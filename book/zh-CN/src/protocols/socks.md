@@ -166,7 +166,30 @@ HTTP 与 WebSocket 客户端的 `socks5://` / `socks4a://` 代理使用同一个
 
 在 Linux 上做纯 TCP 转发时，`only::ebpf::Relay` 可以用 sockmap（`SOCKHASH` + `sk_skb`
 verdict）在内核中拼接两个 TCP 连接，载荷字节完全不进入用户态。它需要特权，并且默认要求
-Linux 6.15+（发现 6.12 在目标发送缓冲区满时会丢数据）。它尚未接入 only-socks。
+Linux 6.15+（发现 6.12 在目标发送缓冲区满时会丢数据）。
+
+代理可按需使用它：`ProxyConfig::sockmap = Some(Relay::new(0)?)`（或 `Socks::sockmap(relay)`）
+会在写出成功应答时把每条 SOCKS 与 HTTP `CONNECT` 隧道拼接到内核中。应答先于任何被转发的字节
+发出；已经在等待的字节（先发问候语的服务器）随后按序到达。
+
+```rust,ignore
+let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
+```
+
+以下隧道改在用户态转发：
+
+- relay 无法创建（无特权、内核较老），或拼接失败；
+- 客户端连接使用 TLS；
+- 客户端在请求之后发来的数据已被代理缓存。
+
+拼接后的字节绕过引擎的写水位。超时与关闭仍然生效：
+
+- 空闲超时读取 socket 的 TCP 计数器（`only::ebpf::byte_counts`）。
+- 一端关闭时，要等所有已转发的数据都进入另一端的发送队列后才关闭另一端，因为关闭 socket 会
+  丢掉内核中的转发积压。
+
+使用 io_uring 时，若两端都开着而一个在拼接前已完成的读交来了负载，隧道会被关闭，避免乱序。
+吞吐量见[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
 
 ## 不支持
 

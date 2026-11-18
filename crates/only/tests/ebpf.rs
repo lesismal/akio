@@ -146,6 +146,67 @@ fn cpu_steering_puts_each_connection_on_the_thread_of_its_cpu() {
     stop(&e);
 }
 
+/// Records the I/O thread and the CPU it runs on when each connection opens.
+struct CpuRecorder(Arc<Mutex<Vec<(usize, usize)>>>);
+impl Acceptor for CpuRecorder {
+    type Handler = Quiet;
+    fn on_open(&self, _c: &Conn<Quiet>) -> Quiet {
+        // SAFETY: sched_getcpu has no preconditions.
+        let cpu = unsafe { libc::sched_getcpu() };
+        self.0.lock().unwrap().push((thread_index(), cpu as usize));
+        Quiet
+    }
+}
+
+#[test]
+fn pinned_threads_run_on_the_cpus_of_their_residue() {
+    let cpus = thread::available_parallelism().map_or(1, |n| n.get());
+    let threads = cpus.clamp(2, 4);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(common::backend())
+                .threads(threads)
+                .accel(Accel::Ebpf({
+                    let mut v = EbpfConfig::default();
+                    v.pin_threads = true;
+                    v
+                }))
+                .serve(CpuRecorder(seen.clone())),
+        )
+        .build()
+        .unwrap();
+    let AccelStatus::Steering(info) = &e.accel_status()[0] else {
+        panic!("{:?}", e.accel_status());
+    };
+    assert_eq!(info.pinned_threads, threads.min(cpus), "{info:?}");
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut keep = Vec::new();
+    for cpu in 0..cpus.min(8) {
+        keep.push(
+            thread::spawn(move || {
+                pin_to_cpu(cpu);
+                TcpStream::connect(addr).unwrap()
+            })
+            .join()
+            .unwrap(),
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().len() < keep.len() {
+        assert!(Instant::now() < deadline, "connections did not open");
+        thread::sleep(Duration::from_millis(2));
+    }
+    for &(t, cpu) in seen.lock().unwrap().iter().filter(|(t, _)| *t < cpus) {
+        assert_eq!(cpu % threads, t, "thread {t} ran on CPU {cpu}");
+    }
+    drop(keep);
+    stop(&e);
+}
+
 #[test]
 fn hash_steering_is_deterministic_for_tcp_connections() {
     let (e, landed) = steered_engine(false, 4, Steering::Hash(HashKey::SrcIpPort));

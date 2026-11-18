@@ -7,11 +7,15 @@
 //!   `only` is designed to make visible: it blocks the I/O thread.
 //! * `block-pool`: do the same sleep on the logical pool with `spawn_blocking` and reply from
 //!   the completion callback.
+//!
+//! `ONLY_ACCEL=cpu|cpu-pin|hash` attaches `SO_REUSEPORT` steering (`Accel::Ebpf`; `cpu-pin` also
+//! pins I/O thread `i` to the CPUs `c % threads == i`), for the eBPF benchmark.
 
 use std::{thread, time::Duration};
 
 use only::{
-    Acceptor, Backend, Conn, Engine, Handler, Listener, PoolConfig, fn_acceptor,
+    Accel, Acceptor, Backend, Conn, EbpfConfig, Engine, Handler, Listener, PoolConfig, ebpf,
+    fn_acceptor,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 
@@ -65,6 +69,9 @@ fn serve<A: Acceptor>(
         .listen(l)
         .build()?;
     println!("listening on {:?}", engine.local_addrs());
+    for s in engine.accel_status() {
+        eprintln!("accel: {s:?}");
+    }
     engine.run()
 }
 
@@ -103,6 +110,20 @@ fn main() -> std::io::Result<()> {
         Listener::tcp(addr).backend(backend)
     }
     .threads(threads);
+    let l = match std::env::var("ONLY_ACCEL").as_deref() {
+        Ok(mode @ ("cpu" | "cpu-pin" | "hash")) => l.accel(Accel::Ebpf({
+            let mut v = EbpfConfig::default();
+            v.steering = if mode == "hash" {
+                ebpf::Steering::Hash(ebpf::HashKey::SrcIpPort)
+            } else {
+                ebpf::Steering::Cpu
+            };
+            v.pin_threads = mode == "cpu-pin";
+            v.strict = true;
+            v
+        })),
+        _ => l,
+    };
 
     match a.get(4).map_or("echo", String::as_str) {
         "echo" => serve(l, fn_acceptor(|_c: &Conn<Echo>| Echo), tls, 64),

@@ -146,15 +146,15 @@ contain no `unsafe`.
 
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
-| `only` | 0 | 0 | 0 | 12 |
+| `only` | 0 | 0 | 0 | 13 |
 | only-dpdk | 31 | 0 | 1 | 0 |
-| only-ebpf | 11 | 3 | 0 | 1 |
+| only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 88 | 3 | 3 | 0 |
+| only-sys | 90 | 3 | 3 | 0 |
 | only-uring | 41 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **317** | **82** | **5** | **21** |
+| **total** | **328** | **83** | **5** | **22** |
 
 By purpose:
 
@@ -163,7 +163,7 @@ By purpose:
 | `only-sys/src/ffi/` | 5 + 7 in the layout tests, `unsafe fn errno_location`, `cmsg_firsthdr`, `cmsg_nxthdr` | the own OS bindings: `extern "C"` declarations of the C library (Linux) / libSystem (macOS), constants, `#[repr(C)]` structs, the `CMSG_*` helpers, `cpu_set_t`, errno | see "The own syscall layer" below |
 | `only-sys/src/net.rs` | 15 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
-| `only-sys/src/process.rs` | 12 | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
+| `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
 | `only-sys/src/ktls.rs` | 9 | kernel TLS (experimental, only-tls `experimental-ktls`): `TCP_ULP` and `SOL_TLS` `setsockopt`, `sendmsg`/`recvmsg` with the record-type cmsg, `uname`, wiping the copied key | crypto-info structs built whole on the stack and checked against `libc` in the layout tests; the cmsg buffer is 8-aligned and `CMSG_SPACE(1)` long; cmsgs walked with `CMSG_*` within `msg_controllen` |
 | `only-sys/src/udp.rs` | 14 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
@@ -190,7 +190,7 @@ By purpose:
 | `only-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
 | `only-dpdk/src/pmd.rs` | 17, `impl Send for Queue` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; a staged tx mbuf written in place | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` is used by one thread at a time (moved once to its I/O thread); the staged tx mbuf is freed if not committed |
 | `only-dpdk/src/sys.rs` | 14 | TAP (`open`, `TUNSETIFF`), AF_PACKET (`socket`, `bind`, `setsockopt`), `read` / `recvfrom` / `write`, `ppoll` | fds owned immediately (`OwnedFd`); `#[repr(C)]` `ifreq` with the UAPI size; buffers and address structs live across each call, lengths passed are their sizes |
-| `only-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
+| `only-ebpf/src/sys.rs` | 20, 4 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_LOOKUP/UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`, `LINK_CREATE`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE`, `SO_RCVLOWAT`, `TCP_INFO`, `SIOCOUTQ`, a `NETLINK_ROUTE` socket (`socket`/`write`/`read`), `if_nametoindex` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>`; per-CPU lookups write into a buffer of 8 bytes per possible CPU (`Map<K, u64>` only); getsockopt/ioctl outputs sized by the length passed |
 
 ### The own syscall layer (`only_sys::ffi`, `only-uring` `ring`)
 

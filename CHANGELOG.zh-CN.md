@@ -192,6 +192,24 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   UDP）、ffmpeg 的 WHIP 封装器与 pion（WHIP、WHEP、PLI 往返）。新 fuzz 目标 `fmp4_demux`、`rtmp_client`、
   `rtsp_client`。
 - 修复：only-webrtc 的 `Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后会 panic。
+### 新增：XDP 限速、I/O 线程绑核、eBPF 哈希分流、内核拼接的 SOCKS 隧道
+
+均为新增（ADR-027，docs/adr/027-ebpf-xdp-pinning-socks-splice.zh-CN.md）：
+
+- **`only::ebpf::xdp::RateLimiter`**：XDP 中按源地址的令牌桶。可只计 TCP SYN（防连接洪泛）或计
+  所有包，源保存在有上限的按 CPU LRU map 中；以 native 或 generic 模式、通过 BPF link 或 netlink
+  挂载。永不替换他人的程序，drop 时卸载，提供 `stats()` 与 `forget()`。
+- **`EbpfConfig::pin_threads`**：把 n 个 I/O 线程中的线程 `i` 绑到 `c % n == i` 的 CPU 上，使
+  `Steering::Cpu` 选中的线程运行在收包 CPU 上。同时新增 `ebpf::cpu_pinning`、
+  `SteerInfo::pinned_threads` 与 `only_sys::process::{allowed_cpus, pin_current_thread}`。
+- **`Steering::Hash` 的 eBPF 层**（需特权）：与经典层的哈希和所选线程相同，socket 写在
+  `REUSEPORT_SOCKARRAY` 中，与加入组的顺序无关。
+- **sockmap relay**：拼接前已排队的字节会被转发，不再等待后续数据。新增 `Relay::splice_inner`、
+  `Relay::splice_inner_with`（在转发任何字节前写出最后一条握手消息）与 `ebpf::byte_counts`。
+- **only-socks**：`ProxyConfig::sockmap` / `Socks::sockmap` 把 SOCKS 与 HTTP `CONNECT` 隧道拼接到
+  内核中转发（需显式开启），无法拼接时回退到用户态转发。
+- `bench-server` 的 `ONLY_ACCEL` 开关、`ebpf-bench` 示例、`tools/bench/ebpf.sh`；fuzz 目标
+  `xdp_rate_limit`。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 

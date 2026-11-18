@@ -75,15 +75,15 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 
 | Crate | 块 | `unsafe fn` | `unsafe impl` | 测试/示例/基准 |
 |---|---:|---:|---:|---:|
-| only | 0 | 0 | 0 | 12 |
+| only | 0 | 0 | 0 | 13 |
 | only-dpdk | 31 | 0 | 1 | 0 |
-| only-ebpf | 11 | 3 | 0 | 1 |
+| only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 88 | 3 | 3 | 0 |
+| only-sys | 90 | 3 | 3 | 0 |
 | only-uring | 41 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **317** | **82** | **5** | **21** |
+| **合计** | **328** | **83** | **5** | **22** |
 
 按用途：
 
@@ -92,7 +92,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-sys/src/ffi/` | 5 + 布局测试中 7 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
 | `only-sys/src/net.rs` | 15 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
-| `only-sys/src/process.rs` | 12 | prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
+| `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `only-sys/src/ktls.rs` | 9 | 内核 TLS（实验性，only-tls 的 `experimental-ktls`）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥 | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg |
 | `only-sys/src/udp.rs` | 14 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
@@ -119,7 +119,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
 | `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |
 | `only-dpdk/src/sys.rs` | 14 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 UAPI 大小一致；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
-| `only-ebpf/src/sys.rs` | 11，3 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定 |
+| `only-ebpf/src/sys.rs` | 20，4 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_LOOKUP/UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`、`LINK_CREATE`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE`、`SO_RCVLOWAT`、`TCP_INFO`、`SIOCOUTQ`、`NETLINK_ROUTE` socket（`socket`/`write`/`read`）、`if_nametoindex` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定；按 CPU 的查询写入每个可能 CPU 8 字节的缓冲区（仅 `Map<K, u64>`）；getsockopt/ioctl 的输出大小由传入长度限定 |
 
 ### 自有系统调用层（`only_sys::ffi`、`only-uring` 的 `ring`）
 

@@ -112,6 +112,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_socks::BlockingUdp
 pub only_socks::ProxyConfig::destinations: only_socks::Destinations
 pub only_socks::ProxyConfig::handshake_timeout: core::option::Option<core::time::Duration>
 pub only_socks::ProxyConfig::idle_timeout: core::option::Option<core::time::Duration>
+pub only_socks::ProxyConfig::sockmap: core::option::Option<only_ebpf::relay::Relay>
 impl core::clone::Clone for only_socks::ProxyConfig
 pub fn only_socks::ProxyConfig::clone(&self) -> Self
 impl core::default::Default for only_socks::ProxyConfig
@@ -149,6 +150,7 @@ pub fn only_socks::Socks::bind_timeout(self, core::time::Duration) -> only_socks
 pub fn only_socks::Socks::config(self, only_socks::ProxyConfig) -> only_socks::Socks
 pub fn only_socks::Socks::destinations(self, only_socks::Destinations) -> only_socks::Socks
 pub fn only_socks::Socks::new(only::EngineRef) -> only_socks::Socks
+pub fn only_socks::Socks::sockmap(self, only_ebpf::relay::Relay) -> only_socks::Socks
 pub fn only_socks::Socks::udp_associate(self, bool) -> only_socks::Socks
 pub fn only_socks::Socks::udp_idle_timeout(self, core::time::Duration) -> only_socks::Socks
 impl core::fmt::Debug for only_socks::Socks

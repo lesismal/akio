@@ -26,3 +26,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-021: DTLS 1.3, connection IDs, PSKs and session resumption in only-dtls](021-dtls13-cid-resumption.md)
 - [ADR-017: TURN over TCP and TLS, a TURN client, ICE-TCP and simulcast sending](017-webrtc-turn-gaps.md) (accepted 2026-11-17)
 - [ADR-016: fMP4 HLS, RTMP and RTSP clients, WebRTC media in the media hub](016-media-fmp4-clients-webrtc.md) (accepted 2026-11-17)
+- [ADR-027: XDP rate limiting, thread pinning, the eBPF hash tier and spliced SOCKS tunnels](027-ebpf-xdp-pinning-socks-splice.md) (accepted 2026-11-18)

@@ -8,20 +8,28 @@
 //!
 //! # Ordering contract
 //!
-//! The kernel takes over the byte streams from the moment of [`Relay::splice`]. Bytes userspace
-//! already read but has not yet written to the other side would be overtaken by the kernel's
-//! newer bytes, so splice only when nothing is in flight in userspace: typically right after the
-//! proxy handshake, before the client was told it may send (e.g. before the SOCKS success reply
-//! is written), with no data queued on either connection. [`Relay::splice_conns`] checks the
-//! queues. After splicing, userspace must not read payload from the sockets (`only`'s loop sees
-//! no more data on them, only EOF and errors) and should only watch for close: closing either
-//! socket removes it from the map.
+//! The kernel takes over the byte streams from the moment of [`Relay::splice`], including bytes
+//! already waiting in the sockets' receive queues. Bytes userspace already read but has not yet
+//! written to the other side would be overtaken by the kernel's newer bytes, so splice only when
+//! nothing is in flight in userspace: typically right after the proxy handshake, with no data
+//! queued on either connection ([`Relay::splice_conns`] checks the queues). A last message of
+//! the handshake (the SOCKS success reply) can be written from
+//! [`Relay::splice_inner_with`]'s callback: it runs when both sockets are in the map but before
+//! anything is relayed, so it reaches the client ahead of the first relayed byte. After
+//! splicing, userspace must not read payload from the sockets (`only`'s loop sees no more data
+//! on them, only EOF and errors) and should only watch for close: closing either socket removes
+//! it from the map.
+//!
+//! While the two sockets are inserted (one at a time) their `SO_RCVLOWAT` is raised so that
+//! arriving data waits in the receive queue instead of reaching the verdict program before both
+//! are in the map (where it would be passed to a psock queue that only userspace reads); it is
+//! then set back to 1, which runs the verdict over whatever arrived meanwhile, in order.
 //!
 //! The kernel's redirect backlog is not bounded by `only`'s write watermarks.
 
 use std::{io, sync::Arc};
 
-use only_core::Conn;
+use only_core::{Conn, ConnInner};
 
 /// Oldest kernel [`Relay::new`] accepts. Earlier kernels can drop or misorder relayed bytes
 /// when the destination socket's send buffer is full and the psock backlog retries after
@@ -99,9 +107,18 @@ impl Relay {
     /// Splices the connected TCP sockets `a` and `b` (raw fds): data received on `a` is sent on
     /// `b` and vice versa, in the kernel. See the module's ordering contract.
     pub fn splice(&self, a: i32, b: i32) -> io::Result<Splice> {
+        self.splice_fds(a, b, &mut || Ok(()))
+    }
+
+    fn splice_fds(
+        &self,
+        a: i32,
+        b: i32,
+        before_relaying: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Splice> {
         #[cfg(target_os = "linux")]
         {
-            let cookies = self.inner.splice(a, b)?;
+            let cookies = self.inner.splice(a, b, before_relaying)?;
             Ok(Splice {
                 relay: self.clone(),
                 cookies,
@@ -109,7 +126,7 @@ impl Relay {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (a, b);
+            let _ = (a, b, before_relaying);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "sockmap relay is Linux-only",
@@ -123,8 +140,26 @@ impl Relay {
     /// connections, after forwarding whatever data that callback received; on error just keep
     /// relaying in userspace.
     pub fn splice_conns<A, B>(&self, a: &Conn<A>, b: &Conn<B>) -> io::Result<Splice> {
+        self.splice_inner(a.inner(), b.inner())
+    }
+
+    /// [`splice_conns`](Self::splice_conns) for the connections' shared state (what a handler
+    /// of one side keeps of the other).
+    pub fn splice_inner(&self, a: &ConnInner, b: &ConnInner) -> io::Result<Splice> {
+        self.splice_inner_with(a, b, || Ok(()))
+    }
+
+    /// [`splice_inner`](Self::splice_inner) that runs `before_relaying` once both sockets are
+    /// spliced but before the kernel relays any byte: what it writes directly to a socket (not
+    /// through the engine's queue) goes out ahead of every relayed byte. If it fails, the splice
+    /// is undone without losing data and its error returned.
+    pub fn splice_inner_with(
+        &self,
+        a: &ConnInner,
+        b: &ConnInner,
+        before_relaying: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<Splice> {
         use std::os::fd::AsRawFd;
-        let (a, b) = (a.inner(), b.inner());
         let (Some(sa), Some(sb)) = (a.tcp_stream(), b.tcp_stream()) else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -149,7 +184,46 @@ impl Relay {
                 "data still queued in userspace",
             ));
         }
-        self.splice(sa.as_raw_fd(), sb.as_raw_fd())
+        let mut f = Some(before_relaying);
+        self.splice_fds(sa.as_raw_fd(), sb.as_raw_fd(), &mut || {
+            f.take().map_or(Ok(()), |f| f())
+        })
+    }
+}
+
+/// Byte counters of a TCP socket ([`byte_counts`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ByteCounts {
+    /// Payload bytes received in order (`tcpi_bytes_received`).
+    pub received: u64,
+    /// Payload bytes written to the socket: acknowledged by the peer (`tcpi_bytes_acked`) plus
+    /// still in its send queue (`SIOCOUTQ`).
+    pub written: u64,
+}
+
+/// The counters of `s` (Linux 4.1+; `Unsupported` elsewhere). Spliced sockets never hand their
+/// data to userspace, so this is how a proxy sees a spliced tunnel's progress: whether it is
+/// idle, and when everything one side received has reached the other side's send queue (the
+/// kernel's relay backlog is invisible otherwise, and closing a socket drops what is still in
+/// it).
+pub fn byte_counts(s: &std::net::TcpStream) -> io::Result<ByteCounts> {
+    #[cfg(target_os = "linux")]
+    {
+        let fd = std::os::fd::AsRawFd::as_raw_fd(s);
+        let (received, acked) = crate::sys::tcp_bytes(fd)?;
+        Ok(ByteCounts {
+            received,
+            written: acked + crate::sys::unsent_bytes(fd)? as u64,
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = s;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "TCP_INFO is read on Linux only",
+        ))
     }
 }
 
@@ -212,16 +286,41 @@ mod imp {
             Ok(RelayInner { map, _prog: prog })
         }
 
-        pub(super) fn splice(&self, a: i32, b: i32) -> io::Result<[u64; 2]> {
+        pub(super) fn splice(
+            &self,
+            a: i32,
+            b: i32,
+            before_relaying: &mut dyn FnMut() -> io::Result<()>,
+        ) -> io::Result<[u64; 2]> {
             let ca = sys::socket_cookie(a)?;
             let cb = sys::socket_cookie(b)?;
+            // Gate both sockets: data arriving from now on waits in the receive queue (no
+            // data_ready wake-up below the low-water mark, so no verdict run).
+            let gate = |v: i32| -> io::Result<()> {
+                sys::set_rcvlowat(a, v)?;
+                sys::set_rcvlowat(b, v)
+            };
+            let ungate = || gate(1);
+            if let Err(e) = gate(i32::MAX) {
+                let _ = ungate();
+                return Err(e);
+            }
             let m = &self.map;
-            // Inserting a socket as a value gives it the verdict program. With only the first
-            // entry, b's data still finds no peer (passes to userspace); the second turns both
-            // directions on.
-            m.update(&ca, &(b as u32))?;
-            if let Err(e) = m.update(&cb, &(a as u32)) {
-                let _ = m.delete(&ca);
+            // Inserting a socket as a value gives it the verdict program; the gate keeps it
+            // from running until both entries exist.
+            let inserted = m.update(&ca, &(b as u32)).and_then(|()| {
+                m.update(&cb, &(a as u32)).inspect_err(|_| {
+                    let _ = m.delete(&ca);
+                })
+            });
+            if let Err(e) = inserted {
+                let _ = ungate();
+                return Err(e);
+            }
+            // Nothing was relayed yet: undoing loses nothing.
+            if let Err(e) = before_relaying().and_then(|()| ungate()) {
+                let _ = self.unsplice([ca, cb]);
+                let _ = ungate();
                 return Err(e);
             }
             Ok([ca, cb])

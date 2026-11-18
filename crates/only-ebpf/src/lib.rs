@@ -33,9 +33,13 @@ mod steer;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod sys;
+#[cfg(any(test, feature = "fuzzing"))]
+mod vm;
+pub mod xdp;
 
-pub use relay::{Relay, Splice};
-pub use steer::{AttachOptions, HashKey, SteerInfo, Steering, Tier, attach_reuseport};
+pub use relay::{ByteCounts, Relay, Splice, byte_counts};
+pub use steer::{AttachOptions, HashKey, SteerInfo, Steering, Tier, attach_reuseport, cpu_pinning};
+pub use xdp::{RateLimiter, XdpLimit};
 // Steering internals the tests check the kernel against; unstable.
 #[doc(hidden)]
 pub use steer::{SLOTS, expected_index, slot_table};
@@ -50,6 +54,9 @@ pub struct Probe {
     pub reuseport_ebpf: bool,
     /// The sockmap relay (privileged).
     pub sockmap_relay: bool,
+    /// The XDP rate limiter's program and maps load (privileged); attaching it to an interface
+    /// is not tried.
+    pub xdp: bool,
 }
 
 /// Probes the features on throwaway sockets bound to the loopback address.
@@ -73,6 +80,7 @@ pub fn probe() -> Probe {
             reuseport_cbpf,
             reuseport_ebpf,
             sockmap_relay: Relay::new(1).is_ok(),
+            xdp: xdp::probe_load().is_ok(),
         }
     }
     #[cfg(not(target_os = "linux"))]

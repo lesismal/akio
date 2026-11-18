@@ -72,12 +72,17 @@
 
 `Accel::Ebpf` 决定每个新连接或新 UDP 对端交给哪个 I/O 线程：
 
-- `Steering::Cpu` 让一个流留在与收到其数据包的 CPU 对应的线程上。配合网卡 RSS/RPS 和绑核的
-  I/O 线程可以获得缓存局部性（only 目前还不提供线程绑核本身）。
+- `Steering::Cpu` 让一个流留在与收到其数据包的 CPU 对应的线程上。配合网卡 RSS/RPS 和
+  `EbpfConfig::pin_threads`（线程 `i` 运行在 `c % n == i` 的 CPU 上）可以获得缓存局部性。
 - `Steering::Hash`（按源 IP，或源 IP 加端口做一致性哈希）让客户端在重连后仍落在同一线程，适合
   按客户端缓存的场景。
 
-经典 BPF 不需要特权；用 `Engine::accel_status()` 查看实际挂载了什么。eBPF 的基准测试尚未发布。
+经典 BPF 不需要特权；用 `Engine::accel_status()` 查看实际挂载了什么。
+
+代理可用 `ProxyConfig::sockmap` 在内核中拼接隧道。在
+[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)中，
+它让 SOCKS 上传吞吐量翻倍，但走回环时每字节 CPU 更多。`ebpf::xdp::RateLimiter` 在协议栈看到包之前
+丢弃来自少数源的洪泛。
 
 ## 7. TLS
 

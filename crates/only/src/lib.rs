@@ -112,6 +112,11 @@ pub struct EbpfConfig {
     pub ebpf_programs: bool,
     /// Fail `build` with `Unsupported` instead of degrading when nothing could be attached.
     pub strict: bool,
+    /// Pin I/O thread `i` of `n` to the CPUs `c` (of those the process may use) with
+    /// `c % n == i` (default: false), so the thread [`ebpf::Steering::Cpu`] picks for a flow is
+    /// the one running on the CPU that received it. Threads with no such CPU (more threads than
+    /// CPUs) stay unpinned; pinning that fails leaves the thread unpinned. Linux only.
+    pub pin_threads: bool,
 }
 
 impl Default for EbpfConfig {
@@ -120,6 +125,7 @@ impl Default for EbpfConfig {
             steering: ebpf::Steering::Cpu,
             ebpf_programs: true,
             strict: false,
+            pin_threads: false,
         }
     }
 }
@@ -513,8 +519,17 @@ fn apply_accel(a: &Accel, g: &dyn Group) -> io::Result<AccelStatus> {
     };
     let mut opts = ebpf::AttachOptions::default();
     opts.ebpf = cfg.ebpf_programs;
-    match ebpf::attach_reuseport(&g.listener_fds(), cfg.steering, opts) {
-        Ok(info) => Ok(AccelStatus::Steering(info)),
+    let fds = g.listener_fds();
+    match ebpf::attach_reuseport(&fds, cfg.steering, opts) {
+        Ok(mut info) => {
+            if cfg.pin_threads {
+                if let Ok(sets) = ebpf::cpu_pinning(fds.len()) {
+                    info.pinned_threads = sets.iter().filter(|s| !s.is_empty()).count();
+                    g.pin_threads(sets);
+                }
+            }
+            Ok(AccelStatus::Steering(info))
+        }
         Err(e) if cfg.strict => Err(unsupported(&format!("BPF steering ({e})"))),
         Err(e) => {
             eprintln!("only: BPF steering unavailable ({e}); using default SO_REUSEPORT hashing");

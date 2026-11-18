@@ -14,7 +14,12 @@
 //! 4a `CONNECT` and `BIND`, on the engine or blocking. The HTTP and WebSocket clients take SOCKS
 //! proxies through `only_ws::proxy::Proxy` (`socks5h://…`) with the same handshake.
 //!
-//! Not supported: GSSAPI authentication, sending fragmented datagrams, a Linux `splice` path.
+//! Not supported: GSSAPI authentication, sending fragmented datagrams.
+//!
+//! Linux fast path (opt-in, [`ProxyConfig::sockmap`]): `CONNECT` tunnels (SOCKS and HTTP) are
+//! spliced in the kernel with `only::ebpf::Relay` once the upstream is connected, so their bytes
+//! no longer pass through userspace; wherever that is unavailable or unsafe the tunnel relays
+//! in userspace as usual.
 //!
 //! Safe defaults ([`ProxyConfig`]): a handshake must complete (upstream connected) within 10 s,
 //! a tunnel with no byte in either direction for 5 minutes is closed, at most 256 KiB of early
@@ -37,6 +42,9 @@ use std::{
 
 mod guard;
 use guard::Watch;
+mod splice;
+use splice::SpliceCtl;
+pub use splice::spliced_tunnels;
 
 use only::{Acceptor, Conn, EngineRef, Handler};
 use only_core::ConnInner;
@@ -159,6 +167,13 @@ pub struct ProxyConfig {
     pub idle_timeout: Option<Duration>,
     /// Which addresses may be dialled. Default [`Destinations::PublicOnly`].
     pub destinations: Destinations,
+    /// Splice `CONNECT` tunnels in the kernel with this sockmap relay (Linux, privileged, 6.15+
+    /// by default; see `only::ebpf::Relay::new`). Default `None`: userspace relaying. A tunnel
+    /// is spliced right after its upstream connects, as its success reply is written, unless
+    /// the client already sent data behind its request, the client connection has TLS, or
+    /// splicing fails; those relay in userspace. Spliced bytes bypass the engine's write
+    /// watermarks; the idle timeout and closing keep working (from the sockets' TCP counters).
+    pub sockmap: Option<only::ebpf::Relay>,
 }
 
 impl Default for ProxyConfig {
@@ -167,6 +182,7 @@ impl Default for ProxyConfig {
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
             destinations: Destinations::PublicOnly,
+            sockmap: None,
         }
     }
 }
@@ -189,23 +205,75 @@ fn forward(from: &Arc<ConnInner>, to: &Arc<ConnInner>, data: &[u8]) {
     }
 }
 
+/// How long a spliced side may make no forwarding progress after the other closed.
+fn stall(cfg: &ProxyConfig) -> Duration {
+    cfg.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT)
+}
+
+/// Payload read in userspace from a side of a spliced tunnel (`from`; `to` is the other side):
+/// `true` when it must not be forwarded. While both sides are open it can only be bytes read
+/// before the splice took over (an io_uring read completing late), which the kernel may already
+/// have overtaken: the tunnel is closed rather than reordered. Once `to` closed, the kernel
+/// passes `from`'s data to userspace, where it has nowhere to go.
+fn spliced_payload(splice: Option<&SpliceCtl>, from: &Arc<ConnInner>, to: &Arc<ConnInner>) -> bool {
+    if !splice.is_some_and(SpliceCtl::is_spliced) {
+        return false;
+    }
+    if to.is_open() {
+        from.close();
+        to.close();
+    }
+    true
+}
+
+/// Sends the success `reply` to the client, splicing the tunnel first if the fast path is on
+/// and safe (its idle timeout then follows the sockets' counters, as no byte reaches the
+/// handlers any more).
+fn reply_and_splice(
+    splice: Option<&SpliceCtl>,
+    watch: Option<&Watch>,
+    client: &Arc<ConnInner>,
+    up: &Arc<ConnInner>,
+    reply: &[u8],
+) {
+    let written = splice.map_or(0, |s| s.try_splice(client, up, reply));
+    if written == reply.len() {
+        if let Some(w) = watch {
+            let (c, u) = (client.clone(), up.clone());
+            w.set_probe(Box::new(move || SpliceCtl::activity(&c, &u)));
+        }
+    } else {
+        let _ = client.send(&reply[written..]);
+    }
+}
+
 /// The far side of a tunnel: its data goes back to the client.
 type UpstreamSlot = Arc<Mutex<Option<Arc<ConnInner>>>>;
 
 struct Upstream {
     client: Arc<ConnInner>,
     watch: Option<Arc<Watch>>,
+    splice: Option<Arc<SpliceCtl>>,
+    stall: Duration,
 }
 
 impl Handler for Upstream {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if spliced_payload(self.splice.as_deref(), c.inner(), &self.client) {
+            return;
+        }
         if let Some(w) = &self.watch {
             w.touch();
         }
         forward(c.inner(), &self.client, data);
     }
-    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<only::Error>) {
-        self.client.close_after_send();
+    fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
+        match &self.splice {
+            Some(s) if s.is_spliced() => {
+                s.close_after_forward(c.inner(), false, self.client.clone(), self.stall);
+            }
+            _ => self.client.close_after_send(),
+        }
     }
 }
 
@@ -217,6 +285,8 @@ struct UpstreamAcceptor {
     slot: UpstreamSlot,
     on_up: Arc<Mutex<Option<OnUp>>>,
     watch: Option<Arc<Watch>>,
+    splice: Option<Arc<SpliceCtl>>,
+    stall: Duration,
 }
 
 impl Acceptor for UpstreamAcceptor {
@@ -234,6 +304,8 @@ impl Acceptor for UpstreamAcceptor {
         Upstream {
             client: self.client.clone(),
             watch: self.watch.clone(),
+            splice: self.splice.clone(),
+            stall: self.stall,
         }
     }
 }
@@ -246,6 +318,9 @@ struct DialCtx {
     client: Arc<ConnInner>,
     slot: UpstreamSlot,
     watch: Option<Arc<Watch>>,
+    splice: Option<Arc<SpliceCtl>>,
+    /// How long a spliced side may make no progress forwarding before it is closed anyway.
+    stall: Duration,
 }
 
 /// Dials the addresses in order for `client`; `on_up` runs on the first that connects,
@@ -285,6 +360,8 @@ fn try_dial(
         slot: ctx.slot.clone(),
         on_up: up.clone(),
         watch: ctx.watch.clone(),
+        splice: ctx.splice.clone(),
+        stall: ctx.stall,
     };
     let e2 = e.clone();
     e.dial(addr, acceptor, move |_err| {
@@ -460,6 +537,13 @@ impl Socks {
         self
     }
 
+    /// Sets [`ProxyConfig::sockmap`]: splice `CONNECT` tunnels in the kernel with `relay`.
+    #[must_use]
+    pub fn sockmap(mut self, relay: only::ebpf::Relay) -> Socks {
+        Arc::make_mut(&mut self.cfg).sockmap = Some(relay);
+        self
+    }
+
     /// Requires SOCKS5 username/password authentication (and turns SOCKS4, which has none, off).
     #[must_use]
     pub fn auth(mut self, check: impl Fn(&str, &str) -> bool + Send + Sync + 'static) -> Socks {
@@ -565,6 +649,7 @@ pub struct SocksSession {
     watch: Option<Arc<Watch>>,
     assoc: Option<Arc<udp::Assoc>>,
     bind_cancel: Option<Arc<AtomicBool>>,
+    splice: Option<Arc<SpliceCtl>>,
 }
 
 impl std::fmt::Debug for SocksSession {
@@ -601,6 +686,7 @@ impl Acceptor for Socks {
             watch,
             assoc: None,
             bind_cancel: None,
+            splice: SpliceCtl::new(self.cfg.sockmap.as_ref()),
         }
     }
 }
@@ -725,19 +811,27 @@ impl SocksSession {
         c.inner().set_relayed(true);
         c.hold_reads(true);
         let engine = self.engine.clone();
+        if let Some(s) = &self.splice
+            && !self.buf.is_empty()
+        {
+            s.mark_early(); // bytes behind the request go through userspace
+        }
         let ctx = DialCtx {
             client: c.inner().clone(),
             slot: self.upstream.clone(),
             watch: self.watch.clone(),
+            splice: self.splice.clone(),
+            stall: stall(&self.cfg),
         };
         let client = c.inner().clone();
+        let (splice, watch) = (self.splice.clone(), self.watch.clone());
         let ok_reply = move |up: &Arc<ConnInner>| {
             let reply = if v5 {
                 socks5_reply(REP_OK, Some(up.local_addr()))
             } else {
                 vec![0, 0x5a, 0, 0, 0, 0, 0, 0]
             };
-            let _ = client.send_owned(reply);
+            reply_and_splice(splice.as_deref(), watch.as_deref(), &client, up, &reply);
             client.hold_reads(false);
         };
         let client2 = c.inner().clone();
@@ -871,6 +965,8 @@ impl SocksSession {
                     client: client.clone(),
                     slot,
                     watch,
+                    splice: None,
+                    stall: Duration::ZERO,
                     on_up: Arc::new(Mutex::new(Some(Box::new(move |up: &Arc<ConnInner>| {
                         if !client_up.is_open() {
                             return up.close();
@@ -1057,13 +1153,20 @@ impl Handler for SocksSession {
             return;
         }
         if let St::Relaying | St::Connecting | St::Binding = self.st {
-            let up = self
-                .upstream
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
+            let up = {
+                let g = self.upstream.lock().unwrap_or_else(|p| p.into_inner());
+                if g.is_none()
+                    && let Some(s) = &self.splice
+                {
+                    s.mark_early(); // held for the upstream: no splicing
+                }
+                g.clone()
+            };
             match up {
                 Some(up) => {
+                    if spliced_payload(self.splice.as_deref(), c.inner(), &up) {
+                        return;
+                    }
                     if let Some(w) = &self.watch {
                         w.touch();
                     }
@@ -1108,7 +1211,7 @@ impl Handler for SocksSession {
         }
     }
 
-    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<only::Error>) {
+    fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
         if let Some(cancel) = self.bind_cancel.take() {
             cancel.store(true, Ordering::Release);
         }
@@ -1121,7 +1224,12 @@ impl Handler for SocksSession {
             .unwrap_or_else(|p| p.into_inner())
             .take();
         if let Some(up) = taken {
-            up.close_after_send();
+            match &self.splice {
+                Some(s) if s.is_spliced() => {
+                    s.close_after_forward(c.inner(), true, up, stall(&self.cfg));
+                }
+                _ => up.close_after_send(),
+            }
         }
     }
 }
@@ -1164,8 +1272,10 @@ pub fn connect_proxy_with(engine: EngineRef, cfg: ProxyConfig) -> impl Service {
             host: Some((host, port)),
             upstream: Arc::new(Mutex::new(None)),
             pending: Vec::new(),
+            splice: SpliceCtl::new(cfg.sockmap.as_ref()),
             cfg: cfg.clone(),
             watch: None,
+            client: None,
         });
     }
 }
@@ -1177,6 +1287,9 @@ struct Tunnel {
     pending: Vec<u8>,
     cfg: Arc<ProxyConfig>,
     watch: Option<Arc<Watch>>,
+    splice: Option<Arc<SpliceCtl>>,
+    /// The client connection (for closing a spliced tunnel).
+    client: Option<Arc<ConnInner>>,
 }
 
 const BAD_GATEWAY: &[u8] =
@@ -1198,11 +1311,15 @@ impl RawHandler for Tunnel {
             self.cfg.idle_timeout,
         );
         let engine = self.engine.clone();
+        self.client = Some(conn.inner().clone());
         let ctx = DialCtx {
             client: conn.inner().clone(),
             slot: self.upstream.clone(),
             watch: self.watch.clone(),
+            splice: self.splice.clone(),
+            stall: stall(&self.cfg),
         };
+        let (splice, watch) = (self.splice.clone(), self.watch.clone());
         let cfg = self.cfg.clone();
         // Resolution may block: it runs on the proxy's resolver threads (a raw connection has
         // no typed handle for the logical pool), never on the I/O thread.
@@ -1232,8 +1349,9 @@ impl RawHandler for Tunnel {
                     &engine,
                     allowed,
                     ctx,
-                    Box::new(move |_up| {
-                        let _ = c_ok.send(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+                    Box::new(move |up| {
+                        const OK: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+                        reply_and_splice(splice.as_deref(), watch.as_deref(), &c_ok, up, OK);
                         c_ok.hold_reads(false);
                     }),
                     Box::new(move || {
@@ -1250,13 +1368,20 @@ impl RawHandler for Tunnel {
     }
 
     fn on_data(&mut self, conn: &RawConn, data: &[u8]) {
-        let up = self
-            .upstream
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let up = {
+            let g = self.upstream.lock().unwrap_or_else(|p| p.into_inner());
+            if g.is_none()
+                && let Some(s) = &self.splice
+            {
+                s.mark_early();
+            }
+            g.clone()
+        };
         match up {
             Some(up) => {
+                if spliced_payload(self.splice.as_deref(), conn.inner(), &up) {
+                    return;
+                }
                 if let Some(w) = &self.watch {
                     w.touch();
                 }
@@ -1282,7 +1407,12 @@ impl RawHandler for Tunnel {
             .unwrap_or_else(|p| p.into_inner())
             .take();
         if let Some(up) = taken {
-            up.close_after_send();
+            match (&self.splice, &self.client) {
+                (Some(s), Some(client)) if s.is_spliced() => {
+                    s.close_after_forward(client, true, up, stall(&self.cfg));
+                }
+                _ => up.close_after_send(),
+            }
         }
     }
 }

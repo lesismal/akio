@@ -981,6 +981,53 @@ permessage-deflate echo（客户端压缩 → 服务端解压 → 服务端压�
 
 UDP 一行在各次运行间相差 2.5 倍（每次只有一个交换，测的是两个引擎线程的唤醒延迟）。
 
+### eBPF 加速（`tools/bench/ebpf.sh`）
+
+2026-11-18 在同一主机上运行（Linux 7.0，root，在 `quiet.sh` 下），分支 `claude/ebpf-gaps-6b8982`。
+每张表都是同轮 A/B：各情形在 3 轮（每轮 5 秒）内交替运行，取中位数。
+
+**分流**（`bench-server` echo，4 个 epoll I/O 线程在 CPU 0–3，`ONLY_ACCEL`；`echo-bench`
+256 连接 × 64 B，8 线程在 CPU 4–7 与 12–15）。走回环时，SYN 与数据都在客户端所在的 CPU 上处理，
+因此这里测的是程序与绑核本身的开销，而不是分流所针对的 RSS 局部性（主机网卡未连接）。
+
+| `ONLY_ACCEL` | req/s | 相对 none |
+|---|---:|---:|
+| none（内核 reuseport 哈希） | 669,683（±3%） | 1.00 |
+| `cpu`（eBPF 层，`Steering::Cpu`） | 743,669 | 1.11 |
+| `cpu-pin`（再加 `pin_threads`） | 756,969 | 1.13 |
+| `hash`（eBPF 层，`Steering::Hash(SrcIpPort)`） | 701,630 | 1.05 |
+
+程序本身的开销测不出来。相对内核哈希的提升很可能来自连接的分布（未按线程测量）：256 个连接时，
+内核哈希可能让 4 个线程的负载不均，而 CPU 分流按客户端线程所在 CPU 分配连接，哈希层按 Maglev 槽分配。绑核再提升 1.8%，
+各轮结果也更稳定（±0.1%）。
+
+**SOCKS5 隧道：用户态转发 vs sockmap 拼接**（`ebpf-bench socks`：2 个 epoll I/O 线程，8 条隧道以
+256 KiB 写入尽速上传到接收端；CPU 为整机忙碌时间（`/proc/stat`），按每 GB 计）。
+
+| 转发方式 | 吞吐量 | 每 GB CPU 秒 | 忙碌 CPU 数 |
+|---|---:|---:|---:|
+| 用户态（`ProxyConfig::sockmap = None`） | 62.9 Gbit/s | 0.49 | 3.9 |
+| sockmap（`Relay::new`） | 124.2 Gbit/s（±7%） | 0.93 | 14.5 |
+
+拼接让隧道吞吐量翻倍（1.97×），因为转发不再跑在代理的 2 个 I/O 线程上：内核在 softirq 与各 CPU 的
+psock backlog 工作线程中转发。按字节计它在这里并不更省：走回环时，客户端、接收端与转发共享
+主机的 16 个 CPU，于是每 GB 多花约 1.9× 的 CPU 换来两倍速度。8 条隧道全部被拼接。快速路径新增的检查不影响
+用户态转发：与 `ab65d376` 同轮 A/B（交替 5 轮），epoll 下为 1.00×（66.7 Gbit/s），io_uring 下为
+0.99×（31.3 对 31.7 Gbit/s，在 io_uring ±7% 的波动之内）。
+
+**XDP 限速**（`ebpf-bench`：一个网络命名空间中 4 线程发送 64 字节 UDP 洪泛，经 veth 对到另一个
+命名空间；限速器对每个包计数，每源 1 个/秒，因此几乎全部丢弃）。
+
+| 接收端 | 洪泛发送 | 处理量 |
+|---|---:|---:|
+| 无 XDP，由 socket 读取 | 1.57 Mpps | 接收 1.42 Mpps |
+| XDP native（veth 驱动模式） | 2.76 Mpps | 丢弃 2.15 Mpps |
+| XDP generic（`skb` 模式） | 2.01 Mpps | 丢弃 1.88 Mpps |
+
+每一行的瓶颈都是发送端（经 veth 时它还要承担接收端的 softirq）。包在 XDP 处被丢弃时，发送端在
+native 模式下多推 1.76×，在 generic 模式下多推 1.28×（相对于包进入协议栈送往 socket 的情形）。
+native XDP 丢弃的包数是 socket 路径接收量的 1.52×。
+
 ## 未测项
 
 - 真实网卡上的 **DPDK**（主机没有）；`only-dpdk` 只通过上面的协议栈基准出现。

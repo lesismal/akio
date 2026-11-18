@@ -519,6 +519,7 @@ unsafe extern "C" {
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
     pub fn prctl(option: c_int, ...) -> c_int;
     pub fn sched_setaffinity(pid: pid_t, size: size_t, set: *const cpu_set_t) -> c_int;
+    pub fn sched_getaffinity(pid: pid_t, size: size_t, set: *mut cpu_set_t) -> c_int;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction, old: *mut sigaction) -> c_int;
 }

@@ -1,11 +1,32 @@
 pub mod only_ebpf
 pub mod only_ebpf::relay
+#[non_exhaustive] pub struct only_ebpf::relay::ByteCounts
+pub only_ebpf::relay::ByteCounts::received: u64
+pub only_ebpf::relay::ByteCounts::written: u64
+impl core::clone::Clone for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::relay::ByteCounts
+impl core::cmp::PartialEq for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::default() -> Self
+impl core::fmt::Debug for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::relay::ByteCounts
+impl core::marker::StructuralPartialEq for only_ebpf::relay::ByteCounts
+impl core::marker::Send for only_ebpf::relay::ByteCounts
+impl core::marker::Sync for only_ebpf::relay::ByteCounts
+impl core::marker::Unpin for only_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::ByteCounts
 pub struct only_ebpf::relay::Relay
 impl only_ebpf::relay::Relay
 pub fn only_ebpf::relay::Relay::new(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
 pub fn only_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
 pub fn only_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<only_ebpf::relay::Splice>
 pub fn only_ebpf::relay::Relay::splice_conns<A, B>(&self, &only_core::conn::Conn<A>, &only_core::conn::Conn<B>) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_inner(&self, &only_core::conn::ConnInner, &only_core::conn::ConnInner) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_inner_with(&self, &only_core::conn::ConnInner, &only_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<only_ebpf::relay::Splice>
 impl core::clone::Clone for only_ebpf::relay::Relay
 pub fn only_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for only_ebpf::relay::Relay
@@ -28,6 +49,124 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Splice
 pub const only_ebpf::relay::DEFAULT_PAIRS: u32
 pub const only_ebpf::relay::MIN_KERNEL: (u32, u32)
+pub fn only_ebpf::relay::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<only_ebpf::relay::ByteCounts>
+pub mod only_ebpf::xdp
+#[non_exhaustive] pub enum only_ebpf::xdp::Attachment
+pub only_ebpf::xdp::Attachment::Link
+pub only_ebpf::xdp::Attachment::Netlink
+impl core::clone::Clone for only_ebpf::xdp::Attachment
+pub fn only_ebpf::xdp::Attachment::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::xdp::Attachment
+impl core::cmp::PartialEq for only_ebpf::xdp::Attachment
+pub fn only_ebpf::xdp::Attachment::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ebpf::xdp::Attachment
+pub fn only_ebpf::xdp::Attachment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::xdp::Attachment
+impl core::marker::StructuralPartialEq for only_ebpf::xdp::Attachment
+impl core::marker::Send for only_ebpf::xdp::Attachment
+impl core::marker::Sync for only_ebpf::xdp::Attachment
+impl core::marker::Unpin for only_ebpf::xdp::Attachment
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::Attachment
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::Attachment
+#[non_exhaustive] pub enum only_ebpf::xdp::Count
+pub only_ebpf::xdp::Count::AllPackets
+pub only_ebpf::xdp::Count::TcpSyn
+impl core::clone::Clone for only_ebpf::xdp::Count
+pub fn only_ebpf::xdp::Count::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::xdp::Count
+impl core::cmp::PartialEq for only_ebpf::xdp::Count
+pub fn only_ebpf::xdp::Count::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::xdp::Count
+pub fn only_ebpf::xdp::Count::default() -> Self
+impl core::fmt::Debug for only_ebpf::xdp::Count
+pub fn only_ebpf::xdp::Count::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::xdp::Count
+impl core::marker::StructuralPartialEq for only_ebpf::xdp::Count
+impl core::marker::Send for only_ebpf::xdp::Count
+impl core::marker::Sync for only_ebpf::xdp::Count
+impl core::marker::Unpin for only_ebpf::xdp::Count
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::Count
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::Count
+#[non_exhaustive] pub enum only_ebpf::xdp::XdpMode
+pub only_ebpf::xdp::XdpMode::Auto
+pub only_ebpf::xdp::XdpMode::Generic
+pub only_ebpf::xdp::XdpMode::Native
+impl core::clone::Clone for only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::XdpMode::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::xdp::XdpMode
+impl core::cmp::PartialEq for only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::XdpMode::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::XdpMode::default() -> Self
+impl core::fmt::Debug for only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::XdpMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::xdp::XdpMode
+impl core::marker::StructuralPartialEq for only_ebpf::xdp::XdpMode
+impl core::marker::Send for only_ebpf::xdp::XdpMode
+impl core::marker::Sync for only_ebpf::xdp::XdpMode
+impl core::marker::Unpin for only_ebpf::xdp::XdpMode
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::XdpMode
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::XdpMode
+pub struct only_ebpf::xdp::RateLimiter
+impl only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::attach(&str, &only_ebpf::xdp::XdpLimit) -> core::io::error::Result<only_ebpf::xdp::RateLimiter>
+pub fn only_ebpf::xdp::RateLimiter::attach_index(u32, &only_ebpf::xdp::XdpLimit) -> core::io::error::Result<only_ebpf::xdp::RateLimiter>
+pub fn only_ebpf::xdp::RateLimiter::attachment(&self) -> only_ebpf::xdp::Attachment
+pub fn only_ebpf::xdp::RateLimiter::detach(self) -> core::io::error::Result<()>
+pub fn only_ebpf::xdp::RateLimiter::forget(&self, core::net::ip_addr::IpAddr) -> core::io::error::Result<bool>
+pub fn only_ebpf::xdp::RateLimiter::ifindex(&self) -> u32
+pub fn only_ebpf::xdp::RateLimiter::mode(&self) -> only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::RateLimiter::stats(&self) -> core::io::error::Result<only_ebpf::xdp::XdpStats>
+impl core::fmt::Debug for only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::drop(&mut self)
+impl core::marker::Send for only_ebpf::xdp::RateLimiter
+impl core::marker::Sync for only_ebpf::xdp::RateLimiter
+impl core::marker::Unpin for only_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::RateLimiter
+#[non_exhaustive] pub struct only_ebpf::xdp::XdpLimit
+pub only_ebpf::xdp::XdpLimit::burst: u32
+pub only_ebpf::xdp::XdpLimit::count: only_ebpf::xdp::Count
+pub only_ebpf::xdp::XdpLimit::max_sources: u32
+pub only_ebpf::xdp::XdpLimit::mode: only_ebpf::xdp::XdpMode
+pub only_ebpf::xdp::XdpLimit::rate: u32
+impl core::clone::Clone for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::clone(&self) -> Self
+impl core::default::Default for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::default() -> Self
+impl core::fmt::Debug for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::xdp::XdpLimit
+impl core::marker::Sync for only_ebpf::xdp::XdpLimit
+impl core::marker::Unpin for only_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::XdpLimit
+#[non_exhaustive] pub struct only_ebpf::xdp::XdpStats
+pub only_ebpf::xdp::XdpStats::dropped: u64
+pub only_ebpf::xdp::XdpStats::new_sources: u64
+pub only_ebpf::xdp::XdpStats::passed: u64
+impl core::clone::Clone for only_ebpf::xdp::XdpStats
+pub fn only_ebpf::xdp::XdpStats::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::xdp::XdpStats
+impl core::cmp::PartialEq for only_ebpf::xdp::XdpStats
+pub fn only_ebpf::xdp::XdpStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::xdp::XdpStats
+pub fn only_ebpf::xdp::XdpStats::default() -> Self
+impl core::fmt::Debug for only_ebpf::xdp::XdpStats
+pub fn only_ebpf::xdp::XdpStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::xdp::XdpStats
+impl core::marker::StructuralPartialEq for only_ebpf::xdp::XdpStats
+impl core::marker::Send for only_ebpf::xdp::XdpStats
+impl core::marker::Sync for only_ebpf::xdp::XdpStats
+impl core::marker::Unpin for only_ebpf::xdp::XdpStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::XdpStats
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::XdpStats
+pub const only_ebpf::xdp::DEFAULT_BURST: u32
+pub const only_ebpf::xdp::DEFAULT_MAX_SOURCES: u32
+pub const only_ebpf::xdp::DEFAULT_RATE: u32
+pub const only_ebpf::xdp::MAX_SOURCES: u32
 #[non_exhaustive] pub enum only_ebpf::HashKey
 pub only_ebpf::HashKey::SrcIp
 pub only_ebpf::HashKey::SrcIpPort
@@ -95,10 +234,30 @@ impl core::marker::Sync for only_ebpf::AttachOptions
 impl core::marker::Unpin for only_ebpf::AttachOptions
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::AttachOptions
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::AttachOptions
+#[non_exhaustive] pub struct only_ebpf::ByteCounts
+pub only_ebpf::ByteCounts::received: u64
+pub only_ebpf::ByteCounts::written: u64
+impl core::clone::Clone for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::relay::ByteCounts
+impl core::cmp::PartialEq for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::default() -> Self
+impl core::fmt::Debug for only_ebpf::relay::ByteCounts
+pub fn only_ebpf::relay::ByteCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::relay::ByteCounts
+impl core::marker::StructuralPartialEq for only_ebpf::relay::ByteCounts
+impl core::marker::Send for only_ebpf::relay::ByteCounts
+impl core::marker::Sync for only_ebpf::relay::ByteCounts
+impl core::marker::Unpin for only_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::ByteCounts
 #[non_exhaustive] pub struct only_ebpf::Probe
 pub only_ebpf::Probe::reuseport_cbpf: bool
 pub only_ebpf::Probe::reuseport_ebpf: bool
 pub only_ebpf::Probe::sockmap_relay: bool
+pub only_ebpf::Probe::xdp: bool
 impl core::clone::Clone for only_ebpf::Probe
 pub fn only_ebpf::Probe::clone(&self) -> Self
 impl core::cmp::Eq for only_ebpf::Probe
@@ -114,12 +273,33 @@ impl core::marker::Sync for only_ebpf::Probe
 impl core::marker::Unpin for only_ebpf::Probe
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::Probe
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::Probe
+pub struct only_ebpf::RateLimiter
+impl only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::attach(&str, &only_ebpf::xdp::XdpLimit) -> core::io::error::Result<only_ebpf::xdp::RateLimiter>
+pub fn only_ebpf::xdp::RateLimiter::attach_index(u32, &only_ebpf::xdp::XdpLimit) -> core::io::error::Result<only_ebpf::xdp::RateLimiter>
+pub fn only_ebpf::xdp::RateLimiter::attachment(&self) -> only_ebpf::xdp::Attachment
+pub fn only_ebpf::xdp::RateLimiter::detach(self) -> core::io::error::Result<()>
+pub fn only_ebpf::xdp::RateLimiter::forget(&self, core::net::ip_addr::IpAddr) -> core::io::error::Result<bool>
+pub fn only_ebpf::xdp::RateLimiter::ifindex(&self) -> u32
+pub fn only_ebpf::xdp::RateLimiter::mode(&self) -> only_ebpf::xdp::XdpMode
+pub fn only_ebpf::xdp::RateLimiter::stats(&self) -> core::io::error::Result<only_ebpf::xdp::XdpStats>
+impl core::fmt::Debug for only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_ebpf::xdp::RateLimiter
+pub fn only_ebpf::xdp::RateLimiter::drop(&mut self)
+impl core::marker::Send for only_ebpf::xdp::RateLimiter
+impl core::marker::Sync for only_ebpf::xdp::RateLimiter
+impl core::marker::Unpin for only_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::RateLimiter
 pub struct only_ebpf::Relay
 impl only_ebpf::relay::Relay
 pub fn only_ebpf::relay::Relay::new(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
 pub fn only_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
 pub fn only_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<only_ebpf::relay::Splice>
 pub fn only_ebpf::relay::Relay::splice_conns<A, B>(&self, &only_core::conn::Conn<A>, &only_core::conn::Conn<B>) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_inner(&self, &only_core::conn::ConnInner, &only_core::conn::ConnInner) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_inner_with(&self, &only_core::conn::ConnInner, &only_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<only_ebpf::relay::Splice>
 impl core::clone::Clone for only_ebpf::relay::Relay
 pub fn only_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for only_ebpf::relay::Relay
@@ -142,6 +322,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Splice
 #[non_exhaustive] pub struct only_ebpf::SteerInfo
 pub only_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
+pub only_ebpf::SteerInfo::pinned_threads: usize
 pub only_ebpf::SteerInfo::sockets: usize
 pub only_ebpf::SteerInfo::steering: only_ebpf::Steering
 pub only_ebpf::SteerInfo::tier: only_ebpf::Tier
@@ -160,5 +341,24 @@ impl core::marker::Sync for only_ebpf::SteerInfo
 impl core::marker::Unpin for only_ebpf::SteerInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::SteerInfo
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::SteerInfo
+#[non_exhaustive] pub struct only_ebpf::XdpLimit
+pub only_ebpf::XdpLimit::burst: u32
+pub only_ebpf::XdpLimit::count: only_ebpf::xdp::Count
+pub only_ebpf::XdpLimit::max_sources: u32
+pub only_ebpf::XdpLimit::mode: only_ebpf::xdp::XdpMode
+pub only_ebpf::XdpLimit::rate: u32
+impl core::clone::Clone for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::clone(&self) -> Self
+impl core::default::Default for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::default() -> Self
+impl core::fmt::Debug for only_ebpf::xdp::XdpLimit
+pub fn only_ebpf::xdp::XdpLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::xdp::XdpLimit
+impl core::marker::Sync for only_ebpf::xdp::XdpLimit
+impl core::marker::Unpin for only_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::XdpLimit
 pub fn only_ebpf::attach_reuseport(&[i32], only_ebpf::Steering, only_ebpf::AttachOptions) -> core::io::error::Result<only_ebpf::SteerInfo>
+pub fn only_ebpf::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<only_ebpf::relay::ByteCounts>
+pub fn only_ebpf::cpu_pinning(usize) -> core::io::error::Result<alloc::vec::Vec<alloc::vec::Vec<usize>>>
 pub fn only_ebpf::probe() -> only_ebpf::Probe

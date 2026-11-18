@@ -234,6 +234,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "xdp_rate_limit"
+path = "fuzz_targets/xdp_rate_limit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "stun_message"
 path = "fuzz_targets/stun_message.rs"
 test = false

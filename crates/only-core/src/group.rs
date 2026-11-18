@@ -15,6 +15,10 @@ pub trait Group: Send + Sync {
     fn listener_fds(&self) -> Vec<i32> {
         Vec::new()
     }
+    /// CPU sets the I/O threads pin themselves to when they start: thread `i` to `cpus[i]`
+    /// (none for an empty set or past the end). Takes effect only before [`start`](Self::start);
+    /// groups whose threads cannot be pinned ignore it.
+    fn pin_threads(&self, _cpus: Vec<Vec<usize>>) {}
     /// Peer counters of a UDP listener (zero for other groups).
     fn udp_stats(&self) -> UdpStats {
         UdpStats::default()

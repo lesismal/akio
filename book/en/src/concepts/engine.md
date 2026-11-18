@@ -68,6 +68,40 @@ hashing and reports why; `strict: true` turns that into a build error.
 `Engine::accel_status()` reports, per listener, `Off`, `Steering(info)` or `Degraded(reason)`.
 Steering needs a `SO_REUSEPORT` socket group, so it is Linux-only; on macOS it always degrades.
 
+Both policies have an eBPF tier when the process is privileged. It names every thread's socket in
+a `REUSEPORT_SOCKARRAY`, so thread `i` serves `fds[i]` whatever order the sockets joined the
+group in. The hash is the same as the classic tier's, so `ebpf::expected_index` holds for both.
+`pin_threads: true` pins I/O thread `i` of `n` to the CPUs `c` with `c % n == i`; with
+`Steering::Cpu`, the thread a flow is steered to then runs on the CPU that received the flow.
+`SteerInfo::pinned_threads` says how many threads were pinned.
+
+## Acceleration: XDP rate limiting
+
+`only::ebpf::xdp::RateLimiter` attaches an XDP program to a network interface. It gives every
+source address a token bucket (`rate` packets per second, `burst` at once) and drops what exceeds
+it before the kernel allocates anything for the packet. By default it counts only TCP SYNs
+(connection-flood protection). `Count::AllPackets` counts every IPv4/IPv6 packet.
+
+```rust,ignore
+use only::ebpf::xdp::{RateLimiter, XdpLimit};
+let mut cfg = XdpLimit::default(); // 100 SYN/s per source, burst 200, 16384 sources
+cfg.rate = 50;
+let limiter = RateLimiter::attach("eth0", &cfg)?; // detached when dropped
+println!("{:?} {:?}", limiter.mode(), limiter.stats()?);
+```
+
+It needs `CAP_NET_ADMIN` and `CAP_BPF`. It runs in native (driver) mode where the driver
+supports it and in generic mode otherwise. It attaches with a BPF link, which the kernel removes
+if the process dies, or with netlink on kernels older than 5.9, and it never replaces a program
+someone else attached.
+
+Limits:
+
+- Buckets are per receiving CPU, so a source whose flows land on several RX queues gets `rate`
+  per queue.
+- Spoofed, ever-changing sources each get a fresh bucket; SYN cookies cover that case.
+- The source map is a bounded LRU (`max_sources`).
+
 ## Thread-per-core
 
 Every connection is owned by exactly one I/O thread from accept to close (ADR-001). That thread

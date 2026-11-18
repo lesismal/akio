@@ -1146,6 +1146,61 @@ driver. This measures the protocol code and its I/O loop only.
 The UDP row swings by 2.5× between runs (it is one exchange at a time, so it measures the wake-up
 latency of the two engine threads).
 
+### eBPF acceleration (`tools/bench/ebpf.sh`)
+
+Run on 2026-11-18 on the same host (Linux 7.0, root, under `quiet.sh`), from branch
+`claude/ebpf-gaps-6b8982`. Each table is a same-run A/B: the cases alternate within each of 3
+rounds of 5 s, and the figure is the median.
+
+**Steering** (`bench-server` echo, 4 epoll I/O threads on CPUs 0–3, `ONLY_ACCEL`; `echo-bench`
+with 256 connections × 64 B from 8 threads on CPUs 4–7 and 12–15). Over loopback the SYN and the
+data are processed on the client's CPU, so this measures the cost of the programs and of
+pinning, not the RSS locality steering is meant for (the host's NICs are down).
+
+| `ONLY_ACCEL` | req/s | vs none |
+|---|---:|---:|
+| none (kernel reuseport hash) | 669,683 (±3%) | 1.00 |
+| `cpu` (eBPF tier, `Steering::Cpu`) | 743,669 | 1.11 |
+| `cpu-pin` (plus `pin_threads`) | 756,969 | 1.13 |
+| `hash` (eBPF tier, `Steering::Hash(SrcIpPort)`) | 701,630 | 1.05 |
+
+The programs cost nothing measurable. The gain over the kernel's hash is most likely placement
+(not measured per thread): with 256 connections, the kernel's hash can leave the 4 threads unevenly loaded, while CPU steering
+spreads connections by the client thread's CPU and the hash tier by Maglev slots. Pinning adds
+1.8% and made the rounds steadier (±0.1%).
+
+**SOCKS5 tunnel, userspace relay vs sockmap splice** (`ebpf-bench socks`: 2 epoll I/O threads,
+8 tunnels uploading 256 KiB writes to a sink as fast as they can; CPU is the whole machine's busy
+time from `/proc/stat`, per GB moved).
+
+| Relay | Throughput | CPU-s per GB | CPUs busy |
+|---|---:|---:|---:|
+| userspace (`ProxyConfig::sockmap = None`) | 62.9 Gbit/s | 0.49 | 3.9 |
+| sockmap (`Relay::new`) | 124.2 Gbit/s (±7%) | 0.93 | 14.5 |
+
+Splicing doubles the tunnels' throughput (1.97×), because the relay no longer runs on the
+proxy's 2 I/O threads: the kernel relays in softirq and in the psock backlog workers on every
+CPU. It is not cheaper per byte here. Over loopback, the clients, the sink and the relay share
+the machine's 16 CPUs, so it spends about 1.9× the CPU per GB to go twice as fast. All 8 tunnels
+were spliced. The userspace relay is unchanged by the fast path's checks: in a same-run A/B
+against `ab65d376` (5 alternating rounds) it ran at 1.00× on epoll (66.7 Gbit/s) and 0.99× on
+io_uring (31.3 vs 31.7 Gbit/s, inside io_uring's ±7% spread).
+
+**XDP rate limiter** (`ebpf-bench`: a UDP flood of 64-byte datagrams from 4 threads in one
+network namespace over a veth pair to another; the limiter counts every packet at 1/s per
+source, so nearly everything is dropped).
+
+| Receiver | Flood sent | Handled |
+|---|---:|---:|
+| no XDP, a socket reading the datagrams | 1.57 Mpps | 1.42 Mpps received |
+| XDP native (veth driver mode) | 2.76 Mpps | 2.15 Mpps dropped |
+| XDP generic (`skb` mode) | 2.01 Mpps | 1.88 Mpps dropped |
+
+The sender, which over veth also runs the receiver's softirq, is the limit in every row. With
+the packets dropped at XDP it pushes 1.76× more in native mode and 1.28× more in generic mode
+than when they go up the stack to a socket. Native XDP drops 1.52× the packets the socket path
+delivers.
+
 ## Not measured
 
 - **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.

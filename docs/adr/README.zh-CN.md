@@ -26,3 +26,4 @@
 - [ADR-021：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复](021-dtls13-cid-resumption.zh-CN.md)
 - [ADR-017：TCP/TLS 上的 TURN、TURN 客户端、ICE-TCP 与 simulcast 发送](017-webrtc-turn-gaps.zh-CN.md)（2026-11-17 采纳）
 - [ADR-016：fMP4 HLS、RTMP 与 RTSP 客户端、媒体 hub 中的 WebRTC 媒体](016-media-fmp4-clients-webrtc.zh-CN.md)（2026-11-17 采纳）
+- [ADR-027：XDP 限速、线程绑核、eBPF 哈希层与内核拼接的 SOCKS 隧道](027-ebpf-xdp-pinning-socks-splice.zh-CN.md)（2026-11-18 采纳）
