@@ -150,7 +150,7 @@ assert_eq!(b.extension(&ext::LEVEL)?, Some(ext::Level::LOW));
 
 封闭枚举（proto2，或 `enum_type = CLOSED`）把未知数值保存为未知字段。
 
-### 反射与 JSON
+### 反射、JSON 与文本格式
 
 每个生成的包内嵌自己的描述符（`FILE_DESCRIPTOR_SET`、`descriptor_pool()`；
 `Config::descriptors(false)` 可关闭），其消息实现 `only_protobuf::reflect::ReflectMessage`。
@@ -162,6 +162,17 @@ let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","locat
 let back: Feature = only_protobuf::json::from_str(&text)?;
 ```
 
+`only_protobuf::text` 读写文本格式（`.textproto`、protoc 的 `--decode` 与 `DebugString`）：支持 group、
+写成 `[pkg.ext]` 的扩展、展开为 `[type.googleapis.com/pkg.Type] { ... }` 的 `Any`、注释以及两种列表
+写法（ADR-030）：
+
+```rust,ignore
+let text = only_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
+let back: Feature = only_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
+let opts = only_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
+let line = only_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
+```
+
 gRPC 服务端反射让 grpcurl、grpcui 不需要 `.proto` 文件就能列出并调用服务：
 
 ```rust,ignore
@@ -170,7 +181,7 @@ gRPC 服务端反射让 grpcurl、grpcui 不需要 `.proto` 文件就能列出�
 ```
 
 `tools/interop/grpc/grpcurl.sh` 用 grpcurl 验证它，`tools/protobuf-test/conformance/run.sh` 对生成代码
-运行 protobuf 一致性测试套件（二进制与 JSON）。
+运行 protobuf 一致性测试套件（二进制、JSON 与文本格式）。
 
 ### prost（已弃用）
 

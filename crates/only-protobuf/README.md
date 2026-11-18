@@ -21,6 +21,7 @@ dependencies. Messages are generated from `.proto` files by
 - `reflect`: descriptor pools and `DynamicMessage` (messages of types known at run time);
   `json`: the canonical proto3 JSON mapping; `Extendable` / `Extension` for proto2 extensions,
   closed enums, groups and editions (ADR-022).
+- `text`: the text format, parsed and printed as protoc does (ADR-030).
 
 ```rust,ignore
 // build.rs:  only_protobuf_build::compile(&["proto/route_guide.proto"], std::env::var("OUT_DIR")?)?;

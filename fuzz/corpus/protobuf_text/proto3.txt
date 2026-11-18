@@ -1,0 +1,6 @@
+optional_int32: 1 optional_string: "a\303\251" repeated_double: [1.5, nan]
+map_string_nested_message { key: "k" value { a: 1 } }
+optional_any { [type.googleapis.com/protobuf_test_messages.proto3.TestAllTypesProto3] { optional_int32: 3 } }
+oneof_uint32: 7 optional_nested_enum: BAZ optional_float: -0
+optional_timestamp < seconds: 1 nanos: 2 >  # comment
+optional_value { struct_value { fields { key: "x" value { list_value { values { bool_value: true } } } } } }
