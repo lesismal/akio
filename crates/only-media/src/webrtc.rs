@@ -6,18 +6,21 @@
 //! [`only::Listener::udp`] (ICE-lite: every peer shares the one port, whose public address is
 //! the host candidate of every answer). Build it with [`RtcMedia::rtc_server`] (or configure
 //! one with [`rtc_config`]), which offers and accepts exactly the codecs the hub carries:
-//! H.264, H.265, Opus, G.711 µ-law and A-law. VP8, VP9 and AV1 have no [`Codec`] in the hub:
-//! a media line offering only those is answered inactive, and an offer with no line the hub
-//! can carry is refused (406). AAC and MP3 (from RTMP, RTSP, SRT publishers) cannot go to a
-//! WebRTC viewer without transcoding, which this crate does not do: such tracks are not sent.
+//! H.264, H.265, VP8, VP9, AV1, Opus, G.711 µ-law and A-law. G.722 has no [`Codec`] in the
+//! hub: a media line offering only that is answered inactive, and an offer with no line the
+//! hub can carry is refused (406). AAC and MP3 (from RTMP, RTSP, SRT publishers) cannot go to
+//! a WebRTC viewer without transcoding, which this crate does not do: such tracks are not sent.
 //!
 //! **WHIP** (publish): the answer receives every audio and video line of the offer. Frames
 //! arrive depacketized (H.264 and H.265 as Annex B); they become hub packets in the canonical
 //! form of [`crate::av`]: AVCC, with the `AVCDecoderConfigurationRecord` /
 //! `HEVCDecoderConfigurationRecord` built from the parameter sets found in band, a packet is
-//! a keyframe when it holds an IDR / IRAP picture. The stream goes live (its tracks are set)
-//! once every line has its codec and, for video, a keyframe with its parameter sets: right
-//! after the peer connects a PLI asks the sender for one. A line that has shown nothing by
+//! a keyframe when it holds an IDR / IRAP picture. VP8 and VP9 frames pass as they are, AV1
+//! temporal units as sized OBUs; their configuration record and picture size come from each
+//! keyframe's header (AV1: its sequence header), and a packet is a keyframe when its
+//! bitstream says so. The stream goes live (its tracks are set) once every line has its codec
+//! and, for video, a keyframe with its configuration: right after the peer connects a PLI
+//! asks the sender for one. A line that has shown nothing by
 //! [`RtcMediaConfig::track_timeout`] is left out (audio-only or video-only), and joins later
 //! with a track change if it starts. Packets that arrive before the stream is live are held,
 //! within [`RtcMediaConfig::max_pending_packets`] and [`RtcMediaConfig::max_pending_bytes`].
@@ -32,9 +35,9 @@
 //! starts at the next keyframe, which the hub asks the publisher for at once (a WebRTC
 //! publisher answers within a round trip, an RTMP encoder at its next GOP), rather than with
 //! a burst of the cached GOP that a WebRTC receiver would play late or fast; set
-//! [`RtcMediaConfig::play_gop_cache`] for the cache. Video goes out as Annex B with the parameter sets of the track's
-//! configuration before each keyframe, on the RTP clock of 90 kHz, audio (Opus, G.711) as it
-//! came. A PLI or FIR from the viewer becomes a keyframe request to the stream's publisher
+//! [`RtcMediaConfig::play_gop_cache`] for the cache. H.264 and H.265 go out as Annex B with
+//! the parameter sets of the track's configuration before each keyframe, VP8, VP9 and AV1
+//! frames as they are, on the RTP clock of 90 kHz, audio (Opus, G.711) as it came. A PLI or FIR from the viewer becomes a keyframe request to the stream's publisher
 //! ([`Subscription::request_keyframe`]). The peer is closed when the stream ends, and the
 //! subscription when the peer closes. If the offer can take none of the stream's codecs the
 //! answer is 406. WebRTC players do not expect B-frames: a stream that has them (an x264
@@ -99,7 +102,7 @@ use only_webrtc::{
 
 use crate::{
     av::{Codec, Packet, SECOND, Time, Track, Tracks, from_ticks, to_ticks},
-    codec::{h264, h265, opus},
+    codec::{av1, h264, h265, opus, vp8, vp9},
     hub::{Hub, HubError, PeerInfo, Publisher, Sink, SubscribeOptions, Subscription, Timeline},
     whip::{Answer, OfferInfo, WebRtcEngine, WebRtcSession, WhipError},
 };
@@ -109,8 +112,9 @@ use crate::{
 const KEYFRAME_RETRY: Duration = Duration::from_secs(1);
 
 /// The peer configuration [`RtcMedia`] needs: [`only_webrtc::rtc_config`] with exactly the
-/// codecs the hub carries enabled (H.264, H.265, Opus, PCMU, PCMA). Pass it to
-/// [`only_webrtc::RtcServer::config`], or start from it to change other settings.
+/// codecs the hub carries enabled (H.264, H.265, VP8, VP9, AV1, Opus, PCMU, PCMA). Pass it to
+/// [`only_webrtc::RtcServer::config`], or start from it to change other settings (disable
+/// codecs a deployment does not want to receive, for instance).
 pub fn rtc_config() -> RtcConfig {
     only_webrtc::rtc_config()
         .clear_codecs()
@@ -119,6 +123,9 @@ pub fn rtc_config() -> RtcConfig {
         .enable_pcma(true)
         .enable_h264(true)
         .enable_h265(true)
+        .enable_vp8(true)
+        .enable_vp9(true)
+        .enable_av1(true)
 }
 
 /// Configures [`RtcMedia`].
@@ -205,6 +212,9 @@ fn to_hub(c: only_webrtc::Codec) -> Option<Codec> {
     Some(match c {
         only_webrtc::Codec::H264 => Codec::H264,
         only_webrtc::Codec::H265 => Codec::H265,
+        only_webrtc::Codec::Vp8 => Codec::Vp8,
+        only_webrtc::Codec::Vp9 => Codec::Vp9,
+        only_webrtc::Codec::Av1 => Codec::Av1,
         only_webrtc::Codec::Opus => Codec::Opus,
         only_webrtc::Codec::Pcmu => Codec::Pcmu,
         only_webrtc::Codec::Pcma => Codec::Pcma,
@@ -217,6 +227,9 @@ fn to_rtc(c: Codec) -> Option<only_webrtc::Codec> {
     Some(match c {
         Codec::H264 => only_webrtc::Codec::H264,
         Codec::H265 => only_webrtc::Codec::H265,
+        Codec::Vp8 => only_webrtc::Codec::Vp8,
+        Codec::Vp9 => only_webrtc::Codec::Vp9,
+        Codec::Av1 => only_webrtc::Codec::Av1,
         Codec::Opus => only_webrtc::Codec::Opus,
         Codec::Pcmu => only_webrtc::Codec::Pcmu,
         Codec::Pcma => only_webrtc::Codec::Pcma,
@@ -224,7 +237,13 @@ fn to_rtc(c: Codec) -> Option<only_webrtc::Codec> {
     })
 }
 
-const VIDEO_CODECS: [only_webrtc::Codec; 2] = [only_webrtc::Codec::H264, only_webrtc::Codec::H265];
+const VIDEO_CODECS: [only_webrtc::Codec; 5] = [
+    only_webrtc::Codec::H264,
+    only_webrtc::Codec::H265,
+    only_webrtc::Codec::Vp8,
+    only_webrtc::Codec::Vp9,
+    only_webrtc::Codec::Av1,
+];
 const AUDIO_CODECS: [only_webrtc::Codec; 3] = [
     only_webrtc::Codec::Opus,
     only_webrtc::Codec::Pcmu,
@@ -346,7 +365,8 @@ impl InLine {
     }
 }
 
-/// What a line's frames tell about its track: the codec and, for video, the parameter sets.
+/// What a line's frames tell about its track: the codec and, for video, the parameter sets
+/// (H.264, H.265) or the track of the last keyframe (VP8, VP9, AV1).
 struct Learn {
     video: bool,
     codec: Option<Codec>,
@@ -355,8 +375,15 @@ struct Learn {
     vps: Option<Vec<u8>>,
     params_changed: bool,
     config: Option<Vec<u8>>,
+    /// VP8 / VP9 / AV1: the track the last keyframe describes.
+    keyframe_track: Option<Track>,
     /// A keyframe was seen with the current configuration.
     keyed: bool,
+}
+
+/// Whether `codec` is VP8, VP9 or AV1 (frames as they are, configuration from keyframes).
+fn is_vpx(codec: Codec) -> bool {
+    matches!(codec, Codec::Vp8 | Codec::Vp9 | Codec::Av1)
 }
 
 impl Learn {
@@ -369,6 +396,7 @@ impl Learn {
             vps: None,
             params_changed: false,
             config: None,
+            keyframe_track: None,
             keyed: false,
         }
     }
@@ -381,6 +409,7 @@ impl Learn {
         let codec = self.codec?;
         Some(match codec {
             Codec::H264 | Codec::H265 => Track::video(codec, self.config.clone()?),
+            c if is_vpx(c) => self.keyframe_track.clone()?,
             Codec::Opus => Track::audio(Codec::Opus, opus::Head::new(2).encode(), 48_000, 2),
             c => Track::audio(c, Vec::new(), 8_000, 1),
         })
@@ -394,9 +423,36 @@ impl Learn {
             self.pps = None;
             self.vps = None;
             self.config = None;
+            self.keyframe_track = None;
             self.keyed = false;
             self.params_changed = false;
         }
+    }
+
+    /// A VP8 / VP9 frame or AV1 temporal unit in canonical form and whether it is a keyframe;
+    /// `None` until the first keyframe (whose header gives the track).
+    fn frame(&mut self, data: &[u8]) -> Option<(Vec<u8>, bool)> {
+        let codec = self.codec?;
+        let frame = match codec {
+            Codec::Av1 => av1::to_sample(data).into_owned(),
+            _ => data.to_vec(),
+        };
+        let key = match codec {
+            Codec::Vp8 => vp8::is_keyframe(&frame),
+            Codec::Vp9 => vp9::is_keyframe(&frame),
+            _ => av1::is_keyframe(&frame),
+        };
+        if key {
+            if let Some(t) = Track::video_from_keyframe(codec, &frame) {
+                self.config = Some(t.config.clone());
+                self.keyframe_track = Some(t);
+                self.keyed = true;
+            }
+        }
+        if !self.keyed || frame.is_empty() {
+            return None;
+        }
+        Some((frame, key))
     }
 
     /// Converts an Annex B access unit to AVCC, learning the parameter sets; `None` when the
@@ -640,7 +696,7 @@ impl PeerHandler for Ingest {
             return;
         };
         let Some(codec) = d.codec.and_then(to_hub) else {
-            return; // VP8, VP9, AV1, G.722: not carried by the hub
+            return; // G.722: not carried by the hub
         };
         if codec.is_video() != self.lines[i].learn.video {
             return;
@@ -652,7 +708,13 @@ impl PeerHandler for Ingest {
             if !d.contiguous {
                 self.pli(p, mid); // frames were lost: the next ones may not decode
             }
-            match self.lines[i].learn.video_au(&d.data) {
+            let learn = &mut self.lines[i].learn;
+            let au = if is_vpx(codec) {
+                learn.frame(&d.data)
+            } else {
+                learn.video_au(&d.data)
+            };
+            match au {
                 Some((au, key)) => Packet::new(0, t, t, key, au),
                 None => {
                     self.pli(p, mid);
@@ -702,6 +764,8 @@ struct Out {
     params: Vec<u8>,
     /// The NAL unit type of an SPS of the codec.
     sps_type: Option<(bool, u8)>,
+    /// H.264 / H.265: AVCC goes out as Annex B (VP8, VP9, AV1 go as they are).
+    annexb: bool,
 }
 
 /// The first track of a kind (`video`) a line of the peer can send, and where it goes.
@@ -757,6 +821,7 @@ fn pick(p: &Peer, lines: &[(Mid, MediaKind)], tracks: &Tracks, video: bool) -> O
                 rate,
                 params,
                 sps_type,
+                annexb: matches!(t.codec, Codec::H264 | Codec::H265),
             });
         }
     }
@@ -870,7 +935,7 @@ impl Sink for PlaySink {
         let pts = dts + pkt.cts().clamp(0, 10 * SECOND);
         let ticks = u64::try_from(to_ticks(pts, out.rate.get())).unwrap_or(0);
         let time = MediaTime::new(ticks, out.rate);
-        let data: &[u8] = if video {
+        let data: &[u8] = if out.annexb {
             self.buf.clear();
             if pkt.keyframe && out.sps_type.is_some_and(|s| !has_sps(&pkt.data, s)) {
                 self.buf.extend_from_slice(&out.params);
@@ -943,6 +1008,9 @@ mod tests {
         for c in [
             Codec::H264,
             Codec::H265,
+            Codec::Vp8,
+            Codec::Vp9,
+            Codec::Av1,
             Codec::Opus,
             Codec::Pcmu,
             Codec::Pcma,
@@ -950,13 +1018,16 @@ mod tests {
             assert_eq!(to_rtc(c).and_then(to_hub), Some(c));
         }
         assert!(to_rtc(Codec::Aac).is_none() && to_rtc(Codec::Mp3).is_none());
-        assert!(to_hub(only_webrtc::Codec::Vp8).is_none());
+        assert!(to_hub(only_webrtc::Codec::G722).is_none());
         let d = RtcMediaConfig::default();
         assert_eq!(d.track_timeout, Duration::from_secs(5));
         assert_eq!((d.max_pending_packets, d.max_pending_bytes), (512, 8 << 20));
         assert!(!d.play_gop_cache);
         let s = format!("{:?}", rtc_config());
-        assert!(s.contains("H265") && !s.contains("Vp8"), "{s}");
+        assert!(
+            s.contains("H265") && s.contains("Av1") && !s.contains("G722"),
+            "{s}"
+        );
         let mut opus = Learn::new(false);
         opus.set_codec(Codec::Opus);
         let t = opus.describe().unwrap();
@@ -966,5 +1037,40 @@ mod tests {
         );
         assert!(has_sps(&h264::to_avcc([SPS, PPS]), (false, h264::NAL_SPS)));
         assert!(!has_sps(&h264::to_avcc([PPS]), (false, h264::NAL_SPS)));
+    }
+
+    /// VP8 / AV1 from WebRTC: nothing until a keyframe, whose header gives the track; frames
+    /// pass as they are (AV1 temporal delimiters dropped); keyframes from the bitstream.
+    #[test]
+    fn vpx_frames_wait_for_a_keyframe_and_describe_the_track() {
+        let mut l = Learn::new(true);
+        l.set_codec(Codec::Vp8);
+        assert!(l.frame(&[0x31, 0x02, 0x00, 0x11]).is_none());
+        assert!(!l.ready());
+        let key = [
+            0x50, 0x2d, 0x00, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xf0, 0x00, 0x00,
+        ];
+        let (f, k) = l.frame(&key).unwrap();
+        assert!(k && f == key && l.ready());
+        let t = l.describe().unwrap();
+        assert_eq!((t.codec, t.width, t.height), (Codec::Vp8, 320, 240));
+        let (_, k) = l.frame(&[0x31, 0x02, 0x00, 0x11]).unwrap();
+        assert!(!k);
+
+        let mut l = Learn::new(true);
+        l.set_codec(Codec::Av1);
+        let seq = [
+            0x0a, 0x0b, 0x02, 0x00, 0x00, 0x05, 0x21, 0xe7, 0xfd, 0xe0, 0x17, 0xc0, 0x02,
+        ];
+        let mut tu = vec![0x12, 0x00];
+        tu.extend_from_slice(&seq);
+        tu.extend_from_slice(&[0x32, 0x02, 0x10, 0xaa]);
+        let (f, k) = l.frame(&tu).unwrap();
+        assert!(k && f == tu[2..]);
+        let t = l.describe().unwrap();
+        assert_eq!((t.codec, t.width, t.height), (Codec::Av1, 320, 240));
+        // Switching codec forgets the track.
+        l.set_codec(Codec::Vp9);
+        assert!(!l.ready() && l.describe().is_none());
     }
 }

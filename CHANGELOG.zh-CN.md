@@ -10,6 +10,33 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：only-media 的 VP8、VP9 与 AV1，多码率 HLS 播放列表
+
+新增（ADR-031，docs/adr/031-media-vp8-vp9-av1-multivariant-hls.zh-CN.md）：
+
+- **hub 中的 VP8、VP9 与 AV1**：`Codec::{Vp8, Vp9, Av1}`，有规范形式（`vpcC` / `av1C` 配置记录、帧、由带长度
+  OBU 组成的 AV1 temporal unit），关键帧由码流判定，因此 GOP 缓存、HLS 切片与慢播放器丢包对它们同样有效。
+  承载于 Enhanced RTMP / FLV（`vp09`、`av01`、`vp08`）、RTSP（经 only-rtp 的 RFC 7741 / RFC 9628 / AV1 RTP，
+  录制与播放）、fMP4 HLS（`vp08` / `vp09` + `vpcC`，`av01` + `av1C`）以及 WHIP / WHEP（`webrtc::rtc_config`
+  启用它们）。MPEG-TS 不承载。新模块 `codec::vp8`、`codec::vp9`、`codec::av1`；`Track::video_from_keyframe`、
+  `Track::codec_string`（RFC 6381）；`rtp::Depacketizer::picture_size`。
+- **多码率 HLS**：`Hls::add_multivariant(name, Multivariant)` 在 `/<name>.m3u8` 提供由分别发布的多路流组成的
+  播放列表（`Variant`：路径、配置或由分段测得的码率、音频组；`AudioRendition`：组、名称、语言、默认），带
+  `BANDWIDTH`、`AVERAGE-BANDWIDTH`、`CODECS`、`RESOLUTION`、`AUDIO` 与 `EXT-X-MEDIA` 音频组，适用于 MPEG-TS 与
+  fMP4，并支持 LL-HLS；`Hls::remove_multivariant`。
+- 变更：`webrtc::rtc_config` 现在接受 VP8、VP9 与 AV1，只含这些编码的 WHIP offer 会被发布，不再被拒绝（406）。
+  修复：`flv::parse_video` 会丢掉 `avc1` / `hvc1` 以外 FourCC 的 coded frames 的前 3 个字节。视频无法被分段格式
+  承载的流（MPEG-TS 中的 VP9 或 AV1）在 HLS 中不再卡住，而是按纯音频流切片。修复：直播播放列表的
+  `EXT-X-TARGETDURATION` 可能在刷新之间变化（出现 1.007 s 的分段后由 1 变为 2），Chrome 自带的 HLS 播放器
+  会拒绝；现在按 RFC 8216 四舍五入取整，且永不减小。修复：RTP 的 AAC 解包（RTSP 录制）在 AU-headers-length 为 1 到 8
+  位时会 panic（由 fuzz 发现）。
+- 热路径，在 gpu51 上与之前的 main 同轮 A/B（交替 5 轮取中位数，head/base）：hub 扇出到 1 / 16 / 256 个订阅者
+  1.008 / 1.009 / 1.011；HLS 切片 TS 0.976、TS + part 1.016、fMP4 1.005、fMP4 + part 1.011；FLV 解码 H.264 0.976、
+  H.265 0.993。退休指令数相同或更少；单项 1–3% 的波动会随无关的代码改动变化（代码布局）。
+- 互通：ffmpeg / ffprobe 验证 Enhanced RTMP 与 fMP4 HLS 上的 VP9 与 AV1、RTSP 上的 VP8 / VP9 / AV1（录制与播放，
+  TCP 与 UDP）、两种格式的多码率播放列表；headless Chrome 通过 WHIP 推 VP8、VP9、AV1 与 H.264，通过 WHEP 解码，
+  并播放多码率 fMP4 LL-HLS 播放列表（`tools/interop/media/browser.sh`）。
+
 ### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
 
 only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。
@@ -1358,7 +1385,7 @@ preferred_address、QUIC v2。
 ssrc 与 FID 组、setup 角色与指纹、ICE-lite、候选、sctp-port / max-message-size、重新协商与 ICE 重启）
 以及把各层粘合起来的 sans-io peer。测试覆盖模拟丢包链路（ICE + DTLS + SCTP + 媒体），并与 pion（数据
 通道、Opus/VP8 回显、PLI、TURN 中继，两个 offer 方向）、fib 的 Go WebRTC（双向）以及无头 Chrome
-（`tools/interop/webrtc/browser.sh`：数据通道，Chrome 的摄像头与麦克风媒体回显后由其解码，两个 offer
+（`tools/interop/media/browser.sh`：数据通道，Chrome 的摄像头与麦克风媒体回显后由其解码，两个 offer
 方向）互通。新增 fuzz 目标 `ice_stun`、`srtp_unprotect`、`rtp_rtcp`、`rtp_codec`、`sctp_packet`；
 `webrtc_sdp` 现在驱动新的 SDP 代码。
 

@@ -1,6 +1,6 @@
 use crate::{
     av::{Codec, Packet, Time, Track, to_ticks},
-    codec::{aac, opus},
+    codec::{aac, av1, opus, vp9},
 };
 
 use super::{
@@ -68,15 +68,13 @@ pub struct Muxer {
 
 impl Muxer {
     /// A muxer for `tracks`, with its init segment built; tracks of codecs not carried in
-    /// fMP4 here (G.711, MP3, unknown) are left out.
+    /// fMP4 here (G.711, MP3, unknown, a VP8 / VP9 / AV1 track without a configuration record
+    /// that parses) are left out.
     pub fn new(tracks: &[Track]) -> Muxer {
         let mut outs = Vec::with_capacity(tracks.len());
         let mut id = 0u32;
         for t in tracks {
-            if !matches!(
-                t.codec,
-                Codec::H264 | Codec::H265 | Codec::Aac | Codec::Opus
-            ) {
+            if !carried(t) {
                 outs.push(None);
                 continue;
             }
@@ -141,6 +139,8 @@ impl Muxer {
     }
 
     /// [`write_packet`](Self::write_packet) from the packet's parts, without a [`Packet`].
+    /// Kept out of line: inlined into the HLS sink's packet path it made that slower.
+    #[inline(never)]
     pub(crate) fn write_sample(
         &mut self,
         track: usize,
@@ -325,6 +325,32 @@ impl Muxer {
     }
 }
 
+/// Whether a track goes into fMP4 (VP8, VP9 and AV1 need their configuration record).
+fn carried(t: &Track) -> bool {
+    match t.codec {
+        Codec::H264 | Codec::H265 | Codec::Aac | Codec::Opus => true,
+        Codec::Vp8 | Codec::Vp9 => vp9::Config::parse(&t.config).is_ok(),
+        Codec::Av1 => av1::Config::parse(&t.config).is_ok(),
+        _ => false,
+    }
+}
+
+/// The fields of a `VisualSampleEntry` before its child boxes.
+fn visual_entry(out: &mut Vec<u8>, t: &Track) {
+    out.extend_from_slice(&[0; 6]);
+    put16(out, 1); // data reference index
+    out.extend_from_slice(&[0; 16]);
+    put16(out, t.width.min(0xffff) as u16);
+    put16(out, t.height.min(0xffff) as u16);
+    put32(out, 0x0048_0000); // 72 dpi
+    put32(out, 0x0048_0000);
+    put32(out, 0);
+    put16(out, 1); // frame count
+    out.extend_from_slice(&[0; 32]); // compressor name
+    put16(out, 0x0018); // depth
+    put16(out, 0xffff);
+}
+
 /// Appends a `styp` box (brands `msdh`, `msix`, `cmfs`), which may start a media segment.
 pub fn write_styp(out: &mut Vec<u8>) {
     let s = open(out, b"styp");
@@ -397,21 +423,33 @@ fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
     let stsd = open_full(out, b"stsd", 0, 0);
     put32(out, 1);
     match t.codec {
+        Codec::Vp8 | Codec::Vp9 => {
+            let e = open(
+                out,
+                if t.codec == Codec::Vp8 {
+                    b"vp08"
+                } else {
+                    b"vp09"
+                },
+            );
+            visual_entry(out, t);
+            let c = open_full(out, b"vpcC", 1, 0);
+            out.extend_from_slice(&t.config);
+            close(out, c);
+            close(out, e);
+        }
+        Codec::Av1 => {
+            let e = open(out, b"av01");
+            visual_entry(out, t);
+            let c = open(out, b"av1C");
+            out.extend_from_slice(&t.config);
+            close(out, c);
+            close(out, e);
+        }
         Codec::H264 | Codec::H265 => {
             let h265 = t.codec == Codec::H265;
             let e = open(out, if h265 { b"hvc1" } else { b"avc1" });
-            out.extend_from_slice(&[0; 6]);
-            put16(out, 1); // data reference index
-            out.extend_from_slice(&[0; 16]);
-            put16(out, t.width.min(0xffff) as u16);
-            put16(out, t.height.min(0xffff) as u16);
-            put32(out, 0x0048_0000); // 72 dpi
-            put32(out, 0x0048_0000);
-            put32(out, 0);
-            put16(out, 1); // frame count
-            out.extend_from_slice(&[0; 32]); // compressor name
-            put16(out, 0x0018); // depth
-            put16(out, 0xffff);
+            visual_entry(out, t);
             let c = open(out, if h265 { b"hvcC" } else { b"avcC" });
             let at = out.len();
             out.extend_from_slice(&t.config);

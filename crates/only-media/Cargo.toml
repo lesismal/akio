@@ -1,6 +1,6 @@
 [package]
 name = "only-media"
-description = "only streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS (MPEG-TS, fMP4), WHIP/WHEP, RTMP/RTSP clients and a stream hub"
+description = "only streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS (MPEG-TS, fMP4, multivariant), WHIP/WHEP, RTMP/RTSP clients and a stream hub; H.264, H.265, VP8, VP9, AV1, AAC, Opus"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,6 +17,8 @@ only = { workspace = true }
 only-core = { workspace = true }
 only-http = { workspace = true }
 only-crypto = { workspace = true }
+# VP8, VP9 and AV1 RTP payload formats (RTSP).
+only-rtp = { workspace = true }
 # WebRTC media for WHIP/WHEP (`only_media::webrtc`), behind the `webrtc` feature.
 only-webrtc = { workspace = true, optional = true }
 

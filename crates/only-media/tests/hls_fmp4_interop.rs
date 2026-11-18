@@ -1,5 +1,5 @@
-//! fMP4 (CMAF) HLS of hub streams read by ffmpeg / ffprobe: H.264 + AAC, H.265 + AAC and
-//! H.265 + Opus, plain and Low-Latency (parts). Each sample file is published in real time;
+//! fMP4 (CMAF) HLS of hub streams read by ffmpeg / ffprobe: H.264 + AAC, H.265 + AAC,
+//! H.265 + Opus, VP9 + Opus and AV1 + Opus, plain and Low-Latency (parts). Each sample file is published in real time;
 //! ffprobe must see the codecs on the live playlist, ffmpeg must decode it without errors,
 //! and every segment (init + segment as one file) must decode, start with a keyframe and hold
 //! a plausible number of frames. Without ffmpeg / ffprobe the ffmpeg parts are skipped; the
@@ -290,14 +290,19 @@ fn check(sample: (Tracks, Vec<Packet>), parts: bool, want: &[&str], ff: bool) {
                 n >= 0.5 * fps && n <= 3.0 * fps,
                 "{s}: {n} frames at {fps:.1} fps"
             );
-            let dur: f64 = lines
+            let durs: Vec<f64> = lines
                 .iter()
                 .filter_map(|l| l.split(',').find_map(|f| f.parse::<f64>().ok()))
-                .sum();
-            assert!(
-                (dur - n / fps).abs() < 0.2,
-                "{s}: {dur:.3} s for {n} frames"
-            );
+                .collect();
+            // ffprobe reports no packet durations for fragmented VP9 (ffmpeg's own output
+            // included): the check needs them all.
+            if durs.len() == lines.len() {
+                let dur: f64 = durs.iter().sum();
+                assert!(
+                    (dur - n / fps).abs() < 0.2,
+                    "{s}: {dur:.3} s for {n} frames"
+                );
+            }
             let audio = probe(
                 &["-select_streams", "a:0", "-show_entries", "packet=pts_time"],
                 &file,
@@ -340,4 +345,20 @@ fn fmp4_hls_h265_opus() {
     let s = || ts_sample(include_bytes!("../testdata/h265_opus.ts"));
     check(s(), false, &["hevc", "opus"], ff);
     check(s(), true, &["hevc", "opus"], ff);
+}
+
+#[test]
+fn fmp4_hls_vp9_opus() {
+    let ff = ffmpeg_present();
+    let s = || flv_sample(include_bytes!("../testdata/vp9_opus.flv"));
+    check(s(), false, &["vp9", "opus"], ff);
+    check(s(), true, &["vp9", "opus"], ff);
+}
+
+#[test]
+fn fmp4_hls_av1_opus() {
+    let ff = ffmpeg_present();
+    let s = || flv_sample(include_bytes!("../testdata/av1_opus.flv"));
+    check(s(), false, &["av1", "opus"], ff);
+    check(s(), true, &["av1", "opus"], ff);
 }

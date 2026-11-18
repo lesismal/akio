@@ -1,6 +1,6 @@
-//! A WHIP/WHEP server with WebRTC media (cargo feature `webrtc`), with RTMP and HTTP-FLV on
-//! the same hub, for trying it out and for the interop checks of
-//! `tools/interop/webrtc/media.sh`.
+//! A WHIP/WHEP server with WebRTC media (cargo feature `webrtc`), with RTMP, HTTP-FLV and
+//! fMP4 LL-HLS on the same hub, for trying it out and for the interop checks of
+//! `tools/interop/webrtc/media.sh` and `tools/interop/media/browser.sh`.
 //!
 //! ```text
 //! cargo run -p only-media --features webrtc --example whip-server -- \
@@ -9,12 +9,17 @@
 //! curl http://127.0.0.1:8080/streams          # path, tracks, packets
 //! ffprobe rtmp://127.0.0.1:1935/live/s        # the WHIP stream over RTMP
 //! ffprobe http://127.0.0.1:8080/live/s.flv    # and HTTP-FLV
+//! ffprobe http://127.0.0.1:8080/live/s/index.m3u8  # and fMP4 LL-HLS
 //! ```
+//!
+//! `http://127.0.0.1:8080/live/abr.m3u8` is a multivariant playlist over the streams
+//! `live/abr_hi` and `live/abr_lo` (publish both, with any codecs fMP4 carries).
 //!
 //! WHEP players POST their offer to `http://127.0.0.1:8080/whep/live/s`; RTMP publishers'
 //! streams (H.264 with Opus or G.711, AAC is not sent) play over WHEP too. The UDP address is
 //! the host candidate of every answer: use an address the peers can reach. Set
-//! `ONLY_MEDIA_SECS` to stop after that many seconds.
+//! `ONLY_MEDIA_SECS` to stop after that many seconds, `ONLY_MEDIA_PART_MS` for the LL-HLS part
+//! length (250 ms by default, 0 for plain HLS).
 
 use std::{net::SocketAddr, sync::Arc, thread, time::Duration};
 
@@ -22,6 +27,7 @@ use only::{Engine, Listener};
 use only_http::{Context, Router, serve};
 use only_media::{
     Hub,
+    hls::{Hls, HlsConfig, Multivariant, SegmentFormat, Variant},
     http::MediaHttp,
     httpflv::{HttpFlv, HttpFlvConfig},
     rtmp::{RtmpConfig, RtmpServer},
@@ -46,7 +52,23 @@ fn main() -> std::io::Result<()> {
     let rtc = RtcMedia::rtc_server(vec![udp]);
     let media = RtcMedia::new(rtc.clone(), RtcMediaConfig::default());
     let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
-    let flv = MediaHttp::new().flv(HttpFlv::new(hub.clone(), HttpFlvConfig::default()));
+    let mut hls_cfg = HlsConfig::default();
+    hls_cfg.format = SegmentFormat::Fmp4;
+    hls_cfg.target_duration = Duration::from_secs(1);
+    // LL-HLS parts of ONLY_MEDIA_PART_MS milliseconds (250 by default, 0 for none).
+    let part_ms = std::env::var("ONLY_MEDIA_PART_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(250);
+    hls_cfg.part_duration = (part_ms > 0).then(|| Duration::from_millis(part_ms));
+    hls_cfg.play_wait = Some(Duration::from_secs(10));
+    let hls = Hls::new(hub.clone(), hls_cfg);
+    let mut abr = Multivariant::new();
+    abr.variants = vec![Variant::new("live/abr_hi"), Variant::new("live/abr_lo")];
+    hls.add_multivariant("live/abr", abr);
+    let flv = MediaHttp::new()
+        .flv(HttpFlv::new(hub.clone(), HttpFlvConfig::default()))
+        .hls(hls);
     let app = whip
         .routes(Router::new())
         .get("/streams", {
@@ -57,8 +79,13 @@ fn main() -> std::io::Result<()> {
                     .iter()
                     .map(|s| {
                         let codecs: Vec<&str> = s.tracks.iter().map(|t| t.codec.name()).collect();
+                        let size = s
+                            .tracks
+                            .iter()
+                            .find(|t| t.is_video())
+                            .map_or(String::new(), |t| format!(" size={}x{}", t.width, t.height));
                         format!(
-                            "{} tracks={} packets={} subscribers={}",
+                            "{} tracks={} packets={} subscribers={}{size}",
                             s.path,
                             codecs.join(","),
                             s.packets_in,

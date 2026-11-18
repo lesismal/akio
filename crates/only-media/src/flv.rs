@@ -1,10 +1,14 @@
 //! FLV (Adobe "Video File Format Specification" 10.1) with the Enhanced RTMP extensions to its
-//! tags (FourCC `hvc1` / `avc1` video, `Opus` / `mp4a` audio), which RTMP carries as messages
-//! and HTTP-FLV / WS-FLV as a file that never ends.
+//! tags (FourCC `hvc1` / `avc1` / `vp09` / `av01` / `vp08` video, `Opus` / `mp4a` audio), which
+//! RTMP carries as messages and HTTP-FLV / WS-FLV as a file that never ends.
 //!
 //! * Tag bodies: [`parse_video`] and [`parse_audio`] read the legacy and the enhanced headers
 //!   (H.264 codec id 7, H.265 as codec id 12 the way Chinese ffmpeg forks write it, or `hvc1`;
-//!   AAC, MP3, G.711, `Opus`).
+//!   `vp09`, `av01`, `vp08`; AAC, MP3, G.711, `Opus`). A `vp09` / `vp08` sequence start is a
+//!   `VPCodecConfigurationRecord`, with the version and flags of its `vpcC` box as ffmpeg
+//!   writes them (stripped when parsed); an `av01` one is an `AV1CodecConfigurationRecord`;
+//!   their coded frames carry no composition time. AV1 temporal units are stored without
+//!   temporal delimiters ([`crate::codec::av1::to_sample`]).
 //! * Streams: [`Encoder`] turns tracks and packets into tag bodies (onMetaData, a sequence
 //!   header per track, a body per packet); [`Decoder`] does the reverse, holding packets back
 //!   until it knows the stream's tracks.
@@ -16,7 +20,7 @@ use std::fmt;
 use crate::{
     amf::{self, Value},
     av::{Codec, MILLISECOND, Packet, Time, Track, Tracks},
-    codec::{h264, h265, opus},
+    codec::{av1, h264, h265, opus, vp8, vp9},
 };
 
 /// Tag type of audio.
@@ -79,7 +83,8 @@ pub struct VideoTag<'a> {
     pub packet_type: PacketType,
     /// Composition time offset in milliseconds.
     pub cts: i32,
-    /// The payload: configuration record or AVCC frame.
+    /// The payload: configuration record (for VP8 and VP9 without the `vpcC` version and
+    /// flags) or frame (AVCC for H.264 and H.265).
     pub data: &'a [u8],
 }
 
@@ -103,7 +108,29 @@ fn fourcc_video(f: &[u8]) -> Codec {
     match f {
         b"avc1" => Codec::H264,
         b"hvc1" => Codec::H265,
+        b"vp08" => Codec::Vp8,
+        b"vp09" => Codec::Vp9,
+        b"av01" => Codec::Av1,
         _ => Codec::Unknown,
+    }
+}
+
+/// The FourCC of an enhanced video tag of `codec`.
+fn video_fourcc(codec: Codec) -> &'static [u8; 4] {
+    match codec {
+        Codec::H264 => b"avc1",
+        Codec::Vp8 => b"vp08",
+        Codec::Vp9 => b"vp09",
+        Codec::Av1 => b"av01",
+        _ => b"hvc1",
+    }
+}
+
+/// A `vpcC` payload without its version (1) and flags, as ffmpeg's flv muxer writes it.
+fn strip_vpcc_version(b: &[u8]) -> &[u8] {
+    match b {
+        [1, 0, 0, 0, rest @ ..] if rest.len() >= 8 => rest,
+        _ => b,
     }
 }
 
@@ -122,16 +149,17 @@ pub fn parse_video(b: &[u8]) -> Result<VideoTag<'_>, FlvError> {
         let four = b.get(1..5).ok_or(FlvError::Short)?;
         let codec = fourcc_video(four);
         let (packet_type, cts, data) = match pt {
-            0 => (PacketType::SequenceHeader, 0, &b[5..]),
-            1 => {
-                let c = b.get(5..8).ok_or(FlvError::Short)?;
-                let cts = if codec == Codec::H264 || codec == Codec::H265 {
-                    cts24(c)
-                } else {
-                    0
-                };
-                (PacketType::Coded, cts, &b[8..])
+            0 if matches!(codec, Codec::Vp8 | Codec::Vp9) => {
+                (PacketType::SequenceHeader, 0, strip_vpcc_version(&b[5..]))
             }
+            0 => (PacketType::SequenceHeader, 0, &b[5..]),
+            // Only AVC and HEVC coded frames have a composition time.
+            1 if codec == Codec::H264 || codec == Codec::H265 => {
+                let c = b.get(5..8).ok_or(FlvError::Short)?;
+                (PacketType::Coded, cts24(c), &b[8..])
+            }
+            1 if codec != Codec::Unknown => (PacketType::Coded, 0, &b[5..]),
+            1 => (PacketType::Other, 0, &b[5..]),
             2 => (PacketType::End, 0, &b[5..]),
             3 => (PacketType::Coded, 0, &b[5..]),
             _ => (PacketType::Other, 0, &b[5..]),
@@ -271,9 +299,12 @@ impl Encoder {
 
     /// Sets the tracks; [`headers`](Self::headers) gives their tags.
     pub fn set_tracks(&mut self, tracks: &Tracks) {
-        self.video = tracks
-            .iter()
-            .position(|t| matches!(t.codec, Codec::H264 | Codec::H265));
+        self.video = tracks.iter().position(|t| {
+            matches!(
+                t.codec,
+                Codec::H264 | Codec::H265 | Codec::Vp8 | Codec::Vp9 | Codec::Av1
+            )
+        });
         self.audio = tracks.iter().position(|t| {
             matches!(
                 t.codec,
@@ -327,8 +358,8 @@ impl Encoder {
             }
             let id = match t.codec {
                 Codec::H265 if self.cfg.legacy_hevc => 12.0,
-                Codec::H265 => f64::from(u32::from_be_bytes(*b"hvc1")),
-                _ => 7.0,
+                Codec::H264 => 7.0,
+                c => f64::from(u32::from_be_bytes(*video_fourcc(c))),
             };
             props.push(("videocodecid".into(), Value::Number(id)));
         }
@@ -360,7 +391,14 @@ impl Encoder {
         let frame = if header || key == 1 { 1u8 } else { 2 };
         let mut b = Vec::with_capacity(data.len() + 8);
         let c = (cts as u32) & 0x00ff_ffff;
-        if codec == Codec::H265 && !self.cfg.legacy_hevc {
+        if matches!(codec, Codec::Vp8 | Codec::Vp9 | Codec::Av1) {
+            // Sequence start or coded frames, no composition time.
+            b.push(0x80 | (frame << 4) | u8::from(!header));
+            b.extend_from_slice(video_fourcc(codec));
+            if header && codec != Codec::Av1 {
+                b.extend_from_slice(&[1, 0, 0, 0]); // vpcC version 1, flags
+            }
+        } else if codec == Codec::H265 && !self.cfg.legacy_hevc {
             let pt = if header {
                 0
             } else if cts == 0 {
@@ -508,11 +546,21 @@ impl Decoder {
                 self.seen_video = true;
                 match v.packet_type {
                     PacketType::SequenceHeader => {
-                        let t = Track::video(v.codec, v.data.to_vec());
+                        let mut t = Track::video(v.codec, v.data.to_vec());
+                        if let Some(old) = self.video.as_ref().filter(|o| o.codec == t.codec) {
+                            if t.width == 0 {
+                                // VP8 / VP9: the size known from a keyframe stays.
+                                (t.width, t.height) = (old.width, old.height);
+                            }
+                        }
                         if self.video.as_ref() != Some(&t) {
                             self.video = Some(t);
                             self.reannounce(&mut out);
                         }
+                    }
+                    PacketType::Coded if !matches!(v.codec, Codec::H264 | Codec::H265) => {
+                        let dts = self.unwrap_ts(ts);
+                        self.vpx_coded(&v, dts, &mut out);
                     }
                     PacketType::Coded => {
                         let dts = self.unwrap_ts(ts);
@@ -603,11 +651,52 @@ impl Decoder {
         self.meta_audio = Some(has("audiocodecid"));
     }
 
-    /// Whether every kind of track the stream has is configured.
+    /// A coded VP8 / VP9 / AV1 frame, out of line so that the H.264 / H.265 path of
+    /// [`write`](Self::write) stays as small as it was.
+    #[inline(never)]
+    fn vpx_coded(&mut self, v: &VideoTag<'_>, dts: Time, out: &mut Vec<Event>) {
+        let key = v.keyframe
+            || match v.codec {
+                Codec::Vp8 => vp8::is_keyframe(v.data),
+                Codec::Vp9 => vp9::is_keyframe(v.data),
+                _ => av1::is_keyframe(v.data),
+            };
+        let data = match v.codec {
+            Codec::Av1 => av1::to_sample(v.data).into_owned(),
+            _ => v.data.to_vec(),
+        };
+        if key && v.codec != Codec::Av1 {
+            self.learn_size(v.codec, &data, out);
+        }
+        self.packet(true, Packet::new(0, dts, dts, key, data), out);
+    }
+
+    /// A VP8 / VP9 track learns its picture size from its first keyframe (the configuration
+    /// record has none).
+    fn learn_size(&mut self, codec: Codec, frame: &[u8], out: &mut Vec<Event>) {
+        let Some(t) = self.video.as_mut().filter(|t| t.codec == codec) else {
+            return;
+        };
+        let Some(k) = Track::video_from_keyframe(codec, frame) else {
+            return;
+        };
+        if (t.width, t.height) != (k.width, k.height) {
+            (t.width, t.height) = (k.width, k.height);
+            if self.tracks.is_some() {
+                self.announce(out);
+            }
+        }
+    }
+
+    /// Whether every kind of track the stream has is configured (VP8 and VP9 with a size).
     fn complete(&self) -> bool {
         let want_video = self.meta_video.unwrap_or(self.seen_video);
         let want_audio = self.meta_audio.unwrap_or(self.seen_audio);
-        (!want_video || self.video.is_some())
+        let video_ready = self
+            .video
+            .as_ref()
+            .is_some_and(|t| t.width > 0 || !matches!(t.codec, Codec::Vp8 | Codec::Vp9));
+        (!want_video || video_ready)
             && (!want_audio || self.audio.is_some())
             && (self.video.is_some() || self.audio.is_some())
     }
@@ -798,6 +887,51 @@ mod tests {
 
     const SAMPLE: &[u8] = include_bytes!("../testdata/h264_aac.flv");
     const SAMPLE_HEVC: &[u8] = include_bytes!("../testdata/h265_aac.flv");
+    const SAMPLE_VP9: &[u8] = include_bytes!("../testdata/vp9_opus.flv");
+    const SAMPLE_AV1: &[u8] = include_bytes!("../testdata/av1_opus.flv");
+
+    /// ffmpeg's Enhanced FLV (`vp09`, `av01`): tracks with their configuration and size, two
+    /// keyframes each detected from the bitstream, AV1 temporal units without delimiters.
+    #[test]
+    fn decode_vp9_and_av1_files() {
+        use crate::codec::{av1, vp9};
+        let (t, p) = decode_file(SAMPLE_VP9);
+        assert_eq!(t.len(), 2);
+        assert_eq!(
+            (t[0].codec, t[0].width, t[0].height),
+            (Codec::Vp9, 320, 240)
+        );
+        let c = vp9::Config::parse(&t[0].config).unwrap();
+        assert_eq!((c.profile, c.bit_depth), (0, 8));
+        assert_eq!(t[1].codec, Codec::Opus);
+        let video: Vec<&Packet> = p.iter().filter(|p| p.track == 0).collect();
+        assert_eq!(video.len(), 50);
+        assert!(video[0].keyframe);
+        assert_eq!(video.iter().filter(|p| p.keyframe).count(), 2);
+        assert!(
+            video
+                .iter()
+                .all(|p| p.keyframe == vp9::is_keyframe(&p.data))
+        );
+
+        let (t, p) = decode_file(SAMPLE_AV1);
+        assert_eq!(
+            (t[0].codec, t[0].width, t[0].height),
+            (Codec::Av1, 320, 240)
+        );
+        assert!(t[0].codec_string().unwrap().starts_with("av01.0."));
+        let video: Vec<&Packet> = p.iter().filter(|p| p.track == 0).collect();
+        assert!(video[0].keyframe);
+        assert_eq!(video.iter().filter(|p| p.keyframe).count(), 2);
+        for v in &video {
+            let obus = av1::obus(&v.data);
+            assert!(!obus.is_empty());
+            assert!(
+                obus.iter()
+                    .all(|o| o.sized && o.obu_type != av1::OBU_TEMPORAL_DELIMITER)
+            );
+        }
+    }
 
     fn decode_file(b: &[u8]) -> (Tracks, Vec<Packet>) {
         let mut d = Demuxer::new();
@@ -844,7 +978,13 @@ mod tests {
 
     #[test]
     fn encode_decode_round_trip() {
-        for (sample, legacy) in [(SAMPLE, false), (SAMPLE_HEVC, false), (SAMPLE_HEVC, true)] {
+        for (sample, legacy) in [
+            (SAMPLE, false),
+            (SAMPLE_HEVC, false),
+            (SAMPLE_HEVC, true),
+            (SAMPLE_VP9, false),
+            (SAMPLE_AV1, false),
+        ] {
             let (tracks, pkts) = decode_file(sample);
             let mut cfg = EncoderConfig::default();
             cfg.legacy_hevc = legacy;

@@ -77,6 +77,7 @@ pub fn only_media::amf::write_string(&mut alloc::vec::Vec<u8>, &str)
 pub mod only_media::av
 #[non_exhaustive] pub enum only_media::av::Codec
 pub only_media::av::Codec::Aac
+pub only_media::av::Codec::Av1
 pub only_media::av::Codec::H264
 pub only_media::av::Codec::H265
 pub only_media::av::Codec::Mp3
@@ -84,6 +85,8 @@ pub only_media::av::Codec::Opus
 pub only_media::av::Codec::Pcma
 pub only_media::av::Codec::Pcmu
 pub only_media::av::Codec::Unknown
+pub only_media::av::Codec::Vp8
+pub only_media::av::Codec::Vp9
 impl only_media::av::Codec
 pub fn only_media::av::Codec::is_audio(self) -> bool
 pub fn only_media::av::Codec::is_video(self) -> bool
@@ -143,9 +146,11 @@ impl only_media::av::Track
 pub fn only_media::av::Track::aac(alloc::vec::Vec<u8>) -> only_media::av::Track
 pub fn only_media::av::Track::audio(only_media::av::Codec, alloc::vec::Vec<u8>, u32, u8) -> only_media::av::Track
 pub fn only_media::av::Track::clock_rate(&self) -> u32
+pub fn only_media::av::Track::codec_string(&self) -> core::option::Option<alloc::string::String>
 pub fn only_media::av::Track::is_video(&self) -> bool
 pub fn only_media::av::Track::new(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
 pub fn only_media::av::Track::video(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::video_from_keyframe(only_media::av::Codec, &[u8]) -> core::option::Option<only_media::av::Track>
 impl core::clone::Clone for only_media::av::Track
 pub fn only_media::av::Track::clone(&self) -> Self
 impl core::cmp::Eq for only_media::av::Track
@@ -211,6 +216,102 @@ impl core::panic::unwind_safe::UnwindSafe for only_media::codec::aac::Config
 pub const only_media::codec::aac::FRAME_SAMPLES: u32
 pub const only_media::codec::aac::SAMPLE_RATES: [u32; 13]
 pub fn only_media::codec::aac::split_adts(&[u8]) -> core::result::Result<(alloc::vec::Vec<only_media::codec::aac::AdtsFrame<'_>>, usize), only_media::codec::CodecError>
+pub mod only_media::codec::av1
+#[non_exhaustive] pub struct only_media::codec::av1::Config
+pub only_media::codec::av1::Config::chroma_sample_position: u8
+pub only_media::codec::av1::Config::config_obus: alloc::vec::Vec<u8>
+pub only_media::codec::av1::Config::high_bitdepth: bool
+pub only_media::codec::av1::Config::level: u8
+pub only_media::codec::av1::Config::monochrome: bool
+pub only_media::codec::av1::Config::profile: u8
+pub only_media::codec::av1::Config::subsampling_x: bool
+pub only_media::codec::av1::Config::subsampling_y: bool
+pub only_media::codec::av1::Config::tier: bool
+pub only_media::codec::av1::Config::twelve_bit: bool
+impl only_media::codec::av1::Config
+pub fn only_media::codec::av1::Config::bit_depth(&self) -> u8
+pub fn only_media::codec::av1::Config::codec_string(&self) -> alloc::string::String
+pub fn only_media::codec::av1::Config::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::av1::Config::from_sequence_header(&[u8]) -> core::option::Option<only_media::codec::av1::Config>
+pub fn only_media::codec::av1::Config::parse(&[u8]) -> core::result::Result<only_media::codec::av1::Config, only_media::codec::CodecError>
+pub fn only_media::codec::av1::Config::sequence_header(&self) -> core::option::Option<only_media::codec::av1::SequenceHeader>
+impl core::clone::Clone for only_media::codec::av1::Config
+pub fn only_media::codec::av1::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::av1::Config
+impl core::cmp::PartialEq for only_media::codec::av1::Config
+pub fn only_media::codec::av1::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::av1::Config
+pub fn only_media::codec::av1::Config::default() -> Self
+impl core::fmt::Debug for only_media::codec::av1::Config
+pub fn only_media::codec::av1::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::codec::av1::Config
+impl core::marker::Send for only_media::codec::av1::Config
+impl core::marker::Sync for only_media::codec::av1::Config
+impl core::marker::Unpin for only_media::codec::av1::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::av1::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::av1::Config
+#[non_exhaustive] pub struct only_media::codec::av1::Obu<'a>
+pub only_media::codec::av1::Obu::data: &'a [u8]
+pub only_media::codec::av1::Obu::header: &'a [u8]
+pub only_media::codec::av1::Obu::obu_type: u8
+pub only_media::codec::av1::Obu::payload: &'a [u8]
+pub only_media::codec::av1::Obu::sized: bool
+impl<'a> core::clone::Clone for only_media::codec::av1::Obu<'a>
+pub fn only_media::codec::av1::Obu<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_media::codec::av1::Obu<'a>
+impl<'a> core::cmp::PartialEq for only_media::codec::av1::Obu<'a>
+pub fn only_media::codec::av1::Obu<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_media::codec::av1::Obu<'a>
+pub fn only_media::codec::av1::Obu<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for only_media::codec::av1::Obu<'a>
+impl<'a> core::marker::StructuralPartialEq for only_media::codec::av1::Obu<'a>
+impl<'a> core::marker::Send for only_media::codec::av1::Obu<'a>
+impl<'a> core::marker::Sync for only_media::codec::av1::Obu<'a>
+impl<'a> core::marker::Unpin for only_media::codec::av1::Obu<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_media::codec::av1::Obu<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_media::codec::av1::Obu<'a>
+#[non_exhaustive] pub struct only_media::codec::av1::SequenceHeader
+pub only_media::codec::av1::SequenceHeader::chroma_sample_position: u8
+pub only_media::codec::av1::SequenceHeader::frame_id_numbers_present: bool
+pub only_media::codec::av1::SequenceHeader::high_bitdepth: bool
+pub only_media::codec::av1::SequenceHeader::level: u8
+pub only_media::codec::av1::SequenceHeader::max_height: u32
+pub only_media::codec::av1::SequenceHeader::max_width: u32
+pub only_media::codec::av1::SequenceHeader::monochrome: bool
+pub only_media::codec::av1::SequenceHeader::profile: u8
+pub only_media::codec::av1::SequenceHeader::reduced_still_picture_header: bool
+pub only_media::codec::av1::SequenceHeader::subsampling_x: bool
+pub only_media::codec::av1::SequenceHeader::subsampling_y: bool
+pub only_media::codec::av1::SequenceHeader::tier: bool
+pub only_media::codec::av1::SequenceHeader::twelve_bit: bool
+impl only_media::codec::av1::SequenceHeader
+pub fn only_media::codec::av1::SequenceHeader::bit_depth(&self) -> u8
+pub fn only_media::codec::av1::SequenceHeader::parse(&[u8]) -> core::option::Option<only_media::codec::av1::SequenceHeader>
+impl core::clone::Clone for only_media::codec::av1::SequenceHeader
+pub fn only_media::codec::av1::SequenceHeader::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::av1::SequenceHeader
+impl core::cmp::PartialEq for only_media::codec::av1::SequenceHeader
+pub fn only_media::codec::av1::SequenceHeader::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::av1::SequenceHeader
+pub fn only_media::codec::av1::SequenceHeader::default() -> Self
+impl core::fmt::Debug for only_media::codec::av1::SequenceHeader
+pub fn only_media::codec::av1::SequenceHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::codec::av1::SequenceHeader
+impl core::marker::StructuralPartialEq for only_media::codec::av1::SequenceHeader
+impl core::marker::Send for only_media::codec::av1::SequenceHeader
+impl core::marker::Sync for only_media::codec::av1::SequenceHeader
+impl core::marker::Unpin for only_media::codec::av1::SequenceHeader
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::av1::SequenceHeader
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::av1::SequenceHeader
+pub const only_media::codec::av1::OBU_FRAME: u8
+pub const only_media::codec::av1::OBU_FRAME_HEADER: u8
+pub const only_media::codec::av1::OBU_SEQUENCE_HEADER: u8
+pub const only_media::codec::av1::OBU_TEMPORAL_DELIMITER: u8
+pub const only_media::codec::av1::OBU_TILE_LIST: u8
+pub fn only_media::codec::av1::is_keyframe(&[u8]) -> bool
+pub fn only_media::codec::av1::obus(&[u8]) -> alloc::vec::Vec<only_media::codec::av1::Obu<'_>>
+pub fn only_media::codec::av1::sequence_header_obu(&[u8]) -> core::option::Option<&[u8]>
+pub fn only_media::codec::av1::to_sample(&[u8]) -> alloc::borrow::Cow<'_, [u8]>
 pub mod only_media::codec::h264
 #[non_exhaustive] pub struct only_media::codec::h264::Config
 pub only_media::codec::h264::Config::compat: u8
@@ -339,6 +440,68 @@ impl core::marker::Unpin for only_media::codec::opus::Head
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::opus::Head
 impl core::panic::unwind_safe::UnwindSafe for only_media::codec::opus::Head
 pub fn only_media::codec::opus::packet_samples(&[u8]) -> u32
+pub mod only_media::codec::vp8
+pub fn only_media::codec::vp8::config(u32, u32) -> only_media::codec::vp9::Config
+pub fn only_media::codec::vp8::is_keyframe(&[u8]) -> bool
+pub fn only_media::codec::vp8::keyframe_size(&[u8]) -> core::option::Option<(u32, u32)>
+pub mod only_media::codec::vp9
+#[non_exhaustive] pub struct only_media::codec::vp9::Config
+pub only_media::codec::vp9::Config::bit_depth: u8
+pub only_media::codec::vp9::Config::chroma_subsampling: u8
+pub only_media::codec::vp9::Config::colour_primaries: u8
+pub only_media::codec::vp9::Config::full_range: bool
+pub only_media::codec::vp9::Config::level: u8
+pub only_media::codec::vp9::Config::matrix_coefficients: u8
+pub only_media::codec::vp9::Config::profile: u8
+pub only_media::codec::vp9::Config::transfer_characteristics: u8
+impl only_media::codec::vp9::Config
+pub fn only_media::codec::vp9::Config::codec_string(&self, &str) -> alloc::string::String
+pub fn only_media::codec::vp9::Config::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::vp9::Config::parse(&[u8]) -> core::result::Result<only_media::codec::vp9::Config, only_media::codec::CodecError>
+impl core::clone::Clone for only_media::codec::vp9::Config
+pub fn only_media::codec::vp9::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::vp9::Config
+impl core::cmp::PartialEq for only_media::codec::vp9::Config
+pub fn only_media::codec::vp9::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::vp9::Config
+pub fn only_media::codec::vp9::Config::default() -> Self
+impl core::fmt::Debug for only_media::codec::vp9::Config
+pub fn only_media::codec::vp9::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::codec::vp9::Config
+impl core::marker::StructuralPartialEq for only_media::codec::vp9::Config
+impl core::marker::Send for only_media::codec::vp9::Config
+impl core::marker::Sync for only_media::codec::vp9::Config
+impl core::marker::Unpin for only_media::codec::vp9::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::vp9::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::vp9::Config
+#[non_exhaustive] pub struct only_media::codec::vp9::Keyframe
+pub only_media::codec::vp9::Keyframe::bit_depth: u8
+pub only_media::codec::vp9::Keyframe::color_space: u8
+pub only_media::codec::vp9::Keyframe::full_range: bool
+pub only_media::codec::vp9::Keyframe::height: u32
+pub only_media::codec::vp9::Keyframe::profile: u8
+pub only_media::codec::vp9::Keyframe::subsampling_x: bool
+pub only_media::codec::vp9::Keyframe::subsampling_y: bool
+pub only_media::codec::vp9::Keyframe::width: u32
+impl only_media::codec::vp9::Keyframe
+pub fn only_media::codec::vp9::Keyframe::config(&self) -> only_media::codec::vp9::Config
+impl core::clone::Clone for only_media::codec::vp9::Keyframe
+pub fn only_media::codec::vp9::Keyframe::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::vp9::Keyframe
+impl core::cmp::PartialEq for only_media::codec::vp9::Keyframe
+pub fn only_media::codec::vp9::Keyframe::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::codec::vp9::Keyframe
+pub fn only_media::codec::vp9::Keyframe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::codec::vp9::Keyframe
+impl core::marker::StructuralPartialEq for only_media::codec::vp9::Keyframe
+impl core::marker::Send for only_media::codec::vp9::Keyframe
+impl core::marker::Sync for only_media::codec::vp9::Keyframe
+impl core::marker::Unpin for only_media::codec::vp9::Keyframe
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::vp9::Keyframe
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::vp9::Keyframe
+pub fn only_media::codec::vp9::is_keyframe(&[u8]) -> bool
+pub fn only_media::codec::vp9::level_for(u32, u32) -> u8
+pub fn only_media::codec::vp9::parse_keyframe(&[u8]) -> core::option::Option<only_media::codec::vp9::Keyframe>
 #[non_exhaustive] pub enum only_media::codec::CodecError
 pub only_media::codec::CodecError::Invalid(&'static str)
 pub only_media::codec::CodecError::Short
@@ -623,10 +786,33 @@ impl core::marker::Sync for only_media::hls::SegmentFormat
 impl core::marker::Unpin for only_media::hls::SegmentFormat
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::SegmentFormat
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::SegmentFormat
+#[non_exhaustive] pub struct only_media::hls::AudioRendition
+pub only_media::hls::AudioRendition::default: bool
+pub only_media::hls::AudioRendition::group: alloc::string::String
+pub only_media::hls::AudioRendition::language: core::option::Option<alloc::string::String>
+pub only_media::hls::AudioRendition::name: alloc::string::String
+pub only_media::hls::AudioRendition::path: alloc::string::String
+impl only_media::hls::AudioRendition
+pub fn only_media::hls::AudioRendition::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> only_media::hls::AudioRendition
+impl core::clone::Clone for only_media::hls::AudioRendition
+pub fn only_media::hls::AudioRendition::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::AudioRendition
+impl core::cmp::PartialEq for only_media::hls::AudioRendition
+pub fn only_media::hls::AudioRendition::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::hls::AudioRendition
+pub fn only_media::hls::AudioRendition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hls::AudioRendition
+impl core::marker::Send for only_media::hls::AudioRendition
+impl core::marker::Sync for only_media::hls::AudioRendition
+impl core::marker::Unpin for only_media::hls::AudioRendition
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::AudioRendition
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::AudioRendition
 pub struct only_media::hls::Hls(_)
 impl only_media::hls::Hls
 pub fn only_media::hls::Hls::active(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn only_media::hls::Hls::add_multivariant(&self, &str, only_media::hls::Multivariant)
 pub fn only_media::hls::Hls::new(only_media::hub::Hub, only_media::hls::HlsConfig) -> only_media::hls::Hls
+pub fn only_media::hls::Hls::remove_multivariant(&self, &str) -> bool
 impl core::clone::Clone for only_media::hls::Hls
 pub fn only_media::hls::Hls::clone(&self) -> Self
 impl core::fmt::Debug for only_media::hls::Hls
@@ -659,6 +845,45 @@ impl core::marker::Sync for only_media::hls::HlsConfig
 impl core::marker::Unpin for only_media::hls::HlsConfig
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsConfig
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsConfig
+#[non_exhaustive] pub struct only_media::hls::Multivariant
+pub only_media::hls::Multivariant::audio: alloc::vec::Vec<only_media::hls::AudioRendition>
+pub only_media::hls::Multivariant::variants: alloc::vec::Vec<only_media::hls::Variant>
+impl only_media::hls::Multivariant
+pub fn only_media::hls::Multivariant::new() -> only_media::hls::Multivariant
+impl core::clone::Clone for only_media::hls::Multivariant
+pub fn only_media::hls::Multivariant::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::Multivariant
+impl core::cmp::PartialEq for only_media::hls::Multivariant
+pub fn only_media::hls::Multivariant::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::hls::Multivariant
+pub fn only_media::hls::Multivariant::default() -> Self
+impl core::fmt::Debug for only_media::hls::Multivariant
+pub fn only_media::hls::Multivariant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hls::Multivariant
+impl core::marker::Send for only_media::hls::Multivariant
+impl core::marker::Sync for only_media::hls::Multivariant
+impl core::marker::Unpin for only_media::hls::Multivariant
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Multivariant
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::Multivariant
+#[non_exhaustive] pub struct only_media::hls::Variant
+pub only_media::hls::Variant::audio_group: core::option::Option<alloc::string::String>
+pub only_media::hls::Variant::bandwidth: core::option::Option<u64>
+pub only_media::hls::Variant::path: alloc::string::String
+impl only_media::hls::Variant
+pub fn only_media::hls::Variant::new(impl core::convert::Into<alloc::string::String>) -> only_media::hls::Variant
+impl core::clone::Clone for only_media::hls::Variant
+pub fn only_media::hls::Variant::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::Variant
+impl core::cmp::PartialEq for only_media::hls::Variant
+pub fn only_media::hls::Variant::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::hls::Variant
+pub fn only_media::hls::Variant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hls::Variant
+impl core::marker::Send for only_media::hls::Variant
+impl core::marker::Sync for only_media::hls::Variant
+impl core::marker::Unpin for only_media::hls::Variant
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Variant
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::Variant
 pub mod only_media::http
 pub struct only_media::http::MediaHttp
 impl only_media::http::MediaHttp
@@ -1294,6 +1519,7 @@ pub struct only_media::rtp::Depacketizer
 impl only_media::rtp::Depacketizer
 pub fn only_media::rtp::Depacketizer::new(&only_media::av::Track) -> only_media::rtp::Depacketizer
 pub fn only_media::rtp::Depacketizer::offset(self, only_media::av::Time) -> only_media::rtp::Depacketizer
+pub fn only_media::rtp::Depacketizer::picture_size(&self) -> core::option::Option<(u32, u32)>
 pub fn only_media::rtp::Depacketizer::push(&mut self, &[u8], &mut alloc::vec::Vec<only_media::av::Packet>) -> core::result::Result<(), only_media::rtp::RtpError>
 pub fn only_media::rtp::Depacketizer::take_config(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
 impl core::fmt::Debug for only_media::rtp::Depacketizer
@@ -2483,6 +2709,7 @@ pub fn only_media::whip::WebRtcSession::trickle(&mut self, &str) -> core::result
 pub fn only_media::whip::handles(&only_http::message::Method) -> bool
 #[non_exhaustive] pub enum only_media::Codec
 pub only_media::Codec::Aac
+pub only_media::Codec::Av1
 pub only_media::Codec::H264
 pub only_media::Codec::H265
 pub only_media::Codec::Mp3
@@ -2490,6 +2717,8 @@ pub only_media::Codec::Opus
 pub only_media::Codec::Pcma
 pub only_media::Codec::Pcmu
 pub only_media::Codec::Unknown
+pub only_media::Codec::Vp8
+pub only_media::Codec::Vp9
 impl only_media::av::Codec
 pub fn only_media::av::Codec::is_audio(self) -> bool
 pub fn only_media::av::Codec::is_video(self) -> bool
@@ -2688,9 +2917,11 @@ impl only_media::av::Track
 pub fn only_media::av::Track::aac(alloc::vec::Vec<u8>) -> only_media::av::Track
 pub fn only_media::av::Track::audio(only_media::av::Codec, alloc::vec::Vec<u8>, u32, u8) -> only_media::av::Track
 pub fn only_media::av::Track::clock_rate(&self) -> u32
+pub fn only_media::av::Track::codec_string(&self) -> core::option::Option<alloc::string::String>
 pub fn only_media::av::Track::is_video(&self) -> bool
 pub fn only_media::av::Track::new(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
 pub fn only_media::av::Track::video(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::video_from_keyframe(only_media::av::Codec, &[u8]) -> core::option::Option<only_media::av::Track>
 impl core::clone::Clone for only_media::av::Track
 pub fn only_media::av::Track::clone(&self) -> Self
 impl core::cmp::Eq for only_media::av::Track

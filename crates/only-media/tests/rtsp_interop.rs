@@ -1,5 +1,6 @@
 //! RTSP server tests: a hand-written client against hub-published packets, and ffmpeg /
-//! ffprobe as publisher and player (skipped when they are not installed).
+//! ffprobe as publisher and player (skipped when they are not installed): H.264, H.265, VP8,
+//! VP9 and AV1 (with an ffmpeg that packetizes it).
 
 use std::{
     io::{Read, Write},
@@ -367,9 +368,20 @@ fn publish(url: &str, transport: &str, vcodec: &str, acodec: &str) -> Kill {
         "yuv420p",
     ])
     .args(["-c:v", vcodec, "-g", "25"]);
-    if vcodec == "libx265" {
-        cmd.args(["-x265-params", "log-level=error"]);
+    match vcodec {
+        "libx265" => {
+            cmd.args(["-x265-params", "log-level=error"]);
+        }
+        "libvpx" | "libvpx-vp9" => {
+            cmd.args(["-deadline", "realtime", "-cpu-used", "8", "-b:v", "300k"]);
+        }
+        "libsvtav1" => {
+            cmd.args(["-preset", "12", "-svtav1-params", "lp=2"]);
+        }
+        _ => {}
     }
+    // ffmpeg's VP9 and AV1 RTP packetizers are "experimental".
+    cmd.args(["-strict", "experimental"]);
     cmd.args([
         "-c:a",
         acodec,
@@ -467,6 +479,62 @@ fn ffmpeg_h264_aac_publish_tcp_play_tcp_udp() {
 #[test]
 fn ffmpeg_h265_opus_publish_udp_play_tcp_udp() {
     interop("udp", "libx265", "libopus", "hevc", "opus");
+}
+
+#[test]
+fn ffmpeg_vp8_opus_publish_tcp_play_tcp_udp() {
+    interop("tcp", "libvpx", "libopus", "vp8", "opus");
+}
+
+#[test]
+fn ffmpeg_vp9_opus_publish_udp_play_tcp_udp() {
+    interop("udp", "libvpx-vp9", "libopus", "vp9", "opus");
+}
+
+#[test]
+fn ffmpeg_av1_opus_publish_tcp_play_tcp_udp() {
+    // ffmpeg packetizes AV1 over RTP from 7.1 on.
+    if have("ffmpeg") && !have_av1_rtp() {
+        eprintln!("this ffmpeg has no AV1 RTP packetizer: skipped");
+        return;
+    }
+    interop("tcp", "libsvtav1", "libopus", "av1", "opus");
+}
+
+/// Whether ffmpeg packetizes AV1 over RTP (checked on a tiny clip; ffmpeg 6 with SVT-AV1 may
+/// hang on it, so it gets 20 seconds).
+fn have_av1_rtp() -> bool {
+    let Ok(mut child) = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg("testsrc=size=64x64:rate=5")
+        .args(["-t", "0.2", "-c:v", "libsvtav1", "-strict", "experimental"])
+        .args(["-f", "rtp", "rtp://127.0.0.1:9"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Reads until the server closes the connection; returns how long that took (`None`: still

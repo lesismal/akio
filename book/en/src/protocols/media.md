@@ -7,25 +7,33 @@ it receives into the canonical packets of `only_media::av` and muxes from them.
 
 | Protocol | In (publish) | Out (play) | Chapter |
 |---|---|---|---|
-| RTMP (digest handshake, Enhanced RTMP H.265 / Opus), server and client | yes | yes | this one |
+| RTMP (digest handshake, Enhanced RTMP H.265 / VP9 / AV1 / VP8 / Opus), server and client | yes | yes | this one |
 | HTTP-FLV, WS-FLV | – | yes | this one |
-| HLS (MPEG-TS or fMP4/CMAF, LL-HLS parts, blocking reload) | – | yes | this one |
+| HLS (MPEG-TS or fMP4/CMAF, LL-HLS parts, blocking reload, multivariant playlists) | – | yes | this one |
 | RTSP (TCP interleaved and UDP), server and client | yes | yes | [RTSP and WHIP/WHEP](media-rtsp.md) |
 | SRT live (ARQ, TSBPD, AES) | yes | yes | [SRT](media-srt.md) |
 | WHIP / WHEP (media with the `webrtc` feature) | yes | yes | [RTSP and WHIP/WHEP](media-rtsp.md) |
 
-Codecs: H.264, H.265, AAC and Opus everywhere they can be carried (G.711 and MP3 where the
-container allows). Snippets below are from `crates/only-media/examples/guide-media.rs`.
+Codecs: H.264, H.265, AAC and Opus everywhere they can be carried; VP8, VP9 and AV1 over
+Enhanced RTMP / FLV, RTSP, WHIP / WHEP and fMP4 HLS (not MPEG-TS); G.711 and MP3 where the
+container allows. Snippets below are from `crates/only-media/examples/guide-media.rs`.
 
 ## The canonical form
 
 `av::Track` describes an elementary stream: its `Codec` and its configuration in the ISO BMFF
 form (the `AVCDecoderConfigurationRecord` / `HEVCDecoderConfigurationRecord` with the parameter
-sets, the AAC `AudioSpecificConfig`, the `OpusHead`), plus picture size or sample rate.
-`av::Packet` is one access unit: AVCC video (4-byte NAL lengths, no access unit delimiters),
-raw AAC frames without ADTS, Opus packets; decode and presentation times in nanoseconds.
-`only_media::codec` has the helpers to go between AVCC and Annex B, parse the configuration
-records and SPS (picture size), and frame ADTS.
+sets, the `VPCodecConfigurationRecord` of VP8 and VP9, the `AV1CodecConfigurationRecord` with
+the sequence header, the AAC `AudioSpecificConfig`, the `OpusHead`), plus picture size or sample
+rate. `av::Packet` is one access unit: AVCC video (4-byte NAL lengths, no access unit
+delimiters), VP8 / VP9 frames, AV1 temporal units (OBUs with sizes, no temporal delimiter), raw
+AAC frames without ADTS, Opus packets; decode and presentation times in nanoseconds. A packet's
+`keyframe` comes from the bitstream (IDR / IRAP, VP8 / VP9 keyframe, AV1 shown `KEY_FRAME`):
+the GOP cache, HLS segments and the dropping of slow players start at those. `only_media::codec`
+has the helpers to go between AVCC and Annex B, parse the configuration records, SPS, VP9
+keyframe headers and AV1 sequence headers (picture size), and frame ADTS;
+`Track::video_from_keyframe` builds a VP8 / VP9 / AV1 track from a keyframe and
+`Track::codec_string` gives the RFC 6381 string (`avc1.64001F`, `vp09.00.31.08`,
+`av01.0.04M.08`, `mp4a.40.2`...).
 
 ## The hub
 
@@ -85,7 +93,8 @@ the full chunk stream (all four header formats, extended timestamps, chunk size 
 aborts, aggregate messages, acknowledgements), and answers `connect`, `releaseStream`,
 `FCPublish`, `createStream`, `publish`, `play`, `getStreamLength`, `FCUnpublish`,
 `deleteStream`, `closeStream`. Publishers' FLV tags go through `flv::Decoder` (legacy codec ids
-including H.265 as id 12, and Enhanced RTMP FourCCs `hvc1`, `Opus`, `mp4a`); players get
+including H.265 as id 12, and Enhanced RTMP FourCCs `hvc1`, `vp09`, `av01`, `vp08`, `Opus`,
+`mp4a`); players get
 onMetaData and the sequence headers first, then the GOP cache, written by `flv::Encoder`
 (H.265 as `hvc1`, or codec id 12 with `EncoderConfig::legacy_hevc`). `RtmpConfig::on_connect`
 can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls. A client must finish
@@ -117,10 +126,25 @@ chunk streams of a connection to 32 MiB.
   playlist reloads (`?_HLS_msn=&_HLS_part=`). Requests that must wait are parked (no thread is
   held) and answered by the publisher's thread when the segment or part is cut.
 - **fMP4 / CMAF segments**: `HlsConfig::format = SegmentFormat::Fmp4` cuts fragmented MP4
-  instead of MPEG-TS (H.264, H.265, AAC and Opus). The playlist names an init segment with
+  instead of MPEG-TS (H.264, H.265, VP8, VP9, AV1, AAC and Opus; MPEG-TS has no VP8 / VP9 /
+  AV1, and a stream whose video it cannot carry is cut like an audio-only one). The playlist names an init segment with
   `#EXT-X-MAP:URI="init-<n>.mp4"` (a new one only when the codec configuration changes),
   segments are `seg-<n>.m4s` and LL-HLS parts `part-<n>.<m>.m4s`, each part one or more whole
   `moof`+`mdat` fragments. `only_media::fmp4` (`Muxer`, `Demuxer`) is usable on its own.
+- **Multivariant playlists**: renditions of one source are published as separate streams (an
+  encoder ladder, several WHIP publishers) and tied together by `Hls::add_multivariant`:
+
+```rust,ignore
+{{#include ../../../../crates/only-media/examples/guide-media.rs:multivariant}}
+```
+
+  `GET /live/show.m3u8` lists an `EXT-X-STREAM-INF` per `Variant` with `BANDWIDTH` (configured,
+  or the peak bitrate of its segments plus its audio group's, then with `AVERAGE-BANDWIDTH`),
+  `CODECS` (the RFC 6381 strings of the tracks the segment format carries), `RESOLUTION` and
+  `AUDIO`, and an `EXT-X-MEDIA:TYPE=AUDIO` per `AudioRendition`. URIs are relative and carry the
+  request's query string. The first request starts every rendition's muxer and is answered
+  once each has its tracks and a segment (renditions not published yet are left out after
+  three target durations). It works with both formats and with LL-HLS.
 
 ## Relaying: the RTMP client
 
@@ -173,7 +197,10 @@ installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 | `ffmpeg -f rtsp rtsp://…` | RTMP, HTTP-FLV, HLS, RTSP (UDP) | H.264 + AAC |
 | `ffmpeg -f flv rtmp://…` | RTSP (TCP) | H.264 + AAC |
 | hub publisher | hand-written HTTP-FLV, WS-FLV and HLS clients | H.264 + AAC |
-| hub publisher | `ffprobe` / `ffmpeg -i …/index.m3u8`, fMP4, plain and LL-HLS | H.264 + AAC, H.265 + AAC, H.265 + Opus |
+| hub publisher | `ffprobe` / `ffmpeg -i …/index.m3u8`, fMP4, plain and LL-HLS | H.264 + AAC, H.265 + AAC, H.265 + Opus, VP9 + Opus, AV1 + Opus |
+| `ffmpeg -f flv rtmp://…` (Enhanced RTMP) | `ffprobe` / `ffmpeg -i rtmp://…` | VP9 + Opus, AV1 + Opus |
+| hub publishers (3 renditions) | `ffprobe` / `ffmpeg -i …/show.m3u8`, MPEG-TS and fMP4 LL-HLS | H.265 + H.264 variants, AAC audio group |
+| Chrome over WHIP (`tools/interop/media/browser.sh`) | hls.js, Chrome's own player: multivariant fMP4 LL-HLS | AV1 ladder + Opus |
 | RTMP client push | `ffmpeg -listen 1 -i rtmp://…`, mediamtx (`--ignored`) | H.264 + AAC, H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`, mediamtx | RTMP client pull | H.264 + AAC, H.265 + AAC |
 
@@ -183,5 +210,5 @@ RTSP and SRT have their own tables in their chapters. Fuzz targets cover the RTM
 
 ## Not supported
 
-HLS encryption and multivariant playlists, RTMPS client, RTMPE / RTMPT, AMF3 replies, Enhanced
-RTMP multitrack, AV1 / VP9 / VP8 in the hub, recording to files, transcoding.
+HLS encryption, I-frame playlists and rendition reports, VP8 / VP9 / AV1 in MPEG-TS, RTMPS
+client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP multitrack, recording to files, transcoding.

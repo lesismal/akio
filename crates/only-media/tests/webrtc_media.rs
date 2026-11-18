@@ -1,7 +1,8 @@
 //! WHIP and WHEP with WebRTC media (`only_media::webrtc::RtcMedia`) end to end over loopback:
 //! `only-webrtc` `Endpoint`s are the WHIP publisher and the WHEP viewers, signalling goes over
-//! HTTP to a `WhipServer`, media over an ICE-lite `RtcServer`. H.264 (and H.265) frames come
-//! from the FLV test files; Opus packets are synthetic (the hub does not decode them).
+//! HTTP to a `WhipServer`, media over an ICE-lite `RtcServer`. H.264, H.265, VP9 and AV1
+//! frames come from the FLV test files, VP8 from an IVF file; Opus packets are synthetic (the
+//! hub does not decode them).
 #![cfg(feature = "webrtc")]
 
 use std::{
@@ -20,8 +21,8 @@ use only::{Engine, Listener};
 use only_http::{Router, serve};
 use only_media::{
     Codec, Hub, PeerInfo, Track,
-    av::{Packet, SECOND, to_ticks},
-    codec::h264,
+    av::{MILLISECOND, Packet, SECOND, to_ticks},
+    codec::{av1, h264, vp8, vp9},
     flv::{Decoder, Demuxer, Event},
     webrtc::{RtcMedia, RtcMediaConfig, rtc_config},
     whip::{WhipConfig, WhipServer},
@@ -33,6 +34,9 @@ use only_webrtc::{
 
 const H264_FLV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/h264_aac.flv");
 const H265_FLV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/h265_aac.flv");
+const VP9_FLV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/vp9_opus.flv");
+const AV1_FLV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/av1_opus.flv");
+const VP8_IVF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/vp8.ivf");
 const T: Duration = Duration::from_secs(15);
 
 struct Setup {
@@ -144,8 +148,29 @@ fn wait(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
-/// The tracks and packets of an FLV file.
+/// The VP8 track and frames of an IVF file (25 fps).
+fn read_ivf(path: &str) -> (Vec<Track>, Vec<Packet>) {
+    let data = std::fs::read(path).unwrap();
+    assert_eq!(&data[..4], b"DKIF");
+    let mut pos = usize::from(u16::from_le_bytes([data[6], data[7]]));
+    let mut packets = Vec::new();
+    while pos + 12 <= data.len() {
+        let n = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        let pts = i64::from_le_bytes(data[pos + 4..pos + 12].try_into().unwrap());
+        let frame = data[pos + 12..pos + 12 + n].to_vec();
+        let t = pts * 40 * MILLISECOND;
+        packets.push(Packet::new(0, t, t, vp8::is_keyframe(&frame), frame));
+        pos += 12 + n;
+    }
+    let track = Track::video_from_keyframe(Codec::Vp8, &packets[0].data).unwrap();
+    (vec![track], packets)
+}
+
+/// The tracks and packets of an FLV (or IVF) file.
 fn read_flv(path: &str) -> (Vec<Track>, Vec<Packet>) {
+    if path.ends_with(".ivf") {
+        return read_ivf(path);
+    }
     let data = std::fs::read(path).unwrap();
     let mut dm = Demuxer::new();
     let mut dec = Decoder::new();
@@ -163,8 +188,12 @@ fn read_flv(path: &str) -> (Vec<Track>, Vec<Packet>) {
     (tracks, packets)
 }
 
-/// An AVCC access unit as Annex B, with the configuration's parameter sets before keyframes.
+/// The frame WebRTC sends: an AVCC access unit as Annex B, with the configuration's parameter
+/// sets before keyframes; VP8, VP9 and AV1 as they are.
 fn annexb(track: &Track, p: &Packet) -> Vec<u8> {
+    if !matches!(track.codec, Codec::H264 | Codec::H265) {
+        return p.data.clone();
+    }
     let mut out = Vec::new();
     if p.keyframe {
         let sets: Vec<Vec<u8>> = if track.codec == Codec::H265 {
@@ -249,10 +278,12 @@ fn publish(s: &Setup, path: &str, flv: &str, with_audio: bool) -> Publishing {
     let (tracks, packets) = read_flv(flv);
     let vi = tracks.iter().position(Track::is_video).unwrap();
     let vtrack = tracks[vi].clone();
-    let codec = if vtrack.codec == Codec::H265 {
-        RtcCodec::H265
-    } else {
-        RtcCodec::H264
+    let codec = match vtrack.codec {
+        Codec::H265 => RtcCodec::H265,
+        Codec::Vp8 => RtcCodec::Vp8,
+        Codec::Vp9 => RtcCodec::Vp9,
+        Codec::Av1 => RtcCodec::Av1,
+        _ => RtcCodec::H264,
     };
     let (tx, rx) = channel();
     let (mut video, mut audio) = (None, None);
@@ -530,7 +561,7 @@ fn whip_h265_video_only_goes_live_with_hvcc() {
 
 /// RTMP-style ingest (packets written to a hub publisher: H.264 + AAC) out over WHEP: video
 /// plays, AAC is not sent; an offer that takes no codec of the stream gets 406, so does a WHIP
-/// offer with only VP8.
+/// offer with only G.722.
 #[test]
 fn hub_publisher_to_whep_and_unsupported_offers() {
     let s = setup();
@@ -575,23 +606,86 @@ fn hub_publisher_to_whep_and_unsupported_offers() {
     }
     assert!(keyframe);
 
-    // A WHIP offer whose only video codec is VP8: 406, and the path stays free.
-    let vp8 = Endpoint::bind(&s.engine, "127.0.0.1:0".parse().unwrap())
+    // A WHIP offer whose only codec is G.722 (an Opus offer renamed): 406, and the path
+    // stays free.
+    let ep = Endpoint::bind(&s.engine, "127.0.0.1:0".parse().unwrap())
         .unwrap()
-        .config(|| only_webrtc::rtc_config().clear_codecs().enable_vp8(true));
+        .config(|| only_webrtc::rtc_config().clear_codecs().enable_opus(true));
     let (tx, _rx) = channel();
-    let (p, offer) = vp8
+    let (p, offer) = ep
         .create_offer(Client(Mutex::new(tx)), |api| {
-            api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
+            api.add_media(MediaKind::Audio, Direction::SendOnly, None, None);
         })
         .unwrap();
-    let (status, _, body) = post_offer(s.http, "/whip/live/vp8", &offer);
+    let offer = offer.replace("opus/48000/2", "G722/8000");
+    assert!(offer.contains("G722"), "{offer}");
+    let (status, _, body) = post_offer(s.http, "/whip/live/g722", &offer);
     assert_eq!(status, 406, "{body}");
     p.close();
-    assert!(s.hub.stream_info("live/vp8").is_none_or(|i| !i.publishing));
+    assert!(s.hub.stream_info("live/g722").is_none_or(|i| !i.publishing));
 
     stop.store(true, Ordering::Release);
     writer.join().unwrap();
+    s.engine.shutdown();
+    s.engine.wait();
+}
+
+/// VP8, VP9 and AV1 over WHIP: the stream goes live with the configuration record and size
+/// from the first keyframe, keyframes are those of the bitstream, and a WHEP viewer gets the
+/// same codec, starting at a keyframe, frames byte for byte.
+#[test]
+fn whip_vp8_vp9_av1_publish_and_whep_play() {
+    let s = setup();
+    for (src, codec, rtc) in [
+        (VP8_IVF, Codec::Vp8, RtcCodec::Vp8),
+        (VP9_FLV, Codec::Vp9, RtcCodec::Vp9),
+        (AV1_FLV, Codec::Av1, RtcCodec::Av1),
+    ] {
+        let path = format!("live/{}", codec.name().to_lowercase());
+        let pubr = publish(&s, &path, src, false);
+        wait("the stream live", || {
+            s.hub
+                .stream_info(&path)
+                .is_some_and(|i| i.publishing && i.packets_in > 10)
+        });
+        let info = s.hub.stream_info(&path).unwrap();
+        assert_eq!(info.tracks.len(), 1, "{codec}");
+        let t = &info.tracks[0];
+        assert_eq!((t.codec, t.width, t.height), (codec, 320, 240));
+        let want = read_flv(src).0[0].codec_string();
+        assert_eq!(
+            t.codec_string().map(|c| c[..9].to_owned()),
+            want.map(|c| c[..9].to_owned())
+        );
+        let is_key = |d: &[u8]| match codec {
+            Codec::Vp8 => vp8::is_keyframe(d),
+            Codec::Vp9 => vp9::is_keyframe(d),
+            _ => av1::is_keyframe(d),
+        };
+        let (status, viewer, _loc, rx, vmid) = play(&s, &path, true, false);
+        assert_eq!(status, 201, "{codec}");
+        let vmid = vmid.unwrap();
+        let Got::Media(_, got, first) = next(
+            &rx,
+            "video",
+            |g| matches!(g, Got::Media(m, ..) if *m == vmid),
+        ) else {
+            unreachable!()
+        };
+        assert_eq!(got, Some(rtc), "{codec}");
+        assert!(is_key(&first), "{codec}: WHEP starts at a keyframe");
+        let (_, frames) = read_flv(src);
+        let originals: Vec<&[u8]> = frames.iter().map(|p| p.data.as_slice()).collect();
+        let mut n = 0;
+        while n < 20 {
+            if let Got::Media(_, _, d) = next(&rx, "frames", |g| matches!(g, Got::Media(..))) {
+                assert!(originals.contains(&&d[..]), "{codec}: frame {n} altered");
+                n += 1;
+            }
+        }
+        viewer.close();
+        drop(pubr);
+    }
     s.engine.shutdown();
     s.engine.wait();
 }

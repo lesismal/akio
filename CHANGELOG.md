@@ -10,6 +10,42 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: VP8, VP9 and AV1 in only-media, multivariant HLS playlists
+
+Additive (ADR-031, docs/adr/031-media-vp8-vp9-av1-multivariant-hls.md):
+
+- **VP8, VP9 and AV1 in the hub**: `Codec::{Vp8, Vp9, Av1}` with canonical forms (`vpcC` /
+  `av1C` configuration records, frames, AV1 temporal units of sized OBUs) and keyframes from the
+  bitstream, so GOP cache, HLS segmenting and slow-player dropping work for them. Carried by
+  Enhanced RTMP / FLV (`vp09`, `av01`, `vp08`), RTSP (RFC 7741 / RFC 9628 / AV1 RTP through
+  only-rtp, record and play), fMP4 HLS (`vp08` / `vp09` + `vpcC`, `av01` + `av1C`) and WHIP /
+  WHEP (`webrtc::rtc_config` enables them). Not in MPEG-TS. New modules `codec::vp8`,
+  `codec::vp9`, `codec::av1`; `Track::video_from_keyframe`, `Track::codec_string` (RFC 6381);
+  `rtp::Depacketizer::picture_size`.
+- **Multivariant HLS**: `Hls::add_multivariant(name, Multivariant)` serves `/<name>.m3u8` over
+  renditions published as separate streams (`Variant`: path, bandwidth configured or measured
+  from segments, audio group; `AudioRendition`: group, name, language, default), with
+  `BANDWIDTH`, `AVERAGE-BANDWIDTH`, `CODECS`, `RESOLUTION`, `AUDIO` and `EXT-X-MEDIA` audio
+  groups, in MPEG-TS and fMP4, with LL-HLS; `Hls::remove_multivariant`.
+- Changed: `webrtc::rtc_config` now accepts VP8, VP9 and AV1, so WHIP offers with only those are
+  published instead of refused (406). Fixed: `flv::parse_video` dropped the first 3 bytes of
+  coded frames of FourCCs other than `avc1` / `hvc1`. HLS no longer stalls a stream whose video
+  the segment format cannot carry (VP9 or AV1 in MPEG-TS): it is cut like an audio-only one.
+  Fixed: a live playlist's `EXT-X-TARGETDURATION` could change between reloads (1 → 2 after a
+  1.007 s segment), which Chrome's own HLS player refuses; it is now rounded to the nearest
+  second per RFC 8216 and never decreases.
+  Fixed: the RTP AAC depacketizer (RTSP record) panicked on an AU-headers-length of 1 to 8
+  bits (found by fuzzing).
+- Hot paths, same-run A/B against the previous main on gpu51 (5 alternating rounds, medians,
+  head/base): hub fan-out to 1 / 16 / 256 subscribers 1.008 / 1.009 / 1.011; HLS segmenting
+  TS 0.976, TS + parts 1.016, fMP4 1.005, fMP4 + parts 1.011; FLV decoding H.264 0.976,
+  H.265 0.993. Retired instructions are equal or lower; per-case swings of 1-3% follow
+  unrelated code changes (code layout).
+- Interop: ffmpeg / ffprobe for VP9 and AV1 over Enhanced RTMP and fMP4 HLS, VP8 / VP9 / AV1
+  over RTSP (record and play, TCP and UDP), multivariant playlists in both formats; headless
+  Chrome publishes VP8, VP9, AV1 and H.264 over WHIP, decodes them over WHEP and plays a
+  multivariant fMP4 LL-HLS playlist (`tools/interop/media/browser.sh`).
+
 ### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
 
 only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH
@@ -1669,7 +1705,7 @@ extmap negotiation, ssrc and FID groups, setup roles and fingerprints, ICE-lite,
 sctp-port / max-message-size, renegotiation and ICE restarts) and the sans-io peer that glues
 the layers together. Tested on a simulated lossy link (ICE + DTLS + SCTP + media) and against
 pion (data channels, Opus/VP8 echo, PLI, a TURN relay, both offer directions), fib's Go WebRTC
-(both directions) and headless Chrome (`tools/interop/webrtc/browser.sh`: data channels, Chrome's
+(both directions) and headless Chrome (`tools/interop/media/browser.sh`: data channels, Chrome's
 camera and microphone echoed back and decoded, both offer directions). New fuzz targets
 `ice_stun`, `srtp_unprotect`, `rtp_rtcp`, `rtp_codec`, `sctp_packet`; `webrtc_sdp` now drives the
 new SDP code.

@@ -1,6 +1,7 @@
 //! SDP (RFC 8866): a lenient parser and a writer, with the mapping between media descriptions
 //! and [`Track`]s that RTSP uses (`rtpmap`, `fmtp` with `sprop-parameter-sets`,
-//! `sprop-vps/sps/pps`, `profile-level-id`, AAC `config`, `a=control`). WHIP/WHEP use the same
+//! `sprop-vps/sps/pps`, `profile-level-id`, AAC `config`, `a=control`; VP8, VP9 and AV1 by
+//! `rtpmap` alone, their configuration coming from the stream). WHIP/WHEP use the same
 //! [`Session`] type for offers and answers.
 
 use std::fmt::{self, Write as _};
@@ -359,6 +360,9 @@ pub fn track_media(track: &Track, pt: u8, control: &str) -> Option<Media> {
             let fmtp = (fmtp.len() > 4).then_some(fmtp);
             (pt, format!("{pt} H265/90000"), fmtp)
         }
+        Codec::Vp8 => (pt, format!("{pt} VP8/90000"), None),
+        Codec::Vp9 => (pt, format!("{pt} VP9/90000"), None),
+        Codec::Av1 => (pt, format!("{pt} AV1/90000"), None),
         Codec::Aac => {
             let c = aac::Config::parse(&track.config).ok()?;
             let hex: String = track.config.iter().map(|b| format!("{b:02X}")).collect();
@@ -438,6 +442,10 @@ pub fn media_track(m: &Media) -> Option<(Track, u8)> {
                 };
                 Track::video(Codec::H265, cfg)
             }
+            // No out-of-band configuration: it comes from the first keyframe.
+            "VP8" => Track::new(Codec::Vp8, Vec::new()),
+            "VP9" => Track::new(Codec::Vp9, Vec::new()),
+            "AV1" => Track::new(Codec::Av1, Vec::new()),
             "MPEG4-GENERIC" => {
                 let mode = get("mode").unwrap_or("").to_ascii_lowercase();
                 if !mode.is_empty() && mode != "aac-hbr" {

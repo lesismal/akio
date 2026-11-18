@@ -60,12 +60,15 @@ pub fn rtp_depacketize(data: &[u8]) {
     let Some((&sel, mut rest)) = data.split_first() else {
         return;
     };
-    let track = match sel % 5 {
+    let track = match sel % 8 {
         0 => Track::video(Codec::H264, vec![]),
         1 => Track::video(Codec::H265, vec![]),
         2 => Track::aac(vec![0x12, 0x10]),
         3 => Track::audio(Codec::Opus, vec![], 48000, 2),
-        _ => Track::audio(Codec::Pcmu, vec![], 8000, 1),
+        4 => Track::audio(Codec::Pcmu, vec![], 8000, 1),
+        5 => Track::new(Codec::Vp8, vec![]),
+        6 => Track::new(Codec::Vp9, vec![]),
+        _ => Track::new(Codec::Av1, vec![]),
     };
     let mut d = Depacketizer::new(&track);
     let mut out = Vec::new();
@@ -75,6 +78,7 @@ pub fn rtp_depacketize(data: &[u8]) {
         rest = &r[n..];
     }
     let _ = d.take_config();
+    let _ = d.picture_size();
 }
 
 #[cfg(test)]
@@ -230,7 +234,40 @@ mod tests {
         vec![
             SDP.as_bytes().to_vec(),
             b"v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\na=rtpmap:111 opus/48000/2\r\n".to_vec(),
+            b"v=0\r\nm=video 0 RTP/AVP 96 97 98\r\na=rtpmap:96 VP8/90000\r\na=rtpmap:97 VP9/90000\r\na=rtpmap:98 AV1/90000\r\n".to_vec(),
         ]
+    }
+
+    /// The first video frames of an FLV sample.
+    fn flv_frames(data: &[u8]) -> (Track, Vec<crate::av::Packet>) {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let mut dec = Decoder::new();
+        let (mut track, mut frames) = (None, Vec::new());
+        for t in Demuxer::new().feed(data).expect("flv") {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => track = Some(t[0].clone()),
+                    Event::Packet(p) if p.track == 0 && frames.len() < 3 => frames.push(p),
+                    Event::Packet(_) => {}
+                }
+            }
+        }
+        (track.expect("tracks"), frames)
+    }
+
+    /// RTP packets of `frames` as `rtp_depacketize` takes them (a length byte, at most 255).
+    fn rtp_frames(track: &Track, frames: &[crate::av::Packet]) -> Vec<u8> {
+        let mut p = Packetizer::new(track, 96).mtu(200);
+        let mut wire = Vec::new();
+        for f in frames {
+            let mut out = Vec::new();
+            p.packetize(f, &mut out);
+            for r in out {
+                wire.push(r.len().min(255) as u8);
+                wire.extend_from_slice(&r[..r.len().min(255)]);
+            }
+        }
+        wire
     }
 
     fn rtp_seeds() -> Vec<Vec<u8>> {
@@ -240,11 +277,27 @@ mod tests {
             Track::aac(vec![0x12, 0x10]),
             Track::audio(Codec::Opus, vec![], 48000, 2),
         ];
-        tracks
+        let mut v: Vec<Vec<u8>> = tracks
             .iter()
             .enumerate()
             .map(|(i, t)| [&[i as u8][..], &rtp_stream(t)].concat())
-            .collect()
+            .collect();
+        // VP8 (a keyframe and an inter frame), VP9 and AV1 (from the FLV samples).
+        let key = [0x50, 0x2d, 0x00, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xf0, 0x00];
+        let vp8 = Track::video_from_keyframe(Codec::Vp8, &key).expect("vp8");
+        let frames = [
+            crate::av::Packet::new(0, 0, 0, true, [&key[..], &[7; 300]].concat()),
+            crate::av::Packet::new(0, 40_000_000, 40_000_000, false, vec![0x31; 300]),
+        ];
+        v.push([&[5u8][..], &rtp_frames(&vp8, &frames)].concat());
+        for (sel, data) in [
+            (6u8, &include_bytes!("../../testdata/vp9_opus.flv")[..]),
+            (7u8, &include_bytes!("../../testdata/av1_opus.flv")[..]),
+        ] {
+            let (t, frames) = flv_frames(data);
+            v.push([&[sel][..], &rtp_frames(&t, &frames)].concat());
+        }
+        v
     }
 
     #[test]

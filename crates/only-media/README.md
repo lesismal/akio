@@ -10,12 +10,12 @@ plays with every other.
 | Module | What it does |
 |---|---|
 | `hub` | streams by path, one publisher and many subscribers, GOP cache (fast start), slow-player dropping to the next keyframe, publish / play auth hooks, wait-for-publisher and republish, timestamp normalization (`Timeline`), statistics |
-| `rtmp` | server and client (`rtmp::client::{push, pull}`): simple and Flash digest handshake, chunk stream, publish / play, Enhanced RTMP (H.265 `hvc1`, Opus) |
-| `rtsp`, `rtp`, `sdp` | RTSP 1.0 server and client (`rtsp::client::{pull, push}`): ANNOUNCE/RECORD and DESCRIBE/SETUP/PLAY over TCP interleaved and UDP, Digest/Basic auth; RTP for H.264, H.265, AAC, Opus, G.711 |
+| `rtmp` | server and client (`rtmp::client::{push, pull}`): simple and Flash digest handshake, chunk stream, publish / play, Enhanced RTMP (H.265 `hvc1`, VP9 `vp09`, AV1 `av01`, VP8 `vp08`, Opus) |
+| `rtsp`, `rtp`, `sdp` | RTSP 1.0 server and client (`rtsp::client::{pull, push}`): ANNOUNCE/RECORD and DESCRIBE/SETUP/PLAY over TCP interleaved and UDP, Digest/Basic auth; RTP for H.264, H.265, VP8, VP9, AV1, AAC, Opus, G.711 |
 | `srt` | SRT live mode: HSv5 caller and listener, ARQ, TSBPD latency, AES-CTR with passphrase, stream ID access control; `push` / `pull` |
-| `httpflv`, `hls`, `http` | HTTP-FLV and WS-FLV; HLS with MPEG-TS or fMP4 (CMAF) segments, LL-HLS parts, preload hints and blocking reload; `MediaHttp` dispatching both |
-| `whip`, `webrtc` | WHIP / WHEP HTTP signalling with a `WebRtcEngine` trait; with the `webrtc` feature, `webrtc::RtcMedia` carries H.264 / H.265 / Opus / G.711 through only-webrtc, viewer PLIs reaching the publisher |
-| `flv`, `mpegts`, `fmp4`, `amf`, `codec` | FLV mux/demux (legacy and Enhanced RTMP tags), MPEG-TS mux/demux, fragmented MP4 mux/demux, AMF0/AMF3, H.264 / H.265 / AAC / Opus helpers |
+| `httpflv`, `hls`, `http` | HTTP-FLV and WS-FLV; HLS with MPEG-TS or fMP4 (CMAF) segments, LL-HLS parts, preload hints and blocking reload, multivariant playlists over renditions published as separate streams; `MediaHttp` dispatching both |
+| `whip`, `webrtc` | WHIP / WHEP HTTP signalling with a `WebRtcEngine` trait; with the `webrtc` feature, `webrtc::RtcMedia` carries H.264 / H.265 / VP8 / VP9 / AV1 / Opus / G.711 through only-webrtc, viewer PLIs reaching the publisher |
+| `flv`, `mpegts`, `fmp4`, `amf`, `codec` | FLV mux/demux (legacy and Enhanced RTMP tags), MPEG-TS mux/demux, fragmented MP4 mux/demux, AMF0/AMF3, H.264 / H.265 / VP8 / VP9 / AV1 / AAC / Opus helpers |
 
 ```rust,no_run
 use only::{Engine, Listener};
@@ -45,7 +45,7 @@ Interoperability is tested with ffmpeg / ffprobe as publisher and player for eve
 [RTSP and WHIP/WHEP](https://lesismal.github.io/only/en/protocols/media-rtsp.html),
 [SRT](https://lesismal.github.io/only/en/protocols/media-srt.html).
 
-Not supported yet: HLS encryption and multivariant playlists, SRT rendezvous, AV1 / VP9 / VP8
-in the hub, recording, transcoding.
+Not supported yet: HLS encryption, SRT rendezvous, VP8 / VP9 / AV1 in MPEG-TS, recording,
+transcoding.
 
 License: MIT.

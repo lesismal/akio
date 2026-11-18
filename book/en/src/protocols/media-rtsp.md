@@ -31,10 +31,11 @@ tokens travel).
   (`hub::Dropper`), and closed past `RtspConfig::max_write_queue`.
 - Publishers: `ANNOUNCE` reserves the path (a second publisher gets 453 at once), `SETUP` with
   `mode=record`, `RECORD`. The stream goes live as soon as the parameter sets are known, from
-  the SDP or in band. RTP carries presentation times only, so the server derives decode times
+  the SDP or in band (VP8, VP9, AV1: from the first keyframe). RTP carries presentation times only, so the server derives decode times
   for B-frame video (a reorder-depth estimate, no frame held back).
-- Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), AAC (`mpeg4-generic`
-  `AAC-hbr`), Opus, G.711.
+- Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), VP8 (RFC 7741), VP9
+  (RFC 9628), AV1 (AOM RTP payload; the three through only-rtp, a frame missing a packet is
+  dropped), AAC (`mpeg4-generic` `AAC-hbr`), Opus, G.711.
 - Authentication: `RtspConfig::credentials` turns on Digest (MD5) and Basic.
 - Timeouts: the first request, and any request once begun, must arrive within
   `request_timeout` (10 s). `Session: <id>;timeout=<s>` advertises `session_timeout` (60 s) and
@@ -91,13 +92,14 @@ let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
 ```
 
 - **WHIP in**: H.264 and H.265 (Annex B over RTP) become AVCC with the configuration record
-  built from the in-band parameter sets; Opus, PCMU and PCMA pass through. The stream goes live
-  when every line is ready (or after `track_timeout`, 5 s, with those that are); what arrives
-  before is held within `max_pending_packets` / `max_pending_bytes`. VP8, VP9, AV1 and G.722 are
-  not carried by the hub: an offer with nothing else gets 406.
+  built from the in-band parameter sets; VP8 and VP9 frames and AV1 temporal units pass through,
+  their configuration record and size taken from each keyframe; Opus, PCMU and PCMA pass
+  through. The stream goes live when every line is ready (or after `track_timeout`, 5 s, with
+  those that are); what arrives before is held within `max_pending_packets` /
+  `max_pending_bytes`. G.722 is not carried by the hub: an offer with nothing else gets 406.
 - **WHEP out**: the viewer is subscribed once ICE and DTLS are up, from the next keyframe (set
   `play_gop_cache` to start from the cached GOP), H.264/H.265 with the parameter sets before
-  each keyframe, Opus and G.711 as they are. AAC and MP3 are not sent (no transcoding): publish
+  each keyframe, VP8, VP9, AV1, Opus and G.711 as they are. AAC and MP3 are not sent (no transcoding): publish
   Opus for WebRTC viewers, and video without B-frames (`-bf 0`).
 - **Keyframes**: a viewer's PLI or FIR goes to the hub (`Subscription::request_keyframe`), which
   passes it to the publisher at most every `HubConfig::keyframe_request_interval` (500 ms); a WHIP
@@ -105,7 +107,9 @@ let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
   once.
 
 `crates/only-media/examples/whip-server.rs` runs it; `tools/interop/webrtc/media.sh` checks it
-against ffmpeg's WHIP muxer and pion (WHIP in, WHEP out, PLI round trip, RTMP in to WHEP out).
+against ffmpeg's WHIP muxer and pion (WHIP in, WHEP out, PLI round trip, RTMP in to WHEP out),
+and `tools/interop/media/browser.sh` against headless Chrome (VP8, VP9, AV1 and H.264 published
+over WHIP and decoded over WHEP, then a multivariant fMP4 LL-HLS ladder played).
 
 ## RTSP client
 
@@ -146,4 +150,4 @@ mediamtx's network because Docker Desktop's NAT drops it).
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
 outlive their connection; RTCP receiver reports to recorders. Client: redirects, reconnects and
-RTCP-based A/V sync. WebRTC: VP8 / VP9 / AV1, simulcast, transcoding.
+RTCP-based A/V sync. WebRTC: simulcast, transcoding.
