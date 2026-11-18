@@ -134,7 +134,42 @@ the roots). A hybrid torrent carries both formats for the same files.
 - **Seed limits**: `SeedLimits { ratio, time }` (`ClientConfig::seed_limits`,
   `AddOptions::seed_limits`, `Torrent::set_seed_limits`): a complete torrent that reaches its
   ratio (uploaded over downloaded this session, or over its size if nothing was downloaded) or
-  its seeding time pauses and reports `TorrentEvent::SeedLimitReached`.
+  its seeding time pauses and reports `TorrentEvent::SeedLimitReached`. With resume data the
+  ratio and time count across sessions.
+
+## Fast resume
+
+Set `ClientConfig::resume_dir` and a torrent added again after a restart, or after a crash,
+starts from what it had instead of hash-checking its data
+([ADR-033](https://github.com/lesismal/only/blob/main/docs/adr/033-bittorrent-fast-resume.md)):
+
+```rust,ignore
+let mut cfg = ClientConfig::default();
+cfg.resume_dir = Some("resume".into()); // <info hash hex>.resume per torrent
+let client = Client::new(cfg)?;
+let t = client.add_torrent(MetaInfo::load("file.torrent")?, AddOptions::default())?;
+// ... later, or in another process:
+client.close(); // saves every torrent once its last write is done
+```
+
+- **What is saved**: a versioned bencoded dictionary closed by a SHA-256 checksum: the pieces
+  had, the info dictionary (a magnet link restarts without metadata exchange), v2 piece layers
+  fetched from peers, each file's size and modification time, up to 200 peers, trackers and web
+  seeds, totals across sessions and the torrent's limits. Saved every
+  `ClientConfig::resume_interval` (30 s) when something changed, soon after a pause, and at
+  `Client::close`; each save replaces the file atomically (temporary file, fsync, rename).
+  `Client::remove` deletes it.
+- **What is trusted**: a file whose size or time changed has all its pieces checked again
+  (`TorrentEvent::ResumeAccepted { pieces, rechecking }`); the rest are taken as had
+  (`TorrentStats::pieces_checked` counts what was read back). After a crash the files the
+  client was still writing are newer than the last save for harmless reasons, so they are
+  trusted on their size; the pieces downloaded after that save are downloaded again. Damaged,
+  truncated or foreign data is refused (`TorrentEvent::ResumeRejected`) and the data is checked
+  in full.
+- **Elsewhere**: `Torrent::resume_data()` returns the bytes; give them back with
+  `AddOptions::resume_data`, or add the torrent from them alone with `Client::add_resume`. A
+  custom `Storage` reports its files with `Storage::file_stamps` (without it, resume data is
+  trusted when `may_have_data()`).
 
 ## One UDP port: `UdpPort`
 
@@ -195,10 +230,14 @@ Each protocol is usable alone, without I/O:
 - `tests/extensions.rs`: v2 and hybrid swarms, a v2 magnet fetching piece layers, a hybrid
   torrent reached by its v2 hash, web seeds from an only-http file server, LSD, a dual-stack
   seeder with IPv4 and IPv6 leechers, the DHT over IPv6 alone, rate limits, seed limits.
+- `tests/resume.rs`: fast resume for v1, v2 and hybrid torrents: a restart after `close` with
+  no peer and nothing hashed again, a client `SIGKILL`ed mid-download that finishes after its
+  restart without hashing a piece it had, a changed file checked again alone, damaged and
+  foreign resume files refused, export and import, a v2 magnet's piece layers restored.
 - Fuzz targets: `bt_bencode` (bencode, v1/v2/hybrid metainfo, magnet), `bt_peer_wire` (hash
   messages included), `bt_krpc` (IPv4 and dual-stack nodes), `bt_utp`, `bt_tracker`, `bt_mse`,
-  `bt_lsd`, `bt_merkle`, with their seed corpora replayed by `cargo test`.
+  `bt_lsd`, `bt_merkle`, `bt_resume`, with their seed corpora replayed by `cargo test`.
 
-Not done: fast resume files. BEP 44 (DHT arbitrary data) is left out on purpose: downloading
+BEP 44 (DHT arbitrary data) is left out on purpose: downloading
 and seeding never need it, and it would add signed per-item storage keyed by remote input to the
 DHT ([ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md)).

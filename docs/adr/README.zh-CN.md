@@ -33,3 +33,4 @@
 - [ADR-027：XDP 限速、线程绑核、eBPF 哈希层与内核拼接的 SOCKS 隧道](027-ebpf-xdp-pinning-socks-splice.zh-CN.md)（2026-11-18 采纳）
 - [ADR-028：读缓冲区、backlog、UDP 空闲超时与 I/O 线程数的热更新](028-hot-reload-buffers-backlog-threads.zh-CN.md)（2026-11-17 采纳）
 - [ADR-029：`ONLY_DEFAULT_BACKEND` 为未选择后端的 listener 选用 io_uring](029-default-backend-env.zh-CN.md)（2026-11-17 采纳）
+- [ADR-033：BitTorrent 快速续传](033-bittorrent-fast-resume.zh-CN.md)（2026-11-18 采纳）

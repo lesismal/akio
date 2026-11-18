@@ -11,6 +11,11 @@
 //! - Local Service Discovery (BEP 14, [`ClientConfig::lsd`]) on a thread of its own.
 //! - Rate limits ([`RateLimits`]) for the client and per torrent, and seed limits
 //!   ([`SeedLimits`]): a torrent that reaches its ratio or seeding time pauses.
+//! - Fast resume (ADR-033): with [`ClientConfig::resume_dir`] a torrent's state (pieces had,
+//!   v2 piece layers, file sizes and times, peers, totals, limits) is saved on a timer, on pause
+//!   and at [`Client::close`], and a torrent added again starts from it without hash-checking
+//!   its data; files that changed since are checked again. [`Torrent::resume_data`],
+//!   [`AddOptions::resume_data`] and [`Client::add_resume`] move the same data as bytes.
 //!
 //! ```no_run
 //! use only_bittorrent::client::{AddOptions, Client, ClientConfig};
@@ -29,6 +34,7 @@
 mod lsd;
 mod peer;
 mod rate;
+pub(crate) mod resume;
 pub mod storage;
 mod torrent;
 mod webseed;
@@ -53,7 +59,10 @@ use crate::port::UdpPort;
 use crate::tracker::{AnnounceRequest, Event, TrackerClient};
 use crate::wire::{PeerId, new_peer_id};
 
-pub use storage::{FileStorage, MemoryStorage, Storage};
+pub use resume::ResumeError;
+pub use storage::{FileStamp, FileStorage, MemoryStorage, Storage};
+
+use resume::ResumeData;
 
 use torrent::{Cx, NewTorrent, TorrentShared};
 
@@ -98,6 +107,18 @@ pub enum TorrentEvent {
         /// Why.
         error: String,
     },
+    /// Fast-resume data was used: `pieces` pieces are taken as had without a hash check, and
+    /// `rechecking` pieces, of files that changed since the save, are checked again. Comes
+    /// before [`Checked`](Self::Checked).
+    ResumeAccepted {
+        /// Pieces trusted.
+        pieces: usize,
+        /// Pieces checked again.
+        rechecking: usize,
+    },
+    /// Fast-resume data was refused (damaged, another torrent, an unknown version); the
+    /// torrent's data is checked in full.
+    ResumeRejected(String),
 }
 
 /// Upload and download rate limits in bytes per second (`None`: unlimited, the default).
@@ -182,10 +203,18 @@ pub struct TorrentStats {
     pub hash_fails: u64,
     /// Connected peers that have every piece.
     pub seeders: usize,
-    /// Time spent seeding (complete and running) in this session.
+    /// Time spent seeding (complete and running), including earlier sessions recorded in
+    /// fast-resume data.
     pub seeding_time: Duration,
     /// Web seeds fetching a piece right now.
     pub web_seeds_active: usize,
+    /// Pieces read back from storage and hash-checked when the torrent started (all of them
+    /// without resume data; only those of changed files with it).
+    pub pieces_checked: u64,
+    /// Payload bytes uploaded, including earlier sessions recorded in fast-resume data.
+    pub total_uploaded: u64,
+    /// Payload bytes downloaded, including earlier sessions recorded in fast-resume data.
+    pub total_downloaded: u64,
 }
 
 /// One connected peer.
@@ -264,6 +293,13 @@ pub struct ClientConfig {
     pub rate_limits: RateLimits,
     /// Seed limits torrents start with (default: none; [`AddOptions::seed_limits`] overrides).
     pub seed_limits: SeedLimits,
+    /// Directory for fast-resume files, `<info hash hex>.resume` (default: none, nothing is
+    /// saved or loaded). Torrents are saved every [`resume_interval`](Self::resume_interval)
+    /// when something changed, when paused and at [`Client::close`]; a torrent added again
+    /// loads its file. Each save replaces the file atomically.
+    pub resume_dir: Option<PathBuf>,
+    /// How often changed torrents are saved to [`resume_dir`](Self::resume_dir) (default 30 s).
+    pub resume_interval: Duration,
     /// Torrent events.
     pub on_event: Option<EventFn>,
 }
@@ -279,6 +315,8 @@ impl fmt::Debug for ClientConfig {
             .field("lsd", &self.lsd)
             .field("rate_limits", &self.rate_limits)
             .field("seed_limits", &self.seed_limits)
+            .field("resume_dir", &self.resume_dir)
+            .field("resume_interval", &self.resume_interval)
             .finish_non_exhaustive()
     }
 }
@@ -304,6 +342,8 @@ impl Default for ClientConfig {
             web_seeds: true,
             rate_limits: RateLimits::default(),
             seed_limits: SeedLimits::default(),
+            resume_dir: None,
+            resume_interval: Duration::from_secs(30),
             on_event: None,
         }
     }
@@ -329,6 +369,12 @@ pub struct AddOptions {
     pub rate_limits: RateLimits,
     /// Seed limits (default: [`ClientConfig::seed_limits`]).
     pub seed_limits: Option<SeedLimits>,
+    /// Fast-resume data from [`Torrent::resume_data`] (default: the torrent's file in
+    /// [`ClientConfig::resume_dir`], if any). Data of another torrent, or damaged, is refused
+    /// with [`TorrentEvent::ResumeRejected`] and the data is checked in full. Its peers,
+    /// trackers and web seeds are added; its limits apply unless these options set some; a
+    /// torrent saved paused starts paused.
+    pub resume_data: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for AddOptions {
@@ -341,6 +387,7 @@ impl fmt::Debug for AddOptions {
             .field("web_seeds", &self.web_seeds)
             .field("rate_limits", &self.rate_limits)
             .field("seed_limits", &self.seed_limits)
+            .field("resume_data", &self.resume_data.as_ref().map(Vec::len))
             .finish_non_exhaustive()
     }
 }
@@ -355,6 +402,8 @@ pub enum AddError {
     Magnet(crate::magnet::MagnetError),
     /// The client is closed.
     Closed,
+    /// [`Client::add_resume`]: the resume data was refused.
+    Resume(ResumeError),
 }
 
 impl fmt::Display for AddError {
@@ -363,6 +412,7 @@ impl fmt::Display for AddError {
             AddError::Duplicate(h) => write!(f, "torrent {h} already added"),
             AddError::Magnet(e) => write!(f, "{e}"),
             AddError::Closed => f.write_str("client closed"),
+            AddError::Resume(e) => write!(f, "{e}"),
         }
     }
 }
@@ -700,6 +750,27 @@ impl Client {
         Ok(Torrent { shared })
     }
 
+    /// The resume data to start a torrent with: `data`, else its file in the resume directory
+    /// under any of `hashes`.
+    fn load_resume(
+        &self,
+        hashes: &[InfoHash],
+        data: Option<Vec<u8>>,
+    ) -> Option<Result<ResumeData, ResumeError>> {
+        if let Some(d) = data {
+            return Some(ResumeData::decode(&d));
+        }
+        let dir = self.inner.cfg.resume_dir.as_ref()?;
+        for h in hashes {
+            match std::fs::read(resume::path(dir, h)) {
+                Ok(b) => return Some(ResumeData::decode(&b)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Some(Err(ResumeError::Malformed(e.to_string()))),
+            }
+        }
+        None
+    }
+
     fn factory(&self) -> torrent::StorageFactory {
         let dir = self.inner.cfg.data_dir.clone();
         Box::new(move |info: &Info| Arc::new(FileStorage::new(&dir, info)) as Arc<dyn Storage>)
@@ -711,7 +782,11 @@ impl Client {
         trackers.extend(opts.trackers.iter().map(|t| vec![t.clone()]));
         let mut url_list = mi.url_list;
         url_list.extend(opts.web_seeds.iter().cloned());
-        self.add(NewTorrent {
+        let hashes: Vec<InfoHash> = std::iter::once(mi.info_hash)
+            .chain(mi.info_hash_v2.map(|h| h.truncated()))
+            .collect();
+        let resume = self.load_resume(&hashes, opts.resume_data);
+        let mut n = NewTorrent {
             info_hash: mi.info_hash,
             info_hash_v2: mi.info_hash_v2,
             name: Some(mi.info.name.clone()),
@@ -726,7 +801,15 @@ impl Client {
             seed: opts.seed,
             rate_limits: opts.rate_limits,
             seed_limits: opts.seed_limits.unwrap_or(self.inner.cfg.seed_limits),
-        })
+            resume: None,
+        };
+        merge_resume(
+            &mut n,
+            resume,
+            &opts.rate_limits,
+            opts.seed_limits.is_some(),
+        );
+        self.add(n)
     }
 
     /// Adds a torrent from a magnet link; its info dictionary comes from peers (BEP 9).
@@ -738,7 +821,11 @@ impl Client {
         peers.extend(opts.peers);
         let mut url_list = m.web_seeds;
         url_list.extend(opts.web_seeds.iter().cloned());
-        self.add(NewTorrent {
+        let hashes: Vec<InfoHash> = std::iter::once(m.info_hash)
+            .chain(m.info_hash_v2.map(|h| h.truncated()))
+            .collect();
+        let resume = self.load_resume(&hashes, opts.resume_data);
+        let mut n = NewTorrent {
             info_hash: m.info_hash,
             info_hash_v2: m.info_hash_v2,
             name: m.name,
@@ -753,7 +840,47 @@ impl Client {
             seed: opts.seed,
             rate_limits: opts.rate_limits,
             seed_limits: opts.seed_limits.unwrap_or(self.inner.cfg.seed_limits),
-        })
+            resume: None,
+        };
+        merge_resume(
+            &mut n,
+            resume,
+            &opts.rate_limits,
+            opts.seed_limits.is_some(),
+        );
+        self.add(n)
+    }
+
+    /// Adds a torrent from fast-resume data alone ([`Torrent::resume_data`] or a file of
+    /// [`ClientConfig::resume_dir`]): its info dictionary, pieces, trackers, web seeds and peers
+    /// come from the data (a torrent saved before its info dictionary arrived continues as a
+    /// magnet link would). `opts.resume_data` is ignored.
+    pub fn add_resume(&self, data: &[u8], opts: AddOptions) -> Result<Torrent, AddError> {
+        let r = ResumeData::decode(data).map_err(AddError::Resume)?;
+        let mut n = NewTorrent {
+            info_hash: r.info_hash,
+            info_hash_v2: r.info_hash_v2,
+            name: None,
+            info: None,
+            layers: PieceLayers::new(),
+            trackers: opts.trackers.iter().map(|t| vec![t.clone()]).collect(),
+            url_list: opts.web_seeds.clone(),
+            peers: opts.peers,
+            storage: opts.storage,
+            storage_factory: self.factory(),
+            paused: opts.paused,
+            seed: opts.seed,
+            rate_limits: opts.rate_limits,
+            seed_limits: opts.seed_limits.unwrap_or(self.inner.cfg.seed_limits),
+            resume: None,
+        };
+        merge_resume(
+            &mut n,
+            Some(Ok(r)),
+            &opts.rate_limits,
+            opts.seed_limits.is_some(),
+        );
+        self.add(n)
     }
 
     /// The torrent of `info_hash` (any of its hashes: a hybrid torrent's truncated v2 hash
@@ -773,7 +900,7 @@ impl Client {
             .collect()
     }
 
-    /// Removes a torrent (its connections close; its data stays).
+    /// Removes a torrent (its connections close; its data stays, its resume file is deleted).
     pub fn remove(&self, info_hash: &InfoHash) -> Option<Torrent> {
         let key = self.inner.torrent(info_hash)?.info_hash;
         let t = self
@@ -782,6 +909,11 @@ impl Client {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&key)?;
+        t.removed.store(true, Ordering::Relaxed);
+        if let Some(dir) = &self.inner.cfg.resume_dir {
+            let _g = t.save_lock.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = std::fs::remove_file(resume::path(dir, &key));
+        }
         let hashes = t.lock().hashes.clone();
         for h in std::iter::once(key).chain(hashes) {
             self.inner
@@ -799,8 +931,9 @@ impl Client {
         Some(Torrent { shared: t })
     }
 
-    /// Stops everything: torrents announce `stopped`, connections close, the engine shuts down.
-    /// Returns once the engine's I/O threads, the disk pool and the maintenance thread have
+    /// Stops everything: torrents announce `stopped`, connections close, the engine shuts down,
+    /// and with [`ClientConfig::resume_dir`] every torrent's resume data is saved once its last
+    /// write is done (recording whether it was paused before). Returns once the engine's I/O threads, the disk pool and the maintenance thread have
     /// exited, so no callback of this client (and no [`Storage`] call) runs after it. Calling it
     /// again, or from another thread while it runs, returns at once. Must not be called from
     /// one of the client's own threads (inside a [`Storage`] method, say): it would wait for
@@ -809,7 +942,16 @@ impl Client {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return;
         }
-        for t in self.inner.all() {
+        let all: Vec<(Arc<TorrentShared>, bool)> = self
+            .inner
+            .all()
+            .into_iter()
+            .map(|t| {
+                let paused = t.lock().status == TorrentStatus::Paused;
+                (t, paused)
+            })
+            .collect();
+        for (t, _) in &all {
             t.with(|st, cx| st.pause(cx));
         }
         // Give `stopped` announces a moment.
@@ -821,6 +963,14 @@ impl Client {
         self.inner.engine.wait();
         self.inner.pool.shutdown();
         self.inner.pool.join();
+        // Every write is done: the files are as the bitfields say.
+        if self.inner.cfg.resume_dir.is_some() {
+            for (t, paused) in &all {
+                if let Err(e) = save_resume(&self.inner, t, Some(*paused)) {
+                    resume_failed(t, &e);
+                }
+            }
+        }
         let threads = std::mem::take(
             &mut *self
                 .inner
@@ -862,7 +1012,33 @@ impl Torrent {
 
     /// Changes this torrent's seed limits.
     pub fn set_seed_limits(&self, limits: SeedLimits) {
-        self.shared.lock().seed_limits = limits;
+        let mut st = self.shared.lock();
+        st.seed_limits = limits;
+        st.resume_gen += 1;
+    }
+
+    /// The torrent's fast-resume data (ADR-033), to store anywhere and give back through
+    /// [`AddOptions::resume_data`] or [`Client::add_resume`]; `None` while its data is being
+    /// checked. Stamps the files from storage, so it does disk I/O on the calling thread.
+    /// Taken while the torrent runs, the data trusts files the torrent may still write to
+    /// on their size alone; taken while paused, it holds every file to its size and time.
+    pub fn resume_data(&self) -> Option<Vec<u8>> {
+        let (mut r, storage, _) = self.shared.lock().resume_snapshot(None)?;
+        if r.info.is_some() {
+            r.files = storage.and_then(|s| s.file_stamps());
+        }
+        Some(r.encode())
+    }
+
+    /// Saves the resume data to [`ClientConfig::resume_dir`] now (an error without one);
+    /// `Ok(false)` while the torrent's data is being checked.
+    pub fn save_resume_data(&self) -> io::Result<bool> {
+        let c = self
+            .shared
+            .client
+            .upgrade()
+            .ok_or_else(|| io::Error::other("client closed"))?;
+        save_resume(&c, &self.shared, None)
     }
 
     /// This torrent's seed limits.
@@ -1119,6 +1295,123 @@ fn on_dht_datagram(client: &Arc<ClientInner>, from: SocketAddr, data: &[u8]) {
     dht_flush(client, out, events);
 }
 
+/// Adds what resume data `r` holds to a torrent being added, or records why it was refused.
+fn merge_resume(
+    n: &mut NewTorrent,
+    r: Option<Result<ResumeData, ResumeError>>,
+    rate_limits: &RateLimits,
+    seed_limits_set: bool,
+) {
+    let Some(r) = r else { return };
+    let r = r.and_then(|r| r.check(&n.info_hash, n.info.as_ref()).map(|()| r));
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => {
+            n.resume = Some(Err(e.to_string()));
+            return;
+        }
+    };
+    if n.info.is_none() {
+        n.info = r.info.as_deref().cloned();
+    }
+    if n.info_hash_v2.is_none() {
+        n.info_hash_v2 = r.info_hash_v2;
+    }
+    if n.name.is_none() {
+        n.name = r.name.clone();
+    }
+    for t in &r.trackers {
+        if !n.trackers.iter().flatten().any(|u| u == t) {
+            n.trackers.push(vec![t.clone()]);
+        }
+    }
+    for u in &r.url_list {
+        if !n.url_list.contains(u) {
+            n.url_list.push(u.clone());
+        }
+    }
+    for p in &r.peers {
+        if !n.peers.contains(p) {
+            n.peers.push(*p);
+        }
+    }
+    n.paused |= r.paused;
+    if *rate_limits == RateLimits::default() {
+        n.rate_limits = r.rate_limits;
+    }
+    if !seed_limits_set {
+        n.seed_limits = r.seed_limits;
+    }
+    n.resume = Some(Ok(r));
+}
+
+/// Writes `t`'s resume data to the resume directory (`paused`: the state to record instead of
+/// the current one); `Ok(false)` if there is nothing to save (a check runs, or it was removed).
+fn save_resume(client: &ClientInner, t: &TorrentShared, paused: Option<bool>) -> io::Result<bool> {
+    let Some(dir) = &client.cfg.resume_dir else {
+        return Err(io::Error::other("no resume directory configured"));
+    };
+    let _g = t.save_lock.lock().unwrap_or_else(|p| p.into_inner());
+    if t.removed.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    let Some((mut r, storage, generation)) = t.lock().resume_snapshot(paused) else {
+        return Ok(false);
+    };
+    let totals = (r.uploaded, r.downloaded);
+    // Stamped after the bitfield was taken: every piece it holds is written already.
+    if r.info.is_some() {
+        r.files = storage.and_then(|s| s.file_stamps());
+    }
+    resume::write_atomic(&resume::path(dir, &t.info_hash), &r.encode())?;
+    let mut st = t.lock();
+    st.saved_gen = st.saved_gen.max(generation);
+    st.saved_stats = totals;
+    Ok(true)
+}
+
+fn resume_failed(t: &Arc<TorrentShared>, e: &io::Error) {
+    t.with(|_, cx| {
+        cx.events
+            .push(TorrentEvent::Error(format!("saving resume data: {e}")));
+    });
+}
+
+/// Queues a save of `t` on the disk pool when one is due: soon after a pause or a check (once
+/// no write is in flight, or after 5 s), or every resume interval if anything changed.
+fn maybe_save(client: &Arc<ClientInner>, t: &Arc<TorrentShared>, now: Instant) {
+    if client.cfg.resume_dir.is_none() || t.save_queued.load(Ordering::Relaxed) {
+        return;
+    }
+    {
+        let mut st = t.lock();
+        let soon = st.save_now.is_some_and(|at| {
+            !st.writes_in_flight() || now.duration_since(at) >= Duration::from_secs(5)
+        });
+        let due = now.duration_since(st.last_save) >= client.cfg.resume_interval
+            && (st.resume_gen != st.saved_gen || st.totals() != st.saved_stats);
+        if !soon && !due {
+            return;
+        }
+        st.save_now = None;
+        st.last_save = now;
+    }
+    t.save_queued.store(true, Ordering::Relaxed);
+    let (wc, wt) = (Arc::downgrade(client), Arc::downgrade(t));
+    let job = Box::new(move || {
+        let (Some(c), Some(t)) = (wc.upgrade(), wt.upgrade()) else {
+            return;
+        };
+        if let Err(e) = save_resume(&c, &t, None) {
+            resume_failed(&t, &e);
+        }
+        t.save_queued.store(false, Ordering::Relaxed);
+    });
+    if client.pool.try_execute(job).is_err() {
+        t.save_queued.store(false, Ordering::Relaxed);
+    }
+}
+
 fn maintenance(weak: &Weak<ClientInner>) {
     let mut last_dht_tick = Instant::now();
     loop {
@@ -1130,6 +1423,7 @@ fn maintenance(weak: &Weak<ClientInner>) {
         let now = Instant::now();
         for t in client.all() {
             t.with(|st, cx: &mut Cx| st.tick(now, cx));
+            maybe_save(&client, &t, now);
             let (running, last_dht, peers) = {
                 let st = t.lock();
                 (st.running(), st.last_dht, st.stats().peers)

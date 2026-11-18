@@ -74,6 +74,26 @@ pub fn only_bittorrent::bencode::raw_value(&[u8], &[u8]) -> core::result::Result
 pub fn only_bittorrent::bencode::skip(&[u8], usize) -> core::result::Result<usize, only_bittorrent::bencode::Error>
 pub mod only_bittorrent::client
 pub mod only_bittorrent::client::storage
+#[non_exhaustive] pub struct only_bittorrent::client::storage::FileStamp
+pub only_bittorrent::client::storage::FileStamp::mtime: std::time::SystemTime
+pub only_bittorrent::client::storage::FileStamp::size: u64
+impl only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::new(u64, std::time::SystemTime) -> only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::of(&std::path::Path) -> core::option::Option<only_bittorrent::client::storage::FileStamp>
+impl core::clone::Clone for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::client::storage::FileStamp
+impl core::cmp::PartialEq for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_bittorrent::client::storage::FileStamp
+impl core::marker::StructuralPartialEq for only_bittorrent::client::storage::FileStamp
+impl core::marker::Send for only_bittorrent::client::storage::FileStamp
+impl core::marker::Sync for only_bittorrent::client::storage::FileStamp
+impl core::marker::Unpin for only_bittorrent::client::storage::FileStamp
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::storage::FileStamp
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::storage::FileStamp
 pub struct only_bittorrent::client::storage::FileStorage
 impl only_bittorrent::client::storage::FileStorage
 pub fn only_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &only_bittorrent::metainfo::Info) -> only_bittorrent::client::storage::FileStorage
@@ -81,6 +101,7 @@ pub fn only_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std
 impl core::fmt::Debug for only_bittorrent::client::storage::FileStorage
 pub fn only_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::FileStorage
+pub fn only_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
@@ -97,6 +118,7 @@ pub fn only_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Ve
 impl core::fmt::Debug for only_bittorrent::client::storage::MemoryStorage
 pub fn only_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::MemoryStorage
+pub fn only_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
@@ -106,14 +128,17 @@ impl core::marker::Unpin for only_bittorrent::client::storage::MemoryStorage
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::storage::MemoryStorage
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::storage::MemoryStorage
 pub trait only_bittorrent::client::storage::Storage: core::marker::Send + core::marker::Sync + 'static
+pub fn only_bittorrent::client::storage::Storage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::Storage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::Storage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::Storage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::FileStorage
+pub fn only_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::MemoryStorage
+pub fn only_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
@@ -121,6 +146,7 @@ pub fn only_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8])
 pub only_bittorrent::client::AddError::Closed
 pub only_bittorrent::client::AddError::Duplicate(only_bittorrent::metainfo::InfoHash)
 pub only_bittorrent::client::AddError::Magnet(only_bittorrent::magnet::MagnetError)
+pub only_bittorrent::client::AddError::Resume(only_bittorrent::client::ResumeError)
 impl core::error::Error for only_bittorrent::client::AddError
 impl core::fmt::Debug for only_bittorrent::client::AddError
 pub fn only_bittorrent::client::AddError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -131,6 +157,27 @@ impl core::marker::Sync for only_bittorrent::client::AddError
 impl core::marker::Unpin for only_bittorrent::client::AddError
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::AddError
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::AddError
+#[non_exhaustive] pub enum only_bittorrent::client::ResumeError
+pub only_bittorrent::client::ResumeError::Checksum
+pub only_bittorrent::client::ResumeError::Malformed(alloc::string::String)
+pub only_bittorrent::client::ResumeError::Mismatch(alloc::string::String)
+pub only_bittorrent::client::ResumeError::Version(i64)
+impl core::clone::Clone for only_bittorrent::client::ResumeError
+pub fn only_bittorrent::client::ResumeError::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::client::ResumeError
+impl core::cmp::PartialEq for only_bittorrent::client::ResumeError
+pub fn only_bittorrent::client::ResumeError::eq(&self, &Self) -> bool
+impl core::error::Error for only_bittorrent::client::ResumeError
+impl core::fmt::Debug for only_bittorrent::client::ResumeError
+pub fn only_bittorrent::client::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_bittorrent::client::ResumeError
+pub fn only_bittorrent::client::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_bittorrent::client::ResumeError
+impl core::marker::Send for only_bittorrent::client::ResumeError
+impl core::marker::Sync for only_bittorrent::client::ResumeError
+impl core::marker::Unpin for only_bittorrent::client::ResumeError
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::ResumeError
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::ResumeError
 #[non_exhaustive] pub enum only_bittorrent::client::TorrentEvent
 pub only_bittorrent::client::TorrentEvent::Checked
 pub only_bittorrent::client::TorrentEvent::Checked::pieces: usize
@@ -141,6 +188,10 @@ pub only_bittorrent::client::TorrentEvent::MetadataReceived
 pub only_bittorrent::client::TorrentEvent::PeerConnected(core::net::socket_addr::SocketAddr)
 pub only_bittorrent::client::TorrentEvent::PeerDisconnected(core::net::socket_addr::SocketAddr)
 pub only_bittorrent::client::TorrentEvent::PieceVerified(u32)
+pub only_bittorrent::client::TorrentEvent::ResumeAccepted
+pub only_bittorrent::client::TorrentEvent::ResumeAccepted::pieces: usize
+pub only_bittorrent::client::TorrentEvent::ResumeAccepted::rechecking: usize
+pub only_bittorrent::client::TorrentEvent::ResumeRejected(alloc::string::String)
 pub only_bittorrent::client::TorrentEvent::SeedLimitReached
 pub only_bittorrent::client::TorrentEvent::StateChanged(only_bittorrent::client::TorrentStatus)
 pub only_bittorrent::client::TorrentEvent::TrackerError
@@ -189,6 +240,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::TorrentSt
 pub only_bittorrent::client::AddOptions::paused: bool
 pub only_bittorrent::client::AddOptions::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub only_bittorrent::client::AddOptions::rate_limits: only_bittorrent::client::RateLimits
+pub only_bittorrent::client::AddOptions::resume_data: core::option::Option<alloc::vec::Vec<u8>>
 pub only_bittorrent::client::AddOptions::seed: bool
 pub only_bittorrent::client::AddOptions::seed_limits: core::option::Option<only_bittorrent::client::SeedLimits>
 pub only_bittorrent::client::AddOptions::storage: core::option::Option<alloc::rcs::arc::Arc<dyn only_bittorrent::client::storage::Storage>>
@@ -208,6 +260,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::AddOptio
 pub struct only_bittorrent::client::Client
 impl only_bittorrent::client::Client
 pub fn only_bittorrent::client::Client::add_magnet(&self, &str, only_bittorrent::client::AddOptions) -> core::result::Result<only_bittorrent::client::Torrent, only_bittorrent::client::AddError>
+pub fn only_bittorrent::client::Client::add_resume(&self, &[u8], only_bittorrent::client::AddOptions) -> core::result::Result<only_bittorrent::client::Torrent, only_bittorrent::client::AddError>
 pub fn only_bittorrent::client::Client::add_torrent(&self, only_bittorrent::metainfo::MetaInfo, only_bittorrent::client::AddOptions) -> core::result::Result<only_bittorrent::client::Torrent, only_bittorrent::client::AddError>
 pub fn only_bittorrent::client::Client::close(&self)
 pub fn only_bittorrent::client::Client::dht_bootstrap(&self, &[core::net::socket_addr::SocketAddr])
@@ -244,6 +297,8 @@ pub only_bittorrent::client::ClientConfig::on_event: core::option::Option<only_b
 pub only_bittorrent::client::ClientConfig::peer_id: core::option::Option<only_bittorrent::wire::PeerId>
 pub only_bittorrent::client::ClientConfig::pex: bool
 pub only_bittorrent::client::ClientConfig::rate_limits: only_bittorrent::client::RateLimits
+pub only_bittorrent::client::ClientConfig::resume_dir: core::option::Option<std::path::PathBuf>
+pub only_bittorrent::client::ClientConfig::resume_interval: core::time::Duration
 pub only_bittorrent::client::ClientConfig::seed_limits: only_bittorrent::client::SeedLimits
 pub only_bittorrent::client::ClientConfig::threads: usize
 pub only_bittorrent::client::ClientConfig::tracker_timeout: core::time::Duration
@@ -262,6 +317,26 @@ impl core::marker::Sync for only_bittorrent::client::ClientConfig
 impl core::marker::Unpin for only_bittorrent::client::ClientConfig
 impl !core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::ClientConfig
 impl !core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::ClientConfig
+#[non_exhaustive] pub struct only_bittorrent::client::FileStamp
+pub only_bittorrent::client::FileStamp::mtime: std::time::SystemTime
+pub only_bittorrent::client::FileStamp::size: u64
+impl only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::new(u64, std::time::SystemTime) -> only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::of(&std::path::Path) -> core::option::Option<only_bittorrent::client::storage::FileStamp>
+impl core::clone::Clone for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::client::storage::FileStamp
+impl core::cmp::PartialEq for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_bittorrent::client::storage::FileStamp
+pub fn only_bittorrent::client::storage::FileStamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_bittorrent::client::storage::FileStamp
+impl core::marker::StructuralPartialEq for only_bittorrent::client::storage::FileStamp
+impl core::marker::Send for only_bittorrent::client::storage::FileStamp
+impl core::marker::Sync for only_bittorrent::client::storage::FileStamp
+impl core::marker::Unpin for only_bittorrent::client::storage::FileStamp
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::storage::FileStamp
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::storage::FileStamp
 pub struct only_bittorrent::client::FileStorage
 impl only_bittorrent::client::storage::FileStorage
 pub fn only_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &only_bittorrent::metainfo::Info) -> only_bittorrent::client::storage::FileStorage
@@ -269,6 +344,7 @@ pub fn only_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std
 impl core::fmt::Debug for only_bittorrent::client::storage::FileStorage
 pub fn only_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::FileStorage
+pub fn only_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
@@ -285,6 +361,7 @@ pub fn only_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Ve
 impl core::fmt::Debug for only_bittorrent::client::storage::MemoryStorage
 pub fn only_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::MemoryStorage
+pub fn only_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
@@ -375,6 +452,8 @@ pub fn only_bittorrent::client::Torrent::peers(&self) -> alloc::vec::Vec<only_bi
 pub fn only_bittorrent::client::Torrent::piece_layers(&self) -> only_bittorrent::metainfo::PieceLayers
 pub fn only_bittorrent::client::Torrent::rate_limits(&self) -> only_bittorrent::client::RateLimits
 pub fn only_bittorrent::client::Torrent::resume(&self)
+pub fn only_bittorrent::client::Torrent::resume_data(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_bittorrent::client::Torrent::save_resume_data(&self) -> core::io::error::Result<bool>
 pub fn only_bittorrent::client::Torrent::seed_limits(&self) -> only_bittorrent::client::SeedLimits
 pub fn only_bittorrent::client::Torrent::set_rate_limits(&self, only_bittorrent::client::RateLimits)
 pub fn only_bittorrent::client::Torrent::set_seed_limits(&self, only_bittorrent::client::SeedLimits)
@@ -396,12 +475,15 @@ pub only_bittorrent::client::TorrentStats::downloaded: u64
 pub only_bittorrent::client::TorrentStats::hash_fails: u64
 pub only_bittorrent::client::TorrentStats::known_peers: usize
 pub only_bittorrent::client::TorrentStats::peers: usize
+pub only_bittorrent::client::TorrentStats::pieces_checked: u64
 pub only_bittorrent::client::TorrentStats::pieces_have: usize
 pub only_bittorrent::client::TorrentStats::pieces_total: usize
 pub only_bittorrent::client::TorrentStats::seeders: usize
 pub only_bittorrent::client::TorrentStats::seeding_time: core::time::Duration
 pub only_bittorrent::client::TorrentStats::status: only_bittorrent::client::TorrentStatus
+pub only_bittorrent::client::TorrentStats::total_downloaded: u64
 pub only_bittorrent::client::TorrentStats::total_size: u64
+pub only_bittorrent::client::TorrentStats::total_uploaded: u64
 pub only_bittorrent::client::TorrentStats::uploaded: u64
 pub only_bittorrent::client::TorrentStats::web_seeds_active: usize
 impl core::clone::Clone for only_bittorrent::client::TorrentStats
@@ -418,14 +500,17 @@ impl core::marker::Unpin for only_bittorrent::client::TorrentStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::TorrentStats
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::TorrentStats
 pub trait only_bittorrent::client::Storage: core::marker::Send + core::marker::Sync + 'static
+pub fn only_bittorrent::client::Storage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::Storage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::Storage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::Storage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::FileStorage
+pub fn only_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
 impl only_bittorrent::client::storage::Storage for only_bittorrent::client::storage::MemoryStorage
+pub fn only_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<only_bittorrent::client::storage::FileStamp>>>
 pub fn only_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn only_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn only_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>

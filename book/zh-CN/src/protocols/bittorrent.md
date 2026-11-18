@@ -115,6 +115,35 @@ v2 种子把每个文件单独哈希成以 16 KiB 块为叶子的 SHA-256 默克
 - **做种限制**：`SeedLimits { ratio, time }`（`ClientConfig::seed_limits`、
   `AddOptions::seed_limits`、`Torrent::set_seed_limits`）：完成的种子达到分享率（本次会话上传量
   除以下载量，若未下载则除以种子大小）或做种时间后暂停，并上报 `TorrentEvent::SeedLimitReached`。
+  有续传数据时，分享率与时间跨会话累计。
+
+## 快速续传
+
+设置 `ClientConfig::resume_dir` 后，重启或崩溃后再次添加的种子会从已有的进度开始，而不是对数据做
+哈希检查（[ADR-033](https://github.com/lesismal/only/blob/main/docs/adr/033-bittorrent-fast-resume.zh-CN.md)）：
+
+```rust,ignore
+let mut cfg = ClientConfig::default();
+cfg.resume_dir = Some("resume".into()); // 每个种子一个 <info hash 十六进制>.resume
+let client = Client::new(cfg)?;
+let t = client.add_torrent(MetaInfo::load("file.torrent")?, AddOptions::default())?;
+// ……之后，或在另一个进程里：
+client.close(); // 在最后一次写入完成后保存每个种子
+```
+
+- **保存什么**：一个带版本、以 SHA-256 校验和收尾的 bencode 字典：已有分片、info 字典（磁力链接
+  重启无需元数据交换）、从对等方获取的 v2 分片层、每个文件的大小与修改时间、至多 200 个对等方、
+  tracker 与 web seed、跨会话累计以及种子的限制。有改动时每隔 `ClientConfig::resume_interval`
+  （30 秒）保存一次，暂停后不久与 `Client::close` 时也保存；每次保存都原子替换文件（临时文件、
+  fsync、rename）。`Client::remove` 删除它。
+- **信任什么**：大小或修改时间变了的文件，其所有分片都重新检查
+  （`TorrentEvent::ResumeAccepted { pieces, rechecking }`）；其余视为已有
+  （`TorrentStats::pieces_checked` 统计读回的分片数）。崩溃后，客户端仍在写入的文件出于无害的
+  原因比上次保存更新，因此按大小信任；那次保存之后下载的分片会重新下载。损坏、截断或属于其他种子
+  的数据会被拒绝（`TorrentEvent::ResumeRejected`），数据做完整检查。
+- **存到别处**：`Torrent::resume_data()` 返回字节；用 `AddOptions::resume_data` 交回，或用
+  `Client::add_resume` 仅凭它们添加种子。自定义 `Storage` 通过 `Storage::file_stamps` 报告其文件
+  （未实现时，若 `may_have_data()` 则信任续传数据）。
 
 ## 一个 UDP 端口：`UdpPort`
 
@@ -171,9 +200,12 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
 - `tests/extensions.rs`：v2 与混合 swarm、v2 磁力链接获取分片层、通过 v2 哈希访问混合种子、从
   only-http 文件服务器获取 web seed、LSD、双栈做种者与 IPv4/IPv6 下载者、仅 IPv6 的 DHT、速率
   限制、做种限制。
+- `tests/resume.rs`：v1、v2 与混合种子的快速续传：`close` 后在没有对等方的情况下重启且没有任何
+  分片被重新哈希；下载中途被 `SIGKILL` 的客户端重启后完成下载，且不哈希它已有的分片；改动的文件
+  单独重新检查；拒绝损坏与属于其他种子的续传文件；导出与导入；恢复 v2 磁力链接的分片层。
 - 模糊测试目标：`bt_bencode`（bencode、v1/v2/混合 metainfo、磁力链接）、`bt_peer_wire`（含哈希
-  消息）、`bt_krpc`（IPv4 与双栈节点）、`bt_utp`、`bt_tracker`、`bt_mse`、`bt_lsd`、`bt_merkle`，
-  其种子语料由 `cargo test` 回放。
+  消息）、`bt_krpc`（IPv4 与双栈节点）、`bt_utp`、`bt_tracker`、`bt_mse`、`bt_lsd`、`bt_merkle`、
+  `bt_resume`，其种子语料由 `cargo test` 回放。
 
-尚未实现：快速续传文件。有意不实现 BEP 44（DHT 任意数据）：下载与做种从不需要它，而它会给 DHT 增加
+有意不实现 BEP 44（DHT 任意数据）：下载与做种从不需要它，而它会给 DHT 增加
 按远端输入索引、需签名校验的条目存储（[ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)）。
