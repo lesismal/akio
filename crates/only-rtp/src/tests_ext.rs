@@ -1057,3 +1057,28 @@ fn red_blocks_wrap_and_unwrap() {
     assert_eq!(hb.payload(&back), orig.payload(&p));
     assert!(red::wrap(&[1, 2], 1).is_none());
 }
+
+#[test]
+fn recovered_packets_stop_nacks_but_count_as_lost() {
+    let t0 = Instant::now();
+    let mut r = RecvStream::new(1, 90_000, true);
+    for seq in [10u16, 11, 13, 14] {
+        r.receive(t0, seq, 0);
+    }
+    assert_eq!(r.missing_count(), 1);
+    // FEC rebuilt 12: no NACK for it, but the report still shows it lost.
+    assert_eq!(r.receive_recovered(t0, 12), Some(12));
+    assert_eq!(r.missing_count(), 0);
+    assert_eq!(r.poll_nack(t0 + Duration::from_secs(1)), None);
+    let rb = r.report_block(t0).unwrap();
+    assert_eq!((rb.cumulative_lost, rb.fraction_lost), (1, 51));
+    assert_eq!(r.packets_received(), 4);
+    // A late copy is a duplicate (not counted), and so is recovering it again.
+    assert_eq!(r.receive(t0, 12, 0), None);
+    assert_eq!(r.receive_recovered(t0, 12), None);
+    assert_eq!(r.duplicates(), 1);
+    // A recovered packet beyond the highest one advances it.
+    assert_eq!(r.receive_recovered(t0, 16), Some(16));
+    assert_eq!(r.extended_highest_seq(), Some(16));
+    assert_eq!(r.missing_count(), 1);
+}

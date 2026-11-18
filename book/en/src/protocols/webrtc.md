@@ -14,8 +14,9 @@ Two crates:
   it, so a large message does not hold up small ones on other channels, and channels sharing the
   association by weighted fair queueing on their priority, ADR-037) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
   VP9, H.264, H.265 and AV1 packetization, a frame assembler, NACK and RTX, PLI/FIR, REMB, TWCC
-  and bandwidth estimation, sender/receiver reports; also RTCP XR, TMMBR / TMMBN, RFC 8888
-  feedback and ULPFEC / FlexFEC / RED, not yet used by the peers). `only-webrtc` itself does SDP
+  and bandwidth estimation, sender/receiver reports, RTCP XR, TMMBR / TMMBN, RFC 8888
+  feedback and ULPFEC / FlexFEC / RED, which the peers negotiate when configured to; see "FEC and
+  more RTCP" below). `only-webrtc` itself does SDP
   offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
   drives the peers with `only`'s I/O threads and one shared timer thread.
 - `only-turn` has the STUN codec, a STUN server, a TURN server (RFC 8656 over UDP, TCP and TLS)
@@ -204,6 +205,42 @@ that one with `Peer::request_layer_keyframe(mid, rid, kind)` (the `sfu` mode of
 switch). Chrome does not receive simulcast: its answer drops `a=simulcast`, and only the first
 encoding is sent to it.
 
+### FEC and more RTCP
+
+Off by default (a default peer offers and answers exactly what it did before), each turned on in
+the `RtcConfig` (ADR-039):
+
+```rust,ignore
+let cfg = only_webrtc::rtc_config()
+    .enable_fec(Some(FecMechanism::FlexFec)) // or FecMechanism::Ulpfec (red + ulpfec)
+    .set_fec_protection(0, 128)              // FEC per 256 media packets: bounds
+    .enable_ccfb(true)                       // RFC 8888 feedback instead of transport-wide
+    .enable_rtcp_xr(true)                    // XR receiver reference time / DLRR: receiver RTT
+    .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
+    .enable_bwe(None);
+```
+
+- **FEC** on video lines without simulcast. FlexFEC is libwebrtc's `flexfec-03`, a separate FEC
+  stream signaled with `a=ssrc-group:FEC-FR` (Chrome needs the field trials
+  `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`); ULPFEC travels in RED on
+  the media stream, and browsers offer it by default. Received FEC repairs packets before the
+  frame assembler and NACK (repaired packets are not NACKed, but receiver reports still count
+  them as lost, as Chrome's do). Sent video is protected at three times the loss before repair
+  (the reported loss, or the share of packets the receiver had retransmitted), within the bounds
+  of `set_fec_protection`; a `min` above 0 protects from the start.
+- **RFC 8888**: when both sides offer `ack ccfb`, received media is acknowledged with RFC 8888
+  feedback instead of transport-wide feedback and the bandwidth estimator runs on it; Chrome
+  needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`.
+- **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
+  the sender's DLRR), which paces its NACKs.
+- **TMMBR**: `Peer::request_max_bitrate(mid, Some(bps))` asks the remote sender for at most
+  `bps` (repeated with every report until `None`); Chrome follows it. Requests about our streams
+  are answered with TMMBN and cap the bandwidth estimate, like REMB.
+
+`tools/interop/webrtc/fec.sh` checks all of it against headless Chrome: with one RTP packet in
+20 dropped each way and NACK removed, Chrome decodes 381–392 of 400 echoed frames with FEC and 8
+without.
+
 ## TURN
 
 `TurnConfig` fields (all public, `TurnConfig::new` sets the defaults):
@@ -299,8 +336,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 ## Not done yet
 
 TCP relays (RFC 6062); TURN over DTLS; simultaneous-open ICE-TCP (`tcptype so`); resolving
-mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC,
-RTCP XR, TMMBR and RFC 8888 feedback in peers (`only-rtp` has them since ADR-036: ULPFEC, FlexFEC
-`flexfec-03` and RFC 8627, RED, every XR block, the TMMBR bounding set, RFC 8888 generation and
-matching; `only-webrtc` does not negotiate them yet); DTLS 1.3 for WebRTC by default; DTLS 1.3
-0-RTT and NewConnectionId. ADR-017 and ADR-032 have the details of what was added.
+mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC on
+simulcast lines and for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by
+default; DTLS 1.3 0-RTT and NewConnectionId. ADR-017, ADR-032 and ADR-039 have the details of
+what was added.

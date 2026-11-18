@@ -6,8 +6,26 @@ use std::time::Instant;
 use crate::rtc::Rtc;
 use crate::types::ConfigInner;
 
-fn fresh(lite: bool) -> Option<Rtc> {
-    Rtc::new(ConfigInner::default(), lite, Instant::now()).ok()
+fn fresh(lite: bool, cfg: ConfigInner) -> Option<Rtc> {
+    Rtc::new(cfg, lite, Instant::now()).ok()
+}
+
+/// The configurations an SDP is tried with: the default, and every ADR-039 option on (FEC as
+/// `fec`).
+fn configs() -> [ConfigInner; 3] {
+    let full = |fec| ConfigInner {
+        fec: Some(fec),
+        fec_min: 50,
+        ccfb: true,
+        xr: true,
+        tmmbr: true,
+        ..ConfigInner::default()
+    };
+    [
+        ConfigInner::default(),
+        full(crate::FecMechanism::FlexFec),
+        full(crate::FecMechanism::Ulpfec),
+    ]
 }
 
 /// `webrtc_turn_url`: a `turn:` / `turns:` URL as [`RelayServer::from_url`] takes it (the host
@@ -50,13 +68,21 @@ pub fn webrtc_sdp(data: &[u8]) {
         return;
     };
     let now = Instant::now();
-    let Some(mut rtc) = fresh(true) else { return };
     let _ = crate::sdp::Sdp::parse(s).map(|p| p.write());
+    for cfg in configs() {
+        sdp_with(s, now, cfg);
+    }
+}
+
+fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
+    let Some(mut rtc) = fresh(true, cfg.clone()) else {
+        return;
+    };
     if let Ok(answer) = rtc.accept_offer(now, s) {
         assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
     }
     // As an answer to an offer with media and a channel.
-    let Some(mut offerer) = fresh(false) else {
+    let Some(mut offerer) = fresh(false, cfg) else {
         return;
     };
     let mut ch = offerer.changes();
@@ -97,12 +123,18 @@ pub(crate) mod seeds {
     use crate::types::ConfigInner;
     use crate::{Direction, MediaKind, SdpChanges};
 
-    /// Offers this stack makes (data only; audio + video + data) and the answers to them.
+    /// Offers this stack makes (data only; audio + video + data; simulcast; with every
+    /// ADR-039 option, FlexFEC or ULPFEC) and the answers to them.
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let now = Instant::now();
-        for media in [0, 1, 2] {
-            let mut rtc = Rtc::new(ConfigInner::default(), false, now).expect("rtc");
+        for media in [0, 1, 2, 3, 4] {
+            let cfg = match media {
+                3 => super::configs()[1].clone(),
+                4 => super::configs()[2].clone(),
+                _ => ConfigInner::default(),
+            };
+            let mut rtc = Rtc::new(cfg.clone(), false, now).expect("rtc");
             rtc.add_local_candidate(only_ice::Candidate::host(
                 "192.0.2.1:5000".parse().expect("addr"),
             ));
@@ -123,7 +155,7 @@ pub(crate) mod seeds {
             {
                 let mut api = SdpChanges(&mut ch);
                 api.add_channel("seed");
-                if media == 1 {
+                if media == 1 || media >= 3 {
                     api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
                     api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
                 }
@@ -138,7 +170,7 @@ pub(crate) mod seeds {
                 }
             }
             let offer = rtc.apply(now, ch).expect("apply").expect("offer");
-            let mut answerer = Rtc::new(ConfigInner::default(), true, now).expect("rtc");
+            let mut answerer = Rtc::new(cfg, true, now).expect("rtc");
             let answer = answerer.accept_offer(now, &offer).expect("answer");
             out.push(offer.into_bytes());
             out.push(answer.into_bytes());

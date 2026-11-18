@@ -23,6 +23,15 @@
 //                                                               (sfu mode), then views: the
 //                                                               simulcast line and the selected
 //                                                               layer, switched l -> m -> h
+//   node browser.mjs <cdp-port> fec <http-addr> [nack] [secs]   Chrome offers VP8 video (with
+//                                                               its FEC payload types) to the
+//                                                               fec-server, the server echoes it;
+//                                                               without "nack" NACK is removed
+//                                                               from the offer (FEC is the only
+//                                                               repair); prints the answer's
+//                                                               FEC / feedback lines and the
+//                                                               video statistics as JSON
+//                                                               (DUMP_SDP=1: both SDPs too)
 import http from "node:http";
 
 const [port, mode, addr] = process.argv.slice(2);
@@ -311,10 +320,65 @@ async function simulcastMode() {
   process.exit(0);
 }
 
+async function fecMode(nack, secs) {
+  const p = await page();
+  await p.evaluate(PAGE_LIB);
+  const offer = await p.evaluate(`(async () => {
+    const pc = new RTCPeerConnection();
+    window.pc = pc;
+    const media = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    const tr = pc.addTransceiver(media.getVideoTracks()[0], { direction: "sendrecv" });
+    const keep = ["video/VP8", "video/rtx", "video/red", "video/ulpfec", "video/flexfec-03"];
+    tr.setCodecPreferences(RTCRtpReceiver.getCapabilities("video").codecs.filter((c) => keep.includes(c.mimeType)));
+    const o = await pc.createOffer();
+    // Without NACK (munged before setLocalDescription, so Chrome does not NACK either).
+    if (${!nack}) o.sdp = o.sdp.split("\\r\\n").filter((l) => !/^a=rtcp-fb:\\d+ nack$/.test(l)).join("\\r\\n");
+    await pc.setLocalDescription(o);
+    await gather(pc);
+    return pc.localDescription.sdp;
+  })()`);
+  const resp = await fetch(`http://${addr}/`, { method: "POST", body: offer, headers: { "content-type": "application/sdp" } });
+  const answer = await resp.text();
+  if (!resp.ok) fail("signalling: " + answer);
+  if (process.env.DUMP_SDP) console.log("offer:\n" + offer + "\nanswer:\n" + answer);
+  const neg = answer.split("\r\n").filter((l) => /red\/|ulpfec|flexfec|FEC-FR|ccfb|tmmbr|rtcp-xr|rrtr| nack$/.test(l));
+  const r = await p.evaluate(`(async () => {
+    await pc.setRemoteDescription({ type: "answer", sdp: ${JSON.stringify(answer)} });
+    await waitFor(() => pc.connectionState === "connected", 15000, "connected (" + pc.connectionState + ")");
+    const stats = async () => {
+      const o = { in: {}, out: {}, pair: {} };
+      (await pc.getStats()).forEach((s) => {
+        if (s.type === "inbound-rtp" && s.kind === "video") o.in = { framesDecoded: s.framesDecoded, packetsReceived: s.packetsReceived, packetsLost: s.packetsLost,
+          fecPacketsReceived: s.fecPacketsReceived, fecPacketsDiscarded: s.fecPacketsDiscarded, fecBytesReceived: s.fecBytesReceived, nackCount: s.nackCount, pliCount: s.pliCount,
+          freezeCount: s.freezeCount, totalFreezesDuration: s.totalFreezesDuration, framesDropped: s.framesDropped, retransmittedPacketsReceived: s.retransmittedPacketsReceived };
+        if (s.type === "outbound-rtp" && s.kind === "video") o.out = { packetsSent: s.packetsSent, bytesSent: s.bytesSent, retransmittedPacketsSent: s.retransmittedPacketsSent,
+          nackCount: s.nackCount, pliCount: s.pliCount, targetBitrate: s.targetBitrate, framesSent: s.framesSent };
+        if (s.type === "candidate-pair" && s.nominated) o.pair = { availableOutgoingBitrate: s.availableOutgoingBitrate, currentRoundTripTime: s.currentRoundTripTime };
+        if (s.type === "remote-inbound-rtp" && s.kind === "video") o.remoteIn = { fractionLost: s.fractionLost, packetsLost: s.packetsLost, roundTripTime: s.roundTripTime };
+      });
+      return o;
+    };
+    const t0 = Date.now();
+    let mid = null;
+    while (Date.now() - t0 < ${secs} * 1000) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (!mid && Date.now() - t0 > ${secs} * 500) mid = await stats();
+    }
+    const end = await stats();
+    end.lastHalfBitrate = mid ? Math.round((end.out.bytesSent - mid.out.bytesSent) * 8 / (${secs} / 2)) : null;
+    return end;
+  })()`);
+  console.log("answer: " + JSON.stringify(neg));
+  console.log("stats: " + JSON.stringify(r));
+  await p.close();
+  process.exit(0);
+}
+
 // The one-shot modes exit when done (a closing DevTools socket must not keep Node alive).
 if (mode === "offer") await offerMode();
 else if (mode === "offer-tcp") await offerMode("tcp");
 else if (mode === "offer-relay") await offerMode("relay", process.argv[5]);
 else if (mode === "answer") await answerMode(process.argv[5]);
 else if (mode === "simulcast") await simulcastMode();
-else fail("usage: browser.mjs <cdp-port> offer|offer-tcp|offer-relay|answer|simulcast <addr> ...");
+else if (mode === "fec") await fecMode(process.argv[5] === "nack", Number(process.argv[6] || 20));
+else fail("usage: browser.mjs <cdp-port> offer|offer-tcp|offer-relay|answer|simulcast|fec <addr> ...");

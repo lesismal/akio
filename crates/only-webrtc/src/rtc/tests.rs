@@ -471,3 +471,419 @@ fn simulcast_api_checks() {
             .is_ok()
     );
 }
+
+// ---- FEC, RFC 8888, XR and TMMBR (ADR-039) ----
+
+/// Two peers with configurations `ca` / `cb` and one video line `dir` (from the offerer `a`);
+/// `munge` edits the offer and the answer in flight.
+fn pair_with(
+    ca: ConfigInner,
+    cb: ConfigInner,
+    dir: Direction,
+    munge: fn(&str) -> String,
+) -> (Side, Side, Mid, Instant) {
+    let now = Instant::now();
+    let mut a = Rtc::new(ca, false, now).unwrap();
+    let mut b = Rtc::new(cb, false, now).unwrap();
+    let (aa, ba): (SocketAddr, SocketAddr) = (
+        "10.0.0.1:1000".parse().unwrap(),
+        "10.0.0.2:2000".parse().unwrap(),
+    );
+    a.add_local_candidate(IceCandidate::host(aa));
+    b.add_local_candidate(IceCandidate::host(ba));
+    let mut ch = a.changes();
+    let video = SdpChanges(&mut ch).add_media(MediaKind::Video, dir, None, None);
+    let offer = munge(&a.apply(now, ch).unwrap().unwrap());
+    let answer = munge(&b.accept_offer(now, &offer).unwrap());
+    a.accept_answer(now, &answer).unwrap();
+    let side = |rtc, addr| Side {
+        rtc,
+        addr,
+        events: Vec::new(),
+        wake: now,
+    };
+    (side(a, aa), side(b, ba), video, now)
+}
+
+fn same(s: &str) -> String {
+    s.to_owned()
+}
+
+fn no_nack(s: &str) -> String {
+    s.split("\r\n")
+        .filter(|l| !(l.starts_with("a=rtcp-fb:") && l.ends_with(" nack")))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+fn connect(a: &mut Side, b: &mut Side, net: &mut Net, mut now: Instant) -> Instant {
+    let start = now;
+    while !(a.rtc.is_connected() && b.rtc.is_connected()) {
+        now += Duration::from_millis(5);
+        step(a, b, now, net);
+        assert!(now - start < Duration::from_secs(30), "no connection");
+    }
+    now
+}
+
+/// `a` sends `frames` VP8 frames of ~3 packets at 25 fps; returns the frames `b` got whole
+/// (`contiguous`) and the time.
+fn send_video(
+    a: &mut Side,
+    b: &mut Side,
+    net: &mut Net,
+    video: Mid,
+    frames: u64,
+    mut now: Instant,
+) -> (usize, Instant) {
+    let vp8 = a.rtc.payload_type(video, Codec::Vp8).unwrap();
+    let frame: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
+    for i in 0..frames {
+        let mut f = frame.clone();
+        f[0] = if i == 0 { 0x10 } else { 0x11 };
+        f[1] = i as u8;
+        let t = MediaTime::new(i * 3600, Frequency::NINETY_KHZ);
+        a.rtc.write_media(now, video, None, vp8, t, &f).unwrap();
+        for _ in 0..8 {
+            now += Duration::from_millis(5);
+            step(a, b, now, net);
+        }
+    }
+    for _ in 0..400 {
+        now += Duration::from_millis(5);
+        step(a, b, now, net);
+    }
+    let whole = b
+        .events
+        .iter()
+        .filter(|e| matches!(e, RtcEvent::MediaData(d) if d.mid == video && d.data.len() == frame.len() && d.data[2..] == frame[2..]))
+        .count();
+    (whole, now)
+}
+
+fn fec_cfg(m: Option<FecMechanism>) -> ConfigInner {
+    ConfigInner {
+        fec: m,
+        fec_min: 80,
+        ..ConfigInner::default()
+    }
+}
+
+#[test]
+fn fec_negotiation() {
+    // Default configurations offer no FEC (browser interop unchanged).
+    let (a, b, video, _) = pair_with(
+        ConfigInner::default(),
+        ConfigInner::default(),
+        Direction::SendRecv,
+        same,
+    );
+    let offer = a.rtc.write_sdp(true);
+    assert!(!offer.contains("ulpfec") && !offer.contains("flexfec") && !offer.contains("red/"));
+    assert!(!offer.contains("ccfb") && !offer.contains("tmmbr") && !offer.contains("rtcp-xr"));
+    assert_eq!(b.rtc.media[0].fec_pts, FecPts::default());
+    // ULPFEC both sides: red + its RTX + ulpfec.
+    let (a, b, video2, _) = pair_with(
+        fec_cfg(Some(FecMechanism::Ulpfec)),
+        fec_cfg(Some(FecMechanism::Ulpfec)),
+        Direction::SendRecv,
+        same,
+    );
+    assert_eq!(video, video2);
+    let offer = a.rtc.write_sdp(true);
+    for l in [
+        "a=rtpmap:116 red/90000",
+        "a=rtpmap:117 rtx/90000",
+        "a=fmtp:117 apt=116",
+        "a=rtpmap:118 ulpfec/90000",
+    ] {
+        assert!(offer.contains(l), "{l}\n{offer}");
+    }
+    let want = FecPts {
+        red: Some(116),
+        red_rtx: Some(117),
+        ulpfec: Some(118),
+        flexfec: None,
+    };
+    assert_eq!(a.rtc.media[0].fec_pts, want);
+    assert_eq!(b.rtc.media[0].fec_pts, want);
+    assert_eq!(b.rtc.media[0].fec_send_scheme(), Some(FecScheme::Ulpfec));
+    // FlexFEC against a peer without FEC: offered with FEC-FR, not negotiated.
+    let (a, b, _, _) = pair_with(
+        fec_cfg(Some(FecMechanism::FlexFec)),
+        ConfigInner::default(),
+        Direction::SendRecv,
+        same,
+    );
+    let now = Instant::now();
+    let mut o = Rtc::new(fec_cfg(Some(FecMechanism::FlexFec)), false, now).unwrap();
+    let mut ch = o.changes();
+    SdpChanges(&mut ch).add_media(MediaKind::Video, Direction::SendRecv, None, None);
+    let offer = o.apply(now, ch).unwrap().unwrap();
+    assert!(offer.contains("a=rtpmap:115 flexfec-03/90000"), "{offer}");
+    assert!(offer.contains("a=fmtp:115 repair-window=10000000"));
+    assert!(offer.contains("a=rtcp-fb:115 transport-cc"));
+    let fec_fr = format!(
+        "a=ssrc-group:FEC-FR {} {}",
+        o.media[0].send.ssrc(),
+        o.media[0].fec_send.ssrc()
+    );
+    assert!(offer.contains(&fec_fr), "{offer}");
+    assert_eq!(b.rtc.media[0].fec_pts, FecPts::default());
+    assert_eq!(a.rtc.media[0].fec_pts, FecPts::default());
+    assert!(!b.rtc.write_sdp(false).contains("flexfec"));
+    // FlexFEC both sides: the answerer learns the offerer's FEC stream.
+    let (a, b, _, _) = pair_with(
+        fec_cfg(Some(FecMechanism::FlexFec)),
+        fec_cfg(Some(FecMechanism::FlexFec)),
+        Direction::SendRecv,
+        same,
+    );
+    assert_eq!(b.rtc.media[0].fec_pts.flexfec, Some(115));
+    assert_eq!(
+        b.rtc.media[0]
+            .remote_fec
+            .get(&a.rtc.media[0].fec_send.ssrc()),
+        Some(&a.rtc.media[0].send.ssrc())
+    );
+    assert!(b.rtc.write_sdp(false).contains("FEC-FR"));
+    // Mismatched mechanisms negotiate nothing.
+    let (_, b, _, _) = pair_with(
+        fec_cfg(Some(FecMechanism::FlexFec)),
+        fec_cfg(Some(FecMechanism::Ulpfec)),
+        Direction::SendRecv,
+        same,
+    );
+    assert_eq!(b.rtc.media[0].fec_pts, FecPts::default());
+}
+
+#[test]
+fn fec_rate_policy() {
+    let cfg = ConfigInner::default();
+    assert_eq!(fec_rate(&cfg, 0.0), 0);
+    assert_eq!(fec_rate(&cfg, 0.005), 0);
+    assert_eq!(fec_rate(&cfg, 0.05), 38);
+    assert_eq!(fec_rate(&cfg, 0.5), 128);
+    let cfg = ConfigInner {
+        fec_min: 20,
+        fec_max: 60,
+        ..ConfigInner::default()
+    };
+    assert_eq!(fec_rate(&cfg, 0.0), 20);
+    assert_eq!(fec_rate(&cfg, 0.3), 60);
+}
+
+/// Video over a link with 8 % loss and no NACK: FEC alone repairs it.
+fn fec_run(m: Option<FecMechanism>, seed: u64) -> (usize, Stats) {
+    let (mut a, mut b, video, now) =
+        pair_with(fec_cfg(m), fec_cfg(m), Direction::SendRecv, no_nack);
+    assert!(!b.rtc.media[0].codecs[0].fb.iter().any(|f| f == "nack"));
+    let mut net = Net {
+        rng: seed,
+        loss: 0,
+        jitter_ms: 5,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    net.loss = 8;
+    let (whole, _) = send_video(&mut a, &mut b, &mut net, video, 200, now);
+    (whole, b.rtc.stats)
+}
+
+#[test]
+fn fec_repairs_loss_without_nack() {
+    for seed in [5, 77] {
+        let (plain, st) = fec_run(None, seed);
+        assert_eq!(st.fec_received, 0);
+        for m in [FecMechanism::Ulpfec, FecMechanism::FlexFec] {
+            let (whole, st) = fec_run(Some(m), seed);
+            assert!(st.fec_received > 50, "{m:?}: {st:?}");
+            assert!(st.fec_recovered > 10, "{m:?}: {st:?}");
+            assert!(
+                whole > plain + 20 && whole >= 180,
+                "{m:?} seed {seed}: {whole} whole frames with FEC, {plain} without"
+            );
+        }
+    }
+}
+
+#[test]
+fn fec_with_nack_and_rtx() {
+    // NACK + RTX (of RED for ULPFEC) and FEC together over a lossy link: every frame.
+    for m in [FecMechanism::Ulpfec, FecMechanism::FlexFec] {
+        let (mut a, mut b, video, now) = pair_with(
+            fec_cfg(Some(m)),
+            fec_cfg(Some(m)),
+            Direction::SendRecv,
+            same,
+        );
+        let mut net = Net {
+            rng: 9,
+            loss: 0,
+            jitter_ms: 20,
+            queue: Vec::new(),
+        };
+        let now = connect(&mut a, &mut b, &mut net, now);
+        net.loss = 12;
+        let (whole, _) = send_video(&mut a, &mut b, &mut net, video, 150, now);
+        assert!(whole >= 148, "{m:?}: {whole}");
+        assert!(a.rtc.stats.fec_sent > 0 && b.rtc.stats.fec_recovered > 0);
+        assert!(
+            a.rtc.media[0].send.packets_resent() > 0,
+            "{m:?}: NACK repaired some"
+        );
+    }
+}
+
+#[test]
+fn fec_rate_follows_reported_loss() {
+    let cfg = ConfigInner {
+        fec: Some(FecMechanism::FlexFec),
+        ..ConfigInner::default()
+    };
+    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    let mut net = Net {
+        rng: 3,
+        loss: 0,
+        jitter_ms: 5,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    // Clean link: no FEC.
+    let (_, now) = send_video(&mut a, &mut b, &mut net, video, 100, now);
+    assert_eq!(a.rtc.stats.fec_sent, 0);
+    // 15 % loss: the receiver reports it, FEC starts.
+    net.loss = 15;
+    send_video(&mut a, &mut b, &mut net, video, 150, now);
+    let rate = a.rtc.media[0].fec_enc.as_ref().unwrap().rate();
+    assert!(rate > 40, "rate {rate}");
+    assert!(a.rtc.stats.fec_sent > 20);
+}
+
+#[test]
+fn ccfb_replaces_transport_cc() {
+    let cfg = ConfigInner {
+        ccfb: true,
+        bwe: Some(300_000),
+        ..ConfigInner::default()
+    };
+    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    assert!(a.rtc.ccfb && b.rtc.ccfb);
+    assert!(a.rtc.write_sdp(true).contains("a=rtcp-fb:96 ack ccfb"));
+    // The answer picks RFC 8888: on every payload type, without transport-wide feedback.
+    let ans = b.rtc.write_sdp(false);
+    assert!(ans.contains("a=rtcp-fb:97 ack ccfb"), "{ans}");
+    assert!(
+        !ans.contains("transport-cc") && !ans.contains("transport-wide-cc"),
+        "{ans}"
+    );
+    let mut net = Net {
+        rng: 11,
+        loss: 0,
+        jitter_ms: 2,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    send_video(&mut a, &mut b, &mut net, video, 200, now);
+    // The estimator ran on RFC 8888 feedback: it grew from 300 kbps.
+    let est = a.rtc.bwe.as_ref().unwrap().estimate();
+    assert!(est > 330_000, "estimate {est}");
+    assert!(
+        b.rtc.twcc_media_ssrc == 0,
+        "no transport-wide feedback recorded"
+    );
+    // Against a peer without it: transport-wide feedback stays.
+    let (a, _, _, _) = pair_with(
+        ConfigInner {
+            ccfb: true,
+            ..ConfigInner::default()
+        },
+        ConfigInner::default(),
+        Direction::SendRecv,
+        same,
+    );
+    assert!(!a.rtc.ccfb);
+}
+
+#[test]
+fn xr_gives_a_receiver_its_rtt() {
+    let cfg = ConfigInner {
+        xr: true,
+        ..ConfigInner::default()
+    };
+    // `a` only sends: `b` only receives and sends no sender reports.
+    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendOnly, same);
+    assert!(a.rtc.write_sdp(true).contains("a=rtcp-xr:rcvr-rtt=all"));
+    assert!(a.rtc.media[0].xr && b.rtc.media[0].xr);
+    let mut net = Net {
+        rng: 21,
+        loss: 0,
+        jitter_ms: 0,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    send_video(&mut a, &mut b, &mut net, video, 150, now);
+    let rtt = b.rtc.xr_rtt.expect("an RTT from DLRR");
+    // 10 ms each way in the simulated network, plus the 5 ms tick.
+    assert!(
+        rtt >= Duration::from_millis(18) && rtt <= Duration::from_millis(35),
+        "{rtt:?}"
+    );
+    assert_eq!(a.rtc.xr_rtt, None);
+    // Without XR negotiated nothing is measured.
+    let (mut a, mut b, video, now) = pair_with(
+        ConfigInner::default(),
+        ConfigInner::default(),
+        Direction::SendOnly,
+        same,
+    );
+    let now = connect(&mut a, &mut b, &mut net, now);
+    send_video(&mut a, &mut b, &mut net, video, 100, now);
+    assert_eq!(b.rtc.xr_rtt, None);
+}
+
+#[test]
+fn tmmbr_caps_the_sender() {
+    let cfg = ConfigInner {
+        tmmbr: true,
+        bwe: Some(1_000_000),
+        ..ConfigInner::default()
+    };
+    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    assert!(a.rtc.write_sdp(true).contains("a=rtcp-fb:96 ccm tmmbr"));
+    let mut net = Net {
+        rng: 31,
+        loss: 0,
+        jitter_ms: 2,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    let (_, now) = send_video(&mut a, &mut b, &mut net, video, 40, now);
+    assert!(b.rtc.request_max_bitrate(video, Some(200_000)));
+    assert!(!b.rtc.request_max_bitrate(Mid::new("nope"), Some(1)));
+    let (_, now) = send_video(&mut a, &mut b, &mut net, video, 60, now);
+    let req = a.rtc.media[0].send.ssrc();
+    let bound = a.events.iter().rev().find_map(|e| match e {
+        RtcEvent::Other(Other::MaxBitrateRequest { ssrc, bitrate, .. }) if *ssrc == req => {
+            Some(*bitrate)
+        }
+        _ => None,
+    });
+    let bound = bound.flatten().expect("a bound");
+    assert!(bound <= 200_000 && bound > 150_000, "{bound}");
+    assert!(a.rtc.bwe.as_ref().unwrap().estimate() <= 200_000);
+    assert!(b.events.iter().any(|e| matches!(
+        e,
+        RtcEvent::Other(Other::MaxBitrateNotification { entries, .. })
+            if entries.first().is_some_and(|x| x.1 == 200_000)
+    )));
+    // Withdrawn: the bound goes, the estimate may grow again.
+    assert!(b.rtc.request_max_bitrate(video, None));
+    send_video(&mut a, &mut b, &mut net, video, 40, now);
+    let last = a.events.iter().rev().find_map(|e| match e {
+        RtcEvent::Other(Other::MaxBitrateRequest { bitrate, .. }) => Some(*bitrate),
+        _ => None,
+    });
+    assert_eq!(last, Some(None));
+    assert!(a.rtc.tmmbr.is_empty());
+}

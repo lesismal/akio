@@ -10,6 +10,24 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（only-webrtc、only-rtp）
+
+ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认关闭（默认对端的 SDP 不变）：
+
+- **only-webrtc**：`RtcConfig::enable_fec(Option<FecMechanism>)`（`FecMechanism::FlexFec`：带
+  `a=ssrc-group:FEC-FR` 流的 `flexfec-03`；`FecMechanism::Ulpfec`：`red` + RTX + `ulpfec`），用于非
+  simulcast 的视频行：收到的 FEC 在帧组装器和 NACK 之前修复包，发送的视频按修复前丢包率的三倍保护，
+  并限制在 `RtcConfig::set_fec_protection(min, max)` 内（每 256 个媒体包，默认 0..=128）。
+  `RtcConfig::enable_ccfb` 协商 RFC 8888（`ack ccfb`；answer 去掉 transport-cc），之后在确认与带宽估计
+  两方面都取代传输层反馈。`RtcConfig::enable_rtcp_xr`（`a=rtcp-xr:rcvr-rtt=all`、`rrtr`）：接收方参考
+  时间与 DLRR 为接收行提供 RTT；收到的 RRTR 总会应答。`RtcConfig::enable_tmmbr`（`ccm tmmbr`）与
+  `Peer::request_max_bitrate(mid, Option<u64>)`；收到的 TMMBR 以 TMMBN 应答，并与 REMB 一起限制估计值。
+  RTCP 的 NTP 时间改为跟随对端的单调时钟。
+- **only-rtp**：`RecvStream::receive_recovered`（由 FEC 重建的包：不 NACK，也不计为已收到）与
+  `FrameAssembler::skip`（不承载媒体的序号，如 ULPFEC 或填充包，不算缺口）。
+- 互通：`tools/interop/webrtc/fec.sh` 对照无头 Chrome 157（丢包下双向 FlexFEC 与 ULPFEC、双向 RFC 8888、
+  XR DLRR RTT、TMMBR）；`webrtc-interop` 示例的 `fec-server` 模式在服务端前放一个有损 UDP 代理。
+
 ### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：

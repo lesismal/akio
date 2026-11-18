@@ -23,7 +23,11 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   G.722, VP8, VP9, H.264, H.265 and AV1; a jitter-free frame assembler (`on_media_data`) or RTP
   mode (`on_rtp`); sender/receiver reports, generic NACK with RTX (RFC 4588), PLI/FIR, REMB,
   transport-wide congestion control (TWCC header extension + feedback) with a delay- and
-  loss-based bandwidth estimator.
+  loss-based bandwidth estimator. Opt-in (`RtcConfig`, ADR-039): FEC on video (FlexFEC
+  `flexfec-03` with an `a=ssrc-group:FEC-FR` stream, or ULPFEC in RED) repairing packets before
+  the frame assembler and NACK and sent at a rate that follows the loss before repair; RFC 8888
+  congestion control feedback instead of TWCC; RTCP XR receiver reference times (receiver-side
+  RTT); TMMBR / TMMBN (`Peer::request_max_bitrate`, requests cap the estimate).
 - **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux, mid/msid, ssrc/FID, extmap,
   rtpmap/fmtp/rtcp-fb negotiation, setup/fingerprint, ice-ufrag/pwd/options/lite, candidates,
   sctp-port/max-message-size; renegotiation (media added, directions, ICE restart);
@@ -62,10 +66,11 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // from WHIP/W
 Interop: pion (data channels, Opus/VP8 echo and PLI in both offer directions, also through a
 `only` TURN relay) and fib's Go WebRTC both ways: `tools/interop/webrtc/run.sh`; headless Chrome
 in both offer directions (data channels, the fake camera and microphone echoed back and decoded
-by Chrome): `tools/interop/webrtc/browser.sh`. STUN and TURN servers are in
+by Chrome): `tools/interop/webrtc/browser.sh`; FEC under loss (Chrome's and ours), RFC 8888 both
+ways, XR and TMMBR with headless Chrome: `tools/interop/webrtc/fec.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC, RTCP XR, TMMBR and RFC 8888
-feedback (all in `only-rtp` since ADR-036, not negotiated or used here yet), SDES-SRTP, DTLS 1.3.
+Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC on simulcast lines and for audio
+(Opus RED), SDES-SRTP, DTLS 1.3.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

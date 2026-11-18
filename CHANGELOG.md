@@ -10,6 +10,29 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: FEC, RTCP XR, TMMBR and RFC 8888 feedback in WebRTC peers (only-webrtc, only-rtp)
+
+ADR-039 (docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.md), additive and off by default (a default peer's
+SDP is unchanged):
+
+- **only-webrtc**: `RtcConfig::enable_fec(Option<FecMechanism>)` (`FecMechanism::FlexFec`:
+  `flexfec-03` with an `a=ssrc-group:FEC-FR` stream; `FecMechanism::Ulpfec`: `red` + RTX +
+  `ulpfec`) on video lines without simulcast: received FEC repairs packets before the frame
+  assembler and NACK, sent video is protected at three times the loss before repair within
+  `RtcConfig::set_fec_protection(min, max)` (per 256 media packets, default 0..=128).
+  `RtcConfig::enable_ccfb` negotiates RFC 8888 (`ack ccfb`; the answer drops transport-cc), which
+  then replaces transport-wide feedback both for acknowledging and for the bandwidth estimator.
+  `RtcConfig::enable_rtcp_xr` (`a=rtcp-xr:rcvr-rtt=all`, `rrtr`): receiver reference times and
+  DLRR give a receiving line its RTT; received RRTRs are always answered. `RtcConfig::enable_tmmbr`
+  (`ccm tmmbr`) and `Peer::request_max_bitrate(mid, Option<u64>)`; received TMMBRs are answered
+  with TMMBN and cap the estimate with REMB. RTCP NTP times now follow the peer's monotonic clock.
+- **only-rtp**: `RecvStream::receive_recovered` (a FEC-rebuilt packet: not NACKed, not counted as
+  received) and `FrameAssembler::skip` (a sequence number without media, e.g. ULPFEC or padding,
+  is not a gap).
+- Interop: `tools/interop/webrtc/fec.sh` against headless Chrome 157 (FlexFEC and ULPFEC both
+  ways under loss, RFC 8888 both ways, XR DLRR RTT, TMMBR); the `fec-server` mode of the
+  `webrtc-interop` example puts a lossy UDP proxy in front of the server.
+
 ### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
 
 ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:

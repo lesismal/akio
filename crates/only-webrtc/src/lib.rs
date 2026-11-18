@@ -82,9 +82,9 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, Frequency, IceConnectionState,
-    KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind, MediaTime, Mid,
-    OtherEvent, Pt, Reliability, RtcConfig, RtpPacket, SdpChanges,
+    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMechanism, Frequency,
+    IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
+    MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtpPacket, SdpChanges,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -467,6 +467,22 @@ impl Peer {
     ) -> Result<(), Error> {
         self.with_rtc_inner(|rtc| {
             if rtc.request_keyframe_of(mid, Some(rid), kind) {
+                Ok(())
+            } else {
+                Err(Error::UnknownMedia)
+            }
+        })?
+    }
+
+    /// Asks the remote sender of `mid` to send at most `bitrate` bits per second, with a TMMBR
+    /// (RFC 5104) about each stream received on it, repeated with every RTCP report so that
+    /// it does not time out; `None` stops repeating it and sends a TMMBR of 0 once (which RFC
+    /// 5104 handlers take as a withdrawal; libwebrtc ignores it and drops the request 25 s after
+    /// the last one). libwebrtc honours TMMBR without `ccm tmmbr` in the SDP; see
+    /// [`RtcConfig::enable_tmmbr`]. [`Error::UnknownMedia`] when there is no such line.
+    pub fn request_max_bitrate(&self, mid: Mid, bitrate: Option<u64>) -> Result<(), Error> {
+        self.with_rtc_inner(|rtc| {
+            if rtc.request_max_bitrate(mid, bitrate) {
                 Ok(())
             } else {
                 Err(Error::UnknownMedia)

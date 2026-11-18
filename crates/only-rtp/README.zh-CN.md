@@ -85,7 +85,11 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
 - FEC：ULPFEC（单个保护级别）、FlexFEC `flexfec-03`（libwebrtc 的头格式）与 RFC 8627（灵活掩码，一个
   被保护 SSRC）、RED。细节见 ADR-036。
 
-未实现：把 XR、TMMBR、RFC 8888 与 FEC 接入 `only-webrtc`（SDP 协商、FEC 保护率策略）；FlexFEC 重传与
+`only-webrtc` 在配置后协商并使用以上全部（ADR-039）；为此 `RecvStream::receive_recovered` 记录由 FEC
+重建的包（不再被 NACK，但报告中仍计为丢失），`FrameAssembler::skip` 标记不承载媒体的序号（ULPFEC、
+填充包），使其不被当作缺口。
+
+未实现：FlexFEC 重传与
 固定 L/D 包、多个被保护 SSRC、ULPFEC 第 1 级、libwebrtc 的掩码表；生成 RLE / 接收时间 XR 块与 VoIP
 质量字段；估计器中的探测；SDES 中类型 / 文本对以外的内容。
 
