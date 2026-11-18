@@ -18,6 +18,7 @@ against ring: key generation 1.40x → 1.57x, signing 1.38x → 1.49x, ECDH 1.12
 secp256r1 TLS handshakes 1.07x → 1.08x rustls+ring. On x86_64 CPUs without AVX-512 IFMA, RSA
 squaring at 3072 and 4096 bits is one level of Karatsuba: verification +5% / +9%. Constant-time
 properties unchanged (`tools/ct-dudect`: no leak). No public API change (docs/BENCHMARKS.md).
+
 ### Added: SOCKS client, SOCKS proxies for the HTTP/WebSocket clients, UDP fragment reassembly, SOCKS4 BIND
 
 Additive (ADR-019, docs/adr/019-socks-client-fragments-socks4-bind.md):
@@ -47,6 +48,7 @@ Additive (ADR-019, docs/adr/019-socks-client-fragments-socks4-bind.md):
 - Interop (`tools/interop/socks/run.sh`, 15/15): our client against Dante and against
   only-socks, curl/PySocks/hand-written clients against the server (fragments, SOCKS4 BIND).
   New fuzz target `socks_client` (client handshake, tunnel transport, reassembly).
+
 ### Added: arpc middleware, coders and client pools (only-arpc)
 
 Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
@@ -73,6 +75,7 @@ Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
 - Measured (gpu51, same-run A/B, medians of 10 rounds): calls without middleware 0.98x of
   before and one middleware 1.00x of none, both within the ~4% noise; +1.5% user instructions
   per call, cycles per call unchanged.
+
 ### Added: BitTorrent v2 and hybrid torrents, web seeds, LSD, IPv6 DHT, rate and seed limits
 
 `only-bittorrent` (ADR-018, docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md):
@@ -105,6 +108,7 @@ Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
   hybrid torrents with aria2 1.37, web seeds from nginx, LSD on a Docker network. Fuzz targets
   `bt_lsd` and `bt_merkle`; `bt_bencode`, `bt_peer_wire`, `bt_krpc` extended.
 - BEP 44 is not implemented, on purpose (ADR-018).
+
 ### Added: protobuf groups, extensions, editions, JSON and reflection; gRPC server reflection
 
 ADR-022 (docs/adr/022-protobuf-gaps.md):
@@ -133,6 +137,7 @@ storing them; extension fields of proto2 messages are now in `extensions`, not
 cost is unchanged: same-run A/B against the previous commit on gpu51 (5 alternating runs, medians,
 prost as control) gives Point 12/18 ns → 12/18 ns, Feature 19/47 ns → 18/45 ns, AllTypes
 encode 309 → 312 ns (+1%, prost 509 → 505) and decode 1629 → 1448 ns (−11%, prost 1788 → 1749).
+
 ### Added: DTLS 1.3, connection IDs, PSKs and session resumption in only-dtls
 
 Additive except where noted (ADR-021, docs/adr/021-dtls13-cid-resumption.md; only-dtls is an
@@ -169,6 +174,7 @@ Internal-tier crate):
   wolfSSL), pion/dtls v3 (CIDs, PSK suites). Fuzz targets `dtls_record` and `dtls_handshake`
   cover CID and unified-header records and the DTLS 1.3 machines. DTLS 1.2 record path, same-run
   A/B on gpu51 (new `dtls-bench` example): 64-byte records 0.97-1.01, 1 KiB 1.00-1.02 of before.
+
 ### Added: TURN over TCP and TLS, a TURN client, ICE-TCP and simulcast sending
 
 Additive (ADR-017, docs/adr/017-webrtc-turn-gaps.md):
@@ -207,6 +213,7 @@ Additive (ADR-017, docs/adr/017-webrtc-turn-gaps.md):
   `Endpoint` with only relayed candidates (from `only-turn`, pion/turn, coturn) and with only its
   passive TCP candidate to pion; simulcast h/m/l received by pion. New fuzz targets
   `turn_stream` and `ice_tcp`.
+
 ### Added: fMP4 HLS, RTMP and RTSP clients, WebRTC media in only-media
 
 Additive (ADR-016, docs/adr/016-media-fmp4-clients-webrtc.md):
@@ -230,6 +237,7 @@ Additive (ADR-016, docs/adr/016-media-fmp4-clients-webrtc.md):
   targets `fmp4_demux`, `rtmp_client`, `rtsp_client`.
 - Fixed: only-webrtc `Endpoint::config`, `close_on_disconnect` and `connect_timeout` panicked
   after `bind`.
+
 ### Added: XDP rate limiting, I/O-thread pinning, eBPF hash steering, spliced SOCKS tunnels
 
 Additive (ADR-027, docs/adr/027-ebpf-xdp-pinning-socks-splice.md):
@@ -251,6 +259,7 @@ Additive (ADR-027, docs/adr/027-ebpf-xdp-pinning-socks-splice.md):
   tunnels in the kernel (opt-in), falling back to userspace relaying when that is not possible.
 - `ONLY_ACCEL` knob in `bench-server`, `ebpf-bench` example, `tools/bench/ebpf.sh`; fuzz target
   `xdp_rate_limit`.
+
 ### Added: IPv6, ECN and pacing in only-dpdk's userspace stack
 
 Additive (ADR-026, docs/adr/026-userspace-ipv6-ecn-pacing.md; only-dpdk is experimental):
@@ -275,6 +284,7 @@ Additive (ADR-026, docs/adr/026-userspace-ipv6-ecn-pacing.md; only-dpdk is exper
   kernel interop over IPv6 in Docker (TAP, AF_PACKET, DPDK `net_tap` with two queues: `ping -6`,
   UDP with fragments, TCP both ways, `netem` loss with ECN and pacing); fuzz targets
   `dpdk_ipv6`, `dpdk_icmpv6`, `dpdk_ndp`.
+
 ### Changed: UDP datagrams delivered in owned receive buffers (only-sys, only-epoll, only-quic; ADR-024)
 
 The UDP loop (epoll, io_uring and macOS; servers and dialed sockets) receives into pooled receive
@@ -286,6 +296,7 @@ UDP peer table hashes with the keyed folded-multiply hasher (shared with only-qu
 Miri- and loom-checked; docs/unsafe-review.md). Same-run A/B on loopback: QUIC bulk, HTTP/3,
 handshakes and UDP echo within 1% (HTTP/3 1.01, the rest 1.00; docs/BENCHMARKS.md). Handlers that
 do not opt in, including secured ones, see no change. No public API change.
+
 ### Changed: no boxed response sink and no target allocation per HTTP request (ADR-025)
 
 The last two per-request allocations named after the HTTP/3 allocation pass are gone
@@ -323,6 +334,7 @@ The last two per-request allocations named after the HTTP/3 allocation pass are 
 | `transport::dispatch(&svc, req, Box::new(s))` | `let sink = SharedSink::new(c);` per connection, then `transport::dispatch_conn(&svc, req, &sink, tag)` |
 | `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
 | `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))` (optional) |
+
 ### Added: spans, push export (OTLP, StatsD), per-route HTTP labels, HTTP/2 gauges
 
 Additive (ADR-020, docs/adr/020-spans-and-push-export.md):
@@ -351,6 +363,7 @@ Additive (ADR-020, docs/adr/020-spans-and-push-export.md):
   (`tools/otel/e2e.sh`); fuzz targets `log_traceparent`, `export_http_response`, `export_otlp`.
 - only-core: `Metrics::collect_into` and `Telemetry::collect_all` (the engine's series as
   `Families`, identical to the Prometheus rendering).
+
 ### Added: hot reload of the read buffer, backlog and UDP idle timeout; I/O thread resizing
 
 ADR-028 (docs/adr/028-hot-reload-buffers-backlog-threads.md):
@@ -374,6 +387,7 @@ ADR-028 (docs/adr/028-hot-reload-buffers-backlog-threads.md):
   and SIGUSR1 run each worker's `Worker::on_reload` hook (apply a new configuration and thread
   count without replacing processes); `Worker::reloads`, `Status::in_place_reloads`.
 - Hot path unchanged (same-run A/B in docs/BENCHMARKS.md, "Hot reload").
+
 ### Added: documentation site for GitHub Pages, a runner for the book's examples
 
 - `book/site.sh` builds the site published at `lesismal.github.io/only`: both books, a language

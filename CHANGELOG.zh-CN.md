@@ -13,6 +13,7 @@ only 的所有重要变更都记录在这里。格式遵循
 ### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
 
 only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组、SOCKS4 BIND
 
 增量（ADR-019，docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md）：
@@ -38,6 +39,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
 - 互通（`tools/interop/socks/run.sh`，15/15）：我们的客户端对 Dante 和 only-socks，curl/PySocks/
   手写客户端对服务端（分片、SOCKS4 BIND）。新增模糊测试目标 `socks_client`（客户端握手、隧道
   transport、重组）。
+
 ### 新增：arpc 中间件、coder 与客户端连接池（only-arpc）
 
 均为新增（ADR-023，docs/adr/023-arpc-middleware-coders-pools.zh-CN.md）：
@@ -60,6 +62,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
   `Peer::pending_calls`、`Peer::ping`。
 - 实测（gpu51，同轮 A/B，10 轮中位数）：无中间件的调用为之前的 0.98 倍，一个中间件为无中间件的
   1.00 倍，均在约 4% 的噪声内；每次调用的用户态指令 +1.5%，周期数不变。
+
 ### 新增：BitTorrent v2 与混合种子、web seed、LSD、IPv6 DHT、速率与做种限制
 
 `only-bittorrent`（ADR-018，docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md）：
@@ -87,6 +90,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
   种子，从 nginx 获取 web seed，Docker 网络上的 LSD。新增模糊测试目标 `bt_lsd` 与 `bt_merkle`；
   扩展 `bt_bencode`、`bt_peer_wire`、`bt_krpc`。
 - 有意不实现 BEP 44（ADR-018）。
+
 ### 新增：protobuf 的 group、extension、edition、JSON 与反射；gRPC 服务端反射
 
 ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
@@ -111,6 +115,7 @@ ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
 位于 `extensions`，不再在 `unknown_fields` 中；超过 5 字节的 tag 被拒绝（与 C++ 一致）。编解码开销不变：在 gpu51 上与上一提交同轮 A/B
 （交替 5 轮取中位数，prost 作对照）：Point 12/18 ns → 12/18 ns，Feature 19/47 ns → 18/45 ns，
 AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 1448 ns（−11%，prost 1788 → 1749）。
+
 ### 新增：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
 
 除注明外均为新增（ADR-021，docs/adr/021-dtls13-cid-resumption.zh-CN.md；only-dtls 属 Internal 层）：
@@ -142,6 +147,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   KeyUpdate、会话恢复、PSK、版本协商、与 wolfSSL 的 CID），pion/dtls v3（CID、PSK 套件）。fuzz 目标
   `dtls_record` 与 `dtls_handshake` 覆盖 CID 与统一头记录以及 DTLS 1.3 状态机。DTLS 1.2 记录层在 gpu51 上
   同轮 A/B（新增 `dtls-bench` 示例）：64 字节记录为原来的 0.97-1.01，1 KiB 为 1.00-1.02。
+
 ### 新增：TCP 与 TLS 上的 TURN、TURN 客户端、ICE-TCP 与 simulcast 发送
 
 新增（ADR-017，docs/adr/017-webrtc-turn-gaps.zh-CN.md）：
@@ -173,6 +179,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   客户端经 UDP、TCP、TLS 对 `only-turn`；`only_turn` 客户端经 UDP、TCP、TLS 对 pion/turn、coturn 与
   `only-turn`；只带 relay 候选（来自 `only-turn`、pion/turn、coturn）以及只带被动 TCP 候选的 `Endpoint`
   对 pion；pion 收到 h/m/l 三层 simulcast。新增 fuzz 目标 `turn_stream` 与 `ice_tcp`。
+
 ### 新增：only-media 的 fMP4 HLS、RTMP 与 RTSP 客户端、WebRTC 媒体
 
 新增（ADR-016，docs/adr/016-media-fmp4-clients-webrtc.zh-CN.md）：
@@ -192,6 +199,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   UDP）、ffmpeg 的 WHIP 封装器与 pion（WHIP、WHEP、PLI 往返）。新 fuzz 目标 `fmp4_demux`、`rtmp_client`、
   `rtsp_client`。
 - 修复：only-webrtc 的 `Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后会 panic。
+
 ### 新增：XDP 限速、I/O 线程绑核、eBPF 哈希分流、内核拼接的 SOCKS 隧道
 
 均为新增（ADR-027，docs/adr/027-ebpf-xdp-pinning-socks-splice.zh-CN.md）：
@@ -210,6 +218,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   内核中转发（需显式开启），无法拼接时回退到用户态转发。
 - `bench-server` 的 `ONLY_ACCEL` 开关、`ebpf-bench` 示例、`tools/bench/ebpf.sh`；fuzz 目标
   `xdp_rate_limit`。
+
 ### 新增：only-dpdk 用户态协议栈的 IPv6、ECN 与 pacing
 
 新增 API（ADR-026，docs/adr/026-userspace-ipv6-ecn-pacing.zh-CN.md；only-dpdk 属实验性）：
@@ -231,6 +240,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
 - 测试：模拟有损链路上的 IPv6 与 ECN / pacing，双栈内存链路测试，Docker 中基于 IPv6 的内核互通
   （TAP、AF_PACKET、双队列 DPDK `net_tap`：`ping -6`、含分片的 UDP、双向 TCP、开启 ECN 与 pacing 的
   `netem` 丢包）；模糊测试目标 `dpdk_ipv6`、`dpdk_icmpv6`、`dpdk_ndp`。
+
 ### 变更：UDP 数据报以拥有所有权的接收缓冲区交付（only-sys、only-epoll、only-quic；ADR-024）
 
 UDP 循环（epoll、io_uring 与 macOS；服务端与拨号 socket）接收进池化的接收 slab，并可把每个数据报作为拥有所有权的
@@ -239,6 +249,7 @@ UDP 循环（epoll、io_uring 与 macOS；服务端与拨号 socket）接收进�
 only-quic 共用）代替 SipHash。`only-buf` 现在只在一个模块（`slab`，经 Miri 与 loom 检查；docs/unsafe-review.zh-CN.md）
 中允许 unsafe 代码。回环上的同轮 A/B：QUIC 批量、HTTP/3、握手与 UDP echo 都在 1% 以内（HTTP/3 1.01，其余 1.00；
 docs/BENCHMARKS.zh-CN.md）。不选择启用的 handler（包括加密的 handler）没有变化。公开 API 无变化。
+
 ### 变更：HTTP 请求不再每次装箱响应 sink、不再每次分配 target（ADR-025）
 
 HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
@@ -272,6 +283,7 @@ HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
 | `transport::dispatch(&svc, req, Box::new(s))` | 每个连接一次 `let sink = SharedSink::new(c);`，然后 `transport::dispatch_conn(&svc, req, &sink, tag)` |
 | `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
 | `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))`（可选） |
+
 ### 新增：span、推送导出（OTLP、StatsD）、HTTP 按路由标签、HTTP/2 gauge
 
 只有新增（ADR-020，docs/adr/020-spans-and-push-export.zh-CN.md）：
@@ -296,6 +308,7 @@ HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
   `export_http_response`、`export_otlp`。
 - only-core：`Metrics::collect_into` 与 `Telemetry::collect_all`（引擎序列以 `Families` 表示，与 Prometheus
   渲染一致）。
+
 ### 新增：读缓冲区、backlog 和 UDP 空闲超时的热更新；I/O 线程数调整
 
 ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
@@ -317,6 +330,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
   SIGUSR1 让每个 worker 执行 `Worker::on_reload` 钩子（不替换进程即应用新配置和线程数）；
   `Worker::reloads`、`Status::in_place_reloads`。
 - 热路径不变（同轮 A/B 见 docs/BENCHMARKS.zh-CN.md 的“热更新”）。
+
 ### 新增：GitHub Pages 文档站点、书中示例的运行脚本
 
 - `book/site.sh` 构建发布在 `lesismal.github.io/only` 的站点：两本书、每页的语言切换与 API 链接、

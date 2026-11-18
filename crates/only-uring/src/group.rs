@@ -289,8 +289,7 @@ impl UringGroup {
                     only_sys::process::pin_current_thread(&pin).ok();
                 }
                 l.run();
-            })
-        {
+            }) {
             Ok(h) => {
                 slot.handle = Some(h);
                 Ok(())
