@@ -205,7 +205,7 @@ fn restart_after_close_without_rehash() {
         let (c, ev) = cfg(&dir.0, false);
         let client = Client::new(c).unwrap();
         let t = client
-            .add_torrent(mi.clone(), AddOptions::default())
+            .add_torrent(mi, AddOptions::default())
             .unwrap();
         assert!(t.wait_complete(Duration::from_secs(10)), "{v:?}");
         wait_checked(&ev);

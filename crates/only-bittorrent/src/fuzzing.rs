@@ -394,7 +394,7 @@ pub(crate) mod seeds {
                         })
                         .collect(),
                 ),
-                held: mi.piece_layers.clone(),
+                held: mi.piece_layers,
                 info: Some(std::sync::Arc::new(info)),
                 clean: i == 0,
                 paused: i == 1,
