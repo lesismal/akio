@@ -22,7 +22,9 @@ use only_crypto::pkey::PublicKey;
 use only_x509::Certificate;
 
 use crate::config::{Config, Fingerprint, FingerprintAlgorithm, SrtpKeys, SrtpProfile, Version};
-use crate::conn::{Conn12, Event, Handoff, HandshakeInfo, Role, new_cid};
+use crate::conn::{
+    Conn12, Event, Handoff, HandshakeInfo, Role, new_cid, srtp_mki_answer, srtp_mki_echo,
+};
 use crate::cookie::{self, HelloVerifier, HrrCookie};
 use crate::crypto::{
     self, CipherSuite, KeyShare, NamedGroup, PrfHash, Protection13, SIGNATURE_SCHEMES,
@@ -256,6 +258,7 @@ pub(crate) struct Conn13 {
     peer_schemes: Vec<u16>,
     peer_psk_dhe: bool,
     srtp_profile: Option<SrtpProfile>,
+    srtp_mki: Option<Vec<u8>>,
     local_cid: Option<Vec<u8>>,
     peer_cid: Option<Vec<u8>>,
     // handshake messages
@@ -362,6 +365,7 @@ impl Conn13 {
             peer_schemes: Vec::new(),
             peer_psk_dhe: false,
             srtp_profile: None,
+            srtp_mki: None,
             local_cid,
             peer_cid: None,
             send_seq: 0,
@@ -1458,6 +1462,7 @@ impl Conn13 {
             peer_certificates: self.peer_chain.clone(),
             srtp_profile: self.srtp_profile,
             srtp_keys,
+            srtp_mki: self.srtp_mki.clone(),
             extended_master_secret: true,
             version: Version::Dtls13,
             resumed: self.resumed,
@@ -1511,7 +1516,7 @@ impl Conn13 {
                 srtp: (!cfg.srtp_profiles.is_empty()).then(|| {
                     (
                         cfg.srtp_profiles.iter().map(|p| p.id()).collect(),
-                        Vec::new(),
+                        cfg.srtp_mki.clone(),
                     )
                 }),
                 connection_id: self.local_cid.clone(),
@@ -1740,9 +1745,7 @@ impl Conn13 {
             let p = SrtpProfile::from_id(*id)
                 .filter(|p| self.config.srtp_profiles.contains(p))
                 .ok_or_else(|| illegal("SRTP profile not offered"))?;
-            if !mki.is_empty() {
-                return Err(illegal("SRTP MKI not offered"));
-            }
+            self.srtp_mki = srtp_mki_answer(&self.config, mki)?;
             self.srtp_profile = Some(p);
         }
         if let Some(cid) = &e.connection_id {
@@ -1982,6 +1985,7 @@ impl Conn13 {
                 .copied()
                 .find(|p| offered.contains(&p.id()))
         });
+        self.srtp_mki = srtp_mki_echo(&self.config, self.srtp_profile, e.srtp.as_ref());
         match (&e.connection_id, &self.local_cid) {
             (Some(peer), Some(_)) => self.peer_cid = Some(peer.clone()),
             _ => self.local_cid = None,
@@ -2012,7 +2016,9 @@ impl Conn13 {
         self.schedule = Some(s);
         self.install_handshake_keys()?;
         let ee = Extensions {
-            srtp: self.srtp_profile.map(|p| (vec![p.id()], Vec::new())),
+            srtp: self
+                .srtp_profile
+                .map(|p| (vec![p.id()], self.srtp_mki.clone().unwrap_or_default())),
             ..Extensions::default()
         };
         msgs.push(self.out_msg(

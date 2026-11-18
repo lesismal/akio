@@ -55,6 +55,49 @@ fn webrtc_handshake_all_srtp_profiles() {
     }
 }
 
+/// RFC 5764 §4.1.3: the client's MKI is used when the server echoes it, not otherwise.
+#[test]
+fn srtp_mki_negotiation() {
+    let ci = Identity::generate_self_signed().unwrap();
+    let si = Identity::generate_self_signed().unwrap();
+    for (offer, accept, want) in [
+        (vec![1, 2, 3, 4], true, Some(vec![1, 2, 3, 4])),
+        (vec![1, 2, 3, 4], false, None),
+        (vec![], true, None),
+        (vec![7; 255], true, Some(vec![7; 255])),
+    ] {
+        let mut sim = Sim::new(21, PERFECT);
+        let cc = Config::webrtc(ci.clone(), PeerVerifier::AcceptAny)
+            .with_srtp_profiles(vec![SrtpProfile::AeadAes128Gcm])
+            .with_srtp_mki(offer);
+        let sc = Config::webrtc(si.clone(), PeerVerifier::AcceptAny)
+            .with_srtp_profiles(SrtpProfile::ALL.to_vec())
+            .with_srtp_accept_mki(accept);
+        let (mut c, mut s) = pair(cc, sc, &sim);
+        sim.run(&mut c, &mut s, Duration::from_secs(5), connected);
+        assert_eq!(c.handshake_info().unwrap().srtp_mki, want);
+        check_connected(&mut c, &mut s, &mut sim);
+    }
+    // No profile in common: no MKI either.
+    let mut sim = Sim::new(22, PERFECT);
+    let cc = Config::webrtc(ci, PeerVerifier::AcceptAny)
+        .with_srtp_profiles(vec![SrtpProfile::AeadAes256Gcm])
+        .with_srtp_mki(vec![9]);
+    let sc = Config::webrtc(si, PeerVerifier::AcceptAny)
+        .with_srtp_profiles(vec![SrtpProfile::Aes128CmHmacSha1_80])
+        .with_srtp_accept_mki(true);
+    let (mut c, mut s) = pair(cc, sc, &sim);
+    sim.run(&mut c, &mut s, Duration::from_secs(5), connected);
+    assert_eq!(s.handshake_info().unwrap().srtp_mki, None);
+    check_connected(&mut c, &mut s, &mut sim);
+}
+
+#[test]
+#[should_panic(expected = "at most 255 bytes")]
+fn srtp_mki_too_long() {
+    let _ = Config::without_identity().with_srtp_mki(vec![0; 256]);
+}
+
 #[test]
 fn every_cipher_suite_and_key_type() {
     let p384 = identity_with(PrivateKey::P384(

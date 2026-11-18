@@ -188,6 +188,7 @@ pub fn check_connected(c: &mut Connection, s: &mut Connection, sim: &mut Sim) {
     assert_eq!(ci.cipher_suite, si.cipher_suite);
     assert_eq!(ci.srtp_profile, si.srtp_profile);
     assert_eq!(ci.srtp_keys, si.srtp_keys);
+    assert_eq!(ci.srtp_mki, si.srtp_mki);
     assert!(ci.extended_master_secret && si.extended_master_secret);
     let a = c
         .export_keying_material("EXPERIMENTAL-test", Some(b"ctx"), 40)

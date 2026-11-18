@@ -609,6 +609,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "srtp_features"
+path = "fuzz_targets/srtp_features.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rtp_rtcp"
 path = "fuzz_targets/rtp_rtcp.rs"
 test = false

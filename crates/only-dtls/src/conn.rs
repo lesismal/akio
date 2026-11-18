@@ -47,6 +47,11 @@ pub struct HandshakeInfo {
     pub srtp_profile: Option<SrtpProfile>,
     /// The SRTP master keys and salts for that profile (RFC 5764 §4.2).
     pub srtp_keys: Option<SrtpKeys>,
+    /// The SRTP Master Key Identifier both sides agreed on (the client's
+    /// [`Config::with_srtp_mki`], echoed by a server with [`Config::with_srtp_accept_mki`]):
+    /// every SRTP and SRTCP packet protected with [`srtp_keys`](Self::srtp_keys), both
+    /// directions, carries it (`only_srtp::Context::new_with_mki`). `None` without an MKI.
+    pub srtp_mki: Option<Vec<u8>>,
     /// Whether the extended master secret (RFC 7627) is in use (always true in DTLS 1.3,
     /// whose key schedule binds the transcript).
     pub extended_master_secret: bool,
@@ -167,6 +172,7 @@ pub(crate) struct Conn12 {
     master_secret: Option<Vec<u8>>,
     ems: bool,
     srtp_profile: Option<SrtpProfile>,
+    srtp_mki: Option<Vec<u8>>,
     peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
     /// Server: the client's signature_algorithms; client: the CertificateRequest's list.
@@ -322,6 +328,7 @@ impl Conn12 {
             master_secret: None,
             ems: false,
             srtp_profile: None,
+            srtp_mki: None,
             peer_chain: Vec::new(),
             peer_key: None,
             peer_schemes: None,
@@ -970,6 +977,7 @@ impl Conn12 {
             peer_certificates: self.peer_chain.clone(),
             srtp_profile: self.srtp_profile,
             srtp_keys,
+            srtp_mki: self.srtp_mki.clone(),
             extended_master_secret: self.ems,
             version: Version::Dtls12,
             resumed: self.resumed,
@@ -1324,7 +1332,7 @@ impl Conn12 {
             srtp: (!cfg.srtp_profiles.is_empty()).then(|| {
                 (
                     cfg.srtp_profiles.iter().map(|p| p.id()).collect(),
-                    Vec::new(),
+                    cfg.srtp_mki.clone(),
                 )
             }),
             extended_master_secret: true,
@@ -1432,9 +1440,7 @@ impl Conn12 {
             let p = SrtpProfile::from_id(*id)
                 .filter(|p| self.config.srtp_profiles.contains(p))
                 .ok_or_else(|| illegal("SRTP profile not offered"))?;
-            if !mki.is_empty() {
-                return Err(illegal("SRTP MKI not offered"));
-            }
+            self.srtp_mki = srtp_mki_answer(&self.config, mki)?;
             self.srtp_profile = Some(p);
         }
         if !e.extended_master_secret && self.config.require_extended_master_secret {
@@ -1683,6 +1689,7 @@ impl Conn12 {
                 .find(|p| offered.contains(&p.id()))
         });
         self.srtp_profile = srtp;
+        self.srtp_mki = srtp_mki_echo(&self.config, srtp, e.srtp.as_ref());
         self.peer_schemes = e.signature_algorithms.clone();
         self.client_random = ch.random;
         self.server_random = random32()?;
@@ -1711,7 +1718,7 @@ impl Conn12 {
             compression: 0,
             extensions: Extensions {
                 point_formats: e.point_formats.as_ref().map(|_| vec![0]),
-                srtp: srtp.map(|p| (vec![p.id()], Vec::new())),
+                srtp: srtp.map(|p| (vec![p.id()], self.srtp_mki.clone().unwrap_or_default())),
                 extended_master_secret: self.ems,
                 renegotiation_info: secure_renegotiation.then(Vec::new),
                 connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
@@ -1828,6 +1835,29 @@ impl Conn12 {
     }
 }
 
+/// Client: the MKI in use after the server's `use_srtp` answer `mki` (RFC 5764 §4.1.3): none
+/// when empty, ours when echoed, and a handshake failure for anything else.
+pub(crate) fn srtp_mki_answer(config: &Config, mki: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    if mki.is_empty() {
+        Ok(None)
+    } else if mki == config.srtp_mki.as_slice() {
+        Ok(Some(mki.to_vec()))
+    } else {
+        Err(illegal("SRTP MKI not offered"))
+    }
+}
+
+/// Server: the MKI to echo for the client's `use_srtp` offer, when a profile was chosen and
+/// MKIs are accepted.
+pub(crate) fn srtp_mki_echo(
+    config: &Config,
+    chosen: Option<SrtpProfile>,
+    offer: Option<&(Vec<u16>, Vec<u8>)>,
+) -> Option<Vec<u8>> {
+    let (_, mki) = offer?;
+    (chosen.is_some() && config.srtp_accept_mki && !mki.is_empty()).then(|| mki.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1846,6 +1876,24 @@ mod tests {
         .encode(hs.len(), &mut d);
         d.extend_from_slice(&hs);
         d
+    }
+
+    #[test]
+    fn srtp_mki_rules() {
+        let cfg = Config::without_identity().with_srtp_mki(vec![1, 2]);
+        assert_eq!(srtp_mki_answer(&cfg, &[]).unwrap(), None);
+        assert_eq!(srtp_mki_answer(&cfg, &[1, 2]).unwrap(), Some(vec![1, 2]));
+        assert!(srtp_mki_answer(&cfg, &[1, 3]).is_err());
+        let plain = Config::without_identity();
+        assert!(srtp_mki_answer(&plain, &[1]).is_err());
+        let offer = (vec![7u16], vec![5u8, 6]);
+        let p = Some(SrtpProfile::AeadAes128Gcm);
+        assert_eq!(srtp_mki_echo(&plain, p, Some(&offer)), None);
+        let acc = Config::without_identity().with_srtp_accept_mki(true);
+        assert_eq!(srtp_mki_echo(&acc, p, Some(&offer)), Some(vec![5, 6]));
+        assert_eq!(srtp_mki_echo(&acc, None, Some(&offer)), None);
+        assert_eq!(srtp_mki_echo(&acc, p, Some(&(vec![7], vec![]))), None);
+        assert_eq!(srtp_mki_echo(&acc, p, None), None);
     }
 
     /// Before the cookie exchange a server reassembles nothing but a plausibly sized

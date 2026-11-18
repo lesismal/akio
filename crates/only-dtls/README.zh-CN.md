@@ -59,7 +59,8 @@ loop {
   ECDSA（SHA-256/384/512）、Ed25519、RSA-PSS 与 RSA PKCS#1 v1.5（SHA-256/384/512）。
 - 扩展：`extended_master_secret`（RFC 7627；默认必需）、`use_srtp`（RFC 5764：
   `SRTP_AEAD_AES_128_GCM`、`SRTP_AEAD_AES_256_GCM`、`SRTP_AES128_CM_HMAC_SHA1_80`、
-  `SRTP_AES128_CM_HMAC_SHA1_32`，不支持 MKI）、`renegotiation_info`（RFC 5746）、`supported_groups`、
+  `SRTP_AES128_CM_HMAC_SHA1_32`；`srtp_mki` 字段：`Config::with_srtp_mki` 提供 MKI，
+  `Config::with_srtp_accept_mki` 回显客户端的 MKI，`HandshakeInfo::srtp_mki` 给出实际使用的 MKI）、`renegotiation_info`（RFC 5746）、`supported_groups`、
   `ec_point_formats`、`signature_algorithms`。拒绝重协商（`no_renegotiation`）。
 - 认证：默认双向（`with_require_client_certificate`）。不做 CA 路径校验：`PeerVerifier::Fingerprints`
   固定证书（SDP `a=fingerprint`），`PeerVerifier::Custom` 调用回调（例如 `only_x509::Verifier`），
@@ -84,13 +85,13 @@ DTLS 1.3、连接 ID、会话恢复与 PSK（ADR-021）：
   外部 PSK（SHA-256）。
 
 未实现：DTLS 1.3 0-RTT、NewConnectionId / RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换、
-CBC 套件、SRTP MKI。
+CBC 套件。
 
 ## 测试
 
 - 模拟链路（`tests/loopback.rs`）：24 个种子，MTU 256 下 25% 丢包、10% 重复、最多 400 毫秒乱序（开启与
   关闭 cookie），检查数据报不超过 MTU，每个密码套件配合 P-256、P-384、Ed25519 与 RSA 服务端证书以及三种
-  客户端证书，每个 SRTP 配置；负面用例：错误指纹（双向）、自定义校验拒绝、重放/篡改/截断的记录、未认证的
+  客户端证书，每个 SRTP 配置，SRTP MKI 协商（含 DTLS 1.3）；负面用例：错误指纹（双向）、自定义校验拒绝、重放/篡改/截断的记录、未认证的
   告警、损坏的 cookie、无状态 `HelloVerifier`（其他地址、过期、垃圾数据）、超时与退避时间表、
   close_notify、无共同套件、缺少客户端证书、API 误用。
 - 互通（`tools/interop/dtls/run.sh`）：OpenSSL `s_server -dtls1_2` / `s_client -dtls1_2`（rust:1 镜像中的

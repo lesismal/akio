@@ -422,6 +422,8 @@ pub struct Config {
     pub(crate) identity: Option<Identity>,
     pub(crate) cipher_suites: Vec<CipherSuite>,
     pub(crate) srtp_profiles: Vec<SrtpProfile>,
+    pub(crate) srtp_mki: Vec<u8>,
+    pub(crate) srtp_accept_mki: bool,
     pub(crate) verifier: PeerVerifier,
     pub(crate) require_client_certificate: bool,
     pub(crate) require_extended_master_secret: bool,
@@ -466,6 +468,8 @@ impl Config {
                 .chain(CipherSuite::ALL)
                 .collect(),
             srtp_profiles: Vec::new(),
+            srtp_mki: Vec::new(),
+            srtp_accept_mki: false,
             verifier: PeerVerifier::AcceptAny,
             require_client_certificate: true,
             require_extended_master_secret: true,
@@ -513,6 +517,31 @@ impl Config {
     #[must_use]
     pub fn with_srtp_profiles(mut self, profiles: Vec<SrtpProfile>) -> Config {
         self.srtp_profiles = profiles;
+        self
+    }
+
+    /// Client: offers to put this SRTP Master Key Identifier in every SRTP and SRTCP packet
+    /// protected with the keys of this handshake (`srtp_mki` of `use_srtp`, RFC 5764
+    /// §4.1.3); empty (the default) offers none. Pick a value distinct from the previous
+    /// handshake's, so packets under old and new keys can be told apart while re-keying. Whether
+    /// the server agreed is in [`HandshakeInfo::srtp_mki`](crate::HandshakeInfo::srtp_mki).
+    ///
+    /// # Panics
+    ///
+    /// When `mki` is longer than 255 bytes.
+    #[must_use]
+    pub fn with_srtp_mki(mut self, mki: Vec<u8>) -> Config {
+        assert!(mki.len() <= 255, "srtp_mki is at most 255 bytes");
+        self.srtp_mki = mki;
+        self
+    }
+
+    /// Server: agrees to a client's SRTP MKI by echoing it in `use_srtp` (default off: the
+    /// server answers with an empty MKI, and SRTP runs without one). Turn it on only when the
+    /// SRTP layer builds its contexts with [`HandshakeInfo::srtp_mki`](crate::HandshakeInfo::srtp_mki).
+    #[must_use]
+    pub fn with_srtp_accept_mki(mut self, on: bool) -> Config {
+        self.srtp_accept_mki = on;
         self
     }
 

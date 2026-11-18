@@ -23,8 +23,9 @@
 //! - Authentication: mutual by default, with self-signed certificates checked by fingerprint
 //!   ([`PeerVerifier::Fingerprints`]), a callback, or deferred to the caller; the peer always
 //!   proves possession of its key.
-//! - DTLS-SRTP: `use_srtp` (RFC 5764) with the AEAD-AES-GCM and AES-CM-HMAC-SHA1 profiles;
-//!   the SRTP master keys come with [`Event::Connected`]. The RFC 5705 exporter is
+//! - DTLS-SRTP: `use_srtp` (RFC 5764) with the AEAD-AES-GCM and AES-CM-HMAC-SHA1 profiles and
+//!   an optional MKI ([`Config::with_srtp_mki`], [`Config::with_srtp_accept_mki`]); the SRTP
+//!   master keys come with [`Event::Connected`]. The RFC 5705 exporter is
 //!   [`Connection::export_keying_material`].
 //! - Alerts: close_notify both ways, fatal alerts on protocol errors.
 //!

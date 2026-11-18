@@ -273,6 +273,8 @@ pub fn only_dtls::Config::with_require_client_certificate(self, bool) -> only_dt
 pub fn only_dtls::Config::with_require_extended_master_secret(self, bool) -> only_dtls::Config
 pub fn only_dtls::Config::with_retransmit(self, core::time::Duration, core::time::Duration) -> only_dtls::Config
 pub fn only_dtls::Config::with_session_resumption(self, bool) -> only_dtls::Config
+pub fn only_dtls::Config::with_srtp_accept_mki(self, bool) -> only_dtls::Config
+pub fn only_dtls::Config::with_srtp_mki(self, alloc::vec::Vec<u8>) -> only_dtls::Config
 pub fn only_dtls::Config::with_srtp_profiles(self, alloc::vec::Vec<only_dtls::SrtpProfile>) -> only_dtls::Config
 pub fn only_dtls::Config::with_ticket_key(self, only_dtls::TicketKey) -> only_dtls::Config
 pub fn only_dtls::Config::with_ticket_lifetime(self, core::time::Duration) -> only_dtls::Config
@@ -350,6 +352,7 @@ pub only_dtls::HandshakeInfo::peer_fingerprint: core::option::Option<only_dtls::
 pub only_dtls::HandshakeInfo::psk_identity: core::option::Option<alloc::vec::Vec<u8>>
 pub only_dtls::HandshakeInfo::resumed: bool
 pub only_dtls::HandshakeInfo::srtp_keys: core::option::Option<only_dtls::SrtpKeys>
+pub only_dtls::HandshakeInfo::srtp_mki: core::option::Option<alloc::vec::Vec<u8>>
 pub only_dtls::HandshakeInfo::srtp_profile: core::option::Option<only_dtls::SrtpProfile>
 pub only_dtls::HandshakeInfo::version: only_dtls::Version
 impl core::clone::Clone for only_dtls::HandshakeInfo

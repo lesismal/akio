@@ -8,7 +8,9 @@ Two crates:
   conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `only-dtls`
   (DTLS 1.2 and 1.3 with certificate fingerprint verification and DTLS-SRTP keys; see below),
   `only-srtp`
-  (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection),
+  (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection; the
+  crate also has AES-192/256-CM, NULL, MKIs and re-keying, cryptex and RFC 6904 header
+  extension encryption, which the peers do not negotiate in SDP yet),
   `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
   channels: reliable or not, ordered or not; I-DATA message interleaving when the peer offers
   it, so a large message does not hold up small ones on other channels, and channels sharing the
