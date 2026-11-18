@@ -73,6 +73,7 @@ mod extension;
 pub mod json;
 mod message;
 pub mod reflect;
+pub mod text;
 pub mod well_known;
 
 pub use error::{DecodeError, DecodeErrorKind};

@@ -1,6 +1,7 @@
 //! The protobuf conformance testee: reads length-prefixed (little-endian u32) `ConformanceRequest`s
 //! from stdin and answers each with a `ConformanceResponse` on stdout, until EOF. Binary payloads
-//! go through the generated message types, JSON through `only_protobuf::json` on the same types.
+//! go through the generated message types, JSON through `only_protobuf::json` and text through
+//! `only_protobuf::text` on the same types.
 //!
 //! Run by the conformance runner: `tools/protobuf-test/conformance/run.sh`.
 
@@ -10,6 +11,7 @@ use only_protobuf::{
     Message,
     json::{self, ParseOptions, PrintOptions},
     reflect::ReflectMessage,
+    text,
 };
 use protobuf_test::{
     conformance::{
@@ -18,6 +20,15 @@ use protobuf_test::{
     },
     protobuf_test_messages::{editions, proto2, proto3},
 };
+
+/// Expanded `Any`s may name `TestAllTypesProto3` from any of the test messages (the C++ runtime
+/// finds it in its global pool).
+fn text_parse_options() -> text::ParseOptions {
+    text::ParseOptions {
+        type_pool: Some(proto3::descriptor_pool().clone()),
+        ..Default::default()
+    }
+}
 
 fn run<M: ReflectMessage>(req: &ConformanceRequest) -> R {
     let opts = ParseOptions {
@@ -34,7 +45,10 @@ fn run<M: ReflectMessage>(req: &ConformanceRequest) -> R {
             Err(e) => return R::ParseError(e.to_string()),
         },
         Some(Payload::JspbPayload(_)) => return R::Skipped("JSPB is not supported".into()),
-        Some(Payload::TextPayload(_)) => return R::Skipped("text format is not supported".into()),
+        Some(Payload::TextPayload(s)) => match text::from_str_with::<M>(s, &text_parse_options()) {
+            Ok(m) => m,
+            Err(e) => return R::ParseError(e.to_string()),
+        },
         None => return R::RuntimeError("no payload".into()),
     };
     match req.requested_output_format {
@@ -44,7 +58,17 @@ fn run<M: ReflectMessage>(req: &ConformanceRequest) -> R {
             Err(e) => R::SerializeError(e.to_string()),
         },
         WireFormat::JSPB => R::Skipped("JSPB is not supported".into()),
-        WireFormat::TEXT_FORMAT => R::Skipped("text format is not supported".into()),
+        WireFormat::TEXT_FORMAT => {
+            let opts = text::PrintOptions {
+                print_unknown_fields: req.print_unknown_fields,
+                type_pool: Some(proto3::descriptor_pool().clone()),
+                ..Default::default()
+            };
+            match text::to_string_with(&m, &opts) {
+                Ok(s) => R::TextPayload(s),
+                Err(e) => R::SerializeError(e.to_string()),
+            }
+        }
         f => R::RuntimeError(format!("unknown output format {f:?}")),
     }
 }

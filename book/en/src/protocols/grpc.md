@@ -157,7 +157,7 @@ assert_eq!(b.extension(&ext::LEVEL)?, Some(ext::Level::LOW));
 
 Closed enums (proto2, or `enum_type = CLOSED`) keep unknown numbers as unknown fields.
 
-### Reflection and JSON
+### Reflection, JSON and text format
 
 Each generated package embeds its descriptors (`FILE_DESCRIPTOR_SET`, `descriptor_pool()`;
 `Config::descriptors(false)` turns this off) and its messages implement
@@ -170,6 +170,17 @@ let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","locat
 let back: Feature = only_protobuf::json::from_str(&text)?;
 ```
 
+`only_protobuf::text` reads and writes the text format (`.textproto`, protoc's `--decode` and
+`DebugString`): groups, extensions as `[pkg.ext]`, `Any` expanded as
+`[type.googleapis.com/pkg.Type] { ... }`, comments and both list forms (ADR-030):
+
+```rust,ignore
+let text = only_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
+let back: Feature = only_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
+let opts = only_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
+let line = only_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
+```
+
 gRPC server reflection lets grpcurl and grpcui list and call the services without the `.proto`
 files:
 
@@ -179,7 +190,7 @@ files:
 ```
 
 `tools/interop/grpc/grpcurl.sh` checks it with grpcurl, `tools/protobuf-test/conformance/run.sh`
-runs the protobuf conformance suite (binary and JSON) against the generated code.
+runs the protobuf conformance suite (binary, JSON and text format) against the generated code.
 
 ### prost (deprecated)
 

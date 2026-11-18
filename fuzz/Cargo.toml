@@ -644,6 +644,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "protobuf_text"
+path = "fuzz_targets/protobuf_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "turn_stream"
 path = "fuzz_targets/turn_stream.rs"
 test = false

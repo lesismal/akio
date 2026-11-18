@@ -1,0 +1,5 @@
+Data { group_int32: 1 } [protobuf_test_messages.proto2.extension_int32]: 5
+[protobuf_test_messages.proto2.groupfield] { group_int32: 2 }
+repeated_bytes: ['\x00\001', "é"] optional_uint64: 0xFFFFFFFFFFFFFFFF
+message_set_correct { [protobuf_test_messages.proto2.TestAllTypesProto2.MessageSetCorrectExtension1] { str: "x" } }
+optional_nested_enum: 1; optional_double: 1e-300,

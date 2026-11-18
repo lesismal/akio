@@ -18,6 +18,7 @@
   value），并用 protoc 生成的黄金编码做了校验。
 - `reflect`：描述符池与 `DynamicMessage`（运行时才知道类型的消息）；`json`：标准 proto3 JSON 映射；
   `Extendable` / `Extension` 用于 proto2 extension，另支持封闭枚举、group 与 edition（ADR-022）。
+- `text`：文本格式，解析与输出方式与 protoc 一致（ADR-030）。
 
 ```rust,ignore
 // build.rs:  only_protobuf_build::compile(&["proto/route_guide.proto"], std::env::var("OUT_DIR")?)?;

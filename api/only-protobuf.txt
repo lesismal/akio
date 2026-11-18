@@ -765,6 +765,9 @@ pub fn only_protobuf::reflect::DynamicMessage::unknown_fields(&self) -> &only_pr
 impl only_protobuf::reflect::DynamicMessage
 pub fn only_protobuf::reflect::DynamicMessage::from_json(only_protobuf::reflect::MessageDescriptor, &str, &only_protobuf::json::ParseOptions) -> core::result::Result<only_protobuf::reflect::DynamicMessage, only_protobuf::json::JsonError>
 pub fn only_protobuf::reflect::DynamicMessage::to_json(&self, &only_protobuf::json::PrintOptions) -> core::result::Result<alloc::string::String, only_protobuf::json::JsonError>
+impl only_protobuf::reflect::DynamicMessage
+pub fn only_protobuf::reflect::DynamicMessage::from_text(only_protobuf::reflect::MessageDescriptor, &str, &only_protobuf::text::ParseOptions) -> core::result::Result<only_protobuf::reflect::DynamicMessage, only_protobuf::text::TextError>
+pub fn only_protobuf::reflect::DynamicMessage::to_text(&self, &only_protobuf::text::PrintOptions) -> alloc::string::String
 impl core::clone::Clone for only_protobuf::reflect::DynamicMessage
 pub fn only_protobuf::reflect::DynamicMessage::clone(&self) -> Self
 impl core::cmp::PartialEq for only_protobuf::reflect::DynamicMessage
@@ -1156,6 +1159,62 @@ impl only_protobuf::reflect::ReflectMessage for only_protobuf::well_known::unint
 pub fn only_protobuf::well_known::uninterpreted_option::NamePart::descriptor() -> only_protobuf::reflect::MessageDescriptor
 pub fn only_protobuf::well_known::uninterpreted_option::NamePart::from_dynamic(&only_protobuf::reflect::DynamicMessage) -> core::result::Result<Self, only_protobuf::DecodeError>
 pub fn only_protobuf::well_known::uninterpreted_option::NamePart::to_dynamic(&self) -> core::result::Result<only_protobuf::reflect::DynamicMessage, only_protobuf::DecodeError>
+pub mod only_protobuf::text
+pub struct only_protobuf::text::ParseOptions
+pub only_protobuf::text::ParseOptions::allow_unknown_fields: bool
+pub only_protobuf::text::ParseOptions::type_pool: core::option::Option<only_protobuf::reflect::DescriptorPool>
+impl core::clone::Clone for only_protobuf::text::ParseOptions
+pub fn only_protobuf::text::ParseOptions::clone(&self) -> Self
+impl core::default::Default for only_protobuf::text::ParseOptions
+pub fn only_protobuf::text::ParseOptions::default() -> Self
+impl core::fmt::Debug for only_protobuf::text::ParseOptions
+pub fn only_protobuf::text::ParseOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_protobuf::text::ParseOptions
+impl core::marker::Sync for only_protobuf::text::ParseOptions
+impl core::marker::Unpin for only_protobuf::text::ParseOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::text::ParseOptions
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::text::ParseOptions
+pub struct only_protobuf::text::PrintOptions
+pub only_protobuf::text::PrintOptions::print_unknown_fields: bool
+pub only_protobuf::text::PrintOptions::single_line: bool
+pub only_protobuf::text::PrintOptions::type_pool: core::option::Option<only_protobuf::reflect::DescriptorPool>
+impl core::clone::Clone for only_protobuf::text::PrintOptions
+pub fn only_protobuf::text::PrintOptions::clone(&self) -> Self
+impl core::default::Default for only_protobuf::text::PrintOptions
+pub fn only_protobuf::text::PrintOptions::default() -> Self
+impl core::fmt::Debug for only_protobuf::text::PrintOptions
+pub fn only_protobuf::text::PrintOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_protobuf::text::PrintOptions
+impl core::marker::Sync for only_protobuf::text::PrintOptions
+impl core::marker::Unpin for only_protobuf::text::PrintOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::text::PrintOptions
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::text::PrintOptions
+pub struct only_protobuf::text::TextError
+impl only_protobuf::text::TextError
+pub fn only_protobuf::text::TextError::column(&self) -> usize
+pub fn only_protobuf::text::TextError::line(&self) -> usize
+impl core::clone::Clone for only_protobuf::text::TextError
+pub fn only_protobuf::text::TextError::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::text::TextError
+impl core::cmp::PartialEq for only_protobuf::text::TextError
+pub fn only_protobuf::text::TextError::eq(&self, &Self) -> bool
+impl core::error::Error for only_protobuf::text::TextError
+impl core::fmt::Debug for only_protobuf::text::TextError
+pub fn only_protobuf::text::TextError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_protobuf::text::TextError
+pub fn only_protobuf::text::TextError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::text::TextError
+impl core::marker::Send for only_protobuf::text::TextError
+impl core::marker::Sync for only_protobuf::text::TextError
+impl core::marker::Unpin for only_protobuf::text::TextError
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::text::TextError
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::text::TextError
+pub const only_protobuf::text::RECURSION_LIMIT: usize
+pub fn only_protobuf::text::from_str<M: only_protobuf::reflect::ReflectMessage>(&str) -> core::result::Result<M, only_protobuf::text::TextError>
+pub fn only_protobuf::text::from_str_with<M: only_protobuf::reflect::ReflectMessage>(&str, &only_protobuf::text::ParseOptions) -> core::result::Result<M, only_protobuf::text::TextError>
+pub fn only_protobuf::text::parse_dynamic(only_protobuf::reflect::MessageDescriptor, &str, &only_protobuf::text::ParseOptions) -> core::result::Result<only_protobuf::reflect::DynamicMessage, only_protobuf::text::TextError>
+pub fn only_protobuf::text::to_string<M: only_protobuf::reflect::ReflectMessage>(&M) -> core::result::Result<alloc::string::String, only_protobuf::text::TextError>
+pub fn only_protobuf::text::to_string_with<M: only_protobuf::reflect::ReflectMessage>(&M, &only_protobuf::text::PrintOptions) -> core::result::Result<alloc::string::String, only_protobuf::text::TextError>
 pub mod only_protobuf::well_known
 pub mod only_protobuf::well_known::descriptor_proto
 pub struct only_protobuf::well_known::descriptor_proto::ExtensionRange

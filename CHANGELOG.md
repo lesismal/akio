@@ -10,6 +10,19 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: protobuf text format (only-protobuf)
+
+ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints
+the text format for generated messages (`to_string`, `to_string_with`, `from_str`,
+`from_str_with`) and `DynamicMessage`s (`parse_dynamic`, `to_text`, `from_text`), with
+`PrintOptions` (`single_line`, `print_unknown_fields`, `type_pool`), `ParseOptions`
+(`allow_unknown_fields`, `type_pool`) and `TextError` (line and column). Scalars, enums by name
+or number, strings and bytes with every escape, messages in `{ }` or `< >`, repeated fields in
+both forms, maps, oneofs, groups, extensions (`[pkg.ext]`), `Any` expansion
+(`[type.googleapis.com/...]`), comments, separators, hex / octal integers, `inf` / `nan`.
+Protobuf conformance runner v35.1: text format 909 passed, 0 failed (was 909 skipped); binary +
+JSON unchanged at 5627. New fuzz target `protobuf_text` (parse → print → parse).
+
 ### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
 
 only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH
