@@ -271,7 +271,8 @@ mod tests {
         let Ok(rx) = UdpSocket::bind("[::]:0") else {
             return; // no IPv6
         };
-        rx.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+        rx.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
         assert!(enable_ecn(rx.as_raw_fd()));
         let tx = UdpSocket::bind("127.0.0.1:0").expect("bind");
         let port = rx.local_addr().expect("addr").port();

@@ -204,9 +204,7 @@ fn restart_after_close_without_rehash() {
         // Without resume data the same data is checked in full.
         let (c, ev) = cfg(&dir.0, false);
         let client = Client::new(c).unwrap();
-        let t = client
-            .add_torrent(mi, AddOptions::default())
-            .unwrap();
+        let t = client.add_torrent(mi, AddOptions::default()).unwrap();
         assert!(t.wait_complete(Duration::from_secs(10)), "{v:?}");
         wait_checked(&ev);
         assert_eq!(t.stats().pieces_checked, n as u64);
