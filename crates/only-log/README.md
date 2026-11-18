@@ -28,6 +28,11 @@ in every `only` library; an optional bridge keeps `log`-based setups (env_logger
 - Compile-time caps, as in the `log` crate: features `max_level_off` .. `max_level_trace` and
   `release_max_level_*` compile statements above the cap out (`STATIC_MAX_LEVEL`). For
   applications only (cargo unifies features across the dependency graph).
+- Spans (`only_log::span`): `span!` / `info_span!` ... start timed spans with fields, a W3C
+  trace context (`SpanContext`, `traceparent` in and out), parents from `parent:` or the span
+  entered on the thread; finished spans go to a `Tracer` (`set_tracer`). Their own maximum level
+  (`set_max_span_level`) is off by default, so a span statement costs one relaxed load until
+  enabled. `only-export` ships a tracer that sends them to an OpenTelemetry collector.
 - No logger installed: records are dropped; `log_or_stderr` prints the records it is given to
   stderr (`only` uses it for errors and fallbacks, and prints slow-callback warnings the same
   way, so they are never lost silently).

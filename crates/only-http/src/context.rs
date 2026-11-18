@@ -8,6 +8,8 @@ use crate::h2::{H2Responder, H2Stream};
 use only_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
 use crate::message::{Headers, Method, Request, Response, Version};
+use crate::router::RouteInfo;
+use only_log::span::Span;
 
 /// Application code: handles one request.
 ///
@@ -194,6 +196,8 @@ struct Finish {
     /// Set with the time header: reading the clock for every request costs.
     started: Option<Instant>,
     time_header: Option<Cow<'static, str>>,
+    /// The request span (`crate::trace`), ended when the response goes out.
+    span: Span,
 }
 
 impl Finish {
@@ -203,6 +207,7 @@ impl Finish {
             filters: Filters::default(),
             started: None,
             time_header: None,
+            span: Span::none(),
         }
     }
 
@@ -210,8 +215,15 @@ impl Finish {
     #[inline]
     fn apply(&mut self, resp: &mut Response, req: &Request) {
         // Most responses have none of these: skip the draining and lookups.
-        if self.filters.is_empty() && self.extra.is_empty() && self.time_header.is_none() {
+        if self.filters.is_empty()
+            && self.extra.is_empty()
+            && self.time_header.is_none()
+            && self.span.is_none()
+        {
             return;
+        }
+        if !self.span.is_none() {
+            crate::trace::responded(std::mem::take(&mut self.span), resp);
         }
         for f in self.filters.drain() {
             f(resp, req);
@@ -327,6 +339,7 @@ pub struct Context {
     upgrade: Option<PendingUpgrade>,
     raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
+    route: Option<&'static RouteInfo>,
 }
 
 impl std::fmt::Debug for Context {
@@ -378,6 +391,7 @@ impl Context {
             upgrade: None,
             raw: None,
             sink: None,
+            route: None,
         }
     }
 
@@ -414,6 +428,7 @@ impl Context {
             upgrade: None,
             raw: None,
             sink: None,
+            route: None,
             responder: None,
         }
     }
@@ -430,6 +445,7 @@ impl Context {
             upgrade: None,
             raw: None,
             sink: None,
+            route: None,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -539,6 +555,32 @@ impl Context {
         }
     }
 
+    /// The route the [`Router`](crate::Router) matched (method and pattern, e.g.
+    /// `GET /users/:id`), set before the route's middleware and handler run. `None` before
+    /// routing, for unmatched requests (404/405) and outside a router.
+    pub fn route(&self) -> Option<&'static RouteInfo> {
+        self.route
+    }
+
+    pub(crate) fn set_route(&mut self, route: &'static RouteInfo) {
+        self.route = Some(route);
+        if !self.fin.span.is_none() {
+            crate::trace::routed(&mut self.fin.span, route);
+        }
+    }
+
+    /// The context of this request's span (only-log spans, `only_http::request`), when request
+    /// spans are enabled: pass it to an outgoing request's `traceparent`
+    /// ([`SpanContext::to_traceparent`](only_log::span::SpanContext::to_traceparent)) or enter
+    /// it on another thread. While the handler runs, the span is also the thread's current one.
+    pub fn span_context(&self) -> Option<only_log::span::SpanContext> {
+        self.fin.span.context()
+    }
+
+    pub(crate) fn set_span(&mut self, span: Span) {
+        self.fin.span = span;
+    }
+
     /// Whether a response has been sent (or the context detached).
     pub fn responded(&self) -> bool {
         self.responder.is_none()
@@ -580,6 +622,7 @@ impl Context {
                 filters: std::mem::take(&mut self.fin.filters),
                 started: self.fin.started,
                 time_header: self.fin.time_header.take(),
+                span: std::mem::take(&mut self.fin.span),
             },
             responder,
         })

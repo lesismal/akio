@@ -272,6 +272,30 @@ HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
 | `transport::dispatch(&svc, req, Box::new(s))` | 每个连接一次 `let sink = SharedSink::new(c);`，然后 `transport::dispatch_conn(&svc, req, &sink, tag)` |
 | `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
 | `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))`（可选） |
+### 新增：span、推送导出（OTLP、StatsD）、HTTP 按路由标签、HTTP/2 gauge
+
+只有新增（ADR-020，docs/adr/020-spans-and-push-export.zh-CN.md）：
+
+- **only-log 中的 span**（`only::log::span`）：`Span`、`SpanBuilder`、`span!` / `info_span!` ……、支持解析和
+  输出 W3C `traceparent` 的 `SpanContext`、`Tracer`（`set_tracer`）、独立的最大 span 级别
+  （`set_max_span_level`，默认关闭：禁用的 span 只花一次 relaxed 读）、`enter` / `in_scope` / `enter_context` /
+  `current`。`FmtLogger` 在 span 内加上 `trace_id` / `span_id`。没有 `tracing` 桥接（原因见 ADR-020）。
+- **HTTP 请求与连接 span**：每个 HTTP/1.x、HTTP/2、HTTP/3 请求一个 `only_http::request`（`info`，种类
+  server），路由后命名为 `"GET /users/:id"`，带方法、路径、路由、协议版本、客户端地址和状态码，带
+  `traceparent` 时作为其子 span；每条连接一个 `only_http::connection`（`debug`）。`Context::span_context()`、
+  `Context::route()`（`RouteInfo`）、`only_http::trace`。
+- **HTTP 按路由的指标**：`HttpMetrics::with_routes(n)` 用路由的方法和模式（绝不是原始路径）标注请求与延迟，
+  最多 `n` 个路由（≤ 4096），之后是 `route="other"`；未匹配的请求是 `route="unmatched"`。
+  `HttpMetrics::route_snapshot()`，族 `only_http_route_requests_total` 和 `only_http_route_request_duration_seconds`。
+- **HTTP/2 gauge**：通过新的 `H2Config::stats` 设置 `observe::H2Stats`：打开中和累计的连接与流、两个方向的
+  `RST_STREAM` 和 `GOAWAY` 帧（`only_http2_*`）。
+- **新 crate `only-export`**：在一个后台线程上把指标（新增的 `Telemetry::collect_all()` 和额外收集器）和 span
+  经 OTLP/HTTP（protobuf 或 JSON）推送到 OpenTelemetry collector，并经 UDP 推送到 StatsD / DogStatsD（计数器
+  增量）。span 队列有界（满时丢弃并计数），推送失败计数且不重试，OTLP 每一步都有超时，支持采样比例。在 Docker
+  里对 OpenTelemetry Collector 做端到端测试（`tools/otel/e2e.sh`）；fuzz 目标 `log_traceparent`、
+  `export_http_response`、`export_otlp`。
+- only-core：`Metrics::collect_into` 与 `Telemetry::collect_all`（引擎序列以 `Families` 表示，与 Prometheus
+  渲染一致）。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 

@@ -323,6 +323,34 @@ The last two per-request allocations named after the HTTP/3 allocation pass are 
 | `transport::dispatch(&svc, req, Box::new(s))` | `let sink = SharedSink::new(c);` per connection, then `transport::dispatch_conn(&svc, req, &sink, tag)` |
 | `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
 | `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))` (optional) |
+### Added: spans, push export (OTLP, StatsD), per-route HTTP labels, HTTP/2 gauges
+
+Additive (ADR-020, docs/adr/020-spans-and-push-export.md):
+
+- **Spans in only-log** (`only::log::span`): `Span`, `SpanBuilder`, `span!` / `info_span!` ...,
+  `SpanContext` with W3C `traceparent` parsing and printing, `Tracer` (`set_tracer`), a maximum
+  span level of its own (`set_max_span_level`, off by default: a disabled span costs one relaxed
+  load), `enter` / `in_scope` / `enter_context` / `current`. `FmtLogger` adds `trace_id` /
+  `span_id` inside a span. No `tracing` bridge (ADR-020 says why).
+- **HTTP request and connection spans**: `only_http::request` (`info`, kind server) for every
+  HTTP/1.x, HTTP/2 and HTTP/3 request, named `"GET /users/:id"` once routed, with method, path,
+  route, protocol version, client address and status, child of an incoming `traceparent`;
+  `only_http::connection` (`debug`) per connection. `Context::span_context()`,
+  `Context::route()` (`RouteInfo`), `only_http::trace`.
+- **Per-route HTTP metrics**: `HttpMetrics::with_routes(n)` labels requests and latency with
+  the route's method and pattern (never the raw path), at most `n` routes (≤ 4096), then
+  `route="other"`; unmatched requests are `route="unmatched"`. `HttpMetrics::route_snapshot()`,
+  families `only_http_route_requests_total` and `only_http_route_request_duration_seconds`.
+- **HTTP/2 gauges**: `observe::H2Stats` via the new `H2Config::stats`: connections and streams
+  open and total, `RST_STREAM` and `GOAWAY` frames each way (`only_http2_*`).
+- **New crate `only-export`**: pushes metrics (`Telemetry::collect_all()`, new, and extra
+  collectors) and spans from one background thread to an OpenTelemetry collector over OTLP/HTTP
+  (protobuf or JSON) and to StatsD / DogStatsD over UDP (counter deltas). Bounded span queue
+  (drops and counts when full), failed pushes counted and not retried, timeouts on every OTLP
+  step, sampling ratio. End-to-end test against the OpenTelemetry Collector in Docker
+  (`tools/otel/e2e.sh`); fuzz targets `log_traceparent`, `export_http_response`, `export_otlp`.
+- only-core: `Metrics::collect_into` and `Telemetry::collect_all` (the engine's series as
+  `Families`, identical to the Prometheus rendering).
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

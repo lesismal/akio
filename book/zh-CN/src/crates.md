@@ -16,7 +16,7 @@ $ cargo doc --workspace --no-deps --open
 |---|---|---|
 | `only` | facade：`Engine`、`Listener`、`Backend`、`Accel`，重新导出核心 API、`tls`、`ebpf` | [核心概念](concepts/index.md) |
 | `only-core` | `Conn`、`Handler`、`Acceptor`、`Config`、`Transport`、`Telemetry`；面向后端的 trait | [Handler](concepts/handlers.md) |
-| `only-log`（`only::log`） | 日志门面：级别、target、键值对、`Logger`、内置 logger、`ONLY_LOG` 过滤、编译期上限、可选 `log` 桥接 | [可观测性](observability.md) |
+| `only-log`（`only::log`） | 日志门面：级别、target、键值对、`Logger`、内置 logger、`ONLY_LOG` 过滤、编译期上限、带 W3C trace context 的 span、可选 `log` 桥接 | [可观测性](observability.md) |
 | `only-pool` | 逻辑（阻塞任务）线程池 | [阻塞任务](concepts/blocking.md) |
 | `only-buf` | 分级缓冲池、`SharedBuf` | [架构](architecture.md) |
 | `only-timer` | I/O 事件循环使用的分层时间轮 | [架构](architecture.md) |
@@ -29,6 +29,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-dpdk`（`only::dpdk`，实验性） | 内核旁路：基于 DPDK / TAP / AF_PACKET 的自研用户态 TCP/IP 协议栈 | [内核旁路（DPDK）](dpdk.md) |
 | `only-tls`（`only::tls`） | 作为连接 transport 的 TLS 1.3 / 1.2（自研） | [TLS](protocols/tls.md) |
 | `only-http` | HTTP/1.1、HTTP/2、Router、中间件、静态文件、客户端、可观测性 | [HTTP 服务端](protocols/http-server.md) |
+| `only-export` | 推送导出：在后台线程上通过 OTLP/HTTP（protobuf、JSON）和 StatsD / DogStatsD 发送指标与 span | [可观测性](observability.md#推送导出otlp-与-statsd) |
 | `only-ws` | WebSocket 服务端会话与客户端 | [WebSocket](protocols/websocket.md) |
 | `only-quic` | QUIC v1（自研实现） | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 与 QPACK | [QUIC 与 HTTP/3](protocols/quic-h3.md) |

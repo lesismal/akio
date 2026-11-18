@@ -525,6 +525,29 @@ three runs; the version is now read from the request in the response filter, HTT
 class, latency sum and first latency bucket on one cache line. The middleware itself costs about
 2% at 0.75 M req/s and 10% at 4.5 M req/s pipelined, on `main` as on the branch.
 
+### Observability overhead (ADR-020, `tools/bench`)
+
+Measured 2026-11-18 on gpu51 under `quiet.sh` (5 s runs, medians, a fresh server per run; server on
+CPUs 0–3 with 4 threads, `h2load` with 8 threads on CPUs 4–7 and 12–15). **Off**: main (ab65d376)
+against this branch's `http-bench`, 7 rounds. **On**: `crates/only-export/examples/obs-bench.rs`
+(the same routes) with one feature switched on, 5 rounds, against the branch's `http-bench`
+(spans: against main, from a later run with the deferred-fields fix). `±` is half the min–max spread.
+
+| Load (epoll) | off: branch / main | `HttpMetrics` | + per-route labels | `H2Stats` | spans 1% sampled | spans 100%, exported |
+|---|---:|---:|---:|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns | 1.000 / 1.050 (±4%) (io_uring 1.005) | 0.987 | 0.987 | 1.002 | 0.972 (±9%) | 0.746 |
+| HTTP/1.1 pipelined ×16 | 0.989 / 0.998 (±3%) (io_uring 0.999) | 0.928 | 0.925 | 0.997 | 0.883 | 0.540 |
+| h2c 64 conns × 16 streams | 1.080 / 0.993 (±13% / ±2%) (io_uring 1.019) | 0.923 (±9%) | 0.918 | 0.992 | 0.875 (±5%) | 0.547 |
+
+**Answers.** With everything off the request path is unchanged (two runs: 0.989 and 0.998 for
+pipelined epoll, the rest within ±1% or within noise). `H2Stats` costs nothing measurable; per-route
+labels add about 0.5% to the existing `HttpMetrics` middleware (whose own ~7% at 4.6M pipelined
+requests/s is the closure and response filter per request, unchanged by this work). Spans cost what
+they do: at 1% sampling, an unsampled request span is a box, two random ids and the thread-local
+enter (about 12% at 4.6M requests/s, 3% at 0.7M); at 100% every request also allocates its fields
+and the exporter thread encodes and sends ~2.5M spans/s on the same four CPUs. Sample in
+production (`sample_ratio`), or give the exporter thread its own CPU.
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

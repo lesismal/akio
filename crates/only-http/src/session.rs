@@ -124,6 +124,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             early_probe: true,
             early_len: 0,
             consumed: 0,
+            span: crate::trace::connection_span(c.peer_addr(), "1.1"),
         }
     }
 
@@ -202,6 +203,8 @@ pub struct Session<S> {
     early_len: u64,
     /// Bytes consumed so far, while within the early data.
     consumed: u64,
+    /// The connection span (`crate::trace`), ended on close.
+    span: only_log::span::Span,
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -227,9 +230,15 @@ impl<S: Service> Handler for Session<S> {
         }
     }
 
-    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
+    fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
         if let Some(w) = &self.watch {
             w.release();
+        }
+        if self.span.is_recording() {
+            if let Some(e) = &err {
+                self.span.record("error.type", e.to_string());
+            }
+            drop(std::mem::take(&mut self.span));
         }
         if let Some(h2) = &self.h2 {
             h2.on_close();
@@ -362,6 +371,7 @@ impl<S: Service> Session<S> {
                 if PREFACE[..n] == seen[..n] {
                     if seen.len() >= PREFACE.len() {
                         self.started = true;
+                        self.span.record("network.protocol.version", "2");
                         self.h2 = Some(H2Session::new(
                             c.inner().clone(),
                             cfg,
@@ -693,7 +703,9 @@ impl<S: Service> Session<S> {
             return;
         };
         let mut ctx = Box::new(Context::new(req, slot, keep_alive));
+        let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
+        drop(g);
         self.state = State::Stream {
             ctx,
             kind,
@@ -710,6 +722,7 @@ impl<S: Service> Session<S> {
                     b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n",
                 );
                 let cfg = self.cfg.h2.clone().unwrap_or_default();
+                self.span.record("network.protocol.version", "2");
                 self.h2 = Some(H2Session::new(
                     c.inner().clone(),
                     cfg,
@@ -727,7 +740,9 @@ impl<S: Service> Session<S> {
             return;
         };
         let mut ctx = Context::new(req, slot, keep_alive);
+        let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
+        drop(g);
         if !ctx.responded() && !ctx.is_detached() {
             ctx.respond(Response::text(500, "handler did not respond"));
         }

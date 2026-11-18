@@ -28,6 +28,10 @@ only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
 only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
 only-crypto = { path = "../crates/only-crypto" }
+only-log = { path = "../crates/only-log" }
+only-export = { path = "../crates/only-export", features = ["fuzzing"] }
+# Reference JSON parser for the OTLP/JSON target (export_otlp).
+serde_json = "1"
 # Reference implementations for the only-crypto differential targets (crypto_*): the crates
 # only-crypto replaced in the libraries stay here as fuzz-only dependencies.
 sha1 = "0.10"
@@ -649,6 +653,27 @@ bench = false
 [[bin]]
 name = "ice_tcp"
 path = "fuzz_targets/ice_tcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_traceparent"
+path = "fuzz_targets/log_traceparent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "export_http_response"
+path = "fuzz_targets/export_http_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "export_otlp"
+path = "fuzz_targets/export_otlp.rs"
 test = false
 doc = false
 bench = false

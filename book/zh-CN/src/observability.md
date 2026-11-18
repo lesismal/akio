@@ -99,12 +99,90 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 | 收集器 | 序列 |
 |---|---|
-| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`、`only_http_request_duration_seconds`、`only_http_requests_in_flight`、`only_http_requests_by_version_total{version}` |
+| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`、`only_http_request_duration_seconds`、`only_http_requests_in_flight`、`only_http_requests_by_version_total{version}`；用 `with_routes(n)` 时还有 `only_http_route_requests_total{method, route, class}` 和 `only_http_route_request_duration_seconds{method, route}` |
+| `only_http::observe::H2Stats`（设在 `H2Config::stats`） | `only_http2_connections_open`、`only_http2_connections_total`、`only_http2_streams_open`、`only_http2_streams_total`、`only_http2_resets_total{direction}`、`only_http2_goaways_total{direction}` |
+| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`、`only_export_spans_exported_total`、`only_export_spans_dropped_total`、`only_export_spans_queued`、`only_export_statsd_dropped_series_total` |
 | `only_quic::QuicServer`（`only_h3::serve` 返回的也是它） | `only_quic_connections_open`（gauge）、`only_quic_connections_accepted_total`、`only_quic_connections_closed_total`、`only_quic_datagrams_total{dir}`、`only_quic_bytes_total{dir}`、`only_quic_packets_sent_total`、`only_quic_packets_lost_total`、`only_quic_lost_bytes_total`、`only_quic_congestion_events_total`、`only_quic_ecn_ce_events_total` |
 | `only::tls::TlsStats`，来自 `Tls::stats()` | `only_tls_handshakes_total{side, version}`、`only_tls_resumed_total{side}`、`only_tls_early_data_total{side, outcome}` |
 
-QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在处理抓取的线程上，从不在 I/O 线程的热路径上：
-请让它们保持轻量。没有内置推送导出（StatsD、OTLP）；`Families` 里有这类导出器需要的全部数据。
+QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在处理抓取的线程上（或导出器的线程上，见
+[推送导出](#推送导出otlp-与-statsd)），从不在 I/O 线程的热路径上：请让它们保持轻量。
+
+## 按路由的指标与 HTTP/2
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:routes}}
+```
+
+- `HttpMetrics::with_routes(n)` 为每个路由增加一行：方法和路由器匹配到的**模式**
+  （`GET /users/:id`），绝不是原始路径，因此序列数受注册的路由数和 `n`（最多 4096）约束。超过 `n`
+  之后出现的路由共用 `route="other"`；没有匹配任何路由的请求（404、405）记为
+  `method="*", route="unmatched"`。路由只有在路由器内部才知道，所以要用 `Router::layer` 安装中间件。
+  路由的槽位通过一次无锁表探测找到；计数器和总数一样分片（每个路由每个分片约 200 字节）。
+  `route_snapshot()` 不经 Prometheus 直接读取。`Context::route()` 把匹配到的 `RouteInfo` 交给你自己的中间件。
+- `H2Stats` 按服务端的视角统计 HTTP/2 连接和流：当前打开数的 gauge（流从 `HEADERS` 起打开，直到关闭或
+  被重置；连接关闭时它的流随之关闭）、总数、收发的 `RST_STREAM` 和 `GOAWAY` 帧。一个 `H2Stats`
+  可以给多个监听器共用；不设 `H2Config::stats` 就什么都不统计。
+
+## Span
+
+`only::log` 除了记录还有 span：带字段、父级、种类和状态的计时工作单元，用 W3C trace id 和 span id 标识。
+span 结束时交给一个 `Tracer`（导出器，见下文）；它们有自己的最大级别，默认 `Off`：在调高之前，一条 span
+语句只花一次 relaxed 原子读，什么也不创建。
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:spans}}
+```
+
+- `span!(target: .., Level::Info, "name", key = value, ...)` 和 `info_span!` …… 启动一个 span（字段沿用
+  记录的语法，没有 `;` 和消息）。`record`、`set_name`、`set_status`、`set_kind` 修改它；drop 即结束。
+  `span.enter()` 让它成为线程当前的 span，直到守卫被 drop：期间启动的 span 是它的子 span，期间写出的记录由
+  `FmtLogger` 加上 `trace_id=.. span_id=..`。在事件循环上，只在为它运行的代码周围进入 span，不要跨回调；
+  `only::log::span::enter_context(ctx)` 把上下文带到别的线程。
+- 请求 span 启用时，only-http 为每个 HTTP/1.1、HTTP/2 和 HTTP/3 请求启动一个**请求 span**（target
+  `only_http::request`，级别 `info`，种类 server）：路由器匹配后命名为 `GET /users/:id`（未匹配的请求只用方法名），
+  带 `http.request.method`、`url.path`、`http.route`、`network.protocol.version`、`client.address` 和
+  `http.response.status_code`；5xx 设置错误状态。处理函数运行期间它是当前 span，响应头发出时结束（detach
+  的响应在任何地方发出时结束）。请求带 `traceparent` 头时，它成为调用方 span 的子 span；`ctx.span_context()`
+  给出要向下游传播的上下文（`to_traceparent()`）。
+- **连接 span**（target `only_http::connection`，级别 `debug`）覆盖一条连接从 accept 到关闭，带客户端地址和协议版本。
+- 采样由 tracer 按 trace 决定一次（导出器的 `sample_ratio`）；调用方 `traceparent` 的标志会被遵从。未采样的 span
+  仍带有 id（它的子 span 和发出的头保持未采样），但不记录任何东西。
+- 自定义 tracer：实现 `only::log::span::Tracer`（`enabled`、`sample`、`on_end`），用 `set_tracer` 加
+  `set_max_span_level` 安装。`on_end` 运行在结束 span 的线程上，常常是 I/O 线程：把 span 入队，绝不阻塞。
+
+没有 `tracing` 桥接：`tracing` 的 subscriber 需要由它自己的宏创建的 `'static` callsite 元数据，转发 only-log 的
+span 意味着按 span 名泄漏元数据，或者把名字藏进字段；OTLP 导出覆盖了常见的去处，其他去处可以用 `Tracer` 对接
+（ADR-020）。
+
+## 推送导出（OTLP 与 StatsD）
+
+`only-export` crate 在一个后台线程上推送指标和 span，没有依赖：
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:export}}
+```
+
+- **发送什么。** 每个 `interval`（默认 10 秒）发送一次与抓取相同的快照：engine 的序列和所有已注册的收集器
+  （`Telemetry::collect_all()`），再加上用 `.collector(..)` 传入的收集器。span 每个 `span_interval`
+  （默认 2 秒）发送一次，队列攒满一批（512）时提前发送。
+- **OTLP/HTTP**（`otlp_http`，或 `otlp_http_with(endpoint, Encoding::Json, headers)`）：向 collector
+  `POST /v1/metrics` 和 `/v1/traces`，protobuf（`application/x-protobuf`）或 OTLP/JSON。计数器成为累积的
+  单调 sum，gauge 仍是 gauge，直方图成为显式分桶直方图；标签成为属性，`service.name` 和 `resource_attr(..)`
+  成为 resource。span 按 target 分成不同的 instrumentation scope。只支持明文 `http://`：发往本地 collector
+  或 agent（或终结 TLS 的 sidecar）。指标已被抓取或发往 StatsD 时，`otlp_traces_only()` 让 OTLP 只发 span。
+- **StatsD**（`statsd(addr, Flavor::DogStatsd | Flavor::Statsd)`、`statsd_options(prefix, max_packet,
+  max_series)`）：计数器发送距上次推送的增量（`name:3|c`），gauge 发送值（`|g`），直方图发送 `.count`、`.sum`
+  和每个桶的 `.bucket` 增量（带 `le` 标签）。DogStatsD 用 tag 携带标签（`|#route:/users/:id,class:2xx`）；
+  普通 StatsD 把它们拼进名字（`name.class.2xx`）。多行打包进最多 1432 字节的数据报。span 不发往 StatsD。
+- **不在 I/O 线程上，且有界。** I/O 线程只把结束的 span 交给一个分片队列（默认 4096 个 span）：超出时 span
+  被丢弃并计数，从不等待。推送失败会计数并丢弃，不重试：指标是累积的，下一次推送就又完整了。StatsD 的增量表最多
+  保留 `max_series` 个序列（默认 10 000）。OTLP 的每一步（连接、写、读）都有超时（默认 5 秒），响应最多读 1 MiB。
+- `flush()` 立即推送并等待；`shutdown()`（或 drop 导出器）再推送一次然后停止线程。tracer 每个进程只能安装一次：
+  第二个带 `traces(..)` 的导出器启动会失败。
+
+`tools/otel/e2e.sh` 在 Docker 里对 OpenTelemetry Collector（contrib）运行端到端测试：OTLP protobuf 和 JSON
+进入它的 OTLP receiver，DogStatsD 进入它的 statsd receiver。
 
 ## 日志
 

@@ -1,11 +1,260 @@
 pub mod only_log
+pub mod only_log::span
+#[non_exhaustive] pub enum only_log::span::FieldValue
+pub only_log::span::FieldValue::Bool(bool)
+pub only_log::span::FieldValue::F64(f64)
+pub only_log::span::FieldValue::I64(i64)
+pub only_log::span::FieldValue::Str(alloc::borrow::Cow<'static, str>)
+pub only_log::span::FieldValue::U64(u64)
+impl only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from_value(only_log::Value<'_>) -> only_log::span::FieldValue
+impl core::clone::Clone for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::clone(&self) -> Self
+impl core::cmp::PartialEq for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::eq(&self, &Self) -> bool
+impl core::convert::From<&'static str> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(&'static str) -> only_log::span::FieldValue
+impl core::convert::From<alloc::borrow::Cow<'static, str>> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(alloc::borrow::Cow<'static, str>) -> only_log::span::FieldValue
+impl core::convert::From<alloc::string::String> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(alloc::string::String) -> only_log::span::FieldValue
+impl core::convert::From<bool> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(bool) -> only_log::span::FieldValue
+impl core::convert::From<f64> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(f64) -> only_log::span::FieldValue
+impl core::convert::From<i16> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(i16) -> only_log::span::FieldValue
+impl core::convert::From<i32> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(i32) -> only_log::span::FieldValue
+impl core::convert::From<i64> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(i64) -> only_log::span::FieldValue
+impl core::convert::From<i8> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(i8) -> only_log::span::FieldValue
+impl core::convert::From<isize> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(isize) -> only_log::span::FieldValue
+impl core::convert::From<u16> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(u16) -> only_log::span::FieldValue
+impl core::convert::From<u32> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(u32) -> only_log::span::FieldValue
+impl core::convert::From<u64> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(u64) -> only_log::span::FieldValue
+impl core::convert::From<u8> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(u8) -> only_log::span::FieldValue
+impl core::convert::From<usize> for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::from(usize) -> only_log::span::FieldValue
+impl core::fmt::Debug for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::span::FieldValue
+pub fn only_log::span::FieldValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::span::FieldValue
+impl core::marker::Send for only_log::span::FieldValue
+impl core::marker::Sync for only_log::span::FieldValue
+impl core::marker::Unpin for only_log::span::FieldValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::FieldValue
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::FieldValue
+pub enum only_log::span::Parent
+pub only_log::span::Parent::Current
+pub only_log::span::Parent::Explicit(core::option::Option<only_log::span::SpanContext>)
+pub only_log::span::Parent::Root
+impl core::clone::Clone for only_log::span::Parent
+pub fn only_log::span::Parent::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::Parent
+impl core::cmp::PartialEq for only_log::span::Parent
+pub fn only_log::span::Parent::eq(&self, &Self) -> bool
+impl core::default::Default for only_log::span::Parent
+pub fn only_log::span::Parent::default() -> Self
+impl core::fmt::Debug for only_log::span::Parent
+pub fn only_log::span::Parent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_log::span::Parent
+impl core::marker::StructuralPartialEq for only_log::span::Parent
+impl core::marker::Send for only_log::span::Parent
+impl core::marker::Sync for only_log::span::Parent
+impl core::marker::Unpin for only_log::span::Parent
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::Parent
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::Parent
+#[non_exhaustive] pub enum only_log::span::SpanKind
+pub only_log::span::SpanKind::Client
+pub only_log::span::SpanKind::Consumer
+pub only_log::span::SpanKind::Internal
+pub only_log::span::SpanKind::Producer
+pub only_log::span::SpanKind::Server
+impl core::clone::Clone for only_log::span::SpanKind
+pub fn only_log::span::SpanKind::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::SpanKind
+impl core::cmp::PartialEq for only_log::span::SpanKind
+pub fn only_log::span::SpanKind::eq(&self, &Self) -> bool
+impl core::default::Default for only_log::span::SpanKind
+pub fn only_log::span::SpanKind::default() -> Self
+impl core::fmt::Debug for only_log::span::SpanKind
+pub fn only_log::span::SpanKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_log::span::SpanKind
+pub fn only_log::span::SpanKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_log::span::SpanKind
+impl core::marker::StructuralPartialEq for only_log::span::SpanKind
+impl core::marker::Send for only_log::span::SpanKind
+impl core::marker::Sync for only_log::span::SpanKind
+impl core::marker::Unpin for only_log::span::SpanKind
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanKind
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanKind
+#[non_exhaustive] pub enum only_log::span::SpanStatus
+pub only_log::span::SpanStatus::Error(alloc::borrow::Cow<'static, str>)
+pub only_log::span::SpanStatus::Ok
+pub only_log::span::SpanStatus::Unset
+impl core::clone::Clone for only_log::span::SpanStatus
+pub fn only_log::span::SpanStatus::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::SpanStatus
+impl core::cmp::PartialEq for only_log::span::SpanStatus
+pub fn only_log::span::SpanStatus::eq(&self, &Self) -> bool
+impl core::default::Default for only_log::span::SpanStatus
+pub fn only_log::span::SpanStatus::default() -> Self
+impl core::fmt::Debug for only_log::span::SpanStatus
+pub fn only_log::span::SpanStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::span::SpanStatus
+impl core::marker::Send for only_log::span::SpanStatus
+impl core::marker::Sync for only_log::span::SpanStatus
+impl core::marker::Unpin for only_log::span::SpanStatus
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanStatus
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanStatus
+pub struct only_log::span::Entered<'a>
+impl core::fmt::Debug for only_log::span::Entered<'_>
+pub fn only_log::span::Entered<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_log::span::Entered<'_>
+pub fn only_log::span::Entered<'_>::drop(&mut self)
+impl<'a> core::marker::Send for only_log::span::Entered<'a>
+impl<'a> core::marker::Sync for only_log::span::Entered<'a>
+impl<'a> core::marker::Unpin for only_log::span::Entered<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_log::span::Entered<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_log::span::Entered<'a>
+pub struct only_log::span::SetTracerError(_)
+impl core::clone::Clone for only_log::span::SetTracerError
+pub fn only_log::span::SetTracerError::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::SetTracerError
+impl core::cmp::PartialEq for only_log::span::SetTracerError
+pub fn only_log::span::SetTracerError::eq(&self, &Self) -> bool
+impl core::error::Error for only_log::span::SetTracerError
+impl core::fmt::Debug for only_log::span::SetTracerError
+pub fn only_log::span::SetTracerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::span::SetTracerError
+pub fn only_log::span::SetTracerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::span::SetTracerError
+impl core::marker::Send for only_log::span::SetTracerError
+impl core::marker::Sync for only_log::span::SetTracerError
+impl core::marker::Unpin for only_log::span::SetTracerError
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SetTracerError
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SetTracerError
+pub struct only_log::span::Span(_)
+impl only_log::span::Span
+pub fn only_log::span::Span::context(&self) -> core::option::Option<only_log::span::SpanContext>
+pub fn only_log::span::Span::end(self)
+pub fn only_log::span::Span::enter(&self) -> only_log::span::Entered<'_>
+pub fn only_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce() -> R) -> R
+pub fn only_log::span::Span::is_none(&self) -> bool
+pub fn only_log::span::Span::is_recording(&self) -> bool
+pub const fn only_log::span::Span::none() -> only_log::span::Span
+pub fn only_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>)
+pub fn only_log::span::Span::set_kind(&mut self, only_log::span::SpanKind)
+pub fn only_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)
+pub fn only_log::span::Span::set_status(&mut self, only_log::span::SpanStatus)
+pub fn only_log::span::Span::start(only_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> only_log::span::Span
+impl core::default::Default for only_log::span::Span
+pub fn only_log::span::Span::default() -> Self
+impl core::fmt::Debug for only_log::span::Span
+pub fn only_log::span::Span::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_log::span::Span
+pub fn only_log::span::Span::drop(&mut self)
+impl core::marker::Send for only_log::span::Span
+impl core::marker::Sync for only_log::span::Span
+impl core::marker::Unpin for only_log::span::Span
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::Span
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::Span
+pub struct only_log::span::SpanBuilder
+impl only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>) -> only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::kind(self, only_log::span::SpanKind) -> only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::new(only_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::parent(self, only_log::span::Parent) -> only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::start(self) -> only_log::span::Span
+impl core::fmt::Debug for only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_log::span::SpanBuilder
+impl core::marker::Sync for only_log::span::SpanBuilder
+impl core::marker::Unpin for only_log::span::SpanBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanBuilder
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanBuilder
+pub struct only_log::span::SpanContext
+impl only_log::span::SpanContext
+pub const fn only_log::span::SpanContext::flags(&self) -> u8
+pub fn only_log::span::SpanContext::from_traceparent(&str) -> core::option::Option<only_log::span::SpanContext>
+pub const fn only_log::span::SpanContext::is_remote(&self) -> bool
+pub const fn only_log::span::SpanContext::is_sampled(&self) -> bool
+pub fn only_log::span::SpanContext::new(u128, u64, bool, bool) -> core::option::Option<only_log::span::SpanContext>
+pub const fn only_log::span::SpanContext::span_id(&self) -> u64
+pub fn only_log::span::SpanContext::to_traceparent(&self) -> alloc::string::String
+pub const fn only_log::span::SpanContext::trace_id(&self) -> u128
+impl core::clone::Clone for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::SpanContext
+impl core::cmp::PartialEq for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_log::span::SpanContext
+impl core::marker::StructuralPartialEq for only_log::span::SpanContext
+impl core::marker::Send for only_log::span::SpanContext
+impl core::marker::Sync for only_log::span::SpanContext
+impl core::marker::Unpin for only_log::span::SpanContext
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanContext
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanContext
+#[non_exhaustive] pub struct only_log::span::SpanData
+pub only_log::span::SpanData::context: only_log::span::SpanContext
+pub only_log::span::SpanData::end: std::time::SystemTime
+pub only_log::span::SpanData::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, only_log::span::FieldValue)>
+pub only_log::span::SpanData::kind: only_log::span::SpanKind
+pub only_log::span::SpanData::level: only_log::Level
+pub only_log::span::SpanData::name: alloc::borrow::Cow<'static, str>
+pub only_log::span::SpanData::parent: core::option::Option<only_log::span::SpanContext>
+pub only_log::span::SpanData::start: std::time::SystemTime
+pub only_log::span::SpanData::status: only_log::span::SpanStatus
+pub only_log::span::SpanData::target: &'static str
+impl only_log::span::SpanData
+pub fn only_log::span::SpanData::duration(&self) -> core::time::Duration
+pub fn only_log::span::SpanData::field(&self, &str) -> core::option::Option<&only_log::span::FieldValue>
+impl core::clone::Clone for only_log::span::SpanData
+pub fn only_log::span::SpanData::clone(&self) -> Self
+impl core::fmt::Debug for only_log::span::SpanData
+pub fn only_log::span::SpanData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_log::span::SpanData
+impl core::marker::Sync for only_log::span::SpanData
+impl core::marker::Unpin for only_log::span::SpanData
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanData
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanData
+pub trait only_log::span::Tracer: core::marker::Send + core::marker::Sync
+pub fn only_log::span::Tracer::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::span::Tracer::on_end(&self, only_log::span::SpanData)
+pub fn only_log::span::Tracer::sample(&self, u128, core::option::Option<&only_log::span::SpanContext>) -> bool
+pub fn only_log::span::current() -> core::option::Option<only_log::span::SpanContext>
+pub fn only_log::span::enabled(only_log::Level) -> bool
+pub fn only_log::span::enter_context(only_log::span::SpanContext) -> only_log::span::Entered<'static>
+pub fn only_log::span::max_span_level() -> only_log::LevelFilter
+pub fn only_log::span::set_boxed_tracer(alloc::boxed::Box<dyn only_log::span::Tracer>) -> core::result::Result<(), only_log::span::SetTracerError>
+pub fn only_log::span::set_max_span_level(only_log::LevelFilter)
+pub fn only_log::span::set_tracer(&'static dyn only_log::span::Tracer) -> core::result::Result<(), only_log::span::SetTracerError>
+pub fn only_log::span::tracer() -> core::option::Option<&'static dyn only_log::span::Tracer>
 pub macro only_log::debug!
+pub macro only_log::debug_span!
 pub macro only_log::error!
+pub macro only_log::error_span!
 pub macro only_log::info!
+pub macro only_log::info_span!
 pub macro only_log::log!
 pub macro only_log::log_enabled!
+pub macro only_log::span!
 pub macro only_log::trace!
+pub macro only_log::trace_span!
 pub macro only_log::warn!
+pub macro only_log::warn_span!
 #[repr(usize)] pub enum only_log::Level
 pub only_log::Level::Debug = 4
 pub only_log::Level::Error = 1
@@ -272,6 +521,57 @@ impl core::marker::Sync for only_log::SetLoggerError
 impl core::marker::Unpin for only_log::SetLoggerError
 impl core::panic::unwind_safe::RefUnwindSafe for only_log::SetLoggerError
 impl core::panic::unwind_safe::UnwindSafe for only_log::SetLoggerError
+pub struct only_log::Span(_)
+impl only_log::span::Span
+pub fn only_log::span::Span::context(&self) -> core::option::Option<only_log::span::SpanContext>
+pub fn only_log::span::Span::end(self)
+pub fn only_log::span::Span::enter(&self) -> only_log::span::Entered<'_>
+pub fn only_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce() -> R) -> R
+pub fn only_log::span::Span::is_none(&self) -> bool
+pub fn only_log::span::Span::is_recording(&self) -> bool
+pub const fn only_log::span::Span::none() -> only_log::span::Span
+pub fn only_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>)
+pub fn only_log::span::Span::set_kind(&mut self, only_log::span::SpanKind)
+pub fn only_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)
+pub fn only_log::span::Span::set_status(&mut self, only_log::span::SpanStatus)
+pub fn only_log::span::Span::start(only_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> only_log::span::Span
+impl core::default::Default for only_log::span::Span
+pub fn only_log::span::Span::default() -> Self
+impl core::fmt::Debug for only_log::span::Span
+pub fn only_log::span::Span::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_log::span::Span
+pub fn only_log::span::Span::drop(&mut self)
+impl core::marker::Send for only_log::span::Span
+impl core::marker::Sync for only_log::span::Span
+impl core::marker::Unpin for only_log::span::Span
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::Span
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::Span
+pub struct only_log::SpanContext
+impl only_log::span::SpanContext
+pub const fn only_log::span::SpanContext::flags(&self) -> u8
+pub fn only_log::span::SpanContext::from_traceparent(&str) -> core::option::Option<only_log::span::SpanContext>
+pub const fn only_log::span::SpanContext::is_remote(&self) -> bool
+pub const fn only_log::span::SpanContext::is_sampled(&self) -> bool
+pub fn only_log::span::SpanContext::new(u128, u64, bool, bool) -> core::option::Option<only_log::span::SpanContext>
+pub const fn only_log::span::SpanContext::span_id(&self) -> u64
+pub fn only_log::span::SpanContext::to_traceparent(&self) -> alloc::string::String
+pub const fn only_log::span::SpanContext::trace_id(&self) -> u128
+impl core::clone::Clone for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::clone(&self) -> Self
+impl core::cmp::Eq for only_log::span::SpanContext
+impl core::cmp::PartialEq for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_log::span::SpanContext
+pub fn only_log::span::SpanContext::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_log::span::SpanContext
+impl core::marker::StructuralPartialEq for only_log::span::SpanContext
+impl core::marker::Send for only_log::span::SpanContext
+impl core::marker::Sync for only_log::span::SpanContext
+impl core::marker::Unpin for only_log::span::SpanContext
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanContext
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanContext
 pub struct only_log::StderrLogger
 impl core::clone::Clone for only_log::StderrLogger
 pub fn only_log::StderrLogger::clone(&self) -> Self

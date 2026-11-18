@@ -65,6 +65,7 @@ pub mod re;
 mod router;
 mod session;
 mod timer;
+pub mod trace;
 // The seam between HTTP transports and services (only-h3 dispatches through it):
 // `#[doc(hidden)]`, unstable, outside the semver promise (docs/api-stability.md).
 #[doc(hidden)]
@@ -76,5 +77,5 @@ pub use context::{
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};
 pub use only_ws as ws;
-pub use router::{RouteMatch, Router};
+pub use router::{RouteInfo, RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

@@ -23,7 +23,7 @@
 //! stays available ([`Context::param_raw`]).
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -80,6 +80,56 @@ impl Ranges {
 /// Parameter name lists, interned: each distinct list is allocated once per process and lives
 /// as long as it, so a dispatched request refers to its route's names without touching a
 /// reference count shared by every thread. Bounded by the distinct lists routes declare.
+/// A registered route as metrics and spans label it: its method and its pattern as written
+/// (`/users/:id`, not the request path), so the label set is bounded by the routes. One per
+/// distinct method and pattern for the life of the process ([`Context::route`]).
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct RouteInfo {
+    method: Method,
+    pattern: Box<str>,
+    id: u64,
+}
+
+impl RouteInfo {
+    /// The method the route was registered for (a `HEAD` request served by a `GET` route
+    /// reports `GET`).
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    /// The path pattern as registered (with a [`Router::nest`] prefix).
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// A process-unique number for this method and pattern.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+/// The interned [`RouteInfo`] of `method path`: registering the same route again (another
+/// router, `layer`) returns the same one, so the leak is bounded by the distinct routes.
+fn route_info(method: &Method, path: &str) -> &'static RouteInfo {
+    type Key = (Method, Box<str>);
+    static INFOS: OnceLock<Mutex<HashMap<Key, &'static RouteInfo>>> = OnceLock::new();
+    let mut map = INFOS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let key = (method.clone(), Box::<str>::from(path));
+    if let Some(i) = map.get(&key) {
+        return i;
+    }
+    let info: &'static RouteInfo = Box::leak(Box::new(RouteInfo {
+        method: method.clone(),
+        pattern: path.into(),
+        id: map.len() as u64 + 1,
+    }));
+    map.insert(key, info);
+    info
+}
+
 fn intern(names: Vec<Box<str>>) -> &'static [Box<str>] {
     if names.is_empty() {
         return &[];
@@ -169,6 +219,7 @@ impl Matcher {
 struct Route {
     method: Method,
     svc: Arc<dyn Service>,
+    info: &'static RouteInfo,
 }
 
 /// The routes registered for one path pattern.
@@ -453,7 +504,8 @@ impl Leaf {
             "duplicate route {} {path}",
             method.as_str()
         );
-        self.routes.push(Route { method, svc });
+        let info = route_info(&method, path);
+        self.routes.push(Route { method, svc, info });
         self.allow = allow(self).into();
     }
 }
@@ -879,6 +931,7 @@ impl Service for Router {
                 if !names.is_empty() {
                     ctx.set_params(Params::new(names, ranges, ctx.path()));
                 }
+                ctx.set_route(r.info);
                 r.svc.call(ctx);
             }
             Resolved::NotAllowed(leaf) => {

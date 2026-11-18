@@ -42,6 +42,8 @@ fn main() {
     log::set_max_level(log::LevelFilter::Info);
 
     for _ in 0..2 {
+        // Spans stay off (no tracer, maximum span level `Off`) while logging is on: the
+        // statement costs one atomic load.
         bench("only-log trace! (disabled, 2 key-values)", |i| {
             only_log::trace!(target: "only", conn_id = i, dialed = false; "connection opened");
         });
@@ -53,6 +55,12 @@ fn main() {
         });
         bench("log log_enabled! (disabled)", |_| {
             black_box(log::log_enabled!(target: "only", log::Level::Trace));
+        });
+        bench("only-log info_span! (spans off, 2 fields)", |i| {
+            black_box(only_log::info_span!(target: "only", "request", conn_id = i, dialed = false));
+        });
+        bench("only-log span::enabled (spans off)", |_| {
+            black_box(only_log::span::enabled(only_log::Level::Info));
         });
         bench("only-log info! (enabled, null logger, 2 kvs)", |i| {
             only_log::info!(target: "only", conn_id = i, dialed = false; "connection opened");

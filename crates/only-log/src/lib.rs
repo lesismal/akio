@@ -42,6 +42,14 @@
 //! [`log_or_stderr`] prints those it is given to stderr instead, which is how `only` keeps
 //! errors and slow-callback warnings visible when an application installs nothing.
 //!
+//! # Spans
+//!
+//! The [`span`](mod@span) module adds timed, nested spans with fields and W3C trace context
+//! ([`span!`], [`info_span!`] ..., [`Span::enter`]), handed to a [`Tracer`](span::Tracer) when
+//! they end. They have their own maximum level ([`span::set_max_span_level`], off by default),
+//! so a disabled span costs the same single atomic load as a disabled log statement.
+//! [`FmtLogger`] adds `trace_id` / `span_id` to records written inside an entered span.
+//!
 //! # The `log` crate
 //!
 //! With the `log` cargo feature, only-log bridges to the [`log`](https://docs.rs/log) crate
@@ -66,9 +74,11 @@ pub mod bridge;
 mod filter;
 mod loggers;
 mod macros;
+pub mod span;
 
 pub use filter::{ENV_VAR, Filter, ParseFilterError};
 pub use loggers::{DEFAULT_QUEUE_LINES, FmtLogger, StderrLogger, init, init_from_env};
+pub use span::{Span, SpanContext};
 
 // ---- levels ---------------------------------------------------------------------------------
 

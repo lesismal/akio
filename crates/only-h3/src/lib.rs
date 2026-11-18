@@ -169,6 +169,7 @@ pub fn serve_with<S: Service>(
             fields: FieldBuf::default(),
             sink: SharedSink::new(out.clone()),
             out,
+            span: only_http::trace::connection_span(c.remote_addr(), "3"),
         }
     })
 }
@@ -578,6 +579,8 @@ struct ServerConn<S> {
     out: H3Out,
     /// `out` as the connection's response sink, shared by its requests.
     sink: SharedSink,
+    /// The connection span (`only_http::trace`), ended on close.
+    span: only::log::span::Span,
 }
 
 /// Why a request stream stopped being read.
@@ -1242,12 +1245,16 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         pump(c, &self.out.outs, id);
     }
 
-    fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {
+    fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
         for (_, mut r) in self.reqs.drain() {
             r.finish_sink(None);
         }
         self.uni.clear();
         lock(&self.out.outs).clear();
+        if self.span.is_recording() {
+            self.span.record("quic.close_reason", format!("{reason:?}"));
+            drop(std::mem::take(&mut self.span));
+        }
     }
 }
 

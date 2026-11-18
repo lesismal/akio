@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/only-sys",
     "crates/only-log",
+    "crates/only-export",
     "crates/only-crypto",
     "crates/only-x509",
     "crates/only-dtls",
@@ -95,6 +96,7 @@ only-media = { path = "crates/only-media", version = "=1.0.0-rc.1" }
 only-bittorrent = { path = "crates/only-bittorrent", version = "=1.0.0-rc.1" }
 only = { path = "crates/only", version = "=1.0.0-rc.1" }
 only-prefork = { path = "crates/only-prefork", version = "=1.0.0-rc.1" }
+only-export = { path = "crates/only-export", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

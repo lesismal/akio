@@ -433,12 +433,56 @@ pub fn only_http::middleware::recover() -> impl only_http::Middleware
 pub fn only_http::middleware::request_id() -> impl only_http::Middleware
 pub fn only_http::middleware::response_time() -> impl only_http::Middleware
 pub mod only_http::observe
+#[non_exhaustive] pub struct only_http::observe::H2Snapshot
+pub only_http::observe::H2Snapshot::connections_open: u64
+pub only_http::observe::H2Snapshot::connections_total: u64
+pub only_http::observe::H2Snapshot::goaways_received: u64
+pub only_http::observe::H2Snapshot::goaways_sent: u64
+pub only_http::observe::H2Snapshot::resets_received: u64
+pub only_http::observe::H2Snapshot::resets_sent: u64
+pub only_http::observe::H2Snapshot::streams_open: u64
+pub only_http::observe::H2Snapshot::streams_total: u64
+impl core::clone::Clone for only_http::observe::H2Snapshot
+pub fn only_http::observe::H2Snapshot::clone(&self) -> Self
+impl core::cmp::Eq for only_http::observe::H2Snapshot
+impl core::cmp::PartialEq for only_http::observe::H2Snapshot
+pub fn only_http::observe::H2Snapshot::eq(&self, &Self) -> bool
+impl core::default::Default for only_http::observe::H2Snapshot
+pub fn only_http::observe::H2Snapshot::default() -> Self
+impl core::fmt::Debug for only_http::observe::H2Snapshot
+pub fn only_http::observe::H2Snapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_http::observe::H2Snapshot
+impl core::marker::StructuralPartialEq for only_http::observe::H2Snapshot
+impl core::marker::Send for only_http::observe::H2Snapshot
+impl core::marker::Sync for only_http::observe::H2Snapshot
+impl core::marker::Unpin for only_http::observe::H2Snapshot
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::observe::H2Snapshot
+impl core::panic::unwind_safe::UnwindSafe for only_http::observe::H2Snapshot
+pub struct only_http::observe::H2Stats(_)
+impl only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::new() -> only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::snapshot(&self) -> only_http::observe::H2Snapshot
+impl core::clone::Clone for only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::clone(&self) -> Self
+impl core::default::Default for only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::default() -> Self
+impl core::fmt::Debug for only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::metrics::Collector for only_http::observe::H2Stats
+pub fn only_http::observe::H2Stats::collect(&self, &mut only_core::metrics::Families)
+impl core::marker::Send for only_http::observe::H2Stats
+impl core::marker::Sync for only_http::observe::H2Stats
+impl core::marker::Unpin for only_http::observe::H2Stats
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::observe::H2Stats
+impl core::panic::unwind_safe::UnwindSafe for only_http::observe::H2Stats
 pub struct only_http::observe::HttpMetrics(_)
 impl only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::middleware(&self) -> impl only_http::Middleware
 pub fn only_http::observe::HttpMetrics::new() -> only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::observe(&self, u16, core::time::Duration)
+pub fn only_http::observe::HttpMetrics::route_snapshot(&self) -> alloc::vec::Vec<only_http::observe::RouteSnapshot>
 pub fn only_http::observe::HttpMetrics::snapshot(&self) -> only_http::observe::HttpSnapshot
+pub fn only_http::observe::HttpMetrics::with_routes(usize) -> only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::write_prometheus(&self, &mut alloc::string::String)
 impl core::clone::Clone for only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::clone(&self) -> Self
@@ -476,7 +520,31 @@ impl core::marker::Sync for only_http::observe::HttpSnapshot
 impl core::marker::Unpin for only_http::observe::HttpSnapshot
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::observe::HttpSnapshot
 impl core::panic::unwind_safe::UnwindSafe for only_http::observe::HttpSnapshot
+#[non_exhaustive] pub struct only_http::observe::RouteSnapshot
+pub only_http::observe::RouteSnapshot::buckets: [u64; 15]
+pub only_http::observe::RouteSnapshot::by_class: [u64; 6]
+pub only_http::observe::RouteSnapshot::method: alloc::string::String
+pub only_http::observe::RouteSnapshot::route: alloc::string::String
+pub only_http::observe::RouteSnapshot::sum: core::time::Duration
+impl only_http::observe::RouteSnapshot
+pub fn only_http::observe::RouteSnapshot::count(&self) -> u64
+impl core::clone::Clone for only_http::observe::RouteSnapshot
+pub fn only_http::observe::RouteSnapshot::clone(&self) -> Self
+impl core::cmp::Eq for only_http::observe::RouteSnapshot
+impl core::cmp::PartialEq for only_http::observe::RouteSnapshot
+pub fn only_http::observe::RouteSnapshot::eq(&self, &Self) -> bool
+impl core::default::Default for only_http::observe::RouteSnapshot
+pub fn only_http::observe::RouteSnapshot::default() -> Self
+impl core::fmt::Debug for only_http::observe::RouteSnapshot
+pub fn only_http::observe::RouteSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_http::observe::RouteSnapshot
+impl core::marker::Send for only_http::observe::RouteSnapshot
+impl core::marker::Sync for only_http::observe::RouteSnapshot
+impl core::marker::Unpin for only_http::observe::RouteSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::observe::RouteSnapshot
+impl core::panic::unwind_safe::UnwindSafe for only_http::observe::RouteSnapshot
 pub const only_http::observe::LATENCY_BUCKETS: [f64; 14]
+pub const only_http::observe::MAX_ROUTE_SLOTS: usize
 pub const only_http::observe::VERSION_LABELS: [&str; 4]
 pub fn only_http::observe::access_log() -> impl only_http::Middleware
 pub fn only_http::observe::debug_handler(alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>, core::option::Option<alloc::string::String>) -> impl only_http::Service
@@ -507,6 +575,10 @@ pub trait only_http::raw::RawHandler: core::marker::Send + 'static
 pub fn only_http::raw::RawHandler::on_close(&mut self)
 pub fn only_http::raw::RawHandler::on_data(&mut self, &only_http::raw::RawConn, &[u8])
 pub fn only_http::raw::RawHandler::on_open(&mut self, &only_http::raw::RawConn)
+pub mod only_http::trace
+pub const only_http::trace::CONNECTION_TARGET: &str
+pub const only_http::trace::REQUEST_TARGET: &str
+pub fn only_http::trace::connection_span(core::net::socket_addr::SocketAddr, &'static str) -> only_log::span::Span
 pub enum only_http::BodyEvent<'a>
 pub only_http::BodyEvent::Chunk(&'a [u8])
 pub only_http::BodyEvent::End(&'a only_http::message::Headers)
@@ -614,8 +686,10 @@ pub fn only_http::Context::push(&mut self, &str) -> bool
 pub fn only_http::Context::req(&self) -> &only_http::message::Request
 pub fn only_http::Context::respond(&mut self, only_http::message::Response)
 pub fn only_http::Context::responded(&self) -> bool
+pub fn only_http::Context::route(&self) -> core::option::Option<&'static only_http::RouteInfo>
 pub fn only_http::Context::set_local(&mut self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn only_http::Context::set_response_time_header(&mut self, &str)
+pub fn only_http::Context::span_context(&self) -> core::option::Option<only_log::span::SpanContext>
 pub fn only_http::Context::status(&self) -> core::option::Option<u16>
 pub fn only_http::Context::stream_response(&mut self, u16, only_http::message::Headers) -> core::option::Option<only_http::BodyStream>
 pub fn only_http::Context::text(&mut self, u16, impl core::convert::Into<alloc::string::String>)
@@ -668,6 +742,7 @@ pub only_http::H2Config::max_header_list: u32
 pub only_http::H2Config::max_pending_bytes: usize
 pub only_http::H2Config::max_resets: u32
 pub only_http::H2Config::reset_window: core::time::Duration
+pub only_http::H2Config::stats: core::option::Option<only_http::observe::H2Stats>
 impl core::clone::Clone for only_http::H2Config
 pub fn only_http::H2Config::clone(&self) -> Self
 impl core::default::Default for only_http::H2Config
@@ -781,6 +856,24 @@ impl core::marker::Sync for only_http::message::Response
 impl core::marker::Unpin for only_http::message::Response
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::message::Response
 impl core::panic::unwind_safe::UnwindSafe for only_http::message::Response
+pub struct only_http::RouteInfo
+impl only_http::RouteInfo
+pub fn only_http::RouteInfo::id(&self) -> u64
+pub fn only_http::RouteInfo::method(&self) -> &only_http::message::Method
+pub fn only_http::RouteInfo::pattern(&self) -> &str
+impl core::cmp::Eq for only_http::RouteInfo
+impl core::cmp::PartialEq for only_http::RouteInfo
+pub fn only_http::RouteInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_http::RouteInfo
+pub fn only_http::RouteInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_http::RouteInfo
+pub fn only_http::RouteInfo::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_http::RouteInfo
+impl core::marker::Send for only_http::RouteInfo
+impl core::marker::Sync for only_http::RouteInfo
+impl core::marker::Unpin for only_http::RouteInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::RouteInfo
+impl core::panic::unwind_safe::UnwindSafe for only_http::RouteInfo
 pub struct only_http::RouteMatch<'r, 'p>
 impl<'r, 'p> only_http::RouteMatch<'r, 'p>
 pub fn only_http::RouteMatch<'r, 'p>::param(&self, &str) -> core::option::Option<&'p str>

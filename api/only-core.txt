@@ -362,6 +362,7 @@ pub only_core::telemetry::Metrics::pool: core::option::Option<only_pool::PoolSta
 pub only_core::telemetry::Metrics::total: only_core::telemetry::LoopCounters
 pub only_core::telemetry::Metrics::uptime: core::time::Duration
 impl only_core::telemetry::Metrics
+pub fn only_core::telemetry::Metrics::collect_into(&self, &mut only_core::metrics::Families)
 pub fn only_core::telemetry::Metrics::to_json(&self) -> alloc::string::String
 pub fn only_core::telemetry::Metrics::to_prometheus(&self) -> alloc::string::String
 pub fn only_core::telemetry::Metrics::write_prometheus(&self, &mut alloc::string::String)
@@ -411,6 +412,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::SlowRecord
 pub struct only_core::telemetry::Telemetry
 impl only_core::telemetry::Telemetry
 pub fn only_core::telemetry::Telemetry::collect(&self) -> only_core::metrics::Families
+pub fn only_core::telemetry::Telemetry::collect_all(&self) -> only_core::metrics::Families
 pub fn only_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
 pub fn only_core::telemetry::Telemetry::live(&self) -> &only_core::telemetry::Live
 pub fn only_core::telemetry::Telemetry::metrics(&self) -> only_core::telemetry::Metrics
@@ -679,6 +681,7 @@ pub only_core::Metrics::pool: core::option::Option<only_pool::PoolStats>
 pub only_core::Metrics::total: only_core::telemetry::LoopCounters
 pub only_core::Metrics::uptime: core::time::Duration
 impl only_core::telemetry::Metrics
+pub fn only_core::telemetry::Metrics::collect_into(&self, &mut only_core::metrics::Families)
 pub fn only_core::telemetry::Metrics::to_json(&self) -> alloc::string::String
 pub fn only_core::telemetry::Metrics::to_prometheus(&self) -> alloc::string::String
 pub fn only_core::telemetry::Metrics::write_prometheus(&self, &mut alloc::string::String)
@@ -781,6 +784,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::SlowRecord
 pub struct only_core::Telemetry
 impl only_core::telemetry::Telemetry
 pub fn only_core::telemetry::Telemetry::collect(&self) -> only_core::metrics::Families
+pub fn only_core::telemetry::Telemetry::collect_all(&self) -> only_core::metrics::Families
 pub fn only_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
 pub fn only_core::telemetry::Telemetry::live(&self) -> &only_core::telemetry::Live
 pub fn only_core::telemetry::Telemetry::metrics(&self) -> only_core::telemetry::Metrics

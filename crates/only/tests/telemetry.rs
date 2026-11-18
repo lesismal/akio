@@ -153,6 +153,22 @@ fn metrics_count_connections_bytes_and_render_prometheus() {
         let v = line.rsplit(' ').next().unwrap();
         assert!(v.parse::<f64>().is_ok(), "bad sample line: {line}");
     }
+    // The same series as `Families` (what push exporters read), rendered identically.
+    let mut fam = only::metrics::Families::new();
+    m.collect_into(&mut fam);
+    let samples = |t: &str| {
+        let mut v: Vec<String> = t
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(str::to_owned)
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(samples(&fam.to_prometheus()), samples(&text));
+    assert_eq!(fam.dropped(), 0);
+    let all = e.telemetry().collect_all();
+    assert!(all.get("only_connections_accepted_total").is_some());
     let json = m.to_json();
     assert!(json.starts_with('{') && json.contains("\"bytes_in\":3000"));
 

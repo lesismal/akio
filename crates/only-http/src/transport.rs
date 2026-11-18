@@ -117,7 +117,9 @@ impl ConnSink for Boxed {
 #[inline(always)]
 pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn ResponseSink>) {
     let mut ctx = Context::new_ext(req, ExtOut(SharedSink::new(Boxed::new(sink)), 0));
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     finalize(&mut ctx);
 }
 
@@ -132,7 +134,9 @@ pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn Re
 #[inline(always)]
 pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &SharedSink, tag: u64) {
     let mut ctx = Context::new_ext(req, ExtOut(sink.clone(), tag));
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     finalize(&mut ctx);
     ctx.recycle_target();
 }
@@ -170,7 +174,9 @@ pub fn start<S: Service + ?Sized>(
         req,
         ExtOut(SharedSink::new(Boxed::new(sink)), 0),
     ));
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     Started { ctx }
 }
 
@@ -183,7 +189,9 @@ pub fn start_conn<S: Service + ?Sized>(
     tag: u64,
 ) -> Started {
     let mut ctx = Box::new(Context::new_ext(req, ExtOut(sink.clone(), tag)));
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     Started { ctx }
 }
 

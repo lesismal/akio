@@ -9,11 +9,15 @@ use std::{
     collections::{HashMap, VecDeque},
     hash::{BuildHasherDefault, Hasher},
     net::SocketAddr,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{
+        Arc, Mutex, MutexGuard, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use crate::hpack::{Decoder, Encoder};
+use crate::observe::{H2Shard, H2Stats};
 use only_core::ConnInner;
 
 use crate::{
@@ -90,6 +94,9 @@ pub struct H2Config {
     /// closed with `GOAWAY ENHANCE_YOUR_CALM` (Rapid Reset, CVE-2023-44487, and its
     /// server-triggered variant). Default 100.
     pub max_resets: u32,
+    /// Connection and stream counters to update (see [`H2Stats`]); `None` (the default) counts
+    /// nothing.
+    pub stats: Option<H2Stats>,
     /// Frames that make no progress (`PRIORITY`, `SETTINGS`, empty `DATA` without
     /// `END_STREAM`, empty `CONTINUATION`) the peer may send per
     /// [`reset_window`](Self::reset_window); past it the connection is closed with
@@ -113,6 +120,7 @@ impl Default for H2Config {
             max_resets: 100,
             max_control_frames: 1000,
             reset_window: Duration::from_secs(30),
+            stats: None,
         }
     }
 }
@@ -342,6 +350,16 @@ struct Core {
     at: usize,
     /// A stream finished since the last read (the idle period restarts from it).
     finished: bool,
+    /// This connection's shard of [`H2Config::stats`].
+    stats: Option<Arc<H2Shard>>,
+    /// The connection's close was counted (streams still open at that point included).
+    stats_closed: bool,
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        self.count_close();
+    }
 }
 
 type Shared = Arc<Mutex<Core>>;
@@ -443,7 +461,31 @@ impl Core {
         }
     }
 
+    #[inline]
+    fn stat(&self, f: impl FnOnce(&H2Shard) -> &AtomicU64) {
+        if let Some(s) = &self.stats {
+            H2Shard::inc(f(s));
+        }
+    }
+
+    fn insert_stream(&mut self, sid: u32, st: Stream) {
+        self.stat(|s| &s.streams_opened);
+        self.streams.insert(sid, st);
+    }
+
+    /// Counts the connection as closed, with the streams it still has.
+    fn count_close(&mut self) {
+        if let Some(s) = &self.stats {
+            if !std::mem::replace(&mut self.stats_closed, true) {
+                H2Shard::inc(&s.conns_closed);
+                s.streams_closed
+                    .fetch_add(self.streams.len() as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
     fn rst(&mut self, sid: u32, code: u32) {
+        self.stat(|s| &s.resets_sent);
         frame(&mut self.out, ty::RST_STREAM, 0, sid, &code.to_be_bytes());
         self.close_stream(sid);
     }
@@ -453,6 +495,7 @@ impl Core {
             return;
         }
         self.goaway_sent = true;
+        self.stat(|s| &s.goaways_sent);
         let mut p = self.last_peer.to_be_bytes().to_vec();
         p.extend_from_slice(&code.to_be_bytes());
         frame(&mut self.out, ty::GOAWAY, 0, 0, &p);
@@ -467,6 +510,9 @@ impl Core {
 
     fn close_stream(&mut self, sid: u32) {
         if let Some(s) = self.streams.remove(&sid) {
+            if !self.stats_closed {
+                self.stat(|s| &s.streams_closed);
+            }
             if sid % 2 == 1 && !s.pushed {
                 self.open_peer = self.open_peer.saturating_sub(1);
             }
@@ -823,6 +869,7 @@ impl Core {
             SState::Open => {
                 // Answered before the request ended: ask the peer to stop sending.
                 st.state = SState::HalfClosedLocal;
+                self.stat(|s| &s.resets_sent);
                 frame(
                     &mut self.out,
                     ty::RST_STREAM,
@@ -1002,6 +1049,7 @@ impl Core {
                     return Err(Fail::Conn(err::FRAME_SIZE));
                 }
                 self.goaway_recv = true;
+                self.stat(|s| &s.goaways_received);
             }
             ty::WINDOW_UPDATE => self.on_window_update(sid, payload)?,
             ty::CONTINUATION => self.on_continuation(sid, flags, payload, actions)?,
@@ -1035,6 +1083,7 @@ impl Core {
         if self.is_idle(sid) {
             return Err(Fail::Conn(err::PROTOCOL));
         }
+        self.stat(|s| &s.resets_received);
         self.close_stream(sid);
         // Rapid Reset (CVE-2023-44487): opening streams and cancelling them at once costs the
         // server a dispatch each and the peer nothing.
@@ -1395,7 +1444,7 @@ impl Core {
         st.content_length = content_length;
         st.head_only = req.method == Method::Head;
         if end_stream {
-            self.streams.insert(sid, st);
+            self.insert_stream(sid, st);
             if content_length.is_some_and(|cl| cl != 0) {
                 return self.peer_rst(sid, err::PROTOCOL);
             }
@@ -1413,16 +1462,17 @@ impl Core {
             // The request goes to the service now; trailers reach it with the end event.
             st.streaming = true;
             let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
-            self.streams.insert(sid, st);
+            self.insert_stream(sid, st);
             actions.push(Action::Start(sid, Box::new(Context::new_h2(req, resp))));
             return Ok(());
         }
         st.head = Some(req);
-        self.streams.insert(sid, st);
+        self.insert_stream(sid, st);
         Ok(())
     }
 
     fn frame_refuse(&mut self, sid: u32) {
+        self.stat(|s| &s.resets_sent);
         frame(
             &mut self.out,
             ty::RST_STREAM,
@@ -1434,6 +1484,7 @@ impl Core {
 
     /// RST_STREAM for a stream that was never registered.
     fn rst_new(&mut self, sid: u32, code: u32) {
+        self.stat(|s| &s.resets_sent);
         frame(&mut self.out, ty::RST_STREAM, 0, sid, &code.to_be_bytes());
     }
 
@@ -1671,7 +1722,7 @@ impl H2Responder {
                 c.local.initial_window,
             );
             st.pushed = true;
-            c.streams.insert(promised, st);
+            c.insert_stream(promised, st);
             c.flush();
             let mut headers = Headers::new();
             headers.append("host", authority);
@@ -1797,6 +1848,10 @@ impl<S: Service> H2Session<S> {
             ..Settings::defaults()
         };
         let conn_window = cfg.conn_window;
+        let stats = cfg.stats.as_ref().map(H2Stats::shard);
+        if let Some(s) = &stats {
+            H2Shard::inc(&s.conns_opened);
+        }
         let core: Shared = Arc::new_cyclic(|me| {
             let mut dec = Decoder::new();
             dec.set_max_allowed_table_size(local.header_table as usize);
@@ -1825,13 +1880,17 @@ impl<S: Service> H2Session<S> {
                 early,
                 push_hook: Some(Arc::new(move |req: Request, resp: H2Responder| {
                     let mut ctx = Context::new_h2(req, resp);
+                    let g = crate::trace::begin(&mut ctx);
                     svc_push.call(&mut ctx);
+                    drop(g);
                     finalize(&mut ctx);
                 })),
                 mode_of: svc_mode
                     .streams_bodies()
                     .then(|| -> ModeFn { Arc::new(move |r: &Request| svc_mode.body_mode(r)) }),
                 me: me.clone(),
+                stats: stats.clone(),
+                stats_closed: false,
                 pending_rst: None,
                 open_peer: 0,
                 dropped: Vec::new(),
@@ -1889,7 +1948,7 @@ impl<S: Service> H2Session<S> {
                     );
                     st.head_only = req.method == Method::Head;
                     st.head = Some(req);
-                    c.streams.insert(1, st);
+                    c.insert_stream(1, st);
                     if let Some(a) = c.complete_request(1) {
                         first.push(a);
                     }
@@ -1980,12 +2039,16 @@ impl<S: Service> H2Session<S> {
     fn run(&self, a: Action, buf: &[u8]) {
         match a {
             Action::Dispatch(mut ctx) => {
+                let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
+                drop(g);
                 finalize(&mut ctx);
                 ctx.recycle_target();
             }
             Action::Start(sid, mut ctx) => {
+                let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
+                drop(g);
                 let mut c = lock(&self.core);
                 if let Some(st) = c.streams.get_mut(&sid) {
                     st.ctx = Some(ctx);
@@ -2036,6 +2099,7 @@ impl<S: Service> H2Session<S> {
     pub(crate) fn on_close(&self) {
         let mut c = lock(&self.core);
         c.dead = true;
+        c.count_close();
         let all: Vec<Stream> = c.streams.drain().map(|(_, s)| s).collect();
         c.dropped.extend(all);
     }

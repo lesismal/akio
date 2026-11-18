@@ -25,7 +25,7 @@ fi
 all=(only-sys only-log only-crypto only-x509 only-dtls only-srtp only-rtp only-sctp only-ice only-buf only-deflate only-timer only-pool only-core only-epoll only-uring only-tls
     only-http only-ws only-mux only-socks only-arpc only-grpc only-protobuf only-protobuf-build
     only-kcp only-quic only-h3
-    only-ebpf only-prefork only-dpdk only-turn only-webrtc only-media only-bittorrent only)
+    only-ebpf only-prefork only-dpdk only-turn only-webrtc only-media only-bittorrent only-export only)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else
