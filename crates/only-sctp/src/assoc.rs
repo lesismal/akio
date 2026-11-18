@@ -28,7 +28,7 @@ pub(crate) const PPID_STRING_PARTIAL: u32 = 54;
 pub(crate) const PPID_STRING_EMPTY: u32 = 56;
 pub(crate) const PPID_BINARY_EMPTY: u32 = 57;
 
-const COOKIE_DATA_LEN: usize = 21;
+const COOKIE_DATA_LEN: usize = 33;
 const COOKIE_MAC_LEN: usize = 16;
 const STREAMS: u16 = u16::MAX;
 /// Peer RE-CONFIG requests remembered for retransmissions.
@@ -98,6 +98,20 @@ struct Peer {
     forward_tsn: bool,
     /// The peer offered I-DATA (RFC 8260).
     i_data: bool,
+    /// The peer accepts zero checksums over DTLS (RFC 9653).
+    zero_checksum: bool,
+}
+
+/// A verified state cookie (RFC 9260 §5.1.3): the peer's INIT, the tag and initial TSN of
+/// our INIT ACK, and the Tie-Tags (our and the peer's tags when the INIT ACK was sent on a
+/// live association, §5.2.2).
+#[derive(Clone, Copy, Debug)]
+struct Cookie {
+    peer: Peer,
+    local_tag: u32,
+    local_tsn: u32,
+    tie_local: u32,
+    tie_peer: u32,
 }
 
 #[derive(Debug)]
@@ -105,6 +119,9 @@ struct OutRequest {
     req_seq: u32,
     streams: Vec<u16>,
     last_tsn: u32,
+    /// Answers the peer's Incoming SSN Reset Request with this sequence number (RFC 6525
+    /// §5.2.3: the Outgoing SSN Reset Request is the response).
+    answers: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -113,6 +130,10 @@ struct PeerRequest {
     result: u32,
     /// An Outgoing SSN Reset that is "in progress": (sender's last TSN, streams).
     pending: Option<(u32, Vec<u16>)>,
+    /// Sender's and Receiver's Next TSN of a performed SSN/TSN reset.
+    tsns: Option<(u32, u32)>,
+    /// An Incoming SSN Reset Request answered by our Outgoing SSN Reset Request.
+    implicit: bool,
 }
 
 /// A sans-io SCTP association carrying WebRTC data channels. See the crate docs.
@@ -144,8 +165,26 @@ pub struct Association {
     reconfig_timer: Option<Instant>,
     peer_req_expected: u32,
     peer_reqs: VecDeque<PeerRequest>,
+    /// The peer's Incoming SSN Reset Request waiting for our Outgoing one.
+    incoming_req: Option<u32>,
+    /// Streams without a channel whose outgoing side the peer asked us to reset.
+    forced_out: Vec<u16>,
+    // HEARTBEAT (RFC 9260 §8.3).
+    hb_timer: Option<Instant>,
+    hb_deadline: Option<Instant>,
+    /// The HEARTBEAT in flight: sequence number and when it was sent.
+    hb_outstanding: Option<(u64, Instant)>,
+    hb_seq: u64,
     low_buf: Vec<u16>,
     delivered: Vec<Message>,
+}
+
+fn timing(c: &Config) -> Timing {
+    Timing {
+        rto_initial: c.rto_initial,
+        rto_min: c.rto_min,
+        rto_max: c.rto_max.max(c.rto_min),
+    }
 }
 
 fn random_bytes<const N: usize>() -> [u8; N] {
@@ -192,13 +231,13 @@ impl Association {
         cookie_secret: [u8; 32],
     ) -> Association {
         config.mtu = config.mtu.clamp(128, 65535);
-        let timing = Timing {
-            rto_initial: config.rto_initial,
-            rto_min: config.rto_min,
-            rto_max: config.rto_max.max(config.rto_min),
-        };
         Association {
-            tx: Sender::new(config.mtu, timing, my_initial_tsn, config.scheduler),
+            tx: Sender::new(
+                config.mtu,
+                timing(&config),
+                my_initial_tsn,
+                config.scheduler,
+            ),
             rx: Receiver::new(0, 0, 0, config.mtu, false),
             state: State::Closed,
             my_tag,
@@ -220,6 +259,12 @@ impl Association {
             reconfig_timer: None,
             peer_req_expected: 0,
             peer_reqs: VecDeque::new(),
+            incoming_req: None,
+            forced_out: Vec::new(),
+            hb_timer: None,
+            hb_deadline: None,
+            hb_outstanding: None,
+            hb_seq: 0,
             low_buf: Vec::new(),
             delivered: Vec::new(),
             cfg: config,
@@ -249,6 +294,7 @@ impl Association {
             forward_tsn: true,
             reconfig: true,
             i_data: self.cfg.message_interleaving,
+            zero_checksum: self.cfg.zero_checksum.then_some(packet::EDMID_DTLS),
         }
     }
 
@@ -295,6 +341,8 @@ impl Association {
             self.tx.t3,
             self.rx.sack_deadline,
             self.reconfig_timer,
+            self.hb_timer,
+            self.hb_deadline,
         ]
         .into_iter()
         .flatten()
@@ -359,26 +407,100 @@ impl Association {
                 self.reconfig_send = true;
             }
         }
+        if self.hb_deadline.is_some_and(|t| t <= now) {
+            // RFC 9260 §8.3: an unanswered HEARTBEAT counts as an error on the (only) path;
+            // past Path.Max.Retrans (= Association.Max.Retrans with one path) the
+            // association fails. The RTO backs off and the next HEARTBEAT goes at once.
+            self.hb_deadline = None;
+            self.hb_outstanding = None;
+            self.tx.error_count += 1;
+            if self.tx.error_count > self.cfg.max_retransmissions {
+                self.abort();
+                return;
+            }
+            self.tx.rto = (self.tx.rto * 2).min(self.cfg.rto_max);
+            self.send_heartbeat(now);
+        }
+        if self.hb_timer.is_some_and(|t| t <= now) {
+            if self.tx.t3.is_some() || self.hb_outstanding.is_some() {
+                // Data in flight: T3-rtx watches the path.
+                self.arm_heartbeat(now);
+            } else {
+                self.send_heartbeat(now);
+            }
+        }
         self.after(now);
+    }
+
+    // ----- HEARTBEAT (RFC 9260 §8.3) -----
+
+    /// Next HEARTBEAT after HB.interval + RTO of idleness.
+    fn arm_heartbeat(&mut self, now: Instant) {
+        self.hb_timer = match self.cfg.heartbeat_interval {
+            Some(i) if self.state == State::Established => Some(now + i + self.tx.rto),
+            _ => None,
+        };
+    }
+
+    fn send_heartbeat(&mut self, now: Instant) {
+        if self.state != State::Established {
+            self.hb_timer = None;
+            return;
+        }
+        self.hb_seq = self.hb_seq.wrapping_add(1);
+        let mut info = [0u8; 12];
+        info[..8].copy_from_slice(&self.hb_seq.to_be_bytes());
+        info[8..].copy_from_slice(&self.my_tag.to_be_bytes());
+        self.ctrl
+            .push_back((self.peer_tag(), packet::heartbeat(&info)));
+        self.hb_outstanding = Some((self.hb_seq, now));
+        self.hb_deadline = Some(now + self.tx.rto);
+        self.arm_heartbeat(now);
+    }
+
+    fn on_heartbeat_ack(&mut self, now: Instant, v: &[u8]) {
+        let Some(info) = packet::parse_heartbeat_ack(v) else {
+            return;
+        };
+        let Some((seq, sent)) = self.hb_outstanding else {
+            return;
+        };
+        if info.len() != 12
+            || info[..8] != seq.to_be_bytes()
+            || info[8..] != self.my_tag.to_be_bytes()
+        {
+            return;
+        }
+        self.hb_outstanding = None;
+        self.hb_deadline = None;
+        self.tx.update_rto(now.saturating_duration_since(sent));
+        self.tx.error_count = 0;
+        self.arm_heartbeat(now);
     }
 
     // ----- handshake -----
 
-    fn make_cookie(&self, init: &Init) -> Vec<u8> {
+    /// The state cookie for an INIT ACK with `local_tag` / `local_tsn` (RFC 9260 §5.1.3);
+    /// `tie` holds the Tie-Tags.
+    fn make_cookie(&self, init: &Init, local_tag: u32, local_tsn: u32, tie: (u32, u32)) -> Vec<u8> {
         let mut c = Vec::with_capacity(COOKIE_DATA_LEN + COOKIE_MAC_LEN);
         c.extend_from_slice(&init.initiate_tag.to_be_bytes());
         c.extend_from_slice(&init.initial_tsn.to_be_bytes());
         c.extend_from_slice(&init.a_rwnd.to_be_bytes());
         c.extend_from_slice(&init.outbound_streams.to_be_bytes());
         c.extend_from_slice(&init.inbound_streams.to_be_bytes());
-        c.push(u8::from(init.forward_tsn) | (u8::from(init.i_data) << 1));
-        c.extend_from_slice(&self.my_tag.to_be_bytes());
+        let zero = init.zero_checksum == Some(packet::EDMID_DTLS);
+        c.push(u8::from(init.forward_tsn) | (u8::from(init.i_data) << 1) | (u8::from(zero) << 2));
+        c.extend_from_slice(&local_tag.to_be_bytes());
+        c.extend_from_slice(&local_tsn.to_be_bytes());
+        c.extend_from_slice(&tie.0.to_be_bytes());
+        c.extend_from_slice(&tie.1.to_be_bytes());
         let mac = Hmac::<Sha256>::mac(&self.cookie_secret, &c);
         c.extend_from_slice(&mac[..COOKIE_MAC_LEN]);
         c
     }
 
-    fn check_cookie(&self, c: &[u8]) -> Option<Peer> {
+    fn check_cookie(&self, c: &[u8]) -> Option<Cookie> {
         if c.len() != COOKIE_DATA_LEN + COOKIE_MAC_LEN {
             return None;
         }
@@ -391,16 +513,41 @@ impl Association {
         }
         let u32_at =
             |i: usize| u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
-        if u32_at(17) != self.my_tag {
-            return None;
-        }
-        Some(Peer {
-            tag: u32_at(0),
-            initial_tsn: u32_at(4),
-            a_rwnd: u32_at(8),
-            forward_tsn: data[16] & 1 != 0,
-            i_data: data[16] & 2 != 0,
+        Some(Cookie {
+            peer: Peer {
+                tag: u32_at(0),
+                initial_tsn: u32_at(4),
+                a_rwnd: u32_at(8),
+                forward_tsn: data[16] & 1 != 0,
+                i_data: data[16] & 2 != 0,
+                zero_checksum: data[16] & 4 != 0,
+            },
+            local_tag: u32_at(17),
+            local_tsn: u32_at(21),
+            tie_local: u32_at(25),
+            tie_peer: u32_at(29),
         })
+    }
+
+    /// Tag and initial TSN of the INIT ACK answering an unexpected INIT (§5.2.2): new ones,
+    /// derived from the cookie key and the INIT so that a retransmitted INIT gets the same.
+    fn restart_ids(&self, init: &Init) -> (u32, u32) {
+        let mut m = Vec::with_capacity(23);
+        m.extend_from_slice(b"restart");
+        for v in [
+            init.initiate_tag,
+            init.initial_tsn,
+            self.my_tag,
+            self.peer_tag(),
+        ] {
+            m.extend_from_slice(&v.to_be_bytes());
+        }
+        let h = Hmac::<Sha256>::mac(&self.cookie_secret, &m);
+        let mut tag = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
+        if tag == 0 || tag == self.my_tag {
+            tag ^= 0x8000_0001;
+        }
+        (tag, u32::from_be_bytes([h[4], h[5], h[6], h[7]]))
     }
 
     fn on_init(&mut self, init: &Init) {
@@ -410,18 +557,31 @@ impl Association {
         match self.state {
             State::Closed | State::CookieWait | State::CookieEchoed => {
                 // RFC 9260 §5.2.1: the same tag as our own INIT, so that an INIT collision
-                // converges on one association.
+                // converges on one association; Tie-Tags once the peer's tag is known.
+                let tie = if self.state == State::CookieEchoed {
+                    (self.my_tag, self.peer_tag())
+                } else {
+                    (0, 0)
+                };
                 let mut ack = self.our_init();
-                ack.cookie = Some(self.make_cookie(init));
+                ack.cookie = Some(self.make_cookie(init, self.my_tag, self.my_initial_tsn, tie));
                 self.ctrl.push_back((init.initiate_tag, ack.encode(true)));
             }
             State::ShutdownAckSent => {
                 self.ctrl
                     .push_back((self.peer_tag(), packet::chunk(CT_SHUTDOWN_ACK, 0, &[])));
             }
-            // A retransmitted INIT of the current handshake; peer restarts (§5.2.2) are not
-            // supported (one association per DTLS connection).
-            _ => {}
+            _ => {
+                // §5.2.2: an unexpected INIT on a live association (the peer may have
+                // restarted): an INIT ACK with a new tag and initial TSN and our current tags
+                // as Tie-Tags. Nothing changes until a matching COOKIE ECHO (§5.2.4 case A).
+                let (tag, tsn) = self.restart_ids(init);
+                let mut ack = self.our_init();
+                ack.initiate_tag = tag;
+                ack.initial_tsn = tsn;
+                ack.cookie = Some(self.make_cookie(init, tag, tsn, (self.my_tag, self.peer_tag())));
+                self.ctrl.push_back((init.initiate_tag, ack.encode(true)));
+            }
         }
     }
 
@@ -438,6 +598,7 @@ impl Association {
             a_rwnd: init.a_rwnd,
             forward_tsn: init.forward_tsn,
             i_data: init.i_data,
+            zero_checksum: init.zero_checksum == Some(packet::EDMID_DTLS),
         });
         let echo = packet::chunk(CT_COOKIE_ECHO, 0, cookie);
         self.ctrl.push_back((init.initiate_tag, echo.clone()));
@@ -448,29 +609,126 @@ impl Association {
         self.t1 = Some(now + self.t1_rto);
     }
 
-    fn on_cookie_echo(&mut self, cookie: &[u8]) {
-        let Some(p) = self.check_cookie(cookie) else {
+    /// A COOKIE ECHO in a packet with verification tag `vtag` (RFC 9260 §5.1.5, §5.2.4).
+    fn on_cookie_echo(&mut self, now: Instant, vtag: u32, cookie: &[u8]) {
+        let Some(ck) = self.check_cookie(cookie) else {
             return;
         };
+        if vtag != ck.local_tag {
+            return;
+        }
+        let p = ck.peer;
+        let ours = ck.local_tag == self.my_tag;
+        let theirs = p.tag == self.peer_tag();
         match self.state {
             State::Closed | State::CookieWait | State::CookieEchoed => {
+                if !ours {
+                    return;
+                }
                 self.peer = Some(p);
                 self.ctrl
                     .push_back((p.tag, packet::chunk(CT_COOKIE_ACK, 0, &[])));
-                self.establish();
+                self.establish(now);
             }
-            s if s.connected() && p.tag == self.peer_tag() => {
-                // Duplicate COOKIE ECHO (§5.2.4 case D).
-                self.ctrl
-                    .push_back((p.tag, packet::chunk(CT_COOKIE_ACK, 0, &[])));
+            s if s.connected() => {
+                if ours && theirs {
+                    // Case D: a duplicate.
+                    self.ctrl
+                        .push_back((p.tag, packet::chunk(CT_COOKIE_ACK, 0, &[])));
+                } else if !ours
+                    && !theirs
+                    && ck.tie_local == self.my_tag
+                    && ck.tie_peer == self.peer_tag()
+                {
+                    // Case A: the peer restarted.
+                    self.on_peer_restart(now, ck);
+                }
+                // Case B once established (our INIT collision handling keeps one tag per
+                // side, so the peer's tag cannot change), case C and anything else:
+                // discarded.
             }
             _ => {}
         }
     }
 
-    fn establish(&mut self) {
-        let Some(p) = self.peer else {
+    /// The peer restarted (§5.2.4 case A).
+    fn on_peer_restart(&mut self, now: Instant, ck: Cookie) {
+        let tag = ck.peer.tag;
+        match self.state {
+            State::Established => {}
+            State::ShutdownAckSent => {
+                // §5.2.4 A: no new association while shutting down.
+                let cause = packet::cause(packet::CAUSE_COOKIE_WHILE_SHUTTING_DOWN, &[]);
+                self.ctrl
+                    .push_back((tag, packet::chunk(CT_SHUTDOWN_ACK, 0, &[])));
+                self.ctrl
+                    .push_back((tag, packet::chunk(CT_ERROR, 0, &cause)));
+                return;
+            }
+            _ => {
+                // A shutdown was in progress: the old association is gone on the peer's side.
+                let cause = packet::cause(packet::CAUSE_COOKIE_WHILE_SHUTTING_DOWN, &[]);
+                self.ctrl
+                    .push_back((tag, packet::chunk(CT_ABORT, 0, &cause)));
+                self.close_now();
+                return;
+            }
+        }
+        // Every channel is gone on the peer's side, and so is every TSN and SSN.
+        for (&stream, ch) in &self.channels {
+            if ch.announced {
+                self.events.push_back(Event::ChannelClose { stream });
+            }
+        }
+        self.channels.clear();
+        self.ctrl.clear();
+        self.delivered.clear();
+        self.low_buf.clear();
+        self.my_tag = ck.local_tag;
+        self.my_initial_tsn = ck.local_tsn;
+        self.tx = Sender::new(
+            self.cfg.mtu,
+            timing(&self.cfg),
+            ck.local_tsn,
+            self.cfg.scheduler,
+        );
+        self.next_req_seq = ck.local_tsn;
+        self.out_request = None;
+        self.reconfig_send = false;
+        self.reconfig_timer = None;
+        self.peer_reqs.clear();
+        self.incoming_req = None;
+        self.forced_out.clear();
+        self.t2 = None;
+        self.t2_count = 0;
+        self.peer = Some(ck.peer);
+        self.ctrl
+            .push_back((tag, packet::chunk(CT_COOKIE_ACK, 0, &[])));
+        self.start_transport(now);
+        self.events.push_back(Event::Restarted);
+    }
+
+    fn establish(&mut self, now: Instant) {
+        if self.peer.is_none() || !self.start_transport(now) {
             return;
+        }
+        self.events.push_back(Event::Connected);
+        for (&stream, ch) in &mut self.channels {
+            if !ch.announced && !ch.closing {
+                ch.announced = true;
+                self.events.push_back(Event::ChannelOpen {
+                    stream,
+                    label: ch.label.clone(),
+                    protocol: ch.protocol.clone(),
+                });
+            }
+        }
+    }
+
+    /// ESTABLISHED with the peer's parameters: sender, receiver, timers.
+    fn start_transport(&mut self, now: Instant) -> bool {
+        let Some(p) = self.peer else {
+            return false;
         };
         self.state = State::Established;
         self.t1 = None;
@@ -486,17 +744,10 @@ impl Association {
             idata,
         );
         self.peer_req_expected = p.initial_tsn;
-        self.events.push_back(Event::Connected);
-        for (&stream, ch) in &mut self.channels {
-            if !ch.announced && !ch.closing {
-                ch.announced = true;
-                self.events.push_back(Event::ChannelOpen {
-                    stream,
-                    label: ch.label.clone(),
-                    protocol: ch.protocol.clone(),
-                });
-            }
-        }
+        self.hb_deadline = None;
+        self.hb_outstanding = None;
+        self.arm_heartbeat(now);
+        true
     }
 
     /// Enters the terminal state: `ChannelClose` for every announced channel, then `Closed`.
@@ -510,6 +761,8 @@ impl Association {
         self.tx.t3 = None;
         self.rx.sack_deadline = None;
         self.reconfig_timer = None;
+        self.hb_timer = None;
+        self.hb_deadline = None;
         for (&stream, ch) in &self.channels {
             if ch.announced {
                 self.events.push_back(Event::ChannelClose { stream });
@@ -583,7 +836,7 @@ impl Association {
         if self.state == State::Done {
             return;
         }
-        let Some((h, chunks)) = packet::parse_packet(packet) else {
+        let Some((h, chunks)) = packet::parse_packet(packet, self.cfg.zero_checksum) else {
             return;
         };
         let Some(first) = chunks.first() else {
@@ -599,12 +852,15 @@ impl Association {
             self.after(now);
             return;
         }
-        let tag_ok = h.vtag == self.my_tag;
-        let peer_tag = self.peer_tag();
         let mut had_data = false;
         let mut reports: Vec<u8> = Vec::new();
         for c in &chunks {
+            // Per chunk: a COOKIE ECHO may restart the association with new tags.
+            let tag_ok = h.vtag == self.my_tag;
+            let peer_tag = self.peer_tag();
             let ok = match c.typ {
+                // Checked against the tag in the cookie (§5.2.4).
+                CT_COOKIE_ECHO => true,
                 CT_ABORT | CT_SHUTDOWN_COMPLETE => {
                     if c.flags & FLAG_T != 0 {
                         peer_tag != 0 && h.vtag == peer_tag
@@ -617,7 +873,7 @@ impl Association {
             if !ok || self.state == State::Done {
                 break;
             }
-            if !self.on_chunk(now, c, &mut had_data, &mut reports) {
+            if !self.on_chunk(now, h.vtag, c, &mut had_data, &mut reports) {
                 break;
             }
         }
@@ -636,6 +892,7 @@ impl Association {
     fn on_chunk(
         &mut self,
         now: Instant,
+        vtag: u32,
         c: &RawChunk<'_>,
         had_data: &mut bool,
         reports: &mut Vec<u8>,
@@ -678,10 +935,10 @@ impl Association {
                     self.on_init_ack(now, &init);
                 }
             }
-            CT_COOKIE_ECHO => self.on_cookie_echo(c.value),
+            CT_COOKIE_ECHO => self.on_cookie_echo(now, vtag, c.value),
             CT_COOKIE_ACK => {
                 if self.state == State::CookieEchoed {
-                    self.establish();
+                    self.establish(now);
                 }
             }
             CT_SACK if connected => {
@@ -700,7 +957,8 @@ impl Association {
                     }
                 }
             }
-            CT_HEARTBEAT_ACK | CT_ERROR => {}
+            CT_HEARTBEAT_ACK => self.on_heartbeat_ack(now, c.value),
+            CT_ERROR => {}
             CT_ABORT => {
                 self.close_now();
                 return false;
@@ -1065,6 +1323,38 @@ impl Association {
         Ok(())
     }
 
+    /// Whether we send packets with a zero checksum (RFC 9653): [`Config::zero_checksum`]
+    /// is on and the peer announced the DTLS method too. `false` until the association is
+    /// established.
+    #[must_use]
+    pub fn zero_checksum(&self) -> bool {
+        self.cfg.zero_checksum
+            && self.state.connected()
+            && self.peer.is_some_and(|p| p.zero_checksum)
+    }
+
+    /// The smoothed round-trip time (RFC 9260 §6.3.1), from SACKs and HEARTBEAT ACKs; `None`
+    /// before the first measurement.
+    #[must_use]
+    pub fn rtt(&self) -> Option<Duration> {
+        self.tx.srtt()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_tsn_for_test(&self) -> u32 {
+        self.tx.next_tsn()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skip_request_seq_for_test(&mut self) {
+        self.next_req_seq = self.next_req_seq.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cum_tsn_for_test(&self) -> u32 {
+        self.rx.cum_tsn()
+    }
+
     /// Whether I-DATA (RFC 8260 message interleaving) is in use: both sides offered it.
     /// `false` until the association is established.
     #[must_use]
@@ -1120,16 +1410,20 @@ impl Association {
                 ..
             } => {
                 let result = self.on_peer_request(req_seq, Some((last_tsn, streams)), true);
-                self.respond(req_seq, result);
+                self.respond(req_seq, result, None);
             }
-            ReconfigParam::OtherRequest { typ, req_seq } => {
-                // Add-streams requests: we accept any stream id anyway. Incoming and SSN/TSN
-                // resets are refused.
-                let ok = matches!(typ, packet::PARAM_ADD_OUTGOING | packet::PARAM_ADD_INCOMING);
-                let result = self.on_peer_request(req_seq, None, ok);
-                self.respond(req_seq, result);
+            ReconfigParam::IncomingReset { req_seq, streams } => {
+                self.on_incoming_reset(req_seq, &streams);
             }
-            ReconfigParam::Response { resp_seq, result } => {
+            ReconfigParam::SsnTsnReset { req_seq } => self.on_ssn_tsn_reset(req_seq),
+            ReconfigParam::OtherRequest { req_seq, .. } => {
+                // Add-streams requests: we accept any stream id anyway.
+                let result = self.on_peer_request(req_seq, None, true);
+                self.respond(req_seq, result, None);
+            }
+            ReconfigParam::Response {
+                resp_seq, result, ..
+            } => {
                 let Some(req) = &self.out_request else {
                     return;
                 };
@@ -1158,23 +1452,40 @@ impl Association {
         }
     }
 
+    /// A request we answered before (a retransmission).
+    fn known_request(&self, req_seq: u32) -> Option<&PeerRequest> {
+        self.peer_reqs.iter().find(|r| r.req_seq == req_seq)
+    }
+
+    /// Whether `req_seq` is within the window of request sequence numbers we take.
+    fn request_in_window(&self, req_seq: u32) -> bool {
+        let window = PEER_REQUESTS as u32;
+        le32(self.peer_req_expected.wrapping_sub(window), req_seq)
+            && lt32(req_seq, self.peer_req_expected.wrapping_add(window))
+    }
+
+    fn record_request(&mut self, r: PeerRequest) {
+        if le32(self.peer_req_expected, r.req_seq) {
+            self.peer_req_expected = r.req_seq.wrapping_add(1);
+        }
+        if self.peer_reqs.len() == PEER_REQUESTS {
+            self.peer_reqs.pop_front();
+        }
+        self.peer_reqs.push_back(r);
+    }
+
     /// A request from the peer. Requests are remembered by sequence number (the last
     /// [`PEER_REQUESTS`]), so retransmissions get the same answer and, since pion keeps
     /// several requests in flight, requests are taken in any order rather than only the
     /// expected next one (RFC 6525 §5.2.1 would answer "bad sequence number").
     fn on_peer_request(&mut self, req_seq: u32, reset: Option<(u32, Vec<u16>)>, ok: bool) -> u32 {
-        if let Some(i) = self.peer_reqs.iter().position(|r| r.req_seq == req_seq) {
+        if let Some(r) = self.known_request(req_seq) {
+            let result = r.result;
             self.check_pending_incoming();
-            return self.peer_reqs[i].result;
+            return result;
         }
-        let window = PEER_REQUESTS as u32;
-        if !le32(self.peer_req_expected.wrapping_sub(window), req_seq)
-            || !lt32(req_seq, self.peer_req_expected.wrapping_add(window))
-        {
+        if !self.request_in_window(req_seq) {
             return packet::RESULT_BAD_SEQUENCE;
-        }
-        if le32(self.peer_req_expected, req_seq) {
-            self.peer_req_expected = req_seq.wrapping_add(1);
         }
         let (result, pending) = match reset {
             None if ok => (packet::RESULT_PERFORMED, None),
@@ -1188,15 +1499,151 @@ impl Association {
                 }
             }
         };
-        if self.peer_reqs.len() == PEER_REQUESTS {
-            self.peer_reqs.pop_front();
-        }
-        self.peer_reqs.push_back(PeerRequest {
+        self.record_request(PeerRequest {
             req_seq,
             result,
             pending,
+            tsns: None,
+            implicit: false,
         });
         result
+    }
+
+    /// Incoming SSN Reset Request (RFC 6525 §5.2.3): the peer asks us to reset our outgoing
+    /// side of `streams` (all when empty). We send an Outgoing SSN Reset Request for them,
+    /// after their queued messages, which also answers this request. A channel among them
+    /// closes as if [`close_channel`](Self::close_channel) had been called.
+    fn on_incoming_reset(&mut self, req_seq: u32, streams: &[u16]) {
+        if let Some(r) = self.known_request(req_seq) {
+            if !r.implicit {
+                let result = r.result;
+                self.respond(req_seq, result, None);
+            } else if self
+                .out_request
+                .as_ref()
+                .is_some_and(|o| o.answers == Some(req_seq))
+            {
+                self.reconfig_send = true;
+            }
+            return;
+        }
+        if !self.request_in_window(req_seq) {
+            self.respond(req_seq, packet::RESULT_BAD_SEQUENCE, None);
+            return;
+        }
+        if self.incoming_req.is_some()
+            || self
+                .out_request
+                .as_ref()
+                .is_some_and(|o| o.answers.is_some())
+        {
+            // One at a time; the peer retries.
+            self.respond(req_seq, packet::RESULT_IN_PROGRESS, None);
+            return;
+        }
+        let all: Vec<u16>;
+        let streams = if streams.is_empty() {
+            all = self.channels.keys().copied().collect();
+            &all[..]
+        } else {
+            streams
+        };
+        let mut any = false;
+        for &s in streams {
+            match self.channels.get_mut(&s) {
+                Some(ch) => {
+                    // A reset already sent or done covers it ("nothing to do" races).
+                    if matches!(ch.out_reset, OutReset::InFlight | OutReset::Done) {
+                        continue;
+                    }
+                    ch.closing = true;
+                    ch.out_reset = OutReset::Queued;
+                    any = true;
+                }
+                None => {
+                    if !self.forced_out.contains(&s) {
+                        self.forced_out.push(s);
+                    }
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            self.record_request(PeerRequest {
+                req_seq,
+                result: packet::RESULT_NOTHING_TO_DO,
+                pending: None,
+                tsns: None,
+                implicit: false,
+            });
+            self.respond(req_seq, packet::RESULT_NOTHING_TO_DO, None);
+            return;
+        }
+        self.record_request(PeerRequest {
+            req_seq,
+            result: packet::RESULT_PERFORMED,
+            pending: None,
+            tsns: None,
+            implicit: true,
+        });
+        self.incoming_req = Some(req_seq);
+    }
+
+    /// SSN/TSN Reset Request (RFC 6525 §5.2.4): performed once nothing of ours is in flight
+    /// or half sent ("in progress" until then, so no data is lost): new TSNs both ways and
+    /// every SSN back to 0.
+    fn on_ssn_tsn_reset(&mut self, req_seq: u32) {
+        if let Some(r) = self.known_request(req_seq) {
+            let (result, tsns) = (r.result, r.tsns);
+            self.respond(req_seq, result, tsns);
+            return;
+        }
+        if !self.request_in_window(req_seq) {
+            self.respond(req_seq, packet::RESULT_BAD_SEQUENCE, None);
+            return;
+        }
+        if !self.tx.quiescent() || self.out_request.is_some() || self.incoming_req.is_some() {
+            self.respond(req_seq, packet::RESULT_IN_PROGRESS, None);
+            return;
+        }
+        // G1-G2: the peer's next TSN is past anything it may still send; ours goes on.
+        let sender_next = self.tx.next_tsn();
+        let receiver_next = self.rx.cum_tsn().wrapping_add(1).wrapping_add(1 << 31);
+        // G4: as if a FORWARD TSN to receiver_next - 1 covered every stream; G5.
+        let deferred: Vec<u16> = self
+            .peer_reqs
+            .iter_mut()
+            .filter_map(|r| {
+                r.pending.take().map(|(_, streams)| {
+                    r.result = packet::RESULT_PERFORMED;
+                    streams
+                })
+            })
+            .flatten()
+            .collect();
+        if !deferred.is_empty() {
+            self.reset_incoming(&deferred);
+        }
+        self.rx = Receiver::new(
+            receiver_next,
+            self.cfg.receive_window,
+            self.cfg.max_receive_message_size,
+            self.cfg.mtu,
+            self.tx.idata,
+        );
+        self.tx.reset_all_ssn();
+        for ch in self.channels.values_mut() {
+            ch.partial.clear();
+        }
+        let tsns = Some((sender_next, receiver_next));
+        self.record_request(PeerRequest {
+            req_seq,
+            result: packet::RESULT_PERFORMED,
+            pending: None,
+            tsns,
+            implicit: false,
+        });
+        self.respond(req_seq, packet::RESULT_PERFORMED, tsns);
     }
 
     /// Performs deferred incoming resets once the cumulative TSN reached them.
@@ -1216,8 +1663,12 @@ impl Association {
         }
     }
 
-    fn respond(&mut self, resp_seq: u32, result: u32) {
-        let chunk = ReconfigParam::encode_chunk(&[ReconfigParam::Response { resp_seq, result }]);
+    fn respond(&mut self, resp_seq: u32, result: u32, tsns: Option<(u32, u32)>) {
+        let chunk = ReconfigParam::encode_chunk(&[ReconfigParam::Response {
+            resp_seq,
+            result,
+            tsns,
+        }]);
         self.ctrl.push_back((self.peer_tag(), chunk));
     }
 
@@ -1269,12 +1720,18 @@ impl Association {
         }
         let max = (self.cfg.mtu.saturating_sub(12 + 4 + 16)) / 2;
         let mut streams = Vec::new();
+        while streams.len() < max {
+            match self.forced_out.pop() {
+                Some(s) => streams.push(s),
+                None => break,
+            }
+        }
         for (&s, ch) in &self.channels {
+            if streams.len() >= max {
+                break;
+            }
             if ch.out_reset == OutReset::Queued && self.tx.pending_on(s) == 0 {
                 streams.push(s);
-                if streams.len() >= max {
-                    break;
-                }
             }
         }
         if streams.is_empty() {
@@ -1289,6 +1746,7 @@ impl Association {
             req_seq: self.next_req_seq,
             streams,
             last_tsn: self.tx.last_assigned_tsn(),
+            answers: self.incoming_req.take(),
         });
         self.next_req_seq = self.next_req_seq.wrapping_add(1);
         self.reconfig_send = true;
@@ -1300,7 +1758,9 @@ impl Association {
         Some(ReconfigParam::encode_chunk(&[
             ReconfigParam::OutgoingReset {
                 req_seq: r.req_seq,
-                resp_seq: self.peer_req_expected.wrapping_sub(1),
+                resp_seq: r
+                    .answers
+                    .unwrap_or_else(|| self.peer_req_expected.wrapping_sub(1)),
                 last_tsn: r.last_tsn,
                 streams: r.streams.clone(),
             },
@@ -1403,6 +1863,8 @@ impl Association {
         if w.is_empty() {
             return None;
         }
-        Some(w.finish())
+        // RFC 9653: zero checksum once the peer announced SCTP over DTLS (never on this
+        // path's INIT, INIT ACK or COOKIE ECHO, which go out before the association is up).
+        Some(w.finish_with(self.zero_checksum()))
     }
 }

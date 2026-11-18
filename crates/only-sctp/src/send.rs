@@ -341,6 +341,36 @@ impl Sender {
         }
     }
 
+    /// Resets the outgoing SSNs / MIDs of every stream (SSN/TSN reset, RFC 6525 §5.2.4 G5).
+    pub(crate) fn reset_all_ssn(&mut self) {
+        for st in self.streams.values_mut() {
+            st.next_ssn = 0;
+            st.next_mid = [0, 0];
+        }
+    }
+
+    /// Nothing in flight and no message partly given TSNs: an SSN/TSN reset can be
+    /// performed without losing data.
+    pub(crate) fn quiescent(&self) -> bool {
+        self.inflight.is_empty()
+            && self.current.is_none()
+            && self.started.is_empty()
+            && self
+                .streams
+                .values()
+                .all(|s| s.queue.front().is_none_or(|m| m.off == 0))
+    }
+
+    /// The TSN the next new DATA chunk gets.
+    pub(crate) fn next_tsn(&self) -> u32 {
+        self.next_tsn
+    }
+
+    /// The smoothed round-trip time, once measured.
+    pub(crate) fn srtt(&self) -> Option<Duration> {
+        self.srtt
+    }
+
     /// Messages of `stream` not completely given TSNs yet.
     pub(crate) fn pending_on(&self, stream: u16) -> usize {
         self.streams.get(&stream).map_or(0, |s| s.queue.len())
@@ -782,7 +812,8 @@ impl Sender {
         }
     }
 
-    fn update_rto(&mut self, r: Duration) {
+    /// Takes an RTT measurement (from a SACK or a HEARTBEAT ACK, RFC 9260 §6.3.1).
+    pub(crate) fn update_rto(&mut self, r: Duration) {
         match self.srtt {
             None => {
                 self.srtt = Some(r);

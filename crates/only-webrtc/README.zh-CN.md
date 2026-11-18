@@ -56,7 +56,8 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 
 互通：与 pion（两个 offer 方向的数据通道、Opus/VP8 回显与 PLI，也经过 `only` TURN 中继）以及 fib
 的 Go WebRTC 双向互通：`tools/interop/webrtc/run.sh`；与无头 Chrome 双向互通（数据通道，Chrome
-的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`。STUN 与 TURN
+的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`；与无头 Firefox
+双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
 未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（自 ADR-036 起都已在

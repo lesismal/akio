@@ -10,6 +10,30 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求（only-sctp）
+
+ADR-042（docs/adr/042-sctp-heartbeat-restart-zero-checksum.zh-CN.md）；only-sctp 属于 Internal 层级：
+
+- **HEARTBEAT**（RFC 9260 §8.3，`Config::heartbeat_interval`，默认 30 s）：空闲关联测量 RTT
+  （`Association::rtt`）并能发现已消失的对端：未获应答的 HEARTBEAT 计入 `max_retransmissions`
+  （单路径时即 Path.Max.Retrans），之后关联失败，即最后一次交互后 60-150 s。此前只应答。
+- **对端重启**（RFC 9260 §5.2.2、§5.2.4）：已建立关联收到 INIT 时回复带新 tag 和 Tie-Tags 的
+  INIT ACK；重启后对端的 COOKIE ECHO 关闭所有通道、丢弃排队数据并重新开始，发出新的
+  `Event::Restarted`。重复的回复 COOKIE ACK，其他组合丢弃，关闭过程中拒绝重启。此前直接忽略。
+- **零校验和**（RFC 9653，`Config::zero_checksum`，默认开启）：INIT / INIT ACK 中声明 "SCTP over
+  DTLS"；接受零校验和，对端也声明时握手之后发送零校验和（`Association::zero_checksum`）：数据路径两端
+  都不再计算 CRC-32C。内存中的 SCTP 快 1.20-1.31 倍（`examples/sctp_bench.rs`，gpu51 上与 46f25f81
+  同轮 A/B，7 轮中位数）；两个回环 `Endpoint` 之间含 DTLS 的数据通道 1.003 倍。Firefox 158 与
+  Chrome 157 不提供，pion/sctp 提供。
+- **Incoming SSN Reset** 与 **SSN/TSN Reset** 请求（RFC 6525 §5.2.3-4）改为执行而非拒绝：前者以我们的
+  Outgoing SSN Reset Request 作答（通道随之关闭），后者在我们没有在途数据时执行（双向新 TSN，SSN 归零）。
+- `Event` 现为 `#[non_exhaustive]`。
+- 互通：经 only-webrtc 与 Firefox 158（usrsctp）两个 offer 方向互通，含 150 s 空闲（新增
+  `tools/interop/webrtc/firefox.sh`，WebDriver BiDi；`webrtc-interop` 示例支持 `ONLY_INTEROP_BIND`）；
+  与 pion/sctp 使用零校验和互通（`tools/interop/sctp/run.sh`）；Chrome 157 照常通过。模糊测试
+  `sctp_packet` 新增种子，gpu51 上 11 分钟，无崩溃。
+- 未实现（WebRTC 均不使用）：多宿主、AUTH、ASCONF、ECN。
+
 ### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：

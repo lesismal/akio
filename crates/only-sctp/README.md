@@ -33,7 +33,9 @@ loop {
             Event::ChannelData { stream, data, binary } => {}
             Event::BufferedAmountLow { stream } => {}
             Event::ChannelClose { stream } => {}
+            Event::Restarted => {} // the peer restarted: channels closed, up again
             Event::Closed => return, // always last
+            _ => {}
         }
     }
     // wait for a record until sctp.poll_timeout(), then:
@@ -45,7 +47,9 @@ loop {
   (`max_message_size` is the remote `a=max-message-size`; a larger incoming message aborts the
   association), 1 MiB receive window and per-channel buffer, 10 retransmissions; RTO 1 s
   initial, 200 ms minimum, 10 s maximum; I-DATA offered (`message_interleaving`) and the
-  weighted fair queueing scheduler (`scheduler`).
+  weighted fair queueing scheduler (`scheduler`); HEARTBEATs after 30 s idle
+  (`heartbeat_interval`); zero checksums offered (`zero_checksum`, RFC 9653: turn it off when
+  the packets do not travel over DTLS).
 - Channels share the association through the `Scheduler` (RFC 8260 §3): first come first
   served, round robin, round robin per packet, priority, fair capacity, or weighted fair
   queueing (the default) by channel priority (`ChannelOptions::with_priority`, the peer's
@@ -70,11 +74,24 @@ loop {
   INIT / INIT ACK / COOKIE ECHO / COOKIE ACK with a self-contained HMAC-SHA-256 cookie, INIT
   and COOKIE ECHO retransmission (8 tries), INIT collision and duplicate COOKIE ECHO; Supported
   Extensions RE-CONFIG, FORWARD TSN, I-DATA and I-FORWARD-TSN.
+- Peer restart (RFC 9260 §5.2.2, §5.2.4): an INIT on a live association gets an INIT ACK with a
+  new tag and Tie-Tags; the COOKIE ECHO of a restarted peer (case A) closes every channel, drops
+  queued data, starts over with the new tags and TSNs and emits `Event::Restarted`; duplicates
+  get COOKIE ACK, other combinations are discarded, and a restart while shutting down is
+  refused (SHUTDOWN ACK + "Cookie Received While Shutting Down", or ABORT).
+- Zero checksum (RFC 9653): Zero Checksum Acceptable with "SCTP over DTLS" in INIT / INIT ACK;
+  packets with a zero checksum accepted; once the peer announced it too
+  (`Association::zero_checksum`), packets after the handshake go out without a CRC-32C.
 - Data transfer: fragmentation and reassembly (bounded by the receive limits), ordered and
   unordered delivery, SACK with gap blocks and duplicate TSNs (delayed every second packet or
   200 ms, immediate on gaps), slow start and congestion avoidance, the peer's window, T3-rtx
   with RTO from SRTT / RTTVAR (Karn), fast retransmit and fast recovery, association failure
-  after `max_retransmissions` timeouts; HEARTBEAT answered; SHUTDOWN in both roles; ABORT.
+  after `max_retransmissions` timeouts; SHUTDOWN in both roles; ABORT.
+- HEARTBEAT (RFC 9260 §8.3): answered; sent after `heartbeat_interval` + RTO without data in
+  flight; the HEARTBEAT ACK is an RTT measurement (`Association::rtt`) and clears the error
+  count; each one unanswered within the RTO is an error (RTO doubled, the next HEARTBEAT at
+  once), and after `max_retransmissions` errors the association fails (Path.Max.Retrans =
+  Association.Max.Retrans with one path), so an idle association notices a vanished peer.
 - Message interleaving (RFC 8260 §2): I-DATA chunks (32-bit MIDs, FSNs) when both sides offer
   them, fragments of different streams interleaved, reassembly per stream and message; DATA
   otherwise, and an ABORT for the chunk kind not negotiated. Stream schedulers and priorities
@@ -84,14 +101,17 @@ loop {
   only when the peer supports it.
 - Stream reset (RFC 6525): Outgoing SSN Reset Request / Response with "in progress" and retry;
   several outstanding peer requests are accepted in any order; add-streams requests are
-  accepted.
+  accepted. Incoming SSN Reset Requests are answered with our Outgoing SSN Reset Request for
+  those streams (their channels close); SSN/TSN Reset Requests are performed once none of our
+  data is in flight ("in progress" until then): new TSNs both ways, every SSN back to 0.
 - Data channels (RFC 8831 / 8832): DCEP OPEN / ACK, every channel type, negotiated channels,
   PPIDs 50, 51, 53, 56, 57 (and the deprecated partial 52, 54 on receive), messages ordered
   until the peer's ACK.
 
-Not implemented: multi-homing, sending HEARTBEATs, peer restart, AUTH, ASCONF, ECN, zero
-checksum (RFC 9653), incoming SSN reset and SSN/TSN reset requests (refused). Interop with
-usrsctp (Firefox) is not checked.
+Not implemented, as WebRTC uses none of them (one association over one DTLS connection):
+multi-homing, AUTH (RFC 4895), ASCONF (RFC 5061), ECN. We never send Incoming SSN Reset or
+SSN/TSN Reset Requests (we answer them). See ADR-042 for the HEARTBEAT, restart, zero checksum
+and reset request design.
 
 ## Testing
 
@@ -108,17 +128,28 @@ usrsctp (Firefox) is not checked.
   head-of-line blocking (a 200 kB message and a 4-byte one on two channels), scheduler shares
   (equal, 3:1 weighted, strict priority, FCFS order, one stream per packet), priorities changed
   at runtime, partial reliability with interleaved reliable and partially reliable channels,
-  many large messages on many channels at once.
+  many large messages on many channels at once; HEARTBEAT RTT when idle, failure of an idle
+  association whose peer vanished (none with HEARTBEATs off), HEARTBEATs over a link losing 15 %
+  each way for 30 minutes; zero checksum negotiation in every combination; peer restart with
+  data queued on both sides, then both directions and shutdown; a stray INIT on a live
+  association. Unit tests: Incoming SSN Reset answered by our Outgoing request, SSN/TSN Reset in
+  progress then performed, restart refused while shutting down.
   DATA and I-DATA run on alternate seeds; `SCTP_SEEDS=<n>` runs more seeds.
 - Interop over UDP (`examples/udp_peer.rs`, `tools/interop/sctp/run.sh`) against pion/sctp
   v1.12.0 with pion/datachannel, both roles, pion's interleaving on (I-DATA / I-FORWARD-TSN)
   and off (DATA), without loss and with every 10th packet dropped each way: echoes on ordered
   and unordered channels, pion-opened reliable and partially reliable channels, closing from
   both sides, shutdown (earlier also v1.8.33, and up to 25 % loss, where pion may take longer
-  than the 60 s limit). Through only-webrtc (`tools/interop/webrtc`): pion negotiates I-DATA;
+  than the 60 s limit); zero checksums offered by both (pion's `WithEnableZeroChecksum`), both
+  roles, with and without loss. Firefox 158 (usrsctp) through only-webrtc
+  (`tools/interop/webrtc/firefox.sh`, WebDriver BiDi), both offer directions: ordered and
+  unordered echoes, 70 kB and 200 kB messages, 150 s idle (our HEARTBEATs answered), a channel
+  closed by Firefox and a new one on the reused id. Neither Firefox nor Chrome 157 offers zero
+  checksums. Through only-webrtc (`tools/interop/webrtc`): pion negotiates I-DATA;
   Chrome 157 uses DATA unless started with
   `--force-fieldtrials=WebRTC-DataChannelMessageInterleaving/Enabled/`, which passes too.
 - Fuzzing: target `sctp_packet` (arbitrary packets, raw and with a fixed-up checksum, into
-  fresh, handshaking and established associations, one pair on I-DATA and one on DATA) in
-  `fuzz/`; `fuzzing::tests` replays its
+  fresh, handshaking and established associations, one pair on I-DATA and one on DATA, all
+  accepting zero checksums; seeds with HEARTBEATs, a peer restart and every RE-CONFIG request)
+  in `fuzz/`; `fuzzing::tests` replays its
   corpus on stable.

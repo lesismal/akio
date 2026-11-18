@@ -62,7 +62,8 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // from WHIP/W
 Interop: pion (data channels, Opus/VP8 echo and PLI in both offer directions, also through a
 `only` TURN relay) and fib's Go WebRTC both ways: `tools/interop/webrtc/run.sh`; headless Chrome
 in both offer directions (data channels, the fake camera and microphone echoed back and decoded
-by Chrome): `tools/interop/webrtc/browser.sh`. STUN and TURN servers are in
+by Chrome): `tools/interop/webrtc/browser.sh`; headless Firefox in both offer directions (data
+channels against usrsctp): `tools/interop/webrtc/firefox.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
 Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC, RTCP XR, TMMBR and RFC 8888

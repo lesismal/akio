@@ -5,6 +5,8 @@
 // and closes each channel the Rust side resets.
 //
 //	go run . connect|accept LOCAL REMOTE [drop-every-n] [interleave 0|1]
+//
+// SCTP_ZERO_CHECKSUM=1 offers zero checksums (RFC 9653).
 package main
 
 import (
@@ -66,6 +68,8 @@ func main() {
 		sctp.WithLoggerFactory(lf),
 		sctp.WithEnableInterleaving(interleave),
 		sctp.WithMaxMessageSize(262144),
+		// RFC 9653 (meant for DTLS; here only to check the negotiation): SCTP_ZERO_CHECKSUM=1.
+		sctp.WithEnableZeroChecksum(os.Getenv("SCTP_ZERO_CHECKSUM") == "1"),
 	}
 	var a *sctp.Association
 	if active {

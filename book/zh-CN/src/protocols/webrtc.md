@@ -9,7 +9,7 @@
   `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放）、
   `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序；对端提供时使用 I-DATA 消息交错，大消息不再阻塞其他通道上的小消息，各通道按优先级以加权公平
-  排队共享关联，ADR-037）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
+  排队共享关联，ADR-037；空闲关联发送 HEARTBEAT、对端重启与 RFC 9653 零校验和，ADR-042）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
   NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告；还有 RTCP XR、TMMBR / TMMBN、
   RFC 8888 反馈与 ULPFEC / FlexFEC / RED，peer 尚未使用）。`only-webrtc` 本身负责 SDP
   offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
@@ -27,8 +27,10 @@
 TLS，`Endpoint` 只带经 TCP 或 TLS 分配的中继候选）；以及 simulcast：Chrome 向 SFU 发送三层 VP8，SFU 以
 simulcast 及所选的一层发回，在 Chrome 解码时切换层（`tools/interop/webrtc/browser.sh`）。pion 与我们
 协商 I-DATA；Chrome 157 使用 DATA chunk，除非打开其 `WebRTC-DataChannelMessageInterleaving` field trial
-（打开后同样的测试经 I-DATA 通过）。SCTP 层本身也经 UDP 与 pion/sctp 互通测试，交错开与关、有无丢包
-（`tools/interop/sctp/run.sh`）。
+（打开后同样的测试经 I-DATA 通过）。SCTP 层本身也经 UDP 与 pion/sctp 互通测试，交错开与关、有无丢包、
+零校验和（`tools/interop/sctp/run.sh`）。无头 Firefox（usrsctp）经 WebDriver BiDi 在两个 offer 方向上测试：
+数据通道回显、大消息、较长的空闲期（期间 SCTP HEARTBEAT 维持关联）、Firefox 关闭通道后重新打开
+（`tools/interop/webrtc/firefox.sh`）。
 
 ## 一个引擎上的服务器、TURN 服务器与客户端
 

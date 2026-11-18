@@ -25,7 +25,7 @@ impl core::marker::Sync for only_sctp::Error
 impl core::marker::Unpin for only_sctp::Error
 impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Error
 impl core::panic::unwind_safe::UnwindSafe for only_sctp::Error
-pub enum only_sctp::Event
+#[non_exhaustive] pub enum only_sctp::Event
 pub only_sctp::Event::BufferedAmountLow
 pub only_sctp::Event::BufferedAmountLow::stream: u16
 pub only_sctp::Event::ChannelClose
@@ -40,6 +40,7 @@ pub only_sctp::Event::ChannelOpen::protocol: alloc::string::String
 pub only_sctp::Event::ChannelOpen::stream: u16
 pub only_sctp::Event::Closed
 pub only_sctp::Event::Connected
+pub only_sctp::Event::Restarted
 impl core::clone::Clone for only_sctp::Event
 pub fn only_sctp::Event::clone(&self) -> Self
 impl core::cmp::Eq for only_sctp::Event
@@ -117,10 +118,12 @@ pub fn only_sctp::Association::open_channel(&mut self, std::time::Instant, only_
 pub fn only_sctp::Association::poll_event(&mut self) -> core::option::Option<only_sctp::Event>
 pub fn only_sctp::Association::poll_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_sctp::Association::poll_transmit(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_sctp::Association::rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn only_sctp::Association::send(&mut self, std::time::Instant, u16, &[u8], bool) -> core::result::Result<bool, only_sctp::Error>
 pub fn only_sctp::Association::set_buffered_amount_low_threshold(&mut self, u16, usize)
 pub fn only_sctp::Association::set_channel_priority(&mut self, u16, u16) -> core::result::Result<(), only_sctp::Error>
 pub fn only_sctp::Association::shutdown(&mut self, std::time::Instant)
+pub fn only_sctp::Association::zero_checksum(&self) -> bool
 impl core::fmt::Debug for only_sctp::Association
 pub fn only_sctp::Association::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_sctp::Association
@@ -179,6 +182,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::ChannelOptions
 impl core::panic::unwind_safe::UnwindSafe for only_sctp::ChannelOptions
 pub struct only_sctp::Config
 pub only_sctp::Config::dtls_client: bool
+pub only_sctp::Config::heartbeat_interval: core::option::Option<core::time::Duration>
 pub only_sctp::Config::local_port: u16
 pub only_sctp::Config::max_buffered_amount: usize
 pub only_sctp::Config::max_init_retransmissions: u32
@@ -193,8 +197,10 @@ pub only_sctp::Config::rto_initial: core::time::Duration
 pub only_sctp::Config::rto_max: core::time::Duration
 pub only_sctp::Config::rto_min: core::time::Duration
 pub only_sctp::Config::scheduler: only_sctp::Scheduler
+pub only_sctp::Config::zero_checksum: bool
 impl only_sctp::Config
 pub fn only_sctp::Config::new(bool) -> only_sctp::Config
+pub fn only_sctp::Config::with_heartbeat_interval(self, core::option::Option<core::time::Duration>) -> only_sctp::Config
 pub fn only_sctp::Config::with_max_buffered_amount(self, usize) -> only_sctp::Config
 pub fn only_sctp::Config::with_max_message_size(self, usize) -> only_sctp::Config
 pub fn only_sctp::Config::with_max_receive_message_size(self, usize) -> only_sctp::Config
@@ -203,6 +209,7 @@ pub fn only_sctp::Config::with_mtu(self, usize) -> only_sctp::Config
 pub fn only_sctp::Config::with_ports(self, u16, u16) -> only_sctp::Config
 pub fn only_sctp::Config::with_receive_window(self, u32) -> only_sctp::Config
 pub fn only_sctp::Config::with_scheduler(self, only_sctp::Scheduler) -> only_sctp::Config
+pub fn only_sctp::Config::with_zero_checksum(self, bool) -> only_sctp::Config
 impl core::clone::Clone for only_sctp::Config
 pub fn only_sctp::Config::clone(&self) -> Self
 impl core::cmp::Eq for only_sctp::Config

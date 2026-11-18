@@ -10,6 +10,34 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: SCTP HEARTBEATs, peer restart, zero checksum and incoming reset requests (only-sctp)
+
+ADR-042 (docs/adr/042-sctp-heartbeat-restart-zero-checksum.md); only-sctp is Internal tier:
+
+- **HEARTBEATs** (RFC 9260 §8.3, `Config::heartbeat_interval`, default 30 s): an idle
+  association measures its RTT (`Association::rtt`) and notices a vanished peer: unanswered
+  HEARTBEATs count towards `max_retransmissions` (Path.Max.Retrans with one path), then the
+  association fails, 60-150 s after the last exchange. Previously only answered.
+- **Peer restart** (RFC 9260 §5.2.2, §5.2.4): an INIT on a live association gets an INIT ACK
+  with a new tag and Tie-Tags; a restarted peer's COOKIE ECHO closes every channel, drops queued
+  data and starts over, with the new `Event::Restarted`. Duplicates get COOKIE ACK, other
+  combinations are discarded, restarts while shutting down are refused. Previously ignored.
+- **Zero checksum** (RFC 9653, `Config::zero_checksum`, default on): "SCTP over DTLS"
+  announced in INIT / INIT ACK; zero checksums accepted, and sent after the handshake when the
+  peer announces it too (`Association::zero_checksum`): no CRC-32C on either end of the data
+  path. In-memory SCTP 1.20-1.31x faster (`examples/sctp_bench.rs`, same-run A/B against
+  46f25f81 on gpu51, medians of 7 rounds); data channels between two loopback `Endpoint`s,
+  DTLS included, 1.003x. Firefox 158 and Chrome 157 do not offer it; pion/sctp does.
+- **Incoming SSN Reset** and **SSN/TSN Reset** requests (RFC 6525 §5.2.3-4) are performed
+  instead of refused: the first is answered with our Outgoing SSN Reset Request (channels
+  close), the second once none of our data is in flight (new TSNs both ways, SSNs back to 0).
+- `Event` is now `#[non_exhaustive]`.
+- Interop: Firefox 158 (usrsctp) through only-webrtc, both offer directions, with a 150 s idle
+  spell (new `tools/interop/webrtc/firefox.sh`, WebDriver BiDi; the `webrtc-interop` example
+  takes `ONLY_INTEROP_BIND`); pion/sctp with zero checksums (`tools/interop/sctp/run.sh`);
+  Chrome 157 unchanged. Fuzz `sctp_packet` with new seeds, 11 minutes on gpu51, no crash.
+- Not implemented, as WebRTC uses none of them: multi-homing, AUTH, ASCONF, ECN.
+
 ### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
 
 ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:

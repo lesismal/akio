@@ -213,7 +213,9 @@ fn client(http: &str, what: &str, args: &[String]) {
             .expect("engine"),
     );
     engine.start().expect("start");
-    let ep = Endpoint::bind(&engine, "127.0.0.1:0".parse().expect("addr")).expect("bind");
+    // ONLY_INTEROP_BIND: another local address (Firefox pairs no loopback candidates).
+    let bind = std::env::var("ONLY_INTEROP_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let ep = Endpoint::bind(&engine, bind.parse().expect("addr")).expect("bind");
     // Force the transport, as a browser's iceTransportPolicy: only the candidates offered.
     let ep = match what {
         "dc-relay" | "dc-relay-url" => ep.candidate_filter(|c| c.kind() == "relay"),
