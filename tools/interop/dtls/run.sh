@@ -4,7 +4,10 @@
 #     image, with `-use_srtp` and `-keymatexport` compared byte for byte; LOCAL_OPENSSL=1 uses
 #     the host's openssl instead.
 #   - pion/dtls v3 (Go; pion/main.go): every SRTP profile, ECDSA and RSA suites, keying
-#     material compared.
+#     material compared; RFC 9146 connection IDs and PSK suites both ways.
+#   - DTLS 1.3, CIDs, PSKs, resumption, KeyUpdate, version negotiation against OpenSSL 4.1 and
+#     wolfSSL 5.8 (dtls13.sh) in the image built from ./Dockerfile (built on first use;
+#     SKIP_DTLS13=1 skips it).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 W=$(mktemp -d)
@@ -80,4 +83,50 @@ for profile in SRTP_AEAD_AES_128_GCM SRTP_AEAD_AES_256_GCM SRTP_AES128_CM_SHA1_8
     echo "ok   pion client -> only-dtls server: $name ($(suite_of "os-$name.log"))"
   done
 done
+# Connection IDs (RFC 9146) and PSK suites.
+port=$((port + 1))
+"$GO" cid-server "127.0.0.1:$port" 8 >ps-cid.log 2>&1 &
+PIDS="$PIDS $!"
+sleep 0.5
+"$RS" client "127.0.0.1:$port" --cid 4 >oc-cid.log 2>&1 || fail "cid: only-dtls client"
+grep -q "local_cid=[0-9A-F]\{8\} peer_cid=[0-9A-F]\{16\}" oc-cid.log || fail "cid: not negotiated"
+grep -q "^RECV hello from only-dtls" oc-cid.log || fail "cid: no echo"
+echo "ok   pion cid-server <- only-dtls --cid 4: CIDs both ways"
+port=$((port + 1))
+"$RS" server "127.0.0.1:$port" --cid 6 --no-client-cert >os-cid.log 2>&1 &
+PIDS="$PIDS $!"
+sleep 0.5
+"$GO" cid-client "127.0.0.1:$port" 0 >pc-cid.log 2>&1 || fail "cid: pion client"
+sleep 0.3
+grep -q "local_cid=[0-9A-F]\{12\} peer_cid=$" os-cid.log || fail "cid: pion did not send our CID"
+grep -q "^RECV hello from pion" pc-cid.log || fail "cid: no echo at pion"
+echo "ok   pion cid-client (send-only) -> only-dtls --cid 6"
+PSK=00112233445566778899aabbccddeeff
+for suite in TLS_PSK_WITH_AES_128_GCM_SHA256 TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256; do
+  port=$((port + 1))
+  "$GO" psk-server "127.0.0.1:$port" only-psk "$PSK" "$suite" >"ps-$suite.log" 2>&1 &
+  PIDS="$PIDS $!"
+  sleep 0.5
+  "$RS" client "127.0.0.1:$port" --psk "only-psk:$PSK" >"oc-$suite.log" 2>&1 || fail "$suite: client"
+  [ "$(suite_of "oc-$suite.log")" = "$suite" ] || fail "$suite: got $(suite_of "oc-$suite.log")"
+  grep -q "^RECV hello from only-dtls" "oc-$suite.log" || fail "$suite: no echo"
+  port=$((port + 1))
+  "$RS" server "127.0.0.1:$port" --psk "only-psk:$PSK" >"os-$suite.log" 2>&1 &
+  PIDS="$PIDS $!"
+  sleep 0.5
+  "$GO" psk-client "127.0.0.1:$port" only-psk "$PSK" "$suite" >"pc-$suite.log" 2>&1 || fail "$suite: pion client"
+  sleep 0.3
+  grep -q "psk=only-psk" "os-$suite.log" || fail "$suite: no PSK at only-dtls"
+  echo "ok   pion <-> only-dtls PSK both ways: $suite"
+done
+
+if [ "${SKIP_DTLS13:-0}" != 1 ]; then
+  echo "== DTLS 1.3 / CID / PSK / resumption (OpenSSL 4.1, wolfSSL 5.8)"
+  docker image inspect only-dtls-interop >/dev/null 2>&1 ||
+    docker build -t only-dtls-interop "$ROOT/tools/interop/dtls"
+  docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+    -e CARGO_TARGET_DIR=/tmp/t only-dtls-interop bash -c \
+    'cargo build -q --release -p only-dtls --example dtls-interop &&
+     tools/interop/dtls/dtls13.sh /tmp/t/release/examples/dtls-interop /tmp/dtls13'
+fi
 echo "dtls interop: all passed"

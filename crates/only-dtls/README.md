@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-Sans-io DTLS 1.2 (RFC 6347) for [`only`](https://github.com/lesismal/only), on
+Sans-io DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147) for [`only`](https://github.com/lesismal/only), on
 [`only-crypto`](../only-crypto) and [`only-x509`](../only-x509), in safe Rust
 (`#![forbid(unsafe_code)]`) with no other dependencies. It is the DTLS layer of the in-house
 WebRTC stack of DEV-PLAN wave D (DTLS-SRTP keys, SCTP data channels), used by `only-webrtc`. An internal crate (docs/api-stability.md): its API follows that stack
@@ -74,8 +74,30 @@ loop {
   leaves the check to the caller (`HandshakeInfo::peer_fingerprint`). The peer always proves
   possession of the certificate key.
 
-Not implemented: DTLS 1.3 (RFC 9147) and its ACK messages, connection IDs (RFC 9146),
-session resumption and tickets, PSK and non-ECDHE key exchanges, CBC suites, SRTP MKIs.
+DTLS 1.3, connection IDs, resumption and PSKs (ADR-021):
+
+- Versions: `Config::with_versions` (default DTLS 1.2 only, also `Config::webrtc`). With both,
+  a connection starts as DTLS 1.3 and continues as DTLS 1.2 with a 1.2-only peer (RFC 8446
+  downgrade sentinel set and checked).
+- DTLS 1.3: suites `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
+  `TLS_CHACHA20_POLY1305_SHA256`; unified record header (16-bit sequence numbers, explicit
+  length) with record number encryption; epoch 2 for the handshake, 3+ for data, one more per
+  KeyUpdate (`Connection::update_keys`; automatic after 2^23 records); ACKs: on gaps, after a
+  quarter of the RTO for an incomplete flight, at once for final flights and repeats; only
+  unacknowledged fragments are retransmitted; stateless HelloRetryRequest cookies (cipher
+  suite, group, ClientHello1 hash under the `HelloVerifier` HMAC), also from
+  `HelloVerifier::check`; `use_srtp` in EncryptedExtensions; the TLS 1.3 exporter.
+- Connection IDs: `Config::with_connection_id(Some(len))`; RFC 9146 `tls12_cid` records in
+  DTLS 1.2, the CID in the unified header in DTLS 1.3; `connection_id(datagram, len)` routes.
+- Resumption: `Config::with_session_resumption(true)`; DTLS 1.2 session IDs (cache of 1024)
+  and RFC 5077 tickets, DTLS 1.3 NewSessionTicket (`psk_dhe_ke`); tickets sealed with
+  AES-256-GCM under a `TicketKey`, carrying the peer chain (checked again on resumption);
+  `Event::NewSession` / `Connection::client_resume`.
+- PSKs: `Config::with_psks`; `TLS_PSK_WITH_*` and `TLS_ECDHE_PSK_WITH_*` AEAD suites in
+  DTLS 1.2, external PSKs (SHA-256) in DTLS 1.3.
+
+Not implemented: DTLS 1.3 0-RTT, NewConnectionId / RequestConnectionId, post-handshake client
+authentication, non-ECDHE certificate key exchanges, CBC suites, SRTP MKIs.
 
 ## Testing
 
@@ -91,6 +113,21 @@ session resumption and tickets, PSK and non-ECDHE key exchanges, CBC suites, SRT
   profiles, `-mtu 300`, mutual authentication, and `-keymatexport EXTRACTOR-dtls_srtp` equal to
   our keys; pion/dtls v3.1 both directions for every SRTP profile with ECDSA, ChaCha20 and RSA
   suites, keying material compared; the in-house WebRTC stack's interop runs (pion, Chrome) exercise it end to end.
+- DTLS 1.3 and the new features (`tests/dtls13.rs`): 32 seeds at MTU 256 with 25 % loss,
+  duplication and reordering (cookies, CIDs, tickets on some), KeyUpdates both ways over the
+  lossy link; one lost datagram resent as one fragment after the client's ACK; lost final
+  flight and lost ACK; HRR cookies in the connection and in `HelloVerifier`; every DTLS 1.3
+  suite with four key types; version negotiation (six combinations, cookies on and off);
+  DTLS 1.3 and DTLS 1.2 resumption (also over a lossy link); external PSKs (wrong key: bad
+  binder); every DTLS 1.2 PSK suite; CIDs in both versions with asymmetric lengths; replayed
+  and tampered DTLS 1.3 records. The key schedule is checked against RFC 8448 with the TLS
+  prefix.
+- Interop for DTLS 1.3 (`tools/interop/dtls/dtls13.sh`, from `run.sh`, in the image of
+  `tools/interop/dtls/Dockerfile`): OpenSSL 4.1 `-dtls1_3` both ways (SRTP keys compared,
+  RSA/ChaCha20 at MTU 300, HRR for a group and for a cookie, KeyUpdate both ways, resumption,
+  PSKs in both versions, version negotiation with `-dtls`, `-dtls1_2` and `-listen`), wolfSSL
+  5.8.4 (CIDs in both versions and directions, HRR, KeyUpdate, resumption); pion/dtls CIDs and
+  PSK suites both ways.
 - Fuzzing: targets `dtls_record` (record splitter, fragment and message parsers, re-encoding)
   and `dtls_handshake` (arbitrary datagrams into client and server state machines mid-handshake
   and connected) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.

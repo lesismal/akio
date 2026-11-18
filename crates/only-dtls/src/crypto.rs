@@ -1,6 +1,7 @@
 //! Cipher suites, the TLS 1.2 PRF, record protection, ECDHE and signature schemes.
 
-use only_crypto::chacha::ChaCha20Poly1305;
+use only_crypto::aes::Aes;
+use only_crypto::chacha::{ChaCha20, ChaCha20Poly1305};
 use only_crypto::gcm::AesGcm;
 use only_crypto::hash::{Hash, Sha256, Sha384};
 use only_crypto::mac::Hmac;
@@ -10,8 +11,9 @@ use only_crypto::{p256, p384, x25519};
 use crate::record::Header;
 use crate::{AlertDescription, Error};
 
-/// A DTLS 1.2 cipher suite. All are ECDHE with an AEAD; the WebRTC baseline is
-/// [`CipherSuite::EcdheEcdsaAes128GcmSha256`].
+/// A DTLS cipher suite: the DTLS 1.2 ECDHE suites with an AEAD (the WebRTC baseline is
+/// [`CipherSuite::EcdheEcdsaAes128GcmSha256`]), the DTLS 1.2 PSK and ECDHE-PSK suites
+/// (RFC 4279 / RFC 5487 / RFC 7905 / RFC 8442) and the DTLS 1.3 suites (RFC 9147).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CipherSuite {
@@ -27,6 +29,24 @@ pub enum CipherSuite {
     EcdheRsaAes256GcmSha384,
     /// `TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256` (0xCCA8).
     EcdheRsaChacha20Poly1305Sha256,
+    /// DTLS 1.2 `TLS_ECDHE_PSK_WITH_AES_128_GCM_SHA256` (0xD001, RFC 8442).
+    EcdhePskAes128GcmSha256,
+    /// DTLS 1.2 `TLS_ECDHE_PSK_WITH_AES_256_GCM_SHA384` (0xD002, RFC 8442).
+    EcdhePskAes256GcmSha384,
+    /// DTLS 1.2 `TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256` (0xCCAC, RFC 7905).
+    EcdhePskChacha20Poly1305Sha256,
+    /// DTLS 1.2 `TLS_PSK_WITH_AES_128_GCM_SHA256` (0x00A8, RFC 5487): no forward secrecy.
+    PskAes128GcmSha256,
+    /// DTLS 1.2 `TLS_PSK_WITH_AES_256_GCM_SHA384` (0x00A9, RFC 5487): no forward secrecy.
+    PskAes256GcmSha384,
+    /// DTLS 1.2 `TLS_PSK_WITH_CHACHA20_POLY1305_SHA256` (0xCCAB, RFC 7905): no forward secrecy.
+    PskChacha20Poly1305Sha256,
+    /// DTLS 1.3 `TLS_AES_128_GCM_SHA256` (0x1301).
+    Tls13Aes128GcmSha256,
+    /// DTLS 1.3 `TLS_AES_256_GCM_SHA384` (0x1302).
+    Tls13Aes256GcmSha384,
+    /// DTLS 1.3 `TLS_CHACHA20_POLY1305_SHA256` (0x1303).
+    Tls13Chacha20Poly1305Sha256,
 }
 
 /// The PRF / transcript hash of a cipher suite.
@@ -43,10 +63,26 @@ impl PrfHash {
             PrfHash::Sha384 => Sha384::digest(data).to_vec(),
         }
     }
+
+    /// The digest length.
+    pub(crate) fn len(self) -> usize {
+        match self {
+            PrfHash::Sha256 => 32,
+            PrfHash::Sha384 => 48,
+        }
+    }
+
+    pub(crate) fn hmac(self, key: &[u8], data: &[u8]) -> Vec<u8> {
+        match self {
+            PrfHash::Sha256 => Hmac::<Sha256>::mac(key, data).to_vec(),
+            PrfHash::Sha384 => Hmac::<Sha384>::mac(key, data).to_vec(),
+        }
+    }
 }
 
 impl CipherSuite {
-    /// Every suite, in the default preference order (ECDSA first, AES-128-GCM first).
+    /// Every DTLS 1.2 certificate (ECDHE-ECDSA / ECDHE-RSA) suite, in the default preference
+    /// order (ECDSA first, AES-128-GCM first).
     pub const ALL: [CipherSuite; 6] = [
         CipherSuite::EcdheEcdsaAes128GcmSha256,
         CipherSuite::EcdheEcdsaAes256GcmSha384,
@@ -54,6 +90,24 @@ impl CipherSuite {
         CipherSuite::EcdheRsaAes128GcmSha256,
         CipherSuite::EcdheRsaAes256GcmSha384,
         CipherSuite::EcdheRsaChacha20Poly1305Sha256,
+    ];
+
+    /// The DTLS 1.2 pre-shared key suites, ECDHE-PSK (forward secret) first. Offered only with
+    /// a [`Psk`](crate::Psk) configured.
+    pub const PSK: [CipherSuite; 6] = [
+        CipherSuite::EcdhePskAes128GcmSha256,
+        CipherSuite::EcdhePskAes256GcmSha384,
+        CipherSuite::EcdhePskChacha20Poly1305Sha256,
+        CipherSuite::PskAes128GcmSha256,
+        CipherSuite::PskAes256GcmSha384,
+        CipherSuite::PskChacha20Poly1305Sha256,
+    ];
+
+    /// The DTLS 1.3 suites, in the default preference order.
+    pub const TLS13: [CipherSuite; 3] = [
+        CipherSuite::Tls13Aes128GcmSha256,
+        CipherSuite::Tls13Aes256GcmSha384,
+        CipherSuite::Tls13Chacha20Poly1305Sha256,
     ];
 
     /// The IANA code point.
@@ -66,16 +120,30 @@ impl CipherSuite {
             CipherSuite::EcdheRsaAes128GcmSha256 => 0xc02f,
             CipherSuite::EcdheRsaAes256GcmSha384 => 0xc030,
             CipherSuite::EcdheRsaChacha20Poly1305Sha256 => 0xcca8,
+            CipherSuite::EcdhePskAes128GcmSha256 => 0xd001,
+            CipherSuite::EcdhePskAes256GcmSha384 => 0xd002,
+            CipherSuite::EcdhePskChacha20Poly1305Sha256 => 0xccac,
+            CipherSuite::PskAes128GcmSha256 => 0x00a8,
+            CipherSuite::PskAes256GcmSha384 => 0x00a9,
+            CipherSuite::PskChacha20Poly1305Sha256 => 0xccab,
+            CipherSuite::Tls13Aes128GcmSha256 => 0x1301,
+            CipherSuite::Tls13Aes256GcmSha384 => 0x1302,
+            CipherSuite::Tls13Chacha20Poly1305Sha256 => 0x1303,
         }
     }
 
     /// The suite for a code point, if supported.
     #[must_use]
     pub fn from_id(id: u16) -> Option<CipherSuite> {
-        CipherSuite::ALL.into_iter().find(|s| s.id() == id)
+        CipherSuite::ALL
+            .into_iter()
+            .chain(CipherSuite::PSK)
+            .chain(CipherSuite::TLS13)
+            .find(|s| s.id() == id)
     }
 
-    /// Whether the suite authenticates with an ECDSA (or Ed25519) certificate rather than RSA.
+    /// Whether the suite authenticates with an ECDSA (or Ed25519) certificate rather than RSA
+    /// (false for PSK and DTLS 1.3 suites, which do not fix the certificate type).
     #[must_use]
     pub fn is_ecdsa(self) -> bool {
         matches!(
@@ -86,42 +154,92 @@ impl CipherSuite {
         )
     }
 
+    /// Whether this is a DTLS 1.3 suite.
+    #[must_use]
+    pub fn is_tls13(self) -> bool {
+        CipherSuite::TLS13.contains(&self)
+    }
+
+    /// Whether this is a DTLS 1.2 pre-shared key suite (PSK or ECDHE-PSK).
+    #[must_use]
+    pub fn is_psk(self) -> bool {
+        CipherSuite::PSK.contains(&self)
+    }
+
+    /// DTLS 1.2 ECDHE-PSK (the PSK suites with forward secrecy).
+    pub(crate) fn is_ecdhe_psk(self) -> bool {
+        matches!(
+            self,
+            CipherSuite::EcdhePskAes128GcmSha256
+                | CipherSuite::EcdhePskAes256GcmSha384
+                | CipherSuite::EcdhePskChacha20Poly1305Sha256
+        )
+    }
+
     pub(crate) fn prf_hash(self) -> PrfHash {
         match self {
-            CipherSuite::EcdheEcdsaAes256GcmSha384 | CipherSuite::EcdheRsaAes256GcmSha384 => {
-                PrfHash::Sha384
-            }
+            CipherSuite::EcdheEcdsaAes256GcmSha384
+            | CipherSuite::EcdheRsaAes256GcmSha384
+            | CipherSuite::EcdhePskAes256GcmSha384
+            | CipherSuite::PskAes256GcmSha384
+            | CipherSuite::Tls13Aes256GcmSha384 => PrfHash::Sha384,
             _ => PrfHash::Sha256,
         }
     }
 
-    fn is_chacha(self) -> bool {
+    pub(crate) fn is_chacha(self) -> bool {
         matches!(
             self,
             CipherSuite::EcdheEcdsaChacha20Poly1305Sha256
                 | CipherSuite::EcdheRsaChacha20Poly1305Sha256
+                | CipherSuite::EcdhePskChacha20Poly1305Sha256
+                | CipherSuite::PskChacha20Poly1305Sha256
+                | CipherSuite::Tls13Chacha20Poly1305Sha256
         )
     }
 
     pub(crate) fn key_len(self) -> usize {
         match self {
-            CipherSuite::EcdheEcdsaAes128GcmSha256 | CipherSuite::EcdheRsaAes128GcmSha256 => 16,
+            CipherSuite::EcdheEcdsaAes128GcmSha256
+            | CipherSuite::EcdheRsaAes128GcmSha256
+            | CipherSuite::EcdhePskAes128GcmSha256
+            | CipherSuite::PskAes128GcmSha256
+            | CipherSuite::Tls13Aes128GcmSha256 => 16,
             _ => 32,
         }
     }
 
-    /// The implicit IV length: the 4-byte GCM salt or the 12-byte ChaCha20-Poly1305 IV.
+    /// The implicit IV length: the 4-byte GCM salt or the 12-byte ChaCha20-Poly1305 IV in
+    /// DTLS 1.2; always 12 in DTLS 1.3.
     pub(crate) fn fixed_iv_len(self) -> usize {
-        if self.is_chacha() { 12 } else { 4 }
+        if self.is_chacha() || self.is_tls13() {
+            12
+        } else {
+            4
+        }
     }
 
-    /// Bytes added to each protected record: explicit nonce plus tag.
+    /// Bytes added to each protected record: explicit nonce plus tag (DTLS 1.2), or tag plus
+    /// the inner content type (DTLS 1.3).
     pub(crate) fn overhead(self) -> usize {
-        if self.is_chacha() { 16 } else { 8 + 16 }
+        if self.is_tls13() {
+            16 + 1
+        } else if self.is_chacha() {
+            16
+        } else {
+            8 + 16
+        }
     }
 
-    /// Whether `key` can authenticate this suite.
+    /// Whether `key` can authenticate this suite (DTLS 1.3 suites take any key; PSK suites
+    /// none).
     pub(crate) fn fits_key(self, key: &PrivateKey) -> bool {
+        if self.is_tls13() {
+            return true;
+        }
+        if self.is_psk() {
+            return false;
+        }
         match key {
             PrivateKey::Rsa(_) => !self.is_ecdsa(),
             _ => self.is_ecdsa(),
@@ -142,6 +260,17 @@ impl std::fmt::Display for CipherSuite {
             CipherSuite::EcdheRsaChacha20Poly1305Sha256 => {
                 "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
             }
+            CipherSuite::EcdhePskAes128GcmSha256 => "TLS_ECDHE_PSK_WITH_AES_128_GCM_SHA256",
+            CipherSuite::EcdhePskAes256GcmSha384 => "TLS_ECDHE_PSK_WITH_AES_256_GCM_SHA384",
+            CipherSuite::EcdhePskChacha20Poly1305Sha256 => {
+                "TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256"
+            }
+            CipherSuite::PskAes128GcmSha256 => "TLS_PSK_WITH_AES_128_GCM_SHA256",
+            CipherSuite::PskAes256GcmSha384 => "TLS_PSK_WITH_AES_256_GCM_SHA384",
+            CipherSuite::PskChacha20Poly1305Sha256 => "TLS_PSK_WITH_CHACHA20_POLY1305_SHA256",
+            CipherSuite::Tls13Aes128GcmSha256 => "TLS_AES_128_GCM_SHA256",
+            CipherSuite::Tls13Aes256GcmSha384 => "TLS_AES_256_GCM_SHA384",
+            CipherSuite::Tls13Chacha20Poly1305Sha256 => "TLS_CHACHA20_POLY1305_SHA256",
         })
     }
 }
@@ -229,23 +358,53 @@ impl RecordProtection {
         a
     }
 
+    /// The RFC 9146 §5 additional data of a `tls12_cid` record whose inner plaintext is `len`
+    /// bytes.
+    pub(crate) fn cid_aad(h: &Header, cid: &[u8], len: usize) -> Vec<u8> {
+        let mut a = Vec::with_capacity(23 + cid.len());
+        a.extend_from_slice(&[0xff; 8]);
+        a.push(crate::record::CT_TLS12_CID);
+        a.push(cid.len() as u8);
+        a.push(crate::record::CT_TLS12_CID);
+        a.extend_from_slice(&h.version.to_be_bytes());
+        a.extend_from_slice(&h.epoch_seq().to_be_bytes());
+        a.extend_from_slice(cid);
+        a.extend_from_slice(&(len as u16).to_be_bytes());
+        a
+    }
+
     /// The protected fragment for `plaintext` under header `h`.
     pub(crate) fn seal(&self, h: &Header, plaintext: &[u8]) -> Vec<u8> {
+        self.seal_aad(h, &Self::aad(h, plaintext.len()), plaintext)
+    }
+
+    /// The protected fragment for `plaintext` under header `h` with additional data `aad`.
+    pub(crate) fn seal_aad(&self, h: &Header, aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
         let nonce = self.nonce(h.epoch_seq());
-        let aad = Self::aad(h, plaintext.len());
         match &self.aead {
             Aead::Gcm(g) => {
                 let mut out = Vec::with_capacity(8 + plaintext.len() + 16);
                 out.extend_from_slice(&nonce[4..]);
-                out.extend_from_slice(&g.encrypt(&nonce, &aad, plaintext));
+                out.extend_from_slice(&g.encrypt(&nonce, aad, plaintext));
                 out
             }
-            Aead::ChaCha(c) => c.encrypt(&nonce, &aad, plaintext),
+            Aead::ChaCha(c) => c.encrypt(&nonce, aad, plaintext),
         }
     }
 
     /// The plaintext of a protected fragment, or `None` if it does not authenticate.
     pub(crate) fn open(&self, h: &Header, fragment: &[u8]) -> Option<Vec<u8>> {
+        self.open_aad(h, fragment, |n| Self::aad(h, n))
+    }
+
+    /// The plaintext of a protected fragment; `aad` builds the additional data from the
+    /// plaintext length.
+    pub(crate) fn open_aad<A: AsRef<[u8]>>(
+        &self,
+        h: &Header,
+        fragment: &[u8],
+        aad: impl Fn(usize) -> A,
+    ) -> Option<Vec<u8>> {
         match &self.aead {
             Aead::Gcm(g) => {
                 if fragment.len() < 8 + 16 {
@@ -254,16 +413,113 @@ impl RecordProtection {
                 let mut nonce = self.iv;
                 nonce[4..].copy_from_slice(&fragment[..8]);
                 let ct = &fragment[8..];
-                let aad = Self::aad(h, ct.len() - 16);
-                g.decrypt(&nonce, &aad, ct).ok()
+                g.decrypt(&nonce, aad(ct.len() - 16).as_ref(), ct).ok()
             }
             Aead::ChaCha(c) => {
                 if fragment.len() < 16 {
                     return None;
                 }
                 let nonce = self.nonce(h.epoch_seq());
-                let aad = Self::aad(h, fragment.len() - 16);
-                c.decrypt(&nonce, &aad, fragment).ok()
+                c.decrypt(&nonce, aad(fragment.len() - 16).as_ref(), fragment)
+                    .ok()
+            }
+        }
+    }
+}
+
+/// One direction's DTLS 1.3 protection for an epoch (RFC 9147 §4): the AEAD with the
+/// TLS 1.3 per-record nonce and the record number encryption key (§4.2.3).
+#[derive(Clone)]
+pub(crate) struct Protection13 {
+    aead: Aead,
+    iv: [u8; 12],
+    sn: SnCipher,
+}
+
+#[derive(Clone)]
+enum SnCipher {
+    Aes(Box<Aes>),
+    ChaCha([u8; 32]),
+}
+
+impl std::fmt::Debug for Protection13 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Protection13").finish_non_exhaustive()
+    }
+}
+
+impl Protection13 {
+    /// Keys from `write_key`, `write_iv` (12 bytes) and `sn_key`.
+    pub(crate) fn new(
+        suite: CipherSuite,
+        key: &[u8],
+        iv: &[u8],
+        sn_key: &[u8],
+    ) -> Result<Protection13, Error> {
+        let bad = || Error::Crypto(only_crypto::Error::InvalidLength);
+        let iv: [u8; 12] = iv.try_into().map_err(|_| bad())?;
+        let (aead, sn) = if suite.is_chacha() {
+            let k: [u8; 32] = key.try_into().map_err(|_| bad())?;
+            let s: [u8; 32] = sn_key.try_into().map_err(|_| bad())?;
+            (
+                Aead::ChaCha(Box::new(ChaCha20Poly1305::new(&k))),
+                SnCipher::ChaCha(s),
+            )
+        } else {
+            (
+                Aead::Gcm(Box::new(AesGcm::new(key)?)),
+                SnCipher::Aes(Box::new(Aes::new(sn_key)?)),
+            )
+        };
+        Ok(Protection13 { aead, iv, sn })
+    }
+
+    fn nonce(&self, seq: u64) -> [u8; 12] {
+        let mut n = self.iv;
+        for (b, s) in n[4..].iter_mut().zip(seq.to_be_bytes()) {
+            *b ^= s;
+        }
+        n
+    }
+
+    /// Ciphertext and tag of `plaintext` (the DTLSInnerPlaintext) for record `seq`.
+    pub(crate) fn seal(&self, seq: u64, aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        let nonce = self.nonce(seq);
+        match &self.aead {
+            Aead::Gcm(g) => g.encrypt(&nonce, aad, plaintext),
+            Aead::ChaCha(c) => c.encrypt(&nonce, aad, plaintext),
+        }
+    }
+
+    /// The inner plaintext of record `seq`, or `None` if it does not authenticate.
+    pub(crate) fn open(&self, seq: u64, aad: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>> {
+        if ciphertext.len() < 16 {
+            return None;
+        }
+        let nonce = self.nonce(seq);
+        match &self.aead {
+            Aead::Gcm(g) => g.decrypt(&nonce, aad, ciphertext).ok(),
+            Aead::ChaCha(c) => c.decrypt(&nonce, aad, ciphertext).ok(),
+        }
+    }
+
+    /// The record number mask from the first 16 bytes of the ciphertext (RFC 9147 §4.2.3):
+    /// AES-ECB of the sample, or the ChaCha20 keystream with the sample's first 4 bytes as the
+    /// (little-endian) counter and the other 12 as the nonce.
+    pub(crate) fn mask(&self, sample: &[u8; 16]) -> [u8; 2] {
+        match &self.sn {
+            SnCipher::Aes(a) => {
+                let mut b = *sample;
+                a.encrypt_block(&mut b);
+                [b[0], b[1]]
+            }
+            SnCipher::ChaCha(k) => {
+                let counter = u32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+                let mut nonce = [0u8; 12];
+                nonce.copy_from_slice(&sample[4..]);
+                let mut m = [0u8; 2];
+                ChaCha20::new(k, &nonce, counter).apply_keystream(&mut m);
+                m
             }
         }
     }
@@ -410,6 +666,53 @@ pub(crate) fn choose_scheme(key: &PrivateKey, peer: Option<&[u16]>) -> Option<u1
     }
 }
 
+/// DTLS 1.3 CertificateVerify schemes (RFC 8446 §4.2.3: no PKCS#1 v1.5, ECDSA bound to its
+/// curve).
+pub(crate) const SIGNATURE_SCHEMES_13: [u16; 7] =
+    [0x0403, 0x0503, 0x0603, 0x0807, 0x0804, 0x0805, 0x0806];
+
+/// The DTLS 1.3 scheme to sign with for `key`, if the peer offered one.
+pub(crate) fn choose_scheme13(key: &PrivateKey, peer: &[u16]) -> Option<u16> {
+    let ours: &[u16] = match key {
+        PrivateKey::P256(_) => &[0x0403],
+        PrivateKey::P384(_) => &[0x0503],
+        PrivateKey::Ed25519(_) => &[0x0807],
+        PrivateKey::Rsa(_) => &[0x0804, 0x0805, 0x0806],
+        _ => &[],
+    };
+    ours.iter().copied().find(|s| peer.contains(s))
+}
+
+/// The content a DTLS 1.3 CertificateVerify signs (RFC 8446 §4.4.3; the context strings are
+/// TLS 1.3's, RFC 9147 keeps them).
+pub(crate) fn certificate_verify_input(server: bool, transcript_hash: &[u8]) -> Vec<u8> {
+    let mut m = vec![0x20u8; 64];
+    m.extend_from_slice(if server {
+        b"TLS 1.3, server CertificateVerify"
+    } else {
+        b"TLS 1.3, client CertificateVerify"
+    });
+    m.push(0);
+    m.extend_from_slice(transcript_hash);
+    m
+}
+
+/// Verifies a DTLS 1.3 CertificateVerify signature.
+pub(crate) fn verify_signature13(
+    key: &PublicKey,
+    scheme: u16,
+    msg: &[u8],
+    sig: &[u8],
+) -> Result<(), Error> {
+    if !SIGNATURE_SCHEMES_13.contains(&scheme) {
+        return Err(Error::protocol(
+            AlertDescription::IllegalParameter,
+            "signature scheme not allowed in DTLS 1.3",
+        ));
+    }
+    verify_signature(key, scheme, msg, sig)
+}
+
 /// Verifies a TLS 1.2 `digitally-signed` value.
 pub(crate) fn verify_signature(
     key: &PublicKey,
@@ -499,11 +802,16 @@ mod tests {
 
     #[test]
     fn suites_roundtrip() {
-        for s in CipherSuite::ALL {
+        for s in CipherSuite::ALL
+            .into_iter()
+            .chain(CipherSuite::PSK)
+            .chain(CipherSuite::TLS13)
+        {
             assert_eq!(CipherSuite::from_id(s.id()), Some(s));
             assert!(!s.to_string().is_empty());
+            assert_eq!(s.is_tls13(), s.id() >> 8 == 0x13);
         }
-        assert_eq!(CipherSuite::from_id(0x1301), None);
+        assert_eq!(CipherSuite::from_id(0x1304), None);
     }
 
     #[test]

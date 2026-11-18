@@ -111,6 +111,37 @@ ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
 位于 `extensions`，不再在 `unknown_fields` 中；超过 5 字节的 tag 被拒绝（与 C++ 一致）。编解码开销不变：在 gpu51 上与上一提交同轮 A/B
 （交替 5 轮取中位数，prost 作对照）：Point 12/18 ns → 12/18 ns，Feature 19/47 ns → 18/45 ns，
 AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 1448 ns（−11%，prost 1788 → 1749）。
+### 新增：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
+
+除注明外均为新增（ADR-021，docs/adr/021-dtls13-cid-resumption.zh-CN.md；only-dtls 属 Internal 层）：
+
+- **DTLS 1.3**（RFC 9147），沿用同一个 sans-io `Connection`：带记录号加密的统一记录头，随 KeyUpdate
+  递增的 epoch（`Connection::update_keys`，密钥接近使用上限前自动更新），ACK 且只重传未确认的分片，
+  无状态的 HelloRetryRequest cookie（`HelloVerifier::check` 对 DTLS 1.3 ClientHello 回以 HRR），
+  `use_srtp`，TLS 1.3 导出器。用 `Config::with_versions` 开启（默认只有 DTLS 1.2，`Config::webrtc`
+  也一样）；同时启用两个版本时，遇到只支持 1.2 的对端回退到 DTLS 1.2，并做 RFC 8446 降级检查。新增
+  `Version`、`Connection::version`、`HandshakeInfo::version`、`CipherSuite::TLS13` 与
+  `CipherSuite::is_tls13`。
+- **连接 ID**：DTLS 1.2 的 RFC 9146 `tls12_cid` 记录与 DTLS 1.3 CID，配合
+  `Config::with_connection_id`、`Connection::local_connection_id`、
+  `HandshakeInfo::{local_connection_id, peer_connection_id}` 以及按 CID 分发数据报的
+  `only_dtls::connection_id`。
+- **会话恢复**：DTLS 1.2 会话 ID（上限 1024 条的缓存）与 RFC 5077 票据，DTLS 1.3 NewSessionTicket
+  （`psk_dhe_ke`），配合 `Config::with_session_resumption`、`with_ticket_key`（`TicketKey`）、
+  `with_ticket_lifetime`（默认 2 小时，最长 7 天）、`Event::NewSession(Box<Session>)`、
+  `Connection::client_resume` 与 `HandshakeInfo::resumed`。
+- **外部 PSK**：`Psk`、`Config::with_psks`、DTLS 1.2 的 PSK / ECDHE-PSK AEAD 套件（`CipherSuite::PSK`、
+  `is_psk`）以及 DTLS 1.3 外部 PSK；只做 PSK 的服务端无需证书。`HandshakeInfo::psk_identity`；告警
+  `MissingExtension`、`UnknownPskIdentity`。
+- 变更：`Config` 默认套件列表以 DTLS 1.3 与 PSK 套件开头（只在对应版本或配置了 PSK 时使用，只用
+  DTLS 1.2 的配置行为不变）；DTLS 1.3 握手后 `Connection::poll_timeout` 也可能返回时间（最后一轮待
+  确认、票据、KeyUpdate）。
+- 测试：MTU 256 下模拟丢包、乱序、重复链路上的 DTLS 1.3（含 KeyUpdate 与 CID），部分重传，最后一轮与
+  ACK 丢失，cookie，会话恢复，PSK，版本协商；密钥计划对照 RFC 8448。互通（`tools/interop/dtls/run.sh`，
+  新增 `Dockerfile` 与 `dtls13.sh`）：OpenSSL 4.1 与 wolfSSL 5.8.4（DTLS 1.3 双向、HRR、MTU 300、
+  KeyUpdate、会话恢复、PSK、版本协商、与 wolfSSL 的 CID），pion/dtls v3（CID、PSK 套件）。fuzz 目标
+  `dtls_record` 与 `dtls_handshake` 覆盖 CID 与统一头记录以及 DTLS 1.3 状态机。DTLS 1.2 记录层在 gpu51 上
+  同轮 A/B（新增 `dtls-bench` 示例）：64 字节记录为原来的 0.97-1.01，1 KiB 为 1.00-1.02。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 

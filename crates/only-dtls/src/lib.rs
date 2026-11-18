@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
-//! Sans-io DTLS 1.2 (RFC 6347) for the `only` crates, on [`only_crypto`] and [`only_x509`] with
+//! Sans-io DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147) for the `only` crates, on [`only_crypto`] and [`only_x509`] with
 //! no other dependencies: the DTLS layer of the in-house WebRTC stack (DTLS-SRTP, SCTP data
 //! channels).
 //!
@@ -28,8 +28,17 @@
 //!   [`Connection::export_keying_material`].
 //! - Alerts: close_notify both ways, fatal alerts on protocol errors.
 //!
-//! Not implemented: DTLS 1.3 (RFC 9147) and its ACKs, session resumption, connection IDs
-//! (RFC 9146), PSK and non-ECDHE key exchanges, CBC suites.
+//! - DTLS 1.3 (opt-in with [`Config::with_versions`]; DTLS 1.2 stays the default, also for
+//!   WebRTC): unified record headers with record number encryption, epochs and KeyUpdate
+//!   ([`Connection::update_keys`]), ACKs with retransmission of only the unacknowledged
+//!   fragments, stateless HelloRetryRequest cookies; fallback to DTLS 1.2 for a 1.2-only peer.
+//! - Connection IDs ([`Config::with_connection_id`], RFC 9146 and DTLS 1.3) with
+//!   [`connection_id`] for routing; session resumption ([`Config::with_session_resumption`],
+//!   [`Event::NewSession`], [`Connection::client_resume`]: DTLS 1.2 session IDs and tickets,
+//!   DTLS 1.3 tickets); external pre-shared keys ([`Psk`], [`Config::with_psks`]).
+//!
+//! Not implemented: DTLS 1.3 0-RTT, NewConnectionId, post-handshake client authentication,
+//! non-ECDHE certificate key exchanges, CBC suites.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -70,11 +79,15 @@
 mod codec;
 mod config;
 mod conn;
+mod conn13;
+mod connection;
 mod cookie;
 mod crypto;
 mod error;
 mod handshake;
+mod ks13;
 mod record;
+mod session;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -82,12 +95,15 @@ pub mod fuzzing;
 
 pub use config::{
     Config, Fingerprint, FingerprintAlgorithm, Identity, PeerVerifier, SrtpKeys, SrtpProfile,
-    VerifyFn,
+    VerifyFn, Version,
 };
-pub use conn::{Connection, Event, HandshakeInfo, Role};
+pub use conn::{Event, HandshakeInfo, Role};
+pub use connection::Connection;
 pub use cookie::{HelloCheck, HelloVerifier};
 pub use crypto::CipherSuite;
 pub use error::{AlertDescription, Error};
+pub use record::connection_id;
+pub use session::{Psk, Session, TicketKey};
 
 /// The RFC 5764 exporter label for DTLS-SRTP keys.
 pub const SRTP_EXPORTER_LABEL: &str = "EXTRACTOR-dtls_srtp";

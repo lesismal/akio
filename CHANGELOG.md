@@ -133,6 +133,42 @@ storing them; extension fields of proto2 messages are now in `extensions`, not
 cost is unchanged: same-run A/B against the previous commit on gpu51 (5 alternating runs, medians,
 prost as control) gives Point 12/18 ns → 12/18 ns, Feature 19/47 ns → 18/45 ns, AllTypes
 encode 309 → 312 ns (+1%, prost 509 → 505) and decode 1629 → 1448 ns (−11%, prost 1788 → 1749).
+### Added: DTLS 1.3, connection IDs, PSKs and session resumption in only-dtls
+
+Additive except where noted (ADR-021, docs/adr/021-dtls13-cid-resumption.md; only-dtls is an
+Internal-tier crate):
+
+- **DTLS 1.3** (RFC 9147) behind the same sans-io `Connection`: unified record headers with
+  record number encryption, epochs with KeyUpdate (`Connection::update_keys`, automatic before
+  a key's usage limit), ACKs with retransmission of only the unacknowledged fragments,
+  stateless HelloRetryRequest cookies (`HelloVerifier::check` answers DTLS 1.3 ClientHellos with
+  one), `use_srtp`, the TLS 1.3 exporter. `Config::with_versions` enables it (default: DTLS 1.2
+  only, also in `Config::webrtc`); with both versions a connection falls back to DTLS 1.2 for a
+  1.2-only peer, with the RFC 8446 downgrade check. New `Version`, `Connection::version`,
+  `HandshakeInfo::version`, `CipherSuite::TLS13` and `CipherSuite::is_tls13`.
+- **Connection IDs**: RFC 9146 `tls12_cid` records in DTLS 1.2 and DTLS 1.3 CIDs, with
+  `Config::with_connection_id`, `Connection::local_connection_id`,
+  `HandshakeInfo::{local_connection_id, peer_connection_id}` and `only_dtls::connection_id` to
+  route datagrams by CID.
+- **Session resumption**: DTLS 1.2 session IDs (a bounded 1024-entry cache) and RFC 5077
+  tickets, DTLS 1.3 NewSessionTicket (`psk_dhe_ke`), with `Config::with_session_resumption`,
+  `with_ticket_key` (`TicketKey`), `with_ticket_lifetime` (2 h default, 7 days at most),
+  `Event::NewSession(Box<Session>)`, `Connection::client_resume` and `HandshakeInfo::resumed`.
+- **External PSKs**: `Psk`, `Config::with_psks`, the DTLS 1.2 PSK / ECDHE-PSK AEAD suites
+  (`CipherSuite::PSK`, `is_psk`) and DTLS 1.3 external PSKs; PSK-only servers need no
+  certificate. `HandshakeInfo::psk_identity`; alerts `MissingExtension`, `UnknownPskIdentity`.
+- Changed: the default `Config` suite list starts with the DTLS 1.3 and PSK suites (each used
+  only with its version or a PSK, so DTLS 1.2-only configurations behave as before);
+  `Connection::poll_timeout` can return a time after a DTLS 1.3 handshake (final flight until
+  acknowledged, tickets, KeyUpdate).
+- Tests: DTLS 1.3 over simulated lossy, reordering and duplicating links at MTU 256 with
+  KeyUpdates and CIDs, partial-flight retransmission, lost final flight and ACK, cookies,
+  resumption, PSKs, version negotiation; the key schedule against RFC 8448. Interop
+  (`tools/interop/dtls/run.sh`, new `Dockerfile` and `dtls13.sh`): OpenSSL 4.1 and wolfSSL 5.8.4
+  (DTLS 1.3 both ways, HRR, MTU 300, KeyUpdate, resumption, PSKs, version negotiation, CIDs with
+  wolfSSL), pion/dtls v3 (CIDs, PSK suites). Fuzz targets `dtls_record` and `dtls_handshake`
+  cover CID and unified-header records and the DTLS 1.3 machines. DTLS 1.2 record path, same-run
+  A/B on gpu51 (new `dtls-bench` example): 64-byte records 0.97-1.01, 1 KiB 1.00-1.02 of before.
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

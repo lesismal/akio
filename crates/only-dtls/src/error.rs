@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// A TLS alert description (RFC 5246 §7.2, RFC 5746, RFC 7301).
+/// A TLS alert description (RFC 5246 §7.2, RFC 5746, RFC 7301, RFC 8446 §6, RFC 4279).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AlertDescription {
@@ -48,6 +48,10 @@ pub enum AlertDescription {
     NoRenegotiation,
     /// `unsupported_extension` (110).
     UnsupportedExtension,
+    /// `missing_extension` (109).
+    MissingExtension,
+    /// `unknown_psk_identity` (115).
+    UnknownPskIdentity,
     /// Any other code.
     Other(u8),
 }
@@ -79,6 +83,8 @@ impl AlertDescription {
             A::UserCanceled => 90,
             A::NoRenegotiation => 100,
             A::UnsupportedExtension => 110,
+            A::MissingExtension => 109,
+            A::UnknownPskIdentity => 115,
             A::Other(v) => v,
         }
     }
@@ -109,6 +115,8 @@ impl AlertDescription {
             90 => A::UserCanceled,
             100 => A::NoRenegotiation,
             110 => A::UnsupportedExtension,
+            109 => A::MissingExtension,
+            115 => A::UnknownPskIdentity,
             v => A::Other(v),
         }
     }
