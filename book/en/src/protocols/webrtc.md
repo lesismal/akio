@@ -10,7 +10,9 @@ Two crates:
   `only-srtp`
   (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection),
   `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
-  channels: reliable or not, ordered or not) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
+  channels: reliable or not, ordered or not; I-DATA message interleaving when the peer offers
+  it, so a large message does not hold up small ones on other channels, and channels sharing the
+  association by weighted fair queueing on their priority, ADR-037) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
   VP9, H.264, H.265 and AV1 packetization, a frame assembler, NACK and RTX, PLI/FIR, REMB, TWCC
   and bandwidth estimation, sender/receiver reports). `only-webrtc` itself does SDP
   offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
@@ -32,7 +34,11 @@ echoed back by an `RtcServer` and decoded by Chrome; ICE-TCP only (Chrome to an 
 `Endpoint` to Chrome); relay only (Chrome with `iceTransportPolicy: "relay"` through `only-turn`
 over UDP, TCP and TLS, an `Endpoint` whose only candidates were allocated over TCP or TLS); and
 simulcast: three VP8 layers from Chrome into an SFU, sent back as simulcast and as one selected
-layer switched while Chrome decodes it (`tools/interop/webrtc/browser.sh`).
+layer switched while Chrome decodes it (`tools/interop/webrtc/browser.sh`). pion negotiates
+I-DATA with us; Chrome 157 uses DATA chunks unless its `WebRTC-DataChannelMessageInterleaving`
+field trial is on (with it on, the same tests pass over I-DATA). The SCTP layer alone is also
+checked against pion/sctp over UDP, with and without interleaving and loss
+(`tools/interop/sctp/run.sh`).
 
 ## A server, a TURN server and a client on one engine
 

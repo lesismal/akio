@@ -1,6 +1,6 @@
 [package]
 name = "only-sctp"
-description = "only internals: sans-io SCTP over DTLS (RFC 4960/9260, 3758, 6525, 8261) with WebRTC data channels (RFC 8831/8832)"
+description = "only internals: sans-io SCTP over DTLS (RFC 4960/9260, 3758, 6525, 8260, 8261) with WebRTC data channels (RFC 8831/8832)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

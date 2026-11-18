@@ -1,12 +1,13 @@
 //! SCTP packet and chunk codec: the common header with its CRC-32C (RFC 9260 §3.1, appendix
-//! A), the chunks this crate speaks (RFC 9260 §3.3, RFC 3758 §3.2, RFC 6525 §3-4) and their
-//! parameters. Parsers are bounds-checked and return `None` on anything malformed.
+//! A), the chunks this crate speaks (RFC 9260 §3.3, RFC 3758 §3.2, RFC 6525 §3-4, RFC 8260
+//! §2.1 and §2.3.1) and their parameters. Parsers are bounds-checked and return `None` on anything malformed.
 
 use only_crypto::crc::crc32c;
 
 pub(crate) const COMMON_HEADER_LEN: usize = 12;
 pub(crate) const CHUNK_HEADER_LEN: usize = 4;
 pub(crate) const DATA_HEADER_LEN: usize = 16;
+pub(crate) const IDATA_HEADER_LEN: usize = 20;
 
 pub(crate) const CT_DATA: u8 = 0;
 pub(crate) const CT_INIT: u8 = 1;
@@ -21,8 +22,10 @@ pub(crate) const CT_ERROR: u8 = 9;
 pub(crate) const CT_COOKIE_ECHO: u8 = 10;
 pub(crate) const CT_COOKIE_ACK: u8 = 11;
 pub(crate) const CT_SHUTDOWN_COMPLETE: u8 = 14;
+pub(crate) const CT_IDATA: u8 = 64;
 pub(crate) const CT_RECONFIG: u8 = 130;
 pub(crate) const CT_FORWARD_TSN: u8 = 192;
+pub(crate) const CT_IFORWARD_TSN: u8 = 194;
 
 /// DATA chunk flags (RFC 9260 §3.3.1, RFC 7053).
 pub(crate) const FLAG_END: u8 = 0x01;
@@ -170,6 +173,27 @@ impl PacketWriter {
         self.buf.resize(pad4(self.buf.len()), 0);
     }
 
+    /// Appends an I-DATA chunk (RFC 8260 §2.1).
+    pub(crate) fn push_idata(&mut self, d: &IData<'_>) {
+        let len = IDATA_HEADER_LEN + d.payload.len();
+        self.buf.push(CT_IDATA);
+        self.buf.push(d.flags);
+        self.buf.extend_from_slice(&(len as u16).to_be_bytes());
+        self.buf.extend_from_slice(&d.tsn.to_be_bytes());
+        self.buf.extend_from_slice(&d.stream.to_be_bytes());
+        self.buf.extend_from_slice(&[0, 0]);
+        self.buf.extend_from_slice(&d.mid.to_be_bytes());
+        // The first fragment carries the PPID, the others their FSN (the first one's is 0).
+        let word = if d.flags & FLAG_BEGIN != 0 {
+            d.ppid
+        } else {
+            d.fsn
+        };
+        self.buf.extend_from_slice(&word.to_be_bytes());
+        self.buf.extend_from_slice(d.payload);
+        self.buf.resize(pad4(self.buf.len()), 0);
+    }
+
     pub(crate) fn finish(mut self) -> Vec<u8> {
         let crc = crc32c(&self.buf);
         self.buf[8..12].copy_from_slice(&crc.to_le_bytes());
@@ -232,6 +256,38 @@ impl<'a> Data<'a> {
     }
 }
 
+/// An I-DATA chunk (RFC 8260 §2.1): a DATA chunk with a 32-bit message identifier per stream
+/// and a fragment sequence number, so that fragments of messages on different streams can be
+/// interleaved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IData<'a> {
+    pub(crate) flags: u8,
+    pub(crate) tsn: u32,
+    pub(crate) stream: u16,
+    pub(crate) mid: u32,
+    /// Only meaningful on the first fragment (B bit).
+    pub(crate) ppid: u32,
+    /// Fragment sequence number: 0 on the first fragment.
+    pub(crate) fsn: u32,
+    pub(crate) payload: &'a [u8],
+}
+
+impl<'a> IData<'a> {
+    pub(crate) fn parse(flags: u8, v: &'a [u8]) -> Option<IData<'a>> {
+        let word = be32(v, 12)?;
+        let begin = flags & FLAG_BEGIN != 0;
+        Some(IData {
+            flags,
+            tsn: be32(v, 0)?,
+            stream: be16(v, 4)?,
+            mid: be32(v, 8)?,
+            ppid: if begin { word } else { 0 },
+            fsn: if begin { 0 } else { word },
+            payload: v.get(16..)?,
+        })
+    }
+}
+
 /// The fields of INIT and INIT ACK (RFC 9260 §3.3.2-3) that we use.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Init {
@@ -246,6 +302,9 @@ pub(crate) struct Init {
     pub(crate) forward_tsn: bool,
     /// RE-CONFIG (RFC 6525) offered: 0x82 in Supported Extensions.
     pub(crate) reconfig: bool,
+    /// I-DATA (RFC 8260) offered: 0x40 in Supported Extensions. We list I-FORWARD-TSN (0xC2)
+    /// with it; with partial reliability it replaces FORWARD TSN (RFC 8260 §2.3).
+    pub(crate) i_data: bool,
 }
 
 impl Init {
@@ -267,6 +326,7 @@ impl Init {
                         match t {
                             CT_FORWARD_TSN => init.forward_tsn = true,
                             CT_RECONFIG => init.reconfig = true,
+                            CT_IDATA => init.i_data = true,
                             _ => {}
                         }
                     }
@@ -296,6 +356,10 @@ impl Init {
         }
         if self.forward_tsn {
             ext.push(CT_FORWARD_TSN);
+        }
+        if self.i_data {
+            ext.push(CT_IDATA);
+            ext.push(CT_IFORWARD_TSN);
         }
         if !ext.is_empty() {
             put_param(&mut v, PARAM_SUPPORTED_EXTENSIONS, &ext);
@@ -392,6 +456,47 @@ impl ForwardTsn {
             v.extend_from_slice(&n.to_be_bytes());
         }
         chunk(CT_FORWARD_TSN, 0, &v)
+    }
+}
+
+/// An I-FORWARD-TSN chunk (RFC 8260 §2.3.1): the new cumulative TSN and, per stream and
+/// ordered / unordered kind, the message identifier skipped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IForwardTsn {
+    pub(crate) new_cum_tsn: u32,
+    /// (stream, unordered, MID).
+    pub(crate) streams: Vec<(u16, bool, u32)>,
+}
+
+impl IForwardTsn {
+    pub(crate) fn parse(v: &[u8]) -> Option<IForwardTsn> {
+        let new_cum_tsn = be32(v, 0)?;
+        let streams = v
+            .get(4..)?
+            .chunks_exact(8)
+            .map(|c| {
+                (
+                    u16::from_be_bytes([c[0], c[1]]),
+                    c[3] & 1 != 0,
+                    u32::from_be_bytes([c[4], c[5], c[6], c[7]]),
+                )
+            })
+            .collect();
+        Some(IForwardTsn {
+            new_cum_tsn,
+            streams,
+        })
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + 8 * self.streams.len());
+        v.extend_from_slice(&self.new_cum_tsn.to_be_bytes());
+        for &(s, u, mid) in &self.streams {
+            v.extend_from_slice(&s.to_be_bytes());
+            v.extend_from_slice(&[0, u8::from(u)]);
+            v.extend_from_slice(&mid.to_be_bytes());
+        }
+        chunk(CT_IFORWARD_TSN, 0, &v)
     }
 }
 
@@ -591,6 +696,7 @@ mod tests {
             cookie: Some(vec![1, 2, 3, 4, 5]),
             forward_tsn: true,
             reconfig: true,
+            i_data: true,
         };
         let enc = init.encode(true);
         assert_eq!(enc[0], CT_INIT_ACK);
@@ -614,6 +720,12 @@ mod tests {
             streams: vec![(1, 2), (3, 4)],
         };
         assert_eq!(ForwardTsn::parse(&f.encode()[4..]).unwrap(), f);
+        let f = IForwardTsn {
+            new_cum_tsn: 0xffff_fff0,
+            streams: vec![(1, false, 7), (1, true, 0x1234_5678), (65535, true, 0)],
+        };
+        assert_eq!(f.encode()[0], CT_IFORWARD_TSN);
+        assert_eq!(IForwardTsn::parse(&f.encode()[4..]).unwrap(), f);
         let ps = vec![
             ReconfigParam::OutgoingReset {
                 req_seq: 1,
@@ -632,6 +744,68 @@ mod tests {
         ];
         let enc = ReconfigParam::encode_chunk(&ps);
         assert_eq!(ReconfigParam::parse_all(&enc[4..]), ps);
+    }
+
+    #[test]
+    fn idata_round_trip() {
+        let mut w = PacketWriter::new(header(), 1200);
+        for d in [
+            IData {
+                flags: FLAG_BEGIN | FLAG_UNORDERED,
+                tsn: 7,
+                stream: 3,
+                mid: 0x0102_0304,
+                ppid: 53,
+                fsn: 0,
+                payload: b"first",
+            },
+            IData {
+                flags: FLAG_END,
+                tsn: 8,
+                stream: 3,
+                mid: 9,
+                ppid: 0,
+                fsn: 0xdead_beef,
+                payload: b"x",
+            },
+        ] {
+            w.push_idata(&d);
+        }
+        let pkt = w.finish();
+        let (_, chunks) = parse_packet(&pkt).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.typ == CT_IDATA));
+        // RFC 8260 §2.1: the 16-byte I-DATA header after the chunk header, reserved field 0.
+        assert_eq!(chunks[0].value.len(), 16 + 5);
+        assert_eq!(&chunks[0].value[6..8], &[0, 0]);
+        let a = IData::parse(chunks[0].flags, chunks[0].value).unwrap();
+        assert_eq!(
+            (a.tsn, a.stream, a.mid, a.ppid, a.fsn),
+            (7, 3, 0x0102_0304, 53, 0)
+        );
+        assert_eq!(a.payload, b"first");
+        let b = IData::parse(chunks[1].flags, chunks[1].value).unwrap();
+        assert_eq!(
+            (b.mid, b.ppid, b.fsn, b.payload),
+            (9, 0, 0xdead_beef, &b"x"[..])
+        );
+        assert!(IData::parse(0, &chunks[1].value[..15]).is_none());
+    }
+
+    #[test]
+    fn init_without_idata() {
+        let init = Init {
+            initiate_tag: 1,
+            a_rwnd: 1,
+            outbound_streams: 1,
+            inbound_streams: 1,
+            forward_tsn: true,
+            reconfig: true,
+            ..Init::default()
+        };
+        let enc = init.encode(false);
+        assert!(!enc.contains(&CT_IDATA));
+        assert!(!Init::parse(&enc[4..]).unwrap().i_data);
     }
 
     #[test]
@@ -654,6 +828,9 @@ mod tests {
             let _ = ForwardTsn::parse(&b);
             let _ = ReconfigParam::parse_all(&b);
             let _ = Data::parse(0, &b);
+            let _ = IData::parse(0, &b);
+            let _ = IData::parse(FLAG_BEGIN, &b);
+            let _ = IForwardTsn::parse(&b);
             let _ = heartbeat_ack(&b);
         }
     }

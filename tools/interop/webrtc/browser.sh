@@ -2,7 +2,9 @@
 # only-webrtc <-> headless Chrome, both offer directions: Chrome offers to the only ICE-lite
 # RtcServer (data channels, fake camera/microphone media echoed back and decoded by Chrome), and
 # the only full-ICE Endpoint offers to Chrome (data channel echo). Needs Node >= 22 and Chrome
-# (CHROME=/path/to/chrome; the macOS default location is tried).
+# (CHROME=/path/to/chrome; the macOS default location is tried). CHROME_ARGS adds Chrome flags:
+# CHROME_ARGS=--force-fieldtrials=WebRTC-DataChannelMessageInterleaving/Enabled/ makes Chrome
+# offer I-DATA (RFC 8260), so the data channels run interleaved (Chrome 157 uses DATA otherwise).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
@@ -15,7 +17,7 @@ trap 'kill $PIDS 2>/dev/null || true; sleep 1; rm -rf "$W" 2>/dev/null || true' 
 "$CHROME" --headless=new --remote-debugging-port=9520 --user-data-dir="$W/profile" \
   --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
   --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
-  --disable-features=WebRtcHideLocalIpsWithMdns --ignore-certificate-errors \
+  --disable-features=WebRtcHideLocalIpsWithMdns --ignore-certificate-errors ${CHROME_ARGS:-} \
   about:blank >"$W/chrome.log" 2>&1 & PIDS="$PIDS $!"
 $RS server 127.0.0.1:9510 127.0.0.1:9511 127.0.0.1:9513 2>"$W/server.log" & PIDS="$PIDS $!"
 $RS turn 127.0.0.1:9515 127.0.0.1 alice wonderland 127.0.0.1:9516 127.0.0.1:9517 \
