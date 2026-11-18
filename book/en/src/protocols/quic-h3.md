@@ -123,11 +123,11 @@ Above 4096 handshakes in progress, new clients must also prove their address wit
   server (else of its token) when it speaks it, rather than `ClientConfig::version`. So a client
   configured for v1 that a server preferring v2 moved to v2 starts its next connection in v2 and
   resumes, with 0-RTT, without a switch.
-- **ECN** (`TransportConfig::ecn`, on by default): on Linux packets go out ECT(0), received
+- **ECN** (`TransportConfig::ecn`, on by default): on Linux, macOS and over only-dpdk packets go out ECT(0), received
   codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
   section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back
   to unmarked packets. Elsewhere packets are not marked (`ONLY_UDP_ECN=0` turns marking off on
-  Linux too). `stats().ecn_capable` / `ecn_ce_events`.
+  Linux and macOS too). `stats().ecn_capable` / `ecn_ce_events`.
 - **Congestion control**: `TransportConfig::congestion` picks CUBIC (default), NewReno or
   `Congestion::Bbr`, an experimental BBR: BBRv1's model (Startup, Drain, ProbeBW, ProbeRTT) on
   delivery-rate samples with BBRv2/v3's bound on rounds losing or CE-marking more than 2%. On a

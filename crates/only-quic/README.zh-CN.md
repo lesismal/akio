@@ -61,8 +61,10 @@ engine.run().unwrap();
 - **连接 ID**：8 字节 ID，用 NEW_CONNECTION_ID 按对端上限下发，退役后补充，由 endpoint 路由；按
   retire_prior_to 跟踪对端的 ID 与重置令牌。
 - **ECN**（RFC 9000 第 13.4 节、RFC 9002 第 7.1 节；`TransportConfig::ecn`，默认开启）：在 UDP 层能
-  设置码点的平台（Linux：每条 `sendmmsg` 消息带一个 `IP_TOS` / `IPV6_TCLASS` 控制消息；
-  `ONLY_UDP_ECN=0` 关闭）上以 ECT(0) 发送；从 `IP_RECVTOS` / `IPV6_RECVTCLASS` 控制消息读取收到的码点并
+  设置码点的地方（Linux 上每条 `sendmmsg` 消息、macOS 上每次 `sendmsg` 带一个 `IP_TOS` /
+  `IPV6_TCLASS` 控制消息，only-dpdk 用户态协议栈下直接写入 IP 头；内核套接字上可用
+  `ONLY_UDP_ECN=0` 关闭）以 ECT(0) 发送；从 `IP_RECVTOS` / `IPV6_RECVTCLASS` 控制消息（only-dpdk 下
+  从 IP 头）读取收到的码点并
   在 ACK_ECN 帧中报告；用十个包的测试期（遇到探测超时提前结束，丢弃带标记包的路径只多花一个 PTO）和
   对端计数验证路径；CE 标记视为拥塞事件；清除、改写或丢弃标记的路径回退为不带标记发送。
   `ConnectionStats::ecn_capable` / `ecn_ce_events`。
@@ -96,8 +98,10 @@ ClientHello 记录，见其 README），以 0.5-RTT 应答。被拒或丢失的 
 **0-RTT 数据可被重放**（发往共享票据的其他服务端，或在窗口内由能诱使客户端重试的攻击者发起），且没有
 前向保密：只处理可安全重复的请求，其余回 `425 Too Early`。
 
-未实现：兼容版本协商（RFC 9368 第 4 节：在一次握手
-中切换版本）、Linux 以外的平台及用户态协议栈上的 ECN 标记（验证会失败，连接改为不带标记发送）。
+兼容版本协商（RFC 9368 第 4 节，ADR-013 与 ADR-014）：服务端偏好版本 2 时
+（`ServerConfig::prefer_version`）在一次握手内把版本 1 客户端切换到版本 2，并做 version_information
+防降级检查；与 ngtcp2 的互通见 `tools/interop/quic/ngtcp2-cvn.sh`（quic-go 未实现 RFC 9368）。ECN 标记在
+Linux、macOS 与 only-dpdk 上设置和读取（ADR-035）；其他平台上连接不打标记。
 
 quic-go（v0.62）对版本 2 的密钥更新用 v1 的标签 `quic ku` 派生，而 RFC 9369 第 3.3.2 节（及其测试向量
 A.5）规定为 `quicv2 ku`；它在 100 个包后发起第一次密钥更新，因此与 quic-go 的版本 2 连接会在那里停住。
@@ -128,7 +132,8 @@ A.5）规定为 `quicv2 ku`；它在 100 个包后发起第一次密钥更新，
   被清除、黑洞或关闭时的回退；BBR 以很小的队列填满 20 Mbit/s 瓶颈、1% 随机丢包下吞吐为 CUBIC 的 4 倍、
   浅缓冲上丢包有界；客户端迁移到新端口（两次）、探测失败时留在原路径、被 disable_active_migration
   拒绝、迁移到首选地址；带 Retry 与密钥更新的版本 2、版本协商后以版本 2 重新开始、伪造的版本协商被
-  识别为降级。环回网络上：迁移到首选地址与新端口、版本 2，以及 Linux 上的 ECN 验证。
+  识别为降级。环回网络上：迁移到首选地址与新端口、版本 2，以及 Linux 与 macOS 上的 ECN 验证。
+  `quic_conn` 模糊测试目标还会选择路径如何对待 ECN（保留、清除、标记 CE、改标 ECT(1)）。
 - 互通：`tools/interop/quic/run.sh`（与 quic-go 的原生 QUIC 流与数据报回显，双向，含 Retry、密钥更新与
   150 MB 传输；双向版本 2；双向客户端迁移，我方使用 BBR；Linux 上与 quic-go 的 ECN 验证）、`tools/interop/h3/run.sh`（与 quic-go、fib 的 HTTP/3 双向互通），以及
   `tools/interop/quic/docker.sh`（在 Debian 的 `rust:1` 镜像中，以通过 libcurl-gnutls 的 ngtcp2 和通过

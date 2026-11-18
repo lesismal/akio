@@ -3,8 +3,8 @@
 # datagrams; then with Retry address validation on the server, 1-RTT key updates started by
 # only-quic every 5000 packets, and a 150 MB stream (which also crosses quic-go's own key update
 # interval of 100k packets); then QUIC version 2 both ways, client migration to a new socket
-# both ways (only-quic's with BBR), 0-RTT both ways (v1, and v2 kept short), and, on Linux, ECN
-# validated against quic-go. Then servers preferring the other version (compatible version
+# both ways (only-quic's with BBR), 0-RTT both ways (v1, and v2 kept short), and, on Linux and
+# macOS, ECN validated against quic-go. Then servers preferring the other version (compatible version
 # negotiation, RFC 9368 section 4): quic-go does not implement RFC 9368 (it sends no
 # version_information and drops packets of another version), so its clients must keep the
 # version they started in; only-quic's own client follows the switch over real UDP sockets
@@ -88,7 +88,7 @@ echo "== only-quic client (v1) -> only-quic server preferring v2: moved to v2; r
 "$RS" client 127.0.0.1:9511 expect-v2 0rtt small
 echo "== only-quic client (v2) -> only-quic server preferring v1: moved to v1"
 "$RS" client 127.0.0.1:9513 v2 expect-v1
-if [ "$(uname)" = Linux ]; then
+if [ "$(uname)" = Linux ] || [ "$(uname)" = Darwin ]; then
     echo "== only-quic client -> quic-go server (ECN validated)"
     "$RS" client 127.0.0.1:9500 ecn
 fi

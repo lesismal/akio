@@ -5,7 +5,8 @@
 The kernel-bypass backend of [`only`](https://github.com/lesismal/only) (**experimental**): a
 userspace TCP/IP stack of its own (Ethernet, ARP, IPv4 with fragmentation, ICMP, IPv6 with
 NDP, ICMPv6 and fragmentation (dual-stack listeners), UDP, and TCP with SACK, fast recovery,
-CUBIC / NewReno, window scaling, timestamps, SYN cookies, optional ECN and pacing; safe Rust,
+CUBIC / NewReno, window scaling, timestamps, SYN cookies, optional ECN and pacing; UDP
+datagrams carry ECN codepoints both ways; safe Rust,
 `#![forbid(unsafe_code)]`, no dependencies) driven by `only` I/O threads, over
 
 - a **DPDK** port (feature `pmd`, Linux, links libdpdk via `pkg-config`): EAL initialised from

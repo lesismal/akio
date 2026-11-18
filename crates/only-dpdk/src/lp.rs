@@ -546,14 +546,15 @@ impl Loop {
         self.call(id, "spawn_blocking completion", |h| h.run_task(task));
     }
 
-    /// Delivers `self.scratch[..n]` to `id`.
-    fn deliver(&mut self, id: u64, n: usize) {
+    /// Delivers `self.scratch[..n]` to `id`; a datagram arrived with ECN codepoint `ecn`.
+    fn deliver(&mut self, id: u64, n: usize, ecn: u8) {
         let data = std::mem::take(&mut self.scratch);
         if let Some(c) = self.conns.get_mut(&id) {
             c.last_active = Instant::now();
             c.bytes_in += n as u64;
             if matches!(c.kind, Kind::Udp { .. }) {
                 c.stats.datagram_in(n);
+                c.inner.set_rx_ecn(ecn);
             } else {
                 c.stats.bytes_in.add_local(n as u64);
                 c.stats.reads.add_local(1);
@@ -609,19 +610,19 @@ impl Loop {
         }
         self.events = events;
         // Datagrams.
-        while let Some((port, from, n)) = self.iface.udp_recv(&mut self.scratch) {
+        while let Some((port, from, n, ecn)) = self.iface.udp_recv_ecn(&mut self.scratch) {
             if let Some(&id) = self.udp_dialed.get(&port) {
                 let ok = self
                     .conns
                     .get(&id)
                     .is_some_and(|c| matches!(&c.kind, Kind::Udp { peer, .. } if **peer == from));
                 if ok {
-                    self.deliver(id, n);
+                    self.deliver(id, n, ecn);
                 }
                 continue;
             }
             if let Some(&gid) = self.listen_ports.get(&(true, port)) {
-                self.on_datagram(gid, port, from, n);
+                self.on_datagram(gid, port, from, n, ecn);
             }
         }
     }
@@ -669,7 +670,7 @@ impl Loop {
         }
     }
 
-    fn on_datagram(&mut self, gid: u64, port: u16, from: SocketAddr, n: usize) {
+    fn on_datagram(&mut self, gid: u64, port: u16, from: SocketAddr, n: usize, ecn: u8) {
         let id = match self.udp_peers.get(&(port, from)) {
             Some(&id) => id,
             None => {
@@ -705,7 +706,7 @@ impl Loop {
                 }
             }
         };
-        self.deliver(id, n);
+        self.deliver(id, n, ecn);
     }
 
     /// Reads what a TCP connection has (within the read budget and backpressure), and notes the
@@ -736,7 +737,7 @@ impl Loop {
             if n == 0 {
                 break;
             }
-            self.deliver(id, n);
+            self.deliver(id, n, 0);
         }
         let Some(c) = self.conns.get_mut(&id) else {
             return;
@@ -804,9 +805,9 @@ impl Loop {
             Kind::Udp { port, ref peer, .. } => {
                 let peer = **peer;
                 let tx = &mut self.port;
-                c.inner.drain_output(&mut |d| {
+                c.inner.drain_output_ecn(&mut |d, ecn| {
                     // A datagram that cannot be sent is dropped, as UDP does.
-                    let _ = iface.udp_send(now, tx, port, peer, d);
+                    let _ = iface.udp_send_ecn(now, tx, port, peer, d, ecn);
                     d.len()
                 })
             }

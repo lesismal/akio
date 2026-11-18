@@ -10,6 +10,18 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：macOS 上与 only-dpdk UDP 上的 ECN（only-sys、only-quic、only-dpdk）
+
+ADR-035（docs/adr/035-ecn-macos-and-userspace-udp.zh-CN.md）。QUIC 连接现在在 macOS 上和用户态
+协议栈上也会标记 ECT(0)、读取收到的码点并校验 ECN，不再只限于 Linux。only-sys 仅在 macOS 上新增
+`enable_ecn`、`ecn_available`、`recv_from_ecn` 与 `send_to_ecn`（每个数据报一次 `sendmsg` /
+`recvmsg`，带 `IP_TOS` / `IPV6_TCLASS` 控制消息；`ONLY_UDP_ECN=0` 可关闭），供 kqueue UDP 循环与
+only-core 在 macOS 上写数据报使用。only-dpdk 的 UDP 把码点写入 IP 头，并报告收到的码点
+（`Conn::rx_ecn`）；only-core 对虚拟数据报套接字也保留码点（隐藏的 `ConnInner::drain_output_ecn`）。
+`quic_conn` 模糊测试目标现在会选择路径如何对待 ECN（保留、清除、CE、ECT(1)）；此前它的数据报从不
+带标记。与 quic-go 的互通脚本在 macOS 上也检查 ECN 校验。only-quic 的 README 不再把兼容版本协商列为缺失（已在 ADR-013 与 ADR-014 中完成）。Linux 的
+API 快照无变化；unsafe 清单：only-sys 91 → 97 个块。
+
 ### 新增：protobuf 文本格式（only-protobuf）
 
 ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息

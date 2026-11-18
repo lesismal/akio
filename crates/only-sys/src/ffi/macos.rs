@@ -2,8 +2,8 @@
 //! macOS has no stable system call interface).
 
 use super::{
-    c_char, c_int, c_void, in_addr, in6_addr, off_t, pid_t, size_t, sockaddr, socklen_t, ssize_t,
-    timespec,
+    c_char, c_int, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t, sockaddr, socklen_t,
+    ssize_t, timespec,
 };
 
 /// `sa_family_t`.
@@ -36,8 +36,13 @@ pub const SOCK_DGRAM: c_int = 2;
 pub const SOL_SOCKET: c_int = 0xffff;
 pub const SO_REUSEADDR: c_int = 0x0004;
 pub const SO_REUSEPORT: c_int = 0x0200;
+pub const IPPROTO_IP: c_int = 0;
 pub const IPPROTO_IPV6: c_int = 41;
 pub const IPV6_V6ONLY: c_int = 27;
+pub const IP_TOS: c_int = 3;
+pub const IP_RECVTOS: c_int = 27;
+pub const IPV6_RECVTCLASS: c_int = 35;
+pub const IPV6_TCLASS: c_int = 36;
 
 // ---- kqueue --------------------------------------------------------------------------------
 pub const EVFILT_READ: i16 = -1;
@@ -94,6 +99,28 @@ pub struct sockaddr_storage {
     _pad2: [u8; 112],
 }
 
+/// `struct msghdr` (`msg_iovlen` and `msg_controllen` are 32-bit on macOS).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct msghdr {
+    pub msg_name: *mut c_void,
+    pub msg_namelen: socklen_t,
+    pub msg_iov: *mut iovec,
+    pub msg_iovlen: c_int,
+    pub msg_control: *mut c_void,
+    pub msg_controllen: socklen_t,
+    pub msg_flags: c_int,
+}
+
+/// `struct cmsghdr`; control messages are 4-byte aligned (`__DARWIN_ALIGN32`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct cmsghdr {
+    pub cmsg_len: socklen_t,
+    pub cmsg_level: c_int,
+    pub cmsg_type: c_int,
+}
+
 /// `struct kevent` (`#pragma pack(4)` in `<sys/event.h>`).
 #[repr(C, packed(4))]
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +149,8 @@ pub struct sigaction {
 }
 
 const _: () = assert!(size_of::<kevent>() == 32 && align_of::<kevent>() == 4);
+const _: () = assert!(size_of::<msghdr>() == 48 && align_of::<msghdr>() == 8);
+const _: () = assert!(size_of::<cmsghdr>() == 12);
 const _: () = assert!(size_of::<sigaction>() == 16);
 
 // ---- libSystem functions -------------------------------------------------------------------
@@ -143,6 +172,8 @@ unsafe extern "C" {
         value: *const c_void,
         len: socklen_t,
     ) -> c_int;
+    pub fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
+    pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
     pub fn sendfile(
         fd: c_int,
         s: c_int,

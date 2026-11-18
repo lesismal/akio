@@ -169,7 +169,9 @@ report keeps neighbor solicitations flowing.
   second segment, quick ACKs at connection start); Nagle off; zero-window probing; keepalive; a
   listen backlog with SYN cookies (window scale and SACK carried in the timestamp); optional ECN
   (RFC 3168: ECT(0) on new data only, ECE until CWR, one reduction per round trip) and pacing (a
-  per-connection timer in the timer heap, bursts of two segments or 100 µs at most).
+  per-connection timer in the timer heap, bursts of two segments or 100 µs at most). UDP
+  datagrams carry the ECN codepoint both ways (`Conn::send_segments_ecn` / `Conn::rx_ecn`, as on
+  kernel sockets), so QUIC validates ECN over the stack (ADR-035).
 - Checksums are computed in software (no offloads); received checksums are verified except on
   AF_PACKET, where frames from the local kernel carry partial ones.
 

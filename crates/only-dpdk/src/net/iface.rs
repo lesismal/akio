@@ -132,6 +132,8 @@ struct Listener {
 struct Datagram {
     port: u16,
     from: SocketAddr,
+    /// ECN codepoint it arrived with (of the last fragment when reassembled).
+    ecn: u8,
     data: Vec<u8>,
 }
 
@@ -1357,6 +1359,7 @@ impl Iface {
     }
 
     /// Sends a datagram from local `port` (fragmented if larger than the (path) MTU).
+    #[cfg(test)]
     pub(crate) fn udp_send(
         &mut self,
         now: Instant,
@@ -1364,6 +1367,20 @@ impl Iface {
         port: u16,
         remote: SocketAddr,
         data: &[u8],
+    ) -> Result<(), CallError> {
+        self.udp_send_ecn(now, tx, port, remote, data, 0)
+    }
+
+    /// Sends a datagram from local `port` (fragmented if larger than the (path) MTU) with ECN
+    /// codepoint `ecn` (its low two bits) in the IP header's TOS / traffic class.
+    pub(crate) fn udp_send_ecn(
+        &mut self,
+        now: Instant,
+        tx: &mut dyn Tx,
+        port: u16,
+        remote: SocketAddr,
+        data: &[u8],
+        ecn: u8,
     ) -> Result<(), CallError> {
         let max = if remote.is_ipv6() {
             65535 - FRAG_HDR - UDP_HDR
@@ -1381,7 +1398,7 @@ impl Iface {
             proto: PROTO_UDP,
             len: UDP_HDR + data.len(),
             df: false,
-            tos: 0,
+            tos: ecn & ECN_MASK,
         };
         let ok = self.net.send_ip(now, tx, o, &mut |b| {
             b[UDP_HDR..].copy_from_slice(data);
@@ -1395,7 +1412,14 @@ impl Iface {
     }
 
     /// The next received datagram: (local port, sender, length copied into `out`).
+    #[cfg(test)]
     pub(crate) fn udp_recv(&mut self, out: &mut [u8]) -> Option<(u16, SocketAddr, usize)> {
+        self.udp_recv_ecn(out).map(|(p, f, n, _)| (p, f, n))
+    }
+
+    /// The next received datagram: (local port, sender, length copied into `out`, ECN
+    /// codepoint).
+    pub(crate) fn udp_recv_ecn(&mut self, out: &mut [u8]) -> Option<(u16, SocketAddr, usize, u8)> {
         let d = self.udp_q.pop_front()?;
         self.udp_bytes -= d.data.len();
         let n = d.data.len().min(out.len());
@@ -1403,7 +1427,7 @@ impl Iface {
         if self.udp_pool.len() < 256 {
             self.udp_pool.push(d.data);
         }
-        Some((d.port, d.from, n))
+        Some((d.port, d.from, n, d.ecn))
     }
 
     // ---- receive path ---------------------------------------------------------------------
@@ -1933,6 +1957,7 @@ impl Iface {
         self.udp_q.push_back(Datagram {
             port: u.dst_port,
             from: SocketAddr::new(p.src, u.src_port),
+            ecn: p.ecn,
             data,
         });
     }

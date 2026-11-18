@@ -346,6 +346,24 @@ fn macos_layouts() {
     same_layout!(super::sockaddr_in6, libc::sockaddr_in6, sin6_len);
     same_layout!(super::sockaddr_storage, libc::sockaddr_storage, ss_len);
     same_layout!(
+        super::msghdr,
+        libc::msghdr,
+        msg_name,
+        msg_namelen,
+        msg_iov,
+        msg_iovlen,
+        msg_control,
+        msg_controllen,
+        msg_flags
+    );
+    same_layout!(
+        super::cmsghdr,
+        libc::cmsghdr,
+        cmsg_len,
+        cmsg_level,
+        cmsg_type
+    );
+    same_layout!(
         super::kevent,
         libc::kevent,
         ident,
@@ -376,7 +394,18 @@ fn macos_constants() {
         EV_DISABLE,
         EV_ERROR,
         EV_EOF,
+        IPPROTO_IP,
+        IP_TOS,
+        IP_RECVTOS,
+        IPV6_RECVTCLASS,
+        IPV6_TCLASS,
     );
+    // SAFETY: CMSG_* only compute offsets from these values.
+    unsafe {
+        assert_eq!(libc::CMSG_LEN(1) as usize, crate::udp_mac::CMSG_HDR + 1);
+        assert_eq!(libc::CMSG_SPACE(4) as usize, crate::udp_mac::CMSG_HDR + 4);
+        assert_eq!(libc::CMSG_SPACE(1) as usize, crate::udp_mac::CMSG_HDR + 4);
+    }
 }
 
 /// The declared functions link and behave: errno is the C library's.
