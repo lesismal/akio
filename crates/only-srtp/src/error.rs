@@ -18,6 +18,15 @@ pub enum Error {
     /// The packet index space is exhausted (2^31 SRTCP packets or 2^48 SRTP packets for one
     /// SSRC): the keys must be renegotiated.
     IndexExhausted,
+    /// An invalid setting: an empty, too long, duplicate or wrong-length MKI, an MKI on a
+    /// context without MKIs, too many master keys, or a key derivation rate that is not 0 or a
+    /// power of two up to 2^24.
+    Config,
+    /// The packet's MKI matches none of the context's master keys.
+    UnknownMki,
+    /// The packet uses something this context cannot protect: with cryptex, a header
+    /// extension that is neither one-byte (`0xBEDE`) nor two-byte (`0x1000`).
+    Unsupported,
 }
 
 impl fmt::Display for Error {
@@ -28,6 +37,9 @@ impl fmt::Display for Error {
             Error::Authentication => "SRTP: authentication failed",
             Error::Replay => "SRTP: replayed or too old packet",
             Error::IndexExhausted => "SRTP: packet index exhausted",
+            Error::Config => "SRTP: invalid MKI, master key or key derivation rate setting",
+            Error::UnknownMki => "SRTP: unknown MKI",
+            Error::Unsupported => "SRTP: header extension not supported by cryptex",
         })
     }
 }

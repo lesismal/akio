@@ -6,7 +6,9 @@
   （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `only-crypto` 之上：
   `only-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
   重启、consent freshness）、`only-dtls`（带证书指纹校验的 DTLS 1.2 与 1.3 及 DTLS-SRTP 密钥，见下文）、
-  `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放）、
+  `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放；该 crate
+  还支持 AES-192/256-CM、NULL、MKI 与换钥、cryptex 以及 RFC 6904 头部扩展加密，peer 尚未在 SDP 中
+  协商它们）、
   `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序；对端提供时使用 I-DATA 消息交错，大消息不再阻塞其他通道上的小消息，各通道按优先级以加权公平
   排队共享关联，ADR-037）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，

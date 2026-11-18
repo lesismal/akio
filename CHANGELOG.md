@@ -10,6 +10,41 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: SRTP MKIs and re-keying, key derivation rates, AES-192/256-CM and NULL, RFC 6904 header extension encryption, cryptex (only-srtp); DTLS-SRTP MKI (only-dtls)
+
+ADR-040 (docs/adr/040-srtp-mki-cryptex.md):
+
+- **Profiles**: `Profile::Aes192CmHmacSha1_80/32`, `Aes256CmHmacSha1_80/32` (RFC 6188) and
+  `NullHmacSha1_80/32` (RFC 5764; SRTCP sent with the E flag clear). `Profile::sdes_name` /
+  `from_sdes_name`, `Profile::encrypts`.
+- **MKIs and re-keying**: `Context::new_with_mki`, `add_master_key`, `set_send_mki`,
+  `remove_master_key`, `send_mki`, `mki_len` (up to 16 master keys, MKIs of 1-255 bytes; the
+  packet's MKI selects the key, `Error::UnknownMki` otherwise; rollover counters and replay
+  windows stay per SSRC across keys).
+- **Key derivation rate**: `Context::with_key_derivation_rate` (0 or a power of two up to 2^24,
+  RFC 3711 §4.3.1), session keys cached per master key and stream for the last `r`.
+- **Header encryption**: `Context::with_encrypted_header_extensions` (RFC 6904; AES-CM keystream
+  for AEAD too, RFC 7714 §8.3) and `Context::with_cryptex` (RFC 9335: CSRCs and whole extension
+  bodies, `0xC0DE` / `0xC2DE`, an empty extension added for CSRCs alone; non-cryptex packets still
+  accepted).
+- **Allocation-free variants**: `protect_rtp_into`, `unprotect_rtp_into`, `protect_rtcp_into`,
+  `unprotect_rtcp_into`.
+- **only-dtls**: `Config::with_srtp_mki` (client offer), `Config::with_srtp_accept_mki` (server
+  echo, default off), `HandshakeInfo::srtp_mki`; a different non-empty MKI from the server fails
+  the handshake (RFC 5764 §4.1.3), DTLS 1.2 and 1.3.
+- Tests: RFC 6188, RFC 6904 and RFC 9335 vectors; 230 packets cross-checked byte for byte with
+  libsrtp main (`tools/interop/srtp`, every profile, MKIs, RFC 6904, cryptex); new fuzz target
+  `srtp_features`. RFC 6904 follows the RFC where libsrtp does not advance its keystream over
+  padding between extension elements.
+- Benchmark (gpu51, `examples/srtp_bench.rs`, ns per packet, base -> this change): existing profiles unchanged within noise or faster: unprotect 0-5 % faster everywhere (AES-128-CM 160 B 255.2 -> 243.0, AES-128-GCM 1200 B 178.3 -> 176.3), AES-CM protect within ±1.3 %, AEAD protect 1200 B within ±0.3 % and 160 B +1-2 % (AES-128-GCM 86.8 -> 88.6). The per-SSRC state is now looked up once per packet instead of twice. New features at 1200 B with a CSRC and three extension elements, AES-128-GCM protect / unprotect: plain 542.7 / 175.9, MKI 547.6 / 179.3, cryptex 555.7 / 187.1, RFC 6904 626.4 / 252.7.
+- Not yet negotiated by `only-webrtc` (SDP `a=cryptex`, encrypt extmaps, DTLS-SRTP MKI).
+
+### Changed: `only_srtp::Profile` (breaking, internal tier)
+
+`Profile` is `#[non_exhaustive]`, `Profile::ALL` has ten entries and `Profile::id` returns
+`Option<u16>` (the RFC 6188 profiles have no DTLS-SRTP id). New `Error::Config`,
+`Error::UnknownMki`, `Error::Unsupported`.
+
 ### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
 
 ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:

@@ -10,6 +10,38 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：SRTP 的 MKI 与换钥、密钥派生率、AES-192/256-CM 与 NULL、RFC 6904 头部扩展加密、cryptex（only-srtp）；DTLS-SRTP MKI（only-dtls）
+
+ADR-040（docs/adr/040-srtp-mki-cryptex.zh-CN.md）：
+
+- **保护配置**：`Profile::Aes192CmHmacSha1_80/32`、`Aes256CmHmacSha1_80/32`（RFC 6188）与
+  `NullHmacSha1_80/32`（RFC 5764；SRTCP 发送时 E 标志为 0）。新增 `Profile::sdes_name` /
+  `from_sdes_name`、`Profile::encrypts`。
+- **MKI 与换钥**：`Context::new_with_mki`、`add_master_key`、`set_send_mki`、`remove_master_key`、
+  `send_mki`、`mki_len`（最多 16 个主密钥，MKI 长 1-255 字节；按包中的 MKI 选择密钥，否则为
+  `Error::UnknownMki`；滚动计数器与重放窗口在密钥之间按 SSRC 保持）。
+- **密钥派生率**：`Context::with_key_derivation_rate`（0 或不超过 2^24 的 2 的幂，RFC 3711
+  §4.3.1），每个主密钥按流缓存最近一次 `r` 的会话密钥。
+- **头部加密**：`Context::with_encrypted_header_extensions`（RFC 6904；AEAD 也用 AES-CM 密钥流，
+  RFC 7714 §8.3）与 `Context::with_cryptex`（RFC 9335：CSRC 与整个扩展体，`0xC0DE` / `0xC2DE`，
+  只有 CSRC 时补空扩展；仍接受未使用 cryptex 的包）。
+- **无分配的变体**：`protect_rtp_into`、`unprotect_rtp_into`、`protect_rtcp_into`、
+  `unprotect_rtcp_into`。
+- **only-dtls**：`Config::with_srtp_mki`（客户端提供）、`Config::with_srtp_accept_mki`（服务端回显，
+  默认关闭）、`HandshakeInfo::srtp_mki`；服务端返回不同的非空 MKI 时握手失败（RFC 5764 §4.1.3），
+  DTLS 1.2 与 1.3 均如此。
+- 测试：RFC 6188、RFC 6904 与 RFC 9335 向量；与 libsrtp main 逐字节交叉验证 230 个包
+  （`tools/interop/srtp`，每种配置、MKI、RFC 6904、cryptex）；新 fuzz 目标 `srtp_features`。libsrtp
+  遇到扩展元素之间的填充不推进密钥流，RFC 6904 在这一点上遵循 RFC。
+- 基准（gpu51，`examples/srtp_bench.rs`，每包纳秒，基线 -> 本变更）：已有配置不变（在噪声内）或更快：unprotect 全部快 0-5 %（AES-128-CM 160 B 255.2 -> 243.0，AES-128-GCM 1200 B 178.3 -> 176.3），AES-CM protect 在 ±1.3 % 内，AEAD protect 1200 B 在 ±0.3 % 内，160 B 慢 1-2 %（AES-128-GCM 86.8 -> 88.6）。每个包对 SSRC 状态的查找由两次减为一次。新功能在 1200 B、带一个 CSRC 与三个扩展元素时的 AES-128-GCM protect / unprotect：普通 542.7 / 175.9，MKI 547.6 / 179.3，cryptex 555.7 / 187.1，RFC 6904 626.4 / 252.7。
+- `only-webrtc` 尚未协商（SDP `a=cryptex`、加密 extmap、DTLS-SRTP MKI）。
+
+### 变更：`only_srtp::Profile`（破坏性，内部层级）
+
+`Profile` 改为 `#[non_exhaustive]`，`Profile::ALL` 有十项，`Profile::id` 返回 `Option<u16>`
+（RFC 6188 的配置没有 DTLS-SRTP 编号）。新增 `Error::Config`、`Error::UnknownMki`、
+`Error::Unsupported`。
+
 ### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：

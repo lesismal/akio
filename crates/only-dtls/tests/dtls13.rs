@@ -42,6 +42,28 @@ fn sessions(evs: &[Event]) -> Vec<Session> {
         .collect()
 }
 
+/// `use_srtp` with an MKI in EncryptedExtensions (RFC 5764 §4.1.3).
+#[test]
+fn srtp_mki() {
+    let (ci, si) = (
+        Identity::generate_self_signed().unwrap(),
+        Identity::generate_self_signed().unwrap(),
+    );
+    for accept in [true, false] {
+        let cc = cfg13(&ci)
+            .with_srtp_profiles(vec![SrtpProfile::AeadAes256Gcm])
+            .with_srtp_mki(vec![0xaa, 0xbb]);
+        let sc = cfg13(&si)
+            .with_srtp_profiles(SrtpProfile::ALL.to_vec())
+            .with_srtp_accept_mki(accept);
+        let (mut c, mut s, mut sim) = handshake(cc, sc, 5, PERFECT);
+        assert_eq!(version(&c), Some(Version::Dtls13));
+        let want = accept.then(|| vec![0xaa, 0xbb]);
+        assert_eq!(c.handshake_info().unwrap().srtp_mki, want);
+        check_connected(&mut c, &mut s, &mut sim);
+    }
+}
+
 #[test]
 fn every_suite_and_key_type() {
     let p384 = identity_with(PrivateKey::P384(

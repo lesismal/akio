@@ -66,7 +66,9 @@ loop {
   Ed25519, RSA-PSS and RSA PKCS#1 v1.5 with SHA-256/384/512.
 - Extensions: `extended_master_secret` (RFC 7627; required by default), `use_srtp`
   (RFC 5764: `SRTP_AEAD_AES_128_GCM`, `SRTP_AEAD_AES_256_GCM`, `SRTP_AES128_CM_HMAC_SHA1_80`,
-  `SRTP_AES128_CM_HMAC_SHA1_32`, no MKI), `renegotiation_info` (RFC 5746), `supported_groups`,
+  `SRTP_AES128_CM_HMAC_SHA1_32`; the `srtp_mki` field: `Config::with_srtp_mki` offers one,
+  `Config::with_srtp_accept_mki` echoes the client's, `HandshakeInfo::srtp_mki` tells which is
+  in use), `renegotiation_info` (RFC 5746), `supported_groups`,
   `ec_point_formats`, `signature_algorithms`. Renegotiation is refused (`no_renegotiation`).
 - Authentication: mutual by default (`with_require_client_certificate`). No CA path
   validation: `PeerVerifier::Fingerprints` pins certificates (SDP `a=fingerprint`),
@@ -97,14 +99,15 @@ DTLS 1.3, connection IDs, resumption and PSKs (ADR-021):
   DTLS 1.2, external PSKs (SHA-256) in DTLS 1.3.
 
 Not implemented: DTLS 1.3 0-RTT, NewConnectionId / RequestConnectionId, post-handshake client
-authentication, non-ECDHE certificate key exchanges, CBC suites, SRTP MKIs.
+authentication, non-ECDHE certificate key exchanges, CBC suites.
 
 ## Testing
 
 - Simulated links (`tests/loopback.rs`): 24 seeds with 25 % loss, 10 % duplication and up to
   400 ms of reordering at MTU 256 (cookies on and off), datagram sizes checked against the MTU,
   every cipher suite with P-256, P-384, Ed25519 and RSA server certificates and three client
-  certificate types, every SRTP profile; negative cases: wrong fingerprints (both directions),
+  certificate types, every SRTP profile, SRTP MKI negotiation (also over DTLS 1.3); negative
+  cases: wrong fingerprints (both directions),
   custom verifier refusal, replayed / tampered / truncated records, unauthenticated alerts,
   corrupted cookies, the stateless `HelloVerifier` (other address, expiry, garbage), timeout and
   backoff schedule, close_notify, no shared suite, missing client certificate, API misuse.
