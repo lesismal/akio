@@ -12,7 +12,8 @@ Two crates:
   `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
   channels: reliable or not, ordered or not) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
   VP9, H.264, H.265 and AV1 packetization, a frame assembler, NACK and RTX, PLI/FIR, REMB, TWCC
-  and bandwidth estimation, sender/receiver reports). `only-webrtc` itself does SDP
+  and bandwidth estimation, sender/receiver reports; also RTCP XR, TMMBR / TMMBN, RFC 8888
+  feedback and ULPFEC / FlexFEC / RED, not yet used by the peers). `only-webrtc` itself does SDP
   offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
   drives the peers with `only`'s I/O threads and one shared timer thread.
 - `only-turn` has the STUN codec, a STUN server, a TURN server (RFC 8656 over UDP, TCP and TLS)
@@ -292,6 +293,8 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 ## Not done yet
 
 TCP relays (RFC 6062); TURN over DTLS; simultaneous-open ICE-TCP (`tcptype so`); resolving
-mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC;
-RTCP XR; DTLS 1.3 for WebRTC by default; DTLS 1.3 0-RTT and NewConnectionId. ADR-017 and ADR-032
-have the details of what was added.
+mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC,
+RTCP XR, TMMBR and RFC 8888 feedback in peers (`only-rtp` has them since ADR-036: ULPFEC, FlexFEC
+`flexfec-03` and RFC 8627, RED, every XR block, the TMMBR bounding set, RFC 8888 generation and
+matching; `only-webrtc` does not negotiate them yet); DTLS 1.3 for WebRTC by default; DTLS 1.3
+0-RTT and NewConnectionId. ADR-017 and ADR-032 have the details of what was added.

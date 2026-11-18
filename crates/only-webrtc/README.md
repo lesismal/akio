@@ -65,6 +65,7 @@ in both offer directions (data channels, the fake camera and microphone echoed b
 by Chrome): `tools/interop/webrtc/browser.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC, RTCP XR, SDES-SRTP, DTLS 1.3.
+Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC, RTCP XR, TMMBR and RFC 8888
+feedback (all in `only-rtp` since ADR-036, not negotiated or used here yet), SDES-SRTP, DTLS 1.3.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

@@ -170,9 +170,53 @@ fn rtcp_samples() -> Vec<Rtcp> {
             ssrcs: vec![4],
         },
         Rtcp::Unknown {
-            packet_type: 207,
+            packet_type: 210,
             fmt: 3,
             data: vec![1, 2, 3, 4, 5],
+        },
+        Rtcp::Tmmbr {
+            sender_ssrc: 3,
+            entries: vec![TmmbItem {
+                ssrc: 4,
+                bitrate: 312_000,
+                overhead: 40,
+            }],
+        },
+        Rtcp::Tmmbn {
+            sender_ssrc: 4,
+            entries: vec![],
+        },
+        Rtcp::CongestionControl(CcfbFeedback {
+            sender_ssrc: 3,
+            streams: vec![CcfbStream {
+                ssrc: 4,
+                begin_seq: 65534,
+                reports: vec![
+                    Some(CcfbMetric {
+                        ecn: 2,
+                        arrival_offset: 100,
+                    }),
+                    None,
+                    Some(CcfbMetric {
+                        ecn: 0,
+                        arrival_offset: CCFB_ATO_OVERRANGE,
+                    }),
+                ],
+            }],
+            report_timestamp: 0x1234_5678,
+        }),
+        Rtcp::ExtendedReport {
+            ssrc: 3,
+            blocks: vec![
+                XrBlock::ReceiverReferenceTime {
+                    ntp: 0x0102_0304_0506_0708,
+                },
+                XrBlock::Dlrr(vec![DlrrItem {
+                    ssrc: 4,
+                    last_rr: 5,
+                    delay_since_last_rr: 6,
+                }]),
+            ],
         },
         Rtcp::Unknown {
             packet_type: 205,

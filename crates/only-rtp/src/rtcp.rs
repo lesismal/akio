@@ -1,8 +1,11 @@
-//! RTCP (RFC 3550 §6, RFC 4585 §6, RFC 5104 §4.3.1, REMB draft-alvestrand-rmcat-remb-03,
+//! RTCP (RFC 3550 §6, RFC 4585 §6, RFC 5104 §4.2 / §4.3.1, RFC 3611 extended reports,
+//! RFC 8888 congestion control feedback, REMB draft-alvestrand-rmcat-remb-03,
 //! transport-wide congestion control draft-holmer-rmcat-transport-wide-cc-extensions-01).
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::xr::{self, XrBlock};
 
 /// Why an RTCP compound packet did not parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +41,14 @@ const SDES: u8 = 202;
 const BYE: u8 = 203;
 const RTPFB: u8 = 205;
 const PSFB: u8 = 206;
+const XR: u8 = 207;
+
+/// RTPFB formats.
+const FMT_NACK: u8 = 1;
+const FMT_TMMBR: u8 = 3;
+const FMT_TMMBN: u8 = 4;
+const FMT_CCFB: u8 = 11;
+const FMT_TWCC: u8 = 15;
 
 /// A reception report block (RFC 3550 §6.4.1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,6 +106,61 @@ pub struct TwccFeedback {
     pub packets: Vec<(u16, Option<i64>)>,
 }
 
+/// One entry of a TMMBR or TMMBN (RFC 5104 §4.2.1.1 / §4.2.2.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct TmmbItem {
+    /// In a TMMBR the media source the request is for; in a TMMBN the owner of the bounding
+    /// tuple (the requester).
+    pub ssrc: u32,
+    /// Maximum total media bitrate in bits per second (6-bit exponent and 17-bit mantissa on
+    /// the wire, so large values lose precision).
+    pub bitrate: u64,
+    /// Measured per-packet overhead in bytes (9 bits; larger values are clamped to 511).
+    pub overhead: u16,
+}
+
+/// One packet's metric block of RFC 8888 feedback (a received packet).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CcfbMetric {
+    /// The ECN bits the packet arrived with (0 Not-ECT, 1 ECT(1), 2 ECT(0), 3 CE).
+    pub ecn: u8,
+    /// Arrival time offset (13 bits): how long before the report timestamp the packet
+    /// arrived, in 1/1024 s; [`CCFB_ATO_OVERRANGE`] for 8190/1024 s or more,
+    /// [`CCFB_ATO_UNAVAILABLE`] when unknown.
+    pub arrival_offset: u16,
+}
+
+/// Arrival time offset meaning "8190/1024 s or more".
+pub const CCFB_ATO_OVERRANGE: u16 = 0x1ffe;
+/// Arrival time offset meaning "unavailable".
+pub const CCFB_ATO_UNAVAILABLE: u16 = 0x1fff;
+/// Most packets one RFC 8888 report block may cover (RFC 8888 §3.1).
+pub const CCFB_MAX_REPORTS: usize = 16_384;
+
+/// The reports of RFC 8888 feedback for one RTP stream: packets `begin_seq`,
+/// `begin_seq + 1`, ... in order, `None` for packets not received.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CcfbStream {
+    /// The media SSRC.
+    pub ssrc: u32,
+    /// Sequence number of the first report.
+    pub begin_seq: u16,
+    /// One entry per sequence number (at most [`CCFB_MAX_REPORTS`] are written).
+    pub reports: Vec<Option<CcfbMetric>>,
+}
+
+/// RTP congestion control feedback (RTPFB FMT 11, RFC 8888).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CcfbFeedback {
+    /// SSRC of the feedback sender.
+    pub sender_ssrc: u32,
+    /// Per-stream report blocks.
+    pub streams: Vec<CcfbStream>,
+    /// When the report was generated: the middle 32 bits of the NTP time
+    /// ([`compact_ntp`]).
+    pub report_timestamp: u32,
+}
+
 /// One RTCP packet of a compound packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rtcp {
@@ -135,6 +201,31 @@ pub enum Rtcp {
     },
     /// Transport-wide congestion control feedback (205/15).
     TransportCc(TwccFeedback),
+    /// Temporary maximum media stream bitrate request (205/3, RFC 5104 §4.2.1). The media
+    /// SSRC field is written as 0 and ignored when parsed.
+    Tmmbr {
+        /// SSRC of the requester.
+        sender_ssrc: u32,
+        /// The requests (normally one), each for the media source in its `ssrc`.
+        entries: Vec<TmmbItem>,
+    },
+    /// Temporary maximum media stream bitrate notification (205/4, RFC 5104 §4.2.2): the
+    /// bounding set, each entry naming its owner.
+    Tmmbn {
+        /// SSRC of the media sender.
+        sender_ssrc: u32,
+        /// The bounding set (empty: no restriction).
+        entries: Vec<TmmbItem>,
+    },
+    /// RTP congestion control feedback (205/11, RFC 8888).
+    CongestionControl(CcfbFeedback),
+    /// Extended report (207, RFC 3611).
+    ExtendedReport {
+        /// SSRC of the report's originator.
+        ssrc: u32,
+        /// The report blocks.
+        blocks: Vec<XrBlock>,
+    },
     /// Picture loss indication (206/1).
     Pli {
         /// SSRC of the PLI sender.
@@ -327,12 +418,19 @@ fn parse_one(pt: u8, count: u8, body: &[u8]) -> Result<Rtcp, Error> {
             };
             Rtcp::Goodbye { ssrcs, reason }
         }
+        XR => {
+            let m = Error::Malformed("extended report");
+            let ssrc = r.u32().ok_or(m)?;
+            let blocks = xr::parse_blocks(r.0).ok_or(m)?;
+            Rtcp::ExtendedReport { ssrc, blocks }
+        }
+        RTPFB if count == FMT_CCFB => Rtcp::CongestionControl(parse_ccfb(body)?),
         RTPFB | PSFB => {
             let m = Error::Malformed("feedback");
             let sender_ssrc = r.u32().ok_or(m)?;
             let media_ssrc = r.u32().ok_or(m)?;
             match (pt, count) {
-                (RTPFB, 1) => {
+                (RTPFB, FMT_NACK) => {
                     if r.remaining() % 4 != 0 {
                         return Err(Error::Malformed("NACK"));
                     }
@@ -351,7 +449,32 @@ fn parse_one(pt: u8, count: u8, body: &[u8]) -> Result<Rtcp, Error> {
                         lost,
                     }
                 }
-                (RTPFB, 15) => match parse_twcc(sender_ssrc, media_ssrc, &mut r)? {
+                (RTPFB, FMT_TMMBR | FMT_TMMBN) => {
+                    if r.remaining() % 8 != 0 {
+                        return Err(Error::Malformed("TMMBR / TMMBN"));
+                    }
+                    let mut entries = Vec::with_capacity(r.remaining() / 8);
+                    while let (Some(ssrc), Some(v)) = (r.u32(), r.u32()) {
+                        let (exp, mantissa) = (v >> 26, u64::from((v >> 9) & 0x1_ffff));
+                        entries.push(TmmbItem {
+                            ssrc,
+                            bitrate: u64::try_from(u128::from(mantissa) << exp).unwrap_or(u64::MAX),
+                            overhead: (v & 0x1ff) as u16,
+                        });
+                    }
+                    if count == FMT_TMMBR {
+                        Rtcp::Tmmbr {
+                            sender_ssrc,
+                            entries,
+                        }
+                    } else {
+                        Rtcp::Tmmbn {
+                            sender_ssrc,
+                            entries,
+                        }
+                    }
+                }
+                (RTPFB, FMT_TWCC) => match parse_twcc(sender_ssrc, media_ssrc, &mut r)? {
                     Some(fb) => Rtcp::TransportCc(fb),
                     None => unknown(),
                 },
@@ -393,6 +516,43 @@ fn parse_one(pt: u8, count: u8, body: &[u8]) -> Result<Rtcp, Error> {
             }
         }
         _ => unknown(),
+    })
+}
+
+fn parse_ccfb(body: &[u8]) -> Result<CcfbFeedback, Error> {
+    let m = Error::Malformed("congestion control feedback");
+    if body.len() < 8 || body.len() % 4 != 0 {
+        return Err(m);
+    }
+    let (head, ts) = body.split_at(body.len() - 4);
+    let mut r = Reader(head);
+    let sender_ssrc = r.u32().ok_or(m)?;
+    let mut streams = Vec::new();
+    while r.remaining() > 0 {
+        let ssrc = r.u32().ok_or(m)?;
+        let begin_seq = r.u16().ok_or(m)?;
+        let n = usize::from(r.u16().ok_or(m)?);
+        let data = r.take(2 * n + 2 * (n % 2)).ok_or(m)?;
+        let reports = data[..2 * n]
+            .chunks_exact(2)
+            .map(|c| {
+                let v = u16::from_be_bytes([c[0], c[1]]);
+                (v & 0x8000 != 0).then_some(CcfbMetric {
+                    ecn: ((v >> 13) & 3) as u8,
+                    arrival_offset: v & 0x1fff,
+                })
+            })
+            .collect();
+        streams.push(CcfbStream {
+            ssrc,
+            begin_seq,
+            reports,
+        });
+    }
+    Ok(CcfbFeedback {
+        sender_ssrc,
+        streams,
+        report_timestamp: u32::from_be_bytes([ts[0], ts[1], ts[2], ts[3]]),
     })
 }
 
@@ -586,11 +746,63 @@ fn write_one(p: &Rtcp, out: &mut Vec<u8>) {
                 b.extend_from_slice(&pid.to_be_bytes());
                 b.extend_from_slice(&blp.to_be_bytes());
             }
-            packet(out, RTPFB, 1, &b);
+            packet(out, RTPFB, FMT_NACK, &b);
         }
         Rtcp::TransportCc(fb) => {
             write_twcc(fb, &mut b);
-            packet(out, RTPFB, 15, &b);
+            packet(out, RTPFB, FMT_TWCC, &b);
+        }
+        Rtcp::Tmmbr {
+            sender_ssrc,
+            entries,
+        }
+        | Rtcp::Tmmbn {
+            sender_ssrc,
+            entries,
+        } => {
+            b.extend_from_slice(&sender_ssrc.to_be_bytes());
+            b.extend_from_slice(&[0; 4]);
+            for e in entries.iter().take(0x3fff) {
+                let (mut mantissa, mut exp) = (e.bitrate, 0u32);
+                while mantissa > 0x1_ffff {
+                    mantissa >>= 1;
+                    exp += 1;
+                }
+                let v = (exp << 26) | ((mantissa as u32) << 9) | u32::from(e.overhead.min(0x1ff));
+                b.extend_from_slice(&e.ssrc.to_be_bytes());
+                b.extend_from_slice(&v.to_be_bytes());
+            }
+            let fmt = if matches!(p, Rtcp::Tmmbr { .. }) {
+                FMT_TMMBR
+            } else {
+                FMT_TMMBN
+            };
+            packet(out, RTPFB, fmt, &b);
+        }
+        Rtcp::CongestionControl(fb) => {
+            b.extend_from_slice(&fb.sender_ssrc.to_be_bytes());
+            for s in &fb.streams {
+                let n = s.reports.len().min(CCFB_MAX_REPORTS);
+                b.extend_from_slice(&s.ssrc.to_be_bytes());
+                b.extend_from_slice(&s.begin_seq.to_be_bytes());
+                b.extend_from_slice(&(n as u16).to_be_bytes());
+                for r in &s.reports[..n] {
+                    let v = r.map_or(0, |m| {
+                        0x8000 | (u16::from(m.ecn & 3) << 13) | m.arrival_offset.min(0x1fff)
+                    });
+                    b.extend_from_slice(&v.to_be_bytes());
+                }
+                if n % 2 == 1 {
+                    b.extend_from_slice(&[0, 0]);
+                }
+            }
+            b.extend_from_slice(&fb.report_timestamp.to_be_bytes());
+            packet(out, RTPFB, FMT_CCFB, &b);
+        }
+        Rtcp::ExtendedReport { ssrc, blocks } => {
+            b.extend_from_slice(&ssrc.to_be_bytes());
+            xr::write_blocks(blocks, &mut b);
+            packet(out, XR, 0, &b);
         }
         Rtcp::Pli {
             sender_ssrc,

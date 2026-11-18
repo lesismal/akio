@@ -3,8 +3,8 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 的 RTP 与 RTCP，安全 Rust（`#![forbid(unsafe_code)]`），
-没有依赖：数据包、RTCP 反馈、带 NACK 与 RTX 的单流收发状态、传输层拥塞控制与带宽估计，以及编解码器
-载荷格式。它是自研 WebRTC 协议栈的媒体层（其下由 [`only-srtp`](../only-srtp) 加密）。这是内部 crate
+没有依赖：数据包、RTCP 反馈、带 NACK 与 RTX 的单流收发状态、传输层与 RFC 8888 拥塞控制反馈及带宽
+估计、RTCP 扩展报告、TMMBR / TMMBN、前向纠错（ULPFEC、FlexFEC、RED），以及编解码器载荷格式。它是自研 WebRTC 协议栈的媒体层（其下由 [`only-srtp`](../only-srtp) 加密）。这是内部 crate
 （docs/api-stability.zh-CN.md）：API 跟随该协议栈的需要，可能在任何发布中变化。
 
 ## 驱动方式
@@ -54,16 +54,40 @@ let rb = recv.report_block(now);                                   // 用于 RR 
 - `BandwidthEstimator`：类 GCC 的时延梯度趋势线与自适应阈值、以确认码率为上限的 AIMD 码率控制、基于
   丢包的控制（>10% 降低，<2% 提高）、REMB 上限与上下界。
 - `codec`：打包 / 解包（Opus 等音频、VP8、VP9、H.264、H.265、AV1）以及帧组装。
+- RTCP XR（RFC 3611）：`RrtrResponder` 用 DLRR 应答接收方参考时间，`RecvStream::handle_dlrr` /
+  `rtt_from_dlrr` 让不发送 SR 的接收方得到 RTT；`RecvStream::statistics_summary` 生成统计摘要块；
+  `BurstLossModel`（RFC 3611 A.2）填写 VoIP 指标中的丢包 / 突发 / 间隙字段。
+- TMMBR / TMMBN（RFC 5104）：`TmmbrHandler` 保存各接收方针对某媒体 SSRC 的请求，计算边界集
+  （`bounding_set`、`bounded_bitrate`）并构造 TMMBN。
+- RFC 8888：`CcfbReceiver` 按媒体 SSRC 生成拥塞控制反馈（含 ECN），每 50 毫秒或每 100 个包一次；
+  `CcfbSender` 像 TWCC 一样把它转换成供估计器使用的 `PacketResult`。
+- `fec`：用于 ULPFEC（RFC 5109）、Chrome 发送的 FlexFEC（`flexfec-03`）和 RFC 8627 FlexFEC 的
+  `FecEncoder` / `FecDecoder`：按帧使用交织掩码（保护率单位 1/256），凡是某个 FEC 包只缺一个包就将其
+  逐字节恢复；`fec::red` 处理 RFC 2198（WebRTC 中 ULPFEC 走 RED）。
+
+```rust,ignore
+// FlexFEC：每帧约 30 % 的 FEC 保护，在另一端恢复。
+let mut enc = FecEncoder::new(FecScheme::Flexfec03, media_ssrc, 77);
+for payload in enc.push(&rtp_packet, marker) { /* 在 FEC SSRC 上发送 */ }
+let mut dec = FecDecoder::new(FecScheme::Flexfec03, media_ssrc);
+for p in dec.on_media(&received) { /* 恢复出的 RTP 包 */ }
+for p in dec.on_fec(fec_payload) { /* ... */ }
+```
 
 ## 协议覆盖
 
 - 头部扩展：mid、rtp-stream-id、repaired-rtp-stream-id、abs-send-time、transport-wide-cc、
   ssrc-audio-level、video-orientation、toffset、playout-delay。
 - RTCP：SR、RR、SDES、BYE、通用 NACK、传输层拥塞控制反馈（游程与两种状态向量块，小 / 大时间差）、
-  PLI、FIR、REMB；其他包保留为 `Rtcp::Unknown`。解析严格检查长度且不会 panic。
+  RFC 8888 拥塞控制反馈、PLI、FIR、REMB、TMMBR、TMMBN，以及包含 RFC 3611 全部报告块的扩展报告（丢包与
+  重复 RLE、接收时间、RRTR、DLRR、统计摘要、VoIP 指标）；其他包保留为 `Rtcp::Unknown`（未知 XR 块为
+  `XrBlock::Unknown`）。解析严格检查长度且不会 panic。
+- FEC：ULPFEC（单个保护级别）、FlexFEC `flexfec-03`（libwebrtc 的头格式）与 RFC 8627（灵活掩码，一个
+  被保护 SSRC）、RED。细节见 ADR-036。
 
-未实现：RTCP XR、TMMBR / TMMBN、FEC（ULPFEC、FlexFEC）、RFC 8888 反馈、估计器中的探测、SDES 中
-类型 / 文本对以外的内容。
+未实现：把 XR、TMMBR、RFC 8888 与 FEC 接入 `only-webrtc`（SDP 协商、FEC 保护率策略）；FlexFEC 重传与
+固定 L/D 包、多个被保护 SSRC、ULPFEC 第 1 级、libwebrtc 的掩码表；生成 RLE / 接收时间 XR 块与 VoIP
+质量字段；估计器中的探测；SDES 中类型 / 文本对以外的内容。
 
 ## 测试
 
@@ -75,5 +99,11 @@ let rb = recv.report_block(now);                                   // 用于 RR 
   按 RTT 重复、放弃、不连续），以及模拟丢包链路上 NACK / RTX 恢复全部包。
 - 7 万个带丢包的包上的 TWCC 端到端测试；模拟链路上估计器在干净链路上增长，在 1 Mbps 瓶颈下稳定在
   其以下，在 25% 丢包下回退。
-- 模糊测试：`fuzz/` 中的 `rtp_rtcp` 目标（头部解析 / 写出 / 再解析、复合 RTCP 往返、驱动流与 TWCC
-  发送端）；`fuzzing::tests` 在 stable 上回放其语料。
+- libwebrtc 单元测试向量：TMMBR、TMMBN、RRTR、DLRR 与空 XR 逐字节一致；其写出器产生、读取器接受的
+  FlexFEC-03 掩码；其 ULPFEC 头读取用例。RFC 3611 §4.7.2 突发示例（丢包、丢弃、突发 / 间隙密度与时长）；
+  按 §3.1 拼装的 RFC 8888 包；每种 XR 块的往返；边界集。
+- 在有丢包的模拟双流链路上由 RFC 8888 反馈驱动估计器；每种方案的 FEC 恢复（组内突发、5000 个包 5 %
+  随机丢包、经 RED 的 ULPFEC），逐字节核对每个恢复出的包。
+- 模糊测试：`fuzz/` 中的 `rtp_rtcp` 目标（头部解析 / 写出 / 再解析、复合 RTCP 往返、驱动流、TWCC 与
+  RFC 8888 发送端、RRTR 应答器和 TMMBR 处理器）与 `rtp_fec` 目标（FEC 头与 RED 的解析 / 重写、任意输入
+  驱动解码器、编码器 → 有损解码器恢复）；`fuzzing::tests` 在 stable 上回放其语料。

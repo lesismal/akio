@@ -59,6 +59,7 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、FEC、RTCP XR、SDES-SRTP、DTLS 1.3。
+未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（自 ADR-036 起都已在
+`only-rtp` 中实现，但这里尚未协商和使用）、SDES-SRTP、DTLS 1.3。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

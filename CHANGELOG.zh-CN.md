@@ -10,6 +10,26 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC（only-rtp）
+
+ADR-036（docs/adr/036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md）。`only-rtp` 属于 Internal 层级；`Rtcp` 新增四个
+变体（PT 207 与 RTPFB 3 / 4 / 11 不再解析为 `Rtcp::Unknown`），其余均为新增：
+
+- **RTCP XR**（RFC 3611）：`Rtcp::ExtendedReport`，`XrBlock` 覆盖全部报告块（丢包 / 重复 RLE、接收
+  时间、RRTR、DLRR、统计摘要、VoIP 指标、未知块）。`RrtrResponder` 用 DLRR 应答 RRTR；`rtt_from_dlrr`
+  与 `RecvStream::{handle_dlrr, rtt}` 让不发送 SR 的接收方得到 RTT；`RecvStream::{statistics_summary,
+  duplicates}`；用于 VoIP 指标的 `BurstLossModel`（附录 A.2，复现 §4.7.2 示例）。
+- **TMMBR / TMMBN**（RFC 5104）：`Rtcp::{Tmmbr, Tmmbn}` 与 `TmmbItem`；`bounding_set`、
+  `bounded_bitrate`、`TmmbrHandler`（按请求者保存请求，25 s 超时，生成 TMMBN）。
+- **RFC 8888**：`Rtcp::CongestionControl(CcfbFeedback)`（`CcfbStream`、`CcfbMetric`、ATO 常量）；
+  `CcfbReceiver` 按媒体 SSRC 生成带 ECN 的反馈（50 ms / 100 个包）；`CcfbSender` 把它映射为供
+  `BandwidthEstimator` 使用的 `PacketResult`。
+- **FEC**（`only_rtp::fec`）：用于 ULPFEC（RFC 5109）、libwebrtc `flexfec-03` 与 RFC 8627 两种 FlexFEC
+  的 `FecEncoder` / `FecDecoder` / `FecHeader`；按帧交织掩码，迭代且逐字节一致的恢复；`fec::red`
+  （RFC 2198 解析 / 写出 / 封装 / 解封装）。
+- 测试对照 libwebrtc 单元测试向量、RFC 3611 示例与模拟丢包；新增 fuzz 目标 `rtp_fec`，扩充
+  `rtp_rtcp`。尚未接入 `only-webrtc`。
+
 ### 新增：protobuf 文本格式（only-protobuf）
 
 ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息
