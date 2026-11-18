@@ -10,6 +10,35 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TURN over TCP and TLS from an `Endpoint`, active and server ICE-TCP, simulcast with Chrome
+
+Additive (ADR-032, docs/adr/032-webrtc-turn-streams-ice-tcp-simulcast.md):
+
+- **Relayed candidates over TCP and TLS**: `Endpoint::gather_relay_via(&engine, &server,
+  timeout)` with a `RelayServer` (`udp`, `tcp`, `tls(addr, server_name, tls_config, ..)`, or
+  `from_url("turn:host?transport=tcp" | "turns:host")` plus `tls_config` for `turns:`). The
+  allocation lives on an engine connection; its candidate ranks below a UDP-allocated one and
+  brings no server-reflexive candidate; relayed data is dropped past 256 KiB queued.
+- **Allocations are made again when lost** (a connection closed, a refresh failed), after 1 s
+  and doubling waits up to a minute, by `gather_relay` too: the new relayed candidate replaces
+  the old one for new peers and is added to open peers, which keep going when the other side is
+  reachable from the relay.
+- **Active ICE-TCP**: `Endpoint::dial_tcp(&engine)` adds an active TCP candidate (port 9) and
+  dials one connection per pair when its first check goes out; active and passive connections
+  share the 256 bound.
+- **Passive ICE-TCP on `RtcServer`**: `RtcServer::tcp_candidates(addrs)` and `RtcServer::tcp()`
+  (an `RtcTcp` acceptor for the engine's TCP listener); at most twice `max_peers` connections.
+- **`Endpoint::candidate_filter(f)`**: the local candidates new peers use and signal (a relay-only
+  or TCP-only policy); `Candidate::kind()` and `Candidate::transport()`.
+- **`Peer::request_layer_keyframe(mid, rid, kind)`**: PLI or FIR to one received simulcast layer
+  (an SFU switching a viewer's layer). Simulcast verified with headless Chrome both ways: three
+  VP8 layers from Chrome, layer selection decoded by Chrome, and our simulcast falling back to its
+  first layer (Chrome does not receive simulcast).
+- `only-ice` (internal tier): `Candidate::relayed_over_stream`. New fuzz target
+  `webrtc_turn_url`. Interop: pion (relays over TCP/TLS on only-turn and pion/turn, ICE-TCP both
+  ways), coturn (relays over TCP/TLS), Chrome (ICE-TCP only, relay only over UDP/TCP/TLS,
+  simulcast and layer selection).
+
 ### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
 
 only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH

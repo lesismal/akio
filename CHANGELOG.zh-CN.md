@@ -10,6 +10,30 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：`Endpoint` 经 TCP 与 TLS 使用 TURN、主动及服务器端 ICE-TCP、与 Chrome 的 simulcast
+
+新增 API（ADR-032，docs/adr/032-webrtc-turn-streams-ice-tcp-simulcast.zh-CN.md）：
+
+- **经 TCP 与 TLS 分配的中继候选**：`Endpoint::gather_relay_via(&engine, &server, timeout)`，参数为
+  `RelayServer`（`udp`、`tcp`、`tls(addr, server_name, tls_config, ..)`，或
+  `from_url("turn:host?transport=tcp" | "turns:host")`，`turns:` 还需 `tls_config`）。分配依附于 engine
+  的一条连接；其候选优先级低于经 UDP 分配的候选，且不带来 server-reflexive 候选；排队超过 256 KiB 时丢弃
+  中继数据。
+- **丢失的分配会重新建立**（连接关闭、刷新失败），1 秒后开始，等待时间加倍至最多一分钟，`gather_relay`
+  也是如此：新的中继候选为新 peer 替换旧候选，并加入已打开的 peer；对端可从中继到达时这些 peer 继续工作。
+- **主动 ICE-TCP**：`Endpoint::dial_tcp(&engine)` 增加一个主动 TCP 候选（端口 9），在每个候选对发出第一次
+  检查时为它拨一条连接；主动与被动连接共用 256 的上限。
+- **`RtcServer` 上的被动 ICE-TCP**：`RtcServer::tcp_candidates(addrs)` 与 `RtcServer::tcp()`（engine TCP
+  监听器的 `RtcTcp` acceptor）；连接数最多为 `max_peers` 的两倍。
+- **`Endpoint::candidate_filter(f)`**：新 peer 使用并发出的本地候选（只用中继或只用 TCP 的策略）；
+  `Candidate::kind()` 与 `Candidate::transport()`。
+- **`Peer::request_layer_keyframe(mid, rid, kind)`**：只向接收到的某一 simulcast 层发 PLI 或 FIR（SFU
+  切换观众所看的层）。已用无头 Chrome 双向验证 simulcast：Chrome 发出三层 VP8，Chrome 解码所选的层，我方的
+  simulcast 回退为第一层（Chrome 不接收 simulcast）。
+- `only-ice`（内部层级）：`Candidate::relayed_over_stream`。新 fuzz 目标 `webrtc_turn_url`。互通：pion（在
+  only-turn 与 pion/turn 上经 TCP/TLS 的中继，双向 ICE-TCP），coturn（经 TCP/TLS 的中继），Chrome（只用
+  ICE-TCP，只用经 UDP/TCP/TLS 的中继，simulcast 与层选择）。
+
 ### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
 
 only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。

@@ -315,6 +315,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "webrtc_turn_url"
+path = "fuzz_targets/webrtc_turn_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "bt_tracker"
 path = "fuzz_targets/bt_tracker.rs"
 test = false

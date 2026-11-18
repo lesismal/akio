@@ -330,14 +330,14 @@ impl IceAgent {
     }
 
     /// Adds a local candidate (gathered by the caller); `false` (and ignored) if one with the
-    /// same address and base exists. Host, server-reflexive and relayed candidates are paired
+    /// same address, base and transport exists (a UDP and a TCP candidate may share an
+    /// address: a server's listeners on one port). Host, server-reflexive and relayed candidates are paired
     /// with the remote candidates of the same IP family.
     pub fn add_local_candidate(&mut self, c: Candidate) -> bool {
         if self.local_cands.len() >= MAX_LOCAL_CANDIDATES
-            || self
-                .local_cands
-                .iter()
-                .any(|l| l.addr() == c.addr() && l.base() == c.base())
+            || self.local_cands.iter().any(|l| {
+                l.addr() == c.addr() && l.base() == c.base() && l.tcp_type() == c.tcp_type()
+            })
         {
             return false;
         }

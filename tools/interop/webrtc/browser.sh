@@ -15,8 +15,12 @@ trap 'kill $PIDS 2>/dev/null || true; sleep 1; rm -rf "$W" 2>/dev/null || true' 
 "$CHROME" --headless=new --remote-debugging-port=9520 --user-data-dir="$W/profile" \
   --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
   --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
+  --disable-features=WebRtcHideLocalIpsWithMdns --ignore-certificate-errors \
   about:blank >"$W/chrome.log" 2>&1 & PIDS="$PIDS $!"
-$RS server 127.0.0.1:9510 127.0.0.1:9511 2>"$W/server.log" & PIDS="$PIDS $!"
+$RS server 127.0.0.1:9510 127.0.0.1:9511 127.0.0.1:9513 2>"$W/server.log" & PIDS="$PIDS $!"
+$RS turn 127.0.0.1:9515 127.0.0.1 alice wonderland 127.0.0.1:9516 127.0.0.1:9517 \
+  2>"$W/turn.log" & PIDS="$PIDS $!"
+$RS sfu 127.0.0.1:9518 127.0.0.1:9519 2>"$W/sfu.log" & PIDS="$PIDS $!"
 sleep 2
 
 echo "== Chrome offers to the only ICE-lite server"
@@ -25,4 +29,29 @@ echo "== only (full ICE Endpoint) offers to Chrome"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9512 & PIDS="$PIDS $!"
 sleep 1
 $RS client 127.0.0.1:9512 dc
+echo "== Chrome offers to the only server over ICE-TCP only"
+node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer-tcp 127.0.0.1:9511
+echo "== Chrome offers to the only server, relay only (only-turn over UDP, TCP, TLS)"
+for u in "turn:127.0.0.1:9515" "turn:127.0.0.1:9516?transport=tcp" "turns:localhost:9517?transport=tcp"; do
+  node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer-relay 127.0.0.1:9511 "$u"
+done
+# Answerers that check the pair Chrome uses: over TCP, or to the Endpoint's relayed candidate.
+answer() { # <how> <client args...>
+  how=$1; shift
+  node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9514 "$how" >"$W/answer.log" 2>&1 &
+  NP=$!
+  sleep 1
+  $RS client 127.0.0.1:9514 "$@"
+  for _ in $(seq 50); do grep -q "chrome: pair" "$W/answer.log" && break; sleep 0.2; done
+  kill $NP 2>/dev/null || true
+  grep "chrome: pair" "$W/answer.log"
+  grep -q "chrome: pair ok" "$W/answer.log"
+}
+echo "== only Endpoint (passive ICE-TCP only) offers to Chrome"
+answer tcp dc-tcp
+echo "== only Endpoint (relayed candidates over TCP and TLS only) offers to Chrome"
+answer relay dc-relay-url "turn:127.0.0.1:9516?transport=tcp" alice wonderland
+answer relay dc-relay-url "turns:127.0.0.1:9517" alice wonderland
+echo "== Chrome simulcast through the only SFU (layers in, simulcast and layer selection out)"
+node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 simulcast 127.0.0.1:9519
 echo "webrtc browser interop: all passed"

@@ -16,11 +16,14 @@
   sans-io 的 TURN 客户端。
 
 互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继，`Endpoint`
-只提供中继候选（来自 only、pion/turn 与 coturn 的 TURN 服务器）或只提供被动 ICE-TCP 候选，以及向 pion
-发送 simulcast；还有 fib 的 Go 版 WebRTC（数据通道，双向）；TURN 服务器经 UDP、TCP 与 TLS 与 pion/turn
+只提供中继候选（来自 only、pion/turn 与 coturn 的 TURN 服务器，经 UDP、TCP 与 TLS 分配）、只提供被动或
+只提供主动 ICE-TCP 候选，pion 经 ICE-TCP 连到 `RtcServer`，以及向 pion 发送 simulcast；还有 fib 的 Go 版 WebRTC（数据通道，双向）；TURN 服务器经 UDP、TCP 与 TLS 与 pion/turn
 客户端和 coturn 的 `turnutils_uclient` 互通；TURN 客户端经 UDP、TCP 与 TLS 与 pion/turn、coturn 和 only
 互通（`tools/interop/webrtc/run.sh`，`COTURN=1` 时包括 coturn，`linux.sh` 在 Linux 容器中全部运行）。无头 Chrome 在两个 offer 方向上均经过测试：数据通道，以及 Chrome
-的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码（`tools/interop/webrtc/browser.sh`）。
+的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码；只用 ICE-TCP（Chrome 连到 `RtcServer`，
+`Endpoint` 连到 Chrome）；只用中继（Chrome 以 `iceTransportPolicy: "relay"` 经 `only-turn` 的 UDP、TCP 与
+TLS，`Endpoint` 只带经 TCP 或 TLS 分配的中继候选）；以及 simulcast：Chrome 向 SFU 发送三层 VP8，SFU 以
+simulcast 及所选的一层发回，在 Chrome 解码时切换层（`tools/interop/webrtc/browser.sh`）。
 
 ## 一个引擎上的服务器、TURN 服务器与客户端
 
@@ -70,6 +73,7 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 | `write_simulcast(mid, rid, pt, wallclock, rtp_time, data)` | 写 simulcast 某一编码的样本 |
 | `payload_type(mid, codec)` | 某编解码器协商得到的 payload type |
 | `request_keyframe(mid, kind)` | 向远端发送方发 PLI 或 FIR |
+| `request_layer_keyframe(mid, rid, kind)` | 只向接收到的某一 simulcast 层发 PLI 或 FIR |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | 首次交换之后的 SDP 变更 |
 | `add_remote_candidate(line)` | trickle ICE |
 | `close()` | DTLS close notify，随后 `on_close` |
@@ -105,14 +109,48 @@ let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
 let relayed = ep.gather_relay("203.0.113.7:3478".parse()?, "alice", "secret", Duration::from_secs(5))?;
 ```
 
+屏蔽 UDP 的网络经 TCP 或 443 端口上的 TLS 访问 TURN 服务器：`gather_relay_via(&engine, &server,
+timeout)` 接受一个 `RelayServer`，可用 `RelayServer::udp`、`tcp` 或 `tls(addr, server_name, tls_config,
+..)` 创建，也可像浏览器的 `iceServers` 那样从 URL 解析（`turn:host[:port][?transport=udp|tcp]`、
+`turns:host[:port]`；`turns:` 服务器还需要 `tls_config`，因为没有默认根证书）。由引擎拨号建立连接（需要
+`client_threads(n)` 或一个 TCP listener），分配依附于该连接。经 TCP 或 TLS 分配的候选优先级低于经 UDP
+分配的候选，且不产生 server-reflexive 候选。建立后丢失的分配（连接关闭、刷新失败）会在 1 秒后重新分配，
+之后等待时间加倍至最多一分钟：新的中继候选为新 peer 替换旧候选，并加入已打开的 peer；对端可从中继到达时
+这些 peer 继续工作（否则用 ICE 重启把它提供给对端）。
+
+```rust,ignore
+let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
+    .tls_config(tls_client_config);
+let relayed = ep.gather_relay_via(&engine, &turns, Duration::from_secs(5))?;
+```
+
+`candidate_filter(f)` 是 endpoint 的 `iceTransportPolicy`：新 peer 只使用并只发出 `f` 接受的本地候选，
+例如 `|c| c.kind() == "relay"`（只用中继）或 `|c| c.transport() == "tcp"`（只用 ICE-TCP）。
+
 ### TCP 上的 ICE
 
 `listen_tcp(&engine, addr)` 在单独的 TCP 端口上加入被动 ICE-TCP 候选（RFC 6544）：位于屏蔽 UDP 的网络后
 的浏览器或 pion 以主动候选连上来，在该连接上运行 ICE、DTLS、SCTP 与 SRTP（RFC 4571 分帧）。引擎需要
 TCP I/O 线程（`client_threads(n)` 或一个 TCP listener）。由专用线程接受连接，同时最多 256 条；10 秒内
 第一帧不是指向该 endpoint 某个 peer 的连通性检查的连接被关闭，peer 关闭时其连接也被关闭。TCP 候选的
-优先级低于 UDP，能用 UDP 的 peer 仍然用 UDP。`Endpoint` 没有主动 TCP 候选：只有 TCP 可用的客户端应使用
-TCP 或 TLS 上的 TURN。
+优先级低于 UDP，能用 UDP 的 peer 仍然用 UDP。
+
+`dial_tcp(&engine)` 加入一个主动 ICE-TCP 候选（主机主地址，端口按 SDP 的写法为 9）：为连上只监听 TCP 的
+服务器，endpoint 在每个候选对发出第一次检查时为它拨一条连接，所有数据都走这条连接。失败的连接由下一次
+检查重新拨号；主动与被动连接共用一个上限（256）。
+
+`RtcServer` 也支持被动 ICE-TCP：`tcp_candidates(addrs)` 在其 answer 与 offer 中加入被动 TCP 候选，
+`server.tcp()` 是这些地址上引擎 TCP listener 的 acceptor，UDP 被屏蔽的浏览器因此可以直接连到服务器：
+
+```rust,ignore
+let server = RtcServer::new(vec![public_udp]).tcp_candidates(vec![public_tcp]);
+let engine = Engine::builder()
+    .listen(Listener::udp(udp_addr).serve(server.clone()))
+    .listen(Listener::tcp(tcp_addr).serve(server.tcp()))
+    .build()?;
+```
+
+规则相同（10 秒内第一次检查，peer 关闭时其连接随之关闭）；连接数最多为 `max_peers` 的两倍。
 
 ### Simulcast
 
@@ -121,7 +159,11 @@ TCP 或 TLS 上的 TURN。
 wallclock, rtp_time, data)` 写某一编码的样本：由应用以各自的分辨率与码率编码每一层。offer 列出这些 RID
 （`a=rid`、`a=simulcast:send`）；由 answer 的 `a=simulcast:recv` 决定发送哪些（没有它时只发第一个）。每个
 编码有自己的 SSRC 与 RTX 流，包带 MID 与 RID 头扩展，关键帧请求带上其 RID（`KeyframeRequest::rid`）。
-作为应答方，本栈也接受远端发来的 simulcast（用 `MediaData::rid` 区分各层）；选择转发哪一层由应用决定。
+作为应答方，本栈也接受远端（如浏览器）发来的 simulcast（用 `MediaData::rid` 区分各层）。向观众转发其中
+一层的 SFU 按 `MediaData::rid` 选层，在新层的关键帧处切换，并用 `Peer::request_layer_keyframe(mid, rid,
+kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/webrtc-interop.rs` 的 `sfu` 模式即如此，
+切换时改写 RTP 时间戳）。Chrome 不接收 simulcast：它的 answer 去掉了 `a=simulcast`，因此只向它发送第一个
+编码。
 
 ## TURN
 
@@ -208,7 +250,6 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；`Endpoint` 经 TCP/TLS 使用 TURN（客户端支持，endpoint 只通过 UDP 分配）；主动
-ICE-TCP 候选与 `RtcServer` 上的 ICE-TCP；解析 mDNS 候选（使用它们的对端仍可通过 peer-reflexive 候选
-连通）；simulcast 分层选择；FEC；RTCP XR；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与
-NewConnectionId。新增内容的细节见 ADR-017。
+TCP 中继（RFC 6062）；DTLS 上的 TURN；同时打开的 ICE-TCP（`tcptype so`）；解析 mDNS 候选（使用它们的
+对端仍可通过 peer-reflexive 候选连通）；FEC；RTCP XR；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与
+NewConnectionId。新增内容的细节见 ADR-017 与 ADR-032。

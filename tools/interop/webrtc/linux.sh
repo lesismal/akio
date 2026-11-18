@@ -3,7 +3,8 @@
 # pion side cross-compiled, and coturn runs next to them (same network namespace):
 #   - turnutils_uclient against only-turn over UDP, TCP (-t) and TLS (-S);
 #   - the only_turn client against coturn over UDP, TCP and TLS;
-#   - an only Endpoint with relayed candidates from coturn, to pion.
+#   - an only Endpoint with relayed candidates from coturn (allocated over UDP, TCP and TLS),
+#     to pion.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 ARCH=$(docker version -f '{{.Server.Arch}}')
@@ -51,4 +52,7 @@ echo "== only Endpoint with relayed candidates from coturn, to pion"
 docker exec -d only-webrtc-it /w/target/interop-linux/webrtc-pion server 127.0.0.1:9602
 sleep 1
 docker exec only-webrtc-it $RS client 127.0.0.1:9602 dc-relay 127.0.0.1:3478 alice wonderland
+for u in "turn:127.0.0.1:3478?transport=tcp" "turns:127.0.0.1:5349"; do
+  docker exec only-webrtc-it $RS client 127.0.0.1:9602 dc-relay-url "$u" alice wonderland
+done
 echo "webrtc linux interop: all passed"

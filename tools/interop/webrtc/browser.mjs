@@ -4,9 +4,25 @@
 //   node browser.mjs <cdp-port> offer <http-signalling-addr>   Chrome offers (data channel echo,
 //                                                               fake camera + microphone, media
 //                                                               echoed back must decode)
-//   node browser.mjs <cdp-port> answer <listen-addr>            Chrome answers offers POSTed to
+//   node browser.mjs <cdp-port> answer <listen-addr> [tcp|relay] Chrome answers offers POSTed to
 //                                                               http://<listen-addr>/ and echoes
-//                                                               data channel messages
+//                                                               data channel messages (tcp: drops
+//                                                               its UDP candidates; relay: checks
+//                                                               the pair it used is the offer's
+//                                                               relayed one)
+//   node browser.mjs <cdp-port> offer-tcp <http-addr>           Chrome offers, the answer's UDP
+//                                                               candidates are dropped: ICE-TCP
+//                                                               only, media and data
+//   node browser.mjs <cdp-port> offer-relay <http-addr> <turn-url>
+//                                                               Chrome offers with
+//                                                               iceTransportPolicy "relay" through
+//                                                               the TURN server at <turn-url>
+//                                                               (alice/wonderland)
+//   node browser.mjs <cdp-port> simulcast <http-addr>           Chrome publishes three VP8
+//                                                               simulcast layers to the only SFU
+//                                                               (sfu mode), then views: the
+//                                                               simulcast line and the selected
+//                                                               layer, switched l -> m -> h
 import http from "node:http";
 
 const [port, mode, addr] = process.argv.slice(2);
@@ -26,8 +42,9 @@ async function page() {
     }
   }
   if (!targets) fail("Chrome DevTools not reachable");
-  let t = targets.find((x) => x.type === "page");
-  if (!t) t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" })).json();
+  // A fresh tab per run: a page left over from the previous run (its peer connections still
+  // open) must not race this run's navigation.
+  const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((r, j) => {
     ws.onopen = r;
@@ -62,7 +79,14 @@ async function page() {
   await call("Page.enable", {});
   await call("Page.navigate", { url: `http://127.0.0.1:${blank.address().port}/` });
   await new Promise((r) => setTimeout(r, 500));
-  return { evaluate, close: () => { ws.close(); blank.close(); } };
+  return {
+    evaluate,
+    close: async () => {
+      await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`, { signal: AbortSignal.timeout(2000) }).catch(() => {});
+      ws.close();
+      blank.close();
+    },
+  };
 }
 
 const PAGE_LIB = `
@@ -78,11 +102,32 @@ window.gather = (pc) => new Promise((r) => {
 });
 true`;
 
-async function offerMode() {
+// The selected candidate pair, as getStats reports it.
+const PAIR_LIB = `
+window.selectedPair = async (pc) => {
+  const st = await pc.getStats();
+  let pair;
+  st.forEach((s) => { if (s.type === "transport" && s.selectedCandidatePairId) pair = st.get(s.selectedCandidatePairId); });
+  if (!pair) st.forEach((s) => { if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s; });
+  if (!pair) return null;
+  const l = st.get(pair.localCandidateId), r = st.get(pair.remoteCandidateId);
+  return { local: l.candidateType + "/" + l.protocol + (l.relayProtocol ? "/" + l.relayProtocol : "") + " " + l.address + ":" + l.port,
+           remote: r.candidateType + "/" + r.protocol + " " + r.address + ":" + r.port,
+           localType: l.candidateType, localProtocol: l.protocol, relayProtocol: l.relayProtocol || "", remoteProtocol: r.protocol };
+};
+true`;
+
+const onlyTcp = (sdp) => sdp.split("\r\n").filter((l) => !l.startsWith("a=candidate") || l.includes(" tcp ")).join("\r\n");
+
+async function offerMode(how, turnUrl) {
   const p = await page();
   await p.evaluate(PAGE_LIB);
+  await p.evaluate(PAIR_LIB);
+  const config = how === "relay"
+    ? { iceServers: [{ urls: turnUrl, username: "alice", credential: "wonderland" }], iceTransportPolicy: "relay" }
+    : {};
   const offer = await p.evaluate(`(async () => {
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection(${JSON.stringify(config)});
     window.pc = pc;
     const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 320, height: 240 } });
     for (const t of media.getTracks()) pc.addTrack(t, media);
@@ -98,9 +143,14 @@ async function offerMode() {
     await gather(pc);
     return pc.localDescription.sdp;
   })()`);
+  if (how === "relay" && !/ typ relay/.test(offer)) fail("Chrome gathered no relayed candidate through " + turnUrl);
   const resp = await fetch(`http://${addr}/`, { method: "POST", body: offer, headers: { "content-type": "application/sdp" } });
-  const answer = await resp.text();
+  let answer = await resp.text();
   if (!resp.ok) fail("signalling: " + answer);
+  if (how === "tcp") {
+    answer = onlyTcp(answer);
+    if (!/ tcp .*tcptype passive/.test(answer)) fail("no passive TCP candidate in the answer:\n" + answer);
+  }
   const r = await p.evaluate(`(async () => {
     await pc.setRemoteDescription({ type: "answer", sdp: ${JSON.stringify(answer)} });
     await waitFor(() => dc.readyState === "open", 15000, "data channel open (ICE " + pc.iceConnectionState + ")");
@@ -126,16 +176,23 @@ async function offerMode() {
     const t0 = Date.now();
     while (Date.now() - t0 < 20000) { st = await decoded(); if (st.v >= 30 && st.a >= 50) break; await new Promise((r) => setTimeout(r, 200)); }
     if (!(st.v >= 30 && st.a >= 50)) throw new Error("media echo: " + JSON.stringify(st));
-    return "ok: Chrome offers: 100 ordered messages + a 70000-byte binary one + an unordered/unreliable one echoed; " +
-      st.v + " echoed VP8 frames decoded, " + st.a + " echoed Opus packets received (Chrome sent " + st.pli + " PLI, " + st.nack + " NACK it got)";
+    const sel = await selectedPair(pc);
+    const how = ${JSON.stringify(how || "")};
+    if (how === "tcp" && !(sel && sel.localProtocol === "tcp" && sel.remoteProtocol === "tcp")) throw new Error("not over TCP: " + JSON.stringify(sel));
+    if (how === "relay" && !(sel && sel.localType === "relay")) throw new Error("not relayed: " + JSON.stringify(sel));
+    return "ok: Chrome offers" + (how ? " (" + how + " only)" : "") + ": 100 ordered messages + a 70000-byte binary one + an unordered/unreliable one echoed; " +
+      st.v + " echoed VP8 frames decoded, " + st.a + " echoed Opus packets received (Chrome sent " + st.pli + " PLI, " + st.nack + " NACK it got); pair " +
+      (sel ? sel.local + " -> " + sel.remote : "?");
   })()`);
   console.log(r);
-  p.close();
+  await p.close();
+  process.exit(0);
 }
 
-async function answerMode() {
+async function answerMode(how) {
   const p = await page();
   await p.evaluate(PAGE_LIB);
+  await p.evaluate(PAIR_LIB);
   const [host, hport] = addr.split(":");
   const srv = http.createServer(async (req, res) => {
     let body = "";
@@ -148,10 +205,21 @@ async function answerMode() {
         await pc.setRemoteDescription({ type: "offer", sdp: ${JSON.stringify(body)} });
         await pc.setLocalDescription(await pc.createAnswer());
         await gather(pc);
-        return pc.localDescription.sdp;
+        const sdp = pc.localDescription.sdp;
+        return ${JSON.stringify(how || "")} === "tcp" ? sdp.split("\\r\\n").filter((l) => !l.startsWith("a=candidate") || l.includes(" tcp ")).join("\\r\\n") : sdp;
       })()`);
       res.writeHead(201, { "content-type": "application/sdp", "content-length": Buffer.byteLength(answer) });
       res.end(answer);
+      if (how) {
+        // The pair Chrome uses: over TCP ("tcp"), or to the offer's relayed candidate ("relay").
+        let sel = null;
+        for (let i = 0; i < 50 && !sel; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          sel = await p.evaluate("selectedPair(window.pc2)");
+        }
+        const ok = how === "tcp" ? sel && sel.localProtocol === "tcp" : sel && sel.remote.startsWith("relay");
+        console.log((ok ? "chrome: pair ok (" : "FAIL chrome: pair (") + how + "): " + JSON.stringify(sel));
+      }
     } catch (e) {
       res.writeHead(400);
       res.end(String(e));
@@ -160,6 +228,93 @@ async function answerMode() {
   srv.listen(Number(hport), host, () => console.error("chrome answerer on " + addr));
 }
 
+async function simulcastMode() {
+  const p = await page();
+  await p.evaluate(PAGE_LIB);
+  const post = async (path, body) => {
+    const r = await fetch(`http://${addr}${path}`, { method: "POST", body, headers: { "content-type": "application/sdp" } });
+    const t = await r.text();
+    if (!r.ok) fail("signalling " + path + ": " + t);
+    return t;
+  };
+  // Publish: three VP8 layers of a 1280x720 fake camera.
+  const offer = await p.evaluate(`(async () => {
+    const pc = new RTCPeerConnection();
+    window.pub = pc;
+    const media = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+    const tr = pc.addTransceiver(media.getVideoTracks()[0], { direction: "sendonly", sendEncodings: [
+      { rid: "l", scaleResolutionDownBy: 4 }, { rid: "m", scaleResolutionDownBy: 2 }, { rid: "h" } ] });
+    const vp8 = RTCRtpSender.getCapabilities("video").codecs.filter((c) => c.mimeType === "video/VP8");
+    tr.setCodecPreferences(vp8);
+    await pc.setLocalDescription(await pc.createOffer());
+    await gather(pc);
+    return pc.localDescription.sdp;
+  })()`);
+  const answer = await post("/publish", offer);
+  if (!/a=simulcast:recv/.test(answer)) fail("the SFU's answer accepts no simulcast:\n" + answer);
+  const pubStats = await p.evaluate(`(async () => {
+    await pub.setRemoteDescription({ type: "answer", sdp: ${JSON.stringify(answer)} });
+    await waitFor(() => pub.connectionState === "connected", 15000, "publisher connected (" + pub.connectionState + ")");
+    const sent = async () => { const m = {}; (await pub.getStats()).forEach((s) => { if (s.type === "outbound-rtp" && s.rid) m[s.rid] = { frames: s.framesSent || 0, w: s.frameWidth || 0 }; }); return m; };
+    let m; const t0 = Date.now();
+    while (Date.now() - t0 < 15000) { m = await sent(); if (["l","m","h"].every((r) => m[r] && m[r].frames > 30)) break; await new Promise((r) => setTimeout(r, 200)); }
+    if (!["l","m","h"].every((r) => m[r] && m[r].frames > 30)) throw new Error("layers not all sent: " + JSON.stringify(m));
+    return m;
+  })()`);
+  // View: the SFU offers a simulcast line and a plain one.
+  const viewOffer = await post("/view", "");
+  const viewAnswer = await p.evaluate(`(async () => {
+    const pc = new RTCPeerConnection();
+    window.view = pc;
+    window.ctlGot = [];
+    pc.ondatachannel = (e) => { window.ctl = e.channel; e.channel.onmessage = (m) => ctlGot.push(m.data); };
+    await pc.setRemoteDescription({ type: "offer", sdp: ${JSON.stringify(viewOffer)} });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await gather(pc);
+    return pc.localDescription.sdp;
+  })()`);
+  const chromeSimulcast = /a=simulcast:recv/.test(viewAnswer);
+  await post("/view-answer", viewAnswer);
+  const r = await p.evaluate(`(async () => {
+    await waitFor(() => view.connectionState === "connected", 15000, "viewer connected (" + view.connectionState + ")");
+    await waitFor(() => window.ctl && ctl.readyState === "open", 10000, "ctl channel");
+    const mids = view.getTransceivers().map((t) => t.mid);
+    const inbound = async () => { const m = {}; (await view.getStats()).forEach((s) => { if (s.type === "inbound-rtp" && s.kind === "video") m[s.mid] = { dec: s.framesDecoded || 0, w: s.frameWidth || 0 }; }); return m; };
+    const [simMid, plainMid] = mids;
+    const out = [];
+    // The simulcast line: Chrome does not receive simulcast, so it gets the first layer.
+    let m; let t0 = Date.now();
+    while (Date.now() - t0 < 15000) { m = await inbound(); if (m[simMid] && m[simMid].dec > 30) break; await new Promise((r) => setTimeout(r, 200)); }
+    if (!(m[simMid] && m[simMid].dec > 30)) throw new Error("simulcast line not decoded: " + JSON.stringify(m));
+    out.push("simulcast line " + m[simMid].dec + " frames " + m[simMid].w + "px");
+    // The plain line: layer selection.
+    const widths = {};
+    for (const layer of ["l", "m", "h"]) {
+      ctl.send("layer " + layer);
+      const before = (await inbound())[plainMid]?.dec || 0;
+      let w = 0; t0 = Date.now();
+      while (Date.now() - t0 < 15000) {
+        m = await inbound();
+        const x = m[plainMid];
+        if (x && x.dec > before + 20 && x.w && (layer === "l" || x.w > widths[layer === "m" ? "l" : "m"])) { w = x.w; break; }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (!w) throw new Error("layer " + layer + " not decoded: " + JSON.stringify(m) + " " + JSON.stringify(widths));
+      widths[layer] = w;
+      out.push("layer " + layer + " " + w + "px");
+    }
+    return out.join(", ");
+  })()`);
+  console.log("ok: simulcast: Chrome sent " + JSON.stringify(pubStats) + "; the SFU's simulcast offer " +
+    (chromeSimulcast ? "was accepted" : "fell back to its first layer (Chrome does not receive simulcast)") + "; " + r);
+  await p.close();
+  process.exit(0);
+}
+
+// The one-shot modes exit when done (a closing DevTools socket must not keep Node alive).
 if (mode === "offer") await offerMode();
-else if (mode === "answer") await answerMode();
-else fail("usage: browser.mjs <cdp-port> offer|answer <addr>");
+else if (mode === "offer-tcp") await offerMode("tcp");
+else if (mode === "offer-relay") await offerMode("relay", process.argv[5]);
+else if (mode === "answer") await answerMode(process.argv[5]);
+else if (mode === "simulcast") await simulcastMode();
+else fail("usage: browser.mjs <cdp-port> offer|offer-tcp|offer-relay|answer|simulcast <addr> ...");

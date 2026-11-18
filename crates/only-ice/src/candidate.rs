@@ -289,6 +289,21 @@ impl Candidate {
         Candidate::local(CandidateKind::Relayed, addr, base, None)
     }
 
+    /// A relayed candidate whose allocation is reached over a TCP (`tls == false`) or TLS
+    /// connection to the TURN server: the relayed address is still UDP, but the candidate
+    /// ranks below one allocated over UDP (local preference halved over TCP, quartered over
+    /// TLS, as browsers rank them) and has a foundation of its own.
+    pub fn relayed_over_stream(addr: SocketAddr, base: SocketAddr, tls: bool) -> Candidate {
+        let kind = CandidateKind::Relayed;
+        let mut c = Candidate::local(kind, addr, base, None);
+        let lp = local_preference(&base) >> if tls { 2 } else { 1 };
+        c.priority = priority(kind.type_preference(), lp, 1);
+        let mut f = foundation(kind, &base, false);
+        f.push(if tls { '3' } else { '2' });
+        c.foundation = f;
+        c
+    }
+
     /// A TCP host candidate (RFC 6544) on the local address `addr`: for
     /// [`TcpType::Passive`], the address of a listening socket.
     pub fn host_tcp(addr: SocketAddr, tcp: TcpType) -> Candidate {
