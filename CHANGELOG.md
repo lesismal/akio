@@ -10,6 +10,29 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
+
+ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:
+
+- **HLS AES-128**: `HlsConfig::encryption` (`HlsEncryption { keys, rotate_every }`) encrypts
+  every segment and LL-HLS part (MPEG-TS and fMP4) with AES-128-CBC + PKCS #7, IV = media
+  sequence number (parts separately, from their segment's IV), `#EXT-X-KEY:METHOD=AES-128`
+  before the first media of each key; fMP4 init segments stay clear (`METHOD=NONE` before a map
+  that follows a key). `KeyProvider` (`key(path, n) -> HlsKey`, `authorize(path, n, &Context)`)
+  issues keys and decides requests for `/<path>/key-<n>.key` (403 when refused);
+  `HlsKey::with_uri` names an external key server; `RandomKeys` issues random keys. Keys rotate
+  every `rotate_every` segments and are served only while a kept segment uses them. `MediaHttp`
+  routes `.key` to `Hls`. Tested with ffmpeg playing the encrypted live playlists.
+- **Recording**: `only_media::record::{Recorder, RecordConfig, RecordFormat, RecordHooks,
+  RecordFile, NoHooks}` records hub streams to fMP4 or FLV files, cut at keyframes by
+  `segment_duration` / `segment_bytes` and at republishes, rotated with `max_files`, with
+  `file_name`, `on_start`, `on_stop` (after `sync_all`) and `on_remove` hooks. Files are
+  written by the recorder's own writer thread, never an I/O thread; the queue is bounded by
+  `max_queued_bytes` (32 MiB), past which the file is closed and packets dropped until the next
+  keyframe (`Recorder::dropped`). Recorded files are checked with ffprobe / ffmpeg.
+- **only-crypto**: `Aes::{encrypt_cbc, decrypt_cbc, encrypt_cbc_padded, decrypt_cbc_padded}`
+  (SP 800-38A vectors, PKCS #7 checked against OpenSSL).
+
 ### Added: protobuf text format (only-protobuf)
 
 ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints

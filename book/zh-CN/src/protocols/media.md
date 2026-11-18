@@ -118,6 +118,36 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
   `RESOLUTION` 与 `AUDIO`，并为每个 `AudioRendition` 列出一条 `EXT-X-MEDIA:TYPE=AUDIO`。URI 是相对路径，并带上
   请求的 query string。首个请求会启动每个 rendition 的 muxer，在每个 rendition 都已知轨道且有一个分段后作答
   （尚未发布的 rendition 在三个目标时长后被略去）。两种分段格式与 LL-HLS 都适用。
+- **加密**：`HlsConfig::encryption` 用 AES-128（`#EXT-X-KEY:METHOD=AES-128`，CBC 加 PKCS #7）加密每个
+  分段和 LL-HLS 分片，MPEG-TS 与 fMP4 相同：
+
+```rust,ignore
+use only_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
+use only_http::Context;
+
+struct Keys; // 应用自己的密钥与权限检查
+impl KeyProvider for Keys {
+    // 在推流者线程上、某个分段需要密钥 `n` 时调用：不得阻塞。每次返回新的随机密钥
+    // （流重启后密钥序号和 IV 都会从 0 重新开始）。
+    fn key(&self, path: &str, n: u64) -> HlsKey {
+        HlsKey::new(new_random_key(path, n)) // 并按应用需要记下它
+    }
+    // 每个 GET /<path>/key-<n>.key 请求，在请求方的 I/O 线程上调用（返回 false 时 403）。
+    fn authorize(&self, path: &str, _n: u64, ctx: &Context) -> bool {
+        ctx.header("cookie").is_some_and(|c| entitled(c, path))
+    }
+}
+
+let mut cfg = HlsConfig::default();
+cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // 每 10 个分段换一个密钥
+```
+
+  IV 是媒体序列号（不写 `IV` 属性），分片按其分段的 IV 单独加密，与播放器解密分片的方式一致。播放列表在
+  密钥适用的第一条媒体之前写出密钥；fMP4 初始化分段保持明文（出现在密钥之后的 map 前写
+  `#EXT-X-KEY:METHOD=NONE`）。只要仍有保留的分段使用某个密钥，就在 `key-<n>.key` 以
+  `Cache-Control: private, no-store` 提供它，或由播放器从 `HlsKey::with_uri` 给出的 URI 获取。播放器
+  请求密钥 URI 时带 cookie 和请求头，不带播放列表的 query string。`RandomKeys` 向所有人发放随机密钥
+  （用于测试，或链接本身保密的场景）。不支持 SAMPLE-AES / CBCS。
 
 ## 转发：RTMP 客户端
 
@@ -140,6 +170,38 @@ let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in"
 `RtmpClientConfig::addr`。每一步都有超时（连接、握手、每条命令的应答各 10 s；拉流 30 s 收不到数据即结束），
 收到的消息有上限（16 MiB），推流落后时先削减到关键帧再断开，与服务端的播放者相同。H.265 与 Opus 以
 Enhanced RTMP 发送。
+
+## 录制
+
+`only_media::record::Recorder` 把 hub 中的流写成分片 MP4 或 FLV 文件：
+
+```rust,ignore
+use std::time::Duration;
+use only_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
+
+struct Hooks;
+impl RecordHooks for Hooks {
+    // 在录制器的写线程上调用：可以阻塞（上传、写数据库）。
+    fn on_stop(&self, f: &RecordFile, result: Result<(), &std::io::Error>) {
+        println!("{} {:?} {} bytes {:?}", f.stream, f.duration, f.bytes, result);
+    }
+}
+
+let mut cfg = RecordConfig::new("/var/lib/only/rec");
+cfg.format = RecordFormat::Fmp4; // 或 Flv
+cfg.segment_duration = Some(Duration::from_secs(600));
+cfg.max_files = 144; // 保留最近一天的十分钟文件
+let rec = Recorder::with_hooks(hub.clone(), cfg, Hooks);
+rec.start("live/cam")?; // 最多等待 `cfg.wait`（10 秒）推流者出现，重新推流时也是
+```
+
+数据包像对任何播放者一样在推流者线程上封装；文件的创建、写入、同步（`on_stop` 之前 `sync_all`）与轮换由
+录制器自己的写线程完成，从不在 I/O 线程上。文件从视频关键帧开始，时间戳从 0 起，在超过
+`segment_duration` 或 `segment_bytes` 后的第一个关键帧处切换，重新推流或编码变化时也切换。到写线程的队列
+有界（`max_queued_bytes`，32 MiB）：磁盘跟不上时关闭当前文件并丢包（`Recorder::dropped`），直到队列降到一半、
+关键帧开始下一个文件，所以慢磁盘只会在文件之间留下空档，不会产生损坏的文件。`RecordHooks::file_name` 为文件
+命名（相对 `dir`），`on_start`、`on_stop` 与 `on_remove`（轮换）跟踪文件。要录制所有流，在 hub 的
+`on_publish` 钩子中调用 `start`。
 
 ## 运行
 
@@ -174,11 +236,13 @@ ffprobe / ffmpeg 作为播放端：
 | 经 WHIP 推流的 Chrome（`tools/interop/media/browser.sh`） | hls.js、Chrome 自带播放器：多码率 fMP4 LL-HLS | AV1 阶梯 + Opus |
 | RTMP 客户端推流 | `ffmpeg -listen 1 -i rtmp://…`、mediamtx（`--ignored`） | H.264 + AAC、H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`、mediamtx | RTMP 客户端拉流 | H.264 + AAC、H.265 + AAC |
+| hub 推流者，AES-128 加密并轮换密钥 | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`，MPEG-TS 与 fMP4，普通与 LL-HLS | H.264 + AAC |
+| hub 推流者，`Recorder` | 对每个 fMP4 与 FLV 文件执行 `ffprobe` / `ffmpeg -i` | H.264 + AAC、H.265 + AAC |
 
 RTSP 与 SRT 的互通表在各自章节中。模糊测试覆盖 RTMP 会话（`rtmp_server`）与客户端（`rtmp_client`）、
 FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS 和 SRT 的解析器。
 
 ## 不支持
 
-HLS 加密、I-frame 播放列表与 rendition report、MPEG-TS 中的 VP8 / VP9 / AV1、RTMPS 客户端、RTMPE / RTMPT、
-AMF3 应答、Enhanced RTMP 多轨、录制到文件、转码。
+HLS SAMPLE-AES / CBCS、I-frame 播放列表与 rendition report、MPEG-TS 中的 VP8 / VP9 / AV1、RTMPS 客户端、
+RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、录制为 MPEG-TS、转码。

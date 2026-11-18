@@ -826,6 +826,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Hls
 impl !core::panic::unwind_safe::UnwindSafe for only_media::hls::Hls
 #[non_exhaustive] pub struct only_media::hls::HlsConfig
 pub only_media::hls::HlsConfig::cors_origin: core::option::Option<alloc::string::String>
+pub only_media::hls::HlsConfig::encryption: core::option::Option<only_media::hls::HlsEncryption>
 pub only_media::hls::HlsConfig::format: only_media::hls::SegmentFormat
 pub only_media::hls::HlsConfig::idle_timeout: core::time::Duration
 pub only_media::hls::HlsConfig::keep_segments: usize
@@ -845,6 +846,40 @@ impl core::marker::Sync for only_media::hls::HlsConfig
 impl core::marker::Unpin for only_media::hls::HlsConfig
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsConfig
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsConfig
+#[non_exhaustive] pub struct only_media::hls::HlsEncryption
+pub only_media::hls::HlsEncryption::keys: alloc::rcs::arc::Arc<dyn only_media::hls::KeyProvider>
+pub only_media::hls::HlsEncryption::rotate_every: u32
+impl only_media::hls::HlsEncryption
+pub fn only_media::hls::HlsEncryption::new(impl only_media::hls::KeyProvider) -> only_media::hls::HlsEncryption
+pub fn only_media::hls::HlsEncryption::rotate_every(self, u32) -> only_media::hls::HlsEncryption
+impl core::clone::Clone for only_media::hls::HlsEncryption
+pub fn only_media::hls::HlsEncryption::clone(&self) -> Self
+impl core::fmt::Debug for only_media::hls::HlsEncryption
+pub fn only_media::hls::HlsEncryption::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsEncryption
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsEncryption
+impl core::marker::Send for only_media::hls::HlsEncryption
+impl core::marker::Sync for only_media::hls::HlsEncryption
+impl core::marker::Unpin for only_media::hls::HlsEncryption
+#[non_exhaustive] pub struct only_media::hls::HlsKey
+pub only_media::hls::HlsKey::key: [u8; 16]
+pub only_media::hls::HlsKey::uri: core::option::Option<alloc::string::String>
+impl only_media::hls::HlsKey
+pub fn only_media::hls::HlsKey::new([u8; 16]) -> only_media::hls::HlsKey
+pub fn only_media::hls::HlsKey::with_uri([u8; 16], impl core::convert::Into<alloc::string::String>) -> only_media::hls::HlsKey
+impl core::clone::Clone for only_media::hls::HlsKey
+pub fn only_media::hls::HlsKey::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::HlsKey
+impl core::cmp::PartialEq for only_media::hls::HlsKey
+pub fn only_media::hls::HlsKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::hls::HlsKey
+pub fn only_media::hls::HlsKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hls::HlsKey
+impl core::marker::Send for only_media::hls::HlsKey
+impl core::marker::Sync for only_media::hls::HlsKey
+impl core::marker::Unpin for only_media::hls::HlsKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsKey
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsKey
 #[non_exhaustive] pub struct only_media::hls::Multivariant
 pub only_media::hls::Multivariant::audio: alloc::vec::Vec<only_media::hls::AudioRendition>
 pub only_media::hls::Multivariant::variants: alloc::vec::Vec<only_media::hls::Variant>
@@ -865,6 +900,19 @@ impl core::marker::Sync for only_media::hls::Multivariant
 impl core::marker::Unpin for only_media::hls::Multivariant
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Multivariant
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::Multivariant
+pub struct only_media::hls::RandomKeys(_)
+impl only_media::hls::RandomKeys
+pub fn only_media::hls::RandomKeys::new() -> core::io::error::Result<only_media::hls::RandomKeys>
+impl core::fmt::Debug for only_media::hls::RandomKeys
+pub fn only_media::hls::RandomKeys::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_media::hls::KeyProvider for only_media::hls::RandomKeys
+pub fn only_media::hls::RandomKeys::authorize(&self, &str, u64, &only_http::context::Context) -> bool
+pub fn only_media::hls::RandomKeys::key(&self, &str, u64) -> only_media::hls::HlsKey
+impl core::marker::Send for only_media::hls::RandomKeys
+impl core::marker::Sync for only_media::hls::RandomKeys
+impl core::marker::Unpin for only_media::hls::RandomKeys
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::RandomKeys
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::RandomKeys
 #[non_exhaustive] pub struct only_media::hls::Variant
 pub only_media::hls::Variant::audio_group: core::option::Option<alloc::string::String>
 pub only_media::hls::Variant::bandwidth: core::option::Option<u64>
@@ -884,6 +932,12 @@ impl core::marker::Sync for only_media::hls::Variant
 impl core::marker::Unpin for only_media::hls::Variant
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Variant
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::Variant
+pub trait only_media::hls::KeyProvider: core::marker::Send + core::marker::Sync + 'static
+pub fn only_media::hls::KeyProvider::authorize(&self, &str, u64, &only_http::context::Context) -> bool
+pub fn only_media::hls::KeyProvider::key(&self, &str, u64) -> only_media::hls::HlsKey
+impl only_media::hls::KeyProvider for only_media::hls::RandomKeys
+pub fn only_media::hls::RandomKeys::authorize(&self, &str, u64, &only_http::context::Context) -> bool
+pub fn only_media::hls::RandomKeys::key(&self, &str, u64) -> only_media::hls::HlsKey
 pub mod only_media::http
 pub struct only_media::http::MediaHttp
 impl only_media::http::MediaHttp
@@ -1221,6 +1275,118 @@ pub const only_media::mpegts::STREAM_MP2_AUDIO: u8
 pub const only_media::mpegts::STREAM_MP3: u8
 pub const only_media::mpegts::STREAM_PRIVATE: u8
 pub fn only_media::mpegts::crc32(&[u8]) -> u32
+pub mod only_media::record
+#[non_exhaustive] pub enum only_media::record::RecordFormat
+pub only_media::record::RecordFormat::Flv
+pub only_media::record::RecordFormat::Fmp4
+impl only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::extension(self) -> &'static str
+impl core::clone::Clone for only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::clone(&self) -> Self
+impl core::cmp::Eq for only_media::record::RecordFormat
+impl core::cmp::PartialEq for only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::default() -> Self
+impl core::fmt::Debug for only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::record::RecordFormat
+pub fn only_media::record::RecordFormat::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::record::RecordFormat
+impl core::marker::StructuralPartialEq for only_media::record::RecordFormat
+impl core::marker::Send for only_media::record::RecordFormat
+impl core::marker::Sync for only_media::record::RecordFormat
+impl core::marker::Unpin for only_media::record::RecordFormat
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::record::RecordFormat
+impl core::panic::unwind_safe::UnwindSafe for only_media::record::RecordFormat
+pub struct only_media::record::NoHooks
+impl core::clone::Clone for only_media::record::NoHooks
+pub fn only_media::record::NoHooks::clone(&self) -> Self
+impl core::default::Default for only_media::record::NoHooks
+pub fn only_media::record::NoHooks::default() -> Self
+impl core::fmt::Debug for only_media::record::NoHooks
+pub fn only_media::record::NoHooks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::record::NoHooks
+impl only_media::record::RecordHooks for only_media::record::NoHooks
+pub fn only_media::record::NoHooks::file_name(&self, &str, u64, std::time::SystemTime, &str) -> alloc::string::String
+pub fn only_media::record::NoHooks::on_remove(&self, &std::path::Path)
+pub fn only_media::record::NoHooks::on_start(&self, &only_media::record::RecordFile)
+pub fn only_media::record::NoHooks::on_stop(&self, &only_media::record::RecordFile, core::result::Result<(), &core::io::error::Error>)
+impl core::marker::Send for only_media::record::NoHooks
+impl core::marker::Sync for only_media::record::NoHooks
+impl core::marker::Unpin for only_media::record::NoHooks
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::record::NoHooks
+impl core::panic::unwind_safe::UnwindSafe for only_media::record::NoHooks
+#[non_exhaustive] pub struct only_media::record::RecordConfig
+pub only_media::record::RecordConfig::dir: std::path::PathBuf
+pub only_media::record::RecordConfig::flv: only_media::flv::EncoderConfig
+pub only_media::record::RecordConfig::format: only_media::record::RecordFormat
+pub only_media::record::RecordConfig::max_files: usize
+pub only_media::record::RecordConfig::max_queued_bytes: usize
+pub only_media::record::RecordConfig::segment_bytes: core::option::Option<u64>
+pub only_media::record::RecordConfig::segment_duration: core::option::Option<core::time::Duration>
+pub only_media::record::RecordConfig::wait: core::option::Option<core::time::Duration>
+impl only_media::record::RecordConfig
+pub fn only_media::record::RecordConfig::new(impl core::convert::Into<std::path::PathBuf>) -> only_media::record::RecordConfig
+impl core::clone::Clone for only_media::record::RecordConfig
+pub fn only_media::record::RecordConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_media::record::RecordConfig
+pub fn only_media::record::RecordConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::record::RecordConfig
+impl core::marker::Sync for only_media::record::RecordConfig
+impl core::marker::Unpin for only_media::record::RecordConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::record::RecordConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::record::RecordConfig
+#[non_exhaustive] pub struct only_media::record::RecordFile
+pub only_media::record::RecordFile::bytes: u64
+pub only_media::record::RecordFile::duration: core::time::Duration
+pub only_media::record::RecordFile::index: u64
+pub only_media::record::RecordFile::path: std::path::PathBuf
+pub only_media::record::RecordFile::started: std::time::SystemTime
+pub only_media::record::RecordFile::stream: alloc::string::String
+impl core::clone::Clone for only_media::record::RecordFile
+pub fn only_media::record::RecordFile::clone(&self) -> Self
+impl core::cmp::Eq for only_media::record::RecordFile
+impl core::cmp::PartialEq for only_media::record::RecordFile
+pub fn only_media::record::RecordFile::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::record::RecordFile
+pub fn only_media::record::RecordFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::record::RecordFile
+impl core::marker::Send for only_media::record::RecordFile
+impl core::marker::Sync for only_media::record::RecordFile
+impl core::marker::Unpin for only_media::record::RecordFile
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::record::RecordFile
+impl core::panic::unwind_safe::UnwindSafe for only_media::record::RecordFile
+pub struct only_media::record::Recorder(_)
+impl only_media::record::Recorder
+pub fn only_media::record::Recorder::active(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn only_media::record::Recorder::dropped(&self) -> u64
+pub fn only_media::record::Recorder::new(only_media::hub::Hub, only_media::record::RecordConfig) -> only_media::record::Recorder
+pub fn only_media::record::Recorder::queued_bytes(&self) -> usize
+pub fn only_media::record::Recorder::start(&self, &str) -> core::result::Result<(), only_media::hub::HubError>
+pub fn only_media::record::Recorder::stop(&self, &str) -> bool
+pub fn only_media::record::Recorder::stop_all(&self)
+pub fn only_media::record::Recorder::with_hooks(only_media::hub::Hub, only_media::record::RecordConfig, impl only_media::record::RecordHooks) -> only_media::record::Recorder
+impl core::clone::Clone for only_media::record::Recorder
+pub fn only_media::record::Recorder::clone(&self) -> Self
+impl core::fmt::Debug for only_media::record::Recorder
+pub fn only_media::record::Recorder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::record::Recorder
+impl core::marker::Sync for only_media::record::Recorder
+impl core::marker::Unpin for only_media::record::Recorder
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::record::Recorder
+impl !core::panic::unwind_safe::UnwindSafe for only_media::record::Recorder
+pub const only_media::record::DEFAULT_MAX_QUEUED_BYTES: usize
+pub trait only_media::record::RecordHooks: core::marker::Send + core::marker::Sync + 'static
+pub fn only_media::record::RecordHooks::file_name(&self, &str, u64, std::time::SystemTime, &str) -> alloc::string::String
+pub fn only_media::record::RecordHooks::on_remove(&self, &std::path::Path)
+pub fn only_media::record::RecordHooks::on_start(&self, &only_media::record::RecordFile)
+pub fn only_media::record::RecordHooks::on_stop(&self, &only_media::record::RecordFile, core::result::Result<(), &core::io::error::Error>)
+impl only_media::record::RecordHooks for only_media::record::NoHooks
+pub fn only_media::record::NoHooks::file_name(&self, &str, u64, std::time::SystemTime, &str) -> alloc::string::String
+pub fn only_media::record::NoHooks::on_remove(&self, &std::path::Path)
+pub fn only_media::record::NoHooks::on_start(&self, &only_media::record::RecordFile)
+pub fn only_media::record::NoHooks::on_stop(&self, &only_media::record::RecordFile, core::result::Result<(), &core::io::error::Error>)
 pub mod only_media::rtmp
 pub mod only_media::rtmp::chunk
 #[non_exhaustive] pub enum only_media::rtmp::chunk::ChunkError

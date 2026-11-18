@@ -1,4 +1,5 @@
-//! AES-128, AES-192 and AES-256 (FIPS 197) in constant time, and CTR mode (NIST SP 800-38A).
+//! AES-128, AES-192 and AES-256 (FIPS 197) in constant time, with CTR and CBC modes (NIST SP
+//! 800-38A; CBC with optional PKCS #7 padding).
 //!
 //! On x86_64 with AES-NI and on aarch64 with the ARMv8 AES instructions (detected at run time),
 //! the CPU's instructions do the work. Elsewhere the block cipher is the fixsliced software AES of
@@ -228,6 +229,102 @@ impl Aes {
         self.ctr_with(data, |i| c.wrapping_add(i).to_be_bytes());
     }
 
+    /// Encrypts `data` in place in CBC mode (SP 800-38A) chaining from `iv`, and leaves the last
+    /// ciphertext block in `iv`, so a long message can be encrypted in pieces. `data` must be a
+    /// whole number of blocks ([`Error::InvalidLength`] otherwise, and nothing is changed).
+    /// Each block depends on the one before, so this runs one block at a time (on the portable
+    /// path a block costs as much as four).
+    ///
+    /// CBC has no integrity: use it where a format calls for it (HLS `AES-128`, legacy
+    /// protocols), with a MAC or an AEAD for anything new.
+    pub fn encrypt_cbc(&self, iv: &mut [u8; 16], data: &mut [u8]) -> Result<(), Error> {
+        if data.len() % 16 != 0 {
+            return Err(Error::InvalidLength);
+        }
+        let mut prev = *iv;
+        for chunk in data.chunks_exact_mut(16) {
+            let mut b = [0u8; 16];
+            for ((o, d), p) in b.iter_mut().zip(chunk.iter()).zip(prev.iter()) {
+                *o = d ^ p;
+            }
+            self.encrypt_block(&mut b);
+            chunk.copy_from_slice(&b);
+            prev = b;
+        }
+        *iv = prev;
+        Ok(())
+    }
+
+    /// Decrypts `data` in place in CBC mode chaining from `iv` (four blocks at a time), and
+    /// leaves the last ciphertext block in `iv`. `data` must be a whole number of blocks
+    /// ([`Error::InvalidLength`] otherwise, and nothing is changed).
+    pub fn decrypt_cbc(&self, iv: &mut [u8; 16], data: &mut [u8]) -> Result<(), Error> {
+        if data.len() % 16 != 0 {
+            return Err(Error::InvalidLength);
+        }
+        let mut prev = *iv;
+        for chunk in data.chunks_mut(64) {
+            let mut b = [[0u8; 16]; 4];
+            let n = chunk.len() / 16;
+            for (dst, src) in b.iter_mut().zip(chunk.chunks_exact(16)) {
+                dst.copy_from_slice(src);
+            }
+            let out = self.dec4(&b);
+            for i in 0..n {
+                let x = if i == 0 { prev } else { b[i - 1] };
+                for (j, byte) in chunk[16 * i..16 * i + 16].iter_mut().enumerate() {
+                    *byte = out[i][j] ^ x[j];
+                }
+            }
+            prev = b[n - 1];
+        }
+        *iv = prev;
+        Ok(())
+    }
+
+    /// Encrypts `data` in CBC mode with PKCS #7 padding (1 to 16 bytes, so the output is
+    /// 1 to 16 bytes longer than `data`), appending the ciphertext to `out`.
+    pub fn encrypt_cbc_padded(&self, iv: &[u8; 16], data: &[u8], out: &mut Vec<u8>) {
+        let start = out.len();
+        let pad = 16 - data.len() % 16;
+        out.reserve(data.len() + pad);
+        out.extend_from_slice(data);
+        out.resize(start + data.len() + pad, pad as u8);
+        let mut iv = *iv;
+        // A whole number of blocks by construction.
+        let _ = self.encrypt_cbc(&mut iv, &mut out[start..]);
+    }
+
+    /// Decrypts PKCS #7-padded CBC ciphertext in place and truncates the padding. Fails with
+    /// [`Error::InvalidLength`] when `data` is not a whole, non-zero number of blocks and with
+    /// [`Error::Verification`] when the padding is malformed (then `data` holds the decrypted
+    /// blocks). The padding is checked in constant time, but CBC itself tells a peer that can
+    /// submit forged ciphertexts whether their padding was valid: never answer such a peer
+    /// differently for the two errors.
+    pub fn decrypt_cbc_padded(&self, iv: &[u8; 16], data: &mut Vec<u8>) -> Result<(), Error> {
+        if data.is_empty() {
+            return Err(Error::InvalidLength);
+        }
+        let mut iv = *iv;
+        self.decrypt_cbc(&mut iv, data)?;
+        let last: [u8; 16] = data[data.len() - 16..]
+            .try_into()
+            .map_err(|_| Error::InvalidLength)?;
+        let pad = last[15];
+        // bad != 0 when pad is 0 or above 16, or a padding byte differs.
+        let mut bad = u8::from(pad == 0) | u8::from(pad > 16);
+        for (i, &b) in last.iter().enumerate() {
+            // Positions 16 - pad .. 16 are padding.
+            let in_pad = u8::from(i + usize::from(pad) >= 16);
+            bad |= in_pad & u8::from(b != pad);
+        }
+        if bad != 0 {
+            return Err(Error::Verification);
+        }
+        data.truncate(data.len() - usize::from(pad));
+        Ok(())
+    }
+
     /// CTR with a 32-bit big-endian counter in the last four bytes (GCM's `inc32`).
     pub(crate) fn apply_ctr32(&self, counter: &[u8; 16], data: &mut [u8]) {
         let base = *counter;
@@ -398,5 +495,118 @@ mod tests {
         let mut b = [0u8; 16];
         aes.encrypt_block(&mut b);
         assert_eq!(a[16..32], b);
+    }
+
+    /// NIST SP 800-38A F.2.1-F.2.6 (CBC-AES128 and CBC-AES256), whole and in pieces, on both
+    /// paths; PKCS #7 padding checked against OpenSSL (`openssl enc -aes-128-cbc`).
+    #[test]
+    fn cbc_sp800_38a() {
+        let iv: [u8; 16] = unhex("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
+        let pt = unhex(
+            "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51\
+             30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+        );
+        for (key, ct) in [
+            (
+                "2b7e151628aed2a6abf7158809cf4f3c",
+                "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2\
+                 73bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7",
+            ),
+            (
+                "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4",
+                "f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d\
+                 39f23369a9d9bacfa530e26304231461b2eb05e2c39be9fcda6c19078c6a9d1b",
+            ),
+        ] {
+            let ct = unhex(ct);
+            for aes in [
+                Aes::new(&unhex(key)).unwrap(),
+                Aes::new_portable(&unhex(key)).unwrap(),
+            ] {
+                let mut d = pt.clone();
+                let mut v = iv;
+                aes.encrypt_cbc(&mut v, &mut d).unwrap();
+                assert_eq!(d, ct);
+                assert_eq!(v[..], ct[48..]);
+                // In pieces: the chaining value carries over.
+                let mut d = pt.clone();
+                let mut v = iv;
+                let (a, b) = d.split_at_mut(16);
+                aes.encrypt_cbc(&mut v, a).unwrap();
+                aes.encrypt_cbc(&mut v, b).unwrap();
+                assert_eq!(d, ct);
+                // Decryption, from one to four blocks at a time and across calls.
+                for split in [0, 16, 32, 48, 64] {
+                    let mut d = ct.clone();
+                    let mut v = iv;
+                    let (a, b) = d.split_at_mut(split);
+                    aes.decrypt_cbc(&mut v, a).unwrap();
+                    aes.decrypt_cbc(&mut v, b).unwrap();
+                    assert_eq!(d, pt);
+                    assert_eq!(v[..], ct[48..]);
+                }
+                let (mut odd, mut v) = ([0u8; 17], iv);
+                assert_eq!(aes.encrypt_cbc(&mut v, &mut odd), Err(Error::InvalidLength));
+                assert_eq!(aes.decrypt_cbc(&mut v, &mut odd), Err(Error::InvalidLength));
+                assert_eq!((odd, v), ([0; 17], iv));
+            }
+        }
+
+        let key = unhex("000102030405060708090a0b0c0d0e0f");
+        let iv: [u8; 16] = unhex("0f0e0d0c0b0a09080706050403020100")
+            .try_into()
+            .unwrap();
+        for aes in [Aes::new(&key).unwrap(), Aes::new_portable(&key).unwrap()] {
+            for (pt, ct) in [
+                (&b"abc"[..], "ba531ab49213c52f3ac482de024dedbb"),
+                (
+                    &b"hello world, HLS"[..],
+                    "313d36e0ed13b08797ffcc48637fb65dce4f89c718b34fe0fa5f5f71f28a1ef9",
+                ),
+            ] {
+                let mut out = vec![9];
+                aes.encrypt_cbc_padded(&iv, pt, &mut out);
+                assert_eq!(out[1..], unhex(ct)[..]);
+                let mut d = out[1..].to_vec();
+                aes.decrypt_cbc_padded(&iv, &mut d).unwrap();
+                assert_eq!(d, pt);
+            }
+            // Every length round-trips; damaged padding is refused.
+            let mut rng = crate::rand::ChaChaRng::from_seed([7; 32]);
+            for n in 0..70 {
+                let mut pt = vec![0u8; n];
+                rng.fill(&mut pt);
+                let mut ct = Vec::new();
+                aes.encrypt_cbc_padded(&iv, &pt, &mut ct);
+                assert_eq!(ct.len(), (n / 16 + 1) * 16);
+                let mut d = ct.clone();
+                aes.decrypt_cbc_padded(&iv, &mut d).unwrap();
+                assert_eq!(d, pt);
+                // Flipping the top bit of the byte before the last block flips that of the
+                // padding length, which then exceeds 16.
+                if ct.len() >= 32 {
+                    let mut bad = ct.clone();
+                    let at = bad.len() - 17;
+                    bad[at] ^= 0x80;
+                    assert_eq!(
+                        aes.decrypt_cbc_padded(&iv, &mut bad),
+                        Err(Error::Verification)
+                    );
+                }
+            }
+            assert_eq!(
+                aes.decrypt_cbc_padded(&iv, &mut Vec::new()),
+                Err(Error::InvalidLength)
+            );
+            let mut zero_pad = vec![0u8; 16];
+            let mut v = iv;
+            aes.encrypt_cbc(&mut v, &mut zero_pad).unwrap();
+            assert_eq!(
+                aes.decrypt_cbc_padded(&iv, &mut zero_pad),
+                Err(Error::Verification)
+            );
+        }
     }
 }

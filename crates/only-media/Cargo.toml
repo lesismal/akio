@@ -1,6 +1,6 @@
 [package]
 name = "only-media"
-description = "only streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS (MPEG-TS, fMP4, multivariant), WHIP/WHEP, RTMP/RTSP clients and a stream hub; H.264, H.265, VP8, VP9, AV1, AAC, Opus"
+description = "only streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS (MPEG-TS, fMP4, multivariant, AES-128), WHIP/WHEP, RTMP/RTSP clients, recording and a stream hub; H.264, H.265, VP8, VP9, AV1, AAC, Opus"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
