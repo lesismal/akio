@@ -21,7 +21,7 @@
 - proto2 的 group、extension（带类型的 `Extension` 常量、`ExtensionSet` 成员）、MessageSet、封闭枚举；
   edition 2023 与 2024 及其特性；自定义 option 与聚合值编码进描述符。每个包内嵌与 protoc 一致的
   `FILE_DESCRIPTOR_SET` 和 `descriptor_pool()`（用于反射、JSON、gRPC 服务端反射）；内置 `descriptor.proto`。
-- 不支持：文本格式。
+- 文本格式由运行时提供：`only_protobuf::text` 解析并打印生成的消息（ADR-030）。
 
 ```rust,ignore
 // build.rs

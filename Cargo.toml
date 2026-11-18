@@ -80,23 +80,15 @@ only-tls = { path = "crates/only-tls", version = "=1.0.0-rc.1" }
 only-http = { path = "crates/only-http", version = "=1.0.0-rc.1" }
 only-ws = { path = "crates/only-ws", version = "=1.0.0-rc.1" }
 only-quic = { path = "crates/only-quic", version = "=1.0.0-rc.1" }
-only-h3 = { path = "crates/only-h3", version = "=1.0.0-rc.1" }
 only-kcp = { path = "crates/only-kcp", version = "=1.0.0-rc.1" }
 only-grpc = { path = "crates/only-grpc", version = "=1.0.0-rc.1" }
-only-arpc = { path = "crates/only-arpc", version = "=1.0.0-rc.1" }
 only-protobuf = { path = "crates/only-protobuf", version = "=1.0.0-rc.1" }
 only-protobuf-build = { path = "crates/only-protobuf-build", version = "=1.0.0-rc.1" }
-only-socks = { path = "crates/only-socks", version = "=1.0.0-rc.1" }
-only-mux = { path = "crates/only-mux", version = "=1.0.0-rc.1" }
 only-ebpf = { path = "crates/only-ebpf", version = "=1.0.0-rc.1" }
 only-dpdk = { path = "crates/only-dpdk", version = "=1.0.0-rc.1" }
 only-turn = { path = "crates/only-turn", version = "=1.0.0-rc.1" }
 only-webrtc = { path = "crates/only-webrtc", version = "=1.0.0-rc.1" }
-only-media = { path = "crates/only-media", version = "=1.0.0-rc.1" }
-only-bittorrent = { path = "crates/only-bittorrent", version = "=1.0.0-rc.1" }
 only = { path = "crates/only", version = "=1.0.0-rc.1" }
-only-prefork = { path = "crates/only-prefork", version = "=1.0.0-rc.1" }
-only-export = { path = "crates/only-export", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -22,7 +22,7 @@ built in: no `protoc`, no `syn` / `quote`, no third-party crates.
   closed enums; editions 2023 and 2024 with their features; custom options and aggregates are
   encoded into the descriptors. Every package embeds `FILE_DESCRIPTOR_SET` and `descriptor_pool()`
   (reflection, JSON, gRPC server reflection), equal to protoc's; `descriptor.proto` is built in.
-- Not supported: text format.
+- The text format is in the runtime: `only_protobuf::text` parses and prints generated messages (ADR-030).
 
 ```rust,ignore
 // build.rs
