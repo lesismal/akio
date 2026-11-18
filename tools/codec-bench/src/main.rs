@@ -1,8 +1,9 @@
 //! Micro benchmarks of the in-house HTTP codecs against the crates they replaced:
 //! the HTTP/1 head parser (`only_ws::http1` vs httparse), HPACK (`only_http::hpack` vs
-//! loona-hpack) and the route constraint regexp engine (`only_http::re` vs regex).
+//! loona-hpack), the route constraint regexp engine (`only_http::re` vs regex) and only-log's
+//! message filter engine (`only_regex`, an unanchored search, vs regex).
 //!
-//! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex]`
+//! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex|logregex]`
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -240,8 +241,44 @@ fn regexp() {
     row("compile \\d{4}-\\d{2}-\\d{2}", ours, theirs, "regex");
 }
 
+fn logregex() {
+    println!("Message filter regexps (unanchored search, only-regex)");
+    let ascii = "2026-11-19T08:00:00Z conn 10.0.0.7:51234 closed: connection reset by peer after 15ms";
+    let utf8 = "2026-11-19T08:00:00Z conn « 10.0.0.7 » fermée : connexion réinitialisée après 15ms";
+    for (pattern, subject, what) in [
+        ("connection reset", ascii, "86 B"),
+        ("timeout|refused|unreachable", ascii, "86 B, no match"),
+        ("(?i)CONNECTION (reset|refused)", ascii, "86 B"),
+        (r"\b\d+ms\b", ascii, "86 B"),
+        (r"conn \d+\.\d+\.\d+\.\d+:\d+", ascii, "86 B"),
+        ("[ab]*a[ab]{12}c", ascii, "86 B, DFA capped"),
+        ("timeout|refused|unreachable", utf8, "UTF-8, no match"),
+        ("(?i)réinitialisée", utf8, "UTF-8"),
+    ] {
+        let ours_re = only_regex::Regex::new(pattern).unwrap();
+        let theirs_re = regex::Regex::new(pattern).unwrap();
+        assert_eq!(ours_re.is_match(subject), theirs_re.is_match(subject));
+        let ours = ns(1_000_000, || {
+            black_box(ours_re.is_match(black_box(subject)));
+        });
+        let theirs = ns(1_000_000, || {
+            black_box(theirs_re.is_match(black_box(subject)));
+        });
+        row(&format!("{pattern} ({what})"), ours, theirs, "regex");
+    }
+    for pattern in ["connection reset", "(?i)CONNECTION (reset|refused)", r"\b\d+ms\b"] {
+        let ours = ns(2_000, || {
+            black_box(only_regex::Regex::new(black_box(pattern)).unwrap());
+        });
+        let theirs = ns(2_000, || {
+            black_box(regex::Regex::new(black_box(pattern)).unwrap());
+        });
+        row(&format!("compile {pattern}"), ours, theirs, "regex");
+    }
+}
+
 fn main() {
-    // Optional filter: `http1`, `hpack`, `regex`.
+    // Optional filter: `http1`, `hpack`, `regex`, `logregex`.
     let only = std::env::args().nth(1).unwrap_or_default();
     if only.is_empty() || only == "http1" {
         http1();
@@ -251,5 +288,8 @@ fn main() {
     }
     if only.is_empty() || only == "regex" {
         regexp();
+    }
+    if only.is_empty() || only == "logregex" {
+        logregex();
     }
 }

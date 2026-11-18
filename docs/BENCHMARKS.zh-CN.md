@@ -1023,6 +1023,25 @@ permessage-deflate echo（客户端压缩 → 服务端解压 → 服务端压�
 | 路由正则 `[a-z0-9_-]{3,16}`，14 个字符 | 17.4 | regex 19.8 |
 | 编译 `\d{4}-\d{2}-\d{2}` | 2,185 | regex 112,199 |
 
+消息过滤正则（`codec-bench logregex`，`only-regex`，在 86 字节日志行上做非锚定搜索；2026-11-19）：
+
+| 操作 | only | regex |
+|---|---:|---:|
+| `connection reset`（字面量：`str::contains`） | 6.8 | 12.3 |
+| `timeout\|refused\|unreachable`，不匹配 | 92.7 | 16.0 |
+| `(?i)CONNECTION (reset\|refused)` | 69.0 | 85.8 |
+| `\b\d+ms\b` | 92.9 | 32.7 |
+| `conn \d+\.\d+\.\d+\.\d+:\d+` | 35.4 | 35.2 |
+| `timeout\|refused\|unreachable`，非 ASCII 行，不匹配 | 91.9 | 15.7 |
+| `(?i)réinitialisée`，非 ASCII 行 | 81.6 | 55.7 |
+| 编译 `connection reset` | 15,567 | 2,025 |
+| 编译 `(?i)CONNECTION (reset\|refused)` | 25,529 | 56,690 |
+| 编译 `\b\d+ms\b` | 99,455 | 39,273 |
+
+DFA 无论 ASCII 与否都约为每字符 1 ns；在 `regex` 的 SIMD 字面量查找适用的场景它更快。only-log 的
+`overhead` 基准：`Filter::matches` 无模式 7.1 ns，带 `/connection (reset|refused)` 匹配 72 字节消息 107 ns
+（含格式化）。
+
 头部解析器用安全代码每次扫描 8 字节（httparse 在 x86-64 上用 SSE4.2/AVX2）：完整头部为 httparse 的
 1.0–1.2 倍耗时，分段到达的头部快 2.2 倍。
 

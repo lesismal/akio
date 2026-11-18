@@ -1199,6 +1199,26 @@ A separate workspace, so httparse, loona-hpack and regex stay out of the librari
 | route regexp `[a-z0-9_-]{3,16}` on 14 chars | 17.4 | regex 19.8 |
 | compile `\d{4}-\d{2}-\d{2}` | 2,185 | regex 112,199 |
 
+Message filter regexps (`codec-bench logregex`, `only-regex`, unanchored search on an 86-byte log
+line; 2026-11-19):
+
+| Operation | only | regex |
+|---|---:|---:|
+| `connection reset` (literal: `str::contains`) | 6.8 | 12.3 |
+| `timeout\|refused\|unreachable`, no match | 92.7 | 16.0 |
+| `(?i)CONNECTION (reset\|refused)` | 69.0 | 85.8 |
+| `\b\d+ms\b` | 92.9 | 32.7 |
+| `conn \d+\.\d+\.\d+\.\d+:\d+` | 35.4 | 35.2 |
+| `timeout\|refused\|unreachable`, non-ASCII line, no match | 91.9 | 15.7 |
+| `(?i)réinitialisée`, non-ASCII line | 81.6 | 55.7 |
+| compile `connection reset` | 15,567 | 2,025 |
+| compile `(?i)CONNECTION (reset\|refused)` | 25,529 | 56,690 |
+| compile `\b\d+ms\b` | 99,455 | 39,273 |
+
+The DFA runs at about 1 ns per character, ASCII or not; `regex` is faster where its SIMD literal
+search applies. only-log's `overhead` bench: `Filter::matches` costs 7.1 ns without a pattern and
+107 ns with `/connection (reset|refused)` on a 72-byte message, formatting included.
+
 The head parser scans 8 bytes at a time in safe code (httparse uses SSE4.2/AVX2 on x86-64): within
 1.0–1.2× of httparse on whole heads, 2.2× faster on heads that arrive in pieces.
 

@@ -47,3 +47,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-041: In-house brotli and Zstandard, in certificate compression and HTTP](041-brotli-zstd.md) (accepted 2026-11-19)
 - [ADR-042: SCTP HEARTBEATs, peer restart, zero checksum and incoming reset requests](042-sctp-heartbeat-restart-zero-checksum.md) (accepted 2026-11-19)
 - [ADR-043: SRT rendezvous, AV1 in MPEG-TS, recording to MPEG-TS, HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.md) (accepted 2026-11-19)
+- [ADR-047: `/regex` message filters in only-log, on a new internal crate `only-regex`](047-log-regex-filters.md) (accepted 2026-11-19)

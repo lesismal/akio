@@ -571,6 +571,7 @@ dependencies = [
  "only-mux",
  "only-protobuf",
  "only-quic",
+ "only-regex",
  "only-rtp",
  "only-sctp",
  "only-socks",
@@ -691,6 +692,10 @@ dependencies = [
  "only-tls",
  "only-x509",
 ]
+
+[[package]]
+name = "only-regex"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-rtp"

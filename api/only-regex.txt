@@ -1,0 +1,44 @@
+pub mod only_regex
+pub struct only_regex::Error
+impl only_regex::Error
+pub fn only_regex::Error::message(&self) -> &'static str
+pub fn only_regex::Error::position(&self) -> usize
+impl core::clone::Clone for only_regex::Error
+pub fn only_regex::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_regex::Error
+impl core::cmp::PartialEq for only_regex::Error
+pub fn only_regex::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_regex::Error
+impl core::fmt::Debug for only_regex::Error
+pub fn only_regex::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_regex::Error
+pub fn only_regex::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_regex::Error
+impl core::marker::Send for only_regex::Error
+impl core::marker::Sync for only_regex::Error
+impl core::marker::Unpin for only_regex::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_regex::Error
+impl core::panic::unwind_safe::UnwindSafe for only_regex::Error
+pub struct only_regex::Regex
+impl only_regex::Regex
+pub fn only_regex::Regex::as_str(&self) -> &str
+pub fn only_regex::Regex::is_match(&self, &str) -> bool
+pub fn only_regex::Regex::is_match_fmt(&self, core::fmt::Arguments<'_>) -> bool
+pub fn only_regex::Regex::new(&str) -> core::result::Result<only_regex::Regex, only_regex::Error>
+impl core::clone::Clone for only_regex::Regex
+pub fn only_regex::Regex::clone(&self) -> Self
+impl core::cmp::Eq for only_regex::Regex
+impl core::cmp::PartialEq for only_regex::Regex
+pub fn only_regex::Regex::eq(&self, &only_regex::Regex) -> bool
+impl core::fmt::Debug for only_regex::Regex
+pub fn only_regex::Regex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_regex::Regex
+pub fn only_regex::Regex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::str::traits::FromStr for only_regex::Regex
+pub type only_regex::Regex::Err = only_regex::Error
+pub fn only_regex::Regex::from_str(&str) -> core::result::Result<only_regex::Regex, only_regex::Error>
+impl core::marker::Send for only_regex::Regex
+impl core::marker::Sync for only_regex::Regex
+impl core::marker::Unpin for only_regex::Regex
+impl core::panic::unwind_safe::RefUnwindSafe for only_regex::Regex
+impl core::panic::unwind_safe::UnwindSafe for only_regex::Regex

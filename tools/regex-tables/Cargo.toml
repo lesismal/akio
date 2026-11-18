@@ -1,0 +1,14 @@
+[package]
+name = "regex-tables"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Its own workspace (excluded from the root one): generates only-regex's Unicode tables
+# (`crates/only-regex/src/tables.rs`) from regex-syntax, the parser of the `regex` crate the
+# differential fuzz target compares only-regex with, so both use the same Unicode data.
+[workspace]
+
+[dependencies]
+regex-syntax = "=0.8.11"

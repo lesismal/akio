@@ -29,6 +29,7 @@ only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
 only-crypto = { path = "../crates/only-crypto" }
 only-log = { path = "../crates/only-log" }
+only-regex = { path = "../crates/only-regex", features = ["fuzzing"] }
 only-export = { path = "../crates/only-export", features = ["fuzzing"] }
 # Reference JSON parser for the OTLP/JSON target (export_otlp).
 serde_json = "1"
@@ -476,6 +477,13 @@ bench = false
 [[bin]]
 name = "regex_match"
 path = "fuzz_targets/regex_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regex_search"
+path = "fuzz_targets/regex_search.rs"
 test = false
 doc = false
 bench = false

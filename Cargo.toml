@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/only-sys",
+    "crates/only-regex",
     "crates/only-log",
     "crates/only-export",
     "crates/only-crypto",
@@ -44,9 +45,10 @@ members = [
     "tools/echo-bench",
     "tools/protobuf-test",
 ]
-# The cargo-fuzz project (nightly-only) and the codec micro benchmarks (which measure against
-# the third-party crates the libraries replaced) are their own workspaces.
-exclude = ["fuzz", "tools/codec-bench"]
+# The cargo-fuzz project (nightly-only), the codec micro benchmarks (which measure against
+# the third-party crates the libraries replaced) and only-regex's table generator (which reads
+# regex-syntax) are their own workspaces.
+exclude = ["fuzz", "tools/codec-bench", "tools/regex-tables"]
 
 [workspace.package]
 version = "1.0.0-rc.1"
@@ -63,6 +65,7 @@ homepage = "https://lesismal.github.io/only/"
 # exact (`=`): all crates are released in lockstep, and the internal crates (only-sys, -buf,
 # -timer, -pool, -epoll, -uring) may change their APIs in any release (docs/api-stability.md).
 only-sys = { path = "crates/only-sys", version = "=1.0.0-rc.1" }
+only-regex = { path = "crates/only-regex", version = "=1.0.0-rc.1" }
 only-log = { path = "crates/only-log", version = "=1.0.0-rc.1" }
 only-crypto = { path = "crates/only-crypto", version = "=1.0.0-rc.1" }
 only-x509 = { path = "crates/only-x509", version = "=1.0.0-rc.1" }

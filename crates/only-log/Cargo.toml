@@ -1,6 +1,6 @@
 [package]
 name = "only-log"
-description = "only's logging facade: levels, targets, structured key-values, a global logger and built-in stderr loggers, without dependencies"
+description = "only's logging facade: levels, targets, structured key-values, a global logger and built-in stderr loggers, without third-party dependencies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,8 @@ keywords = ["logging", "log", "structured", "facade"]
 categories = ["development-tools::debugging"]
 
 [dependencies]
+# The `/regex` message filters (ADR-047): the in-house linear-time engine.
+only-regex = { workspace = true }
 # Optional bridge to the `log` crate (feature `log`): records go to `log`'s logger while no
 # only-log logger is installed, `log` records can be routed into only-log, and the level types
 # convert both ways. Outside the semver promise (docs/api-stability.md).

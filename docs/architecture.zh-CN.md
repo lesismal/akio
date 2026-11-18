@@ -25,6 +25,7 @@ flowchart BT
     brotli["only-brotli<br/>brotli"]
     zstd["only-zstd<br/>Zstandard"]
     logc["only-log<br/>日志门面"]
+    regexc["only-regex<br/>线性时间正则"]
     pool["only-pool<br/>逻辑线程池"]
     core["only-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
     epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
@@ -49,6 +50,7 @@ flowchart BT
     buf --> core
     pool --> core
     logc --> core
+    regexc --> logc
     core --> epoll
     sys --> epoll
     timer --> epoll

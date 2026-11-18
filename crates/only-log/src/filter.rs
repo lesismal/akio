@@ -1,23 +1,34 @@
-//! Per-target level filters and their text syntax ([`Filter`], `ONLY_LOG=info,only_http=debug`).
+//! Per-target level filters and message filters, and their text syntax ([`Filter`],
+//! `ONLY_LOG=info,only_http=debug/regex`).
 
-use std::{error::Error, fmt, str::FromStr};
+use std::{borrow::Cow, error::Error, fmt, str::FromStr};
 
-use crate::{LevelFilter, Metadata};
+use only_regex::Regex;
+
+use crate::{LevelFilter, Metadata, Record};
 
 /// The environment variable [`init_from_env`](crate::init_from_env) and
 /// [`Filter::from_env`] read.
 pub const ENV_VAR: &str = "ONLY_LOG";
 
-/// A level per target, plus a level for every other target: what decides whether a record is
-/// written. Parsed from env_logger-style directives, or built with [`new`](Filter::new) and
-/// [`directive`](Filter::directive).
+/// A level per target, plus a level for every other target, and optionally a regular
+/// expression the message must match: what decides whether a record is written. Parsed from
+/// env_logger-style directives, or built with [`new`](Filter::new),
+/// [`directive`](Filter::directive) and [`message_regex`](Filter::message_regex).
 ///
 /// Syntax: comma-separated directives, each one of
 ///
 /// - `level`: the level of targets no other directive matches (`off`, `error`, `warn`, `info`,
 ///   `debug`, `trace`, any case);
 /// - `target=level`: the level of `target` and of its submodules (`target::...`);
-/// - `target`: `target` and its submodules at `trace`.
+/// - `target`: `target` and its submodules at `trace`;
+///
+/// then optionally `/regex`: only records whose formatted message matches `regex` anywhere are
+/// written (`info,only_http=debug/connection (reset|refused)`). Everything after the first `/`
+/// is the pattern, as written (commas and spaces included); an empty one filters nothing. The
+/// syntax is the `regex` crate's minus captures, look-around and Unicode classes (`\d` `\w`
+/// `\s` are Unicode-aware, `(?i)` folds case, `\b` is a word boundary); matching takes time
+/// linear in the message whatever the pattern (the in-house `only-regex` engine).
 ///
 /// ```
 /// use only_log::{Filter, Level, LevelFilter, Metadata};
@@ -33,15 +44,33 @@ pub const ENV_VAR: &str = "ONLY_LOG";
 /// assert_eq!(f.max_level(), LevelFilter::Trace); // what the global maximum must let through
 /// ```
 ///
+/// ```
+/// use only_log::{Filter, Level, Record};
+///
+/// let f: Filter = "warn/(?i)timed? ?out|refused".parse().unwrap();
+/// let rec = |l, msg: std::fmt::Arguments<'_>| f.matches(&Record::new(l, "app", msg));
+/// assert!(rec(Level::Warn, format_args!("upstream {} Timed out", 3)));
+/// assert!(!rec(Level::Warn, format_args!("upstream {} slow", 3)));
+/// assert!(!rec(Level::Info, format_args!("connection refused"))); // below the level
+/// assert_eq!(f.message_pattern(), Some("(?i)timed? ?out|refused"));
+/// ```
+///
+/// [`enabled`](Filter::enabled) checks the levels only (a logger's `enabled` is asked before
+/// there is a message); [`matches`](Filter::matches) checks the message too, and
+/// [`FmtLogger`](crate::FmtLogger) applies the pattern to the message it formatted for the line,
+/// so a message filter formats nothing twice. A filter without a pattern costs nothing extra.
+///
 /// Differences from env_logger: a target matches itself and `target::...` only (`only` does
 /// not match `only_http`; env_logger matches any string prefix), the most specific (longest)
-/// matching target wins whatever the order, and a `/regex` message filter is rejected. Without
-/// a bare `level`, targets no directive names are off, as with env_logger. When a directive
-/// repeats a target (or a bare level appears twice), the last one wins.
+/// matching target wins whatever the order, and the pattern may contain `/` (env_logger
+/// rejects a second `/`). Without a bare `level`, targets no directive names are off, as with
+/// env_logger. When a directive repeats a target (or a bare level appears twice), the last one
+/// wins.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Filter {
     default: LevelFilter,
     targets: Vec<(String, LevelFilter)>,
+    message: Option<Regex>,
 }
 
 impl Default for Filter {
@@ -57,6 +86,7 @@ impl Filter {
         Filter {
             default,
             targets: Vec::new(),
+            message: None,
         }
     }
 
@@ -77,6 +107,42 @@ impl Filter {
     pub fn default_level(mut self, level: LevelFilter) -> Filter {
         self.default = level;
         self
+    }
+
+    /// Only records whose formatted message matches `pattern` anywhere pass
+    /// [`matches`](Filter::matches) (the `/regex` part of the directives; see [`Filter`] for the
+    /// syntax). An empty pattern removes the message filter.
+    pub fn message_regex(mut self, pattern: &str) -> Result<Filter, ParseFilterError> {
+        self.message = if pattern.is_empty() {
+            None
+        } else {
+            Some(Regex::new(pattern).map_err(|e| ParseFilterError {
+                directive: format!("/{pattern}"),
+                reason: Cow::Owned(format!("invalid message regex: {e}")),
+            })?)
+        };
+        Ok(self)
+    }
+
+    /// The message filter's pattern, if there is one.
+    pub fn message_pattern(&self) -> Option<&str> {
+        self.message.as_ref().map(Regex::as_str)
+    }
+
+    /// Whether a record passes: its level within [`level_for`](Filter::level_for) its target,
+    /// and its message matching the message filter if there is one (the message is formatted
+    /// into the matcher piece by piece, not into a string).
+    pub fn matches(&self, record: &Record<'_>) -> bool {
+        self.enabled(record.metadata())
+            && self
+                .message
+                .as_ref()
+                .is_none_or(|re| re.is_match_fmt(*record.args()))
+    }
+
+    /// The message filter, for loggers that match the text they formatted themselves.
+    pub(crate) fn message_filter(&self) -> Option<&Regex> {
+        self.message.as_ref()
     }
 
     /// Parses the directives in the environment variable `var` (`ONLY_LOG` is [`ENV_VAR`]):
@@ -133,17 +199,16 @@ impl Filter {
 impl FromStr for Filter {
     type Err = ParseFilterError;
 
-    /// Parses `info,only_http=debug,...` (see [`Filter`]). With no bare level, targets that no
-    /// directive names are off.
+    /// Parses `info,only_http=debug,.../regex` (see [`Filter`]). With no bare level, targets
+    /// that no directive names are off.
     fn from_str(s: &str) -> Result<Filter, ParseFilterError> {
         let mut f = Filter::new(LevelFilter::Off);
-        for d in s.split(',').map(str::trim).filter(|d| !d.is_empty()) {
-            if d.contains('/') {
-                return Err(ParseFilterError::new(
-                    d,
-                    "message filters (`/regex`) are not supported",
-                ));
-            }
+        let (directives, pattern) = s.split_once('/').unwrap_or((s, ""));
+        for d in directives
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
             match d.split_once('=') {
                 Some((t, l)) => {
                     let t = t.trim();
@@ -162,7 +227,7 @@ impl FromStr for Filter {
                 },
             }
         }
-        Ok(f)
+        f.message_regex(pattern)
     }
 }
 
@@ -181,6 +246,9 @@ impl fmt::Display for Filter {
         for (t, l) in &self.targets {
             write!(f, ",{t}={}", l.as_str().to_ascii_lowercase())?;
         }
+        if let Some(re) = &self.message {
+            write!(f, "/{re}")?;
+        }
         Ok(())
     }
 }
@@ -189,18 +257,18 @@ impl fmt::Display for Filter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseFilterError {
     directive: String,
-    reason: &'static str,
+    reason: Cow<'static, str>,
 }
 
 impl ParseFilterError {
     fn new(directive: &str, reason: &'static str) -> ParseFilterError {
         ParseFilterError {
             directive: directive.to_owned(),
-            reason,
+            reason: Cow::Borrowed(reason),
         }
     }
 
-    /// The directive that failed.
+    /// The directive that failed (`/pattern` for an invalid message regex).
     pub fn directive(&self) -> &str {
         &self.directive
     }
@@ -266,7 +334,15 @@ mod tests {
             ",,".parse::<Filter>().unwrap().max_level(),
             LevelFilter::Off
         );
-        for bad in ["a=loud", "=info", "info/foo", "a b", "a=info=x"] {
+        for bad in [
+            "a=loud",
+            "=info",
+            "a b",
+            "a=info=x",
+            "info/(",
+            "info/a{2,1}",
+            "x y/a",
+        ] {
             let e = bad.parse::<Filter>().unwrap_err();
             assert!(
                 e.to_string().contains("invalid log directive"),
@@ -279,6 +355,63 @@ mod tests {
         assert!(!on(&f, Level::Error, "x::y"));
         let f = f.default_level(LevelFilter::Warn);
         assert_eq!(f.level_for("z"), LevelFilter::Warn);
+    }
+
+    #[test]
+    fn message_regex() {
+        let f: Filter = r"info,only_http=debug/conn(ection)? (reset|refused), code=\d+/x"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            f.message_pattern(),
+            Some(r"conn(ection)? (reset|refused), code=\d+/x")
+        );
+        assert_eq!(f.default_level_filter(), LevelFilter::Info);
+        assert_eq!(f.level_for("only_http::server"), LevelFilter::Debug);
+        let rec = |l, t, m: fmt::Arguments<'_>| f.matches(&Record::new(l, t, m));
+        assert!(rec(
+            Level::Info,
+            "app",
+            format_args!("peer {}: conn reset, code={}/x", "10.0.0.7", 104)
+        ));
+        assert!(!rec(
+            Level::Info,
+            "app",
+            format_args!("peer {}: conn reset, code=?/x", "10.0.0.7")
+        ));
+        assert!(!rec(
+            Level::Debug,
+            "app",
+            format_args!("connection refused, code=1/x")
+        ));
+        assert!(rec(
+            Level::Debug,
+            "only_http::server",
+            format_args!("connection refused, code=1/x")
+        ));
+        // `enabled` sees levels only.
+        assert!(on(&f, Level::Info, "app"));
+        // Round trip; equality compares the pattern text.
+        assert_eq!(f.to_string().parse::<Filter>().unwrap(), f);
+        assert_ne!(f.clone().message_regex("x").unwrap(), f);
+        // An empty pattern is no message filter; a pattern alone leaves every level off.
+        let f: Filter = "debug/".parse().unwrap();
+        assert_eq!(f.message_pattern(), None);
+        assert_eq!(f, Filter::new(LevelFilter::Debug));
+        let f: Filter = "/^GET ".parse().unwrap();
+        assert_eq!(f.max_level(), LevelFilter::Off);
+        let f = Filter::default().message_regex("(?i)^get ").unwrap();
+        assert!(f.matches(&Record::new(Level::Trace, "a", format_args!("Get /"))));
+        assert!(!f.matches(&Record::new(Level::Trace, "a", format_args!("POST /"))));
+        let f = f.message_regex("").unwrap();
+        assert_eq!(f.message_pattern(), None);
+        // Errors name the pattern and where it fails.
+        let e = "info/a(b".parse::<Filter>().unwrap_err();
+        assert_eq!(e.directive(), "/a(b");
+        assert_eq!(
+            e.to_string(),
+            "invalid log directive `/a(b`: invalid message regex: unclosed group at byte 3"
+        );
     }
 
     #[test]

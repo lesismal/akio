@@ -2,8 +2,8 @@
 
 [中文](README.zh-CN.md)
 
-The logging facade of [`only`](https://github.com/lesismal/only), without dependencies
-(`#![forbid(unsafe_code)]`). `only` re-exports it as `only::log`. It replaces the `log` crate
+The logging facade of [`only`](https://github.com/lesismal/only), without third-party
+dependencies (`#![forbid(unsafe_code)]`). `only` re-exports it as `only::log`. It replaces the `log` crate
 in every `only` library; an optional bridge keeps `log`-based setups (env_logger,
 `tracing-log` ...) working.
 
@@ -24,7 +24,12 @@ in every `only` library; an optional bridge keeps `log`-based setups (env_logger
 - `Filter`: per-target levels from env_logger-style directives; `init_from_env(default)` reads
   `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` once and installs `FmtLogger` with it
   (opt-in: nothing reads the environment otherwise). Targets match on `::` boundaries, the most
-  specific wins, `/regex` filters are not supported.
+  specific wins. A trailing `/regex` keeps only the records whose message matches it
+  (`ONLY_LOG=info,only_http=debug/connection (reset|refused)`, env_logger's syntax; everything
+  after the first `/` is the pattern). The engine is the in-house `only-regex` (Unicode
+  `\d \w \s`, `(?i)`, `\b`, no backtracking, time linear in the message); `FmtLogger` matches the
+  message it already formatted for the line, `Filter::matches` streams the message into the
+  matcher without building a string, and a filter without a pattern costs nothing extra.
 - Compile-time caps, as in the `log` crate: features `max_level_off` .. `max_level_trace` and
   `release_max_level_*` compile statements above the cap out (`STATIC_MAX_LEVEL`). For
   applications only (cargo unifies features across the dependency graph).
@@ -70,6 +75,8 @@ The two directions never loop. The feature follows `log` 0.4 and is outside the 
 | `trace!` with 2 key-values, level disabled | 0.25-0.29 | 0.36-0.37 |
 | `log_enabled!`, disabled | 0.25 | 0.25 |
 | `info!` with 2 key-values, enabled, logger discards | 2.3 | 3.0 |
+| `Filter::matches`, no message regex | 4.9 | |
+| `Filter::matches` with `/connection (reset\|refused)`, 72-byte message (formatting included) | 120 | |
 
 With the `log` feature and no only-log logger installed, the disabled check also reads
 `log::max_level()` (about 0.5 ns). The compile-time cap adds nothing when no cap feature is on

@@ -686,6 +686,7 @@ name = "only-log"
 version = "1.0.0-rc.1"
 dependencies = [
  "log",
+ "only-regex",
 ]
 
 [[package]]
@@ -746,6 +747,10 @@ dependencies = [
  "only-tls",
  "only-x509",
 ]
+
+[[package]]
+name = "only-regex"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-rtp"
