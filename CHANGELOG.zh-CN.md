@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据（only-dtls）
+
+ADR-045（docs/adr/045-dtls13-cid-updates-pha-early-data.zh-CN.md），均为新增且默认关闭：
+
+- **连接 ID 更新**（RFC 9147 §9）：`Connection::new_connection_ids(count, immediate)`
+  （NewConnectionId）、`request_connection_ids(n)`（RequestConnectionId，对端自动答复）、
+  `rotate_connection_id()`、`spare_connection_ids()`、`local_connection_ids()`、
+  `peer_connection_id()`；最多 8 个有效 CID，对端改用更新的 CID 后旧 CID 退役，
+  `Event::LocalConnectionIds` 报告监听方应路由的集合。`AlertDescription::TooManyCidsRequested`。
+- **握手后客户端认证**（RFC 8446 §4.6.2）：`Config::with_post_handshake_auth`（客户端）、
+  `Connection::request_client_certificate` 与 `Event::ClientCertificate`（服务端）。
+- **早期数据（0-RTT）**，基于票据：`Config::with_early_data(max)`、`Config::with_anti_replay`、
+  `AntiReplayStore` / `MemoryAntiReplay`（记录 binder 并检查票据年龄新鲜度）、
+  `Connection::send_early_data`、`Session::max_early_data`、`Event::EarlyData`、
+  `HandshakeInfo::early_data`。早期数据被接受的 ClientHello 跳过 HelloRetryRequest cookie 交换。
+- `Error::NotAvailable`：连接未协商或尚不具备条件的操作。
+- 握手后 flight（NewSessionTicket、KeyUpdate 与新消息）共用一个队列。
+- 测试 `tests/dtls13_post.rs`；fuzz 目标 `dtls_post_handshake`；与 wolfSSL 5.8.4 互通（双向早期数据
+  与握手后认证；互通镜像现以 `--enable-earlydata --enable-postauth` 构建 wolfSSL，镜像名由
+  `DTLS_INTEROP_IMAGE` 指定）；示例 `dtls-hs-bench`（每秒握手数、DTLS 1.3 记录）。非 ECDHE 密钥交换与
+  CBC 套件有意不做（README、ADR-045）。
+
 ### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（only-webrtc、only-rtp）
 
 ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认关闭（默认对端的 SDP 不变）：

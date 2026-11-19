@@ -98,8 +98,33 @@ DTLS 1.3, connection IDs, resumption and PSKs (ADR-021):
 - PSKs: `Config::with_psks`; `TLS_PSK_WITH_*` and `TLS_ECDHE_PSK_WITH_*` AEAD suites in
   DTLS 1.2, external PSKs (SHA-256) in DTLS 1.3.
 
-Not implemented: DTLS 1.3 0-RTT, NewConnectionId / RequestConnectionId, post-handshake client
-authentication, non-ECDHE certificate key exchanges, CBC suites.
+After the handshake and before it (DTLS 1.3, ADR-045):
+
+- Connection ID updates (RFC 9147 §9): `Connection::new_connection_ids(count, immediate)`
+  (NewConnectionId, `cid_immediate` or `cid_spare`, at most 8 live CIDs),
+  `request_connection_ids(n)` (RequestConnectionId; requests from the peer are answered at
+  once), `rotate_connection_id()` to switch to a spare CID of the peer's (for example after an
+  address change), `spare_connection_ids()`. CIDs we issued retire once the peer sends with a
+  later one; `local_connection_ids()` and `Event::LocalConnectionIds` give a listener the exact
+  set to route to the connection.
+- Post-handshake client authentication (RFC 8446 §4.6.2): a client with
+  `Config::with_post_handshake_auth(true)` offers it and answers with its identity (or an empty
+  certificate); a server calls `Connection::request_client_certificate()` and gets
+  `Event::ClientCertificate(chain)`, checked by the `PeerVerifier`.
+- Early data (0-RTT): `Config::with_early_data(max)` (off by default, needs resumption). A
+  server announces `max` in its tickets and accepts early data from a fresh ticket under the
+  ticket's suite, without a HelloRetryRequest (a ClientHello whose early data is accepted skips
+  the cookie exchange), once per ClientHello (an `AntiReplayStore` records binders;
+  `MemoryAntiReplay` by default, `Config::with_anti_replay` to share one); it arrives as
+  `Event::EarlyData` before `Connected`. A client resuming such a session sends it with
+  `Connection::send_early_data`; `HandshakeInfo::early_data` says whether it was accepted.
+  Early data can be replayed: idempotent requests only.
+
+Not implemented, on purpose: non-ECDHE certificate key exchanges (static RSA, DHE) and CBC
+suites. They lack forward secrecy or use MAC-then-encrypt records (padding oracles); RFC 9325
+recommends ECDHE with AEAD only, RFC 8827 requires it for WebRTC, and every peer we
+interoperate with negotiates ECDHE AEAD suites, so they would add attack surface for no
+peer (ADR-045).
 
 ## Testing
 
@@ -133,4 +158,21 @@ authentication, non-ECDHE certificate key exchanges, CBC suites.
   PSK suites both ways.
 - Fuzzing: targets `dtls_record` (record splitter, fragment and message parsers, re-encoding)
   and `dtls_handshake` (arbitrary datagrams into client and server state machines mid-handshake
-  and connected) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.
+  and connected) and `dtls_post_handshake` (arbitrary post-handshake messages into connected
+  DTLS 1.3 ends running CID, KeyUpdate and authentication flights; arbitrary early data and
+  datagrams at a server accepting 0-RTT) in `fuzz/`; `fuzzing::tests` replays their corpora on
+  stable.
+- Connection ID updates, post-handshake authentication and early data (`tests/dtls13_post.rs`):
+  NewConnectionId spare and immediate, RequestConnectionId both ways up to the 8-CID limit,
+  rotation through every spare with retirement of the old CIDs, over lossy links; refusals
+  without CIDs, with zero-length CIDs and in DTLS 1.2. Post-handshake authentication twice
+  per connection with KeyUpdates in between (ECDSA and RSA clients, lossy links), declined,
+  refused by the verifier, not offered. Early data accepted (cookies on, lossy link, before
+  `Connected`), its size limit, a replayed ClientHello (resumed without early data), a shared
+  anti-replay store across two servers; rejected by a server without early data, for a stale
+  ticket age, after a HelloRetryRequest, by a failing or full store.
+- Interop for ADR-045 (`dtls13.sh`): wolfSSL 5.8.4 early data both ways (its client `-r -0`
+  accepted with cookies on and off; its server `-r -0 -J n` reads ours, its default
+  HelloRetryRequest cookie rejects it), post-handshake authentication both ways (wolfSSL `-Q`).
+  Neither OpenSSL 4.1 nor wolfSSL implements NewConnectionId / RequestConnectionId; the script
+  checks rotation between two only-dtls ends over UDP. GnuTLS has no RFC 9146 CIDs.

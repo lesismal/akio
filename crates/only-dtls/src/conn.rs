@@ -66,6 +66,11 @@ pub struct HandshakeInfo {
     pub local_connection_id: Option<Vec<u8>>,
     /// The connection ID we put in the records we send.
     pub peer_connection_id: Option<Vec<u8>>,
+    /// DTLS 1.3: whether the server accepted the client's early data (0-RTT,
+    /// [`Config::with_early_data`]). A client whose early data was rejected sends it again
+    /// with [`Connection::send_application_data`](crate::Connection::send_application_data)
+    /// if it still needs to.
+    pub early_data: bool,
 }
 
 /// What [`Connection::poll_event`](crate::Connection::poll_event) reports.
@@ -82,6 +87,24 @@ pub enum Event {
     /// [`Connection::client_resume`](crate::Connection::client_resume) can resume later (a
     /// DTLS 1.2 session ID or ticket at connect, each DTLS 1.3 NewSessionTicket).
     NewSession(Box<Session>),
+    /// Server, DTLS 1.3: a record of early data (0-RTT, [`Config::with_early_data`]) from the
+    /// client, before [`Event::Connected`]. Unlike [`Event::ApplicationData`] it may be a
+    /// replay of a record sent on another connection (to this server before the
+    /// anti-replay record forgot it, or to a server not sharing it): act only on idempotent
+    /// requests.
+    EarlyData(Vec<u8>),
+    /// Server, DTLS 1.3: the client answered
+    /// [`Connection::request_client_certificate`](crate::Connection::request_client_certificate)
+    /// (post-handshake authentication) with this certificate chain (DER, leaf first), checked
+    /// by the [`PeerVerifier`](crate::PeerVerifier) and with possession of its key proven;
+    /// empty when the client declined. [`HandshakeInfo::peer_certificates`] then reports it.
+    ClientCertificate(Vec<Vec<u8>>),
+    /// DTLS 1.3 with connection IDs: the set of CIDs this connection now accepts changed
+    /// (new ones issued with [`Connection::new_connection_ids`](crate::Connection::new_connection_ids)
+    /// or at the peer's RequestConnectionId, older ones retired once the peer moved past
+    /// them). A listener routing by [`connection_id`](crate::connection_id) maps exactly
+    /// these to this connection.
+    LocalConnectionIds(Vec<Vec<u8>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +447,17 @@ impl Conn12 {
     /// The CID the peer puts in records to us, once negotiated.
     pub(crate) fn local_cid(&self) -> Option<&[u8]> {
         self.peer_cid.as_ref().and(self.local_cid.as_deref())
+    }
+
+    pub(crate) fn local_cids(&self) -> &[Vec<u8>] {
+        match (&self.peer_cid, &self.local_cid) {
+            (Some(_), Some(c)) if !c.is_empty() => std::slice::from_ref(c),
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn peer_cid(&self) -> Option<&[u8]> {
+        self.peer_cid.as_deref()
     }
 
     /// The next datagram to send.
@@ -984,6 +1018,7 @@ impl Conn12 {
             psk_identity: self.psk.as_ref().map(|(id, _)| id.clone()),
             local_connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
             peer_connection_id: self.peer_cid.clone(),
+            early_data: false,
         };
         self.info = Some(info.clone());
         self.events.push_back(Event::Connected(Box::new(info)));
@@ -1005,6 +1040,7 @@ impl Conn12 {
             lifetime: u32::try_from(self.config.ticket_lifetime.as_secs()).unwrap_or(u32::MAX),
             age_add: 0,
             peer_chain: self.peer_chain.clone(),
+            max_early_data: 0,
         })
     }
 

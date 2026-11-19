@@ -56,6 +56,8 @@ pub fn record(data: &[u8]) {
         hs::NEW_SESSION_TICKET,
         hs::ENCRYPTED_EXTENSIONS,
         hs::KEY_UPDATE,
+        hs::NEW_CONNECTION_ID,
+        hs::REQUEST_CONNECTION_ID,
     ] {
         parse_message(t, data);
     }
@@ -115,6 +117,15 @@ fn parse_message(t: u8, body: &[u8]) {
         hs::KEY_UPDATE => {
             let _ = hs::parse_key_update(body);
         }
+        hs::NEW_CONNECTION_ID => {
+            if let Ok((cids, usage)) = hs::parse_new_connection_id(body) {
+                let again = hs::encode_new_connection_id(&cids, usage);
+                assert!(hs::parse_new_connection_id(&again).ok() == Some((cids, usage)));
+            }
+        }
+        hs::REQUEST_CONNECTION_ID => {
+            let _ = hs::parse_request_connection_id(body);
+        }
         _ => {}
     }
 }
@@ -171,6 +182,8 @@ pub fn handshake(data: &[u8]) {
             .with_connection_id(Some(4))
             .with_session_resumption(true)
             .with_psks(psk.iter().cloned().collect())
+            .with_post_handshake_auth(true)
+            .with_early_data(512)
     };
     let mut clients = vec![client];
     if let Ok(c) = Connection::client(Arc::new(v13((*client_cfg).clone())), now) {
@@ -233,6 +246,10 @@ pub fn handshake(data: &[u8]) {
         }
         assert!(c.is_connected() && s.is_connected());
         let _ = c.update_keys(true);
+        let _ = s.new_connection_ids(2, false);
+        let _ = c.request_connection_ids(2);
+        let _ = s.request_client_certificate();
+        let _ = c.rotate_connection_id();
         for d in datagrams(data) {
             let _ = c.handle_datagram(start, d);
             let _ = s.handle_datagram(start, d);
@@ -241,6 +258,130 @@ pub fn handshake(data: &[u8]) {
         }
         let _ = c.send_application_data(data);
     }
+}
+
+/// Client, server, the session the client got, client and server configurations.
+type Connected13 = (
+    Connection,
+    Connection,
+    Option<crate::Session>,
+    Arc<Config>,
+    Arc<Config>,
+);
+
+/// Two connected DTLS 1.3 ends (connection IDs, post-handshake authentication offered,
+/// resumption with early data) and the session the client got.
+fn connected13(start: Instant) -> Option<Connected13> {
+    let (a, b) = identities();
+    let key = crate::TicketKey::from_secret(&[1; 32]).ok()?;
+    let common = |c: Config| {
+        c.with_versions(vec![Version::Dtls13])
+            .with_connection_id(Some(4))
+            .with_session_resumption(true)
+            .with_early_data(256)
+            .with_mtu(256)
+    };
+    let sc = Arc::new(
+        common(Config::new(a.clone()))
+            .with_require_client_certificate(false)
+            .with_ticket_key(key),
+    );
+    let cc = Arc::new(common(Config::new(b.clone())).with_post_handshake_auth(true));
+    let mut c = Connection::client(cc.clone(), start).ok()?;
+    let mut s = Connection::new(sc.clone(), Role::Server, start, b"peer").ok()?;
+    let mut session = None;
+    for _ in 0..8 {
+        pump(&mut c, &mut s, start);
+        while let Some(e) = c.poll_event() {
+            if let crate::Event::NewSession(x) = e {
+                session = Some(*x);
+            }
+        }
+    }
+    (c.is_connected() && s.is_connected()).then_some((c, s, session, cc, sc))
+}
+
+/// Delivers what each side sends to the other, a few rounds.
+fn pump(c: &mut Connection, s: &mut Connection, now: Instant) {
+    for _ in 0..4 {
+        while let Some(d) = c.poll_transmit() {
+            let _ = s.handle_datagram(now, &d);
+        }
+        while let Some(d) = s.poll_transmit() {
+            let _ = c.handle_datagram(now, &d);
+        }
+    }
+}
+
+/// `dtls_post_handshake`: arbitrary DTLS 1.3 post-handshake messages (each `[to_server: u8,
+/// type: u8, length: u16, body]`) processed as if they arrived decrypted at a connected client
+/// or server (NewConnectionId, RequestConnectionId, CertificateRequest, Certificate,
+/// CertificateVerify, Finished, KeyUpdate, NewSessionTicket and anything else), with the real
+/// post-handshake flights (CID requests, post-handshake authentication, KeyUpdates) running
+/// between them; then the input as early data and as a ClientHello's datagrams to a server
+/// accepting 0-RTT. Never panics.
+pub fn post_handshake(data: &[u8]) {
+    let start = Instant::now();
+    let Some((mut c, mut s, session, cc, sc)) = connected13(start) else {
+        return;
+    };
+    let mut now = start;
+    let mut rest = data;
+    let mut i = 0u32;
+    while rest.len() >= 4 {
+        let (to_server, ty) = (rest[0] & 1 == 1, rest[1]);
+        let n = usize::from(u16::from_be_bytes([rest[2], rest[3]])).min(rest.len() - 4);
+        let body = &rest[4..4 + n];
+        rest = &rest[4 + n..];
+        i += 1;
+        match rest.len() % 5 {
+            0 => {
+                let _ = s.request_client_certificate();
+            }
+            1 => {
+                let _ = c.request_connection_ids(3);
+            }
+            2 => {
+                let _ = s.new_connection_ids(1, i % 2 == 0);
+            }
+            3 => {
+                let _ = c.update_keys(i % 3 == 0);
+            }
+            _ => {
+                let _ = c.rotate_connection_id();
+            }
+        }
+        let target = if to_server { &mut s } else { &mut c };
+        let _ = target.fuzz_message(now, ty, body);
+        pump(&mut c, &mut s, now);
+        now += Duration::from_millis(700);
+        let _ = c.handle_timeout(now);
+        let _ = s.handle_timeout(now);
+        while c.poll_event().is_some() {}
+        while s.poll_event().is_some() {}
+        let _ = c.local_connection_ids();
+        let _ = s.spare_connection_ids();
+        let _ = s.handshake_info();
+    }
+    // 0-RTT: the input as early data, then as the datagrams following a ClientHello.
+    let Some(session) = session else { return };
+    let Ok(mut c) = Connection::client_resume(cc, start, &session) else {
+        return;
+    };
+    for chunk in data.chunks(200).take(4) {
+        let _ = c.send_early_data(chunk);
+    }
+    let Ok(mut s) = Connection::new(sc, Role::Server, start, b"peer") else {
+        return;
+    };
+    while let Some(d) = c.poll_transmit() {
+        let _ = s.handle_datagram(start, &d);
+    }
+    for d in datagrams(data) {
+        let _ = s.handle_datagram(start, d);
+    }
+    while s.poll_event().is_some() {}
+    pump(&mut c, &mut s, start);
 }
 
 #[cfg(test)]
@@ -364,5 +505,122 @@ mod tests {
     #[test]
     fn replay_dtls_handshake() {
         replay("dtls_handshake", super::handshake);
+    }
+
+    #[test]
+    fn replay_dtls_post_handshake() {
+        replay("dtls_post_handshake", super::post_handshake);
+    }
+
+    /// Seeds for `dtls_post_handshake`: each post-handshake message type with plausible
+    /// bodies, both directions. `cargo test -p only-dtls --features fuzzing -- --ignored
+    /// generate_post_handshake_corpus`.
+    #[test]
+    #[ignore = "writes fuzz/corpus"]
+    fn generate_post_handshake_corpus() {
+        use crate::handshake as hs;
+        let dir = format!(
+            "{}/../../fuzz/corpus/dtls_post_handshake",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let msg = |to_server: bool, ty: u8, body: &[u8]| {
+            let mut out = vec![u8::from(to_server), ty];
+            out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+        let cert =
+            hs::encode_certificate13(&[1; 16], &[super::identities().1.certificate().to_vec()]);
+        let seeds: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "new_cid_spare",
+                msg(
+                    false,
+                    hs::NEW_CONNECTION_ID,
+                    &hs::encode_new_connection_id(&[vec![1; 4], vec![2; 4]], hs::CID_SPARE),
+                ),
+            ),
+            (
+                "new_cid_immediate",
+                msg(
+                    true,
+                    hs::NEW_CONNECTION_ID,
+                    &hs::encode_new_connection_id(&[vec![3; 4]], hs::CID_IMMEDIATE),
+                ),
+            ),
+            ("request_cid", msg(true, hs::REQUEST_CONNECTION_ID, &[4])),
+            (
+                "request_cid_many",
+                [
+                    msg(true, hs::REQUEST_CONNECTION_ID, &[255]),
+                    msg(true, hs::REQUEST_CONNECTION_ID, &[255]),
+                    msg(false, hs::REQUEST_CONNECTION_ID, &[1]),
+                ]
+                .concat(),
+            ),
+            (
+                "cert_request",
+                msg(
+                    false,
+                    hs::CERTIFICATE_REQUEST,
+                    &hs::encode_certificate_request13(
+                        &[9; 8],
+                        &crate::crypto::SIGNATURE_SCHEMES_13,
+                    ),
+                ),
+            ),
+            (
+                "client_cert",
+                [
+                    msg(true, hs::CERTIFICATE, &cert),
+                    msg(
+                        true,
+                        hs::CERTIFICATE_VERIFY,
+                        &hs::encode_signed(0x0403, &[0; 70]),
+                    ),
+                    msg(true, hs::FINISHED, &[0; 32]),
+                ]
+                .concat(),
+            ),
+            (
+                "empty_cert",
+                [
+                    msg(
+                        true,
+                        hs::CERTIFICATE,
+                        &hs::encode_certificate13(&[1; 16], &[]),
+                    ),
+                    msg(true, hs::FINISHED, &[0; 32]),
+                ]
+                .concat(),
+            ),
+            (
+                "key_update",
+                [
+                    msg(false, hs::KEY_UPDATE, &[1]),
+                    msg(true, hs::KEY_UPDATE, &[0]),
+                ]
+                .concat(),
+            ),
+            (
+                "ticket",
+                msg(
+                    false,
+                    hs::NEW_SESSION_TICKET,
+                    &hs::Ticket13 {
+                        lifetime: 60,
+                        age_add: 1,
+                        nonce: vec![1],
+                        ticket: vec![5; 40],
+                        max_early_data: 100,
+                    }
+                    .encode(),
+                ),
+            ),
+        ];
+        for (name, data) in seeds {
+            std::fs::write(format!("{dir}/{name}"), data).unwrap();
+        }
     }
 }

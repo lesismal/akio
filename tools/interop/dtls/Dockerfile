@@ -1,6 +1,6 @@
 # Reference DTLS 1.3 peers for tools/interop/dtls/run.sh: OpenSSL 4.1 (built here: Debian ships
-# 3.5, which has no DTLS 1.3) and wolfSSL 5.8.4 (DTLS 1.3 + connection IDs), on rust:1 so the
-# same image also builds the only-dtls example.
+# 3.5, which has no DTLS 1.3) and wolfSSL 5.8.4 (DTLS 1.3, connection IDs, 0-RTT, post-handshake
+# authentication), on rust:1 so the same image also builds the only-dtls example.
 #   docker build -t only-dtls-interop tools/interop/dtls
 FROM rust:1
 RUN apt-get update && apt-get install -y --no-install-recommends autoconf automake libtool \
@@ -16,6 +16,7 @@ RUN git clone --depth 1 -b "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl /sr
       --enable-dtls-frag-ch --enable-session-ticket --enable-psk --enable-curve25519 \
       --enable-ed25519 --enable-aesgcm --enable-chacha --enable-poly1305 --enable-hrrcookie \
       --enable-secure-renegotiation --enable-srtp --enable-keying-material \
+      --enable-earlydata --enable-postauth \
       --enable-debug >/dev/null && \
     make -j"$(nproc)" >/dev/null && make install >/dev/null && \
     cp examples/client/.libs/client /opt/wolfssl/bin/wolfssl-client && \

@@ -2,7 +2,8 @@
 # only-dtls <-> OpenSSL 4.1 and wolfSSL 5.8: DTLS 1.3 (RFC 9147) both directions, version
 # negotiation and downgrade, HelloRetryRequest (cookie and group), small MTUs (fragments and
 # ACKs), KeyUpdate, connection IDs (RFC 9146 in DTLS 1.2, DTLS 1.3 CIDs), external PSKs,
-# session resumption (DTLS 1.3 and DTLS 1.2 tickets), DTLS-SRTP keys compared byte for byte.
+# session resumption (DTLS 1.3 and DTLS 1.2 tickets), DTLS-SRTP keys compared byte for byte;
+# early data (0-RTT) and post-handshake client authentication both ways with wolfSSL (ADR-045).
 #   dtls13.sh <dtls-interop binary> <work dir>
 # run.sh calls it inside the image built from ./Dockerfile (OpenSSL 4.1 and wolfSSL 5.8.4 built
 # with DTLS 1.3 and CIDs; Debian's OpenSSL 3.5 has no DTLS 1.3).
@@ -260,4 +261,72 @@ start sh -c "cd $WOLF && exec wolfssl-server -u -v 4 -p $port -d" >ws-ku.log 2>&
   fail "wolf server keyupdate: client"
 want oc-ku.log "^KEY_UPDATE" "wolf server keyupdate"
 echo "ok   wolfssl-server -v 4 <- only-dtls: KeyUpdate"
+
+# Early data (0-RTT) with resumption, both ways. wolfSSL's client sends "A drop of info" as
+# early data on its resumed connection (-r -0); its server reads early data with -0 and needs
+# -J n (no HelloRetryRequest cookie: early data is rejected after a HelloRetryRequest).
+for cookie in on off; do
+  next
+  sflags=(--versions 1.3 --resumption --early-data 16384 --accept 2 --no-client-cert)
+  [ "$cookie" = off ] && sflags+=(--no-cookie)
+  start "$BIN" server "127.0.0.1:$port" "${sflags[@]}" >"os-early-$cookie.log" 2>&1
+  (cd "$WOLF" && timeout 10 wolfssl-client -u -v 4 -p "$port" -d -r -0) >"wc-early-$cookie.log" 2>&1 || true
+  want "os-early-$cookie.log" "^EARLY_RECV A drop of info" "wolf client early data, cookies $cookie"
+  grep "^EARLY accepted" "os-early-$cookie.log" | sed -n 2p | grep -q "accepted=true" ||
+    fail "wolf client early data, cookies $cookie: not accepted"
+  grep "^INFO" "os-early-$cookie.log" | sed -n 2p | grep -q "resumed=true" ||
+    fail "wolf client early data, cookies $cookie: not resumed"
+  echo "ok   wolfssl-client -v 4 -r -0 -> only-dtls --early-data: accepted (cookies $cookie)"
+done
+next
+# stdbuf: the example prints the early data with printf; line-buffer it for the log.
+start sh -c "cd $WOLF && exec timeout 15 stdbuf -oL wolfssl-server -u -v 4 -p $port -d -C 2 -r -0 -J n" >ws-early.log 2>&1
+"$BIN" client "127.0.0.1:$port" --versions 1.3 --resume --early-data 1 --message hi >oc-early.log 2>&1 ||
+  fail "wolf server early data: client"
+want oc-early.log "^EARLY_SENT" "wolf server early data"
+grep "^EARLY accepted" oc-early.log | sed -n 2p | grep -q "accepted=true" || fail "wolf server early data: not accepted"
+sleep 1
+want ws-early.log "Early Data Client message: early: hi" "wolf server early data"
+echo "ok   wolfssl-server -v 4 -r -0 <- only-dtls --resume --early-data: accepted, read by wolfSSL"
+# The same against wolfSSL's default HelloRetryRequest cookie: rejected, resent as 1-RTT data.
+next
+start sh -c "cd $WOLF && exec timeout 15 wolfssl-server -u -v 4 -p $port -d -C 2 -r -0" >ws-early-hrr.log 2>&1
+"$BIN" client "127.0.0.1:$port" --versions 1.3 --resume --early-data 1 --message hi >oc-early-hrr.log 2>&1 ||
+  fail "wolf server early data after HRR: client"
+grep "^EARLY accepted" oc-early-hrr.log | sed -n 2p | grep -q "accepted=false" ||
+  fail "wolf server early data after HRR: accepted"
+grep "^INFO" oc-early-hrr.log | sed -n 2p | grep -q "resumed=true" || fail "wolf server early data after HRR: not resumed"
+echo "ok   wolfssl-server -v 4 -r -0 (HRR cookie) <- only-dtls --early-data: rejected, resumed"
+
+# Post-handshake client authentication (RFC 8446 §4.6.2), both ways.
+next
+start sh -c "cd $WOLF && exec timeout 15 wolfssl-server -u -v 4 -p $port -Q" >ws-pha.log 2>&1
+"$BIN" client "127.0.0.1:$port" --versions 1.3 --pha --cert "$WOLF/certs/client-cert.pem" \
+  --key "$WOLF/certs/client-key.pem" --message hi >oc-pha.log 2>&1 || fail "wolf server pha: client"
+sleep 1
+want oc-pha.log "^RECV I hear you" "wolf server pha"
+want ws-pha.log "Successfully requested post-hs certificate" "wolf server pha"
+want ws-pha.log "Verified Peer's cert" "wolf server pha"
+sed -n '/Successfully requested post-hs/,$p' ws-pha.log | grep -q "processing finished" ||
+  fail "wolf server pha: no post-handshake Finished processed"
+if sed -n '/Successfully requested post-hs/,$p' ws-pha.log | grep -a "SendAlert:" | grep -qv close_notify; then
+  fail "wolf server pha: alert"
+fi
+echo "ok   wolfssl-server -v 4 -Q <- only-dtls --pha: certificate, CertificateVerify, Finished verified"
+next
+start "$BIN" server "127.0.0.1:$port" --versions 1.3 --no-client-cert --request-cert >os-pha.log 2>&1
+(cd "$WOLF" && timeout 10 wolfssl-client -u -v 4 -p "$port" -d -Q) >wc-pha.log 2>&1 || true
+want os-pha.log "^CLIENT_CERT $(fp "$WOLF/certs/client-cert.pem")" "wolf client pha"
+echo "ok   wolfssl-client -v 4 -Q -> only-dtls --request-cert: client certificate after the handshake"
+# NewConnectionId / RequestConnectionId (RFC 9147 §9): neither OpenSSL 4.1 nor wolfSSL 5.8
+# implements them; only-dtls against itself over UDP, with CIDs both ways.
+next
+start "$BIN" server "127.0.0.1:$port" --versions 1.3 --cid 4 --no-client-cert >os-rotate.log 2>&1
+"$BIN" client "127.0.0.1:$port" --versions 1.3 --cid 5 --rotate-cid --message hi >oc-rotate.log 2>&1 ||
+  fail "rotate: client"
+want oc-rotate.log "^ROTATED true" "rotate"
+[ "$(grep -c '^RECV hi' oc-rotate.log)" = 2 ] || fail "rotate: no echo on the new CID"
+new_cid=$(sed -n 's/^ROTATED true peer_cid=//p' oc-rotate.log)
+want os-rotate.log "^LOCAL_CIDS $new_cid" "rotate: old CID retired"
+echo "ok   only-dtls --rotate-cid -> only-dtls: RequestConnectionId, NewConnectionId, rotation"
 echo "dtls13 interop: all passed"

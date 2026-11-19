@@ -587,6 +587,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dtls_post_handshake"
+path = "fuzz_targets/dtls_post_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tls_client"
 path = "fuzz_targets/tls_client.rs"
 test = false

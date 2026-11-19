@@ -60,6 +60,13 @@ pub(crate) fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Milliseconds since the Unix epoch (0-RTT ticket ages).
+pub(crate) fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// What a server needs to resume a session; also what a ticket carries.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SessionState {
@@ -75,6 +82,8 @@ pub(crate) struct SessionState {
     pub(crate) age_add: u32,
     /// The peer's certificate chain (checked again by the verifier on resumption).
     pub(crate) peer_chain: Vec<Vec<u8>>,
+    /// DTLS 1.3: the max_early_data_size the ticket allows (0: no early data).
+    pub(crate) max_early_data: u32,
 }
 
 impl fmt::Debug for SessionState {
@@ -92,7 +101,7 @@ const MAX_STATE: usize = 8 << 10;
 
 impl SessionState {
     fn encode(&self) -> Vec<u8> {
-        let mut out = vec![1];
+        let mut out = vec![2];
         put_u16(&mut out, self.version.wire());
         put_u16(&mut out, self.suite.id());
         out.push(u8::from(self.ems));
@@ -105,12 +114,15 @@ impl SessionState {
             put_vec24(&mut chain, c);
         }
         put_vec24(&mut out, &chain);
+        out.extend_from_slice(&self.max_early_data.to_be_bytes());
         out
     }
 
     fn decode(b: &[u8]) -> Option<SessionState> {
         let mut r = Reader::new(b);
-        if r.u8().ok()? != 1 {
+        // Format 1 (before ADR-045) has no max_early_data.
+        let format = r.u8().ok()?;
+        if format != 1 && format != 2 {
             return None;
         }
         let version = Version::from_wire(r.u16().ok()?)?;
@@ -121,6 +133,7 @@ impl SessionState {
         let age_add = r.u32().ok()?;
         let secret = r.vec8().ok()?.to_vec();
         let mut chain = Reader::new(r.vec24().ok()?);
+        let max_early_data = if format == 2 { r.u32().ok()? } else { 0 };
         r.finish().ok()?;
         let mut peer_chain = Vec::new();
         while !chain.is_empty() {
@@ -135,6 +148,7 @@ impl SessionState {
             lifetime,
             age_add,
             peer_chain,
+            max_early_data,
         })
     }
 
@@ -249,6 +263,15 @@ impl Session {
         !self.ticket.is_empty()
     }
 
+    /// DTLS 1.3: how many bytes of early data (0-RTT) the server accepts when this session
+    /// is resumed (0: none). A client sends them with
+    /// [`Connection::send_early_data`](crate::Connection::send_early_data) when its
+    /// [`Config::with_early_data`](crate::Config::with_early_data) is on.
+    #[must_use]
+    pub fn max_early_data(&self) -> u32 {
+        self.state.max_early_data
+    }
+
     /// When the server stops accepting it (as the server announced; servers may forget it
     /// earlier).
     #[must_use]
@@ -336,6 +359,7 @@ mod tests {
             lifetime: 3600,
             age_add: 99,
             peer_chain: vec![vec![1, 2, 3], vec![4]],
+            max_early_data: 0,
         }
     }
 
@@ -358,6 +382,16 @@ mod tests {
         assert!(k.seal(&big).is_none(), "too large");
         // Same secret, same key: tickets work across servers.
         assert!(TicketKey::from_secret(&[3; 32]).unwrap().open(&t).is_some());
+        let mut early = state();
+        early.max_early_data = 1234;
+        assert_eq!(k.open(&k.seal(&early).unwrap()).unwrap(), early);
+        // Format 1 (before 0-RTT) still decodes, without early data.
+        let mut v1 = state().encode();
+        v1[0] = 1;
+        v1.truncate(v1.len() - 4);
+        assert_eq!(SessionState::decode(&v1).unwrap(), state());
+        v1[0] = 3;
+        assert!(SessionState::decode(&v1).is_none());
     }
 
     #[test]
