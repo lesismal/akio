@@ -57,6 +57,22 @@ impl<'a> BackReader<'a> {
         (self.container << self.consumed) >> (64 - n)
     }
 
+    /// The next `n` bits, 1..=63, without the checks of [`BackReader::peek`]: past the end of
+    /// the stream (`consumed` > 64) the value is meaningless, which the caller detects with
+    /// [`BackReader::finished`] at the end.
+    #[inline(always)]
+    pub(crate) fn peek_fast(&self, n: u32) -> u64 {
+        self.container.wrapping_shl(self.consumed) >> (64 - n)
+    }
+
+    /// Reads `n` bits, 0..=63, without branches (see [`BackReader::peek_fast`]).
+    #[inline(always)]
+    pub(crate) fn read_fast(&mut self, n: u32) -> u64 {
+        let v = (self.container.wrapping_shl(self.consumed) >> 1) >> (63 - n);
+        self.consumed += n;
+        v
+    }
+
     #[inline]
     pub(crate) fn consume(&mut self, n: u32) {
         self.consumed += n;
@@ -74,7 +90,7 @@ impl<'a> BackReader<'a> {
     }
 
     /// Refills the container so that at least 57 bits are available, or all that remain.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn reload(&mut self) {
         if self.consumed > 64 {
             return; // overflowed: stays so
@@ -132,6 +148,27 @@ impl<'a> BitWriter<'a> {
             self.acc >>= 32;
             self.n -= 32;
         }
+    }
+
+    /// Appends the low `bits` bits of `v` without writing anything out: at most 63 bits may
+    /// be pending, so [`BitWriter::flush_bytes`] must come before that (and before
+    /// [`BitWriter::put`]).
+    #[inline(always)]
+    pub(crate) fn add(&mut self, v: u64, bits: u32) {
+        debug_assert!(self.n + bits <= 63);
+        self.acc |= (v & ((1u64 << bits) - 1)) << self.n;
+        self.n += bits;
+    }
+
+    /// Writes out the whole bytes pending (fewer than 8 bits stay).
+    #[inline(always)]
+    pub(crate) fn flush_bytes(&mut self) {
+        let k = self.n / 8;
+        let len = self.out.len();
+        self.out.extend_from_slice(&self.acc.to_le_bytes());
+        self.out.truncate(len + k as usize);
+        self.acc >>= 8 * k;
+        self.n -= 8 * k;
     }
 
     /// Writes what is left, padding the last byte with zeros.

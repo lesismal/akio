@@ -12,12 +12,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotlic-sys"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44564126338ef14526ee5eddb56795cde7fc432ced4f3cfc39f1ec4fe74929c8"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "cc"
 version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -31,12 +42,16 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 name = "codec-bench"
 version = "0.0.0"
 dependencies = [
+ "brotlic-sys",
  "httparse",
  "loona-hpack",
+ "only-brotli",
  "only-http",
  "only-regex",
  "only-ws",
+ "only-zstd",
  "regex",
+ "zstd",
 ]
 
 [[package]]
@@ -60,10 +75,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "getrandom"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
+]
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom",
+ "libc",
+]
 
 [[package]]
 name = "lazy_static"
@@ -145,9 +181,14 @@ dependencies = [
  "only-ebpf",
  "only-epoll",
  "only-log",
+ "only-sys",
  "only-tls",
  "only-uring",
 ]
+
+[[package]]
+name = "only-brotli"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-buf"
@@ -202,11 +243,13 @@ name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-ws",
+ "only-zstd",
 ]
 
 [[package]]
@@ -239,11 +282,13 @@ version = "1.0.0-rc.1"
 name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-x509",
+ "only-zstd",
 ]
 
 [[package]]
@@ -275,10 +320,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-zstd"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "proc-macro2"
@@ -297,6 +352,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "regex"
@@ -545,4 +606,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "zstd"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50adf04cf3ec914b0b9905c9dde90c80fe74bfd701e331fc80a39c512c525278"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498d94ad68720c89b4fbe41b9090850651e68cb2dd9210ce7ffbff3a94653819"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.3+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]

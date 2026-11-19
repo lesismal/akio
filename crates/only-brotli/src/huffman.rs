@@ -18,19 +18,19 @@ const fn entry(sym: u32, len: u32) -> u32 {
     (sym << 16) | len
 }
 
-/// A table that decodes symbol `sym` from zero bits.
+/// Appends to `out` a table that decodes symbol `sym` from zero bits.
 pub(crate) fn single(sym: usize, out: &mut Vec<u32>) {
-    out.clear();
-    out.resize(ROOT_SIZE, entry(sym as u32, 0));
+    out.resize(out.len() + ROOT_SIZE, entry(sym as u32, 0));
 }
 
 fn reverse(code: u32, len: u32) -> u32 {
     code.reverse_bits() >> (32 - len)
 }
 
-/// Builds the decoding table of the canonical code with lengths `lens` (each 0..=15) into
-/// `out`. The code must be complete (the callers check that); a code with a single symbol is
-/// built with [`single`] instead.
+/// Appends to `out` the decoding table of the canonical code with lengths `lens` (each
+/// 0..=15); links to second-level tables are relative to the table's start. The code must be
+/// complete (the callers check that); a code with a single symbol is built with [`single`]
+/// instead.
 pub(crate) fn build(lens: &[u8], out: &mut Vec<u32>) {
     let mut count = [0u32; 16];
     for &l in lens {
@@ -43,27 +43,30 @@ pub(crate) fn build(lens: &[u8], out: &mut Vec<u32>) {
         c = (c + count[len - 1]) << 1;
         first[len] = c;
     }
-    out.clear();
-    out.resize(ROOT_SIZE, entry(0, 0));
+    let base = out.len();
+    out.resize(base + ROOT_SIZE, entry(0, 0));
     // Second-level table sizes: the longest code under each root index.
     let mut sub = [0u8; ROOT_SIZE];
-    let mut next = first;
-    for &l in lens {
-        let l = u32::from(l & 15);
-        if l > ROOT_BITS {
-            let code = next[l as usize];
-            next[l as usize] += 1;
-            let r = reverse(code, l) as usize & (ROOT_SIZE - 1);
-            sub[r] = sub[r].max((l - ROOT_BITS) as u8);
+    if count[9..].iter().any(|&n| n != 0) {
+        let mut next = first;
+        for &l in lens {
+            let l = u32::from(l & 15);
+            if l > ROOT_BITS {
+                let code = next[l as usize];
+                next[l as usize] += 1;
+                let r = reverse(code, l) as usize & (ROOT_SIZE - 1);
+                sub[r] = sub[r].max((l - ROOT_BITS) as u8);
+            }
+        }
+        for (r, &sb) in sub.iter().enumerate() {
+            if sb != 0 {
+                let off = out.len() - base;
+                out.resize(base + off + (1 << sb), entry(0, 0));
+                out[base + r] = (off as u32) << 16 | LINK | u32::from(sb);
+            }
         }
     }
-    for (r, &sb) in sub.iter().enumerate() {
-        if sb != 0 {
-            let off = out.len();
-            out.resize(off + (1 << sb), entry(0, 0));
-            out[r] = (off as u32) << 16 | LINK | u32::from(sb);
-        }
-    }
+    let table = &mut out[base..];
     let mut next = first;
     for (sym, &l) in lens.iter().enumerate() {
         let l = u32::from(l & 15);
@@ -75,20 +78,20 @@ pub(crate) fn build(lens: &[u8], out: &mut Vec<u32>) {
         let r = reverse(code, l) as usize;
         let e = entry(sym as u32, l);
         if l <= ROOT_BITS {
-            for x in out[..ROOT_SIZE].iter_mut().skip(r).step_by(1 << l) {
-                *x = e;
+            let mut i = r;
+            while i < ROOT_SIZE {
+                table[i] = e;
+                i += 1 << l;
             }
         } else {
-            let link = out[r & (ROOT_SIZE - 1)];
+            let link = table[r & (ROOT_SIZE - 1)];
             let off = (link >> 16) as usize;
             let sb = link & 0xff;
-            if let Some(t) = out.get_mut(off..off + (1 << sb)) {
-                for x in t
-                    .iter_mut()
-                    .skip(r >> ROOT_BITS)
-                    .step_by(1 << (l - ROOT_BITS))
-                {
-                    *x = e;
+            if let Some(t) = table.get_mut(off..off + (1 << sb)) {
+                let mut i = r >> ROOT_BITS;
+                while i < t.len() {
+                    t[i] = e;
+                    i += 1 << (l - ROOT_BITS);
                 }
             }
         }
@@ -112,6 +115,45 @@ pub(crate) fn decode(table: &[u32], br: &mut BitReader<'_>) -> usize {
     let i = (e >> 16) as usize + ((bits >> ROOT_BITS) as usize & ((1 << sb) - 1));
     let e = table.get(i).copied().unwrap_or(0);
     br.consume(e & 0xff);
+    (e >> 16) as usize
+}
+
+/// Decodes one symbol with `table` from the loaded bits: [`BitReader::refill`] must have run,
+/// and at most 57 bits (three 15-bit codes, say) be consumed before the next one.
+#[inline(always)]
+pub(crate) fn decode_loaded(table: &[u32], br: &mut BitReader<'_>) -> usize {
+    let bits = br.peek();
+    let e = table
+        .get((bits as usize) & (ROOT_SIZE - 1))
+        .copied()
+        .unwrap_or(0);
+    if e & LINK == 0 {
+        br.consume_loaded(e & 0xff);
+        return (e >> 16) as usize;
+    }
+    let sb = e & 0xff;
+    let i = (e >> 16) as usize + ((bits >> ROOT_BITS) as usize & ((1 << sb) - 1));
+    let e = table.get(i).copied().unwrap_or(0);
+    br.consume_loaded(e & 0xff);
+    (e >> 16) as usize
+}
+
+/// [`decode_loaded`] with the table at `start` in `tables` (one bounds check per level).
+#[inline(always)]
+pub(crate) fn decode_loaded_at(tables: &[u32], start: usize, br: &mut BitReader<'_>) -> usize {
+    let bits = br.peek();
+    let e = tables
+        .get(start + ((bits as usize) & (ROOT_SIZE - 1)))
+        .copied()
+        .unwrap_or(0);
+    if e & LINK == 0 {
+        br.consume_loaded(e & 0xff);
+        return (e >> 16) as usize;
+    }
+    let sb = e & 0xff;
+    let i = start + (e >> 16) as usize + ((bits >> ROOT_BITS) as usize & ((1 << sb) - 1));
+    let e = tables.get(i).copied().unwrap_or(0);
+    br.consume_loaded(e & 0xff);
     (e >> 16) as usize
 }
 

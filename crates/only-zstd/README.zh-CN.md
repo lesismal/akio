@@ -12,7 +12,8 @@
   RLE、Huffman（单流或四流，树描述可为直接表示或 FSE 压缩，码长至多 12 位）与 treeless 字面量；
   预定义、RLE、FSE 压缩与重复使用的序列表；重复偏移；校验 Frame_Content_Size 与 XXH64
   Content_Checksum。Frame_Content_Size 只作为提示：声明超过上限的帧会被立即拒绝，预留的内存至多为
-  上限。Huffman 与 FSE 流通过 64 位容器反向读取，并以查表方式解码。
+  上限。Huffman 与 FSE 流通过 64 位容器反向读取，并以查表方式解码：四个字面量流交错同步解码，序列字段的
+  表按免边界检查查找的大小存放；字面量与匹配以 16 字节为块复制到提前一个块清零的窗口中（仍从不超过上限）。
 - `compress(level, data)`：输出一个带 Frame_Content_Size 与内容校验和的帧；输入不超过 8 MiB 时为
   单段（single segment），更大的输入使用 8 MiB 窗口（RFC 9659 为 HTTP 规定的上限）。级别沿用 zstd 的
   1..=22（`Level::FASTEST` 为 1，`DEFAULT` 为 3，`BEST` 为 22）。
@@ -43,11 +44,13 @@ assert_eq!(decompress(&packed, data.len() - 1), Err(Error::TooLarge));
 
 指定了字典的帧会被拒绝（`Error::DictionaryRequired`），与没有字典的 libzstd 相同。
 
-**编码器。** 基于 4 字节哈希链的 LZ77，窗口与输入一样大（至多 8 MiB）。每个位置先尝试三个重复偏移
-（编码代价低），再沿哈希链搜索：从级别 1 的 1 个候选到级别 22 的 768 个候选，达到 “足够长” 的长度
-即停止；级别 1、2 为贪心匹配，并在没有匹配的数据中更快地向前跳；级别 3..=5 为惰性匹配（后移一个字节
-若有更好的匹配则采用），6..=22 为 lazy2（后移一或两个字节），与 zstd 一样以匹配长度减去偏移的编码
-代价来比较匹配。每块至多 128 KiB。字面量使用 Huffman 编码（用 package-merge 将码长限制在 11 位，少于
+**编码器。** LZ77，窗口与输入一样大（至多 8 MiB），采用 libzstd 的匹配查找方式：级别 1、2 为 `fast`
+（一张以后续 6 字节为键的哈希表，每个位置一个候选，在没有匹配的数据中更快地向前跳），级别 3、4 为
+`double_fast`（以后续 8 字节和 5 字节为键的两张表；长匹配优先，短匹配会与后移一个字节处的长匹配比较），
+两者都是贪心匹配，先尝试后移一个字节处的第一个重复偏移，并在匹配之后直接接上第二个重复偏移的连续匹配；
+级别 5..=22 先尝试三个重复偏移，再沿 4 字节哈希链搜索（从级别 5 的 8 个候选到级别 22 的 768 个候选，
+达到 “足够长” 的长度即停止），级别 5 为惰性匹配，6..=22 为 lazy2（后移一或两个字节若有更好的匹配则采用），
+与 zstd 一样以匹配长度减去偏移的编码代价来比较匹配。每块至多 128 KiB。字面量使用 Huffman 编码（普通 Huffman 码长，超过 11 位时改用 package-merge 限制在 11 位，少于
 256 个字面量用单流，否则用四流；树描述在 FSE 压缩权重与每个权重 4 位之间取较小者），若 raw 或 RLE
 更小则改用它们。三个序列字段各自在 RLE 表、预定义表与 FSE 压缩表（在每个有意义的精度对数下归一化）
 中选择估算位数最少者。不能变小的块按 raw 存储，只含同一字节的块写成 RLE 块。
@@ -72,6 +75,10 @@ assert_eq!(decompress(&packed, data.len() - 1), Err(Error::TooLarge));
 （安装了 CLI 时用 `zstd -b`）对比，同时输出压缩与解压速度并与 libzstd 对比；语料为由
 `fuzz/corpus/x509_parse` 中证书链构造的 TLS 1.3 Certificate 消息、生成的文本、JSON 与随机数据，以及
 命令行给出的每个文件。
+
+与 C 库在同一进程内对比（Silesia 语料与 HTTP 负载，见 docs/BENCHMARKS.zh-CN.md）：先用
+`tools/codec-bench/corpus.sh` 构造语料，再运行
+`cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd FILE...`。
 
 局限：没有流式 API（解码器需要完整输入并保留完整输出，这正是证书压缩与缓冲的 HTTP 消息体所需要的）；
 不支持字典；编码器没有长距离匹配、最优解析与多线程，因此在最高级别上的压缩率不及 libzstd；编码器从不

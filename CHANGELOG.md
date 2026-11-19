@@ -10,6 +10,31 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: faster brotli and Zstandard decoding and encoding (only-brotli, only-zstd)
+
+No public API change (docs/BENCHMARKS.md, "Brotli and Zstandard"; against libbrotli 1.2.1 and
+libzstd 1.5.7 in `tools/codec-bench`, which now has `brotli` / `zstd` modes and a corpus script).
+
+- **Decoders** (output unchanged): decompression takes 1.3–1.7× libzstd's time (was 1.7–2.4×) and
+  1.1–1.7× libbrotli's (was 1.4–3.1×); on Silesia zstd level 1 decodes 849 MB/s (was 541,
+  libzstd 1,120) and brotli level 5 467 MB/s (was 333, libbrotli 716). The output doubles as a window zeroed ahead (never past the limit) so literals and
+  matches are copied in 16-byte chunks; branch-free bit reads kept in registers; zstd's four
+  Huffman streams decoded in lockstep and predefined sequence tables no longer copied per block;
+  brotli decodes three literals per refill through a per-block-type context → tree table. Bounds
+  are unchanged: memory stays within the limit, truncated brotli input is caught once per command
+  instead of once per literal (still bounded by the output).
+- **zstd encoder** (output changes): levels 1–2 use libzstd's `fast` match finder and 3–4
+  `double_fast` instead of lazy hash chains, plus a faster Huffman code construction and bit
+  writer: 2.1–3.2× faster; sizes within −3…+2% of libzstd's (level 3 is 1–7% larger than before on
+  small HTTP payloads, where the old lazy search beat libzstd's level 3).
+- **brotli encoder** (output changes): per-hash buckets instead of chains at levels 0–6 (5-byte
+  hashes at 5–6), Google's candidate counts at levels 2–4 (level 4: 4 instead of 16), Google's
+  skipping through incompressible data, cheaper context clustering below level 10: Silesia 3.4×
+  (q4), 2.4× (q5), 2.6× (q6) faster; q5–q6 sizes −1.2…+0.8% (+2–3% on certificate chains, which
+  use level 11 in only-tls), q4 1–9% larger but no longer smaller than libbrotli's q4 at four
+  times its search effort. Brotli levels 10–11 and zstd levels 5–22 keep their speed and, but for
+  small differences from the context clustering and Huffman code construction, their output.
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

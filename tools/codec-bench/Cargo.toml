@@ -6,16 +6,21 @@ license = "MIT"
 publish = false
 
 # Its own workspace (excluded from the root one), so the reference crates it measures against
-# (httparse, loona-hpack, regex) stay out of the libraries' dependency graph and Cargo.lock.
+# (httparse, loona-hpack, regex, libbrotli, libzstd) stay out of the libraries' dependency graph and Cargo.lock.
 [workspace]
 
 [dependencies]
 only-http = { path = "../../crates/only-http" }
 only-ws = { path = "../../crates/only-ws" }
 only-regex = { path = "../../crates/only-regex" }
+only-brotli = { path = "../../crates/only-brotli" }
+only-zstd = { path = "../../crates/only-zstd" }
 httparse = "1"
 loona-hpack = "0.4"
 regex = "1"
+# The C reference libraries, built from their bundled sources.
+brotlic-sys = "0.2"
+zstd = { version = "0.13", default-features = false }
 
 [profile.release]
 codegen-units = 1

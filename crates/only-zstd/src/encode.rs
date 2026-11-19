@@ -1,4 +1,5 @@
-//! The encoder: LZ77 over hash chains, Huffman-coded literals and FSE-coded sequences.
+//! The encoder: LZ77 (libzstd's `fast` and `double_fast` match finders at levels 1..=4, hash
+//! chains above), Huffman-coded literals and FSE-coded sequences.
 
 use crate::Level;
 use crate::bits::BitWriter;
@@ -19,6 +20,8 @@ const MIN_MATCH: usize = 4;
 /// Match-finder settings of a level.
 #[derive(Clone, Copy, Debug)]
 struct Params {
+    /// How matches are found.
+    strategy: Strategy,
     /// Candidates examined per position.
     depth: u32,
     /// 0: greedy; 1: also try one position later; 2: and two.
@@ -31,12 +34,25 @@ struct Params {
     chain_log: u32,
 }
 
+/// The match finders, after libzstd's strategies of the same names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strategy {
+    /// One hash table of the next `n` bytes (`hash_log` bits), probed once per position,
+    /// greedy (`zstd_fast`).
+    Fast(u32),
+    /// Two hash tables, of the next 8 bytes (`hash_log`) and of the next 5 (`chain_log`),
+    /// greedy (`zstd_double_fast`).
+    DoubleFast,
+    /// Hash chains, `depth` candidates, lazy matching (`lazy` / `lazy2`).
+    Chain,
+}
+
 fn params(level: Level) -> Params {
     let (depth, lazy, nice, skip, hash_log, chain_log) = match level.get() {
-        1 => (1, 0, 16, 5, 16, 15),
-        2 => (2, 0, 24, 6, 17, 16),
-        3 => (4, 1, 32, 8, 17, 17),
-        4 => (6, 1, 48, 8, 17, 17),
+        1 => (1, 0, 16, 8, 15, 0),
+        2 => (1, 0, 16, 9, 16, 0),
+        3 => (1, 0, 16, 7, 17, 16),
+        4 => (1, 0, 16, 7, 18, 17),
         5 => (8, 1, 64, 0, 18, 18),
         6 => (12, 2, 64, 0, 18, 18),
         7 => (16, 2, 96, 0, 18, 19),
@@ -56,7 +72,14 @@ fn params(level: Level) -> Params {
         21 => (640, 2, 1024, 0, 22, 23),
         _ => (768, 2, 1024, 0, 22, 23),
     };
+    let strategy = match level.get() {
+        1 => Strategy::Fast(6),
+        2 => Strategy::Fast(6),
+        3 | 4 => Strategy::DoubleFast,
+        _ => Strategy::Chain,
+    };
     Params {
+        strategy,
         depth,
         lazy,
         nice,
@@ -134,6 +157,28 @@ impl Cand {
     fn gain(&self) -> i64 {
         self.len as i64 * 4 - i64::from(highbit(self.off))
     }
+}
+
+#[inline(always)]
+fn read32(d: &[u8], i: usize) -> u32 {
+    match d.get(i..i + 4) {
+        Some(s) => u32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+        None => 0,
+    }
+}
+
+#[inline(always)]
+fn read64(d: &[u8], i: usize) -> u64 {
+    match d.get(i..i + 8) {
+        Some(s) => u64::from_le_bytes(s.try_into().unwrap_or([0; 8])),
+        None => 0,
+    }
+}
+
+/// Hash of the `n` (4..=8) bytes at `i` into `log` bits.
+#[inline(always)]
+fn hash_n(d: &[u8], i: usize, n: u32, log: u32) -> usize {
+    ((read64(d, i) << (64 - 8 * n)).wrapping_mul(0x9E37_79B1_85EB_CA87) >> (64 - log)) as usize
 }
 
 /// The Offset_Value of a match `dist` back with repeat offsets `reps`.
@@ -373,6 +418,169 @@ impl<'a> Encoder<'a> {
         self.lits.extend_from_slice(&self.data[anchor..end]);
     }
 
+    /// Appends the sequence of a match of `len` at `at`, `dist` back, after the literals
+    /// from `anchor`.
+    #[inline]
+    fn emit(&mut self, anchor: usize, at: usize, len: usize, dist: usize) {
+        let ll = at - anchor;
+        self.lits.extend_from_slice(&self.data[anchor..at]);
+        let off = offset_value(dist, ll == 0, &self.reps);
+        update_reps(&mut self.reps, off, dist, ll == 0);
+        self.seqs.push(Seq {
+            ll: ll as u32,
+            ml: len as u32,
+            off,
+        });
+    }
+
+    /// A match of the first repeat offset one byte after `pos` (where literals precede it),
+    /// at least 4 long: its length.
+    #[inline(always)]
+    fn rep_at_next(&self, pos: usize, end: usize) -> Option<usize> {
+        let r = self.reps[0] as usize;
+        let at = pos + 1;
+        if r == 0 || r > at || r > self.window {
+            return None;
+        }
+        let d = self.data;
+        if read32(d, at - r) != read32(d, at) {
+            return None;
+        }
+        Some(4 + self.common(at + 4, at + 4 - r, end - at - 4))
+    }
+
+    /// Extends a match at `pos` from `cand` backwards over the literals since `anchor`.
+    #[inline(always)]
+    fn catch_up(&self, anchor: usize, mut pos: usize, mut cand: usize, len: &mut usize) -> usize {
+        let d = self.data;
+        while pos > anchor && cand > 0 && d[pos - 1] == d[cand - 1] {
+            pos -= 1;
+            cand -= 1;
+            *len += 1;
+        }
+        pos
+    }
+
+    /// After a match ending at `pos`: matches of the second repeat offset right there (no
+    /// literals before them), as many as follow each other. Returns the new position.
+    #[inline]
+    fn rep2_run(&mut self, mut pos: usize, ilimit: usize, end: usize) -> usize {
+        let d = self.data;
+        while pos < ilimit {
+            let r = self.reps[1] as usize;
+            if r == 0 || r > pos || r > self.window || read32(d, pos - r) != read32(d, pos) {
+                break;
+            }
+            let len = 4 + self.common(pos + 4, pos + 4 - r, end - pos - 4);
+            self.emit(pos, pos, len, r);
+            pos += len;
+        }
+        pos
+    }
+
+    /// `zstd_fast`: one hash table of the next `mls` bytes, greedy, skipping ahead faster the
+    /// longer no match is found.
+    #[inline(never)]
+    fn parse_fast(&mut self, start: usize, end: usize, mls: u32) {
+        self.lits.clear();
+        self.seqs.clear();
+        let d = self.data;
+        let hlog = self.hash_log;
+        // Positions before this can read 8 bytes and match at least 4 within the block.
+        let ilimit = end.saturating_sub(8);
+        let mut pos = start;
+        let mut anchor = start;
+        while pos + 1 < ilimit {
+            let h = hash_n(d, pos, mls, hlog);
+            let cand = self.head[h] as usize;
+            self.head[h] = pos as u32 + 1;
+            let (at, len, dist) = if let Some(len) = self.rep_at_next(pos, end) {
+                (pos + 1, len, self.reps[0] as usize)
+            } else if cand > 0
+                && pos - (cand - 1) <= self.window
+                && read32(d, cand - 1) == read32(d, pos)
+            {
+                let c = cand - 1;
+                let mut len = 4 + self.common(pos + 4, c + 4, end - pos - 4);
+                let at = self.catch_up(anchor, pos, c, &mut len);
+                (at, len, pos - c)
+            } else {
+                pos += 1 + ((pos - anchor) >> self.p.skip);
+                continue;
+            };
+            self.emit(anchor, at, len, dist);
+            pos = at + len;
+            if pos < ilimit {
+                self.head[hash_n(d, at + 2, mls, hlog)] = at as u32 + 3;
+                self.head[hash_n(d, pos - 2, mls, hlog)] = pos as u32 - 1;
+            }
+            pos = self.rep2_run(pos, ilimit, end);
+            anchor = pos;
+        }
+        self.lits.extend_from_slice(&d[anchor..end]);
+    }
+
+    /// `zstd_double_fast`: a table of the next 8 bytes (`head`) and one of the next 5
+    /// (`chain`); a long match wins, a short one is checked against a long one a byte later.
+    #[inline(never)]
+    fn parse_double_fast(&mut self, start: usize, end: usize) {
+        self.lits.clear();
+        self.seqs.clear();
+        let d = self.data;
+        let (llog, slog) = (self.hash_log, self.chain_mask.count_ones());
+        let ilimit = end.saturating_sub(8);
+        let mut pos = start;
+        let mut anchor = start;
+        let ok = |pos: usize, cand: usize, window: usize| cand > 0 && pos - (cand - 1) <= window;
+        while pos + 1 < ilimit {
+            let hl = hash_n(d, pos, 8, llog);
+            let hs = hash_n(d, pos, 5, slog);
+            let cl = self.head[hl] as usize;
+            let cs = self.chain[hs] as usize;
+            self.head[hl] = pos as u32 + 1;
+            self.chain[hs] = pos as u32 + 1;
+            let (at, len, dist) = if let Some(len) = self.rep_at_next(pos, end) {
+                (pos + 1, len, self.reps[0] as usize)
+            } else if ok(pos, cl, self.window) && read64(d, cl - 1) == read64(d, pos) {
+                let c = cl - 1;
+                let mut len = 8 + self.common(pos + 8, c + 8, end - pos - 8);
+                let at = self.catch_up(anchor, pos, c, &mut len);
+                (at, len, pos - c)
+            } else if ok(pos, cs, self.window) && read32(d, cs - 1) == read32(d, pos) {
+                let p1 = pos + 1;
+                let hl1 = hash_n(d, p1, 8, llog);
+                let cl1 = self.head[hl1] as usize;
+                self.head[hl1] = p1 as u32 + 1;
+                if ok(p1, cl1, self.window) && read64(d, cl1 - 1) == read64(d, p1) {
+                    let c = cl1 - 1;
+                    let mut len = 8 + self.common(p1 + 8, c + 8, end - p1 - 8);
+                    let at = self.catch_up(anchor, p1, c, &mut len);
+                    (at, len, p1 - c)
+                } else {
+                    let c = cs - 1;
+                    let mut len = 4 + self.common(pos + 4, c + 4, end - pos - 4);
+                    let at = self.catch_up(anchor, pos, c, &mut len);
+                    (at, len, pos - c)
+                }
+            } else {
+                pos += 1 + ((pos - anchor) >> self.p.skip);
+                continue;
+            };
+            self.emit(anchor, at, len, dist);
+            pos = at + len;
+            if pos < ilimit {
+                for q in [at + 2, pos - 2] {
+                    self.head[hash_n(d, q, 8, llog)] = q as u32 + 1;
+                    self.chain[hash_n(d, q, 5, slog)] = q as u32 + 1;
+                }
+                self.chain[hash_n(d, pos - 1, 5, slog)] = pos as u32;
+            }
+            pos = self.rep2_run(pos, ilimit, end);
+            anchor = pos;
+        }
+        self.lits.extend_from_slice(&d[anchor..end]);
+    }
+
     /// Writes the block `[start, end)`.
     fn block(&mut self, start: usize, end: usize, last: bool, out: &mut Vec<u8>) {
         let src = &self.data[start..end];
@@ -387,7 +595,11 @@ impl<'a> Encoder<'a> {
             return;
         }
         let saved = self.reps;
-        self.parse(start, end);
+        match self.p.strategy {
+            Strategy::Fast(n) => self.parse_fast(start, end, n),
+            Strategy::DoubleFast => self.parse_double_fast(start, end),
+            Strategy::Chain => self.parse(start, end),
+        }
         let mut body = Vec::with_capacity(len);
         encode_literals(&self.lits, &mut body);
         encode_sequences(&self.seqs, &mut body);
@@ -414,6 +626,7 @@ fn raw_literals_header(kind: u8, n: usize, out: &mut Vec<u8>) {
     }
 }
 
+#[inline(never)]
 fn encode_literals(lits: &[u8], out: &mut Vec<u8>) {
     let n = lits.len();
     if n > 1 && lits.iter().all(|&b| b == lits[0]) {
@@ -483,10 +696,10 @@ impl FieldCode {
         }
     }
 
-    #[inline]
-    fn encode(&self, w: &mut BitWriter<'_>, state: &mut u32, sym: u8) {
+    #[inline(always)]
+    fn encode_add(&self, w: &mut BitWriter<'_>, state: &mut u32, sym: u8) {
         if let FieldCode::Table(t) = self {
-            t.encode(w, state, sym);
+            t.encode_add(w, state, sym);
         }
     }
 
@@ -547,6 +760,7 @@ fn choose_table(
     }
 }
 
+#[inline(never)]
 fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>) {
     let n = seqs.len();
     if n < 128 {
@@ -571,13 +785,16 @@ fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>) {
     out.extend_from_slice(&of_d);
     out.extend_from_slice(&ml_d);
     let mut w = BitWriter::new(out);
+    // Per sequence at most 26 bits of states and 16 + 16 + 31 extra bits: two flushes.
     let extra = |w: &mut BitWriter<'_>, i: usize| {
         let s = seqs[i];
         let llc = usize::from(ll[i]);
-        w.put(u64::from(s.ll - LL_BASE[llc]), u32::from(LL_BITS[llc]));
+        w.add(u64::from(s.ll - LL_BASE[llc]), u32::from(LL_BITS[llc]));
+        w.flush_bytes();
         let mlc = usize::from(ml[i]);
-        w.put(u64::from(s.ml - ML_BASE[mlc]), u32::from(ML_BITS[mlc]));
-        w.put(u64::from(s.off - (1 << of[i])), u32::from(of[i]));
+        w.add(u64::from(s.ml - ML_BASE[mlc]), u32::from(ML_BITS[mlc]));
+        w.add(u64::from(s.off - (1 << of[i])), u32::from(of[i]));
+        w.flush_bytes();
     };
     let last = n - 1;
     let mut s_ml = ml_c.init(ml[last]);
@@ -585,9 +802,9 @@ fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>) {
     let mut s_ll = ll_c.init(ll[last]);
     extra(&mut w, last);
     for i in (0..last).rev() {
-        of_c.encode(&mut w, &mut s_of, of[i]);
-        ml_c.encode(&mut w, &mut s_ml, ml[i]);
-        ll_c.encode(&mut w, &mut s_ll, ll[i]);
+        of_c.encode_add(&mut w, &mut s_of, of[i]);
+        ml_c.encode_add(&mut w, &mut s_ml, ml[i]);
+        ll_c.encode_add(&mut w, &mut s_ll, ll[i]);
         extra(&mut w, i);
     }
     ml_c.flush(&mut w, s_ml);

@@ -24,22 +24,30 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   (`BadBlockLength`) in every meta-block, not only the last.
   Hostile input cannot make it panic or allocate beyond `limit`: every insert, copy and
   dictionary word is checked against the meta-block length and the limit before it is written,
-  the output vector (which is also the window) grows geometrically but never past the limit,
+  the output vector (which is also the window, zeroed up to 128 KiB ahead so that matches can be
+  copied in 16-byte chunks) grows geometrically but never past the limit,
   and the prefix code tables are bounded by the format (a few megabytes at most). Reading past
-  the end of the input yields zero bits that are counted and checked at least once per literal
-  and per command, so truncated input costs no more than its length plus the output.
-  A 64-bit bit reader and two-level prefix code tables (8-bit root) do the decoding.
+  the end of the input yields zero bits that are counted and checked at least once per command,
+  so truncated input costs no more than its length plus the output.
+  A 64-bit bit reader (refilled without branching on the bits left, three literals per refill)
+  and two-level prefix code tables (8-bit root) do the decoding; literals of a block type whose
+  context map has one tree skip the context computation.
 - `compress(level, data)`: levels 0..=11 on brotli's quality scale (`Level::FASTEST` = 1,
-  `Level::DEFAULT` = 6, `Level::BEST` = 11). LZ77 over hash chains of the next four bytes:
-  greedy at levels 0..=3, lazy matching at 4..=9 (Google's backward reference score, up to four
-  steps ahead), and at 10 and 11 a shortest-path parse over all candidate matches priced with
-  the symbol costs of a previous pass (one pass at 10, two at 11), long matches taken whole.
-  The four distances of the distance ring are always candidates (short codes instead of extra
-  bits). Meta-blocks of 1 MiB (256 KiB at levels 10 and 11), one block type per category,
-  `NPOSTFIX` = `NDIRECT` = 0; from level 5 literals use a context map: the 64 contexts of each
-  context mode (UTF-8 and signed at 5..=6, all four from 7) are clustered greedily by the
-  estimated cost of their histograms and the map is kept only when it makes the meta-block
-  smaller. Prefix codes are limited to 15 bits, written in the simple form when they have at most
+  `Level::DEFAULT` = 6, `Level::BEST` = 11). LZ77 with Google's match finders: at levels
+  0..=6 a bucket per hash holding its last 1, 2, 2, 4, 4, 16 or 32 positions (Google's `H2`..`H6`;
+  hashes of the next four bytes, five at levels 5 and 6), at 7..=11 hash chains; greedy at levels
+  0..=3, lazy matching at 4..=9 (Google's backward reference score, up to four steps ahead), and
+  at 10 and 11 a shortest-path parse over all candidate matches priced with the symbol costs of
+  a previous pass (one pass at 10, two at 11), long matches taken whole. Below level 10, after
+  64 literals without a match only every second position is looked at, after 320 every fourth
+  (Google's heuristic for data that does not compress). The four distances of the distance ring
+  are always candidates (short codes instead of extra bits). Meta-blocks of 1 MiB (256 KiB at
+  levels 10 and 11), one block type per category, `NPOSTFIX` = `NDIRECT` = 0; from level 5
+  literals use a context map: the 64 contexts of each context mode (UTF-8 and signed at 5..=6, all
+  four from 7) are clustered greedily by the estimated cost of their histograms (contexts with
+  fewer than 32 literals start out as one cluster; below level 10 a meta-block needs 4096
+  literals for this) and the map is kept when the estimate says it pays (at 10 and 11: only when
+  it makes the meta-block  smaller). Prefix codes are limited to 15 bits, written in the simple form when they have at most
   four symbols, with Google's run-length coding of code lengths; context maps try move-to-front
   and every run-length setting and keep the shortest. A meta-block that would come out larger
   than its bytes is stored. The window is the smallest of 2^16..2^22 that holds the input.
@@ -72,6 +80,10 @@ ratio and compression and decompression throughput at levels 0..=11 (`BENCH_LEVE
 picks some) on generated text, JSON and random data plus each file given, with the zlib
 level 9 size as a baseline and, when `brotli(1)` is installed, its size at the same quality and
 its time to decode our stream.
+
+Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md):
+`tools/codec-bench/corpus.sh` builds the corpus, then
+`cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
 Limitations: decompression is one-shot (the whole stream in, the whole output out, as
 certificate compression and buffered HTTP bodies need); there is no streaming decoder or

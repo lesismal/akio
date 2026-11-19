@@ -17,6 +17,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-buf` | `#![deny(unsafe_code)]`，仅 `slab` 模块允许 | 接收 slab（ADR-024）：一块分配通过互不相交、带所有权的句柄访问（`ChunkMut` 独占可写，`Chunk` 共享只读），使收到的数据报能从 `recvmmsg` 槽位交给 only-quic 并原地解密而无需复制；`Arc` 引用计数、指向该分配的裸指针，以及该分配的 `Send`/`Sync` 实现；尺寸分级池与 `SharedBuf` 仍是安全 Rust |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅十二个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`（含 `chacha::hw::avx512` 与 `chacha::hw::ifma`）、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64`、`bignum::hw`、`bignum::ifma`，以及 `fill`（基于向量未初始化空闲容量的 AEAD 输出缓冲区）允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ 搭配 AVX-512 或 AVX2 的 `asm!` AES-GCM 内核，以及基于 VAES / VPCLMULQDQ + AVX-512 的 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂与 Poly1305 中使用 AVX-512 IFMA 的 `asm!` 块以及 AVX-512 上的 ChaCha20 `asm!` 块（同样在 MSRV 上不稳定），aarch64 上 P-256 与 Curve25519 域运算中使用 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链的 `asm!` 块，以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；`fill` 让 TLS 记录层（`#![forbid(unsafe_code)]`）直接在 `Vec` 的空闲容量中加密和解密，不必先清零（16 KiB AES-GCM 记录约 10%），其 `unsafe` 只用于在每个字节都写入后把缓冲区视为字节切片以及 `Vec::set_len`；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
 | `tools/ct-dudect` | `#![deny(unsafe_code)]`，仅 `timer` 模块允许 | 统计计时测试（docs/constant-time.zh-CN.md）：两处读取周期计数器的 `asm!`（x86_64 为 `lfence; rdtsc; lfence`，aarch64 为 `isb; mrs cntvct_el0`），只用寄存器、不访问内存；不发布 |
+| `tools/codec-bench` | 不发布，独立 workspace | 基准测试中对 Google C 库 libbrotli（`brotlic-sys`）的三处一次性调用，用于与 only-brotli 对比（docs/BENCHMARKS.zh-CN.md）；libzstd 通过安全的 `zstd` crate 调用 |
 | 其它所有 crate（`only`、`only-core`、`only-x509`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -85,7 +86,8 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **345** | **84** | **8** | **22** |
+| codec-bench | 3 | 0 | 0 | 0 |
+| **合计** | **348** | **84** | **8** | **22** |
 
 按用途：
 

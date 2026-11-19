@@ -76,6 +76,41 @@ pub(crate) const fn split_command(sym: usize) -> (usize, usize, bool) {
     )
 }
 
+/// What an insert-and-copy symbol says: the base and extra bits of its insert and copy
+/// lengths, and whether its distance is implicitly the last one.
+#[derive(Clone, Copy)]
+pub(crate) struct Cmd {
+    pub(crate) ins_base: u32,
+    pub(crate) copy_base: u32,
+    pub(crate) ins_extra: u8,
+    pub(crate) copy_extra: u8,
+    pub(crate) implicit: bool,
+}
+
+/// [`Cmd`] of each of the 704 insert-and-copy symbols.
+pub(crate) const CMD_LUT: [Cmd; 704] = {
+    let mut t = [Cmd {
+        ins_base: 0,
+        copy_base: 0,
+        ins_extra: 0,
+        copy_extra: 0,
+        implicit: false,
+    }; 704];
+    let mut s = 0;
+    while s < 704 {
+        let (ic, cc, implicit) = split_command(s);
+        t[s] = Cmd {
+            ins_base: INS_BASE[ic],
+            copy_base: COPY_BASE[cc],
+            ins_extra: INS_EXTRA[ic],
+            copy_extra: COPY_EXTRA[cc],
+            implicit,
+        };
+        s += 1;
+    }
+    t
+};
+
 /// Order in which the code length code lengths are sent (section 3.5).
 pub(crate) const CODE_LENGTH_ORDER: [usize; 18] =
     [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15];

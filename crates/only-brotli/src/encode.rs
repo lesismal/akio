@@ -1,14 +1,15 @@
 //! Brotli compression.
 //!
 //! The input is cut into meta-blocks (1 MiB, or 256 KiB at the levels with optimal parsing),
-//! each parsed into insert-and-copy commands by LZ77 over hash chains of the next four bytes:
-//! greedy matching at levels 0..=3, lazy matching (up to four steps, as in Google's encoder) at
-//! levels 4..=9, and at levels 10 and 11 a shortest-path parse over all candidate matches priced
-//! with the code lengths of a previous pass (one pass at level 10, two at 11). Candidates also
-//! include the four distances of the distance ring, which cost a short code instead of extra
-//! bits. Each meta-block has one block type per category; from level 5 the literals are coded
-//! with a context map: the 64 contexts of each context mode are clustered greedily by the cost
-//! of their histograms and the cheapest mode is kept. Prefix codes are limited to 15 bits (5
+//! each parsed into insert-and-copy commands by LZ77 (candidates from per-hash buckets of the
+//! last positions at levels 0..=6, from hash chains above): greedy matching at levels 0..=3,
+//! lazy matching (up to four steps, as in Google's encoder) at levels 4..=9, and at levels 10
+//! and 11 a shortest-path parse over all candidate matches priced with the code lengths of a
+//! previous pass (one pass at level 10, two at 11). Candidates also include the four distances
+//! of the distance ring, which cost a short code instead of extra bits. Each meta-block has one
+//! block type per category; from level 5 the literals are coded with a context map: the 64
+//! contexts of each context mode are clustered greedily by the cost of their histograms and the
+//! cheapest mode is kept. Prefix codes are limited to 15 bits (5
 //! for the code length code), written in the simple form when they have at most four symbols,
 //! and their code length sequences are run-length coded like Google's encoder does. A
 //! meta-block that would come out larger than its bytes is stored uncompressed instead.
@@ -91,9 +92,9 @@ fn params(level: u8) -> Params {
     match level {
         0 => p(1, 16, false, 14, NONE, false),
         1 => p(2, 32, false, 15, NONE, false),
-        2 => p(4, 32, false, 15, NONE, true),
-        3 => p(8, 64, false, 16, NONE, true),
-        4 => p(16, 64, true, 16, NONE, true),
+        2 => p(2, 32, false, 15, NONE, true),
+        3 => p(4, 64, false, 16, NONE, true),
+        4 => p(4, 64, true, 16, NONE, true),
         5 => p(16, 128, true, 16, TWO, true),
         6 => p(32, 128, true, 17, TWO, true),
         7 => p(64, 192, true, 17, ALL, true),
@@ -133,10 +134,32 @@ struct Encoder<'a> {
     head: Vec<u32>,
     prev: Vec<u32>,
     wmask: usize,
+    /// Instead of chains (levels with up to 32 candidates and no optimal parsing): per hash,
+    /// a bucket of the last `1 << block_bits` positions (`buckets`) and how many were entered
+    /// (`num`); the same candidates in the same order, in one or two cache lines.
+    block_bits: u32,
+    /// Hash the next five bytes instead of four (levels with 16 or more candidates: fewer of
+    /// them that cannot match, as in Google's `H6`).
+    hash5: bool,
+    num: Vec<u32>,
+    buckets: Vec<u32>,
     /// Next position to enter into the hash chains.
     ins: usize,
     /// The distance ring, most recent first.
     last: [u32; 4],
+}
+
+#[inline(always)]
+fn load8(d: &[u8], i: usize) -> u64 {
+    match d.get(i..i + 8) {
+        Some(s) => u64::from_le_bytes(s.try_into().unwrap_or([0; 8])),
+        None => {
+            let mut b = [0u8; 8];
+            let rest = d.get(i..).unwrap_or(&[]);
+            b[..rest.len().min(8)].copy_from_slice(&rest[..rest.len().min(8)]);
+            u64::from_le_bytes(b)
+        }
+    }
 }
 
 #[inline(always)]
@@ -187,17 +210,46 @@ struct Found {
 impl<'a> Encoder<'a> {
     fn new(p: Params, wbits: u32, data: &'a [u8]) -> Self {
         let wsize = (1usize << wbits).min(data.len().next_power_of_two().max(1024));
-        let hash_bits = p
-            .hash_bits
-            .min(usize::BITS - data.len().max(1).leading_zeros() + 1)
-            .max(10);
+        let len_bits = usize::BITS - data.len().max(1).leading_zeros();
+        let bucketed = p.optimal == 0 && p.depth <= 32;
+        let (hash_bits, block_bits) = if bucketed {
+            let block_bits = p.depth.trailing_zeros();
+            // At most 2^15 buckets, and about twice as many entries as the input has bytes.
+            let bits = p
+                .hash_bits
+                .min(15)
+                .min((len_bits + 1).saturating_sub(block_bits));
+            (bits.max(8), block_bits)
+        } else {
+            (p.hash_bits.min(len_bits + 1).max(10), 0)
+        };
         Encoder {
             data,
             p: Params { hash_bits, ..p },
             max_dist: (1usize << wbits) - 16,
-            head: vec![NIL; 1 << hash_bits],
-            prev: vec![NIL; wsize],
+            head: if bucketed {
+                Vec::new()
+            } else {
+                vec![NIL; 1 << hash_bits]
+            },
+            prev: if bucketed {
+                Vec::new()
+            } else {
+                vec![NIL; wsize]
+            },
             wmask: wsize - 1,
+            block_bits,
+            hash5: bucketed && p.depth >= 16,
+            num: if bucketed {
+                vec![0; 1 << hash_bits]
+            } else {
+                Vec::new()
+            },
+            buckets: if bucketed {
+                vec![0; 1 << (hash_bits + block_bits)]
+            } else {
+                Vec::new()
+            },
             ins: 0,
             last: [4, 11, 15, 16],
         }
@@ -205,12 +257,32 @@ impl<'a> Encoder<'a> {
 
     #[inline(always)]
     fn hash(&self, i: usize) -> usize {
+        if self.hash5 {
+            let v = load8(self.data, i) << 24;
+            return (v.wrapping_mul(0x1E35_A7BD_1E35_A7BD) >> (64 - self.p.hash_bits)) as usize;
+        }
         (load4(self.data, i).wrapping_mul(0x1E35_A7BD) >> (32 - self.p.hash_bits)) as usize
     }
 
     /// Enters positions up to `upto` (exclusive) into the hash chains.
     fn insert_until(&mut self, upto: usize) {
         let lim = upto.min(self.data.len().saturating_sub(3));
+        if !self.num.is_empty() {
+            let mask = (1u32 << self.block_bits) - 1;
+            while self.ins < lim {
+                let i = self.ins;
+                let h = self.hash(i);
+                let k = self.num[h];
+                self.num[h] = k.wrapping_add(1);
+                if let Some(b) = self
+                    .buckets
+                    .get_mut((h << self.block_bits) | (k & mask) as usize)
+                {
+                    *b = i as u32;
+                }
+                self.ins += 1;
+            }
+        }
         while self.ins < lim {
             let i = self.ins;
             let h = self.hash(i);
@@ -237,6 +309,14 @@ impl<'a> Encoder<'a> {
             if dist == 0 || dist > max_dist {
                 continue;
             }
+            // Quick rejects: at least two bytes, and longer than the best so far.
+            if d.get(i) != d.get(i - dist)
+                || d.get(i + 1) != d.get(i + 1 - dist)
+                || (best_len > 0
+                    && (best_len >= max_len || d.get(i + best_len) != d.get(i + best_len - dist)))
+            {
+                continue;
+            }
             let len = match_len(d, i - dist, i, max_len);
             if len < if k < 2 { 2 } else { 3 } {
                 continue;
@@ -249,6 +329,47 @@ impl<'a> Encoder<'a> {
             }
         }
         if max_len < 4 {
+            return best;
+        }
+        if !self.num.is_empty() {
+            // The bucket, most recent first.
+            let h = self.hash(i);
+            let k = self.num[h];
+            let size = 1u32 << self.block_bits;
+            let bucket = self
+                .buckets
+                .get(h << self.block_bits..(h + 1) << self.block_bits)
+                .unwrap_or(&[]);
+            for j in 1..=k.min(size) {
+                let c = bucket
+                    .get((k.wrapping_sub(j) & (size - 1)) as usize)
+                    .copied()
+                    .unwrap_or(0) as usize;
+                // Entries are positions before `i`: `c >= i` wraps around and stops too.
+                if i.wrapping_sub(c).wrapping_sub(1) >= max_dist {
+                    break;
+                }
+                if best_len >= max_len {
+                    break;
+                }
+                // `c + best_len < i + best_len < end`.
+                if d[c + best_len] != d[i + best_len] {
+                    continue;
+                }
+                let len = match_len(d, c, i, max_len);
+                if len >= 4 {
+                    let dist = i - c;
+                    let score = 135 * len as i64 + 1920 - 30 * log2_floor(dist);
+                    if score > best_score {
+                        best_score = score;
+                        best_len = len;
+                        best = Some(Found { len, dist, score });
+                        if len >= self.p.nice {
+                            break;
+                        }
+                    }
+                }
+            }
             return best;
         }
         let mut cand = self.head[self.hash(i)];
@@ -285,10 +406,28 @@ impl<'a> Encoder<'a> {
         let mut i = start;
         let mut lit_start = start;
         let mut ring = self.last;
+        // Google's encoder's heuristic for data that does not compress: when no match was
+        // found for a while, look at every second position, and later at every fourth.
+        const RANDOM_WINDOW: usize = 64;
         while i < end {
             self.insert_until(i);
             let Some(mut cur) = self.find(i, end, &ring) else {
-                i += 1;
+                let gap = i - lit_start;
+                if gap > RANDOM_WINDOW && i + 20 < end {
+                    let (span, step) = if gap > 5 * RANDOM_WINDOW {
+                        (16, 4)
+                    } else {
+                        (8, 2)
+                    };
+                    let stop = i + span;
+                    while i < stop {
+                        self.insert_until(i + 1);
+                        i += step;
+                        self.ins = i;
+                    }
+                } else {
+                    i += 1;
+                }
                 continue;
             };
             if self.p.lazy {
@@ -342,8 +481,14 @@ impl<'a> Encoder<'a> {
         let ring = self.last;
         let mut model = LiteralModel::single();
         if !self.p.modes.is_empty() {
-            let m = literal_model(self.data, start, &cmds, self.p.modes);
-            if m.ntrees > 1 {
+            // Clustering costs about as much as compressing a few kilobytes: below the optimal
+            // parsing levels it is worth it only for more literals.
+            let min_literals = if self.p.optimal > 0 { 2048 } else { 4096 };
+            let m = literal_model(self.data, start, &cmds, self.p.modes, min_literals);
+            if m.ntrees > 1 && self.p.optimal == 0 {
+                // The clustering's estimate says the context map pays for itself.
+                model = m;
+            } else if m.ntrees > 1 {
                 // Keep the context map only if it pays for itself.
                 let mut a = BitWriter::with_capacity(0);
                 self.write_compressed(&mut a, start, end, last, &cmds, &m);
@@ -404,9 +549,16 @@ impl<'a> Encoder<'a> {
         {
             let mut pos = start;
             for c in cmds {
-                for p in pos..pos + c.insert as usize {
-                    let ctx = context(data, p, lut);
-                    lit_hist[usize::from(model.map[ctx])][usize::from(data[p])] += 1;
+                let lits = &data[pos..pos + c.insert as usize];
+                if model.ntrees == 1 {
+                    for &b in lits {
+                        lit_hist[0][usize::from(b)] += 1;
+                    }
+                } else {
+                    for (p, &b) in (pos..).zip(lits) {
+                        let ctx = context(data, p, lut);
+                        lit_hist[usize::from(model.map[ctx])][usize::from(b)] += 1;
+                    }
                 }
                 pos += (c.insert + c.copy) as usize;
             }
@@ -442,9 +594,16 @@ impl<'a> Encoder<'a> {
             cmd_code.put(w, usize::from(k.cmd));
             w.bits(u32::from(k.ins_n), u64::from(k.ins_x));
             w.bits(u32::from(k.copy_n), u64::from(k.copy_x));
-            for p in pos..pos + c.insert as usize {
-                let tree = usize::from(model.map[context(data, p, lut)]);
-                lit_codes[tree].put(w, usize::from(data[p]));
+            let lits = &data[pos..pos + c.insert as usize];
+            if model.ntrees == 1 {
+                for &b in lits {
+                    lit_codes[0].put(w, usize::from(b));
+                }
+            } else {
+                for (p, &b) in (pos..).zip(lits) {
+                    let tree = usize::from(model.map[context(data, p, lut)]);
+                    lit_codes[tree].put(w, usize::from(b));
+                }
             }
             if k.dsym != NO_DIST {
                 dist_code.put(w, usize::from(k.dsym));
@@ -1004,10 +1163,16 @@ fn merged_cost(a: &Hist, b: &Hist) -> f64 {
 }
 
 /// Chooses the context mode and clusters the 64 literal contexts of the commands' literals.
-fn literal_model(data: &[u8], start: usize, cmds: &[Command], modes: &[u8]) -> LiteralModel {
+fn literal_model(
+    data: &[u8],
+    start: usize,
+    cmds: &[Command],
+    modes: &[u8],
+    min_literals: usize,
+) -> LiteralModel {
     let total: usize = cmds.iter().map(|c| c.insert as usize).sum();
     // Below this the context map rarely pays for its cost (and the clustering's).
-    if total < 2048 {
+    if total < min_literals {
         return LiteralModel::single();
     }
     let mut best = LiteralModel::single();
@@ -1039,19 +1204,36 @@ fn cluster(hist: &[[u32; 256]]) -> ([u8; 64], usize, f64) {
         cost: f64,
         members: Vec<usize>,
     }
-    let mut cl: Vec<C> = hist
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| h.iter().any(|&c| c != 0))
-        .map(|(i, h)| {
-            let h = Hist::new(h);
-            C {
+    // Contexts with few literals start out together in one cluster: they could not pay for a
+    // tree of their own, and fewer clusters make the pairwise search much cheaper.
+    const FEW: u32 = 32;
+    let mut rare = C {
+        h: Hist::new(&[0; 256]),
+        cost: 0.0,
+        members: Vec::new(),
+    };
+    let mut cl: Vec<C> = Vec::new();
+    for (i, h) in hist.iter().enumerate() {
+        let total: u32 = h.iter().sum();
+        if total == 0 {
+            continue;
+        }
+        let h = Hist::new(h);
+        if total < FEW {
+            rare.h.add(&h);
+            rare.members.push(i);
+        } else {
+            cl.push(C {
                 cost: hist_cost(&h),
                 h,
                 members: vec![i],
-            }
-        })
-        .collect();
+            });
+        }
+    }
+    if !rare.members.is_empty() {
+        rare.cost = hist_cost(&rare.h);
+        cl.push(rare);
+    }
     // Each extra tree also costs context map bits.
     const TREE_COST: f64 = 24.0;
     let n = cl.len();

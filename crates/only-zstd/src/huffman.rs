@@ -75,8 +75,10 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
         start[wt + 1] = start[wt] + ((rank[wt] as usize) << (wt - 1));
     }
     table.log = log;
-    table.entries.clear();
-    table.entries.resize(1 << log, 0);
+    // Only the first `1 << log` entries are used (and all of them are written below).
+    if table.entries.len() < TABLE_SIZE {
+        table.entries.resize(TABLE_SIZE, 0);
+    }
     for (s, &wt) in w[..nsym].iter().enumerate() {
         if wt == 0 {
             continue;
@@ -90,11 +92,27 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
     Some(size)
 }
 
-/// Decodes one stream holding exactly `out.len()` symbols; the stream must end exactly there.
-fn decode_stream(t: &DTable, src: &[u8], out: &mut [u8]) -> Result<(), Error> {
-    let mut br = BackReader::new(src).ok_or(Error::BadHuffmanStream)?;
-    let log = t.log;
-    let e = &t.entries[..];
+/// Size of the decoding table: codes are at most 12 bits long (`read_table` checks it), and a
+/// table of `1 << log` entries is stored at the start of a table of this size so that lookups
+/// need no bounds checks.
+const TABLE_SIZE: usize = 1 << 12;
+
+/// Decodes one symbol: the entry of the next `log` bits.
+#[inline(always)]
+fn step(e: &[u16; TABLE_SIZE], br: &mut BackReader<'_>, log: u32) -> u8 {
+    let v = e[br.peek_fast(log) as usize & (TABLE_SIZE - 1)];
+    br.consume(u32::from(v >> 8));
+    v as u8
+}
+
+/// Decodes the symbols of `out` from `br`, which must then be exactly at the end of its
+/// stream. Four symbols take at most 48 bits, so one reload covers them.
+fn finish_stream(
+    e: &[u16; TABLE_SIZE],
+    log: u32,
+    mut br: BackReader<'_>,
+    out: &mut [u8],
+) -> Result<(), Error> {
     let mut chunks = out.chunks_exact_mut(4);
     for c in &mut chunks {
         br.reload();
@@ -102,16 +120,12 @@ fn decode_stream(t: &DTable, src: &[u8], out: &mut [u8]) -> Result<(), Error> {
             return Err(Error::BadHuffmanStream);
         }
         for x in c {
-            let v = e[br.peek(log) as usize];
-            *x = v as u8;
-            br.consume(u32::from(v >> 8));
+            *x = step(e, &mut br, log);
         }
     }
     br.reload();
     for x in chunks.into_remainder() {
-        let v = e[br.peek(log) as usize];
-        *x = v as u8;
-        br.consume(u32::from(v >> 8));
+        *x = step(e, &mut br, log);
     }
     if br.finished() {
         Ok(())
@@ -120,10 +134,20 @@ fn decode_stream(t: &DTable, src: &[u8], out: &mut [u8]) -> Result<(), Error> {
     }
 }
 
+fn entries(t: &DTable) -> Result<&[u16; TABLE_SIZE], Error> {
+    t.entries
+        .get(..TABLE_SIZE)
+        .and_then(|e| e.try_into().ok())
+        .ok_or(Error::BadHuffmanTable)
+}
+
 /// Decodes the literals of one stream (`four == false`) or of four streams behind a jump table.
 pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Result<(), Error> {
+    let e = entries(t)?;
+    let log = t.log;
     if !four {
-        return decode_stream(t, src, out);
+        let br = BackReader::new(src).ok_or(Error::BadHuffmanStream)?;
+        return finish_stream(e, log, br, out);
     }
     if src.len() < 10 {
         return Err(Error::BadLiterals);
@@ -142,18 +166,105 @@ pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Resu
     let (s1, rest) = src[6..].split_at(l1);
     let (s2, rest) = rest.split_at(l2);
     let (s3, s4) = rest.split_at(l3);
-    decode_stream(t, s1, o1)?;
-    decode_stream(t, s2, o2)?;
-    decode_stream(t, s3, o3)?;
-    decode_stream(t, s4, o4)
+    let mut r1 = BackReader::new(s1).ok_or(Error::BadHuffmanStream)?;
+    let mut r2 = BackReader::new(s2).ok_or(Error::BadHuffmanStream)?;
+    let mut r3 = BackReader::new(s3).ok_or(Error::BadHuffmanStream)?;
+    let mut r4 = BackReader::new(s4).ok_or(Error::BadHuffmanStream)?;
+    // The four streams in lockstep, four symbols each per round, as long as the shortest
+    // segment (the fourth) lasts; bits read past the end of a stream are caught by the checks
+    // of `finish_stream`.
+    let rounds = o4.len() / 4;
+    for (((c1, c2), c3), c4) in o1
+        .chunks_exact_mut(4)
+        .zip(o2.chunks_exact_mut(4))
+        .zip(o3.chunks_exact_mut(4))
+        .zip(o4.chunks_exact_mut(4))
+        .take(rounds)
+    {
+        r1.reload();
+        r2.reload();
+        r3.reload();
+        r4.reload();
+        for k in 0..4 {
+            c1[k] = step(e, &mut r1, log);
+            c2[k] = step(e, &mut r2, log);
+            c3[k] = step(e, &mut r3, log);
+            c4[k] = step(e, &mut r4, log);
+        }
+    }
+    let done = rounds * 4;
+    finish_stream(e, log, r1, &mut o1[done..])?;
+    finish_stream(e, log, r2, &mut o2[done..])?;
+    finish_stream(e, log, r3, &mut o3[done..])?;
+    finish_stream(e, log, r4, &mut o4[done..])
 }
 
 // ---------------------------------------------------------------------------------------------
 // Encoder side.
 
-/// Code lengths of at most `limit` bits, optimal for `counts` (package-merge). At least two
-/// symbols must be present. The code is complete.
+/// Code lengths of at most `limit` bits, optimal for `counts`: a plain Huffman code when it
+/// stays within the limit, else package-merge. At least two symbols must be present. The code
+/// is complete.
 fn limited_lengths(counts: &[u32; 256], limit: u32) -> [u8; 256] {
+    huffman_lengths(counts, limit).unwrap_or_else(|| package_merge(counts, limit))
+}
+
+/// The code lengths of a Huffman code for `counts` (at least two symbols present), built with
+/// two queues; `None` when one is longer than `limit`.
+fn huffman_lengths(counts: &[u32; 256], limit: u32) -> Option<[u8; 256]> {
+    // Leaves sorted by count (then symbol): count << 8 | symbol.
+    let mut leaves = [0u64; 256];
+    let mut n = 0;
+    for (s, &c) in counts.iter().enumerate() {
+        if c > 0 {
+            leaves[n] = u64::from(c) << 8 | s as u64;
+            n += 1;
+        }
+    }
+    let leaves = &mut leaves[..n];
+    leaves.sort_unstable();
+    // Nodes 0..n are the leaves, n.. the internal nodes in order of creation.
+    let mut weight = [0u64; 512];
+    let mut parent = [0u16; 512];
+    for (w, l) in weight.iter_mut().zip(leaves.iter()) {
+        *w = l >> 8;
+    }
+    let (mut li, mut ii, mut next) = (0usize, n, n);
+    let mut take = |weight: &[u64; 512], next: usize| {
+        if li < n && (ii >= next || weight[li] <= weight[ii]) {
+            li += 1;
+            li - 1
+        } else {
+            ii += 1;
+            ii - 1
+        }
+    };
+    for _ in 0..n - 1 {
+        let a = take(&weight, next);
+        let b = take(&weight, next);
+        weight[next] = weight[a] + weight[b];
+        parent[a] = next as u16;
+        parent[b] = next as u16;
+        next += 1;
+    }
+    // Depths, from the root (the last node) down.
+    let mut depth = [0u8; 512];
+    let mut lengths = [0u8; 256];
+    for i in (0..next - 1).rev() {
+        let d = depth[usize::from(parent[i])] + 1;
+        if i < n {
+            if u32::from(d) > limit {
+                return None;
+            }
+            lengths[(leaves[i] & 0xff) as usize] = d;
+        }
+        depth[i] = d;
+    }
+    Some(lengths)
+}
+
+/// Code lengths of at most `limit` bits, optimal for `counts` (package-merge).
+fn package_merge(counts: &[u32; 256], limit: u32) -> [u8; 256] {
     #[derive(Clone, Copy)]
     struct Item {
         w: u64,
@@ -265,14 +376,27 @@ impl Encoder {
             .sum()
     }
 
+    #[inline(never)]
     fn stream(&self, data: &[u8], out: &mut Vec<u8>) {
         let mut w = BitWriter::new(out);
-        for &b in data.iter().rev() {
-            w.put(
+        // Four codes of at most 11 bits between flushes.
+        let mut chunks = data.rchunks_exact(4);
+        for c in &mut chunks {
+            for &b in c.iter().rev() {
+                w.add(
+                    u64::from(self.codes[usize::from(b)]),
+                    u32::from(self.lens[usize::from(b)]),
+                );
+            }
+            w.flush_bytes();
+        }
+        for &b in chunks.remainder().iter().rev() {
+            w.add(
                 u64::from(self.codes[usize::from(b)]),
                 u32::from(self.lens[usize::from(b)]),
             );
         }
+        w.flush_bytes();
         w.close();
     }
 

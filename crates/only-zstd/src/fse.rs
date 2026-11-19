@@ -435,6 +435,16 @@ impl CTable {
         *state = u32::from(self.states[((*state >> nb) as i32 + dfs) as usize]);
     }
 
+    /// [`CTable::encode`] with [`BitWriter::add`](crate::bits::BitWriter::add): the caller
+    /// flushes.
+    #[inline(always)]
+    pub(crate) fn encode_add(&self, w: &mut crate::bits::BitWriter<'_>, state: &mut u32, sym: u8) {
+        let (dfs, dnb) = self.tt[usize::from(sym)];
+        let nb = (state.wrapping_add(dnb)) >> 16;
+        w.add(u64::from(*state), nb);
+        *state = u32::from(self.states[((*state >> nb) as i32 + dfs) as usize]);
+    }
+
     /// Writes the final state.
     pub(crate) fn flush(&self, w: &mut crate::bits::BitWriter<'_>, state: u32) {
         w.put(u64::from(state), self.table_log);
