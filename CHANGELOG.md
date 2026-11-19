@@ -59,6 +59,43 @@ ADR-045 (docs/adr/045-dtls13-cid-updates-pha-early-data.md), additive and off by
   `dtls-hs-bench` (handshakes per second, DTLS 1.3 records). Non-ECDHE key exchanges and CBC
   suites stay out on purpose (README, ADR-045).
 
+### Added: certificate policies, indirect CRLs, Ed448, X448 and DSA verification (only-x509, only-crypto, only-tls)
+
+ADR-046 (docs/adr/046-x509-policies-indirect-crls-ed448-dsa.md):
+
+- **only-x509**: certificate policy processing (RFC 5280 §6.1 on the RFC 9618 policy graph):
+  `Verifier::policies(PolicyOptions)` (initial policy set, explicit policy, inhibit policy
+  mapping / anyPolicy), `Verifier::verify_path` → `VerifiedPath { chain, policies:
+  ValidPolicies }`, `Error::PolicyViolation`; `Certificate::{certificate_policies,
+  policy_mappings, policy_constraints, inhibit_any_policy, is_self_issued}`,
+  `PolicyConstraints`, `ext::{ANY_POLICY, POLICY_MAPPINGS, POLICY_CONSTRAINTS,
+  INHIBIT_ANY_POLICY}`. Indirect CRLs and CRLs signed by another key of the CA (the signer's
+  path is validated to the same root, with revocation): `Verifier::crl_signers`,
+  `Crl::find_for`, `RevokedCertificate::certificate_issuer`,
+  `DistributionPoint::relative_name`, `IssuingDistributionPoint::relative_name` (new public
+  fields); CRL scopes now follow the certificate's distribution points and their reasons.
+  rfc822Name and URI name constraints (and the subject's emailAddress), self-issued
+  intermediates exempt from name constraints and pathLen, `Verifier::allow_ca_end_entity`,
+  `attr::EMAIL_ADDRESS`; Ed448 and DSA certificates and CRLs. NIST PKITS harness
+  (`tests/pkits.rs`, `tools/pkits/prepare.sh`): 242/248 runs as expected.
+- **only-crypto**: `hash::{Shake128, Shake256}`, `ed448`, `x448`, `dsa` (verification only),
+  `rsa::HashAlg::Sha224`, `pkey::SignatureAlgorithm::{Ed448, DsaSha1, DsaSha224, DsaSha256}`,
+  `pkey::{PublicKey, PrivateKey}::Ed448`, `pkey::PublicKey::Dsa`, `der::oid::{ED448, X448, DSA,
+  DSA_WITH_SHA1, DSA_WITH_SHA224, DSA_WITH_SHA256}`; `pk_bench 448`; ct-dudect targets `x448`,
+  `ed448-keygen`, `ed448-sign`.
+- **only-tls**: group x448 (0x001e, offered last) and signature scheme ed448 (0x0808), TLS 1.3
+  and 1.2; interop cases against OpenSSL in `tools/interop/tls/run.sh`.
+- Fuzz targets `x509_policy` and `crypto_ed448_dsa`; `x509_parse` and `x509_crl` cover the new
+  extensions and indirect-CRL entries.
+
+### Changed: path validation details (only-x509)
+
+- With CRLs configured, revocation is checked once a candidate path reaches a root (top down)
+  instead of while it is built. Paths whose policyConstraints require an explicit policy that
+  is absent now fail (`Error::PolicyViolation`), and a certificate with a malformed policy
+  extension no longer parses. CRL serial numbers compare as signed INTEGERs (a CRL entry for −1
+  no longer matches serial 255), and `CrlParams` / OCSP CertIDs write serials as given.
+
 ### Added: FEC, RTCP XR, TMMBR and RFC 8888 feedback in WebRTC peers (only-webrtc, only-rtp)
 
 ADR-039 (docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.md), additive and off by default (a default peer's

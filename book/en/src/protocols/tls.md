@@ -46,9 +46,9 @@ connection.
 
 | | TLS 1.3 (RFC 8446) | TLS 1.2 (RFC 5246) |
 |---|---|---|
-| key exchange | X25519, secp256r1, secp384r1; HelloRetryRequest | ECDHE on the same groups (no RSA key exchange, no static DH) |
+| key exchange | X25519, secp256r1, secp384r1, x448 (offered last); HelloRetryRequest | ECDHE on the same groups (no RSA key exchange, no static DH) |
 | cipher suites | AES-128-GCM-SHA256, AES-256-GCM-SHA384, CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA with AES-128/256-GCM and CHACHA20-POLY1305 (no CBC) |
-| certificates | ECDSA P-256/P-384, Ed25519, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
+| certificates | ECDSA P-256/P-384, Ed25519, Ed448, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
 | resumption | tickets + PSK (`psk_dhe_ke`): stateless with `.session_tickets(true)`, single-use cached tickets with the session cache | session IDs (cache) and RFC 5077 tickets |
 | other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped), certificate compression (RFC 8879: zlib, brotli, zstd) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
 | record_size_limit (RFC 8449) | yes | yes |
@@ -256,7 +256,9 @@ let cfg = ClientConfig::builder()
   covered; resumed sessions are not checked again.
 - **CRLs** (`.crls` on the client, `.client_crls` on the server for client certificates): every
   certificate below the root is checked against current CRLs of its issuer (complete and delta,
-  issuingDistributionPoint scopes, signatures checked once). A listed certificate fails with
+  issuingDistributionPoint scopes, signatures checked once), including indirect CRLs and CRLs
+  signed by another key of the CA when the signing certificate is in the presented chain or the
+  roots and itself validates to the same root (ADR-046). A listed certificate fails with
   `certificate_revoked`; under `HardFail` one with no current CRL fails with
   `certificate_unknown`. To refresh, build a new configuration.
 
@@ -276,7 +278,7 @@ on a NIC with TLS offload.
 
 ## Not done
 
-Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`), indirect CRLs;
+Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`);
 RSA-PSS keys
 (`rsa_pss_pss_*`); P-521; the Windows certificate store and macOS trust settings.
 

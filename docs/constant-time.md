@@ -55,6 +55,9 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
 | `x25519` | X25519 ladder: all-zero scalar (2²⁵⁴ after clamping) vs random, fixed peer |
 | `x25519-keygen` | X25519 public key (Edwards fixed-base): all-zero vs random scalar |
 | `ed25519-sign` | Ed25519 sign: all-zero seed vs random seed, fixed message |
+| `x448` | X448 ladder: all-zero scalar (2⁴⁴⁷ after clamping) vs random, fixed peer (portable only: no hardware path, first pass) |
+| `ed448-keygen` | Ed448 key from a seed (SHAKE256, `[s]B` with masked table scans): all-zero vs random seed |
+| `ed448-sign` | Ed448 sign (`[r]B`, scalar arithmetic modulo ℓ): all-zero vs random seed, fixed message |
 | `rsa2048-sign-msg` | RSA-2048 PKCS#1 v1.5 sign (CRT, blinding): all-zero digest vs random digest |
 | `rsa2048-sign-key` | RSA-2048 sign: test key A vs test key B (two fixed keys: a random 2048-bit key per measurement is too slow to make) |
 | `aes128-gcm-open-tag` | AES-128-GCM open, 256 bytes: tag wrong in the last byte vs random tag (how much of the tag matches) |
@@ -155,3 +158,8 @@ Reading:
   and the inversion have no secret-dependent branch in the disassembly.
 - Neither finding changes code. A longer run on a quiet host (and on a fixed core clock) is the
   next step for both.
+
+Ed448 and X448 (2026-11-19, ADR-046), same host and method, through `quiet.sh`, core 2, 60 s per
+target; these targets have no hardware path, so one pass covers them: `x448` 0.79 (226,650
+measurements), `ed448-keygen` 1.68 (232,300), `ed448-sign` 1.34 (105,600), `sanity-null` 2.05
+(10⁸). No difference seen.

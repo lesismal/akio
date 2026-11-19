@@ -20,6 +20,9 @@ pub mod attr {
     pub const ORGANIZATION: &[u8] = &[0x55, 0x04, 0x0a];
     /// organizationalUnitName, 2.5.4.11.
     pub const ORGANIZATIONAL_UNIT: &[u8] = &[0x55, 0x04, 0x0b];
+    /// emailAddress (PKCS #9), 1.2.840.113549.1.9.1: a legacy e-mail address in a subject
+    /// name, checked against rfc822Name constraints (RFC 5280 §4.2.1.10).
+    pub const EMAIL_ADDRESS: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01];
 }
 
 /// One attribute of a distinguished name: type, string tag and value bytes.

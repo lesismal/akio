@@ -10,7 +10,8 @@ use only_crypto::pkey::{PrivateKey, SignatureAlgorithm};
 
 use crate::Error;
 use crate::cert::{
-    Certificate, Extension, KeyUsage, ext, read_dp_name, read_extension_list, read_extensions,
+    Certificate, Extension, KeyUsage, append_rdn, ext, read_dp_name, read_extension_list,
+    read_extensions, read_general_names,
 };
 use crate::name::{GeneralName, Name};
 use crate::revocation::{ReasonFlags, RevocationReason, RevocationStatus, is_current, uint_cmp};
@@ -27,6 +28,10 @@ pub struct RevokedCertificate {
     pub reason: Option<RevocationReason>,
     /// invalidityDate, Unix seconds, if present.
     pub invalidity_date: Option<i64>,
+    /// The issuer of the revoked certificate in an indirect CRL: the certificateIssuer of
+    /// this entry or the closest preceding entry that has one (RFC 5280 §5.3.3); `None`
+    /// means the CRL issuer.
+    pub certificate_issuer: Option<Vec<GeneralName>>,
 }
 
 /// issuingDistributionPoint (RFC 5280 §5.2.5): the scope of a CRL.
@@ -34,22 +39,25 @@ pub struct RevokedCertificate {
 pub struct IssuingDistributionPoint {
     /// distributionPoint as fullName (empty when absent or nameRelativeToCRLIssuer).
     pub full_name: Vec<GeneralName>,
+    /// distributionPoint as nameRelativeToCRLIssuer: the DER `RelativeDistinguishedName`
+    /// (a SET) appended to the CRL issuer's name.
+    pub relative_name: Option<Vec<u8>>,
     /// onlyContainsUserCerts: covers end-entity certificates only.
     pub only_user_certs: bool,
     /// onlyContainsCACerts: covers CA certificates only.
     pub only_ca_certs: bool,
     /// onlySomeReasons: covers only these reasons.
     pub only_some_reasons: Option<ReasonFlags>,
-    /// indirectCRL: entries may belong to other issuers (not supported for lookups: such a
-    /// CRL is never used).
+    /// indirectCRL: entries may belong to other issuers (certificateIssuer entry extensions),
+    /// for certificates whose distribution point names this CRL issuer as cRLIssuer.
     pub indirect_crl: bool,
     /// onlyContainsAttributeCerts: covers attribute certificates only (never used here).
     pub only_attribute_certs: bool,
 }
 
 /// A parsed CRL (`CertificateList`). Parsing checks the structure and the extensions RFC 5280
-/// defines; an unknown critical CRL or entry extension (indirect CRLs' certificateIssuer
-/// included) is recorded, and such a CRL is never used for status lookups.
+/// defines; an unknown critical CRL or entry extension is recorded, and such a CRL is never
+/// used for status lookups.
 #[derive(Debug, Clone)]
 pub struct Crl {
     der: Vec<u8>,
@@ -77,6 +85,13 @@ impl PartialEq for Crl {
     }
 }
 impl Eq for Crl {}
+
+/// An order of serial numbers (minimal INTEGER contents, so equal values have equal bytes;
+/// negative serials, which some CAs issued, are distinct from the positive value with the
+/// same magnitude bytes).
+fn serial_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
 
 fn range(outer: &[u8], inner: &[u8]) -> (usize, usize) {
     let start = inner.as_ptr() as usize - outer.as_ptr() as usize;
@@ -116,7 +131,7 @@ fn read_idp(v: &[u8]) -> Result<IssuingDistributionPoint, Error> {
     r.finish()?;
     let mut idp = IssuingDistributionPoint::default();
     if let Some(c) = s.read_optional(tag::explicit(0))? {
-        idp.full_name = read_dp_name(c)?;
+        (idp.full_name, idp.relative_name) = read_dp_name(c)?;
     }
     if let Some(c) = s.read_optional(tag::implicit(1))? {
         idp.only_user_certs = read_implicit_bool(c)?;
@@ -174,6 +189,7 @@ impl Crl {
         let next_update = read_time_opt(&mut t)?;
         let mut unsupported_critical = None;
         let mut revoked = Vec::new();
+        let mut current_issuer: Option<Vec<GeneralName>> = None;
         if t.peek_tag() == Some(tag::SEQUENCE) {
             let mut list = t.sequence()?;
             while !list.is_empty() {
@@ -187,6 +203,7 @@ impl Crl {
                     revocation_date: read_time(&mut e)?,
                     reason: None,
                     invalidity_date: None,
+                    certificate_issuer: None,
                 };
                 if !e.is_empty() {
                     if version < 2 {
@@ -209,6 +226,11 @@ impl Crl {
                                 v.finish()?;
                             }
                             ext::HOLD_INSTRUCTION_CODE => {}
+                            ext::CERTIFICATE_ISSUER => {
+                                let names = read_general_names(v.sequence()?)?;
+                                v.finish()?;
+                                current_issuer = Some(names);
+                            }
                             _ => {
                                 if x.critical && unsupported_critical.is_none() {
                                     unsupported_critical = Some(x.oid.clone());
@@ -218,6 +240,7 @@ impl Crl {
                     }
                     e.finish()?;
                 }
+                entry.certificate_issuer.clone_from(&current_issuer);
                 revoked.push(entry);
             }
         }
@@ -265,7 +288,7 @@ impl Crl {
             }
         }
         // Sorted by serial for lookups (a stable sort keeps duplicate entries in order).
-        crl.revoked.sort_by(|a, b| uint_cmp(&a.serial, &b.serial));
+        crl.revoked.sort_by(|a, b| serial_cmp(&a.serial, &b.serial));
         crl.der = der;
         Ok(crl)
     }
@@ -335,9 +358,28 @@ impl Crl {
     #[must_use]
     pub fn find(&self, serial: &[u8]) -> Option<&RevokedCertificate> {
         self.revoked
-            .binary_search_by(|e| uint_cmp(&e.serial, serial))
+            .binary_search_by(|e| serial_cmp(&e.serial, serial))
             .ok()
             .map(|i| &self.revoked[i])
+    }
+
+    /// The entry for the certificate with `serial` issued by `issuer`: in an indirect CRL,
+    /// entries belong to the issuer their certificateIssuer names (the CRL issuer by
+    /// default).
+    #[must_use]
+    pub fn find_for(&self, serial: &[u8], issuer: &Name) -> Option<&RevokedCertificate> {
+        let start = self
+            .revoked
+            .partition_point(|e| serial_cmp(&e.serial, serial) == Ordering::Less);
+        self.revoked[start..]
+            .iter()
+            .take_while(|e| serial_cmp(&e.serial, serial) == Ordering::Equal)
+            .find(|e| match &e.certificate_issuer {
+                None => &self.issuer == issuer,
+                Some(names) => names
+                    .iter()
+                    .any(|n| matches!(n, GeneralName::DirectoryName(d) if d == issuer)),
+            })
     }
 
     /// All CRL extensions, in order.
@@ -424,44 +466,94 @@ impl Crl {
         Ok(())
     }
 
-    /// Whether this CRL may answer for `cert`: usable (no unsupported critical extension,
-    /// not indirect, not attribute-only) and in scope (the issuingDistributionPoint's user/CA
-    /// restriction and distribution point name).
-    fn covers(&self, cert: &Certificate) -> bool {
+    /// The reasons this CRL can answer for `cert` (RFC 5280 §6.3.3 (b) and (d)), or `None` if
+    /// it cannot: usable (no unsupported critical extension, not attribute-only), the
+    /// issuingDistributionPoint's user/CA restriction, and for some distribution point of the
+    /// certificate (or, without any, the certificate's issuer) a matching CRL issuer (the
+    /// certificate's issuer, or the point's cRLIssuer for an indirect CRL) and distribution
+    /// point name. The reasons are the union over the matching points of the IDP's
+    /// onlySomeReasons intersected with the point's reasons.
+    fn scope(&self, cert: &Certificate) -> Option<ReasonFlags> {
         if self.unsupported_critical.is_some() {
-            return false;
+            return None;
         }
-        let Some(idp) = &self.idp else {
-            return true;
-        };
-        if idp.indirect_crl || idp.only_attribute_certs {
-            return false;
+        let idp = self.idp.as_ref();
+        if let Some(idp) = idp {
+            if idp.only_attribute_certs
+                || (idp.only_user_certs && cert.is_ca())
+                || (idp.only_ca_certs && !cert.is_ca())
+            {
+                return None;
+            }
         }
-        if (idp.only_user_certs && cert.is_ca()) || (idp.only_ca_certs && !cert.is_ca()) {
-            return false;
-        }
-        if idp.full_name.is_empty() {
-            return true;
-        }
-        // RFC 5280 §6.3.3 (b)(2)(i): a name of the IDP must match one of the certificate's
-        // distribution points or, without them, the CRL issuer.
+        let indirect = idp.is_some_and(|i| i.indirect_crl);
+        let idp_reasons = idp
+            .and_then(|i| i.only_some_reasons)
+            .unwrap_or(ReasonFlags::ALL);
+        let idp_names = idp
+            .map(|i| dp_names(&i.full_name, i.relative_name.as_deref(), &self.issuer))
+            .unwrap_or_default();
         let dps = cert.crl_distribution_points();
         if dps.is_empty() {
-            return idp
-                .full_name
-                .iter()
-                .any(|n| matches!(n, GeneralName::DirectoryName(d) if d == &self.issuer));
+            if &self.issuer != cert.issuer() {
+                return None;
+            }
+            // Without distribution points, an IDP name must name the CRL issuer itself.
+            if !idp_names.is_empty()
+                && !idp_names
+                    .iter()
+                    .any(|n| matches!(n, GeneralName::DirectoryName(d) if d == &self.issuer))
+            {
+                return None;
+            }
+            return Some(idp_reasons);
         }
-        dps.iter()
-            .any(|dp| dp.full_name.iter().any(|n| idp.full_name.contains(n)))
+        let mut mask: Option<ReasonFlags> = None;
+        for dp in dps {
+            let crl_issuer_dn = dp.crl_issuer.iter().find_map(|n| match n {
+                GeneralName::DirectoryName(d) => Some(d),
+                _ => None,
+            });
+            if dp.crl_issuer.is_empty() {
+                if &self.issuer != cert.issuer() {
+                    continue;
+                }
+            } else if !indirect
+                || !dp
+                    .crl_issuer
+                    .iter()
+                    .any(|n| matches!(n, GeneralName::DirectoryName(d) if d == &self.issuer))
+            {
+                continue;
+            }
+            if !idp_names.is_empty() {
+                let base = crl_issuer_dn.unwrap_or_else(|| cert.issuer());
+                let names = dp_names(&dp.full_name, dp.relative_name.as_deref(), base);
+                let matched = if names.is_empty() {
+                    dp.crl_issuer.iter().any(|n| idp_names.contains(n))
+                } else {
+                    names.iter().any(|n| idp_names.contains(n))
+                };
+                if !matched {
+                    continue;
+                }
+            }
+            let r = ReasonFlags(idp_reasons.0 & dp.reasons.unwrap_or(ReasonFlags::ALL).0);
+            mask = Some(mask.unwrap_or_default().union(r));
+        }
+        mask
     }
+}
 
-    /// The reasons this CRL covers.
-    fn reasons(&self) -> ReasonFlags {
-        self.idp
-            .as_ref()
-            .and_then(|i| i.only_some_reasons)
-            .unwrap_or(ReasonFlags::ALL)
+/// The names of a distribution point: its fullName, or `base` with its relative name
+/// appended.
+fn dp_names(full: &[GeneralName], relative: Option<&[u8]>, base: &Name) -> Vec<GeneralName> {
+    match relative {
+        Some(rdn) => append_rdn(base, rdn)
+            .map(GeneralName::DirectoryName)
+            .into_iter()
+            .collect(),
+        None => full.to_vec(),
     }
 }
 
@@ -519,14 +611,18 @@ impl CrlSet {
     }
 
     /// The status of `cert`, issued by `issuer`, at `now` (Unix seconds) with `skew` seconds
-    /// of tolerance (RFC 5280 §6.3, without indirect CRLs):
+    /// of tolerance (RFC 5280 §6.3), using only CRLs signed by `issuer` itself:
     ///
-    /// - CRLs used: issued by `issuer` (same name, signature by its key, cRLSign), current,
-    ///   in scope (issuingDistributionPoint), with no unsupported critical extension.
+    /// - CRLs used: signed by `issuer` (same name, signature by its key, cRLSign), current,
+    ///   in scope (issuingDistributionPoint against the certificate's distribution points),
+    ///   with no unsupported critical extension.
     /// - Revoked when a complete CRL lists the serial (removeFromCRL entries ignored), or a
     ///   delta CRL based on a used complete CRL lists it; a delta's removeFromCRL lifts a
     ///   certificateHold.
     /// - Good when the used complete CRLs together cover every reason; Unknown otherwise.
+    ///
+    /// [`Verifier::crls`](crate::Verifier::crls) also uses indirect CRLs and CRLs signed by
+    /// another key of the issuer, validating the CRL signer's own path to the same root.
     #[must_use]
     pub fn status(
         &self,
@@ -538,23 +634,32 @@ impl CrlSet {
         if cert.issuer().as_der() != issuer.subject().as_der() {
             return RevocationStatus::Unknown;
         }
-        let usable = |c: &&Crl| {
-            c.issuer.as_der() == issuer.subject().as_der()
-                && c.covers(cert)
-                && c.is_current(now, skew)
-                && c.verify_signed_by(issuer).is_ok()
-        };
+        self.status_with(cert, now, skew, &mut |c| c.verify_signed_by(issuer).is_ok())
+    }
+
+    /// [`status`](Self::status) with the CRL signer check left to `signed`: whether a CRL is
+    /// authentic (signed by a key that validates for the CRL's issuer name, with cRLSign).
+    pub(crate) fn status_with(
+        &self,
+        cert: &Certificate,
+        now: i64,
+        skew: u32,
+        signed: &mut dyn FnMut(&Crl) -> bool,
+    ) -> RevocationStatus {
         let mut covered = ReasonFlags::default();
         let mut found: Option<RevocationStatus> = None;
-        let mut newest: Option<&[u8]> = None;
-        for c in self.crls.iter().filter(|c| !c.is_delta()).filter(usable) {
-            covered = covered.union(c.reasons());
-            if let Some(n) = c.crl_number.as_deref() {
-                if newest.is_none_or(|m| uint_cmp(n, m) == Ordering::Greater) {
-                    newest = Some(n);
-                }
+        // The complete CRLs used, with their numbers.
+        let mut used: Vec<&Crl> = Vec::new();
+        for c in self.crls.iter().filter(|c| !c.is_delta()) {
+            let Some(reasons) = c.scope(cert) else {
+                continue;
+            };
+            if !c.is_current(now, skew) || !signed(c) {
+                continue;
             }
-            if let Some(e) = c.find(cert.serial()) {
+            covered = covered.union(reasons);
+            used.push(c);
+            if let Some(e) = c.find_for(cert.serial(), cert.issuer()) {
                 if e.reason != Some(RevocationReason::RemoveFromCrl) && found.is_none() {
                     found = Some(RevocationStatus::Revoked {
                         time: e.revocation_date,
@@ -566,44 +671,52 @@ impl CrlSet {
         if !covered.contains(ReasonFlags::ALL) {
             return found.unwrap_or(RevocationStatus::Unknown);
         }
-        // Deltas: the newest one whose base is a CRL we used (base number <= our newest
-        // complete CRL's number) and that is newer than it.
-        if let Some(base) = newest {
-            let delta = self
-                .crls
-                .iter()
-                .filter(|c| c.is_delta())
-                .filter(|c| {
-                    c.delta_base
-                        .as_deref()
-                        .is_some_and(|b| uint_cmp(b, base) != Ordering::Greater)
-                        && c.crl_number
+        // Deltas: the newest one with the same issuer and scope as a used complete CRL, whose
+        // base is that CRL or older (base number <= its number) and that is newer than it.
+        let base_of = |d: &Crl| {
+            used.iter().any(|c| {
+                c.issuer == d.issuer
+                    && c.idp == d.idp
+                    && c.crl_number.as_deref().is_some_and(|n| {
+                        d.delta_base
                             .as_deref()
-                            .is_some_and(|n| uint_cmp(n, base) == Ordering::Greater)
-                })
-                .filter(usable)
-                .max_by(|a, b| {
-                    uint_cmp(
-                        a.crl_number.as_deref().unwrap_or_default(),
-                        b.crl_number.as_deref().unwrap_or_default(),
-                    )
-                });
-            if let Some(d) = delta {
-                if let Some(e) = d.find(cert.serial()) {
-                    if e.reason == Some(RevocationReason::RemoveFromCrl) {
-                        if let Some(RevocationStatus::Revoked {
-                            reason: Some(RevocationReason::CertificateHold),
-                            ..
-                        }) = found
-                        {
-                            found = None;
-                        }
-                    } else {
-                        found = Some(RevocationStatus::Revoked {
-                            time: e.revocation_date,
-                            reason: e.reason,
-                        });
+                            .is_some_and(|b| uint_cmp(b, n) != Ordering::Greater)
+                            && d.crl_number
+                                .as_deref()
+                                .is_some_and(|dn| uint_cmp(dn, n) == Ordering::Greater)
+                    })
+            })
+        };
+        let mut delta: Option<&Crl> = None;
+        for d in self.crls.iter().filter(|c| c.is_delta()) {
+            if !base_of(d) || d.scope(cert).is_none() || !d.is_current(now, skew) {
+                continue;
+            }
+            let newer = delta.is_none_or(|x| {
+                uint_cmp(
+                    d.crl_number.as_deref().unwrap_or_default(),
+                    x.crl_number.as_deref().unwrap_or_default(),
+                ) == Ordering::Greater
+            });
+            if newer && signed(d) {
+                delta = Some(d);
+            }
+        }
+        if let Some(d) = delta {
+            if let Some(e) = d.find_for(cert.serial(), cert.issuer()) {
+                if e.reason == Some(RevocationReason::RemoveFromCrl) {
+                    if let Some(RevocationStatus::Revoked {
+                        reason: Some(RevocationReason::CertificateHold),
+                        ..
+                    }) = found
+                    {
+                        found = None;
                     }
+                } else {
+                    found = Some(RevocationStatus::Revoked {
+                        time: e.revocation_date,
+                        reason: e.reason,
+                    });
                 }
             }
         }
@@ -651,6 +764,7 @@ impl CrlParams {
             revocation_date: self.this_update,
             reason,
             invalidity_date: None,
+            certificate_issuer: None,
         });
         self
     }
@@ -683,9 +797,12 @@ impl CrlParams {
                 w.sequence(|w| {
                     for e in &self.revoked {
                         w.sequence(|w| {
-                            w.uint(&e.serial);
+                            w.tlv(tag::INTEGER, &e.serial);
                             write_time(w, e.revocation_date);
-                            if e.reason.is_some() || e.invalidity_date.is_some() {
+                            if e.reason.is_some()
+                                || e.invalidity_date.is_some()
+                                || e.certificate_issuer.is_some()
+                            {
                                 w.sequence(|w| {
                                     if let Some(r) = e.reason {
                                         extension(w, ext::REASON_CODE, false, &|w| {
@@ -695,6 +812,15 @@ impl CrlParams {
                                     if let Some(t) = e.invalidity_date {
                                         extension(w, ext::INVALIDITY_DATE, false, &|w| {
                                             write_generalized_time(w, t);
+                                        });
+                                    }
+                                    if let Some(names) = &e.certificate_issuer {
+                                        extension(w, ext::CERTIFICATE_ISSUER, true, &|w| {
+                                            w.sequence(|w| {
+                                                for n in names {
+                                                    n.write(w);
+                                                }
+                                            });
                                         });
                                     }
                                 });
@@ -744,7 +870,13 @@ impl Default for CrlParams {
 
 fn write_idp(w: &mut Writer, idp: &IssuingDistributionPoint) {
     w.sequence(|w| {
-        if !idp.full_name.is_empty() {
+        if let Some(rdn) = &idp.relative_name {
+            // [0] { [1] IMPLICIT RelativeDistinguishedName }: re-tag the SET's contents.
+            let mut rr = Reader::new(rdn);
+            if let Ok((_, c, _)) = rr.read_tlv() {
+                w.nested(tag::explicit(0), |w| w.tlv(tag::explicit(1), c));
+            }
+        } else if !idp.full_name.is_empty() {
             w.nested(tag::explicit(0), |w| {
                 w.nested(tag::explicit(0), |w| {
                     for n in &idp.full_name {

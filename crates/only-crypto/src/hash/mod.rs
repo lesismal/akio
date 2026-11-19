@@ -1,4 +1,6 @@
-//! Hash functions: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4) and MD5 (RFC 1321).
+//! Hash functions: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4) and MD5 (RFC 1321),
+//! and the extendable-output functions SHAKE128 and SHAKE256 (FIPS 202; [`Shake256`] has its own
+//! `squeeze` interface instead of the [`Hash`] trait).
 //!
 //! Each type hashes incrementally ([`update`](Hash::update) any number of times, then
 //! [`finalize`](Hash::finalize)) or in one call ([`digest`](Hash::digest)). The same methods
@@ -22,10 +24,12 @@ mod hw;
 mod md5;
 mod sha1;
 mod sha256;
+mod sha3;
 mod sha512;
 
 pub use md5::Md5;
 pub use sha1::Sha1;
+pub use sha3::{Shake128, Shake256};
 pub use sha256::{Sha224, Sha256};
 pub use sha512::{Sha384, Sha512};
 

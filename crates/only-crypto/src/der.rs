@@ -90,6 +90,18 @@ pub mod oid {
     pub const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
     /// id-X25519, 1.3.101.110.
     pub const X25519: &[u8] = &[0x2b, 0x65, 0x6e];
+    /// id-X448, 1.3.101.111.
+    pub const X448: &[u8] = &[0x2b, 0x65, 0x6f];
+    /// id-Ed448, 1.3.101.113.
+    pub const ED448: &[u8] = &[0x2b, 0x65, 0x71];
+    /// id-dsa, 1.2.840.10040.4.1.
+    pub const DSA: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01];
+    /// id-dsa-with-sha1, 1.2.840.10040.4.3.
+    pub const DSA_WITH_SHA1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x03];
+    /// id-dsa-with-sha224, 2.16.840.1.101.3.4.3.1.
+    pub const DSA_WITH_SHA224: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x01];
+    /// id-dsa-with-sha256, 2.16.840.1.101.3.4.3.2.
+    pub const DSA_WITH_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x02];
     /// rsaEncryption, 1.2.840.113549.1.1.1.
     pub const RSA_ENCRYPTION: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
     /// sha1WithRSAEncryption, 1.2.840.113549.1.1.5.

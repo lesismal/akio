@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use crate::Error;
 use crate::bignum::{self, Mont};
-use crate::hash::{Hash, Sha1, Sha256, Sha384, Sha512};
+use crate::hash::{Hash, Sha1, Sha224, Sha256, Sha384, Sha512};
 
 /// The smallest accepted modulus in bits.
 pub const MIN_BITS: usize = 2048;
@@ -27,6 +27,8 @@ pub const MAX_BITS: usize = 8192;
 pub enum HashAlg {
     /// SHA-1: legacy, for verifying old signatures only.
     Sha1,
+    /// SHA-224 (DSA signatures; not offered for RSA signing).
+    Sha224,
     /// SHA-256.
     Sha256,
     /// SHA-384.
@@ -41,6 +43,7 @@ impl HashAlg {
     pub fn output_len(self) -> usize {
         match self {
             HashAlg::Sha1 => 20,
+            HashAlg::Sha224 => 28,
             HashAlg::Sha256 => 32,
             HashAlg::Sha384 => 48,
             HashAlg::Sha512 => 64,
@@ -63,6 +66,7 @@ impl HashAlg {
         }
         match self {
             HashAlg::Sha1 => run::<Sha1>(parts),
+            HashAlg::Sha224 => run::<Sha224>(parts),
             HashAlg::Sha256 => run::<Sha256>(parts),
             HashAlg::Sha384 => run::<Sha384>(parts),
             HashAlg::Sha512 => run::<Sha512>(parts),
@@ -75,6 +79,10 @@ impl HashAlg {
             HashAlg::Sha1 => &[
                 0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04,
                 0x14,
+            ],
+            HashAlg::Sha224 => &[
+                0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x04, 0x05, 0x00, 0x04, 0x1c,
             ],
             HashAlg::Sha256 => &[
                 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,

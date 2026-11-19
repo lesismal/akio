@@ -9,6 +9,7 @@ pub(crate) const ECDSA_P256_SHA256: u16 = 0x0403;
 pub(crate) const ECDSA_P384_SHA384: u16 = 0x0503;
 pub(crate) const ECDSA_P521_SHA512: u16 = 0x0603;
 pub(crate) const ED25519: u16 = 0x0807;
+pub(crate) const ED448: u16 = 0x0808;
 pub(crate) const PSS_SHA256: u16 = 0x0804;
 pub(crate) const PSS_SHA384: u16 = 0x0805;
 pub(crate) const PSS_SHA512: u16 = 0x0806;
@@ -22,6 +23,7 @@ pub(crate) const SUPPORTED: &[u16] = &[
     ECDSA_P256_SHA256,
     ECDSA_P384_SHA384,
     ED25519,
+    ED448,
     PSS_SHA256,
     PSS_SHA384,
     PSS_SHA512,
@@ -36,6 +38,7 @@ fn algorithm(scheme: u16) -> Option<A> {
         ECDSA_P384_SHA384 => A::EcdsaSha384,
         ECDSA_P521_SHA512 => A::EcdsaSha512,
         ED25519 => A::Ed25519,
+        ED448 => A::Ed448,
         PSS_SHA256 => A::RsaPssSha256,
         PSS_SHA384 => A::RsaPssSha384,
         PSS_SHA512 => A::RsaPssSha512,
@@ -50,6 +53,7 @@ fn algorithm(scheme: u16) -> Option<A> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Ed25519,
+    Ed448,
     P256,
     P384,
     Rsa,
@@ -59,6 +63,7 @@ enum Kind {
 fn public_kind(key: &PublicKey) -> Kind {
     match key {
         PublicKey::Ed25519(_) => Kind::Ed25519,
+        PublicKey::Ed448(_) => Kind::Ed448,
         PublicKey::P256(_) => Kind::P256,
         PublicKey::P384(_) => Kind::P384,
         PublicKey::Rsa(_) => Kind::Rsa,
@@ -70,6 +75,7 @@ fn public_kind(key: &PublicKey) -> Kind {
 fn private_kind(key: &PrivateKey) -> Kind {
     match key {
         PrivateKey::Ed25519(_) => Kind::Ed25519,
+        PrivateKey::Ed448(_) => Kind::Ed448,
         PrivateKey::P256(_) => Kind::P256,
         PrivateKey::P384(_) => Kind::P384,
         PrivateKey::Rsa(_) => Kind::Rsa,
@@ -86,6 +92,7 @@ pub(crate) fn is_rsa(key: &PrivateKey) -> bool {
 fn fits(scheme: u16, kind: Kind, tls13: bool) -> bool {
     match kind {
         Kind::Ed25519 => scheme == ED25519,
+        Kind::Ed448 => scheme == ED448,
         Kind::P256 => scheme == ECDSA_P256_SHA256 || (!tls13 && scheme == ECDSA_P384_SHA384),
         Kind::P384 => scheme == ECDSA_P384_SHA384 || (!tls13 && scheme == ECDSA_P256_SHA256),
         Kind::Rsa => {
@@ -148,12 +155,13 @@ pub(crate) fn tls13_content(server: bool, transcript_hash: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use only_crypto::{ed25519, p256, p384};
+    use only_crypto::{ed448, ed25519, p256, p384};
 
     #[test]
     fn choose_sign_verify() {
         let keys = [
             PrivateKey::Ed25519(ed25519::SigningKey::from_seed(&[1; 32])),
+            PrivateKey::Ed448(ed448::SigningKey::from_seed(&[1; 57])),
             PrivateKey::P256(p256::SecretKey::generate().unwrap()),
             PrivateKey::P384(p384::SecretKey::generate().unwrap()),
         ];
@@ -168,9 +176,9 @@ mod tests {
             assert!(choose(k, &[0x0201], true).is_none());
         }
         // TLS 1.3 binds the curve: a P-256 key cannot use the P-384 scheme.
-        assert_eq!(choose(&keys[1], &[ECDSA_P384_SHA384], true), None);
+        assert_eq!(choose(&keys[2], &[ECDSA_P384_SHA384], true), None);
         assert_eq!(
-            choose(&keys[1], &[ECDSA_P384_SHA384], false),
+            choose(&keys[2], &[ECDSA_P384_SHA384], false),
             Some(ECDSA_P384_SHA384)
         );
         assert_eq!(tls13_content(true, b"h").len(), 64 + 33 + 1 + 1);

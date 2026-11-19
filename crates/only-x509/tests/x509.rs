@@ -537,3 +537,93 @@ fn spki_and_keys_from_certificates() {
         assert_eq!(PublicKey::from_spki_der(c.spki_der()).unwrap(), k);
     }
 }
+
+/// Ed448 and DSA certificates made by OpenSSL (`tests/data/ed448-dsa/gen.sh`): an Ed448 chain
+/// and signature, a DSA 2048/256 root signing P-256 leaves with dsa_with_SHA256, and its CRL.
+#[test]
+fn openssl_ed448_and_dsa() {
+    let at = 1_800_000_000; // inside the 20-year validity
+    let store = roots(&["ed448-dsa/ed448_root.pem"]);
+    let leaf = pem_certs("ed448-dsa/ed448_leaf.pem").remove(0);
+    assert_eq!(leaf.signature_algorithm(), Ok(SignatureAlgorithm::Ed448));
+    let v = Verifier::new(&store).at_time(at);
+    let path = v.verify_server(&leaf, &[], "ed448.test").unwrap();
+    assert_eq!(path.len(), 2);
+    assert!(matches!(leaf.public_key(), Ok(PublicKey::Ed448(_))));
+    // The PKCS#8 key loads, its public key matches, and Ed448 being deterministic, our
+    // signature equals OpenSSL's.
+    let key = PrivateKey::from_pem(&data("ed448-dsa/ed448_leaf.key")).unwrap();
+    assert_eq!(key.public_key(), leaf.public_key().unwrap());
+    let msg = data("ed448-dsa/msg.bin");
+    let sig = data("ed448-dsa/ed448.sig");
+    assert_eq!(key.sign(SignatureAlgorithm::Ed448, &msg).unwrap(), sig);
+    leaf.public_key()
+        .unwrap()
+        .verify(SignatureAlgorithm::Ed448, &msg, &sig)
+        .unwrap();
+    let mut bad = leaf.as_der().to_vec();
+    let n = bad.len();
+    bad[n - 10] ^= 1;
+    let bad = Certificate::from_der(bad).unwrap();
+    assert_eq!(
+        v.verify_server(&bad, &[], "ed448.test"),
+        Err(Error::BadSignature)
+    );
+    // Ed448 keys round-trip through PKCS#8 and sign certificates here too.
+    let again = PrivateKey::from_der(&key.to_pkcs8_der()).unwrap();
+    assert_eq!(again.to_pkcs8_der(), key.to_pkcs8_der());
+    let ca = CertificateParams::ca("Our Ed448 CA")
+        .self_signed(&key)
+        .unwrap();
+    assert_eq!(ca.signature_algorithm(), Ok(SignatureAlgorithm::Ed448));
+    ca.verify_signed_by(&key.public_key()).unwrap();
+
+    // DSA.
+    let store = roots(&["ed448-dsa/dsa_root.pem"]);
+    let dsa_root = pem_certs("ed448-dsa/dsa_root.pem").remove(0);
+    let PublicKey::Dsa(k) = dsa_root.public_key().unwrap() else {
+        panic!("not a DSA key");
+    };
+    assert_eq!((k.p_bits(), k.q_bits()), (2048, 256));
+    let v = Verifier::new(&store).at_time(at);
+    let good = pem_certs("ed448-dsa/dsa_leaf3.pem").remove(0);
+    let revoked = pem_certs("ed448-dsa/dsa_leaf4.pem").remove(0);
+    assert_eq!(
+        good.signature_algorithm(),
+        Ok(SignatureAlgorithm::DsaSha256)
+    );
+    v.verify_server(&good, &[], "dsa.test").unwrap();
+    v.verify_server(&revoked, &[], "dsa.test").unwrap();
+    let mut crls = only_x509::CrlSet::new();
+    assert_eq!(
+        crls.add_pem(&data("ed448-dsa/dsa_root.crl.pem")).unwrap(),
+        1
+    );
+    crls.crls()[0].verify_signed_by(&dsa_root).unwrap();
+    let v = v.crls(&crls);
+    v.verify_server(&good, &[], "dsa.test").unwrap();
+    assert_eq!(
+        v.verify_server(&revoked, &[], "dsa.test"),
+        Err(Error::Revoked(Some(
+            only_x509::RevocationReason::KeyCompromise
+        )))
+    );
+    // A corrupted DSA signature.
+    let mut bad = good.as_der().to_vec();
+    let n = bad.len();
+    bad[n - 5] ^= 1;
+    let bad = Certificate::from_der(bad).unwrap();
+    assert_eq!(
+        Verifier::new(&store)
+            .at_time(at)
+            .verify_server(&bad, &[], "dsa.test"),
+        Err(Error::BadSignature)
+    );
+    // DSA keys are verification-only: the SPKI round-trips.
+    assert_eq!(
+        PublicKey::from_spki_der(dsa_root.spki_der())
+            .unwrap()
+            .to_spki_der(),
+        dsa_root.spki_der()
+    );
+}

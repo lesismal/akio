@@ -1122,7 +1122,10 @@ impl Client {
             Some(Auth12::Rsa) => matches!(key, PublicKey::Rsa(_)),
             _ => matches!(
                 key,
-                PublicKey::P256(_) | PublicKey::P384(_) | PublicKey::Ed25519(_)
+                PublicKey::P256(_)
+                    | PublicKey::P384(_)
+                    | PublicKey::Ed25519(_)
+                    | PublicKey::Ed448(_)
             ),
         };
         if !ok_key {

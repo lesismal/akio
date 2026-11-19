@@ -1,12 +1,12 @@
 //! Public-key operations per second, only-crypto vs ring:
-//! `cargo run --release -p only-crypto --example pk_bench [rsa|p256]` (`rsa`, `p256`: those rows
-//! only).
+//! `cargo run --release -p only-crypto --example pk_bench [rsa|p256|448]` (`rsa`, `p256`: those
+//! rows only; `448`: Ed448, X448 and DSA, which ring does not have, next to Ed25519 and X25519).
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use only_crypto::pkey::{PrivateKey, SignatureAlgorithm};
-use only_crypto::{ed25519, p256, p384, x25519};
+use only_crypto::{ed448, ed25519, p256, p384, x448, x25519};
 use ring::signature::{self as rs, KeyPair as _};
 
 fn rate(mut f: impl FnMut()) -> f64 {
@@ -40,6 +40,10 @@ fn main() {
         rsa_all(&msg, &rand);
         return;
     }
+    if only.as_deref() == Some("448") {
+        curve448_dsa(&msg);
+        return;
+    }
     let all = only.is_none();
 
     // Ed25519.
@@ -50,6 +54,91 @@ fn main() {
     if all {
         rsa_all(&msg, &rand);
     }
+}
+
+/// A row without a ring counterpart: our rate and the reference (`vs`) rate of a related
+/// operation of ours, for the ratio.
+fn row_vs(name: &str, ours: f64, vs_name: &str, vs: f64) {
+    println!(
+        "{name:<28} {ours:>10.0} {:>10} {:>8.2}x of {vs_name}",
+        "-",
+        ours / vs
+    );
+}
+
+fn curve448_dsa(msg: &[u8; 64]) {
+    let e25 = ed25519::SigningKey::from_seed(&[1; 32]);
+    let s25 = e25.sign(msg);
+    let v25 = e25.verifying_key();
+    let ed25519_sign = rate(|| {
+        black_box(e25.sign(black_box(msg)));
+    });
+    let ed25519_verify = rate(|| v25.verify(black_box(msg), &s25).expect("verify"));
+    let k = ed448::SigningKey::from_seed(&[1; 57]);
+    let sig = k.sign(msg);
+    let vk = k.verifying_key();
+    row_vs(
+        "ed448 sign",
+        rate(|| {
+            black_box(k.sign(black_box(msg)));
+        }),
+        "ed25519",
+        ed25519_sign,
+    );
+    row_vs(
+        "ed448 verify",
+        rate(|| vk.verify(black_box(msg), &sig).expect("verify")),
+        "ed25519",
+        ed25519_verify,
+    );
+    let x25 = x25519::PrivateKey::from_bytes([2; 32]);
+    let p25 = x25519::PrivateKey::from_bytes([3; 32]).public_key();
+    let x25519_agree = rate(|| {
+        black_box(x25.diffie_hellman(black_box(&p25)).expect("dh"));
+    });
+    let xk = x448::PrivateKey::from_bytes([2; 56]);
+    let peer = x448::PrivateKey::from_bytes([3; 56]).public_key();
+    row_vs(
+        "x448 agree",
+        rate(|| {
+            black_box(xk.diffie_hellman(black_box(&peer)).expect("dh"));
+        }),
+        "x25519",
+        x25519_agree,
+    );
+    // DSA 2048/256 verification (the OpenSSL-made root of only-x509's test data).
+    let pem = include_bytes!("../../only-x509/tests/data/ed448-dsa/dsa_root.pem");
+    let der = only_crypto::pem::decode_label(pem, "CERTIFICATE").expect("pem");
+    let cert = &der[0];
+    // tbsCertificate, signature value and SubjectPublicKeyInfo, by walking the DER.
+    let mut r = only_crypto::der::Reader::new(cert);
+    let mut c = r.sequence().expect("cert");
+    let tbs = c
+        .read_element(only_crypto::der::tag::SEQUENCE)
+        .expect("tbs");
+    let _alg = c
+        .read_element(only_crypto::der::tag::SEQUENCE)
+        .expect("alg");
+    let sig = c.read_bit_string().expect("sig");
+    let mut t = only_crypto::der::Reader::new(tbs).sequence().expect("tbs");
+    for _ in 0..6 {
+        t.read_tlv().expect("field");
+    }
+    let spki = t
+        .read_element(only_crypto::der::tag::SEQUENCE)
+        .expect("spki");
+    let only_crypto::pkey::PublicKey::Dsa(key) =
+        only_crypto::pkey::PublicKey::from_spki_der(spki).expect("dsa key")
+    else {
+        panic!("not DSA");
+    };
+    let hash = only_crypto::rsa::HashAlg::Sha256;
+    row_vs(
+        "dsa2048/256 verify",
+        rate(|| key.verify(hash, black_box(tbs), sig).expect("verify")),
+        "ed25519 verify",
+        ed25519_verify,
+    );
 }
 
 fn ed_x25519(msg: [u8; 64], rand: &ring::rand::SystemRandom) {

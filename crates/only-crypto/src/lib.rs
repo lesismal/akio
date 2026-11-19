@@ -23,7 +23,7 @@
 //! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU; not benchmarked yet) |
 //!
 //! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
-//!   the [`Hash`](hash::Hash) trait.
+//!   the [`Hash`](hash::Hash) trait; SHAKE128 and SHAKE256.
 //! - [`mac`]: HMAC over any [`Hash`](hash::Hash).
 //! - [`kdf`]: HKDF (RFC 5869) and PBKDF2-HMAC (RFC 8018).
 //! - [`crc`]: CRC-32 (IEEE 802.3, as zlib / `crc32fast`) and CRC-32C (Castagnoli).
@@ -41,6 +41,8 @@
 //!
 //! - [`x25519`]: X25519 key agreement (RFC 7748).
 //! - [`ed25519`]: Ed25519 signatures (RFC 8032) with strict verification.
+//! - [`x448`], [`ed448`]: X448 (RFC 7748) and Ed448 (RFC 8032), portable constant-time code.
+//! - [`dsa`]: DSA signature verification (FIPS 186-4), for legacy certificates.
 //! - [`p256`], [`p384`]: ECDH and ECDSA on the NIST curves (RFC 6979 nonces; DER and
 //!   fixed-width signatures; validated SEC1 points).
 //! - [`rsa`]: RSA PKCS#1 v1.5 and PSS signatures, 2048–8192-bit keys (CRT, blinding).
@@ -86,7 +88,9 @@ pub mod base64;
 pub mod chacha;
 pub mod crc;
 pub mod der;
+pub mod dsa;
 pub mod ed25519;
+pub mod ed448;
 pub mod gcm;
 pub mod hash;
 pub mod kdf;
@@ -98,11 +102,13 @@ pub mod pkey;
 pub mod rand;
 pub mod rsa;
 pub mod x25519;
+pub mod x448;
 
 mod bignum;
 mod cpu;
 mod ct;
 mod curve25519;
+mod curve448;
 mod ec;
 mod error;
 mod field;

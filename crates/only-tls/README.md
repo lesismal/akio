@@ -36,18 +36,19 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   (0-RTT) when both sides enable it (see below), else rejected and skipped as RFC 8446 4.2.10
   says.
 - **TLS 1.2** (RFC 5246, RFC 7627 extended master secret, RFC 5746 renegotiation indication):
-  ECDHE with ECDSA, Ed25519 or RSA certificates and AEAD suites only (no CBC, no RSA key
+  ECDHE with ECDSA, Ed25519, Ed448 or RSA certificates and AEAD suites only (no CBC, no RSA key
   exchange, no static DH), session IDs and RFC 5077 tickets, client certificates; renegotiation
   is refused with a `no_renegotiation` warning.
 - Suites `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
   `ECDHE-{ECDSA,RSA}-AES{128,256}-GCM` and `ECDHE-{ECDSA,RSA}-CHACHA20-POLY1305`; groups X25519,
-  secp256r1, secp384r1; signature schemes ECDSA P-256/P-384, Ed25519, RSA-PSS (rsae),
-  RSA PKCS#1 v1.5 (TLS 1.2 and certificates).
+  secp256r1, secp384r1, x448 (offered last; ADR-046); signature schemes ECDSA P-256/P-384,
+  Ed25519, Ed448, RSA-PSS (rsae), RSA PKCS#1 v1.5 (TLS 1.2 and certificates).
 - Record layer: 16 KiB fragments, TLS 1.3 inner content types and padding, version negotiation
   with the downgrade sentinel, strict state machines, handshake messages reassembled across
   records and never across key changes, alerts and close_notify, constant-time Finished / binder
   checks.
-- Certificates are verified with `only-x509` (chain, validity, EKU, DNS names and IP addresses).
+- Certificates are verified with `only-x509` (chain, validity, EKU, DNS names and IP addresses,
+  certificate policies with the default inputs).
 - Extensions: record_size_limit (RFC 8449), certificate compression (RFC 8879: zlib, brotli, zstd) and OCSP
   stapling (RFC 6066 / RFC 8446 4.4.2.1), below.
 

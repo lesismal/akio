@@ -191,7 +191,7 @@ impl CertId {
             });
             w.octet_string(&self.issuer_name_hash);
             w.octet_string(&self.issuer_key_hash);
-            w.uint(&self.serial);
+            w.tlv(tag::INTEGER, &self.serial);
         });
     }
 }
