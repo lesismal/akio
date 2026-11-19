@@ -322,11 +322,19 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
   `TicketKey` 封装，恢复时校验器会再次检查对端证书。
 - **外部 PSK**（`Config::with_psks`）：DTLS 1.2 的 PSK 与 ECDHE-PSK AEAD 套件以及 DTLS 1.3
   `psk_dhe_ke`；只做 PSK 的服务端不需要证书。
+- **CID 更新**（DTLS 1.3，ADR-045）：`Connection::new_connection_ids` 与 `request_connection_ids`
+  交换新的 CID（NewConnectionId / RequestConnectionId）；`rotate_connection_id` 在地址变化后切换到
+  备用 CID，使新旧路径无法关联；`Event::LocalConnectionIds` 让监听方的路由表保持精确。
+- **握手后客户端认证**（DTLS 1.3）：用 `Config::with_post_handshake_auth` 提供该能力的客户端，可随时被
+  `Connection::request_client_certificate` 要求出示证书；答复为 `Event::ClientCertificate`。
+- **早期数据（0-RTT）**（DTLS 1.3，`Config::with_early_data`，默认关闭）：恢复会话的客户端在握手完成前
+  用 `Connection::send_early_data` 发送；服务端对每个 ClientHello 只收到一次 `Event::EarlyData`（票据
+  年龄检查与可在服务端之间共享的 binder `AntiReplayStore`）。早期数据可被重放，只应放幂等请求。
 
 互通测试覆盖 OpenSSL 3.5 / 4.1、wolfSSL 5.8 和 pion/dtls（`tools/interop/dtls/run.sh`）。
 
 ## 尚未完成
 
 TCP 中继（RFC 6062）；DTLS 上的 TURN；IPv6 组播上的 mDNS；simulcast 行与音频（Opus RED）上的 FEC、
-libwebrtc 的 FEC 掩码表；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与 NewConnectionId。新增内容的
-细节见 ADR-017、ADR-032、ADR-039 与 ADR-044。
+libwebrtc 的 FEC 掩码表；WebRTC 默认使用 DTLS 1.3。新增内容的细节见 ADR-017、ADR-032、ADR-039、
+ADR-044 与 ADR-045。

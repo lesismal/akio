@@ -7,9 +7,11 @@
 #     material compared; RFC 9146 connection IDs and PSK suites both ways.
 #   - DTLS 1.3, CIDs, PSKs, resumption, KeyUpdate, version negotiation against OpenSSL 4.1 and
 #     wolfSSL 5.8 (dtls13.sh) in the image built from ./Dockerfile (built on first use;
-#     SKIP_DTLS13=1 skips it).
+#     SKIP_DTLS13=1 skips it; DTLS_INTEROP_IMAGE names the image, default only-dtls-interop:
+#     rebuild it after the Dockerfile changes).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+IMAGE=${DTLS_INTEROP_IMAGE:-only-dtls-interop}
 W=$(mktemp -d)
 PIDS=""
 trap 'kill $PIDS 2>/dev/null || true; rm -rf "$W"' EXIT
@@ -122,10 +124,10 @@ done
 
 if [ "${SKIP_DTLS13:-0}" != 1 ]; then
   echo "== DTLS 1.3 / CID / PSK / resumption (OpenSSL 4.1, wolfSSL 5.8)"
-  docker image inspect only-dtls-interop >/dev/null 2>&1 ||
-    docker build -t only-dtls-interop "$ROOT/tools/interop/dtls"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 ||
+    docker build -t "$IMAGE" "$ROOT/tools/interop/dtls"
   docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
-    -e CARGO_TARGET_DIR=/tmp/t only-dtls-interop bash -c \
+    -e CARGO_TARGET_DIR=/tmp/t "$IMAGE" bash -c \
     'cargo build -q --release -p only-dtls --example dtls-interop &&
      tools/interop/dtls/dtls13.sh /tmp/t/release/examples/dtls-interop /tmp/dtls13'
 fi

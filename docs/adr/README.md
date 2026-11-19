@@ -48,4 +48,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-042: SCTP HEARTBEATs, peer restart, zero checksum and incoming reset requests](042-sctp-heartbeat-restart-zero-checksum.md) (accepted 2026-11-19)
 - [ADR-043: SRT rendezvous, AV1 in MPEG-TS, recording to MPEG-TS, HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.md) (accepted 2026-11-19)
 - [ADR-044: mDNS ICE candidates, renomination and aggressive nomination, simultaneous-open ICE-TCP](044-ice-mdns-renomination-tcp-so.md) (accepted 2026-11-19)
+- [ADR-045: DTLS 1.3 connection ID updates, post-handshake client authentication and early data in only-dtls](045-dtls13-cid-updates-pha-early-data.md) (accepted 2026-11-19)
 - [ADR-047: `/regex` message filters in only-log, on a new internal crate `only-regex`](047-log-regex-filters.md) (accepted 2026-11-19)

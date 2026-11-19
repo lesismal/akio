@@ -8,6 +8,7 @@ use only_crypto::hash::{Sha1, Sha256, Sha384, Sha512};
 use only_crypto::pkey::PrivateKey;
 use only_x509::{Certificate, CertificateParams};
 
+use crate::replay::{AntiReplay, AntiReplayStore};
 use crate::session::{Psk, SessionCache, TicketKey};
 use crate::{CipherSuite, Error};
 
@@ -439,6 +440,9 @@ pub struct Config {
     pub(crate) session_cache: Option<Arc<SessionCache>>,
     pub(crate) ticket_lifetime: Duration,
     pub(crate) connection_id: Option<u8>,
+    pub(crate) early_data: u32,
+    pub(crate) anti_replay: Option<AntiReplay>,
+    pub(crate) post_handshake_auth: bool,
 }
 
 impl Config {
@@ -448,7 +452,8 @@ impl Config {
     /// suites only with a PSK), no SRTP, [`PeerVerifier::AcceptAny`], client certificates
     /// required, extended master secret required, HelloVerifyRequest / HelloRetryRequest
     /// cookies on, MTU 1200, retransmission 1 s doubling to 60 s, handshake timeout 30 s, no
-    /// PSK, no session resumption, no connection IDs.
+    /// PSK, no session resumption, no connection IDs, no early data, no post-handshake
+    /// authentication.
     #[must_use]
     pub fn new(identity: Identity) -> Config {
         let mut c = Config::without_identity();
@@ -485,6 +490,9 @@ impl Config {
             session_cache: None,
             ticket_lifetime: Duration::from_secs(2 * 3600),
             connection_id: None,
+            early_data: 0,
+            anti_replay: None,
+            post_handshake_auth: false,
         }
     }
 
@@ -658,6 +666,58 @@ impl Config {
     #[must_use]
     pub fn with_connection_id(mut self, len: Option<u8>) -> Config {
         self.connection_id = len;
+        self
+    }
+
+    /// DTLS 1.3 early data (0-RTT, RFC 9147 / RFC 8446 §4.2.10; default 0: off). Needs
+    /// [`with_session_resumption`](Config::with_session_resumption).
+    ///
+    /// - Server: accepts up to `max` bytes of early data per connection from clients resuming
+    ///   one of its tickets, and announces `max` in the NewSessionTickets it issues. Early data
+    ///   arrives as [`Event::EarlyData`](crate::Event::EarlyData) before
+    ///   [`Event::Connected`](crate::Event::Connected). It is accepted only from a fresh ticket
+    ///   (the client's ticket age within 10 s of the server's), with the cipher suite the
+    ///   ticket was issued with, without a HelloRetryRequest, and for the first use of a
+    ///   ClientHello (an [`AntiReplayStore`] records PSK binders; a
+    ///   [`MemoryAntiReplay`](crate::MemoryAntiReplay) of 100,000 entries per configuration
+    ///   unless [`with_anti_replay`](Config::with_anti_replay) sets a shared one). With
+    ///   cookies on, a ClientHello whose early data is accepted is answered without the
+    ///   HelloRetryRequest round trip (the binder proves the client holds the ticket, and the
+    ///   abbreviated flight is smaller than the ClientHello). A listener that answers with
+    ///   [`HelloVerifier::check`](crate::HelloVerifier::check) always asks for a cookie first,
+    ///   so its clients never get early data accepted.
+    /// - Client: any non-zero `max` lets [`Connection::client_resume`](crate::Connection::client_resume)
+    ///   offer early data when the session allows it
+    ///   ([`Session::max_early_data`](crate::Session::max_early_data)); send it with
+    ///   [`Connection::send_early_data`](crate::Connection::send_early_data).
+    ///
+    /// Early data can be replayed by an attacker to another server that does not share the
+    /// anti-replay store, and has no forward secrecy against the ticket key: send only
+    /// idempotent requests in it.
+    #[must_use]
+    pub fn with_early_data(mut self, max: u32) -> Config {
+        self.early_data = max;
+        if max > 0 && self.anti_replay.is_none() {
+            self.anti_replay = Some(AntiReplay::memory());
+        }
+        self
+    }
+
+    /// Server: where the ClientHellos whose early data was accepted are recorded (RFC 8446
+    /// §8.2); share one store between servers that share a [`TicketKey`].
+    #[must_use]
+    pub fn with_anti_replay(mut self, store: Arc<dyn AntiReplayStore>) -> Config {
+        self.anti_replay = Some(AntiReplay::new(store));
+        self
+    }
+
+    /// Client, DTLS 1.3: offer post-handshake client authentication (`post_handshake_auth`,
+    /// RFC 8446 §4.6.2; default off). The server may then ask for the client's certificate at
+    /// any time after the handshake ([`Connection::request_client_certificate`](crate::Connection::request_client_certificate));
+    /// the client answers with its [`Identity`], or an empty certificate without one.
+    #[must_use]
+    pub fn with_post_handshake_auth(mut self, on: bool) -> Config {
+        self.post_handshake_auth = on;
         self
     }
 

@@ -383,6 +383,18 @@ DTLS 1.2 for a 1.2-only peer (with the RFC 8446 downgrade check).
   again by the verifier on resumption.
 - **External PSKs** (`Config::with_psks`): the DTLS 1.2 PSK and ECDHE-PSK AEAD suites and
   DTLS 1.3 `psk_dhe_ke`; a PSK-only server needs no certificate.
+- **CID updates** (DTLS 1.3, ADR-045): `Connection::new_connection_ids` and
+  `request_connection_ids` exchange fresh CIDs (NewConnectionId / RequestConnectionId);
+  `rotate_connection_id` switches to a spare one after an address change so the two paths
+  cannot be linked; `Event::LocalConnectionIds` keeps a listener's routing table exact.
+- **Post-handshake client authentication** (DTLS 1.3): a client offering it with
+  `Config::with_post_handshake_auth` can be asked for its certificate at any time with
+  `Connection::request_client_certificate`; the answer is `Event::ClientCertificate`.
+- **Early data (0-RTT)** (DTLS 1.3, `Config::with_early_data`, off by default): a resuming
+  client sends `Connection::send_early_data` before the handshake completes; the server gets
+  `Event::EarlyData` once per ClientHello (ticket-age check and an `AntiReplayStore` of
+  binders, shareable between servers). Early data can be replayed, so only idempotent
+  requests belong in it.
 
 Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 (`tools/interop/dtls/run.sh`).
@@ -390,6 +402,5 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 ## Not done yet
 
 TCP relays (RFC 6062); TURN over DTLS; mDNS over IPv6 multicast; FEC on simulcast lines and
-for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by default; DTLS 1.3
-0-RTT and NewConnectionId. ADR-017, ADR-032, ADR-039 and ADR-044 have the details of what was
-added.
+for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by default. ADR-017,
+ADR-032, ADR-039, ADR-044 and ADR-045 have the details of what was added.

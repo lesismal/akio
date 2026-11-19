@@ -48,4 +48,5 @@
 - [ADR-042：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求](042-sctp-heartbeat-restart-zero-checksum.zh-CN.md)（2026-11-19 采纳）
 - [ADR-043：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md)（2026-11-19 采纳）
 - [ADR-044：mDNS ICE 候选、重新提名与激进提名、同时打开的 ICE-TCP](044-ice-mdns-renomination-tcp-so.zh-CN.md)（2026-11-19 采纳）
+- [ADR-045：only-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据](045-dtls13-cid-updates-pha-early-data.zh-CN.md)（2026-11-19 采纳）
 - [ADR-047：only-log 的 `/regex` 消息过滤，基于新的内部 crate `only-regex`](047-log-regex-filters.zh-CN.md)（2026-11-19 采纳）

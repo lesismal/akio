@@ -38,8 +38,15 @@
 //!   [`Event::NewSession`], [`Connection::client_resume`]: DTLS 1.2 session IDs and tickets,
 //!   DTLS 1.3 tickets); external pre-shared keys ([`Psk`], [`Config::with_psks`]).
 //!
-//! Not implemented: DTLS 1.3 0-RTT, NewConnectionId, post-handshake client authentication,
-//! non-ECDHE certificate key exchanges, CBC suites.
+//! - DTLS 1.3 after the handshake (ADR-045): connection ID updates
+//!   ([`Connection::new_connection_ids`], [`Connection::request_connection_ids`],
+//!   [`Connection::rotate_connection_id`]), post-handshake client authentication
+//!   ([`Config::with_post_handshake_auth`], [`Connection::request_client_certificate`]); and
+//!   before it, early data (0-RTT, [`Config::with_early_data`], [`Connection::send_early_data`],
+//!   [`Event::EarlyData`]) with an anti-replay record ([`AntiReplayStore`]).
+//!
+//! Not implemented, on purpose: non-ECDHE certificate key exchanges and CBC suites (no forward
+//! secrecy, MAC-then-encrypt; see ADR-045).
 //!
 //! ```
 //! use std::sync::Arc;
@@ -88,6 +95,7 @@ mod error;
 mod handshake;
 mod ks13;
 mod record;
+mod replay;
 mod session;
 
 #[cfg(feature = "fuzzing")]
@@ -104,6 +112,7 @@ pub use cookie::{HelloCheck, HelloVerifier};
 pub use crypto::CipherSuite;
 pub use error::{AlertDescription, Error};
 pub use record::connection_id;
+pub use replay::{AntiReplayStore, MemoryAntiReplay};
 pub use session::{Psk, Session, TicketKey};
 
 /// The RFC 5764 exporter label for DTLS-SRTP keys.

@@ -36,6 +36,8 @@ pub enum AlertDescription {
     DecodeError,
     /// `decrypt_error` (51).
     DecryptError,
+    /// `too_many_cids_requested` (52, RFC 9147 §9).
+    TooManyCidsRequested,
     /// `protocol_version` (70).
     ProtocolVersion,
     /// `insufficient_security` (71).
@@ -77,6 +79,7 @@ impl AlertDescription {
             A::AccessDenied => 49,
             A::DecodeError => 50,
             A::DecryptError => 51,
+            A::TooManyCidsRequested => 52,
             A::ProtocolVersion => 70,
             A::InsufficientSecurity => 71,
             A::InternalError => 80,
@@ -109,6 +112,7 @@ impl AlertDescription {
             49 => A::AccessDenied,
             50 => A::DecodeError,
             51 => A::DecryptError,
+            52 => A::TooManyCidsRequested,
             70 => A::ProtocolVersion,
             71 => A::InsufficientSecurity,
             80 => A::InternalError,
@@ -160,6 +164,10 @@ pub enum Error {
     Exporter(&'static str),
     /// A cryptographic primitive failed (random number generator, invalid key).
     Crypto(only_crypto::Error),
+    /// The operation needs something this connection did not negotiate or is not in the
+    /// state for (DTLS 1.3, connection IDs, the peer's `post_handshake_auth`, accepted early
+    /// data, no request of the same kind outstanding).
+    NotAvailable(&'static str),
 }
 
 impl Error {
@@ -193,6 +201,7 @@ impl fmt::Display for Error {
             Error::Closed => f.write_str("dtls: connection closed"),
             Error::TooLarge => f.write_str("dtls: record larger than 16384 bytes"),
             Error::Config(m) => write!(f, "dtls: invalid configuration: {m}"),
+            Error::NotAvailable(m) => write!(f, "dtls: not available: {m}"),
             Error::Exporter(m) => write!(f, "dtls: keying material exporter: {m}"),
             Error::Crypto(e) => write!(f, "dtls: crypto: {e}"),
         }

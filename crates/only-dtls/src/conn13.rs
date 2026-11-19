@@ -9,8 +9,11 @@
 //!   (exponential backoff). The receiver ACKs on gaps, after a quarter of the retransmission
 //!   timeout when a flight stays incomplete, on the peer's final flight and on repeats.
 //! - Handshake: ECDHE (X25519, P-256, P-384) with certificates (mutual by default), stateless
-//!   HelloRetryRequest cookies, `psk_dhe_ke` with external PSKs or tickets, `use_srtp`,
-//!   connection IDs, NewSessionTicket and KeyUpdate after the handshake.
+//!   HelloRetryRequest cookies, `psk_dhe_ke` with external PSKs or tickets, early data (0-RTT)
+//!   with tickets, `use_srtp`, connection IDs.
+//! - After the handshake (one flight at a time, the others queued): NewSessionTicket,
+//!   KeyUpdate, NewConnectionId / RequestConnectionId (§9) and post-handshake client
+//!   authentication (RFC 8446 §4.6.2).
 //! - A peer that only speaks DTLS 1.2 makes the connection hand over to the DTLS 1.2 machine
 //!   (`into_handoff`); the wrapper in `connection.rs` does that.
 
@@ -36,7 +39,8 @@ use crate::record::{
     self, CT_ACK, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, DTLS12, DTLS13, Header,
     MAX_PLAINTEXT, ReplayWindow, Unified, Wire,
 };
-use crate::session::{Session, SessionState};
+use crate::replay::AntiReplay;
+use crate::session::{Session, SessionState, unix_now_ms};
 use crate::{AlertDescription, Error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +75,55 @@ enum Expect {
 enum FlightKind {
     Handshake,
     KeyUpdate,
+    /// NewSessionTicket, NewConnectionId, RequestConnectionId, a post-handshake
+    /// CertificateRequest or the client's answer to it.
+    Post,
+}
+
+/// A post-handshake flight waiting for the current one; built when it starts, so that its
+/// message sequence numbers follow the earlier flights' and it uses the keys current then.
+#[derive(Debug)]
+enum Post {
+    /// KeyUpdate (requesting the peer's).
+    KeyUpdate(bool),
     Ticket,
+    /// NewConnectionId: CIDs, usage, whether it answers a RequestConnectionId.
+    NewCids(Vec<Vec<u8>>, u8, bool),
+    RequestCids(u8),
+    /// Server: a CertificateRequest with this context.
+    CertRequest(Vec<u8>),
+    /// Client: the answer to a CertificateRequest (its context, schemes and transcript
+    /// bytes).
+    CertResponse {
+        context: Vec<u8>,
+        schemes: Vec<u16>,
+        request: Vec<u8>,
+    },
+}
+
+/// Server: a post-handshake CertificateRequest sent and the client's answer so far.
+#[derive(Debug)]
+struct Pha {
+    context: Vec<u8>,
+    /// Handshake transcript + CertificateRequest + what the client sent so far.
+    transcript: Vec<u8>,
+    /// The next message expected (Certificate, CertificateVerify or Finished).
+    expect: u8,
+    chain: Vec<Vec<u8>>,
+    key: Option<PublicKey>,
+}
+
+/// The PSK a server selected from a ClientHello's offer.
+#[derive(Debug)]
+struct SelectedPsk {
+    index: usize,
+    key: Vec<u8>,
+    external: bool,
+    identity: Vec<u8>,
+    session: Option<SessionState>,
+    /// The obfuscated ticket age and the binder (for early data).
+    age: u32,
+    binder: Vec<u8>,
 }
 
 /// A handshake message of an outgoing flight and which of its bytes the peer acknowledged.
@@ -179,9 +231,16 @@ const REASSEMBLY_WINDOW: u16 = 16;
 /// Record numbers kept for ACKs, and sent records remembered per flight.
 const MAX_ACK_RECORDS: usize = 32;
 const MAX_SENT_RECORDS: usize = 256;
-/// A post-handshake flight (NewSessionTicket, KeyUpdate) is given up after this many
+/// A post-handshake flight (NewSessionTicket, KeyUpdate, ...) is given up after this many
 /// retransmissions.
 const MAX_POST_RETRANSMITS: u32 = 8;
+/// Connection IDs of ours the peer may use at once, and spare CIDs of the peer's we keep.
+const MAX_LOCAL_CIDS: usize = 8;
+const MAX_PEER_CIDS: usize = 8;
+/// Answers to RequestConnectionId queued at once before the peer is told it asks too much.
+const MAX_CID_ANSWERS: usize = 4;
+/// Post-handshake flights queued behind the current one.
+const MAX_PENDING: usize = 32;
 /// Records sent in one epoch before an automatic KeyUpdate (RFC 9147 §4.5.3 bounds AES-GCM
 /// to 2^24.5 records per key with a large margin).
 const KEY_UPDATE_AFTER: u64 = 1 << 23;
@@ -276,9 +335,29 @@ pub(crate) struct Conn13 {
     /// A gap in the peer's flight: ACK at the next timer (coalescing the datagrams that
     /// arrive together).
     ack_gap: bool,
-    /// A KeyUpdate to send once the current flight is acknowledged (request the peer's).
-    key_update_wanted: Option<bool>,
+    /// Post-handshake flights to send once the current flight is acknowledged.
+    pending: VecDeque<Post>,
     tickets_sent: u8,
+    // connection IDs after the handshake (RFC 9147 §9)
+    /// Our CIDs the peer may use, in the order issued (empty without non-empty CIDs).
+    local_cids: Vec<Vec<u8>>,
+    /// CIDs the peer gave us to switch to.
+    spare_peer_cids: VecDeque<Vec<u8>>,
+    /// Our RequestConnectionId is not answered yet.
+    cid_request_outstanding: bool,
+    // post-handshake authentication
+    /// Client: we offered `post_handshake_auth`; server: the client did.
+    pha_offered: bool,
+    pha: Option<Pha>,
+    // early data (0-RTT)
+    /// Client: the epoch-1 keys while early data may be sent.
+    write_early: Option<WriteEpoch>,
+    /// Client: we offered early data; server: the client did.
+    early_offered: bool,
+    early_accepted: bool,
+    /// Bytes of early data allowed, and sent (client) or received (server) so far.
+    early_max: u32,
+    early_bytes: u32,
     // record layer
     epoch0_seq: u64,
     last_record_seq: u64,
@@ -379,8 +458,18 @@ impl Conn13 {
             ack_at: None,
             ack_now: false,
             ack_gap: false,
-            key_update_wanted: None,
+            pending: VecDeque::new(),
             tickets_sent: 0,
+            local_cids: Vec::new(),
+            spare_peer_cids: VecDeque::new(),
+            cid_request_outstanding: false,
+            pha_offered: false,
+            pha: None,
+            write_early: None,
+            early_offered: false,
+            early_accepted: false,
+            early_max: 0,
+            early_bytes: 0,
             epoch0_seq: 0,
             last_record_seq: 0,
             write_hs: None,
@@ -451,7 +540,18 @@ impl Conn13 {
     }
 
     pub(crate) fn local_cid(&self) -> Option<&[u8]> {
-        self.local_cid.as_deref()
+        self.local_cids
+            .first()
+            .map(Vec::as_slice)
+            .or(self.local_cid.as_deref())
+    }
+
+    pub(crate) fn local_cids(&self) -> &[Vec<u8>] {
+        &self.local_cids
+    }
+
+    pub(crate) fn peer_cid(&self) -> Option<&[u8]> {
+        self.peer_cid.as_deref()
     }
 
     pub(crate) fn poll_transmit(&mut self) -> Option<Vec<u8>> {
@@ -494,6 +594,10 @@ impl Conn13 {
                 if give_up {
                     self.flight = None;
                     self.retransmit_at = None;
+                    if let Err(e) = self.next_post() {
+                        self.fail(&e);
+                        return Err(e);
+                    }
                 } else {
                     self.transmit_flight();
                     if let Some(f) = &mut self.flight {
@@ -585,11 +689,292 @@ impl Conn13 {
             .write_app
             .as_ref()
             .is_some_and(|w| w.seq >= KEY_UPDATE_AFTER)
-            && self.key_update_wanted.is_none()
+            && !self.key_update_queued()
         {
             self.update_keys(false)?;
         }
         Ok(())
+    }
+
+    /// Client: a record of early data (epoch 1), while the server may still accept it.
+    pub(crate) fn send_early_data(&mut self, data: &[u8]) -> Result<(), Error> {
+        match self.state {
+            State::Handshake => {}
+            State::Connected => {
+                return Err(Error::NotAvailable(
+                    "the handshake completed: send application data",
+                ));
+            }
+            _ => return Err(Error::Closed),
+        }
+        if self.write_early.is_none() {
+            return Err(Error::NotAvailable(
+                "early data not offered, rejected or finished",
+            ));
+        }
+        if data.len() > MAX_PLAINTEXT
+            || self.early_bytes as usize + data.len() > self.early_max as usize
+        {
+            return Err(Error::TooLarge);
+        }
+        self.early_bytes += data.len() as u32;
+        if let Some((r, _)) = self.seal(1, CT_APPLICATION_DATA, data) {
+            self.transmits.push_back(r);
+        }
+        Ok(())
+    }
+
+    fn check_connected(&self) -> Result<(), Error> {
+        match self.state {
+            State::Connected => Ok(()),
+            State::Handshake => Err(Error::NotConnected),
+            _ => Err(Error::Closed),
+        }
+    }
+
+    /// Issues `count` new CIDs of ours in a NewConnectionId (`immediate`: the peer switches
+    /// to the first at once).
+    pub(crate) fn new_connection_ids(
+        &mut self,
+        count: usize,
+        immediate: bool,
+    ) -> Result<(), Error> {
+        self.check_connected()?;
+        if self.local_cids.is_empty() {
+            return Err(Error::NotAvailable(
+                "no non-empty connection IDs negotiated",
+            ));
+        }
+        if count == 0 || self.local_cids.len() + count > MAX_LOCAL_CIDS {
+            return Err(Error::NotAvailable("1 to 8 connection IDs per connection"));
+        }
+        let cids = self.issue_cids(count)?;
+        let usage = if immediate {
+            hs::CID_IMMEDIATE
+        } else {
+            hs::CID_SPARE
+        };
+        self.queue_post(Post::NewCids(cids, usage, false))
+    }
+
+    /// Asks the peer for `count` spare CIDs (RequestConnectionId).
+    pub(crate) fn request_connection_ids(&mut self, count: u8) -> Result<(), Error> {
+        self.check_connected()?;
+        if !self.peer_cid.as_ref().is_some_and(|c| !c.is_empty()) {
+            return Err(Error::NotAvailable(
+                "the peer uses no non-empty connection ID",
+            ));
+        }
+        if count == 0 {
+            return Err(Error::NotAvailable("request at least one connection ID"));
+        }
+        if self.cid_request_outstanding {
+            return Err(Error::NotAvailable(
+                "a RequestConnectionId is not answered yet",
+            ));
+        }
+        self.cid_request_outstanding = true;
+        self.queue_post(Post::RequestCids(count))
+    }
+
+    /// Switches the CID we send to the next spare one the peer issued.
+    pub(crate) fn rotate_connection_id(&mut self) -> Result<bool, Error> {
+        self.check_connected()?;
+        match self.spare_peer_cids.pop_front() {
+            Some(c) => {
+                self.peer_cid = Some(c);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    pub(crate) fn spare_connection_ids(&self) -> usize {
+        self.spare_peer_cids.len()
+    }
+
+    /// `count` fresh random CIDs of the negotiated length, accepted from now on.
+    fn issue_cids(&mut self, count: usize) -> Result<Vec<Vec<u8>>, Error> {
+        let len = self.local_cids.first().map_or(0, Vec::len);
+        let mut out: Vec<Vec<u8>> = Vec::with_capacity(count);
+        while out.len() < count {
+            let mut c = vec![0u8; len];
+            only_crypto::rand::fill_random(&mut c)
+                .map_err(|_| Error::Crypto(only_crypto::Error::Random))?;
+            if !self.local_cids.contains(&c) && !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        self.local_cids.extend(out.iter().cloned());
+        self.events
+            .push_back(Event::LocalConnectionIds(self.local_cids.clone()));
+        Ok(out)
+    }
+
+    /// Server: asks for the client's certificate (post-handshake authentication).
+    pub(crate) fn request_client_certificate(&mut self) -> Result<(), Error> {
+        self.check_connected()?;
+        if self.role != Role::Server {
+            return Err(Error::NotAvailable(
+                "only a server requests a client certificate",
+            ));
+        }
+        if !self.pha_offered {
+            return Err(Error::NotAvailable(
+                "the client did not offer post_handshake_auth",
+            ));
+        }
+        if self.pha.is_some()
+            || self
+                .pending
+                .iter()
+                .any(|p| matches!(p, Post::CertRequest(_)))
+        {
+            return Err(Error::NotAvailable(
+                "a client certificate request is outstanding",
+            ));
+        }
+        let context = random32()?[..16].to_vec();
+        self.queue_post(Post::CertRequest(context))
+    }
+
+    /// Whether a KeyUpdate is in flight or queued.
+    fn key_update_queued(&self) -> bool {
+        self.flight
+            .as_ref()
+            .is_some_and(|f| f.kind == FlightKind::KeyUpdate)
+            || self.pending.iter().any(|p| matches!(p, Post::KeyUpdate(_)))
+    }
+
+    /// Sends `post` now if no flight is in progress, else after the queued ones.
+    fn queue_post(&mut self, post: Post) -> Result<(), Error> {
+        if self.pending.len() >= MAX_PENDING {
+            return Err(Error::protocol(
+                AlertDescription::InternalError,
+                "too many post-handshake messages queued",
+            ));
+        }
+        self.pending.push_back(post);
+        if self.flight.is_none() {
+            self.next_post()?;
+        }
+        Ok(())
+    }
+
+    /// Starts the next queued post-handshake flight (skipping those with nothing to send).
+    fn next_post(&mut self) -> Result<(), Error> {
+        if self.state != State::Connected {
+            return Ok(());
+        }
+        while self.flight.is_none() {
+            let Some(post) = self.pending.pop_front() else {
+                return Ok(());
+            };
+            self.start_post(post)?;
+        }
+        Ok(())
+    }
+
+    fn start_post(&mut self, post: Post) -> Result<(), Error> {
+        let Some(epoch) = self.write_app.as_ref().map(|w| w.epoch) else {
+            return Ok(());
+        };
+        let now = self.now;
+        let (kind, msgs) = match post {
+            Post::KeyUpdate(request) => {
+                let m = self.out_msg(epoch, hs::KEY_UPDATE, vec![u8::from(request)], false);
+                (FlightKind::KeyUpdate, vec![m])
+            }
+            Post::Ticket => {
+                let Some(body) = self.new_ticket()? else {
+                    return Ok(());
+                };
+                let m = self.out_msg(epoch, hs::NEW_SESSION_TICKET, body, false);
+                // The ACK of the client's flight goes first.
+                if self.ack_now {
+                    self.send_ack();
+                }
+                (FlightKind::Post, vec![m])
+            }
+            Post::NewCids(cids, usage, _) => {
+                let body = hs::encode_new_connection_id(&cids, usage);
+                (
+                    FlightKind::Post,
+                    vec![self.out_msg(epoch, hs::NEW_CONNECTION_ID, body, false)],
+                )
+            }
+            Post::RequestCids(n) => (
+                FlightKind::Post,
+                vec![self.out_msg(epoch, hs::REQUEST_CONNECTION_ID, vec![n], false)],
+            ),
+            Post::CertRequest(context) => {
+                let body = hs::encode_certificate_request13(&context, &SIGNATURE_SCHEMES_13);
+                let mut transcript = self.transcript.clone();
+                transcript.extend_from_slice(&hs::transcript13(hs::CERTIFICATE_REQUEST, &body));
+                self.pha = Some(Pha {
+                    context,
+                    transcript,
+                    expect: hs::CERTIFICATE,
+                    chain: Vec::new(),
+                    key: None,
+                });
+                (
+                    FlightKind::Post,
+                    vec![self.out_msg(epoch, hs::CERTIFICATE_REQUEST, body, false)],
+                )
+            }
+            Post::CertResponse {
+                context,
+                schemes,
+                request,
+            } => {
+                let msgs = self.cert_response(&context, &schemes, &request)?;
+                let msgs = msgs
+                    .into_iter()
+                    .map(|(t, b)| self.out_msg(epoch, t, b, false))
+                    .collect();
+                (FlightKind::Post, msgs)
+            }
+        };
+        self.start_flight(now, kind, msgs);
+        Ok(())
+    }
+
+    /// Client: Certificate, CertificateVerify and Finished answering a post-handshake
+    /// CertificateRequest (RFC 8446 §4.4: the handshake transcript plus the request, the
+    /// Finished key from the current client application traffic secret).
+    fn cert_response(
+        &self,
+        context: &[u8],
+        schemes: &[u16],
+        request: &[u8],
+    ) -> Result<Vec<(u8, Vec<u8>)>, Error> {
+        let h = self.hash();
+        let mut t = self.transcript.clone();
+        t.extend_from_slice(request);
+        // Without a key fitting the requested schemes the client declines (an empty
+        // Certificate).
+        let identity = self.config.identity.clone().and_then(|id| {
+            crypto::choose_scheme13(id.private_key(), schemes).map(|scheme| (id, scheme))
+        });
+        let chain = identity
+            .as_ref()
+            .map(|(id, _)| id.chain().to_vec())
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        let cert = hs::encode_certificate13(context, &chain);
+        t.extend_from_slice(&hs::transcript13(hs::CERTIFICATE, &cert));
+        out.push((hs::CERTIFICATE, cert));
+        if let Some((id, scheme)) = identity {
+            let input = crypto::certificate_verify_input(false, &h.digest(&t));
+            let sig = crypto::sign(id.private_key(), scheme, &input)?;
+            let cv = hs::encode_signed(scheme, &sig);
+            t.extend_from_slice(&hs::transcript13(hs::CERTIFICATE_VERIFY, &cv));
+            out.push((hs::CERTIFICATE_VERIFY, cv));
+        }
+        let fin = ks13::finished_mac(h, &self.client_ap, &h.digest(&t));
+        out.push((hs::FINISHED, fin));
+        Ok(out)
     }
 
     /// Sends a KeyUpdate (after the current post-handshake flight, if any); the new keys are
@@ -600,21 +985,13 @@ impl Conn13 {
             State::Handshake => return Err(Error::NotConnected),
             _ => return Err(Error::Closed),
         }
-        if self.flight.is_some() {
-            self.key_update_wanted = Some(request_peer || self.key_update_wanted == Some(true));
-            return Ok(());
+        for p in &mut self.pending {
+            if let Post::KeyUpdate(r) = p {
+                *r |= request_peer;
+                return Ok(());
+            }
         }
-        self.send_key_update(request_peer);
-        Ok(())
-    }
-
-    fn send_key_update(&mut self, request_peer: bool) {
-        self.key_update_wanted = None;
-        let Some(epoch) = self.write_app.as_ref().map(|w| w.epoch) else {
-            return;
-        };
-        let m = self.out_msg(epoch, hs::KEY_UPDATE, vec![u8::from(request_peer)], false);
-        self.start_flight(self.now, FlightKind::KeyUpdate, vec![m]);
+        self.queue_post(Post::KeyUpdate(request_peer))
     }
 
     pub(crate) fn export_keying_material(
@@ -654,6 +1031,32 @@ impl Conn13 {
         }
     }
 
+    /// Fuzzing: processes `body` as the next handshake message (`msg_type`) as if it arrived
+    /// in the newest epoch we read.
+    #[cfg(feature = "fuzzing")]
+    pub(crate) fn fuzz_message(
+        &mut self,
+        now: Instant,
+        msg_type: u8,
+        body: &[u8],
+    ) -> Result<(), Error> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        self.now = self.now.max(now);
+        let epoch = self.read.iter().map(|r| r.epoch).max().unwrap_or(0);
+        let frag = hs::encode_fragment(msg_type, self.recv_seq, body.len(), 0, body);
+        let rn = (epoch, u64::from(self.recv_seq) | 1 << 40);
+        let mut retransmit = false;
+        let r = self.handle_handshake(now, epoch, rn, &frag, &mut retransmit);
+        if let Err(e) = &r {
+            self.fail(e);
+        } else if self.ack_now {
+            self.send_ack();
+        }
+        r
+    }
+
     // ---- record layer ----
 
     /// The epoch we currently send non-handshake records in.
@@ -689,7 +1092,9 @@ impl Conn13 {
             return Some((out, (0, seq)));
         }
         let cid = self.peer_cid.clone().filter(|c| !c.is_empty());
-        let w = if epoch == 2 {
+        let w = if epoch == 1 {
+            self.write_early.as_mut()?
+        } else if epoch == 2 {
             self.write_hs.as_mut()?
         } else {
             self.write_app.as_mut().filter(|w| w.epoch == epoch)?
@@ -765,9 +1170,18 @@ impl Conn13 {
         u: &Unified<'_>,
         retransmit: &mut bool,
     ) -> Result<(), Error> {
+        // Which of our CIDs the record carries (the peer moving past older ones retires them).
+        let mut cid_at = 0;
         if let Some(c) = u.cid {
-            if Some(c) != self.local_cid.as_deref() {
-                return Ok(());
+            if self.local_cids.is_empty() {
+                if Some(c) != self.local_cid.as_deref() {
+                    return Ok(());
+                }
+            } else {
+                match self.local_cids.iter().position(|x| x == c) {
+                    Some(i) => cid_at = i,
+                    None => return Ok(()),
+                }
             }
         }
         if u.ciphertext.len() < 16 {
@@ -781,6 +1195,14 @@ impl Conn13 {
             .max_by_key(|(_, r)| r.epoch)
             .map(|(i, _)| i)
         else {
+            if u.epoch_bits == 1
+                && self.role == Role::Server
+                && self.schedule.is_some()
+                && !self.early_accepted
+            {
+                // Early data we did not accept (RFC 8446 §4.2.10: skip it).
+                return Ok(());
+            }
             if self.state == State::Handshake && self.early_records.len() < MAX_EARLY_RECORDS {
                 let mut rec = u.header.to_vec();
                 rec.extend_from_slice(u.ciphertext);
@@ -808,6 +1230,11 @@ impl Conn13 {
         };
         r.window.accept(seq);
         let epoch = r.epoch;
+        if cid_at > 0 {
+            self.local_cids.drain(..cid_at);
+            self.events
+                .push_back(Event::LocalConnectionIds(self.local_cids.clone()));
+        }
         while inner.last() == Some(&0) {
             inner.pop();
         }
@@ -827,6 +1254,18 @@ impl Conn13 {
             CT_HANDSHAKE => self.handle_handshake(now, epoch, (epoch, seq), &inner, retransmit),
             CT_ACK => self.handle_ack(now, &inner),
             CT_ALERT => self.handle_alert(&inner),
+            CT_APPLICATION_DATA if epoch == 1 && self.role == Role::Server => {
+                self.early_bytes = self
+                    .early_bytes
+                    .saturating_add(u32::try_from(inner.len()).unwrap_or(u32::MAX));
+                if self.early_bytes > self.early_max {
+                    return Err(unexpected("more early data than max_early_data_size"));
+                }
+                if self.state == State::Handshake {
+                    self.events.push_back(Event::EarlyData(inner));
+                }
+                Ok(())
+            }
             CT_APPLICATION_DATA if epoch >= 3 => {
                 match self.state {
                     State::Connected => self.events.push_back(Event::ApplicationData(inner)),
@@ -882,15 +1321,16 @@ impl Conn13 {
             }
         }
         if f.is_acked() {
-            self.flight_done(now);
+            self.flight_done(now)?;
         }
         Ok(())
     }
 
     /// The current flight was acknowledged (by an ACK or the peer's next flight).
-    fn flight_done(&mut self, now: Instant) {
+    fn flight_done(&mut self, now: Instant) -> Result<(), Error> {
+        let _ = now;
         let Some(f) = self.flight.take() else {
-            return;
+            return Ok(());
         };
         self.retransmit_at = None;
         self.rto = self.config.initial_retransmit;
@@ -912,13 +1352,7 @@ impl Conn13 {
                 }
             }
         }
-        if self.state == State::Connected {
-            if let Some(req) = self.key_update_wanted {
-                self.send_key_update(req);
-            } else if self.role == Role::Server {
-                let _ = self.maybe_send_ticket(now);
-            }
-        }
+        self.next_post()
     }
 
     /// A message of ours: numbered and, for handshake messages, added to the transcript.
@@ -1243,7 +1677,9 @@ impl Conn13 {
                 self.retransmit_at = None;
                 self.ack_now = true;
                 self.connected()?;
-                self.maybe_send_ticket(now)?;
+                if self.config.resumption && self.peer_psk_dhe && self.tickets_sent == 0 {
+                    self.queue_post(Post::Ticket)?;
+                }
             }
             // ---- post-handshake ----
             (Expect::Done, hs::NEW_SESSION_TICKET) if self.role == Role::Client => {
@@ -1255,15 +1691,81 @@ impl Conn13 {
                 let requested = hs::parse_key_update(body)?;
                 self.ack_now = true;
                 self.peer_key_update(epoch)?;
-                if requested && self.key_update_wanted.is_none() {
-                    let pending_ku = self
-                        .flight
-                        .as_ref()
-                        .is_some_and(|f| f.kind == FlightKind::KeyUpdate);
-                    if !pending_ku {
-                        self.update_keys(false)?;
+                if requested && !self.key_update_queued() {
+                    self.update_keys(false)?;
+                }
+            }
+            (Expect::Done, hs::NEW_CONNECTION_ID) => {
+                if !self.peer_cid.as_ref().is_some_and(|c| !c.is_empty()) {
+                    // RFC 9147 §9: not without (non-empty) CIDs.
+                    return Err(unexpected("NewConnectionId without connection IDs"));
+                }
+                let (cids, usage) = hs::parse_new_connection_id(body)?;
+                self.ack_now = true;
+                self.cid_request_outstanding = false;
+                let mut cids = cids.into_iter();
+                if usage == hs::CID_IMMEDIATE {
+                    // Older spares may be retired by the peer once it sees the new one.
+                    self.spare_peer_cids.clear();
+                    self.peer_cid = cids.next();
+                }
+                for c in cids {
+                    if self.spare_peer_cids.len() < MAX_PEER_CIDS
+                        && Some(&c) != self.peer_cid.as_ref()
+                        && !self.spare_peer_cids.contains(&c)
+                    {
+                        self.spare_peer_cids.push_back(c);
                     }
                 }
+            }
+            (Expect::Done, hs::REQUEST_CONNECTION_ID) => {
+                if self.local_cids.is_empty() {
+                    return Err(unexpected("RequestConnectionId without connection IDs"));
+                }
+                let n = hs::parse_request_connection_id(body)?;
+                self.ack_now = true;
+                let queued = self
+                    .pending
+                    .iter()
+                    .filter(|p| matches!(p, Post::NewCids(_, _, true)))
+                    .count();
+                if queued >= MAX_CID_ANSWERS {
+                    return Err(Error::protocol(
+                        AlertDescription::TooManyCidsRequested,
+                        "too many RequestConnectionId",
+                    ));
+                }
+                // Fewer (or none) when the peer already holds as many as we keep.
+                let count = usize::from(n).min(MAX_LOCAL_CIDS - self.local_cids.len());
+                let cids = if count > 0 {
+                    self.issue_cids(count)?
+                } else {
+                    Vec::new()
+                };
+                self.queue_post(Post::NewCids(cids, hs::CID_SPARE, true))?;
+            }
+            (Expect::Done, hs::CERTIFICATE_REQUEST) if self.role == Role::Client => {
+                if !self.pha_offered {
+                    return Err(unexpected("CertificateRequest without post_handshake_auth"));
+                }
+                let (context, schemes) = hs::parse_certificate_request13(body)?;
+                if context.is_empty() {
+                    return Err(illegal(
+                        "post-handshake CertificateRequest without a context",
+                    ));
+                }
+                self.ack_now = true;
+                self.queue_post(Post::CertResponse {
+                    context,
+                    schemes,
+                    request: raw,
+                })?;
+            }
+            (Expect::Done, hs::CERTIFICATE | hs::CERTIFICATE_VERIFY | hs::FINISHED)
+                if self.role == Role::Server
+                    && self.pha.as_ref().is_some_and(|p| p.expect == msg_type) =>
+            {
+                self.post_handshake_auth(now, msg_type, body, raw)?;
             }
             _ => return Err(unexpected("unexpected handshake message")),
         }
@@ -1329,10 +1831,18 @@ impl Conn13 {
     }
 
     fn accept_certificate(&mut self, chain: Vec<Vec<u8>>) -> Result<(), Error> {
-        if chain.is_empty() {
+        let key = self.check_chain(&chain)?;
+        self.peer_key = Some(key);
+        self.peer_chain = chain;
+        Ok(())
+    }
+
+    /// The leaf's public key of a chain the verifier accepts.
+    fn check_chain(&self, chain: &[Vec<u8>]) -> Result<PublicKey, Error> {
+        let Some(first) = chain.first() else {
             return Err(Error::Certificate("no certificate".into()));
-        }
-        let leaf = Certificate::from_der(chain[0].clone())
+        };
+        let leaf = Certificate::from_der(first.clone())
             .map_err(|e| Error::Certificate(format!("unparsable certificate: {e}")))?;
         let key = leaf.public_key().map_err(|_| {
             Error::protocol(
@@ -1340,10 +1850,8 @@ impl Conn13 {
                 "unsupported certificate key",
             )
         })?;
-        self.config.verifier.verify(&chain)?;
-        self.peer_key = Some(key);
-        self.peer_chain = chain;
-        Ok(())
+        self.config.verifier.verify(chain)?;
+        Ok(key)
     }
 
     /// Installs read and write keys of the handshake epoch from the handshake secrets.
@@ -1442,6 +1950,14 @@ impl Conn13 {
         self.expect = Expect::Done;
         self.partials.clear();
         self.early_records.clear();
+        // Early data ends with the handshake (RFC 9147 has no EndOfEarlyData).
+        self.write_early = None;
+        self.read.retain(|r| r.epoch != 1);
+        if self.peer_cid.is_some() {
+            if let Some(c) = self.local_cid.clone().filter(|c| !c.is_empty()) {
+                self.local_cids = vec![c];
+            }
+        }
         let suite = self.suite.ok_or_else(|| handshake_failure("no suite"))?;
         let srtp_keys = match self.srtp_profile {
             Some(p) => {
@@ -1469,6 +1985,7 @@ impl Conn13 {
             psk_identity: self.psk.as_ref().and_then(|(_, _, id)| id.clone()),
             local_connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
             peer_connection_id: self.peer_cid.clone(),
+            early_data: self.early_accepted,
         };
         self.info = Some(info.clone());
         self.events.push_back(Event::Connected(Box::new(info)));
@@ -1532,6 +2049,16 @@ impl Conn13 {
         if cfg.resumption || self.offered_psk.is_some() {
             ext.psk_modes = Some(vec![hs::PSK_DHE_KE]);
         }
+        ext.post_handshake_auth = cfg.post_handshake_auth;
+        self.pha_offered = cfg.post_handshake_auth;
+        // Early data with a ticket that allows it (RFC 8446 §4.2.10).
+        if let Some(s) = self.offered_psk.as_ref().and_then(|p| p.session.as_ref()) {
+            if cfg.early_data > 0 && s.max_early_data > 0 {
+                ext.early_data = true;
+                self.early_offered = true;
+                self.early_max = s.max_early_data;
+            }
+        }
         let mut suites: Vec<u16> = suites13.iter().map(|s| s.id()).collect();
         if self.offer12 {
             let mut ch12 = Conn12::client_hello12(&cfg, self.client_random, None, None);
@@ -1547,7 +2074,22 @@ impl Conn13 {
             compression: vec![0],
             extensions: ext,
         };
-        self.send_client_hello(now, ch, &[])
+        self.send_client_hello(now, ch, &[])?;
+        if self.early_offered {
+            // client_early_traffic_secret over the ClientHello, under the ticket's suite.
+            if let Some(p) = &self.offered_psk {
+                if let Some(s) = &p.session {
+                    let early = Schedule::early(p.hash, Some(&p.key));
+                    let secret = early.derive(b"c e traffic", &p.hash.digest(&self.transcript));
+                    self.write_early = Some(WriteEpoch {
+                        epoch: 1,
+                        keys: ks13::protection(s.suite, &secret)?,
+                        seq: 0,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Adds the PSK offer with its binder (over `prefix` + the truncated ClientHello), sends
@@ -1664,6 +2206,9 @@ impl Conn13 {
             prefix.extend_from_slice(&raw);
             let mut ch2 = ch;
             ch2.extensions.cookie = e.cookie.clone();
+            // Early data is rejected after a HelloRetryRequest (RFC 8446 §4.2.10).
+            ch2.extensions.early_data = false;
+            self.write_early = None;
             if let Some(g) = new_group {
                 let share = KeyShare::generate(g)?;
                 ch2.extensions.key_shares = Some(vec![(g.id(), share.public())]);
@@ -1735,7 +2280,11 @@ impl Conn13 {
 
     fn client_encrypted_extensions(&mut self, body: &[u8]) -> Result<(), Error> {
         let e = hs::parse_encrypted_extensions(body)?;
-        if e.key_shares.is_some() || e.supported_versions.is_some() || e.psk_selected.is_some() {
+        if e.key_shares.is_some()
+            || e.supported_versions.is_some()
+            || e.psk_selected.is_some()
+            || e.post_handshake_auth
+        {
             return Err(illegal("handshake extension in EncryptedExtensions"));
         }
         if let Some((profiles, mki)) = &e.srtp {
@@ -1759,6 +2308,18 @@ impl Conn13 {
         }
         if self.peer_cid.is_none() {
             self.local_cid = None;
+        }
+        if e.early_data {
+            if self.write_early.is_none() || !self.resumed {
+                return Err(Error::protocol(
+                    AlertDescription::UnsupportedExtension,
+                    "early_data not offered",
+                ));
+            }
+            self.early_accepted = true;
+        } else {
+            // Rejected: stop sending it (the application may send it again once connected).
+            self.write_early = None;
         }
         Ok(())
     }
@@ -1819,6 +2380,7 @@ impl Conn13 {
             lifetime: t.lifetime.min(7 * 24 * 3600),
             age_add: t.age_add,
             peer_chain: self.peer_chain.clone(),
+            max_early_data: t.max_early_data,
         };
         self.events.push_back(Event::NewSession(Box::new(Session {
             state,
@@ -1866,15 +2428,25 @@ impl Conn13 {
             }
             None => None,
         };
-        let suite = match &cookie {
-            Some((c, _)) => c.suite,
-            None => ours
+        let e = &ch.extensions;
+        // Early data needs the ticket's suite: prefer it when the client offers early data.
+        let early_suite = if cookie.is_none() && e.early_data && self.config.early_data > 0 {
+            self.first_ticket(e)
+                .map(|s| s.suite)
+                .filter(|s| ours.contains(s) && ch.cipher_suites.contains(&s.id()))
+        } else {
+            None
+        };
+        let suite = match (&cookie, early_suite) {
+            (Some((c, _)), _) => c.suite,
+            (None, Some(s)) => s,
+            (None, None) => ours
                 .iter()
                 .copied()
                 .find(|s| ch.cipher_suites.contains(&s.id()))
                 .ok_or_else(|| handshake_failure("no shared cipher suite"))?,
         };
-        let e = &ch.extensions;
+        let h = suite.prf_hash();
         let shares = e.key_shares.clone().unwrap_or_default();
         let share = NamedGroup::ALL.iter().find_map(|g| {
             shares
@@ -1882,7 +2454,20 @@ impl Conn13 {
                 .find(|(id, _)| *id == g.id())
                 .map(|(_, k)| (*g, k.clone()))
         });
-        let needs_hrr = cookie.is_none() && (self.hello_verifier.is_some() || share.is_none());
+        let mut needs_hrr = cookie.is_none() && (self.hello_verifier.is_some() || share.is_none());
+        // A ClientHello whose early data we accept skips the cookie exchange: the binder
+        // proves the client holds our ticket, the anti-replay record lets each ClientHello
+        // through once, and the abbreviated flight is smaller than the ClientHello.
+        let mut early_pick = None;
+        if needs_hrr && share.is_some() && early_suite.is_some() {
+            let t = hs::transcript13(hs::CLIENT_HELLO, body);
+            if let Ok(Some(sel)) = self.select_psk(e, h, &t) {
+                if self.accept_early(e, &sel, suite, false) {
+                    needs_hrr = false;
+                    early_pick = Some(sel);
+                }
+            }
+        }
         if needs_hrr {
             // Stateless HelloRetryRequest (RFC 9147 §5.1): everything we need comes back in
             // the cookie.
@@ -1910,7 +2495,6 @@ impl Conn13 {
             }
         }
         self.suite = Some(suite);
-        let h = suite.prf_hash();
         // Transcript: (message_hash + HelloRetryRequest +) ClientHello.
         self.transcript.clear();
         if let Some((c, raw_cookie)) = &cookie {
@@ -1933,50 +2517,40 @@ impl Conn13 {
             .psk_modes
             .as_ref()
             .is_some_and(|m| m.contains(&hs::PSK_DHE_KE));
+        self.pha_offered = e.post_handshake_auth;
         // PSK (RFC 8446 §4.2.11): the first identity we know, binder checked.
-        let mut selected = None;
-        if let (Some(offer), true) = (&e.psk_offer, self.peer_psk_dhe) {
-            for (i, (id, _age)) in offer.identities.iter().enumerate() {
-                let found = if let Some(p) = self.config.psks.iter().find(|p| p.identity == *id) {
-                    (h == PrfHash::Sha256).then(|| (p.key.clone(), true, None))
-                } else if self.config.resumption {
-                    self.config
-                        .ticket_key
-                        .as_ref()
-                        .and_then(|k| k.open(id))
-                        .filter(|s| {
-                            s.version == Version::Dtls13
-                                && s.suite.prf_hash() == h
-                                && (s.peer_chain.is_empty()
-                                    || self.config.verifier.verify(&s.peer_chain).is_ok())
-                        })
-                        .map(|s| (s.secret.clone(), false, Some(s)))
-                } else {
-                    None
-                };
-                let Some((key, external, session)) = found else {
-                    continue;
-                };
-                let mut t = self.transcript.clone();
-                t.truncate(t.len() - offer.binders_len());
-                let early = Schedule::early(h, Some(&key));
-                let expected = ks13::finished_mac(h, &early.binder_key(external), &h.digest(&t));
-                if !only_crypto::ct_eq(&expected, &offer.binders[i]) {
-                    return Err(Error::protocol(
-                        AlertDescription::DecryptError,
-                        "bad PSK binder",
-                    ));
-                }
-                selected = Some((i, key, external, id.clone(), session));
-                break;
+        let (selected, accept_early) = match early_pick {
+            Some(sel) => (Some(sel), true),
+            None => {
+                let sel = self.select_psk(e, h, &self.transcript)?;
+                let accept = sel
+                    .as_ref()
+                    .is_some_and(|sel| self.accept_early(e, sel, suite, self.hrr));
+                (sel, accept)
             }
-        }
-        if let Some((_, key, external, id, session)) = &selected {
-            if let Some(s) = session {
+        };
+        if let Some(sel) = &selected {
+            if let Some(s) = &sel.session {
                 self.peer_chain.clone_from(&s.peer_chain);
                 self.resumed = true;
             }
-            self.psk = Some((key.clone(), *external, external.then(|| id.clone())));
+            self.psk = Some((
+                sel.key.clone(),
+                sel.external,
+                sel.external.then(|| sel.identity.clone()),
+            ));
+        }
+        self.early_offered = e.early_data;
+        if let (true, Some(sel)) = (accept_early, &selected) {
+            let early = Schedule::early(h, Some(&sel.key));
+            let secret = early.derive(b"c e traffic", &self.transcript_hash());
+            self.read.push(ReadEpoch {
+                epoch: 1,
+                keys: ks13::protection(suite, &secret)?,
+                window: ReplayWindow::default(),
+            });
+            self.early_accepted = true;
+            self.early_max = self.config.early_data;
         }
         self.srtp_profile = e.srtp.as_ref().and_then(|(offered, _)| {
             self.config
@@ -2002,7 +2576,7 @@ impl Conn13 {
             extensions: Extensions {
                 supported_versions: Some(vec![DTLS13]),
                 key_shares: Some(vec![(group.id(), share.public())]),
-                psk_selected: selected.as_ref().map(|(i, ..)| *i as u16),
+                psk_selected: selected.as_ref().map(|sel| sel.index as u16),
                 connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
                 ..Extensions::default()
             },
@@ -2019,6 +2593,7 @@ impl Conn13 {
             srtp: self
                 .srtp_profile
                 .map(|p| (vec![p.id()], self.srtp_mki.clone().unwrap_or_default())),
+            early_data: self.early_accepted,
             ..Extensions::default()
         };
         msgs.push(self.out_msg(
@@ -2067,18 +2642,115 @@ impl Conn13 {
         Ok(())
     }
 
-    /// Server, after the handshake: one NewSessionTicket when resumption is on and the client
-    /// allows `psk_dhe_ke`.
-    fn maybe_send_ticket(&mut self, now: Instant) -> Result<(), Error> {
-        if !self.config.resumption
-            || !self.peer_psk_dhe
-            || self.tickets_sent > 0
-            || self.flight.is_some()
+    /// The state of the first PSK identity when it is one of our tickets.
+    fn first_ticket(&self, e: &Extensions) -> Option<SessionState> {
+        if !self.config.resumption {
+            return None;
+        }
+        let (id, _) = e.psk_offer.as_ref()?.identities.first()?;
+        self.config
+            .ticket_key
+            .as_ref()?
+            .open(id)
+            .filter(|s| s.version == Version::Dtls13)
+    }
+
+    /// The first offered PSK we know (an external PSK or one of our tickets), with its binder
+    /// checked against `transcript` (up to and including the ClientHello).
+    fn select_psk(
+        &self,
+        e: &Extensions,
+        h: PrfHash,
+        transcript: &[u8],
+    ) -> Result<Option<SelectedPsk>, Error> {
+        let psk_dhe = e
+            .psk_modes
+            .as_ref()
+            .is_some_and(|m| m.contains(&hs::PSK_DHE_KE));
+        let Some(offer) = e.psk_offer.as_ref().filter(|_| psk_dhe) else {
+            return Ok(None);
+        };
+        for (i, (id, age)) in offer.identities.iter().enumerate() {
+            let found = if let Some(p) = self.config.psks.iter().find(|p| p.identity == *id) {
+                (h == PrfHash::Sha256).then(|| (p.key.clone(), true, None))
+            } else if self.config.resumption {
+                self.config
+                    .ticket_key
+                    .as_ref()
+                    .and_then(|k| k.open(id))
+                    .filter(|s| {
+                        s.version == Version::Dtls13
+                            && s.suite.prf_hash() == h
+                            && (s.peer_chain.is_empty()
+                                || self.config.verifier.verify(&s.peer_chain).is_ok())
+                    })
+                    .map(|s| (s.secret.clone(), false, Some(s)))
+            } else {
+                None
+            };
+            let Some((key, external, session)) = found else {
+                continue;
+            };
+            let mut t = transcript.to_vec();
+            t.truncate(t.len().saturating_sub(offer.binders_len()));
+            let early = Schedule::early(h, Some(&key));
+            let expected = ks13::finished_mac(h, &early.binder_key(external), &h.digest(&t));
+            if !only_crypto::ct_eq(&expected, &offer.binders[i]) {
+                return Err(Error::protocol(
+                    AlertDescription::DecryptError,
+                    "bad PSK binder",
+                ));
+            }
+            return Ok(Some(SelectedPsk {
+                index: i,
+                key,
+                external,
+                identity: id.clone(),
+                session,
+                age: *age,
+                binder: offer.binders[i].clone(),
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Whether the early data offered with `sel` is accepted (RFC 8446 §4.2.10, §8): on
+    /// here, the first identity, a ticket allowing early data under `suite`, no
+    /// HelloRetryRequest, a fresh ticket age and the first use of this ClientHello. Records
+    /// the binder, so it is asked once per ClientHello.
+    fn accept_early(
+        &self,
+        e: &Extensions,
+        sel: &SelectedPsk,
+        suite: CipherSuite,
+        hrr: bool,
+    ) -> bool {
+        let Some(s) = &sel.session else {
+            return false;
+        };
+        if !e.early_data
+            || self.config.early_data == 0
+            || hrr
+            || sel.index != 0
+            || s.max_early_data == 0
+            || s.suite != suite
+            || !AntiReplay::fresh(s.issued, sel.age.wrapping_sub(s.age_add), unix_now_ms())
         {
-            return Ok(());
+            return false;
+        }
+        self.config
+            .anti_replay
+            .as_ref()
+            .is_some_and(|a| a.record(&sel.binder))
+    }
+
+    /// Server: one NewSessionTicket (its body), allowing early data when that is on.
+    fn new_ticket(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        if self.tickets_sent > 0 {
+            return Ok(None);
         }
         let (Some(suite), Some(key)) = (self.suite, self.config.ticket_key.clone()) else {
-            return Ok(());
+            return Ok(None);
         };
         self.tickets_sent += 1;
         let nonce = vec![self.tickets_sent];
@@ -2095,23 +2767,100 @@ impl Conn13 {
             lifetime,
             age_add: u32::from_be_bytes(age_add),
             peer_chain: self.peer_chain.clone(),
+            max_early_data: self.config.early_data,
         };
         let Some(ticket) = key.seal(&state) else {
-            return Ok(());
+            return Ok(None);
         };
         let t = hs::Ticket13 {
             lifetime,
             age_add: state.age_add,
             nonce,
             ticket,
+            max_early_data: state.max_early_data,
         };
-        let epoch = self.write_app.as_ref().map_or(3, |w| w.epoch);
-        let m = self.out_msg(epoch, hs::NEW_SESSION_TICKET, t.encode(), false);
-        // The ACK of the client's flight goes first.
-        if self.ack_now {
-            self.send_ack();
+        Ok(Some(t.encode()))
+    }
+
+    /// Server: the client's Certificate, CertificateVerify or Finished answering our
+    /// post-handshake CertificateRequest.
+    fn post_handshake_auth(
+        &mut self,
+        now: Instant,
+        msg_type: u8,
+        body: &[u8],
+        raw: Vec<u8>,
+    ) -> Result<(), Error> {
+        let h = self.hash();
+        if msg_type == hs::CERTIFICATE {
+            // The answer acknowledges the request.
+            if self
+                .flight
+                .as_ref()
+                .is_some_and(|f| f.msgs.iter().any(|m| m.msg_type == hs::CERTIFICATE_REQUEST))
+            {
+                self.flight_done(now)?;
+            }
         }
-        self.start_flight(now, FlightKind::Ticket, vec![m]);
+        let Some(p) = self.pha.as_mut() else {
+            return Err(unexpected("no CertificateRequest outstanding"));
+        };
+        match msg_type {
+            hs::CERTIFICATE => {
+                let (context, chain) = hs::parse_certificate13(body)?;
+                if context != p.context {
+                    return Err(illegal("Certificate context does not match"));
+                }
+                p.transcript.extend_from_slice(&raw);
+                if chain.is_empty() {
+                    p.expect = hs::FINISHED;
+                } else {
+                    let chain_ = chain.clone();
+                    let key = self.check_chain(&chain_)?;
+                    if let Some(p) = self.pha.as_mut() {
+                        p.key = Some(key);
+                        p.chain = chain;
+                        p.expect = hs::CERTIFICATE_VERIFY;
+                    }
+                }
+            }
+            hs::CERTIFICATE_VERIFY => {
+                let (scheme, sig) = hs::parse_signed(body)?;
+                if !SIGNATURE_SCHEMES_13.contains(&scheme) {
+                    return Err(illegal("CertificateVerify scheme not offered"));
+                }
+                let key = p.key.as_ref().ok_or_else(|| unexpected("no client key"))?;
+                let input = crypto::certificate_verify_input(false, &h.digest(&p.transcript));
+                crypto::verify_signature13(key, scheme, &input, &sig)?;
+                p.transcript.extend_from_slice(&raw);
+                p.expect = hs::FINISHED;
+            }
+            _ => {
+                let expected = ks13::finished_mac(h, &self.client_ap, &h.digest(&p.transcript));
+                if !only_crypto::ct_eq(&expected, body) {
+                    return Err(Error::protocol(
+                        AlertDescription::DecryptError,
+                        "bad post-handshake Finished",
+                    ));
+                }
+                let Some(p) = self.pha.take() else {
+                    return Ok(());
+                };
+                self.ack_now = true;
+                if !p.chain.is_empty() {
+                    self.peer_chain.clone_from(&p.chain);
+                    self.peer_key = p.key;
+                    if let Some(info) = &mut self.info {
+                        info.peer_certificates.clone_from(&p.chain);
+                        info.peer_fingerprint = p
+                            .chain
+                            .first()
+                            .map(|c| Fingerprint::of(FingerprintAlgorithm::Sha256, c));
+                    }
+                }
+                self.events.push_back(Event::ClientCertificate(p.chain));
+            }
+        }
         Ok(())
     }
 }

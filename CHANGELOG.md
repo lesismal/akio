@@ -34,6 +34,31 @@ ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing change
   other members) and `Engine::dial_from(local, addr, acceptor, on_error)` (a connect from a
   bound, shared local port); only-sys `connect_nonblocking_from`.
 
+### Added: DTLS 1.3 connection ID updates, post-handshake client authentication and early data (only-dtls)
+
+ADR-045 (docs/adr/045-dtls13-cid-updates-pha-early-data.md), additive and off by default:
+
+- **Connection ID updates** (RFC 9147 §9): `Connection::new_connection_ids(count, immediate)`
+  (NewConnectionId), `request_connection_ids(n)` (RequestConnectionId, answered automatically
+  by the peer), `rotate_connection_id()`, `spare_connection_ids()`, `local_connection_ids()`,
+  `peer_connection_id()`; at most 8 live CIDs, our older CIDs retire once the peer sends with a
+  later one, `Event::LocalConnectionIds` reports the set a listener should route.
+  `AlertDescription::TooManyCidsRequested`.
+- **Post-handshake client authentication** (RFC 8446 §4.6.2): `Config::with_post_handshake_auth`
+  (client), `Connection::request_client_certificate` and `Event::ClientCertificate` (server).
+- **Early data (0-RTT)** with tickets: `Config::with_early_data(max)`, `Config::with_anti_replay`,
+  `AntiReplayStore` / `MemoryAntiReplay` (binder recording and a ticket-age freshness check),
+  `Connection::send_early_data`, `Session::max_early_data`, `Event::EarlyData`,
+  `HandshakeInfo::early_data`. A ClientHello whose early data is accepted skips the
+  HelloRetryRequest cookie exchange.
+- `Error::NotAvailable` for operations the connection did not negotiate or is not ready for.
+- Post-handshake flights (NewSessionTicket, KeyUpdate and the new messages) share one queue.
+- Tests `tests/dtls13_post.rs`; fuzz target `dtls_post_handshake`; interop with wolfSSL 5.8.4
+  (early data and post-handshake authentication both ways; the interop image now builds wolfSSL
+  with `--enable-earlydata --enable-postauth`, `DTLS_INTEROP_IMAGE` names it); example
+  `dtls-hs-bench` (handshakes per second, DTLS 1.3 records). Non-ECDHE key exchanges and CBC
+  suites stay out on purpose (README, ADR-045).
+
 ### Added: FEC, RTCP XR, TMMBR and RFC 8888 feedback in WebRTC peers (only-webrtc, only-rtp)
 
 ADR-039 (docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.md), additive and off by default (a default peer's

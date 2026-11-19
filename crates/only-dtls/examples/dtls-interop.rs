@@ -22,10 +22,18 @@
 //!   --key-update                  client: after the echo, KeyUpdate (asking the peer's) and
 //!                                 send the message again
 //!   --accept N                    server: serve N connections one after the other
+//!   --early-data N                DTLS 1.3 0-RTT: server accepts N bytes; client (with
+//!                                 --resume) sends `early: <message>` before the handshake
+//!   --pha                         client: offer post-handshake authentication
+//!   --request-cert                server: ask for the client's certificate before the first
+//!                                 echo (prints `CLIENT_CERT <fingerprint>`)
+//!   --rotate-cid                  client: after the echo, RequestConnectionId, switch to a
+//!                                 new CID and send the message again
 //! ```
 //!
 //! Prints `CONNECTED suite=.. srtp=.. peer=<fingerprint>`, `INFO version=.. resumed=..
-//! psk=.. local_cid=.. peer_cid=..`, `SRTP_MATERIAL <hex>` (the `EXTRACTOR-dtls_srtp` export,
+//! psk=.. local_cid=.. peer_cid=..`, `EARLY accepted=..` (DTLS 1.3), `EARLY_RECV <text>`,
+//! `SRTP_MATERIAL <hex>` (the `EXTRACTOR-dtls_srtp` export,
 //! as OpenSSL's `-keymatexport` prints it), `RECV <text>`.
 
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -80,6 +88,9 @@ struct Opts {
     resume: bool,
     key_update: bool,
     accept: usize,
+    early: bool,
+    request_cert: bool,
+    rotate_cid: bool,
 }
 
 fn parse(args: &[String]) -> Opts {
@@ -102,6 +113,10 @@ fn parse(args: &[String]) -> Opts {
     let mut resume = false;
     let mut key_update = false;
     let mut accept = 1;
+    let mut early = 0;
+    let mut pha = false;
+    let mut request_cert = false;
+    let mut rotate_cid = false;
     let mut i = 0;
     while i < args.len() {
         let v = args.get(i + 1).cloned().unwrap_or_default();
@@ -162,6 +177,19 @@ fn parse(args: &[String]) -> Opts {
                 key_update = true;
                 i -= 1;
             }
+            "--early-data" => early = v.parse().expect("bytes"),
+            "--pha" => {
+                pha = true;
+                i -= 1;
+            }
+            "--request-cert" => {
+                request_cert = true;
+                i -= 1;
+            }
+            "--rotate-cid" => {
+                rotate_cid = true;
+                i -= 1;
+            }
             o => panic!("unknown option {o}"),
         }
         i += 2;
@@ -190,6 +218,8 @@ fn parse(args: &[String]) -> Opts {
             Some(f) => PeerVerifier::Fingerprints(vec![f]),
             None => PeerVerifier::AcceptAny,
         })
+        .with_early_data(early)
+        .with_post_handshake_auth(pha)
         .with_retransmit(Duration::from_millis(500), Duration::from_secs(4))
         .with_handshake_timeout(Duration::from_secs(15));
     if !suites.is_empty() {
@@ -207,6 +237,9 @@ fn parse(args: &[String]) -> Opts {
         resume,
         key_update,
         accept,
+        early: early > 0,
+        request_cert,
+        rotate_cid,
     }
 }
 
@@ -237,6 +270,9 @@ fn on_connected(conn: &Connection, opts: &Opts, info: &only_dtls::HandshakeInfo)
             .as_deref()
             .map_or_else(|| "-".to_string(), hex),
     );
+    if info.version == Version::Dtls13 {
+        println!("EARLY accepted={}", info.early_data);
+    }
     if let Some(p) = info.srtp_profile {
         let n = 2 * (p.master_key_len() + p.master_salt_len());
         let m = conn
@@ -278,6 +314,13 @@ fn main() {
             let sock = UdpSocket::bind("0.0.0.0:0").expect("bind");
             let mut conn =
                 Connection::client_resume(config, Instant::now(), &session).expect("client");
+            if opts.early {
+                println!("EARLY max={}", session.max_early_data());
+                match conn.send_early_data(format!("early: {}", opts.message).as_bytes()) {
+                    Ok(()) => println!("EARLY_SENT"),
+                    Err(e) => println!("EARLY_NOT_SENT {e}"),
+                }
+            }
             run(&sock, peer, &mut conn, &opts, &mut buf);
         }
         return;
@@ -319,15 +362,29 @@ fn run(
     // the echo, or a linger for NewSessionTickets).
     let mut resend_at: Option<Instant> = None;
     let mut done_at: Option<Instant> = None;
-    let linger = Duration::from_millis(match (opts.resume, opts.key_update) {
+    // Server: the certificate request after the first echo; client: CID rotation steps.
+    let mut asked_cert = false;
+    let mut rotate_step = 0;
+    let linger = Duration::from_millis(match (opts.resume, opts.key_update || opts.rotate_cid) {
         (_, true) => 1500,
         (true, _) => 700,
+        _ if opts.request_cert => 1000,
         _ => 300,
     });
     loop {
         flush(sock, peer, conn);
         if resend_at.is_some_and(|t| Instant::now() >= t) {
             resend_at = None;
+            if rotate_step == 1 {
+                // The spare CIDs arrived (or not): switch and send on the new one.
+                rotate_step = 2;
+                let rotated = conn.rotate_connection_id().expect("rotate");
+                println!(
+                    "ROTATED {rotated} peer_cid={}",
+                    conn.peer_connection_id()
+                        .map_or_else(|| "-".to_string(), hex)
+                );
+            }
             conn.send_application_data(opts.message.as_bytes())
                 .expect("send");
             println!("SENT_AFTER_UPDATE");
@@ -356,7 +413,20 @@ fn run(
                     let text = String::from_utf8_lossy(&d).trim_end().to_string();
                     println!("RECV {text}");
                     if role == Role::Server {
+                        if opts.request_cert && !asked_cert {
+                            // Before the echo: a client waiting for it processes the request
+                            // first.
+                            asked_cert = true;
+                            conn.request_client_certificate()
+                                .expect("request certificate");
+                            println!("REQUESTED_CERT");
+                        }
                         conn.send_application_data(&d).expect("echo");
+                    } else if opts.rotate_cid && rotate_step == 0 {
+                        rotate_step = 1;
+                        conn.request_connection_ids(2).expect("request CIDs");
+                        println!("REQUESTED_CIDS");
+                        resend_at = Some(Instant::now() + Duration::from_millis(500));
                     } else if done_at.is_none() {
                         let wait = if opts.key_update || opts.resume {
                             linger
@@ -373,6 +443,23 @@ fn run(
                 Event::Closed => {
                     println!("CLOSED");
                     return session;
+                }
+                Event::EarlyData(d) => {
+                    println!("EARLY_RECV {}", String::from_utf8_lossy(&d).trim_end());
+                }
+                Event::ClientCertificate(chain) => {
+                    println!(
+                        "CLIENT_CERT {}",
+                        chain.first().map_or_else(
+                            || "-".to_string(),
+                            |c| Fingerprint::of(only_dtls::FingerprintAlgorithm::Sha256, c)
+                                .to_string()
+                        )
+                    );
+                }
+                Event::LocalConnectionIds(ids) => {
+                    let ids: Vec<String> = ids.iter().map(|c| hex(c)).collect();
+                    println!("LOCAL_CIDS {}", ids.join(","));
                 }
                 _ => {}
             }

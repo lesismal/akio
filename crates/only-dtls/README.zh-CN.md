@@ -84,8 +84,26 @@ DTLS 1.3、连接 ID、会话恢复与 PSK（ADR-021）：
 - PSK：`Config::with_psks`；DTLS 1.2 的 `TLS_PSK_WITH_*` 与 `TLS_ECDHE_PSK_WITH_*` AEAD 套件，DTLS 1.3 的
   外部 PSK（SHA-256）。
 
-未实现：DTLS 1.3 0-RTT、NewConnectionId / RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换、
-CBC 套件。
+握手之后与握手之前（DTLS 1.3，ADR-045）：
+
+- 连接 ID 更新（RFC 9147 §9）：`Connection::new_connection_ids(count, immediate)`（NewConnectionId，
+  `cid_immediate` 或 `cid_spare`，最多 8 个有效 CID）、`request_connection_ids(n)`（RequestConnectionId；
+  对端的请求立即答复）、`rotate_connection_id()` 切换到对端给出的备用 CID（例如地址变化之后）、
+  `spare_connection_ids()`。本端发放的 CID 在对端开始使用更新的 CID 后退役；`local_connection_ids()` 与
+  `Event::LocalConnectionIds` 为监听方给出应路由到该连接的精确集合。
+- 握手后客户端认证（RFC 8446 §4.6.2）：设置 `Config::with_post_handshake_auth(true)` 的客户端提供该能力，
+  并以其身份（或空证书）答复；服务端调用 `Connection::request_client_certificate()`，得到经 `PeerVerifier`
+  校验的 `Event::ClientCertificate(chain)`。
+- 早期数据（0-RTT）：`Config::with_early_data(max)`（默认关闭，需要会话恢复）。服务端在票据中声明 `max`，
+  接受来自新鲜票据、使用票据密码套件、没有 HelloRetryRequest 的早期数据（早期数据被接受的 ClientHello
+  跳过 cookie 交换），每个 ClientHello 只接受一次（`AntiReplayStore` 记录 binder；默认
+  `MemoryAntiReplay`，`Config::with_anti_replay` 可共享）；它在 `Connected` 之前以 `Event::EarlyData`
+  到达。恢复此类会话的客户端用 `Connection::send_early_data` 发送；`HandshakeInfo::early_data` 表示是否
+  被接受。早期数据可被重放：只发送幂等请求。
+
+有意不实现：非 ECDHE 的证书密钥交换（静态 RSA、DHE）与 CBC 套件。它们缺少前向保密，或使用先 MAC 后加密的
+记录（填充预言）；RFC 9325 只推荐 ECDHE 加 AEAD，RFC 8827 要求 WebRTC 使用它们，我们互通的所有实现都协商
+ECDHE AEAD 套件，因此加入它们只会增加攻击面（ADR-045）。
 
 ## 测试
 
@@ -108,5 +126,17 @@ CBC 套件。
   的镜像中）：OpenSSL 4.1 `-dtls1_3` 双向（比较 SRTP 密钥、MTU 300 下的 RSA/ChaCha20、为组和为 cookie 的
   HRR、双向 KeyUpdate、会话恢复、两个版本的 PSK、与 `-dtls`、`-dtls1_2`、`-listen` 的版本协商），wolfSSL
   5.8.4（两个版本双向 CID、HRR、KeyUpdate、会话恢复）；pion/dtls 双向 CID 与 PSK 套件。
-- Fuzz：`fuzz/` 中的目标 `dtls_record`（记录拆分、分片与消息解析、重新编码）与 `dtls_handshake`
-  （任意数据报输入握手中及已连接的客户端和服务端状态机）；`fuzzing::tests` 在 stable 上回放它们的语料。
+- Fuzz：`fuzz/` 中的目标 `dtls_record`（记录拆分、分片与消息解析、重新编码）、`dtls_handshake`
+  （任意数据报输入握手中及已连接的客户端和服务端状态机）与 `dtls_post_handshake`（任意握手后消息输入正在
+  运行 CID、KeyUpdate 与认证 flight 的已连接 DTLS 1.3 两端；任意早期数据与数据报输入接受 0-RTT 的服务端）；
+  `fuzzing::tests` 在 stable 上回放它们的语料。
+- 连接 ID 更新、握手后认证与早期数据（`tests/dtls13_post.rs`）：备用与立即生效的 NewConnectionId，
+  双向 RequestConnectionId 直到 8 个 CID 的上限，轮换所有备用 CID 并让旧 CID 退役，均在有损链路上；没有
+  CID、零长度 CID 与 DTLS 1.2 时的拒绝。每个连接两次握手后认证，中间穿插 KeyUpdate（ECDSA 与 RSA 客户端，
+  有损链路）、客户端拒绝、校验器拒绝、客户端未提供。早期数据被接受（开启 cookie、有损链路、先于
+  `Connected`）、大小上限、重放的 ClientHello（恢复但没有早期数据）、两个服务端共享防重放存储；以及在服务端
+  未开启早期数据、票据年龄不新鲜、HelloRetryRequest 之后、存储失败或已满时被拒绝。
+- ADR-045 的互通（`dtls13.sh`）：与 wolfSSL 5.8.4 双向早期数据（其客户端 `-r -0` 在开关 cookie 时均被
+  接受；其服务端 `-r -0 -J n` 读出我们的早期数据，默认的 HelloRetryRequest cookie 会拒绝它），双向握手后
+  认证（wolfSSL `-Q`）。OpenSSL 4.1 与 wolfSSL 都未实现 NewConnectionId / RequestConnectionId；脚本在两个
+  only-dtls 端之间经 UDP 检查轮换。GnuTLS 没有 RFC 9146 CID。

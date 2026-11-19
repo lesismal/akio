@@ -18,6 +18,9 @@ pub(crate) const FINISHED: u8 = 20;
 pub(crate) const NEW_SESSION_TICKET: u8 = 4;
 pub(crate) const ENCRYPTED_EXTENSIONS: u8 = 8;
 pub(crate) const KEY_UPDATE: u8 = 24;
+/// RFC 9147 §9.
+pub(crate) const NEW_CONNECTION_ID: u8 = 9;
+pub(crate) const REQUEST_CONNECTION_ID: u8 = 10;
 /// The synthetic `message_hash` that replaces ClientHello1 in the transcript after a
 /// HelloRetryRequest (RFC 8446 §4.4.1).
 pub(crate) const MESSAGE_HASH: u8 = 254;
@@ -42,6 +45,7 @@ pub(crate) const EXT_EARLY_DATA: u16 = 42;
 pub(crate) const EXT_SUPPORTED_VERSIONS: u16 = 43;
 pub(crate) const EXT_COOKIE: u16 = 44;
 pub(crate) const EXT_PSK_KEY_EXCHANGE_MODES: u16 = 45;
+pub(crate) const EXT_POST_HANDSHAKE_AUTH: u16 = 49;
 pub(crate) const EXT_KEY_SHARE: u16 = 51;
 pub(crate) const EXT_CONNECTION_ID: u16 = 54;
 pub(crate) const EXT_RENEGOTIATION_INFO: u16 = 0xff01;
@@ -240,7 +244,12 @@ pub(crate) struct Extensions {
     pub(crate) psk_modes: Option<Vec<u8>>,
     pub(crate) psk_offer: Option<PskOffer>,
     pub(crate) psk_selected: Option<u16>,
+    /// `early_data` in a ClientHello or EncryptedExtensions (empty).
     pub(crate) early_data: bool,
+    /// `early_data` in a NewSessionTicket: max_early_data_size.
+    pub(crate) max_early_data: Option<u32>,
+    /// `post_handshake_auth` (RFC 8446 §4.2.6).
+    pub(crate) post_handshake_auth: bool,
     /// Types of extensions we ignored.
     pub(crate) unknown: Vec<u16>,
 }
@@ -433,7 +442,22 @@ impl Extensions {
                         d.finish()?;
                     }
                 }
-                EXT_EARLY_DATA => e.early_data = true,
+                EXT_EARLY_DATA if kind == Kind::NewSessionTicket => {
+                    e.max_early_data = Some(d.u32()?);
+                    d.finish()?;
+                }
+                EXT_EARLY_DATA => {
+                    if !data.is_empty() {
+                        return Err(Error::decode("bad early_data"));
+                    }
+                    e.early_data = true;
+                }
+                EXT_POST_HANDSHAKE_AUTH => {
+                    if !data.is_empty() {
+                        return Err(Error::decode("bad post_handshake_auth"));
+                    }
+                    e.post_handshake_auth = true;
+                }
                 other => e.unknown.push(other),
             }
         }
@@ -530,6 +554,12 @@ impl Extensions {
         }
         if self.early_data {
             ext(EXT_EARLY_DATA, &[]);
+        }
+        if let Some(m) = self.max_early_data {
+            ext(EXT_EARLY_DATA, &m.to_be_bytes());
+        }
+        if self.post_handshake_auth {
+            ext(EXT_POST_HANDSHAKE_AUTH, &[]);
         }
         if let Some(i) = self.psk_selected {
             ext(EXT_PRE_SHARED_KEY, &i.to_be_bytes());
@@ -878,6 +908,8 @@ pub(crate) struct Ticket13 {
     pub(crate) age_add: u32,
     pub(crate) nonce: Vec<u8>,
     pub(crate) ticket: Vec<u8>,
+    /// The `early_data` extension's max_early_data_size (0: none).
+    pub(crate) max_early_data: u32,
 }
 
 impl Ticket13 {
@@ -886,7 +918,11 @@ impl Ticket13 {
         out.extend_from_slice(&self.age_add.to_be_bytes());
         put_vec8(&mut out, &self.nonce);
         put_vec16(&mut out, &self.ticket);
-        put_u16(&mut out, 0);
+        Extensions {
+            max_early_data: (self.max_early_data > 0).then_some(self.max_early_data),
+            ..Extensions::default()
+        }
+        .encode_kind(&mut out, Kind::NewSessionTicket, true);
         out
     }
 
@@ -896,7 +932,7 @@ impl Ticket13 {
         let age_add = r.u32()?;
         let nonce = r.vec8()?.to_vec();
         let ticket = r.vec16()?.to_vec();
-        let _ = Extensions::parse_kind(&mut r, Kind::NewSessionTicket, true)?;
+        let e = Extensions::parse_kind(&mut r, Kind::NewSessionTicket, true)?;
         r.finish()?;
         if ticket.is_empty() {
             return Err(Error::decode("empty ticket"));
@@ -906,6 +942,7 @@ impl Ticket13 {
             age_add,
             nonce,
             ticket,
+            max_early_data: e.max_early_data.unwrap_or(0),
         })
     }
 }
@@ -988,6 +1025,61 @@ pub(crate) fn parse_key_update(body: &[u8]) -> Result<bool, Error> {
             AlertDescription::IllegalParameter,
             "bad KeyUpdate",
         )),
+    }
+}
+
+/// NewConnectionId usage (RFC 9147 §9): use the first CID now, or keep them as spares.
+pub(crate) const CID_IMMEDIATE: u8 = 0;
+pub(crate) const CID_SPARE: u8 = 1;
+
+/// NewConnectionId: the CIDs (each 1 to 255 bytes) and their usage.
+pub(crate) fn encode_new_connection_id(cids: &[Vec<u8>], usage: u8) -> Vec<u8> {
+    let mut list = Vec::new();
+    for c in cids {
+        put_vec8(&mut list, c);
+    }
+    let mut out = Vec::new();
+    put_vec16(&mut out, &list);
+    out.push(usage);
+    out
+}
+
+pub(crate) fn parse_new_connection_id(body: &[u8]) -> Result<(Vec<Vec<u8>>, u8), Error> {
+    let mut r = Reader::new(body);
+    let mut list = Reader::new(r.vec16()?);
+    let usage = r.u8()?;
+    r.finish()?;
+    let mut cids = Vec::new();
+    while !list.is_empty() {
+        let c = list.vec8()?;
+        if c.is_empty() {
+            return Err(Error::protocol(
+                AlertDescription::IllegalParameter,
+                "empty connection ID in NewConnectionId",
+            ));
+        }
+        cids.push(c.to_vec());
+    }
+    if usage != CID_IMMEDIATE && usage != CID_SPARE {
+        return Err(Error::protocol(
+            AlertDescription::IllegalParameter,
+            "bad NewConnectionId usage",
+        ));
+    }
+    if usage == CID_IMMEDIATE && cids.is_empty() {
+        return Err(Error::protocol(
+            AlertDescription::IllegalParameter,
+            "cid_immediate without a connection ID",
+        ));
+    }
+    Ok((cids, usage))
+}
+
+/// RequestConnectionId: how many CIDs the sender wants.
+pub(crate) fn parse_request_connection_id(body: &[u8]) -> Result<u8, Error> {
+    match body {
+        [n] => Ok(*n),
+        _ => Err(Error::decode("bad RequestConnectionId")),
     }
 }
 
