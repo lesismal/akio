@@ -492,12 +492,16 @@ pub fn only_webrtc::RtcConfig::clear_codecs(self) -> Self
 pub fn only_webrtc::RtcConfig::enable_av1(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_bwe(self, core::option::Option<u64>) -> Self
 pub fn only_webrtc::RtcConfig::enable_ccfb(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_cryptex(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_dtls13(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_encrypted_header_extensions(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_fec(self, core::option::Option<only_webrtc::FecMechanism>) -> Self
 pub fn only_webrtc::RtcConfig::enable_h264(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_h265(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_ice_aggressive_nomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_ice_renomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_opus_red(self, core::option::Option<u8>) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_rtcp_xr(self, bool) -> Self

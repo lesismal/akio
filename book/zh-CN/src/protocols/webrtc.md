@@ -5,7 +5,7 @@
 - `only-webrtc` 在 only UDP socket 上运行 WebRTC peer，基于自研、sans-io、无第三方依赖的协议栈
   （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `only-crypto` 之上：
   `only-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
-  重启、consent freshness）、`only-dtls`（带证书指纹校验的 DTLS 1.2 与 1.3 及 DTLS-SRTP 密钥，见下文）、
+  重启、consent freshness）、`only-dtls`（DTLS 1.3，可回退到 1.2，带证书指纹校验及 DTLS-SRTP 密钥，见下文）、
   `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放；该 crate
   还支持 AES-192/256-CM、NULL、MKI 与换钥、cryptex 以及 RFC 6904 头部扩展加密，peer 尚未在 SDP 中
   协商它们）、
@@ -215,24 +215,30 @@ kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/we
 
 ### FEC 与更多 RTCP
 
-默认全部关闭（默认 peer 的 offer 与 answer 与以前完全相同），在 `RtcConfig` 中逐项打开（ADR-039）：
+默认全部关闭（默认 peer 的 offer 与 answer 与以前完全相同），在 `RtcConfig` 中逐项打开（ADR-039、ADR-048）：
 
 ```rust,ignore
 let cfg = only_webrtc::rtc_config()
     .enable_fec(Some(FecMechanism::FlexFec)) // 或 FecMechanism::Ulpfec（red + ulpfec）
     .set_fec_protection(0, 128)              // 每 256 个媒体包的 FEC 包数：上下界
+    .enable_opus_red(Some(1))                // Opus RED，一个冗余包（最多 2 个）
     .enable_ccfb(true)                       // 用 RFC 8888 反馈代替传输层反馈
     .enable_rtcp_xr(true)                    // XR 接收方参考时间 / DLRR：接收方 RTT
     .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
     .enable_bwe(None);
 ```
 
-- **FEC** 用于非 simulcast 的视频行。FlexFEC 即 libwebrtc 的 `flexfec-03`，是用
+- **FEC** 用于视频行。FlexFEC 即 libwebrtc 的 `flexfec-03`，是用
   `a=ssrc-group:FEC-FR` 声明的独立 FEC 流（Chrome 需要 field trial
   `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`）；ULPFEC 在媒体流上经 RED 承载，
-  浏览器默认就会提供。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被 NACK，但接收报告仍把它们
+  浏览器默认就会提供。simulcast 行上只用 ULPFEC，按编码各自保护（每个 RID 的流有自己的 FEC，按自己的
+  丢包率），这正是 Chrome 的做法：基于 RID 的 simulcast 不声明 SSRC，无从指明 FlexFEC 流。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被 NACK，但接收报告仍把它们
   算作丢失，与 Chrome 一致）。发送的视频按修复前丢包率（报告的丢包，或接收方要求重传的包所占比例）的
   三倍保护，并限制在 `set_fec_protection` 的上下界内；`min` 大于 0 时从一开始就保护。
+- **Opus RED**（RFC 2198，`red/48000/2`）：`enable_opus_red(Some(n))` 把 RED 排在 Opus *之前*，因为
+  libwebrtc 只向把 RED 排在前面的对端发送 RED（Chrome 自己的 offer 把它放在 Opus 之后）。收到的 RED
+  会被拆开：冗余副本代替丢失的包（已到达的包的副本被丢弃）；发送的 Opus 携带前 `n` 个包（`Some(0)`
+  发送普通 Opus，但仍接收 RED）。
 - **RFC 8888**：双方都提供 `ack ccfb` 时，收到的媒体用 RFC 8888 反馈确认，替代传输层反馈，带宽估计器
   也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
@@ -240,7 +246,27 @@ let cfg = only_webrtc::rtc_config()
   直到传入 `None`）；Chrome 会遵守。关于我方流的请求以 TMMBN 应答，并像 REMB 一样限制带宽估计。
 
 `tools/interop/webrtc/fec.sh` 用 headless Chrome 检查以上全部：每个方向每 20 个 RTP 包丢 1 个且去掉
-NACK 时，有 FEC 时 Chrome 解码回显的 400 帧中的 381–392 帧，没有 FEC 时只有 8 帧。
+NACK 时，有 FEC 时 Chrome 解码回显的 400 帧中的 381–397 帧，没有 FEC 时只有 8-15 帧；双向 10 % 丢包下，
+双向 Opus RED 时 Chrome 只隐藏 2-3 % 的音频，没有时为 20 %；Chrome 的三层 simulcast 带有按层的 ULPFEC，
+可据此修复。`browser.sh` 让我方带按编码 ULPFEC 的 simulcast 行经过 5 % 丢包且无 NACK 发给 Chrome：
+Chrome 解码了全部帧，没有 FEC 时几乎一帧都解不出。
+
+### 头部保护：cryptex 与加密扩展
+
+```rust,ignore
+let cfg = only_webrtc::rtc_config()
+    .enable_cryptex(true)                     // a=cryptex（RFC 9335）
+    .enable_encrypted_header_extensions(true); // RFC 6904 extmap
+```
+
+普通 SRTP 下 RTP 头部扩展（MID、RID、音频电平……）与 CSRC 是明文。使用 **cryptex** 时双方都声明
+`a=cryptex`（与 Chrome 一样写在会话级），每个包的扩展块与 CSRC 都被加密；只要本端提供或接受了它，
+收到的 cryptex 包就会被解密。页面设置 `RTCConfiguration.rtpHeaderEncryptionPolicy`（需要
+`--enable-experimental-web-platform-features`）时 Chrome 157 会提供它，"require" 时拒绝不支持它的对端。
+**RFC 6904** 则只加密选定扩展的值：offer 额外给出 `a=extmap:<id> urn:ietf:params:rtp-hdrext:encrypt <uri>`
+变体（音频电平、MID、RID、修复 RID、视频方向、播放延迟，使用空闲的单字节 ID），answer 对以两种形式
+提供的扩展选择加密变体。没有浏览器提供 RFC 6904，它适用于与本栈类似的对端。不协商 MKI：DTLS-SRTP
+没有对应的 SDP。
 
 ## TURN
 
@@ -302,13 +328,14 @@ turn.set_engine(&engine);
 在 `poll_timeout` 时调用 `handle_timeout`。上限：64 个对端、等待绑定的数据 64 KiB。`Endpoint::gather_relay`
 在 UDP 上驱动一个客户端。
 
-## DTLS 层：WebRTC 用 DTLS 1.2，按需开启 DTLS 1.3
+## DTLS 层：DTLS 1.3，可回退到 DTLS 1.2
 
 `only-dtls` 是 sans-io 连接（`Connection`：喂入数据报和定时器到期，发送 `poll_transmit` 返回的
-内容），支持 DTLS 1.2（RFC 6347）与 DTLS 1.3（RFC 9147）。WebRTC 使用 DTLS 1.2：`Config::webrtc`
-只启用它，因为 pion 和浏览器的协议栈协商的是 DTLS 1.2，提供 1.3 只会让 ClientHello 变大（ADR-021）。
-WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 同时提供两个版本，
-遇到只支持 1.2 的对端时回退到 DTLS 1.2（带 RFC 8446 降级检查）。
+内容），支持 DTLS 1.2（RFC 6347）与 DTLS 1.3（RFC 9147）。`Config::with_versions(vec![Version::Dtls13,
+Version::Dtls12])` 同时提供两个版本，遇到只支持 1.2 的对端时回退到 DTLS 1.2（带 RFC 8446 降级检查）。
+`Config::webrtc` 本身只启用 DTLS 1.2（ADR-021）；`only-webrtc` 的 peer 加上 DTLS 1.3（ADR-048，
+`RtcConfig::enable_dtls13`，默认开启），Chrome 157 在两种 DTLS 角色下都会协商 DTLS 1.3，pion 仍用
+DTLS 1.2。
 
 - **DTLS 1.3**：带加密记录号的统一记录头，随 KeyUpdate 递增的 epoch（`Connection::update_keys`，
   密钥接近使用上限前也会自动更新），用 ACK 只重传一轮中丢失的分片，无状态的 HelloRetryRequest
@@ -335,6 +362,6 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；DTLS 上的 TURN；IPv6 组播上的 mDNS；simulcast 行与音频（Opus RED）上的 FEC、
-libwebrtc 的 FEC 掩码表；WebRTC 默认使用 DTLS 1.3。新增内容的细节见 ADR-017、ADR-032、ADR-039、
-ADR-044 与 ADR-045。
+TCP 中继（RFC 6062）；DTLS 上的 TURN；IPv6 组播上的 mDNS；simulcast 行上的 FlexFEC、libwebrtc 的 FEC
+掩码表；WebRTC 中的 SRTP MKI。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045 与
+ADR-048。

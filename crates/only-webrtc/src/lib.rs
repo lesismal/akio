@@ -3,9 +3,10 @@
 //! third-party dependencies.
 //!
 //! The protocol layers are crates of their own: ICE (full agent and ICE-lite, consent
-//! freshness, trickle, restarts: `only-ice`), DTLS 1.2 with DTLS-SRTP and certificate
-//! fingerprint verification (`only-dtls`), SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and
-//! AEAD-AES-128/256-GCM (`only-srtp`), RTP/RTCP with packetization of Opus, G.711, G.722, VP8,
+//! freshness, trickle, restarts: `only-ice`), DTLS 1.3 (falling back to DTLS 1.2) with
+//! DTLS-SRTP and certificate fingerprint verification (`only-dtls`), SRTP/SRTCP with
+//! AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, cryptex and encrypted header extensions
+//! (`only-srtp`), RTP/RTCP with packetization of Opus, G.711, G.722, VP8,
 //! VP9, H.264, H.265 and AV1, NACK and RTX, PLI/FIR, sender and receiver reports, TWCC and
 //! bandwidth estimation (`only-rtp`), and SCTP data channels with DCEP (reliable or not,
 //! ordered or not: `only-sctp`). This crate adds SDP offer/answer (BUNDLE, rtcp-mux,

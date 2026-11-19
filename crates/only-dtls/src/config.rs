@@ -499,7 +499,8 @@ impl Config {
     /// The WebRTC profile (RFC 8827): DTLS 1.2, `identity`, the SRTP profiles
     /// AEAD-AES-128-GCM, AEAD-AES-256-GCM and AES128-CM-HMAC-SHA1-80, mutual authentication by
     /// `verifier`, no HelloVerifyRequest (ICE already proved return routability). DTLS 1.3
-    /// stays off here: browsers and pion negotiate DTLS 1.2 for WebRTC (see ADR-021).
+    /// stays off here (ADR-021); [`with_versions`](Self::with_versions) adds it, as
+    /// `only-webrtc`'s peers do (ADR-048: Chrome negotiates it, pion stays on DTLS 1.2).
     #[must_use]
     pub fn webrtc(identity: Identity, verifier: PeerVerifier) -> Config {
         Config::new(identity)

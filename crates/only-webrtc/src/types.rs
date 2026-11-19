@@ -637,6 +637,12 @@ pub(crate) enum Other {
         fec_recovered: u64,
         /// RFC 8888 congestion control feedback is in use instead of transport-wide feedback.
         ccfb: bool,
+        /// The DTLS version of the connection (`None` before it is up).
+        dtls: Option<&'static str>,
+        /// RTP packets received with cryptex (RFC 9335) encrypted headers.
+        cryptex_received: u64,
+        /// Packets received as redundancy in Opus RED that stood in for a lost one.
+        red_recovered: u64,
     },
     /// A sender report arrived for a received stream.
     SenderReport {
@@ -682,6 +688,14 @@ pub(crate) struct ConfigInner {
     pub(crate) tmmbr: bool,
     pub(crate) ice_renomination: bool,
     pub(crate) ice_aggressive: bool,
+    /// DTLS 1.3 offered (with DTLS 1.2 as the fallback).
+    pub(crate) dtls13: bool,
+    /// Cryptex (RFC 9335) offered and accepted.
+    pub(crate) cryptex: bool,
+    /// RFC 6904 encrypted header extensions offered and accepted.
+    pub(crate) encrypt_ext: bool,
+    /// Opus RED (RFC 2198): `None` off, else the redundant blocks sent (0..=2).
+    pub(crate) opus_red: Option<u8>,
 }
 
 impl Default for ConfigInner {
@@ -710,6 +724,10 @@ impl Default for ConfigInner {
             tmmbr: false,
             ice_renomination: false,
             ice_aggressive: false,
+            dtls13: true,
+            cryptex: false,
+            encrypt_ext: false,
+            opus_red: None,
         }
     }
 }
@@ -730,6 +748,10 @@ impl fmt::Debug for RtcConfig {
             .field("tmmbr", &self.0.tmmbr)
             .field("ice_renomination", &self.0.ice_renomination)
             .field("ice_aggressive_nomination", &self.0.ice_aggressive)
+            .field("dtls13", &self.0.dtls13)
+            .field("cryptex", &self.0.cryptex)
+            .field("encrypted_header_extensions", &self.0.encrypt_ext)
+            .field("opus_red", &self.0.opus_red)
             .finish_non_exhaustive()
     }
 }
@@ -824,7 +846,9 @@ impl RtcConfig {
     /// RTX) and `ulpfec`; either way received FEC repairs lost packets before the
     /// jitter buffer and NACK, and sent video is protected at a rate that follows the loss
     /// the remote receiver reports (see [`set_fec_protection`](Self::set_fec_protection)).
-    /// Simulcast lines are not protected.
+    /// On a simulcast line ULPFEC protects each encoding on its own (its RED stream carries
+    /// the encoding's RID), as Chrome sends it; FlexFEC needs an SSRC-signaled FEC stream, which
+    /// RID-based simulcast does not have, so simulcast lines get no FlexFEC.
     #[must_use]
     pub fn enable_fec(mut self, mechanism: Option<FecMechanism>) -> Self {
         self.0.fec = mechanism;
@@ -893,6 +917,51 @@ impl RtcConfig {
     #[must_use]
     pub fn enable_ice_aggressive_nomination(mut self, enabled: bool) -> Self {
         self.0.ice_aggressive = enabled;
+        self
+    }
+
+    /// DTLS 1.3 (RFC 9147) for the DTLS-SRTP handshake: a client sends a DTLS 1.3 ClientHello
+    /// that DTLS 1.2 servers answer with DTLS 1.2, a server picks DTLS 1.3 when the client
+    /// offers it and DTLS 1.2 otherwise. Nothing changes in SDP (the version is negotiated in
+    /// the handshake; Chrome 157 negotiates DTLS 1.3 in either role). Default on; `false`
+    /// speaks DTLS 1.2 only.
+    #[must_use]
+    pub fn enable_dtls13(mut self, enabled: bool) -> Self {
+        self.0.dtls13 = enabled;
+        self
+    }
+
+    /// Cryptex (RFC 9335): offers `a=cryptex` and accepts it in a remote offer. Once both
+    /// sides signaled it, every sent RTP packet with header extensions or CSRCs has them
+    /// encrypted (`0xC0DE` / `0xC2DE`); received packets are decrypted either way. Chrome 157
+    /// offers it with `rtpHeaderEncryptionPolicy` (behind
+    /// `--enable-experimental-web-platform-features`). Default off.
+    #[must_use]
+    pub fn enable_cryptex(mut self, enabled: bool) -> Self {
+        self.0.cryptex = enabled;
+        self
+    }
+
+    /// RFC 6904 encrypted header extensions: offers the audio level extension (RFC 6464) also
+    /// as `urn:ietf:params:rtp-hdrext:encrypt`, and answers an offer's encrypted variant of
+    /// any extension with that variant. Negotiated extensions so marked have their values
+    /// encrypted in SRTP (on packets not sent with cryptex). Browsers do not offer it.
+    /// Default off.
+    #[must_use]
+    pub fn enable_encrypted_header_extensions(mut self, enabled: bool) -> Self {
+        self.0.encrypt_ext = enabled;
+        self
+    }
+
+    /// Opus RED (RFC 2198, `red/48000/2` with `fmtp <red> <opus>/<opus>`), offered after Opus
+    /// as Chrome does and accepted when offered. `None` (the default) negotiates no RED.
+    /// With `Some(n)`, received RED is split: a redundant copy of a lost packet stands in for
+    /// it (duplicates are dropped); sent Opus goes in RED with up to `n` (at most 2) earlier
+    /// packets as redundancy, or plain with `Some(0)`. Chrome sends RED whenever it is
+    /// negotiated.
+    #[must_use]
+    pub fn enable_opus_red(mut self, redundancy: Option<u8>) -> Self {
+        self.0.opus_red = redundancy.map(|n| n.min(2));
         self
     }
 }

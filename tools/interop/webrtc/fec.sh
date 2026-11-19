@@ -9,7 +9,12 @@
 #   2. RFC 8888 feedback both ways (Chrome's estimate grows on ours, ours runs on Chrome's) and
 #      XR receiver reference times (the server measures its RTT from Chrome's DLRR);
 #   3. a TMMBR of 150 kbps from the server: Chrome's send rate follows it and Chrome answers
-#      with TMMBN.
+#      with TMMBN;
+#   4. Opus RED (ADR-048) under 10 % loss each way: the server lists RED before Opus, so Chrome
+#      sends RED, which the server splits (copies stand in for lost packets), and the server
+#      echoes with two redundant blocks: Chrome conceals far fewer samples than without RED;
+#   5. Chrome publishing three simulcast layers with its ULPFEC per layer (NACK removed) through
+#      5 % loss: the server repairs packets of the layers from it.
 # Needs Node >= 22 and Chrome (CHROME=/path/to/chrome; the macOS default location is tried).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -79,4 +84,49 @@ run tmmbr nack 20 tmmbr=150000
 js tmmbr "s.pair.availableOutgoingBitrate <= 160000 && s.lastHalfBitrate < 200000"
 js tmmbr "/MaxBitrateNotification \{ ssrc: \d+, entries: \[\(\d+, 150000\)\] \}/.test(l)"
 echo "ok: Chrome's send rate $(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").match(/^stats: (.*)$/m)[1]).lastHalfBitrate)' "$W/tmmbr.out") bps under a 150 kbps TMMBR, TMMBN received"
+echo "== Opus RED: 10 % loss each way"
+red() { # <label> <RED blocks or empty>
+  rm -rf "$W/profile-$1"
+  "$CHROME" --headless=new --remote-debugging-port=9620 --user-data-dir="$W/profile-$1" \
+    --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
+    --autoplay-policy=no-user-gesture-required --allow-loopback-in-peer-connection \
+    --no-first-run --no-default-browser-check --disable-features=WebRtcHideLocalIpsWithMdns \
+    about:blank >"$W/chrome-$1.log" 2>&1 & CP=$!
+  ONLY_INTEROP_RED=$2 ONLY_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 \
+    127.0.0.1:9632 loss-in=10 loss-out=10 2>"$W/$1.log" & SP=$!
+  sleep 2
+  node "$ROOT/tools/interop/webrtc/browser.mjs" 9620 red 127.0.0.1:9632 15 >"$W/$1.out"
+  sleep 1.2
+  kill $SP $CP 2>/dev/null || true
+  wait $SP $CP 2>/dev/null || true
+  CP=""
+}
+concealed() { node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").match(/^stats: (.*)$/m)[1]).audioIn; console.log((s.concealedSamples / s.totalSamplesReceived).toFixed(3))' "$W/$1.out"; }
+red red-none ""
+red red2 2
+js red2 'a.some((x) => /^m=audio 9 UDP\/TLS\/RTP\/SAVPF 63 111/.test(x)) && a.some((x) => /red\/48000\/2/.test(x))'
+js red-none '!a.some((x) => /red\//.test(x)) && s.audioIn.totalSamplesReceived > 300000'
+js red2 "n('red_recovered') > 50 && s.audioIn.totalSamplesReceived > 300000"
+js red2 "s.audioIn.concealedSamples / s.audioIn.totalSamplesReceived < 0.5 * $(concealed red-none)"
+echo "ok: Chrome concealed $(concealed red-none) of its samples without RED, $(concealed red2) with RED both ways; the server took $(grep -o 'red_recovered: [0-9]*' "$W/red2.log" | tail -1 | cut -d' ' -f2) packets from Chrome's RED"
+
+echo "== ULPFEC per simulcast layer from Chrome: 5 % periodic loss, no NACK"
+rm -rf "$W/profile-sim"
+"$CHROME" --headless=new --remote-debugging-port=9620 --user-data-dir="$W/profile-sim" \
+  --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
+  --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
+  --disable-features=WebRtcHideLocalIpsWithMdns about:blank >"$W/chrome-sim.log" 2>&1 & CP=$!
+ONLY_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 127.0.0.1:9632 fec=ulpfec \
+  loss-in=5 periodic 2>"$W/sim.log" & SP=$!
+sleep 2
+node "$ROOT/tools/interop/webrtc/browser.mjs" 9620 simulcast-fec 127.0.0.1:9632 15 >"$W/sim.out"
+sleep 1.2
+kill $SP $CP 2>/dev/null || true
+wait $SP $CP 2>/dev/null || true
+CP=""
+js sim 'a.some((x) => /ulpfec\/90000/.test(x)) && a.some((x) => /simulcast:recv/.test(x)) && ["l", "m", "h"].every((r) => s[r].framesSent > 200)'
+js sim "n('fec_received') > 100 && n('fec_recovered') > 10"
+# Every layer arrived (per RID: frames, whole frames).
+js sim '(() => { const x = (l.match(/rid frames.*/g) || [""]).pop(); return ["l", "m", "h"].every((r) => Number((x.match(new RegExp("\"" + r + "\": \\((\\d+)")) || [0, 0])[1]) > 150); })()'
+echo "ok: $(grep -o 'fec_received: [0-9]*, fec_recovered: [0-9]*' "$W/sim.log" | tail -1); frames per layer (all, whole): $(grep -o 'rid frames.*' "$W/sim.log" | tail -1)"
 echo "webrtc FEC / feedback interop: all passed"

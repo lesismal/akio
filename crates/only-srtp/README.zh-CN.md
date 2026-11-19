@@ -88,7 +88,9 @@ cryptex（`Error::Unsupported`）。RFC 6904 让 ID、长度与填充保持明�
 
 未实现：AES-f8 与 SEED 变换、RFC 4771 滚动计数器携带、SRTP 与 SRTCP 分别设置的密钥派生率。RFC 6904
 在与 libsrtp 不同之处遵循 RFC（libsrtp 遇到扩展元素之间的填充时不推进密钥流；见 ADR-040）。
-`only-webrtc` 尚未在 SDP 中协商 MKI、RFC 6904 或 cryptex。
+`only-webrtc` 在 SDP 中协商 cryptex（`a=cryptex`）与 RFC 6904（`urn:ietf:params:rtp-hdrext:encrypt`
+extmap，ADR-048），但不协商 MKI：DTLS-SRTP 只在 DTLS 的 `use_srtp` 扩展中携带 MKI，SDP 没有对应属性，
+浏览器也不使用。
 
 ## 测试
 

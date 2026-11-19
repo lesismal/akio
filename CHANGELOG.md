@@ -10,6 +10,39 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
+
+ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):
+
+- **Changed**: peers offer DTLS 1.3 (RFC 9147) with a DTLS 1.2 fallback by default
+  (`RtcConfig::enable_dtls13`, `false` for DTLS 1.2 only). Nothing changes in SDP. Chrome 157
+  negotiates DTLS 1.3 in either DTLS role; pion and other DTLS 1.2 peers are answered with
+  DTLS 1.2 (checked in both roles).
+- `RtcConfig::enable_cryptex`: `a=cryptex` (RFC 9335) offered and accepted; once both sides
+  signal it, header extensions and CSRCs of sent RTP are encrypted. Checked both ways against
+  Chrome 157's `rtpHeaderEncryptionPolicy: "require"` (behind
+  `--enable-experimental-web-platform-features`).
+- `RtcConfig::enable_encrypted_header_extensions`: RFC 6904 encrypted extension variants
+  (`urn:ietf:params:rtp-hdrext:encrypt`) offered for audio level, MID, RID, repaired RID, video
+  orientation and playout delay on free one-byte ids, and taken in answers. No browser offers
+  them. SRTP MKIs stay out of WebRTC: DTLS-SRTP has no SDP for them and browsers do not use them.
+- `RtcConfig::enable_opus_red(Option<u8>)`: Opus RED (`red/48000/2`, payload type 63) listed
+  before Opus, which is what makes libwebrtc send it; received redundancy stands in for lost
+  packets (duplicates dropped), sent Opus carries up to two earlier packets. Under 10 % loss each
+  way Chrome 157 conceals 2-3 % of its audio instead of 20 %.
+- ULPFEC on simulcast lines (`FecMechanism::Ulpfec`): each encoding has its own FEC encoder,
+  loss estimate and rate, RED and ULPFEC on the encoding's SSRC with its RID, as Chrome sends
+  it; received simulcast is repaired per layer (up to 8 FEC decoders per peer). FlexFEC is not
+  used on simulcast lines (RID-based simulcast signals no FEC stream).
+- Statistics events report the DTLS version, packets received with cryptex and packets
+  recovered from RED.
+- Interop: `tools/interop/webrtc/browser.sh` (DTLS 1.3 both roles, cryptex both ways, our
+  simulcast line with per-encoding ULPFEC through 5 % loss without NACK: Chrome decodes all of it,
+  next to nothing without FEC), `fec.sh` (Opus RED under loss, Chrome's per-layer ULPFEC),
+  `run.sh` (pion falls back to DTLS 1.2), Firefox 158 with DTLS 1.3 (both DTLS roles). The
+  `webrtc-interop` example takes `ONLY_INTEROP_*` switches and a lossy proxy for the SFU.
+- Benchmark (gpu51 same-run A/B against main 436b47e7, `quiet.sh`, CPUs 2-9, in-process peers with DTLS 1.2 on both sides, medians of the six quiet pairs: peer connections per second 0.990x, VP8 media 4000-byte frames 0.995x (752 vs 756 MB/s), 120-byte frames 0.993x: no regression. With the new default DTLS 1.3 a handshake costs about 5 % more CPU than DTLS 1.2; media throughput is the same, and with cryptex too).
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

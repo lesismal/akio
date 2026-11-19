@@ -10,6 +10,32 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
+
+ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：
+
+- **变更**：peer 默认提供 DTLS 1.3（RFC 9147）并可回退到 DTLS 1.2（`RtcConfig::enable_dtls13`，设为
+  `false` 则只用 DTLS 1.2）。SDP 不变。Chrome 157 在两种 DTLS 角色下都协商 DTLS 1.3；对 pion 等 DTLS
+  1.2 对端以 DTLS 1.2 应答（两种角色均已验证）。
+- `RtcConfig::enable_cryptex`：提供并接受 `a=cryptex`（RFC 9335）；双方都声明后，发送的 RTP 的头部扩展
+  与 CSRC 被加密。已与 Chrome 157 的 `rtpHeaderEncryptionPolicy: "require"`（需要
+  `--enable-experimental-web-platform-features`）双向验证。
+- `RtcConfig::enable_encrypted_header_extensions`：为音频电平、MID、RID、修复 RID、视频方向与播放延迟
+  在空闲的单字节 ID 上提供 RFC 6904 加密扩展变体（`urn:ietf:params:rtp-hdrext:encrypt`），并在 answer
+  中采用。没有浏览器提供它们。SRTP MKI 不进入 WebRTC：DTLS-SRTP 没有对应的 SDP，浏览器也不使用。
+- `RtcConfig::enable_opus_red(Option<u8>)`：Opus RED（`red/48000/2`，负载类型 63）排在 Opus 之前，
+  这正是让 libwebrtc 发送它的条件；收到的冗余代替丢失的包（重复的丢弃），发送的 Opus 携带至多两个先前
+  的包。双向 10 % 丢包下 Chrome 157 隐藏的音频从 20 % 降到 2-3 %。
+- simulcast 线路上的 ULPFEC（`FecMechanism::Ulpfec`）：每个编码有自己的 FEC 编码器、丢包估计与速率，
+  RED 与 ULPFEC 在该编码的 SSRC 上并带其 RID，与 Chrome 的发送方式一致；收到的 simulcast 按层修复（每个
+  peer 至多 8 个 FEC 解码器）。simulcast 线路不使用 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流）。
+- 统计事件报告 DTLS 版本、以 cryptex 收到的包数与由 RED 恢复的包数。
+- 互通：`tools/interop/webrtc/browser.sh`（两种角色的 DTLS 1.3、双向 cryptex、我方带按编码 ULPFEC 的
+  simulcast 线路经过 5 % 丢包且无 NACK：Chrome 全部解码，没有 FEC 时几乎解不出）、`fec.sh`（丢包下的
+  Opus RED、Chrome 的按层 ULPFEC）、`run.sh`（pion 回退到 DTLS 1.2）、Firefox 158 下的 DTLS 1.3
+  （两种 DTLS 角色）。`webrtc-interop` 示例新增 `ONLY_INTEROP_*` 开关，并可让 SFU 经过有损代理。
+- 基准（gpu51 与 main 436b47e7 同轮 A/B，`quiet.sh`，CPU 2-9，进程内 peer，双方均为 DTLS 1.2，取六组安静轮次的中位数：每秒建立的 peer 连接 0.990x，4000 字节 VP8 帧媒体 0.995x（752 对 756 MB/s），120 字节帧 0.993x：无回退。新默认的 DTLS 1.3 握手比 DTLS 1.2 多约 5 % CPU；媒体吞吐不变，开启 cryptex 时也一样）。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：

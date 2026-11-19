@@ -4,8 +4,8 @@
 # only-turn over UDP, TCP and TLS, the only_turn client against pion/turn and only-turn over
 # UDP, TCP and TLS, Endpoint relayed candidates (on only-turn and pion/turn, allocated over UDP,
 # TCP and TLS), ICE-TCP both ways (only passive with pion active, only active with pion passive,
-# pion active to the ICE-lite server's passive candidate) and simulcast sending (pion receives
-# the three RIDs);
+# pion active to the ICE-lite server's passive candidate), simulcast sending (pion receives
+# the three RIDs) and DTLS 1.3 offered to pion's DTLS 1.2 in both roles (falls back, ADR-048);
 # and fib's Go WebRTC (data channels, both directions) when the fib checkout is next to this
 # repository (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
 # against only-turn, both in Docker (the only TURN server is built for Linux in rust:1).
@@ -32,6 +32,8 @@ $GO server-tcp 127.0.0.1:9505 2>/tmp/webrtc-pion-tcp.log & PIDS="$PIDS $!"
 $GO server-tcp-passive 127.0.0.1:9507 127.0.0.1:9508 2>/tmp/webrtc-pion-tcp-passive.log & PIDS="$PIDS $!"
 $RS server 127.0.0.1:9509 127.0.0.1:9510 127.0.0.1:9511 2>/tmp/webrtc-only-server-tcp.log & PIDS="$PIDS $!"
 $GO server-simulcast 127.0.0.1:9506 2>/dev/null & PIDS="$PIDS $!"
+ONLY_INTEROP_DTLS13=1 ONLY_LOG=only_webrtc=debug $RS server 127.0.0.1:9530 127.0.0.1:9531 \
+  2>/tmp/webrtc-only-server-dtls13.log & PIDS="$PIDS $!"
 sleep 1
 
 echo "== pion offers to the only ICE-lite server"
@@ -70,6 +72,13 @@ echo "== pion (active TCP only) to the only ICE-lite server's passive ICE-TCP ca
 $GO client-dc-tcp 127.0.0.1:9510
 echo "== only simulcast (h/m/l) to pion"
 $RS client 127.0.0.1:9506 simulcast
+echo "== DTLS 1.3 offered to pion (DTLS 1.2): the only server (pion is the client) and client"
+$GO client-dc 127.0.0.1:9531
+$GO client-media 127.0.0.1:9531
+grep -q "dtls: connected with DTLS 1.2" /tmp/webrtc-only-server-dtls13.log
+ONLY_INTEROP_DTLS13=1 ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9502 media 2>/tmp/webrtc-only-client-dtls13.log
+grep "dtls: connected with" /tmp/webrtc-only-client-dtls13.log
+grep -q "dtls: connected with DTLS 1.2" /tmp/webrtc-only-client-dtls13.log
 
 FIB_DIR=${FIB_DIR:-$ROOT/../fib}
 if [ -d "$FIB_DIR/webrtc" ]; then

@@ -51,3 +51,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-045: DTLS 1.3 connection ID updates, post-handshake client authentication and early data in only-dtls](045-dtls13-cid-updates-pha-early-data.md) (accepted 2026-11-19)
 - [ADR-046: Certificate policies, indirect CRLs, Ed448, X448 and DSA verification](046-x509-policies-indirect-crls-ed448-dsa.md) (accepted 2026-11-19)
 - [ADR-047: `/regex` message filters in only-log, on a new internal crate `only-regex`](047-log-regex-filters.md) (accepted 2026-11-19)
+- [ADR-048: DTLS 1.3, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in only-webrtc](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md) (accepted 2026-11-19)
