@@ -11,18 +11,24 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
 - `Certificate`: strict DER parsing of v1/v3 certificates (trailing data, BER lengths, explicit
   v1, duplicate extensions and mismatched signature algorithms are rejected); subjectAltName
   (DNS, IP, e-mail, URI, directoryName), basicConstraints, keyUsage, extKeyUsage,
-  nameConstraints, subject/authority key identifiers; unknown critical extensions are recorded
-  and fail verification; PEM in and out; `verify_signed_by`.
+  nameConstraints, subject/authority key identifiers, certificatePolicies, policyMappings,
+  policyConstraints, inhibitAnyPolicy; unknown critical extensions are recorded and fail
+  verification; PEM in and out; `verify_signed_by`.
 - `Verifier` over a `RootStore`: path building through unordered intermediates (depth limit,
   loop detection, a budget of signature checks), validity times, CA bit and pathLenConstraint,
   keyCertSign, extKeyUsage on the leaf and intermediates (server or client auth),
-  CA-as-end-entity rejection, name constraints (DNS, IP and directoryName; other forms fail
-  closed), and RFC 6125 server names: DNS names match dNSName SANs case-insensitively, a
+  CA-as-end-entity rejection (`allow_ca_end_entity` to validate a CA certificate), name
+  constraints (DNS, IP, directoryName, rfc822Name including the subject's emailAddress, and
+  URI; other forms fail closed; self-issued intermediates exempt, and not counted against
+  pathLen), certificate policies (ADR-046: RFC 5280 §6.1 on the policy graph of RFC 9618,
+  `Verifier::policies(PolicyOptions)` for the initial policy set, explicit policy and the
+  inhibit flags; `verify_path` returns the user-constrained policy set), and RFC 6125 server
+  names: DNS names match dNSName SANs case-insensitively, a
   wildcard only as the whole leftmost label and never over a public-suffix-like single label
   (`*.com`), IP addresses match iPAddress SANs only; the common name is not used. Trust anchors
   are subject name plus key (their own validity is not checked, as in rustls-webpki).
 - `CertificateParams` and `generate_simple_self_signed`: self-signed and CA-signed certificates
-  signed with ECDSA P-256 (default for generated keys) or P-384, Ed25519 or RSA keys; SANs,
+  signed with ECDSA P-256 (default for generated keys) or P-384, Ed25519, Ed448 or RSA keys; SANs,
   validity, serial, CA/pathLen, key usage, EKU, name constraints, custom extensions, key
   identifiers.
 - Revocation (ADR-038), without network access (the application fetches;
@@ -31,15 +37,23 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
   invalidityDate, issuingDistributionPoint scopes; signature checked against the issuer once and
   remembered) and `CrlSet::status` (good / revoked / unknown with clock skew, deltas and
   removeFromCRL, reason coverage), applied to whole paths by `Verifier::crls` with
-  `RevocationMode::{SoftFail, HardFail}`; `OcspResponse::verify` (RFC 6960: the issuer or a
+  `RevocationMode::{SoftFail, HardFail}`, checked once a candidate path reaches a root; indirect
+  CRLs (certificateIssuer entries, a distribution point's cRLIssuer) and CRLs signed by another
+  key of the CA, whose signer certificate (among the intermediates, `Verifier::crl_signers` and
+  the roots) must validate to the same root (ADR-046, RFC 5280 §6.3.3); `OcspResponse::verify` (RFC 6960: the issuer or a
   delegated responder with id-kp-OCSPSigning, CertID with SHA-1/256/384/512, nonce compared in
   constant time, thisUpdate / nextUpdate with clock skew) and `OcspRequest`; `CrlParams` and
   `OcspResponseParams` build signed CRLs and responses for tests and development CAs.
 
-Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384 keys), Ed25519, RSA
-PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates) and RSA-PSS with
-SHA-256/384/512. Not implemented: indirect CRLs (and CRLs signed by another key of the CA),
-signed OCSP requests, fetching anything over the network, certificate policies, Ed448, DSA.
+Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384 keys), Ed25519, Ed448,
+RSA PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates), RSA-PSS with
+SHA-256/384/512, and DSA with SHA-1/224/256 (verification only; FIPS 186-4 sizes; parameters
+inherited from the issuer are not supported). Not implemented, on purpose (ADR-046): signed OCSP
+requests (responders do not require them; only the application's client key could sign) and
+fetching anything over the network (the crate is sans-io; fetching would stall handshakes on
+third parties, tell the CA which sites a client visits, and follow attacker-supplied URLs). Names
+are chained by their DER bytes (RFC 5280 §7.1 allows it), not with RFC 4518 case and whitespace
+folding.
 
 ```rust
 use only_crypto::pkey::PrivateKey;
@@ -84,6 +98,18 @@ Verifier::new(&roots).verify_server(&cert, &[], "localhost").unwrap();
   skew, corrupted signatures, every truncation); requests byte-identical to `openssl ocsp`'s;
   generated CRLs and responses for deltas lifting holds, scopes, partial reasons, revoked
   intermediates and expired responders.
+- NIST PKITS (`tests/pkits.rs`, the suite downloaded by `tools/pkits/prepare.sh`, not vendored):
+  every test of section 4 with the policy settings the PKITS document lists and revocation in
+  hard-fail mode; 242 of 248 runs as expected, the 6 others listed with the reason (DSA
+  parameter inheritance, RFC 4518 name folding).
+- Policies, indirect CRLs and separate CRL keys on generated chains (`tests/policy.rs`:
+  explicit policy, requireExplicitPolicy, mappings and inhibitPolicyMapping, anyPolicy and
+  inhibitAnyPolicy, malformed extensions, indirect CRLs with certificateIssuer, revoked and
+  expired CRL signers, negative serial numbers, rfc822Name and URI constraints).
+- Ed448 and DSA from OpenSSL (`tests/data/ed448-dsa/gen.sh`): an Ed448 chain, key and
+  signature (ours equals OpenSSL's), a DSA 2048/256 root signing P-256 leaves and a CRL.
 - Fuzzing: targets `x509_parse` (certificate/PEM/SPKI/PKCS#8 parsing, round trips,
-  self-verification), `x509_crl` and `x509_ocsp` (parsing, round trips, status lookups and
-  validation) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.
+  self-verification, policy accessors), `x509_crl` and `x509_ocsp` (parsing, round trips,
+  status lookups including indirect-CRL entries, validation) and `x509_policy` (arbitrary
+  paths through policy processing) in `fuzz/`; `fuzzing::tests` replays their corpora on
+  stable.

@@ -238,6 +238,7 @@ pub(crate) enum Kind {
     P256,
     P384,
     Ed25519,
+    Ed448,
     Rsa,
 }
 
@@ -254,6 +255,7 @@ pub(crate) fn private_key(kind: Kind) -> pkey::PrivateKey {
         Kind::Ed25519 => {
             pkey::PrivateKey::Ed25519(only_crypto::ed25519::SigningKey::generate().unwrap())
         }
+        Kind::Ed448 => pkey::PrivateKey::Ed448(only_crypto::ed448::SigningKey::generate().unwrap()),
         Kind::Rsa => pkey::PrivateKey::from_pem(include_bytes!("../testdata/rsa2048.pem")).unwrap(),
     }
 }
@@ -364,7 +366,7 @@ pub(crate) fn exchange(c: &mut Connection, s: &mut Connection) {
 fn tls13_suites_and_groups() {
     let p = pki(Kind::P256, &["localhost"]);
     for suite in [0x1301u16, 0x1302, 0x1303] {
-        for group in [0x001du16, 0x0017, 0x0018] {
+        for group in [0x001du16, 0x0017, 0x0018, 0x001e] {
             let s = server(&p).__suites(&[suite]).build().unwrap();
             let c = client(&p).__groups(&[group]).build().unwrap();
             let (mut c, mut s) = connect(&s, &c, "localhost").unwrap();
@@ -378,7 +380,13 @@ fn tls13_suites_and_groups() {
 
 #[test]
 fn tls13_certificate_types() {
-    for kind in [Kind::P256, Kind::P384, Kind::Ed25519, Kind::Rsa] {
+    for kind in [
+        Kind::P256,
+        Kind::P384,
+        Kind::Ed25519,
+        Kind::Ed448,
+        Kind::Rsa,
+    ] {
         let p = pki(kind, &["localhost"]);
         let (mut c, mut s) = connect(
             &server(&p).build().unwrap(),
@@ -397,12 +405,13 @@ fn tls12_suites_and_keys() {
         (Kind::P256, &[0xc02b, 0xc02c, 0xcca9]),
         (Kind::P384, &[0xc02b, 0xc02c]),
         (Kind::Ed25519, &[0xc02b, 0xcca9]),
+        (Kind::Ed448, &[0xc02c]),
         (Kind::Rsa, &[0xc02f, 0xc030, 0xcca8]),
     ];
     for (kind, suites) in cases {
         let p = pki(*kind, &["localhost"]);
         for suite in *suites {
-            for group in [0x001du16, 0x0017, 0x0018] {
+            for group in [0x001du16, 0x0017, 0x0018, 0x001e] {
                 let s = server(&p)
                     .__suites(&[*suite])
                     .__groups(&[group])

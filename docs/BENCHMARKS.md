@@ -843,6 +843,23 @@ about a quarter of "verify + key parse" at 2,048 bits (1.8 µs: the division for
 the allocations); the AMMs themselves are latency-bound on one chain here, with no second
 exponentiation to interleave.
 
+#### Ed448, X448 and DSA (`--example pk_bench 448`, CPU 2)
+
+2026-11-19, ADR-046, the same host through `quiet.sh` (load average 4–10 from processes outside
+the benchmark lock during the runs; two consistent runs of three, the third 10–25% lower).
+ring has none of these, so the ratio column is against our own Ed25519 / X25519:
+
+| Operation (op/s) | only-crypto | vs |
+|---|---:|---|
+| Ed448 sign | 3,520 | 0.04× Ed25519 sign |
+| Ed448 verify | 2,630 | 0.11× Ed25519 verify |
+| X448 agree | 3,515 | 0.10× X25519 |
+| DSA 2048/256 verify (SHA-256) | 1,970 | 0.08× Ed25519 verify |
+
+Ed448 and X448 are portable constant-time code on the generic seven-limb Montgomery field (no
+assembly, no precomputed base-point table); they are not on any default fast path (TLS offers
+x448 last).
+
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
 MB/s of message bytes with 13 bytes of AAD, median of three alternating rounds; before = `main`

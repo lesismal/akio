@@ -19,8 +19,8 @@
 //! [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
 //! [`TlsInfo::early_data`]) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,
-//! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384;
-//! ECDSA, Ed25519 and RSA (PSS; PKCS#1 v1.5 in TLS 1.2) certificates verified with
+//! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384, X448;
+//! ECDSA, Ed25519, Ed448 and RSA (PSS; PKCS#1 v1.5 in TLS 1.2) certificates verified with
 //! `only-x509`; SNI and ALPN; revocation checking, off by default ([`RevocationPolicy`]: the
 //! stapled OCSP response with [`ClientConfigBuilder::ocsp_policy`], application-supplied
 //! [`Crls`] for server and client chains).

@@ -6,14 +6,32 @@ use std::net::IpAddr;
 use crate::Error;
 use crate::cert::{Certificate, KeyUsage, ext};
 use crate::crl::CrlSet;
-use crate::name::GeneralName;
+use crate::name::{GeneralName, attr};
+use crate::policy::{self, PolicyOptions, ValidPolicies};
 use crate::revocation::{DEFAULT_CLOCK_SKEW, RevocationStatus};
 
 /// The most intermediates a path may contain.
 pub const MAX_INTERMEDIATES: usize = 6;
 /// The most signature verifications one path search may perform (a bound on the work an
-/// adversarial set of intermediates can cause).
+/// adversarial set of intermediates can cause), CRL signatures and CRL signer paths
+/// included.
 pub const MAX_SIGNATURE_CHECKS: usize = 100;
+
+/// How deep CRL signer paths are revocation-checked: the path of a CRL signer other than the
+/// certificate's issuer is validated (to the same trust anchor) and its own certificates
+/// checked against CRLs; the signers of those CRLs are validated without further revocation
+/// checks.
+const MAX_CRL_SIGNER_DEPTH: u8 = 2;
+
+/// A validated path and the policies it is valid for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifiedPath {
+    /// The certificates, end entity first, trust anchor last.
+    pub chain: Vec<Certificate>,
+    /// The user-constrained policy set (RFC 5280 §6.1.6).
+    pub policies: ValidPolicies,
+}
 
 /// A set of trust anchors (root certificates).
 #[derive(Debug, Clone, Default)]
@@ -171,15 +189,21 @@ pub fn matches_server_name(cert: &Certificate, name: &ServerName) -> bool {
 /// directoryName forms; others fail closed) apply to the end entity's names; the server name,
 /// if given, must match a subjectAltName. Trust anchors are only a subject name and key: their
 /// own validity and constraints other than name constraints are not checked (as in
-/// rustls-webpki).
+/// rustls-webpki). Certificate policies are processed as RFC 5280 §6.1 specifies (policy
+/// mappings, requireExplicitPolicy, inhibitPolicyMapping, inhibitAnyPolicy), with the inputs
+/// of [`policies`](Self::policies); a self-issued intermediate does not count against
+/// pathLenConstraint. Revocation ([`crls`](Self::crls)) is checked once a whole path is found.
 #[derive(Debug, Clone)]
 pub struct Verifier<'a> {
     roots: &'a RootStore,
     time: Option<i64>,
     usage: Usage,
     crls: Option<&'a CrlSet>,
+    crl_signers: &'a [Certificate],
     mode: RevocationMode,
     skew: u32,
+    policy: PolicyOptions,
+    ca_end_entity: bool,
 }
 
 /// What [`Verifier::crls`] does with a certificate no current CRL covers.
@@ -203,18 +227,49 @@ impl<'a> Verifier<'a> {
             time: None,
             usage: Usage::ServerAuth,
             crls: None,
+            crl_signers: &[],
             mode: RevocationMode::SoftFail,
             skew: DEFAULT_CLOCK_SKEW,
+            policy: PolicyOptions::default(),
+            ca_end_entity: false,
         }
     }
 
-    /// Checks every certificate of the path below the root against `crls`
-    /// ([`CrlSet::status`]) while building it: a revoked certificate fails that path
-    /// ([`Error::Revoked`]; another path may still succeed), and one no CRL covers is handled
-    /// by the [`revocation_mode`](Self::revocation_mode).
+    /// Whether the end entity may be a CA certificate (default: no, [`Error::CaUsedAsEndEntity`];
+    /// RFC 5280 path validation itself allows it, e.g. to validate a CA certificate).
+    #[must_use]
+    pub fn allow_ca_end_entity(mut self, allow: bool) -> Self {
+        self.ca_end_entity = allow;
+        self
+    }
+
+    /// Checks every certificate of a candidate path below the root against `crls`: a revoked
+    /// certificate fails that path ([`Error::Revoked`]; another path may still succeed), and
+    /// one no CRL covers is handled by the [`revocation_mode`](Self::revocation_mode). CRLs
+    /// are used as [`CrlSet::status`] describes, and also when signed by another key than the
+    /// issuer's (a certificate with the CRL issuer's name and cRLSign) or by another issuer
+    /// that the certificate's distribution point names as cRLIssuer (an indirect CRL): such a
+    /// signer certificate, found among the intermediates, the
+    /// [`crl_signers`](Self::crl_signers) and the roots, must itself validate to the same root
+    /// (RFC 5280 §6.3.3 (f)), including revocation.
     #[must_use]
     pub fn crls(mut self, crls: &'a CrlSet) -> Self {
         self.crls = Some(crls);
+        self
+    }
+
+    /// Extra certificates that may sign CRLs or be on a CRL signer's path (not used to
+    /// build the certificate's own path).
+    #[must_use]
+    pub fn crl_signers(mut self, certs: &'a [Certificate]) -> Self {
+        self.crl_signers = certs;
+        self
+    }
+
+    /// The certificate policy inputs (default: any policy, nothing required or inhibited).
+    #[must_use]
+    pub fn policies(mut self, options: PolicyOptions) -> Self {
+        self.policy = options;
         self
     }
 
@@ -255,12 +310,22 @@ impl<'a> Verifier<'a> {
         intermediates: &[Certificate],
         name: Option<&ServerName>,
     ) -> Result<Vec<Certificate>, Error> {
+        self.verify_path(leaf, intermediates, name).map(|p| p.chain)
+    }
+
+    /// [`verify`](Self::verify), also returning the policies the path is valid for.
+    pub fn verify_path(
+        &self,
+        leaf: &Certificate,
+        intermediates: &[Certificate],
+        name: Option<&ServerName>,
+    ) -> Result<VerifiedPath, Error> {
         let now = self.time.unwrap_or_else(crate::time::now);
         check_time(leaf, now)?;
         if let Some(oid) = leaf.unsupported_critical_extension() {
             return Err(Error::UnsupportedCriticalExtension(oid.to_vec()));
         }
-        if leaf.is_ca() {
+        if leaf.is_ca() && !self.ca_end_entity {
             return Err(Error::CaUsedAsEndEntity);
         }
         check_eku(leaf, self.usage)?;
@@ -271,14 +336,25 @@ impl<'a> Verifier<'a> {
         }
         let mut path = vec![leaf];
         let mut budget = MAX_SIGNATURE_CHECKS;
+        let main: Vec<&Certificate> = intermediates.iter().collect();
+        let mut signer_pool = main.clone();
+        signer_pool.extend(self.crl_signers.iter());
         let mut search = Search {
             v: self,
             now,
-            intermediates,
+            intermediates: &main,
+            signer_pool: &signer_pool,
             budget: &mut budget,
+            anchor: None,
+            usage: self.usage,
+            depth: 0,
+            policies: None,
         };
-        let found = search.extend(&mut path)?;
-        Ok(found)
+        let chain = search.extend(&mut path)?;
+        Ok(VerifiedPath {
+            chain,
+            policies: search.policies.unwrap_or(ValidPolicies::Any),
+        })
     }
 
     /// [`verify`](Self::verify) for a server certificate presented for `server_name`.
@@ -345,31 +421,149 @@ fn rank(e: &Error) -> u8 {
 struct Search<'s, 'a> {
     v: &'s Verifier<'a>,
     now: i64,
-    intermediates: &'s [Certificate],
+    intermediates: &'s [&'s Certificate],
+    /// Where CRL signers and their issuers are looked for (plus the roots).
+    signer_pool: &'s [&'s Certificate],
     budget: &'s mut usize,
+    /// Only this root may end the path (CRL signer paths: the same trust anchor).
+    anchor: Option<&'s Certificate>,
+    usage: Usage,
+    /// 0 for the certificate's own path, 1 and more for CRL signer paths.
+    depth: u8,
+    /// The policies of the path found.
+    policies: Option<ValidPolicies>,
 }
 
 impl<'s> Search<'s, '_> {
     fn check_signature(&mut self, child: &Certificate, issuer: &Certificate) -> Result<(), Error> {
+        self.spend()?;
+        child.verify_signed_by(&issuer.public_key()?)
+    }
+
+    fn spend(&mut self) -> Result<(), Error> {
         if *self.budget == 0 {
             return Err(Error::TooManySignatures);
         }
         *self.budget -= 1;
-        child.verify_signed_by(&issuer.public_key()?)?;
-        self.check_revocation(child, issuer)
+        Ok(())
     }
 
-    fn check_revocation(&self, child: &Certificate, issuer: &Certificate) -> Result<(), Error> {
+    /// The checks of a complete path `path` + `root`: name constraints of the root, policy
+    /// processing (the certificate's own path only), and revocation from the top down.
+    fn finish(&mut self, path: &[&Certificate], root: &'s Certificate) -> Result<(), Error> {
+        check_name_constraints(root, path)?;
+        if self.depth == 0 {
+            let below: Vec<&Certificate> = path.iter().rev().copied().collect();
+            self.policies = Some(policy::process(&below, &self.v.policy)?);
+        }
+        if self.v.crls.is_some() && self.depth < MAX_CRL_SIGNER_DEPTH {
+            for k in (0..path.len()).rev() {
+                let issuer = path.get(k + 1).copied().unwrap_or(root);
+                self.check_revocation(path[k], issuer, root)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_revocation(
+        &mut self,
+        child: &Certificate,
+        issuer: &Certificate,
+        root: &'s Certificate,
+    ) -> Result<(), Error> {
         let Some(crls) = self.v.crls else {
             return Ok(());
         };
-        match crls.status(child, issuer, self.now, self.v.skew) {
+        if child.issuer().as_der() != issuer.subject().as_der() {
+            return Err(Error::RevocationUnknown);
+        }
+        let (now, skew) = (self.now, self.v.skew);
+        let mut too_many = false;
+        let status = crls.status_with(child, now, skew, &mut |crl| match self
+            .crl_signed(crl, issuer, root)
+        {
+            Ok(b) => b,
+            Err(_) => {
+                too_many = true;
+                false
+            }
+        });
+        if too_many {
+            return Err(Error::TooManySignatures);
+        }
+        match status {
             RevocationStatus::Good => Ok(()),
             RevocationStatus::Revoked { reason, .. } => Err(Error::Revoked(reason)),
             RevocationStatus::Unknown => match self.v.mode {
                 RevocationMode::SoftFail => Ok(()),
                 RevocationMode::HardFail => Err(Error::RevocationUnknown),
             },
+        }
+    }
+
+    /// Whether `crl` is authentic for a path ending at `root`: signed by `issuer` (the
+    /// certificate's issuer), or by a certificate with the CRL issuer's name and cRLSign that
+    /// itself validates to `root`. Fails only when the signature budget runs out.
+    fn crl_signed(
+        &mut self,
+        crl: &crate::Crl,
+        issuer: &Certificate,
+        root: &'s Certificate,
+    ) -> Result<bool, Error> {
+        if crl.issuer().as_der() == issuer.subject().as_der() {
+            self.spend()?;
+            if crl.verify_signed_by(issuer).is_ok() {
+                return Ok(true);
+            }
+        }
+        if crl.issuer().as_der() == root.subject().as_der() && root != issuer {
+            self.spend()?;
+            if crl.verify_signed_by(root).is_ok() {
+                return Ok(true);
+            }
+        }
+        let pool = self.signer_pool;
+        for &cand in pool {
+            if cand.subject().as_der() != crl.issuer().as_der() || cand == issuer || cand == root {
+                continue;
+            }
+            self.spend()?;
+            if crl.verify_signed_by(cand).is_err() {
+                continue;
+            }
+            if self.validate_signer(cand, root)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether the CRL signer `cand` has a valid path to `root` (without the end-entity
+    /// rules: a CRL signer may be a CA).
+    fn validate_signer(
+        &mut self,
+        cand: &'s Certificate,
+        root: &'s Certificate,
+    ) -> Result<bool, Error> {
+        if check_time(cand, self.now).is_err() || cand.unsupported_critical_extension().is_some() {
+            return Ok(false);
+        }
+        let mut sub = Search {
+            v: self.v,
+            now: self.now,
+            intermediates: self.signer_pool,
+            signer_pool: self.signer_pool,
+            budget: &mut *self.budget,
+            anchor: Some(root),
+            usage: Usage::Any,
+            depth: self.depth + 1,
+            policies: None,
+        };
+        let mut path = vec![cand];
+        match sub.extend(&mut path) {
+            Ok(_) => Ok(true),
+            Err(e @ Error::TooManySignatures) => Err(e),
+            Err(_) => Ok(false),
         }
     }
 
@@ -385,13 +579,16 @@ impl<'s> Search<'s, '_> {
             }
         };
         let child = path[path.len() - 1];
-        for root in self.v.roots.roots() {
-            if root.subject().as_der() != child.issuer().as_der() {
+        let roots = self.v.roots.roots();
+        for root in roots {
+            if root.subject().as_der() != child.issuer().as_der()
+                || self.anchor.is_some_and(|a| a != root)
+            {
                 continue;
             }
             let r = self
                 .check_signature(child, root)
-                .and_then(|()| check_name_constraints(root, path));
+                .and_then(|()| self.finish(path, root));
             match r {
                 Ok(()) => {
                     let mut out: Vec<Certificate> = path.iter().map(|c| (*c).clone()).collect();
@@ -407,12 +604,14 @@ impl<'s> Search<'s, '_> {
             return Err(best);
         }
         let intermediates = self.intermediates;
-        for ca in intermediates {
+        for &ca in intermediates {
             if ca.subject().as_der() != child.issuer().as_der() || path.contains(&ca) {
                 continue;
             }
+            // Self-issued intermediates below `ca` do not count against its pathLen.
+            let below = path[1..].iter().filter(|c| !c.is_self_issued()).count();
             let r = self
-                .check_ca(ca, path.len() - 1)
+                .check_ca(ca, below)
                 .and_then(|()| self.check_signature(child, ca))
                 .and_then(|()| check_name_constraints(ca, path));
             if let Err(e) = r {
@@ -452,7 +651,7 @@ impl<'s> Search<'s, '_> {
         {
             return Err(Error::KeyUsage);
         }
-        check_eku(ca, self.v.usage)
+        check_eku(ca, self.usage)
     }
 }
 
@@ -463,12 +662,22 @@ fn check_name_constraints(ca: &Certificate, path: &[&Certificate]) -> Result<(),
         return Ok(());
     };
     for (i, c) in path.iter().enumerate() {
+        // Self-issued intermediates are exempt (RFC 5280 §6.1.3 (b)).
+        if i > 0 && c.is_self_issued() {
+            continue;
+        }
         let mut names: Vec<GeneralName> = Vec::new();
         if !c.subject().is_empty() {
             names.push(GeneralName::DirectoryName(c.subject().clone()));
         }
         if i == 0 {
             names.extend(c.subject_alt_names().iter().cloned());
+            // Legacy e-mail addresses in the subject name are rfc822Names too.
+            names.extend(
+                c.subject()
+                    .values(attr::EMAIL_ADDRESS)
+                    .map(GeneralName::Email),
+            );
         }
         for n in &names {
             // Excluded: a match, or a form of the same type we cannot evaluate.
@@ -493,9 +702,42 @@ fn same_form(a: &GeneralName, b: &GeneralName) -> bool {
 }
 
 /// Whether `name` is within `base`: `Some(true/false)` for the forms we evaluate (DNS, IP,
-/// directoryName), `None` for other forms of the same type (fail closed).
+/// directoryName, rfc822Name, URI), `None` for other forms of the same type or names we
+/// cannot evaluate (fail closed).
 fn subtree_match(base: &GeneralName, name: &GeneralName) -> Option<bool> {
+    // A host within a constraint: equal, or (constraint ".example.com") any subdomain.
+    let host_in = |b: &str, host: &str| -> bool {
+        match b.strip_prefix('.') {
+            Some(_) => {
+                host.len() > b.len() && host.to_ascii_lowercase().ends_with(&b.to_ascii_lowercase())
+            }
+            None => host.eq_ignore_ascii_case(b),
+        }
+    };
     match (base, name) {
+        (GeneralName::Email(b), GeneralName::Email(n)) => {
+            // A mailbox (local part exact, host case-insensitive), a host, or a domain.
+            let (local, host) = n.rsplit_once('@')?;
+            Some(match b.rsplit_once('@') {
+                Some((bl, bh)) => bl == local && bh.eq_ignore_ascii_case(host),
+                None => host_in(b, host),
+            })
+        }
+        (GeneralName::Uri(b), GeneralName::Uri(n)) => {
+            // The host of the authority; a URI without one cannot be evaluated.
+            let rest = n.split_once("://")?.1;
+            let auth = rest.split(['/', '?', '#']).next()?;
+            let auth = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+            let host = if auth.starts_with('[') {
+                return None;
+            } else {
+                auth.split(':').next()?
+            };
+            if host.is_empty() {
+                return None;
+            }
+            Some(host_in(b, host))
+        }
         (GeneralName::Dns(b), GeneralName::Dns(n)) => {
             let n = n.strip_prefix("*.").unwrap_or(n).to_ascii_lowercase();
             let b = b.to_ascii_lowercase();

@@ -30,13 +30,13 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   （应答；在达到 AES-GCM 记录上限前主动发送）、NewSessionTicket 与使用 `psk_dhe_ke` 的 PSK 恢复
   （无状态票据，或来自会话缓存的一次性票据）、客户端证书（CertificateRequest）、中间设备兼容模式；
   双方都开启时支持早期数据（0-RTT，见下文），否则拒绝并按 RFC 8446 4.2.10 跳过。
-- **TLS 1.2**（RFC 5246、RFC 7627 扩展主密钥、RFC 5746 重协商指示）：仅 ECDHE 搭配 ECDSA、Ed25519
-  或 RSA 证书与 AEAD 套件（无 CBC、无 RSA 密钥交换、无静态 DH），会话 ID 与 RFC 5077 票据，客户端
+- **TLS 1.2**（RFC 5246、RFC 7627 扩展主密钥、RFC 5746 重协商指示）：仅 ECDHE 搭配 ECDSA、Ed25519、
+  Ed448 或 RSA 证书与 AEAD 套件（无 CBC、无 RSA 密钥交换、无静态 DH），会话 ID 与 RFC 5077 票据，客户端
   证书；以 `no_renegotiation` 警告拒绝重协商。
 - 套件 `TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、`TLS_CHACHA20_POLY1305_SHA256`、
   `ECDHE-{ECDSA,RSA}-AES{128,256}-GCM` 与 `ECDHE-{ECDSA,RSA}-CHACHA20-POLY1305`；组 X25519、
-  secp256r1、secp384r1；签名方案 ECDSA P-256/P-384、Ed25519、RSA-PSS（rsae）、RSA PKCS#1 v1.5
-  （TLS 1.2 与证书）。
+  secp256r1、secp384r1、x448（排在最后；ADR-046）；签名方案 ECDSA P-256/P-384、Ed25519、Ed448、
+  RSA-PSS（rsae）、RSA PKCS#1 v1.5（TLS 1.2 与证书）。
 - 记录层：16 KiB 分片、TLS 1.3 内层内容类型与填充、带降级哨兵的版本协商、严格的状态机、握手消息跨
   记录重组且绝不跨密钥切换、告警与 close_notify、常量时间的 Finished / 绑定值校验。
 - 证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）。

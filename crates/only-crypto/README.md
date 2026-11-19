@@ -24,7 +24,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 
 | Module | What |
 |---|---|
-| `hash` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5 (streaming and one-shot, `Hash` trait) |
+| `hash` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5 (streaming and one-shot, `Hash` trait); SHAKE128, SHAKE256 (FIPS 202, `squeeze` any length) |
 | `mac` | HMAC over any `Hash` (constant-time `verify`) |
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
@@ -36,10 +36,12 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `ct_eq` | constant-time comparison |
 | `x25519` | X25519 key agreement (RFC 7748), rejecting the all-zero shared secret |
 | `ed25519` | Ed25519 (RFC 8032): deterministic signing, strict verification (canonical `S`, `R` compared as encoded) |
+| `x448`, `ed448` | X448 (RFC 7748) and Ed448 (RFC 8032, pure, empty context; strict verification like Ed25519), ADR-046: portable constant-time code on the generic seven-limb Montgomery field (fixed windows with masked table scans, the ladder's masked swaps), no assembly |
+| `dsa` | DSA verification only (FIPS 186-4; 1024/160, 2048/224, 2048/256, 3072/256; keys checked once), for legacy certificates and CRLs |
 | `p256`, `p384` | ECDH and ECDSA on NIST P-256 / P-384: RFC 6979 nonces, any `Hash` for prehashing, DER and fixed-width (P1363) signatures, validated SEC1 points (compressed and uncompressed) |
 | `rsa` | RSA PKCS#1 v1.5 and PSS (MGF1) with SHA-256/384/512 (SHA-1 verification only), 2048–8192-bit moduli; private keys use the CRT with blinding and a check of the result |
 | `der`, `pem` | strict DER reader and writer (rejects BER), common OIDs, PEM (RFC 7468) |
-| `pkey` | `PrivateKey` / `PublicKey` over all of the above: PKCS#8 v1/v2, SEC1, PKCS#1, SubjectPublicKeyInfo, PEM; `SignatureAlgorithm` as TLS and X.509 name them |
+| `pkey` | `PrivateKey` / `PublicKey` over all of the above (DSA public keys only): PKCS#8 v1/v2, SEC1, PKCS#1, SubjectPublicKeyInfo, PEM; `SignatureAlgorithm` as TLS and X.509 name them |
 
 It replaces sha1, sha2, md-5, hmac, pbkdf2, aes, aes-gcm, ctr, crc32fast, base64 and getrandom
 in `only-kcp`, `only-turn`, `only-ws`, `only-http`, `only-media`, `only-bittorrent` and

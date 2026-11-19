@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # only-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
-# TLS 1.3 and 1.2, every implemented cipher suite and group, RSA / ECDSA P-256 / P-384 /
-# Ed25519 certificates, client authentication, resumption (tickets and session IDs),
+# TLS 1.3 and 1.2, every implemented cipher suite and group (X448 and Ed448 with OpenSSL only:
+# Go has neither), RSA / ECDSA P-256 / P-384 / Ed25519 / Ed448 certificates, client authentication, resumption (tickets and session IDs),
 # HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
 # OCSP stapling (OpenSSL, Go, GnuTLS; only's client validating it, and CRLs, against OpenSSL),
 # certificate compression (RFC 8879 zlib, brotli and zstd: OpenSSL 3.2+ built with them, e.g.
@@ -51,6 +51,7 @@ leaf rsa -algorithm RSA -pkeyopt rsa_keygen_bits:2048
 leaf p256 -algorithm EC -pkeyopt ec_paramgen_curve:P-256
 leaf p384 -algorithm EC -pkeyopt ec_paramgen_curve:P-384
 leaf ed25519 -algorithm ED25519
+leaf ed448 -algorithm ED448
 leaf client -algorithm EC -pkeyopt ec_paramgen_curve:P-256
 # An OCSP response for the P-256 leaf, signed by the CA (status good, valid for a day).
 printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=p256\n' \
@@ -200,12 +201,12 @@ for cs in TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SH
     s_server_case "1.3 $cs" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -ciphersuites $cs" ""
     s_client_case "1.3 $cs" "$S" "-tls1_3 -ciphersuites $cs" "hello only"
 done
-for g in X25519 P-256 P-384; do
+for g in X25519 P-256 P-384 X448; do
     s_server_case "1.3 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -groups $g" ""
     s_client_case "1.3 group $g" "$S" "-tls1_3 -groups $g" "hello only"
 done
 # Certificate types, both versions.
-for k in rsa p256 p384 ed25519; do
+for k in rsa p256 p384 ed25519 ed448; do
     s_server_case "1.3 $k cert" "-cert $P/$k.pem -key $P/$k.key -tls1_3" ""
     s_client_case "1.3 $k cert" "--cert $P/$k.pem --key $P/$k.key" "-tls1_3" "hello only"
 done
@@ -220,8 +221,10 @@ for cs in ECDHE-RSA-AES128-GCM-SHA256 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-RSA-CHAC
 done
 s_server_case "1.2 ed25519 cert" "-cert $P/ed25519.pem -key $P/ed25519.key -tls1_2" ""
 s_client_case "1.2 ed25519 cert" "--cert $P/ed25519.pem --key $P/ed25519.key" "-tls1_2" "hello only"
+s_server_case "1.2 ed448 cert" "-cert $P/ed448.pem -key $P/ed448.key -tls1_2" ""
+s_client_case "1.2 ed448 cert" "--cert $P/ed448.pem --key $P/ed448.key" "-tls1_2" "hello only"
 s_server_case "1.2 p384 cert" "-cert $P/p384.pem -key $P/p384.key -tls1_2" ""
-for g in X25519 P-256 P-384; do
+for g in X25519 P-256 P-384 X448; do
     s_server_case "1.2 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -groups $g" ""
 done
 # HelloRetryRequest: the server wants P-384, the client sends X25519 first.

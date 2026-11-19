@@ -42,9 +42,9 @@
 
 | | TLS 1.3（RFC 8446） | TLS 1.2（RFC 5246） |
 |---|---|---|
-| 密钥交换 | X25519、secp256r1、secp384r1；HelloRetryRequest | 同样这些组上的 ECDHE（无 RSA 密钥交换、无静态 DH） |
+| 密钥交换 | X25519、secp256r1、secp384r1、x448（排在最后）；HelloRetryRequest | 同样这些组上的 ECDHE（无 RSA 密钥交换、无静态 DH） |
 | 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
-| 证书 | ECDSA P-256/P-384、Ed25519、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
+| 证书 | ECDSA P-256/P-384、Ed25519、Ed448、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
 | 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
 | 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过；证书压缩（RFC 8879：zlib、brotli、zstd） | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
 | record_size_limit（RFC 8449） | 支持 | 支持 |
@@ -227,7 +227,8 @@ let cfg = ClientConfig::builder()
   只拒绝有效的“revoked”（告警 `certificate_revoked`）；`HardFail` 还拒绝缺失、无效、过期或“unknown”的响应
   （`bad_certificate_status_response`）。只覆盖叶证书；恢复的会话不再检查。
 - **CRL**（客户端用 `.crls`，服务端检查客户端证书用 `.client_crls`）：根以下的每张证书都用其签发者当前的 CRL
-  检查（完整与 delta、issuingDistributionPoint 范围，签名只验证一次）。被列出的证书以 `certificate_revoked`
+  检查（完整与 delta、issuingDistributionPoint 范围，签名只验证一次），包括间接 CRL 以及由 CA 另一把
+  密钥签发的 CRL，前提是签名证书位于对端发送的证书链或根证书中，且自身能验证到同一个根（ADR-046）。被列出的证书以 `certificate_revoked`
   失败；`HardFail` 下没有当前 CRL 的证书以 `certificate_unknown` 失败。刷新时构建新的配置。
 
 去哪里获取，以及自己查询响应者：内部 crate `only-x509`（无 semver 承诺）提供
@@ -243,7 +244,7 @@ let cfg = ClientConfig::builder()
 
 ## 尚未完成
 
-获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）、间接 CRL；RSA-PSS 密钥
+获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）；RSA-PSS 密钥
 （`rsa_pss_pss_*`）；P-521；
 Windows 证书库与 macOS 信任设置。
 

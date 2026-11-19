@@ -4,8 +4,8 @@
 use only_crypto::der::Reader;
 
 use crate::{
-    Certificate, Crl, CrlSet, OcspResponse, OcspValidation, RootStore, ServerName, Usage, Verifier,
-    matches_server_name,
+    Certificate, Crl, CrlSet, OcspResponse, OcspValidation, PolicyOptions, RootStore, ServerName,
+    Usage, Verifier, ext, matches_server_name,
 };
 
 /// The OpenSSL-made CA and leaf of tests/data/revocation, for the revocation targets.
@@ -30,6 +30,17 @@ pub fn crl(data: &[u8]) {
     assert!(Crl::from_pem(c.to_pem().as_bytes()).ok().as_deref() == Some(std::slice::from_ref(&c)));
     for e in c.revoked() {
         assert!(c.find(&e.serial).is_some());
+        // Indirect CRLs: the entry belongs to its certificateIssuer, else the CRL issuer.
+        match &e.certificate_issuer {
+            None => assert!(c.find_for(&e.serial, c.issuer()).is_some()),
+            Some(names) => {
+                for n in names {
+                    if let crate::GeneralName::DirectoryName(d) = n {
+                        assert!(c.find_for(&e.serial, d).is_some());
+                    }
+                }
+            }
+        }
     }
     let _ = (
         c.issuer().to_string(),
@@ -45,6 +56,58 @@ pub fn crl(data: &[u8]) {
         let _ = set.status(&leaf, &ca, t, 300);
         let _ = set.status(&ca, &ca, t, 300);
     }
+}
+
+/// `x509_policy`: arbitrary bytes as a certificate path (DER certificates, each preceded by a
+/// two-byte big-endian length; the first byte selects the policy options) run through policy
+/// processing (RFC 5280 §6.1). Never panics, and the work stays polynomial (the policy graph
+/// has at most one node per policy per depth).
+pub fn policy(data: &[u8]) {
+    let Some((&flags, mut rest)) = data.split_first() else {
+        return;
+    };
+    let mut path = Vec::new();
+    while rest.len() >= 2 && path.len() < 8 {
+        let n = usize::from(u16::from_be_bytes([rest[0], rest[1]]));
+        rest = &rest[2..];
+        let take = n.min(rest.len());
+        if let Ok(c) = Certificate::from_der(&rest[..take]) {
+            path.push(c);
+        }
+        rest = &rest[take..];
+    }
+    if path.is_empty() {
+        return;
+    }
+    let mut opts = PolicyOptions::new();
+    opts.explicit_policy = flags & 1 != 0;
+    opts.inhibit_policy_mapping = flags & 2 != 0;
+    opts.inhibit_any_policy = flags & 4 != 0;
+    if flags & 8 != 0 {
+        // The policies the path itself names, and anyPolicy.
+        for c in &path {
+            opts.initial_policy_set
+                .extend(c.certificate_policies().unwrap_or_default().iter().cloned());
+        }
+        if flags & 16 != 0 {
+            opts.initial_policy_set.push(ext::ANY_POLICY.to_vec());
+        }
+    }
+    let refs: Vec<&Certificate> = path.iter().collect();
+    if let Ok(p) = crate::policy::process(&refs, &opts) {
+        let _ = (p.is_empty(), p.contains(ext::ANY_POLICY));
+    }
+    // The whole verifier over the same certificates (the first as the root).
+    let mut roots = RootStore::new();
+    roots.add(path[0].clone());
+    let leaf = &path[path.len() - 1];
+    let t = leaf.not_before().saturating_add(1);
+    let _ = Verifier::new(&roots)
+        .at_time(t)
+        .usage(Usage::Any)
+        .allow_ca_end_entity(true)
+        .policies(opts)
+        .verify_path(leaf, &path[1..], None);
 }
 
 /// `x509_ocsp`: arbitrary bytes as a DER OCSP response. Never panics; a parsed response
@@ -115,6 +178,17 @@ pub fn parse(data: &[u8]) {
     let t = c.not_before().saturating_add(1);
     let v = Verifier::new(&roots).at_time(t).usage(Usage::Any);
     let _ = v.verify(&c, std::slice::from_ref(&c), None);
+    let _ = (
+        c.certificate_policies(),
+        c.policy_mappings(),
+        c.policy_constraints(),
+        c.inhibit_any_policy(),
+        c.is_self_issued(),
+    );
+    let _ = v
+        .allow_ca_end_entity(true)
+        .policies(PolicyOptions::require([ext::ANY_POLICY.to_vec()]))
+        .verify_path(&c, &[], None);
 }
 
 #[cfg(test)]
@@ -149,6 +223,11 @@ mod tests {
     #[test]
     fn replay_x509_crl() {
         replay("x509_crl", super::crl);
+    }
+
+    #[test]
+    fn replay_x509_policy() {
+        replay("x509_policy", super::policy);
     }
 
     #[test]

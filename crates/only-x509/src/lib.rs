@@ -8,23 +8,26 @@
 //!   extKeyUsage, nameConstraints, key identifiers), PEM, signature checks.
 //! - [`Verifier`] over a [`RootStore`]: path building through unordered intermediates,
 //!   validity times, CA and pathLen constraints, key usage, extended key usage, name
-//!   constraints, server names (DNS with leftmost-label wildcards, IP addresses).
+//!   constraints, certificate policies (RFC 5280 §6.1, [`PolicyOptions`], [`ValidPolicies`]),
+//!   server names (DNS with leftmost-label wildcards, IP addresses).
 //! - [`CertificateParams`] and [`generate_simple_self_signed`]: generation with ECDSA
 //!   P-256/P-384, Ed25519 or RSA keys.
 //! - Revocation, without network access (the application fetches CRLs and OCSP responses;
 //!   [`Certificate::crl_distribution_points`] and [`Certificate::ocsp_urls`] say where):
 //!   [`Crl`] and [`CrlSet`] (RFC 5280 §5: complete and delta CRLs, reason codes,
-//!   issuingDistributionPoint scopes), checked by [`Verifier::crls`] or
+//!   issuingDistributionPoint scopes, indirect CRLs and CRLs signed by another key of the CA
+//!   through [`Verifier::crls`]), checked by [`Verifier::crls`] or
 //!   [`CrlSet::status`]; [`OcspResponse`] (RFC 6960: issuer or delegated responder
 //!   signatures, nonce, thisUpdate / nextUpdate with clock skew) and [`OcspRequest`].
 //!
 //! Supported signature algorithms are those of [`only_crypto::pkey::SignatureAlgorithm`]:
-//! ECDSA P-256/P-384 with SHA-256/384/512, Ed25519, RSA PKCS#1 v1.5 (SHA-1 verification only
-//! for legacy chains) and RSA-PSS with SHA-256/384/512.
+//! ECDSA P-256/P-384 with SHA-256/384/512, Ed25519, Ed448, RSA PKCS#1 v1.5 (SHA-1 verification
+//! only for legacy chains), RSA-PSS with SHA-256/384/512, and DSA with SHA-1/224/256
+//! (verification only).
 //!
-//! Not implemented: indirect CRLs and CRLs signed by a key other than the issuer's, signed
-//! OCSP requests, certificate policies, and name-constraint forms other than DNS, IP and
-//! directoryName (others fail closed).
+//! Not implemented: signed OCSP requests, network fetching (ADR-046 says why), name-constraint
+//! forms other than DNS, IP, directoryName, rfc822Name and URI (others fail closed), DSA
+//! parameter inheritance, and name comparison with RFC 4518 folding (names chain by DER bytes).
 //!
 //! ```
 //! use only_x509::{CertificateParams, RootStore, Verifier, generate_simple_self_signed};
@@ -53,6 +56,7 @@ mod crl;
 mod generate;
 mod name;
 mod ocsp;
+mod policy;
 mod revocation;
 mod time;
 mod verify;
@@ -63,7 +67,7 @@ pub mod fuzzing;
 
 pub use cert::{
     BasicConstraints, Certificate, DistributionPoint, Extension, GeneralSubtree, KeyUsage,
-    NameConstraints, ext,
+    NameConstraints, PolicyConstraints, ext,
 };
 pub use crl::{Crl, CrlParams, CrlSet, IssuingDistributionPoint, RevokedCertificate};
 pub use generate::{CertificateParams, IsCa, generate_simple_self_signed};
@@ -72,10 +76,11 @@ pub use ocsp::{
     BasicOcspResponse, CertId, CertIdHash, OcspRequest, OcspResponse, OcspResponseParams,
     OcspResponseStatus, OcspValidation, ResponderId, SingleResponse,
 };
+pub use policy::{PolicyOptions, ValidPolicies};
 pub use revocation::{DEFAULT_CLOCK_SKEW, ReasonFlags, RevocationReason, RevocationStatus};
 pub use verify::{
     MAX_INTERMEDIATES, MAX_SIGNATURE_CHECKS, RevocationMode, RootStore, ServerName, Usage,
-    Verifier, dns_name_matches, matches_server_name,
+    VerifiedPath, Verifier, dns_name_matches, matches_server_name,
 };
 
 /// Why parsing or verification failed.
@@ -120,6 +125,9 @@ pub enum Error {
     InvalidServerName,
     /// A name violates a CA's name constraints.
     NameConstraintViolation,
+    /// Certificate policy processing failed (RFC 5280 §6.1): no acceptable policy where one
+    /// is required, or a mapping to or from anyPolicy.
+    PolicyViolation,
     /// A certificate is revoked (by a CRL or an OCSP response), with the reason if given.
     Revoked(Option<RevocationReason>),
     /// No current, authentic revocation information covers a certificate, and the
@@ -177,6 +185,7 @@ impl std::fmt::Display for Error {
             Error::NameMismatch => f.write_str("certificate not valid for this name"),
             Error::InvalidServerName => f.write_str("invalid server name"),
             Error::NameConstraintViolation => f.write_str("name constraint violation"),
+            Error::PolicyViolation => f.write_str("certificate policy violation"),
             Error::Revoked(Some(r)) => write!(f, "certificate revoked ({r})"),
             Error::Revoked(None) => f.write_str("certificate revoked"),
             Error::RevocationUnknown => f.write_str("revocation status unknown"),

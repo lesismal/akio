@@ -13,7 +13,7 @@ explanation is in the [book](https://lesismal.github.io/only/en/).
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
-    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, P-256/P-384, RSA, DER/PEM"]
+    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, X448, Ed448, P-256/P-384, RSA, DSA verify, DER/PEM"]
     x509["only-x509<br/>certificates, chain validation, generation"]
     dtls["only-dtls<br/>sans-io DTLS 1.2, DTLS-SRTP"]
     srtp["only-srtp<br/>SRTP/SRTCP"]
@@ -117,7 +117,8 @@ flowchart BT
   AES instructions, with a constant-time portable fallback; the random syscall is in `only-sys`) provides the hashes, MACs, KDFs, CRC-32, constant-time AES-CTR/GCM,
   ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
-  formats (X25519, Ed25519, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DER/PEM, PKCS#8) that
+  formats (X25519, Ed25519, X448, Ed448, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DSA
+  verification, DER/PEM, PKCS#8) that
   `only-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
   these two crates in `only-tls` (wave C), DTLS in `only-dtls`, and QUIC in `only-quic` on
   `only-tls`'s record-free TLS 1.3 core (`only_tls::quic`) and `only-crypto` (wave D).

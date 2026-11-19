@@ -559,8 +559,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "x509_policy"
+path = "fuzz_targets/x509_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "crypto_sig_verify"
 path = "fuzz_targets/crypto_sig_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_ed448_dsa"
+path = "fuzz_targets/crypto_ed448_dsa.rs"
 test = false
 doc = false
 bench = false

@@ -61,6 +61,14 @@ pub mod ext {
     pub const CERTIFICATE_ISSUER: &[u8] = &[0x55, 0x1d, 0x1d];
     /// freshestCRL, 2.5.29.46.
     pub const FRESHEST_CRL: &[u8] = &[0x55, 0x1d, 0x2e];
+    /// anyPolicy, 2.5.29.32.0.
+    pub const ANY_POLICY: &[u8] = &[0x55, 0x1d, 0x20, 0x00];
+    /// policyMappings, 2.5.29.33.
+    pub const POLICY_MAPPINGS: &[u8] = &[0x55, 0x1d, 0x21];
+    /// policyConstraints, 2.5.29.36.
+    pub const POLICY_CONSTRAINTS: &[u8] = &[0x55, 0x1d, 0x24];
+    /// inhibitAnyPolicy, 2.5.29.54.
+    pub const INHIBIT_ANY_POLICY: &[u8] = &[0x55, 0x1d, 0x36];
 }
 
 /// The keyUsage bits (RFC 5280 §4.2.1.3), bit `i` for named bit `i`.
@@ -119,12 +127,25 @@ pub struct NameConstraints {
     pub excluded: Vec<GeneralSubtree>,
 }
 
-/// One cRLDistributionPoints entry (RFC 5280 §4.2.1.13): where to fetch a CRL. Only the
-/// `fullName` form of the name is kept (`nameRelativeToCRLIssuer` leaves it empty).
+/// policyConstraints (RFC 5280 §4.2.1.11): the number of further certificates after which an
+/// explicit policy is required, or policy mapping is inhibited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PolicyConstraints {
+    /// requireExplicitPolicy.
+    pub require_explicit_policy: Option<u32>,
+    /// inhibitPolicyMapping.
+    pub inhibit_policy_mapping: Option<u32>,
+}
+
+/// One cRLDistributionPoints entry (RFC 5280 §4.2.1.13): where to fetch a CRL, and which CRL
+/// covers the certificate.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DistributionPoint {
-    /// `distributionPoint` as `fullName` (usually one URI).
+    /// `distributionPoint` as `fullName` (usually one URI; empty when absent or relative).
     pub full_name: Vec<GeneralName>,
+    /// `distributionPoint` as `nameRelativeToCRLIssuer`: the DER `RelativeDistinguishedName`
+    /// (a SET) to append to the CRL issuer's name.
+    pub relative_name: Option<Vec<u8>>,
     /// `reasons`, if the point only serves some revocation reasons.
     pub reasons: Option<crate::ReasonFlags>,
     /// `cRLIssuer`, if the CRL is signed by someone other than the certificate's issuer.
@@ -168,6 +189,10 @@ pub struct Certificate {
     crl_distribution_points: Vec<DistributionPoint>,
     ocsp_urls: Vec<String>,
     ca_issuer_urls: Vec<String>,
+    policies: Option<Vec<Vec<u8>>>,
+    policy_mappings: Vec<(Vec<u8>, Vec<u8>)>,
+    policy_constraints: Option<PolicyConstraints>,
+    inhibit_any_policy: Option<u32>,
     unsupported_critical: Option<Vec<u8>>,
     signature: Vec<u8>,
 }
@@ -213,6 +238,10 @@ impl Certificate {
             crl_distribution_points: p.cdp,
             ocsp_urls: p.ocsp,
             ca_issuer_urls: p.ca_issuers,
+            policies: p.policies,
+            policy_mappings: p.policy_mappings,
+            policy_constraints: p.policy_constraints,
+            inhibit_any_policy: p.inhibit_any_policy,
             unsupported_critical: p.unsupported_critical,
             signature: p.signature.to_vec(),
             der,
@@ -365,6 +394,38 @@ impl Certificate {
         &self.crl_distribution_points
     }
 
+    /// The policy OIDs of certificatePolicies (anyPolicy included as [`ext::ANY_POLICY`]),
+    /// in order; `None` when the extension is absent. Qualifiers are not kept.
+    #[must_use]
+    pub fn certificate_policies(&self) -> Option<&[Vec<u8>]> {
+        self.policies.as_deref()
+    }
+
+    /// policyMappings: `(issuerDomainPolicy, subjectDomainPolicy)` pairs; empty when absent.
+    #[must_use]
+    pub fn policy_mappings(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.policy_mappings
+    }
+
+    /// policyConstraints, if present.
+    #[must_use]
+    pub fn policy_constraints(&self) -> Option<PolicyConstraints> {
+        self.policy_constraints
+    }
+
+    /// inhibitAnyPolicy (SkipCerts), if present.
+    #[must_use]
+    pub fn inhibit_any_policy(&self) -> Option<u32> {
+        self.inhibit_any_policy
+    }
+
+    /// Whether the certificate is self-issued (subject and issuer are the same name,
+    /// RFC 5280 §6.1).
+    #[must_use]
+    pub fn is_self_issued(&self) -> bool {
+        self.subject.as_der() == self.issuer.as_der()
+    }
+
     /// The OCSP responder URIs of authorityInfoAccess (id-ad-ocsp); empty when absent or
     /// unparsable.
     #[must_use]
@@ -421,6 +482,10 @@ struct Parsed<'a> {
     cdp: Vec<DistributionPoint>,
     ocsp: Vec<String>,
     ca_issuers: Vec<String>,
+    policies: Option<Vec<Vec<u8>>>,
+    policy_mappings: Vec<(Vec<u8>, Vec<u8>)>,
+    policy_constraints: Option<PolicyConstraints>,
+    inhibit_any_policy: Option<u32>,
     unsupported_critical: Option<Vec<u8>>,
 }
 
@@ -490,6 +555,10 @@ impl<'a> Parsed<'a> {
             cdp: Vec::new(),
             ocsp: Vec::new(),
             ca_issuers: Vec::new(),
+            policies: None,
+            policy_mappings: Vec::new(),
+            policy_constraints: None,
+            inhibit_any_policy: None,
             unsupported_critical: None,
         };
         if version == 3 {
@@ -611,8 +680,74 @@ impl<'a> Parsed<'a> {
                 }
                 return Ok(());
             }
-            // Understood and deliberately not acted on (no policy processing).
-            ext::CERTIFICATE_POLICIES | ext::ISSUER_ALT_NAME => {
+            ext::CERTIFICATE_POLICIES => {
+                let mut s = r.sequence()?;
+                let mut v: Vec<Vec<u8>> = Vec::new();
+                if s.is_empty() {
+                    return Err(Error::Encoding);
+                }
+                while !s.is_empty() {
+                    let mut pi = s.sequence()?;
+                    let oid = pi.read_oid()?.to_vec();
+                    if !pi.is_empty() {
+                        // policyQualifiers: a non-empty SEQUENCE OF PolicyQualifierInfo
+                        // { policyQualifierId, qualifier ANY }; checked for shape, not kept.
+                        let mut qs = pi.sequence()?;
+                        if qs.is_empty() {
+                            return Err(Error::Encoding);
+                        }
+                        while !qs.is_empty() {
+                            let mut q = qs.sequence()?;
+                            q.read_oid()?;
+                            if !q.is_empty() {
+                                q.read_tlv()?;
+                            }
+                            q.finish()?;
+                        }
+                    }
+                    pi.finish()?;
+                    // A policy OID may appear only once (RFC 5280 §4.2.1.4).
+                    if v.contains(&oid) {
+                        return Err(Error::Encoding);
+                    }
+                    v.push(oid);
+                }
+                self.policies = Some(v);
+            }
+            ext::POLICY_MAPPINGS => {
+                let mut s = r.sequence()?;
+                if s.is_empty() {
+                    return Err(Error::Encoding);
+                }
+                while !s.is_empty() {
+                    let mut m = s.sequence()?;
+                    let issuer = m.read_oid()?.to_vec();
+                    let subject = m.read_oid()?.to_vec();
+                    m.finish()?;
+                    self.policy_mappings.push((issuer, subject));
+                }
+            }
+            ext::POLICY_CONSTRAINTS => {
+                let mut s = r.sequence()?;
+                let mut pc = PolicyConstraints::default();
+                if let Some(c) = s.read_optional(tag::implicit(0))? {
+                    pc.require_explicit_policy = Some(read_skip_certs(c)?);
+                }
+                if let Some(c) = s.read_optional(tag::implicit(1))? {
+                    pc.inhibit_policy_mapping = Some(read_skip_certs(c)?);
+                }
+                s.finish()?;
+                if pc == PolicyConstraints::default() {
+                    return Err(Error::Encoding); // MUST NOT be an empty sequence
+                }
+                self.policy_constraints = Some(pc);
+            }
+            ext::INHIBIT_ANY_POLICY => {
+                let n = r.read_small_uint()?;
+                self.inhibit_any_policy = Some(u32::try_from(n).unwrap_or(u32::MAX));
+            }
+            // Understood and deliberately not acted on.
+            ext::ISSUER_ALT_NAME => {
                 return Ok(());
             }
             _ => {
@@ -625,6 +760,20 @@ impl<'a> Parsed<'a> {
         r.finish()?;
         Ok(())
     }
+}
+
+/// The contents of an IMPLICIT `SkipCerts` (`INTEGER (0..MAX)`), saturated to `u32`.
+fn read_skip_certs(c: &[u8]) -> Result<u32, Error> {
+    let mut w = only_crypto::der::Writer::new();
+    w.tlv(tag::INTEGER, c);
+    let der = w.into_vec();
+    let mut r = Reader::new(&der);
+    let v = r.read_uint()?;
+    r.finish()?;
+    if v.len() > 4 {
+        return Ok(u32::MAX);
+    }
+    Ok(v.iter().fold(0u32, |a, &b| (a << 8) | u32::from(b)))
 }
 
 /// Reads the contents of an `[n] EXPLICIT Extensions` wrapper: a non-empty SEQUENCE of
@@ -679,17 +828,40 @@ pub(crate) fn read_general_names(mut r: Reader<'_>) -> Result<Vec<GeneralName>, 
     Ok(v)
 }
 
-/// A `DistributionPointName` inside its `[0]` wrapper: the fullName, or an empty list for
-/// nameRelativeToCRLIssuer.
-pub(crate) fn read_dp_name(c: &[u8]) -> Result<Vec<GeneralName>, Error> {
+/// The parts of a `DistributionPointName`: `fullName`, or `nameRelativeToCRLIssuer` as the
+/// DER of a `RelativeDistinguishedName` SET.
+pub(crate) type DpName = (Vec<GeneralName>, Option<Vec<u8>>);
+
+/// A `DistributionPointName` inside its `[0]` wrapper.
+pub(crate) fn read_dp_name(c: &[u8]) -> Result<DpName, Error> {
     let mut r = Reader::new(c);
     let (t, inner, _) = r.read_tlv()?;
     r.finish()?;
     match t {
-        0xa0 => read_general_names(Reader::new(inner)),
-        0xa1 => Ok(Vec::new()),
+        0xa0 => Ok((read_general_names(Reader::new(inner))?, None)),
+        0xa1 => {
+            // Re-tag as a universal SET and check it parses as one RDN.
+            let mut w = only_crypto::der::Writer::new();
+            w.tlv(tag::SET, inner);
+            let rdn = w.into_vec();
+            let mut nw = only_crypto::der::Writer::new();
+            nw.tlv(tag::SEQUENCE, &rdn);
+            Name::from_der(&nw.into_vec())?;
+            Ok((Vec::new(), Some(rdn)))
+        }
         _ => Err(Error::Encoding),
     }
+}
+
+/// The name a relative distribution point name denotes: `base` with `rdn` appended.
+pub(crate) fn append_rdn(base: &Name, rdn: &[u8]) -> Option<Name> {
+    let mut r = Reader::new(base.as_der());
+    let inner = r.read(tag::SEQUENCE).ok()?;
+    let mut contents = inner.to_vec();
+    contents.extend_from_slice(rdn);
+    let mut w = only_crypto::der::Writer::new();
+    w.tlv(tag::SEQUENCE, &contents);
+    Name::from_der(&w.into_vec()).ok()
 }
 
 /// cRLDistributionPoints (RFC 5280 §4.2.1.13).
@@ -702,7 +874,7 @@ fn read_distribution_points(v: &[u8]) -> Result<Vec<DistributionPoint>, Error> {
         let mut d = s.sequence()?;
         let mut dp = DistributionPoint::default();
         if let Some(c) = d.read_optional(tag::explicit(0))? {
-            dp.full_name = read_dp_name(c)?;
+            (dp.full_name, dp.relative_name) = read_dp_name(c)?;
         }
         if let Some(b) = d.read_optional(tag::implicit(1))? {
             dp.reasons = Some(crate::ReasonFlags::from_bit_string(b)?);

@@ -10,6 +10,39 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：证书策略、间接 CRL、Ed448、X448 与 DSA 验签（only-x509、only-crypto、only-tls）
+
+ADR-046（docs/adr/046-x509-policies-indirect-crls-ed448-dsa.zh-CN.md）：
+
+- **only-x509**：证书策略处理（基于 RFC 9618 策略图的 RFC 5280 §6.1）：
+  `Verifier::policies(PolicyOptions)`（初始策略集、显式策略、禁止策略映射 / anyPolicy）、
+  `Verifier::verify_path` → `VerifiedPath { chain, policies: ValidPolicies }`、
+  `Error::PolicyViolation`；`Certificate::{certificate_policies, policy_mappings,
+  policy_constraints, inhibit_any_policy, is_self_issued}`、`PolicyConstraints`、
+  `ext::{ANY_POLICY, POLICY_MAPPINGS, POLICY_CONSTRAINTS, INHIBIT_ANY_POLICY}`。间接 CRL 与由 CA
+  另一把密钥签发的 CRL（签名者路径须验证到同一个根，并检查其吊销）：`Verifier::crl_signers`、
+  `Crl::find_for`、`RevokedCertificate::certificate_issuer`、`DistributionPoint::relative_name`、
+  `IssuingDistributionPoint::relative_name`（新增公开字段）；CRL 的适用范围现在按证书的分发点及其
+  原因判断。rfc822Name 与 URI 名称约束（以及主题中的 emailAddress），自签发中间证书不受名称约束、
+  不计入 pathLen，`Verifier::allow_ca_end_entity`，`attr::EMAIL_ADDRESS`；Ed448 与 DSA 证书和
+  CRL。NIST PKITS 测试（`tests/pkits.rs`、`tools/pkits/prepare.sh`）：248 次运行中 242 次符合预期。
+- **only-crypto**：`hash::{Shake128, Shake256}`、`ed448`、`x448`、`dsa`（仅验签）、
+  `rsa::HashAlg::Sha224`、`pkey::SignatureAlgorithm::{Ed448, DsaSha1, DsaSha224, DsaSha256}`、
+  `pkey::{PublicKey, PrivateKey}::Ed448`、`pkey::PublicKey::Dsa`、`der::oid::{ED448, X448, DSA,
+  DSA_WITH_SHA1, DSA_WITH_SHA224, DSA_WITH_SHA256}`；`pk_bench 448`；ct-dudect 目标 `x448`、
+  `ed448-keygen`、`ed448-sign`。
+- **only-tls**：组 x448（0x001e，排在最后）与签名方案 ed448（0x0808），TLS 1.3 与 1.2；
+  `tools/interop/tls/run.sh` 中与 OpenSSL 的互通用例。
+- 模糊测试目标 `x509_policy` 与 `crypto_ed448_dsa`；`x509_parse` 与 `x509_crl` 覆盖新的扩展与间接
+  CRL 条目。
+
+### 变更：路径验证细节（only-x509）
+
+- 配置了 CRL 时，吊销在候选路径到达根证书后自顶向下检查，而不是在建链过程中检查。policyConstraints
+  要求显式策略而路径上没有时现在会失败（`Error::PolicyViolation`），策略扩展格式错误的证书不再能
+  解析。CRL 序列号按有符号 INTEGER 比较（−1 的 CRL 条目不再匹配序列号 255），`CrlParams` 与 OCSP
+  CertID 按原样写出序列号。
+
 ### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（only-webrtc、only-rtp）
 
 ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认关闭（默认对端的 SDP 不变）：

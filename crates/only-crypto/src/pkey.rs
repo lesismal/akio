@@ -18,7 +18,7 @@
 use crate::der::{Reader, Writer, oid, tag};
 use crate::hash::{Sha256, Sha384, Sha512};
 use crate::rsa::HashAlg;
-use crate::{Error, ed25519, p256, p384, pem, rsa};
+use crate::{Error, dsa, ed448, ed25519, p256, p384, pem, rsa};
 
 /// A signature algorithm as TLS signature schemes and X.509 `AlgorithmIdentifier`s name them.
 /// ECDSA signatures are DER `ECDSA-Sig-Value`s; the curve comes from the key.
@@ -33,6 +33,14 @@ pub enum SignatureAlgorithm {
     EcdsaSha512,
     /// Ed25519 (RFC 8032).
     Ed25519,
+    /// Ed448 (RFC 8032, pure, empty context).
+    Ed448,
+    /// DSA with SHA-1: legacy, verification only (RFC 3279).
+    DsaSha1,
+    /// DSA with SHA-224: verification only (RFC 5758).
+    DsaSha224,
+    /// DSA with SHA-256: verification only (RFC 5758).
+    DsaSha256,
     /// RSASSA-PKCS1-v1_5 with SHA-1: legacy, verification of old certificates only.
     RsaPkcs1Sha1,
     /// RSASSA-PKCS1-v1_5 with SHA-256.
@@ -66,6 +74,10 @@ impl SignatureAlgorithm {
             x if x == oid::ECDSA_WITH_SHA384 && no_params => A::EcdsaSha384,
             x if x == oid::ECDSA_WITH_SHA512 && no_params => A::EcdsaSha512,
             x if x == oid::ED25519 && no_params => A::Ed25519,
+            x if x == oid::ED448 && no_params => A::Ed448,
+            x if x == oid::DSA_WITH_SHA1 && no_params => A::DsaSha1,
+            x if x == oid::DSA_WITH_SHA224 && no_params => A::DsaSha224,
+            x if x == oid::DSA_WITH_SHA256 && no_params => A::DsaSha256,
             x if x == oid::SHA1_WITH_RSA && (null_params || no_params) => A::RsaPkcs1Sha1,
             x if x == oid::SHA256_WITH_RSA && (null_params || no_params) => A::RsaPkcs1Sha256,
             x if x == oid::SHA384_WITH_RSA && (null_params || no_params) => A::RsaPkcs1Sha384,
@@ -91,6 +103,10 @@ impl SignatureAlgorithm {
             A::EcdsaSha384 => w.oid(oid::ECDSA_WITH_SHA384),
             A::EcdsaSha512 => w.oid(oid::ECDSA_WITH_SHA512),
             A::Ed25519 => w.oid(oid::ED25519),
+            A::Ed448 => w.oid(oid::ED448),
+            A::DsaSha1 => w.oid(oid::DSA_WITH_SHA1),
+            A::DsaSha224 => w.oid(oid::DSA_WITH_SHA224),
+            A::DsaSha256 => w.oid(oid::DSA_WITH_SHA256),
             A::RsaPkcs1Sha1 | A::RsaPkcs1Sha256 | A::RsaPkcs1Sha384 | A::RsaPkcs1Sha512 => {
                 w.oid(match self {
                     A::RsaPkcs1Sha1 => oid::SHA1_WITH_RSA,
@@ -149,6 +165,15 @@ impl SignatureAlgorithm {
             _ => return None,
         })
     }
+
+    fn dsa(self) -> Option<HashAlg> {
+        Some(match self {
+            SignatureAlgorithm::DsaSha1 => HashAlg::Sha1,
+            SignatureAlgorithm::DsaSha224 => HashAlg::Sha224,
+            SignatureAlgorithm::DsaSha256 => HashAlg::Sha256,
+            _ => return None,
+        })
+    }
 }
 
 /// A public key of any supported type.
@@ -157,12 +182,16 @@ impl SignatureAlgorithm {
 pub enum PublicKey {
     /// Ed25519.
     Ed25519(ed25519::VerifyingKey),
+    /// Ed448.
+    Ed448(ed448::VerifyingKey),
     /// ECDSA / ECDH on P-256.
     P256(p256::PublicKey),
     /// ECDSA / ECDH on P-384.
     P384(p384::PublicKey),
     /// RSA.
     Rsa(rsa::PublicKey),
+    /// DSA (verification only).
+    Dsa(dsa::PublicKey),
 }
 
 /// Reads an `AlgorithmIdentifier` into `(oid, parameters)`.
@@ -213,6 +242,14 @@ impl PublicKey {
                 }
                 ed25519::VerifyingKey::from_bytes(key).map(PublicKey::Ed25519)
             }
+            x if x == oid::ED448 => {
+                if !params.is_empty() {
+                    return Err(Error::Encoding);
+                }
+                ed448::VerifyingKey::from_bytes(key).map(PublicKey::Ed448)
+            }
+            // Absent parameters (inherited from the issuer, RFC 3279 §2.3.2) are not supported.
+            x if x == oid::DSA => dsa::PublicKey::from_der(params, key).map(PublicKey::Dsa),
             x if x == oid::RSA_ENCRYPTION => {
                 if params != [tag::NULL, 0] {
                     return Err(Error::Encoding);
@@ -230,6 +267,11 @@ impl PublicKey {
         w.sequence(|w| {
             w.sequence(|w| match self {
                 PublicKey::Ed25519(_) => w.oid(oid::ED25519),
+                PublicKey::Ed448(_) => w.oid(oid::ED448),
+                PublicKey::Dsa(k) => {
+                    w.oid(oid::DSA);
+                    w.raw(&k.params_der());
+                }
                 PublicKey::P256(_) => {
                     w.oid(oid::EC_PUBLIC_KEY);
                     w.oid(oid::SECP256R1);
@@ -248,12 +290,14 @@ impl PublicKey {
         w.into_vec()
     }
 
-    /// The key bits of the `SubjectPublicKeyInfo`: the 32-byte Ed25519 key, the uncompressed
-    /// SEC1 point, or the PKCS#1 `RSAPublicKey`.
+    /// The key bits of the `SubjectPublicKeyInfo`: the 32-byte Ed25519 or 57-byte Ed448 key,
+    /// the uncompressed SEC1 point, the PKCS#1 `RSAPublicKey`, or the DSA `INTEGER` `y`.
     #[must_use]
     pub fn raw_key(&self) -> Vec<u8> {
         match self {
             PublicKey::Ed25519(k) => k.as_bytes().to_vec(),
+            PublicKey::Ed448(k) => k.as_bytes().to_vec(),
+            PublicKey::Dsa(k) => k.key_der(),
             PublicKey::P256(k) => k.to_uncompressed(),
             PublicKey::P384(k) => k.to_uncompressed(),
             PublicKey::Rsa(k) => k.to_pkcs1_der(),
@@ -277,6 +321,11 @@ impl PublicKey {
         }
         match self {
             PublicKey::Ed25519(k) if alg == A::Ed25519 => k.verify(msg, sig),
+            PublicKey::Ed448(k) if alg == A::Ed448 => k.verify(msg, sig),
+            PublicKey::Dsa(k) => match alg.dsa() {
+                Some(h) => k.verify(h, msg, sig),
+                None => Err(Error::Unsupported),
+            },
             PublicKey::P256(k)
                 if matches!(alg, A::EcdsaSha256 | A::EcdsaSha384 | A::EcdsaSha512) =>
             {
@@ -304,6 +353,8 @@ impl PublicKey {
 pub enum PrivateKey {
     /// Ed25519.
     Ed25519(ed25519::SigningKey),
+    /// Ed448.
+    Ed448(ed448::SigningKey),
     /// P-256.
     P256(p256::SecretKey),
     /// P-384.
@@ -384,7 +435,7 @@ impl PrivateKey {
     }
 
     /// From a DER PKCS#8 `PrivateKeyInfo` / `OneAsymmetricKey` (RFC 5208, 5958): Ed25519,
-    /// EC (P-256, P-384) or RSA. Unencrypted only.
+    /// Ed448, EC (P-256, P-384) or RSA. Unencrypted only.
     pub fn from_pkcs8_der(der: &[u8]) -> Result<PrivateKey, Error> {
         let mut r = Reader::new(der);
         let mut s = r.sequence()?;
@@ -420,6 +471,24 @@ impl PrivateKey {
                     }
                 }
                 Ok(PrivateKey::Ed25519(k))
+            }
+            x if x == oid::ED448 => {
+                if !params.is_empty() {
+                    return Err(Error::Encoding);
+                }
+                let mut kr = Reader::new(key);
+                let seed: [u8; 57] = kr
+                    .read_octet_string()?
+                    .try_into()
+                    .map_err(|_| Error::InvalidKey)?;
+                kr.finish()?;
+                let k = ed448::SigningKey::from_seed(&seed);
+                if let Some(p) = public {
+                    if p.first() != Some(&0) || p[1..] != k.verifying_key().as_bytes()[..] {
+                        return Err(Error::InvalidKey);
+                    }
+                }
+                Ok(PrivateKey::Ed448(k))
             }
             x if x == oid::EC_PUBLIC_KEY => {
                 let curve = named_curve(params)?;
@@ -480,6 +549,10 @@ impl PrivateKey {
             match self {
                 PrivateKey::Ed25519(k) => {
                     w.sequence(|w| w.oid(oid::ED25519));
+                    w.nested(tag::OCTET_STRING, |w| w.octet_string(k.seed()));
+                }
+                PrivateKey::Ed448(k) => {
+                    w.sequence(|w| w.oid(oid::ED448));
                     w.nested(tag::OCTET_STRING, |w| w.octet_string(k.seed()));
                 }
                 PrivateKey::P256(_) | PrivateKey::P384(_) => {
@@ -543,6 +616,7 @@ impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
         match self {
             PrivateKey::Ed25519(k) => PublicKey::Ed25519(k.verifying_key()),
+            PrivateKey::Ed448(k) => PublicKey::Ed448(k.verifying_key()),
             PrivateKey::P256(k) => PublicKey::P256(k.public_key()),
             PrivateKey::P384(k) => PublicKey::P384(k.public_key()),
             PrivateKey::Rsa(k) => PublicKey::Rsa(k.public_key().clone()),
@@ -550,11 +624,12 @@ impl PrivateKey {
     }
 
     /// The algorithm certificates signed with this key use by default: ECDSA with the curve's
-    /// hash, Ed25519, RSA PKCS#1 v1.5 with SHA-256.
+    /// hash, Ed25519, Ed448, RSA PKCS#1 v1.5 with SHA-256.
     #[must_use]
     pub fn default_signature_algorithm(&self) -> SignatureAlgorithm {
         match self {
             PrivateKey::Ed25519(_) => SignatureAlgorithm::Ed25519,
+            PrivateKey::Ed448(_) => SignatureAlgorithm::Ed448,
             PrivateKey::P256(_) => SignatureAlgorithm::EcdsaSha256,
             PrivateKey::P384(_) => SignatureAlgorithm::EcdsaSha384,
             PrivateKey::Rsa(_) => SignatureAlgorithm::RsaPkcs1Sha256,
@@ -577,6 +652,7 @@ impl PrivateKey {
         }
         match self {
             PrivateKey::Ed25519(k) if alg == A::Ed25519 => Ok(k.sign(msg).to_vec()),
+            PrivateKey::Ed448(k) if alg == A::Ed448 => Ok(k.sign(msg).to_vec()),
             PrivateKey::P256(k) => ecdsa!(k),
             PrivateKey::P384(k) => ecdsa!(k),
             PrivateKey::Rsa(k) => match alg.rsa() {
@@ -597,6 +673,7 @@ mod tests {
     fn roundtrips() {
         for key in [
             PrivateKey::Ed25519(ed25519::SigningKey::from_seed(&[3; 32])),
+            PrivateKey::Ed448(ed448::SigningKey::from_seed(&[3; 57])),
             PrivateKey::P256(p256::SecretKey::generate().unwrap()),
             PrivateKey::P384(p384::SecretKey::generate().unwrap()),
         ] {

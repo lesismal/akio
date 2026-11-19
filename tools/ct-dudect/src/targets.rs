@@ -11,7 +11,7 @@ use only_crypto::gcm::AesGcm;
 use only_crypto::hash::Sha256;
 use only_crypto::mac::Hmac;
 use only_crypto::rsa::HashAlg;
-use only_crypto::{p256, rsa, x25519};
+use only_crypto::{ed448, p256, rsa, x448, x25519};
 
 use crate::ct;
 use crate::rng::Rng;
@@ -162,6 +162,30 @@ pub(crate) fn all() -> Vec<Spec> {
             batch: 1000,
             about: "Ed25519 sign: all-zero seed vs random seed, fixed message",
             make: ed25519_sign,
+        },
+        Spec {
+            name: "x448",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 50,
+            about: "X448 ladder: all-zero scalar (clamped: 2⁴⁴⁷) vs random scalar, fixed peer",
+            make: x448_dh,
+        },
+        Spec {
+            name: "ed448-keygen",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 50,
+            about: "Ed448 key from seed (SHAKE256, [s]B): all-zero vs random seed",
+            make: ed448_keygen,
+        },
+        Spec {
+            name: "ed448-sign",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 50,
+            about: "Ed448 sign ([r]B, scalar arithmetic): all-zero seed vs random seed, fixed message",
+            make: ed448_sign,
         },
         Spec {
             name: "rsa2048-sign-msg",
@@ -360,6 +384,41 @@ fn ed25519_sign() -> Box<dyn Target> {
     boxed(
         [0xa5_u8; 32],
         |_, c, rng| SigningKey::from_seed(&if c == 0 { [0; 32] } else { rng.array() }),
+        |msg, k| {
+            black_box(black_box(&*k).sign(msg));
+        },
+    )
+}
+
+fn x448_dh() -> Box<dyn Target> {
+    let peer = x448::PrivateKey::from_bytes([0x24; 56]).public_key();
+    boxed(
+        peer,
+        |_, c, rng| x448::PrivateKey::from_bytes(if c == 0 { [0; 56] } else { rng.array() }),
+        |peer, k| {
+            black_box(black_box(&*k).diffie_hellman(peer).ok());
+        },
+    )
+}
+
+fn ed448_seed(c: u8, rng: &mut Rng) -> [u8; 57] {
+    if c == 0 { [0; 57] } else { rng.array() }
+}
+
+fn ed448_keygen() -> Box<dyn Target> {
+    boxed(
+        (),
+        |(), c, rng| ed448_seed(c, rng),
+        |(), seed| {
+            black_box(ed448::SigningKey::from_seed(black_box(&*seed)));
+        },
+    )
+}
+
+fn ed448_sign() -> Box<dyn Target> {
+    boxed(
+        [0xa5_u8; 32],
+        |_, c, rng| ed448::SigningKey::from_seed(&ed448_seed(c, rng)),
         |msg, k| {
             black_box(black_box(&*k).sign(msg));
         },

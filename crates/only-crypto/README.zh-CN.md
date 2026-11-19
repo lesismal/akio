@@ -23,7 +23,7 @@
 
 | 模块 | 内容 |
 |---|---|
-| `hash` | SHA-1、SHA-224、SHA-256、SHA-384、SHA-512、MD5（流式与一次性，`Hash` trait） |
+| `hash` | SHA-1、SHA-224、SHA-256、SHA-384、SHA-512、MD5（流式与一次性，`Hash` trait）；SHAKE128、SHAKE256（FIPS 202，`squeeze` 任意长度） |
 | `mac` | 基于任意 `Hash` 的 HMAC（常数时间 `verify`） |
 | `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
@@ -35,10 +35,12 @@
 | `ct_eq` | 常数时间比较 |
 | `x25519` | X25519 密钥协商（RFC 7748），拒绝全零共享密钥 |
 | `ed25519` | Ed25519（RFC 8032）：确定性签名，严格验证（`S` 必须规范，按编码比较 `R`） |
+| `x448`、`ed448` | X448（RFC 7748）与 Ed448（RFC 8032，纯 Ed448、空上下文；与 Ed25519 一样严格验证），ADR-046：基于通用 7 limb Montgomery 域的可移植常数时间代码（固定窗口加掩码查表、梯子的掩码交换），无汇编 |
+| `dsa` | 仅 DSA 验签（FIPS 186-4；1024/160、2048/224、2048/256、3072/256；密钥只检查一次），用于遗留证书与 CRL |
 | `p256`、`p384` | NIST P-256 / P-384 上的 ECDH 与 ECDSA：RFC 6979 nonce，可用任意 `Hash` 预哈希，DER 与定长（P1363）签名，带校验的 SEC1 点（压缩与非压缩） |
 | `rsa` | RSA PKCS#1 v1.5 与 PSS（MGF1），SHA-256/384/512（SHA-1 仅验证），模数 2048–8192 位；私钥运算使用 CRT、盲化并校验结果 |
 | `der`、`pem` | 严格 DER 读写器（拒绝 BER）、常用 OID、PEM（RFC 7468） |
-| `pkey` | 覆盖以上所有算法的 `PrivateKey` / `PublicKey`：PKCS#8 v1/v2、SEC1、PKCS#1、SubjectPublicKeyInfo、PEM；按 TLS 与 X.509 命名的 `SignatureAlgorithm` |
+| `pkey` | 覆盖以上所有算法的 `PrivateKey` / `PublicKey`（DSA 只有公钥）：PKCS#8 v1/v2、SEC1、PKCS#1、SubjectPublicKeyInfo、PEM；按 TLS 与 X.509 命名的 `SignatureAlgorithm` |
 
 它在 `only-kcp`、`only-turn`、`only-ws`、`only-http`、`only-media`、`only-bittorrent` 和
 `only-webrtc` 中替代了 sha1、sha2、md-5、hmac、pbkdf2、aes、aes-gcm、ctr、crc32fast、base64 与
