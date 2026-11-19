@@ -680,6 +680,8 @@ pub(crate) struct ConfigInner {
     pub(crate) ccfb: bool,
     pub(crate) xr: bool,
     pub(crate) tmmbr: bool,
+    pub(crate) ice_renomination: bool,
+    pub(crate) ice_aggressive: bool,
 }
 
 impl Default for ConfigInner {
@@ -706,6 +708,8 @@ impl Default for ConfigInner {
             ccfb: false,
             xr: false,
             tmmbr: false,
+            ice_renomination: false,
+            ice_aggressive: false,
         }
     }
 }
@@ -724,6 +728,8 @@ impl fmt::Debug for RtcConfig {
             .field("ccfb", &self.0.ccfb)
             .field("rtcp_xr", &self.0.xr)
             .field("tmmbr", &self.0.tmmbr)
+            .field("ice_renomination", &self.0.ice_renomination)
+            .field("ice_aggressive_nomination", &self.0.ice_aggressive)
             .finish_non_exhaustive()
     }
 }
@@ -864,6 +870,29 @@ impl RtcConfig {
     #[must_use]
     pub fn enable_tmmbr(mut self, enabled: bool) -> Self {
         self.0.tmmbr = enabled;
+        self
+    }
+
+    /// ICE renomination (draft-thatcher-ice-renomination): advertises
+    /// `a=ice-options:trickle renomination`; when the remote advertises it too and this peer
+    /// is controlling (the offerer, or against an ICE-lite remote), checks of better pairs go
+    /// on after nomination and a better pair that works later is nominated again (STUN
+    /// NOMINATION attribute), e.g. one made of a candidate trickled late. A controlled peer
+    /// always follows the highest NOMINATION value it receives. Default off.
+    #[must_use]
+    pub fn enable_ice_renomination(mut self, enabled: bool) -> Self {
+        self.0.ice_renomination = enabled;
+        self
+    }
+
+    /// ICE aggressive nomination (RFC 5245 §8.1.1.2) when this peer is controlling: every
+    /// connectivity check carries USE-CANDIDATE, the first pair that works is used at once
+    /// and the best one that works in the end replaces it (on both sides). Peers expecting
+    /// RFC 5245 agents may want it; a controlled peer always selects the best nominated pair.
+    /// Default off (regular nomination, RFC 8445).
+    #[must_use]
+    pub fn enable_ice_aggressive_nomination(mut self, enabled: bool) -> Self {
+        self.0.ice_aggressive = enabled;
         self
     }
 }

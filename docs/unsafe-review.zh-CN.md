@@ -81,18 +81,18 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 97 | 3 | 3 | 0 |
+| only-sys | 99 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **343** | **84** | **8** | **22** |
+| **合计** | **345** | **84** | **8** | **22** |
 
 按用途：
 
 | 位置 | 数量 | 用途 | 主要不变式 |
 |---|---:|---|---|
 | `only-sys/src/ffi/` | 5 + 布局测试中 8 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
-| `only-sys/src/net.rs` | 19 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` <-> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `only-sys/src/net.rs` | 21 | `socket`/`bind`/`listen`/`connect`（含为 TCP 同时打开而从已绑定的共享端口发起的 connect，ADR-044）、`setsockopt`、`sendfile`、`SocketAddr` <-> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |

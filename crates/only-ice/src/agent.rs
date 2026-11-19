@@ -24,6 +24,10 @@ const CONSENT_SENDS: u32 = 4;
 const CONSENT_RTO: Duration = Duration::from_millis(500);
 /// Finished transactions remembered so that late duplicate responses are still consumed.
 const MAX_DONE_TX: usize = 64;
+/// The NOMINATION attribute of ICE renomination (draft-thatcher-ice-renomination-01 §3.1):
+/// a 32-bit value, comprehension-optional; the controlled agent selects the pair of the
+/// highest value it received.
+pub(crate) const ATTR_NOMINATION: u16 = 0xC001;
 
 /// Agent configuration. [`IceConfig::new`] fills in the defaults; adjust fields after.
 #[derive(Clone, Debug)]
@@ -55,6 +59,18 @@ pub struct IceConfig {
     /// Without end-of-candidates: when nothing succeeded this long after the first pair was
     /// formed and every pair failed, the state becomes [`IceState::Failed`] (default 30 s).
     pub failed_timeout: Duration,
+    /// Controlling: aggressive nomination (RFC 5245 §8.1.1.2, for peers that expect it):
+    /// every check carries USE-CANDIDATE, the highest-priority pair whose check succeeds is
+    /// selected, and checks of higher-priority pairs go on after a selection, which moves to
+    /// such a pair when it succeeds. Default off (regular nomination, RFC 8445 §8.1.1).
+    pub aggressive_nomination: bool,
+    /// ICE renomination (draft-thatcher-ice-renomination, `a=ice-options:renomination`) is
+    /// supported here; it is used once the remote supports it too
+    /// ([`IceAgent::set_remote_renomination`]). Controlling: checks of higher-priority pairs
+    /// go on after nomination, and a better pair that succeeds later is nominated again with
+    /// a higher NOMINATION value. Controlled (always, whatever this flag says): the pair with
+    /// the highest NOMINATION value is selected. Default off.
+    pub renomination: bool,
 }
 
 impl IceConfig {
@@ -72,6 +88,8 @@ impl IceConfig {
             consent_interval: Duration::from_secs(5),
             consent_timeout: Duration::from_secs(30),
             failed_timeout: Duration::from_secs(30),
+            aggressive_nomination: false,
+            renomination: false,
         }
     }
 }
@@ -138,6 +156,9 @@ struct Tx {
     rto: Duration,
     next: Instant,
     use_candidate: bool,
+    /// The check is an explicit nomination (regular nomination or renomination), not an
+    /// aggressive one.
+    nominating: bool,
     controlling: bool,
     priority: u32,
     key: String,
@@ -157,8 +178,13 @@ struct Pair {
     tx: Option<Tx>,
     /// Controlled: the remote sent USE-CANDIDATE on this pair.
     remote_nominated: bool,
+    /// Controlled: the NOMINATION value of the remote's last USE-CANDIDATE check on this pair
+    /// (renomination), `None` without the attribute.
+    remote_nomination: Option<u32>,
     /// Controlling: the next check carries USE-CANDIDATE.
     nominate: bool,
+    /// Controlling with renomination: the NOMINATION value of that check.
+    nomination: u32,
     /// The local candidate is passive TCP: this side never opens the connection, so the pair
     /// only gets checks triggered by the remote's (over its connection).
     passive: bool,
@@ -172,6 +198,8 @@ struct Selected {
     remote_creds: Option<Credentials>,
     local_pref: u32,
     generation: u64,
+    /// The pair priority (0 for a lite agent, which keeps no pairs).
+    prio: u64,
 }
 
 #[derive(Debug)]
@@ -210,6 +238,16 @@ pub struct IceAgent {
     prev_local: Option<Credentials>,
     remote_creds: Option<Credentials>,
     remote_lite: bool,
+    /// The remote supports renomination.
+    remote_renomination: bool,
+    /// Controlling: the last NOMINATION value sent.
+    nomination: u32,
+    /// Controlled: the highest NOMINATION value selected in this generation.
+    remote_nomination: u32,
+    /// Controlling, after a selection: when a pair better than the selected one first
+    /// succeeded (renomination waits [`IceConfig::nomination_delay`] from then for better
+    /// pairs still being checked).
+    improved_at: Option<Instant>,
     controlling: bool,
     tie_breaker: u64,
     local_cands: Vec<Candidate>,
@@ -247,6 +285,10 @@ impl IceAgent {
             prev_local: None,
             remote_creds: None,
             remote_lite: false,
+            remote_renomination: false,
+            nomination: 0,
+            remote_nomination: 0,
+            improved_at: None,
             controlling,
             tie_breaker: random_u64(),
             local_cands: Vec::new(),
@@ -327,6 +369,13 @@ impl IceAgent {
         if yes {
             self.set_controlling(true);
         }
+    }
+
+    /// The remote supports ICE renomination (`renomination` in its `a=ice-options`): with
+    /// [`IceConfig::renomination`] this controlling agent renominates better pairs found
+    /// after nomination.
+    pub fn set_remote_renomination(&mut self, yes: bool) {
+        self.remote_renomination = yes;
     }
 
     /// Adds a local candidate (gathered by the caller); `false` (and ignored) if one with the
@@ -456,6 +505,8 @@ impl IceAgent {
         self.nominating = None;
         self.first_valid_at = None;
         self.checking_since = None;
+        self.improved_at = None;
+        self.remote_nomination = 0;
         self.generation += 1;
     }
 
@@ -575,10 +626,16 @@ impl IceAgent {
             return true;
         }
         let use_candidate = m.has(attr::USE_CANDIDATE);
+        let nomination = m.get_u32(ATTR_NOMINATION);
         if self.config.lite {
             self.lite_last_check = Some(now);
             self.lite_valid = Some((destination, source));
-            if use_candidate {
+            // The last USE-CANDIDATE check wins, unless renomination says it is older.
+            let newer = nomination.is_none_or(|n| n > self.remote_nomination);
+            if use_candidate && newer {
+                if let Some(n) = nomination {
+                    self.remote_nomination = n;
+                }
                 self.select(destination, source, now);
             }
             return true;
@@ -621,10 +678,13 @@ impl IceAgent {
         else {
             return true;
         };
-        self.pairs[i].remote_nominated |= nominated;
+        if nominated {
+            self.pairs[i].remote_nominated = true;
+            self.pairs[i].remote_nomination = nomination;
+        }
         match self.pairs[i].state {
             PairState::Succeeded => {
-                if nominated {
+                if nominated && self.accept_nomination(i) {
                     self.select(destination, source, now);
                 }
             }
@@ -709,6 +769,7 @@ impl IceAgent {
         p.state = PairState::Succeeded;
         let remote_nominated = p.remote_nominated;
         let nominate = p.nominate;
+        let prio = p.prio;
         p.nominate = false;
         let found = (p.local_foundation.clone(), p.remote_foundation.clone());
         for q in &mut self.pairs {
@@ -720,10 +781,18 @@ impl IceAgent {
             }
         }
         self.first_valid_at.get_or_insert(now);
+        if self.selected_prio().is_some_and(|s| prio > s) {
+            self.improved_at.get_or_insert(now);
+        }
         let nominated = if self.controlling {
-            tx.use_candidate && nominate
+            // An explicit nomination always moves the selection; an aggressive one only to a
+            // better pair.
+            tx.use_candidate
+                && ((tx.nominating && nominate)
+                    || (self.config.aggressive_nomination
+                        && self.selected_prio().is_none_or(|s| prio > s)))
         } else {
-            remote_nominated
+            remote_nominated && self.accept_nomination(i)
         };
         if nominated {
             self.select(key.0, key.1, now);
@@ -807,6 +876,59 @@ impl IceAgent {
         }
     }
 
+    /// Renomination is in use: supported here and by the remote (a lite remote never
+    /// renominates nor needs it).
+    fn renominating(&self) -> bool {
+        self.config.renomination && self.remote_renomination && !self.remote_lite
+    }
+
+    /// Controlling and still looking for better pairs after a selection: aggressive
+    /// nomination or renomination.
+    fn keeps_improving(&self) -> bool {
+        self.controlling
+            && !self.config.lite
+            && (self.config.aggressive_nomination || self.renominating())
+    }
+
+    /// The priority of the pair selected in the current generation.
+    fn selected_prio(&self) -> Option<u64> {
+        self.selected
+            .as_ref()
+            .filter(|s| s.generation == self.generation)
+            .map(|s| s.prio)
+    }
+
+    /// Whether an ordinary check may start on `p`: before a selection in this generation
+    /// any; after it only, when still looking, of a better pair.
+    fn ordinary_check_ok(&self, p: &Pair) -> bool {
+        match self.selected_prio() {
+            None => true,
+            Some(s) => self.keeps_improving() && p.prio > s,
+        }
+    }
+
+    /// Controlled: whether the remote's nomination of valid pair `i` selects it. With a
+    /// NOMINATION value, when it is higher than the one selected (renomination); without,
+    /// when nothing is selected in this generation or the pair is better than the selected
+    /// one (aggressive nomination: the highest-priority nominated pair is used).
+    fn accept_nomination(&mut self, i: usize) -> bool {
+        let p = &self.pairs[i];
+        match p.remote_nomination {
+            Some(n) => {
+                if n > self.remote_nomination {
+                    self.remote_nomination = n;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                let prio = p.prio;
+                self.selected_prio().is_none_or(|s| prio > s)
+            }
+        }
+    }
+
     fn add_pair(&mut self, local: &Candidate, remote: &Candidate) {
         let la = local.send_addr();
         let ra = remote.addr();
@@ -858,7 +980,9 @@ impl IceAgent {
             },
             tx: None,
             remote_nominated: false,
+            remote_nomination: None,
             nominate: false,
+            nomination: 0,
             passive: local.tcp_type() == Some(TcpType::Passive),
         });
         self.checking_since.get_or_insert(self.now);
@@ -871,11 +995,11 @@ impl IceAgent {
         if !changed {
             return;
         }
-        let local_pref = self
+        let (local_pref, prio) = self
             .pairs
             .iter()
             .find(|p| p.local == local && p.remote == remote)
-            .map_or(65_535, |p| p.local_pref);
+            .map_or((65_535, 0), |p| (p.local_pref, p.prio));
         self.selected = Some(Selected {
             local,
             remote,
@@ -883,17 +1007,29 @@ impl IceAgent {
             remote_creds: self.remote_creds.clone(),
             local_pref,
             generation: self.generation,
+            prio,
         });
         self.nominating = None;
-        // Stop checking the other pairs (RFC 8445 §8.1.2); a pair the remote nominates later
-        // gets a triggered check again.
+        self.improved_at = None;
+        // Stop checking the other pairs (RFC 8445 §8.1.2), except, while still looking for
+        // better pairs (aggressive nomination, renomination), the better ones; a pair the
+        // remote nominates later gets a triggered check again.
+        let keep = self.keeps_improving();
         for i in 0..self.pairs.len() {
             let p = &self.pairs[i];
-            if p.tx.is_some() && (p.local, p.remote) != (local, remote) {
+            if p.tx.is_some() && (p.local, p.remote) != (local, remote) && !(keep && p.prio > prio)
+            {
                 self.fail_pair(i);
             }
         }
-        self.triggered.retain(|k| *k == (local, remote));
+        let pairs = &self.pairs;
+        self.triggered.retain(|k| {
+            *k == (local, remote)
+                || (keep
+                    && pairs
+                        .iter()
+                        .any(|p| (p.local, p.remote) == *k && p.prio > prio))
+        });
         self.consent_ok(now);
         while let Some(t) = self.consent_txs.pop_front() {
             self.retire(t.tid);
@@ -915,6 +1051,7 @@ impl IceAgent {
         local_ufrag: &str,
         local_pref: u32,
         use_candidate: bool,
+        nomination: Option<u32>,
     ) -> ([u8; 12], Vec<u8>, u32) {
         let mut tid = [0u8; 12];
         random_bytes(&mut tid);
@@ -932,6 +1069,9 @@ impl IceAgent {
         };
         if use_candidate {
             b = b.attr(attr::USE_CANDIDATE, &[]);
+            if let Some(n) = nomination {
+                b = b.u32(ATTR_NOMINATION, n);
+            }
         }
         let packet = b.integrity(remote.pwd.as_bytes()).fingerprint().build();
         (tid, packet, priority)
@@ -941,12 +1081,15 @@ impl IceAgent {
         let Some(remote) = self.remote_creds.clone() else {
             return false;
         };
-        let use_candidate = self.controlling && self.pairs[i].nominate;
+        let nominating = self.controlling && self.pairs[i].nominate;
+        let use_candidate = nominating || (self.controlling && self.config.aggressive_nomination);
+        let nomination = (nominating && self.renominating()).then_some(self.pairs[i].nomination);
         let (tid, packet, priority) = self.build_request(
             &remote,
             &self.config.local.ufrag,
             self.pairs[i].local_pref,
             use_candidate,
+            nomination,
         );
         let p = &mut self.pairs[i];
         if p.state != PairState::Succeeded {
@@ -964,17 +1107,12 @@ impl IceAgent {
             rto: self.config.check_rto,
             next: now + self.config.check_rto,
             use_candidate,
+            nominating,
             controlling: self.controlling,
             priority,
             key: remote.pwd,
         });
         true
-    }
-
-    fn ordinary_checks_allowed(&self) -> bool {
-        self.selected
-            .as_ref()
-            .is_none_or(|s| s.generation != self.generation)
     }
 
     fn can_send_checks(&self) -> bool {
@@ -985,13 +1123,17 @@ impl IceAgent {
         if !self.can_send_checks() {
             return false;
         }
-        !self.triggered.is_empty()
-            || (self.ordinary_checks_allowed()
-                && self.pairs.iter().any(|p| {
-                    p.tx.is_none()
-                        && !p.passive
-                        && matches!(p.state, PairState::Waiting | PairState::Frozen)
-                }))
+        !self.triggered.is_empty() || self.ordinary_pending()
+    }
+
+    /// Whether a pair waits for an ordinary check this agent may start.
+    fn ordinary_pending(&self) -> bool {
+        self.pairs.iter().any(|p| {
+            p.tx.is_none()
+                && !p.passive
+                && matches!(p.state, PairState::Waiting | PairState::Frozen)
+                && self.ordinary_check_ok(p)
+        })
     }
 
     /// Sends the next paced check, if any: the triggered queue first, then the
@@ -1011,14 +1153,13 @@ impl IceAgent {
                 }
             }
         }
-        if !self.ordinary_checks_allowed() {
-            return false;
-        }
         let pick = |st: PairState| {
             self.pairs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.tx.is_none() && !p.passive && p.state == st)
+                .filter(|(_, p)| {
+                    p.tx.is_none() && !p.passive && p.state == st && self.ordinary_check_ok(p)
+                })
                 .max_by_key(|(_, p)| p.prio)
                 .map(|(i, _)| i)
         };
@@ -1032,12 +1173,22 @@ impl IceAgent {
         if !self.controlling
             || self.config.lite
             || self.nominating.is_some()
-            || !self.ordinary_checks_allowed()
             || !self.can_send_checks()
         {
             return None;
         }
+        // Aggressive nomination nominates with every check; renomination nominates again a
+        // pair better than the selected one.
+        let selected = self.selected_prio();
+        if (self.config.aggressive_nomination && !self.remote_lite)
+            || (selected.is_some() && !self.renominating())
+        {
+            return None;
+        }
         let best = self.best_valid()?;
+        if selected.is_some_and(|s| best.prio <= s) {
+            return None;
+        }
         let pending_higher = self.pairs.iter().any(|p| {
             p.prio > best.prio
                 && matches!(
@@ -1048,8 +1199,12 @@ impl IceAgent {
         if self.remote_lite || !pending_higher {
             Some(self.now)
         } else {
-            self.first_valid_at
-                .map(|t| t + self.config.nomination_delay)
+            let since = if selected.is_some() {
+                self.improved_at
+            } else {
+                self.first_valid_at
+            };
+            since.map(|t| t + self.config.nomination_delay)
         }
     }
 
@@ -1094,8 +1249,15 @@ impl IceAgent {
         // Nomination (regular, RFC 8445 §8.1.1).
         if self.nomination_deadline().is_some_and(|d| d <= now) {
             if let Some(key) = self.best_valid().map(|p| (p.local, p.remote)) {
+                let n = if self.renominating() {
+                    self.nomination = self.nomination.wrapping_add(1).max(1);
+                    self.nomination
+                } else {
+                    0
+                };
                 if let Some(p) = self.pairs.iter_mut().find(|p| (p.local, p.remote) == key) {
                     p.nominate = true;
+                    p.nomination = n;
                 }
                 self.nominating = Some(key);
                 self.triggered.retain(|k| *k != key);
@@ -1132,7 +1294,7 @@ impl IceAgent {
         if self.consent_next.is_some_and(|t| t <= now) {
             if let Some(remote) = sel.remote_creds.as_ref() {
                 let (tid, packet, _) =
-                    self.build_request(remote, &sel.local_ufrag, sel.local_pref, false);
+                    self.build_request(remote, &sel.local_ufrag, sel.local_pref, false, None);
                 self.transmits.push_back(Transmit {
                     source: sel.local,
                     destination: sel.remote,
@@ -1162,7 +1324,9 @@ impl IceAgent {
     }
 
     fn checks_done(&self) -> bool {
-        self.triggered.is_empty() && self.pairs.iter().all(|p| p.tx.is_none())
+        self.triggered.is_empty()
+            && self.pairs.iter().all(|p| p.tx.is_none())
+            && !(self.keeps_improving() && self.ordinary_pending())
     }
 
     fn update_state(&mut self, now: Instant) {

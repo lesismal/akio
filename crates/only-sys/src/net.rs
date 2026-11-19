@@ -237,6 +237,30 @@ pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
     Ok(TcpStream::from(fd))
 }
 
+/// Starts a non-blocking connect to `addr` from `local`, bound with `SO_REUSEADDR` and
+/// `SO_REUSEPORT` first: several sockets (connections to different peers, a listener) may
+/// share the local port, which TCP simultaneous open needs (ICE-TCP `so` candidates, RFC
+/// 6544). As [`connect_nonblocking`], the stream becomes writable when the connect finished.
+pub fn connect_nonblocking_from(local: SocketAddr, addr: SocketAddr) -> io::Result<TcpStream> {
+    let fd = socket(&addr)?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    setsockopt_int(raw, ffi::SOL_SOCKET, ffi::SO_REUSEADDR, 1)?;
+    setsockopt_int(raw, ffi::SOL_SOCKET, ffi::SO_REUSEPORT, 1)?;
+    let (ls, llen) = sockaddr(&local);
+    // SAFETY: `ls` is a valid sockaddr of `llen` bytes.
+    cvt(unsafe { ffi::bind(raw, (&raw const ls).cast::<ffi::sockaddr>(), llen) })?;
+    let (ss, len) = sockaddr(&addr);
+    // SAFETY: `ss` is a valid sockaddr of `len` bytes.
+    let r = unsafe { ffi::connect(raw, (&raw const ss).cast::<ffi::sockaddr>(), len) };
+    if r < 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(ffi::EINPROGRESS) {
+            return Err(e);
+        }
+    }
+    Ok(TcpStream::from(fd))
+}
+
 /// Sends up to `count` bytes of `file` starting at `offset` to the socket `out` without copying
 /// through user space. `Ok(n)` bytes were sent; `WouldBlock` when the socket is full.
 pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Result<usize> {

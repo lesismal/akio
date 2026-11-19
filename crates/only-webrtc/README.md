@@ -9,8 +9,11 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
 - **ICE** ([`only-ice`](../only-ice/README.md), RFC 8445): ICE-lite server (`RtcServer` on a
   `Listener::udp`, all peers on one port) and a full ICE agent (`Endpoint` on a socket bound with
   `Engine::bind_udp`); host, server-reflexive (`Endpoint::gather_srflx`) and peer-reflexive
-  candidates, checklists, regular nomination, role conflicts, trickle ICE (RFC 8838), ICE
-  restarts, consent freshness (RFC 7675), a connect timeout.
+  candidates, checklists, regular nomination (aggressive nomination and renomination with
+  `RtcConfig::enable_ice_aggressive_nomination` / `enable_ice_renomination`), role conflicts,
+  trickle ICE (RFC 8838), ICE restarts, consent freshness (RFC 7675), a connect timeout; mDNS
+  (`.local`) candidates resolved and our own host addresses concealed behind mDNS names
+  (`Endpoint::resolve_mdns`, `conceal_host_candidates`), as browsers do.
 - **DTLS-SRTP** ([`only-dtls`](../only-dtls/README.md)): DTLS 1.2 with the roles from
   `a=setup` and certificate fingerprint verification; SRTP/SRTCP
   ([`only-srtp`](../only-srtp/README.md), RFC 3711 / RFC 7714) with AES-CM-HMAC-SHA1-80/32 and
@@ -35,8 +38,9 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   per-layer keyframe requests for layer selection (`request_layer_keyframe`).
 - **Candidates** for an `Endpoint`: host, server-reflexive (`gather_srflx`), relayed through a
   TURN allocation over UDP, TCP or TLS (`gather_relay`, `gather_relay_via` with a `RelayServer`
-  or a `turn:`/`turns:` URL; lost allocations are made again), passive and active ICE-TCP
-  (`listen_tcp`, `dial_tcp`, RFC 6544), and a candidate policy (`candidate_filter`, as
+  or a `turn:`/`turns:` URL; lost allocations are made again), passive, active and
+  simultaneous-open ICE-TCP (`listen_tcp`, `dial_tcp`, `listen_tcp_so`, RFC 6544), and a
+  candidate policy (`candidate_filter`, as
   `iceTransportPolicy`). An `RtcServer` takes passive ICE-TCP on an engine TCP listener
   (`tcp_candidates`, `tcp`).
 - **Own types**: the API is this crate's own; the `unstable` cargo feature currently adds
@@ -66,12 +70,15 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // from WHIP/W
 Interop: pion (data channels, Opus/VP8 echo and PLI in both offer directions, also through a
 `only` TURN relay) and fib's Go WebRTC both ways: `tools/interop/webrtc/run.sh`; headless Chrome
 in both offer directions (data channels, the fake camera and microphone echoed back and decoded
-by Chrome): `tools/interop/webrtc/browser.sh`; FEC under loss (Chrome's and ours), RFC 8888 both
+by Chrome; an `Endpoint` that conceals its address with mDNS reaching Chrome with its own mDNS
+concealment on, each resolving the other's name): `tools/interop/webrtc/browser.sh`; FEC under loss (Chrome's and ours), RFC 8888 both
 ways, XR and TMMBR with headless Chrome: `tools/interop/webrtc/fec.sh`; headless Firefox in both
 offer directions (data channels against usrsctp): `tools/interop/webrtc/firefox.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC on simulcast lines and for audio
-(Opus RED), SDES-SRTP, DTLS 1.3.
+Not implemented: TURN over DTLS, FEC on simulcast lines and for audio (Opus RED), SDES-SRTP,
+DTLS 1.3, mDNS over IPv6 multicast, several ICE components (rtcp-mux is universal). Browsers
+and pion have no simultaneous-open ICE-TCP candidates: `listen_tcp_so` is tested between
+`Endpoint`s.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

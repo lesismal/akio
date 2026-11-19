@@ -128,6 +128,7 @@ pub const only_sys::MAX_GSO_BYTES: usize
 pub const only_sys::MAX_GSO_SEGMENTS: usize
 pub const only_sys::SEND_BATCH: usize
 pub fn only_sys::connect_nonblocking(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpStream>
+pub fn only_sys::connect_nonblocking_from(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpStream>
 pub fn only_sys::disable_gso()
 pub fn only_sys::ecn_available() -> bool
 pub fn only_sys::enable_ecn(std::os::fd::raw::RawFd) -> bool

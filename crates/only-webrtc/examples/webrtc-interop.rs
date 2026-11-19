@@ -20,6 +20,10 @@
 //!                                                      candidate only
 //! webrtc-interop client <http-addr> dc-active          the same offering its active ICE-TCP
 //!                                                      candidate only
+//! webrtc-interop client <http-addr> dc-mdns            the same on the primary address, which the
+//!                                                      offer conceals behind an mDNS name; the
+//!                                                      answer's mDNS names are resolved (each
+//!                                                      resolution logged with ONLY_LOG=debug)
 //! webrtc-interop client <http-addr> dc-relay-url <turn:|turns: URL> <user> <password>
 //!                                                      relayed candidates only, allocated over
 //!                                                      UDP, TCP or TLS
@@ -226,8 +230,24 @@ fn client(http: &str, what: &str, args: &[String]) {
     );
     engine.start().expect("start");
     // ONLY_INTEROP_BIND: another local address (Firefox pairs no loopback candidates).
-    let bind = std::env::var("ONLY_INTEROP_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    // mDNS: the address browsers conceal theirs behind (the LAN, not loopback).
+    let bind = std::env::var("ONLY_INTEROP_BIND").unwrap_or_else(|_| {
+        if what == "dc-mdns" {
+            "0.0.0.0:0"
+        } else {
+            "127.0.0.1:0"
+        }
+        .into()
+    });
     let ep = Endpoint::bind(&engine, bind.parse().expect("addr")).expect("bind");
+    // ONLY_INTEROP_NOMINATION=aggressive|renomination: how this (controlling) side nominates.
+    let ep = match std::env::var("ONLY_INTEROP_NOMINATION").as_deref() {
+        Ok("aggressive") => {
+            ep.config(|| only_webrtc::rtc_config().enable_ice_aggressive_nomination(true))
+        }
+        Ok("renomination") => ep.config(|| only_webrtc::rtc_config().enable_ice_renomination(true)),
+        _ => ep,
+    };
     // Force the transport, as a browser's iceTransportPolicy: only the candidates offered.
     let ep = match what {
         "dc-relay" | "dc-relay-url" => ep.candidate_filter(|c| c.kind() == "relay"),
@@ -258,6 +278,11 @@ fn client(http: &str, what: &str, args: &[String]) {
             .gather_relay_via(&engine, &s, Duration::from_secs(10))
             .expect("allocate");
         eprintln!("client: relayed candidate {r} over {}", s.transport());
+    }
+    if what == "dc-mdns" {
+        ep.resolve_mdns(&engine, Duration::from_secs(5))
+            .expect("mdns");
+        ep.conceal_host_candidates().expect("conceal");
     }
     if what == "dc-active" {
         let a = ep.dial_tcp(&engine).expect("active tcp");
@@ -300,9 +325,29 @@ fn client(http: &str, what: &str, args: &[String]) {
         "dc-relay" | "dc-relay-url" => filter_candidates(&offer, |l| l.contains(" typ relay")),
         "dc-tcp" => filter_candidates(&offer, |l| l.contains("tcptype passive")),
         "dc-active" => filter_candidates(&offer, |l| l.contains("tcptype active")),
+        "dc-mdns" => filter_candidates(&offer, |l| l.contains(" udp ")),
         _ => offer,
     };
+    if what == "dc-mdns" {
+        assert!(
+            offer
+                .lines()
+                .any(|l| l.contains(".local ") && l.contains(" typ host")),
+            "no concealed host candidate:\n{offer}"
+        );
+    }
     let answer = post(http, &offer);
+    if what == "dc-mdns" {
+        let n = answer
+            .lines()
+            .filter(|l| l.starts_with("a=candidate") && l.contains(".local "))
+            .count();
+        eprintln!("client: the answer has {n} mDNS candidates");
+        assert!(
+            n > 0,
+            "Chrome did not conceal its host candidates:\n{answer}"
+        );
+    }
     peer.accept_answer(&answer).expect("answer");
     let deadline = Instant::now() + Duration::from_secs(15);
     let next = || {
@@ -365,6 +410,11 @@ fn client(http: &str, what: &str, args: &[String]) {
             }
         }
         println!("ok: 100 data channel messages echoed in order ({what})");
+        if what == "dc-mdns" {
+            // Chrome's checks may have connected us before its name resolved: let the
+            // queries finish, for the log browser.sh checks.
+            std::thread::sleep(Duration::from_secs(1));
+        }
     } else {
         let mid = audio.expect("audio");
         let pt = peer.payload_type(mid, Codec::Opus).expect("opus");
@@ -594,6 +644,7 @@ fn turn_client(transport: &str, server: &str, user: &str, pass: &str) {
 }
 
 fn main() {
+    let _ = only_log::init_from_env(only_log::LevelFilter::Warn);
     let a: Vec<String> = std::env::args().collect();
     match a.get(1).map(String::as_str) {
         Some("server") => server(

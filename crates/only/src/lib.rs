@@ -818,6 +818,48 @@ impl Engine {
         }
     }
 
+    /// [`bind_udp`](Self::bind_udp) for a multicast group: binds the unspecified address of
+    /// `group`'s family on `group.port()` with `SO_REUSEADDR` and `SO_REUSEPORT` (sharing the
+    /// port with other responders on the host, e.g. the system's mDNS daemon on 5353), joins
+    /// the group `group.ip()` on the default interface and serves the socket with `acceptor`:
+    /// datagrams sent to the group (or to the port) arrive from their sources as on any bound
+    /// socket, and [`UdpBinding::send_to`] with `group` multicasts (looped back to this host's
+    /// members too). For multicast protocols such as mDNS (RFC 6762). Needs
+    /// [`EngineBuilder::udp_client_threads`] or a UDP listener; the engine must have been
+    /// [`start`](Self::start)ed.
+    pub fn bind_udp_multicast<A: Acceptor>(
+        &self,
+        group: SocketAddr,
+        acceptor: A,
+    ) -> io::Result<UdpBinding> {
+        if !group.ip().is_multicast() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a multicast group address",
+            ));
+        }
+        let Some(g) = self.udp_client.and_then(|i| self.groups.get(i)) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
+            ));
+        };
+        let any: std::net::IpAddr = match group {
+            SocketAddr::V4(_) => std::net::Ipv4Addr::UNSPECIFIED.into(),
+            SocketAddr::V6(_) => std::net::Ipv6Addr::UNSPECIFIED.into(),
+        };
+        let sock = only_sys::listen_udp(SocketAddr::new(any, group.port()), true)?;
+        match group.ip() {
+            std::net::IpAddr::V4(ip) => {
+                sock.join_multicast_v4(&ip, &std::net::Ipv4Addr::UNSPECIFIED)?;
+                sock.set_multicast_ttl_v4(255)?;
+            }
+            std::net::IpAddr::V6(ip) => sock.join_multicast_v6(&ip, 0)?,
+        }
+        sock.set_nonblocking(true)?;
+        g.bind_udp(sock, Arc::new(acceptor))
+    }
+
     /// Opens a UDP "connection" to `peer` on the socket of this engine's UDP listener bound at
     /// `local` (as [`local_addrs`](Self::local_addrs) reports it): datagrams leave from the
     /// listener's port, which is what protocols that share one port for a peer-to-peer node
@@ -887,6 +929,31 @@ impl Engine {
                 io::ErrorKind::InvalidInput,
                 "engine has no I/O threads",
             )),
+        }
+    }
+
+    /// [`dial`](Self::dial) from the local address `local` (port 0 picks one), bound with
+    /// `SO_REUSEADDR` and `SO_REUSEPORT` before connecting: connections to different peers, and
+    /// a listener, may share the local port, as TCP simultaneous open needs (ICE-TCP `so`
+    /// candidates, RFC 6544, where both sides connect at once between their advertised ports).
+    /// A connect that crosses the peer's own becomes one connection on both sides. The engine
+    /// must have been [`start`](Self::start)ed.
+    pub fn dial_from<A: Acceptor>(
+        &self,
+        local: SocketAddr,
+        addr: SocketAddr,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        let Some(g) = self.tcp_dial.and_then(|i| self.groups.get(i)) else {
+            return on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no I/O threads",
+            ));
+        };
+        match only_sys::connect_nonblocking_from(local, addr) {
+            Ok(stream) => g.dial_stream(stream, addr, Arc::new(acceptor), Box::new(on_error)),
+            Err(e) => on_error(e),
         }
     }
 }

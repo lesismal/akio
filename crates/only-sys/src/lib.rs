@@ -31,7 +31,9 @@ mod waker;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use net::listen_backlog;
-pub use net::{connect_nonblocking, listen, listen_udp, sendfile, set_backlog};
+pub use net::{
+    connect_nonblocking, connect_nonblocking_from, listen, listen_udp, sendfile, set_backlog,
+};
 pub use poller::{Event, Poller};
 #[doc(hidden)]
 pub use random::fill_random;

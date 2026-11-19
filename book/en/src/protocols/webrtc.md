@@ -39,7 +39,10 @@ echoed back by an `RtcServer` and decoded by Chrome; ICE-TCP only (Chrome to an 
 `Endpoint` to Chrome); relay only (Chrome with `iceTransportPolicy: "relay"` through `only-turn`
 over UDP, TCP and TLS, an `Endpoint` whose only candidates were allocated over TCP or TLS); and
 simulcast: three VP8 layers from Chrome into an SFU, sent back as simulcast and as one selected
-layer switched while Chrome decodes it (`tools/interop/webrtc/browser.sh`). pion negotiates
+layer switched while Chrome decodes it; an `Endpoint` with aggressive nomination; and an
+`Endpoint` that hides its host address behind an mDNS name offering to a Chrome that does the
+same (its default), each resolving the other's name, host to host
+(`tools/interop/webrtc/browser.sh`). pion negotiates
 I-DATA with us; Chrome 157 uses DATA chunks unless its `WebRTC-DataChannelMessageInterleaving`
 field trial is on (with it on, the same tests pass over I-DATA). The SCTP layer alone is also
 checked against pion/sctp over UDP, with and without interleaving, loss and zero checksums
@@ -194,6 +197,51 @@ let engine = Engine::builder()
 The same rules hold (first check within 10 seconds, a peer's connections close with it); at most
 twice `max_peers` connections.
 
+`listen_tcp_so(&engine, addr)` adds a simultaneous-open candidate (`tcptype so`), which pairs
+with the remote's `so` candidates: both sides connect at once between the two advertised ports.
+The port listens (`SO_REUSEPORT`) and the checks are dialed from it (`Engine::dial_from`), so
+whichever connect arrives first, one connection results: crossing SYNs make a TCP simultaneous
+open, otherwise the listener accepts the other side's and our checks go over that one. Browsers
+and pion have no `so` candidates (libnice has); between two `Endpoint`s it works anywhere a
+direct TCP connection does.
+
+### mDNS candidates
+
+Browsers do not show their host addresses: a page without camera or microphone permission gets
+host candidates like `candidate:1 1 udp 2113937151 1f3c...-9a.local 54321 typ host`, and the
+browser answers multicast DNS queries (RFC 6762) for that name on the local network. Without a
+resolver such candidates are skipped, and an `Endpoint` reaches a browser on the same LAN only
+when the browser's checks reach it first.
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
+ep.resolve_mdns(&engine, Duration::from_secs(5))?; // resolve the browsers' .local names
+ep.conceal_host_candidates()?;                      // and write ours as .local names too
+```
+
+`resolve_mdns` opens a socket on the mDNS port 5353, shared with the system's responder
+(`Engine::bind_udp_multicast`, a member of `224.0.0.251`; when the port cannot be bound, an
+ephemeral one asking for unicast answers), served by an engine I/O thread like the endpoint's
+own. Each `.local` candidate, in a description or trickled through `add_remote_candidate`, is
+queried at once and again after 1 and 2 seconds, then every 2 seconds until the timeout; the
+answer gives the peer the candidate with the address. Answers, and the announcements browsers
+send when they make a name, are cached for their TTL. `conceal_host_candidates` makes new peers
+signal every host candidate under a random `<uuid>.local` name (one per address) and hide the
+related address of the others (`0.0.0.0:0`); the socket answers queries for those names, so a
+browser or another endpoint can resolve them.
+
+### Nomination
+
+The controlling side (the offerer, or any side facing an ICE-lite remote) nominates one pair:
+the best that works, once nothing better is still being checked. Two more modes are opt-in in
+`RtcConfig`: `enable_ice_aggressive_nomination(true)` puts USE-CANDIDATE on every check (the
+first pair that works is used at once, a better one replaces it), and
+`enable_ice_renomination(true)` offers `a=ice-options:renomination`; when the remote does too,
+checks of better pairs go on after nomination and a better pair that works later (a candidate
+trickled late, say) is nominated again with a higher NOMINATION value. Whatever its own
+configuration, a controlled peer follows the highest NOMINATION value it receives, or without
+one the best nominated pair.
+
 ### Simulcast
 
 `SdpChanges::add_simulcast_media(kind, dir, &["h", "m", "l"], stream_id, track_id)` adds a line
@@ -341,8 +389,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); TURN over DTLS; simultaneous-open ICE-TCP (`tcptype so`); resolving
-mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC on
-simulcast lines and for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by
-default; DTLS 1.3 0-RTT and NewConnectionId. ADR-017, ADR-032 and ADR-039 have the details of
-what was added.
+TCP relays (RFC 6062); TURN over DTLS; mDNS over IPv6 multicast; FEC on simulcast lines and
+for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by default; DTLS 1.3
+0-RTT and NewConnectionId. ADR-017, ADR-032, ADR-039 and ADR-044 have the details of what was
+added.

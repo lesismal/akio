@@ -441,6 +441,21 @@ impl Group for EpollGroup {
         });
     }
 
+    fn dial_stream(
+        &self,
+        stream: std::net::TcpStream,
+        addr: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        self.post_dial(Cmd::Dial {
+            stream,
+            addr,
+            acceptor,
+            on_error,
+        });
+    }
+
     fn adopt(
         &self,
         stream: std::net::TcpStream,

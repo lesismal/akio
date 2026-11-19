@@ -17,6 +17,12 @@
 //!   it is up; other datagrams to a remote without a connection are dropped. What arrives on it
 //!   goes to that peer as datagrams from the remote address to the active candidate's address.
 //!   A connection that fails or closes is forgotten: the agent's next check opens another.
+//! - **Simultaneous open** (`tcptype so`): the candidate's port listens (accepted connections
+//!   are handled as passive ones) and checks to a remote `so` candidate are dialed from that
+//!   same port ([`only::Engine::dial_from`], `SO_REUSEPORT`), unless a connection with that
+//!   remote was accepted already. When both sides' connects cross, TCP simultaneous open makes
+//!   one connection that each side uses as its dialed one; when one arrives first, the other
+//!   side's listener accepts it and that side's checks then go over it.
 
 use std::collections::HashMap;
 use std::io;
@@ -41,6 +47,8 @@ pub(crate) const FIRST_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_QUEUED: usize = 1 << 20;
 /// Bytes queued for an active connection that is still being dialed.
 const MAX_DIALING: usize = 64 * 1024;
+/// How long frames of a failed simultaneous-open dial wait for the remote's connection.
+const ORPHAN_TTL: Duration = Duration::from_secs(2);
 
 /// A connection, and the peer it belongs to once known.
 struct Entry {
@@ -59,6 +67,10 @@ struct Conns {
     passive: HashMap<SocketAddr, Entry>,
     /// Active connections by peer and remote passive candidate.
     active: HashMap<(u64, SocketAddr), Active>,
+    /// Simultaneous open: frames queued for a dial that failed because the remote's own
+    /// connect is being accepted, by remote address, for that connection (at most
+    /// [`MAX_CONNS`], kept [`ORPHAN_TTL`]).
+    orphans: HashMap<SocketAddr, (Instant, Vec<Vec<u8>>)>,
 }
 
 impl Conns {
@@ -77,6 +89,9 @@ pub(crate) struct TcpSide {
     engine: OnceLock<Weak<Engine>>,
     /// The address an endpoint's listener is bound to (to wake its thread on close).
     bound: OnceLock<SocketAddr>,
+    /// The simultaneous-open candidate's address (what its connections are dialed from) and
+    /// the address its listener is bound to.
+    so: OnceLock<(SocketAddr, SocketAddr)>,
     conns: Mutex<Conns>,
     /// A server's side: the bound follows its peer limit.
     server: bool,
@@ -92,6 +107,7 @@ impl TcpSide {
             active: OnceLock::new(),
             engine: OnceLock::new(),
             bound: OnceLock::new(),
+            so: OnceLock::new(),
             conns: Mutex::new(Conns::default()),
             server,
             stop: AtomicBool::new(false),
@@ -149,15 +165,40 @@ impl TcpSide {
         Ok(())
     }
 
+    /// Starts the simultaneous-open candidate `local` on `listener` (bound with
+    /// `SO_REUSEPORT` to that port), dialing from `local` on `engine`. Once.
+    pub(crate) fn listen_so(
+        &self,
+        engine: &Arc<Engine>,
+        listener: TcpListener,
+        local: SocketAddr,
+    ) -> io::Result<()> {
+        let bound = listener.local_addr()?;
+        if self.so.set((local, bound)).is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint has a simultaneous-open TCP candidate already",
+            ));
+        }
+        let _ = self.engine.set(Arc::downgrade(engine));
+        self.add_passive(&[local]);
+        let (engine, me) = (Arc::downgrade(engine), self.me.clone());
+        std::thread::Builder::new()
+            .name("only-webrtc-ice-tcp-so".into())
+            .spawn(move || accept_loop(&listener, &engine, &me))?;
+        Ok(())
+    }
+
     /// Enables the active candidate `addr` (IP and port 9), dialing on `engine`. Once.
     pub(crate) fn set_active(&self, engine: &Arc<Engine>, addr: SocketAddr) -> bool {
         let _ = self.engine.set(Arc::downgrade(engine));
         self.active.set(addr).is_ok()
     }
 
-    /// Whether `src` is the active candidate's address (lock-free: on every transmit).
+    /// Whether `src` is the active or the simultaneous-open candidate's address (lock-free:
+    /// on every transmit), whose datagrams go over connections.
     pub(crate) fn is_active(&self, src: SocketAddr) -> bool {
-        self.active.get() == Some(&src)
+        self.active.get() == Some(&src) || self.so.get().is_some_and(|s| s.0 == src)
     }
 
     /// The candidate address a passive connection with local address `local` arrived on.
@@ -177,16 +218,28 @@ impl TcpSide {
     pub(crate) fn send(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8]) {
         let Some(f) = frame(data) else { return };
         if self.active.get() == Some(&src) {
-            self.send_active(id, dest, data, f);
+            self.send_active(id, dest, data, f, None);
             return;
         }
         let c = lock(&self.conns).passive.get(&dest).map(|e| e.conn.clone());
         if let Some(c) = c {
             send_frame(&c, f);
+        } else if let Some(&(so, _)) = self.so.get().filter(|s| s.0 == src) {
+            // Simultaneous open: no connection from that remote was accepted, dial it.
+            self.send_active(id, dest, data, f, Some(so));
         }
     }
 
-    fn send_active(&self, id: u64, dest: SocketAddr, data: &[u8], f: Vec<u8>) {
+    /// Sends on the dialed connection of peer `id` to `dest` (dialing it, from `from` when
+    /// given, if `data` is a check).
+    fn send_active(
+        &self,
+        id: u64,
+        dest: SocketAddr,
+        data: &[u8],
+        f: Vec<u8>,
+        from: Option<SocketAddr>,
+    ) {
         let key = (id, dest);
         {
             let mut conns = lock(&self.conns);
@@ -223,17 +276,45 @@ impl TcpSide {
         let acc = TcpAcceptor {
             side: self.me.clone(),
             active: Some(key),
+            local: from,
         };
         let me = self.me.clone();
-        engine.dial(dest, acc, move |e| {
+        let failed = move |e: io::Error| {
             only_log::debug!(target: "only_webrtc", "ice-tcp: connect {dest}: {e}");
-            if let Some(s) = me.upgrade() {
+            let Some(s) = me.upgrade() else { return };
+            let (queued, accepted) = {
                 let mut conns = lock(&s.conns);
-                if matches!(conns.active.get(&key), Some(Active::Dialing(..))) {
-                    conns.active.remove(&key);
+                let q = match conns.active.get(&key) {
+                    Some(Active::Dialing(..)) => match conns.active.remove(&key) {
+                        Some(Active::Dialing(q, _)) => q,
+                        _ => Vec::new(),
+                    },
+                    _ => Vec::new(),
+                };
+                (q, conns.passive.get(&dest).map(|e| e.conn.clone()))
+            };
+            // Simultaneous open: the remote's connect reached our listener first (ours then
+            // fails, the 4-tuple being taken): what was queued goes over that connection, or
+            // waits for it if it is still being accepted.
+            if from.is_none() || queued.is_empty() {
+                return;
+            }
+            match accepted {
+                Some(c) => queued.into_iter().for_each(|f| send_frame(&c, f)),
+                None => {
+                    let mut conns = lock(&s.conns);
+                    let now = Instant::now();
+                    conns.orphans.retain(|_, (t, _)| now < *t + ORPHAN_TTL);
+                    if conns.orphans.len() < MAX_CONNS {
+                        conns.orphans.insert(dest, (now, queued));
+                    }
                 }
             }
-        });
+        };
+        match from {
+            Some(local) => engine.dial_from(local, dest, acc, failed),
+            None => engine.dial(dest, acc, failed),
+        }
     }
 
     /// Closes the connections of peer `id`.
@@ -266,15 +347,10 @@ impl TcpSide {
     pub(crate) fn close(&self) {
         self.stop.store(true, Ordering::Release);
         if let Some(&bound) = self.bound.get() {
-            let mut wake = bound;
-            if wake.ip().is_unspecified() {
-                wake.set_ip(if wake.is_ipv4() {
-                    std::net::Ipv4Addr::LOCALHOST.into()
-                } else {
-                    std::net::Ipv6Addr::LOCALHOST.into()
-                });
-            }
-            let _ = TcpStream::connect_timeout(&wake, Duration::from_millis(200));
+            wake(bound);
+        }
+        if let Some(&(_, bound)) = self.so.get() {
+            wake(bound);
         }
         let conns: Vec<Conn<IceTcp>> = {
             let mut cs = lock(&self.conns);
@@ -296,21 +372,29 @@ impl TcpSide {
         if self.stop.load(Ordering::Acquire) {
             return false;
         }
-        let old = {
+        let (old, orphans) = {
             let mut cs = lock(&self.conns);
             if cs.len() >= self.max_conns() && !cs.passive.contains_key(&c.peer_addr()) {
                 return false;
             }
-            cs.passive.insert(
+            let old = cs.passive.insert(
                 c.peer_addr(),
                 Entry {
                     conn: c.clone(),
                     peer: None,
                 },
-            )
+            );
+            let orphans = cs
+                .orphans
+                .remove(&c.peer_addr())
+                .filter(|(t, _)| t.elapsed() < ORPHAN_TTL);
+            (old, orphans)
         };
         if let Some(old) = old {
             old.conn.close();
+        }
+        for f in orphans.map(|o| o.1).unwrap_or_default() {
+            send_frame(c, f);
         }
         true
     }
@@ -356,6 +440,19 @@ impl TcpSide {
     }
 }
 
+/// Connects to a listener bound at `bound` so that its blocking `accept` returns.
+fn wake(bound: SocketAddr) {
+    let mut wake = bound;
+    if wake.ip().is_unspecified() {
+        wake.set_ip(if wake.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    let _ = TcpStream::connect_timeout(&wake, Duration::from_millis(200));
+}
+
 fn send_frame(c: &Conn<IceTcp>, f: Vec<u8>) {
     if c.queued_bytes() > MAX_QUEUED {
         return;
@@ -390,6 +487,7 @@ fn accept_loop(listener: &TcpListener, engine: &Weak<Engine>, side: &Weak<TcpSid
             TcpAcceptor {
                 side: Arc::downgrade(&side),
                 active: None,
+                local: None,
             },
             |_| {},
         );
@@ -413,6 +511,7 @@ impl Acceptor for RtcTcp {
         TcpAcceptor {
             side: self.0.clone(),
             active: None,
+            local: None,
         }
         .on_open(c)
     }
@@ -422,6 +521,9 @@ struct TcpAcceptor {
     side: Weak<TcpSide>,
     /// The peer and remote of an active (dialed) connection.
     active: Option<(u64, SocketAddr)>,
+    /// The candidate a dialed connection belongs to: the simultaneous-open one, or (`None`)
+    /// the active one.
+    local: Option<SocketAddr>,
 }
 
 impl Acceptor for TcpAcceptor {
@@ -436,7 +538,9 @@ impl Acceptor for TcpAcceptor {
         let (ok, local) = match (&side, self.active) {
             (Some(s), Some(key)) => (
                 s.active_open(key, c),
-                s.active.get().copied().unwrap_or_else(|| c.local_addr()),
+                self.local
+                    .or_else(|| s.active.get().copied())
+                    .unwrap_or_else(|| c.local_addr()),
             ),
             (Some(s), None) => {
                 let ok = s.passive_open(c);

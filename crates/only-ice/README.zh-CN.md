@@ -3,8 +3,9 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 的 sans-io ICE（RFC 8445）实现：完整（full）与精简
-（lite）代理、同意新鲜度（consent freshness，RFC 7675）、Trickle（RFC 8838）和 ICE 重启，面向
-UDP 上的单个组件（RTP/RTCP 复用，BUNDLE）。基于 [`only-turn`](../only-turn) 的 STUN 编解码和
+（lite）代理、同意新鲜度（consent freshness，RFC 7675）、Trickle（RFC 8838）、ICE 重启，常规提名、
+激进提名与重新提名，面向 UDP 与 TCP 上的单个组件（RTP/RTCP 复用，BUNDLE），并带有处理浏览器
+`.local` 候选的 mDNS 编解码。基于 [`only-turn`](../only-turn) 的 STUN 编解码和
 [`only-crypto`](../only-crypto)，纯安全 Rust（`#![forbid(unsafe_code)]`），没有其他依赖。它是自研
 WebRTC 协议栈的 ICE 层，用来替换 str0m 的实现。这是内部 crate（docs/api-stability.md）：API 跟随
 该协议栈的需要，任何版本都可能变化。
@@ -45,10 +46,19 @@ loop {
 - 对端是 `a=ice-lite` 时调用 `set_remote_lite(true)`；`end_of_remote_candidates()` 使代理能进入
   `Failed`；`close()` 停止代理。
 - `Candidate::parse` 把 mDNS（`*.local`）和 FQDN 候选报告为不同的 `ParseError` 变体
-  （`is_unsupported()`），便于跳过。
+  （`is_unsupported()`）；`Candidate::parse_resolved(line, |name| ...)` 把名字交给解析器并采用其返回
+  的地址（名字保存在 `hostname()`）。`mdns` 模块构造一次性查询、读取应答（RFC 6762；每条消息一个
+  问题，这是 Chromium 应答器的要求），并应答对我方名字的查询：`Candidate::with_hostname(name)` 让
+  SDP 写名字而非 IP（配合 `with_related(Some(0.0.0.0:0))` 隐藏相关地址）。套接字由调用方负责
+  （only-webrtc 的 `Endpoint::resolve_mdns`）。
+- 提名：默认常规提名；`IceConfig::aggressive_nomination`（每个检查都带 USE-CANDIDATE，最终取能用
+  的最佳候选对）与 `IceConfig::renomination` 加 `set_remote_renomination(true)`
+  （draft-thatcher-ice-renomination：提名后发现的更好候选对会以更大的 NOMINATION 值再次提名）。
+  受控代理遵循最大的 NOMINATION 值，没有该属性时取优先级最高的被提名候选对。
 - TCP 候选（RFC 6544）：`TcpType`、`Candidate::host_tcp`、SDP 中的 `tcp ... tcptype`、低于 UDP 的
-  RFC 6544 优先级、只在同一传输内且类型兼容时配对。被动本地候选只应答：经接受的连接到达的检查形成候选对，
-  调用方用 `tcp::FrameReader` / `tcp::frame`（RFC 4571）对连接分帧。
+  RFC 6544 优先级、只在同一传输内且类型兼容时配对（主动配被动，`so` 配 `so`）。主动和 `so` 本地
+  候选像 UDP 候选一样发送检查（调用方在第一个检查发出时建立连接）；被动本地候选只应答：经接受的
+  连接到达的检查形成候选对。调用方用 `tcp::FrameReader` / `tcp::frame`（RFC 4571）对连接分帧。
 
 ## 协议覆盖
 
@@ -61,14 +71,19 @@ loop {
   MESSAGE-INTEGRITY、FINGERPRINT；400/401 应答，双方的角色冲突处理（487）；对端反射
   （peer-reflexive）候选；只接受对称的响应；远端凭据到达之前的请求照常应答，其触发检查等待凭据。
 - 提名：常规提名（没有更优候选对待检查时，或首个有效候选对出现 500 ms 后，提名最佳有效候选对；
-  对端为 lite 时立即提名）；受控方遵循 USE-CANDIDATE；lite 代理选择最后一个 USE-CANDIDATE 检查的
-  候选对。
+  对端为 lite 时立即提名）；激进提名（RFC 5245 §8.1.1.2）与重新提名
+  （draft-thatcher-ice-renomination-01，NOMINATION 属性 0xC001），二者在选中后都继续检查更好的
+  候选对并迁移到能用的那个；受控方遵循 USE-CANDIDATE（取最大 NOMINATION 值，否则取优先级最高的
+  被提名候选对）；lite 代理选择最后一个 USE-CANDIDATE 检查的候选对。
+- mDNS（`mdns`，RFC 6762）：`A` / `AAAA` 一次性查询，应答（组播、带 QU 的单播、传统单播），压缩
+  指针（只能向前跳回，每个名字最多 16 次），随机 UUID 名字。
 - 同意新鲜度：在选定候选对上每 5 s ±20 % 检查一次（重传 4 次），30 s 无响应（lite：无有效检查）
   进入 `Disconnected`，恢复后回到原状态。end-of-candidates 之后或 30 s 后所有候选对都失败则为
   `Failed`。
 
-未实现：多组件、本地主动与同时打开的 TCP 候选、候选收集（STUN/TURN 客户端由调用方负责）、mDNS 解析、作为控制方的
-激进提名与重新提名、在提名之后改选更好的候选对。
+未实现：多组件（WebRTC 总是复用 RTP 与 RTCP：rtcp-mux、BUNDLE）、候选收集（STUN/TURN 客户端由
+调用方负责）、任何套接字（mDNS 解析器与应答器、TCP 连接都在 only-webrtc 的 `Endpoint` 中）、远端
+不支持重新提名时的改选（那要靠 ICE 重启）。
 
 ## 测试
 
@@ -80,5 +95,9 @@ loop {
 - 互通（`tests/pion.rs`，默认忽略）：通过回环 UDP 与 pion/ice v4.4.8 互通四种组合（pion 受控、
   pion 控制、pion lite、only-ice lite），并在选定候选对上双向交换数据；需要 `ONLY_ICE_PION_PEER`
   指向一个小型 pion 对端程序。
-- 模糊测试：`fuzz/` 中的 `ice_stun` 目标（向控制方、受控方和 lite 代理输入数据报，以及
-  `Candidate::parse`）；`fuzzing::tests` 在 stable 上回放其语料。
+- 提名（`tests/sim.rs`）：提名后 trickle 出的更好候选对，常规提名下被忽略，激进提名与重新提名下
+  双方都会迁移（也在 10% 丢包下）；激进提名最终落在最佳候选对；受控代理遵循最大的 NOMINATION 值并
+  忽略旧值。
+- 模糊测试：`fuzz/` 中的 `ice_stun`（向控制方、受控方和 lite 代理输入数据报，也包括启用激进提名
+  与重新提名的代理，以及 `Candidate::parse`）、`ice_tcp`（分帧的连接）和 `ice_mdns`（mDNS 消息、
+  带名字的候选行）目标；`fuzzing::tests` 在 stable 上回放它们的语料。

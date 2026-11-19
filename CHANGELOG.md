@@ -10,6 +10,30 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
+
+ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):
+
+- **only-webrtc**: `Endpoint::resolve_mdns(&engine, timeout)` resolves the `<uuid>.local` host
+  candidates browsers send (in descriptions and trickled; one-shot mDNS queries over the shared
+  port 5353 and `224.0.0.251`, answers cached, never blocking an I/O thread), so an `Endpoint`
+  reaches a browser host to host; `Endpoint::conceal_host_candidates()` writes our own host
+  candidates as mDNS names and answers the queries for them. Tested with headless Chrome 157
+  with its mDNS concealment on (each side resolves the other's name).
+  `RtcConfig::enable_ice_renomination` (`a=ice-options:renomination`) and
+  `RtcConfig::enable_ice_aggressive_nomination`. `Endpoint::listen_tcp_so(&engine, addr)`: a
+  simultaneous-open ICE-TCP candidate (RFC 6544 `tcptype so`). `Peer::add_remote_candidate`
+  accepts mDNS lines when the endpoint resolves them.
+- **only-ice**: `mdns` module (RFC 6762 codec), `Candidate::{parse_resolved, with_hostname,
+  hostname, with_related}`, `IceConfig::{aggressive_nomination, renomination}`,
+  `IceAgent::set_remote_renomination` (NOMINATION attribute; a better pair found after
+  nomination is used). A controlled agent now selects the highest NOMINATION value, or without
+  one the highest-priority nominated pair, instead of the last nomination. Fuzz target
+  `ice_mdns`.
+- **only**: `Engine::bind_udp_multicast(group, acceptor)` (a multicast group's port shared with
+  other members) and `Engine::dial_from(local, addr, acceptor, on_error)` (a connect from a
+  bound, shared local port); only-sys `connect_nonblocking_from`.
+
 ### Added: FEC, RTCP XR, TMMBR and RFC 8888 feedback in WebRTC peers (only-webrtc, only-rtp)
 
 ADR-039 (docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.md), additive and off by default (a default peer's

@@ -153,18 +153,18 @@ contain no `unsafe`.
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 97 | 3 | 3 | 0 |
+| only-sys | 99 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **343** | **84** | **8** | **22** |
+| **total** | **345** | **84** | **8** | **22** |
 
 By purpose:
 
 | Where | Count | Purpose | Main invariants |
 |---|---:|---|---|
 | `only-sys/src/ffi/` | 5 + 8 in the layout tests, `unsafe fn errno_location`, `cmsg_firsthdr`, `cmsg_nxthdr` | the own OS bindings: `extern "C"` declarations of the C library (Linux) / libSystem (macOS), constants, `#[repr(C)]` structs, the `CMSG_*` helpers, `cpu_set_t`, errno | see "The own syscall layer" below |
-| `only-sys/src/net.rs` | 19 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests) | sockaddr length matches family; fd owned before any fallible step |
+| `only-sys/src/net.rs` | 21 | `socket`/`bind`/`listen`/`connect` (also a connect from a bound, shared port for TCP simultaneous open, ADR-044), `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests) | sockaddr length matches family; fd owned before any fallible step |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |

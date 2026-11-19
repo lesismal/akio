@@ -1343,3 +1343,181 @@ fn ice_tcp_passive_alone_never_checks() {
     assert!(sim.net.queue.is_empty());
     assert_ne!(sim.peers[0].agent.state(), IceState::Connected);
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Nomination {
+    Regular,
+    Aggressive,
+    Renomination,
+}
+
+fn nominating(mode: Nomination, controlling: bool) -> IceConfig {
+    let mut c = full(controlling);
+    c.aggressive_nomination = mode == Nomination::Aggressive;
+    c.renomination = mode == Nomination::Renomination;
+    c
+}
+
+/// Counts the requests carrying USE-CANDIDATE and NOMINATION (0xC001) in the queue.
+fn nominations(sim: &Sim) -> (usize, usize) {
+    let mut n = (0, 0);
+    for p in &sim.net.queue {
+        if let Ok(m) = Message::parse(&p.data) {
+            if m.class() == Class::Request && m.has(attr::USE_CANDIDATE) {
+                n.0 += 1;
+                n.1 += usize::from(m.has(0xC001));
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn better_pair_after_nomination() {
+    // A (controlling) has IPv4 and IPv6; B only IPv4 at first, so the IPv4 pair is selected.
+    // B then trickles an IPv6 candidate: a better pair. Regular nomination keeps the first
+    // selection; aggressive nomination and renomination move both sides to the new pair.
+    for mode in [
+        Nomination::Regular,
+        Nomination::Aggressive,
+        Nomination::Renomination,
+    ] {
+        for seed in [1, 2] {
+            let mut sim = basic(
+                seed,
+                nominating(mode, true),
+                &["10.0.0.1:1000", "[2001:db8::1]:1000"],
+                nominating(mode, false),
+                &["10.0.0.2:2000"],
+            );
+            sim.net.loss_pct = if seed == 2 { 10 } else { 0 };
+            for p in &mut sim.peers {
+                p.agent
+                    .set_remote_renomination(mode == Nomination::Renomination);
+            }
+            sim.signal();
+            assert!(
+                sim.run_until(Duration::from_secs(20), |s| s.both(IceState::Completed)),
+                "{mode:?}"
+            );
+            let v4 = (a("10.0.0.1:1000"), a("10.0.0.2:2000"));
+            assert_eq!(sim.peers[0].agent.selected_pair(), Some(v4), "{mode:?}");
+            let mut uses = 0;
+            sim.peers[1].addrs.push(a("[2001:db8::2]:2000"));
+            assert!(
+                sim.peers[1]
+                    .agent
+                    .add_local_candidate(Candidate::host(a("[2001:db8::2]:2000")))
+            );
+            sim.signal_candidates(1);
+            let limit = sim.now + Duration::from_secs(15);
+            while sim.step(limit) {
+                let (u, n) = nominations(&sim);
+                uses += u;
+                if mode != Nomination::Renomination {
+                    assert_eq!(n, 0, "NOMINATION only with renomination");
+                }
+            }
+            let v6 = (a("[2001:db8::1]:1000"), a("[2001:db8::2]:2000"));
+            let want = if mode == Nomination::Regular { v4 } else { v6 };
+            assert_eq!(sim.peers[0].agent.selected_pair(), Some(want), "{mode:?}");
+            sim.assert_connected_pair();
+            assert!(sim.both(IceState::Completed), "{mode:?}");
+            let switches = if mode == Nomination::Regular { 1 } else { 2 };
+            for p in &sim.peers {
+                assert_eq!(p.selections().len(), switches, "{mode:?}");
+            }
+            if mode == Nomination::Regular {
+                assert_eq!(uses, 0, "no USE-CANDIDATE after nomination");
+            }
+            // Still up on the new pair.
+            sim.app_data = true;
+            sim.run_for(Duration::from_secs(40));
+            assert!(sim.both(IceState::Completed), "{mode:?}");
+        }
+    }
+}
+
+#[test]
+fn aggressive_nomination_selects_the_best_pair() {
+    // Every check of the controlling side carries USE-CANDIDATE; both sides end on the
+    // highest-priority pair (IPv6 here) even though several pairs were nominated.
+    let mut sim = basic(
+        3,
+        nominating(Nomination::Aggressive, true),
+        &["10.0.0.1:1000", "[2001:db8::1]:1000"],
+        full(false),
+        &["10.0.0.2:2000", "[2001:db8::2]:2000"],
+    );
+    sim.signal();
+    assert!(sim.run_until(Duration::from_secs(10), |s| s.both(IceState::Completed)));
+    assert_eq!(
+        sim.peers[0].agent.selected_pair(),
+        Some((a("[2001:db8::1]:1000"), a("[2001:db8::2]:2000")))
+    );
+    sim.assert_connected_pair();
+}
+
+/// A Binding request from `from` (controlling, tie-breaker `tb`) to `to`'s agent, nominating
+/// with `nomination` (USE-CANDIDATE and, if given, NOMINATION).
+fn nominate_request(remote: &Credentials, local_ufrag: &str, nomination: Option<u32>) -> Vec<u8> {
+    let mut b = MessageBuilder::new(Method::BINDING, Class::Request, stun::transaction_id())
+        .attr(
+            attr::USERNAME,
+            format!("{}:{}", remote.ufrag, local_ufrag).as_bytes(),
+        )
+        .u32(attr::PRIORITY, 1_853_824_767)
+        .attr(attr::ICE_CONTROLLING, &u64::MAX.to_be_bytes())
+        .attr(attr::USE_CANDIDATE, &[]);
+    if let Some(n) = nomination {
+        b = b.u32(0xC001, n);
+    }
+    b.integrity(remote.pwd.as_bytes()).fingerprint().build()
+}
+
+#[test]
+fn controlled_follows_the_highest_nomination() {
+    // B (controlled) has two valid pairs to A; A nominates with NOMINATION values: the
+    // highest value wins, an older (lower) one later changes nothing.
+    let mut sim = basic(
+        4,
+        full(true),
+        &["10.0.0.1:1000", "10.0.0.1:1001"],
+        full(false),
+        &["10.0.0.2:2000"],
+    );
+    sim.signal();
+    assert!(sim.run_until(Duration::from_secs(10), |s| s.both(IceState::Completed)));
+    let first = sim.peers[1].agent.selected_pair().unwrap();
+    let other = if first.1 == a("10.0.0.1:1000") {
+        a("10.0.0.1:1001")
+    } else {
+        a("10.0.0.1:1000")
+    };
+    let b_addr = a("10.0.0.2:2000");
+    let bc = sim.peers[1].agent.local_credentials().clone();
+    let au = sim.peers[0].agent.local_credentials().ufrag.clone();
+    // The forged requests' responses would reach A, which never sent them: drop them.
+    let inject = |sim: &mut Sim, from: SocketAddr, r: &[u8]| {
+        let now = sim.now;
+        assert!(sim.peers[1].agent.handle_receive(now, from, b_addr, r));
+        while let Some(t) = sim.peers[1].agent.poll_transmit() {
+            if Message::parse(&t.contents).unwrap().class() == Class::Request {
+                sim.net.send(now, t);
+            }
+        }
+    };
+    // Make sure B's pair to `other` is valid: its check of it went out when A's arrived.
+    inject(&mut sim, other, &nominate_request(&bc, &au, None));
+    sim.run_for(Duration::from_secs(2));
+    let send = |sim: &mut Sim, from: SocketAddr, n: u32| {
+        inject(sim, from, &nominate_request(&bc, &au, Some(n)));
+        sim.run_for(Duration::from_millis(500));
+    };
+    send(&mut sim, other, 5);
+    assert_eq!(sim.peers[1].agent.selected_pair(), Some((b_addr, other)));
+    send(&mut sim, first.1, 3);
+    assert_eq!(sim.peers[1].agent.selected_pair(), Some((b_addr, other)));
+    send(&mut sim, first.1, 6);
+    assert_eq!(sim.peers[1].agent.selected_pair(), Some((b_addr, first.1)));
+}

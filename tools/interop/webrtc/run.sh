@@ -40,6 +40,9 @@ $GO client-media 127.0.0.1:9501
 echo "== only (full ICE Endpoint) offers to pion"
 $RS client 127.0.0.1:9502 dc
 $RS client 127.0.0.1:9502 media
+echo "== only Endpoint with aggressive nomination, then offering renomination, to pion"
+ONLY_INTEROP_NOMINATION=aggressive $RS client 127.0.0.1:9502 dc
+ONLY_INTEROP_NOMINATION=renomination $RS client 127.0.0.1:9502 dc
 echo "== pion over a only TURN relay (relay-only policy) to the only server"
 $GO client-turn 127.0.0.1:9501 127.0.0.1:9503 alice wonderland
 echo "== pion/turn client against only-turn (UDP, TCP, TLS)"

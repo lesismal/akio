@@ -1,0 +1,2 @@
+candidate:1 1 udp 2113937151 4c1fab2e-0d4a-4c11-9e2f-5a6b7c8d9e0f.local 54321 typ host generation 0 ufrag X network-cost 999
+candidate:2 1 tcp 1518280447 4C1FAB2E-0D4A-4C11-9E2F-5A6B7C8D9E0F.LOCAL 9 typ host tcptype active

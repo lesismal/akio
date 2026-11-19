@@ -61,6 +61,7 @@
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod mdns;
 mod relay;
 mod rtc;
 mod sdp;
@@ -384,10 +385,21 @@ impl Peer {
         r.map_err(sdp_err)
     }
 
-    /// Adds a trickled remote ICE candidate (`candidate:...` or `a=candidate:...`).
+    /// Adds a trickled remote ICE candidate (`candidate:...` or `a=candidate:...`). One
+    /// whose address is an mDNS name (`<uuid>.local`, as browsers conceal their host
+    /// addresses) is resolved first when the endpoint resolves them
+    /// ([`Endpoint::resolve_mdns`]), else refused like any name.
     pub fn add_remote_candidate(&self, candidate: &str) -> Result<(), Error> {
-        let c = Candidate::parse(candidate)?;
-        self.with_rtc_inner(|rtc| rtc.add_remote_candidate(c.0))
+        let s = candidate.trim();
+        let s = s.strip_prefix("a=").unwrap_or(s);
+        let resolving = self.0.hub.upgrade().is_some_and(|h| h.mdns.get().is_some());
+        match only_ice::Candidate::parse(s) {
+            Ok(c) => self.with_rtc_inner(|rtc| rtc.add_remote_candidate(c)),
+            Err(only_ice::ParseError::Mdns) if resolving => self.with_rtc_inner(|rtc| {
+                let _ = rtc.add_remote_candidate_line(s);
+            }),
+            Err(e) => Err(Error::Sdp(e.to_string())),
+        }
     }
 
     /// Writes one media sample (a frame: an Opus packet, a VP8 frame, H.264 access unit ...)
@@ -546,11 +558,13 @@ impl Peer {
         let close_on_disconnect = hub
             .as_ref()
             .is_some_and(|h| h.close_on_disconnect.load(Ordering::Relaxed));
+        let mdns_wanted;
         {
             let mut st = lock(&self.0.state);
             if st.closed {
                 return;
             }
+            mdns_wanted = st.rtc.take_mdns();
             if st.rtc.is_connected() {
                 st.connect_by = None;
             } else if st.connect_by.is_some_and(|d| d <= Instant::now()) {
@@ -597,6 +611,13 @@ impl Peer {
             }
             if !evs.is_empty() {
                 lock(&self.0.events).extend(evs);
+            }
+        }
+        if let Some((names, ufrag)) = mdns_wanted {
+            if let Some(m) = hub.as_ref().and_then(|h| h.mdns.get()) {
+                for (name, line) in names {
+                    m.resolve(self.0.id, &ufrag, name, line);
+                }
             }
         }
         if died {
@@ -721,6 +742,11 @@ struct Hub {
     tcp: OnceLock<Arc<tcp::TcpSide>>,
     /// Which local candidates new peers use ([`Endpoint::candidate_filter`]).
     filter: Mutex<Option<Arc<CandidateFilter>>>,
+    /// The mDNS resolver and responder ([`Endpoint::resolve_mdns`]).
+    mdns: OnceLock<Arc<mdns::Mdns>>,
+    /// New peers conceal host addresses behind mDNS names
+    /// ([`Endpoint::conceal_host_candidates`]).
+    conceal: AtomicBool,
 }
 
 type CandidateFilter = dyn Fn(&Candidate) -> bool + Send + Sync;
@@ -746,6 +772,8 @@ impl Hub {
             relay_count: AtomicUsize::new(0),
             tcp: OnceLock::new(),
             filter: Mutex::new(None),
+            mdns: OnceLock::new(),
+            conceal: AtomicBool::new(false),
         }
     }
 
@@ -811,6 +839,7 @@ impl Hub {
         if !self.uses(&c) {
             return;
         }
+        let c = self.concealed(c);
         let peers: Vec<Peer> = lock(&self.peers).values().cloned().collect();
         for p in peers {
             let _ = p.with_rtc_inner(|rtc| rtc.add_local_candidate(c.clone()));
@@ -839,10 +868,35 @@ impl Hub {
         let cs = lock(&self.candidates).clone();
         for c in cs {
             if self.uses(&c) {
-                rtc.add_local_candidate(c);
+                rtc.add_local_candidate(self.concealed(c));
             }
         }
         Ok(rtc)
+    }
+
+    /// `c` as new peers signal it: with host addresses concealed
+    /// ([`Endpoint::conceal_host_candidates`]), a host candidate under its mDNS name and the
+    /// related address of the others as `0.0.0.0:0`.
+    fn concealed(&self, c: only_ice::Candidate) -> only_ice::Candidate {
+        if !self.conceal.load(Ordering::Relaxed) {
+            return c;
+        }
+        let Some(m) = self.mdns.get() else { return c };
+        if c.kind() == only_ice::CandidateKind::Host {
+            match m.name_for(c.addr().ip()) {
+                Some(n) => c.with_hostname(n),
+                None => c,
+            }
+        } else if c.related().is_some() {
+            let any = if c.addr().is_ipv4() {
+                IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+            };
+            c.with_related(Some(SocketAddr::new(any, 0)))
+        } else {
+            c
+        }
     }
 
     fn full(&self) -> bool {
@@ -1528,6 +1582,103 @@ impl Endpoint {
         Ok(addr)
     }
 
+    /// Resolves remote candidates whose address is an mDNS name (`<uuid>.local`: browsers
+    /// conceal their host addresses so, draft-ietf-mmusic-mdns-ice-candidates), in
+    /// descriptions and trickled ([`Peer::add_remote_candidate`]), with one-shot mDNS queries
+    /// (RFC 6762 §5.1) sent at once, after 1 and 2 seconds and then every 2 seconds, giving
+    /// up after `timeout`; the peers get the resolved candidates (one per address the name
+    /// has) as they arrive, answers are cached for their TTL. Without it such candidates are
+    /// skipped (the remote's checks still reach a reachable endpoint, as peer-reflexive
+    /// candidates).
+    ///
+    /// The queries and answers go through a socket served by `engine` (which needs UDP I/O
+    /// threads: [`only::EngineBuilder::udp_client_threads`] or a UDP listener, and must be
+    /// started): the mDNS port 5353 shared with the system's responder and the
+    /// `224.0.0.251` group, or, when that port cannot be bound, an ephemeral port asking for
+    /// unicast answers (then [`conceal_host_candidates`](Self::conceal_host_candidates) is
+    /// not available). IPv4 mDNS only (names may still resolve to IPv6 addresses). Once per
+    /// endpoint.
+    pub fn resolve_mdns(&self, engine: &Engine, timeout: Duration) -> Result<(), Error> {
+        if self.0.mdns.get().is_some() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint resolves mDNS names already",
+            )));
+        }
+        let m = mdns::Mdns::new(&self.0, engine, timeout).map_err(Error::Io)?;
+        if let Err(m) = self.0.mdns.set(m) {
+            m.close();
+        }
+        Ok(())
+    }
+
+    /// Conceals this endpoint's host addresses as browsers do: new peers signal each host
+    /// candidate with a random mDNS name (`<uuid>.local`, one per address) instead of its
+    /// IP, and the related address of server-reflexive and relayed candidates as
+    /// `0.0.0.0:0`; the endpoint answers mDNS queries for those names on the local network.
+    /// Needs [`resolve_mdns`](Self::resolve_mdns) first, on the shared mDNS port
+    /// ([`Error::Io`] otherwise). The remote must resolve the names (browsers do) or reach
+    /// this endpoint through other candidates. Applies to the peers created after the call.
+    pub fn conceal_host_candidates(&self) -> Result<(), Error> {
+        match self.0.mdns.get() {
+            Some(m) if m.can_respond() => {
+                self.0.conceal.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+            Some(_) => Err(Error::Io(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "the mDNS port could not be bound: no mDNS answers possible",
+            ))),
+            None => Err(Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "call resolve_mdns first",
+            ))),
+        }
+    }
+
+    /// Adds a simultaneous-open ICE-TCP host candidate (RFC 6544 `tcptype so`) for new
+    /// peers: it pairs with the remote's `so` candidates (libnice, another endpoint), and
+    /// both sides connect at once between the two advertised ports. The candidate's port
+    /// listens (connections the remote opens first are accepted and identified by their first
+    /// check, as for [`listen_tcp`](Self::listen_tcp)) and the checks to a remote `so`
+    /// candidate are dialed from that same port (`SO_REUSEPORT`) when no connection with it
+    /// was accepted; connects that cross make one connection (TCP simultaneous open). Checks,
+    /// DTLS and media then run over it (RFC 4571 framing). The candidate is `addr`, or with
+    /// the unspecified address the endpoint's primary address, with the bound port, which
+    /// must differ from the UDP port (port 0 picks one); it is returned. A dedicated thread
+    /// accepts; the connections count with the endpoint's others (256). Once per endpoint;
+    /// needs an engine with TCP I/O threads ([`only::EngineBuilder::client_threads`] or a
+    /// TCP listener). Browsers and pion have no `so` candidates.
+    pub fn listen_tcp_so(
+        &self,
+        engine: &Arc<Engine>,
+        addr: SocketAddr,
+    ) -> Result<SocketAddr, Error> {
+        let udp = self.local_addr().ok_or(Error::Closed)?;
+        if addr.port() != 0 && addr.port() == udp.port() {
+            return Err(Error::InvalidCandidate(format!(
+                "{addr}: the TCP port must differ from the UDP port"
+            )));
+        }
+        let mut l = only_sys::listen(addr, true, 128).map_err(Error::Io)?;
+        if l.local_addr().map_err(Error::Io)?.port() == udp.port() {
+            l = only_sys::listen(addr, true, 128).map_err(Error::Io)?;
+        }
+        l.set_nonblocking(false).map_err(Error::Io)?;
+        let bound = l.local_addr().map_err(Error::Io)?;
+        let local = if bound.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(bound.is_ipv6()), bound.port())
+        } else {
+            bound
+        };
+        self.0
+            .tcp_side()
+            .listen_so(engine, l, local)
+            .map_err(Error::Io)?;
+        lock(&self.0.candidates).push(only_ice::Candidate::host_tcp(local, only_ice::TcpType::So));
+        Ok(local)
+    }
+
     /// Builds every peer's configuration with `f` (start from [`rtc_config`]); applies to the
     /// peers created after the call.
     #[must_use]
@@ -1604,6 +1755,9 @@ impl Endpoint {
         }
         if let Some(t) = self.0.tcp.get() {
             t.close();
+        }
+        if let Some(m) = self.0.mdns.get() {
+            m.close();
         }
         if let Some(b) = self.binding() {
             b.close();

@@ -4,12 +4,15 @@
 //   node browser.mjs <cdp-port> offer <http-signalling-addr>   Chrome offers (data channel echo,
 //                                                               fake camera + microphone, media
 //                                                               echoed back must decode)
-//   node browser.mjs <cdp-port> answer <listen-addr> [tcp|relay] Chrome answers offers POSTed to
+//   node browser.mjs <cdp-port> answer <listen-addr> [tcp|relay|mdns]
+//                                                               Chrome answers offers POSTed to
 //                                                               http://<listen-addr>/ and echoes
 //                                                               data channel messages (tcp: drops
 //                                                               its UDP candidates; relay: checks
 //                                                               the pair it used is the offer's
-//                                                               relayed one)
+//                                                               relayed one; mdns: checks it is
+//                                                               host to host, both sides' host
+//                                                               candidates being mDNS names)
 //   node browser.mjs <cdp-port> offer-tcp <http-addr>           Chrome offers, the answer's UDP
 //                                                               candidates are dropped: ICE-TCP
 //                                                               only, media and data
@@ -220,13 +223,18 @@ async function answerMode(how) {
       res.writeHead(201, { "content-type": "application/sdp", "content-length": Buffer.byteLength(answer) });
       res.end(answer);
       if (how) {
-        // The pair Chrome uses: over TCP ("tcp"), or to the offer's relayed candidate ("relay").
+        // The pair Chrome uses: over TCP ("tcp"), to the offer's relayed candidate ("relay"),
+        // or host to host, the offer's host candidate being an mDNS name ("mdns").
         let sel = null;
         for (let i = 0; i < 50 && !sel; i++) {
           await new Promise((r) => setTimeout(r, 200));
           sel = await p.evaluate("selectedPair(window.pc2)");
         }
-        const ok = how === "tcp" ? sel && sel.localProtocol === "tcp" : sel && sel.remote.startsWith("relay");
+        const ok = how === "tcp" ? sel && sel.localProtocol === "tcp"
+          // Chrome's host candidate (an mDNS name), to ours: a host candidate it resolved, or
+          // peer-reflexive when our check arrived first.
+          : how === "mdns" ? sel && sel.localType === "host" && /^(host|prflx)\/udp/.test(sel.remote)
+          : sel && sel.remote.startsWith("relay");
         console.log((ok ? "chrome: pair ok (" : "FAIL chrome: pair (") + how + "): " + JSON.stringify(sel));
       }
     } catch (e) {
