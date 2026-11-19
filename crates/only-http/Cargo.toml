@@ -16,6 +16,7 @@ categories = ["network-programming", "web-programming::http-server", "web-progra
 only-core = { workspace = true }
 only = { workspace = true }
 only-log = { workspace = true }
+only-regex = { workspace = true }
 only-crypto = { workspace = true }
 only-ws = { workspace = true }
 only-deflate = { workspace = true }

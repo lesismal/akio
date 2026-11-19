@@ -96,6 +96,30 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/repos/:owner/:repo/contents/*path"),
 ];
 
+/// Routes with varied regexp constraints, and a request each matches.
+const VARIED: &[(&str, &str)] = &[
+    (
+        "/repos/{owner:[a-z0-9_-]{1,39}}/{repo:[A-Za-z0-9_.-]+}/commits/{sha:[0-9a-f]{7,40}}",
+        "/repos/lesser-known_org/only.rs/commits/436b47e7c0ffee",
+    ),
+    (
+        "/reports/{date:\\d{4}-\\d{2}-\\d{2}}",
+        "/reports/2026-11-19",
+    ),
+    ("/users/{id:[0-9]+}", "/users/1234567"),
+    ("/users/{name:[a-z][a-z0-9_]{2,15}}", "/users/octocat_42"),
+    (
+        "/files/{name:[a-z0-9_-]+\\.(?:png|jpe?g|gif)}",
+        "/files/holiday-photo.jpeg",
+    ),
+    ("/v{major:[0-9]+}.{minor:[0-9]+}/status", "/v12.345/status"),
+    (
+        "/items/{id:[0-9]+}/tags/{tag:\\w+}",
+        "/items/42/tags/new_arrival",
+    ),
+    ("/hex/{v:0x[0-9a-fA-F]+}", "/hex/0xDEADbeef"),
+];
+
 /// A concrete request path for a pattern.
 fn concrete(pattern: &str) -> String {
     pattern
@@ -109,7 +133,12 @@ fn concrete(pattern: &str) -> String {
         .join("/")
 }
 
-fn measure(name: &str, iters: u64, mut f: impl FnMut() -> usize) {
+fn measure(name: &str, iters: u64, f: impl FnMut() -> usize) {
+    measure_n(name, iters, ROUTES.len() as u64, f);
+}
+
+/// `per` lookups per call of `f`.
+fn measure_n(name: &str, iters: u64, per: u64, mut f: impl FnMut() -> usize) {
     // Warm up (regex caches, branch predictors).
     for _ in 0..iters / 10 {
         black_box(f());
@@ -122,7 +151,7 @@ fn measure(name: &str, iters: u64, mut f: impl FnMut() -> usize) {
     }
     let el = t.elapsed();
     let allocs = ALLOCS.load(Ordering::Relaxed) - a0;
-    let lookups = iters * ROUTES.len() as u64;
+    let lookups = iters * per;
     println!(
         "{name:<28} {:>7.1} ns/lookup  {:>6.2} allocs/lookup  ({found} matches)",
         el.as_nanos() as f64 / lookups as f64,
@@ -193,6 +222,34 @@ fn main() {
             })
             .count()
     });
+
+    // Varied regexp constraints (counted repetition, alternation, classes, partial segments),
+    // each request a match that the constraint has to check character by character.
+    let mut vre_router = Router::new();
+    for (p, _) in VARIED {
+        vre_router = vre_router.get(p, nop);
+    }
+    for (p, req) in VARIED {
+        assert!(vre_router.lookup(&Method::Get, req).is_some(), "{p}: {req}");
+    }
+    measure_n(
+        "new, varied regexp params",
+        iters,
+        VARIED.len() as u64,
+        || {
+            VARIED
+                .iter()
+                .filter(|(_, req)| {
+                    black_box(
+                        vre_router
+                            .lookup(&Method::Get, req)
+                            .map(|r| r.params().count()),
+                    )
+                    .is_some()
+                })
+                .count()
+        },
+    );
 
     // Partial segments: `{number}.json`, `{sha}.diff` and `v{id}` in place of plain parameters.
     let mut part_router = Router::new();

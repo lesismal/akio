@@ -68,23 +68,38 @@ pub fn regex_input(data: &[u8]) -> (String, Vec<String>) {
     (pattern, subjects)
 }
 
-/// `regex_match`: the route constraint engine (`crate::re`). Compiling must not panic, and for
-/// small patterns the bit-parallel simulation must agree with the general one. (The cargo-fuzz
-/// target also compares the outcome with the `regex` crate.)
+/// `regex_match`: the router's route constraint matcher (`only-regex`, whole text, ASCII
+/// classes; ADR-051) against the engine it replaced (kept as a test reference): compiling must
+/// not panic, the router must accept whatever the old engine accepted (except duplicate group
+/// names) and may accept only the documented superset, and both must match every subject the
+/// same way. (The cargo-fuzz target also compares the outcome with the `regex` crate.)
 pub fn regex_match(data: &[u8]) {
     if data.len() > 4096 {
         return;
     }
     let (pattern, subjects) = regex_input(data);
-    let Ok(re) = crate::re::Regex::new(&pattern) else {
-        return;
-    };
-    for s in std::iter::once("").chain(subjects.iter().map(String::as_str)) {
-        assert_eq!(
-            re.is_match(s),
-            re.pike_match(s),
-            "engines disagree on {pattern:?} / {s:?}"
-        );
+    crate::legacy_re::check_agreement(
+        &pattern,
+        std::iter::once("").chain(subjects.iter().map(String::as_str)),
+    );
+}
+
+/// A route constraint as the router compiles it (for the `regex_match` target's comparison
+/// with the `regex` crate).
+#[derive(Debug)]
+pub struct RouteRegex(crate::router::Matcher);
+
+impl RouteRegex {
+    /// Compiles `pattern` as the router does; `None` if it does not compile.
+    pub fn new(pattern: &str) -> Option<RouteRegex> {
+        crate::router::Matcher::compile(pattern)
+            .ok()
+            .map(RouteRegex)
+    }
+
+    /// Whether the whole of `s` matches.
+    pub fn is_match(&self, s: &str) -> bool {
+        self.0.is_match(s)
     }
 }
 

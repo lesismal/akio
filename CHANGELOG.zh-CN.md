@@ -95,6 +95,25 @@ libbrotli 1.2.1、libzstd 1.5.7 对比，该工具新增 `brotli` / `zstd` 模�
   换取比其 q4 更小的输出。brotli 10–11 级与 zstd 5–22 级速度不变，输出除上下文聚类与 Huffman 码构造带来的
   细微差别外也不变。
 
+### 变更：路由约束改用 `only-regex`（only-http、only-regex）
+
+ADR-051（docs/adr/051-router-on-only-regex.zh-CN.md）。路由器的正则参数（`/users/{id:[0-9]+}`，部分段中的
+也一样）现在由 `only-regex` 匹配，即 only-log 消息过滤背后的引擎；路由器自己的引擎（`only_http::re`，
+`#[doc(hidden)]`，不是公共 API）已从普通构建中移除。
+
+- **匹配结果不变。** 约束仍然匹配整段，`\d \w \s` 仍只认 ASCII。旧引擎接受的每个模式匹配的段完全相同：
+  差分测试（仓库中所有正则路由、旧引擎的测试模式、3 000 个各带约 30 个主体的生成模式、20 000 个随机语法
+  片段）与 `regex_match` 模糊测试目标对两者进行比较，旧引擎冻结保留为仅供测试的参照。
+- **更多语法**：标志 `(?i)`（Unicode 大小写折叠）、`(?m)`、`(?s)`、`(?U)`，可取反、可限定范围；`\A \z`；
+  `\b \B`（ASCII 单词边界）；Unicode 与含点号的组名；最多 20 000 条指令的程序。**唯一的收紧**：同一约束中
+  两个同名分组现在会在注册时 panic，与 `regex` crate 一致（组名从来不会被捕获）。
+- **更快**：每次约束检查耗时减少约三分之一（7 位数字上的 `[0-9]+` 8.5 → 5.7 ns，`\d{4}-\d{2}-\d{2}`
+  11.9 → 7.6 ns）；router-bench 的多样正则表每次查找 46.0 → 42.0 ns，`[0-9]+` 表保持 28.1 ns。编译约束会
+  构建 DFA：注册时 7–13 µs，原先 2.1 µs。
+- **only-regex**（内部层级）：`RegexBuilder`，带 `whole_text`（匹配整段文本，相当于 `\A(?:...)\z`）与
+  `ascii_classes`（ASCII 的 `\d \w \s` 与 `\b`）；`Regex` 的相等比较包含选项。`Regex::is_match` 先在紧凑
+  循环中运行预先构建的 DFA，only-log 的消息过滤也因此快了几个百分点。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：

@@ -52,6 +52,7 @@ flowchart BT
     pool --> core
     logc --> core
     regexc --> logc
+    regexc --> http
     core --> epoll
     sys --> epoll
     timer --> epoll

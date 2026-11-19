@@ -1,3 +1,8 @@
+//! The route constraint engine the router used before ADR-051, kept unchanged (test and fuzzing
+//! builds only) as the reference that `only-regex` (`RegexBuilder` with `whole_text` and
+//! `ascii_classes`, what the router uses now) is compared with: the differential test below and
+//! the `regex_match` fuzz target. Do not fix or extend it: it records the old behaviour.
+//!
 //! A small regular expression engine for route parameter constraints (`{id:[0-9]+}`): a pattern
 //! always matches the whole input (as if wrapped in `^(?:...)$`), in time linear in the input
 //! (Thompson NFA simulation, no backtracking).
@@ -19,14 +24,12 @@
 //! assertions (`\b`, `\A`, `\<`), Unicode classes (`\p{L}`), backreferences, POSIX and nested
 //! classes (`[[:alpha:]]`), class set operations (`&&`, `--`, `~~`).
 //!
-//! `#[doc(hidden)]`: not a public API (the router uses it; the fuzz targets compare it with the
-//! `regex` crate).
 
 use std::fmt;
 
 /// A pattern that does not compile: what is wrong and where (a byte offset in the pattern).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error {
+pub(crate) struct Error {
     /// Byte offset in the pattern.
     pub pos: usize,
     /// What is wrong.
@@ -549,7 +552,7 @@ struct Bits {
 }
 
 /// A compiled pattern; matches whole inputs only.
-pub struct Regex {
+pub(crate) struct Regex {
     insts: Vec<Inst>,
     classes: Vec<Vec<(u32, u32)>>,
     bits: Option<Bits>,
@@ -565,7 +568,7 @@ impl fmt::Debug for Regex {
 
 impl Regex {
     /// Compiles `pattern` (see the module docs for the syntax).
-    pub fn new(pattern: &str) -> Result<Regex, Error> {
+    pub(crate) fn new(pattern: &str) -> Result<Regex, Error> {
         let mut p = Parser {
             chars: pattern.char_indices().collect(),
             len: pattern.len(),
@@ -592,7 +595,7 @@ impl Regex {
     }
 
     /// Whether the whole of `s` matches.
-    pub fn is_match(&self, s: &str) -> bool {
+    pub(crate) fn is_match(&self, s: &str) -> bool {
         match &self.bits {
             Some(b) => self.bits_match(b, s),
             None => self.pike_match(s),
@@ -983,5 +986,506 @@ mod tests {
                 m(p, s);
             }
         }
+    }
+}
+
+/// Old engine error messages for syntax `only-regex` supports (ADR-051: the router accepts a
+/// superset): flags, `\b \B \A \z`, Unicode / dotted group names, programs of 10 000 to 20 000
+/// instructions.
+const SUPERSET: &[&str] = &[
+    "group flags are not supported",
+    "unsupported escape (assertions, Unicode classes and backreferences are not supported)",
+    "invalid group name",
+    "pattern too large",
+];
+
+/// Compiles `pattern` with the old engine and with the router's `only-regex` matcher and checks
+/// they agree: the router must accept every pattern the old engine accepted (except two groups
+/// with the same name, which the `regex` crate refuses too), may accept more ([`SUPERSET`]),
+/// and must match every subject the same way. Returns how many subjects matched, if both
+/// compiled.
+pub(crate) fn check_agreement<'a>(
+    pattern: &str,
+    subjects: impl Iterator<Item = &'a str>,
+) -> Option<usize> {
+    let old = Regex::new(pattern);
+    let new = crate::router::Matcher::compile(pattern);
+    let (old, new) = match (old, new) {
+        (Ok(o), Ok(n)) => (o, n),
+        (Err(_), Err(_)) => return None,
+        (Ok(_), Err(e)) => {
+            assert_eq!(
+                e.message(),
+                "duplicate group name",
+                "the old engine compiled {pattern:?}, only-regex refused it: {e}"
+            );
+            return None;
+        }
+        (Err(e), Ok(_)) => {
+            assert!(
+                SUPERSET.contains(&e.msg),
+                "only-regex compiled {pattern:?}, the old engine refused it: {e}"
+            );
+            return None;
+        }
+    };
+    let mut matched = 0;
+    for s in subjects {
+        let want = old.is_match(s);
+        assert_eq!(want, old.pike_match(s), "old engines: {pattern:?} / {s:?}");
+        assert_eq!(new.is_match(s), want, "pattern {pattern:?}, subject {s:?}");
+        matched += usize::from(want);
+    }
+    Some(matched)
+}
+
+#[cfg(test)]
+mod differential {
+    use super::check_agreement;
+
+    /// xorshift64*: deterministic, no dependencies.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn pick<'a, T>(&mut self, v: &'a [T]) -> &'a T {
+            &v[self.below(v.len())]
+        }
+    }
+
+    /// Characters subjects are made of: ASCII digits, letters and punctuation, controls the
+    /// classes tell apart, and non-ASCII digits, letters and spaces (where Unicode and ASCII
+    /// `\d \w \s` differ).
+    const ALPHABET: &[char] = &[
+        'a',
+        'b',
+        'c',
+        'x',
+        'z',
+        'A',
+        'B',
+        'Z',
+        '0',
+        '1',
+        '5',
+        '9',
+        '-',
+        '_',
+        '.',
+        '~',
+        '%',
+        '/',
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        '\x0b',
+        '\x0c',
+        '\x00',
+        '}',
+        ']',
+        '^',
+        '$',
+        'é',
+        'É',
+        'ß',
+        '中',
+        '\u{0663}',
+        '\u{ff10}',
+        '\u{00a0}',
+        '\u{3000}',
+        '\u{212a}',
+        '\u{1F600}',
+        '\u{10FFFF}',
+    ];
+
+    /// A generated pattern: its text and how to make texts it matches.
+    enum G {
+        /// Pattern text and the characters it may consume (one each).
+        One(String, Vec<char>),
+        Start,
+        End,
+        Cat(Vec<G>),
+        Alt(Vec<G>),
+        Rep(Box<G>, u32, Option<u32>, bool),
+        Group(Box<G>, &'static str),
+    }
+
+    const ONES: &[(&str, &str)] = &[
+        ("a", "a"),
+        ("b", "b"),
+        ("0", "0"),
+        ("-", "-"),
+        ("é", "é"),
+        ("中", "中"),
+        (".", "a0-é中 \t"),
+        ("\\d", "0159"),
+        ("\\D", "a-é\u{0663}"),
+        ("\\w", "aZ0_"),
+        ("\\W", "-.é中 "),
+        ("\\s", " \t\n\r\x0b\x0c"),
+        ("\\S", "a0é\u{3000}"),
+        ("[a-c]", "abc"),
+        ("[^/]", "a0-é."),
+        ("[0-9]", "059"),
+        ("[\\w-]", "a_-9"),
+        ("[^\\d]", "a-é\u{0663}"),
+        ("[\\s\\d]", " 9\t"),
+        ("[]a]", "]a"),
+        ("[a-]", "a-"),
+        ("[^a-z0-9]", "A-é"),
+        ("[0-9a-fA-F]", "0aF"),
+        ("\\.", "."),
+        ("\\-", "-"),
+        ("\\x41", "A"),
+        ("\\u{e9}", "é"),
+        ("\\x{1F600}", "\u{1F600}"),
+        ("[\\x{1F600}-\\x{1F64F}]", "\u{1F600}"),
+        ("\\t", "\t"),
+        ("\\n", "\n"),
+        ("[\\n]", "\n"),
+    ];
+
+    fn generate(r: &mut Rng, depth: u32) -> G {
+        let leaf = depth == 0 || r.below(3) == 0;
+        if leaf {
+            return match r.below(20) {
+                0 => G::Start,
+                1 => G::End,
+                _ => {
+                    let &(p, cs) = r.pick(ONES);
+                    G::One(p.to_owned(), cs.chars().collect())
+                }
+            };
+        }
+        match r.below(5) {
+            0 | 1 => G::Cat((0..=r.below(4)).map(|_| generate(r, depth - 1)).collect()),
+            2 => G::Alt(
+                (0..2 + r.below(2))
+                    .map(|_| generate(r, depth - 1))
+                    .collect(),
+            ),
+            3 => {
+                let (min, max) = *r.pick(&[
+                    (0, None),
+                    (1, None),
+                    (0, Some(1)),
+                    (2, Some(2)),
+                    (1, Some(3)),
+                    (2, None),
+                    (0, Some(0)),
+                ]);
+                G::Rep(Box::new(generate(r, depth - 1)), min, max, r.below(4) == 0)
+            }
+            _ => {
+                let kind = *r.pick(&["(", "(?:", "(?P<n>", "(?<n>"]);
+                G::Group(Box::new(generate(r, depth - 1)), kind)
+            }
+        }
+    }
+
+    fn render(g: &G, out: &mut String) {
+        match g {
+            G::One(p, _) => out.push_str(p),
+            G::Start => out.push('^'),
+            G::End => out.push('$'),
+            G::Cat(v) => v.iter().for_each(|g| render(g, out)),
+            G::Alt(v) => {
+                // Alternation binds loosest: group it so it stays one item.
+                out.push_str("(?:");
+                for (i, g) in v.iter().enumerate() {
+                    if i > 0 {
+                        out.push('|');
+                    }
+                    render(g, out);
+                }
+                out.push(')');
+            }
+            G::Rep(g, min, max, lazy) => {
+                out.push_str("(?:");
+                render(g, out);
+                out.push(')');
+                match (min, max) {
+                    (0, None) => out.push('*'),
+                    (1, None) => out.push('+'),
+                    (0, Some(1)) => out.push('?'),
+                    (m, None) => out.push_str(&format!("{{{m},}}")),
+                    (m, Some(n)) if m == n => out.push_str(&format!("{{{m}}}")),
+                    (m, Some(n)) => out.push_str(&format!("{{{m},{n}}}")),
+                }
+                if *lazy {
+                    out.push('?');
+                }
+            }
+            G::Group(g, kind) => {
+                // Unique names: the old engine accepted duplicates, only-regex refuses them.
+                let kind = kind.replace('n', &format!("n{}", out.len()));
+                out.push_str(&kind);
+                render(g, out);
+                out.push(')');
+            }
+        }
+    }
+
+    /// A text the pattern probably matches (assertions are skipped, so not always).
+    fn sample(g: &G, r: &mut Rng, out: &mut String) {
+        match g {
+            G::One(_, cs) => out.push(*r.pick(cs)),
+            G::Start | G::End => {}
+            G::Cat(v) => v.iter().for_each(|g| sample(g, r, out)),
+            G::Alt(v) => sample(r.pick(v), r, out),
+            G::Rep(g, min, max, _) => {
+                let n = min + r.below((max.unwrap_or(min + 3) - min + 1) as usize) as u32;
+                (0..n).for_each(|_| sample(g, r, out));
+            }
+            G::Group(g, _) => sample(g, r, out),
+        }
+    }
+
+    /// Near misses: one character dropped, replaced or inserted.
+    fn mutate(s: &str, r: &mut Rng) -> String {
+        let mut v: Vec<char> = s.chars().collect();
+        let at = r.below(v.len() + 1);
+        match r.below(3) {
+            0 if at < v.len() => {
+                v.remove(at);
+            }
+            1 if at < v.len() => v[at] = *r.pick(ALPHABET),
+            _ => v.insert(at, *r.pick(ALPHABET)),
+        }
+        v.into_iter().collect()
+    }
+
+    fn random_text(r: &mut Rng) -> String {
+        (0..r.below(10)).map(|_| *r.pick(ALPHABET)).collect()
+    }
+
+    /// Every regexp route pattern in the repository's tests, examples and docs, the old
+    /// engine's own unit test patterns and the codec benchmark's.
+    const REPO: &[&str] = &[
+        "[0-9]+",
+        "[0-9",
+        "[{]+",
+        "\\d{2}",
+        "[a-z]{2,3}",
+        "\\d{4}-\\d{2}",
+        "\\d{4}-\\d{2}-\\d{2}",
+        ".+",
+        "0x[0-9a-f]+",
+        "v[0-9]+",
+        "re",
+        "regexp",
+        "[a-z0-9_-]{3,16}",
+        "[a-z0-9_-]{1,39}",
+        "[A-Za-z0-9_.-]+",
+        "[0-9a-f]{7,40}",
+        "[a-z][a-z0-9_]{2,15}",
+        "[a-z0-9_-]+\\.(?:png|jpe?g|gif)",
+        "\\w+",
+        "0x[0-9a-fA-F]+",
+        "0x[0-9a-f]+",
+        "a|bc|",
+        "(?:ab)*c",
+        "(?P<x>a)(?<y>b)",
+        "[^/]+",
+        "é+.",
+        ".",
+        "[]a]+",
+        "[a-]+",
+        "[-a]",
+        "[\\w-]+",
+        "\\W\\S\\D",
+        "\\s",
+        "a{2,3}",
+        "a{2,}",
+        "a{0}b",
+        "(a*)*b",
+        "^ab$",
+        "a^?b",
+        "\\x41\\x{42}\\u0043\\u{44}\\U00000045",
+        "\\.\\-\\/\\ ",
+        "a**",
+        "a+?b??",
+        "a}",
+        "]",
+        "[^\\n]",
+        "x{ 2 , 3 }",
+        "x{\t2,\t3}",
+        "[a-b-c]+",
+        "(|a)+",
+        "[\\x{1F600}-\\x{1F64F}]",
+        "\\d",
+        "a$b",
+        "a^b",
+        "[^a-z]",
+        "[]a]",
+        "a*b?c+",
+        "(a|b)*c",
+        "[^a]*a",
+        "^a*$",
+        "(a$|b)c?",
+        "(^|x)y",
+        "a{2,4}b{0,2}",
+        "(ab|a)(bc|c)",
+        ".*\\d",
+        "(?:\\w+-)*\\w+",
+        "",
+        "[a-c]{70}x|y{3,100}",
+        "(a|aa)*(a|aa)*(a|aa)*b{0,60}c",
+        // Rejected by both, or only by the old engine (the documented superset).
+        "a{",
+        "a{,5}",
+        "{",
+        "?",
+        "*a",
+        "a{3,2}",
+        "a{1001}",
+        "(a",
+        "a)",
+        "[a",
+        "[]",
+        "[^]",
+        "[z-a]",
+        "[\\d-z]",
+        "[a-\\d]",
+        "(?i)a",
+        "(?P<1>a)",
+        "(?<>a)",
+        "\\b",
+        "\\B",
+        "\\A",
+        "\\z",
+        "\\<",
+        "\\>",
+        "\\p{L}",
+        "\\1",
+        "\\0",
+        "\\e",
+        "\\x{D800}",
+        "\\x{110000}",
+        "\\xZ",
+        "[[:alpha:]]",
+        "[a&&b]",
+        "[a--b]",
+        "[a~~b]",
+        "[[a]]",
+        "\\",
+        "(?)",
+        "\\x{123456789}",
+        "(a{1000}){1000}",
+        "(a{1000}){15}",
+        "(?P<a.b>x)",
+        "(?<é>x)",
+    ];
+
+    /// Subjects for a pattern: samples of it, near misses and random text.
+    fn subjects(g: Option<&G>, r: &mut Rng) -> Vec<String> {
+        let mut v = vec![String::new()];
+        for _ in 0..12 {
+            let s = match g {
+                Some(g) => {
+                    let mut s = String::new();
+                    sample(g, r, &mut s);
+                    s
+                }
+                None => random_text(r),
+            };
+            v.push(mutate(&s, r));
+            v.push(s);
+        }
+        for _ in 0..6 {
+            v.push(random_text(r));
+        }
+        v
+    }
+
+    #[test]
+    fn repository_patterns_agree() {
+        let mut r = Rng(0x0123_4567_89ab_cdef);
+        let mut texts: Vec<String> = ALPHABET.iter().map(char::to_string).collect();
+        texts.extend((0..300).map(|_| random_text(&mut r)));
+        texts.extend(
+            [
+                "1234567",
+                "2026-11",
+                "2026-11-19",
+                "0x1f",
+                "v12",
+                "ab",
+                "ababc",
+                "abc",
+                "ok",
+                "re",
+                "regexp",
+                "a.png",
+                "a/b.png",
+                "photo.jpeg",
+                "abcdef0",
+                "octocat_42",
+            ]
+            .map(String::from),
+        );
+        let (mut both, mut matched) = (0, 0);
+        for p in REPO {
+            if let Some(n) = check_agreement(p, texts.iter().map(String::as_str)) {
+                both += 1;
+                matched += n;
+            }
+        }
+        assert!(
+            both >= 60,
+            "only {both} patterns compiled with both engines"
+        );
+        assert!(matched > 1000, "only {matched} matches");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "thousands of patterns: hours under Miri")]
+    fn generated_patterns_agree() {
+        let mut r = Rng(0x5eed_0f0b_1a5e_d00d);
+        let (mut both, mut cases, mut matched) = (0, 0, 0);
+        for _ in 0..3000 {
+            let g = generate(&mut r, 4);
+            let mut p = String::new();
+            render(&g, &mut p);
+            let subjects = subjects(Some(&g), &mut r);
+            cases += subjects.len();
+            if let Some(n) = check_agreement(&p, subjects.iter().map(String::as_str)) {
+                both += 1;
+                matched += n;
+            }
+        }
+        assert!(both > 2900, "only {both} generated patterns compiled");
+        // Both outcomes are well represented.
+        assert!(cases > 90_000 && matched > cases / 5 && matched < cases * 4 / 5);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "thousands of patterns: hours under Miri")]
+    fn random_syntax_agrees() {
+        // Pattern soup: mostly invalid, exercises which patterns each engine accepts.
+        const SOUP: &[&str] = &[
+            "a", "é", "0", "-", ".", "^", "$", "|", "(", ")", "(?:", "(?P<n>", "(?<n>", "(?", "[",
+            "]", "[^", "\\", "\\d", "\\w", "\\s", "\\b", "\\x", "\\u{", "{", "}", "{2}", "{1,3}",
+            ",", "*", "+", "?", "a-z", "0-9", "&&", "--", ":", "<", ">", "P", "i", "1", " ",
+        ];
+        let mut r = Rng(0xfeed_beef_cafe_f00d);
+        let mut both = 0;
+        for _ in 0..20_000 {
+            let p: String = (0..=r.below(8)).map(|_| *r.pick(SOUP)).collect();
+            let subjects = subjects(None, &mut r);
+            both += usize::from(check_agreement(&p, subjects.iter().map(String::as_str)).is_some());
+        }
+        assert!(both > 1000, "only {both} soup patterns compiled");
     }
 }

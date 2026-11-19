@@ -11,7 +11,7 @@
 //!    must also match its whole value. Two parameters must be separated by literal text. Among
 //!    partial segments, more literal text is tried first, then registration order;
 //! 3. regexp parameter: `{id:[0-9]+}` (chi style; the expression must match the whole segment
-//!    and cannot contain `/`; the in-house linear-time engine in `crate::re`);
+//!    and cannot contain `/`; `only-regex`, linear time, with ASCII `\d \w \s`, ADR-051);
 //! 4. plain parameter: `:id` or `{id}` (one non-empty segment);
 //! 5. wildcard: `*rest` or `{*rest}`, last segment only, matching the rest of the path (possibly
 //!    empty).
@@ -200,18 +200,29 @@ impl Params {
     }
 }
 
-/// A regexp parameter's constraint (the in-house engine, `crate::re`).
-struct Matcher(crate::re::Regex);
+/// A regexp parameter's constraint: `only-regex` matching the whole value, with ASCII
+/// `\d \w \s` and `\b` (ADR-051).
+#[derive(Debug)]
+pub(crate) struct Matcher(only_regex::Regex);
 
 impl Matcher {
+    /// Compiles a constraint.
+    pub(crate) fn compile(src: &str) -> Result<Matcher, only_regex::Error> {
+        only_regex::RegexBuilder::new(src)
+            .whole_text(true)
+            .ascii_classes(true)
+            .build()
+            .map(Matcher)
+    }
+
     fn new(src: &str, path: &str) -> Matcher {
-        match crate::re::Regex::new(src) {
-            Ok(re) => Matcher(re),
+        match Matcher::compile(src) {
+            Ok(m) => m,
             Err(e) => panic!("bad parameter regexp in {path}: {e}"),
         }
     }
 
-    fn is_match(&self, seg: &str) -> bool {
+    pub(crate) fn is_match(&self, seg: &str) -> bool {
         self.0.is_match(seg)
     }
 }
@@ -1034,6 +1045,41 @@ mod tests {
             matched(&r, "/x/special/shallow"),
             Some((1, p(&[("v", "special")])))
         );
+    }
+
+    #[test]
+    fn regexp_classes_are_ascii_and_flags_work() {
+        let nop = |_: &mut Context| {};
+        let r = Router::new()
+            .get("/n/{id:\\d+}", nop)
+            .get("/n/{name}", nop)
+            .get("/w/{w:\\w+}", nop)
+            .get("/i/{tag:(?i)ab[c-e]}", nop)
+            .get("/b/{x:a\\b.*}", nop)
+            .get("/v{major:\\d+}.{minor:\\d+}", nop);
+        assert_eq!(matched(&r, "/n/0042"), Some((1, p(&[("id", "0042")]))));
+        // Arabic-Indic and full-width digits are not `\d` in a route.
+        assert_eq!(matched(&r, "/n/٤٢"), Some((1, p(&[("name", "٤٢")]))));
+        assert_eq!(matched(&r, "/n/４２"), Some((1, p(&[("name", "４２")]))));
+        assert_eq!(matched(&r, "/w/a_9"), Some((1, p(&[("w", "a_9")]))));
+        assert_eq!(matched(&r, "/w/é"), None);
+        assert_eq!(matched(&r, "/i/aBD"), Some((1, p(&[("tag", "aBD")]))));
+        assert_eq!(matched(&r, "/i/abf"), None);
+        // ASCII word boundary: `é` is not a word character.
+        assert_eq!(matched(&r, "/b/a-x"), Some((1, p(&[("x", "a-x")]))));
+        assert_eq!(matched(&r, "/b/aé"), Some((1, p(&[("x", "aé")]))));
+        assert_eq!(matched(&r, "/b/ab"), None);
+        assert_eq!(
+            matched(&r, "/v1.20"),
+            Some((1, p(&[("major", "1"), ("minor", "20")])))
+        );
+        assert_eq!(matched(&r, "/v1.٢"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate group name")]
+    fn duplicate_group_names_panic() {
+        let _ = Router::new().get("/a/{x:(?P<n>a)|(?P<n>b)}", |_: &mut Context| {});
     }
 
     #[test]

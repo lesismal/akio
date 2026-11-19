@@ -20,7 +20,8 @@ pub(crate) enum Look {
     StartLine,
     /// `(?m)$`: the end of the input or before `\n`.
     EndLine,
-    /// `\b`: between a word character and something else (Unicode `\w`).
+    /// `\b`: between a word character and something else (`\w`: Unicode, or ASCII with
+    /// [`Options::ascii`]).
     Word,
     /// `\B`: not at a word boundary.
     NotWord,
@@ -44,11 +45,23 @@ pub(crate) enum Node {
 /// The parse result: the tree and the classes it refers to.
 pub(crate) struct Parsed {
     pub(crate) root: Node,
+    /// The options it was parsed with (the compiler applies [`Options::whole`]).
+    pub(crate) opts: Options,
     pub(crate) classes: Vec<Box<[(u32, u32)]>>,
 }
 
-pub(crate) fn parse(pattern: &str) -> Result<Parsed, Error> {
+/// Compile options that change what the syntax means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct Options {
+    /// `\d \w \s` (and negations) are ASCII; `\b \B` see ASCII word characters.
+    pub(crate) ascii: bool,
+    /// The pattern matches the whole text only (`\A(?:...)\z`).
+    pub(crate) whole: bool,
+}
+
+pub(crate) fn parse(pattern: &str, opts: Options) -> Result<Parsed, Error> {
     let mut p = Parser {
+        ascii: opts.ascii,
         chars: pattern.char_indices().collect(),
         len: pattern.len(),
         i: 0,
@@ -63,6 +76,7 @@ pub(crate) fn parse(pattern: &str) -> Result<Parsed, Error> {
     }
     Ok(Parsed {
         root,
+        opts,
         classes: p.classes,
     })
 }
@@ -132,15 +146,25 @@ fn fold(r: &mut Vec<(u32, u32)>) {
     }
 }
 
+/// ASCII `\d`, `\w` and `\s` (`[0-9]`, `[0-9A-Za-z_]`, `[\t\n\x0B\x0C\r ]`).
+const ASCII_DIGIT: &[(u32, u32)] = &[(0x30, 0x39)];
+const ASCII_WORD: &[(u32, u32)] = &[(0x30, 0x39), (0x41, 0x5a), (0x5f, 0x5f), (0x61, 0x7a)];
+const ASCII_SPACE: &[(u32, u32)] = &[(0x09, 0x0d), (0x20, 0x20)];
+
 /// A Perl class (`\d \w \s` and negations): its ranges and whether it is negated.
-fn perl_class(c: char) -> Option<(&'static [(u32, u32)], bool)> {
+fn perl_class(c: char, ascii: bool) -> Option<(&'static [(u32, u32)], bool)> {
+    let (digit, word, space) = if ascii {
+        (ASCII_DIGIT, ASCII_WORD, ASCII_SPACE)
+    } else {
+        (tables::DIGIT, tables::WORD, tables::SPACE)
+    };
     Some(match c {
-        'd' => (tables::DIGIT, false),
-        'D' => (tables::DIGIT, true),
-        'w' => (tables::WORD, false),
-        'W' => (tables::WORD, true),
-        's' => (tables::SPACE, false),
-        'S' => (tables::SPACE, true),
+        'd' => (digit, false),
+        'D' => (digit, true),
+        'w' => (word, false),
+        'W' => (word, true),
+        's' => (space, false),
+        'S' => (space, true),
         _ => return None,
     })
 }
@@ -160,6 +184,8 @@ enum Atom {
 }
 
 struct Parser {
+    /// [`Options::ascii`].
+    ascii: bool,
     chars: Vec<(usize, char)>,
     len: usize,
     i: usize,
@@ -433,7 +459,7 @@ impl Parser {
             return self.err("incomplete escape");
         };
         self.i += 1;
-        if let Some((r, neg)) = perl_class(c) {
+        if let Some((r, neg)) = perl_class(c, self.ascii) {
             return Ok(Escape::Class(r, neg));
         }
         if !in_class {

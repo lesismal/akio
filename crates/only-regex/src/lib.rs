@@ -44,6 +44,10 @@
 //! backreferences, look-around, POSIX and nested classes (`[[:alpha:]]`), class set operations
 //! (`&&`, `--`, `~~`), the flags `u`, `x` and `R`, and special word boundaries (`\<`, `\b{start}`).
 //!
+//! [`RegexBuilder`] has two options: `ascii_classes` (`\d \w \s` and `\b` are ASCII) and
+//! `whole_text` (the pattern must match the whole text, as if written `\A(?:...)\z`).
+//! `only-http`'s router compiles its route constraints (`{id:[0-9]+}`) with both.
+//!
 //! # Cost
 //!
 //! Compiling builds the NFA program (at most 20 000 instructions) and, for programs of at most
@@ -91,21 +95,73 @@ impl fmt::Display for Error {
 impl error::Error for Error {}
 
 /// A compiled pattern. Cloning is cheap (the program is shared); two `Regex`es are equal when
-/// their patterns are the same text.
+/// their patterns are the same text compiled with the same [`RegexBuilder`] options.
 #[derive(Clone)]
 pub struct Regex {
     pattern: Arc<str>,
+    opts: parse::Options,
     prog: Arc<exec::Prog>,
 }
 
-impl Regex {
-    /// Compiles `pattern` (see the crate documentation for the syntax).
-    pub fn new(pattern: &str) -> Result<Regex, Error> {
-        let parsed = parse::parse(pattern)?;
+/// Compile options: [`RegexBuilder::new`], then the options, then [`build`](RegexBuilder::build).
+/// [`Regex::new`] is `RegexBuilder::new(pattern).build()`.
+///
+/// ```
+/// use only_regex::RegexBuilder;
+///
+/// // A route constraint: the whole segment, ASCII digits.
+/// let re = RegexBuilder::new(r"\d{4}").whole_text(true).ascii_classes(true).build().unwrap();
+/// assert!(re.is_match("2026"));
+/// assert!(!re.is_match("x2026"));
+/// assert!(!re.is_match("٢٠٢٦")); // Arabic-Indic digits are not ASCII
+/// ```
+#[derive(Clone, Debug)]
+pub struct RegexBuilder {
+    pattern: String,
+    opts: parse::Options,
+}
+
+impl RegexBuilder {
+    /// Options for `pattern`, all off.
+    pub fn new(pattern: &str) -> RegexBuilder {
+        RegexBuilder {
+            pattern: pattern.to_owned(),
+            opts: parse::Options::default(),
+        }
+    }
+
+    /// `\d \w \s` and their negations mean `[0-9]`, `[0-9A-Za-z_]` and `[\t\n\x0B\x0C\r ]`,
+    /// and `\b \B` see ASCII word characters only (off: Unicode, as in the `regex` crate). The
+    /// rest of the syntax is unchanged: literals, classes and `.` still match any Unicode
+    /// character, and `(?i)` still folds Unicode case.
+    pub fn ascii_classes(&mut self, yes: bool) -> &mut RegexBuilder {
+        self.opts.ascii = yes;
+        self
+    }
+
+    /// The pattern matches the whole text or nothing, as if written `\A(?:pattern)\z` (off: it
+    /// matches anywhere in the text).
+    pub fn whole_text(&mut self, yes: bool) -> &mut RegexBuilder {
+        self.opts.whole = yes;
+        self
+    }
+
+    /// Compiles the pattern (see the crate documentation for the syntax).
+    pub fn build(&self) -> Result<Regex, Error> {
+        let parsed = parse::parse(&self.pattern, self.opts)?;
         Ok(Regex {
-            pattern: pattern.into(),
+            pattern: self.pattern.as_str().into(),
+            opts: self.opts,
             prog: Arc::new(exec::Prog::new(parsed)?),
         })
+    }
+}
+
+impl Regex {
+    /// Compiles `pattern` (see the crate documentation for the syntax), with the default options
+    /// (an unanchored search, Unicode classes).
+    pub fn new(pattern: &str) -> Result<Regex, Error> {
+        RegexBuilder::new(pattern).build()
     }
 
     /// The pattern this was compiled from.
@@ -113,18 +169,25 @@ impl Regex {
         &self.pattern
     }
 
-    /// Whether the pattern matches anywhere in `text`.
+    /// Whether the pattern matches anywhere in `text` (the whole of `text` with
+    /// [`RegexBuilder::whole_text`]).
+    #[inline]
     pub fn is_match(&self, text: &str) -> bool {
-        if let Some(lit) = self.prog.literal() {
-            return text.contains(lit);
+        match self.prog.literal() {
+            Some((lit, true)) => return text == lit,
+            Some((lit, false)) => return text.contains(lit),
+            None => {}
+        }
+        if let Some(m) = self.prog.dfa_match(text) {
+            return m;
         }
         let mut s = self.prog.start();
         s.feed(text);
         s.finish()
     }
 
-    /// Whether the pattern matches anywhere in the text `args` formats to, without collecting
-    /// it into a string: the pieces are matched as they are written. Formatting goes on to the
+    /// [`is_match`](Regex::is_match) on the text `args` formats to, without collecting it into a
+    /// string: the pieces are matched as they are written. Formatting goes on to the
     /// end once the outcome is known (only matching stops), so `Display` impls never see an
     /// error they did not cause.
     pub fn is_match_fmt(&self, args: fmt::Arguments<'_>) -> bool {
@@ -173,7 +236,7 @@ impl fmt::Display for Regex {
 
 impl PartialEq for Regex {
     fn eq(&self, other: &Regex) -> bool {
-        self.as_str() == other.as_str()
+        self.as_str() == other.as_str() && self.opts == other.opts
     }
 }
 
@@ -304,6 +367,85 @@ mod tests {
         for (p, s) in no {
             assert!(!m(p, s), "{p:?} should not match {s:?}");
         }
+    }
+
+    /// Like `m`, with the options: every way of matching must agree.
+    fn mo(p: &str, ascii: bool, whole: bool, s: &str) -> bool {
+        let re = RegexBuilder::new(p)
+            .ascii_classes(ascii)
+            .whole_text(whole)
+            .build()
+            .unwrap_or_else(|e| panic!("{p}: {e}"));
+        let fast = re.is_match(s);
+        assert_eq!(
+            fast,
+            exec::Search::nfa_only(&re.prog, s),
+            "NFA: {p:?} / {s:?}"
+        );
+        assert_eq!(
+            fast,
+            re.is_match_fmt(format_args!("{s}{}", "")),
+            "fmt: {p:?} / {s:?}"
+        );
+        fast
+    }
+
+    #[test]
+    fn options() {
+        // whole_text: as if `\A(?:...)\z`.
+        for (p, s, want) in [
+            ("abc", "abc", true),
+            ("abc", "xabc", false),
+            ("abc", "abcx", false),
+            ("", "", true),
+            ("", "a", false),
+            ("a|bc|", "", true),
+            ("a|bc|", "bc", true),
+            ("a|bc", "abc", false),
+            ("[0-9]+", "42", true),
+            ("[0-9]+", "42x", false),
+            ("a*", "bbb", false),
+            ("^a$|b", "b", true),
+            ("a$b", "ab", false),
+            ("(?m)a$", "a\n", false),
+            ("é+.", "éé\u{1F600}", true),
+            ("[^/]+", "a/b", false),
+        ] {
+            assert_eq!(mo(p, false, true, s), want, "whole {p:?} / {s:?}");
+            // An unanchored search finds at least what a whole match does.
+            if want {
+                assert!(mo(p, false, false, s), "search {p:?} / {s:?}");
+            }
+        }
+        // ascii_classes: `\d \w \s` and `\b` are ASCII.
+        for (p, s, ascii, unicode) in [
+            ("\\d", "\u{0663}", false, true),
+            ("\\d", "7", true, true),
+            ("\\D", "\u{0663}", true, false),
+            ("\\w", "é", false, true),
+            ("\\W", "é", true, false),
+            ("[\\w-]+", "a_b-9", true, true),
+            ("[^\\w]", "中", true, false),
+            ("\\s", "\u{3000}", false, true),
+            ("\\s", "\x0b", true, true),
+            ("\\S", "\u{3000}", true, false),
+            ("\\bé", "é", false, true),
+            ("a\\bé", "aé", true, false),
+            ("a\\Bé", "aé", false, true),
+            ("(?i)k", "\u{212a}", true, true), // case folding stays Unicode
+        ] {
+            assert_eq!(mo(p, true, true, s), ascii, "ascii {p:?} / {s:?}");
+            assert_eq!(mo(p, false, true, s), unicode, "unicode {p:?} / {s:?}");
+        }
+        // Equality includes the options.
+        let mut b = RegexBuilder::new("a+");
+        let plain = b.build().unwrap();
+        let whole = b.whole_text(true).build().unwrap();
+        assert_eq!(plain, Regex::new("a+").unwrap());
+        assert_ne!(plain, whole);
+        assert_eq!(whole.as_str(), "a+");
+        assert!(plain.is_match("baab") && !whole.is_match("baab") && whole.is_match("aa"));
+        assert!(RegexBuilder::new("(").whole_text(true).build().is_err());
     }
 
     #[test]

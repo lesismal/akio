@@ -112,6 +112,31 @@ libzstd 1.5.7 in `tools/codec-bench`, which now has `brotli` / `zstd` modes and 
   times its search effort. Brotli levels 10–11 and zstd levels 5–22 keep their speed and, but for
   small differences from the context clustering and Huffman code construction, their output.
 
+### Changed: route constraints run on `only-regex` (only-http, only-regex)
+
+ADR-051 (docs/adr/051-router-on-only-regex.md). The router's regexp parameters
+(`/users/{id:[0-9]+}`, also inside partial segments) are now matched by `only-regex`, the engine
+behind only-log's message filters; the router's own engine (`only_http::re`, `#[doc(hidden)]`,
+not a public API) is gone from normal builds.
+
+- **Same matches.** Constraints still match the whole segment, and `\d \w \s` stay ASCII. Every
+  pattern the old engine accepted matches exactly the same segments: a differential test (every
+  regexp route in the repository, the old engine's test patterns, 3 000 generated patterns with
+  about 30 subjects each, 20 000 random syntax soups) and the `regex_match` fuzz target compare
+  the two, with the old engine kept, frozen, as a test-only reference.
+- **More syntax**: flags `(?i)` (Unicode case folding), `(?m)`, `(?s)`, `(?U)`, negated and
+  scoped; `\A \z`; `\b \B` (ASCII word boundaries); Unicode and dotted group names; programs of
+  up to 20 000 instructions. **One narrowing**: two groups with the same name in one constraint
+  now panic at registration, as the `regex` crate refuses them (names were never captured).
+- **Faster**: about a third less time per constraint check (`[0-9]+` on 7 digits 8.5 → 5.7 ns,
+  `\d{4}-\d{2}-\d{2}` 11.9 → 7.6 ns); router-bench's varied-regexp table 46.0 → 42.0 ns per
+  lookup, the `[0-9]+` table unchanged at 28.1 ns. Compiling a constraint builds a DFA: 7–13 µs
+  at registration instead of 2.1 µs.
+- **only-regex** (internal tier): `RegexBuilder` with `whole_text` (match the whole text, as
+  `\A(?:...)\z`) and `ascii_classes` (ASCII `\d \w \s` and `\b`); `Regex` equality includes the
+  options. `Regex::is_match` runs the ahead-of-time DFA in a tight loop first, a few percent faster
+  for only-log's message filters too.
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

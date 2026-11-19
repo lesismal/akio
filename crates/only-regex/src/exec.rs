@@ -62,11 +62,12 @@ enum Inst {
     Match,
 }
 
-fn is_word(c: char) -> bool {
+/// Whether `c` is a word character (`\w`): Unicode, or ASCII only with `ascii`.
+fn is_word(c: char, ascii: bool) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || c == '_'
     } else {
-        in_ranges(tables::WORD, c as u32)
+        !ascii && in_ranges(tables::WORD, c as u32)
     }
 }
 
@@ -92,10 +93,14 @@ pub(crate) struct Prog {
     always: bool,
     /// Has `\b` / `\B`: word characters are a category of their own.
     word_looks: bool,
+    /// `\b` / `\B` see ASCII word characters only.
+    ascii_word: bool,
     /// Has `(?m)^` / `(?m)$`: `\n` is a category of its own.
     line_looks: bool,
     /// The whole pattern is this literal text.
     literal: Option<Box<str>>,
+    /// Matches the whole text only: [`literal`](Prog::literal) is compared, not searched for.
+    whole: bool,
     dfa: Option<Dfa>,
 }
 
@@ -206,8 +211,15 @@ fn literal(n: &Node) -> Option<Box<str>> {
 
 impl Prog {
     pub(crate) fn new(parsed: Parsed) -> Result<Prog, Error> {
+        let whole = parsed.opts.whole;
         let mut c = Compiler { insts: Vec::new() };
+        if whole {
+            c.push(Inst::Look(Look::StartText))?;
+        }
         c.emit(&parsed.root)?;
+        if whole {
+            c.push(Inst::Look(Look::EndText))?;
+        }
         c.push(Inst::Match)?;
         let looks =
             |f: fn(Look) -> bool| c.insts.iter().any(|i| matches!(i, Inst::Look(l) if f(*l)));
@@ -219,8 +231,10 @@ impl Prog {
             classes: parsed.classes,
             always: false,
             word_looks,
+            ascii_word: parsed.opts.ascii,
             line_looks,
             literal: literal(&parsed.root),
+            whole,
             dfa: None,
         };
         let mut sc = Scratch::default();
@@ -236,8 +250,9 @@ impl Prog {
         Ok(prog)
     }
 
-    pub(crate) fn literal(&self) -> Option<&str> {
-        self.literal.as_deref()
+    /// The literal text the pattern is, and whether it must be the whole text.
+    pub(crate) fn literal(&self) -> Option<(&str, bool)> {
+        self.literal.as_deref().map(|l| (l, self.whole))
     }
 
     /// The category of `c`, merged with `OTHER` where no assertion tells them apart (fewer DFA
@@ -245,7 +260,7 @@ impl Prog {
     fn category(&self, c: char) -> u8 {
         if c == '\n' {
             if self.line_looks { NL } else { OTHER }
-        } else if self.word_looks && is_word(c) {
+        } else if self.word_looks && is_word(c, self.ascii_word) {
             WORD
         } else {
             OTHER
@@ -328,6 +343,35 @@ impl Prog {
     /// Whether the pending threads match at the end of the input.
     fn nfa_finish(&self, sc: &mut Scratch, prev: u8) -> bool {
         self.expand(sc, prev, EDGE, None) == Step::Match
+    }
+
+    /// Matches `s` on the DFA alone, in one tight loop; `None` when the DFA has no such
+    /// transition (or no DFA was built): the caller runs a full [`Search`].
+    #[inline]
+    pub(crate) fn dfa_match(&self, s: &str) -> Option<bool> {
+        let d = self.dfa.as_ref()?;
+        let b = s.as_bytes();
+        let mut st = d.start;
+        let mut i = 0;
+        while let Some(&byte) = b.get(i) {
+            let (k, len) = if byte < 0x80 {
+                (d.ascii[usize::from(byte)], 1)
+            } else {
+                let c = s[i..].chars().next()?;
+                (d.class_of(c), c.len_utf8())
+            };
+            let nx = *d.trans.get(st as usize + usize::from(k))?;
+            if nx >= MISS {
+                return match nx {
+                    MATCH => Some(true),
+                    DEAD => Some(false),
+                    _ => None,
+                };
+            }
+            st = nx;
+            i += len;
+        }
+        Some(d.trans.get(st as usize + d.classes)? == &MATCH)
     }
 
     pub(crate) fn start(&self) -> Search<'_> {
@@ -430,11 +474,10 @@ struct Dfa {
     /// Classes of the other characters: `(first code point, class)`, sorted, from 0x80 on.
     other: Vec<(u32, u8)>,
     classes: usize,
-    /// Indexed by state index (`state * classes`) plus class: the next state index, or
-    /// [`MATCH`], [`DEAD`], [`MISS`].
+    /// Indexed by state index (`state * (classes + 1)`) plus class: the next state index, or
+    /// [`MATCH`], [`DEAD`], [`MISS`]. The entry after the classes is the end of the input:
+    /// [`MATCH`] or [`DEAD`] (no division to find a state's number when a search ends).
     trans: Vec<u32>,
-    /// Whether the input matches when it ends in this state (by state number).
-    accept_end: Vec<bool>,
     /// Pending set and previous category of each state (by state number).
     states: Vec<(Box<[u32]>, u8)>,
     /// State index of each sorted pending set, per previous category.
@@ -503,7 +546,7 @@ impl Dfa {
                 _ => {}
             }
         }
-        if prog.word_looks {
+        if prog.word_looks && !prog.ascii_word {
             for &(lo, hi) in tables::WORD {
                 bound(lo, hi);
             }
@@ -528,7 +571,6 @@ impl Dfa {
             other,
             classes,
             trans: Vec::new(),
-            accept_end: Vec::new(),
             states: Vec::new(),
             index: Default::default(),
             start: 0,
@@ -554,7 +596,7 @@ impl Dfa {
                         match dfa.lookup(sc, prev) {
                             Some(t) => t,
                             None if dfa.states.len() < DFA_MAX_STATES
-                                && (dfa.states.len() + 1) * classes <= DFA_MAX_ENTRIES =>
+                                && (dfa.states.len() + 1) * (classes + 1) <= DFA_MAX_ENTRIES =>
                             {
                                 dfa.add(prog, sc, prev)
                             }
@@ -562,7 +604,7 @@ impl Dfa {
                         }
                     }
                 };
-                dfa.trans[s * classes + k] = target;
+                dfa.trans[s * (classes + 1) + k] = target;
             }
             s += 1;
         }
@@ -579,12 +621,16 @@ impl Dfa {
     /// Adds the state for `sc.pending` after a character of category `prev`; returns its index.
     fn add(&mut self, prog: &Prog, sc: &mut Scratch, prev: u8) -> u32 {
         sc.sort_key();
-        let at = (self.states.len() * self.classes) as u32;
+        let at = (self.states.len() * (self.classes + 1)) as u32;
         let key: Box<[u32]> = sc.key.clone().into_boxed_slice();
         self.index[prev as usize].insert(key.clone(), at);
         self.states.push((key, prev));
         self.trans.resize(self.trans.len() + self.classes, MISS);
-        self.accept_end.push(prog.nfa_finish(sc, prev));
+        self.trans.push(if prog.nfa_finish(sc, prev) {
+            MATCH
+        } else {
+            DEAD
+        });
         at
     }
 }
@@ -644,7 +690,7 @@ impl Search<'_> {
         let Some(d) = &prog.dfa else {
             return;
         };
-        let (pcs, prev) = &d.states[st as usize / d.classes];
+        let (pcs, prev) = &d.states[st as usize / (d.classes + 1)];
         let sc = self.scratch();
         sc.pending.clear();
         for &pc in pcs {
@@ -728,7 +774,7 @@ impl Search<'_> {
                 .prog
                 .dfa
                 .as_ref()
-                .is_some_and(|d| d.accept_end[st as usize / d.classes]),
+                .is_some_and(|d| d.trans[st as usize + d.classes] == MATCH),
             Mode::Nfa(prev) => {
                 let prog = self.prog;
                 let sc = self.scratch();

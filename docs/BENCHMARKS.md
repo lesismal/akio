@@ -1358,10 +1358,10 @@ out of the libraries.
 | HPACK decode, request block, all indexed | 255 | loona-hpack 306 |
 | HPACK encode response, warm table | 72 | loona-hpack 284 |
 | HPACK encode response, fresh table (only Huffman-codes) | 268 | loona-hpack 285 |
-| route regexp `[0-9]+` on `1234567` | 8.5 | regex 15.9 |
-| route regexp `\d{4}-\d{2}-\d{2}` | 11.7 | regex 16.6 |
-| route regexp `[a-z0-9_-]{3,16}` on 14 chars | 17.4 | regex 19.8 |
-| compile `\d{4}-\d{2}-\d{2}` | 2,185 | regex 112,199 |
+| route regexp `[0-9]+` on `1234567` (only-regex since ADR-051; was 8.5) | 5.7 | regex 15.7 |
+| route regexp `\d{4}-\d{2}-\d{2}` (was 11.9) | 7.6 | regex 17.0 |
+| route regexp `[a-z0-9_-]{3,16}` on 14 chars (was 17.6) | 10.6 | regex 20.0 |
+| compile `\d{4}-\d{2}-\d{2}` (builds the DFA; was 2,124) | 7,262 | regex 112,501 |
 
 Message filter regexps (`codec-bench logregex`, `only-regex`, unanchored search on an 86-byte log
 line; 2026-11-19):
