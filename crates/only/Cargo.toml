@@ -20,6 +20,8 @@ only-ebpf = { workspace = true }
 only-tls = { workspace = true }
 only-dpdk = { workspace = true, optional = true }
 only-log = { workspace = true }
+# Socket setup the engine does itself (`bind_udp_multicast`, `dial_from`).
+only-sys = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 only-uring = { workspace = true }
@@ -49,8 +51,6 @@ libc = "0.2"
 only-core = { workspace = true }
 only-buf = { workspace = true }
 only-x509 = { workspace = true }
-# tests/reload.rs: reads a listening socket's backlog back (Linux).
-only-sys = { workspace = true }
 # tests/logging_bridge.rs: the `log` bridge, with a `log` crate logger.
 only-log = { workspace = true, features = ["log"] }
 log = { version = "0.4.21", features = ["kv"] }

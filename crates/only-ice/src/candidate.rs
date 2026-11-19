@@ -202,6 +202,8 @@ pub struct Candidate {
     ufrag: Option<String>,
     generation: Option<u32>,
     tcp: Option<TcpType>,
+    /// The name the SDP gives instead of the IP address (an mDNS `.local` name).
+    hostname: Option<String>,
 }
 
 /// Type preferences of TCP candidates: below every UDP type so that UDP pairs win when both
@@ -268,6 +270,7 @@ impl Candidate {
             ufrag: None,
             generation: None,
             tcp: None,
+            hostname: None,
         }
     }
 
@@ -322,6 +325,31 @@ impl Candidate {
     /// A peer-reflexive candidate with an explicit priority.
     pub fn peer_reflexive(addr: SocketAddr, base: SocketAddr, priority: u32) -> Candidate {
         Candidate::local(CandidateKind::PeerReflexive, addr, base, Some(priority))
+    }
+
+    /// The same candidate written in the SDP with the name `hostname` instead of its IP
+    /// address: an mDNS name (`<uuid>.local`) that conceals a host address (the caller answers
+    /// mDNS queries for it). The agent still uses [`Candidate::addr`].
+    #[must_use]
+    pub fn with_hostname(mut self, hostname: impl Into<String>) -> Candidate {
+        self.hostname = Some(hostname.into());
+        self
+    }
+
+    /// The name the SDP gives instead of the IP address: set by
+    /// [`Candidate::with_hostname`], or the mDNS name a candidate parsed by
+    /// [`Candidate::parse_resolved`] was resolved from.
+    pub fn hostname(&self) -> Option<&str> {
+        self.hostname.as_deref()
+    }
+
+    /// The same candidate with the SDP related address (`raddr`/`rport`) `related`:
+    /// `Some(0.0.0.0:0)` hides the host address behind a server-reflexive or relayed
+    /// candidate, as browsers do with mDNS concealment; `None` leaves it out.
+    #[must_use]
+    pub fn with_related(mut self, related: Option<SocketAddr>) -> Candidate {
+        self.related = related;
+        self
     }
 
     /// The transport address.
@@ -421,13 +449,17 @@ impl Candidate {
             Some(TcpType::Active) => 9,
             _ => self.addr.port(),
         };
+        let host = match &self.hostname {
+            Some(h) => h.clone(),
+            None => self.addr.ip().to_string(),
+        };
         let mut s = format!(
             "candidate:{} {} {} {} {} {} typ {}",
             self.foundation,
             self.component,
             if self.tcp.is_some() { "tcp" } else { "udp" },
             self.priority,
-            self.addr.ip(),
+            host,
             port,
             self.kind.as_str()
         );
@@ -445,6 +477,19 @@ impl Candidate {
     /// RFC 8839 §5.1 plus the `generation`, `ufrag`, `network-id` and `network-cost`
     /// extensions (other extension pairs are ignored).
     pub fn parse(s: &str) -> Result<Candidate, ParseError> {
+        Candidate::parse_resolved(s, |_| None)
+    }
+
+    /// [`Candidate::parse`], resolving a name in the address field: for a well-formed line
+    /// whose address is a name (an mDNS `*.local` name, lowercased, or another FQDN),
+    /// `resolve` is called with it once; the IP it returns becomes the candidate's address
+    /// (the name is kept as [`Candidate::hostname`]), `None` gives [`ParseError::Mdns`] or
+    /// [`ParseError::Fqdn`] as `parse` does. Calling it with a closure that records the name
+    /// and returns `None` is how a caller learns which name to resolve.
+    pub fn parse_resolved(
+        s: &str,
+        resolve: impl FnOnce(&str) -> Option<IpAddr>,
+    ) -> Result<Candidate, ParseError> {
         let s = s.trim();
         let s = s.strip_prefix("a=").unwrap_or(s);
         let rest = s
@@ -538,9 +583,23 @@ impl Candidate {
         if tcp && tcptype.is_none() {
             return Err(ParseError::Syntax("tcp candidate without tcptype"));
         }
-        let ip: IpAddr = match host.parse() {
-            Ok(ip) => ip,
-            Err(_) => return Err(host_error(host)),
+        let (ip, hostname) = match host.parse::<IpAddr>() {
+            Ok(ip) => (ip, None),
+            Err(_) => {
+                let e = host_error(host);
+                if !e.is_unsupported() {
+                    return Err(e);
+                }
+                let name = if e == ParseError::Mdns {
+                    host.to_ascii_lowercase()
+                } else {
+                    host.to_owned()
+                };
+                match resolve(&name) {
+                    Some(ip) => (ip, Some(name)),
+                    None => return Err(e),
+                }
+            }
         };
         let addr = SocketAddr::new(ip, port);
         Ok(Candidate {
@@ -554,6 +613,7 @@ impl Candidate {
             ufrag,
             generation,
             tcp: if tcp { tcptype } else { None },
+            hostname,
         })
     }
 }
@@ -709,6 +769,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.related(), None);
+    }
+
+    #[test]
+    fn mdns_names() {
+        let line = "candidate:1 1 udp 2122260223 4C1F-AB.local 5000 typ host generation 0";
+        let mut asked = None;
+        let r = Candidate::parse_resolved(line, |h| {
+            asked = Some(h.to_owned());
+            None
+        });
+        assert_eq!(r, Err(ParseError::Mdns));
+        assert_eq!(asked.as_deref(), Some("4c1f-ab.local"));
+        let c = Candidate::parse_resolved(line, |_| Some("192.168.1.7".parse().unwrap())).unwrap();
+        assert_eq!(c.addr(), a("192.168.1.7:5000"));
+        assert_eq!(c.hostname(), Some("4c1f-ab.local"));
+        assert_eq!(c.generation(), Some(0));
+        // FQDNs go through `resolve` too, IPs and syntax errors never do.
+        let f =
+            Candidate::parse_resolved("candidate:1 1 udp 1 turn.example.com 5000 typ relay", |h| {
+                (h == "turn.example.com").then(|| "203.0.113.9".parse().unwrap())
+            })
+            .unwrap();
+        assert_eq!(f.addr(), a("203.0.113.9:5000"));
+        let ip = Candidate::parse_resolved("candidate:1 1 udp 1 10.0.0.1 5 typ host", |_| {
+            panic!("not a name")
+        });
+        assert!(ip.is_ok());
+        assert!(
+            Candidate::parse_resolved("candidate:1 1 udp 1 a..b 5 typ host", |_| {
+                panic!("bad syntax")
+            })
+            .is_err()
+        );
+        // Concealing: the SDP gets the name and a hidden related address.
+        let h = Candidate::host(a("192.168.1.2:5000")).with_hostname("abcd.local");
+        assert_eq!(h.addr(), a("192.168.1.2:5000"));
+        let sdp = h.to_sdp();
+        assert!(sdp.contains(" abcd.local 5000 typ host"), "{sdp}");
+        let s = Candidate::server_reflexive(a("1.2.3.4:6000"), a("192.168.1.2:5000"))
+            .with_related(Some(a("0.0.0.0:0")));
+        assert!(s.to_sdp().ends_with("typ srflx raddr 0.0.0.0 rport 0"));
+        assert!(
+            !Candidate::server_reflexive(a("1.2.3.4:6000"), a("192.168.1.2:5000"))
+                .with_related(None)
+                .to_sdp()
+                .contains("raddr")
+        );
     }
 
     #[test]

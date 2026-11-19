@@ -720,6 +720,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ice_mdns"
+path = "fuzz_targets/ice_mdns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "log_traceparent"
 path = "fuzz_targets/log_traceparent.rs"
 test = false

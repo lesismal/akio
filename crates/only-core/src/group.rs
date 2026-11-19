@@ -81,6 +81,22 @@ pub trait Group: Send + Sync {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     );
 
+    /// Serves `stream`, whose non-blocking connect to `addr` is in progress (made by the
+    /// caller, e.g. from a bound local port), exactly like a [`dial`](Self::dial)ed one:
+    /// `on_open` once it connects, `on_error` if it fails. TCP groups implement it.
+    fn dial_stream(
+        &self,
+        _stream: std::net::TcpStream,
+        _addr: SocketAddr,
+        _acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        on_error(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group cannot dial a TCP stream",
+        ));
+    }
+
     /// Serves the already connected, non-blocking TCP stream `stream` with `acceptor`, as a
     /// dialed connection that has just connected (`on_open` on an I/O thread); `on_error` if
     /// it cannot be registered. TCP groups implement it.

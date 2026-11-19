@@ -28,7 +28,9 @@
 的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码；只用 ICE-TCP（Chrome 连到 `RtcServer`，
 `Endpoint` 连到 Chrome）；只用中继（Chrome 以 `iceTransportPolicy: "relay"` 经 `only-turn` 的 UDP、TCP 与
 TLS，`Endpoint` 只带经 TCP 或 TLS 分配的中继候选）；以及 simulcast：Chrome 向 SFU 发送三层 VP8，SFU 以
-simulcast 及所选的一层发回，在 Chrome 解码时切换层（`tools/interop/webrtc/browser.sh`）。pion 与我们
+simulcast 及所选的一层发回，在 Chrome 解码时切换层；启用激进提名的 `Endpoint`；以及把主机地址隐藏在
+mDNS 名字之后的 `Endpoint` 向同样这样做（默认如此）的 Chrome 发起 offer，双方互相解析对方名字，主机
+对主机连通（`tools/interop/webrtc/browser.sh`）。pion 与我们
 协商 I-DATA；Chrome 157 使用 DATA chunk，除非打开其 `WebRTC-DataChannelMessageInterleaving` field trial
 （打开后同样的测试经 I-DATA 通过）。SCTP 层本身也经 UDP 与 pion/sctp 互通测试，交错开与关、有无丢包、
 零校验和（`tools/interop/sctp/run.sh`）。无头 Firefox（usrsctp）经 WebDriver BiDi 在两个 offer 方向上测试：
@@ -162,6 +164,42 @@ let engine = Engine::builder()
 
 规则相同（10 秒内第一次检查，peer 关闭时其连接随之关闭）；连接数最多为 `max_peers` 的两倍。
 
+`listen_tcp_so(&engine, addr)` 加入一个同时打开候选（`tcptype so`），它与远端的 `so` 候选配对：双方
+同时在两个公布的端口之间发起连接。该端口在监听（`SO_REUSEPORT`），检查也从它拨出
+（`Engine::dial_from`），因此无论哪边的连接先到，结果都是一条连接：SYN 交叉即 TCP 同时打开，否则
+监听端接受对方的连接，我方的检查改走那条连接。浏览器和 pion 都没有 `so` 候选（libnice 有）；在两个
+`Endpoint` 之间，凡是 TCP 能直连的地方都可以用。
+
+### mDNS 候选
+
+浏览器不暴露主机地址：没有摄像头或麦克风权限的页面得到的主机候选形如
+`candidate:1 1 udp 2113937151 1f3c...-9a.local 54321 typ host`，浏览器在本地网络上应答对这个名字
+的组播 DNS 查询（RFC 6762）。没有解析器时这类候选会被跳过，`Endpoint` 只有在浏览器的检查先到达自己
+时才能连到同一局域网上的浏览器。
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
+ep.resolve_mdns(&engine, Duration::from_secs(5))?; // 解析浏览器的 .local 名字
+ep.conceal_host_candidates()?;                      // 我方也写成 .local 名字
+```
+
+`resolve_mdns` 在与系统应答器共享的 mDNS 端口 5353 上打开一个套接字（`Engine::bind_udp_multicast`，
+加入 `224.0.0.251`；端口绑定不了时改用请求单播应答的临时端口），与 endpoint 自己的套接字一样由引擎
+I/O 线程服务。描述中的或经 `add_remote_candidate` trickle 来的每个 `.local` 候选会立即查询，1 秒、
+2 秒后再查，之后每 2 秒一次直到超时；收到应答后，对端得到带地址的候选。应答以及浏览器创建名字时
+发出的通告都按 TTL 缓存。`conceal_host_candidates` 让新对端把每个主机候选以随机的 `<uuid>.local`
+名字发出（每个地址一个），并隐藏其他候选的相关地址（`0.0.0.0:0`）；套接字应答对这些名字的查询，
+浏览器或另一个 endpoint 因而能解析它们。
+
+### 提名
+
+控制方（offer 方，或面对 ICE-lite 远端的任一方）提名一个候选对：在没有更好的候选对仍在检查时，选能用
+的最好那个。`RtcConfig` 中还可以开启两种模式：`enable_ice_aggressive_nomination(true)` 让每个检查都带
+USE-CANDIDATE（第一个能用的候选对立即使用，更好的再替换它）；`enable_ice_renomination(true)` 在 offer
+中写 `a=ice-options:renomination`，远端也支持时，提名后继续检查更好的候选对，后来能用的更好候选对（例如
+晚到的 trickle 候选）会以更大的 NOMINATION 值再次提名。无论自身配置如何，受控方都遵循收到的最大
+NOMINATION 值，没有该值时取最好的被提名候选对。
+
 ### Simulcast
 
 `SdpChanges::add_simulcast_media(kind, dir, &["h", "m", "l"], stream_id, track_id)` 添加一条按 RID 各发
@@ -289,7 +327,6 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；DTLS 上的 TURN；同时打开的 ICE-TCP（`tcptype so`）；解析 mDNS 候选（使用它们的
-对端仍可通过 peer-reflexive 候选连通）；simulcast 行与音频（Opus RED）上的 FEC、libwebrtc 的 FEC 掩码表；
-WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与 NewConnectionId。新增内容的细节见 ADR-017、ADR-032 与
-ADR-039。
+TCP 中继（RFC 6062）；DTLS 上的 TURN；IPv6 组播上的 mDNS；simulcast 行与音频（Opus RED）上的 FEC、
+libwebrtc 的 FEC 掩码表；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与 NewConnectionId。新增内容的
+细节见 ADR-017、ADR-032、ADR-039 与 ADR-044。

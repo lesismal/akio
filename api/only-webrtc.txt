@@ -252,6 +252,7 @@ pub fn only_webrtc::Endpoint::candidate_filter(self, impl core::ops::function::F
 pub fn only_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<only_webrtc::Candidate>
 pub fn only_webrtc::Endpoint::close(&self)
 pub fn only_webrtc::Endpoint::close_on_disconnect(self, bool) -> Self
+pub fn only_webrtc::Endpoint::conceal_host_candidates(&self) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> only_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn only_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_webrtc::Endpoint::create_offer<H: only_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
@@ -260,9 +261,11 @@ pub fn only_webrtc::Endpoint::gather_relay(&self, core::net::socket_addr::Socket
 pub fn only_webrtc::Endpoint::gather_relay_via(&self, &alloc::rcs::arc::Arc<only::Engine>, &only_webrtc::RelayServer, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::gather_srflx(&self, core::net::socket_addr::SocketAddr, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::listen_tcp(&self, &alloc::rcs::arc::Arc<only::Engine>, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
+pub fn only_webrtc::Endpoint::listen_tcp_so(&self, &alloc::rcs::arc::Arc<only::Engine>, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn only_webrtc::Endpoint::max_peers(self, usize) -> Self
 pub fn only_webrtc::Endpoint::peers(&self) -> usize
+pub fn only_webrtc::Endpoint::resolve_mdns(&self, &only::Engine, core::time::Duration) -> core::result::Result<(), only_webrtc::Error>
 impl core::clone::Clone for only_webrtc::Endpoint
 pub fn only_webrtc::Endpoint::clone(&self) -> Self
 impl core::fmt::Debug for only_webrtc::Endpoint
@@ -492,6 +495,8 @@ pub fn only_webrtc::RtcConfig::enable_ccfb(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_fec(self, core::option::Option<only_webrtc::FecMechanism>) -> Self
 pub fn only_webrtc::RtcConfig::enable_h264(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_h265(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_ice_aggressive_nomination(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_ice_renomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self

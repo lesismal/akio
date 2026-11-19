@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Sans-io ICE (RFC 8445) for the `only` WebRTC stack: one component (RTP/RTCP muxed,
-//! BUNDLE) over UDP and passive TCP (RFC 6544), full and lite agents.
+//! BUNDLE) over UDP and TCP (RFC 6544), full and lite agents, regular and aggressive
+//! nomination and renomination, and an mDNS codec ([`mdns`]) for browsers' `.local`
+//! candidates.
 //!
 //! An [`IceAgent`] owns no sockets, threads or clocks. The caller gathers local candidates
 //! (host addresses of its sockets, server-reflexive and relayed ones from its STUN/TURN
@@ -49,11 +51,13 @@
 //!   relay 0; local preference IPv6 > IPv4 > IPv6 link-local; component 1), foundations from
 //!   type and base IP, the SDP `candidate` attribute (RFC 8839 §5.1, with the `generation`,
 //!   `ufrag`, `network-id`, `network-cost` extensions). mDNS (`*.local`) and other FQDN
-//!   candidates parse to distinct [`ParseError`] variants so callers can skip them.
+//!   candidates parse to distinct [`ParseError`] variants; [`Candidate::parse_resolved`] takes
+//!   a resolver for them, [`Candidate::with_hostname`] writes such a name for a local one.
 //! - TCP candidates (RFC 6544): `tcp` transport with `tcptype` (active, passive, so), TCP
 //!   type and local preferences below UDP's (§4.2), pairs only within a transport and between
-//!   compatible types (§6.2). A local passive candidate ([`Candidate::host_tcp`]) never starts
-//!   checks: a check arriving over an accepted connection makes a peer-reflexive remote
+//!   compatible types (§6.2: active with passive, `so` with `so`). Local active and `so`
+//!   candidates send checks (the caller opens the connection). A local passive candidate
+//!   ([`Candidate::host_tcp`]) never starts checks: a check arriving over an accepted connection makes a peer-reflexive remote
 //!   (active) candidate whose pair gets the triggered checks, nomination and consent. The
 //!   caller frames STUN and data on the connection (RFC 4571) and passes the connection's
 //!   remote address and the candidate's address as for UDP.
@@ -73,7 +77,15 @@
 //!   once no higher-priority pair is pending, or [`IceConfig::nomination_delay`] after the
 //!   first valid pair; immediately when the remote is lite); a controlled agent selects a pair
 //!   with USE-CANDIDATE once its own check on it succeeded; a lite agent selects the pair of
-//!   the last valid USE-CANDIDATE check. After nomination no new ordinary checks start.
+//!   the last valid USE-CANDIDATE check. After nomination no new ordinary checks start, except
+//!   with [`IceConfig::aggressive_nomination`] (USE-CANDIDATE on every check, RFC 5245
+//!   §8.1.1.2) or renomination ([`IceConfig::renomination`] and
+//!   [`IceAgent::set_remote_renomination`], draft-thatcher-ice-renomination: NOMINATION
+//!   attribute 0xC001): checks of better pairs go on and a better pair that works is selected
+//!   (renominated). A controlled agent selects the nominated pair with the highest NOMINATION
+//!   value, or without one the highest-priority nominated pair.
+//! - mDNS ([`mdns`], RFC 6762): one-shot queries, answers, queries for our own names; the
+//!   caller has the socket.
 //! - Consent freshness (RFC 7675) on the selected pair with randomized intervals (each check
 //!   retransmitted up to 4 times from 500 ms);
 //!   [`IceState::Disconnected`] after [`IceConfig::consent_timeout`] without responses (a lite
@@ -85,13 +97,10 @@
 //!
 //! # Not implemented
 //!
-//! Several components, local active and simultaneous-open TCP candidates (remote ones are
-//! parsed and kept; active ones pair with our passive candidates), aggressive nomination (requests carrying
-//! USE-CANDIDATE are honoured, but this agent never sends them outside regular nomination),
-//! renomination, gathering (the caller's STUN/TURN clients do it), mDNS resolution, cancelling
-//! an in-progress check when a triggered check is due on its pair (§7.3.1.4: the
-//! retransmissions continue instead), re-nominating a better pair that appears after
-//! nomination. A success response whose mapped address is new adds a peer-reflexive local
+//! Several components (WebRTC muxes RTP and RTCP), gathering (the caller's STUN/TURN clients
+//! do it), sockets (mDNS, TCP connections), cancelling an in-progress check when a triggered
+//! check is due on its pair (§7.3.1.4: the retransmissions continue instead), re-nominating a
+//! better pair after nomination without renomination support on both sides. A success response whose mapped address is new adds a peer-reflexive local
 //! candidate, but the valid pair is the checked one (both share the same base).
 //!
 //! This is an implementation crate of `only` (docs/api-stability.md, Internal tier): its API
@@ -99,6 +108,7 @@
 
 mod agent;
 mod candidate;
+pub mod mdns;
 pub mod tcp;
 
 #[cfg(any(test, feature = "fuzzing"))]

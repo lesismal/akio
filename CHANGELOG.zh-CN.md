@@ -10,6 +10,27 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
+
+ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：
+
+- **only-webrtc**：`Endpoint::resolve_mdns(&engine, timeout)` 解析浏览器发来的 `<uuid>.local`
+  主机候选（描述中的与 trickle 的；经共享的 5353 端口和 `224.0.0.251` 发送一次性 mDNS 查询，缓存
+  应答，从不阻塞 I/O 线程），使 `Endpoint` 能以主机对主机的方式连到浏览器；
+  `Endpoint::conceal_host_candidates()` 把我方主机候选写成 mDNS 名字并应答对它们的查询。已与开启
+  mDNS 隐藏的无头 Chrome 157 测试（双方互相解析对方的名字）。`RtcConfig::enable_ice_renomination`
+  （`a=ice-options:renomination`）与 `RtcConfig::enable_ice_aggressive_nomination`。
+  `Endpoint::listen_tcp_so(&engine, addr)`：同时打开的 ICE-TCP 候选（RFC 6544 `tcptype so`）。端点
+  解析名字时，`Peer::add_remote_candidate` 接受 mDNS 候选行。
+- **only-ice**：`mdns` 模块（RFC 6762 编解码）、`Candidate::{parse_resolved, with_hostname,
+  hostname, with_related}`、`IceConfig::{aggressive_nomination, renomination}`、
+  `IceAgent::set_remote_renomination`（NOMINATION 属性；提名后发现的更好候选对会被采用）。受控代理
+  现在选择最大的 NOMINATION 值，没有该属性时选择优先级最高的被提名候选对，而不是最后一次提名。
+  模糊测试目标 `ice_mdns`。
+- **only**：`Engine::bind_udp_multicast(group, acceptor)`（与其他成员共享组播组端口）与
+  `Engine::dial_from(local, addr, acceptor, on_error)`（从已绑定的共享本地端口发起连接）；only-sys
+  的 `connect_nonblocking_from`。
+
 ### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（only-webrtc、only-rtp）
 
 ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认关闭（默认对端的 SDP 不变）：

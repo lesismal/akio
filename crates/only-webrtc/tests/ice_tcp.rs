@@ -204,13 +204,18 @@ mod dc {
 
     /// `a` (active TCP candidate) offers to `answer`, both signalling TCP candidates only.
     fn echo_over_tcp(a: &Endpoint, answer: impl FnOnce(&str) -> String) -> Peer {
+        echo_over(a, " 9 typ host tcptype active", answer)
+    }
+
+    /// `a` offers to `answer`, both signalling TCP candidates only; the offer has `want`.
+    fn echo_over(a: &Endpoint, want: &str, answer: impl FnOnce(&str) -> String) -> Peer {
         let (tx, rx) = channel();
         let mut ch = None;
         let (pa, offer) = a
             .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
             .unwrap();
         let offer = tcp_only(&offer);
-        assert!(offer.contains(" 9 typ host tcptype active"), "{offer}");
+        assert!(offer.contains(want), "{offer}");
         pa.accept_answer(&tcp_only(&answer(&offer))).unwrap();
         wait(&rx, "open", |g| matches!(g, Got::Open));
         for i in 0..50u16 {
@@ -241,6 +246,37 @@ mod dc {
         a.close();
         b.close();
         e.shutdown();
+    }
+
+    #[test]
+    fn simultaneous_open_endpoints() {
+        // Both sides have only `so` candidates: whichever connect wins (crossing connects,
+        // or one side's listener accepting the other's), checks, DTLS and SCTP run over it.
+        for round in 0..3 {
+            let e = engine();
+            let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+            let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+            let sa = a.listen_tcp_so(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+            assert_ne!(sa.port(), a.local_addr().unwrap().port());
+            assert!(a.listen_tcp_so(&e, "127.0.0.1:0".parse().unwrap()).is_err());
+            b.listen_tcp_so(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+            let want = format!("{} {} typ host tcptype so", sa.ip(), sa.port());
+            let pa = echo_over(&a, &want, |offer| {
+                let answer = b.accept_offer(offer, Echo).unwrap().1;
+                assert!(answer.contains("tcptype so"), "{answer}");
+                answer
+            });
+            // ICE on both sides, not only DTLS over the connection's address.
+            let t = Instant::now();
+            while !pa.is_connected() {
+                assert!(t.elapsed() < Duration::from_secs(10), "round {round}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            pa.close();
+            a.close();
+            b.close();
+            e.shutdown();
+        }
     }
 
     #[test]

@@ -1,4 +1,93 @@
 pub mod only_ice
+pub mod only_ice::mdns
+pub struct only_ice::mdns::Error(_)
+impl core::clone::Clone for only_ice::mdns::Error
+pub fn only_ice::mdns::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::mdns::Error
+impl core::cmp::PartialEq for only_ice::mdns::Error
+pub fn only_ice::mdns::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_ice::mdns::Error
+impl core::fmt::Debug for only_ice::mdns::Error
+pub fn only_ice::mdns::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ice::mdns::Error
+pub fn only_ice::mdns::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ice::mdns::Error
+impl core::marker::StructuralPartialEq for only_ice::mdns::Error
+impl core::marker::Send for only_ice::mdns::Error
+impl core::marker::Sync for only_ice::mdns::Error
+impl core::marker::Unpin for only_ice::mdns::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::mdns::Error
+impl core::panic::unwind_safe::UnwindSafe for only_ice::mdns::Error
+pub struct only_ice::mdns::Message
+pub only_ice::mdns::Message::id: u16
+pub only_ice::mdns::Message::questions: alloc::vec::Vec<only_ice::mdns::Question>
+pub only_ice::mdns::Message::records: alloc::vec::Vec<only_ice::mdns::Record>
+pub only_ice::mdns::Message::response: bool
+impl only_ice::mdns::Message
+pub fn only_ice::mdns::Message::parse(&[u8]) -> core::result::Result<only_ice::mdns::Message, only_ice::mdns::Error>
+pub fn only_ice::mdns::Message::query(&str, u16, bool) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_ice::mdns::Message::response(u16, &[only_ice::mdns::Question], &[only_ice::mdns::Record]) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_ice::mdns::Message
+pub fn only_ice::mdns::Message::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::mdns::Message
+impl core::cmp::PartialEq for only_ice::mdns::Message
+pub fn only_ice::mdns::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::mdns::Message
+pub fn only_ice::mdns::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ice::mdns::Message
+impl core::marker::Send for only_ice::mdns::Message
+impl core::marker::Sync for only_ice::mdns::Message
+impl core::marker::Unpin for only_ice::mdns::Message
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::mdns::Message
+impl core::panic::unwind_safe::UnwindSafe for only_ice::mdns::Message
+pub struct only_ice::mdns::Question
+pub only_ice::mdns::Question::name: alloc::string::String
+pub only_ice::mdns::Question::qtype: u16
+pub only_ice::mdns::Question::unicast_response: bool
+impl core::clone::Clone for only_ice::mdns::Question
+pub fn only_ice::mdns::Question::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::mdns::Question
+impl core::cmp::PartialEq for only_ice::mdns::Question
+pub fn only_ice::mdns::Question::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::mdns::Question
+pub fn only_ice::mdns::Question::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ice::mdns::Question
+impl core::marker::Send for only_ice::mdns::Question
+impl core::marker::Sync for only_ice::mdns::Question
+impl core::marker::Unpin for only_ice::mdns::Question
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::mdns::Question
+impl core::panic::unwind_safe::UnwindSafe for only_ice::mdns::Question
+pub struct only_ice::mdns::Record
+pub only_ice::mdns::Record::addr: core::net::ip_addr::IpAddr
+pub only_ice::mdns::Record::cache_flush: bool
+pub only_ice::mdns::Record::name: alloc::string::String
+pub only_ice::mdns::Record::ttl: u32
+impl core::clone::Clone for only_ice::mdns::Record
+pub fn only_ice::mdns::Record::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::mdns::Record
+impl core::cmp::PartialEq for only_ice::mdns::Record
+pub fn only_ice::mdns::Record::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::mdns::Record
+pub fn only_ice::mdns::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ice::mdns::Record
+impl core::marker::Send for only_ice::mdns::Record
+impl core::marker::Sync for only_ice::mdns::Record
+impl core::marker::Unpin for only_ice::mdns::Record
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::mdns::Record
+impl core::panic::unwind_safe::UnwindSafe for only_ice::mdns::Record
+pub const only_ice::mdns::GROUP_V4: core::net::ip_addr::Ipv4Addr
+pub const only_ice::mdns::GROUP_V6: core::net::ip_addr::Ipv6Addr
+pub const only_ice::mdns::MAX_POINTERS: usize
+pub const only_ice::mdns::MAX_QUESTIONS: usize
+pub const only_ice::mdns::MAX_RECORDS: usize
+pub const only_ice::mdns::MULTICAST_V4: core::net::socket_addr::SocketAddr
+pub const only_ice::mdns::PORT: u16
+pub const only_ice::mdns::TYPE_A: u16
+pub const only_ice::mdns::TYPE_AAAA: u16
+pub const only_ice::mdns::TYPE_ANY: u16
+pub fn only_ice::mdns::is_mdns_name(&str) -> bool
+pub fn only_ice::mdns::random_name() -> alloc::string::String
+pub fn only_ice::mdns::valid_name(&str) -> bool
 pub mod only_ice::tcp
 pub struct only_ice::tcp::FrameReader
 impl only_ice::tcp::FrameReader
@@ -136,8 +225,10 @@ pub fn only_ice::Candidate::foundation(&self) -> &str
 pub fn only_ice::Candidate::generation(&self) -> core::option::Option<u32>
 pub fn only_ice::Candidate::host(core::net::socket_addr::SocketAddr) -> only_ice::Candidate
 pub fn only_ice::Candidate::host_tcp(core::net::socket_addr::SocketAddr, only_ice::TcpType) -> only_ice::Candidate
+pub fn only_ice::Candidate::hostname(&self) -> core::option::Option<&str>
 pub fn only_ice::Candidate::kind(&self) -> only_ice::CandidateKind
 pub fn only_ice::Candidate::parse(&str) -> core::result::Result<only_ice::Candidate, only_ice::ParseError>
+pub fn only_ice::Candidate::parse_resolved(&str, impl core::ops::function::FnOnce(&str) -> core::option::Option<core::net::ip_addr::IpAddr>) -> core::result::Result<only_ice::Candidate, only_ice::ParseError>
 pub fn only_ice::Candidate::peer_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, u32) -> only_ice::Candidate
 pub fn only_ice::Candidate::priority(&self) -> u32
 pub fn only_ice::Candidate::related(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
@@ -147,6 +238,8 @@ pub fn only_ice::Candidate::server_reflexive(core::net::socket_addr::SocketAddr,
 pub fn only_ice::Candidate::tcp_type(&self) -> core::option::Option<only_ice::TcpType>
 pub fn only_ice::Candidate::to_sdp(&self) -> alloc::string::String
 pub fn only_ice::Candidate::ufrag(&self) -> core::option::Option<&str>
+pub fn only_ice::Candidate::with_hostname(self, impl core::convert::Into<alloc::string::String>) -> only_ice::Candidate
+pub fn only_ice::Candidate::with_related(self, core::option::Option<core::net::socket_addr::SocketAddr>) -> only_ice::Candidate
 impl core::clone::Clone for only_ice::Candidate
 pub fn only_ice::Candidate::clone(&self) -> Self
 impl core::cmp::Eq for only_ice::Candidate
@@ -209,6 +302,7 @@ pub fn only_ice::IceAgent::send_pair(&self) -> core::option::Option<(core::net::
 pub fn only_ice::IceAgent::set_controlling(&mut self, bool)
 pub fn only_ice::IceAgent::set_remote_credentials(&mut self, only_ice::Credentials)
 pub fn only_ice::IceAgent::set_remote_lite(&mut self, bool)
+pub fn only_ice::IceAgent::set_remote_renomination(&mut self, bool)
 pub fn only_ice::IceAgent::state(&self) -> only_ice::IceState
 impl core::fmt::Debug for only_ice::IceAgent
 pub fn only_ice::IceAgent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -218,6 +312,7 @@ impl core::marker::Unpin for only_ice::IceAgent
 impl core::panic::unwind_safe::RefUnwindSafe for only_ice::IceAgent
 impl core::panic::unwind_safe::UnwindSafe for only_ice::IceAgent
 pub struct only_ice::IceConfig
+pub only_ice::IceConfig::aggressive_nomination: bool
 pub only_ice::IceConfig::check_max_sends: u32
 pub only_ice::IceConfig::check_rto: core::time::Duration
 pub only_ice::IceConfig::check_rto_max: core::time::Duration
@@ -228,6 +323,7 @@ pub only_ice::IceConfig::failed_timeout: core::time::Duration
 pub only_ice::IceConfig::lite: bool
 pub only_ice::IceConfig::local: only_ice::Credentials
 pub only_ice::IceConfig::nomination_delay: core::time::Duration
+pub only_ice::IceConfig::renomination: bool
 pub only_ice::IceConfig::ta: core::time::Duration
 impl only_ice::IceConfig
 pub fn only_ice::IceConfig::new(bool, bool) -> only_ice::IceConfig

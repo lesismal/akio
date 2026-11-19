@@ -21,6 +21,8 @@ unstable = []
 
 [dependencies]
 only = { workspace = true }
+# The listener of a simultaneous-open ICE-TCP candidate (`SO_REUSEPORT`).
+only-sys = { workspace = true }
 only-turn = { workspace = true }
 only-crypto = { workspace = true }
 only-dtls = { workspace = true }

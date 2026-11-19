@@ -504,6 +504,20 @@ impl Group for UringGroup {
         });
     }
 
+    fn dial_stream(
+        &self,
+        stream: std::net::TcpStream,
+        _addr: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        self.post_dial(Cmd::Dial {
+            stream,
+            acceptor,
+            on_error,
+        });
+    }
+
     fn adopt(
         &self,
         stream: std::net::TcpStream,

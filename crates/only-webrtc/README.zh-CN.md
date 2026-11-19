@@ -9,8 +9,10 @@
 - **ICE**（[`only-ice`](../only-ice/README.zh-CN.md)，RFC 8445）：ICE-lite 服务端（`Listener::udp`
   上的 `RtcServer`，所有 peer 共用一个端口）与完整 ICE agent（以 `Engine::bind_udp` 绑定 socket 的
   `Endpoint`）；host、server-reflexive（`Endpoint::gather_srflx`）与 peer-reflexive 候选，
-  检查列表，常规提名，角色冲突，trickle ICE（RFC 8838），ICE 重启，consent freshness
-  （RFC 7675），连接超时。
+  检查列表，常规提名（以 `RtcConfig::enable_ice_aggressive_nomination` / `enable_ice_renomination`
+  启用激进提名与重新提名），角色冲突，trickle ICE（RFC 8838），ICE 重启，consent freshness
+  （RFC 7675），连接超时；与浏览器一样解析 mDNS（`.local`）候选，并把我方主机地址隐藏在 mDNS 名字
+  之后（`Endpoint::resolve_mdns`、`conceal_host_candidates`）。
 - **DTLS-SRTP**（[`only-dtls`](../only-dtls/README.zh-CN.md)）：DTLS 1.2，角色取自 `a=setup`，
   校验证书指纹；SRTP/SRTCP（[`only-srtp`](../only-srtp/README.zh-CN.md)，RFC 3711 / RFC 7714）
   支持 AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM，防重放，ROC 处理；密钥来自 DTLS 导出器。
@@ -31,9 +33,9 @@
   `a=simulcast`、RID/MID 头扩展）与接收，以及用于层选择的按层关键帧请求（`request_layer_keyframe`）。
 - **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 UDP、TCP 或 TLS 的 TURN 分配得到的
   relay（`gather_relay`，以及用 `RelayServer` 或 `turn:`/`turns:` URL 的 `gather_relay_via`；丢失的分配会
-  重新建立）、被动与主动 ICE-TCP（`listen_tcp`、`dial_tcp`，RFC 6544），以及候选策略（`candidate_filter`，
-  相当于 `iceTransportPolicy`）。`RtcServer` 可在 engine 的 TCP 监听器上提供被动 ICE-TCP
-  （`tcp_candidates`、`tcp`）。
+  重新建立）、被动、主动与同时打开的 ICE-TCP（`listen_tcp`、`dial_tcp`、`listen_tcp_so`，RFC 6544），
+  以及候选策略（`candidate_filter`，相当于 `iceTransportPolicy`）。`RtcServer` 可在 engine 的 TCP
+  监听器上提供被动 ICE-TCP（`tcp_candidates`、`tcp`）。
 - **自有类型**：API 全部是本 crate 自己的类型；`unstable` cargo feature 目前不增加任何内容。
 
 ```rust,no_run
@@ -59,12 +61,14 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 
 互通：与 pion（两个 offer 方向的数据通道、Opus/VP8 回显与 PLI，也经过 `only` TURN 中继）以及 fib
 的 Go WebRTC 双向互通：`tools/interop/webrtc/run.sh`；与无头 Chrome 双向互通（数据通道，Chrome
-的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`；与无头 Chrome
+的虚拟摄像头与麦克风媒体回显后由 Chrome 解码；用 mDNS 隐藏地址的 `Endpoint` 与开启 mDNS 隐藏的
+Chrome 互相解析对方名字后连通）：`tools/interop/webrtc/browser.sh`；与无头 Chrome
 的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与 TMMBR：`tools/interop/webrtc/fec.sh`；与无头 Firefox
 双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、simulcast 行与音频（Opus RED）上的 FEC、SDES-SRTP、
-DTLS 1.3。
+未实现：DTLS 上的 TURN、simulcast 行与音频（Opus RED）上的 FEC、SDES-SRTP、DTLS 1.3、IPv6 组播
+上的 mDNS、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
+`listen_tcp_so` 在 `Endpoint` 之间测试。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

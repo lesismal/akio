@@ -703,6 +703,9 @@ pub(crate) struct Rtc {
     /// The local address the first DTLS datagram arrived on (where DTLS answers go before ICE
     /// has a pair).
     remote_local: Option<SocketAddr>,
+    /// Remote candidates whose address is an mDNS name: (name, candidate line), for the
+    /// endpoint's resolver ([`Rtc::take_mdns`]).
+    mdns_wanted: Vec<(String, String)>,
     /// FEC decoders by protected (received) media SSRC.
     fec_rx: HashMap<u32, FecDecoder>,
     /// RFC 8888 feedback was negotiated: it replaces transport-wide feedback.
@@ -756,12 +759,18 @@ impl std::fmt::Debug for Rtc {
     }
 }
 
+/// mDNS candidates waiting for the resolver at once.
+const MAX_MDNS_WANTED: usize = 32;
+
 impl Rtc {
     /// A peer; `lite` runs an ICE-lite agent. Generates the DTLS certificate.
     pub(crate) fn new(cfg: ConfigInner, lite: bool, now: Instant) -> Result<Rtc, RtcErr> {
         let identity =
             Identity::generate_self_signed().map_err(|e| err(format!("certificate: {e}")))?;
-        let ice = IceAgent::new(IceConfig::new(lite, false), now);
+        let mut ice_cfg = IceConfig::new(lite, false);
+        ice_cfg.aggressive_nomination = cfg.ice_aggressive;
+        ice_cfg.renomination = cfg.ice_renomination;
+        let ice = IceAgent::new(ice_cfg, now);
         let bwe = cfg.bwe.map(BandwidthEstimator::new);
         Ok(Rtc {
             lite,
@@ -805,6 +814,7 @@ impl Rtc {
             stats: Stats::default(),
             remote_addr: None,
             remote_local: None,
+            mdns_wanted: Vec::new(),
             fec_rx: HashMap::new(),
             ccfb: false,
             ccfb_rx: CcfbReceiver::new(),
@@ -836,6 +846,59 @@ impl Rtc {
 
     pub(crate) fn add_remote_candidate(&mut self, c: IceCandidate) {
         self.ice.add_remote_candidate(c);
+    }
+
+    /// Adds a remote candidate line (`candidate:...`): one whose address is an mDNS name is
+    /// kept for the resolver ([`Rtc::take_mdns`]); `Err` for anything else that does not
+    /// parse (FQDNs included).
+    pub(crate) fn add_remote_candidate_line(
+        &mut self,
+        line: &str,
+    ) -> Result<(), only_ice::ParseError> {
+        let mut name = None;
+        let r = IceCandidate::parse_resolved(line, |n| {
+            name = Some(n.to_owned());
+            None
+        });
+        match (r, name) {
+            (Ok(c), _) => {
+                self.ice.add_remote_candidate(c);
+                Ok(())
+            }
+            (Err(only_ice::ParseError::Mdns), Some(n)) => {
+                if self.mdns_wanted.len() < MAX_MDNS_WANTED {
+                    self.mdns_wanted.push((n, line.to_owned()));
+                }
+                Ok(())
+            }
+            (Err(e), _) => Err(e),
+        }
+    }
+
+    /// The mDNS candidates received since the last call, with the remote ufrag they belong
+    /// to; `None` (and no allocation: this runs on every drive) when there are none.
+    pub(crate) fn take_mdns(&mut self) -> Option<(Vec<(String, String)>, String)> {
+        if self.mdns_wanted.is_empty() {
+            return None;
+        }
+        let ufrag = self
+            .ice
+            .remote_credentials()
+            .map(|c| c.ufrag.clone())
+            .unwrap_or_default();
+        Some((std::mem::take(&mut self.mdns_wanted), ufrag))
+    }
+
+    /// A resolved mDNS candidate, unless the remote restarted ICE since (`ufrag` is the
+    /// remote ufrag when it arrived).
+    pub(crate) fn add_resolved_candidate(&mut self, c: IceCandidate, ufrag: &str) {
+        if self
+            .ice
+            .remote_credentials()
+            .is_some_and(|r| r.ufrag == ufrag)
+        {
+            self.ice.add_remote_candidate(c);
+        }
     }
 
     pub(crate) fn is_connected(&self) -> bool {
@@ -1164,6 +1227,9 @@ impl Rtc {
             self.ice.restart(Credentials::random(), true);
         }
         self.ice.set_remote_credentials(creds);
+        let renomination = get("ice-options")
+            .is_some_and(|o| o.split_ascii_whitespace().any(|t| t == "renomination"));
+        self.ice.set_remote_renomination(renomination);
         if sdp.has("ice-lite") {
             self.ice.set_remote_lite(true);
         } else if is_offer && !self.lite {
@@ -1172,9 +1238,8 @@ impl Rtc {
         let mut end = false;
         for m in &sdp.media {
             for c in m.all("candidate") {
-                if let Ok(c) = IceCandidate::parse(&format!("candidate:{c}")) {
-                    self.ice.add_remote_candidate(c);
-                }
+                // Unusable lines (FQDNs, syntax) are skipped as browsers do.
+                let _ = self.add_remote_candidate_line(&format!("candidate:{c}"));
             }
             end |= m.has("end-of-candidates");
         }
@@ -1341,7 +1406,14 @@ impl Rtc {
         let c = self.ice.local_credentials();
         attrs.push(Attr::kv("ice-ufrag", c.ufrag.clone()));
         attrs.push(Attr::kv("ice-pwd", c.pwd.clone()));
-        attrs.push(Attr::kv("ice-options", "trickle"));
+        attrs.push(Attr::kv(
+            "ice-options",
+            if self.cfg.ice_renomination {
+                "trickle renomination"
+            } else {
+                "trickle"
+            },
+        ));
         attrs.push(Attr::kv(
             "fingerprint",
             fingerprint_sdp(&self.identity.fingerprint()),

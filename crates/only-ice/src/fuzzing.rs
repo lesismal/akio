@@ -14,15 +14,31 @@ const REMOTE: (&str, &str) = ("peer", "peerpeerpeerpeerpeerpeer");
 const LOCAL_ADDR: &str = "10.0.0.1:1000";
 const REMOTE_ADDR: &str = "10.0.0.2:2000";
 
+/// Whether a candidate read back from its own SDP has the same address: an active TCP
+/// candidate's port is always written as 9 (RFC 6544 §4.5), whatever the line said.
+fn same_addr(a: &Candidate, b: &Candidate) -> bool {
+    a.addr() == b.addr()
+        || (a.tcp_type() == Some(TcpType::Active) && a.addr().ip() == b.addr().ip())
+}
+
 fn addr(s: &str) -> SocketAddr {
     s.parse()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
 }
 
+#[cfg(test)]
 fn agent(lite: bool, controlling: bool, now: Instant) -> IceAgent {
+    agent_with(lite, controlling, false, now)
+}
+
+/// `nominating`: aggressive nomination and renomination (both sides) on.
+fn agent_with(lite: bool, controlling: bool, nominating: bool, now: Instant) -> IceAgent {
     let mut c = IceConfig::new(lite, controlling);
     c.local = Credentials::new(LOCAL.0, LOCAL.1);
+    c.aggressive_nomination = nominating;
+    c.renomination = nominating;
     let mut a = IceAgent::new(c, now);
+    a.set_remote_renomination(nominating);
     a.add_local_candidate(Candidate::host(addr(LOCAL_ADDR)));
     a.set_remote_credentials(Credentials::new(REMOTE.0, REMOTE.1));
     a.add_remote_candidate(Candidate::host(addr(REMOTE_ADDR)));
@@ -30,7 +46,8 @@ fn agent(lite: bool, controlling: bool, now: Instant) -> IceAgent {
 }
 
 /// `ice_stun`: arbitrary bytes as a datagram into full controlling, full controlled and lite
-/// agents (remote credentials set, one check in flight), from the known remote address and
+/// agents, and full ones with aggressive nomination and renomination (remote credentials
+/// set, one check in flight), from the known remote address and
 /// from an unknown one, then timers far into the future; and every line of the input (if
 /// UTF-8) through [`Candidate::parse`], whose results must survive an SDP round trip.
 pub fn stun(data: &[u8]) {
@@ -38,7 +55,7 @@ pub fn stun(data: &[u8]) {
         for line in s.lines() {
             if let Ok(c) = Candidate::parse(line) {
                 let again = Candidate::parse(&c.to_sdp());
-                assert!(again.is_ok_and(|d| d.addr() == c.addr()
+                assert!(again.is_ok_and(|d| same_addr(&d, &c)
                     && d.priority() == c.priority()
                     && d.kind() == c.kind()
                     && d.foundation() == c.foundation()));
@@ -46,8 +63,14 @@ pub fn stun(data: &[u8]) {
         }
     }
     let now = Instant::now();
-    for (lite, controlling) in [(false, true), (false, false), (true, false)] {
-        let mut a = agent(lite, controlling, now);
+    for (lite, controlling, nominating) in [
+        (false, true, false),
+        (false, false, false),
+        (true, false, false),
+        (false, true, true),
+        (false, false, true),
+    ] {
+        let mut a = agent_with(lite, controlling, nominating, now);
         a.handle_timeout(now);
         for src in [REMOTE_ADDR, "10.0.0.3:3000", "[2001:db8::3]:3000"] {
             let _ = a.handle_receive(now, addr(src), addr(LOCAL_ADDR), data);
@@ -109,6 +132,58 @@ pub fn ice_tcp(data: &[u8]) {
     }
 }
 
+/// `ice_mdns`: arbitrary bytes as an mDNS message ([`crate::mdns::Message::parse`]): what
+/// parses must survive being rebuilt as a response and parsed again (the records and
+/// questions whose names can be written); and every line (if UTF-8) through
+/// [`Candidate::parse_resolved`] with a resolver, whose results must survive an SDP round trip
+/// (the name kept).
+pub fn mdns(data: &[u8]) {
+    use crate::mdns::{MAX_QUESTIONS, MAX_RECORDS, Message, valid_name};
+    if let Ok(m) = Message::parse(data) {
+        assert!(m.questions.len() <= MAX_QUESTIONS && m.records.len() <= MAX_RECORDS);
+        let qs: Vec<_> = m
+            .questions
+            .iter()
+            .filter(|q| valid_name(&q.name))
+            .cloned()
+            .collect();
+        let rs: Vec<_> = m
+            .records
+            .iter()
+            .filter(|r| valid_name(&r.name))
+            .cloned()
+            .collect();
+        let again = Message::parse(&Message::response(m.id, &qs, &rs));
+        let again = again.unwrap_or_else(|e| panic!("rebuilt message refused: {e}"));
+        assert_eq!(again.id, m.id);
+        assert!(again.response);
+        assert_eq!(again.records.len(), rs.len());
+        assert_eq!(again.questions.len(), qs.len());
+        for (a, b) in again.records.iter().zip(&rs) {
+            assert_eq!(
+                (a.addr, a.ttl, a.cache_flush),
+                (b.addr, b.ttl, b.cache_flush)
+            );
+        }
+        for q in &qs {
+            let _ = Message::query(&q.name, q.qtype, q.unicast_response);
+        }
+    }
+    if let Ok(s) = std::str::from_utf8(data) {
+        for line in s.lines() {
+            let ip = std::net::IpAddr::from([192, 168, 7, 9]);
+            if let Ok(c) = Candidate::parse_resolved(line, |_| Some(ip)) {
+                if let Some(h) = c.hostname() {
+                    assert_eq!(c.addr().ip(), ip);
+                    let again = Candidate::parse_resolved(&c.to_sdp(), |n| (n == h).then_some(ip));
+                    assert!(again.is_ok_and(|d| same_addr(&d, &c) && d.hostname() == Some(h)));
+                }
+            }
+        }
+        let _ = crate::mdns::is_mdns_name(s);
+    }
+}
+
 #[cfg(test)]
 mod seeds {
     use super::*;
@@ -158,6 +233,60 @@ mod seeds {
         out
     }
 
+    /// Queries and responses as resolvers and responders send them (one question, two,
+    /// compressed names, legacy unicast, goodbyes) and mDNS candidate lines.
+    pub(super) fn ice_mdns() -> Vec<Vec<u8>> {
+        use crate::mdns::{Message, Question, Record, TYPE_A, TYPE_AAAA};
+        let name = "4c1fab2e-0d4a-4c11-9e2f-5a6b7c8d9e0f.local";
+        let rec = |addr: &str, ttl: u32, cache_flush: bool| Record {
+            name: name.to_owned(),
+            addr: addr.parse().unwrap_or_else(|_| [0, 0, 0, 0].into()),
+            ttl,
+            cache_flush,
+        };
+        let q = |qtype: u16, unicast_response: bool| Question {
+            name: name.to_owned(),
+            qtype,
+            unicast_response,
+        };
+        let mut out = vec![
+            Message::query(name, TYPE_A, false).unwrap_or_default(),
+            Message::query(name, TYPE_AAAA, true).unwrap_or_default(),
+            Message::response(0, &[], &[rec("192.168.1.20", 120, true)]),
+            Message::response(
+                0,
+                &[],
+                &[rec("fe80::1", 120, true), rec("10.0.0.7", 0, false)],
+            ),
+            Message::response(
+                0x4242,
+                &[q(TYPE_A, false)],
+                &[rec("192.168.1.20", 10, false)],
+            ),
+        ];
+        // As a browser's responder writes it: the name once, then a compression pointer.
+        let mut c = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 1];
+        for label in name.split('.') {
+            c.push(label.len() as u8);
+            c.extend_from_slice(label.as_bytes());
+        }
+        c.push(0);
+        c.extend_from_slice(&[0, 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 192, 168, 1, 20]);
+        c.extend_from_slice(&[0xc0, 12, 0, 28, 0x80, 1, 0, 0, 0, 120, 0, 16]);
+        c.extend_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        c.extend_from_slice(&[0xc0, 12, 0, 47, 0x80, 1, 0, 0, 0, 120, 0, 2, 0xc0, 12]);
+        out.push(c);
+        out.push(
+            format!(
+                "candidate:1 1 udp 2113937151 {name} 54321 typ host generation 0 ufrag X network-cost 999\n\
+                 candidate:2 1 tcp 1518280447 {} 9 typ host tcptype active",
+                name.to_uppercase()
+            )
+            .into_bytes(),
+        );
+        out
+    }
+
     /// A real active agent's checks over the connection, framed, both roles.
     pub(super) fn ice_tcp() -> Vec<Vec<u8>> {
         let now = Instant::now();
@@ -204,6 +333,22 @@ mod tests {
     fn replay_corpora() {
         assert!(replay(DIR, "ice_stun", stun) > 0);
         assert!(replay(DIR, "ice_tcp", ice_tcp) > 0);
+        assert!(replay(DIR, "ice_mdns", mdns) > 0);
+    }
+
+    #[test]
+    fn mdns_seeds_run_clean() {
+        for s in &seeds::ice_mdns() {
+            mdns(s);
+            for n in [0, 1, 11, 12, 13, s.len() / 2] {
+                mdns(&s[..n.min(s.len())]);
+            }
+            for i in 0..s.len() {
+                let mut m = s.clone();
+                m[i] ^= 0x41;
+                mdns(&m);
+            }
+        }
     }
 
     #[test]
@@ -240,5 +385,6 @@ mod tests {
     fn write_fuzz_seeds() {
         write_target_seeds(DIR, "ice_stun", &seeds::ice_stun());
         write_target_seeds(DIR, "ice_tcp", &seeds::ice_tcp());
+        write_target_seeds(DIR, "ice_mdns", &seeds::ice_mdns());
     }
 }
