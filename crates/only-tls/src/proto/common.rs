@@ -282,6 +282,8 @@ pub(crate) struct ServerSettings {
     pub(crate) client_auth: Option<(Arc<RootStore>, bool)>,
     /// CRLs for client chains (None: no check).
     pub(crate) client_crls: Option<CrlCheck>,
+    /// Ask TLS 1.3 clients for an OCSP response and validate it (Off: not asked).
+    pub(crate) client_ocsp: crate::RevocationPolicy,
     pub(crate) cache: Option<SessionCache>,
     pub(crate) ticketer: Option<Ticketer>,
     pub(crate) tls12: bool,
@@ -427,12 +429,14 @@ pub(crate) fn verify_chain(
     Ok(Verified { key, leaf, issuer })
 }
 
-/// Checks the OCSP response stapled for `leaf` (issued by `issuer`) under `policy`.
+/// Checks the OCSP response stapled for `leaf` (issued by `issuer`; the `peer`'s, "server" or
+/// "client", for the messages) under `policy`.
 pub(crate) fn check_stapled_ocsp(
     policy: crate::RevocationPolicy,
     response: Option<&[u8]>,
     leaf: &only_x509::Certificate,
     issuer: &only_x509::Certificate,
+    peer: &str,
 ) -> Result<(), Fatal> {
     use crate::RevocationPolicy as P;
     use only_x509::RevocationStatus as S;
@@ -449,8 +453,8 @@ pub(crate) fn check_stapled_ocsp(
         Ok(S::Revoked { reason, .. }) => Err(Fatal::new(
             Alert::CertificateRevoked,
             match reason {
-                Some(r) => format!("server certificate revoked (stapled OCSP: {r})"),
-                None => "server certificate revoked (stapled OCSP)".to_string(),
+                Some(r) => format!("{peer} certificate revoked (stapled OCSP: {r})"),
+                None => format!("{peer} certificate revoked (stapled OCSP)"),
             },
         )),
         Ok(S::Good) => Ok(()),

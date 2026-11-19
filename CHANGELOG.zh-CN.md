@@ -36,6 +36,26 @@ ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）�
   （两种 DTLS 角色）。`webrtc-interop` 示例新增 `ONLY_INTEROP_*` 开关，并可让 SFU 经过有损代理。
 - 基准（gpu51 与 main 436b47e7 同轮 A/B，`quiet.sh`，CPU 2-9，进程内 peer，双方均为 DTLS 1.2，取六组安静轮次的中位数：每秒建立的 peer 连接 0.990x，4000 字节 VP8 帧媒体 0.995x（752 对 756 MB/s），120 字节帧 0.993x：无回退。新默认的 DTLS 1.3 握手比 DTLS 1.2 多约 5 % CPU；媒体吞吐不变，开启 cryptex 时也一样）。
 
+### 新增：P-521、RSA-PSS 密钥与 TLS 1.3 客户端的 OCSP 响应（only-crypto、only-x509、only-tls）
+
+ADR-049（docs/adr/049-p521-rsa-pss-keys-client-ocsp.zh-CN.md），只增不改：
+
+- **only-crypto**：`p521`（NIST P-521 上的 ECDH 与 ECDSA，API 同 `p256` / `p384`，标量 66 字节，默认
+  SHA-512，RFC 6979 nonce；基于独立的 `2⁵²¹ - 1` 域与完备公式的可移植常量时间代码；ct-dudect 目标
+  `p521-ecdh`、`p521-keygen`、`p521-sign`）；`pkey::PublicKey::{P521, RsaPss}`、
+  `pkey::PrivateKey::{P521, RsaPss}` 与 `pkey::PssParams`，用于带或不带参数的 `id-RSASSA-PSS` 密钥
+  （RFC 4055），它们只在参数范围内做 RSA-PSS 签名与验签；`der::oid::SECP521R1`。Wycheproof P-521
+  ECDSA / ECDH 与 RFC 6979 A.2.7 向量，OpenSSL 生成的 PSS 密钥。
+- **only-x509**：P-521 与 RSA-PSS 密钥的证书可以解析、验证与签发（`tests/data/pss-p521` 中为 OpenSSL
+  生成的证书链）。
+- **only-tls**：组 secp521r1（排在最后）、`ecdsa_secp521r1_sha512` 与 `rsa_pss_pss_sha256/384/512`
+  （服务端与客户端证书，TLS 1.3 与 1.2）；`ServerConfigBuilder::client_ocsp_policy` 要求 TLS 1.3 客户端
+  随证书发送 OCSP 响应并校验（ADR-038 的策略；硬失败时拒绝 TLS 1.2 客户端证书），
+  `ClientConfigBuilder::client_cert_ocsp_response` 在被要求时发送，服务端的 `TlsInfo::ocsp_response`
+  保存它。与 OpenSSL、Go 互通（`tools/interop/tls/run.sh`）。`status_request_v2` 仍不实现（仅限
+  TLS 1.2，已过时）。
+- 默认 ClientHello 列出 secp521r1（多 2 字节）；默认握手的其他部分不变。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：

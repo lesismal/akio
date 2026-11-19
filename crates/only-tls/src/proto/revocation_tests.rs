@@ -279,3 +279,99 @@ fn crls_for_client_certificates() {
         }
     }
 }
+
+/// A client's OCSP response in TLS 1.3 client authentication (ADR-049): asked for in the
+/// CertificateRequest under `client_ocsp_policy`, stapled from `client_cert_ocsp_response`,
+/// validated by the server as a server's is by a client.
+#[test]
+fn client_ocsp_in_client_auth() {
+    let p = pki();
+    let about_client = |status| {
+        OcspResponseParams::new(status)
+            .sign(&p.client, &p.ca, &p.ca, &p.ca_key)
+            .unwrap()
+    };
+    let good = about_client(RevocationStatus::Good);
+    let revoked = about_client(RevocationStatus::Revoked {
+        time: 1_700_000_000,
+        reason: None,
+    });
+    let unknown = about_client(RevocationStatus::Unknown);
+    let mut delegated = OcspResponseParams::new(RevocationStatus::Good);
+    delegated.include_signer = true;
+    let delegated = delegated
+        .sign(&p.client, &p.ca, &p.responder, &p.responder_key)
+        .unwrap();
+    // About the server's leaf, not the client's.
+    let wrong = p.ocsp(&OcspResponseParams::new(RevocationStatus::Good));
+    use RevocationPolicy::{HardFail, Off, SoftFail};
+    let bad = Some(Alert::BadCertificateStatusResponse);
+    let rev = Some(Alert::CertificateRevoked);
+    type Case<'a> = (&'a str, Option<&'a Vec<u8>>, [Option<Alert>; 3]);
+    let cases: [Case<'_>; 6] = [
+        ("good", Some(&good), [None, None, None]),
+        ("delegated", Some(&delegated), [None, None, None]),
+        ("revoked", Some(&revoked), [None, rev, rev]),
+        ("unknown", Some(&unknown), [None, None, bad]),
+        ("other certificate", Some(&wrong), [None, None, bad]),
+        ("none", None, [None, None, bad]),
+    ];
+    let server = |policy| {
+        ServerConfig::builder(
+            vec![tls_cert(&p.leaf), tls_cert(&p.ca)],
+            tls_key(&p.leaf_key),
+        )
+        .client_auth_required(p.roots())
+        .client_ocsp_policy(policy)
+        .session_tickets(true)
+        .build()
+        .unwrap()
+    };
+    let client = |tls12: bool, resp: Option<&Vec<u8>>| {
+        let mut b = p
+            .client(tls12)
+            .client_cert(vec![tls_cert(&p.client)], tls_key(&p.client_key));
+        if let Some(r) = resp {
+            b = b.client_cert_ocsp_response(r.clone());
+        }
+        b.build().unwrap()
+    };
+    for (what, resp, want) in &cases {
+        for (policy, want) in [Off, SoftFail, HardFail].into_iter().zip(want) {
+            let r = connect(&server(policy), &client(false, *resp), "localhost");
+            if want.is_some() {
+                assert!(matches!(r, Err(Side::Server(_))), "{what} {policy:?}");
+            }
+            if let Ok((_, s)) = &r {
+                // The server sees the response only when it asked for one.
+                let seen = s.ocsp_response().map(<[u8]>::to_vec);
+                let asked = policy != Off;
+                assert_eq!(seen.as_ref(), resp.filter(|_| asked), "{what} {policy:?}");
+            }
+            assert_eq!(alert(r), *want, "{what} {policy:?}");
+        }
+    }
+    // TLS 1.2 cannot carry a client's response: soft fail passes, hard fail refuses.
+    assert_eq!(
+        alert(connect(
+            &server(SoftFail),
+            &client(true, Some(&good)),
+            "localhost"
+        )),
+        None
+    );
+    assert_eq!(
+        alert(connect(
+            &server(HardFail),
+            &client(true, Some(&good)),
+            "localhost"
+        )),
+        bad
+    );
+    // Resumed sessions are not checked again.
+    let scfg = server(HardFail);
+    let ccfg = client(false, Some(&good));
+    connect(&scfg, &ccfg, "localhost").unwrap();
+    let (c, _) = connect(&scfg, &ccfg, "localhost").unwrap();
+    assert!(c.resumed());
+}

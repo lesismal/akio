@@ -41,7 +41,8 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `p256`, `p384` | ECDH and ECDSA on NIST P-256 / P-384: RFC 6979 nonces, any `Hash` for prehashing, DER and fixed-width (P1363) signatures, validated SEC1 points (compressed and uncompressed) |
 | `rsa` | RSA PKCS#1 v1.5 and PSS (MGF1) with SHA-256/384/512 (SHA-1 verification only), 2048–8192-bit moduli; private keys use the CRT with blinding and a check of the result |
 | `der`, `pem` | strict DER reader and writer (rejects BER), common OIDs, PEM (RFC 7468) |
-| `pkey` | `PrivateKey` / `PublicKey` over all of the above (DSA public keys only): PKCS#8 v1/v2, SEC1, PKCS#1, SubjectPublicKeyInfo, PEM; `SignatureAlgorithm` as TLS and X.509 name them |
+| `p521` | ECDH and ECDSA on NIST P-521 (ADR-049), the same API with 66-byte scalars: SHA-512 by default, RFC 6979 nonces over 521 bits, 132-byte fixed-width signatures; portable Rust on its own Mersenne-prime field and complete formulas |
+| `pkey` | `PrivateKey` / `PublicKey` over all of the above (DSA public keys only): PKCS#8 v1/v2, SEC1, PKCS#1, SubjectPublicKeyInfo, PEM, RSA keys as `rsaEncryption` or `id-RSASSA-PSS` with their `PssParams` restrictions (RFC 4055; ADR-049); `SignatureAlgorithm` as TLS and X.509 name them |
 
 It replaces sha1, sha2, md-5, hmac, pbkdf2, aes, aes-gcm, ctr, crc32fast, base64 and getrandom
 in `only-kcp`, `only-turn`, `only-ws`, `only-http`, `only-media`, `only-bittorrent` and
@@ -96,6 +97,16 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   follows the instruction counts (a 4×64 product is 16 `MUL` + 16 `UMULH` against 25 128-bit
   products in radix 2⁵¹); this path is tested but **not benchmarked yet**, so no aarch64 numbers
   are claimed.
+- P-521 (`p521`, ADR-049) has its own code: the base field `2⁵²¹ - 1` in nine unsaturated limbs
+  (58 bits, the top one 57; the product's high half folds back doubled, one carry chain, the
+  top carry re-entering at limb 0; additions end in one carry step done for every limb at
+  once), inversion and square roots by fixed chains, the scalar field on the generic Montgomery
+  code. Points use the complete projective formulas (no exceptional case to argue): ECDH by
+  signed 5-bit Booth windows over `0·P … 16·P` (every lookup reads all 17 entries) with the
+  doublings in Jacobian coordinates (dbl-2001-b maps the identity `(1:1:0)` to itself), key
+  generation and signing by a signed 4-bit comb of 131 rows of affine multiples of `G`, every row
+  read in full. Portable Rust only; `tools/ct-dudect` measures `p521-ecdh`, `p521-keygen` and
+  `p521-sign`.
 - Secret scalar multiplication on P-256 / P-384 uses Jacobian coordinates (`a = -3`: doubling
   4M + 4S, addition 11M + 5S, mixed addition 7M + 4S; the P-256 twin's assembly adds with
   12M + 4S and 8M + 3S, which need half the modular additions and subtractions). Variable base (ECDH): Booth-recoded signed
@@ -291,10 +302,14 @@ benchmarked), aarch64 whole-point routines and divsteps.
 - `cargo run --release -p only-crypto --example bench` compares throughput with the replaced
   crates.
 - Public key (`tests/pk_kat.rs`): Wycheproof X25519, Ed25519, ECDSA P-256/SHA-256 (DER and
-  P1363), P-384/SHA-384 and SHA-512, ECDH P-256 (SPKI and raw points) and P-384, RSA PKCS#1
+  P1363), P-384/SHA-384 and SHA-512, P-521/SHA-512 (DER and P1363), ECDH P-256 (SPKI and raw
+  points), P-384 and P-521, RSA PKCS#1
   v1.5 verification (2048/SHA-256, 3072/SHA-384, 4096/SHA-512), RSA-PSS verification
   (2048/SHA-256/32, 4096/SHA-512/64), RSA PKCS#1 v1.5 signature generation; RFC 7748, 8032 and
   6979 vectors in unit tests. Every "valid" vector is accepted and every "invalid" one rejected.
+  P-521 also against RFC 6979 A.2.7 (SHA-512 and SHA-256, the values OpenSSL's deterministic
+  ECDSA gives), and OpenSSL-made `id-RSASSA-PSS` keys with and without parameters (PKCS#8 and
+  SPKI encodings byte-identical, OpenSSL's signatures verified, the restrictions enforced).
 - `tests/pk_compat.rs` cross-checks against ring and RustCrypto p256/p384 (identical Ed25519,
   ECDSA RFC 6979 and RSA PKCS#1 signatures, the latter at 2048, 3072 and 4096 bits and also
   with the portable code forced; mutual verification; identical ECDH and X25519

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # only-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
 # TLS 1.3 and 1.2, every implemented cipher suite and group (X448 and Ed448 with OpenSSL only:
-# Go has neither), RSA / ECDSA P-256 / P-384 / Ed25519 / Ed448 certificates, client authentication, resumption (tickets and session IDs),
+# Go has neither), RSA / RSA-PSS-key (rsa_pss_pss_*, OpenSSL only: Go cannot parse the keys) /
+# ECDSA P-256 / P-384 / P-521 / Ed25519 / Ed448 certificates, client authentication (also with
+# P-521 and RSA-PSS-key client certificates, and the client's OCSP response of ADR-049: only
+# both ways, and OpenSSL, which neither asks for nor sends one, around it), resumption (tickets and session IDs),
 # HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
 # OCSP stapling (OpenSSL, Go, GnuTLS; only's client validating it, and CRLs, against OpenSSL),
 # certificate compression (RFC 8879 zlib, brotli and zstd: OpenSSL 3.2+ built with them, e.g.
@@ -53,6 +56,11 @@ leaf p384 -algorithm EC -pkeyopt ec_paramgen_curve:P-384
 leaf ed25519 -algorithm ED25519
 leaf ed448 -algorithm ED448
 leaf client -algorithm EC -pkeyopt ec_paramgen_curve:P-256
+leaf p521 -algorithm EC -pkeyopt ec_paramgen_curve:P-521
+leaf pss -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_pss_keygen_md:sha256 \
+    -pkeyopt rsa_pss_keygen_mgf1_md:sha256 -pkeyopt rsa_pss_keygen_saltlen:32
+leaf client_p521 -algorithm EC -pkeyopt ec_paramgen_curve:P-521
+leaf client_pss -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:2048
 # An OCSP response for the P-256 leaf, signed by the CA (status good, valid for a day).
 printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=p256\n' \
     "$(openssl x509 -in p256.pem -noout -serial | cut -d= -f2)" > index.txt
@@ -70,6 +78,16 @@ for db in revoked empty; do
         "$db" > "crl-$db.cnf"
     echo 01 > crlnumber
     openssl ca -config "crl-$db.cnf" -gencrl -cert ca.pem -keyfile ca.key -out "crl-$db.pem" >/dev/null 2>&1
+done
+# OCSP responses for the P-256 client leaf (good, revoked), for its OCSP in client authentication.
+printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=client\n' \
+    "$(openssl x509 -in client.pem -noout -serial | cut -d= -f2)" > index-client.txt
+printf 'R\t491231235959Z\t%s,keyCompromise\t%s\tunknown\t/CN=client\n' "$(date -u +%y%m%d%H%M%SZ)" \
+    "$(openssl x509 -in client.pem -noout -serial | cut -d= -f2)" > index-client-revoked.txt
+openssl ocsp -issuer ca.pem -cert client.pem -reqout ocsp-client-req.der -no_nonce >/dev/null 2>&1
+for st in "" -revoked; do
+    openssl ocsp -index "index-client$st.txt" -CA ca.pem -rsigner ca.pem -rkey ca.key \
+        -reqin ocsp-client-req.der -respout "ocsp-client$st.der" -ndays 1 >/dev/null 2>&1
 done
 cd "$OUT" || exit 1
 
@@ -201,12 +219,12 @@ for cs in TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SH
     s_server_case "1.3 $cs" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -ciphersuites $cs" ""
     s_client_case "1.3 $cs" "$S" "-tls1_3 -ciphersuites $cs" "hello only"
 done
-for g in X25519 P-256 P-384 X448; do
+for g in X25519 P-256 P-384 X448 P-521; do
     s_server_case "1.3 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -groups $g" ""
     s_client_case "1.3 group $g" "$S" "-tls1_3 -groups $g" "hello only"
 done
 # Certificate types, both versions.
-for k in rsa p256 p384 ed25519 ed448; do
+for k in rsa p256 p384 p521 pss ed25519 ed448; do
     s_server_case "1.3 $k cert" "-cert $P/$k.pem -key $P/$k.key -tls1_3" ""
     s_client_case "1.3 $k cert" "--cert $P/$k.pem --key $P/$k.key" "-tls1_3" "hello only"
 done
@@ -224,7 +242,12 @@ s_client_case "1.2 ed25519 cert" "--cert $P/ed25519.pem --key $P/ed25519.key" "-
 s_server_case "1.2 ed448 cert" "-cert $P/ed448.pem -key $P/ed448.key -tls1_2" ""
 s_client_case "1.2 ed448 cert" "--cert $P/ed448.pem --key $P/ed448.key" "-tls1_2" "hello only"
 s_server_case "1.2 p384 cert" "-cert $P/p384.pem -key $P/p384.key -tls1_2" ""
-for g in X25519 P-256 P-384 X448; do
+s_server_case "1.2 p521 cert" "-cert $P/p521.pem -key $P/p521.key -tls1_2" ""
+s_client_case "1.2 p521 cert" "--cert $P/p521.pem --key $P/p521.key" "-tls1_2" "hello only"
+s_server_case "1.2 pss cert (rsa_pss_pss_sha256)" "-cert $P/pss.pem -key $P/pss.key -tls1_2" ""
+s_client_case "1.2 pss cert (rsa_pss_pss_sha256)" "--cert $P/pss.pem --key $P/pss.key" "-tls1_2" \
+    "hello only"
+for g in X25519 P-256 P-384 X448 P-521; do
     s_server_case "1.2 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -groups $g" ""
 done
 # HelloRetryRequest: the server wants P-384, the client sends X25519 first.
@@ -239,6 +262,67 @@ s_client_case "1.3 client auth" "$S --ca $P/ca.pem --require" \
     "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
 s_client_case "1.2 client auth" "$S --ca $P/ca.pem --require" \
     "-tls1_2 -cert $P/client.pem -key $P/client.key" "hello only"
+for k in client_p521 client_pss; do
+    for v in 1.3 1.2; do
+        sv="-tls${v/./_}"
+        s_server_case "$v client auth ($k)" "-cert $P/p256.pem -key $P/p256.key $sv -Verify 1" \
+            "--cert $P/$k.pem --key $P/$k.key"
+        s_client_case "$v client auth ($k)" "$S --ca $P/ca.pem --require" \
+            "$sv -cert $P/$k.pem -key $P/$k.key" "hello only"
+    done
+done
+# The client's OCSP response in client authentication (ADR-049). OpenSSL neither asks for one
+# nor sends one: its client ignores the status_request of our CertificateRequest (soft fail
+# passes, hard fail refuses it), and our client staples nothing when not asked.
+s_client_case "1.3 client auth, client OCSP soft-fail (none sent)" \
+    "$S --ca $P/ca.pem --require --client-ocsp-policy soft" \
+    "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
+s_server_case "1.3 client auth, client OCSP not asked" \
+    "-cert $P/p256.pem -key $P/p256.key -tls1_3 -Verify 1" \
+    "--cert $P/client.pem --key $P/client.key --client-ocsp-file $P/ocsp-client.der"
+next_port
+"$ONLY" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require --client-ocsp-policy hard \
+    > "$OUT/srv.log" 2>&1 &
+sp=$!
+wait_port "$PORT"
+(echo a; sleep 0.5) | timeout 10 openssl s_client -connect "127.0.0.1:$PORT" -servername localhost \
+    -CAfile "$P/ca.pem" -tls1_3 -cert "$P/client.pem" -key "$P/client.key" > "$OUT/cli.log" 2>&1
+sleep 0.3
+if grep -q "no stapled OCSP response" "$OUT/srv.log"; then
+    ok "openssl -> only server: 1.3 client OCSP hard-fail refuses a client without one"
+else
+    ko "openssl -> only server: 1.3 client OCSP hard-fail" "$OUT/srv.log"
+fi
+kill $sp 2>/dev/null
+wait $sp 2>/dev/null
+# only both ways over TCP: good, revoked, missing (hard fail).
+only_client_ocsp_case() { # name server-policy "client args" expect(ok|pattern)
+    local name=$1 pol=$2 cargs=$3 want=$4
+    next_port
+    # shellcheck disable=SC2086
+    "$ONLY" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require \
+        --client-ocsp-policy "$pol" > "$OUT/srv.log" 2>&1 &
+    local sp=$!
+    wait_port "$PORT"
+    # shellcheck disable=SC2086
+    "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --cert "$P/client.pem" \
+        --key "$P/client.key" $cargs > "$OUT/cli.log" 2>&1
+    local rc=$?
+    sleep 0.3
+    if [ "$want" = ok ] && [ $rc = 0 ] && grep -q "^server: .*ocsp=[1-9]" "$OUT/srv.log"; then
+        ok "only client -> only server: $name ($(grep -m1 -o 'ocsp=[0-9]*' "$OUT/srv.log"))"
+    elif [ "$want" != ok ] && [ $rc != 0 ] && grep -q "$want" "$OUT/srv.log"; then
+        ok "only client -> only server: $name (refused: $want)"
+    else
+        ko "only client -> only server: $name" "$OUT/srv.log"
+    fi
+    kill $sp 2>/dev/null
+    wait $sp 2>/dev/null
+}
+only_client_ocsp_case "1.3 client OCSP hard-fail, good" hard "--client-ocsp-file $P/ocsp-client.der" ok
+only_client_ocsp_case "1.3 client OCSP soft-fail, revoked" soft \
+    "--client-ocsp-file $P/ocsp-client-revoked.der" "revoked"
+only_client_ocsp_case "1.3 client OCSP hard-fail, none" hard "" "no stapled OCSP response"
 # Resumption: tickets in 1.3, tickets and session IDs in 1.2.
 s_server_case "1.3 resumption" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--count 3 --expect-resume"
 s_server_case "1.2 resumption (ticket)" "-cert $P/p256.pem -key $P/p256.key -tls1_2" \
@@ -451,7 +535,7 @@ else
 fi
 
 # Go crypto/tls.
-for k in rsa p256 p384 ed25519; do
+for k in rsa p256 p384 p521 ed25519; do
     go_server_case "1.3 $k cert" "-cert $P/$k.pem -key $P/$k.key" ""
     go_server_case "1.2 $k cert" "-cert $P/$k.pem -key $P/$k.key -tls12" "--tls12"
     go_client_case "1.3 $k cert" "--cert $P/$k.pem --key $P/$k.key" ""
@@ -464,7 +548,7 @@ for s in 0xc02b 0xc02c 0xcca9; do
     go_server_case "1.2 suite $s" "-cert $P/p256.pem -key $P/p256.key -suite $s" "--tls12"
     go_client_case "1.2 suite $s" "$S" "-tls12 -suite $s"
 done
-for c in 29 23 24; do
+for c in 29 23 24 25; do
     go_client_case "1.3 curve $c" "$S" "-curve $c"
     go_server_case "1.3 curve $c" "-cert $P/p256.pem -key $P/p256.key -curve $c" ""
 done

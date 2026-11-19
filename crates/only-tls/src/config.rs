@@ -531,6 +531,7 @@ impl ServerConfig {
             alpn: Vec::new(),
             client_auth: None,
             client_crls: None,
+            client_ocsp: RevocationPolicy::Off,
             session_cache: 256,
             tickets: false,
             tls13_only: false,
@@ -572,6 +573,7 @@ pub struct ServerConfigBuilder {
     alpn: Vec<Vec<u8>>,
     client_auth: Option<(RootCerts, bool)>,
     client_crls: Option<(Crls, RevocationPolicy)>,
+    client_ocsp: RevocationPolicy,
     session_cache: usize,
     tickets: bool,
     tls13_only: bool,
@@ -610,6 +612,7 @@ impl fmt::Debug for ServerConfigBuilder {
                 &self.sni.iter().map(|s| &s.0).collect::<Vec<_>>(),
             )
             .field("client_auth", &self.client_auth.as_ref().map(|c| c.1))
+            .field("client_ocsp_policy", &self.client_ocsp)
             .field("session_cache", &self.session_cache)
             .field("tickets", &self.tickets)
             .field("tls13_only", &self.tls13_only)
@@ -671,6 +674,25 @@ impl ServerConfigBuilder {
     /// [`client_auth_optional`](Self::client_auth_optional).
     pub fn client_crls(mut self, crls: Crls, policy: RevocationPolicy) -> Self {
         self.client_crls = Some((crls, policy));
+        self
+    }
+
+    /// Asks TLS 1.3 clients for an OCSP response with their certificate (an empty
+    /// status_request in the CertificateRequest, RFC 8446 section 4.4.2.1) and validates the
+    /// one stapled to the leaf's CertificateEntry as
+    /// [`ClientConfigBuilder::ocsp_policy`] validates a server's (ADR-038, ADR-049): signed by
+    /// the leaf's issuer or a responder it delegated, about this certificate, current within 5
+    /// minutes. [`SoftFail`](RevocationPolicy::SoftFail) refuses only a valid "revoked"
+    /// (`certificate_revoked`); [`HardFail`](RevocationPolicy::HardFail) requires a valid
+    /// "good" (else `bad_certificate_status_response`). TLS 1.2 has no way for a client to
+    /// send one, so under hard fail TLS 1.2 client certificates are refused (pair it with
+    /// [`tls13_only`](Self::tls13_only)). Resumed sessions are not checked again; what the
+    /// client sent is [`TlsInfo::ocsp_response`](crate::TlsInfo::ocsp_response). Needs
+    /// [`client_auth_required`](Self::client_auth_required) or
+    /// [`client_auth_optional`](Self::client_auth_optional); default
+    /// [`RevocationPolicy::Off`] (nothing asked).
+    pub fn client_ocsp_policy(mut self, policy: RevocationPolicy) -> Self {
+        self.client_ocsp = policy;
         self
     }
 
@@ -867,6 +889,11 @@ impl ServerConfigBuilder {
         if self.client_auth.as_ref().is_some_and(|(r, _)| r.is_empty()) {
             return Err(Error::new("client authentication roots: no roots"));
         }
+        if self.client_ocsp != RevocationPolicy::Off && self.client_auth.is_none() {
+            return Err(Error::new(
+                "client OCSP policy without client authentication",
+            ));
+        }
         let mut default = certified(&self.chain, &self.key)?;
         default.ocsp.clone_from(&self.ocsp);
         let mut by_name = HashMap::new();
@@ -936,6 +963,7 @@ impl ServerConfigBuilder {
             alpn: self.alpn,
             client_auth: self.client_auth.map(|(r, req)| (Arc::new(r.0), req)),
             client_crls: crl_check(self.client_crls),
+            client_ocsp: self.client_ocsp,
             cache: (self.session_cache > 0).then(|| SessionCache::new(self.session_cache)),
             ticketer,
             tls12: suites.iter().any(|s| !s.is_tls13()),
@@ -996,6 +1024,7 @@ impl ClientConfig {
             roots: RootCerts::empty(),
             alpn: Vec::new(),
             client_cert: None,
+            client_cert_ocsp: None,
             insecure: false,
             sni: true,
             resumption: true,
@@ -1031,6 +1060,7 @@ pub struct ClientConfigBuilder {
     roots: RootCerts,
     alpn: Vec<Vec<u8>>,
     client_cert: Option<(Vec<Certificate>, PrivateKey)>,
+    client_cert_ocsp: Option<Vec<u8>>,
     insecure: bool,
     sni: bool,
     resumption: bool,
@@ -1053,6 +1083,10 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("roots", &self.roots)
             .field("alpn", &self.alpn)
             .field("client_cert", &self.client_cert.is_some())
+            .field(
+                "client_cert_ocsp_response",
+                &self.client_cert_ocsp.is_some(),
+            )
             .field("insecure", &self.insecure)
             .field("sni", &self.sni)
             .field("resumption", &self.resumption)
@@ -1088,6 +1122,16 @@ impl ClientConfigBuilder {
     /// Presents `chain` (leaf first) and `key` when the server asks for a client certificate.
     pub fn client_cert(mut self, chain: Vec<Certificate>, key: PrivateKey) -> Self {
         self.client_cert = Some((chain, key));
+        self
+    }
+
+    /// Staples `der`, an OCSP response (RFC 6960) for the client certificate's leaf, when a
+    /// TLS 1.3 server asks for one (status_request in its CertificateRequest; it goes in the
+    /// leaf's CertificateEntry, RFC 8446 section 4.4.2.1). TLS 1.2 cannot carry it. Checked
+    /// only to be a successful DER OCSPResponse; refreshing it is the caller's job. Needs
+    /// [`client_cert`](Self::client_cert) (ADR-049).
+    pub fn client_cert_ocsp_response(mut self, der: impl Into<Vec<u8>>) -> Self {
+        self.client_cert_ocsp = Some(der.into());
         self
     }
 
@@ -1237,13 +1281,23 @@ impl ClientConfigBuilder {
                 if chain.is_empty() {
                     return Err(Error::new("empty client certificate chain"));
                 }
-                Some(Arc::new(CertKey::new(
+                let mut ck = CertKey::new(
                     chain.iter().map(|c| c.0.clone()).collect(),
                     key.parse()
                         .map_err(|e| Error::wrap("client certificate", e))?,
-                )))
+                );
+                if let Some(r) = &self.client_cert_ocsp {
+                    check_ocsp_response(r)?;
+                    ck.ocsp = Some(r.clone());
+                }
+                Some(Arc::new(ck))
             }
         };
+        if self.client_cert_ocsp.is_some() && cert.is_none() {
+            return Err(Error::new(
+                "client OCSP response without a client certificate",
+            ));
+        }
         let mut suites = match &self.suites {
             Some(ids) => suites_from_ids(ids)?,
             None => suites::ALL.to_vec(),

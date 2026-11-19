@@ -52,6 +52,7 @@ fn fixture() -> &'static Fixture {
         let server_auth = build(
             ServerConfig::builder(chain, pk)
                 .client_auth_optional(roots.clone())
+                .client_ocsp_policy(crate::RevocationPolicy::SoftFail)
                 .__force_hello_retry(true),
         );
         let client = ClientConfig::builder()
@@ -97,8 +98,8 @@ fn feed(c: &mut Connection, data: &[u8]) {
 }
 
 /// `tls_server`: arbitrary bytes as what a client sends to a server (TLS 1.3 / 1.2, with and
-/// without client authentication and a forced HelloRetryRequest, record_size_limit, OCSP
-/// stapling); never panics. Also parses the input directly as handshake messages (a
+/// without client authentication (asking for the client's OCSP response) and a forced
+/// HelloRetryRequest, record_size_limit, OCSP stapling); never panics. Also parses the input directly as handshake messages (a
 /// CompressedCertificate among them, and the QUIC transport parameters peek of a whole
 /// ClientHello), and what compresses decompresses to the same bytes.
 pub fn server(data: &[u8]) {

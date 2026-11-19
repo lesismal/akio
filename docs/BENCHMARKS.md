@@ -860,6 +860,34 @@ Ed448 and X448 are portable constant-time code on the generic seven-limb Montgom
 assembly, no precomputed base-point table); they are not on any default fast path (TLS offers
 x448 last).
 
+#### P-521 (`--example pk_bench 521`, `tls-bench handshakes 2`, CPU 2)
+
+2026-11-19, ADR-049, the same host through `quiet.sh` (load from processes outside the benchmark
+lock during the run: the handshake rounds below vary by up to 30%). ring has no P-521, so the
+comparison is OpenSSL 3.0.13 (`openssl speed ecdsap521 ecdhp521`, Ubuntu's build, which has
+OpenSSL's 64-bit P-521 code) on the same core; P-521 has no hardware path here, so the default
+and `ONLY_CRYPTO_PORTABLE=1` runs are the same code (best of the two):
+
+| Operation (op/s) | only-crypto | OpenSSL 3.0.13 | only / OpenSSL |
+|---|---:|---:|---:|
+| P-521 ECDSA sign (SHA-512) | 5,651 | 5,190 | 1.09 |
+| P-521 ECDSA verify | 2,562 | 2,441 | 1.05 |
+| P-521 ECDH | 2,700 | 3,224 | 0.84 |
+| P-521 key generation (`d·G`) | 10,903 | – | – |
+
+On an Apple M-series core (not quiet) against Homebrew's OpenSSL 4.1: sign about 1.07×, verify
+0.85–0.95×, ECDH about 0.54×.
+
+Handshakes with the default configurations (the ClientHello now lists secp521r1, 2 bytes more),
+before = `main` at `436b47e7`, three alternated rounds; best round of each side, as the load
+outside the lock made single rounds unreliable:
+
+| case | before | after | after / before |
+|---|---:|---:|---:|
+| X25519 | 5,391 | 5,411 | 1.00 |
+| secp256r1 | 5,310 | 5,421 | 1.02 |
+| X25519, RSA-2048 certificate | 3,169 | 3,253 | 1.03 |
+
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
 MB/s of message bytes with 13 bytes of AAD, median of three alternating rounds; before = `main`

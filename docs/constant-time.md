@@ -58,6 +58,9 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
 | `x448` | X448 ladder: all-zero scalar (2⁴⁴⁷ after clamping) vs random, fixed peer (portable only: no hardware path, first pass) |
 | `ed448-keygen` | Ed448 key from a seed (SHAKE256, `[s]B` with masked table scans): all-zero vs random seed |
 | `ed448-sign` | Ed448 sign (`[r]B`, scalar arithmetic modulo ℓ): all-zero vs random seed, fixed message |
+| `p521-ecdh` | P-521 ECDH `d·Q`: scalar 1 vs random scalar, fixed peer (portable only, first pass; ADR-049) |
+| `p521-keygen` | P-521 public key `d·G` (signed 4-bit comb): scalar 1 vs random |
+| `p521-sign` | ECDSA P-521 sign (RFC 6979 nonce, `k·G`, `k⁻¹`): key 1 vs random key, fixed message |
 | `rsa2048-sign-msg` | RSA-2048 PKCS#1 v1.5 sign (CRT, blinding): all-zero digest vs random digest |
 | `rsa2048-sign-key` | RSA-2048 sign: test key A vs test key B (two fixed keys: a random 2048-bit key per measurement is too slow to make) |
 | `aes128-gcm-open-tag` | AES-128-GCM open, 256 bytes: tag wrong in the last byte vs random tag (how much of the tag matches) |
@@ -163,3 +166,9 @@ Ed448 and X448 (2026-11-19, ADR-046), same host and method, through `quiet.sh`, 
 target; these targets have no hardware path, so one pass covers them: `x448` 0.79 (226,650
 measurements), `ed448-keygen` 1.68 (232,300), `ed448-sign` 1.34 (105,600), `sanity-null` 2.05
 (10⁸). No difference seen.
+
+P-521 (2026-11-19, ADR-049), same host and method, through `quiet.sh`, core 2, 60 s per target,
+one pass (no hardware path): `p521-ecdh` 0.96 (134,400 measurements), `p521-keygen` 1.42
+(579,000), `p521-sign` 2.09 (278,100), `sanity-null` 0.88 (10⁸). No difference seen. The P-521
+code was not disassembled; its argument is the source (masked selects and full-table scans,
+complete formulas without special cases, fixed inversion chains) plus this measurement.

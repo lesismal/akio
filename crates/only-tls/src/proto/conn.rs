@@ -131,7 +131,7 @@ impl Machine {
     pub(crate) fn ocsp(&self) -> Option<&[u8]> {
         match self {
             Machine::Client(c) => c.ocsp.as_deref(),
-            Machine::Server(_) => None,
+            Machine::Server(s) => s.peer_ocsp.as_deref(),
         }
     }
 
@@ -301,8 +301,10 @@ impl Connection {
         self.m.early()
     }
 
-    /// The OCSP response the server stapled to its certificate (client side, when asked for
-    /// with `ocsp_stapling`): DER, not validated.
+    /// The OCSP response the peer stapled to its certificate, DER: the server's (client side,
+    /// when asked for with `ocsp_stapling`; validated only under an `ocsp_policy`), or the
+    /// client's (server side, TLS 1.3, when asked for with `client_ocsp_policy`, which
+    /// validated it).
     pub fn ocsp_response(&self) -> Option<&[u8]> {
         self.m.ocsp()
     }

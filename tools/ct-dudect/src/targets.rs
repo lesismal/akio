@@ -11,7 +11,7 @@ use only_crypto::gcm::AesGcm;
 use only_crypto::hash::Sha256;
 use only_crypto::mac::Hmac;
 use only_crypto::rsa::HashAlg;
-use only_crypto::{ed448, p256, rsa, x448, x25519};
+use only_crypto::{ed448, p256, p521, rsa, x448, x25519};
 
 use crate::ct;
 use crate::rng::Rng;
@@ -138,6 +138,30 @@ pub(crate) fn all() -> Vec<Spec> {
             batch: 1000,
             about: "P-256 ECDSA sign (RFC 6979 nonce, k·G, k⁻¹): key 1 vs random key, fixed message",
             make: p256_sign,
+        },
+        Spec {
+            name: "p521-ecdh",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 200,
+            about: "P-521 ECDH d·Q (portable only): scalar 1 vs random scalar, fixed peer",
+            make: p521_ecdh,
+        },
+        Spec {
+            name: "p521-keygen",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 500,
+            about: "P-521 public key d·G (fixed-base comb, portable only): scalar 1 vs random scalar",
+            make: p521_keygen,
+        },
+        Spec {
+            name: "p521-sign",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 300,
+            about: "P-521 ECDSA sign (RFC 6979 nonce, k·G, k⁻¹; portable only): key 1 vs random key, fixed message",
+            make: p521_sign,
         },
         Spec {
             name: "x25519",
@@ -349,6 +373,60 @@ fn p256_sign() -> Box<dyn Target> {
     boxed(
         [0x5a_u8; 32],
         |_, c, rng| p256_key(c, rng),
+        |msg, k| {
+            black_box(black_box(&*k).sign(msg));
+        },
+    )
+}
+
+const ONE_521: [u8; 66] = {
+    let mut b = [0u8; 66];
+    b[65] = 1;
+    b
+};
+
+fn p521_key(c: u8, rng: &mut Rng) -> p521::SecretKey {
+    if c == 0 {
+        return p521::SecretKey::from_bytes(&ONE_521).expect("scalar 1");
+    }
+    loop {
+        let mut b = rng.array::<66>();
+        b[0] &= 1;
+        if let Ok(k) = p521::SecretKey::from_bytes(&b) {
+            return k;
+        }
+    }
+}
+
+fn p521_ecdh() -> Box<dyn Target> {
+    let mut seed = [0x42; 66];
+    seed[0] = 1;
+    let peer = p521::SecretKey::from_bytes(&seed)
+        .expect("peer key")
+        .public_key();
+    boxed(
+        peer,
+        |_, c, rng| p521_key(c, rng),
+        |peer, k| {
+            black_box(black_box(&*k).diffie_hellman(peer));
+        },
+    )
+}
+
+fn p521_keygen() -> Box<dyn Target> {
+    boxed(
+        (),
+        |(), c, rng| p521_key(c, rng),
+        |(), k| {
+            black_box(black_box(&*k).public_key());
+        },
+    )
+}
+
+fn p521_sign() -> Box<dyn Target> {
+    boxed(
+        [0x5a_u8; 32],
+        |_, c, rng| p521_key(c, rng),
         |msg, k| {
             black_box(black_box(&*k).sign(msg));
         },

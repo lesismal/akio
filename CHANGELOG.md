@@ -43,6 +43,28 @@ ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):
   `webrtc-interop` example takes `ONLY_INTEROP_*` switches and a lossy proxy for the SFU.
 - Benchmark (gpu51 same-run A/B against main 436b47e7, `quiet.sh`, CPUs 2-9, in-process peers with DTLS 1.2 on both sides, medians of the six quiet pairs: peer connections per second 0.990x, VP8 media 4000-byte frames 0.995x (752 vs 756 MB/s), 120-byte frames 0.993x: no regression. With the new default DTLS 1.3 a handshake costs about 5 % more CPU than DTLS 1.2; media throughput is the same, and with cryptex too).
 
+### Added: P-521, RSA-PSS keys and the client's OCSP response in TLS 1.3 (only-crypto, only-x509, only-tls)
+
+ADR-049 (docs/adr/049-p521-rsa-pss-keys-client-ocsp.md), additive:
+
+- **only-crypto**: `p521` (ECDH and ECDSA on NIST P-521 with the API of `p256` / `p384`, 66-byte
+  scalars, SHA-512 by default, RFC 6979 nonces; portable constant-time code on its own
+  `2⁵²¹ - 1` field and complete formulas; ct-dudect targets `p521-ecdh`, `p521-keygen`,
+  `p521-sign`); `pkey::PublicKey::{P521, RsaPss}`, `pkey::PrivateKey::{P521, RsaPss}` and
+  `pkey::PssParams` for `id-RSASSA-PSS` keys (RFC 4055) with or without parameters, which sign
+  and verify RSA-PSS only, within their parameters; `der::oid::SECP521R1`. Wycheproof P-521
+  ECDSA / ECDH and RFC 6979 A.2.7 vectors, OpenSSL-made PSS keys.
+- **only-x509**: P-521 and RSA-PSS-key certificates parse, verify and are issued (OpenSSL-made
+  chains in `tests/data/pss-p521`).
+- **only-tls**: group secp521r1 (offered last), `ecdsa_secp521r1_sha512` and
+  `rsa_pss_pss_sha256/384/512` (server and client certificates, TLS 1.3 and 1.2);
+  `ServerConfigBuilder::client_ocsp_policy` asks TLS 1.3 clients for an OCSP response with
+  their certificate and validates it (ADR-038 policies; TLS 1.2 client certificates are refused
+  under hard fail), `ClientConfigBuilder::client_cert_ocsp_response` sends one when asked, and
+  the server's `TlsInfo::ocsp_response` holds it. Interop with OpenSSL and Go
+  (`tools/interop/tls/run.sh`). `status_request_v2` stays unimplemented (TLS 1.2 only, obsolete).
+- Default ClientHellos list secp521r1 (2 more bytes); nothing else changes in default handshakes.
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

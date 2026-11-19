@@ -237,9 +237,12 @@ fn rfc8448_client_hello_drives_our_server() {
 pub(crate) enum Kind {
     P256,
     P384,
+    P521,
     Ed25519,
     Ed448,
     Rsa,
+    /// The RSA test key as `id-RSASSA-PSS`, restricted to SHA-256 (rsa_pss_pss_sha256).
+    RsaPss,
 }
 
 pub(crate) struct Pki {
@@ -256,7 +259,15 @@ pub(crate) fn private_key(kind: Kind) -> pkey::PrivateKey {
             pkey::PrivateKey::Ed25519(only_crypto::ed25519::SigningKey::generate().unwrap())
         }
         Kind::Ed448 => pkey::PrivateKey::Ed448(only_crypto::ed448::SigningKey::generate().unwrap()),
+        Kind::P521 => pkey::PrivateKey::P521(only_crypto::p521::SecretKey::generate().unwrap()),
         Kind::Rsa => pkey::PrivateKey::from_pem(include_bytes!("../testdata/rsa2048.pem")).unwrap(),
+        Kind::RsaPss => match private_key(Kind::Rsa) {
+            pkey::PrivateKey::Rsa(k) => pkey::PrivateKey::RsaPss(
+                k,
+                Some(pkey::PssParams::new(only_crypto::rsa::HashAlg::Sha256, 32)),
+            ),
+            _ => unreachable!(),
+        },
     }
 }
 
@@ -383,9 +394,11 @@ fn tls13_certificate_types() {
     for kind in [
         Kind::P256,
         Kind::P384,
+        Kind::P521,
         Kind::Ed25519,
         Kind::Ed448,
         Kind::Rsa,
+        Kind::RsaPss,
     ] {
         let p = pki(kind, &["localhost"]);
         let (mut c, mut s) = connect(
@@ -407,11 +420,13 @@ fn tls12_suites_and_keys() {
         (Kind::Ed25519, &[0xc02b, 0xcca9]),
         (Kind::Ed448, &[0xc02c]),
         (Kind::Rsa, &[0xc02f, 0xc030, 0xcca8]),
+        (Kind::P521, &[0xc02c]),
+        (Kind::RsaPss, &[0xc02f, 0xcca8]),
     ];
     for (kind, suites) in cases {
         let p = pki(*kind, &["localhost"]);
         for suite in *suites {
-            for group in [0x001du16, 0x0017, 0x0018, 0x001e] {
+            for group in [0x001du16, 0x0017, 0x0018, 0x001e, 0x0019] {
                 let s = server(&p)
                     .__suites(&[*suite])
                     .__groups(&[group])
@@ -600,7 +615,13 @@ fn tls12_resumption() {
 #[test]
 fn client_authentication() {
     let sp = pki(Kind::P256, &["localhost"]);
-    for kind in [Kind::P256, Kind::Ed25519, Kind::Rsa] {
+    for kind in [
+        Kind::P256,
+        Kind::P521,
+        Kind::Ed25519,
+        Kind::Rsa,
+        Kind::RsaPss,
+    ] {
         let cp = pki(kind, &["client"]);
         for tls12 in [false, true] {
             let s = server(&sp)
@@ -1189,3 +1210,17 @@ fn malformed_records_and_finished() {
 #[cfg(feature = "experimental-ktls")]
 #[path = "ktls_tests.rs"]
 mod ktls;
+
+/// secp521r1 as the only group on either side, TLS 1.3 (key share in the first ClientHello, or
+/// after a HelloRetryRequest when the client led with X25519).
+#[test]
+fn tls13_secp521r1() {
+    let p = pki(Kind::P521, &["localhost"]);
+    for client_groups in [&[0x0019u16][..], &[0x001d, 0x0019]] {
+        let s = server(&p).__groups(&[0x0019]).build().unwrap();
+        let c = client(&p).__groups(client_groups).build().unwrap();
+        let (mut c, mut s) = connect(&s, &c, "localhost").unwrap();
+        assert_eq!(c.version_name(), Some("TLSv1_3"));
+        exchange(&mut c, &mut s);
+    }
+}

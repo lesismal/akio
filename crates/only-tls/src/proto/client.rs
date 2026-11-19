@@ -72,6 +72,8 @@ pub(crate) struct Client {
     /// connection started in until compatible version negotiation moves it.
     pub(crate) quic_ticket_version: u32,
     cert_req: Option<(Vec<u8>, Vec<u16>)>,
+    /// The TLS 1.3 CertificateRequest asked for an OCSP response (status_request).
+    cert_req_ocsp: bool,
     pub(crate) peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
     pub(crate) alpn: Option<Vec<u8>>,
@@ -186,6 +188,7 @@ impl Client {
             resumed: false,
             quic_ticket_version: quic_version,
             cert_req: None,
+            cert_req_ocsp: false,
             peer_chain: Vec::new(),
             peer_key: None,
             alpn: None,
@@ -807,6 +810,11 @@ impl Client {
                     self.peer_cert_comp = CompAlgs::from_ids(&parse_cert_comp(&mut x)?)
                         .and(self.cfg.cert_compression);
                 }
+                // RFC 8446 4.4.2.1: empty; a CertificateStatusRequest body is tolerated.
+                EXT_STATUS_REQUEST => {
+                    self.cert_req_ocsp = true;
+                    x.rest();
+                }
                 _ => {
                     x.rest();
                 }
@@ -923,7 +931,7 @@ impl Client {
                 .and_then(|c| sig::choose(&c.key, &algs, true).map(|s| (c.clone(), s)));
             match chosen {
                 Some((ck, scheme)) => {
-                    let m = ck.certificate13(&ctx, false, self.peer_cert_comp);
+                    let m = ck.certificate13(&ctx, self.cert_req_ocsp, self.peer_cert_comp);
                     self.t.add(&m);
                     out.push(Action::Msg(Level::Handshake, m));
                     let content = sig::tls13_content(false, &self.t.hash());
@@ -1094,7 +1102,13 @@ impl Client {
     /// Certificate; TLS 1.2: in a CertificateStatus before the ServerKeyExchange).
     fn check_ocsp(&mut self) -> Result<(), Fatal> {
         match self.ocsp_certs.take() {
-            Some(c) => check_stapled_ocsp(self.cfg.ocsp_policy, self.ocsp.as_deref(), &c.0, &c.1),
+            Some(c) => check_stapled_ocsp(
+                self.cfg.ocsp_policy,
+                self.ocsp.as_deref(),
+                &c.0,
+                &c.1,
+                "server",
+            ),
             None => Ok(()),
         }
     }
@@ -1119,11 +1133,12 @@ impl Client {
             .as_ref()
             .ok_or_else(|| Fatal::new(Alert::InternalError, "no peer key"))?;
         let ok_key = match suite.tls12 {
-            Some(Auth12::Rsa) => matches!(key, PublicKey::Rsa(_)),
+            Some(Auth12::Rsa) => sig::is_rsa_public(key),
             _ => matches!(
                 key,
                 PublicKey::P256(_)
                     | PublicKey::P384(_)
+                    | PublicKey::P521(_)
                     | PublicKey::Ed25519(_)
                     | PublicKey::Ed448(_)
             ),

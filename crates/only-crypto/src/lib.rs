@@ -43,12 +43,14 @@
 //! - [`ed25519`]: Ed25519 signatures (RFC 8032) with strict verification.
 //! - [`x448`], [`ed448`]: X448 (RFC 7748) and Ed448 (RFC 8032), portable constant-time code.
 //! - [`dsa`]: DSA signature verification (FIPS 186-4), for legacy certificates.
-//! - [`p256`], [`p384`]: ECDH and ECDSA on the NIST curves (RFC 6979 nonces; DER and
-//!   fixed-width signatures; validated SEC1 points).
+//! - [`p256`], [`p384`], [`p521`]: ECDH and ECDSA on the NIST curves (RFC 6979 nonces; DER and
+//!   fixed-width signatures; validated SEC1 points; P-521 on its own Mersenne-prime field with
+//!   complete formulas, portable Rust).
 //! - [`rsa`]: RSA PKCS#1 v1.5 and PSS signatures, 2048–8192-bit keys (CRT, blinding).
 //! - [`der`], [`pem`]: strict ASN.1 DER reading/writing, PEM.
-//! - [`pkey`]: algorithm-agnostic keys (PKCS#8, SEC1, PKCS#1, SubjectPublicKeyInfo) and
-//!   signatures by [`SignatureAlgorithm`](pkey::SignatureAlgorithm).
+//! - [`pkey`]: algorithm-agnostic keys (PKCS#8, SEC1, PKCS#1, SubjectPublicKeyInfo; RSA keys as
+//!   `rsaEncryption` or `id-RSASSA-PSS` with [`PssParams`](pkey::PssParams)) and signatures by
+//!   [`SignatureAlgorithm`](pkey::SignatureAlgorithm).
 //!
 //! Timing: secret-dependent work (field and scalar arithmetic, scalar multiplication, RSA
 //! private exponentiation) runs without secret-dependent branches or table indices: Montgomery
@@ -97,6 +99,7 @@ pub mod kdf;
 pub mod mac;
 pub mod p256;
 pub mod p384;
+pub mod p521;
 pub mod pem;
 pub mod pkey;
 pub mod rand;

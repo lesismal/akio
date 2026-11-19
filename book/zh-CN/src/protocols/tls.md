@@ -35,16 +35,17 @@
 ## 协商结果
 
 `tls_info(&conn)` 返回 `TlsInfo`，包含 `handshaking`、`alpn`、`server_name`（SNI，仅服务端）、
-`version`、`early_data` 与 `early_data_len`（见[早期数据](#早期数据0-rtt)）以及 `ocsp_response`（客户端，
-见 [OCSP stapling](#ocsp-stapling)）；非 TLS 连接返回 `None`。
+`version`、`early_data` 与 `early_data_len`（见[早期数据](#早期数据0-rtt)）以及 `ocsp_response`（客户端：
+服务端的响应，见 [OCSP stapling](#ocsp-stapling)；服务端：TLS 1.3 客户端的响应，见[吊销检查](#吊销检查)）；
+非 TLS 连接返回 `None`。
 
 ## 协议支持
 
 | | TLS 1.3（RFC 8446） | TLS 1.2（RFC 5246） |
 |---|---|---|
-| 密钥交换 | X25519、secp256r1、secp384r1、x448（排在最后）；HelloRetryRequest | 同样这些组上的 ECDHE（无 RSA 密钥交换、无静态 DH） |
+| 密钥交换 | X25519、secp256r1、secp384r1、x448、secp521r1（排在最后）；HelloRetryRequest | 同样这些组上的 ECDHE（无 RSA 密钥交换、无静态 DH） |
 | 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
-| 证书 | ECDSA P-256/P-384、Ed25519、Ed448、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
+| 证书 | ECDSA P-256/P-384/P-521、Ed25519、Ed448、RSA（PSS 签名：`rsaEncryption` 密钥用 `rsa_pss_rsae_*`，`id-RSASSA-PSS` 密钥用 `rsa_pss_pss_*`） | 同上，RSA（`rsaEncryption` 密钥）也可用 PKCS#1 v1.5 |
 | 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
 | 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过；证书压缩（RFC 8879：zlib、brotli、zstd） | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
 | record_size_limit（RFC 8449） | 支持 | 支持 |
@@ -83,6 +84,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 | 证书压缩 | 默认开启；`.certificate_compression(false)` 关闭 | `.certificate_compression(true)` 开启 |
 | OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`；`.ocsp_policy(RevocationPolicy::HardFail)` 校验它 |
 | CRL（[吊销检查](#吊销检查)） | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
+| 客户端的 OCSP 响应（TLS 1.3） | `.client_ocsp_policy(policy)` 请求并校验 | `.client_cert_ocsp_response(der)` 在被请求时发送 |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
 `.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
@@ -226,6 +228,10 @@ let cfg = ClientConfig::builder()
   （id-kp-OCSPSigning）签名、指向该叶证书且当前有效（thisUpdate / nextUpdate 在 5 分钟时钟偏差内）。`SoftFail`
   只拒绝有效的“revoked”（告警 `certificate_revoked`）；`HardFail` 还拒绝缺失、无效、过期或“unknown”的响应
   （`bad_certificate_status_response`）。只覆盖叶证书；恢复的会话不再检查。
+- **客户端的 OCSP 响应**（服务端 `.client_ocsp_policy`，ADR-049）：服务端在 CertificateRequest 中要求 TLS 1.3
+  客户端提供响应（RFC 8446 4.4.2.1），并按相同的规则与策略检查客户端随证书装订的响应。客户端只在被要求时发送
+  `.client_cert_ocsp_response(der)` 的响应。TLS 1.2 无法携带，因此 `HardFail` 下拒绝 TLS 1.2 的客户端证书
+  （请配合 `.tls13_only(true)`）。OpenSSL 与 Go 客户端既不发送也不在意该请求：`SoftFail` 下可以通过。
 - **CRL**（客户端用 `.crls`，服务端检查客户端证书用 `.client_crls`）：根以下的每张证书都用其签发者当前的 CRL
   检查（完整与 delta、issuingDistributionPoint 范围，签名只验证一次），包括间接 CRL 以及由 CA 另一把
   密钥签发的 CRL，前提是签名证书位于对端发送的证书链或根证书中，且自身能验证到同一个根（ADR-046）。被列出的证书以 `certificate_revoked`
@@ -244,8 +250,7 @@ let cfg = ClientConfig::builder()
 
 ## 尚未完成
 
-获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）；RSA-PSS 密钥
-（`rsa_pss_pss_*`）；P-521；
+获取 OCSP 响应或 CRL；中间证书的 OCSP（`status_request_v2`：仅限 TLS 1.2 且已过时，ADR-049）；
 Windows 证书库与 macOS 信任设置。
 
 ## 编写自己的 transport
