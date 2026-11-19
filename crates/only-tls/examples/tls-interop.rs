@@ -7,7 +7,7 @@
 //!                           [--tls12|--tls13] [--suites 0x1301,..] [--groups 0x1d,..]
 //!                           [--tickets] [--count N] [--hrr] [--early-data [--early-max N]]
 //!                           [--record-limit N] [--no-cert-comp | --cert-comp zlib,brotli,zstd]
-//!                           [--ocsp-file resp.der]
+//!                           [--ocsp-file resp.der] [--client-ocsp-policy soft|hard]
 //! tls-interop client <addr> <name> [--ca ca.pem | --insecure] [--cert c.pem --key k.pem]
 //!                           [--alpn ..] [--tls12|--tls13] [--suites ..] [--groups ..]
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
@@ -16,6 +16,7 @@
 //!                           [--no-cert-comp | --cert-comp zlib,brotli,zstd]
 //!                           [--ocsp] [--expect-ocsp resp.der] [--ocsp-policy soft|hard]
 //!                           [--crl file.pem [--crl-policy soft|hard]]
+//!                           [--client-ocsp-file resp.der]
 //! ```
 //!
 //! `--record-limit` sets the record_size_limit sent (RFC 8449), `--expect-record-limit` checks
@@ -24,7 +25,9 @@
 //! default on both sides here); `--ocsp-file` staples a DER OCSP response, `--ocsp` asks for one and
 //! `--expect-ocsp` checks it is exactly that file; `--ocsp-policy` validates the stapled
 //! response (soft or hard fail) and `--crl` checks the server's chain against a CRL file
-//! (PEM or DER).
+//! (PEM or DER). `--client-ocsp-policy` makes the server ask TLS 1.3 clients for an OCSP response
+//! with their certificate and validate it; `--client-ocsp-file` is the client's (ADR-049). The
+//! server's `ocsp=` field is the length of the client's response it received.
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
 //! checks the echo and prints what was negotiated, one line per connection. With
@@ -86,6 +89,8 @@ struct Opts {
     ocsp_policy: RevocationPolicy,
     crl: Option<String>,
     crl_policy: RevocationPolicy,
+    client_ocsp_policy: RevocationPolicy,
+    client_ocsp_file: Option<String>,
 }
 
 fn policy(s: &str) -> RevocationPolicy {
@@ -140,6 +145,8 @@ fn parse() -> Opts {
         ocsp_policy: RevocationPolicy::Off,
         crl: None,
         crl_policy: RevocationPolicy::SoftFail,
+        client_ocsp_policy: RevocationPolicy::Off,
+        client_ocsp_file: None,
     };
     match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
         Ok("1") => o.ktls = true,
@@ -198,6 +205,8 @@ fn parse() -> Opts {
             "--ocsp-policy" => o.ocsp_policy = policy(&val()),
             "--crl" => o.crl = Some(val()),
             "--crl-policy" => o.crl_policy = policy(&val()),
+            "--client-ocsp-policy" => o.client_ocsp_policy = policy(&val()),
+            "--client-ocsp-file" => o.client_ocsp_file = Some(val()),
             _ => o.pos.push(x),
         }
     }
@@ -306,6 +315,7 @@ fn server(o: &Opts) {
         } else {
             b.client_auth_optional(roots(ca))
         };
+        b = b.client_ocsp_policy(o.client_ocsp_policy);
     }
     if !o.suites.is_empty() {
         b = b.__suites(&o.suites);
@@ -401,6 +411,9 @@ fn client(o: &Opts) {
             Certificate::from_pem(&read(c)).expect("cert"),
             PrivateKey::from_pem(&read(k)).expect("key"),
         );
+    }
+    if let Some(f) = &o.client_ocsp_file {
+        b = b.client_cert_ocsp_response(read(f));
     }
     if !o.suites.is_empty() {
         b = b.__suites(&o.suites);

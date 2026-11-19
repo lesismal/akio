@@ -35,8 +35,10 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   证书；以 `no_renegotiation` 警告拒绝重协商。
 - 套件 `TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、`TLS_CHACHA20_POLY1305_SHA256`、
   `ECDHE-{ECDSA,RSA}-AES{128,256}-GCM` 与 `ECDHE-{ECDSA,RSA}-CHACHA20-POLY1305`；组 X25519、
-  secp256r1、secp384r1、x448（排在最后；ADR-046）；签名方案 ECDSA P-256/P-384、Ed25519、Ed448、
-  RSA-PSS（rsae）、RSA PKCS#1 v1.5（TLS 1.2 与证书）。
+  secp256r1、secp384r1、x448（ADR-046）、secp521r1（排在最后；ADR-049）；签名方案 ECDSA
+  P-256/P-384/P-521、Ed25519、Ed448、使用 `rsaEncryption` 密钥的 RSA-PSS（`rsa_pss_rsae_*`）与使用
+  `id-RSASSA-PSS` 密钥的 RSA-PSS（`rsa_pss_pss_*`，受密钥参数约束，TLS 1.3 与 1.2；ADR-049）、
+  RSA PKCS#1 v1.5（TLS 1.2 与证书）。
 - 记录层：16 KiB 分片、TLS 1.3 内层内容类型与填充、带降级哨兵的版本协商、严格的状态机、握手消息跨
   记录重组且绝不跨密钥切换、告警与 close_notify、常量时间的 Finished / 绑定值校验。
 - 证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）。
@@ -76,6 +78,12 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   `ServerConfigBuilder::client_crls(Crls, policy)` 用 CRL（完整与 delta，RFC 5280）检查对端证书链中根以下的
   每张证书；硬失败下没有当前 CRL 覆盖的证书会失败（`certificate_unknown`）。恢复的会话不再检查；刷新 CRL
   需要构建新的配置。默认全部关闭，没有开销。
+- **客户端的 OCSP 响应**（TLS 1.3 客户端认证，RFC 8446 4.4.2.1；ADR-049）：
+  `ServerConfigBuilder::client_ocsp_policy(policy)` 请求它（在 CertificateRequest 中发送空的
+  status_request），并按与上面相同的策略和规则校验客户端装订在叶证书 CertificateEntry 中的响应；
+  `ClientConfigBuilder::client_cert_ocsp_response(der)` 是客户端被要求时装订的响应。TLS 1.2 无法携带，
+  因此硬失败时拒绝 TLS 1.2 的客户端证书；OpenSSL 与 Go 既不发送也不请求（它们的客户端忽略该请求：软失败
+  下可通过）。服务端的 `TlsInfo::ocsp_response` 即客户端的响应。
 
 ### 早期数据（0-RTT）
 
@@ -102,8 +110,9 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 ClientHello 中再次发送同一请求。只为可安全重复的请求（幂等读取）开启它，其他操作前先检查
 `TlsInfo::early_data` / `Early-Data: 1`，对其余请求回 `425 Too Early`。
 
-未实现：TLS 1.3 客户端认证中客户端的 OCSP 响应、`status_request_v2`（中间证书的
-OCSP）、获取 OCSP 响应或 CRL（由应用负责；`only-x509` 给出 URL）、RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
+未实现：`status_request_v2`（RFC 6961，中间证书的 OCSP；仅限 TLS 1.2，从未广泛部署，已被 TLS 1.3 中
+每个 CertificateEntry 自带的状态取代，ADR-049）、获取 OCSP 响应或 CRL（由应用负责；`only-x509` 给出
+URL）、以哈希长度之外的盐长做 RSA-PSS 签名。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
 也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
 feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 
@@ -126,10 +135,14 @@ feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
   的分片、close_notify、降级检测、篡改、意外记录与垃圾数据；record_size_limit（两个版本、双向低至 64 字节的
   限制、超限记录、遵循票据限制的早期数据）、证书压缩（服务端与客户端证书、任一方关闭、格式错误的消息）与
   OCSP stapling（两个版本、SNI、会话恢复），单独及组合测试；吊销检查：每种策略对正常、委托、吊销、未知、过期、
-  伪造、针对其他证书、内容不透明与缺失的装订响应（两个版本），以及服务器与客户端证书链的 CRL。
+  伪造、针对其他证书、内容不透明与缺失的装订响应（两个版本），服务器与客户端证书链的 CRL，客户端的 OCSP
+  响应（正常、委托、吊销、未知、针对其他证书、缺失；TLS 1.2 下各策略）；P-521 与 RSA-PSS 密钥
+  （`id-RSASSA-PSS`）的服务端与客户端证书、secp521r1。
 - 互通（`tools/interop/tls/run.sh`）：与 OpenSSL `s_server` / `s_client` 及 Go `crypto/tls` 双向互通，
   覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN、KeyUpdate、early data 与 OCSP stapling（由
-  `s_client` 验证），本库客户端校验 `s_server -status_file` 的装订响应（正常、吊销、缺失；软/硬失败）并检查
+  `s_client` 验证），secp521r1、P-521 与 RSA-PSS 密钥证书（`rsa_pss_pss_sha256`，TLS 1.3 与 1.2；仅 OpenSSL，
+  Go 不支持 RSA-PSS 密钥）用于服务端与客户端，客户端 OCSP 请求对 OpenSSL（它忽略该请求）以及本库客户端与服务端
+  之间经 TCP（正常、吊销、缺失），本库客户端校验 `s_server -status_file` 的装订响应（正常、吊销、缺失；软/硬失败）并检查
   OpenSSL 生成的 CRL，与以 zlib、brotli、zstd 构建的 OpenSSL 3.2+ 测试这三种证书压缩（Debian 的有 zlib 与 zstd；
   `tools/interop/tls/certcomp.Dockerfile` 构建三者俱全的版本），安装了 GnuTLS 时测试
   record_size_limit 与 OCSP，另有 curl 对

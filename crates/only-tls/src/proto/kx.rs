@@ -1,6 +1,6 @@
 //! Key exchange groups (RFC 8446 section 4.2.7, RFC 8422) and ephemeral key shares.
 
-use only_crypto::{p256, p384, x448, x25519};
+use only_crypto::{p256, p384, p521, x448, x25519};
 
 use super::alert::{Alert, Fatal};
 
@@ -13,8 +13,10 @@ pub enum Group {
     Secp256r1,
     /// secp384r1 (P-384).
     Secp384r1,
-    /// X448 (RFC 7748; offered last by default).
+    /// X448 (RFC 7748; offered after the 256- and 384-bit groups by default).
     X448,
+    /// secp521r1 (P-521; offered last by default, ADR-049).
+    Secp521r1,
 }
 
 impl Group {
@@ -25,6 +27,7 @@ impl Group {
             Group::Secp256r1 => 0x0017,
             Group::Secp384r1 => 0x0018,
             Group::X448 => 0x001e,
+            Group::Secp521r1 => 0x0019,
         }
     }
 
@@ -35,6 +38,7 @@ impl Group {
             0x0017 => Some(Group::Secp256r1),
             0x0018 => Some(Group::Secp384r1),
             0x001e => Some(Group::X448),
+            0x0019 => Some(Group::Secp521r1),
             _ => None,
         }
     }
@@ -47,6 +51,7 @@ impl Group {
             Group::Secp256r1 => KeyShare::P256(p256::SecretKey::generate().map_err(err)?),
             Group::Secp384r1 => KeyShare::P384(p384::SecretKey::generate().map_err(err)?),
             Group::X448 => KeyShare::X448(x448::PrivateKey::generate().map_err(err)?),
+            Group::Secp521r1 => KeyShare::P521(p521::SecretKey::generate().map_err(err)?),
         })
     }
 }
@@ -57,6 +62,7 @@ pub(crate) const DEFAULT_GROUPS: &[Group] = &[
     Group::Secp256r1,
     Group::Secp384r1,
     Group::X448,
+    Group::Secp521r1,
 ];
 
 /// An ephemeral private key.
@@ -65,6 +71,7 @@ pub(crate) enum KeyShare {
     P256(p256::SecretKey),
     P384(p384::SecretKey),
     X448(x448::PrivateKey),
+    P521(p521::SecretKey),
 }
 
 impl KeyShare {
@@ -74,6 +81,7 @@ impl KeyShare {
             KeyShare::P256(_) => Group::Secp256r1,
             KeyShare::P384(_) => Group::Secp384r1,
             KeyShare::X448(_) => Group::X448,
+            KeyShare::P521(_) => Group::Secp521r1,
         }
     }
 
@@ -84,6 +92,7 @@ impl KeyShare {
             KeyShare::P256(k) => k.public_key().to_uncompressed(),
             KeyShare::P384(k) => k.public_key().to_uncompressed(),
             KeyShare::X448(k) => k.public_key().to_vec(),
+            KeyShare::P521(k) => k.public_key().to_uncompressed(),
         }
     }
 
@@ -114,6 +123,13 @@ impl KeyShare {
                 let p: [u8; 56] = peer.try_into().map_err(|_| bad())?;
                 k.diffie_hellman(&p).map(|s| s.to_vec()).map_err(|_| bad())
             }
+            KeyShare::P521(k) => {
+                if peer.len() != 133 || peer[0] != 4 {
+                    return Err(bad());
+                }
+                let p = p521::PublicKey::from_sec1(peer).map_err(|_| bad())?;
+                Ok(k.diffie_hellman(&p).to_vec())
+            }
         }
     }
 }
@@ -143,6 +159,11 @@ mod tests {
         let a = Group::X448.generate().unwrap();
         assert!(a.agree(&[0; 56]).is_err());
         assert!(a.agree(&[0; 32]).is_err());
-        assert!(Group::from_id(0x0019).is_none());
+        assert!(Group::from_id(0x001a).is_none());
+        // A compressed P-521 point is refused (TLS 1.3 key shares are uncompressed).
+        let a = Group::Secp521r1.generate().unwrap();
+        let b = p521::SecretKey::generate().unwrap().public_key();
+        assert!(a.agree(&b.to_compressed()).is_err());
+        assert_eq!(a.agree(&b.to_uncompressed()).unwrap().len(), 66);
     }
 }

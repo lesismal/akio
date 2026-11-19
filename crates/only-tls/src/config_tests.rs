@@ -207,8 +207,22 @@ fn bad_keys_and_errors_are_reported() {
     // Unknown internal suites / groups, or none left.
     let b = || ServerConfig::builder(vec![srv.cert.clone()], srv.key.clone());
     assert!(b().__suites(&[0x0035]).build().is_err());
-    assert!(b().__groups(&[0x0019]).build().is_err());
+    assert!(b().__groups(&[0x001a]).build().is_err());
     assert!(b().__groups(&[]).build().is_err());
+    // Client OCSP needs client authentication / a client certificate.
+    let e = b()
+        .client_ocsp_policy(RevocationPolicy::SoftFail)
+        .build()
+        .unwrap_err();
+    assert!(e.to_string().contains("client authentication"), "{e}");
+    let e = ClientConfig::builder()
+        .client_cert_ocsp_response(vec![0x30, 0x03, 0x0a, 0x01, 0x00])
+        .build()
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("without a client certificate"),
+        "{e}"
+    );
     assert!(b().__suites(&[0x1301]).__tls12_only(true).build().is_err());
     assert!(
         ClientConfig::builder()

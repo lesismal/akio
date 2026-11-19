@@ -41,8 +41,10 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   is refused with a `no_renegotiation` warning.
 - Suites `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
   `ECDHE-{ECDSA,RSA}-AES{128,256}-GCM` and `ECDHE-{ECDSA,RSA}-CHACHA20-POLY1305`; groups X25519,
-  secp256r1, secp384r1, x448 (offered last; ADR-046); signature schemes ECDSA P-256/P-384,
-  Ed25519, Ed448, RSA-PSS (rsae), RSA PKCS#1 v1.5 (TLS 1.2 and certificates).
+  secp256r1, secp384r1, x448 (ADR-046), secp521r1 (offered last; ADR-049); signature schemes
+  ECDSA P-256/P-384/P-521, Ed25519, Ed448, RSA-PSS with `rsaEncryption` keys (`rsa_pss_rsae_*`)
+  and with `id-RSASSA-PSS` keys (`rsa_pss_pss_*`, within the key's parameters, TLS 1.3 and 1.2;
+  ADR-049), RSA PKCS#1 v1.5 (TLS 1.2 and certificates).
 - Record layer: 16 KiB fragments, TLS 1.3 inner content types and padding, version negotiation
   with the downgrade sentinel, strict state machines, handshake messages reassembled across
   records and never across key changes, alerts and close_notify, constant-time Finished / binder
@@ -95,6 +97,14 @@ Decided in [ADR-008](../../docs/adr/008-tls-extensions.md).
   below the root against CRLs (complete and delta, RFC 5280); under hard fail a certificate no
   current CRL covers fails (`certificate_unknown`). Resumed sessions are not re-checked;
   refreshing CRLs means building a new configuration. All off by default, at no cost.
+- **The client's OCSP response** (TLS 1.3 client authentication, RFC 8446 4.4.2.1; ADR-049):
+  `ServerConfigBuilder::client_ocsp_policy(policy)` asks for it (an empty status_request in the
+  CertificateRequest) and validates what the client staples to its leaf's CertificateEntry
+  under the same policies and rules as above; `ClientConfigBuilder::client_cert_ocsp_response(der)`
+  is what the client staples when asked. TLS 1.2 cannot carry one, so under hard fail TLS 1.2
+  client certificates are refused; OpenSSL and Go neither send nor ask for one (their clients
+  ignore the request: soft fail passes them). The server's `TlsInfo::ocsp_response` is the
+  client's response.
 
 ### Early data (0-RTT)
 
@@ -129,9 +139,10 @@ same request in a new ClientHello by an attacker who can make the client retry. 
 for requests that are safe to repeat (idempotent reads), check `TlsInfo::early_data` /
 `Early-Data: 1` before acting on anything else, and answer `425 Too Early` to the rest.
 
-Not implemented: a client's OCSP response in TLS 1.3
-client authentication, `status_request_v2` (OCSP for intermediates), fetching OCSP responses or
-CRLs (the application does; `only-x509` gives the URLs), RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
+Not implemented: `status_request_v2` (RFC 6961, OCSP for intermediates; TLS 1.2 only, never
+widely deployed and superseded by TLS 1.3's per-CertificateEntry status, ADR-049), fetching OCSP
+responses or CRLs (the application does; `only-x509` gives the URLs), RSA-PSS signing with a
+salt other than the hash length. Kernel TLS offload was evaluated and
 is not used: it was slower than this crate's record layer in every case measured, `sendfile`
 included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"); the code stays behind the
 experimental `experimental-ktls` feature (test stream and benchmark only, outside the semver
@@ -163,10 +174,15 @@ promise).
   ticket's limit), certificate compression (server and client certificates, either side off,
   malformed messages) and OCSP stapling (both versions, SNI, resumption), alone and together;
   revocation: every policy against good, delegated, revoked, unknown, expired, forged, foreign,
-  opaque and missing staples in both versions, CRLs for server and client chains.
+  opaque and missing staples in both versions, CRLs for server and client chains, the client's
+  OCSP response (good, delegated, revoked, unknown, foreign, missing; TLS 1.2 under each
+  policy); P-521 and RSA-PSS-key (`id-RSASSA-PSS`) server and client certificates, secp521r1.
 - Interop (`tools/interop/tls/run.sh`): OpenSSL `s_server` / `s_client` and Go `crypto/tls` in
   both directions over every suite, group, key type, client authentication, resumption, HRR,
-  ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), zlib, brotli and zstd
+  ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), secp521r1, P-521 and
+  RSA-PSS-key certificates (`rsa_pss_pss_sha256`, TLS 1.3 and 1.2; with OpenSSL only, Go has no
+  RSA-PSS keys) for servers and clients, the client OCSP request against OpenSSL (which ignores
+  it) and between only's client and server over TCP (good, revoked, missing), zlib, brotli and zstd
   certificate compression with OpenSSL 3.2+ built with them (Debian's has zlib and zstd;
   `tools/interop/tls/certcomp.Dockerfile` builds one with all three), only's client validating
   `s_server -status_file` staples (good, revoked, missing; soft and hard fail) and checking

@@ -11,8 +11,8 @@ use super::alert::{Alert, Fatal, fatal};
 use super::client::{key_update, send_key_update};
 use super::codec::{Reader, put_u16, put_u32, put_vec, put_vec8, put_vec16};
 use super::common::{
-    Action, CertKey, EarlyData, Keys, Level, Schedule, ServerSettings, Transcript, finished_mac,
-    now_millis, now_secs, random, verify_chain,
+    Action, CertKey, EarlyData, Keys, Level, Schedule, ServerSettings, Transcript,
+    check_stapled_ocsp, finished_mac, now_millis, now_secs, random, verify_chain,
 };
 use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
@@ -63,6 +63,9 @@ pub(crate) struct Server {
     pub(crate) resumed: bool,
     cert_requested: bool,
     pub(crate) peer_chain: Vec<Vec<u8>>,
+    /// The OCSP response the client stapled to its certificate (asked for by
+    /// `client_ocsp_policy`).
+    pub(crate) peer_ocsp: Option<Vec<u8>>,
     peer_key: Option<PublicKey>,
     pub(crate) peer_quic: Option<Vec<u8>>,
     /// The algorithm the client's certificate came compressed with (RFC 8879).
@@ -155,6 +158,7 @@ impl Server {
             resumed: false,
             cert_requested: false,
             peer_chain: Vec::new(),
+            peer_ocsp: None,
             peer_key: None,
             peer_quic: None,
             cert_compressed: None,
@@ -599,6 +603,11 @@ impl Server {
                         if !algs.is_empty() {
                             ext(o, EXT_COMPRESS_CERTIFICATE, |o| cert_comp_body(o, algs));
                         }
+                        // RFC 8446 4.4.2.1: an empty status_request asks for the client's
+                        // OCSP response.
+                        if self.cfg.client_ocsp != crate::RevocationPolicy::Off {
+                            ext(o, EXT_STATUS_REQUEST, |_| {});
+                        }
                     });
                 });
                 self.t.add(&cr);
@@ -718,7 +727,7 @@ impl Server {
         let Certificate13 {
             context: ctx,
             chain,
-            ..
+            ocsp,
         } = parse_certificate13(body)?;
         if !ctx.is_empty() {
             return fatal(Alert::IllegalParameter, "certificate context mismatch");
@@ -731,21 +740,33 @@ impl Server {
             self.st = St::WaitFinished13;
             return Ok(());
         }
-        self.client_chain(chain)?;
+        // A response we did not ask for is ignored, like a server's unasked one.
+        let ocsp = ocsp.filter(|_| self.cfg.client_ocsp != crate::RevocationPolicy::Off);
+        self.client_chain(chain, ocsp)?;
         self.st = St::WaitCertVerify13;
         Ok(())
     }
 
-    fn client_chain(&mut self, chain: Vec<Vec<u8>>) -> Result<(), Fatal> {
+    /// Verifies a client chain, and the OCSP response stapled to it (TLS 1.3 only: `None`
+    /// in TLS 1.2) under `client_ocsp_policy`.
+    fn client_chain(&mut self, chain: Vec<Vec<u8>>, ocsp: Option<Vec<u8>>) -> Result<(), Fatal> {
         let roots = self
             .cfg
             .client_auth
             .as_ref()
             .map(|c| c.0.clone())
             .ok_or_else(|| Fatal::new(Alert::InternalError, "no client roots"))?;
-        self.peer_key =
-            Some(verify_chain(&roots, &chain, None, self.cfg.client_crls.as_ref())?.key);
+        let v = verify_chain(&roots, &chain, None, self.cfg.client_crls.as_ref())?;
+        check_stapled_ocsp(
+            self.cfg.client_ocsp,
+            ocsp.as_deref(),
+            &v.leaf,
+            &v.issuer,
+            "client",
+        )?;
+        self.peer_key = Some(v.key);
         self.peer_chain = chain;
+        self.peer_ocsp = ocsp;
         Ok(())
     }
 
@@ -1064,7 +1085,7 @@ impl Server {
                 return fatal(Alert::HandshakeFailure, "client certificate required");
             }
         } else {
-            self.client_chain(chain)?;
+            self.client_chain(chain, None)?;
         }
         self.st = St::WaitClientKx12;
         Ok(())

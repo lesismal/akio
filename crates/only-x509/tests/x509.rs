@@ -1,6 +1,7 @@
 //! X.509 tests: real-world chains (vendored public certificates), OpenSSL-made chains and keys
-//! (generated in Docker, `tests/data/openssl`), certificates generated here, and constructed
-//! negative cases in the spirit of BetterTLS / x509-limbo.
+//! (generated in Docker, `tests/data/openssl`; RSA-PSS and P-521 keys in `tests/data/pss-p521`),
+//! certificates generated here, and constructed negative cases in the spirit of BetterTLS /
+//! x509-limbo.
 
 use only_crypto::pkey::{PrivateKey, PublicKey, SignatureAlgorithm};
 use only_crypto::{ed25519, p256, p384};
@@ -205,6 +206,74 @@ fn openssl_chain_and_keys() {
         root_key.public_key(),
         store.roots()[0].public_key().unwrap()
     );
+}
+
+/// OpenSSL-made chains with RSA-PSS (`id-RSASSA-PSS`) and P-521 keys (`data/pss-p521/gen.sh`),
+/// and certificates issued here with the same key types that OpenSSL's chains vouch for.
+#[test]
+fn openssl_pss_and_p521_chains() {
+    let msg = data("pss-p521/msg.bin");
+    for (prefix, name, alg) in [
+        ("pss", "pss.test", SignatureAlgorithm::RsaPssSha256),
+        ("p521", "p521.test", SignatureAlgorithm::EcdsaSha512),
+    ] {
+        let store = roots(&[&format!("pss-p521/{prefix}_root.pem")]);
+        let leaf = &pem_certs(&format!("pss-p521/{prefix}_leaf.pem"))[0];
+        assert_eq!(leaf.signature_algorithm().unwrap(), alg);
+        let v = Verifier::new(&store).at_time(leaf.not_before() + 3600);
+        v.verify_server(leaf, &[], name).unwrap();
+        v.verify_client(leaf, &[]).unwrap();
+        assert_eq!(
+            v.verify_server(leaf, &[], "x.test"),
+            Err(Error::NameMismatch)
+        );
+        let key = PrivateKey::from_pem(&data(&format!("pss-p521/{prefix}_leaf.key"))).unwrap();
+        assert_eq!(key.public_key(), leaf.public_key().unwrap());
+        // OpenSSL's signature over msg.bin, and ours.
+        let sig_file = if prefix == "pss" {
+            "pss-p521/pss_sha256.sig"
+        } else {
+            "pss-p521/p521_sha512.sig"
+        };
+        let pk = leaf.public_key().unwrap();
+        pk.verify(alg, &msg, &data(sig_file)).unwrap();
+        pk.verify(alg, &msg, &key.sign(alg, &msg).unwrap()).unwrap();
+        let root_key = PrivateKey::from_pem(&data(&format!("pss-p521/{prefix}_root.key"))).unwrap();
+        assert_eq!(
+            root_key.public_key(),
+            store.roots()[0].public_key().unwrap()
+        );
+        // The OpenSSL root issues a certificate here (its default algorithm: RSA-PSS SHA-256
+        // within the root key's parameters, ECDSA SHA-512), and it verifies.
+        let ours = leaf_params(&["ours.test"])
+            .signed_by(&key.public_key(), &store.roots()[0], &root_key)
+            .unwrap();
+        assert_eq!(ours.signature_algorithm().unwrap(), alg);
+        Verifier::new(&store)
+            .verify_server(&ours, &[], "ours.test")
+            .unwrap();
+        assert_eq!(ours.public_key().unwrap(), key.public_key());
+    }
+    // The PSS root's key only allows SHA-256: a certificate claiming RSA-PSS SHA-512 under it
+    // fails, as would a PKCS#1 v1.5 one.
+    let root_key = PrivateKey::from_pem(&data("pss-p521/pss_root.key")).unwrap();
+    assert!(matches!(
+        root_key.public_key(),
+        PublicKey::RsaPss(_, Some(p)) if p.salt_len == 32
+    ));
+    assert!(
+        root_key
+            .sign(SignatureAlgorithm::RsaPssSha512, &msg)
+            .is_err()
+    );
+    assert!(
+        root_key
+            .sign(SignatureAlgorithm::RsaPkcs1Sha256, &msg)
+            .is_err()
+    );
+    let sec1 = PrivateKey::from_pem(&data("pss-p521/p521_leaf_sec1.key")).unwrap();
+    let pkcs8 = PrivateKey::from_pem(&data("pss-p521/p521_leaf.key")).unwrap();
+    assert_eq!(sec1.to_pkcs8_der(), pkcs8.to_pkcs8_der());
 }
 
 fn p256_key() -> PrivateKey {

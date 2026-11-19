@@ -28,7 +28,8 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
   (`*.com`), IP addresses match iPAddress SANs only; the common name is not used. Trust anchors
   are subject name plus key (their own validity is not checked, as in rustls-webpki).
 - `CertificateParams` and `generate_simple_self_signed`: self-signed and CA-signed certificates
-  signed with ECDSA P-256 (default for generated keys) or P-384, Ed25519, Ed448 or RSA keys; SANs,
+  signed with ECDSA P-256 (default for generated keys), P-384 or P-521, Ed25519, Ed448 or RSA
+  keys (`rsaEncryption`, or `id-RSASSA-PSS` signing RSA-PSS within its parameters); SANs,
   validity, serial, CA/pathLen, key usage, EKU, name constraints, custom extensions, key
   identifiers.
 - Revocation (ADR-038), without network access (the application fetches;
@@ -45,9 +46,10 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
   constant time, thisUpdate / nextUpdate with clock skew) and `OcspRequest`; `CrlParams` and
   `OcspResponseParams` build signed CRLs and responses for tests and development CAs.
 
-Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384 keys), Ed25519, Ed448,
-RSA PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates), RSA-PSS with
-SHA-256/384/512, and DSA with SHA-1/224/256 (verification only; FIPS 186-4 sizes; parameters
+Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384, P-521 keys), Ed25519,
+Ed448, RSA PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates), RSA-PSS with
+SHA-256/384/512 (by `rsaEncryption` keys, and by `id-RSASSA-PSS` keys within their RFC 4055
+parameters, which also forbid PKCS#1 v1.5; ADR-049), and DSA with SHA-1/224/256 (verification only; FIPS 186-4 sizes; parameters
 inherited from the issuer are not supported). Not implemented, on purpose (ADR-046): signed OCSP
 requests (responders do not require them; only the application's client key could sign) and
 fetching anything over the network (the crate is sans-io; fetching would stall handshakes on
@@ -83,7 +85,10 @@ Verifier::new(&roots).verify_server(&cert, &[], "localhost").unwrap();
 - OpenSSL-made chains and keys (`tests/data/openssl`, generated in Docker): an RSA-3072 root, a
   P-384 intermediate signed with RSA-PSS, Ed25519 and RSA leaves with wildcard and IPv4/IPv6
   SANs; PKCS#8, SEC1 and PKCS#1 key files; OpenSSL's ECDSA, Ed25519, RSA PKCS#1 and PSS
-  signatures verified, and ours equal OpenSSL's where deterministic. These keys are test-only.
+  signatures verified, and ours equal OpenSSL's where deterministic; `tests/data/pss-p521`
+  (`gen.sh`): a root and a leaf with `id-RSASSA-PSS` keys (restricted to SHA-256 and without
+  parameters) and a P-521 root and leaf, verified, their keys loaded, and certificates issued
+  here under the OpenSSL roots. These keys are test-only.
 - Interop: rcgen (ring) certificates verify here and rcgen loads our PKCS#8 keys; our CA and
   leaf certificates verify with rustls-webpki (dev-dependencies only).
 - Constructed negatives in the spirit of BetterTLS / x509-limbo: pathLen exceeded, non-CA

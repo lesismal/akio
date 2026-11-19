@@ -39,16 +39,17 @@ Run both with `cargo run -p only --example guide-tls`.
 
 `tls_info(&conn)` returns a `TlsInfo` with `handshaking`, `alpn`, `server_name` (SNI, server
 side), `version`, `early_data` and `early_data_len` (see [Early data](#early-data-0-rtt)) and
-`ocsp_response` (client side, see [OCSP stapling](#ocsp-stapling)), or `None` for a non-TLS
+`ocsp_response` (client side: the server's, see [OCSP stapling](#ocsp-stapling); server side: a
+TLS 1.3 client's, see [Revocation checking](#revocation-checking)), or `None` for a non-TLS
 connection.
 
 ## Protocol support
 
 | | TLS 1.3 (RFC 8446) | TLS 1.2 (RFC 5246) |
 |---|---|---|
-| key exchange | X25519, secp256r1, secp384r1, x448 (offered last); HelloRetryRequest | ECDHE on the same groups (no RSA key exchange, no static DH) |
+| key exchange | X25519, secp256r1, secp384r1, x448, secp521r1 (offered last); HelloRetryRequest | ECDHE on the same groups (no RSA key exchange, no static DH) |
 | cipher suites | AES-128-GCM-SHA256, AES-256-GCM-SHA384, CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA with AES-128/256-GCM and CHACHA20-POLY1305 (no CBC) |
-| certificates | ECDSA P-256/P-384, Ed25519, Ed448, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
+| certificates | ECDSA P-256/P-384/P-521, Ed25519, Ed448, RSA (PSS signatures: `rsa_pss_rsae_*` with `rsaEncryption` keys, `rsa_pss_pss_*` with `id-RSASSA-PSS` keys) | the same, RSA (`rsaEncryption` keys) also with PKCS#1 v1.5 |
 | resumption | tickets + PSK (`psk_dhe_ke`): stateless with `.session_tickets(true)`, single-use cached tickets with the session cache | session IDs (cache) and RFC 5077 tickets |
 | other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped), certificate compression (RFC 8879: zlib, brotli, zstd) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
 | record_size_limit (RFC 8449) | yes | yes |
@@ -90,6 +91,7 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | certificate compression | on by default; `.certificate_compression(false)` to disable | `.certificate_compression(true)` to offer it |
 | OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`; `.ocsp_policy(RevocationPolicy::HardFail)` to validate it |
 | CRLs ([revocation](#revocation-checking)) | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
+| the client's OCSP response (TLS 1.3) | `.client_ocsp_policy(policy)` asks for and validates it | `.client_cert_ocsp_response(der)` sends it when asked |
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf
@@ -254,6 +256,12 @@ let cfg = ClientConfig::builder()
   only a valid "revoked" (alert `certificate_revoked`); `HardFail` also rejects a missing,
   invalid, stale or "unknown" response (`bad_certificate_status_response`). Only the leaf is
   covered; resumed sessions are not checked again.
+- **The client's OCSP response** (`.client_ocsp_policy` on the server, ADR-049): the server asks
+  TLS 1.3 clients for one in its CertificateRequest (RFC 8446 4.4.2.1) and checks what the client
+  staples to its certificate with the same rules and policies. The client sends the response of
+  `.client_cert_ocsp_response(der)` only when asked. TLS 1.2 has no way to carry it, so under
+  `HardFail` TLS 1.2 client certificates are refused (use `.tls13_only(true)`). OpenSSL and Go
+  clients neither send one nor mind the request: `SoftFail` lets them through.
 - **CRLs** (`.crls` on the client, `.client_crls` on the server for client certificates): every
   certificate below the root is checked against current CRLs of its issuer (complete and delta,
   issuingDistributionPoint scopes, signatures checked once), including indirect CRLs and CRLs
@@ -278,9 +286,8 @@ on a NIC with TLS offload.
 
 ## Not done
 
-Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`);
-RSA-PSS keys
-(`rsa_pss_pss_*`); P-521; the Windows certificate store and macOS trust settings.
+Fetching OCSP responses or CRLs; OCSP for intermediates (`status_request_v2`: TLS 1.2 only and
+obsolete, ADR-049); the Windows certificate store and macOS trust settings.
 
 ## Writing your own transport
 

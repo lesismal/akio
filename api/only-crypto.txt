@@ -171,6 +171,7 @@ pub const only_crypto::der::oid::RSASSA_PSS: &[u8]
 pub const only_crypto::der::oid::RSA_ENCRYPTION: &[u8]
 pub const only_crypto::der::oid::SECP256R1: &[u8]
 pub const only_crypto::der::oid::SECP384R1: &[u8]
+pub const only_crypto::der::oid::SECP521R1: &[u8]
 pub const only_crypto::der::oid::SHA1: &[u8]
 pub const only_crypto::der::oid::SHA1_WITH_RSA: &[u8]
 pub const only_crypto::der::oid::SHA256: &[u8]
@@ -753,6 +754,65 @@ impl core::marker::Unpin for only_crypto::p384::Signature
 impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::p384::Signature
 impl core::panic::unwind_safe::UnwindSafe for only_crypto::p384::Signature
 pub const only_crypto::p384::SCALAR_LEN: usize
+pub mod only_crypto::p521
+pub struct only_crypto::p521::PublicKey
+impl only_crypto::p521::PublicKey
+pub fn only_crypto::p521::PublicKey::from_sec1(&[u8]) -> core::result::Result<only_crypto::p521::PublicKey, only_crypto::Error>
+pub fn only_crypto::p521::PublicKey::to_compressed(&self) -> alloc::vec::Vec<u8>
+pub fn only_crypto::p521::PublicKey::to_uncompressed(&self) -> alloc::vec::Vec<u8>
+pub fn only_crypto::p521::PublicKey::verify(&self, &[u8], &only_crypto::p521::Signature) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::p521::PublicKey::verify_prehash(&self, &[u8], &only_crypto::p521::Signature) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::p521::PublicKey::verify_with<H: only_crypto::hash::Hash>(&self, &[u8], &only_crypto::p521::Signature) -> core::result::Result<(), only_crypto::Error>
+impl core::clone::Clone for only_crypto::p521::PublicKey
+pub fn only_crypto::p521::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for only_crypto::p521::PublicKey
+impl core::cmp::PartialEq for only_crypto::p521::PublicKey
+pub fn only_crypto::p521::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_crypto::p521::PublicKey
+pub fn only_crypto::p521::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::p521::PublicKey
+impl core::marker::Sync for only_crypto::p521::PublicKey
+impl core::marker::Unpin for only_crypto::p521::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::p521::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::p521::PublicKey
+pub struct only_crypto::p521::SecretKey
+impl only_crypto::p521::SecretKey
+pub fn only_crypto::p521::SecretKey::diffie_hellman(&self, &only_crypto::p521::PublicKey) -> [u8; 66]
+pub fn only_crypto::p521::SecretKey::from_bytes(&[u8]) -> core::result::Result<only_crypto::p521::SecretKey, only_crypto::Error>
+pub fn only_crypto::p521::SecretKey::generate() -> core::result::Result<only_crypto::p521::SecretKey, only_crypto::Error>
+pub fn only_crypto::p521::SecretKey::public_key(&self) -> only_crypto::p521::PublicKey
+pub fn only_crypto::p521::SecretKey::sign(&self, &[u8]) -> only_crypto::p521::Signature
+pub fn only_crypto::p521::SecretKey::sign_prehash<H: only_crypto::hash::Hash>(&self, &[u8]) -> only_crypto::p521::Signature
+pub fn only_crypto::p521::SecretKey::sign_with<H: only_crypto::hash::Hash>(&self, &[u8]) -> only_crypto::p521::Signature
+pub fn only_crypto::p521::SecretKey::to_bytes(&self) -> [u8; 66]
+impl core::clone::Clone for only_crypto::p521::SecretKey
+pub fn only_crypto::p521::SecretKey::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::p521::SecretKey
+pub fn only_crypto::p521::SecretKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::p521::SecretKey
+impl core::marker::Sync for only_crypto::p521::SecretKey
+impl core::marker::Unpin for only_crypto::p521::SecretKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::p521::SecretKey
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::p521::SecretKey
+pub struct only_crypto::p521::Signature(_)
+impl only_crypto::p521::Signature
+pub fn only_crypto::p521::Signature::from_der(&[u8]) -> core::result::Result<only_crypto::p521::Signature, only_crypto::Error>
+pub fn only_crypto::p521::Signature::from_fixed(&[u8]) -> core::result::Result<only_crypto::p521::Signature, only_crypto::Error>
+pub fn only_crypto::p521::Signature::to_der(&self) -> alloc::vec::Vec<u8>
+pub fn only_crypto::p521::Signature::to_fixed(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_crypto::p521::Signature
+pub fn only_crypto::p521::Signature::clone(&self) -> Self
+impl core::cmp::Eq for only_crypto::p521::Signature
+impl core::cmp::PartialEq for only_crypto::p521::Signature
+pub fn only_crypto::p521::Signature::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_crypto::p521::Signature
+pub fn only_crypto::p521::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::p521::Signature
+impl core::marker::Sync for only_crypto::p521::Signature
+impl core::marker::Unpin for only_crypto::p521::Signature
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::p521::Signature
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::p521::Signature
+pub const only_crypto::p521::SCALAR_LEN: usize
 pub mod only_crypto::pem
 pub fn only_crypto::pem::decode(&[u8]) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>, only_crypto::Error>
 pub fn only_crypto::pem::decode_label(&[u8], &str) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, only_crypto::Error>
@@ -763,7 +823,9 @@ pub only_crypto::pkey::PrivateKey::Ed25519(only_crypto::ed25519::SigningKey)
 pub only_crypto::pkey::PrivateKey::Ed448(only_crypto::ed448::SigningKey)
 pub only_crypto::pkey::PrivateKey::P256(only_crypto::p256::SecretKey)
 pub only_crypto::pkey::PrivateKey::P384(only_crypto::p384::SecretKey)
+pub only_crypto::pkey::PrivateKey::P521(only_crypto::p521::SecretKey)
 pub only_crypto::pkey::PrivateKey::Rsa(alloc::boxed::Box<only_crypto::rsa::PrivateKey>)
+pub only_crypto::pkey::PrivateKey::RsaPss(alloc::boxed::Box<only_crypto::rsa::PrivateKey>, core::option::Option<only_crypto::pkey::PssParams>)
 impl only_crypto::pkey::PrivateKey
 pub fn only_crypto::pkey::PrivateKey::default_signature_algorithm(&self) -> only_crypto::pkey::SignatureAlgorithm
 pub fn only_crypto::pkey::PrivateKey::from_der(&[u8]) -> core::result::Result<only_crypto::pkey::PrivateKey, only_crypto::Error>
@@ -791,7 +853,9 @@ pub only_crypto::pkey::PublicKey::Ed25519(only_crypto::ed25519::VerifyingKey)
 pub only_crypto::pkey::PublicKey::Ed448(only_crypto::ed448::VerifyingKey)
 pub only_crypto::pkey::PublicKey::P256(only_crypto::p256::PublicKey)
 pub only_crypto::pkey::PublicKey::P384(only_crypto::p384::PublicKey)
+pub only_crypto::pkey::PublicKey::P521(only_crypto::p521::PublicKey)
 pub only_crypto::pkey::PublicKey::Rsa(only_crypto::rsa::PublicKey)
+pub only_crypto::pkey::PublicKey::RsaPss(only_crypto::rsa::PublicKey, core::option::Option<only_crypto::pkey::PssParams>)
 impl only_crypto::pkey::PublicKey
 pub fn only_crypto::pkey::PublicKey::from_algorithm_and_key(&[u8], &[u8], &[u8]) -> core::result::Result<only_crypto::pkey::PublicKey, only_crypto::Error>
 pub fn only_crypto::pkey::PublicKey::from_spki_der(&[u8]) -> core::result::Result<only_crypto::pkey::PublicKey, only_crypto::Error>
@@ -846,6 +910,30 @@ impl core::marker::Sync for only_crypto::pkey::SignatureAlgorithm
 impl core::marker::Unpin for only_crypto::pkey::SignatureAlgorithm
 impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::pkey::SignatureAlgorithm
 impl core::panic::unwind_safe::UnwindSafe for only_crypto::pkey::SignatureAlgorithm
+#[non_exhaustive] pub struct only_crypto::pkey::PssParams
+pub only_crypto::pkey::PssParams::hash: only_crypto::rsa::HashAlg
+pub only_crypto::pkey::PssParams::salt_len: usize
+impl only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::allows(&self, only_crypto::pkey::SignatureAlgorithm) -> bool
+pub fn only_crypto::pkey::PssParams::from_der(&[u8]) -> core::result::Result<only_crypto::pkey::PssParams, only_crypto::Error>
+pub fn only_crypto::pkey::PssParams::new(only_crypto::rsa::HashAlg, usize) -> only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::to_der(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::clone(&self) -> Self
+impl core::cmp::Eq for only_crypto::pkey::PssParams
+impl core::cmp::PartialEq for only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_crypto::pkey::PssParams
+pub fn only_crypto::pkey::PssParams::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_crypto::pkey::PssParams
+impl core::marker::StructuralPartialEq for only_crypto::pkey::PssParams
+impl core::marker::Send for only_crypto::pkey::PssParams
+impl core::marker::Sync for only_crypto::pkey::PssParams
+impl core::marker::Unpin for only_crypto::pkey::PssParams
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::pkey::PssParams
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::pkey::PssParams
 pub mod only_crypto::rand
 pub struct only_crypto::rand::ChaChaRng
 impl only_crypto::rand::ChaChaRng

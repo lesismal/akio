@@ -23,7 +23,8 @@ TLS 1.2/1.3、DTLS 与 QUIC 协议栈的证书层（也将替代测试证书用�
   （`*.com`），IP 地址只匹配 iPAddress SAN；不使用 CN。信任锚只看主体名与公钥（不检查其自身有效期，与
   rustls-webpki 相同）。
 - `CertificateParams` 与 `generate_simple_self_signed`：生成自签名或 CA 签发的证书，签名密钥可以是
-  ECDSA P-256（生成密钥时的默认值）或 P-384、Ed25519、Ed448、RSA；支持 SAN、有效期、序列号、CA/pathLen、密钥用途、
+  ECDSA P-256（生成密钥时的默认值）、P-384 或 P-521、Ed25519、Ed448、RSA（`rsaEncryption`，或在其参数范围内
+  以 RSA-PSS 签名的 `id-RSASSA-PSS`）；支持 SAN、有效期、序列号、CA/pathLen、密钥用途、
   EKU、名称约束、自定义扩展、密钥标识符。
 - 吊销检查（ADR-038），不访问网络（由应用获取；`Certificate::crl_distribution_points`、`ocsp_urls` 与
   `ca_issuer_urls` 给出地址）：`Crl`（RFC 5280 第 5 节：严格的 DER/PEM、cRLNumber、delta CRL、原因码、
@@ -36,8 +37,9 @@ TLS 1.2/1.3、DTLS 与 QUIC 协议栈的证书层（也将替代测试证书用�
   thisUpdate / nextUpdate）与 `OcspRequest`；`CrlParams` 与 `OcspResponseParams` 为测试和开发用 CA 生成
   已签名的 CRL 与响应。
 
-支持的签名算法：ECDSA 配 SHA-256/384/512（P-256、P-384 密钥）、Ed25519、Ed448、RSA PKCS#1 v1.5 配
-SHA-256/384/512（SHA-1 仅用于验证旧证书）、RSA-PSS 配 SHA-256/384/512，以及 DSA 配 SHA-1/224/256
+支持的签名算法：ECDSA 配 SHA-256/384/512（P-256、P-384、P-521 密钥）、Ed25519、Ed448、RSA PKCS#1 v1.5 配
+SHA-256/384/512（SHA-1 仅用于验证旧证书）、RSA-PSS 配 SHA-256/384/512（`rsaEncryption` 密钥，以及在其
+RFC 4055 参数范围内的 `id-RSASSA-PSS` 密钥，后者不能用于 PKCS#1 v1.5；ADR-049），以及 DSA 配 SHA-1/224/256
 （仅验签；FIPS 186-4 规定的长度；不支持从签发者继承参数）。有意不实现（ADR-046）：签名的 OCSP 请求
 （应答器并不要求；只有应用的客户端密钥才能签名）和任何网络获取（本 crate 是 sans-io 的；网络获取会让
 握手停顿在第三方上、向 CA 泄露客户端访问的站点，并会访问攻击者提供的 URL）。名称按 DER 字节链接
@@ -69,8 +71,9 @@ Verifier::new(&roots).verify_server(&cert, &[], "localhost").unwrap();
   签名被篡改等反例。
 - OpenSSL 生成的证书链与密钥（`tests/data/openssl`，在 Docker 中生成）：RSA-3072 根、用 RSA-PSS 签发的
   P-384 中间证书、带通配符与 IPv4/IPv6 SAN 的 Ed25519 与 RSA 叶子证书；PKCS#8、SEC1 与 PKCS#1 密钥文件；
-  验证 OpenSSL 生成的 ECDSA、Ed25519、RSA PKCS#1 与 PSS 签名，确定性签名与 OpenSSL 的结果逐字节一致。
-  这些密钥只用于测试。
+  验证 OpenSSL 生成的 ECDSA、Ed25519、RSA PKCS#1 与 PSS 签名，确定性签名与 OpenSSL 的结果逐字节一致；
+  `tests/data/pss-p521`（`gen.sh`）：使用 `id-RSASSA-PSS` 密钥（限定 SHA-256 与不带参数）的根与叶子证书，以及
+  P-521 根与叶子证书，验证通过、密钥可加载，并在这些 OpenSSL 根下签发本库生成的证书。这些密钥只用于测试。
 - 互通：rcgen（ring）生成的证书能在这里通过验证，rcgen 能加载我们的 PKCS#8 密钥；我们生成的 CA 与叶子证书
   能通过 rustls-webpki 的验证（都只是 dev-dependency）。
 - 参照 BetterTLS / x509-limbo 构造的反例：超过 pathLen、颁发者不是 CA、CA 证书当作终端实体、缺少

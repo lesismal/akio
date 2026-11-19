@@ -40,7 +40,8 @@
 | `p256`、`p384` | NIST P-256 / P-384 上的 ECDH 与 ECDSA：RFC 6979 nonce，可用任意 `Hash` 预哈希，DER 与定长（P1363）签名，带校验的 SEC1 点（压缩与非压缩） |
 | `rsa` | RSA PKCS#1 v1.5 与 PSS（MGF1），SHA-256/384/512（SHA-1 仅验证），模数 2048–8192 位；私钥运算使用 CRT、盲化并校验结果 |
 | `der`、`pem` | 严格 DER 读写器（拒绝 BER）、常用 OID、PEM（RFC 7468） |
-| `pkey` | 覆盖以上所有算法的 `PrivateKey` / `PublicKey`（DSA 只有公钥）：PKCS#8 v1/v2、SEC1、PKCS#1、SubjectPublicKeyInfo、PEM；按 TLS 与 X.509 命名的 `SignatureAlgorithm` |
+| `p521` | NIST P-521 上的 ECDH 与 ECDSA（ADR-049），API 相同、标量 66 字节：默认 SHA-512，基于 521 位的 RFC 6979 nonce，132 字节定长签名；可移植 Rust，独立的 Mersenne 素数域与完备公式 |
+| `pkey` | 覆盖以上所有算法的 `PrivateKey` / `PublicKey`（DSA 只有公钥）：PKCS#8 v1/v2、SEC1、PKCS#1、SubjectPublicKeyInfo、PEM，RSA 密钥可为 `rsaEncryption` 或带 `PssParams` 限制的 `id-RSASSA-PSS`（RFC 4055；ADR-049）；按 TLS 与 X.509 命名的 `SignatureAlgorithm` |
 
 它在 `only-kcp`、`only-turn`、`only-ws`、`only-http`、`only-media`、`only-bittorrent` 和
 `only-webrtc` 中替代了 sha1、sha2、md-5、hmac、pbkdf2、aes、aes-gcm、ctr、crc32fast、base64 与
@@ -81,6 +82,12 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   求逆是 safegcd（可移植的 divsteps），点运算公式、查表与 4 位梳形表是建立在这个域上的可移植实现。设计依据
   指令数（4×64 乘积是 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但
   **尚未做性能测试**，因此不给出 aarch64 的性能数字。
+- P-521（`p521`，ADR-049）有独立实现：基域 `2⁵²¹ - 1` 用九个非饱和肢（58 位，最高肢 57 位；乘积高半部分
+  加倍折回，一次进位链，最高进位回到第 0 肢；加法以一次对所有肢同时进行的进位步结束），求逆与平方根用固定
+  链，标量域用通用 Montgomery 代码。点用完备的射影公式（无需论证例外情形）：ECDH 用有符号 5 位 Booth 窗口查
+  `0·P … 16·P`（每次查表读全部 17 项），倍点在 Jacobian 坐标中进行（dbl-2001-b 把单位元 `(1:1:0)` 映射到
+  自身）；生成密钥与签名用 131 行 `G` 的仿射倍数组成的有符号 4 位梳，每行整行读取。只有可移植 Rust；
+  `tools/ct-dudect` 测量 `p521-ecdh`、`p521-keygen`、`p521-sign`。
 - P-256 / P-384 的秘密标量乘法使用 Jacobian 坐标（`a = -3`：倍点 4M + 4S，加法 11M + 5S，混合加法
   7M + 4S；P-256 孪生曲线的汇编加法用 12M + 4S 与 8M + 3S，模加减次数减半）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
   查表读取全部 16 项，取负为掩码选择。固定基点：把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个
@@ -221,9 +228,12 @@ X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的�
   P-256、P-384 与 P-256 孪生曲线（含整点汇编与宽梳形表）；由 Edwards 基点表计算的 X25519 公钥与 `u = 9` 上的阶梯结果比较。
 - `cargo run --release -p only-crypto --example bench` 与被替代的 crate 比较吞吐量。
 - 公钥（`tests/pk_kat.rs`）：Wycheproof 的 X25519、Ed25519、ECDSA P-256/SHA-256（DER 与 P1363）、
-  P-384/SHA-384 与 SHA-512、ECDH P-256（SPKI 与原始点）与 P-384、RSA PKCS#1 v1.5 验证（2048/SHA-256、
+  P-384/SHA-384 与 SHA-512、P-521/SHA-512（DER 与 P1363）、ECDH P-256（SPKI 与原始点）、P-384 与 P-521、
+  RSA PKCS#1 v1.5 验证（2048/SHA-256、
   3072/SHA-384、4096/SHA-512）、RSA-PSS 验证（2048/SHA-256/32、4096/SHA-512/64）、RSA PKCS#1 v1.5
   签名生成；单元测试中有 RFC 7748、8032 与 6979 向量。所有 "valid" 向量都被接受，所有 "invalid" 向量都被拒绝。
+  P-521 另有 RFC 6979 A.2.7（SHA-512 与 SHA-256，也是 OpenSSL 确定性 ECDSA 的结果）；OpenSSL 生成的
+  `id-RSASSA-PSS` 密钥（带与不带参数；PKCS#8 与 SPKI 编码逐字节相同，验证 OpenSSL 的签名，限制得到执行）。
 - `tests/pk_compat.rs` 与 ring 和 RustCrypto p256/p384 交叉比对（Ed25519、ECDSA RFC 6979 与 RSA PKCS#1
   签名逐字节一致，RSA 覆盖 2048、3072 与 4096 位，并在强制可移植实现时再比较一次；互相验证；ECDH 与 X25519 共享密钥一致；PKCS#8 密钥双向互通）。`tests/sig_diff.rs`
   回放 `crypto_sig_verify` 模糊测试目标（对合法、变异与任意的签名和密钥，与 ring 的验证结果比较）；

@@ -86,6 +86,8 @@ pub mod oid {
     pub const SECP256R1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
     /// secp384r1, 1.3.132.0.34.
     pub const SECP384R1: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x22];
+    /// secp521r1, 1.3.132.0.35.
+    pub const SECP521R1: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
     /// id-Ed25519, 1.3.101.112.
     pub const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
     /// id-X25519, 1.3.101.110.

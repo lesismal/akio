@@ -1,12 +1,13 @@
 //! Public-key operations per second, only-crypto vs ring:
-//! `cargo run --release -p only-crypto --example pk_bench [rsa|p256|448]` (`rsa`, `p256`: those
-//! rows only; `448`: Ed448, X448 and DSA, which ring does not have, next to Ed25519 and X25519).
+//! `cargo run --release -p only-crypto --example pk_bench [rsa|p256|448|521]` (`rsa`, `p256`:
+//! those rows only; `448`: Ed448, X448 and DSA, which ring does not have, next to Ed25519 and
+//! X25519; `521`: P-521, which ring does not have either, next to P-384).
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use only_crypto::pkey::{PrivateKey, SignatureAlgorithm};
-use only_crypto::{ed448, ed25519, p256, p384, x448, x25519};
+use only_crypto::{ed448, ed25519, p256, p384, p521, x448, x25519};
 use ring::signature::{self as rs, KeyPair as _};
 
 fn rate(mut f: impl FnMut()) -> f64 {
@@ -44,6 +45,10 @@ fn main() {
         curve448_dsa(&msg);
         return;
     }
+    if only.as_deref() == Some("521") {
+        p521_rows(&msg);
+        return;
+    }
     let all = only.is_none();
 
     // Ed25519.
@@ -64,6 +69,42 @@ fn row_vs(name: &str, ours: f64, vs_name: &str, vs: f64) {
         "-",
         ours / vs
     );
+}
+
+/// P-521 (ring has none) next to our P-384 rates.
+fn p521_rows(msg: &[u8; 64]) {
+    let k384 = p384::SecretKey::generate().expect("rng");
+    let peer384 = p384::SecretKey::generate().expect("rng").public_key();
+    let s384 = k384.sign(msg);
+    let pk384 = k384.public_key();
+    let k = p521::SecretKey::generate().expect("rng");
+    let peer = p521::SecretKey::generate().expect("rng").public_key();
+    let sig = k.sign(msg);
+    let pk = k.public_key();
+    let ref_keygen = rate(|| {
+        black_box(black_box(&k384).public_key());
+    });
+    let keygen = rate(|| {
+        black_box(black_box(&k).public_key());
+    });
+    row_vs("P-521 keygen (d·G)", keygen, "P-384", ref_keygen);
+    let ref_ecdh = rate(|| {
+        black_box(k384.diffie_hellman(black_box(&peer384)));
+    });
+    let ecdh = rate(|| {
+        black_box(k.diffie_hellman(black_box(&peer)));
+    });
+    row_vs("P-521 ECDH", ecdh, "P-384", ref_ecdh);
+    let ref_sign = rate(|| {
+        black_box(k384.sign(black_box(msg)));
+    });
+    let sign = rate(|| {
+        black_box(k.sign(black_box(msg)));
+    });
+    row_vs("P-521 ECDSA sign (SHA-512)", sign, "P-384", ref_sign);
+    let ref_verify = rate(|| pk384.verify(black_box(msg), &s384).expect("verify"));
+    let verify = rate(|| pk.verify(black_box(msg), &sig).expect("verify"));
+    row_vs("P-521 ECDSA verify", verify, "P-384", ref_verify);
 }
 
 fn curve448_dsa(msg: &[u8; 64]) {

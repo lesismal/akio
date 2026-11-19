@@ -19,11 +19,13 @@
 //! [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
 //! [`TlsInfo::early_data`]) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,
-//! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384, X448;
-//! ECDSA, Ed25519, Ed448 and RSA (PSS; PKCS#1 v1.5 in TLS 1.2) certificates verified with
-//! `only-x509`; SNI and ALPN; revocation checking, off by default ([`RevocationPolicy`]: the
-//! stapled OCSP response with [`ClientConfigBuilder::ocsp_policy`], application-supplied
-//! [`Crls`] for server and client chains).
+//! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384, X448,
+//! P-521; ECDSA (P-256, P-384, P-521), Ed25519, Ed448 and RSA (PSS with `rsaEncryption` or
+//! `id-RSASSA-PSS` keys; PKCS#1 v1.5 in TLS 1.2) certificates verified with `only-x509`; SNI and
+//! ALPN; revocation checking, off by default ([`RevocationPolicy`]: the stapled OCSP response
+//! with [`ClientConfigBuilder::ocsp_policy`], a TLS 1.3 client's with
+//! [`ServerConfigBuilder::client_ocsp_policy`], application-supplied [`Crls`] for server and
+//! client chains).
 //!
 //! ```no_run
 //! use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -414,8 +416,10 @@ pub struct TlsInfo {
     /// [`ServerConfigBuilder::early_data`]), or the first this many bytes the client sent
     /// (client; sent again after the handshake if `early_data` is `Rejected`).
     pub early_data_len: u64,
-    /// The OCSP response (DER) the server stapled to its certificate: client side, when asked
-    /// for with [`ClientConfigBuilder::ocsp_stapling`]. **Not verified.**
+    /// The OCSP response (DER) the peer stapled to its certificate. Client side: the server's,
+    /// when asked for with [`ClientConfigBuilder::ocsp_stapling`] (verified only under an
+    /// [`ocsp_policy`](ClientConfigBuilder::ocsp_policy)). Server side: a TLS 1.3 client's,
+    /// when asked for with [`ServerConfigBuilder::client_ocsp_policy`] (which verified it).
     pub ocsp_response: Option<Vec<u8>>,
 }
 

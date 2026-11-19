@@ -12,7 +12,7 @@
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
-    crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数、<br/>X25519、Ed25519、X448、Ed448、P-256/P-384、RSA、DSA 验签、DER/PEM"]
+    crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数、<br/>X25519、Ed25519、X448、Ed448、P-256/P-384/P-521、RSA、DSA 验签、DER/PEM"]
     x509["only-x509<br/>证书解析、证书链校验、证书生成"]
     dtls["only-dtls<br/>sans-io DTLS 1.2、DTLS-SRTP"]
     srtp["only-srtp<br/>SRTP/SRTCP"]
@@ -115,7 +115,7 @@ flowchart BT
   随机数系统调用在 `only-sys` 中）提供协议
   crate 需要的哈希、MAC、KDF、CRC-32、常数时间 AES-CTR/GCM、ChaCha20-Poly1305、base64 与随机数
   （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent），以及 `only-x509`（证书解析、
-  证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、X448、Ed448、P-256/P-384 的 ECDH/ECDSA、
+  证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、X448、Ed448、P-256/P-384/P-521 的 ECDH/ECDSA、
   RSA PKCS#1/PSS、DSA 验签、DER/PEM、PKCS#8）。`only-tls` 中的 TLS 1.2/1.3 已运行在这两个 crate 之上（第 C 波）；
   `only-quic` 中的 QUIC 运行在 `only-tls` 不经记录层的 TLS 1.3 内核（`only_tls::quic`）与
   `only-crypto` 之上（第 D 波）；WebRTC 中的 DTLS 在第 D 波的 WebRTC 部分之前仍使用 dimpl，之后也会
