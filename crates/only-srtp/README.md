@@ -97,7 +97,10 @@ them once.
 Not implemented: the AES-f8 and SEED transforms, RFC 4771 rollover counter carrying, separate
 key derivation rates for SRTP and SRTCP. RFC 6904 follows the RFC where libsrtp differs
 (libsrtp does not advance the keystream over padding between extension elements; ADR-040).
-`only-webrtc` does not negotiate MKIs, RFC 6904 or cryptex in SDP yet.
+`only-webrtc` negotiates cryptex (`a=cryptex`) and RFC 6904
+(`urn:ietf:params:rtp-hdrext:encrypt` extmaps) in SDP (ADR-048), but not MKIs: DTLS-SRTP carries
+an MKI only in the DTLS `use_srtp` extension, SDP has no attribute for it, and browsers do not
+use one.
 
 ## Testing
 

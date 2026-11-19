@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use only_dtls::{Config as DtlsConfig, Connection, Event as DtlsEvent, Fingerprint, Identity};
-use only_dtls::{PeerVerifier, Role};
+use only_dtls::{PeerVerifier, Role, Version as DtlsVersion};
 use only_ice::{Candidate as IceCandidate, Credentials, IceAgent, IceConfig, IceEvent};
 use only_rtp::codec::{FrameAssembler, Packetizer};
 use only_rtp::fec::{FecDecoder, FecEncoder, FecScheme};
@@ -39,9 +39,14 @@ const SCTP_MTU: usize = 1200;
 const MAX_MESSAGE_SIZE: usize = 262_144;
 /// Received RTP streams tracked per peer (more SSRCs are ignored).
 const MAX_RECV_STREAMS: usize = 64;
-/// Received streams repaired by FEC per peer: each decoder keeps up to 1024 recent packets
-/// (about 1.5 MB), so a peer holds at most about 6 MB for it.
-const MAX_FEC_DECODERS: usize = 4;
+/// Received streams repaired by FEC per peer (one per simulcast encoding of a line with
+/// ULPFEC): each decoder keeps up to 1024 recent packets (about 1.5 MB), so a peer holds at
+/// most about 12 MB for it.
+const MAX_FEC_DECODERS: usize = 8;
+/// Our Opus RED payload type (Chrome's).
+const OPUS_RED_PT: u8 = 63;
+/// RFC 6904: the URI an encrypted extension's `a=extmap` names before its own.
+pub(crate) const ENCRYPT_URI: &str = "urn:ietf:params:rtp-hdrext:encrypt";
 /// How often RTCP reports go out.
 const RTCP_INTERVAL: Duration = Duration::from_millis(1000);
 
@@ -170,9 +175,11 @@ pub(crate) struct FecPts {
 }
 
 impl FecPts {
-    /// Our payload types for `mechanism`.
-    fn local(cfg: &ConfigInner, kind: MediaKind) -> FecPts {
+    /// Our payload types for `mechanism` (on a simulcast line ULPFEC only: FlexFEC needs a
+    /// signaled FEC stream).
+    fn local(cfg: &ConfigInner, kind: MediaKind, simulcast: bool) -> FecPts {
         match (kind, cfg.fec) {
+            (_, Some(FecMechanism::FlexFec)) if simulcast => FecPts::default(),
             (MediaKind::Video, Some(FecMechanism::Ulpfec)) => FecPts {
                 red: Some(116),
                 red_rtx: Some(117),
@@ -237,6 +244,15 @@ impl FecPts {
                 ..FecPts::default()
             },
             None => FecPts::default(),
+        }
+    }
+
+    /// Without FlexFEC on a simulcast line.
+    fn for_simulcast(self, simulcast: bool) -> FecPts {
+        if simulcast && self.flexfec.is_some() {
+            FecPts::default()
+        } else {
+            self
         }
     }
 
@@ -394,23 +410,83 @@ fn remote_codecs(cfg: &ConfigInner, m: &Media, kind: MediaKind) -> Vec<CodecPara
     out
 }
 
-fn remote_extmap(m: &Media) -> ExtensionMap {
-    let mut map = ExtensionMap::new();
+/// The extensions of a remote media section and the ids among them that are RFC 6904
+/// encrypted: with `encrypt`, an extension offered both ways is taken encrypted (RFC 6904
+/// §4), else encrypted variants are ignored.
+fn remote_extmap(m: &Media, encrypt: bool) -> (ExtensionMap, Vec<u8>) {
+    let mut plain = Vec::new();
+    let mut enc = Vec::new();
     for v in m.all("extmap") {
         let mut f = v.split_whitespace();
-        let (Some(id), Some(uri)) = (f.next(), f.next()) else {
+        let (Some(id), Some(mut uri)) = (f.next(), f.next()) else {
             continue;
         };
         let Ok(id) = id.split('/').next().unwrap_or("").parse::<u8>() else {
             continue;
         };
-        if let Some(e) = Extension::from_uri(uri) {
-            if id > 0 {
-                map.insert(id, e);
+        let encrypted = uri == ENCRYPT_URI;
+        if encrypted {
+            match f.next() {
+                Some(u) => uri = u,
+                None => continue,
+            }
+        }
+        if let (Some(e), true) = (Extension::from_uri(uri), id > 0) {
+            if encrypted {
+                enc.push((id, e));
+            } else {
+                plain.push((id, e));
             }
         }
     }
-    map
+    let mut map = ExtensionMap::new();
+    let mut ids = Vec::new();
+    for (id, e) in plain {
+        if !(encrypt && enc.iter().any(|x| x.1 == e)) {
+            map.insert(id, e);
+        }
+    }
+    if encrypt {
+        for (id, e) in enc {
+            if map.get(id).is_none() && map.id_of(e).is_none() {
+                map.insert(id, e);
+                ids.push(id);
+            }
+        }
+    }
+    (map, ids)
+}
+
+/// The Opus RED payload type of a remote audio section that this configuration accepts:
+/// `red/48000/2` whose blocks (`fmtp <pt> <opus>/<opus>...`) are all a negotiated Opus.
+fn remote_red(cfg: &ConfigInner, m: &Media, codecs: &[CodecParams]) -> Option<u8> {
+    cfg.opus_red?;
+    m.all("rtpmap").find_map(|v| {
+        let (pt, enc) = v.split_once(' ')?;
+        let pt = pt.trim().parse::<u8>().ok()?;
+        let mut f = enc.trim().split('/');
+        if !f.next()?.eq_ignore_ascii_case("red")
+            || f.next() != Some("48000")
+            || !m.fmts.iter().any(|x| x.parse() == Ok(pt))
+        {
+            return None;
+        }
+        let fmtp = m.all("fmtp").find_map(|v| {
+            let (p, rest) = v.split_once(' ')?;
+            (p.trim().parse::<u8>().ok()? == pt).then(|| rest.trim())
+        })?;
+        let mut blocks = fmtp.split('/').map(|b| b.trim().parse::<u8>().ok());
+        let first = blocks.next()??;
+        let opus = codecs
+            .iter()
+            .any(|c| c.codec == Codec::Opus && c.pt == first);
+        (opus && blocks.all(|b| b == Some(first))).then_some(pt)
+    })
+}
+
+/// Whether a description signals cryptex (RFC 9335), at session or media level.
+fn has_cryptex(sdp: &Sdp) -> bool {
+    sdp.has("cryptex") || sdp.media.iter().any(|m| m.port != 0 && m.has("cryptex"))
 }
 
 fn local_extmap(kind: MediaKind) -> ExtensionMap {
@@ -448,6 +524,18 @@ struct SimEnc {
     packetizers: HashMap<u8, Box<dyn Packetizer>>,
     /// The answer accepted it (`a=simulcast:recv`); before an answer, every encoding is.
     active: bool,
+    /// FEC protecting this encoding (ULPFEC in RED, as on [`MediaLine::fec`]).
+    fec: FecSend,
+}
+
+/// The FEC state of one sent stream: its encoder, made on the first protected write, the
+/// smoothed loss fraction from the remote's receiver reports and the packets sent and
+/// retransmitted at the previous report.
+#[derive(Debug, Default)]
+struct FecSend {
+    enc: Option<FecEncoder>,
+    loss: Option<f64>,
+    prev: (u64, u64),
 }
 
 /// Most simulcast encodings of one line (and RIDs accepted from a remote offer).
@@ -511,18 +599,20 @@ struct MediaLine {
     fec_pts: FecPts,
     /// Our FlexFEC stream (used when `flexfec-03` is negotiated and this line sends).
     fec_send: SendStream,
-    /// The encoder protecting the sent stream, made on the first protected write.
-    fec_enc: Option<FecEncoder>,
-    /// Smoothed loss fraction of the sent stream from the remote's receiver reports.
-    fec_loss: Option<f64>,
-    /// Packets sent and retransmitted at the previous receiver report.
-    fec_prev: (u64, u64),
+    /// FEC protecting the sent (not simulcast) stream.
+    fec: FecSend,
     /// Remote FlexFEC SSRCs (`a=ssrc-group:FEC-FR`) and the SSRC each protects.
     remote_fec: HashMap<u32, u32>,
     /// RTCP XR receiver reference times were negotiated.
     xr: bool,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
     tmmbr_req: Option<u64>,
+    /// The Opus RED payload type (offered, then negotiated) of an audio line.
+    red: Option<u8>,
+    /// The last Opus payloads sent (RTP timestamp, payload), redundancy for the next RED.
+    red_hist: VecDeque<(u32, Vec<u8>)>,
+    /// RFC 6904 encrypted extension ids of [`ext`](Self::ext).
+    enc_ids: Vec<u8>,
 }
 
 impl MediaLine {
@@ -549,6 +639,7 @@ impl MediaLine {
                 ),
                 packetizers: HashMap::new(),
                 active: true,
+                fec: FecSend::default(),
             })
             .collect();
         MediaLine {
@@ -572,21 +663,36 @@ impl MediaLine {
             recv_rids: Vec::new(),
             fec_pts: FecPts::default(),
             fec_send: SendStream::new(random_u32(), 90_000, None, random_u32() as u16),
-            fec_enc: None,
-            fec_loss: None,
-            fec_prev: (0, 0),
+            fec: FecSend::default(),
             remote_fec: HashMap::new(),
             xr: false,
             tmmbr_req: None,
+            red: None,
+            red_hist: VecDeque::new(),
+            enc_ids: Vec::new(),
         }
     }
 
-    /// The scheme of the FEC this line sends with its media, if negotiated.
+    /// The scheme of the FEC this line sends with its media, if negotiated (on a simulcast
+    /// line ULPFEC only, per encoding).
     fn fec_send_scheme(&self) -> Option<FecScheme> {
-        if self.kind != MediaKind::Video || !self.sim.is_empty() || !self.negotiated {
+        if self.kind != MediaKind::Video || !self.negotiated {
             return None;
         }
-        self.fec_pts.receive_scheme()
+        self.fec_pts
+            .receive_scheme()
+            .filter(|s| self.sim.is_empty() || *s == FecScheme::Ulpfec)
+    }
+
+    /// The send stream and FEC state of encoding `enc` (`None`: the main stream).
+    fn fec_of(&mut self, enc: Option<usize>) -> (&SendStream, &mut FecSend) {
+        match enc {
+            Some(i) => {
+                let e = &mut self.sim[i];
+                (&e.send, &mut e.fec)
+            }
+            None => (&self.send, &mut self.fec),
+        }
     }
 
     /// The send stream with SSRC `ssrc`: `None` for the main one, else the encoding's index.
@@ -623,12 +729,12 @@ impl MediaLine {
         self.codecs.iter().find(|c| c.rtx == Some(pt))
     }
 
-    /// Whether `pt` is a negotiated payload type of this line (media, RTX or FEC).
+    /// Whether `pt` is a negotiated payload type of this line (media, RTX, FEC or RED).
     fn knows_pt(&self, pt: u8) -> bool {
         let f = &self.fec_pts;
         self.codec(pt).is_some()
             || self.rtx_of(pt).is_some()
-            || [f.red, f.red_rtx, f.ulpfec, f.flexfec].contains(&Some(pt))
+            || [f.red, f.red_rtx, f.ulpfec, f.flexfec, self.red].contains(&Some(pt))
     }
 
     /// Whether `pt` is an RTX payload type of this line.
@@ -723,6 +829,14 @@ pub(crate) struct Rtc {
     ntp_anchor: (Instant, u64),
     /// The last REMB.
     remb: Option<u64>,
+    /// Cryptex (RFC 9335) was negotiated: sent packets use it.
+    cryptex: bool,
+    /// RFC 6904 encrypted extension ids of the BUNDLE transport.
+    enc_ids: Vec<u8>,
+    /// The ids the SRTP contexts encrypt now.
+    srtp_enc_ids: Vec<u8>,
+    /// The DTLS version, once connected.
+    dtls_version: Option<DtlsVersion>,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -747,6 +861,8 @@ struct Stats {
     fec_sent: u64,
     fec_received: u64,
     fec_recovered: u64,
+    cryptex_received: u64,
+    red_recovered: u64,
 }
 
 impl std::fmt::Debug for Rtc {
@@ -823,6 +939,10 @@ impl Rtc {
             xr_rtt: None,
             tmmbr: HashMap::new(),
             remb: None,
+            cryptex: false,
+            enc_ids: Vec::new(),
+            srtp_enc_ids: Vec::new(),
+            dtls_version: None,
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -968,9 +1088,11 @@ impl Rtc {
                     };
                     let mut line = MediaLine::new(mid, kind, dir, stream_id, track_id, &rids);
                     line.codecs = local_codecs(&self.cfg, kind);
-                    if rids.is_empty() {
-                        line.fec_pts = FecPts::local(&self.cfg, kind);
-                    }
+                    line.fec_pts = FecPts::local(&self.cfg, kind, !rids.is_empty());
+                    line.red = (kind == MediaKind::Audio
+                        && self.cfg.opus_red.is_some()
+                        && line.codecs.iter().any(|c| c.codec == Codec::Opus))
+                    .then_some(OPUS_RED_PT);
                     self.media.push(line);
                     new_lines.push(mid);
                 }
@@ -1009,6 +1131,7 @@ impl Rtc {
         let sdp = Sdp::parse(answer).map_err(err)?;
         let pending = self.pending.take().ok_or_else(|| err("no offer pending"))?;
         self.apply_remote_transport(&sdp, false)?;
+        self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
         if self.dtls_role.is_none() {
             let setup = sdp
                 .media
@@ -1050,13 +1173,10 @@ impl Rtc {
                 .unwrap_or(Direction::SendRecv);
             line.dir = line.want.intersect(remote_dir.reverse());
             line.codecs = remote_codecs(&cfg, m, line.kind);
-            line.fec_pts = if line.sim.is_empty() {
-                FecPts::remote(&cfg, m, line.kind)
-            } else {
-                FecPts::default()
-            };
+            line.fec_pts = FecPts::remote(&cfg, m, line.kind).for_simulcast(!line.sim.is_empty());
+            line.red = remote_red(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
-            line.ext = remote_extmap(m);
+            (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             line.negotiated = true;
             read_ssrcs(line, m);
             if !line.sim.is_empty() {
@@ -1090,6 +1210,7 @@ impl Rtc {
         // A remote offer replaces any of ours (glare: theirs wins here).
         self.pending = None;
         self.apply_remote_transport(&sdp, true)?;
+        self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
         if self.dtls_role.is_none() {
             let setup = sdp
                 .media
@@ -1153,13 +1274,20 @@ impl Rtc {
                 line.stopped = true;
             }
             line.codecs = remote_codecs(&cfg, m, kind);
-            line.fec_pts = if line.sim.is_empty() {
-                FecPts::remote(&cfg, m, kind)
-            } else {
-                FecPts::default()
-            };
+            // A simulcast sender: receive the RIDs it declares (`a=rid:<id> send`).
+            line.recv_rids = simulcast_rids(m, "send")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| {
+                    m.all("rid")
+                        .any(|v| v.split_whitespace().take(2).eq([r.as_str(), "send"]))
+                })
+                .collect();
+            let simulcast = !line.sim.is_empty() || !line.recv_rids.is_empty();
+            line.fec_pts = FecPts::remote(&cfg, m, kind).for_simulcast(simulcast);
+            line.red = remote_red(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
-            line.ext = remote_extmap(m);
+            (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             if cfg.ccfb
                 && line
                     .codecs
@@ -1180,15 +1308,6 @@ impl Rtc {
             };
             line.negotiated = true;
             read_ssrcs(line, m);
-            // A simulcast sender: receive the RIDs it declares (`a=rid:<id> send`).
-            line.recv_rids = simulcast_rids(m, "send")
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|r| {
-                    m.all("rid")
-                        .any(|v| v.split_whitespace().take(2).eq([r.as_str(), "send"]))
-                })
-                .collect();
             if was_new && !line.codecs.is_empty() && !line.stopped {
                 self.events.push_back(RtcEvent::MediaAdded(MediaAdded {
                     mid,
@@ -1269,9 +1388,25 @@ impl Rtc {
                 .any(|l| !l.stopped && l.codecs.iter().any(|c| c.fb.iter().any(|f| f == FB_CCFB)));
         for l in &mut self.media {
             if l.fec_send_scheme().is_none() {
-                l.fec_enc = None;
+                l.fec.enc = None;
+                for e in &mut l.sim {
+                    e.fec.enc = None;
+                }
+            }
+            if l.red.is_none() || self.cfg.opus_red.unwrap_or(0) == 0 {
+                l.red_hist.clear();
             }
         }
+        let mut enc_ids: Vec<u8> = Vec::new();
+        for l in self.media.iter().filter(|l| !l.stopped) {
+            for id in &l.enc_ids {
+                if !enc_ids.contains(id) {
+                    enc_ids.push(*id);
+                }
+            }
+        }
+        self.enc_ids = enc_ids;
+        self.apply_srtp_options();
         self.start_sctp(now);
         self.open_pending_channels(now);
     }
@@ -1307,6 +1442,10 @@ impl Rtc {
         sdp.attrs.push(Attr::kv("msid-semantic", " WMS *"));
         if self.lite {
             sdp.attrs.push(Attr::flag("ice-lite"));
+        }
+        if self.cfg.cryptex {
+            // Session level, as Chrome writes it (RFC 9335 §6: it applies to the BUNDLE group).
+            sdp.attrs.push(Attr::flag("cryptex"));
         }
         for (i, mid) in order.iter().enumerate() {
             let setup = if offer {
@@ -1354,6 +1493,9 @@ impl Rtc {
         if self.lite {
             sdp.attrs.push(Attr::flag("ice-lite"));
         }
+        if self.cryptex {
+            sdp.attrs.push(Attr::flag("cryptex"));
+        }
         let setup = self.setup_answer();
         let mut first = true;
         for s in order {
@@ -1393,6 +1535,38 @@ impl Rtc {
             sdp.media.push(sec);
         }
         sdp.write()
+    }
+
+    /// The extensions an offer also offers RFC 6904 encrypted, with their ids (the same in
+    /// every section of the BUNDLE): those a line has in the clear, the ones that say most
+    /// about the media or the session first, on the one-byte ids no line uses (5 with our
+    /// default maps; never the two-byte form, which not every receiver takes).
+    fn encrypted_offer(&self) -> Vec<(u8, Extension)> {
+        const ORDER: [Extension; 6] = [
+            Extension::AudioLevel,
+            Extension::Mid,
+            Extension::RtpStreamId,
+            Extension::RepairedRtpStreamId,
+            Extension::VideoOrientation,
+            Extension::PlayoutDelay,
+        ];
+        if !self.cfg.encrypt_ext {
+            return Vec::new();
+        }
+        let lines = || self.media.iter().filter(|l| !l.stopped);
+        let mut free = (1..=14u8)
+            .filter(|id| lines().all(|l| l.ext.get(*id).is_none() && !l.enc_ids.contains(id)));
+        let mut out = Vec::new();
+        for e in ORDER {
+            let clear = lines().any(|l| l.ext.id_of(e).is_some_and(|i| !l.enc_ids.contains(&i)));
+            if clear {
+                match free.next() {
+                    Some(id) => out.push((id, e)),
+                    None => break,
+                }
+            }
+        }
+        out
     }
 
     fn setup_answer(&self) -> &'static str {
@@ -1454,7 +1628,23 @@ impl Rtc {
         self.transport_attrs(&mut attrs, setup, candidates);
         attrs.push(Attr::kv("mid", l.mid.as_str()));
         for (id, e) in l.ext.iter() {
-            attrs.push(Attr::kv("extmap", format!("{id} {}", e.uri())));
+            let enc = if l.enc_ids.contains(&id) {
+                format!("{ENCRYPT_URI} ")
+            } else {
+                String::new()
+            };
+            attrs.push(Attr::kv("extmap", format!("{id} {enc}{}", e.uri())));
+        }
+        if offer {
+            // RFC 6904 §4: extensions offered encrypted too (the answer picks one).
+            for (id, e) in self.encrypted_offer() {
+                if l.ext.id_of(e).is_some_and(|i| !l.enc_ids.contains(&i)) {
+                    attrs.push(Attr::kv(
+                        "extmap",
+                        format!("{id} {ENCRYPT_URI} {}", e.uri()),
+                    ));
+                }
+            }
         }
         let dir = if offer { l.want } else { l.dir };
         attrs.push(Attr::flag(dir.as_str()));
@@ -1470,6 +1660,15 @@ impl Rtc {
             }
         };
         for c in &l.codecs {
+            if let (Codec::Opus, Some(r)) = (c.codec, l.red) {
+                // Opus RED before Opus: libwebrtc sends RED only when the remote description
+                // lists it before the codec it carries (Chrome's own offers list it after
+                // Opus, asking for plain Opus).
+                fmts.push(r.to_string());
+                attrs.push(Attr::kv("rtpmap", format!("{r} red/48000/2")));
+                ccfb_fb(&mut attrs, r);
+                attrs.push(Attr::kv("fmtp", format!("{r} {}/{}", c.pt, c.pt)));
+            }
             fmts.push(c.pt.to_string());
             let ch = c.channels.map(|n| format!("/{n}")).unwrap_or_default();
             attrs.push(Attr::kv(
@@ -1706,20 +1905,27 @@ impl Rtc {
         let has_rid = line.ext.id_of(Extension::RtpStreamId).is_some();
         let has_twcc = line.ext.id_of(Extension::TransportCc).is_some();
         let has_ast = line.ext.id_of(Extension::AbsSendTime).is_some();
-        // FEC: ULPFEC wraps every packet in RED; FlexFEC goes on its own stream.
-        let scheme = if enc.is_none() {
-            line.fec_send_scheme()
-        } else {
-            None
-        };
+        // FEC: ULPFEC wraps every packet in RED (each simulcast encoding on its own);
+        // FlexFEC goes on its own stream.
+        let scheme = line.fec_send_scheme();
         let fp = line.fec_pts;
         let red = (scheme == Some(FecScheme::Ulpfec))
             .then_some(fp.red.zip(fp.ulpfec))
             .flatten();
-        if scheme.is_some() && line.fec_enc.is_none() {
-            let rate = fec_rate(&self.cfg, line.fec_loss.unwrap_or(0.0));
-            line.fec_enc = scheme.map(|sc| FecEncoder::new(sc, line.send.ssrc(), rate));
+        if let Some(sc) = scheme {
+            let (send, fec) = line.fec_of(enc);
+            if fec.enc.is_none() {
+                let rate = fec_rate(&self.cfg, fec.loss.unwrap_or(0.0));
+                fec.enc = Some(FecEncoder::new(sc, send.ssrc(), rate));
+            }
         }
+        // Opus RED: its payload type and the earlier packets that go with each.
+        let audio_red = match (line.red, self.cfg.opus_red) {
+            (Some(r), Some(n)) if n > 0 && line.negotiated && codec.codec == Codec::Opus => {
+                Some((r, usize::from(n)))
+            }
+            _ => None,
+        };
         line.last_pt = Some(red.map_or(codec.pt, |(r, _)| r));
         let MediaLine {
             ext: map,
@@ -1727,15 +1933,21 @@ impl Rtc {
             packetizers,
             sim,
             fec_send,
-            fec_enc,
+            fec,
+            red_hist,
             ..
         } = line;
-        let (send, packetizers, rid) = match enc {
+        let (send, packetizers, rid, fec_enc) = match enc {
             Some(i) => {
                 let e = &mut sim[i];
-                (&mut e.send, &mut e.packetizers, Some(e.rid.as_str()))
+                (
+                    &mut e.send,
+                    &mut e.packetizers,
+                    Some(e.rid.as_str()),
+                    &mut e.fec.enc,
+                )
             }
-            None => (send, packetizers, None),
+            None => (send, packetizers, None, &mut fec.enc),
         };
         let pk = packetizers
             .entry(codec.pt)
@@ -1761,14 +1973,18 @@ impl Rtc {
         for (p, marker) in payloads {
             let ext = ext_of(rid);
             let tw = ext.transport_cc;
-            let raw = match red {
-                Some((red_pt, _)) => {
+            let raw = match (red, audio_red) {
+                (Some((red_pt, _)), _) => {
                     let mut q = Vec::with_capacity(1 + p.len());
                     q.push(codec.pt);
                     q.extend_from_slice(&p);
                     send.write(now, red_pt, marker, ts, &q, &ext, map)
                 }
-                None => send.write(now, codec.pt, marker, ts, &p, &ext, map),
+                (None, Some((red_pt, n))) => {
+                    let q = opus_red_payload(red_hist, codec.pt, ts, &p, n);
+                    send.write(now, red_pt, marker, ts, &q, &ext, map)
+                }
+                (None, None) => send.write(now, codec.pt, marker, ts, &p, &ext, map),
             };
             let fec = match fec_enc.as_mut() {
                 Some(fe) => {
@@ -1782,7 +1998,8 @@ impl Rtc {
             };
             out.push((raw, tw, false));
             for f in fec {
-                let ext = ext_of(None);
+                // ULPFEC is a packet of the media stream: with the encoding's RID.
+                let ext = ext_of(red.and(rid));
                 let tw = ext.transport_cc;
                 let raw = match (red, fp.flexfec) {
                     (Some((red_pt, ulp_pt)), _) => {
@@ -1988,10 +2205,13 @@ impl Rtc {
         if self.dtls.is_some() {
             return;
         }
-        let cfg = Arc::new(DtlsConfig::webrtc(
-            self.identity.clone(),
-            PeerVerifier::Fingerprints(vec![fp]),
-        ));
+        let mut cfg =
+            DtlsConfig::webrtc(self.identity.clone(), PeerVerifier::Fingerprints(vec![fp]));
+        if self.cfg.dtls13 {
+            // A DTLS 1.3 ClientHello DTLS 1.2 servers answer; a server takes either.
+            cfg = cfg.with_versions(vec![DtlsVersion::Dtls13, DtlsVersion::Dtls12]);
+        }
+        let cfg = Arc::new(cfg);
         let r = match role {
             Role::Client => Connection::client(cfg, now),
             Role::Server => {
@@ -2008,6 +2228,27 @@ impl Rtc {
         }
     }
 
+    /// The negotiated header protection on the SRTP contexts: cryptex on what is sent once
+    /// negotiated (received cryptex is decrypted whenever this side offers or accepts it, so
+    /// packets sent right after the remote's answer are not lost), RFC 6904 ids both ways.
+    fn apply_srtp_options(&mut self) {
+        let (cryptex, rx_cryptex) = (self.cryptex, self.cfg.cryptex);
+        // Setting the ids derives the session keys again: only when they change.
+        let ids = (self.enc_ids != self.srtp_enc_ids).then(|| self.enc_ids.clone());
+        let apply = |c: Srtp, cx: bool| {
+            let c = c.with_cryptex(cx);
+            match &ids {
+                Some(ids) => c.with_encrypted_header_extensions(ids),
+                None => c,
+            }
+        };
+        self.srtp_tx = self.srtp_tx.take().map(|c| apply(c, cryptex));
+        self.srtp_rx = self.srtp_rx.take().map(|c| apply(c, rx_cryptex));
+        if self.srtp_tx.is_some() || self.srtp_rx.is_some() {
+            self.srtp_enc_ids.clone_from(&self.enc_ids);
+        }
+    }
+
     fn handle_rtp(&mut self, now: Instant, data: &[u8]) {
         let Some(rx) = self.srtp_rx.as_mut() else {
             return;
@@ -2015,6 +2256,9 @@ impl Rtc {
         let Ok(pkt) = rx.unprotect_rtp(data) else {
             return;
         };
+        if is_cryptex(data) {
+            self.stats.cryptex_received += 1;
+        }
         let Some(h) = RtpHeader::parse(&pkt, &self.ext) else {
             return;
         };
@@ -2065,7 +2309,60 @@ impl Rtc {
             self.media_packet(now, route, &inner, &ih);
             return;
         }
+        let line = &self.media[route.line];
+        if route.repairs.is_none() && line.red.is_some() && line.red == Some(h.payload_type) {
+            self.opus_red(now, route.line, &pkt, &h);
+            return;
+        }
         self.media_packet(now, route, &pkt, &h);
+    }
+
+    /// An Opus RED packet (RFC 2198): each redundant block stands in for a packet lost
+    /// before it, then the primary block is the packet itself. As libwebrtc sends it, the
+    /// redundant blocks are the packets right before (the last one sequence number - 1 ...);
+    /// copies of packets already received are dropped by the receive stream.
+    fn opus_red(&mut self, now: Instant, line: usize, pkt: &[u8], h: &RtpHeader) {
+        let Some(blocks) = only_rtp::fec::red::parse(h.payload(pkt)) else {
+            return;
+        };
+        let Some((primary, redundant)) = blocks.split_last() else {
+            return;
+        };
+        let l = &self.media[line];
+        if l.codec(primary.pt).is_none() {
+            return;
+        }
+        let n = redundant.len();
+        let mut last_off = u16::MAX;
+        for (i, b) in redundant.iter().enumerate() {
+            // Older blocks first, each with a larger offset; anything else is not RED as sent.
+            if b.pt != primary.pt || b.timestamp_offset == 0 || b.timestamp_offset >= last_off {
+                last_off = 0;
+                continue;
+            }
+            last_off = b.timestamp_offset;
+            let d = (n - i) as u16;
+            let p = Pkt {
+                ssrc: h.ssrc,
+                seq: h.sequence_number.wrapping_sub(d),
+                pt: b.pt,
+                ts: h.timestamp.wrapping_sub(u32::from(b.timestamp_offset)),
+                marker: false,
+                rid: None,
+            };
+            if self.recv.contains_key(&h.ssrc) && self.deliver(now, line, &p, b.data, true) {
+                self.stats.red_recovered += 1;
+            }
+        }
+        let p = Pkt {
+            ssrc: h.ssrc,
+            seq: h.sequence_number,
+            pt: primary.pt,
+            ts: h.timestamp,
+            marker: h.marker,
+            rid: h.ext.rid.as_deref(),
+        };
+        self.deliver(now, line, &p, primary.data, false);
     }
 
     /// The FEC decoder of the received media stream `ssrc` on line `line`, made when FEC
@@ -2218,7 +2515,8 @@ impl Rtc {
         }
     }
 
-    /// One media packet into its receive stream and on to the application.
+    /// One media packet into its receive stream and on to the application; whether it was
+    /// new there (not a duplicate).
     fn deliver(
         &mut self,
         now: Instant,
@@ -2226,16 +2524,16 @@ impl Rtc {
         p: &Pkt<'_>,
         payload: &[u8],
         recovered: bool,
-    ) {
+    ) -> bool {
         if payload.is_empty() {
             // Padding only: not a gap in the media stream.
             if !recovered && self.recv.contains_key(&p.ssrc) {
                 self.fec_seq(now, line_idx, p.ssrc, p.seq, p.ts);
             }
-            return;
+            return false;
         }
         let Some(codec) = self.media[line_idx].codec(p.pt).cloned() else {
-            return;
+            return false;
         };
         let reorder = if codec.codec.kind() == MediaKind::Audio {
             self.cfg.reorder_audio
@@ -2245,7 +2543,7 @@ impl Rtc {
         let rtp_mode = self.cfg.rtp_mode;
         let Some(recv) = recv_entry(&mut self.recv, &self.media, line_idx, p.ssrc, codec.clock)
         else {
-            return;
+            return false;
         };
         if recv.rid.is_none() {
             recv.rid = p.rid.map(str::to_owned);
@@ -2256,7 +2554,7 @@ impl Rtc {
             recv.stream.receive(now, p.seq, p.ts)
         };
         let Some(ext_seq) = got else {
-            return;
+            return false;
         };
         let (ssrc, pt) = (p.ssrc, p.pt);
         if rtp_mode {
@@ -2273,16 +2571,17 @@ impl Rtc {
                 received: now,
                 payload: Arc::from(payload),
             }));
-            return;
+            return true;
         }
         if recv.assembler.as_ref().is_none_or(|(x, _)| *x != pt) {
             recv.assembler = Some((pt, FrameAssembler::new(codec.codec.rtp(), reorder)));
         }
         let Some((_, asm)) = recv.assembler.as_mut() else {
-            return;
+            return false;
         };
         asm.push(ext_seq, p.ts, p.marker, payload, now);
         self.pop_frames(line_idx, ssrc);
+        true
     }
 
     /// Which line (and repaired stream) an incoming packet belongs to.
@@ -2458,19 +2757,21 @@ impl Rtc {
             if let Some((li, enc)) = found {
                 let l = &mut self.media[li];
                 l.send_mut(enc).handle_report_block(now, ntp, b);
-                if enc.is_none() && l.send.packets_sent() > l.fec_prev.0 {
+                let (send, fec) = l.fec_of(enc);
+                if send.packets_sent() > fec.prev.0 {
                     // The FEC rate follows the loss before repair: what the receiver reports,
                     // or (NACK repairs losses before the report) the share of packets it
                     // asked to have retransmitted since the previous report; smoothed. Reports
-                    // without anything sent since leave it alone.
-                    let (sent, resent) = (l.send.packets_sent(), l.send.packets_resent());
-                    let (ps, pr) = l.fec_prev;
-                    l.fec_prev = (sent, resent);
+                    // without anything sent since leave it alone. Each simulcast encoding has
+                    // its own.
+                    let (sent, resent) = (send.packets_sent(), send.packets_resent());
+                    let (ps, pr) = fec.prev;
+                    fec.prev = (sent, resent);
                     let nacked = (resent.saturating_sub(pr) as f64 / (sent - ps) as f64).min(1.0);
                     let loss = (f64::from(b.fraction_lost) / 256.0).max(nacked);
-                    let s = l.fec_loss.map_or(loss, |x| 0.5 * x + 0.5 * loss);
-                    l.fec_loss = Some(s);
-                    if let Some(e) = l.fec_enc.as_mut() {
+                    let s = fec.loss.map_or(loss, |x| 0.5 * x + 0.5 * loss);
+                    fec.loss = Some(s);
+                    if let Some(e) = fec.enc.as_mut() {
                         e.set_rate(fec_rate(&self.cfg, s));
                     }
                 }
@@ -2608,6 +2909,12 @@ impl Rtc {
                     fec_received: self.stats.fec_received,
                     fec_recovered: self.stats.fec_recovered,
                     ccfb: self.ccfb,
+                    dtls: self.dtls_version.map(|v| match v {
+                        DtlsVersion::Dtls13 => "DTLS 1.3",
+                        _ => "DTLS 1.2",
+                    }),
+                    cryptex_received: self.stats.cryptex_received,
+                    red_recovered: self.stats.red_recovered,
                 }));
             }
         }
@@ -2778,8 +3085,12 @@ impl Rtc {
                             self.srtp_tx = Srtp::new(p, lk, ls).ok();
                             self.srtp_rx =
                                 Srtp::new(p, rk, rs).ok().map(|c| c.with_replay_window(512));
+                            self.srtp_enc_ids.clear();
+                            self.apply_srtp_options();
                         }
                     }
+                    self.dtls_version = Some(info.version);
+                    only_log::debug!(target: "only_webrtc", "dtls: connected with {}", info.version);
                     self.dtls_connected = true;
                     self.events.push_back(RtcEvent::Connected);
                     self.next_rtcp = Some(now + Duration::from_millis(200));
@@ -2905,6 +3216,61 @@ impl Rtc {
         }
         Output::Timeout(t.max(now))
     }
+}
+
+/// A RED payload (RFC 2198) of the Opus `payload` at RTP time `ts`, with the newest of the
+/// earlier payloads in `hist` (up to `n`, oldest first) as redundancy while their timestamp
+/// offsets fit 14 bits and the packet fits the MTU, as libwebrtc builds it (the redundant
+/// blocks are always the packets right before, which receivers rely on); `payload` then
+/// joins `hist`, which keeps the last `n`.
+fn opus_red_payload(
+    hist: &mut VecDeque<(u32, Vec<u8>)>,
+    pt: u8,
+    ts: u32,
+    payload: &[u8],
+    n: usize,
+) -> Vec<u8> {
+    use only_rtp::fec::red::{RedBlock, write};
+    let mut room = RTP_PAYLOAD_MTU.saturating_sub(payload.len() + 1);
+    let mut take = 0;
+    for (t, d) in hist.iter().rev() {
+        let off = ts.wrapping_sub(*t);
+        if take == n || off == 0 || off >= 1 << 14 || d.len() >= 1024 || d.len() + 4 > room {
+            break;
+        }
+        room -= d.len() + 4;
+        take += 1;
+    }
+    let mut blocks: Vec<RedBlock<'_>> = hist
+        .iter()
+        .skip(hist.len() - take)
+        .map(|(t, d)| RedBlock {
+            pt,
+            timestamp_offset: ts.wrapping_sub(*t) as u16,
+            data: d,
+        })
+        .collect();
+    blocks.push(RedBlock {
+        pt,
+        timestamp_offset: 0,
+        data: payload,
+    });
+    let out = write(&blocks);
+    hist.push_back((ts, payload.to_vec()));
+    while hist.len() > n {
+        hist.pop_front();
+    }
+    out
+}
+
+/// Whether an SRTP packet's header extension is marked as cryptex (RFC 9335 §5.1:
+/// `0xC0DE` or `0xC2DE`; the header itself is in the clear).
+fn is_cryptex(p: &[u8]) -> bool {
+    let Some(&b0) = p.first() else {
+        return false;
+    };
+    let at = 12 + 4 * usize::from(b0 & 0x0f);
+    b0 & 0x10 != 0 && matches!(p.get(at..at + 2), Some([0xc0 | 0xc2, 0xde]))
 }
 
 /// The fields of a received media packet that [`Rtc::deliver`] needs.

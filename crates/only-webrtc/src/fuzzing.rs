@@ -10,8 +10,8 @@ fn fresh(lite: bool, cfg: ConfigInner) -> Option<Rtc> {
     Rtc::new(cfg, lite, Instant::now()).ok()
 }
 
-/// The configurations an SDP is tried with: the default, and every ADR-039 option on (FEC as
-/// `fec`).
+/// The configurations an SDP is tried with: the default, and every ADR-039 and ADR-048 option
+/// on (FEC as `fec`).
 fn configs() -> [ConfigInner; 3] {
     let full = |fec| ConfigInner {
         fec: Some(fec),
@@ -19,6 +19,10 @@ fn configs() -> [ConfigInner; 3] {
         ccfb: true,
         xr: true,
         tmmbr: true,
+        dtls13: true,
+        cryptex: true,
+        encrypt_ext: true,
+        opus_red: Some(2),
         ..ConfigInner::default()
     };
     [
@@ -124,14 +128,15 @@ pub(crate) mod seeds {
     use crate::{Direction, MediaKind, SdpChanges};
 
     /// Offers this stack makes (data only; audio + video + data; simulcast; with every
-    /// ADR-039 option, FlexFEC or ULPFEC) and the answers to them.
+    /// ADR-039 / ADR-048 option, FlexFEC or ULPFEC; simulcast with them and ULPFEC) and the
+    /// answers to them.
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let now = Instant::now();
-        for media in [0, 1, 2, 3, 4] {
+        for media in [0, 1, 2, 3, 4, 5] {
             let cfg = match media {
                 3 => super::configs()[1].clone(),
-                4 => super::configs()[2].clone(),
+                4 | 5 => super::configs()[2].clone(),
                 _ => ConfigInner::default(),
             };
             let mut rtc = Rtc::new(cfg.clone(), false, now).expect("rtc");
@@ -159,7 +164,10 @@ pub(crate) mod seeds {
                     api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
                     api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
                 }
-                if media == 2 {
+                if media == 5 {
+                    api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+                }
+                if media == 2 || media == 5 {
                     let _ = api.add_simulcast_media(
                         MediaKind::Video,
                         Direction::SendOnly,

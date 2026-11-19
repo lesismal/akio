@@ -10,12 +10,15 @@
 //! webrtc-interop server <udp-addr> <http-addr> <tcp-addr>
 //!                                                      the same, also with a passive ICE-TCP
 //!                                                      candidate on <tcp-addr>
-//! webrtc-interop sfu <udp-addr> <http-addr>            ICE-lite simulcast forwarding: POST /publish
+//! webrtc-interop sfu <udp-addr> <http-addr> [<proxy-addr> loss-out=<%> [periodic]]
+//!                                                      ICE-lite simulcast forwarding: POST /publish
 //!                                                      a simulcast offer; POST /view gets an
 //!                                                      offer (a simulcast line relaying every
 //!                                                      layer, a plain line with the selected
 //!                                                      layer, a "ctl" channel taking "layer
-//!                                                      <rid>"), POST /view-answer its answer
+//!                                                      <rid>"), POST /view-answer its answer;
+//!                                                      behind a lossy proxy (as fec-server's)
+//!                                                      when <proxy-addr> is given
 //! webrtc-interop client <http-addr> dc-tcp             the same offering its passive ICE-TCP
 //!                                                      candidate only
 //! webrtc-interop client <http-addr> dc-active          the same offering its active ICE-TCP
@@ -48,7 +51,16 @@
 //!                                                      (out: to the browser; at random, or
 //!                                                      one in 100/<%> with periodic); prints the
 //!                                                      statistics every second
+//! webrtc-interop client <http-addr> media-in           offers audio (and a data channel), sends
+//!                                                      Opus and waits for 100 audio frames from
+//!                                                      the answerer
 //! Signalling is one HTTP POST: the offer as the body, the answer as the response body.
+//!
+//! Every mode takes these from the environment (ADR-048): ONLY_INTEROP_DTLS13=0|1 (DTLS 1.2
+//! only, or the default DTLS 1.3 with 1.2 fallback), ONLY_INTEROP_CRYPTEX=1, ONLY_INTEROP_RED=<0..2> (Opus RED),
+//! ONLY_INTEROP_FEC=ulpfec|flexfec with ONLY_INTEROP_FEC_MIN=<n>, ONLY_INTEROP_STATS=1
+//! (statistics events every second, printed). With ONLY_LOG=only_webrtc=debug the DTLS
+//! version of each connection is logged.
 #![allow(missing_docs)]
 
 use std::io::{Read, Write};
@@ -67,6 +79,32 @@ use only_webrtc::{
     KeyframeRequestKind, MediaData, MediaKind, MediaTime, Mid, Peer, PeerHandler, RelayServer,
     RtcServer,
 };
+
+/// The ADR-048 switches from the environment (see the module documentation).
+fn extras(mut c: only_webrtc::RtcConfig) -> only_webrtc::RtcConfig {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(v) = env("ONLY_INTEROP_DTLS13") {
+        c = c.enable_dtls13(v != "0");
+    }
+    if env("ONLY_INTEROP_CRYPTEX").is_some() {
+        c = c.enable_cryptex(true);
+    }
+    if let Some(n) = env("ONLY_INTEROP_RED").and_then(|v| v.parse().ok()) {
+        c = c.enable_opus_red(Some(n));
+    }
+    match env("ONLY_INTEROP_FEC").as_deref() {
+        Some("ulpfec") => c = c.enable_fec(Some(FecMechanism::Ulpfec)),
+        Some("flexfec") => c = c.enable_fec(Some(FecMechanism::FlexFec)),
+        _ => {}
+    }
+    if let Some(m) = env("ONLY_INTEROP_FEC_MIN").and_then(|v| v.parse::<u8>().ok()) {
+        c = c.set_fec_protection(m, 128.max(m));
+    }
+    if env("ONLY_INTEROP_STATS").is_some() {
+        c = c.set_stats_interval(Some(Duration::from_secs(1)));
+    }
+    c
+}
 
 /// Echoes data channel messages and media samples; answers a keyframe request with a text
 /// message on the first data channel.
@@ -92,6 +130,9 @@ impl PeerHandler for Echo {
         if let Some(id) = self.first {
             let _ = p.send(id, b"keyframe-request", false);
         }
+    }
+    fn on_event(&mut self, _p: &Peer, e: &Event) {
+        eprintln!("server: event {e:?}");
     }
     fn on_close(&mut self, _p: &Peer) {
         eprintln!("server: peer closed after {} media samples", self.media);
@@ -130,7 +171,7 @@ fn read_http(s: &mut TcpStream) -> (String, String) {
 }
 
 fn server(udp: SocketAddr, http: SocketAddr, tcp: Option<SocketAddr>) {
-    let mut rtc = RtcServer::new(vec![udp]);
+    let mut rtc = RtcServer::new(vec![udp]).config(|| extras(only_webrtc::rtc_config()));
     if let Some(t) = tcp {
         rtc = rtc.tcp_candidates(vec![t]);
     }
@@ -210,6 +251,9 @@ impl PeerHandler for Probe {
             .expect("lock")
             .send(Got::Media(d.data.to_vec()));
     }
+    fn on_event(&mut self, _p: &Peer, e: &Event) {
+        eprintln!("client: event {e:?}");
+    }
 }
 
 /// Keeps only the candidate lines `keep` accepts.
@@ -241,13 +285,12 @@ fn client(http: &str, what: &str, args: &[String]) {
     });
     let ep = Endpoint::bind(&engine, bind.parse().expect("addr")).expect("bind");
     // ONLY_INTEROP_NOMINATION=aggressive|renomination: how this (controlling) side nominates.
-    let ep = match std::env::var("ONLY_INTEROP_NOMINATION").as_deref() {
-        Ok("aggressive") => {
-            ep.config(|| only_webrtc::rtc_config().enable_ice_aggressive_nomination(true))
-        }
-        Ok("renomination") => ep.config(|| only_webrtc::rtc_config().enable_ice_renomination(true)),
-        _ => ep,
-    };
+    let nomination = std::env::var("ONLY_INTEROP_NOMINATION").unwrap_or_default();
+    let ep = ep.config(move || {
+        extras(only_webrtc::rtc_config())
+            .enable_ice_aggressive_nomination(nomination == "aggressive")
+            .enable_ice_renomination(nomination == "renomination")
+    });
     // Force the transport, as a browser's iceTransportPolicy: only the candidates offered.
     let ep = match what {
         "dc-relay" | "dc-relay-url" => ep.candidate_filter(|c| c.kind() == "relay"),
@@ -304,7 +347,7 @@ fn client(http: &str, what: &str, args: &[String]) {
             } else {
                 "interop"
             });
-            if what == "media" {
+            if what == "media" || what == "media-in" {
                 audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
             }
             if what == "simulcast" {
@@ -415,7 +458,7 @@ fn client(http: &str, what: &str, args: &[String]) {
             // queries finish, for the log browser.sh checks.
             std::thread::sleep(Duration::from_secs(1));
         }
-    } else {
+    } else if what == "media" {
         let mid = audio.expect("audio");
         let pt = peer.payload_type(mid, Codec::Opus).expect("opus");
         let mut n = 0;
@@ -435,6 +478,39 @@ fn client(http: &str, what: &str, args: &[String]) {
             assert!(Instant::now() < deadline, "media echo timed out ({n} back)");
         }
         println!("ok: {n} Opus samples echoed (sent {i})");
+    }
+    if what == "media-in" {
+        // The answerer's own audio (and ours to it).
+        let mid = audio.expect("audio");
+        let pt = peer.payload_type(mid, Codec::Opus).expect("opus");
+        let (mut n, mut i) = (0, 0u64);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while n < 100 {
+            // 20 ms of Opus silence (a CELT frame Chrome decodes).
+            let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+            peer.write_media(mid, pt, Instant::now(), t, &[0xf8, 0xff, 0xfe])
+                .expect("write");
+            i += 1;
+            std::thread::sleep(Duration::from_millis(20));
+            while let Ok(g) = rx.try_recv() {
+                if matches!(g, Got::Media(_)) {
+                    n += 1;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no audio from the answerer ({n})"
+            );
+        }
+        // Chrome counts what we sent too: keep sending a while.
+        for _ in 0..150 {
+            let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+            peer.write_media(mid, pt, Instant::now(), t, &[0xf8, 0xff, 0xfe])
+                .expect("write");
+            i += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!("ok: {n} audio frames from the answerer (sent {i})");
     }
     peer.close();
 }
@@ -652,7 +728,11 @@ fn main() {
             a[3].parse().expect("http"),
             a.get(4).map(|t| t.parse().expect("tcp")),
         ),
-        Some("sfu") => sfu(a[2].parse().expect("udp"), a[3].parse().expect("http")),
+        Some("sfu") => sfu(
+            a[2].parse().expect("udp"),
+            a[3].parse().expect("http"),
+            &a[4..],
+        ),
         Some("fec-server") => fec_server(
             a[2].parse().expect("udp"),
             a[3].parse().expect("proxy"),
@@ -812,8 +892,21 @@ fn respond(s: &mut TcpStream, r: Result<String, String>) {
     let _ = s.write_all(resp.as_bytes());
 }
 
-fn sfu(udp: SocketAddr, http: SocketAddr) {
-    let rtc = RtcServer::new(vec![udp]);
+fn sfu(udp: SocketAddr, http: SocketAddr, proxy: &[String]) {
+    // Behind a lossy proxy: `<proxy-addr> loss-out=<%> [periodic]`.
+    let public = match proxy.first() {
+        Some(p) => {
+            let public: SocketAddr = p.parse().expect("proxy addr");
+            let loss = proxy
+                .iter()
+                .find_map(|o| o.strip_prefix("loss-out=").and_then(|v| v.parse().ok()))
+                .unwrap_or(0);
+            lossy_proxy(public, udp, 0, loss, proxy.iter().any(|o| o == "periodic"));
+            public
+        }
+        None => udp,
+    };
+    let rtc = RtcServer::new(vec![public]).config(|| extras(only_webrtc::rtc_config()));
     let engine = Engine::builder()
         .listen(Listener::udp(udp).threads(1).serve(rtc.clone()))
         .build()
@@ -886,6 +979,8 @@ struct FecEcho {
     asked: bool,
     media: u64,
     keyframes: u64,
+    /// Frames received per simulcast RID, and how many of them were whole (`contiguous`).
+    rids: std::collections::BTreeMap<String, (u64, u64)>,
 }
 
 impl PeerHandler for FecEcho {
@@ -895,6 +990,11 @@ impl PeerHandler for FecEcho {
     }
     fn on_media_data(&mut self, p: &Peer, d: &MediaData) {
         self.media += 1;
+        if let Some(r) = &d.rid {
+            let e = self.rids.entry(r.clone()).or_default();
+            e.0 += 1;
+            e.1 += u64::from(d.contiguous);
+        }
         let _ = p.write_media(d.mid, d.pt, Instant::now(), d.time, &d.data);
         if let (Some(b), Some(t), false) = (self.tmmbr, self.connected, self.asked) {
             if t.elapsed() > Duration::from_secs(3) && d.codec.is_some_and(|c| c == Codec::Vp8) {
@@ -911,6 +1011,9 @@ impl PeerHandler for FecEcho {
     }
     fn on_event(&mut self, _p: &Peer, e: &Event) {
         eprintln!("server: event {e:?}");
+        if !self.rids.is_empty() {
+            eprintln!("server: rid frames (all, whole) {:?}", self.rids);
+        }
     }
     fn on_close(&mut self, _p: &Peer) {
         eprintln!(
@@ -920,16 +1023,16 @@ impl PeerHandler for FecEcho {
     }
 }
 
-/// Forwards UDP between the browser (at `public`) and the server (`inner`), dropping
-/// `loss_in` / `loss_out` percent of the RTP (not RTCP, STUN or DTLS) towards each: at random,
-/// or with `periodic` exactly one packet in every `100 / loss`.
+/// Forwards UDP between browser peer connections (at `public`) and the server (`inner`),
+/// one upstream socket per browser address, dropping `loss_in` / `loss_out` percent of the RTP
+/// (not RTCP, STUN or DTLS) towards each: at random, or with `periodic` exactly one packet in
+/// every `100 / loss` (counted per direction and browser address).
 fn lossy_proxy(public: SocketAddr, inner: SocketAddr, loss_in: u64, loss_out: u64, periodic: bool) {
     let outer = std::net::UdpSocket::bind(public).expect("proxy bind");
-    let up = std::net::UdpSocket::bind("127.0.0.1:0").expect("proxy upstream");
-    let client = Arc::new(Mutex::new(None::<SocketAddr>));
-    let is_rtp =
-        |d: &[u8]| d.len() > 12 && (128..192).contains(&d[0]) && !(192..224).contains(&d[1]);
-    let rng = move |x: &mut u64, loss: u64| {
+    fn is_rtp(d: &[u8]) -> bool {
+        d.len() > 12 && (128..192).contains(&d[0]) && !(192..224).contains(&d[1])
+    }
+    let drop_it = move |x: &mut u64, loss: u64| {
         if periodic {
             *x += 1;
             return loss > 0 && *x % (100 / loss.clamp(1, 100)) == 0;
@@ -939,47 +1042,46 @@ fn lossy_proxy(public: SocketAddr, inner: SocketAddr, loss_in: u64, loss_out: u6
         *x ^= *x << 17;
         *x % 100 < loss
     };
-    {
-        let (outer, up, client) = (
-            outer.try_clone().expect("clone"),
-            up.try_clone().expect("clone"),
-            client.clone(),
-        );
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 2048];
-            let mut x = 0x1234_5678_9abc_def1u64;
-            let (mut fwd, mut drop) = (0u64, 0u64);
-            while let Ok((n, from)) = outer.recv_from(&mut buf) {
-                *client.lock().unwrap() = Some(from);
-                if is_rtp(&buf[..n]) && rng(&mut x, loss_in) {
-                    drop += 1;
-                    continue;
-                }
-                fwd += 1;
-                if (fwd + drop) % 2000 == 0 {
-                    eprintln!("proxy: in {fwd} forwarded, {drop} RTP dropped");
-                }
-                let _ = up.send_to(&buf[..n], inner);
-            }
-        });
-    }
     std::thread::spawn(move || {
+        let mut ups: std::collections::HashMap<SocketAddr, (std::net::UdpSocket, u64)> =
+            std::collections::HashMap::new();
         let mut buf = [0u8; 2048];
-        let mut x = 0x0fed_cba9_8765_4321u64;
         let (mut fwd, mut drop) = (0u64, 0u64);
-        while let Ok((n, _)) = up.recv_from(&mut buf) {
-            if is_rtp(&buf[..n]) && rng(&mut x, loss_out) {
+        while let Ok((n, from)) = outer.recv_from(&mut buf) {
+            let (up, x) = ups.entry(from).or_insert_with(|| {
+                // A new browser address: its own upstream socket, and its return path.
+                let up = std::net::UdpSocket::bind("127.0.0.1:0").expect("proxy upstream");
+                let (back, outer) = (
+                    up.try_clone().expect("clone"),
+                    outer.try_clone().expect("clone"),
+                );
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 2048];
+                    let mut x = 0x0fed_cba9_8765_4321u64;
+                    let (mut fwd, mut drop) = (0u64, 0u64);
+                    while let Ok((n, _)) = back.recv_from(&mut buf) {
+                        if is_rtp(&buf[..n]) && drop_it(&mut x, loss_out) {
+                            drop += 1;
+                            continue;
+                        }
+                        fwd += 1;
+                        if (fwd + drop) % 2000 == 0 {
+                            eprintln!("proxy: out to {from} {fwd} forwarded, {drop} RTP dropped");
+                        }
+                        let _ = outer.send_to(&buf[..n], from);
+                    }
+                });
+                (up, 0x1234_5678_9abc_def1u64)
+            });
+            if is_rtp(&buf[..n]) && drop_it(x, loss_in) {
                 drop += 1;
                 continue;
             }
             fwd += 1;
             if (fwd + drop) % 2000 == 0 {
-                eprintln!("proxy: out {fwd} forwarded, {drop} RTP dropped");
+                eprintln!("proxy: in {fwd} forwarded, {drop} RTP dropped");
             }
-            let to = *client.lock().unwrap();
-            if let Some(c) = to {
-                let _ = outer.send_to(&buf[..n], c);
-            }
+            let _ = up.send_to(&buf[..n], inner);
         }
     });
 }
@@ -1008,7 +1110,7 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
     let periodic = opt("periodic").is_some();
     lossy_proxy(public, udp, num("loss-in"), num("loss-out"), periodic);
     let rtc = RtcServer::new(vec![public]).config(move || {
-        let mut c = only_webrtc::rtc_config()
+        let mut c = extras(only_webrtc::rtc_config())
             .enable_fec(fec)
             .set_fec_protection(min, 128.max(min))
             .enable_ccfb(ccfb)
@@ -1038,6 +1140,7 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
             asked: false,
             media: 0,
             keyframes: 0,
+            rids: std::collections::BTreeMap::new(),
         };
         respond(
             &mut s,

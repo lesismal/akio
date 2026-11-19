@@ -13,9 +13,12 @@
   启用激进提名与重新提名），角色冲突，trickle ICE（RFC 8838），ICE 重启，consent freshness
   （RFC 7675），连接超时；与浏览器一样解析 mDNS（`.local`）候选，并把我方主机地址隐藏在 mDNS 名字
   之后（`Endpoint::resolve_mdns`、`conceal_host_candidates`）。
-- **DTLS-SRTP**（[`only-dtls`](../only-dtls/README.zh-CN.md)）：DTLS 1.2，角色取自 `a=setup`，
-  校验证书指纹；SRTP/SRTCP（[`only-srtp`](../only-srtp/README.zh-CN.md)，RFC 3711 / RFC 7714）
-  支持 AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM，防重放，ROC 处理；密钥来自 DTLS 导出器。
+- **DTLS-SRTP**（[`only-dtls`](../only-dtls/README.zh-CN.md)）：DTLS 1.3（RFC 9147，与 Chrome 157
+  协商一致），可回退到 DTLS 1.2（pion；`RtcConfig::enable_dtls13(false)` 只用 DTLS 1.2），角色取自
+  `a=setup`，校验证书指纹；SRTP/SRTCP（[`only-srtp`](../only-srtp/README.zh-CN.md)，RFC 3711 /
+  RFC 7714）支持 AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM，防重放，ROC 处理；密钥来自 DTLS
+  导出器。可选开启（ADR-048）：cryptex（`a=cryptex`，RFC 9335，`enable_cryptex`）与 RFC 6904 加密头部
+  扩展（`enable_encrypted_header_extensions`）。
 - **数据通道**（[`only-sctp`](../only-sctp/README.zh-CN.md)）：基于 DTLS 的 SCTP（RFC 8261），
   拥塞控制、重传、PR-SCTP FORWARD-TSN（RFC 3758）、用于关闭通道的流重置（RFC 6525）、CRC32C；
   DCEP（RFC 8832）；可靠 / 最大重传次数 / 最大生存期，有序或无序，二进制 / 字符串 / 空消息，
@@ -23,9 +26,10 @@
 - **媒体**（[`only-rtp`](../only-rtp/README.zh-CN.md)）：RTP/RTCP，Opus、G.711、G.722、VP8、
   VP9、H.264、H.265 与 AV1 打包；无抖动缓冲延迟的组帧器（`on_media_data`）或 RTP 模式
   （`on_rtp`）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
-  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。可选开启（`RtcConfig`，ADR-039）：视频 FEC
-  （带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC），在帧组装器和 NACK 之前
-  修复包，按修复前丢包率调节发送的保护率；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
+  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。可选开启（`RtcConfig`，ADR-039、ADR-048）：视频
+  FEC（带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC，后者也与 Chrome 一样按
+  simulcast 线路的每个编码发送），在帧组装器和 NACK 之前修复包，按修复前丢包率调节发送的保护率；Opus
+  RED（`red/48000/2`，排在 Opus 之前使 Chrome 发送；冗余副本代替丢失的包，最多发送两个）；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
   （接收方 RTT）；TMMBR / TMMBN（`Peer::request_max_bitrate`，收到的请求会限制估计值）。
 - **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
@@ -62,13 +66,16 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 互通：与 pion（两个 offer 方向的数据通道、Opus/VP8 回显与 PLI，也经过 `only` TURN 中继）以及 fib
 的 Go WebRTC 双向互通：`tools/interop/webrtc/run.sh`；与无头 Chrome 双向互通（数据通道，Chrome
 的虚拟摄像头与麦克风媒体回显后由 Chrome 解码；用 mDNS 隐藏地址的 `Endpoint` 与开启 mDNS 隐藏的
-Chrome 互相解析对方名字后连通）：`tools/interop/webrtc/browser.sh`；与无头 Chrome
-的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与 TMMBR：`tools/interop/webrtc/fec.sh`；与无头 Firefox
+Chrome 互相解析对方名字后连通；两种 DTLS 角色的 DTLS 1.3；在 Chrome 的 `rtpHeaderEncryptionPolicy`
+"require" 下双向 cryptex；我方 simulcast 线路带按编码的 ULPFEC 经过丢包）：
+`tools/interop/webrtc/browser.sh`；与无头 Chrome 的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与
+TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`tools/interop/webrtc/fec.sh`；与无头 Firefox
 双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：DTLS 上的 TURN、simulcast 行与音频（Opus RED）上的 FEC、SDES-SRTP、DTLS 1.3、IPv6 组播
-上的 mDNS、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
+未实现：DTLS 上的 TURN、simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不
+发送）、SDES-SRTP、SRTP MKI（DTLS-SRTP 没有对应的 SDP，也没有浏览器使用）、与浏览器的 RFC 6904（没有浏览器
+提供）、IPv6 组播上的 mDNS、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
 `listen_tcp_so` 在 `Endpoint` 之间测试。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

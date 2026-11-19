@@ -35,9 +35,25 @@
 //                                                               FEC / feedback lines and the
 //                                                               video statistics as JSON
 //                                                               (DUMP_SDP=1: both SDPs too)
+//   node browser.mjs <cdp-port> red <http-addr> [secs]          the same with Opus audio (and
+//                                                               Chrome's RED) instead of video
+//   node browser.mjs <cdp-port> simulcast-fec <http-addr> [secs]
+//                                                               Chrome publishes three VP8
+//                                                               simulcast layers (with its
+//                                                               red/ulpfec, NACK removed) to the
+//                                                               fec-server; prints per-layer
+//                                                               sending statistics as JSON
+//
+// PC_CONFIG (JSON) is passed to Chrome's RTCPeerConnection in every mode (e.g.
+// {"rtpHeaderEncryptionPolicy":"require"} for cryptex, which needs
+// --enable-experimental-web-platform-features in Chrome 157). The offer modes print the DTLS
+// version Chrome reports (tlsVersion: FEFD = DTLS 1.2, FEFC = DTLS 1.3); answer mode "media"
+// sends the fake microphone to the offerer and prints "chrome: audio <packets received>
+// <packets sent> <DTLS transport>".
 import http from "node:http";
 
 const [port, mode, addr] = process.argv.slice(2);
+const PC = process.env.PC_CONFIG || "{}";
 const fail = (m) => {
   console.error("FAIL: " + m);
   process.exit(1);
@@ -129,15 +145,26 @@ window.selectedPair = async (pc) => {
 };
 true`;
 
+// The DTLS transport as Chrome reports it.
+const DTLS_LIB = `
+window.dtlsInfo = async (pc) => {
+  let t = null;
+  (await pc.getStats()).forEach((s) => { if (s.type === "transport" && s.tlsVersion) t = s; });
+  return t ? { tlsVersion: t.tlsVersion, dtlsCipher: t.dtlsCipher, srtpCipher: t.srtpCipher, dtlsRole: t.dtlsRole } : null;
+};
+true`;
+
 const onlyTcp = (sdp) => sdp.split("\r\n").filter((l) => !l.startsWith("a=candidate") || l.includes(" tcp ")).join("\r\n");
 
 async function offerMode(how, turnUrl) {
   const p = await page();
   await p.evaluate(PAGE_LIB);
   await p.evaluate(PAIR_LIB);
+  await p.evaluate(DTLS_LIB);
   const config = how === "relay"
     ? { iceServers: [{ urls: turnUrl, username: "alice", credential: "wonderland" }], iceTransportPolicy: "relay" }
     : {};
+  Object.assign(config, JSON.parse(PC));
   const offer = await p.evaluate(`(async () => {
     const pc = new RTCPeerConnection(${JSON.stringify(config)});
     window.pc = pc;
@@ -189,12 +216,13 @@ async function offerMode(how, turnUrl) {
     while (Date.now() - t0 < 20000) { st = await decoded(); if (st.v >= 30 && st.a >= 50) break; await new Promise((r) => setTimeout(r, 200)); }
     if (!(st.v >= 30 && st.a >= 50)) throw new Error("media echo: " + JSON.stringify(st));
     const sel = await selectedPair(pc);
+    const dtls = await dtlsInfo(pc);
     const how = ${JSON.stringify(how || "")};
     if (how === "tcp" && !(sel && sel.localProtocol === "tcp" && sel.remoteProtocol === "tcp")) throw new Error("not over TCP: " + JSON.stringify(sel));
     if (how === "relay" && !(sel && sel.localType === "relay")) throw new Error("not relayed: " + JSON.stringify(sel));
     return "ok: Chrome offers" + (how ? " (" + how + " only)" : "") + ": 100 ordered messages + a 70000-byte binary one + an unordered/unreliable one echoed; " +
       st.v + " echoed VP8 frames decoded, " + st.a + " echoed Opus packets received (Chrome sent " + st.pli + " PLI, " + st.nack + " NACK it got); pair " +
-      (sel ? sel.local + " -> " + sel.remote : "?");
+      (sel ? sel.local + " -> " + sel.remote : "?") + "; dtls " + JSON.stringify(dtls);
   })()`);
   console.log(r);
   await p.close();
@@ -205,16 +233,22 @@ async function answerMode(how) {
   const p = await page();
   await p.evaluate(PAGE_LIB);
   await p.evaluate(PAIR_LIB);
+  await p.evaluate(DTLS_LIB);
   const [host, hport] = addr.split(":");
   const srv = http.createServer(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     try {
       const answer = await p.evaluate(`(async () => {
-        const pc = new RTCPeerConnection();
+        const pc = new RTCPeerConnection(${PC});
         window.pc2 = pc;
         pc.ondatachannel = (e) => { const dc = e.channel; dc.onmessage = (m) => dc.send(m.data); };
         await pc.setRemoteDescription({ type: "offer", sdp: ${JSON.stringify(body)} });
+        if (${JSON.stringify(how || "")} === "media") {
+          // Our microphone to the offerer's audio line.
+          const mic = (await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
+          for (const t of pc.getTransceivers()) if (t.receiver.track.kind === "audio") { t.direction = "sendrecv"; await t.sender.replaceTrack(mic); }
+        }
         await pc.setLocalDescription(await pc.createAnswer());
         await gather(pc);
         const sdp = pc.localDescription.sdp;
@@ -222,7 +256,15 @@ async function answerMode(how) {
       })()`);
       res.writeHead(201, { "content-type": "application/sdp", "content-length": Buffer.byteLength(answer) });
       res.end(answer);
-      if (how) {
+      if (how === "media") {
+        let st = null;
+        for (let i = 0; i < 100; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          st = await p.evaluate(`(async () => { let r = 0, s = 0; (await pc2.getStats()).forEach((x) => { if (x.type === "inbound-rtp" && x.kind === "audio") r = x.packetsReceived; if (x.type === "outbound-rtp" && x.kind === "audio") s = x.packetsSent; }); return [r, s]; })()`);
+          if (st[0] > 100 && st[1] > 100) break;
+        }
+        console.log("chrome: audio " + st[0] + " " + st[1] + " " + JSON.stringify(await p.evaluate("dtlsInfo(window.pc2)")));
+      } else if (how) {
         // The pair Chrome uses: over TCP ("tcp"), to the offer's relayed candidate ("relay"),
         // or host to host, the offer's host candidate being an mDNS name ("mdns").
         let sel = null;
@@ -256,7 +298,7 @@ async function simulcastMode() {
   };
   // Publish: three VP8 layers of a 1280x720 fake camera.
   const offer = await p.evaluate(`(async () => {
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection(${PC});
     window.pub = pc;
     const media = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
     const tr = pc.addTransceiver(media.getVideoTracks()[0], { direction: "sendonly", sendEncodings: [
@@ -281,15 +323,20 @@ async function simulcastMode() {
   // View: the SFU offers a simulcast line and a plain one.
   const viewOffer = await post("/view", "");
   const viewAnswer = await p.evaluate(`(async () => {
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection(${PC});
     window.view = pc;
     window.ctlGot = [];
     pc.ondatachannel = (e) => { window.ctl = e.channel; e.channel.onmessage = (m) => ctlGot.push(m.data); };
     await pc.setRemoteDescription({ type: "offer", sdp: ${JSON.stringify(viewOffer)} });
-    await pc.setLocalDescription(await pc.createAnswer());
+    const ans = await pc.createAnswer();
+    // NO_NACK: FEC is the only repair of what the SFU sends (munged before
+    // setLocalDescription, so Chrome does not NACK either).
+    if (${!!process.env.NO_NACK}) ans.sdp = ans.sdp.split("\\r\\n").filter((l) => !/^a=rtcp-fb:\\d+ nack$/.test(l)).join("\\r\\n");
+    await pc.setLocalDescription(ans);
     await gather(pc);
     return pc.localDescription.sdp;
   })()`);
+  if (process.env.DUMP_SDP) console.log("view offer:\n" + viewOffer + "\nview answer:\n" + viewAnswer);
   const chromeSimulcast = /a=simulcast:recv/.test(viewAnswer);
   await post("/view-answer", viewAnswer);
   const r = await p.evaluate(`(async () => {
@@ -303,7 +350,10 @@ async function simulcastMode() {
     let m; let t0 = Date.now();
     while (Date.now() - t0 < 15000) { m = await inbound(); if (m[simMid] && m[simMid].dec > 30) break; await new Promise((r) => setTimeout(r, 200)); }
     if (!(m[simMid] && m[simMid].dec > 30)) throw new Error("simulcast line not decoded: " + JSON.stringify(m));
-    out.push("simulcast line " + m[simMid].dec + " frames " + m[simMid].w + "px");
+    let simIn = {};
+    (await view.getStats()).forEach((s) => { if (s.type === "inbound-rtp" && s.mid === simMid) simIn = s; });
+    out.push("simulcast line " + m[simMid].dec + " frames " + m[simMid].w + "px, " + (simIn.fecPacketsReceived || 0) + " FEC packets (" +
+      (simIn.fecPacketsDiscarded || 0) + " discarded), " + (simIn.packetsReceived || 0) + " packets");
     // The plain line: layer selection.
     const widths = {};
     for (const layer of ["l", "m", "h"]) {
@@ -320,6 +370,18 @@ async function simulcastMode() {
       widths[layer] = w;
       out.push("layer " + layer + " " + w + "px");
     }
+    // VIEW_SECS: how much of the simulcast line (the first layer, h) decodes over that time.
+    const secs = ${Number(process.env.VIEW_SECS || 0)};
+    if (secs) {
+      const sim = async () => { let x = {}; (await view.getStats()).forEach((s) => { if (s.type === "inbound-rtp" && s.mid === simMid) x = s; }); return x; };
+      const sentH = async () => { let f = 0; (await pub.getStats()).forEach((s) => { if (s.type === "outbound-rtp" && s.rid === "h") f = s.framesSent; }); return f; };
+      const [a0, h0] = [await sim(), await sentH()];
+      await new Promise((r) => setTimeout(r, secs * 1000));
+      const [a1, h1] = [await sim(), await sentH()];
+      window.viewStats = { decoded: a1.framesDecoded - a0.framesDecoded, sent: h1 - h0, lost: a1.packetsLost - a0.packetsLost,
+        freezes: (a1.freezeCount || 0) - (a0.freezeCount || 0), nack: a1.nackCount, pli: (a1.pliCount || 0) - (a0.pliCount || 0) };
+      out.push("view " + JSON.stringify(window.viewStats));
+    }
     return out.join(", ");
   })()`);
   console.log("ok: simulcast: Chrome sent " + JSON.stringify(pubStats) + "; the SFU's simulcast offer " +
@@ -328,16 +390,19 @@ async function simulcastMode() {
   process.exit(0);
 }
 
-async function fecMode(nack, secs) {
+async function fecMode(nack, secs, kind = "video") {
   const p = await page();
   await p.evaluate(PAGE_LIB);
   const offer = await p.evaluate(`(async () => {
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection(${PC});
     window.pc = pc;
-    const media = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-    const tr = pc.addTransceiver(media.getVideoTracks()[0], { direction: "sendrecv" });
-    const keep = ["video/VP8", "video/rtx", "video/red", "video/ulpfec", "video/flexfec-03"];
-    tr.setCodecPreferences(RTCRtpReceiver.getCapabilities("video").codecs.filter((c) => keep.includes(c.mimeType)));
+    const kind = ${JSON.stringify(kind)};
+    // Received audio must be played out for Chrome to count (and conceal) samples.
+    pc.ontrack = (e) => { const a = new Audio(); a.srcObject = new MediaStream([e.track]); a.play().catch(() => {}); window.player = a; };
+    const media = await navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: true } : { video: { width: 640, height: 480 } });
+    const tr = pc.addTransceiver(media.getTracks()[0], { direction: "sendrecv" });
+    const keep = kind === "audio" ? ["audio/opus", "audio/red"] : ["video/VP8", "video/rtx", "video/red", "video/ulpfec", "video/flexfec-03"];
+    tr.setCodecPreferences(RTCRtpReceiver.getCapabilities(kind).codecs.filter((c) => keep.includes(c.mimeType)));
     const o = await pc.createOffer();
     // Without NACK (munged before setLocalDescription, so Chrome does not NACK either).
     if (${!nack}) o.sdp = o.sdp.split("\\r\\n").filter((l) => !/^a=rtcp-fb:\\d+ nack$/.test(l)).join("\\r\\n");
@@ -349,16 +414,20 @@ async function fecMode(nack, secs) {
   const answer = await resp.text();
   if (!resp.ok) fail("signalling: " + answer);
   if (process.env.DUMP_SDP) console.log("offer:\n" + offer + "\nanswer:\n" + answer);
-  const neg = answer.split("\r\n").filter((l) => /red\/|ulpfec|flexfec|FEC-FR|ccfb|tmmbr|rtcp-xr|rrtr| nack$/.test(l));
+  const neg = answer.split("\r\n").filter((l) => /red\/|ulpfec|flexfec|FEC-FR|ccfb|tmmbr|rtcp-xr|rrtr| nack$|^m=|cryptex/.test(l));
   const r = await p.evaluate(`(async () => {
     await pc.setRemoteDescription({ type: "answer", sdp: ${JSON.stringify(answer)} });
     await waitFor(() => pc.connectionState === "connected", 15000, "connected (" + pc.connectionState + ")");
     const stats = async () => {
       const o = { in: {}, out: {}, pair: {} };
       (await pc.getStats()).forEach((s) => {
+        if (s.type === "inbound-rtp" && s.kind === "audio") o.audioIn = { packetsReceived: s.packetsReceived, packetsLost: s.packetsLost, concealedSamples: s.concealedSamples,
+          totalSamplesReceived: s.totalSamplesReceived, concealmentEvents: s.concealmentEvents, fecPacketsReceived: s.fecPacketsReceived, fecPacketsDiscarded: s.fecPacketsDiscarded };
+        if (s.type === "outbound-rtp" && s.kind === "audio") o.audioOut = { packetsSent: s.packetsSent, bytesSent: s.bytesSent, codec: s.codecId };
         if (s.type === "inbound-rtp" && s.kind === "video") o.in = { framesDecoded: s.framesDecoded, packetsReceived: s.packetsReceived, packetsLost: s.packetsLost,
           fecPacketsReceived: s.fecPacketsReceived, fecPacketsDiscarded: s.fecPacketsDiscarded, fecBytesReceived: s.fecBytesReceived, nackCount: s.nackCount, pliCount: s.pliCount,
           freezeCount: s.freezeCount, totalFreezesDuration: s.totalFreezesDuration, framesDropped: s.framesDropped, retransmittedPacketsReceived: s.retransmittedPacketsReceived };
+        if (s.type === "transport" && s.tlsVersion) o.dtls = { tlsVersion: s.tlsVersion, srtpCipher: s.srtpCipher };
         if (s.type === "outbound-rtp" && s.kind === "video") o.out = { packetsSent: s.packetsSent, bytesSent: s.bytesSent, retransmittedPacketsSent: s.retransmittedPacketsSent,
           nackCount: s.nackCount, pliCount: s.pliCount, targetBitrate: s.targetBitrate, framesSent: s.framesSent };
         if (s.type === "candidate-pair" && s.nominated) o.pair = { availableOutgoingBitrate: s.availableOutgoingBitrate, currentRoundTripTime: s.currentRoundTripTime };
@@ -373,8 +442,43 @@ async function fecMode(nack, secs) {
       if (!mid && Date.now() - t0 > ${secs} * 500) mid = await stats();
     }
     const end = await stats();
-    end.lastHalfBitrate = mid ? Math.round((end.out.bytesSent - mid.out.bytesSent) * 8 / (${secs} / 2)) : null;
+    end.lastHalfBitrate = mid && end.out.bytesSent ? Math.round((end.out.bytesSent - mid.out.bytesSent) * 8 / (${secs} / 2)) : null;
     return end;
+  })()`);
+  console.log("answer: " + JSON.stringify(neg));
+  console.log("stats: " + JSON.stringify(r));
+  await p.close();
+  process.exit(0);
+}
+
+async function simulcastFecMode(secs) {
+  const p = await page();
+  await p.evaluate(PAGE_LIB);
+  const offer = await p.evaluate(`(async () => {
+    const pc = new RTCPeerConnection(${PC});
+    window.pc = pc;
+    const media = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+    const tr = pc.addTransceiver(media.getVideoTracks()[0], { direction: "sendonly", sendEncodings: [
+      { rid: "l", scaleResolutionDownBy: 4 }, { rid: "m", scaleResolutionDownBy: 2 }, { rid: "h" } ] });
+    const keep = ["video/VP8", "video/rtx", "video/red", "video/ulpfec"];
+    tr.setCodecPreferences(RTCRtpSender.getCapabilities("video").codecs.filter((c) => keep.includes(c.mimeType)));
+    const o = await pc.createOffer();
+    o.sdp = o.sdp.split("\\r\\n").filter((l) => !/^a=rtcp-fb:\\d+ nack$/.test(l)).join("\\r\\n");
+    await pc.setLocalDescription(o);
+    await gather(pc);
+    return pc.localDescription.sdp;
+  })()`);
+  const resp = await fetch(`http://${addr}/`, { method: "POST", body: offer, headers: { "content-type": "application/sdp" } });
+  const answer = await resp.text();
+  if (!resp.ok) fail("signalling: " + answer);
+  const neg = answer.split("\r\n").filter((l) => /red\/|ulpfec|simulcast| nack$/.test(l));
+  const r = await p.evaluate(`(async () => {
+    await pc.setRemoteDescription({ type: "answer", sdp: ${JSON.stringify(answer)} });
+    await waitFor(() => pc.connectionState === "connected", 15000, "connected (" + pc.connectionState + ")");
+    await new Promise((r) => setTimeout(r, ${secs} * 1000));
+    const o = {};
+    (await pc.getStats()).forEach((s) => { if (s.type === "outbound-rtp" && s.rid) o[s.rid] = { framesSent: s.framesSent, packetsSent: s.packetsSent, fecPacketsSent: s.fecPacketsSent, nackCount: s.nackCount }; });
+    return o;
   })()`);
   console.log("answer: " + JSON.stringify(neg));
   console.log("stats: " + JSON.stringify(r));
@@ -389,4 +493,6 @@ else if (mode === "offer-relay") await offerMode("relay", process.argv[5]);
 else if (mode === "answer") await answerMode(process.argv[5]);
 else if (mode === "simulcast") await simulcastMode();
 else if (mode === "fec") await fecMode(process.argv[5] === "nack", Number(process.argv[6] || 20));
-else fail("usage: browser.mjs <cdp-port> offer|offer-tcp|offer-relay|answer|simulcast|fec <addr> ...");
+else if (mode === "red") await fecMode(false, Number(process.argv[5] || 20), "audio");
+else if (mode === "simulcast-fec") await simulcastFecMode(Number(process.argv[5] || 15));
+else fail("usage: browser.mjs <cdp-port> offer|offer-tcp|offer-relay|answer|simulcast|fec|red|simulcast-fec <addr> ...");

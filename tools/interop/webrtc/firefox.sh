@@ -39,7 +39,8 @@ user_pref("media.navigator.permission.disabled", true);
 EOF
 "$FIREFOX" --headless --no-remote --profile "$PROFILE" --remote-debugging-port=9620 about:blank \
   >"$W/firefox.log" 2>&1 & PIDS="$PIDS $!"
-$RS server $IP:9610 127.0.0.1:9611 $IP:9613 2>"$W/server.log" & PIDS="$PIDS $!"
+ONLY_LOG=only_webrtc=debug $RS server $IP:9610 127.0.0.1:9611 $IP:9613 2>"$W/server.log" &
+PIDS="$PIDS $!"
 sleep 3
 "$FIREFOX" --version 2>/dev/null | grep -i firefox || true
 
@@ -48,5 +49,7 @@ echo "== Firefox offers to the only ICE-lite server"
 echo "== only (full ICE Endpoint) offers to Firefox"
 "$W/ff" 9620 answer 127.0.0.1:9612 2>"$W/answer.log" & PIDS="$PIDS $!"
 for _ in $(seq 100); do grep -q "answerer on" "$W/answer.log" && break; sleep 0.1; done
-ONLY_INTEROP_BIND=$IP:0 $RS client 127.0.0.1:9612 dc
+ONLY_INTEROP_BIND=$IP:0 ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9612 dc 2>"$W/client.log"
+# The DTLS version of each side (DTLS 1.3 by default, ADR-048).
+grep -ho "dtls: connected with DTLS 1\.[23]" "$W/server.log" "$W/client.log"
 echo "webrtc firefox interop: all passed"

@@ -6,7 +6,7 @@ Two crates:
   third-party dependencies (DEV-PLAN wave D), one crate per layer, all `#![forbid(unsafe_code)]`
   on `only-crypto`: `only-ice` (ICE full agent and ICE-lite, checklists, nomination, role
   conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `only-dtls`
-  (DTLS 1.2 and 1.3 with certificate fingerprint verification and DTLS-SRTP keys; see below),
+  (DTLS 1.3 falling back to 1.2, with certificate fingerprint verification and DTLS-SRTP keys; see below),
   `only-srtp`
   (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection; the
   crate also has AES-192/256-CM, NULL, MKIs and re-keying, cryptex and RFC 6904 header
@@ -262,26 +262,34 @@ encoding is sent to it.
 ### FEC and more RTCP
 
 Off by default (a default peer offers and answers exactly what it did before), each turned on in
-the `RtcConfig` (ADR-039):
+the `RtcConfig` (ADR-039, ADR-048):
 
 ```rust,ignore
 let cfg = only_webrtc::rtc_config()
     .enable_fec(Some(FecMechanism::FlexFec)) // or FecMechanism::Ulpfec (red + ulpfec)
     .set_fec_protection(0, 128)              // FEC per 256 media packets: bounds
+    .enable_opus_red(Some(1))                // Opus RED, one redundant packet (at most 2)
     .enable_ccfb(true)                       // RFC 8888 feedback instead of transport-wide
     .enable_rtcp_xr(true)                    // XR receiver reference time / DLRR: receiver RTT
     .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
     .enable_bwe(None);
 ```
 
-- **FEC** on video lines without simulcast. FlexFEC is libwebrtc's `flexfec-03`, a separate FEC
+- **FEC** on video lines. FlexFEC is libwebrtc's `flexfec-03`, a separate FEC
   stream signaled with `a=ssrc-group:FEC-FR` (Chrome needs the field trials
   `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`); ULPFEC travels in RED on
-  the media stream, and browsers offer it by default. Received FEC repairs packets before the
+  the media stream, and browsers offer it by default. On a simulcast line only ULPFEC is used,
+  per encoding (each RID's stream has its own FEC, at its own loss), which is what Chrome sends:
+  RID-based simulcast signals no SSRCs, so there is no FlexFEC stream to name. Received FEC repairs packets before the
   frame assembler and NACK (repaired packets are not NACKed, but receiver reports still count
   them as lost, as Chrome's do). Sent video is protected at three times the loss before repair
   (the reported loss, or the share of packets the receiver had retransmitted), within the bounds
   of `set_fec_protection`; a `min` above 0 protects from the start.
+- **Opus RED** (RFC 2198, `red/48000/2`): `enable_opus_red(Some(n))` lists RED *before* Opus,
+  because libwebrtc sends RED only to a peer that lists it first (Chrome's own offers put it
+  after Opus). Received RED is split: a redundant copy stands in for a lost packet (copies of
+  packets that arrived are dropped); sent Opus carries the `n` previous packets (`Some(0)` sends
+  plain Opus but still takes RED).
 - **RFC 8888**: when both sides offer `ack ccfb`, received media is acknowledged with RFC 8888
   feedback instead of transport-wide feedback and the bandwidth estimator runs on it; Chrome
   needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`.
@@ -292,8 +300,30 @@ let cfg = only_webrtc::rtc_config()
   are answered with TMMBN and cap the bandwidth estimate, like REMB.
 
 `tools/interop/webrtc/fec.sh` checks all of it against headless Chrome: with one RTP packet in
-20 dropped each way and NACK removed, Chrome decodes 381–392 of 400 echoed frames with FEC and 8
-without.
+20 dropped each way and NACK removed, Chrome decodes 381–397 of 400 echoed frames with FEC and 8-15
+without; with 10 % loss each way Chrome conceals 2-3 % of its audio with Opus RED both ways and
+20 % without; Chrome's three simulcast layers come with ULPFEC per layer, which repairs them.
+`browser.sh` sends our simulcast line with ULPFEC per encoding to Chrome through 5 % loss and no
+NACK: Chrome decodes every frame of it, and next to none without FEC.
+
+### Header protection: cryptex and encrypted extensions
+
+```rust,ignore
+let cfg = only_webrtc::rtc_config()
+    .enable_cryptex(true)                     // a=cryptex (RFC 9335)
+    .enable_encrypted_header_extensions(true); // RFC 6904 extmaps
+```
+
+RTP header extensions (MID, RID, audio level ...) and CSRCs are in the clear under plain SRTP.
+With **cryptex** both sides signal `a=cryptex` (at session level, as Chrome writes it) and every
+packet's extension block and CSRCs are encrypted; received cryptex is decrypted whenever this
+side offered or accepted it. Chrome 157 offers it when the page sets
+`RTCConfiguration.rtpHeaderEncryptionPolicy` (behind `--enable-experimental-web-platform-features`),
+and with "require" refuses a peer without it. **RFC 6904** encrypts chosen extension values
+instead: the offer adds `a=extmap:<id> urn:ietf:params:rtp-hdrext:encrypt <uri>` variants (audio
+level, MID, RID, repaired RID, video orientation, playout delay, on free one-byte ids), and an
+answer takes the encrypted variant of whatever is offered both ways. No browser offers RFC 6904,
+so it is for peers like this one. MKIs are not negotiated: DTLS-SRTP has no SDP for them.
 
 ## TURN
 
@@ -359,14 +389,14 @@ with what comes back (it returns relayed data as `(peer, payload)`), `handle_tim
 `poll_timeout`. Bounds: 64 peers, 64 KiB waiting for bindings. `Endpoint::gather_relay` drives
 one over UDP.
 
-## The DTLS layer: DTLS 1.2 for WebRTC, DTLS 1.3 when asked
+## The DTLS layer: DTLS 1.3 with a DTLS 1.2 fallback
 
 `only-dtls` is a sans-io connection (`Connection`: feed datagrams and timer expiries, send what
-`poll_transmit` returns) that speaks DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147). WebRTC uses
-DTLS 1.2: `Config::webrtc` enables only it, because pion and the browsers' stacks negotiate
-DTLS 1.2 and offering 1.3 would only make the ClientHello larger (ADR-021). Outside WebRTC,
+`poll_transmit` returns) that speaks DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147).
 `Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` offers both and falls back to
-DTLS 1.2 for a 1.2-only peer (with the RFC 8446 downgrade check).
+DTLS 1.2 for a 1.2-only peer (with the RFC 8446 downgrade check). `Config::webrtc` itself enables
+only DTLS 1.2 (ADR-021); `only-webrtc`'s peers add DTLS 1.3 (ADR-048, `RtcConfig::enable_dtls13`,
+default on), which Chrome 157 negotiates in either DTLS role while pion stays on DTLS 1.2.
 
 - **DTLS 1.3**: unified record headers with encrypted record numbers, epochs with KeyUpdate
   (`Connection::update_keys`, also automatic before a key's usage limit), ACKs so that only
@@ -401,6 +431,6 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); TURN over DTLS; mDNS over IPv6 multicast; FEC on simulcast lines and
-for audio (Opus RED), libwebrtc's FEC mask tables; DTLS 1.3 for WebRTC by default. ADR-017,
-ADR-032, ADR-039, ADR-044 and ADR-045 have the details of what was added.
+TCP relays (RFC 6062); TURN over DTLS; mDNS over IPv6 multicast; FlexFEC on simulcast lines,
+libwebrtc's FEC mask tables; SRTP MKIs in WebRTC. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045
+and ADR-048 have the details of what was added.
