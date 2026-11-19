@@ -2177,7 +2177,44 @@ impl Rtc {
             if let (Some(e), Some((_, a))) = (r.stream.receive(now, seq, ts), r.assembler.as_mut())
             {
                 a.skip(e);
+                // The number may have been the last thing the frames after it waited for
+                // (a repaired FEC packet arriving after them): emit them now, not with the
+                // next media packet, which may never come.
+                self.pop_frames(line, ssrc);
             }
+        }
+    }
+
+    /// Emits the frames the assembler of the received stream `ssrc` (on `line`) has complete.
+    fn pop_frames(&mut self, line: usize, ssrc: u32) {
+        let Some(l) = self.media.get(line) else {
+            return;
+        };
+        let mid = l.mid;
+        let Some(recv) = self.recv.get_mut(&ssrc) else {
+            return;
+        };
+        let rid = recv.rid.clone();
+        let Some((pt, asm)) = recv.assembler.as_mut() else {
+            return;
+        };
+        let Some(codec) = l.codec(*pt) else {
+            return;
+        };
+        while let Some(f) = asm.pop() {
+            self.events.push_back(RtcEvent::MediaData(MediaData {
+                mid,
+                pt: Pt::from(*pt),
+                rid: rid.clone(),
+                codec: Some(codec.codec),
+                time: MediaTime::new(
+                    f.timestamp,
+                    Frequency::new(codec.clock).unwrap_or(Frequency::NINETY_KHZ),
+                ),
+                network_time: f.first_arrival,
+                contiguous: f.contiguous,
+                data: Arc::from(f.data),
+            }));
         }
     }
 
@@ -2222,7 +2259,6 @@ impl Rtc {
             return;
         };
         let (ssrc, pt) = (p.ssrc, p.pt);
-        let mid = self.media[line_idx].mid;
         if rtp_mode {
             self.events.push_back(RtcEvent::Rtp(RtpPacket {
                 seq_no: ext_seq,
@@ -2242,26 +2278,11 @@ impl Rtc {
         if recv.assembler.as_ref().is_none_or(|(x, _)| *x != pt) {
             recv.assembler = Some((pt, FrameAssembler::new(codec.codec.rtp(), reorder)));
         }
-        let rid = recv.rid.clone();
         let Some((_, asm)) = recv.assembler.as_mut() else {
             return;
         };
         asm.push(ext_seq, p.ts, p.marker, payload, now);
-        while let Some(f) = asm.pop() {
-            self.events.push_back(RtcEvent::MediaData(MediaData {
-                mid,
-                pt: Pt::from(pt),
-                rid: rid.clone(),
-                codec: Some(codec.codec),
-                time: MediaTime::new(
-                    f.timestamp,
-                    Frequency::new(codec.clock).unwrap_or(Frequency::NINETY_KHZ),
-                ),
-                network_time: f.first_arrival,
-                contiguous: f.contiguous,
-                data: Arc::from(f.data),
-            }));
-        }
+        self.pop_frames(line_idx, ssrc);
     }
 
     /// Which line (and repaired stream) an incoming packet belongs to.

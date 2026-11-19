@@ -887,3 +887,47 @@ fn tmmbr_caps_the_sender() {
     assert_eq!(last, Some(None));
     assert!(a.rtc.tmmbr.is_empty());
 }
+
+#[test]
+fn late_ulpfec_number_releases_the_frames_after_it() {
+    // Frame A, then a ULPFEC packet that is lost, then frame B, complete but waiting on that
+    // number. When the FEC packet's retransmission arrives, B must come out at once, not with
+    // the next media packet (which at the end of a stream never comes).
+    let cfg = fec_cfg(Some(FecMechanism::Ulpfec));
+    let (_, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    let vp8 = b.rtc.payload_type(video, Codec::Vp8).unwrap().get();
+    let mut pk = only_rtp::codec::packetizer(Codec::Vp8.rtp());
+    let frames = |b: &Side| {
+        b.rtc
+            .events
+            .iter()
+            .filter(|e| matches!(e, RtcEvent::MediaData(_)))
+            .count()
+    };
+    let mut seq = 100u16;
+    let mut fec_seq = 0;
+    for i in 0..2u8 {
+        let mut f = vec![i; 2500];
+        f[0] = if i == 0 { 0x10 } else { 0x11 };
+        for (p, marker) in pk.packetize(RTP_PAYLOAD_MTU, &f) {
+            let pkt = Pkt {
+                ssrc: 7,
+                seq,
+                pt: vp8,
+                ts: u32::from(i) * 3000,
+                marker,
+                rid: None,
+            };
+            b.rtc.deliver(now, 0, &pkt, &p, false);
+            seq += 1;
+        }
+        if i == 0 {
+            assert_eq!(frames(&b), 1);
+            fec_seq = seq; // the FEC packet after frame A: lost for now
+            seq += 1;
+        }
+    }
+    assert_eq!(frames(&b), 1, "frame B waits on the missing number");
+    b.rtc.fec_seq(now, 0, 7, fec_seq, 0);
+    assert_eq!(frames(&b), 2, "the repaired FEC number releases frame B");
+}
