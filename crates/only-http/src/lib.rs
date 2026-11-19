@@ -35,8 +35,8 @@
 //! WebSocket: [`Context::upgrade_websocket`] switches a request to a `only_ws::WsHandler` (re-exported
 //! as [`ws`]), with subprotocols, an origin check and `permessage-deflate`.
 //!
-//! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, an in-house
-//! linear-time engine), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
+//! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, the
+//! linear-time `only-regex` engine), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
 //! parameters are percent-decoded once ([`Context::param`], raw in [`Context::param_raw`]).
 //!
 //! Guide: [HTTP servers](https://lesismal.github.io/only/en/protocols/http-server.html), [Routing, middleware and static files](https://lesismal.github.io/only/en/protocols/http-routing.html), [HTTP clients](https://lesismal.github.io/only/en/protocols/http-clients.html), [Observability](https://lesismal.github.io/only/en/observability.html)
@@ -59,9 +59,10 @@ pub mod middleware;
 pub mod observe;
 mod parse;
 pub mod raw;
-// The route constraint regexp engine: `#[doc(hidden)]` for the fuzz targets, not a public API.
-#[doc(hidden)]
-pub mod re;
+// The route constraint engine before ADR-051 (the router now uses only-regex), frozen as the
+// reference of the differential tests and the `regex_match` fuzz target.
+#[cfg(any(test, feature = "fuzzing"))]
+mod legacy_re;
 mod router;
 mod session;
 mod timer;

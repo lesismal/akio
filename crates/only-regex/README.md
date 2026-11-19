@@ -5,12 +5,15 @@
 A small regular expression engine for [`only`](https://github.com/lesismal/only), in safe Rust
 (`#![forbid(unsafe_code)]`) without dependencies. Matching time is linear in the input whatever
 the pattern. It is the engine behind `only-log`'s env_logger-style message filters
-(`ONLY_LOG=info/connection (reset|refused)`). An internal crate (docs/api-stability.md): use it
-through `only-log`.
+(`ONLY_LOG=info/connection (reset|refused)`) and `only-http`'s route constraints
+(`/users/{id:[0-9]+}`, ADR-051). An internal crate (docs/api-stability.md): use it through
+`only-log` and `only-http`.
 
 - One question: does the pattern occur anywhere in this text? `Regex::is_match(&str)`, and
   `Regex::is_match_fmt(format_args!(..))`, which matches the pieces as they are formatted, with
   no string built and no allocation.
+- `RegexBuilder` options: `whole_text(true)` matches the whole text only (as `\A(?:...)\z`), and
+  `ascii_classes(true)` makes `\d \w \s` and `\b` ASCII. The router uses both.
 - The syntax is a subset of the `regex` crate's, with the same meaning: literals, `.`, classes with
   ranges and negation, Unicode-aware `\d \w \s` (and `\D \W \S`), repetition `* + ? {m,n}`,
   greedy or lazy, alternation, groups (non-capturing, named groups accepted), `^ $ \A \z`,

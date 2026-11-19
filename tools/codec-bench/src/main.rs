@@ -1,7 +1,7 @@
 //! Micro benchmarks of the in-house HTTP codecs against the crates they replaced:
 //! the HTTP/1 head parser (`only_ws::http1` vs httparse), HPACK (`only_http::hpack` vs
-//! loona-hpack), the route constraint regexp engine (`only_http::re` vs regex) and only-log's
-//! message filter engine (`only_regex`, an unanchored search, vs regex).
+//! loona-hpack) and `only_regex` (vs regex): route constraints as the router compiles them (whole
+//! segment, ASCII classes; ADR-051) and only-log's message filters (an unanchored search).
 //!
 //! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex|logregex]`
 
@@ -212,6 +212,15 @@ fn hpack() {
     );
 }
 
+/// A route constraint as `only-http`'s router compiles it.
+fn route(pattern: &str) -> only_regex::Regex {
+    only_regex::RegexBuilder::new(pattern)
+        .whole_text(true)
+        .ascii_classes(true)
+        .build()
+        .unwrap()
+}
+
 fn regexp() {
     println!("Route constraint regexps (whole-segment match)");
     for (pattern, subject) in [
@@ -221,7 +230,7 @@ fn regexp() {
         ("(?:v[0-9]+|latest)", "latest"),
         ("[0-9]+", "12345x"),
     ] {
-        let ours_re = only_http::re::Regex::new(pattern).unwrap();
+        let ours_re = route(pattern);
         let theirs_re = regex::Regex::new(&format!("^(?:{pattern})$")).unwrap();
         assert_eq!(ours_re.is_match(subject), theirs_re.is_match(subject));
         let ours = ns(2_000_000, || {
@@ -233,7 +242,7 @@ fn regexp() {
         row(&format!("{pattern} on {subject:?}"), ours, theirs, "regex");
     }
     let ours = ns(20_000, || {
-        black_box(only_http::re::Regex::new(black_box("\\d{4}-\\d{2}-\\d{2}")).unwrap());
+        black_box(route(black_box("\\d{4}-\\d{2}-\\d{2}")));
     });
     let theirs = ns(20_000, || {
         black_box(regex::Regex::new(black_box("^(?:\\d{4}-\\d{2}-\\d{2})$")).unwrap());

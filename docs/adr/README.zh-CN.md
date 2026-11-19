@@ -51,3 +51,4 @@
 - [ADR-045：only-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据](045-dtls13-cid-updates-pha-early-data.zh-CN.md)（2026-11-19 采纳）
 - [ADR-046：证书策略、间接 CRL、Ed448、X448 与 DSA 验签](046-x509-policies-indirect-crls-ed448-dsa.zh-CN.md)（2026-11-19 采纳）
 - [ADR-047：only-log 的 `/regex` 消息过滤，基于新的内部 crate `only-regex`](047-log-regex-filters.zh-CN.md)（2026-11-19 采纳）
+- [ADR-051：路由约束改用 `only-regex`](051-router-on-only-regex.zh-CN.md)（2026-11-19 采纳）

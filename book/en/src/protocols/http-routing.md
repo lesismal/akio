@@ -38,23 +38,30 @@ Among partial segments, more literal text is tried first (`{name}.tar.gz` before
 then registration order. Two parameters need literal text between them, and a wildcard cannot
 share a segment; both panic at registration.
 
-Regexp parameters use a small built-in engine: the expression must match the whole segment, and
-matching takes time linear in the segment length (no backtracking, so no pathological patterns).
-Supported syntax, with the meaning it has in the `regex` crate:
+Regexp parameters use `only-regex`, the workspace's linear-time engine (ADR-051): the expression
+must match the whole segment, and matching takes time linear in the segment length (no
+backtracking, so no pathological patterns; a DFA built at registration, about one nanosecond per
+character). Supported syntax, with the meaning it has in the `regex` crate:
 
-- literals (any Unicode character), `.` (any character but newline), `^` / `$`;
-- classes `[a-z0-9_]`, `[^/]` with ranges, negation and escapes; `]` first and `-` first or last
+- literals (any Unicode character), `.` (any character but newline), `^` / `$` (and `\A` / `\z`);
+- classes `[a-z0-9_]`, `[^.]` with ranges, negation and escapes; `]` first and `-` first or last
   are literal;
 - `\d`, `\w`, `\s` and `\D`, `\W`, `\S`, **ASCII only** (`[0-9]`, `[0-9A-Za-z_]`,
-  `[\t\n\x0B\x0C\r ]`: segments are matched as sent, percent-encoded);
+  `[\t\n\x0B\x0C\r ]`: segments are matched as sent, percent-encoded), and `\b` / `\B` (ASCII
+  word boundaries);
 - escapes `\n \t \r \f \v \a`, `\x41`, `\x{1F600}`, `\u0041`, `\u{41}`, `\U0001F600`, and any escaped
   ASCII punctuation (`\.`, `\-`, `\{` ...);
-- groups `(...)`, `(?:...)`, `(?P<name>...)`, `(?<name>...)` (nothing is captured), alternation
-  `|`, quantifiers `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}` (counts up to 1000) and their lazy forms.
+- groups `(...)`, `(?:...)`, `(?P<name>...)`, `(?<name>...)` (nothing is captured; names must be
+  distinct), alternation `|`, quantifiers `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}` (counts up to 1000)
+  and their lazy forms;
+- flags `(?i)` (case-insensitive, Unicode simple case folding: `{name:(?i)[a-z]+}`), `(?m)`,
+  `(?s)`, `(?U)`, negated (`(?-i)`) and scoped (`(?i:...)`).
 
-Anything else (flags such as `(?i)`, `\b` and other assertions, `\p{L}`, backreferences, POSIX
-classes `[[:alpha:]]`, class set operations `&&` `--` `~~`) is refused at registration with a
-message naming the problem. The `regex` cargo feature of earlier versions no longer does anything.
+Anything else (`\p{L}`, backreferences, look-around, POSIX classes `[[:alpha:]]`, class set
+operations `&&` `--` `~~`) is refused at registration with a message naming the problem. Before
+ADR-051 the router had an engine of its own, which also refused flags, `\b \B \A \z` and
+non-ASCII group names, and accepted two groups with the same name; every other pattern matches
+exactly as before. The `regex` cargo feature of earlier versions no longer does anything.
 
 Behaviour:
 

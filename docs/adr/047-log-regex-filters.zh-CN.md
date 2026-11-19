@@ -46,7 +46,7 @@ only-http 之下。在工作区中检索，没有其他模式匹配器：路由�
    `ParseFilterError` 的私有字段 `reason` 改为 `Cow<'static, str>`。`Display` 会写回模式，过滤器仍可往返
    转换。`enabled(metadata)` 不变（只看级别：logger 的 `enabled` 在还没有消息时就被调用）。`FmtLogger`
    直接匹配它已经格式化好的那一行中的消息部分，因此消息过滤不会重复格式化。
-3. **only-http 暂时保留 `only_http::re`。** 路由约束是锚定的，并且文档写明只认 ASCII（`\d` = `[0-9]`）；
+3. **only-http 暂时保留 `only_http::re`**（之后已完成：ADR-051 把路由器迁移到 `only-regex`）。路由约束是锚定的，并且文档写明只认 ASCII（`\d` = `[0-9]`）；
    改用 `only-regex` 会改变哪些路由能匹配。之后的变更可以让路由改用带 ASCII 模式和位并行匹配器的
    `only-regex`；本 ADR 不做这件事。
 

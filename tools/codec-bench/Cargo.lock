@@ -145,9 +145,14 @@ dependencies = [
  "only-ebpf",
  "only-epoll",
  "only-log",
+ "only-sys",
  "only-tls",
  "only-uring",
 ]
+
+[[package]]
+name = "only-brotli"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-buf"
@@ -202,11 +207,14 @@ name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
+ "only-regex",
  "only-ws",
+ "only-zstd",
 ]
 
 [[package]]
@@ -239,11 +247,13 @@ version = "1.0.0-rc.1"
 name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-x509",
+ "only-zstd",
 ]
 
 [[package]]
@@ -273,6 +283,10 @@ version = "1.0.0-rc.1"
 dependencies = [
  "only-crypto",
 ]
+
+[[package]]
+name = "only-zstd"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "pin-project-lite"

@@ -42,3 +42,18 @@ impl core::marker::Sync for only_regex::Regex
 impl core::marker::Unpin for only_regex::Regex
 impl core::panic::unwind_safe::RefUnwindSafe for only_regex::Regex
 impl core::panic::unwind_safe::UnwindSafe for only_regex::Regex
+pub struct only_regex::RegexBuilder
+impl only_regex::RegexBuilder
+pub fn only_regex::RegexBuilder::ascii_classes(&mut self, bool) -> &mut only_regex::RegexBuilder
+pub fn only_regex::RegexBuilder::build(&self) -> core::result::Result<only_regex::Regex, only_regex::Error>
+pub fn only_regex::RegexBuilder::new(&str) -> only_regex::RegexBuilder
+pub fn only_regex::RegexBuilder::whole_text(&mut self, bool) -> &mut only_regex::RegexBuilder
+impl core::clone::Clone for only_regex::RegexBuilder
+pub fn only_regex::RegexBuilder::clone(&self) -> Self
+impl core::fmt::Debug for only_regex::RegexBuilder
+pub fn only_regex::RegexBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_regex::RegexBuilder
+impl core::marker::Sync for only_regex::RegexBuilder
+impl core::marker::Unpin for only_regex::RegexBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for only_regex::RegexBuilder
+impl core::panic::unwind_safe::UnwindSafe for only_regex::RegexBuilder

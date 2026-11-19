@@ -4,11 +4,14 @@
 
 [`only`](https://github.com/lesismal/only) 的小型正则表达式引擎，纯安全 Rust
 （`#![forbid(unsafe_code)]`），无依赖。无论模式如何，匹配时间都与输入长度成线性关系。它是
-`only-log` 中 env_logger 风格消息过滤（`ONLY_LOG=info/connection (reset|refused)`）背后的引擎。
-属于内部 crate（docs/api-stability.zh-CN.md）：请通过 `only-log` 使用。
+`only-log` 中 env_logger 风格消息过滤（`ONLY_LOG=info/connection (reset|refused)`）以及 `only-http`
+路由约束（`/users/{id:[0-9]+}`，ADR-051）背后的引擎。属于内部 crate（docs/api-stability.zh-CN.md）：
+请通过 `only-log` 与 `only-http` 使用。
 
 - 只回答一个问题：模式是否出现在这段文本的某处？`Regex::is_match(&str)`，以及
   `Regex::is_match_fmt(format_args!(..))`：在格式化的同时逐段匹配，不拼接字符串，也不分配内存。
+- `RegexBuilder` 选项：`whole_text(true)` 只匹配整段文本（相当于 `\A(?:...)\z`），`ascii_classes(true)`
+  让 `\d \w \s` 与 `\b` 只看 ASCII。路由器同时使用两者。
 - 语法是 `regex` crate 的子集，含义相同：字面字符、`.`、带范围与取反的字符类、支持 Unicode 的
   `\d \w \s`（及 `\D \W \S`）、重复 `* + ? {m,n}`（贪婪或惰性）、分支、分组（不捕获，接受命名分组）、
   `^ $ \A \z`、`\b \B`（Unicode 单词边界）、标志 `(?i)`（Unicode 简单大小写折叠）、`(?m)`、`(?s)` 与

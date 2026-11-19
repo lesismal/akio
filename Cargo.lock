@@ -658,6 +658,7 @@ dependencies = [
  "only-crypto",
  "only-deflate",
  "only-log",
+ "only-regex",
  "only-ws",
  "only-x509",
  "only-zstd",

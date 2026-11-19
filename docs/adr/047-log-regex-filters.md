@@ -59,7 +59,8 @@ router's partial-segment patterns are literal splitting, and nothing else parses
    pattern back, so filters still round-trip. `enabled(metadata)` is unchanged (levels only: a
    logger's `enabled` runs before there is a message). `FmtLogger` matches the message slice of
    the line it already formatted, so a message filter formats nothing twice.
-3. **only-http keeps `only_http::re` for now.** Route constraints are anchored and documented as
+3. **only-http keeps `only_http::re` for now** (done since: ADR-051 moved the router onto
+   `only-regex`). Route constraints are anchored and documented as
    ASCII (`\d` = `[0-9]`); switching them to `only-regex` would change which routes match. A
    later change may move the router onto `only-regex` with an ASCII mode and the bit-parallel
    matcher; this ADR does not.
