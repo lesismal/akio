@@ -10,6 +10,28 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: bandwidth probing in the estimator (only-rtp, only-webrtc)
+
+ADR-050 (docs/adr/050-bwe-probing.md). `only_rtp::BandwidthEstimator` probes the path like
+libwebrtc, so video ramps up in a fraction of a second instead of tens of seconds:
+
+- **only-rtp**: probe clusters (15 ms / 5 packets or more, paced at a target rate) at 3 and 6
+  times the start rate, doubling while results keep up; every 5 s while application-limited
+  (`application_limited()`); after a large drop of the estimate; from scratch after
+  `on_network_change(now)`. `poll_probe(now)` / `probe_timeout()` / `on_probe_sent` /
+  `cancel_probes` drive the sending, `TwccSender::on_sent_probe` and `CcfbSender::on_sent_probe` tag the packets,
+  `PacketResult::probe` carries the cluster back, and the measured delivery rate lifts the
+  delay- and loss-based rates. `SendStream::padding` builds probe packets (RTX copies of recent
+  media, or padding). On by default; `with_probing(false)` keeps the previous behaviour.
+  **Breaking** (internal tier): `PacketResult` has a new public field `probe`.
+- **only-webrtc**: with `enable_bwe`, the probes go out as RTX copies of the most active stream's
+  recent packets, paced through `poll_output`'s timeout; a new ICE selected pair restarts the
+  estimate. Public API unchanged.
+- Simulated links, start 300 kbps: 90 % of 0.5 / 2 / 10 Mbps after 0.15 / 0.25 / 0.35 s (was
+  5.4 / 23 / 44 s), peaks at most 1.12x the capacity. With Chrome 157 as receiver
+  (`tools/interop/webrtc/bwe.sh`, new): 10 Mbps 0.2 s after the connection (the estimate used to
+  stay at its 1 Mbps start).
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

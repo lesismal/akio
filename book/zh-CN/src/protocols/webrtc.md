@@ -242,6 +242,16 @@ let cfg = only_webrtc::rtc_config()
 `tools/interop/webrtc/fec.sh` 用 headless Chrome 检查以上全部：每个方向每 20 个 RTP 包丢 1 个且去掉
 NACK 时，有 FEC 时 Chrome 解码回显的 400 帧中的 381–392 帧，没有 FEC 时只有 8 帧。
 
+### 带宽探测
+
+开启 `enable_bwe` 后，估计器会像 libwebrtc 一样探测路径（ADR-050）：以目标速率节奏发送短簇（15 ms
+或更长）的最近视频 RTX 副本，由其反馈（transport-wide 或 RFC 8888）看出路径能送达多少。媒体一开始
+流动就以起始速率的 3 倍和 6 倍探测，结果跟得上就翻倍继续；编码器发送量远低于估计值时每 5 s 探测一次；
+估计值大幅下降之后也会探测；ICE 换到另一个候选对时从头开始。结果只会提升估计值，降低仍由时延与丢包
+检测器负责。在模拟的 10 Mbps 链路上，从 300 kbps 起步的发送方 0.35 s 即达到 90 %，而不是 44 s；
+`tools/interop/webrtc/bwe.sh` 以 Chrome 为接收方检查这一点（连接后 0.2 s 估计值达到 10 Mbps，以前
+一直停在起始值）。
+
 ## TURN
 
 `TurnConfig` 字段（均为公开字段，`TurnConfig::new` 设置默认值）：

@@ -255,6 +255,82 @@ impl SendStream {
         out
     }
 
+    /// A packet of about `size` bytes of payload for bandwidth probing (ADR-050), or `None`
+    /// before the stream sent anything. With `rtx_pt` and an RTX SSRC it is an RTX copy of the
+    /// newest packet in the history whose payload fits in `size` (else the newest packet),
+    /// which a receiver drops as a duplicate; with an empty history, or without RTX, it is a
+    /// padding-only packet (at most 255 bytes of padding, RFC 3550 §5.1) on the RTX stream if
+    /// there is one, else on the media stream with the next sequence number and the last
+    /// timestamp. The extensions are the newest packet's, adjusted by `f`. Probe packets do
+    /// not count as sent or resent and do not enter the history.
+    pub fn padding(
+        &mut self,
+        now: Instant,
+        size: usize,
+        rtx_pt: Option<u8>,
+        map: &ExtensionMap,
+        mut f: impl FnMut(&mut ExtensionValues),
+    ) -> Option<Vec<u8>> {
+        let (last_ts, _) = self.last?;
+        self.prune(now);
+        let rtx = rtx_pt.zip(self.rtx_ssrc);
+        if let Some((pt, rtx_ssrc)) = rtx {
+            let pick = self
+                .history
+                .iter()
+                .rev()
+                .find(|s| s.payload.len() + 2 <= size)
+                .or_else(|| self.history.back());
+            if let Some(s) = pick {
+                let mut ext = s.ext.clone();
+                f(&mut ext);
+                let h = RtpHeader {
+                    marker: s.marker,
+                    payload_type: pt,
+                    sequence_number: self.next_rtx_seq,
+                    timestamp: s.timestamp,
+                    ssrc: rtx_ssrc,
+                    ext,
+                    ..RtpHeader::default()
+                };
+                let mut p = Vec::with_capacity(2 + s.payload.len());
+                p.extend_from_slice(&s.seq.to_be_bytes());
+                p.extend_from_slice(&s.payload);
+                self.next_rtx_seq = self.next_rtx_seq.wrapping_add(1);
+                return Some(h.write(map, &p));
+            }
+        }
+        let mut ext = self
+            .history
+            .back()
+            .map(|s| s.ext.clone())
+            .unwrap_or_default();
+        f(&mut ext);
+        let (ssrc, pt, seq) = match rtx {
+            Some((pt, rtx_ssrc)) => {
+                let s = self.next_rtx_seq;
+                self.next_rtx_seq = s.wrapping_add(1);
+                (rtx_ssrc, pt, s)
+            }
+            None => {
+                let s = self.next_seq;
+                self.next_seq = s.wrapping_add(1);
+                let pt = self.history.back().map_or(0, |s| s.pt);
+                (self.ssrc, pt, s)
+            }
+        };
+        let h = RtpHeader {
+            payload_type: pt,
+            sequence_number: seq,
+            timestamp: last_ts,
+            ssrc,
+            ext,
+            padding_len: size.clamp(1, 255),
+            ..RtpHeader::default()
+        };
+        Some(h.write(map, &[]))
+    }
+
     /// The sender information for an SR at `now` (`ntp_now` = [`ntp_time`](crate::ntp_time)
     /// of the same instant), or `None` before anything was sent. The RTP time is the last
     /// packet's timestamp advanced by the elapsed time at the clock rate.

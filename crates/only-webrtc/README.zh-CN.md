@@ -23,7 +23,8 @@
 - **媒体**（[`only-rtp`](../only-rtp/README.zh-CN.md)）：RTP/RTCP，Opus、G.711、G.722、VP8、
   VP9、H.264、H.265 与 AV1 打包；无抖动缓冲延迟的组帧器（`on_media_data`）或 RTP 模式
   （`on_rtp`）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
-  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。可选开启（`RtcConfig`，ADR-039）：视频 FEC
+  （TWCC 头扩展与反馈）及基于时延和丢包、会探测路径的带宽估计（ADR-050：开始时、受应用限制时、
+  下降之后以及 ICE 候选对改变时，以短簇节奏发送最近媒体的 RTX 副本）。可选开启（`RtcConfig`，ADR-039）：视频 FEC
   （带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC），在帧组装器和 NACK 之前
   修复包，按修复前丢包率调节发送的保护率；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
   （接收方 RTT）；TMMBR / TMMBN（`Peer::request_max_bitrate`，收到的请求会限制估计值）。
@@ -63,7 +64,8 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 的 Go WebRTC 双向互通：`tools/interop/webrtc/run.sh`；与无头 Chrome 双向互通（数据通道，Chrome
 的虚拟摄像头与麦克风媒体回显后由 Chrome 解码；用 mDNS 隐藏地址的 `Endpoint` 与开启 mDNS 隐藏的
 Chrome 互相解析对方名字后连通）：`tools/interop/webrtc/browser.sh`；与无头 Chrome
-的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与 TMMBR：`tools/interop/webrtc/fec.sh`；与无头 Firefox
+的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与 TMMBR：`tools/interop/webrtc/fec.sh`；以 Chrome 为接收方时估计值的爬升（探测）：
+`tools/interop/webrtc/bwe.sh`；与无头 Firefox
 双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 

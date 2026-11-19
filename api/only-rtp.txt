@@ -621,12 +621,19 @@ impl core::panic::unwind_safe::UnwindSafe for only_rtp::XrBlock
 pub struct only_rtp::BandwidthEstimator
 impl only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option::Option<u64>
+pub fn only_rtp::BandwidthEstimator::application_limited(&self) -> bool
+pub fn only_rtp::BandwidthEstimator::cancel_probes(&mut self)
 pub fn only_rtp::BandwidthEstimator::estimate(&self) -> u64
 pub fn only_rtp::BandwidthEstimator::new(u64) -> only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::on_network_change(&mut self, std::time::Instant)
 pub fn only_rtp::BandwidthEstimator::on_packet_results(&mut self, std::time::Instant, &[only_rtp::PacketResult])
+pub fn only_rtp::BandwidthEstimator::on_probe_sent(&mut self, std::time::Instant, u32, usize)
+pub fn only_rtp::BandwidthEstimator::poll_probe(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ProbePacket>
+pub fn only_rtp::BandwidthEstimator::probe_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_rtp::BandwidthEstimator::set_remote_estimate(&mut self, u64)
 pub fn only_rtp::BandwidthEstimator::usage(&self) -> only_rtp::BandwidthUsage
 pub fn only_rtp::BandwidthEstimator::with_bounds(self, u64, u64) -> only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::with_probing(self, bool) -> only_rtp::BandwidthEstimator
 impl core::fmt::Debug for only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_rtp::BandwidthEstimator
@@ -708,6 +715,7 @@ impl only_rtp::CcfbSender
 pub fn only_rtp::CcfbSender::new() -> only_rtp::CcfbSender
 pub fn only_rtp::CcfbSender::on_feedback(&mut self, std::time::Instant, &only_rtp::CcfbFeedback) -> alloc::vec::Vec<only_rtp::PacketResult>
 pub fn only_rtp::CcfbSender::on_sent(&mut self, u32, u16, std::time::Instant, usize)
+pub fn only_rtp::CcfbSender::on_sent_probe(&mut self, u32, u16, std::time::Instant, usize, u32)
 impl core::default::Default for only_rtp::CcfbSender
 pub fn only_rtp::CcfbSender::default() -> Self
 impl core::fmt::Debug for only_rtp::CcfbSender
@@ -829,6 +837,7 @@ impl core::marker::Unpin for only_rtp::JitterStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterStats
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterStats
 pub struct only_rtp::PacketResult
+pub only_rtp::PacketResult::probe: core::option::Option<u32>
 pub only_rtp::PacketResult::received: core::option::Option<std::time::Instant>
 pub only_rtp::PacketResult::sent: std::time::Instant
 pub only_rtp::PacketResult::seq: u64
@@ -847,6 +856,23 @@ impl core::marker::Sync for only_rtp::PacketResult
 impl core::marker::Unpin for only_rtp::PacketResult
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::PacketResult
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::PacketResult
+pub struct only_rtp::ProbePacket
+pub only_rtp::ProbePacket::cluster: u32
+pub only_rtp::ProbePacket::size: usize
+impl core::clone::Clone for only_rtp::ProbePacket
+pub fn only_rtp::ProbePacket::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::ProbePacket
+impl core::cmp::PartialEq for only_rtp::ProbePacket
+pub fn only_rtp::ProbePacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::ProbePacket
+pub fn only_rtp::ProbePacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::ProbePacket
+impl core::marker::StructuralPartialEq for only_rtp::ProbePacket
+impl core::marker::Send for only_rtp::ProbePacket
+impl core::marker::Sync for only_rtp::ProbePacket
+impl core::marker::Unpin for only_rtp::ProbePacket
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ProbePacket
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::ProbePacket
 pub struct only_rtp::RecvStream
 impl only_rtp::RecvStream
 pub fn only_rtp::RecvStream::duplicates(&self) -> u64
@@ -971,6 +997,7 @@ pub fn only_rtp::SendStream::octets_resent(&self) -> u64
 pub fn only_rtp::SendStream::octets_sent(&self) -> u64
 pub fn only_rtp::SendStream::packets_resent(&self) -> u64
 pub fn only_rtp::SendStream::packets_sent(&self) -> u64
+pub fn only_rtp::SendStream::padding(&mut self, std::time::Instant, usize, core::option::Option<u8>, &only_rtp::ExtensionMap, impl core::ops::function::FnMut(&mut only_rtp::ExtensionValues)) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_rtp::SendStream::remote_report(&self) -> core::option::Option<&only_rtp::ReportBlock>
 pub fn only_rtp::SendStream::resend(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &only_rtp::ExtensionMap) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::SendStream::resend_with(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &only_rtp::ExtensionMap, impl core::ops::function::FnMut(&mut only_rtp::ExtensionValues)) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
@@ -1131,6 +1158,7 @@ pub fn only_rtp::TwccSender::new() -> only_rtp::TwccSender
 pub fn only_rtp::TwccSender::next_seq(&mut self) -> u16
 pub fn only_rtp::TwccSender::on_feedback(&mut self, std::time::Instant, &only_rtp::TwccFeedback) -> alloc::vec::Vec<only_rtp::PacketResult>
 pub fn only_rtp::TwccSender::on_sent(&mut self, u16, std::time::Instant, usize)
+pub fn only_rtp::TwccSender::on_sent_probe(&mut self, u16, std::time::Instant, usize, u32)
 impl core::default::Default for only_rtp::TwccSender
 pub fn only_rtp::TwccSender::default() -> only_rtp::TwccSender
 impl core::fmt::Debug for only_rtp::TwccSender

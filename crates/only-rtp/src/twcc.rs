@@ -27,12 +27,16 @@ pub struct PacketResult {
     /// Its arrival time on the remote clock mapped onto local `Instant`s (only differences
     /// between arrivals are meaningful), or `None` if reported lost.
     pub received: Option<Instant>,
+    /// The probe cluster it belonged to ([`TwccSender::on_sent_probe`],
+    /// [`CcfbSender::on_sent_probe`](crate::CcfbSender::on_sent_probe)), if any.
+    pub probe: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct SentPacket {
     at: Instant,
     size: usize,
+    probe: Option<u32>,
 }
 
 /// The sending side of transport-wide CC: assigns transport-wide sequence numbers, logs
@@ -77,6 +81,16 @@ impl TwccSender {
     /// Logs that the packet with transport-wide sequence number `seq` and `size` bytes left
     /// at `now`. The last 8192 packets are remembered.
     pub fn on_sent(&mut self, seq: u16, now: Instant, size: usize) {
+        self.log(seq, now, size, None);
+    }
+
+    /// [`on_sent`](Self::on_sent) for a probe packet of cluster `cluster`
+    /// ([`BandwidthEstimator::poll_probe`](crate::BandwidthEstimator::poll_probe)).
+    pub fn on_sent_probe(&mut self, seq: u16, now: Instant, size: usize, cluster: u32) {
+        self.log(seq, now, size, Some(cluster));
+    }
+
+    fn log(&mut self, seq: u16, now: Instant, size: usize, probe: Option<u32>) {
         let last = self.next.saturating_sub(1);
         let Some(ext) = unwrap16(last, seq) else {
             return;
@@ -84,7 +98,14 @@ impl TwccSender {
         if ext >= self.next {
             self.next = ext + 1;
         }
-        self.sent.insert(ext, SentPacket { at: now, size });
+        self.sent.insert(
+            ext,
+            SentPacket {
+                at: now,
+                size,
+                probe,
+            },
+        );
         while self
             .sent
             .first_key_value()
@@ -142,6 +163,7 @@ impl TwccSender {
                 sent: p.at,
                 size: p.size,
                 received,
+                probe: p.probe,
             });
         }
         out
