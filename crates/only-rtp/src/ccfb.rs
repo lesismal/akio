@@ -187,6 +187,7 @@ struct Sent {
     index: u64,
     at: Instant,
     size: usize,
+    probe: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -219,6 +220,16 @@ impl CcfbSender {
     /// Logs that packet `seq` of `ssrc`, `size` bytes, left at `now`. The last 8192
     /// packets per stream are remembered.
     pub fn on_sent(&mut self, ssrc: u32, seq: u16, now: Instant, size: usize) {
+        self.log(ssrc, seq, now, size, None);
+    }
+
+    /// [`on_sent`](Self::on_sent) for a probe packet of cluster `cluster`
+    /// ([`BandwidthEstimator::poll_probe`](crate::BandwidthEstimator::poll_probe)).
+    pub fn on_sent_probe(&mut self, ssrc: u32, seq: u16, now: Instant, size: usize, cluster: u32) {
+        self.log(ssrc, seq, now, size, Some(cluster));
+    }
+
+    fn log(&mut self, ssrc: u32, seq: u16, now: Instant, size: usize, probe: Option<u32>) {
         let s = self.streams.entry(ssrc).or_default();
         let ext = match s.last {
             None => (1 << 32) + u64::from(seq),
@@ -236,6 +247,7 @@ impl CcfbSender {
                 index: self.next_index,
                 at: now,
                 size,
+                probe,
             },
         );
         self.next_index += 1;
@@ -306,6 +318,7 @@ impl CcfbSender {
                     sent: p.at,
                     size: p.size,
                     received,
+                    probe: p.probe,
                 };
                 if received.is_some() {
                     out.insert(p.index, res);

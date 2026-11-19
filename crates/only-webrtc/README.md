@@ -29,7 +29,9 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   G.722, VP8, VP9, H.264, H.265 and AV1; a jitter-free frame assembler (`on_media_data`) or RTP
   mode (`on_rtp`); sender/receiver reports, generic NACK with RTX (RFC 4588), PLI/FIR, REMB,
   transport-wide congestion control (TWCC header extension + feedback) with a delay- and
-  loss-based bandwidth estimator. Opt-in (`RtcConfig`, ADR-039, ADR-048): FEC on video (FlexFEC
+  loss-based bandwidth estimator that probes the path (ADR-050: RTX copies of recent media paced
+  in short clusters at start, while application-limited, after a drop and on a new ICE pair).
+  Opt-in (`RtcConfig`, ADR-039, ADR-048): FEC on video (FlexFEC
   `flexfec-03` with an `a=ssrc-group:FEC-FR` stream, or ULPFEC in RED, also per encoding of a
   simulcast line as Chrome sends it) repairing packets before the frame assembler and NACK and
   sent at a rate that follows the loss before repair; Opus RED (`red/48000/2`, listed before Opus
@@ -80,7 +82,8 @@ concealment on, each resolving the other's name; DTLS 1.3 in both DTLS roles; cr
 with Chrome's `rtpHeaderEncryptionPolicy` "require"; our simulcast line with per-encoding ULPFEC
 through loss): `tools/interop/webrtc/browser.sh`; FEC under loss (Chrome's and ours), RFC 8888
 both ways, XR and TMMBR, Opus RED under loss both ways, Chrome's per-layer ULPFEC on simulcast
-with headless Chrome: `tools/interop/webrtc/fec.sh`; headless Firefox in both
+with headless Chrome: `tools/interop/webrtc/fec.sh`; the estimate's ramp-up with Chrome as
+receiver (probing): `tools/interop/webrtc/bwe.sh`; headless Firefox in both
 offer directions (data channels against usrsctp): `tools/interop/webrtc/firefox.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 

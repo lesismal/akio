@@ -837,6 +837,8 @@ pub(crate) struct Rtc {
     srtp_enc_ids: Vec<u8>,
     /// The DTLS version, once connected.
     dtls_version: Option<DtlsVersion>,
+    /// The ICE pair the estimate was made on (a new one restarts it, ADR-050).
+    probe_pair: Option<(SocketAddr, SocketAddr)>,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -943,6 +945,7 @@ impl Rtc {
             enc_ids: Vec::new(),
             srtp_enc_ids: Vec::new(),
             dtls_version: None,
+            probe_pair: None,
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -2034,6 +2037,7 @@ impl Rtc {
         if self.next_rtcp.is_none() {
             self.next_rtcp = Some(now + Duration::from_millis(100));
         }
+        self.send_probes(now);
         Ok(true)
     }
 
@@ -2164,6 +2168,7 @@ impl Rtc {
             }
         }
         self.media_timers(now);
+        self.send_probes(now);
         self.pump(now);
     }
 
@@ -3025,6 +3030,7 @@ impl Rtc {
                         }
                     }
                     IceEvent::SelectedPair { local, remote } => {
+                        self.on_selected_pair(now, local, remote);
                         self.events
                             .push_back(RtcEvent::Other(Other::IcePair { local, remote }));
                     }
@@ -3205,6 +3211,10 @@ impl Rtc {
         if self.srtp_tx.is_some() {
             min(self.next_rtcp);
             min(self.next_stats);
+            min(self
+                .bwe
+                .as_ref()
+                .and_then(BandwidthEstimator::probe_timeout));
             for r in self.recv.values() {
                 min(r.stream.poll_timeout());
             }
@@ -3384,5 +3394,6 @@ fn abs_send_time_now() -> u32 {
 }
 
 mod feedback;
+mod pacing;
 #[cfg(test)]
 mod tests;

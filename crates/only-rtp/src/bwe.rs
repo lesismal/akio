@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::probe::{ProbeController, ProbePacket};
 use crate::twcc::PacketResult;
 
 /// Default lower bound of the estimate (bits per second).
@@ -63,8 +64,18 @@ struct Group {
 /// - The estimate is the minimum of both and of the last REMB
 ///   ([`set_remote_estimate`](Self::set_remote_estimate)), clamped to
 ///   [`with_bounds`](Self::with_bounds) (default 30 kbps .. 20 Mbps).
+/// - Probing (ADR-050, on unless [`with_probing(false)`](Self::with_probing)): short
+///   clusters of probe packets paced at a target rate ([`poll_probe`](Self::poll_probe)) whose
+///   feedback measures what the path delivers. It starts with probes at 3 and 6 times the start
+///   rate and doubles while a result reaches 70 % of the last probe; it probes at twice the
+///   estimate every 5 s while the sender is application-limited, and after a large drop of the
+///   estimate (below 66 %) at up to 85 % of the earlier rate (when the queues have drained,
+///   then every 3 s for 30 s); [`on_network_change`](Self::on_network_change) starts over. A
+///   result raises both the delay-based and the loss-based rate unless the link is over-used.
 #[derive(Debug)]
 pub struct BandwidthEstimator {
+    initial: u64,
+    probe: ProbeController,
     min: u64,
     max: u64,
     delay_rate: f64,
@@ -101,6 +112,8 @@ impl BandwidthEstimator {
     pub fn new(initial_bps: u64) -> BandwidthEstimator {
         let r = initial_bps as f64;
         BandwidthEstimator {
+            initial: initial_bps,
+            probe: ProbeController::new(true),
             min: DEFAULT_MIN_BITRATE,
             max: DEFAULT_MAX_BITRATE,
             delay_rate: r,
@@ -137,6 +150,74 @@ impl BandwidthEstimator {
         self
     }
 
+    /// Turns probing on (the default) or off. Without it the estimator only ever grows by its
+    /// AIMD rules.
+    #[must_use]
+    pub fn with_probing(mut self, on: bool) -> BandwidthEstimator {
+        self.probe = ProbeController::new(on);
+        self
+    }
+
+    /// The probe packet to send at `now`, if one is due (call until `None`). The first call
+    /// starts the initial probing. Send about `size` bytes (an RTX copy of recent media, or
+    /// padding), log it with [`TwccSender::on_sent_probe`](crate::TwccSender::on_sent_probe)
+    /// or [`CcfbSender::on_sent_probe`](crate::CcfbSender::on_sent_probe) and report it with
+    /// [`on_probe_sent`](Self::on_probe_sent); a packet that cannot be sent is just not
+    /// reported.
+    pub fn poll_probe(&mut self, now: Instant) -> Option<ProbePacket> {
+        if !self.probe.enabled() {
+            return None;
+        }
+        let e = self.estimate() as f64;
+        self.probe.start(now, e, self.max_probe());
+        self.probe.poll(now)
+    }
+
+    /// When the next probe packet is due ([`poll_probe`](Self::poll_probe)).
+    #[must_use]
+    pub fn probe_timeout(&self) -> Option<Instant> {
+        self.probe.timeout()
+    }
+
+    /// Drops the probe clusters waiting to be sent: the caller cannot send them now (no path,
+    /// no stream to carry them), and [`probe_timeout`](Self::probe_timeout) must not stay due.
+    pub fn cancel_probes(&mut self) {
+        self.probe.cancel();
+    }
+
+    /// Reports a probe packet of `bytes` bytes of cluster `cluster` sent at `now`.
+    pub fn on_probe_sent(&mut self, now: Instant, cluster: u32, bytes: usize) {
+        self.probe.on_sent(now, cluster, bytes);
+    }
+
+    /// The path changed (a new ICE pair, an interface switch): the delay and loss state is
+    /// dropped, the estimate goes back to the start rate and probing starts over.
+    pub fn on_network_change(&mut self, now: Instant) {
+        let fresh = BandwidthEstimator::new(self.initial).with_bounds(self.min, self.max);
+        let remote = self.remote;
+        let probe = std::mem::replace(&mut self.probe, ProbeController::new(false));
+        *self = BandwidthEstimator { probe, ..fresh };
+        self.remote = remote;
+        self.probe.reset();
+        let e = self.estimate() as f64;
+        self.probe.start(now, e, self.max_probe());
+    }
+
+    /// Whether the sender looks application-limited: the media it sent over the last 500 ms
+    /// stays below about 60 % of the estimate (only tracked with probing on).
+    #[must_use]
+    pub fn application_limited(&self) -> bool {
+        self.probe.alr()
+    }
+
+    fn max_probe(&self) -> f64 {
+        let mut m = self.max as f64;
+        if let Some(r) = self.remote {
+            m = m.min(r as f64);
+        }
+        m
+    }
+
     /// Caps the estimate at a receiver estimate (REMB); `0` removes the cap.
     pub fn set_remote_estimate(&mut self, bps: u64) {
         self.remote = (bps > 0).then_some(bps);
@@ -170,10 +251,21 @@ impl BandwidthEstimator {
     }
 
     /// Feeds the results of one feedback ([`TwccSender::on_feedback`](crate::TwccSender::on_feedback)).
+    /// Results of probe packets ([`PacketResult::probe`]) also measure their cluster's rate.
     pub fn on_packet_results(&mut self, now: Instant, results: &[PacketResult]) {
+        let prev = self.estimate() as f64;
+        let prev_usage = self.usage;
+        let mut probed: Option<f64> = None;
         let mut sorted: Vec<&PacketResult> = results.iter().collect();
         sorted.sort_by_key(|r| r.seq);
         for r in &sorted {
+            if r.probe.is_some() {
+                if let Some(p) = self.probe.on_probe_result(now, r) {
+                    probed = Some(p);
+                }
+            } else {
+                self.probe.on_media_result(r);
+            }
             self.loss_total += 1;
             match r.received {
                 None => self.loss_lost += 1,
@@ -191,8 +283,24 @@ impl BandwidthEstimator {
             }
         }
         self.update_rate(now);
+        // A probe result lifts the estimate unless the link is over-used.
+        if let Some(p) = probed.filter(|_| self.usage != BandwidthUsage::Overusing) {
+            let p = p.min(self.max_probe());
+            if p > self.delay_rate {
+                self.delay_rate = p;
+                self.decrease_rate = None;
+            }
+            self.loss_rate = self.loss_rate.max(p);
+        }
         self.update_loss(now);
         self.clamp_rates();
+        if self.probe.enabled() {
+            let e = self.estimate() as f64;
+            let max = self.max_probe();
+            let normal = self.usage == BandwidthUsage::Normal;
+            let recovered = prev_usage == BandwidthUsage::Underusing && normal;
+            self.probe.on_estimate(now, prev, e, max, normal, recovered);
+        }
     }
 
     fn clamp_rates(&mut self) {

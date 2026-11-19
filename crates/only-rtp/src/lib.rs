@@ -24,7 +24,8 @@
 //! - [`TwccSender`] / [`TwccReceiver`]: transport-wide sequence numbers, feedback
 //!   generation (libwebrtc's packing) and matching; [`CcfbSender`] / [`CcfbReceiver`]: the
 //!   same for RFC 8888; [`BandwidthEstimator`]: a GCC-like delay-gradient + loss-based
-//!   estimator fed by either.
+//!   estimator fed by either, with libwebrtc-like probing ([`BandwidthEstimator::poll_probe`],
+//!   [`SendStream::padding`], ADR-050).
 //! - [`RrtrResponder`], [`RecvStream::handle_dlrr`], [`RecvStream::statistics_summary`],
 //!   [`BurstLossModel`]: the XR receiver RTT exchange, statistics summaries and VoIP burst
 //!   metrics. [`TmmbrHandler`] / [`bounding_set`]: TMMBR handling for a media sender.
@@ -32,8 +33,8 @@
 //!   RED (RFC 2198).
 //! - [`codec`]: payload packetizers / depacketizers and frame assembly.
 //!
-//! Not implemented: SDES items beyond type/text pairs, SRTP (see `only-srtp`), probing in the
-//! estimator, RTP header extension encryption; see ADR-036 for what the FEC and XR support
+//! Not implemented: SDES items beyond type/text pairs, SRTP (see `only-srtp`), RTP header
+//! extension encryption; see ADR-036 for what the FEC and XR support
 //! leaves out.
 //!
 //! ```
@@ -72,6 +73,7 @@ mod ccfb;
 pub mod codec;
 pub mod fec;
 mod packet;
+mod probe;
 mod rtcp;
 mod stream;
 mod tmmbr;
@@ -86,10 +88,13 @@ pub mod fuzzing;
 mod tests;
 #[cfg(test)]
 mod tests_ext;
+#[cfg(test)]
+mod tests_probe;
 
 pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
 pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
+pub use probe::ProbePacket;
 pub use rtcp::{
     CCFB_ATO_OVERRANGE, CCFB_ATO_UNAVAILABLE, CCFB_MAX_REPORTS, CcfbFeedback, CcfbMetric,
     CcfbStream, Error, MAX_TWCC_STATUSES, ReportBlock, Rtcp, SenderInfo, TmmbItem, TwccFeedback,

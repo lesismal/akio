@@ -53,3 +53,4 @@
 - [ADR-047：only-log 的 `/regex` 消息过滤，基于新的内部 crate `only-regex`](047-log-regex-filters.zh-CN.md)（2026-11-19 采纳）
 - [ADR-048：only-webrtc 的 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md)（2026-11-19 采纳）
 - [ADR-049：P-521、RSA-PSS 密钥与 TLS 1.3 客户端的 OCSP 响应](049-p521-rsa-pss-keys-client-ocsp.zh-CN.md)（2026-11-19 采纳）
+- [ADR-050：only-rtp 估计器中的带宽探测](050-bwe-probing.zh-CN.md)（2026-11-19 采纳）

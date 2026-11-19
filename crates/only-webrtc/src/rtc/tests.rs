@@ -761,6 +761,43 @@ fn fec_rate_follows_reported_loss() {
 }
 
 #[test]
+fn bwe_probes_ramp_up() {
+    // 600 kbps of video: without probes the estimate stays within 1.5 x what is acknowledged;
+    // probe clusters (RTX copies of recent packets) show the path carries much more.
+    for ccfb in [false, true] {
+        let cfg = ConfigInner {
+            bwe: Some(300_000),
+            ccfb,
+            ..ConfigInner::default()
+        };
+        let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+        let mut net = Net {
+            rng: 41,
+            loss: 0,
+            jitter_ms: 0,
+            queue: Vec::new(),
+        };
+        let now = connect(&mut a, &mut b, &mut net, now);
+        let (whole, _) = send_video(&mut a, &mut b, &mut net, video, 50, now);
+        // Probes do not disturb the media: every frame arrives, the copies are duplicates.
+        assert_eq!(whole, 50);
+        let dups: u64 = b.rtc.recv.values().map(|r| r.stream.duplicates()).sum();
+        assert!(dups > 20, "{dups}");
+        let est = a.rtc.bwe.as_ref().unwrap().estimate();
+        assert!(est > 2_000_000, "ccfb {ccfb}: estimate {est}");
+        assert!(a.events.iter().any(|e| matches!(
+            e,
+            RtcEvent::Other(Other::EgressBitrateEstimate(e)) if *e > 2_000_000
+        )));
+        // A new ICE pair starts over from the start rate.
+        let p = a.rtc.probe_pair.unwrap();
+        let other: SocketAddr = "10.0.0.9:9".parse().unwrap();
+        a.rtc.on_selected_pair(now, p.0, other);
+        assert_eq!(a.rtc.bwe.as_ref().unwrap().estimate(), 300_000);
+    }
+}
+
+#[test]
 fn ccfb_replaces_transport_cc() {
     let cfg = ConfigInner {
         ccfb: true,

@@ -26,7 +26,8 @@
 - **媒体**（[`only-rtp`](../only-rtp/README.zh-CN.md)）：RTP/RTCP，Opus、G.711、G.722、VP8、
   VP9、H.264、H.265 与 AV1 打包；无抖动缓冲延迟的组帧器（`on_media_data`）或 RTP 模式
   （`on_rtp`）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
-  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。可选开启（`RtcConfig`，ADR-039、ADR-048）：视频
+  （TWCC 头扩展与反馈）及基于时延和丢包、会探测路径的带宽估计（ADR-050：开始时、受应用限制时、
+  下降之后以及 ICE 候选对改变时，以短簇节奏发送最近媒体的 RTX 副本）。可选开启（`RtcConfig`，ADR-039、ADR-048）：视频
   FEC（带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC，后者也与 Chrome 一样按
   simulcast 线路的每个编码发送），在帧组装器和 NACK 之前修复包，按修复前丢包率调节发送的保护率；Opus
   RED（`red/48000/2`，排在 Opus 之前使 Chrome 发送；冗余副本代替丢失的包，最多发送两个）；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
@@ -69,7 +70,8 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 Chrome 互相解析对方名字后连通；两种 DTLS 角色的 DTLS 1.3；在 Chrome 的 `rtpHeaderEncryptionPolicy`
 "require" 下双向 cryptex；我方 simulcast 线路带按编码的 ULPFEC 经过丢包）：
 `tools/interop/webrtc/browser.sh`；与无头 Chrome 的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与
-TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`tools/interop/webrtc/fec.sh`；与无头 Firefox
+TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`tools/interop/webrtc/fec.sh`；以 Chrome 为接收方时估计值的爬升（探测）：
+`tools/interop/webrtc/bwe.sh`；与无头 Firefox
 双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 

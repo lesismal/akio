@@ -52,7 +52,12 @@ let rb = recv.report_block(now);                                   // 用于 RR 
 - `TwccReceiver` 每 100 毫秒或每 100 个包按 libwebrtc 的打包方式生成反馈；`TwccSender` 把反馈对应到
   已发送的包，得到 `PacketResult`。
 - `BandwidthEstimator`：类 GCC 的时延梯度趋势线与自适应阈值、以确认码率为上限的 AIMD 码率控制、基于
-  丢包的控制（>10% 降低，<2% 提高）、REMB 上限与上下界。
+  丢包的控制（>10% 降低，<2% 提高）、REMB 上限与上下界；以及类似 libwebrtc 的探测（ADR-050）：以
+  起始速率的 3 倍和 6 倍探测，结果跟得上时翻倍继续，受应用限制时每 5 s 一次，估计值大幅下降之后，以及
+  `on_network_change` 之后重新开始。调用方把 `poll_probe(now)` 要求的包（`probe_timeout()` 给出时间）
+  作为最近媒体的 RTX 副本或填充包（`SendStream::padding`）发出，用 `TwccSender::on_sent_probe` /
+  `CcfbSender::on_sent_probe` 记录、用 `on_probe_sent` 报告；反馈（`PacketResult::probe`）测出簇的
+  送达速率，用于提升估计值。`with_probing(false)` 关闭探测。
 - `codec`：打包 / 解包（Opus 等音频、VP8、VP9、H.264、H.265、AV1）以及帧组装。
 - RTCP XR（RFC 3611）：`RrtrResponder` 用 DLRR 应答接收方参考时间，`RecvStream::handle_dlrr` /
   `rtt_from_dlrr` 让不发送 SR 的接收方得到 RTT；`RecvStream::statistics_summary` 生成统计摘要块；
@@ -91,7 +96,7 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
 
 未实现：FlexFEC 重传与
 固定 L/D 包、多个被保护 SSRC、ULPFEC 第 1 级、libwebrtc 的掩码表；生成 RLE / 接收时间 XR 块与 VoIP
-质量字段；估计器中的探测；SDES 中类型 / 文本对以外的内容。
+质量字段；SDES 中类型 / 文本对以外的内容。
 
 ## 测试
 
@@ -103,6 +108,10 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
   按 RTT 重复、放弃、不连续），以及模拟丢包链路上 NACK / RTX 恢复全部包。
 - 7 万个带丢包的包上的 TWCC 端到端测试；模拟链路上估计器在干净链路上增长，在 1 Mbps 瓶颈下稳定在
   其以下，在 25% 丢包下回退。
+- 模拟链路上的探测（编码器跟随估计值、尾部丢弃瓶颈、单向 20 ms；起始 300 kbps），有 / 无探测：
+  0.5、2 与 10 Mbps 的 90 % 分别在 0.15 / 0.25 / 0.35 s 达到，而不是 5.4 / 23 / 44 s，峰值至多为
+  容量的 1.12 倍；10 -> 2 -> 10 Mbps 阶跃 3.6 s 恢复（无探测时 30 s 内都恢复不了）；5 % 丢包、15 %
+  丢包、竞争流量、受应用限制的编码器；40 个种子；簇的节奏与测量、填充包。
 - libwebrtc 单元测试向量：TMMBR、TMMBN、RRTR、DLRR 与空 XR 逐字节一致；其写出器产生、读取器接受的
   FlexFEC-03 掩码；其 ULPFEC 头读取用例。RFC 3611 §4.7.2 突发示例（丢包、丢弃、突发 / 间隙密度与时长）；
   按 §3.1 拼装的 RFC 8888 包；每种 XR 块的往返；边界集。

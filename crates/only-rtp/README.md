@@ -59,7 +59,14 @@ let rb = recv.report_block(now);                                   // for an RR 
   `TwccSender` maps feedback onto sent packets as `PacketResult`s.
 - `BandwidthEstimator`: GCC-like delay-gradient trendline with an adaptive threshold, AIMD
   rate control capped by the acknowledged bitrate, loss-based control (>10 % decrease,
-  <2 % increase), REMB cap, bounds.
+  <2 % increase), REMB cap, bounds; and probing (ADR-050), like libwebrtc's: probe clusters at
+  3 and 6 times the start rate then doubling while results keep up, every 5 s while
+  application-limited, after a large drop of the estimate, and again after
+  `on_network_change`. The caller sends what `poll_probe(now)` asks for (`probe_timeout()` says
+  when) as RTX copies of recent media or padding (`SendStream::padding`), logs it with
+  `TwccSender::on_sent_probe` / `CcfbSender::on_sent_probe` and reports it with
+  `on_probe_sent`; the feedback (`PacketResult::probe`) measures the cluster's delivery rate,
+  which lifts the estimate. `with_probing(false)` turns it off.
 - `codec`: packetizers / depacketizers (Opus and other audio, VP8, VP9, H.264, H.265, AV1)
   and frame assembly.
 - RTCP XR (RFC 3611): `RrtrResponder` answers receiver reference times with DLRR, and
@@ -104,7 +111,7 @@ gaps.
 
 Not implemented: FlexFEC retransmission and fixed L/D packets, several protected SSRCs, ULPFEC
 level 1, libwebrtc's mask tables; generating RLE / receipt-time XR blocks and VoIP quality
-fields; probing in the estimator; SDES items beyond type / text pairs.
+fields; SDES items beyond type / text pairs.
 
 ## Testing
 
@@ -121,6 +128,12 @@ fields; probing in the estimator; SDES items beyond type / text pairs.
   packet.
 - TWCC end to end over 70 000 packets with loss; the estimator on simulated links grows on a
   clean link, settles below a 1 Mbps bottleneck and backs off under 25 % loss.
+- Probing on simulated links (an encoder following the estimate, a drop-tail bottleneck, 20 ms
+  each way; start 300 kbps), with / without probing: 90 % of 0.5, 2 and 10 Mbps after 0.15 /
+  0.25 / 0.35 s instead of 5.4 / 23 / 44 s, peaks at most 1.12x the capacity; a 10 -> 2 -> 10
+  Mbps step recovered in 3.6 s (never within 30 s without); 5 % loss, 15 % loss, competing
+  traffic, an application-limited encoder; 40 seeds; cluster pacing and measurement, padding
+  packets.
 - libwebrtc unit-test vectors: TMMBR, TMMBN, RRTR, DLRR and the empty XR byte for byte; the
   FlexFEC-03 masks its writer produces and its reader accepts; its ULPFEC header reader cases.
   The RFC 3611 §4.7.2 burst example (loss, discard, burst / gap density and duration); RFC 8888

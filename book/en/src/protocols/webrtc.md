@@ -325,6 +325,18 @@ level, MID, RID, repaired RID, video orientation, playout delay, on free one-byt
 answer takes the encrypted variant of whatever is offered both ways. No browser offers RFC 6904,
 so it is for peers like this one. MKIs are not negotiated: DTLS-SRTP has no SDP for them.
 
+### Bandwidth probing
+
+With `enable_bwe` the estimator probes the path (ADR-050), as libwebrtc does: short clusters
+(15 ms or more) of RTX copies of recently sent video, paced at a target rate, whose feedback
+(transport-wide or RFC 8888) shows what the path delivers. It probes at 3 and 6 times the start
+rate as soon as media flows and doubles while results keep up, every 5 s while the encoder sends
+well below the estimate, after a large drop of the estimate, and from scratch when ICE moves to
+another pair. A result only ever lifts the estimate; the delay and loss detectors still bring it
+down. On a simulated 10 Mbps link a sender starting at 300 kbps reaches 90 % in 0.35 s instead of
+44 s; `tools/interop/webrtc/bwe.sh` checks it with Chrome as the receiver (the estimate reaches
+10 Mbps 0.2 s after the connection; it used to stay at its start).
+
 ## TURN
 
 `TurnConfig` fields (all public, `TurnConfig::new` sets the defaults):

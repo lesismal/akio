@@ -56,6 +56,24 @@ ADR-049（docs/adr/049-p521-rsa-pss-keys-client-ocsp.zh-CN.md），只增不改�
   TLS 1.2，已过时）。
 - 默认 ClientHello 列出 secp521r1（多 2 字节）；默认握手的其他部分不变。
 
+### 新增：估计器中的带宽探测（only-rtp、only-webrtc）
+
+ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 像 libwebrtc 一样
+探测路径，视频的爬升从数十秒缩短到不到一秒：
+
+- **only-rtp**：以起始速率的 3 倍和 6 倍发送探测簇（至少 15 ms / 5 个包，按目标速率控制节奏），
+  结果跟得上时翻倍继续；受应用限制时（`application_limited()`）每 5 s 一次；估计值大幅下降之后；
+  `on_network_change(now)` 之后从头开始。`poll_probe(now)` / `probe_timeout()` / `on_probe_sent`
+  / `cancel_probes` 驱动发送，`TwccSender::on_sent_probe` 与 `CcfbSender::on_sent_probe` 标记探测包，
+  `PacketResult::probe` 带回簇 id，测得的送达速率提升基于时延与丢包的速率。`SendStream::padding`
+  构造探测包（最近媒体的 RTX 副本或填充包）。默认开启；`with_probing(false)` 保持以前的行为。
+  **破坏性变更**（内部层级）：`PacketResult` 新增公开字段 `probe`。
+- **only-webrtc**：开启 `enable_bwe` 后，探测包作为发送最多的流最近包的 RTX 副本发出，节奏由
+  `poll_output` 的超时控制；ICE 选中新的候选对时重新开始估计。公开 API 不变。
+- 模拟链路、起始 300 kbps：0.5 / 2 / 10 Mbps 的 90 % 在 0.15 / 0.25 / 0.35 s 达到（以前 5.4 / 23 /
+  44 s），峰值至多为容量的 1.12 倍。以 Chrome 157 为接收方（新增 `tools/interop/webrtc/bwe.sh`）：
+  连接后 0.2 s 达到 10 Mbps（以前估计值停在起始的 1 Mbps）。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：
