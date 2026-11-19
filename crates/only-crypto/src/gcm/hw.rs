@@ -13,7 +13,8 @@
 //!
 //! On x86_64 with VAES and VPCLMULQDQ the kernels of `vaes` take over: with AVX-512 the whole
 //! message (AAD up to 256 bytes, every data byte, the tag) in one call
-//! ([`Powers::crypt_all`]), with AVX2 only whole 256-byte groups (this module handles the rest).
+//! ([`Powers::crypt_all`]), with AVX2 too (the tail through a stack buffer, as AVX2 has no byte
+//! masks).
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
 //! `#[target_feature]` functions and their intrinsics and for the `asm!` kernels of `vaes`,
@@ -45,7 +46,7 @@ pub(super) enum Mode {
 enum Wide {
     /// VAES + VPCLMULQDQ + AVX-512: the whole message per call.
     Avx512,
-    /// VAES + VPCLMULQDQ + AVX2: whole 256-byte groups.
+    /// VAES + VPCLMULQDQ + AVX2: the whole message per call too (the tail through a buffer).
     Avx2,
 }
 
@@ -147,10 +148,10 @@ impl Powers {
         "clmul"
     }
 
-    /// Whether [`crypt_all`](Self::crypt_all) does whole messages (the AVX-512 kernel).
+    /// Whether [`crypt_all`](Self::crypt_all) does whole messages (the VAES kernels).
     pub(super) fn whole_message(&self) -> bool {
         #[cfg(target_arch = "x86_64")]
-        return matches!(self.wide, Some((_, Wide::Avx512)));
+        return self.wide.is_some();
         #[cfg(not(target_arch = "x86_64"))]
         false
     }
@@ -227,14 +228,17 @@ impl Powers {
                         if !avx2_available() {
                             unreachable!("AVX2 wide powers exist only with VAES");
                         }
+                        let mut a = vaes::Args2::new(ctr, *y);
                         // SAFETY: `avx2_available()` confirmed every CPU and OS feature the
-                        // kernel needs; `n` is a nonzero multiple of `CHUNK2` and at most the
-                        // length of `src` (when given) and of `out`, whose `n` bytes at `dst`
-                        // are writable (the kernel reads output bytes only after writing them:
-                        // the GHASH of a sealed group); `src` is a shared slice and `out` holds
-                        // a unique borrow, so they do not overlap, and without `src` the kernel
-                        // works in place; `rk` comes from `aes::hw`.
-                        unsafe { vaes::crypt256(w, rk, ctr, y, from, dst, n, open) };
+                        // kernel needs; the `n / CHUNK2` whole groups lie within `src` (when
+                        // given) and within `out` at `dst`, whose `n` bytes are writable (the
+                        // kernel reads output bytes only after writing them: the GHASH of a
+                        // sealed group); `src` is a shared slice and `out` holds a unique
+                        // borrow, so they do not overlap, and without `src` the kernel works in
+                        // place; `a` has no blocks to hash besides the groups and no tail (null
+                        // pointers, zero counts); `rk` comes from `aes::hw`.
+                        unsafe { vaes::crypt256(w, rk, &mut a, from, dst, n / chunk, open) };
+                        *y = a.y();
                     }
                 }
                 if src.is_some() {
@@ -259,7 +263,7 @@ impl Powers {
         done + n
     }
 
-    /// All of AES-GCM after the key schedule on the AVX-512 kernel, when this key has it (else
+    /// All of AES-GCM after the key schedule on a VAES kernel, when this key has one (else
     /// `None`, nothing done): `aad` (the whole AAD of `aad_len` bytes when that is at most 256
     /// bytes, else empty with its GHASH already in `y`) is hashed, the message encrypted
     /// (`open == false`) or decrypted, and the tag over the ciphertext returned. The message is
@@ -369,9 +373,94 @@ impl Powers {
             unsafe { vaes::crypt512(w, rk, &mut a, dst.cast_const(), dst, groups, open) };
             return Some(a.tag());
         }
+        #[cfg(target_arch = "x86_64")]
+        if let Some((w, Wide::Avx2)) = &self.wide {
+            return Some(crypt_all_avx2(w, rk, j0, y, aad, aad_len, src, out, open));
+        }
         let _ = (rk, j0, y, aad, aad_len, src, out, open);
         None
     }
+}
+
+/// [`Powers::crypt_all`] on the AVX2 kernel: at most two calls (whole groups read from `src`
+/// when it holds only part of the message, then the rest in place), the AAD hashed before the
+/// groups or, without groups, together with the tail and the length block. The tail goes
+/// through a [`vaes::TailBuf`] (AVX2 has no byte masks for loads and stores).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn crypt_all_avx2(
+    w: &vaes::WidePowers,
+    rk: RoundKeys<'_>,
+    j0: &[u8; 16],
+    y: [u64; 2],
+    aad: &[u8],
+    aad_len: usize,
+    src: Option<&[u8]>,
+    out: &mut Fill<'_>,
+    open: bool,
+) -> [u8; 16] {
+    const G: usize = vaes::CHUNK2;
+    if !avx2_available() {
+        unreachable!("AVX2 wide powers exist only with VAES");
+    }
+    assert!(src.is_none_or(|s| s.len() <= out.len() && out.pos() == 0) && aad.len() <= G);
+    let len = out.len();
+    let mut ctr = advance(j0, 1);
+    let mut b = vaes::TailBuf::new();
+    let mut a = vaes::Args2::new(&ctr, y);
+    let mut aad_left = aad;
+    let mut at = 0;
+    if let Some(s) = src {
+        let groups = s.len() / G;
+        let whole = s.len() == len;
+        if groups > 0 {
+            if whole {
+                // Everything in one call: the groups from `s`, the tail from `s` too.
+                let tail = &s[groups * G..];
+                a.aad(&mut b, aad, true);
+                a.finish(&mut b, tail, j0, aad_len, len);
+                let dst = out.next_ptr(groups * G);
+                // SAFETY: `avx2_available()` confirmed every CPU and OS feature the kernel
+                // needs; the `groups` whole groups lie within `s` and at `dst`
+                // (`next_ptr(groups * 256)`, writable, only written), a shared slice and a
+                // unique borrow that do not overlap; the pointers of `a` point into `b`, set
+                // by `Args2::aad` and `Args2::finish`; `rk` comes from `aes::hw`.
+                unsafe { vaes::crypt256(w, rk, &mut a, s.as_ptr(), dst, groups, open) };
+                // SAFETY: the kernel stored the `groups * 256` bytes of whole groups.
+                unsafe { out.assume_written(groups * G) };
+                out.push(b.tail(&a, tail.len()));
+                return a.tag();
+            }
+            // The whole groups of `s` out of place first (the AAD before them).
+            a.aad(&mut b, aad, true);
+            let dst = out.next_ptr(groups * G);
+            // SAFETY: as above, with no tail and no end (`Args2::aad` only).
+            unsafe { vaes::crypt256(w, rk, &mut a, s.as_ptr(), dst, groups, open) };
+            // SAFETY: the kernel stored the `groups * 256` bytes of whole groups.
+            unsafe { out.assume_written(groups * G) };
+            ctr = advance(&ctr, groups * G / 16);
+            a = vaes::Args2::new(&ctr, a.y());
+            // The tail's padding must be zero again (the AAD was there).
+            b = vaes::TailBuf::new();
+            aad_left = &[];
+            at = groups * G;
+        }
+        // The rest of `s` (all of it without groups) is worked on in place with what follows.
+        out.push(&s[groups * G..]);
+    }
+    let rest = &mut out.filled()[at..];
+    let groups = rest.len() / G;
+    let (body, tail) = rest.split_at_mut(groups * G);
+    a.aad(&mut b, aad_left, groups > 0);
+    a.finish(&mut b, tail, j0, aad_len, len);
+    let dst = body.as_mut_ptr();
+    // SAFETY: `avx2_available()` confirmed every CPU and OS feature the kernel needs; `body`
+    // (at `dst`, initialised) holds the `groups` whole groups, worked on in place; the pointers
+    // of `a` point into `b`, set by `Args2::aad` and `Args2::finish`; `rk` comes from
+    // `aes::hw`.
+    unsafe { vaes::crypt256(w, rk, &mut a, dst.cast_const(), dst, groups, open) };
+    tail.copy_from_slice(b.tail(&a, tail.len()));
+    a.tag()
 }
 
 /// The GHASH product of the 256-bit unreduced product `v` (least significant word first):

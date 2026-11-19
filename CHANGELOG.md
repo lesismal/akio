@@ -10,6 +10,24 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Performance: AES-GCM whole messages on the VAES-AVX2 kernel; P-256 divsteps on aarch64 (only-crypto)
+
+No API change.
+
+- **VAES-AVX2 AES-GCM kernel** (CPUs with VAES but no AVX-512: Zen 3, Alder Lake / Raptor
+  Lake): one call now does the whole message, as the AVX-512 kernel does: `E(J0)`, the AAD (up to
+  256 bytes), the 256-byte groups, the tail after them and the length block. AVX2 has no byte
+  masks, so the tail goes through a zero-padded stack buffer (four or eight ymm vectors, the
+  keystream masked by a constant table). Before, everything but whole 256-byte groups ran on the
+  128-bit kernel. Measured on Zen 4 with the AVX2 kernel forced, against the 128-bit kernel in
+  the same runs: 200 B 1.00× → 1.84–1.90×, 1 KiB 1.47–1.75× → 1.81–2.12×, 1400 B 1.50–1.70× →
+  1.82–2.09×, 64 B 0.91–1.01× → 1.12–1.20×; against ring 1 KiB 0.88–1.00× → 1.03–1.13×. No Zen 3
+  or Alder Lake host was available to measure on.
+- **aarch64 P-256**: safegcd divsteps in assembly (inversion 1.66 → 1.26 µs on an Apple M4 Pro)
+  and OpenSSL's addition formulas on the twin. Sign +9% (1.15× → 1.25× ring), key generation
+  +3.5%, ECDH 0.98× → 1.00× ring. First measurement of the aarch64 assembly: P-256 verify 1.04×
+  ring, X25519 1.04× (docs/BENCHMARKS.md).
+
 ### Added: mDNS ICE candidates, aggressive nomination and renomination, simultaneous-open ICE-TCP (only-ice, only-webrtc, only)
 
 ADR-044 (docs/adr/044-ice-mdns-renomination-tcp-so.md), additive (nothing changes unless used):

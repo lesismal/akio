@@ -10,18 +10,20 @@
 //! - modulo the group order `n` ([`ord_mul`], [`ord_sqr`], [`P256Na`]): Montgomery
 //!   multiplication and squaring, which the portable `P256N` scalar field calls when [`enabled`].
 //!
-//! Inversions modulo `p` and `n` are safegcd (`crate::safegcd`, portable divsteps) with the final
-//! Montgomery multiplication in this module. The twin keeps the portable defaults of the
-//! `Curve::jac_*` hooks (point formulas, table scans, the 4-bit comb), which run on this field;
-//! the x86_64 twin's whole-point assembly, AVX2 scans and 6-bit comb have no aarch64 counterpart
-//! yet.
+//! Inversions modulo `p` and `n` are safegcd (`crate::safegcd`) with the divsteps
+//! ([`divsteps_59`]) and the final Montgomery multiplication in this module. The twin's addition
+//! and mixed addition use OpenSSL's formulas over this field (as the x86_64 twin's assembly
+//! does); the doubling, the table scans and the 4-bit comb are the portable defaults of the
+//! `Curve::jac_*` hooks. The x86_64 twin's whole-point assembly, AVX2 scans and 6-bit comb have
+//! no aarch64 counterpart: on an Apple M4 Pro a doubling (70 ns) is already near the latency
+//! bound of its field operations (docs/BENCHMARKS.md, "P-256 and X25519 on aarch64").
 //!
 //! The instructions are in every ARMv8.0-A CPU, so there is nothing to detect: [`enabled`] is
 //! `cpu::has(Feature::Umulh)`, which is set on every aarch64 target outside Miri and cleared by
 //! `ONLY_CRYPTO_PORTABLE=1` / `set_portable(true)`.
 //!
-//! Design (not benchmarked yet; the choices follow OpenSSL's `ecp_nistz256-armv8` and the
-//! instruction counts): the 512-bit product is formed row by row (4 `MUL` + 4 `UMULH` per row,
+//! Design (the choices follow OpenSSL's `ecp_nistz256-armv8` and the instruction counts;
+//! measured in docs/BENCHMARKS.md): the 512-bit product is formed row by row (4 `MUL` + 4 `UMULH` per row,
 //! the low halves on one carry chain, the high halves on a second), the square from the six
 //! cross products doubled plus the four squares (10 `MUL` + 10 `UMULH` instead of 16 + 16). The
 //! reduction modulo `p` needs no multiplication at all: `-p⁻¹ mod 2⁶⁴ = 1`, so each step's
@@ -43,7 +45,7 @@
 use std::arch::asm;
 
 use super::curves::{P256, P256N};
-use super::{BaseTables, Curve};
+use super::{BaseTables, Curve, Fp, Jac};
 use crate::cpu::{self, Feature};
 use crate::field::Modulus;
 
@@ -100,9 +102,9 @@ impl Modulus<4> for P256Pa {
         r
     }
 
-    // safegcd (portable divsteps), then the final Montgomery multiplication here.
+    // safegcd (the assembly divsteps), then the final Montgomery multiplication here.
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
-        Some(crate::safegcd::mont_inv::<Self>(a))
+        Some(mont_inv_safegcd::<Self>(a))
     }
 }
 
@@ -138,6 +140,54 @@ impl Curve<4> for P256A {
     const GY: [u64; 4] = P256::GY;
     fn tables() -> &'static BaseTables<4> {
         P256::tables()
+    }
+
+    /// OpenSSL's `ecp_nistz256_point_add` without its special cases (12M + 4S, seven
+    /// additions and subtractions against the fourteen of add-2007-bl), as the x86_64 twin's
+    /// `ec::hw::point_add`: `H = U₂ - U₁`, `R = S₂ - S₁`, `Z₃ = H·Z₁·Z₂`,
+    /// `X₃ = R² - H³ - 2·U₁·H²`, `Y₃ = R·(U₁·H² - X₃) - S₁·H³`. The same point as the portable
+    /// formula, another representative; correct under the same conditions (neither operand
+    /// the identity, `self ≠ q`; `self = -q` gives `Z = 0`).
+    #[inline]
+    fn jac_add_core(p: &Jac<Self, 4>, q: &Jac<Self, 4>) -> Jac<Self, 4> {
+        let z2z2 = q.z.square();
+        let z1z1 = p.z.square();
+        let u1 = p.x.mul(&z2z2);
+        let h = q.x.mul(&z1z1).sub(&u1);
+        let s1 = p.y.mul(&z2z2.mul(&q.z));
+        let r = q.y.mul(&z1z1.mul(&p.z)).sub(&s1);
+        let z3 = h.mul(&p.z).mul(&q.z);
+        let hh = h.square();
+        let hhh = hh.mul(&h);
+        let v = u1.mul(&hh);
+        let x3 = r.square().sub(&hhh).sub(&v).sub(&v);
+        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&hhh));
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// OpenSSL's `ecp_nistz256_point_add_affine` without its special cases (8M + 3S, seven
+    /// additions and subtractions against the fourteen of madd-2007-bl): [`Self::jac_add_core`]
+    /// with `Z₂ = 1`.
+    #[inline]
+    fn jac_madd_core(p: &Jac<Self, 4>, x2: &Fp<Self, 4>, y2: &Fp<Self, 4>) -> Jac<Self, 4> {
+        let z1z1 = p.z.square();
+        let h = x2.mul(&z1z1).sub(&p.x);
+        let r = y2.mul(&z1z1.mul(&p.z)).sub(&p.y);
+        let z3 = h.mul(&p.z);
+        let hh = h.square();
+        let hhh = hh.mul(&h);
+        let v = p.x.mul(&hh);
+        let x3 = r.square().sub(&hhh).sub(&v).sub(&v);
+        let y3 = r.mul(&v.sub(&x3)).sub(&p.y.mul(&hhh));
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 }
 
@@ -835,6 +885,85 @@ pub(crate) fn mul3(a: &[u64; 4]) -> [u64; 4] {
     [r0, r1, r2, r3]
 }
 
+/// 59 Bernstein–Yang divsteps in assembly: [`crate::safegcd::divsteps_59`] step for step, as
+/// the x86_64 twin `ec::hw::divsteps_59`, the conditions turned into masks by `ASR` (the sign of
+/// `ζ`) and `SBFX` (the low bit of `g`) instead of the portable `ct::mask` round trip through
+/// memory, so constant time by construction; the only branch is the loop counter. Base ARMv8.0
+/// instructions only.
+pub(crate) fn divsteps_59(zeta: i64, f0: u64, g0: u64) -> (i64, crate::safegcd::Trans) {
+    let (mut zeta, mut f, mut g) = (zeta as u64, f0, g0);
+    let (mut u, mut v, mut q, mut r) = (8u64, 0u64, 0u64, 8u64);
+    // SAFETY: registers only (no memory, no stack); base ARMv8.0 instructions.
+    unsafe {
+        asm!(
+            "mov {n:w}, #59",
+            "2:",
+            // c1 = δ > 0 (ζ < 0), c2 = g odd.
+            "asr {c1}, {zeta}, #63",
+            "sbfx {c2}, {g}, #0, #1",
+            // (x, y, z) = ±(f, u, v); g, q, r += them where g is odd.
+            "eor {x}, {f}, {c1}",
+            "sub {x}, {x}, {c1}",
+            "eor {y}, {u}, {c1}",
+            "sub {y}, {y}, {c1}",
+            "eor {z}, {v}, {c1}",
+            "sub {z}, {z}, {c1}",
+            "and {x}, {x}, {c2}",
+            "add {g}, {g}, {x}",
+            "and {y}, {y}, {c2}",
+            "add {q}, {q}, {y}",
+            "and {z}, {z}, {c2}",
+            "add {r}, {r}, {z}",
+            // Both: ζ ← -ζ - 2 (δ ← 1 - δ) and f, u, v ← old g, q, r.
+            "and {c1}, {c1}, {c2}",
+            "eor {zeta}, {zeta}, {c1}",
+            "sub {zeta}, {zeta}, #1",
+            "and {x}, {g}, {c1}",
+            "add {f}, {f}, {x}",
+            "and {y}, {q}, {c1}",
+            "add {u}, {u}, {y}",
+            "and {z}, {r}, {c1}",
+            "add {v}, {v}, {z}",
+            "lsr {g}, {g}, #1",
+            "lsl {u}, {u}, #1",
+            "lsl {v}, {v}, #1",
+            "subs {n:w}, {n:w}, #1",
+            "b.ne 2b",
+            zeta = inout(reg) zeta,
+            f = inout(reg) f,
+            g = inout(reg) g,
+            u = inout(reg) u,
+            v = inout(reg) v,
+            q = inout(reg) q,
+            r = inout(reg) r,
+            c1 = out(reg) _,
+            c2 = out(reg) _,
+            x = out(reg) _,
+            y = out(reg) _,
+            z = out(reg) _,
+            n = out(reg) _,
+            options(pure, nomem, nostack),
+        );
+    }
+    let _ = (f, g);
+    (
+        zeta as i64,
+        crate::safegcd::Trans {
+            u: u as i64,
+            v: v as i64,
+            q: q as i64,
+            r: r as i64,
+        },
+    )
+}
+
+/// `a⁻¹·R` from the Montgomery form `a·R` (`0` maps to `0`) by safegcd with the assembly
+/// divsteps: the integer inverse `(aR)⁻¹ = a⁻¹R⁻¹`, then one Montgomery multiplication by `R³`.
+#[inline]
+pub(crate) fn mont_inv_safegcd<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
+    crate::safegcd::mont_inv_with::<M>(a, divsteps_59)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,10 +1122,37 @@ mod tests {
             let want = crate::ec::curves::p256n_inv::<P256N>(a);
             assert_eq!(crate::ec::curves::p256n_inv::<P256Na>(a), want, "{a:x?}");
             assert_eq!(crate::safegcd::mont_inv::<P256Na>(a), want, "{a:x?}");
+            assert_eq!(mont_inv_safegcd::<P256Na>(a), want, "{a:x?}");
         }
         for a in values(&P256P::P).iter().take(200) {
             let want = crate::ec::curves::p256_inv::<P256P>(a);
             assert_eq!(crate::safegcd::mont_inv::<P256Pa>(a), want, "{a:x?}");
+            assert_eq!(mont_inv_safegcd::<P256Pa>(a), want, "{a:x?}");
+        }
+    }
+
+    /// The assembly divsteps match the portable ones step for step (every `ζ` sign, `f`, `g`
+    /// with high bits set).
+    #[test]
+    fn divsteps_match_portable() {
+        if !cpu::cpu_has(Feature::Umulh) {
+            return;
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([0x7a; 32]);
+        for i in 0..20_000 {
+            let mut b = [0u8; 24];
+            rng.fill(&mut b);
+            let w = |k: usize| u64::from_le_bytes(b[8 * k..8 * k + 8].try_into().unwrap());
+            let f = w(0) | 1;
+            let g = if i % 7 == 0 { 0 } else { w(1) };
+            let zeta = (w(2) as i64) >> (i % 60);
+            let (z1, t1) = crate::safegcd::divsteps_59(zeta, f, g);
+            let (z2, t2) = divsteps_59(zeta, f, g);
+            assert_eq!(
+                (z1, t1.u, t1.v, t1.q, t1.r),
+                (z2, t2.u, t2.v, t2.q, t2.r),
+                "{zeta} {f:x} {g:x}"
+            );
         }
     }
 

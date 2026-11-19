@@ -4,7 +4,8 @@
 //! `x25519::x25519` when [`enabled`]; the portable ladder (radix 2⁵¹) is the reference and the
 //! fallback.
 //!
-//! Why four 64-bit limbs (not benchmarked yet; the choice follows the instruction counts): a
+//! Why four 64-bit limbs (the choice follows the instruction counts; 1.18× the portable radix-2⁵¹
+//! ladder on an Apple M4 Pro, docs/BENCHMARKS.md): a
 //! product is 16 `MUL` + 16 `UMULH` (a square 10 + 10) plus the fold by 38, against 25 128-bit
 //! products (50 instructions) and the carry propagation of radix 2⁵¹; aarch64 has no
 //! 64×64 → 128-bit instruction, so the halves cost the same either way.

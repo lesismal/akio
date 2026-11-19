@@ -724,6 +724,47 @@ limbs) unchanged. A Karatsuba multiplication at 48 / 64 limbs was correct but is
 per verification and was left out. CPUs with IFMA run 2048–4096-bit RSA on IFMA and do not reach
 this code. `tools/ct-dudect p256` (60 s per target, hardware path): no leak (max |t| 3.48).
 
+#### P-256 and X25519 on aarch64 (Apple M4 Pro, `--example pk_bench`)
+
+2026-11-19, the first measurement of the aarch64 assembly (`ec::hw_aarch64`,
+`curve25519::hw_aarch64`; tested since 2026-11-17, never benchmarked), macOS on an Apple M4 Pro
+(14 cores), ring 0.17 in the same runs (its `ecp_nistz256-armv8` P-256 and fiat X25519). The
+machine was shared with other builds (load average 7–10, at times far higher), so these are
+medians of five alternating rounds of `main` (`436b47e7`) and this pass; the portable column is
+`main` with `ONLY_CRYPTO_PORTABLE=1` (median of three rounds).
+
+| op/s (M4 Pro, shared) | portable | assembly before | after | ring | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|---:|
+| P-256 ECDSA sign | 46,803 | 99,487 | 108,571 | 85,350–86,622 | 1.15 | 1.25 |
+| P-256 ECDSA verify | 17,042 | 34,355 | 34,817 | 33,242–33,509 | 1.03 | 1.04 |
+| P-256 ECDH | 19,160 | 37,147 | 37,746 | 37,736–37,800 | 0.98 | 1.00 |
+| P-256 key generation | 76,905 | 146,501 | 151,611 | 127,811–128,366 | 1.15 | 1.18 |
+| X25519 | 48,708 | 57,511 | 57,067 | 54,619–54,794 | 1.05 | 1.04 |
+
+The assembly field doubles P-256 against the portable code and gives X25519 +18%. Where the time
+goes (a timing loop over the `P256A` twin's routines, release build): a Montgomery
+multiplication 11.8 ns, a squaring 10.6 ns, a modular addition 5.5 ns (latencies, each feeding
+the next), a Jacobian doubling 70 ns, an addition 122 ns, a mixed addition 84 ns, an inversion
+1.66 µs, the variable-base multiplication 26.4 µs. The inversion was the portable part worth
+moving: safegcd's divsteps went through `ct::mask` (a `black_box` round trip through memory per
+condition). This pass:
+
+- **Divsteps in assembly** (`hw_aarch64::divsteps_59`, the x86_64 twin's loop with masks from
+  `ASR` and `SBFX`): inversion 1.66 → 1.26 µs. Signing has two inversions (the nonce modulo `n`,
+  `Z` modulo `p`), key generation and ECDH one: sign +9%, key generation +3.5%, ECDH +1.6%.
+- **OpenSSL's point formulas** for the twin's addition (12M + 4S) and mixed addition (8M + 3S),
+  as on x86_64: seven modular additions and subtractions instead of fourteen. Addition
+  122 → 108 ns, mixed addition 84 → 80 ns (within the noise of this machine).
+- **Whole-point assembly: not done.** A doubling takes 70 ns where its critical path (four
+  dependent multiplications and three additions) is about 64 ns at the measured latencies: the
+  out-of-order core already overlaps the independent operations, and with 31 general registers
+  the compiler keeps the operands of the inline `asm!` field operations in registers, so a
+  whole-point block could only drop the moves between them. The x86_64 gain came from spills
+  with 16 registers, which aarch64 does not have. A faster doubling would need a shorter field
+  multiplication (about 50 cycles of latency; an interleaved reduction), not point-level assembly.
+
+`tools/ct-dudect` on this machine: see docs/constant-time.md.
+
 #### RSA (`--example pk_bench rsa`, `tls-bench handshakes`, CPU 2)
 
 Three alternating rounds of the previous code (`7f5c483a`, with this pass's benchmark files) and
@@ -985,6 +1026,65 @@ What changed:
   twice, so the zero-fill (the cheaper second write) stays; removing it needs the `unsafe` step.
   ChaCha20-Poly1305 1 KiB records were 7% faster with the copy and in-place seal (the ChaCha
   out-of-place path costs more on short messages), 16–64 KiB the same or slower; not changed.
+
+#### AES-GCM: the whole message on the VAES-AVX2 kernel (`--example gcm-sizes`, forced AVX2 key, CPU 2)
+
+2026-11-19, three alternating rounds of `main` (`436b47e7`) and this pass through `quiet.sh`,
+the VAES-AVX2 kernel forced on the Zen 4 (`AesGcm::with_cipher_avx2`: it stands in for Zen 3 and
+Alder Lake / Raptor Lake, which have VAES but no AVX-512; no such host was reachable), 13 bytes
+of AAD. The host was busy (load average 8–11 from other workloads, CPU 2 itself free) and
+absolute MB/s moved by up to 40% between runs of the same binary, so the table gives the ratios
+measured within one run, medians of the three rounds: the AVX2 kernel against the 128-bit
+AES-NI + PCLMULQDQ kernel (what those CPUs ran before the AVX2 kernel existed) and against ring.
+
+| AES-128-GCM | AVX2 / 128-bit before | after | AVX2 / ring before | after |
+|---|---:|---:|---:|---:|
+| seal 64 B | 1.01 | 1.12 | 0.98 | 1.03 |
+| seal 200 B | 0.99 | 1.84 | 0.90 | 1.66 |
+| seal 1 KiB | 1.47 | 1.81 | 0.92 | 1.05 |
+| seal 1400 B | 1.50 | 1.82 | 0.89 | 1.20 |
+| seal 4000 B | 1.73 | 1.90 | 0.92 | 1.01 |
+| seal 16 KiB | 1.95 | 1.99 | 1.01 | 1.02 |
+| open 64 B | 1.00 | 1.20 | 1.21 | 1.23 |
+| open 200 B | 1.00 | 1.90 | 0.83 | 1.58 |
+| open 1 KiB | 1.56 | 1.87 | 1.00 | 1.03 |
+| open 1400 B | 1.57 | 1.94 | 0.90 | 1.20 |
+| open 4000 B | 1.74 | 1.93 | 0.91 | 1.00 |
+| open 16 KiB | 1.93 | 1.96 | 1.07 | 1.08 |
+
+| AES-256-GCM | AVX2 / 128-bit before | after | AVX2 / ring before | after |
+|---|---:|---:|---:|---:|
+| seal 64 B | 0.91 | 1.13 | 0.88 | 0.99 |
+| seal 200 B | 0.98 | 1.86 | 0.91 | 1.70 |
+| seal 1 KiB | 1.51 | 1.89 | 0.88 | 1.13 |
+| seal 1400 B | 1.70 | 1.89 | 1.23 | 1.25 |
+| seal 4000 B | 1.75 | 2.01 | 0.95 | 1.08 |
+| seal 16 KiB | 1.98 | 2.02 | 1.03 | 1.06 |
+| open 64 B | 1.00 | 1.14 | 1.13 | 1.11 |
+| open 200 B | 1.00 | 1.89 | 0.83 | 1.57 |
+| open 1 KiB | 1.75 | 2.12 | 0.90 | 1.12 |
+| open 1400 B | 1.69 | 2.09 | 0.88 | 1.14 |
+| open 4000 B | 1.91 | 2.12 | 0.94 | 1.05 |
+| open 16 KiB | 2.13 | 2.19 | 1.09 | 1.11 |
+
+The AVX2 kernel used to take whole 256-byte groups only: the AAD was hashed before it, the rest
+of the message (up to 255 bytes) ran on the 128-bit path, and the length block and `E(J0)` were
+a third step, so a message under 256 bytes never reached it (ratio 1.00) and a 1 KiB message
+paid three dependent GHASH reductions around it. Now one call per message (two when the TLS
+record layer's input is split between two buffers): `E(J0)` first (one block, overlapping what
+follows), the AAD (up to 256 bytes) in a GHASH pass before the groups, the groups, then the tail
+and the length block. AVX2 has no byte masks, so the tail, the AAD before it and the length block
+after it are copied into a zero-padded 544-byte stack buffer; the tail is encrypted in place on
+four ymm vectors (up to 128 bytes) or eight, the keystream ANDed with 256 bytes of a constant
+`0xff…ff 00…00` table from offset `256 - t` so the padding and the length block stay, and one
+GHASH pass (up to sixteen blocks per reduction, from the power table's entry `16 - m`, the vector
+past the last block meeting its zero entries) hashes the AAD (when there were no groups), the
+tail and the length block. Opening hashes the buffer before decrypting it in place. The first
+version (always eight vectors for the tail, a second buffer for the opened tail) measured
+64 B at 1.05–1.09× the 128-bit kernel; four vectors for short tails and in-place opening took it
+to 1.12–1.20×. Not tried: `vpmaskmovd` loads and stores straight from the message (dword
+granularity, so a scalar remainder too; masked stores are slow on several AMD cores), and 128-bit VAES lanes for the tail (the stack buffer costs two copies of at most 255
+bytes, a few nanoseconds). The AVX-512 kernel is unchanged.
 
 #### ChaCha20-Poly1305 by message size (`--example chacha-sizes`, `tls-bench records`, CPU 2)
 

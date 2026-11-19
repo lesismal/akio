@@ -43,7 +43,9 @@ impl Modulus<4> for P256P {
         }
         #[cfg(target_arch = "aarch64")]
         if super::hw_aarch64::enabled() {
-            return Some(crate::safegcd::mont_inv::<super::hw_aarch64::P256Pa>(a));
+            return Some(super::hw_aarch64::mont_inv_safegcd::<
+                super::hw_aarch64::P256Pa,
+            >(a));
         }
         Some(crate::safegcd::mont_inv::<Self>(a))
     }
@@ -148,7 +150,9 @@ impl Modulus<4> for P256N {
         }
         #[cfg(target_arch = "aarch64")]
         if super::hw_aarch64::enabled() {
-            return Some(crate::safegcd::mont_inv::<super::hw_aarch64::P256Na>(a));
+            return Some(super::hw_aarch64::mont_inv_safegcd::<
+                super::hw_aarch64::P256Na,
+            >(a));
         }
         Some(crate::safegcd::mont_inv::<Self>(a))
     }
