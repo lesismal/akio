@@ -10,12 +10,12 @@
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
 |---|---|---|
 | AES 分组密码、CTR（同时处理 8 个分组） | AES-NI | ARMv8 AES |
-| AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组，掩码尾部），否则 VAES + VPCLMULQDQ + AVX2（16 个），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
+| AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组，掩码尾部），否则 VAES + VPCLMULQDQ + AVX2（16 个，尾部经栈缓冲区），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20（`chacha::hw`、`chacha::hw::avx512`） | AVX-512 内联汇编（`vprold`；每次迭代 16 个分组，余下部分 8 或 4 个，4 个时每个寄存器存一行；不完整的最后一组在字节掩码下处理），否则 AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
 | Poly1305（`chacha::hw::ifma`、`chacha::hw`） | AVX-512 IFMA 内联汇编（每步 8 个分组，用于 256 字节及以上的连续分组），否则 AVX2（以 2²⁶ 为基数每步 4 个分组，用于 512 字节及以上），否则 2⁶⁴ 进制标量实现 | 2⁶⁴ 进制标量实现 |
-| P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`；`ec::hw_aarch64`、`curve25519::hw_aarch64`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 内联汇编（`MUL`/`UMULH`、`ADDS`/`ADCS`、`CSEL`；所有 ARMv8.0 CPU；尚未做性能测试） |
+| P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`；`ec::hw_aarch64`、`curve25519::hw_aarch64`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 内联汇编（`MUL`/`UMULH`、`ADDS`/`ADCS`、`CSEL`；所有 ARMv8.0 CPU），safegcd 的 divsteps 也是汇编 |
 | RSA 模幂（`bignum::ifma`、`bignum::hw`） | AVX-512 IFMA（`vpmadd52luq`/`vpmadd52huq`）处理 2048 至 4096 位密钥的 CRT 两半以及 2048 至 4096 位模数的公开运算（验签），否则 BMI2 + ADX 内联汇编（Montgomery 乘法与平方） | 可移植实现 |
 
 设置 `ONLY_CRYPTO_PORTABLE=1`（只读取一次）可强制全部使用可移植实现；测试会在设置与不设置时各跑一遍全部已知
@@ -28,7 +28,7 @@
 | `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR、CBC（可带 PKCS #7 填充，用于 HLS `AES-128`） |
-| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时用 256 位寄存器处理完整的 256 字节组，否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
+| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时同样用 256 位寄存器处理整条消息（尾部、AAD 与长度块经补零的栈缓冲区：AVX2 没有字节掩码），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
 | `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，AVX2 每步 4 个，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
@@ -79,9 +79,11 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
 - aarch64 上（所有 ARMv8.0 CPU 都具备所需指令，无需检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭）P-256 的域与群阶
   运算以及 X25519 阶梯的域运算用内联汇编实现：`MUL`/`UMULH` 求积，`ADDS`/`ADCS`/`SUBS`/`SBCS` 进位链，`CSEL`
   修正，两条曲线都用四个 64 位 limb（模 P-256 素数的约简只用移位与减法，同 OpenSSL 的 `ecp_nistz256-armv8`）；
-  求逆是 safegcd（可移植的 divsteps），点运算公式、查表与 4 位梳形表是建立在这个域上的可移植实现。设计依据
-  指令数（4×64 乘积是 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但
-  **尚未做性能测试**，因此不给出 aarch64 的性能数字。
+  求逆是 safegcd，divsteps 也是汇编（掩码由 `ASR`/`SBFX` 生成），P-256 的加法用 OpenSSL 的公式（12M + 4S，
+  混合加法 8M + 3S），倍点、查表与 4 位梳形表是建立在这个域上的可移植实现。设计依据指令数（4×64 乘积是 16 个
+  `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）。在 Apple M4 Pro 上（docs/BENCHMARKS.zh-CN.md）
+  P-256 为 ring 的 1.25 倍（签名）、1.04 倍（验签）、1.00 倍（ECDH）、1.18 倍（密钥生成），X25519 为 1.04 倍；
+  可移植代码约为其一半。aarch64 上没有写整点汇编：一次倍点（70 ns）已接近其域运算的延迟下限。
 - P-521（`p521`，ADR-049）有独立实现：基域 `2⁵²¹ - 1` 用九个非饱和肢（58 位，最高肢 57 位；乘积高半部分
   加倍折回，一次进位链，最高进位回到第 0 肢；加法以一次对所有肢同时进行的进位步结束），求逆与平方根用固定
   链，标量域用通用 Montgomery 代码。点用完备的射影公式（无需论证例外情形）：ECDH 用有符号 5 位 Booth 窗口查
@@ -187,9 +189,12 @@ ring 的 2.20 倍（3072：2.19 倍，4096：2.55 倍），RSA-2048 证书握手
 移到 IFMA 上（新增 60 与 80 个数字的乘法，`e = 65537` 只需 18 次乘积，`R²` 用更快的除法求得），验签达到 ring
 的 3.07 倍（3072：3.30 倍，4096：3.70 倍），含密钥解析的验签 2.35 倍（2.64 倍、2.90 倍；原为 1.02、0.95、
 0.95 倍），握手达到 rustls 的 1.82 倍；表中 RSA 与握手各行来自这次改动，与原代码在同一次运行中交替测得。没有尝试 Karatsuba：在这些位数下，汇编的行循环
-已没有多少可省。后续：VAES-AVX2 内核的掩码尾部（消息在 256 字节组之后的部分走 128 位路径）、在 Zen 3 /
-Alder Lake 上测量该内核、测量 aarch64 上 P-256 与
-X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的整点运算与 divsteps 汇编。
+已没有多少可省。随后 VAES-AVX2 内核改为处理整条消息（AAD、经栈缓冲区用 4 或 8 个 ymm 向量处理的尾部、长度块与
+标签都在同一次调用中；此前除完整的 256 字节组外全部交给 128 位路径）：在关闭 AVX-512 的 Zen 4 上测得，200 B
+从 128 位内核的 1.00 倍升至 1.84–1.90 倍，1 KiB 从 1.47–1.75 倍升至 1.81–2.12 倍，64 B 从 0.91–1.01 倍升至
+1.12–1.20 倍。aarch64 汇编首次做了性能测试（Apple M4 Pro，见上），并改用汇编 divsteps 与 OpenSSL 的加法公式
+（签名 +9%）。后续：在 Zen 3 / Alder Lake 上测量 AVX2 内核（没有可用的此类机器），aarch64 上延迟更短的 P-256
+域乘法（倍点受它限制）。
 
 ## 测试
 
@@ -209,7 +214,8 @@ X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的�
   极端的 `r` / `s`；在具备 AVX-512 IFMA 的 CPU（Zen 4）上原生运行。
 - 宽 AES-GCM 内核（`gcm::tests`）：AVX-512 与 AVX2 两个内核（后者用 `AesGcm::with_cipher_avx2` 强制启用）
   互相比较，并在 0..=600 的每个长度、若干大长度、0..=300 及 512 以上的每种 AAD 长度上与 128 位路径和可移植
-  实现比较，覆盖未对齐、原地与非原地（包括 TLS 1.3 记录层那样输入分散在两个缓冲区）、组内 32 位计数器回绕，
+  实现比较，覆盖未对齐、原地与非原地（包括 TLS 1.3 记录层那样输入分散在两个缓冲区）、组内以及整条消息尾部的 32 位计数器
+  回绕（`whole_message_counter_wraps`，对比普通 CTR 与单独计算的标签），
   大消息还与 ring 比较；CAVP 与 Wycheproof 的 AES-GCM 向量在每个内核上都跑一遍。它们需要具备 VAES 与
   AVX-512 的 CPU，因此这些测试要在这样的机器（Zen 4）上原生运行。
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的

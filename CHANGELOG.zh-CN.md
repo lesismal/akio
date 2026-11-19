@@ -114,6 +114,20 @@ ADR-051（docs/adr/051-router-on-only-regex.zh-CN.md）。路由器的正则参�
   `ascii_classes`（ASCII 的 `\d \w \s` 与 `\b`）；`Regex` 的相等比较包含选项。`Regex::is_match` 先在紧凑
   循环中运行预先构建的 DFA，only-log 的消息过滤也因此快了几个百分点。
 
+### 性能：VAES-AVX2 内核处理整条 AES-GCM 消息；aarch64 上 P-256 的 divsteps（only-crypto）
+
+无 API 变化。
+
+- **VAES-AVX2 AES-GCM 内核**（有 VAES 而无 AVX-512 的 CPU：Zen 3、Alder Lake / Raptor Lake）：与 AVX-512 内核
+  一样，一次调用完成整条消息：`E(J0)`、AAD（至多 256 字节）、256 字节组、其后的尾部与长度块。AVX2 没有字节
+  掩码，所以尾部经补零的栈缓冲区处理（4 或 8 个 ymm 向量，密钥流由常量表掩码）。此前除完整的 256 字节组外
+  全部走 128 位内核。在 Zen 4 上强制使用 AVX2 内核测得，相对同一次运行中的 128 位内核：200 B 1.00 倍 →
+  1.84–1.90 倍，1 KiB 1.47–1.75 倍 → 1.81–2.12 倍，1400 B 1.50–1.70 倍 → 1.82–2.09 倍，64 B 0.91–1.01 倍 →
+  1.12–1.20 倍；相对 ring，1 KiB 0.88–1.00 倍 → 1.03–1.13 倍。没有可用的 Zen 3 或 Alder Lake 机器。
+- **aarch64 上的 P-256**：safegcd 的 divsteps 改为汇编（Apple M4 Pro 上求逆 1.66 → 1.26 µs），孪生曲线的加法
+  改用 OpenSSL 的公式。签名 +9%（ring 的 1.15 倍 → 1.25 倍），密钥生成 +3.5%，ECDH 为 ring 的 0.98 倍 → 1.00
+  倍。首次测量 aarch64 汇编：P-256 验签为 ring 的 1.04 倍，X25519 1.04 倍（docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：

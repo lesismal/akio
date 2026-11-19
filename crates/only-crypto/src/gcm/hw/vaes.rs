@@ -8,8 +8,12 @@
 //!   with the powers of its length, and the length block and `E(J0)` give the tag.
 //! - **AVX2** ([`crypt256`]), for CPUs with VAES and VPCLMULQDQ but no AVX-512 (Zen 3, Alder
 //!   Lake): sixteen blocks per iteration in eight 256-bit vectors, one reduction per sixteen
-//!   blocks, only the sixteen VEX registers (the round keys and constants come from memory);
-//!   whole 256-byte groups only, the rest goes through the 128-bit path.
+//!   blocks, only the sixteen VEX registers (the round keys and constants come from memory). The
+//!   whole message runs in one call too, but AVX2 has no byte masks: the AAD, the last partial
+//!   group (the tail) and the length block are copied into a zero-padded [`TailBuf`]; the tail
+//!   is processed there in place on four or eight vectors (its keystream ANDed with a constant
+//!   `0xff…00…` table, so the padding and the length block stay), and GHASH passes of up to
+//!   sixteen blocks per reduction hash the AAD before the groups and the rest after them.
 //!
 //! The design follows the `aes-gcm-avx10-x86_64` and `aes-gcm-vaes-avx2` kernels of BoringSSL
 //! and Linux (Eric Biggers); the code here is new.
@@ -70,7 +74,9 @@ impl WidePowers {
 /// of each 128-bit lane), `POLY` (64, `x⁶³ + x⁶² + x⁵⁷` in the high half of each lane), `LANES`
 /// (128, lane `i` holds `i` in its low 32 bits: the counter offsets of one vector), `INC`
 /// (192, 4 in the low 32 bits of each lane: the counter step from one 512-bit vector to the
-/// next) and `INC2` (256, 2 in the low 32 bits of the two lanes of a 256-bit vector).
+/// next), `INC2` (256, 2 in the low 32 bits of the two lanes of a 256-bit vector) and `MASK`
+/// (320, 256 bytes `0xff` then 256 zero bytes: the 256 bytes from `MASK + 256 - t` keep the
+/// first `t` bytes of a tail, for the AVX2 kernel, which has no byte masks).
 #[repr(C, align(64))]
 struct Consts {
     bswap: [u8; 64],
@@ -78,6 +84,7 @@ struct Consts {
     lanes: [u32; 16],
     inc: [u32; 16],
     inc2: [u32; 16],
+    mask: [u8; 512],
 }
 
 const fn consts() -> Consts {
@@ -87,10 +94,16 @@ const fn consts() -> Consts {
         lanes: [0; 16],
         inc: [0; 16],
         inc2: [0; 16],
+        mask: [0; 512],
     };
     let mut i = 0;
     while i < 64 {
         c.bswap[i] = 15 - (i % 16) as u8;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 256 {
+        c.mask[i] = 0xff;
         i += 1;
     }
     let mut l = 0;
@@ -160,6 +173,7 @@ const _: () = {
     assert!(offset_of!(Consts, lanes) == 128);
     assert!(offset_of!(Consts, inc) == 192);
     assert!(offset_of!(Consts, inc2) == 256);
+    assert!(offset_of!(Consts, mask) == 320);
 };
 
 /// The bytes four masks select.
@@ -1115,8 +1129,159 @@ pub(super) unsafe fn crypt512(
 // Vector registers (ymm, VEX only: 0-15): 0-7 AES states (sixteen blocks), 8 the round key of
 // the current round (broadcast from memory), 9-11 the LO/MI/HI accumulators, 12-13
 // temporaries, 14 the GHASH state (low 128 bits), 15 the next counters (byte-reflected). The
-// constants are memory operands. GPRs as in the AVX-512 kernel, with `ctr` and `y` pointers
-// instead of `a`, and rax at the last round key throughout.
+// constants are memory operands. GPR operands as in the AVX-512 kernel (`a` the `Args2`);
+// fixed: rsi input, rdi output, rcx 256-byte groups, rax the last round key throughout, r8-r11
+// scratch of `E(J0)`, the GHASH passes and the tail. Local labels: 2/3 loop, 4/5 round count,
+// 6/7 GHASH pass, 8 `E(J0)`, 9 the end of a skipped step, 12 the end of the groups.
+
+/// The memory operand of one call of the AVX2 kernel, at the fixed offsets the kernel text uses
+/// (checked below). The blocks hashed before the groups (the AAD), the tail and the blocks
+/// hashed after it (the AAD when there are no groups, the tail ciphertext, the length block)
+/// live in a [`TailBuf`].
+#[repr(C, align(16))]
+pub(super) struct Args2 {
+    /// The counter block of the first data byte.
+    ctr: [u8; 16],
+    /// The GHASH state, in and out.
+    y: [u64; 2],
+    /// `J0`.
+    j0: [u8; 16],
+    /// `E(J0)`, then the tag (with `fin`).
+    tag: [u8; 16],
+    /// Blocks hashed before the groups.
+    pre: *const u8,
+    /// How many.
+    pre_blocks: u64,
+    /// Blocks hashed after the tail.
+    post: *const u8,
+    /// How many (zero without `fin`).
+    post_blocks: u64,
+    /// The tail, zero-padded to 256 bytes, processed in place: sealing changes only its first
+    /// `tail_len` bytes; opening hashes it first and then overwrites all 256 bytes.
+    tail: *mut u8,
+    /// `MASK + 256 - tail_len` (see `Consts`).
+    tail_mask: *const u8,
+    /// Tail bytes, under 256 (zero: no tail).
+    tail_len: u64,
+    /// Nonzero: compute `E(J0)` and the tag.
+    fin: u64,
+    /// AAD blocks at the start of the `TailBuf` (not read by the kernel).
+    na: usize,
+}
+
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(Args2, ctr) == 0);
+    assert!(offset_of!(Args2, y) == 16);
+    assert!(offset_of!(Args2, j0) == 32);
+    assert!(offset_of!(Args2, tag) == 48);
+    assert!(offset_of!(Args2, pre) == 64);
+    assert!(offset_of!(Args2, pre_blocks) == 72);
+    assert!(offset_of!(Args2, post) == 80);
+    assert!(offset_of!(Args2, post_blocks) == 88);
+    assert!(offset_of!(Args2, tail) == 96);
+    assert!(offset_of!(Args2, tail_mask) == 104);
+    assert!(offset_of!(Args2, tail_len) == 112);
+    assert!(offset_of!(Args2, fin) == 120);
+};
+
+/// The AAD (up to 256 bytes), the tail (up to 255 bytes, zero-padded to 256) and the length
+/// block of one AVX2 call, contiguous so that one GHASH pass can cover them, then a spare block
+/// (a GHASH pass reads whole vectors of two blocks).
+pub(super) struct TailBuf {
+    hb: [u8; 2 * CHUNK2 + 32],
+}
+
+impl TailBuf {
+    pub(super) fn new() -> TailBuf {
+        TailBuf {
+            hb: [0; 2 * CHUNK2 + 32],
+        }
+    }
+
+    /// The processed tail (`len` bytes) after a call with [`Args2::finish`] on `a`.
+    pub(super) fn tail(&self, a: &Args2, len: usize) -> &[u8] {
+        &self.hb[16 * a.na..16 * a.na + len]
+    }
+}
+
+impl Args2 {
+    /// Whole groups only, from the counter block `ctr` and the GHASH state `y`.
+    pub(super) fn new(ctr: &[u8; 16], y: [u64; 2]) -> Args2 {
+        Args2 {
+            ctr: *ctr,
+            y,
+            j0: [0; 16],
+            tag: [0; 16],
+            pre: core::ptr::null(),
+            pre_blocks: 0,
+            post: core::ptr::null(),
+            post_blocks: 0,
+            tail: core::ptr::null_mut(),
+            tail_mask: core::ptr::null(),
+            tail_len: 0,
+            fin: 0,
+            na: 0,
+        }
+    }
+
+    /// Hashes `aad` (at most 256 bytes, copied into `b`): before the groups (`first`), or else
+    /// together with the tail and the length block ([`finish`](Self::finish), which must
+    /// follow then).
+    pub(super) fn aad(&mut self, b: &mut TailBuf, aad: &[u8], first: bool) {
+        assert!(aad.len() <= CHUNK2);
+        b.hb[..aad.len()].copy_from_slice(aad);
+        self.na = aad.len().div_ceil(16);
+        if first {
+            self.pre = b.hb.as_ptr();
+            self.pre_blocks = self.na as u64;
+        }
+    }
+
+    /// Ends the message with the `tail` (under 256 bytes, copied into `b`, after the AAD) that
+    /// follows the groups: it is processed, the AAD (unless hashed before the groups), its
+    /// ciphertext and the length block of `aad_len` and `ct_len` bytes are hashed, and the tag
+    /// is made with `J0`. The processed tail is then [`TailBuf::tail`].
+    pub(super) fn finish(
+        &mut self,
+        b: &mut TailBuf,
+        tail: &[u8],
+        j0: &[u8; 16],
+        aad_len: usize,
+        ct_len: usize,
+    ) {
+        assert!(tail.len() < CHUNK2);
+        let at = 16 * self.na;
+        let nb = tail.len().div_ceil(16);
+        b.hb[at..at + tail.len()].copy_from_slice(tail);
+        let lens = at + 16 * nb;
+        b.hb[lens..lens + 8].copy_from_slice(&((aad_len as u64) << 3).to_be_bytes());
+        b.hb[lens + 8..lens + 16].copy_from_slice(&((ct_len as u64) << 3).to_be_bytes());
+        let first = if self.pre_blocks > 0 { at } else { 0 };
+        // Every pointer into `hb` from one borrow.
+        let base = b.hb.as_mut_ptr();
+        if self.pre_blocks > 0 {
+            self.pre = base.cast_const();
+        }
+        self.post = base.wrapping_add(first).cast_const();
+        self.post_blocks = ((lens + 16 - first) / 16) as u64;
+        self.tail = base.wrapping_add(at);
+        self.tail_len = tail.len() as u64;
+        self.tail_mask = CONSTS.mask[CHUNK2 - tail.len()..].as_ptr();
+        self.j0 = *j0;
+        self.fin = 1;
+    }
+
+    /// The GHASH state after the call.
+    pub(super) fn y(&self) -> [u64; 2] {
+        self.y
+    }
+
+    /// The tag after a call with [`finish`](Self::finish).
+    pub(super) fn tag(&self) -> [u8; 16] {
+        self.tag
+    }
+}
 
 /// One AES round on ymm0-7 with the round key `off` bytes below the last one.
 macro_rules! yround {
@@ -1144,10 +1309,10 @@ macro_rules! ysetup {
             "mov rax, {r}\n",
             "shl rax, 4\n",
             "add rax, {rk}\n",
-            "vbroadcasti128 ymm15, xmmword ptr [{ctr}]\n",
+            "vbroadcasti128 ymm15, xmmword ptr [{a}]\n",
             "vpshufb ymm15, ymm15, ymmword ptr [{c}]\n",
             "vpaddd ymm15, ymm15, ymmword ptr [{c} + 128]\n",
-            "vmovdqu xmm14, xmmword ptr [{y}]\n",
+            "vmovdqu xmm14, xmmword ptr [{a} + 16]\n",
         )
     };
 }
@@ -1343,13 +1508,265 @@ macro_rules! yrounds_ghash {
     };
 }
 
-/// Sealing: the first group is only encrypted, each later one is encrypted while the previous
-/// ciphertext group (the 256 bytes before `rdi`) is hashed, and the last one is hashed after
-/// the loop.
+/// `E(J0)` into the `tag` of `a` when `fin` is set: one block through all the rounds (the
+/// rounds overlap whatever follows, which does not depend on them).
+macro_rules! yj0 {
+    () => {
+        concat!(
+            "cmp qword ptr [{a} + 120], 0\n",
+            "je 9f\n",
+            "vmovdqu xmm13, xmmword ptr [{a} + 32]\n",
+            "vpxor xmm13, xmm13, xmmword ptr [{rk}]\n",
+            "lea r8, [{rk} + 16]\n",
+            "8:\n",
+            "vaesenc xmm13, xmm13, xmmword ptr [r8]\n",
+            "add r8, 16\n",
+            "cmp r8, rax\n",
+            "jb 8b\n",
+            "vaesenclast xmm13, xmm13, xmmword ptr [rax]\n",
+            "vmovdqu xmmword ptr [{a} + 48], xmm13\n",
+            "9:\n",
+        )
+    };
+}
+
+/// Hashes the blocks at `[a + src]` (their count at `[a + n]`, none: nothing) into the state, in
+/// passes of up to sixteen blocks: a pass of `m` blocks multiplies the state by `Hᵐ` and the
+/// blocks by `Hᵐ … H¹` (from entry `16 - m` of the powers; a vector past the last block meets
+/// entry 16, which is zero) and reduces once.
+macro_rules! ypass {
+    ($src:literal, $n:literal) => {
+        concat!(
+            "mov r8, qword ptr [{a} + ",
+            $src,
+            "]\n",
+            "mov r9, qword ptr [{a} + ",
+            $n,
+            "]\n",
+            "test r9, r9\n",
+            "jz 9f\n",
+            "6:\n",
+            "mov r10d, 16\n",
+            "cmp r9, 16\n",
+            "cmovb r10, r9\n",
+            "sub r9, r10\n",
+            "mov r11d, 16\n",
+            "sub r11, r10\n",
+            "shl r11, 4\n",
+            "add r11, {pw}\n",
+            "vpclmulqdq xmm9, xmm14, xmmword ptr [r11], 0x00\n",
+            "vpclmulqdq xmm10, xmm14, xmmword ptr [r11], 0x01\n",
+            "vpclmulqdq xmm13, xmm14, xmmword ptr [r11], 0x10\n",
+            "vpxor xmm10, xmm10, xmm13\n",
+            "vpclmulqdq xmm11, xmm14, xmmword ptr [r11], 0x11\n",
+            "inc r10\n",
+            "shr r10, 1\n",
+            "7:\n",
+            "vmovdqu ymm12, ymmword ptr [r8]\n",
+            "vpshufb ymm12, ymm12, ymmword ptr [{c}]\n",
+            "vpclmulqdq ymm13, ymm12, ymmword ptr [r11], 0x00\n",
+            "vpxor ymm9, ymm9, ymm13\n",
+            "vpclmulqdq ymm13, ymm12, ymmword ptr [r11], 0x01\n",
+            "vpxor ymm10, ymm10, ymm13\n",
+            "vpclmulqdq ymm13, ymm12, ymmword ptr [r11], 0x10\n",
+            "vpxor ymm10, ymm10, ymm13\n",
+            "vpclmulqdq ymm13, ymm12, ymmword ptr [r11], 0x11\n",
+            "vpxor ymm11, ymm11, ymm13\n",
+            "add r8, 32\n",
+            "add r11, 32\n",
+            "dec r10\n",
+            "jnz 7b\n",
+            yfold!(),
+            yreduce!(),
+            "test r9, r9\n",
+            "jnz 6b\n",
+            "9:\n",
+        )
+    };
+}
+
+/// One AES round on ymm0-3 (a tail of at most 128 bytes) with the round key `off` bytes below
+/// the last one.
+macro_rules! yround4 {
+    ($off:literal) => {
+        concat!(
+            "vbroadcasti128 ymm8, xmmword ptr [rax - ",
+            $off,
+            "]\n",
+            "vaesenc ymm0, ymm0, ymm8\n",
+            "vaesenc ymm1, ymm1, ymm8\n",
+            "vaesenc ymm2, ymm2, ymm8\n",
+            "vaesenc ymm3, ymm3, ymm8\n",
+        )
+    };
+}
+
+/// The tail's counter blocks through every round but the last, on `$n` vectors (4: up to 128
+/// bytes, 8: up to 256), the last round key in ymm8.
+macro_rules! ytail_rounds {
+    (4) => {
+        concat!(
+            "vpshufb ymm0, ymm15, ymmword ptr [{c}]\n",
+            "vpaddd ymm15, ymm15, ymmword ptr [{c} + 256]\n",
+            "vpshufb ymm1, ymm15, ymmword ptr [{c}]\n",
+            "vpaddd ymm15, ymm15, ymmword ptr [{c} + 256]\n",
+            "vpshufb ymm2, ymm15, ymmword ptr [{c}]\n",
+            "vpaddd ymm15, ymm15, ymmword ptr [{c} + 256]\n",
+            "vpshufb ymm3, ymm15, ymmword ptr [{c}]\n",
+            "vbroadcasti128 ymm8, xmmword ptr [{rk}]\n",
+            "vpxor ymm0, ymm0, ymm8\n",
+            "vpxor ymm1, ymm1, ymm8\n",
+            "vpxor ymm2, ymm2, ymm8\n",
+            "vpxor ymm3, ymm3, ymm8\n",
+            "cmp {r}, 12\n",
+            "jb 5f\n",
+            "je 4f\n",
+            yround4!("208"),
+            yround4!("192"),
+            "4:\n",
+            yround4!("176"),
+            yround4!("160"),
+            "5:\n",
+            yround4!("144"),
+            yround4!("128"),
+            yround4!("112"),
+            yround4!("96"),
+            yround4!("80"),
+            yround4!("64"),
+            yround4!("48"),
+            yround4!("32"),
+            yround4!("16"),
+            "vbroadcasti128 ymm8, xmmword ptr [rax]\n",
+        )
+    };
+    (8) => {
+        concat!(
+            yctr!(),
+            yextra!(),
+            yround!("144"),
+            yround!("128"),
+            yround!("112"),
+            yround!("96"),
+            yround!("80"),
+            yround!("64"),
+            yround!("48"),
+            yround!("32"),
+            yround!("16"),
+            "vbroadcasti128 ymm8, xmmword ptr [rax]\n",
+        )
+    };
+}
+
+/// The last round of tail vector `v` at byte `off` of the tail (rsi), in place. Sealing: the
+/// keystream masked to the tail's bytes (r8) and XORed in, so the zero padding and the length
+/// block after the tail stay. Opening (after the tail was hashed): all 32 bytes.
+macro_rules! ytail_last {
+    (seal, $v:literal, $off:literal) => {
+        concat!(
+            "vaesenclast ymm",
+            $v,
+            ", ymm",
+            $v,
+            ", ymm8\n",
+            "vpand ymm",
+            $v,
+            ", ymm",
+            $v,
+            ", ymmword ptr [r8 + ",
+            $off,
+            "]\n",
+            "vpxor ymm",
+            $v,
+            ", ymm",
+            $v,
+            ", ymmword ptr [rsi + ",
+            $off,
+            "]\n",
+            "vmovdqu ymmword ptr [rsi + ",
+            $off,
+            "], ymm",
+            $v,
+            "\n",
+        )
+    };
+    (open, $v:literal, $off:literal) => {
+        concat!(
+            "vpxor ymm12, ymm8, ymmword ptr [rsi + ",
+            $off,
+            "]\n",
+            "vaesenclast ymm",
+            $v,
+            ", ymm",
+            $v,
+            ", ymm12\n",
+            "vmovdqu ymmword ptr [rsi + ",
+            $off,
+            "], ymm",
+            $v,
+            "\n",
+        )
+    };
+}
+
+/// The tail (`[a + 96]`, 256 bytes zero-padded, `[a + 112]` bytes; none: nothing), in place,
+/// on four vectors when it is at most 128 bytes, else eight.
+macro_rules! ytail {
+    ($dir:ident) => {
+        concat!(
+            "mov r9, qword ptr [{a} + 112]\n",
+            "test r9, r9\n",
+            "jz 9f\n",
+            "mov rsi, qword ptr [{a} + 96]\n",
+            "mov r8, qword ptr [{a} + 104]\n",
+            "cmp r9, 128\n",
+            "ja 13f\n",
+            ytail_rounds!(4),
+            ytail_last!($dir, "0", "0"),
+            ytail_last!($dir, "1", "32"),
+            ytail_last!($dir, "2", "64"),
+            ytail_last!($dir, "3", "96"),
+            "jmp 9f\n",
+            "13:\n",
+            ytail_rounds!(8),
+            ytail_last!($dir, "0", "0"),
+            ytail_last!($dir, "1", "32"),
+            ytail_last!($dir, "2", "64"),
+            ytail_last!($dir, "3", "96"),
+            ytail_last!($dir, "4", "128"),
+            ytail_last!($dir, "5", "160"),
+            ytail_last!($dir, "6", "192"),
+            ytail_last!($dir, "7", "224"),
+            "9:\n",
+        )
+    };
+}
+
+/// The end of a call (after the blocks after the tail were hashed): the state stored, and the
+/// tag (only used with `fin`) made from it and `E(J0)`.
+macro_rules! yend {
+    () => {
+        concat!(
+            "vmovdqu xmmword ptr [{a} + 16], xmm14\n",
+            "vpshufb xmm12, xmm14, xmmword ptr [{c}]\n",
+            "vpxor xmm12, xmm12, xmmword ptr [{a} + 48]\n",
+            "vmovdqu xmmword ptr [{a} + 48], xmm12\n",
+            "vzeroupper\n",
+        )
+    };
+}
+
+/// Sealing: `E(J0)` and the blocks before the groups; the first group is only encrypted, each
+/// later one is encrypted while the previous ciphertext group (the 256 bytes before `rdi`) is
+/// hashed, and the last one is hashed after the loop; then the tail, the blocks after the
+/// groups (the tail's ciphertext among them) and the end.
 macro_rules! seal256 {
     () => {
         concat!(
             ysetup!(),
+            yj0!(),
+            ypass!("64", "72"),
+            "test rcx, rcx\n",
+            "jz 12f\n",
             yctr!(),
             yextra!(),
             yround!("144"),
@@ -1394,17 +1811,25 @@ macro_rules! seal256 {
             yghash!("rdi - 32", "224"),
             yfold!(),
             yreduce!(),
-            "vmovdqu xmmword ptr [{y}], xmm14\n",
-            "vzeroupper\n",
+            "12:\n",
+            ytail!(seal),
+            ypass!("80", "88"),
+            yend!(),
         )
     };
 }
 
-/// Opening: each group is hashed while it is decrypted.
+/// Opening: `E(J0)` and the blocks before the groups; each group is hashed while it is
+/// decrypted; then the blocks after the groups (the tail's ciphertext among them) are hashed,
+/// the tail decrypted in place and the end.
 macro_rules! open256 {
     () => {
         concat!(
             ysetup!(),
+            yj0!(),
+            ypass!("64", "72"),
+            "test rcx, rcx\n",
+            "jz 12f\n",
             "2:\n",
             yctr!(),
             yrounds_ghash!(
@@ -1422,46 +1847,53 @@ macro_rules! open256 {
             "add rsi, 256\n",
             "dec rcx\n",
             "jnz 2b\n",
-            "vmovdqu xmmword ptr [{y}], xmm14\n",
-            "vzeroupper\n",
+            "12:\n",
+            ypass!("80", "88"),
+            ytail!(open),
+            yend!(),
         )
     };
 }
 
-/// CTR-encrypts (`open == false`) or decrypts the `len` bytes at `src` into `dst` with the AES
-/// round keys `rk`, starting at the counter block `ctr` (32-bit big-endian counter in the last
-/// four bytes, wrapping), and absorbs the ciphertext into the GHASH state `y`, on 256-bit
-/// vectors. `src == dst` works in place: each 256-byte group is read before it is written.
+/// CTR-encrypts (`open == false`) or decrypts the `groups` 256-byte groups at `src` into `dst`
+/// and then the tail of `a`, with the AES round keys `rk`, starting at the counter block in `a`
+/// (32-bit big-endian counter in the last four bytes, wrapping), on 256-bit vectors; the
+/// blocks `a` hashes before the groups, the ciphertext and the blocks it hashes after the tail
+/// are absorbed into the GHASH state in `a`, and with `fin` the tag is left in `a`.
+/// `src == dst` works in place: each 256-byte group is read before it is written.
 ///
 /// # Safety
 ///
 /// The CPU must support AES-NI, PCLMULQDQ, VAES, VPCLMULQDQ and AVX2, and the OS must save the
-/// YMM state (`Feature::Vaes` of `cpu.rs`); `len` is a nonzero multiple of [`CHUNK2`]; `src` is
-/// valid for reading and `dst` for writing `len` bytes, and the two ranges are the same or do
-/// not overlap; `rk.1` is 10, 12 or 14.
+/// YMM state (`Feature::Vaes` of `cpu.rs`); `src` is valid for reading and `dst` for writing
+/// `256 * groups` bytes, and the two ranges are the same or do not overlap; the pointers of `a`
+/// are null (with zero counts) or point into one live [`TailBuf`] as [`Args2::aad`] and
+/// [`Args2::finish`] set them; `rk.1` is 10, 12 or 14.
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn crypt256(
     p: &WidePowers,
     rk: RoundKeys<'_>,
-    ctr: &[u8; 16],
-    y: &mut [u64; 2],
+    a: &mut Args2,
     src: *const u8,
     dst: *mut u8,
-    len: usize,
+    groups: usize,
     open: bool,
 ) {
-    let n = len / CHUNK2;
-    debug_assert!(n > 0 && len % CHUNK2 == 0);
     debug_assert!(matches!(rk.1, 10 | 12 | 14));
+    debug_assert!(a.tail_len < CHUNK2 as u64 && a.pre_blocks <= 16 && a.post_blocks <= 33);
     if open {
-        // SAFETY: the caller guarantees the CPU and OS features and the `src` / `dst` ranges.
-        // The kernel reads the round keys `rk.0[0]` and `rk.0[r - 13 ..= r]` (as in
-        // `crypt512`), the 256 bytes of entries 0-15 of `p`, 288 bytes of `CONSTS`, 16 bytes of
-        // `ctr` and of `y`, `n * 256` bytes at `src`, and writes `n * 256` bytes at `dst`
-        // (`n >= 1`; each group is loaded, for the GHASH and the last round, before it is
-        // stored) and 16 bytes of `y`, all unaligned. It uses no stack and clobbers only
-        // registers declared here (all vector registers through `clobber_abi("C")`, the flags),
-        // ending with `vzeroupper`.
+        // SAFETY: the caller guarantees the CPU and OS features and the memory ranges. The
+        // kernel reads the round keys `rk.0[0 ..= r]` (`r <= 14`, within the 15-entry array),
+        // at most the 512 bytes of the 32-entry power table at `pw` (a pass of `m` blocks reads
+        // `32 * ⌈m / 2⌉` bytes from entry `16 - m`), the `CONSTS` it addresses (the mask at most
+        // 256 bytes from `MASK + 256 - t`, `t >= 1`, within its 512 bytes), `a`, `256 * groups`
+        // bytes at `src`, and in the `TailBuf` of `a` (when the counts are nonzero) the blocks
+        // before and after the tail rounded up to whole vectors (`hb` has a spare block past the
+        // last one) and the 256 tail bytes; it writes `256 * groups` bytes at `dst` (each group
+        // read before it is stored), the 256 tail bytes in place (after the blocks after the
+        // tail were hashed), `a.y` and `a.tag`, all unaligned. It uses no stack and clobbers only registers declared here
+        // (all vector registers through `clobber_abi("C")`, r8-r11, the flags), ending with
+        // `vzeroupper`.
         unsafe {
             core::arch::asm!(
                 open256!(),
@@ -1469,19 +1901,22 @@ pub(super) unsafe fn crypt256(
                 r = in(reg) rk.1,
                 pw = in(reg) p.0.as_ptr(),
                 c = in(reg) &raw const CONSTS,
-                ctr = in(reg) ctr.as_ptr(),
-                y = in(reg) y.as_mut_ptr(),
+                a = in(reg) &raw mut *a,
                 inout("rsi") src => _,
                 inout("rdi") dst => _,
-                inout("rcx") n => _,
+                inout("rcx") groups => _,
                 out("rax") _,
+                out("r8") _,
+                out("r9") _,
+                out("r10") _,
+                out("r11") _,
                 clobber_abi("C"),
                 options(nostack),
             );
         }
     } else {
-        // SAFETY: as above (the same reads and writes; sealing hashes the 256 bytes it just
-        // wrote at `dst`).
+        // SAFETY: as above, except that sealing hashes the 256 bytes it just wrote at `dst` and
+        // the blocks after the tail after writing the tail.
         unsafe {
             core::arch::asm!(
                 seal256!(),
@@ -1489,12 +1924,15 @@ pub(super) unsafe fn crypt256(
                 r = in(reg) rk.1,
                 pw = in(reg) p.0.as_ptr(),
                 c = in(reg) &raw const CONSTS,
-                ctr = in(reg) ctr.as_ptr(),
-                y = in(reg) y.as_mut_ptr(),
+                a = in(reg) &raw mut *a,
                 inout("rsi") src => _,
                 inout("rdi") dst => _,
-                inout("rcx") n => _,
+                inout("rcx") groups => _,
                 out("rax") _,
+                out("r8") _,
+                out("r9") _,
+                out("r10") _,
+                out("r11") _,
                 clobber_abi("C"),
                 options(nostack),
             );

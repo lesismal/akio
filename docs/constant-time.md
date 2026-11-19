@@ -172,3 +172,14 @@ one pass (no hardware path): `p521-ecdh` 0.96 (134,400 measurements), `p521-keyg
 (579,000), `p521-sign` 2.09 (278,100), `sanity-null` 0.88 (10⁸). No difference seen. The P-521
 code was not disassembled; its argument is the source (masked selects and full-table scans,
 complete formulas without special cases, fixed inversion chains) plus this measurement.
+
+aarch64 (2026-11-19, after the assembly divsteps and the OpenSSL addition formulas of the P-256
+twin): Apple M4 Pro, macOS, hardware path, `cntvct_el0` (1 GHz on this chip, judging by the means:
+a P-256 ECDH reads about 26,000 ticks, the 27 µs it takes; one tick is a few core cycles), 60 s
+per target, the machine shared with other builds (load average 7–10): `p256-ecdh` 2.21 (2.3M
+measurements), `p256-keygen` 1.74 (10.5M), `p256-sign` 2.25 (6.5M), `x25519` 3.26 (3.4M),
+`sanity-null` 1.51 (10⁸); both leaky sanity targets found (26,208 and 17,221). `x25519-keygen`
+showed the all-zero-scalar effect described above (24.59 in the fastest 3% of 8.9M
+measurements; the same portable Edwards code on both paths, not touched here); with
+`--fixed-random 1` it was 2.25 (9.0M), and `p256-sign` 3.48 (6.4M). No difference seen in the
+P-256 paths, the new divsteps included.

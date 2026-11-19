@@ -11,12 +11,12 @@ syscall lives in `only-sys`).
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
 |---|---|---|
 | AES block cipher, CTR (8 blocks in flight) | AES-NI | ARMv8 AES |
-| AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction, masked tails), else VAES + VPCLMULQDQ + AVX2 (16), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
+| AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction, masked tails), else VAES + VPCLMULQDQ + AVX2 (16, the tail through a stack buffer), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest, the 4 one row per register; a partial last group under byte masks), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
 | Poly1305 (`chacha::hw::ifma`, `chacha::hw`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else AVX2 (4 blocks per step in radix 2²⁶, runs of 512 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
-| P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
+| P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU), safegcd divsteps too |
 | RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys and for the public operation (verification) of 2048- to 4096-bit moduli, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
@@ -29,7 +29,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR, CBC (with PKCS #7 padding, for HLS `AES-128`) |
-| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
+| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 the whole message too on 256-bit registers (the tail, the AAD and the length block through a zero-padded stack buffer: AVX2 has no byte masks), else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
 | `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, AVX2 four, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
@@ -92,11 +92,14 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   field and order arithmetic and the X25519 ladder's field run in inline assembly with
   `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS` carry chains and `CSEL` corrections, on four
   64-bit limbs for both curves (the reduction modulo the P-256 prime uses shifts and subtractions
-  only, as in OpenSSL's `ecp_nistz256-armv8`); inversions are safegcd with portable divsteps, and
-  the point formulas, table scans and 4-bit comb are the portable ones over that field. The design
+  only, as in OpenSSL's `ecp_nistz256-armv8`); inversions are safegcd with assembly divsteps
+  (masks by `ASR`/`SBFX`), the P-256 additions use OpenSSL's formulas (12M + 4S, mixed 8M + 3S),
+  and the doubling, table scans and 4-bit comb are the portable ones over that field. The design
   follows the instruction counts (a 4×64 product is 16 `MUL` + 16 `UMULH` against 25 128-bit
-  products in radix 2⁵¹); this path is tested but **not benchmarked yet**, so no aarch64 numbers
-  are claimed.
+  products in radix 2⁵¹). On an Apple M4 Pro (docs/BENCHMARKS.md) P-256 runs at 1.25× ring
+  (sign), 1.04× (verify), 1.00× (ECDH), 1.18× (key generation), X25519 at 1.04×; the portable
+  code reaches about half of that. Whole-point assembly was not written for aarch64: a doubling
+  (70 ns) is already near the latency bound of its field operations.
 - P-521 (`p521`, ADR-049) has its own code: the base field `2⁵²¹ - 1` in nine unsaturated limbs
   (58 bits, the top one 57; the product's high half folds back doubled, one carry chain, the
   top carry re-entering at limb 0; additions end in one carry step done for every limb at
@@ -239,10 +242,15 @@ handshakes to 1.69× rustls. The public operation on IFMA (new 60- and 80-digit 
 (3072: 3.30×, 4096: 3.70×), verification with the key parse to 2.35× (2.64×, 2.90×; was 1.02×,
 0.95×, 0.95×) and the handshakes to 1.82× rustls; the RSA and handshake rows of the table are
 from that change, run against the previous code in the same runs. Karatsuba was not tried: at these sizes the
-assembly row loops leave little to save. Follow-ups: masked tails for the VAES-AVX2 kernel
-(the rest of a message after its 256-byte groups runs on the 128-bit path), measuring that kernel
-on Zen 3 / Alder Lake, measuring the aarch64 assembly for P-256 and X25519 (tested, not
-benchmarked), aarch64 whole-point routines and divsteps.
+assembly row loops leave little to save. The VAES-AVX2 kernel then took whole messages (the
+AAD, the tail through a stack buffer on four or eight ymm vectors, the length block and the tag
+in the same call; it used to leave everything but whole 256-byte groups to the 128-bit path):
+measured on Zen 4 with AVX-512 off, 200 B went from 1.00× to 1.84–1.90× the 128-bit kernel,
+1 KiB from 1.47–1.75× to 1.81–2.12×, 64 B from 0.91–1.01× to 1.12–1.20×. The aarch64 assembly was
+measured for the first time (Apple M4 Pro, above) and got assembly divsteps and OpenSSL's
+addition formulas (sign +9%). Follow-ups: measuring the AVX2 kernel on Zen 3 / Alder Lake (no
+such host was reachable), a shorter-latency P-256 field multiplication on aarch64 (the
+doubling is bound by it).
 
 ## Testing
 
@@ -271,7 +279,9 @@ benchmarked), aarch64 whole-point routines and divsteps.
   `AesGcm::with_cipher_avx2`) against each other, the 128-bit and the portable paths at every
   length 0..=600, large sizes and every AAD length 0..=300 and past 512, misaligned, in place and
   out of place (also with the input split between two buffers as the TLS 1.3 record layer has
-  it), the 32-bit counter wrapping inside a group, and large messages against ring; the CAVP and
+  it), the 32-bit counter wrapping inside a group and inside a whole message's tail
+  (`whole_message_counter_wraps`, against plain CTR and the separate tag), and large messages
+  against ring; the CAVP and
   Wycheproof AES-GCM vectors run on every kernel. They need a CPU with VAES and AVX-512, so these
   tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`

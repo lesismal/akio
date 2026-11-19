@@ -4,8 +4,8 @@
 //! cargo run --release -p only-crypto --example gcm-sizes [MS]
 //! ```
 //!
-//! For AES-128 and AES-256, seal and open of 64 B, 1 KiB, 1400 B (a QUIC packet), 16 KiB (a
-//! full TLS record) and 64 KiB, with 13 bytes of AAD (a TLS 1.3 record header is 5): the default
+//! For AES-128 and AES-256, seal and open of 64 B, 200 B, 1 KiB, 1400 B (a QUIC packet), 4000 B,
+//! 16 KiB (a full TLS record) and 64 KiB, with 13 bytes of AAD (a TLS 1.3 record header is 5): the default
 //! key (the widest kernel this CPU has: VAES + VPCLMULQDQ + AVX-512 on x86_64), the VAES-AVX2
 //! kernel of CPUs without AVX-512 (`avx2`, forced), the 128-bit AES-NI + PCLMULQDQ kernel
 //! (`narrow`) and ring. Open copies the sealed message into the working buffer first on every
@@ -60,7 +60,7 @@ fn main() {
             avx2.kernel(),
             narrow.kernel()
         );
-        for len in [64usize, 1024, 1400, 16 * 1024, 64 * 1024] {
+        for len in [64usize, 200, 1024, 1400, 4000, 16 * 1024, 64 * 1024] {
             let mut buf = vec![0x5au8; len];
             let mut rbuf = buf.clone();
             let w = rate(ms, len, || {

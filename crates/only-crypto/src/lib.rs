@@ -15,12 +15,12 @@
 //! | | x86_64 | aarch64 |
 //! |---|---|---|
 //! | AES (block, CTR 8 blocks at a time) | AES-NI | ARMv8 AES |
-//! | AES-GCM (GHASH, fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
+//! | AES-GCM (GHASH, fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else VAES + VPCLMULQDQ + AVX2 (16), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 //! | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 //! | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 //! | ChaCha20 | AVX-512 (`vprold`; 16, 8 or 4 blocks), else AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
 //! | Poly1305 | AVX-512 IFMA (8 blocks per step, runs of 256 bytes and more), else radix 2⁶⁴ scalar | radix 2⁶⁴ scalar |
-//! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU; not benchmarked yet) |
+//! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU) |
 //!
 //! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
 //!   the [`Hash`](hash::Hash) trait; SHAKE128 and SHAKE256.

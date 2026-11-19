@@ -328,7 +328,7 @@ impl AesGcm {
         let rk = self.aes.hw_round_keys()?;
         let (aad_len, ct_len) = (aad.len(), out.len());
         let mut y = [0u64; 2];
-        // The AVX-512 kernel does everything in one call (an AAD over 256 bytes hashed first).
+        // The VAES kernels do everything in one call (an AAD over 256 bytes hashed first).
         if p.whole_message() {
             let (wide_aad, wide_y) = if aad_len <= WIDE_AAD {
                 (aad, y)
@@ -1104,6 +1104,50 @@ mod tests {
                     g.aes.apply_ctr32(&ctr, &mut d3[..n1]);
                     assert!(d1[..n1] == d3[..n1]);
                     assert!(d1[n1..] == data[n1..]);
+                }
+            }
+        }
+    }
+
+    /// Whole messages whose 32-bit counter wraps (a `J0` no 12-byte nonce gives) on every
+    /// fused kernel this CPU has, in place and out of place, against plain CTR and the
+    /// separately computed tag: the groups, the tail and `E(J0)` of the VAES kernels.
+    #[test]
+    fn whole_message_counter_wraps() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([8; 32]);
+        for klen in [16, 24, 32] {
+            let mut key = vec![0u8; klen];
+            rng.fill(&mut key);
+            let keys = [
+                AesGcm::new(&key).unwrap(),
+                AesGcm::with_cipher_avx2(Aes::new(&key).unwrap()),
+                AesGcm::with_cipher_narrow(Aes::new(&key).unwrap()),
+            ];
+            for start in [0xffff_fff0u32, 0xffff_fffe, 0xffff_ffff, 0xffff_ff00, 7] {
+                let mut j0 = [0x3cu8; 16];
+                j0[12..].copy_from_slice(&start.to_be_bytes());
+                for len in [0, 1, 15, 16, 100, 255, 256, 300, 511, 1024 + 200, 4096 + 17] {
+                    let mut data = vec![0u8; len];
+                    rng.fill(&mut data);
+                    let aad = [0x17u8; 13];
+                    for g in &keys {
+                        for open in [false, true] {
+                            let mut expect = data.clone();
+                            g.aes.apply_ctr32(&inc32(j0), &mut expect);
+                            // The tag is over the ciphertext: `data` when opening.
+                            let tag = g.tag(&j0, &aad, if open { &data } else { &expect });
+                            let mut buf = data.clone();
+                            let t = g.fused(&j0, &aad, None, &mut Fill::init(&mut buf), open);
+                            let Some(t) = t else { continue };
+                            assert_eq!(t, tag, "{} len {len} open {open}", g.kernel());
+                            assert!(buf == expect, "{} len {len} open {open}", g.kernel());
+                            let mut out = vec![0u8; len];
+                            let t =
+                                g.fused(&j0, &aad, Some(&data), &mut Fill::init(&mut out), open);
+                            assert_eq!(t, Some(tag), "{} len {len} open {open}", g.kernel());
+                            assert!(out == expect, "{} from len {len} open {open}", g.kernel());
+                        }
+                    }
                 }
             }
         }
