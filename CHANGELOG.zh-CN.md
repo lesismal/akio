@@ -74,6 +74,27 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
   44 s），峰值至多为容量的 1.12 倍。以 Chrome 157 为接收方（新增 `tools/interop/webrtc/bwe.sh`）：
   连接后 0.2 s 达到 10 Mbps（以前估计值停在起始的 1 Mbps）。
 
+### 变更：更快的 brotli 与 Zstandard 解码和编码（only-brotli、only-zstd）
+
+公共 API 不变（见 docs/BENCHMARKS.zh-CN.md 的 “Brotli 与 Zstandard”；在 `tools/codec-bench` 中与
+libbrotli 1.2.1、libzstd 1.5.7 对比，该工具新增 `brotli` / `zstd` 模式与语料脚本）。
+
+- **解码器**（输出不变）：解压用时为 libzstd 的 1.3–1.7 倍（之前 1.7–2.4 倍）、libbrotli 的 1.1–1.7 倍
+  （之前 1.4–3.1 倍）；在 Silesia 上 zstd 级别 1 解码 849 MB/s（之前 541，libzstd 1,120），brotli 级别 5
+  解码 467 MB/s（之前 333，libbrotli 716）。输出同时作为提前清零的窗口（从不超过上限），字面量与匹配以 16 字节为块复制；位读取无分支
+  且保留在寄存器中；zstd 的四个 Huffman 流交错同步解码，预定义序列表不再每块复制；brotli 每次补充
+  解码三个字面量，经每个块类型的 “上下文 → 树” 表查找。边界不变：内存仍不超过上限，截断的 brotli
+  输入改为每条命令检查一次（而非每个字面量），代价仍以输出为界。
+- **zstd 编码器**（输出改变）：级别 1–2 改用 libzstd 的 `fast` 匹配查找，3–4 改用 `double_fast`，
+  不再是惰性哈希链；Huffman 码构造与位写入也更快：快 2.1–3.2 倍；大小与 libzstd 相差 −3…+2%
+  （级别 3 在小的 HTTP 负载上比之前大 1–7%，原来的惰性搜索在那里胜过 libzstd 的级别 3）。
+- **brotli 编码器**（输出改变）：0–6 级用每个哈希值一个桶代替哈希链（5–6 级用 5 字节哈希），2–4 级
+  采用 Google 的候选数（4 级：4 个而非 16 个），像 Google 一样跳过不可压缩数据，10 级以下的上下文
+  聚类更便宜：Silesia 上 q4 快 3.4 倍、q5 快 2.4 倍、q6 快 2.6 倍；q5–q6 大小变化 −1.2…+0.8%
+  （证书链上大 2–3%，only-tls 对证书链使用 11 级），q4 大 1–9%，但不再以四倍于 libbrotli 的搜索量
+  换取比其 q4 更小的输出。brotli 10–11 级与 zstd 5–22 级速度不变，输出除上下文聚类与 Huffman 码构造带来的
+  细微差别外也不变。
+
 ### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：

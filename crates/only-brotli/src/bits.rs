@@ -9,7 +9,8 @@ pub(crate) struct BitReader<'a> {
     data: &'a [u8],
     /// Next byte to load.
     pos: usize,
-    /// Loaded, unconsumed bits (the low `nbits`); the bits above are zero.
+    /// Loaded, unconsumed bits (the low `nbits`); the bits above are the stream's next ones
+    /// (as far as they were loaded) or zero.
     bits: u64,
     nbits: u32,
     /// Zero bits loaded past the end of the input (the top `phantom` of `nbits`, or more if
@@ -28,20 +29,17 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Makes at least 57 bits available.
+    /// Makes at least 57 bits available. Without a branch on the bits left: the 8 bytes at
+    /// `pos` are ORed in above the loaded bits (bits past the 64th fall off), `pos` moves on
+    /// by the whole bytes that fitted. Bits above `nbits` are therefore not zero but the next
+    /// bits of the stream (or zero past its end), and ORing them in again changes nothing.
     #[inline(always)]
     pub(crate) fn refill(&mut self) {
-        if self.nbits > 56 {
-            return;
-        }
         if let Some(chunk) = self.data.get(self.pos..self.pos + 8) {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(chunk);
-            let v = u64::from_le_bytes(b);
-            let n = (63 - self.nbits) / 8; // 1..=7 bytes
-            self.bits |= (v & ((1u64 << (n * 8)) - 1)) << self.nbits;
-            self.pos += n as usize;
-            self.nbits += n * 8;
+            let v = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+            self.bits |= v << self.nbits;
+            self.pos += ((63 - self.nbits) >> 3) as usize;
+            self.nbits |= 56;
         } else {
             self.refill_slow();
         }
@@ -60,8 +58,8 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// The next 64 bits (only the low `nbits` are meaningful); call [`BitReader::refill`]
-    /// first.
+    /// The next 64 bits (only the low `nbits` are meaningful: mask what is used); call
+    /// [`BitReader::refill`] first.
     #[inline(always)]
     pub(crate) fn peek(&self) -> u64 {
         self.bits
@@ -71,6 +69,15 @@ impl<'a> BitReader<'a> {
     #[inline(always)]
     pub(crate) fn consume(&mut self, n: u32) {
         let n = n.min(self.nbits);
+        self.bits >>= n;
+        self.nbits -= n;
+    }
+
+    /// Drops `n` bits, which must be loaded (after [`BitReader::refill`], up to 57 bits in
+    /// all before the next refill).
+    #[inline(always)]
+    pub(crate) fn consume_loaded(&mut self, n: u32) {
+        debug_assert!(n <= self.nbits);
         self.bits >>= n;
         self.nbits -= n;
     }

@@ -38,7 +38,11 @@ fn le_n(b: &[u8], at: usize, n: usize) -> u64 {
 /// Like libzstd, input made only of skippable frames (or empty input) gives empty output, and
 /// a match may not reach into a previous frame.
 pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
-    let mut out = Vec::new();
+    let mut out = Out {
+        buf: Vec::new(),
+        pos: 0,
+        limit,
+    };
     let mut d = Decoder::default();
     let mut pos = 0;
     while data.len() - pos >= 5 {
@@ -58,50 +62,97 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         if magic != MAGIC {
             return Err(Error::BadMagic);
         }
-        pos += d.frame(rest, &mut out, limit)?;
+        pos += d.frame(rest, &mut out)?;
     }
     if pos != data.len() {
         return Err(Error::Truncated);
     }
-    Ok(out)
+    out.buf.truncate(out.pos);
+    Ok(out.buf)
 }
 
-/// Makes room for `n` more bytes of output, refusing to pass `limit`; capacity never exceeds
-/// the limit.
-#[inline]
-fn room(out: &mut Vec<u8>, n: u64, limit: usize) -> Result<(), Error> {
-    let free = (limit - out.len()) as u64;
-    if n > free {
-        return Err(Error::TooLarge);
-    }
-    let n = n as usize;
-    if out.capacity() - out.len() < n {
-        let want = (out.capacity() * 2).max(out.len() + n).min(limit);
-        out.reserve_exact(want - out.len());
-    }
-    Ok(())
+/// Bytes past the end of a literal run or a match that the fast paths may overwrite (with
+/// bytes that are overwritten again later, or cut off at the end).
+const WILD: usize = 32;
+
+/// The output, which is also the window. `buf[..pos]` is the output so far; the rest of `buf`
+/// is zeroed room for the next block, so that literals and matches can be copied in whole
+/// 16-byte chunks. `buf` never grows past `limit` (neither its length nor its capacity).
+struct Out {
+    buf: Vec<u8>,
+    pos: usize,
+    limit: usize,
 }
 
-/// Appends `len` bytes starting `offset` bytes back (`offset` ≤ `out.len()`, `len` > 0).
-#[inline]
-fn copy_match(out: &mut Vec<u8>, offset: usize, len: usize) {
-    let mut src = out.len() - offset;
+impl Out {
+    /// Makes `buf` at least `pos + n` long (`n` <= `limit - pos`, checked by the caller), plus
+    /// `WILD` bytes when the limit allows. Capacity grows geometrically up to the limit; the
+    /// zeroed part only as far as needed, so that zeroing is cheap (in cache).
+    fn grow(&mut self, n: usize) {
+        let want = (self.pos + n)
+            .saturating_add(WILD)
+            .min(self.limit.max(self.pos + n));
+        if self.buf.len() >= want {
+            return;
+        }
+        if self.buf.capacity() < want {
+            let cap = (self.buf.capacity() * 2)
+                .max(want)
+                .min(self.limit.max(want));
+            self.buf.reserve_exact(cap - self.buf.len());
+        }
+        self.buf.resize(want, 0);
+    }
+
+    /// Appends `src` (whose length was checked against the limit).
+    fn extend(&mut self, src: &[u8]) {
+        self.grow(src.len());
+        self.buf[self.pos..self.pos + src.len()].copy_from_slice(src);
+        self.pos += src.len();
+    }
+
+    /// Checks that `n` more bytes fit the limit.
+    fn room(&self, n: u64) -> Result<(), Error> {
+        if n > (self.limit - self.pos) as u64 {
+            Err(Error::TooLarge)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Copies `len` bytes from `src` to `dst` within `buf` (`src + len <= dst` or overlapping
+/// forwards, as LZ77 matches do: `src < dst`).
+#[inline(always)]
+fn copy_match(buf: &mut [u8], src: usize, dst: usize, len: usize) {
+    let offset = dst - src;
+    if offset >= 16 && dst + len + 16 <= buf.len() {
+        // Whole chunks; each reads bytes already final (16 or more behind).
+        let mut k = 0;
+        loop {
+            buf.copy_within(src + k..src + k + 16, dst + k);
+            k += 16;
+            if k >= len {
+                return;
+            }
+        }
+    }
     if offset >= len {
-        out.extend_from_within(src..src + len);
+        buf.copy_within(src..src + len, dst);
         return;
     }
     if offset == 1 {
-        let b = out[src];
-        out.resize(out.len() + len, b);
+        let b = buf[src];
+        buf[dst..dst + len].fill(b);
         return;
     }
     // Overlapping: the copied pattern doubles at each step.
-    let mut left = len;
-    while left > 0 {
-        let n = left.min(out.len() - src);
-        out.extend_from_within(src..src + n);
-        src += n;
-        left -= n;
+    let mut d = dst;
+    let end = dst + len;
+    while d < end {
+        let n = (d - src).min(end - d);
+        buf.copy_within(src..src + n, d);
+        d += n;
     }
 }
 
@@ -150,44 +201,72 @@ impl Kind {
     }
 }
 
+/// Entries of a sequence table: accuracy logs are at most 9, and tables are stored this long
+/// (the `1 << log` entries first) so that lookups need no bounds checks.
+const SEQ_TABLE_SIZE: usize = 512;
+
 #[derive(Clone, Debug, Default)]
 struct SeqTable {
     log: u32,
     entries: Vec<SeqEntry>,
+    /// Scratch space for building.
+    cells: Vec<fse::DEntry>,
+    /// The predefined table is in use (not copied here).
+    predef: bool,
+}
+
+impl SeqTable {
+    /// The table in use: this one or the predefined one of `kind`.
+    fn active(&self, kind: Kind) -> &SeqTable {
+        if self.predef { predefined(kind) } else { self }
+    }
+
+    fn cells(&self) -> Result<&[SeqEntry; SEQ_TABLE_SIZE], Error> {
+        self.entries
+            .get(..SEQ_TABLE_SIZE)
+            .and_then(|e| e.try_into().ok())
+            .ok_or(Error::BadFseTable)
+    }
 }
 
 impl SeqTable {
     fn from_norm(kind: Kind, norm: &[i16], log: u32) -> SeqTable {
-        let mut cells = Vec::new();
-        fse::build_dtable(norm, log, &mut cells);
-        SeqTable {
-            log,
-            entries: cells
-                .iter()
-                .map(|c| {
-                    let (base, add_bits) = kind.value(c.symbol);
-                    SeqEntry {
-                        base,
-                        add_bits,
-                        nb_bits: c.nb_bits,
-                        next: c.base,
-                    }
-                })
-                .collect(),
-        }
+        let mut t = SeqTable::default();
+        t.fill(kind, norm, log, &mut Vec::new());
+        t
     }
 
-    fn rle(kind: Kind, sym: u8) -> SeqTable {
-        let (base, add_bits) = kind.value(sym);
-        SeqTable {
-            log: 0,
-            entries: vec![SeqEntry {
+    /// Builds the table of `norm` in place (`cells`: scratch space). Entries past `1 << log`
+    /// are left as they are: states never reach them.
+    fn fill(&mut self, kind: Kind, norm: &[i16], log: u32, cells: &mut Vec<fse::DEntry>) {
+        fse::build_dtable(norm, log, cells);
+        if self.entries.len() < SEQ_TABLE_SIZE {
+            self.entries.resize(SEQ_TABLE_SIZE, SeqEntry::default());
+        }
+        for (e, c) in self.entries.iter_mut().zip(cells.iter()) {
+            let (base, add_bits) = kind.value(c.symbol);
+            *e = SeqEntry {
                 base,
                 add_bits,
-                nb_bits: 0,
-                next: 0,
-            }],
+                nb_bits: c.nb_bits,
+                next: c.base,
+            };
         }
+        self.log = log;
+    }
+
+    fn set_rle(&mut self, kind: Kind, sym: u8) {
+        let (base, add_bits) = kind.value(sym);
+        if self.entries.len() < SEQ_TABLE_SIZE {
+            self.entries.resize(SEQ_TABLE_SIZE, SeqEntry::default());
+        }
+        self.entries[0] = SeqEntry {
+            base,
+            add_bits,
+            nb_bits: 0,
+            next: 0,
+        };
+        self.log = 0;
     }
 }
 
@@ -217,7 +296,7 @@ fn load_table(
 ) -> Result<usize, Error> {
     match mode {
         0 => {
-            t.clone_from(predefined(kind));
+            t.predef = true;
             Ok(0)
         }
         1 => {
@@ -225,7 +304,8 @@ fn load_table(
             if usize::from(sym) > kind.max() {
                 return Err(Error::BadFseTable);
             }
-            *t = SeqTable::rle(kind, sym);
+            t.set_rle(kind, sym);
+            t.predef = false;
             Ok(1)
         }
         2 => {
@@ -235,7 +315,10 @@ fn load_table(
             if log > kind.max_log() {
                 return Err(Error::BadFseTable);
             }
-            *t = SeqTable::from_norm(kind, &norm[..=max_sv], log);
+            let mut cells = std::mem::take(&mut t.cells);
+            t.fill(kind, &norm[..=max_sv], log, &mut cells);
+            t.cells = cells;
+            t.predef = false;
             Ok(size)
         }
         _ => {
@@ -264,7 +347,7 @@ struct Decoder {
 impl Decoder {
     /// Decodes the frame at the start of `src` (whose magic number was checked); returns its
     /// size.
-    fn frame(&mut self, src: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, Error> {
+    fn frame(&mut self, src: &[u8], out: &mut Out) -> Result<usize, Error> {
         let fhd = src[4];
         let single = fhd & 0x20 != 0;
         let dict_size = [0, 1, 2, 4][usize::from(fhd & 3)];
@@ -304,15 +387,14 @@ impl Decoder {
         let block_max = window.min(BLOCK_MAX as u64) as usize;
         if let Some(n) = content_size {
             // A hint only: refuse early what cannot fit, reserve at most the limit.
-            if n > (limit - out.len()) as u64 {
-                return Err(Error::TooLarge);
-            }
-            out.reserve_exact(n as usize);
+            out.room(n)?;
+            let want = (out.pos + n as usize).saturating_add(WILD).min(out.limit);
+            out.buf.reserve_exact(want.saturating_sub(out.buf.len()));
         }
         self.have_huf = false;
         self.seq_ready = false;
         self.reps = [1, 4, 8];
-        let start = out.len();
+        let start = out.pos;
         loop {
             if src.len() - p < 3 {
                 return Err(Error::Truncated);
@@ -328,8 +410,8 @@ impl Decoder {
                     if size > block_max {
                         return Err(Error::BadBlock);
                     }
-                    room(out, size as u64, limit)?;
-                    out.extend_from_slice(&src[p..p + size]);
+                    out.room(size as u64)?;
+                    out.extend(&src[p..p + size]);
                     p += size;
                 }
                 1 => {
@@ -339,8 +421,10 @@ impl Decoder {
                     if size > block_max {
                         return Err(Error::BadBlock);
                     }
-                    room(out, size as u64, limit)?;
-                    out.resize(out.len() + size, src[p]);
+                    out.room(size as u64)?;
+                    out.grow(size);
+                    out.buf[out.pos..out.pos + size].fill(src[p]);
+                    out.pos += size;
                     p += 1;
                 }
                 2 => {
@@ -350,7 +434,7 @@ impl Decoder {
                     if size > block_max {
                         return Err(Error::BadBlock);
                     }
-                    self.block(&src[p..p + size], out, start, limit, block_max)?;
+                    self.block(&src[p..p + size], out, start, block_max)?;
                     p += size;
                 }
                 _ => return Err(Error::BadBlock),
@@ -360,7 +444,7 @@ impl Decoder {
             }
         }
         if let Some(n) = content_size {
-            if (out.len() - start) as u64 != n {
+            if (out.pos - start) as u64 != n {
                 return Err(Error::ContentSizeMismatch);
             }
         }
@@ -368,7 +452,7 @@ impl Decoder {
             if src.len() - p < 4 {
                 return Err(Error::Truncated);
             }
-            if xxh64(&out[start..], 0) as u32 != le32(src, p) {
+            if xxh64(&out.buf[start..out.pos], 0) as u32 != le32(src, p) {
                 return Err(Error::ChecksumMismatch);
             }
             p += 4;
@@ -380,29 +464,31 @@ impl Decoder {
     fn block(
         &mut self,
         b: &[u8],
-        out: &mut Vec<u8>,
+        out: &mut Out,
         frame_start: usize,
-        limit: usize,
         block_max: usize,
     ) -> Result<(), Error> {
         if b.len() < 2 {
             return Err(Error::BadBlock);
         }
         let mut lits = std::mem::take(&mut self.lits);
-        let r = self.literals(b, &mut lits, limit - out.len(), block_max);
-        let r = r.and_then(|(raw, used)| {
+        let r = self.literals(b, &mut lits, out.limit - out.pos, block_max);
+        let r = r.and_then(|(raw, n, used)| {
+            // Literals with at least WILD bytes after them when possible (raw ones: the rest
+            // of the block).
             let l: &[u8] = match raw {
-                Some((at, n)) => &b[at..at + n],
+                Some(at) => &b[at..],
                 None => &lits,
             };
-            self.sequences(&b[used..], l, out, frame_start, limit, block_max)
+            self.sequences(&b[used..], l, n, out, frame_start, block_max)
         });
         self.lits = lits;
         r
     }
 
-    /// Decodes the literals section into `buf`, or locates raw literals in `b`. Returns where
-    /// raw literals are (`None`: in `buf`) and the size of the section.
+    /// Decodes the literals section into `buf` (followed by `WILD` spare bytes), or locates raw
+    /// literals in `b`. Returns where raw literals are (`None`: in `buf`), how many literals
+    /// there are and the size of the section.
     #[allow(clippy::type_complexity)]
     fn literals(
         &mut self,
@@ -410,7 +496,7 @@ impl Decoder {
         buf: &mut Vec<u8>,
         free: usize,
         block_max: usize,
-    ) -> Result<(Option<(usize, usize)>, usize), Error> {
+    ) -> Result<(Option<usize>, usize, usize), Error> {
         let b0 = b[0];
         let sf = (b0 >> 2) & 3;
         match b0 & 3 {
@@ -438,11 +524,11 @@ impl Decoder {
                     if lh + size > b.len() {
                         return Err(Error::BadLiterals);
                     }
-                    Ok((Some((lh, size)), lh + size))
+                    Ok((Some(lh), size, lh + size))
                 } else {
                     buf.clear();
-                    buf.resize(size, b[lh]);
-                    Ok((None, lh + 1))
+                    buf.resize(size + WILD, b[lh]);
+                    Ok((None, size, lh + 1))
                 }
             }
             t => {
@@ -480,24 +566,25 @@ impl Decoder {
                     src = &src[h..];
                 }
                 buf.clear();
-                buf.resize(size, 0);
-                huffman::decode(&self.huf, src, buf, four)?;
-                Ok((None, lh + csize))
+                buf.resize(size + WILD, 0);
+                huffman::decode(&self.huf, src, &mut buf[..size], four)?;
+                Ok((None, size, lh + csize))
             }
         }
     }
 
-    /// Decodes the sequences section `s` and executes it with the literals `lits`.
+    /// Decodes the sequences section `s` and executes it with the first `nlits` bytes of
+    /// `lits` as literals (the bytes after them may be read, never used).
     fn sequences(
         &mut self,
         s: &[u8],
         lits: &[u8],
-        out: &mut Vec<u8>,
+        nlits: usize,
+        out: &mut Out,
         frame_start: usize,
-        limit: usize,
         block_max: usize,
     ) -> Result<(), Error> {
-        let block_start = out.len();
+        let block_start = out.pos;
         let &b0 = s.first().ok_or(Error::BadSequences)?;
         let (count, mut q) = match b0 {
             0..=0x7F => (usize::from(b0), 1),
@@ -518,8 +605,8 @@ impl Decoder {
             if q != s.len() {
                 return Err(Error::BadSequences);
             }
-            room(out, lits.len() as u64, limit)?;
-            out.extend_from_slice(lits);
+            out.room(nlits as u64)?;
+            out.extend(&lits[..nlits]);
             return Ok(());
         }
         let &modes = s.get(q).ok_or(Error::BadSequences)?;
@@ -540,25 +627,32 @@ impl Decoder {
         self.seq_ready = true;
 
         let mut br = BackReader::new(&s[q..]).ok_or(Error::BadSequences)?;
-        let (ll_t, of_t, ml_t) = (
-            &self.ll.entries[..],
-            &self.of.entries[..],
-            &self.ml.entries[..],
+        let (ll, of, ml) = (
+            self.ll.active(Kind::LitLen),
+            self.of.active(Kind::Offset),
+            self.ml.active(Kind::MatchLen),
         );
-        let mut ll_s = br.read(self.ll.log) as usize;
-        let mut of_s = br.read(self.of.log) as usize;
-        let mut ml_s = br.read(self.ml.log) as usize;
+        let (ll_t, of_t, ml_t) = (ll.cells()?, of.cells()?, ml.cells()?);
+        const MASK: usize = SEQ_TABLE_SIZE - 1;
+        let mut ll_s = br.read(ll.log) as usize;
+        let mut of_s = br.read(of.log) as usize;
+        let mut ml_s = br.read(ml.log) as usize;
         br.reload();
         let mut reps = self.reps;
         let mut lp = 0usize;
-        let block_end = (block_start + block_max) as u64;
+        // Room for the whole block (the zeroed part of `buf` beyond it allows wild copies).
+        let block_end = block_start + block_max;
+        out.grow(block_max.min(out.limit - block_start));
+        let limit = out.limit;
+        let buf = &mut out.buf[..];
+        let mut pos = block_start;
         for i in 0..count {
-            let lle = ll_t[ll_s];
-            let ofe = of_t[of_s];
-            let mle = ml_t[ml_s];
+            let lle = ll_t[ll_s & MASK];
+            let ofe = of_t[of_s & MASK];
+            let mle = ml_t[ml_s & MASK];
             let code = ofe.base;
             let offset = if code > 1 {
-                let o = ((1u64 << code) - 3) + br.read(code);
+                let o = ((1u64 << code) - 3) + br.read_fast(code);
                 reps = [o, reps[0], reps[1]];
                 o
             } else {
@@ -569,7 +663,7 @@ impl Decoder {
                     }
                     reps[0]
                 } else {
-                    let idx = 1 + u64::from(ll0) + br.read(1);
+                    let idx = 1 + u64::from(ll0) + br.read_fast(1);
                     let mut o = match idx {
                         1 => reps[1],
                         2 => reps[2],
@@ -586,40 +680,57 @@ impl Decoder {
                     o
                 }
             };
-            let ml = u64::from(mle.base) + br.read(u32::from(mle.add_bits));
+            let ml = mle.base as usize + br.read_fast(u32::from(mle.add_bits)) as usize;
             br.reload();
-            let ll = u64::from(lle.base) + br.read(u32::from(lle.add_bits));
+            let ll = lle.base as usize + br.read_fast(u32::from(lle.add_bits)) as usize;
             if i + 1 < count {
-                ll_s = usize::from(lle.next) + br.read(u32::from(lle.nb_bits)) as usize;
-                ml_s = usize::from(mle.next) + br.read(u32::from(mle.nb_bits)) as usize;
-                of_s = usize::from(ofe.next) + br.read(u32::from(ofe.nb_bits)) as usize;
+                ll_s = usize::from(lle.next) + br.read_fast(u32::from(lle.nb_bits)) as usize;
+                ml_s = usize::from(mle.next) + br.read_fast(u32::from(mle.nb_bits)) as usize;
+                of_s = usize::from(ofe.next) + br.read_fast(u32::from(ofe.nb_bits)) as usize;
                 br.reload();
             }
-            if ll > (lits.len() - lp) as u64 {
+            if ll > nlits - lp {
                 return Err(Error::BadSequences);
             }
-            if out.len() as u64 + ll + ml > block_end {
+            let end = pos + ll + ml;
+            if end > block_end {
                 return Err(Error::BadBlock);
             }
-            room(out, ll + ml, limit)?;
-            let ll = ll as usize;
-            out.extend_from_slice(&lits[lp..lp + ll]);
+            if end > limit {
+                return Err(Error::TooLarge);
+            }
+            // Literals: whole 16-byte chunks when both sides have room.
+            if lp + ll + 16 <= lits.len() && pos + ll + 16 <= buf.len() {
+                let mut k = 0;
+                loop {
+                    buf[pos + k..pos + k + 16].copy_from_slice(&lits[lp + k..lp + k + 16]);
+                    k += 16;
+                    if k >= ll {
+                        break;
+                    }
+                }
+            } else {
+                buf[pos..pos + ll].copy_from_slice(&lits[lp..lp + ll]);
+            }
+            pos += ll;
             lp += ll;
-            if offset > (out.len() - frame_start) as u64 {
+            if offset > (pos - frame_start) as u64 {
                 return Err(Error::BadOffset);
             }
-            copy_match(out, offset as usize, ml as usize);
+            copy_match(buf, pos - offset as usize, pos, ml);
+            pos = end;
         }
+        out.pos = pos;
         if !br.finished() {
             return Err(Error::BadSequences);
         }
         self.reps = reps;
-        let rest = &lits[lp..];
-        if out.len() + rest.len() > block_start + block_max {
+        let rest = &lits[lp..nlits];
+        if out.pos + rest.len() > block_start + block_max {
             return Err(Error::BadBlock);
         }
-        room(out, rest.len() as u64, limit)?;
-        out.extend_from_slice(rest);
+        out.room(rest.len() as u64)?;
+        out.extend(rest);
         Ok(())
     }
 }

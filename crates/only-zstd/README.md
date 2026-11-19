@@ -15,7 +15,9 @@ crate (docs/api-stability.md): use it through those crates.
   offsets; Frame_Content_Size and the XXH64 Content_Checksum are verified. Frame_Content_Size is
   only a hint: a frame announcing more than the limit is refused at once, and memory is reserved
   up to the limit at most. Huffman and FSE streams are read backwards through a 64-bit container
-  with table-driven decoding.
+  with table-driven decoding: the four literal streams in lockstep, sequence fields from tables
+  sized for unchecked lookups; literals and matches are copied in 16-byte chunks into a window
+  zeroed one block ahead (still never past the limit).
 - `compress(level, data)`: one frame with Frame_Content_Size and a content checksum, a single
   segment up to 8 MiB (larger inputs get an 8 MiB window, the limit RFC 9659 sets for HTTP).
   Levels follow zstd's 1..=22 scale (`Level::FASTEST` 1, `DEFAULT` 3, `BEST` 22).
@@ -50,13 +52,16 @@ Intentional differences, all stricter, are what the differential fuzz target tol
 
 Frames naming a dictionary are refused (`Error::DictionaryRequired`), as by libzstd without one.
 
-**Encoder.** LZ77 over hash chains of 4-byte hashes in a window the size of the input (at most
-8 MiB). Each position first tries the three repeat offsets (cheap to code), then walks the chain:
-from 1 candidate at level 1 to 768 at level 22, stopping at a "nice" length; level 1 and 2 are
-greedy and skip ahead faster in data without matches, levels 3..=5 are lazy (a better match one
-byte later wins) and 6..=22 lazy2 (one or two bytes later), comparing matches by length minus the
-cost of their offset as zstd does. Blocks hold at most 128 KiB. Literals are Huffman-coded (code
-lengths limited to 11 bits by package-merge, one stream below 256 literals, four above, the tree
+**Encoder.** LZ77 in a window the size of the input (at most 8 MiB), with libzstd's match
+finders: level 1 and 2 are `fast` (one hash table of the next 6 bytes, one candidate per
+position, skipping ahead faster in data without matches), 3 and 4 `double_fast` (tables of the
+next 8 and 5 bytes; a long match wins, a short one is checked against a long one a byte later),
+both greedy, trying the first repeat offset one byte ahead first and taking runs of the second
+repeat offset right after a match; levels 5..=22 walk hash chains of 4-byte hashes (from 8
+candidates at level 5 to 768 at 22, stopping at a "nice" length) after trying the three repeat
+offsets, lazily (5) or lazy2 (6..=22: a better match one or two bytes later wins), comparing
+matches by length minus the cost of their offset as zstd does. Blocks hold at most 128 KiB. Literals are Huffman-coded (code
+lengths of a plain Huffman code, or limited to 11 bits by package-merge when longer, one stream below 256 literals, four above, the tree
 described with FSE-compressed weights or 4 bits per weight, whichever is smaller), stored raw or
 RLE when that is smaller. Each of the three sequence fields uses whichever of an RLE, the
 predefined or an FSE-compressed table (normalized at every useful accuracy log) costs the fewest
@@ -87,6 +92,10 @@ Benchmark: `cargo run --release -p only-zstd --example zstd-bench [FILE...]` pri
 (only-deflate) and libzstd (`zstd -b`, when installed), and compression and decompression speed
 next to libzstd's, on TLS 1.3 Certificate messages built from the chains in
 `fuzz/corpus/x509_parse`, generated text, JSON and random data, and each file given.
+
+Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md):
+`tools/codec-bench/corpus.sh` builds the corpus, then
+`cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd FILE...`.
 
 Limitations: no streaming API (the decoder needs the whole input and keeps the whole output,
 which is what certificate compression and buffered HTTP bodies need); no dictionaries; no

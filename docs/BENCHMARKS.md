@@ -1223,9 +1223,128 @@ level 6, context takeover, JSON-like messages):
 | 4 KiB | 17,166 | 17,147 | 1.00 | 481 |
 | 64 KiB | 1,375 | 1,404 | 0.98 | 6,897 |
 
+### Brotli and Zstandard (`only-brotli`, `only-zstd`, `tools/codec-bench`, CPU 2, 2026-11-19)
+
+Against the C reference libraries in the same process: libzstd 1.5.7 (the `zstd` crate, one-shot
+calls on reused contexts, content checksum on as in ours) and Google's libbrotli 1.2.1
+(`brotlic-sys`, one-shot calls, lgwin 22, decoding into a reused buffer), both built from their
+bundled sources (libzstd picks its BMI2 paths at run time and uses its x86-64 assembly Huffman
+decoder); only-brotli and only-zstd are `#![forbid(unsafe_code)]`, built for baseline x86-64.
+Corpora (`tools/codec-bench/corpus.sh`): the Silesia corpus as one tar (the slowest levels on its
+first 20 MB) and typical HTTP payloads: the workspace's `cargo metadata` JSON, the largest rustdoc
+page and the search script of only-http's documentation, and two DER certificate chains. Best of
+three rounds of ≥300 ms (one call per round on Silesia; level 11 and level 19 compression timed
+once). "Decompress" decodes the C library's stream with both decoders. "Before" is the same tool
+built against the crates as they were before this pass (`436b47e7`), run right after on the same
+host. The host was not idle (load 6 falling to 1 during the run, the "before" columns at the lower
+load), so single cells move by about ±10%.
+
+zstd:
+
+| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
+|---|---:|---|---|---|---:|
+| Silesia (212 MB) | 1 | 70,904,663 / 73,216,948 | 300 (127) / 571 | 849 (541) / 1,120 | 1.32 |
+| Silesia (212 MB) | 3 | 66,562,838 / 66,131,721 | 231 (86) / 360 | 780 (546) / 1,040 | 1.33 |
+| Silesia, first 20 MB | 19 | 6,158,589 / 5,723,363 | 7.1 (7.1) / 5.5 | 1,032 (706) / 1,623 | 1.57 |
+| JSON (657 KB) | 1 | 65,110 / 63,680 | 654 (275) / 1,242 | 2,834 (1,739) / 4,207 | 1.48 |
+| JSON (657 KB) | 3 | 61,154 / 60,477 | 614 (203) / 1,073 | 2,790 (1,772) / 4,114 | 1.47 |
+| JSON (657 KB) | 19 | 46,888 / 44,269 | 22 (22) / 4.3 | 3,259 (2,256) / 4,763 | 1.46 |
+| HTML (45 KB) | 1 | 8,431 / 8,357 | 495 (233) / 1,147 | 1,764 (1,228) / 2,565 | 1.45 |
+| HTML (45 KB) | 3 | 7,981 / 7,969 | 430 (175) / 943 | 1,765 (1,278) / 2,616 | 1.48 |
+| HTML (45 KB) | 19 | 7,173 / 6,967 | 58 (56) / 3.9 | 1,770 (1,356) / 2,662 | 1.50 |
+| JS (92 KB) | 1 | 24,974 / 24,919 | 399 (150) / 809 | 1,294 (878) / 2,088 | 1.61 |
+| JS (92 KB) | 3 | 23,420 / 23,345 | 342 (108) / 655 | 1,260 (926) / 2,029 | 1.61 |
+| JS (92 KB) | 19 | 20,726 / 20,102 | 27 (27) / 5.6 | 1,261 (1,005) / 2,002 | 1.59 |
+| cert chain (2.7 KB) | 1 | 1,791 / 1,770 | 149 (57) / 386 | 648 (438) / 944 | 1.46 |
+| cert chain (2.7 KB) | 3 | 1,778 / 1,770 | 127 (49) / 301 | 1,321 (1,297) / 2,193 | 1.66 |
+| cert chain (2.7 KB) | 19 | 1,728 / 1,701 | 52 (37) / 11 | 1,165 (1,110) / 1,935 | 1.66 |
+| cert chain (4.1 KB) | 1 | 2,642 / 2,636 | 176 (71) / 458 | 1,614 (1,541) / 2,686 | 1.66 |
+| cert chain (4.1 KB) | 3 | 2,613 / 2,589 | 165 (60) / 364 | 1,548 (1,458) / 2,561 | 1.65 |
+| cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,480 (1,370) / 2,427 | 1.64 |
+
+brotli:
+
+| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
+|---|---:|---|---|---|---:|
+| Silesia (212 MB) | 1 | 68,088,477 / 73,455,775 | 117 (111) / 359 | 396 (258) / 584 | 1.47 |
+| Silesia (212 MB) | 4 | 63,972,366 / 64,132,974 | 78 (23) / 133 | 492 (326) / 719 | 1.46 |
+| Silesia (212 MB) | 5 | 58,932,318 / 59,510,923 | 46 (19) / 89 | 467 (333) / 716 | 1.54 |
+| Silesia (212 MB) | 6 | 57,954,494 / 58,432,310 | 36 (14) / 77 | 479 (343) / 740 | 1.54 |
+| Silesia, first 20 MB | 11 | 5,599,940 / 5,346,712 | 0.7 (0.7) / 1.0 | 472 (383) / 531 | 1.13 |
+| JSON (657 KB) | 1 | 62,442 / 67,165 | 384 (383) / 1,048 | 1,328 (895) / 1,883 | 1.42 |
+| JSON (657 KB) | 4 | 54,756 / 54,633 | 228 (193) / 324 | 1,684 (1,166) / 2,476 | 1.47 |
+| JSON (657 KB) | 5 | 48,018 / 48,884 | 164 (127) / 203 | 1,771 (1,271) / 2,759 | 1.56 |
+| JSON (657 KB) | 6 | 47,205 / 47,678 | 138 (110) / 184 | 1,827 (1,310) / 2,920 | 1.60 |
+| JSON (657 KB) | 11 | 43,630 / 41,742 | 0.6 (0.6) / 1.3 | 1,673 (1,298) / 2,776 | 1.66 |
+| HTML (45 KB) | 1 | 7,976 / 8,716 | 249 (241) / 811 | 912 (593) / 1,514 | 1.66 |
+| HTML (45 KB) | 4 | 7,499 / 7,573 | 179 (136) / 274 | 1,010 (730) / 1,676 | 1.66 |
+| HTML (45 KB) | 5 | 7,069 / 6,890 | 71 (38) / 150 | 1,003 (788) / 1,732 | 1.73 |
+| HTML (45 KB) | 6 | 7,021 / 6,826 | 68 (37) / 136 | 1,016 (798) / 1,747 | 1.72 |
+| HTML (45 KB) | 11 | 6,739 / 6,048 | 2.0 (1.9) / 1.6 | 897 (755) / 1,410 | 1.57 |
+| JS (92 KB) | 1 | 23,344 / 25,616 | 138 (138) / 555 | 628 (342) / 1,059 | 1.69 |
+| JS (92 KB) | 4 | 21,890 / 22,546 | 97 (80) / 134 | 740 (539) / 1,242 | 1.68 |
+| JS (92 KB) | 5 | 20,918 / 20,789 | 58 (40) / 91 | 726 (564) / 1,252 | 1.72 |
+| JS (92 KB) | 6 | 20,793 / 20,585 | 54 (37) / 82 | 737 (571) / 1,269 | 1.72 |
+| JS (92 KB) | 11 | 19,936 / 19,077 | 3.0 (3.0) / 1.6 | 669 (556) / 1,058 | 1.58 |
+| cert chain (2.7 KB) | 1 | 1,721 / 1,868 | 55 (48) / 244 | 273 (166) / 444 | 1.63 |
+| cert chain (2.7 KB) | 4 | 1,717 / 1,759 | 52 (46) / 86 | 304 (176) / 471 | 1.55 |
+| cert chain (2.7 KB) | 5 | 1,734 / 1,694 | 51 (46) / 73 | 300 (182) / 468 | 1.56 |
+| cert chain (2.7 KB) | 6 | 1,734 / 1,694 | 48 (46) / 72 | 301 (182) / 467 | 1.55 |
+| cert chain (2.7 KB) | 11 | 1,693 / 1,615 | 6.3 (6.5) / 1.1 | 297 (185) / 457 | 1.54 |
+| cert chain (4.1 KB) | 1 | 2,598 / 2,736 | 69 (55) / 288 | 326 (185) / 495 | 1.52 |
+| cert chain (4.1 KB) | 4 | 2,563 / 2,611 | 65 (52) / 102 | 364 (203) / 524 | 1.44 |
+| cert chain (4.1 KB) | 5 | 2,593 / 2,549 | 65 (1.6) / 92 | 374 (204) / 538 | 1.44 |
+| cert chain (4.1 KB) | 6 | 2,593 / 2,549 | 63 (1.6) / 89 | 374 (208) / 539 | 1.44 |
+| cert chain (4.1 KB) | 11 | 2,515 / 2,430 | 2.2 (0.7) / 1.2 | 376 (203) / 560 | 1.49 |
+
+**Decompression** went from 1.7–2.4× libzstd's time to 1.3–1.7× and from 1.4–3.1× libbrotli's to
+1.1–1.7×. On Silesia zstd takes 1.32–1.33× libzstd's time at levels 1 and 3 (1.57× at 19) and
+brotli 1.46–1.54× libbrotli's at levels 1–6 (1.13× at 11). On the HTTP payloads zstd takes
+1.45–1.66× and brotli 1.42–1.73×; context-modelled brotli streams of a few tens of kilobytes (HTML,
+JavaScript at levels 5–6) are the slowest, where per-literal context lookups and table building
+weigh most. The ~1.5× goal is met on Silesia (zstd level 19: 1.57×), for zstd on JSON and HTML,
+and for brotli at levels 1–4 on JSON and on the 4 KB chain; elsewhere it is missed by up to 0.23×
+(brotli 1.55–1.73× on HTML, JavaScript, the 2.7 KB chain and JSON at levels 5–11; zstd 1.59–1.66×
+on JavaScript and the chains). What changed (output unchanged): the output is the window, zeroed
+one block (zstd) or 128 KiB (brotli) ahead and never past the limit, so literals and matches are
+copied in 16-byte chunks instead of through `Vec::extend_from_within`; bit readers live in locals
+(brotli's lived in `self`, which kept LLVM from holding it in registers across output stores),
+zstd's with branch-free reads, brotli's refilled by ORing in the next 8 bytes without a branch on
+the bits left; zstd decodes its four Huffman streams in lockstep from tables sized for unchecked
+lookups and references the predefined sequence tables instead of copying them per block; brotli
+decodes three literals per refill, through a context → tree offset table per block type (none at
+all when a block type's context map has one tree), with a 704-entry command table and prefix code
+tables built in place. A double-symbol Huffman table for zstd literals was tried and dropped
+(slower on Zen 4).
+
+**Compression** (output changes; round trips, the C libraries decoding our output in every cell
+above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2
+use libzstd's `fast` match finder (6-byte hash, its search strength) and 3–4 `double_fast`
+instead of hash chains with lazy matching, Huffman codes start from a plain Huffman code and fall
+back to package-merge only when it is too deep, and literals and sequences are written through a
+64-bit accumulator flushed bytewise: 2.1–3.2× faster, now 1.6–2.6× libzstd's time (was 4.2–6.8×).
+Sizes are within −3…+2% of libzstd's at levels 1 and 3; level 1 is 2.6% smaller than before on
+Silesia, level 3 1.4% larger on Silesia and 1–7% larger on the HTTP payloads (it was a lazy
+chain search, better than libzstd's level 3). Brotli levels 0–6 keep the last positions of each
+hash in a bucket instead of chains (Google's `H2`..`H6`: the same candidates in one cache line,
+5-byte hashes at 5–6), levels 2–4 look at as many candidates as Google's (level 4: 4, was 16),
+the distance ring has quick rejects, data that does not compress is skipped through as Google's
+encoder does, contexts with fewer than 32 literals start out clustered together, and below
+level 10 the context map is kept on the clustering's estimate instead of writing each meta-block
+three times: Silesia 3.4× (q4), 2.4× (q5) and 2.6× (q6) faster, now 1.7–2.2× libbrotli's time
+(was 4.6–5.8×); HTTP payloads 1.0–1.9× faster at q4–q6, a 4 KB chain 40× at q5–q6 (no
+clustering below 4096 literals: 3% larger). Sizes at q5–q6 are 0.4–1.2% smaller on Silesia and
+JSON, 0.7–0.8% larger on HTML and JavaScript and 2–3% larger on the certificate chains; q4 is
+1–9% larger than before and now about libbrotli's q4 size (+0.2% on JSON, 0.3–3% smaller on the
+rest; it had looked at four times Google's candidates). Level 11 and zstd level 19 are
+unchanged in speed (0.7× and 1.3× the C libraries' speed on Silesia) and stay 3–11% (brotli 11)
+and 1–8% (zstd 19) larger than the reference encoders' output, which use block splitting,
+static-dictionary references and optimal parsing (`btultra2`) that these encoders do not have.
+
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 
-A separate workspace, so httparse, loona-hpack and regex stay out of the libraries.
+A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay
+out of the libraries.
 
 | Operation | only | replaced crate |
 |---|---:|---:|
@@ -1474,6 +1593,9 @@ cargo run --release -p only-crypto --example gcm-sizes   # AES-GCM by message si
 BENCH_LEVELS=1,3,6,9 cargo run --release -p only-deflate --example bench SOURCES libc.so.6
 cargo run --release -p only-deflate --example pmd_echo
 cargo run --release --manifest-path tools/codec-bench/Cargo.toml
+tools/codec-bench/corpus.sh DIR   # SILESIA=1 also downloads the Silesia corpus
+BENCH_LEVELS=1,3,19 cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd DIR/*
+BENCH_LEVELS=1,4,5,6,11 cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli DIR/*
 cargo run --release -p only-dpdk --example stack-bench
 ```
 

@@ -1,9 +1,13 @@
 //! Micro benchmarks of the in-house HTTP codecs against the crates they replaced:
 //! the HTTP/1 head parser (`only_ws::http1` vs httparse), HPACK (`only_http::hpack` vs
 //! loona-hpack), the route constraint regexp engine (`only_http::re` vs regex) and only-log's
-//! message filter engine (`only_regex`, an unanchored search, vs regex).
+//! message filter engine (`only_regex`, an unanchored search, vs regex); and only-brotli and
+//! only-zstd against the C libraries (`compress.rs`).
 //!
 //! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex|logregex]`
+//! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli|zstd FILE...`
+
+mod compress;
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -243,7 +247,8 @@ fn regexp() {
 
 fn logregex() {
     println!("Message filter regexps (unanchored search, only-regex)");
-    let ascii = "2026-11-19T08:00:00Z conn 10.0.0.7:51234 closed: connection reset by peer after 15ms";
+    let ascii =
+        "2026-11-19T08:00:00Z conn 10.0.0.7:51234 closed: connection reset by peer after 15ms";
     let utf8 = "2026-11-19T08:00:00Z conn « 10.0.0.7 » fermée : connexion réinitialisée après 15ms";
     for (pattern, subject, what) in [
         ("connection reset", ascii, "86 B"),
@@ -266,7 +271,11 @@ fn logregex() {
         });
         row(&format!("{pattern} ({what})"), ours, theirs, "regex");
     }
-    for pattern in ["connection reset", "(?i)CONNECTION (reset|refused)", r"\b\d+ms\b"] {
+    for pattern in [
+        "connection reset",
+        "(?i)CONNECTION (reset|refused)",
+        r"\b\d+ms\b",
+    ] {
         let ours = ns(2_000, || {
             black_box(only_regex::Regex::new(black_box(pattern)).unwrap());
         });
@@ -280,6 +289,13 @@ fn logregex() {
 fn main() {
     // Optional filter: `http1`, `hpack`, `regex`, `logregex`.
     let only = std::env::args().nth(1).unwrap_or_default();
+    let files: Vec<String> = std::env::args().skip(2).collect();
+    if only == "brotli" {
+        return compress::brotli(&files);
+    }
+    if only == "zstd" {
+        return compress::zstd(&files);
+    }
     if only.is_empty() || only == "http1" {
         http1();
     }
