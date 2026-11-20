@@ -33,7 +33,8 @@ ADR-060 (docs/adr/060-h2-websocket.md), additive:
   half within 5 s of ours, or does not answer a client's close within its close timeout, is
   reset (`CANCEL`).
 - Interop with Go's HTTP/2 both ways over h2c and TLS (`tools/interop/h2ws/run.sh`: net/http
-  server, golang.org/x/net/http2 client). New fuzz target `h2_websocket`; `h2_server` seeds with
+  server, golang.org/x/net/http2 client), and with headless Chrome, which opens the WebSocket on
+  the HTTP/2 connection of the page it loaded. New fuzz target `h2_websocket`; `h2_server` seeds with
   extended CONNECT.
 - Performance: H2C_AB_EN
 

@@ -59,7 +59,9 @@ HTTP/1.1 连接；我们自己的客户端也无法让请求和 WebSocket 共用
   客户端为 golang.org/x/net/http2 的 transport（net/http 自己的 transport 拒绝 `:protocol` 字段；在
   Go 1.27 上 x/net 需要 `-tags http2legacy`，两者都需要 `GODEBUG=http2xconnect=1`）。覆盖文本、3 MiB
   二进制消息（多次窗口更新）、双向 `permessage-deflate`、分片消息、ping 和关闭握手，同一连接上还有普通
-  请求和第二个 WebSocket。
+  请求和第二个 WebSocket。浏览器也已验证：无头 Chrome 157 从我方 TLS 服务端加载页面，先 fetch，再打开
+  WebSocket，它在同一条 HTTP/2 连接上发出（`permessage-deflate`、子协议、300 KB 消息、以 1000 关闭）；
+  服务端确认该 WebSocket 是经 HTTP/2 接受的。
 - Fuzz：新目标 `h2_websocket` 在已接受的 extended CONNECT 之后送入 WebSocket 字节（按输入切成 DATA
   帧）或原始帧；`h2_server` 增加 extended CONNECT 种子。
 - 对端在我方 END_STREAM 之后一直不结束它那一半时，流最多保留 5 秒，在此之前计入

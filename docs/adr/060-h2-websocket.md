@@ -75,7 +75,10 @@ connection; and our own clients could not share one connection between requests 
   refuses the `:protocol` field; x/net needs `-tags http2legacy` on Go 1.27, and both
   `GODEBUG=http2xconnect=1`). Text, a 3 MiB binary message (many window updates),
   `permessage-deflate` both ways, fragmented messages, ping and the close handshake, with a
-  plain request and a second WebSocket on the same connection.
+  plain request and a second WebSocket on the same connection. A browser too: headless Chrome
+  157 loads a page from our TLS server, fetches from it and then opens a WebSocket, which it
+  sends on the same HTTP/2 connection (`permessage-deflate`, a subprotocol, 300 KB messages,
+  close 1000); the server checks the WebSocket was accepted over HTTP/2.
 - Fuzzing: a new target `h2_websocket` feeds WebSocket bytes (cut into DATA frames as the input
   says) or raw frames after an accepted extended CONNECT; `h2_server` gains extended CONNECT
   seeds.

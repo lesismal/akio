@@ -30,7 +30,7 @@ ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
   1001 关闭 WebSocket。对端在我方结束后 5 秒内不结束它那一半，或在客户端关闭超时内不应答客户端的关闭，
   流被重置（`CANCEL`）。
 - 与 Go 的 HTTP/2 在 h2c 和 TLS 上双向互通（`tools/interop/h2ws/run.sh`：net/http 服务端，
-  golang.org/x/net/http2 客户端）。新增 fuzz 目标 `h2_websocket`；`h2_server` 增加 extended CONNECT 种子。
+  golang.org/x/net/http2 客户端），并与无头 Chrome 互通：它在所加载页面的 HTTP/2 连接上打开 WebSocket。新增 fuzz 目标 `h2_websocket`；`h2_server` 增加 extended CONNECT 种子。
 - 性能：H2C_AB_ZH
 
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
