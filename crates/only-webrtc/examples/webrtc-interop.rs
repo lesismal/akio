@@ -32,13 +32,17 @@
 //!                                                      UDP, TCP or TLS
 //! webrtc-interop client <http-addr> simulcast          offers VP8 simulcast h/m/l and a "stats"
 //!                                                      channel; checks the answerer got all three
-//! webrtc-interop turn <udp-addr> <relay-ip> <user> <password> [<tcp-addr> [<tls-addr>]]
-//!                                                      a TURN server (realm "only"), also on TCP
-//!                                                      and TLS (self-signed) when given
-//! webrtc-interop turn-client udp|tcp|tls <server> <user> <password> [<relay-port-check>]
+//! webrtc-interop turn <udp-addr> <relay-ip> <user> <password> [<tcp-addr> [<tls-addr> [<dtls-addr>]]]
+//!                                                      a TURN server (realm "only"), also on TCP,
+//!                                                      TLS and DTLS (self-signed) when given
+//! webrtc-interop turn-client udp|tcp|tls|dtls <server> <user> <password> [<relay-port-check>]
 //!                                                      the only_turn client: allocate, then 20
 //!                                                      datagrams through a channel to a local
 //!                                                      echo peer and back
+//! webrtc-interop relay-echo <turn:|turns: URL> <user> <password>
+//!                                                      two Endpoints with relayed candidates only
+//!                                                      from that server (UDP, TCP, TLS or DTLS),
+//!                                                      a data channel echo between them
 //! ```
 //! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
 //!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
@@ -309,7 +313,7 @@ fn client(http: &str, what: &str, args: &[String]) {
         // A turn:/turns: URL; TLS without verification (the interop servers' certificates
         // are self-signed).
         let mut s = RelayServer::from_url(&args[0], &args[1], &args[2]).expect("url");
-        if s.transport() == "tls" {
+        if matches!(s.transport(), "tls" | "dtls") {
             s = s.tls_config(
                 tls::ClientConfig::builder()
                     .insecure_skip_verify()
@@ -532,18 +536,25 @@ fn turn(udp: SocketAddr, relay: &str, user: &str, pass: &str, streams: &[String]
                 .serve(turn.stream()),
         );
     }
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).expect("cert");
+    let scfg = tls::ServerConfig::builder(
+        vec![tls::Certificate::from_der(ck.0.as_der().to_vec())],
+        tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .expect("tls config");
     if let Some(tl) = streams.get(1) {
-        let ck = only_x509::generate_simple_self_signed(["localhost"]).expect("cert");
-        let scfg = tls::ServerConfig::builder(
-            vec![tls::Certificate::from_der(ck.0.as_der().to_vec())],
-            tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
-        )
-        .build()
-        .expect("tls config");
         b = b.listen(
             Listener::tcp(tl.parse().expect("tls addr"))
                 .threads(1)
-                .serve(tls::Tls::server(scfg, turn.stream())),
+                .serve(tls::Tls::server(scfg.clone(), turn.stream())),
+        );
+    }
+    if let Some(d) = streams.get(2) {
+        b = b.listen(
+            Listener::udp(d.parse().expect("dtls addr"))
+                .threads(1)
+                .serve(turn.dtls(&scfg).expect("dtls")),
         );
     }
     let engine = Arc::new(b.build().expect("engine"));
@@ -557,13 +568,52 @@ enum Wire {
     Udp(std::net::UdpSocket, SocketAddr),
     Tcp(TcpStream),
     Tls(Box<tls::stream::Stream<TcpStream>>),
+    /// A DTLS client connection (connected) on a UDP socket, and the records it decrypted.
+    Dtls(
+        std::net::UdpSocket,
+        Box<only_dtls::Connection>,
+        std::collections::VecDeque<Vec<u8>>,
+    ),
 }
 
 impl Wire {
+    /// A DTLS handshake with `addr` (DTLS 1.3 offered, 1.2 accepted; no verification: the
+    /// interop servers' certificates are self-signed).
+    fn dtls(s: std::net::UdpSocket, addr: SocketAddr) -> Wire {
+        s.connect(addr).expect("connect");
+        let cfg = only_dtls::Config::without_identity()
+            .with_versions(vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12]);
+        let mut c =
+            only_dtls::Connection::client(Arc::new(cfg), Instant::now()).expect("dtls client");
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut buf = [0u8; 4096];
+        while !c.is_connected() {
+            assert!(Instant::now() < end, "dtls handshake timed out");
+            while let Some(d) = c.poll_transmit() {
+                s.send(&d).expect("send");
+            }
+            match s.recv(&mut buf) {
+                Ok(n) => c.handle_datagram(Instant::now(), &buf[..n]).expect("dtls"),
+                Err(_) => c.handle_timeout(Instant::now()).expect("dtls"),
+            }
+        }
+        while let Some(d) = c.poll_transmit() {
+            s.send(&d).expect("send");
+        }
+        eprintln!("turn-client: DTLS connected ({})", c.version());
+        Wire::Dtls(s, Box::new(c), std::collections::VecDeque::new())
+    }
+
     fn send(&mut self, m: &[u8]) {
         match self {
             Wire::Udp(s, to) => {
                 s.send_to(m, *to).expect("send");
+            }
+            Wire::Dtls(s, c, _) => {
+                c.send_application_data(m).expect("dtls send");
+                while let Some(d) = c.poll_transmit() {
+                    s.send(&d).expect("send");
+                }
             }
             Wire::Tcp(s) => s.write_all(m).expect("write"),
             Wire::Tls(s) => {
@@ -575,10 +625,31 @@ impl Wire {
 
     /// Bytes from the server (a datagram, or what the stream had).
     fn recv(&mut self, buf: &mut [u8]) -> Option<usize> {
+        if let Wire::Dtls(s, c, q) = self {
+            if q.is_empty() {
+                let mut d = vec![0u8; 65536];
+                match s.recv(&mut d) {
+                    Ok(n) => c.handle_datagram(Instant::now(), &d[..n]).expect("dtls"),
+                    Err(_) => c.handle_timeout(Instant::now()).expect("dtls"),
+                }
+                while let Some(e) = c.poll_event() {
+                    if let only_dtls::Event::ApplicationData(m) = e {
+                        q.push_back(m);
+                    }
+                }
+                while let Some(d) = c.poll_transmit() {
+                    s.send(&d).expect("send");
+                }
+            }
+            let m = q.pop_front()?;
+            buf[..m.len()].copy_from_slice(&m);
+            return Some(m.len());
+        }
         let r = match self {
             Wire::Udp(s, _) => s.recv(buf),
             Wire::Tcp(s) => s.read(buf),
             Wire::Tls(s) => s.read(buf),
+            Wire::Dtls(..) => unreachable!(),
         };
         match r {
             Ok(n) => Some(n),
@@ -604,6 +675,11 @@ fn turn_client(transport: &str, server: &str, user: &str, pass: &str) {
             s.set_read_timeout(short).expect("timeout");
             Wire::Udp(s, addr)
         }
+        "dtls" => {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+            s.set_read_timeout(short).expect("timeout");
+            Wire::dtls(s, addr)
+        }
         "tcp" | "tls" => {
             let s = TcpStream::connect(addr).expect("connect");
             s.set_read_timeout(short).expect("timeout");
@@ -623,7 +699,7 @@ fn turn_client(transport: &str, server: &str, user: &str, pass: &str) {
         t => panic!("unknown transport {t}"),
     };
     let mut wire = wire;
-    let stream = transport != "udp";
+    let stream = matches!(transport, "tcp" | "tls");
     let mut c = Client::new(
         ClientConfig::new(addr, user, pass).stream(stream),
         Instant::now(),
@@ -719,6 +795,103 @@ fn turn_client(transport: &str, server: &str, user: &str, pass: &str) {
     );
 }
 
+/// Two Endpoints with relayed candidates only, allocated on the TURN server of `url`, and a
+/// data channel echo between them.
+fn relay_echo(url: &str, user: &str, pass: &str) {
+    let engine = Arc::new(
+        Engine::builder()
+            .udp_client_threads(1)
+            .client_threads(1)
+            .build()
+            .expect("engine"),
+    );
+    engine.start().expect("start");
+    let mut s = RelayServer::from_url(url, user, pass).expect("url");
+    if matches!(s.transport(), "tls" | "dtls") {
+        s = s.tls_config(
+            tls::ClientConfig::builder()
+                .insecure_skip_verify()
+                .build()
+                .expect("tls config"),
+        );
+    }
+    let ep = || {
+        let e = Endpoint::bind(&engine, "127.0.0.1:0".parse().expect("addr"))
+            .expect("bind")
+            .candidate_filter(|c| c.kind() == "relay");
+        let r = e
+            .gather_relay_via(&engine, &s, Duration::from_secs(10))
+            .expect("allocate");
+        eprintln!("relay-echo: relayed candidate {r} over {}", s.transport());
+        e
+    };
+    let (a, b) = (ep(), ep());
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Collect(Mutex::new(tx)), |api| {
+            ch = Some(api.add_channel("echo"));
+        })
+        .expect("offer");
+    assert!(
+        offer.contains(" typ relay") && !offer.contains(" typ host"),
+        "{offer}"
+    );
+    let (_pb, answer) = b.accept_offer(&offer, EchoBack).expect("answer");
+    pa.accept_answer(&answer).expect("accept");
+    let ch = ch.expect("channel");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut open = false;
+    let mut back = 0;
+    while back < 20 {
+        assert!(
+            Instant::now() < deadline,
+            "relay-echo: timed out ({back} back)"
+        );
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(None) => {
+                open = true;
+                pa.send(ch, b"through the relays 0", true).expect("send");
+            }
+            Ok(Some(d)) => {
+                assert_eq!(d, format!("through the relays {back}").as_bytes());
+                back += 1;
+                if back < 20 {
+                    let m = format!("through the relays {back}");
+                    pa.send(ch, m.as_bytes(), true).expect("send");
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    assert!(open);
+    println!(
+        "ok: Endpoints relayed through {url} ({}): data channel, 20 echoes",
+        s.transport()
+    );
+    a.close();
+    b.close();
+}
+
+/// Sends `None` when the channel opens, then each message.
+struct Collect(Mutex<Sender<Option<Vec<u8>>>>);
+impl PeerHandler for Collect {
+    fn on_channel_open(&mut self, _p: &Peer, _id: ChannelId, _label: &str) {
+        let _ = self.0.lock().expect("lock").send(None);
+    }
+    fn on_channel_data(&mut self, _p: &Peer, _id: ChannelId, data: &[u8], _binary: bool) {
+        let _ = self.0.lock().expect("lock").send(Some(data.to_vec()));
+    }
+}
+
+/// Echoes data channel messages.
+struct EchoBack;
+impl PeerHandler for EchoBack {
+    fn on_channel_data(&mut self, p: &Peer, id: ChannelId, data: &[u8], binary: bool) {
+        let _ = p.send(id, data, binary);
+    }
+}
+
 fn main() {
     let _ = only_log::init_from_env(only_log::LevelFilter::Warn);
     let a: Vec<String> = std::env::args().collect();
@@ -742,6 +915,7 @@ fn main() {
         Some("client") => client(&a[2], &a[3], &a[4..]),
         Some("turn") => turn(a[2].parse().expect("udp"), &a[3], &a[4], &a[5], &a[6..]),
         Some("turn-client") => turn_client(&a[2], &a[3], &a[4], &a[5]),
+        Some("relay-echo") => relay_echo(&a[2], &a[3], &a[4]),
         _ => eprintln!("usage: webrtc-interop server|client|turn|turn-client ..."),
     }
 }

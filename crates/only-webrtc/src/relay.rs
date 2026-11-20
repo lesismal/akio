@@ -1,9 +1,10 @@
 //! TURN allocations of an [`Endpoint`](crate::Endpoint): relayed candidates shared by its peers.
 //!
-//! One [`Relay`] drives one [`only_turn::client::Client`], over the endpoint's UDP socket or
-//! over a TCP or TLS connection of the engine ([`RelayServer`](crate::RelayServer)). Over UDP
-//! the server's datagrams are read off the socket before peer routing; over a stream the
-//! connection's messages are cut by [`FrameReader`]. Relayed data comes out as if it had
+//! One [`Relay`] drives one [`only_turn::client::Client`], over the endpoint's UDP socket (in
+//! the clear, or inside a DTLS association: TURN over DTLS, RFC 7350) or over a TCP or TLS
+//! connection of the engine ([`RelayServer`](crate::RelayServer)). Over UDP the server's
+//! datagrams are read off the socket before peer routing; over a stream the connection's
+//! messages are cut by [`FrameReader`]. Relayed data comes out as if it had
 //! arrived on the relayed address, and whatever a peer sends from the relayed address goes to
 //! the client (channels, permissions and refreshes are its business). Its timers run on the
 //! shared WebRTC timer thread.
@@ -51,21 +52,74 @@ pub(crate) enum Wire {
     Tcp,
     /// TLS client configuration and server name.
     Tls(tls::ClientConfig, String),
+    /// DTLS over the endpoint's UDP socket (RFC 7350): the TLS client configuration's roots
+    /// and client certificate, and the server name.
+    Dtls(tls::ClientConfig, String),
 }
 
 impl Wire {
     pub(crate) fn is_stream(&self) -> bool {
-        !matches!(self, Wire::Udp)
+        matches!(self, Wire::Tcp | Wire::Tls(..))
     }
 
-    /// 0 UDP, 1 TCP, 2 TLS (an endpoint has one allocation per server and transport).
+    /// 0 UDP, 1 TCP, 2 TLS, 3 DTLS (an endpoint has one allocation per server and transport).
     pub(crate) fn code(&self) -> u8 {
         match self {
             Wire::Udp => 0,
             Wire::Tcp => 1,
             Wire::Tls(..) => 2,
+            Wire::Dtls(..) => 3,
         }
     }
+}
+
+/// The DTLS client configuration of TURN over DTLS from a TLS client configuration: its roots
+/// verify the server's chain for `server_name` (nothing is verified when it skips
+/// verification), its client certificate, if any, is sent; DTLS 1.3 with fallback to 1.2 (1.3
+/// only when it is TLS 1.3 only).
+pub(crate) fn dtls_config(
+    cfg: &tls::ClientConfig,
+    server_name: &str,
+) -> Result<Arc<only_dtls::Config>, String> {
+    let p = cfg.__parts();
+    let mut c = match &p.client_cert {
+        Some((chain, key)) => {
+            let key = only_crypto::pkey::PrivateKey::from_pkcs8_der(key)
+                .map_err(|e| format!("dtls: client key: {e}"))?;
+            only_dtls::Config::new(
+                only_dtls::Identity::new(chain.clone(), key).map_err(|e| format!("dtls: {e}"))?,
+            )
+        }
+        None => only_dtls::Config::without_identity(),
+    };
+    c = c.with_versions(if p.tls13_only {
+        vec![only_dtls::Version::Dtls13]
+    } else {
+        vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12]
+    });
+    if !p.insecure {
+        let mut roots = only_x509::RootStore::new();
+        for r in &p.roots {
+            if let Ok(c) = only_x509::Certificate::from_der(r.clone()) {
+                roots.add(c);
+            }
+        }
+        let name = server_name.to_owned();
+        c = c.with_verifier(only_dtls::PeerVerifier::Custom(Arc::new(
+            move |chain: &[Vec<u8>]| {
+                let mut certs = chain.iter().map(|d| {
+                    only_x509::Certificate::from_der(d.clone()).map_err(|e| e.to_string())
+                });
+                let leaf = certs.next().ok_or("no certificate")??;
+                let rest = certs.collect::<Result<Vec<_>, _>>()?;
+                only_x509::Verifier::new(&roots)
+                    .verify_server(&leaf, &rest, &name)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            },
+        )));
+    }
+    Ok(Arc::new(c))
 }
 
 enum Link {
@@ -90,6 +144,10 @@ pub(crate) enum Deferred {
 
 struct State {
     client: Client,
+    /// TURN over DTLS: the association (made again with the allocation) and what the client
+    /// sent before its handshake completed.
+    dtls: Option<only_dtls::Connection>,
+    dtls_queue: Vec<Vec<u8>>,
     /// Waiting to make the allocation again (the client is not driven).
     down: bool,
     armed: Option<Instant>,
@@ -110,6 +168,8 @@ pub(crate) struct Relay {
     pub(crate) server: SocketAddr,
     pub(crate) wire: Wire,
     cfg: ClientConfig,
+    /// TURN over DTLS: the association's configuration.
+    dtls_cfg: Option<Arc<only_dtls::Config>>,
     engine: Weak<Engine>,
     closed: AtomicBool,
     state: Mutex<State>,
@@ -122,6 +182,7 @@ impl Relay {
         hub: &Arc<Hub>,
         engine: Weak<Engine>,
         wire: Wire,
+        dtls_cfg: Option<Arc<only_dtls::Config>>,
         cfg: ClientConfig,
         waiter: mpsc::Sender<Allocated>,
     ) -> Arc<Relay> {
@@ -129,10 +190,13 @@ impl Relay {
         Arc::new_cyclic(|me| Relay {
             server: cfg.server,
             wire,
+            dtls_cfg,
             engine,
             closed: AtomicBool::new(false),
             state: Mutex::new(State {
                 client: Client::new(cfg.clone(), Instant::now()),
+                dtls: None,
+                dtls_queue: Vec::new(),
                 down: false,
                 armed: None,
                 retry_at: None,
@@ -171,8 +235,20 @@ impl Relay {
                 me.dial(st);
             } else {
                 st.base = me.udp_base();
+                me.handshake(st, Instant::now());
             }
         });
+    }
+
+    /// TURN over DTLS: starts a new association (its ClientHello goes out with the next
+    /// flush); the client's messages wait for it.
+    fn handshake(&self, st: &mut State, now: Instant) {
+        let Some(cfg) = &self.dtls_cfg else { return };
+        st.dtls_queue.clear();
+        match only_dtls::Connection::client(cfg.clone(), now) {
+            Ok(c) => st.dtls = Some(c),
+            Err(e) => self.fail(st, format!("turn {}: dtls: {e}", self.server)),
+        }
     }
 
     /// Whether the allocation is gone for good (it failed before it was made, or the endpoint
@@ -200,6 +276,7 @@ impl Relay {
             Wire::Udp => only_ice::Candidate::relayed(relayed, base),
             Wire::Tcp => only_ice::Candidate::relayed_over_stream(relayed, base, false),
             Wire::Tls(..) => only_ice::Candidate::relayed_over_stream(relayed, base, true),
+            Wire::Dtls(..) => only_ice::Candidate::relayed(relayed, base),
         }
     }
 
@@ -209,19 +286,98 @@ impl Relay {
     }
 
     /// A datagram (or stream message) from the server: relayed data comes back as (peer,
-    /// relayed address, data).
-    pub(crate) fn input(&self, data: &[u8]) -> Option<(SocketAddr, SocketAddr, Vec<u8>)> {
-        self.with(|_, st| {
+    /// relayed address, data); a DTLS datagram may carry several.
+    pub(crate) fn input(&self, data: &[u8]) -> Vec<(SocketAddr, SocketAddr, Vec<u8>)> {
+        self.with(|me, st| {
+            let mut out = Vec::new();
             if st.down {
-                return None;
+                return out;
             }
-            let r = st
-                .client
-                .handle_input(Instant::now(), data)
-                .map(|(p, d)| (p, d.to_vec()));
-            let relayed = st.client.relayed_addr()?;
-            r.map(|(p, d)| (p, relayed, d))
+            let now = Instant::now();
+            if st.dtls.is_none() {
+                Self::client_input(st, now, data, &mut out);
+                return out;
+            }
+            let ok = st
+                .dtls
+                .as_mut()
+                .is_some_and(|d| d.handle_datagram(now, data).is_ok());
+            if !ok {
+                me.dtls_down(st, now, "dtls: fatal error");
+                return out;
+            }
+            for m in me.dtls_events(st, now) {
+                Self::client_input(st, now, &m, &mut out);
+            }
+            out
         })
+    }
+
+    fn client_input(
+        st: &mut State,
+        now: Instant,
+        data: &[u8],
+        out: &mut Vec<(SocketAddr, SocketAddr, Vec<u8>)>,
+    ) {
+        let r = st
+            .client
+            .handle_input(now, data)
+            .map(|(p, d)| (p, d.to_vec()));
+        if let (Some((p, d)), Some(relayed)) = (r, st.client.relayed_addr()) {
+            out.push((p, relayed, d));
+        }
+    }
+
+    /// Reads the DTLS association's events: its application data (STUN and ChannelData
+    /// messages) is returned; the handshake's end releases what the client sent meanwhile; a
+    /// close_notify loses the allocation.
+    fn dtls_events(&self, st: &mut State, now: Instant) -> Vec<Vec<u8>> {
+        let mut msgs = Vec::new();
+        let mut closed = false;
+        let mut connected = false;
+        if let Some(d) = st.dtls.as_mut() {
+            while let Some(e) = d.poll_event() {
+                match e {
+                    only_dtls::Event::ApplicationData(m) => msgs.push(m),
+                    only_dtls::Event::Connected(_) => connected = true,
+                    only_dtls::Event::Closed => closed = true,
+                    _ => {}
+                }
+            }
+        }
+        if connected {
+            for m in mem::take(&mut st.dtls_queue) {
+                self.transmit(st, m);
+            }
+        }
+        if closed {
+            self.dtls_down(st, now, "dtls: closed by the server");
+        }
+        msgs
+    }
+
+    /// The DTLS association failed or closed: so did the allocation over it.
+    fn dtls_down(&self, st: &mut State, now: Instant, why: &str) {
+        self.flush_dtls(st);
+        st.dtls = None;
+        st.dtls_queue.clear();
+        only_log::debug!(target: "only_webrtc", "turn {}: {why}", self.server);
+        if st.waiter.is_some() {
+            self.fail(st, format!("turn {}: {why}", self.server));
+        } else if !self.closed.load(Ordering::Acquire) {
+            self.lose(st, now);
+        }
+    }
+
+    /// Sends the DTLS association's datagrams.
+    fn flush_dtls(&self, st: &mut State) {
+        let Some(d) = st.dtls.as_mut() else { return };
+        let b = self.hub.upgrade().and_then(|h| h.binding().cloned());
+        while let Some(m) = d.poll_transmit() {
+            if let Some(b) = &b {
+                let _ = b.send_to(&m, self.server);
+            }
+        }
     }
 
     /// Sends `data` to `peer` through the relay.
@@ -241,7 +397,12 @@ impl Relay {
             if !st.down {
                 st.client.close(Instant::now());
                 me.flush(st);
+                if let Some(d) = st.dtls.as_mut() {
+                    d.close();
+                }
+                me.flush_dtls(st);
             }
+            st.dtls = None;
             st.down = true;
             st.retry_at = None;
             st.waiter = None;
@@ -270,6 +431,22 @@ impl Relay {
 
     /// Sends one message from the client to the server.
     fn transmit(&self, st: &mut State, m: Vec<u8>) {
+        if let Some(d) = st.dtls.as_mut() {
+            if !d.is_connected() {
+                // A retransmission of a queued request (same transaction) is not queued again.
+                let tid = |x: &[u8]| (stun::is_stun(x) && x.len() >= 20).then(|| x[8..20].to_vec());
+                let dup = tid(&m)
+                    .is_some_and(|t| st.dtls_queue.iter().any(|q| tid(q).as_ref() == Some(&t)));
+                if !dup
+                    && st.dtls_queue.iter().map(Vec::len).sum::<usize>() + m.len() <= MAX_CONNECTING
+                {
+                    st.dtls_queue.push(m);
+                }
+            } else {
+                let _ = d.send_application_data(&m);
+            }
+            return;
+        }
         match &mut st.link {
             Link::None if !self.wire.is_stream() => {
                 if let Some(b) = self.hub.upgrade().as_ref().and_then(|h| h.binding()) {
@@ -302,6 +479,8 @@ impl Relay {
 
     /// The allocation is lost: forget it and try again later.
     fn lose(&self, st: &mut State, now: Instant) {
+        st.dtls = None;
+        st.dtls_queue.clear();
         if let Some(old) = st.relayed.take() {
             st.retired.push_back(old);
             if st.retired.len() > RETIRED {
@@ -327,6 +506,8 @@ impl Relay {
         self.closed.store(true, Ordering::Release);
         st.down = true;
         st.retry_at = None;
+        st.dtls = None;
+        st.dtls_queue.clear();
         if let Link::Open(c) = mem::replace(&mut st.link, Link::None) {
             st.deferred.push(Deferred::Close(c));
         }
@@ -400,10 +581,20 @@ impl Relay {
                 }
             }
         }
+        if !st.down {
+            self.flush_dtls(st);
+        }
         let client_due = if st.down {
             None
         } else {
-            st.client.poll_timeout()
+            let dtls_due = st
+                .dtls
+                .as_ref()
+                .and_then(only_dtls::Connection::poll_timeout);
+            match (st.client.poll_timeout(), dtls_due) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         };
         let due = match (client_due, st.retry_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -427,6 +618,7 @@ impl Relay {
             self.dial(st);
         } else {
             st.base = self.udp_base();
+            self.handshake(st, now);
         }
     }
 
@@ -491,6 +683,22 @@ impl timer::Due for Relay {
             if st.retry_at.is_some_and(|t| t <= now) && !me.closed.load(Ordering::Acquire) {
                 me.retry(st, now);
             }
+            if !st.down
+                && st
+                    .dtls
+                    .as_ref()
+                    .is_some_and(|d| d.poll_timeout().is_some_and(|t| t <= now))
+            {
+                let ok = st
+                    .dtls
+                    .as_mut()
+                    .is_some_and(|d| d.handle_timeout(now).is_ok());
+                if ok {
+                    let _ = me.dtls_events(st, now);
+                } else {
+                    me.dtls_down(st, now, "dtls: handshake timed out");
+                }
+            }
             if !st.down {
                 st.client.handle_timeout(now);
                 if st.client.state() == ClientState::Closed {
@@ -548,7 +756,7 @@ impl Handler for TurnConn {
         };
         let hub = r.hub.upgrade();
         let res = self.reader.push(data, |m| {
-            if let Some((peer, relayed, d)) = r.input(m) {
+            for (peer, relayed, d) in r.input(m) {
                 if let Some(h) = &hub {
                     h.route(peer, relayed, &d);
                 }
@@ -569,16 +777,17 @@ impl Handler for TurnConn {
 
 /// A TURN server an [`Endpoint`](crate::Endpoint) allocates a relayed candidate on
 /// ([`Endpoint::gather_relay_via`](crate::Endpoint::gather_relay_via)): its address, the
-/// transport (UDP from the endpoint's socket, or a TCP or TLS connection of the engine) and
-/// long-term credentials.
+/// transport (UDP or DTLS from the endpoint's socket, or a TCP or TLS connection of the
+/// engine) and long-term credentials.
 #[derive(Clone)]
 pub struct RelayServer {
     pub(crate) addr: SocketAddr,
     pub(crate) wire: Wire,
     pub(crate) username: String,
     pub(crate) password: String,
-    /// `turns:` URL without a TLS configuration yet: its server name.
-    pending_tls: Option<String>,
+    /// `turns:` URL without a TLS configuration yet: its server name, and whether it is over
+    /// DTLS (`transport=udp`).
+    pending_tls: Option<(String, bool)>,
 }
 
 impl std::fmt::Debug for RelayServer {
@@ -630,12 +839,35 @@ impl RelayServer {
         )
     }
 
+    /// TURN over DTLS (`turns:host:port?transport=udp`, RFC 7350), from the endpoint's own
+    /// socket: the allocation is made inside a DTLS association (DTLS 1.3 with fallback to
+    /// 1.2), which verifies the server's certificate for `server_name` against the roots of
+    /// `config` (or not at all if it skips verification) and sends its client certificate if
+    /// it has one. Relayed candidates are UDP ones, as with [`udp`](Self::udp); the server's
+    /// mapped address becomes a server-reflexive candidate too. The allocation lives as long
+    /// as the association: a lost association is made again with the allocation.
+    pub fn dtls(
+        addr: SocketAddr,
+        server_name: &str,
+        config: tls::ClientConfig,
+        username: &str,
+        password: &str,
+    ) -> RelayServer {
+        RelayServer::new(
+            addr,
+            Wire::Dtls(config, server_name.to_owned()),
+            username,
+            password,
+        )
+    }
+
     /// Parses an RFC 7065 URL, `turn:<host>[:<port>][?transport=udp|tcp]` or
-    /// `turns:<host>[:<port>][?transport=tcp]` (ports 3478 and 5349 by default; an IPv6
-    /// address in brackets), as browsers take it in `iceServers`. A host name is resolved
-    /// here (blocking: not on a `only` I/O thread) and its first address used. A `turns:`
-    /// server needs [`tls_config`](Self::tls_config) before use; the URL's host is the name
-    /// its certificate is verified for.
+    /// `turns:<host>[:<port>][?transport=tcp|udp]` (ports 3478 and 5349 by default; an IPv6
+    /// address in brackets), as browsers take it in `iceServers`; `turns:` is TLS over TCP,
+    /// or DTLS with `transport=udp` (RFC 7350). A host name is resolved here (blocking: not
+    /// on a `only` I/O thread) and its first address used. A `turns:` server needs
+    /// [`tls_config`](Self::tls_config) before use; the URL's host is the name its
+    /// certificate is verified for.
     pub fn from_url(
         url: &str,
         username: &str,
@@ -662,22 +894,24 @@ impl RelayServer {
             RelayServer::udp(addr, username, password)
         };
         if u.secure {
-            s.pending_tls = Some(u.host.to_owned());
+            s.pending_tls = Some((u.host.to_owned(), !u.tcp));
         }
         s
     }
 
     /// The TLS client configuration of a `turns:` server made by
-    /// [`from_url`](Self::from_url) (it has no default: the roots are the application's). On
-    /// another server, makes it TLS with the server's IP address as the name to verify.
+    /// [`from_url`](Self::from_url) (it has no default: the roots are the application's),
+    /// for TLS or, with `transport=udp`, DTLS. On a DTLS server, replaces its configuration.
+    /// On another server, makes it TLS with the server's IP address as the name to verify.
     #[must_use]
     pub fn tls_config(mut self, config: tls::ClientConfig) -> Self {
-        let name = match (self.pending_tls.take(), &self.wire) {
-            (Some(n), _) => n,
-            (None, Wire::Tls(_, n)) => n.clone(),
-            (None, _) => self.addr.ip().to_string(),
+        self.wire = match (self.pending_tls.take(), &self.wire) {
+            (Some((n, true)), _) => Wire::Dtls(config, n),
+            (Some((n, false)), _) => Wire::Tls(config, n),
+            (None, Wire::Tls(_, n)) => Wire::Tls(config, n.clone()),
+            (None, Wire::Dtls(_, n)) => Wire::Dtls(config, n.clone()),
+            (None, _) => Wire::Tls(config, self.addr.ip().to_string()),
         };
-        self.wire = Wire::Tls(config, name);
         self
     }
 
@@ -686,15 +920,13 @@ impl RelayServer {
         self.addr
     }
 
-    /// `"udp"`, `"tcp"` or `"tls"`.
+    /// `"udp"`, `"tcp"`, `"tls"` or `"dtls"`.
     pub fn transport(&self) -> &'static str {
-        if self.pending_tls.is_some() {
-            return "tls";
-        }
-        match self.wire {
-            Wire::Udp => "udp",
-            Wire::Tcp => "tcp",
-            Wire::Tls(..) => "tls",
+        match (&self.pending_tls, &self.wire) {
+            (Some((_, true)), _) | (None, Wire::Dtls(..)) => "dtls",
+            (Some((_, false)), _) | (None, Wire::Tls(..)) => "tls",
+            (None, Wire::Udp) => "udp",
+            (None, Wire::Tcp) => "tcp",
         }
     }
 
@@ -726,8 +958,9 @@ pub(crate) fn parse_url(url: &str) -> Result<TurnUrl<'_>, &'static str> {
     let tcp = match query {
         "" => secure,
         "transport=tcp" => true,
-        "transport=udp" if !secure => false,
-        _ => return Err("transport must be udp or tcp (tcp for turns:)"),
+        // turns: over UDP is DTLS (RFC 7350).
+        "transport=udp" => false,
+        _ => return Err("transport must be udp or tcp"),
     };
     let (host, port) = if let Some(r) = hostport.strip_prefix('[') {
         let (h, p) = r.split_once(']').ok_or("unclosed [")?;

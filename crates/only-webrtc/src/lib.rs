@@ -748,7 +748,15 @@ struct Hub {
     /// New peers conceal host addresses behind mDNS names
     /// ([`Endpoint::conceal_host_candidates`]).
     conceal: AtomicBool,
+    /// The interfaces (scope ids) of remote link-local IPv6 addresses: SDP carries none, so
+    /// remote addresses go to ICE without one and get it back on the way out. Learnt from
+    /// the datagrams they send and from mDNS answers. Endpoints that see no link-local
+    /// traffic never touch it.
+    scopes: Mutex<HashMap<std::net::Ipv6Addr, u32>>,
 }
+
+/// Link-local addresses whose interface is remembered.
+const MAX_SCOPES: usize = 256;
 
 type CandidateFilter = dyn Fn(&Candidate) -> bool + Send + Sync;
 
@@ -775,6 +783,56 @@ impl Hub {
             filter: Mutex::new(None),
             mdns: OnceLock::new(),
             conceal: AtomicBool::new(false),
+            scopes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Remembers that link-local `ip` is reached through interface `scope`.
+    fn learn_scope(&self, ip: std::net::Ipv6Addr, scope: u32) {
+        let mut m = lock(&self.scopes);
+        if m.len() < MAX_SCOPES || m.contains_key(&ip) {
+            m.insert(ip, scope);
+        }
+    }
+
+    /// `a` without its scope id when it is a link-local IPv6 address (the interface is
+    /// remembered).
+    fn unscope(&self, a: SocketAddr) -> SocketAddr {
+        match a {
+            SocketAddr::V6(v) if v.scope_id() != 0 && mdns::is_link_local(v.ip()) => {
+                self.learn_scope(*v.ip(), v.scope_id());
+                SocketAddr::V6(std::net::SocketAddrV6::new(
+                    *v.ip(),
+                    v.port(),
+                    v.flowinfo(),
+                    0,
+                ))
+            }
+            a => a,
+        }
+    }
+
+    /// `a` with the interface of a link-local IPv6 address that has none: the one learnt for
+    /// it, else the socket's own when it is bound to a link-local address (same link).
+    fn rescope(&self, a: SocketAddr) -> SocketAddr {
+        match a {
+            SocketAddr::V6(v) if v.scope_id() == 0 && mdns::is_link_local(v.ip()) => {
+                let learnt = lock(&self.scopes).get(v.ip()).copied();
+                let own = || match self.binding().map(UdpBinding::local_addr) {
+                    Some(SocketAddr::V6(l)) if l.scope_id() != 0 => Some(l.scope_id()),
+                    _ => None,
+                };
+                match learnt.or_else(own) {
+                    Some(s) => SocketAddr::V6(std::net::SocketAddrV6::new(
+                        *v.ip(),
+                        v.port(),
+                        v.flowinfo(),
+                        s,
+                    )),
+                    None => a,
+                }
+            }
+            a => a,
         }
     }
 
@@ -811,7 +869,7 @@ impl Hub {
             .find_map(|r| r.owns(addr).map(|cur| (r.clone(), cur)))
     }
 
-    /// The UDP relay whose TURN server is at `addr`.
+    /// The UDP or DTLS relay whose TURN server is at `addr`.
     fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
         if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
@@ -982,6 +1040,7 @@ impl Hub {
             }
             return;
         }
+        let dest = self.rescope(dest);
         match &self.tx {
             Tx::Listener(conns) => {
                 let c = lock(conns).get(&dest).cloned();
@@ -1011,6 +1070,7 @@ impl Hub {
     }
 
     fn on_datagram(&self, source: SocketAddr, local: SocketAddr, data: &[u8]) {
+        let source = self.unscope(source);
         let is_stun = stun::is_stun(data);
         if is_stun && !lock(&self.stun_waiters).is_empty() {
             if let Ok(m) = stun::Message::parse(data) {
@@ -1024,7 +1084,7 @@ impl Hub {
             }
         }
         if let Some(r) = self.relay_of_server(source) {
-            if let Some((peer, relayed, data)) = r.input(data) {
+            for (peer, relayed, data) in r.input(data) {
                 self.route(peer, relayed, &data);
             }
             return;
@@ -1422,7 +1482,7 @@ impl Endpoint {
         )
     }
 
-    /// [`gather_relay`](Self::gather_relay) on `server`, over UDP, TCP or TLS
+    /// [`gather_relay`](Self::gather_relay) on `server`, over UDP, DTLS, TCP or TLS
     /// ([`RelayServer`]): over a stream, `engine` (which needs TCP I/O threads:
     /// [`only::EngineBuilder::client_threads`] or a TCP listener) dials the connection the
     /// allocation lives on, and the candidate ranks below a UDP-allocated one; no
@@ -1456,6 +1516,10 @@ impl Endpoint {
                 "a turns: server needs RelayServer::tls_config".into(),
             ));
         }
+        let dtls_cfg = match &server.wire {
+            relay::Wire::Dtls(c, name) => Some(relay::dtls_config(c, name).map_err(Error::Turn)?),
+            _ => None,
+        };
         let b = self.binding().ok_or(Error::Closed)?.clone();
         let (tx, rx) = mpsc::channel();
         let cfg =
@@ -1465,17 +1529,20 @@ impl Endpoint {
             if relays.len() >= MAX_RELAYS {
                 return Err(Error::Turn("too many TURN allocations".into()));
             }
-            if relays
-                .iter()
-                .any(|r| r.server == server.addr && r.wire.code() == server.wire.code())
-            {
+            // Datagrams from the server's address go to one relay: UDP and DTLS ones share
+            // that.
+            let datagram = !server.wire.is_stream();
+            if relays.iter().any(|r| {
+                r.server == server.addr
+                    && (r.wire.code() == server.wire.code() || datagram && !r.wire.is_stream())
+            }) {
                 return Err(Error::Turn(format!(
                     "an allocation on {} over {} exists already",
                     server.addr,
                     server.transport()
                 )));
             }
-            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), cfg, tx);
+            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), dtls_cfg, cfg, tx);
             relays.push(r.clone());
             Ok(r)
         })?;
@@ -1597,8 +1664,10 @@ impl Endpoint {
     /// started): the mDNS port 5353 shared with the system's responder and the
     /// `224.0.0.251` group, or, when that port cannot be bound, an ephemeral port asking for
     /// unicast answers (then [`conceal_host_candidates`](Self::conceal_host_candidates) is
-    /// not available). IPv4 mDNS only (names may still resolve to IPv6 addresses). Once per
-    /// endpoint.
+    /// not available). With IPv6, a second socket does the same over `ff02::fb`, joined on
+    /// every interface with a link-local address: queries go out on each, answers go back on
+    /// the link of their query, and a resolved link-local address is reached through the
+    /// interface its answer came from (ADR-054). Once per endpoint.
     pub fn resolve_mdns(&self, engine: &Engine, timeout: Duration) -> Result<(), Error> {
         if self.0.mdns.get().is_some() {
             return Err(Error::Io(io::Error::new(

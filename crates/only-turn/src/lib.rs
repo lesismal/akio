@@ -15,6 +15,10 @@
 //!   framed on the stream ([`framing`]), relays still over UDP. An allocation lives as long as
 //!   its connection. TCP relays (RFC 6062) are not offered: `REQUESTED-TRANSPORT` TCP is
 //!   refused with 442.
+//! - [`TurnDtls`] ([`TurnServer::dtls`]): the same server for UDP listeners whose clients talk
+//!   DTLS (RFC 7350, `turns:` with `transport=udp`), on `only-dtls`: stateless cookies, DTLS
+//!   1.3 with fallback to 1.2, one STUN or ChannelData message per record. An allocation lives
+//!   as long as its DTLS association.
 //! - [`client::Client`]: a sans-io TURN client (allocate, refresh, permissions, channels) over
 //!   UDP or a stream.
 //! - [`TurnCore`]: the same server as a sans-io state machine.
@@ -47,6 +51,7 @@
 mod auth;
 pub mod client;
 mod core;
+mod dtls;
 pub mod framing;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -136,12 +141,22 @@ enum ClientConn {
     Udp(Conn<TurnClient>),
     /// A TCP or TLS connection, and when it was accepted.
     Stream(Conn<TurnStreamClient>, Instant),
+    /// A UDP 5-tuple of a DTLS listener and its DTLS association.
+    Dtls(Conn<TurnDtlsClient>, Arc<Mutex<dtls::DtlsSession>>),
+}
+
+/// The transport a client reaches the server over; each has its own third of the shards, so
+/// the same address on two transports names two clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wire {
+    Udp = 0,
+    Stream = 1,
+    Dtls = 2,
 }
 
 /// One shard of a server: the allocations of the clients whose address hashes to it, and their
-/// listener connections. A datagram locks only its own shard. UDP and stream clients live in
-/// separate shards (the first half and the second half), so the same address on both
-/// transports names two clients.
+/// listener connections. A datagram locks only its own shard. UDP, stream and DTLS clients
+/// live in separate shards (thirds of the table, see [`Wire`]).
 struct Shard {
     core: TurnCore,
     clients: HashMap<SocketAddr, ClientConn>,
@@ -166,11 +181,11 @@ struct Inner {
 }
 
 impl Inner {
-    /// The shard of a UDP client (`stream == false`) or a TCP/TLS one.
-    fn shard_of(&self, addr: SocketAddr, stream: bool) -> usize {
-        let half = self.shards.len() / 2;
-        let i = (self.hasher.hash_one(addr) as usize) & (half - 1);
-        if stream { half + i } else { i }
+    /// The shard of a client on `wire`.
+    fn shard_of(&self, addr: SocketAddr, wire: Wire) -> usize {
+        let third = self.shards.len() / 3;
+        let i = (self.hasher.hash_one(addr) as usize) & (third - 1);
+        wire as usize * third + i
     }
 
     fn relays_of(&self, relay: SocketAddr) -> &Mutex<HashMap<SocketAddr, Relay>> {
@@ -222,7 +237,7 @@ impl Inner {
     }
 }
 
-/// Shards for each transport (UDP, streams): about four per CPU.
+/// Shards for each transport (UDP, streams, DTLS): about four per CPU.
 fn shard_count() -> usize {
     let cpus = std::thread::available_parallelism().map_or(4, usize::from);
     (cpus * 4).next_power_of_two().clamp(8, 256)
@@ -252,6 +267,13 @@ impl TurnEnv for Env<'_> {
                     return;
                 }
                 let _ = c.send(data);
+            }
+            Some(ClientConn::Dtls(c, s)) => {
+                let mut out = Vec::new();
+                lock(s).seal(data, &mut out);
+                for d in out {
+                    let _ = c.send_owned(d);
+                }
             }
             None => {}
         }
@@ -330,7 +352,7 @@ impl TurnServer {
         let shared = Arc::new(Shared::new(cfg));
         let n = shard_count();
         let inner = Arc::new_cyclic(|me| Inner {
-            shards: (0..2 * n)
+            shards: (0..3 * n)
                 .map(|_| {
                     Mutex::new(Shard {
                         core: TurnCore::shard(shared.clone()),
@@ -368,6 +390,19 @@ impl TurnServer {
                             }) {
                                 c.close();
                             }
+                            // DTLS retransmissions and handshake deadlines.
+                            for c in env.clients.values() {
+                                if let ClientConn::Dtls(c, s) = c {
+                                    let mut out = dtls::DtlsOutput::default();
+                                    lock(s).handle_timeout(now, &mut out);
+                                    for d in out.transmit {
+                                        let _ = c.send_owned(d);
+                                    }
+                                    if out.closed {
+                                        c.close();
+                                    }
+                                }
+                            }
                         });
                     }
                 }
@@ -397,16 +432,55 @@ impl TurnServer {
 
     /// The relayed address of `client`'s allocation (a UDP client).
     pub fn relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
-        lock(&self.0.shards[self.0.shard_of(client, false)])
+        lock(&self.0.shards[self.0.shard_of(client, Wire::Udp)])
             .core
             .relay_of(client)
     }
 
     /// The relayed address of the allocation of the TCP or TLS client at `client`.
     pub fn stream_relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
-        lock(&self.0.shards[self.0.shard_of(client, true)])
+        lock(&self.0.shards[self.0.shard_of(client, Wire::Stream)])
             .core
             .relay_of(client)
+    }
+
+    /// The relayed address of the allocation of the DTLS client at `client`.
+    pub fn dtls_relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
+        lock(&self.0.shards[self.0.shard_of(client, Wire::Dtls)])
+            .core
+            .relay_of(client)
+    }
+
+    /// The acceptor for UDP listeners of this server whose clients talk DTLS (TURN over
+    /// DTLS, RFC 7350: `turns:<host>:<port>?transport=udp`, port 5349 by convention), with the
+    /// certificate and key of `tls` (its default chain; client certificates only if it asks
+    /// for them): same allocations, quotas and credentials as the plain UDP listener. DTLS 1.3
+    /// is offered with fallback to 1.2 (only 1.3 if `tls` is TLS 1.3 only). ClientHellos are
+    /// answered with stateless cookies; each STUN or ChannelData message travels in its own
+    /// record, unpadded. An allocation lives as long as its DTLS association (close_notify, a
+    /// fatal alert, a new handshake from the same address, or `Config::udp_idle_timeout` of
+    /// silence ends it), so keep that timeout above the client's refresh interval. Fails when
+    /// the key or certificate cannot be used.
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use only::{Engine, Listener, tls};
+    /// # use only_turn::{TurnConfig, TurnServer, static_auth};
+    /// # fn f(turn: TurnServer, tls_cfg: tls::ServerConfig) -> std::io::Result<()> {
+    /// let engine = Arc::new(
+    ///     Engine::builder()
+    ///         .listen(Listener::udp("0.0.0.0:3478".parse().unwrap()).serve(turn.clone()))
+    ///         .listen(Listener::udp("0.0.0.0:5349".parse().unwrap()).serve(turn.dtls(&tls_cfg)?))
+    ///         .build()?,
+    /// );
+    /// turn.set_engine(&engine);
+    /// # Ok(()) }
+    /// ```
+    pub fn dtls(&self, tls: &only::tls::ServerConfig) -> io::Result<TurnDtls> {
+        Ok(TurnDtls(
+            self.0.clone(),
+            Arc::new(dtls::DtlsShared::new(tls)?),
+        ))
     }
 
     /// The acceptor for TCP listeners (and TLS ones, wrapped in [`only::tls::Tls`]) of this
@@ -447,7 +521,7 @@ impl TurnServer {
 impl Acceptor for TurnServer {
     type Handler = TurnClient;
     fn on_open(&self, c: &Conn<TurnClient>) -> TurnClient {
-        let shard = self.0.shard_of(c.peer_addr(), false);
+        let shard = self.0.shard_of(c.peer_addr(), Wire::Udp);
         lock(&self.0.shards[shard])
             .clients
             .insert(c.peer_addr(), ClientConn::Udp(c.clone()));
@@ -520,7 +594,7 @@ impl fmt::Debug for TurnStream {
 impl Acceptor for TurnStream {
     type Handler = TurnStreamClient;
     fn on_open(&self, c: &Conn<TurnStreamClient>) -> TurnStreamClient {
-        let shard = self.0.shard_of(c.peer_addr(), true);
+        let shard = self.0.shard_of(c.peer_addr(), Wire::Stream);
         let old = lock(&self.0.shards[shard])
             .clients
             .insert(c.peer_addr(), ClientConn::Stream(c.clone(), Instant::now()));
@@ -583,6 +657,110 @@ impl Handler for TurnStreamClient {
             {
                 env.clients.remove(&client);
                 // The allocation lives as long as its connection (RFC 8656 section 3.1).
+                core.remove_client(client, env);
+            }
+        });
+    }
+}
+
+// ---- TURN over DTLS ----
+
+/// The [`TurnServer`] acceptor for UDP listeners whose clients talk DTLS
+/// ([`TurnServer::dtls`]).
+#[derive(Clone)]
+pub struct TurnDtls(Arc<Inner>, Arc<dtls::DtlsShared>);
+
+impl fmt::Debug for TurnDtls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TurnDtls").finish_non_exhaustive()
+    }
+}
+
+impl Acceptor for TurnDtls {
+    type Handler = TurnDtlsClient;
+    fn on_open(&self, c: &Conn<TurnDtlsClient>) -> TurnDtlsClient {
+        let shard = self.0.shard_of(c.peer_addr(), Wire::Dtls);
+        let session = self.1.session(c.peer_addr());
+        lock(&self.0.shards[shard])
+            .clients
+            .insert(c.peer_addr(), ClientConn::Dtls(c.clone(), session.clone()));
+        TurnDtlsClient {
+            inner: self.0.clone(),
+            shard,
+            session,
+        }
+    }
+
+    fn on_shutdown(&self, c: &Conn<TurnDtlsClient>) {
+        let shard = self.0.shard_of(c.peer_addr(), Wire::Dtls);
+        let session = match lock(&self.0.shards[shard]).clients.get(&c.peer_addr()) {
+            Some(ClientConn::Dtls(x, s)) if x.id() == c.id() => Some(s.clone()),
+            _ => None,
+        };
+        if let Some(s) = session {
+            let mut out = Vec::new();
+            lock(&s).close(&mut out); // close_notify
+            for d in out {
+                let _ = c.send_owned(d);
+            }
+        }
+        TurnServer(self.0.clone()).close_all();
+    }
+}
+
+/// One DTLS client 5-tuple of a [`TurnServer`] (internal).
+#[doc(hidden)]
+pub struct TurnDtlsClient {
+    inner: Arc<Inner>,
+    shard: usize,
+    session: Arc<Mutex<dtls::DtlsSession>>,
+}
+
+impl fmt::Debug for TurnDtlsClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TurnDtlsClient").finish_non_exhaustive()
+    }
+}
+
+impl Handler for TurnDtlsClient {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        let inner = &self.inner;
+        let shard = self.shard;
+        let client = c.peer_addr();
+        let now = Instant::now();
+        let mut out = dtls::DtlsOutput::default();
+        lock(&self.session).input(now, data, &mut out);
+        for d in out.transmit {
+            let _ = c.send_owned(d);
+        }
+        if out.restarted {
+            // The client started over: its old allocation goes with the old association.
+            inner.with_shard(shard, None, |core, env| core.remove_client(client, env));
+        }
+        for msg in &out.messages {
+            let prebound = if inner.shared.authenticated_allocate(now, client, msg) {
+                inner
+                    .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), shard)
+                    .ok()
+            } else {
+                None
+            };
+            inner.with_shard(shard, prebound, |core, env| {
+                core.handle_client(now, client, msg, env);
+            });
+        }
+        if out.closed {
+            c.close();
+        }
+    }
+
+    fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
+        let client = c.peer_addr();
+        self.inner.with_shard(self.shard, None, |core, env| {
+            if matches!(env.clients.get(&client), Some(ClientConn::Dtls(x, _)) if x.id() == c.id())
+            {
+                env.clients.remove(&client);
+                // The allocation lives as long as its DTLS association.
                 core.remove_client(client, env);
             }
         });

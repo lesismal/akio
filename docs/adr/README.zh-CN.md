@@ -56,4 +56,5 @@
 - [ADR-050：only-rtp 估计器中的带宽探测](050-bwe-probing.zh-CN.md)（2026-11-19 采纳）
 - [ADR-051：路由约束改用 `only-regex`](051-router-on-only-regex.zh-CN.md)（2026-11-19 采纳）
 - [ADR-053：ULPFEC 保护级别、由收包生成 XR 块、类型化 SDES 项](053-ulpfec-levels-xr-receipts-sdes-items.zh-CN.md)（2026-11-20 采纳）
+- [ADR-054：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP](054-turn-dtls-mdns-ipv6-sdes.zh-CN.md)（2026-11-20 采纳）
 - [ADR-055：only-ice 中每个 ICE 数据流支持多个组件](055-ice-components.zh-CN.md)（2026-11-20 采纳）

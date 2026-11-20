@@ -10,9 +10,9 @@ fn fresh(lite: bool, cfg: ConfigInner) -> Option<Rtc> {
     Rtc::new(cfg, lite, Instant::now()).ok()
 }
 
-/// The configurations an SDP is tried with: the default, and every ADR-039 and ADR-048 option
-/// on (FEC as `fec`).
-fn configs() -> [ConfigInner; 3] {
+/// The configurations an SDP is tried with: the default, every ADR-039 and ADR-048 option
+/// on (FEC as `fec`), and SDES-SRTP on (ADR-054).
+fn configs() -> [ConfigInner; 4] {
     let full = |fec| ConfigInner {
         fec: Some(fec),
         fec_min: 50,
@@ -29,6 +29,10 @@ fn configs() -> [ConfigInner; 3] {
         ConfigInner::default(),
         full(crate::FecMechanism::FlexFec),
         full(crate::FecMechanism::Ulpfec),
+        ConfigInner {
+            sdes: true,
+            ..ConfigInner::default()
+        },
     ]
 }
 
@@ -44,14 +48,15 @@ pub fn webrtc_turn_url(data: &[u8]) {
         return;
     };
     assert!(!u.host.is_empty());
-    assert!(u.secure <= u.tcp, "turns: is always over TCP");
     if let Ok(ip) = u.host.parse::<std::net::IpAddr>() {
         let r = crate::RelayServer::from_parts(&u, (ip, u.port).into(), "u", "p");
         let t = r.transport();
         assert_eq!(
             t,
-            if u.secure {
+            if u.secure && u.tcp {
                 "tls"
+            } else if u.secure {
+                "dtls"
             } else if u.tcp {
                 "tcp"
             } else {
@@ -79,11 +84,16 @@ pub fn webrtc_sdp(data: &[u8]) {
 }
 
 fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
+    let sdes = cfg.sdes;
     let Some(mut rtc) = fresh(true, cfg.clone()) else {
         return;
     };
     if let Ok(answer) = rtc.accept_offer(now, s) {
         assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
+        // Keys travel in SDP only when SDES is on, and never next to a DTLS fingerprint.
+        let crypto = answer.contains("a=crypto:");
+        assert!(!crypto || cfg.sdes, "{answer}");
+        assert!(!(crypto && answer.contains("a=fingerprint:")), "{answer}");
     }
     // As an answer to an offer with media and a channel.
     let Some(mut offerer) = fresh(false, cfg) else {
@@ -92,7 +102,9 @@ fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
     let mut ch = offerer.changes();
     {
         let mut api = crate::SdpChanges(&mut ch);
-        api.add_channel("fuzz");
+        if !sdes {
+            api.add_channel("fuzz"); // an SDES session has no data channels
+        }
         api.add_media(
             crate::MediaKind::Audio,
             crate::Direction::SendRecv,
@@ -133,10 +145,11 @@ pub(crate) mod seeds {
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let now = Instant::now();
-        for media in [0, 1, 2, 3, 4, 5] {
+        for media in [0, 1, 2, 3, 4, 5, 6] {
             let cfg = match media {
                 3 => super::configs()[1].clone(),
                 4 | 5 => super::configs()[2].clone(),
+                6 => super::configs()[3].clone(),
                 _ => ConfigInner::default(),
             };
             let mut rtc = Rtc::new(cfg.clone(), false, now).expect("rtc");
@@ -159,7 +172,9 @@ pub(crate) mod seeds {
             let mut ch = rtc.changes();
             {
                 let mut api = SdpChanges(&mut ch);
-                api.add_channel("seed");
+                if media != 6 {
+                    api.add_channel("seed");
+                }
                 if media == 1 || media >= 3 {
                     api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
                     api.add_media(MediaKind::Video, Direction::SendOnly, None, None);

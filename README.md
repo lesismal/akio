@@ -20,7 +20,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | Engine | per-listener backends: epoll (Linux), kqueue (macOS), io_uring (Linux 5.19+, falls back to epoll); thread-per-core I/O threads; `SO_REUSEPORT` accept distribution; eBPF/classic-BPF steering (`Accel::Ebpf`) and an in-kernel sockmap relay |
 | Connections | `Conn` is `Clone + Send + Sync`; non-blocking `send` from any thread with direct writes, corking, `writev`, `sendfile`; backpressure (watermarks, `hold_reads`, `on_drain`, `max_queued_bytes`); idle timeouts; async dial; graceful shutdown |
 | Blocking work | adaptive bounded logical pool, `Conn::spawn_blocking` with completions back on the I/O thread, ordered response slots, slow-callback detection |
-| UDP | one `Conn` per peer, `recvmmsg`/`sendmmsg`, UDP GSO/GRO, peer caps, UDP dial |
+| UDP | one `Conn` per peer, `recvmmsg`/`sendmmsg`, UDP GSO/GRO, peer caps, UDP dial, multicast groups on a shared port (IPv6 groups joined per interface: `Engine::bind_udp_multicast_on`) |
 | TLS | in-house TLS 1.3 / 1.2 (`only-tls`, no third-party code) as a connection transport: server and client, ALPN, SNI, client certificates, resumption |
 | HTTP | HTTP/1.1 and HTTP/2 (h2spec 147/147) on one port, pipelining, streaming both ways, Router (static/regexp/param/wildcard), 9 middlewares, static files with `sendfile`, HTTP/1 and HTTP/2 clients |
 | WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |

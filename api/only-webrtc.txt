@@ -471,6 +471,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Pt
 pub struct only_webrtc::RelayServer
 impl only_webrtc::RelayServer
 pub fn only_webrtc::RelayServer::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_webrtc::RelayServer::dtls(core::net::socket_addr::SocketAddr, &str, only_tls::config::ClientConfig, &str, &str) -> only_webrtc::RelayServer
 pub fn only_webrtc::RelayServer::from_url(&str, &str, &str) -> core::result::Result<only_webrtc::RelayServer, only_webrtc::Error>
 pub fn only_webrtc::RelayServer::tcp(core::net::socket_addr::SocketAddr, &str, &str) -> only_webrtc::RelayServer
 pub fn only_webrtc::RelayServer::tls(core::net::socket_addr::SocketAddr, &str, only_tls::config::ClientConfig, &str, &str) -> only_webrtc::RelayServer
@@ -505,6 +506,7 @@ pub fn only_webrtc::RtcConfig::enable_opus_red(self, core::option::Option<u8>) -
 pub fn only_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_rtcp_xr(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_sdes_srtp(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self

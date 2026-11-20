@@ -65,6 +65,37 @@ ADR-053 (docs/adr/053-ulpfec-levels-xr-receipts-sdes-items.md):
 - Not done: wiring into only-webrtc (XR receipt / VoIP blocks, ULPFEC levels, random CNAMEs);
   partially recovered packets are not handed out; no R factor / MOS estimation.
 
+### Added: TURN over DTLS, mDNS over IPv6 and SDES-SRTP (only-turn, only-webrtc, only)
+
+ADR-054 (docs/adr/054-turn-dtls-mdns-ipv6-sdes.md):
+
+- `TurnServer::dtls(&tls::ServerConfig)`: TURN over DTLS (RFC 7350) on a UDP listener, with
+  the TLS listener's certificate: stateless cookies, DTLS 1.3 with a DTLS 1.2 fallback, one
+  STUN / ChannelData message per record, an allocation per DTLS association (freed by
+  close_notify, a fatal alert, idle timeout or a new handshake from the same address);
+  `TurnServer::dtls_relay_of`. only-turn now depends on only-dtls.
+- `RelayServer::dtls` and `turns:host[:port]?transport=udp` URLs (no longer an error):
+  `Endpoint` allocations inside a DTLS association on the endpoint's own UDP socket, the
+  server's certificate verified against the TLS client configuration's roots; a UDP relayed
+  candidate plus the server-reflexive one; made again after a lost association.
+- mDNS over IPv6: `Endpoint::resolve_mdns` adds a `[::]:5353` socket joined to `ff02::fb` on
+  every interface with a link-local address, queries per interface, answers on the query's link;
+  remote link-local addresses keep their interface (SDP carries no scope id). IPv4 behaviour is
+  unchanged; hosts without IPv6 run IPv4 only.
+- `only`: `Engine::bind_udp_multicast_on(group, interfaces, acceptor)` joins an IPv6 multicast
+  group on each listed interface index (0: the default one; interfaces refusing the join are
+  skipped). IPv4 groups take only `&[0]` (`InvalidInput` otherwise). `bind_udp_multicast` is
+  `bind_udp_multicast_on(group, &[0], ..)`, unchanged.
+- `RtcConfig::enable_sdes_srtp` (off by default): SDES-SRTP (RFC 4568) for SIP gateways: offers
+  `RTP/SAVPF` with an `a=crypto` line per suite (AEAD-AES-256/128-GCM, AES-256/128-CM-HMAC-SHA1-80,
+  AES-128-CM-HMAC-SHA1-32) and answers SDES offers; SRTP keyed from the SDP, no DTLS, no data
+  channels; no MKIs or session parameters. DTLS-SRTP offers are still answered with DTLS-SRTP:
+  browsers never see `a=crypto`.
+- Fuzzing: new target `turn_dtls`; `webrtc_sdp` tries an SDES configuration.
+- Interop: `tools/interop/webrtc/turn-dtls.sh` (coturn 4.6 in Docker): `turnutils_uclient -S`
+  against only-turn's DTLS listener, the only_turn client and two relayed `Endpoint`s against
+  coturn's DTLS listener (DTLS 1.2 negotiated).
+
 ### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
 
 ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):

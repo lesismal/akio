@@ -162,6 +162,20 @@ let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret
 let relayed = ep.gather_relay_via(&engine, &turns, Duration::from_secs(5))?;
 ```
 
+TURN over DTLS (RFC 7350) keeps UDP and encrypts the control channel:
+`RelayServer::dtls(addr, server_name, tls_config, ..)` or `turns:host[:port]?transport=udp`
+(then `tls_config`). The allocation runs inside a DTLS association (DTLS 1.3, falling back to
+1.2 as coturn speaks it) on the endpoint's own UDP socket, the server's certificate checked
+against the TLS configuration's roots for `server_name`; the candidate is a UDP relayed one, and
+the server's mapped address becomes a server-reflexive candidate as with plain UDP. A lost
+association loses the allocation, which is made again with a new handshake.
+
+```rust,ignore
+let dtls = RelayServer::from_url("turns:turn.example.com:5349?transport=udp", "alice", "secret")?
+    .tls_config(tls_client_config);
+let relayed = ep.gather_relay_via(&engine, &dtls, Duration::from_secs(5))?;
+```
+
 `candidate_filter(f)` is the endpoint's `iceTransportPolicy`: new peers use, and signal, only
 the local candidates `f` accepts, for example `|c| c.kind() == "relay"` (relay only) or
 `|c| c.transport() == "tcp"` (ICE-TCP only).
@@ -229,6 +243,13 @@ send when they make a name, are cached for their TTL. `conceal_host_candidates` 
 signal every host candidate under a random `<uuid>.local` name (one per address) and hide the
 related address of the others (`0.0.0.0:0`); the socket answers queries for those names, so a
 browser or another endpoint can resolve them.
+
+IPv6 runs next to IPv4 (ADR-054): a second socket on `[::]:5353` joins `ff02::fb` on every
+interface with a link-local address (`Engine::bind_udp_multicast_on`), queries go out on each of
+them, and an answer goes back on the link its query came from. IPv6 host addresses are
+concealed like IPv4 ones (AAAA records). SDP carries no scope id, so the endpoint remembers the
+interface of a remote link-local address (from the answer that resolved it, or from its
+traffic) and puts it back on what it sends. A host without IPv6 runs IPv4 only.
 
 ### Nomination
 
@@ -325,6 +346,22 @@ level, MID, RID, repaired RID, video orientation, playout delay, on free one-byt
 answer takes the encrypted variant of whatever is offered both ways. No browser offers RFC 6904,
 so it is for peers like this one. MKIs are not negotiated: DTLS-SRTP has no SDP for them.
 
+### SDES-SRTP for SIP gateways
+
+```rust,ignore
+let ep = ep.config(|| only_webrtc::rtc_config().enable_sdes_srtp(true));
+```
+
+SIP gateways often key SRTP with SDP security descriptions (RFC 4568) instead of DTLS-SRTP. With
+`enable_sdes_srtp(true)` offers carry `RTP/SAVPF` sections with an `a=crypto` line per suite
+(AEAD-AES-256/128-GCM, AES-256-CM and AES-128-CM with HMAC-SHA1-80, AES-128-CM with
+HMAC-SHA1-32), each with a random key, and no fingerprint; an SDES offer (`RTP/SAVP` or
+`RTP/SAVPF` with `a=crypto`) is answered with the first line this side can use and a key of its
+own. Each side encrypts with its own key and decrypts with the other's; the peer connects once
+ICE has a pair (the gateway needs ICE or ICE-lite). There is no DTLS, so no data channels, and the
+keys are only as secret as the signalling. Lines with an MKI or session parameters are not
+taken. DTLS-SRTP offers are still answered with DTLS-SRTP, so browsers never see `a=crypto`.
+
 ### Bandwidth probing
 
 With `enable_bwe` the estimator probes the path (ADR-050), as libwebrtc does: short clusters
@@ -390,6 +427,22 @@ turn.set_engine(&engine);
 An allocation made over a connection ends with it. STUN and ChannelData are framed on the stream
 by their own lengths (`only_turn::framing::FrameReader`), ChannelData padded to four bytes.
 
+### TURN over DTLS
+
+`turn.dtls(&tls_cfg)?` is the acceptor for UDP listeners whose clients talk DTLS (RFC 7350,
+`turns:host:5349?transport=udp`), with the same certificate as the TLS listener and the same
+allocations, quotas and credentials. ClientHellos are answered with stateless cookies before
+any state is kept; DTLS 1.3 is offered with a fallback to 1.2. Each record carries one STUN or
+ChannelData message, unpadded. An allocation lives as long as its DTLS association: close_notify,
+a fatal alert, `udp_idle_timeout` of silence or a new handshake from the same address frees it.
+coturn's `turnutils_uclient -S` and coturn's own DTLS listener interoperate
+(`tools/interop/webrtc/turn-dtls.sh`).
+
+```rust,ignore
+Engine::builder()
+    .listen(Listener::udp("0.0.0.0:5349".parse()?).serve(turn.dtls(&tls_cfg)?))
+```
+
 ### The TURN client
 
 `only_turn::client::Client` is a sans-io client of one allocation, over UDP or a TCP/TLS stream
@@ -443,6 +496,6 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); TURN over DTLS; mDNS over IPv6 multicast; FlexFEC on simulcast lines,
-libwebrtc's FEC mask tables; SRTP MKIs in WebRTC. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045
-and ADR-048 have the details of what was added.
+TCP relays (RFC 6062); FlexFEC on simulcast lines, libwebrtc's FEC mask tables; SRTP MKIs in
+WebRTC; SDES-SRTP without ICE or next to data channels. ADR-017, ADR-032, ADR-039, ADR-044,
+ADR-045, ADR-048 and ADR-054 have the details of what was added.

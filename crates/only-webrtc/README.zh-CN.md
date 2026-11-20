@@ -12,13 +12,16 @@
   检查列表，常规提名（以 `RtcConfig::enable_ice_aggressive_nomination` / `enable_ice_renomination`
   启用激进提名与重新提名），角色冲突，trickle ICE（RFC 8838），ICE 重启，consent freshness
   （RFC 7675），连接超时；与浏览器一样解析 mDNS（`.local`）候选，并把我方主机地址隐藏在 mDNS 名字
-  之后（`Endpoint::resolve_mdns`、`conceal_host_candidates`）。
+  之后（`Endpoint::resolve_mdns`、`conceal_host_candidates`），走 IPv4（`224.0.0.251`）与 IPv6
+  （`ff02::fb`，在每个有链路本地地址的接口上加入；链路本地地址保留其接口，ADR-054）。
 - **DTLS-SRTP**（[`only-dtls`](../only-dtls/README.zh-CN.md)）：DTLS 1.3（RFC 9147，与 Chrome 157
   协商一致），可回退到 DTLS 1.2（pion；`RtcConfig::enable_dtls13(false)` 只用 DTLS 1.2），角色取自
   `a=setup`，校验证书指纹；SRTP/SRTCP（[`only-srtp`](../only-srtp/README.zh-CN.md)，RFC 3711 /
   RFC 7714）支持 AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM，防重放，ROC 处理；密钥来自 DTLS
   导出器。可选开启（ADR-048）：cryptex（`a=cryptex`，RFC 9335，`enable_cryptex`）与 RFC 6904 加密头部
-  扩展（`enable_encrypted_header_extensions`）。
+  扩展（`enable_encrypted_header_extensions`）。面向 SIP 网关等非浏览器对端可选开启（ADR-054）：
+  SDES-SRTP（`enable_sdes_srtp`，SDP 中的 RFC 4568 `a=crypto` 密钥，`RTP/SAVPF`，没有 DTLS，因此没有
+  数据通道；DTLS-SRTP offer 仍以 DTLS-SRTP 应答，浏览器永远看不到 `a=crypto`）。
 - **数据通道**（[`only-sctp`](../only-sctp/README.zh-CN.md)）：基于 DTLS 的 SCTP（RFC 8261），
   拥塞控制、重传、PR-SCTP FORWARD-TSN（RFC 3758）、用于关闭通道的流重置（RFC 6525）、CRC32C；
   DCEP（RFC 8832）；可靠 / 最大重传次数 / 最大生存期，有序或无序，二进制 / 字符串 / 空消息，
@@ -36,7 +39,8 @@
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
   sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
   `a=simulcast`、RID/MID 头扩展）与接收，以及用于层选择的按层关键帧请求（`request_layer_keyframe`）。
-- **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 UDP、TCP 或 TLS 的 TURN 分配得到的
+- **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 UDP、DTLS（RFC 7350，
+  `RelayServer::dtls`、`turns:...?transport=udp`）、TCP 或 TLS 的 TURN 分配得到的
   relay（`gather_relay`，以及用 `RelayServer` 或 `turn:`/`turns:` URL 的 `gather_relay_via`；丢失的分配会
   重新建立）、被动、主动与同时打开的 ICE-TCP（`listen_tcp`、`dial_tcp`、`listen_tcp_so`，RFC 6544），
   以及候选策略（`candidate_filter`，相当于 `iceTransportPolicy`）。`RtcServer` 可在 engine 的 TCP
@@ -72,12 +76,13 @@ Chrome 互相解析对方名字后连通；两种 DTLS 角色的 DTLS 1.3；在 
 `tools/interop/webrtc/browser.sh`；与无头 Chrome 的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与
 TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`tools/interop/webrtc/fec.sh`；以 Chrome 为接收方时估计值的爬升（探测）：
 `tools/interop/webrtc/bwe.sh`；与无头 Firefox
-双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`。STUN 与 TURN
+双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`；coturn 的 DTLS 监听器（经
+`turns:...?transport=udp` 由它中继的 `Endpoint`）：`tools/interop/webrtc/turn-dtls.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：DTLS 上的 TURN、simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不
-发送）、SDES-SRTP、SRTP MKI（DTLS-SRTP 没有对应的 SDP，也没有浏览器使用）、与浏览器的 RFC 6904（没有浏览器
-提供）、IPv6 组播上的 mDNS、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
+未实现：simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不发送）、SRTP MKI
+（DTLS-SRTP 没有对应的 SDP，也没有浏览器使用；带 MKI 的 SDES 行同样不采用）、无 ICE 或带数据通道的
+SDES-SRTP、与浏览器的 RFC 6904（没有浏览器提供）、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
 `listen_tcp_so` 在 `Endpoint` 之间测试。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

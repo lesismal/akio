@@ -771,7 +771,11 @@ pub(crate) struct Rtc {
     remote_fp: Option<Fingerprint>,
     dtls_role: Option<Role>,
     dtls: Option<Connection>,
+    /// The SRTP keys are in place and ICE has a pair: by DTLS-SRTP, or with SDES-SRTP keys
+    /// once ICE selected a pair.
     dtls_connected: bool,
+    /// SDES-SRTP (RFC 4568), when the session uses it instead of DTLS-SRTP.
+    sdes: sdes::Sdes,
     srtp_tx: Option<Srtp>,
     srtp_rx: Option<Srtp>,
     sctp: Option<Association>,
@@ -899,6 +903,7 @@ impl Rtc {
             dtls_role: None,
             dtls: None,
             dtls_connected: false,
+            sdes: sdes::Sdes::default(),
             srtp_tx: None,
             srtp_rx: None,
             sctp: None,
@@ -1064,6 +1069,18 @@ impl Rtc {
         now: Instant,
         ch: Changes<'_>,
     ) -> Result<Option<String>, RtcErr> {
+        if !self.negotiated && self.pending.is_none() {
+            // The first offer decides how the session is keyed.
+            self.sdes.active = self.cfg.sdes;
+            if self.sdes.active {
+                sdes::PROTOS[0].clone_into(&mut self.sdes.proto);
+            }
+        }
+        if self.sdes.active && ch.ops.iter().any(|o| matches!(o, Change::AddChannel(..))) {
+            return Err(err(
+                "data channels need DTLS: an SDES-SRTP session carries media only",
+            ));
+        }
         self.next_channel = self.next_channel.max(ch.next_channel);
         self.next_mid = self.next_mid.max(ch.next_mid);
         let needs_offer = ch.ops.iter().any(|o| !matches!(o, Change::AddChannel(..)))
@@ -1125,6 +1142,9 @@ impl Rtc {
         if !self.lite {
             self.ice.set_controlling(true);
         }
+        if self.sdes.active {
+            self.sdes.offer_lines();
+        }
         self.pending = Some(Pending { new_lines });
         Ok(Some(self.write_sdp(true)))
     }
@@ -1133,9 +1153,12 @@ impl Rtc {
     pub(crate) fn accept_answer(&mut self, now: Instant, answer: &str) -> Result<(), RtcErr> {
         let sdp = Sdp::parse(answer).map_err(err)?;
         let pending = self.pending.take().ok_or_else(|| err("no offer pending"))?;
+        if self.sdes.active {
+            self.sdes.accept_answer(&sdp).map_err(err)?;
+        }
         self.apply_remote_transport(&sdp, false)?;
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
-        if self.dtls_role.is_none() {
+        if self.dtls_role.is_none() && !self.sdes.active {
             let setup = sdp
                 .media
                 .iter()
@@ -1200,6 +1223,7 @@ impl Rtc {
                 }));
             }
         }
+        self.key_sdes();
         self.after_negotiation(now);
         Ok(())
     }
@@ -1212,9 +1236,25 @@ impl Rtc {
         }
         // A remote offer replaces any of ours (glare: theirs wins here).
         self.pending = None;
+        let sdes_offer = sdes::is_sdes_offer(&sdp);
+        if self.negotiated && sdes_offer != self.sdes.active {
+            return Err(err("the remote switched between SDES-SRTP and DTLS-SRTP"));
+        }
+        if sdes_offer && !self.cfg.sdes {
+            return Err(err(
+                "an SDES-SRTP offer (a=crypto): SDES is off (RtcConfig::enable_sdes_srtp)",
+            ));
+        }
+        self.sdes.active = sdes_offer;
+        if sdes_offer {
+            self.sdes.accept_offer(&sdp).map_err(err)?;
+            if let Some(m) = sdp.media.iter().find(|m| m.port != 0) {
+                self.sdes.proto.clone_from(&m.proto);
+            }
+        }
         self.apply_remote_transport(&sdp, true)?;
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
-        if self.dtls_role.is_none() {
+        if self.dtls_role.is_none() && !self.sdes.active {
             let setup = sdp
                 .media
                 .iter()
@@ -1239,7 +1279,8 @@ impl Rtc {
                 _ => None,
             };
             if m.kind == "application" && m.proto.contains("SCTP") {
-                if self.app_mid.is_none() || self.app_mid == Some(mid) {
+                // Data channels need DTLS: refused in an SDES session.
+                if !self.sdes.active && (self.app_mid.is_none() || self.app_mid == Some(mid)) {
                     self.app_mid = Some(mid);
                     self.app_negotiated = m.port != 0;
                     if let Some(v) = m.get("max-message-size").and_then(|v| v.parse().ok()) {
@@ -1320,6 +1361,7 @@ impl Rtc {
             }
             order.push(Section::Line(mid));
         }
+        self.key_sdes();
         // Our lines must follow the offer's order.
         let answer = self.write_answer(&order);
         self.after_negotiation(now);
@@ -1336,12 +1378,14 @@ impl Rtc {
         };
         let ufrag = get("ice-ufrag").ok_or_else(|| err("no a=ice-ufrag"))?;
         let pwd = get("ice-pwd").ok_or_else(|| err("no a=ice-pwd"))?;
-        let fp = get("fingerprint").ok_or_else(|| err("no a=fingerprint"))?;
-        let fp = Fingerprint::parse(fp).map_err(|e| err(format!("fingerprint: {e}")))?;
-        if self.remote_fp.as_ref().is_some_and(|f| *f != fp) && self.dtls.is_some() {
-            return Err(err("the remote DTLS fingerprint changed"));
+        if !self.sdes.active {
+            let fp = get("fingerprint").ok_or_else(|| err("no a=fingerprint"))?;
+            let fp = Fingerprint::parse(fp).map_err(|e| err(format!("fingerprint: {e}")))?;
+            if self.remote_fp.as_ref().is_some_and(|f| *f != fp) && self.dtls.is_some() {
+                return Err(err("the remote DTLS fingerprint changed"));
+            }
+            self.remote_fp = Some(fp);
         }
-        self.remote_fp = Some(fp);
         let creds = Credentials::new(ufrag, pwd);
         let restart = self.ice.remote_credentials().is_some_and(|c| *c != creds);
         if restart && is_offer {
@@ -1369,6 +1413,37 @@ impl Rtc {
             self.ice.end_of_remote_candidates();
         }
         Ok(())
+    }
+
+    /// SDES-SRTP: (re)keys the SRTP contexts whose key the negotiation changed; a context
+    /// whose key stayed keeps its state (rollover counters, replay window).
+    fn key_sdes(&mut self) {
+        if !self.sdes.active {
+            return;
+        }
+        let (Some(local), Some(remote)) = (self.sdes.local.clone(), self.sdes.remote.clone())
+        else {
+            return;
+        };
+        let mut changed = false;
+        if self.sdes.keyed_tx.as_ref() != Some(&local) {
+            let (k, s) = local.key_salt();
+            self.srtp_tx = Srtp::new(local.profile, k, s).ok();
+            self.sdes.keyed_tx = Some(local);
+            changed = true;
+        }
+        if self.sdes.keyed_rx.as_ref() != Some(&remote) {
+            let (k, s) = remote.key_salt();
+            self.srtp_rx = Srtp::new(remote.profile, k, s)
+                .ok()
+                .map(|c| c.with_replay_window(512));
+            self.sdes.keyed_rx = Some(remote);
+            changed = true;
+        }
+        if changed {
+            // The header protection goes onto the new contexts.
+            self.srtp_enc_ids.clear();
+        }
     }
 
     fn after_negotiation(&mut self, now: Instant) {
@@ -1523,7 +1598,7 @@ impl Rtc {
                         &Media {
                             kind: l.kind.as_str().into(),
                             port: 0,
-                            proto: "UDP/TLS/RTP/SAVPF".into(),
+                            proto: self.media_proto(),
                             fmts: vec!["0".into()],
                             attrs: Vec::new(),
                         },
@@ -1579,7 +1654,16 @@ impl Rtc {
         }
     }
 
-    fn transport_attrs(&self, attrs: &mut Vec<Attr>, setup: &str, candidates: bool) {
+    /// The media protocol of our sections.
+    fn media_proto(&self) -> String {
+        if self.sdes.active {
+            self.sdes.proto.clone()
+        } else {
+            "UDP/TLS/RTP/SAVPF".into()
+        }
+    }
+
+    fn transport_attrs(&self, attrs: &mut Vec<Attr>, setup: &str, candidates: bool, offer: bool) {
         let c = self.ice.local_credentials();
         attrs.push(Attr::kv("ice-ufrag", c.ufrag.clone()));
         attrs.push(Attr::kv("ice-pwd", c.pwd.clone()));
@@ -1591,11 +1675,23 @@ impl Rtc {
                 "trickle"
             },
         ));
-        attrs.push(Attr::kv(
-            "fingerprint",
-            fingerprint_sdp(&self.identity.fingerprint()),
-        ));
-        attrs.push(Attr::kv("setup", setup));
+        if self.sdes.active {
+            // SDES: the keys themselves, no DTLS (RFC 4568).
+            let lines = if offer {
+                &self.sdes.offered[..]
+            } else {
+                self.sdes.local.as_slice()
+            };
+            for c in lines {
+                attrs.push(Attr::kv("crypto", c.to_attr()));
+            }
+        } else {
+            attrs.push(Attr::kv(
+                "fingerprint",
+                fingerprint_sdp(&self.identity.fingerprint()),
+            ));
+            attrs.push(Attr::kv("setup", setup));
+        }
         if candidates {
             for c in self.ice.local_candidates() {
                 if c.kind() == only_ice::CandidateKind::PeerReflexive {
@@ -1613,7 +1709,7 @@ impl Rtc {
 
     fn app_section(&self, mid: Mid, setup: &str, candidates: bool) -> Media {
         let mut attrs = Vec::new();
-        self.transport_attrs(&mut attrs, setup, candidates);
+        self.transport_attrs(&mut attrs, setup, candidates, false);
         attrs.push(Attr::kv("mid", mid.as_str()));
         attrs.push(Attr::kv("sctp-port", "5000"));
         attrs.push(Attr::kv("max-message-size", MAX_MESSAGE_SIZE.to_string()));
@@ -1628,7 +1724,7 @@ impl Rtc {
 
     fn line_section(&self, l: &MediaLine, setup: &str, candidates: bool, offer: bool) -> Media {
         let mut attrs = Vec::new();
-        self.transport_attrs(&mut attrs, setup, candidates);
+        self.transport_attrs(&mut attrs, setup, candidates, offer);
         attrs.push(Attr::kv("mid", l.mid.as_str()));
         for (id, e) in l.ext.iter() {
             let enc = if l.enc_ids.contains(&id) {
@@ -1776,7 +1872,7 @@ impl Rtc {
         Media {
             kind: l.kind.as_str().into(),
             port: if l.stopped { 0 } else { 9 },
-            proto: "UDP/TLS/RTP/SAVPF".into(),
+            proto: self.media_proto(),
             fmts,
             attrs,
         }
@@ -3037,6 +3133,17 @@ impl Rtc {
                     _ => {}
                 }
             }
+            if self.sdes.active
+                && !self.dtls_connected
+                && self.srtp_tx.is_some()
+                && self.ice.send_pair().is_some()
+            {
+                // SDES: keyed by the SDP, connected once ICE has a pair.
+                self.dtls_connected = true;
+                self.events.push_back(RtcEvent::Connected);
+                self.next_rtcp = Some(now + Duration::from_millis(200));
+                progress = true;
+            }
             if self.dtls.is_none()
                 && self.dtls_role == Some(Role::Client)
                 && self.ice.send_pair().is_some()
@@ -3395,5 +3502,6 @@ fn abs_send_time_now() -> u32 {
 
 mod feedback;
 mod pacing;
+mod sdes;
 #[cfg(test)]
 mod tests;
