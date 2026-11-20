@@ -696,6 +696,8 @@ pub(crate) struct ConfigInner {
     pub(crate) encrypt_ext: bool,
     /// Opus RED (RFC 2198): `None` off, else the redundant blocks sent (0..=2).
     pub(crate) opus_red: Option<u8>,
+    /// SDES-SRTP (RFC 4568) offered and accepted instead of DTLS-SRTP.
+    pub(crate) sdes: bool,
 }
 
 impl Default for ConfigInner {
@@ -728,6 +730,7 @@ impl Default for ConfigInner {
             cryptex: false,
             encrypt_ext: false,
             opus_red: None,
+            sdes: false,
         }
     }
 }
@@ -752,6 +755,7 @@ impl fmt::Debug for RtcConfig {
             .field("cryptex", &self.0.cryptex)
             .field("encrypted_header_extensions", &self.0.encrypt_ext)
             .field("opus_red", &self.0.opus_red)
+            .field("sdes_srtp", &self.0.sdes)
             .finish_non_exhaustive()
     }
 }
@@ -962,6 +966,23 @@ impl RtcConfig {
     #[must_use]
     pub fn enable_opus_red(mut self, redundancy: Option<u8>) -> Self {
         self.0.opus_red = redundancy.map(|n| n.min(2));
+        self
+    }
+
+    /// SDP security descriptions for SRTP (SDES, RFC 4568), for peers without DTLS-SRTP such
+    /// as SIP gateways. When on, offers are SDES ones: media sections `RTP/SAVPF` with one
+    /// `a=crypto` line per suite (AEAD-AES-256-GCM, AEAD-AES-128-GCM, AES-256-CM and
+    /// AES-128-CM with HMAC-SHA1-80, AES-128-CM with HMAC-SHA1-32, each with its own random
+    /// key) and no `a=fingerprint`; and a remote offer in that form (`RTP/SAVP` or
+    /// `RTP/SAVPF` with `a=crypto`) is answered with the first line it can use and a key of
+    /// this side's. The SRTP contexts are keyed from the SDP: no DTLS handshake runs, so an
+    /// SDES session has no data channels (adding one fails) and its keys are only as secret
+    /// as the signalling channel. ICE still runs (the remote needs ICE or ICE-lite); lines
+    /// with an MKI or session parameters are not taken. DTLS-SRTP offers are answered with
+    /// DTLS-SRTP either way, so browsers never see `a=crypto`. Default off.
+    #[must_use]
+    pub fn enable_sdes_srtp(mut self, enabled: bool) -> Self {
+        self.0.sdes = enabled;
         self
     }
 }
