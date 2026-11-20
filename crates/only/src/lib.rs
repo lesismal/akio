@@ -832,6 +832,23 @@ impl Engine {
         group: SocketAddr,
         acceptor: A,
     ) -> io::Result<UdpBinding> {
+        self.bind_udp_multicast_on(group, &[], acceptor)
+    }
+
+    /// [`bind_udp_multicast`](Self::bind_udp_multicast) for an IPv6 group joined on each of
+    /// `interfaces` (interface indexes, the scope ids of link-local addresses) instead of the
+    /// default interface: a link-scoped group such as mDNS's `ff02::fb` reaches a socket only
+    /// on the links it was joined on. Interfaces that refuse the join (down, no IPv6) are
+    /// skipped; it fails only when none accepts it. An empty list joins on the default
+    /// interface; an IPv4 group is always joined on the default interface. Datagrams arrive
+    /// with the source's scope id; [`UdpBinding::send_to`] the group with a scope id to send
+    /// on that link.
+    pub fn bind_udp_multicast_on<A: Acceptor>(
+        &self,
+        group: SocketAddr,
+        interfaces: &[u32],
+        acceptor: A,
+    ) -> io::Result<UdpBinding> {
         if !group.ip().is_multicast() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -854,7 +871,20 @@ impl Engine {
                 sock.join_multicast_v4(&ip, &std::net::Ipv4Addr::UNSPECIFIED)?;
                 sock.set_multicast_ttl_v4(255)?;
             }
-            std::net::IpAddr::V6(ip) => sock.join_multicast_v6(&ip, 0)?,
+            std::net::IpAddr::V6(ip) if interfaces.is_empty() => sock.join_multicast_v6(&ip, 0)?,
+            std::net::IpAddr::V6(ip) => {
+                let mut last = None;
+                let mut joined = false;
+                for &i in interfaces {
+                    match sock.join_multicast_v6(&ip, i) {
+                        Ok(()) => joined = true,
+                        Err(e) => last = Some(e),
+                    }
+                }
+                if !joined {
+                    return Err(last.unwrap_or_else(|| io::Error::other("no interface")));
+                }
+            }
         }
         sock.set_nonblocking(true)?;
         g.bind_udp(sock, Arc::new(acceptor))
