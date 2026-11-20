@@ -748,7 +748,15 @@ struct Hub {
     /// New peers conceal host addresses behind mDNS names
     /// ([`Endpoint::conceal_host_candidates`]).
     conceal: AtomicBool,
+    /// The interfaces (scope ids) of remote link-local IPv6 addresses: SDP carries none, so
+    /// remote addresses go to ICE without one and get it back on the way out. Learnt from
+    /// the datagrams they send and from mDNS answers. Endpoints that see no link-local
+    /// traffic never touch it.
+    scopes: Mutex<HashMap<std::net::Ipv6Addr, u32>>,
 }
+
+/// Link-local addresses whose interface is remembered.
+const MAX_SCOPES: usize = 256;
 
 type CandidateFilter = dyn Fn(&Candidate) -> bool + Send + Sync;
 
@@ -775,6 +783,51 @@ impl Hub {
             filter: Mutex::new(None),
             mdns: OnceLock::new(),
             conceal: AtomicBool::new(false),
+            scopes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Remembers that link-local `ip` is reached through interface `scope`.
+    fn learn_scope(&self, ip: std::net::Ipv6Addr, scope: u32) {
+        let mut m = lock(&self.scopes);
+        if m.len() < MAX_SCOPES || m.contains_key(&ip) {
+            m.insert(ip, scope);
+        }
+    }
+
+    /// `a` without its scope id when it is a link-local IPv6 address (the interface is
+    /// remembered).
+    fn unscope(&self, a: SocketAddr) -> SocketAddr {
+        match a {
+            SocketAddr::V6(v) if v.scope_id() != 0 && mdns::is_link_local(v.ip()) => {
+                self.learn_scope(*v.ip(), v.scope_id());
+                SocketAddr::V6(std::net::SocketAddrV6::new(*v.ip(), v.port(), v.flowinfo(), 0))
+            }
+            a => a,
+        }
+    }
+
+    /// `a` with the interface of a link-local IPv6 address that has none: the one learnt for
+    /// it, else the socket's own when it is bound to a link-local address (same link).
+    fn rescope(&self, a: SocketAddr) -> SocketAddr {
+        match a {
+            SocketAddr::V6(v) if v.scope_id() == 0 && mdns::is_link_local(v.ip()) => {
+                let learnt = lock(&self.scopes).get(v.ip()).copied();
+                let own = || match self.binding().map(UdpBinding::local_addr) {
+                    Some(SocketAddr::V6(l)) if l.scope_id() != 0 => Some(l.scope_id()),
+                    _ => None,
+                };
+                match learnt.or_else(own) {
+                    Some(s) => SocketAddr::V6(std::net::SocketAddrV6::new(
+                        *v.ip(),
+                        v.port(),
+                        v.flowinfo(),
+                        s,
+                    )),
+                    None => a,
+                }
+            }
+            a => a,
         }
     }
 
@@ -982,6 +1035,7 @@ impl Hub {
             }
             return;
         }
+        let dest = self.rescope(dest);
         match &self.tx {
             Tx::Listener(conns) => {
                 let c = lock(conns).get(&dest).cloned();
@@ -1011,6 +1065,7 @@ impl Hub {
     }
 
     fn on_datagram(&self, source: SocketAddr, local: SocketAddr, data: &[u8]) {
+        let source = self.unscope(source);
         let is_stun = stun::is_stun(data);
         if is_stun && !lock(&self.stun_waiters).is_empty() {
             if let Ok(m) = stun::Message::parse(data) {

@@ -2,12 +2,20 @@
 //! `.local` names browsers write instead of their host addresses, and answering queries for
 //! the names an [`Endpoint`](crate::Endpoint) conceals its own host addresses behind.
 //!
-//! One socket per endpoint, served by an engine I/O thread (nothing here blocks): normally
-//! the shared mDNS port (`0.0.0.0:5353` with `SO_REUSEADDR`/`SO_REUSEPORT`, member of
-//! `224.0.0.251`, next to the system's responder), where queries go to the group and the
-//! answers come back by multicast; if that port cannot be bound, an ephemeral port, from which
-//! queries are "legacy unicast" one-shot queries (RFC 6762 §6.7: responders answer to the
-//! source port) and nothing can be concealed.
+//! One socket per address family and endpoint, served by an engine I/O thread (nothing here
+//! blocks): normally the shared mDNS port (`0.0.0.0:5353` member of `224.0.0.251`, and
+//! `[::]:5353` member of `ff02::fb`, with `SO_REUSEADDR`/`SO_REUSEPORT`, next to the system's
+//! responder), where queries go to the group and the answers come back by multicast; if that
+//! port cannot be bound, an ephemeral port, from which queries are "legacy unicast" one-shot
+//! queries (RFC 6762 §6.7: responders answer to the source port) and nothing can be concealed
+//! over that family. A host without IPv6 runs IPv4 only, as before.
+//!
+//! IPv6 multicast is link-scoped: a query goes to `ff02::fb` on each interface the endpoint
+//! knows (the scope ids of its link-local IPv6 host candidates, and the default multicast
+//! interface), an answer goes back to the interface its query came from, and a link-local
+//! address resolved from an answer is reached through the interface the answer came from
+//! (the endpoint keeps that scope id for the address: SDP carries none). Either family's
+//! answers may carry `A` and `AAAA` records; a name resolves to the addresses of both.
 //!
 //! A name being resolved is queried at once, again after 1 and 2 seconds, then every 2
 //! seconds until the timeout; answers, solicited or not (browsers announce their names), are
@@ -16,7 +24,7 @@
 //! address family the name has), unless that peer's remote ICE credentials changed meanwhile.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -66,86 +74,188 @@ struct State {
     armed: Option<Instant>,
 }
 
+/// The group of `v6`'s family on interface `scope` (IPv4 has no scope).
+fn group(v6: bool, scope: u32) -> SocketAddr {
+    if v6 {
+        SocketAddr::V6(SocketAddrV6::new(mdns::GROUP_V6, mdns::PORT, 0, scope))
+    } else {
+        mdns::MULTICAST_V4
+    }
+}
+
+/// Whether `ip` is an IPv6 link-local unicast address (`fe80::/10`), which needs a scope id.
+pub(crate) fn is_link_local(ip: &Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xffc0 == 0xfe80
+}
+
+/// The interfaces with an IPv6 link-local address (their indexes, the scope ids): on Linux
+/// from `/proc/net/if_inet6`, elsewhere by asking the kernel for a route to `ff02::fb` on
+/// each of the first indexes (a UDP connect, nothing sent). Sorted, at most 64.
+pub(crate) fn ipv6_interfaces() -> Vec<u32> {
+    const MAX: usize = 64;
+    let mut out = Vec::new();
+    if let Ok(t) = std::fs::read_to_string("/proc/net/if_inet6") {
+        // `<addr hex> <ifindex hex> <prefix> <scope hex> <flags> <name>`; scope 0x20: link.
+        for l in t.lines() {
+            let f: Vec<&str> = l.split_ascii_whitespace().collect();
+            if f.len() >= 6 && f[3] == "20" {
+                if let Ok(i) = u32::from_str_radix(f[1], 16) {
+                    if !out.contains(&i) && out.len() < MAX {
+                        out.push(i);
+                    }
+                }
+            }
+        }
+    } else {
+        for i in 1..=MAX as u32 {
+            let Ok(s) = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)) else {
+                break;
+            };
+            let up = s.connect(group(true, i)).is_ok()
+                && matches!(s.local_addr(), Ok(SocketAddr::V6(a)) if is_link_local(a.ip()));
+            if up {
+                out.push(i);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// One mDNS socket.
+struct Sock {
+    binding: UdpBinding,
+    v6: bool,
+    /// Bound to the shared mDNS port (multicast); else an ephemeral port (legacy unicast).
+    shared: bool,
+}
+
 pub(crate) struct Mdns {
     me: Weak<Mdns>,
     hub: Weak<Hub>,
-    binding: OnceLock<UdpBinding>,
-    /// Bound to the shared mDNS port (multicast); else an ephemeral port (legacy unicast).
-    shared: bool,
+    /// The IPv4 socket, then the IPv6 one when the host has IPv6.
+    socks: OnceLock<Vec<Sock>>,
+    /// The interfaces the IPv6 socket joined `ff02::fb` on (empty: the default one).
+    ifaces: Vec<u32>,
     timeout: Duration,
     state: Mutex<State>,
 }
 
-struct MdnsAcceptor(Weak<Mdns>);
+struct MdnsAcceptor(Weak<Mdns>, bool);
 
 impl Acceptor for MdnsAcceptor {
     type Handler = MdnsUdp;
     fn on_open(&self, _c: &Conn<MdnsUdp>) -> MdnsUdp {
-        MdnsUdp(self.0.clone())
+        MdnsUdp(self.0.clone(), self.1)
     }
 }
 
-/// The mDNS socket's handler.
-pub(crate) struct MdnsUdp(Weak<Mdns>);
+/// An mDNS socket's handler (and whether it is the IPv6 one).
+pub(crate) struct MdnsUdp(Weak<Mdns>, bool);
 
 impl std::fmt::Debug for MdnsUdp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MdnsUdp").finish_non_exhaustive()
+        f.debug_struct("MdnsUdp").field("v6", &self.1).finish_non_exhaustive()
     }
 }
 
 impl Handler for MdnsUdp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        let src = c.peer_addr();
+        // The dual-stack IPv6 socket may also see IPv4 datagrams (as mapped addresses): the
+        // IPv4 socket has them.
+        if self.1 && matches!(src, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_some()) {
+            return;
+        }
         if let Some(m) = self.0.upgrade() {
-            m.on_datagram(c.peer_addr(), data);
+            m.on_datagram(src, data);
         }
     }
 }
 
 impl Mdns {
-    /// Binds the mDNS socket on `engine` (the shared port, else an ephemeral one).
+    /// Binds the mDNS sockets on `engine`: IPv4 (the shared port, else an ephemeral one),
+    /// then IPv6 the same way when the host has IPv6 (its failure is not an error), member
+    /// of `ff02::fb` on every interface with a link-local address.
     pub(crate) fn new(
         hub: &Arc<Hub>,
         engine: &Engine,
         timeout: Duration,
     ) -> std::io::Result<Arc<Mdns>> {
-        let make = |shared: bool| {
-            Arc::new_cyclic(|me| Mdns {
-                me: me.clone(),
-                hub: Arc::downgrade(hub),
-                binding: OnceLock::new(),
-                shared,
-                timeout,
-                state: Mutex::new(State::default()),
-            })
-        };
-        let m = make(true);
-        let b = match engine.bind_udp_multicast(mdns::MULTICAST_V4, MdnsAcceptor(m.me.clone())) {
-            Ok(b) => (m, b),
-            Err(e) => {
-                only_log::debug!(target: "only_webrtc", "mdns: port {} unavailable ({e}); one-shot unicast queries", mdns::PORT);
-                let m = make(false);
-                let b = engine.bind_udp(
-                    SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
-                    MdnsAcceptor(m.me.clone()),
-                )?;
-                (m, b)
+        let m = Arc::new_cyclic(|me| Mdns {
+            me: me.clone(),
+            hub: Arc::downgrade(hub),
+            socks: OnceLock::new(),
+            ifaces: ipv6_interfaces(),
+            timeout,
+            state: Mutex::new(State::default()),
+        });
+        let bind = |v6: bool| -> std::io::Result<Sock> {
+            let acc = || MdnsAcceptor(m.me.clone(), v6);
+            let ifaces: &[u32] = if v6 { &m.ifaces } else { &[] };
+            match engine.bind_udp_multicast_on(group(v6, 0), ifaces, acc()) {
+                Ok(binding) => Ok(Sock {
+                    binding,
+                    v6,
+                    shared: true,
+                }),
+                Err(e) => {
+                    only_log::debug!(target: "only_webrtc", "mdns: port {} unavailable over IPv{} ({e}); one-shot unicast queries", mdns::PORT, if v6 { 6 } else { 4 });
+                    let any: IpAddr = if v6 {
+                        Ipv6Addr::UNSPECIFIED.into()
+                    } else {
+                        Ipv4Addr::UNSPECIFIED.into()
+                    };
+                    Ok(Sock {
+                        binding: engine.bind_udp(SocketAddr::new(any, 0), acc())?,
+                        v6,
+                        shared: false,
+                    })
+                }
             }
         };
-        let (m, b) = b;
-        let _ = m.binding.set(b);
+        let mut socks = vec![bind(false)?];
+        match bind(true) {
+            Ok(s) => socks.push(s),
+            Err(e) => only_log::debug!(target: "only_webrtc", "mdns: no IPv6 ({e}); IPv4 only"),
+        }
+        let _ = m.socks.set(socks);
         Ok(m)
     }
 
-    /// Whether this socket can answer queries (it is on the shared mDNS port).
+    fn socks(&self) -> &[Sock] {
+        self.socks.get().map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether names can be answered (the IPv4 socket is on the shared mDNS port).
     pub(crate) fn can_respond(&self) -> bool {
-        self.shared
+        self.socks().first().is_some_and(|s| s.shared)
     }
 
     pub(crate) fn close(&self) {
-        if let Some(b) = self.binding.get() {
-            b.close();
+        for s in self.socks() {
+            s.binding.close();
         }
+    }
+
+    /// The interfaces IPv6 queries go out on: those the group was joined on (or the default
+    /// one, 0) and those of the endpoint's link-local IPv6 host candidates.
+    fn scopes(&self) -> Vec<u32> {
+        let mut out = if self.ifaces.is_empty() {
+            vec![0]
+        } else {
+            self.ifaces.clone()
+        };
+        if let Some(hub) = self.hub.upgrade() {
+            for c in lock(&hub.candidates).iter() {
+                if let SocketAddr::V6(a) = c.addr() {
+                    if a.scope_id() != 0 && !out.contains(&a.scope_id()) {
+                        out.push(a.scope_id());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The name concealing local address `ip` (made on first use); `None` past
@@ -246,14 +356,27 @@ impl Mdns {
     }
 
     fn send_queries(&self, names: &[String]) {
-        let Some(b) = self.binding.get() else { return };
-        for n in names {
-            // Over the shared port, a multicast query; otherwise a legacy unicast one (the
-            // QU bit is set too, which the RFC asks of one-shot queriers on another port).
-            // One question per message (Chromium's responder ignores several).
-            for t in [mdns::TYPE_A, mdns::TYPE_AAAA] {
-                if let Some(q) = Message::query(n, t, !self.shared) {
-                    let _ = b.send_to(&q, mdns::MULTICAST_V4);
+        let scopes = if self.socks().iter().any(|s| s.v6) {
+            self.scopes()
+        } else {
+            Vec::new()
+        };
+        for s in self.socks() {
+            let dests: Vec<SocketAddr> = if s.v6 {
+                scopes.iter().map(|&i| group(true, i)).collect()
+            } else {
+                vec![mdns::MULTICAST_V4]
+            };
+            for n in names {
+                // Over the shared port, a multicast query; otherwise a legacy unicast one (the
+                // QU bit is set too, which the RFC asks of one-shot queriers on another port).
+                // One question per message (Chromium's responder ignores several).
+                for t in [mdns::TYPE_A, mdns::TYPE_AAAA] {
+                    if let Some(q) = Message::query(n, t, !s.shared) {
+                        for d in &dests {
+                            let _ = s.binding.send_to(&q, *d);
+                        }
+                    }
                 }
             }
         }
@@ -264,14 +387,28 @@ impl Mdns {
         if m.response {
             // RFC 6762 §6: answers come from the mDNS port (also to legacy unicast queriers).
             if src.port() == mdns::PORT {
-                self.on_response(&m.records);
+                self.on_response(src, &m.records);
             }
-        } else if self.shared && !m.questions.is_empty() {
+        } else if !m.questions.is_empty()
+            && self.socks().iter().any(|s| s.v6 == src.is_ipv6() && s.shared)
+        {
             self.on_query(src, &m);
         }
     }
 
-    fn on_response(&self, records: &[Record]) {
+    fn on_response(&self, src: SocketAddr, records: &[Record]) {
+        // A link-local address is reached through the interface its answer came from.
+        if let (SocketAddr::V6(s), Some(hub)) = (src, self.hub.upgrade()) {
+            if s.scope_id() != 0 {
+                for r in records {
+                    if let IpAddr::V6(ip) = r.addr {
+                        if is_link_local(&ip) && r.ttl > 0 {
+                            hub.learn_scope(ip, s.scope_id());
+                        }
+                    }
+                }
+            }
+        }
         let now = Instant::now();
         let mut done = Vec::new();
         {
@@ -346,7 +483,14 @@ impl Mdns {
             return;
         }
         only_log::debug!(target: "only_webrtc", "mdns: answering {src} for {}", answers[0].name);
-        let Some(b) = self.binding.get() else { return };
+        let Some(b) = self
+            .socks()
+            .iter()
+            .find(|s| s.v6 == src.is_ipv6())
+            .map(|s| &s.binding)
+        else {
+            return;
+        };
         if src.port() != mdns::PORT {
             // Legacy unicast (RFC 6762 §6.7): the query's id and questions, no cache flush,
             // a short TTL, to the querier's port.
@@ -362,7 +506,16 @@ impl Mdns {
             return;
         }
         let unicast = questions.iter().all(|q: &Question| q.unicast_response);
-        let dest = if unicast { src } else { mdns::MULTICAST_V4 };
+        // Multicast answers go to the group on the link the query came from.
+        let scope = match src {
+            SocketAddr::V6(a) => a.scope_id(),
+            SocketAddr::V4(_) => 0,
+        };
+        let dest = if unicast {
+            src
+        } else {
+            group(src.is_ipv6(), scope)
+        };
         let _ = b.send_to(&Message::response(0, &[], &answers), dest);
     }
 }

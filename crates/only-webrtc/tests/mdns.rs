@@ -136,3 +136,261 @@ fn without_resolution_mdns_candidates_are_refused() {
     ep.close();
     e.shutdown();
 }
+
+// ---- IPv6 (ff02::fb) ----
+
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
+
+use only_ice::mdns::{GROUP_V6, Message, PORT, Record, TYPE_AAAA};
+
+/// The interfaces with an IPv6 link-local address (as the endpoint finds them).
+fn ifaces() -> Vec<u32> {
+    if let Ok(t) = std::fs::read_to_string("/proc/net/if_inet6") {
+        let mut v: Vec<u32> = t
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_ascii_whitespace().collect();
+                (f.len() >= 6 && f[3] == "20").then(|| u32::from_str_radix(f[1], 16).ok())?
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        return v;
+    }
+    (1..=64)
+        .filter(|&i| {
+            let s = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
+            s.connect(v6_group(i)).is_ok()
+                && matches!(s.local_addr(), Ok(SocketAddr::V6(a)) if a.ip().segments()[0] == 0xfe80)
+        })
+        .collect()
+}
+
+/// A raw socket on the shared IPv6 mDNS port, member of `ff02::fb` on every interface, or
+/// `None` (the test is skipped) when this host has no IPv6 multicast.
+fn raw_v6() -> Option<(UdpSocket, Vec<u32>)> {
+    let ifs = ifaces();
+    let s = only_sys::listen_udp((Ipv6Addr::UNSPECIFIED, PORT).into(), true).and_then(|s| {
+        let mut ok = false;
+        for &i in &ifs {
+            ok |= s.join_multicast_v6(&GROUP_V6, i).is_ok();
+        }
+        if ok {
+            s.set_nonblocking(false).map(|()| s)
+        } else {
+            Err(std::io::Error::other("no interface takes ff02::fb"))
+        }
+    });
+    match s {
+        Ok(s) => {
+            s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            Some((s, ifs))
+        }
+        Err(e) => {
+            eprintln!("skipped: no IPv6 multicast ({e})");
+            None
+        }
+    }
+}
+
+/// Sends `m` to `ff02::fb` on every interface.
+fn multicast_v6(s: &UdpSocket, ifs: &[u32], m: &[u8]) {
+    let mut sent = false;
+    for &i in ifs {
+        sent |= s.send_to(m, v6_group(i)).is_ok();
+    }
+    assert!(sent, "no interface sends to ff02::fb");
+}
+
+/// Reads mDNS messages that arrived over IPv6 (not IPv4-mapped) until `f` takes one.
+fn recv_v6<T>(s: &UdpSocket, mut f: impl FnMut(SocketAddr, Message) -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut buf = [0u8; 9000];
+    while Instant::now() < deadline {
+        let Ok((n, src)) = s.recv_from(&mut buf) else {
+            continue;
+        };
+        let SocketAddr::V6(a) = src else { continue };
+        if a.ip().to_ipv4_mapped().is_some() {
+            continue;
+        }
+        if let Ok(m) = Message::parse(&buf[..n]) {
+            if let Some(t) = f(src, m) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+fn v6_group(scope: u32) -> SocketAddr {
+    SocketAddr::V6(std::net::SocketAddrV6::new(GROUP_V6, PORT, 0, scope))
+}
+
+fn bind_v6(e: &Engine) -> Option<Endpoint> {
+    match Endpoint::bind(e, "[::1]:0".parse().unwrap()) {
+        Ok(ep) => Some(ep),
+        Err(err) => {
+            eprintln!("skipped: no IPv6 loopback ({err})");
+            None
+        }
+    }
+}
+
+/// The endpoint answers an AAAA query that arrives over IPv6 for its concealed `::1`, by
+/// IPv6 multicast to the link the query came from.
+#[test]
+fn answers_aaaa_queries_over_ipv6_multicast() {
+    let Some((raw, ifs)) = raw_v6() else { return };
+    let e = engine();
+    let Some(ep) = bind_v6(&e) else { return };
+    ep.resolve_mdns(&e, Duration::from_secs(5)).unwrap();
+    if let Err(err) = ep.conceal_host_candidates() {
+        eprintln!("skipped: {err}");
+        return;
+    }
+    let (p, offer) = ep
+        .create_offer(Echo, |api| {
+            api.add_channel("c");
+        })
+        .unwrap();
+    let line = host_lines(&offer).into_iter().next().expect("a host candidate");
+    assert!(!line.contains("::1"), "{line}");
+    let name = line.split_whitespace().nth(4).unwrap().to_owned();
+    let q = Message::query(&name, TYPE_AAAA, false).unwrap();
+    multicast_v6(&raw, &ifs, &q);
+    let answer = recv_v6(&raw, |_src, m| {
+        (m.response && m.records.iter().any(|r| r.name == name)).then_some(m)
+    })
+    .expect("no AAAA answer over IPv6");
+    let r = answer.records.iter().find(|r| r.name == name).unwrap();
+    assert_eq!(r.addr, IpAddr::V6(Ipv6Addr::LOCALHOST));
+    assert!(r.ttl > 0 && r.cache_flush);
+    p.close();
+    ep.close();
+    e.shutdown();
+}
+
+/// A name only an IPv6 responder knows: the endpoint queries `ff02::fb`, the answer over IPv6
+/// resolves it, and the peers connect through the resolved `::1` candidate.
+#[test]
+fn resolves_names_over_ipv6_multicast() {
+    let Some((raw, ifs)) = raw_v6() else { return };
+    let e = engine();
+    let (Some(a), Some(b)) = (bind_v6(&e), bind_v6(&e)) else {
+        return;
+    };
+    a.resolve_mdns(&e, Duration::from_secs(10)).unwrap();
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
+        .unwrap();
+    let (pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    // b's candidates replaced by one under a name of ours.
+    let name = "0a1b2c3d-1111-4222-8333-444455556666.local";
+    let port = b.local_addr().unwrap().port();
+    let answer: String = answer
+        .lines()
+        .filter(|l| !l.starts_with("a=candidate"))
+        .map(|l| format!("{l}\r\n"))
+        .collect();
+    pa.accept_answer(&answer).unwrap();
+    let cand = format!("candidate:1 1 udp 2122260223 {name} {port} typ host");
+    pa.add_remote_candidate(&cand).unwrap();
+    // The query arrives over IPv6; answer it there.
+    recv_v6(&raw, |_src, m| {
+        (!m.response && m.questions.iter().any(|q| q.name == name && q.qtype == TYPE_AAAA))
+            .then_some(())
+    })
+    .expect("no AAAA query over IPv6");
+    let rec = Record {
+        name: name.to_owned(),
+        addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ttl: 120,
+        cache_flush: true,
+    };
+    multicast_v6(&raw, &ifs, &Message::response(0, &[], &[rec]));
+    wait(&rx, b"open");
+    pa.send(ch.unwrap(), b"over mdns6", true).unwrap();
+    wait(&rx, b"over mdns6");
+    pa.close();
+    pb.close();
+    a.close();
+    b.close();
+    e.shutdown();
+}
+
+/// Two endpoints on `::1` conceal and resolve each other (AAAA records).
+#[test]
+fn concealed_ipv6_endpoints_resolve_each_other() {
+    let e = engine();
+    let (Some(a), Some(b)) = (bind_v6(&e), bind_v6(&e)) else {
+        return;
+    };
+    for ep in [&a, &b] {
+        ep.resolve_mdns(&e, Duration::from_secs(5)).unwrap();
+        if let Err(err) = ep.conceal_host_candidates() {
+            eprintln!("skipped: {err}");
+            return;
+        }
+    }
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
+        .unwrap();
+    assert!(host_lines(&offer).iter().all(|l| l.contains(".local ") && !l.contains("::1")));
+    let (pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    pa.accept_answer(&answer).unwrap();
+    wait(&rx, b"open");
+    pa.send(ch.unwrap(), b"v6", true).unwrap();
+    wait(&rx, b"v6");
+    pa.close();
+    pb.close();
+    a.close();
+    b.close();
+    e.shutdown();
+}
+
+/// Endpoints bound to a link-local IPv6 address: the SDP carries no scope id, the endpoint
+/// puts the link's back on what it sends (and strips it from what it receives).
+#[test]
+fn link_local_ipv6_endpoints_connect() {
+    let addr = ifaces().into_iter().find_map(|i| {
+        let s = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok()?;
+        s.connect(v6_group(i)).ok()?;
+        match s.local_addr().ok()? {
+            SocketAddr::V6(mut a) if a.ip().segments()[0] == 0xfe80 && a.scope_id() == i => {
+                a.set_port(0);
+                Some(SocketAddr::V6(a))
+            }
+            _ => None,
+        }
+    });
+    let Some(addr) = addr else {
+        eprintln!("skipped: no link-local IPv6 address");
+        return;
+    };
+    let e = engine();
+    let (Ok(a), Ok(b)) = (Endpoint::bind(&e, addr), Endpoint::bind(&e, addr)) else {
+        eprintln!("skipped: cannot bind {addr}");
+        return;
+    };
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
+        .unwrap();
+    assert!(!offer.contains('%'), "{offer}");
+    let (pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    pa.accept_answer(&answer).unwrap();
+    wait(&rx, b"open");
+    pa.send(ch.unwrap(), b"link-local", true).unwrap();
+    wait(&rx, b"link-local");
+    pa.close();
+    pb.close();
+    a.close();
+    b.close();
+    e.shutdown();
+}
