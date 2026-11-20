@@ -15,9 +15,13 @@ crate (docs/api-stability.md): use it through those crates.
   offsets; Frame_Content_Size and the XXH64 Content_Checksum are verified. Frame_Content_Size is
   only a hint: a frame announcing more than the limit is refused at once, and memory is reserved
   up to the limit at most. Huffman and FSE streams are read backwards through a 64-bit container
-  with table-driven decoding: the four literal streams in lockstep, sequence fields from tables
-  sized for unchecked lookups; literals and matches are copied in 16-byte chunks into a window
-  zeroed one block ahead (still never past the limit).
+  with table-driven decoding: the four literal streams in lockstep (libzstd's fast loop: bits
+  left-aligned in a register, refilled from the position of a marker bit), sequences decoded in
+  batches of 64 (one bit read per sequence when the extra bits allow) and then executed, from
+  tables sized for unchecked lookups; literals and matches are copied in 16-byte chunks into a
+  window zeroed one block ahead (still never past the limit). The decoding tables and the
+  literals buffer are kept per thread between calls, as libzstd's reused context keeps them
+  (about 20 KB, plus up to 32 KiB of literals).
 - `compress(level, data)`: one frame with Frame_Content_Size and a content checksum, a single
   segment up to 8 MiB (larger inputs get an 8 MiB window, the limit RFC 9659 sets for HTTP).
   Levels follow zstd's 1..=22 scale (`Level::FASTEST` 1, `DEFAULT` 3, `BEST` 22).

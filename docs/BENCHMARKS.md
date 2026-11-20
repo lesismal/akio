@@ -1343,24 +1343,27 @@ zstd:
 
 | Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
 |---|---:|---|---|---|---:|
-| Silesia (212 MB) | 1 | 70,904,663 / 73,216,948 | 300 (127) / 571 | 849 (541) / 1,120 | 1.32 |
-| Silesia (212 MB) | 3 | 66,562,838 / 66,131,721 | 231 (86) / 360 | 780 (546) / 1,040 | 1.33 |
-| Silesia, first 20 MB | 19 | 6,158,589 / 5,723,363 | 7.1 (7.1) / 5.5 | 1,032 (706) / 1,623 | 1.57 |
-| JSON (657 KB) | 1 | 65,110 / 63,680 | 654 (275) / 1,242 | 2,834 (1,739) / 4,207 | 1.48 |
-| JSON (657 KB) | 3 | 61,154 / 60,477 | 614 (203) / 1,073 | 2,790 (1,772) / 4,114 | 1.47 |
-| JSON (657 KB) | 19 | 46,888 / 44,269 | 22 (22) / 4.3 | 3,259 (2,256) / 4,763 | 1.46 |
-| HTML (45 KB) | 1 | 8,431 / 8,357 | 495 (233) / 1,147 | 1,764 (1,228) / 2,565 | 1.45 |
-| HTML (45 KB) | 3 | 7,981 / 7,969 | 430 (175) / 943 | 1,765 (1,278) / 2,616 | 1.48 |
-| HTML (45 KB) | 19 | 7,173 / 6,967 | 58 (56) / 3.9 | 1,770 (1,356) / 2,662 | 1.50 |
-| JS (92 KB) | 1 | 24,974 / 24,919 | 399 (150) / 809 | 1,294 (878) / 2,088 | 1.61 |
-| JS (92 KB) | 3 | 23,420 / 23,345 | 342 (108) / 655 | 1,260 (926) / 2,029 | 1.61 |
-| JS (92 KB) | 19 | 20,726 / 20,102 | 27 (27) / 5.6 | 1,261 (1,005) / 2,002 | 1.59 |
-| cert chain (2.7 KB) | 1 | 1,791 / 1,770 | 149 (57) / 386 | 648 (438) / 944 | 1.46 |
-| cert chain (2.7 KB) | 3 | 1,778 / 1,770 | 127 (49) / 301 | 1,321 (1,297) / 2,193 | 1.66 |
-| cert chain (2.7 KB) | 19 | 1,728 / 1,701 | 52 (37) / 11 | 1,165 (1,110) / 1,935 | 1.66 |
-| cert chain (4.1 KB) | 1 | 2,642 / 2,636 | 176 (71) / 458 | 1,614 (1,541) / 2,686 | 1.66 |
-| cert chain (4.1 KB) | 3 | 2,613 / 2,589 | 165 (60) / 364 | 1,548 (1,458) / 2,561 | 1.65 |
-| cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,480 (1,370) / 2,427 | 1.64 |
+| Silesia (212 MB) | 1 | 70,904,663 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
+| Silesia (212 MB) | 3 | 66,562,838 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
+| Silesia, first 20 MB | 19 | 6,158,589 / 5,723,363 | 7.1 (7.1) / 5.5 | 1,173 (1,029) / 1,624 | 1.39 |
+| JSON (657 KB) | 1 | 65,110 / 63,680 | 654 (275) / 1,242 | 3,101 (2,849) / 4,240 | 1.37 |
+| JSON (657 KB) | 3 | 61,154 / 60,477 | 614 (203) / 1,073 | 3,034 (2,761) / 4,173 | 1.38 |
+| JSON (657 KB) | 19 | 46,888 / 44,269 | 22 (22) / 4.3 | 3,503 (3,273) / 4,825 | 1.38 |
+| HTML (45 KB) | 1 | 8,431 / 8,357 | 495 (233) / 1,147 | 2,008 (1,764) / 2,634 | 1.31 |
+| HTML (45 KB) | 3 | 7,981 / 7,969 | 430 (175) / 943 | 1,998 (1,758) / 2,638 | 1.32 |
+| HTML (45 KB) | 19 | 7,173 / 6,967 | 58 (56) / 3.9 | 1,998 (1,759) / 2,651 | 1.33 |
+| JS (92 KB) | 1 | 24,974 / 24,919 | 399 (150) / 809 | 1,512 (1,286) / 2,107 | 1.39 |
+| JS (92 KB) | 3 | 23,420 / 23,345 | 342 (108) / 655 | 1,471 (1,271) / 2,041 | 1.39 |
+| JS (92 KB) | 19 | 20,726 / 20,102 | 27 (27) / 5.6 | 1,454 (1,252) / 2,012 | 1.38 |
+| cert chain (2.7 KB) | 1 | 1,791 / 1,770 | 149 (57) / 386 | 816 (642) / 948 | 1.16 |
+| cert chain (2.7 KB) | 3 | 1,778 / 1,770 | 127 (49) / 301 | 1,708 (1,331) / 2,104 | 1.23 |
+| cert chain (2.7 KB) | 19 | 1,728 / 1,701 | 52 (37) / 11 | 1,488 (1,172) / 1,873 | 1.26 |
+| cert chain (4.1 KB) | 1 | 2,642 / 2,636 | 176 (71) / 458 | 1,997 (1,621) / 2,543 | 1.27 |
+| cert chain (4.1 KB) | 3 | 2,613 / 2,589 | 165 (60) / 364 | 1,926 (1,559) / 2,447 | 1.27 |
+| cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,838 (1,487) / 2,323 | 1.26 |
+
+The zstd decompression cells are from the second decoder pass (2026-11-20, quiet host, see below):
+only (main at `aca9e988`, the first pass) / C, measured in the same run.
 
 brotli:
 
@@ -1416,6 +1419,37 @@ decodes three literals per refill, through a context → tree offset table per b
 all when a block type's context map has one tree), with a 704-entry command table and prefix code
 tables built in place. A double-symbol Huffman table for zstd literals was tried and dropped
 (slower on Zen 4).
+
+**zstd decoding, second pass** (2026-11-20, no API change, output unchanged; the zstd
+decompression cells above). Measured on a quiet host (the bench host's `quiet.sh`: no desktop,
+model service or kind cluster), CPU 2, both builds alternated twice, best of each; the
+first pass's numbers for main (`aca9e988`) reproduced within 2%. libzstd's time over ours went
+from 1.46–1.64× to 1.16–1.39× on the HTTP payloads and from 1.32–1.33× / 1.57× to 1.22–1.24× /
+1.39× on Silesia: JavaScript 1.38–1.39× (was 1.59–1.61×), the 2.7 KB chain 1.16–1.26×
+(1.49–1.64×), the 4.1 KB chain 1.26–1.27× (1.63–1.64×), JSON 1.37–1.38×, HTML 1.31–1.33×; every
+cell is under 1.4×. Still `#![forbid(unsafe_code)]`, baseline x86-64, no BMI2 paths. Profiles
+(`perf`) showed two costs: on the chains (raw literals, 100–170 sequences, three FSE-coded tables
+per frame) building tables weighed most, and every call allocated and zeroed about 20 KB of them;
+on JavaScript (6,100–7,100 sequences) the sequence loop ran about 1.6× libzstd's instructions (at an
+IPC of 5.4) and spilled values to the stack. What changed:
+- the decoding tables and the literals buffer are kept per thread between calls (libzstd's reused
+  context; about 20 KB, plus up to 32 KiB of literals), and literal buffers are no longer zeroed;
+- sequences are decoded in batches of 64 and then executed: two loops with fewer live values;
+  when the extra bits total less than 31 (libzstd's condition) one read takes the extra bits and
+  the three state updates of a sequence; the three tables sit side by side (one base register),
+  the predefined ones copied in only when the mode changes; a sequence ending 16 bytes or more
+  before the end of the room and of the literals is copied in 16-byte chunks after two
+  comparisons, with no overflow checks;
+- the four Huffman streams use libzstd's fast loop: bits left-aligned in a register above a
+  marker bit, refilled from the marker's position, the table's accuracy log a constant (one copy
+  of the loop per log), up to 8 symbols per stream between refills while every window lies in
+  its stream;
+- FSE tables are built straight into the decoding entries, Huffman weight tables on the stack.
+
+Tried and dropped: a bit reader keeping its position as the slice length (worse code on x86-64 and
+AArch64), a mask table instead of `(1 << n) - 1` (3% slower on JavaScript), batches of 4–16
+(5–10% faster on Apple M-series, 1–4% slower on Zen 4). Not done: libzstd's double-symbol Huffman
+tables (it picks them for the JavaScript literals, about 8% of our time there).
 
 **Compression** (output changes; round trips, the C libraries decoding our output in every cell
 above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2

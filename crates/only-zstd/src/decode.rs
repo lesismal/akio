@@ -43,7 +43,31 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         pos: 0,
         limit,
     };
-    let mut d = Decoder::default();
+    // The tables and scratch space of the previous call on this thread (libzstd's reused
+    // context): allocating and zeroing them again costs as much as decoding a small frame.
+    let mut d = DECODER
+        .try_with(|c| c.take())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let r = decompress_with(&mut d, data, &mut out);
+    if d.lits.capacity() > LITS_KEEP {
+        d.lits = Vec::new();
+    }
+    let _ = DECODER.try_with(|c| c.set(Some(d)));
+    r?;
+    out.buf.truncate(out.pos);
+    Ok(out.buf)
+}
+
+thread_local! {
+    static DECODER: std::cell::Cell<Option<Box<Decoder>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Literals buffer capacity kept for the next call on the thread.
+const LITS_KEEP: usize = 32 << 10;
+
+fn decompress_with(d: &mut Decoder, data: &[u8], out: &mut Out) -> Result<(), Error> {
     let mut pos = 0;
     while data.len() - pos >= 5 {
         let rest = &data[pos..];
@@ -62,13 +86,12 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         if magic != MAGIC {
             return Err(Error::BadMagic);
         }
-        pos += d.frame(rest, &mut out)?;
+        pos += d.frame(rest, out)?;
     }
     if pos != data.len() {
         return Err(Error::Truncated);
     }
-    out.buf.truncate(out.pos);
-    Ok(out.buf)
+    Ok(())
 }
 
 /// Bytes past the end of a literal run or a match that the fast paths may overwrite (with
@@ -174,14 +197,41 @@ enum Kind {
     MatchLen,
 }
 
+/// Offset codes are their own baselines and extra bits (the value is `(1 << code) + bits`,
+/// worked out when decoding).
+const OF_CODES: [u8; MAX_OF + 1] = {
+    let mut t = [0u8; MAX_OF + 1];
+    let mut i = 0;
+    while i <= MAX_OF {
+        t[i] = i as u8;
+        i += 1;
+    }
+    t
+};
+
+const OF_BASES: [u32; MAX_OF + 1] = {
+    let mut t = [0u32; MAX_OF + 1];
+    let mut i = 0;
+    while i <= MAX_OF {
+        t[i] = i as u32;
+        i += 1;
+    }
+    t
+};
+
 impl Kind {
-    fn value(self, sym: u8) -> (u32, u8) {
-        let s = usize::from(sym);
+    /// Baselines and extra bits by symbol.
+    fn values(self) -> (&'static [u32], &'static [u8]) {
         match self {
-            Kind::LitLen => (LL_BASE[s], LL_BITS[s]),
-            Kind::MatchLen => (ML_BASE[s], ML_BITS[s]),
-            Kind::Offset => (u32::from(sym), sym),
+            Kind::LitLen => (&LL_BASE, &LL_BITS),
+            Kind::MatchLen => (&ML_BASE, &ML_BITS),
+            Kind::Offset => (&OF_BASES, &OF_CODES),
         }
+    }
+
+    fn value(self, sym: u8) -> (u32, u8) {
+        let (b, n) = self.values();
+        (b[usize::from(sym)], n[usize::from(sym)])
     }
 
     fn max(self) -> usize {
@@ -205,130 +255,364 @@ impl Kind {
 /// (the `1 << log` entries first) so that lookups need no bounds checks.
 const SEQ_TABLE_SIZE: usize = 512;
 
-#[derive(Clone, Debug, Default)]
-struct SeqTable {
-    log: u32,
-    entries: Vec<SeqEntry>,
-    /// Scratch space for building.
-    cells: Vec<fse::DEntry>,
-    /// The predefined table is in use (not copied here).
-    predef: bool,
-}
+type Cells = [SeqEntry; SEQ_TABLE_SIZE];
 
-impl SeqTable {
-    /// The table in use: this one or the predefined one of `kind`.
-    fn active(&self, kind: Kind) -> &SeqTable {
-        if self.predef { predefined(kind) } else { self }
-    }
-
-    fn cells(&self) -> Result<&[SeqEntry; SEQ_TABLE_SIZE], Error> {
-        self.entries
-            .get(..SEQ_TABLE_SIZE)
-            .and_then(|e| e.try_into().ok())
-            .ok_or(Error::BadFseTable)
-    }
-}
-
-impl SeqTable {
-    fn from_norm(kind: Kind, norm: &[i16], log: u32) -> SeqTable {
-        let mut t = SeqTable::default();
-        t.fill(kind, norm, log, &mut Vec::new());
-        t
-    }
-
-    /// Builds the table of `norm` in place (`cells`: scratch space). Entries past `1 << log`
-    /// are left as they are: states never reach them.
-    fn fill(&mut self, kind: Kind, norm: &[i16], log: u32, cells: &mut Vec<fse::DEntry>) {
-        fse::build_dtable(norm, log, cells);
-        if self.entries.len() < SEQ_TABLE_SIZE {
-            self.entries.resize(SEQ_TABLE_SIZE, SeqEntry::default());
-        }
-        for (e, c) in self.entries.iter_mut().zip(cells.iter()) {
-            let (base, add_bits) = kind.value(c.symbol);
-            *e = SeqEntry {
-                base,
-                add_bits,
-                nb_bits: c.nb_bits,
-                next: c.base,
-            };
-        }
-        self.log = log;
-    }
-
-    fn set_rle(&mut self, kind: Kind, sym: u8) {
-        let (base, add_bits) = kind.value(sym);
-        if self.entries.len() < SEQ_TABLE_SIZE {
-            self.entries.resize(SEQ_TABLE_SIZE, SeqEntry::default());
-        }
-        self.entries[0] = SeqEntry {
-            base,
-            add_bits,
-            nb_bits: 0,
-            next: 0,
+/// Builds the table of `norm` (symbols up to `kind.max()`) in the first `1 << log` cells.
+fn build_seq_table(kind: Kind, norm: &[i16], log: u32, cells: &mut Cells) {
+    let mut symbols = [0u8; SEQ_TABLE_SIZE];
+    let mut next = fse::spread(norm, log, &mut symbols);
+    let (bases, bits) = kind.values();
+    for (e, &s) in cells[..1 << log].iter_mut().zip(&symbols) {
+        let s = usize::from(s);
+        let x = &mut next[s];
+        let (nb_bits, next) = fse::next_state(u32::from(*x), log);
+        *x += 1;
+        *e = SeqEntry {
+            base: bases[s],
+            add_bits: bits[s],
+            nb_bits,
+            next,
         };
-        self.log = 0;
     }
 }
 
-fn predefined(kind: Kind) -> &'static SeqTable {
-    static TABLES: OnceLock<[SeqTable; 3]> = OnceLock::new();
+/// The decoding tables of the three fields of sequences, in the order of [`Kind`], next to
+/// each other so that one register addresses all three.
+struct SeqTables {
+    cells: Box<[Cells; 3]>,
+    log: [u32; 3],
+    /// The slot holds the predefined table of its kind (copied there when first used).
+    predef: [bool; 3],
+}
+
+impl Default for SeqTables {
+    fn default() -> Self {
+        SeqTables {
+            cells: Box::new([[SeqEntry::default(); SEQ_TABLE_SIZE]; 3]),
+            log: [0; 3],
+            predef: [false; 3],
+        }
+    }
+}
+
+/// The predefined tables (accuracy log and cells) by [`Kind`].
+fn predefined(kind: Kind) -> (u32, &'static [SeqEntry]) {
+    static TABLES: OnceLock<[Vec<SeqEntry>; 3]> = OnceLock::new();
     let t = TABLES.get_or_init(|| {
+        let make = |kind, norm: &[i16], log| {
+            let mut c = [SeqEntry::default(); SEQ_TABLE_SIZE];
+            build_seq_table(kind, norm, log, &mut c);
+            c[..1 << log].to_vec()
+        };
         [
-            SeqTable::from_norm(Kind::LitLen, &LL_DEFAULT_NORM, LL_DEFAULT_LOG),
-            SeqTable::from_norm(Kind::Offset, &OF_DEFAULT_NORM, OF_DEFAULT_LOG),
-            SeqTable::from_norm(Kind::MatchLen, &ML_DEFAULT_NORM, ML_DEFAULT_LOG),
+            make(Kind::LitLen, &LL_DEFAULT_NORM, LL_DEFAULT_LOG),
+            make(Kind::Offset, &OF_DEFAULT_NORM, OF_DEFAULT_LOG),
+            make(Kind::MatchLen, &ML_DEFAULT_NORM, ML_DEFAULT_LOG),
         ]
     });
     match kind {
-        Kind::LitLen => &t[0],
-        Kind::Offset => &t[1],
-        Kind::MatchLen => &t[2],
+        Kind::LitLen => (LL_DEFAULT_LOG, &t[0]),
+        Kind::Offset => (OF_DEFAULT_LOG, &t[1]),
+        Kind::MatchLen => (ML_DEFAULT_LOG, &t[2]),
     }
 }
 
-/// Reads the table description of one sequence field in `mode`; returns its size.
-fn load_table(
-    t: &mut SeqTable,
-    kind: Kind,
-    mode: u8,
-    src: &[u8],
-    repeat_ok: bool,
-) -> Result<usize, Error> {
-    match mode {
-        0 => {
-            t.predef = true;
-            Ok(0)
-        }
-        1 => {
-            let &sym = src.first().ok_or(Error::BadFseTable)?;
-            if usize::from(sym) > kind.max() {
-                return Err(Error::BadFseTable);
-            }
-            t.set_rle(kind, sym);
-            t.predef = false;
-            Ok(1)
-        }
-        2 => {
-            let mut norm = [0i16; 256];
-            let (max_sv, log, size) =
-                fse::read_ncount(src, kind.max(), &mut norm).ok_or(Error::BadFseTable)?;
-            if log > kind.max_log() {
-                return Err(Error::BadFseTable);
-            }
-            let mut cells = std::mem::take(&mut t.cells);
-            t.fill(kind, &norm[..=max_sv], log, &mut cells);
-            t.cells = cells;
-            t.predef = false;
-            Ok(size)
-        }
-        _ => {
-            if repeat_ok {
+impl SeqTables {
+    /// Reads the table description of one sequence field in `mode`; returns its size.
+    fn load(&mut self, kind: Kind, mode: u8, src: &[u8], repeat_ok: bool) -> Result<usize, Error> {
+        let i = kind as usize;
+        match mode {
+            0 => {
+                if !self.predef[i] {
+                    let (log, cells) = predefined(kind);
+                    self.cells[i][..cells.len()].copy_from_slice(cells);
+                    self.log[i] = log;
+                    self.predef[i] = true;
+                }
                 Ok(0)
-            } else {
-                Err(Error::BadFseTable)
+            }
+            1 => {
+                let &sym = src.first().ok_or(Error::BadFseTable)?;
+                if usize::from(sym) > kind.max() {
+                    return Err(Error::BadFseTable);
+                }
+                let (base, add_bits) = kind.value(sym);
+                self.cells[i][0] = SeqEntry {
+                    base,
+                    add_bits,
+                    nb_bits: 0,
+                    next: 0,
+                };
+                self.log[i] = 0;
+                self.predef[i] = false;
+                Ok(1)
+            }
+            2 => {
+                let mut norm = [0i16; 256];
+                let (max_sv, log, size) =
+                    fse::read_ncount(src, kind.max(), &mut norm).ok_or(Error::BadFseTable)?;
+                if log > kind.max_log() {
+                    return Err(Error::BadFseTable);
+                }
+                build_seq_table(kind, &norm[..=max_sv], log, &mut self.cells[i]);
+                self.log[i] = log;
+                self.predef[i] = false;
+                Ok(size)
+            }
+            _ => {
+                if repeat_ok {
+                    Ok(0)
+                } else {
+                    Err(Error::BadFseTable)
+                }
             }
         }
     }
+}
+
+/// Makes the literals buffer at least `n + WILD` long. Its bytes are whatever an earlier block
+/// left there: the literals overwrite the first `n`, the rest is read and never used.
+fn lits_room(buf: &mut Vec<u8>, n: usize) {
+    if buf.len() < n + WILD {
+        buf.resize(n + WILD, 0);
+    }
+}
+
+/// The FSE states of the three fields and the repeat offsets.
+struct SeqState {
+    ll: usize,
+    of: usize,
+    ml: usize,
+    reps: [u64; 3],
+}
+
+impl SeqState {
+    /// Decodes a sequence, then (`UPDATE`) moves the states on.
+    #[inline(always)]
+    fn decode<const UPDATE: bool>(&mut self, t: &[Cells; 3], br: &mut BackReader<'_>) -> Seq {
+        const MASK: usize = SEQ_TABLE_SIZE - 1;
+        let lle = t[0][self.ll & MASK];
+        let ofe = t[1][self.of & MASK];
+        let mle = t[2][self.ml & MASK];
+        let code = ofe.base;
+        let (llb, mlb) = (u32::from(lle.add_bits), u32::from(mle.add_bits));
+        let extra = code + mlb + llb;
+        let (ofx, mlx, llx);
+        if extra < 31 {
+            // The extra bits and the states' bits in one read of at most 56 bits (libzstd's
+            // condition for one reload per sequence), split from the last field up.
+            let (lln, mln, ofn) = if UPDATE {
+                (
+                    u32::from(lle.nb_bits),
+                    u32::from(mle.nb_bits),
+                    u32::from(ofe.nb_bits),
+                )
+            } else {
+                (0, 0, 0)
+            };
+            let mut v = br.read_fast(extra + lln + mln + ofn);
+            if UPDATE {
+                self.of = usize::from(ofe.next) + low(v, ofn);
+                v >>= ofn;
+                self.ml = usize::from(mle.next) + low(v, mln);
+                v >>= mln;
+                self.ll = usize::from(lle.next) + low(v, lln);
+                v >>= lln;
+            }
+            llx = low(v, llb) as u32;
+            v >>= llb;
+            mlx = low(v, mlb) as u32;
+            ofx = v >> mlb;
+        } else {
+            ofx = br.read_fast(code);
+            mlx = br.read_fast(mlb) as u32;
+            br.reload();
+            llx = br.read_fast(llb) as u32;
+            if UPDATE {
+                self.ll = usize::from(lle.next) + br.read_fast(u32::from(lle.nb_bits)) as usize;
+                self.ml = usize::from(mle.next) + br.read_fast(u32::from(mle.nb_bits)) as usize;
+                self.of = usize::from(ofe.next) + br.read_fast(u32::from(ofe.nb_bits)) as usize;
+            }
+        }
+        br.reload();
+        let reps = &mut self.reps;
+        let off = if code > 1 {
+            let o = ((1u64 << code) - 3) + ofx;
+            *reps = [o, reps[0], reps[1]];
+            o
+        } else {
+            let ll0 = lle.base == 0;
+            if code == 0 {
+                if ll0 {
+                    reps.swap(0, 1);
+                }
+                reps[0]
+            } else {
+                let idx = 1 + u64::from(ll0) + ofx;
+                let mut o = match idx {
+                    1 => reps[1],
+                    2 => reps[2],
+                    _ => reps[0].wrapping_sub(1),
+                };
+                if o == 0 {
+                    o = u64::MAX; // invalid, refused when executed
+                }
+                if idx != 1 {
+                    reps[2] = reps[1];
+                }
+                reps[1] = reps[0];
+                reps[0] = o;
+                o
+            }
+        };
+        let ml = mle.base + mlx;
+        let ll = lle.base + llx;
+        Seq { ll, ml, off }
+    }
+}
+
+/// The low `n` bits (0..=63) of `v`.
+#[inline(always)]
+fn low(v: u64, n: u32) -> usize {
+    (v & ((1u64 << n) - 1)) as usize
+}
+
+/// A decoded sequence.
+#[derive(Clone, Copy, Default)]
+struct Seq {
+    ll: u32,
+    ml: u32,
+    off: u64,
+}
+
+/// Sequences decoded per batch.
+const BATCH: usize = 64;
+
+/// Bytes past the end of a sequence that its fast path may write (the 16-byte chunks of its
+/// literals and match).
+const FAST_SLACK: usize = 16;
+
+/// Executes sequences: the output (the window) and the literals of the block.
+struct Exec<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+    lits: &'a [u8],
+    lp: usize,
+    nlits: usize,
+    frame_start: usize,
+    block_end: usize,
+    limit: usize,
+}
+
+impl Exec<'_> {
+    /// Executes `seqs`.
+    #[inline(always)]
+    fn run(&mut self, seqs: &[Seq]) -> Result<(), Error> {
+        // A sequence ending at or before `fast_end`, whose literals end before `lits_fast`,
+        // stays within the block and the limit (`buf` never exceeds it) and may copy whole
+        // 16-byte chunks on both sides (matches are at least 3 bytes, so `end` > 0).
+        let fast_end = self
+            .block_end
+            .min(self.buf.len().saturating_sub(FAST_SLACK));
+        let lits_fast = (self.nlits + 1).min(self.lits.len().saturating_sub(15));
+        let buf = &mut *self.buf;
+        let lits = self.lits;
+        let mut pos = self.pos;
+        let mut lp = self.lp;
+        for q in seqs {
+            let (ll, ml) = (q.ll as usize, q.ml as usize);
+            let end = pos + ll + ml;
+            if end <= fast_end && lp + ll < lits_fast {
+                buf[pos..][..16].copy_from_slice(&lits[lp..][..16]);
+                let mut k = 16;
+                while k < ll {
+                    buf[pos + k..][..16].copy_from_slice(&lits[lp + k..][..16]);
+                    k += 16;
+                }
+                pos += ll;
+                lp += ll;
+                if q.off > (pos - self.frame_start) as u64 {
+                    return Err(Error::BadOffset);
+                }
+                let off = q.off as usize;
+                let src = pos - off;
+                if off >= 16 {
+                    // Whole chunks; each reads bytes already final (16 or more behind).
+                    let mut k = 0;
+                    loop {
+                        copy16_within(buf, src + k, pos + k);
+                        k += 16;
+                        if k >= ml {
+                            break;
+                        }
+                    }
+                } else {
+                    copy_match(buf, src, pos, ml);
+                }
+                pos = end;
+            } else {
+                (pos, lp) = exec_exact(
+                    buf,
+                    lits,
+                    self.nlits,
+                    pos,
+                    lp,
+                    q,
+                    self.frame_start,
+                    self.block_end,
+                    self.limit,
+                )?;
+            }
+        }
+        self.pos = pos;
+        self.lp = lp;
+        Ok(())
+    }
+}
+
+/// Copies the 16 bytes at `from` to `to` (as a whole: `to` may be within them).
+#[inline(always)]
+fn copy16_within(buf: &mut [u8], from: usize, to: usize) {
+    let mut c = [0u8; 16];
+    c.copy_from_slice(&buf[from..][..16]);
+    buf[to..][..16].copy_from_slice(&c);
+}
+
+/// Executes `q` at `pos` with the literals from `lp` (the sequence's literals and match may
+/// end anywhere within `buf`, which reaches the end of the block or the limit); returns the
+/// new `pos` and `lp`.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn exec_exact(
+    buf: &mut [u8],
+    lits: &[u8],
+    nlits: usize,
+    pos: usize,
+    lp: usize,
+    q: &Seq,
+    frame_start: usize,
+    block_end: usize,
+    limit: usize,
+) -> Result<(usize, usize), Error> {
+    let (ll, ml) = (q.ll as usize, q.ml as usize);
+    if ll > nlits - lp {
+        return Err(Error::BadSequences);
+    }
+    let end = pos + ll + ml;
+    if end > block_end {
+        return Err(Error::BadBlock);
+    }
+    if end > limit {
+        return Err(Error::TooLarge);
+    }
+    buf[pos..pos + ll].copy_from_slice(&lits[lp..lp + ll]);
+    let pos = pos + ll;
+    if q.off > (pos - frame_start) as u64 {
+        return Err(Error::BadOffset);
+    }
+    copy_match(buf, pos - q.off as usize, pos, ml);
+    Ok((end, lp + ll))
 }
 
 /// Decoding state kept across the blocks of a frame (and scratch space across frames).
@@ -337,9 +621,7 @@ struct Decoder {
     huf: huffman::DTable,
     have_huf: bool,
     seq_ready: bool,
-    ll: SeqTable,
-    of: SeqTable,
-    ml: SeqTable,
+    seq: SeqTables,
     reps: [u64; 3],
     lits: Vec<u8>,
 }
@@ -526,8 +808,8 @@ impl Decoder {
                     }
                     Ok((Some(lh), size, lh + size))
                 } else {
-                    buf.clear();
-                    buf.resize(size + WILD, b[lh]);
+                    lits_room(buf, size);
+                    buf[..size].fill(b[lh]);
                     Ok((None, size, lh + 1))
                 }
             }
@@ -565,8 +847,7 @@ impl Decoder {
                     self.have_huf = true;
                     src = &src[h..];
                 }
-                buf.clear();
-                buf.resize(size + WILD, 0);
+                lits_room(buf, size);
                 huffman::decode(&self.huf, src, &mut buf[..size], four)?;
                 Ok((None, size, lh + csize))
             }
@@ -615,111 +896,54 @@ impl Decoder {
             return Err(Error::BadSequences);
         }
         let ready = self.seq_ready;
-        q += load_table(&mut self.ll, Kind::LitLen, modes >> 6, &s[q..], ready)?;
-        q += load_table(&mut self.of, Kind::Offset, (modes >> 4) & 3, &s[q..], ready)?;
-        q += load_table(
-            &mut self.ml,
-            Kind::MatchLen,
-            (modes >> 2) & 3,
-            &s[q..],
-            ready,
-        )?;
+        let t = &mut self.seq;
+        q += t.load(Kind::LitLen, modes >> 6, &s[q..], ready)?;
+        q += t.load(Kind::Offset, (modes >> 4) & 3, &s[q..], ready)?;
+        q += t.load(Kind::MatchLen, (modes >> 2) & 3, &s[q..], ready)?;
         self.seq_ready = true;
 
         let mut br = BackReader::new(&s[q..]).ok_or(Error::BadSequences)?;
-        let (ll, of, ml) = (
-            self.ll.active(Kind::LitLen),
-            self.of.active(Kind::Offset),
-            self.ml.active(Kind::MatchLen),
-        );
-        let (ll_t, of_t, ml_t) = (ll.cells()?, of.cells()?, ml.cells()?);
-        const MASK: usize = SEQ_TABLE_SIZE - 1;
-        let mut ll_s = br.read(ll.log) as usize;
-        let mut of_s = br.read(of.log) as usize;
-        let mut ml_s = br.read(ml.log) as usize;
+        let mut st = SeqState {
+            ll: br.read(t.log[0]) as usize,
+            of: br.read(t.log[1]) as usize,
+            ml: br.read(t.log[2]) as usize,
+            reps: self.reps,
+        };
         br.reload();
-        let mut reps = self.reps;
-        let mut lp = 0usize;
+        let cells = &*t.cells;
         // Room for the whole block (the zeroed part of `buf` beyond it allows wild copies).
         let block_end = block_start + block_max;
         out.grow(block_max.min(out.limit - block_start));
-        let limit = out.limit;
-        let buf = &mut out.buf[..];
-        let mut pos = block_start;
-        for i in 0..count {
-            let lle = ll_t[ll_s & MASK];
-            let ofe = of_t[of_s & MASK];
-            let mle = ml_t[ml_s & MASK];
-            let code = ofe.base;
-            let offset = if code > 1 {
-                let o = ((1u64 << code) - 3) + br.read_fast(code);
-                reps = [o, reps[0], reps[1]];
-                o
-            } else {
-                let ll0 = lle.base == 0;
-                if code == 0 {
-                    if ll0 {
-                        reps.swap(0, 1);
-                    }
-                    reps[0]
-                } else {
-                    let idx = 1 + u64::from(ll0) + br.read_fast(1);
-                    let mut o = match idx {
-                        1 => reps[1],
-                        2 => reps[2],
-                        _ => reps[0].wrapping_sub(1),
-                    };
-                    if o == 0 {
-                        o = u64::MAX; // invalid, refused below
-                    }
-                    if idx != 1 {
-                        reps[2] = reps[1];
-                    }
-                    reps[1] = reps[0];
-                    reps[0] = o;
-                    o
-                }
-            };
-            let ml = mle.base as usize + br.read_fast(u32::from(mle.add_bits)) as usize;
-            br.reload();
-            let ll = lle.base as usize + br.read_fast(u32::from(lle.add_bits)) as usize;
-            if i + 1 < count {
-                ll_s = usize::from(lle.next) + br.read_fast(u32::from(lle.nb_bits)) as usize;
-                ml_s = usize::from(mle.next) + br.read_fast(u32::from(mle.nb_bits)) as usize;
-                of_s = usize::from(ofe.next) + br.read_fast(u32::from(ofe.nb_bits)) as usize;
-                br.reload();
+        let mut x = Exec {
+            buf: &mut out.buf[..],
+            pos: block_start,
+            lits,
+            lp: 0,
+            nlits,
+            frame_start,
+            block_end,
+            limit: out.limit,
+        };
+        // Sequences are decoded in batches and then executed: two loops with fewer live
+        // values each than one doing both (which spilled to the stack).
+        let mut seqs = [Seq::default(); BATCH];
+        let mut left = count;
+        while left > 0 {
+            let n = left.min(BATCH);
+            left -= n;
+            // The states are not updated after the last sequence.
+            let (body, last) = seqs[..n].split_at_mut(n - usize::from(left == 0));
+            for q in body {
+                *q = st.decode::<true>(cells, &mut br);
             }
-            if ll > nlits - lp {
-                return Err(Error::BadSequences);
+            if let Some(q) = last.first_mut() {
+                *q = st.decode::<false>(cells, &mut br);
             }
-            let end = pos + ll + ml;
-            if end > block_end {
-                return Err(Error::BadBlock);
-            }
-            if end > limit {
-                return Err(Error::TooLarge);
-            }
-            // Literals: whole 16-byte chunks when both sides have room.
-            if lp + ll + 16 <= lits.len() && pos + ll + 16 <= buf.len() {
-                let mut k = 0;
-                loop {
-                    buf[pos + k..pos + k + 16].copy_from_slice(&lits[lp + k..lp + k + 16]);
-                    k += 16;
-                    if k >= ll {
-                        break;
-                    }
-                }
-            } else {
-                buf[pos..pos + ll].copy_from_slice(&lits[lp..lp + ll]);
-            }
-            pos += ll;
-            lp += ll;
-            if offset > (pos - frame_start) as u64 {
-                return Err(Error::BadOffset);
-            }
-            copy_match(buf, pos - offset as usize, pos, ml);
-            pos = end;
+            x.run(&seqs[..n])?;
         }
+        let reps = st.reps;
+        let pos = x.pos;
+        let lp = x.lp;
         out.pos = pos;
         if !br.finished() {
             return Err(Error::BadSequences);

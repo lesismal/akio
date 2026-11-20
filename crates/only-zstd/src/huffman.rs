@@ -6,7 +6,7 @@ use crate::bits::{BackReader, BitWriter};
 use crate::fse;
 use crate::tables::highbit;
 
-/// A decoding table: `1 << log` entries of `symbol | code_length << 8`.
+/// A decoding table: `1 << log` entries of `code_length | symbol << 8`.
 #[derive(Debug, Default)]
 pub(crate) struct DTable {
     log: u32,
@@ -85,7 +85,7 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
         }
         let wt = usize::from(wt);
         let len = 1usize << (wt - 1);
-        let e = s as u16 | ((log as u16 + 1 - wt as u16) << 8);
+        let e = (s as u16) << 8 | (log as u16 + 1 - wt as u16);
         table.entries[start[wt]..start[wt] + len].fill(e);
         start[wt] += len;
     }
@@ -101,8 +101,95 @@ const TABLE_SIZE: usize = 1 << 12;
 #[inline(always)]
 fn step(e: &[u16; TABLE_SIZE], br: &mut BackReader<'_>, log: u32) -> u8 {
     let v = e[br.peek_fast(log) as usize & (TABLE_SIZE - 1)];
-    br.consume(u32::from(v >> 8));
-    v as u8
+    br.consume(u32::from(v & 0xFF));
+    (v >> 8) as u8
+}
+
+/// The four streams of `body` (stream `i` is `body[bounds[i]..bounds[i + 1]]`) in lockstep, from the readers `r` to
+/// the outputs `o`, for as long as every stream's 8-byte window stays within it: libzstd's
+/// fast loop. Each stream's bits are kept left-aligned in a register with a 1 bit below the
+/// last one loaded, so a symbol takes a shift by a constant (the table's `LOG`), a lookup and
+/// a shift by its length, and a refill finds the bits used from the position of that 1 bit.
+/// Returns how many symbols each stream got (the readers are moved past them).
+#[inline(always)]
+fn fast4<'a, const LOG: u32>(
+    e: &[u16; TABLE_SIZE],
+    body: &'a [u8],
+    bounds: [usize; 5],
+    r: &mut [BackReader<'a>; 4],
+    o: [&mut [u8]; 4],
+) -> usize {
+    // Symbols per refill: a refill leaves at most 7 bits used, and the 1 bit must stay below
+    // the bits looked up (7 + syms * LOG <= 63).
+    let syms = (56 / LOG as usize).min(8);
+    let mut ip = [0usize; 4];
+    let mut bits = [0u64; 4];
+    for i in 0..4 {
+        let Some((ptr, used)) = r[i].window() else {
+            return 0;
+        };
+        if used > 7 {
+            return 0;
+        }
+        ip[i] = bounds[i] + ptr;
+        bits[i] = (load8(body, ip[i]) | 1) << used;
+    }
+    let [o1, o2, o3, o4] = o;
+    let mut done = 0;
+    loop {
+        // A refill moves a window back by at most 7 bytes.
+        let n = (0..4)
+            .map(|i| (ip[i] - bounds[i]) / 7)
+            .min()
+            .unwrap_or(0)
+            .min((o4.len() - done) / syms);
+        if n == 0 {
+            break;
+        }
+        for (((c1, c2), c3), c4) in o1[done..]
+            .chunks_exact_mut(syms)
+            .zip(o2[done..].chunks_exact_mut(syms))
+            .zip(o3[done..].chunks_exact_mut(syms))
+            .zip(o4[done..].chunks_exact_mut(syms))
+            .take(n)
+        {
+            for k in 0..syms {
+                c1[k] = sym::<LOG>(e, &mut bits[0]);
+                c2[k] = sym::<LOG>(e, &mut bits[1]);
+                c3[k] = sym::<LOG>(e, &mut bits[2]);
+                c4[k] = sym::<LOG>(e, &mut bits[3]);
+            }
+            for i in 0..4 {
+                let used = bits[i].trailing_zeros();
+                ip[i] -= (used >> 3) as usize;
+                bits[i] = (load8(body, ip[i]) | 1) << (used & 7);
+            }
+        }
+        done += n * syms;
+    }
+    for i in 0..4 {
+        r[i] = BackReader::at(
+            &body[bounds[i]..bounds[i + 1]],
+            ip[i] - bounds[i],
+            bits[i].trailing_zeros(),
+        );
+    }
+    done
+}
+
+/// One symbol of a left-aligned bit register (see [`fast4`]).
+#[inline(always)]
+fn sym<const LOG: u32>(e: &[u16; TABLE_SIZE], bits: &mut u64) -> u8 {
+    let v = e[(*bits >> (64 - LOG)) as usize & (TABLE_SIZE - 1)];
+    *bits <<= v & 63;
+    (v >> 8) as u8
+}
+
+#[inline(always)]
+fn load8(b: &[u8], at: usize) -> u64 {
+    let mut w = [0u8; 8];
+    w.copy_from_slice(&b[at..][..8]);
+    u64::from_le_bytes(w)
 }
 
 /// Decodes the symbols of `out` from `br`, which must then be exactly at the end of its
@@ -166,19 +253,42 @@ pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Resu
     let (s1, rest) = src[6..].split_at(l1);
     let (s2, rest) = rest.split_at(l2);
     let (s3, s4) = rest.split_at(l3);
-    let mut r1 = BackReader::new(s1).ok_or(Error::BadHuffmanStream)?;
-    let mut r2 = BackReader::new(s2).ok_or(Error::BadHuffmanStream)?;
-    let mut r3 = BackReader::new(s3).ok_or(Error::BadHuffmanStream)?;
-    let mut r4 = BackReader::new(s4).ok_or(Error::BadHuffmanStream)?;
-    // The four streams in lockstep, four symbols each per round, as long as the shortest
-    // segment (the fourth) lasts; bits read past the end of a stream are caught by the checks
-    // of `finish_stream`.
-    let rounds = o4.len() / 4;
-    for (((c1, c2), c3), c4) in o1
+    let mut r = [
+        BackReader::new(s1).ok_or(Error::BadHuffmanStream)?,
+        BackReader::new(s2).ok_or(Error::BadHuffmanStream)?,
+        BackReader::new(s3).ok_or(Error::BadHuffmanStream)?,
+        BackReader::new(s4).ok_or(Error::BadHuffmanStream)?,
+    ];
+    for x in &mut r {
+        x.reload();
+    }
+    let body = &src[6..];
+    let bounds = [0, l1, l1 + l2, l1 + l2 + l3, body.len()];
+    let o = [&mut *o1, &mut *o2, &mut *o3, &mut *o4];
+    let fast = match log {
+        1 => fast4::<1>(e, body, bounds, &mut r, o),
+        2 => fast4::<2>(e, body, bounds, &mut r, o),
+        3 => fast4::<3>(e, body, bounds, &mut r, o),
+        4 => fast4::<4>(e, body, bounds, &mut r, o),
+        5 => fast4::<5>(e, body, bounds, &mut r, o),
+        6 => fast4::<6>(e, body, bounds, &mut r, o),
+        7 => fast4::<7>(e, body, bounds, &mut r, o),
+        8 => fast4::<8>(e, body, bounds, &mut r, o),
+        9 => fast4::<9>(e, body, bounds, &mut r, o),
+        10 => fast4::<10>(e, body, bounds, &mut r, o),
+        11 => fast4::<11>(e, body, bounds, &mut r, o),
+        _ => fast4::<12>(e, body, bounds, &mut r, o),
+    };
+    let [mut r1, mut r2, mut r3, mut r4] = r;
+    // The rest in lockstep, four symbols each per round, as long as the shortest segment (the
+    // fourth) lasts; bits read past the end of a stream are caught by the checks of
+    // `finish_stream`.
+    let rounds = (o4.len() - fast) / 4;
+    for (((c1, c2), c3), c4) in o1[fast..]
         .chunks_exact_mut(4)
-        .zip(o2.chunks_exact_mut(4))
-        .zip(o3.chunks_exact_mut(4))
-        .zip(o4.chunks_exact_mut(4))
+        .zip(o2[fast..].chunks_exact_mut(4))
+        .zip(o3[fast..].chunks_exact_mut(4))
+        .zip(o4[fast..].chunks_exact_mut(4))
         .take(rounds)
     {
         r1.reload();
@@ -192,7 +302,7 @@ pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Resu
             c4[k] = step(e, &mut r4, log);
         }
     }
-    let done = rounds * 4;
+    let done = fast + rounds * 4;
     finish_stream(e, log, r1, &mut o1[done..])?;
     finish_stream(e, log, r2, &mut o2[done..])?;
     finish_stream(e, log, r3, &mut o3[done..])?;

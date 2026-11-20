@@ -41,6 +41,25 @@ impl<'a> BackReader<'a> {
         })
     }
 
+    /// The position of the 8-byte window and the bits used of it, when the window lies
+    /// within the stream (`None` for a stream shorter than 8 bytes).
+    #[inline]
+    pub(crate) fn window(&self) -> Option<(usize, u32)> {
+        (self.data.len() >= 8).then_some((self.ptr, self.consumed))
+    }
+
+    /// A reader of `data` (8 bytes or more) whose window is at `ptr`, `consumed` bits of it
+    /// used (as [`BackReader::window`] gave them, or moved on correctly).
+    #[inline]
+    pub(crate) fn at(data: &'a [u8], ptr: usize, consumed: u32) -> Self {
+        BackReader {
+            data,
+            ptr,
+            container: Self::load(data, ptr),
+            consumed,
+        }
+    }
+
     #[inline]
     fn load(data: &[u8], ptr: usize) -> u64 {
         let mut b = [0u8; 8];
