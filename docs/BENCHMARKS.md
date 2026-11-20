@@ -1654,6 +1654,32 @@ the packets dropped at XDP it pushes 1.76× more in native mode and 1.28× more 
 than when they go up the stack to a socket. Native XDP drops 1.52× the packets the socket path
 delivers.
 
+### AF_XDP vs AF_PACKET under the userspace stack (`tools/bench/afxdp.sh`)
+
+Run on 2026-11-21 on the same host (Linux 7.0, root, under `quiet.sh`), from branch
+`claude/ebpf-xdp-2df444` (ADR-063). It is a same-run A/B: the two links alternate within each of 5
+rounds of 5 s (the order swaps every round), and the figure is the median.
+
+The setup: the only-dpdk stack serves UDP and TCP echo on one end of a veth pair, in the root
+namespace, with its I/O thread pinned to CPU 2. Kernel clients run in a network namespace on
+the other end (4 threads on CPUs 4–7, `link-bench` example). TSO, GSO and GRO are off on both
+ends, so both links move one MTU-sized frame per segment. AF_XDP ran in native XDP and copy mode
+(a veth has no zero-copy AF_XDP); AF_PACKET is the existing `Device::AfPacket`.
+
+| Case | AF_PACKET | AF_XDP | AF_XDP / AF_PACKET |
+|---|---:|---:|---:|
+| UDP request/response, 64 B, 4 in flight | 255,599/s (±0.3%) | 428,413/s (414–465 k) | 1.68 |
+| TCP request/response, 64 B, 4 connections | 220,053/s | 348,673/s (339–379 k) | 1.58 |
+| TCP connections/s (connect, 8 B echo, close) | 23,727/s | 29,492/s | 1.24 |
+| TCP echo, one connection, MB/s each way | 274.6 | 814.7 | 2.97 |
+
+AF_PACKET pays a `recvfrom` system call and an skb per received frame, plus a `write` per sent
+frame. AF_XDP moves frames through shared rings: one copy into the UMEM on receive, in place on
+send, and one `sendmsg` kick per batch. The difference is largest for bulk TCP, where each
+direction carries full-size frames. Connection churn gains least: most of its cost is in the
+kernel clients' own connect and close. This measures copy mode; zero-copy on a NIC that supports
+it is not measured (the host's NICs are not used).
+
 ## Not measured
 
 - **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.

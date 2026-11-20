@@ -166,7 +166,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
   - `Prefork::bpf_steering(BpfSteering)`：supervisor 为每个地址固定一组（`workers * threads` 个槽位），每个 worker 的 `listener(i)` 加入自己的槽位，重启或重载后的 worker 接管这些槽位，因此 `ReusePort` 重载不会重置任何连接。没有 root 或 bpffs 时 worker 保持内核哈希（设置 `strict` 则失败）；无法迁移的重载会记录警告。
   - `only_dpdk::Device::AfXdp(AfXdpConfig)`：AF_XDP 作为用户态协议栈的一种链路，与 TAP、AF_PACKET 并列（每队列一个 socket、一块 UMEM 和一个 I/O 线程，手工汇编的 `XSKMAP` 重定向程序，先零拷贝后拷贝模式，先 native 后 generic XDP）；不新增 `Backend`。
   - 测试（gpu51，root，`ONLY_TEST_EXPECT_EBPF=1`；只用 veth 对与网络命名空间）：共享槽位，以及 accept 队列与 `TCP_DEFER_ACCEPT` 半连接的迁移（`only-ebpf/tests/shared.rs`）；三个 worker × 两个线程在一次重启前后都与 `expected_index` 一致，持续建连下连续三次重载无任何丢失且 accept 计数吻合（每次约 7–9 万次交互，epoll 与 io_uring），先停止后杀死的 worker 的队列被迁移（7–9 个连接，对照组无程序时被重置 8–12 个）（`only-prefork/tests/bpf.rs`）；AF_XDP 内核对端测试（native、generic/拷贝、IPv6、双队列 200 连接、veth 上拒绝零拷贝）。去掉 capability（`setpriv`）后全部跳过或降级，设置 `ONLY_TEST_EXPECT_EBPF=1` 时失败。
-  - AF_XDP 与 AF_PACKET 在同一 veth 对上的对比：docs/BENCHMARKS.zh-CN.md（“AF_XDP 与 AF_PACKET”，`tools/bench/afxdp.sh`）。
+  - AF_XDP 与 AF_PACKET 在同一 veth 对上的对比（同一轮 A/B，`tools/bench/afxdp.sh`，native 拷贝模式）：UDP 请求/应答 1.68 倍、TCP 请求/应答 1.58 倍、每秒 TCP 建连 1.24 倍、单连接 TCP 回显 2.97 倍（814.7 对 274.6 MB/s）；见 docs/BENCHMARKS.zh-CN.md。
   - 未完成：在真实网卡上测量零拷贝（不碰主机网卡，veth 不支持零拷贝 AF_XDP）、队列间共享 UMEM、多缓冲区（巨帧）、为 epoll/io_uring 的内核协议栈提供 AF_XDP。
 - **交付**：长稳（≥72h）报告
 

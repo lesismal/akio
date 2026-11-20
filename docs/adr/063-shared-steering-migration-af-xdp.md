@@ -179,6 +179,13 @@ Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `ONLY_TEST_EXPE
   - Three reloads under 8 client threads of connection churn, for CPU and hash steering: no
     exchange failed, and the workers' accept counts add up exactly to the clients' successful
     exchanges.
+  - These reloads migrate nothing (`TCPMigrateReqSuccess` stays put): the new worker takes the
+    slots before the old one stops, so the old listeners are empty when they close. Migration is
+    exercised by a worker stopped with SIGSTOP under churn and then killed. Its queued connections
+    (7–9 per run) migrate and nothing fails, while the control run without the program loses
+    8–12. At most one exchange may fail: a connection the worker had accepted but not answered
+    when it stopped.
+  - The results are the same on epoll and io_uring.
   - A non-bpffs directory falls back to the kernel's hashing, and `strict` fails the spawn.
 - `only-dpdk/tests/kernel_peer.rs`, `af_xdp_*` on veth pairs:
   - Native/auto, generic/copy and IPv6: UDP echo, ECN, fragments, a 2 MiB TCP echo, dials and
@@ -190,4 +197,8 @@ Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `ONLY_TEST_EXPE
   only-dpdk tests skip, the prefork test checks that the workers serve with the kernel's
   hashing, and all of them fail when `ONLY_TEST_EXPECT_EBPF=1` is set.
 
-Benchmark: see docs/BENCHMARKS ("AF_XDP vs AF_PACKET").
+Benchmark (same-run A/B under `quiet.sh`, `tools/bench/afxdp.sh`, one veth pair, AF_XDP in native
+copy mode): compared with AF_PACKET, AF_XDP gives 1.68× the UDP request/response rate, 1.58× the
+TCP request/response rate, 1.24× the TCP connection rate and 2.97× the single-connection TCP echo
+throughput (814.7 vs 274.6 MB/s each way). Details are in docs/BENCHMARKS ("AF_XDP vs AF_PACKET
+under the userspace stack").

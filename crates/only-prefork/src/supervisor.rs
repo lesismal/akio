@@ -230,7 +230,7 @@ impl Supervisor {
             .args
             .clone()
             .unwrap_or_else(|| std::env::args_os().skip(1).collect());
-        let state_bpf_base = cfg
+        let bpf_base = cfg
             .bpf
             .as_ref()
             .filter(|_| !steering.is_empty())
@@ -299,7 +299,6 @@ impl Supervisor {
                 return Err(io::Error::other("prefork: the supervisor thread panicked"));
             }
         }
-        let bpf_base = state_bpf_base;
         Ok(Supervisor {
             ctl: Controller { tx },
             status,

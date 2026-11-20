@@ -148,6 +148,11 @@ veth 对与网络命名空间，从不碰真实网卡。非特权的降级路径
   - 作答的 worker 正是 `expected_index` 指定的那个，杀掉并重启一个 worker 之后依然如此。
   - 在 8 个客户端线程不断建连的情况下连续重载三次，CPU 与哈希分流各测一遍：没有任何一次交互失败，
     各 worker 的 accept 计数之和恰好等于客户端成功的交互数。
+  - 这些重载没有迁移任何连接（`TCPMigrateReqSuccess` 不变）：新 worker 在旧 worker 停止之前就接管了槽位，
+    因此旧 listener 关闭时是空的。迁移由另一个场景覆盖：在持续建连下用 SIGSTOP 停住一个 worker，再将其杀死。
+    它排队的连接（每次 7–9 个）全部迁移，没有交互失败；对照组没有程序时丢失 8–12 个。最多可能失败一次交互：
+    该 worker 停止时已 accept 但尚未作答的那个连接。
+  - epoll 与 io_uring 上结果相同。
   - 不在 bpffs 上的目录会降级到内核哈希，`strict` 时 spawn 失败。
 - `only-dpdk/tests/kernel_peer.rs`，veth 对上的 `af_xdp_*`：
   - native/auto、generic/拷贝与 IPv6：UDP 回显、ECN、分片、2 MiB 的 TCP 回显、拨号以及到内核的 ICMP。
@@ -157,4 +162,7 @@ veth 对与网络命名空间，从不碰真实网卡。非特权的降级路径
   capability 的 root）下运行。only-ebpf 与 only-dpdk 的测试跳过，prefork 测试检查 worker 使用内核哈希
   照常服务；设置 `ONLY_TEST_EXPECT_EBPF=1` 时它们全部失败。
 
-基准测试见 docs/BENCHMARKS.zh-CN.md（“AF_XDP 与 AF_PACKET”）。
+基准测试（`quiet.sh` 下同一轮 A/B，`tools/bench/afxdp.sh`，同一 veth 对，AF_XDP 为 native 拷贝模式）：与
+AF_PACKET 相比，AF_XDP 的 UDP 请求/应答速率为 1.68 倍，TCP 请求/应答速率为 1.58 倍，TCP 建连速率为 1.24 倍，
+单连接 TCP 回显吞吐为 2.97 倍（每个方向 814.7 对 274.6 MB/s）。详见 docs/BENCHMARKS.zh-CN.md（“用户态协议栈上的
+AF_XDP 与 AF_PACKET”）。
