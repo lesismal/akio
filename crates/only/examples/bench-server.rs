@@ -1,6 +1,9 @@
 //! Server for the benchmarks (see docs/BENCHMARKS.md):
 //!
-//! `bench-server <tcp|tls|udp> <addr> <threads> <epoll|uring> [echo|block-inline|block-pool [ms]]`
+//! `bench-server <tcp|tls|udp|udp-dgram> <addr> <threads> <epoll|uring> [echo|block-inline|block-pool [ms]]`
+//!
+//! `udp` serves one connection per peer (`Listener::udp(..).serve`); `udp-dgram` echoes with a
+//! connectionless `DatagramsHandler` (`serve_datagrams`, ADR-065) and only takes `echo`.
 //!
 //! * `echo`: reply with what was received.
 //! * `block-inline`: sleep `ms` (default 5) inside `on_data`, then reply. This is the mistake
@@ -14,8 +17,8 @@
 use std::{thread, time::Duration};
 
 use only::{
-    Accel, Acceptor, Backend, Conn, EbpfConfig, Engine, Handler, Listener, PoolConfig, ebpf,
-    fn_acceptor,
+    Accel, Acceptor, Backend, Conn, DatagramSender, Datagrams, DatagramsHandler, EbpfConfig,
+    Engine, Handler, Listener, PoolConfig, Replies, ebpf, fn_acceptor,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 
@@ -23,6 +26,16 @@ struct Echo;
 impl Handler for Echo {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let _ = c.send(data);
+    }
+}
+
+/// Connectionless echo: every datagram of a batch back to its sender.
+struct DgramEcho;
+impl DatagramsHandler for DgramEcho {
+    fn on_datagrams(&mut self, batch: &Datagrams<'_>, out: &mut Replies) {
+        for (peer, data) in batch {
+            let _ = out.send_to(data, peer);
+        }
     }
 }
 
@@ -79,7 +92,7 @@ fn main() -> std::io::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.len() < 4 {
         eprintln!(
-            "usage: bench-server <tcp|tls|udp> <addr> <threads> <epoll|uring> [echo|block-inline|block-pool [ms]]"
+            "usage: bench-server <tcp|tls|udp|udp-dgram> <addr> <threads> <epoll|uring> [echo|block-inline|block-pool [ms]]"
         );
         std::process::exit(2);
     }
@@ -106,6 +119,8 @@ fn main() -> std::io::Result<()> {
         .transpose()?;
     let l = if a[0] == "udp" {
         Listener::udp(addr)
+    } else if a[0] == "udp-dgram" {
+        Listener::udp(addr).backend(backend)
     } else {
         Listener::tcp(addr).backend(backend)
     }
@@ -125,6 +140,13 @@ fn main() -> std::io::Result<()> {
         _ => l,
     };
 
+    if a[0] == "udp-dgram" {
+        let engine = Engine::builder()
+            .listen(l.serve_datagrams(|_: &DatagramSender| DgramEcho))
+            .build()?;
+        println!("listening on {:?}", engine.local_addrs());
+        return engine.run();
+    }
     match a.get(4).map_or("echo", String::as_str) {
         "echo" => serve(l, fn_acceptor(|_c: &Conn<Echo>| Echo), tls, 64),
         "block-inline" => serve(l, fn_acceptor(move |_c: &Conn<Inline>| Inline(d)), tls, 64),

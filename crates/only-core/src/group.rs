@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr, sync::Arc};
 
-use crate::DynAcceptor;
+use crate::{DatagramSender, DynAcceptor};
 
 /// One backend instance serving one listener (or, with no listener, only dialed connections):
 /// a group of I/O threads. Implemented by backend crates; `Engine` composes groups, which is how
@@ -19,6 +19,10 @@ pub trait Group: Send + Sync {
     /// (none for an empty set or past the end). Takes effect only before [`start`](Self::start);
     /// groups whose threads cannot be pinned ignore it.
     fn pin_threads(&self, _cpus: Vec<Vec<usize>>) {}
+    /// A sender on the socket of a datagram listener (ADR-065; `None` for other groups).
+    fn datagram_sender(&self) -> Option<DatagramSender> {
+        None
+    }
     /// Peer counters of a UDP listener (zero for other groups).
     fn udp_stats(&self) -> UdpStats {
         UdpStats::default()

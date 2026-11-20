@@ -15,6 +15,7 @@
 
 mod config;
 mod conn;
+mod datagrams;
 mod error;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -31,6 +32,9 @@ pub use config::{Config, SlowCallback, SlowHook};
 pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport};
 #[doc(hidden)]
 pub use conn::{ConnInner, LoopLink, Task};
+#[doc(hidden)]
+pub use datagrams::{DatagramPort, DatagramsFactory, datagrams_factory};
+pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, Replies};
 pub use error::{Error, Result};
 #[doc(hidden)]
 pub use group::Group;

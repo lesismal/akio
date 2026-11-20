@@ -5,8 +5,8 @@
 #   * every `guide-*` example: each starts its servers, drives them with its own clients and
 #     exits 0, or fails (non-zero exit, panic or timeout);
 #   * the serve-only examples the books include (guide-media, guide-media-rtsp, echo,
-#     udp-echo, hello, prefork-http): started, probed from outside (TCP/UDP echo, HTTP/1.1,
-#     HTTP/2, RTSP OPTIONS, RTMP connect), then stopped;
+#     udp-echo, udp-dns, hello, prefork-http): started, probed from outside (TCP/UDP echo, a DNS
+#     query, HTTP/1.1, HTTP/2, RTSP OPTIONS, RTMP connect), then stopped;
 #   * the gRPC chapter's generated stubs (tools/protobuf-test): its gRPC test.
 #
 #   book/check-guides.sh                 # all of them
@@ -17,7 +17,7 @@
 # With ONLY_DEFAULT_BACKEND=uring every TCP listener that does not choose a backend runs on
 # io_uring, and an example whose engine fell back to epoll fails.
 #
-# The serve-only examples listen on fixed ports (8080, 1935, 8554, 8000-8001, 7002). On
+# The serve-only examples listen on fixed ports (8080, 1935, 8554, 8000-8001, 7002, 5353). On
 # Linux the script re-runs itself in a private network namespace (`unshare -rn`) when it can,
 # so nothing else on the host is in the way; elsewhere (macOS, containers without unshare) a
 # busy port fails the example with the process holding it. Uses CARGO_TARGET_DIR. Needs
@@ -43,7 +43,7 @@ logs="$(mktemp -d "${TMPDIR:-/tmp}/only-guides.XXXXXX")"
 guides=()
 while IFS= read -r f; do guides+=("$(basename "$f" .rs)"); done < <(
   find crates -path '*/examples/guide-*.rs' | sort -t/ -k4)
-serve_only=(guide-media guide-media-rtsp echo udp-echo hello prefork-http)
+serve_only=(guide-media guide-media-rtsp echo udp-echo udp-dns hello prefork-http)
 all=()
 for g in "${guides[@]}"; do
   case " ${serve_only[*]} " in *" $g "*) ;; *) all+=("$g") ;; esac
@@ -195,6 +195,30 @@ sys.exit(f"udp {port}: no answer")
 EOF
 }
 
+# dns_exchange PORT NAME EXPECT_HEX: one DNS `A` query for NAME; the answer must contain the bytes
+# EXPECT_HEX (the address).
+dns_exchange() {
+  python3 - "$@" <<'EOF'
+import socket, struct, sys
+port, name, expect = int(sys.argv[1]), sys.argv[2], bytes.fromhex(sys.argv[3])
+q = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+q += b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + bytes(1) + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(1)
+for _ in range(15):  # the server may still be starting: retry
+    s.sendto(q, ("127.0.0.1", port))
+    try:
+        got = s.recv(65536)
+    except socket.timeout:
+        continue
+    if got[:2] == q[:2] and expect in got:
+        print(f"dns {port}: {name} answered ({len(got)} bytes)")
+        sys.exit(0)
+    sys.exit(f"dns {port}: got {got!r}")
+sys.exit(f"dns {port}: no answer")
+EOF
+}
+
 # serve LOG PORTS -- CMD...: checks the ports are free, starts CMD in the background (pid in
 # $server), waits for the first TCP port.
 server=""
@@ -255,6 +279,11 @@ probe() {
     udp-echo)
       serve "$log" udp/7002 -- "$bin/udp-echo"
       udp_exchange 7002 'hello' 'hello'
+      stop
+      ;;
+    udp-dns)
+      serve "$log" udp/5353 -- "$bin/udp-dns"
+      dns_exchange 5353 hello.test 7f000001
       stop
       ;;
     hello)

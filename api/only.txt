@@ -4,6 +4,10 @@ pub use only::AnyAcceptor
 pub use only::Config
 pub use only::Conn
 pub use only::ConnInfo
+pub use only::DatagramSender
+pub use only::Datagrams
+pub use only::DatagramsHandler
+pub use only::DatagramsIter
 pub use only::Error
 pub use only::FnAcceptor
 pub use only::Handler
@@ -16,6 +20,7 @@ pub use only::Part
 pub use only::PoolConfig
 pub use only::PoolStats
 pub use only::ReloadReport
+pub use only::Replies
 pub use only::ResponseSlot
 pub use only::ResponseStream
 pub use only::Result
@@ -108,6 +113,7 @@ pub fn only::Engine::bind_udp_multicast<A: only_core::handler::Acceptor>(&self, 
 pub fn only::Engine::bind_udp_multicast_on<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, &[u32], A) -> core::io::error::Result<only_core::group::UdpBinding>
 pub fn only::Engine::builder() -> only::EngineBuilder
 pub fn only::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
+pub fn only::Engine::datagram_sender(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<only_core::datagrams::DatagramSender>
 pub fn only::Engine::dial<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn only::Engine::dial_from<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn only::Engine::dial_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
@@ -171,6 +177,7 @@ pub fn only::Listener::accel(self, only::Accel) -> Self
 pub fn only::Listener::backend(self, only::Backend) -> Self
 pub fn only::Listener::serve<A: only_core::handler::Acceptor>(self, A) -> Self
 pub fn only::Listener::serve_any(self, impl core::convert::Into<only_core::handler::AnyAcceptor>) -> Self
+pub fn only::Listener::serve_datagrams<H, F>(self, F) -> Self where H: only_core::datagrams::DatagramsHandler, F: core::ops::function::Fn(&only_core::datagrams::DatagramSender) -> H + core::marker::Send + core::marker::Sync + 'static
 pub fn only::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
 pub fn only::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
 pub fn only::Listener::threads(self, usize) -> Self
