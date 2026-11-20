@@ -194,4 +194,9 @@ let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
 ## 不支持
 
 GSSAPI 认证；Linux `splice(2)` 转发路径（没有尝试：保留 engine 上带双向背压的转发，内核内转发由
-`only::ebpf::Relay` 提供）；发送分片的 UDP 数据报（只做重组）；客户端到代理的 TLS。
+`only::ebpf::Relay` 提供）。
+
+ADR-059 起：数据报可以双向分片发送（RFC 1928 `FRAG`；`UdpAssociation::send_fragmented`、
+`BlockingUdp::send_fragmented`，服务端 `Socks::udp_fragment_size(Some(n))`，默认关闭），
+`SocksClient::tls(cfg, name)` 让 engine 方法经 TLS 连接代理（服务端放在 `Tls::server` 后面即可）；
+HTTP 与 WebSocket 客户端支持 `https://` HTTP 代理。

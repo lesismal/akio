@@ -1,8 +1,9 @@
 //! An asynchronous HTTP/1.1 client on `only`'s engine: callbacks or a waitable/awaitable result,
 //! keep-alive connection reuse per host, chunked and close-delimited bodies, HTTPS through
 //! `only::tls` (the system's CAs by default), opt-in redirects ([`RedirectPolicy`]), per-request
-//! timeouts, HTTP proxies ([`Proxy`]) and name resolution off the calling thread
-//! ([`only::dns`]). See ADR-010 for the rules.
+//! timeouts, HTTP and SOCKS proxies ([`Proxy`], `https://` proxies included), name resolution
+//! off the calling thread with Happy Eyeballs connection racing ([`only::dns`]) and an opt-in
+//! cookie jar ([`Client::with_cookies`]). See ADR-010 and ADR-059 for the rules.
 //!
 //! ```no_run
 //! # use std::{sync::Arc, time::Duration};
@@ -50,6 +51,8 @@ use only_ws::{
     http1,
     proxy::{Connect, ProxyServer, Refusal},
 };
+
+use crate::cookie::CookieJar;
 
 use crate::{
     message::{Headers, Method, Version},
@@ -138,6 +141,9 @@ pub struct ClientOptions {
     pub max_idle_per_host: usize,
     /// Idle keep-alive connections kept in all. Default 256.
     pub max_idle: usize,
+    /// How the addresses of a server (or proxy) are raced when it has several (RFC 8305:
+    /// IPv6 and IPv4 interleaved, a new attempt every 250 ms by default).
+    pub happy_eyeballs: only::dns::HappyEyeballs,
 }
 
 impl Default for ClientOptions {
@@ -148,6 +154,7 @@ impl Default for ClientOptions {
             idle_timeout: Some(Duration::from_secs(90)),
             max_idle_per_host: 32,
             max_idle: 256,
+            happy_eyeballs: only::dns::HappyEyeballs::default(),
         }
     }
 }
@@ -468,6 +475,9 @@ fn redirect(
 /// carries the timeout.
 struct Exchange {
     done: Mutex<Option<Callback>>,
+    /// The site of the first request (cookies: a chain that leaves it is cross-site).
+    site: OnceLock<String>,
+    cross_site: AtomicBool,
     /// The connection serving the current attempt, for the timeout to close.
     conn: Mutex<Option<Weak<ConnInner>>>,
     expired: AtomicBool,
@@ -526,6 +536,7 @@ struct Settings {
     timeout: Option<Duration>,
     proxy: Proxy,
     opts: ClientOptions,
+    cookies: Option<CookieJar>,
 }
 
 /// Idle keep-alive connections, newest last per route, with when each became idle.
@@ -653,6 +664,19 @@ impl Client {
         self.rebuild(|s| s.proxy = proxy)
     }
 
+    /// Stores the cookies responses set in `jar` and sends the matching ones with every
+    /// request, each hop of a redirect chain included (the rules: [`crate::cookie`]). None by
+    /// default. A `Cookie` field set on a request is kept, the jar's cookies after it.
+    #[must_use]
+    pub fn with_cookies(self, jar: CookieJar) -> Client {
+        self.rebuild(|s| s.cookies = Some(jar))
+    }
+
+    /// The cookie jar, if any.
+    pub fn cookies(&self) -> Option<&CookieJar> {
+        self.inner.settings.cookies.as_ref()
+    }
+
     /// Sends `req`; `done` is called once with the outcome (on an I/O thread, or as the module
     /// documentation says).
     pub fn request(
@@ -662,6 +686,8 @@ impl Client {
     ) {
         let ex = Arc::new(Exchange {
             done: Mutex::new(Some(Box::new(done))),
+            site: OnceLock::new(),
+            cross_site: AtomicBool::new(false),
             conn: Mutex::new(None),
             expired: AtomicBool::new(false),
             hops: AtomicU32::new(0),
@@ -708,12 +734,41 @@ impl Client {
         if let Some(auth) = absolute.and_then(|p| p.authorization.as_deref()) {
             bytes.extend_from_slice(format!("Proxy-Authorization: {auth}\r\n").as_bytes());
         }
+        let jar = self.inner.settings.cookies.as_ref();
+        let mut cookie = String::new();
         for (n, v) in req.headers.iter() {
-            if !n.eq_ignore_ascii_case("host") && !n.eq_ignore_ascii_case("content-length") {
+            if jar.is_some() && n.eq_ignore_ascii_case("cookie") {
+                // One `Cookie` field: the request's, then the jar's.
+                if !cookie.is_empty() {
+                    cookie.push_str("; ");
+                }
+                cookie.push_str(v);
+            } else if !n.eq_ignore_ascii_case("host") && !n.eq_ignore_ascii_case("content-length") {
                 bytes.extend_from_slice(
                     format!("{n}: {}\r\n", v.replace(['\r', '\n'], "")).as_bytes(),
                 );
             }
+        }
+        let origin = jar.and_then(|_| crate::cookie::origin(&req.url));
+        if let (Some(jar), Some(o)) = (jar, &origin) {
+            let site = jar.site(&o.host);
+            if *ex.site.get_or_init(|| site.clone()) != site {
+                ex.cross_site.store(true, Ordering::Relaxed);
+            }
+            let cross = ex.cross_site.load(Ordering::Relaxed);
+            if let Some(h) =
+                jar.header_for(o, req.method.as_str(), cross, crate::cookie::now_secs())
+            {
+                if !cookie.is_empty() {
+                    cookie.push_str("; ");
+                }
+                cookie.push_str(&h);
+            }
+        }
+        if !cookie.is_empty() {
+            bytes.extend_from_slice(
+                format!("Cookie: {}\r\n", cookie.replace(['\r', '\n'], "")).as_bytes(),
+            );
         }
         if req.headers.get("user-agent").is_none() {
             bytes.extend_from_slice(b"User-Agent: only-http\r\n");
@@ -736,8 +791,17 @@ impl Client {
             (req.url, None)
         };
         let (me, ex2) = (self.clone(), ex.clone());
+        let jar = self.inner.settings.cookies.clone();
         let cb: Callback = Box::new(move |r| match r {
             Ok(mut resp) => {
+                if let Some(jar) = &jar {
+                    if let Some(o) = crate::cookie::origin(&url) {
+                        let now = crate::cookie::now_secs();
+                        for v in resp.headers.get_all("set-cookie") {
+                            jar.store_from(&o, v, now);
+                        }
+                    }
+                }
                 if let Some(req) = saved {
                     let hops = ex2.hops.load(Ordering::Relaxed);
                     match redirect(policy, hops, &req, &resp) {
@@ -957,9 +1021,10 @@ impl Client {
             });
         }
         let key = p.key.clone();
-        let addr = p.addrs[0];
+        let addrs = p.addrs.clone();
         let tunnel = p.proxy.clone().filter(|s| key.tls || !s.is_http());
         let tunnel_host = p.tunnel_host.clone().unwrap_or_else(|| key.host.clone());
+        let proxy_tls = p.proxy.as_ref().filter(|s| s.tls).map(|s| s.host.clone());
         let slot = Arc::new(Mutex::new(Some(p)));
         let refusal = tunnel.as_ref().map(|_| Refusal::default());
         let acceptor = DialAcceptor {
@@ -967,40 +1032,66 @@ impl Client {
             client: self.clone(),
             refusal: refusal.clone(),
         };
-        let fail = {
-            let (slot, me) = (slot, self.clone());
-            move |e: io::Error| {
-                let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Some(mut p) = taken {
-                    if p.addrs.len() > 1 {
-                        // Next address (`localhost` is often ::1 first, then 127.0.0.1).
-                        p.addrs.remove(0);
-                        me.dial(p);
-                    } else {
-                        (p.cb)(Err(ClientError::Io(e)));
-                    }
-                }
+        let fail = move |e: io::Error| {
+            let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(p) = taken {
+                (p.cb)(Err(ClientError::Io(e)));
             }
         };
+        let he = self.inner.settings.opts.happy_eyeballs;
+        let engine = &self.inner.engine;
+        // TLS to the proxy itself (`https://` proxies), with the client's TLS configuration.
+        let proxy_cfg = match proxy_tls {
+            Some(name) => match self.tls() {
+                Ok(c) => Some((c, name)),
+                Err(e) => return fail(e),
+            },
+            None => None,
+        };
         if key.tls {
-            let cfg = match self.tls() {
-                Ok(c) => c,
+            let a = match self
+                .tls()
+                .and_then(|cfg| Tls::client(cfg, &key.host, acceptor))
+            {
+                Ok(a) => a,
                 Err(e) => return fail(e),
             };
-            match (Tls::client(cfg, &key.host, acceptor), tunnel, refusal) {
-                (Ok(a), Some(proxy), Some(r)) => {
-                    let a = Connect::new(&tunnel_host, key.port, &proxy, r, a);
-                    self.inner.engine.dial(addr, a, fail);
+            match (tunnel, refusal) {
+                (Some(proxy), Some(r)) => {
+                    let c = Connect::new(&tunnel_host, key.port, &proxy, r, a);
+                    match over_proxy_tls(c, &proxy_cfg) {
+                        Ok(c) => he.dial(engine, addrs, c, fail),
+                        Err(e) => fail(e),
+                    }
                 }
-                (Ok(a), _, _) => self.inner.engine.dial(addr, a, fail),
-                (Err(e), _, _) => fail(e),
+                _ => he.dial(engine, addrs, a, fail),
             }
         } else if let (Some(proxy), Some(r)) = (tunnel, refusal) {
-            let a = Connect::new(&tunnel_host, key.port, &proxy, r, acceptor);
-            self.inner.engine.dial(addr, a, fail);
+            let c = Connect::new(&tunnel_host, key.port, &proxy, r, acceptor);
+            match over_proxy_tls(c, &proxy_cfg) {
+                Ok(c) => he.dial(engine, addrs, c, fail),
+                Err(e) => fail(e),
+            }
+        } else if let Some((cfg, name)) = proxy_cfg {
+            // `http://` in absolute form to an `https://` proxy: TLS to the proxy only.
+            match Tls::client(cfg, &name, acceptor) {
+                Ok(a) => he.dial(engine, addrs, a, fail),
+                Err(e) => fail(e),
+            }
         } else {
-            self.inner.engine.dial(addr, acceptor, fail);
+            he.dial(engine, addrs, acceptor, fail);
         }
+    }
+}
+
+/// Runs the tunnel over TLS to the proxy when it is an `https://` one.
+fn over_proxy_tls<A: Acceptor>(
+    c: Connect<A>,
+    tls: &Option<(TlsClientConfig, String)>,
+) -> io::Result<Connect<A>> {
+    match tls {
+        Some((cfg, name)) => c.over_tls(cfg.clone(), name),
+        None => Ok(c),
     }
 }
 

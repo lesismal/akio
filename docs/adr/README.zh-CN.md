@@ -60,3 +60,4 @@
 - [ADR-054：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP](054-turn-dtls-mdns-ipv6-sdes.zh-CN.md)（2026-11-20 采纳）
 - [ADR-055：only-ice 中每个 ICE 数据流支持多个组件](055-ice-components.zh-CN.md)（2026-11-20 采纳）
 - [ADR-058：only-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别](058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md)（2026-11-20 采纳）
+- [ADR-059：客户端的 cookie、Happy Eyeballs、DNS 缓存与到代理的 TLS；SOCKS 分片与 TLS](059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md)（2026-11-20 采纳）

@@ -662,6 +662,8 @@ fn interop_with_external_echo_server() {
 
 #[path = "../../only-http/tests/support/proxy.rs"]
 mod proxy;
+#[path = "../../only-http/tests/support/tls_front.rs"]
+mod tls_front;
 
 fn redirecting(base_other: Option<String>) -> Router {
     echo_router(WsOptions::default(), None)
@@ -752,6 +754,49 @@ fn through_a_proxy_with_connect() {
         .and_then(|e| e.downcast_ref::<only_ws::proxy::ProxyRefused>())
         .unwrap();
     assert_eq!(r.status(), 407);
+    stop(&e);
+}
+
+#[test]
+fn through_an_https_proxy() {
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = only::tls::ServerConfig::builder(
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let (es, sport) = start_with(echo_router(WsOptions::default(), None), Some(scfg.clone()));
+    let p = proxy::start(Some("Basic dTpw")); // u:p
+    let (fe, front, opened) = tls_front::start(scfg, p.addr);
+    let mut roots = only::tls::RootCerts::empty();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
+    let mut opts = DialOptions::default();
+    opts.tls = Some(
+        only::tls::ClientConfig::builder()
+            .roots(roots)
+            .build()
+            .unwrap(),
+    );
+    opts.proxy =
+        only_ws::proxy::Proxy::all(&format!("https://u:p@localhost:{}", front.port())).unwrap();
+    // ws:// and wss:// (TLS inside the TLS to the proxy).
+    let (ws, rx, _, _) = open(&e, &format!("ws://127.0.0.1:{port}/ws"), &opts);
+    roundtrips(&ws, &rx);
+    let (ws2, rx2, _, _) = open(&e, &format!("wss://localhost:{sport}/ws"), &opts);
+    roundtrips(&ws2, &rx2);
+    let big = pattern(1 << 20, 9);
+    ws2.send_binary(&big).unwrap();
+    assert!(next_msg(&rx2) == Message::Binary(big));
+    let seen = p.seen();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(seen[0].starts_with(&format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n")));
+    assert!(seen[1].starts_with(&format!("CONNECT localhost:{sport} HTTP/1.1\r\n")));
+    assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 2);
+    stop(&fe);
+    stop(&es);
     stop(&e);
 }
 

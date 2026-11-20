@@ -72,6 +72,7 @@ mod replay;
 #[doc(hidden)]
 pub mod stream;
 mod system;
+mod trust;
 
 pub use config::{
     CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey,

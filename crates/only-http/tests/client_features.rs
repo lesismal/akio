@@ -1,11 +1,14 @@
 //! HTTP client features of ADR-010: redirects (chains, loops, method rules, cross-origin header
 //! stripping), per-request timeouts (HTTP/1 and HTTP/2), proxies (absolute form, `CONNECT`,
-//! authentication, refusal, `NO_PROXY`), name resolution off the calling thread.
+//! authentication, refusal, `NO_PROXY`), name resolution off the calling thread; ADR-059: the
+//! cookie jar across redirect chains, `https://` proxies (TLS to the proxy).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 #[path = "support/proxy.rs"]
 mod proxy;
+#[path = "support/tls_front.rs"]
+mod tls_front;
 
 use std::{
     sync::{
@@ -105,6 +108,27 @@ fn app(loops: Arc<AtomicUsize>) -> Router {
                 });
             }
             "/hello" => ctx.text(200, "hello"),
+            "/cookie/set" => {
+                // `/cookie/set?<location>`: sets cookies, then redirects there.
+                let mut r = Response::new(302).header("Location", &query);
+                for c in [
+                    "a=1; Path=/",
+                    "strict=1; SameSite=Strict; Path=/",
+                    "lax=1; SameSite=Lax; Path=/",
+                    "dom=1; Domain=127.0.0.1; Path=/",
+                    "bad=1; Domain=0.0.1; Path=/",
+                    "sec=1; Secure; Path=/",
+                    "deep=1; Path=/elsewhere",
+                ] {
+                    r.headers.append("Set-Cookie", c);
+                }
+                ctx.respond(r);
+            }
+            "/cookie/clear" => {
+                let mut r = Response::text(200, "cleared");
+                r.headers.append("Set-Cookie", "a=; Max-Age=0; Path=/");
+                ctx.respond(r);
+            }
             _ => ctx.text(404, "no"),
         }
     })
@@ -409,6 +433,16 @@ fn http_through_a_proxy_uses_the_absolute_form() {
 }
 
 fn tls_server() -> (Arc<Engine>, only::tls::ClientConfig) {
+    let (e, c, _) = tls_parts();
+    (e, c)
+}
+
+/// An https server for `localhost`, a client config trusting it, and the server config.
+fn tls_parts() -> (
+    Arc<Engine>,
+    only::tls::ClientConfig,
+    only::tls::ServerConfig,
+) {
     let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
     let cert = ck.0.as_der().to_vec();
     let scfg = only::tls::ServerConfig::builder(
@@ -417,14 +451,14 @@ fn tls_server() -> (Arc<Engine>, only::tls::ClientConfig) {
     )
     .build()
     .unwrap();
-    let e = start(Tls::server(scfg, serve(app(Arc::default()))));
+    let e = start(Tls::server(scfg.clone(), serve(app(Arc::default()))));
     let mut roots = only::tls::RootCerts::empty();
     roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
     let ccfg = only::tls::ClientConfig::builder()
         .roots(roots)
         .build()
         .unwrap();
-    (e, ccfg)
+    (e, ccfg, scfg)
 }
 
 #[test]
@@ -484,5 +518,126 @@ fn https_uses_the_system_roots_by_default() {
         matches!(err, ClientError::Closed | ClientError::Io(_)),
         "{err}"
     );
+    stop(&e);
+}
+
+#[test]
+fn cookies_follow_the_jar_rules_across_redirects() {
+    use only_http::cookie::CookieJar;
+    let (e, base, _) = server();
+    let port = e.local_addrs()[0].port();
+    let jar = CookieJar::new();
+    let c = Client::new(e.clone())
+        .with_redirects(RedirectPolicy::limit(5))
+        .with_cookies(jar.clone());
+    // Set mid-chain, sent on the next hop of the same chain; `bad` (another domain), `sec`
+    // (Secure over http) and `deep` (another path) are not.
+    let r = c
+        .send(ClientRequest::get(&format!("{base}/cookie/set?/inspect")))
+        .wait();
+    assert_eq!(
+        body(r),
+        "GET 0 ct=false auth=- cookie=a=1; strict=1; lax=1; dom=1"
+    );
+    let names: Vec<String> = jar.cookies().into_iter().map(|c| c.name).collect();
+    assert_eq!(names, ["a", "strict", "lax", "dom", "deep"]);
+    // A chain that starts on another site (localhost) and lands on 127.0.0.1: no Strict
+    // cookies; Lax ones only for a safe method.
+    let cross = format!("http://localhost:{port}/to?302&http://127.0.0.1:{port}/inspect");
+    assert_eq!(
+        body(c.send(ClientRequest::get(&cross)).wait()),
+        "GET 0 ct=false auth=- cookie=a=1; lax=1; dom=1"
+    );
+    let cross_post = format!("http://localhost:{port}/to?307&http://127.0.0.1:{port}/inspect");
+    assert_eq!(
+        body(
+            c.send(ClientRequest::post(&cross_post, b"x".to_vec()))
+                .wait()
+        ),
+        "POST 1 ct=false auth=- cookie=a=1; dom=1"
+    );
+    // Host-only cookies of 127.0.0.1 do not go to localhost.
+    assert_eq!(
+        body(
+            c.send(ClientRequest::get(&format!(
+                "http://localhost:{port}/inspect"
+            )))
+            .wait()
+        ),
+        "GET 0 ct=false auth=- cookie=-"
+    );
+    // A request's own Cookie field comes first, in the same field.
+    let r = c
+        .send(ClientRequest::get(&format!("{base}/inspect")).header("Cookie", "mine=1"))
+        .wait();
+    assert_eq!(
+        body(r),
+        "GET 0 ct=false auth=- cookie=mine=1; a=1; strict=1; lax=1; dom=1"
+    );
+    // Max-Age=0 deletes.
+    assert_eq!(
+        body(
+            c.send(ClientRequest::get(&format!("{base}/cookie/clear")))
+                .wait()
+        ),
+        "cleared"
+    );
+    assert_eq!(
+        body(
+            c.send(ClientRequest::get(&format!("{base}/inspect")))
+                .wait()
+        ),
+        "GET 0 ct=false auth=- cookie=strict=1; lax=1; dom=1"
+    );
+    // Without a jar nothing is stored or sent.
+    let plain = Client::new(e.clone()).with_redirects(RedirectPolicy::limit(5));
+    assert!(plain.cookies().is_none());
+    assert_eq!(
+        body(
+            plain
+                .send(ClientRequest::get(&format!("{base}/cookie/set?/inspect")))
+                .wait()
+        ),
+        "GET 0 ct=false auth=- cookie=-"
+    );
+    stop(&e);
+}
+
+#[test]
+fn through_an_https_proxy() {
+    let (e, ccfg, scfg) = tls_parts();
+    let tls_port = e.local_addrs()[0].port();
+    let (pe, base, _) = server();
+    let p = proxy::start(Some("Basic dXNlcjpwYXNz"));
+    let (fe, front, opened) = tls_front::start(scfg, p.addr);
+    let c = Client::new(e.clone())
+        .with_tls(ccfg.clone())
+        .with_proxy(Proxy::all(&format!("https://user:pass@localhost:{}", front.port())).unwrap());
+    // https://: CONNECT inside TLS to the proxy, TLS to the target inside the tunnel.
+    let url = format!("https://localhost:{tls_port}/hello");
+    assert_eq!(body(c.send(ClientRequest::get(&url)).wait()), "hello");
+    assert_eq!(body(c.send(ClientRequest::get(&url)).wait()), "hello");
+    // http://: absolute form over TLS to the proxy.
+    let plain = format!("{base}/hello");
+    assert_eq!(body(c.send(ClientRequest::get(&plain)).wait()), "hello");
+    let seen = p.seen();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(seen[0].starts_with(&format!("CONNECT localhost:{tls_port} HTTP/1.1\r\n")));
+    assert!(seen[0].contains("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n"));
+    assert!(
+        seen[1].starts_with(&format!("GET {plain} HTTP/1.1\r\n")),
+        "{seen:?}"
+    );
+    assert!(seen[1].contains("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n"));
+    assert_eq!(opened.load(Ordering::SeqCst), 2);
+    // The proxy's certificate is checked against its name.
+    let wrong = Client::new(e.clone())
+        .with_tls(ccfg)
+        .with_proxy(Proxy::all(&format!("https://user:pass@127.0.0.1:{}", front.port())).unwrap());
+    assert!(wrong.send(ClientRequest::get(&url)).wait().is_err());
+    assert!(wrong.send(ClientRequest::get(&plain)).wait().is_err());
+    assert_eq!(p.seen().len(), 2, "nothing reached the proxy");
+    stop(&fe);
+    stop(&pe);
     stop(&e);
 }

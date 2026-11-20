@@ -1,6 +1,7 @@
 //! The SOCKS client (engine and blocking) against only-socks' server, a misbehaving proxy and
 //! a hand-written UDP relay; the HTTP and WebSocket clients' `socks5h://` / `socks4a://`
-//! proxies; the server's SOCKS4 BIND and UDP fragment reassembly.
+//! proxies; the server's SOCKS4 BIND and UDP fragment reassembly; ADR-059: fragments sent both
+//! ways, TLS to the proxy.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -680,4 +681,189 @@ fn http_client_through_socks() {
     stop(&ce);
     stop(&e);
     stop(&he);
+}
+
+#[test]
+fn fragments_both_ways() {
+    let echo = udp_echo();
+    let e = server(|s| s.udp_fragment_size(Some(600)));
+    let proxy = e.local_addrs()[0];
+    let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+    // A raw association sees the server's fragments: 600-byte pieces, the last marked.
+    let mut ctl = TcpStream::connect(proxy).unwrap();
+    ctl.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let u = UdpSocket::bind("127.0.0.1:0").unwrap();
+    u.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    ctl.write_all(&[5, 1, 0]).unwrap();
+    let mut r = [0u8; 2];
+    ctl.read_exact(&mut r).unwrap();
+    let mut req = vec![5, 3, 0];
+    req.extend_from_slice(&v4_header(0, u.local_addr().unwrap())[3..]);
+    ctl.write_all(&req).unwrap();
+    let mut rep = [0u8; 10];
+    ctl.read_exact(&mut rep).unwrap();
+    let relay = SocketAddr::from((
+        [rep[4], rep[5], rep[6], rep[7]],
+        u16::from_be_bytes([rep[8], rep[9]]),
+    ));
+    let mut d = v4_header(0, echo);
+    d.extend_from_slice(&payload);
+    u.send_to(&d, relay).unwrap();
+    let mut b = vec![0u8; 65_536];
+    let mut frags = Vec::new();
+    let mut joined = Vec::new();
+    for _ in 0..5 {
+        let n = u.recv(&mut b).unwrap();
+        frags.push(b[2]);
+        assert!(n - 10 <= 600);
+        joined.extend_from_slice(&b[10..n]);
+    }
+    assert_eq!(frags, [1, 2, 3, 4, 0x85]);
+    assert_eq!(joined, payload);
+    // Small ones stay whole.
+    let mut d = v4_header(0, echo);
+    d.extend_from_slice(b"small");
+    u.send_to(&d, relay).unwrap();
+    let n = u.recv(&mut b).unwrap();
+    assert_eq!((b[2], &b[10..n]), (0, &b"small"[..]));
+    drop(ctl);
+
+    // The client sends in fragments, the server reassembles, the echo comes back in
+    // fragments, the client reassembles.
+    let c = SocksClient::new(Version::Socks5, proxy);
+    let bu = c.udp_associate_blocking().unwrap();
+    bu.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    bu.send_fragmented(&payload, &echo.into(), 700).unwrap();
+    let (n, from) = bu.recv_from(&mut b).unwrap();
+    assert_eq!((&b[..n], from), (&payload[..], Dest::Addr(echo)));
+    assert_eq!(
+        bu.send_fragmented(&payload, &echo.into(), 10)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput,
+        "more than 127 fragments"
+    );
+    drop(bu);
+    // On the engine.
+    let ce = client_engine();
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let (dtx, drx) = mpsc::channel();
+    c.udp_associate(
+        &ce,
+        move |_a, _from, p| {
+            let _ = tx.lock().unwrap().send(p.to_vec());
+        },
+        move |r| dtx.send(r).unwrap(),
+    );
+    let a = drx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    a.send_fragmented(&payload, &echo.into(), 1000).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), payload);
+    a.send_fragmented(b"tiny", &echo.into(), 1000).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"tiny");
+    a.close();
+    stop(&ce);
+    stop(&e);
+}
+
+#[test]
+fn tls_to_the_proxy() {
+    let echo = echo_server();
+    let udp = udp_echo();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = only::tls::ServerConfig::builder(
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let mut roots = only::tls::RootCerts::empty();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = only::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
+    // only-socks' server behind TLS.
+    let er = EngineRef::new();
+    let socks = Socks::new(er.clone())
+        .destinations(only_socks::Destinations::Any)
+        .auth(|u, p| u == "u" && p == "p")
+        .udp_associate(true);
+    let e = Arc::new(
+        Engine::builder()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(300);
+                v
+            })
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .backend(backend())
+                    .serve(only::tls::Tls::server(scfg, socks)),
+            )
+            .client_threads(usize::from(!uring()))
+            .udp_client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    er.set(&e);
+    e.start().unwrap();
+    let proxy = e.local_addrs()[0];
+    let ce = client_engine();
+    let c = SocksClient::with_host(Version::Socks5, "localhost", proxy.port())
+        .auth("u", "p")
+        .tls(ccfg.clone(), None);
+    let (a, rx) = echo_acceptor(b"over tls to the proxy\n");
+    c.dial(&ce, echo.into(), a, |e| panic!("dial: {e}"));
+    let (got, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(got, b"over tls to the proxy\n");
+    // UDP ASSOCIATE: the control connection over TLS, datagrams plain.
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let (dtx, drx) = mpsc::channel();
+    c.udp_associate(
+        &ce,
+        move |_a, _from, p| {
+            let _ = tx.lock().unwrap().send(p.to_vec());
+        },
+        move |r| dtx.send(r).unwrap(),
+    );
+    let assoc = drx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assoc.send_to(b"udp ping", &udp.into()).unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        b"udp ping"
+    );
+    assoc.close();
+    // A name the certificate does not cover: the dial fails.
+    let wrong = SocksClient::new(Version::Socks5, proxy)
+        .auth("u", "p")
+        .tls(ccfg, Some("other.example"));
+    let (a, rx) = echo_acceptor(b"x\n");
+    let (etx, erx) = mpsc::channel();
+    wrong.dial(&ce, echo.into(), a, move |e| {
+        let _ = etx.send(e);
+    });
+    // The failure is the dial's: before the tunnel opened.
+    let err = erx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    let (got, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(got.is_empty());
+    // Without TLS the TLS-only proxy does not answer as SOCKS.
+    let plain = SocksClient::new(Version::Socks5, proxy)
+        .auth("u", "p")
+        .handshake_timeout(Some(Duration::from_millis(300)));
+    assert!(plain.dial_blocking(&echo.into()).is_err());
+    // The blocking helpers cannot carry TLS.
+    assert_eq!(
+        c.dial_blocking(&echo.into()).unwrap_err().kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    assert_eq!(
+        c.udp_associate_blocking().unwrap_err().kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    stop(&ce);
+    stop(&e);
 }

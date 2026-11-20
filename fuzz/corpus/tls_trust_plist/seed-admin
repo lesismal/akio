@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>trustList</key>
+	<dict>
+		<key>1111111111111111111111111111111111111111</key>
+		<dict>
+			<key>issuerName</key>
+			<data>
+			MAA=
+			</data>
+			<key>modDate</key>
+			<date>2025-05-11T08:27:10Z</date>
+			<key>trustSettings</key>
+			<array>
+				<dict>
+					<key>kSecTrustSettingsPolicy</key>
+					<data>
+					KoZIhvdjZAEC
+					</data>
+					<key>kSecTrustSettingsPolicyName</key>
+					<string>basicX509</string>
+				</dict>
+			</array>
+		</dict>
+		<key>00000000000000000000000000000000000000AA</key>
+		<dict>
+			<key>trustSettings</key>
+			<array>
+				<dict>
+					<key>kSecTrustSettingsPolicy</key>
+					<data>KoZIhvdjZAED</data>
+					<key>kSecTrustSettingsResult</key>
+					<integer>3</integer>
+				</dict>
+			</array>
+		</dict>
+		<key>00000000000000000000000000000000000000BB</key>
+		<dict>
+			<key>trustSettings</key>
+			<array/>
+		</dict>
+		<key>00000000000000000000000000000000000000CC</key>
+		<dict>
+			<key>trustSettings</key>
+			<array>
+				<dict>
+					<key>kSecTrustSettingsPolicy</key>
+					<data>KoZIhvdjZAEI</data>
+					<key>kSecTrustSettingsResult</key>
+					<integer>3</integer>
+				</dict>
+				<dict>
+					<key>kSecTrustSettingsPolicyString</key>
+					<string>only.example &amp; co</string>
+				</dict>
+				<dict>
+					<key>kSecTrustSettingsResult</key>
+					<integer>4</integer>
+				</dict>
+			</array>
+		</dict>
+		<key>not-a-hash</key>
+		<dict/>
+	</dict>
+	<key>trustVersion</key>
+	<integer>1</integer>
+	<key>flag</key>
+	<true/>
+</dict>
+</plist>

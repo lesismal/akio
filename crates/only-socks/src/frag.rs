@@ -1,5 +1,6 @@
-//! SOCKS5 UDP fragment reassembly (RFC 1928 section 7), used by the server's relay for the
-//! client's datagrams and by the client's association for the relay's.
+//! SOCKS5 UDP fragments (RFC 1928 section 7): reassembly, used by the server's relay for the
+//! client's datagrams and by the client's association for the relay's, and splitting
+//! ([`split`], ADR-059), used to send datagrams in fragments both ways.
 //!
 //! `FRAG` is 0 for a whole datagram, else the fragment's position 1..=127, with the high bit
 //! set on the last one. RFC 1928 keeps one reassembly queue and timer per association, reset
@@ -20,6 +21,42 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Largest reassembled payload: the most one UDP datagram can carry.
 pub(crate) const MAX_DATAGRAM: usize = 65_507;
+
+/// Most fragments in one sequence (positions 1..=127).
+pub(crate) const MAX_FRAGMENTS: usize = 127;
+
+/// The smallest fragment payload that still lets any datagram ([`MAX_DATAGRAM`]) fit in
+/// [`MAX_FRAGMENTS`] fragments.
+pub(crate) const MIN_FRAGMENT: usize = MAX_DATAGRAM.div_ceil(MAX_FRAGMENTS);
+
+/// Splits `payload` into the `(FRAG, piece)` pairs to send: one whole datagram (`FRAG` 0)
+/// when it fits in `max` bytes, else pieces of `max` bytes at positions 1, 2, ... with the
+/// high bit on the last. An error when it would take more than 127 fragments, when `max` is
+/// 0 or when `payload` is larger than one datagram can carry.
+pub(crate) fn split(payload: &[u8], max: usize) -> std::io::Result<Vec<(u8, &[u8])>> {
+    let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, m.to_owned());
+    if max == 0 {
+        return Err(bad("fragment size 0"));
+    }
+    if payload.len() > MAX_DATAGRAM {
+        return Err(bad("larger than a UDP datagram (65,507 bytes)"));
+    }
+    if payload.len() <= max {
+        return Ok(vec![(0, payload)]);
+    }
+    let n = payload.len().div_ceil(max);
+    if n > MAX_FRAGMENTS {
+        return Err(bad("more than 127 fragments"));
+    }
+    Ok(payload
+        .chunks(max)
+        .enumerate()
+        .map(|(i, c)| {
+            let pos = i as u8 + 1;
+            (if i + 1 == n { pos | 0x80 } else { pos }, c)
+        })
+        .collect())
+}
 
 /// What a datagram's `FRAG` field made of it.
 #[derive(Debug, PartialEq, Eq)]
@@ -184,6 +221,40 @@ mod tests {
             Frag::Complete(d(1), b"new!".to_vec())
         );
         assert_eq!(r.push(t, 0x80, &d(1), b"?"), Frag::Held);
+    }
+
+    #[test]
+    fn splitting_round_trips_through_reassembly() {
+        let t = Instant::now();
+        let data: Vec<u8> = (0..10_000u32).map(|i| i as u8).collect();
+        for max in [1usize, 79, 1000, 9_999, 10_000, 20_000] {
+            let Ok(parts) = split(&data, max) else {
+                assert!(data.len().div_ceil(max) > MAX_FRAGMENTS, "{max}");
+                continue;
+            };
+            if max >= data.len() {
+                assert_eq!(parts, [(0, &data[..])]);
+                continue;
+            }
+            assert_eq!(parts.len(), data.len().div_ceil(max));
+            assert_eq!(parts.last().unwrap().0 & 0x80, 0x80);
+            let mut r = Reassembly::default();
+            let mut out = None;
+            for (f, p) in parts {
+                assert!(p.len() <= max);
+                if let Frag::Complete(_, v) = r.push(t, f, &d(1), p) {
+                    out = Some(v);
+                }
+            }
+            assert_eq!(out.as_deref(), Some(&data[..]), "{max}");
+        }
+        // Any datagram fits at the smallest fragment size.
+        let big = vec![1u8; MAX_DATAGRAM];
+        assert_eq!(split(&big, MIN_FRAGMENT).unwrap().len(), MAX_FRAGMENTS);
+        assert!(split(&big, MIN_FRAGMENT - 1).is_err());
+        assert!(split(&vec![0; MAX_DATAGRAM + 1], 60_000).is_err());
+        assert!(split(b"x", 0).is_err());
+        assert_eq!(split(b"", 5).unwrap(), [(0, &b""[..])]);
     }
 
     #[test]

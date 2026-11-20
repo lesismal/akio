@@ -45,6 +45,7 @@
 
 pub mod client;
 mod context;
+pub mod cookie;
 mod deadline;
 pub mod files;
 #[cfg(any(test, feature = "fuzzing"))]

@@ -89,6 +89,7 @@ pub trait WsHandler: Send + 'static {
 
 ## 尚未完成
 
-客户端：到代理的 TLS、跨重定向携带 cookie。服务端：基于 HTTP/2 的 WebSocket（RFC 8441，
+客户端：跨重定向携带 cookie（可以自行用 `only_http::cookie::CookieJar::header` 设置 `Cookie` 头；
+`https://` 代理与 Happy Eyeballs 已完成，ADR-059）。服务端：基于 HTTP/2 的 WebSocket（RFC 8441，
 应答 400）；基于 HTTP/3 的 WebSocket（RFC 9220）已完成，见
 [QUIC 与 HTTP/3](quic-h3.md#http3-上的-websocket)。

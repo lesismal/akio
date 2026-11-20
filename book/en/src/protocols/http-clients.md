@@ -54,7 +54,30 @@ When the body is dropped, its `Content-*` fields go too. A redirect to another o
 host or port) drops `Authorization`, `Cookie` and `Proxy-Authorization`, for the rest of the
 chain. `https://` to `http://` is not followed (the 3xx is returned) unless
 `RedirectPolicy::limit(n).allow_https_downgrade(true)`. More than `n` redirects (a loop, for
-instance) fails with `ClientError::TooManyRedirects`. There is no cookie jar.
+instance) fails with `ClientError::TooManyRedirects`.
+
+### Cookies
+
+Off unless a jar is attached: `Client::new(engine).with_cookies(CookieJar::new())`
+(`only_http::cookie`, ADR-059). Every response's `Set-Cookie` fields are stored, each hop of a
+redirect chain included, and every request carries the matching cookies in one `Cookie` field
+(after the request's own, if it has one). The rules are RFC 6265 with RFC 6265bis: host-only
+cookies without `Domain`; a `Domain` that is a public suffix is refused unless it is the host
+(single labels and IP addresses always are; plug in the Public Suffix List with
+`CookieJar::public_suffixes`); Secure cookies only over `https://`; `__Secure-` / `__Host-`
+prefixes; `SameSite=Strict` cookies are not sent once a redirect chain left the first request's
+site, `Lax` ones only with a safe method; `Max-Age` over `Expires`, at most 400 days. Bounded
+by `CookieLimits` (4096 bytes per cookie, 50 per domain, 3000 in all). The jar is shared by
+clones and can be read (`cookies()`, `header(url)`) or filled (`store(url, set_cookie)`) by
+hand.
+
+### Connecting
+
+Names are resolved off the calling thread and cached for 30 s (`only::dns::CacheConfig`; the
+system resolver gives no TTL). A name with several addresses is raced (Happy Eyeballs v2, RFC
+8305): IPv6 and IPv4 alternate, a new attempt starts every 250 ms or as soon as one fails, the
+first connection up is used (`ClientOptions::happy_eyeballs`). `H2Client::connect(engine, host,
+port, ...)` does the same for HTTP/2.
 
 ### Timeouts
 
@@ -81,7 +104,9 @@ let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@prox
 Credentials in the proxy URL become `Proxy-Authorization: Basic`. A proxy that refuses the
 tunnel fails the request with `ClientError::Io` whose error is an `only_http::client::ProxyRefused`
 (`status()`, `reason()`). `NO_PROXY` entries: `*`, host names (and their subdomains), IP
-addresses, CIDR blocks, each optionally with `:port`. TLS to the proxy itself is not supported.
+addresses, CIDR blocks, each optionally with `:port`. An `https://` proxy URL (port 443) reaches
+the proxy over TLS, its certificate checked for its name with the client's TLS configuration;
+`https://` targets then run TLS inside that TLS.
 Nothing reads the environment unless you call `Proxy::from_env()`; `all_proxy` / `ALL_PROXY`
 covers the schemes the specific variables leave unset.
 

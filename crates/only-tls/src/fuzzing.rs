@@ -127,6 +127,12 @@ pub fn server(data: &[u8]) {
     }
 }
 
+/// `tls_trust_plist`: a macOS trust-settings export (`security trust-settings-export`, an XML
+/// property list) read into verdicts; never panics, and parses the same way twice.
+pub fn trust_plist(data: &[u8]) {
+    crate::trust::fuzz(data);
+}
+
 /// `tls_client`: arbitrary bytes as what a server sends back to our ClientHello (dual-version
 /// and TLS 1.2-only clients); never panics.
 pub fn client(data: &[u8]) {
@@ -242,6 +248,11 @@ mod tests {
     #[test]
     fn replay_tls_record() {
         replay("tls_record", record);
+    }
+
+    #[test]
+    fn replay_tls_trust_plist() {
+        replay("tls_trust_plist", trust_plist);
     }
 
     /// Regenerates the seed corpora: `cargo test -p only-tls --lib write_corpus -- --ignored`.
