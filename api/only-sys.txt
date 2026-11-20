@@ -28,6 +28,27 @@ pub fn only_sys::process::pin_current_thread(&[usize]) -> core::io::error::Resul
 pub fn only_sys::process::reserve_reuseport(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn only_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
 pub fn only_sys::process::take_inherited_fd(std::os::fd::raw::RawFd) -> core::io::error::Result<std::os::fd::owned::OwnedFd>
+pub enum only_sys::FsEvent
+pub only_sys::FsEvent::Changed
+pub only_sys::FsEvent::Changed::id: only_sys::WatchId
+pub only_sys::FsEvent::Changed::is_dir: bool
+pub only_sys::FsEvent::Changed::name: core::option::Option<std::ffi::os_str::OsString>
+pub only_sys::FsEvent::Gone
+pub only_sys::FsEvent::Gone::id: only_sys::WatchId
+pub only_sys::FsEvent::Overflow
+impl core::clone::Clone for only_sys::FsEvent
+pub fn only_sys::FsEvent::clone(&self) -> Self
+impl core::cmp::Eq for only_sys::FsEvent
+impl core::cmp::PartialEq for only_sys::FsEvent
+pub fn only_sys::FsEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_sys::FsEvent
+pub fn only_sys::FsEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sys::FsEvent
+impl core::marker::Send for only_sys::FsEvent
+impl core::marker::Sync for only_sys::FsEvent
+impl core::marker::Unpin for only_sys::FsEvent
+impl core::panic::unwind_safe::RefUnwindSafe for only_sys::FsEvent
+impl core::panic::unwind_safe::UnwindSafe for only_sys::FsEvent
 pub struct only_sys::Batch<'s, 'd>
 impl<'d> only_sys::Batch<'_, 'd>
 pub fn only_sys::Batch<'_, 'd>::is_empty(&self) -> bool
@@ -71,6 +92,22 @@ impl core::marker::Sync for only_sys::EventFd
 impl core::marker::Unpin for only_sys::EventFd
 impl core::panic::unwind_safe::RefUnwindSafe for only_sys::EventFd
 impl core::panic::unwind_safe::UnwindSafe for only_sys::EventFd
+pub struct only_sys::FsWatcher
+impl only_sys::FsWatcher
+pub const only_sys::FsWatcher::DIR_EVENTS_NAME_ENTRIES: bool
+pub fn only_sys::FsWatcher::new() -> core::io::error::Result<only_sys::FsWatcher>
+pub fn only_sys::FsWatcher::unwatch(&self, only_sys::WatchId)
+pub fn only_sys::FsWatcher::wait(&self, core::option::Option<core::time::Duration>, &mut alloc::vec::Vec<only_sys::FsEvent>) -> core::io::error::Result<()>
+pub fn only_sys::FsWatcher::wake(&self)
+pub fn only_sys::FsWatcher::watch_dir(&self, &std::path::Path) -> core::io::error::Result<only_sys::WatchId>
+pub fn only_sys::FsWatcher::watch_file(&self, &std::path::Path) -> core::io::error::Result<only_sys::WatchId>
+impl core::fmt::Debug for only_sys::FsWatcher
+pub fn only_sys::FsWatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_sys::FsWatcher
+impl core::marker::Sync for only_sys::FsWatcher
+impl core::marker::Unpin for only_sys::FsWatcher
+impl core::panic::unwind_safe::RefUnwindSafe for only_sys::FsWatcher
+impl core::panic::unwind_safe::UnwindSafe for only_sys::FsWatcher
 pub struct only_sys::Poller
 impl only_sys::Poller
 pub fn only_sys::Poller::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
@@ -139,3 +176,4 @@ pub fn only_sys::listen(core::net::socket_addr::SocketAddr, bool, i32) -> core::
 pub fn only_sys::listen_udp(core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<std::net::udp::UdpSocket>
 pub fn only_sys::sendfile(std::os::fd::raw::RawFd, std::os::fd::raw::RawFd, u64, usize) -> core::io::error::Result<usize>
 pub fn only_sys::set_backlog(&std::net::tcp::TcpListener, i32) -> core::io::error::Result<()>
+pub type only_sys::WatchId = u64

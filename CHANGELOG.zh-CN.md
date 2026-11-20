@@ -10,6 +10,20 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：静态文件缓存的变更通知（only-http、only-sys）
+
+ADR-066（docs/adr/066-static-files-change-notifications.zh-CN.md），只有新增（默认关闭）：
+
+- `Files::watch(true)`：缓存经 inotify（Linux）或 kqueue `EVFILT_VNODE`（macOS）跟随磁盘变化，不再每个
+  `check_interval` 重查。路径上的目录（自根目录起）、文件及其压缩同名文件都有监视的缓存项，在变化把它
+  丢弃之前不访问磁盘：写入或属性变化，文件、同名文件或路径上目录的重命名或删除，或事件丢失（溢出）。
+  每个 `Files` 一个 `only-files-watch` 线程，`Files` 丢弃后退出。
+- 通知无法担保的缓存项仍按间隔规则：Linux 上的符号链接与有多个硬链接的文件；在变化正被报告时读入的
+  缓存项；超过 `Files::max_watches(n)`（默认 1024：目录监视数，macOS 上另加每个缓存文件一个文件描述符）
+  的缓存项；通知无法建立或出错时的全部缓存项。不适用于网络文件系统与 FUSE，其他机器的修改不产生通知。
+- only-sys：`FsWatcher`（`watch_dir`、`watch_file`、`unwatch`、`wait`、`wake`）、`FsEvent`、`WatchId`。
+- I/O 线程上的命中路径多读一个 relaxed 原子量；不打开 `watch` 时其余一切不变。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

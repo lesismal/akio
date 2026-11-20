@@ -155,12 +155,12 @@ contain no `unsafe`.
 | only-http | 0 | 0 | 0 | 8 |
 | only-brotli | 0 | 0 | 0 | 7 |
 | only-crypto | 150 | 72 | 0 | 0 |
-| only-sys | 99 | 3 | 3 | 0 |
+| only-sys | 111 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
-| **total** | **354** | **84** | **8** | **29** |
+| **total** | **366** | **84** | **8** | **29** |
 
 By purpose:
 
@@ -170,6 +170,7 @@ By purpose:
 | `only-sys/src/net.rs` | 21 | `socket`/`bind`/`listen`/`connect` (also a connect from a bound, shared port for TCP simultaneous open, ADR-044), `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests) | sockaddr length matches family; fd owned before any fallible step |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
+| `only-sys/src/fswatch.rs` | 12 (7 Linux, 5 macOS) | change notification for only-http's static file cache: `inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`, `ppoll` on the inotify fd and an eventfd, `read` of events (Linux); `kqueue`, `fcntl`, `kevent` changes and waits with `EVFILT_VNODE` / `EVFILT_USER` (macOS) | fds owned immediately; paths are NUL-terminated `CString`s; reads stay within the buffer and records are parsed from bytes; the kevent `udata` is a watch id, never dereferenced; `O_EVTONLY` descriptors are opened by `std` and owned by the watcher |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
 | `only-sys/src/ktls.rs` | 9 | kernel TLS (experimental, only-tls `experimental-ktls`): `TCP_ULP` and `SOL_TLS` `setsockopt`, `sendmsg`/`recvmsg` with the record-type cmsg, `uname`, wiping the copied key | crypto-info structs built whole on the stack and checked against `libc` in the layout tests; the cmsg buffer is 8-aligned and `CMSG_SPACE(1)` long; cmsgs walked with `CMSG_*` within `msg_controllen` |
 | `only-sys/src/udp.rs` | 12 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO / ECN cmsgs | each receive iovec covers the first `size` bytes of a slot's exclusive slab range (`only_buf::slab::ChunkMut`, at least `size` long, checked before each call and borrowed mutably for it); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |

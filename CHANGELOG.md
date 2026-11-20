@@ -10,6 +10,26 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: change notifications for the static file cache (only-http, only-sys)
+
+ADR-066 (docs/adr/066-static-files-change-notifications.md), additive (off by default):
+
+- `Files::watch(true)`: the cache follows the disk through inotify (Linux) or kqueue
+  `EVFILT_VNODE` (macOS) instead of re-checking every `check_interval`. An entry whose
+  directories (root down), file and compressed twins are watched is served without touching the
+  disk until a change drops it: a write or attribute change, a rename or deletion of the file, a
+  twin or a directory on its path, or a lost-event overflow. One `only-files-watch` thread per
+  `Files`; it exits when the `Files` is dropped.
+- Entries the notifications cannot vouch for keep the interval rule: on Linux, symlinks and
+  files with several hard links; entries read while a change was being reported; entries past
+  `Files::max_watches(n)` (default 1024: directory watches, plus one file descriptor per cached
+  file on macOS); everything if notifications cannot be set up or break. Not for network or FUSE
+  file systems, where other machines' changes produce no notification.
+- only-sys: `FsWatcher` (`watch_dir`, `watch_file`, `unwatch`, `wait`, `wake`), `FsEvent`,
+  `WatchId`.
+- The hit path on the I/O thread reads one more relaxed atomic; with `watch` off, nothing else
+  changes.
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

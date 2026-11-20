@@ -8,13 +8,14 @@ use std::{
     os::unix::fs::{FileExt, MetadataExt},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard, OnceLock, RwLock,
+        Arc, Mutex, MutexGuard, OnceLock, RwLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
 
 use only_core::{Pool, PoolConfig};
+use only_sys::{FsEvent, FsWatcher, WatchId};
 
 use crate::{
     context::{Context, Service},
@@ -48,6 +49,12 @@ use crate::{
 ///   multi-range response from a large file) runs on a small pool of its own (up to 16 threads,
 ///   4096 queued requests; past that the answer is `503` with `Retry-After: 1`), and the
 ///   response is sent from there.
+/// * With [`watch`](Files::watch) on, the cache follows the disk through change notifications
+///   (inotify on Linux, kqueue on macOS) instead of re-checking: an entry is dropped as soon as
+///   its file, a compressed twin, or a directory on its path changes, and until then it is
+///   served without consulting the disk, however old it is. Entries the notifications cannot
+///   vouch for keep the [`check_interval`](Files::check_interval) rule; see
+///   [`watch`](Files::watch).
 pub struct Files {
     inner: Arc<Inner>,
 }
@@ -64,6 +71,21 @@ struct Inner {
     /// The entries holding an open file, in CLOCK order. Only cache fills and evictions (on
     /// the disk pool) take it, always before a shard lock.
     ring: Mutex<Ring>,
+    /// Whether [`Files::watch`] asked for change notifications, and how many watches at most.
+    watch_on: bool,
+    max_watches: usize,
+    /// The change notifications, set up on the first request that reaches the disk (`None`
+    /// when they cannot be).
+    watch: OnceLock<Option<Arc<Watch>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // The watcher thread holds only a weak reference: wake it so that it notices and exits.
+        if let Some(Some(w)) = self.watch.get() {
+            w.sys.wake();
+        }
+    }
 }
 
 const SHARDS: usize = 16;
@@ -74,8 +96,17 @@ const TWINS: [(&str, &str); 3] = [("br", "br"), ("zstd", "zst"), ("gzip", "gz")]
 
 enum Entry {
     File(Arc<Cached>),
-    /// A directory, served as its index file, and when that was last checked.
-    Dir(Arc<Path>, AtomicU64),
+    /// A directory, served as its index file.
+    Dir(Arc<DirEntry>),
+}
+
+struct DirEntry {
+    /// The index file.
+    index: Arc<Path>,
+    /// When the disk was last consulted, in [`clock_ms`] milliseconds.
+    checked: AtomicU64,
+    /// Change notifications cover the directory: trusted until they drop the entry.
+    watched: AtomicBool,
 }
 
 /// The open-file entries (at most `max_open`) and the CLOCK hand: the next slot considered
@@ -138,6 +169,14 @@ struct Cached {
     used: AtomicBool,
     /// When the disk was last consulted, in [`clock_ms`] milliseconds.
     checked: AtomicU64,
+    /// Change notifications cover the file, its twins and its directories: the entry is
+    /// trusted until they drop it.
+    watched: AtomicBool,
+    /// Change notifications can follow this file (on Linux: a regular file with one link; on
+    /// macOS: [`guard`](Cached::guard) was taken before the file was read).
+    trackable: bool,
+    /// The file's own watch (macOS), ended when the last holder drops it.
+    guard: Option<Arc<FileWatch>>,
     etag: Box<str>,
     /// The content type (of the original file, for a compressed twin).
     mime: &'static str,
@@ -162,6 +201,7 @@ impl Cached {
         encoding: Option<&str>,
         cache_control: Option<&str>,
         twins: [Option<Arc<Cached>>; 3],
+        track: (bool, Option<Arc<FileWatch>>),
     ) -> Cached {
         let secs = unix_secs(mtime);
         let etag = match encoding {
@@ -192,6 +232,9 @@ impl Cached {
             id,
             used: AtomicBool::new(false),
             checked: AtomicU64::new(clock_ms()),
+            watched: AtomicBool::new(false),
+            trackable: track.0,
+            guard: track.1,
             etag: etag.into(),
             mime,
             meta,
@@ -250,6 +293,9 @@ impl Files {
                 max_open: 64,
                 shards: (0..SHARDS).map(|_| RwLock::default()).collect(),
                 ring: Mutex::default(),
+                watch_on: false,
+                max_watches: 1024,
+                watch: OnceLock::new(),
             }),
         }
     }
@@ -288,6 +334,37 @@ impl Files {
     #[must_use]
     pub fn check_interval(mut self, d: Duration) -> Files {
         self.cfg().check_interval = d;
+        self
+    }
+
+    /// Follows changes on disk through notifications (inotify on Linux, kqueue `EVFILT_VNODE`
+    /// on macOS; default off). A cached file whose file, compressed twins and directories (from
+    /// the root down) are all watched is served without touching the disk until a change
+    /// drops it: a write, an attribute change, a rename or deletion of the file, a twin or a
+    /// directory, or a lost-event overflow (which drops everything). One thread per `Files`
+    /// reads the notifications.
+    ///
+    /// The notifications cannot vouch for every entry, and those keep the
+    /// [`check_interval`](Files::check_interval) rule: on Linux, files that are symlinks or
+    /// have more than one hard link (a write through another link is not reported for this
+    /// directory); entries read while a change was being reported; entries past
+    /// [`max_watches`](Files::max_watches); everything when notifications cannot be set up.
+    ///
+    /// Do not turn it on for network or FUSE file systems (NFS, SMB, sshfs…): changes made by
+    /// other machines produce no notification there, so cached entries would never be renewed.
+    #[must_use]
+    pub fn watch(mut self, on: bool) -> Files {
+        self.cfg().watch_on = on;
+        self
+    }
+
+    /// The most watches [`watch`](Files::watch) sets up (default 1024): one per directory, and
+    /// on macOS also one per cached file and twin (each an `O_EVTONLY` file descriptor). Past
+    /// it, new entries keep the [`check_interval`](Files::check_interval) rule. On Linux the
+    /// watches also count against `fs.inotify.max_user_watches`.
+    #[must_use]
+    pub fn max_watches(mut self, n: usize) -> Files {
+        self.cfg().max_watches = n;
         self
     }
 
@@ -355,7 +432,10 @@ impl Inner {
         &self.shards[(h as usize) % self.shards.len()]
     }
 
-    fn is_fresh(&self, checked: &AtomicU64) -> bool {
+    fn is_fresh(&self, checked: &AtomicU64, watched: &AtomicBool) -> bool {
+        if watched.load(Ordering::Relaxed) {
+            return true;
+        }
         let age = clock_ms().saturating_sub(checked.load(Ordering::Relaxed));
         u128::from(age) < self.check_interval.as_millis()
     }
@@ -367,22 +447,22 @@ impl Inner {
             let g = read_lock(self.shard(path));
             match g.get(path)? {
                 Entry::File(c) => {
-                    return self.is_fresh(&c.checked).then(|| {
+                    return self.is_fresh(&c.checked, &c.watched).then(|| {
                         c.used.store(true, Ordering::Relaxed);
                         c.clone()
                     });
                 }
-                Entry::Dir(index, checked) => {
-                    if !self.is_fresh(checked) {
+                Entry::Dir(d) => {
+                    if !self.is_fresh(&d.checked, &d.watched) {
                         return None;
                     }
-                    index.clone()
+                    d.index.clone()
                 }
             }
         };
         let g = read_lock(self.shard(&index));
         match g.get(&*index)? {
-            Entry::File(c) if self.is_fresh(&c.checked) => {
+            Entry::File(c) if self.is_fresh(&c.checked, &c.watched) => {
                 c.used.store(true, Ordering::Relaxed);
                 Some(c.clone())
             }
@@ -399,24 +479,45 @@ impl Inner {
         write_lock(self.shard(path)).remove(path);
     }
 
+    /// Drops every entry whose path satisfies `pred`.
+    fn forget_where(&self, pred: impl Fn(&Path) -> bool) {
+        let mut ring = lock(&self.ring);
+        ring.slots.retain(|(p, _)| !pred(p));
+        for s in &self.shards {
+            write_lock(s).retain(|p, _| !pred(p));
+        }
+    }
+
     /// Answers a request from the disk (on the disk pool): `stat`, directory index, (re)loading
     /// the cache entry and its compressed twins.
-    fn serve_disk(&self, req: &Request, mut path: PathBuf) -> Response {
+    fn serve_disk(self: &Arc<Self>, req: &Request, mut path: PathBuf) -> Response {
+        // Watches go up before the disk is consulted, so a change after it is reported.
+        let ticket = self.watch_begin(&path);
         let Ok(mut md) = fs::metadata(&path) else {
             self.forget(&path);
             return Response::text(404, "Not Found");
         };
+        let mut dirs_ok = ticket.as_ref().is_some_and(|t| t.dirs);
         if md.is_dir() {
             let dir = path.clone();
+            dirs_ok = dirs_ok && ticket.as_ref().is_some_and(|t| t.w.ensure_dir(&dir));
             path.push(&self.index);
             match fs::metadata(&path) {
                 Ok(m) if m.is_file() => md = m,
                 _ => return Response::text(404, "Not Found"),
             }
-            let entry = Entry::Dir(Arc::from(path.as_path()), AtomicU64::new(clock_ms()));
-            write_lock(self.shard(&dir)).insert(dir, entry);
+            let entry = Arc::new(DirEntry {
+                index: Arc::from(path.as_path()),
+                checked: AtomicU64::new(clock_ms()),
+                watched: AtomicBool::new(false),
+            });
+            write_lock(self.shard(&dir)).insert(dir, Entry::Dir(entry.clone()));
+            if let Some(t) = &ticket {
+                t.finish(&entry.watched, dirs_ok);
+            }
         }
-        let Some(c) = self.load(&path, &md) else {
+        let track = ticket.as_ref().filter(|_| dirs_ok);
+        let Some(c) = self.load_tracked(&path, &md, track) else {
             return Response::text(404, "Not Found");
         };
         let served = pick(&c, req.headers.get("accept-encoding").unwrap_or(""));
@@ -424,14 +525,27 @@ impl Inner {
             .unwrap_or_else(|| Response::text(500, "Internal Server Error"))
     }
 
+    /// [`load_tracked`](Inner::load_tracked) without change notifications.
+    #[cfg(test)]
+    fn load(&self, path: &Path, md: &fs::Metadata) -> Option<Arc<Cached>> {
+        self.load_tracked(path, md, None)
+    }
+
     /// The entry of `path` (whose metadata is `md`), reusing what is cached when the file did
     /// not change, and caching it when it is small enough or open handles are cached at all.
-    /// Runs on the disk pool.
-    fn load(&self, path: &Path, md: &fs::Metadata) -> Option<Arc<Cached>> {
+    /// With `track` (watches cover every directory on the path), the entry is marked watched
+    /// when notifications can vouch for it. Runs on the disk pool.
+    fn load_tracked(
+        &self,
+        path: &Path,
+        md: &fs::Metadata,
+        track: Option<&Ticket>,
+    ) -> Option<Arc<Cached>> {
         let old = match read_lock(self.shard(path)).get(path) {
             Some(Entry::File(c)) => Some(c.clone()),
             _ => None,
         };
+        let watch = track.map(|t| &t.w);
         let mime = Files::mime(path);
         let twins: [Option<Arc<Cached>>; 3] = std::array::from_fn(|i| {
             let (enc, ext) = TWINS[i];
@@ -442,7 +556,7 @@ impl Inner {
             let m = fs::metadata(&p).ok().filter(fs::Metadata::is_file)?;
             match old.as_ref().and_then(|o| o.twins[i].clone()) {
                 Some(t) if t.matches(&m) => Some(t),
-                _ => self.read(&p, &m, mime, Some(enc), [None, None, None]),
+                _ => self.read(&p, &m, mime, Some(enc), [None, None, None], watch),
             }
         });
         let c = match old {
@@ -457,6 +571,9 @@ impl Inner {
                     for t in o.twins.iter().flatten() {
                         t.checked.store(clock_ms(), Ordering::Relaxed);
                     }
+                    if let Some(t) = track {
+                        t.finish(&o.watched, o.vouched());
+                    }
                     return Some(o);
                 }
                 // Same file, other twins: keep its content.
@@ -469,9 +586,10 @@ impl Inner {
                     None,
                     self.cache_control.as_deref(),
                     twins,
+                    (o.trackable, o.guard.clone()),
                 ))
             }
-            _ => self.read(path, md, mime, None, twins)?,
+            _ => self.read(path, md, mime, None, twins, watch)?,
         };
         let big = c.len > self.max_cached;
         if big && self.max_open == 0 {
@@ -494,10 +612,16 @@ impl Inner {
             (false, None) => {}
         }
         write_lock(self.shard(path)).insert(path.to_owned(), Entry::File(c.clone()));
+        drop(ring);
+        if let Some(t) = track {
+            t.finish(&c.watched, c.vouched());
+        }
         Some(c)
     }
 
-    /// Reads (small) or opens (large) the file at `path`, described by `md`.
+    /// Reads (small) or opens (large) the file at `path`, described by `md`. With `watch`,
+    /// works out whether notifications can follow the file (taking its own watch first, on
+    /// macOS).
     fn read(
         &self,
         path: &Path,
@@ -505,9 +629,11 @@ impl Inner {
         mime: &'static str,
         encoding: Option<&str>,
         twins: [Option<Arc<Cached>>; 3],
+        watch: Option<&Arc<Watch>>,
     ) -> Option<Arc<Cached>> {
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let id = (md.dev(), md.ino());
+        let track = watch.map_or((false, None), |w| Watch::track(w, path, md));
         let (body, len) = if md.len() > self.max_cached {
             let f = fs::File::open(path).ok()?;
             // The metadata of the handle itself: the path may have been replaced since `md`.
@@ -533,7 +659,310 @@ impl Inner {
             encoding,
             self.cache_control.as_deref(),
             twins,
+            track,
         )))
+    }
+
+    /// The change notifications, started on first use (`None` when off, or when they could not
+    /// be set up or broke).
+    fn watcher(self: &Arc<Self>) -> Option<Arc<Watch>> {
+        if !self.watch_on {
+            return None;
+        }
+        let w = self.watch.get_or_init(|| {
+            let w = Arc::new(Watch {
+                sys: FsWatcher::new().ok()?,
+                max: self.max_watches,
+                epoch: AtomicU64::new(0),
+                broken: AtomicBool::new(false),
+                state: Mutex::default(),
+            });
+            let (inner, w2) = (Arc::downgrade(self), w.clone());
+            std::thread::Builder::new()
+                .name("only-files-watch".into())
+                .spawn(move || Watch::run(&inner, &w2))
+                .ok()?;
+            Some(w)
+        });
+        w.clone().filter(|w| !w.broken.load(Ordering::Relaxed))
+    }
+
+    /// Before `path` is looked up on disk: the notification epoch, and watches on every
+    /// directory from the root down to the one holding `path`.
+    fn watch_begin(self: &Arc<Self>, path: &Path) -> Option<Ticket> {
+        let w = self.watcher()?;
+        let epoch = w.epoch.load(Ordering::SeqCst);
+        let mut chain: Vec<&Path> = path
+            .parent()
+            .map(|p| {
+                p.ancestors()
+                    .take_while(|a| a.starts_with(&self.root))
+                    .collect()
+            })
+            .unwrap_or_default();
+        chain.reverse();
+        let dirs = chain.into_iter().all(|d| w.ensure_dir(d));
+        Some(Ticket { w, epoch, dirs })
+    }
+
+    /// Applies a batch of change notifications: drops the entries they concern.
+    fn apply(&self, w: &Watch, evs: &[FsEvent]) {
+        // Bumped before anything is dropped: a load that began before this batch was read
+        // cannot mark its entry watched (see `Ticket::finish`).
+        w.epoch.fetch_add(1, Ordering::SeqCst);
+        let mut files = Vec::new();
+        let mut trees = Vec::new();
+        let mut children = Vec::new();
+        let mut unwatch = Vec::new();
+        let mut all = false;
+        {
+            let mut st = lock(&w.state);
+            for ev in evs {
+                match ev {
+                    FsEvent::Overflow => all = true,
+                    FsEvent::Gone { id } => {
+                        unwatch.push(*id);
+                        for p in st.paths.remove(id).unwrap_or_default() {
+                            if st.dirs.get(&p).is_some_and(|d| d.0 == *id) {
+                                st.end_tree(&p, &mut unwatch);
+                                trees.push(p);
+                            } else {
+                                files.push(p);
+                            }
+                        }
+                    }
+                    FsEvent::Changed { id, name, is_dir } => {
+                        let Some(paths) = st.paths.get(id).cloned() else {
+                            continue;
+                        };
+                        for p in paths {
+                            if !st.dirs.get(&p).is_some_and(|d| d.0 == *id) {
+                                files.push(p); // a file's own watch (macOS)
+                            } else if let Some(n) = name {
+                                let c = p.join(n);
+                                if *is_dir || st.dirs.contains_key(&c) {
+                                    // A directory (or a symlink to one) moved, removed or
+                                    // replaced: everything below, watches included.
+                                    st.end_tree(&c, &mut unwatch);
+                                    trees.push(c);
+                                } else {
+                                    files.push(c);
+                                }
+                            } else {
+                                // macOS: entries of `p` were added, removed or renamed. A
+                                // subdirectory replaced through a symlink reports nothing
+                                // itself: compare the watched ones with the disk.
+                                let moved: Vec<PathBuf> = st
+                                    .dirs
+                                    .iter()
+                                    .filter(|(d, (_, ino))| {
+                                        d.parent() == Some(p.as_path())
+                                            && fs::metadata(d)
+                                                .map_or(true, |m| (m.dev(), m.ino()) != *ino)
+                                    })
+                                    .map(|(d, _)| d.clone())
+                                    .collect();
+                                for d in moved {
+                                    st.end_tree(&d, &mut unwatch);
+                                    trees.push(d);
+                                }
+                                children.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Outside the watch state lock: dropping an entry may end its file watch, which takes it.
+        for id in unwatch {
+            w.sys.unwatch(id);
+        }
+        if all {
+            self.forget_where(|_| true);
+            return;
+        }
+        for t in &trees {
+            self.forget_where(|p| p.starts_with(t));
+        }
+        if !children.is_empty() {
+            self.forget_where(|p| p.parent().is_some_and(|d| children.iter().any(|c| c == d)));
+        }
+        for f in &files {
+            self.forget(f);
+            // A compressed twin is cached with its original.
+            let ext = f.extension().and_then(|e| e.to_str());
+            if TWINS.iter().any(|(_, x)| Some(*x) == ext) {
+                self.forget(&f.with_extension(""));
+            }
+        }
+    }
+}
+
+/// Change notifications for one [`Files`]: the watches and the thread reading them.
+struct Watch {
+    sys: FsWatcher,
+    max: usize,
+    /// Incremented before each batch of notifications is applied.
+    epoch: AtomicU64,
+    /// Reading notifications failed: the cache went back to the interval rule.
+    broken: AtomicBool,
+    state: Mutex<WatchState>,
+}
+
+#[derive(Default)]
+struct WatchState {
+    /// The watched directories: watch, and device and inode when the watch was made.
+    dirs: HashMap<PathBuf, (WatchId, (u64, u64))>,
+    /// The paths each watch is for (directories; files on macOS). On Linux a directory
+    /// reached by two paths has one watch.
+    paths: HashMap<WatchId, Vec<PathBuf>>,
+    /// The file watches alive (macOS).
+    files: usize,
+}
+
+impl WatchState {
+    /// Forgets the watches of `top` and every directory below it (their paths no longer lead
+    /// to what they watch), adding the ids to end to `unwatch`.
+    fn end_tree(&mut self, top: &Path, unwatch: &mut Vec<WatchId>) {
+        let below: Vec<(PathBuf, WatchId)> = self
+            .dirs
+            .iter()
+            .filter(|(d, _)| d.starts_with(top))
+            .map(|(d, (id, _))| (d.clone(), *id))
+            .collect();
+        for (d, id) in below {
+            self.dirs.remove(&d);
+            if let Some(ps) = self.paths.get_mut(&id) {
+                ps.retain(|p| *p != d);
+                if ps.is_empty() {
+                    self.paths.remove(&id);
+                    unwatch.push(id);
+                }
+            }
+        }
+    }
+}
+
+impl Watch {
+    /// The watcher thread: reads notifications until the [`Files`] is dropped.
+    fn run(inner: &Weak<Inner>, w: &Arc<Watch>) {
+        let mut evs = Vec::new();
+        loop {
+            evs.clear();
+            let r = w.sys.wait(None, &mut evs);
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            if r.is_err() {
+                // Nothing can be vouched for any more: back to re-checking everything.
+                w.broken.store(true, Ordering::Relaxed);
+                w.epoch.fetch_add(1, Ordering::SeqCst);
+                inner.forget_where(|_| true);
+                return;
+            }
+            if !evs.is_empty() {
+                inner.apply(w, &evs);
+            }
+        }
+    }
+
+    /// Whether `dir` is watched, watching it if there is room.
+    fn ensure_dir(&self, dir: &Path) -> bool {
+        let mut st = lock(&self.state);
+        if st.dirs.contains_key(dir) {
+            return true;
+        }
+        if st.dirs.len() + st.files >= self.max {
+            return false;
+        }
+        let Ok(id) = self.sys.watch_dir(dir) else {
+            return false;
+        };
+        // The directory the watch follows (after it was made: a later replacement is reported).
+        let Ok(m) = fs::metadata(dir) else {
+            drop(st);
+            self.sys.unwatch(id);
+            return false;
+        };
+        st.dirs.insert(dir.to_owned(), (id, (m.dev(), m.ino())));
+        st.paths.entry(id).or_default().push(dir.to_owned());
+        true
+    }
+
+    /// Whether notifications can follow the file at `path` (described by `md`), and its own
+    /// watch on macOS, taken before the file is read.
+    fn track(w: &Arc<Watch>, path: &Path, md: &fs::Metadata) -> (bool, Option<Arc<FileWatch>>) {
+        if FsWatcher::DIR_EVENTS_NAME_ENTRIES {
+            // Linux: the directory's watch reports writes made through this path only, and
+            // changes to a symlink, not to its target.
+            let plain = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
+            return (plain && md.nlink() == 1, None);
+        }
+        let guard = {
+            let mut st = lock(&w.state);
+            if st.dirs.len() + st.files >= w.max {
+                return (false, None);
+            }
+            let Ok(id) = w.sys.watch_file(path) else {
+                return (false, None);
+            };
+            st.files += 1;
+            st.paths.insert(id, vec![path.to_owned()]);
+            Arc::new(FileWatch { w: w.clone(), id })
+        };
+        // The watch follows the file `md` describes only if the path was not replaced since.
+        let same = fs::metadata(path).is_ok_and(|m| {
+            m.len() == md.len()
+                && m.modified().ok() == md.modified().ok()
+                && (m.dev(), m.ino()) == (md.dev(), md.ino())
+        });
+        if same {
+            (true, Some(guard))
+        } else {
+            (false, None)
+        }
+    }
+}
+
+/// A file's own watch (macOS): ended when the last cache entry holding it is dropped.
+struct FileWatch {
+    w: Arc<Watch>,
+    id: WatchId,
+}
+
+impl Drop for FileWatch {
+    fn drop(&mut self) {
+        {
+            let mut st = lock(&self.w.state);
+            st.files -= 1;
+            st.paths.remove(&self.id);
+        }
+        self.w.sys.unwatch(self.id);
+    }
+}
+
+/// Taken before a request consults the disk: the notification epoch then, and whether every
+/// directory on the path is watched.
+struct Ticket {
+    w: Arc<Watch>,
+    epoch: u64,
+    dirs: bool,
+}
+
+impl Ticket {
+    /// After the entry holding `watched` is in the cache: marks it watched when `ok` and no
+    /// notification was applied since the ticket was taken (one may concern what was read, and
+    /// was applied before the entry was in place to be dropped).
+    fn finish(&self, watched: &AtomicBool, ok: bool) {
+        let ok = ok && self.w.epoch.load(Ordering::SeqCst) == self.epoch;
+        watched.store(ok, Ordering::Relaxed);
+    }
+}
+
+impl Cached {
+    /// Notifications can follow the file and every compressed twin.
+    fn vouched(&self) -> bool {
+        self.trackable && self.twins.iter().flatten().all(|t| t.trackable)
     }
 }
 
@@ -1219,6 +1648,182 @@ mod tests {
         assert_eq!(enc(&renewed, "gzip, zstd").as_deref(), Some("zstd"));
         assert_eq!(enc(&renewed, "gzip, zstd, br").as_deref(), Some("br"));
         assert_eq!(enc(&renewed, "gzip").as_deref(), Some("gzip"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn get(f: &Files, p: &Path) -> Response {
+        f.inner
+            .serve_disk(&Request::new(Method::Get, "/"), p.to_owned())
+    }
+
+    /// Waits up to 5 s for `cond`.
+    fn wait_until(what: &str, cond: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Requests `p` until its entry is watched: notifications still in flight from an earlier
+    /// change keep a request from vouching for what it read.
+    fn watched_soon(f: &Files, p: &Path) -> Arc<Cached> {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            get(f, p);
+            if let Some(c) = f.inner.fresh(p) {
+                return c;
+            }
+            assert!(Instant::now() < end, "{} never became watched", p.display());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Without watching, a zero interval means nothing is fresh.
+    #[test]
+    fn unwatched_entries_follow_the_interval() {
+        let dir = scratch("nowatch");
+        let p = dir.join("x.txt");
+        fs::write(&p, "one").unwrap();
+        let f = Files::new(&dir).check_interval(Duration::ZERO);
+        assert_eq!(get(&f, &p).body, b"one");
+        assert!(f.inner.fresh(&p).is_none());
+        assert!(
+            f.inner.watch.get().is_none(),
+            "no watcher without watch(true)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watched_entries_live_until_a_change() {
+        let dir = scratch("watch");
+        let sub = dir.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        let p = sub.join("x.txt");
+        fs::write(&p, "one").unwrap();
+        // A zero interval: only a watched entry is ever fresh.
+        let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
+        assert_eq!(get(&f, &p).body, b"one");
+        let c = f.inner.fresh(&p).expect("a watched entry is fresh");
+        assert!(c.watched.load(Ordering::Relaxed));
+        drop(c);
+
+        // A write drops it; the next request reads the new content and watches again.
+        fs::write(&p, "two").unwrap();
+        wait_until("a write to drop the entry", || f.inner.fresh(&p).is_none());
+        assert_eq!(get(&f, &p).body, b"two");
+        watched_soon(&f, &p);
+
+        // A new compressed twin drops the original.
+        fs::write(sub.join("x.txt.gz"), b"\x1f\x8b").unwrap();
+        wait_until("a new twin to drop the entry", || {
+            f.inner.fresh(&p).is_none()
+        });
+        let c = watched_soon(&f, &p);
+        assert!(c.twins[2].is_some());
+        drop(c);
+        // A change to the twin drops the original too.
+        fs::write(sub.join("x.txt.gz"), b"\x1f\x8b\x08").unwrap();
+        wait_until("a twin write to drop the entry", || {
+            f.inner.fresh(&p).is_none()
+        });
+        watched_soon(&f, &p);
+
+        // Renaming a directory on the path drops everything below it and its watches.
+        fs::rename(dir.join("a"), dir.join("a2")).unwrap();
+        wait_until("a renamed directory to drop the entry", || {
+            f.inner.fresh(&p).is_none()
+        });
+        assert_eq!(get(&f, &p).status, 404);
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(&p, "three").unwrap();
+        assert_eq!(get(&f, &p).body, b"three");
+        // The re-created directories are watched anew.
+        watched_soon(&f, &p);
+        fs::write(&p, "four").unwrap();
+        wait_until("a write in the new directory", || {
+            f.inner.fresh(&p).is_none()
+        });
+
+        // A directory served as its index file.
+        let a = dir.join("a");
+        fs::write(a.join("index.html"), "idx").unwrap();
+        assert_eq!(get(&f, &a).body, b"idx");
+        watched_soon(&f, &a);
+        fs::remove_file(a.join("index.html")).unwrap();
+        wait_until("a removed index to drop the directory", || {
+            f.inner.fresh(&a).is_none()
+        });
+        assert_eq!(get(&f, &a).status, 404);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_limits_overflow_and_in_flight_changes_fall_back() {
+        let dir = scratch("watchlimits");
+        fs::create_dir_all(dir.join("d")).unwrap();
+        let top = dir.join("top.txt");
+        let deep = dir.join("d").join("deep.txt");
+        fs::write(&top, "t").unwrap();
+        fs::write(&deep, "d").unwrap();
+
+        // Room for one watch: the root, not `d`.
+        let f = Files::new(&dir)
+            .watch(true)
+            .max_watches(1)
+            .check_interval(Duration::ZERO);
+        get(&f, &top);
+        get(&f, &deep);
+        if FsWatcher::DIR_EVENTS_NAME_ENTRIES {
+            assert!(f.inner.fresh(&top).is_some());
+        }
+        assert!(
+            f.inner.fresh(&deep).is_none(),
+            "past max_watches: the interval rule"
+        );
+
+        // An overflow drops everything.
+        let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
+        get(&f, &top);
+        get(&f, &deep);
+        assert!(f.inner.fresh(&top).is_some() && f.inner.fresh(&deep).is_some());
+        let w = f.inner.watcher().unwrap();
+        f.inner.apply(&w, &[FsEvent::Overflow]);
+        assert!(f.inner.fresh(&top).is_none() && f.inner.fresh(&deep).is_none());
+
+        // A notification applied while a request read the disk: not marked watched.
+        let t = f.inner.watch_begin(&top).unwrap();
+        f.inner.apply(&w, &[]);
+        let md = fs::metadata(&top).unwrap();
+        let c = f.inner.load_tracked(&top, &md, Some(&t)).unwrap();
+        assert!(!c.watched.load(Ordering::Relaxed));
+        drop((c, t));
+        // The next request vouches for it again.
+        get(&f, &top);
+        assert!(f.inner.fresh(&top).is_some());
+
+        // Dropping the Files ends the thread and every watch.
+        drop(f);
+        wait_until("the watcher thread to exit", || Arc::strong_count(&w) == 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Linux: a write through another hard link is not reported for this directory, so such
+    /// files keep the interval rule (macOS watches the file itself).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linked_files_are_not_vouched_for_on_linux() {
+        let dir = scratch("watchlinks");
+        let p = dir.join("x.txt");
+        fs::write(&p, "x").unwrap();
+        fs::hard_link(&p, dir.join("y.txt")).unwrap();
+        std::os::unix::fs::symlink(&p, dir.join("z.txt")).unwrap();
+        let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
+        get(&f, &p);
+        get(&f, &dir.join("z.txt"));
+        assert!(f.inner.fresh(&p).is_none());
+        assert!(f.inner.fresh(&dir.join("z.txt")).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1,6 +1,7 @@
 //! Thin, audited `unsafe` wrappers over OS primitives: a readiness [`Poller`] (epoll on Linux,
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
-//! non-blocking connect, `sendfile`), the kernel CSPRNG (`getrandom` / `getentropy`, for
+//! non-blocking connect, `sendfile`), file change notification ([`FsWatcher`]: inotify / kqueue
+//! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `only-crypto`), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO, ECN codepoints in control messages; on macOS one datagram per
 //! `sendmsg` / `recvmsg` with its ECN codepoint) and, hidden and experimental, kernel TLS offload (`TCP_ULP` "tls", `SOL_TLS`; only-tls's
@@ -15,6 +16,7 @@
 
 #[doc(hidden)]
 pub mod ffi;
+mod fswatch;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod ktls;
@@ -28,6 +30,7 @@ mod udp;
 mod udp_mac;
 mod waker;
 
+pub use fswatch::{FsEvent, FsWatcher, WatchId};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use net::listen_backlog;

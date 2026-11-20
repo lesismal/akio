@@ -113,6 +113,24 @@ pub const EPOLL_CLOEXEC: c_int = O_CLOEXEC;
 pub const EFD_NONBLOCK: c_int = O_NONBLOCK;
 pub const EFD_CLOEXEC: c_int = O_CLOEXEC;
 pub const POLLIN: c_short = 0x1;
+
+// ---- inotify -------------------------------------------------------------------------------
+pub const IN_NONBLOCK: c_int = O_NONBLOCK;
+pub const IN_CLOEXEC: c_int = O_CLOEXEC;
+pub const IN_MODIFY: u32 = 0x2;
+pub const IN_ATTRIB: u32 = 0x4;
+pub const IN_CLOSE_WRITE: u32 = 0x8;
+pub const IN_MOVED_FROM: u32 = 0x40;
+pub const IN_MOVED_TO: u32 = 0x80;
+pub const IN_CREATE: u32 = 0x100;
+pub const IN_DELETE: u32 = 0x200;
+pub const IN_DELETE_SELF: u32 = 0x400;
+pub const IN_MOVE_SELF: u32 = 0x800;
+pub const IN_UNMOUNT: u32 = 0x2000;
+pub const IN_Q_OVERFLOW: u32 = 0x4000;
+pub const IN_IGNORED: u32 = 0x8000;
+pub const IN_ONLYDIR: u32 = 0x0100_0000;
+pub const IN_ISDIR: u32 = 0x4000_0000;
 pub const POLLOUT: c_short = 0x4;
 pub const POLLERR: c_short = 0x8;
 pub const POLLRDHUP: c_short = 0x2000;
@@ -488,6 +506,9 @@ unsafe extern "C" {
     pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut epoll_event) -> c_int;
     pub fn epoll_wait(epfd: c_int, events: *mut epoll_event, max: c_int, timeout: c_int) -> c_int;
     pub fn eventfd(initval: c_uint, flags: c_int) -> c_int;
+    pub fn inotify_init1(flags: c_int) -> c_int;
+    pub fn inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> c_int;
+    pub fn inotify_rm_watch(fd: c_int, wd: c_int) -> c_int;
     pub fn ppoll(
         fds: *mut pollfd,
         nfds: c_ulong,

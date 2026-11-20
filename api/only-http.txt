@@ -152,7 +152,9 @@ pub fn only_http::files::Files::check_interval(self, core::time::Duration) -> on
 pub fn only_http::files::Files::index(self, &str) -> only_http::files::Files
 pub fn only_http::files::Files::max_cached_bytes(self, u64) -> only_http::files::Files
 pub fn only_http::files::Files::max_open_files(self, usize) -> only_http::files::Files
+pub fn only_http::files::Files::max_watches(self, usize) -> only_http::files::Files
 pub fn only_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> only_http::files::Files
+pub fn only_http::files::Files::watch(self, bool) -> only_http::files::Files
 impl core::fmt::Debug for only_http::files::Files
 pub fn only_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl only_http::Service for only_http::files::Files
