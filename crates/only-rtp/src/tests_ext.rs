@@ -655,6 +655,7 @@ fn flexfec03_libwebrtc_header_vectors() {
             offsets: o.clone(),
             header_len: 0,
             protection_len: 0,
+            ulp_levels: Vec::new(),
         };
         let w = h.write(FecScheme::Flexfec03);
         let mut want = hex("007babcd 01234567 01000000 11223344 aabb");
@@ -732,6 +733,7 @@ fn ulpfec_and_rfc8627_headers() {
             offsets: o.clone(),
             header_len: 0,
             protection_len: 0,
+            ulp_levels: Vec::new(),
         };
         let w = h.write(FecScheme::Flexfec);
         let p = FecHeader::parse(FecScheme::Flexfec, &w).unwrap();

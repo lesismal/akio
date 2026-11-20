@@ -35,6 +35,36 @@ ADR-055 (docs/adr/055-ice-components.md), additive (one-component agents behave 
   only-webrtc still muxes RTP and RTCP on component 1; streams without rtcp-mux there are a
   follow-up.
 
+### Added: ULPFEC protection levels, XR blocks from received packets, typed SDES items (only-rtp)
+
+ADR-053 (docs/adr/053-ulpfec-levels-xr-receipts-sdes-items.md):
+
+- **ULPFEC levels** (RFC 5109 §7.4, any number): `FecHeader::ulp_levels` / `write_level`;
+  `FecEncoder::encode_ulp` builds packets from explicit levels and enforces the §7.4 rules;
+  `FecEncoder::set_ulp_level0(Some(l0))` protects the first `l0` bytes of every packet with the
+  interleaved FEC packets and the rest of the group once (a single loss per group still comes
+  back whole, for about `m * l0 + longest - l0` repair bytes instead of `m * longest`). The
+  decoder rebuilds packets range by range in any order and returns them once complete
+  (`FecDecoder::partially_recovered` counts the rest). The RFC 5109 §10.2 example matches byte
+  for byte (M recovery bit per erratum 3461).
+- **XR blocks from received packets** (RFC 3611 §4.1-4.3): `ReceiptLog` builds loss RLE,
+  duplicate RLE and packet receipt times blocks (with thinning; receipt times in the RTP
+  clock), `RecvStream::{enable_receipt_log, receipt_blocks}` feed one from the stream;
+  `RleReport::{encode, decode, reported_seqs}` reproduce the §4.1 examples. Bytes match
+  pion/rtcp v1.2.20 (whose writer drops the null chunk of odd chunk counts; ours adds it).
+- **VoIP metrics** (§4.7): `BurstLossModel::report` with `VoipQuality` (round trip and end
+  system delay, signal / noise level, RERL, R factors and MOS when the application has them,
+  sent as 127 otherwise or when out of range, PLC, jitter buffer); `pcm_level_dbm0`.
+- **SDES items**: `SdesItem` (text items with constants for every registered type, CNAME ..
+  MID; PRIV with prefix and value) converts the pairs of `Rtcp::SourceDescription`;
+  `random_cname` (RFC 7022). PRIV prefix lengths above 127 now survive parsing (they became
+  U+FFFD); texts and BYE reasons are cut to 255 bytes at a character boundary. Bytes match
+  pion/rtcp v1.2.20.
+- API additive except `FecHeader`'s new public field `ulp_levels` (only-rtp is internal tier).
+  The `rtp_rtcp` and `rtp_fec` fuzz targets cover all of it (gpu51, 16 min each: `rtp_rtcp` 2.90 M runs, `rtp_fec` 1.59 M runs, no finding in the code; an earlier `rtp_rtcp` run caught a too-strict check in the target itself (RLE chunks ending before the block's interval), kept as a regression input).
+- Not done: wiring into only-webrtc (XR receipt / VoIP blocks, ULPFEC levels, random CNAMEs);
+  partially recovered packets are not handed out; no R factor / MOS estimation.
+
 ### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
 
 ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):

@@ -5,6 +5,7 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::sdes::{self, SdesItem};
 use crate::xr::{self, XrBlock};
 
 /// Why an RTCP compound packet did not parse.
@@ -180,8 +181,10 @@ pub enum Rtcp {
         /// Reception report blocks.
         reports: Vec<ReportBlock>,
     },
-    /// Source description (202): chunks of `(ssrc, [(item type, text)])` (1 = CNAME).
-    /// At most 31 chunks and 255-byte texts are written; item type 0 is never written.
+    /// Source description (202): chunks of `(ssrc, [(item type, text)])` (1 = CNAME;
+    /// [`SdesItem`] converts the pairs, including PRIV's prefix and value). At most 31
+    /// chunks and 255-byte texts (cut at a character boundary) are written; item type 0 is
+    /// never written.
     SourceDescription(Vec<(u32, Vec<(u8, String)>)>),
     /// Goodbye (203). At most 31 SSRCs and a 255-byte reason are written.
     Goodbye {
@@ -576,7 +579,14 @@ fn parse_sdes(body: &[u8], count: u8) -> Option<SdesChunks> {
             }
             let n = usize::from(*body.get(pos + 1)?);
             let v = body.get(pos + 2..pos + 2 + n)?;
-            items.push((t, text(v)));
+            items.push((
+                t,
+                if t == SdesItem::PRIV {
+                    sdes::priv_text(v)
+                } else {
+                    text(v)
+                },
+            ));
             pos += 2 + n;
         }
         chunks.push((ssrc, items));
@@ -712,10 +722,10 @@ fn write_one(p: &Rtcp, out: &mut Vec<u8>) {
             for (ssrc, items) in &chunks[..n] {
                 b.extend_from_slice(&ssrc.to_be_bytes());
                 for (t, v) in items.iter().filter(|(t, _)| *t != 0) {
-                    let v = &v.as_bytes()[..v.len().min(255)];
+                    let v = sdes::wire_octets(*t, v);
                     b.push(*t);
                     b.push(v.len() as u8);
-                    b.extend_from_slice(v);
+                    b.extend_from_slice(&v);
                 }
                 b.push(0);
                 pad4(&mut b);
@@ -728,7 +738,7 @@ fn write_one(p: &Rtcp, out: &mut Vec<u8>) {
                 .iter()
                 .for_each(|s| b.extend_from_slice(&s.to_be_bytes()));
             if let Some(r) = reason {
-                let r = &r.as_bytes()[..r.len().min(255)];
+                let r = sdes::truncate(r, 255).as_bytes();
                 b.push(r.len() as u8);
                 b.extend_from_slice(r);
                 pad4(&mut b);

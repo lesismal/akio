@@ -71,8 +71,15 @@ let rb = recv.report_block(now);                                   // for an RR 
   and frame assembly.
 - RTCP XR (RFC 3611): `RrtrResponder` answers receiver reference times with DLRR, and
   `RecvStream::handle_dlrr` / `rtt_from_dlrr` give a receiver without sender reports its RTT;
-  `RecvStream::statistics_summary` builds statistics summary blocks; `BurstLossModel` (RFC 3611
-  A.2) fills the loss / burst / gap fields of VoIP metrics.
+  `RecvStream::statistics_summary` builds statistics summary blocks; `ReceiptLog`
+  (`RecvStream::enable_receipt_log` / `receipt_blocks`) builds loss RLE, duplicate RLE and
+  packet receipt times blocks from the packets received, with thinning; `BurstLossModel` (RFC
+  3611 A.2) fills the loss / burst / gap fields of VoIP metrics and, with `VoipQuality` (delays,
+  levels, RERL, R / MOS when the application has them, PLC, jitter buffer), the whole block
+  (`report`); `pcm_level_dbm0` measures signal and noise levels (ADR-053).
+- SDES: `SdesItem` converts the `(type, text)` pairs of `Rtcp::SourceDescription` to typed
+  items, PRIV with its prefix and value included, with constants for every registered type
+  (CNAME .. MID); `random_cname` makes an RFC 7022 CNAME.
 - TMMBR / TMMBN (RFC 5104): `TmmbrHandler` keeps each receiver's request for a media SSRC,
   computes the bounding set (`bounding_set`, `bounded_bitrate`) and builds the TMMBN.
 - RFC 8888: `CcfbReceiver` builds congestion control feedback per media SSRC (with ECN), every
@@ -80,7 +87,11 @@ let rb = recv.report_block(now);                                   // for an RR 
 - `fec`: `FecEncoder` / `FecDecoder` for ULPFEC (RFC 5109), FlexFEC as Chrome sends it
   (`flexfec-03`) and RFC 8627 FlexFEC: interleaved masks per frame (rate in 1/256), recovery of
   every packet that is the only one missing from some FEC packet, byte-identical; `fec::red`
-  for RFC 2198 (ULPFEC in WebRTC travels in RED).
+  for RFC 2198 (ULPFEC in WebRTC travels in RED). ULPFEC also with several protection levels
+  (RFC 5109 §7.4, ADR-053): `set_ulp_level0(Some(l0))` protects the first `l0` bytes of every
+  packet with the interleaved FEC packets and the rest once per group; `encode_ulp` takes
+  explicit levels; the decoder rebuilds packets range by range and returns them once complete.
+  Levels are for receivers that implement them: libwebrtc reads level 0 only.
 
 ```rust,ignore
 // FlexFEC: protect each frame with ~30 % FEC, recover on the other side.
@@ -101,17 +112,20 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
   duplicate RLE, receipt times, RRTR, DLRR, statistics summary, VoIP metrics); other packets
   are kept as `Rtcp::Unknown` (and unknown XR blocks as `XrBlock::Unknown`). Parsing is strict
   about lengths and never panics.
-- FEC: ULPFEC (one protection level), FlexFEC `flexfec-03` (libwebrtc's header) and RFC 8627
-  (flexible masks, one protected SSRC), RED. ADR-036 has the details.
+- FEC: ULPFEC (any number of protection levels), FlexFEC `flexfec-03` (libwebrtc's header) and
+  RFC 8627 (flexible masks, one protected SSRC), RED. ADR-036 and ADR-053 have the details.
+- SDES items: every registered type (RFC 3550 §6.5, IANA), PRIV's prefix / value, texts cut at
+  a character boundary.
 
 `only-webrtc` negotiates and uses all of these when configured to (ADR-039); for it
 `RecvStream::receive_recovered` records FEC-rebuilt packets (not NACKed, still lost in reports)
 and `FrameAssembler::skip` marks sequence numbers without media (ULPFEC, padding) so they are not
 gaps.
 
-Not implemented: FlexFEC retransmission and fixed L/D packets, several protected SSRCs, ULPFEC
-level 1, libwebrtc's mask tables; generating RLE / receipt-time XR blocks and VoIP quality
-fields; SDES items beyond type / text pairs.
+Not implemented: FlexFEC retransmission and fixed L/D packets, several protected SSRCs,
+libwebrtc's mask tables; handing out partially recovered packets; R factor / MOS estimation
+(the application supplies them). only-webrtc does not yet send receipt-log or VoIP XR blocks,
+use ULPFEC levels or random CNAMEs.
 
 ## Testing
 
@@ -138,10 +152,18 @@ fields; SDES items beyond type / text pairs.
   FlexFEC-03 masks its writer produces and its reader accepts; its ULPFEC header reader cases.
   The RFC 3611 §4.7.2 burst example (loss, discard, burst / gap density and duration); RFC 8888
   packets assembled from §3.1; round trips of every XR block; bounding sets.
+- ADR-053: the RFC 5109 §10.2 two-level example byte for byte (erratum 3461), every single loss,
+  level 1 before level 0, two losses, the §7.4 rules, the level-0 mode over 400 lossy frames;
+  the RFC 3611 §4.1 RLE examples from received packets; loss / duplicate RLE and receipt times
+  blocks byte for byte against pion/rtcp v1.2.20 (even chunk counts: pion leaves out the null
+  chunk of odd ones); RLE encode / decode of 300 random traces with thinning and wraparound;
+  receipt logs across the wrap; VoIP report fields and PCM levels; SDES with PRIV, MID and
+  RtpStreamId byte for byte against pion/rtcp v1.2.20; RFC 7022 CNAMEs.
 - RFC 8888 feedback driving the estimator on a simulated two-stream link with loss; FEC
   recovery for every scheme (bursts within a group, 5 % random loss over 5000 packets, ULPFEC
   through RED), each recovered packet compared byte for byte.
 - Fuzzing: targets `rtp_rtcp` (header parse / write / parse, compound RTCP round trips,
-  feeding streams, the TWCC and RFC 8888 senders, the RRTR responder and the TMMBR handler) and
-  `rtp_fec` (FEC headers and RED parse / rewrite, decoder on arbitrary input, encoder → lossy
-  decoder recovery) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.
+  feeding streams, the TWCC and RFC 8888 senders, the RRTR responder and the TMMBR handler, SDES
+  items, RLE re-encoding, VoIP reports, receipt logs) and `rtp_fec` (FEC headers with ULPFEC
+  levels and RED parse / rewrite, decoder on arbitrary input, encoder → lossy decoder recovery,
+  also in the level-0 mode and with explicit levels) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.

@@ -412,6 +412,7 @@ impl only_rtp::fec::FecDecoder
 pub fn only_rtp::fec::FecDecoder::new(only_rtp::fec::FecScheme, u32) -> only_rtp::fec::FecDecoder
 pub fn only_rtp::fec::FecDecoder::on_fec(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecDecoder::on_media(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecDecoder::partially_recovered(&self) -> usize
 pub fn only_rtp::fec::FecDecoder::recovered(&self) -> u64
 impl core::fmt::Debug for only_rtp::fec::FecDecoder
 pub fn only_rtp::fec::FecDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -423,11 +424,13 @@ impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecDecoder
 pub struct only_rtp::fec::FecEncoder
 impl only_rtp::fec::FecEncoder
 pub fn only_rtp::fec::FecEncoder::encode(&self, &[&[u8]], &[alloc::vec::Vec<usize>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn only_rtp::fec::FecEncoder::encode_ulp(&self, &[&[u8]], &[alloc::vec::Vec<only_rtp::fec::UlpLevelSpec>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn only_rtp::fec::FecEncoder::flush(&mut self) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecEncoder::new(only_rtp::fec::FecScheme, u32, u8) -> only_rtp::fec::FecEncoder
 pub fn only_rtp::fec::FecEncoder::push(&mut self, &[u8], bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecEncoder::rate(&self) -> u8
 pub fn only_rtp::fec::FecEncoder::set_rate(&mut self, u8)
+pub fn only_rtp::fec::FecEncoder::set_ulp_level0(&mut self, core::option::Option<usize>)
 impl core::fmt::Debug for only_rtp::fec::FecEncoder
 pub fn only_rtp::fec::FecEncoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_rtp::fec::FecEncoder
@@ -445,9 +448,11 @@ pub only_rtp::fec::FecHeader::protection_len: usize
 pub only_rtp::fec::FecHeader::pxcc_recovery: u8
 pub only_rtp::fec::FecHeader::ssrc: core::option::Option<u32>
 pub only_rtp::fec::FecHeader::ts_recovery: u32
+pub only_rtp::fec::FecHeader::ulp_levels: alloc::vec::Vec<only_rtp::fec::UlpLevel>
 impl only_rtp::fec::FecHeader
 pub fn only_rtp::fec::FecHeader::parse(only_rtp::fec::FecScheme, &[u8]) -> core::option::Option<only_rtp::fec::FecHeader>
 pub fn only_rtp::fec::FecHeader::write(&self, only_rtp::fec::FecScheme) -> alloc::vec::Vec<u8>
+pub fn only_rtp::fec::FecHeader::write_level(&self, usize) -> core::option::Option<alloc::vec::Vec<u8>>
 impl core::clone::Clone for only_rtp::fec::FecHeader
 pub fn only_rtp::fec::FecHeader::clone(&self) -> Self
 impl core::cmp::Eq for only_rtp::fec::FecHeader
@@ -461,6 +466,43 @@ impl core::marker::Sync for only_rtp::fec::FecHeader
 impl core::marker::Unpin for only_rtp::fec::FecHeader
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecHeader
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecHeader
+pub struct only_rtp::fec::UlpLevel
+pub only_rtp::fec::UlpLevel::offsets: alloc::vec::Vec<u16>
+pub only_rtp::fec::UlpLevel::payload_offset: usize
+pub only_rtp::fec::UlpLevel::protection_len: usize
+impl core::clone::Clone for only_rtp::fec::UlpLevel
+pub fn only_rtp::fec::UlpLevel::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::UlpLevel
+impl core::cmp::PartialEq for only_rtp::fec::UlpLevel
+pub fn only_rtp::fec::UlpLevel::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::fec::UlpLevel
+pub fn only_rtp::fec::UlpLevel::default() -> Self
+impl core::fmt::Debug for only_rtp::fec::UlpLevel
+pub fn only_rtp::fec::UlpLevel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::fec::UlpLevel
+impl core::marker::Send for only_rtp::fec::UlpLevel
+impl core::marker::Sync for only_rtp::fec::UlpLevel
+impl core::marker::Unpin for only_rtp::fec::UlpLevel
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::UlpLevel
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::UlpLevel
+pub struct only_rtp::fec::UlpLevelSpec
+pub only_rtp::fec::UlpLevelSpec::mask: alloc::vec::Vec<usize>
+pub only_rtp::fec::UlpLevelSpec::protection_len: usize
+impl core::clone::Clone for only_rtp::fec::UlpLevelSpec
+pub fn only_rtp::fec::UlpLevelSpec::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::UlpLevelSpec
+impl core::cmp::PartialEq for only_rtp::fec::UlpLevelSpec
+pub fn only_rtp::fec::UlpLevelSpec::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::fec::UlpLevelSpec
+pub fn only_rtp::fec::UlpLevelSpec::default() -> Self
+impl core::fmt::Debug for only_rtp::fec::UlpLevelSpec
+pub fn only_rtp::fec::UlpLevelSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::fec::UlpLevelSpec
+impl core::marker::Send for only_rtp::fec::UlpLevelSpec
+impl core::marker::Sync for only_rtp::fec::UlpLevelSpec
+impl core::marker::Unpin for only_rtp::fec::UlpLevelSpec
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::UlpLevelSpec
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::UlpLevelSpec
 pub const only_rtp::fec::MAX_FEC_GROUP: usize
 pub fn only_rtp::fec::interleaved_masks(usize, usize) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
 pub enum only_rtp::BandwidthUsage
@@ -533,6 +575,27 @@ impl core::marker::Sync for only_rtp::Extension
 impl core::marker::Unpin for only_rtp::Extension
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Extension
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::Extension
+pub enum only_rtp::Plc
+pub only_rtp::Plc::Disabled
+pub only_rtp::Plc::Enhanced
+pub only_rtp::Plc::Standard
+pub only_rtp::Plc::Unspecified
+impl core::clone::Clone for only_rtp::Plc
+pub fn only_rtp::Plc::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::Plc
+impl core::cmp::PartialEq for only_rtp::Plc
+pub fn only_rtp::Plc::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::Plc
+pub fn only_rtp::Plc::default() -> Self
+impl core::fmt::Debug for only_rtp::Plc
+pub fn only_rtp::Plc::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::Plc
+impl core::marker::StructuralPartialEq for only_rtp::Plc
+impl core::marker::Send for only_rtp::Plc
+impl core::marker::Sync for only_rtp::Plc
+impl core::marker::Unpin for only_rtp::Plc
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Plc
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::Plc
 pub enum only_rtp::Rtcp
 pub only_rtp::Rtcp::CongestionControl(only_rtp::CcfbFeedback)
 pub only_rtp::Rtcp::ExtendedReport
@@ -587,6 +650,51 @@ impl core::marker::Sync for only_rtp::Rtcp
 impl core::marker::Unpin for only_rtp::Rtcp
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Rtcp
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::Rtcp
+pub enum only_rtp::SdesItem
+pub only_rtp::SdesItem::Priv
+pub only_rtp::SdesItem::Priv::prefix: alloc::string::String
+pub only_rtp::SdesItem::Priv::value: alloc::string::String
+pub only_rtp::SdesItem::Text
+pub only_rtp::SdesItem::Text::item_type: u8
+pub only_rtp::SdesItem::Text::text: alloc::string::String
+impl only_rtp::SdesItem
+pub const only_rtp::SdesItem::APSI: u8
+pub const only_rtp::SdesItem::CCID: u8
+pub const only_rtp::SdesItem::CNAME: u8
+pub const only_rtp::SdesItem::EMAIL: u8
+pub const only_rtp::SdesItem::END: u8
+pub const only_rtp::SdesItem::H323_CADDR: u8
+pub const only_rtp::SdesItem::LOC: u8
+pub const only_rtp::SdesItem::MID: u8
+pub const only_rtp::SdesItem::NAME: u8
+pub const only_rtp::SdesItem::NOTE: u8
+pub const only_rtp::SdesItem::PHONE: u8
+pub const only_rtp::SdesItem::PRIV: u8
+pub const only_rtp::SdesItem::REPAIRED_RTP_STREAM_ID: u8
+pub const only_rtp::SdesItem::RGRP: u8
+pub const only_rtp::SdesItem::RTP_STREAM_ID: u8
+pub const only_rtp::SdesItem::TOOL: u8
+pub fn only_rtp::SdesItem::cname(impl core::convert::Into<alloc::string::String>) -> only_rtp::SdesItem
+pub fn only_rtp::SdesItem::from_pair(u8, &str) -> only_rtp::SdesItem
+pub fn only_rtp::SdesItem::item_type(&self) -> u8
+pub fn only_rtp::SdesItem::private(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> only_rtp::SdesItem
+pub fn only_rtp::SdesItem::text(u8, impl core::convert::Into<alloc::string::String>) -> only_rtp::SdesItem
+pub fn only_rtp::SdesItem::to_pair(&self) -> (u8, alloc::string::String)
+impl core::clone::Clone for only_rtp::SdesItem
+pub fn only_rtp::SdesItem::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::SdesItem
+impl core::cmp::PartialEq for only_rtp::SdesItem
+pub fn only_rtp::SdesItem::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::SdesItem
+pub fn only_rtp::SdesItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::SdesItem
+pub fn only_rtp::SdesItem::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_rtp::SdesItem
+impl core::marker::Send for only_rtp::SdesItem
+impl core::marker::Sync for only_rtp::SdesItem
+impl core::marker::Unpin for only_rtp::SdesItem
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::SdesItem
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::SdesItem
 pub enum only_rtp::XrBlock
 pub only_rtp::XrBlock::Dlrr(alloc::vec::Vec<only_rtp::DlrrItem>)
 pub only_rtp::XrBlock::DuplicateRle(only_rtp::RleReport)
@@ -646,6 +754,8 @@ impl only_rtp::BurstLossModel
 pub fn only_rtp::BurstLossModel::metrics(&self, u32, u16) -> only_rtp::VoipMetrics
 pub fn only_rtp::BurstLossModel::new(u8) -> only_rtp::BurstLossModel
 pub fn only_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
+impl only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::report(&self, u32, u16, &only_rtp::VoipQuality) -> only_rtp::VoipMetrics
 impl core::clone::Clone for only_rtp::BurstLossModel
 pub fn only_rtp::BurstLossModel::clone(&self) -> Self
 impl core::default::Default for only_rtp::BurstLossModel
@@ -815,6 +925,28 @@ impl core::marker::Sync for only_rtp::ExtensionValues
 impl core::marker::Unpin for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::ExtensionValues
+pub struct only_rtp::JitterBufferConfig
+pub only_rtp::JitterBufferConfig::abs_max: core::time::Duration
+pub only_rtp::JitterBufferConfig::adaptive: bool
+pub only_rtp::JitterBufferConfig::maximum: core::time::Duration
+pub only_rtp::JitterBufferConfig::nominal: core::time::Duration
+pub only_rtp::JitterBufferConfig::rate: u8
+impl core::clone::Clone for only_rtp::JitterBufferConfig
+pub fn only_rtp::JitterBufferConfig::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::JitterBufferConfig
+impl core::cmp::PartialEq for only_rtp::JitterBufferConfig
+pub fn only_rtp::JitterBufferConfig::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::JitterBufferConfig
+pub fn only_rtp::JitterBufferConfig::default() -> Self
+impl core::fmt::Debug for only_rtp::JitterBufferConfig
+pub fn only_rtp::JitterBufferConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::JitterBufferConfig
+impl core::marker::StructuralPartialEq for only_rtp::JitterBufferConfig
+impl core::marker::Send for only_rtp::JitterBufferConfig
+impl core::marker::Sync for only_rtp::JitterBufferConfig
+impl core::marker::Unpin for only_rtp::JitterBufferConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterBufferConfig
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterBufferConfig
 pub struct only_rtp::JitterStats
 pub only_rtp::JitterStats::dev: u32
 pub only_rtp::JitterStats::max: u32
@@ -873,9 +1005,30 @@ impl core::marker::Sync for only_rtp::ProbePacket
 impl core::marker::Unpin for only_rtp::ProbePacket
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ProbePacket
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::ProbePacket
+pub struct only_rtp::ReceiptLog
+impl only_rtp::ReceiptLog
+pub fn only_rtp::ReceiptLog::duplicate_rle(&self, u8) -> core::option::Option<only_rtp::XrBlock>
+pub fn only_rtp::ReceiptLog::is_empty(&self) -> bool
+pub fn only_rtp::ReceiptLog::len(&self) -> usize
+pub fn only_rtp::ReceiptLog::loss_rle(&self, u8) -> core::option::Option<only_rtp::XrBlock>
+pub fn only_rtp::ReceiptLog::new(u32, u32, usize) -> only_rtp::ReceiptLog
+pub fn only_rtp::ReceiptLog::next_interval(&mut self)
+pub fn only_rtp::ReceiptLog::on_packet(&mut self, std::time::Instant, u16, u32)
+pub fn only_rtp::ReceiptLog::receipt_times(&self, u8) -> alloc::vec::Vec<only_rtp::XrBlock>
+pub fn only_rtp::ReceiptLog::ssrc(&self) -> u32
+impl core::clone::Clone for only_rtp::ReceiptLog
+pub fn only_rtp::ReceiptLog::clone(&self) -> Self
+impl core::fmt::Debug for only_rtp::ReceiptLog
+pub fn only_rtp::ReceiptLog::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::ReceiptLog
+impl core::marker::Sync for only_rtp::ReceiptLog
+impl core::marker::Unpin for only_rtp::ReceiptLog
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ReceiptLog
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::ReceiptLog
 pub struct only_rtp::RecvStream
 impl only_rtp::RecvStream
 pub fn only_rtp::RecvStream::duplicates(&self) -> u64
+pub fn only_rtp::RecvStream::enable_receipt_log(&mut self, usize)
 pub fn only_rtp::RecvStream::extended_highest_seq(&self) -> core::option::Option<u64>
 pub fn only_rtp::RecvStream::handle_dlrr(&mut self, u64, &only_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::RecvStream::handle_sender_report(&mut self, std::time::Instant, &only_rtp::SenderInfo)
@@ -886,6 +1039,8 @@ pub fn only_rtp::RecvStream::new(u32, u32, bool) -> only_rtp::RecvStream
 pub fn only_rtp::RecvStream::packets_received(&self) -> u64
 pub fn only_rtp::RecvStream::poll_nack(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u16>>
 pub fn only_rtp::RecvStream::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_rtp::RecvStream::receipt_blocks(&mut self, u8, bool, bool, bool) -> alloc::vec::Vec<only_rtp::XrBlock>
+pub fn only_rtp::RecvStream::receipt_log(&self) -> core::option::Option<&only_rtp::ReceiptLog>
 pub fn only_rtp::RecvStream::receive(&mut self, std::time::Instant, u16, u32) -> core::option::Option<u64>
 pub fn only_rtp::RecvStream::receive_recovered(&mut self, std::time::Instant, u16) -> core::option::Option<u64>
 pub fn only_rtp::RecvStream::report_block(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ReportBlock>
@@ -930,6 +1085,10 @@ pub only_rtp::RleReport::chunks: alloc::vec::Vec<u16>
 pub only_rtp::RleReport::end_seq: u16
 pub only_rtp::RleReport::ssrc: u32
 pub only_rtp::RleReport::thinning: u8
+impl only_rtp::RleReport
+pub fn only_rtp::RleReport::decode(&self) -> alloc::vec::Vec<(u16, bool)>
+pub fn only_rtp::RleReport::encode(&[bool]) -> alloc::vec::Vec<u16>
+pub fn only_rtp::RleReport::reported_seqs(&self) -> impl core::iter::traits::iterator::Iterator<Item = u16>
 impl core::clone::Clone for only_rtp::RleReport
 pub fn only_rtp::RleReport::clone(&self) -> Self
 impl core::cmp::Eq for only_rtp::RleReport
@@ -1206,6 +1365,34 @@ impl core::marker::Sync for only_rtp::VoipMetrics
 impl core::marker::Unpin for only_rtp::VoipMetrics
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::VoipMetrics
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::VoipMetrics
+pub struct only_rtp::VoipQuality
+pub only_rtp::VoipQuality::end_system_delay: core::option::Option<core::time::Duration>
+pub only_rtp::VoipQuality::ext_r_factor: core::option::Option<u8>
+pub only_rtp::VoipQuality::jitter_buffer: core::option::Option<only_rtp::JitterBufferConfig>
+pub only_rtp::VoipQuality::mos_cq: core::option::Option<u8>
+pub only_rtp::VoipQuality::mos_lq: core::option::Option<u8>
+pub only_rtp::VoipQuality::noise_level: core::option::Option<i8>
+pub only_rtp::VoipQuality::plc: only_rtp::Plc
+pub only_rtp::VoipQuality::r_factor: core::option::Option<u8>
+pub only_rtp::VoipQuality::rerl: core::option::Option<u8>
+pub only_rtp::VoipQuality::round_trip: core::option::Option<core::time::Duration>
+pub only_rtp::VoipQuality::signal_level: core::option::Option<i8>
+impl core::clone::Clone for only_rtp::VoipQuality
+pub fn only_rtp::VoipQuality::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::VoipQuality
+impl core::cmp::PartialEq for only_rtp::VoipQuality
+pub fn only_rtp::VoipQuality::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::VoipQuality
+pub fn only_rtp::VoipQuality::default() -> Self
+impl core::fmt::Debug for only_rtp::VoipQuality
+pub fn only_rtp::VoipQuality::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::VoipQuality
+impl core::marker::StructuralPartialEq for only_rtp::VoipQuality
+impl core::marker::Send for only_rtp::VoipQuality
+impl core::marker::Sync for only_rtp::VoipQuality
+impl core::marker::Unpin for only_rtp::VoipQuality
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::VoipQuality
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::VoipQuality
 pub const only_rtp::CCFB_ATO_OVERRANGE: u16
 pub const only_rtp::CCFB_ATO_UNAVAILABLE: u16
 pub const only_rtp::CCFB_FEEDBACK_INTERVAL: core::time::Duration
@@ -1213,6 +1400,7 @@ pub const only_rtp::CCFB_MAX_REPORTS: usize
 pub const only_rtp::DEFAULT_MAX_BITRATE: u64
 pub const only_rtp::DEFAULT_MIN_BITRATE: u64
 pub const only_rtp::MAX_TWCC_STATUSES: usize
+pub const only_rtp::MAX_XR_SPAN: usize
 pub const only_rtp::SEND_HISTORY_AGE: core::time::Duration
 pub const only_rtp::SEND_HISTORY_PACKETS: usize
 pub const only_rtp::TMMBR_TIMEOUT: core::time::Duration
@@ -1225,5 +1413,7 @@ pub fn only_rtp::compact_ntp(u64) -> u32
 pub fn only_rtp::is_rtcp(&[u8]) -> bool
 pub fn only_rtp::ntp_time(std::time::SystemTime) -> u64
 pub fn only_rtp::parse_compound(&[u8]) -> core::result::Result<alloc::vec::Vec<only_rtp::Rtcp>, only_rtp::Error>
+pub fn only_rtp::pcm_level_dbm0(&[i16]) -> core::option::Option<i8>
+pub fn only_rtp::random_cname(&[u8; 12]) -> alloc::string::String
 pub fn only_rtp::rtt_from_dlrr(u64, &only_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::write_compound(&[only_rtp::Rtcp]) -> alloc::vec::Vec<u8>

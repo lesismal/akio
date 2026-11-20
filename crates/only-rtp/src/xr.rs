@@ -628,3 +628,410 @@ impl BurstLossModel {
         }
     }
 }
+
+/// Longest run a run-length chunk holds.
+const MAX_RUN: usize = 0x3fff;
+
+impl RleReport {
+    /// Encodes a trace (one value per reported sequence number, in order) as chunks: a run
+    /// of 15 or more equal values, or one reaching the end of the trace, becomes run-length
+    /// chunks, anything else 15-bit vectors (bits past the end zero). The writer adds the
+    /// null chunk that rounds an odd count out. This gives the second encoding of the RFC
+    /// 3611 §4.1 examples.
+    #[must_use]
+    pub fn encode(trace: &[bool]) -> Vec<u16> {
+        let mut chunks = Vec::new();
+        let mut i = 0;
+        while i < trace.len() {
+            let v = trace[i];
+            let run = trace[i..].iter().take_while(|&&x| x == v).count();
+            if run >= 15 || i + run == trace.len() {
+                let n = run.min(MAX_RUN);
+                chunks.push(u16::from(v) << 14 | n as u16);
+                i += n;
+            } else {
+                let mut c = 0x8000u16;
+                for (b, &x) in trace[i..].iter().take(15).enumerate() {
+                    c |= u16::from(x) << (14 - b);
+                }
+                chunks.push(c);
+                i += 15;
+            }
+        }
+        chunks
+    }
+
+    /// The sequence numbers reported on, in order: those in `begin_seq..end_seq` (with
+    /// wraparound) that are multiples of 2^`thinning`.
+    pub fn reported_seqs(&self) -> impl Iterator<Item = u16> {
+        reported(self.thinning, self.begin_seq, self.end_seq)
+    }
+
+    /// Decodes the chunks into `(sequence number, value)` pairs for the reported sequence
+    /// numbers (loss RLE: `true` = received; duplicate RLE: `true` = no duplicate). Stops at
+    /// whichever of the chunks and the interval ends first.
+    #[must_use]
+    pub fn decode(&self) -> Vec<(u16, bool)> {
+        let mut values = Vec::new();
+        for &c in &self.chunks {
+            if c & 0x8000 != 0 {
+                values.extend((0..15).map(|b| c & (1 << (14 - b)) != 0));
+            } else {
+                let n = usize::from(c & 0x3fff);
+                values.extend(std::iter::repeat_n(c & 0x4000 != 0, n));
+            }
+        }
+        self.reported_seqs().zip(values).collect()
+    }
+}
+
+/// The sequence numbers in `begin..end` (wrapping) that are multiples of 2^`thinning`.
+fn reported(thinning: u8, begin: u16, end: u16) -> impl Iterator<Item = u16> {
+    let step = 1u32 << (thinning & 0x0f);
+    let span = u32::from(end.wrapping_sub(begin));
+    let first = u32::from(begin).div_ceil(step) * step;
+    let skip = first - u32::from(begin);
+    (skip..span)
+        .step_by(step as usize)
+        .map(move |o| begin.wrapping_add(o as u16))
+}
+
+/// What a [`ReceiptLog`] knows about one sequence number.
+#[derive(Debug, Clone, Copy, Default)]
+struct Receipt {
+    received: bool,
+    duplicate: bool,
+    /// Receipt time of the first copy, in RTP timestamp units.
+    time: u32,
+}
+
+/// Most sequence numbers one RLE block may span (RFC 3611 §4.1: less than 65534).
+pub const MAX_XR_SPAN: usize = 65_533;
+
+/// A per-sequence-number log of one source's packets for the RFC 3611 loss RLE (§4.1),
+/// duplicate RLE (§4.2) and packet receipt times (§4.3) blocks, over a reporting interval
+/// from the first packet (or the end of the previous interval) to the highest sequence
+/// number received.
+///
+/// Sequence numbers are unwrapped as §4.1 / Appendix A.1 require (within 32768 of the last
+/// one, ties without rollover). Receipt times are the arrival times in the source's RTP
+/// clock, anchored at the first packet's RTP timestamp, so send and receipt times of a
+/// packet are comparable (their difference is the one-way delay plus a constant). FEC-
+/// rebuilt packets are not fed in, so they count as lost (as in receiver reports).
+/// [`RecvStream::enable_receipt_log`](crate::RecvStream::enable_receipt_log) keeps one
+/// fed with the stream's packets.
+#[derive(Debug, Clone)]
+pub struct ReceiptLog {
+    ssrc: u32,
+    clock_rate: u32,
+    capacity: usize,
+    anchor: Option<(Instant, u32)>,
+    last: Option<u64>,
+    begin: u64,
+    log: std::collections::VecDeque<Receipt>,
+}
+
+impl ReceiptLog {
+    /// A log for source `ssrc` with RTP clock rate `clock_rate` (Hz), keeping at most
+    /// `capacity` sequence numbers per interval (clamped to 1..=[`MAX_XR_SPAN`]; older ones
+    /// are dropped from the start of the interval).
+    #[must_use]
+    pub fn new(ssrc: u32, clock_rate: u32, capacity: usize) -> ReceiptLog {
+        ReceiptLog {
+            ssrc,
+            clock_rate: clock_rate.max(1),
+            capacity: capacity.clamp(1, MAX_XR_SPAN),
+            anchor: None,
+            last: None,
+            begin: 0,
+            log: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// The source reported on.
+    #[must_use]
+    pub fn ssrc(&self) -> u32 {
+        self.ssrc
+    }
+
+    /// Records a packet with sequence number `seq` and RTP timestamp `timestamp` received at
+    /// `now` (duplicates included). Packets from before the interval are ignored.
+    pub fn on_packet(&mut self, now: Instant, seq: u16, timestamp: u32) {
+        let (t0, ts0) = *self.anchor.get_or_insert((now, timestamp));
+        let ext = match self.last {
+            None => {
+                self.begin = (1 << 32) + u64::from(seq);
+                self.begin
+            }
+            Some(last) => {
+                let d = seq.wrapping_sub(last as u16);
+                if d == 0x8000 {
+                    // Equally far both ways: the choice without a rollover.
+                    if u32::from(last as u16) < 0x8000 {
+                        last + 0x8000
+                    } else {
+                        last - 0x8000
+                    }
+                } else {
+                    (last as i64 + i64::from(d as i16)) as u64
+                }
+            }
+        };
+        if self.last.is_none_or(|l| ext > l) {
+            self.last = Some(ext);
+        }
+        if ext < self.begin {
+            return;
+        }
+        let i = (ext - self.begin) as usize;
+        if i >= self.log.len() {
+            if i >= self.capacity {
+                let drop = i + 1 - self.capacity;
+                if drop >= self.log.len() {
+                    self.log.clear();
+                } else {
+                    self.log.drain(..drop);
+                }
+                self.begin += drop as u64;
+            }
+            let i = (ext - self.begin) as usize;
+            self.log.resize(i + 1, Receipt::default());
+        }
+        let ticks =
+            now.saturating_duration_since(t0).as_micros() * u128::from(self.clock_rate) / 1_000_000;
+        let r = &mut self.log[(ext - self.begin) as usize];
+        if r.received {
+            r.duplicate = true;
+        } else {
+            r.received = true;
+            r.time = ts0.wrapping_add(ticks as u32);
+        }
+    }
+
+    /// Sequence numbers in the current interval (up to the highest received).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.log.len()
+    }
+
+    /// Whether the current interval is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.log.is_empty()
+    }
+
+    /// The reported entries `(sequence number, receipt)` of the interval with `thinning`.
+    fn reported(&self, thinning: u8) -> impl Iterator<Item = (u16, Receipt)> + '_ {
+        let mask = (1u64 << (thinning & 0x0f)) - 1;
+        self.log
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (self.begin + i as u64, *r))
+            .filter(move |(e, _)| e & mask == 0)
+            .map(|(e, r)| (e as u16, r))
+    }
+
+    fn rle(&self, thinning: u8, value: impl Fn(&Receipt) -> bool) -> Option<RleReport> {
+        if self.log.is_empty() {
+            return None;
+        }
+        let trace: Vec<bool> = self.reported(thinning).map(|(_, r)| value(&r)).collect();
+        Some(RleReport {
+            ssrc: self.ssrc,
+            thinning: thinning & 0x0f,
+            begin_seq: self.begin as u16,
+            end_seq: (self.begin + self.log.len() as u64) as u16,
+            chunks: RleReport::encode(&trace),
+        })
+    }
+
+    /// A loss RLE block (BT 1) of the interval: `true` = received. `None` if it is empty.
+    #[must_use]
+    pub fn loss_rle(&self, thinning: u8) -> Option<XrBlock> {
+        self.rle(thinning, |r| r.received).map(XrBlock::LossRle)
+    }
+
+    /// A duplicate RLE block (BT 2) of the interval: per §4.2 a zero marks a sequence
+    /// number received more than once, a one anything else (losses included). `None` if
+    /// the interval is empty.
+    #[must_use]
+    pub fn duplicate_rle(&self, thinning: u8) -> Option<XrBlock> {
+        self.rle(thinning, |r| !r.duplicate)
+            .map(XrBlock::DuplicateRle)
+    }
+
+    /// Packet receipt times blocks (BT 3) of the interval: since every sequence number a
+    /// block reports on must have been received, one block per run of received reported
+    /// sequence numbers (split at the block size limit), each with the first copy's time.
+    #[must_use]
+    pub fn receipt_times(&self, thinning: u8) -> Vec<XrBlock> {
+        let step = 1u16 << (thinning & 0x0f);
+        let max = (MAX_BLOCK_BODY - 8) / 4;
+        let mut out = Vec::new();
+        let mut run: Option<(u16, Vec<u32>)> = None;
+        let flush = |run: &mut Option<(u16, Vec<u32>)>, out: &mut Vec<XrBlock>| {
+            if let Some((begin, times)) = run.take() {
+                let n = times.len() as u16;
+                out.push(XrBlock::PacketReceiptTimes {
+                    ssrc: self.ssrc,
+                    thinning: thinning & 0x0f,
+                    begin_seq: begin,
+                    // One past the last reported sequence number.
+                    end_seq: begin
+                        .wrapping_add((n - 1).wrapping_mul(step))
+                        .wrapping_add(1),
+                    times,
+                });
+            }
+        };
+        for (seq, r) in self.reported(thinning) {
+            if !r.received {
+                flush(&mut run, &mut out);
+                continue;
+            }
+            match &mut run {
+                Some((_, times)) if times.len() < max => times.push(r.time),
+                _ => {
+                    flush(&mut run, &mut out);
+                    run = Some((seq, vec![r.time]));
+                }
+            }
+        }
+        flush(&mut run, &mut out);
+        out
+    }
+
+    /// Starts the next interval after the highest sequence number received.
+    pub fn next_interval(&mut self) {
+        self.begin += self.log.len() as u64;
+        self.log.clear();
+    }
+}
+
+/// Packet loss concealment of a VoIP receiver (RFC 3611 §4.7.6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Plc {
+    /// No information (00).
+    #[default]
+    Unspecified,
+    /// Silence is inserted (01).
+    Disabled,
+    /// Enhanced interpolation (10).
+    Enhanced,
+    /// Simple replay or interpolation (11).
+    Standard,
+}
+
+/// The jitter buffer of a VoIP receiver (RFC 3611 §4.7.6, §4.7.7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JitterBufferConfig {
+    /// Adaptive (`true`) or fixed size.
+    pub adaptive: bool,
+    /// Adjustment rate J (0..=15): about `2 * J * frame size` ms to adapt from 30 to 100 ms
+    /// peak-to-peak jitter.
+    pub rate: u8,
+    /// Current nominal delay.
+    pub nominal: Duration,
+    /// Current maximum delay (for a fixed buffer, the nominal one).
+    pub maximum: Duration,
+    /// The absolute maximum delay an adaptive buffer can reach.
+    pub abs_max: Duration,
+}
+
+/// The VoIP metrics fields beyond the loss and burst model (RFC 3611 §4.7.3 to §4.7.7),
+/// which only the media application knows; [`BurstLossModel::report`] puts them into a
+/// [`VoipMetrics`]. Anything `None` is sent as unavailable (127 for levels and quality
+/// scores, 0 for delays, unknown for the receiver configuration).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoipQuality {
+    /// The latest round-trip time (for example [`RecvStream::rtt`](crate::RecvStream::rtt)).
+    pub round_trip: Option<Duration>,
+    /// End system delay: sending-side accumulation and encoding plus receiving-side jitter
+    /// buffer, decoding and playout.
+    pub end_system_delay: Option<Duration>,
+    /// Speech level in dBm0 ([`pcm_level_dbm0`] over talkspurts).
+    pub signal_level: Option<i8>,
+    /// Background noise level in dBm0 ([`pcm_level_dbm0`] over silence).
+    pub noise_level: Option<i8>,
+    /// Residual echo return loss in dB (ERL + ERLE from the echo canceller).
+    pub rerl: Option<u8>,
+    /// R factor of the RTP segment, 0..=100 (ITU-T G.107).
+    pub r_factor: Option<u8>,
+    /// R factor of an external segment, 0..=100.
+    pub ext_r_factor: Option<u8>,
+    /// MOS-LQ × 10, 10..=50.
+    pub mos_lq: Option<u8>,
+    /// MOS-CQ × 10, 10..=50.
+    pub mos_cq: Option<u8>,
+    /// Packet loss concealment.
+    pub plc: Plc,
+    /// The jitter buffer, if known.
+    pub jitter_buffer: Option<JitterBufferConfig>,
+}
+
+fn ms16(d: Duration) -> u16 {
+    d.as_millis().min(0xffff) as u16
+}
+
+impl BurstLossModel {
+    /// A complete VoIP metrics block for `ssrc`: the loss, discard, burst and gap fields of
+    /// [`metrics`](Self::metrics) (with `packet_ms` milliseconds of media per packet) and
+    /// the fields of `quality`. Out-of-range quality scores are sent as unavailable (127),
+    /// as §4.7.5 requires; levels are capped at 126 dB (127 means unavailable).
+    #[must_use]
+    pub fn report(&self, ssrc: u32, packet_ms: u16, quality: &VoipQuality) -> VoipMetrics {
+        let q = quality;
+        let level = |l: Option<i8>| l.map_or(VOIP_UNAVAILABLE, |v| v.min(126) as u8);
+        let score = |v: Option<u8>, lo: u8, hi: u8| {
+            v.filter(|v| (lo..=hi).contains(v))
+                .unwrap_or(VOIP_UNAVAILABLE)
+        };
+        let plc = match q.plc {
+            Plc::Unspecified => 0,
+            Plc::Disabled => 1,
+            Plc::Enhanced => 2,
+            Plc::Standard => 3,
+        };
+        let jb = q.jitter_buffer.unwrap_or_default();
+        let jba = match q.jitter_buffer {
+            None => 0,
+            Some(j) if j.adaptive => 3,
+            Some(_) => 2,
+        };
+        VoipMetrics {
+            round_trip_delay: q.round_trip.map_or(0, ms16),
+            end_system_delay: q.end_system_delay.map_or(0, ms16),
+            signal_level: level(q.signal_level),
+            noise_level: level(q.noise_level),
+            rerl: q.rerl.map_or(VOIP_UNAVAILABLE, |v| v.min(126)),
+            r_factor: score(q.r_factor, 0, 100),
+            ext_r_factor: score(q.ext_r_factor, 0, 100),
+            mos_lq: score(q.mos_lq, 10, 50),
+            mos_cq: score(q.mos_cq, 10, 50),
+            rx_config: plc << 6 | jba << 4 | (jb.rate & 0x0f),
+            jb_nominal: ms16(jb.nominal),
+            jb_maximum: ms16(jb.maximum),
+            jb_abs_max: ms16(jb.abs_max),
+            ..self.metrics(ssrc, packet_ms)
+        }
+    }
+}
+
+/// The level of 16-bit linear PCM in dBm0 (RFC 3611 §4.7.4: 10 log10 of the RMS power,
+/// relative to 0 dBm0, a full-scale sine being +3.14 dBm0 as in G.711 µ-law), rounded and
+/// clamped to -127..=3. `None` for no samples; digital silence gives -127.
+#[must_use]
+pub fn pcm_level_dbm0(samples: &[i16]) -> Option<i8> {
+    if samples.is_empty() {
+        return None;
+    }
+    let power = samples.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / samples.len() as f64;
+    if power == 0.0 {
+        return Some(-127);
+    }
+    // A full-scale sine has power 32767^2 / 2 and is +3.14 dBm0 (G.711 µ-law).
+    const FULL_SINE_DBM0: f64 = 314.0 / 100.0;
+    let full_sine = 32767.0f64 * 32767.0 / 2.0;
+    let db = 10.0 * (power / full_sine).log10() + FULL_SINE_DBM0;
+    Some(db.round().clamp(-127.0, 3.0) as i8)
+}
