@@ -811,7 +811,7 @@ impl Hub {
             .find_map(|r| r.owns(addr).map(|cur| (r.clone(), cur)))
     }
 
-    /// The UDP relay whose TURN server is at `addr`.
+    /// The UDP or DTLS relay whose TURN server is at `addr`.
     fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
         if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
@@ -1024,7 +1024,7 @@ impl Hub {
             }
         }
         if let Some(r) = self.relay_of_server(source) {
-            if let Some((peer, relayed, data)) = r.input(data) {
+            for (peer, relayed, data) in r.input(data) {
                 self.route(peer, relayed, &data);
             }
             return;
@@ -1422,7 +1422,7 @@ impl Endpoint {
         )
     }
 
-    /// [`gather_relay`](Self::gather_relay) on `server`, over UDP, TCP or TLS
+    /// [`gather_relay`](Self::gather_relay) on `server`, over UDP, DTLS, TCP or TLS
     /// ([`RelayServer`]): over a stream, `engine` (which needs TCP I/O threads:
     /// [`only::EngineBuilder::client_threads`] or a TCP listener) dials the connection the
     /// allocation lives on, and the candidate ranks below a UDP-allocated one; no
@@ -1456,6 +1456,10 @@ impl Endpoint {
                 "a turns: server needs RelayServer::tls_config".into(),
             ));
         }
+        let dtls_cfg = match &server.wire {
+            relay::Wire::Dtls(c, name) => Some(relay::dtls_config(c, name).map_err(Error::Turn)?),
+            _ => None,
+        };
         let b = self.binding().ok_or(Error::Closed)?.clone();
         let (tx, rx) = mpsc::channel();
         let cfg =
@@ -1465,17 +1469,20 @@ impl Endpoint {
             if relays.len() >= MAX_RELAYS {
                 return Err(Error::Turn("too many TURN allocations".into()));
             }
-            if relays
-                .iter()
-                .any(|r| r.server == server.addr && r.wire.code() == server.wire.code())
-            {
+            // Datagrams from the server's address go to one relay: UDP and DTLS ones share
+            // that.
+            let datagram = !server.wire.is_stream();
+            if relays.iter().any(|r| {
+                r.server == server.addr
+                    && (r.wire.code() == server.wire.code() || datagram && !r.wire.is_stream())
+            }) {
                 return Err(Error::Turn(format!(
                     "an allocation on {} over {} exists already",
                     server.addr,
                     server.transport()
                 )));
             }
-            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), cfg, tx);
+            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), dtls_cfg, cfg, tx);
             relays.push(r.clone());
             Ok(r)
         })?;

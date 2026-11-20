@@ -26,6 +26,8 @@ only-sys = { workspace = true }
 only-turn = { workspace = true }
 only-crypto = { workspace = true }
 only-dtls = { workspace = true }
+# TURN over DTLS: the server certificate is verified against the TLS client configuration's roots.
+only-x509 = { workspace = true }
 only-ice = { workspace = true }
 only-rtp = { workspace = true }
 only-sctp = { workspace = true }
@@ -34,7 +36,6 @@ only-log = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
-only-x509 = { workspace = true }
 
 [lints]
 workspace = true

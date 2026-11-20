@@ -44,14 +44,15 @@ pub fn webrtc_turn_url(data: &[u8]) {
         return;
     };
     assert!(!u.host.is_empty());
-    assert!(u.secure <= u.tcp, "turns: is always over TCP");
     if let Ok(ip) = u.host.parse::<std::net::IpAddr>() {
         let r = crate::RelayServer::from_parts(&u, (ip, u.port).into(), "u", "p");
         let t = r.transport();
         assert_eq!(
             t,
-            if u.secure {
+            if u.secure && u.tcp {
                 "tls"
+            } else if u.secure {
+                "dtls"
             } else if u.tcp {
                 "tcp"
             } else {

@@ -256,11 +256,15 @@ fn stream_allocation_errors() {
     );
     let u = RelayServer::from_url("turns:localhost", "u", "p").unwrap();
     assert_eq!((u.addr().port(), u.transport()), (5349, "tls"));
+    // turns: over UDP is DTLS (RFC 7350).
+    let u = RelayServer::from_url("turns:127.0.0.1?transport=udp", "u", "p").unwrap();
+    assert_eq!((u.addr().port(), u.transport()), (5349, "dtls"));
+    assert_eq!(u.tls_config(tls_config(&srv.cert)).transport(), "dtls");
     for bad in [
         "stun:1.2.3.4",
         "turn:",
         "turn:1.2.3.4:x",
-        "turns:1.2.3.4?transport=udp",
+        "turns:1.2.3.4?transport=sctp",
         "turn:1.2.3.4?transport=sctp",
     ] {
         assert!(

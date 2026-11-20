@@ -176,6 +176,63 @@ pub fn turn_stream(data: &[u8]) {
     }
 }
 
+/// The DTLS configuration of the `turn_dtls` server (a certificate made once per process).
+fn dtls_config() -> std::sync::Arc<only_dtls::Config> {
+    static CFG: std::sync::OnceLock<std::sync::Arc<only_dtls::Config>> =
+        std::sync::OnceLock::new();
+    CFG.get_or_init(|| {
+        let id = only_dtls::Identity::generate_self_signed().expect("identity");
+        std::sync::Arc::new(
+            only_dtls::Config::new(id)
+                .with_versions(vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12])
+                .with_hello_verify(false)
+                .with_require_client_certificate(false),
+        )
+    })
+    .clone()
+}
+
+/// `turn_dtls`: TURN over DTLS on the server side: datagrams into a client's DTLS session
+/// (cookies, handshake, records), whose application data goes to a [`TurnCore`]. The first
+/// byte picks the start: even, ClientHellos must bring a valid cookie (as on the listener);
+/// odd, a connection exists already (as if the cookie had been checked), so handshakes get
+/// further. A packet `0xff` advances the clock by a second and runs the timers.
+pub fn turn_dtls(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let start = Instant::now();
+    let verifier = std::sync::Arc::new(only_dtls::HelloVerifier::new(start).expect("verifier"));
+    let mut s = crate::dtls::DtlsSession::new(dtls_config(), verifier, b"10.0.0.1:4000".to_vec());
+    if mode % 2 == 1 {
+        s.fuzz_accept(start);
+    }
+    let mut core = turn_core(start);
+    let mut env = NullEnv { next_port: 0 };
+    let mut now = start;
+    for p in packets(rest) {
+        let mut out = crate::dtls::DtlsOutput::default();
+        if p == [0xff] {
+            now += Duration::from_secs(1);
+            s.handle_timeout(now, &mut out);
+        } else {
+            s.input(now, p, &mut out);
+        }
+        if out.restarted {
+            core.remove_client(CLIENT, &mut env);
+        }
+        for m in &out.messages {
+            core.handle_client(now, CLIENT, m, &mut env);
+            let mut sealed = Vec::new();
+            s.seal(m, &mut sealed);
+        }
+        if out.closed {
+            core.remove_client(CLIENT, &mut env);
+            assert!(!s.is_connected());
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod seeds {
     use super::*;
@@ -271,6 +328,30 @@ pub(crate) mod seeds {
         vec![join(&pkts)]
     }
 
+    /// First flights of DTLS 1.2 and 1.3 clients (with the cookie-less and the accepted start),
+    /// a junk record and a timer tick.
+    pub(crate) fn turn_dtls() -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for versions in [
+            vec![only_dtls::Version::Dtls12],
+            vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12],
+        ] {
+            let cfg = only_dtls::Config::without_identity().with_versions(versions);
+            let mut c = only_dtls::Connection::client(std::sync::Arc::new(cfg), Instant::now())
+                .expect("client");
+            let mut pkts = Vec::new();
+            while let Some(d) = c.poll_transmit() {
+                pkts.push(d);
+            }
+            pkts.push(b"\x17\xfe\xfd\x00\x01\x00\x00\x00\x00\x00\x01\x00\x03abc".to_vec());
+            pkts.push(vec![0xff]);
+            for mode in [0u8, 1] {
+                out.push([&[mode][..], &join(&pkts)].concat());
+            }
+        }
+        out
+    }
+
     /// The server session above as one stream (client messages only, ChannelData padded),
     /// cut at odd places; and a client fed a challenge and server messages.
     pub(crate) fn turn_stream() -> Vec<Vec<u8>> {
@@ -319,7 +400,8 @@ mod tests {
     fn replay_corpora() {
         let n = replay(DIR, "stun_message", stun_message)
             + replay(DIR, "turn_server", turn_server)
-            + replay(DIR, "turn_stream", turn_stream);
+            + replay(DIR, "turn_stream", turn_stream)
+            + replay(DIR, "turn_dtls", turn_dtls);
         assert!(n > 0);
     }
 
@@ -334,6 +416,9 @@ mod tests {
         for s in &seeds::turn_stream() {
             turn_stream(s);
         }
+        for s in &seeds::turn_dtls() {
+            turn_dtls(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p only-turn --lib write_fuzz_seeds -- --ignored`.
@@ -343,5 +428,6 @@ mod tests {
         write_target_seeds(DIR, "stun_message", &seeds::stun_message());
         write_target_seeds(DIR, "turn_server", &seeds::turn_server());
         write_target_seeds(DIR, "turn_stream", &seeds::turn_stream());
+        write_target_seeds(DIR, "turn_dtls", &seeds::turn_dtls());
     }
 }
