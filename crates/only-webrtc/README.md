@@ -42,8 +42,17 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   sent at a rate that follows the loss before repair; Opus RED (`red/48000/2`, listed before Opus
   so Chrome sends it; redundant copies stand in for lost packets, up to two sent); RFC 8888
   congestion control feedback instead of TWCC; RTCP XR receiver reference times (receiver-side
-  RTT); TMMBR / TMMBN (`Peer::request_max_bitrate`, requests cap the estimate).
-- **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux, mid/msid, ssrc/FID, extmap,
+  RTT); TMMBR / TMMBN (`Peer::request_max_bitrate`, requests cap the estimate). Opt-in
+  (ADR-058): RTCP XR loss RLE, duplicate RLE, receipt times and VoIP metrics about received
+  streams (`enable_rtcp_xr_blocks`, received ones reported as events); ULPFEC with protection
+  levels (`set_ulpfec_level0`, for receivers that read levels, not Chrome). The CNAME is
+  RFC 7022's random one per peer connection; received SDES items are reported typed.
+- **RTCP on its own port** (ADR-058, RFC 5761 without rtcp-mux, ICE component 2): with
+  `Endpoint::bind_rtcp`, offers without `a=rtcp-mux` (SIP endpoints, older RTP stacks) are
+  answered with `a=rtcp` and RTCP on its own socket; `RtcConfig::set_rtcp_mux_policy` lets our
+  offers propose it (`Negotiate`) or require it (`Off`). DTLS-SRTP runs a handshake per
+  component (RFC 5764), SDES-SRTP keys both. Browsers keep rtcp-mux and BUNDLE.
+- **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux (or `a=rtcp`), mid/msid, ssrc/FID, extmap,
   rtpmap/fmtp/rtcp-fb negotiation, setup/fingerprint, ice-ufrag/pwd/options/lite, candidates,
   sctp-port/max-message-size; renegotiation (media added, directions, ICE restart);
   simulcast sending (`a=rid`, `a=simulcast`, RID/MID header extensions) and receiving, with
@@ -98,7 +107,9 @@ listener (`Endpoint`s relayed through it over `turns:...?transport=udp`):
 Not implemented: FlexFEC on simulcast lines (RID-based simulcast signals no FEC stream; Chrome
 sends none), SRTP MKIs (DTLS-SRTP has no SDP for them and no browser uses them; SDES lines with
 an MKI are not taken either), SDES-SRTP without ICE or with data channels, RFC 6904 with
-browsers (none offers it), several ICE components (rtcp-mux is universal). Browsers and pion have no simultaneous-open ICE-TCP
+browsers (none offers it); without rtcp-mux: several media sections or data channels (no
+BUNDLE: one transport per session), server-reflexive and relayed RTCP candidates, `RtcServer`
+(pion has no non-mux mode: tested between `Endpoint`s). Browsers and pion have no simultaneous-open ICE-TCP
 candidates: `listen_tcp_so` is tested between `Endpoint`s.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

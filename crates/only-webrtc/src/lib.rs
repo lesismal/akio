@@ -86,7 +86,8 @@ use crate::types::ConfigInner;
 pub use crate::types::{
     Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMechanism, Frequency,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtpPacket, SdpChanges,
+    MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
+    XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -753,6 +754,8 @@ struct Hub {
     /// the datagrams they send and from mDNS answers. Endpoints that see no link-local
     /// traffic never touch it.
     scopes: Mutex<HashMap<std::net::Ipv6Addr, u32>>,
+    /// The socket of ICE component 2 (RTCP without rtcp-mux, [`Endpoint::bind_rtcp`]).
+    rtcp: OnceLock<UdpBinding>,
 }
 
 /// Link-local addresses whose interface is remembered.
@@ -784,6 +787,7 @@ impl Hub {
             mdns: OnceLock::new(),
             conceal: AtomicBool::new(false),
             scopes: Mutex::new(HashMap::new()),
+            rtcp: OnceLock::new(),
         }
     }
 
@@ -1049,7 +1053,12 @@ impl Hub {
                 }
             }
             Tx::Bound(b) => {
-                if let Some(b) = b.get() {
+                // Component 2's candidates send from the RTCP socket (its own port).
+                let b = match self.rtcp.get() {
+                    Some(r) if rtcp_source(r.local_addr(), src) => Some(r),
+                    _ => b.get(),
+                };
+                if let Some(b) = b {
                     let _ = b.send_to(data, dest);
                 }
             }
@@ -1158,6 +1167,15 @@ impl Handler for RtcUdp {
             }
         }
     }
+}
+
+/// Whether a datagram from local candidate base `src` goes out through the RTCP socket bound
+/// at `rtcp` (its address, or its port and family when bound to the unspecified address).
+fn rtcp_source(rtcp: SocketAddr, src: SocketAddr) -> bool {
+    rtcp == src
+        || (rtcp.ip().is_unspecified()
+            && rtcp.port() == src.port()
+            && rtcp.is_ipv4() == src.is_ipv4())
 }
 
 fn host_candidates(addrs: &[SocketAddr]) -> Vec<only_ice::Candidate> {
@@ -1397,6 +1415,45 @@ impl Endpoint {
 
     fn binding(&self) -> Option<&UdpBinding> {
         self.0.binding()
+    }
+
+    /// Binds a second socket at `addr` on `engine` for RTCP on its own port, as ICE
+    /// component 2 (RFC 5761 without rtcp-mux, ADR-058), and returns its address; its host
+    /// candidate (with the same rule for the unspecified address as [`bind`](Self::bind)) is
+    /// given to new peers. With it, peers answer offers without `a=rtcp-mux` (SIP endpoints,
+    /// older RTP stacks) with RTCP on that socket, and offer it with
+    /// [`RtcConfig::set_rtcp_mux_policy`]; offers with `a=rtcp-mux` (browsers) are answered
+    /// with it as before. Component 2 has host and peer-reflexive candidates only (no
+    /// server-reflexive or relayed ones). Once per endpoint: [`Error::Io`] otherwise.
+    pub fn bind_rtcp(&self, engine: &Engine, addr: SocketAddr) -> Result<SocketAddr, Error> {
+        if self.0.rtcp.get().is_some() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the RTCP socket is bound already",
+            )));
+        }
+        let b = engine
+            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
+            .map_err(Error::Io)?;
+        let local = b.local_addr();
+        let host = if local.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(local.is_ipv6()), local.port())
+        } else {
+            local
+        };
+        if self.0.rtcp.set(b).is_err() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the RTCP socket is bound already",
+            )));
+        }
+        lock(&self.0.candidates).push(only_ice::Candidate::host(host).with_component(2));
+        Ok(local)
+    }
+
+    /// The address of the RTCP socket ([`bind_rtcp`](Self::bind_rtcp)).
+    pub fn rtcp_addr(&self) -> Option<SocketAddr> {
+        self.0.rtcp.get().map(UdpBinding::local_addr)
     }
 
     /// The bound address.
@@ -1830,6 +1887,9 @@ impl Endpoint {
             m.close();
         }
         if let Some(b) = self.binding() {
+            b.close();
+        }
+        if let Some(b) = self.0.rtcp.get() {
             b.close();
         }
     }

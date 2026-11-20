@@ -241,6 +241,8 @@ let cfg = only_webrtc::rtc_config()
     .enable_opus_red(Some(1))                // Opus RED，一个冗余包（最多 2 个）
     .enable_ccfb(true)                       // 用 RFC 8888 反馈代替传输层反馈
     .enable_rtcp_xr(true)                    // XR 接收方参考时间 / DLRR：接收方 RTT
+    .enable_rtcp_xr_blocks(XrBlocks::ALL)    // XR 丢包 / 重复 RLE、接收时间、VoIP 指标
+    .set_ulpfec_level0(Some(120))            // ULPFEC 保护级别：只用于对端也是本栈时
     .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
     .enable_bwe(None);
 ```
@@ -259,6 +261,13 @@ let cfg = only_webrtc::rtc_config()
 - **RFC 8888**：双方都提供 `ack ccfb` 时，收到的媒体用 RFC 8888 反馈确认，替代传输层反馈，带宽估计器
   也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
+- **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
+  列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
+  音频行发送，丢包、突发与间隙字段实测，带往返时间，编解码器相关的质量字段为不可用。收到的块以
+  `XrReceipts` 与 `VoipMetrics` 事件报告，并累计到统计中。
+- **ULPFEC 保护级别**（RFC 5109 §5）：`set_ulpfec_level0(Some(l0))` 时一帧的 FEC 包保护每个包的前
+  `l0` 字节，另有一个级别覆盖其余部分一次：单个丢包能完整修复，修复字节少得多。libwebrtc 只读级别 0
+  （Chrome 会把长包重建错），因此面向浏览器时不要开启。
 - **TMMBR**：`Peer::request_max_bitrate(mid, Some(bps))` 请求远端发送方最多发送 `bps`（随每轮报告重复，
   直到传入 `None`）；Chrome 会遵守。关于我方流的请求以 TMMBN 应答，并像 REMB 一样限制带宽估计。
 
@@ -298,6 +307,23 @@ AES-256-CM 与 AES-128-CM、带 HMAC-SHA1-32 的 AES-128-CM），各带随机密
 密钥加密、用对方的密钥解密；ICE 有了候选对即连通（网关需要 ICE 或 ICE-lite）。没有 DTLS，因此没有数据
 通道，密钥也只与信令一样机密。带 MKI 或会话参数的行不采用。DTLS-SRTP offer 仍以 DTLS-SRTP 应答，所以
 浏览器永远看不到 `a=crypto`。
+
+### RTCP 走独立端口（不复用 RTCP）
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:5004".parse()?)?;
+ep.bind_rtcp(&engine, "0.0.0.0:5005".parse()?)?; // ICE 组件 2
+let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
+```
+
+浏览器与 pion 总是复用 RTP 与 RTCP（rtcp-mux、BUNDLE），默认对端也一样。SIP 终端与较老的 RTP 栈未必
+如此：它们的 offer 没有 `a=rtcp-mux`，RTCP 发往单独的端口（RFC 5761，`a=rtcp`）。带 RTCP 套接字的
+`Endpoint` 以 `a=rtcp` 应答它们，并以两个组件运行 ICE（ADR-055）：RTP 走组件 1，RTCP 走组件 2，各有
+自己的选中候选对。DTLS-SRTP 每个组件各握手一次（RFC 5764：SRTCP 用组件 2 的密钥），SDES-SRTP 两个组件
+都用 SDP 中的密钥；两个组件都就绪对端才算连接。带 `a=rtcp-mux` 的 offer 照旧以它应答。我方 offer 按
+`set_rtcp_mux_policy` 书写：`Require`（默认）只写 rtcp-mux，`Negotiate` 写 rtcp-mux 加 `a=rtcp` 与
+组件 2 候选（由应答决定），`Off` 不写 rtcp-mux。没有 rtcp-mux 就没有 BUNDLE，因此这种会话只有一个媒体段、
+没有数据通道；组件 2 只有主机与 peer-reflexive 候选，`RtcServer` 没有组件 2（ADR-058）。
 
 ### 带宽探测
 
@@ -418,5 +444,6 @@ DTLS 1.2。
 ## 尚未完成
 
 TCP 中继（RFC 6062）；simulcast 行上的 FlexFEC、libwebrtc 的 FEC 掩码表；WebRTC 中的 SRTP MKI；无 ICE
-或与数据通道并存的 SDES-SRTP。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048
-与 ADR-054。
+或与数据通道并存的 SDES-SRTP；不复用 RTCP 时一个会话中的多个媒体段或数据通道、RTCP 的 server-reflexive
+与中继候选以及 `RtcServer`。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、
+ADR-054 与 ADR-058。

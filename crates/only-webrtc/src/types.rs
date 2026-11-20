@@ -643,6 +643,13 @@ pub(crate) enum Other {
         cryptex_received: u64,
         /// Packets received as redundancy in Opus RED that stood in for a lost one.
         red_recovered: u64,
+        /// Sent packets the remote receivers' XR loss RLE blocks report received and lost,
+        /// and their duplicate RLE blocks duplicated (RFC 3611 §4.1, §4.2).
+        xr_received: u64,
+        xr_lost: u64,
+        xr_duplicated: u64,
+        /// RTP and RTCP share ICE component 1 (`false`: RTCP on component 2, ADR-058).
+        rtcp_mux: bool,
     },
     /// A sender report arrived for a received stream.
     SenderReport {
@@ -666,6 +673,33 @@ pub(crate) enum Other {
     /// The remote sender acknowledged a TMMBR with this bounding set (bits per second per
     /// owner SSRC).
     MaxBitrateNotification { ssrc: u32, entries: Vec<(u32, u64)> },
+    /// A remote receiver's RTCP XR receipt blocks (RFC 3611 §4.1-4.3) about a stream this
+    /// side sends: the sequence numbers they cover (thinned ones left out), how many of
+    /// those arrived, were lost or came more than once, and the receipt times reported.
+    XrReceipts {
+        mid: Mid,
+        /// The sent SSRC reported on.
+        ssrc: u32,
+        /// The reporting receiver.
+        reporter: u32,
+        received: u64,
+        lost: u64,
+        duplicated: u64,
+        receipt_times: u64,
+    },
+    /// A remote receiver's RTCP XR VoIP metrics (RFC 3611 §4.7) about a stream this side
+    /// sends.
+    VoipMetrics {
+        mid: Mid,
+        reporter: u32,
+        metrics: only_rtp::VoipMetrics,
+    },
+    /// The SDES items (RFC 3550 §6.5) a remote source sends, when they first arrive or
+    /// change.
+    SourceDescription {
+        ssrc: u32,
+        items: Vec<only_rtp::SdesItem>,
+    },
 }
 
 // ---- configuration ----
@@ -698,6 +732,12 @@ pub(crate) struct ConfigInner {
     pub(crate) opus_red: Option<u8>,
     /// SDES-SRTP (RFC 4568) offered and accepted instead of DTLS-SRTP.
     pub(crate) sdes: bool,
+    /// What offers this side makes say about RTP/RTCP multiplexing.
+    pub(crate) rtcp_mux: RtcpMuxPolicy,
+    /// RTCP XR report blocks about received streams offered and accepted (RFC 3611 §5.1).
+    pub(crate) xr_blocks: XrBlocks,
+    /// ULPFEC: the level-0 protection length (RFC 5109 §5), `None` for whole packets.
+    pub(crate) ulpfec_level0: Option<usize>,
 }
 
 impl Default for ConfigInner {
@@ -731,6 +771,9 @@ impl Default for ConfigInner {
             encrypt_ext: false,
             opus_red: None,
             sdes: false,
+            rtcp_mux: RtcpMuxPolicy::Require,
+            xr_blocks: XrBlocks::NONE,
+            ulpfec_level0: None,
         }
     }
 }
@@ -756,6 +799,9 @@ impl fmt::Debug for RtcConfig {
             .field("encrypted_header_extensions", &self.0.encrypt_ext)
             .field("opus_red", &self.0.opus_red)
             .field("sdes_srtp", &self.0.sdes)
+            .field("rtcp_mux", &self.0.rtcp_mux)
+            .field("rtcp_xr_blocks", &self.0.xr_blocks)
+            .field("ulpfec_level0", &self.0.ulpfec_level0)
             .finish_non_exhaustive()
     }
 }
@@ -984,6 +1030,143 @@ impl RtcConfig {
     pub fn enable_sdes_srtp(mut self, enabled: bool) -> Self {
         self.0.sdes = enabled;
         self
+    }
+
+    /// RTP/RTCP multiplexing (RFC 5761) in the offers this peer makes (ADR-058). The default,
+    /// [`RtcpMuxPolicy::Require`], offers `a=rtcp-mux` alone, as browsers do. With the
+    /// others, and an [`Endpoint`](crate::Endpoint) with an RTCP socket
+    /// ([`Endpoint::bind_rtcp`](crate::Endpoint::bind_rtcp)), offers also carry `a=rtcp` and
+    /// candidates of ICE component 2, for peers that send RTCP on a port of its own (SIP
+    /// endpoints, older RTP stacks): [`RtcpMuxPolicy::Negotiate`] lets the answer choose,
+    /// [`RtcpMuxPolicy::Off`] leaves `a=rtcp-mux` out. Remote offers are answered whatever
+    /// this says: with rtcp-mux when they offer it, with RTCP on component 2 when they do not
+    /// and the endpoint has an RTCP socket. A session without rtcp-mux has one media section
+    /// and no data channels (there is no BUNDLE without rtcp-mux, RFC 8843 §9.1).
+    #[must_use]
+    pub fn set_rtcp_mux_policy(mut self, policy: RtcpMuxPolicy) -> Self {
+        self.0.rtcp_mux = policy;
+        self
+    }
+
+    /// RTCP XR blocks about received streams (RFC 3611): offers and accepts the
+    /// `a=rtcp-xr` formats of `blocks` (`pkt-loss-rle`, `pkt-dup-rle`, `pkt-rcpt-times`,
+    /// `voip-metrics`). A block is sent when both sides list it: once a second, per received
+    /// stream, about the sequence numbers since the previous report (thinned to fit a
+    /// datagram), VoIP metrics on audio lines only, with the loss and burst fields measured
+    /// and the round-trip time known; the other quality fields are sent as unavailable.
+    /// Received blocks of these kinds are reported as events. Independent of
+    /// [`enable_rtcp_xr`](Self::enable_rtcp_xr) (receiver reference times). Default none.
+    #[must_use]
+    pub fn enable_rtcp_xr_blocks(mut self, blocks: XrBlocks) -> Self {
+        self.0.xr_blocks = blocks;
+        self
+    }
+
+    /// ULPFEC unequal protection (RFC 5109 §5) on sent video where ULPFEC is negotiated
+    /// ([`FecMechanism::Ulpfec`]): with `Some(l0)`, the FEC packets of a frame protect the
+    /// first `l0` bytes of each packet (and the headers), and the last one also carries a
+    /// level 1 over the rest of every packet once: a single loss per frame is repaired whole
+    /// for about `m * l0 + longest - l0` repair bytes instead of `m * longest`. Only for
+    /// receivers that implement levels (this stack): libwebrtc (Chrome) reads level 0 alone
+    /// and rebuilds longer packets wrongly. `None` (the default) protects whole packets.
+    #[must_use]
+    pub fn set_ulpfec_level0(mut self, l0: Option<usize>) -> Self {
+        self.0.ulpfec_level0 = l0;
+        self
+    }
+}
+
+/// What offers say about RTP/RTCP multiplexing ([`RtcConfig::set_rtcp_mux_policy`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RtcpMuxPolicy {
+    /// `a=rtcp-mux` only: RTP and RTCP share ICE component 1 (browsers, the default).
+    #[default]
+    Require,
+    /// `a=rtcp-mux` and `a=rtcp` with component-2 candidates: the answer decides.
+    Negotiate,
+    /// `a=rtcp` with component-2 candidates, no `a=rtcp-mux`: RTCP on its own port.
+    Off,
+}
+
+/// A set of RTCP XR report blocks ([`RtcConfig::enable_rtcp_xr_blocks`]); combine with `|`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct XrBlocks(u8);
+
+impl XrBlocks {
+    /// No block.
+    pub const NONE: XrBlocks = XrBlocks(0);
+    /// Loss RLE (RFC 3611 §4.1, `pkt-loss-rle`).
+    pub const LOSS_RLE: XrBlocks = XrBlocks(1);
+    /// Duplicate RLE (§4.2, `pkt-dup-rle`).
+    pub const DUPLICATE_RLE: XrBlocks = XrBlocks(2);
+    /// Packet receipt times (§4.3, `pkt-rcpt-times`).
+    pub const RECEIPT_TIMES: XrBlocks = XrBlocks(4);
+    /// VoIP metrics (§4.7, `voip-metrics`).
+    pub const VOIP_METRICS: XrBlocks = XrBlocks(8);
+    /// Every block above.
+    pub const ALL: XrBlocks = XrBlocks(15);
+
+    /// Whether every block of `other` is in this set.
+    #[must_use]
+    pub fn contains(self, other: XrBlocks) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether the set is empty.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The `a=rtcp-xr` formats (RFC 3611 §5.1) of the set, in RFC order.
+    pub(crate) fn sdp_formats(self) -> impl Iterator<Item = &'static str> {
+        XR_FORMATS
+            .iter()
+            .filter(move |(b, _)| self.contains(*b))
+            .map(|(_, f)| *f)
+    }
+
+    /// The blocks named in `a=rtcp-xr` values (formats with parameters, such as
+    /// `pkt-loss-rle=400`, count; unknown formats are ignored).
+    pub(crate) fn from_sdp<'a>(values: impl Iterator<Item = &'a str>) -> XrBlocks {
+        let mut out = XrBlocks::NONE;
+        for v in values {
+            for f in v.split_ascii_whitespace() {
+                let name = f.split('=').next().unwrap_or("");
+                if let Some((b, _)) = XR_FORMATS.iter().find(|(_, n)| *n == name) {
+                    out = out | *b;
+                }
+            }
+        }
+        out
+    }
+}
+
+const XR_FORMATS: [(XrBlocks, &str); 4] = [
+    (XrBlocks::LOSS_RLE, "pkt-loss-rle"),
+    (XrBlocks::DUPLICATE_RLE, "pkt-dup-rle"),
+    (XrBlocks::RECEIPT_TIMES, "pkt-rcpt-times"),
+    (XrBlocks::VOIP_METRICS, "voip-metrics"),
+];
+
+impl std::ops::BitOr for XrBlocks {
+    type Output = XrBlocks;
+    fn bitor(self, rhs: XrBlocks) -> XrBlocks {
+        XrBlocks(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitAnd for XrBlocks {
+    type Output = XrBlocks;
+    fn bitand(self, rhs: XrBlocks) -> XrBlocks {
+        XrBlocks(self.0 & rhs.0)
+    }
+}
+
+impl fmt::Debug for XrBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.sdp_formats()).finish()
     }
 }
 
