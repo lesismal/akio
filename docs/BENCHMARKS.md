@@ -1343,8 +1343,8 @@ zstd:
 
 | Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
 |---|---:|---|---|---|---:|
-| Silesia (212 MB) | 1 | 70,904,663 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
-| Silesia (212 MB) | 3 | 66,562,838 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
+| Silesia (212 MB) | 1 | 70,907,335 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
+| Silesia (212 MB) | 3 | 66,565,671 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
 | Silesia, first 20 MB | 19 | 6,158,589 / 5,723,363 | 7.1 (7.1) / 5.5 | 1,173 (1,029) / 1,624 | 1.39 |
 | JSON (657 KB) | 1 | 65,110 / 63,680 | 654 (275) / 1,242 | 3,101 (2,849) / 4,240 | 1.37 |
 | JSON (657 KB) | 3 | 61,154 / 60,477 | 614 (203) / 1,073 | 3,034 (2,761) / 4,173 | 1.38 |
@@ -1355,15 +1355,16 @@ zstd:
 | JS (92 KB) | 1 | 24,974 / 24,919 | 399 (150) / 809 | 1,512 (1,286) / 2,107 | 1.39 |
 | JS (92 KB) | 3 | 23,420 / 23,345 | 342 (108) / 655 | 1,471 (1,271) / 2,041 | 1.39 |
 | JS (92 KB) | 19 | 20,726 / 20,102 | 27 (27) / 5.6 | 1,454 (1,252) / 2,012 | 1.38 |
-| cert chain (2.7 KB) | 1 | 1,791 / 1,770 | 149 (57) / 386 | 816 (642) / 948 | 1.16 |
-| cert chain (2.7 KB) | 3 | 1,778 / 1,770 | 127 (49) / 301 | 1,708 (1,331) / 2,104 | 1.23 |
-| cert chain (2.7 KB) | 19 | 1,728 / 1,701 | 52 (37) / 11 | 1,488 (1,172) / 1,873 | 1.26 |
-| cert chain (4.1 KB) | 1 | 2,642 / 2,636 | 176 (71) / 458 | 1,997 (1,621) / 2,543 | 1.27 |
-| cert chain (4.1 KB) | 3 | 2,613 / 2,589 | 165 (60) / 364 | 1,926 (1,559) / 2,447 | 1.27 |
+| cert chain (2.7 KB) | 1 | 1,808 / 1,770 | 149 (57) / 386 | 816 (642) / 948 | 1.16 |
+| cert chain (2.7 KB) | 3 | 1,791 / 1,770 | 127 (49) / 301 | 1,708 (1,331) / 2,104 | 1.23 |
+| cert chain (2.7 KB) | 19 | 1,736 / 1,701 | 52 (37) / 11 | 1,488 (1,172) / 1,873 | 1.26 |
+| cert chain (4.1 KB) | 1 | 2,654 / 2,636 | 176 (71) / 458 | 1,997 (1,621) / 2,543 | 1.27 |
+| cert chain (4.1 KB) | 3 | 2,617 / 2,589 | 165 (60) / 364 | 1,926 (1,559) / 2,447 | 1.27 |
 | cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,838 (1,487) / 2,323 | 1.26 |
 
 The zstd decompression cells are from the second decoder pass (2026-11-20, quiet host, see below):
-only (main at `aca9e988`, the first pass) / C, measured in the same run.
+only (main at `aca9e988`, the first pass) / C, measured in the same run. Our sizes on Silesia and
+the certificate chains are after the literals change below ("zstd literals").
 
 brotli:
 
@@ -1475,8 +1476,41 @@ IPC of 5.4) and spilled values to the stack. What changed:
 
 Tried and dropped: a bit reader keeping its position as the slice length (worse code on x86-64 and
 AArch64), a mask table instead of `(1 << n) - 1` (3% slower on JavaScript), batches of 4–16
-(5–10% faster on Apple M-series, 1–4% slower on Zen 4). Not done: libzstd's double-symbol Huffman
-tables (it picks them for the JavaScript literals, about 8% of our time there).
+(5–10% faster on Apple M-series, 1–4% slower on Zen 4). libzstd's double-symbol Huffman tables
+came after ("zstd double-symbol Huffman tables" below).
+
+**zstd literals** (2026-11-20, output changes): the encoder keeps a block's literals raw unless
+Huffman coding saves more than 2 bytes plus 1/64 of them, and never Huffman-codes fewer than 64,
+as libzstd does (`ZSTD_minGain`, `LITERAL_NOENTROPY`). Raw literals decode several times faster:
+on the certificate chains our own frames (the ones TLS certificate compression sends) decoded at
+870–965 MB/s, under half the speed of libzstd's frames, because the Huffman tables saved 4–17
+bytes. Same quiet host, CPU 2, both builds alternated twice, decoding each encoder's own output
+with only-zstd: the 2.7 KB chain 2,426–2,862 MB/s (was 873–915) and 8–17 bytes larger, the 4.1 KB
+chain 2,133–2,257 MB/s at levels 1 and 3 (was 924–965) and 4–12 bytes larger (level 19 already
+raw); JSON, HTML and JavaScript byte-identical, Silesia 0.004% larger (2,672 and 2,834 bytes at
+levels 1 and 3).
+
+**zstd double-symbol Huffman tables** (2026-11-20, no API change, output unchanged). For a
+four-stream literals section that libzstd's `HUF_selectDecoder` would decode with its
+double-symbol table (by its timings per size and compression ratio: from about 4.5–6.7 KB of
+literals at the ratios of the HTTP payloads), the decoder builds one from the single-symbol table
+(11 bits, 12 for a 12-bit code; an entry holds one symbol, or two when the next code fits in the
+bits left) and decodes one or two symbols per lookup, writing two bytes and moving on by one or
+two; the table stays with the per-thread decoder (16 KB more). The streams then move apart and
+run out at different times (their codes take more or fewer bits), so when one stops the others
+go on together, three, two, then one; finishing them one by one had left up to 12% of a stream's
+symbols to a serial loop. Literal decoding alone (JavaScript, JSON and HTML literals, 16–60 KB,
+CPU 2): 0.52–0.53 ns per byte → 0.41–0.45 on Zen 4 (13–21% faster), JavaScript literals
+0.62–0.65 → 0.40–0.41 on Apple M-series (35–37%); building the table costs 0.4–0.6 µs on Zen 4,
+so it pays from about 5–10 KB, in line with libzstd's rule. End to end, same quiet host, both builds (`6154345c` and this) alternated twice,
+best of each: JSON +2.5–3.0% (3,094–3,489 → 3,176–3,594 MB/s), JavaScript +1.6–2.5%, HTML +1.6%,
+Silesia level 19 +1.4%, level 3 unchanged and level 1 −0.8% (929 → 922 MB/s); libzstd's time
+over ours on JavaScript 1.34–1.40× (1.36–1.42× for the old build in the same run). On x86-64
+without BMI2 the single-symbol loop already runs at about 4.5 instructions per cycle with 5
+instructions per symbol, so the double table gains less there than on Apple M-series. Tried and dropped: a 17-byte
+output window per stream and round (more live values than x86-64's 16 registers: spilled, no
+gain; positions in the one literals buffer instead), the symbols of a round gathered in a
+register and stored once (8–20% slower).
 
 **Compression** (output changes; round trips, the C libraries decoding our output in every cell
 above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2

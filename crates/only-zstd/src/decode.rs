@@ -848,7 +848,7 @@ impl Decoder {
                     src = &src[h..];
                 }
                 lits_room(buf, size);
-                huffman::decode(&self.huf, src, &mut buf[..size], four)?;
+                huffman::decode(&mut self.huf, src, &mut buf[..size], four, csize)?;
                 Ok((None, size, lh + csize))
             }
         }
