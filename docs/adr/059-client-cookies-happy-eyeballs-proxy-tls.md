@@ -119,6 +119,16 @@ Constraints: no new third-party dependency (ADR-005); every table and queue has 
   macOS the real keychains.
 - Fuzz targets `cookie_parse` (Set-Cookie and dates, the jar's storage rules and limits) and
   `tls_trust_plist` (the plist parser), with seed corpora replayed by the unit tests.
+- Linux (gpu51, x86_64): only, only-http, only-ws, only-socks and only-tls pass on epoll and
+  io_uring; the Happy Eyeballs test meets a real IPv6 black hole there (a full accept queue drops
+  SYNs). macOS: the same crates pass (`only-ws`'s `large_and_fragmented_messages_and_limits` is
+  slow in debug builds on main as well and needs `ONLY_TEST_TIMEOUT_SCALE` under load). Fuzzing on
+  gpu51, 5 minutes each: `cookie_parse` 4.2 million runs, `tls_trust_plist` 6.3 million, no
+  finding.
+- Same-round A/B on gpu51 (`quiet.sh`, CPU 2-9, 7 alternating rounds,
+  `examples/client-bench.rs`: 64 keep-alive request loops of the HTTP/1 client against a local
+  server): 0.999x of main b22519ae (270.0k vs 270.2k requests/s, rounds 0.992-1.039x): no
+  regression.
 - Costs: a client without a jar tests one `Option` per request header; `resolve` takes a
   process-wide lock to look a name up (once per new connection, not per request); a race costs
   one hop through the racer thread and one poller registration per attempt; an `https://` proxy

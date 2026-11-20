@@ -92,6 +92,14 @@ macOS 信任设置与 Windows 证书库。ADR-019 随后加入 SOCKS 代理（`s
   ASSOCIATE、证书名字不符、阻塞方式被拒）；信任设置的结论与域的优先级，以及 macOS 上真实的钥匙串。
 - fuzz 目标 `cookie_parse`（Set-Cookie 与日期、容器的存储规则与上限）与 `tls_trust_plist`（plist
   解析器），种子语料由单元测试回放。
+- Linux（gpu51，x86_64）：only、only-http、only-ws、only-socks 与 only-tls 在 epoll 与 io_uring 上
+  通过；Happy Eyeballs 测试在那里遇到真实的 IPv6 黑洞（接受队列满时丢弃 SYN）。macOS：同样的 crate
+  通过（`only-ws` 的 `large_and_fragmented_messages_and_limits` 在 debug 构建下于 main 上同样很慢，
+  负载下需要 `ONLY_TEST_TIMEOUT_SCALE`）。gpu51 上各 fuzz 5 分钟：`cookie_parse` 420 万次，
+  `tls_trust_plist` 630 万次，无发现。
+- gpu51 上同轮 A/B（`quiet.sh`，CPU 2-9，7 轮交替，`examples/client-bench.rs`：HTTP/1 客户端 64 个
+  keep-alive 请求循环对本地服务端）：为 main b22519ae 的 0.999 倍（27.00 万对 27.02 万请求/秒，各轮
+  0.992-1.039 倍）：无退化。
 - 代价：不挂容器的客户端对每个请求头多一次 `Option` 判断；`resolve` 查缓存时持有一个进程级锁（每个新
   连接一次，而不是每个请求）；一场竞速多一次经竞速线程的跳转，每次尝试多一次 poller 注册；`https://`
   代理让每个连接多一个 TLS 会话。
