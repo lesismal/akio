@@ -776,6 +776,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "export_otlp_response"
+path = "fuzz_targets/export_otlp_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "srt_rendezvous"
 path = "fuzz_targets/srt_rendezvous.rs"
 test = false

@@ -34,7 +34,7 @@ use std::{
 
 use only_core::{
     Telemetry,
-    metrics::{Collector, Families, HistogramSnapshot},
+    metrics::{Collector, ExemplarReservoir, Families, HistogramSnapshot},
     telemetry::{connections_json, json_str, slow_callbacks_json},
 };
 
@@ -250,6 +250,8 @@ struct Inner {
     h11_seen: AtomicU64,
     /// Route slots, when per-route labels are on.
     routes: Option<RouteTable>,
+    /// Exemplars of the latency histogram ([`HttpMetrics::with_exemplars`]).
+    exemplars: Option<Arc<ExemplarReservoir>>,
 }
 
 /// Request counters by status class and a latency histogram, cheap enough for every request
@@ -318,6 +320,8 @@ struct Pending {
     t0: Instant,
     /// The route slot, `usize::MAX` without per-route labels.
     route: usize,
+    /// Where the latency goes as an exemplar: only with exemplars on and a sampled request span.
+    exemplar: Option<(Arc<ExemplarReservoir>, only_log::span::SpanContext)>,
 }
 
 impl Drop for Pending {
@@ -357,7 +361,28 @@ impl HttpMetrics {
                 .collect(),
             h11_seen: AtomicU64::new(0),
             routes: routes.map(RouteTable::new),
+            exemplars: None,
         }))
+    }
+
+    /// Keeps exemplars on the request-latency histogram
+    /// (`only_http_request_duration_seconds`): each bucket remembers the latest request whose
+    /// request span was sampled, with that span's trace and span ids, so a slow bucket on a
+    /// dashboard leads to a trace. Exported over OTLP (`only-export`); needs request spans
+    /// (`only_http::request`, level `info`) to be on. Costs nothing per request otherwise; with
+    /// a sampled span, a clock read and an uncontended `try_lock`. Call it on new metrics,
+    /// before cloning them (a shared value is replaced by fresh metrics).
+    #[must_use]
+    pub fn with_exemplars(self) -> HttpMetrics {
+        let mut m = if Arc::strong_count(&self.0) == 1 {
+            self
+        } else {
+            HttpMetrics::build(self.0.routes.as_ref().map(|t| t.max))
+        };
+        if let Some(inner) = Arc::get_mut(&mut m.0) {
+            inner.exemplars = Some(Arc::new(ExemplarReservoir::new(NB)));
+        }
+        m
     }
 
     /// Records one response.
@@ -380,10 +405,18 @@ impl HttpMetrics {
                         Some(info) => t.slot(info),
                         None => t.unmatched(),
                     });
+            let exemplar = match &m.0.exemplars {
+                None => None,
+                Some(ex) => ctx
+                    .span_context()
+                    .filter(only_log::span::SpanContext::is_sampled)
+                    .map(|c| (ex.clone(), c)),
+            };
             let p = Pending {
                 shard,
                 t0: Instant::now(),
                 route,
+                exemplar,
             };
             ctx.add_response_filter(move |resp: &mut Response, req: &Request| {
                 let v = match req.version {
@@ -396,6 +429,14 @@ impl HttpMetrics {
                 p.shard.observe(resp.status, latency, Some(v));
                 if let Some(rc) = p.shard.routes.get(p.route) {
                     rc.observe(resp.status, latency);
+                }
+                if let Some((ex, c)) = &p.exemplar {
+                    ex.offer(
+                        bucket_of(latency),
+                        latency.as_secs_f64(),
+                        c.trace_id(),
+                        c.span_id(),
+                    );
                 }
             });
             next.call(ctx);
@@ -511,7 +552,11 @@ impl Collector for HttpMetrics {
             LATENCY_BUCKETS.to_vec(),
             s.buckets.to_vec(),
             s.sum.as_secs_f64(),
-        );
+        )
+        .map(|h| match &self.0.exemplars {
+            Some(ex) => h.with_exemplars(ex.snapshot()),
+            None => h,
+        });
         if let Some(h) = h {
             out.histogram(
                 "only_http_request_duration_seconds",

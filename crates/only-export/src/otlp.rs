@@ -1,12 +1,55 @@
 //! OTLP request bodies (opentelemetry-proto v1: `ExportMetricsServiceRequest`,
-//! `ExportTraceServiceRequest`) built from `Families` and finished spans.
+//! `ExportTraceServiceRequest`, `ExportLogsServiceRequest`) built from `Families`, finished
+//! spans and log records, and the `partial_success` of the responses.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    borrow::Cow,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use only_core::metrics::{Families, Kind, Value};
-use only_log::span::{FieldValue, SpanData, SpanKind, SpanStatus};
+use only_core::metrics::{Exemplar, Families, Kind, Value};
+use only_log::{
+    Level,
+    span::{FieldValue, SpanContext, SpanData, SpanKind, SpanStatus},
+};
+use only_protobuf::encoding::{Reader, WireType};
 
-use crate::tree::{Msg, Node};
+use crate::{
+    logs::LogData,
+    tree::{Msg, Node},
+};
+
+/// The three OTLP signals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Signal {
+    Metrics,
+    Traces,
+    Logs,
+}
+
+impl Signal {
+    /// The OTLP/HTTP path.
+    pub(crate) fn http_path(self) -> &'static str {
+        match self {
+            Signal::Metrics => "/v1/metrics",
+            Signal::Traces => "/v1/traces",
+            Signal::Logs => "/v1/logs",
+        }
+    }
+
+    /// The OTLP/gRPC method.
+    pub(crate) fn grpc_path(self) -> &'static str {
+        match self {
+            Signal::Metrics => "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
+            Signal::Traces => "/opentelemetry.proto.collector.trace.v1.TraceService/Export",
+            Signal::Logs => "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+}
 
 /// The encoding of OTLP/HTTP request bodies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -106,6 +149,19 @@ fn scope(name: &str) -> Msg {
     s
 }
 
+fn id_node(b: &[u8]) -> Node {
+    Node::Id(b.to_vec())
+}
+
+fn exemplar_msg(e: &Exemplar) -> Msg {
+    let mut m = Msg::new();
+    m.set(2, "timeUnixNano", Node::Fixed64(unix_nanos(e.time)))
+        .set(3, "asDouble", Node::Double(e.value))
+        .set(4, "spanId", id_node(&e.span_id.to_be_bytes()))
+        .set(5, "traceId", id_node(&e.trace_id.to_be_bytes()));
+    m
+}
+
 fn point_attrs(m: &mut Msg, num: u32, labels: &[(String, String)]) {
     for (k, v) in labels {
         m.push_msg(num, "attributes", kv(k, any_str(v)));
@@ -153,6 +209,9 @@ pub(crate) fn metrics_request(
                         .set(5, "sum", Node::Double(h.sum))
                         .set(6, "bucketCounts", Node::PackedFixed64(h.counts.clone()))
                         .set(7, "explicitBounds", Node::PackedDouble(h.bounds.clone()));
+                    for e in &h.exemplars {
+                        p.push_msg(8, "exemplars", exemplar_msg(e));
+                    }
                     data.push_msg(1, "dataPoints", p);
                 }
                 _ => {}
@@ -223,6 +282,31 @@ fn span_msg(s: &SpanData) -> Msg {
     for (k, v) in &s.fields {
         m.push_msg(9, "attributes", kv(k, field_any(v)));
     }
+    for e in &s.events {
+        let mut ev = Msg::new();
+        ev.set(1, "timeUnixNano", Node::Fixed64(unix_nanos(e.time)))
+            .str(2, "name", e.name.as_ref());
+        for (k, v) in &e.fields {
+            ev.push_msg(3, "attributes", kv(k, field_any(v)));
+        }
+        m.push_msg(11, "events", ev);
+    }
+    if s.dropped_events > 0 {
+        m.set(12, "droppedEventsCount", Node::U32(s.dropped_events));
+    }
+    for l in &s.links {
+        let mut lm = Msg::new();
+        lm.set(1, "traceId", id_node(&l.context.trace_id().to_be_bytes()))
+            .set(2, "spanId", id_node(&l.context.span_id().to_be_bytes()));
+        for (k, v) in &l.fields {
+            lm.push_msg(4, "attributes", kv(k, field_any(v)));
+        }
+        lm.set(6, "flags", Node::Fixed32(context_flags(&l.context)));
+        m.push_msg(13, "links", lm);
+    }
+    if s.dropped_links > 0 {
+        m.set(14, "droppedLinksCount", Node::U32(s.dropped_links));
+    }
     let mut st = Msg::new();
     match &s.status {
         SpanStatus::Unset => {}
@@ -245,6 +329,103 @@ fn span_msg(s: &SpanData) -> Msg {
     }
     m.set(16, "flags", Node::Fixed32(flags));
     m
+}
+
+/// W3C trace flags plus "remote" information (bit 8: known, bit 9: remote).
+fn context_flags(c: &SpanContext) -> u32 {
+    u32::from(c.flags()) | 0x100 | if c.is_remote() { 0x200 } else { 0 }
+}
+
+/// OpenTelemetry's severity number of a level.
+pub(crate) fn severity(l: Level) -> u32 {
+    match l {
+        Level::Trace => 1,
+        Level::Debug => 5,
+        Level::Info => 9,
+        Level::Warn => 13,
+        Level::Error => 17,
+    }
+}
+
+fn log_msg(r: &LogData) -> Msg {
+    let t = unix_nanos(r.time);
+    let mut m = Msg::new();
+    m.set(1, "timeUnixNano", Node::Fixed64(t))
+        .set(11, "observedTimeUnixNano", Node::Fixed64(t))
+        .set(2, "severityNumber", Node::U32(severity(r.level)))
+        .str(3, "severityText", r.level.as_str())
+        .msg(5, "body", any_str(&r.message));
+    for (k, v) in &r.fields {
+        m.push_msg(6, "attributes", kv(k, field_any(v)));
+    }
+    if let Some(f) = &r.file {
+        m.push_msg(6, "attributes", kv("code.file.path", any_str(f)));
+    }
+    if let Some(l) = r.line {
+        let mut a = Msg::new();
+        a.set(3, "intValue", Node::I64(i64::from(l)));
+        m.push_msg(6, "attributes", kv("code.line.number", a));
+    }
+    if let Some(c) = &r.span {
+        m.set(8, "flags", Node::Fixed32(u32::from(c.flags())))
+            .set(9, "traceId", id_node(&c.trace_id().to_be_bytes()))
+            .set(10, "spanId", id_node(&c.span_id().to_be_bytes()));
+    }
+    m
+}
+
+/// `ExportLogsServiceRequest` for a batch of records, one scope per target.
+pub(crate) fn logs_request(records: &[LogData], resource_attrs: &[(String, String)]) -> Msg {
+    let mut targets: Vec<&str> = Vec::new();
+    for r in records {
+        if !targets.contains(&r.target.as_str()) {
+            targets.push(&r.target);
+        }
+    }
+    let mut rl = Msg::new();
+    rl.msg(1, "resource", resource(resource_attrs));
+    for t in targets {
+        let mut sl = Msg::new();
+        sl.msg(1, "scope", scope(t));
+        for r in records.iter().filter(|r| r.target == t) {
+            sl.push_msg(2, "logRecords", log_msg(r));
+        }
+        rl.push_msg(2, "scopeLogs", sl);
+    }
+    let mut req = Msg::new();
+    req.push_msg(1, "resourceLogs", rl);
+    req
+}
+
+/// The `partial_success` of an `Export*ServiceResponse` in protobuf: (rejected items, error
+/// message). `(0, "")` for an empty or unreadable body.
+pub(crate) fn partial_success(body: &[u8]) -> (u64, Cow<'_, str>) {
+    fn inner(body: &[u8]) -> Option<(u64, Cow<'_, str>)> {
+        let mut r = Reader::new(body);
+        let mut out = (0u64, Cow::Borrowed(""));
+        while !r.is_empty() {
+            let (f, wt) = r.read_tag().ok()?;
+            if f == 1 && wt == WireType::Len {
+                let mut p = r.nested().ok()?;
+                while !p.is_empty() {
+                    let (f, wt) = p.read_tag().ok()?;
+                    match (f, wt) {
+                        (1, WireType::Varint) => out.0 = p.read_varint().ok()?,
+                        (2, WireType::Len) => {
+                            out.1 = String::from_utf8_lossy(p.read_bytes().ok()?);
+                        }
+                        _ => {
+                            p.skip_field(f, wt).ok()?;
+                        }
+                    }
+                }
+            } else {
+                r.skip_field(f, wt).ok()?;
+            }
+        }
+        Some(out)
+    }
+    inner(body).unwrap_or((0, Cow::Borrowed("")))
 }
 
 /// `ExportTraceServiceRequest` for a batch of spans, one scope per span target.

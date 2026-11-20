@@ -29,7 +29,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use crate::telemetry::json_str;
@@ -94,6 +94,10 @@ pub struct HistogramSnapshot {
     pub counts: Vec<u64>,
     /// Sum of all observations.
     pub sum: f64,
+    /// Recent observations made inside a sampled span, with its trace and span ids (at most one
+    /// per bucket; empty unless the histogram keeps exemplars). Exported over OTLP; the
+    /// Prometheus text format has no place for them.
+    pub exemplars: Vec<Exemplar>,
 }
 
 impl HistogramSnapshot {
@@ -107,7 +111,15 @@ impl HistogramSnapshot {
             bounds,
             counts,
             sum,
+            exemplars: Vec::new(),
         })
+    }
+
+    /// Sets the exemplars.
+    #[must_use]
+    pub fn with_exemplars(mut self, exemplars: Vec<Exemplar>) -> HistogramSnapshot {
+        self.exemplars = exemplars;
+        self
     }
 
     /// Observations in total.
@@ -575,6 +587,80 @@ impl Gauge {
     }
 }
 
+/// One observation kept as an example of its bucket, with the trace it was made in: a latency
+/// spike on a dashboard leads to the span that caused it (OpenTelemetry's exemplar).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Exemplar {
+    /// The observed value.
+    pub value: f64,
+    /// When it was observed.
+    pub time: SystemTime,
+    /// The trace id of the span current then.
+    pub trace_id: u128,
+    /// The span id of that span.
+    pub span_id: u64,
+}
+
+impl Exemplar {
+    /// An exemplar from its parts.
+    pub fn new(value: f64, time: SystemTime, trace_id: u128, span_id: u64) -> Exemplar {
+        Exemplar {
+            value,
+            time,
+            trace_id,
+            span_id,
+        }
+    }
+}
+
+/// The latest exemplar of each bucket of a histogram (OpenTelemetry's aligned-histogram
+/// reservoir). Offering one is a thread-local read and, inside a sampled span, a clock read and
+/// a `try_lock` that never waits: when two threads offer to the same bucket at once, one of
+/// the two exemplars is kept.
+#[derive(Debug)]
+pub struct ExemplarReservoir {
+    slots: Box<[Mutex<Option<Exemplar>>]>,
+}
+
+impl ExemplarReservoir {
+    /// A reservoir for `buckets` buckets.
+    pub fn new(buckets: usize) -> ExemplarReservoir {
+        ExemplarReservoir {
+            slots: (0..buckets).map(|_| Mutex::new(None)).collect(),
+        }
+    }
+
+    /// Keeps `value` as the exemplar of `bucket` when the thread is inside a sampled span
+    /// ([`only_log::span::current`]).
+    #[inline]
+    pub fn offer_current(&self, bucket: usize, value: f64) {
+        if let Some(ctx) = only_log::span::current() {
+            if ctx.is_sampled() {
+                self.offer(bucket, value, ctx.trace_id(), ctx.span_id());
+            }
+        }
+    }
+
+    /// Keeps `value` as the exemplar of `bucket`, observed now in the span `span_id` of
+    /// `trace_id`. A bucket out of range is ignored.
+    pub fn offer(&self, bucket: usize, value: f64, trace_id: u128, span_id: u64) {
+        if let Some(slot) = self.slots.get(bucket) {
+            if let Ok(mut g) = slot.try_lock() {
+                *g = Some(Exemplar::new(value, SystemTime::now(), trace_id, span_id));
+            }
+        }
+    }
+
+    /// The exemplars kept, in bucket order.
+    pub fn snapshot(&self) -> Vec<Exemplar> {
+        self.slots
+            .iter()
+            .filter_map(|s| *s.lock().unwrap_or_else(|p| p.into_inner()))
+            .collect()
+    }
+}
+
 /// Prometheus' default histogram bounds, in seconds (5 ms to 10 s).
 pub const DEFAULT_BUCKETS: [f64; 11] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
@@ -585,6 +671,7 @@ struct HistInner {
     bounds: Box<[f64]>,
     counts: Box<[AtomicU64]>,
     sum: AtomicU64,
+    exemplars: Option<ExemplarReservoir>,
 }
 
 /// A histogram for application code: fixed buckets, relaxed atomics.
@@ -602,11 +689,23 @@ impl Histogram {
     /// A histogram with upper bounds `bounds` (non-finite values dropped, sorted, duplicates
     /// removed); one more bucket counts observations above all of them.
     pub fn new(bounds: &[f64]) -> Histogram {
+        Histogram::build(bounds, false)
+    }
+
+    /// [`Histogram::new`] keeping exemplars: each bucket remembers its latest observation made
+    /// inside a sampled span ([`ExemplarReservoir`]), reported in
+    /// [`HistogramSnapshot::exemplars`] and exported over OTLP with the span's trace id.
+    pub fn with_exemplars(bounds: &[f64]) -> Histogram {
+        Histogram::build(bounds, true)
+    }
+
+    fn build(bounds: &[f64], exemplars: bool) -> Histogram {
         let mut b: Vec<f64> = bounds.iter().copied().filter(|x| x.is_finite()).collect();
         b.sort_by(f64::total_cmp);
         b.dedup();
         let counts = (0..=b.len()).map(|_| AtomicU64::new(0)).collect();
         Histogram(Arc::new(HistInner {
+            exemplars: exemplars.then(|| ExemplarReservoir::new(b.len() + 1)),
             bounds: b.into_boxed_slice(),
             counts,
             sum: AtomicU64::new(0f64.to_bits()),
@@ -638,6 +737,9 @@ impl Histogram {
         let i = h.bounds.partition_point(|&b| b < v);
         h.counts[i].fetch_add(1, Ordering::Relaxed);
         add_f64(&h.sum, v);
+        if let Some(ex) = &h.exemplars {
+            ex.offer_current(i, v);
+        }
     }
 
     /// Records a duration in seconds.
@@ -653,6 +755,10 @@ impl Histogram {
             bounds: h.bounds.to_vec(),
             counts: h.counts.iter().map(|c| c.load(Ordering::Relaxed)).collect(),
             sum: f64::from_bits(h.sum.load(Ordering::Relaxed)),
+            exemplars: h
+                .exemplars
+                .as_ref()
+                .map_or_else(Vec::new, ExemplarReservoir::snapshot),
         }
     }
 }
@@ -774,6 +880,30 @@ impl Registry {
             _ => Histogram::new(bounds),
         }
     }
+
+    /// [`histogram`](Self::histogram), created with [`Histogram::with_exemplars`] on first use.
+    pub fn histogram_with_exemplars(
+        &self,
+        name: &str,
+        help: &str,
+        labels: &[(&str, &str)],
+        bounds: &[f64],
+    ) -> Histogram {
+        let i = self.get_or_add(
+            name,
+            help,
+            labels,
+            || Inst::Histogram(Histogram::with_exemplars(bounds)),
+            |i| match i {
+                Inst::Histogram(h) => Some(Inst::Histogram(h.clone())),
+                _ => None,
+            },
+        );
+        match i {
+            Inst::Histogram(h) => h,
+            _ => Histogram::with_exemplars(bounds),
+        }
+    }
 }
 
 impl Collector for Registry {
@@ -881,6 +1011,7 @@ mod tests {
             bounds: vec![2.0, 1.0],
             counts: vec![0, 0, 0],
             sum: 0.0,
+            exemplars: Vec::new(),
         };
         f.histogram("bad", "", &[], &bad);
         assert_eq!(f.dropped(), 2);
@@ -935,5 +1066,48 @@ mod tests {
         let none: &[(&str, &str)] = &[];
         f.collect_from(&x, none);
         assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn exemplars_follow_the_current_sampled_span() {
+        use only_log::span::{SpanContext, enter_context};
+        let h = Histogram::with_exemplars(&[1.0, 2.0]);
+        h.observe(0.5); // no span: no exemplar
+        {
+            let _g = enter_context(SpanContext::new(0xabc, 0x12, true, false).unwrap());
+            h.observe(1.5);
+            h.observe(0.25);
+        }
+        {
+            let _g = enter_context(SpanContext::new(0xdef, 0x34, false, false).unwrap());
+            h.observe(9.0); // unsampled: none
+        }
+        let s = h.snapshot();
+        assert_eq!(s.counts, vec![2, 1, 1]);
+        let ex: Vec<(f64, u128, u64)> = s
+            .exemplars
+            .iter()
+            .map(|e| (e.value, e.trace_id, e.span_id))
+            .collect();
+        assert_eq!(ex, vec![(0.25, 0xabc, 0x12), (1.5, 0xabc, 0x12)]);
+        // Without exemplars nothing is kept, inside a span or not.
+        let plain = Histogram::new(&[1.0]);
+        let _g = enter_context(SpanContext::new(1, 2, true, false).unwrap());
+        plain.observe(0.5);
+        assert!(plain.snapshot().exemplars.is_empty());
+        // The registry hands out the same instrument again.
+        let reg = Registry::new();
+        let a = reg.histogram_with_exemplars("lat", "L.", &[], &[1.0]);
+        a.observe(0.5);
+        let b = reg.histogram_with_exemplars("lat", "L.", &[], &[1.0]);
+        assert_eq!(b.snapshot().exemplars.len(), 1);
+        let mut f = Families::new();
+        reg.collect(&mut f);
+        match &f.get("lat").unwrap().samples[0].value {
+            Value::Histogram(h) => assert_eq!(h.exemplars[0].trace_id, 1),
+            v => panic!("{v:?}"),
+        }
+        // Out of range buckets are ignored.
+        ExemplarReservoir::new(1).offer(5, 1.0, 1, 1);
     }
 }

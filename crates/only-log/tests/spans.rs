@@ -197,3 +197,65 @@ fn traceparent_mutations_round_trip_or_fail() {
         }
     }
 }
+
+#[test]
+fn events_and_links_are_bounded() {
+    let _g = setup();
+    let other = SpanContext::new(7, 9, true, true).unwrap();
+    let mut s = SpanBuilder::new(Level::Info, "app", "batch")
+        .link(span::SpanLink::new(other).field("reason", "fan-in"))
+        .start();
+    s.add_event(
+        "retry",
+        &[("attempt", 2u64.into()), ("err", "timeout".into())],
+    );
+    s.add_link(SpanContext::new(8, 10, false, false).unwrap(), &[]);
+    let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5);
+    s.push_event(span::SpanEvent::new("at five", t).field("k", 1i32));
+    for _ in 0..span::MAX_EVENTS {
+        s.add_event("spam", &[]);
+    }
+    for _ in 0..span::MAX_LINKS + 3 {
+        s.add_link(other, &[]);
+    }
+    drop(s);
+    // Too many links at creation are counted too.
+    let mut b = SpanBuilder::new(Level::Info, "app", "many");
+    for _ in 0..span::MAX_LINKS + 2 {
+        b = b.link(span::SpanLink::new(other));
+    }
+    drop(b.start());
+    // A disabled span ignores both.
+    let mut off = trace_span!("off");
+    off.add_event("x", &[]);
+    off.add_link(other, &[]);
+    drop(off);
+
+    let spans = take();
+    assert_eq!(spans.len(), 2);
+    let d = &spans[0];
+    assert_eq!(d.events.len(), span::MAX_EVENTS);
+    assert_eq!(d.dropped_events, 2);
+    assert_eq!(d.events[0].name, "retry");
+    assert_eq!(
+        d.events[0].fields,
+        vec![
+            ("attempt".into(), FieldValue::U64(2)),
+            ("err".into(), FieldValue::Str("timeout".into()))
+        ]
+    );
+    assert!(d.events[0].time >= d.start && d.events[0].time <= d.end);
+    assert_eq!(d.events[1].time, t);
+    assert_eq!(d.links.len(), span::MAX_LINKS);
+    assert_eq!(d.dropped_links, 5);
+    assert_eq!(d.links[0].context, other);
+    assert_eq!(
+        d.links[0].fields,
+        vec![("reason".into(), FieldValue::Str("fan-in".into()))]
+    );
+    assert!(!d.links[1].context.is_sampled());
+    assert_eq!(
+        (spans[1].links.len(), spans[1].dropped_links),
+        (span::MAX_LINKS, 2)
+    );
+}

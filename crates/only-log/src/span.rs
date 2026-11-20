@@ -302,6 +302,90 @@ macro_rules! field_int {
 field_int!(U64 as u64: u8, u16, u32, u64, usize);
 field_int!(I64 as i64: i8, i16, i32, i64, isize);
 
+// ---- events and links -----------------------------------------------------------------------
+
+/// Most events one span keeps ([`Span::add_event`]); later ones are counted in
+/// [`SpanData::dropped_events`] (OpenTelemetry's default limit).
+pub const MAX_EVENTS: usize = 128;
+
+/// Most links one span keeps ([`Span::add_link`], [`SpanBuilder::link`]); later ones are counted
+/// in [`SpanData::dropped_links`].
+pub const MAX_LINKS: usize = 128;
+
+/// Something that happened at one moment during a span (a retry, a cache miss, an exception),
+/// with fields: OpenTelemetry's span event.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SpanEvent {
+    /// The name (`"retry"`, `"exception"` ...).
+    pub name: Cow<'static, str>,
+    /// When it happened (wall clock).
+    pub time: SystemTime,
+    /// The fields.
+    pub fields: Vec<(Cow<'static, str>, FieldValue)>,
+}
+
+impl SpanEvent {
+    /// An event without fields.
+    pub fn new(name: impl Into<Cow<'static, str>>, time: SystemTime) -> SpanEvent {
+        SpanEvent {
+            name: name.into(),
+            time,
+            fields: Vec::new(),
+        }
+    }
+
+    /// Adds a field.
+    #[must_use]
+    pub fn field(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<FieldValue>,
+    ) -> SpanEvent {
+        self.fields.push((key.into(), value.into()));
+        self
+    }
+}
+
+/// A reference from a span to another span, possibly of another trace (a batch job linking the
+/// requests it serves, a consumer linking the producer): OpenTelemetry's span link.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SpanLink {
+    /// The linked span.
+    pub context: SpanContext,
+    /// The fields.
+    pub fields: Vec<(Cow<'static, str>, FieldValue)>,
+}
+
+impl SpanLink {
+    /// A link without fields.
+    pub fn new(context: SpanContext) -> SpanLink {
+        SpanLink {
+            context,
+            fields: Vec::new(),
+        }
+    }
+
+    /// Adds a field.
+    #[must_use]
+    pub fn field(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<FieldValue>,
+    ) -> SpanLink {
+        self.fields.push((key.into(), value.into()));
+        self
+    }
+}
+
+fn owned_fields(fields: &[(&'static str, FieldValue)]) -> Vec<(Cow<'static, str>, FieldValue)> {
+    fields
+        .iter()
+        .map(|(k, v)| (Cow::Borrowed(*k), v.clone()))
+        .collect()
+}
+
 // ---- finished spans -------------------------------------------------------------------------
 
 /// What a span represents (OpenTelemetry's `SpanKind`).
@@ -358,6 +442,14 @@ pub struct SpanData {
     pub fields: Vec<(Cow<'static, str>, FieldValue)>,
     /// The status.
     pub status: SpanStatus,
+    /// Events, in the order they were added (at most [`MAX_EVENTS`]).
+    pub events: Vec<SpanEvent>,
+    /// Links (at most [`MAX_LINKS`]).
+    pub links: Vec<SpanLink>,
+    /// Events not kept because the span already had [`MAX_EVENTS`].
+    pub dropped_events: u32,
+    /// Links not kept because the span already had [`MAX_LINKS`].
+    pub dropped_links: u32,
 }
 
 impl SpanData {
@@ -375,6 +467,10 @@ impl SpanData {
             end: SystemTime::UNIX_EPOCH,
             fields: Vec::new(),
             status: SpanStatus::Unset,
+            events: Vec::new(),
+            links: Vec::new(),
+            dropped_events: 0,
+            dropped_links: 0,
         }
     }
 
@@ -497,6 +593,10 @@ struct Recording {
     t0: Instant,
     fields: Vec<(Cow<'static, str>, FieldValue)>,
     status: SpanStatus,
+    events: Vec<SpanEvent>,
+    links: Vec<SpanLink>,
+    dropped_events: u32,
+    dropped_links: u32,
 }
 
 /// A span in progress; ends when dropped (or with [`Span::end`]). A disabled span
@@ -527,6 +627,7 @@ pub struct SpanBuilder {
     kind: SpanKind,
     parent: Parent,
     fields: Vec<(Cow<'static, str>, FieldValue)>,
+    links: Vec<SpanLink>,
 }
 
 impl SpanBuilder {
@@ -543,6 +644,7 @@ impl SpanBuilder {
             kind: SpanKind::Internal,
             parent: Parent::Current,
             fields: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -568,6 +670,13 @@ impl SpanBuilder {
         self
     }
 
+    /// Adds a link to another span (known when the span starts, as OpenTelemetry recommends
+    /// so samplers could see it). Past [`MAX_LINKS`] links are counted, not kept.
+    pub fn link(mut self, link: SpanLink) -> SpanBuilder {
+        self.links.push(link);
+        self
+    }
+
     /// Starts the span: [`Span::none`] unless spans of this level are [`enabled`] and a tracer
     /// is installed that wants it.
     pub fn start(self) -> Span {
@@ -581,8 +690,17 @@ impl SpanBuilder {
             kind,
             parent,
             fields,
+            mut links,
         } = self;
-        Span::begin(level, target, name, kind, parent, |out| *out = fields)
+        let mut span = Span::begin(level, target, name, kind, parent, |out| *out = fields);
+        if let Some(r) = span.rec() {
+            if links.len() > MAX_LINKS {
+                r.dropped_links = u32::try_from(links.len() - MAX_LINKS).unwrap_or(u32::MAX);
+                links.truncate(MAX_LINKS);
+            }
+            r.links = links;
+        }
+        span
     }
 }
 
@@ -644,6 +762,10 @@ impl Span {
                 t0: Instant::now(),
                 fields,
                 status: SpanStatus::Unset,
+                events: Vec::new(),
+                links: Vec::new(),
+                dropped_events: 0,
+                dropped_links: 0,
             }
         });
         Span(Some(Box::new(Inner { ctx, rec })))
@@ -724,6 +846,53 @@ impl Span {
         }
     }
 
+    /// Adds an event (something that happened now) with fields:
+    /// `span.add_event("retry", &[("attempt", 2u64.into())])`. Past [`MAX_EVENTS`] events are
+    /// counted, not kept. Does nothing unless the span records.
+    pub fn add_event(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        fields: &[(&'static str, FieldValue)],
+    ) {
+        if let Some(r) = self.rec() {
+            if r.events.len() >= MAX_EVENTS {
+                r.dropped_events = r.dropped_events.saturating_add(1);
+                return;
+            }
+            r.events.push(SpanEvent {
+                name: name.into(),
+                time: r.start + r.t0.elapsed(),
+                fields: owned_fields(fields),
+            });
+        }
+    }
+
+    /// Adds a finished [`SpanEvent`] (its own time and fields). Past [`MAX_EVENTS`] events are
+    /// counted, not kept.
+    pub fn push_event(&mut self, event: SpanEvent) {
+        if let Some(r) = self.rec() {
+            if r.events.len() >= MAX_EVENTS {
+                r.dropped_events = r.dropped_events.saturating_add(1);
+                return;
+            }
+            r.events.push(event);
+        }
+    }
+
+    /// Adds a link to `context` with fields. Past [`MAX_LINKS`] links are counted, not kept.
+    pub fn add_link(&mut self, context: SpanContext, fields: &[(&'static str, FieldValue)]) {
+        if let Some(r) = self.rec() {
+            if r.links.len() >= MAX_LINKS {
+                r.dropped_links = r.dropped_links.saturating_add(1);
+                return;
+            }
+            r.links.push(SpanLink {
+                context,
+                fields: owned_fields(fields),
+            });
+        }
+    }
+
     /// Makes this the current span of the thread until the guard is dropped. Does nothing for
     /// [`Span::none`].
     pub fn enter(&self) -> Entered<'_> {
@@ -773,6 +942,10 @@ fn finish(inner: Box<Inner>) {
         end: r.start + r.t0.elapsed(),
         fields: r.fields,
         status: r.status,
+        events: r.events,
+        links: r.links,
+        dropped_events: r.dropped_events,
+        dropped_links: r.dropped_links,
     });
 }
 
