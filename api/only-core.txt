@@ -761,6 +761,27 @@ impl core::marker::Sync for only_core::telemetry::Metrics
 impl core::marker::Unpin for only_core::telemetry::Metrics
 impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::Metrics
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::Metrics
+#[non_exhaustive] pub struct only_core::Offloaded
+pub only_core::Offloaded::rx: bool
+pub only_core::Offloaded::tx: bool
+impl only_core::Offloaded
+pub fn only_core::Offloaded::new(bool, bool) -> only_core::Offloaded
+impl core::clone::Clone for only_core::Offloaded
+pub fn only_core::Offloaded::clone(&self) -> Self
+impl core::cmp::Eq for only_core::Offloaded
+impl core::cmp::PartialEq for only_core::Offloaded
+pub fn only_core::Offloaded::eq(&self, &Self) -> bool
+impl core::default::Default for only_core::Offloaded
+pub fn only_core::Offloaded::default() -> Self
+impl core::fmt::Debug for only_core::Offloaded
+pub fn only_core::Offloaded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_core::Offloaded
+impl core::marker::StructuralPartialEq for only_core::Offloaded
+impl core::marker::Send for only_core::Offloaded
+impl core::marker::Sync for only_core::Offloaded
+impl core::marker::Unpin for only_core::Offloaded
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::Offloaded
+impl core::panic::unwind_safe::UnwindSafe for only_core::Offloaded
 #[non_exhaustive] pub struct only_core::ReloadReport
 pub only_core::ReloadReport::applied: alloc::vec::Vec<&'static str>
 pub only_core::ReloadReport::ignored: alloc::vec::Vec<&'static str>
@@ -948,14 +969,21 @@ pub fn only_core::DatagramsHandler::on_shutdown(&mut self, &mut only_core::Repli
 pub trait only_core::Handler: core::marker::Send + core::marker::Sized + 'static
 pub fn only_core::Handler::on_close(&mut self, &only_core::Conn<Self>, core::option::Option<only_core::Error>)
 pub fn only_core::Handler::on_data(&mut self, &only_core::Conn<Self>, &[u8])
+pub trait only_core::SocketOp: core::marker::Send + 'static
+pub fn only_core::SocketOp::run(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<bool>
 pub trait only_core::Transport: core::marker::Send + 'static
 pub fn only_core::Transport::as_any(&mut self) -> &mut dyn core::any::Any
 pub fn only_core::Transport::handshake_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::Transport::handshaking(&self) -> bool
+pub fn only_core::Transport::kernel_record(&mut self, u8, &[u8]) -> core::io::error::Result<bool>
+pub fn only_core::Transport::kernel_send(&mut self, usize, &mut alloc::vec::Vec<alloc::boxed::Box<dyn only_core::SocketOp>>) -> core::io::error::Result<()>
 pub fn only_core::Transport::name(&self) -> &'static str
+pub fn only_core::Transport::offload(&mut self, std::os::fd::raw::RawFd, core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<only_core::Offloaded>
 pub fn only_core::Transport::recv(&mut self, &[u8], &mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
 pub fn only_core::Transport::seal(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
 pub fn only_core::Transport::set_waker(&mut self, only_core::TransportWaker)
 pub fn only_core::Transport::shutdown(&mut self, &mut alloc::vec::Vec<u8>)
+pub fn only_core::Transport::take_ops(&mut self, &mut alloc::vec::Vec<alloc::boxed::Box<dyn only_core::SocketOp>>)
+pub fn only_core::Transport::wants_offload(&self) -> bool
 pub fn only_core::fn_acceptor<H, F>(F) -> only_core::FnAcceptor<H, F> where H: only_core::Handler, F: core::ops::function::Fn(&only_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type only_core::Result<T> = core::result::Result<T, only_core::Error>

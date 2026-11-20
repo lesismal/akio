@@ -112,9 +112,13 @@ ClientHello 中再次发送同一请求。只为可安全重复的请求（幂�
 
 未实现：`status_request_v2`（RFC 6961，中间证书的 OCSP；仅限 TLS 1.2，从未广泛部署，已被 TLS 1.3 中
 每个 CertificateEntry 自带的状态取代，ADR-049）、获取 OCSP 响应或 CRL（由应用负责；`only-x509` 给出
-URL）、以哈希长度之外的盐长做 RSA-PSS 签名。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
-也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
-feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
+URL）、以哈希长度之外的盐长做 RSA-PSS 签名。
+
+内核 TLS（`ktls` feature，ADR-067）：`ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` 在握手后
+把引擎连接的记录层移入 Linux。`Ktls::Hardware` 只卸载支持 TLS 卸载的网卡自己完成的部分（按接口检查，
+由内核计数器确认），在其他主机上什么都不改变；`Ktls::Software` / `SoftwareTx` 使用内核的软件记录层，
+在当前 CPU 上比本 crate 的慢，`sendfile` 也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）。
+默认关闭。
 
 ## 内部结构
 

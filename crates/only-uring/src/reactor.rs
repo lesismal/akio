@@ -601,7 +601,17 @@ struct LoopConn {
     /// Accepted while draining: `on_shutdown` runs after its first data, so the request that
     /// is already on its way is served (see `on_accept`).
     shutdown_after_data: bool,
+    /// Kernel TLS: reads are stopped so that the transport's receive direction can move into
+    /// the kernel (`ConnInner::offload_rx_now`) at a point where no recv is in flight.
+    rx_offload: bool,
+    /// Attempts at that so far (a stream that never pauses on a record boundary gives up).
+    rx_offload_tries: u8,
 }
+
+/// Attempts at moving a connection's receive direction into the kernel before giving up.
+const RX_OFFLOAD_TRIES: u8 = 8;
+/// Buffer for one kernel TLS record read with `recvmsg` (16 KiB of content and some room).
+const KERNEL_RECORD_BUF: usize = (16 << 10) + 256;
 
 enum Slot {
     Conn(LoopConn),
@@ -699,6 +709,7 @@ enum Done {
 /// reached `Config::write_high_watermark`, checked after every chunk as epoll does.
 fn reads_paused(lc: &LoopConn, high: usize) -> bool {
     lc.bp
+        || lc.rx_offload
         || lc.inner.read_held()
         || (lc.inner.write_backpressure()
             && lc.q_hint.unwrap_or_else(|| lc.inner.queued_bytes()) >= high)
@@ -1184,7 +1195,11 @@ impl Loop {
                         // while `data` lives. `slice` bounds-checks the range.
                         let data = unsafe { g.bufs.slice(off, n.min(g.size)) };
                         // `refresh` ran after the previous completion, so `bp` is current.
-                        if !lc.held_in.is_empty() || lc.bp || lc.inner.read_held() {
+                        if !lc.held_in.is_empty()
+                            || lc.bp
+                            || lc.rx_offload
+                            || lc.inner.read_held()
+                        {
                             // Reads are paused, but the multishot recv runs until its cancel
                             // lands (it can complete many more buffers first): keep the data,
                             // in order, for when they resume (`replay`).
@@ -1205,6 +1220,36 @@ impl Loop {
                     } else {
                         lc.held_eof = true; // after the held input (`replay`)
                     }
+                }
+            } else if res == -ffi::EIO && lc.inner.kernel_rx() && !lc.eof && !lc.held_eof {
+                // Kernel TLS: a control record is next (an alert, a post-handshake message).
+                // Read it with its content type; the multishot recv ended, `refresh` re-arms.
+                let mut buf = vec![0u8; KERNEL_RECORD_BUF];
+                match lc.inner.kernel_read_record(&mut buf) {
+                    Ok(only_core::KernelRead::Data(0)) => {
+                        // close_notify: the end of the peer's stream.
+                        if lc.held_in.is_empty() {
+                            lc.eof = true;
+                            lc.inner.close_after_responses();
+                            done = Done::Eof;
+                        } else {
+                            lc.held_eof = true;
+                        }
+                    }
+                    Ok(only_core::KernelRead::Data(n)) => {
+                        let st = &self.shared.stats;
+                        if !lc.held_in.is_empty() || reads_paused(lc, usize::MAX) {
+                            lc.held_in.extend_from_slice(&buf[..n]);
+                        } else {
+                            done = feed(lc, &buf[..n], id, &self.cfg, st, &mut self.clock);
+                            fed = true;
+                        }
+                    }
+                    Ok(only_core::KernelRead::Control) => match lc.inner.uncork_flush() {
+                        Ok(q) => lc.q_hint = Some(q),
+                        Err(e) => done = Done::Err(e),
+                    },
+                    Err(e) => done = Done::Err(e),
                 }
             } else if res != -ffi::ENOBUFS && res != -ffi::ECANCELED && res != -ffi::EINTR {
                 done = Done::Err(io::Error::from_raw_os_error(-res));
@@ -1348,6 +1393,8 @@ impl Loop {
                 opened: now,
                 bytes_in: 0,
                 shutdown_after_data: false,
+                rx_offload: false,
+                rx_offload_tries: 0,
             }),
         );
         self.arm_reset_watch(id, fd);
@@ -1467,7 +1514,31 @@ impl Loop {
         } else if q <= high / 4 || !lc.inner.write_backpressure() {
             lc.bp = false;
         }
-        let want_read = !lc.inner.read_held() && !lc.bp && !lc.eof && lc.inner.is_open();
+        // Kernel TLS: the receive direction may follow the send direction into the kernel only
+        // where no recv is in flight (it could hold records the transport has not seen): stop
+        // reading, and once the multishot recv has ended with nothing held, move it.
+        if lc.inner.offload_rx_waiting() && !lc.eof && lc.inner.is_open() {
+            if !lc.rx_offload && lc.rx_offload_tries < RX_OFFLOAD_TRIES {
+                lc.rx_offload = true;
+            }
+            if lc.rx_offload && !lc.recv_armed {
+                lc.rx_offload = false;
+                lc.rx_offload_tries += 1;
+                if lc.held_in.is_empty() && !lc.held_eof {
+                    if let Err(e) = lc.inner.offload_rx_now() {
+                        return self.finalize(id, Some(Error::Io(e)));
+                    }
+                }
+                if lc.rx_offload_tries >= RX_OFFLOAD_TRIES && lc.inner.offload_rx_waiting() {
+                    lc.inner.offload_rx_give_up();
+                }
+            }
+        }
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        let want_read =
+            !lc.inner.read_held() && !lc.bp && !lc.rx_offload && !lc.eof && lc.inner.is_open();
         if want_read && (!lc.held_in.is_empty() || lc.held_eof) {
             // Input held while paused goes first; `replay` comes back here (once it is out, or
             // paused again, so this does not loop).

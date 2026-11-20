@@ -13,6 +13,9 @@
 //!
 //! `ONLY_ACCEL=cpu|cpu-pin|hash` attaches `SO_REUSEPORT` steering (`Accel::Ebpf`; `cpu-pin` also
 //! pins I/O thread `i` to the CPUs `c % threads == i`), for the eBPF benchmark.
+//!
+//! `ONLY_KTLS=off|hardware|software|software-tx` sets `tls`'s kernel TLS mode (`Ktls`; takes
+//! effect with the `ktls` feature on Linux), for the kernel TLS benchmark.
 
 use std::{thread, time::Duration};
 
@@ -21,6 +24,16 @@ use only::{
     Engine, Handler, Listener, PoolConfig, Replies, ebpf, fn_acceptor,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
+
+/// `ONLY_KTLS`, see the module documentation.
+fn ktls_mode() -> only::tls::Ktls {
+    match std::env::var("ONLY_KTLS").as_deref() {
+        Ok("hardware") => only::tls::Ktls::Hardware,
+        Ok("software") => only::tls::Ktls::Software,
+        Ok("software-tx") => only::tls::Ktls::SoftwareTx,
+        _ => only::tls::Ktls::Off,
+    }
+}
 
 struct Echo;
 impl Handler for Echo {
@@ -113,6 +126,7 @@ fn main() -> std::io::Result<()> {
                 vec![Certificate::from_der(ck.0.as_der().to_vec())],
                 PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
             )
+            .ktls(ktls_mode())
             .build()
             .map_err(std::io::Error::from)
         })

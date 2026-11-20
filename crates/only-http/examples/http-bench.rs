@@ -7,6 +7,8 @@
 //! * `GET /ws`: WebSocket upgrade, echoes every message.
 //!
 //! HTTP/2 is served on the same port (prior knowledge / h2c upgrade, or ALPN `h2` with `tls`).
+//! `ONLY_KTLS=off|hardware|software|software-tx` sets the kernel TLS mode of `tls` (`Ktls`;
+//! takes effect with only's `ktls` feature on Linux).
 
 use only::{
     Backend, Engine, Listener,
@@ -81,6 +83,12 @@ fn main() -> std::io::Result<()> {
             PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
         )
         .alpn(["h2", "http/1.1"])
+        .ktls(match std::env::var("ONLY_KTLS").as_deref() {
+            Ok("hardware") => only::tls::Ktls::Hardware,
+            Ok("software") => only::tls::Ktls::Software,
+            Ok("software-tx") => only::tls::Ktls::SoftwareTx,
+            _ => only::tls::Ktls::Off,
+        })
         .build()?;
         l.serve(Tls::server(cfg, serve(app)))
     } else {

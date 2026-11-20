@@ -83,12 +83,12 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-http | 0 | 0 | 0 | 8 |
 | only-brotli | 0 | 0 | 0 | 7 |
 | only-crypto | 150 | 72 | 0 | 0 |
-| only-sys | 111 | 3 | 3 | 0 |
+| only-sys | 117 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 2 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
-| **合计** | **394** | **84** | **10** | **30** |
+| **合计** | **400** | **84** | **10** | **30** |
 
 按用途：
 
@@ -100,7 +100,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/fswatch.rs` | 12（Linux 7 个，macOS 5 个） | 供 only-http 静态文件缓存使用的变更通知：`inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`、对 inotify fd 与 eventfd 的 `ppoll`、读取事件（Linux）；`kqueue`、`fcntl`、带 `EVFILT_VNODE` / `EVFILT_USER` 的 `kevent` 注册与等待（macOS） | fd 立即被拥有；路径是以 NUL 结尾的 `CString`；读取不越过缓冲区，记录按字节解析；kevent 的 `udata` 是监视 id，从不解引用；`O_EVTONLY` 描述符由 `std` 打开并归监视器所有 |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
-| `only-sys/src/ktls.rs` | 9 | 内核 TLS（实验性，only-tls 的 `experimental-ktls`）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥 | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg |
+| `only-sys/src/ktls.rs` | 15 | 内核 TLS（only-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`、`getifaddrs`/`freeifaddrs` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照）；`getifaddrs` 链表只在 `freeifaddrs` 之前读取，地址按其地址族非对齐读取 |
 | `only-sys/src/udp.rs` | 12 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO / ECN cmsg | 每个接收 iovec 覆盖某槽位独占 slab 区间（`only_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `only-sys/src/udp_mac.rs` | 5 | macOS：每次 `sendmsg` / `recvmsg` 一个数据报及其 ECN 码点（`IP_TOS` / `IPV6_TCLASS` cmsg），`IP_RECVTOS` / `IPV6_RECVTCLASS` 的 `setsockopt` | `msghdr` 只指向存活的局部变量（`sockaddr_storage`、覆盖调用方切片的一个 iovec、64 字节 8 对齐的控制缓冲区）并带其长度，或为空指针且长度为 0；控制数据按字节构造与解析，以 `msg_controllen` 为界（不做 `CMSG_*` 指针遍历） |
 | `only-crypto/src/aes/hw.rs` | 26 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |

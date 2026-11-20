@@ -1,7 +1,7 @@
 //! Kernel TLS on engine connections (ADR-067, `ktls` feature, Linux with the `tls` module): a
 //! rustls client (and an `only` client) against `only` servers whose record layer moves into
-//! the kernel after the handshake. Runs on epoll and, with `ONLY_TEST_BACKEND=uring`, io_uring
-//! (where only the send direction moves).
+//! the kernel after the handshake. Runs on epoll and, with `ONLY_TEST_BACKEND=uring`, io_uring.
+
 #![allow(missing_docs)]
 #![cfg(all(target_os = "linux", feature = "ktls"))]
 
@@ -104,10 +104,6 @@ fn quick() -> Config {
     let mut v = Config::default();
     v.shutdown_timeout = Duration::from_millis(300);
     v
-}
-
-fn uring() -> bool {
-    std::env::var("ONLY_TEST_BACKEND").as_deref() == Ok("uring")
 }
 
 /// Echoes, and keeps the server's latest `tls_info`.
@@ -220,8 +216,8 @@ fn expected(mode: Ktls, tls13: bool) -> (Option<KtlsPath>, Option<KtlsPath>) {
     let able = if tls13 { rekey_ok() } else { kernel_tls() };
     match mode {
         _ if !able => (None, None),
-        Ktls::Software if !uring() => (Some(KtlsPath::Software), Some(KtlsPath::Software)),
-        Ktls::Software | Ktls::SoftwareTx => (Some(KtlsPath::Software), None),
+        Ktls::Software => (Some(KtlsPath::Software), Some(KtlsPath::Software)),
+        Ktls::SoftwareTx => (Some(KtlsPath::Software), None),
         _ => (None, None),
     }
 }

@@ -417,8 +417,10 @@ impl KtlsState {
             self.stats.ktls_installed(true, p);
         }
         if self.want_rx && self.rx.is_none() {
-            if !rx_ok || conn.failed_or_closed() {
+            if conn.failed_or_closed() {
                 self.want_rx = false;
+            } else if !rx_ok {
+                // The backend cannot switch its reads now: it asks again when it can.
             } else if let Some(rx_keys) = conn.rx_offload_keys() {
                 let verify = self.iface.is_some();
                 match install_dir(fd, KtlsDir::Rx, self.tls13, self.aead, &rx_keys, verify) {

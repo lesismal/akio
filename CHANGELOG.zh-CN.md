@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
+
+ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：
+
+- `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` 与 `only_tls::Ktls`：握手完成后，epoll 或
+  io_uring 上的 `Tls` 连接把记录层交给 Linux。`Ktls::Hardware` 只卸载支持 TLS 卸载的网卡自己完成的部分
+  （本地地址所在接口的 `tls-hw-tx-offload` / `tls-hw-rx-offload`；AES-GCM），用内核的 `TlsTxDevice` /
+  `TlsRxDevice` 计数器确认，并不再提供驱动拒绝过的组合；在没有这类网卡的主机上什么都不改变。
+  `Ktls::Software` / `Ktls::SoftwareTx` 使用软件 kTLS（双向 / 只发送方向）。
+  `ktls_zerocopy_sendfile(true)` 为网卡卸载的连接设置 `TLS_TX_ZEROCOPY_RO`。
+- 发送方向在内核中时，应用数据不再在用户态加密，`send_file` 与静态文件经 `sendfile(2)` 发出；控制记录
+  与密钥更新按顺序排队。接收方向在内核中时，`on_data` 直接拿到解密后的数据，控制记录（告警、KeyUpdate、
+  close_notify）用 `recvmsg` 读取。io_uring 先让 multishot recv 停在记录边界，再移交接收方向。
+- `TlsInfo::ktls_tx` / `ktls_rx`（`KtlsPath::Software` / `Hardware`）、`TlsCounts::ktls_*` 与指标
+  `only_tls_ktls_total{side, dir, path}`。
+- only-core：`Transport::{wants_offload, offload, kernel_send, take_ops, kernel_record}`（默认方法）、
+  `Offloaded`、`SocketOp`（Linux）。
+- only-sys：`netdev_tls_offload`、`netdev_features`、`interface_addrs`、`tls_stat`、
+  `ktls_tx_zerocopy_ro`、`ktls_rx_expect_no_pad`、`kernel_at_least`（隐藏模块）。
+- Feature：`only-tls/ktls` 与 `only/ktls`；`experimental-ktls` 保留为别名。
+- 基准服务器支持 `ONLY_KTLS=off|hardware|software|software-tx`。
+
 ### 新增：静态文件缓存的变更通知（only-http、only-sys）
 
 ADR-066（docs/adr/066-static-files-change-notifications.zh-CN.md），只有新增（默认关闭）：

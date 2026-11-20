@@ -88,8 +88,11 @@
 
 在报告中，TLS 吞吐量与 tokio-rustls 的差距在噪声范围内（TLS 1.3，1 KiB 记录）。启用会话恢复
 （`ticketer`）让重连更便宜；在 ALPN 中提供 `h2`，让 HTTP 客户端复用连接而不是开更多连接。
-不使用内核 TLS：在带 VAES 的 x86_64 上它比 only-tls 自己的记录层慢，大文件的 `sendfile` 也不例外
+软件内核 TLS 默认关闭：在带 VAES 的 x86_64 上它比 only-tls 自己的记录层慢，大文件的 `sendfile` 也不例外
 （[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
+在支持 TLS 卸载的网卡（ConnectX-6 Dx 及更新型号）上，启用 `ktls` feature 并设置
+`.ktls(Ktls::Hardware)`：记录加解密由网卡完成，`sendfile` 保持零拷贝，没有这类网卡的主机不受影响
+（[TLS](protocols/tls.md#内核-tls)）。
 
 ## 8. 操作系统
 

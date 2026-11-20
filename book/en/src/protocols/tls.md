@@ -296,13 +296,38 @@ promise) has `Certificate::crl_distribution_points()` and `ocsp_urls()`, `OcspRe
 
 ## Kernel TLS
 
-Not used: kernel TLS offload (handing the record keys to Linux after the handshake, so that
-`sendfile` works under TLS) was measured and is slower than only-tls's own record layer, by
-0.83x at 1 KiB responses down to 0.40x at 256 KiB and 0.48x for `sendfile` of a 10 MB file
-against `pread` plus sealing ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)). The offload is
-kept behind the experimental `experimental-ktls` cargo feature (blocking test stream and
-benchmark only, not wired into `Tls`, outside the semver promise) for re-measuring, for example
-on a NIC with TLS offload.
+After the handshake, a connection of `Tls` can hand its record layer to Linux (kernel TLS, the
+`ktls` cargo feature, ADR-067), so that the kernel, or a NIC that does TLS itself, encrypts what
+is sent and decrypts what arrives, and `send_file` / static files go out with `sendfile` again.
+It is off by default because the kernel's *software* record layer is slower than only-tls's own:
+0.83x at 1 KiB responses down to 0.40x at 256 KiB, and 0.48x for `sendfile` of a 10 MB file
+against `pread` plus sealing ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
+
+```rust,ignore
+use only::tls::{Ktls, ServerConfig};
+
+let cfg = ServerConfig::builder(chain, key)
+    // Only what a NIC with TLS offload does itself; nothing anywhere else.
+    .ktls(Ktls::Hardware)
+    .build()?;
+```
+
+- `Ktls::Hardware`: the send direction when the interface of the connection's local address has
+  `tls-hw-tx-offload` on (`ethtool -k`; e.g. NVIDIA ConnectX-6 Dx and later), the receive
+  direction too with `tls-hw-rx-offload`; AES-GCM only. The kernel's counters confirm the NIC took
+  each direction; a combination the driver turned down (the kernel fell back to software) is not
+  tried again. On a host without such a NIC this costs a cached check per connection and changes
+  nothing: safe to turn on everywhere.
+- `Ktls::Software` / `Ktls::SoftwareTx`: software kTLS, both directions or the send direction
+  only. Slower on current CPUs; for comparisons and setups that need the plaintext in the kernel.
+- `ktls_zerocopy_sendfile(true)`: with the NIC encrypting, it reads `sendfile` pages straight
+  from the page cache (`TLS_TX_ZEROCOPY_RO`); only if served files never change while being sent.
+- `TlsInfo::ktls_tx` / `ktls_rx` tell where each direction went (`KtlsPath::Software` /
+  `Hardware`), `TlsStats` counts it (`only_tls_ktls_total{side, dir, path}`).
+- Linux with the `tls` module; TLS 1.3 needs 6.14 (key updates of offloaded directions). Works on
+  epoll and io_uring, server and client; not on DPDK, QUIC or DTLS. The receive direction needs
+  `read_buffer` of 16 KiB or more. Whenever the kernel refuses, the connection stays in user
+  space.
 
 ## Not done
 

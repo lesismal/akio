@@ -44,6 +44,48 @@ impl core::marker::Sync for only_tls::EarlyData
 impl core::marker::Unpin for only_tls::EarlyData
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::EarlyData
 impl core::panic::unwind_safe::UnwindSafe for only_tls::EarlyData
+#[non_exhaustive] pub enum only_tls::Ktls
+pub only_tls::Ktls::Hardware
+pub only_tls::Ktls::Off
+pub only_tls::Ktls::Software
+pub only_tls::Ktls::SoftwareTx
+impl core::clone::Clone for only_tls::Ktls
+pub fn only_tls::Ktls::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::Ktls
+impl core::cmp::PartialEq for only_tls::Ktls
+pub fn only_tls::Ktls::eq(&self, &Self) -> bool
+impl core::default::Default for only_tls::Ktls
+pub fn only_tls::Ktls::default() -> Self
+impl core::fmt::Debug for only_tls::Ktls
+pub fn only_tls::Ktls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_tls::Ktls
+pub fn only_tls::Ktls::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_tls::Ktls
+impl core::marker::StructuralPartialEq for only_tls::Ktls
+impl core::marker::Send for only_tls::Ktls
+impl core::marker::Sync for only_tls::Ktls
+impl core::marker::Unpin for only_tls::Ktls
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::Ktls
+impl core::panic::unwind_safe::UnwindSafe for only_tls::Ktls
+#[non_exhaustive] pub enum only_tls::KtlsPath
+pub only_tls::KtlsPath::Hardware
+pub only_tls::KtlsPath::Software
+impl core::clone::Clone for only_tls::KtlsPath
+pub fn only_tls::KtlsPath::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::KtlsPath
+impl core::cmp::PartialEq for only_tls::KtlsPath
+pub fn only_tls::KtlsPath::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_tls::KtlsPath
+pub fn only_tls::KtlsPath::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_tls::KtlsPath
+pub fn only_tls::KtlsPath::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_tls::KtlsPath
+impl core::marker::StructuralPartialEq for only_tls::KtlsPath
+impl core::marker::Send for only_tls::KtlsPath
+impl core::marker::Sync for only_tls::KtlsPath
+impl core::marker::Unpin for only_tls::KtlsPath
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::KtlsPath
+impl core::panic::unwind_safe::UnwindSafe for only_tls::KtlsPath
 #[non_exhaustive] pub enum only_tls::RevocationPolicy
 pub only_tls::RevocationPolicy::HardFail
 pub only_tls::RevocationPolicy::Off
@@ -107,6 +149,8 @@ pub fn only_tls::ClientConfigBuilder::crls(self, only_tls::Crls, only_tls::Revoc
 pub fn only_tls::ClientConfigBuilder::early_data(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
+pub fn only_tls::ClientConfigBuilder::ktls(self, only_tls::Ktls) -> Self
+pub fn only_tls::ClientConfigBuilder::ktls_zerocopy_sendfile(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::ocsp_policy(self, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ClientConfigBuilder::ocsp_stapling(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::record_size_limit(self, u16) -> Self
@@ -238,6 +282,8 @@ pub fn only_tls::ServerConfigBuilder::client_crls(self, only_tls::Crls, only_tls
 pub fn only_tls::ServerConfigBuilder::client_ocsp_policy(self, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ServerConfigBuilder::early_data(self, u32) -> Self
 pub fn only_tls::ServerConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn only_tls::ServerConfigBuilder::ktls(self, only_tls::Ktls) -> Self
+pub fn only_tls::ServerConfigBuilder::ktls_zerocopy_sendfile(self, bool) -> Self
 pub fn only_tls::ServerConfigBuilder::ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn only_tls::ServerConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn only_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
@@ -291,6 +337,10 @@ impl<A> !core::panic::unwind_safe::UnwindSafe for only_tls::Tls<A>
 #[non_exhaustive] pub struct only_tls::TlsCounts
 pub only_tls::TlsCounts::early_accepted: u64
 pub only_tls::TlsCounts::early_rejected: u64
+pub only_tls::TlsCounts::ktls_rx_hardware: u64
+pub only_tls::TlsCounts::ktls_rx_software: u64
+pub only_tls::TlsCounts::ktls_tx_hardware: u64
+pub only_tls::TlsCounts::ktls_tx_software: u64
 pub only_tls::TlsCounts::resumed: u64
 pub only_tls::TlsCounts::tls12: u64
 pub only_tls::TlsCounts::tls13: u64
@@ -315,6 +365,8 @@ pub only_tls::TlsInfo::alpn: core::option::Option<alloc::vec::Vec<u8>>
 pub only_tls::TlsInfo::early_data: only_tls::EarlyData
 pub only_tls::TlsInfo::early_data_len: u64
 pub only_tls::TlsInfo::handshaking: bool
+pub only_tls::TlsInfo::ktls_rx: core::option::Option<only_tls::KtlsPath>
+pub only_tls::TlsInfo::ktls_tx: core::option::Option<only_tls::KtlsPath>
 pub only_tls::TlsInfo::ocsp_response: core::option::Option<alloc::vec::Vec<u8>>
 pub only_tls::TlsInfo::server_name: core::option::Option<alloc::string::String>
 pub only_tls::TlsInfo::version: core::option::Option<alloc::string::String>

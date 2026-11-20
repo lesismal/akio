@@ -10,6 +10,32 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
+
+ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):
+
+- `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` with `only_tls::Ktls`: after the
+  handshake a `Tls` connection on epoll or io_uring hands its record layer to Linux.
+  `Ktls::Hardware` offloads only what a NIC with TLS offload does itself (`tls-hw-tx-offload` /
+  `tls-hw-rx-offload` on the interface of the local address; AES-GCM), confirms it with the
+  kernel's `TlsTxDevice` / `TlsRxDevice` counters and stops offering a combination the driver
+  turned down; on hosts without such a NIC it changes nothing. `Ktls::Software` /
+  `Ktls::SoftwareTx` use software kTLS (both directions / the send direction only).
+  `ktls_zerocopy_sendfile(true)` sets `TLS_TX_ZEROCOPY_RO` on device-offloaded connections.
+- With the send direction in the kernel, application bytes skip user-space sealing and
+  `send_file` / static files go out with `sendfile(2)`; control records and key updates are
+  queued in order. With the receive direction in the kernel, `on_data` gets the decrypted bytes
+  directly and control records (alerts, KeyUpdate, close_notify) are read with `recvmsg`.
+  io_uring moves the receive direction after stopping its multishot recv on a record boundary.
+- `TlsInfo::ktls_tx` / `ktls_rx` (`KtlsPath::Software` / `Hardware`), `TlsCounts::ktls_*` and
+  the `only_tls_ktls_total{side, dir, path}` metric.
+- only-core: `Transport::{wants_offload, offload, kernel_send, take_ops, kernel_record}`
+  (default methods), `Offloaded`, `SocketOp` (Linux).
+- only-sys: `netdev_tls_offload`, `netdev_features`, `interface_addrs`, `tls_stat`,
+  `ktls_tx_zerocopy_ro`, `ktls_rx_expect_no_pad`, `kernel_at_least` (hidden module).
+- Features: `only-tls/ktls` and `only/ktls`; `experimental-ktls` stays as an alias.
+- The benchmark servers take `ONLY_KTLS=off|hardware|software|software-tx`.
+
 ### Added: change notifications for the static file cache (only-http, only-sys)
 
 ADR-066 (docs/adr/066-static-files-change-notifications.md), additive (off by default):

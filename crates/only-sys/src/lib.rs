@@ -4,8 +4,8 @@
 //! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `only-crypto`), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO, ECN codepoints in control messages; on macOS one datagram per
-//! `sendmsg` / `recvmsg` with its ECN codepoint) and, hidden and experimental, kernel TLS offload (`TCP_ULP` "tls", `SOL_TLS`; only-tls's
-//! `experimental-ktls` feature).
+//! `sendmsg` / `recvmsg` with its ECN codepoint) and, hidden, kernel TLS offload (`TCP_ULP`
+//! "tls", `SOL_TLS`, NIC TLS offload features through ethtool; only-tls's `ktls` feature).
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
 //!

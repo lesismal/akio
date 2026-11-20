@@ -39,7 +39,7 @@
 //! session tickets on the way) instead of checking an echo.
 //!
 //! `--ktls` (or `ONLY_INTEROP_KTLS=1` in the environment, `=require` to fail when the kernel
-//! refuses; needs Linux and the `experimental-ktls` feature) moves the record layer into the Linux kernel after the handshake (kernel TLS,
+//! refuses; needs Linux and the `ktls` feature) moves the record layer into the Linux kernel after the handshake (kernel TLS,
 //! evaluation only: docs/BENCHMARKS.md); `--key-update` then rekeys through the kernel.
 #![allow(missing_docs)]
 

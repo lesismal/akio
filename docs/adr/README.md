@@ -66,3 +66,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-063: Cross-process steering through bpffs, listener migration on reload, and AF_XDP](063-shared-steering-migration-af-xdp.md) (accepted 2026-11-21)
 - [ADR-065: Connectionless UDP listeners (`DatagramsHandler`)](065-connectionless-datagrams.md) (accepted 2026-11-21)
 - [ADR-066: Change notifications for the static file cache (inotify / kqueue)](066-static-files-change-notifications.md) (accepted 2026-11-20)
+- [ADR-067: Kernel TLS for engine connections, hardware-first](067-kernel-tls-engine-offload.md) (accepted 2026-11-21)

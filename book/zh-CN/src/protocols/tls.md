@@ -259,11 +259,33 @@ let cfg = ClientConfig::builder()
 
 ## 内核 TLS
 
-不使用：内核 TLS 卸载（握手后把记录密钥交给 Linux，使 `sendfile` 在 TLS 下可用）已经测量过，比 only-tls
-自己的记录层慢，从 1 KiB 响应的 0.83 倍到 256 KiB 的 0.40 倍，10 MB 文件用 `sendfile` 对比 `pread`
-加加密为 0.48 倍（[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。卸载代码保留在实验性的
-`experimental-ktls` cargo feature 之后（只用于阻塞测试流与基准，没有接入 `Tls`，不在 semver 承诺之内），
-以便重新测量，例如在带 TLS 卸载的网卡上。
+握手完成后，`Tls` 的连接可以把记录层交给 Linux（内核 TLS，`ktls` cargo feature，ADR-067），由内核或
+自己做 TLS 的网卡加密发送的数据、解密收到的数据，`send_file` 与静态文件也重新走 `sendfile`。默认关闭，
+因为内核的**软件**记录层比 only-tls 自己的慢：从 1 KiB 响应的 0.83 倍到 256 KiB 的 0.40 倍，10 MB 文件用
+`sendfile` 对比 `pread` 加加密为 0.48 倍（[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
+
+```rust,ignore
+use only::tls::{Ktls, ServerConfig};
+
+let cfg = ServerConfig::builder(chain, key)
+    // 只卸载支持 TLS 卸载的网卡自己完成的部分；其他地方什么都不做。
+    .ktls(Ktls::Hardware)
+    .build()?;
+```
+
+- `Ktls::Hardware`：连接本地地址所在接口开启了 `tls-hw-tx-offload`（`ethtool -k`；例如 NVIDIA
+  ConnectX-6 Dx 及更新型号）时卸载发送方向，同时开启 `tls-hw-rx-offload` 时也卸载接收方向；仅限
+  AES-GCM。内核计数器确认网卡接管了每个方向；驱动拒绝的组合（内核回退到软件）不再尝试。在没有这类
+  网卡的主机上，每个连接只多一次缓存的检查，什么都不改变：可以放心地在所有地方打开。
+- `Ktls::Software` / `Ktls::SoftwareTx`：软件 kTLS，双向或只发送方向。在当前 CPU 上更慢；用于对比和
+  需要明文留在内核中的场景。
+- `ktls_zerocopy_sendfile(true)`：由网卡加密时，让它直接从页缓存读取 `sendfile` 的页面
+  （`TLS_TX_ZEROCOPY_RO`）；仅在发送过程中文件绝不会被修改时使用。
+- `TlsInfo::ktls_tx` / `ktls_rx` 说明每个方向去了哪里（`KtlsPath::Software` / `Hardware`），
+  `TlsStats` 对此计数（`only_tls_ktls_total{side, dir, path}`）。
+- 需要带 `tls` 模块的 Linux；TLS 1.3 需要 6.14（已卸载方向的密钥更新）。支持 epoll 与 io_uring、服务端
+  与客户端；不支持 DPDK、QUIC 与 DTLS。接收方向需要 `read_buffer` 不小于 16 KiB。只要内核拒绝，连接
+  就留在用户态。
 
 ## 尚未完成
 

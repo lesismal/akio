@@ -142,11 +142,14 @@ for requests that are safe to repeat (idempotent reads), check `TlsInfo::early_d
 Not implemented: `status_request_v2` (RFC 6961, OCSP for intermediates; TLS 1.2 only, never
 widely deployed and superseded by TLS 1.3's per-CertificateEntry status, ADR-049), fetching OCSP
 responses or CRLs (the application does; `only-x509` gives the URLs), RSA-PSS signing with a
-salt other than the hash length. Kernel TLS offload was evaluated and
-is not used: it was slower than this crate's record layer in every case measured, `sendfile`
-included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"); the code stays behind the
-experimental `experimental-ktls` feature (test stream and benchmark only, outside the semver
-promise).
+salt other than the hash length.
+
+Kernel TLS (the `ktls` feature, ADR-067): `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls`
+move the record layer of engine connections into Linux after the handshake. `Ktls::Hardware`
+offloads only what a NIC with TLS offload does itself (checked per interface, confirmed by the
+kernel's counters) and changes nothing on other hosts; `Ktls::Software` / `SoftwareTx` use the
+kernel's software record layer, which is slower than this crate's on current CPUs, `sendfile`
+included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"). Off by default.
 
 ## Internals
 

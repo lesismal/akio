@@ -1,4 +1,4 @@
-//! Kernel TLS offload over real loopback sockets (Linux, `experimental-ktls`): every suite of
+//! Kernel TLS offload over real loopback sockets (Linux, `ktls`): every suite of
 //! TLS 1.3 and 1.2, KeyUpdate through the kernel in both directions, alerts, close_notify,
 //! `sendfile` of encrypted records, and a user-space peer. Skipped (with a note) where the
 //! kernel has no `tls` module, as in most containers.

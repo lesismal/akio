@@ -4,7 +4,7 @@
 # file case), same server, same handshake, interleaved rounds. Needs Linux with the `tls` module
 # (6.14+ for TLS 1.3), h2load, root for VETH=1.
 #
-#   cargo build --release -p only-tls --example ktls-bench --features experimental-ktls
+#   cargo build --release -p only-tls --example ktls-bench --features ktls
 #   tools/bench/ktls.sh                  # loopback
 #   VETH=1 tools/bench/ktls.sh           # client in a network namespace behind a veth pair, MTU 1500
 #

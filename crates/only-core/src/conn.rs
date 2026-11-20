@@ -24,6 +24,10 @@ const OFFLOAD_NONE: u8 = 0;
 const OFFLOAD_PENDING: u8 = 1;
 /// `ConnInner::offload` bit: the read direction is in the kernel.
 const OFFLOAD_RX: u8 = 2;
+/// `ConnInner::offload` bit: the send direction is in the kernel and the transport wants the
+/// read direction too, once the backend can stop its reads (`offload_rx_now`).
+#[cfg(target_os = "linux")]
+const OFFLOAD_RX_WAIT: u8 = 4;
 /// The smallest read buffer that takes a whole kernel TLS control record (16 KiB of content;
 /// the kernel delivers one record per read).
 #[cfg(target_os = "linux")]
@@ -1186,21 +1190,31 @@ impl ConnInner {
     /// ([`Transport::offload`]) and records what moved into the kernel.
     #[cfg(target_os = "linux")]
     fn try_offload(&self, w: &mut WriteState) -> io::Result<()> {
+        let rx_ok = self.rx_offload_ok.load(Ordering::Relaxed);
+        self.offload_locked(w, rx_ok)
+    }
+
+    /// [`try_offload`](Self::try_offload) and [`offload_rx_now`](Self::offload_rx_now):
+    /// calls the transport and records the outcome in `offload`. A transport that moved its
+    /// send direction and still wants the receive direction, which `rx_ok` does not allow now,
+    /// waits for the backend (`OFFLOAD_RX_WAIT`) instead of being asked after every flush.
+    #[cfg(target_os = "linux")]
+    fn offload_locked(&self, w: &mut WriteState, rx_ok: bool) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         let cur = self.offload.load(Ordering::Relaxed);
+        let stop = cur & OFFLOAD_RX;
         let fd = match &self.sock {
             Sock::Tcp(s) if self.is_open() && !w.close_after_send => s.as_raw_fd(),
             _ => {
-                self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+                self.offload.store(stop, Ordering::Relaxed);
                 return Ok(());
             }
         };
         let Some(t) = w.transport.as_mut() else {
-            self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+            self.offload.store(stop, Ordering::Relaxed);
             return Ok(());
         };
-        let rx_ok = self.rx_offload_ok.load(Ordering::Relaxed)
-            && self.cfg.telemetry.live().read_buffer() >= KERNEL_RX_MIN_BUF;
+        let rx_ok = rx_ok && self.cfg.telemetry.live().read_buffer() >= KERNEL_RX_MIN_BUF;
         let dirs = t.offload(fd, self.local, rx_ok);
         let wants = t.wants_offload();
         let mut ops = Vec::new();
@@ -1208,13 +1222,15 @@ impl ConnInner {
         let dirs = match dirs {
             Ok(d) => d,
             Err(e) => {
-                self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+                self.offload.store(stop, Ordering::Relaxed);
                 return Err(e);
             }
         };
         w.kernel_tx = dirs.tx;
         let mut v = OFFLOAD_NONE;
-        if wants {
+        if wants && dirs.tx && !dirs.rx && !rx_ok {
+            v |= OFFLOAD_RX_WAIT;
+        } else if wants {
             v |= OFFLOAD_PENDING;
         }
         if dirs.rx {
@@ -1223,6 +1239,48 @@ impl ConnInner {
         self.offload.store(v, Ordering::Release);
         self.queue_ops(w, ops);
         Ok(())
+    }
+
+    /// Whether the transport's send direction is in the kernel and its receive direction
+    /// waits for the backend to call [`offload_rx_now`](Self::offload_rx_now) (a backend
+    /// whose reads can be in flight between its flushes: io_uring). Loop side, lock-free.
+    #[cfg(target_os = "linux")]
+    pub fn offload_rx_waiting(&self) -> bool {
+        self.offload.load(Ordering::Relaxed) & OFFLOAD_RX_WAIT != 0
+    }
+
+    /// Loop side, with no read in flight and nothing read that the transport has not seen:
+    /// lets the transport move its receive direction into the kernel. Returns whether it is
+    /// still waiting (a partial record is buffered: try again after more reads).
+    #[cfg(target_os = "linux")]
+    pub fn offload_rx_now(&self) -> io::Result<bool> {
+        if !self.offload_rx_waiting() {
+            return Ok(false);
+        }
+        let mut w = self.lock();
+        let r = self.offload_locked(&mut w, true);
+        let wake = !w.queue.is_empty() && !self.corked(&w);
+        drop(w);
+        if wake {
+            self.link.wake_conn(self.id);
+        }
+        r?;
+        // Still wanting the receive direction: the transport stays asked after flushes.
+        let v = self.offload.load(Ordering::Relaxed);
+        if v & OFFLOAD_PENDING != 0 {
+            self.offload
+                .store((v & !OFFLOAD_PENDING) | OFFLOAD_RX_WAIT, Ordering::Relaxed);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// The backend gives up moving the receive direction (it could not stop its reads at a
+    /// record boundary): the connection stays as it is.
+    #[cfg(target_os = "linux")]
+    pub fn offload_rx_give_up(&self) {
+        let v = self.offload.load(Ordering::Relaxed);
+        self.offload.store(v & OFFLOAD_RX, Ordering::Relaxed);
     }
 
     /// Queues socket operations of the transport after what is queued. Returns whether the

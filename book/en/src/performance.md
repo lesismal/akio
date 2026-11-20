@@ -97,9 +97,12 @@ it doubled a SOCKS upload's throughput, at more CPU per byte over loopback.
 
 TLS throughput was within noise of tokio-rustls in the report (TLS 1.3, 1 KiB records). Enable
 session resumption (`ticketer`) to make reconnects cheap; offer `h2` in ALPN so HTTP clients
-multiplex instead of opening more connections. Kernel TLS is not used: on x86_64 with VAES it
-was slower than only-tls's own record layer, `sendfile` of large files included
-([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
+multiplex instead of opening more connections. Kernel TLS in software is off by default: on
+x86_64 with VAES it was slower than only-tls's own record layer, `sendfile` of large files
+included ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
+On a NIC with TLS offload (ConnectX-6 Dx and later), build with the `ktls` feature and set
+`.ktls(Ktls::Hardware)`: the NIC then does the record crypto and `sendfile` stays zero-copy, and
+hosts without such a NIC are unaffected ([TLS](protocols/tls.md#kernel-tls)).
 
 ## 8. Operating system
 
