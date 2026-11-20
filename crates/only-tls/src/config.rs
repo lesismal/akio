@@ -518,7 +518,9 @@ type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 ///
 /// Needs the `ktls` cargo feature and Linux with the `tls` module (TLS 1.3 also 6.14 or later,
 /// for key updates); otherwise, and whenever the kernel refuses, the connection stays in user
-/// space, unchanged. [`TlsInfo::ktls`](crate::TlsInfo) tells what moved.
+/// space, unchanged. [`TlsInfo::ktls_tx`](crate::TlsInfo::ktls_tx) /
+/// [`ktls_rx`](crate::TlsInfo::ktls_rx) tell what moved, and [`TlsStats`](crate::TlsStats)
+/// counts it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Ktls {
@@ -551,6 +553,8 @@ pub(crate) struct KtlsConfig {
     pub(crate) mode: Ktls,
     /// `TLS_TX_ZEROCOPY_RO` with device offload ([`ServerConfigBuilder::ktls_zerocopy_sendfile`]).
     pub(crate) zerocopy_sendfile: bool,
+    /// Tests: TLS 1.3 records sent under one key before a key update (`__key_update_after`).
+    pub(crate) key_update_after: Option<u64>,
 }
 
 // ---- server ----
@@ -836,6 +840,14 @@ impl ServerConfigBuilder {
     /// authentication tag no longer matches, and the peer drops the connection. Default off.
     pub fn ktls_zerocopy_sendfile(mut self, yes: bool) -> Self {
         self.ktls.zerocopy_sendfile = yes;
+        self
+    }
+
+    /// Tests only, not a public API: TLS 1.3 records this side sends under one key before it
+    /// starts a key update (default 2^23).
+    #[doc(hidden)]
+    pub fn __key_update_after(mut self, records: u64) -> Self {
+        self.ktls.key_update_after = Some(records);
         self
     }
 
@@ -1395,6 +1407,13 @@ impl ClientConfigBuilder {
     /// As [`ServerConfigBuilder::ktls_zerocopy_sendfile`], for client connections.
     pub fn ktls_zerocopy_sendfile(mut self, yes: bool) -> Self {
         self.ktls.zerocopy_sendfile = yes;
+        self
+    }
+
+    /// Tests only, not a public API: as `ServerConfigBuilder::__key_update_after`.
+    #[doc(hidden)]
+    pub fn __key_update_after(mut self, records: u64) -> Self {
+        self.ktls.key_update_after = Some(records);
         self
     }
 

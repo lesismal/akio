@@ -852,7 +852,7 @@ impl Connection {
                         // after the KeyUpdate just queued.
                         self.kernel_records = 0;
                         self.kernel_ev
-                            .push(OffloadEvent::TxKeys(ktls::DirKeys::new(&k, 0)));
+                            .push(OffloadEvent::TxKeys(DirKeys::new(&k, 0)));
                         continue;
                     }
                     self.rec.set_write(&k);

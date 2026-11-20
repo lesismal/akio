@@ -78,9 +78,20 @@ mod tickets;
 mod trust;
 
 pub use config::{
-    CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey,
-    RevocationPolicy, RootCerts, ServerConfig, ServerConfigBuilder,
+    CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, Ktls,
+    PrivateKey, RevocationPolicy, RootCerts, ServerConfig, ServerConfigBuilder,
 };
+
+/// Who does one direction's record protection once a connection moved it into the kernel
+/// ([`Ktls`], [`TlsInfo::ktls_tx`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum KtlsPath {
+    /// The kernel, on the CPU.
+    Software,
+    /// The NIC (TLS device offload).
+    Hardware,
+}
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
 pub use replay::{AntiReplayStore, AsyncAntiReplayStore, MemoryAntiReplay, ReplayCheck};
@@ -116,8 +127,10 @@ pub struct Tls<A> {
 /// Handshake outcomes of the connections of one [`Tls`] acceptor, from [`Tls::stats`]; cheap to
 /// clone (shared counters). A [`Collector`] (ADR-015) reporting
 /// `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}` and
-/// `only_tls_early_data_total{side, outcome}` (`accepted` / `rejected`). Failed handshakes are
-/// counted by the engine (`only_tls_handshake_failures_total`).
+/// `only_tls_early_data_total{side, outcome}` (`accepted` / `rejected`), and
+/// `only_tls_ktls_total{side, dir, path}` (directions moved into the kernel, [`Ktls`]: `dir` is
+/// `tx` / `rx`, `path` `software` / `hardware`). Failed handshakes are counted by the engine
+/// (`only_tls_handshake_failures_total`).
 #[derive(Clone, Debug, Default)]
 pub struct TlsStats(Arc<StatsInner>);
 
@@ -129,6 +142,8 @@ struct StatsInner {
     resumed: AtomicU64,
     early_accepted: AtomicU64,
     early_rejected: AtomicU64,
+    /// Kernel TLS installs: [tx software, tx hardware, rx software, rx hardware].
+    ktls: [AtomicU64; 4],
 }
 
 /// A snapshot of [`TlsStats`].
@@ -145,6 +160,14 @@ pub struct TlsCounts {
     pub early_accepted: u64,
     /// Handshakes whose early data was rejected.
     pub early_rejected: u64,
+    /// Connections whose send direction moved into the kernel, in software ([`Ktls`]).
+    pub ktls_tx_software: u64,
+    /// Connections whose send direction a NIC took.
+    pub ktls_tx_hardware: u64,
+    /// Connections whose receive direction moved into the kernel, in software.
+    pub ktls_rx_software: u64,
+    /// Connections whose receive direction a NIC took.
+    pub ktls_rx_hardware: u64,
 }
 
 impl TlsStats {
@@ -164,7 +187,18 @@ impl TlsStats {
             resumed: s.resumed.load(Ordering::Relaxed),
             early_accepted: s.early_accepted.load(Ordering::Relaxed),
             early_rejected: s.early_rejected.load(Ordering::Relaxed),
+            ktls_tx_software: s.ktls[0].load(Ordering::Relaxed),
+            ktls_tx_hardware: s.ktls[1].load(Ordering::Relaxed),
+            ktls_rx_software: s.ktls[2].load(Ordering::Relaxed),
+            ktls_rx_hardware: s.ktls[3].load(Ordering::Relaxed),
         }
+    }
+
+    /// A direction moved into the kernel.
+    #[cfg_attr(not(all(target_os = "linux", feature = "ktls")), allow(dead_code))]
+    pub(crate) fn ktls_installed(&self, tx: bool, path: KtlsPath) {
+        let i = usize::from(!tx) * 2 + usize::from(path == KtlsPath::Hardware);
+        self.0.ktls[i].fetch_add(1, Ordering::Relaxed);
     }
 
     fn handshake_done(&self, c: &proto::Connection) {
@@ -225,6 +259,20 @@ impl Collector for TlsStats {
             &[("side", side), ("outcome", "rejected")],
             c.early_rejected as f64,
         );
+        let h = "TLS connections whose record layer moved into the kernel, by direction and path.";
+        for (dir, path, v) in [
+            ("tx", "software", c.ktls_tx_software),
+            ("tx", "hardware", c.ktls_tx_hardware),
+            ("rx", "software", c.ktls_rx_software),
+            ("rx", "hardware", c.ktls_rx_hardware),
+        ] {
+            out.counter(
+                "only_tls_ktls_total",
+                h,
+                &[("side", side), ("dir", dir), ("path", path)],
+                v as f64,
+            );
+        }
     }
 }
 
@@ -284,22 +332,34 @@ impl<A: Acceptor> Acceptor for Tls<A> {
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
-        let (conn, timeout) = match &self.mode {
+        let (conn, timeout, ktls) = match &self.mode {
             Mode::Server(cfg) => (
                 Ok(proto::Connection::server(cfg.inner.clone())),
                 cfg.handshake_timeout,
+                cfg.ktls,
             ),
             Mode::Client(cfg, name) => (
                 proto::Connection::client(cfg.inner.clone(), name),
                 cfg.handshake_timeout,
+                cfg.ktls,
             ),
         };
         match conn {
-            Ok(conn) => Some(Box::new(TlsTransport {
-                conn,
-                stats: Some(self.stats.clone()),
-                timeout,
-            })),
+            Ok(mut conn) => {
+                if let Some(n) = ktls.key_update_after {
+                    conn.set_key_update_after(n);
+                }
+                Some(Box::new(TlsTransport {
+                    #[cfg(all(target_os = "linux", feature = "ktls"))]
+                    ktls: (ktls.mode != Ktls::Off).then(|| {
+                        conn.set_keep_keys(true);
+                        Box::new(ktls::KtlsState::new(ktls, self.stats.clone()))
+                    }),
+                    conn,
+                    stats: Some(self.stats.clone()),
+                    timeout,
+                }))
+            }
             Err(e) => {
                 only_log::warn!(target: "only::tls", "cannot start TLS session: {e}");
                 // No transport would mean plaintext; refuse by installing a dead one.
@@ -341,6 +401,20 @@ struct TlsTransport {
     stats: Option<TlsStats>,
     /// [`ServerConfigBuilder::handshake_timeout`] / [`ClientConfigBuilder::handshake_timeout`].
     timeout: Option<Duration>,
+    /// Kernel TLS ([`Ktls`] other than `Off`).
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    ktls: Option<Box<ktls::KtlsState>>,
+}
+
+impl TlsTransport {
+    /// Where each direction's record protection is: `None` while in user space.
+    fn ktls_paths(&self) -> (Option<KtlsPath>, Option<KtlsPath>) {
+        #[cfg(all(target_os = "linux", feature = "ktls"))]
+        if let Some(k) = &self.ktls {
+            return k.paths();
+        }
+        (None, None)
+    }
 }
 
 fn io_err(e: proto::Fatal) -> io::Error {
@@ -387,6 +461,51 @@ impl Transport for TlsTransport {
         // A suspended handshake (asynchronous anti-replay store) resumes through it.
         self.conn.set_waker(Arc::new(move || waker.wake()));
     }
+
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    fn wants_offload(&self) -> bool {
+        self.ktls.as_ref().is_some_and(|k| k.wants())
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    fn offload(
+        &mut self,
+        fd: std::os::fd::RawFd,
+        local: std::net::SocketAddr,
+        rx_ok: bool,
+    ) -> io::Result<only_core::Offloaded> {
+        match self.ktls.as_mut() {
+            Some(k) => k.offload(&mut self.conn, fd, local.ip(), rx_ok),
+            None => Ok(only_core::Offloaded::default()),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    fn kernel_send(
+        &mut self,
+        len: usize,
+        ops: &mut Vec<Box<dyn only_core::SocketOp>>,
+    ) -> io::Result<()> {
+        match self.ktls.as_mut() {
+            Some(k) => k.kernel_send(&mut self.conn, len, ops),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    fn take_ops(&mut self, ops: &mut Vec<Box<dyn only_core::SocketOp>>) {
+        if let Some(k) = self.ktls.as_mut() {
+            k.take_ops(&mut self.conn, ops);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
+    fn kernel_record(&mut self, typ: u8, content: &[u8]) -> io::Result<bool> {
+        match self.ktls.as_mut() {
+            Some(k) => k.kernel_record(&mut self.conn, typ, content),
+            None => Err(io::ErrorKind::InvalidData.into()),
+        }
+    }
 }
 
 /// What happened to TLS 1.3 early data (0-RTT) on a connection.
@@ -431,13 +550,21 @@ pub struct TlsInfo {
     /// [`ocsp_policy`](ClientConfigBuilder::ocsp_policy)). Server side: a TLS 1.3 client's,
     /// when asked for with [`ServerConfigBuilder::client_ocsp_policy`] (which verified it).
     pub ocsp_response: Option<Vec<u8>>,
+    /// Where the send direction's record protection is, once moved into the kernel ([`Ktls`]);
+    /// `None` while only-tls does it.
+    pub ktls_tx: Option<KtlsPath>,
+    /// Where the receive direction's record protection is, once moved into the kernel.
+    pub ktls_rx: Option<KtlsPath>,
 }
 
 /// TLS details of `c`, or `None` if it is not a TLS connection.
 pub fn tls_info<H>(c: &Conn<H>) -> Option<TlsInfo> {
     c.with_transport(|t| {
         let t = t.as_any().downcast_mut::<TlsTransport>()?;
+        let (ktls_tx, ktls_rx) = t.ktls_paths();
         Some(TlsInfo {
+            ktls_tx,
+            ktls_rx,
             handshaking: t.conn.handshaking(),
             alpn: t.conn.alpn().map(<[u8]>::to_vec),
             server_name: t.conn.server_name().map(str::to_owned),

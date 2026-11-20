@@ -214,6 +214,11 @@ impl Connection {
         self.tx_kernel
     }
 
+    /// The connection failed, or a side closed it: nothing more will be offloaded.
+    pub fn failed_or_closed(&self) -> bool {
+        self.error.is_some() || self.received_close || self.sent_close
+    }
+
     /// Moves what this side has to send through the kernel since the last call (send
     /// direction offloaded) into `ev`, in order.
     pub fn take_kernel_events(&mut self, ev: &mut Vec<OffloadEvent>) {
