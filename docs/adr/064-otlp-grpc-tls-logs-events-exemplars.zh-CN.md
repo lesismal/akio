@@ -116,8 +116,8 @@ only-export 现在依赖 only、only-http、only-grpc 和 only-tls（全部自�
   和常量）；API 快照只增不减。
 - only-export 的行为变化：失败的推送会退避重试（以前丢弃），接受 `https://` 端点（以前报错）。
   `ExporterBuilder::retry(.., .., Duration::ZERO)` 恢复丢弃失败批次的行为（collector 仍会被退避）。
-- 全部关闭时热路径没有变化：关闭的 span 或日志语句仍是同一次原子读取（only-log 的开销基准不变，docs/BENCHMARKS.md），
-  普通 `Histogram` 不变（exemplar 在 `ExemplarHistogram` 中），不带 exemplar 的 `HttpMetrics` 每个请求多一个分支。
+- 全部关闭时热路径没有变化：关闭的 span 或日志语句仍是同一次原子读取（同一轮 A/B 为 0.994–1.009，docs/BENCHMARKS.zh-CN.md“OTLP 导出新增功能”），
+  普通 `Histogram` 不变（exemplar 在 `ExemplarHistogram` 中），不带 exemplar 的 `HttpMetrics` 每个请求多一个分支（测不出：0.999 和 1.001）。
 - 使用 gRPC 导出器的进程多一个线程（私有 engine 的 I/O 线程）。
 - 未完成：指数直方图、请求体 gzip 压缩、gRPC `RetryInfo` 细节（使用导出器自己的退避）、OpenMetrics exemplar、`tracing`
   桥接。

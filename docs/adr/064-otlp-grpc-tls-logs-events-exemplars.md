@@ -152,9 +152,9 @@ API snapshot and the test matrix for no saving.
   `https://` endpoints are accepted (previously an error). `ExporterBuilder::retry(.., ..,
   Duration::ZERO)` restores dropping failed batches (the collector is still backed off).
 - With everything off, nothing changed on the hot paths: a disabled span or log statement is
-  the same atomic load (only-log's overhead benchmark is unchanged, docs/BENCHMARKS.md), a
+  the same atomic load (same-run A/B 0.994–1.009, docs/BENCHMARKS.md "OTLP export additions"), a
   plain `Histogram` is unchanged (exemplars live in `ExemplarHistogram`), and
-  `HttpMetrics` without exemplars one branch per request.
+  `HttpMetrics` without exemplars one branch per request (unmeasurable: 0.999 and 1.001).
 - A process with the gRPC exporter runs one more thread (the private engine's I/O thread).
 - Not done: exponential histograms, gzip request compression, gRPC `RetryInfo` details (the
   exporter's own backoff applies), OpenMetrics exemplars, a `tracing` bridge.
