@@ -830,7 +830,7 @@ fn relay_echo(url: &str, user: &str, pass: &str) {
     let mut ch = None;
     let (pa, offer) = a
         .create_offer(Collect(Mutex::new(tx)), |api| {
-            ch = Some(api.add_channel("echo"))
+            ch = Some(api.add_channel("echo"));
         })
         .expect("offer");
     assert!(
