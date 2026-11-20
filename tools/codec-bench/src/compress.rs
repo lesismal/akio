@@ -12,6 +12,8 @@
 //! `BENCH_OWN=0` skips decoding each library's own output.
 //! `BENCH_DUMP=DIR` writes the zstd frames there (`FILE.LEVEL.zst` from the C library,
 //! `FILE.LEVEL.only.zst` from only-zstd), for inspecting what the decoders are timed on.
+//! `BENCH_BR_LIMIT=N` decodes brotli with an output limit of `N` bytes instead of the exact
+//! size (a caller that does not know the size; the C one-shot call needs none).
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -148,6 +150,7 @@ pub fn brotli(files: &[String]) {
     header();
     for (name, data) in load(files) {
         let mut out = vec![0u8; data.len()];
+        let limit = (env_u("BENCH_BR_LIMIT", 0) as usize).max(data.len());
         for level in levels(&[1, 4, 5, 6, 11]) {
             let once = level >= slow;
             let lv = only_brotli::Level::new(level);
@@ -168,7 +171,7 @@ pub fn brotli(files: &[String]) {
             );
             let dec = (
                 mbps(data.len(), ms, false, || {
-                    black_box(only_brotli::decompress(black_box(&theirs), data.len()).unwrap());
+                    black_box(only_brotli::decompress(black_box(&theirs), limit).unwrap());
                 }),
                 mbps(data.len(), cms, false, || {
                     // The C one-shot API writes into a caller buffer: one reused buffer (its best
@@ -177,7 +180,7 @@ pub fn brotli(files: &[String]) {
                 }),
             );
             let own = mbps(data.len(), ms, false, || {
-                black_box(only_brotli::decompress(black_box(&ours), data.len()).unwrap());
+                black_box(only_brotli::decompress(black_box(&ours), limit).unwrap());
             });
             print(&Row {
                 name: &name,

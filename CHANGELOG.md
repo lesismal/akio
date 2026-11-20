@@ -155,6 +155,24 @@ ADR-052 (docs/adr/052-srtp-f8-seed.md), additive:
   (+1.5-2.2 % protect inside the full case sequence); two regressions the A/B found on the way
   (+3 % and +2.4 % for AES-GCM) were removed (ADR-052).
 
+### Changed: faster brotli decoding (only-brotli)
+
+No public API change, output unchanged (docs/BENCHMARKS.md, "Brotli and Zstandard"). Decoding
+takes 1.08–1.34× libbrotli 1.2.1's time on the HTTP payloads of `tools/codec-bench brotli` (was
+1.42–1.73×) and 1.04–1.32× on Silesia (was 1.13–1.56×).
+
+- The command loop keeps its state (bit reader, output, position, last distances) in locals and
+  checks the meta-block end, the output limit and the window's spare room with one comparison per
+  write; distance contexts and short distance codes come from tables, roots have a fixed size.
+- Prefix code tables are built from the code lengths as they are read, without passes over symbols
+  that have no code, and the code length code gets a 32-entry table: table building was 40% of
+  decoding a 2.7 KB certificate chain.
+- Copies of up to 32 bytes with a period under 16 go in 8-byte chunks.
+- The output is zeroed ahead only up to the end of the meta-block, so a small output decoded under
+  a large limit no longer zeroes 128 KiB first (2.7 KB chain with a 16 MiB limit: 266 → 370 MB/s).
+- `tools/codec-bench`: `BENCH_BR_LIMIT=N` decodes with an output limit of `N` instead of the exact
+  size.
+
 ### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
 
 ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):

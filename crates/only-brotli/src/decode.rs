@@ -12,7 +12,7 @@
 use crate::Error;
 use crate::bits::BitReader;
 use crate::dictionary::{DICTIONARY, OFFSETS_BY_LENGTH, SIZE_BITS_BY_LENGTH, transform_word};
-use crate::huffman::{build, decode, decode_loaded, decode_loaded_at, single};
+use crate::huffman::{Lengths, Tree, code_length_table, decode, decode_loaded_at, single};
 use crate::tables::{BLOCK_LEN, CMD_LUT, CODE_LENGTH_ORDER, CONTEXT_LUT};
 
 /// Decompresses the brotli stream `data`, which must be exactly one complete stream, into at
@@ -28,8 +28,7 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         pos: 0,
         limit,
         last: [4, 11, 15, 16],
-        lens: Vec::new(),
-        cl_table: Vec::new(),
+        lens: Lengths::default(),
     };
     d.stream(data.len())?;
     d.buf.truncate(d.pos);
@@ -48,15 +47,40 @@ const AHEAD: usize = 1 << 17;
 #[inline(always)]
 fn copy_match(buf: &mut [u8], src: usize, dst: usize, len: usize) {
     let offset = dst - src;
-    if offset >= 16 && dst + len + 16 <= buf.len() {
-        // Whole chunks; each reads bytes already final (16 or more behind).
-        let mut k = 0;
-        loop {
-            buf.copy_within(src + k..src + k + 16, dst + k);
-            k += 16;
-            if k >= len {
-                return;
+    if dst + len + 16 <= buf.len() {
+        if offset >= 16 {
+            // Whole chunks; each reads bytes already final (16 or more behind).
+            let mut k = 0;
+            loop {
+                buf.copy_within(src + k..src + k + 16, dst + k);
+                k += 16;
+                if k >= len {
+                    return;
+                }
             }
+        }
+        if len <= 32 {
+            // A short copy with a short period: 8-byte chunks from `d` behind, `d` the
+            // smallest multiple of the offset that is at least 8 (the same bytes, by
+            // periodicity), each reading bytes already final; below an offset of 8, the first
+            // `d - offset` bytes one at a time so that the first chunk reads from `src` on.
+            // (Longer ones are left to the loop below: each chunk here waits for the store of
+            // the one before.)
+            let d = if offset >= 8 {
+                offset
+            } else {
+                offset * 8usize.div_ceil(offset)
+            };
+            let head = (d - offset).min(len);
+            for i in 0..head {
+                buf[dst + i] = buf[src + i];
+            }
+            let mut k = head;
+            while k < len {
+                buf.copy_within(dst + k - d..dst + k - d + 8, dst + k);
+                k += 8;
+            }
+            return;
         }
     }
     if offset >= len {
@@ -77,6 +101,122 @@ fn copy_match(buf: &mut [u8], src: usize, dst: usize, len: usize) {
         d += n;
     }
 }
+
+/// Makes `buf` at least `pos + n` long (`n` checked against the limit by the caller), plus
+/// `WILD` bytes when the limit allows, zeroing up to `AHEAD` bytes ahead at a time (but not
+/// past the end of the meta-block, `end`) and growing the capacity geometrically, never past
+/// the limit.
+#[inline]
+fn reserve(buf: &mut Vec<u8>, pos: usize, n: usize, end: usize, limit: usize) {
+    let need = (pos + n).saturating_add(WILD).min(limit.max(pos + n));
+    if buf.len() < need {
+        grow(buf, pos, need, end, limit);
+    }
+}
+
+#[cold]
+fn grow(buf: &mut Vec<u8>, pos: usize, need: usize, end: usize, limit: usize) {
+    let cap_limit = limit.max(need);
+    let ahead = (pos + AHEAD).min(end.saturating_add(WILD));
+    let want = need.max(ahead).min(cap_limit);
+    if buf.capacity() < want {
+        let cap = (buf.capacity() * 2).max(want).min(cap_limit);
+        buf.reserve_exact(cap - buf.len());
+    }
+    buf.resize(want, 0);
+}
+
+/// The output position up to which a meta-block ending at `end` can write without checks:
+/// within the meta-block and the limit, with `WILD` bytes of `buf` to spare.
+#[inline(always)]
+fn fast_end(buf: &[u8], end: usize, limit: usize) -> usize {
+    end.min(limit).min(buf.len().saturating_sub(WILD))
+}
+
+/// The checks for `n` more bytes at `pos` when they pass [`fast_end`]: within the meta-block
+/// ending at `end` (else `BadBlockLength`), within the limit (else `TooLarge`), then room in
+/// `buf`. Returns the new [`fast_end`].
+#[cold]
+#[inline(never)]
+fn make_room(
+    buf: &mut Vec<u8>,
+    pos: usize,
+    n: usize,
+    end: usize,
+    limit: usize,
+) -> Result<usize, Error> {
+    if n > end - pos {
+        return Err(Error::BadBlockLength);
+    }
+    if n > limit - pos {
+        return Err(Error::TooLarge);
+    }
+    reserve(buf, pos, n, end, limit);
+    Ok(fast_end(buf, end, limit))
+}
+
+/// Writes the static dictionary word that distance `dist` (beyond `max_distance`) and length
+/// `copy` address at `pos`; returns its length.
+#[inline(never)]
+fn dictionary_word(
+    buf: &mut Vec<u8>,
+    pos: usize,
+    dist: usize,
+    max_distance: usize,
+    copy: usize,
+    end: usize,
+    limit: usize,
+) -> Result<usize, Error> {
+    if dist > MAX_ALLOWED_DISTANCE {
+        return Err(Error::BadDistance);
+    }
+    if !(4..=24).contains(&copy) {
+        return Err(Error::BadDictionaryReference);
+    }
+    let shift = SIZE_BITS_BY_LENGTH[copy];
+    let address = dist - max_distance - 1;
+    let word = address & ((1 << shift) - 1);
+    let t = address >> shift;
+    if t >= 121 {
+        return Err(Error::BadDictionaryReference);
+    }
+    let start = OFFSETS_BY_LENGTH[copy] as usize + word * copy;
+    let w = DICTIONARY
+        .get(start..start + copy)
+        .ok_or(Error::BadDictionaryReference)?;
+    let mut tmp = [0u8; 64];
+    let n = transform_word(&mut tmp, w, t);
+    if n > end - pos {
+        return Err(Error::BadBlockLength);
+    }
+    if n > limit - pos {
+        return Err(Error::TooLarge);
+    }
+    reserve(buf, pos, n, end, limit);
+    buf[pos..pos + n].copy_from_slice(&tmp[..n]);
+    Ok(n)
+}
+
+/// Distance codes 0..16: which of the last four distances (most recent first) and what to add
+/// to it (RFC 7932 section 4).
+const SHORT_DISTANCES: [(u8, i8); 16] = [
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (0, -1),
+    (0, 1),
+    (0, -2),
+    (0, 2),
+    (0, -3),
+    (0, 3),
+    (1, -1),
+    (1, 1),
+    (1, -2),
+    (1, 2),
+    (1, -3),
+    (1, 3),
+];
 
 /// The largest distance the reference decoder accepts (`BROTLI_MAX_ALLOWED_DISTANCE`).
 const MAX_ALLOWED_DISTANCE: usize = 0x7fff_fffc;
@@ -125,9 +265,7 @@ struct Decoder<'a> {
     /// The last four distances, most recent first.
     last: [usize; 4],
     /// Scratch space for code lengths.
-    lens: Vec<u8>,
-    /// Scratch space for the code length code's table.
-    cl_table: Vec<u32>,
+    lens: Lengths,
 }
 
 /// A group of prefix codes (the trees of one category), stored back to back.
@@ -138,10 +276,11 @@ struct Group {
 }
 
 impl Group {
+    /// Where tree `i` starts in `tables` (0 for a tree that does not exist, which callers
+    /// never ask for).
     #[inline(always)]
-    fn tree(&self, i: usize) -> &[u32] {
-        let s = self.starts.get(i).copied().unwrap_or(usize::MAX);
-        self.tables.get(s..).unwrap_or(&[])
+    fn start(&self, i: usize) -> usize {
+        self.starts.get(i).copied().unwrap_or(0)
     }
 }
 
@@ -171,33 +310,10 @@ impl Decoder<'_> {
         }
     }
 
-    /// Makes `buf` at least `pos + n` long (`n` checked against the limit by the caller),
-    /// plus `WILD` bytes when the limit allows, zeroing up to `AHEAD` bytes ahead at a time and
-    /// growing the capacity geometrically, never past the limit.
-    #[inline]
-    fn reserve(&mut self, n: usize) {
-        let need = (self.pos + n)
-            .saturating_add(WILD)
-            .min(self.limit.max(self.pos + n));
-        if self.buf.len() < need {
-            self.grow(need);
-        }
-    }
-
-    #[cold]
-    fn grow(&mut self, need: usize) {
-        let cap_limit = self.limit.max(need);
-        let want = need.max(self.pos + AHEAD).min(cap_limit);
-        if self.buf.capacity() < want {
-            let cap = (self.buf.capacity() * 2).max(want).min(cap_limit);
-            self.buf.reserve_exact(cap - self.buf.len());
-        }
-        self.buf.resize(want, 0);
-    }
-
     /// Appends `src` (whose length was checked against the limit).
     fn extend(&mut self, src: &[u8]) {
-        self.reserve(src.len());
+        let end = self.pos + src.len();
+        reserve(&mut self.buf, self.pos, src.len(), end, self.limit);
         self.buf[self.pos..self.pos + src.len()].copy_from_slice(src);
         self.pos += src.len();
     }
@@ -337,29 +453,24 @@ impl Decoder<'_> {
         if !(num == 1 || space == 0) {
             return Err(Error::BadPrefixCode);
         }
-        let mut cl_table = std::mem::take(&mut self.cl_table);
-        cl_table.clear();
-        if num == 1 {
-            let s = cl.iter().position(|&l| l != 0).unwrap_or(0);
-            single(s, &mut cl_table);
-        } else {
-            build(&cl, &mut cl_table);
-        }
-        // Symbol code lengths.
+        let cl_table = code_length_table(&cl);
         let mut lens = std::mem::take(&mut self.lens);
+        // Symbol code lengths.
         lens.clear();
-        lens.resize(size, 0);
         let mut sym = 0usize;
         let mut space = 32768i32;
         let mut prev = 8u8;
         let mut repeat = 0usize;
         let mut repeat_len = 0u8;
         while sym < size && space > 0 {
-            let code = decode(&cl_table, &mut self.br);
+            self.br.refill();
+            let e = cl_table[(self.br.peek() & 31) as usize];
+            self.br.consume_loaded(e & 0xff);
+            let code = (e >> 16) as usize;
             if code < 16 {
                 repeat = 0;
                 if code != 0 {
-                    lens[sym] = code as u8;
+                    lens.push(sym, code as u8);
                     prev = code as u8;
                     space -= 32768 >> code;
                 }
@@ -381,7 +492,7 @@ impl Decoder<'_> {
                     return Err(Error::BadPrefixCode);
                 }
                 if repeat_len != 0 {
-                    lens[sym..sym + delta].fill(repeat_len);
+                    lens.push_run(sym, delta, repeat_len);
                     space -= (delta as i32) << (15 - repeat_len);
                 }
                 sym += delta;
@@ -390,11 +501,10 @@ impl Decoder<'_> {
         let r = if space != 0 {
             Err(Error::BadPrefixCode)
         } else {
-            build(&lens, out);
+            lens.build(out);
             Ok(())
         };
         self.lens = lens;
-        self.cl_table = cl_table;
         self.check()?;
         r
     }
@@ -431,19 +541,26 @@ impl Decoder<'_> {
                 }
             }
         };
-        let mut lens = std::mem::take(&mut self.lens);
-        lens.clear();
-        lens.resize(size, 0);
-        for (&s, &l) in syms.iter().zip(shape) {
-            lens[s] = l;
+        // Lengths go to the symbols in the order given; codes are assigned in symbol order.
+        let mut pairs = [(0usize, 0u8); 4];
+        for (p, (&s, &l)) in pairs.iter_mut().zip(syms.iter().zip(shape)) {
+            *p = (s, l);
         }
-        build(&lens, out);
-        self.lens = lens;
+        let pairs = &mut pairs[..nsym];
+        pairs.sort_unstable();
+        self.lens.clear();
+        for &(s, l) in pairs.iter() {
+            self.lens.push(s, l);
+        }
+        self.lens.build(out);
         Ok(())
     }
 
     fn group(&mut self, n: usize, size: usize) -> Result<Group, Error> {
-        let mut g = Group::default();
+        let mut g = Group {
+            tables: Vec::with_capacity(n * 320),
+            starts: Vec::with_capacity(n),
+        };
         for _ in 0..n {
             g.starts.push(g.tables.len());
             self.prefix_code(size, &mut g.tables)?;
@@ -558,23 +675,19 @@ impl Decoder<'_> {
 
         // Literal trees: one for all 64 contexts of a block type when its context map says
         // so (then the literals of that block type need no context).
-        let uniform: Vec<Option<u8>> = lit_map
+        let uniform: Vec<Option<usize>> = lit_map
             .chunks_exact(64)
-            .map(|m| m.iter().all(|&t| t == m[0]).then_some(m[0]))
+            .map(|m| {
+                m.iter()
+                    .all(|&t| t == m[0])
+                    .then(|| lit_codes.start(usize::from(m[0])))
+            })
             .collect();
         let lit_tree_of = |t: usize| uniform.get(t).copied().flatten();
         // Per block type: where the tree of each context starts in `lit_codes.tables`.
         let ctx_starts: Vec<[u32; 64]> = lit_map
             .chunks_exact(64)
-            .map(|m| {
-                std::array::from_fn(|c| {
-                    lit_codes
-                        .starts
-                        .get(usize::from(m[c]))
-                        .copied()
-                        .unwrap_or(0) as u32
-                })
-            })
+            .map(|m| std::array::from_fn(|c| lit_codes.start(usize::from(m[c])) as u32))
             .collect();
         let lut_of = |t: usize| -> &'static [u8; 512] {
             let m = usize::from(modes.get(t).copied().unwrap_or(0) & 3);
@@ -582,210 +695,206 @@ impl Decoder<'_> {
                 .try_into()
                 .unwrap_or(&[0; 512])
         };
-        // The bit reader in a local, so that it can live in registers (the output writes
-        // through `self` would otherwise force it back to memory); put back at the end.
+        // Per distance block type: the start of the tree of each of the four distance contexts.
+        let dist_trees_of = |t: usize| -> [Tree<'_>; 4] {
+            std::array::from_fn(|c| {
+                let tree = dist_map.get(4 * t + c).copied().unwrap_or(0);
+                Tree::at(&dist_codes.tables, dist_codes.start(usize::from(tree)))
+            })
+        };
+        // The decoding state lives in locals, so that it can stay in registers (stores to the
+        // output through `self` would otherwise force it back to memory); it is put back at the
+        // end (on errors the decoder is dropped).
         let mut br = std::mem::replace(&mut self.br, BitReader::new(&[]));
-        let mut remaining = mlen;
+        let mut buf = std::mem::take(&mut self.buf);
+        let mut pos = self.pos;
+        let mut last = self.last;
+        let limit = self.limit;
+        let end = pos.saturating_add(mlen);
+        // `pos + n <= fast` means that `n` more bytes are within the meta-block and the limit,
+        // and that `buf` has `WILD` bytes of room past them; otherwise `make_room` sorts it out.
+        let mut fast = fast_end(&buf, end, limit);
         let mut lit_type = 0usize;
         let mut lut = lut_of(0);
         let mut lit_tree = lit_tree_of(0);
-        let (mut p1, mut p2) = match self.pos {
-            0 => (0u8, 0u8),
-            1 => (self.buf[0], 0),
-            n => (self.buf[n - 1], self.buf[n - 2]),
-        };
+        let mut cmd_tree = Tree::at(&cmd_codes.tables, cmd_codes.start(0));
+        let mut dist_trees = dist_trees_of(0);
+        let lit_tables = &lit_codes.tables[..];
         loop {
             check(&br)?;
             if cmd.left == 0 && cmd.types > 1 {
                 switch(&mut br, &mut cmd);
+                cmd_tree = Tree::at(&cmd_codes.tables, cmd_codes.start(cmd.current()));
             }
             cmd.left = cmd.left.wrapping_sub(1);
-            let sym = decode(cmd_codes.tree(cmd.current()), &mut br);
-            let c = CMD_LUT[sym % 704];
+            br.refill();
+            let sym = cmd_tree.decode_loaded(&mut br);
+            let c = CMD_LUT[sym & 1023];
             // The two extra bit fields together are at most 48 bits.
             br.refill();
             let bits = br.peek();
             let insert = c.ins_base as usize + (bits & ((1 << c.ins_extra) - 1)) as usize;
             let copy =
                 c.copy_base as usize + ((bits >> c.ins_extra) & ((1 << c.copy_extra) - 1)) as usize;
-            br.consume(u32::from(c.ins_extra) + u32::from(c.copy_extra));
-            if insert > remaining {
-                return Err(Error::BadBlockLength);
-            }
-            self.room(insert)?;
-            self.reserve(insert);
-            let mut left = insert;
-            while left > 0 {
-                let mut n = left;
-                if lit.types > 1 {
-                    if lit.left == 0 {
-                        switch(&mut br, &mut lit);
-                        let t = lit.current();
-                        lit_type = t;
-                        lut = lut_of(t);
-                        lit_tree = lit_tree_of(t);
-                    }
-                    n = n.min(lit.left as usize);
-                    lit.left -= n as u32;
+            br.consume_loaded(u32::from(c.ins_extra) + u32::from(c.copy_extra));
+            if insert > 0 {
+                if pos + insert > fast {
+                    fast = make_room(&mut buf, pos, insert, end, limit)?;
                 }
-                let out = &mut self.buf[self.pos..self.pos + n];
-                // Codes are at most 15 bits: three per refill.
-                if let Some(t) = lit_tree {
-                    let table = lit_codes.tree(usize::from(t));
-                    let mut chunks = out.chunks_exact_mut(3);
-                    for c in &mut chunks {
+                let mut left = insert;
+                loop {
+                    let mut n = left;
+                    if lit.types > 1 {
+                        if lit.left == 0 {
+                            switch(&mut br, &mut lit);
+                            let t = lit.current();
+                            lit_type = t;
+                            lut = lut_of(t);
+                            lit_tree = lit_tree_of(t);
+                        }
+                        n = n.min(lit.left as usize);
+                        lit.left -= n as u32;
+                    }
+                    // Codes are at most 15 bits: three per refill.
+                    if let Some(start) = lit_tree {
+                        let tree = Tree::at(lit_tables, start);
+                        let out = &mut buf[pos..pos + n];
+                        let mut chunks = out.chunks_exact_mut(3);
+                        for c in &mut chunks {
+                            br.refill();
+                            c[0] = tree.decode_loaded(&mut br) as u8;
+                            c[1] = tree.decode_loaded(&mut br) as u8;
+                            c[2] = tree.decode_loaded(&mut br) as u8;
+                        }
                         br.refill();
-                        c[0] = decode_loaded(table, &mut br) as u8;
-                        c[1] = decode_loaded(table, &mut br) as u8;
-                        c[2] = decode_loaded(table, &mut br) as u8;
-                    }
-                    for x in chunks.into_remainder() {
-                        *x = decode(table, &mut br) as u8;
-                    }
-                    if let [.., a, b] = out {
-                        (p2, p1) = (*a, *b);
-                    } else if let [b] = out {
-                        (p2, p1) = (p1, *b);
-                    }
-                } else {
-                    let starts = ctx_starts.get(lit_type).unwrap_or(&[0; 64]);
-                    let tables = &lit_codes.tables[..];
-                    let mut chunks = out.chunks_exact_mut(3);
-                    for c in &mut chunks {
+                        for x in chunks.into_remainder() {
+                            *x = tree.decode_loaded(&mut br) as u8;
+                        }
+                    } else {
+                        let mut p1 = if pos > 0 { buf[pos - 1] } else { 0 };
+                        let mut p2 = if pos > 1 { buf[pos - 2] } else { 0 };
+                        let starts = ctx_starts.get(lit_type).unwrap_or(&[0; 64]);
+                        let out = &mut buf[pos..pos + n];
+                        let mut chunks = out.chunks_exact_mut(3);
+                        for c in &mut chunks {
+                            br.refill();
+                            for x in c.iter_mut() {
+                                let ctx = lut[usize::from(p1)] | lut[256 + usize::from(p2)];
+                                let start = starts[usize::from(ctx & 63)] as usize;
+                                let b = decode_loaded_at(lit_tables, start, &mut br) as u8;
+                                *x = b;
+                                p2 = p1;
+                                p1 = b;
+                            }
+                        }
                         br.refill();
-                        for x in c.iter_mut() {
+                        for x in chunks.into_remainder() {
                             let ctx = lut[usize::from(p1)] | lut[256 + usize::from(p2)];
                             let start = starts[usize::from(ctx & 63)] as usize;
-                            let b = decode_loaded_at(tables, start, &mut br) as u8;
+                            let b = decode_loaded_at(lit_tables, start, &mut br) as u8;
                             *x = b;
                             p2 = p1;
                             p1 = b;
                         }
                     }
-                    for x in chunks.into_remainder() {
-                        br.refill();
-                        let ctx = lut[usize::from(p1)] | lut[256 + usize::from(p2)];
-                        let start = starts[usize::from(ctx & 63)] as usize;
-                        let b = decode_loaded_at(tables, start, &mut br) as u8;
-                        *x = b;
-                        p2 = p1;
-                        p1 = b;
+                    pos += n;
+                    left -= n;
+                    if left == 0 {
+                        break;
                     }
                 }
-                self.pos += n;
-                left -= n;
-            }
-            if br.overrun() {
-                return Err(Error::Truncated);
-            }
-            remaining -= insert;
-            if remaining == 0 {
-                break;
+                if br.overrun() {
+                    return Err(Error::Truncated);
+                }
+                if pos == end {
+                    break;
+                }
             }
 
             let dist;
             let mut push = true;
             if c.implicit {
-                dist = self.last[0];
+                dist = last[0];
                 push = false;
             } else {
                 if dst.left == 0 && dst.types > 1 {
                     switch(&mut br, &mut dst);
+                    dist_trees = dist_trees_of(dst.current());
                 }
                 dst.left = dst.left.wrapping_sub(1);
-                let dctx = match copy {
-                    2 => 0,
-                    3 => 1,
-                    4 => 2,
-                    _ => 3,
-                };
-                let tree = dist_map.get(4 * dst.current() + dctx).copied().unwrap_or(0);
-                let code = decode(dist_codes.tree(usize::from(tree)), &mut br);
+                // Distance context: copy lengths 2, 3, 4 and more (copies are at least 2 long).
+                let dctx = copy.min(5) - 2;
+                // A code (at most 15 bits) and its extra bits (at most 24) fit in one refill.
+                br.refill();
+                let code = dist_trees[dctx].decode_loaded(&mut br);
                 if code < 16 {
-                    dist = match code {
-                        0 => {
-                            push = false;
-                            self.last[0]
-                        }
-                        1..=3 => self.last[code],
-                        _ => {
-                            let (base, delta): (usize, i64) = match code {
-                                4 => (self.last[0], -1),
-                                5 => (self.last[0], 1),
-                                6 => (self.last[0], -2),
-                                7 => (self.last[0], 2),
-                                8 => (self.last[0], -3),
-                                9 => (self.last[0], 3),
-                                10 => (self.last[1], -1),
-                                11 => (self.last[1], 1),
-                                12 => (self.last[1], -2),
-                                13 => (self.last[1], 2),
-                                14 => (self.last[1], -3),
-                                _ => (self.last[1], 3),
-                            };
-                            let d = base as i64 + delta;
-                            if d <= 0 {
-                                return Err(Error::BadDistance);
-                            }
-                            d as usize
-                        }
-                    };
+                    let (i, delta) = SHORT_DISTANCES[code];
+                    let d = last[usize::from(i)] as i64 + i64::from(delta);
+                    if d <= 0 {
+                        return Err(Error::BadDistance);
+                    }
+                    dist = d as usize;
+                    push = code != 0;
                 } else {
                     let (off, extra) = dist_lut.get(code).copied().unwrap_or((0, 0));
-                    let x = br.read(u32::from(extra)) as usize;
+                    let x = (br.peek() & ((1u64 << extra) - 1)) as usize;
+                    br.consume_loaded(u32::from(extra));
                     dist = off as usize + (x << npostfix);
                 }
             }
             check(&br)?;
-            let max_distance = self.pos.min(max_backward);
+            let max_distance = pos.min(max_backward);
             if dist > max_distance {
-                // A static dictionary reference.
-                if dist > MAX_ALLOWED_DISTANCE {
-                    return Err(Error::BadDistance);
-                }
-                if !(4..=24).contains(&copy) {
-                    return Err(Error::BadDictionaryReference);
-                }
-                let shift = SIZE_BITS_BY_LENGTH[copy];
-                let address = dist - max_distance - 1;
-                let word = address & ((1 << shift) - 1);
-                let t = address >> shift;
-                if t >= 121 {
-                    return Err(Error::BadDictionaryReference);
-                }
-                let start = OFFSETS_BY_LENGTH[copy] as usize + word * copy;
-                let w = DICTIONARY
-                    .get(start..start + copy)
-                    .ok_or(Error::BadDictionaryReference)?;
-                let mut buf = [0u8; 64];
-                let n = transform_word(&mut buf, w, t);
-                if n > remaining {
-                    return Err(Error::BadBlockLength);
-                }
-                self.room(n)?;
-                self.extend(&buf[..n]);
-                remaining -= n;
+                let n = dictionary_word(&mut buf, pos, dist, max_distance, copy, end, limit)?;
+                pos += n;
+                fast = fast_end(&buf, end, limit);
             } else {
                 if push {
-                    self.last = [dist, self.last[0], self.last[1], self.last[2]];
+                    last = [dist, last[0], last[1], last[2]];
                 }
-                if copy > remaining {
-                    return Err(Error::BadBlockLength);
+                if pos + copy > fast {
+                    fast = make_room(&mut buf, pos, copy, end, limit)?;
                 }
-                self.room(copy)?;
-                self.reserve(copy);
-                copy_match(&mut self.buf, self.pos - dist, self.pos, copy);
-                self.pos += copy;
-                remaining -= copy;
+                copy_match(&mut buf, pos - dist, pos, copy);
+                pos += copy;
             }
-            let n = self.pos;
-            p1 = self.buf.get(n.wrapping_sub(1)).copied().unwrap_or(0);
-            p2 = self.buf.get(n.wrapping_sub(2)).copied().unwrap_or(0);
-            if remaining == 0 {
+            if pos == end {
                 break;
             }
         }
         self.br = br;
+        self.buf = buf;
+        self.pos = pos;
+        self.last = last;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_match;
+
+    #[test]
+    fn copy_match_is_a_bytewise_copy() {
+        for offset in 1..48 {
+            for len in 1..80 {
+                for slack in [0, 7, 16, 40] {
+                    let start = 50;
+                    let mut buf: Vec<u8> = (0..start + len + slack)
+                        .map(|i| (i * 7 + 3) as u8)
+                        .collect();
+                    let mut want = buf.clone();
+                    for i in 0..len {
+                        want[start + i] = want[start + i - offset];
+                    }
+                    copy_match(&mut buf, start - offset, start, len);
+                    assert_eq!(
+                        buf[..start + len],
+                        want[..start + len],
+                        "offset {offset} len {len} slack {slack}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -87,15 +87,16 @@ pub(crate) struct Cmd {
     pub(crate) implicit: bool,
 }
 
-/// [`Cmd`] of each of the 704 insert-and-copy symbols.
-pub(crate) const CMD_LUT: [Cmd; 704] = {
+/// [`Cmd`] of each of the 704 insert-and-copy symbols, padded to 1024 entries so that a
+/// decoded symbol can index it with a mask.
+pub(crate) const CMD_LUT: [Cmd; 1024] = {
     let mut t = [Cmd {
         ins_base: 0,
         copy_base: 0,
         ins_extra: 0,
         copy_extra: 0,
         implicit: false,
-    }; 704];
+    }; 1024];
     let mut s = 0;
     while s < 704 {
         let (ic, cc, implicit) = split_command(s);

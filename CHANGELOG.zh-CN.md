@@ -129,6 +129,21 @@ ADR-052（docs/adr/052-srtp-f8-seed.zh-CN.md），仅新增：
   1200 字节 AES-GCM 单独测量时持平（在完整用例序列中 protect +1.5-2.2%）；A/B 途中发现的两处 AES-GCM
   回退（+3% 与 +2.4%）已消除（ADR-052）。
 
+### 变更：更快的 brotli 解码（only-brotli）
+
+公共 API 不变，输出不变（见 docs/BENCHMARKS.zh-CN.md 的 “Brotli 与 Zstandard”）。在
+`tools/codec-bench brotli` 的 HTTP 负载上解码用时为 libbrotli 1.2.1 的 1.08–1.34 倍（之前 1.42–1.73
+倍），在 Silesia 上为 1.04–1.32 倍（之前 1.13–1.56 倍）。
+
+- 命令循环的状态（位读取器、输出、输出位置、最近的距离）放在局部变量里，元块末尾、输出上限与窗口
+  余量合并为每次写入一次比较；距离上下文与短距离码查表得到，根表大小固定。
+- 前缀码表在读码长时就收集信息再构建，不再遍历没有码的符号，码长码改用 32 项的表：解码一条
+  2.7 KB 证书链时建表曾占 40%。
+- 周期小于 16、不超过 32 字节的复制以 8 字节为块进行。
+- 输出只提前清零到元块末尾，因此在很大的上限下解码小输出时不再先清零 128 KiB（2.7 KB 证书链、
+  16 MiB 上限：266 → 370 MB/s）。
+- `tools/codec-bench`：`BENCH_BR_LIMIT=N` 以 `N` 而非精确大小作为输出上限解码。
+
 ### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：
