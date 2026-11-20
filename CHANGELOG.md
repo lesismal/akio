@@ -36,7 +36,11 @@ ADR-060 (docs/adr/060-h2-websocket.md), additive:
   server, golang.org/x/net/http2 client), and with headless Chrome, which opens the WebSocket on
   the HTTP/2 connection of the page it loaded. New fuzz target `h2_websocket`; `h2_server` seeds with
   extended CONNECT.
-- Performance: H2C_AB_EN
+- Performance: requests without `:protocol` take the same branches as before. Same-run A/B on
+  gpu51 against `b22519ae` (7 interleaved rounds under `quiet.sh`, epoll): h2c 64 × 16 per-round
+  ratio median 0.991, h2c 16 × 128 1.004, both inside the rounds' spread (±10–36%); see
+  docs/BENCHMARKS.md. Fuzzing on gpu51: `h2_server` 4.8 M and `h2_websocket` 2.3 M runs
+  (10 min each), no crashes.
 
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 

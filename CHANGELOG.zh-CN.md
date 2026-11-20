@@ -31,7 +31,10 @@ ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
   流被重置（`CANCEL`）。
 - 与 Go 的 HTTP/2 在 h2c 和 TLS 上双向互通（`tools/interop/h2ws/run.sh`：net/http 服务端，
   golang.org/x/net/http2 客户端），并与无头 Chrome 互通：它在所加载页面的 HTTP/2 连接上打开 WebSocket。新增 fuzz 目标 `h2_websocket`；`h2_server` 增加 extended CONNECT 种子。
-- 性能：H2C_AB_ZH
+- 性能：不带 `:protocol` 的请求走与之前相同的分支。gpu51 上对 `b22519ae` 的同轮 A/B（`quiet.sh` 下
+  交错 7 轮，epoll）：h2c 64 × 16 逐轮比值中位数 0.991，h2c 16 × 128 为 1.004，都在各轮波动
+  （±10–36%）之内；见 docs/BENCHMARKS.zh-CN.md。gpu51 上 fuzz：`h2_server` 480 万次、
+  `h2_websocket` 230 万次（各 10 分钟），无崩溃。
 
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 

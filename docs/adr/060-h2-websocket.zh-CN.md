@@ -53,8 +53,9 @@ HTTP/1.1 连接；我们自己的客户端也无法让请求和 WebSocket 共用
 ## 影响
 
 - 服务端的 SETTINGS 帧多 6 字节。`Stream` 多一个标志，挂起的 context 变成两种情况的枚举（每个打开的流
-  多 8 字节）；不带 `:protocol` 的请求走与之前相同的分支。gpu51 上的 h2c 同轮 A/B（数字见 CHANGELOG
-  条目）在轮间波动之内。
+  多 8 字节）；不带 `:protocol` 的请求走与之前相同的分支。gpu51 上对 `b22519ae` 的 h2c 同轮 A/B（交错
+  7 轮）：逐轮比值中位数 0.991（64 × 16）和 1.004（16 × 128），在各轮波动之内
+  （docs/BENCHMARKS.zh-CN.md，“HTTP/2 上的 WebSocket”）。
 - 互通（`tools/interop/h2ws/run.sh`）：与 Go 的 HTTP/2 双向互通，覆盖 h2c 和 TLS：服务端为 net/http，
   客户端为 golang.org/x/net/http2 的 transport（net/http 自己的 transport 拒绝 `:protocol` 字段；在
   Go 1.27 上 x/net 需要 `-tags http2legacy`，两者都需要 `GODEBUG=http2xconnect=1`）。覆盖文本、3 MiB
@@ -63,7 +64,8 @@ HTTP/1.1 连接；我们自己的客户端也无法让请求和 WebSocket 共用
   WebSocket，它在同一条 HTTP/2 连接上发出（`permessage-deflate`、子协议、300 KB 消息、以 1000 关闭）；
   服务端确认该 WebSocket 是经 HTTP/2 接受的。
 - Fuzz：新目标 `h2_websocket` 在已接受的 extended CONNECT 之后送入 WebSocket 字节（按输入切成 DATA
-  帧）或原始帧；`h2_server` 增加 extended CONNECT 种子。
+  帧）或原始帧；`h2_server` 增加 extended CONNECT 种子。gpu51 上各跑 10 分钟（libFuzzer、ASan）：
+  `h2_server` 480 万次、`h2_websocket` 230 万次，无崩溃。
 - 对端在我方 END_STREAM 之后一直不结束它那一半时，流最多保留 5 秒，在此之前计入
   `max_concurrent_streams`。若该定时器在握手完成前重置流，handler 的 `on_close`（1006）在定时器线程上
   而非连接的 I/O 线程上运行。

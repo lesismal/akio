@@ -68,8 +68,9 @@ connection; and our own clients could not share one connection between requests 
 
 - The server's SETTINGS frame is six bytes longer. `Stream` gains a flag and its parked
   context became a two-case enum (8 bytes more per open stream); requests without `:protocol`
-  go through the same branches as before. h2c A/B on gpu51 (see the CHANGELOG entry for the
-  numbers) is within run-to-run spread.
+  go through the same branches as before. h2c A/B on gpu51 against `b22519ae` (7 interleaved
+  rounds): per-round ratio medians 0.991 (64 × 16) and 1.004 (16 × 128), within the rounds'
+  spread (docs/BENCHMARKS.md, "WebSocket over HTTP/2").
 - Interop (`tools/interop/h2ws/run.sh`): Go's HTTP/2 both ways, over h2c and TLS: net/http's
   server, and golang.org/x/net/http2's transport as the client (net/http's own transport
   refuses the `:protocol` field; x/net needs `-tags http2legacy` on Go 1.27, and both
@@ -81,7 +82,8 @@ connection; and our own clients could not share one connection between requests 
   close 1000); the server checks the WebSocket was accepted over HTTP/2.
 - Fuzzing: a new target `h2_websocket` feeds WebSocket bytes (cut into DATA frames as the input
   says) or raw frames after an accepted extended CONNECT; `h2_server` gains extended CONNECT
-  seeds.
+  seeds. Ten minutes each on gpu51 (libFuzzer, ASan): 4.8 M runs of `h2_server`, 2.3 M of
+  `h2_websocket`, no crashes.
 - A peer that never ends its half after our END_STREAM keeps the stream up to 5 s; until then
   it counts against `max_concurrent_streams`. When that timer resets the stream before the
   handshake finished, the handler's `on_close` (1006) runs on the timer thread rather than the
