@@ -972,7 +972,7 @@ fn late_ulpfec_number_releases_the_frames_after_it() {
 // ---- DTLS 1.3, cryptex, RFC 6904, Opus RED, FEC on simulcast lines (ADR-048) ----
 
 /// Chrome 157's offer of one audio line (abridged: one candidate, fewer codecs).
-const BROWSER_OFFER: &str = "v=0\r\no=- 1062146362762926423 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
+pub(super) const BROWSER_OFFER: &str = "v=0\r\no=- 1062146362762926423 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
 a=group:BUNDLE 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\n\
 m=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\n\
 a=candidate:2 1 udp 2122260223 192.0.2.9 50001 typ host generation 0\r\n\

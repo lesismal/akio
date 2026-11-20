@@ -10,6 +10,36 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
+
+ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's
+SDP and behaviour are unchanged):
+
+- Streams without rtcp-mux (RFC 5761, ICE components from ADR-055): `Endpoint::bind_rtcp`
+  binds a second socket whose host candidate is ICE component 2 (`Endpoint::rtcp_addr`). Offers
+  without `a=rtcp-mux` (SIP endpoints, older RTP stacks) are then answered with `a=rtcp` and RTCP
+  on component 2; offers with it (browsers, pion) as before. `RtcConfig::set_rtcp_mux_policy`
+  (`RtcpMuxPolicy::Require` default, `Negotiate`, `Off`) decides what our offers say. DTLS-SRTP
+  runs a handshake per component (RFC 5764 §4.1: SRTCP keyed by component 2's), SDES-SRTP keys
+  both from the SDP; connected once both components are. Such a session has one media section
+  and no data channels (no BUNDLE without rtcp-mux); component 2 has host and peer-reflexive
+  candidates only; `RtcServer` has none.
+- `RtcConfig::enable_rtcp_xr_blocks(XrBlocks)`: RTCP XR loss RLE, duplicate RLE, packet
+  receipt times and VoIP metrics (RFC 3611, `a=rtcp-xr:pkt-loss-rle pkt-dup-rle pkt-rcpt-times
+  voip-metrics`, sent when both sides list them; VoIP metrics on audio only) about received
+  streams, once a second from a receipt log, thinned to fit a datagram; received ones become
+  `XrReceipts` / `VoipMetrics` events and totals in the statistics.
+- `RtcConfig::set_ulpfec_level0(Some(l0))`: ULPFEC with protection levels (RFC 5109 §5) on sent
+  video, for receivers that read levels (this stack; Chrome reads level 0 only). Off by
+  default.
+- The CNAME is RFC 7022's random one (`only_rtp::random_cname`), new per peer connection;
+  received SDES items are reported typed (`SourceDescription` event); `PeerStats` says whether
+  RTCP is muxed.
+- Fuzzing: `webrtc_sdp` also runs a configuration with component-2 candidates, every XR block
+  and ULPFEC levels; two seeds without rtcp-mux. Interop: pion has neither a non-mux policy
+  nor ICE components, so the check without rtcp-mux is between `Endpoint`s; the browser and
+  pion scripts see unchanged SDP.
+
 ### Added: several components per ICE stream (only-ice)
 
 ADR-055 (docs/adr/055-ice-components.md), additive (one-component agents behave as before):

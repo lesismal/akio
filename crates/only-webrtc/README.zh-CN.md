@@ -34,8 +34,15 @@
   FEC（带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC，后者也与 Chrome 一样按
   simulcast 线路的每个编码发送），在帧组装器和 NACK 之前修复包，按修复前丢包率调节发送的保护率；Opus
   RED（`red/48000/2`，排在 Opus 之前使 Chrome 发送；冗余副本代替丢失的包，最多发送两个）；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
-  （接收方 RTT）；TMMBR / TMMBN（`Peer::request_max_bitrate`，收到的请求会限制估计值）。
-- **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux、mid/msid、ssrc/FID、extmap、
+  （接收方 RTT）；TMMBR / TMMBN（`Peer::request_max_bitrate`，收到的请求会限制估计值）。可选开启
+  （ADR-058）：关于接收流的 RTCP XR 丢包 RLE、重复 RLE、接收时间与 VoIP 指标（`enable_rtcp_xr_blocks`，
+  收到的以事件报告）；带保护级别的 ULPFEC（`set_ulpfec_level0`，用于能读级别的接收方，不包括 Chrome）。
+  CNAME 是每个对端连接一个的 RFC 7022 随机 CNAME；收到的 SDES 项以类型化形式报告。
+- **RTCP 走独立端口**（ADR-058，不复用 RTCP 的 RFC 5761，ICE 组件 2）：调用 `Endpoint::bind_rtcp`
+  后，不带 `a=rtcp-mux` 的 offer（SIP 终端、较老的 RTP 栈）以 `a=rtcp` 应答，RTCP 走单独的套接字；
+  `RtcConfig::set_rtcp_mux_policy` 让我方 offer 提议（`Negotiate`）或要求（`Off`）这种方式。DTLS-SRTP
+  每个组件各握手一次（RFC 5764），SDES-SRTP 两个组件都加密。浏览器仍用 rtcp-mux 与 BUNDLE。
+- **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux（或 `a=rtcp`）、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
   sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
   `a=simulcast`、RID/MID 头扩展）与接收，以及用于层选择的按层关键帧请求（`request_layer_keyframe`）。
@@ -82,7 +89,9 @@ TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`t
 
 未实现：simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不发送）、SRTP MKI
 （DTLS-SRTP 没有对应的 SDP，也没有浏览器使用；带 MKI 的 SDES 行同样不采用）、无 ICE 或带数据通道的
-SDES-SRTP、与浏览器的 RFC 6904（没有浏览器提供）、多个 ICE 组件（rtcp-mux 是通行做法）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
+SDES-SRTP、与浏览器的 RFC 6904（没有浏览器提供）；不复用 RTCP 时：多个媒体段或数据通道（没有 BUNDLE：
+每个会话一个传输）、RTCP 的 server-reflexive 与中继候选、`RtcServer`（pion 没有非复用模式：在 `Endpoint`
+之间测试）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
 `listen_tcp_so` 在 `Endpoint` 之间测试。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

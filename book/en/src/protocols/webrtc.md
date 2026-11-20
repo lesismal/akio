@@ -292,6 +292,8 @@ let cfg = only_webrtc::rtc_config()
     .enable_opus_red(Some(1))                // Opus RED, one redundant packet (at most 2)
     .enable_ccfb(true)                       // RFC 8888 feedback instead of transport-wide
     .enable_rtcp_xr(true)                    // XR receiver reference time / DLRR: receiver RTT
+    .enable_rtcp_xr_blocks(XrBlocks::ALL)    // XR loss / duplicate RLE, receipt times, VoIP metrics
+    .set_ulpfec_level0(Some(120))            // ULPFEC levels: only toward peers that are this stack
     .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
     .enable_bwe(None);
 ```
@@ -316,6 +318,16 @@ let cfg = only_webrtc::rtc_config()
   needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`.
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
+- **XR blocks about received streams** (ADR-058, `pkt-loss-rle pkt-dup-rle pkt-rcpt-times
+  voip-metrics`): a block goes out when both sides list its format, once a second per received
+  stream, about the sequence numbers since the last report (thinned to fit a datagram); VoIP
+  metrics on audio lines only, with the loss, burst and gap fields measured and the round-trip
+  time, the codec's quality fields unavailable. Received ones arrive as `XrReceipts` and
+  `VoipMetrics` events, with totals in the statistics.
+- **ULPFEC levels** (RFC 5109 §5): with `set_ulpfec_level0(Some(l0))` the FEC packets of a frame
+  protect the first `l0` bytes of each packet and one more level covers the rest once: a single
+  loss is repaired whole for far fewer repair bytes. libwebrtc reads level 0 only (Chrome would
+  rebuild long packets wrongly), so leave it off toward browsers.
 - **TMMBR**: `Peer::request_max_bitrate(mid, Some(bps))` asks the remote sender for at most
   `bps` (repeated with every report until `None`); Chrome follows it. Requests about our streams
   are answered with TMMBN and cap the bandwidth estimate, like REMB.
@@ -361,6 +373,26 @@ own. Each side encrypts with its own key and decrypts with the other's; the peer
 ICE has a pair (the gateway needs ICE or ICE-lite). There is no DTLS, so no data channels, and the
 keys are only as secret as the signalling. Lines with an MKI or session parameters are not
 taken. DTLS-SRTP offers are still answered with DTLS-SRTP, so browsers never see `a=crypto`.
+
+### RTCP on its own port (no rtcp-mux)
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:5004".parse()?)?;
+ep.bind_rtcp(&engine, "0.0.0.0:5005".parse()?)?; // ICE component 2
+let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
+```
+
+Browsers and pion always multiplex RTP and RTCP (rtcp-mux, BUNDLE), and so does a default peer.
+SIP endpoints and older RTP stacks may not: their offer has no `a=rtcp-mux` and they send RTCP
+to a port of its own (RFC 5761, `a=rtcp`). An `Endpoint` with an RTCP socket answers them with
+`a=rtcp` and runs ICE with two components (ADR-055): RTP on component 1, RTCP on component 2,
+each with its selected pair. DTLS-SRTP runs one handshake per component (RFC 5764: SRTCP keyed
+by component 2's), SDES-SRTP keys both from the SDP; the peer is connected once both
+components are. Offers with `a=rtcp-mux` are answered with it as before. Our offers say what
+`set_rtcp_mux_policy` asks: `Require` (default) rtcp-mux only, `Negotiate` rtcp-mux plus `a=rtcp`
+and component-2 candidates (the answer decides), `Off` no rtcp-mux. There is no BUNDLE without
+rtcp-mux, so such a session has one media section and no data channels; component 2 has host
+and peer-reflexive candidates only, and `RtcServer` has no component 2 (ADR-058).
 
 ### Bandwidth probing
 
@@ -497,5 +529,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 ## Not done yet
 
 TCP relays (RFC 6062); FlexFEC on simulcast lines, libwebrtc's FEC mask tables; SRTP MKIs in
-WebRTC; SDES-SRTP without ICE or next to data channels. ADR-017, ADR-032, ADR-039, ADR-044,
-ADR-045, ADR-048 and ADR-054 have the details of what was added.
+WebRTC; SDES-SRTP without ICE or next to data channels; without rtcp-mux, several media
+sections or data channels in one session, server-reflexive and relayed RTCP candidates and
+`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054 and ADR-058 have the
+details of what was added.

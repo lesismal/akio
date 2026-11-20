@@ -10,6 +10,30 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
+
+ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP
+与行为不变）：
+
+- 不复用 RTCP 的流（RFC 5761，使用 ADR-055 的 ICE 组件）：`Endpoint::bind_rtcp` 绑定第二个套接字，
+  其主机候选是 ICE 组件 2（`Endpoint::rtcp_addr`）。之后不带 `a=rtcp-mux` 的 offer（SIP 终端、较老的
+  RTP 栈）以 `a=rtcp` 应答，RTCP 走组件 2；带它的 offer（浏览器、pion）照旧。
+  `RtcConfig::set_rtcp_mux_policy`（默认 `RtcpMuxPolicy::Require`，另有 `Negotiate`、`Off`）决定我方
+  offer 的写法。DTLS-SRTP 每个组件各握手一次（RFC 5764 §4.1：SRTCP 用组件 2 的密钥），SDES-SRTP 两个
+  组件都用 SDP 中的密钥；两个组件都就绪才算连接。这种会话只有一个媒体段、没有数据通道（无 rtcp-mux 就
+  没有 BUNDLE）；组件 2 只有主机与 peer-reflexive 候选；`RtcServer` 没有组件 2。
+- `RtcConfig::enable_rtcp_xr_blocks(XrBlocks)`：关于接收流的 RTCP XR 丢包 RLE、重复 RLE、包接收时间
+  与 VoIP 指标（RFC 3611，`a=rtcp-xr:pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`，双方都
+  列出才发送；VoIP 指标仅音频），每秒由接收日志生成一次，抽稀到一个数据报内；收到的块产生
+  `XrReceipts` / `VoipMetrics` 事件并累计到统计中。
+- `RtcConfig::set_ulpfec_level0(Some(l0))`：发送视频时使用带保护级别的 ULPFEC（RFC 5109 §5），只用于能
+  读级别的接收方（本栈；Chrome 只读级别 0）。默认关闭。
+- CNAME 改为 RFC 7022 的随机 CNAME（`only_rtp::random_cname`），每个对端连接新生成；收到的 SDES 项以
+  类型化形式报告（`SourceDescription` 事件）；`PeerStats` 指明 RTCP 是否复用。
+- 模糊测试：`webrtc_sdp` 还会以带组件 2 候选、全部 XR 块与 ULPFEC 级别的配置运行；新增两个不复用 RTCP
+  的种子。互通：pion 既没有非复用策略也没有 ICE 多组件，因此不复用 RTCP 的检查在 `Endpoint` 之间进行；
+  浏览器与 pion 脚本看到的 SDP 不变。
+
 ### 新增：每个 ICE 数据流支持多个组件（only-ice）
 
 ADR-055（docs/adr/055-ice-components.zh-CN.md），只有新增（单组件代理的行为不变）：

@@ -27,7 +27,7 @@ use crate::sdp::{Attr, Media, Sdp};
 use crate::types::{
     Change, Changes, ChannelConfig, ChannelId, Codec, ConfigInner, Direction, FecMechanism,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, Other, Pt, RtpPacket,
+    MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
 };
 use crate::{Frequency, fill_random};
 
@@ -505,6 +505,8 @@ struct Recv {
     stream: RecvStream,
     assembler: Option<(u8, FrameAssembler)>,
     rid: Option<String>,
+    /// The burst / gap loss model of VoIP metrics (RFC 3611 §4.7), fed from the receipt log.
+    burst: Option<only_rtp::BurstLossModel>,
 }
 
 /// How an incoming SSRC maps to a media line.
@@ -605,6 +607,8 @@ struct MediaLine {
     remote_fec: HashMap<u32, u32>,
     /// RTCP XR receiver reference times were negotiated.
     xr: bool,
+    /// The RTCP XR blocks about received streams both sides listed (`a=rtcp-xr`).
+    xr_blocks: XrBlocks,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
     tmmbr_req: Option<u64>,
     /// The Opus RED payload type (offered, then negotiated) of an audio line.
@@ -666,6 +670,7 @@ impl MediaLine {
             fec: FecSend::default(),
             remote_fec: HashMap::new(),
             xr: false,
+            xr_blocks: XrBlocks::NONE,
             tmmbr_req: None,
             red: None,
             red_hist: VecDeque::new(),
@@ -843,6 +848,13 @@ pub(crate) struct Rtc {
     dtls_version: Option<DtlsVersion>,
     /// The ICE pair the estimate was made on (a new one restarts it, ADR-050).
     probe_pair: Option<(SocketAddr, SocketAddr)>,
+    /// The DTLS handshake of component 1 completed (its SRTP keys are in place).
+    dtls_up: bool,
+    /// RTCP on its own ICE component (ADR-058): the local candidates of component 2, its
+    /// DTLS association and SRTCP keys.
+    rtcp: rtcp_mux::RtcpComponent,
+    /// The SDES items last received per remote SSRC.
+    remote_sdes: HashMap<u32, Vec<only_rtp::SdesItem>>,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -869,6 +881,10 @@ struct Stats {
     fec_recovered: u64,
     cryptex_received: u64,
     red_recovered: u64,
+    /// Totals of the remote receivers' XR loss and duplicate RLE blocks.
+    xr_received: u64,
+    xr_lost: u64,
+    xr_duplicated: u64,
 }
 
 impl std::fmt::Debug for Rtc {
@@ -929,7 +945,12 @@ impl Rtc {
             bwe,
             next_rtcp: None,
             next_stats: cfg.stats_interval.map(|d| now + d),
-            cname: random_token(16),
+            cname: {
+                // RFC 7022 §4.2: a new random CNAME per peer connection.
+                let mut b = [0u8; 12];
+                fill_random(&mut b);
+                only_rtp::random_cname(&b)
+            },
             transmits: VecDeque::new(),
             events: VecDeque::new(),
             alive: true,
@@ -951,6 +972,9 @@ impl Rtc {
             srtp_enc_ids: Vec::new(),
             dtls_version: None,
             probe_pair: None,
+            dtls_up: false,
+            rtcp: rtcp_mux::RtcpComponent::default(),
+            remote_sdes: HashMap::new(),
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -969,6 +993,10 @@ impl Rtc {
     }
 
     pub(crate) fn add_local_candidate(&mut self, c: IceCandidate) {
+        if c.component() == 2 {
+            // Kept for a session without rtcp-mux (the agent has one component until then).
+            self.rtcp.add_candidate(&c);
+        }
         self.ice.add_local_candidate(c);
     }
 
@@ -1030,7 +1058,9 @@ impl Rtc {
     }
 
     pub(crate) fn is_connected(&self) -> bool {
-        self.dtls_connected && self.ice.send_pair().is_some()
+        self.dtls_connected
+            && self.ice.send_pair().is_some()
+            && (self.ice.components() == 1 || self.ice.send_pair_of(2).is_some())
     }
 
     pub(crate) fn is_alive(&self) -> bool {
@@ -1080,6 +1110,22 @@ impl Rtc {
             return Err(err(
                 "data channels need DTLS: an SDES-SRTP session carries media only",
             ));
+        }
+        let first_offer = !self.negotiated && self.pending.is_none();
+        if first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off && !self.rtcp.has_candidates() {
+            return Err(err(
+                "RTCP without rtcp-mux needs component-2 candidates (Endpoint::bind_rtcp)",
+            ));
+        }
+        if (self.ice.components() == 2 || (first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off))
+            && self.sections_after(&ch.ops) > 1
+        {
+            return Err(err(
+                "a session without rtcp-mux has one media section and no data channels",
+            ));
+        }
+        if first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off {
+            self.use_rtcp_component(now);
         }
         self.next_channel = self.next_channel.max(ch.next_channel);
         self.next_mid = self.next_mid.max(ch.next_mid);
@@ -1156,6 +1202,17 @@ impl Rtc {
         if self.sdes.active {
             self.sdes.accept_answer(&sdp).map_err(err)?;
         }
+        if !self.negotiated && self.ice.components() == 1 && self.offers_rtcp_component() {
+            // A `Negotiate` offer: the answer picks (RFC 5761 §5.1.1).
+            if !rtcp_mux::muxed(&sdp) {
+                if rtcp_mux::sections_in_use(&sdp) > 1 {
+                    return Err(err(
+                        "an answer without rtcp-mux must keep one section in use (no BUNDLE)",
+                    ));
+                }
+                self.use_rtcp_component(now);
+            }
+        }
         self.apply_remote_transport(&sdp, false)?;
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
         if self.dtls_role.is_none() && !self.sdes.active {
@@ -1202,6 +1259,7 @@ impl Rtc {
             line.fec_pts = FecPts::remote(&cfg, m, line.kind).for_simulcast(!line.sim.is_empty());
             line.red = remote_red(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
+            line.xr_blocks = remote_xr_blocks(&cfg, m, line.kind);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             line.negotiated = true;
             read_ssrcs(line, m);
@@ -1251,6 +1309,22 @@ impl Rtc {
             if let Some(m) = sdp.media.iter().find(|m| m.port != 0) {
                 self.sdes.proto.clone_from(&m.proto);
             }
+        }
+        let split = if self.negotiated {
+            self.ice.components() == 2
+        } else {
+            // RTCP on component 2 for an offer without rtcp-mux, when this side has an RTCP
+            // socket; without one the answer keeps rtcp-mux as before (ADR-058).
+            !rtcp_mux::muxed(&sdp) && self.rtcp.has_candidates()
+        };
+        if split && rtcp_mux::sections_in_use(&sdp) > 1 {
+            return Err(err(
+                "an offer without rtcp-mux must have one section in use: several transports \
+                 (no BUNDLE) are not supported",
+            ));
+        }
+        if split {
+            self.use_rtcp_component(now);
         }
         self.apply_remote_transport(&sdp, true)?;
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
@@ -1331,6 +1405,7 @@ impl Rtc {
             line.fec_pts = FecPts::remote(&cfg, m, kind).for_simulcast(simulcast);
             line.red = remote_red(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
+            line.xr_blocks = remote_xr_blocks(&cfg, m, kind);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             if cfg.ccfb
                 && line
@@ -1515,8 +1590,11 @@ impl Rtc {
             })
             .map(Mid::as_str)
             .collect();
-        sdp.attrs
-            .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
+        if self.rtcp_mux_attrs(offer).0 {
+            // No BUNDLE without rtcp-mux (RFC 8843 §9.1).
+            sdp.attrs
+                .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
+        }
         sdp.attrs.push(Attr::kv("msid-semantic", " WMS *"));
         if self.lite {
             sdp.attrs.push(Attr::flag("ice-lite"));
@@ -1565,8 +1643,10 @@ impl Rtc {
                 _ => {}
             }
         }
-        sdp.attrs
-            .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
+        if self.ice.components() == 1 {
+            sdp.attrs
+                .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
+        }
         sdp.attrs.push(Attr::kv("msid-semantic", " WMS *"));
         if self.lite {
             sdp.attrs.push(Attr::flag("ice-lite"));
@@ -1693,7 +1773,13 @@ impl Rtc {
             attrs.push(Attr::kv("setup", setup));
         }
         if candidates {
-            for c in self.ice.local_candidates() {
+            // A `Negotiate` offer signals component 2 before the agent has it.
+            let extra = if offer && self.ice.components() == 1 && self.offers_rtcp_component() {
+                self.rtcp.candidates()
+            } else {
+                &[]
+            };
+            for c in self.ice.local_candidates().iter().chain(extra) {
                 if c.kind() == only_ice::CandidateKind::PeerReflexive {
                     continue;
                 }
@@ -1748,7 +1834,14 @@ impl Rtc {
         let dir = if offer { l.want } else { l.dir };
         attrs.push(Attr::flag(dir.as_str()));
         attrs.push(Attr::kv("msid", format!("{} {}", l.stream_id, l.track_id)));
-        attrs.push(Attr::flag("rtcp-mux"));
+        let (mux, rtcp) = self.rtcp_mux_attrs(offer);
+        if rtcp {
+            // RFC 3605: RTCP's own port; the actual addresses are component 2's candidates.
+            attrs.push(Attr::kv("rtcp", "9 IN IP4 0.0.0.0"));
+        }
+        if mux {
+            attrs.push(Attr::flag("rtcp-mux"));
+        }
         attrs.push(Attr::flag("rtcp-rsize"));
         let mut fmts = Vec::new();
         // RFC 8888 is per section: libwebrtc wants it on every payload type (RTX, FEC too).
@@ -1817,8 +1910,18 @@ impl Rtc {
                 ccfb_fb(&mut attrs, x);
                 attrs.push(Attr::kv("fmtp", format!("{x} repair-window=10000000")));
             }
+            let mut xr: Vec<&str> = Vec::new();
             if self.cfg.xr && (offer || l.xr) {
-                attrs.push(Attr::kv("rtcp-xr", "rcvr-rtt=all"));
+                xr.push("rcvr-rtt=all");
+            }
+            let blocks = if offer {
+                line_xr_blocks(self.cfg.xr_blocks, l.kind)
+            } else {
+                l.xr_blocks
+            };
+            xr.extend(blocks.sdp_formats());
+            if !xr.is_empty() {
+                attrs.push(Attr::kv("rtcp-xr", xr.join(" ")));
             }
         }
         if dir.sends() && !l.sim.is_empty() {
@@ -2015,7 +2118,11 @@ impl Rtc {
             let (send, fec) = line.fec_of(enc);
             if fec.enc.is_none() {
                 let rate = fec_rate(&self.cfg, fec.loss.unwrap_or(0.0));
-                fec.enc = Some(FecEncoder::new(sc, send.ssrc(), rate));
+                let mut e = FecEncoder::new(sc, send.ssrc(), rate);
+                if sc == FecScheme::Ulpfec {
+                    e.set_ulp_level0(self.cfg.ulpfec_level0);
+                }
+                fec.enc = Some(e);
             }
         }
         // Opus RED: its payload type and the earlier packets that go with each.
@@ -2196,7 +2303,20 @@ impl Rtc {
     }
 
     fn send_rtcp(&mut self, pkts: &[Rtcp]) {
-        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        // Without rtcp-mux: on component 2, with its own DTLS keys (RFC 5764 §4.1) or the
+        // SDES keys.
+        let split = self.ice.components() == 2;
+        let path = if split {
+            self.ice.send_pair_of(2)
+        } else {
+            self.ice.send_pair()
+        };
+        let tx = if split && !self.sdes.active {
+            self.rtcp.srtcp_tx.as_mut()
+        } else {
+            self.srtp_tx.as_mut()
+        };
+        let (Some(tx), Some((src, dest))) = (tx, path) else {
             return;
         };
         let raw = only_rtp::write_compound(pkts);
@@ -2220,9 +2340,16 @@ impl Rtc {
             return;
         }
         let Some(&b) = data.first() else { return };
+        // Component 2 (RTCP without rtcp-mux): what arrives on its local addresses.
+        let rtcp_comp = self.ice.components() == 2 && self.rtcp.is_local(destination);
         match b {
             0..=3 => {
                 self.ice.handle_receive(now, source, destination, data);
+            }
+            20..=63 if rtcp_comp => {
+                if !self.sdes.active {
+                    self.rtcp_dtls_input(now, source, destination, data);
+                }
             }
             20..=63 => {
                 if self.remote_addr.is_none() {
@@ -2235,8 +2362,8 @@ impl Rtc {
                 self.stats.bytes_received += data.len() as u64;
                 self.stats.packets_received += 1;
                 if only_rtp::is_rtcp(data) {
-                    self.handle_rtcp(now, data);
-                } else {
+                    self.handle_rtcp(now, data, rtcp_comp);
+                } else if !rtcp_comp {
                     self.handle_rtp(now, data);
                 }
             }
@@ -2250,11 +2377,14 @@ impl Rtc {
             return;
         }
         self.ice.handle_timeout(now);
-        if let Some(d) = self.dtls.as_mut() {
+        for d in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             if d.poll_timeout().is_some_and(|t| t <= now) {
                 if let Err(e) = d.handle_timeout(now) {
                     only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                    self.die();
+                    self.alive = false;
                 }
             }
         }
@@ -2282,6 +2412,10 @@ impl Rtc {
             d.close();
         }
         self.flush_dtls(now);
+        if let Some(d) = self.rtcp.dtls.as_mut() {
+            d.close();
+        }
+        self.flush_rtcp_dtls(now);
         self.ice.close();
         self.alive = false;
     }
@@ -2300,12 +2434,20 @@ impl Rtc {
     }
 
     fn start_dtls(&mut self, now: Instant) {
-        let (Some(role), Some(fp)) = (self.dtls_role, self.remote_fp.clone()) else {
-            return;
-        };
         if self.dtls.is_some() {
             return;
         }
+        let peer = self.remote_addr;
+        self.dtls = self.new_dtls(now, peer);
+    }
+
+    /// A DTLS association in the negotiated role (`peer`: a server's client address, for its
+    /// cookies); `None` before the role and fingerprint are known, or when it cannot be made
+    /// (the peer is then dead).
+    fn new_dtls(&mut self, now: Instant, peer: Option<SocketAddr>) -> Option<Connection> {
+        let (Some(role), Some(fp)) = (self.dtls_role, self.remote_fp.clone()) else {
+            return None;
+        };
         let mut cfg =
             DtlsConfig::webrtc(self.identity.clone(), PeerVerifier::Fingerprints(vec![fp]));
         if self.cfg.dtls13 {
@@ -2316,15 +2458,16 @@ impl Rtc {
         let r = match role {
             Role::Client => Connection::client(cfg, now),
             Role::Server => {
-                let peer = self.remote_addr.map(|a| a.to_string()).unwrap_or_default();
+                let peer = peer.map(|a| a.to_string()).unwrap_or_default();
                 Connection::server(cfg, now, peer.as_bytes())
             }
         };
         match r {
-            Ok(c) => self.dtls = Some(c),
+            Ok(c) => Some(c),
             Err(e) => {
                 only_log::debug!(target: "only_webrtc", "dtls: {e}");
                 self.die();
+                None
             }
         }
     }
@@ -2751,8 +2894,15 @@ impl Rtc {
         Some(r)
     }
 
-    fn handle_rtcp(&mut self, now: Instant, data: &[u8]) {
-        let Some(rx) = self.srtp_rx.as_mut() else {
+    /// A received SRTCP packet; `rtcp_comp`: it came on component 2 (no rtcp-mux), where
+    /// DTLS-SRTP has keys of its own.
+    fn handle_rtcp(&mut self, now: Instant, data: &[u8], rtcp_comp: bool) {
+        let rx = if rtcp_comp && !self.sdes.active {
+            self.rtcp.srtcp_rx.as_mut()
+        } else {
+            self.srtp_rx.as_mut()
+        };
+        let Some(rx) = rx else {
             return;
         };
         let Ok(pkt) = rx.unprotect_rtcp(data) else {
@@ -2830,7 +2980,11 @@ impl Rtc {
                             entries: entries.iter().map(|e| (e.ssrc, e.bitrate)).collect(),
                         }));
                 }
-                Rtcp::ExtendedReport { ssrc, blocks } => self.handle_xr(now, ntp, ssrc, &blocks),
+                Rtcp::ExtendedReport { ssrc, blocks } => {
+                    self.handle_xr(now, ntp, ssrc, &blocks);
+                    self.handle_receipts(ssrc, &blocks);
+                }
+                Rtcp::SourceDescription(chunks) => self.handle_sdes(&chunks),
                 _ => {}
             }
         }
@@ -3016,6 +3170,10 @@ impl Rtc {
                     }),
                     cryptex_received: self.stats.cryptex_received,
                     red_recovered: self.stats.red_recovered,
+                    xr_received: self.stats.xr_received,
+                    xr_lost: self.stats.xr_lost,
+                    xr_duplicated: self.stats.xr_duplicated,
+                    rtcp_mux: self.ice.components() == 1,
                 }));
             }
         }
@@ -3099,6 +3257,7 @@ impl Rtc {
                 ]),
             }
         }
+        compounds.extend(self.receipt_reports());
         for c in compounds {
             self.send_rtcp(&c);
         }
@@ -3133,15 +3292,7 @@ impl Rtc {
                     _ => {}
                 }
             }
-            if self.sdes.active
-                && !self.dtls_connected
-                && self.srtp_tx.is_some()
-                && self.ice.send_pair().is_some()
-            {
-                // SDES: keyed by the SDP, connected once ICE has a pair.
-                self.dtls_connected = true;
-                self.events.push_back(RtcEvent::Connected);
-                self.next_rtcp = Some(now + Duration::from_millis(200));
+            if self.sdes.active && self.check_connected(now) {
                 progress = true;
             }
             if self.dtls.is_none()
@@ -3151,7 +3302,21 @@ impl Rtc {
                 self.start_dtls(now);
                 progress = true;
             }
+            if self.rtcp.dtls.is_none()
+                && !self.sdes.active
+                && self.ice.components() == 2
+                && self.dtls_role == Some(Role::Client)
+                && self.ice.send_pair_of(2).is_some()
+            {
+                // RFC 5764 §4.1: a DTLS-SRTP handshake of its own on the RTCP component.
+                let peer = self.ice.send_pair_of(2).map(|p| p.1);
+                self.rtcp.dtls = self.new_dtls(now, peer);
+                progress = true;
+            }
             if self.flush_dtls(now) {
+                progress = true;
+            }
+            if self.flush_rtcp_dtls(now) {
                 progress = true;
             }
             if self.flush_sctp(now) {
@@ -3204,11 +3369,8 @@ impl Rtc {
                     }
                     self.dtls_version = Some(info.version);
                     only_log::debug!(target: "only_webrtc", "dtls: connected with {}", info.version);
-                    self.dtls_connected = true;
-                    self.events.push_back(RtcEvent::Connected);
-                    self.next_rtcp = Some(now + Duration::from_millis(200));
-                    self.start_sctp(now);
-                    self.open_pending_channels(now);
+                    self.dtls_up = true;
+                    self.check_connected(now);
                 }
                 DtlsEvent::ApplicationData(data) => {
                     if let Some(s) = self.sctp.as_mut() {
@@ -3314,6 +3476,7 @@ impl Rtc {
         };
         min(self.ice.poll_timeout());
         min(self.dtls.as_ref().and_then(Connection::poll_timeout));
+        min(self.rtcp.dtls.as_ref().and_then(Connection::poll_timeout));
         min(self.sctp.as_ref().and_then(Association::poll_timeout));
         if self.srtp_tx.is_some() {
             min(self.next_rtcp);
@@ -3411,16 +3574,21 @@ fn recv_entry<'a>(
     if recv.len() >= MAX_RECV_STREAMS && !recv.contains_key(&ssrc) {
         return None;
     }
-    let nack = media
-        .get(line)?
-        .codecs
-        .iter()
-        .any(|c| c.fb.iter().any(|f| f == "nack"));
+    let l = media.get(line)?;
+    let nack = l.codecs.iter().any(|c| c.fb.iter().any(|f| f == "nack"));
+    let receipts = !l.xr_blocks.is_empty();
     Some(recv.entry(ssrc).or_insert_with(|| Recv {
         line,
-        stream: RecvStream::new(ssrc, clock, nack),
+        stream: {
+            let mut s = RecvStream::new(ssrc, clock, nack);
+            if receipts {
+                s.enable_receipt_log(receipts::RECEIPT_LOG_CAPACITY);
+            }
+            s
+        },
         assembler: None,
         rid: None,
+        burst: None,
     }))
 }
 
@@ -3502,6 +3670,12 @@ fn abs_send_time_now() -> u32 {
 
 mod feedback;
 mod pacing;
+mod receipts;
+mod rtcp_mux;
 mod sdes;
+
+use receipts::{line_xr_blocks, remote_xr_blocks};
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mux;

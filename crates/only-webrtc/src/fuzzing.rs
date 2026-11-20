@@ -11,8 +11,9 @@ fn fresh(lite: bool, cfg: ConfigInner) -> Option<Rtc> {
 }
 
 /// The configurations an SDP is tried with: the default, every ADR-039 and ADR-048 option
-/// on (FEC as `fec`), and SDES-SRTP on (ADR-054).
-fn configs() -> [ConfigInner; 4] {
+/// on (FEC as `fec`), SDES-SRTP on (ADR-054), and RTCP without rtcp-mux offered with XR
+/// receipt blocks and ULPFEC levels (ADR-058; its peers get component-2 candidates).
+fn configs() -> [ConfigInner; 5] {
     let full = |fec| ConfigInner {
         fec: Some(fec),
         fec_min: 50,
@@ -33,7 +34,26 @@ fn configs() -> [ConfigInner; 4] {
             sdes: true,
             ..ConfigInner::default()
         },
+        ConfigInner {
+            rtcp_mux: crate::RtcpMuxPolicy::Negotiate,
+            xr: true,
+            xr_blocks: crate::XrBlocks::ALL,
+            ulpfec_level0: Some(64),
+            ..full(crate::FecMechanism::Ulpfec)
+        },
     ]
+}
+
+/// Host candidates of both components for a peer whose configuration offers RTCP without
+/// rtcp-mux.
+fn rtcp_candidates(rtc: &mut Rtc, cfg: &ConfigInner) {
+    if cfg.rtcp_mux != crate::RtcpMuxPolicy::Require {
+        let a: std::net::SocketAddr = ([192, 0, 2, 1], 5000).into();
+        rtc.add_local_candidate(only_ice::Candidate::host(a));
+        rtc.add_local_candidate(
+            only_ice::Candidate::host(([192, 0, 2, 1], 5001).into()).with_component(2),
+        );
+    }
 }
 
 /// `webrtc_turn_url`: a `turn:` / `turns:` URL as [`RelayServer::from_url`] takes it (the host
@@ -88,17 +108,30 @@ fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
     let Some(mut rtc) = fresh(true, cfg.clone()) else {
         return;
     };
+    rtcp_candidates(&mut rtc, &cfg);
     if let Ok(answer) = rtc.accept_offer(now, s) {
         assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
         // Keys travel in SDP only when SDES is on, and never next to a DTLS fingerprint.
         let crypto = answer.contains("a=crypto:");
         assert!(!crypto || cfg.sdes, "{answer}");
         assert!(!(crypto && answer.contains("a=fingerprint:")), "{answer}");
+        // RTCP on component 2 (`a=rtcp`) or muxed, never both, and BUNDLE only when muxed;
+        // `a=rtcp` in every media section in use once the peer runs two components.
+        let (mux, rtcp) = (answer.contains("a=rtcp-mux"), answer.contains("a=rtcp:"));
+        assert!(!(mux && rtcp), "{answer}");
+        assert!(!rtcp || !answer.contains("a=group:BUNDLE"), "{answer}");
+        assert!(!rtcp || rtc.two_components(), "{answer}");
+        let in_use = answer.lines().any(|l| {
+            (l.starts_with("m=audio ") || l.starts_with("m=video "))
+                && l.split(' ').nth(1) != Some("0")
+        });
+        assert!(!(in_use && rtc.two_components()) || rtcp, "{answer}");
     }
     // As an answer to an offer with media and a channel.
-    let Some(mut offerer) = fresh(false, cfg) else {
+    let Some(mut offerer) = fresh(false, cfg.clone()) else {
         return;
     };
+    rtcp_candidates(&mut offerer, &cfg);
     let mut ch = offerer.changes();
     {
         let mut api = crate::SdpChanges(&mut ch);
@@ -145,11 +178,16 @@ pub(crate) mod seeds {
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let now = Instant::now();
-        for media in [0, 1, 2, 3, 4, 5, 6] {
+        for media in [0, 1, 2, 3, 4, 5, 6, 7] {
             let cfg = match media {
                 3 => super::configs()[1].clone(),
                 4 | 5 => super::configs()[2].clone(),
                 6 => super::configs()[3].clone(),
+                // RTCP on component 2: one audio section, no data channel.
+                7 => ConfigInner {
+                    rtcp_mux: crate::RtcpMuxPolicy::Off,
+                    ..super::configs()[4].clone()
+                },
                 _ => ConfigInner::default(),
             };
             let mut rtc = Rtc::new(cfg.clone(), false, now).expect("rtc");
@@ -169,13 +207,16 @@ pub(crate) mod seeds {
                 "192.0.2.1:40000".parse().expect("addr"),
                 true,
             ));
+            super::rtcp_candidates(&mut rtc, &cfg);
             let mut ch = rtc.changes();
             {
                 let mut api = SdpChanges(&mut ch);
-                if media != 6 {
+                if media == 7 {
+                    api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+                } else if media != 6 {
                     api.add_channel("seed");
                 }
-                if media == 1 || media >= 3 {
+                if media == 1 || (3..7).contains(&media) {
                     api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
                     api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
                 }
@@ -193,7 +234,8 @@ pub(crate) mod seeds {
                 }
             }
             let offer = rtc.apply(now, ch).expect("apply").expect("offer");
-            let mut answerer = Rtc::new(cfg, true, now).expect("rtc");
+            let mut answerer = Rtc::new(cfg.clone(), true, now).expect("rtc");
+            super::rtcp_candidates(&mut answerer, &cfg);
             let answer = answerer.accept_offer(now, &offer).expect("answer");
             out.push(offer.into_bytes());
             out.push(answer.into_bytes());
