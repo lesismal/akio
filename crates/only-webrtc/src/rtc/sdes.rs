@@ -10,6 +10,8 @@
 //!   unknown suite or a key of the wrong length are not taken (RFC 4568 §6.1: the answerer
 //!   ignores lines it does not understand); a lifetime is accepted and not enforced (the
 //!   SRTP context refuses to wrap its index anyway).
+//! - Remote offers may use any suite only-srtp has an SDES name for, including AES-f8 and
+//!   SEED (ADR-052); our offers list [`OFFERED`] only.
 //! - Every section of the BUNDLE carries the same lines: one SRTP context per direction
 //!   serves the transport, so a remote description whose sections disagree is refused.
 
@@ -223,14 +225,21 @@ mod tests {
         // A lifetime is fine.
         assert!(Crypto::parse(&format!("2 AES_CM_128_HMAC_SHA1_32 inline:{k}|2^20")).is_some());
         assert!(Crypto::parse(&format!("2 AES_CM_128_HMAC_SHA1_32 inline:{k}|1048576")).is_some());
+        // Suites only-srtp supports beyond OFFERED are taken from remote offers (ADR-052).
+        let f8 = Crypto::parse(&format!("3 F8_128_HMAC_SHA1_80 inline:{k}")).unwrap();
+        assert_eq!(f8.profile, Profile::AesF8HmacSha1_80);
+        assert_eq!(
+            Crypto::parse(&format!("4 SEED_CTR_128_HMAC_SHA1_80 inline:{k}")).map(|c| c.profile),
+            Some(Profile::SeedCtrHmacSha1_80)
+        );
         for bad in [
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|2^20|1:4"), // MKI
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4"),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k};inline:{k}"), // two keys
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"),      // session parameter
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} UNENCRYPTED_SRTP"),
-            format!("1 F8_128_HMAC_SHA1_80 inline:{k}"), // unsupported suite
-            format!("1 AES_256_CM_HMAC_SHA1_80 inline:{k}"), // key too short for the suite
+            format!("1 ARIA_128_CTR_HMAC_SHA1_80 inline:{k}"), // unsupported suite (RFC 8269)
+            format!("1 AES_256_CM_HMAC_SHA1_80 inline:{k}"),   // key too short for the suite
             format!("x AES_CM_128_HMAC_SHA1_80 inline:{k}"),
             format!("1234567890 AES_CM_128_HMAC_SHA1_80 inline:{k}"),
             format!("1 AES_CM_128_HMAC_SHA1_80 {k}"),
@@ -267,10 +276,10 @@ mod tests {
         let k = Crypto::generate(7, Profile::Aes128CmHmacSha1_80);
         let offer = sdp(&[
             "m=audio 9 RTP/SAVPF 0",
-            "a=crypto:3 F8_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
+            "a=crypto:3 ARIA_128_CTR_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
             &format!("a=crypto:{}", k.to_attr()),
             "m=video 9 RTP/SAVPF 96",
-            "a=crypto:3 F8_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
+            "a=crypto:3 ARIA_128_CTR_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
             &format!("a=crypto:{}", k.to_attr()),
         ]);
         assert!(is_sdes_offer(&offer));
@@ -298,7 +307,7 @@ mod tests {
         // Nothing usable.
         let none = sdp(&[
             "m=audio 9 RTP/SAVP 0",
-            "a=crypto:1 F8_128_HMAC_SHA1_80 inline:x",
+            "a=crypto:1 ARIA_128_CTR_HMAC_SHA1_80 inline:x",
         ]);
         assert!(is_sdes_offer(&none));
         assert!(b.accept_offer(&none).is_err());
