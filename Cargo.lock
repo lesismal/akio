@@ -659,6 +659,7 @@ dependencies = [
  "only-deflate",
  "only-log",
  "only-regex",
+ "only-sys",
  "only-ws",
  "only-x509",
  "only-zstd",

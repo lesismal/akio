@@ -115,6 +115,8 @@
 | `max_cached_bytes(n)` | 256 KiB | 不超过此大小的文件缓存在内存中（0 关闭） |
 | `max_open_files(n)` | 64 | 更大的文件保留打开的句柄并缓存元数据；满时先淘汰最近最少使用的（CLOCK） |
 | `check_interval(d)` | 5 s | 缓存条目在重新检查磁盘之前被信任的时长 |
+| `watch(on)` | 关闭 | 经 inotify（Linux）/ kqueue（macOS）跟随变化：有监视的缓存项在变化把它丢弃之前一直被信任（不适用于网络文件系统与 FUSE） |
+| `max_watches(n)` | 1024 | `watch` 最多建立的监视数（目录；macOS 上另加每个缓存文件一个文件描述符）；超过后按 `check_interval` 规则 |
 | `cache_control(v)` | 无 | 每个文件响应的 `Cache-Control` 头 |
 
 功能：`GET`/`HEAD`；`ETag` 与 `Last-Modified`；`If-None-Match` / `If-Modified-Since`（304），

@@ -22,6 +22,7 @@ pub const ENOSYS: c_int = 78;
 
 // ---- files and fcntl -----------------------------------------------------------------------
 pub const O_NONBLOCK: c_int = 0x4;
+pub const O_EVTONLY: c_int = 0x8000;
 pub const F_GETFD: c_int = 1;
 pub const F_SETFD: c_int = 2;
 pub const F_GETFL: c_int = 3;
@@ -47,6 +48,17 @@ pub const IPV6_TCLASS: c_int = 36;
 // ---- kqueue --------------------------------------------------------------------------------
 pub const EVFILT_READ: i16 = -1;
 pub const EVFILT_WRITE: i16 = -2;
+pub const EVFILT_VNODE: i16 = -4;
+pub const EVFILT_USER: i16 = -10;
+pub const EV_CLEAR: u16 = 0x20;
+pub const NOTE_TRIGGER: u32 = 0x0100_0000;
+pub const NOTE_DELETE: u32 = 0x1;
+pub const NOTE_WRITE: u32 = 0x2;
+pub const NOTE_EXTEND: u32 = 0x4;
+pub const NOTE_ATTRIB: u32 = 0x8;
+pub const NOTE_LINK: u32 = 0x10;
+pub const NOTE_RENAME: u32 = 0x20;
+pub const NOTE_REVOKE: u32 = 0x40;
 pub const EV_ADD: u16 = 0x1;
 pub const EV_DELETE: u16 = 0x2;
 pub const EV_ENABLE: u16 = 0x4;

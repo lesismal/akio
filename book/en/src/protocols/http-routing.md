@@ -130,6 +130,8 @@ the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files 
 | `max_cached_bytes(n)` | 256 KiB | files up to this size are kept in memory (0 disables) |
 | `max_open_files(n)` | 64 | larger files keep an open handle and metadata cached; least recently used evicted first (CLOCK) |
 | `check_interval(d)` | 5 s | how long a cached entry is trusted before re-checking the disk |
+| `watch(on)` | off | follow changes through inotify (Linux) / kqueue (macOS): watched entries are trusted until a change drops them (not for network or FUSE file systems) |
+| `max_watches(n)` | 1024 | most watches `watch` sets up (directories; plus one file descriptor per cached file on macOS); past it, the `check_interval` rule |
 | `cache_control(v)` | none | `Cache-Control` header on every file response |
 
 Features: `GET`/`HEAD`; `ETag` and `Last-Modified`; `If-None-Match` / `If-Modified-Since` (304),
