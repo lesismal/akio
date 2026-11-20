@@ -1449,8 +1449,8 @@ IPC of 5.4) and spilled values to the stack. What changed:
 
 Tried and dropped: a bit reader keeping its position as the slice length (worse code on x86-64 and
 AArch64), a mask table instead of `(1 << n) - 1` (3% slower on JavaScript), batches of 4–16
-(5–10% faster on Apple M-series, 1–4% slower on Zen 4). Not done: libzstd's double-symbol Huffman
-tables (it picks them for the JavaScript literals, about 8% of our time there).
+(5–10% faster on Apple M-series, 1–4% slower on Zen 4). libzstd's double-symbol Huffman tables
+came after ("zstd double-symbol Huffman tables" below).
 
 **zstd literals** (2026-11-20, output changes): the encoder keeps a block's literals raw unless
 Huffman coding saves more than 2 bytes plus 1/64 of them, and never Huffman-codes fewer than 64,
@@ -1462,6 +1462,28 @@ with only-zstd: the 2.7 KB chain 2,426–2,862 MB/s (was 873–915) and 8–17 b
 chain 2,133–2,257 MB/s at levels 1 and 3 (was 924–965) and 4–12 bytes larger (level 19 already
 raw); JSON, HTML and JavaScript byte-identical, Silesia 0.004% larger (2,672 and 2,834 bytes at
 levels 1 and 3).
+
+**zstd double-symbol Huffman tables** (2026-11-20, no API change, output unchanged). For a
+four-stream literals section that libzstd's `HUF_selectDecoder` would decode with its
+double-symbol table (by its timings per size and compression ratio: from about 4.5–6.7 KB of
+literals at the ratios of the HTTP payloads), the decoder builds one from the single-symbol table
+(11 bits, 12 for a 12-bit code; an entry holds one symbol, or two when the next code fits in the
+bits left) and decodes one or two symbols per lookup, writing two bytes and moving on by one or
+two; the table stays with the per-thread decoder (16 KB more). The streams then move apart and
+run out at different times (their codes take more or fewer bits), so when one stops the others
+go on together, three, two, then one; finishing them one by one had left up to 12% of a stream's
+symbols to a serial loop. Literal decoding alone (JavaScript, JSON and HTML literals, 16–60 KB,
+CPU 2): 0.52–0.53 ns per byte → 0.41–0.45 on Zen 4 (13–21% faster), JavaScript literals
+0.62–0.65 → 0.40–0.41 on Apple M-series (35–37%); building the table costs 0.4–0.6 µs on Zen 4,
+so it pays from about 5–10 KB, in line with libzstd's rule. End to end, same quiet host, both builds (`6154345c` and this) alternated twice,
+best of each: JSON +2.5–3.0% (3,094–3,489 → 3,176–3,594 MB/s), JavaScript +1.6–2.5%, HTML +1.6%,
+Silesia level 19 +1.4%, level 3 unchanged and level 1 −0.8% (929 → 922 MB/s); libzstd's time
+over ours on JavaScript 1.34–1.40× (1.36–1.42× for the old build in the same run). On x86-64
+without BMI2 the single-symbol loop already runs at about 4.5 instructions per cycle with 5
+instructions per symbol, so the double table gains less there than on Apple M-series. Tried and dropped: a 17-byte
+output window per stream and round (more live values than x86-64's 16 registers: spilled, no
+gain; positions in the one literals buffer instead), the symbols of a round gathered in a
+register and stored once (8–20% slower).
 
 **Compression** (output changes; round trips, the C libraries decoding our output in every cell
 above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2

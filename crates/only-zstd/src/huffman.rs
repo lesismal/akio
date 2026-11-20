@@ -6,11 +6,19 @@ use crate::bits::{BackReader, BitWriter};
 use crate::fse;
 use crate::tables::highbit;
 
-/// A decoding table: `1 << log` entries of `code_length | symbol << 8`.
+/// A decoding table: `1 << log` entries of `code_length | symbol << 8`, and the double-symbol
+/// table made from it when a large literals section asks for one (see [`double_pays`]).
 #[derive(Debug, Default)]
 pub(crate) struct DTable {
     log: u32,
     entries: Vec<u16>,
+    /// `1 << double_log` entries of `bits | count << 8 | first << 16 | second << 24`:
+    /// the one or two symbols whose codes fill the next `double_log` bits (libzstd's
+    /// `HUF_DEltX2`). `double_log` is 0 until it is built.
+    double: Vec<u32>,
+    double_log: u32,
+    /// The length of the shortest code.
+    shortest: u32,
 }
 
 /// Reads a Huffman tree description into `table` (libzstd's `HUF_readStats` checks: weights up
@@ -75,6 +83,8 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
         start[wt + 1] = start[wt] + ((rank[wt] as usize) << (wt - 1));
     }
     table.log = log;
+    table.double_log = 0;
+    table.shortest = log + 1 - (1..=log).rev().find(|&w| rank[w as usize] > 0).unwrap_or(1);
     // Only the first `1 << log` entries are used (and all of them are written below).
     if table.entries.len() < TABLE_SIZE {
         table.entries.resize(TABLE_SIZE, 0);
@@ -177,6 +187,122 @@ fn fast4<'a, const LOG: u32>(
     done
 }
 
+/// [`fast4`] with the double-symbol table of `D` bits: each lookup gives one or two symbols,
+/// so the streams move apart, each with its own position in `out` (stream `i` writes up to
+/// `ends[i]`, from where stream `i - 1` ends; returned). Streams also run out at different
+/// times (their codes take more or fewer bits), so when one stops the others go on together,
+/// three, two, then one, instead of finishing one by one.
+#[inline(always)]
+fn fast4_double<'a, const D: u32>(
+    dt: &[u32; TABLE_SIZE],
+    body: &'a [u8],
+    bounds: [usize; 5],
+    r: &mut [BackReader<'a>; 4],
+    out: &mut [u8],
+    ends: [usize; 4],
+) -> [usize; 4] {
+    let mut l = Lanes {
+        ip: [0; 4],
+        bits: [0; 4],
+        op: [0, ends[0], ends[1], ends[2]],
+    };
+    for i in 0..4 {
+        let Some((ptr, used)) = r[i].window() else {
+            return l.op;
+        };
+        if used > 7 {
+            return l.op;
+        }
+        l.ip[i] = bounds[i] + ptr;
+        l.bits[i] = (load8(body, l.ip[i]) | 1) << used;
+    }
+    loop {
+        // The streams that can take another round: 7 more bytes in, a round's bytes out.
+        let mut go = [0usize; 4];
+        let mut k = 0;
+        for i in 0..4 {
+            if l.ip[i] - bounds[i] >= 7 && ends[i] - l.op[i] >= 2 * (56 / D as usize) {
+                go[k] = i;
+                k += 1;
+            }
+        }
+        match k {
+            4 => lanes::<D, 4>(dt, body, &bounds, &mut l, out, &ends, [0, 1, 2, 3]),
+            3 => lanes::<D, 3>(dt, body, &bounds, &mut l, out, &ends, [go[0], go[1], go[2]]),
+            2 => lanes::<D, 2>(dt, body, &bounds, &mut l, out, &ends, [go[0], go[1]]),
+            1 => lanes::<D, 1>(dt, body, &bounds, &mut l, out, &ends, [go[0]]),
+            _ => break,
+        }
+    }
+    for i in 0..4 {
+        r[i] = BackReader::at(
+            &body[bounds[i]..bounds[i + 1]],
+            l.ip[i] - bounds[i],
+            l.bits[i].trailing_zeros(),
+        );
+    }
+    l.op
+}
+
+/// The state of the four streams of [`fast4_double`]: input position (its 8-byte window),
+/// left-aligned bits above a marker bit, output position.
+struct Lanes {
+    ip: [usize; 4],
+    bits: [u64; 4],
+    op: [usize; 4],
+}
+
+/// Rounds of the streams `idx` until one of them stops.
+#[inline(always)]
+fn lanes<const D: u32, const K: usize>(
+    dt: &[u32; TABLE_SIZE],
+    body: &[u8],
+    bounds: &[usize; 5],
+    l: &mut Lanes,
+    out: &mut [u8],
+    ends: &[usize; 4],
+    idx: [usize; K],
+) {
+    // Lookups per refill, as in `fast4`; each writes two bytes and moves on by one or two, so
+    // a round writes at most `room` bytes and stays within its stream's part of `out`.
+    let syms = 56 / D as usize;
+    let room = 2 * syms;
+    let mut ip = idx.map(|i| l.ip[i]);
+    let mut bits = idx.map(|i| l.bits[i]);
+    let mut op = idx.map(|i| l.op[i]);
+    let lo = idx.map(|i| bounds[i]);
+    let hi = idx.map(|i| ends[i]);
+    loop {
+        let mut n = usize::MAX;
+        for k in 0..K {
+            n = n.min((ip[k] - lo[k]) / 7).min((hi[k] - op[k]) / room);
+        }
+        if n == 0 {
+            break;
+        }
+        for _ in 0..n {
+            for _ in 0..syms {
+                for k in 0..K {
+                    let v = dt[(bits[k] >> (64 - D)) as usize & (TABLE_SIZE - 1)];
+                    out[op[k]..][..2].copy_from_slice(&((v >> 16) as u16).to_le_bytes());
+                    bits[k] <<= v & 63;
+                    op[k] += (v >> 8 & 0xFF) as usize;
+                }
+            }
+            for k in 0..K {
+                let used = bits[k].trailing_zeros();
+                ip[k] -= (used >> 3) as usize;
+                bits[k] = (load8(body, ip[k]) | 1) << (used & 7);
+            }
+        }
+    }
+    for (k, &i) in idx.iter().enumerate() {
+        l.ip[i] = ip[k];
+        l.bits[i] = bits[k];
+        l.op[i] = op[k];
+    }
+}
+
 /// One symbol of a left-aligned bit register (see [`fast4`]).
 #[inline(always)]
 fn sym<const LOG: u32>(e: &[u16; TABLE_SIZE], bits: &mut u64) -> u8 {
@@ -228,8 +354,109 @@ fn entries(t: &DTable) -> Result<&[u16; TABLE_SIZE], Error> {
         .ok_or(Error::BadHuffmanTable)
 }
 
+/// Builds the double-symbol table of `t`: entries of `double_log` bits (11, or 12 for a code of
+/// 12 bits, as libzstd), each holding the symbol whose code starts them and, when the next
+/// code fits in the bits left, the symbol after it.
+fn build_double(t: &mut DTable) -> Result<(), Error> {
+    let e: &[u16; TABLE_SIZE] = t
+        .entries
+        .get(..TABLE_SIZE)
+        .and_then(|e| e.try_into().ok())
+        .ok_or(Error::BadHuffmanTable)?;
+    let log = t.log;
+    let d = log.max(11);
+    let shift = d - log;
+    if t.double.len() < TABLE_SIZE {
+        t.double.resize(TABLE_SIZE, 0);
+    }
+    let out: &mut [u32; TABLE_SIZE] = (&mut t.double[..TABLE_SIZE])
+        .try_into()
+        .map_err(|_| Error::BadHuffmanTable)?;
+    let shortest = t.shortest;
+    // The first table's entries run by symbol in code order (longest codes first): each
+    // symbol of length `l1` starts `1 << (d - l1)` entries here, whose last `d - l1` bits are
+    // the code after it. Codes too long for any code after them come first: one symbol each.
+    let single = e[..1 << log].partition_point(|&a| u32::from(a & 0xFF) + shortest > d);
+    for (x, o) in out[..single << shift].iter_mut().enumerate() {
+        let a = u32::from(e[(x >> shift) & (TABLE_SIZE - 1)]);
+        *o = (a & 0xFF) | 1 << 8 | (a >> 8) << 16;
+    }
+    // Symbols of one length follow each other and differ only in the first symbol, so all
+    // but the first of them copy the entries before.
+    let mut k = single;
+    let mut prev = (0usize, 0u32);
+    while k < 1 << log {
+        let a = e[k];
+        let l1 = u32::from(a & 0xFF);
+        let run = 1usize << (log - l1);
+        let first = l1 | 1 << 8 | u32::from(a >> 8) << 16;
+        let start = k << shift;
+        let len = run << shift;
+        let (done, rest) = out.split_at_mut(start);
+        let span = &mut rest[..len];
+        if prev.1 & 0xFFFF == first & 0xFFFF && prev.0 + len == start {
+            let delta = first.wrapping_sub(prev.1);
+            for (x, &y) in span.iter_mut().zip(&done[prev.0..]) {
+                *x = y.wrapping_add(delta);
+            }
+        } else {
+            for (j, x) in span.iter_mut().enumerate() {
+                let b = u32::from(e[(j << l1 >> shift) & (TABLE_SIZE - 1)]);
+                let l2 = b & 0xFF;
+                let fits = u32::from(l1 + l2 <= d).wrapping_neg();
+                *x = first + ((l2 | 1 << 8 | (b >> 8) << 24) & fits);
+            }
+        }
+        prev = (start, first);
+        k += run;
+    }
+    t.double_log = d;
+    Ok(())
+}
+
+/// Whether the double-symbol table pays for its building on `size` literals coded in
+/// `coded` bytes: libzstd's `HUF_selectDecoder` (its timings of both tables per 1/16 of
+/// compression ratio, the double one charged 1/32 more for its cache footprint).
+fn double_pays(size: usize, coded: usize) -> bool {
+    const TIME: [[(u32, u32); 2]; 16] = [
+        [(0, 0), (1, 1)],
+        [(0, 0), (1, 1)],
+        [(150, 216), (381, 119)],
+        [(170, 205), (514, 112)],
+        [(177, 199), (539, 110)],
+        [(197, 194), (644, 107)],
+        [(221, 192), (735, 107)],
+        [(256, 189), (881, 106)],
+        [(359, 188), (1167, 109)],
+        [(582, 187), (1570, 114)],
+        [(688, 187), (1712, 122)],
+        [(825, 186), (1965, 136)],
+        [(976, 185), (2131, 150)],
+        [(1180, 186), (2070, 175)],
+        [(1377, 185), (1731, 202)],
+        [(1412, 185), (1695, 202)],
+    ];
+    let q = if coded >= size { 15 } else { coded * 16 / size };
+    let d256 = (size >> 8) as u32;
+    let [(t1, d1), (t2, d2)] = TIME[q];
+    let single = t1 + d1 * d256;
+    let double = t2 + d2 * d256;
+    double + (double >> 5) < single
+}
+
 /// Decodes the literals of one stream (`four == false`) or of four streams behind a jump table.
-pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Result<(), Error> {
+/// `coded` is the size of the literals section's Huffman data, tree description included.
+pub(crate) fn decode(
+    t: &mut DTable,
+    src: &[u8],
+    out: &mut [u8],
+    four: bool,
+    coded: usize,
+) -> Result<(), Error> {
+    if four && t.double_log == 0 && double_pays(out.len(), coded) {
+        build_double(t)?;
+    }
+    let t = &*t;
     let e = entries(t)?;
     let log = t.log;
     if !four {
@@ -245,11 +472,6 @@ pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Resu
     if 6 + l1 + l2 + l3 > src.len() {
         return Err(Error::BadLiterals);
     }
-    let seg = out.len().div_ceil(4);
-    // With at least 6 symbols (checked by the caller) the fourth segment is not negative.
-    let (o1, rest) = out.split_at_mut(seg.min(out.len()));
-    let (o2, rest) = rest.split_at_mut(seg.min(rest.len()));
-    let (o3, o4) = rest.split_at_mut(seg.min(rest.len()));
     let (s1, rest) = src[6..].split_at(l1);
     let (s2, rest) = rest.split_at(l2);
     let (s3, s4) = rest.split_at(l3);
@@ -264,6 +486,29 @@ pub(crate) fn decode(t: &DTable, src: &[u8], out: &mut [u8], four: bool) -> Resu
     }
     let body = &src[6..];
     let bounds = [0, l1, l1 + l2, l1 + l2 + l3, body.len()];
+    let seg = out.len().div_ceil(4);
+    // With at least 6 symbols (checked by the caller) the fourth segment is not negative.
+    let ends = [seg, 2 * seg, 3 * seg, out.len()].map(|x| x.min(out.len()));
+    if t.double_log != 0 {
+        let dt: &[u32; TABLE_SIZE] = t
+            .double
+            .get(..TABLE_SIZE)
+            .and_then(|d| d.try_into().ok())
+            .ok_or(Error::BadHuffmanTable)?;
+        let done = if t.double_log == 11 {
+            fast4_double::<11>(dt, body, bounds, &mut r, out, ends)
+        } else {
+            fast4_double::<12>(dt, body, bounds, &mut r, out, ends)
+        };
+        let [r1, r2, r3, r4] = r;
+        finish_stream(e, log, r1, &mut out[done[0]..ends[0]])?;
+        finish_stream(e, log, r2, &mut out[done[1]..ends[1]])?;
+        finish_stream(e, log, r3, &mut out[done[2]..ends[2]])?;
+        return finish_stream(e, log, r4, &mut out[done[3]..ends[3]]);
+    }
+    let (o1, rest) = out.split_at_mut(ends[0]);
+    let (o2, rest) = rest.split_at_mut(ends[1] - ends[0]);
+    let (o3, o4) = rest.split_at_mut(ends[2] - ends[1]);
     let o = [&mut *o1, &mut *o2, &mut *o3, &mut *o4];
     let fast = match log {
         1 => fast4::<1>(e, body, bounds, &mut r, o),
@@ -443,7 +688,12 @@ impl Encoder {
     /// A code for `counts` (at least two symbols present), or `None` when its tree cannot be
     /// described (more than 128 weights that do not compress).
     pub(crate) fn new(counts: &[u32; 256]) -> Option<Encoder> {
-        let lens = limited_lengths(counts, 11);
+        Self::with_limit(counts, 11)
+    }
+
+    /// [`Encoder::new`] with codes of at most `limit` bits (11 or 12).
+    fn with_limit(counts: &[u32; 256], limit: u32) -> Option<Encoder> {
+        let lens = limited_lengths(counts, limit);
         let max_len = u32::from(*lens.iter().max()?);
         let mut w = [0u8; 256];
         for s in 0..256 {
@@ -489,7 +739,7 @@ impl Encoder {
     #[inline(never)]
     fn stream(&self, data: &[u8], out: &mut Vec<u8>) {
         let mut w = BitWriter::new(out);
-        // Four codes of at most 11 bits between flushes.
+        // Four codes of at most 12 bits between flushes.
         let mut chunks = data.rchunks_exact(4);
         for c in &mut chunks {
             for &b in c.iter().rev() {
@@ -592,20 +842,40 @@ fn describe(w: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    fn round_trip(data: &[u8], four: bool) {
+    /// Codes `data` with codes of at most `limit` bits and decodes it with the single-symbol
+    /// table (a coded size of at least `data.len()` never picks the other) and, for four
+    /// streams, with the double-symbol table; also checks that both reject the stream with
+    /// its last byte changed.
+    fn round_trip_limit(data: &[u8], four: bool, limit: u32) {
         let mut counts = [0u32; 256];
         for &b in data {
             counts[usize::from(b)] += 1;
         }
-        let enc = Encoder::new(&counts).expect("describable");
+        let enc = Encoder::with_limit(&counts, limit).expect("describable");
         let mut out = enc.description.clone();
         enc.encode(data, four, &mut out).expect("encodes");
         let mut t = DTable::default();
         let size = read_table(&out, &mut t).expect("reads");
         assert_eq!(size, enc.description.len());
         let mut back = vec![0u8; data.len()];
-        decode(&t, &out[size..], &mut back, four).expect("decodes");
+        decode(&mut t, &out[size..], &mut back, four, usize::MAX).expect("decodes");
+        assert_eq!(t.double_log, 0);
         assert_eq!(back, data);
+        let mut bad = out[size..].to_vec();
+        *bad.last_mut().unwrap() ^= 0x40;
+        let single = decode(&mut t, &bad, &mut back, four, usize::MAX).is_ok();
+        if four {
+            build_double(&mut t).unwrap();
+            back.fill(0);
+            decode(&mut t, &out[size..], &mut back, four, usize::MAX).expect("decodes");
+            assert_eq!(back, data);
+            let double = decode(&mut t, &bad, &mut back, four, usize::MAX).is_ok();
+            assert_eq!(single, double);
+        }
+    }
+
+    fn round_trip(data: &[u8], four: bool) {
+        round_trip_limit(data, four, 11);
     }
 
     #[test]
@@ -644,6 +914,12 @@ mod tests {
         }
         assert_eq!(*limited_lengths(&counts, 11).iter().max().unwrap(), 11);
         round_trip(&data, true);
+        // 12-bit codes (a double-symbol table of 12 bits; libzstd's encoder writes at most 11).
+        assert_eq!(*limited_lengths(&counts, 12).iter().max().unwrap(), 12);
+        round_trip_limit(&data, true, 12);
+        let mut long = data.clone();
+        long.extend((0..20_000u32).map(|i| (i * i % 21) as u8));
+        round_trip_limit(&long, true, 12);
         // All 256 symbols equally: weights do not compress, 255 of them > 128.
         let flat: Vec<u8> = (0..4096u32).map(|i| i as u8).collect();
         let mut counts = [0u32; 256];

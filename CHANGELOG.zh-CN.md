@@ -76,7 +76,8 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
 
 ### 变更：更快的 Zstandard 解码，第二轮（only-zstd）
 
-公共 API 不变（docs/BENCHMARKS.zh-CN.md，“zstd 解码第二轮”与“zstd 字面量”；安静的 gpu51，在
+公共 API 不变（docs/BENCHMARKS.zh-CN.md，“zstd 解码第二轮”“zstd 字面量”与“zstd 双符号 Huffman 表”；
+安静的 gpu51，在
 `tools/codec-bench zstd` 中与 libzstd 1.5.7 对比）：
 
 - 解压在 HTTP 负载上用时为 libzstd 的 1.16–1.39 倍（之前 1.46–1.64 倍）：JavaScript 1.38–1.39 倍
@@ -86,6 +87,9 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
   另加至多 32 KiB 字面量），序列以 64 个为一批先解码再执行（附加位允许时每个序列只读一次位），四个
   Huffman 流采用 libzstd 的快速循环解码。仍为 `#![forbid(unsafe_code)]`，无 BMI2 路径。每个 fuzz
   目标 16 分钟（`zstd_decompress`、`zstd_roundtrip`）。
+- 较大的 Huffman 编码字面量段（按 libzstd 的 `HUF_selectDecoder` 规则）改用双符号表解码，每次查表
+  一个或两个符号：字面量解码在 Zen 4 上快 13–21%，在 Apple M 系列上快 35–37%（JavaScript 字面量，16–60 KB）；端到端 JSON、JavaScript
+  与 HTML 快 1.6–3%，Silesia −0.8…+1.4%。按线程保留的解码器保留该表（多 16 KB）。
 - 压缩输出改变：编码器只在 Huffman 编码节省超过 2 字节加字面量的 1/64 时才使用它，不足 64 个字面量时
   保留为 raw，与 libzstd 相同（`ZSTD_minGain`）。我们自己的证书链帧解码快 2.3–3.2 倍（之前不到
   libzstd 帧速度的一半），大 4–17 字节；JSON、HTML 与 JavaScript 逐字节相同，Silesia 大 0.004%。

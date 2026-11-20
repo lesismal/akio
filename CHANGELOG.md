@@ -89,8 +89,8 @@ libwebrtc, so video ramps up in a fraction of a second instead of tens of second
 
 ### Changed: faster Zstandard decoding, second pass (only-zstd)
 
-No public API change (docs/BENCHMARKS.md, "zstd decoding, second pass" and "zstd literals"; quiet
-gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
+No public API change (docs/BENCHMARKS.md, "zstd decoding, second pass", "zstd literals" and "zstd
+double-symbol Huffman tables"; quiet gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
 
 - Decompression takes 1.16–1.39× libzstd's time on the HTTP payloads (was 1.46–1.64×): JavaScript
   1.38–1.39× (was 1.59–1.61×), certificate chains 1.16–1.27× (was 1.49–1.64×), JSON 1.37–1.38×,
@@ -100,6 +100,10 @@ gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
   of 64 before executing them (one bit read per sequence when the extra bits allow), and decodes
   the four Huffman streams with libzstd's fast loop. Still `#![forbid(unsafe_code)]`, no BMI2
   paths. Fuzzed 16 min per target (`zstd_decompress`, `zstd_roundtrip`).
+- Large Huffman-coded literal sections (by libzstd's `HUF_selectDecoder` rule) are decoded with a
+  double-symbol table, one or two symbols per lookup: literal decoding 13–21% faster on Zen 4
+  and 35–37% on Apple M-series (JavaScript literals, 16–60 KB); end to end JSON, JavaScript and
+  HTML 1.6–3% faster, Silesia −0.8…+1.4%. The per-thread decoder keeps the table (16 KB more).
 - Compressed output changes: the encoder keeps literals raw unless Huffman coding saves more than
   2 bytes plus 1/64 of them, and below 64 literals, as libzstd does (`ZSTD_minGain`). Our own
   certificate-chain frames decode 2.3–3.2× faster (they decoded at under half the speed of
