@@ -4,7 +4,8 @@
 
 Sans-io ICE (RFC 8445) for [`only`](https://github.com/lesismal/only): full and lite agents,
 consent freshness (RFC 7675), trickle (RFC 8838), ICE restarts, regular, aggressive and
-renomination, for one component over UDP and TCP (RTP/RTCP muxed, BUNDLE), with an mDNS codec for
+renomination, for streams of one component (RTP/RTCP muxed, BUNDLE) or several (RTP and RTCP on
+their own ports) over UDP and TCP, with an mDNS codec for
 the `.local` candidates browsers send, on [`only-turn`](../only-turn)'s STUN codec and
 [`only-crypto`](../only-crypto), in safe Rust (`#![forbid(unsafe_code)]`) with no other
 dependencies. It is the ICE layer of the in-house WebRTC stack, replacing str0m's. An internal
@@ -58,6 +59,13 @@ loop {
   `set_remote_renomination(true)` (draft-thatcher-ice-renomination: a better pair found after
   nomination is nominated again with a higher NOMINATION value). A controlled agent follows the
   highest NOMINATION value, or without one the highest-priority nominated pair.
+- Several components (RFC 8445; RTP and RTCP without rtcp-mux): `IceConfig::components = 2`,
+  local candidates `Candidate::host(rtcp_addr).with_component(2)` (the priority changes, the
+  foundation stays), the remote's `a=candidate` lines carry their component. The state reaches
+  `Connected` / `Completed` once every component has a selected pair; component 2's selection is
+  `IceEvent::ComponentSelectedPair { component: 2, .. }`, `selected_pair_of(2)` and
+  `send_pair_of(2)` (`SelectedPair`, `selected_pair()` and `send_pair()` stay component 1's).
+  Received datagrams belong to the component of the local candidate they arrived on.
 - TCP candidates (RFC 6544): `TcpType`, `Candidate::host_tcp`, `tcp ... tcptype` in SDP, RFC 6544
   priorities below UDP's, pairing within a transport and between compatible types (active with
   passive, `so` with `so`). Active and `so` local candidates send checks like UDP ones (the caller
@@ -69,16 +77,19 @@ loop {
 
 - Candidates: RFC 8445 §5.1 priorities and foundations, SDP grammar of RFC 8839 §5.1 with the
   `generation`, `ufrag`, `network-id`, `network-cost` extensions.
-- Checklist: pairs per IP family, pair priorities, pruning by base, Frozen/Waiting/
-  InProgress/Succeeded/Failed with per-foundation unfreezing, at most 100 pairs; pacing one
+- Checklist: one per stream for every component, pairs per component and IP family, pair
+  priorities, pruning by base, Frozen/Waiting/InProgress/Succeeded/Failed with the RFC 8445
+  §6.1.2.6 initial states (of each foundation, the pair of the lowest component is Waiting; also
+  when candidates trickle in another order) and per-foundation unfreezing across components, at
+  most 100 pairs; pacing one
   check per `Ta` (50 ms), triggered-check queue; retransmission from 250 ms doubling to 1.6 s,
   7 sends (the pair fails about 8 s after the first).
 - Checks: USERNAME, PRIORITY, ICE-CONTROLLING/ICE-CONTROLLED with a random tie-breaker,
   USE-CANDIDATE, MESSAGE-INTEGRITY, FINGERPRINT; 400/401 answers, role conflicts (487) on
   both sides; peer-reflexive candidates; symmetric responses only; requests before the remote
   credentials are answered and their triggered checks wait.
-- Nomination: regular nomination (best valid pair once no better pair is pending or 500 ms
-  after the first valid pair; at once with a lite remote); aggressive nomination (RFC 5245
+- Nomination, per component: regular nomination (best valid pair once no better pair of the
+  component is pending or 500 ms after its first valid pair; at once with a lite remote); aggressive nomination (RFC 5245
   §8.1.1.2) and renomination (draft-thatcher-ice-renomination-01, NOMINATION attribute 0xC001),
   both of which keep checking better pairs after a selection and move to one that works;
   controlled agents follow USE-CANDIDATE (the highest NOMINATION value, else the
@@ -86,14 +97,17 @@ loop {
 - mDNS (`mdns`, RFC 6762): one-shot queries for `A` / `AAAA`, responses (multicast, unicast
   with QU, legacy unicast), compression pointers (backwards only, at most 16 per name), random
   UUID names.
-- Consent freshness: checks every 5 s ±20 % on the selected pair (retransmitted 4 times),
-  `Disconnected` after 30 s without responses (lite: without valid checks), recovery when
-  they resume. `Failed` once every pair failed after end-of-candidates or 30 s.
+- Consent freshness, per component: checks every 5 s ±20 % on each selected pair
+  (retransmitted 4 times), `Disconnected` after 30 s without responses on any component (lite:
+  without valid checks), recovery when they resume. `Failed` once every pair of a component
+  without a selected pair failed, after end-of-candidates or 30 s. ICE restarts cover every
+  component; each keeps its selected pair until the new generation nominates one.
 
-Not implemented: several components (WebRTC always muxes RTP and RTCP: rtcp-mux, BUNDLE),
-gathering (STUN/TURN clients are the caller's), sockets of any kind (the mDNS resolver and
+Not implemented: gathering (STUN/TURN clients are the caller's), sockets of any kind (the mDNS resolver and
 responder, the TCP connections: only-webrtc's `Endpoint` has them), renominating when the
-remote does not support renomination (an ICE restart does that).
+remote does not support renomination (an ICE restart does that). only-webrtc always muxes RTP
+and RTCP (rtcp-mux, BUNDLE) and uses component 1 only: offering or accepting media without
+rtcp-mux there is a follow-up.
 
 ## Testing
 
@@ -106,12 +120,24 @@ remote does not support renomination (an ICE restart does that).
   address, forged integrity, malformed requests (400/401), RFC 5769 test vectors.
 - Interop (`tests/pion.rs`, ignored): pion/ice v4.4.8 over loopback UDP in four setups
   (pion controlled, pion controlling, pion lite, only-ice lite), data exchanged both ways on
-  the selected pair; needs `ONLY_ICE_PION_PEER` pointing at a small pion peer program.
+  the selected pair; needs `ONLY_ICE_PION_PEER` pointing at a small pion peer program. pion/ice
+  has one component only.
+- Interop with two components (`tests/libnice.rs`, ignored; `tools/interop/ice/run.sh` builds
+  the peer and runs it in a Debian container): libnice 0.1.21 with one stream of two components
+  over loopback UDP in five setups (libnice controlling with aggressive and with regular
+  nomination, libnice controlled, libnice lite, only-ice lite); both sides select the same
+  pair for each component and data goes both ways on both.
+- Several components (`tests/sim.rs`): two-component streams (RTP and RTCP ports) in every
+  nomination mode and both roles, 12 seeds of the lossy link (IPv4 and IPv6, some with a lite
+  remote), role conflicts, peer-reflexive pairs per component through a NAT, the Frozen order
+  (both RTP pairs before the RTCP ones, whatever order the candidates trickle in), RTCP
+  unreachable (`Failed` though RTP is selected), consent lost on RTCP only and recovered, ICE
+  restarts from either side.
 - Nomination (`tests/sim.rs`): a better pair trickled after nomination is ignored with regular
   nomination and taken by both sides with aggressive nomination and with renomination (also
   over 10 % loss); aggressive nomination ends on the best pair; a controlled agent follows the
   highest NOMINATION value and ignores an older one.
 - Fuzzing: targets `ice_stun` (datagrams into controlling, controlled and lite agents, also with
-  aggressive nomination and renomination, and `Candidate::parse`), `ice_tcp` (framed
+  aggressive nomination and renomination and with two components, and `Candidate::parse`), `ice_tcp` (framed
   connections) and `ice_mdns` (mDNS messages, candidate lines with names) in `fuzz/`;
   `fuzzing::tests` replays their corpora on stable.

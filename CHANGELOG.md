@@ -10,6 +10,31 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: several components per ICE stream (only-ice)
+
+ADR-055 (docs/adr/055-ice-components.md), additive (one-component agents behave as before):
+
+- `IceConfig::components` (default 1): an agent, full or lite, handles a stream of several
+  components (RFC 8445), e.g. RTP (component 1) and RTCP (component 2) on their own ports without
+  rtcp-mux. `Candidate::with_component(n)` makes a local candidate of component `n` (its priority
+  changes, its foundation stays); remote candidates carry their component as before.
+- One checklist for every component with the RFC 8445 §6.1.2.6 initial states (of each foundation
+  the pair of the lowest component is Waiting, the others Frozen, also when candidates trickle in
+  another order) and unfreezing across components; nomination (regular, aggressive,
+  renomination), selection, consent freshness and the lite agent's state per component; ICE
+  restarts cover every component, each keeping its selected pair until the new generation
+  nominates one. The state is `Connected` / `Completed` only once every component has a selected
+  pair, `Disconnected` when consent expires on any, `Failed` when a component can no longer get
+  one.
+- `IceEvent::ComponentSelectedPair { component, local, remote }`,
+  `IceAgent::{components, selected_pair_of, send_pair_of}`; `SelectedPair`, `selected_pair()`
+  and `send_pair()` stay component 1's.
+- Interop: `tests/libnice.rs` and `tools/interop/ice/run.sh` check two components against
+  libnice 0.1.21 in five setups (libnice controlling with aggressive and with regular nomination,
+  controlled, lite; only-ice lite). The `ice_stun` fuzz target also drives two-component agents.
+  only-webrtc still muxes RTP and RTCP on component 1; streams without rtcp-mux there are a
+  follow-up.
+
 ### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
 
 ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):

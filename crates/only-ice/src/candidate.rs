@@ -185,7 +185,7 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// An ICE candidate: UDP, or TCP with a [`TcpType`] (RFC 6544); component 1 when created
-/// locally.
+/// locally ([`Candidate::with_component`] for another).
 ///
 /// For candidates created with the constructors, [`Candidate::base`] is the local address
 /// the candidate sends from; for parsed (remote) candidates it equals [`Candidate::addr`] and
@@ -382,9 +382,28 @@ impl Candidate {
         &self.foundation
     }
 
-    /// The component id (1 for RTP; candidates of other components are ignored by the agent).
+    /// The component id (1 for RTP, 2 for RTCP without rtcp-mux); an agent ignores the
+    /// components above its [`IceConfig::components`](crate::IceConfig::components).
     pub fn component(&self) -> u16 {
         self.component
+    }
+
+    /// The same candidate for component `component` (clamped to 1..=256; 2 for RTCP without
+    /// rtcp-mux): the component part of the priority changes (RFC 8445 §5.1.2.1), the
+    /// foundation stays (§5.1.1.3: it does not depend on the component, so the pairs of
+    /// different components on the same path share theirs and unfreeze together).
+    #[must_use]
+    pub fn with_component(mut self, component: u16) -> Candidate {
+        let component = component.clamp(1, 256);
+        self.priority = (self.priority & !0xff) | (256 - u32::from(component));
+        self.component = component;
+        self
+    }
+
+    /// Sets the component and keeps the priority (a peer-reflexive candidate's comes from a
+    /// check's PRIORITY, which already accounts for it).
+    pub(crate) fn set_component(&mut self, component: u16) {
+        self.component = component;
     }
 
     /// The `ufrag` extension (RFC 8840 trickle: the generation's username fragment).
@@ -405,7 +424,8 @@ impl Candidate {
     /// Whether candidates `self` (local) and `remote` can form a pair: same IP family and
     /// transport, and for TCP compatible types.
     pub(crate) fn pairs_with(&self, remote: &Candidate) -> bool {
-        self.send_addr().is_ipv4() == remote.addr().is_ipv4()
+        self.component == remote.component
+            && self.send_addr().is_ipv4() == remote.addr().is_ipv4()
             && match (self.tcp, remote.tcp) {
                 (None, None) => true,
                 (Some(l), Some(r)) => l.pairs_with(r),
@@ -684,6 +704,31 @@ mod tests {
         );
         assert_eq!(r.send_addr(), a("5.6.7.8:7000"));
         assert_eq!(s.send_addr(), a("192.168.1.2:5000"));
+    }
+
+    #[test]
+    fn components() {
+        let rtp = Candidate::host(a("192.168.1.2:5000"));
+        let rtcp = Candidate::host(a("192.168.1.2:5001")).with_component(2);
+        assert_eq!(rtcp.component(), 2);
+        // RFC 8445 §5.1.2.1: 256 - component in the low byte; the foundation is shared.
+        assert_eq!(rtcp.priority(), rtp.priority() - 1);
+        assert_eq!(rtcp.foundation(), rtp.foundation());
+        assert!(!rtp.pairs_with(&rtcp) && rtcp.pairs_with(&rtcp.clone()));
+        let back = Candidate::parse(&rtcp.to_sdp()).unwrap();
+        assert_eq!((back.component(), back.priority()), (2, rtcp.priority()));
+        // Every constructor's priority takes the component.
+        for c in [
+            Candidate::server_reflexive(a("1.2.3.4:5"), a("192.168.1.2:5001")),
+            Candidate::relayed_over_stream(a("1.2.3.4:5"), a("192.168.1.2:5001"), true),
+            Candidate::host_tcp(a("192.168.1.2:5001"), TcpType::Passive),
+        ] {
+            let p = c.priority();
+            let c2 = c.with_component(2);
+            assert_eq!((c2.priority(), c2.with_component(1).priority()), (p - 1, p));
+        }
+        assert_eq!(rtp.clone().with_component(0).component(), 1);
+        assert_eq!(rtp.with_component(300).priority() & 0xff, 0);
     }
 
     #[test]

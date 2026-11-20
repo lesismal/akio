@@ -209,6 +209,36 @@ impl Peer {
             .collect()
     }
 
+    /// A peer of a stream of several components: host candidates `(address, component)`.
+    fn with_components(config: IceConfig, now: Instant, addrs: &[(&str, u16)]) -> Peer {
+        let mut agent = IceAgent::new(config, now);
+        for &(ad, c) in addrs {
+            assert!(agent.add_local_candidate(Candidate::host(a(ad)).with_component(c)));
+        }
+        Peer {
+            agent,
+            addrs: addrs.iter().map(|(s, _)| a(s)).collect(),
+            events: Vec::new(),
+            app: 0,
+        }
+    }
+
+    /// The selections of component `c` (both event kinds).
+    fn selections_of(&self, c: u16) -> Vec<(SocketAddr, SocketAddr)> {
+        self.events
+            .iter()
+            .filter_map(|e| match e {
+                IceEvent::SelectedPair { local, remote } if c == 1 => Some((*local, *remote)),
+                IceEvent::ComponentSelectedPair {
+                    component,
+                    local,
+                    remote,
+                } if *component == c => Some((*local, *remote)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn selections(&self) -> Vec<(SocketAddr, SocketAddr)> {
         self.events
             .iter()
@@ -287,7 +317,10 @@ impl Sim {
         if self.app_data && self.now >= self.next_app {
             self.next_app = self.now + Duration::from_millis(100);
             for i in 0..self.peers.len() {
-                if let Some((src, dst)) = self.peers[i].agent.send_pair() {
+                for c in 1..=self.peers[i].agent.components() {
+                    let Some((src, dst)) = self.peers[i].agent.send_pair_of(c) else {
+                        continue;
+                    };
                     self.net.send(
                         self.now,
                         Transmit {
@@ -1520,4 +1553,347 @@ fn controlled_follows_the_highest_nomination() {
     assert_eq!(sim.peers[1].agent.selected_pair(), Some((b_addr, other)));
     send(&mut sim, first.1, 6);
     assert_eq!(sim.peers[1].agent.selected_pair(), Some((b_addr, first.1)));
+}
+
+// ---- Several components (RFC 8445: RTP and RTCP on their own ports, no rtcp-mux) ----
+
+fn two_comps(mut c: IceConfig) -> IceConfig {
+    c.components = 2;
+    c
+}
+
+/// Component 1 on even ports, component 2 on the odd one above.
+const A2: [(&str, u16); 2] = [("10.0.0.1:1000", 1), ("10.0.0.1:1001", 2)];
+const B2: [(&str, u16); 2] = [("10.0.0.2:2000", 1), ("10.0.0.2:2001", 2)];
+const A4: [(&str, u16); 4] = [
+    ("10.0.0.1:1000", 1),
+    ("10.0.0.1:1001", 2),
+    ("[2001:db8::1]:1000", 1),
+    ("[2001:db8::1]:1001", 2),
+];
+const B4: [(&str, u16); 4] = [
+    ("10.0.0.2:2000", 1),
+    ("10.0.0.2:2001", 2),
+    ("[2001:db8::2]:2000", 1),
+    ("[2001:db8::2]:2001", 2),
+];
+
+fn two(seed: u64, ca: IceConfig, aa: &[(&str, u16)], cb: IceConfig, ba: &[(&str, u16)]) -> Sim {
+    let now = Instant::now();
+    Sim::new(
+        seed,
+        Peer::with_components(two_comps(ca), now, aa),
+        Peer::with_components(two_comps(cb), now, ba),
+        now,
+    )
+}
+
+/// Both components selected on mirrored pairs of their own ports (no NAT).
+fn assert_two_components(sim: &Sim) {
+    for c in 1..=2u16 {
+        let (l0, r0) = sim.peers[0].agent.selected_pair_of(c).expect("A selected");
+        let (l1, r1) = sim.peers[1].agent.selected_pair_of(c).expect("B selected");
+        assert_eq!((l0, r0), (r1, l1), "component {c}");
+        assert_eq!(l0.port() % 2, c - 1, "component {c} on {l0}");
+        assert_eq!(r0.port() % 2, c - 1, "component {c} to {r0}");
+    }
+}
+
+#[test]
+fn two_components_connect_in_every_nomination_mode() {
+    for mode in [
+        Nomination::Regular,
+        Nomination::Aggressive,
+        Nomination::Renomination,
+    ] {
+        for controlling in [true, false] {
+            let mut sim = two(
+                40,
+                nominating(mode, controlling),
+                &A2,
+                nominating(mode, !controlling),
+                &B2,
+            );
+            for p in &mut sim.peers {
+                p.agent
+                    .set_remote_renomination(mode == Nomination::Renomination);
+            }
+            assert_eq!(sim.peers[0].agent.components(), 2);
+            sim.signal();
+            assert!(
+                sim.run_until(Duration::from_secs(5), |s| s.both(IceState::Completed)),
+                "{mode:?} {controlling}"
+            );
+            assert!(
+                sim.elapsed() < Duration::from_secs(1),
+                "{:?}",
+                sim.elapsed()
+            );
+            assert_two_components(&sim);
+            for p in &sim.peers {
+                assert_eq!(p.states(), NORMAL_STATES, "{mode:?}");
+                assert_eq!(p.selections_of(1).len(), 1);
+                assert_eq!(p.selections_of(2).len(), 1);
+                // Connected only once both components have a selected pair.
+                let at = |f: &dyn Fn(&IceEvent) -> bool| p.events.iter().position(f).unwrap();
+                let connected = at(&|e| *e == IceEvent::StateChanged(IceState::Connected));
+                assert!(at(&|e| matches!(e, IceEvent::SelectedPair { .. })) < connected);
+                assert!(
+                    at(&|e| matches!(e, IceEvent::ComponentSelectedPair { component: 2, .. }))
+                        < connected
+                );
+                assert_eq!(p.agent.send_pair(), p.agent.selected_pair_of(1));
+                assert_eq!(p.agent.send_pair_of(2), p.agent.selected_pair_of(2));
+                assert_eq!(p.agent.selected_pair_of(0), None);
+                assert_eq!(p.agent.send_pair_of(3), None);
+            }
+            // Consent keeps both components up; data flows on both.
+            sim.app_data = true;
+            sim.run_for(Duration::from_secs(120));
+            assert!(sim.both(IceState::Completed));
+            for p in &sim.peers {
+                assert_eq!(p.states().len(), 3);
+                assert!(p.app > 2000, "{}", p.app);
+            }
+        }
+    }
+}
+
+#[test]
+fn rtcp_pairs_wait_for_rtp() {
+    // RFC 8445 §6.1.2.6: of the pairs of one foundation, component 1's is Waiting and
+    // component 2's Frozen. With IPv6 ranked above IPv4, the IPv6 RTCP pair outranks the IPv4
+    // RTP pair, yet both RTP pairs are checked first, whichever component's candidates
+    // arrive first.
+    for order in [[1, 3, 0, 2], [0, 2, 1, 3], [1, 0, 3, 2]] {
+        let now = Instant::now();
+        let mut ag = IceAgent::new(two_comps(full(true)), now);
+        for (ad, c) in A4 {
+            assert!(ag.add_local_candidate(Candidate::host(a(ad)).with_component(c)));
+        }
+        ag.set_remote_credentials(Credentials::random());
+        for i in order {
+            let (ad, c) = B4[i];
+            ag.add_remote_candidate(Candidate::host(a(ad)).with_component(c));
+        }
+        let mut sent = Vec::new();
+        for i in 0..4u32 {
+            ag.handle_timeout(now + Duration::from_millis(50) * i);
+            while let Some(t) = ag.poll_transmit() {
+                let m = Message::parse(&t.contents).unwrap();
+                let prio = m.get_u32(attr::PRIORITY).unwrap();
+                sent.push((t.source, t.destination, prio & 0xff));
+            }
+        }
+        assert_eq!(
+            sent,
+            [
+                (a("[2001:db8::1]:1000"), a("[2001:db8::2]:2000"), 255),
+                (a("10.0.0.1:1000"), a("10.0.0.2:2000"), 255),
+                (a("[2001:db8::1]:1001"), a("[2001:db8::2]:2001"), 254),
+                (a("10.0.0.1:1001"), a("10.0.0.2:2001"), 254),
+            ],
+            "{order:?}"
+        );
+    }
+}
+
+#[test]
+fn two_components_over_a_lossy_link() {
+    for seed in 0..12u64 {
+        let controlling = seed % 2 == 0;
+        let lite_remote = seed % 3 == 0;
+        let (ca, cb) = if lite_remote {
+            (full(true), lite())
+        } else {
+            (full(controlling), full(!controlling))
+        };
+        let mut sim = two(200 + seed, ca, &A4, cb, &B4);
+        if lite_remote {
+            sim.peers[0].agent.set_remote_lite(true);
+        }
+        sim.net.loss_pct = 25;
+        sim.net.dup_pct = 10;
+        sim.net.jitter_ms = 300;
+        sim.signal();
+        assert!(
+            sim.run_until(Duration::from_secs(30), |s| s.both(IceState::Completed)),
+            "seed {seed}: {:?} {:?}",
+            sim.peers[0].agent.state(),
+            sim.peers[1].agent.state()
+        );
+        assert_two_components(&sim);
+        sim.app_data = true;
+        sim.run_for(Duration::from_secs(90));
+        for p in &sim.peers {
+            assert_eq!(p.agent.state(), IceState::Completed, "seed {seed}");
+            assert!(!p.states().contains(&IceState::Disconnected), "seed {seed}");
+            assert!(!p.states().contains(&IceState::Failed), "seed {seed}");
+            assert_eq!(p.selections_of(1).len(), 1, "seed {seed}");
+            assert_eq!(p.selections_of(2).len(), 1, "seed {seed}");
+        }
+        assert!(sim.peers[0].app > 0 && sim.peers[1].app > 0);
+    }
+}
+
+#[test]
+fn two_components_role_conflicts() {
+    for controlling in [true, false] {
+        let mut sim = two(41, full(controlling), &A2, full(controlling), &B2);
+        sim.signal();
+        assert!(sim.run_until(Duration::from_secs(10), |s| s.both(IceState::Completed)));
+        assert_two_components(&sim);
+        assert_ne!(
+            sim.peers[0].agent.controlling(),
+            sim.peers[1].agent.controlling()
+        );
+        sim.run_for(Duration::from_secs(30));
+        assert!(sim.both(IceState::Completed));
+    }
+}
+
+#[test]
+fn two_components_through_nat() {
+    // B only knows A's private addresses: each component gets its own peer-reflexive pair.
+    for controlling in [true, false] {
+        let now = Instant::now();
+        let pa = Peer::with_components(two_comps(full(controlling)), now, &A2);
+        let pb = Peer::with_components(
+            two_comps(full(!controlling)),
+            now,
+            &[("203.0.113.2:2000", 1), ("203.0.113.2:2001", 2)],
+        );
+        let mut sim = Sim::new(42, pa, pb, now);
+        sim.net.nats.push(Nat::new("10.0.0.1", "198.51.100.1"));
+        sim.signal();
+        assert!(sim.run_until(Duration::from_secs(15), |s| s.both(IceState::Completed)));
+        for (c, inside, b) in [
+            (1, "10.0.0.1:1000", "203.0.113.2:2000"),
+            (2, "10.0.0.1:1001", "203.0.113.2:2001"),
+        ] {
+            let mapped = sim.net.nats[0].map[&a(inside)];
+            assert_eq!(sim.peers[1].agent.selected_pair_of(c), Some((a(b), mapped)));
+            assert_eq!(
+                sim.peers[0].agent.selected_pair_of(c),
+                Some((a(inside), a(b)))
+            );
+            assert!(sim.peers[1].agent.remote_candidates().iter().any(|r| {
+                r.addr() == mapped
+                    && r.component() == c
+                    && r.kind() == only_ice::CandidateKind::PeerReflexive
+            }));
+        }
+    }
+}
+
+#[test]
+fn rtcp_unreachable_fails_the_stream() {
+    // RTP works, RTCP never does: Failed, never Connected, although component 1 is selected.
+    for end_of_candidates in [true, false] {
+        let mut sim = two(43, full(true), &A2, full(false), &B2);
+        sim.net.dead.insert(a("10.0.0.2:2001"));
+        sim.signal();
+        if end_of_candidates {
+            sim.peers[0].agent.end_of_remote_candidates();
+            sim.peers[1].agent.end_of_remote_candidates();
+        }
+        assert!(sim.run_until(Duration::from_secs(60), |s| s.both(IceState::Failed)));
+        let t = sim.elapsed();
+        if end_of_candidates {
+            assert!(
+                t > Duration::from_secs(6) && t < Duration::from_secs(10),
+                "{t:?}"
+            );
+        } else {
+            assert!(
+                t >= Duration::from_secs(30) && t < Duration::from_secs(31),
+                "{t:?}"
+            );
+        }
+        for p in &sim.peers {
+            assert_eq!(p.states(), [IceState::Checking, IceState::Failed]);
+            assert!(p.agent.selected_pair_of(1).is_some());
+            assert_eq!(p.agent.selected_pair_of(2), None);
+        }
+    }
+}
+
+#[test]
+fn two_components_consent_per_component() {
+    let mut sim = two(44, full(true), &A2, full(false), &B2);
+    sim.signal();
+    assert!(sim.run_until(Duration::from_secs(5), |s| s.both(IceState::Completed)));
+    sim.run_for(Duration::from_secs(10));
+    // Only RTCP's path dies: consent on component 2 expires.
+    sim.net.dead.insert(a("10.0.0.2:2001"));
+    let t0 = sim.now;
+    assert!(sim.run_until(Duration::from_secs(60), |s| s.both(IceState::Disconnected)));
+    let lag = sim.now - t0;
+    assert!(
+        lag > Duration::from_secs(23) && lag <= Duration::from_secs(31),
+        "{lag:?}"
+    );
+    sim.net.dead.clear();
+    assert!(sim.run_until(Duration::from_secs(8), |s| s.both(IceState::Completed)));
+    for p in &sim.peers {
+        assert_eq!(
+            p.states(),
+            [
+                IceState::Checking,
+                IceState::Connected,
+                IceState::Completed,
+                IceState::Disconnected,
+                IceState::Completed
+            ]
+        );
+        assert_eq!(p.selections_of(1).len(), 1);
+        assert_eq!(p.selections_of(2).len(), 1);
+    }
+}
+
+#[test]
+fn two_components_ice_restart() {
+    for who in [0, 1] {
+        let mut sim = two(45, full(true), &A2, full(false), &B2);
+        sim.signal();
+        assert!(sim.run_until(Duration::from_secs(5), |s| s.both(IceState::Completed)));
+        sim.run_for(Duration::from_secs(7));
+        restart(&mut sim, who, true);
+        for p in &sim.peers {
+            assert_eq!(p.agent.send_pair_of(2), p.agent.selected_pair_of(2));
+            assert!(p.agent.send_pair_of(2).is_some());
+        }
+        assert!(sim.run_until(Duration::from_secs(10), |s| {
+            s.both(IceState::Completed)
+                && s.peers
+                    .iter()
+                    .all(|p| p.selections_of(1).len() == 2 && p.selections_of(2).len() == 2)
+        }));
+        assert_two_components(&sim);
+        sim.run_for(Duration::from_secs(60));
+        assert!(sim.both(IceState::Completed));
+    }
+}
+
+#[test]
+fn components_outside_the_stream_are_ignored() {
+    let now = Instant::now();
+    let mut ag = IceAgent::new(full(true), now);
+    assert_eq!(ag.components(), 1);
+    assert!(!ag.add_local_candidate(Candidate::host(a("10.0.0.1:1001")).with_component(2)));
+    ag.add_remote_candidate(Candidate::host(a("10.0.0.2:2001")).with_component(2));
+    assert!(ag.remote_candidates().is_empty());
+    for (n, want) in [(0, 1), (3, 3), (1000, 256)] {
+        let mut c = full(true);
+        c.components = n;
+        assert_eq!(IceAgent::new(c, now).components(), want);
+    }
+    // A component-2 candidate never pairs with a component-1 one.
+    let mut ag = IceAgent::new(two_comps(full(true)), now);
+    assert!(ag.add_local_candidate(Candidate::host(a("10.0.0.1:1000"))));
+    ag.set_remote_credentials(Credentials::random());
+    ag.add_remote_candidate(Candidate::host(a("10.0.0.2:2001")).with_component(2));
+    ag.handle_timeout(now);
+    assert!(ag.poll_transmit().is_none());
+    assert_eq!(ag.state(), IceState::New);
 }

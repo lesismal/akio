@@ -71,6 +71,12 @@ pub struct IceConfig {
     /// a higher NOMINATION value. Controlled (always, whatever this flag says): the pair with
     /// the highest NOMINATION value is selected. Default off.
     pub renomination: bool,
+    /// Components of the data stream (RFC 8445 §2): 1 (default) for RTP and RTCP muxed or
+    /// BUNDLEd, 2 for RTP (component 1) and RTCP (component 2) on their own ports. Candidates
+    /// carry their component ([`Candidate::with_component`]); those of components above this
+    /// number are ignored. The agent is `Connected` once every component has a selected pair.
+    /// Values outside 1..=256 are clamped.
+    pub components: u16,
 }
 
 impl IceConfig {
@@ -90,6 +96,7 @@ impl IceConfig {
             failed_timeout: Duration::from_secs(30),
             aggressive_nomination: false,
             renomination: false,
+            components: 1,
         }
     }
 }
@@ -106,20 +113,23 @@ pub struct Transmit {
     pub contents: Vec<u8>,
 }
 
-/// The agent state (the `RTCIceConnectionState` values that apply to one component).
+/// The agent state (the `RTCIceConnectionState` values), over every component of the stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IceState {
     /// Nothing started yet.
     New,
-    /// Checks are running (a lite agent: valid checks arrived) but nothing is selected.
+    /// Checks are running (a lite agent: valid checks arrived) but some component has no
+    /// selected pair.
     Checking,
-    /// A pair is selected; checks may still be running.
+    /// Every component has a selected pair; checks may still be running.
     Connected,
-    /// A pair is selected and nothing is left to check.
+    /// Every component has a selected pair of the current generation and nothing is left to
+    /// check.
     Completed,
-    /// Consent expired on the selected pair (it may come back).
+    /// Consent expired on the selected pair of a component (it may come back).
     Disconnected,
-    /// Every pair failed (after end-of-candidates or [`IceConfig::failed_timeout`]).
+    /// Every pair of a component without a selected pair failed (after end-of-candidates or
+    /// [`IceConfig::failed_timeout`]).
     Failed,
 }
 
@@ -129,9 +139,19 @@ pub enum IceState {
 pub enum IceEvent {
     /// The state changed.
     StateChanged(IceState),
-    /// A pair was selected (nominated): the first time, when it changes, and after each ICE
-    /// restart's nomination even if the addresses stay the same.
+    /// A pair of component 1 was selected (nominated): the first time, when it changes, and
+    /// after each ICE restart's nomination even if the addresses stay the same.
     SelectedPair {
+        /// Local address (the base; the relayed address for a relayed candidate).
+        local: SocketAddr,
+        /// Remote address.
+        remote: SocketAddr,
+    },
+    /// A pair of a component other than 1 was selected, on the same occasions as
+    /// [`IceEvent::SelectedPair`] (only with [`IceConfig::components`] above 1).
+    ComponentSelectedPair {
+        /// The component id (2 for RTCP).
+        component: u16,
         /// Local address (the base; the relayed address for a relayed candidate).
         local: SocketAddr,
         /// Remote address.
@@ -166,6 +186,8 @@ struct Tx {
 
 #[derive(Debug)]
 struct Pair {
+    /// The component of both candidates.
+    component: u16,
     local: SocketAddr,
     local_prio: u32,
     local_pref: u32,
@@ -202,6 +224,47 @@ struct Selected {
     prio: u64,
 }
 
+/// The state of one component of the stream: its selection, nomination, consent freshness
+/// (RFC 7675 runs per component) and, for a lite agent, the last valid check. The pairs of
+/// every component share one checklist (RFC 8445 §6.1.2), its pacing and triggered queue.
+#[derive(Debug)]
+struct Comp {
+    selected: Option<Selected>,
+    /// Controlling: the pair being nominated.
+    nominating: Option<(SocketAddr, SocketAddr)>,
+    first_valid_at: Option<Instant>,
+    /// Controlling, after a selection: when a pair better than the selected one first
+    /// succeeded (renomination waits [`IceConfig::nomination_delay`] from then for better
+    /// pairs still being checked).
+    improved_at: Option<Instant>,
+    /// Controlled: the highest NOMINATION value selected in this generation.
+    remote_nomination: u32,
+    consent_next: Option<Instant>,
+    consent_last: Instant,
+    consent_lost: bool,
+    consent_txs: VecDeque<ConsentTx>,
+    lite_last_check: Option<Instant>,
+    lite_valid: Option<(SocketAddr, SocketAddr)>,
+}
+
+impl Comp {
+    fn new(now: Instant) -> Comp {
+        Comp {
+            selected: None,
+            nominating: None,
+            first_valid_at: None,
+            improved_at: None,
+            remote_nomination: 0,
+            consent_next: None,
+            consent_last: now,
+            consent_lost: false,
+            consent_txs: VecDeque::new(),
+            lite_last_check: None,
+            lite_valid: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ConsentTx {
     tid: [u8; 12],
@@ -231,7 +294,9 @@ fn pairs_on_signal(c: &Candidate) -> bool {
     c.kind() != CandidateKind::PeerReflexive && c.tcp_type() != Some(TcpType::Passive)
 }
 
-/// A sans-io ICE agent for one component over UDP. See the crate docs for how to drive it.
+/// A sans-io ICE agent for one data stream over UDP and TCP: one component by default
+/// (RTP/RTCP muxed), more with [`IceConfig::components`]. See the crate docs for how to drive
+/// it.
 #[derive(Debug)]
 pub struct IceAgent {
     config: IceConfig,
@@ -240,35 +305,24 @@ pub struct IceAgent {
     remote_lite: bool,
     /// The remote supports renomination.
     remote_renomination: bool,
-    /// Controlling: the last NOMINATION value sent.
+    /// Controlling: the last NOMINATION value sent (one counter for every component).
     nomination: u32,
-    /// Controlled: the highest NOMINATION value selected in this generation.
-    remote_nomination: u32,
-    /// Controlling, after a selection: when a pair better than the selected one first
-    /// succeeded (renomination waits [`IceConfig::nomination_delay`] from then for better
-    /// pairs still being checked).
-    improved_at: Option<Instant>,
     controlling: bool,
     tie_breaker: u64,
     local_cands: Vec<Candidate>,
     remote_cands: Vec<Candidate>,
+    /// The checklist: the pairs of every component.
     pairs: Vec<Pair>,
     triggered: VecDeque<(SocketAddr, SocketAddr)>,
     end_of_candidates: bool,
     generation: u64,
-    selected: Option<Selected>,
+    /// Component `i + 1` at index `i`.
+    comps: Vec<Comp>,
+    /// The generation in which every component's selection completed.
     completed_gen: Option<u64>,
-    nominating: Option<(SocketAddr, SocketAddr)>,
-    first_valid_at: Option<Instant>,
     checking_since: Option<Instant>,
     next_check: Instant,
-    consent_next: Option<Instant>,
-    consent_last: Instant,
-    consent_lost: bool,
-    consent_txs: VecDeque<ConsentTx>,
     done_tids: VecDeque<[u8; 12]>,
-    lite_last_check: Option<Instant>,
-    lite_valid: Option<(SocketAddr, SocketAddr)>,
     state: IceState,
     transmits: VecDeque<Transmit>,
     events: VecDeque<IceEvent>,
@@ -278,8 +332,10 @@ pub struct IceAgent {
 
 impl IceAgent {
     /// A new agent.
-    pub fn new(config: IceConfig, now: Instant) -> IceAgent {
+    pub fn new(mut config: IceConfig, now: Instant) -> IceAgent {
+        config.components = config.components.clamp(1, 256);
         let controlling = config.controlling && !config.lite;
+        let comps = (0..config.components).map(|_| Comp::new(now)).collect();
         IceAgent {
             config,
             prev_local: None,
@@ -287,8 +343,6 @@ impl IceAgent {
             remote_lite: false,
             remote_renomination: false,
             nomination: 0,
-            remote_nomination: 0,
-            improved_at: None,
             controlling,
             tie_breaker: random_u64(),
             local_cands: Vec::new(),
@@ -297,25 +351,45 @@ impl IceAgent {
             triggered: VecDeque::new(),
             end_of_candidates: false,
             generation: 0,
-            selected: None,
+            comps,
             completed_gen: None,
-            nominating: None,
-            first_valid_at: None,
             checking_since: None,
             next_check: now,
-            consent_next: None,
-            consent_last: now,
-            consent_lost: false,
-            consent_txs: VecDeque::new(),
             done_tids: VecDeque::new(),
-            lite_last_check: None,
-            lite_valid: None,
             state: IceState::New,
             transmits: VecDeque::new(),
             events: VecDeque::new(),
             closed: false,
             now,
         }
+    }
+
+    fn comp(&self, component: u16) -> &Comp {
+        &self.comps[usize::from(component - 1)]
+    }
+
+    fn comp_mut(&mut self, component: u16) -> &mut Comp {
+        &mut self.comps[usize::from(component - 1)]
+    }
+
+    fn has_component(&self, component: u16) -> bool {
+        (1..=self.config.components).contains(&component)
+    }
+
+    /// The component of the local (signaled) candidate sending from `local`.
+    fn component_of(&self, local: SocketAddr) -> Option<u16> {
+        self.local_cands
+            .iter()
+            .find(|c| c.kind() != CandidateKind::PeerReflexive && c.send_addr() == local)
+            .map(Candidate::component)
+    }
+
+    /// The component of the pair `key`.
+    fn pair_component(&self, key: &(SocketAddr, SocketAddr)) -> Option<u16> {
+        self.pairs
+            .iter()
+            .find(|p| (p.local, p.remote) == *key)
+            .map(|p| p.component)
     }
 
     /// The local credentials (for the SDP).
@@ -329,8 +403,8 @@ impl IceAgent {
     }
 
     /// Sets the remote credentials. Setting different ones than before (a remote ICE restart)
-    /// drops the remote candidates, the pairs and end-of-candidates; the selected pair stays
-    /// in use (with consent on the old credentials) until a new one is nominated.
+    /// drops the remote candidates, the pairs and end-of-candidates; the selected pairs stay
+    /// in use (with consent on the old credentials) until new ones are nominated.
     pub fn set_remote_credentials(&mut self, c: Credentials) {
         if self.remote_creds.as_ref() == Some(&c) {
             return;
@@ -350,6 +424,11 @@ impl IceAgent {
         self.config.lite
     }
 
+    /// The number of components of the stream ([`IceConfig::components`]).
+    pub fn components(&self) -> u16 {
+        self.config.components
+    }
+
     /// Whether this agent is currently controlling (it may change on a role conflict).
     pub fn controlling(&self) -> bool {
         self.controlling
@@ -363,7 +442,7 @@ impl IceAgent {
     }
 
     /// The remote is ICE-lite (`a=ice-lite`): this full agent becomes controlling and
-    /// nominates the first valid pair.
+    /// nominates the first valid pair of each component.
     pub fn set_remote_lite(&mut self, yes: bool) {
         self.remote_lite = yes;
         if yes {
@@ -380,10 +459,12 @@ impl IceAgent {
 
     /// Adds a local candidate (gathered by the caller); `false` (and ignored) if one with the
     /// same address, base and transport exists (a UDP and a TCP candidate may share an
-    /// address: a server's listeners on one port). Host, server-reflexive and relayed candidates are paired
-    /// with the remote candidates of the same IP family.
+    /// address: a server's listeners on one port) or its component is not one of the stream's.
+    /// Host, server-reflexive and relayed candidates are paired with the remote candidates of
+    /// the same component and IP family.
     pub fn add_local_candidate(&mut self, c: Candidate) -> bool {
-        if self.local_cands.len() >= MAX_LOCAL_CANDIDATES
+        if !self.has_component(c.component())
+            || self.local_cands.len() >= MAX_LOCAL_CANDIDATES
             || self.local_cands.iter().any(|l| {
                 l.addr() == c.addr() && l.base() == c.base() && l.tcp_type() == c.tcp_type()
             })
@@ -408,12 +489,13 @@ impl IceAgent {
         &self.local_cands
     }
 
-    /// Adds a remote candidate (trickle: any time). Ignored: components other than 1,
-    /// duplicates of a known address, candidates whose `ufrag` extension names another
-    /// generation than the remote credentials. A signaled candidate replaces a peer-reflexive
-    /// one with the same address.
+    /// Adds a remote candidate (trickle: any time). Ignored: components the stream does not
+    /// have ([`IceConfig::components`]; only 1 by default), duplicates of a known address of
+    /// the same component, candidates whose `ufrag` extension names another generation than
+    /// the remote credentials. A signaled candidate replaces a peer-reflexive one with the
+    /// same address.
     pub fn add_remote_candidate(&mut self, c: Candidate) {
-        if c.component() != 1 {
+        if !self.has_component(c.component()) {
             return;
         }
         if let (Some(u), Some(rc)) = (c.ufrag(), self.remote_creds.as_ref()) {
@@ -421,12 +503,21 @@ impl IceAgent {
                 return;
             }
         }
-        if let Some(i) = self.remote_cands.iter().position(|r| r.addr() == c.addr()) {
+        let comp = c.component();
+        if let Some(i) = self
+            .remote_cands
+            .iter()
+            .position(|r| r.addr() == c.addr() && r.component() == comp)
+        {
             if self.remote_cands[i].kind() == CandidateKind::PeerReflexive
                 && c.kind() != CandidateKind::PeerReflexive
             {
                 let controlling = self.controlling;
-                for p in self.pairs.iter_mut().filter(|p| p.remote == c.addr()) {
+                for p in self
+                    .pairs
+                    .iter_mut()
+                    .filter(|p| p.remote == c.addr() && p.component == comp)
+                {
                     p.remote_prio = c.priority();
                     p.remote_foundation = c.foundation().to_owned();
                     p.prio = pair_priority(controlling, p.local_prio, p.remote_prio);
@@ -454,19 +545,20 @@ impl IceAgent {
         &self.remote_cands
     }
 
-    /// The remote signaled end-of-candidates: once every pair failed the state becomes
-    /// [`IceState::Failed`].
+    /// The remote signaled end-of-candidates: once every pair of a component without a
+    /// selected pair failed the state becomes [`IceState::Failed`].
     pub fn end_of_remote_candidates(&mut self) {
         self.end_of_candidates = true;
         let now = self.now;
         self.update_state(now);
     }
 
-    /// Local ICE restart with new credentials. The pairs are rebuilt (local candidates kept
-    /// if `keep_local_candidates`, peer-reflexive ones always dropped); the selected pair stays
-    /// in use, and requests on the old credentials are still answered, until a new pair is
-    /// nominated. Call [`IceAgent::set_remote_credentials`] with the remote's new credentials
-    /// (and re-add its candidates) when the answer arrives.
+    /// Local ICE restart with new credentials (for every component of the stream). The pairs
+    /// are rebuilt (local candidates kept if `keep_local_candidates`, peer-reflexive ones
+    /// always dropped); each component's selected pair stays in use, and requests on the old
+    /// credentials are still answered, until a new pair of that component is nominated. Call
+    /// [`IceAgent::set_remote_credentials`] with the remote's new credentials (and re-add its
+    /// candidates) when the answer arrives.
     pub fn restart(&mut self, local: Credentials, keep_local_candidates: bool) {
         let old = std::mem::replace(&mut self.config.local, local);
         self.prev_local = Some(old);
@@ -478,7 +570,9 @@ impl IceAgent {
         }
         self.reset_checklist();
         self.end_of_candidates = false;
-        self.lite_valid = None;
+        for c in &mut self.comps {
+            c.lite_valid = None;
+        }
         for l in self.local_cands.clone() {
             if !pairs_on_signal(&l) {
                 continue;
@@ -502,18 +596,21 @@ impl IceAgent {
         }
         self.pairs.clear();
         self.triggered.clear();
-        self.nominating = None;
-        self.first_valid_at = None;
+        for c in &mut self.comps {
+            c.nominating = None;
+            c.first_valid_at = None;
+            c.improved_at = None;
+            c.remote_nomination = 0;
+        }
         self.checking_since = None;
-        self.improved_at = None;
-        self.remote_nomination = 0;
         self.generation += 1;
     }
 
     /// Handles a received datagram (`source` the remote address, `destination` the local
     /// address it arrived on: a candidate's base, or the relayed address). Returns `true` if
     /// it was a STUN message for this agent (consumed), `false` for anything else (DTLS,
-    /// SRTP, other STUN traffic), which the caller handles itself.
+    /// SRTP, other STUN traffic), which the caller handles itself. The component is the one
+    /// of the local candidate at `destination`.
     pub fn handle_receive(
         &mut self,
         now: Instant,
@@ -598,7 +695,7 @@ impl IceAgent {
             self.respond(source, destination, err(400, "Bad Request"));
             return true;
         };
-        // Role conflict, RFC 8445 §7.3.1.1.
+        // Role conflict, RFC 8445 §7.3.1.1 (the role is the agent's, for every component).
         if !self.config.lite {
             let conflict = if self.controlling {
                 remote_controlling.map(|t| self.tie_breaker >= t)
@@ -628,19 +725,23 @@ impl IceAgent {
         let use_candidate = m.has(attr::USE_CANDIDATE);
         let nomination = m.get_u32(ATTR_NOMINATION);
         if self.config.lite {
-            self.lite_last_check = Some(now);
-            self.lite_valid = Some((destination, source));
+            // A lite agent may have no candidate on that address (one component): component 1.
+            let comp = self.component_of(destination).unwrap_or(1);
+            let c = self.comp_mut(comp);
+            c.lite_last_check = Some(now);
+            c.lite_valid = Some((destination, source));
             // The last USE-CANDIDATE check wins, unless renomination says it is older.
-            let newer = nomination.is_none_or(|n| n > self.remote_nomination);
+            let newer = nomination.is_none_or(|n| n > c.remote_nomination);
             if use_candidate && newer {
                 if let Some(n) = nomination {
-                    self.remote_nomination = n;
+                    c.remote_nomination = n;
                 }
-                self.select(destination, source, now);
+                self.select(comp, destination, source, now);
             }
             return true;
         }
-        // Peer-reflexive remote candidate, RFC 8445 §7.3.1.3.
+        // Peer-reflexive remote candidate, RFC 8445 §7.3.1.3, of the component of the local
+        // candidate the request arrived on.
         let Some(local) = self
             .local_cands
             .iter()
@@ -649,6 +750,7 @@ impl IceAgent {
         else {
             return true;
         };
+        let comp = local.component();
         // Over TCP the remote end is of the opposite type (RFC 6544 §7.2).
         let remote_tcp = local.tcp_type().map(|t| match t {
             TcpType::Passive => TcpType::Active,
@@ -658,14 +760,15 @@ impl IceAgent {
         let known = self
             .remote_cands
             .iter()
-            .find(|r| r.addr() == source && r.tcp_type() == remote_tcp);
+            .find(|r| r.addr() == source && r.tcp_type() == remote_tcp && r.component() == comp);
         let remote = if let Some(r) = known {
             r.clone()
         } else {
             if self.remote_cands.len() >= MAX_REMOTE_CANDIDATES {
                 return true;
             }
-            let r = Candidate::remote_prflx(source, priority, remote_tcp);
+            let mut r = Candidate::remote_prflx(source, priority, remote_tcp);
+            r.set_component(comp);
             self.remote_cands.push(r.clone());
             r
         };
@@ -685,7 +788,7 @@ impl IceAgent {
         match self.pairs[i].state {
             PairState::Succeeded => {
                 if nominated && self.accept_nomination(i) {
-                    self.select(destination, source, now);
+                    self.select(comp, destination, source, now);
                 }
             }
             PairState::InProgress => {}
@@ -728,6 +831,7 @@ impl IceAgent {
         };
         self.retire(tx.tid);
         let key = (self.pairs[i].local, self.pairs[i].remote);
+        let comp = self.pairs[i].component;
         // Non-symmetric responses fail the check (RFC 8445 §7.2.5.2.1).
         if source != key.1 || destination != key.0 {
             self.fail_pair(i);
@@ -743,8 +847,9 @@ impl IceAgent {
                 }
                 if !self.controlling {
                     p.nominate = false;
-                    if self.nominating == Some(key) {
-                        self.nominating = None;
+                    let c = self.comp_mut(comp);
+                    if c.nominating == Some(key) {
+                        c.nominating = None;
                     }
                 }
                 self.triggered.retain(|k| *k != key);
@@ -762,8 +867,9 @@ impl IceAgent {
         if self.local_cands.len() < MAX_LOCAL_CANDIDATES
             && !self.local_cands.iter().any(|c| c.addr() == mapped)
         {
-            self.local_cands
-                .push(Candidate::peer_reflexive(mapped, key.0, tx.priority));
+            let mut c = Candidate::peer_reflexive(mapped, key.0, tx.priority);
+            c.set_component(comp);
+            self.local_cands.push(c);
         }
         let p = &mut self.pairs[i];
         p.state = PairState::Succeeded;
@@ -771,6 +877,8 @@ impl IceAgent {
         let nominate = p.nominate;
         let prio = p.prio;
         p.nominate = false;
+        // Unfreeze the pairs of the same foundations, in every component (RFC 8445
+        // §7.2.5.3.3): once RTP works on a path, RTCP's pairs on it are checked.
         let found = (p.local_foundation.clone(), p.remote_foundation.clone());
         for q in &mut self.pairs {
             if q.state == PairState::Frozen
@@ -780,29 +888,31 @@ impl IceAgent {
                 q.state = PairState::Waiting;
             }
         }
-        self.first_valid_at.get_or_insert(now);
-        if self.selected_prio().is_some_and(|s| prio > s) {
-            self.improved_at.get_or_insert(now);
+        let selected = self.selected_prio(comp);
+        let c = self.comp_mut(comp);
+        c.first_valid_at.get_or_insert(now);
+        if selected.is_some_and(|s| prio > s) {
+            c.improved_at.get_or_insert(now);
         }
         let nominated = if self.controlling {
             // An explicit nomination always moves the selection; an aggressive one only to a
             // better pair.
             tx.use_candidate
                 && ((tx.nominating && nominate)
-                    || (self.config.aggressive_nomination
-                        && self.selected_prio().is_none_or(|s| prio > s)))
+                    || (self.config.aggressive_nomination && selected.is_none_or(|s| prio > s)))
         } else {
             remote_nominated && self.accept_nomination(i)
         };
         if nominated {
-            self.select(key.0, key.1, now);
+            self.select(comp, key.0, key.1, now);
         }
         if self
+            .comp(comp)
             .selected
             .as_ref()
             .is_some_and(|s| s.local == key.0 && s.remote == key.1)
         {
-            self.consent_ok(now);
+            self.consent_ok(comp, now);
         }
         true
     }
@@ -815,30 +925,37 @@ impl IceAgent {
         m: &Message<'_>,
     ) -> bool {
         let tid = m.transaction_id();
-        let Some(i) = self.consent_txs.iter().position(|t| t.tid == tid) else {
+        let Some((ci, i)) = self.comps.iter().enumerate().find_map(|(ci, c)| {
+            c.consent_txs
+                .iter()
+                .position(|t| t.tid == tid)
+                .map(|i| (ci, i))
+        }) else {
             return self.done_tids.contains(&tid);
         };
-        let t = &self.consent_txs[i];
+        let t = &self.comps[ci].consent_txs[i];
         if !m.check_integrity(t.key.as_bytes()) {
             return true;
         }
         let ok = m.class() == Class::Success && t.local == destination && t.remote == source;
-        self.consent_txs.remove(i);
+        self.comps[ci].consent_txs.remove(i);
         self.retire(tid);
         if ok
-            && self
+            && self.comps[ci]
                 .selected
                 .as_ref()
                 .is_some_and(|s| s.local == destination && s.remote == source)
         {
-            self.consent_ok(now);
+            // ci < 256: the components are clamped.
+            self.consent_ok(ci as u16 + 1, now);
         }
         true
     }
 
-    fn consent_ok(&mut self, now: Instant) {
-        self.consent_last = now;
-        self.consent_lost = false;
+    fn consent_ok(&mut self, component: u16, now: Instant) {
+        let c = self.comp_mut(component);
+        c.consent_last = now;
+        c.consent_lost = false;
     }
 
     fn retire(&mut self, tid: [u8; 12]) {
@@ -855,8 +972,10 @@ impl IceAgent {
         let p = &mut self.pairs[i];
         p.state = PairState::Failed;
         p.nominate = false;
-        if self.nominating == Some((p.local, p.remote)) {
-            self.nominating = None;
+        let (key, comp) = ((p.local, p.remote), p.component);
+        let c = self.comp_mut(comp);
+        if c.nominating == Some(key) {
+            c.nominating = None;
         }
     }
 
@@ -872,7 +991,9 @@ impl IceAgent {
             }
         }
         if !controlling {
-            self.nominating = None;
+            for c in &mut self.comps {
+                c.nominating = None;
+            }
         }
     }
 
@@ -890,33 +1011,37 @@ impl IceAgent {
             && (self.config.aggressive_nomination || self.renominating())
     }
 
-    /// The priority of the pair selected in the current generation.
-    fn selected_prio(&self) -> Option<u64> {
-        self.selected
+    /// The priority of the pair of `component` selected in the current generation.
+    fn selected_prio(&self, component: u16) -> Option<u64> {
+        self.comp(component)
+            .selected
             .as_ref()
             .filter(|s| s.generation == self.generation)
             .map(|s| s.prio)
     }
 
-    /// Whether an ordinary check may start on `p`: before a selection in this generation
-    /// any; after it only, when still looking, of a better pair.
+    /// Whether an ordinary check may start on `p`: before a selection of its component in
+    /// this generation any; after it only, when still looking, of a better pair.
     fn ordinary_check_ok(&self, p: &Pair) -> bool {
-        match self.selected_prio() {
+        match self.selected_prio(p.component) {
             None => true,
             Some(s) => self.keeps_improving() && p.prio > s,
         }
     }
 
-    /// Controlled: whether the remote's nomination of valid pair `i` selects it. With a
-    /// NOMINATION value, when it is higher than the one selected (renomination); without,
-    /// when nothing is selected in this generation or the pair is better than the selected
-    /// one (aggressive nomination: the highest-priority nominated pair is used).
+    /// Controlled: whether the remote's nomination of valid pair `i` selects it (for its
+    /// component). With a NOMINATION value, when it is higher than the one selected
+    /// (renomination); without, when nothing is selected in this generation or the pair is
+    /// better than the selected one (aggressive nomination: the highest-priority nominated
+    /// pair is used).
     fn accept_nomination(&mut self, i: usize) -> bool {
         let p = &self.pairs[i];
+        let comp = p.component;
         match p.remote_nomination {
             Some(n) => {
-                if n > self.remote_nomination {
-                    self.remote_nomination = n;
+                let c = self.comp_mut(comp);
+                if n > c.remote_nomination {
+                    c.remote_nomination = n;
                     true
                 } else {
                     false
@@ -924,7 +1049,7 @@ impl IceAgent {
             }
             None => {
                 let prio = p.prio;
-                self.selected_prio().is_none_or(|s| prio > s)
+                self.selected_prio(comp).is_none_or(|s| prio > s)
             }
         }
     }
@@ -935,6 +1060,7 @@ impl IceAgent {
         if !local.pairs_with(remote) {
             return;
         }
+        let comp = local.component();
         let prio = pair_priority(self.controlling, local.priority(), remote.priority());
         if let Some(p) = self
             .pairs
@@ -953,18 +1079,40 @@ impl IceAgent {
         if self.pairs.len() >= MAX_PAIRS {
             return;
         }
-        // Frozen unless no other pair of this foundation is being checked (RFC 8445 §6.1.2.6).
-        let active = self.pairs.iter().any(|p| {
-            p.local_foundation == local.foundation()
-                && p.remote_foundation == remote.foundation()
-                && matches!(p.state, PairState::Waiting | PairState::InProgress)
+        // Initial states, RFC 8445 §6.1.2.6: of the pairs of one foundation, the one of the
+        // lowest component (the highest priority among those) is Waiting, the others Frozen
+        // until a pair of the foundation succeeds. With trickle the pairs come in any order:
+        // a new pair is Frozen behind a pair of the foundation of a lower component that has
+        // not failed, or of its own component that is being checked; a new pair of a lower
+        // component freezes again the Waiting (not yet checked) pairs of higher ones.
+        let (lf, rf) = (local.foundation(), remote.foundation());
+        let same = |p: &Pair| p.local_foundation == lf && p.remote_foundation == rf;
+        let succeeded = self
+            .pairs
+            .iter()
+            .any(|p| same(p) && p.state == PairState::Succeeded);
+        let blocked = self.pairs.iter().any(|p| {
+            same(p)
+                && ((p.component < comp && p.state != PairState::Failed)
+                    || (p.component == comp
+                        && matches!(p.state, PairState::Waiting | PairState::InProgress)))
         });
-        let succeeded = self.pairs.iter().any(|p| {
-            p.local_foundation == local.foundation()
-                && p.remote_foundation == remote.foundation()
-                && p.state == PairState::Succeeded
-        });
+        let waiting = succeeded || !blocked;
+        if waiting && !succeeded {
+            let triggered = &self.triggered;
+            for p in &mut self.pairs {
+                if same(p)
+                    && p.component > comp
+                    && p.state == PairState::Waiting
+                    && p.tx.is_none()
+                    && !triggered.contains(&(p.local, p.remote))
+                {
+                    p.state = PairState::Frozen;
+                }
+            }
+        }
         self.pairs.push(Pair {
+            component: comp,
             local: la,
             local_prio: local.priority(),
             local_pref: local.local_pref(),
@@ -973,10 +1121,10 @@ impl IceAgent {
             remote_prio: remote.priority(),
             remote_foundation: remote.foundation().to_owned(),
             prio,
-            state: if active && !succeeded {
-                PairState::Frozen
-            } else {
+            state: if waiting {
                 PairState::Waiting
+            } else {
+                PairState::Frozen
             },
             tx: None,
             remote_nominated: false,
@@ -988,10 +1136,12 @@ impl IceAgent {
         self.checking_since.get_or_insert(self.now);
     }
 
-    fn select(&mut self, local: SocketAddr, remote: SocketAddr, now: Instant) {
-        let changed = self.selected.as_ref().is_none_or(|s| {
-            s.local != local || s.remote != remote || s.generation != self.generation
-        });
+    fn select(&mut self, comp: u16, local: SocketAddr, remote: SocketAddr, now: Instant) {
+        let generation = self.generation;
+        let changed =
+            self.comp(comp).selected.as_ref().is_none_or(|s| {
+                s.local != local || s.remote != remote || s.generation != generation
+            });
         if !changed {
             return;
         }
@@ -1000,24 +1150,30 @@ impl IceAgent {
             .iter()
             .find(|p| p.local == local && p.remote == remote)
             .map_or((65_535, 0), |p| (p.local_pref, p.prio));
-        self.selected = Some(Selected {
+        let sel = Selected {
             local,
             remote,
             local_ufrag: self.config.local.ufrag.clone(),
             remote_creds: self.remote_creds.clone(),
             local_pref,
-            generation: self.generation,
+            generation,
             prio,
-        });
-        self.nominating = None;
-        self.improved_at = None;
-        // Stop checking the other pairs (RFC 8445 §8.1.2), except, while still looking for
-        // better pairs (aggressive nomination, renomination), the better ones; a pair the
-        // remote nominates later gets a triggered check again.
+        };
+        let c = self.comp_mut(comp);
+        c.selected = Some(sel);
+        c.nominating = None;
+        c.improved_at = None;
+        // Stop checking the other pairs of the component (RFC 8445 §8.1.2), except, while
+        // still looking for better pairs (aggressive nomination, renomination), the better
+        // ones; a pair the remote nominates later gets a triggered check again. The other
+        // components' checks go on.
         let keep = self.keeps_improving();
         for i in 0..self.pairs.len() {
             let p = &self.pairs[i];
-            if p.tx.is_some() && (p.local, p.remote) != (local, remote) && !(keep && p.prio > prio)
+            if p.component == comp
+                && p.tx.is_some()
+                && (p.local, p.remote) != (local, remote)
+                && !(keep && p.prio > prio)
             {
                 self.fail_pair(i);
             }
@@ -1025,18 +1181,30 @@ impl IceAgent {
         let pairs = &self.pairs;
         self.triggered.retain(|k| {
             *k == (local, remote)
-                || (keep
-                    && pairs
-                        .iter()
-                        .any(|p| (p.local, p.remote) == *k && p.prio > prio))
+                || pairs.iter().any(|p| {
+                    (p.local, p.remote) == *k && (p.component != comp || (keep && p.prio > prio))
+                })
         });
-        self.consent_ok(now);
-        while let Some(t) = self.consent_txs.pop_front() {
-            self.retire(t.tid);
+        self.consent_ok(comp, now);
+        let delay = self.consent_delay();
+        let mut retired = Vec::new();
+        let c = self.comp_mut(comp);
+        while let Some(t) = c.consent_txs.pop_front() {
+            retired.push(t.tid);
         }
-        self.consent_next = Some(now + self.consent_delay());
-        self.events
-            .push_back(IceEvent::SelectedPair { local, remote });
+        c.consent_next = Some(now + delay);
+        for t in retired {
+            self.retire(t);
+        }
+        self.events.push_back(if comp == 1 {
+            IceEvent::SelectedPair { local, remote }
+        } else {
+            IceEvent::ComponentSelectedPair {
+                component: comp,
+                local,
+                remote,
+            }
+        });
     }
 
     fn consent_delay(&self) -> Duration {
@@ -1050,12 +1218,14 @@ impl IceAgent {
         remote: &Credentials,
         local_ufrag: &str,
         local_pref: u32,
+        component: u16,
         use_candidate: bool,
         nomination: Option<u32>,
     ) -> ([u8; 12], Vec<u8>, u32) {
         let mut tid = [0u8; 12];
         random_bytes(&mut tid);
-        let priority = candidate::priority(110, local_pref, 1);
+        // PRIORITY: that of a peer-reflexive candidate of the component (RFC 8445 §7.1.1).
+        let priority = candidate::priority(110, local_pref, component);
         let mut b = MessageBuilder::new(Method::BINDING, Class::Request, tid)
             .attr(
                 attr::USERNAME,
@@ -1088,6 +1258,7 @@ impl IceAgent {
             &remote,
             &self.config.local.ufrag,
             self.pairs[i].local_pref,
+            self.pairs[i].component,
             use_candidate,
             nomination,
         );
@@ -1137,7 +1308,8 @@ impl IceAgent {
     }
 
     /// Sends the next paced check, if any: the triggered queue first, then the
-    /// highest-priority Waiting pair, then the highest-priority Frozen one.
+    /// highest-priority Waiting pair, then the highest-priority Frozen one (of any
+    /// component: component 1's pairs rank first).
     fn send_next_check(&mut self, now: Instant) -> bool {
         if !self.can_send_checks() {
             return false;
@@ -1169,28 +1341,32 @@ impl IceAgent {
         }
     }
 
-    fn nomination_deadline(&self) -> Option<Instant> {
+    /// When the controlling agent nominates a pair of `comp` (RFC 8445 §8.1.1 runs per
+    /// component).
+    fn nomination_deadline(&self, comp: u16) -> Option<Instant> {
+        let c = self.comp(comp);
         if !self.controlling
             || self.config.lite
-            || self.nominating.is_some()
+            || c.nominating.is_some()
             || !self.can_send_checks()
         {
             return None;
         }
         // Aggressive nomination nominates with every check; renomination nominates again a
         // pair better than the selected one.
-        let selected = self.selected_prio();
+        let selected = self.selected_prio(comp);
         if (self.config.aggressive_nomination && !self.remote_lite)
             || (selected.is_some() && !self.renominating())
         {
             return None;
         }
-        let best = self.best_valid()?;
+        let best = self.best_valid(comp)?;
         if selected.is_some_and(|s| best.prio <= s) {
             return None;
         }
         let pending_higher = self.pairs.iter().any(|p| {
-            p.prio > best.prio
+            p.component == comp
+                && p.prio > best.prio
                 && matches!(
                     p.state,
                     PairState::Frozen | PairState::Waiting | PairState::InProgress
@@ -1200,18 +1376,18 @@ impl IceAgent {
             Some(self.now)
         } else {
             let since = if selected.is_some() {
-                self.improved_at
+                c.improved_at
             } else {
-                self.first_valid_at
+                c.first_valid_at
             };
             since.map(|t| t + self.config.nomination_delay)
         }
     }
 
-    fn best_valid(&self) -> Option<&Pair> {
+    fn best_valid(&self, comp: u16) -> Option<&Pair> {
         self.pairs
             .iter()
-            .filter(|p| p.state == PairState::Succeeded && p.tx.is_none())
+            .filter(|p| p.component == comp && p.state == PairState::Succeeded && p.tx.is_none())
             .max_by_key(|p| p.prio)
     }
 
@@ -1246,29 +1422,33 @@ impl IceAgent {
             };
             self.transmits.push_back(t);
         }
-        // Nomination (regular, RFC 8445 §8.1.1).
-        if self.nomination_deadline().is_some_and(|d| d <= now) {
-            if let Some(key) = self.best_valid().map(|p| (p.local, p.remote)) {
-                let n = if self.renominating() {
-                    self.nomination = self.nomination.wrapping_add(1).max(1);
-                    self.nomination
-                } else {
-                    0
-                };
-                if let Some(p) = self.pairs.iter_mut().find(|p| (p.local, p.remote) == key) {
-                    p.nominate = true;
-                    p.nomination = n;
-                }
-                self.nominating = Some(key);
-                self.triggered.retain(|k| *k != key);
-                self.triggered.push_front(key);
+        // Nomination (regular, RFC 8445 §8.1.1), per component.
+        for comp in 1..=self.config.components {
+            if !self.nomination_deadline(comp).is_some_and(|d| d <= now) {
+                continue;
             }
+            let Some(key) = self.best_valid(comp).map(|p| (p.local, p.remote)) else {
+                continue;
+            };
+            let n = if self.renominating() {
+                self.nomination = self.nomination.wrapping_add(1).max(1);
+                self.nomination
+            } else {
+                0
+            };
+            if let Some(p) = self.pairs.iter_mut().find(|p| (p.local, p.remote) == key) {
+                p.nominate = true;
+                p.nomination = n;
+            }
+            self.comp_mut(comp).nominating = Some(key);
+            self.triggered.retain(|k| *k != key);
+            self.triggered.push_front(key);
         }
         // Paced checks.
         if now >= self.next_check && self.send_next_check(now) {
             self.next_check = now + self.config.ta;
         }
-        // Consent freshness (RFC 7675).
+        // Consent freshness (RFC 7675), per component.
         if !self.config.lite {
             self.consent_tick(now);
         }
@@ -1276,50 +1456,62 @@ impl IceAgent {
     }
 
     fn consent_tick(&mut self, now: Instant) {
-        let Some(sel) = self.selected.clone() else {
-            return;
-        };
-        for t in &mut self.consent_txs {
-            if t.sends < CONSENT_SENDS && t.next <= now {
-                t.sends += 1;
-                t.rto *= 2;
-                t.next = now + t.rto;
-                self.transmits.push_back(Transmit {
-                    source: t.local,
-                    destination: t.remote,
-                    contents: t.packet.clone(),
-                });
-            }
-        }
-        if self.consent_next.is_some_and(|t| t <= now) {
-            if let Some(remote) = sel.remote_creds.as_ref() {
-                let (tid, packet, _) =
-                    self.build_request(remote, &sel.local_ufrag, sel.local_pref, false, None);
-                self.transmits.push_back(Transmit {
-                    source: sel.local,
-                    destination: sel.remote,
-                    contents: packet.clone(),
-                });
-                if self.consent_txs.len() >= MAX_CONSENT_TX {
-                    if let Some(old) = self.consent_txs.pop_front() {
-                        self.retire(old.tid);
-                    }
+        for comp in 1..=self.config.components {
+            let ci = usize::from(comp - 1);
+            let Some(sel) = self.comps[ci].selected.clone() else {
+                continue;
+            };
+            for t in &mut self.comps[ci].consent_txs {
+                if t.sends < CONSENT_SENDS && t.next <= now {
+                    t.sends += 1;
+                    t.rto *= 2;
+                    t.next = now + t.rto;
+                    self.transmits.push_back(Transmit {
+                        source: t.local,
+                        destination: t.remote,
+                        contents: t.packet.clone(),
+                    });
                 }
-                self.consent_txs.push_back(ConsentTx {
-                    tid,
-                    key: remote.pwd.clone(),
-                    local: sel.local,
-                    remote: sel.remote,
-                    packet,
-                    sends: 1,
-                    rto: CONSENT_RTO,
-                    next: now + CONSENT_RTO,
-                });
             }
-            self.consent_next = Some(now + self.consent_delay());
-        }
-        if !self.consent_lost && now >= self.consent_last + self.config.consent_timeout {
-            self.consent_lost = true;
+            if self.comps[ci].consent_next.is_some_and(|t| t <= now) {
+                if let Some(remote) = sel.remote_creds.as_ref() {
+                    let (tid, packet, _) = self.build_request(
+                        remote,
+                        &sel.local_ufrag,
+                        sel.local_pref,
+                        comp,
+                        false,
+                        None,
+                    );
+                    self.transmits.push_back(Transmit {
+                        source: sel.local,
+                        destination: sel.remote,
+                        contents: packet.clone(),
+                    });
+                    if self.comps[ci].consent_txs.len() >= MAX_CONSENT_TX {
+                        if let Some(old) = self.comps[ci].consent_txs.pop_front() {
+                            self.retire(old.tid);
+                        }
+                    }
+                    self.comps[ci].consent_txs.push_back(ConsentTx {
+                        tid,
+                        key: remote.pwd.clone(),
+                        local: sel.local,
+                        remote: sel.remote,
+                        packet,
+                        sends: 1,
+                        rto: CONSENT_RTO,
+                        next: now + CONSENT_RTO,
+                    });
+                }
+                let delay = self.consent_delay();
+                self.comps[ci].consent_next = Some(now + delay);
+            }
+            let timeout = self.config.consent_timeout;
+            let c = &mut self.comps[ci];
+            if !c.consent_lost && now >= c.consent_last + timeout {
+                c.consent_lost = true;
+            }
         }
     }
 
@@ -1329,21 +1521,38 @@ impl IceAgent {
             && !(self.keeps_improving() && self.ordinary_pending())
     }
 
+    /// Whether `comp`, which has no selected pair, cannot get one: no triggered check of it
+    /// waits and every one of its pairs (if any) failed.
+    fn comp_failed(&self, comp: u16) -> bool {
+        !self
+            .triggered
+            .iter()
+            .any(|k| self.pair_component(k).is_none_or(|c| c == comp))
+            && self
+                .pairs
+                .iter()
+                .filter(|p| p.component == comp)
+                .all(|p| p.state == PairState::Failed)
+    }
+
     fn update_state(&mut self, now: Instant) {
         if self.closed {
             return;
         }
+        let all_selected = self.comps.iter().all(|c| c.selected.is_some());
         let new = if self.config.lite {
+            let timeout = self.config.consent_timeout;
             let lost = self
-                .lite_last_check
-                .is_some_and(|t| now >= t + self.config.consent_timeout);
-            if self.selected.is_some() {
+                .comps
+                .iter()
+                .any(|c| c.lite_last_check.is_some_and(|t| now >= t + timeout));
+            if all_selected {
                 if lost {
                     IceState::Disconnected
                 } else {
                     IceState::Completed
                 }
-            } else if self.lite_last_check.is_some() {
+            } else if self.comps.iter().any(|c| c.lite_last_check.is_some()) {
                 if lost {
                     IceState::Disconnected
                 } else {
@@ -1352,18 +1561,18 @@ impl IceAgent {
             } else {
                 IceState::New
             }
-        } else if let Some(sel) = self.selected.as_ref() {
-            if self.consent_lost {
+        } else if all_selected {
+            let generation = self.generation;
+            let current = self.comps.iter().all(|c| {
+                c.selected
+                    .as_ref()
+                    .is_some_and(|s| s.generation == generation)
+            });
+            if self.comps.iter().any(|c| c.consent_lost) {
                 IceState::Disconnected
-            } else if self.completed_gen == Some(sel.generation)
-                || (sel.generation == self.generation && self.checks_done())
-            {
-                self.completed_gen = Some(sel.generation);
-                if sel.generation == self.generation {
-                    IceState::Completed
-                } else {
-                    IceState::Connected
-                }
+            } else if current && (self.completed_gen == Some(generation) || self.checks_done()) {
+                self.completed_gen = Some(generation);
+                IceState::Completed
             } else {
                 IceState::Connected
             }
@@ -1374,13 +1583,13 @@ impl IceAgent {
                 IceState::New
             }
         } else {
-            let all_failed = self.triggered.is_empty()
-                && self.pairs.iter().all(|p| p.state == PairState::Failed);
             let give_up = self.end_of_candidates
                 || self
                     .checking_since
                     .is_some_and(|t| now >= t + self.config.failed_timeout);
-            if all_failed && give_up {
+            let failed = (1..=self.config.components)
+                .any(|c| self.comp(c).selected.is_none() && self.comp_failed(c));
+            if failed && give_up {
                 IceState::Failed
             } else {
                 IceState::Checking
@@ -1421,28 +1630,32 @@ impl IceAgent {
         if self.has_pending_check() {
             at(self.next_check.max(self.now));
         }
-        if let Some(d) = self.nomination_deadline() {
-            at(d.max(self.now));
-        }
-        if self.selected.is_some() && !self.config.lite {
-            if let Some(c) = self.consent_next {
-                at(c);
+        for comp in 1..=self.config.components {
+            if let Some(d) = self.nomination_deadline(comp) {
+                at(d.max(self.now));
             }
-            for c in &self.consent_txs {
-                if c.sends < CONSENT_SENDS {
-                    at(c.next);
+        }
+        for c in &self.comps {
+            if c.selected.is_some() && !self.config.lite {
+                if let Some(n) = c.consent_next {
+                    at(n);
+                }
+                for x in &c.consent_txs {
+                    if x.sends < CONSENT_SENDS {
+                        at(x.next);
+                    }
+                }
+                if !c.consent_lost {
+                    at(c.consent_last + self.config.consent_timeout);
                 }
             }
-            if !self.consent_lost {
-                at(self.consent_last + self.config.consent_timeout);
+            if self.config.lite && self.state != IceState::Disconnected {
+                if let Some(l) = c.lite_last_check {
+                    at(l + self.config.consent_timeout);
+                }
             }
         }
-        if self.config.lite && self.state != IceState::Disconnected {
-            if let Some(l) = self.lite_last_check {
-                at(l + self.config.consent_timeout);
-            }
-        }
-        if self.selected.is_none() && self.state != IceState::Failed {
+        if self.comps.iter().any(|c| c.selected.is_none()) && self.state != IceState::Failed {
             if let Some(c) = self.checking_since {
                 let d = c + self.config.failed_timeout;
                 if d > self.now {
@@ -1468,29 +1681,48 @@ impl IceAgent {
         self.state
     }
 
-    /// The selected (nominated) pair: (local address, remote address).
+    /// The selected (nominated) pair of component 1: (local address, remote address).
     pub fn selected_pair(&self) -> Option<(SocketAddr, SocketAddr)> {
-        self.selected.as_ref().map(|s| (s.local, s.remote))
+        self.selected_pair_of(1)
     }
 
-    /// Where application data goes (local address to send from, remote address): the selected
-    /// pair, else the highest-priority valid pair (before nomination); for a lite agent, the
-    /// pair the last valid check with USE-CANDIDATE arrived on, else the last valid check's.
+    /// The selected (nominated) pair of `component` (`None` for a component the stream does
+    /// not have).
+    pub fn selected_pair_of(&self, component: u16) -> Option<(SocketAddr, SocketAddr)> {
+        if !self.has_component(component) {
+            return None;
+        }
+        self.comp(component)
+            .selected
+            .as_ref()
+            .map(|s| (s.local, s.remote))
+    }
+
+    /// Where application data of component 1 goes (local address to send from, remote
+    /// address): the selected pair, else the highest-priority valid pair (before nomination);
+    /// for a lite agent, the pair the last valid check with USE-CANDIDATE arrived on, else the
+    /// last valid check's.
     pub fn send_pair(&self) -> Option<(SocketAddr, SocketAddr)> {
-        if let Some(s) = self.selected_pair() {
+        self.send_pair_of(1)
+    }
+
+    /// Where application data of `component` goes (RTCP without rtcp-mux: component 2), by
+    /// the rules of [`IceAgent::send_pair`].
+    pub fn send_pair_of(&self, component: u16) -> Option<(SocketAddr, SocketAddr)> {
+        if let Some(s) = self.selected_pair_of(component) {
             return Some(s);
         }
-        if self.config.lite {
-            return self.lite_valid;
+        if !self.has_component(component) {
+            return None;
         }
-        self.best_valid_any().map(|p| (p.local, p.remote))
-    }
-
-    fn best_valid_any(&self) -> Option<&Pair> {
+        if self.config.lite {
+            return self.comp(component).lite_valid;
+        }
         self.pairs
             .iter()
-            .filter(|p| p.state == PairState::Succeeded)
+            .filter(|p| p.component == component && p.state == PairState::Succeeded)
             .max_by_key(|p| p.prio)
+            .map(|p| (p.local, p.remote))
     }
 
     /// Stops the agent: no more timers or transmissions; received datagrams are no longer
