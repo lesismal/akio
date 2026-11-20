@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::alert::{Alert, Fatal, fatal};
 use super::client::Client;
-#[cfg(feature = "experimental-ktls")]
+#[cfg(feature = "ktls")]
 use super::common::Keys;
 use super::common::{Action, ClientSettings, EarlyData, Level, ServerSettings};
 use super::msgs::{TLS12, TLS13};
@@ -16,9 +16,9 @@ use super::server::Server;
 use super::suites::Suite;
 use crate::replay::Waker;
 
-#[cfg(feature = "experimental-ktls")]
+#[cfg(feature = "ktls")]
 mod ktls;
-#[cfg(feature = "experimental-ktls")]
+#[cfg(feature = "ktls")]
 pub use ktls::{DirKeys, Offload, OffloadEvent};
 
 /// Largest handshake message accepted (certificate chains are the big ones).
@@ -199,15 +199,26 @@ pub struct Connection {
     /// under every key but the early ones.
     read_limit: u16,
     /// Kernel TLS: keep the raw traffic keys (`read_keys` / `write_keys`) for an offload.
-    #[cfg(feature = "experimental-ktls")]
+    #[cfg(feature = "ktls")]
     keep_keys: bool,
-    #[cfg(feature = "experimental-ktls")]
+    #[cfg(feature = "ktls")]
     read_keys: Option<Keys>,
-    #[cfg(feature = "experimental-ktls")]
+    #[cfg(feature = "ktls")]
     write_keys: Option<Keys>,
-    /// The record layer moved into the kernel (`commit_offload`).
-    #[cfg(feature = "experimental-ktls")]
+    /// The record layer moved into the kernel (`commit_offload`, `commit_rx_offload`): the
+    /// receive direction too.
+    #[cfg(feature = "ktls")]
     offloaded: bool,
+    /// The send direction is in the kernel (`commit_tx_offload`): records to send become
+    /// `kernel_ev` events instead of bytes.
+    #[cfg(feature = "ktls")]
+    tx_kernel: bool,
+    #[cfg(feature = "ktls")]
+    kernel_ev: Vec<OffloadEvent>,
+    /// Records the kernel sent under the current send keys (approximate, see
+    /// `kernel_records_sent`).
+    #[cfg(feature = "ktls")]
+    kernel_records: u64,
     /// Called when a suspended handshake can go on (an asynchronous anti-replay answer came).
     waker: Option<Waker>,
 }
@@ -262,14 +273,20 @@ impl Connection {
             early_sent: Vec::new(),
             early_len: 0,
             read_limit: 0,
-            #[cfg(feature = "experimental-ktls")]
+            #[cfg(feature = "ktls")]
             keep_keys: false,
-            #[cfg(feature = "experimental-ktls")]
+            #[cfg(feature = "ktls")]
             read_keys: None,
-            #[cfg(feature = "experimental-ktls")]
+            #[cfg(feature = "ktls")]
             write_keys: None,
-            #[cfg(feature = "experimental-ktls")]
+            #[cfg(feature = "ktls")]
             offloaded: false,
+            #[cfg(feature = "ktls")]
+            tx_kernel: false,
+            #[cfg(feature = "ktls")]
+            kernel_ev: Vec::new(),
+            #[cfg(feature = "ktls")]
+            kernel_records: 0,
             waker: None,
         }
     }
@@ -450,7 +467,10 @@ impl Connection {
             self.pending.extend_from_slice(&plain[n..]);
             return Ok(());
         }
-        if self.m.version() == TLS13 && self.rec.write_seq() >= self.key_update_after {
+        if self.m.version() == TLS13
+            && !self.kernel_tx()
+            && self.rec.write_seq() >= self.key_update_after
+        {
             let mut acts = std::mem::take(&mut self.actions);
             let r = self
                 .m
@@ -462,7 +482,7 @@ impl Connection {
                 return Err(e);
             }
         }
-        if let Err(e) = self.rec.seal(CT_APPLICATION_DATA, plain, out) {
+        if let Err(e) = self.emit(CT_APPLICATION_DATA, plain, out) {
             self.fail(&e, out);
             return Err(e);
         }
@@ -476,7 +496,7 @@ impl Connection {
             return;
         }
         self.sent_close = true;
-        let _ = self.rec.seal(CT_ALERT, &[1, 0], out);
+        let _ = self.emit(CT_ALERT, &[1, 0], out);
     }
 
     fn fail(&mut self, e: &Fatal, out: &mut Vec<u8>) {
@@ -484,10 +504,38 @@ impl Connection {
             return;
         }
         if !e.from_peer {
-            out.append(&mut self.hs_out);
-            let _ = self.rec.seal(CT_ALERT, &[2, e.alert.code()], out);
+            if self.kernel_tx() {
+                self.hs_out.clear();
+            } else {
+                out.append(&mut self.hs_out);
+            }
+            let _ = self.emit(CT_ALERT, &[2, e.alert.code()], out);
         }
         self.error = Some(e.clone());
+    }
+
+    /// Whether the send direction is in the kernel (kernel TLS).
+    #[inline]
+    fn kernel_tx(&self) -> bool {
+        #[cfg(feature = "ktls")]
+        {
+            self.tx_kernel
+        }
+        #[cfg(not(feature = "ktls"))]
+        {
+            false
+        }
+    }
+
+    /// Protects one record for the peer: through the record layer into `out`, or, with the
+    /// send direction in the kernel, as an event for it (`take_kernel_events`).
+    fn emit(&mut self, typ: u8, data: &[u8], out: &mut Vec<u8>) -> Result<(), Fatal> {
+        #[cfg(feature = "ktls")]
+        if self.tx_kernel {
+            self.kernel_ev.push(OffloadEvent::Send(typ, data.to_vec()));
+            return Ok(());
+        }
+        self.rec.seal(typ, data, out)
     }
 
     /// Takes in `input` after the handshake: completes a record left over from an earlier call,
@@ -789,7 +837,7 @@ impl Connection {
                         self.read_limit
                     };
                     self.rec.set_read(&k);
-                    #[cfg(feature = "experimental-ktls")]
+                    #[cfg(feature = "ktls")]
                     if self.keep_keys {
                         self.read_keys = Some(k);
                     }
@@ -798,15 +846,24 @@ impl Connection {
                 Action::WriteKeys(l, k) => {
                     self.flush_hs(out)?;
                     self.early_writing = l == Level::EarlyData;
+                    #[cfg(feature = "ktls")]
+                    if self.tx_kernel {
+                        // A key update answering the peer's: the kernel installs the new keys
+                        // after the KeyUpdate just queued.
+                        self.kernel_records = 0;
+                        self.kernel_ev
+                            .push(OffloadEvent::TxKeys(ktls::DirKeys::new(&k, 0)));
+                        continue;
+                    }
                     self.rec.set_write(&k);
-                    #[cfg(feature = "experimental-ktls")]
+                    #[cfg(feature = "ktls")]
                     if self.keep_keys {
                         self.write_keys = Some(k);
                     }
                 }
                 Action::Warning(alert) => {
                     self.flush_hs(out)?;
-                    self.rec.seal(CT_ALERT, &[1, alert.code()], out)?;
+                    self.emit(CT_ALERT, &[1, alert.code()], out)?;
                 }
                 Action::RejectEarlyData if self.m.is_client() => {
                     // Back to plaintext (a ClientHello may follow) until the next keys; what
@@ -842,7 +899,9 @@ impl Connection {
         if self.hs_out.is_empty() {
             return Ok(());
         }
-        let r = self.rec.seal(CT_HANDSHAKE, &self.hs_out, out);
+        let hs = std::mem::take(&mut self.hs_out);
+        let r = self.emit(CT_HANDSHAKE, &hs, out);
+        self.hs_out = hs;
         self.hs_out.clear();
         r
     }

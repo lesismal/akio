@@ -2,7 +2,7 @@
 //! TLS 1.3 and 1.2, KeyUpdate through the kernel in both directions, alerts, close_notify,
 //! `sendfile` of encrypted records, and a user-space peer. Skipped (with a note) where the
 //! kernel has no `tls` module, as in most containers.
-#![cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+#![cfg(all(target_os = "linux", feature = "ktls"))]
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::io::{Read, Write};

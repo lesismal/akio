@@ -65,7 +65,7 @@ mod config;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
-#[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+#[cfg(all(target_os = "linux", feature = "ktls"))]
 mod ktls;
 mod proto;
 #[doc(hidden)]
@@ -92,7 +92,7 @@ pub mod __proto {
     pub use crate::proto::alert::{Alert, Fatal};
     pub use crate::proto::suites;
     pub use crate::proto::{Connection, Group, Keys, Level};
-    #[cfg(feature = "experimental-ktls")]
+    #[cfg(feature = "ktls")]
     pub use crate::proto::{DirKeys, Offload, OffloadEvent};
 
     /// A client connection (the ClientHello is queued for the first `recv`/`seal`).

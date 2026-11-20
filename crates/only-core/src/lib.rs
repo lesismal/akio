@@ -32,6 +32,11 @@ pub use config::{Config, SlowCallback, SlowHook};
 pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport, TransportWaker};
 #[doc(hidden)]
 pub use conn::{ConnInner, LoopLink, Task};
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use conn::KernelRead;
+#[cfg(target_os = "linux")]
+pub use conn::{Offloaded, SocketOp};
 #[doc(hidden)]
 pub use datagrams::{DatagramPort, DatagramsFactory, datagrams_factory};
 pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, Replies};

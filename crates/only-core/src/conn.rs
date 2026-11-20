@@ -17,6 +17,18 @@ const OPEN: u8 = 0;
 const CLOSING: u8 = 1;
 const CLOSED: u8 = 2;
 
+/// `ConnInner::offload`: nothing to do.
+const OFFLOAD_NONE: u8 = 0;
+/// `ConnInner::offload` bit: the transport wants [`Transport::offload`] calls.
+#[cfg(target_os = "linux")]
+const OFFLOAD_PENDING: u8 = 1;
+/// `ConnInner::offload` bit: the read direction is in the kernel.
+const OFFLOAD_RX: u8 = 2;
+/// The smallest read buffer that takes a whole kernel TLS control record (16 KiB of content;
+/// the kernel delivers one record per read).
+#[cfg(target_os = "linux")]
+const KERNEL_RX_MIN_BUF: usize = 16 << 10;
+
 /// How a connection reaches its owning I/O loop. Implemented by backends.
 ///
 /// Implementations must make `wake_conn` / `close_conn` cheap, callable from any thread
@@ -61,6 +73,10 @@ enum Bytes {
         start: u64,
         len: u64,
     },
+    /// An operation on the socket, run in order (kernel TLS, see [`SocketOp`]). Carries no
+    /// bytes; a write never reaches past it.
+    #[cfg(target_os = "linux")]
+    Op(Box<dyn SocketOp>),
 }
 
 struct Chunk {
@@ -76,6 +92,21 @@ impl Chunk {
             Bytes::Segmented(v, ..) => &v[self.off..],
             #[cfg(unix)]
             Bytes::File { .. } => &[],
+            #[cfg(target_os = "linux")]
+            Bytes::Op(_) => &[],
+        }
+    }
+
+    /// An operation chunk ([`Bytes::Op`]): writes stop in front of it.
+    #[inline]
+    fn is_op(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            matches!(self.bytes, Bytes::Op(_))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
         }
     }
 
@@ -226,6 +257,101 @@ pub trait Transport: Send + 'static {
     fn set_waker(&mut self, waker: TransportWaker) {
         let _ = waker;
     }
+
+    /// Whether the transport could still move (more of) its work into the kernel with
+    /// [`offload`](Self::offload) (Linux; kernel TLS). Read when the transport is installed and
+    /// after every `offload` call; once `false` the engine stops asking. Default: `false`.
+    #[cfg(target_os = "linux")]
+    fn wants_offload(&self) -> bool {
+        false
+    }
+
+    /// Offers the connection's TCP socket `fd` (local address `local`) for the kernel to take
+    /// over the transport's work (Linux; kernel TLS). Called on the owning I/O thread, between
+    /// reads, with nothing queued for writing, while [`wants_offload`](Self::wants_offload)
+    /// says so. `rx_ok`: the backend can switch the read direction now (no read is in flight
+    /// that could hold bytes the transport has not seen); without it only the send direction
+    /// may move. Returns the directions in the kernel so far (cumulative): from then on the
+    /// engine writes application bytes to the socket as they are (`tx`, see
+    /// [`kernel_send`](Self::kernel_send)) and hands what it reads to `on_data` as it is
+    /// (`rx`, see [`kernel_record`](Self::kernel_record)). An error closes the connection.
+    #[cfg(target_os = "linux")]
+    fn offload(
+        &mut self,
+        fd: std::os::fd::RawFd,
+        local: SocketAddr,
+        rx_ok: bool,
+    ) -> io::Result<Offloaded> {
+        let _ = (fd, local, rx_ok);
+        Ok(Offloaded::default())
+    }
+
+    /// The send direction is in the kernel: `len` application bytes are about to be written to
+    /// the socket as they are. The transport may push operations that must run before them (a
+    /// TLS 1.3 key update) to `ops`. Default: nothing.
+    #[cfg(target_os = "linux")]
+    fn kernel_send(&mut self, len: usize, ops: &mut Vec<Box<dyn SocketOp>>) -> io::Result<()> {
+        let _ = (len, ops);
+        Ok(())
+    }
+
+    /// The send direction is in the kernel: moves the operations that `recv`, `shutdown` or
+    /// `kernel_record` produced into `ops`, in order (with the send direction in the kernel
+    /// they append nothing to `out`). Default: nothing.
+    #[cfg(target_os = "linux")]
+    fn take_ops(&mut self, ops: &mut Vec<Box<dyn SocketOp>>) {
+        let _ = ops;
+    }
+
+    /// The receive direction is in the kernel: a record that is not application data arrived
+    /// (TLS: content type `typ`, decrypted `content`; an alert, a post-handshake message).
+    /// `Ok(false)`: the peer closed its side (close_notify). An error closes the connection
+    /// after what [`take_ops`](Self::take_ops) then returns (an alert) is sent.
+    #[cfg(target_os = "linux")]
+    fn kernel_record(&mut self, typ: u8, content: &[u8]) -> io::Result<bool> {
+        let _ = (typ, content);
+        Err(io::ErrorKind::InvalidData.into())
+    }
+}
+
+/// The directions of a [`Transport`] that the kernel has taken over (Linux; kernel TLS).
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Offloaded {
+    /// What the application sends goes to the socket unencoded; the kernel encodes it.
+    pub tx: bool,
+    /// What the socket delivers is already decoded.
+    pub rx: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Offloaded {
+    /// `tx` and `rx` as given.
+    pub fn new(tx: bool, rx: bool) -> Offloaded {
+        Offloaded { tx, rx }
+    }
+}
+
+/// An operation on a connection's socket that must happen in order with its queued output,
+/// produced by a [`Transport`] whose send direction is in the kernel (Linux; kernel TLS: a
+/// control record, new send keys).
+#[cfg(target_os = "linux")]
+pub trait SocketOp: Send + 'static {
+    /// Runs on the socket `fd` (non-blocking). `Ok(true)`: done. `Ok(false)`: the socket is
+    /// full; run again once it is writable. An error closes the connection.
+    fn run(&mut self, fd: std::os::fd::RawFd) -> io::Result<bool>;
+}
+
+/// What [`ConnInner::kernel_read_record`] read (Linux).
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum KernelRead {
+    /// `n` bytes of application data (0: end of stream, or the peer's close_notify).
+    Data(usize),
+    /// A control record, handled by the transport.
+    Control,
 }
 
 /// Lets a [`Transport`] that is waiting for something other than the peer's bytes resume:
@@ -278,6 +404,10 @@ struct WriteState {
     /// UDP: every chunk is one datagram; never coalesced, never partially written.
     datagram: bool,
     transport: Option<Box<dyn Transport>>,
+    /// The transport's send direction is in the kernel ([`Transport::offload`]): application
+    /// bytes go to the socket as they are.
+    #[cfg(target_os = "linux")]
+    kernel_tx: bool,
     queue: InlineDeque<Chunk>,
     queued: usize,
     /// Bytes of queued file chunks: they use no memory, so they are not in `queued`.
@@ -674,6 +804,13 @@ pub struct ConnInner {
     relayed: AtomicBool,
     /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
     rx_ecn: AtomicU8,
+    /// Kernel offload of the transport (Linux, [`Transport::offload`]): `OFFLOAD_NONE`,
+    /// `OFFLOAD_PENDING` (ask after reads and flushes) and `OFFLOAD_RX` (bit: the read
+    /// direction is in the kernel). Read without the lock by the loop's hot paths.
+    offload: AtomicU8,
+    /// The backend allows the read direction to move into the kernel (no read can be in
+    /// flight between its reads; see [`set_rx_offload_ok`](Self::set_rx_offload_ok)).
+    rx_offload_ok: AtomicBool,
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -707,6 +844,8 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
+            offload: AtomicU8::new(OFFLOAD_NONE),
+            rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
                 ..WriteState::default()
@@ -742,6 +881,8 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
+            offload: AtomicU8::new(OFFLOAD_NONE),
+            rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram: true,
                 stats: link.stats(),
@@ -782,6 +923,8 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
+            offload: AtomicU8::new(OFFLOAD_NONE),
+            rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram,
                 stats: link.stats(),
@@ -1013,7 +1156,12 @@ impl ConnInner {
         let mut w = self.lock();
         w.corked = false;
         self.loop_cork.store(false, Ordering::Relaxed);
-        let r = self.write_locked(&mut w);
+        #[allow(unused_mut)]
+        let mut r = self.write_locked(&mut w);
+        #[cfg(target_os = "linux")]
+        if matches!(r, Ok(true)) && self.offload.load(Ordering::Relaxed) & OFFLOAD_PENDING != 0 {
+            r = self.try_offload(&mut w).map(|()| w.queue.is_empty());
+        }
         let q = w.queued + w.file_bytes as usize;
         drop(w);
         self.run_drained();
@@ -1023,10 +1171,133 @@ impl ConnInner {
     /// Loop side: writes as much queued data as the socket takes. `Ok(true)` when empty.
     pub fn flush_queue(&self) -> io::Result<bool> {
         let mut w = self.lock();
-        let r = self.write_locked(&mut w);
+        #[allow(unused_mut)]
+        let mut r = self.write_locked(&mut w);
+        #[cfg(target_os = "linux")]
+        if matches!(r, Ok(true)) && self.offload.load(Ordering::Relaxed) & OFFLOAD_PENDING != 0 {
+            r = self.try_offload(&mut w).map(|()| w.queue.is_empty());
+        }
         drop(w);
         self.run_drained();
         r
+    }
+
+    /// Loop side, with nothing queued: offers the socket to the transport
+    /// ([`Transport::offload`]) and records what moved into the kernel.
+    #[cfg(target_os = "linux")]
+    fn try_offload(&self, w: &mut WriteState) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let cur = self.offload.load(Ordering::Relaxed);
+        let fd = match &self.sock {
+            Sock::Tcp(s) if self.is_open() && !w.close_after_send => s.as_raw_fd(),
+            _ => {
+                self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+                return Ok(());
+            }
+        };
+        let Some(t) = w.transport.as_mut() else {
+            self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+            return Ok(());
+        };
+        let rx_ok = self.rx_offload_ok.load(Ordering::Relaxed)
+            && self.cfg.telemetry.live().read_buffer() >= KERNEL_RX_MIN_BUF;
+        let dirs = t.offload(fd, self.local, rx_ok);
+        let wants = t.wants_offload();
+        let mut ops = Vec::new();
+        t.take_ops(&mut ops);
+        let dirs = match dirs {
+            Ok(d) => d,
+            Err(e) => {
+                self.offload.store(cur & !OFFLOAD_PENDING, Ordering::Relaxed);
+                return Err(e);
+            }
+        };
+        w.kernel_tx = dirs.tx;
+        let mut v = OFFLOAD_NONE;
+        if wants {
+            v |= OFFLOAD_PENDING;
+        }
+        if dirs.rx {
+            v |= OFFLOAD_RX;
+        }
+        self.offload.store(v, Ordering::Release);
+        self.queue_ops(w, ops);
+        Ok(())
+    }
+
+    /// Queues socket operations of the transport after what is queued. Returns whether the
+    /// loop must be woken to run them.
+    #[cfg(target_os = "linux")]
+    fn queue_ops(&self, w: &mut WriteState, ops: Vec<Box<dyn SocketOp>>) -> bool {
+        if ops.is_empty() {
+            return false;
+        }
+        let was_empty = w.queue.is_empty();
+        for op in ops {
+            w.queue.push_back(Chunk {
+                bytes: Bytes::Op(op),
+                off: 0,
+            });
+        }
+        was_empty && !self.corked(w)
+    }
+
+    /// Backend side, once at registration: whether the read direction of this connection may
+    /// move into the kernel (the backend reads only between the loop's flushes, so no read can
+    /// hold bytes the transport has not seen when [`Transport::offload`] runs).
+    pub fn set_rx_offload_ok(&self, ok: bool) {
+        self.rx_offload_ok.store(ok, Ordering::Relaxed);
+    }
+
+    /// Whether the transport's read direction is in the kernel: bytes read are already decoded
+    /// (Linux; kernel TLS). Always `false` elsewhere.
+    #[inline]
+    pub fn kernel_rx(&self) -> bool {
+        self.offload.load(Ordering::Acquire) & OFFLOAD_RX != 0
+    }
+
+    /// Loop side, with the read direction in the kernel: a read failed with `EIO`, which means a
+    /// control record is next. Reads it with its content type into `buf` (16 KiB at least) and
+    /// hands it to the transport ([`Transport::kernel_record`]); application data that came
+    /// instead is returned for `on_data`.
+    #[cfg(target_os = "linux")]
+    pub fn kernel_read_record(&self, buf: &mut [u8]) -> io::Result<KernelRead> {
+        use std::os::fd::AsRawFd;
+        const APPLICATION_DATA: u8 = 23;
+        let Sock::Tcp(s) = &self.sock else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        // A control record must fit whole (`try_offload` keeps the read direction in user
+        // space when the loop's read buffer is smaller).
+        if buf.len() < KERNEL_RX_MIN_BUF {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (typ, n) = loop {
+            match only_sys::ktls::ktls_recv(s.as_raw_fd(), buf) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                r => break r?,
+            }
+        };
+        if n == 0 || typ == APPLICATION_DATA {
+            return Ok(KernelRead::Data(n));
+        }
+        let mut w = self.lock();
+        let Some(t) = w.transport.as_mut() else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        let r = t.kernel_record(typ, &buf[..n]);
+        let mut ops = Vec::new();
+        t.take_ops(&mut ops);
+        let wake = self.queue_ops(&mut w, ops);
+        drop(w);
+        if wake {
+            self.link.wake_conn(self.id);
+        }
+        match r {
+            Ok(true) => Ok(KernelRead::Control),
+            Ok(false) => Ok(KernelRead::Data(0)), // close_notify: the end of the stream
+            Err(e) => Err(e),
+        }
     }
 
     /// Calls `f` once everything queued has been written (right away if nothing is queued),
@@ -1149,6 +1420,24 @@ impl ConnInner {
             }
         }
         while !w.queue.is_empty() {
+            #[cfg(target_os = "linux")]
+            if let Some(Chunk {
+                bytes: Bytes::Op(op),
+                ..
+            }) = w.queue.front_mut()
+            {
+                use std::os::fd::AsRawFd;
+                match op.run(self.tcp().as_raw_fd()) {
+                    Ok(true) => {
+                        w.queue.pop_front();
+                        continue;
+                    }
+                    Ok(false) => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
             #[cfg(unix)]
             if let Some(Chunk {
                 bytes: Bytes::File { file, start, len },
@@ -1174,8 +1463,10 @@ impl ConnInner {
                 let mut iov: [IoSlice<'_>; MAX_IOV] = [IoSlice::new(&[]); MAX_IOV];
                 let mut k = 0;
                 for (slot, c) in iov.iter_mut().zip(w.queue.iter()) {
-                    if c.is_file() {
-                        break; // the file goes out with sendfile once the bytes before it did
+                    if c.is_file() || c.is_op() {
+                        // The file goes out with sendfile, the operation runs, once the bytes
+                        // before them did.
+                        break;
                     }
                     *slot = IoSlice::new(c.rest());
                     k += 1;
@@ -1487,6 +1778,8 @@ impl ConnInner {
             Bytes::Shared(s) => s.len(),
             #[cfg(unix)]
             Bytes::File { .. } => 0,
+            #[cfg(target_os = "linux")]
+            Bytes::Op(_) => 0,
         };
         w.add_queued(n);
         w.queue.push_back(Chunk { bytes, off: 0 });
@@ -1553,6 +1846,10 @@ impl ConnInner {
             let mut out = Vec::new();
             t.shutdown(&mut out);
             self.queue_raw(&mut w, out);
+            #[cfg(target_os = "linux")]
+            if w.kernel_tx {
+                self.take_transport_ops(&mut w);
+            }
         }
         drop(w);
         self.link.wake_conn(self.id);
@@ -1812,7 +2109,7 @@ impl ConnInner {
         if self.is_datagram_sock() {
             return Err(Error::Io(io::ErrorKind::Unsupported.into()));
         }
-        if self.has_transport() {
+        if self.needs_seal() {
             // All of it is queued in memory: refuse up front what cannot fit, rather than read
             // up to `max_queued_bytes` of it from disk and fail halfway.
             let max = self.cfg.telemetry.live().max_queued_bytes() as u64;
@@ -1839,6 +2136,15 @@ impl ConnInner {
         }
         let mut w = self.lock();
         self.check_sendable(&w, 0)?;
+        #[cfg(target_os = "linux")]
+        if w.kernel_tx {
+            // Kernel TLS: the kernel seals what `sendfile` takes from the page cache.
+            let n = usize::try_from(len).unwrap_or(usize::MAX);
+            if let Err(e) = self.kernel_presend(&mut w, n) {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        }
         let was_empty = w.queue.is_empty();
         w.file_bytes += len;
         w.queue.push_back(Chunk {
@@ -1867,6 +2173,10 @@ impl ConnInner {
 
     /// Installs the transport layer. Call once, before any data flows.
     pub fn set_transport(&self, t: Box<dyn Transport>) {
+        #[cfg(target_os = "linux")]
+        if t.wants_offload() && matches!(self.sock, Sock::Tcp(_)) {
+            self.offload.store(OFFLOAD_PENDING, Ordering::Relaxed);
+        }
         self.lock().transport = Some(t);
     }
 
@@ -1911,12 +2221,28 @@ impl ConnInner {
         };
         let mut out = Vec::new();
         let r = t.recv(cipher, plain, &mut out);
-        let wake = self.queue_raw(&mut w, out);
+        #[allow(unused_mut)]
+        let mut wake = self.queue_raw(&mut w, out);
+        #[cfg(target_os = "linux")]
+        if w.kernel_tx {
+            wake |= self.take_transport_ops(&mut w);
+        }
         drop(w);
         if wake {
             self.link.wake_conn(self.id);
         }
         r
+    }
+
+    /// Queues what the transport produced for its send direction in the kernel. Returns
+    /// whether the loop must be woken.
+    #[cfg(target_os = "linux")]
+    fn take_transport_ops(&self, w: &mut WriteState) -> bool {
+        let mut ops = Vec::new();
+        if let Some(t) = w.transport.as_mut() {
+            t.take_ops(&mut ops);
+        }
+        self.queue_ops(w, ops)
     }
 
     /// Queues bytes that are already encoded for the wire. Returns whether the loop must be
@@ -1936,6 +2262,11 @@ impl ConnInner {
 
     /// Encodes `data` through the transport if there is one.
     fn seal(&self, w: &mut WriteState, data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        #[cfg(target_os = "linux")]
+        if w.kernel_tx {
+            self.kernel_presend(w, data.len())?;
+            return Ok(None);
+        }
         match w.transport.as_mut() {
             None => Ok(None),
             Some(t) => {
@@ -1944,6 +2275,37 @@ impl ConnInner {
                 Ok(Some(out))
             }
         }
+    }
+
+    /// The send direction is in the kernel: `len` bytes are about to go to the socket as they
+    /// are. Runs (or queues, and wakes the loop for) what the transport needs done first.
+    #[cfg(target_os = "linux")]
+    fn kernel_presend(&self, w: &mut WriteState, len: usize) -> io::Result<()> {
+        let Some(t) = w.transport.as_mut() else {
+            return Ok(());
+        };
+        let mut ops = Vec::new();
+        t.kernel_send(len, &mut ops)?;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        if self.queue_ops(w, ops) {
+            // Not corked: run them now, so the data can usually still go straight out.
+            if !self.write_locked(w)? {
+                self.link.wake_conn(self.id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether application bytes must pass through the transport before the socket.
+    fn needs_seal(&self) -> bool {
+        let w = self.lock();
+        #[cfg(target_os = "linux")]
+        if w.kernel_tx {
+            return false;
+        }
+        w.transport.is_some()
     }
 
     pub fn local_addr(&self) -> SocketAddr {

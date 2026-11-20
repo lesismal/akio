@@ -17,7 +17,7 @@ pub struct Stream<S> {
     eof: bool,
     buf: Vec<u8>,
     /// Kernel TLS: the socket and the negotiated (version, AEAD) once offloaded.
-    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
     ktls: Option<(std::os::fd::RawFd, bool, crate::proto::suites::AeadAlg)>,
 }
 
@@ -46,7 +46,7 @@ impl<S: Read + Write> Stream<S> {
             out: Vec::new(),
             eof: false,
             buf: Vec::new(),
-            #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+            #[cfg(all(target_os = "linux", feature = "ktls"))]
             ktls: None,
         }
     }
@@ -76,7 +76,7 @@ impl<S: Read + Write> Stream<S> {
 
     /// Reads once from the socket and processes it; false at EOF.
     fn pump(&mut self) -> io::Result<bool> {
-        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        #[cfg(all(target_os = "linux", feature = "ktls"))]
         if self.ktls.is_some() {
             return self.pump_ktls();
         }
@@ -125,7 +125,7 @@ impl<S: Read + Write> Stream<S> {
 
     /// Sends close_notify.
     pub fn close(&mut self) -> io::Result<()> {
-        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        #[cfg(all(target_os = "linux", feature = "ktls"))]
         if let Some((fd, ..)) = self.ktls {
             if let Some(crate::proto::OffloadEvent::Send(t, d)) = self.conn.offloaded_close() {
                 crate::ktls::send_all(fd, t, &d)?;
@@ -138,14 +138,14 @@ impl<S: Read + Write> Stream<S> {
 
     /// Whether the record layer is in the kernel.
     pub fn offloaded(&self) -> bool {
-        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        #[cfg(all(target_os = "linux", feature = "ktls"))]
         return self.ktls.is_some();
-        #[cfg(not(all(target_os = "linux", feature = "experimental-ktls")))]
+        #[cfg(not(all(target_os = "linux", feature = "ktls")))]
         false
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+#[cfg(all(target_os = "linux", feature = "ktls"))]
 impl<S: Read + Write + std::os::fd::AsRawFd> Stream<S> {
     /// Asks for kernel TLS: call before the handshake, then [`offload`](Self::offload) after it.
     pub fn want_ktls(&mut self) {
@@ -172,7 +172,7 @@ impl<S: Read + Write + std::os::fd::AsRawFd> Stream<S> {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+#[cfg(all(target_os = "linux", feature = "ktls"))]
 impl<S: Read + Write> Stream<S> {
     /// Sends a TLS 1.3 KeyUpdate through the kernel (which must support rekeying, Linux 6.14
     /// and later). Only once offloaded.
@@ -245,7 +245,7 @@ impl<S: Read + Write> Write for Stream<S> {
         if self.conn.handshaking() {
             self.handshake()?;
         }
-        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        #[cfg(all(target_os = "linux", feature = "ktls"))]
         if self.ktls.is_some() {
             return self.sock.write(buf);
         }

@@ -172,7 +172,8 @@ struct HandlerBox<H: Handler> {
 
 impl<H: Handler> DynHandler for HandlerBox<H> {
     fn on_data(&mut self, data: &[u8]) {
-        if !self.secured {
+        // With the read direction in the kernel (kernel TLS) the bytes are already decoded.
+        if !self.secured || self.conn.inner.kernel_rx() {
             return self.h.on_data(&self.conn, data);
         }
         let mut plain = std::mem::take(&mut self.plain);
@@ -209,7 +210,7 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
     fn run_task(&mut self, task: Task) {
         if task.is::<TransportPoll>() {
             // The transport finished waiting (TransportWaker): poll it as if bytes arrived.
-            if self.secured {
+            if self.secured && !self.conn.inner.kernel_rx() {
                 self.on_data(&[]);
             }
             return;

@@ -258,6 +258,222 @@ pub fn ktls_recv(fd: RawFd, buf: &mut [u8]) -> io::Result<(u8, usize)> {
     Ok((typ, n as usize))
 }
 
+/// Promises the kernel that the files sent with `sendfile(2)` on this socket do not change
+/// while in flight, so that a NIC encrypting the records (TLS device offload) reads the page
+/// cache directly instead of a copy (`TLS_TX_ZEROCOPY_RO`, Linux 6.0). Without device offload
+/// the option has no effect. Set after the send keys.
+pub fn ktls_tx_zerocopy_ro(fd: RawFd) -> io::Result<()> {
+    setsockopt(fd, ffi::SOL_TLS, ffi::TLS_TX_ZEROCOPY_RO, &1u32)
+}
+
+/// TLS 1.3 receive direction: expects the peer not to pad its records, so the kernel decrypts
+/// straight into the caller's buffer (and decrypts again, counting `TlsRxNoPadViolation`, when
+/// a record turns out padded) (`TLS_RX_EXPECT_NO_PAD`, Linux 6.0). Set after the receive keys.
+pub fn ktls_rx_expect_no_pad(fd: RawFd) -> io::Result<()> {
+    setsockopt(fd, ffi::SOL_TLS, ffi::TLS_RX_EXPECT_NO_PAD, &1u32)
+}
+
+/// The kernel TLS offload features a network interface has turned on (`ethtool -k`:
+/// `tls-hw-tx-offload`, `tls-hw-rx-offload`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetdevTls {
+    /// The NIC encrypts the records it sends.
+    pub tx: bool,
+    /// The NIC decrypts the records it receives.
+    pub rx: bool,
+}
+
+/// A datagram socket for `ioctl`s, closed on drop.
+struct IoctlSock(RawFd);
+
+impl IoctlSock {
+    fn new() -> io::Result<IoctlSock> {
+        // SAFETY: a plain system call with constant arguments.
+        let fd = unsafe { ffi::socket(ffi::AF_INET, ffi::SOCK_DGRAM | ffi::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(IoctlSock(fd))
+    }
+
+    /// `SIOCETHTOOL` on interface `name` with the command buffer `data`.
+    fn ethtool(&self, name: &str, data: &mut [u32]) -> io::Result<()> {
+        if name.is_empty() || name.len() >= ffi::IFNAMSIZ || name.contains('\0') {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let mut ifr = ffi::ifreq_data {
+            ifr_name: [0; ffi::IFNAMSIZ],
+            ifr_data: data.as_mut_ptr().cast(),
+            _pad: [0; 16],
+        };
+        for (d, s) in ifr.ifr_name.iter_mut().zip(name.bytes()) {
+            *d = s as ffi::c_char;
+        }
+        // SAFETY: `ifr` is a valid `struct ifreq` naming a NUL-terminated interface, and its
+        // `ifr_data` points at `data`, which the caller sized for the command it holds (the
+        // kernel writes no more than the counts written in it). Both outlive the call.
+        let r = unsafe { ffi::ioctl(self.0, ffi::SIOCETHTOOL, &raw mut ifr) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for IoctlSock {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a descriptor this value owns.
+        unsafe { ffi::close(self.0) };
+    }
+}
+
+/// Reads the TLS offload features of interface `name` with the ethtool `ioctl`s (no privilege
+/// needed). An interface without them (loopback, a bridge, most NICs) reports both off.
+pub fn netdev_tls_offload(name: &str) -> io::Result<NetdevTls> {
+    let f = netdev_features(name, &["tls-hw-tx-offload", "tls-hw-rx-offload"])?;
+    Ok(NetdevTls { tx: f[0], rx: f[1] })
+}
+
+/// Whether each of the netdev features `want` (by their ethtool names) is active on interface
+/// `name`; a name the kernel does not know reads as off.
+pub fn netdev_features(name: &str, want: &[&str]) -> io::Result<Vec<bool>> {
+    let sock = IoctlSock::new()?;
+    // How many features there are: `struct ethtool_sset_info` (cmd, reserved, a u64 mask of
+    // string sets, then one u32 count per set in the mask).
+    let mut info = [0u32; 5];
+    info[0] = ffi::ETHTOOL_GSSET_INFO;
+    info[2] = 1 << ffi::ETH_SS_FEATURES; // the low half of the u64 mask (little-endian)
+    sock.ethtool(name, &mut info)?;
+    let none = vec![false; want.len()];
+    if info[2] & (1 << ffi::ETH_SS_FEATURES) == 0 {
+        return Ok(none);
+    }
+    let count = info[4] as usize;
+    if count == 0 || count > 4096 {
+        return Ok(none);
+    }
+    // Their names: `struct ethtool_gstrings` (cmd, string_set, len, then len * 32 bytes).
+    let words = ffi::ETH_GSTRING_LEN / 4;
+    let mut strings = vec![0u32; 3 + count * words];
+    strings[0] = ffi::ETHTOOL_GSTRINGS;
+    strings[1] = ffi::ETH_SS_FEATURES;
+    strings[2] = count as u32;
+    sock.ethtool(name, &mut strings)?;
+    let count = count.min(strings[2] as usize);
+    let bytes: Vec<u8> = strings[3..].iter().flat_map(|w| w.to_ne_bytes()).collect();
+    let index: Vec<Option<usize>> = want
+        .iter()
+        .map(|w| {
+            bytes
+                .chunks_exact(ffi::ETH_GSTRING_LEN)
+                .take(count)
+                .position(|s| s.split(|&b| b == 0).next() == Some(w.as_bytes()))
+        })
+        .collect();
+    if index.iter().all(Option::is_none) {
+        return Ok(none);
+    }
+    // Their state: `struct ethtool_gfeatures` (cmd, size, then `size` blocks of four u32s:
+    // available, requested, active, never_changed).
+    let blocks = count.div_ceil(32);
+    let mut feats = vec![0u32; 2 + 4 * blocks];
+    feats[0] = ffi::ETHTOOL_GFEATURES;
+    feats[1] = blocks as u32;
+    sock.ethtool(name, &mut feats)?;
+    let active =
+        |i: &Option<usize>| i.is_some_and(|i| feats[2 + 4 * (i / 32) + 2] & (1 << (i % 32)) != 0);
+    Ok(index.iter().map(active).collect())
+}
+
+/// The addresses of the host's network interfaces, with the interface names (`getifaddrs(3)`).
+pub fn interface_addrs() -> io::Result<Vec<(String, std::net::IpAddr)>> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut head: *mut ffi::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `head` is valid for writes; on success it holds a list freed below.
+    if unsafe { ffi::getifaddrs(&raw mut head) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    let mut p = head;
+    while !p.is_null() {
+        // SAFETY: `p` is an entry of the list `getifaddrs` returned, alive until
+        // `freeifaddrs`; its name is a NUL-terminated string and its address, when not null,
+        // a socket address of the size its family implies (read unaligned).
+        unsafe {
+            let e = &*p;
+            if !e.ifa_addr.is_null() && !e.ifa_name.is_null() {
+                let family = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sa_family_t>());
+                let ip = match i32::from(family) {
+                    ffi::AF_INET => {
+                        let a = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in>());
+                        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                            a.sin_addr.s_addr,
+                        ))))
+                    }
+                    ffi::AF_INET6 => {
+                        let a =
+                            std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in6>());
+                        Some(IpAddr::V6(Ipv6Addr::from(a.sin6_addr.s6_addr)))
+                    }
+                    _ => None,
+                };
+                if let Some(ip) = ip {
+                    let name = std::ffi::CStr::from_ptr(e.ifa_name);
+                    out.push((name.to_string_lossy().into_owned(), ip));
+                }
+            }
+            p = e.ifa_next;
+        }
+    }
+    // SAFETY: `head` came from a successful `getifaddrs` and is freed once.
+    unsafe { ffi::freeifaddrs(head) };
+    Ok(out)
+}
+
+/// Counters of the kernel TLS module (`/proc/net/tls_stat`, per network namespace).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TlsStat {
+    /// Send directions installed in software (`TlsTxSw`), cumulative.
+    pub tx_sw: u64,
+    /// Receive directions installed in software (`TlsRxSw`), cumulative.
+    pub rx_sw: u64,
+    /// Send directions a NIC took (`TlsTxDevice`), cumulative.
+    pub tx_device: u64,
+    /// Receive directions a NIC took (`TlsRxDevice`), cumulative.
+    pub rx_device: u64,
+}
+
+/// Reads [`TlsStat`]; `NotFound` while the `tls` module is not loaded.
+pub fn tls_stat() -> io::Result<TlsStat> {
+    Ok(parse_tls_stat(&std::fs::read_to_string(
+        "/proc/net/tls_stat",
+    )?))
+}
+
+fn parse_tls_stat(text: &str) -> TlsStat {
+    let mut s = TlsStat::default();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(k), Some(v)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let Ok(v) = v.parse() else { continue };
+        match k {
+            "TlsTxSw" => s.tx_sw = v,
+            "TlsRxSw" => s.rx_sw = v,
+            "TlsTxDevice" => s.tx_device = v,
+            "TlsRxDevice" => s.rx_device = v,
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Whether the running kernel is at least `major.minor`.
+pub fn kernel_at_least(major: u32, minor: u32) -> bool {
+    kernel_version() >= (major, minor)
+}
+
 /// The running kernel's `(major, minor)` version, from `uname(2)`.
 fn kernel_version() -> (u32, u32) {
     // SAFETY: `utsname` is plain bytes; all-zero is a valid value.
@@ -309,6 +525,37 @@ mod tests {
     #[test]
     fn kernel_version_parses() {
         assert!(kernel_version() >= (3, 0));
+    }
+
+    #[test]
+    fn tls_stat_parses() {
+        let s = parse_tls_stat(
+            "TlsCurrTxSw   \t1\nTlsTxSw  \t7\nTlsRxSw 6\nTlsTxDevice 3\nTlsRxDevice\t2\nbad\n",
+        );
+        let want = TlsStat {
+            tx_sw: 7,
+            rx_sw: 6,
+            tx_device: 3,
+            rx_device: 2,
+        };
+        assert_eq!(s, want);
+    }
+
+    #[test]
+    fn loopback_has_no_tls_offload() {
+        let lo = interface_addrs()
+            .unwrap()
+            .into_iter()
+            .find(|(_, ip)| ip.is_loopback())
+            .map(|(n, _)| n)
+            .expect("a loopback address");
+        assert_eq!(netdev_tls_offload(&lo).unwrap(), NetdevTls::default());
+        // The bit lookup: `ethtool -k lo` shows "loopback: on [fixed]" and "ntuple-filters:
+        // off [fixed]"; an unknown name reads as off.
+        let f = netdev_features(&lo, &["loopback", "rx-ntuple-filter", "no-such-feature"]);
+        assert_eq!(f.unwrap(), [true, false, false]);
+        assert!(netdev_tls_offload("no-such-if0").is_err());
+        assert!(netdev_tls_offload("").is_err());
     }
 
     #[test]

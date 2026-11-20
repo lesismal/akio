@@ -99,6 +99,16 @@ pub const TLS_1_3_VERSION: u16 = 0x0304;
 pub const TLS_CIPHER_AES_GCM_128: u16 = 51;
 pub const TLS_CIPHER_AES_GCM_256: u16 = 52;
 pub const TLS_CIPHER_CHACHA20_POLY1305: u16 = 54;
+pub const TLS_TX_ZEROCOPY_RO: c_int = 3;
+pub const TLS_RX_EXPECT_NO_PAD: c_int = 4;
+
+// ---- ethtool (linux/ethtool.h, linux/sockios.h) ---------------------------------------------
+pub const SIOCETHTOOL: c_ulong = 0x8946;
+pub const ETHTOOL_GSTRINGS: u32 = 0x1b;
+pub const ETHTOOL_GSSET_INFO: u32 = 0x37;
+pub const ETHTOOL_GFEATURES: u32 = 0x3a;
+pub const ETH_SS_FEATURES: u32 = 4;
+pub const ETH_GSTRING_LEN: usize = 32;
 
 // ---- epoll, eventfd, poll ------------------------------------------------------------------
 pub const EPOLLIN: c_int = 0x1;
@@ -370,6 +380,41 @@ pub struct utsname {
     pub domainname: [c_char; 65],
 }
 
+/// `struct ifreq` with the `ifr_data` member of its union (`SIOCETHTOOL`), padded to the
+/// union's 24 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ifreq_data {
+    pub ifr_name: [c_char; IFNAMSIZ],
+    pub ifr_data: *mut c_void,
+    pub _pad: [u8; 16],
+}
+
+/// `struct ifaddrs` (`getifaddrs(3)`).
+#[repr(C)]
+#[derive(Debug)]
+pub struct ifaddrs {
+    pub ifa_next: *mut ifaddrs,
+    pub ifa_name: *mut c_char,
+    pub ifa_flags: c_uint,
+    pub ifa_addr: *mut sockaddr,
+    pub ifa_netmask: *mut sockaddr,
+    pub ifa_ifu: *mut sockaddr,
+    pub ifa_data: *mut c_void,
+}
+
+/// `struct ethtool_get_features_block`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ethtool_get_features_block {
+    pub available: u32,
+    pub requested: u32,
+    pub active: u32,
+    pub never_changed: u32,
+}
+
+const _: () = assert!(size_of::<ifreq_data>() == 40);
+const _: () = assert!(size_of::<ifaddrs>() == 56);
 const _: () = assert!(size_of::<sockaddr_ll>() == 20);
 const _: () = assert!(size_of::<msghdr>() == 56 && align_of::<msghdr>() == 8);
 const _: () = assert!(size_of::<mmsghdr>() == 64);
@@ -501,6 +546,8 @@ unsafe extern "C" {
     pub fn sendmmsg(fd: c_int, msgs: *mut mmsghdr, vlen: c_uint, flags: c_int) -> c_int;
     pub fn sendfile(out: c_int, file: c_int, offset: *mut off_t, count: size_t) -> ssize_t;
     pub fn if_nametoindex(name: *const c_char) -> c_uint;
+    pub fn getifaddrs(ifap: *mut *mut ifaddrs) -> c_int;
+    pub fn freeifaddrs(ifa: *mut ifaddrs);
 
     pub fn epoll_create1(flags: c_int) -> c_int;
     pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut epoll_event) -> c_int;

@@ -25,6 +25,9 @@ const LISTEN_BIT: u64 = 1 << 62;
 const FIRST_CONN: u64 = 16;
 const MAX_ACCEPT_PER_EVENT: usize = 64;
 const MAX_READS_PER_EVENT: usize = 16;
+/// `EIO`: what a read returns on a kernel TLS socket when a control record is next.
+#[cfg(target_os = "linux")]
+const EIO: i32 = 5;
 /// After `accept` fails (EMFILE, ENFILE, ENOBUFS...), the listener is left alone this long.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
@@ -1042,6 +1045,9 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
+        // Reads happen only here, between flushes: a transport may move its read direction
+        // into the kernel (kernel TLS).
+        inner.set_rx_offload_ok(true);
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
             tel.conn_closed();
@@ -1194,7 +1200,26 @@ impl Loop {
                 return;
             }
             for _ in 0..MAX_READS_PER_EVENT {
-                match lc.inner.stream().read(&mut self.scratch) {
+                let r = match lc.inner.stream().read(&mut self.scratch) {
+                    // Kernel TLS: a control record is next (an alert, a post-handshake
+                    // message); it is read with its content type and handled by the transport.
+                    #[cfg(target_os = "linux")]
+                    Err(e) if e.raw_os_error() == Some(EIO) && lc.inner.kernel_rx() => {
+                        match lc.inner.kernel_read_record(&mut self.scratch) {
+                            Ok(only_core::KernelRead::Data(n)) => Ok(n),
+                            Ok(only_core::KernelRead::Control) => {
+                                if let Err(e) = lc.inner.uncork_flush() {
+                                    done = Done::Err(e);
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    r => r,
+                };
+                match r {
                     Ok(0) => {
                         done = Done::Eof;
                         break;

@@ -196,6 +196,17 @@ fn linux_layouts() {
         sa_restorer
     );
     same_layout!(
+        super::ifaddrs,
+        libc::ifaddrs,
+        ifa_next,
+        ifa_name,
+        ifa_flags,
+        ifa_addr,
+        ifa_netmask,
+        ifa_data
+    );
+    assert_eq!(size_of::<super::ifreq_data>(), size_of::<libc::ifreq>());
+    same_layout!(
         super::utsname,
         libc::utsname,
         sysname,
@@ -268,6 +279,9 @@ fn linux_constants() {
         TLS_CIPHER_AES_GCM_128,
         TLS_CIPHER_AES_GCM_256,
         TLS_CIPHER_CHACHA20_POLY1305,
+        TLS_TX_ZEROCOPY_RO,
+        TLS_RX_EXPECT_NO_PAD,
+        SIOCETHTOOL,
         EPOLLIN,
         EPOLLOUT,
         EPOLLERR,

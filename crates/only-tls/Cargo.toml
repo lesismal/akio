@@ -18,11 +18,14 @@ categories = ["network-programming", "cryptography"]
 unstable = []
 # Fuzz entry points for `fuzz/` (`only_tls::fuzzing`); not a public API.
 fuzzing = []
-# EXPERIMENTAL, not a public API and outside the semver promise: Linux kernel TLS offload for the
-# blocking test stream (`stream::Stream::offload`), the `ktls-bench` example and
-# `tls-interop --ktls`. Measured slower than only-tls's own record layer (docs/BENCHMARKS.md,
-# "Kernel TLS"), so it is not wired into `Tls` / the engine.
-experimental-ktls = ["dep:only-sys"]
+# Linux kernel TLS (ADR-067): `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` move the
+# record layer of engine connections into the kernel after the handshake: `Ktls::Hardware` only
+# where a NIC does the crypto (TLS device offload), `Ktls::Software` always. Off by default:
+# the kernel's software record layer is slower than only-tls's own (docs/BENCHMARKS.md, "Kernel
+# TLS"). Without it (or off Linux) the setting is accepted and nothing is offloaded.
+ktls = ["dep:only-sys"]
+# The earlier name of `ktls`.
+experimental-ktls = ["ktls"]
 
 [dependencies]
 only-core = { workspace = true }
@@ -35,7 +38,7 @@ only-zstd = { workspace = true }
 only-log = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# `experimental-ktls`: `setsockopt(SOL_TLS)`, record-type control messages.
+# `ktls`: `setsockopt(SOL_TLS)`, record-type control messages, NIC offload detection.
 only-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -47,4 +50,4 @@ workspace = true
 
 [[example]]
 name = "ktls-bench"
-required-features = ["experimental-ktls"]
+required-features = ["ktls"]

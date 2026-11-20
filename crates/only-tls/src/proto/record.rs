@@ -167,7 +167,7 @@ impl RecordLayer {
     }
 
     /// Records read under the current read keys (kernel TLS offload).
-    #[cfg(feature = "experimental-ktls")]
+    #[cfg(feature = "ktls")]
     pub(crate) fn read_seq(&self) -> u64 {
         self.read.as_ref().map_or(0, |c| c.seq)
     }

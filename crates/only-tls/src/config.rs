@@ -509,6 +509,50 @@ pub struct ClientParts {
 /// unwind-unsafe state (a callback, a cache) in a later release.
 type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 
+// ---- kernel TLS ----
+
+/// Kernel TLS (Linux): whether a TLS connection of the engine ([`Tls`](crate::Tls) over TCP)
+/// hands its record layer to the kernel once the handshake is done, so that the kernel, or the
+/// NIC, encrypts what is sent and decrypts what arrives (ADR-067). Set with
+/// [`ServerConfigBuilder::ktls`] / [`ClientConfigBuilder::ktls`].
+///
+/// Needs the `ktls` cargo feature and Linux with the `tls` module (TLS 1.3 also 6.14 or later,
+/// for key updates); otherwise, and whenever the kernel refuses, the connection stays in user
+/// space, unchanged. [`TlsInfo::ktls`](crate::TlsInfo) tells what moved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Ktls {
+    /// Never (the default): only-tls's own record layer, which is faster than the kernel's
+    /// software one on CPUs with AES / VAES instructions (docs/BENCHMARKS.md, "Kernel TLS").
+    #[default]
+    Off,
+    /// Only what a NIC does itself (TLS device offload, e.g. NVIDIA ConnectX-6 Dx and later):
+    /// the send direction when the interface of the connection's local address has
+    /// `tls-hw-tx-offload` on, the receive direction too when it also has `tls-hw-rx-offload`.
+    /// AES-GCM only (no NIC offloads ChaCha20-Poly1305). After installing, the kernel's
+    /// counters confirm the NIC took the connection; if the kernel fell back to software (the
+    /// driver does not support this version or key size), that interface, version and cipher
+    /// are not tried again by this process. On a host without such a NIC nothing is installed
+    /// and nothing changes: a cached look at the interfaces (refreshed every 30 s).
+    Hardware,
+    /// Always, in software where no NIC helps: both directions. Slower than [`Off`](Self::Off)
+    /// on current x86_64 and aarch64 CPUs; for comparisons, for kernels and CPUs where the
+    /// kernel's AES-GCM is faster than only-crypto's, and for setups that need the plaintext
+    /// in the kernel (sockmap redirection).
+    Software,
+    /// As [`Software`](Self::Software), but the send direction only (the receive direction
+    /// stays in user space).
+    SoftwareTx,
+}
+
+/// What a TLS connection's kernel TLS settings are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KtlsConfig {
+    pub(crate) mode: Ktls,
+    /// `TLS_TX_ZEROCOPY_RO` with device offload ([`ServerConfigBuilder::ktls_zerocopy_sendfile`]).
+    pub(crate) zerocopy_sendfile: bool,
+}
+
 // ---- server ----
 
 /// A TLS server configuration: what [`Tls::server`](crate::Tls::server) and the QUIC, HTTP/3
@@ -517,6 +561,7 @@ type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 pub struct ServerConfig {
     pub(crate) inner: Arc<ServerSettings>,
     pub(crate) handshake_timeout: Option<Duration>,
+    pub(crate) ktls: KtlsConfig,
     parts: Arc<ServerParts>,
     _reserved: NotUnwindSafe,
 }
@@ -559,6 +604,7 @@ impl ServerConfig {
             ocsp: None,
             sni_ocsp: Vec::new(),
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
+            ktls: KtlsConfig::default(),
         }
     }
 
@@ -604,6 +650,7 @@ pub struct ServerConfigBuilder {
     ocsp: Option<Vec<u8>>,
     sni_ocsp: Vec<(String, Vec<u8>)>,
     handshake_timeout: Option<Duration>,
+    ktls: KtlsConfig,
 }
 
 /// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
@@ -653,6 +700,7 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_response", &self.ocsp.is_some())
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("ktls", &self.ktls.mode)
             .finish_non_exhaustive()
     }
 }
@@ -770,6 +818,24 @@ impl ServerConfigBuilder {
     /// (epoll, kqueue, io_uring); QUIC has its own handshake timeout.
     pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Kernel TLS for the connections of [`Tls::server`](crate::Tls::server) (default
+    /// [`Ktls::Off`]; see [`Ktls`]). Applies on the epoll and io_uring backends (io_uring: the
+    /// send direction only); QUIC, DTLS and the DPDK backend are unaffected.
+    pub fn ktls(mut self, mode: Ktls) -> Self {
+        self.ktls.mode = mode;
+        self
+    }
+
+    /// With the send direction offloaded to a NIC ([`Ktls::Hardware`]): lets the NIC read
+    /// files sent with `sendfile` (`Conn::send_file`, static files) straight from the page
+    /// cache, saving a copy (`TLS_TX_ZEROCOPY_RO`, Linux 6.0). Only safe if those files do
+    /// not change while being sent: a file modified mid-send goes out with records whose
+    /// authentication tag no longer matches, and the peer drops the connection. Default off.
+    pub fn ktls_zerocopy_sendfile(mut self, yes: bool) -> Self {
+        self.ktls.zerocopy_sendfile = yes;
         self
     }
 
@@ -1059,6 +1125,7 @@ impl ServerConfigBuilder {
         Ok(ServerConfig {
             inner: Arc::new(settings),
             handshake_timeout: self.handshake_timeout,
+            ktls: self.ktls,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })
@@ -1073,6 +1140,7 @@ impl ServerConfigBuilder {
 pub struct ClientConfig {
     pub(crate) inner: Arc<ClientSettings>,
     pub(crate) handshake_timeout: Option<Duration>,
+    pub(crate) ktls: KtlsConfig,
     parts: Arc<ClientParts>,
     _reserved: NotUnwindSafe,
 }
@@ -1108,6 +1176,7 @@ impl ClientConfig {
             ocsp_policy: RevocationPolicy::Off,
             crls: None,
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
+            ktls: KtlsConfig::default(),
         }
     }
 
@@ -1144,6 +1213,7 @@ pub struct ClientConfigBuilder {
     ocsp_policy: RevocationPolicy,
     crls: Option<(Crls, RevocationPolicy)>,
     handshake_timeout: Option<Duration>,
+    ktls: KtlsConfig,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -1167,6 +1237,7 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("ocsp_policy", &self.ocsp_policy)
             .field("crls", &self.crls)
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("ktls", &self.ktls.mode)
             .finish_non_exhaustive()
     }
 }
@@ -1314,6 +1385,19 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Kernel TLS for the connections of [`Tls::client`](crate::Tls::client) (default
+    /// [`Ktls::Off`]; see [`Ktls`] and [`ServerConfigBuilder::ktls`]).
+    pub fn ktls(mut self, mode: Ktls) -> Self {
+        self.ktls.mode = mode;
+        self
+    }
+
+    /// As [`ServerConfigBuilder::ktls_zerocopy_sendfile`], for client connections.
+    pub fn ktls_zerocopy_sendfile(mut self, yes: bool) -> Self {
+        self.ktls.zerocopy_sendfile = yes;
+        self
+    }
+
     /// Accepts **any** server certificate, without verifying it: for tests and interop runs
     /// against self-signed servers only, never in production.
     pub fn insecure_skip_verify(mut self) -> Self {
@@ -1419,6 +1503,7 @@ impl ClientConfigBuilder {
         Ok(ClientConfig {
             inner: Arc::new(settings),
             handshake_timeout: self.handshake_timeout,
+            ktls: self.ktls,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })

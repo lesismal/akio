@@ -37,7 +37,7 @@ impl std::fmt::Debug for DirKeys {
 }
 
 impl DirKeys {
-    fn new(k: &Keys, seq: u64) -> DirKeys {
+    pub(super) fn new(k: &Keys, seq: u64) -> DirKeys {
         let mut iv = [0u8; 12];
         match k {
             Keys::Tls13 { suite, secret } => {
@@ -95,6 +95,7 @@ impl Connection {
     pub fn offload_ready(&self) -> bool {
         self.keep_keys
             && !self.offloaded
+            && !self.tx_kernel
             && !self.m.handshaking()
             && matches!(self.m.version(), TLS12 | TLS13)
             && self.rx.is_empty()
@@ -130,9 +131,113 @@ impl Connection {
     /// The kernel took the keys: from now on only the `offloaded_*` calls may be used.
     pub fn commit_offload(&mut self) {
         self.offloaded = true;
+        self.tx_kernel = true;
         self.keep_keys = false;
         self.read_keys = None;
         self.write_keys = None;
+    }
+
+    /// The send direction alone can move to the kernel now: the handshake is done, nothing
+    /// is waiting to be sent or held back, and the connection is healthy. What has been
+    /// received does not matter: the receive direction stays here.
+    pub fn tx_offload_ready(&self) -> bool {
+        self.keep_keys
+            && !self.tx_kernel
+            && !self.m.handshaking()
+            && matches!(self.m.version(), TLS12 | TLS13)
+            && self.pending.is_empty()
+            && self.out_pending.is_empty()
+            && self.hs_out.is_empty()
+            && self.error.is_none()
+            && !self.sent_close
+            && self.write_keys.is_some()
+            // The kernel writes full 16 KiB records: not under a peer's smaller limit.
+            && self.rec.max_fragment(CT_APPLICATION_DATA) == MAX_PLAINTEXT
+    }
+
+    /// The receive direction can follow the send direction into the kernel now: no partial
+    /// record or handshake message is buffered and the connection is healthy.
+    pub fn rx_offload_ready(&self) -> bool {
+        self.keep_keys
+            && self.tx_kernel
+            && !self.offloaded
+            && self.rx.is_empty()
+            && self.hs.is_empty()
+            && self.error.is_none()
+            && !self.received_close
+            && self.read_keys.is_some()
+    }
+
+    /// The version, AEAD and send keys for the kernel, `None` unless
+    /// [`tx_offload_ready`](Self::tx_offload_ready). Nothing changes until
+    /// [`commit_tx_offload`](Self::commit_tx_offload).
+    pub fn tx_offload_keys(&self) -> Option<(bool, AeadAlg, DirKeys)> {
+        if !self.tx_offload_ready() {
+            return None;
+        }
+        let w = self.write_keys.as_ref()?;
+        Some((
+            self.m.version() == TLS13,
+            self.m.suite()?.aead,
+            DirKeys::new(w, self.rec.write_seq()),
+        ))
+    }
+
+    /// The receive keys for the kernel, `None` unless
+    /// [`rx_offload_ready`](Self::rx_offload_ready).
+    pub fn rx_offload_keys(&self) -> Option<DirKeys> {
+        if !self.rx_offload_ready() {
+            return None;
+        }
+        Some(DirKeys::new(self.read_keys.as_ref()?, self.rec.read_seq()))
+    }
+
+    /// The kernel took the send keys: from now on what this side sends (alerts, handshake
+    /// messages, new send keys) comes out of [`take_kernel_events`](Self::take_kernel_events)
+    /// instead of the `out` buffers, and application data is written to the socket as is.
+    /// Receiving stays as before ([`recv`](Self::recv)) until
+    /// [`commit_rx_offload`](Self::commit_rx_offload).
+    pub fn commit_tx_offload(&mut self) {
+        self.tx_kernel = true;
+        self.write_keys = None;
+    }
+
+    /// The kernel took the receive keys too: as after [`commit_offload`](Self::commit_offload).
+    pub fn commit_rx_offload(&mut self) {
+        self.offloaded = true;
+        self.keep_keys = false;
+        self.read_keys = None;
+    }
+
+    /// Whether the send direction is in the kernel.
+    pub fn tx_offloaded(&self) -> bool {
+        self.tx_kernel
+    }
+
+    /// Moves what this side has to send through the kernel since the last call (send
+    /// direction offloaded) into `ev`, in order.
+    pub fn take_kernel_events(&mut self, ev: &mut Vec<OffloadEvent>) {
+        ev.append(&mut self.kernel_ev);
+    }
+
+    /// With the send direction in the kernel: `records` more records went out. Starts a TLS
+    /// 1.3 key update (into [`take_kernel_events`](Self::take_kernel_events)) once as many
+    /// went under the current keys as [`set_key_update_after`](Self::set_key_update_after)
+    /// allows.
+    pub fn kernel_records_sent(&mut self, records: u64) -> Result<(), Fatal> {
+        self.kernel_records = self.kernel_records.saturating_add(records);
+        if self.m.version() != TLS13
+            || self.kernel_records < self.key_update_after
+            || self.error.is_some()
+            || self.sent_close
+        {
+            return Ok(());
+        }
+        self.kernel_records = 0;
+        let mut ev = std::mem::take(&mut self.kernel_ev);
+        let r = self.offloaded_key_update(&mut ev);
+        self.kernel_ev = ev;
+        r
     }
 
     /// No offload will happen: drop the kept keys.

@@ -1207,7 +1207,7 @@ fn malformed_records_and_finished() {
     assert_eq!(e.alert, Alert::ProtocolVersion);
 }
 
-#[cfg(feature = "experimental-ktls")]
+#[cfg(feature = "ktls")]
 #[path = "ktls_tests.rs"]
 mod ktls;
 

@@ -252,11 +252,11 @@ fn describe(c: &only_tls::__proto::Connection) -> String {
 
 /// Asks for kernel TLS before the handshake (Linux).
 #[cfg_attr(
-    not(all(target_os = "linux", feature = "experimental-ktls")),
+    not(all(target_os = "linux", feature = "ktls")),
     allow(clippy::needless_pass_by_ref_mut)
 )]
 fn want_ktls<S: Read + Write + std::os::fd::AsRawFd>(o: &Opts, s: &mut Stream<S>) {
-    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
     if o.ktls {
         s.want_ktls();
     }
@@ -265,14 +265,14 @@ fn want_ktls<S: Read + Write + std::os::fd::AsRawFd>(o: &Opts, s: &mut Stream<S>
 
 /// Moves the record layer into the kernel after the handshake; " ktls=on|off" for the report.
 #[cfg_attr(
-    not(all(target_os = "linux", feature = "experimental-ktls")),
+    not(all(target_os = "linux", feature = "ktls")),
     allow(clippy::needless_pass_by_ref_mut)
 )]
 fn offload<S: Read + Write + std::os::fd::AsRawFd>(o: &Opts, s: &mut Stream<S>) -> &'static str {
     if !o.ktls {
         return "";
     }
-    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
     match s.offload() {
         Ok(true) => return " ktls=on",
         Ok(false) => {}
@@ -542,11 +542,11 @@ fn client(o: &Opts) {
 }
 
 #[cfg_attr(
-    not(all(target_os = "linux", feature = "experimental-ktls")),
+    not(all(target_os = "linux", feature = "ktls")),
     allow(clippy::needless_pass_by_ref_mut)
 )]
 fn key_update<S: Read + Write>(s: &mut Stream<S>) {
-    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    #[cfg(all(target_os = "linux", feature = "ktls"))]
     if let Err(e) = s.key_update() {
         println!("kTLS KeyUpdate failed: {e}");
         std::process::exit(1);
