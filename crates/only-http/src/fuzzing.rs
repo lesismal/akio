@@ -281,6 +281,7 @@ fn session_config() -> HttpConfig {
             max_control_frames: 1000,
             reset_window: std::time::Duration::from_secs(30),
             stats: None,
+            enable_connect_protocol: true,
         }),
         // No deadline thread in fuzz runs: every read is driven by the harness.
         head_timeout: None,
