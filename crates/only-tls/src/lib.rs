@@ -15,7 +15,9 @@
 //!
 //! Protocol coverage: TLS 1.3 (RFC 8446: full and PSK-resumed handshakes, HelloRetryRequest,
 //! KeyUpdate, client certificates, early data (0-RTT) when both sides enable it, with replay
-//! protection, shareable across servers through an [`AntiReplayStore`]:
+//! protection, shareable across servers through an [`AntiReplayStore`] (or a remote
+//! [`AsyncAntiReplayStore`] answered without blocking the I/O thread), session tickets under
+//! rotating [`TicketKeys`]:
 //! [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
 //! [`TlsInfo::early_data`]) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,

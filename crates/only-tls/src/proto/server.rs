@@ -394,7 +394,8 @@ impl Server {
         if self.st == St::WaitClientHello2 && !tls13 {
             return fatal(Alert::IllegalParameter, "second ClientHello is not TLS 1.3");
         }
-        if !tls13 && ch.suites.contains(&FALLBACK_SCSV) {
+        // RFC 7507 section 3: only a server that supports a higher version refuses it.
+        if !tls13 && self.cfg.tls13 && ch.suites.contains(&FALLBACK_SCSV) {
             return fatal(
                 Alert::InappropriateFallback,
                 "client fell back from TLS 1.3",
@@ -433,13 +434,15 @@ impl Server {
                 );
             }
         }
-        // No key_share at all (a psk_ke-only client): like an empty one, a retry may fix it.
-        let no_shares = Vec::new();
-        let shares = ch.key_shares.as_ref().unwrap_or(&no_shares);
         let client_groups = ch
             .groups
             .as_ref()
             .ok_or_else(|| Fatal::new(Alert::MissingExtension, "no supported_groups"))?;
+        // supported_groups requires key_share, possibly empty (RFC 8446 section 9.2).
+        let shares = ch
+            .key_shares
+            .as_ref()
+            .ok_or_else(|| Fatal::new(Alert::MissingExtension, "no key_share"))?;
         let skip_shares = self.cfg.force_hrr && self.hrr.is_none();
         let chosen = self.cfg.groups.iter().copied().find_map(|g| {
             shares
@@ -1140,6 +1143,10 @@ impl Server {
                 }
                 if let Some(p) = &self.alpn {
                     ext(o, EXT_ALPN, |o| alpn_body(o, &[p]));
+                }
+                // The name was used: acknowledged, empty (RFC 6066 section 3), not on resumption.
+                if self.sni.is_some() && !self.resumed {
+                    ext(o, EXT_SERVER_NAME, |_| {});
                 }
                 if self.send_ticket12 && !self.resumed {
                     ext(o, EXT_SESSION_TICKET, |_| {});

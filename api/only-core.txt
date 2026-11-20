@@ -825,6 +825,19 @@ impl core::marker::Sync for only_core::telemetry::Telemetry
 impl core::marker::Unpin for only_core::telemetry::Telemetry
 impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::Telemetry
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::Telemetry
+pub struct only_core::TransportWaker
+impl only_core::TransportWaker
+pub fn only_core::TransportWaker::noop() -> only_core::TransportWaker
+pub fn only_core::TransportWaker::wake(&self)
+impl core::clone::Clone for only_core::TransportWaker
+pub fn only_core::TransportWaker::clone(&self) -> Self
+impl core::fmt::Debug for only_core::TransportWaker
+pub fn only_core::TransportWaker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::TransportWaker
+impl core::marker::Sync for only_core::TransportWaker
+impl core::marker::Unpin for only_core::TransportWaker
+impl !core::panic::unwind_safe::RefUnwindSafe for only_core::TransportWaker
+impl !core::panic::unwind_safe::UnwindSafe for only_core::TransportWaker
 pub struct only_core::UdpBinding
 impl only_core::UdpBinding
 pub fn only_core::UdpBinding::close(&self)
@@ -878,6 +891,7 @@ pub fn only_core::Transport::handshaking(&self) -> bool
 pub fn only_core::Transport::name(&self) -> &'static str
 pub fn only_core::Transport::recv(&mut self, &[u8], &mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
 pub fn only_core::Transport::seal(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
+pub fn only_core::Transport::set_waker(&mut self, only_core::TransportWaker)
 pub fn only_core::Transport::shutdown(&mut self, &mut alloc::vec::Vec<u8>)
 pub fn only_core::fn_acceptor<H, F>(F) -> only_core::FnAcceptor<H, F> where H: only_core::Handler, F: core::ops::function::Fn(&only_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type only_core::Result<T> = core::result::Result<T, only_core::Error>

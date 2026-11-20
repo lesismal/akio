@@ -309,6 +309,10 @@ impl RecordLayer {
                 };
                 self.skip_early = 0;
                 c.seq += 1;
+                // TLSInnerPlaintext, padding included, is at most 2^14 + 1 bytes (RFC 8446 5.4).
+                if ct.len() > MAX_PLAINTEXT + 1 {
+                    return fatal(Alert::RecordOverflow, "padded plaintext too long");
+                }
                 let Some(pos) = ct.iter().rposition(|b| *b != 0) else {
                     return fatal(Alert::UnexpectedMessage, "record without content type");
                 };

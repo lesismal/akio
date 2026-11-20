@@ -665,3 +665,20 @@ fn server_hello_extensions(body: &[u8]) -> Vec<u16> {
     }
     types
 }
+
+#[test]
+fn missing_key_share_is_missing_extension() {
+    // supported_groups without key_share (RFC 8446 section 9.2): refused, not retried.
+    let p = pki(Kind::P256, &["localhost"]);
+    let scfg = server(&p).build().unwrap();
+    let ccfg = ClientConfig::builder().roots(p.roots).build().unwrap();
+    let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+    let (mut plain, mut wire) = (Vec::new(), Vec::new());
+    c.recv(&[], &mut plain, &mut wire).unwrap();
+    let first = 5 + usize::from(u16::from_be_bytes([wire[3], wire[4]]));
+    let mut ch = wire[..first].to_vec();
+    rename_extension(&mut ch, msgs::EXT_KEY_SHARE, 0xfafa);
+    let mut s = crate::__proto::server(&scfg);
+    let e = s.recv(&ch, &mut plain, &mut Vec::new()).unwrap_err();
+    assert_eq!(e.alert, Alert::MissingExtension);
+}

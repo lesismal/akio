@@ -10,6 +10,32 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: asynchronous 0-RTT anti-replay store, rotating session ticket keys, BoGo (only-tls, only-core, only-quic)
+
+ADR-062 (docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.md), additive (default
+configurations behave as before):
+
+- `AsyncAntiReplayStore` / `ReplayCheck` with `ServerConfigBuilder::async_anti_replay_store`:
+  a remote store (Redis and the like) answered without blocking the I/O thread. A 0-RTT
+  ClientHello that needs the check suspends its handshake (bytes arriving meanwhile wait,
+  bounded) and resumes on its I/O thread when the store calls `ReplayCheck::complete` from any
+  thread; `ServerConfigBuilder::anti_replay_timeout` (1 s) rejects the early data when no
+  answer comes (fail closed, the handshake goes on as a 1-RTT resumption). Over TCP and QUIC.
+- only-core: `Transport::set_waker` (provided method) and `TransportWaker`, which lets a
+  transport waiting on something other than the peer have its I/O thread poll it again.
+- `TicketKeys` with `ServerConfigBuilder::session_ticket_keys`: rotating session ticket keys,
+  one sealing and up to three earlier ones (`MAX_TICKET_KEYS`) still opening their tickets;
+  rotated by the application (`rotate`, `set`), per period from a secret the servers share
+  (`TicketKeys::derived`: servers sharing tickets rotate in step), or per period at random
+  (`TicketKeys::random`). Scheduled keys cap the advertised ticket lifetime at one period.
+- `status_request_v2` (RFC 6961): never sent, ignored when received (decision and reasons in
+  the ADR). OCSP validation was already done (ADR-038, ADR-049); DEV-PLAN corrected.
+- BoGo: a shim (`crates/only-tls/examples/bogo-shim.rs`) and `tools/interop/tls/bogo.sh` run BoringSSL's test runner at a pinned commit with `tools/interop/tls/bogo_config.json` (disabled areas and known failures, each with a reason): 865 of 8,110 tests pass, none fail unexpectedly, 1,122 unimplemented, 6,123 disabled.
+
+### Fixed (only-tls)
+
+- Found by BoGo: a server without TLS 1.3 no longer refuses TLS_FALLBACK_SCSV (RFC 7507); a ClientHello with supported_groups and no key_share gets `missing_extension` instead of a HelloRetryRequest (RFC 8446 §9.2); the TLS 1.2 server acknowledges server_name (RFC 6066 §3); TLS 1.3 padded plaintexts over 2^14 + 1 bytes are `record_overflow` (RFC 8446 §5.4).
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

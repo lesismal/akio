@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：异步 0-RTT 防重放存储、可轮换的会话票据密钥、BoGo（only-tls、only-core、only-quic）
+
+ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），只有新增（默认配置行为不变）：
+
+- `AsyncAntiReplayStore` / `ReplayCheck` 与 `ServerConfigBuilder::async_anti_replay_store`：远程存储（Redis
+  之类）的应答不再阻塞 I/O 线程。需要检查的 0-RTT ClientHello 挂起其握手（其间到达的字节暂存，有上限），
+  存储在任意线程调用 `ReplayCheck::complete` 后在其 I/O 线程上继续；`ServerConfigBuilder::anti_replay_timeout`
+  （1 秒）超时未应答则拒绝早期数据（失败即关闭，握手以 1-RTT 恢复继续）。TCP 与 QUIC 均支持。
+- only-core：`Transport::set_waker`（带默认实现）与 `TransportWaker`，让等待对端以外事件的传输层可以请其 I/O
+  线程再次轮询。
+- `TicketKeys` 与 `ServerConfigBuilder::session_ticket_keys`：可轮换的会话票据密钥，一把负责封装，此前最多三把
+  （`MAX_TICKET_KEYS`）仍能解开各自的票据；由应用轮换（`rotate`、`set`），或按周期从服务器共享的密钥派生
+  （`TicketKeys::derived`：共享票据的服务器同步轮换），或按周期随机生成（`TicketKeys::random`）。定时密钥把
+  票据声明的有效期限制在一个周期内。
+- `status_request_v2`（RFC 6961）：从不发送，收到时忽略（决定与理由见 ADR）。OCSP 验证此前已完成（ADR-038、
+  ADR-049）；已更正 DEV-PLAN。
+- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 865 个通过，没有意外失败，1,122 个未实现，6,123 个被禁用。
+
+### 修复（only-tls）
+
+- 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP
