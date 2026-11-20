@@ -48,7 +48,7 @@ A full HTTP example: [`examples/prefork-http.rs`](examples/prefork-http.rs)
 
 | `ListenMode` | How | Balancing | Restart / reload |
 |---|---|---|---|
-| `ReusePort` (Linux default) | every worker binds the address with `SO_REUSEPORT` (one socket per I/O thread); the supervisor only reserves the port, bound but not listening | the kernel hashes connections over all workers' sockets | connections queued on a closing worker's sockets are reset, unless `sysctl net.ipv4.tcp_migrate_req=1` (Linux 5.14+) |
+| `ReusePort` (Linux default) | every worker binds the address with `SO_REUSEPORT` (one socket per I/O thread); the supervisor only reserves the port, bound but not listening | the kernel hashes connections over all workers' sockets | connections queued on a closing worker's sockets are reset, unless they migrate: with `bpf_steering` (Linux 5.14+) to the new worker, or with `sysctl net.ipv4.tcp_migrate_req=1` to a random live one |
 | `Inherit` (macOS default) | the supervisor binds and listens once; workers inherit the socket and their threads share it | whichever worker accepts first | nothing is refused: the socket keeps listening in the supervisor |
 | `Auto` | `ReusePort` on Linux, `Inherit` elsewhere | | |
 
@@ -101,16 +101,48 @@ the addresses itself, which is handy under a debugger.
 worker a CPU list. The affinity is set in the child before `exec`, so every thread of the worker
 inherits it. Linux only (macOS has no affinity API; a warning is logged).
 
-## eBPF steering (`Accel::Ebpf`)
+## eBPF steering across workers (`bpf_steering`)
 
-In `ReusePort` mode the sockets of **all** workers form one kernel reuseport group (same address,
-same user). A steering program is a property of the group: attaching one from a worker replaces
-the group's program, and the program `only` builds indexes only that worker's own sockets, so every
-new connection would go to the worker that attached last. Do not combine `Accel::Ebpf` with
-`ReusePort` prefork (`Worker::serve` logs a warning when it sees it). In `Inherit` mode a worker's
-listener is not a reuseport group of its own and `Accel::Ebpf` reports `Degraded`. Balancing
-across processes with a program shared through bpffs (fib's `BalanceReusePort`) is not
-implemented yet.
+In `ReusePort` mode the sockets of **all** workers form one kernel reuseport group, and a steering
+program belongs to the group. A worker's own `Accel::Ebpf` would replace it with a program that
+only knows that worker's sockets, so every new connection would go to the worker that attached
+last (`Worker::serve` warns). Use the shared program instead (ADR-063):
+
+```rust,ignore
+use only::ebpf::{HashKey, Steering};
+use only_prefork::{BpfSteering, Prefork};
+
+Prefork::new()
+    .workers(4)
+    .listen("0.0.0.0:8080".parse().unwrap())
+    .bpf_steering(BpfSteering::new(Steering::Hash(HashKey::SrcIp), 2)) // 2 I/O threads per worker
+    .run(|worker| {
+        // listener(0) already has 2 threads and joins this worker's slots.
+        let engine = Engine::builder().listen(worker.listener(0)?.serve(app)).build()?;
+        worker.serve(&engine)
+    })
+```
+
+- The supervisor loads one `SK_REUSEPORT` program and socket array per address, with
+  `workers * threads` slots, and pins them under `/sys/fs/bpf/only-prefork/<ip>_<port>`
+  (`BpfSteering::dir`). It removes them when it stops.
+- Worker `i` puts its sockets in slots `i * threads..(i + 1) * threads`. A restarted or reloaded
+  worker takes the same slots over.
+- `Steering::Cpu` sends a flow to slot `cpu % slots`. `Steering::Hash` uses the Maglev table of
+  `attach_reuseport`, so `only::ebpf::expected_index(steering, workers * threads, peer, local)`
+  names the slot, and the worker is the slot divided by `threads`.
+- **Reloads lose nothing** (Linux 5.14+, `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`). A new worker
+  takes its slots as soon as its engine is built. When the old worker's listeners close, what
+  they still had queued (accepted handshakes, pending ones) migrates to the socket now in its
+  slot. A worker that dies migrates its queue to the others. No sysctl is needed.
+- **Needs** root (or `CAP_BPF`) in the supervisor and the workers, and bpffs. Without them a
+  warning is logged and the workers use the kernel's hashing; `BpfSteering::strict` fails the
+  spawn instead. `Supervisor::bpf_steering(i)` says whether it is active.
+- Keep the listener at `threads` I/O threads; `Engine::set_threads` is `Unsupported` for a
+  steered listener.
+
+In `Inherit` mode a worker's listener is not a reuseport group of its own: `Accel::Ebpf` reports
+`Degraded` and `bpf_steering` is ignored (nothing needs migrating there).
 
 ## Platform support
 

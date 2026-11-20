@@ -12,7 +12,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 |---|---|---|
 | `only-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`） |
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许（以及仅测试用的 `eval` 测量工具） | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
-| `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
+| `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 与 `xsk` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya）；AF_XDP socket、其 UMEM 与环（`xsk`，ADR-063） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
 | `only-buf` | `#![deny(unsafe_code)]`，仅 `slab` 模块允许 | 接收 slab（ADR-024）：一块分配通过互不相交、带所有权的句柄访问（`ChunkMut` 独占可写，`Chunk` 共享只读），使收到的数据报能从 `recvmmsg` 槽位交给 only-quic 并原地解密而无需复制；`Arc` 引用计数、指向该分配的裸指针，以及该分配的 `Send`/`Sync` 实现；尺寸分级池与 `SharedBuf` 仍是安全 Rust |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅十二个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`（含 `chacha::hw::avx512` 与 `chacha::hw::ifma`）、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64`、`bignum::hw`、`bignum::ifma`，以及 `fill`（基于向量未初始化空闲容量的 AEAD 输出缓冲区）允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ 搭配 AVX-512 或 AVX2 的 `asm!` AES-GCM 内核，以及基于 VAES / VPCLMULQDQ + AVX-512 的 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂与 Poly1305 中使用 AVX-512 IFMA 的 `asm!` 块以及 AVX-512 上的 ChaCha20 `asm!` 块（同样在 MSRV 上不稳定），aarch64 上 P-256 与 Curve25519 域运算中使用 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链的 `asm!` 块，以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；`fill` 让 TLS 记录层（`#![forbid(unsafe_code)]`）直接在 `Vec` 的空闲容量中加密和解密，不必先清零（16 KiB AES-GCM 记录约 10%），其 `unsafe` 只用于在每个字节都写入后把缓冲区视为字节切片以及 `Vec::set_len`；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
@@ -79,7 +79,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 |---|---:|---:|---:|---:|
 | only | 0 | 0 | 0 | 13 |
 | only-dpdk | 32 | 0 | 1 | 0 |
-| only-ebpf | 20 | 4 | 0 | 1 |
+| only-ebpf | 48 | 4 | 2 | 2 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-brotli | 0 | 0 | 0 | 7 |
 | only-crypto | 150 | 72 | 0 | 0 |
@@ -126,7 +126,8 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
 | `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |
 | `only-dpdk/src/sys.rs` | 15 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`，含加入 all-multicast 的 `PACKET_ADD_MEMBERSHIP`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 `packet_mreq` 与 UAPI 大小一致（编译期断言）；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
-| `only-ebpf/src/sys.rs` | 20，4 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_LOOKUP/UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`、`LINK_CREATE`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE`、`SO_RCVLOWAT`、`TCP_INFO`、`SIOCOUTQ`、`NETLINK_ROUTE` socket（`socket`/`write`/`read`）、`if_nametoindex` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定；按 CPU 的查询写入每个可能 CPU 8 字节的缓冲区（仅 `Map<K, u64>`）；getsockopt/ioctl 的输出大小由传入长度限定 |
+| `only-ebpf/src/sys.rs` | 25，4 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_LOOKUP/UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`、`LINK_CREATE`、`OBJ_PIN`、`OBJ_GET`、`OBJ_GET_INFO_BY_FD`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE`、`SO_RCVLOWAT`、`TCP_INFO`、`SIOCOUTQ`、`NETLINK_ROUTE` socket（`socket`/`write`/`read`）、`if_nametoindex` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段（包括以 NUL 结尾的 pin 路径和 info 缓冲区）在调用期间存活；键/值大小由 `Map<K, V>` 固定，从 bpffs 打开的 map（`Map::open_pinned`）先经 `OBJ_GET_INFO_BY_FD` 核对正是这两个大小，之后才能使用其类型化方法；按 CPU 的查询写入每个可能 CPU 8 字节的缓冲区（仅 `Map<K, u64>`），普通查询写入 `4 * N` 字节（仅 `Map<K, [u32; N]>`）；getsockopt/ioctl 的输出大小由传入长度限定 |
+| `only-ebpf/src/xsk.rs` | 23，`Ring<E>` 与 `UmemMem` 的 `impl Send` | AF_XDP（ADR-063）：`socket(AF_XDP)`、`setsockopt`/`getsockopt`（`XDP_UMEM_REG`、环大小、`XDP_MMAP_OFFSETS`、`XDP_OPTIONS`、`XDP_STATISTICS`）、`bind(sockaddr_xdp)`、四个环与 UMEM（匿名映射）的 `mmap`/`munmap`、经裸指针读写环条目与生产者/消费者字、UMEM 块上的切片、`sendmsg`/`recvfrom` 唤醒、`ppoll` | UMEM 是独立的匿名映射，只在 socket 关闭之后才解除映射（字段顺序），内核钉住的页不会被分给别的分配；环指针来自映射内的 `XDP_MMAP_OFFSETS`，生产者/消费者字以 `AtomicU32` 的 acquire/release 访问（与内核的协议一致），条目只在 `index & mask < size` 处访问；一个块只在其 RX 描述符到它回到填充环之间被读取（按 UMEM 边界检查），只在它位于用户态 TX 池时被写入，且经由可变借用 socket 的切片；`#[repr(C)]` 的 UAPI 结构体有编译期大小断言；一个 socket 同一时刻只被一个线程使用（一次性移交给其 I/O 线程） |
 
 ### 自有系统调用层（`only_sys::ffi`、`only-uring` 的 `ring`）
 

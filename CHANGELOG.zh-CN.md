@@ -10,6 +10,32 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：跨进程 BPF 分流、prefork 重载时的 listener 迁移与 AF_XDP（only-ebpf、only-prefork、only-dpdk）
+
+ADR-063（docs/adr/063-shared-steering-migration-af-xdp.zh-CN.md），只有新增（不显式开启则一切不变）：
+
+- `only_ebpf::SharedSteering`：一个固定在 bpffs 中、由多个进程的 `SO_REUSEPORT` socket 共用的
+  `SK_REUSEPORT` 程序、socket 数组与 Maglev 表。接口有 `create`（所有者，drop 时删除 pin）、`open`、
+  `at(first, count)` 和 `join(fds)`，`join` 填入本进程的槽位。支持按 CPU 或哈希分流，哈希与表都和
+  `attach_reuseport` 相同。在 Linux 5.14+ 上程序以 `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE` 加载
+  （`migrates()`）：无论 `net.ipv4.tcp_migrate_req` 如何设置，关闭中的 listener 的 accept 队列与半连接
+  都会迁移到其槽位当前的 socket。另有 `SteerInfo::{shared, migrate}`、
+  `Probe::{reuseport_migrate, af_xdp}` 和门面中的 `EbpfConfig::shared`。
+- `Prefork::bpf_steering(BpfSteering { steering, threads, dir, strict })`（`ListenMode::ReusePort`，
+  Linux）：supervisor 为每个地址固定一组（`workers * threads` 个槽位），每个 worker 的 `listener(i)`
+  加入自己的槽位。重启或重载后的 worker 接管自己的槽位，因此重载时新 worker 一构建完成就接过旧 worker
+  的那份流量，旧 listener 关闭时仍在排队的连接会迁移过去。没有特权或 bpffs 时 worker 照旧使用内核哈希
+  （设置 `strict` 则失败）。无法迁移的 `ReusePort` 重载会记录警告。另有 `Supervisor::bpf_steering`、
+  `DEFAULT_BPF_DIR`。
+- `only_dpdk::Device::AfXdp(AfXdpConfig)`：AF_XDP socket 作为用户态协议栈的一种链路，与 TAP、
+  AF_PACKET 并列，不需要 DPDK。每个队列一个 socket 和一个 I/O 线程，每个 socket 一块 UMEM，四个环由该
+  线程轮询，另有一个手工汇编的 XDP 程序把每个队列重定向到对应的 socket。驱动支持时零拷贝，否则拷贝
+  模式（`ZeroCopy`）；先 native，否则 generic XDP（`XdpMode`，重新导出）。默认 MAC 取接口自己的。
+- 测试只使用 veth 对与网络命名空间：共享槽位、accept 队列与半连接的迁移、多进程分流，以及在持续建连
+  下的重载与先停止后杀死的 worker（没有丢失，accept 计数吻合），外加 AF_XDP 的内核对端测试（native、
+  generic、IPv6、两个队列）。降级路径在去掉 capability 后测试。`tools/bench/afxdp.sh` 与示例
+  `link-bench` 对比 AF_XDP 与 AF_PACKET（docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

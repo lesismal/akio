@@ -38,7 +38,7 @@ usual.
 
 | `ListenMode` | Sockets | Balancing | Workers exiting |
 |---|---|---|---|
-| `ReusePort` (Linux default) | each worker binds with `SO_REUSEPORT`, one socket per I/O thread; the supervisor reserves the port without listening | kernel hash over every worker's sockets | connections queued on a closing worker's sockets are reset unless `net.ipv4.tcp_migrate_req=1` (Linux 5.14+) |
+| `ReusePort` (Linux default) | each worker binds with `SO_REUSEPORT`, one socket per I/O thread; the supervisor reserves the port without listening | kernel hash over every worker's sockets | connections queued on a closing worker's sockets are reset unless they migrate: with `bpf_steering` to the new worker (Linux 5.14+), or with `net.ipv4.tcp_migrate_req=1` to a random live one |
 | `Inherit` (macOS default) | the supervisor listens once; workers inherit the socket (`Listener::tcp_from_std`) | first worker to accept | nothing is refused: the supervisor keeps the socket listening |
 
 macOS accepts several processes binding one port with `SO_REUSEPORT` but sends every connection
@@ -125,7 +125,15 @@ the sockets of all workers form a single group, and a program attached from one 
 the group's program and indexes only that worker's sockets: every new connection would go to the
 worker that attached last. Do not combine the two (`Worker::serve` warns when it sees it). With
 `Inherit`, a worker's listener forms no reuseport group and `Accel::Ebpf` reports `Degraded`.
-Cross-process steering through a program pinned in bpffs is not implemented yet.
+
+`Prefork::bpf_steering(BpfSteering::new(steering, threads))` steers across processes instead
+(ADR-063). The supervisor pins one program and socket array per address in bpffs, with
+`workers * threads` slots. Each worker's `listener(i)` comes with `threads` I/O threads and joins
+its own slots, and a restarted or reloaded worker takes the same slots over. On Linux 5.14+ the
+program is also the `SELECT_OR_MIGRATE` policy: a reload's new worker takes its slots as soon as
+it is built, and what the old listeners still had queued migrates to it when they close, so a
+`ReusePort` reload resets nothing, without `tcp_migrate_req`. Without root or bpffs the workers
+fall back to the kernel's hashing (or the spawn fails with `strict`).
 
 ## Testing
 

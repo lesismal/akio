@@ -60,3 +60,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-054: TURN over DTLS, mDNS over IPv6 and SDES-SRTP](054-turn-dtls-mdns-ipv6-sdes.md) (accepted 2026-11-20)
 - [ADR-055: Several components per ICE stream in only-ice](055-ice-components.md) (accepted 2026-11-20)
 - [ADR-058: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in only-webrtc](058-webrtc-rtcp-components-xr-ulpfec-levels.md) (accepted 2026-11-20)
+- [ADR-063: Cross-process steering through bpffs, listener migration on reload, and AF_XDP](063-shared-steering-migration-af-xdp.md) (accepted 2026-11-21)

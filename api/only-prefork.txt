@@ -38,6 +38,22 @@ impl core::marker::Sync for only_prefork::ListenMode
 impl core::marker::Unpin for only_prefork::ListenMode
 impl core::panic::unwind_safe::RefUnwindSafe for only_prefork::ListenMode
 impl core::panic::unwind_safe::UnwindSafe for only_prefork::ListenMode
+#[non_exhaustive] pub struct only_prefork::BpfSteering
+pub only_prefork::BpfSteering::dir: std::path::PathBuf
+pub only_prefork::BpfSteering::steering: only_ebpf::steer::Steering
+pub only_prefork::BpfSteering::strict: bool
+pub only_prefork::BpfSteering::threads: usize
+impl only_prefork::BpfSteering
+pub fn only_prefork::BpfSteering::new(only_ebpf::steer::Steering, usize) -> only_prefork::BpfSteering
+impl core::clone::Clone for only_prefork::BpfSteering
+pub fn only_prefork::BpfSteering::clone(&self) -> Self
+impl core::fmt::Debug for only_prefork::BpfSteering
+pub fn only_prefork::BpfSteering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_prefork::BpfSteering
+impl core::marker::Sync for only_prefork::BpfSteering
+impl core::marker::Unpin for only_prefork::BpfSteering
+impl core::panic::unwind_safe::RefUnwindSafe for only_prefork::BpfSteering
+impl core::panic::unwind_safe::UnwindSafe for only_prefork::BpfSteering
 pub struct only_prefork::Controller
 impl only_prefork::Controller
 pub fn only_prefork::Controller::reload(&self)
@@ -56,6 +72,7 @@ pub struct only_prefork::Prefork
 impl only_prefork::Prefork
 pub fn only_prefork::Prefork::args<I, S>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<std::ffi::os_str::OsStr>
 pub fn only_prefork::Prefork::backlog(self, i32) -> Self
+pub fn only_prefork::Prefork::bpf_steering(self, only_prefork::BpfSteering) -> Self
 pub fn only_prefork::Prefork::env(self, impl core::convert::AsRef<std::ffi::os_str::OsStr>, impl core::convert::AsRef<std::ffi::os_str::OsStr>) -> Self
 pub fn only_prefork::Prefork::handle_signals(self, bool) -> Self
 pub fn only_prefork::Prefork::listen(self, core::net::socket_addr::SocketAddr) -> Self
@@ -107,6 +124,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_prefork::Status
 pub struct only_prefork::Supervisor
 impl only_prefork::Supervisor
 pub fn only_prefork::Supervisor::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
+pub fn only_prefork::Supervisor::bpf_steering(&self, usize) -> core::option::Option<&only_ebpf::shared::SharedSteering>
 pub fn only_prefork::Supervisor::controller(&self) -> only_prefork::Controller
 pub fn only_prefork::Supervisor::reload(&self)
 pub fn only_prefork::Supervisor::reload_in_place(&self)
@@ -165,6 +183,7 @@ impl core::marker::Sync for only_prefork::WorkerInfo
 impl core::marker::Unpin for only_prefork::WorkerInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_prefork::WorkerInfo
 impl core::panic::unwind_safe::UnwindSafe for only_prefork::WorkerInfo
+pub const only_prefork::DEFAULT_BPF_DIR: &str
 pub const only_prefork::DEFAULT_READY_TIMEOUT: core::time::Duration
 pub const only_prefork::DEFAULT_RESTART_MAX: core::time::Duration
 pub const only_prefork::DEFAULT_RESTART_MIN: core::time::Duration

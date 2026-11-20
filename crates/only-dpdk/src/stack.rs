@@ -265,6 +265,7 @@ fn device_key(d: &Device) -> String {
         Device::Dpdk(e) => format!("dpdk:{}", e.port),
         Device::Tap(n) => format!("tap:{n}"),
         Device::AfPacket(n) => format!("af_packet:{n}"),
+        Device::AfXdp(c) => format!("af_xdp:{}", c.interface),
         Device::Memory(m) => format!("memory:{}", m.id),
     }
 }
@@ -332,11 +333,13 @@ impl Stack {
             Device::Tap(name) => (vec![Link::tap(name)?], cfg.mac_or_derived()),
             #[cfg(target_os = "linux")]
             Device::AfPacket(name) => (vec![Link::af_packet(name)?], cfg.mac_or_derived()),
+            #[cfg(target_os = "linux")]
+            Device::AfXdp(x) => crate::device::af_xdp(x, cfg)?,
             #[cfg(not(target_os = "linux"))]
-            Device::Tap(_) | Device::AfPacket(_) => {
+            Device::Tap(_) | Device::AfPacket(_) | Device::AfXdp(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "TAP and AF_PACKET devices are Linux-only",
+                    "TAP, AF_PACKET and AF_XDP devices are Linux-only",
                 ));
             }
             Device::Memory(m) => (vec![Link::Memory(m.clone())], cfg.mac_or_derived()),

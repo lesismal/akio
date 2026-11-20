@@ -73,6 +73,44 @@ use std::{
 };
 
 pub use supervisor::{Controller, Status, Supervisor, WorkerInfo};
+
+/// Default of [`BpfSteering::dir`].
+pub const DEFAULT_BPF_DIR: &str = "/sys/fs/bpf/only-prefork";
+
+/// Cross-process BPF steering of a [`ListenMode::ReusePort`] group (Linux, privileged;
+/// ADR-063): see [`Prefork::bpf_steering`]. `#[non_exhaustive]`: start from
+/// [`BpfSteering::new`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct BpfSteering {
+    /// The policy over all the workers' sockets: [`Steering::Cpu`](only::ebpf::Steering::Cpu)
+    /// sends a flow to socket `cpu % (workers * threads)`, `Steering::Hash` hashes the peer
+    /// into a Maglev table over them.
+    pub steering: only::ebpf::Steering,
+    /// I/O threads (sockets) per worker: [`Worker::listener`] sets it, so the slots of worker
+    /// `i` are `i * threads..(i + 1) * threads`. Set at most this many threads on the listener.
+    pub threads: usize,
+    /// bpffs directory holding one subdirectory per listening address (default
+    /// [`DEFAULT_BPF_DIR`]). The supervisor creates and removes it.
+    pub dir: PathBuf,
+    /// Fail [`Prefork::run`] / [`Prefork::spawn`] when the program cannot be created
+    /// (no privileges, no bpffs, an old kernel) instead of logging and running the workers with
+    /// the kernel's default `SO_REUSEPORT` hashing (default false).
+    pub strict: bool,
+}
+
+impl BpfSteering {
+    /// `steering` over `threads` sockets per worker, pinned under [`DEFAULT_BPF_DIR`], not
+    /// strict.
+    pub fn new(steering: only::ebpf::Steering, threads: usize) -> BpfSteering {
+        BpfSteering {
+            steering,
+            threads: threads.max(1),
+            dir: PathBuf::from(DEFAULT_BPF_DIR),
+            strict: false,
+        }
+    }
+}
 pub use worker::Worker;
 
 /// How the workers get their listening sockets.
@@ -88,9 +126,10 @@ pub enum ListenMode {
     /// reserves the port (and resolves port 0) and receives nothing.
     ///
     /// When a worker's sockets close (it exits, or is drained by a reload) the connections the
-    /// kernel had already queued on them but the worker had not accepted are reset; on Linux 5.14
-    /// and later, `sysctl net.ipv4.tcp_migrate_req=1` makes the kernel move them to another
-    /// worker instead. macOS accepts the binds but does not balance: the most recently bound
+    /// kernel had already queued on them but the worker had not accepted are reset, unless they
+    /// migrate (Linux 5.14+): with [`Prefork::bpf_steering`] the shared program moves them to the
+    /// socket now in their slot (the new worker's after a reload), and without it
+    /// `sysctl net.ipv4.tcp_migrate_req=1` makes the kernel move them to a random live worker. macOS accepts the binds but does not balance: the most recently bound
     /// socket gets the connections; prefer [`Inherit`](Self::Inherit) there.
     ReusePort,
     /// The supervisor binds and listens once; every worker inherits that socket (its I/O threads
@@ -165,6 +204,7 @@ pub struct Prefork {
     pub(crate) envs: Vec<(OsString, OsString)>,
     pub(crate) backlog: i32,
     pub(crate) signals: bool,
+    pub(crate) bpf: Option<BpfSteering>,
 }
 
 impl Default for Prefork {
@@ -190,6 +230,7 @@ impl Prefork {
             envs: Vec::new(),
             backlog: 1024,
             signals: true,
+            bpf: None,
         }
     }
 
@@ -272,6 +313,23 @@ impl Prefork {
     pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.envs
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
+        self
+    }
+
+    /// Steers new connections over every worker's sockets with one BPF program shared through
+    /// bpffs ([`ListenMode::ReusePort`] on Linux; ignored with a warning otherwise). The
+    /// supervisor loads the program and its socket array and pins them; each worker's
+    /// [`Worker::listener`] puts its sockets in its own slots, and a restarted or reloaded worker
+    /// takes its slots over, so a reload's new worker receives the old one's share as soon as it
+    /// has bound, and the old one's queued connections migrate to it when it closes
+    /// (`BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`, Linux 5.14+). Needs `CAP_BPF` (or root) in the
+    /// supervisor and the workers and a bpffs mount; without them the workers run with the
+    /// kernel's hashing, as without this option, unless [`BpfSteering::strict`]. The pins are
+    /// removed when the supervisor stops (a supervisor killed with SIGKILL leaves them; the
+    /// next one on the same address replaces them).
+    #[must_use]
+    pub fn bpf_steering(mut self, cfg: BpfSteering) -> Self {
+        self.bpf = Some(cfg);
         self
     }
 

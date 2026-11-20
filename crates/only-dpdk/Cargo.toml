@@ -1,6 +1,6 @@
 [package]
 name = "only-dpdk"
-description = "only kernel-bypass backend (experimental): its own userspace TCP/IP stack over DPDK ports, TAP, AF_PACKET or in-memory devices"
+description = "only kernel-bypass backend (experimental): its own userspace TCP/IP stack over DPDK ports, AF_XDP, TAP, AF_PACKET or in-memory devices"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,9 @@ links = "only_dpdk_shim"
 
 [dependencies]
 only-core = { workspace = true }
+# AF_XDP sockets and the XDP redirect program (`Device::AfXdp`); everything else is Linux-only
+# inside it and reports `Unsupported` elsewhere.
+only-ebpf = { workspace = true }
 
 # TAP and AF_PACKET devices (the userspace TCP/IP stack itself has no dependencies).
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -18,13 +18,28 @@ Rust，`#![forbid(unsafe_code)]`，无依赖），再把数据交给与其他后
 | `Dpdk(EalConfig)` | Linux、feature `dpdk-pmd`、libdpdk（通过 `pkg-config` 查找） | 生产：绑定到 DPDK 的网卡（vfio-pci），或 DPDK 虚拟设备（`net_tap`、`net_af_packet`、`net_ring` 等） |
 | `Tap(name)` | Linux、`CAP_NET_ADMIN`、`/dev/net/tun` | 开发与测试：TAP 另一侧的内核就是对端 |
 | `AfPacket(ifname)` | Linux、`CAP_NET_RAW` | 把协议栈放在内核不使用的现有接口上（veth 的一端、闲置网卡） |
+| `AfXdp(AfXdpConfig)` | Linux 5.4+、root（`CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_BPF`） | 经 AF_XDP 把协议栈放在现有接口上：比 DPDK 轻（网卡保留内核驱动），比 AF_PACKET 快（见下文） |
 | `Memory(MemoryPort)` | 无 | 同一进程内的两个协议栈（`MemoryWire::new()`），任意平台：测试与示例 |
+
+## AF_XDP
+
+`Device::AfXdp(AfXdpConfig::new("eth1"))` 经 AF_XDP socket 在一个接口上运行协议栈（ADR-063）：
+
+- 每个队列一个 socket 和一个 I/O 线程（`queues`，默认 1），各有一块 16 MiB 的 UMEM（`frames` 个 4 KiB 的块）。
+- 手工汇编的 XDP 程序把配置的 RX 队列重定向到这些 socket，其他队列的帧照常交给内核。
+- 驱动支持时零拷贝，否则拷贝模式（`ZeroCopy::{Auto, Required, Off}`）；先 native XDP，否则 generic
+  （`XdpMode`）。
+- 协议栈的 MAC 默认取接口自己的，因此网卡不需要混杂模式。
+
+它不需要 DPDK、大页或重新绑定驱动，接口对 `ip` 与 `ethtool` 依然可见，但内核不再看到这些队列的流量。每帧放在
+一个 4 KiB 的块中（MTU 最大 3826），因此对端不能发送 GSO 聚合包：veth 上的 native XDP 会自动关掉它们，generic
+模式下要关闭 TSO、GSO 与 GRO。`only::dpdk::af_xdp_info(iface)`（隐藏）报告实际选用的模式。
 
 ## 启用
 
 ```toml
 [dependencies]
-only = { version = "1", features = ["dpdk"] }       # TAP、AF_PACKET、内存链路
+only = { version = "1", features = ["dpdk"] }       # AF_XDP、TAP、AF_PACKET、内存链路
 # only = { version = "1", features = ["dpdk-pmd"] } # 外加 DPDK 端口（链接 libdpdk）
 ```
 
@@ -156,7 +171,7 @@ IPv4 地址、`::`、`address6` 或链路本地地址）。`dial` 与 `dial_udp`
   持续回显 ECE，每个往返最多降一次窗口）与 pacing（定时器堆中的每连接定时器，突发最多两个报文段或
   100 µs）。UDP 数据报双向携带 ECN 码点（与内核套接字一样经 `Conn::send_segments_ecn` /
   `Conn::rx_ecn`），因此 QUIC 在该协议栈上可通过 ECN 校验（ADR-035）。
-- 校验和由软件计算（无卸载）；收到的校验和都会校验，AF_PACKET 除外（来自本机内核的帧携带的是部分
+- 校验和由软件计算（无卸载）；收到的校验和都会校验，AF_PACKET 与 AF_XDP 除外（来自本机内核的帧携带的是部分
   校验和）。
 
 为什么自研：每个队列一个实例、没有全局状态，契合 only 的每核一线程模型，无需加锁；整个协议栈都是
@@ -188,7 +203,7 @@ IPv6 方面：邻居发现期间排队的首个 SYN、双向有损乱序链路�
 下的 pacing。`tests/memory.rs` 可在任意平台运行：两个协议栈之间的 UDP 与 TCP echo（IPv4 与 IPv6，含
 ECN 与 pacing）、带流控的大块 TCP 传输、有序关闭、协议栈之上的 KCP。`tools/dpdk/test.sh` 构建 `tools/dpdk/` 中的 Docker 镜像（Debian 的 DPDK 24.11），
 以 `--cap-add NET_ADMIN --device /dev/net/tun` 运行 `tests/kernel_peer.rs`，以 Linux 内核自己的 socket
-为对端：通过 DPDK 的 `net_tap` PMD（单队列与双队列）、TAP 设备和 veth 对上的 AF_PACKET 做 UDP（含分片
+为对端：通过 DPDK 的 `net_tap` PMD（单队列与双队列）、TAP 设备、veth 对上的 AF_PACKET 与 AF_XDP（native、generic、双队列）做 UDP（含分片
 数据报）与 TCP echo，从协议栈向内核拨号（每个队列上的 TCP、UDP、ICMP 端口不可达），ping，`tc netem`
 丢包/时延/乱序（内核的 SACK 计数器必须变化），20 ms RTT 下的 4 MiB 窗口，以及 500 条并发连接；
 同样的测试也在 IPv6 上运行（`ping -6`、含分片的 UDP、双向 TCP、开启 ECN 与 pacing 的 `netem` 丢包、

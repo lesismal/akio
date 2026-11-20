@@ -13,10 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use only::telemetry::log_or_stderr;
+use only::{ebpf::SharedSteering, telemetry::log_or_stderr};
 use only_sys::process as sys;
 
-use crate::{ListenMode, Prefork, env};
+use crate::{BpfSteering, ListenMode, Prefork, env};
 
 /// How often the supervisor looks at its workers when nothing else wakes it.
 const TICK: Duration = Duration::from_millis(10);
@@ -122,7 +122,66 @@ pub struct Supervisor {
     ctl: Controller,
     status: Arc<Mutex<Status>>,
     addrs: Vec<SocketAddr>,
+    steering: Vec<Option<SharedSteering>>,
+    /// `BpfSteering::dir`, removed (when empty) once the supervisor stopped.
+    bpf_base: Option<std::path::PathBuf>,
     thread: Option<JoinHandle<io::Result<()>>>,
+}
+
+/// The pin directory of address `addr` under `base` (bpffs names cannot contain '.').
+fn pin_dir(base: &std::path::Path, addr: SocketAddr) -> std::path::PathBuf {
+    base.join(format!("{}_{}", addr.ip(), addr.port()).replace('.', "-"))
+}
+
+/// Creates the shared steering of every address ([`Prefork::bpf_steering`]); `None` for an
+/// address where it is unavailable (logged), or an error when strict.
+fn create_steering(
+    bpf: &BpfSteering,
+    workers: usize,
+    addrs: &[SocketAddr],
+) -> io::Result<Vec<Option<SharedSteering>>> {
+    let mut out = Vec::with_capacity(addrs.len());
+    for &a in addrs {
+        let dir = pin_dir(&bpf.dir, a);
+        let sockets = workers.saturating_mul(bpf.threads.max(1));
+        match SharedSteering::create(&dir, sockets, bpf.steering) {
+            Ok(s) => {
+                if !s.migrates() {
+                    log_or_stderr(
+                        only_log::Level::Warn,
+                        format_args!(
+                            "prefork: {a}: the kernel has no BPF_SK_REUSEPORT_SELECT_OR_MIGRATE \
+                             (Linux 5.14+): connections queued on a closing worker's sockets are \
+                             reset unless net.ipv4.tcp_migrate_req=1"
+                        ),
+                    );
+                }
+                out.push(Some(s));
+            }
+            Err(e) if bpf.strict => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("prefork: BPF steering for {a}: {e}"),
+                ));
+            }
+            Err(e) => {
+                log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!(
+                        "prefork: BPF steering for {a} unavailable ({e}); the workers use the \
+                         kernel's SO_REUSEPORT hashing"
+                    ),
+                );
+                out.push(None);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `net.ipv4.tcp_migrate_req` is on (Linux 5.14+).
+fn kernel_migrates() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv4/tcp_migrate_req").is_ok_and(|v| v.trim() == "1")
 }
 
 impl Supervisor {
@@ -141,6 +200,28 @@ impl Supervisor {
             .iter()
             .map(TcpListener::local_addr)
             .collect::<io::Result<Vec<_>>>()?;
+        let steering = match &cfg.bpf {
+            Some(b) if mode == ListenMode::ReusePort && cfg!(target_os = "linux") => {
+                create_steering(b, cfg.workers, &addrs)?
+            }
+            Some(_) => {
+                log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!(
+                        "prefork: BPF steering needs ListenMode::ReusePort on Linux; ignored"
+                    ),
+                );
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        // ReusePort reloads reset what the old workers' sockets queued unless it migrates.
+        let migrates = mode != ListenMode::ReusePort
+            || kernel_migrates()
+            || (!steering.is_empty()
+                && steering
+                    .iter()
+                    .all(|s| s.as_ref().is_some_and(SharedSteering::migrates)));
         let program = match &cfg.program {
             Some(p) => p.clone(),
             None => std::env::current_exe()?,
@@ -149,6 +230,11 @@ impl Supervisor {
             .args
             .clone()
             .unwrap_or_else(|| std::env::args_os().skip(1).collect());
+        let state_bpf_base = cfg
+            .bpf
+            .as_ref()
+            .filter(|_| !steering.is_empty())
+            .map(|b| b.dir.clone());
         let status = Arc::new(Mutex::new(Status::default()));
         let (tx, rx) = mpsc::channel();
         let mut state = State {
@@ -158,8 +244,11 @@ impl Supervisor {
                 mode,
                 addrs: addrs.clone(),
                 sockets,
+                steering: steering.clone(),
                 cfg,
             },
+            migrates,
+            warned_migration: false,
             slots: Vec::new(),
             pending: Vec::new(),
             draining: Vec::new(),
@@ -210,10 +299,13 @@ impl Supervisor {
                 return Err(io::Error::other("prefork: the supervisor thread panicked"));
             }
         }
+        let bpf_base = state_bpf_base;
         Ok(Supervisor {
             ctl: Controller { tx },
             status,
             addrs,
+            steering,
+            bpf_base,
             thread: Some(thread),
         })
     }
@@ -221,6 +313,12 @@ impl Supervisor {
     /// The listening addresses, with port 0 resolved.
     pub fn addrs(&self) -> &[SocketAddr] {
         &self.addrs
+    }
+
+    /// The shared BPF steering of listening address `i` ([`Prefork::bpf_steering`]): `None`
+    /// when it was not asked for or is unavailable (the workers then use the kernel's hashing).
+    pub fn bpf_steering(&self, i: usize) -> Option<&SharedSteering> {
+        self.steering.get(i).and_then(Option::as_ref)
     }
 
     /// A snapshot of the workers and counters.
@@ -252,11 +350,23 @@ impl Supervisor {
     }
 
     /// Blocks until the supervisor has stopped (after a shutdown, once every worker exited).
+    /// The BPF steering pins ([`Prefork::bpf_steering`]) are removed then.
     pub fn wait(mut self) -> io::Result<()> {
-        match self.thread.take().map(JoinHandle::join) {
+        let r = match self.thread.take().map(JoinHandle::join) {
             Some(Ok(r)) => r,
             Some(Err(_)) => Err(io::Error::other("prefork: the supervisor thread panicked")),
             None => Ok(()),
+        };
+        self.remove_pins();
+        r
+    }
+
+    /// Drops the last handles of the pinned steering (which removes the pins) and the base
+    /// directory if it is empty then.
+    fn remove_pins(&mut self) {
+        self.steering.clear();
+        if let Some(base) = self.bpf_base.take() {
+            let _ = std::fs::remove_dir(base);
         }
     }
 }
@@ -268,6 +378,7 @@ impl Drop for Supervisor {
             self.ctl.shutdown();
             let _ = t.join();
         }
+        self.remove_pins();
     }
 }
 
@@ -304,6 +415,8 @@ struct Spawner {
     /// Inherit: the listening sockets; ReusePort: the port reservations. Held for the
     /// supervisor's life.
     sockets: Vec<TcpListener>,
+    /// ReusePort with BPF steering: the pinned programs (removed when the supervisor stops).
+    steering: Vec<Option<SharedSteering>>,
     cfg: Prefork,
 }
 
@@ -322,6 +435,18 @@ impl Spawner {
             cmd.env(env::FDS, env::join(&inherit[1..]));
             "inherit"
         } else {
+            if let Some(b) = self.cfg.bpf.as_ref().filter(|_| !self.steering.is_empty()) {
+                let dirs: Vec<String> = self
+                    .steering
+                    .iter()
+                    .map(|s| {
+                        s.as_ref()
+                            .map_or_else(String::new, |s| s.dir().display().to_string())
+                    })
+                    .collect();
+                cmd.env(env::BPF, dirs.join("\n"))
+                    .env(env::BPF_THREADS, b.threads.max(1).to_string());
+            }
             "reuseport"
         };
         cmd.env(env::WORKER, index.to_string())
@@ -448,6 +573,10 @@ struct Slot {
 
 struct State {
     spawner: Spawner,
+    /// A reload moves what the old workers' sockets queued (Inherit, or ReusePort with
+    /// migration): see `ListenMode::ReusePort`.
+    migrates: bool,
+    warned_migration: bool,
     slots: Vec<Slot>,
     /// A reload's new workers, not yet ready.
     pending: Vec<Proc>,
@@ -494,6 +623,17 @@ impl State {
         }
         self.reloads += 1;
         self.generation += 1;
+        if !self.migrates && !self.warned_migration && self.spawner.cfg.workers > 0 {
+            self.warned_migration = true;
+            log_or_stderr(
+                only_log::Level::Warn,
+                format_args!(
+                    "prefork: ReusePort reload without migration (net.ipv4.tcp_migrate_req=0 and \
+                     no BPF steering): connections queued on the old workers' sockets when they \
+                     close are reset; see Prefork::bpf_steering or use ListenMode::Inherit"
+                ),
+            );
+        }
         // A previous reload's stragglers are superseded.
         let timeout = self.timeout();
         for mut p in self.pending.drain(..) {
@@ -703,6 +843,19 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_dirs_have_no_dots() {
+        let base = std::path::Path::new("/sys/fs/bpf/x");
+        assert_eq!(
+            pin_dir(base, "127.0.0.1:80".parse().unwrap()),
+            base.join("127-0-0-1_80")
+        );
+        assert_eq!(
+            pin_dir(base, "[::1]:8080".parse().unwrap()),
+            base.join("::1_8080")
+        );
+    }
 
     fn info(index: usize, generation: u64, ready: bool, draining: bool) -> WorkerInfo {
         WorkerInfo {

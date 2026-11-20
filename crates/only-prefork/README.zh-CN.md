@@ -45,7 +45,7 @@ fn main() -> std::io::Result<()> {
 
 | `ListenMode` | 方式 | 负载均衡 | 重启 / 重载 |
 |---|---|---|---|
-| `ReusePort`（Linux 默认） | 每个 worker 以 `SO_REUSEPORT` 绑定地址（每个 I/O 线程一个套接字）；supervisor 只保留端口：绑定但不监听 | 内核按哈希把连接分到所有 worker 的套接字上 | 正在关闭的 worker 的套接字上已排队的连接会被重置，除非设置 `sysctl net.ipv4.tcp_migrate_req=1`（Linux 5.14+） |
+| `ReusePort`（Linux 默认） | 每个 worker 以 `SO_REUSEPORT` 绑定地址（每个 I/O 线程一个套接字）；supervisor 只保留端口：绑定但不监听 | 内核按哈希把连接分到所有 worker 的套接字上 | 正在关闭的 worker 的套接字上已排队的连接会被重置，除非它们被迁移：使用 `bpf_steering`（Linux 5.14+）时迁到新 worker，设置 `sysctl net.ipv4.tcp_migrate_req=1` 时迁到随机一个存活的 worker |
 | `Inherit`（macOS 默认） | supervisor 绑定并监听一次；worker 继承这个套接字，其线程共享它 | 谁先 accept 谁处理 | 不会拒绝任何连接：套接字一直在 supervisor 中监听 |
 | `Auto` | Linux 上为 `ReusePort`，其他平台为 `Inherit` | | |
 
@@ -89,13 +89,41 @@ macOS 允许多个进程以 `SO_REUSEPORT` 绑定同一地址，但不做均衡�
 指定一组 CPU。亲和性在子进程 `exec` 之前设置，因此 worker 的所有线程都继承它。仅 Linux（macOS 没有亲和性
 API，会记录一条警告）。
 
-## eBPF 分流（`Accel::Ebpf`）
+## 跨 worker 的 eBPF 分流（`bpf_steering`）
 
-在 `ReusePort` 模式下，**所有** worker 的套接字组成同一个内核 reuseport 组（相同地址、相同用户）。分流程序
-属于整个组：某个 worker 挂载程序会替换组上的程序，而 only 生成的程序只索引该 worker 自己的套接字，于是所有
-新连接都会去往最后挂载的那个 worker。不要把 `Accel::Ebpf` 与 `ReusePort` 模式的 prefork 一起使用
-（`Worker::serve` 发现时会记录警告）。在 `Inherit` 模式下，worker 的监听器不构成自己的 reuseport 组，
-`Accel::Ebpf` 报告 `Degraded`。通过 bpffs 共享程序、跨进程均衡（fib 的 `BalanceReusePort`）尚未实现。
+在 `ReusePort` 模式下，**所有** worker 的套接字组成同一个内核 reuseport 组，分流程序属于整个组。worker 自己的
+`Accel::Ebpf` 会把它换成只认识该 worker 套接字的程序，于是所有新连接都去往最后挂载的那个 worker（`Worker::serve`
+会警告）。请改用共享程序（ADR-063）：
+
+```rust,ignore
+use only::ebpf::{HashKey, Steering};
+use only_prefork::{BpfSteering, Prefork};
+
+Prefork::new()
+    .workers(4)
+    .listen("0.0.0.0:8080".parse().unwrap())
+    .bpf_steering(BpfSteering::new(Steering::Hash(HashKey::SrcIp), 2)) // 每个 worker 2 个 I/O 线程
+    .run(|worker| {
+        // listener(0) 已设好 2 个线程，并加入本 worker 的槽位。
+        let engine = Engine::builder().listen(worker.listener(0)?.serve(app)).build()?;
+        worker.serve(&engine)
+    })
+```
+
+- supervisor 为每个地址加载一个 `SK_REUSEPORT` 程序和 socket 数组，共 `workers * threads` 个槽位，并把它们固定
+  在 `/sys/fs/bpf/only-prefork/<ip>_<port>`（`BpfSteering::dir`）下，停止时删除。
+- worker `i` 把自己的套接字放进槽位 `i * threads..(i + 1) * threads`，重启或重载后的 worker 接管同样的槽位。
+- `Steering::Cpu` 把流发往槽位 `cpu % slots`。`Steering::Hash` 使用 `attach_reuseport` 的 Maglev 表，因此
+  `only::ebpf::expected_index(steering, workers * threads, peer, local)` 给出槽位，槽位除以 `threads` 即 worker。
+- **重载不丢连接**（Linux 5.14+，`BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`）。新 worker 的 engine 一构建完成就接管
+  其槽位。旧 worker 的监听器关闭时，其中仍在排队的连接（已完成与未完成握手的）迁移到其槽位当前的套接字。死掉的
+  worker 的队列迁移到其他 worker。不需要任何 sysctl。
+- **需要** supervisor 与 worker 有 root（或 `CAP_BPF`）权限，并且有 bpffs。不满足时会记录警告，worker 使用内核
+  哈希；设置 `BpfSteering::strict` 则 spawn 失败。`Supervisor::bpf_steering(i)` 说明是否生效。
+- 保持 listener 为 `threads` 个 I/O 线程；对有分流的 listener，`Engine::set_threads` 返回 `Unsupported`。
+
+在 `Inherit` 模式下，worker 的监听器不构成自己的 reuseport 组：`Accel::Ebpf` 报告 `Degraded`，`bpf_steering`
+被忽略（那里也不需要迁移）。
 
 ## 平台支持
 
