@@ -157,10 +157,10 @@ contain no `unsafe`.
 | only-crypto | 150 | 72 | 0 | 0 |
 | only-sys | 111 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
-| only-uring | 43 | 5 | 1 | 0 |
+| only-uring | 43 | 5 | 2 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
-| **total** | **366** | **84** | **8** | **29** |
+| **total** | **394** | **84** | **10** | **30** |
 
 By purpose:
 

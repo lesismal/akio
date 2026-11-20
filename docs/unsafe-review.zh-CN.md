@@ -85,10 +85,10 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-crypto | 150 | 72 | 0 | 0 |
 | only-sys | 111 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
-| only-uring | 43 | 5 | 1 | 0 |
+| only-uring | 43 | 5 | 2 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
-| **合计** | **366** | **84** | **8** | **29** |
+| **合计** | **394** | **84** | **10** | **30** |
 
 按用途：
 

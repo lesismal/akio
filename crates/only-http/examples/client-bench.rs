@@ -57,7 +57,7 @@ fn main() {
             .expect("client engine"),
     );
     ce.start().expect("start");
-    let client = Client::new(ce.clone());
+    let client = Client::new(ce);
     let url: Arc<str> = format!("http://127.0.0.1:{port}/plaintext").into();
     // Warm up the keep-alive pool.
     client
