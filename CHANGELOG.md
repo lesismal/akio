@@ -89,7 +89,7 @@ libwebrtc, so video ramps up in a fraction of a second instead of tens of second
 
 ### Changed: faster Zstandard decoding, second pass (only-zstd)
 
-No public API change, output unchanged (docs/BENCHMARKS.md, "zstd decoding, second pass"; quiet
+No public API change (docs/BENCHMARKS.md, "zstd decoding, second pass" and "zstd literals"; quiet
 gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
 
 - Decompression takes 1.16–1.39× libzstd's time on the HTTP payloads (was 1.46–1.64×): JavaScript
@@ -100,6 +100,11 @@ gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
   of 64 before executing them (one bit read per sequence when the extra bits allow), and decodes
   the four Huffman streams with libzstd's fast loop. Still `#![forbid(unsafe_code)]`, no BMI2
   paths. Fuzzed 16 min per target (`zstd_decompress`, `zstd_roundtrip`).
+- Compressed output changes: the encoder keeps literals raw unless Huffman coding saves more than
+  2 bytes plus 1/64 of them, and below 64 literals, as libzstd does (`ZSTD_minGain`). Our own
+  certificate-chain frames decode 2.3–3.2× faster (they decoded at under half the speed of
+  libzstd's frames) and are 4–17 bytes larger; JSON, HTML and JavaScript are byte-identical,
+  Silesia 0.004% larger.
 - `tools/codec-bench`: `BENCH_OWN=0` skips decoding each library's own output, `BENCH_DUMP=DIR`
   writes the zstd frames that are timed.
 

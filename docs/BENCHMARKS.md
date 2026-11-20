@@ -1343,8 +1343,8 @@ zstd:
 
 | Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
 |---|---:|---|---|---|---:|
-| Silesia (212 MB) | 1 | 70,904,663 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
-| Silesia (212 MB) | 3 | 66,562,838 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
+| Silesia (212 MB) | 1 | 70,907,335 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
+| Silesia (212 MB) | 3 | 66,565,671 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
 | Silesia, first 20 MB | 19 | 6,158,589 / 5,723,363 | 7.1 (7.1) / 5.5 | 1,173 (1,029) / 1,624 | 1.39 |
 | JSON (657 KB) | 1 | 65,110 / 63,680 | 654 (275) / 1,242 | 3,101 (2,849) / 4,240 | 1.37 |
 | JSON (657 KB) | 3 | 61,154 / 60,477 | 614 (203) / 1,073 | 3,034 (2,761) / 4,173 | 1.38 |
@@ -1355,15 +1355,16 @@ zstd:
 | JS (92 KB) | 1 | 24,974 / 24,919 | 399 (150) / 809 | 1,512 (1,286) / 2,107 | 1.39 |
 | JS (92 KB) | 3 | 23,420 / 23,345 | 342 (108) / 655 | 1,471 (1,271) / 2,041 | 1.39 |
 | JS (92 KB) | 19 | 20,726 / 20,102 | 27 (27) / 5.6 | 1,454 (1,252) / 2,012 | 1.38 |
-| cert chain (2.7 KB) | 1 | 1,791 / 1,770 | 149 (57) / 386 | 816 (642) / 948 | 1.16 |
-| cert chain (2.7 KB) | 3 | 1,778 / 1,770 | 127 (49) / 301 | 1,708 (1,331) / 2,104 | 1.23 |
-| cert chain (2.7 KB) | 19 | 1,728 / 1,701 | 52 (37) / 11 | 1,488 (1,172) / 1,873 | 1.26 |
-| cert chain (4.1 KB) | 1 | 2,642 / 2,636 | 176 (71) / 458 | 1,997 (1,621) / 2,543 | 1.27 |
-| cert chain (4.1 KB) | 3 | 2,613 / 2,589 | 165 (60) / 364 | 1,926 (1,559) / 2,447 | 1.27 |
+| cert chain (2.7 KB) | 1 | 1,808 / 1,770 | 149 (57) / 386 | 816 (642) / 948 | 1.16 |
+| cert chain (2.7 KB) | 3 | 1,791 / 1,770 | 127 (49) / 301 | 1,708 (1,331) / 2,104 | 1.23 |
+| cert chain (2.7 KB) | 19 | 1,736 / 1,701 | 52 (37) / 11 | 1,488 (1,172) / 1,873 | 1.26 |
+| cert chain (4.1 KB) | 1 | 2,654 / 2,636 | 176 (71) / 458 | 1,997 (1,621) / 2,543 | 1.27 |
+| cert chain (4.1 KB) | 3 | 2,617 / 2,589 | 165 (60) / 364 | 1,926 (1,559) / 2,447 | 1.27 |
 | cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,838 (1,487) / 2,323 | 1.26 |
 
 The zstd decompression cells are from the second decoder pass (2026-11-20, quiet host, see below):
-only (main at `aca9e988`, the first pass) / C, measured in the same run.
+only (main at `aca9e988`, the first pass) / C, measured in the same run. Our sizes on Silesia and
+the certificate chains are after the literals change below ("zstd literals").
 
 brotli:
 
@@ -1450,6 +1451,17 @@ Tried and dropped: a bit reader keeping its position as the slice length (worse 
 AArch64), a mask table instead of `(1 << n) - 1` (3% slower on JavaScript), batches of 4–16
 (5–10% faster on Apple M-series, 1–4% slower on Zen 4). Not done: libzstd's double-symbol Huffman
 tables (it picks them for the JavaScript literals, about 8% of our time there).
+
+**zstd literals** (2026-11-20, output changes): the encoder keeps a block's literals raw unless
+Huffman coding saves more than 2 bytes plus 1/64 of them, and never Huffman-codes fewer than 64,
+as libzstd does (`ZSTD_minGain`, `LITERAL_NOENTROPY`). Raw literals decode several times faster:
+on the certificate chains our own frames (the ones TLS certificate compression sends) decoded at
+870–965 MB/s, under half the speed of libzstd's frames, because the Huffman tables saved 4–17
+bytes. Same quiet host, CPU 2, both builds alternated twice, decoding each encoder's own output
+with only-zstd: the 2.7 KB chain 2,426–2,862 MB/s (was 873–915) and 8–17 bytes larger, the 4.1 KB
+chain 2,133–2,257 MB/s at levels 1 and 3 (was 924–965) and 4–12 bytes larger (level 19 already
+raw); JSON, HTML and JavaScript byte-identical, Silesia 0.004% larger (2,672 and 2,834 bytes at
+levels 1 and 3).
 
 **Compression** (output changes; round trips, the C libraries decoding our output in every cell
 above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2

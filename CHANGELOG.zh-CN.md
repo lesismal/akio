@@ -76,7 +76,7 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
 
 ### 变更：更快的 Zstandard 解码，第二轮（only-zstd）
 
-公共 API 不变，输出不变（docs/BENCHMARKS.zh-CN.md，“zstd 解码第二轮”；安静的 gpu51，在
+公共 API 不变（docs/BENCHMARKS.zh-CN.md，“zstd 解码第二轮”与“zstd 字面量”；安静的 gpu51，在
 `tools/codec-bench zstd` 中与 libzstd 1.5.7 对比）：
 
 - 解压在 HTTP 负载上用时为 libzstd 的 1.16–1.39 倍（之前 1.46–1.64 倍）：JavaScript 1.38–1.39 倍
@@ -86,6 +86,9 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
   另加至多 32 KiB 字面量），序列以 64 个为一批先解码再执行（附加位允许时每个序列只读一次位），四个
   Huffman 流采用 libzstd 的快速循环解码。仍为 `#![forbid(unsafe_code)]`，无 BMI2 路径。每个 fuzz
   目标 16 分钟（`zstd_decompress`、`zstd_roundtrip`）。
+- 压缩输出改变：编码器只在 Huffman 编码节省超过 2 字节加字面量的 1/64 时才使用它，不足 64 个字面量时
+  保留为 raw，与 libzstd 相同（`ZSTD_minGain`）。我们自己的证书链帧解码快 2.3–3.2 倍（之前不到
+  libzstd 帧速度的一半），大 4–17 字节；JSON、HTML 与 JavaScript 逐字节相同，Silesia 大 0.004%。
 - `tools/codec-bench`：`BENCH_OWN=0` 跳过各库解码自身输出，`BENCH_DUMP=DIR` 写出被计时的 zstd 帧。
 
 ### 变更：更快的 brotli 与 Zstandard 解码和编码（only-brotli、only-zstd）

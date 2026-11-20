@@ -634,22 +634,19 @@ fn encode_literals(lits: &[u8], out: &mut Vec<u8>) {
         out.push(lits[0]);
         return;
     }
-    let raw_size = n + if n < 32 {
-        1
-    } else if n < 4096 {
-        2
-    } else {
-        3
-    };
-    if n >= 32 {
+    // As libzstd (`ZSTD_compressLiterals`, `ZSTD_minGain`): Huffman only from 64 literals, and
+    // only when it saves more than 2 bytes plus 1/64 of them. Raw literals decode several times
+    // faster than Huffman-coded ones, so a few bytes saved are not worth it (certificate chains
+    // in TLS certificate compression decoded at half libzstd's speed before).
+    if n >= 64 {
+        let limit = n - ((n >> 6) + 2);
         let mut counts = [0u32; 256];
         for &b in lits {
             counts[usize::from(b)] += 1;
         }
-        // Worth trying when the entropy estimate saves something.
         if let Some(enc) = huffman::Encoder::new(&counts) {
-            let estimate = enc.description.len() + enc.cost_bits(&counts) / 8 + 3;
-            if estimate < raw_size {
+            let estimate = enc.description.len() + enc.cost_bits(&counts) / 8;
+            if estimate < limit {
                 let four = n >= 256;
                 let mut body = enc.description.clone();
                 if enc.encode(lits, four, &mut body).is_some() {
@@ -663,7 +660,7 @@ fn encode_literals(lits: &[u8], out: &mut Vec<u8>) {
                     } else {
                         (3, 5)
                     };
-                    if lh + c < raw_size && (four || c <= 1023) {
+                    if c < limit && (four || c <= 1023) {
                         let shift = match lh {
                             3 => 14,
                             4 => 18,
