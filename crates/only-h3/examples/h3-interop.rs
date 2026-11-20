@@ -19,7 +19,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use only::{Engine, Listener};
-use only_h3::{H3Client, H3Config, H3WsOptions};
+use only_h3::{H3Client, H3Config, H3Event, H3WsOptions};
 use only_http::message::{Headers, Method};
 use only_http::ws::{Message, WsHandler, WsSender};
 use only_http::{BodyEvent, Context, Router, Streaming, WsOptions};
@@ -191,6 +191,7 @@ fn main() {
         fail(format!("GET /big: {} bytes", r.body.len()));
     }
     parallel(&c, t);
+    streamed_responses(&c, t);
     // A streamed upload (no content-length) to quic-go's /count.
     let (tx, rx) = mpsc::channel();
     let up = c.upload(Method::Post, "/count", &Headers::new(), move |r| {
@@ -237,7 +238,69 @@ fn main() {
         fail("websocket: no close".into());
     }
     c.close();
-    println!("ok: only-h3 client -> quic-go server (incl. WebSocket over HTTP/3, streamed upload)");
+    println!(
+        "ok: only-h3 client -> quic-go server (incl. WebSocket over HTTP/3, streamed upload, \
+         streamed responses)"
+    );
+}
+
+/// What a streamed response (`H3Client::open`) brought: status, body, trailers, pieces.
+type Streamed = (u16, Vec<u8>, Option<Headers>, usize);
+
+/// Streamed responses from quic-go: /big read in pieces, paused for a while (`hold_reads`) and
+/// resumed; /trailers with its trailers.
+fn streamed_responses(c: &H3Client, t: Duration) {
+    let open = |path: &str, hold: bool| -> Streamed {
+        let (tx, rx) = mpsc::channel();
+        let mut s: Streamed = (0, Vec::new(), None, 0);
+        let slot = Arc::new(std::sync::Mutex::new(None::<Arc<only_h3::H3Upload>>));
+        let s2 = slot.clone();
+        let up = Arc::new(
+            c.open(Method::Get, path, &Headers::new(), move |ev| match ev {
+                H3Event::Head { status, .. } => s.0 = status,
+                H3Event::Data(d) => {
+                    s.1.extend_from_slice(d);
+                    s.3 += 1;
+                    if hold && s.3 == 1 {
+                        // Pause after the first piece, resume a little later from another thread.
+                        let up = s2.lock().unwrap().clone();
+                        if let Some(up) = up {
+                            up.hold_reads(true);
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(300));
+                                up.hold_reads(false);
+                            });
+                        }
+                    }
+                }
+                H3Event::Trailers(h) => s.2 = Some(h.clone()),
+                H3Event::End => {
+                    let _ = tx.send(Ok(std::mem::take(&mut s)));
+                }
+                H3Event::Error(e) => {
+                    let _ = tx.send(Err(e));
+                }
+                _ => {}
+            }),
+        );
+        *slot.lock().unwrap() = Some(up.clone());
+        up.finish();
+        rx.recv_timeout(t)
+            .unwrap_or_else(|_| fail(format!("open {path}: timeout")))
+            .unwrap_or_else(|e| fail(format!("open {path}: {e}")))
+    };
+    let (status, body, _, pieces) = open("/big", true);
+    if status != 200 || body != pattern(4 << 20) || pieces < 2 {
+        fail(format!(
+            "open /big: {status} {} bytes in {pieces}",
+            body.len()
+        ));
+    }
+    let (status, body, trailers, _) = open("/trailers", false);
+    let sum = trailers.as_ref().and_then(|h| h.get("x-sum"));
+    if status != 200 || body != b"body" || sum != Some("42") {
+        fail(format!("open /trailers: {status} {body:?} {sum:?}"));
+    }
 }
 
 fn parallel(c: &H3Client, t: Duration) {

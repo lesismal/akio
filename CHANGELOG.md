@@ -10,6 +10,35 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a complete QPACK encoder and streamed responses on the HTTP/3 client (only-h3, only-quic)
+
+ADR-061 (docs/adr/061-qpack-encoder-h3-streamed-responses.md), additive (defaults unchanged: the
+encoder stays off, `qpack_encoder_capacity: 0`):
+
+- QPACK encoder (RFC 9204), when `qpack_encoder_capacity` is set: inserts with static or dynamic
+  name references or literal names, only for fields seen twice (never paths, dates, lengths,
+  validators, ranges, credentials or cookies); Duplicate for referenced entries about to be
+  evicted; dynamic name references in literal field lines; post-base references to entries the
+  same section inserted; sections that reference unacknowledged entries only within the peer's
+  `SETTINGS_QPACK_BLOCKED_STREAMS` (now read from its SETTINGS; at most 64); eviction of
+  acknowledged, unreferenced entries only; Section Acknowledgement, Stream Cancellation and Insert
+  Count Increment handled as before.
+- `H3Client::open(method, path, headers, on_event) -> H3Upload`: a streamed response reported as
+  `H3Event::{Head, Data, Trailers, End, Error}` on the connection's I/O thread (not buffered, not
+  bounded by `max_body_bytes`), with the request body written through the returned `H3Upload`
+  (upload and download at once work). `H3Upload::hold_reads(bool)` pauses and resumes reading
+  the response, so QUIC flow control holds the server back; `H3Upload::cancel()` abandons the
+  request. `request_timeout` applies until the head.
+- `only_quic::Connection::hold_reads(id, bool)`: hold a stream's delivery; held data stays in the
+  receive buffer and the stream window is not extended until resumed.
+- Server push stays out (browsers dropped it; ADR-061).
+- Testing: unit tests per encoder rule, a new fuzz target `qpack_encoder` (our encoder against our
+  decoder over a link that delays and splits the encoder stream, delays acknowledgements and
+  cancels streams), `tools/interop/h3/nghttp3-qpack.py` (libnghttp3's QPACK decoder, the one curl
+  uses, checks our encoder through the new `qpack-pipe` example: over the wire, curl, quic-go and
+  fib advertise no decoder table), end-to-end tests for streamed responses.
+- `quic-bench h3` (gpu51, two same-run A/Bs of 7 alternating rounds against main b22519ae): default configuration (encoder off) at parity, 0.997x and 1.001x in two runs (0.999x over all 14 rounds, 863.9k vs 864.8k req/s; the client's request path only gained a check for streamed responses); with both encoders on, 0.991x of the previous encoder with both on (722.1k vs 728.9k), which is 0.833x of the default (the previous encoder: 0.839x), hence the encoder stays off by default.
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

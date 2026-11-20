@@ -194,12 +194,13 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 `H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`), or `dial_with(.., H3ClientOptions)`
 for limits and QPACK settings; requests sent before
 the handshake completes wait for it (unless the client resumes with 0-RTT, see above). `request(method, path, headers, body, callback)`,
-`request_blocking(..)`, `get(path, timeout)`, `upload(..)`, `websocket(..)`, `close()`,
-`connection()`. Responses arrive buffered.
+`request_blocking(..)`, `get(path, timeout)`, `upload(..)`, `open(..)`, `websocket(..)`,
+`close()`, `connection()`. Responses to `request` arrive buffered; `open` streams them (below).
 `H3Client::dial_with(.., H3ClientOptions)` sets the limits: `max_body_bytes` (8 MiB) and
 `max_field_section_bytes` (64 KiB, advertised) stop the response stream and fail the request
 with `H3Error::TooLarge`; `request_timeout` (30 s, from `request` or `websocket` to the
-complete response, a WebSocket's head; uploads have none) resets the stream and fails it with
+complete response, a WebSocket's or a streamed response's head; uploads have none) resets the
+stream and fails it with
 `H3Error::Timeout` (that callback runs on a timer thread). It also takes the QPACK settings
 (below).
 
@@ -218,6 +219,23 @@ the response goes to the callback.
 
 ```rust,ignore
 {{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+```
+
+### Streamed responses on the client
+
+`open(method, path, &headers, on_event)` is the counterpart of `H2Client::open`: it returns an
+`H3Upload` for the request body (`finish()` at once when there is none) and reports the response
+to `on_event` on the connection's I/O thread as it arrives: `H3Event::Head { status, headers }`,
+`Data(&[u8])` for each piece (not buffered, not limited by `max_body_bytes`), `Trailers`, then
+`End`, or `Error(H3Error)`. Upload and download can run at the same time. `hold_reads(true)` on
+the handle pauses reading: QUIC flow control then stops the server once the stream's receive
+window (`TransportConfig::stream_receive_window`) is used, so a slow consumer bounds the memory a
+download takes; `hold_reads(false)` resumes it. Both work from any thread, the event callback
+included (`only_quic::Connection::hold_reads` does the same for any stream). `cancel()` resets
+the stream and nothing more is reported. `request_timeout` applies until the head.
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:download}}
 ```
 
 ### WebSocket over HTTP/3
@@ -249,12 +267,17 @@ through an encoder stream. In `H3Config` (servers) and `H3ClientOptions` (client
   Peers such as nghttp3 (curl) and OpenSSL's QUIC use the table as soon as it is offered.
   Set the capacity to 0 to allow static references and literals only.
 - `qpack_encoder_capacity` (0, off): this side's encoder table, at most what the peer allows.
-  It only references entries the peer has acknowledged, so it never makes the peer wait; it
-  inserts fields that repeat (not paths, dates, lengths, validators, credentials or cookies).
-  It saves bytes on connections that carry many messages with the same custom fields, at the
-  cost of a lock per message; quic-go and fib advertise no table, so it does nothing with them.
-  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
-  explains the defaults.
+  It inserts a field the second time it sees it (never paths, dates, lengths, validators,
+  credentials or cookies), with a static or dynamic name reference or a literal name; refers to
+  entries inserted by the same message with post-base indices; uses dynamic name references in
+  literals; duplicates entries about to be evicted; and evicts only entries the peer has
+  acknowledged. It makes at most as many of the peer's streams wait for its inserts as the
+  peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (0: never). It saves bytes on connections that
+  carry many messages with the same custom fields, at the cost of a lock per message and the
+  peer's acknowledgements; quic-go, fib and curl advertise no table, so it does nothing with
+  them. [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
+  and [ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)
+  explain the defaults.
 
 ## How HTTP/3 reuses `only-http`
 
@@ -276,5 +299,6 @@ Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BE
 
 ## Not done
 
-Server push; WebSocket over HTTP/2 (RFC 8441); streamed responses on the client (`H3Client`
-buffers them); the Duplicate instruction and dynamic name references in our QPACK encoder.
+WebSocket over HTTP/2 (RFC 8441). Server push is left out on purpose: browsers dropped it, and
+103 Early Hints replaced its use
+([ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)).

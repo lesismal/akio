@@ -10,6 +10,29 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：完整的 QPACK 编码器与 HTTP/3 客户端流式响应（only-h3、only-quic）
+
+ADR-061（docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md），只有新增（默认值不变：编码器
+仍关闭，`qpack_encoder_capacity: 0`）：
+
+- QPACK 编码器（RFC 9204），设置 `qpack_encoder_capacity` 后：插入使用静态或动态名称引用或字面名称，
+  只插入出现过两次的字段（从不插入路径、日期、长度、校验器、范围、凭据或 cookie）；对即将被驱逐且被引用
+  的条目使用 Duplicate；字面字段行使用动态名称引用；用 post-base 索引引用同一段插入的条目；引用未确认
+  条目的段只在对端 `SETTINGS_QPACK_BLOCKED_STREAMS`（现从其 SETTINGS 读取，最多 64）之内；只驱逐已确认
+  且未被引用的条目；Section Acknowledgement、Stream Cancellation 与 Insert Count Increment 处理同前。
+- `H3Client::open(method, path, headers, on_event) -> H3Upload`：流式响应在连接的 I/O 线程上以
+  `H3Event::{Head, Data, Trailers, End, Error}` 报告（不缓冲，不受 `max_body_bytes` 限制），请求体通过
+  返回的 `H3Upload` 写入（上传与下载可同时进行）。`H3Upload::hold_reads(bool)` 暂停与恢复读取响应，
+  由 QUIC 流量控制让服务器停下；`H3Upload::cancel()` 放弃请求。`request_timeout` 只作用到响应头。
+- `only_quic::Connection::hold_reads(id, bool)`：暂停交付一个流的数据；暂停期间数据留在接收缓冲区，
+  恢复前不扩大该流的窗口。
+- 服务器推送仍不做（浏览器已放弃，见 ADR-061）。
+- 测试：针对每条编码器规则的单元测试；新 fuzz 目标 `qpack_encoder`（我方编码器对我方解码器，链路延迟并
+  拆分编码器流、延迟确认、取消流）；`tools/interop/h3/nghttp3-qpack.py`（libnghttp3 的 QPACK 解码器，即
+  curl 所用的那个，通过新的 `qpack-pipe` 示例检验我方编码器：线上的 curl、quic-go 与 fib 都通告解码器表
+  为 0）；流式响应的端到端测试。
+- `quic-bench h3`（gpu51，对 main b22519ae 两次同轮 A/B，各 7 轮交替）：默认配置（编码器关闭）持平，两次分别为 0.997 倍和 1.001 倍（14 轮合计 0.999 倍，86.39 万 vs 86.48 万请求/秒；客户端请求路径只多了一次流式响应检查）；两端编码器都开启时为旧编码器同样开启时的 0.991 倍（72.21 万 vs 72.89 万），即默认配置的 0.833 倍（旧编码器为 0.839 倍），因此编码器默认仍关闭。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

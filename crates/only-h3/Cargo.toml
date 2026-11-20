@@ -28,3 +28,8 @@ only-x509 = { workspace = true }
 
 [lints]
 workspace = true
+
+# Drives this side's QPACK encoder for tools/interop/h3/nghttp3-qpack.py.
+[[example]]
+name = "qpack-pipe"
+required-features = ["fuzzing"]

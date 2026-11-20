@@ -62,6 +62,21 @@ impl core::marker::Sync for only_h3::H3Error
 impl core::marker::Unpin for only_h3::H3Error
 impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Error
 impl core::panic::unwind_safe::UnwindSafe for only_h3::H3Error
+#[non_exhaustive] pub enum only_h3::H3Event<'a>
+pub only_h3::H3Event::Data(&'a [u8])
+pub only_h3::H3Event::End
+pub only_h3::H3Event::Error(only_h3::H3Error)
+pub only_h3::H3Event::Head
+pub only_h3::H3Event::Head::headers: &'a only_http::message::Headers
+pub only_h3::H3Event::Head::status: u16
+pub only_h3::H3Event::Trailers(&'a only_http::message::Headers)
+impl core::fmt::Debug for only_h3::H3Event<'_>
+pub fn only_h3::H3Event<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for only_h3::H3Event<'a>
+impl<'a> core::marker::Sync for only_h3::H3Event<'a>
+impl<'a> core::marker::Unpin for only_h3::H3Event<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Event<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_h3::H3Event<'a>
 pub struct only_h3::H3Client
 impl only_h3::H3Client
 pub fn only_h3::H3Client::close(&self)
@@ -69,6 +84,7 @@ pub fn only_h3::H3Client::connection(&self) -> &only_quic::Connection
 pub fn only_h3::H3Client::dial(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::types::ClientConfig) -> core::result::Result<only_h3::H3Client, only_quic::Error>
 pub fn only_h3::H3Client::dial_with(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::types::ClientConfig, only_h3::H3ClientOptions) -> core::result::Result<only_h3::H3Client, only_quic::Error>
 pub fn only_h3::H3Client::get(&self, &str, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
+pub fn only_h3::H3Client::open(&self, only_http::message::Method, &str, &only_http::message::Headers, impl core::ops::function::FnMut(only_h3::H3Event<'_>) + core::marker::Send + 'static) -> only_h3::H3Upload
 pub fn only_h3::H3Client::request(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static)
 pub fn only_h3::H3Client::request_blocking(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
 pub fn only_h3::H3Client::upload(&self, only_http::message::Method, &str, &only_http::message::Headers, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static) -> only_h3::H3Upload
@@ -120,7 +136,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Config
 impl core::panic::unwind_safe::UnwindSafe for only_h3::H3Config
 pub struct only_h3::H3Upload
 impl only_h3::H3Upload
+pub fn only_h3::H3Upload::cancel(&self)
 pub fn only_h3::H3Upload::finish(&self) -> bool
+pub fn only_h3::H3Upload::hold_reads(&self, bool)
 pub fn only_h3::H3Upload::queued_bytes(&self) -> usize
 pub fn only_h3::H3Upload::write(&self, &[u8]) -> bool
 impl core::fmt::Debug for only_h3::H3Upload

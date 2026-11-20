@@ -322,6 +322,22 @@ impl Connection {
         r
     }
 
+    /// Holds (`true`) or resumes (`false`) delivering a stream's data to
+    /// [`QuicHandler::on_stream_data`]: while held, what arrives stays in the stream's receive
+    /// buffer and its flow control window is not extended, so the peer stops sending once the
+    /// window ([`TransportConfig::stream_receive_window`]) is used; held bytes also count
+    /// against the connection's window. Resuming delivers what arrived (in later callbacks) and
+    /// extends the window. Data already handed to the handler's queue may still arrive after
+    /// holding. Holding a stream that was finished, reset or stopped does nothing;
+    /// [`stop`](Self::stop) drops what is held.
+    pub fn hold_reads(&self, id: StreamId, hold: bool) -> Result<(), Error> {
+        let r = lock(&self.0.state).conn.hold_reads(id, hold);
+        if !hold {
+            self.kick();
+        }
+        r
+    }
+
     /// Bytes queued on a stream that were not sent yet.
     pub fn queued_bytes(&self, id: StreamId) -> usize {
         lock(&self.0.state).conn.queued_bytes(id)

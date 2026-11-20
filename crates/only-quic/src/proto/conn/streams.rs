@@ -32,6 +32,8 @@ pub(crate) struct RecvSide {
     pub fin_delivered: bool,
     /// Nothing more for the application: FIN or reset delivered.
     pub done: bool,
+    /// The application holds reads: data stays here and the window is not extended.
+    pub held: bool,
 }
 
 #[derive(Debug, Default)]
@@ -260,6 +262,37 @@ impl Connection {
         }
         r.stop_sent = Some(code);
         self.pending.stop_sending.insert(raw);
+        if r.held {
+            // What was held is dropped, and its connection credit returned.
+            r.held = false;
+            self.deliver_stream(raw);
+        }
+        Ok(())
+    }
+
+    /// Holds (or resumes) delivering a stream's data: held data stays in the stream's receive
+    /// buffer and its window is not extended, so the peer stops at the window (flow control is
+    /// the backpressure). Resuming delivers what arrived and extends the window.
+    pub fn hold_reads(&mut self, id: StreamId, hold: bool) -> Result<(), Error> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        if id.dir() == Dir::Uni && id.initiator() == self.side {
+            return Err(Error::UnknownStream);
+        }
+        let raw = u64::from(id);
+        let r = self
+            .streams
+            .get_mut(&raw)
+            .and_then(|s| s.recv.as_mut())
+            .ok_or(Error::UnknownStream)?;
+        if r.held == hold || r.done || r.stop_sent.is_some() {
+            return Ok(());
+        }
+        r.held = hold;
+        if !hold {
+            self.deliver_stream(raw);
+        }
         Ok(())
     }
 
@@ -401,6 +434,9 @@ impl Connection {
         let Some(r) = self.streams.get_mut(&raw).and_then(|s| s.recv.as_mut()) else {
             return;
         };
+        if r.held {
+            return;
+        }
         // Chunks go straight into the event queue (two temporary vectors per delivery showed up
         // in HTTP/3 profiles); the last one gets the FIN once the stream is known to be done.
         let mut delivered = 0u64;
