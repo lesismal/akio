@@ -738,7 +738,7 @@ impl Histogram {
         h.counts[i].fetch_add(1, Ordering::Relaxed);
         add_f64(&h.sum, v);
         if let Some(ex) = &h.exemplars {
-            ex.offer_current(i, v);
+            offer_exemplar(ex, i, v);
         }
     }
 
@@ -761,6 +761,13 @@ impl Histogram {
                 .map_or_else(Vec::new, ExemplarReservoir::snapshot),
         }
     }
+}
+
+/// Out of line, so a histogram without exemplars keeps `observe` as small as before.
+#[cold]
+#[inline(never)]
+fn offer_exemplar(ex: &ExemplarReservoir, bucket: usize, v: f64) {
+    ex.offer_current(bucket, v);
 }
 
 #[derive(Clone, Debug)]

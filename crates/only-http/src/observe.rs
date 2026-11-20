@@ -321,7 +321,8 @@ struct Pending {
     /// The route slot, `usize::MAX` without per-route labels.
     route: usize,
     /// Where the latency goes as an exemplar: only with exemplars on and a sampled request span.
-    exemplar: Option<(Arc<ExemplarReservoir>, only_log::span::SpanContext)>,
+    /// Boxed: a request without one carries a null pointer, not the context.
+    exemplar: Option<Box<(Arc<ExemplarReservoir>, only_log::span::SpanContext)>>,
 }
 
 impl Drop for Pending {
@@ -410,7 +411,7 @@ impl HttpMetrics {
                 Some(ex) => ctx
                     .span_context()
                     .filter(only_log::span::SpanContext::is_sampled)
-                    .map(|c| (ex.clone(), c)),
+                    .map(|c| Box::new((ex.clone(), c))),
             };
             let p = Pending {
                 shard,
@@ -430,7 +431,8 @@ impl HttpMetrics {
                 if let Some(rc) = p.shard.routes.get(p.route) {
                     rc.observe(resp.status, latency);
                 }
-                if let Some((ex, c)) = &p.exemplar {
+                if let Some(e) = &p.exemplar {
+                    let (ex, c) = &**e;
                     ex.offer(
                         bucket_of(latency),
                         latency.as_secs_f64(),
