@@ -74,6 +74,8 @@ pub(crate) struct Client {
     cert_req: Option<(Vec<u8>, Vec<u16>)>,
     /// The TLS 1.3 CertificateRequest asked for an OCSP response (status_request).
     cert_req_ocsp: bool,
+    /// A KeyUpdate answering the peer's request went out and no application data since.
+    pub(crate) key_update_answered: bool,
     pub(crate) peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
     pub(crate) alpn: Option<Vec<u8>>,
@@ -189,6 +191,7 @@ impl Client {
             quic_ticket_version: quic_version,
             cert_req: None,
             cert_req_ocsp: false,
+            key_update_answered: false,
             peer_chain: Vec::new(),
             peer_key: None,
             alpn: None,
@@ -744,8 +747,11 @@ impl Client {
                     early = true;
                 }
                 EXT_SERVER_NAME => {
-                    if !d.is_empty() || self.sni.is_none() {
-                        return fatal(Alert::IllegalParameter, "bad server_name answer");
+                    if self.sni.is_none() {
+                        return fatal(Alert::UnsupportedExtension, "unsolicited server_name");
+                    }
+                    if !d.is_empty() {
+                        return fatal(Alert::DecodeError, "non-empty server_name answer");
                     }
                 }
                 EXT_ALPN if self.sent_exts.contains(&EXT_ALPN) => {
@@ -859,7 +865,7 @@ impl Client {
     /// The server's Certificate (`body`; decompressed when `msg` is a CompressedCertificate,
     /// which is what the transcript takes).
     fn certificate13(&mut self, msg: &[u8], body: &[u8]) -> Result<(), Fatal> {
-        let c = parse_certificate13(body)?;
+        let c = parse_certificate13(body, self.cfg.ocsp)?;
         if !c.context.is_empty() {
             return fatal(Alert::IllegalParameter, "server certificate with a context");
         }
@@ -1029,7 +1035,7 @@ impl Client {
     fn key_update(&mut self, body: &[u8], out: &mut Vec<Action>) -> Result<(), Fatal> {
         let suite = self.suite_or_err()?;
         let (read, write) = (&mut self.s_ap, &mut self.c_ap);
-        key_update(suite, body, read, write, out)
+        key_update(suite, body, read, write, &mut self.key_update_answered, out)
     }
 
     /// Sends a KeyUpdate (not requesting one back) and moves to the next write secret.
@@ -1051,6 +1057,15 @@ impl Client {
             if !ri.is_empty() {
                 return fatal(Alert::HandshakeFailure, "non-empty renegotiation_info");
             }
+        }
+        // An acknowledged server_name is empty (RFC 6066 section 3); unsolicited ones were
+        // refused by check_exts.
+        if sh
+            .exts
+            .iter()
+            .any(|(t, d)| *t == EXT_SERVER_NAME && !d.is_empty())
+        {
+            return fatal(Alert::DecodeError, "non-empty server_name answer");
         }
         if let Some(f) = sh.ec_point_formats {
             if !f.contains(&0) {
@@ -1294,12 +1309,15 @@ impl Client {
     }
 }
 
-/// Handles a received TLS 1.3 KeyUpdate: next read secret, and a KeyUpdate back if requested.
+/// Handles a received TLS 1.3 KeyUpdate: next read secret, and a KeyUpdate back if requested,
+/// once however many requests come before our next application data (`answered`, cleared
+/// when application data is sealed; RFC 8446 section 4.6.3 asks for one before it).
 pub(crate) fn key_update(
     suite: &'static Suite,
     body: &[u8],
     read: &mut Vec<u8>,
     write: &mut Vec<u8>,
+    answered: &mut bool,
     out: &mut Vec<Action>,
 ) -> Result<(), Fatal> {
     let requested = match body {
@@ -1318,7 +1336,8 @@ pub(crate) fn key_update(
             secret: read.clone(),
         },
     ));
-    if requested {
+    if requested && !*answered {
+        *answered = true;
         send_key_update(suite, write, false, out);
     }
     Ok(())

@@ -96,6 +96,11 @@ pub(crate) struct Server {
     replay_wait: Option<Box<ReplayWait>>,
     /// The answer, for the ClientHello taken up again: PSK index, session, accept early data.
     replay_done: Option<Box<(usize, Session, bool)>>,
+    /// TLS 1.3: the client can resume with tickets (psk_dhe_ke among its PSK modes; we offer
+    /// no other mode, RFC 8446 section 4.2.9).
+    client_dhe_ke: bool,
+    /// A KeyUpdate answering the peer's request went out and no application data since.
+    pub(crate) key_update_answered: bool,
 }
 
 /// A ClientHello whose early data waits for an asynchronous anti-replay answer: everything
@@ -187,6 +192,8 @@ impl Server {
             quic_ticket_version: 0,
             replay_wait: None,
             replay_done: None,
+            client_dhe_ke: false,
+            key_update_answered: false,
         }
     }
 
@@ -296,7 +303,14 @@ impl Server {
             (St::WaitFinished13, FINISHED) => self.finished13(msg, body, out),
             (St::Done13, KEY_UPDATE) if self.quic.is_none() => {
                 let suite = self.suite_or_err()?;
-                key_update(suite, body, &mut self.c_ap, &mut self.s_ap, out)
+                key_update(
+                    suite,
+                    body,
+                    &mut self.c_ap,
+                    &mut self.s_ap,
+                    &mut self.key_update_answered,
+                    out,
+                )
             }
             (St::WaitCert12, CERTIFICATE) => self.certificate12(msg, body),
             (St::WaitClientKx12, CLIENT_KEY_EXCHANGE) => self.client_key_exchange(msg, body),
@@ -489,6 +503,10 @@ impl Server {
             );
         }
         // PSK resumption.
+        if let Some(e) = &ch.psk_error {
+            return Err(e.clone());
+        }
+        self.client_dhe_ke = ch.psk_modes.is_some_and(|m| m.contains(&PSK_DHE_KE));
         if ch.psk.is_some() && ch.psk_modes.is_none() {
             return fatal(
                 Alert::MissingExtension,
@@ -808,7 +826,7 @@ impl Server {
             context: ctx,
             chain,
             ocsp,
-        } = parse_certificate13(body)?;
+        } = parse_certificate13(body, self.cfg.client_ocsp != crate::RevocationPolicy::Off)?;
         if !ctx.is_empty() {
             return fatal(Alert::IllegalParameter, "certificate context mismatch");
         }
@@ -889,7 +907,7 @@ impl Server {
             .map(|s| s.derive(b"res master", &th))
             .unwrap_or_default();
         let max_early_data = self.max_early_data();
-        if self.cfg.resumption() {
+        if self.cfg.resumption() && self.client_dhe_ke {
             for i in 0..self.cfg.tickets13 {
                 let nonce = [i as u8];
                 let psk =
