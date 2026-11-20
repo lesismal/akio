@@ -102,8 +102,17 @@ pub struct SocksClient {
     handshake_timeout: Option<Duration>,
     bind_timeout: Option<Duration>,
     /// TLS to the proxy: the configuration and the name to verify (the proxy's host if none).
-    tls: Option<(TlsClientConfig, Option<String>)>,
+    tls: Option<ProxyTls>,
 }
+
+/// TLS settings for the proxy. `ClientConfig` is not unwind-safe (it reserves the right to
+/// hold interior state); a `SocksClient` only clones it, so it stays unwind-safe as before
+/// ADR-059.
+#[derive(Clone)]
+struct ProxyTls(TlsClientConfig, Option<String>);
+
+impl std::panic::UnwindSafe for ProxyTls {}
+impl std::panic::RefUnwindSafe for ProxyTls {}
 
 impl std::fmt::Debug for SocksClient {
     // Without the credentials.
@@ -202,15 +211,18 @@ impl SocksClient {
     /// [`Socks`]: crate::Socks
     #[must_use]
     pub fn tls(mut self, cfg: TlsClientConfig, server_name: Option<&str>) -> SocksClient {
-        self.tls = Some((cfg, server_name.map(str::to_owned)));
+        self.tls = Some(ProxyTls(cfg, server_name.map(str::to_owned)));
         self
     }
 
     /// The TLS configuration and name to reach the proxy with, if any.
     fn proxy_tls(&self) -> Option<(TlsClientConfig, String)> {
-        self.tls
-            .as_ref()
-            .map(|(c, n)| (c.clone(), n.clone().unwrap_or_else(|| self.host.clone())))
+        self.tls.as_ref().map(|t| {
+            (
+                t.0.clone(),
+                t.1.clone().unwrap_or_else(|| self.host.clone()),
+            )
+        })
     }
 
     fn no_blocking_tls(&self) -> io::Result<()> {
@@ -1144,5 +1156,14 @@ impl BlockingUdp {
         };
         let _ = self.control.set_nonblocking(false);
         open
+    }
+}
+
+#[cfg(test)]
+mod unwind_tests {
+    #[test]
+    fn socks_client_stays_unwind_safe() {
+        fn check<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+        check::<super::SocksClient>();
     }
 }

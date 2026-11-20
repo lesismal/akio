@@ -356,6 +356,46 @@ fn h2_requests_time_out_and_the_connection_survives() {
 }
 
 #[test]
+fn h2_connect_resolves_and_races_a_name() {
+    let (e, _, _) = server();
+    let port = e.local_addrs()[0].port();
+    // `localhost` may list ::1 first, where nothing listens: the race moves on to 127.0.0.1.
+    let (tx, rx) = std::sync::mpsc::channel();
+    H2Client::connect(
+        &e,
+        "localhost",
+        port,
+        None,
+        H2Options::default(),
+        move |r| {
+            let _ = tx.send(r);
+        },
+    );
+    let h2 = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    let r = h2
+        .send(ClientRequest::get(&format!(
+            "http://localhost:{port}/hello"
+        )))
+        .wait()
+        .unwrap();
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"hello"[..]));
+    // A name that does not resolve: the error.
+    let (tx, rx) = std::sync::mpsc::channel();
+    H2Client::connect(
+        &e,
+        "no-such-host.invalid",
+        port,
+        None,
+        H2Options::default(),
+        move |r| {
+            let _ = tx.send(r.map(|_| ()));
+        },
+    );
+    assert!(rx.recv_timeout(Duration::from_secs(30)).unwrap().is_err());
+    stop(&e);
+}
+
+#[test]
 fn names_resolve_off_the_calling_thread() {
     let (e, _, _) = server();
     let port = e.local_addrs()[0].port();

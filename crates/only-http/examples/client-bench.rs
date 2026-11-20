@@ -74,7 +74,10 @@ fn main() {
     let n = done.load(Ordering::Relaxed);
     let took = start.elapsed().as_secs_f64();
     stop.store(true, Ordering::Relaxed);
-    println!("client-bench: {:.0} req/s ({n} in {took:.2} s, {conc} loops)", n as f64 / took);
+    println!(
+        "client-bench: {:.0} req/s ({n} in {took:.2} s, {conc} loops)",
+        n as f64 / took
+    );
     std::thread::sleep(Duration::from_millis(200));
     std::process::exit(0);
 }
