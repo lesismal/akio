@@ -1654,6 +1654,25 @@ the packets dropped at XDP it pushes 1.76× more in native mode and 1.28× more 
 than when they go up the stack to a socket. Native XDP drops 1.52× the packets the socket path
 delivers.
 
+### Connectionless UDP
+
+**`DatagramsHandler` against per-peer UDP** (2026-11-21, ADR-065; gpu51, Ryzen 7 7800X3D, Linux
+7.0, quiet host via `quiet.sh`, one alternating run: 64-byte echo, `bench-server` with 4 threads
+on CPUs 0–3, `echo-bench` 64 sockets × 64 B with 8 threads on CPUs 4–11, 10-second runs, 9
+rounds in rotating order; medians, server CPU per request from `/proc`):
+
+| Server | req/s, median (range) | vs per-peer before | server CPU per request | vs before |
+|---|---:|---:|---:|---:|
+| per-peer `Listener::udp(..).serve`, before (`b22519ae`) | 768,144 (684,519–860,916) | 1.00 | 4,745 ns | 1.00 |
+| per-peer, after | 781,173 (712,511–841,607) | 1.02 | 4,747 ns | 1.00 |
+| `serve_datagrams`, epoll | 829,051 (726,597–926,309) | 1.08 | 4,407 ns | 0.93 |
+| `serve_datagrams`, io_uring | 838,496 (680,238–912,182) | 1.09 | 4,364 ns | 0.92 |
+
+The per-peer path does not regress (throughput within the run-to-run spread, CPU per request
+equal). Without the peer lookup, `Conn` and per-peer cork/flush bookkeeping the connectionless
+echo costs 7–8% less server CPU per request; with 64 clients on loopback the client is close to
+its limit, so throughput gains less than that. Rerun with `tools/bench/udp-dgram.sh`.
+
 ## Not measured
 
 - **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.
