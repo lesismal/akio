@@ -540,7 +540,7 @@ fn inc32(mut j: [u8; 16]) -> [u8; 16] {
 }
 
 /// A 16-byte block as (low, high) 64-bit halves: `high` is the first eight bytes, big-endian.
-fn be_pair(b: &[u8]) -> (u64, u64) {
+pub(crate) fn be_pair(b: &[u8]) -> (u64, u64) {
     let hi = u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
     let lo = u64::from_be_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
     (lo, hi)
@@ -576,7 +576,7 @@ fn gf_mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
 }
 
 /// GHASH state (BearSSL `br_ghash_ctmul64`), or the hardware path when `hw` is set.
-struct Ghash<'a> {
+pub(crate) struct Ghash<'a> {
     hw: Option<&'a hw::Powers>,
     h0: u64,
     h1: u64,
@@ -589,6 +589,11 @@ struct Ghash<'a> {
 }
 
 impl<'a> Ghash<'a> {
+    /// GHASH under `h` (from [`be_pair`]) on the portable constant-time multiplication.
+    pub(crate) fn portable(h: (u64, u64)) -> Ghash<'static> {
+        Ghash::new(h, None)
+    }
+
     fn new((h0, h1): (u64, u64), hw: Option<&'a hw::Powers>) -> Ghash<'a> {
         let h0r = h0.reverse_bits();
         let h1r = h1.reverse_bits();
@@ -606,7 +611,7 @@ impl<'a> Ghash<'a> {
     }
 
     /// Absorbs `data` as 16-byte blocks, the last one padded with zeros.
-    fn update_padded(&mut self, data: &[u8]) {
+    pub(crate) fn update_padded(&mut self, data: &[u8]) {
         let whole = data.len() & !15;
         let rest = &data[whole..];
         if let Some(p) = self.hw {
@@ -671,7 +676,7 @@ impl<'a> Ghash<'a> {
         self.y1 = v3;
     }
 
-    fn finish(&self) -> [u8; 16] {
+    pub(crate) fn finish(&self) -> [u8; 16] {
         let mut out = [0u8; 16];
         out[..8].copy_from_slice(&self.y1.to_be_bytes());
         out[8..].copy_from_slice(&self.y0.to_be_bytes());

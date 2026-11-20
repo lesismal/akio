@@ -29,6 +29,7 @@
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR、CBC（可带 PKCS #7 填充，用于 HLS `AES-128`） |
 | `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时同样用 256 位寄存器处理整条消息（尾部、AAD 与长度块经补零的栈缓冲区：AVX2 没有字节掩码），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
+| `seed` | SEED（RFC 4269）及 CTR、CCM（RFC 3610）与 GCM，供 SRTP 使用（RFC 5669；ADR-052）：不用查表，S 盒由固定切片 AES 的求逆电路经域同构再加仿射变换得到，G 函数在 16 个字上位切片运行（ECB / CTR / GCM 同时处理 16 个分组，单个分组与 CCM 的 CBC-MAC 走单字路径）；没有硬件路径 |
 | `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，AVX2 每步 4 个，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |

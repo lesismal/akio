@@ -1,5 +1,6 @@
-//! Context tests: RFC 7714 vectors, pion/srtp v3.1.3 cross-check vectors, round trips,
-//! replay, rollover, tampering and truncation.
+//! Context tests: RFC 7714, RFC 3711 B.1 (f8) and RFC 5669 vectors, pion/srtp v3.1.3,
+//! libsrtp and independent AES-f8 / SEED cross-check vectors, round trips, replay, rollover,
+//! tampering and truncation.
 
 use crate::{Context, Error, Profile};
 
@@ -375,12 +376,31 @@ fn libsrtp_ctx(case: &str) -> (Profile, Context) {
 /// MKI), protect and unprotect.
 #[test]
 fn libsrtp_cross_check() {
-    let data = include_str!("../testdata/libsrtp.txt");
+    assert_eq!(
+        cross_check(include_str!("../testdata/libsrtp.txt")),
+        (50, 230)
+    );
+}
+
+/// The same packets, cases and keys under the AES-f8 and SEED profiles, byte for byte against
+/// an independent implementation (testdata/f8_seed.py: Python on pyca/cryptography's AES and
+/// SEED, written from the RFCs and checked against their vectors), protect and unprotect.
+#[test]
+fn f8_seed_cross_check() {
+    assert_eq!(
+        cross_check(include_str!("../testdata/f8_seed.txt")),
+        (25, 115)
+    );
+}
+
+/// Runs the cross-check cases of `data` (`<kind:Profile> <rtp|rtcp> <input> <protected>`
+/// lines); returns the number of cases and of packets checked.
+fn cross_check(data: &str) -> (usize, usize) {
     type Packet<'a> = (&'a str, Vec<u8>, Vec<u8>);
     let mut cases: Vec<(&str, Vec<Packet<'_>>)> = Vec::new();
     for line in data
         .lines()
-        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter(|l| !l.starts_with('#') && !l.starts_with("kdf ") && !l.is_empty())
     {
         let f: Vec<&str> = line.split(' ').collect();
         let entry = (f[1], hex(f[2]), hex(f[3]));
@@ -389,7 +409,7 @@ fn libsrtp_cross_check() {
             _ => cases.push((f[0], vec![entry])),
         }
     }
-    assert_eq!(cases.len(), 50);
+    let ncases = cases.len();
     let mut checked = 0;
     for (case, packets) in cases {
         let (profile, mut tx) = libsrtp_ctx(case);
@@ -433,7 +453,96 @@ fn libsrtp_cross_check() {
             assert!(profile.rtp_tag_len() > 0);
         }
     }
-    assert_eq!(checked, 230);
+    (ncases, checked)
+}
+
+const RFC5669_PAYLOAD: &str = "f57af5fd4ae19562976ec57a5a7ad55a5af5c5e5c5fdf5c55ad57a4a7272d572
+    62e9729566ed66e97ac54a4a5a7ad5e15ae5fdd5fd5ac5d56ae56ad5c572d54a
+    e54ac55a956afd6aed5a4ac562957a9516991691d572fd14e97ae962ed7a9f4a
+    955af572e162f57a956666e17ae1f54a95f566d54a66e16e4afd6a9f7ae1c5c5
+    5ae5d56afde916c5e94a6ec56695e14afde1148416e94ad57ac5146ed59d1cc5";
+
+/// RFC 5669 Appendix A through contexts keyed with the vectors' session keys, on the RTP
+/// header of A.2 / A.3 (`8008315e bf2e6fe0 20e8f5eb`): A.1 SEED-CTR (the encrypted payload; its
+/// tag is an HMAC over the header and the *plaintext* without the ROC, not RFC 3711 §4.2's, so
+/// it is not compared), A.2 SEED-CCM and A.3 SEED-GCM whole packets (zero salt: the nonce is
+/// the bare SSRC, ROC and SEQ), both ways.
+#[test]
+fn rfc5669_vectors() {
+    let packet = hex(&format!("8008315ebf2e6fe020e8f5eb {RFC5669_PAYLOAD}"));
+    let mut tx = Context::from_session_keys(
+        Profile::SeedCtrHmacSha1_80,
+        &hex("0c5ffd37a11edc42c325287fc0604f2e"),
+        &hex("cd3a7c42c671e0067a2a2639b43a"),
+        &hex("f93563311b354748c978913795530631"),
+    );
+    let p = tx.protect_rtp(&packet).unwrap();
+    assert_eq!(
+        p[12..172],
+        hex(
+            "df5a89291e7e383e9beff765e691a73749c9e33139ad3001cd8da73ad07f69a2
+            805a70358b5c7c8c60ed359f95cf5e08f713c53ff7b808250d79a19ccb8d1073
+            4e3cb72ed1f0a4e85b002b248049ab0763dbe571bec52cf9153fdf2019e421ef
+            779cd6f4bd1c8211da8c272e2fce43934b9eabb87362510f254149f992599036
+            f5e43102327db1ac5e78adc4f66546ed7abfb5a4db320fb7b9c52a61bc554e44"
+        )
+    );
+    for (profile, key, ct, tag) in [
+        (
+            Profile::SeedCcm80,
+            "974bee725d44fc3992267b284c3c6750",
+            "486843a881df215a8574650ddabf5dbb2650f06f51252bccaeb4012899d6d71e
+            30c64dad5ead5d8ba65ffe9d79aaf30dc9e6334490c07e7533d704114a9006ec
+            b3b3bff59ecf585485bc0bd286ed434cfd684d19a1ad514ca5f37b71d93288c0
+            7cf4d5e9b83db8becc8c692a7279b6a9ac62ba970fc54f46dcc926d434c0b5ad
+            8678fbf0e7a03037924dae342ef64fa65b8eaea260fecb477a57e3919c5dab82",
+            "b0a8274cf6a8bb6cc466",
+        ),
+        (
+            Profile::SeedGcm96,
+            "e91e5e75da65554a48181f3846349562",
+            "8a5363682c6b1bbf13c0b09cf747a5512543cb2f129b8bd0e92dfadf735cda8f
+            88c4bbf90288f5e58d20c4f1bb0d58446ea009103ee57ba99cdeabaaa18d4a9a
+            05ddb46e7e5290a5a2284fe50b1f6fe9ad3f1348c354181e85b24f1a552a1193
+            cf0e13eed5ab95ae854fb4f5b0edb2d3ee5eb238c8f4bfb136b2eb6cd7876042
+            0680ce1879100014f140a15e07e70133ed9cbb6d57b75d574acb0087eefbac99",
+            "36cd9ae602be3ee2cd8d5d9d",
+        ),
+    ] {
+        let mut tx = Context::from_session_keys(profile, &hex(key), &[0; 12], &[]);
+        let mut rx = Context::from_session_keys(profile, &hex(key), &[0; 12], &[]);
+        let want = hex(&format!("8008315ebf2e6fe020e8f5eb {ct} {tag}"));
+        assert_eq!(tx.protect_rtp(&packet).unwrap(), want, "{profile:?}");
+        assert_eq!(rx.unprotect_rtp(&want).unwrap(), packet, "{profile:?}");
+        let mut bad = want.clone();
+        bad[50] ^= 1;
+        let mut rx = Context::from_session_keys(profile, &hex(key), &[0; 12], &[]);
+        assert_eq!(rx.unprotect_rtp(&bad), Err(Error::Authentication));
+    }
+}
+
+/// RFC 3711 Appendix B.1 as an SRTP packet: AES-f8 with the appendix's session key, its 32-bit
+/// salt and ROC 0xd462564a.
+#[test]
+fn rfc3711_b1_f8_packet() {
+    let header = "806e5cba50681de55c621599";
+    let packet = hex(&format!(
+        "{header} 70736575646f72616e646f6d6e65737320697320746865206e6578742062657374207468696e67"
+    ));
+    let key = hex("234829008467be186c3de14aae72d62c");
+    for profile in [Profile::AesF8HmacSha1_80, Profile::AesF8HmacSha1_32] {
+        let mut tx = Context::from_session_keys(profile, &key, &hex("32f2870d"), &[7; 20]);
+        tx.set_send_index(0x5c62_1599, (0xd462_564a << 16) | 0x5cba);
+        let p = tx.protect_rtp(&packet).unwrap();
+        assert_eq!(tx.send_roc(0x5c62_1599), Some(0xd462_564a));
+        assert_eq!(
+            p[..51],
+            hex(&format!(
+                "{header} 019ce7a26e7854014a6366aa95d4eefd1ad4172a14f9faf455b7f1d4b62bd08f562c0eef7c4802"
+            ))
+        );
+        assert_eq!(p.len(), 51 + profile.rtp_tag_len());
+    }
 }
 
 /// RFC 9335 Appendix A: cryptex with AES-CM (A.1) and AES-GCM (A.2), one- and two-byte

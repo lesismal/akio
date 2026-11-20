@@ -1,4 +1,4 @@
-//! Protection profiles (RFC 3711, RFC 5764 §4.1.2, RFC 6188, RFC 7714 §14.2).
+//! Protection profiles (RFC 3711, RFC 4568, RFC 5669, RFC 5764 §4.1.2, RFC 6188, RFC 7714 §14.2).
 
 /// An SRTP protection profile (crypto suite): as negotiated by DTLS-SRTP (`use_srtp`) or named
 /// by SDP security descriptions.
@@ -22,6 +22,19 @@ pub enum Profile {
     Aes256CmHmacSha1_80,
     /// `AES_256_CM_HMAC_SHA1_32` (RFC 6188; SRTCP keeps 80-bit tags).
     Aes256CmHmacSha1_32,
+    /// `F8_128_HMAC_SHA1_80` (RFC 3711 §4.1.2, RFC 4568): AES-128 in f8 mode, 80-bit HMAC-SHA1
+    /// tags (SDP security descriptions only, no DTLS-SRTP id).
+    AesF8HmacSha1_80,
+    /// `F8_128_HMAC_SHA1_32`: as above with 32-bit SRTP tags (SRTCP keeps 80-bit tags). Named
+    /// by the RFC 4568 grammar, not in its registry.
+    AesF8HmacSha1_32,
+    /// `SEED_CTR_128_HMAC_SHA1_80` (RFC 5669): SEED in counter mode, 80-bit HMAC-SHA1 tags, keys
+    /// derived with the SEED-CTR PRF (SDP security descriptions only).
+    SeedCtrHmacSha1_80,
+    /// `SEED_128_CCM_80` (RFC 5669): SEED-CCM AEAD, 80-bit tags, 96-bit session salt.
+    SeedCcm80,
+    /// `SEED_128_GCM_96` (RFC 5669): SEED-GCM AEAD, 96-bit tags, 96-bit session salt.
+    SeedGcm96,
     /// `SRTP_NULL_HMAC_SHA1_80` (0x0005): no encryption, 80-bit HMAC-SHA1 tags. Packets are
     /// authenticated only; for testing and debugging.
     NullHmacSha1_80,
@@ -31,8 +44,8 @@ pub enum Profile {
 
 impl Profile {
     /// Every profile: the four WebRTC profiles in preference order (AEAD, then AES-128-CM),
-    /// then AES-256-CM and AES-192-CM, then the NULL cipher.
-    pub const ALL: [Profile; 10] = [
+    /// then AES-256-CM and AES-192-CM, AES-f8, SEED (CTR, GCM, CCM), then the NULL cipher.
+    pub const ALL: [Profile; 15] = [
         Profile::AeadAes128Gcm,
         Profile::AeadAes256Gcm,
         Profile::Aes128CmHmacSha1_80,
@@ -41,12 +54,17 @@ impl Profile {
         Profile::Aes256CmHmacSha1_32,
         Profile::Aes192CmHmacSha1_80,
         Profile::Aes192CmHmacSha1_32,
+        Profile::AesF8HmacSha1_80,
+        Profile::AesF8HmacSha1_32,
+        Profile::SeedCtrHmacSha1_80,
+        Profile::SeedGcm96,
+        Profile::SeedCcm80,
         Profile::NullHmacSha1_80,
         Profile::NullHmacSha1_32,
     ];
 
-    /// The IANA DTLS-SRTP protection profile id; `None` for the AES-192/256-CM profiles,
-    /// which have none.
+    /// The IANA DTLS-SRTP protection profile id; `None` for the AES-192/256-CM, AES-f8 and
+    /// SEED profiles, which have none.
     #[must_use]
     pub fn id(self) -> Option<u16> {
         match self {
@@ -59,7 +77,12 @@ impl Profile {
             Profile::Aes192CmHmacSha1_80
             | Profile::Aes192CmHmacSha1_32
             | Profile::Aes256CmHmacSha1_80
-            | Profile::Aes256CmHmacSha1_32 => None,
+            | Profile::Aes256CmHmacSha1_32
+            | Profile::AesF8HmacSha1_80
+            | Profile::AesF8HmacSha1_32
+            | Profile::SeedCtrHmacSha1_80
+            | Profile::SeedCcm80
+            | Profile::SeedGcm96 => None,
         }
     }
 
@@ -84,7 +107,7 @@ impl Profile {
         }
     }
 
-    /// The SDP security descriptions crypto suite name (RFC 4568, RFC 6188, RFC 7714), for
+    /// The SDP security descriptions crypto suite name (RFC 4568, RFC 5669, RFC 6188, RFC 7714), for
     /// example `AES_CM_128_HMAC_SHA1_80`; `None` for the NULL profiles, which have none.
     #[must_use]
     pub fn sdes_name(self) -> Option<&'static str> {
@@ -97,6 +120,11 @@ impl Profile {
             Profile::Aes192CmHmacSha1_32 => "AES_192_CM_HMAC_SHA1_32",
             Profile::Aes256CmHmacSha1_80 => "AES_256_CM_HMAC_SHA1_80",
             Profile::Aes256CmHmacSha1_32 => "AES_256_CM_HMAC_SHA1_32",
+            Profile::AesF8HmacSha1_80 => "F8_128_HMAC_SHA1_80",
+            Profile::AesF8HmacSha1_32 => "F8_128_HMAC_SHA1_32",
+            Profile::SeedCtrHmacSha1_80 => "SEED_CTR_128_HMAC_SHA1_80",
+            Profile::SeedCcm80 => "SEED_128_CCM_80",
+            Profile::SeedGcm96 => "SEED_128_GCM_96",
             Profile::NullHmacSha1_80 | Profile::NullHmacSha1_32 => return None,
         })
     }
@@ -122,31 +150,48 @@ impl Profile {
         }
     }
 
-    /// Master (and session) salt length in bytes: 12 for AEAD, 14 for the others.
+    /// Master salt length in bytes: 12 for AES-GCM (RFC 7714), 14 for the others (SEED-CCM and
+    /// SEED-GCM too: RFC 5669 shortens only the session salt, see
+    /// [`session_salt_len`](Self::session_salt_len)).
     #[must_use]
     pub fn salt_len(self) -> usize {
+        if self.is_aes_gcm() { 12 } else { 14 }
+    }
+
+    /// Session salt length in bytes: 12 for the AEAD profiles (AES-GCM, SEED-CCM, SEED-GCM),
+    /// 14 for the others.
+    #[must_use]
+    pub fn session_salt_len(self) -> usize {
         if self.is_aead() { 12 } else { 14 }
     }
 
     /// Length of the SRTP authentication tag appended by
-    /// [`Context::protect_rtp`](crate::Context::protect_rtp): 16 for AEAD, 10 or 4 for the
-    /// HMAC-SHA1 profiles (`_80` / `_32`). An MKI, when used, adds its length on top.
+    /// [`Context::protect_rtp`](crate::Context::protect_rtp): 16 for AES-GCM, 12 for SEED-GCM,
+    /// 10 for SEED-CCM, 10 or 4 for the HMAC-SHA1 profiles (`_80` / `_32`). An MKI, when used,
+    /// adds its length on top.
     #[must_use]
     pub fn rtp_tag_len(self) -> usize {
         match self {
             Profile::AeadAes128Gcm | Profile::AeadAes256Gcm => 16,
+            Profile::SeedGcm96 => 12,
             Profile::Aes128CmHmacSha1_32
             | Profile::Aes192CmHmacSha1_32
             | Profile::Aes256CmHmacSha1_32
+            | Profile::AesF8HmacSha1_32
             | Profile::NullHmacSha1_32 => 4,
             _ => 10,
         }
     }
 
-    /// SRTCP authentication tag length: 16 for AEAD, 10 for every HMAC-SHA1 profile.
+    /// SRTCP authentication tag length: the SRTP tag length for AEAD (16, 12 or 10), 10 for
+    /// every HMAC-SHA1 profile.
     #[must_use]
     pub fn rtcp_tag_len(self) -> usize {
-        if self.is_aead() { 16 } else { 10 }
+        if self.is_aead() {
+            self.rtp_tag_len()
+        } else {
+            10
+        }
     }
 
     /// Length of the DTLS-SRTP keying material to export for this profile
@@ -156,10 +201,34 @@ impl Profile {
         2 * (self.key_len() + self.salt_len())
     }
 
-    /// Whether this is an AEAD (AES-GCM) profile.
+    /// Whether this is an AEAD profile (AES-GCM, SEED-CCM, SEED-GCM): the tag comes from the
+    /// cipher, before the MKI, and there is no HMAC.
     #[must_use]
     pub fn is_aead(self) -> bool {
+        matches!(
+            self,
+            Profile::AeadAes128Gcm
+                | Profile::AeadAes256Gcm
+                | Profile::SeedCcm80
+                | Profile::SeedGcm96
+        )
+    }
+
+    fn is_aes_gcm(self) -> bool {
         matches!(self, Profile::AeadAes128Gcm | Profile::AeadAes256Gcm)
+    }
+
+    /// Whether the transform is AES-f8 (RFC 3711 §4.1.2).
+    pub(crate) fn is_f8(self) -> bool {
+        matches!(self, Profile::AesF8HmacSha1_80 | Profile::AesF8HmacSha1_32)
+    }
+
+    /// Whether the block cipher (and the key derivation PRF) is SEED (RFC 5669).
+    pub(crate) fn is_seed(self) -> bool {
+        matches!(
+            self,
+            Profile::SeedCtrHmacSha1_80 | Profile::SeedCcm80 | Profile::SeedGcm96
+        )
     }
 
     /// Whether packets are encrypted (false for the NULL profiles).
@@ -197,7 +266,20 @@ mod tests {
             assert!(p.rtp_tag_len() <= p.rtcp_tag_len());
         }
         assert_eq!(Profile::from_id(3), None);
-        assert_eq!(Profile::from_sdes_name("F8_128_HMAC_SHA1_80"), None);
+        assert_eq!(
+            Profile::from_sdes_name("F8_128_HMAC_SHA1_80"),
+            Some(Profile::AesF8HmacSha1_80)
+        );
+        assert_eq!(
+            Profile::from_sdes_name("SEED_128_GCM_96"),
+            Some(Profile::SeedGcm96)
+        );
+        assert_eq!(Profile::from_sdes_name("SEED_128_CCM_96"), None);
+        assert_eq!(Profile::SeedGcm96.rtcp_tag_len(), 12);
+        assert_eq!(Profile::SeedCcm80.keying_material_len(), 60);
+        assert_eq!(Profile::SeedCcm80.session_salt_len(), 12);
+        assert_eq!(Profile::AesF8HmacSha1_32.rtp_tag_len(), 4);
+        assert_eq!(Profile::AesF8HmacSha1_32.rtcp_tag_len(), 10);
         assert_eq!(Profile::AeadAes256Gcm.keying_material_len(), 88);
         assert_eq!(Profile::Aes128CmHmacSha1_80.keying_material_len(), 60);
         assert_eq!(Profile::Aes192CmHmacSha1_32.keying_material_len(), 76);

@@ -1,6 +1,6 @@
 [package]
 name = "only-crypto"
-description = "only internals: dependency-free hashes, HMAC/HKDF/PBKDF2, CRC32, constant-time AES (CTR, GCM), ChaCha20-Poly1305, base64, OS randomness, X25519, Ed25519, P-256/P-384 ECDH and ECDSA, RSA signatures, DER/PEM and key formats"
+description = "only internals: dependency-free hashes, HMAC/HKDF/PBKDF2, CRC32, constant-time AES (CTR, GCM), SEED (CTR, CCM, GCM), ChaCha20-Poly1305, base64, OS randomness, X25519, Ed25519, P-256/P-384 ECDH and ECDSA, RSA signatures, DER/PEM and key formats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

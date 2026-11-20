@@ -1024,6 +1024,56 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::rsa::PublicKey
 impl core::panic::unwind_safe::UnwindSafe for only_crypto::rsa::PublicKey
 pub const only_crypto::rsa::MAX_BITS: usize
 pub const only_crypto::rsa::MIN_BITS: usize
+pub mod only_crypto::seed
+pub struct only_crypto::seed::Seed
+impl only_crypto::seed::Seed
+pub fn only_crypto::seed::Seed::apply_ctr(&self, &[u8; 16], &mut [u8])
+pub fn only_crypto::seed::Seed::decrypt_block(&self, &mut [u8; 16])
+pub fn only_crypto::seed::Seed::decrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::seed::Seed::encrypt_block(&self, &mut [u8; 16])
+pub fn only_crypto::seed::Seed::encrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::seed::Seed::from_slice(&[u8]) -> core::result::Result<only_crypto::seed::Seed, only_crypto::Error>
+pub fn only_crypto::seed::Seed::new(&[u8; 16]) -> only_crypto::seed::Seed
+impl core::clone::Clone for only_crypto::seed::Seed
+pub fn only_crypto::seed::Seed::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::seed::Seed
+pub fn only_crypto::seed::Seed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::seed::Seed
+impl core::marker::Sync for only_crypto::seed::Seed
+impl core::marker::Unpin for only_crypto::seed::Seed
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::seed::Seed
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::seed::Seed
+pub struct only_crypto::seed::SeedCcm
+impl only_crypto::seed::SeedCcm
+pub fn only_crypto::seed::SeedCcm::decrypt_in_place_detached(&self, &[u8], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::seed::SeedCcm::encrypt_in_place_detached(&self, &[u8], &[u8], &mut [u8], &mut [u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::seed::SeedCcm::new(&[u8; 16]) -> only_crypto::seed::SeedCcm
+impl core::clone::Clone for only_crypto::seed::SeedCcm
+pub fn only_crypto::seed::SeedCcm::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::seed::SeedCcm
+pub fn only_crypto::seed::SeedCcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::seed::SeedCcm
+impl core::marker::Sync for only_crypto::seed::SeedCcm
+impl core::marker::Unpin for only_crypto::seed::SeedCcm
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::seed::SeedCcm
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::seed::SeedCcm
+pub struct only_crypto::seed::SeedGcm
+impl only_crypto::seed::SeedGcm
+pub fn only_crypto::seed::SeedGcm::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::seed::SeedGcm::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn only_crypto::seed::SeedGcm::new(&[u8; 16]) -> only_crypto::seed::SeedGcm
+impl core::clone::Clone for only_crypto::seed::SeedGcm
+pub fn only_crypto::seed::SeedGcm::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::seed::SeedGcm
+pub fn only_crypto::seed::SeedGcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::seed::SeedGcm
+impl core::marker::Sync for only_crypto::seed::SeedGcm
+impl core::marker::Unpin for only_crypto::seed::SeedGcm
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::seed::SeedGcm
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::seed::SeedGcm
+pub const only_crypto::seed::BLOCK_LEN: usize
+pub const only_crypto::seed::GCM_NONCE_LEN: usize
+pub const only_crypto::seed::KEY_LEN: usize
 pub mod only_crypto::x25519
 pub struct only_crypto::x25519::PrivateKey(_)
 impl only_crypto::x25519::PrivateKey

@@ -34,6 +34,9 @@ mod fixslice;
 mod hw;
 
 use fixslice::BatchBlocks;
+/// The Boyar-Peralta S-box circuit without its four NOTs (`M·x⁻¹` in GF(2⁸), the AES affine
+/// map's linear part) over eight bit planes: SEED's S-boxes are built on it (`crate::seed`).
+pub(crate) use fixslice::sub_bytes as bitsliced_sub_bytes;
 
 use crate::Error;
 

@@ -354,6 +354,43 @@ fn main() {
             black_box(base64::engine::general_purpose::STANDARD.encode(black_box(&pkt)));
         }),
     );
+    // SEED (bitsliced, constant time; no reference crate to compare with).
+    let seed = only_crypto::seed::Seed::new(&[5; 16]);
+    row1(
+        "SEED one block",
+        16,
+        rate(16, || {
+            let mut b = [1u8; 16];
+            seed.encrypt_block(black_box(&mut b));
+            black_box(b);
+        }),
+    );
+    let mut sbuf = vec![0u8; 1200];
+    row1(
+        "SEED-CTR",
+        1200,
+        rate(1200, || seed.apply_ctr(&[3; 16], black_box(&mut sbuf))),
+    );
+    let seed_gcm = only_crypto::seed::SeedGcm::new(&[5; 16]);
+    row1(
+        "SEED-GCM seal",
+        1200,
+        rate(1200, || {
+            black_box(seed_gcm.encrypt_in_place_detached(&[1; 12], &[2; 12], black_box(&mut sbuf)));
+        }),
+    );
+    let seed_ccm = only_crypto::seed::SeedCcm::new(&[5; 16]);
+    row1(
+        "SEED-CCM seal",
+        1200,
+        rate(1200, || {
+            let mut tag = [0u8; 10];
+            seed_ccm
+                .encrypt_in_place_detached(&[1; 12], &[2; 12], black_box(&mut sbuf), &mut tag)
+                .unwrap();
+            black_box(tag);
+        }),
+    );
     let mut k1 = [0u8; 32];
     let mut k2 = [0u8; 32];
     let t = Instant::now();
