@@ -8,6 +8,7 @@ pub only_http::client::ClientError::Closed
 pub only_http::client::ClientError::InvalidUrl(alloc::string::String)
 pub only_http::client::ClientError::Io(core::io::error::Error)
 pub only_http::client::ClientError::Protocol(&'static str)
+pub only_http::client::ClientError::Status(u16)
 pub only_http::client::ClientError::Timeout
 pub only_http::client::ClientError::TooLarge(&'static str)
 pub only_http::client::ClientError::TooManyRedirects
@@ -283,6 +284,8 @@ pub fn only_http::h2client::H2Client::is_open(&self) -> bool
 pub fn only_http::h2client::H2Client::open(&self, only_http::client::ClientRequest, impl core::ops::function::FnMut(only_http::h2client::H2Event<'_>) + core::marker::Send + 'static) -> only_http::h2client::H2Upload
 pub fn only_http::h2client::H2Client::request(&self, only_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<only_http::client::ClientResponse, only_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn only_http::h2client::H2Client::send(&self, only_http::client::ClientRequest) -> only_http::client::ResponseFuture
+pub fn only_http::h2client::H2Client::websocket(&self, &str, &only_http::h2client::H2WsOptions, impl only_ws::session::WsHandler, impl core::ops::function::FnOnce(core::result::Result<only_ws::session::WsSender, only_http::client::ClientError>) + core::marker::Send + 'static)
+pub fn only_http::h2client::H2Client::websocket_blocking(&self, &str, &only_http::h2client::H2WsOptions, impl only_ws::session::WsHandler) -> core::result::Result<only_ws::session::WsSender, only_http::client::ClientError>
 impl core::clone::Clone for only_http::h2client::H2Client
 pub fn only_http::h2client::H2Client::clone(&self) -> Self
 impl core::fmt::Debug for only_http::h2client::H2Client
@@ -331,6 +334,26 @@ impl core::marker::Sync for only_http::h2client::H2Upload
 impl core::marker::Unpin for only_http::h2client::H2Upload
 impl !core::panic::unwind_safe::RefUnwindSafe for only_http::h2client::H2Upload
 impl !core::panic::unwind_safe::UnwindSafe for only_http::h2client::H2Upload
+#[non_exhaustive] pub struct only_http::h2client::H2WsOptions
+pub only_http::h2client::H2WsOptions::close_timeout: core::time::Duration
+pub only_http::h2client::H2WsOptions::config: only_ws::session::WsConfig
+pub only_http::h2client::H2WsOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_http::h2client::H2WsOptions::max_queued_bytes: usize
+pub only_http::h2client::H2WsOptions::origin: core::option::Option<alloc::string::String>
+pub only_http::h2client::H2WsOptions::pmd: only_ws::deflate::PmdOffer
+pub only_http::h2client::H2WsOptions::protocols: alloc::vec::Vec<alloc::string::String>
+pub only_http::h2client::H2WsOptions::timeout: core::time::Duration
+impl core::clone::Clone for only_http::h2client::H2WsOptions
+pub fn only_http::h2client::H2WsOptions::clone(&self) -> Self
+impl core::default::Default for only_http::h2client::H2WsOptions
+pub fn only_http::h2client::H2WsOptions::default() -> only_http::h2client::H2WsOptions
+impl core::fmt::Debug for only_http::h2client::H2WsOptions
+pub fn only_http::h2client::H2WsOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_http::h2client::H2WsOptions
+impl core::marker::Sync for only_http::h2client::H2WsOptions
+impl core::marker::Unpin for only_http::h2client::H2WsOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::h2client::H2WsOptions
+impl core::panic::unwind_safe::UnwindSafe for only_http::h2client::H2WsOptions
 pub mod only_http::message
 #[non_exhaustive] pub enum only_http::message::Method
 pub only_http::message::Method::Connect
@@ -829,6 +852,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_http::message::FileBody
 impl core::panic::unwind_safe::UnwindSafe for only_http::message::FileBody
 #[non_exhaustive] pub struct only_http::H2Config
 pub only_http::H2Config::conn_window: u32
+pub only_http::H2Config::enable_connect_protocol: bool
 pub only_http::H2Config::initial_window: u32
 pub only_http::H2Config::max_body_bytes: usize
 pub only_http::H2Config::max_concurrent_streams: u32

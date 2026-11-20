@@ -14,14 +14,23 @@
 //! Responses are bounded by [`H2Options`]: frames by the default `SETTINGS_MAX_FRAME_SIZE`
 //! (16 KiB), header lists by `max_header_list` (64 KiB, advertised), buffered bodies by
 //! `max_body_bytes` (64 MiB). Request timeouts are [`ClientRequest::timeout`].
+//!
+//! [`H2Client::websocket`] opens a WebSocket on a stream of the connection (RFC 8441 extended
+//! CONNECT), next to the connection's other requests.
 
 use std::{
     collections::{HashMap, VecDeque},
     io,
     net::SocketAddr,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
+
+use only_ws::{WsConfig, WsHandler, WsLink, WsSender, WsSession, deflate::PmdOffer};
 
 use crate::hpack::{Decoder, Encoder};
 use only::{
@@ -69,6 +78,221 @@ impl Default for H2Options {
             max_header_list: 64 << 10,
             max_body_bytes: 64 << 20,
         }
+    }
+}
+
+/// How [`H2Client::websocket`] opens a WebSocket over HTTP/2 (RFC 8441).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct H2WsOptions {
+    /// Message limits and compression; `permessage_deflate` decides whether it is offered.
+    pub config: WsConfig,
+    /// What the `permessage-deflate` offer asks for.
+    pub pmd: PmdOffer,
+    /// Subprotocols to offer, in order of preference; the server's choice is
+    /// [`WsSender::subprotocol`].
+    pub protocols: Vec<String>,
+    /// `Origin` header, for servers that check it.
+    pub origin: Option<String>,
+    /// Extra request header fields (e.g. `authorization`).
+    pub headers: Vec<(String, String)>,
+    /// After the close handshake, how long to wait for the server to end the stream before
+    /// resetting it from this side. Default 3 s.
+    pub close_timeout: Duration,
+    /// How long to wait for the server's SETTINGS and its answer; past it the stream is reset
+    /// (`CANCEL`) and the WebSocket fails with [`ClientError::Timeout`]. Default 10 s.
+    pub timeout: Duration,
+    /// Bytes the WebSocket may hold for the server (not yet written to the connection, because
+    /// the stream's or the connection's window is closed) before sends fail with
+    /// `Overloaded` (a message is taken whatever its size when nothing is queued):
+    /// [`WsSender::queued_bytes`] paces a producer. Default 8 MiB.
+    pub max_queued_bytes: usize,
+}
+
+impl Default for H2WsOptions {
+    fn default() -> H2WsOptions {
+        H2WsOptions {
+            config: WsConfig::default(),
+            pmd: PmdOffer::default(),
+            protocols: Vec::new(),
+            origin: None,
+            headers: Vec::new(),
+            close_timeout: Duration::from_secs(3),
+            timeout: Duration::from_secs(10),
+            max_queued_bytes: 8 << 20,
+        }
+    }
+}
+
+type WsDone = Box<dyn FnOnce(Result<WsSender, ClientError>) + Send>;
+
+/// The callback of a WebSocket being opened, taken once: by the answer or by the timeout.
+#[derive(Clone)]
+struct WsOnce(Arc<Mutex<Option<WsDone>>>);
+
+impl WsOnce {
+    fn take(&self) -> Option<WsDone> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    fn fail(&self, e: ClientError) {
+        if let Some(cb) = self.take() {
+            cb(Err(e));
+        }
+    }
+}
+
+/// A WebSocket being opened.
+struct WsOpen {
+    url: String,
+    /// Regular request fields (lowercase names).
+    fields: Vec<(String, String)>,
+    handler: Box<dyn WsHandler>,
+    cfg: WsConfig,
+    pmd: Option<PmdOffer>,
+    protocols: Vec<String>,
+    close_timeout: Duration,
+    max_queued: usize,
+    done: WsOnce,
+    /// The stream it got (0 until started), for the timeout to cancel.
+    sid: Arc<AtomicU32>,
+}
+
+/// The WebSocket on a stream. Dropped with its stream, whatever ended it: the opener then
+/// hears [`ClientError::Closed`], an open session `on_close` (1006 unless the close handshake
+/// ended it).
+struct CWs(WsState);
+
+enum WsState {
+    Opening(Box<WsOpen>),
+    Open(Box<WsSession>, Arc<LinkShared>),
+    Gone,
+}
+
+impl CWs {
+    fn fail(&mut self, e: ClientError) {
+        match std::mem::replace(&mut self.0, WsState::Gone) {
+            WsState::Opening(w) => w.done.fail(e),
+            WsState::Open(mut s, sh) => {
+                sh.closed.store(true, Ordering::Release);
+                s.on_transport_closed();
+            }
+            WsState::Gone => {}
+        }
+    }
+}
+
+impl Drop for CWs {
+    fn drop(&mut self) {
+        self.fail(ClientError::Closed);
+    }
+}
+
+/// What a WebSocket's sender queued for its stream, moved there on the I/O thread.
+struct LinkShared {
+    q: Mutex<LinkQ>,
+    /// Bytes accepted by `send` and not yet handed to the connection.
+    queued: AtomicUsize,
+    max: usize,
+    closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct LinkQ {
+    chunks: VecDeque<Vec<u8>>,
+    end: LinkEnd,
+    /// A pump is on its way to the I/O thread.
+    scheduled: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum LinkEnd {
+    #[default]
+    No,
+    /// END_STREAM after what is queued.
+    Graceful,
+    /// END_STREAM if the server ended its half, else `RST_STREAM CANCEL`.
+    Now,
+}
+
+/// The stream of a WebSocket over HTTP/2, client side.
+struct ClientLink {
+    conn: Conn<H2Conn>,
+    sid: u32,
+    sh: Arc<LinkShared>,
+}
+
+impl ClientLink {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LinkQ> {
+        self.sh.q.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Has the I/O thread move what is queued to the stream (once per batch).
+    fn kick(&self) -> only::Result<()> {
+        let (sid, sh) = (self.sid, self.sh.clone());
+        self.conn
+            .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.ws_pump(c, sid, &sh))
+    }
+
+    fn end(&self, end: LinkEnd) {
+        self.sh.closed.store(true, Ordering::Release);
+        let mut q = self.lock();
+        q.end = q.end.max(end);
+        if !std::mem::replace(&mut q.scheduled, true) {
+            drop(q);
+            if self.kick().is_err() {
+                self.lock().scheduled = false;
+            }
+        }
+    }
+}
+
+impl WsLink for ClientLink {
+    fn send(&self, data: Vec<u8>) -> only::Result<()> {
+        if self.sh.closed.load(Ordering::Acquire) || !self.conn.is_open() {
+            return Err(only::Error::Closed);
+        }
+        let n = data.len();
+        // One message is taken whatever its size when nothing is queued.
+        let queued = self.sh.queued.load(Ordering::Acquire);
+        if queued > 0 && queued + n > self.sh.max {
+            return Err(only::Error::Overloaded);
+        }
+        let mut q = self.lock();
+        q.chunks.push_back(data);
+        self.sh.queued.fetch_add(n, Ordering::AcqRel);
+        if std::mem::replace(&mut q.scheduled, true) {
+            return Ok(());
+        }
+        drop(q);
+        if let Err(e) = self.kick() {
+            // Not handed over: take the bytes back (sends of one sender are serialized).
+            let mut q = self.lock();
+            q.scheduled = false;
+            q.chunks.pop_back();
+            self.sh.queued.fetch_sub(n, Ordering::AcqRel);
+            return Err(match e {
+                only::Error::Overloaded => only::Error::Overloaded,
+                _ => only::Error::Closed,
+            });
+        }
+        Ok(())
+    }
+
+    fn close_after_send(&self) {
+        self.end(LinkEnd::Graceful);
+    }
+
+    fn close(&self) {
+        self.end(LinkEnd::Now);
+    }
+
+    fn is_open(&self) -> bool {
+        !self.sh.closed.load(Ordering::Acquire) && self.conn.is_open()
+    }
+
+    fn queued_bytes(&self) -> usize {
+        self.sh.queued.load(Ordering::Acquire)
     }
 }
 
@@ -238,14 +462,14 @@ impl H2Client {
         let timeout = req.timeout;
         let mut done: Callback = Box::new(done);
         // The stream the request got (0 until started), for the timeout to cancel.
-        let sid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sid = Arc::new(AtomicU32::new(0));
         if let Some(d) = timeout {
             let once = Arc::new(Mutex::new(Some(done)));
             let (o2, sid2, conn) = (once.clone(), sid.clone(), self.conn.clone());
             crate::timer::after(d, move || {
                 let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 let Some(cb) = cb else { return };
-                let id = sid2.load(std::sync::atomic::Ordering::Acquire);
+                let id = sid2.load(Ordering::Acquire);
                 if id != 0 {
                     let _ =
                         conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
@@ -269,7 +493,7 @@ impl H2Client {
                     let id = h.next_id;
                     h.start(c, req, cb);
                     if h.streams.contains_key(&id) {
-                        sid.store(id, std::sync::atomic::Ordering::Release);
+                        sid.store(id, Ordering::Release);
                     }
                 }
             },
@@ -330,6 +554,119 @@ impl H2Client {
         let s = shared.clone();
         self.request(req, move |r| s.complete(r));
         ResponseFuture { shared }
+    }
+
+    /// Opens a WebSocket at `url` (`http`, `https`, `ws` or `wss`; the scheme only names the
+    /// `:scheme` sent, the connection is this one) on a new stream of this connection (RFC 8441:
+    /// an extended CONNECT, whose stream then carries the WebSocket), served by `handler` as an
+    /// `only_ws::client` connection is: callbacks on the connection's I/O thread, [`WsSender`]
+    /// to send from any thread. It waits for the server's SETTINGS first. `done` gets the
+    /// sender once the server accepted (`on_open` has run), or why not:
+    /// [`ClientError::Status`] for a refusal, [`ClientError::Protocol`] when the server does not
+    /// allow extended CONNECT, [`ClientError::Timeout`] past [`H2WsOptions::timeout`].
+    ///
+    /// The stream's window paces what is sent; sends fail with `Overloaded` past
+    /// [`H2WsOptions::max_queued_bytes`] queued. A reset stream or a lost connection is a close
+    /// without handshake (1006).
+    pub fn websocket(
+        &self,
+        url: &str,
+        opts: &H2WsOptions,
+        handler: impl WsHandler,
+        done: impl FnOnce(Result<WsSender, ClientError>) + Send + 'static,
+    ) {
+        let url = match url.split_once("://") {
+            Some(("ws", rest)) => format!("http://{rest}"),
+            Some(("wss", rest)) => format!("https://{rest}"),
+            _ => url.to_owned(),
+        };
+        let mut fields = vec![("sec-websocket-version".to_owned(), "13".to_owned())];
+        if !opts.protocols.is_empty() {
+            fields.push(("sec-websocket-protocol".into(), opts.protocols.join(", ")));
+        }
+        let pmd = opts.config.permessage_deflate.then_some(opts.pmd);
+        if let Some(p) = &pmd {
+            fields.push(("sec-websocket-extensions".into(), p.header()));
+        }
+        if let Some(o) = &opts.origin {
+            fields.push(("origin".into(), o.clone()));
+        }
+        for (n, v) in &opts.headers {
+            let lower = n.to_ascii_lowercase();
+            let hop = matches!(
+                lower.as_str(),
+                "host"
+                    | "connection"
+                    | "keep-alive"
+                    | "proxy-connection"
+                    | "transfer-encoding"
+                    | "upgrade"
+                    | "te"
+                    | "content-length"
+            );
+            if !hop && !lower.starts_with("sec-websocket-") && lower != "origin" {
+                fields.push((lower, v.replace(['\r', '\n'], "")));
+            }
+        }
+        let once = WsOnce(Arc::new(Mutex::new(Some(Box::new(done) as WsDone))));
+        let sid = Arc::new(AtomicU32::new(0));
+        {
+            let (once, sid, conn) = (once.clone(), sid.clone(), self.conn.clone());
+            crate::timer::after(opts.timeout, move || {
+                let Some(cb) = once.take() else { return };
+                let id = sid.load(Ordering::Acquire);
+                if id != 0 {
+                    let _ =
+                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
+                }
+                cb(Err(ClientError::Timeout));
+            });
+        }
+        let open = Box::new(WsOpen {
+            url,
+            fields,
+            handler: Box::new(handler),
+            cfg: opts.config.clone(),
+            pmd,
+            protocols: opts.protocols.clone(),
+            close_timeout: opts.close_timeout,
+            max_queued: opts.max_queued_bytes,
+            done: once,
+            sid,
+        });
+        let slot = Arc::new(Mutex::new(Some(open)));
+        let s2 = slot.clone();
+        let queued = self.conn.spawn_blocking(
+            || (),
+            move |h: &mut H2Conn, c, ()| {
+                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(w) = taken {
+                    h.ws_start(c, w);
+                }
+            },
+        );
+        if queued.is_err() {
+            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(w) = taken {
+                w.done.fail(ClientError::Closed);
+            }
+        }
+    }
+
+    /// [`websocket`](Self::websocket), waiting for the outcome (at most
+    /// [`H2WsOptions::timeout`]).
+    pub fn websocket_blocking(
+        &self,
+        url: &str,
+        opts: &H2WsOptions,
+        handler: impl WsHandler,
+    ) -> Result<WsSender, ClientError> {
+        let (tx, rx) = mpsc::channel();
+        self.websocket(url, opts, handler, move |r| {
+            let _ = tx.send(r);
+        });
+        rx.recv_timeout(opts.timeout + Duration::from_secs(1))
+            .map_err(|_| ClientError::Timeout)?
     }
 
     /// Whether the connection can still take requests.
@@ -417,6 +754,8 @@ struct CStream {
     /// Pushed responses still outstanding for this (parent) stream.
     pending_pushes: u32,
     pushed: Vec<(String, ClientResponse)>,
+    /// A WebSocket (extended CONNECT) carried by this stream.
+    ws: Option<Box<CWs>>,
 }
 
 /// The connection's handler.
@@ -435,6 +774,12 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
+    /// The server's first SETTINGS arrived, and whether it allows extended CONNECT.
+    got_settings: bool,
+    connect_protocol: bool,
+    /// WebSockets waiting for the server's SETTINGS (RFC 8441 §3).
+    #[allow(clippy::vec_box)] // each moves on into its stream as it is
+    ws_wait: Vec<Box<WsOpen>>,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -466,6 +811,9 @@ impl H2Conn {
             cont: None,
             goaway: false,
             dead: false,
+            got_settings: false,
+            connect_protocol: false,
+            ws_wait: Vec::new(),
         }
     }
 
@@ -579,6 +927,7 @@ impl H2Conn {
             parent: None,
             pending_pushes: 0,
             pushed: Vec::new(),
+            ws: None,
         };
         st.upload_done = st.upload.is_empty() && !is_stream;
         self.streams.insert(sid, st);
@@ -587,6 +936,219 @@ impl H2Conn {
         if let Some(up) = up {
             *up.sid.lock().unwrap_or_else(|p| p.into_inner()) = Some(sid);
             self.pump(c, &up);
+        }
+    }
+
+    /// Starts a WebSocket's extended CONNECT, once the server's SETTINGS allow it.
+    fn ws_start(&mut self, c: &Conn<Self>, w: Box<WsOpen>) {
+        if self.dead || self.goaway {
+            return w.done.fail(ClientError::Closed);
+        }
+        if !self.got_settings {
+            self.ws_wait.push(w);
+            return;
+        }
+        if !self.connect_protocol {
+            return w.done.fail(ClientError::Protocol(
+                "server does not allow extended CONNECT",
+            ));
+        }
+        if w.done.0.lock().unwrap_or_else(|p| p.into_inner()).is_none() {
+            return; // timed out while waiting for the SETTINGS
+        }
+        let pu = match parse_url(&w.url) {
+            Ok(p) => p,
+            Err(e) => return w.done.fail(e),
+        };
+        let sid = self.next_id;
+        self.next_id += 2;
+        let scheme: &[u8] = if pu.key.tls { b"https" } else { b"http" };
+        let mut list: Vec<(&[u8], &[u8])> = vec![
+            (b":method", b"CONNECT"),
+            (b":protocol", b"websocket"),
+            (b":scheme", scheme),
+            (b":authority", pu.host_header.as_bytes()),
+            (b":path", pu.target.as_bytes()),
+        ];
+        for (n, v) in &w.fields {
+            list.push((n.as_bytes(), v.as_bytes()));
+        }
+        if !w.fields.iter().any(|(n, _)| n == "user-agent") {
+            list.push((b"user-agent", b"only-http"));
+        }
+        let block = self.enc.encode(list);
+        let mut out = Vec::new();
+        self.header_block(&mut out, ty::HEADERS, sid, &[], &block, false);
+        w.sid.store(sid, Ordering::Release);
+        self.streams.insert(
+            sid,
+            CStream {
+                url: String::new(),
+                cb: None,
+                status: 0,
+                headers: Headers::new(),
+                body: Vec::new(),
+                trailers: Headers::new(),
+                got_head: false,
+                ended: false,
+                send_window: self.remote_initial,
+                recv_window: i64::from(self.opts.initial_window),
+                upload: VecDeque::new(),
+                upload_done: false,
+                upload_open: true,
+                events: None,
+                head_only: false,
+                pushed_path: None,
+                parent: None,
+                pending_pushes: 0,
+                pushed: Vec::new(),
+                ws: Some(Box::new(CWs(WsState::Opening(w)))),
+            },
+        );
+        let _ = c.send_owned(out);
+    }
+
+    /// The server answered a WebSocket's extended CONNECT: check the answer, start the session.
+    fn ws_answer(&mut self, c: &Conn<Self>, sid: u32, status: u16, hs: &Headers) {
+        let Some(st) = self.streams.get_mut(&sid) else {
+            return;
+        };
+        let Some(WsState::Opening(w)) = st
+            .ws
+            .as_deref_mut()
+            .map(|w| std::mem::replace(&mut w.0, WsState::Gone))
+        else {
+            return;
+        };
+        let checked = (|| {
+            if !(200..300).contains(&status) {
+                return Err(ClientError::Status(status));
+            }
+            let mut protos = hs.get_all("sec-websocket-protocol");
+            let protocol = match (protos.next(), protos.next()) {
+                (None, _) => None,
+                (Some(p), None) if w.protocols.iter().any(|o| o == p) => Some(p.to_owned()),
+                _ => {
+                    return Err(ClientError::Protocol(
+                        "server selected a subprotocol that was not offered",
+                    ));
+                }
+            };
+            let pmd = match &w.pmd {
+                Some(offer) => offer
+                    .accept_response(hs.get_all("sec-websocket-extensions"))
+                    .map_err(ClientError::Protocol)?,
+                None => {
+                    if hs
+                        .get_all("sec-websocket-extensions")
+                        .any(|v| !v.is_empty())
+                    {
+                        return Err(ClientError::Protocol(
+                            "server accepted an extension that was not offered",
+                        ));
+                    }
+                    None
+                }
+            };
+            Ok((protocol, pmd))
+        })();
+        let done = w.done.take();
+        let (protocol, pmd, cb) = match (checked, done) {
+            (Ok((protocol, pmd)), Some(cb)) => (protocol, pmd, cb),
+            (Err(e), Some(cb)) => {
+                self.cancel(c, sid);
+                return cb(Err(e));
+            }
+            // Timed out meanwhile: nobody waits for it.
+            (_, None) => return self.cancel(c, sid),
+        };
+        let WsOpen {
+            handler,
+            cfg,
+            close_timeout,
+            max_queued,
+            ..
+        } = *w;
+        let sh = Arc::new(LinkShared {
+            q: Mutex::new(LinkQ::default()),
+            queued: AtomicUsize::new(0),
+            max: max_queued,
+            closed: AtomicBool::new(false),
+        });
+        let link: Arc<dyn WsLink> = Arc::new(ClientLink {
+            conn: c.clone(),
+            sid,
+            sh: sh.clone(),
+        });
+        let mut ws = WsSession::client_with_link(link, &cfg, pmd, handler, protocol, close_timeout);
+        let sender = ws.sender().clone();
+        ws.open();
+        if let Some(st) = self.streams.get_mut(&sid) {
+            st.ws = Some(Box::new(CWs(WsState::Open(Box::new(ws), sh))));
+        }
+        cb(Ok(sender));
+    }
+
+    /// The server ended its half of a WebSocket's stream: the session's transport is closed,
+    /// and our half ends after what is queued.
+    fn ws_peer_ended(&mut self, c: &Conn<Self>, sid: u32) {
+        let Some(st) = self.streams.get_mut(&sid) else {
+            return;
+        };
+        st.ended = true;
+        let sh = match st.ws.as_deref_mut() {
+            Some(CWs(WsState::Open(s, sh))) => {
+                s.on_transport_closed();
+                sh.clone()
+            }
+            _ => {
+                // Ended before it opened.
+                return self.cancel(c, sid);
+            }
+        };
+        self.ws_pump(c, sid, &sh);
+    }
+
+    /// Moves what a WebSocket's sender queued into its stream, sends what the windows allow,
+    /// and ends or resets the stream as asked.
+    fn ws_pump(&mut self, c: &Conn<Self>, sid: u32, sh: &Arc<LinkShared>) {
+        let (chunks, end) = {
+            let mut q = sh.q.lock().unwrap_or_else(|p| p.into_inner());
+            q.scheduled = false;
+            (std::mem::take(&mut q.chunks), q.end)
+        };
+        let Some(st) = self.streams.get_mut(&sid) else {
+            sh.queued.store(0, Ordering::Release);
+            return;
+        };
+        for ch in chunks {
+            st.upload.extend(ch);
+        }
+        match end {
+            LinkEnd::No => {}
+            LinkEnd::Graceful => st.upload_open = false,
+            LinkEnd::Now if st.ended => st.upload_open = false,
+            LinkEnd::Now => {
+                sh.queued.store(0, Ordering::Release);
+                return self.cancel(c, sid);
+            }
+        }
+        let mut out = Vec::new();
+        self.send_upload(sid, &mut out);
+        if !out.is_empty() {
+            let _ = c.send_owned(out);
+        }
+        self.ws_finish(sid);
+    }
+
+    /// A WebSocket's stream whose halves have both ended is done.
+    fn ws_finish(&mut self, sid: u32) {
+        if self
+            .streams
+            .get(&sid)
+            .is_some_and(|s| s.ws.is_some() && s.ended && s.upload_done)
+        {
+            self.streams.remove(&sid);
         }
     }
 
@@ -677,6 +1239,9 @@ impl H2Conn {
             }
             let n = st.upload.len().min(allow as usize);
             let data: Vec<u8> = st.upload.drain(..n).collect();
+            if let Some(CWs(WsState::Open(_, sh))) = st.ws.as_deref() {
+                sh.queued.fetch_sub(n, Ordering::AcqRel);
+            }
             let last = st.upload.is_empty() && !st.upload_open;
             st.send_window -= n as i64;
             self.conn_send -= n as i64;
@@ -704,11 +1269,14 @@ impl H2Conn {
             .map(|(i, _)| *i)
             .collect();
         let mut out = Vec::new();
-        for id in ids {
+        for &id in &ids {
             self.send_upload(id, &mut out);
         }
         if !out.is_empty() {
             let _ = c.send_owned(out);
+        }
+        for id in ids {
+            self.ws_finish(id);
         }
     }
 
@@ -726,7 +1294,12 @@ impl H2Conn {
                 cb(Err(msg(&e)));
             } else if let Some(ev) = s.events.as_mut() {
                 ev(H2Event::Error(msg(&e)));
+            } else if let Some(w) = s.ws.as_deref_mut() {
+                w.fail(msg(&e));
             }
+        }
+        for w in std::mem::take(&mut self.ws_wait) {
+            w.done.fail(msg(&e));
         }
     }
 
@@ -750,6 +1323,8 @@ impl H2Conn {
             cb(Err(e));
         } else if let Some(ev) = s.events.as_mut() {
             ev(H2Event::Error(e));
+        } else if let Some(w) = s.ws.as_deref_mut() {
+            w.fail(e);
         }
         if let Some(parent) = s.parent {
             if let Some(pp) = self.streams.get_mut(&parent) {
@@ -864,6 +1439,7 @@ impl H2Conn {
                     parent: Some(sid),
                     pending_pushes: 0,
                     pushed: Vec::new(),
+                    ws: None,
                 },
             );
             return;
@@ -892,6 +1468,17 @@ impl H2Conn {
             } else if n.first() != Some(&b':') {
                 hs.append(String::from_utf8_lossy(n), v);
             }
+        }
+        if st.ws.is_some() {
+            if !st.got_head && !(100..200).contains(&status) {
+                st.got_head = true;
+                self.ws_answer(c, sid, status, &hs);
+            }
+            // Trailers end the server's half like END_STREAM on DATA.
+            if end_stream {
+                self.ws_peer_ended(c, sid);
+            }
+            return;
         }
         if !st.got_head {
             if (100..200).contains(&status) {
@@ -950,12 +1537,19 @@ impl H2Conn {
                         5 if (DEFAULT_FRAME..(1 << 24)).contains(&v) => {
                             self.remote_max_frame = v as usize;
                         }
+                        // SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 8441 §3).
+                        8 => self.connect_protocol = v == 1,
                         _ => {}
                     }
                 }
                 frame(&mut out, ty::SETTINGS, flag::ACK, 0, &[]);
                 let _ = c.send_owned(out);
                 self.flush_uploads(c);
+                if !std::mem::replace(&mut self.got_settings, true) {
+                    for w in std::mem::take(&mut self.ws_wait) {
+                        self.ws_start(c, w);
+                    }
+                }
             }
             ty::PING => {
                 if flags & flag::ACK == 0 && p.len() == 8 {
@@ -1007,12 +1601,15 @@ impl H2Conn {
                             "stream reset by the server",
                         )));
                     }
+                    let why = if code == err::REFUSED_STREAM {
+                        "stream refused"
+                    } else {
+                        "stream reset by the server"
+                    };
                     if let Some(cb) = s.cb.take() {
-                        cb(Err(ClientError::Protocol(if code == err::REFUSED_STREAM {
-                            "stream refused"
-                        } else {
-                            "stream reset by the server"
-                        })));
+                        cb(Err(ClientError::Protocol(why)));
+                    } else if let Some(w) = s.ws.as_deref_mut() {
+                        w.fail(ClientError::Protocol(why));
                     }
                     if let Some(parent) = s.parent {
                         if let Some(pp) = self.streams.get_mut(&parent) {
@@ -1033,6 +1630,25 @@ impl H2Conn {
                 self.conn_recv -= i64::from(total);
                 window_update(&mut out, 0, total);
                 self.conn_recv += i64::from(total);
+                let end_stream = flags & flag::END_STREAM != 0;
+                if let Some(st) = self.streams.get_mut(&sid).filter(|s| s.ws.is_some()) {
+                    // A WebSocket's bytes: consumed now, so the window is given back now.
+                    if !end_stream {
+                        window_update(&mut out, sid, total);
+                    }
+                    if let (Some(CWs(WsState::Open(ws, _))), true) =
+                        (st.ws.as_deref_mut(), start <= end)
+                    {
+                        ws.on_data(&p[start..end]);
+                    }
+                    if !out.is_empty() {
+                        let _ = c.send_owned(out);
+                    }
+                    if end_stream {
+                        self.ws_peer_ended(c, sid);
+                    }
+                    return;
+                }
                 let max_body = self.opts.max_body_bytes;
                 let mut too_large = false;
                 if let Some(st) = self.streams.get_mut(&sid) {

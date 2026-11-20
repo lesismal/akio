@@ -659,25 +659,24 @@ impl Context {
     /// answering a bad handshake itself (400, 403 or 426), in which case the connection stays
     /// HTTP. Do not pipeline requests behind an upgrade request.
     ///
-    /// HTTP/3 (RFC 9220): the request is an extended CONNECT with `:protocol` `websocket`
-    /// (which [`Router`](crate::Router) routes to the path's GET route); it is answered `200` and
-    /// its stream carries the WebSocket connection, with the same checks (version 13, origin),
-    /// subprotocol selection and `permessage-deflate`. HTTP/2 is not supported (400).
+    /// HTTP/2 (RFC 8441) and HTTP/3 (RFC 9220): the request is an extended CONNECT with
+    /// `:protocol` `websocket` (which [`Router`](crate::Router) routes to the path's GET route);
+    /// it is answered `200` and its stream carries the WebSocket connection, with the same
+    /// checks (version 13, origin), subprotocol selection and `permessage-deflate`. On HTTP/2
+    /// the stream's flow control paces the peer, and sends past
+    /// [`H2Config::max_pending_bytes`](crate::H2Config::max_pending_bytes) queued fail with
+    /// `Overloaded`; a reset stream is a close without handshake (1006).
     pub fn upgrade_websocket(&mut self, handler: impl WsHandler, opts: &WsOptions) -> bool {
         if self.responder.is_none() {
             return false;
         }
-        if matches!(self.responder, Some(Out::Ext(_))) {
-            return self.upgrade_websocket_ext(Box::new(handler), opts);
+        if matches!(self.responder, Some(Out::Ext(_) | Out::H2(_))) {
+            return self.upgrade_websocket_connect(Box::new(handler), opts);
         }
         let r = self.req.share();
         let h = &r.headers;
         if r.method != Method::Get || r.version != Version::Http11 {
             self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
-            return false;
-        }
-        if matches!(self.responder, Some(Out::H2(_))) {
-            self.text(400, "WebSocket over HTTP/2 is not supported");
             return false;
         }
         if !h.has_token("connection", "upgrade") || !h.has_token("upgrade", "websocket") {
@@ -733,15 +732,20 @@ impl Context {
         true
     }
 
-    /// [`upgrade_websocket`](Self::upgrade_websocket) on a transport outside this crate
-    /// (HTTP/3): an extended CONNECT answered `200` with the head only, the stream left open.
-    fn upgrade_websocket_ext(&mut self, handler: Box<dyn WsHandler>, opts: &WsOptions) -> bool {
+    /// [`upgrade_websocket`](Self::upgrade_websocket) on HTTP/2 or a transport outside this
+    /// crate (HTTP/3): an extended CONNECT answered `200` with the head only, the stream left
+    /// open.
+    fn upgrade_websocket_connect(&mut self, handler: Box<dyn WsHandler>, opts: &WsOptions) -> bool {
         let r = self.req.share();
         let h = &r.headers;
         if r.method != Method::Connect || r.protocol.as_deref() != Some("websocket") {
             self.text(
                 400,
-                "WebSocket over HTTP/3 needs an extended CONNECT (RFC 9220)",
+                if matches!(self.responder, Some(Out::H2(_))) {
+                    "WebSocket over HTTP/2 needs an extended CONNECT (RFC 8441)"
+                } else {
+                    "WebSocket over HTTP/3 needs an extended CONNECT (RFC 9220)"
+                },
             );
             return false;
         }
@@ -775,23 +779,34 @@ impl Context {
         }
         // The head goes out as a streamed response's (no content length, the stream stays
         // open); the transport carries the WebSocket bytes on it from now on.
-        let Some(Out::Ext(out)) = self.responder.take() else {
-            return false;
-        };
         let mut resp = Response::new(200);
         resp.headers = headers;
         resp.streaming = true;
         self.fin.apply(&mut resp, &r);
         self.status = Some(200);
-        let Some(body) = out.start_stream(resp) else {
-            return false;
+        let ext = match self.responder.take() {
+            Some(Out::Ext(out)) => match out.start_stream(resp) {
+                Some(body) => Some(body),
+                None => return false,
+            },
+            // HTTP/2: the session takes the stream over once the handler returns.
+            Some(Out::H2(out)) => {
+                if !out.start_tunnel(&resp) {
+                    return false;
+                }
+                None
+            }
+            other => {
+                self.responder = other;
+                return false;
+            }
         };
         self.detached = true;
         self.upgrade = Some(PendingUpgrade {
             handler,
             cfg: opts.config.clone(),
             pmd,
-            ext: Some(body),
+            ext,
         });
         true
     }

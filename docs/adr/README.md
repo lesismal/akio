@@ -61,6 +61,7 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-055: Several components per ICE stream in only-ice](055-ice-components.md) (accepted 2026-11-20)
 - [ADR-058: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in only-webrtc](058-webrtc-rtcp-components-xr-ulpfec-levels.md) (accepted 2026-11-20)
 - [ADR-059: Cookies, Happy Eyeballs, a DNS cache and TLS to proxies in the clients; SOCKS fragments and TLS](059-client-cookies-happy-eyeballs-proxy-tls.md) (accepted 2026-11-20)
+- [ADR-060: WebSocket over HTTP/2 (RFC 8441)](060-h2-websocket.md) (accepted 2026-11-20)
 - [ADR-061: A complete QPACK encoder and streamed responses on the HTTP/3 client](061-qpack-encoder-h3-streamed-responses.md) (accepted 2026-11-20)
 - [ADR-062: Asynchronous anti-replay store, rotating ticket keys, status_request_v2 and BoGo for only-tls](062-tls-async-anti-replay-ticket-rotation-bogo.md) (accepted 2026-11-20)
 - [ADR-063: Cross-process steering through bpffs, listener migration on reload, and AF_XDP](063-shared-steering-migration-af-xdp.md) (accepted 2026-11-21)

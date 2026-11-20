@@ -125,6 +125,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "h2_websocket"
+path = "fuzz_targets/h2_websocket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ws_frames"
 path = "fuzz_targets/ws_frames.rs"
 test = false

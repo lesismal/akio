@@ -197,6 +197,9 @@ pub enum ClientError {
     TooManyRedirects,
     /// The response passed a size limit of [`ClientOptions`] (which one).
     TooLarge(&'static str),
+    /// The server refused a WebSocket ([`H2Client::websocket`](crate::h2client::H2Client::websocket))
+    /// with this status.
+    Status(u16),
 }
 
 impl std::fmt::Display for ClientError {
@@ -209,6 +212,7 @@ impl std::fmt::Display for ClientError {
             ClientError::Timeout => f.write_str("request timed out"),
             ClientError::TooManyRedirects => f.write_str("too many redirects"),
             ClientError::TooLarge(what) => write!(f, "too large: {what}"),
+            ClientError::Status(s) => write!(f, "WebSocket refused with status {s}"),
         }
     }
 }

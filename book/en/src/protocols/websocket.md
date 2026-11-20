@@ -44,8 +44,10 @@ different threads never interleave):
 `Upgrade`/`Connection` tokens, version 13, key, origin policy), answers `101 Switching
 Protocols` and switches the connection; `on_open` runs right away. On a bad handshake it answers
 400, 403 or 426 itself, returns `false`, and the connection stays HTTP. Do not pipeline requests
-behind an upgrade request. On HTTP/3 the same call accepts an extended CONNECT (RFC 9220) and
-answers `200`; see [WebSocket over HTTP/3](quic-h3.md#websocket-over-http3).
+behind an upgrade request. On HTTP/2 (RFC 8441) and HTTP/3 (RFC 9220) the same call accepts an
+extended CONNECT and answers `200`; the request's stream then carries the WebSocket, next to
+the connection's other requests. See [WebSocket over HTTP/2](#websocket-over-http2) and
+[WebSocket over HTTP/3](quic-h3.md#websocket-over-http3).
 
 `WsOptions`:
 
@@ -97,9 +99,29 @@ authentication, rate limiting, logging) applies to the handshake request.
 Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, and see
 `crates/only-http/examples/ws-chat.rs` for a browser chat.
 
+## WebSocket over HTTP/2
+
+The HTTP/2 server advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL`, so browsers that hold an h2
+connection to the origin open their WebSockets on it. The route is the same `.get("/ws", ...)`:
+`Router` answers an extended CONNECT for `websocket` with the path's GET route, and
+`ctx.req().protocol` is `Some("websocket")`. `H2Config::enable_connect_protocol = false` turns
+it off.
+
+`H2Client::websocket(url, &H2WsOptions, handler, done)` (or `websocket_blocking`) opens one on an
+`H2Client` connection (see [HTTP clients](http-clients.md#http2-h2clienth2client)); `done` gets
+the `WsSender`, or `ClientError::Status` when the server refused. `H2WsOptions` has the fields of
+`DialOptions` that apply (`config`, `pmd`, `protocols`, `origin`, `headers`, `close_timeout`),
+`timeout` (10 s) and `max_queued_bytes` (8 MiB).
+
+Each WebSocket is one stream: the stream's and the connection's windows pace it. Sends fail with
+`Overloaded` once `H2Config::max_pending_bytes` (server) or `H2WsOptions::max_queued_bytes`
+(client) are queued for a peer that does not open its window; `WsSender::queued_bytes` tells a
+producer when to wait. A close frame ends our half of the stream, `RST_STREAM` or a lost
+connection reach `on_close` as 1006, and graceful shutdown closes with 1001.
+
 ## Not done
 
 Client: cookies across redirects (set a `Cookie` header from `only_http::cookie::CookieJar::header`
-yourself; `https://` proxies and Happy Eyeballs are done, ADR-059). Server: WebSocket over HTTP/2 (RFC 8441,
-answered 400); WebSocket over HTTP/3 (RFC 9220) is done, see
-[QUIC and HTTP/3](quic-h3.md#websocket-over-http3).
+yourself; `https://` proxies and Happy Eyeballs are done, ADR-059); `client::dial` stays HTTP/1.1
+(WebSocket over HTTP/2 needs an `H2Client`). WebSocket over HTTP/2 (RFC 8441, above) and over
+HTTP/3 (RFC 9220, see [QUIC and HTTP/3](quic-h3.md#websocket-over-http3)) are done.

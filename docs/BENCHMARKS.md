@@ -1720,6 +1720,23 @@ direction carries full-size frames. Connection churn gains least: most of its co
 kernel clients' own connect and close. This measures copy mode; zero-copy on a NIC that supports
 it is not measured (the host's NICs are not used).
 
+### WebSocket over HTTP/2 (ADR-060, h2c A/B)
+
+Measured 2026-11-21 on gpu51. Question: does accepting extended CONNECT change the h2c request
+path? The changes there are a `:protocol` check in the header decoder, a `tunnel` flag on the
+stream, and the parked context as a two-case enum. `base` is `main` at `b22519ae`, `new` the
+branch (`http-bench`, epoll); both built in one session and run interleaved under `quiet.sh`,
+7 rounds (5 s runs, a fresh server per run; server on CPUs 0–3 with 4 threads, `h2load` with
+8 threads on CPUs 4–7 and 12–15). `±` is half the min–max spread of the rounds.
+
+| Load | base median | new median | new / base (medians) | per-round ratio median |
+|---|---:|---:|---:|---:|
+| h2c 64 conns × 16 streams | 3,607,629 (±22%) | 3,801,917 (±36%) | 1.054 | 0.991 |
+| h2c 16 conns × 128 streams | 5,373,158 (±10%) | 5,022,618 (±11%) | 0.935 | 1.004 |
+
+**Answer: no measurable change.** h2c rounds on this host spread far wider than the difference: both directions appear in each row (h2c 64 × 16
+per-round ratios 0.54–1.26, 16 × 128 0.82–1.14), and the per-round ratio medians are within 1%.
+
 ## Not measured
 
 - **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.
