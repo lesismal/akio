@@ -22,6 +22,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_ws::client::WsClientError
 pub only_ws::client::DialOptions::close_timeout: core::time::Duration
 pub only_ws::client::DialOptions::config: only_ws::WsConfig
 pub only_ws::client::DialOptions::handshake_timeout: core::time::Duration
+pub only_ws::client::DialOptions::happy_eyeballs: only::dns::HappyEyeballs
 pub only_ws::client::DialOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub only_ws::client::DialOptions::max_redirects: u32
 pub only_ws::client::DialOptions::origin: core::option::Option<alloc::string::String>
