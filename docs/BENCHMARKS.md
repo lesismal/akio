@@ -1364,38 +1364,64 @@ zstd:
 
 brotli:
 
-| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
+| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (aca9e988) / C | C / only |
 |---|---:|---|---|---|---:|
-| Silesia (212 MB) | 1 | 68,088,477 / 73,455,775 | 117 (111) / 359 | 396 (258) / 584 | 1.47 |
-| Silesia (212 MB) | 4 | 63,972,366 / 64,132,974 | 78 (23) / 133 | 492 (326) / 719 | 1.46 |
-| Silesia (212 MB) | 5 | 58,932,318 / 59,510,923 | 46 (19) / 89 | 467 (333) / 716 | 1.54 |
-| Silesia (212 MB) | 6 | 57,954,494 / 58,432,310 | 36 (14) / 77 | 479 (343) / 740 | 1.54 |
-| Silesia, first 20 MB | 11 | 5,599,940 / 5,346,712 | 0.7 (0.7) / 1.0 | 472 (383) / 531 | 1.13 |
-| JSON (657 KB) | 1 | 62,442 / 67,165 | 384 (383) / 1,048 | 1,328 (895) / 1,883 | 1.42 |
-| JSON (657 KB) | 4 | 54,756 / 54,633 | 228 (193) / 324 | 1,684 (1,166) / 2,476 | 1.47 |
-| JSON (657 KB) | 5 | 48,018 / 48,884 | 164 (127) / 203 | 1,771 (1,271) / 2,759 | 1.56 |
-| JSON (657 KB) | 6 | 47,205 / 47,678 | 138 (110) / 184 | 1,827 (1,310) / 2,920 | 1.60 |
-| JSON (657 KB) | 11 | 43,630 / 41,742 | 0.6 (0.6) / 1.3 | 1,673 (1,298) / 2,776 | 1.66 |
-| HTML (45 KB) | 1 | 7,976 / 8,716 | 249 (241) / 811 | 912 (593) / 1,514 | 1.66 |
-| HTML (45 KB) | 4 | 7,499 / 7,573 | 179 (136) / 274 | 1,010 (730) / 1,676 | 1.66 |
-| HTML (45 KB) | 5 | 7,069 / 6,890 | 71 (38) / 150 | 1,003 (788) / 1,732 | 1.73 |
-| HTML (45 KB) | 6 | 7,021 / 6,826 | 68 (37) / 136 | 1,016 (798) / 1,747 | 1.72 |
-| HTML (45 KB) | 11 | 6,739 / 6,048 | 2.0 (1.9) / 1.6 | 897 (755) / 1,410 | 1.57 |
-| JS (92 KB) | 1 | 23,344 / 25,616 | 138 (138) / 555 | 628 (342) / 1,059 | 1.69 |
-| JS (92 KB) | 4 | 21,890 / 22,546 | 97 (80) / 134 | 740 (539) / 1,242 | 1.68 |
-| JS (92 KB) | 5 | 20,918 / 20,789 | 58 (40) / 91 | 726 (564) / 1,252 | 1.72 |
-| JS (92 KB) | 6 | 20,793 / 20,585 | 54 (37) / 82 | 737 (571) / 1,269 | 1.72 |
-| JS (92 KB) | 11 | 19,936 / 19,077 | 3.0 (3.0) / 1.6 | 669 (556) / 1,058 | 1.58 |
-| cert chain (2.7 KB) | 1 | 1,721 / 1,868 | 55 (48) / 244 | 273 (166) / 444 | 1.63 |
-| cert chain (2.7 KB) | 4 | 1,717 / 1,759 | 52 (46) / 86 | 304 (176) / 471 | 1.55 |
-| cert chain (2.7 KB) | 5 | 1,734 / 1,694 | 51 (46) / 73 | 300 (182) / 468 | 1.56 |
-| cert chain (2.7 KB) | 6 | 1,734 / 1,694 | 48 (46) / 72 | 301 (182) / 467 | 1.55 |
-| cert chain (2.7 KB) | 11 | 1,693 / 1,615 | 6.3 (6.5) / 1.1 | 297 (185) / 457 | 1.54 |
-| cert chain (4.1 KB) | 1 | 2,598 / 2,736 | 69 (55) / 288 | 326 (185) / 495 | 1.52 |
-| cert chain (4.1 KB) | 4 | 2,563 / 2,611 | 65 (52) / 102 | 364 (203) / 524 | 1.44 |
-| cert chain (4.1 KB) | 5 | 2,593 / 2,549 | 65 (1.6) / 92 | 374 (204) / 538 | 1.44 |
-| cert chain (4.1 KB) | 6 | 2,593 / 2,549 | 63 (1.6) / 89 | 374 (208) / 539 | 1.44 |
-| cert chain (4.1 KB) | 11 | 2,515 / 2,430 | 2.2 (0.7) / 1.2 | 376 (203) / 560 | 1.49 |
+| Silesia (212 MB) | 1 | 68,088,477 / 73,455,775 | 117 (111) / 359 | 469 (397) / 585 | 1.25 |
+| Silesia (212 MB) | 4 | 63,972,366 / 64,132,974 | 78 (23) / 133 | 565 (489) / 720 | 1.27 |
+| Silesia (212 MB) | 5 | 58,932,318 / 59,510,923 | 46 (19) / 89 | 545 (468) / 718 | 1.32 |
+| Silesia (212 MB) | 6 | 57,954,494 / 58,432,310 | 36 (14) / 77 | 564 (478) / 744 | 1.32 |
+| Silesia, first 20 MB | 11 | 5,599,940 / 5,346,712 | 0.7 (0.7) / 1.0 | 513 (473) / 535 | 1.04 |
+| JSON (657 KB) | 1 | 62,442 / 67,165 | 384 (383) / 1,048 | 1,744 (1,318) / 1,877 | 1.08 |
+| JSON (657 KB) | 4 | 54,756 / 54,633 | 228 (193) / 324 | 2,186 (1,649) / 2,448 | 1.12 |
+| JSON (657 KB) | 5 | 48,018 / 48,884 | 164 (127) / 203 | 2,365 (1,747) / 2,703 | 1.14 |
+| JSON (657 KB) | 6 | 47,205 / 47,678 | 138 (110) / 184 | 2,467 (1,788) / 2,877 | 1.17 |
+| JSON (657 KB) | 11 | 43,630 / 41,742 | 0.6 (0.6) / 1.3 | 2,296 (1,690) / 2,750 | 1.20 |
+| HTML (45 KB) | 1 | 7,976 / 8,716 | 249 (241) / 811 | 1,209 (915) / 1,514 | 1.25 |
+| HTML (45 KB) | 4 | 7,499 / 7,573 | 179 (136) / 274 | 1,297 (1,011) / 1,679 | 1.30 |
+| HTML (45 KB) | 5 | 7,069 / 6,890 | 71 (38) / 150 | 1,300 (1,002) / 1,734 | 1.33 |
+| HTML (45 KB) | 6 | 7,021 / 6,826 | 68 (37) / 136 | 1,306 (1,011) / 1,745 | 1.34 |
+| HTML (45 KB) | 11 | 6,739 / 6,048 | 2.0 (1.9) / 1.6 | 1,126 (896) / 1,436 | 1.27 |
+| JS (92 KB) | 1 | 23,344 / 25,616 | 138 (138) / 555 | 830 (628) / 1,054 | 1.27 |
+| JS (92 KB) | 4 | 21,890 / 22,546 | 97 (80) / 134 | 954 (738) / 1,234 | 1.29 |
+| JS (92 KB) | 5 | 20,918 / 20,789 | 58 (40) / 91 | 946 (724) / 1,247 | 1.32 |
+| JS (92 KB) | 6 | 20,793 / 20,585 | 54 (37) / 82 | 962 (733) / 1,264 | 1.31 |
+| JS (92 KB) | 11 | 19,936 / 19,077 | 3.0 (3.0) / 1.6 | 845 (666) / 1,062 | 1.26 |
+| cert chain (2.7 KB) | 1 | 1,721 / 1,868 | 55 (48) / 244 | 356 (279) / 455 | 1.28 |
+| cert chain (2.7 KB) | 4 | 1,717 / 1,759 | 52 (46) / 86 | 371 (304) / 469 | 1.26 |
+| cert chain (2.7 KB) | 5 | 1,734 / 1,694 | 51 (46) / 73 | 371 (301) / 476 | 1.28 |
+| cert chain (2.7 KB) | 6 | 1,734 / 1,694 | 48 (46) / 72 | 371 (302) / 477 | 1.28 |
+| cert chain (2.7 KB) | 11 | 1,693 / 1,615 | 6.3 (6.5) / 1.1 | 368 (297) / 466 | 1.27 |
+| cert chain (4.1 KB) | 1 | 2,598 / 2,736 | 69 (55) / 288 | 407 (325) / 498 | 1.23 |
+| cert chain (4.1 KB) | 4 | 2,563 / 2,611 | 65 (52) / 102 | 434 (365) / 524 | 1.21 |
+| cert chain (4.1 KB) | 5 | 2,593 / 2,549 | 65 (1.6) / 92 | 448 (372) / 546 | 1.22 |
+| cert chain (4.1 KB) | 6 | 2,593 / 2,549 | 63 (1.6) / 89 | 448 (372) / 546 | 1.22 |
+| cert chain (4.1 KB) | 11 | 2,515 / 2,430 | 2.2 (0.7) / 1.2 | 462 (380) / 571 | 1.24 |
+
+The brotli decompression columns are from a second decoder pass (2026-11-20, quiet host, same tool
+and corpus script; the JSON is regenerated, 656 KB): "(aca9e988)" is the decoder after the first
+pass, built into the same tool and run alternately with this one (two rounds each on the HTTP
+payloads, one on Silesia), best cell kept. Brotli decoding now takes 1.08–1.34× libbrotli's time on
+the HTTP payloads (was 1.42–1.73×) and 1.04–1.32× on Silesia (was 1.13–1.56×). The slow payloads
+were not bound by context maps: at levels 5–6 libbrotli writes a single literal tree for the HTML
+and JavaScript files, and about 90% of their bytes come from copies (HTML at level 5: 2,136
+commands, 2,193 literals, 40,884 copied bytes, distances mostly 16 or more, copies mostly 16 bytes
+or fewer), so the time went to the per-command path (about a million instructions per decode of the
+HTML page at 4.1 per cycle, the loop's state spilled to the stack) and, on the certificate chains,
+to building prefix code tables (40% of the time). What changed (output unchanged): the command loop
+keeps the bit reader, the output, its position and the last distances in locals, checks the
+meta-block end, the limit and the window's spare room as one position per write (`make_room` past
+it), takes distance contexts and the 16 short distance codes from tables, decodes a distance code
+and its extra bits from one refill, masks the command symbol into a 1024-entry table instead of `%
+704`, and looks up roots of a fixed 256 entries without bounds checks; prefix code tables are built
+from the lengths as they are read (symbols with a code and counts per length, so no pass over the
+symbols without one; codes up to 8 bits straight into the root, longer ones sorted for second-level
+tables sized as Google's `NextTableBitSize`; bit reversal through a byte table, since x86-64 has no
+instruction for `reverse_bits`), and the code length code gets a 32-entry table instead of a
+256-entry one; copies of up to 32 bytes with a period under 16 go in 8-byte chunks instead of
+`memmove`/`memset` calls; the output is zeroed ahead only up to the end of the meta-block, so a
+small output decoded under a large limit no longer zeroes 128 KiB first (`BENCH_BR_LIMIT=16777216`,
+level 5: the 2.7 KB chain 266 → 370 MB/s, the 4.1 KB one 337 → 446 MB/s, against 300 → 371 and 372 →
+448 with an exact limit). Still `#![forbid(unsafe_code)]` and baseline x86-64 (no BMI2 paths).
 
 **Decompression** went from 1.7–2.4× libzstd's time to 1.3–1.7× and from 1.4–3.1× libbrotli's to
 1.1–1.7×. On Silesia zstd takes 1.32–1.33× libzstd's time at levels 1 and 3 (1.57× at 19) and
@@ -1415,7 +1441,8 @@ lookups and references the predefined sequence tables instead of copying them pe
 decodes three literals per refill, through a context → tree offset table per block type (none at
 all when a block type's context map has one tree), with a 704-entry command table and prefix code
 tables built in place. A double-symbol Huffman table for zstd literals was tried and dropped
-(slower on Zen 4).
+(slower on Zen 4). (The brotli decoding figures in this paragraph are from before the second
+pass described under the brotli table.)
 
 **Compression** (output changes; round trips, the C libraries decoding our output in every cell
 above, the crates' CLI interop tests and the round-trip fuzz targets check it): zstd levels 1–2
