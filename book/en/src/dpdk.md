@@ -20,13 +20,33 @@ The device under the stack is one of:
 | `Dpdk(EalConfig)` | Linux, feature `dpdk-pmd`, libdpdk (found with `pkg-config`) | production: a NIC bound to DPDK (vfio-pci), or a DPDK virtual device (`net_tap`, `net_af_packet`, `net_ring`, ...) |
 | `Tap(name)` | Linux, `CAP_NET_ADMIN`, `/dev/net/tun` | development and tests: the kernel is the peer on the other side of the TAP |
 | `AfPacket(ifname)` | Linux, `CAP_NET_RAW` | the stack on an existing interface the kernel does not use (a veth end, a spare NIC) |
+| `AfXdp(AfXdpConfig)` | Linux 5.4+, root (`CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_BPF`) | the stack on an existing interface through AF_XDP: lighter than DPDK (the NIC keeps its kernel driver), faster than AF_PACKET (see below) |
 | `Memory(MemoryPort)` | nothing | two stacks in one process (`MemoryWire::new()`), any platform: tests and examples |
+
+## AF_XDP
+
+`Device::AfXdp(AfXdpConfig::new("eth1"))` runs the stack on an interface through AF_XDP sockets
+(ADR-063):
+
+- One socket and one I/O thread per queue (`queues`, default 1), each with a 16 MiB UMEM
+  (`frames` chunks of 4 KiB).
+- A hand-assembled XDP program redirects the configured RX queues to the sockets; frames of other
+  queues still reach the kernel.
+- Zero-copy where the driver supports it, copy mode otherwise (`ZeroCopy::{Auto, Required, Off}`);
+  native XDP, else generic (`XdpMode`).
+- The stack's MAC defaults to the interface's own, so a NIC needs no promiscuous mode.
+
+It needs no DPDK, no hugepages and no driver rebinding, and the interface stays visible to `ip`
+and `ethtool`. The kernel no longer sees the traffic of those queues, though. Each frame fits one
+4 KiB chunk (MTU at most 3826), so the peer must not send GSO aggregates. Native XDP on a veth
+turns them off by itself; in generic mode turn TSO, GSO and GRO off.
+`only::dpdk::af_xdp_info(iface)` (hidden) says which modes were picked.
 
 ## Enabling it
 
 ```toml
 [dependencies]
-only = { version = "1", features = ["dpdk"] }       # TAP, AF_PACKET, memory wire
+only = { version = "1", features = ["dpdk"] }       # AF_XDP, TAP, AF_PACKET, memory wire
 # only = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
 ```
 
@@ -173,7 +193,7 @@ report keeps neighbor solicitations flowing.
   datagrams carry the ECN codepoint both ways (`Conn::send_segments_ecn` / `Conn::rx_ecn`, as on
   kernel sockets), so QUIC validates ECN over the stack (ADR-035).
 - Checksums are computed in software (no offloads); received checksums are verified except on
-  AF_PACKET, where frames from the local kernel carry partial ones.
+  AF_PACKET and AF_XDP, where frames from the local kernel carry partial ones.
 
 Why its own stack: one instance per queue with no global state fits `only`'s thread-per-core model
 without locks, the whole stack is safe Rust, and it can do what the data path needs (ACK
@@ -209,7 +229,8 @@ packet-too-big; ECN negotiation, CE marks instead of drops, pacing at a shallow 
 and pacing), bulk TCP with flow control, orderly close, KCP over the stack. `tools/dpdk/test.sh` builds the Docker image in `tools/dpdk/` (Debian's DPDK 24.11) and
 runs `tests/kernel_peer.rs` with `--cap-add NET_ADMIN --device /dev/net/tun` against the Linux
 kernel's own sockets: UDP (fragmented datagrams included) and TCP echo over DPDK's `net_tap` PMD
-(one and two queues), a TAP device and AF_PACKET on a veth pair, dials from the stack to the
+(one and two queues), a TAP device, AF_PACKET and AF_XDP (native, generic, two queues) on veth
+pairs, dials from the stack to the
 kernel (TCP on every queue, UDP, ICMP port unreachable), ping, `tc netem` loss / delay /
 reordering (the kernel's SACK counters must move), a 4 MiB window over a 20 ms RTT, and 500
 concurrent connections; the same runs over IPv6 (`ping -6`, UDP with fragments, TCP both ways,

@@ -11,6 +11,9 @@ datagrams carry ECN codepoints both ways; safe Rust,
 
 - a **DPDK** port (feature `pmd`, Linux, links libdpdk via `pkg-config`): EAL initialised from
   `EalConfig`, one rx/tx queue pair and one I/O thread per queue, mbuf rx/tx bursts, RSS;
+- an existing Linux interface through **AF_XDP** sockets (`Device::AfXdp`, ADR-063): an XDP
+  program redirects each RX queue to a socket the I/O thread polls, zero-copy where the driver
+  supports it (same stack, no DPDK);
 - a Linux **TAP** interface or an **AF_PACKET** socket (same stack, no DPDK);
 - an in-process **memory wire** (any platform; tests and examples).
 

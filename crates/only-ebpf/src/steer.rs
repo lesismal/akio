@@ -62,6 +62,12 @@ pub struct SteerInfo {
     /// I/O threads pinned to the CPUs [`cpu_pinning`] gives them (set by the engine when its
     /// configuration asks for pinning; 0 otherwise).
     pub pinned_threads: usize,
+    /// The program is a [`SharedSteering`](crate::SharedSteering) one, pinned in bpffs and
+    /// shared with the sockets of other processes in the group.
+    pub shared: bool,
+    /// The program also chooses where a closing listener's connections migrate
+    /// ([`SharedSteering::migrates`](crate::SharedSteering::migrates)).
+    pub migrate: bool,
 }
 
 impl fmt::Display for SteerInfo {
@@ -256,6 +262,8 @@ mod imp {
                         sockets: fds.len(),
                         ebpf_unavailable: None,
                         pinned_threads: 0,
+                        shared: false,
+                        migrate: false,
                     });
                 }
                 Err(e) => ebpf_unavailable = Some(e.to_string()),
@@ -268,6 +276,8 @@ mod imp {
             sockets: fds.len(),
             ebpf_unavailable,
             pinned_threads: 0,
+            shared: false,
+            migrate: false,
         })
     }
 }

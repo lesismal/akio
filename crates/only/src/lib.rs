@@ -118,6 +118,12 @@ pub struct EbpfConfig {
     /// the one running on the CPU that received it. Threads with no such CPU (more threads than
     /// CPUs) stay unpinned; pinning that fails leaves the thread unpinned. Linux only.
     pub pin_threads: bool,
+    /// Join a steering program shared with other processes through bpffs instead of attaching
+    /// one of this engine's own (default: `None`; ADR-063): the listener's sockets fill the
+    /// handle's slots ([`ebpf::SharedSteering::at`]) and the group runs the pinned program,
+    /// whose policy replaces [`steering`](Self::steering). `only-prefork` sets it for its
+    /// workers. Without privileges the listener degrades like any other steering failure.
+    pub shared: Option<ebpf::SharedSteering>,
 }
 
 impl Default for EbpfConfig {
@@ -127,6 +133,7 @@ impl Default for EbpfConfig {
             ebpf_programs: true,
             strict: false,
             pin_threads: false,
+            shared: None,
         }
     }
 }
@@ -651,10 +658,30 @@ fn apply_accel(a: &Accel, g: &dyn Group) -> io::Result<AccelStatus> {
     let mut opts = ebpf::AttachOptions::default();
     opts.ebpf = cfg.ebpf_programs;
     let fds = g.listener_fds();
-    match ebpf::attach_reuseport(&fds, cfg.steering, opts) {
+    let attached = match &cfg.shared {
+        Some(s) if fds.is_empty() => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "shared steering ({}) needs a SO_REUSEPORT socket group",
+                s.dir().display()
+            ),
+        )),
+        Some(s) => s.join(&fds),
+        None => ebpf::attach_reuseport(&fds, cfg.steering, opts),
+    };
+    match attached {
         Ok(mut info) => {
             if cfg.pin_threads {
-                if let Ok(sets) = ebpf::cpu_pinning(fds.len()) {
+                // Shared CPU steering picks slot `cpu % sockets`: thread `t` of a process at
+                // slots `first..` runs on the CPUs of slot `first + t`.
+                let sets = match &cfg.shared {
+                    Some(s) => ebpf::cpu_pinning(s.sockets()).map(|v| {
+                        let first = s.slots().0;
+                        v.get(first..first + fds.len()).unwrap_or_default().to_vec()
+                    }),
+                    None => ebpf::cpu_pinning(fds.len()),
+                };
+                if let Ok(sets) = sets {
                     info.pinned_threads = sets.iter().filter(|s| !s.is_empty()).count();
                     g.pin_threads(sets);
                 }

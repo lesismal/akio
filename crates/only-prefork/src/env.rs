@@ -18,10 +18,26 @@ pub(crate) const FDS: &str = "ONLY_PREFORK_FDS";
 pub(crate) const CTL: &str = "ONLY_PREFORK_CTL";
 /// `listen(2)` backlog for `reuseport` workers.
 pub(crate) const BACKLOG: &str = "ONLY_PREFORK_BACKLOG";
+/// `reuseport` with BPF steering: the pin directory of each address, one per line, in `ADDRS`
+/// order (an empty line: no shared steering for that address).
+pub(crate) const BPF: &str = "ONLY_PREFORK_BPF";
+/// `reuseport` with BPF steering: I/O threads (slots) per worker.
+pub(crate) const BPF_THREADS: &str = "ONLY_PREFORK_BPF_THREADS";
 
 /// Every variable above (cleared from a worker's environment before setting them again, so a
 /// worker that itself runs a supervisor does not pass stale values on).
-pub(crate) const ALL: [&str; 8] = [WORKER, WORKERS, GENERATION, MODE, ADDRS, FDS, CTL, BACKLOG];
+pub(crate) const ALL: [&str; 10] = [
+    WORKER,
+    WORKERS,
+    GENERATION,
+    MODE,
+    ADDRS,
+    FDS,
+    CTL,
+    BACKLOG,
+    BPF,
+    BPF_THREADS,
+];
 
 /// The control protocol: single bytes on the control socket.
 pub(crate) const MSG_READY: u8 = b'R';

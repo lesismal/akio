@@ -135,6 +135,38 @@ configurations behave as before):
 
 - Found by BoGo: a server without TLS 1.3 no longer refuses TLS_FALLBACK_SCSV (RFC 7507); a ClientHello with supported_groups and no key_share gets `missing_extension` instead of a HelloRetryRequest (RFC 8446 §9.2); the TLS 1.2 server acknowledges server_name (RFC 6066 §3); TLS 1.3 padded plaintexts over 2^14 + 1 bytes are `record_overflow` (RFC 8446 §5.4).
 
+### Added: cross-process BPF steering, listener migration on prefork reloads, and AF_XDP (only-ebpf, only-prefork, only-dpdk)
+
+ADR-063 (docs/adr/063-shared-steering-migration-af-xdp.md), additive (nothing changes unless
+asked for):
+
+- `only_ebpf::SharedSteering`: one `SK_REUSEPORT` program, socket array and Maglev table pinned
+  in bpffs and shared by the `SO_REUSEPORT` sockets of several processes. `create` (owner,
+  removes the pins on drop), `open`, `at(first, count)` and `join(fds)`, the latter filling this
+  process's slots. CPU or hash steering, with the same hash and table as `attach_reuseport`. On
+  Linux 5.14+ the program is loaded for `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE` (`migrates()`): a
+  closing listener's accept queue and pending handshakes move to the socket now in their slot,
+  whatever `net.ipv4.tcp_migrate_req` says. `SteerInfo::{shared, migrate}`,
+  `Probe::{reuseport_migrate, af_xdp}`, `EbpfConfig::shared` (facade).
+- `Prefork::bpf_steering(BpfSteering { steering, threads, dir, strict })` (`ListenMode::ReusePort`,
+  Linux): the supervisor pins one group per address (`workers * threads` slots), and each
+  worker's `listener(i)` joins its own slots. A restarted or reloaded worker takes its slots
+  over, so a reload hands the old worker's share to the new one as soon as it is built, and what
+  was still queued migrates when the old listeners close. Without privileges or bpffs the
+  workers use the kernel's hashing as before (`strict` fails instead). A `ReusePort` reload
+  that cannot migrate logs a warning. `Supervisor::bpf_steering`, `DEFAULT_BPF_DIR`.
+- `only_dpdk::Device::AfXdp(AfXdpConfig)`: AF_XDP sockets as a link of the userspace stack,
+  next to TAP and AF_PACKET, without DPDK. One socket and one I/O thread per queue, a UMEM per
+  socket, the four rings polled by the thread, and a hand-assembled XDP program that redirects
+  each queue to its socket. Zero-copy where the driver has it, copy mode otherwise
+  (`ZeroCopy`); native, else generic XDP (`XdpMode`, re-exported). The default MAC is the
+  interface's own.
+- Tests on veth pairs and namespaces only: shared slots, accept-queue and request migration,
+  multi-process steering, reloads and a stopped-then-killed worker under connection churn
+  (nothing lost, accept counts add up), and the AF_XDP kernel-peer suite (native, generic,
+  IPv6, two queues). Fallbacks are tested without capabilities. `tools/bench/afxdp.sh` and the
+  `link-bench` example compare AF_XDP with AF_PACKET (docs/BENCHMARKS).
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

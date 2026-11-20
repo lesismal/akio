@@ -7,9 +7,16 @@
 //!   (`SO_ATTACH_REUSEPORT_CBPF`), which works unprivileged on any Linux since 4.6, and eBPF with
 //!   a `REUSEPORT_SOCKARRAY` (privileged) for CPU steering. Without either, the kernel's default
 //!   4-tuple hash stays in place. The facade wires this to `Listener::accel(Accel::Ebpf(..))`.
+//! * **shared steering** ([`SharedSteering`]): the same policies for a `SO_REUSEPORT` group
+//!   whose sockets belong to several processes (prefork workers): one program and socket array
+//!   pinned in bpffs, each process filling its own slots; with Linux 5.14+ it also picks where a
+//!   closing listener's queued connections migrate (`BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`).
 //! * **sockmap relay** ([`Relay`]): splices two TCP sockets in the kernel (`SOCKHASH` +
 //!   `sk_skb` stream verdict) for proxies; privileged, and Linux 6.15+ by default (older
 //!   kernels can lose relayed data, see [`relay::MIN_KERNEL`]).
+//!
+//! * **AF_XDP** (`xsk`, `#[doc(hidden)]`): the sockets and redirect program behind only-dpdk's
+//!   `Device::AfXdp` link.
 //!
 //! Programs are hand-assembled (a dozen instructions each) and loaded with raw `bpf(2)` calls,
 //! so building `only` needs neither a BPF toolchain nor nightly Rust, and no `aya`/libbpf.
@@ -18,7 +25,8 @@
 //! Guide: [eBPF steering](https://lesismal.github.io/only/en/concepts/engine.html#acceleration-ebpf-steering)
 //! (中文: [eBPF 分流](https://lesismal.github.io/only/zh-CN/concepts/engine.html)).
 #![warn(clippy::unwrap_used)]
-// `unsafe` is confined to `sys` (raw bpf(2) and socket options); see docs/unsafe-review.md.
+// `unsafe` is confined to `sys` (raw bpf(2) and socket options) and `xsk` (AF_XDP rings);
+// see docs/unsafe-review.md.
 #![deny(unsafe_code)]
 
 /// Classic BPF programs and an interpreter (tests, fuzzing). `#[doc(hidden)]`: unstable.
@@ -29,6 +37,7 @@ mod ebpf;
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod relay;
+mod shared;
 mod steer;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
@@ -36,8 +45,14 @@ mod sys;
 #[cfg(any(test, feature = "fuzzing"))]
 mod vm;
 pub mod xdp;
+/// AF_XDP sockets for only-dpdk's `Device::AfXdp` (ADR-063). `#[doc(hidden)]`: unstable.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+#[allow(unsafe_code)]
+pub mod xsk;
 
 pub use relay::{ByteCounts, Relay, Splice, byte_counts};
+pub use shared::{MAX_SHARED_SOCKETS, SharedSteering};
 pub use steer::{AttachOptions, HashKey, SteerInfo, Steering, Tier, attach_reuseport, cpu_pinning};
 pub use xdp::{RateLimiter, XdpLimit};
 // Steering internals the tests check the kernel against; unstable.
@@ -57,6 +72,12 @@ pub struct Probe {
     /// The XDP rate limiter's program and maps load (privileged); attaching it to an interface
     /// is not tried.
     pub xdp: bool,
+    /// Reuseport programs for `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE` load (privileged, Linux
+    /// 5.14+): [`SharedSteering`] programs choose where closing listeners' connections go.
+    pub reuseport_migrate: bool,
+    /// AF_XDP sockets, an `XSKMAP` and the redirect program can be created (privileged);
+    /// binding to an interface is not tried.
+    pub af_xdp: bool,
 }
 
 /// Probes the features on throwaway sockets bound to the loopback address.
@@ -81,8 +102,23 @@ pub fn probe() -> Probe {
             reuseport_ebpf,
             sockmap_relay: Relay::new(1).is_ok(),
             xdp: xdp::probe_load().is_ok(),
+            reuseport_migrate: probe_migrate().is_ok(),
+            af_xdp: xsk::probe().is_ok(),
         }
     }
     #[cfg(not(target_os = "linux"))]
     Probe::default()
+}
+
+/// Loads (and drops) a `SELECT_OR_MIGRATE` reuseport program.
+#[cfg(target_os = "linux")]
+fn probe_migrate() -> std::io::Result<()> {
+    let socks = sys::Map::<u32, u64>::create(sys::MAP_REUSEPORT_SOCKARRAY, 1)?;
+    sys::prog_load(
+        sys::PROG_SK_REUSEPORT,
+        sys::ATTACH_SK_REUSEPORT_SELECT_OR_MIGRATE,
+        &ebpf::reuseport_shared(socks.fd(), socks.fd(), 1, Steering::Cpu, true),
+        "only_probe_mig",
+    )
+    .map(drop)
 }

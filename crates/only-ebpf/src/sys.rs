@@ -18,12 +18,16 @@ const BPF_MAP_LOOKUP_ELEM: ffi::c_long = 1;
 const BPF_MAP_UPDATE_ELEM: ffi::c_long = 2;
 const BPF_MAP_DELETE_ELEM: ffi::c_long = 3;
 const BPF_PROG_LOAD: ffi::c_long = 5;
+const BPF_OBJ_PIN: ffi::c_long = 6;
+const BPF_OBJ_GET: ffi::c_long = 7;
 const BPF_PROG_ATTACH: ffi::c_long = 8;
+const BPF_OBJ_GET_INFO_BY_FD: ffi::c_long = 15;
 const BPF_LINK_CREATE: ffi::c_long = 28;
 
 pub(crate) const MAP_ARRAY: u32 = 2;
 pub(crate) const MAP_PERCPU_ARRAY: u32 = 6;
 pub(crate) const MAP_LRU_PERCPU_HASH: u32 = 10;
+pub(crate) const MAP_XSKMAP: u32 = 17;
 pub(crate) const MAP_SOCKHASH: u32 = 18;
 pub(crate) const MAP_REUSEPORT_SOCKARRAY: u32 = 20;
 pub(crate) const PROG_XDP: u32 = 6;
@@ -31,6 +35,7 @@ pub(crate) const PROG_SK_SKB: u32 = 14;
 pub(crate) const PROG_SK_REUSEPORT: u32 = 21;
 pub(crate) const ATTACH_SK_SKB_STREAM_VERDICT: u32 = 5;
 pub(crate) const ATTACH_SK_REUSEPORT_SELECT: u32 = 39;
+pub(crate) const ATTACH_SK_REUSEPORT_SELECT_OR_MIGRATE: u32 = 40;
 pub(crate) const ATTACH_XDP: u32 = 37;
 
 fn cvt(r: ffi::c_int) -> io::Result<ffi::c_int> {
@@ -201,6 +206,58 @@ impl<K: Copy, V: Copy> Map<K, V> {
     }
 }
 
+impl<K: Copy, V: Copy> Map<K, V> {
+    /// Opens the map pinned at `path` (`BPF_OBJ_GET`), checking that it is a `map_type` map
+    /// whose key and value sizes are those of `K` and `V` (which is what makes the typed methods
+    /// safe on it). Returns the map and its `max_entries`.
+    pub(crate) fn open_pinned(path: &std::path::Path, map_type: u32) -> io::Result<(Self, u32)> {
+        let fd = obj_get(path)?;
+        let info = map_info(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
+        if info.map_type != map_type
+            || info.key_size as usize != size_of::<K>()
+            || info.value_size as usize != size_of::<V>()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{}: not the expected BPF map (type {}, key {} bytes, value {} bytes)",
+                    path.display(),
+                    info.map_type,
+                    info.key_size,
+                    info.value_size
+                ),
+            ));
+        }
+        Ok((
+            Map {
+                fd,
+                _kv: std::marker::PhantomData,
+            },
+            info.max_entries,
+        ))
+    }
+
+    /// Pins the map at `path` (`BPF_OBJ_PIN`; the directory must be on a bpffs mount).
+    pub(crate) fn pin(&self, path: &std::path::Path) -> io::Result<()> {
+        obj_pin(self.fd(), path)
+    }
+}
+
+impl<K: Copy, const N: usize> Map<K, [u32; N]> {
+    /// `BPF_MAP_LOOKUP_ELEM` of a (non per-CPU) map of `[u32; N]` values.
+    pub(crate) fn lookup(&self, key: &K) -> io::Result<[u32; N]> {
+        let mut out = vec![0u8; N * 4];
+        // SAFETY: the key size is `size_of::<K>()` and the value size `4 * N` (creation or
+        // `open_pinned` checked it); a non per-CPU map writes exactly `value_size` bytes.
+        unsafe { map_lookup(self.fd(), key, &mut out) }?;
+        let mut v = [0u32; N];
+        for (d, c) in v.iter_mut().zip(out.chunks_exact(4)) {
+            *d = u32::from_ne_bytes([c[0], c[1], c[2], c[3]]);
+        }
+        Ok(v)
+    }
+}
+
 impl<K: Copy> Map<K, u64> {
     /// `BPF_MAP_LOOKUP_ELEM` of a per-CPU map of `u64`s: one value per possible CPU.
     pub(crate) fn lookup_percpu(&self, key: &K) -> io::Result<Vec<u64>> {
@@ -231,6 +288,92 @@ fn parse_cpu_list(s: &str) -> Option<usize> {
         .split(',')
         .map(|r| r.rsplit('-').next()?.trim().parse::<usize>().ok())
         .try_fold(0, |m, v| Some(m.max(v?)))
+}
+
+#[repr(C)]
+struct ObjPin {
+    pathname: u64,
+    bpf_fd: u32,
+    file_flags: u32,
+}
+
+fn c_path(path: &std::path::Path) -> io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path with NUL"))
+}
+
+/// `BPF_OBJ_PIN`: pins the map, program or link `fd` at `path` on a bpffs mount, where it stays
+/// (and keeps the object alive) until the file is removed.
+pub(crate) fn obj_pin(fd: RawFd, path: &std::path::Path) -> io::Result<()> {
+    let p = c_path(path)?;
+    let mut a = ObjPin {
+        pathname: p.as_ptr() as u64,
+        bpf_fd: fd as u32,
+        file_flags: 0,
+    };
+    // SAFETY: `ObjPin` is the BPF_OBJ_PIN prefix of `bpf_attr`; `pathname` points to the
+    // NUL-terminated `p`, alive until the call returns.
+    unsafe { bpf(BPF_OBJ_PIN, &mut a) }.map(drop)
+}
+
+/// `BPF_OBJ_GET`: a new descriptor (read-write) for the object pinned at `path`.
+pub(crate) fn obj_get(path: &std::path::Path) -> io::Result<OwnedFd> {
+    let p = c_path(path)?;
+    let mut a = ObjPin {
+        pathname: p.as_ptr() as u64,
+        bpf_fd: 0,
+        file_flags: 0,
+    };
+    // SAFETY: as in `obj_pin`.
+    unsafe { bpf(BPF_OBJ_GET, &mut a) }.map(owned)
+}
+
+#[repr(C)]
+struct InfoByFd {
+    bpf_fd: u32,
+    info_len: u32,
+    info: u64,
+}
+
+/// The first fields of `struct bpf_map_info`.
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct MapInfo {
+    pub(crate) map_type: u32,
+    pub(crate) id: u32,
+    pub(crate) key_size: u32,
+    pub(crate) value_size: u32,
+    pub(crate) max_entries: u32,
+    pub(crate) map_flags: u32,
+}
+
+/// `BPF_OBJ_GET_INFO_BY_FD` of a map (the fields above; the kernel copies only `info_len`
+/// bytes).
+pub(crate) fn map_info(fd: RawFd) -> io::Result<MapInfo> {
+    let mut info = MapInfo::default();
+    let mut a = InfoByFd {
+        bpf_fd: fd as u32,
+        info_len: size_of::<MapInfo>() as u32,
+        info: (&raw mut info) as u64,
+    };
+    // SAFETY: `InfoByFd` is the BPF_OBJ_GET_INFO_BY_FD prefix of `bpf_attr`; `info` points to
+    // `info_len` writable bytes alive until the call returns.
+    unsafe { bpf(BPF_OBJ_GET_INFO_BY_FD, &mut a) }?;
+    Ok(info)
+}
+
+/// The type of the program `fd` (first field of `struct bpf_prog_info`).
+pub(crate) fn prog_type(fd: RawFd) -> io::Result<u32> {
+    let mut info = [0u32; 4];
+    let mut a = InfoByFd {
+        bpf_fd: fd as u32,
+        info_len: size_of_val(&info) as u32,
+        info: info.as_mut_ptr() as u64,
+    };
+    // SAFETY: as in `map_info`; `info` has `info_len` writable bytes.
+    unsafe { bpf(BPF_OBJ_GET_INFO_BY_FD, &mut a) }?;
+    Ok(info[0])
 }
 
 #[repr(C)]

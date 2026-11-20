@@ -337,6 +337,9 @@ pub(crate) fn probe_load() -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) use imp::ProgLink;
+
+#[cfg(target_os = "linux")]
 mod imp {
     use std::{
         io,
@@ -377,11 +380,11 @@ mod imp {
         Detached,
     }
 
-    pub(super) struct Attached {
+    /// An XDP program attached to an interface (by a BPF link or netlink); detached by
+    /// [`ProgLink::detach`] or when the link fd closes.
+    pub(crate) struct ProgLink {
         how: How,
         prog: Option<OwnedFd>,
-        sources: Option<Sources>,
-        counters: Option<sys::Map<u32, u64>>,
     }
 
     fn netlink(msg: &[u8]) -> io::Result<()> {
@@ -392,34 +395,24 @@ mod imp {
         parse_ack(&buf[..n])
     }
 
-    impl Attached {
-        pub(super) fn empty() -> Attached {
-            Attached {
+    impl ProgLink {
+        pub(crate) fn empty() -> ProgLink {
+            ProgLink {
                 how: How::Detached,
                 prog: None,
-                sources: None,
-                counters: None,
             }
         }
 
-        pub(super) fn new(
+        /// Attaches the loaded XDP program `prog` to `ifindex` in `mode` (native first, then
+        /// generic, for `Auto`): with a BPF link, or with netlink on kernels without XDP links
+        /// (or when `force_netlink`). Never replaces a program someone else attached.
+        pub(crate) fn attach(
             ifindex: u32,
-            cfg: &XdpLimit,
-            cost: u64,
-            cap: u64,
-        ) -> io::Result<(Attached, XdpMode, Attachment)> {
-            let (sources, counters, prog) = load(cfg, cost, cap)?;
-            Self::attach(ifindex, cfg, sources, counters, prog)
-        }
-
-        fn attach(
-            ifindex: u32,
-            cfg: &XdpLimit,
-            sources: Sources,
-            counters: sys::Map<u32, u64>,
             prog: OwnedFd,
-        ) -> io::Result<(Attached, XdpMode, Attachment)> {
-            let modes: &[(u32, XdpMode)] = match cfg.mode {
+            mode: XdpMode,
+            force_netlink: bool,
+        ) -> io::Result<(ProgLink, XdpMode, Attachment)> {
+            let modes: &[(u32, XdpMode)] = match mode {
                 XdpMode::Native => &[(XDP_FLAGS_DRV_MODE, XdpMode::Native)],
                 XdpMode::Generic => &[(XDP_FLAGS_SKB_MODE, XdpMode::Generic)],
                 _ => &[
@@ -435,17 +428,15 @@ mod imp {
                 )
             };
             let mut first_err = None;
-            let mut link_unsupported = cfg.force_netlink;
+            let mut link_unsupported = force_netlink;
             if !link_unsupported {
                 for &(flags, mode) in modes {
                     match sys::xdp_link_create(prog.as_raw_fd(), ifindex, flags) {
                         Ok(link) => {
                             return Ok((
-                                Attached {
+                                ProgLink {
                                     how: How::Link(link),
                                     prog: Some(prog),
-                                    sources: Some(sources),
-                                    counters: Some(counters),
                                 },
                                 mode,
                                 Attachment::Link,
@@ -471,11 +462,9 @@ mod imp {
                     match netlink(&msg) {
                         Ok(()) => {
                             return Ok((
-                                Attached {
+                                ProgLink {
                                     how: How::Netlink { mode_flags: flags },
                                     prog: Some(prog),
-                                    sources: Some(sources),
-                                    counters: Some(counters),
                                 },
                                 mode,
                                 Attachment::Netlink,
@@ -489,6 +478,72 @@ mod imp {
                 }
             }
             Err(first_err.unwrap_or_else(|| io::Error::other("XDP attach failed")))
+        }
+
+        pub(crate) fn detach(mut self, ifindex: u32) -> io::Result<()> {
+            match std::mem::replace(&mut self.how, How::Detached) {
+                How::Detached => Ok(()),
+                // Closing the last link fd detaches.
+                How::Link(link) => {
+                    drop(link);
+                    Ok(())
+                }
+                How::Netlink { mode_flags } => {
+                    let Some(prog) = &self.prog else {
+                        return Ok(());
+                    };
+                    // Remove only our program (5.7+); older kernels reject the flag, and then
+                    // whatever is attached in our mode goes.
+                    let ours = setlink_xdp(
+                        ifindex,
+                        -1,
+                        mode_flags | XDP_FLAGS_REPLACE,
+                        Some(prog.as_raw_fd()),
+                    );
+                    match netlink(&ours) {
+                        Err(e) if e.raw_os_error() == Some(only_sys::ffi::EINVAL) => {
+                            netlink(&setlink_xdp(ifindex, -1, mode_flags, None))
+                        }
+                        r => r,
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) struct Attached {
+        link: ProgLink,
+        sources: Option<Sources>,
+        counters: Option<sys::Map<u32, u64>>,
+    }
+
+    impl Attached {
+        pub(super) fn empty() -> Attached {
+            Attached {
+                link: ProgLink::empty(),
+                sources: None,
+                counters: None,
+            }
+        }
+
+        pub(super) fn new(
+            ifindex: u32,
+            cfg: &XdpLimit,
+            cost: u64,
+            cap: u64,
+        ) -> io::Result<(Attached, XdpMode, Attachment)> {
+            let (sources, counters, prog) = load(cfg, cost, cap)?;
+            let (link, mode, attachment) =
+                ProgLink::attach(ifindex, prog, cfg.mode, cfg.force_netlink)?;
+            Ok((
+                Attached {
+                    link,
+                    sources: Some(sources),
+                    counters: Some(counters),
+                },
+                mode,
+                attachment,
+            ))
         }
 
         pub(super) fn stats(&self) -> io::Result<XdpStats> {
@@ -518,34 +573,8 @@ mod imp {
             }
         }
 
-        pub(super) fn detach(mut self, ifindex: u32) -> io::Result<()> {
-            match std::mem::replace(&mut self.how, How::Detached) {
-                How::Detached => Ok(()),
-                // Closing the last link fd detaches.
-                How::Link(link) => {
-                    drop(link);
-                    Ok(())
-                }
-                How::Netlink { mode_flags } => {
-                    let Some(prog) = &self.prog else {
-                        return Ok(());
-                    };
-                    // Remove only our program (5.7+); older kernels reject the flag, and then
-                    // whatever is attached in our mode goes.
-                    let ours = setlink_xdp(
-                        ifindex,
-                        -1,
-                        mode_flags | XDP_FLAGS_REPLACE,
-                        Some(prog.as_raw_fd()),
-                    );
-                    match netlink(&ours) {
-                        Err(e) if e.raw_os_error() == Some(only_sys::ffi::EINVAL) => {
-                            netlink(&setlink_xdp(ifindex, -1, mode_flags, None))
-                        }
-                        r => r,
-                    }
-                }
-            }
+        pub(super) fn detach(self, ifindex: u32) -> io::Result<()> {
+            self.link.detach(ifindex)
         }
     }
 }

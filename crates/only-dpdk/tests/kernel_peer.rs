@@ -1,5 +1,6 @@
 //! The userspace stack against the Linux kernel's own TCP/IP stack as the peer: over a TAP
-//! interface (`Device::Tap`), over a veth pair (`Device::AfPacket`), and over DPDK's `net_tap`
+//! interface (`Device::Tap`), over a veth pair (`Device::AfPacket`, `Device::AfXdp`), and over
+//! DPDK's `net_tap`
 //! poll-mode driver (`Device::Dpdk`, feature `pmd` with libdpdk; one and two queues). A std
 //! `UdpSocket` / `TcpStream` on the kernel side talks to a `only` UDP / TCP echo served by the
 //! userspace stack, and the userspace stack dials the kernel's sockets.
@@ -16,7 +17,9 @@
 //! TCP both ways, and the netem loss run.
 //!
 //! Needs `CAP_NET_ADMIN`, `/dev/net/tun` and the `ip` / `tc` / `ss` tools, so the tests only run
-//! when asked: `ONLY_TAP_TEST=1` (TAP, AF_PACKET) and `ONLY_DPDK_TEST=1` (DPDK).
+//! when asked: `ONLY_TAP_TEST=1` (TAP, AF_PACKET) and `ONLY_DPDK_TEST=1` (DPDK). The AF_XDP ones
+//! (`af_xdp_*`, also `CAP_BPF` and `ethtool`) run with `ONLY_XDP_TEST=1` or
+//! `ONLY_TEST_EXPECT_EBPF=1`; without privileges they skip, unless `ONLY_TEST_EXPECT_EBPF=1`.
 //! `tools/dpdk/test.sh` runs them in Docker (`--cap-add NET_ADMIN --device /dev/net/tun`, IPv6
 //! enabled with `--sysctl net.ipv6.conf.all.disable_ipv6=0`).
 #![allow(missing_docs)]
@@ -32,7 +35,7 @@ use std::{
 
 use only::{
     Backend, Config, Conn, Engine, Error, Handler, Listener,
-    dpdk::{Device, DpdkConfig},
+    dpdk::{AfXdpConfig, Device, DpdkConfig, XdpMode, ZeroCopy},
     fn_acceptor,
 };
 
@@ -792,6 +795,184 @@ fn af_packet_many_concurrent_connections() {
     assert_eq!(accepted, 500);
     engine.shutdown();
     engine.wait();
+}
+
+// ---- AF_XDP ----------------------------------------------------------------------------------
+
+fn expect_ebpf() -> bool {
+    std::env::var("ONLY_TEST_EXPECT_EBPF").is_ok_and(|v| v == "1")
+}
+
+/// Whether to run the AF_XDP tests, and whether AF_XDP works here (privileges): a skip is a
+/// failure under `ONLY_TEST_EXPECT_EBPF=1`.
+fn xdp_enabled() -> bool {
+    if !(expect_ebpf() || std::env::var("ONLY_XDP_TEST").is_ok_and(|v| v == "1")) {
+        eprintln!("skipped: set ONLY_XDP_TEST=1 (needs CAP_NET_ADMIN, CAP_BPF and ethtool)");
+        return false;
+    }
+    let probe = only::ebpf::probe();
+    assert!(
+        probe.af_xdp || !expect_ebpf(),
+        "AF_XDP unavailable with ONLY_TEST_EXPECT_EBPF=1: {probe:?}"
+    );
+    if !probe.af_xdp {
+        eprintln!("skipped: AF_XDP sockets cannot be created here ({probe:?})");
+    }
+    probe.af_xdp
+}
+
+fn xdp(ifname: &str, mode: XdpMode, zero_copy: ZeroCopy, queues: u16) -> Device {
+    let mut c = AfXdpConfig::new(ifname);
+    c.mode = mode;
+    c.zero_copy = zero_copy;
+    c.queues = queues;
+    Device::AfXdp(c)
+}
+
+/// A veth pair `<name>0` (the stack, through AF_XDP) / `<name>1` (the kernel), `queues` queues
+/// each way. The kernel side sends no GSO aggregates and no GRO merges frames on ours: an
+/// AF_XDP chunk holds one frame of at most 3840 bytes (native XDP on a veth turns the peer's
+/// GSO off by itself; generic XDP runs after GRO and needs it explicitly).
+fn xdp_veth(name: &str, queues: u16) {
+    let _ = Command::new("ip")
+        .args(["link", "del", &format!("{name}0")])
+        .status();
+    ip(&format!(
+        "link add {name}0 numtxqueues {queues} numrxqueues {queues} type veth peer name {name}1 \
+         numtxqueues {queues} numrxqueues {queues}"
+    ));
+    run("ethtool", &format!("-K {name}1 tso off gso off gro off"));
+    run("ethtool", &format!("-K {name}0 tso off gso off gro off"));
+    ip(&format!("link set {name}0 up"));
+}
+
+/// The full kernel-peer run (UDP, ECN, fragments, 2 MiB TCP echo, dials) over AF_XDP.
+fn af_xdp_peer(name: &str, mode: XdpMode, zero_copy: ZeroCopy, local: IpAddr, kernel: IpAddr) {
+    xdp_veth(name, 1);
+    let ifname = format!("{name}0");
+    kernel_peer(
+        xdp(&ifname, mode, zero_copy, 1),
+        &format!("{name}1"),
+        local,
+        kernel,
+    );
+    let info = only::dpdk::af_xdp_info(&ifname).expect("AF_XDP info");
+    eprintln!("{ifname}: {info:?}");
+    match mode {
+        XdpMode::Generic => assert!(!info.native),
+        // A veth has native XDP (but no zero-copy AF_XDP).
+        _ => assert!(info.native, "{info:?}"),
+    }
+    if zero_copy == ZeroCopy::Off {
+        assert!(!info.zero_copy);
+    }
+    ip(&format!("link del {ifname}"));
+}
+
+#[test]
+fn af_xdp_kernel_peer_native() {
+    if !xdp_enabled() {
+        return;
+    }
+    af_xdp_peer(
+        "flxdp",
+        XdpMode::Auto,
+        ZeroCopy::Auto,
+        Ipv4Addr::new(10, 70, 0, 2).into(),
+        Ipv4Addr::new(10, 70, 0, 1).into(),
+    );
+}
+
+#[test]
+fn af_xdp_kernel_peer_generic_copy() {
+    if !xdp_enabled() {
+        return;
+    }
+    af_xdp_peer(
+        "flxdg",
+        XdpMode::Generic,
+        ZeroCopy::Off,
+        Ipv4Addr::new(10, 69, 0, 2).into(),
+        Ipv4Addr::new(10, 69, 0, 1).into(),
+    );
+}
+
+#[test]
+fn af_xdp_kernel_peer_ipv6() {
+    if !xdp_enabled() {
+        return;
+    }
+    af_xdp_peer("flxd6", XdpMode::Auto, ZeroCopy::Auto, v6(70, 2), v6(70, 1));
+}
+
+#[test]
+fn af_xdp_zero_copy_required_fails_on_a_veth() {
+    if !xdp_enabled() {
+        return;
+    }
+    xdp_veth("flxdz", 1);
+    let r = Engine::builder()
+        .listen(
+            Listener::udp(SocketAddr::from(([10, 68, 0, 2], 7000)))
+                .backend(Backend::Dpdk(DpdkConfig::new(
+                    xdp("flxdz0", XdpMode::Auto, ZeroCopy::Required, 1),
+                    Ipv4Addr::new(10, 68, 0, 2),
+                )))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build();
+    let e = r.expect_err("veth has no zero-copy AF_XDP");
+    eprintln!("zero-copy required on a veth: {e}");
+    // The failed open left no program behind: AF_PACKET-free copy mode works next.
+    let engine = echo_engine(DpdkConfig::new(
+        xdp("flxdz0", XdpMode::Auto, ZeroCopy::Off, 1),
+        Ipv4Addr::new(10, 68, 0, 2),
+    ));
+    engine.shutdown();
+    engine.wait();
+    ip("link del flxdz0");
+}
+
+#[test]
+fn af_xdp_two_queues_and_many_connections() {
+    if !xdp_enabled() {
+        return;
+    }
+    let local: IpAddr = Ipv4Addr::new(10, 67, 0, 2).into();
+    let kernel: IpAddr = Ipv4Addr::new(10, 67, 0, 1).into();
+    xdp_veth("flxdq", 2);
+    let engine = echo_engine(dcfg(xdp("flxdq0", XdpMode::Auto, ZeroCopy::Auto, 2), local));
+    kernel_addr("flxdq1", kernel);
+    ip("link set flxdq1 up");
+    engine.start().unwrap();
+    let took = echo_many(local, 200, 32 << 10);
+    eprintln!("AF_XDP, 2 queues: 200 concurrent connections x 32 KiB echoed in {took:?}");
+    // Dialed connections use ports naming their queue; replies RSS puts on the other queue are
+    // handed over.
+    dial_kernel(&engine, kernel);
+    let m = engine.metrics().to_prometheus();
+    let accepted: u64 = m
+        .lines()
+        .filter(|l| l.starts_with("only_connections_accepted_total{") && l.contains(":7001"))
+        .filter_map(|l| l.rsplit(" ").next()?.parse::<u64>().ok())
+        .sum();
+    assert_eq!(accepted, 200);
+    // The veth spread the flows over both queues (one I/O thread each).
+    let per_queue: Vec<u64> = m
+        .lines()
+        .filter(|l| l.starts_with("only_connections_accepted_total{") && l.contains(":7001"))
+        .filter_map(|l| l.rsplit(" ").next()?.parse::<u64>().ok())
+        .collect();
+    eprintln!("AF_XDP, 2 queues: accepted per queue {per_queue:?}");
+    assert!(
+        per_queue.len() == 2 && per_queue.iter().all(|&n| n > 0),
+        "{per_queue:?}"
+    );
+    let info = only::dpdk::af_xdp_info("flxdq0").unwrap();
+    assert_eq!(info.queues, 2);
+    engine.shutdown();
+    engine.wait();
+    ip("link del flxdq0");
 }
 
 /// EAL settings for a net_tap port on interface `iface`. The EAL is initialised once per

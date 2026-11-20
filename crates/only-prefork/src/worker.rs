@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use only::{AccelStatus, Engine, Listener};
+use only::{Accel, AccelStatus, EbpfConfig, Engine, Listener};
 use only_sys::process as sys;
 
 use crate::{ListenMode, Prefork, env};
@@ -70,6 +70,9 @@ pub struct Worker {
     stop: Arc<Latch>,
     supervised: bool,
     reload: Arc<ReloadHook>,
+    /// BPF steering: the pin directory of each address (empty: none) and the slots per worker.
+    bpf_dirs: Vec<String>,
+    bpf_threads: usize,
 }
 
 /// The [`Worker::on_reload`] hook and how often it ran.
@@ -140,6 +143,14 @@ impl Worker {
                 inherited.push(Some(TcpListener::from(sys::take_inherited_fd(fd)?)));
             }
         }
+        let bpf_dirs: Vec<String> = std::env::var(env::BPF)
+            .map(|v| v.split('\n').map(str::to_owned).collect())
+            .unwrap_or_default();
+        let bpf_threads: usize = if bpf_dirs.is_empty() {
+            0
+        } else {
+            env::number(env::BPF_THREADS)?
+        };
         let ctl = UnixStream::from(sys::take_inherited_fd(env::number(env::CTL)?)?);
         let stop = Arc::new(Latch::default());
         let reload = Arc::new(ReloadHook::default());
@@ -175,6 +186,8 @@ impl Worker {
             stop,
             supervised: true,
             reload,
+            bpf_dirs,
+            bpf_threads,
         }))
     }
 
@@ -196,6 +209,8 @@ impl Worker {
             stop,
             supervised: false,
             reload,
+            bpf_dirs: Vec::new(),
+            bpf_threads: 0,
         })
     }
 
@@ -236,7 +251,10 @@ impl Worker {
 
     /// A [`Listener`] for address `i` (in [`Prefork::listen`] order), ready for `.threads(..)`,
     /// `.backend(..)` and `.serve(..)`: the inherited socket ([`ListenMode::Inherit`], once per
-    /// address), or a listener that binds the address with `SO_REUSEPORT`.
+    /// address), or a listener that binds the address with `SO_REUSEPORT`. With
+    /// [`Prefork::bpf_steering`] the listener already has `BpfSteering::threads` threads and an
+    /// `Accel::Ebpf` that joins this worker's slots of the shared program (when opening it
+    /// fails, a warning is logged and the listener has no `Accel`).
     pub fn listener(&self, i: usize) -> io::Result<Listener> {
         let addr = *self.addrs.get(i).ok_or_else(|| {
             io::Error::new(
@@ -257,7 +275,7 @@ impl Worker {
             }
             // Linux: the engine binds one SO_REUSEPORT socket per I/O thread, all in the same
             // group as every other worker's.
-            ListenMode::ReusePort if cfg!(target_os = "linux") => Ok(Listener::tcp(addr)),
+            ListenMode::ReusePort if cfg!(target_os = "linux") => Ok(self.steered(i, addr)),
             // Elsewhere the engine's own first bind would not set SO_REUSEPORT: bind here.
             ListenMode::ReusePort => Ok(Listener::tcp_from_std(only_sys::listen(
                 addr,
@@ -265,6 +283,36 @@ impl Worker {
                 self.backlog,
             )?)),
             _ => Ok(Listener::tcp(addr)),
+        }
+    }
+
+    /// `Listener::tcp(addr)`, joined to the shared steering of address `i` when there is one.
+    fn steered(&self, i: usize, addr: SocketAddr) -> Listener {
+        let l = Listener::tcp(addr);
+        let Some(dir) = self.bpf_dirs.get(i).filter(|d| !d.is_empty()) else {
+            return l;
+        };
+        let t = self.bpf_threads.max(1);
+        let opened = only::ebpf::SharedSteering::open(dir)
+            .and_then(|s| s.at(self.index.saturating_mul(t), t));
+        match opened {
+            Ok(s) => {
+                let mut cfg = EbpfConfig::default();
+                cfg.steering = s.steering();
+                cfg.shared = Some(s);
+                l.threads(t).accel(Accel::Ebpf(cfg))
+            }
+            Err(e) => {
+                only::telemetry::log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!(
+                        "prefork: worker {}: shared BPF steering {dir}: {e}; using the kernel's \
+                         SO_REUSEPORT hashing",
+                        self.index
+                    ),
+                );
+                l
+            }
         }
     }
 
@@ -333,14 +381,14 @@ impl Worker {
             && engine
                 .accel_status()
                 .iter()
-                .any(|s| matches!(s, AccelStatus::Steering(_)))
+                .any(|s| matches!(s, AccelStatus::Steering(i) if !i.shared))
         {
             only::telemetry::log_or_stderr(
                 only_log::Level::Warn,
                 format_args!(
                     "prefork: worker {}: Accel::Ebpf steering in a SO_REUSEPORT group shared by \
                      {} worker processes replaces the group's program and sends new connections \
-                     only to this worker's sockets; use ListenMode::Inherit or drop the Accel",
+                     only to this worker's sockets; use Prefork::bpf_steering, ListenMode::Inherit or no Accel",
                     self.index, self.workers
                 ),
             );

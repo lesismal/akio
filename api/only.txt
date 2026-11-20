@@ -145,6 +145,7 @@ impl core::panic::unwind_safe::UnwindSafe for only::Backend
 #[non_exhaustive] pub struct only::EbpfConfig
 pub only::EbpfConfig::ebpf_programs: bool
 pub only::EbpfConfig::pin_threads: bool
+pub only::EbpfConfig::shared: core::option::Option<only_ebpf::shared::SharedSteering>
 pub only::EbpfConfig::steering: only_ebpf::steer::Steering
 pub only::EbpfConfig::strict: bool
 impl core::clone::Clone for only::EbpfConfig

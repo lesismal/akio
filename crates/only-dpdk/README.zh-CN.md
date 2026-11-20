@@ -10,6 +10,8 @@ pacing 的 TCP；UDP 数据报双向携带 ECN 码点；安全 Rust，`#![forbid
 
 - **DPDK** 端口（feature `pmd`，Linux，通过 `pkg-config` 链接 libdpdk）：按 `EalConfig` 初始化
   EAL，每个 rx/tx 队列对一个 I/O 线程，mbuf 批量收发，RSS；
+- 经 **AF_XDP** socket 使用现有 Linux 接口（`Device::AfXdp`，ADR-063）：XDP 程序把每个 RX 队列重定向到由 I/O
+  线程轮询的 socket，驱动支持时零拷贝（同一个协议栈，无需 DPDK）；
 - Linux **TAP** 接口或 **AF_PACKET** socket（同一个协议栈，无需 DPDK）；
 - 进程内的**内存链路**（任意平台；用于测试与示例）。
 

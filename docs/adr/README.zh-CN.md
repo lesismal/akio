@@ -63,5 +63,6 @@
 - [ADR-059：客户端的 cookie、Happy Eyeballs、DNS 缓存与到代理的 TLS；SOCKS 分片与 TLS](059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md)（2026-11-20 采纳）
 - [ADR-061：完整的 QPACK 编码器与 HTTP/3 客户端流式响应](061-qpack-encoder-h3-streamed-responses.zh-CN.md)（2026-11-20 采纳）
 - [ADR-062：only-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo](062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)（2026-11-20 采纳）
+- [ADR-063：经 bpffs 的跨进程分流、重载时的 listener 迁移与 AF_XDP](063-shared-steering-migration-af-xdp.zh-CN.md)（2026-11-21 采纳）
 - [ADR-065：无连接的 UDP listener（`DatagramsHandler`）](065-connectionless-datagrams.zh-CN.md)（2026-11-21 采纳）
 - [ADR-066：静态文件缓存的变更通知（inotify / kqueue）](066-static-files-change-notifications.zh-CN.md)（2026-11-20 采纳）

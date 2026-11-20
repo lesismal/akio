@@ -1,4 +1,5 @@
 pub mod only_dpdk
+pub use only_dpdk::XdpMode
 #[non_exhaustive] pub enum only_dpdk::Congestion
 pub only_dpdk::Congestion::Cubic
 pub only_dpdk::Congestion::NewReno
@@ -20,6 +21,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_dpdk::Congestion
 impl core::panic::unwind_safe::UnwindSafe for only_dpdk::Congestion
 #[non_exhaustive] pub enum only_dpdk::Device
 pub only_dpdk::Device::AfPacket(alloc::string::String)
+pub only_dpdk::Device::AfXdp(only_dpdk::AfXdpConfig)
 pub only_dpdk::Device::Dpdk(only_dpdk::EalConfig)
 pub only_dpdk::Device::Memory(only_dpdk::MemoryPort)
 pub only_dpdk::Device::Tap(alloc::string::String)
@@ -32,6 +34,43 @@ impl core::marker::Sync for only_dpdk::Device
 impl core::marker::Unpin for only_dpdk::Device
 impl core::panic::unwind_safe::RefUnwindSafe for only_dpdk::Device
 impl core::panic::unwind_safe::UnwindSafe for only_dpdk::Device
+#[non_exhaustive] pub enum only_dpdk::ZeroCopy
+pub only_dpdk::ZeroCopy::Auto
+pub only_dpdk::ZeroCopy::Off
+pub only_dpdk::ZeroCopy::Required
+impl core::clone::Clone for only_dpdk::ZeroCopy
+pub fn only_dpdk::ZeroCopy::clone(&self) -> Self
+impl core::cmp::Eq for only_dpdk::ZeroCopy
+impl core::cmp::PartialEq for only_dpdk::ZeroCopy
+pub fn only_dpdk::ZeroCopy::eq(&self, &Self) -> bool
+impl core::default::Default for only_dpdk::ZeroCopy
+pub fn only_dpdk::ZeroCopy::default() -> Self
+impl core::fmt::Debug for only_dpdk::ZeroCopy
+pub fn only_dpdk::ZeroCopy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_dpdk::ZeroCopy
+impl core::marker::StructuralPartialEq for only_dpdk::ZeroCopy
+impl core::marker::Send for only_dpdk::ZeroCopy
+impl core::marker::Sync for only_dpdk::ZeroCopy
+impl core::marker::Unpin for only_dpdk::ZeroCopy
+impl core::panic::unwind_safe::RefUnwindSafe for only_dpdk::ZeroCopy
+impl core::panic::unwind_safe::UnwindSafe for only_dpdk::ZeroCopy
+#[non_exhaustive] pub struct only_dpdk::AfXdpConfig
+pub only_dpdk::AfXdpConfig::frames: u32
+pub only_dpdk::AfXdpConfig::interface: alloc::string::String
+pub only_dpdk::AfXdpConfig::mode: only_ebpf::xdp::XdpMode
+pub only_dpdk::AfXdpConfig::queues: u16
+pub only_dpdk::AfXdpConfig::zero_copy: only_dpdk::ZeroCopy
+impl only_dpdk::AfXdpConfig
+pub fn only_dpdk::AfXdpConfig::new(impl core::convert::Into<alloc::string::String>) -> only_dpdk::AfXdpConfig
+impl core::clone::Clone for only_dpdk::AfXdpConfig
+pub fn only_dpdk::AfXdpConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_dpdk::AfXdpConfig
+pub fn only_dpdk::AfXdpConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_dpdk::AfXdpConfig
+impl core::marker::Sync for only_dpdk::AfXdpConfig
+impl core::marker::Unpin for only_dpdk::AfXdpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_dpdk::AfXdpConfig
+impl core::panic::unwind_safe::UnwindSafe for only_dpdk::AfXdpConfig
 #[non_exhaustive] pub struct only_dpdk::DpdkConfig
 pub only_dpdk::DpdkConfig::address: core::net::ip_addr::Ipv4Addr
 pub only_dpdk::DpdkConfig::address6: core::option::Option<core::net::ip_addr::Ipv6Addr>

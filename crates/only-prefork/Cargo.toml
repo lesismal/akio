@@ -27,5 +27,9 @@ only-http = { workspace = true }
 name = "prefork"
 harness = false
 
+[[test]]
+name = "bpf"
+harness = false
+
 [lints]
 workspace = true

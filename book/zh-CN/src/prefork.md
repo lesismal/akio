@@ -31,7 +31,7 @@ worker 是一个函数：在 supervisor 准备好的监听器上构建引擎，�
 
 | `ListenMode` | 套接字 | 均衡 | worker 退出时 |
 |---|---|---|---|
-| `ReusePort`（Linux 默认） | 每个 worker 以 `SO_REUSEPORT` 绑定，每个 I/O 线程一个套接字；supervisor 只保留端口、不监听 | 内核按哈希分到所有 worker 的套接字 | 正在关闭的 worker 套接字上已排队的连接会被重置，除非设置 `net.ipv4.tcp_migrate_req=1`（Linux 5.14+） |
+| `ReusePort`（Linux 默认） | 每个 worker 以 `SO_REUSEPORT` 绑定，每个 I/O 线程一个套接字；supervisor 只保留端口、不监听 | 内核按哈希分到所有 worker 的套接字 | 正在关闭的 worker 套接字上已排队的连接会被重置，除非它们被迁移：使用 `bpf_steering` 时迁到新 worker（Linux 5.14+），设置 `net.ipv4.tcp_migrate_req=1` 时迁到随机一个存活的 worker |
 | `Inherit`（macOS 默认） | supervisor 监听一次；worker 继承该套接字（`Listener::tcp_from_std`） | 谁先 accept 谁处理 | 不拒绝任何连接：supervisor 让套接字一直处于监听状态 |
 
 macOS 允许多个进程以 `SO_REUSEPORT` 绑定同一端口，但把所有连接交给最后一个，所以 `Auto` 在那里选择
@@ -106,7 +106,14 @@ worker 执行它的钩子（直接向某个 worker 发送 SIGUSR1 只重载那�
 `Accel::Ebpf` 把分流程序挂到监听器的 reuseport 组上。在 `ReusePort` 模式的 prefork 中，所有 worker 的套接字
 组成同一个组，从某个 worker 挂载的程序会替换组上的程序，而且只索引该 worker 的套接字：所有新连接都会去往最后
 挂载的 worker。不要把两者一起使用（`Worker::serve` 发现时会警告）。在 `Inherit` 模式下，worker 的监听器不构成
-reuseport 组，`Accel::Ebpf` 报告 `Degraded`。通过 bpffs 中固定的程序做跨进程分流尚未实现。
+reuseport 组，`Accel::Ebpf` 报告 `Degraded`。
+
+跨进程分流请用 `Prefork::bpf_steering(BpfSteering::new(steering, threads))`（ADR-063）。supervisor 在 bpffs 中
+为每个地址固定一个程序和 socket 数组，共 `workers * threads` 个槽位。每个 worker 的 `listener(i)` 自带 `threads`
+个 I/O 线程并加入自己的槽位，重启或重载后的 worker 接管同样的槽位。在 Linux 5.14+ 上，这个程序同时也是
+`SELECT_OR_MIGRATE` 策略：重载产生的新 worker 一构建完成就接管其槽位，旧监听器关闭时仍在排队的连接迁移给它，
+因此 `ReusePort` 重载不重置任何连接，也不需要 `tcp_migrate_req`。没有 root 或 bpffs 时 worker 退回内核哈希
+（设置 `strict` 则 spawn 失败）。
 
 ## 测试
 

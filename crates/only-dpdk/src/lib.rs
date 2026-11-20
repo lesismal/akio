@@ -7,6 +7,10 @@
 //! * a **DPDK** port ([`Device::Dpdk`], cargo feature `pmd`, Linux, links `libdpdk`): the EAL is
 //!   initialised from [`EalConfig`], each I/O thread polls one rx/tx queue pair with
 //!   `rte_eth_rx_burst` / `rte_eth_tx_burst`, frames are read from and written to mbufs in place;
+//! * an existing Linux interface through **AF_XDP** sockets ([`Device::AfXdp`], ADR-063): the
+//!   kernel's lighter bypass, without DPDK or a dedicated driver: an XDP program redirects each
+//!   RX queue to a socket whose rings and UMEM the I/O thread polls (zero-copy where the driver
+//!   supports it, copy mode otherwise);
 //! * a Linux **TAP** interface ([`Device::Tap`]) or an existing interface through an
 //!   **AF_PACKET** socket ([`Device::AfPacket`]): the same stack without DPDK, for development,
 //!   tests and machines without a DPDK-capable NIC;
@@ -100,6 +104,92 @@ impl Default for EalConfig {
     }
 }
 
+pub use only_ebpf::xdp::XdpMode;
+
+/// Whether [`Device::AfXdp`] binds its sockets in zero-copy mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ZeroCopy {
+    /// Zero-copy where the driver supports it on the queue (the NIC writes frames straight into
+    /// the socket's memory), copy mode otherwise (the kernel copies each frame once, still
+    /// without an skb or a syscall per frame).
+    #[default]
+    Auto,
+    /// Zero-copy, or fail.
+    Required,
+    /// Copy mode.
+    Off,
+}
+
+/// Configuration of [`Device::AfXdp`]. `#[non_exhaustive]`: start from
+/// [`AfXdpConfig::new`] and set fields.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct AfXdpConfig {
+    /// The interface (a NIC, or one end of a veth pair).
+    pub interface: String,
+    /// RX/TX queues `0..queues`, one AF_XDP socket and one I/O thread each (default 1). The
+    /// interface must have that many queues; with several, its RSS spreads flows over them.
+    /// Frames of the interface's other queues go to the kernel.
+    pub queues: u16,
+    /// How the redirect program is attached (default [`XdpMode::Auto`]: native, else generic).
+    pub mode: XdpMode,
+    /// Zero-copy or copy mode (default [`ZeroCopy::Auto`]).
+    pub zero_copy: ZeroCopy,
+    /// UMEM chunks of 4 KiB per queue, half for receiving and half for sending (default 4096,
+    /// 16 MiB per queue; at least 128). Rings have `min(2048, frames / 2)` entries.
+    pub frames: u32,
+}
+
+impl AfXdpConfig {
+    /// One queue of `interface`, defaults for the rest.
+    pub fn new(interface: impl Into<String>) -> AfXdpConfig {
+        AfXdpConfig {
+            interface: interface.into(),
+            queues: 1,
+            mode: XdpMode::Auto,
+            zero_copy: ZeroCopy::Auto,
+            frames: 4096,
+        }
+    }
+}
+
+/// What a [`Device::AfXdp`] stack set up ([`af_xdp_info`]). `#[doc(hidden)]`: for tests and
+/// benchmarks.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AfXdpInfo {
+    /// The redirect program runs in the driver (native XDP), not in the generic skb path.
+    pub native: bool,
+    /// Every socket is bound in zero-copy mode.
+    pub zero_copy: bool,
+    /// Queues (sockets).
+    pub queues: u16,
+}
+
+static AF_XDP_INFO: Mutex<Vec<(String, AfXdpInfo)>> = Mutex::new(Vec::new());
+
+/// How the last [`Device::AfXdp`] stack opened on `interface` was set up (`None` if none
+/// was). `#[doc(hidden)]`: for tests and benchmarks.
+#[doc(hidden)]
+pub fn af_xdp_info(interface: &str) -> Option<AfXdpInfo> {
+    AF_XDP_INFO
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .rev()
+        .find(|(i, _)| i == interface)
+        .map(|(_, v)| *v)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn record_af_xdp(interface: &str, info: AfXdpInfo) {
+    let mut v = AF_XDP_INFO.lock().unwrap_or_else(|p| p.into_inner());
+    v.retain(|(i, _)| i != interface);
+    v.push((interface.to_owned(), info));
+}
+
 /// The link layer a stack runs on.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -115,6 +205,13 @@ pub enum Device {
     /// kernel keeps its own stack on that interface too: use an interface the kernel does not
     /// use (one end of a veth pair, a dedicated NIC), with an address the kernel does not own.
     AfPacket(String),
+    /// An existing Linux interface through AF_XDP sockets (Linux 5.4+; needs `CAP_NET_ADMIN`,
+    /// `CAP_NET_RAW` and `CAP_BPF`, or root). An XDP program redirects every frame of the
+    /// configured queues to the stack, so the kernel no longer sees that traffic: give the
+    /// stack an interface (or queues) of its own. The default MAC is the interface's, so a NIC
+    /// needs no promiscuous mode. Fails with `AlreadyExists`/`Busy` if another XDP program is
+    /// attached, and with `Unsupported` off Linux.
+    AfXdp(AfXdpConfig),
     /// One end of an in-process [`MemoryWire`].
     Memory(MemoryPort),
 }
@@ -145,8 +242,8 @@ pub struct DpdkConfig {
     pub prefix_len6: u8,
     /// IPv6 default router (usually its link-local address), for peers off the link.
     pub gateway6: Option<Ipv6Addr>,
-    /// MAC address. `None`: the DPDK port's own address, or a locally administered address
-    /// derived from `address` for the other devices.
+    /// MAC address. `None`: the DPDK port's or AF_XDP interface's own address, or a locally
+    /// administered address derived from `address` for the other devices.
     pub mac: Option<[u8; 6]>,
     /// IP MTU (default 1500).
     pub mtu: usize,

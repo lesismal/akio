@@ -87,6 +87,7 @@ pub(crate) const FN_MAP_UPDATE_ELEM: i32 = 2;
 pub(crate) const FN_KTIME_GET_NS: i32 = 5;
 pub(crate) const FN_GET_SMP_PROCESSOR_ID: i32 = 8;
 pub(crate) const FN_GET_SOCKET_COOKIE: i32 = 46;
+pub(crate) const FN_REDIRECT_MAP: i32 = 51;
 pub(crate) const FN_SKB_LOAD_BYTES_RELATIVE: i32 = 68;
 pub(crate) const FN_SK_REDIRECT_HASH: i32 = 72;
 pub(crate) const FN_SK_SELECT_REUSEPORT: i32 = 82;
@@ -315,6 +316,66 @@ pub(crate) fn reuseport_hash(sockarray: i32, slots: i32, key: HashKey) -> Vec<In
     a.bind(pass);
     a.exit_with(SK_PASS);
     a.finish()
+}
+
+/// `struct sk_reuseport_md`: offsets of `hash` and `migrating_sk` (Linux 5.14+).
+const MD_HASH: i16 = 32;
+const MD_MIGRATING_SK: i16 = 48;
+
+/// `BPF_PROG_TYPE_SK_REUSEPORT` for a group shared by several processes (pinned in bpffs):
+/// `n` sockets in `sockarray`, chosen by [`reuseport_cpu`] or [`reuseport_hash`] (`slots`
+/// is only read by the latter). With `migrate` the program is loaded for
+/// `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`: when the kernel moves a request or an accepted-queue
+/// connection off a closing listener (`migrating_sk` set), it selects
+/// `sockarray[hash % n]`, the slot's current socket, which after a prefork reload is the new
+/// worker's; an empty slot leaves the choice to the kernel (a random live listener).
+pub(crate) fn reuseport_shared(
+    sockarray: i32,
+    slots: i32,
+    n: u32,
+    steering: crate::Steering,
+    migrate: bool,
+) -> Vec<Insn> {
+    let body = match steering {
+        crate::Steering::Hash(key) => reuseport_hash(sockarray, slots, key),
+        _ => reuseport_cpu(sockarray, n),
+    };
+    if !migrate {
+        return body;
+    }
+    let mut a = Asm::default();
+    let skip = a.label();
+    a.op(LDX_MEM_DW, R2, R1, MD_MIGRATING_SK, 0)
+        .jmp(JMP_JEQ_K, R2, 0, 0, skip)
+        .i(mov_x(R6, R1))
+        .op(LDX_MEM_W, R0, R1, MD_HASH, 0)
+        .op(ALU_MOD_K, R0, 0, 0, n.max(1) as i32)
+        .op(STX_MEM_W, R10, R0, -4, 0)
+        .ld_map(R2, sockarray)
+        .i(mov_x(R1, R6))
+        .i(mov_x(R3, R10))
+        .op(ALU64_ADD_K, R3, 0, 0, -4)
+        .i(mov_k(R4, 0))
+        .call(FN_SK_SELECT_REUSEPORT)
+        .exit_with(SK_PASS);
+    a.bind(skip);
+    let mut p = a.finish();
+    p.extend(body);
+    p
+}
+
+/// `BPF_PROG_TYPE_XDP` for AF_XDP: redirects every frame of an RX queue to the AF_XDP socket
+/// stored for that queue in `xskmap` (`XSKMAP`); a queue without a socket passes its frames to
+/// the kernel (the `XDP_PASS` default action of `bpf_redirect_map`, Linux 5.3+).
+pub(crate) fn xdp_redirect_xsk(xskmap: i32) -> Vec<Insn> {
+    let mut p = vec![ins(LDX_MEM_W, R2, R1, 16, 0)]; // xdp_md.rx_queue_index
+    p.extend(ld_map_fd(R1, xskmap));
+    p.extend([
+        mov_k(R3, XDP_PASS),
+        call(FN_REDIRECT_MAP),
+        ins(EXIT, 0, 0, 0, 0),
+    ]);
+    p
 }
 
 /// Indexes of the rate limiter's counters (`PERCPU_ARRAY` of `u64`).
@@ -590,6 +651,10 @@ mod tests {
                 cap: 10_000,
                 syn_only: false,
             }),
+            reuseport_shared(3, 4, 6, crate::Steering::Cpu, true),
+            reuseport_shared(3, 4, 6, crate::Steering::Hash(HashKey::SrcIp), true),
+            reuseport_shared(3, 4, 6, crate::Steering::Hash(HashKey::SrcIpPort), false),
+            xdp_redirect_xsk(5),
             xdp_rate_limit(LimitProg {
                 sources: 3,
                 counters: 4,

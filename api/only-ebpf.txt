@@ -254,8 +254,10 @@ impl core::marker::Unpin for only_ebpf::relay::ByteCounts
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::ByteCounts
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::ByteCounts
 #[non_exhaustive] pub struct only_ebpf::Probe
+pub only_ebpf::Probe::af_xdp: bool
 pub only_ebpf::Probe::reuseport_cbpf: bool
 pub only_ebpf::Probe::reuseport_ebpf: bool
+pub only_ebpf::Probe::reuseport_migrate: bool
 pub only_ebpf::Probe::sockmap_relay: bool
 pub only_ebpf::Probe::xdp: bool
 impl core::clone::Clone for only_ebpf::Probe
@@ -309,6 +311,26 @@ impl core::marker::Sync for only_ebpf::relay::Relay
 impl core::marker::Unpin for only_ebpf::relay::Relay
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Relay
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Relay
+pub struct only_ebpf::SharedSteering
+impl only_ebpf::SharedSteering
+pub fn only_ebpf::SharedSteering::at(&self, usize, usize) -> core::io::error::Result<only_ebpf::SharedSteering>
+pub fn only_ebpf::SharedSteering::create(impl core::convert::AsRef<std::path::Path>, usize, only_ebpf::Steering) -> core::io::error::Result<only_ebpf::SharedSteering>
+pub fn only_ebpf::SharedSteering::dir(&self) -> &std::path::Path
+pub fn only_ebpf::SharedSteering::join(&self, &[i32]) -> core::io::error::Result<only_ebpf::SteerInfo>
+pub fn only_ebpf::SharedSteering::migrates(&self) -> bool
+pub fn only_ebpf::SharedSteering::open(impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<only_ebpf::SharedSteering>
+pub fn only_ebpf::SharedSteering::slots(&self) -> (usize, usize)
+pub fn only_ebpf::SharedSteering::sockets(&self) -> usize
+pub fn only_ebpf::SharedSteering::steering(&self) -> only_ebpf::Steering
+impl core::clone::Clone for only_ebpf::SharedSteering
+pub fn only_ebpf::SharedSteering::clone(&self) -> Self
+impl core::fmt::Debug for only_ebpf::SharedSteering
+pub fn only_ebpf::SharedSteering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::SharedSteering
+impl core::marker::Sync for only_ebpf::SharedSteering
+impl core::marker::Unpin for only_ebpf::SharedSteering
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::SharedSteering
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::SharedSteering
 pub struct only_ebpf::Splice
 impl only_ebpf::relay::Splice
 pub fn only_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
@@ -322,7 +344,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Splice
 #[non_exhaustive] pub struct only_ebpf::SteerInfo
 pub only_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
+pub only_ebpf::SteerInfo::migrate: bool
 pub only_ebpf::SteerInfo::pinned_threads: usize
+pub only_ebpf::SteerInfo::shared: bool
 pub only_ebpf::SteerInfo::sockets: usize
 pub only_ebpf::SteerInfo::steering: only_ebpf::Steering
 pub only_ebpf::SteerInfo::tier: only_ebpf::Tier
@@ -358,6 +382,7 @@ impl core::marker::Sync for only_ebpf::xdp::XdpLimit
 impl core::marker::Unpin for only_ebpf::xdp::XdpLimit
 impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::xdp::XdpLimit
 impl core::panic::unwind_safe::UnwindSafe for only_ebpf::xdp::XdpLimit
+pub const only_ebpf::MAX_SHARED_SOCKETS: usize
 pub fn only_ebpf::attach_reuseport(&[i32], only_ebpf::Steering, only_ebpf::AttachOptions) -> core::io::error::Result<only_ebpf::SteerInfo>
 pub fn only_ebpf::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<only_ebpf::relay::ByteCounts>
 pub fn only_ebpf::cpu_pinning(usize) -> core::io::error::Result<alloc::vec::Vec<alloc::vec::Vec<usize>>>

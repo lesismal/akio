@@ -577,6 +577,7 @@ dependencies = [
  "cc",
  "only",
  "only-core",
+ "only-ebpf",
  "only-kcp",
  "only-sys",
  "pkg-config",
