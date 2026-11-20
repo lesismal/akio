@@ -191,21 +191,31 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Connection {
-    fn new(h: proto::ConnHandle, conn: proto::Connection, ep: Arc<Ep>) -> Connection {
-        Connection(Arc::new_cyclic(|me| Shared {
-            h,
-            ep,
-            me: me.clone(),
-            state: Mutex::new(State {
-                conn,
-                armed: None,
-                lost: false,
-            }),
-            events: Mutex::new(VecDeque::new()),
-            handler: Mutex::new(None),
-            done: AtomicBool::new(false),
-            outq: Mutex::new(VecDeque::new()),
-            sending: AtomicBool::new(false),
+    fn new(h: proto::ConnHandle, mut conn: proto::Connection, ep: Arc<Ep>) -> Connection {
+        Connection(Arc::new_cyclic(|me: &Weak<Shared>| {
+            // A handshake suspended for an asynchronous anti-replay answer (ADR-062) is driven
+            // again, from the thread that answers, once it is in.
+            let wake = me.clone();
+            conn.set_tls_waker(Arc::new(move || {
+                if let Some(s) = wake.upgrade() {
+                    Connection(s).drive();
+                }
+            }));
+            Shared {
+                h,
+                ep,
+                me: me.clone(),
+                state: Mutex::new(State {
+                    conn,
+                    armed: None,
+                    lost: false,
+                }),
+                events: Mutex::new(VecDeque::new()),
+                handler: Mutex::new(None),
+                done: AtomicBool::new(false),
+                outq: Mutex::new(VecDeque::new()),
+                sending: AtomicBool::new(false),
+            }
         }))
     }
 

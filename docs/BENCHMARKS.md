@@ -325,6 +325,27 @@ A server with `prefer_version` copies the client's first Initial CRYPTO data (on
 about 300 bytes to a few KiB) once per connection; the store is called only for ClientHellos
 whose early data would be accepted.
 
+#### Asynchronous anti-replay store and rotating ticket keys: handshake A/B
+
+ADR-062 (2026-11-21, `b22519ae` → this branch, alternating runs on the quiet host through
+`quiet.sh`; default configurations, so no store is called and tickets use the fixed key: the
+path every connection takes). TLS with `tls-bench handshakes 2` on CPU 2 (three rounds), QUIC
+with `quic-bench` on CPUs 2–5 (`handshakes 5 8` seven rounds, `resume 300` three rounds):
+
+| Case | Before | After | After / before |
+|---|---:|---:|---:|
+| TLS full handshakes/s, X25519 (mean) | 5,361 | 5,323 | 0.99 |
+| TLS full handshakes/s, secp256r1 (mean) | 5,454 | 5,419 | 0.99 |
+| TLS full handshakes/s, X25519, RSA-2048 certificate (mean) | 3,242 | 3,258 | 1.00 |
+| QUIC full handshakes/s, 8 concurrent (median) | 3,934 | 3,922 | 1.00 |
+| QUIC resumed, 0-RTT: dial to answer (median of the round medians) | 253.6 µs | 252.0 µs | 0.99 |
+| QUIC resumed, 1-RTT: dial to answer (median of the round medians) | 293.7 µs | 294.8 µs | 1.00 |
+
+The rustls column of `tls-bench`, run in the same processes, moved by as much (4,961 → 4,954
+handshakes/s on average), so the TLS differences are within the host's noise. A first QUIC
+handshake set of three rounds, always base first, read 0.97; seven rounds with the order
+reversed read 1.00 (rounds 3,676–3,942/s for both).
+
 ### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
 
 Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel

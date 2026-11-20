@@ -136,40 +136,58 @@ records the PSK binder of each accepted ClientHello for 30 seconds (section 8.2:
 seen before gets its early data rejected and continues as an ordinary resumption. The record
 holds 100,000 ClientHellos per `ServerConfig`; when full, early data is rejected.
 
-**Servers sharing tickets** ([ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)).
+**Servers sharing tickets** ([ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md),
+[ADR-062](https://github.com/lesismal/only/blob/main/docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.md)).
 Several processes or machines accept each other's tickets when built with the same
-`.session_ticket_key(key)` (48 secret random bytes: a 16-byte key name and a 32-byte key; rotate
-by building new configurations). They then also need one replay record, or a first flight
-recorded on its way to one server can be replayed to another: `.anti_replay_store(store)` takes
-any `Arc<dyn AntiReplayStore>`, whose one method records a ClientHello's binder for a time and
-says whether it was new. It is called on the I/O thread during the handshake, only for
-ClientHellos whose early data would otherwise be accepted, so keep it short and bounded by a
-timeout. Errors **fail closed**: the early data is rejected and the client sends it again after
-the handshake. The default is `MemoryAntiReplay` (the per-configuration record above). With
-Redis, one atomic `SET key 1 NX PX ttl` per call:
+`.session_ticket_key(key)` (48 secret random bytes: a 16-byte key name and a 32-byte key), or,
+to rotate keys without refusing the tickets already out, the same `.session_ticket_keys(keys)`:
+
+```rust,ignore
+use only_tls::TicketKeys;
+// Every server derives the same key per period from a shared secret: they rotate in step.
+let keys = TicketKeys::derived(&shared_secret, Duration::from_secs(6 * 3600));
+// Or rotate by hand (the same new key pushed to every server), the old keys still opening:
+let keys = TicketKeys::new(first_key);
+keys.rotate(next_key); // up to 4 keys: one seals, three still open
+```
+
+They then also need one replay record, or a first flight recorded on its way to one server can
+be replayed to another. A store across the network goes in
+`.async_anti_replay_store(store)`: its one method records a ClientHello's binder for a time
+and answers, later and from any thread, whether it was new. The handshake waiting for the
+answer is suspended (the I/O thread serves its other connections meanwhile) and resumes on its
+I/O thread; no answer within `.anti_replay_timeout(..)` (1 s) rejects the early data. Only
+ClientHellos whose early data would otherwise be accepted reach the store. Errors **fail
+closed**: the early data is rejected and the client sends it again after the handshake. With
+Redis, one atomic `SET key 1 NX PX ttl` per call, on a non-blocking client:
 
 ```rust,ignore
 use std::{io, sync::Arc, time::Duration};
-use only_tls::{AntiReplayStore, ServerConfig};
+use only_tls::{AsyncAntiReplayStore, ReplayCheck, ServerConfig, TicketKeys};
 
-struct RedisReplay { pool: MyRedisPool } // any client with a short timeout
+struct RedisReplay { client: MyAsyncRedis } // replies on the client's own thread
 
-impl AntiReplayStore for RedisReplay {
-    fn check_and_insert(&self, binder: &[u8], ttl: Duration) -> io::Result<bool> {
+impl AsyncAntiReplayStore for RedisReplay {
+    fn check_and_insert(&self, binder: &[u8], ttl: Duration, done: ReplayCheck) {
         let key = format!("only:0rtt:{}", hex(binder));
-        // "OK" if the key was set (first time), nil if it existed (a replay).
-        let reply = self.pool.set_nx_px(&key, "1", ttl.as_millis() as u64)
-            .map_err(io::Error::other)?; // timeouts too: early data rejected
-        Ok(reply.is_some())
+        // Sends and returns; the reply callback answers: "OK" if the key was set (first
+        // time), nil if it existed (a replay), an error rejects the early data.
+        self.client.set_nx_px(&key, "1", ttl.as_millis() as u64, move |reply| {
+            done.complete(reply.map(|r| r.is_some()).map_err(io::Error::other));
+        });
     }
 }
 
 let cfg = ServerConfig::builder(chain, key)
-    .session_ticket_key(ticket_key)          // the same on every server
+    .session_ticket_keys(TicketKeys::derived(&shared_secret, Duration::from_secs(6 * 3600)))
     .early_data(16384)
-    .anti_replay_store(Arc::new(RedisReplay { pool }))
+    .async_anti_replay_store(Arc::new(RedisReplay { client }))
     .build()?;
 ```
+
+A store that answers in memory can implement the synchronous `AntiReplayStore` instead and go
+in `.anti_replay_store(store)` (called on the I/O thread, so it must not wait); the default is
+`MemoryAntiReplay` (the per-configuration record above).
 
 The store must be atomic (a read then a write lets a concurrent replay through); across regions
 with replication lag, give each region its own store and ticket key. QUIC servers get both

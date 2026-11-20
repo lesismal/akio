@@ -5,12 +5,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use only_crypto::chacha::ChaCha20Poly1305;
-
 use super::alert::{Alert, Fatal, fatal};
 use super::codec::{DResult, Reader, put_u8, put_u16, put_u32, put_vec8, put_vec16, put_vec24};
 use super::common::random;
-use crate::replay::AntiReplayStore;
+use crate::replay::{AntiReplayStore, AsyncAntiReplayStore, Slot, start_check};
 
 /// A resumable session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -119,10 +117,12 @@ impl Session {
     }
 }
 
-/// Seals sessions into stateless tickets: `key_name(16) || nonce(12) || ChaCha20-Poly1305`.
-pub(crate) struct Ticketer {
-    name: [u8; 16],
-    key: ChaCha20Poly1305,
+/// Seals sessions into stateless tickets: `key_name(16) || nonce(12) || ChaCha20-Poly1305`,
+/// under one key for the configuration's lifetime (the default, and `session_ticket_key`) or
+/// under rotating [`TicketKeys`](crate::TicketKeys).
+pub(crate) enum Ticketer {
+    Fixed(crate::tickets::TicketKey),
+    Rotating(crate::tickets::TicketKeys),
 }
 
 impl std::fmt::Debug for Ticketer {
@@ -133,34 +133,26 @@ impl std::fmt::Debug for Ticketer {
 
 impl Ticketer {
     pub(crate) fn new() -> Option<Ticketer> {
-        let name = random::<16>().ok()?;
-        let key = random::<32>().ok()?;
-        Some(Ticketer::from_key(name, &key))
+        Some(Ticketer::from_key(&random::<48>().ok()?))
     }
 
-    /// A ticketer whose tickets every ticketer with the same `name` and `key` opens.
-    pub(crate) fn from_key(name: [u8; 16], key: &[u8; 32]) -> Ticketer {
-        Ticketer {
-            name,
-            key: ChaCha20Poly1305::new(key),
-        }
+    /// A ticketer whose tickets every ticketer with the same key opens.
+    pub(crate) fn from_key(key: &[u8; 48]) -> Ticketer {
+        Ticketer::Fixed(crate::tickets::TicketKey::new(key))
     }
 
     pub(crate) fn seal(&self, s: &Session) -> Option<Vec<u8>> {
-        let nonce = random::<12>().ok()?;
-        let mut out = self.name.to_vec();
-        out.extend_from_slice(&nonce);
-        out.extend_from_slice(&self.key.encrypt(&nonce, &self.name, &s.encode()));
-        Some(out)
+        match self {
+            Ticketer::Fixed(k) => k.seal(s),
+            Ticketer::Rotating(k) => k.seal(s),
+        }
     }
 
     pub(crate) fn open(&self, ticket: &[u8]) -> Option<Session> {
-        if ticket.len() < 16 + 12 + 16 || ticket[..16] != self.name {
-            return None;
+        match self {
+            Ticketer::Fixed(k) => k.open(ticket),
+            Ticketer::Rotating(k) => k.open(ticket),
         }
-        let nonce: [u8; 12] = ticket[16..28].try_into().ok()?;
-        let plain = self.key.decrypt(&nonce, &self.name, &ticket[28..]).ok()?;
-        Session::decode(&plain)
     }
 }
 
@@ -221,19 +213,36 @@ impl SessionCache {
 pub(crate) struct AntiReplay {
     /// The freshness window, milliseconds.
     pub(crate) window_ms: u64,
-    store: Arc<dyn AntiReplayStore>,
+    store: ReplayStore,
+}
+
+/// Where accepted ClientHellos are recorded.
+pub(crate) enum ReplayStore {
+    /// Answered in the call (the default in-memory record, or an application's).
+    Sync(Arc<dyn AntiReplayStore>),
+    /// Answered later; the handshake waits at most the timeout.
+    Async(Arc<dyn AsyncAntiReplayStore>, Duration),
+}
+
+/// The answer of [`AntiReplay::record`].
+pub(crate) enum Verdict {
+    /// Known now: accept the early data or not.
+    Now(bool),
+    /// Comes later through the slot: the handshake suspends.
+    Later(Arc<Slot>),
 }
 
 impl std::fmt::Debug for AntiReplay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AntiReplay")
             .field("window_ms", &self.window_ms)
+            .field("async", &matches!(self.store, ReplayStore::Async(..)))
             .finish_non_exhaustive()
     }
 }
 
 impl AntiReplay {
-    pub(crate) fn new(window_ms: u64, store: Arc<dyn AntiReplayStore>) -> AntiReplay {
+    pub(crate) fn new(window_ms: u64, store: ReplayStore) -> AntiReplay {
         AntiReplay { window_ms, store }
     }
 
@@ -245,14 +254,27 @@ impl AntiReplay {
     }
 
     /// Records the ClientHello identified by `binder` (its first PSK binder): `false` if it
-    /// was seen before within the retention time, if the store is full or if it failed.
+    /// was seen before within the retention time, if the store is full or if it failed; or,
+    /// with an asynchronous store that did not answer in the call, the slot the answer
+    /// comes to.
     ///
     /// Retention: a replay passes the freshness check up to twice the window after the first
     /// use on the same clock; servers sharing a store may disagree on the time, so one more
     /// window covers clocks up to that far apart (three windows, 30 s by default).
-    pub(crate) fn record(&self, binder: &[u8]) -> bool {
+    pub(crate) fn record(&self, binder: &[u8]) -> Verdict {
         let ttl = Duration::from_millis(self.window_ms.saturating_mul(3));
-        self.store.check_and_insert(binder, ttl).unwrap_or(false)
+        match &self.store {
+            ReplayStore::Sync(st) => {
+                Verdict::Now(st.check_and_insert(binder, ttl).unwrap_or(false))
+            }
+            ReplayStore::Async(st, timeout) => {
+                let slot = start_check(&**st, binder, ttl, *timeout);
+                match slot.result() {
+                    Some(r) => Verdict::Now(r),
+                    None => Verdict::Later(slot),
+                }
+            }
+        }
     }
 }
 
@@ -413,14 +435,26 @@ mod tests {
         assert!(t.open(&bad).is_none());
         assert!(Ticketer::new().unwrap().open(&sealed).is_none());
         let (a, b) = (
-            Ticketer::from_key([1; 16], &[2; 32]),
-            Ticketer::from_key([1; 16], &[2; 32]),
+            Ticketer::from_key(&{
+                let mut k = [1; 48];
+                k[16..].fill(2);
+                k
+            }),
+            Ticketer::from_key(&{
+                let mut k = [1; 48];
+                k[16..].fill(2);
+                k
+            }),
         );
         assert_eq!(b.open(&a.seal(&s).unwrap()).unwrap(), s);
         assert!(
-            Ticketer::from_key([1; 16], &[3; 32])
-                .open(&a.seal(&s).unwrap())
-                .is_none()
+            Ticketer::from_key(&{
+                let mut k = [1; 48];
+                k[16..].fill(3);
+                k
+            })
+            .open(&a.seal(&s).unwrap())
+            .is_none()
         );
         assert!(t.open(&[0; 10]).is_none());
     }
@@ -428,16 +462,23 @@ mod tests {
     #[test]
     fn anti_replay() {
         use crate::replay::MemoryAntiReplay;
-        let a = AntiReplay::new(10_000, Arc::new(MemoryAntiReplay::new(2)));
+        let now = |v: Verdict| match v {
+            Verdict::Now(b) => b,
+            Verdict::Later(_) => panic!("a synchronous store answers now"),
+        };
+        let a = AntiReplay::new(
+            10_000,
+            ReplayStore::Sync(Arc::new(MemoryAntiReplay::new(2))),
+        );
         assert!(a.fresh(1_000, 5_000, 6_000));
         assert!(a.fresh(1_000, 0, 11_000));
         assert!(!a.fresh(1_000, 0, 11_001));
         assert!(!a.fresh(30_000, 15_000, 30_000));
-        assert!(a.record(&[1; 32]));
-        assert!(!a.record(&[1; 32]));
-        assert!(a.record(&[2; 32]));
+        assert!(now(a.record(&[1; 32])));
+        assert!(!now(a.record(&[1; 32])));
+        assert!(now(a.record(&[2; 32])));
         // Full.
-        assert!(!a.record(&[3; 32]));
+        assert!(!now(a.record(&[3; 32])));
         // A failing store fails closed.
         struct Down;
         impl AntiReplayStore for Down {
@@ -445,7 +486,87 @@ mod tests {
                 Err(std::io::Error::other("down"))
             }
         }
-        assert!(!AntiReplay::new(10_000, Arc::new(Down)).record(&[4; 32]));
+        assert!(!now(AntiReplay::new(
+            10_000,
+            ReplayStore::Sync(Arc::new(Down))
+        )
+        .record(&[4; 32])));
+    }
+
+    #[test]
+    fn async_anti_replay() {
+        use crate::replay::{AsyncAntiReplayStore, ReplayCheck};
+        use std::sync::Mutex;
+        /// Answers inline when `inline`, else keeps the checks for the test to answer.
+        struct Remote {
+            inline: bool,
+            held: Mutex<Vec<ReplayCheck>>,
+        }
+        impl AsyncAntiReplayStore for Remote {
+            fn check_and_insert(&self, binder: &[u8], ttl: Duration, done: ReplayCheck) {
+                assert_eq!(ttl, Duration::from_secs(30));
+                if self.inline {
+                    done.complete(Ok(binder[0] == 1));
+                } else {
+                    self.held.lock().unwrap().push(done);
+                }
+            }
+        }
+        let inline = Arc::new(Remote {
+            inline: true,
+            held: Mutex::new(Vec::new()),
+        });
+        let a = AntiReplay::new(10_000, ReplayStore::Async(inline, Duration::from_secs(1)));
+        assert!(matches!(a.record(&[1; 32]), Verdict::Now(true)));
+        assert!(matches!(a.record(&[2; 32]), Verdict::Now(false)));
+
+        let remote = Arc::new(Remote {
+            inline: false,
+            held: Mutex::new(Vec::new()),
+        });
+        let a = AntiReplay::new(
+            10_000,
+            ReplayStore::Async(remote.clone(), Duration::from_millis(200)),
+        );
+        let Verdict::Later(s1) = a.record(&[1; 32]) else {
+            panic!("pending")
+        };
+        let Verdict::Later(s2) = a.record(&[2; 32]) else {
+            panic!("pending")
+        };
+        let Verdict::Later(s3) = a.record(&[3; 32]) else {
+            panic!("pending")
+        };
+        let Verdict::Later(s4) = a.record(&[4; 32]) else {
+            panic!("pending")
+        };
+        assert_eq!(s1.result(), None);
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let w = woken.clone();
+        assert!(s1.set_waker(Arc::new(move || {
+            w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        let mut held = std::mem::take(&mut *remote.held.lock().unwrap());
+        let c4 = held.pop().unwrap();
+        let c3 = held.pop().unwrap();
+        let c2 = held.pop().unwrap();
+        let c1 = held.pop().unwrap();
+        // Answered from another thread: the waker runs once.
+        std::thread::spawn(move || c1.complete(Ok(true)))
+            .join()
+            .unwrap();
+        assert_eq!(s1.result(), Some(true));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!s1.set_waker(Arc::new(|| {})), "already answered");
+        // A store error and a dropped check reject.
+        c2.complete(Err(std::io::Error::other("down")));
+        assert_eq!(s2.result(), Some(false));
+        drop(c3);
+        assert_eq!(s3.result(), Some(false));
+        // No answer: the timeout rejects, and a late answer changes nothing.
+        assert!(!s4.wait());
+        c4.complete(Ok(true));
+        assert_eq!(s4.result(), Some(false));
     }
 
     #[test]

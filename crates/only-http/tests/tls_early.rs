@@ -107,3 +107,62 @@ fn early_requests_are_marked() {
     engine.shutdown();
     engine.wait();
 }
+
+/// A remote anti-replay store answered from another thread (ADR-062): the handshake waits
+/// for it without holding up the I/O thread, then resumes there.
+struct SlowStore(std::sync::Mutex<std::collections::HashSet<Vec<u8>>>);
+
+impl only::tls::AsyncAntiReplayStore for SlowStore {
+    fn check_and_insert(&self, binder: &[u8], _ttl: Duration, done: only::tls::ReplayCheck) {
+        let fresh = self.0.lock().unwrap().insert(binder.to_vec());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            done.complete(Ok(fresh));
+        });
+    }
+}
+
+#[test]
+fn early_data_with_an_async_anti_replay_store() {
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = only::tls::ServerConfig::builder(
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .alpn(["http/1.1"])
+    .session_tickets(true)
+    .early_data(16384)
+    .async_anti_replay_store(std::sync::Arc::new(SlowStore(Default::default())))
+    .build()
+    .unwrap();
+    let engine = Engine::builder()
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(backend())
+                .serve(Tls::server(scfg, serve(app()))),
+        )
+        .build()
+        .unwrap();
+    engine.start().unwrap();
+    let addr = engine.local_addrs()[0];
+    let mut roots = only::tls::RootCerts::empty();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = only::tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["http/1.1"])
+        .early_data(true)
+        .build()
+        .unwrap();
+    let get = b"GET / HTTP/1.1\r\nHost: a\r\n\r\n";
+    let last = b"GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n";
+    let (_, e) = exchange(addr, &ccfg, get, last);
+    assert_eq!(e, only::tls::EarlyData::NotAttempted);
+    for _ in 0..2 {
+        let (r, e) = exchange(addr, &ccfg, get, last);
+        assert_eq!(e, only::tls::EarlyData::Accepted);
+        assert!(r.contains("early=1") && r.contains("early=-"), "{r}");
+    }
+    engine.shutdown();
+    engine.wait();
+}

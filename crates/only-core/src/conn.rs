@@ -219,7 +219,59 @@ pub trait Transport: Send + 'static {
     fn handshake_timeout(&self) -> Option<std::time::Duration> {
         None
     }
+    /// Receives the connection's [`TransportWaker`] once, when the transport is installed.
+    /// A transport that waits for something outside the byte stream (a remote lookup during a
+    /// handshake) keeps it and calls [`TransportWaker::wake`] when that completes. The
+    /// default ignores it.
+    fn set_waker(&mut self, waker: TransportWaker) {
+        let _ = waker;
+    }
 }
+
+/// Lets a [`Transport`] that is waiting for something other than the peer's bytes resume:
+/// [`wake`](Self::wake) (from any thread) makes the connection's owning I/O thread call
+/// [`Transport::recv`] with no input, then hand any decoded bytes to `on_data` and flush what
+/// the transport produced, as for bytes read from the socket. Cheap to clone; holds no strong
+/// reference to the connection.
+#[derive(Clone)]
+pub struct TransportWaker {
+    inner: std::sync::Weak<ConnInner>,
+}
+
+impl std::fmt::Debug for TransportWaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportWaker").finish_non_exhaustive()
+    }
+}
+
+impl TransportWaker {
+    pub(crate) fn new(inner: &Arc<ConnInner>) -> TransportWaker {
+        TransportWaker {
+            inner: Arc::downgrade(inner),
+        }
+    }
+
+    /// A waker attached to no connection: [`wake`](Self::wake) does nothing (tests, and
+    /// transports driven outside an engine).
+    pub fn noop() -> TransportWaker {
+        TransportWaker {
+            inner: std::sync::Weak::new(),
+        }
+    }
+
+    /// Schedules the transport poll on the connection's I/O thread. Does nothing once the
+    /// connection is closed or gone.
+    pub fn wake(&self) {
+        if let Some(i) = self.inner.upgrade() {
+            if i.is_open() {
+                i.link.post_task(i.id, Box::new(TransportPoll));
+            }
+        }
+    }
+}
+
+/// The [`Task`] a [`TransportWaker`] posts.
+pub(crate) struct TransportPoll;
 
 #[derive(Default)]
 struct WriteState {

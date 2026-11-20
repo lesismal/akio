@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{Conn, ConnInner, Error, Task, Transport, conn::Completion};
+use crate::{
+    Conn, ConnInner, Error, Task, Transport,
+    conn::{Completion, TransportPoll, TransportWaker},
+};
 
 /// Per-connection state *and* event callbacks (ADR-003).
 ///
@@ -204,6 +207,13 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
         self.h.on_data_owned(&self.conn, data);
     }
     fn run_task(&mut self, task: Task) {
+        if task.is::<TransportPoll>() {
+            // The transport finished waiting (TransportWaker): poll it as if bytes arrived.
+            if self.secured {
+                self.on_data(&[]);
+            }
+            return;
+        }
         if let Ok(f) = task.downcast::<Completion<H>>() {
             (*f)(&mut self.h, &self.conn);
         }
@@ -214,7 +224,8 @@ impl<A: Acceptor> DynAcceptor for A {
     fn on_open(&self, inner: &Arc<ConnInner>) -> Box<dyn DynHandler> {
         let conn = Conn::<A::Handler>::new(inner.clone());
         let secured = match Acceptor::transport(self) {
-            Some(t) => {
+            Some(mut t) => {
+                t.set_waker(TransportWaker::new(inner));
                 inner.set_transport(t);
                 // Lets a client transport send its opening records right away.
                 let _ = inner.transport_recv(&[], &mut Vec::new());

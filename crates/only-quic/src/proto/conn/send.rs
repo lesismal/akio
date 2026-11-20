@@ -19,6 +19,7 @@ fn ack_room(sp: &Space) -> usize {
 impl Connection {
     /// The next datagram(s) to send, up to `max_datagrams` full-size ones for one GSO call.
     pub fn poll_transmit(&mut self, now: Instant, max_datagrams: usize) -> Option<Transmit> {
+        self.resume_tls(now);
         match &self.state {
             State::Drained | State::Draining { .. } => return None,
             State::Closing { resend, .. } => {

@@ -29,7 +29,7 @@ mod sync;
 pub mod telemetry;
 
 pub use config::{Config, SlowCallback, SlowHook};
-pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport};
+pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport, TransportWaker};
 #[doc(hidden)]
 pub use conn::{ConnInner, LoopLink, Task};
 #[doc(hidden)]

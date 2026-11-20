@@ -464,3 +464,308 @@ fn write_early_corpus() {
     let len = usize::from(u16::from_be_bytes([flight[3], flight[4]]));
     write("tls_server", "early_client_hello_body", &flight[9..5 + len]);
 }
+
+/// An asynchronous "remote" anti-replay store (ADR-062): the same shared map as
+/// [`RemoteStore`], answered from another thread after `delay` (or never, when `silent`), as a
+/// Redis client's reader thread would.
+#[derive(Default)]
+struct AsyncRemote {
+    map: std::sync::Arc<RemoteStore>,
+    delay: std::time::Duration,
+    silent: std::sync::atomic::AtomicBool,
+    inline: bool,
+    held: std::sync::Mutex<Vec<crate::ReplayCheck>>,
+}
+
+impl crate::AsyncAntiReplayStore for AsyncRemote {
+    fn check_and_insert(&self, binder: &[u8], ttl: std::time::Duration, done: crate::ReplayCheck) {
+        use crate::AntiReplayStore;
+        if self.silent.load(std::sync::atomic::Ordering::SeqCst) {
+            self.held.lock().unwrap().push(done);
+            return;
+        }
+        if self.inline {
+            return done.complete(self.map.check_and_insert(binder, ttl));
+        }
+        let (map, binder, delay) = (self.map.clone(), binder.to_vec(), self.delay);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            done.complete(map.check_and_insert(&binder, ttl));
+        });
+    }
+}
+
+/// [`run`] against a server whose anti-replay store answers asynchronously: the server takes
+/// the ClientHello and suspends (sending nothing) until the answer, its waker is called, and
+/// the handshake goes on. Returns the run and whether the server suspended.
+fn run_async(scfg: &ServerConfig, ccfg: &ClientConfig, early: &[u8]) -> (Run, bool) {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let mut c = crate::__proto::client(ccfg, "localhost").unwrap();
+    let mut s = crate::__proto::server(scfg);
+    let woken = std::sync::Arc::new(AtomicUsize::new(0));
+    let w = woken.clone();
+    s.set_waker(std::sync::Arc::new(move || {
+        w.fetch_add(1, SeqCst);
+    }));
+    let mut c2s = Vec::new();
+    c.seal(early, &mut c2s).unwrap();
+    let first_flight = c2s.clone();
+    let (mut s_plain, mut c_plain, mut s_plain_early) = (Vec::new(), Vec::new(), 0);
+    let mut suspended = false;
+    for _ in 0..50 {
+        if c2s.is_empty() && !c.handshaking() && !s.handshaking() {
+            break;
+        }
+        let mut s2c = Vec::new();
+        s.recv(&std::mem::take(&mut c2s), &mut s_plain, &mut s2c)
+            .unwrap();
+        if s.suspended() {
+            suspended = true;
+            // Nothing goes out and nothing reaches the application meanwhile; bytes that
+            // arrive wait.
+            assert!(s2c.is_empty() && s_plain.is_empty());
+            s.recv(b"", &mut s_plain, &mut s2c).unwrap();
+            assert!(s2c.is_empty());
+            s.wait_resumable();
+            assert_eq!(
+                woken.load(SeqCst),
+                1,
+                "the waker runs once the answer is in"
+            );
+            // Woken: the connection is polled with no input.
+            s.recv(b"", &mut s_plain, &mut s2c).unwrap();
+            assert!(!s.suspended() && !s2c.is_empty());
+        }
+        if s.handshaking() {
+            s_plain_early = s_plain.len();
+        }
+        c.recv(&s2c, &mut c_plain, &mut c2s).unwrap();
+    }
+    assert!(!c.handshaking() && !s.handshaking());
+    (
+        Run {
+            c,
+            s,
+            s_plain,
+            s_plain_early,
+            first_flight,
+        },
+        suspended,
+    )
+}
+
+fn async_server(p: &Pki, store: &std::sync::Arc<AsyncRemote>) -> ServerConfigBuilder {
+    server(p)
+        .session_ticket_key([0x5b; 48])
+        .early_data(16384)
+        .async_anti_replay_store(store.clone())
+}
+
+#[test]
+fn async_store_suspends_the_handshake() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(AsyncRemote {
+        delay: std::time::Duration::from_millis(20),
+        ..AsyncRemote::default()
+    });
+    let scfg = async_server(&p, &store).build().unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    // No early data: no check, no suspension.
+    let (r, suspended) = run_async(&scfg, &ccfg, b"");
+    assert!(!suspended && r.s.early_data() == EarlyData::NotAttempted);
+    // Early data (with more than one record of it waiting during the check).
+    let early = vec![b'e'; 40_000];
+    let (r, suspended) = run_async(&scfg, &ccfg, &early);
+    assert!(suspended && r.s.resumed());
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+    assert_eq!(r.c.early_data(), EarlyData::Accepted);
+    assert_eq!(r.s_plain_early, 16384);
+    assert_eq!(r.s_plain, early);
+    // The recorded flight replayed to another server sharing the store: rejected.
+    let other = async_server(&p, &store).build().unwrap();
+    let mut s = crate::__proto::server(&other);
+    let (mut plain, mut out) = (Vec::new(), Vec::new());
+    s.recv(&r.first_flight, &mut plain, &mut out).unwrap();
+    assert!(s.suspended());
+    s.wait_resumable();
+    s.recv(b"", &mut plain, &mut out).unwrap();
+    assert!(!s.suspended());
+    assert_eq!(s.early_data(), EarlyData::Rejected);
+    assert!(
+        plain.is_empty(),
+        "replayed early data reached the application"
+    );
+    assert!(!out.is_empty(), "the handshake went on");
+}
+
+#[test]
+fn async_store_answering_inline_does_not_suspend() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(AsyncRemote {
+        inline: true,
+        ..AsyncRemote::default()
+    });
+    let scfg = async_server(&p, &store).build().unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    let (r, suspended) = run_async(&scfg, &ccfg, b"inline");
+    assert!(!suspended);
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+    assert_eq!(replay_to(&scfg, &r.first_flight).0, EarlyData::Rejected);
+}
+
+#[test]
+fn async_store_timeout_rejects_early_data() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(AsyncRemote::default());
+    store
+        .silent
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let scfg = async_server(&p, &store)
+        .anti_replay_timeout(std::time::Duration::from_millis(30))
+        .build()
+        .unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    let t0 = std::time::Instant::now();
+    let (r, suspended) = run_async(&scfg, &ccfg, b"no answer");
+    assert!(suspended && t0.elapsed() >= std::time::Duration::from_millis(30));
+    // Fail closed: resumed without the early data, which the client sends again.
+    assert!(r.s.resumed());
+    assert_rejected(&r, b"no answer");
+    // A late answer changes nothing.
+    for c in store.held.lock().unwrap().drain(..) {
+        c.complete(Ok(true));
+    }
+    assert_eq!(r.s.early_data(), EarlyData::Rejected);
+}
+
+#[test]
+fn async_store_with_cached_tickets() {
+    // Stateful TLS 1.3 tickets are taken from the cache once: the resumed ClientHello must
+    // not look them up again.
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(AsyncRemote {
+        delay: std::time::Duration::from_millis(5),
+        ..AsyncRemote::default()
+    });
+    let scfg = ServerConfig::builder(p.chain.clone(), p.key.clone())
+        .alpn(["h2"])
+        .early_data(16384)
+        .async_anti_replay_store(store)
+        .build()
+        .unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    let (r, suspended) = run_async(&scfg, &ccfg, b"cached");
+    assert!(suspended && r.s.resumed());
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+}
+
+#[test]
+fn async_store_suspended_input_is_bounded() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(AsyncRemote::default());
+    store
+        .silent
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let scfg = async_server(&p, &store)
+        .anti_replay_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+    let mut s = crate::__proto::server(&scfg);
+    let mut flight = Vec::new();
+    c.seal(b"x", &mut flight).unwrap();
+    let (mut plain, mut out) = (Vec::new(), Vec::new());
+    s.recv(&flight, &mut plain, &mut out).unwrap();
+    assert!(s.suspended());
+    // A peer streaming while the check is pending is cut off past the bound.
+    let junk = [23u8, 3, 3, 0x40, 0];
+    let mut rec = junk.to_vec();
+    rec.resize(5 + 0x4000, 0);
+    let mut failed = false;
+    for _ in 0..64 {
+        if let Err(e) = s.recv(&rec, &mut plain, &mut out) {
+            assert_eq!(e.alert, Alert::UnexpectedMessage);
+            failed = true;
+            break;
+        }
+    }
+    assert!(failed);
+}
+
+#[test]
+fn rotating_ticket_keys_keep_old_tickets() {
+    // Two servers sharing tickets, rotated together by the application (ADR-062).
+    let p = pki(Kind::P256, &["localhost"]);
+    for tls12 in [false, true] {
+        let (ka, kb) = (
+            crate::TicketKeys::new([1; 48]),
+            crate::TicketKeys::new([1; 48]),
+        );
+        let mk = |k: &crate::TicketKeys| {
+            server(&p)
+                .session_ticket_keys(k.clone())
+                .__tls12_only(tls12)
+                .build()
+                .unwrap()
+        };
+        let (a, b) = (mk(&ka), mk(&kb));
+        let ccfg = client(&p).__tls12_only(tls12).build().unwrap();
+        prime(&a, &ccfg, "localhost");
+        for k in [&ka, &kb] {
+            k.rotate([2; 48]);
+        }
+        // A ticket sealed under the previous key resumes on either server.
+        assert!(run(&b, &ccfg, "localhost", b"").unwrap().s.resumed());
+        // Only the keys still listed open tickets.
+        prime(&a, &ccfg, "localhost");
+        for k in [&ka, &kb] {
+            k.set([3; 48], &[]);
+        }
+        assert!(
+            !run(&b, &ccfg, "localhost", b"").unwrap().s.resumed(),
+            "tls12 {tls12}"
+        );
+        // What the new key sealed resumes.
+        assert!(run(&a, &ccfg, "localhost", b"").unwrap().s.resumed());
+    }
+}
+
+#[test]
+fn derived_ticket_keys_are_shared() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let secret = [0x77; 32];
+    let period = std::time::Duration::from_secs(3600);
+    let a = server(&p)
+        .session_ticket_keys(crate::TicketKeys::derived(&secret, period))
+        .build()
+        .unwrap();
+    let b = server(&p)
+        .session_ticket_keys(crate::TicketKeys::derived(&secret, period))
+        .build()
+        .unwrap();
+    let other = server(&p)
+        .session_ticket_keys(crate::TicketKeys::derived(&[0x78; 32], period))
+        .build()
+        .unwrap();
+    // Tickets advertise at most one period.
+    assert_eq!(a.inner.ticket_lifetime, 3600);
+    let ccfg = client(&p).build().unwrap();
+    prime(&a, &ccfg, "localhost");
+    assert!(run(&b, &ccfg, "localhost", b"").unwrap().s.resumed());
+    prime(&a, &ccfg, "localhost");
+    assert!(!run(&other, &ccfg, "localhost", b"").unwrap().s.resumed());
+    // Process-local random keys: their own tickets only.
+    let r = server(&p)
+        .session_ticket_keys(crate::TicketKeys::random(period).unwrap())
+        .build()
+        .unwrap();
+    prime(&r, &ccfg, "localhost");
+    assert!(run(&r, &ccfg, "localhost", b"").unwrap().s.resumed());
+    prime(&r, &ccfg, "localhost");
+    assert!(!run(&a, &ccfg, "localhost", b"").unwrap().s.resumed());
+}

@@ -17,10 +17,11 @@ use super::common::{
 use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
 use super::msgs::*;
-use super::session::Session;
+use super::session::{Session, Verdict};
 use super::sig;
 use super::suites::{self, Auth12, EMPTY_RENEGOTIATION_INFO_SCSV, FALLBACK_SCSV, Suite};
 use super::tls12;
+use crate::replay::{Slot, Waker};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum St {
@@ -91,6 +92,20 @@ pub(crate) struct Server {
     pub(crate) quic_accept_version: u32,
     /// QUIC: the version tickets are issued in, the negotiated one.
     pub(crate) quic_ticket_version: u32,
+    /// The ClientHello suspended until an asynchronous anti-replay store answers.
+    replay_wait: Option<Box<ReplayWait>>,
+    /// The answer, for the ClientHello taken up again: PSK index, session, accept early data.
+    replay_done: Option<Box<(usize, Session, bool)>>,
+}
+
+/// A ClientHello whose early data waits for an asynchronous anti-replay answer: everything
+/// before the decision was checked (the binder verified, the ticket opened, which a session
+/// cache does only once), so it is handled again from the start with that outcome.
+struct ReplayWait {
+    msg: Vec<u8>,
+    index: usize,
+    session: Session,
+    slot: Arc<Slot>,
 }
 
 /// The parts of ClientHello1 that ClientHello2 must repeat: everything but the key shares,
@@ -125,9 +140,6 @@ impl Ch1 {
         }
     }
 }
-
-/// Lifetime hint of TLS 1.2 tickets and lifetime of cached TLS 1.2 sessions.
-const LIFETIME12: u32 = 6 * 3600;
 
 impl Server {
     /// `early_ctx`: QUIC with 0-RTT, see [`Server::early_ctx`].
@@ -173,7 +185,49 @@ impl Server {
             early_ctx,
             quic_accept_version: 0,
             quic_ticket_version: 0,
+            replay_wait: None,
+            replay_done: None,
         }
+    }
+
+    /// The handshake waits for an asynchronous anti-replay answer.
+    pub(crate) fn suspended(&self) -> bool {
+        self.replay_wait.is_some()
+    }
+
+    /// While [`suspended`](Self::suspended): has `w` called once the answer is here; `false`
+    /// if it already is (resume right away).
+    pub(crate) fn set_replay_waker(&self, w: Waker) -> bool {
+        self.replay_wait
+            .as_ref()
+            .is_some_and(|r| r.slot.set_waker(w))
+    }
+
+    /// While [`suspended`](Self::suspended): blocks until the answer is here (blocking drivers).
+    pub(crate) fn wait_replay(&self) {
+        if let Some(r) = &self.replay_wait {
+            r.slot.wait();
+        }
+    }
+
+    /// Takes the suspended ClientHello up again once its anti-replay answer is here: `false`
+    /// (nothing done) while it is not.
+    pub(crate) fn resume(&mut self, out: &mut Vec<Action>) -> Result<bool, Fatal> {
+        let Some(accept) = self.replay_wait.as_ref().and_then(|r| r.slot.result()) else {
+            return Ok(false);
+        };
+        let Some(w) = self.replay_wait.take() else {
+            return Ok(false);
+        };
+        let ReplayWait {
+            msg,
+            index,
+            session,
+            ..
+        } = *w;
+        self.replay_done = Some(Box::new((index, session, accept)));
+        self.handle(&msg, out)?;
+        Ok(true)
     }
 
     /// The early data limit tickets carry and accepted early data is held to: QUIC 0-RTT
@@ -189,7 +243,8 @@ impl Server {
     /// Whether the early data of a ClientHello resuming `s` with PSK identity `index`
     /// (obfuscated age `age`, first binder `binder`) is accepted (RFC 8446 section 4.2.10):
     /// enabled here, the first identity, a ticket allowing it, the same suite, ALPN protocol,
-    /// SNI name (checked with the ticket) and QUIC parameters, fresh and not a replay.
+    /// SNI name (checked with the ticket) and QUIC parameters, fresh and not a replay (which
+    /// an asynchronous store answers later).
     fn accept_early(
         &self,
         suite: &'static Suite,
@@ -197,7 +252,7 @@ impl Server {
         index: usize,
         age: u32,
         binder: &[u8],
-    ) -> bool {
+    ) -> Verdict {
         if self.max_early_data() == 0
             || index != 0
             || self.hrr.is_some()
@@ -206,11 +261,14 @@ impl Server {
             || s.alpn != self.alpn
             || self.early_ctx.as_ref().is_some_and(|c| *c != s.early_ctx)
         {
-            return false;
+            return Verdict::Now(false);
         }
         let now = now_millis();
         let ar = &self.cfg.anti_replay;
-        ar.fresh(s.created * 1000, age.wrapping_sub(s.age_add), now) && ar.record(binder)
+        if !ar.fresh(s.created * 1000, age.wrapping_sub(s.age_add), now) {
+            return Verdict::Now(false);
+        }
+        ar.record(binder)
     }
 
     pub(crate) fn handshaking(&self) -> bool {
@@ -336,7 +394,8 @@ impl Server {
         if self.st == St::WaitClientHello2 && !tls13 {
             return fatal(Alert::IllegalParameter, "second ClientHello is not TLS 1.3");
         }
-        if !tls13 && ch.suites.contains(&FALLBACK_SCSV) {
+        // RFC 7507 section 3: only a server that supports a higher version refuses it.
+        if !tls13 && self.cfg.tls13 && ch.suites.contains(&FALLBACK_SCSV) {
             return fatal(
                 Alert::InappropriateFallback,
                 "client fell back from TLS 1.3",
@@ -375,13 +434,15 @@ impl Server {
                 );
             }
         }
-        // No key_share at all (a psk_ke-only client): like an empty one, a retry may fix it.
-        let no_shares = Vec::new();
-        let shares = ch.key_shares.as_ref().unwrap_or(&no_shares);
         let client_groups = ch
             .groups
             .as_ref()
             .ok_or_else(|| Fatal::new(Alert::MissingExtension, "no supported_groups"))?;
+        // supported_groups requires key_share, possibly empty (RFC 8446 section 9.2).
+        let shares = ch
+            .key_shares
+            .as_ref()
+            .ok_or_else(|| Fatal::new(Alert::MissingExtension, "no key_share"))?;
         let skip_shares = self.cfg.force_hrr && self.hrr.is_none();
         let chosen = self.cfg.groups.iter().copied().find_map(|g| {
             shares
@@ -436,7 +497,12 @@ impl Server {
         }
         let mut psk: Option<(usize, Session)> = None;
         let mut early = false;
-        if let (Some(offer), true) = (&ch.psk, self.cfg.resumption()) {
+        if let Some(d) = self.replay_done.take() {
+            // Taken up again after the anti-replay answer: the PSK was chosen and verified.
+            let (i, s, accept) = *d;
+            psk = Some((i, s));
+            early = accept;
+        } else if let (Some(offer), true) = (&ch.psk, self.cfg.resumption()) {
             let dhe = ch.psk_modes.is_some_and(|m| m.contains(&PSK_DHE_KE));
             if dhe {
                 let now = now_secs();
@@ -462,8 +528,22 @@ impl Server {
                     if !ct_eq(&expect, offer.binders[i]) {
                         return fatal(Alert::DecryptError, "PSK binder does not verify");
                     }
-                    early =
-                        ch.early_data && self.accept_early(suite, &s, i, *age, offer.binders[i]);
+                    if ch.early_data {
+                        match self.accept_early(suite, &s, i, *age, offer.binders[i]) {
+                            Verdict::Now(v) => early = v,
+                            Verdict::Later(slot) => {
+                                // Suspended: nothing sent, nothing changed that the second
+                                // pass does not set again (SNI, certificate, ALPN).
+                                self.replay_wait = Some(Box::new(ReplayWait {
+                                    msg: msg.to_vec(),
+                                    index: i,
+                                    session: s,
+                                    slot,
+                                }));
+                                return Ok(());
+                            }
+                        }
+                    }
                     psk = Some((i, s));
                     break;
                 }
@@ -1064,6 +1144,10 @@ impl Server {
                 if let Some(p) = &self.alpn {
                     ext(o, EXT_ALPN, |o| alpn_body(o, &[p]));
                 }
+                // The name was used: acknowledged, empty (RFC 6066 section 3), not on resumption.
+                if self.sni.is_some() && !self.resumed {
+                    ext(o, EXT_SERVER_NAME, |_| {});
+                }
                 if self.send_ticket12 && !self.resumed {
                     ext(o, EXT_SESSION_TICKET, |_| {});
                 }
@@ -1150,7 +1234,7 @@ impl Server {
                 suite: suite.id,
                 secret: self.master.clone(),
                 created: now_secs(),
-                lifetime: LIFETIME12,
+                lifetime: self.cfg.ticket_lifetime,
                 age_add: 0,
                 alpn: self.alpn.clone(),
                 sni: self.sni.clone(),
@@ -1168,7 +1252,7 @@ impl Server {
                     .and_then(|t| t.seal(&session))
                     .unwrap_or_default();
                 let nst = message(NEW_SESSION_TICKET, |o| {
-                    put_u32(o, LIFETIME12);
+                    put_u32(o, self.cfg.ticket_lifetime);
                     put_vec16(o, &ticket);
                 });
                 self.t.add(&nst);

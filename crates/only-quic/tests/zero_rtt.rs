@@ -142,3 +142,51 @@ fn zero_rtt_off_on_the_server() {
     assert_eq!(b, b"late:two");
     assert_eq!(c.early_data(), EarlyData::NotAttempted);
 }
+
+/// A remote anti-replay store answered from another thread after a delay (ADR-062): the
+/// suspended handshake is driven again from that thread.
+struct SlowStore(std::sync::Mutex<std::collections::HashSet<Vec<u8>>>);
+
+impl only::tls::AsyncAntiReplayStore for SlowStore {
+    fn check_and_insert(&self, binder: &[u8], _ttl: Duration, done: only::tls::ReplayCheck) {
+        let fresh = self.0.lock().unwrap().insert(binder.to_vec());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            done.complete(Ok(fresh));
+        });
+    }
+}
+
+#[test]
+fn zero_rtt_with_an_async_anti_replay_store() {
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
+    let tls = only::tls::ServerConfig::builder(vec![cert], key)
+        .alpn(["echo"])
+        .async_anti_replay_store(Arc::new(SlowStore(Default::default())))
+        .build()
+        .unwrap();
+    let cfg = only_quic::server_config_from(&tls).unwrap().zero_rtt(true);
+    let server = QuicServer::new(cfg, |_c: &Connection| Echo::default());
+    let e = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(server))
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let cfg = only_quic::client_config_insecure(&[b"echo"])
+        .unwrap()
+        .zero_rtt(true);
+    let (_, c) = request(&e, addr, &cfg, b"one");
+    std::thread::sleep(Duration::from_millis(200));
+    c.close(0, b"");
+    for _ in 0..2 {
+        let (b, c) = request(&e, addr, &cfg, b"GET /");
+        assert_eq!(b, b"early:GET /");
+        assert_eq!(c.early_data(), EarlyData::Accepted);
+        std::thread::sleep(Duration::from_millis(100));
+        c.close(0, b"");
+    }
+}

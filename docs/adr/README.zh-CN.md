@@ -62,5 +62,6 @@
 - [ADR-058：only-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别](058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md)（2026-11-20 采纳）
 - [ADR-059：客户端的 cookie、Happy Eyeballs、DNS 缓存与到代理的 TLS；SOCKS 分片与 TLS](059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md)（2026-11-20 采纳）
 - [ADR-061：完整的 QPACK 编码器与 HTTP/3 客户端流式响应](061-qpack-encoder-h3-streamed-responses.zh-CN.md)（2026-11-20 采纳）
+- [ADR-062：only-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo](062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)（2026-11-20 采纳）
 - [ADR-065：无连接的 UDP listener（`DatagramsHandler`）](065-connectionless-datagrams.zh-CN.md)（2026-11-21 采纳）
 - [ADR-066：静态文件缓存的变更通知（inotify / kqueue）](066-static-files-change-notifications.zh-CN.md)（2026-11-20 采纳）

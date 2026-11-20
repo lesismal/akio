@@ -599,3 +599,86 @@ fn malformed_key_update_alerts() {
     }
     assert!(super::client::key_update(suite, &[1], &mut r, &mut w, &mut out).is_ok());
 }
+
+#[test]
+fn status_request_v2_is_ignored() {
+    // RFC 6961 (ocsp_multi, TLS 1.2 only, superseded by TLS 1.3's per-certificate
+    // status_request): the client never offers it, the server answers a ClientHello that does
+    // as if it were absent (ADR-062).
+    const STATUS_REQUEST_V2: u16 = 17;
+    let p = pki(Kind::P256, &["localhost"]);
+    let scfg = server(&p).ocsp_response(ocsp(1)).build().unwrap();
+    for tls12 in [false, true] {
+        let ccfg = ClientConfig::builder()
+            .roots(p.roots.clone())
+            .ocsp_stapling(true)
+            .__tls12_only(tls12)
+            .build()
+            .unwrap();
+        let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+        let (mut plain, mut wire) = (Vec::new(), Vec::new());
+        c.recv(&[], &mut plain, &mut wire).unwrap();
+        let first = 5 + usize::from(u16::from_be_bytes([wire[3], wire[4]]));
+        let ch = ClientHello::parse(&wire[9..first]).unwrap();
+        assert!(!ch.exts.iter().any(|(t, _)| *t == STATUS_REQUEST_V2));
+        // The same ClientHello asking with status_request_v2 instead of status_request.
+        let mut v2 = wire[..first].to_vec();
+        rename_extension(&mut v2, msgs::EXT_STATUS_REQUEST, STATUS_REQUEST_V2);
+        let mut s = crate::__proto::server(&scfg);
+        let mut out = Vec::new();
+        s.recv(&v2, &mut plain, &mut out).unwrap();
+        assert!(s.handshaking());
+        // The ServerHello (plaintext in both versions) answers neither request, and no
+        // CertificateStatus follows in TLS 1.2.
+        let sh_len = usize::from(u16::from_be_bytes([out[3], out[4]]));
+        let sh = &out[5..5 + sh_len];
+        assert_eq!(sh[0], msgs::SERVER_HELLO);
+        let exts = server_hello_extensions(&sh[4..]);
+        assert!(!exts.contains(&STATUS_REQUEST_V2) && !exts.contains(&msgs::EXT_STATUS_REQUEST));
+        if tls12 {
+            let mut pos = 0;
+            let flight = &out[5..];
+            let mut types = Vec::new();
+            while pos + 4 <= flight.len() && flight[pos] != 0x14 {
+                types.push(flight[pos]);
+                let l = (usize::from(flight[pos + 1]) << 16)
+                    | (usize::from(flight[pos + 2]) << 8)
+                    | usize::from(flight[pos + 3]);
+                pos += 4 + l;
+            }
+            assert!(!types.contains(&msgs::CERTIFICATE_STATUS), "{types:?}");
+        }
+    }
+}
+
+/// The extension types of a ServerHello body.
+fn server_hello_extensions(body: &[u8]) -> Vec<u16> {
+    let mut r = super::codec::Reader::new(body);
+    r.bytes(2 + 32).unwrap();
+    r.vec8().unwrap();
+    r.bytes(3).unwrap();
+    let mut e = super::codec::Reader::new(r.vec16().unwrap());
+    let mut types = Vec::new();
+    while !e.is_empty() {
+        types.push(e.u16().unwrap());
+        e.vec16().unwrap();
+    }
+    types
+}
+
+#[test]
+fn missing_key_share_is_missing_extension() {
+    // supported_groups without key_share (RFC 8446 section 9.2): refused, not retried.
+    let p = pki(Kind::P256, &["localhost"]);
+    let scfg = server(&p).build().unwrap();
+    let ccfg = ClientConfig::builder().roots(p.roots).build().unwrap();
+    let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+    let (mut plain, mut wire) = (Vec::new(), Vec::new());
+    c.recv(&[], &mut plain, &mut wire).unwrap();
+    let first = 5 + usize::from(u16::from_be_bytes([wire[3], wire[4]]));
+    let mut ch = wire[..first].to_vec();
+    rename_extension(&mut ch, msgs::EXT_KEY_SHARE, 0xfafa);
+    let mut s = crate::__proto::server(&scfg);
+    let e = s.recv(&ch, &mut plain, &mut Vec::new()).unwrap_err();
+    assert_eq!(e.alert, Alert::MissingExtension);
+}

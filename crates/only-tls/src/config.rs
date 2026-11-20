@@ -17,9 +17,9 @@ use crate::proto::msgs::{
     CERT_COMP_BROTLI, CERT_COMP_ZLIB, CERT_COMP_ZSTD, CompAlgs, MAX_RECORD_LIMIT13,
     MIN_RECORD_LIMIT,
 };
-use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
+use crate::proto::session::{AntiReplay, ClientCache, ReplayStore, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
-use crate::replay::{AntiReplayStore, MemoryAntiReplay};
+use crate::replay::{AntiReplayStore, AsyncAntiReplayStore, MemoryAntiReplay};
 
 /// A certificate compression algorithm (RFC 8879), all implemented in-house: zlib through
 /// `only-deflate`, brotli through `only-brotli`, zstd through `only-zstd`.
@@ -551,7 +551,9 @@ impl ServerConfig {
             max_early_data: 0,
             anti_replay: (ANTI_REPLAY_WINDOW_MS, ANTI_REPLAY_ENTRIES),
             anti_replay_store: None,
+            anti_replay_timeout: DEFAULT_ANTI_REPLAY_TIMEOUT,
             ticket_key: None,
+            ticket_keys: None,
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: CompAlgs::ALL,
             ocsp: None,
@@ -593,8 +595,10 @@ pub struct ServerConfigBuilder {
     max_early_data: u32,
     anti_replay: (u64, usize),
     /// Wrapped so the builder stays unwind safe (a store is only called after `build`).
-    anti_replay_store: Option<std::panic::AssertUnwindSafe<Arc<dyn AntiReplayStore>>>,
+    anti_replay_store: Option<std::panic::AssertUnwindSafe<StoreChoice>>,
+    anti_replay_timeout: Duration,
     ticket_key: Option<[u8; 48]>,
+    ticket_keys: Option<crate::TicketKeys>,
     record_limit: u16,
     cert_compression: CompAlgs,
     ocsp: Option<Vec<u8>>,
@@ -607,6 +611,16 @@ pub struct ServerConfigBuilder {
 const ANTI_REPLAY_WINDOW_MS: u64 = 10_000;
 /// ClientHellos remembered for replay detection (each for twice the window).
 const ANTI_REPLAY_ENTRIES: usize = 100_000;
+/// Lifetime of session tickets and of cached sessions (6 hours).
+const TICKET_LIFETIME: u32 = 6 * 3600;
+/// Default of [`ServerConfigBuilder::anti_replay_timeout`].
+const DEFAULT_ANTI_REPLAY_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The shared anti-replay store a builder was given.
+enum StoreChoice {
+    Sync(Arc<dyn AntiReplayStore>),
+    Async(Arc<dyn AsyncAntiReplayStore>),
+}
 /// Default of [`ServerConfigBuilder::handshake_timeout`] and
 /// [`ClientConfigBuilder::handshake_timeout`].
 pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -627,9 +641,14 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("max_early_data", &self.max_early_data)
             .field(
                 "shared_anti_replay_store",
-                &self.anti_replay_store.is_some(),
+                &self.anti_replay_store.as_ref().map(|s| match s.0 {
+                    StoreChoice::Sync(_) => "sync",
+                    StoreChoice::Async(_) => "async",
+                }),
             )
+            .field("anti_replay_timeout", &self.anti_replay_timeout)
             .field("shared_ticket_key", &self.ticket_key.is_some())
+            .field("ticket_keys", &self.ticket_keys)
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_response", &self.ocsp.is_some())
@@ -814,8 +833,30 @@ impl ServerConfigBuilder {
     /// for 30 seconds: twice the 10-second freshness window, plus one window for the clocks
     /// of the servers sharing the store to differ by (keep them within 10 s of each other). A store error rejects the early data
     /// (the handshake goes on without it). Only used with [`early_data`](Self::early_data).
+    ///
+    /// The store is called on the I/O thread and that thread waits for its answer: for a
+    /// store across the network, use [`async_anti_replay_store`](Self::async_anti_replay_store).
     pub fn anti_replay_store(mut self, store: Arc<dyn AntiReplayStore>) -> Self {
-        self.anti_replay_store = Some(std::panic::AssertUnwindSafe(store));
+        self.anti_replay_store = Some(std::panic::AssertUnwindSafe(StoreChoice::Sync(store)));
+        self
+    }
+
+    /// Like [`anti_replay_store`](Self::anti_replay_store), with a store that answers
+    /// asynchronously (ADR-062): a handshake whose early data needs a check is suspended
+    /// until the store answers (its I/O thread serves its other connections meanwhile), then
+    /// resumes on its I/O thread. No answer within
+    /// [`anti_replay_timeout`](Self::anti_replay_timeout) rejects the early data. Replaces a
+    /// store set with `anti_replay_store` (and the other way round). Over TCP and QUIC.
+    pub fn async_anti_replay_store(mut self, store: Arc<dyn AsyncAntiReplayStore>) -> Self {
+        self.anti_replay_store = Some(std::panic::AssertUnwindSafe(StoreChoice::Async(store)));
+        self
+    }
+
+    /// How long a handshake waits for an [`async_anti_replay_store`](Self::async_anti_replay_store)
+    /// to answer before rejecting the early data and going on without it (1 second by
+    /// default; at least 1 ms). The handshake timeout still bounds the whole handshake.
+    pub fn anti_replay_timeout(mut self, timeout: Duration) -> Self {
+        self.anti_replay_timeout = timeout.max(Duration::from_millis(1));
         self
     }
 
@@ -823,10 +864,25 @@ impl ServerConfigBuilder {
     /// ChaCha20-Poly1305 key; secret, random, and the same on every server that should accept
     /// the others' tickets) instead of a key generated for this configuration, and turns
     /// session tickets on. Tickets sealed under another key are ignored (a full handshake).
-    /// Rotating the key is up to the caller (build a new configuration); tickets issued under
-    /// the old key are then refused.
+    /// To rotate the key without refusing the tickets sealed under the old one, use
+    /// [`session_ticket_keys`](Self::session_ticket_keys) instead.
     pub fn session_ticket_key(mut self, key: [u8; 48]) -> Self {
         self.ticket_key = Some(key);
+        self.ticket_keys = None;
+        self.tickets = true;
+        self
+    }
+
+    /// Seals session tickets with rotating `keys` (ADR-062): the current key seals, earlier
+    /// ones still open the tickets they sealed; rotated by the application or on a schedule,
+    /// with keys shared by servers that accept each other's tickets
+    /// ([`TicketKeys::derived`](crate::TicketKeys::derived), or the same keys given to
+    /// [`TicketKeys::rotate`](crate::TicketKeys::rotate) everywhere). Turns session tickets on
+    /// and replaces [`session_ticket_key`](Self::session_ticket_key). With scheduled keys,
+    /// tickets advertise a lifetime of at most one period.
+    pub fn session_ticket_keys(mut self, keys: crate::TicketKeys) -> Self {
+        self.ticket_keys = Some(keys);
+        self.ticket_key = None;
         self.tickets = true;
         self
     }
@@ -945,11 +1001,18 @@ impl ServerConfigBuilder {
         if groups.is_empty() {
             return Err(Error::new("no groups"));
         }
-        let ticketer = if let Some(k) = &self.ticket_key {
-            let (name, key) = k.split_at(16);
-            let name: [u8; 16] = name.try_into().map_err(|_| Error::new("ticket key"))?;
-            let key: [u8; 32] = key.try_into().map_err(|_| Error::new("ticket key"))?;
-            Some(Ticketer::from_key(name, &key))
+        // Tickets are sure to open for a period of scheduled keys at least, not more.
+        let ticket_lifetime = self
+            .ticket_keys
+            .as_ref()
+            .and_then(crate::TicketKeys::period)
+            .map_or(TICKET_LIFETIME, |p| {
+                TICKET_LIFETIME.min(u32::try_from(p.as_secs()).unwrap_or(u32::MAX))
+            });
+        let ticketer = if let Some(k) = &self.ticket_keys {
+            Some(Ticketer::Rotating(k.clone()))
+        } else if let Some(k) = &self.ticket_key {
+            Some(Ticketer::from_key(k))
         } else if self.tickets {
             Some(Ticketer::new().ok_or_else(|| Error::new("no randomness for tickets"))?)
         } else {
@@ -979,18 +1042,16 @@ impl ServerConfigBuilder {
             suites,
             groups,
             tickets13: self.tickets13,
-            ticket_lifetime: 6 * 3600,
+            ticket_lifetime,
             force_hrr: self.force_hrr,
             max_early_data: self.max_early_data,
             anti_replay: AntiReplay::new(
                 self.anti_replay.0,
-                self.anti_replay_store.map_or_else(
-                    || {
-                        Arc::new(MemoryAntiReplay::new(self.anti_replay.1))
-                            as Arc<dyn AntiReplayStore>
-                    },
-                    |s| s.0,
-                ),
+                match self.anti_replay_store.map(|s| s.0) {
+                    None => ReplayStore::Sync(Arc::new(MemoryAntiReplay::new(self.anti_replay.1))),
+                    Some(StoreChoice::Sync(s)) => ReplayStore::Sync(s),
+                    Some(StoreChoice::Async(s)) => ReplayStore::Async(s, self.anti_replay_timeout),
+                },
             ),
             record_limit,
             cert_compression: self.cert_compression,

@@ -14,6 +14,7 @@ use super::record::{
 };
 use super::server::Server;
 use super::suites::Suite;
+use crate::replay::Waker;
 
 #[cfg(feature = "experimental-ktls")]
 mod ktls;
@@ -139,6 +140,25 @@ impl Machine {
         matches!(self, Machine::Client(_))
     }
 
+    /// A server waiting for an asynchronous anti-replay answer.
+    pub(crate) fn suspended(&self) -> bool {
+        matches!(self, Machine::Server(s) if s.suspended())
+    }
+
+    pub(crate) fn resume(&mut self, out: &mut Vec<Action>) -> Result<bool, Fatal> {
+        match self {
+            Machine::Client(_) => Ok(false),
+            Machine::Server(s) => s.resume(out),
+        }
+    }
+
+    pub(crate) fn set_replay_waker(&self, w: Waker) -> bool {
+        match self {
+            Machine::Client(_) => false,
+            Machine::Server(s) => s.set_replay_waker(w),
+        }
+    }
+
     /// Rejected early data a server skips: what its tickets allow, at least 64 KiB.
     fn early_skip(&self) -> usize {
         match self {
@@ -188,6 +208,8 @@ pub struct Connection {
     /// The record layer moved into the kernel (`commit_offload`).
     #[cfg(feature = "experimental-ktls")]
     offloaded: bool,
+    /// Called when a suspended handshake can go on (an asynchronous anti-replay answer came).
+    waker: Option<Waker>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -248,6 +270,27 @@ impl Connection {
             write_keys: None,
             #[cfg(feature = "experimental-ktls")]
             offloaded: false,
+            waker: None,
+        }
+    }
+
+    /// Sets what to call when a suspended handshake can go on: the server's handshake waits
+    /// for an asynchronous anti-replay store (ADR-062); calling [`recv`](Self::recv) (with no
+    /// input) then takes it up again.
+    pub(crate) fn set_waker(&mut self, w: Waker) {
+        self.waker = Some(w);
+    }
+
+    /// The handshake is suspended, waiting for an asynchronous anti-replay answer.
+    pub fn suspended(&self) -> bool {
+        self.m.suspended()
+    }
+
+    /// While [`suspended`](Self::suspended): blocks until the answer is here (blocking
+    /// drivers; then call [`recv`](Self::recv)).
+    pub fn wait_resumable(&self) {
+        if let Machine::Server(s) = &self.m {
+            s.wait_replay();
         }
     }
 
@@ -509,6 +552,20 @@ impl Connection {
     }
 
     fn process(&mut self, plain: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<(), Fatal> {
+        if self.m.suspended() {
+            if !self.resume_now(out)? {
+                // What arrives meanwhile (early data under keys not decided yet) waits,
+                // bounded.
+                if self.rx.len() > 2 * self.m.early_skip() + MAX_HANDSHAKE {
+                    return fatal(
+                        Alert::UnexpectedMessage,
+                        "too much data while the anti-replay check is pending",
+                    );
+                }
+                return Ok(());
+            }
+            self.process_handshake(out)?;
+        }
         // Records are opened in place in `rx`, taken out of `self` meanwhile so their contents
         // can be handed to `on_record`.
         let mut rx = std::mem::take(&mut self.rx);
@@ -536,8 +593,42 @@ impl Connection {
             if !self.on_record(o.typ, &rx[at + o.start..at + o.end], plain, out)? {
                 return Ok(());
             }
+            if self.m.suspended() {
+                // The rest is read once the ClientHello is taken up again.
+                return Ok(());
+            }
         }
         Ok(())
+    }
+
+    /// A suspended handshake: takes the ClientHello up again if the anti-replay answer is
+    /// here (`true`), else registers the waker (`false`).
+    fn resume_now(&mut self, out: &mut Vec<u8>) -> Result<bool, Fatal> {
+        loop {
+            let mut acts = std::mem::take(&mut self.actions);
+            let r = match self.m.resume(&mut acts) {
+                Ok(true) => self.apply(&mut acts, out).map(Some),
+                Ok(false) => Ok(None),
+                Err(e) => Err(e),
+            };
+            self.actions = acts;
+            match r? {
+                Some(read_changed) => {
+                    if read_changed && !self.hs.is_empty() {
+                        return fatal(
+                            Alert::UnexpectedMessage,
+                            "handshake data across a key change",
+                        );
+                    }
+                    return Ok(true);
+                }
+                None => match &self.waker {
+                    // Answered between the two looks: go on now.
+                    Some(w) if !self.m.set_replay_waker(w.clone()) => {}
+                    _ => return Ok(false),
+                },
+            }
+        }
     }
 
     /// Application data may arrive now.
@@ -664,6 +755,12 @@ impl Connection {
                 .and_then(|()| self.apply(&mut acts, out));
             self.actions = acts;
             let read_changed = r?;
+            if self.m.suspended() {
+                if !self.resume_now(out)? {
+                    return Ok(());
+                }
+                continue;
+            }
             if read_changed && !self.hs.is_empty() {
                 return fatal(
                     Alert::UnexpectedMessage,
