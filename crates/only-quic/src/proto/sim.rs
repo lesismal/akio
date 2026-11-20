@@ -1238,6 +1238,82 @@ fn reset_and_stop_streams() {
     assert!(sc.opened.contains(&u));
 }
 
+/// A receiver that holds a stream's reads stops its sender at the stream window; resuming
+/// delivers everything in order; stopping a held stream drops what it held.
+#[test]
+fn held_reads_apply_backpressure() {
+    let (s, tls) = certs();
+    let t = TransportConfig {
+        stream_receive_window: 16 * 1024,
+        // Keeps the quiet, flow-blocked connection alive in simulated time.
+        keep_alive_interval: Some(Duration::from_millis(100)),
+        ..TransportConfig::default()
+    };
+    let mut sim = Sim::new(31, ConnConfig::new(t.clone(), true), s, false);
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let a = sim.cconn(h).open(Dir::Bi).expect("stream");
+    let want = body(300_000, 7);
+    sim.cconn(h)
+        .write(a, Bytes::from(want.clone()))
+        .expect("write");
+    sim.cconn(h).finish(a).expect("finish");
+    let mut sc = Collector::default();
+    assert!(sim.run_until(Duration::from_secs(5), |s| {
+        let sh = s.server_handle().expect("server");
+        let evs = s.events(true, sh);
+        sc.take(evs);
+        sc.data.get(&a).is_some_and(|d| !d.is_empty())
+    }));
+    sim.sconn().hold_reads(a, true).expect("hold");
+    let before = sc.data[&a].len();
+    // A while later: nothing more delivered, the sender waits at the window.
+    sim.run_until(Duration::from_millis(300), |s| {
+        let sh = s.server_handle().expect("server");
+        let evs = s.events(true, sh);
+        sc.take(evs);
+        false
+    });
+    assert!(sim.server_handle().is_some());
+    assert_eq!(sc.data[&a].len(), before);
+    assert!(sim.cconn(h).queued_bytes(a) >= 300_000 - before - 16 * 1024);
+    // Resumed: everything arrives, in order.
+    sim.sconn().hold_reads(a, false).expect("resume");
+    assert!(sim.run_until(Duration::from_secs(10), |s| {
+        let sh = s.server_handle().expect("server");
+        let evs = s.events(true, sh);
+        sc.take(evs);
+        sc.finished.contains_key(&a)
+    }));
+    assert!(sc.finished[&a] == want);
+    // Holding a finished stream does nothing; stopping a held one drops what it holds.
+    assert!(matches!(
+        sim.sconn().hold_reads(a, true),
+        Ok(()) | Err(crate::Error::UnknownStream)
+    ));
+    let b = sim.cconn(h).open(Dir::Bi).expect("stream");
+    sim.cconn(h)
+        .write(b, Bytes::from(vec![3u8; 40_000]))
+        .expect("write");
+    let mut got = 0;
+    assert!(sim.run_until(Duration::from_secs(5), |s| {
+        let sh = s.server_handle().expect("server");
+        let evs = s.events(true, sh);
+        sc.take(evs);
+        got = sc.data.get(&b).map_or(0, Vec::len);
+        got > 0
+    }));
+    sim.sconn().hold_reads(b, true).expect("hold");
+    sim.run_until(Duration::from_millis(300), |_| false);
+    sim.sconn().stop(b, 4).expect("stop");
+    sim.run_until(Duration::from_millis(300), |s| {
+        let sh = s.server_handle().expect("server");
+        let evs = s.events(true, sh);
+        sc.take(evs);
+        false
+    });
+    assert_eq!(sc.data.get(&b).map_or(0, Vec::len), got);
+}
+
 #[test]
 fn blackout_then_recovery() {
     let (mut sim, tls) = Sim::default_pair(24);

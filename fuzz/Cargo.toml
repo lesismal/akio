@@ -830,3 +830,10 @@ path = "fuzz_targets/zstd_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "qpack_encoder"
+path = "fuzz_targets/qpack_encoder.rs"
+test = false
+doc = false
+bench = false

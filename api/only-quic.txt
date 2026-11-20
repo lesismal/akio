@@ -218,6 +218,7 @@ pub fn only_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Ve
 pub fn only_quic::Connection::close(&self, u32, &[u8])
 pub fn only_quic::Connection::early_data(&self) -> only_tls::EarlyData
 pub fn only_quic::Connection::finish(&self, only_quic::StreamId) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::hold_reads(&self, only_quic::StreamId, bool) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::is_closed(&self) -> bool
 pub fn only_quic::Connection::is_early(&self, only_quic::StreamId) -> bool
 pub fn only_quic::Connection::migrate(&self, &only::Engine) -> core::result::Result<(), only_quic::Error>

@@ -168,11 +168,11 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 `H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`），或用
 `dial_with(.., H3ClientOptions)` 指定限制和 QPACK 设置；握手完成前发出的
 请求会等待握手完成（以 0-RTT 恢复会话时除外，见上文）。`request(method, path, headers, body, callback)`、
-`request_blocking(..)`、`get(path, timeout)`、`upload(..)`、`websocket(..)`、`close()`、
-`connection()`。响应以缓冲方式到达。
+`request_blocking(..)`、`get(path, timeout)`、`upload(..)`、`open(..)`、`websocket(..)`、`close()`、
+`connection()`。`request` 的响应以缓冲方式到达；`open` 以流式方式交付（见下文）。
 `H3Client::dial_with(.., H3ClientOptions)` 设置限制：超过 `max_body_bytes`（8 MiB）或
 `max_field_section_bytes`（64 KiB，会通告给对端）时停止该响应 stream，并以 `H3Error::TooLarge`
-使请求失败；`request_timeout`（30 s，从 `request` 或 `websocket` 到完整响应，WebSocket 为其头部；
+使请求失败；`request_timeout`（30 s，从 `request` 或 `websocket` 到完整响应，WebSocket 与流式响应为其头部；
 上传没有超时）会重置 stream 并以 `H3Error::Timeout` 使其失败（这个回调在定时器线程上运行）。
 它也接受 QPACK 设置（见下文）。
 
@@ -189,6 +189,21 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 
 ```rust,ignore
 {{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+```
+
+### 客户端流式响应
+
+`open(method, path, &headers, on_event)` 与 `H2Client::open` 对应：它返回用于请求体的 `H3Upload`
+（没有请求体时立即 `finish()`），并在连接的 I/O 线程上把到达的响应报告给 `on_event`：
+`H3Event::Head { status, headers }`、每块一个 `Data(&[u8])`（不缓冲，不受 `max_body_bytes` 限制）、
+`Trailers`，然后是 `End` 或 `Error(H3Error)`。上传与下载可以同时进行。在句柄上调用
+`hold_reads(true)` 暂停读取：流的接收窗口（`TransportConfig::stream_receive_window`）用完后，QUIC
+流量控制让服务器停下，所以慢消费者让一次下载占用的内存有界；`hold_reads(false)` 恢复。两者都可从任意
+线程调用，包括事件回调内（`only_quic::Connection::hold_reads` 对任意流做同样的事）。`cancel()` 重置
+该流，此后不再报告任何事件。`request_timeout` 只作用到响应头到达为止。
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:download}}
 ```
 
 ### HTTP/3 上的 WebSocket
@@ -217,11 +232,15 @@ QPACK（RFC 9204）用一张由各自编码器通过 encoder stream 填充的表
   使用多少。引用了尚未收到的插入的字段段会等待它们，最多到 blocked streams 上限；确认通过我方
   decoder stream 发回。nghttp3（curl）和 OpenSSL QUIC 等对端一旦看到这张表就会使用。容量设为 0
   则只允许静态引用和字面量。
-- `qpack_encoder_capacity`（0，关闭）：我方编码器的表，最多为对端允许的容量。它只引用对端已确认的
-  条目，所以从不让对端等待；只插入会重复的字段（不插路径、日期、长度、校验器、凭据和 cookie）。
-  在携带大量相同自定义字段的连接上它能省字节，代价是每个消息一次加锁；quic-go 和 fib 不宣告动态表，
-  与它们通信时它不起作用。默认值的理由见
-  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)。
+- `qpack_encoder_capacity`（0，关闭）：我方编码器的表，最多为对端允许的容量。字段第二次出现时才
+  插入（从不插入路径、日期、长度、校验器、凭据和 cookie），使用静态或动态名称引用或字面名称；同一
+  消息中插入的条目用 post-base 索引引用；字面行使用动态名称引用；即将被驱逐的条目会被复制
+  （Duplicate）；只驱逐对端已确认的条目。让对端等待其插入的流不超过对端
+  `SETTINGS_QPACK_BLOCKED_STREAMS` 允许的数量（0 则从不）。在携带大量相同自定义字段的连接上它能省
+  字节，代价是每个消息一次加锁以及对端的确认；quic-go、fib 和 curl 不宣告动态表，与它们通信时它不起
+  作用。默认值的理由见
+  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)
+  与 [ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)。
 
 ## HTTP/3 如何复用 only-http
 
@@ -239,5 +258,5 @@ sink，所以 router、中间件和 handler 都无需改动。见[架构](../arc
 
 ## 尚未完成
 
-服务端推送；HTTP/2 上的 WebSocket（RFC 8441）；客户端的流式响应（`H3Client` 缓冲响应）；我方 QPACK
-编码器的 Duplicate 指令和动态名称引用。
+HTTP/2 上的 WebSocket（RFC 8441）。服务器推送是有意不做的：浏览器已放弃它，其用途已被 103 Early
+Hints 取代（[ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)）。

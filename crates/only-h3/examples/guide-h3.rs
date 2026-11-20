@@ -1,5 +1,6 @@
 //! Companion of the book's "QUIC and HTTP/3" chapter: a only-http router served over HTTP/3
-//! (with a streamed request body and a WebSocket), and the H3 client.
+//! (with a streamed request body and a WebSocket), and the H3 client (with a streamed upload
+//! and a streamed response).
 //!
 //! `cargo run -p only-h3 --example guide-h3`
 
@@ -7,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use only::{Engine, Listener};
-use only_h3::{H3Client, H3Config, H3WsOptions};
+use only_h3::{H3Client, H3Config, H3Event, H3WsOptions};
 use only_http::message::{Headers, Method};
 use only_http::ws::{Message, WsHandler, WsSender};
 use only_http::{BodyEvent, Context, Router, Streaming, WsOptions};
@@ -114,6 +115,35 @@ fn main() -> std::io::Result<()> {
         .map_err(std::io::Error::other)?;
     print!("{}", String::from_utf8_lossy(&resp.body));
     // ANCHOR_END: upload
+
+    // ANCHOR: download
+    // A streamed response: pieces as they arrive, nothing buffered. `hold_reads(true)` on the
+    // returned handle would pause it (QUIC flow control then holds the server back).
+    let (tx, rx) = mpsc::channel();
+    let mut got = 0usize;
+    let download = client.open(
+        Method::Get,
+        "/hello/stream",
+        &Headers::new(),
+        move |ev| match ev {
+            H3Event::Head { status, .. } => println!("streamed response: {status}"),
+            H3Event::Data(piece) => got += piece.len(),
+            H3Event::End => {
+                let _ = tx.send(Ok(got));
+            }
+            H3Event::Error(e) => {
+                let _ = tx.send(Err(e));
+            }
+            _ => {}
+        },
+    );
+    download.finish(); // no request body
+    let n = rx
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)?;
+    println!("streamed {n} bytes");
+    // ANCHOR_END: download
 
     // ANCHOR: websocket
     let (tx, rx) = mpsc::channel();

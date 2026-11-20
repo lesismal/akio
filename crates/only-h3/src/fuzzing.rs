@@ -215,16 +215,17 @@ pub fn qpack_dynamic(data: &[u8]) {
     {
         return;
     }
-    // Our encoder, twice against a peer that acknowledges everything in between.
-    let mut e = Encoder::new(cap.max(256), 4096);
+    // Our encoder, three times (fields are inserted the second time) against a peer that
+    // acknowledges everything in between.
+    let mut e = Encoder::new(cap.max(256), 4096, 0);
     let mut d = DecTable::new(4096);
-    for round in 0..2u64 {
-        let (mut lines, mut sec) = e.begin();
+    for round in 0..3u64 {
+        let (mut lines, mut sec) = e.begin(round * 4);
         for (n, v) in &text {
             e.line(&mut lines, &mut sec, n, v);
         }
         let mut out = Vec::new();
-        e.end(&mut out, lines, sec, round * 4);
+        e.end(&mut out, lines, sec);
         let ins = std::mem::take(&mut e.out);
         assert_eq!(d.on_encoder_stream(&ins), Ok(ins.len()));
         let mut g = FieldBuf::default();
@@ -239,6 +240,238 @@ pub fn qpack_dynamic(data: &[u8]) {
         let acks = std::mem::take(&mut d.out);
         assert_eq!(e.on_decoder_stream(&acks), Ok(acks.len()));
     }
+}
+
+/// This side's QPACK encoder for checks against other decoders (`examples/qpack-pipe.rs`
+/// drives it for `tools/interop/h3/nghttp3-qpack.py`).
+pub struct InteropEncoder(Encoder);
+
+impl std::fmt::Debug for InteropEncoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("InteropEncoder")
+            .field(&self.stats())
+            .finish()
+    }
+}
+
+impl InteropEncoder {
+    /// An encoder with `capacity` bytes of table for a peer allowing `peer_max_capacity` and
+    /// `peer_blocked` blocked streams.
+    pub fn new(capacity: u64, peer_max_capacity: u64, peer_blocked: u64) -> InteropEncoder {
+        InteropEncoder(Encoder::new(capacity, peer_max_capacity, peer_blocked))
+    }
+
+    /// Encodes a field section for `stream` (names lowercase).
+    pub fn encode(&mut self, stream: u64, fields: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+        let (mut lines, mut sec) = self.0.begin(stream);
+        for (n, v) in fields {
+            self.0.line(&mut lines, &mut sec, n, v);
+        }
+        let mut out = Vec::new();
+        self.0.end(&mut out, lines, sec);
+        out
+    }
+
+    /// Encoder stream bytes produced so far.
+    pub fn take_encoder_stream(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.0.out)
+    }
+
+    /// Decoder stream bytes from the peer; the bytes taken, or the error code.
+    pub fn on_decoder_stream(&mut self, b: &[u8]) -> Result<usize, u32> {
+        self.0.on_decoder_stream(b)
+    }
+
+    /// What the encoder did: inserts, duplicates, dynamic-name inserts, dynamic-name lines,
+    /// post-base lines, blocking sections; then the Known Received Count and entries inserted.
+    pub fn stats(&self) -> [u64; 8] {
+        let s = self.0.stats;
+        [
+            s.inserts,
+            s.duplicates,
+            s.dyn_name_inserts,
+            s.dyn_name_lines,
+            s.post_base,
+            s.blocking,
+            self.0.known(),
+            self.0.inserted(),
+        ]
+    }
+}
+
+/// Field names and values `qpack_encoder` draws from: few, so fields repeat, fill the table
+/// and share names.
+const NAMES: [&str; 8] = [
+    "x-a",
+    "x-b",
+    "server",
+    "content-type",
+    "x-a-much-longer-header-name",
+    "date",
+    ":authority",
+    "accept-language",
+];
+const VALUES: [&str; 8] = [
+    "1",
+    "2",
+    "only",
+    "text/html",
+    "application/x-a-rather-long-media-type-for-the-table",
+    "Mon, 16 Nov 2026 00:00:00 GMT",
+    "example.com",
+    "",
+];
+
+/// A field section received by `Far`: its stream, bytes and the fields encoded in it.
+type Received = (u64, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>);
+
+/// The decoder end of `qpack_encoder`: a table, encoder stream bytes not taken yet, and field
+/// sections received but not decoded (per stream, in order).
+struct Far {
+    d: DecTable,
+    ins: Vec<u8>,
+    pending: Vec<Received>,
+}
+
+impl Far {
+    /// Decodes what it can, in order per stream, acknowledging each; the peer's blocked-streams
+    /// limit must hold.
+    fn decode(&mut self, max_blocked: u64) {
+        let mut waiting: Vec<u64> = Vec::new();
+        let mut f = FieldBuf::default();
+        let mut i = 0;
+        while i < self.pending.len() {
+            let stream = self.pending[i].0;
+            if waiting.contains(&stream) {
+                i += 1;
+                continue;
+            }
+            match decode_section(&self.pending[i].1, usize::MAX, &self.d, &mut f) {
+                Ok(ric) => {
+                    let (_, _, want) = self.pending.remove(i);
+                    let got: Vec<(Vec<u8>, Vec<u8>)> =
+                        f.iter().map(|(n, v)| (n.to_vec(), v.to_vec())).collect();
+                    assert_eq!(got, want);
+                    if ric > 0 {
+                        self.d.section_ack(stream, ric);
+                    }
+                }
+                Err(SectionError::Blocked(ric)) => {
+                    assert!(ric > self.d.inserted());
+                    waiting.push(stream);
+                    i += 1;
+                }
+                Err(SectionError::Bad(e)) => panic!("own section: {e:?}"),
+            }
+        }
+        assert!(waiting.len() as u64 <= max_blocked, "{waiting:?}");
+    }
+
+    /// Takes `n` more bytes of the encoder stream.
+    fn take(&mut self, wire: &mut Vec<u8>, n: usize) {
+        let n = n.min(wire.len());
+        self.ins.extend(wire.drain(..n));
+        let k = self
+            .d
+            .on_encoder_stream(&self.ins)
+            .expect("own encoder stream");
+        self.ins.drain(..k);
+    }
+}
+
+/// `qpack_encoder`: this side's QPACK encoder (inserts, Duplicate, dynamic and post-base
+/// references, blocking within the peer's limit) against our decoder over a link that delays
+/// the encoder stream, acknowledgements and increments, and cancels streams. `data[0]` sets the
+/// encoder's capacity (x16 bytes), `data[1]` the peer's (x32 bytes) and `data[2]` its blocked
+/// streams (0 to 7); then operations. Every section decodes to the fields encoded, the peer
+/// never has more blocked streams than it allows, and the tables stay within capacity.
+pub fn qpack_encoder(data: &[u8]) {
+    if data.len() < 3 {
+        return;
+    }
+    let peer_cap = u64::from(data[1]) * 32;
+    let blocked = u64::from(data[2] % 8);
+    let mut e = Encoder::new(u64::from(data[0]) * 16, peer_cap, blocked);
+    let mut far = Far {
+        d: DecTable::new(peer_cap),
+        ins: Vec::new(),
+        pending: Vec::new(),
+    };
+    let mut wire = std::mem::take(&mut e.out);
+    let mut acks: Vec<u8> = Vec::new();
+    // Stream ids are not reused: a cancelled stream's slot moves on to a new id.
+    let mut ids = [0u64; 8];
+    let mut ops = data[3..].iter().copied();
+    while let Some(op) = ops.next() {
+        let arg = ops.next().unwrap_or(0);
+        match op % 6 {
+            0 => {
+                // A section of 1 to 6 fields on one of 8 streams.
+                let slot = usize::from(arg % 8);
+                let stream = (ids[slot] * 8 + slot as u64) * 4;
+                let mut fields = Vec::new();
+                for _ in 0..=(arg / 8) % 6 {
+                    let x = ops.next().unwrap_or(0);
+                    let n = NAMES[usize::from(x % 8)].as_bytes().to_vec();
+                    let v = VALUES[usize::from(x / 8 % 8)].as_bytes().to_vec();
+                    fields.push((n, v));
+                }
+                let (mut lines, mut sec) = e.begin(stream);
+                for (n, v) in &fields {
+                    e.line(&mut lines, &mut sec, n, v);
+                }
+                let mut out = Vec::new();
+                e.end(&mut out, lines, sec);
+                wire.append(&mut e.out);
+                assert!(e.size() <= peer_cap.min(u64::from(data[0]) * 16));
+                assert!(e.blocking_streams() <= blocked);
+                // Nothing a section still needs is evicted.
+                if let Some(m) = e.min_referenced() {
+                    assert!(m >= e.dropped());
+                }
+                assert!(e.dropped() <= e.known());
+                far.pending.push((stream, out, fields));
+            }
+            1 => far.take(&mut wire, usize::from(arg)),
+            2 => far.decode(blocked),
+            3 => far.d.increment(),
+            4 => {
+                // The peer abandons a stream that still has a section to decode.
+                if !far.pending.is_empty() {
+                    let s = far.pending[usize::from(arg) % far.pending.len()].0;
+                    far.pending.retain(|p| p.0 != s);
+                    far.d.cancel(s);
+                    ids[(s / 4 % 8) as usize] += 1;
+                }
+            }
+            _ => {
+                // The decoder stream, in pieces.
+                acks.append(&mut far.d.out);
+                let n = usize::from(arg).min(acks.len());
+                let k = e.on_decoder_stream(&acks[..n]).expect("own decoder stream");
+                acks.drain(..k);
+            }
+        }
+    }
+    // Everything arrives: every section decodes.
+    let n = wire.len();
+    far.take(&mut wire, n);
+    far.decode(blocked);
+    assert!(far.pending.is_empty());
+    assert_eq!(far.d.inserted(), e.inserted());
+    acks.append(&mut far.d.out);
+    let k = e.on_decoder_stream(&acks).expect("own decoder stream");
+    assert_eq!(k, acks.len());
+    #[cfg(test)]
+    STATS.with(|s| s.set(Some(e.stats)));
+}
+
+// What the last `qpack_encoder` run's encoder did (unit tests check that every kind of
+// instruction happens).
+#[cfg(test)]
+thread_local! {
+    static STATS: std::cell::Cell<Option<crate::qtable::EncStats>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// `h3_request`: a request stream (HEADERS, DATA, trailers, unknown and forbidden frames, size
@@ -327,6 +560,44 @@ mod seeds {
         ];
         // Literal with a literal Huffman-coded name.
         v.push(vec![0, 0, 0, 0x2b, 0x94, 0xe7, 0x81, b'x']);
+        v
+    }
+
+    /// Encoder runs: a section repeated on one stream with every delivery in between; the
+    /// same with the encoder stream late (sections block); a full table (duplicates); a
+    /// cancelled stream.
+    pub(super) fn qpack_encoder() -> Vec<Vec<u8>> {
+        // Sections of 3 fields (arg 16..23: 3 fields on stream arg % 8) then delivery (1),
+        // decoding (2), increment (3), cancellation (4) and acknowledgements (5).
+        let sec = |stream: u8, f: [u8; 3]| [0, 16 + stream, f[0], f[1], f[2]];
+        let deliver = [1, 255, 2, 0, 3, 0, 5, 255];
+        let mut v = Vec::new();
+        let mut a = vec![64, 128, 0];
+        for i in 0..6 {
+            a.extend_from_slice(&sec(i % 2, [0x08, 0x13, 0x22]));
+            a.extend_from_slice(&deliver);
+        }
+        v.push(a.clone());
+        a[2] = 3;
+        v.push(a);
+        let mut late = vec![64, 128, 2];
+        for i in 0..6 {
+            late.extend_from_slice(&sec(i, [0x08, 0x13, 0x24]));
+            late.extend_from_slice(&[2, 0, 5, 255]);
+        }
+        late.extend_from_slice(&deliver);
+        v.push(late);
+        let mut full = vec![12, 12, 4];
+        for i in 0..40u8 {
+            full.extend_from_slice(&sec(i % 4, [i % 64, 0x08, (i % 9) * 7]));
+            full.extend_from_slice(&deliver);
+        }
+        v.push(full);
+        let mut cancel = vec![64, 128, 4];
+        cancel.extend_from_slice(&sec(1, [0x08, 0x13, 0x22]));
+        cancel.extend_from_slice(&sec(1, [0x08, 0x13, 0x22]));
+        cancel.extend_from_slice(&[4, 0, 5, 255, 1, 255, 2, 0, 5, 255]);
+        v.push(cancel);
         v
     }
 
@@ -470,6 +741,7 @@ mod tests {
         let n = replay(DIR, "h3_frame", h3_frame)
             + replay(DIR, "qpack_decode", qpack_decode)
             + replay(DIR, "qpack_dynamic", qpack_dynamic)
+            + replay(DIR, "qpack_encoder", qpack_encoder)
             + replay(DIR, "h3_request", h3_request);
         assert!(n > 0);
     }
@@ -488,6 +760,57 @@ mod tests {
         for s in &seeds::qpack_dynamic() {
             qpack_dynamic(s);
         }
+        for s in &seeds::qpack_encoder() {
+            qpack_encoder(s);
+        }
+    }
+
+    /// The encoder harness on pseudo-random operation streams (stable stands in for the
+    /// fuzzer): the encoder's inserts, duplicates, dynamic and post-base references and
+    /// blocking all happen.
+    #[test]
+    fn qpack_encoder_random() {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut total = crate::qtable::EncStats::default();
+        for round in 0..3000u32 {
+            let mut d = Vec::with_capacity(400);
+            for _ in 0..400 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                d.push(x as u8);
+            }
+            // Mostly sections and deliveries; tables small enough to fill.
+            d[0] = 4 + d[0] % 32;
+            d[1] = 4 + d[1] % 32;
+            if round % 4 == 0 {
+                d[2] = 0;
+            }
+            let s = stats(&d);
+            total.inserts += s.inserts;
+            total.duplicates += s.duplicates;
+            total.dyn_name_inserts += s.dyn_name_inserts;
+            total.dyn_name_lines += s.dyn_name_lines;
+            total.post_base += s.post_base;
+            total.blocking += s.blocking;
+        }
+        let t = total;
+        assert!(
+            t.inserts > 0
+                && t.duplicates > 0
+                && t.dyn_name_inserts > 0
+                && t.dyn_name_lines > 0
+                && t.post_base > 0
+                && t.blocking > 0,
+            "{t:?}"
+        );
+    }
+
+    /// Runs [`qpack_encoder`] and returns what its encoder did.
+    fn stats(d: &[u8]) -> crate::qtable::EncStats {
+        STATS.with(|s| s.set(None));
+        qpack_encoder(d);
+        STATS.with(std::cell::Cell::take).unwrap_or_default()
     }
 
     /// Regenerates the seed files: `cargo test -p only-h3 --lib write_fuzz_seeds -- --ignored`.
@@ -498,5 +821,6 @@ mod tests {
         write_target_seeds(DIR, "qpack_decode", &seeds::qpack_decode());
         write_target_seeds(DIR, "h3_request", &seeds::h3_request());
         write_target_seeds(DIR, "qpack_dynamic", &seeds::qpack_dynamic());
+        write_target_seeds(DIR, "qpack_encoder", &seeds::qpack_encoder());
     }
 }

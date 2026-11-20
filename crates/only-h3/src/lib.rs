@@ -28,8 +28,10 @@
 //! enables it ([`only_quic::ClientConfig::zero_rtt`]) and it resumes.
 //!
 //! QPACK uses a dynamic table ([`H3Config`]): the decoder accepts the peer's inserts (4 KiB and
-//! 16 blocked streams by default); the encoder is off by default and, when enabled, only
-//! references entries the peer has acknowledged, so it never blocks the peer.
+//! 16 blocked streams by default); the encoder is off by default and, when enabled, inserts
+//! fields that repeat, duplicates entries about to be evicted, references names and fields in
+//! its table (post-base too) and leaves at most as many streams waiting for its inserts as the
+//! peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows.
 //!
 //! WebSocket over HTTP/3 (RFC 9220): servers advertise extended CONNECT, and
 //! `Context::upgrade_websocket` accepts it (a [`Router`][only_http::Router] GET route answers
@@ -65,7 +67,7 @@ use only_http::ws::{WsLink, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
-pub use client::{H3Client, H3ClientOptions, H3Error, H3Upload, H3WsOptions};
+pub use client::{H3Client, H3ClientOptions, H3Error, H3Event, H3Upload, H3WsOptions};
 pub use frame::code;
 
 use frame::{Piece, Reader, StreamReader};
@@ -116,7 +118,10 @@ pub struct H3Config {
     pub qpack_blocked_streams: usize,
     /// The QPACK dynamic table this side's encoder uses (at most what the peer allows), in
     /// bytes; 0 (the default) encodes with static references and literals only. The encoder
-    /// never makes the peer wait: it references only entries the peer has acknowledged.
+    /// inserts fields the second time it sees them (not paths, dates, lengths, validators,
+    /// ranges or credentials), and makes at most as many of the peer's streams wait for its
+    /// inserts as the peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (at most 64); it evicts
+    /// only entries the peer has acknowledged.
     pub qpack_encoder_capacity: usize,
 }
 
@@ -207,6 +212,7 @@ pub(crate) fn control_stream_preamble(cfg: &H3Config, server: bool) -> Vec<u8> {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Settings {
     pub(crate) qpack_max_table_capacity: u64,
+    pub(crate) qpack_blocked_streams: u64,
     pub(crate) connect_protocol: bool,
 }
 
@@ -226,6 +232,7 @@ pub(crate) fn check_settings(p: &[u8]) -> Result<Settings, u32> {
         }
         match id {
             frame::SETTINGS_QPACK_MAX_TABLE_CAPACITY => out.qpack_max_table_capacity = v,
+            frame::SETTINGS_QPACK_BLOCKED_STREAMS => out.qpack_blocked_streams = v,
             frame::SETTINGS_ENABLE_CONNECT_PROTOCOL => {
                 if v > 1 {
                     return Err(code::SETTINGS_ERROR);
@@ -290,9 +297,9 @@ impl EncShared {
         f: impl FnOnce(&mut Encoder, &mut Vec<u8>, &mut Section),
     ) {
         let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
-        let (mut lines, mut sec) = e.begin();
+        let (mut lines, mut sec) = e.begin(sid(id));
         f(&mut e, &mut lines, &mut sec);
-        e.end(out, lines, sec, sid(id));
+        e.end(out, lines, sec);
         if !e.out.is_empty() {
             let ins = std::mem::take(&mut e.out);
             let _ = self.c.send(self.stream, ins);
@@ -357,10 +364,11 @@ impl Peer {
     /// allow it, and sends what our decoder has to say.
     pub(crate) fn after(&mut self, c: &Connection) {
         if std::mem::take(&mut self.new_settings) {
-            let max = self.settings.map_or(0, |s| s.qpack_max_table_capacity);
+            let s = self.settings.unwrap_or_default();
+            let max = s.qpack_max_table_capacity;
             if self.enc_capacity > 0 && max > 0 {
                 if let Some(id) = c.open_uni() {
-                    let mut e = Encoder::new(self.enc_capacity, max);
+                    let mut e = Encoder::new(self.enc_capacity, max, s.qpack_blocked_streams);
                     let mut first = vec![frame::STREAM_QPACK_ENCODER as u8];
                     first.append(&mut e.out);
                     let _ = c.send(id, first);
@@ -493,7 +501,7 @@ pub(crate) fn on_uni(
                 }
                 // No encoder: only cancellations can come (acknowledgements and increments
                 // of a table we never filled are errors).
-                None => Encoder::new(0, 0).on_decoder_stream(buf)?,
+                None => Encoder::new(0, 0, 0).on_decoder_stream(buf)?,
             };
             buf.drain(..n);
             if fin {

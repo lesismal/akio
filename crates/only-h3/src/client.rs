@@ -1,11 +1,13 @@
 //! An HTTP/3 client: requests multiplexed on one QUIC connection, request bodies streamed
-//! ([`H3Client::upload`]) and WebSocket over HTTP/3 ([`H3Client::websocket`]).
+//! ([`H3Client::upload`]), responses streamed ([`H3Client::open`], with flow control
+//! backpressure) and WebSocket over HTTP/3 ([`H3Client::websocket`]).
 //!
 //! Responses are bounded by [`H3ClientOptions`]: body (8 MiB), field sections (64 KiB,
 //! advertised as `SETTINGS_MAX_FIELD_SECTION_SIZE`) and a total request timeout (30 s).
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -22,13 +24,52 @@ use crate::{Blocked, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap,
 type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
 type WsDone = Box<dyn FnOnce(Result<WsSender, H3Error>) + Send>;
 type Encode = Box<dyn FnOnce(StreamId, Option<&EncShared>) -> Vec<u8> + Send>;
+type EventCb = Box<dyn FnMut(H3Event<'_>) + Send>;
+
+/// What a streamed response ([`H3Client::open`]) reports as it arrives, on the connection's
+/// I/O thread. After `End` or `Error` nothing more is reported.
+#[non_exhaustive]
+pub enum H3Event<'a> {
+    /// The response head (interim 1xx responses are skipped).
+    Head {
+        /// Status code.
+        status: u16,
+        /// Header fields.
+        headers: &'a Headers,
+    },
+    /// Body bytes, as they arrive (valid for this call only).
+    Data(&'a [u8]),
+    /// Trailer fields.
+    Trailers(&'a Headers),
+    /// The response is complete.
+    End,
+    /// The request failed: reset, connection lost, a limit or the protocol broken, or no head
+    /// within [`H3ClientOptions::request_timeout`] (reported from the client's timer thread).
+    Error(H3Error),
+}
+
+impl std::fmt::Debug for H3Event<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            H3Event::Head { status, .. } => f
+                .debug_struct("Head")
+                .field("status", status)
+                .finish_non_exhaustive(),
+            H3Event::Data(d) => f.debug_tuple("Data").field(&d.len()).finish(),
+            H3Event::Trailers(_) => f.write_str("Trailers"),
+            H3Event::End => f.write_str("End"),
+            H3Event::Error(e) => f.debug_tuple("Error").field(e).finish(),
+        }
+    }
+}
 
 /// Limits and QPACK settings of an [`H3Client`]. Every one has a safe default.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct H3ClientOptions {
     /// Largest response body; past it the request stream is stopped and the request fails
-    /// with [`H3Error::TooLarge`]. Default 8 MiB (as `H3Config::max_body_bytes`).
+    /// with [`H3Error::TooLarge`]. Streamed responses ([`H3Client::open`]) are handed over as
+    /// they arrive and not limited. Default 8 MiB (as `H3Config::max_body_bytes`).
     pub max_body_bytes: usize,
     /// Largest response field section (headers or trailers, decoded), advertised as
     /// `SETTINGS_MAX_FIELD_SECTION_SIZE`; larger ones fail the request with
@@ -38,7 +79,8 @@ pub struct H3ClientOptions {
     /// response (a WebSocket's: its head), waiting for the handshake or a stream included.
     /// Past it the request stream is reset (`H3_REQUEST_CANCELLED`) and the request fails with
     /// [`H3Error::Timeout`]; that callback runs on the client's timer thread. Uploads
-    /// ([`H3Client::upload`]) have no timeout. `None` opts out. Default 30 s.
+    /// ([`H3Client::upload`]) have no timeout; streamed responses ([`H3Client::open`]) have it
+    /// until their head arrives. `None` opts out. Default 30 s.
     pub request_timeout: Option<Duration>,
     /// QPACK dynamic table capacity this client's decoder allows the server
     /// (as `H3Config::qpack_max_table_capacity`). Default 4096.
@@ -156,12 +198,30 @@ struct WsOpen {
     done: WsDone,
 }
 
+/// A streamed response's callback and its request's body.
+struct StreamOpen {
+    ev: EventCb,
+    up: Arc<UpState>,
+}
+
+impl StreamOpen {
+    /// Reports `e`, unless the request was cancelled.
+    fn fail(&mut self, e: H3Error) {
+        self.up.fail();
+        if !self.up.cancelled() {
+            (self.ev)(H3Event::Error(e));
+        }
+    }
+}
+
 /// What a request stream is for.
 enum Kind {
     /// A request whose response goes to the callback.
     Plain(Callback),
     /// A WebSocket being opened: done once the response head arrives.
     Ws(Box<WsOpen>),
+    /// A streamed response: reported from its head on.
+    Stream(Box<StreamOpen>),
 }
 
 impl Kind {
@@ -169,6 +229,7 @@ impl Kind {
         match self {
             Kind::Plain(cb) => cb(Err(e)),
             Kind::Ws(w) => (w.done)(Err(e)),
+            Kind::Stream(mut s) => s.fail(e),
         }
     }
 }
@@ -237,6 +298,7 @@ struct InFlight {
 #[derive(Default)]
 struct Extra {
     ws: Option<Box<WsOpen>>,
+    st: Option<Box<StreamOpen>>,
     up: Option<Arc<UpState>>,
     blocked: Option<Box<Blocked>>,
 }
@@ -244,13 +306,15 @@ struct Extra {
 impl InFlight {
     #[inline]
     fn new(kind: Kind, up: Option<Arc<UpState>>, token: u64) -> InFlight {
-        let (cb, ws) = match kind {
-            Kind::Plain(cb) => (Some(cb), None),
-            Kind::Ws(w) => (None, Some(w)),
+        let (cb, ws, st) = match kind {
+            Kind::Plain(cb) => (Some(cb), None, None),
+            Kind::Ws(w) => (None, Some(w), None),
+            Kind::Stream(s) => (None, None, Some(s)),
         };
-        let x = (ws.is_some() || up.is_some()).then(|| {
+        let x = (ws.is_some() || st.is_some() || up.is_some()).then(|| {
             Box::new(Extra {
                 ws,
+                st,
                 up,
                 blocked: None,
             })
@@ -267,7 +331,13 @@ impl InFlight {
     fn take_kind(&mut self) -> Option<Kind> {
         match self.cb.take() {
             Some(cb) => Some(Kind::Plain(cb)),
-            None => self.x.as_mut()?.ws.take().map(Kind::Ws),
+            None => {
+                let x = self.x.as_mut()?;
+                match x.ws.take() {
+                    Some(w) => Some(Kind::Ws(w)),
+                    None => x.st.take().map(Kind::Stream),
+                }
+            }
         }
     }
 
@@ -372,8 +442,9 @@ impl std::fmt::Debug for H3Client {
     }
 }
 
-/// The body of a request started with [`H3Client::upload`]: write it in pieces from any
-/// thread, then finish it.
+/// The body of a request started with [`H3Client::upload`] or [`H3Client::open`]: write it in
+/// pieces from any thread, then finish it. For [`open`](H3Client::open) it also paces
+/// ([`hold_reads`](Self::hold_reads)) and cancels ([`cancel`](Self::cancel)) the response.
 pub struct H3Upload {
     up: Arc<UpState>,
 }
@@ -387,6 +458,8 @@ impl std::fmt::Debug for H3Upload {
 struct UpState {
     c: Connection,
     s: Mutex<Up>,
+    /// [`H3Upload::cancel`] was called: nothing more is reported.
+    cancelled: AtomicBool,
 }
 
 #[derive(Default)]
@@ -400,6 +473,8 @@ struct Up {
     /// The stream's end was sent.
     ended: bool,
     failed: bool,
+    /// The response's reads are held ([`H3Upload::hold_reads`]).
+    held: bool,
 }
 
 impl UpState {
@@ -407,11 +482,38 @@ impl UpState {
         self.s.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The stream is open and its head sent: what was written goes out.
+    fn new(c: &Connection) -> UpState {
+        UpState {
+            c: c.clone(),
+            s: Mutex::new(Up::default()),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    /// The stream is open and its head sent: what was written goes out (or the stream is
+    /// cancelled, or its reads held, if that was asked before).
     fn attach(&self, id: StreamId) {
         let mut u = self.lock();
         u.id = Some(id);
+        if self.cancelled() {
+            let _ = self.c.reset(id, code::REQUEST_CANCELLED);
+            let _ = self.c.stop(id, code::REQUEST_CANCELLED);
+            return;
+        }
+        if u.held {
+            let _ = self.c.hold_reads(id, true);
+        }
         self.flush(&mut u);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Puts the stream's reads back as the application wants them (after QPACK held them).
+    fn restore_hold(&self, id: StreamId) {
+        let held = self.lock().held;
+        let _ = self.c.hold_reads(id, held);
     }
 
     /// Sends what waits (as far as the send buffer takes it), then the end if finished.
@@ -482,6 +584,33 @@ impl H3Upload {
         let u = self.up.lock();
         u.queued.len() + u.id.map_or(0, |id| self.up.c.queued_bytes(id))
     }
+
+    /// Holds (`true`) or resumes (`false`) reading a streamed response
+    /// ([`H3Client::open`]): while held, no more [`H3Event::Data`] is reported (bytes already
+    /// received may still be) and QUIC flow control stops the server once the stream's receive
+    /// window is used, so a slow consumer bounds the memory a response takes. Holding before
+    /// the head arrives holds the head too (and [`H3ClientOptions::request_timeout`] still
+    /// runs). Callable from any thread, the event callback included.
+    pub fn hold_reads(&self, hold: bool) {
+        let mut u = self.up.lock();
+        u.held = hold;
+        if let Some(id) = u.id {
+            let _ = self.up.c.hold_reads(id, hold);
+        }
+    }
+
+    /// Abandons the request: its stream is reset and the server asked to stop sending
+    /// (`H3_REQUEST_CANCELLED`); nothing more is reported (an event callback already running
+    /// finishes). Writes fail from then on.
+    pub fn cancel(&self) {
+        let mut u = self.up.lock();
+        self.up.cancelled.store(true, Ordering::Release);
+        u.failed = true;
+        if let Some(id) = u.id {
+            let _ = self.up.c.reset(id, code::REQUEST_CANCELLED);
+            let _ = self.up.c.stop(id, code::REQUEST_CANCELLED);
+        }
+    }
 }
 
 impl H3Client {
@@ -527,6 +656,8 @@ impl H3Client {
             uni: StreamMap::default(),
             ws: StreamMap::default(),
             ws_answer: None,
+            dl_start: None,
+            dl: StreamMap::default(),
             fields: FieldBuf::default(),
         };
         let conn = only_quic::dial(engine, addr, server_name, config, handler)?;
@@ -670,8 +801,8 @@ impl H3Client {
             }
             return job.kind.fail(H3Error::Closed(e));
         }
-        if job.up().is_none() && job.token == 0 {
-            // Uploads have no deadline.
+        if (job.up().is_none() || matches!(job.kind, Kind::Stream(_))) && job.token == 0 {
+            // Uploads have no deadline; streamed responses have one until their head.
             job.token = self.timed(&mut st);
         }
         st.queue.push_back(job);
@@ -692,10 +823,7 @@ impl H3Client {
         headers: &Headers,
         cb: impl FnOnce(Result<Response, H3Error>) + Send + 'static,
     ) -> H3Upload {
-        let up = Arc::new(UpState {
-            c: self.conn.clone(),
-            s: Mutex::new(Up::default()),
-        });
+        let up = Arc::new(UpState::new(&self.conn));
         let wire = match self.sh.enc.get() {
             None => Ok(self.encode_now(&method, path, headers, Vec::new())),
             Some(_) => Err(self.encode_later(method, path, headers, Vec::new())),
@@ -705,6 +833,39 @@ impl H3Client {
             false,
             Some(up.clone()),
             Kind::Plain(Box::new(cb)),
+        ));
+        H3Upload { up }
+    }
+
+    /// Starts a request whose body is written afterwards through the returned [`H3Upload`]
+    /// (call [`finish`](H3Upload::finish) at once when there is none) and whose response is
+    /// reported piece by piece to `on_event` as it arrives, on the connection's I/O thread:
+    /// [`H3Event::Head`], [`H3Event::Data`] for each piece of the body, [`H3Event::Trailers`],
+    /// then [`H3Event::End`], or [`H3Event::Error`]. The body is not buffered and not limited
+    /// by [`H3ClientOptions::max_body_bytes`]; pace it with [`H3Upload::hold_reads`] (QUIC flow
+    /// control then holds the server back). [`H3ClientOptions::request_timeout`] applies until
+    /// the head arrives; [`H3Upload::cancel`] abandons the request at any time. On a closed
+    /// connection `on_event` gets [`H3Event::Error`] before this returns.
+    pub fn open(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &Headers,
+        on_event: impl FnMut(H3Event<'_>) + Send + 'static,
+    ) -> H3Upload {
+        let up = Arc::new(UpState::new(&self.conn));
+        let wire = match self.sh.enc.get() {
+            None => Ok(self.encode_now(&method, path, headers, Vec::new())),
+            Some(_) => Err(self.encode_later(method, path, headers, Vec::new())),
+        };
+        self.push(Job::with(
+            wire,
+            false,
+            Some(up.clone()),
+            Kind::Stream(Box::new(StreamOpen {
+                ev: Box::new(on_event),
+                up: up.clone(),
+            })),
         ));
         H3Upload { up }
     }
@@ -932,6 +1093,9 @@ fn expire(conn: &Connection, sh: &Arc<Shared>, armed: Instant) {
                 if f.take_blocked().is_some() {
                     s.expired_blocked.push(id);
                 }
+                if let Some(up) = f.up() {
+                    up.fail();
+                }
                 kinds.extend(f.take_kind());
             }
             let _ = conn.reset(id, code::REQUEST_CANCELLED);
@@ -994,6 +1158,10 @@ struct ClientConn {
     ws_answer: Option<Box<WsAnswer>>,
     /// Open WebSockets, by stream.
     ws: StreamMap<(StreamReader, WsSession)>,
+    /// A streamed response's head `on_resp` just took off its stream, for `report`.
+    dl_start: Option<Box<DlStart>>,
+    /// Streamed responses past their head, by stream.
+    dl: StreamMap<Dl>,
     /// Field sections are decoded here, then copied once into the response's `Headers`.
     fields: FieldBuf,
 }
@@ -1027,6 +1195,103 @@ struct WsAnswer {
 /// A finished request: its callback and the response, or why there is none.
 type Done = (Callback, Result<Response, H3Error>);
 
+/// A streamed response whose head arrived (with what came along: body bytes, trailers,
+/// the end), and the stream's reader (holding the start of a frame, maybe).
+struct DlStart {
+    s: Box<StreamOpen>,
+    r: Result<Response, H3Error>,
+    fin: bool,
+    reader: Reader,
+}
+
+/// A streamed response past its head.
+struct Dl {
+    r: StreamReader,
+    s: Box<StreamOpen>,
+    /// Trailers arrived: nothing but the end may follow.
+    trailers: bool,
+    /// Trailers waiting for QPACK inserts (the stream's reads are held meanwhile).
+    blocked: Option<Box<Blocked>>,
+}
+
+/// Handles one piece of a streamed response past its head.
+fn dl_piece(
+    peer: &mut Peer,
+    fields: &mut FieldBuf,
+    max_field: usize,
+    id: StreamId,
+    d: &mut DlParts<'_>,
+    p: Piece<'_>,
+) -> Result<(), H3Error> {
+    if let Some(b) = d.blocked.as_mut() {
+        // Held back, in order, until the trailers before them can be decoded.
+        match p {
+            Piece::Data(x) => frame::put_frame(&mut b.rest, frame::DATA, x),
+            Piece::Headers(h) => frame::put_frame(&mut b.rest, frame::HEADERS, h),
+            Piece::Skip(_) => {}
+        }
+        return Ok(());
+    }
+    match p {
+        Piece::Data(x) => {
+            if *d.trailers {
+                return Err(H3Error::Protocol("DATA after trailers"));
+            }
+            if !x.is_empty() && !d.s.up.cancelled() {
+                (d.s.ev)(H3Event::Data(x));
+            }
+        }
+        Piece::Headers(h) => {
+            if *d.trailers {
+                return Err(H3Error::Protocol("HEADERS after trailers"));
+            }
+            match qpack::decode_section(h, max_field, &peer.dec, fields) {
+                Ok(ric) => {
+                    if ric > 0 {
+                        peer.dec.section_ack(sid(id), ric);
+                    }
+                    *d.trailers = true;
+                    let mut t = Headers::with_capacity(fields.len(), fields.bytes());
+                    for (n, v) in fields.iter() {
+                        t.append(String::from_utf8_lossy(n), String::from_utf8_lossy(v));
+                    }
+                    if !d.s.up.cancelled() {
+                        (d.s.ev)(H3Event::Trailers(&t));
+                    }
+                }
+                Err(SectionError::Blocked(ric)) => {
+                    if peer.blocked >= peer.max_blocked {
+                        return Err(H3Error::Protocol("too many blocked streams"));
+                    }
+                    peer.blocked += 1;
+                    *d.blocked = Some(Box::new(Blocked {
+                        ric,
+                        section: h.to_vec(),
+                        rest: Vec::new(),
+                        fin: false,
+                    }));
+                }
+                Err(SectionError::Bad(qpack::QpackError::TooLarge)) => {
+                    return Err(H3Error::TooLarge("response field section too large"));
+                }
+                Err(SectionError::Bad(_)) => return Err(H3Error::Protocol("bad field section")),
+            }
+        }
+        Piece::Skip(t) if crate::h2_only(t) || t == frame::SETTINGS => {
+            return Err(H3Error::Protocol("frame not allowed on a request stream"));
+        }
+        Piece::Skip(_) => {}
+    }
+    Ok(())
+}
+
+/// The parts of a [`Dl`] a piece changes.
+struct DlParts<'a> {
+    s: &'a mut StreamOpen,
+    trailers: &'a mut bool,
+    blocked: &'a mut Option<Box<Blocked>>,
+}
+
 /// Blocked responses a timeout gave up: their sections are cancelled.
 fn cancel_expired(peer: &mut Peer, st: &mut State) {
     if !st.expired_blocked.is_empty() {
@@ -1058,6 +1323,9 @@ impl ClientConn {
         for (_, (_, mut ws)) in self.ws.drain() {
             ws.on_transport_closed();
         }
+        for (_, mut d) in self.dl.drain() {
+            d.s.fail(H3Error::Closed(why.clone()));
+        }
     }
 
     /// Feeds a response stream; what to report, once the response is complete (a WebSocket's
@@ -1072,6 +1340,8 @@ impl ClientConn {
         let mut st = self.sh.lock();
         cancel_expired(&mut self.peer, &mut st);
         let InFlight { r, resp, x, .. } = st.inflight.get_mut(&id)?;
+        // A streamed response's body is not limited (what comes with its head is handed on).
+        let streamed = x.as_ref().is_some_and(|x| x.st.is_some());
         let fields = &mut self.fields;
         let peer = &mut self.peer;
         let (max_body, max_field) = (self.max_body, self.cfg.max_field_section_bytes);
@@ -1130,7 +1400,7 @@ impl ClientConn {
                         }
                     }
                     frame::DATA => match resp.as_mut() {
-                        Some(r) if r.body.len() + p.len() > max_body => {
+                        Some(r) if !streamed && r.body.len() + p.len() > max_body => {
                             return Err(H3Error::TooLarge("response body too large"));
                         }
                         Some(r) => r.body.extend_from_slice(p),
@@ -1148,7 +1418,7 @@ impl ClientConn {
                 return None;
             }
         }
-        let ws_head = resp.is_some() && x.as_ref().is_some_and(|x| x.ws.is_some());
+        let ws_head = resp.is_some() && x.as_ref().is_some_and(|x| x.ws.is_some() || streamed);
         if err.is_none() && !fin && !ws_head {
             return None;
         }
@@ -1158,8 +1428,11 @@ impl ClientConn {
             if f.take_blocked().is_some() {
                 self.peer.blocked -= 1;
             }
-            if let Some(up) = f.up() {
-                up.fail();
+            // A streamed response goes on from its head: its request body may too.
+            if !(streamed && err.is_none() && !fin) {
+                if let Some(up) = f.up() {
+                    up.fail();
+                }
             }
         }
         let r = match (err, f.resp.take()) {
@@ -1173,6 +1446,16 @@ impl ClientConn {
                 // Started by the caller (`report`), outside the lock.
                 self.ws_answer = Some(Box::new(WsAnswer {
                     w,
+                    r,
+                    fin,
+                    reader: std::mem::take(&mut f.r),
+                }));
+                None
+            }
+            Kind::Stream(s) => {
+                // Reported by the caller (`report`), outside the lock.
+                self.dl_start = Some(Box::new(DlStart {
+                    s,
                     r,
                     fin,
                     reader: std::mem::take(&mut f.r),
@@ -1233,6 +1516,144 @@ impl ClientConn {
         if let Some(a) = self.ws_answer.take() {
             let WsAnswer { w, r, fin, reader } = *a;
             self.ws_open(c, id, *w, r, fin, reader);
+        }
+        if let Some(d) = self.dl_start.take() {
+            self.dl_begin(c, id, *d);
+        }
+    }
+
+    /// A streamed response's head arrived: reports it (and what came with it), then keeps the
+    /// stream for its body.
+    fn dl_begin(&mut self, c: &Connection, id: StreamId, d: DlStart) {
+        let DlStart {
+            mut s,
+            r,
+            fin,
+            reader,
+        } = d;
+        let resp = match r {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = c.stop(id, code::REQUEST_CANCELLED);
+                let _ = c.reset(id, code::REQUEST_CANCELLED);
+                return s.fail(e);
+            }
+        };
+        if s.up.cancelled() {
+            return;
+        }
+        (s.ev)(H3Event::Head {
+            status: resp.status,
+            headers: &resp.headers,
+        });
+        if !resp.body.is_empty() && !s.up.cancelled() {
+            (s.ev)(H3Event::Data(&resp.body));
+        }
+        if let Some(t) = &resp.trailers {
+            if !s.up.cancelled() {
+                (s.ev)(H3Event::Trailers(t));
+            }
+        }
+        if fin {
+            if !s.up.cancelled() {
+                (s.ev)(H3Event::End);
+            }
+            return;
+        }
+        let trailers = resp.trailers.is_some();
+        self.prune_cancelled(c);
+        self.dl.insert(
+            id,
+            Dl {
+                r: StreamReader::from(reader),
+                s,
+                trailers,
+                blocked: None,
+            },
+        );
+    }
+
+    /// Drops streamed responses cancelled through their `H3Upload` whose stream will report
+    /// nothing more (a server that had sent everything need not reset it).
+    fn prune_cancelled(&mut self, c: &Connection) {
+        if !self.dl.values().any(|d| d.s.up.cancelled()) {
+            return;
+        }
+        let gone: Vec<StreamId> = self
+            .dl
+            .iter()
+            .filter(|(_, d)| d.s.up.cancelled())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in gone {
+            if let Some(mut d) = self.dl.remove(&id) {
+                if d.blocked.take().is_some() {
+                    self.peer.blocked -= 1;
+                    self.peer.dec.cancel(sid(id));
+                }
+            }
+        }
+        self.peer.flush(c);
+    }
+
+    /// Bytes of a streamed response past its head; with `fresh`, they are held-back frames
+    /// fed through their own reader (the stream's keeps its place).
+    fn on_dl(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool, fresh: bool) {
+        let Some(d) = self.dl.get_mut(&id) else {
+            return;
+        };
+        let was_blocked = d.blocked.is_some();
+        let max_field = self.cfg.max_field_section_bytes;
+        let (peer, fields) = (&mut self.peer, &mut self.fields);
+        let Dl {
+            r,
+            s,
+            trailers,
+            blocked,
+        } = d;
+        let mut parts = DlParts {
+            s,
+            trailers,
+            blocked,
+        };
+        let mut own = StreamReader::default();
+        let reader = if fresh { &mut own } else { r };
+        let fed = reader.feed_stream(
+            data,
+            max_field as u64,
+            || H3Error::TooLarge("response field section too large"),
+            |p| dl_piece(peer, fields, max_field, id, &mut parts, p),
+        );
+        let cancelled = d.s.up.cancelled();
+        if fed.is_ok() && !cancelled {
+            if let Some(b) = d.blocked.as_mut() {
+                b.fin |= fin;
+                if !was_blocked {
+                    // Nothing more is read until the inserts arrive (flow control bounds it).
+                    let _ = c.hold_reads(id, true);
+                }
+                return;
+            }
+            if !fin {
+                return;
+            }
+        }
+        let Some(mut d) = self.dl.remove(&id) else {
+            return;
+        };
+        if d.blocked.take().is_some() {
+            self.peer.blocked -= 1;
+            self.peer.dec.cancel(sid(id));
+        }
+        d.s.up.fail();
+        match fed {
+            _ if cancelled => {}
+            Err(e) => {
+                let _ = c.stop(id, code::REQUEST_CANCELLED);
+                let _ = c.reset(id, code::REQUEST_CANCELLED);
+                d.s.fail(e);
+            }
+            Ok(()) => (d.s.ev)(H3Event::End),
         }
     }
 
@@ -1339,6 +1760,28 @@ impl ClientConn {
             return;
         }
         let have = self.peer.dec.inserted();
+        // Streamed responses' trailers.
+        let dl_ready: Vec<StreamId> = self
+            .dl
+            .iter()
+            .filter(|(_, d)| d.blocked.as_ref().is_some_and(|b| b.ric <= have))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in dl_ready {
+            let Some(b) = self.dl.get_mut(&id).and_then(|d| d.blocked.take()) else {
+                continue;
+            };
+            self.peer.blocked -= 1;
+            let mut data = Vec::with_capacity(b.section.len() + b.rest.len() + 9);
+            frame::put_frame(&mut data, frame::HEADERS, &b.section);
+            data.extend_from_slice(&b.rest);
+            self.on_dl(c, id, &data, b.fin, true);
+            if let Some(d) = self.dl.get(&id) {
+                if d.blocked.is_none() {
+                    d.s.up.restore_hold(id);
+                }
+            }
+        }
         let ready: Vec<StreamId> = self
             .sh
             .lock()
@@ -1364,8 +1807,11 @@ impl ClientConn {
             let mut done = self.on_resp(id, &data, false);
             if let Some(f) = self.sh.lock().inflight.get_mut(&id) {
                 f.r = held;
+            } else if let Some(d) = self.dl_start.as_mut() {
+                d.reader = held;
+                d.fin |= b.fin;
             }
-            if done.is_none() && self.ws_answer.is_none() && b.fin {
+            if done.is_none() && self.ws_answer.is_none() && self.dl_start.is_none() && b.fin {
                 done = self.on_resp(id, &[], true);
             }
             self.report(c, id, done);
@@ -1412,6 +1858,10 @@ impl QuicHandler for ClientConn {
         if !self.ws.is_empty() && self.ws.contains_key(&id) {
             return self.on_ws(c, id, &data, fin);
         }
+        if !self.dl.is_empty() && self.dl.contains_key(&id) {
+            self.on_dl(c, id, &data, fin, false);
+            return self.peer.flush(c);
+        }
         match self.on_resp(id, &data, fin) {
             Some((cb, r)) => {
                 if r.is_err() && !fin {
@@ -1420,7 +1870,9 @@ impl QuicHandler for ClientConn {
                 }
                 cb(r);
             }
-            None if self.ws_answer.is_some() => self.report(c, id, None),
+            None if self.ws_answer.is_some() || self.dl_start.is_some() => {
+                self.report(c, id, None);
+            }
             None => {}
         }
         self.peer.flush(c);
@@ -1429,6 +1881,14 @@ impl QuicHandler for ClientConn {
     fn on_stream_reset(&mut self, c: &Connection, id: StreamId, code: u64) {
         if let Some((_, mut ws)) = self.ws.remove(&id) {
             return ws.on_transport_closed();
+        }
+        if let Some(mut d) = self.dl.remove(&id) {
+            if d.blocked.take().is_some() {
+                self.peer.blocked -= 1;
+                self.peer.dec.cancel(sid(id));
+                self.peer.flush(c);
+            }
+            return d.s.fail(H3Error::Reset(code));
         }
         let f = {
             let mut st = self.sh.lock();
@@ -1455,12 +1915,15 @@ impl QuicHandler for ClientConn {
 
     fn on_stream_writable(&mut self, _c: &Connection, id: StreamId) {
         // An upload whose writes were refused goes on.
-        let up = self
-            .sh
-            .lock()
-            .inflight
-            .get(&id)
-            .and_then(|f| f.up().cloned());
+        let up = match self.dl.get(&id) {
+            Some(d) => Some(d.s.up.clone()),
+            None => self
+                .sh
+                .lock()
+                .inflight
+                .get(&id)
+                .and_then(|f| f.up().cloned()),
+        };
         if let Some(up) = up {
             let mut u = up.lock();
             up.flush(&mut u);
