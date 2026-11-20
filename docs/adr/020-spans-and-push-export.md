@@ -116,4 +116,6 @@ plain HTTP/1.1 over `std::net`, meant for a local collector or agent.
   1% sampling and 46% at 100% sampling with export on 4.6M pipelined requests/s.
 - A tracer is per process: one exporter with traces per process.
 - Not done: OTLP over gRPC, TLS to the collector, OTLP logs, span events and links, exemplars,
-  a `tracing` bridge.
+  a `tracing` bridge. All but the bridge were added by
+  [ADR-064](064-otlp-grpc-tls-logs-events-exemplars.md), which also replaced "failed pushes are
+  dropped" with retry and backoff.

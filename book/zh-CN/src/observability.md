@@ -81,6 +81,11 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 - `Registry` 持有具名的 `Counter`、`Gauge`、`Histogram`（共享原子量，更新不加锁）；以相同名称和
   标签再次获取会返回同一个工具。
+- **Exemplar。** `Histogram::with_exemplars(bounds)`（或 `Registry::histogram_with_exemplars`）让每个桶
+  记住最近一次在已采样 span 内的观测值，连同该 span 的 trace id 和 span id（`HistogramSnapshot::exemplars`）；
+  `HttpMetrics::with_exemplars()` 对请求延迟直方图做同样的事，取自请求 span。它们经 OTLP 导出（Prometheus
+  文本格式没有它们的位置）。关闭时每次观测多一个可预测的分支；开启时多一次线程局部读取，在已采样 span 内再加一次
+  读时钟和一次从不等待的 `try_lock`（ADR-064）。
 - `fn_collector(|out| ...)` 把闭包变成每次抓取都会运行的收集器；`out.counter`、`out.gauge`、
   `out.histogram` 添加样本。非法名称、重复的标签名和类型冲突会被丢弃（计入 `Families::dropped()`），
   从不 panic。
@@ -101,7 +106,7 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 |---|---|
 | `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`、`only_http_request_duration_seconds`、`only_http_requests_in_flight`、`only_http_requests_by_version_total{version}`；用 `with_routes(n)` 时还有 `only_http_route_requests_total{method, route, class}` 和 `only_http_route_request_duration_seconds{method, route}` |
 | `only_http::observe::H2Stats`（设在 `H2Config::stats`） | `only_http2_connections_open`、`only_http2_connections_total`、`only_http2_streams_open`、`only_http2_streams_total`、`only_http2_resets_total{direction}`、`only_http2_goaways_total{direction}` |
-| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`、`only_export_spans_exported_total`、`only_export_spans_dropped_total`、`only_export_spans_queued`、`only_export_statsd_dropped_series_total` |
+| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`（signal 为 `metrics`、`traces`、`logs`）、`only_export_otlp_retries_total`、`only_export_metric_points_rejected_total`、`only_export_{spans,logs}_exported_total`、`_dropped_total`、`_rejected_total`、`_queued`、`only_export_statsd_dropped_series_total` |
 | `only_quic::QuicServer`（`only_h3::serve` 返回的也是它） | `only_quic_connections_open`（gauge）、`only_quic_connections_accepted_total`、`only_quic_connections_closed_total`、`only_quic_datagrams_total{dir}`、`only_quic_bytes_total{dir}`、`only_quic_packets_sent_total`、`only_quic_packets_lost_total`、`only_quic_lost_bytes_total`、`only_quic_congestion_events_total`、`only_quic_ecn_ce_events_total` |
 | `only::tls::TlsStats`，来自 `Tls::stats()` | `only_tls_handshakes_total{side, version}`、`only_tls_resumed_total{side}`、`only_tls_early_data_total{side, outcome}` |
 
@@ -146,6 +151,11 @@ span 结束时交给一个 `Tracer`（导出器，见下文）；它们有自己
   的响应在任何地方发出时结束）。请求带 `traceparent` 头时，它成为调用方 span 的子 span；`ctx.span_context()`
   给出要向下游传播的上下文（`to_traceparent()`）。
 - **连接 span**（target `only_http::connection`，级别 `debug`）覆盖一条连接从 accept 到关闭，带客户端地址和协议版本。
+- **事件与链接。** `span.add_event("retry", &[("attempt", 2u64.into())])` 记录 span 中某一时刻发生的事
+  （`push_event` 接受自带时间的 `SpanEvent`）；`span.add_link(ctx, &[..])`，或在 span 开始时用
+  `SpanBuilder::link(SpanLink::new(ctx))`，指向另一个 span（同一 trace 或其他 trace，比如一个批处理链接它服务的
+  请求）。每个 span 各最多保留 128 个（`MAX_EVENTS`、`MAX_LINKS`）；多出的计入 `SpanData::dropped_events` /
+  `dropped_links` 并照此导出。对不记录的 span 它们什么也不做。
 - 采样由 tracer 按 trace 决定一次（导出器的 `sample_ratio`）；调用方 `traceparent` 的标志会被遵从。未采样的 span
   仍带有 id（它的子 span 和发出的头保持未采样），但不记录任何东西。
 - 自定义 tracer：实现 `only::log::span::Tracer`（`enabled`、`sample`、`on_end`），用 `set_tracer` 加
@@ -157,32 +167,52 @@ span 意味着按 span 名泄漏元数据，或者把名字藏进字段；OTLP �
 
 ## 推送导出（OTLP 与 StatsD）
 
-`only-export` crate 在一个后台线程上推送指标和 span，没有依赖：
+`only-export` crate 在一个后台线程上推送指标、span 和日志记录，用的是工作区自研的 HTTP、gRPC、TLS 和
+protobuf 代码，没有第三方依赖：
 
 ```rust,ignore
 {{#include ../../../crates/only-export/examples/guide-export.rs:export}}
 ```
 
 - **发送什么。** 每个 `interval`（默认 10 秒）发送一次与抓取相同的快照：engine 的序列和所有已注册的收集器
-  （`Telemetry::collect_all()`），再加上用 `.collector(..)` 传入的收集器。span 每个 `span_interval`
+  （`Telemetry::collect_all()`），再加上用 `.collector(..)` 传入的收集器。span 和日志记录每个 `span_interval`
   （默认 2 秒）发送一次，队列攒满一批（512）时提前发送。
-- **OTLP/HTTP**（`otlp_http`，或 `otlp_http_with(endpoint, Encoding::Json, headers)`）：向 collector
-  `POST /v1/metrics` 和 `/v1/traces`，protobuf（`application/x-protobuf`）或 OTLP/JSON。计数器成为累积的
-  单调 sum，gauge 仍是 gauge，直方图成为显式分桶直方图；标签成为属性，`service.name` 和 `resource_attr(..)`
-  成为 resource。span 按 target 分成不同的 instrumentation scope。只支持明文 `http://`：发往本地 collector
-  或 agent（或终结 TLS 的 sidecar）。指标已被抓取或发往 StatsD 时，`otlp_traces_only()` 让 OTLP 只发 span。
+- **OTLP/HTTP**（`otlp_http`，或 `otlp_http_with(endpoint, Encoding::Json, headers)`）：`POST /v1/metrics`、
+  `/v1/traces` 和 `/v1/logs`，protobuf（`application/x-protobuf`）或 OTLP/JSON。**OTLP/gRPC**
+  （`otlp_grpc("http://collector:4317")`、`otlp_grpc_with(endpoint, metadata)`）：三个 collector 服务的一元
+  `Export` 方法，使用 only-grpc 的客户端，运行在一个只有一个客户端 I/O 线程的私有 engine 上，首次推送时启动。
+  计数器成为累积的单调 sum，gauge 仍是 gauge，直方图成为带 exemplar 的显式分桶直方图；标签成为属性，
+  `service.name` 和 `resource_attr(..)` 成为 resource。span（连同事件和链接）和日志记录按 target 分成不同的
+  instrumentation scope。指标已被抓取或发往 StatsD 时，`otlp_traces_only()` 让 OTLP 不发指标。
+- **TLS。** `https://` 端点（两种协议均可）经 only-tls 连接，gRPC 用 ALPN `h2`，HTTP 用 `http/1.1`。collector
+  的证书按系统根证书校验，或按 `tls_roots(RootCerts)`（私有 CA）校验；`tls_client_cert(chain, key)` 应答要求客户端
+  证书的 collector；`tls_server_name(..)` 覆盖校验的名字（默认是端点的主机名）。TLS 选项配 `http://` 端点在 `start`
+  时报错。
+- **日志。** `logs(level)` 安装一个 logger（进程级的 only-log logger），把不超过 `level` 的记录转成 OTLP
+  `LogRecord`：消息作为 body，带严重级别、键值作为属性、`code.file.path` 与 `code.line.number`，以及记录所在处当前
+  span 的 trace id 和 span id，collector 因而能把一次请求的日志和它的 trace 放在一起。
+  `forward_logs(FmtLogger::new(), LevelFilter::Warn)` 同时把记录交给另一个 logger。最大日志级别取两者中更详细的一个。
+  导出器自己线程上的记录不会被导出。与 tracer 一样，logger 每个进程只能安装一次。
 - **StatsD**（`statsd(addr, Flavor::DogStatsd | Flavor::Statsd)`、`statsd_options(prefix, max_packet,
   max_series)`）：计数器发送距上次推送的增量（`name:3|c`），gauge 发送值（`|g`），直方图发送 `.count`、`.sum`
   和每个桶的 `.bucket` 增量（带 `le` 标签）。DogStatsD 用 tag 携带标签（`|#route:/users/:id,class:2xx`）；
-  普通 StatsD 把它们拼进名字（`name.class.2xx`）。多行打包进最多 1432 字节的数据报。span 不发往 StatsD。
-- **不在 I/O 线程上，且有界。** I/O 线程只把结束的 span 交给一个分片队列（默认 4096 个 span）：超出时 span
-  被丢弃并计数，从不等待。推送失败会计数并丢弃，不重试：指标是累积的，下一次推送就又完整了。StatsD 的增量表最多
-  保留 `max_series` 个序列（默认 10 000）。OTLP 的每一步（连接、写、读）都有超时（默认 5 秒），响应最多读 1 MiB。
-- `flush()` 立即推送并等待；`shutdown()`（或 drop 导出器）再推送一次然后停止线程。tracer 每个进程只能安装一次：
-  第二个带 `traces(..)` 的导出器启动会失败。
+  普通 StatsD 把它们拼进名字（`name.class.2xx`）。多行打包进最多 1432 字节的数据报。span 和日志不发往 StatsD。
+- **不在 I/O 线程上，且有界。** I/O 线程只把结束的 span 和记录交给分片队列（默认各 4096，`span_queue` /
+  `log_queue`）：超出时被丢弃并计数，从不等待。StatsD 的增量表最多保留 `max_series` 个序列（默认 10 000）。OTLP
+  的每一步（连接、TLS 握手、写、读，或一次 gRPC 调用）都有超时（默认 5 秒），HTTP 响应最多读 1 MiB。
+- **collector 不可用时。** 可能自行恢复的失败（连不上、超时、HTTP 429、502、503、504，gRPC `UNAVAILABLE`、
+  `DEADLINE_EXCEEDED`、`RESOURCE_EXHAUSTED` 等）让 collector 进入退避：`retry(initial, max, max_elapsed)`，默认从
+  1 秒起翻倍到 30 秒并带抖动，或按服务器的 `Retry-After`。期间每种信号失败的那一批等待重发（每种信号一批），新数据在
+  有界队列中等待；退避结束时立即发送这一批和队列，指标用新快照重新推送（它们是累积的）。超过 `max_elapsed`（默认
+  5 分钟；`Duration::ZERO` 表示从不重试）仍失败的一批被丢弃并计数。其他失败（HTTP 400、gRPC `INVALID_ARGUMENT`、
+  客户端拒绝的 TLS 证书等）立即丢弃这一批。collector 在 partial success 中拒绝的条目会被计数（`spans_rejected`、
+  `logs_rejected`、`metric_points_rejected`）。
+- `flush()` 忽略退避立即推送并等待；遇到可重试的失败即结束，其余留在队列中。`shutdown()`（或 drop 导出器）再推送
+  一次然后停止线程。tracer 和 logger 每个进程只能安装一次：第二个带 `traces(..)` 或 `logs(..)` 的导出器启动会失败。
 
-`tools/otel/e2e.sh` 在 Docker 里对 OpenTelemetry Collector（contrib）运行端到端测试：OTLP protobuf 和 JSON
-进入它的 OTLP receiver，DogStatsD 进入它的 statsd receiver。
+`tools/otel/e2e.sh` 在 Docker 里对 OpenTelemetry Collector（contrib）运行端到端测试：OTLP/HTTP 的 protobuf 和
+JSON、OTLP/gRPC，明文以及带客户端证书的 TLS（脚本生成私有 CA），带事件和链接的 trace，与请求 span 关联的日志，带
+exemplar 的指标，以及进入 statsd receiver 的 DogStatsD；检查 collector 的 file exporter 输出。
 
 ## 日志
 

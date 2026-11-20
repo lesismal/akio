@@ -144,6 +144,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SetTracerError
 impl core::panic::unwind_safe::UnwindSafe for only_log::span::SetTracerError
 pub struct only_log::span::Span(_)
 impl only_log::span::Span
+pub fn only_log::span::Span::add_event(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, &[(&'static str, only_log::span::FieldValue)])
+pub fn only_log::span::Span::add_link(&mut self, only_log::span::SpanContext, &[(&'static str, only_log::span::FieldValue)])
 pub fn only_log::span::Span::context(&self) -> core::option::Option<only_log::span::SpanContext>
 pub fn only_log::span::Span::end(self)
 pub fn only_log::span::Span::enter(&self) -> only_log::span::Entered<'_>
@@ -151,6 +153,7 @@ pub fn only_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce
 pub fn only_log::span::Span::is_none(&self) -> bool
 pub fn only_log::span::Span::is_recording(&self) -> bool
 pub const fn only_log::span::Span::none() -> only_log::span::Span
+pub fn only_log::span::Span::push_event(&mut self, only_log::span::SpanEvent)
 pub fn only_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>)
 pub fn only_log::span::Span::set_kind(&mut self, only_log::span::SpanKind)
 pub fn only_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)
@@ -171,6 +174,7 @@ pub struct only_log::span::SpanBuilder
 impl only_log::span::SpanBuilder
 pub fn only_log::span::SpanBuilder::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>) -> only_log::span::SpanBuilder
 pub fn only_log::span::SpanBuilder::kind(self, only_log::span::SpanKind) -> only_log::span::SpanBuilder
+pub fn only_log::span::SpanBuilder::link(self, only_log::span::SpanLink) -> only_log::span::SpanBuilder
 pub fn only_log::span::SpanBuilder::new(only_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> only_log::span::SpanBuilder
 pub fn only_log::span::SpanBuilder::parent(self, only_log::span::Parent) -> only_log::span::SpanBuilder
 pub fn only_log::span::SpanBuilder::start(self) -> only_log::span::Span
@@ -209,10 +213,14 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanContext
 impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanContext
 #[non_exhaustive] pub struct only_log::span::SpanData
 pub only_log::span::SpanData::context: only_log::span::SpanContext
+pub only_log::span::SpanData::dropped_events: u32
+pub only_log::span::SpanData::dropped_links: u32
 pub only_log::span::SpanData::end: std::time::SystemTime
+pub only_log::span::SpanData::events: alloc::vec::Vec<only_log::span::SpanEvent>
 pub only_log::span::SpanData::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, only_log::span::FieldValue)>
 pub only_log::span::SpanData::kind: only_log::span::SpanKind
 pub only_log::span::SpanData::level: only_log::Level
+pub only_log::span::SpanData::links: alloc::vec::Vec<only_log::span::SpanLink>
 pub only_log::span::SpanData::name: alloc::borrow::Cow<'static, str>
 pub only_log::span::SpanData::parent: core::option::Option<only_log::span::SpanContext>
 pub only_log::span::SpanData::start: std::time::SystemTime
@@ -230,6 +238,45 @@ impl core::marker::Sync for only_log::span::SpanData
 impl core::marker::Unpin for only_log::span::SpanData
 impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanData
 impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanData
+#[non_exhaustive] pub struct only_log::span::SpanEvent
+pub only_log::span::SpanEvent::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, only_log::span::FieldValue)>
+pub only_log::span::SpanEvent::name: alloc::borrow::Cow<'static, str>
+pub only_log::span::SpanEvent::time: std::time::SystemTime
+impl only_log::span::SpanEvent
+pub fn only_log::span::SpanEvent::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>) -> only_log::span::SpanEvent
+pub fn only_log::span::SpanEvent::new(impl core::convert::Into<alloc::borrow::Cow<'static, str>>, std::time::SystemTime) -> only_log::span::SpanEvent
+impl core::clone::Clone for only_log::span::SpanEvent
+pub fn only_log::span::SpanEvent::clone(&self) -> Self
+impl core::cmp::PartialEq for only_log::span::SpanEvent
+pub fn only_log::span::SpanEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_log::span::SpanEvent
+pub fn only_log::span::SpanEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::span::SpanEvent
+impl core::marker::Send for only_log::span::SpanEvent
+impl core::marker::Sync for only_log::span::SpanEvent
+impl core::marker::Unpin for only_log::span::SpanEvent
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanEvent
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanEvent
+#[non_exhaustive] pub struct only_log::span::SpanLink
+pub only_log::span::SpanLink::context: only_log::span::SpanContext
+pub only_log::span::SpanLink::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, only_log::span::FieldValue)>
+impl only_log::span::SpanLink
+pub fn only_log::span::SpanLink::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>) -> only_log::span::SpanLink
+pub fn only_log::span::SpanLink::new(only_log::span::SpanContext) -> only_log::span::SpanLink
+impl core::clone::Clone for only_log::span::SpanLink
+pub fn only_log::span::SpanLink::clone(&self) -> Self
+impl core::cmp::PartialEq for only_log::span::SpanLink
+pub fn only_log::span::SpanLink::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_log::span::SpanLink
+pub fn only_log::span::SpanLink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::span::SpanLink
+impl core::marker::Send for only_log::span::SpanLink
+impl core::marker::Sync for only_log::span::SpanLink
+impl core::marker::Unpin for only_log::span::SpanLink
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::span::SpanLink
+impl core::panic::unwind_safe::UnwindSafe for only_log::span::SpanLink
+pub const only_log::span::MAX_EVENTS: usize
+pub const only_log::span::MAX_LINKS: usize
 pub trait only_log::span::Tracer: core::marker::Send + core::marker::Sync
 pub fn only_log::span::Tracer::enabled(&self, &only_log::Metadata<'_>) -> bool
 pub fn only_log::span::Tracer::on_end(&self, only_log::span::SpanData)
@@ -526,6 +573,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_log::SetLoggerError
 impl core::panic::unwind_safe::UnwindSafe for only_log::SetLoggerError
 pub struct only_log::Span(_)
 impl only_log::span::Span
+pub fn only_log::span::Span::add_event(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, &[(&'static str, only_log::span::FieldValue)])
+pub fn only_log::span::Span::add_link(&mut self, only_log::span::SpanContext, &[(&'static str, only_log::span::FieldValue)])
 pub fn only_log::span::Span::context(&self) -> core::option::Option<only_log::span::SpanContext>
 pub fn only_log::span::Span::end(self)
 pub fn only_log::span::Span::enter(&self) -> only_log::span::Entered<'_>
@@ -533,6 +582,7 @@ pub fn only_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce
 pub fn only_log::span::Span::is_none(&self) -> bool
 pub fn only_log::span::Span::is_recording(&self) -> bool
 pub const fn only_log::span::Span::none() -> only_log::span::Span
+pub fn only_log::span::Span::push_event(&mut self, only_log::span::SpanEvent)
 pub fn only_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<only_log::span::FieldValue>)
 pub fn only_log::span::Span::set_kind(&mut self, only_log::span::SpanKind)
 pub fn only_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)

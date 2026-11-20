@@ -75,6 +75,39 @@ impl core::marker::Sync for only_core::metrics::Counter
 impl core::marker::Unpin for only_core::metrics::Counter
 impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Counter
 impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Counter
+#[non_exhaustive] pub struct only_core::metrics::Exemplar
+pub only_core::metrics::Exemplar::span_id: u64
+pub only_core::metrics::Exemplar::time: std::time::SystemTime
+pub only_core::metrics::Exemplar::trace_id: u128
+pub only_core::metrics::Exemplar::value: f64
+impl only_core::metrics::Exemplar
+pub fn only_core::metrics::Exemplar::new(f64, std::time::SystemTime, u128, u64) -> only_core::metrics::Exemplar
+impl core::clone::Clone for only_core::metrics::Exemplar
+pub fn only_core::metrics::Exemplar::clone(&self) -> Self
+impl core::cmp::PartialEq for only_core::metrics::Exemplar
+pub fn only_core::metrics::Exemplar::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::Exemplar
+pub fn only_core::metrics::Exemplar::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_core::metrics::Exemplar
+impl core::marker::StructuralPartialEq for only_core::metrics::Exemplar
+impl core::marker::Send for only_core::metrics::Exemplar
+impl core::marker::Sync for only_core::metrics::Exemplar
+impl core::marker::Unpin for only_core::metrics::Exemplar
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Exemplar
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Exemplar
+pub struct only_core::metrics::ExemplarReservoir
+impl only_core::metrics::ExemplarReservoir
+pub fn only_core::metrics::ExemplarReservoir::new(usize) -> only_core::metrics::ExemplarReservoir
+pub fn only_core::metrics::ExemplarReservoir::offer(&self, usize, f64, u128, u64)
+pub fn only_core::metrics::ExemplarReservoir::offer_current(&self, usize, f64)
+pub fn only_core::metrics::ExemplarReservoir::snapshot(&self) -> alloc::vec::Vec<only_core::metrics::Exemplar>
+impl core::fmt::Debug for only_core::metrics::ExemplarReservoir
+pub fn only_core::metrics::ExemplarReservoir::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::metrics::ExemplarReservoir
+impl core::marker::Sync for only_core::metrics::ExemplarReservoir
+impl core::marker::Unpin for only_core::metrics::ExemplarReservoir
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::ExemplarReservoir
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::ExemplarReservoir
 pub struct only_core::metrics::Families
 impl only_core::metrics::Families
 pub fn only_core::metrics::Families::collect_from<K: core::convert::AsRef<str>, V: core::convert::AsRef<str>>(&mut self, &dyn only_core::metrics::Collector, &[(K, V)])
@@ -154,6 +187,7 @@ pub fn only_core::metrics::Histogram::new(&[f64]) -> only_core::metrics::Histogr
 pub fn only_core::metrics::Histogram::observe(&self, f64)
 pub fn only_core::metrics::Histogram::observe_duration(&self, core::time::Duration)
 pub fn only_core::metrics::Histogram::snapshot(&self) -> only_core::metrics::HistogramSnapshot
+pub fn only_core::metrics::Histogram::with_exemplars(&[f64]) -> only_core::metrics::Histogram
 impl core::clone::Clone for only_core::metrics::Histogram
 pub fn only_core::metrics::Histogram::clone(&self) -> Self
 impl core::default::Default for only_core::metrics::Histogram
@@ -168,10 +202,12 @@ impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Histogram
 #[non_exhaustive] pub struct only_core::metrics::HistogramSnapshot
 pub only_core::metrics::HistogramSnapshot::bounds: alloc::vec::Vec<f64>
 pub only_core::metrics::HistogramSnapshot::counts: alloc::vec::Vec<u64>
+pub only_core::metrics::HistogramSnapshot::exemplars: alloc::vec::Vec<only_core::metrics::Exemplar>
 pub only_core::metrics::HistogramSnapshot::sum: f64
 impl only_core::metrics::HistogramSnapshot
 pub fn only_core::metrics::HistogramSnapshot::count(&self) -> u64
 pub fn only_core::metrics::HistogramSnapshot::new(alloc::vec::Vec<f64>, alloc::vec::Vec<u64>, f64) -> core::option::Option<only_core::metrics::HistogramSnapshot>
+pub fn only_core::metrics::HistogramSnapshot::with_exemplars(self, alloc::vec::Vec<only_core::metrics::Exemplar>) -> only_core::metrics::HistogramSnapshot
 impl core::clone::Clone for only_core::metrics::HistogramSnapshot
 pub fn only_core::metrics::HistogramSnapshot::clone(&self) -> Self
 impl core::cmp::PartialEq for only_core::metrics::HistogramSnapshot
@@ -189,6 +225,7 @@ impl only_core::metrics::Registry
 pub fn only_core::metrics::Registry::counter(&self, &str, &str, &[(&str, &str)]) -> only_core::metrics::Counter
 pub fn only_core::metrics::Registry::gauge(&self, &str, &str, &[(&str, &str)]) -> only_core::metrics::Gauge
 pub fn only_core::metrics::Registry::histogram(&self, &str, &str, &[(&str, &str)], &[f64]) -> only_core::metrics::Histogram
+pub fn only_core::metrics::Registry::histogram_with_exemplars(&self, &str, &str, &[(&str, &str)], &[f64]) -> only_core::metrics::Histogram
 pub fn only_core::metrics::Registry::new() -> only_core::metrics::Registry
 impl core::clone::Clone for only_core::metrics::Registry
 pub fn only_core::metrics::Registry::clone(&self) -> Self

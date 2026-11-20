@@ -30,7 +30,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-dpdk` (`only::dpdk`, experimental) | kernel bypass: its own userspace TCP/IP stack over DPDK / TAP / AF_PACKET | [Kernel bypass (DPDK)](dpdk.md) |
 | `only-tls` (`only::tls`) | TLS 1.3 / 1.2 (in-house) as a connection transport | [TLS](protocols/tls.md) |
 | `only-http` | HTTP/1.1, HTTP/2, Router, middleware, static files, clients, observability | [HTTP servers](protocols/http-server.md) |
-| `only-export` | push export: metrics and spans over OTLP/HTTP (protobuf, JSON) and StatsD / DogStatsD, from a background thread | [Observability](observability.md#push-export-otlp-and-statsd) |
+| `only-export` | push export: metrics, spans and logs over OTLP (HTTP with protobuf or JSON, gRPC; plain or TLS) and metrics to StatsD / DogStatsD, from a background thread | [Observability](observability.md#push-export-otlp-and-statsd) |
 | `only-ws` | WebSocket server session and client | [WebSocket](protocols/websocket.md) |
 | `only-quic` | QUIC v1 and v2 (own implementation) | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 and QPACK | [QUIC and HTTP/3](protocols/quic-h3.md) |

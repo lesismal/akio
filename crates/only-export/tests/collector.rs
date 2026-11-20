@@ -1,7 +1,9 @@
-//! End to end against the OpenTelemetry Collector: run with `tools/otel/e2e.sh`, which starts
-//! the collector in Docker and sets `ONLY_OTEL_COLLECTOR` (OTLP/HTTP endpoint),
-//! `ONLY_OTEL_STATSD` (its statsd receiver) and `ONLY_OTEL_OUT` (where its file exporters write
-//! OTLP/JSON). Without them the test returns at once.
+//! End to end against the OpenTelemetry Collector over plain OTLP/HTTP and StatsD: run with
+//! `tools/otel/e2e.sh`, which starts the collector in Docker and sets `ONLY_OTEL_COLLECTOR`
+//! (OTLP/HTTP endpoint), `ONLY_OTEL_STATSD` (its statsd receiver) and `ONLY_OTEL_OUT` (where its
+//! file exporters write OTLP/JSON). Without them the test returns at once. Traces carry events
+//! and links, logs are correlated with the request spans, the latency histogram has exemplars.
+//! `collector_tls.rs` covers gRPC and TLS.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -12,7 +14,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use only::{Config, Engine, Listener, log::LevelFilter};
+use only::{
+    Config, Engine, Listener,
+    log::{LevelFilter, info, span::FieldValue},
+};
 use only_export::{Encoding, Exporter, Flavor};
 use only_http::{Context, Router, observe, serve};
 
@@ -72,12 +77,18 @@ fn otlp_and_statsd_into_the_collector() {
     let mut cfg = Config::default();
     cfg.shutdown_timeout = Duration::from_millis(300);
     let tel = cfg.telemetry.clone();
-    let http = observe::HttpMetrics::with_routes(16);
+    let http = observe::HttpMetrics::with_routes(16).with_exemplars();
     tel.register_collector(Arc::new(http.clone()), &[]);
     let app = Router::new()
         .get("/users/:id", |ctx: &mut Context| {
-            // A child span of the request span.
-            drop(only::log::info_span!(target: "e2e", "load user"));
+            // A child span of the request span, with an event and a link; a record in it.
+            let mut child = only::log::info_span!(target: "e2e", "load user");
+            child.add_event("cache miss", &[("tier", FieldValue::from("l1"))]);
+            let linked = only::log::span::SpanContext::new(0xfeed, 0xbeef, true, true).unwrap();
+            child.add_link(linked, &[("why", FieldValue::from("batch"))]);
+            let id = ctx.param("id").unwrap_or("?").to_owned();
+            child.in_scope(|| info!(target: "e2e", user = id.as_str(); "loading user {id}"));
+            drop(child);
             ctx.text(200, "u");
         })
         .get("/boom", |ctx: &mut Context| ctx.text(500, "x"))
@@ -103,6 +114,7 @@ fn otlp_and_statsd_into_the_collector() {
         .statsd(&statsd, Flavor::DogStatsd)
         .statsd_options("e2e.", 1432, 10_000)
         .traces(LevelFilter::Info)
+        .logs(LevelFilter::Info)
         .start()
         .unwrap();
     let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
@@ -133,6 +145,22 @@ fn otlp_and_statsd_into_the_collector() {
             "\"name\":\"GET /boom\"",
             "\"key\":\"http.route\"",
             "\"stringValue\":\"only-e2e\"",
+            // The event and the link of the child span.
+            "\"events\":[{\"timeUnixNano\":",
+            "\"name\":\"cache miss\"",
+            "\"links\":[{\"traceId\":\"0000000000000000000000000000feed\",\"spanId\":\"000000000000beef\"",
+        ],
+    );
+    wait_for(
+        &out,
+        "logs.jsonl",
+        &[
+            "\"body\":{\"stringValue\":\"loading user 1\"}",
+            "\"key\":\"code.file.path\"",
+            "\"severityText\":\"INFO\"",
+            // The record logged in the request with a traceparent carries its trace id.
+            "\"traceId\":\"4bf92f3577b34da6a3ce929d0e0e4736\"",
+            "\"stringValue\":\"only-e2e\"",
         ],
     );
     wait_for(
@@ -144,6 +172,8 @@ fn otlp_and_statsd_into_the_collector() {
             "\"name\":\"only_http_route_request_duration_seconds\"",
             "\"name\":\"only_connections_accepted_total\"",
             "\"stringValue\":\"/users/:id\"",
+            // Exemplars of the latency histogram point at request spans.
+            "\"exemplars\":[{\"timeUnixNano\":",
             // OTLP/JSON from the second.
             "\"stringValue\":\"only-json-e2e\"",
             // DogStatsD through the collector's statsd receiver.
@@ -153,12 +183,19 @@ fn otlp_and_statsd_into_the_collector() {
     );
     let s = ex.stats();
     assert_eq!(
-        (s.otlp_metrics_failed, s.otlp_traces_failed, s.statsd_failed),
-        (0, 0, 0),
+        (
+            s.otlp_metrics_failed,
+            s.otlp_traces_failed,
+            s.otlp_logs_failed,
+            s.statsd_failed
+        ),
+        (0, 0, 0, 0),
         "the collector refused a request: {s:?}"
     );
     assert!(s.otlp_metrics_ok >= 1 && s.otlp_traces_ok >= 1 && s.statsd_ok >= 1);
+    assert!(s.otlp_logs_ok >= 1 && s.logs_exported >= 5, "{s:?}");
     assert_eq!(s.spans_exported, 11, "6 requests + 5 children: {s:?}");
+    assert_eq!((s.spans_rejected, s.logs_rejected), (0, 0));
     assert_eq!(json.stats().otlp_metrics_ok, 1);
     assert_eq!(json.stats().otlp_metrics_failed, 0);
     json.shutdown();

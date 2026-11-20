@@ -12,6 +12,9 @@ use only_tls::ClientConfig;
 
 use crate::{http::Endpoint, logs::suppress_this_thread};
 
+/// Largest `Export*ServiceResponse` accepted.
+const MAX_RESPONSE: usize = 1 << 20;
+
 /// The outcome of one call.
 pub(crate) enum Answer {
     /// The response message (an `Export*ServiceResponse`).
@@ -99,7 +102,12 @@ impl Client {
                 },
             );
             match rx.recv_timeout(self.timeout) {
-                Ok(Ok(h2)) => return Ok(GrpcClient::new(h2, &self.ep.origin())),
+                Ok(Ok(h2)) => {
+                    // Export responses are tiny: bound them like the HTTP path's (1 MiB).
+                    return Ok(GrpcClient::new(h2, &self.ep.origin())
+                        .max_message_bytes(MAX_RESPONSE)
+                        .max_collect_bytes(MAX_RESPONSE));
+                }
                 Ok(Err(e)) => last = e,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     last = io::Error::new(io::ErrorKind::TimedOut, "gRPC connect timed out");
