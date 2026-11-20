@@ -318,6 +318,29 @@ impl Session {
             Enc::Cm(aes) => {
                 aes.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
             }
+            Enc::Gcm(g) => {
+                let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
+                let (a, body) = buf.split_at_mut(aad);
+                let tag = g.encrypt_in_place_detached(&iv, a, body);
+                buf.extend_from_slice(&tag);
+            }
+            _ => return self.seal_rtp_other(buf, aad, ssrc, roc, seq),
+        }
+        Ok(())
+    }
+
+    /// [`seal_rtp`](Self::seal_rtp) for AES-f8 and SEED, out of line: the WebRTC transforms
+    /// (NULL, AES-CM, AES-GCM) stay as small and fast as they were.
+    #[inline(never)]
+    fn seal_rtp_other(
+        &self,
+        buf: &mut Vec<u8>,
+        aad: usize,
+        ssrc: u32,
+        roc: u32,
+        seq: u16,
+    ) -> Result<(), Error> {
+        match &self.enc {
             Enc::SeedCtr(seed) => {
                 seed.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
             }
@@ -325,7 +348,7 @@ impl Session {
                 let iv = f8_rtp_iv(buf, roc);
                 f8.stream(&iv).xor_at(0, &mut buf[aad..]);
             }
-            Enc::Gcm(_) | Enc::SeedCcm(_) | Enc::SeedGcm(_) => {
+            _ => {
                 let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
                 let (a, body) = buf.split_at_mut(aad);
                 let (tag, n) = self.aead_seal(&iv, a, body)?;
@@ -353,6 +376,28 @@ impl Session {
                 aes.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
                 Ok(())
             }
+            Enc::Gcm(g) => {
+                let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
+                let (a, body) = buf.split_at_mut(aad);
+                g.decrypt_in_place_detached(&iv, a, body, tag)
+                    .map_err(|_| Error::Authentication)
+            }
+            _ => self.open_rtp_other(buf, aad, tag, ssrc, roc, seq),
+        }
+    }
+
+    /// [`open_rtp`](Self::open_rtp) for AES-f8 and SEED, out of line.
+    #[inline(never)]
+    fn open_rtp_other(
+        &self,
+        buf: &mut [u8],
+        aad: usize,
+        tag: &[u8],
+        ssrc: u32,
+        roc: u32,
+        seq: u16,
+    ) -> Result<(), Error> {
+        match &self.enc {
             Enc::SeedCtr(seed) => {
                 seed.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
                 Ok(())
@@ -362,7 +407,7 @@ impl Session {
                 f8.stream(&iv).xor_at(0, &mut buf[aad..]);
                 Ok(())
             }
-            Enc::Gcm(_) | Enc::SeedCcm(_) | Enc::SeedGcm(_) => {
+            _ => {
                 let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
                 let (a, body) = buf.split_at_mut(aad);
                 self.aead_open(&iv, a, body, tag)
@@ -371,6 +416,7 @@ impl Session {
     }
 
     /// AEAD sessions: encrypts `body` and returns the tag (its first `n` bytes).
+    #[inline(never)]
     pub(crate) fn aead_seal(
         &self,
         iv: &[u8; 12],
@@ -391,6 +437,7 @@ impl Session {
     }
 
     /// AEAD sessions: verifies `tag` over `aad` and `body` and decrypts `body`.
+    #[inline(never)]
     pub(crate) fn aead_open(
         &self,
         iv: &[u8; 12],

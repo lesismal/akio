@@ -26,7 +26,7 @@
 
 use crate::Error;
 use crate::aes::{Aes, bitsliced_sub_bytes};
-use crate::gcm::{Ghash, be_pair};
+use crate::gcm::{be_pair, portable_ghash};
 
 /// The block length in bytes.
 pub const BLOCK_LEN: usize = 16;
@@ -486,14 +486,7 @@ impl SeedGcm {
     }
 
     fn tag(&self, ek0: &[u8; BLOCK_LEN], aad: &[u8], ct: &[u8]) -> [u8; BLOCK_LEN] {
-        let mut g = Ghash::portable(self.h);
-        g.update_padded(aad);
-        g.update_padded(ct);
-        let mut len = [0u8; BLOCK_LEN];
-        len[..8].copy_from_slice(&((aad.len() as u64) << 3).to_be_bytes());
-        len[8..].copy_from_slice(&((ct.len() as u64) << 3).to_be_bytes());
-        g.update_padded(&len);
-        let mut t = g.finish();
+        let mut t = portable_ghash(self.h, aad, ct);
         for (t, k) in t.iter_mut().zip(ek0) {
             *t ^= k;
         }

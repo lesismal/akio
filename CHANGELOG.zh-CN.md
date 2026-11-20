@@ -10,6 +10,31 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：SRTP 的 AES-f8 与 SEED（only-srtp），only-crypto 的 SEED
+
+ADR-052（docs/adr/052-srtp-f8-seed.zh-CN.md），仅新增：
+
+- **only-crypto**：`seed` 模块，包含 `Seed`（RFC 4269：分组加解密、CTR）、`SeedGcm`（SP 800-38D，
+  完整或截短的标签）与 `SeedCcm`（RFC 3610）。常数时间且不查表：S 盒由固定切片 AES 的 Boyar-Peralta
+  求逆电路经域同构再加仿射变换得到（对每个输入都与 RFC 4269 的表比对），G 函数在 16 个字上位切片
+  （ECB / CTR / GCM 同时处理 16 个分组），单个分组与 CCM 的 CBC-MAC 走单字路径；没有硬件路径。
+  ct-dudect 新增目标 `seed-key` 与 `seed-block`。
+- **only-srtp**：`Profile::{AesF8HmacSha1_80, AesF8HmacSha1_32}`（AES-f8，RFC 3711 §4.1.2；SDES 名称
+  `F8_128_HMAC_SHA1_80/32`）与 `Profile::{SeedCtrHmacSha1_80, SeedCcm80, SeedGcm96}`（RFC 5669，
+  SEED-CTR PRF；`SEED_CTR_128_HMAC_SHA1_80`、`SEED_128_CCM_80`、`SEED_128_GCM_96`），与其他配置一样
+  支持 MKI、密钥派生率、RFC 6904 头部扩展加密与 cryptex。`Profile::ALL` 列出 15 种；`is_aead` 对
+  SEED-CCM / SEED-GCM 为真；新增 `Profile::session_salt_len`（AEAD 为 12；SEED AEAD 的主盐仍为 14
+  字节）。它们没有 DTLS-SRTP 编号，因此 `only-webrtc` 不协商它们（那里没有实现 SDES）。
+- 验证：RFC 3711 B.1、RFC 4269 附录 B、RFC 5669 A.1-A.3（A.1 的标签是对不含 ROC 的明文计算的 HMAC，
+  因此只使用其密钥流）、RFC 3610（用 AES 验证 CCM 构造）、OpenSSL `seed-ecb`，以及一个独立的 Python
+  实现（基于 pyca/cryptography 的 `testdata/f8_seed.py`）：libsrtp 交叉验证的 25 组用例 / 115 个包在
+  五种配置下双向逐字节一致。
+- 基准（gpu51，`quiet.sh`，CPU 2，1200 字节载荷，protect）：AES-f8 2.26 µs（AES-128-CM 1.18 µs）、
+  SEED-CTR 18.3 µs（66 MB/s）、SEED-GCM 20.4 µs、SEED-CCM 98 µs（12 MB/s）；160 字节：354 ns、3.6、
+  3.9 与 16.1 µs。原有配置对比 main aca9e988（三轮交替）：AES-CM 与 160 字节 AES-GCM 在 ±1.6% 以内，
+  1200 字节 AES-GCM 单独测量时持平（在完整用例序列中 protect +1.5-2.2%）；A/B 途中发现的两处 AES-GCM
+  回退（+3% 与 +2.4%）已消除（ADR-052）。
+
 ### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：

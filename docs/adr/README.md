@@ -55,3 +55,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-049: P-521, RSA-PSS keys and the client's OCSP response in TLS 1.3](049-p521-rsa-pss-keys-client-ocsp.md) (accepted 2026-11-19)
 - [ADR-050: Bandwidth probing in the only-rtp estimator](050-bwe-probing.md) (accepted 2026-11-19)
 - [ADR-051: Route constraints on `only-regex`](051-router-on-only-regex.md) (accepted 2026-11-19)
+- [ADR-052: AES-f8 and SEED in SRTP, SEED in only-crypto](052-srtp-f8-seed.md) (accepted 2026-11-20)

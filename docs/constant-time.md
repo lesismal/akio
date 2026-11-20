@@ -68,6 +68,8 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
 | `hmac-sha256-verify-tag` | `Hmac::verify`: tag wrong in the last byte vs random tag |
 | `hmac-sha256-verify-valid` | `Hmac::verify`: valid tag vs random tag (both compute the MAC and compare in full) |
 | `aes128-gcm-open-valid`, `chacha20poly1305-open-valid` | valid tag vs random tag; **public**: the caller learns anyway whether the tag verified, and the work differs by design (ChaCha20-Poly1305 decrypts only after a valid tag; the fused AES-GCM pass undoes the decryption on failure). Reported, never a leak |
+| `seed-key` | SEED key schedule and CTR over 256 bytes (one sixteen-block batch): all-zero key vs random key (portable only: no hardware path, first pass; ADR-052) |
+| `seed-block` | SEED one block (the one-word G path of CCM's CBC-MAC), fixed key: all-zero block vs random block |
 | `ct-eq` | `only_crypto::ct_eq`, 32 bytes: equal but the last byte vs random |
 | `ct-word` | `ct.rs` `mask`, `is_zero`, `eq`, `select` over 64 words: zeros vs random |
 | `ct-limbs` | `ct.rs` `add_limbs`, `sub_limbs`, `lt_limbs`, `is_zero_limbs`, `assign`, `swap` on 2048-bit limb arrays: zeros vs random |
@@ -183,3 +185,8 @@ showed the all-zero-scalar effect described above (24.59 in the fastest 3% of 8.
 measurements; the same portable Edwards code on both paths, not touched here); with
 `--fixed-random 1` it was 2.25 (9.0M), and `p256-sign` 3.48 (6.4M). No difference seen in the
 P-256 paths, the new divsteps included.
+
+SEED (2026-11-20, ADR-052), the same host quieted (`quiet.sh`), core 2, `rdtsc`, 60 s per
+target; SEED has no hardware path, so one pass: `seed-key` 1.50 (15.5M measurements; key
+schedule and a sixteen-block CTR pass, about 15,700 cycles either way) and `seed-block` 1.52
+(50.6M; the one-word path, about 4,480 cycles either way). No difference seen.

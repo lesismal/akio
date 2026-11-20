@@ -575,8 +575,31 @@ fn gf_mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     [g.y0, g.y1]
 }
 
+/// `GHASH_H(A || pad || C || pad || len(A) || len(C))` on the portable constant-time
+/// multiplication, for SEED-GCM (`crate::seed`). It goes through [`Ghash::block`] only and stays
+/// out of line, so the AES-GCM paths keep their call graph (and their inlining).
+#[inline(never)]
+pub(crate) fn portable_ghash(h: (u64, u64), aad: &[u8], ct: &[u8]) -> [u8; 16] {
+    let mut g = Ghash::new(h, None);
+    for data in [aad, ct] {
+        for chunk in data.chunks(16) {
+            let mut b = [0u8; 16];
+            b[..chunk.len()].copy_from_slice(chunk);
+            g.block(&b);
+        }
+    }
+    let mut len = [0u8; 16];
+    len[..8].copy_from_slice(&((aad.len() as u64) << 3).to_be_bytes());
+    len[8..].copy_from_slice(&((ct.len() as u64) << 3).to_be_bytes());
+    g.block(&len);
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&g.y1.to_be_bytes());
+    out[8..].copy_from_slice(&g.y0.to_be_bytes());
+    out
+}
+
 /// GHASH state (BearSSL `br_ghash_ctmul64`), or the hardware path when `hw` is set.
-pub(crate) struct Ghash<'a> {
+struct Ghash<'a> {
     hw: Option<&'a hw::Powers>,
     h0: u64,
     h1: u64,
@@ -589,11 +612,6 @@ pub(crate) struct Ghash<'a> {
 }
 
 impl<'a> Ghash<'a> {
-    /// GHASH under `h` (from [`be_pair`]) on the portable constant-time multiplication.
-    pub(crate) fn portable(h: (u64, u64)) -> Ghash<'static> {
-        Ghash::new(h, None)
-    }
-
     fn new((h0, h1): (u64, u64), hw: Option<&'a hw::Powers>) -> Ghash<'a> {
         let h0r = h0.reverse_bits();
         let h1r = h1.reverse_bits();
@@ -611,7 +629,7 @@ impl<'a> Ghash<'a> {
     }
 
     /// Absorbs `data` as 16-byte blocks, the last one padded with zeros.
-    pub(crate) fn update_padded(&mut self, data: &[u8]) {
+    fn update_padded(&mut self, data: &[u8]) {
         let whole = data.len() & !15;
         let rest = &data[whole..];
         if let Some(p) = self.hw {
@@ -676,7 +694,7 @@ impl<'a> Ghash<'a> {
         self.y1 = v3;
     }
 
-    pub(crate) fn finish(&self) -> [u8; 16] {
+    fn finish(&self) -> [u8; 16] {
         let mut out = [0u8; 16];
         out[..8].copy_from_slice(&self.y1.to_be_bytes());
         out[8..].copy_from_slice(&self.y0.to_be_bytes());
