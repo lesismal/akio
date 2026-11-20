@@ -1,11 +1,13 @@
-//! Key derivation (RFC 3711 §4.3, RFC 6188 §3, RFC 6904 §4.1) and the per-packet primitives:
-//! AES-CM / NULL with HMAC-SHA1 (RFC 3711 §4.1.1, §4.2) and AEAD AES-GCM (RFC 7714 §8, §9),
-//! plus the header extension keystream (RFC 6904 §3, RFC 7714 §8.3).
+//! Key derivation (RFC 3711 §4.3, RFC 5669 §4, RFC 6188 §3, RFC 6904 §4.1) and the per-packet
+//! primitives: AES-CM / NULL with HMAC-SHA1 (RFC 3711 §4.1.1, §4.2), AES-f8 (RFC 3711 §4.1.2),
+//! AEAD AES-GCM (RFC 7714 §8, §9), SEED-CTR, SEED-CCM and SEED-GCM (RFC 5669), plus the header
+//! extension keystream (RFC 6904 §3, RFC 7714 §8.3).
 
 use only_crypto::aes::Aes;
 use only_crypto::gcm::AesGcm;
 use only_crypto::hash::Sha1;
 use only_crypto::mac::Hmac;
+use only_crypto::seed::{Seed, SeedCcm, SeedGcm};
 
 use crate::{Error, Profile};
 
@@ -19,15 +21,21 @@ const LABEL_RTCP_SALT: u8 = 5;
 const LABEL_RTP_HDR_ENC: u8 = 6;
 const LABEL_RTP_HDR_SALT: u8 = 7;
 
-/// AES-GCM tag length.
-pub(crate) const GCM_TAG: usize = 16;
 /// E flag of the SRTCP index word.
 pub(crate) const E_FLAG: u32 = 0x8000_0000;
 
-/// A master key and salt: the input of the AES-CM PRF.
+/// The block cipher of the key derivation PRF: AES-CM (RFC 3711, RFC 6188) or SEED-CTR
+/// (RFC 5669 §4). One per master key and rarely used: not worth boxing the AES key.
+#[allow(clippy::large_enum_variant)]
+enum Prf {
+    Aes(Aes),
+    Seed(Seed),
+}
+
+/// A master key and salt: the input of the PRF.
 pub(crate) struct Master {
-    aes: Aes,
-    /// The master salt, left-aligned and zero-padded to 14 bytes (AEAD salts are 12 bytes).
+    prf: Prf,
+    /// The master salt, left-aligned and zero-padded to 14 bytes (AES-GCM salts are 12 bytes).
     salt: [u8; 14],
 }
 
@@ -36,15 +44,20 @@ impl Master {
         if key.len() != profile.key_len() || salt.len() != profile.salt_len() {
             return Err(Error::KeyLength);
         }
-        let aes = Aes::new(key).map_err(|_| Error::KeyLength)?;
+        let prf = if profile.is_seed() {
+            Prf::Seed(Seed::from_slice(key).map_err(|_| Error::KeyLength)?)
+        } else {
+            Prf::Aes(Aes::new(key).map_err(|_| Error::KeyLength)?)
+        };
         let mut s = [0u8; 14];
         s[..salt.len()].copy_from_slice(salt);
-        Ok(Master { aes, salt: s })
+        Ok(Master { prf, salt: s })
     }
 
-    /// The AES-CM PRF: `AES-CM(master_key, (master_salt XOR (label || r)) * 2^16)` truncated to
+    /// The PRF: `AES-CM(master_key, (master_salt XOR (label || r)) * 2^16)` truncated to
     /// `out.len()`, `label || r` right-aligned in the 112-bit salt field (`r`: index DIV key
-    /// derivation rate, 48 bits). AES-128/192/256 follows the master key (RFC 6188).
+    /// derivation rate, 48 bits). AES-128/192/256 follows the master key (RFC 6188); the SEED
+    /// profiles use SEED-CTR the same way (RFC 5669 §4).
     pub(crate) fn prf(&self, label: u8, r: u64, out: &mut [u8]) {
         let mut iv = [0u8; 16];
         iv[..14].copy_from_slice(&self.salt);
@@ -53,18 +66,139 @@ impl Master {
             *d ^= s;
         }
         out.fill(0);
-        self.aes.apply_ctr(&iv, out);
+        match &self.prf {
+            Prf::Aes(aes) => aes.apply_ctr(&iv, out),
+            Prf::Seed(seed) => seed.apply_ctr(&iv, out),
+        }
     }
 }
 
-/// The encryption transform of one session. The GCM key is boxed: its own allocation keeps the
-/// layout of its tables independent of where the session sits (measurably faster for small
-/// packets than embedding it).
+/// AES-f8 keys (RFC 3711 §4.1.2): the session key `k_e` for the keystream and `k_e XOR m`,
+/// `m = k_s || 0x55…`, for the masked IV `IV' = E(k_e XOR m, IV)`.
+pub(crate) struct F8 {
+    aes: Aes,
+    iv_aes: Aes,
+}
+
+impl F8 {
+    pub(crate) fn new(key: &[u8], salt: &[u8]) -> Result<F8, Error> {
+        if salt.len() > key.len() {
+            return Err(Error::KeyLength);
+        }
+        let mut masked = [0x55u8; 32];
+        masked[..salt.len()].copy_from_slice(salt);
+        let masked = &mut masked[..key.len()];
+        for (m, k) in masked.iter_mut().zip(key) {
+            *m ^= k;
+        }
+        let f8 = F8 {
+            aes: Aes::new(key).map_err(|_| Error::KeyLength)?,
+            iv_aes: Aes::new(masked).map_err(|_| Error::KeyLength)?,
+        };
+        masked.fill(0);
+        Ok(f8)
+    }
+
+    /// The keystream for `iv`, from its first byte.
+    fn stream(&self, iv: &[u8; 16]) -> F8Stream<'_> {
+        let mut ivp = *iv;
+        self.iv_aes.encrypt_block(&mut ivp);
+        F8Stream {
+            aes: &self.aes,
+            ivp,
+            s: [0; 16],
+            j: 0,
+        }
+    }
+}
+
+/// An f8 keystream being generated: `S(j) = E(k_e, IV' XOR j XOR S(j-1))`, `S(-1) = 0`. The
+/// blocks depend on each other, so it only moves forward.
+struct F8Stream<'a> {
+    aes: &'a Aes,
+    ivp: [u8; 16],
+    /// `S(j-1)`, the block last generated (zero before the first).
+    s: [u8; 16],
+    /// Blocks generated so far.
+    j: u32,
+}
+
+impl F8Stream<'_> {
+    fn next_block(&mut self) {
+        let mut b = self.ivp;
+        for (b, s) in b.iter_mut().zip(&self.s) {
+            *b ^= s;
+        }
+        for (b, j) in b[12..].iter_mut().zip(self.j.to_be_bytes()) {
+            *b ^= j;
+        }
+        self.aes.encrypt_block(&mut b);
+        self.s = b;
+        self.j += 1;
+    }
+
+    /// XORs keystream bytes `at..at + data.len()` into `data`; `at` is not before the block
+    /// last generated.
+    fn xor_at(&mut self, at: usize, data: &mut [u8]) {
+        let mut pos = at;
+        let mut i = 0;
+        while i < data.len() {
+            let block = pos / 16;
+            while self.j as usize <= block {
+                self.next_block();
+            }
+            debug_assert_eq!(self.j as usize, block + 1);
+            let off = pos % 16;
+            let n = (16 - off).min(data.len() - i);
+            for (d, k) in data[i..i + n].iter_mut().zip(&self.s[off..]) {
+                *d ^= k;
+            }
+            i += n;
+            pos += n;
+        }
+    }
+}
+
+/// The f8 SRTP IV (RFC 3711 §4.1.2.2): `0x00 || M || PT || SEQ || TS || SSRC || ROC`, from the
+/// first twelve bytes of the RTP header.
+pub(crate) fn f8_rtp_iv(head: &[u8], roc: u32) -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    iv[1..12].copy_from_slice(&head[1..12]);
+    iv[12..].copy_from_slice(&roc.to_be_bytes());
+    iv
+}
+
+/// The f8 SRTCP IV (RFC 3711 §4.1.2.3): `0..0 || E || SRTCP index || V || P || RC || PT ||
+/// length || SSRC`, from the E flag and index word and the first eight bytes of the packet.
+fn f8_rtcp_iv(head: &[u8], word: u32) -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    iv[4..8].copy_from_slice(&word.to_be_bytes());
+    iv[8..].copy_from_slice(&head[..8]);
+    iv
+}
+
+/// The encryption transform of one session. The AES-GCM key and the f8 key pair are boxed:
+/// their own allocation keeps the layout of their tables independent of where the session sits
+/// (measurably faster for small packets than embedding the GCM key).
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Enc {
     Null,
     Cm(Aes),
+    F8(Box<F8>),
     Gcm(Box<AesGcm>),
+    SeedCtr(Seed),
+    SeedCcm(SeedCcm),
+    SeedGcm(SeedGcm),
+}
+
+/// The RFC 6904 header extension keystream generator: the payload's transform keyed with the
+/// header key and salt (labels 6 and 7); SEED-CTR for the SEED AEAD profiles (RFC 6904 §3.2),
+/// AES-CM for AES-GCM (RFC 7714 §8.3). AES-CM and SEED-CTR inline, as in [`Enc`].
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum HdrCipher {
+    Cm(Aes),
+    F8(Box<F8>),
+    SeedCtr(Seed),
 }
 
 /// The session keys of one stream type (SRTP or SRTCP) derived from one master key at one
@@ -75,9 +209,9 @@ pub(crate) struct Session {
     pub(crate) salt: [u8; 14],
     /// HMAC-SHA1 keyed with the session authentication key (not for AEAD).
     pub(crate) auth: Option<Hmac<Sha1>>,
-    /// RFC 6904 header extension keystream generator: AES-CM with the header key and salt
-    /// (SRTP only, when header extension encryption is configured and the profile encrypts).
-    pub(crate) hdr: Option<(Aes, [u8; 14])>,
+    /// RFC 6904 header extension keystream generator and header salt (SRTP only, when header
+    /// extension encryption is configured and the profile encrypts).
+    pub(crate) hdr: Option<(HdrCipher, [u8; 14])>,
 }
 
 /// Which stream a [`Session`] protects.
@@ -104,7 +238,7 @@ impl Session {
         let (k, s, a) = (
             profile.cipher_key_len(),
             if profile.encrypts() {
-                profile.salt_len()
+                profile.session_salt_len()
             } else {
                 0
             },
@@ -121,9 +255,15 @@ impl Session {
             let mut hk = [0u8; 32];
             let mut hs = [0u8; 14];
             master.prf(LABEL_RTP_HDR_ENC, r, &mut hk[..k]);
-            master.prf(LABEL_RTP_HDR_SALT, r, &mut hs[..profile.salt_len()]);
-            let aes = Aes::new(&hk[..k]).map_err(|_| Error::KeyLength)?;
-            session.hdr = Some((aes, hs));
+            master.prf(LABEL_RTP_HDR_SALT, r, &mut hs[..s]);
+            let cipher = if profile.is_seed() {
+                HdrCipher::SeedCtr(Seed::from_slice(&hk[..k]).map_err(|_| Error::KeyLength)?)
+            } else if profile.is_f8() {
+                HdrCipher::F8(Box::new(F8::new(&hk[..k], &hs[..s])?))
+            } else {
+                HdrCipher::Cm(Aes::new(&hk[..k]).map_err(|_| Error::KeyLength)?)
+            };
+            session.hdr = Some((cipher, hs));
             hk.fill(0);
         }
         key.fill(0);
@@ -138,12 +278,18 @@ impl Session {
         salt: &[u8],
         auth: &[u8],
     ) -> Result<Session, Error> {
-        let enc = if !profile.encrypts() {
-            Enc::Null
-        } else if profile.is_aead() {
-            Enc::Gcm(Box::new(AesGcm::new(key).map_err(|_| Error::KeyLength)?))
-        } else {
-            Enc::Cm(Aes::new(key).map_err(|_| Error::KeyLength)?)
+        let seed_key =
+            || -> Result<&[u8; 16], Error> { key.try_into().map_err(|_| Error::KeyLength) };
+        let enc = match profile {
+            _ if !profile.encrypts() => Enc::Null,
+            Profile::AeadAes128Gcm | Profile::AeadAes256Gcm => {
+                Enc::Gcm(Box::new(AesGcm::new(key).map_err(|_| Error::KeyLength)?))
+            }
+            Profile::SeedCtrHmacSha1_80 => Enc::SeedCtr(Seed::new(seed_key()?)),
+            Profile::SeedCcm80 => Enc::SeedCcm(SeedCcm::new(seed_key()?)),
+            Profile::SeedGcm96 => Enc::SeedGcm(SeedGcm::new(seed_key()?)),
+            _ if profile.is_f8() => Enc::F8(Box::new(F8::new(key, salt)?)),
+            _ => Enc::Cm(Aes::new(key).map_err(|_| Error::KeyLength)?),
         };
         let mut s = [0u8; 14];
         let n = salt.len().min(14);
@@ -156,10 +302,17 @@ impl Session {
         })
     }
 
-    /// Encrypts `buf[aad..]` of an SRTP packet (GCM: `buf[..aad]` is the associated data and
-    /// the tag is appended).
+    /// Encrypts `buf[aad..]` of an SRTP packet (AEAD: `buf[..aad]` is the associated data and
+    /// the tag is appended). `buf` starts with the RTP header (f8 takes its IV from it).
     #[inline(always)]
-    pub(crate) fn seal_rtp(&self, buf: &mut Vec<u8>, aad: usize, ssrc: u32, roc: u32, seq: u16) {
+    pub(crate) fn seal_rtp(
+        &self,
+        buf: &mut Vec<u8>,
+        aad: usize,
+        ssrc: u32,
+        roc: u32,
+        seq: u16,
+    ) -> Result<(), Error> {
         match &self.enc {
             Enc::Null => {}
             Enc::Cm(aes) => {
@@ -171,10 +324,42 @@ impl Session {
                 let tag = g.encrypt_in_place_detached(&iv, a, body);
                 buf.extend_from_slice(&tag);
             }
+            _ => return self.seal_rtp_other(buf, aad, ssrc, roc, seq),
         }
+        Ok(())
     }
 
-    /// Decrypts `buf[aad..]` of an SRTP packet; for GCM verifies `tag` first.
+    /// [`seal_rtp`](Self::seal_rtp) for AES-f8 and SEED, out of line: the WebRTC transforms
+    /// (NULL, AES-CM, AES-GCM) stay as small and fast as they were.
+    #[inline(never)]
+    fn seal_rtp_other(
+        &self,
+        buf: &mut Vec<u8>,
+        aad: usize,
+        ssrc: u32,
+        roc: u32,
+        seq: u16,
+    ) -> Result<(), Error> {
+        match &self.enc {
+            Enc::SeedCtr(seed) => {
+                seed.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
+            }
+            Enc::F8(f8) => {
+                let iv = f8_rtp_iv(buf, roc);
+                f8.stream(&iv).xor_at(0, &mut buf[aad..]);
+            }
+            _ => {
+                let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
+                let (a, body) = buf.split_at_mut(aad);
+                let (tag, n) = self.aead_seal(&iv, a, body)?;
+                buf.extend_from_slice(&tag[..n]);
+            }
+        }
+        Ok(())
+    }
+
+    /// Decrypts `buf[aad..]` of an SRTP packet (`buf` starts with the RTP header); for AEAD
+    /// verifies `tag` first (SEED-CCM: after decrypting, zeroing `buf[aad..]` on failure).
     #[inline]
     pub(crate) fn open_rtp(
         &self,
@@ -197,7 +382,76 @@ impl Session {
                 g.decrypt_in_place_detached(&iv, a, body, tag)
                     .map_err(|_| Error::Authentication)
             }
+            _ => self.open_rtp_other(buf, aad, tag, ssrc, roc, seq),
         }
+    }
+
+    /// [`open_rtp`](Self::open_rtp) for AES-f8 and SEED, out of line.
+    #[inline(never)]
+    fn open_rtp_other(
+        &self,
+        buf: &mut [u8],
+        aad: usize,
+        tag: &[u8],
+        ssrc: u32,
+        roc: u32,
+        seq: u16,
+    ) -> Result<(), Error> {
+        match &self.enc {
+            Enc::SeedCtr(seed) => {
+                seed.apply_ctr(&cm_iv(&self.salt, ssrc, index(roc, seq)), &mut buf[aad..]);
+                Ok(())
+            }
+            Enc::F8(f8) => {
+                let iv = f8_rtp_iv(buf, roc);
+                f8.stream(&iv).xor_at(0, &mut buf[aad..]);
+                Ok(())
+            }
+            _ => {
+                let iv = gcm_rtp_iv(&self.salt, ssrc, roc, seq);
+                let (a, body) = buf.split_at_mut(aad);
+                self.aead_open(&iv, a, body, tag)
+            }
+        }
+    }
+
+    /// AEAD sessions: encrypts `body` and returns the tag (its first `n` bytes).
+    #[inline(never)]
+    pub(crate) fn aead_seal(
+        &self,
+        iv: &[u8; 12],
+        aad: &[u8],
+        body: &mut [u8],
+    ) -> Result<([u8; 16], usize), Error> {
+        match &self.enc {
+            Enc::Gcm(g) => Ok((g.encrypt_in_place_detached(iv, aad, body), 16)),
+            Enc::SeedGcm(g) => Ok((g.encrypt_in_place_detached(iv, aad, body), 12)),
+            Enc::SeedCcm(c) => {
+                let mut tag = [0u8; 16];
+                c.encrypt_in_place_detached(iv, aad, body, &mut tag[..10])
+                    .map_err(|_| Error::Malformed)?;
+                Ok((tag, 10))
+            }
+            _ => Err(Error::Unsupported),
+        }
+    }
+
+    /// AEAD sessions: verifies `tag` over `aad` and `body` and decrypts `body`.
+    #[inline(never)]
+    pub(crate) fn aead_open(
+        &self,
+        iv: &[u8; 12],
+        aad: &[u8],
+        body: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), Error> {
+        let opened = match &self.enc {
+            Enc::Gcm(g) => g.decrypt_in_place_detached(iv, aad, body, tag),
+            Enc::SeedGcm(g) => g.decrypt_in_place_detached(iv, aad, body, tag),
+            Enc::SeedCcm(c) => c.decrypt_in_place_detached(iv, aad, body, tag),
+            _ => return Err(Error::Unsupported),
+        };
+        opened.map_err(|_| Error::Authentication)
     }
 
     /// HMAC-SHA1 over `parts` (not for AEAD sessions).
@@ -209,27 +463,23 @@ impl Session {
         }
     }
 
-    /// Encrypts or decrypts `body` (everything after the first 8 bytes) of an SRTCP packet
-    /// with an AES-CM / NULL session.
+    /// Encrypts or decrypts `body` (everything after the first 8 bytes, `head`) of an SRTCP
+    /// packet with a non-AEAD session; `word` is the E flag and SRTCP index.
     #[inline]
-    pub(crate) fn ctr_rtcp(&self, body: &mut [u8], ssrc: u32, idx: u32) {
-        if let Enc::Cm(aes) = &self.enc {
-            aes.apply_ctr(&cm_iv(&self.salt, ssrc, u64::from(idx)), body);
-        }
-    }
-
-    /// The AES-GCM cipher, if this is an AEAD session.
-    #[inline]
-    pub(crate) fn gcm(&self) -> Option<&AesGcm> {
+    pub(crate) fn crypt_rtcp(&self, head: &[u8], word: u32, body: &mut [u8], ssrc: u32) {
+        let idx = u64::from(word & !E_FLAG);
         match &self.enc {
-            Enc::Gcm(g) => Some(g),
-            _ => None,
+            Enc::Cm(aes) => aes.apply_ctr(&cm_iv(&self.salt, ssrc, idx), body),
+            Enc::SeedCtr(seed) => seed.apply_ctr(&cm_iv(&self.salt, ssrc, idx), body),
+            Enc::F8(f8) => f8.stream(&f8_rtcp_iv(head, word)).xor_at(0, body),
+            _ => {}
         }
     }
 
     /// RFC 6904: XORs the masked header extension keystream into the extension elements of
     /// `ext` (an RFC 8285 header extension, its 4-byte header included) whose IDs are in
-    /// `ids`. Does nothing without header keys or for a profile that is not RFC 8285.
+    /// `ids`; `head` is the packet's fixed header, `roc` its rollover counter. Does nothing
+    /// without header keys or for a profile that is not RFC 8285.
     ///
     /// # Errors
     ///
@@ -239,12 +489,42 @@ impl Session {
         &self,
         ids: &[u64; 4],
         ext: &mut [u8],
-        ssrc: u32,
-        idx: u64,
+        head: &[u8],
+        roc: u32,
     ) -> Result<(), Error> {
         match &self.hdr {
-            Some((aes, salt)) => crypt_elements(aes, salt, ids, ext, ssrc, idx),
+            Some((cipher, salt)) => crypt_elements(cipher, salt, ids, ext, head, roc),
             None => Ok(()),
+        }
+    }
+}
+
+/// The header extension keystream of one packet, read at increasing offsets.
+enum HdrStream<'a> {
+    Cm(&'a Aes, u128),
+    SeedCtr(&'a Seed, u128),
+    F8(F8Stream<'a>),
+}
+
+impl HdrStream<'_> {
+    /// XORs keystream bytes `at..at + data.len()` (at most 256) into `data`.
+    fn xor_at(&mut self, at: usize, data: &mut [u8]) {
+        let iv = match self {
+            HdrStream::F8(s) => return s.xor_at(at, data),
+            HdrStream::Cm(_, iv) | HdrStream::SeedCtr(_, iv) => *iv,
+        };
+        // Keystream bytes at..at+len: the block holding `at`, then onwards.
+        let mut ks = [0u8; 16 + 256];
+        let skip = at % 16;
+        let ctr = iv.wrapping_add((at / 16) as u128).to_be_bytes();
+        let ks = &mut ks[..skip + data.len()];
+        match self {
+            HdrStream::Cm(aes, _) => aes.apply_ctr(&ctr, ks),
+            HdrStream::SeedCtr(seed, _) => seed.apply_ctr(&ctr, ks),
+            HdrStream::F8(_) => {}
+        }
+        for (d, k) in data.iter_mut().zip(&ks[skip..]) {
+            *d ^= k;
         }
     }
 }
@@ -252,12 +532,12 @@ impl Session {
 /// [`Session::crypt_header_extension`] with header keys.
 #[inline(never)]
 fn crypt_elements(
-    aes: &Aes,
+    cipher: &HdrCipher,
     salt: &[u8; 14],
     ids: &[u64; 4],
     ext: &mut [u8],
-    ssrc: u32,
-    idx: u64,
+    head: &[u8],
+    roc: u32,
 ) -> Result<(), Error> {
     let profile = u16::from_be_bytes([ext[0], ext[1]]);
     let two_byte = match profile {
@@ -265,7 +545,14 @@ fn crypt_elements(
         p if p & 0xfff0 == 0x1000 => true,
         _ => return Ok(()),
     };
-    let iv = u128::from_be_bytes(cm_iv(salt, ssrc, idx));
+    let ssrc = u32::from_be_bytes([head[8], head[9], head[10], head[11]]);
+    let idx = index(roc, u16::from_be_bytes([head[2], head[3]]));
+    let ctr = || u128::from_be_bytes(cm_iv(salt, ssrc, idx));
+    let mut ks = match cipher {
+        HdrCipher::Cm(aes) => HdrStream::Cm(aes, ctr()),
+        HdrCipher::SeedCtr(seed) => HdrStream::SeedCtr(seed, ctr()),
+        HdrCipher::F8(f8) => HdrStream::F8(f8.stream(&f8_rtp_iv(head, roc))),
+    };
     let data = &mut ext[4..];
     let mut i = 0;
     while i < data.len() {
@@ -289,14 +576,7 @@ fn crypt_elements(
             return Err(Error::Malformed);
         }
         if ids[usize::from(id) / 64] & (1 << (id % 64)) != 0 && len > 0 {
-            // Keystream bytes at..at+len: the block holding `at`, then onwards.
-            let mut ks = [0u8; 16 + 256];
-            let skip = at % 16;
-            let ctr = iv.wrapping_add((at / 16) as u128).to_be_bytes();
-            aes.apply_ctr(&ctr, &mut ks[..skip + len]);
-            for (d, k) in data[at..at + len].iter_mut().zip(&ks[skip..]) {
-                *d ^= k;
-            }
+            ks.xor_at(at, &mut data[at..at + len]);
         }
         i = at + len;
     }
@@ -307,7 +587,7 @@ fn index(roc: u32, seq: u16) -> u64 {
     (u64::from(roc) << 16) | u64::from(seq)
 }
 
-/// AES-CM IV (RFC 3711 §4.1.1): `(k_s * 2^16) XOR (SSRC * 2^64) XOR (index * 2^16)`.
+/// AES-CM / SEED-CTR IV (RFC 3711 §4.1.1): `(k_s * 2^16) XOR (SSRC * 2^64) XOR (index * 2^16)`.
 pub(crate) fn cm_iv(salt: &[u8; 14], ssrc: u32, index: u64) -> [u8; 16] {
     let mut iv = [0u8; 16];
     iv[..14].copy_from_slice(salt);
@@ -320,7 +600,7 @@ pub(crate) fn cm_iv(salt: &[u8; 14], ssrc: u32, index: u64) -> [u8; 16] {
     iv
 }
 
-/// RFC 7714 §8.1: `(00 00 || SSRC || ROC || SEQ) XOR salt`.
+/// RFC 7714 §8.1, RFC 5669 §3.1: `(00 00 || SSRC || ROC || SEQ) XOR salt`.
 fn gcm_rtp_iv(salt: &[u8; 14], ssrc: u32, roc: u32, seq: u16) -> [u8; 12] {
     let mut iv = [0u8; 12];
     iv[2..6].copy_from_slice(&ssrc.to_be_bytes());
@@ -332,7 +612,7 @@ fn gcm_rtp_iv(salt: &[u8; 14], ssrc: u32, roc: u32, seq: u16) -> [u8; 12] {
     iv
 }
 
-/// RFC 7714 §9.1: `(00 00 || SSRC || 00 00 || 0 || SRTCP index) XOR salt`.
+/// RFC 7714 §9.1, RFC 5669 §3.2: `(00 00 || SSRC || 00 00 || 0 || SRTCP index) XOR salt`.
 pub(crate) fn gcm_rtcp_iv(salt: &[u8; 14], ssrc: u32, index: u32) -> [u8; 12] {
     let mut iv = [0u8; 12];
     iv[2..6].copy_from_slice(&ssrc.to_be_bytes());
@@ -471,34 +751,93 @@ mod tests {
         let mut s =
             Session::from_keys(Profile::Aes128CmHmacSha1_80, &[0; 16], &[0; 14], &[]).unwrap();
         s.hdr = Some((
-            Aes::new(&hex("549752054D6FB708622C4A2E596A1B93")).unwrap(),
+            HdrCipher::Cm(Aes::new(&hex("549752054D6FB708622C4A2E596A1B93")).unwrap()),
             hex("AB01818174C40D39A3781F7C2D27").try_into().unwrap(),
         ));
+        let head = hex("80001234 00000000 cafebabe");
+        let head1 = hex("80000001 00000000 00000001");
         let mut ids = [0u64; 4];
         for id in [1, 3, 4] {
             ids[0] |= 1 << id;
         }
         let plain = hex("BEDE0006 17414273A475262748220000C8308E4655996386B395FB00");
         let mut ext = plain.clone();
-        s.crypt_header_extension(&ids, &mut ext, 0xcafe_babe, 0x1234)
-            .unwrap();
+        s.crypt_header_extension(&ids, &mut ext, &head, 0).unwrap();
         assert_eq!(
             ext,
             hex("BEDE0006 17588A9270F4E15E1C220000C8309546A994F0BC54789700")
         );
-        s.crypt_header_extension(&ids, &mut ext, 0xcafe_babe, 0x1234)
-            .unwrap();
+        s.crypt_header_extension(&ids, &mut ext, &head, 0).unwrap();
         assert_eq!(ext, plain);
         // An element running past the end.
         let mut bad = hex("BEDE0001 1F000000");
         assert_eq!(
-            s.crypt_header_extension(&ids, &mut bad, 1, 1),
+            s.crypt_header_extension(&ids, &mut bad, &head1, 0),
             Err(Error::Malformed)
         );
         // Not RFC 8285: untouched.
         let mut other = hex("ABCD0001 11223344");
-        s.crypt_header_extension(&ids, &mut other, 1, 1).unwrap();
+        s.crypt_header_extension(&ids, &mut other, &head1, 0)
+            .unwrap();
         assert_eq!(other, hex("ABCD0001 11223344"));
+    }
+
+    /// RFC 3711 Appendix B.1: the AES-f8 keystream, with the appendix's 32-bit salt; read in
+    /// pieces at increasing offsets (as RFC 6904 elements are) it is the same.
+    #[test]
+    fn rfc3711_b1_f8() {
+        let f8 = F8::new(&hex("234829008467be186c3de14aae72d62c"), &hex("32f2870d")).unwrap();
+        let iv = f8_rtp_iv(&hex("806e5cba50681de55c621599"), 0xd462_564a);
+        assert_eq!(iv.to_vec(), hex("006e5cba50681de55c621599d462564a"));
+        let mut s = f8.stream(&iv);
+        assert_eq!(s.ivp.to_vec(), hex("595b699bbd3bc0df26062093c1ad8f73"));
+        let mut p =
+            hex("70736575646f72616e646f6d6e65737320697320746865206e6578742062657374207468696e67");
+        s.xor_at(0, &mut p);
+        assert_eq!(
+            p,
+            hex("019ce7a26e7854014a6366aa95d4eefd1ad4172a14f9faf455b7f1d4b62bd08f562c0eef7c4802")
+        );
+        let mut full = [0u8; 80];
+        f8.stream(&iv).xor_at(0, &mut full);
+        let mut pieces = [0u8; 80];
+        let mut s = f8.stream(&iv);
+        for (from, to) in [(0, 5), (5, 16), (16, 17), (20, 21), (40, 41), (41, 80)] {
+            s.xor_at(from, &mut pieces[from..to]);
+        }
+        for (from, to) in [(0, 17), (20, 21), (40, 80)] {
+            assert_eq!(pieces[from..to], full[from..to]);
+        }
+        assert_eq!(
+            f8_rtcp_iv(&hex("80c80006cafebabe"), 0x8000_0005).to_vec(),
+            hex("00000000 80000005 80c80006cafebabe")
+        );
+        assert!(F8::new(&[0; 16], &[0; 17]).is_err());
+    }
+
+    /// The SEED-CTR PRF (RFC 5669 §4) on the RFC 3711 B.3 master key and salt, against the
+    /// independent implementation of testdata/f8_seed.py (`kdf` lines).
+    #[test]
+    fn seed_ctr_prf() {
+        let mut n = 0;
+        for line in include_str!("../testdata/f8_seed.txt").lines() {
+            let f: Vec<&str> = line.split(' ').collect();
+            if f[0] != "kdf" {
+                continue;
+            }
+            let want = hex(f[4]);
+            let got = prf(
+                Profile::SeedCtrHmacSha1_80,
+                "E1F97A0D3E018BE0D64FA32C06DE4139",
+                "0EC675AD498AFEEBB6960B3AABE6",
+                f[2].parse().unwrap(),
+                u64::from_str_radix(f[3], 16).unwrap(),
+                want.len(),
+            );
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 7);
     }
 
     #[test]
@@ -507,5 +846,8 @@ mod tests {
         assert!(Master::new(Profile::AeadAes256Gcm, &[0; 16], &[0; 12]).is_err());
         assert!(Master::new(Profile::Aes192CmHmacSha1_80, &[0; 24], &[0; 14]).is_ok());
         assert!(Master::new(Profile::NullHmacSha1_32, &[0; 16], &[0; 14]).is_ok());
+        assert!(Master::new(Profile::SeedGcm96, &[0; 16], &[0; 14]).is_ok());
+        assert!(Master::new(Profile::SeedGcm96, &[0; 16], &[0; 12]).is_err());
+        assert!(Session::from_keys(Profile::SeedCcm80, &[0; 15], &[0; 12], &[]).is_err());
     }
 }

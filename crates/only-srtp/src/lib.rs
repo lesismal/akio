@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
-//! SRTP and SRTCP (RFC 3711, RFC 6188, RFC 6904, RFC 7714, RFC 9335) for the `only` WebRTC
-//! stack, on [`only_crypto`] with no other dependencies.
+//! SRTP and SRTCP (RFC 3711, RFC 5669, RFC 6188, RFC 6904, RFC 7714, RFC 9335) for the `only`
+//! WebRTC stack, on [`only_crypto`] with no other dependencies.
 //!
 //! A [`Context`] holds one direction of an SRTP session: the master keys (from DTLS-SRTP or SDP
 //! security descriptions), the session keys derived from them, and per-SSRC state (rollover
@@ -11,29 +11,32 @@
 //!
 //! - Profiles ([`Profile`]): `SRTP_AES128_CM_HMAC_SHA1_80/32` (SRTCP still uses 80-bit tags),
 //!   `SRTP_AEAD_AES_128_GCM`, `SRTP_AEAD_AES_256_GCM` (RFC 7714), `AES_192_CM_HMAC_SHA1_80/32`
-//!   and `AES_256_CM_HMAC_SHA1_80/32` (RFC 6188), `SRTP_NULL_HMAC_SHA1_80/32`.
+//!   and `AES_256_CM_HMAC_SHA1_80/32` (RFC 6188), `F8_128_HMAC_SHA1_80/32` (AES-f8, RFC 3711
+//!   §4.1.2), `SEED_CTR_128_HMAC_SHA1_80`, `SEED_128_CCM_80` and `SEED_128_GCM_96` (RFC 5669),
+//!   `SRTP_NULL_HMAC_SHA1_80/32`. The AES-f8 and SEED profiles have no DTLS-SRTP id: they are
+//!   keyed through SDP security descriptions (or any other way of agreeing on keys).
 //! - Key derivation: the AES-CM PRF (RFC 3711 §4.3, RFC 6188 for 192- and 256-bit master
-//!   keys), at key derivation rate 0 or any power of two up to 2^24
-//!   ([`Context::with_key_derivation_rate`]).
+//!   keys; AES-f8 too) or the SEED-CTR PRF (RFC 5669 §4), at key derivation rate 0 or any power
+//!   of two up to 2^24 ([`Context::with_key_derivation_rate`]).
 //! - Master Key Identifiers and re-keying ([`Context::new_with_mki`],
 //!   [`Context::add_master_key`], [`Context::set_send_mki`]): the MKI in every packet selects
 //!   the master key.
-//! - SRTP (RFC 3711 §3.3, §4.1.1, §4.2; RFC 7714 §8): the header (CSRCs and header extension
-//!   included) is authenticated and, unless chosen below, not encrypted; the payload and padding
-//!   are encrypted. The packet index is estimated from the sequence number and the per-SSRC
+//! - SRTP (RFC 3711 §3.3, §4.1, §4.2; RFC 5669 §2-3; RFC 7714 §8): the header (CSRCs and
+//!   header extension included) is authenticated and, unless chosen below, not encrypted; the
+//!   payload and padding are encrypted. The packet index is estimated from the sequence number and the per-SSRC
 //!   rollover counter (§3.3.1, Appendix A); the tag is verified before decryption; the replay
 //!   window (64 packets by default, [`Context::with_replay_window`]) is updated only after
 //!   successful authentication, and replays are reported as [`Error::Replay`].
 //! - Header encryption: selected header extension elements (RFC 6904,
 //!   [`Context::with_encrypted_header_extensions`]) or, with cryptex (RFC 9335,
 //!   [`Context::with_cryptex`]), the CSRCs and whole header extension body.
-//! - SRTCP (RFC 3711 §3.4; RFC 7714 §9): the E flag and a 31-bit index per sender SSRC; replay
+//! - SRTCP (RFC 3711 §3.4; RFC 5669 §2-3; RFC 7714 §9): the E flag and a 31-bit index per sender SSRC; replay
 //!   protected; received packets with the E flag clear are authenticated only.
 //! - Per-direction state is bounded: beyond 1024 SSRCs ([`Context::with_max_ssrcs`]) the least
 //!   recently used SSRC is forgotten; at most [`MAX_MASTER_KEYS`] master keys.
 //!
-//! Not implemented: the AES-f8 and SEED transforms, RFC 4771 rollover counter carrying, separate
-//! key derivation rates for SRTP and SRTCP.
+//! Not implemented: RFC 4771 rollover counter carrying, separate key derivation rates for SRTP
+//! and SRTCP.
 //!
 //! ```
 //! use only_srtp::{Context, Error, Profile};

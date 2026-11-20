@@ -103,10 +103,39 @@ fn main() {
             }
         }
     }
+    // NEW-API-BEGIN (stripped for runs against releases without these features)
+    // AES-f8 and SEED (ADR-052): f8 chains its blocks; SEED is bitsliced, sixteen blocks at a
+    // time (CCM's CBC-MAC one at a time).
+    for profile in [
+        Profile::AesF8HmacSha1_80,
+        Profile::SeedCtrHmacSha1_80,
+        Profile::SeedGcm96,
+        Profile::SeedCcm80,
+    ] {
+        let key = vec![7u8; profile.key_len()];
+        let salt = vec![9u8; profile.salt_len()];
+        for payload in [160, 1200] {
+            let mk = || Context::new(profile, &key, &salt).expect("context");
+            let name = profile.name();
+            if !format!("{name} {payload}").contains(&filter) {
+                continue;
+            }
+            let n = if profile == Profile::SeedCcm80 {
+                n / 8
+            } else {
+                n / 2
+            };
+            report(
+                name,
+                payload,
+                rtp(0, payload, false).len(),
+                run(&mk, payload, false, n.max(BATCH)),
+            );
+        }
+    }
     if !filter.is_empty() {
         return;
     }
-    // NEW-API-BEGIN (stripped for runs against releases without these features)
     for profile in [
         Profile::AeadAes128Gcm,
         Profile::Aes128CmHmacSha1_80,

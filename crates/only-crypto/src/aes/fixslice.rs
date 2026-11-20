@@ -735,7 +735,7 @@ fn inv_sub_bytes(state: &mut [u64]) {
 /// See: <http://www.cs.yale.edu/homes/peralta/CircuitStuff/SLP_AES_113.txt>
 ///
 /// Note that the 4 bitwise NOT (^= 0xffffffffffffffff) are moved to the key schedule.
-fn sub_bytes(state: &mut [u64]) {
+pub(crate) fn sub_bytes(state: &mut [u64]) {
     debug_assert_eq!(state.len(), 8);
 
     // Scheduled using https://github.com/Ko-/aes-armcortexm/tree/public/scheduler

@@ -126,6 +126,35 @@ ADR-054 (docs/adr/054-turn-dtls-mdns-ipv6-sdes.md):
   against only-turn's DTLS listener, the only_turn client and two relayed `Endpoint`s against
   coturn's DTLS listener (DTLS 1.2 negotiated).
 
+### Added: AES-f8 and SEED in SRTP (only-srtp), SEED in only-crypto
+
+ADR-052 (docs/adr/052-srtp-f8-seed.md), additive:
+
+- **only-crypto**: `seed` with `Seed` (RFC 4269: blocks both ways, CTR), `SeedGcm` (SP 800-38D,
+  full or truncated tags) and `SeedCcm` (RFC 3610). Constant time without tables: the S-boxes are
+  the fixsliced AES's Boyar-Peralta inversion circuit behind a field isomorphism plus affine maps
+  (checked against the RFC 4269 tables for every input), G bitsliced over sixteen words (sixteen
+  blocks in flight for ECB / CTR / GCM), a one-word path for single blocks and CCM's CBC-MAC; no
+  hardware path. ct-dudect targets `seed-key` and `seed-block`.
+- **only-srtp**: `Profile::{AesF8HmacSha1_80, AesF8HmacSha1_32}` (AES-f8, RFC 3711 §4.1.2; SDES
+  `F8_128_HMAC_SHA1_80/32`) and `Profile::{SeedCtrHmacSha1_80, SeedCcm80, SeedGcm96}` (RFC 5669,
+  SEED-CTR PRF; `SEED_CTR_128_HMAC_SHA1_80`, `SEED_128_CCM_80`, `SEED_128_GCM_96`), with MKIs,
+  key derivation rates, RFC 6904 header extension encryption and cryptex like the other profiles.
+  `Profile::ALL` lists fifteen; `is_aead` is true for SEED-CCM / SEED-GCM; new
+  `Profile::session_salt_len` (12 for AEAD; the SEED AEAD master salt stays 14 bytes). No
+  DTLS-SRTP ids, so `only-webrtc` does not negotiate them (SDES is not implemented there).
+- Verified with RFC 3711 B.1, RFC 4269 B, RFC 5669 A.1-A.3 (A.1's tag is HMAC over the
+  plaintext without the ROC, so only its keystream is used), RFC 3610 (the CCM construction, with
+  AES), OpenSSL `seed-ecb`, and an independent Python implementation (`testdata/f8_seed.py` on
+  pyca/cryptography): the libsrtp cross-check's 25 cases / 115 packets under the five profiles,
+  byte for byte both ways.
+- Benchmarks (gpu51, `quiet.sh`, CPU 2, 1200-byte payloads, protect): AES-f8 2.26 µs (AES-128-CM
+  1.18 µs), SEED-CTR 18.3 µs (66 MB/s), SEED-GCM 20.4 µs, SEED-CCM 98 µs (12 MB/s); 160 bytes:
+  354 ns, 3.6, 3.9 and 16.1 µs. The existing profiles against main aca9e988 (three alternating
+  rounds): AES-CM and 160-byte AES-GCM within ±1.6 %, 1200-byte AES-GCM at parity measured alone
+  (+1.5-2.2 % protect inside the full case sequence); two regressions the A/B found on the way
+  (+3 % and +2.4 % for AES-GCM) were removed (ADR-052).
+
 ### Added: DTLS 1.3 by default, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in WebRTC peers (only-webrtc)
 
 ADR-048 (docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md):

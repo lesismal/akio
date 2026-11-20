@@ -540,7 +540,7 @@ fn inc32(mut j: [u8; 16]) -> [u8; 16] {
 }
 
 /// A 16-byte block as (low, high) 64-bit halves: `high` is the first eight bytes, big-endian.
-fn be_pair(b: &[u8]) -> (u64, u64) {
+pub(crate) fn be_pair(b: &[u8]) -> (u64, u64) {
     let hi = u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
     let lo = u64::from_be_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
     (lo, hi)
@@ -573,6 +573,29 @@ fn gf_mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     blk[8..].copy_from_slice(&a[0].to_be_bytes());
     g.block(&blk);
     [g.y0, g.y1]
+}
+
+/// `GHASH_H(A || pad || C || pad || len(A) || len(C))` on the portable constant-time
+/// multiplication, for SEED-GCM (`crate::seed`). It goes through [`Ghash::block`] only and stays
+/// out of line, so the AES-GCM paths keep their call graph (and their inlining).
+#[inline(never)]
+pub(crate) fn portable_ghash(h: (u64, u64), aad: &[u8], ct: &[u8]) -> [u8; 16] {
+    let mut g = Ghash::new(h, None);
+    for data in [aad, ct] {
+        for chunk in data.chunks(16) {
+            let mut b = [0u8; 16];
+            b[..chunk.len()].copy_from_slice(chunk);
+            g.block(&b);
+        }
+    }
+    let mut len = [0u8; 16];
+    len[..8].copy_from_slice(&((aad.len() as u64) << 3).to_be_bytes());
+    len[8..].copy_from_slice(&((ct.len() as u64) << 3).to_be_bytes());
+    g.block(&len);
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&g.y1.to_be_bytes());
+    out[8..].copy_from_slice(&g.y0.to_be_bytes());
+    out
 }
 
 /// GHASH state (BearSSL `br_ghash_ctmul64`), or the hardware path when `hw` is set.

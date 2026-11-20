@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-SRTP and SRTCP (RFC 3711, RFC 6188, RFC 6904, RFC 7714, RFC 9335) for [`only`](https://github.com/lesismal/only), on
+SRTP and SRTCP (RFC 3711, RFC 5669, RFC 6188, RFC 6904, RFC 7714, RFC 9335) for [`only`](https://github.com/lesismal/only), on
 [`only-crypto`](../only-crypto), in safe Rust (`#![forbid(unsafe_code)]`) with no other
 dependencies. It is the media encryption layer of the in-house WebRTC stack (keys come from
 DTLS-SRTP, [`only-dtls`](../only-dtls)). An internal crate (docs/api-stability.md): its API
@@ -40,9 +40,10 @@ match rx.unprotect_rtp(&datagram) {
   protected too.
 - `protect_rtp_into` / `unprotect_rtp_into` (and the RTCP ones) write into a reused buffer:
   no allocation per packet.
-- `Profile` gives `key_len`, `salt_len`, `rtp_tag_len`, `rtcp_tag_len`,
-  `keying_material_len`, the DTLS-SRTP ids (`id` / `from_id`; `None` for AES-192/256-CM) and
-  the SDES crypto suite names (`sdes_name` / `from_sdes_name`).
+- `Profile` gives `key_len`, `salt_len` (master), `session_salt_len`, `rtp_tag_len`,
+  `rtcp_tag_len`, `keying_material_len`, the DTLS-SRTP ids (`id` / `from_id`; `None` for
+  AES-192/256-CM, AES-f8 and SEED) and the SDES crypto suite names (`sdes_name` /
+  `from_sdes_name`).
 
 ### MKIs and re-keying
 
@@ -74,7 +75,8 @@ With cryptex, packets that have CSRCs or an extension go out marked `0xC0DE` / `
 empty extension is added for CSRCs alone); receivers decrypt those and still accept packets
 without cryptex. Extensions other than one-byte `0xBEDE` and two-byte `0x1000` cannot use
 cryptex (`Error::Unsupported`). RFC 6904 leaves IDs, lengths and padding in the clear; with
-AEAD the keystream is AES-CM (RFC 7714 §8.3).
+AES-GCM the keystream is AES-CM (RFC 7714 §8.3), with SEED-CCM / SEED-GCM SEED-CTR
+(RFC 6904 §3.2), with AES-f8 f8 under the header key and the packet's IV.
 
 ### Key derivation rate
 
@@ -87,15 +89,19 @@ them once.
 - Profiles: `SRTP_AES128_CM_HMAC_SHA1_80`, `SRTP_AES128_CM_HMAC_SHA1_32` (SRTCP keeps 80-bit
   tags, RFC 5764 §4.1.2), `SRTP_AEAD_AES_128_GCM`, `SRTP_AEAD_AES_256_GCM` (RFC 7714),
   `AES_192_CM_HMAC_SHA1_80/32` and `AES_256_CM_HMAC_SHA1_80/32` (RFC 6188),
-  `SRTP_NULL_HMAC_SHA1_80/32` (authentication only; SRTCP with the E flag clear).
-- Key derivation with the AES-CM PRF (RFC 3711 §4.3; RFC 6188 for 192- and 256-bit keys), at
-  any key derivation rate; MKIs with up to 16 master keys per context; RFC 6904 header
+  `F8_128_HMAC_SHA1_80/32` (AES-f8, RFC 3711 §4.1.2; SRTCP keeps 80-bit tags),
+  `SEED_CTR_128_HMAC_SHA1_80`, `SEED_128_CCM_80` and `SEED_128_GCM_96` (RFC 5669; SEED from
+  `only-crypto`, bitsliced, constant time; master salts 14 bytes, AEAD session salts 12; ADR-052),
+  `SRTP_NULL_HMAC_SHA1_80/32` (authentication only; SRTCP with the E flag clear). AES-f8 and SEED
+  have no DTLS-SRTP id: SDES or other keying only (`only-webrtc` does not offer them).
+- Key derivation with the AES-CM PRF (RFC 3711 §4.3; RFC 6188 for 192- and 256-bit keys) or
+  the SEED-CTR PRF (RFC 5669 §4), at any key derivation rate; MKIs with up to 16 master keys per context; RFC 6904 header
   extension encryption; cryptex (RFC 9335).
 - Replay window of 64 packets by default, up to 32768 (`with_replay_window`); at most 1024
   SSRCs per direction (`with_max_ssrcs`), least recently used evicted.
 
-Not implemented: the AES-f8 and SEED transforms, RFC 4771 rollover counter carrying, separate
-key derivation rates for SRTP and SRTCP. RFC 6904 follows the RFC where libsrtp differs
+Not implemented: RFC 4771 rollover counter carrying, separate key derivation rates for SRTP
+and SRTCP. RFC 6904 follows the RFC where libsrtp differs
 (libsrtp does not advance the keystream over padding between extension elements; ADR-040).
 `only-webrtc` negotiates cryptex (`a=cryptex`) and RFC 6904
 (`urn:ietf:params:rtp-hdrext:encrypt` extmaps) in SDP (ADR-048), but not MKIs: DTLS-SRTP carries
@@ -116,6 +122,11 @@ use one.
 - Cross-check against libsrtp (main, `testdata/libsrtp.txt` from `tools/interop/srtp`): 230
   packets over every profile, without and with two MKI keys switched mid-stream, RFC 6904
   one- and two-byte extensions, cryptex with and without CSRCs, RTP and SRTCP, byte for byte.
+- AES-f8 and SEED (libsrtp has neither): RFC 3711 Appendix B.1 (f8), RFC 5669 Appendix A
+  (SEED-CTR keystream; SEED-CCM and SEED-GCM packets), and the same 25 cases (115 packets) as
+  the libsrtp cross-check against an independent Python implementation on pyca/cryptography's
+  AES and SEED (`testdata/f8_seed.py` → `f8_seed.txt`, with SEED-CTR PRF outputs), byte for
+  byte.
 - Replay and reordering inside / outside the window, rollover with reordering around it and
   a second wrap, tampering of every byte, truncation, wrong keys, SSRC eviction; re-keying with
   packets in flight, forged and unknown MKIs, key derivation rate with reordering across key

@@ -56,6 +56,8 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/only-cr
 | `hmac-sha256-verify-tag` | `Hmac::verify`：只有最后一字节错误的标签对随机标签 |
 | `hmac-sha256-verify-valid` | `Hmac::verify`：有效标签对随机标签（两者都计算完整 MAC 并完整比较） |
 | `aes128-gcm-open-valid`、`chacha20poly1305-open-valid` | 有效标签对随机标签；**公开**：调用方本来就知道标签是否通过，两种情况的工作量按设计不同（ChaCha20-Poly1305 只在标签有效后解密；融合的 AES-GCM 在失败时撤销解密）。只报告，不算泄漏 |
+| `seed-key` | SEED 密钥扩展加 256 字节 CTR（一趟 16 个分组）：全零密钥对随机密钥（只有可移植代码：没有硬件路径，仅第一轮；ADR-052） |
+| `seed-block` | SEED 单个分组（CCM 的 CBC-MAC 所用的单字 G 路径），固定密钥：全零分组对随机分组 |
 | `ct-eq` | `only_crypto::ct_eq`，32 字节：仅最后一字节不同对随机 |
 | `ct-word` | `ct.rs` 的 `mask`、`is_zero`、`eq`、`select`，64 个字：全零对随机 |
 | `ct-limbs` | `ct.rs` 的 `add_limbs`、`sub_limbs`、`lt_limbs`、`is_zero_limbs`、`assign`、`swap`，2048 位 limb 数组：全零对随机 |
@@ -149,3 +151,7 @@ aarch64（2026-11-19，P-256 孪生曲线改用汇编 divsteps 与 OpenSSL 加�
 sanity 目标都被发现（26,208 与 17,221）。`x25519-keygen` 出现了上文所述的全零标量现象（在 890 万次测量中最快的
 3% 上为 24.59；两条路径上是同一份可移植 Edwards 代码，本轮未改动）；用 `--fixed-random 1` 时为 2.25（900 万），
 `p256-sign` 为 3.48（640 万）。P-256 各路径（包括新的 divsteps）未见差异。
+
+SEED（2026-11-20，ADR-052），同一台主机经 `quiet.sh` 静默，核心 2，`rdtsc`，每个目标 60 秒；SEED 没有
+硬件路径，只跑一轮：`seed-key` 1.50（1550 万次测量；密钥扩展加一趟 16 分组的 CTR，两类都约 15,700 个
+周期），`seed-block` 1.52（5060 万；单字路径，两类都约 4,480 个周期）。未见差异。

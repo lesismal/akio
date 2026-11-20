@@ -1,6 +1,6 @@
 [package]
 name = "only-srtp"
-description = "only internals: SRTP and SRTCP (RFC 3711, RFC 7714 AEAD-AES-GCM) for the WebRTC stack"
+description = "only internals: SRTP and SRTCP (RFC 3711, RFC 7714 AEAD-AES-GCM, RFC 5669 SEED) for the WebRTC stack"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -11,6 +11,7 @@ use only_crypto::gcm::AesGcm;
 use only_crypto::hash::Sha256;
 use only_crypto::mac::Hmac;
 use only_crypto::rsa::HashAlg;
+use only_crypto::seed::Seed;
 use only_crypto::{ed448, p256, p521, rsa, x448, x25519};
 
 use crate::ct;
@@ -274,6 +275,22 @@ pub(crate) fn all() -> Vec<Spec> {
             batch: 5000,
             about: "HMAC-SHA256 verify, 256 B: valid tag vs random tag (both run to the end)",
             make: hmac_valid,
+        },
+        Spec {
+            name: "seed-key",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 2000,
+            about: "SEED key schedule and CTR over 256 B (one 16-block batch): all-zero key vs random key",
+            make: seed_key,
+        },
+        Spec {
+            name: "seed-block",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 5000,
+            about: "SEED one block (the one-word G path), fixed key: all-zero block vs random block",
+            make: seed_block,
         },
         Spec {
             name: "ct-eq",
@@ -654,6 +671,31 @@ fn hmac_valid() -> Box<dyn Target> {
 
 // ---------------------------------------------------------------------------------------------
 // Constant-time primitives
+
+fn seed_key() -> Box<dyn Target> {
+    boxed(
+        (),
+        |(), c, rng| if c == 0 { [0u8; 16] } else { rng.array() },
+        |(), k| {
+            let s = Seed::new(black_box(&*k));
+            let mut buf = [0u8; 256];
+            s.apply_ctr(&[0x44; 16], &mut buf);
+            black_box(buf);
+        },
+    )
+}
+
+fn seed_block() -> Box<dyn Target> {
+    boxed(
+        Seed::new(&[0x11; 16]),
+        |_, c, rng| if c == 0 { [0u8; 16] } else { rng.array() },
+        |s, b| {
+            let mut x = *b;
+            s.encrypt_block(black_box(&mut x));
+            black_box(x);
+        },
+    )
+}
 
 fn ct_eq_bytes() -> Box<dyn Target> {
     boxed(

@@ -31,6 +31,8 @@
 //!   else a constant-time fixsliced software implementation (no secret-dependent table lookups
 //!   or branches); CTR mode.
 //! - [`gcm`]: AES-GCM with a constant-time GHASH.
+//! - [`seed`]: SEED (RFC 4269) with CTR, CCM and GCM (RFC 5669, for SRTP), bitsliced S-boxes,
+//!   no tables.
 //! - [`chacha`]: ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439).
 //! - [`base64`]: standard and URL-safe alphabets, padded or not, strict decoding.
 //! - [`rand`]: the operating system's randomness ([`fill_random`](rand::fill_random)) and a
@@ -104,6 +106,7 @@ pub mod pem;
 pub mod pkey;
 pub mod rand;
 pub mod rsa;
+pub mod seed;
 pub mod x25519;
 pub mod x448;
 

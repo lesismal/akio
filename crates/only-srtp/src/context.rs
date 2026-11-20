@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::cipher::{self, E_FLAG, GCM_TAG, Master, Session, Stream};
+use crate::cipher::{self, E_FLAG, Master, Session, Stream};
 use crate::replay::ReplayWindow;
 use crate::{Error, Profile};
 
@@ -196,7 +196,6 @@ fn seal_rtp(
     roc: u32,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let idx = index(roc, h.seq);
     if cryptex && profile.encrypts() && (h.cc > 0 || h.ext.is_some()) {
         let csrc_end = 12 + 4 * h.cc;
         match h.ext {
@@ -218,14 +217,14 @@ fn seal_rtp(
             }
         }
         cryptex_swap(out, h.cc, false);
-        s.seal_rtp(out, 16, h.ssrc, roc, h.seq);
+        s.seal_rtp(out, 16, h.ssrc, roc, h.seq)?;
         cryptex_swap(out, h.cc, true);
     } else {
         out.extend_from_slice(p);
         if let Some(off) = h.ext {
-            s.crypt_header_extension(hdr_ids, &mut out[off..h.len], h.ssrc, idx)?;
+            s.crypt_header_extension(hdr_ids, &mut out[off..h.len], &p[..12], roc)?;
         }
-        s.seal_rtp(out, h.len, h.ssrc, roc, h.seq);
+        s.seal_rtp(out, h.len, h.ssrc, roc, h.seq)?;
     }
     if profile.is_aead() {
         if !mki.is_empty() {
@@ -264,7 +263,7 @@ fn open_rtp(
     let aad = if cryptex { 16 } else { h.len };
     if profile.is_aead() {
         let ct_end = p.len() - mki_len;
-        let (data, tag) = p[..ct_end].split_at(ct_end - GCM_TAG);
+        let (data, tag) = p[..ct_end].split_at(ct_end - profile.rtp_tag_len());
         out.extend_from_slice(data);
         if cryptex {
             cryptex_swap(out, h.cc, false);
@@ -294,7 +293,7 @@ fn open_rtp(
             out[off..off + 2].copy_from_slice(&plain.to_be_bytes());
         }
         Some(off) => {
-            s.crypt_header_extension(hdr_ids, &mut out[off..h.len], h.ssrc, index(roc, h.seq))?;
+            s.crypt_header_extension(hdr_ids, &mut out[off..h.len], &p[..12], roc)?;
         }
         None => {}
     }
@@ -447,7 +446,8 @@ impl Context {
     }
 
     /// Encrypts the RTP header extension elements with these IDs (RFC 6904; RFC 7714 §8.3
-    /// for AEAD): one-byte (`0xBEDE`) IDs 1-14 or two-byte (`0x100X`) IDs 1-255, as negotiated
+    /// for AES-GCM, which uses AES-CM for them, RFC 6904 §3.2 for SEED-CCM and SEED-GCM, which
+    /// use SEED-CTR): one-byte (`0xBEDE`) IDs 1-14 or two-byte (`0x100X`) IDs 1-255, as negotiated
     /// with `a=extmap:<id> urn:ietf:params:rtp-hdrext:encrypt <uri>`. Only the element data
     /// is encrypted (IDs, lengths and padding stay in the clear), with a keystream from the
     /// header encryption key and salt (labels 6 and 7). ID 0 is ignored; an empty list turns
@@ -788,17 +788,22 @@ impl Context {
         let e = if self.profile.encrypts() { E_FLAG } else { 0 };
         let word = (e | idx).to_be_bytes();
         out.extend_from_slice(packet);
-        if let Some(g) = s.gcm() {
+        if self.profile.is_aead() {
             let iv = cipher::gcm_rtcp_iv(&s.salt, ssrc, idx);
             let mut aad = [0u8; 12];
             aad[..8].copy_from_slice(&packet[..8]);
             aad[8..].copy_from_slice(&word);
-            let tag = g.encrypt_in_place_detached(&iv, &aad, &mut out[8..]);
-            out.extend_from_slice(&tag);
+            match s.aead_seal(&iv, &aad, &mut out[8..]) {
+                Ok((tag, n)) => out.extend_from_slice(&tag[..n]),
+                Err(e) => {
+                    out.clear();
+                    return Err(e);
+                }
+            }
             out.extend_from_slice(&word);
             out.extend_from_slice(&k.mki);
         } else {
-            s.ctr_rtcp(&mut out[8..], ssrc, idx);
+            s.crypt_rtcp(&packet[..8], e | idx, &mut out[8..], ssrc);
             out.extend_from_slice(&word);
             let mac = s.mac(out, &[]);
             out.extend_from_slice(&k.mki);
@@ -886,31 +891,30 @@ impl Context {
             )?)
         };
         let s = fresh.as_deref().unwrap_or(&k.rtcp);
-        let res = if let Some(g) = s.gcm() {
-            let data_end = word_at - GCM_TAG;
+        let res = if aead {
+            let data_end = word_at - tag_len;
             let tag = &packet[data_end..word_at];
             let iv = cipher::gcm_rtcp_iv(&s.salt, ssrc, idx);
             out.extend_from_slice(&packet[..data_end]);
-            let opened = if word & E_FLAG != 0 {
+            if word & E_FLAG != 0 {
                 let mut aad = [0u8; 12];
                 aad[..8].copy_from_slice(&packet[..8]);
                 aad[8..].copy_from_slice(&word.to_be_bytes());
-                g.decrypt_in_place_detached(&iv, &aad, &mut out[8..], tag)
+                s.aead_open(&iv, &aad, &mut out[8..], tag)
             } else {
-                // RFC 7714 §9.2: unencrypted SRTCP, the whole packet is AAD.
+                // RFC 7714 §9.2, RFC 5669 §2.2: unencrypted SRTCP, the whole packet is AAD.
                 out.extend_from_slice(&word.to_be_bytes());
-                let opened = g.decrypt_in_place_detached(&iv, &out[..], &mut [], tag);
+                let opened = s.aead_open(&iv, &out[..], &mut [], tag);
                 out.truncate(data_end);
                 opened
-            };
-            opened.map_err(|_| Error::Authentication)
+            }
         } else {
             let auth_end = word_at + 4;
             let mac = s.mac(&packet[..auth_end], &[]);
             if only_crypto::ct_eq(&mac[..tag_len], &packet[packet.len() - tag_len..]) {
                 out.extend_from_slice(&packet[..word_at]);
                 if word & E_FLAG != 0 {
-                    s.ctr_rtcp(&mut out[8..], ssrc, idx);
+                    s.crypt_rtcp(&packet[..8], word, &mut out[8..], ssrc);
                 }
                 Ok(())
             } else {
