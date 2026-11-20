@@ -72,6 +72,7 @@ mod replay;
 #[doc(hidden)]
 pub mod stream;
 mod system;
+mod tickets;
 
 pub use config::{
     CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey,
@@ -79,7 +80,8 @@ pub use config::{
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
-pub use replay::{AntiReplayStore, MemoryAntiReplay};
+pub use replay::{AntiReplayStore, AsyncAntiReplayStore, MemoryAntiReplay, ReplayCheck};
+pub use tickets::{MAX_TICKET_KEYS, TicketKeys};
 
 /// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.
 #[doc(hidden)]
@@ -376,6 +378,11 @@ impl Transport for TlsTransport {
 
     fn handshake_timeout(&self) -> Option<Duration> {
         self.timeout
+    }
+
+    fn set_waker(&mut self, waker: only_core::TransportWaker) {
+        // A suspended handshake (asynchronous anti-replay store) resumes through it.
+        self.conn.set_waker(Arc::new(move || waker.wake()));
     }
 }
 

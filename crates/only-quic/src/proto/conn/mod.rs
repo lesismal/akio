@@ -453,6 +453,9 @@ pub struct Connection {
     rng: ChaChaRng,
     state: State,
     tls: QuicTls,
+    /// What wakes the connection when its TLS handshake can go on after a suspension (an
+    /// asynchronous anti-replay store, ADR-062).
+    tls_waker: Option<Arc<dyn Fn() + Send + Sync>>,
     tls_done: bool,
     confirmed: bool,
     params_done: bool,
@@ -631,6 +634,7 @@ impl Connection {
             rng: ChaChaRng::from_seed(rng_seed),
             state: State::Handshake,
             tls,
+            tls_waker: None,
             tls_done: false,
             confirmed: false,
             params_done: false,
@@ -974,6 +978,9 @@ impl Connection {
                 // issue belong to the negotiated version (RFC 9369 section 5).
                 self.tls =
                     QuicTls::server_versioned(&c.tls, c.params.encode(), c.early_ctx.take(), from);
+                if let Some(w) = &self.tls_waker {
+                    self.tls.set_waker(w.clone());
+                }
                 self.switch_version(c.to);
             }
         }
@@ -1161,6 +1168,36 @@ impl Connection {
     }
 
     // ---- TLS ----
+
+    /// Sets what to call, from any thread, when the TLS handshake can go on after waiting
+    /// for an asynchronous anti-replay answer; the connection is then driven
+    /// ([`poll_transmit`](Self::poll_transmit) takes the handshake up again).
+    pub fn set_tls_waker(&mut self, w: Arc<dyn Fn() + Send + Sync>) {
+        self.tls.set_waker(w.clone());
+        self.tls_waker = Some(w);
+    }
+
+    /// Takes a suspended TLS handshake up again once its anti-replay answer is in.
+    pub(crate) fn resume_tls(&mut self, now: Instant) {
+        if !self.tls.suspended() {
+            return;
+        }
+        match self.tls.resume() {
+            Ok(true) => {
+                self.drain_tls(now);
+                // 0-RTT packets that came meanwhile waited for the keys just installed.
+                self.replay_buffered(now);
+            }
+            Ok(false) => {}
+            Err(e) => self.close_transport(
+                now,
+                TransportError::new(
+                    code::CRYPTO_ERROR + u64::from(e.alert.code()),
+                    e.to_string(),
+                ),
+            ),
+        }
+    }
 
     /// Applies what the TLS handshake produced.
     fn drain_tls(&mut self, now: Instant) {

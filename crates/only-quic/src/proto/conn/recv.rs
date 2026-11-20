@@ -75,6 +75,11 @@ impl Connection {
         }
         self.rx_ecn = ecn;
         self.datagram(now, from, data, true);
+        self.replay_buffered(now);
+    }
+
+    /// Handles again the packets kept for keys that have now arrived.
+    pub(crate) fn replay_buffered(&mut self, now: Instant) {
         let mut rounds = 0;
         while self.replay && rounds < 4 {
             rounds += 1;

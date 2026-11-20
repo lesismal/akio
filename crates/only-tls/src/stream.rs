@@ -86,9 +86,14 @@ impl<S: Read + Write> Stream<S> {
             self.eof = true;
             return Ok(false);
         }
-        let r = self
+        let mut r = self
             .conn
             .recv(&self.buf[..n], &mut self.plain, &mut self.out);
+        // A server waiting for an asynchronous anti-replay answer: wait for it here.
+        while r.is_ok() && self.conn.suspended() {
+            self.conn.wait_resumable();
+            r = self.conn.recv(&[], &mut self.plain, &mut self.out);
+        }
         self.flush_out()?;
         r.map_err(err)?;
         Ok(true)

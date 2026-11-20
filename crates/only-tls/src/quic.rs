@@ -41,6 +41,7 @@ use crate::proto::client::Client;
 use crate::proto::common::Action;
 use crate::proto::conn::{MAX_HANDSHAKE, Machine};
 use crate::proto::server::Server;
+use crate::replay::Waker;
 
 /// What the handshake produced, in order.
 #[derive(Debug)]
@@ -62,6 +63,8 @@ pub struct QuicTls {
     read_level: Level,
     events: VecDeque<Event>,
     error: Option<Fatal>,
+    /// Called when a suspended handshake can go on.
+    waker: Option<Waker>,
 }
 
 impl std::fmt::Debug for QuicTls {
@@ -168,6 +171,65 @@ impl QuicTls {
             read_level: Level::Initial,
             events: VecDeque::new(),
             error: None,
+            waker: None,
+        }
+    }
+
+    /// Sets what to call (from any thread) when a suspended handshake can go on: the server
+    /// waits for an asynchronous anti-replay store (ADR-062). The QUIC connection then calls
+    /// [`resume`](Self::resume) from its own thread. `w` is never called from inside a
+    /// method of this handshake.
+    pub fn set_waker(&mut self, w: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        if self.m.suspended() {
+            // Already answered: the next `resume` goes on.
+            let _ = self.m.set_replay_waker(w.clone());
+        }
+        self.waker = Some(w);
+    }
+
+    /// The server's handshake waits for an asynchronous anti-replay answer: nothing more
+    /// comes out until [`resume`](Self::resume) takes it up again.
+    pub fn suspended(&self) -> bool {
+        self.m.suspended()
+    }
+
+    /// Takes a suspended handshake up again if its anti-replay answer is here; `Ok(false)`
+    /// while it is not (the waker is called when it is). An error is fatal, as for
+    /// [`read_handshake`](Self::read_handshake).
+    pub fn resume(&mut self) -> Result<bool, Fatal> {
+        if !self.m.suspended() {
+            return Ok(false);
+        }
+        if let Some(e) = &self.error {
+            return Err(e.clone());
+        }
+        let level = self.read_level;
+        let before = self.m.suspended();
+        let r = self.read_inner(level, &[]);
+        if let Err(e) = &r {
+            self.error = Some(e.clone());
+        }
+        r.map(|()| before && !self.m.suspended())
+    }
+
+    /// Suspended: takes the ClientHello up again if the answer is here (`true`), else
+    /// registers the waker.
+    fn resume_now(&mut self) -> Result<bool, Fatal> {
+        loop {
+            let mut acts = Vec::new();
+            if self.m.resume(&mut acts)? {
+                if self.push(acts) && !self.hs.is_empty() {
+                    return Err(Fatal::new(
+                        Alert::UnexpectedMessage,
+                        "handshake data across a key change",
+                    ));
+                }
+                return Ok(true);
+            }
+            match &self.waker {
+                Some(w) if !self.m.set_replay_waker(w.clone()) => {}
+                _ => return Ok(false),
+            }
         }
     }
 
@@ -223,6 +285,18 @@ impl QuicTls {
         }
         self.hs.extend_from_slice(data);
         loop {
+            if self.m.suspended() {
+                if self.hs.len() > MAX_HANDSHAKE {
+                    return Err(Fatal::new(
+                        Alert::UnexpectedMessage,
+                        "handshake data while the anti-replay check is pending",
+                    ));
+                }
+                if !self.resume_now()? {
+                    return Ok(());
+                }
+                continue;
+            }
             if self.hs.len() < 4 {
                 return Ok(());
             }
@@ -238,7 +312,7 @@ impl QuicTls {
             let msg: Vec<u8> = self.hs.drain(..4 + len).collect();
             let mut acts = Vec::new();
             self.m.handle(&msg, &mut acts)?;
-            if self.push(acts) && !self.hs.is_empty() {
+            if self.push(acts) && !self.m.suspended() && !self.hs.is_empty() {
                 return Err(Fatal::new(
                     Alert::UnexpectedMessage,
                     "handshake data across a key change",

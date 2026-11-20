@@ -384,3 +384,86 @@ fn zero_rtt_packet_types_on_the_wire() {
     assert_eq!(z.ty, PacketType::ZeroRtt);
     assert_eq!(z.dcid, h.dcid);
 }
+
+/// An asynchronous anti-replay store (ADR-062) whose checks the test answers.
+#[derive(Default)]
+struct HeldStore(std::sync::Mutex<Vec<only_tls::ReplayCheck>>);
+
+impl only_tls::AsyncAntiReplayStore for HeldStore {
+    fn check_and_insert(&self, _binder: &[u8], _ttl: Duration, done: only_tls::ReplayCheck) {
+        self.0.lock().expect("store").push(done);
+    }
+}
+
+/// Sends a 0-RTT request to a server whose anti-replay store answers `accept` only once the
+/// test says so: the handshake waits for it, then goes on. Returns what became of the early
+/// data and whether the request reached the server before the handshake completed.
+fn async_store_request(seed: u8, accept: bool) -> (EarlyData, bool) {
+    let (cert, key) = only_x509::generate_simple_self_signed(["localhost"]).expect("cert");
+    let chain = vec![only_tls::Certificate::from_der(cert.as_der().to_vec())];
+    let mut roots = only_tls::RootCerts::empty();
+    roots.add(&chain[0]).expect("root");
+    let store = std::sync::Arc::new(HeldStore::default());
+    let stls = only_tls::ServerConfig::builder(
+        chain,
+        only_tls::PrivateKey::from_pkcs8_der(key.to_pkcs8_der()),
+    )
+    .alpn(["sim"])
+    .tls13_only(true)
+    .async_anti_replay_store(store.clone())
+    .build()
+    .expect("server tls");
+    let tls = only_tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["sim"])
+        .tls13_only(true)
+        .build()
+        .expect("client tls");
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    cfg.zero_rtt = true;
+    let mut sim = Sim::new(seed, cfg, stls, false);
+    prime(&mut sim, &tls, zcfg());
+    let h = sim.connect(&tls, zcfg(), None);
+    let id = sim.cconn(h).open(Dir::Bi).expect("0-RTT stream");
+    sim.cconn(h)
+        .write(id, Bytes::copy_from_slice(b"POST /pay"))
+        .expect("write");
+    sim.cconn(h).finish(id).expect("finish");
+    sim.run_until(Duration::from_millis(30), |_| false);
+    // The server took the ClientHello and waits for the store: nothing answered, nothing
+    // delivered.
+    let sh = sim.server_handle().expect("server connection");
+    assert!(!sim.connected(true, sh));
+    assert!(
+        !sim.events(true, sh)
+            .iter()
+            .any(|e| matches!(e, Event::StreamData(..)))
+    );
+    assert!(!sim.connected(false, h));
+    let check = store
+        .0
+        .lock()
+        .expect("store")
+        .pop()
+        .expect("a pending check");
+    check.complete(Ok(accept));
+    let (mut early_data, mut connected) = (false, false);
+    let ok = sim.run_until(Duration::from_secs(5), |s| {
+        for e in s.events(true, sh) {
+            match e {
+                Event::Connected => connected = true,
+                Event::StreamData(..) => early_data |= !connected,
+                _ => {}
+            }
+        }
+        connected && s.connected(false, h)
+    });
+    assert!(ok, "the handshake went on");
+    (sim.sconn().early_data(), early_data)
+}
+
+#[test]
+fn async_anti_replay_store_suspends_the_handshake() {
+    assert_eq!(async_store_request(57, true), (EarlyData::Accepted, true));
+    assert_eq!(async_store_request(58, false), (EarlyData::Rejected, false));
+}
