@@ -1,0 +1,3 @@
+http://a.b.c.example/
+x=1; Domain=.EXAMPLE; Path=relative
+y; SameSite=Lax; Max-Age=-1

@@ -99,6 +99,7 @@ Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, 
 
 ## Not done
 
-Client: TLS to the proxy, cookies across redirects. Server: WebSocket over HTTP/2 (RFC 8441,
+Client: cookies across redirects (set a `Cookie` header from `only_http::cookie::CookieJar::header`
+yourself; `https://` proxies and Happy Eyeballs are done, ADR-059). Server: WebSocket over HTTP/2 (RFC 8441,
 answered 400); WebSocket over HTTP/3 (RFC 9220) is done, see
 [QUIC and HTTP/3](quic-h3.md#websocket-over-http3).

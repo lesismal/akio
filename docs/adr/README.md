@@ -60,5 +60,6 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-054: TURN over DTLS, mDNS over IPv6 and SDES-SRTP](054-turn-dtls-mdns-ipv6-sdes.md) (accepted 2026-11-20)
 - [ADR-055: Several components per ICE stream in only-ice](055-ice-components.md) (accepted 2026-11-20)
 - [ADR-058: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in only-webrtc](058-webrtc-rtcp-components-xr-ulpfec-levels.md) (accepted 2026-11-20)
+- [ADR-059: Cookies, Happy Eyeballs, a DNS cache and TLS to proxies in the clients; SOCKS fragments and TLS](059-client-cookies-happy-eyeballs-proxy-tls.md) (accepted 2026-11-20)
 - [ADR-065: Connectionless UDP listeners (`DatagramsHandler`)](065-connectionless-datagrams.md) (accepted 2026-11-21)
 - [ADR-066: Change notifications for the static file cache (inotify / kqueue)](066-static-files-change-notifications.md) (accepted 2026-11-20)

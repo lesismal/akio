@@ -52,6 +52,34 @@ unchanged):
   gpu51: per-peer UDP unchanged (1.02x req/s, 1.00x CPU per request); `serve_datagrams` 1.08x
   (epoll) / 1.09x (io_uring) req/s with 7-8% less server CPU per request.
 
+### Added: cookie jar, Happy Eyeballs, DNS cache and `https://` proxies in the clients; SOCKS fragments and TLS; macOS trust settings (only, only-http, only-ws, only-socks, only-tls)
+
+ADR-059 (docs/adr/059-client-cookies-happy-eyeballs-proxy-tls.md), additive:
+
+- `only_http::cookie::CookieJar` and `Client::with_cookies`: RFC 6265 cookies with the RFC
+  6265bis rules (Domain and public suffixes: single labels and IPs always, a list through
+  `CookieJar::public_suffixes`; Path; Secure, `__Secure-` / `__Host-`; HttpOnly; SameSite across
+  redirect chains that leave the first site; Max-Age / Expires, 400-day cap), bounded
+  (`CookieLimits`: 4096 bytes, 50 per domain, 3000 in all, least recently used first), applied
+  on every hop of a redirect chain. Off unless attached.
+- `only::dns`: a bounded answer cache (`CacheConfig`: fixed TTL of 30 s since `getaddrinfo`
+  gives none, 1024 names, failures not cached by default; `set_cache`, `clear_cache`) and
+  shared in-flight lookups; Happy Eyeballs v2 (`HappyEyeballs`, RFC 8305: families interleaved,
+  an attempt every 250 ms or at once after a failure, losers closed before sending) on one
+  bounded racer thread handing the winner to the engine. The HTTP/1 client
+  (`ClientOptions::happy_eyeballs`), the WebSocket client (`DialOptions::happy_eyeballs`) and
+  the new `H2Client::connect(engine, host, port, ...)` race this way.
+- `https://` proxy URLs (TLS to the proxy, its certificate checked by name; TLS inside TLS for
+  `https://` / `wss://` targets) for the HTTP and WebSocket clients and `Proxy::from_env`.
+- only-socks: `SocksClient::tls` (TLS to the proxy on the engine methods), sending UDP datagrams
+  in fragments (`UdpAssociation::send_fragmented`, `BlockingUdp::send_fragmented`, and the
+  server's opt-in `Socks::udp_fragment_size`); the client's UDP association tries the proxy's
+  next address when one is unreachable.
+- `RootCerts::system()` on macOS applies the user, admin and system trust settings (`security
+  trust-settings-export`): distrusted CAs are left out, CAs trusted in the System or login
+  keychain are roots, the System keychain's untrusted certificates no longer are.
+- Fuzz targets `cookie_parse` and `tls_trust_plist`. Not done: PAC, the Windows store, GSSAPI.
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

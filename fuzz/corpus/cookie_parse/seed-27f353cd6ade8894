@@ -1,0 +1,3 @@
+https://www.example.com/a/b
+sid=1; Domain=example.com; Path=/; Secure; HttpOnly
+pref=dark; Max-Age=3600

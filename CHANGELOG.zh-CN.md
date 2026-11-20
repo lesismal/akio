@@ -45,6 +45,31 @@ ADR-065（docs/adr/065-connectionless-datagrams.zh-CN.md），只有新增（每
   每对端 UDP 不变（req/s 1.02 倍，每请求 CPU 1.00 倍）；`serve_datagrams` 的 req/s 为 1.08 倍（epoll）/
   1.09 倍（io_uring），每请求服务端 CPU 少 7–8%。
 
+### 新增：客户端的 cookie 容器、Happy Eyeballs、DNS 缓存与 `https://` 代理；SOCKS 分片与 TLS；macOS 信任设置（only、only-http、only-ws、only-socks、only-tls）
+
+ADR-059（docs/adr/059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md），只有新增：
+
+- `only_http::cookie::CookieJar` 与 `Client::with_cookies`：RFC 6265 cookie，采用 RFC 6265bis 规则
+  （Domain 与公共后缀：单标签与 IP 总是算，完整列表经 `CookieJar::public_suffixes` 接入；Path；
+  Secure、`__Secure-` / `__Host-`；HttpOnly；离开第一个站点的重定向链上的 SameSite；Max-Age /
+  Expires，最多 400 天），有上限（`CookieLimits`：4096 字节、每个域 50 个、总共 3000 个，最久未用的
+  先淘汰），对重定向链的每一跳生效。不挂容器时不生效。
+- `only::dns`：有上限的应答缓存（`CacheConfig`：`getaddrinfo` 不给 TTL，因此用固定的 30 秒，1024 个
+  名字，默认不缓存失败；`set_cache`、`clear_cache`）与共享的进行中查询；Happy Eyeballs v2
+  （`HappyEyeballs`，RFC 8305：协议族交替，每 250 毫秒或失败后立即发起一次尝试，落败的连接在发送前
+  关闭），在一个有上限的竞速线程上进行，胜者交给 engine。HTTP/1 客户端（`ClientOptions::happy_eyeballs`）、
+  WebSocket 客户端（`DialOptions::happy_eyeballs`）与新增的 `H2Client::connect(engine, host, port, ...)`
+  都这样竞速。
+- HTTP 与 WebSocket 客户端及 `Proxy::from_env` 支持 `https://` 代理 URL（到代理的 TLS，按名字校验其
+  证书；`https://` / `wss://` 目标为 TLS 套 TLS）。
+- only-socks：`SocksClient::tls`（engine 方法经 TLS 连接代理），分片发送 UDP 数据报
+  （`UdpAssociation::send_fragmented`、`BlockingUdp::send_fragmented`，以及服务端需显式开启的
+  `Socks::udp_fragment_size`）；客户端的 UDP 关联在代理某个地址不可达时改试下一个地址。
+- macOS 上的 `RootCerts::system()` 应用用户、管理员与系统的信任设置（`security
+  trust-settings-export`）：被标记为不信任的 CA 被去掉，在 System 或登录钥匙串中被标记为信任的 CA
+  成为根证书，System 钥匙串中未被信任的证书不再算根证书。
+- fuzz 目标 `cookie_parse` 与 `tls_trust_plist`。未做：PAC、Windows 证书库、GSSAPI。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

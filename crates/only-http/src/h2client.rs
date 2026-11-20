@@ -183,6 +183,39 @@ impl H2Client {
         }
     }
 
+    /// Resolves `host` ([`only::dns::resolve`], off the calling thread) and connects to the
+    /// first of its addresses that answers, racing them (Happy Eyeballs v2, RFC 8305:
+    /// [`only::dns::HappyEyeballs`]), then as [`dial`](Self::dial). `tls` is the TLS
+    /// configuration and the name to verify (usually `host`).
+    pub fn connect(
+        engine: &Arc<Engine>,
+        host: &str,
+        port: u16,
+        tls: Option<(TlsClientConfig, &str)>,
+        opts: H2Options,
+        ready: impl FnOnce(Result<H2Client, io::Error>) + Send + 'static,
+    ) {
+        let ready: Arc<Mutex<Option<ReadyCb>>> = Arc::new(Mutex::new(Some(Box::new(ready))));
+        let fail = {
+            let ready = ready.clone();
+            move |e: io::Error| {
+                let taken = ready.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(cb) = taken {
+                    cb(Err(e));
+                }
+            }
+        };
+        let he = only::dns::HappyEyeballs::default();
+        let acceptor = H2Acceptor { opts, ready };
+        match tls {
+            Some((cfg, name)) => match Tls::client(cfg, name, acceptor) {
+                Ok(a) => he.connect(engine, host, port, a, fail),
+                Err(e) => fail(e),
+            },
+            None => he.connect(engine, host, port, acceptor, fail),
+        }
+    }
+
     /// Like [`dial`](Self::dial), waiting for the result (10 s).
     pub fn dial_blocking(
         engine: &Engine,

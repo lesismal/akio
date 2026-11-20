@@ -24,6 +24,8 @@ fuzzing = ["only-core/fuzzing"]
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
+# Test certificates for the TLS-to-the-proxy tests.
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

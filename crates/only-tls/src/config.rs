@@ -268,7 +268,10 @@ impl RootCerts {
     /// `/usr/bin/security`, falling back to `/etc/ssl/cert.pem`); on other Unix systems the
     /// distribution's CA bundle (`/etc/ssl/certs/ca-certificates.crt`,
     /// `/etc/pki/tls/certs/ca-bundle.crt`, ...) or certificate directory. Certificates that do
-    /// not parse are skipped; macOS trust settings (a CA marked as distrusted) are not applied.
+    /// not parse are skipped. On macOS the trust settings apply (ADR-059): a certificate the
+    /// user or an administrator marked as distrusted for SSL is left out, one marked as trusted
+    /// is a root wherever it is (System or login keychain), the system roots are otherwise
+    /// trusted and the System keychain's other certificates are not (as for Safari).
     /// Fails when no certificate was found.
     pub fn system() -> Result<RootCerts, Error> {
         static CACHE: std::sync::OnceLock<Result<RootCerts, String>> = std::sync::OnceLock::new();
@@ -276,6 +279,11 @@ impl RootCerts {
             .get_or_init(|| {
                 let found = crate::system::load();
                 let mut roots = RootCerts::empty();
+                for der in &found.ders {
+                    if let Ok(c) = only_x509::Certificate::from_der(der.clone()) {
+                        roots.0.add(c);
+                    }
+                }
                 for pem in &found.pems {
                     let Ok(ders) = only_crypto::pem::decode_label(pem, "CERTIFICATE") else {
                         continue;

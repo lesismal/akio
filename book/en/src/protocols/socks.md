@@ -220,5 +220,10 @@ open, the tunnel is closed rather than risk reordering. Throughput: see [the ben
 ## Not supported
 
 GSSAPI authentication; a Linux `splice(2)` relay path (not attempted: the engine's relay with
-two-way backpressure stays, and `only::ebpf::Relay` covers in-kernel relaying); sending
-fragmented UDP datagrams (they are only reassembled); TLS to the proxy in the clients.
+two-way backpressure stays, and `only::ebpf::Relay` covers in-kernel relaying).
+
+Since ADR-059: datagrams can be sent in fragments (RFC 1928 `FRAG`) both ways
+(`UdpAssociation::send_fragmented`, `BlockingUdp::send_fragmented`, and on the server
+`Socks::udp_fragment_size(Some(n))`, off by default), and `SocksClient::tls(cfg, name)` reaches
+the proxy over TLS on the engine methods (serve the server behind `Tls::server` for that); the
+HTTP and WebSocket clients take `https://` HTTP proxies.

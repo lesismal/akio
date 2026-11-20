@@ -39,10 +39,64 @@ pub use only::metrics
 pub use only::telemetry
 pub use only::tls
 pub mod only::dns
+#[non_exhaustive] pub struct only::dns::CacheConfig
+pub only::dns::CacheConfig::max_entries: usize
+pub only::dns::CacheConfig::negative_ttl: core::time::Duration
+pub only::dns::CacheConfig::ttl: core::time::Duration
+impl only::dns::CacheConfig
+pub fn only::dns::CacheConfig::disabled() -> only::dns::CacheConfig
+impl core::clone::Clone for only::dns::CacheConfig
+pub fn only::dns::CacheConfig::clone(&self) -> Self
+impl core::cmp::Eq for only::dns::CacheConfig
+impl core::cmp::PartialEq for only::dns::CacheConfig
+pub fn only::dns::CacheConfig::eq(&self, &Self) -> bool
+impl core::default::Default for only::dns::CacheConfig
+pub fn only::dns::CacheConfig::default() -> only::dns::CacheConfig
+impl core::fmt::Debug for only::dns::CacheConfig
+pub fn only::dns::CacheConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only::dns::CacheConfig
+impl core::marker::StructuralPartialEq for only::dns::CacheConfig
+impl core::marker::Send for only::dns::CacheConfig
+impl core::marker::Sync for only::dns::CacheConfig
+impl core::marker::Unpin for only::dns::CacheConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only::dns::CacheConfig
+impl core::panic::unwind_safe::UnwindSafe for only::dns::CacheConfig
+#[non_exhaustive] pub struct only::dns::HappyEyeballs
+pub only::dns::HappyEyeballs::attempt_delay: core::time::Duration
+pub only::dns::HappyEyeballs::connect_timeout: core::time::Duration
+impl only::dns::HappyEyeballs
+pub fn only::dns::HappyEyeballs::connect<A: only_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<only::Engine>, &str, u16, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn only::dns::HappyEyeballs::dial<A: only_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<only::Engine>, alloc::vec::Vec<core::net::socket_addr::SocketAddr>, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+impl core::clone::Clone for only::dns::HappyEyeballs
+pub fn only::dns::HappyEyeballs::clone(&self) -> Self
+impl core::cmp::Eq for only::dns::HappyEyeballs
+impl core::cmp::PartialEq for only::dns::HappyEyeballs
+pub fn only::dns::HappyEyeballs::eq(&self, &Self) -> bool
+impl core::default::Default for only::dns::HappyEyeballs
+pub fn only::dns::HappyEyeballs::default() -> only::dns::HappyEyeballs
+impl core::fmt::Debug for only::dns::HappyEyeballs
+pub fn only::dns::HappyEyeballs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only::dns::HappyEyeballs
+impl core::marker::StructuralPartialEq for only::dns::HappyEyeballs
+impl core::marker::Send for only::dns::HappyEyeballs
+impl core::marker::Sync for only::dns::HappyEyeballs
+impl core::marker::Unpin for only::dns::HappyEyeballs
+impl core::panic::unwind_safe::RefUnwindSafe for only::dns::HappyEyeballs
+impl core::panic::unwind_safe::UnwindSafe for only::dns::HappyEyeballs
+pub const only::dns::ATTEMPT_DELAY: core::time::Duration
+pub const only::dns::CONNECT_TIMEOUT: core::time::Duration
+pub const only::dns::DEFAULT_CACHE_ENTRIES: usize
+pub const only::dns::DEFAULT_CACHE_TTL: core::time::Duration
 pub const only::dns::IDLE: core::time::Duration
+pub const only::dns::MAX_RACES: usize
+pub const only::dns::MAX_RACE_ADDRS: usize
 pub const only::dns::MAX_THREADS: usize
+pub fn only::dns::cache_config() -> only::dns::CacheConfig
+pub fn only::dns::clear_cache()
+pub fn only::dns::interleave(&[core::net::socket_addr::SocketAddr]) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn only::dns::literal(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
 pub fn only::dns::resolve(&str, u16, impl core::ops::function::FnOnce(core::io::error::Result<alloc::vec::Vec<core::net::socket_addr::SocketAddr>>) + core::marker::Send + 'static)
+pub fn only::dns::set_cache(only::dns::CacheConfig)
 #[non_exhaustive] pub enum only::Accel
 pub only::Accel::Ebpf(only::EbpfConfig)
 pub only::Accel::None

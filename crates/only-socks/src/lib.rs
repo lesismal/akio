@@ -14,7 +14,7 @@
 //! 4a `CONNECT` and `BIND`, on the engine or blocking. The HTTP and WebSocket clients take SOCKS
 //! proxies through `only_ws::proxy::Proxy` (`socks5h://…`) with the same handshake.
 //!
-//! Not supported: GSSAPI authentication, sending fragmented datagrams.
+//! Not supported: GSSAPI authentication.
 //!
 //! Linux fast path (opt-in, [`ProxyConfig::sockmap`]): `CONNECT` tunnels (SOCKS and HTTP) are
 //! spliced in the kernel with `only::ebpf::Relay` once the upstream is connected, so their bytes
@@ -494,6 +494,7 @@ pub struct Socks {
     udp: bool,
     bind_timeout: Duration,
     udp_idle: Duration,
+    udp_frag: Option<usize>,
     sweeper: Arc<udp::Sweeper>,
 }
 
@@ -519,6 +520,7 @@ impl Socks {
             udp: false,
             bind_timeout: Duration::from_secs(60),
             udp_idle: Duration::from_secs(120),
+            udp_frag: None,
             sweeper: udp::Sweeper::new(),
         }
     }
@@ -614,6 +616,17 @@ impl Socks {
         self.udp_idle = timeout;
         self
     }
+
+    /// Sends datagrams from remote hosts to the client in fragments (RFC 1928 `FRAG`) when
+    /// they are larger than `size` bytes, for paths whose MTU the client knows to be small.
+    /// `None` (the default) sends every datagram whole, which every client understands; not
+    /// all clients reassemble fragments. Raised to 516 bytes when smaller, so that any
+    /// datagram fits in the 127 fragments a sequence may have.
+    #[must_use]
+    pub fn udp_fragment_size(mut self, size: Option<usize>) -> Socks {
+        self.udp_frag = size.map(|s| s.max(frag::MIN_FRAGMENT));
+        self
+    }
 }
 
 enum St {
@@ -640,6 +653,7 @@ pub struct SocksSession {
     udp: bool,
     bind_timeout: Duration,
     udp_idle: Duration,
+    udp_frag: Option<usize>,
     sweeper: Arc<udp::Sweeper>,
     user: Option<String>,
     st: St,
@@ -677,6 +691,7 @@ impl Acceptor for Socks {
             udp: self.udp,
             bind_timeout: self.bind_timeout,
             udp_idle: self.udp_idle,
+            udp_frag: self.udp_frag,
             sweeper: self.sweeper.clone(),
             user: None,
             st: St::Greeting,
@@ -1003,6 +1018,7 @@ impl SocksSession {
             self.cfg.destinations.clone(),
             &self.sweeper,
             self.udp_idle,
+            self.udp_frag,
         ) {
             Ok((a, bound)) => {
                 // The association has its own idle timeout (its datagrams never touch the

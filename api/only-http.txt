@@ -23,10 +23,12 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_http::client::ClientError
 impl !core::panic::unwind_safe::UnwindSafe for only_http::client::ClientError
 pub struct only_http::client::Client
 impl only_http::client::Client
+pub fn only_http::client::Client::cookies(&self) -> core::option::Option<&only_http::cookie::CookieJar>
 pub fn only_http::client::Client::new(alloc::rcs::arc::Arc<only::Engine>) -> only_http::client::Client
 pub fn only_http::client::Client::options(&self) -> &only_http::client::ClientOptions
 pub fn only_http::client::Client::request(&self, only_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<only_http::client::ClientResponse, only_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn only_http::client::Client::send(&self, only_http::client::ClientRequest) -> only_http::client::ResponseFuture
+pub fn only_http::client::Client::with_cookies(self, only_http::cookie::CookieJar) -> only_http::client::Client
 pub fn only_http::client::Client::with_options(self, only_http::client::ClientOptions) -> only_http::client::Client
 pub fn only_http::client::Client::with_proxy(self, only_ws::proxy::Proxy) -> only_http::client::Client
 pub fn only_http::client::Client::with_redirects(self, only_http::client::RedirectPolicy) -> only_http::client::Client
@@ -53,6 +55,7 @@ impl core::marker::Unpin for only_http::client::ClientConn
 impl !core::panic::unwind_safe::RefUnwindSafe for only_http::client::ClientConn
 impl !core::panic::unwind_safe::UnwindSafe for only_http::client::ClientConn
 #[non_exhaustive] pub struct only_http::client::ClientOptions
+pub only_http::client::ClientOptions::happy_eyeballs: only::dns::HappyEyeballs
 pub only_http::client::ClientOptions::idle_timeout: core::option::Option<core::time::Duration>
 pub only_http::client::ClientOptions::max_body_bytes: usize
 pub only_http::client::ClientOptions::max_head_bytes: usize
@@ -144,6 +147,94 @@ impl core::marker::Sync for only_http::client::ResponseFuture
 impl core::marker::Unpin for only_http::client::ResponseFuture
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::client::ResponseFuture
 impl core::panic::unwind_safe::UnwindSafe for only_http::client::ResponseFuture
+pub mod only_http::cookie
+#[non_exhaustive] pub enum only_http::cookie::SameSite
+pub only_http::cookie::SameSite::Lax
+pub only_http::cookie::SameSite::None
+pub only_http::cookie::SameSite::Strict
+impl core::clone::Clone for only_http::cookie::SameSite
+pub fn only_http::cookie::SameSite::clone(&self) -> Self
+impl core::cmp::Eq for only_http::cookie::SameSite
+impl core::cmp::PartialEq for only_http::cookie::SameSite
+pub fn only_http::cookie::SameSite::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_http::cookie::SameSite
+pub fn only_http::cookie::SameSite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_http::cookie::SameSite
+pub fn only_http::cookie::SameSite::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_http::cookie::SameSite
+impl core::marker::StructuralPartialEq for only_http::cookie::SameSite
+impl core::marker::Send for only_http::cookie::SameSite
+impl core::marker::Sync for only_http::cookie::SameSite
+impl core::marker::Unpin for only_http::cookie::SameSite
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::cookie::SameSite
+impl core::panic::unwind_safe::UnwindSafe for only_http::cookie::SameSite
+#[non_exhaustive] pub struct only_http::cookie::Cookie
+pub only_http::cookie::Cookie::domain: alloc::string::String
+pub only_http::cookie::Cookie::expires: core::option::Option<std::time::SystemTime>
+pub only_http::cookie::Cookie::host_only: bool
+pub only_http::cookie::Cookie::http_only: bool
+pub only_http::cookie::Cookie::name: alloc::string::String
+pub only_http::cookie::Cookie::path: alloc::string::String
+pub only_http::cookie::Cookie::same_site: core::option::Option<only_http::cookie::SameSite>
+pub only_http::cookie::Cookie::secure: bool
+pub only_http::cookie::Cookie::value: alloc::string::String
+impl core::clone::Clone for only_http::cookie::Cookie
+pub fn only_http::cookie::Cookie::clone(&self) -> Self
+impl core::cmp::Eq for only_http::cookie::Cookie
+impl core::cmp::PartialEq for only_http::cookie::Cookie
+pub fn only_http::cookie::Cookie::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_http::cookie::Cookie
+pub fn only_http::cookie::Cookie::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_http::cookie::Cookie
+impl core::marker::Send for only_http::cookie::Cookie
+impl core::marker::Sync for only_http::cookie::Cookie
+impl core::marker::Unpin for only_http::cookie::Cookie
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::cookie::Cookie
+impl core::panic::unwind_safe::UnwindSafe for only_http::cookie::Cookie
+pub struct only_http::cookie::CookieJar
+impl only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::clear(&self)
+pub fn only_http::cookie::CookieJar::cookies(&self) -> alloc::vec::Vec<only_http::cookie::Cookie>
+pub fn only_http::cookie::CookieJar::header(&self, &str) -> core::option::Option<alloc::string::String>
+pub fn only_http::cookie::CookieJar::is_empty(&self) -> bool
+pub fn only_http::cookie::CookieJar::len(&self) -> usize
+pub fn only_http::cookie::CookieJar::new() -> only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::public_suffixes(self, impl core::ops::function::Fn(&str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::site(&self, &str) -> alloc::string::String
+pub fn only_http::cookie::CookieJar::store(&self, &str, &str) -> bool
+pub fn only_http::cookie::CookieJar::with_limits(self, only_http::cookie::CookieLimits) -> only_http::cookie::CookieJar
+impl core::clone::Clone for only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::clone(&self) -> Self
+impl core::default::Default for only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::default() -> only_http::cookie::CookieJar
+impl core::fmt::Debug for only_http::cookie::CookieJar
+pub fn only_http::cookie::CookieJar::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_http::cookie::CookieJar
+impl core::marker::Sync for only_http::cookie::CookieJar
+impl core::marker::Unpin for only_http::cookie::CookieJar
+impl !core::panic::unwind_safe::RefUnwindSafe for only_http::cookie::CookieJar
+impl !core::panic::unwind_safe::UnwindSafe for only_http::cookie::CookieJar
+#[non_exhaustive] pub struct only_http::cookie::CookieLimits
+pub only_http::cookie::CookieLimits::max_cookie_bytes: usize
+pub only_http::cookie::CookieLimits::max_cookies: usize
+pub only_http::cookie::CookieLimits::max_per_domain: usize
+impl core::clone::Clone for only_http::cookie::CookieLimits
+pub fn only_http::cookie::CookieLimits::clone(&self) -> Self
+impl core::cmp::Eq for only_http::cookie::CookieLimits
+impl core::cmp::PartialEq for only_http::cookie::CookieLimits
+pub fn only_http::cookie::CookieLimits::eq(&self, &Self) -> bool
+impl core::default::Default for only_http::cookie::CookieLimits
+pub fn only_http::cookie::CookieLimits::default() -> only_http::cookie::CookieLimits
+impl core::fmt::Debug for only_http::cookie::CookieLimits
+pub fn only_http::cookie::CookieLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_http::cookie::CookieLimits
+impl core::marker::StructuralPartialEq for only_http::cookie::CookieLimits
+impl core::marker::Send for only_http::cookie::CookieLimits
+impl core::marker::Sync for only_http::cookie::CookieLimits
+impl core::marker::Unpin for only_http::cookie::CookieLimits
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::cookie::CookieLimits
+impl core::panic::unwind_safe::UnwindSafe for only_http::cookie::CookieLimits
+pub const only_http::cookie::MAX_AGE_CAP: core::time::Duration
 pub mod only_http::files
 pub struct only_http::files::Files
 impl only_http::files::Files
@@ -185,6 +276,7 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for only_http::h2client::H2Event<
 pub struct only_http::h2client::H2Client
 impl only_http::h2client::H2Client
 pub fn only_http::h2client::H2Client::close(&self)
+pub fn only_http::h2client::H2Client::connect(&alloc::rcs::arc::Arc<only::Engine>, &str, u16, core::option::Option<(only_tls::config::ClientConfig, &str)>, only_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<only_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
 pub fn only_http::h2client::H2Client::dial(&only::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(only_tls::config::ClientConfig, &str)>, only_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<only_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
 pub fn only_http::h2client::H2Client::dial_blocking(&only::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(only_tls::config::ClientConfig, &str)>, only_http::h2client::H2Options) -> core::io::error::Result<only_http::h2client::H2Client>
 pub fn only_http::h2client::H2Client::is_open(&self) -> bool

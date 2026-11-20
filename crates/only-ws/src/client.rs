@@ -85,6 +85,9 @@ pub struct DialOptions {
     /// [`headers`](Self::headers). The [`handshake_timeout`](Self::handshake_timeout) covers the
     /// whole chain.
     pub max_redirects: u32,
+    /// How the addresses of the server (or the proxy) are raced (RFC 8305: IPv6 and IPv4
+    /// interleaved, a new attempt every 250 ms by default).
+    pub happy_eyeballs: only::dns::HappyEyeballs,
 }
 
 impl Default for DialOptions {
@@ -101,6 +104,7 @@ impl Default for DialOptions {
             close_timeout: Duration::from_secs(3),
             proxy: Proxy::none(),
             max_redirects: 0,
+            happy_eyeballs: only::dns::HappyEyeballs::default(),
         }
     }
 }
@@ -420,7 +424,7 @@ fn start(
         only::dns::resolve(&dial_host, dial_port, move |r| match r {
             Ok(addrs) => {
                 let _ = plan.addrs.set(addrs);
-                dial_addr(plan, 0);
+                dial_addrs(plan);
             }
             Err(e) => plan.fail(WsClientError::Io(e)),
         });
@@ -444,51 +448,72 @@ fn start(
     });
 }
 
-fn dial_addr(plan: Arc<Plan>, i: usize) {
+/// Runs the tunnel over TLS to the proxy when it is an `https://` one.
+fn over_proxy_tls<A: Acceptor>(
+    c: Connect<A>,
+    tls: &Option<(TlsClientConfig, String)>,
+) -> io::Result<Connect<A>> {
+    match tls {
+        Some((cfg, name)) => c.over_tls(cfg.clone(), name),
+        None => Ok(c),
+    }
+}
+
+fn dial_addrs(plan: Arc<Plan>) {
     if plan.lock().resolved() {
         return; // timed out while resolving
     }
-    let Some(&addr) = plan.addrs.get().and_then(|a| a.get(i)) else {
-        return plan.fail(WsClientError::Closed);
-    };
+    let addrs = plan.addrs.get().cloned().unwrap_or_default();
     let acceptor = ClientAcceptor { plan: plan.clone() };
     let on_err = {
         let plan = plan.clone();
-        move |e: io::Error| {
-            if plan.lock().resolved() {
-                return;
-            }
-            if i + 1 < plan.addrs.get().map_or(0, Vec::len) {
-                // Next address (`localhost` is often ::1 first, then 127.0.0.1).
-                dial_addr(plan, i + 1);
-            } else {
-                plan.fail(WsClientError::Io(e));
-            }
-        }
+        move |e: io::Error| plan.fail(WsClientError::Io(e))
     };
     let engine = plan.engine.clone();
+    let he = plan.opts.happy_eyeballs;
     let tunnel_host = plan.tunnel_host.get().unwrap_or(&plan.host).clone();
     let tunnel = || {
         let r = Refusal::default();
         *plan.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
         r
     };
-    match (&plan.tls, &plan.proxy) {
-        (Some((cfg, name)), proxy) => match Tls::client(cfg.clone(), name, acceptor) {
-            Ok(a) => match proxy {
-                Some(p) => {
-                    let a = Connect::new(&tunnel_host, plan.port, p, tunnel(), a);
-                    engine.dial(addr, a, on_err);
-                }
-                None => engine.dial(addr, a, on_err),
-            },
-            Err(e) => plan.fail(WsClientError::Io(e)),
-        },
-        (None, Some(p)) => {
-            let a = Connect::new(&tunnel_host, plan.port, p, tunnel(), acceptor);
-            engine.dial(addr, a, on_err);
+    // TLS to the proxy itself (`https://` proxies), checked with the same configuration.
+    let proxy_tls = match &plan.proxy {
+        Some(p) if p.tls => {
+            let cfg = match &plan.tls {
+                Some((cfg, _)) => Ok(cfg.clone()),
+                None => plan.opts.tls.clone().map_or_else(system_tls, Ok),
+            };
+            match cfg {
+                Ok(c) => Some((c, p.host.clone())),
+                Err(e) => return plan.fail(WsClientError::Io(e)),
+            }
         }
-        (None, None) => engine.dial(addr, acceptor, on_err),
+        _ => None,
+    };
+    let r = match (&plan.tls, &plan.proxy) {
+        (Some((cfg, name)), proxy) => Tls::client(cfg.clone(), name, acceptor).and_then(|a| {
+            match proxy {
+                Some(p) => {
+                    let c = Connect::new(&tunnel_host, plan.port, p, tunnel(), a);
+                    let c = over_proxy_tls(c, &proxy_tls)?;
+                    he.dial(&engine, addrs, c, on_err);
+                }
+                None => he.dial(&engine, addrs, a, on_err),
+            }
+            Ok(())
+        }),
+        (None, Some(p)) => {
+            let c = Connect::new(&tunnel_host, plan.port, p, tunnel(), acceptor);
+            over_proxy_tls(c, &proxy_tls).map(|c| he.dial(&engine, addrs, c, on_err))
+        }
+        (None, None) => {
+            he.dial(&engine, addrs, acceptor, on_err);
+            Ok(())
+        }
+    };
+    if let Err(e) = r {
+        plan.fail(WsClientError::Io(e));
     }
 }
 

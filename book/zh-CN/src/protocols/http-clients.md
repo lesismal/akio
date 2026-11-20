@@ -51,7 +51,26 @@
 丢弃请求体时，相应的 `Content-*` 字段也一并去掉。重定向到另一个源（scheme、主机或端口不同）时删除
 `Authorization`、`Cookie` 和 `Proxy-Authorization`，并在链的剩余部分保持删除。`https://` 到
 `http://` 不跟随（返回该 3xx），除非 `RedirectPolicy::limit(n).allow_https_downgrade(true)`。
-超过 `n` 次重定向（例如循环）以 `ClientError::TooManyRedirects` 失败。没有 cookie 容器。
+超过 `n` 次重定向（例如循环）以 `ClientError::TooManyRedirects` 失败。
+
+### Cookie
+
+不挂容器时不生效：`Client::new(engine).with_cookies(CookieJar::new())`（`only_http::cookie`，
+ADR-059）。每个响应（包括重定向链的每一跳）的 `Set-Cookie` 都会保存，每个请求在一个 `Cookie` 字段中
+携带匹配的 cookie（请求自带的在前）。规则是 RFC 6265 加 RFC 6265bis：没有 `Domain` 时只发回该主机；
+是公共后缀的 `Domain` 被拒绝，除非它就是该主机（单标签与 IP 地址总是公共后缀；用
+`CookieJar::public_suffixes` 接入 Public Suffix List）；Secure cookie 只走 `https://`；`__Secure-` /
+`__Host-` 前缀；重定向链离开第一个请求的站点后不再发送 `SameSite=Strict` cookie，`Lax` 只在安全方法下
+发送；`Max-Age` 优先于 `Expires`，最多 400 天。受 `CookieLimits` 限制（每个 4096 字节、每个域 50 个、
+总共 3000 个）。容器在克隆间共享，可以手动读取（`cookies()`、`header(url)`）或填入
+（`store(url, set_cookie)`）。
+
+### 建立连接
+
+域名在调用线程之外解析并缓存 30 秒（`only::dns::CacheConfig`；系统解析器不给 TTL）。有多个地址的
+名字会竞速（Happy Eyeballs v2，RFC 8305）：IPv6 与 IPv4 交替，每 250 毫秒或在一次尝试失败后立即发起
+新的尝试，使用最先建立的连接（`ClientOptions::happy_eyeballs`）。`H2Client::connect(engine, host,
+port, ...)` 对 HTTP/2 做同样的事。
 
 ### 超时
 
@@ -75,7 +94,8 @@ let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@prox
 `CONNECT host:port` 隧道，在隧道内与目标建立 TLS。代理 URL 中的凭据变成
 `Proxy-Authorization: Basic`。代理拒绝建立隧道时，请求以 `ClientError::Io` 失败，其内部错误是
 `only_http::client::ProxyRefused`（`status()`、`reason()`）。`NO_PROXY` 条目：`*`、主机名（及其
-子域）、IP 地址、CIDR 网段，均可带 `:port`。不支持到代理本身的 TLS。除非调用
+子域）、IP 地址、CIDR 网段，均可带 `:port`。`https://` 代理 URL（端口 443）经 TLS 连接代理，用客户端的
+TLS 配置按名字校验其证书；`https://` 目标于是在这层 TLS 之内再跑一层 TLS。除非调用
 `Proxy::from_env()`，否则不会读取环境变量；`all_proxy` / `ALL_PROXY` 用于专门变量没有设置的协议。
 
 SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认端口 1080）：所有请求，包括

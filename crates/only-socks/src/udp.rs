@@ -10,7 +10,9 @@
 //! - every destination goes through the access-control hook ([`Command::UdpDatagram`]),
 //!   decided once per destination and association;
 //! - datagrams from remote hosts are relayed to the client only from addresses the client has
-//!   sent to (endpoint-dependent filtering), so the relay is not an open inbound port;
+//!   sent to (endpoint-dependent filtering), so the relay is not an open inbound port; with
+//!   [`Socks::udp_fragment_size`](crate::Socks::udp_fragment_size) set, larger ones go in
+//!   fragments of that size (ADR-059);
 //! - the association ends with the control TCP connection, or after the idle timeout without
 //!   a datagram either way (the sweeper closes the control connection).
 
@@ -151,6 +153,8 @@ pub(crate) struct Assoc {
     last: AtomicU64,
     idle_ms: u64,
     closed: AtomicBool,
+    /// Datagrams to the client larger than this go in fragments.
+    frag_size: Option<usize>,
 }
 
 impl Assoc {
@@ -165,6 +169,7 @@ impl Assoc {
         destinations: Destinations,
         sweeper: &Arc<Sweeper>,
         idle: Duration,
+        frag_size: Option<usize>,
     ) -> std::io::Result<(Arc<Assoc>, SocketAddr)> {
         let client_tcp = canon(control.peer_addr());
         // The client's declared address only counts when it is its own IP (behind NAT it
@@ -190,6 +195,7 @@ impl Assoc {
             last: AtomicU64::new(sweeper.now_ms()),
             idle_ms: idle.as_millis().max(1) as u64,
             closed: AtomicBool::new(false),
+            frag_size,
         });
         let b = engine.bind_udp(local, RelayAcceptor(a.clone()))?;
         let bound = canon(b.local_addr());
@@ -331,6 +337,20 @@ impl Assoc {
         let (Some(client), Some(b)) = (*lock(&self.client), self.binding.get()) else {
             return false;
         };
+        if let Some(max) = self.frag_size.filter(|&m| data.len() > m) {
+            let Ok(parts) = crate::frag::split(data, max) else {
+                return true; // larger than a datagram: cannot be expressed
+            };
+            let mut out = Vec::with_capacity(max + 22);
+            for (frag, piece) in parts {
+                out.clear();
+                push_header(&mut out, peer);
+                out[2] = frag;
+                out.extend_from_slice(piece);
+                let _ = b.send_to(&out, client);
+            }
+            return true;
+        }
         let mut out = Vec::with_capacity(data.len() + 22);
         push_header(&mut out, peer);
         out.extend_from_slice(data);

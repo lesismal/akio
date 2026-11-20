@@ -1,6 +1,8 @@
 //! The SOCKS client (ADR-019): SOCKS5 `CONNECT`, `BIND` and `UDP ASSOCIATE` with no
 //! authentication or username/password, SOCKS4 and SOCKS4a `CONNECT` and `BIND`, on the engine
 //! (non-blocking, callbacks on the I/O threads) and as blocking helpers over `std::net`.
+//! ADR-059 adds TLS to the proxy ([`SocksClient::tls`], engine methods) and sending UDP
+//! datagrams in fragments ([`UdpAssociation::send_fragmented`]).
 //!
 //! The handshake itself is the sans-io one the HTTP and WebSocket clients use for their
 //! `socks5://` / `socks4a://` proxies (`only_ws::proxy`), so a refusal is reported the same
@@ -16,7 +18,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use only::{Acceptor, Conn, Engine, Handler, Transport, UdpBinding};
+use only::{
+    Acceptor, Conn, Engine, Handler, Transport, UdpBinding,
+    tls::{ClientConfig as TlsClientConfig, Tls},
+};
 use only_core::ConnInner;
 use only_ws::{
     proxy::{Connect, OnBound, Refusal},
@@ -96,7 +101,18 @@ pub struct SocksClient {
     auth: Option<(String, String)>,
     handshake_timeout: Option<Duration>,
     bind_timeout: Option<Duration>,
+    /// TLS to the proxy: the configuration and the name to verify (the proxy's host if none).
+    tls: Option<ProxyTls>,
 }
+
+/// TLS settings for the proxy. `ClientConfig` is not unwind-safe (it reserves the right to
+/// hold interior state); a `SocksClient` only clones it, so it stays unwind-safe as before
+/// ADR-059.
+#[derive(Clone)]
+struct ProxyTls(TlsClientConfig, Option<String>);
+
+impl std::panic::UnwindSafe for ProxyTls {}
+impl std::panic::RefUnwindSafe for ProxyTls {}
 
 impl std::fmt::Debug for SocksClient {
     // Without the credentials.
@@ -105,6 +121,7 @@ impl std::fmt::Debug for SocksClient {
             .field("proxy", &format_args!("{}:{}", self.host, self.port))
             .field("version", &self.version)
             .field("auth", &self.auth.is_some())
+            .field("tls", &self.tls.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -128,6 +145,7 @@ impl SocksClient {
             auth: None,
             handshake_timeout: Some(DEFAULT_CLIENT_HANDSHAKE_TIMEOUT),
             bind_timeout: Some(DEFAULT_BIND_TIMEOUT),
+            tls: None,
         }
     }
 
@@ -180,6 +198,41 @@ impl SocksClient {
     pub fn bind_timeout(mut self, d: Option<Duration>) -> SocksClient {
         self.bind_timeout = d;
         self
+    }
+
+    /// Speaks to the proxy over TLS (a SOCKS server behind TLS, such as only-socks' [`Socks`]
+    /// wrapped in `Tls::server`), verifying its certificate with `cfg` for `server_name`, or
+    /// for the proxy's host when `None`. Applies to the engine methods ([`dial`](Self::dial),
+    /// [`bind`](Self::bind), and the control connection of
+    /// [`udp_associate`](Self::udp_associate); the datagrams themselves stay plain UDP, as
+    /// RFC 1928 has them); the blocking helpers return a `TcpStream` and refuse with
+    /// `Unsupported`. A `Tls` acceptor given to `dial` then runs TLS inside this one.
+    ///
+    /// [`Socks`]: crate::Socks
+    #[must_use]
+    pub fn tls(mut self, cfg: TlsClientConfig, server_name: Option<&str>) -> SocksClient {
+        self.tls = Some(ProxyTls(cfg, server_name.map(str::to_owned)));
+        self
+    }
+
+    /// The TLS configuration and name to reach the proxy with, if any.
+    fn proxy_tls(&self) -> Option<(TlsClientConfig, String)> {
+        self.tls.as_ref().map(|t| {
+            (
+                t.0.clone(),
+                t.1.clone().unwrap_or_else(|| self.host.clone()),
+            )
+        })
+    }
+
+    fn no_blocking_tls(&self) -> io::Result<()> {
+        if self.tls.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "TLS to the proxy needs the engine methods (the blocking ones return a TcpStream)",
+            ));
+        }
+        Ok(())
     }
 
     /// The protocol.
@@ -281,6 +334,7 @@ impl SocksClient {
             let plan = Arc::new(TunnelPlan {
                 hs,
                 acceptor: Arc::new(acceptor),
+                tls: me.proxy_tls(),
                 timeout,
                 on_bound: Mutex::new(on_bound),
                 on_error: Mutex::new(Some(on_error)),
@@ -324,7 +378,7 @@ impl SocksClient {
         let on_datagram: OnDatagram = Arc::new(on_datagram);
         let done: DoneCb = Box::new(done);
         only::dns::resolve(&me.host.clone(), me.port, move |r| match r {
-            Ok(addrs) if !addrs.is_empty() => udp_open(&me, &engine, addrs[0], on_datagram, done),
+            Ok(addrs) if !addrs.is_empty() => udp_open(me, engine, addrs, 0, on_datagram, done),
             Ok(_) => done(Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "proxy has no address",
@@ -338,6 +392,7 @@ impl SocksClient {
     /// Connects to the proxy (each of its addresses in turn) and runs the handshake, all
     /// within [`handshake_timeout`](Self::handshake_timeout).
     fn open_blocking(&self, cmd: Cmd, to: &Dest) -> io::Result<(TcpStream, Handshake, Deadline)> {
+        self.no_blocking_tls()?;
         let dl = Deadline::new(self.handshake_timeout);
         let resolved;
         let to = match self.local_name(to) {
@@ -395,6 +450,7 @@ impl SocksClient {
     /// `UDP ASSOCIATE` (SOCKS5), blocking: binds a UDP socket on the unspecified address of
     /// the proxy's family, announces it and returns the association.
     pub fn udp_associate_blocking(&self) -> io::Result<BlockingUdp> {
+        self.no_blocking_tls()?;
         if self.version != Version::Socks5 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -467,6 +523,7 @@ fn first_v4(addrs: impl IntoIterator<Item = SocketAddr>) -> io::Result<SocketAdd
 struct TunnelPlan<A> {
     hs: Handshake,
     acceptor: Arc<A>,
+    tls: Option<(TlsClientConfig, String)>,
     timeout: Option<Duration>,
     on_bound: Mutex<Option<BoundCb>>,
     on_error: Mutex<Option<ErrCb>>,
@@ -551,6 +608,12 @@ fn dial_tunnel<A: Acceptor>(
         let f: OnBound = Box::new(move |r| cb(reply_addr(&r.addr, addr)));
         c = c.on_bound(f);
     }
+    if let Some((cfg, name)) = &plan.tls {
+        c = match c.over_tls(cfg.clone(), name) {
+            Ok(c) => c,
+            Err(e) => return plan.fail(e),
+        };
+    }
     let e2 = engine.clone();
     engine.dial(addr, c, move |e| {
         if i + 1 < addrs.len() {
@@ -586,13 +649,37 @@ impl std::fmt::Debug for UdpAssociation {
 
 /// Appends the UDP request header for `to` (`RSV FRAG=0 ATYP DST.ADDR DST.PORT`).
 fn udp_header(out: &mut Vec<u8>, to: &Dest) -> io::Result<()> {
+    udp_header_frag(out, to, 0)
+}
+
+/// Sends `payload` to `to` in fragments of at most `max` bytes through `send`, which gets each
+/// datagram (header included).
+fn send_fragments(
+    payload: &[u8],
+    to: &Dest,
+    max: usize,
+    mut send: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let parts = crate::frag::split(payload, max)?;
+    let mut d = Vec::with_capacity(max.min(payload.len()) + 262);
+    for (frag, piece) in parts {
+        d.clear();
+        udp_header_frag(&mut d, to, frag)?;
+        d.extend_from_slice(piece);
+        send(&d)?;
+    }
+    Ok(())
+}
+
+/// The UDP request header with a `FRAG` value.
+fn udp_header_frag(out: &mut Vec<u8>, to: &Dest, frag: u8) -> io::Result<()> {
     if matches!(to, Dest::Name(h, _) if h.is_empty() || h.len() > 255) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "SOCKS5 host names are 1 to 255 bytes",
         ));
     }
-    out.extend_from_slice(&[0, 0, 0]);
+    out.extend_from_slice(&[0, 0, frag]);
     only_ws::socks::push_addr(out, &target(to));
     Ok(())
 }
@@ -615,6 +702,25 @@ impl UdpAssociation {
         udp_header(&mut d, to)?;
         d.extend_from_slice(payload);
         self.0.binding.send_to(&d, relay)
+    }
+
+    /// Sends `payload` to `to` in fragments of at most `max` bytes each (RFC 1928 `FRAG`
+    /// 1, 2, ..., the last with the high bit set), for a path whose MTU is known to be small;
+    /// as one datagram when it fits. The proxy must reassemble fragments (only-socks does;
+    /// many proxies drop them). `InvalidInput` when it would take more than 127 fragments
+    /// (`max` below `payload.len() / 127`), `max` is 0 or `payload` is larger than 65,507
+    /// bytes.
+    pub fn send_fragmented(&self, payload: &[u8], to: &Dest, max: usize) -> io::Result<()> {
+        if self.0.closed.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "association closed",
+            ));
+        }
+        let relay = *self.0.relay.get().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "association not established")
+        })?;
+        send_fragments(payload, to, max, |d| self.0.binding.send_to(d, relay))
     }
 
     /// The proxy's relay address datagrams go to.
@@ -654,19 +760,23 @@ fn unspecified_port(proxy: SocketAddr, port: u16) -> SocketAddr {
     SocketAddr::new(unspecified(proxy).ip(), port)
 }
 
+/// Opens the association through the proxy's address `addrs[i]`; when it cannot be reached,
+/// through the next one.
 fn udp_open(
-    client: &SocksClient,
-    engine: &Arc<Engine>,
-    proxy: SocketAddr,
+    client: SocksClient,
+    engine: Arc<Engine>,
+    addrs: Vec<SocketAddr>,
+    i: usize,
     on_datagram: OnDatagram,
     done: DoneCb,
 ) {
+    let proxy = addrs[i];
     let slot: Arc<OnceLock<UdpAssociation>> = Arc::new(OnceLock::new());
     let binding = match engine.bind_udp(
         unspecified(proxy),
         RelayIn {
             assoc: slot.clone(),
-            on_datagram,
+            on_datagram: on_datagram.clone(),
         },
     ) {
         Ok(b) => b,
@@ -700,13 +810,26 @@ fn udp_open(
         done: done.clone(),
         timeout: client.handshake_timeout,
     };
-    engine.dial(proxy, acceptor, move |e| {
+    let tls = client.proxy_tls();
+    let e2 = engine.clone();
+    let on_err = move |e| {
         assoc.close();
         let cb = done.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(cb) = cb {
+        let Some(cb) = cb else { return };
+        if i + 1 < addrs.len() {
+            // Not reachable there (`localhost` is often ::1 first): the next address.
+            udp_open(client, e2, addrs, i + 1, on_datagram, cb);
+        } else {
             cb(Err(e));
         }
-    });
+    };
+    match tls {
+        Some((cfg, name)) => match Tls::client(cfg, &name, acceptor) {
+            Ok(a) => engine.dial(proxy, a, on_err),
+            Err(e) => on_err(e),
+        },
+        None => engine.dial(proxy, acceptor, on_err),
+    }
 }
 
 struct ControlAcceptor {
@@ -966,6 +1089,13 @@ impl BlockingUdp {
         self.sock.send_to(&d, self.relay).map(|_| ())
     }
 
+    /// [`UdpAssociation::send_fragmented`], blocking.
+    pub fn send_fragmented(&self, payload: &[u8], to: &Dest, max: usize) -> io::Result<()> {
+        send_fragments(payload, to, max, |d| {
+            self.sock.send_to(d, self.relay).map(|_| ())
+        })
+    }
+
     /// Receives the next datagram the relay forwards: its length (cut to `buf`, as UDP does)
     /// and where it came from. Fragmented datagrams are reassembled; datagrams from anywhere
     /// but the relay are skipped. Honours [`set_read_timeout`](Self::set_read_timeout) per
@@ -1026,5 +1156,14 @@ impl BlockingUdp {
         };
         let _ = self.control.set_nonblocking(false);
         open
+    }
+}
+
+#[cfg(test)]
+mod unwind_tests {
+    #[test]
+    fn socks_client_stays_unwind_safe() {
+        fn check<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+        check::<super::SocksClient>();
     }
 }

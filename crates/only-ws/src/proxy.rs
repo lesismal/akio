@@ -9,7 +9,11 @@
 //!
 //! Proxy URLs:
 //! - `http://[user:password@]host[:port]` (port 80): an HTTP proxy; credentials become
-//!   `Proxy-Authorization: Basic`. TLS to the proxy itself (`https://`) is not supported.
+//!   `Proxy-Authorization: Basic`.
+//! - `https://[user:password@]host[:port]` (port 443): an HTTP proxy reached over TLS (ADR-059;
+//!   the certificate is checked against the proxy's host name with the client's TLS
+//!   configuration, the system's CAs by default). An `https://` target then runs TLS inside
+//!   TLS: one session with the proxy, one with the target through the tunnel.
 //! - `socks5://` and `socks5h://` (port 1080): SOCKS5 (RFC 1928), with username/password
 //!   authentication (RFC 1929) when the URL has credentials. `socks5h` sends host names to the
 //!   proxy, `socks5` resolves them first (curl's convention); every request, `http://` ones
@@ -173,6 +177,8 @@ pub struct ProxyServer {
     pub authorization: Option<String>,
     /// What the proxy speaks.
     pub kind: ProxyKind,
+    /// TLS to the proxy itself (`https://` proxy URLs).
+    pub tls: bool,
     /// User name and password from the URL (SOCKS proxies; SOCKS4 uses the name as user id).
     pub credentials: Option<(String, String)>,
 }
@@ -197,8 +203,11 @@ impl std::fmt::Debug for ProxyServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ProxyServer({:?} {}:{})",
-            self.kind, self.host, self.port
+            "ProxyServer({:?}{} {}:{})",
+            self.kind,
+            if self.tls { " over TLS" } else { "" },
+            self.host,
+            self.port
         )
     }
 }
@@ -263,22 +272,31 @@ impl ProxyServer {
             version,
             remote_dns,
         };
+        let mut tls = false;
         let (kind, rest) = match url.split_once("://") {
             Some((scheme, rest)) => match scheme.to_ascii_lowercase().as_str() {
                 "http" => (ProxyKind::Http, rest),
+                "https" => {
+                    tls = true;
+                    (ProxyKind::Http, rest)
+                }
                 "socks5" => (socks(Version::Socks5, false), rest),
                 "socks5h" => (socks(Version::Socks5, true), rest),
                 "socks4" => (socks(Version::Socks4, false), rest),
                 "socks4a" => (socks(Version::Socks4a, true), rest),
                 _ => {
                     return Err(bad(
-                        "supported proxies: http://, socks5://, socks5h://, socks4://, socks4a://",
+                        "supported proxies: http://, https://, socks5://, socks5h://, socks4://, socks4a://",
                     ));
                 }
             },
             None => (ProxyKind::Http, url),
         };
-        let default_port = if kind == ProxyKind::Http { 80 } else { 1080 };
+        let default_port = match kind {
+            ProxyKind::Http if tls => 443,
+            ProxyKind::Http => 80,
+            ProxyKind::Socks { .. } => 1080,
+        };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
         let (userinfo, hostport) = match authority.rsplit_once('@') {
             Some((u, h)) => (Some(u), h),
@@ -322,6 +340,7 @@ impl ProxyServer {
             port,
             authorization,
             kind,
+            tls,
             credentials,
         })
     }
@@ -516,6 +535,8 @@ struct Hooks {
     bound: Mutex<Option<OnBound>>,
     fail: Mutex<Option<OnFail>>,
     open: Mutex<Option<OnOpen>>,
+    /// The tunnel is open (failures no longer go to `fail`).
+    opened: std::sync::atomic::AtomicBool,
 }
 
 fn take<T>(m: &Mutex<Option<T>>) -> Option<T> {
@@ -539,6 +560,8 @@ pub struct Connect<A> {
     refusal: Refusal,
     hooks: Arc<Hooks>,
     timeout: Option<std::time::Duration>,
+    /// TLS to the proxy, under the tunnel.
+    outer: Option<only::tls::Tls<Nop>>,
     inner: A,
 }
 
@@ -583,6 +606,7 @@ impl<A: Acceptor> Connect<A> {
             refusal,
             hooks: Arc::default(),
             timeout: None,
+            outer: None,
             inner,
         }
     }
@@ -599,6 +623,7 @@ impl<A: Acceptor> Connect<A> {
             refusal,
             hooks: Arc::default(),
             timeout: None,
+            outer: None,
             inner,
         }
     }
@@ -624,6 +649,17 @@ impl<A: Acceptor> Connect<A> {
     pub fn on_open(self, f: OnOpen) -> Connect<A> {
         *self.hooks.open.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
         self
+    }
+
+    /// Runs the tunnel over TLS to the proxy (`https://` proxies, SOCKS over TLS), checking its
+    /// certificate for `server_name` with `cfg`.
+    pub fn over_tls(
+        mut self,
+        cfg: only::tls::ClientConfig,
+        server_name: &str,
+    ) -> io::Result<Connect<A>> {
+        self.outer = Some(only::tls::Tls::client(cfg, server_name, Nop)?);
+        Ok(self)
     }
 
     /// Closes the connection when the tunnel (and the inner transport's handshake) is not up
@@ -652,7 +688,7 @@ impl<A: Acceptor> Acceptor for Connect<A> {
             Mode::Http(r) => (Some(r.clone()), None),
             Mode::Socks(hs) => (None, Some(hs.clone())),
         };
-        Some(Box::new(Tunnel {
+        let tunnel = Box::new(Tunnel {
             request,
             socks,
             hooks: self.hooks.clone(),
@@ -663,7 +699,133 @@ impl<A: Acceptor> Acceptor for Connect<A> {
             held: Vec::new(),
             inner,
             refusal: self.refusal.clone(),
-        }))
+        });
+        match self.outer.as_ref().and_then(Acceptor::transport) {
+            Some(outer) => {
+                let mut l = Layered::new(outer, tunnel);
+                l.hooks = Some(self.hooks.clone());
+                Some(Box::new(l))
+            }
+            None => Some(tunnel),
+        }
+    }
+}
+
+/// An acceptor that only lends its TLS transport ([`Connect::over_tls`]); never opens.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct Nop;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct NopHandler;
+
+impl only::Handler for NopHandler {
+    fn on_data(&mut self, _c: &Conn<Self>, _d: &[u8]) {}
+}
+
+impl Acceptor for Nop {
+    type Handler = NopHandler;
+    fn on_open(&self, _c: &Conn<NopHandler>) -> NopHandler {
+        NopHandler
+    }
+}
+
+/// One transport over another: `outer` (TLS to the proxy) carries what `inner` (the tunnel,
+/// and the target's transport inside it) puts on the wire. Not public API.
+#[doc(hidden)]
+pub struct Layered {
+    outer: Box<dyn Transport>,
+    inner: Box<dyn Transport>,
+    /// The outer transport's plaintext (the inner one's wire bytes, in).
+    down: Vec<u8>,
+    /// The inner transport's wire bytes, out.
+    up: Vec<u8>,
+    /// The tunnel's hooks: a failure of the outer transport before the tunnel opened goes to
+    /// its `on_fail`.
+    hooks: Option<Arc<Hooks>>,
+}
+
+impl std::fmt::Debug for Layered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Layered")
+            .field("outer", &self.outer.name())
+            .field("inner", &self.inner.name())
+            .finish()
+    }
+}
+
+impl Layered {
+    /// `inner` over `outer`.
+    pub fn new(outer: Box<dyn Transport>, inner: Box<dyn Transport>) -> Layered {
+        Layered {
+            outer,
+            inner,
+            down: Vec::new(),
+            up: Vec::new(),
+            hooks: None,
+        }
+    }
+
+    fn send_up(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
+        if self.up.is_empty() {
+            return Ok(());
+        }
+        let r = self.outer.seal(&self.up, out);
+        self.up.clear();
+        r
+    }
+}
+
+impl Transport for Layered {
+    fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
+        self.down.clear();
+        if let Err(e) = self.outer.recv(cipher, &mut self.down, out) {
+            if let Some(h) = &self.hooks {
+                if !h.opened.load(std::sync::atomic::Ordering::Acquire) {
+                    if let Some(f) = take(&h.fail) {
+                        f(copy_err(&e));
+                    }
+                }
+            }
+            return Err(e);
+        }
+        // Also with nothing new: lets the inner transport produce its first flight.
+        let down = std::mem::take(&mut self.down);
+        let r = self.inner.recv(&down, plain, &mut self.up);
+        self.down = down;
+        self.send_up(out)?;
+        r
+    }
+
+    fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
+        self.inner.seal(plain, &mut self.up)?;
+        self.send_up(out)
+    }
+
+    fn shutdown(&mut self, out: &mut Vec<u8>) {
+        self.inner.shutdown(&mut self.up);
+        let _ = self.send_up(out);
+        self.outer.shutdown(out);
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        // `only::tls::tls_info` reports the target's session, as without the outer layer.
+        self.inner.as_any()
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn handshaking(&self) -> bool {
+        self.outer.handshaking() || self.inner.handshaking()
+    }
+
+    fn handshake_timeout(&self) -> Option<std::time::Duration> {
+        self.inner
+            .handshake_timeout()
+            .or_else(|| self.outer.handshake_timeout())
     }
 }
 
@@ -828,6 +990,9 @@ impl Tunnel {
 
     fn opened(&mut self) {
         self.open = true;
+        self.hooks
+            .opened
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(f) = take(&self.hooks.open) {
             f();
         }
@@ -940,8 +1105,15 @@ mod tests {
         );
         let s = ProxyServer::parse("HTTP://[::1]").unwrap();
         assert_eq!((s.host.as_str(), s.port), ("::1", 80));
+        let s = ProxyServer::parse("https://u:p@proxy.example").unwrap();
+        assert_eq!(
+            (s.host.as_str(), s.port, s.tls),
+            ("proxy.example", 443, true)
+        );
+        assert!(s.is_http() && s.authorization.is_some());
+        assert!(!ProxyServer::parse("http://p").unwrap().tls);
         for bad in [
-            "https://p:1",
+            "httpx://p:1",
             "ftp://p:1",
             "http://:1",
             "http://p:x",

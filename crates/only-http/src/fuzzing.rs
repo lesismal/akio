@@ -11,6 +11,13 @@ use crate::ws::{Message, WsConfig, WsHandler, WsSender};
 use crate::{BodyEvent, BodyMode, Context, H2Config, HttpConfig, Service, WsOptions};
 use only_ws::http1::Resume;
 
+/// `cookie_parse`: `Set-Cookie` and cookie-date parsing and the jar's storage rules (input:
+/// an optional `url\n` line, then `Set-Cookie` values one per line). Never panics, and the
+/// jar stays within its limits.
+pub fn cookie_parse(data: &[u8]) {
+    crate::cookie::fuzz(data);
+}
+
 /// `http1_request`: the request head parser. A complete head must parse to the same result
 /// from exactly its own bytes, and never claim more bytes than it was given. Also, `data[1..]`
 /// fed in growing prefixes cut as `data[0]` says (resumed parsing) must reach the same outcome
@@ -499,6 +506,20 @@ pub(crate) mod seeds {
     }
 
     /// Route-style patterns with matching and non-matching subjects.
+    pub(crate) fn cookie_parse() -> Vec<Vec<u8>> {
+        let cases: [&[u8]; 8] = [
+            b"https://www.example.com/a/b\nsid=1; Domain=example.com; Path=/; Secure; HttpOnly\npref=dark; Max-Age=3600",
+            b"http://h.test/\na=1; Expires=Sun, 06 Nov 1994 08:49:37 GMT\nb=2; Expires=Sunday, 06-Nov-94 08:49:37 GMT",
+            b"https://h.test/x\n__Host-id=1; Secure; Path=/\n__Secure-t=2; Secure; SameSite=None",
+            b"http://10.0.0.1/\ni=1; Domain=10.0.0.1\nj=2; Domain=0.0.1",
+            b"http://a.b.c.example/\nx=1; Domain=.EXAMPLE; Path=relative\ny; SameSite=Lax; Max-Age=-1",
+            b"https://[::1]:8443/p\nv6=1; max-age=99999999999999999999\n=novalue",
+            b"Sun Nov  6 08:49:37 1994",
+            b"http://h.test/\na=1\na=; Max-Age=0\nc=3; Expires=29 Feb 2001 0:0:0",
+        ];
+        cases.iter().map(|c| c.to_vec()).collect()
+    }
+
     pub(crate) fn regex_match() -> Vec<Vec<u8>> {
         let cases: [&[u8]; 10] = [
             b"[0-9]+\x0042\x0042x\x00",
@@ -555,6 +576,7 @@ mod tests {
         n += replay(DIR, "http1_server", http1_server);
         n += replay(DIR, "h2_server", h2_server);
         n += replay(DIR, "regex_match", regex_match);
+        n += replay(DIR, "cookie_parse", cookie_parse);
         assert!(n > 0, "no corpus found under fuzz/corpus");
     }
 
@@ -580,6 +602,9 @@ mod tests {
         }
         for s in &seeds::regex_match() {
             regex_match(s);
+        }
+        for s in &seeds::cookie_parse() {
+            cookie_parse(s);
         }
     }
 
@@ -652,5 +677,6 @@ mod tests {
         write_target_seeds(DIR, "http1_server", &seeds::http1_server());
         write_target_seeds(DIR, "h2_server", &seeds::h2_server());
         write_target_seeds(DIR, "regex_match", &seeds::regex_match());
+        write_target_seeds(DIR, "cookie_parse", &seeds::cookie_parse());
     }
 }
