@@ -29,7 +29,9 @@ ADR-020 那一条）留下五个缺口：gRPC 上的 OTLP、到 collector 的 TL
 `Exemplar`（值、时间、trace id、span id）与 `ExemplarReservoir`：每个桶一个槽位，保留最近一次在已采样 span 内的
 观测（OpenTelemetry 的 aligned-histogram reservoir）。`offer_current` 读取线程当前的 span（only-log 的线程局部
 变量），已采样时再读时钟，然后对槽位 `try_lock`：从不等待；两个线程同时写同一个桶时保留其中一个。
-`Histogram::with_exemplars(bounds)` 和 `Registry::histogram_with_exemplars` 创建带 reservoir 的直方图；
+`ExemplarHistogram`（`Histogram` 加一个 reservoir，用 `ExemplarHistogram::new(bounds)` 或
+`Registry::histogram_with_exemplars` 创建）是单独的类型，所以普通 `Histogram::observe` 的代码与以前相同（把开关放在
+`Histogram` 内部会多一个分支，在 gpu51 上测得占 4.7 ns 观测的 4%）；
 `HistogramSnapshot::exemplars` 携带它们（`with_exemplars` 给快照设置）。only-http 中
 `HttpMetrics::with_exemplars()` 为请求延迟直方图保留 exemplar：中间件在分派时取得请求 span 的上下文（仅当开启
 exemplar 且该 span 已采样），响应发出时提交延迟，因此 detach 的响应仍指向它的请求 span。exemplar 经 OTLP 导出
@@ -101,8 +103,8 @@ only-export 现在依赖 only、only-http、only-grpc 和 only-tls（全部自�
 - **指标快照也重试**：累积 sum 让旧快照在新快照发出后变得多余；保留它们会让内存随中断时长增长。
 - **无限重试（永不放弃）**：永不恢复的 collector 会让每种信号的一批永远占着内存并让队列一直满着；`max_elapsed` 限制了
   这一点，把它设大是使用者的选择。
-- **所有直方图都带 exemplar**：每个程序中每个直方图的每次观测都要多一次线程局部读取；按直方图开启让默认路径只多一个
-  可预测的分支。
+- **所有直方图都带 exemplar**：每个程序中每个直方图的每次观测都要多一次线程局部读取。即使是放在 `Histogram` 内部的
+  可选开关也会让每次观测多一个分支（微基准中 4%），所以用单独的类型。
 - **在 Prometheus 文本输出中带 exemplar**：只有 OpenMetrics 支持；`metrics_handler` 输出的 0.0.4 格式保持不变。
 - **把日志记录作为 span 事件**：OpenTelemetry 把它们当作通过 id 关联的不同信号；collector 和后端也是这样建索引的。
 - **用 log appender trait 代替安装 logger**：only-log 的工作方式就是每个进程一个 logger；`forward_logs` 覆盖了保留
@@ -115,7 +117,7 @@ only-export 现在依赖 only、only-http、only-grpc 和 only-tls（全部自�
 - only-export 的行为变化：失败的推送会退避重试（以前丢弃），接受 `https://` 端点（以前报错）。
   `ExporterBuilder::retry(.., .., Duration::ZERO)` 恢复丢弃失败批次的行为（collector 仍会被退避）。
 - 全部关闭时热路径没有变化：关闭的 span 或日志语句仍是同一次原子读取（only-log 的开销基准不变，docs/BENCHMARKS.md），
-  不带 exemplar 的直方图每次观测多一个预测良好的分支，不带 exemplar 的 `HttpMetrics` 每个请求多一个分支。
+  普通 `Histogram` 不变（exemplar 在 `ExemplarHistogram` 中），不带 exemplar 的 `HttpMetrics` 每个请求多一个分支。
 - 使用 gRPC 导出器的进程多一个线程（私有 engine 的 I/O 线程）。
 - 未完成：指数直方图、请求体 gzip 压缩、gRPC `RetryInfo` 细节（使用导出器自己的退避）、OpenMetrics exemplar、`tracing`
   桥接。

@@ -78,7 +78,7 @@ fn grpc_and_tls_into_the_collector() {
         .span_interval(Duration::from_millis(100))
         .otlp_http(&https)
         .tls_roots(roots.clone())
-        .tls_client_cert(chain.clone(), key.clone())
+        .tls_client_cert(chain, key)
         .logs(LevelFilter::Info)
         .start()
         .unwrap();

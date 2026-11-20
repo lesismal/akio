@@ -35,8 +35,10 @@ methods do nothing; the disabled path (a null `Span`) is untouched.
 the latest observation made inside a sampled span (OpenTelemetry's aligned-histogram reservoir).
 `offer_current` reads the thread's current span (only-log's thread-local) and, when it is
 sampled, the clock, then `try_lock`s the slot: never a wait; when two threads offer to one bucket
-at once one exemplar is kept. `Histogram::with_exemplars(bounds)` and
-`Registry::histogram_with_exemplars` create histograms with a reservoir;
+at once one exemplar is kept. `ExemplarHistogram` (a `Histogram` plus a reservoir, `ExemplarHistogram::new(bounds)` or
+`Registry::histogram_with_exemplars`) is a type of its own, so a plain `Histogram::observe` is
+the same code as before (a flag inside `Histogram` cost one branch, measured at 4% of a 4.7 ns
+observation on gpu51);
 `HistogramSnapshot::exemplars` carries them (`with_exemplars` sets them on a snapshot). In
 only-http, `HttpMetrics::with_exemplars()` keeps exemplars of the request-latency histogram:
 the middleware captures the request span's context at dispatch (only when exemplars are on and
@@ -133,7 +135,8 @@ API snapshot and the test matrix for no saving.
   signal for ever and keep the queues full; `max_elapsed` bounds that, and setting it high is a
   choice.
 - **Exemplars on every histogram**: a thread-local read on every observation of every histogram
-  in every program; opt-in per histogram keeps the default path at one predictable branch.
+  in every program. Even an opt-in flag inside `Histogram` cost a branch per observation
+  (4% in the micro-benchmark), hence the separate type.
 - **Exemplars in the Prometheus text output**: only OpenMetrics carries them; the 0.0.4 format
   `metrics_handler` serves is unchanged.
 - **Log records as span events**: OpenTelemetry treats them as separate signals correlated by
@@ -150,7 +153,7 @@ API snapshot and the test matrix for no saving.
   Duration::ZERO)` restores dropping failed batches (the collector is still backed off).
 - With everything off, nothing changed on the hot paths: a disabled span or log statement is
   the same atomic load (only-log's overhead benchmark is unchanged, docs/BENCHMARKS.md), a
-  histogram without exemplars adds one well-predicted branch per observation, and
+  plain `Histogram` is unchanged (exemplars live in `ExemplarHistogram`), and
   `HttpMetrics` without exemplars one branch per request.
 - A process with the gRPC exporter runs one more thread (the private engine's I/O thread).
 - Not done: exponential histograms, gzip request compression, gRPC `RetryInfo` details (the

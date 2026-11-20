@@ -666,15 +666,11 @@ pub const DEFAULT_BUCKETS: [f64; 11] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
-/// The fields `observe` touches first and together; the exemplar reservoir is one (null when
-/// off) pointer after them, so a histogram without exemplars is as small as before.
 #[derive(Debug)]
-#[repr(C)]
 struct HistInner {
     bounds: Box<[f64]>,
     counts: Box<[AtomicU64]>,
     sum: AtomicU64,
-    exemplars: Option<Box<ExemplarReservoir>>,
 }
 
 /// A histogram for application code: fixed buckets, relaxed atomics.
@@ -692,23 +688,11 @@ impl Histogram {
     /// A histogram with upper bounds `bounds` (non-finite values dropped, sorted, duplicates
     /// removed); one more bucket counts observations above all of them.
     pub fn new(bounds: &[f64]) -> Histogram {
-        Histogram::build(bounds, false)
-    }
-
-    /// [`Histogram::new`] keeping exemplars: each bucket remembers its latest observation made
-    /// inside a sampled span ([`ExemplarReservoir`]), reported in
-    /// [`HistogramSnapshot::exemplars`] and exported over OTLP with the span's trace id.
-    pub fn with_exemplars(bounds: &[f64]) -> Histogram {
-        Histogram::build(bounds, true)
-    }
-
-    fn build(bounds: &[f64], exemplars: bool) -> Histogram {
         let mut b: Vec<f64> = bounds.iter().copied().filter(|x| x.is_finite()).collect();
         b.sort_by(f64::total_cmp);
         b.dedup();
         let counts = (0..=b.len()).map(|_| AtomicU64::new(0)).collect();
         Histogram(Arc::new(HistInner {
-            exemplars: exemplars.then(|| Box::new(ExemplarReservoir::new(b.len() + 1))),
             bounds: b.into_boxed_slice(),
             counts,
             sum: AtomicU64::new(0f64.to_bits()),
@@ -733,16 +717,20 @@ impl Histogram {
     /// Records one observation (NaN is ignored).
     #[inline]
     pub fn observe(&self, v: f64) {
+        self.record(v);
+    }
+
+    /// Records `v`; its bucket (`None` for NaN).
+    #[inline]
+    fn record(&self, v: f64) -> Option<usize> {
         if v.is_nan() {
-            return;
+            return None;
         }
         let h = &*self.0;
         let i = h.bounds.partition_point(|&b| b < v);
         h.counts[i].fetch_add(1, Ordering::Relaxed);
         add_f64(&h.sum, v);
-        if let Some(ex) = &h.exemplars {
-            offer_exemplar(ex, i, v);
-        }
+        Some(i)
     }
 
     /// Records a duration in seconds.
@@ -758,19 +746,58 @@ impl Histogram {
             bounds: h.bounds.to_vec(),
             counts: h.counts.iter().map(|c| c.load(Ordering::Relaxed)).collect(),
             sum: f64::from_bits(h.sum.load(Ordering::Relaxed)),
-            exemplars: h
-                .exemplars
-                .as_ref()
-                .map_or_else(Vec::new, |e| e.snapshot()),
+            exemplars: Vec::new(),
         }
     }
 }
 
-/// Out of line, so a histogram without exemplars keeps `observe` as small as before.
-#[cold]
-#[inline(never)]
-fn offer_exemplar(ex: &ExemplarReservoir, bucket: usize, v: f64) {
-    ex.offer_current(bucket, v);
+/// A [`Histogram`] that keeps exemplars: each bucket remembers its latest observation made
+/// inside a sampled span ([`ExemplarReservoir`]), reported in [`HistogramSnapshot::exemplars`]
+/// and exported over OTLP with the span's trace id. A type of its own, so a plain
+/// [`Histogram`]'s `observe` pays nothing for the feature. Clones share the same buckets.
+#[derive(Clone, Debug)]
+pub struct ExemplarHistogram {
+    hist: Histogram,
+    exemplars: Arc<ExemplarReservoir>,
+}
+
+impl ExemplarHistogram {
+    /// A histogram with upper bounds `bounds` (as [`Histogram::new`]) and a reservoir.
+    pub fn new(bounds: &[f64]) -> ExemplarHistogram {
+        let hist = Histogram::new(bounds);
+        let n = hist.0.counts.len();
+        ExemplarHistogram {
+            hist,
+            exemplars: Arc::new(ExemplarReservoir::new(n)),
+        }
+    }
+
+    /// Records one observation (NaN is ignored) and, inside a sampled span, offers it as the
+    /// bucket's exemplar.
+    #[inline]
+    pub fn observe(&self, v: f64) {
+        if let Some(i) = self.hist.record(v) {
+            self.exemplars.offer_current(i, v);
+        }
+    }
+
+    /// Records a duration in seconds.
+    #[inline]
+    pub fn observe_duration(&self, d: Duration) {
+        self.observe(d.as_secs_f64());
+    }
+
+    /// The current buckets and exemplars.
+    pub fn snapshot(&self) -> HistogramSnapshot {
+        self.hist
+            .snapshot()
+            .with_exemplars(self.exemplars.snapshot())
+    }
+
+    /// The buckets without the exemplars (observing through it records no exemplar).
+    pub fn histogram(&self) -> &Histogram {
+        &self.hist
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -778,6 +805,7 @@ enum Inst {
     Counter(Counter),
     Gauge(Gauge),
     Histogram(Histogram),
+    ExemplarHistogram(ExemplarHistogram),
 }
 
 #[derive(Debug)]
@@ -867,7 +895,7 @@ impl Registry {
     }
 
     /// The histogram `name` with `labels`, registered on first use with `bounds` (ignored when
-    /// it already exists).
+    /// it already exists; for an [`ExemplarHistogram`], its buckets without exemplars).
     pub fn histogram(
         &self,
         name: &str,
@@ -882,6 +910,8 @@ impl Registry {
             || Inst::Histogram(Histogram::new(bounds)),
             |i| match i {
                 Inst::Histogram(h) => Some(Inst::Histogram(h.clone())),
+                // The same buckets, observed without exemplars.
+                Inst::ExemplarHistogram(h) => Some(Inst::Histogram(h.histogram().clone())),
                 _ => None,
             },
         );
@@ -891,27 +921,29 @@ impl Registry {
         }
     }
 
-    /// [`histogram`](Self::histogram), created with [`Histogram::with_exemplars`] on first use.
+    /// The [`ExemplarHistogram`] `name` with `labels`, registered on first use with `bounds`
+    /// (ignored when it already exists). A plain histogram of the same name and labels makes
+    /// this a detached instrument, like any kind clash.
     pub fn histogram_with_exemplars(
         &self,
         name: &str,
         help: &str,
         labels: &[(&str, &str)],
         bounds: &[f64],
-    ) -> Histogram {
+    ) -> ExemplarHistogram {
         let i = self.get_or_add(
             name,
             help,
             labels,
-            || Inst::Histogram(Histogram::with_exemplars(bounds)),
+            || Inst::ExemplarHistogram(ExemplarHistogram::new(bounds)),
             |i| match i {
-                Inst::Histogram(h) => Some(Inst::Histogram(h.clone())),
+                Inst::ExemplarHistogram(h) => Some(Inst::ExemplarHistogram(h.clone())),
                 _ => None,
             },
         );
         match i {
-            Inst::Histogram(h) => h,
-            _ => Histogram::with_exemplars(bounds),
+            Inst::ExemplarHistogram(h) => h,
+            _ => ExemplarHistogram::new(bounds),
         }
     }
 }
@@ -929,6 +961,9 @@ impl Collector for Registry {
                 Inst::Counter(c) => out.counter(&e.name, &e.help, &labels, c.get() as f64),
                 Inst::Gauge(v) => out.gauge(&e.name, &e.help, &labels, v.get()),
                 Inst::Histogram(h) => out.histogram(&e.name, &e.help, &labels, &h.snapshot()),
+                Inst::ExemplarHistogram(h) => {
+                    out.histogram(&e.name, &e.help, &labels, &h.snapshot());
+                }
             }
         }
     }
@@ -1081,7 +1116,7 @@ mod tests {
     #[test]
     fn exemplars_follow_the_current_sampled_span() {
         use only_log::span::{SpanContext, enter_context};
-        let h = Histogram::with_exemplars(&[1.0, 2.0]);
+        let h = ExemplarHistogram::new(&[1.0, 2.0]);
         h.observe(0.5); // no span: no exemplar
         {
             let _g = enter_context(SpanContext::new(0xabc, 0x12, true, false).unwrap());

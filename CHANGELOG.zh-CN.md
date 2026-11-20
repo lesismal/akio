@@ -24,7 +24,7 @@ ADR-064（docs/adr/064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md），API 只
 - only-log：span 事件与链接：`SpanEvent`、`SpanLink`、`Span::add_event` / `push_event` / `add_link`、
   `SpanBuilder::link`，每个 span 各最多 `MAX_EVENTS` / `MAX_LINKS`（128）个，超出计入
   `SpanData::dropped_events` / `dropped_links`；经 OTLP 导出。
-- only-core：exemplar：`Exemplar`、`ExemplarReservoir`、`Histogram::with_exemplars`、
+- only-core：exemplar：`Exemplar`、`ExemplarReservoir`、`ExemplarHistogram`、
   `Registry::histogram_with_exemplars`、`HistogramSnapshot::exemplars` / `with_exemplars`。only-http：
   `HttpMetrics::with_exemplars()` 在延迟直方图上保留请求 span 的 id。经 OTLP 导出（Prometheus 文本格式中没有）。
 - only-export：`ExportStats` 新增 `otlp_logs_ok` / `otlp_logs_failed`、`otlp_retried`、`metric_points_rejected`、

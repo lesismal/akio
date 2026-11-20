@@ -81,11 +81,11 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 - `Registry` 持有具名的 `Counter`、`Gauge`、`Histogram`（共享原子量，更新不加锁）；以相同名称和
   标签再次获取会返回同一个工具。
-- **Exemplar。** `Histogram::with_exemplars(bounds)`（或 `Registry::histogram_with_exemplars`）让每个桶
+- **Exemplar。** `ExemplarHistogram::new(bounds)`（或 `Registry::histogram_with_exemplars`）是一种直方图，每个桶
   记住最近一次在已采样 span 内的观测值，连同该 span 的 trace id 和 span id（`HistogramSnapshot::exemplars`）；
   `HttpMetrics::with_exemplars()` 对请求延迟直方图做同样的事，取自请求 span。它们经 OTLP 导出（Prometheus
-  文本格式没有它们的位置）。关闭时每次观测多一个可预测的分支；开启时多一次线程局部读取，在已采样 span 内再加一次
-  读时钟和一次从不等待的 `try_lock`（ADR-064）。
+  文本格式没有它们的位置）。普通 `Histogram` 不为它们付出任何代价（是单独的类型）；`ExemplarHistogram` 每次观测多一次线程局部读取，
+  在已采样 span 内再加一次读时钟和一次从不等待的 `try_lock`（ADR-064）。
 - `fn_collector(|out| ...)` 把闭包变成每次抓取都会运行的收集器；`out.counter`、`out.gauge`、
   `out.histogram` 添加样本。非法名称、重复的标签名和类型冲突会被丢弃（计入 `Families::dropped()`），
   从不 panic。

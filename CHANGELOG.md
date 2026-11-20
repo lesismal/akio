@@ -27,7 +27,7 @@ ADR-064 (docs/adr/064-otlp-grpc-tls-logs-events-exemplars.md), additive API:
 - only-log: span events and links: `SpanEvent`, `SpanLink`, `Span::add_event` / `push_event` /
   `add_link`, `SpanBuilder::link`, at most `MAX_EVENTS` / `MAX_LINKS` (128) per span with
   `SpanData::dropped_events` / `dropped_links`; exported over OTLP.
-- only-core: exemplars: `Exemplar`, `ExemplarReservoir`, `Histogram::with_exemplars`,
+- only-core: exemplars: `Exemplar`, `ExemplarReservoir`, `ExemplarHistogram`,
   `Registry::histogram_with_exemplars`, `HistogramSnapshot::exemplars` / `with_exemplars`.
   only-http: `HttpMetrics::with_exemplars()` keeps the request span's ids on the latency
   histogram. Exported over OTLP (not in the Prometheus text format).

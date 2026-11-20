@@ -39,7 +39,7 @@
 //!
 //! * **OTLP** (`POST /v1/metrics`, `/v1/traces`, `/v1/logs`, or the gRPC `Export` methods):
 //!   counters as cumulative monotonic sums, gauges, histograms with explicit bounds and
-//!   exemplars ([`Histogram::with_exemplars`](only_core::metrics::Histogram::with_exemplars));
+//!   exemplars ([`ExemplarHistogram`](only_core::metrics::ExemplarHistogram));
 //!   spans with their W3C ids, kind, status, fields as attributes, events and links, one
 //!   instrumentation scope per span target; log records with severity, body, key-values,
 //!   source location and the ids of the span current where they were logged.

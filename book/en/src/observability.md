@@ -88,13 +88,13 @@ crate is involved.
 
 - `Registry` owns named `Counter`, `Gauge` and `Histogram` instruments (shared atomics, no lock per
   update); asking again for the same name and labels returns the same instrument.
-- **Exemplars.** `Histogram::with_exemplars(bounds)` (or `Registry::histogram_with_exemplars`)
-  makes each bucket remember its latest observation made inside a sampled span, with that span's
+- **Exemplars.** `ExemplarHistogram::new(bounds)` (or `Registry::histogram_with_exemplars`) is
+  a histogram whose buckets each remember their latest observation made inside a sampled span, with that span's
   trace and span ids (`HistogramSnapshot::exemplars`); `HttpMetrics::with_exemplars()` does the
   same for the request latency histogram, from the request span. They are exported over OTLP
-  (the Prometheus text format has no place for them). Off, an observation pays one predictable
-  branch; on, a thread-local read, and inside a sampled span a clock read and a `try_lock` that
-  never waits (ADR-064).
+  (the Prometheus text format has no place for them). A plain `Histogram` pays nothing for them
+  (a separate type); an `ExemplarHistogram` observation adds a thread-local read, and inside a
+  sampled span a clock read and a `try_lock` that never waits (ADR-064).
 - `fn_collector(|out| ...)` turns a closure into a collector run on every scrape; `out.counter`,
   `out.gauge` and `out.histogram` add samples. Invalid names, duplicate label names and kind clashes
   are dropped (counted in `Families::dropped()`), never a panic.
