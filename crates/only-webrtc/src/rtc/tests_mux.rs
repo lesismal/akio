@@ -669,9 +669,13 @@ fn ulpfec_levels_repair_loss() {
             st_lvl.fec_received > 100 && st_lvl.fec_recovered > 10,
             "{st_lvl:?}"
         );
-        // Frames with a single loss come back whole with levels too ...
+        // Frames with a single loss come back whole with levels too ... The loss pattern is
+        // seeded, but SSRCs, initial sequence numbers and keys are random, so the FEC groups
+        // fall differently on the frames from run to run: over 120 runs, levels gave 180-192
+        // whole frames (without FEC about 156 survive 8 % loss) and 3 ± 3.4 fewer than
+        // whole-packet FEC (at most 14). The bounds sit about five deviations out.
         assert!(
-            whole_lvl >= 180 && whole_lvl + 10 >= whole_fec,
+            whole_lvl >= 170 && whole_lvl + 20 >= whole_fec,
             "seed {seed}: {whole_lvl} whole frames with levels, {whole_fec} with whole-packet FEC ({st_fec:?})"
         );
         // ... for far fewer repair bytes.
