@@ -666,12 +666,15 @@ pub const DEFAULT_BUCKETS: [f64; 11] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
+/// The fields `observe` touches first and together; the exemplar reservoir is one (null when
+/// off) pointer after them, so a histogram without exemplars is as small as before.
 #[derive(Debug)]
+#[repr(C)]
 struct HistInner {
     bounds: Box<[f64]>,
     counts: Box<[AtomicU64]>,
     sum: AtomicU64,
-    exemplars: Option<ExemplarReservoir>,
+    exemplars: Option<Box<ExemplarReservoir>>,
 }
 
 /// A histogram for application code: fixed buckets, relaxed atomics.
@@ -705,7 +708,7 @@ impl Histogram {
         b.dedup();
         let counts = (0..=b.len()).map(|_| AtomicU64::new(0)).collect();
         Histogram(Arc::new(HistInner {
-            exemplars: exemplars.then(|| ExemplarReservoir::new(b.len() + 1)),
+            exemplars: exemplars.then(|| Box::new(ExemplarReservoir::new(b.len() + 1))),
             bounds: b.into_boxed_slice(),
             counts,
             sum: AtomicU64::new(0f64.to_bits()),
@@ -758,7 +761,7 @@ impl Histogram {
             exemplars: h
                 .exemplars
                 .as_ref()
-                .map_or_else(Vec::new, ExemplarReservoir::snapshot),
+                .map_or_else(Vec::new, |e| e.snapshot()),
         }
     }
 }
