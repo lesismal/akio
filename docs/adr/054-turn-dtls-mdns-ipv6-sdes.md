@@ -84,8 +84,16 @@ doc-hidden `__parts()` (QUIC's bridge), so no internal-tier type reaches the pub
   elsewhere by asking the kernel for a route to `ff02::fb%<i>` for the first 64 indexes (a UDP
   connect, nothing sent). The engine-served socket joins the group on each through a new
   additive `only` API, `Engine::bind_udp_multicast_on(group, interfaces, acceptor)`
-  (`bind_udp_multicast` now calls it with no interfaces); `UdpBinding` does not expose its
-  socket, so this cannot be done from only-webrtc.
+  (`UdpBinding` does not expose its socket, so this cannot be done from only-webrtc; added
+  with the coordinator's approval). `bind_udp_multicast(group, a)` is now
+  `bind_udp_multicast_on(group, &[0], a)`, unchanged in behaviour; 0 is the default interface.
+  Interfaces that refuse the join are skipped, and it fails only when none accepts it. **IPv6
+  groups only take a list**: an IPv4 group is joined on the default interface, so it takes
+  `&[0]` and anything else is refused with `InvalidInput` (IPv4 joins name an interface by
+  address, not by index, and mDNS over IPv4 needs no more); an empty list is refused too.
+  Tests in `crates/only/tests/shared_ports.rs` (argument checks; an IPv6 group joined on every
+  link-local interface receives a datagram sent to it on each link, from a source with that
+  link's scope id).
 - **Scope ids.** Queries go to `ff02::fb` on every joined interface (and on the scope ids of the
   endpoint's own link-local host candidates); an answer goes back to the group on the
   interface its query came from (or unicast to the querier when it asked so). SDP carries no

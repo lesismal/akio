@@ -23,8 +23,10 @@ ADR-054（docs/adr/054-turn-dtls-mdns-ipv6-sdes.zh-CN.md）：
   候选；关联丢失后重新分配。
 - IPv6 上的 mDNS：`Endpoint::resolve_mdns` 增加一个 `[::]:5353` 套接字，在每个有链路本地地址的接口上加入
   `ff02::fb`，按接口查询，在查询所来的链路上应答；远端链路本地地址保留其接口（SDP 不携带作用域 ID）。
-  IPv4 行为不变；没有 IPv6 的主机只跑 IPv4。`only`：`Engine::bind_udp_multicast_on(group, interfaces,
-  acceptor)` 按接口加入 IPv6 组。
+  IPv4 行为不变；没有 IPv6 的主机只跑 IPv4。
+- `only`：`Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在列出的每个接口索引上加入 IPv6
+  组播组（0 为默认接口；拒绝加入的接口被跳过）。IPv4 组只接受 `&[0]`（否则 `InvalidInput`）。
+  `bind_udp_multicast` 即 `bind_udp_multicast_on(group, &[0], ..)`，行为不变。
 - `RtcConfig::enable_sdes_srtp`（默认关闭）：面向 SIP 网关的 SDES-SRTP（RFC 4568）：offer 为 `RTP/SAVPF`，
   每个套件一行 `a=crypto`（AEAD-AES-256/128-GCM、AES-256/128-CM-HMAC-SHA1-80、AES-128-CM-HMAC-SHA1-32），
   并应答 SDES offer；SRTP 密钥取自 SDP，没有 DTLS，没有数据通道；不支持 MKI 与会话参数。DTLS-SRTP offer

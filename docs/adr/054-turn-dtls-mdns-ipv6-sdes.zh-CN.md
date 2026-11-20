@@ -66,9 +66,13 @@
   拒绝发往它（"no route to host"）。接口取有 IPv6 链路本地地址的那些：Linux 上读
   `/proc/net/if_inet6`，其他系统对前 64 个索引向内核询问到 `ff02::fb%<i>` 的路由（UDP connect，
   不发送任何东西）。引擎服务的套接字通过新增的 `only` API
-  `Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在每个接口上加入该组
-  （`bind_udp_multicast` 现以空接口列表调用它）；`UdpBinding` 不暴露其套接字，所以在 only-webrtc
-  内无法做到。
+  `Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在每个接口上加入该组（`UdpBinding`
+  不暴露其套接字，所以在 only-webrtc 内无法做到；经协调会话批准新增）。`bind_udp_multicast(group, a)`
+  现在就是 `bind_udp_multicast_on(group, &[0], a)`，行为不变；0 表示默认接口。拒绝加入的接口被跳过，
+  只有全部拒绝时才失败。**只有 IPv6 组接受接口列表**：IPv4 组在默认接口上加入，因此只接受 `&[0]`，
+  其他值以 `InvalidInput` 拒绝（IPv4 加入组时按地址而非索引指定接口，IPv4 上的 mDNS 也不需要更多）；
+  空列表同样被拒绝。测试在 `crates/only/tests/shared_ports.rs`（参数检查；在每个链路本地接口上加入的
+  IPv6 组，从每条链路收到发往它的数据报，源地址带该链路的作用域 ID）。
 - **作用域 ID。** 查询发往每个已加入接口上的 `ff02::fb`（以及 endpoint 自身链路本地主机候选的
   作用域 ID）；应答发回查询所来接口上的组（或在查询方要求时单播给它）。SDP 不携带作用域 ID，所以
   endpoint 的 hub 记住远端链路本地地址的接口：从它们发来的数据报（地址交给 ICE 前先去掉作用域 ID）

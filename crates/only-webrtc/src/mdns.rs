@@ -194,7 +194,12 @@ impl Mdns {
         });
         let bind = |v6: bool| -> std::io::Result<Sock> {
             let acc = || MdnsAcceptor(m.me.clone(), v6);
-            let ifaces: &[u32] = if v6 { &m.ifaces } else { &[] };
+            // IPv4 joins the default interface; IPv6 every link-local one (else the default).
+            let ifaces: &[u32] = if v6 && !m.ifaces.is_empty() {
+                &m.ifaces
+            } else {
+                &[0]
+            };
             match engine.bind_udp_multicast_on(group(v6, 0), ifaces, acc()) {
                 Ok(binding) => Ok(Sock {
                     binding,

@@ -26,8 +26,11 @@ ADR-054 (docs/adr/054-turn-dtls-mdns-ipv6-sdes.md):
 - mDNS over IPv6: `Endpoint::resolve_mdns` adds a `[::]:5353` socket joined to `ff02::fb` on
   every interface with a link-local address, queries per interface, answers on the query's link;
   remote link-local addresses keep their interface (SDP carries no scope id). IPv4 behaviour is
-  unchanged; hosts without IPv6 run IPv4 only. `only`: `Engine::bind_udp_multicast_on(group,
-  interfaces, acceptor)` joins an IPv6 group per interface.
+  unchanged; hosts without IPv6 run IPv4 only.
+- `only`: `Engine::bind_udp_multicast_on(group, interfaces, acceptor)` joins an IPv6 multicast
+  group on each listed interface index (0: the default one; interfaces refusing the join are
+  skipped). IPv4 groups take only `&[0]` (`InvalidInput` otherwise). `bind_udp_multicast` is
+  `bind_udp_multicast_on(group, &[0], ..)`, unchanged.
 - `RtcConfig::enable_sdes_srtp` (off by default): SDES-SRTP (RFC 4568) for SIP gateways: offers
   `RTP/SAVPF` with an `a=crypto` line per suite (AEAD-AES-256/128-GCM, AES-256/128-CM-HMAC-SHA1-80,
   AES-128-CM-HMAC-SHA1-32) and answers SDES offers; SRTP keyed from the SDP, no DTLS, no data
