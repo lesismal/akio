@@ -61,14 +61,22 @@ let rb = recv.report_block(now);                                   // 用于 RR 
 - `codec`：打包 / 解包（Opus 等音频、VP8、VP9、H.264、H.265、AV1）以及帧组装。
 - RTCP XR（RFC 3611）：`RrtrResponder` 用 DLRR 应答接收方参考时间，`RecvStream::handle_dlrr` /
   `rtt_from_dlrr` 让不发送 SR 的接收方得到 RTT；`RecvStream::statistics_summary` 生成统计摘要块；
-  `BurstLossModel`（RFC 3611 A.2）填写 VoIP 指标中的丢包 / 突发 / 间隙字段。
+  `ReceiptLog`（`RecvStream::enable_receipt_log` / `receipt_blocks`）根据收到的包生成丢包 RLE、重复
+  RLE 与包接收时间块，支持稀疏化；`BurstLossModel`（RFC 3611 A.2）填写 VoIP 指标中的丢包 / 突发 /
+  间隙字段，配合 `VoipQuality`（时延、电平、RERL、应用提供的 R / MOS、PLC、抖动缓冲）生成完整的块
+  （`report`）；`pcm_level_dbm0` 测量信号与噪声电平（ADR-053）。
+- SDES：`SdesItem` 把 `Rtcp::SourceDescription` 的 `(类型, 文本)` 对转换为类型化的项，包括 PRIV 的前缀与
+  值，并为每个已注册类型（CNAME .. MID）提供常量；`random_cname` 生成 RFC 7022 的 CNAME。
 - TMMBR / TMMBN（RFC 5104）：`TmmbrHandler` 保存各接收方针对某媒体 SSRC 的请求，计算边界集
   （`bounding_set`、`bounded_bitrate`）并构造 TMMBN。
 - RFC 8888：`CcfbReceiver` 按媒体 SSRC 生成拥塞控制反馈（含 ECN），每 50 毫秒或每 100 个包一次；
   `CcfbSender` 像 TWCC 一样把它转换成供估计器使用的 `PacketResult`。
 - `fec`：用于 ULPFEC（RFC 5109）、Chrome 发送的 FlexFEC（`flexfec-03`）和 RFC 8627 FlexFEC 的
   `FecEncoder` / `FecDecoder`：按帧使用交织掩码（保护率单位 1/256），凡是某个 FEC 包只缺一个包就将其
-  逐字节恢复；`fec::red` 处理 RFC 2198（WebRTC 中 ULPFEC 走 RED）。
+  逐字节恢复；`fec::red` 处理 RFC 2198（WebRTC 中 ULPFEC 走 RED）。ULPFEC 也支持多个保护级别
+  （RFC 5109 §7.4，ADR-053）：`set_ulp_level0(Some(l0))` 用交织的 FEC 包保护每个包的前 `l0` 字节，
+  其余部分每组保护一次；`encode_ulp` 接受显式级别；解码器逐个区间重建包，完整后才返回。多级保护只适用于
+  实现了它的接收方：libwebrtc 只读第 0 级。
 
 ```rust,ignore
 // FlexFEC：每帧约 30 % 的 FEC 保护，在另一端恢复。
@@ -87,16 +95,17 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
   RFC 8888 拥塞控制反馈、PLI、FIR、REMB、TMMBR、TMMBN，以及包含 RFC 3611 全部报告块的扩展报告（丢包与
   重复 RLE、接收时间、RRTR、DLRR、统计摘要、VoIP 指标）；其他包保留为 `Rtcp::Unknown`（未知 XR 块为
   `XrBlock::Unknown`）。解析严格检查长度且不会 panic。
-- FEC：ULPFEC（单个保护级别）、FlexFEC `flexfec-03`（libwebrtc 的头格式）与 RFC 8627（灵活掩码，一个
-  被保护 SSRC）、RED。细节见 ADR-036。
+- FEC：ULPFEC（任意多个保护级别）、FlexFEC `flexfec-03`（libwebrtc 的头格式）与 RFC 8627（灵活掩码，
+  一个被保护 SSRC）、RED。细节见 ADR-036 与 ADR-053。
+- SDES 项：每个已注册类型（RFC 3550 §6.5、IANA）、PRIV 的前缀 / 值，文本在字符边界处截断。
 
 `only-webrtc` 在配置后协商并使用以上全部（ADR-039）；为此 `RecvStream::receive_recovered` 记录由 FEC
 重建的包（不再被 NACK，但报告中仍计为丢失），`FrameAssembler::skip` 标记不承载媒体的序号（ULPFEC、
 填充包），使其不被当作缺口。
 
-未实现：FlexFEC 重传与
-固定 L/D 包、多个被保护 SSRC、ULPFEC 第 1 级、libwebrtc 的掩码表；生成 RLE / 接收时间 XR 块与 VoIP
-质量字段；SDES 中类型 / 文本对以外的内容。
+未实现：FlexFEC 重传与固定 L/D 包、多个被保护 SSRC、libwebrtc 的掩码表；交出部分恢复的包；R 因子 /
+MOS 估算（由应用提供）。only-webrtc 尚未发送接收日志或 VoIP 的 XR 块，也未使用 ULPFEC 多级保护或随机
+CNAME。
 
 ## 测试
 
@@ -115,8 +124,14 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
 - libwebrtc 单元测试向量：TMMBR、TMMBN、RRTR、DLRR 与空 XR 逐字节一致；其写出器产生、读取器接受的
   FlexFEC-03 掩码；其 ULPFEC 头读取用例。RFC 3611 §4.7.2 突发示例（丢包、丢弃、突发 / 间隙密度与时长）；
   按 §3.1 拼装的 RFC 8888 包；每种 XR 块的往返；边界集。
+- ADR-053：逐字节核对 RFC 5109 §10.2 两级示例（勘误 3461）、每个单包丢失、第 1 级先于第 0 级、丢两个
+  包、§7.4 规则、400 个有损帧上的第 0 级模式；由收包生成 RFC 3611 §4.1 的 RLE 示例；丢包 / 重复 RLE 与
+  接收时间块与 pion/rtcp v1.2.20 逐字节一致（偶数个块：pion 漏掉奇数时的空块）；300 条随机轨迹在稀疏化
+  与回绕下的 RLE 编码 / 解码；跨回绕的接收日志；VoIP 报告字段与 PCM 电平；含 PRIV、MID、RtpStreamId 的
+  SDES 与 pion/rtcp v1.2.20 逐字节一致；RFC 7022 CNAME。
 - 在有丢包的模拟双流链路上由 RFC 8888 反馈驱动估计器；每种方案的 FEC 恢复（组内突发、5000 个包 5 %
   随机丢包、经 RED 的 ULPFEC），逐字节核对每个恢复出的包。
 - 模糊测试：`fuzz/` 中的 `rtp_rtcp` 目标（头部解析 / 写出 / 再解析、复合 RTCP 往返、驱动流、TWCC 与
-  RFC 8888 发送端、RRTR 应答器和 TMMBR 处理器）与 `rtp_fec` 目标（FEC 头与 RED 的解析 / 重写、任意输入
-  驱动解码器、编码器 → 有损解码器恢复）；`fuzzing::tests` 在 stable 上回放其语料。
+  RFC 8888 发送端、RRTR 应答器和 TMMBR 处理器、SDES 项、RLE 重编码、VoIP 报告、接收日志）与 `rtp_fec`
+  目标（含 ULPFEC 级别的 FEC 头与 RED 的解析 / 重写、任意输入驱动解码器、编码器 → 有损解码器恢复，包括
+  第 0 级模式与显式级别）；`fuzzing::tests` 在 stable 上回放其语料。

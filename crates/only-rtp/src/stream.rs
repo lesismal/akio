@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::packet::{ExtensionMap, ExtensionValues, RtpHeader};
 use crate::rtcp::{ReportBlock, SenderInfo, compact_ntp};
-use crate::xr::{DlrrItem, JitterStats, StatisticsSummary, rtt_from_dlrr};
+use crate::xr::{DlrrItem, JitterStats, ReceiptLog, StatisticsSummary, XrBlock, rtt_from_dlrr};
 
 /// Packets kept for retransmission.
 pub const SEND_HISTORY_PACKETS: usize = 1024;
@@ -420,6 +420,7 @@ pub struct RecvStream {
     missing: BTreeMap<u64, Missing>,
     duplicates: u64,
     summary: Summary,
+    receipts: Option<ReceiptLog>,
 }
 
 impl RecvStream {
@@ -445,7 +446,48 @@ impl RecvStream {
             missing: BTreeMap::new(),
             duplicates: 0,
             summary: Summary::default(),
+            receipts: None,
         }
+    }
+
+    /// Starts logging every received packet (duplicates and late ones included, FEC-rebuilt
+    /// ones not) for the RFC 3611 loss RLE, duplicate RLE and receipt times blocks, keeping
+    /// at most `capacity` sequence numbers per interval (see [`ReceiptLog`]).
+    pub fn enable_receipt_log(&mut self, capacity: usize) {
+        self.receipts = Some(ReceiptLog::new(self.ssrc, self.clock_rate, capacity));
+    }
+
+    /// The receipt log, if enabled.
+    #[must_use]
+    pub fn receipt_log(&self) -> Option<&ReceiptLog> {
+        self.receipts.as_ref()
+    }
+
+    /// XR blocks about the receipt log's current interval, which then ends: a loss RLE, a
+    /// duplicate RLE and packet receipt times blocks as selected, each thinned by
+    /// `thinning`. Empty if the log is not enabled or nothing arrived.
+    pub fn receipt_blocks(
+        &mut self,
+        thinning: u8,
+        loss: bool,
+        duplicates: bool,
+        times: bool,
+    ) -> Vec<XrBlock> {
+        let Some(log) = &mut self.receipts else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if loss {
+            out.extend(log.loss_rle(thinning));
+        }
+        if duplicates {
+            out.extend(log.duplicate_rle(thinning));
+        }
+        if times {
+            out.extend(log.receipt_times(thinning));
+        }
+        log.next_interval();
+        out
     }
 
     /// The SSRC.
@@ -537,6 +579,9 @@ impl RecvStream {
     /// or `None` for a duplicate or a packet more than 2048 sequence numbers older than the
     /// highest one (or from before the first packet's cycle).
     pub fn receive(&mut self, now: Instant, seq: u16, timestamp: u32) -> Option<u64> {
+        if let Some(log) = &mut self.receipts {
+            log.on_packet(now, seq, timestamp);
+        }
         self.receive_inner(now, seq, timestamp, true)
     }
 

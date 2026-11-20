@@ -10,6 +10,31 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：ULPFEC 保护级别、由收包生成 XR 块、类型化 SDES 项（only-rtp）
+
+ADR-053（docs/adr/053-ulpfec-levels-xr-receipts-sdes-items.zh-CN.md）：
+
+- **ULPFEC 级别**（RFC 5109 §7.4，任意多个）：`FecHeader::ulp_levels` / `write_level`；
+  `FecEncoder::encode_ulp` 按显式级别构造 FEC 包并检查 §7.4 的规则；`FecEncoder::set_ulp_level0(Some(l0))`
+  用交织的 FEC 包保护每个包的前 `l0` 字节、全组其余部分保护一次（每组丢一个包时仍能完整恢复，修复字节
+  约为 `m * l0 + longest - l0` 而不是 `m * longest`）。解码器以任意顺序逐个区间重建包，完整后才返回
+  （`FecDecoder::partially_recovered` 统计其余的包）。与 RFC 5109 §10.2 示例逐字节一致（M 恢复位按
+  勘误 3461）。
+- **由收包生成 XR 块**（RFC 3611 §4.1-4.3）：`ReceiptLog` 生成丢包 RLE、重复 RLE 与包接收时间块（支持
+  稀疏化；接收时间采用 RTP 时钟），`RecvStream::{enable_receipt_log, receipt_blocks}` 用流的收包喂给它；
+  `RleReport::{encode, decode, reported_seqs}` 复现 §4.1 的示例。与 pion/rtcp v1.2.20 逐字节一致（其写出器
+  在块数为奇数时漏掉空块，我们会补上）。
+- **VoIP 指标**（§4.7）：`BurstLossModel::report` 配合 `VoipQuality`（往返与端系统时延、信号 / 噪声电平、
+  RERL、应用提供的 R 因子与 MOS，未提供或超出范围时发送 127、PLC、抖动缓冲）；`pcm_level_dbm0`。
+- **SDES 项**：`SdesItem`（文本项，为每个已注册类型 CNAME .. MID 提供常量；带前缀与值的 PRIV）转换
+  `Rtcp::SourceDescription` 中的二元组；`random_cname`（RFC 7022）。大于 127 的 PRIV 前缀长度现在能在
+  解析后保留（以前变成 U+FFFD）；文本与 BYE 原因在字符边界处截断到 255 字节。与 pion/rtcp v1.2.20 逐字节
+  一致。
+- API 均为新增，只有 `FecHeader` 的新公有字段 `ulp_levels` 除外（only-rtp 属内部层级）。`rtp_rtcp` 与
+  `rtp_fec` 模糊测试目标覆盖以上全部（gpu51 上各 16 分钟：`rtp_rtcp` 290 万次、`rtp_fec` 159 万次，代码中没有发现问题；更早的一次 `rtp_rtcp` 运行发现的是目标自身过严的检查（RLE 块在块的区间结束前就结束），已作为回归输入保留）。
+- 未做：接入 only-webrtc（XR 接收 / VoIP 块、ULPFEC 级别、随机 CNAME）；不交出部分恢复的包；不估算 R 因子
+  / MOS。
+
 ### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：

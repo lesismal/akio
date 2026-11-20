@@ -33,9 +33,12 @@
 //!   RED (RFC 2198).
 //! - [`codec`]: payload packetizers / depacketizers and frame assembly.
 //!
-//! Not implemented: SDES items beyond type/text pairs, SRTP (see `only-srtp`), RTP header
-//! extension encryption; see ADR-036 for what the FEC and XR support
-//! leaves out.
+//! - [`SdesItem`]: typed SDES items (PRIV prefix / value, every registered type) and
+//!   [`random_cname`] (RFC 7022); [`ReceiptLog`]: loss / duplicate RLE and receipt times XR
+//!   blocks from received packets; [`BurstLossModel::report`]: complete VoIP metrics.
+//!
+//! Not implemented: SRTP (see `only-srtp`), RTP header extension encryption; see ADR-036 and
+//! ADR-053 for what the FEC and XR support leaves out.
 //!
 //! ```
 //! use std::time::{Duration, Instant};
@@ -75,6 +78,7 @@ pub mod fec;
 mod packet;
 mod probe;
 mod rtcp;
+mod sdes;
 mod stream;
 mod tmmbr;
 mod twcc;
@@ -89,6 +93,8 @@ mod tests;
 #[cfg(test)]
 mod tests_ext;
 #[cfg(test)]
+mod tests_levels;
+#[cfg(test)]
 mod tests_probe;
 
 pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
@@ -100,10 +106,12 @@ pub use rtcp::{
     CcfbStream, Error, MAX_TWCC_STATUSES, ReportBlock, Rtcp, SenderInfo, TmmbItem, TwccFeedback,
     compact_ntp, ntp_time, parse_compound, write_compound,
 };
+pub use sdes::{SdesItem, random_cname};
 pub use stream::{RecvStream, SEND_HISTORY_AGE, SEND_HISTORY_PACKETS, SendStream};
 pub use tmmbr::{TMMBR_TIMEOUT, TmmbrHandler, bounded_bitrate, bounding_set};
 pub use twcc::{PacketResult, TWCC_FEEDBACK_INTERVAL, TwccReceiver, TwccSender};
 pub use xr::{
-    BurstLossModel, DlrrItem, JitterStats, RleReport, RrtrResponder, StatisticsSummary, TtlStats,
-    VOIP_UNAVAILABLE, VoipMetrics, XrBlock, rtt_from_dlrr,
+    BurstLossModel, DlrrItem, JitterBufferConfig, JitterStats, MAX_XR_SPAN, Plc, ReceiptLog,
+    RleReport, RrtrResponder, StatisticsSummary, TtlStats, VOIP_UNAVAILABLE, VoipMetrics,
+    VoipQuality, XrBlock, pcm_level_dbm0, rtt_from_dlrr,
 };

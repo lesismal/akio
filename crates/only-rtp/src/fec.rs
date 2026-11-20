@@ -13,14 +13,22 @@
 //! wrapped in RED ([`red::write`]), for FlexFEC as packets of the separate FEC stream (for
 //! RFC 8627 with the protected SSRC as the only CSRC). [`FecDecoder`] takes received media
 //! packets and FEC payloads and returns the media packets it rebuilt.
+//!
+//! ULPFEC can also protect packets unequally (RFC 5109 §5, §7.4): level 0 of a FEC packet
+//! covers the first L0 bytes after the fixed header of its level-0 packets (and their header
+//! fields), level 1 the next L1 bytes of its level-1 packets, and so on.
+//! [`FecEncoder::set_ulp_level0`] protects the start of every packet with the interleaved
+//! FEC packets and the rest once per group; [`FecEncoder::encode_ulp`] takes explicit levels.
+//! The decoder rebuilds packets piecewise from any levels and returns them once complete.
 
 use std::collections::BTreeMap;
 
 /// The FEC payload format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FecScheme {
-    /// ULPFEC (RFC 5109) with one protection level: 16- or 48-bit masks, protection length
-    /// = the longest protected packet.
+    /// ULPFEC (RFC 5109): 16- or 48-bit masks; by default one protection level whose
+    /// protection length is the longest protected packet, optionally more levels (see
+    /// [`FecEncoder::set_ulp_level0`]).
     Ulpfec,
     /// FlexFEC as libwebrtc implements it for the SDP name `flexfec-03`
     /// (draft-ietf-payload-flexible-fec-scheme-03): the protected SSRC in the FEC header
@@ -62,12 +70,40 @@ pub struct FecHeader {
     pub ssrc: Option<u32>,
     /// The lowest protected sequence number.
     pub base_seq: u16,
-    /// Offsets from `base_seq` of the protected packets, ascending.
+    /// Offsets from `base_seq` of the protected packets (for ULPFEC: at level 0), ascending.
     pub offsets: Vec<u16>,
-    /// The header length; the repair payload follows.
+    /// The header length (for ULPFEC up to the end of the level-0 header); the repair
+    /// payload follows.
     pub header_len: usize,
-    /// How many repair bytes follow (ULPFEC: the protection length, which the parser does
-    /// not check against the payload).
+    /// How many repair bytes follow (ULPFEC: the level-0 protection length, which the
+    /// parser does not check against the payload unless further levels follow it).
+    pub protection_len: usize,
+    /// ULPFEC levels 1, 2, ... (RFC 5109 §7.4), each header after the previous level's
+    /// payload. Empty for one level and for FlexFEC.
+    pub ulp_levels: Vec<UlpLevel>,
+}
+
+/// A ULPFEC protection level above level 0 (RFC 5109 §7.4): it protects bytes `S..S + L`
+/// after the fixed RTP header of its packets, where `S` is the sum of the lower levels'
+/// protection lengths and `L` its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UlpLevel {
+    /// Offsets from the FEC header's `base_seq` of the packets protected at this level,
+    /// ascending.
+    pub offsets: Vec<u16>,
+    /// The protection length `L`.
+    pub protection_len: usize,
+    /// Where this level's repair payload starts in the FEC payload (set by the parser;
+    /// ignored by the writer).
+    pub payload_offset: usize,
+}
+
+/// One level of a ULPFEC packet built by [`FecEncoder::encode_ulp`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UlpLevelSpec {
+    /// The protected packets (indices into the media list).
+    pub mask: Vec<usize>,
+    /// The protection length of this level.
     pub protection_len: usize,
 }
 
@@ -93,7 +129,8 @@ impl FecHeader {
     /// Parses the header at the start of a FEC payload (for ULPFEC, after RED was
     /// removed). `None` if it is truncated, uses an unsupported variant (FlexFEC with the R
     /// or F bit, flexfec-03 with more than one SSRC, ULPFEC with the E bit) or protects
-    /// nothing.
+    /// nothing. ULPFEC bytes after the level-0 payload are further levels; `None` if one of
+    /// them is truncated, runs past the payload or protects nothing.
     #[must_use]
     pub fn parse(scheme: FecScheme, p: &[u8]) -> Option<FecHeader> {
         let mut offsets = Vec::new();
@@ -122,6 +159,30 @@ impl FecHeader {
                 if offsets.is_empty() {
                     return None;
                 }
+                let mut ulp_levels = Vec::new();
+                let level_header = if long { 8 } else { 4 };
+                let mut pos = header_len + prot;
+                while pos < p.len() {
+                    let lh = p.get(pos..pos + level_header)?;
+                    let mut lo = Vec::new();
+                    if long {
+                        let v = (u64::from(be16(lh, 2)) << 32) | u64::from(be32(lh, 4));
+                        mask_bits(v, 48, 0, &mut lo);
+                    } else {
+                        mask_bits(u64::from(be16(lh, 2)), 16, 0, &mut lo);
+                    }
+                    let len = usize::from(be16(lh, 0));
+                    let start = pos + level_header;
+                    if lo.is_empty() || start + len > p.len() {
+                        return None;
+                    }
+                    ulp_levels.push(UlpLevel {
+                        offsets: lo,
+                        protection_len: len,
+                        payload_offset: start,
+                    });
+                    pos = start + len;
+                }
                 return Some(FecHeader {
                     pxcc_recovery: h[0] & 0x3f,
                     mpt_recovery: h[1],
@@ -132,6 +193,7 @@ impl FecHeader {
                     offsets,
                     header_len,
                     protection_len: prot,
+                    ulp_levels,
                 });
             }
             FecScheme::Flexfec03 => {
@@ -203,11 +265,22 @@ impl FecHeader {
             offsets,
             header_len,
             protection_len: p.len() - header_len,
+            ulp_levels: Vec::new(),
         })
     }
 
+    /// Whether the ULPFEC header needs the 48-bit masks (an offset of any level above 15).
+    fn ulp_long(&self) -> bool {
+        let max = FecScheme::Ulpfec.max_offset();
+        self.offsets
+            .iter()
+            .chain(self.ulp_levels.iter().flat_map(|l| &l.offsets))
+            .any(|&o| o > 15 && o <= max)
+    }
+
     /// Serializes the header for `scheme` (the repair payload goes after it). `ssrc` is
-    /// written for [`FecScheme::Flexfec03`] (0 if `None`); `protection_len` for ULPFEC.
+    /// written for [`FecScheme::Flexfec03`] (0 if `None`); `protection_len` for ULPFEC, which
+    /// ends with the level-0 header (see [`write_level`](Self::write_level) for the others).
     /// Offsets beyond the scheme's mask are dropped.
     #[must_use]
     pub fn write(&self, scheme: FecScheme) -> Vec<u8> {
@@ -223,7 +296,7 @@ impl FecHeader {
         let mut b = Vec::with_capacity(32);
         match scheme {
             FecScheme::Ulpfec => {
-                let long = top > 15;
+                let long = self.ulp_long();
                 b.push(if long { 0x40 } else { 0 } | (self.pxcc_recovery & 0x3f));
                 b.push(self.mpt_recovery);
                 b.extend_from_slice(&self.base_seq.to_be_bytes());
@@ -272,6 +345,32 @@ impl FecHeader {
             }
         }
         b
+    }
+
+    /// Serializes the ULPFEC header of `ulp_levels[i]` (level `i + 1`): its protection
+    /// length and mask, 16 or 48 bits like every level of the packet. `None` if there is no
+    /// such level. A FEC packet is [`write`](Self::write), the level-0 repair bytes, then
+    /// per further level this header and its repair bytes.
+    #[must_use]
+    pub fn write_level(&self, i: usize) -> Option<Vec<u8>> {
+        let level = self.ulp_levels.get(i)?;
+        let long = self.ulp_long();
+        let mut mask: u64 = 0;
+        for &o in level
+            .offsets
+            .iter()
+            .filter(|&&o| o <= FecScheme::Ulpfec.max_offset())
+        {
+            mask |= 1 << (47 - o);
+        }
+        let mut b = Vec::with_capacity(8);
+        b.extend_from_slice(&(level.protection_len.min(0xffff) as u16).to_be_bytes());
+        if long {
+            b.extend_from_slice(&mask.to_be_bytes()[2..]);
+        } else {
+            b.extend_from_slice(&((mask >> 32) as u16).to_be_bytes());
+        }
+        Some(b)
     }
 }
 
@@ -327,20 +426,7 @@ fn encode(
     media: &[&[u8]],
     masks: &[Vec<usize>],
 ) -> Option<Vec<Vec<u8>>> {
-    if media.is_empty() || media.iter().any(|p| !rtp_ok(p) || be32(p, 8) != ssrc) {
-        return None;
-    }
-    let seqs: Vec<u16> = media.iter().map(|p| be16(p, 2)).collect();
-    // The base is the sequence number from which every other is closest ahead.
-    let base = *seqs
-        .iter()
-        .min_by_key(|&&b| seqs.iter().map(|&s| s.wrapping_sub(b)).max())?;
-    if seqs
-        .iter()
-        .any(|&s| s.wrapping_sub(base) > scheme.max_offset())
-    {
-        return None;
-    }
+    let base = group_base(scheme, ssrc, media)?;
     let mut out = Vec::with_capacity(masks.len());
     for mask in masks {
         let mut par = Parity::default();
@@ -365,9 +451,125 @@ fn encode(
             offsets,
             header_len: 0,
             protection_len: par.payload.len(),
+            ulp_levels: Vec::new(),
         };
         let mut b = h.write(scheme);
         b.extend_from_slice(&par.payload);
+        out.push(b);
+    }
+    Some(out)
+}
+
+/// The sequence number base of a group: the one from which every other is closest ahead.
+/// `None` if the group is empty, a packet is not RTP of `ssrc`, or the span exceeds the
+/// scheme's mask.
+fn group_base(scheme: FecScheme, ssrc: u32, media: &[&[u8]]) -> Option<u16> {
+    if media.is_empty() || media.iter().any(|p| !rtp_ok(p) || be32(p, 8) != ssrc) {
+        return None;
+    }
+    let seqs: Vec<u16> = media.iter().map(|p| be16(p, 2)).collect();
+    let base = *seqs
+        .iter()
+        .min_by_key(|&&b| seqs.iter().map(|&s| s.wrapping_sub(b)).max())?;
+    seqs.iter()
+        .all(|&s| s.wrapping_sub(base) <= scheme.max_offset())
+        .then_some(base)
+}
+
+/// XOR of bytes `start..start + len` after the fixed header of `packets` (zero past
+/// their ends).
+fn xor_range(packets: &[&[u8]], start: usize, len: usize) -> Vec<u8> {
+    let mut out = vec![0; len];
+    for p in packets {
+        let body = p.get(12 + start..).unwrap_or(&[]);
+        out.iter_mut().zip(body).for_each(|(a, b)| *a ^= *b);
+    }
+    out
+}
+
+/// Builds ULPFEC payloads with explicit protection levels: `fec[j]` lists the levels of FEC
+/// packet `j`, level 0 first. `None` if a packet is not RTP of `ssrc`, the sequence numbers
+/// span more than 48, a mask is empty or out of range, the protection lengths add up to
+/// more than 65535, or RFC 5109 §7.4's rules are broken: (a) a packet is protected more
+/// than once at a level above 0, or more than once at level 0 with different protection
+/// lengths; (b) a packet is protected at level `p > 0` but nowhere at level `p - 1`.
+fn encode_ulp(ssrc: u32, media: &[&[u8]], fec: &[Vec<UlpLevelSpec>]) -> Option<Vec<Vec<u8>>> {
+    let base = group_base(FecScheme::Ulpfec, ssrc, media)?;
+    // Rules (a) and (b): per level, which packets it protects (and level 0's lengths).
+    let depth = fec.iter().map(Vec::len).max().unwrap_or(0);
+    let mut at: Vec<Vec<Option<usize>>> = vec![vec![None; media.len()]; depth];
+    for levels in fec {
+        if levels.is_empty() || levels.iter().map(|l| l.protection_len).sum::<usize>() > 0xffff {
+            return None;
+        }
+        for (n, level) in levels.iter().enumerate() {
+            if level.mask.is_empty() {
+                return None;
+            }
+            for &i in &level.mask {
+                let slot = at[n].get_mut(i)?;
+                match *slot {
+                    Some(l) if n > 0 || l != levels[0].protection_len => return None,
+                    _ => *slot = Some(levels[0].protection_len),
+                }
+            }
+        }
+    }
+    if (1..depth).any(|n| (0..media.len()).any(|i| at[n][i].is_some() && at[n - 1][i].is_none())) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(fec.len());
+    for levels in fec {
+        let select = |mask: &[usize]| -> Vec<&[u8]> {
+            let mut m = mask.to_vec();
+            m.sort_unstable();
+            m.dedup();
+            m.into_iter().map(|i| media[i]).collect()
+        };
+        let offsets = |pkts: &[&[u8]]| -> Vec<u16> {
+            let mut o: Vec<u16> = pkts.iter().map(|p| be16(p, 2).wrapping_sub(base)).collect();
+            o.sort_unstable();
+            o
+        };
+        let l0 = select(&levels[0].mask);
+        let mut par = Parity::default();
+        for p in &l0 {
+            par.add(p);
+        }
+        let mut payloads = Vec::with_capacity(levels.len());
+        let mut start = 0;
+        let mut ulp_levels = Vec::new();
+        for (n, level) in levels.iter().enumerate() {
+            let pkts = select(&level.mask);
+            payloads.push(xor_range(&pkts, start, level.protection_len));
+            if n > 0 {
+                ulp_levels.push(UlpLevel {
+                    offsets: offsets(&pkts),
+                    protection_len: level.protection_len,
+                    payload_offset: 0,
+                });
+            }
+            start += level.protection_len;
+        }
+        let h = FecHeader {
+            pxcc_recovery: par.pxcc,
+            mpt_recovery: par.mpt,
+            length_recovery: par.len,
+            ts_recovery: par.ts,
+            ssrc: Some(ssrc),
+            base_seq: base,
+            offsets: offsets(&l0),
+            header_len: 0,
+            protection_len: levels[0].protection_len,
+            ulp_levels,
+        };
+        let mut b = h.write(FecScheme::Ulpfec);
+        for (n, payload) in payloads.iter().enumerate() {
+            if n > 0 {
+                b.extend(h.write_level(n - 1)?);
+            }
+            b.extend_from_slice(payload);
+        }
         out.push(b);
     }
     Some(out)
@@ -384,6 +586,7 @@ pub struct FecEncoder {
     scheme: FecScheme,
     ssrc: u32,
     rate: u8,
+    ulp_level0: Option<usize>,
     group: Vec<Vec<u8>>,
 }
 
@@ -395,8 +598,23 @@ impl FecEncoder {
             scheme,
             ssrc,
             rate,
+            ulp_level0: None,
             group: Vec::new(),
         }
+    }
+
+    /// ULPFEC unequal protection (RFC 5109 §5): with `Some(l0)`, the interleaved FEC packets
+    /// of a group protect only the first `l0` bytes after each packet's fixed header (the
+    /// part most media formats need to decode anything: CSRCs, extensions, payload
+    /// descriptors), and the last of them also carries a level 1 protecting the rest of
+    /// every packet of the group once. With `m` FEC packets per group this costs about
+    /// `m * l0 + longest - l0` repair bytes instead of `m * longest`: any loss the level-0
+    /// packets can repair gets its start back, and the whole packet when it is the only
+    /// loss of the group. `None` (the default) and the other schemes protect whole packets.
+    /// Only for receivers that implement levels (this decoder): libwebrtc reads level 0
+    /// alone and would rebuild packets longer than `l0` wrongly.
+    pub fn set_ulp_level0(&mut self, l0: Option<usize>) {
+        self.ulp_level0 = l0.map(|l| l.min(0xffff));
     }
 
     /// Changes the protection factor (takes effect with the next group).
@@ -443,7 +661,29 @@ impl FecEncoder {
         }
         let m = ((k * usize::from(self.rate) + 128) >> 8).clamp(1, k);
         let refs: Vec<&[u8]> = group.iter().map(Vec::as_slice).collect();
-        encode(self.scheme, self.ssrc, &refs, &interleaved_masks(k, m)).unwrap_or_default()
+        let masks = interleaved_masks(k, m);
+        let longest = refs.iter().map(|p| p.len() - 12).max().unwrap_or(0);
+        match self.ulp_level0 {
+            Some(l0) if self.scheme == FecScheme::Ulpfec && longest > l0 => {
+                let mut fec: Vec<Vec<UlpLevelSpec>> = masks
+                    .into_iter()
+                    .map(|mask| {
+                        vec![UlpLevelSpec {
+                            mask,
+                            protection_len: l0,
+                        }]
+                    })
+                    .collect();
+                if let Some(last) = fec.last_mut() {
+                    last.push(UlpLevelSpec {
+                        mask: (0..k).collect(),
+                        protection_len: (longest - l0).min(0xffff - l0),
+                    });
+                }
+                encode_ulp(self.ssrc, &refs, &fec).unwrap_or_default()
+            }
+            _ => encode(self.scheme, self.ssrc, &refs, &masks).unwrap_or_default(),
+        }
     }
 
     /// FEC payloads for an explicit group: `media` (RTP packets of this SSRC) protected by
@@ -452,6 +692,22 @@ impl FecEncoder {
     #[must_use]
     pub fn encode(&self, media: &[&[u8]], masks: &[Vec<usize>]) -> Option<Vec<Vec<u8>>> {
         encode(self.scheme, self.ssrc, media, masks)
+    }
+
+    /// ULPFEC payloads with explicit protection levels for `media` (RTP packets of this
+    /// SSRC): `fec[j]` lists the levels of FEC packet `j`, level 0 first, each protecting
+    /// its packets' bytes after the lower levels' (RFC 5109 §7.4, §8.2). The header fields
+    /// are recovered from the level-0 packets. `None` for the FlexFEC schemes, if a packet
+    /// is not RTP of this SSRC, the sequence numbers span more than 48, a mask is empty or
+    /// out of range, a packet's levels add up to more than 65535 bytes, or the rules of
+    /// §7.4 are broken: a packet protected more than once at a level above 0 (or at level 0
+    /// with different protection lengths), or at level `p` but nowhere at level `p - 1`.
+    #[must_use]
+    pub fn encode_ulp(&self, media: &[&[u8]], fec: &[Vec<UlpLevelSpec>]) -> Option<Vec<Vec<u8>>> {
+        if self.scheme != FecScheme::Ulpfec {
+            return None;
+        }
+        encode_ulp(self.ssrc, media, fec)
     }
 }
 
@@ -466,21 +722,120 @@ const MEDIA_WINDOW: u64 = 1024;
 /// FEC packets waiting for recovery.
 const MAX_PENDING_FEC: usize = 64;
 
+/// One protection level of a pending FEC packet: its packets' bytes `start..start +
+/// repair.len()` after the fixed header XOR to `repair`.
+#[derive(Debug)]
+struct Level {
+    exts: Vec<u64>,
+    start: usize,
+    repair: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct PendingFec {
-    header: FecHeader,
     base: u64,
-    repair: Vec<u8>,
+    pxcc: u8,
+    mpt: u8,
+    len: u16,
+    ts: u32,
+    /// Level 0 first (it also recovers the header); `None` once used or useless.
+    levels: Vec<Option<Level>>,
+}
+
+/// A media packet, received or (partly) rebuilt.
+#[derive(Debug, Default)]
+struct Media {
+    /// The fixed header (zeros until known) and the body bytes (zeros where unknown).
+    pkt: Vec<u8>,
+    /// The fixed header and the length are known.
+    header: bool,
+    /// Known body byte ranges, sorted and disjoint.
+    known: Vec<(usize, usize)>,
+    /// Complete: received, or rebuilt and returned.
+    done: bool,
+}
+
+impl Media {
+    fn received(packet: &[u8]) -> Media {
+        Media {
+            pkt: packet.to_vec(),
+            header: true,
+            known: vec![(0, packet.len() - 12)],
+            done: true,
+        }
+    }
+
+    /// Whether body bytes `s..e` are known (bytes past a known length are zeros).
+    fn covers(&self, s: usize, e: usize) -> bool {
+        let e = if self.header {
+            e.min(self.pkt.len() - 12)
+        } else {
+            e
+        };
+        s >= e || self.known.iter().any(|&(a, b)| a <= s && e <= b)
+    }
+
+    /// XORs body bytes `s..s + out.len()` into `out`.
+    fn xor_into(&self, s: usize, out: &mut [u8]) {
+        let body = self.pkt.get(12 + s..).unwrap_or(&[]);
+        out.iter_mut().zip(body).for_each(|(a, b)| *a ^= *b);
+    }
+
+    /// Stores body bytes from `s` (cut at the length once it is known).
+    fn store(&mut self, s: usize, data: &[u8]) {
+        let e = if self.header {
+            (s + data.len()).min(self.pkt.len() - 12)
+        } else {
+            s + data.len()
+        };
+        if s >= e {
+            return;
+        }
+        if self.pkt.len() < 12 + e {
+            self.pkt.resize(12 + e, 0);
+        }
+        self.pkt[12 + s..12 + e].copy_from_slice(&data[..e - s]);
+        self.known.push((s, e));
+        self.known.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(self.known.len());
+        for &(a, b) in &self.known {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        self.known = merged;
+    }
+
+    /// Sets the rebuilt fixed header and body length.
+    fn set_header(&mut self, head: &[u8; 12], len: usize) {
+        self.pkt.resize(12 + len, 0);
+        self.pkt[..12].copy_from_slice(head);
+        self.header = true;
+        for r in &mut self.known {
+            r.1 = r.1.min(len);
+        }
+        self.known.retain(|&(a, b)| a < b);
+    }
+
+    fn complete(&self) -> bool {
+        self.header && self.covers(0, self.pkt.len() - 12)
+    }
 }
 
 /// The receiving side: keeps recent media packets and FEC payloads of one protected SSRC
 /// and rebuilds missing media packets.
+///
+/// Every protection level of a FEC packet whose packets all but one are known over its
+/// byte range rebuilds that range of the missing one (level 0 also its header and length);
+/// a packet is returned once all of it is known. Rebuilt pieces help other levels and FEC
+/// packets in turn.
 #[derive(Debug)]
 pub struct FecDecoder {
     scheme: FecScheme,
     ssrc: u32,
     last: Option<u64>,
-    media: BTreeMap<u64, Vec<u8>>,
+    media: BTreeMap<u64, Media>,
     fec: Vec<PendingFec>,
     recovered: u64,
 }
@@ -503,6 +858,16 @@ impl FecDecoder {
     #[must_use]
     pub fn recovered(&self) -> u64 {
         self.recovered
+    }
+
+    /// Missing packets of which some bytes were rebuilt but not all (ULPFEC with levels
+    /// or a short protection length), within the recovery window.
+    #[must_use]
+    pub fn partially_recovered(&self) -> usize {
+        self.media
+            .values()
+            .filter(|m| !m.done && (m.header || !m.known.is_empty()))
+            .count()
     }
 
     fn ext(&mut self, seq: u16) -> Option<u64> {
@@ -545,7 +910,10 @@ impl FecDecoder {
         let Some(ext) = self.ext(be16(packet, 2)) else {
             return Vec::new();
         };
-        self.media.entry(ext).or_insert_with(|| packet.to_vec());
+        let m = self.media.entry(ext).or_default();
+        if !m.done {
+            *m = Media::received(packet);
+        }
         self.prune();
         self.recover()
     }
@@ -554,97 +922,135 @@ impl FecDecoder {
     /// and returns the packets it lets the decoder rebuild. Payloads that do not parse, or
     /// (flexfec-03) protect another SSRC, are ignored.
     pub fn on_fec(&mut self, payload: &[u8]) -> Vec<Vec<u8>> {
-        let Some(header) = FecHeader::parse(self.scheme, payload) else {
+        let Some(h) = FecHeader::parse(self.scheme, payload) else {
             return Vec::new();
         };
-        if header.ssrc.is_some_and(|s| s != self.ssrc) {
+        if h.ssrc.is_some_and(|s| s != self.ssrc) {
             return Vec::new();
         }
-        let Some(repair) = payload
-            .get(header.header_len..header.header_len + header.protection_len)
-            .map(<[u8]>::to_vec)
-        else {
+        let Some(repair) = payload.get(h.header_len..h.header_len + h.protection_len) else {
             return Vec::new();
         };
-        let Some(base) = self.ext(header.base_seq) else {
+        let Some(base) = self.ext(h.base_seq) else {
             return Vec::new();
         };
+        let exts = |o: &[u16]| o.iter().map(|&o| base + u64::from(o)).collect();
+        let mut levels = vec![Some(Level {
+            exts: exts(&h.offsets),
+            start: 0,
+            repair: repair.to_vec(),
+        })];
+        let mut start = h.protection_len;
+        for l in &h.ulp_levels {
+            levels.push(Some(Level {
+                exts: exts(&l.offsets),
+                start,
+                repair: payload[l.payload_offset..l.payload_offset + l.protection_len].to_vec(),
+            }));
+            start += l.protection_len;
+        }
         self.fec.push(PendingFec {
-            header,
             base,
-            repair,
+            pxcc: h.pxcc_recovery,
+            mpt: h.mpt_recovery,
+            len: h.length_recovery,
+            ts: h.ts_recovery,
+            levels,
         });
         self.prune();
         self.recover()
+    }
+
+    /// The one packet of a level not known over its range (level 0: or without header),
+    /// `Some(None)` if all are known, `None` if several are missing.
+    fn missing(&self, level: &Level, level0: bool) -> Option<Option<u64>> {
+        let end = level.start + level.repair.len();
+        let mut missing = None;
+        for &e in &level.exts {
+            let known = self
+                .media
+                .get(&e)
+                .is_some_and(|m| (m.header || !level0) && m.covers(level.start, end));
+            if !known {
+                if missing.is_some() {
+                    return None;
+                }
+                missing = Some(e);
+            }
+        }
+        Some(missing)
     }
 
     fn recover(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         loop {
             let mut progress = false;
-            let mut i = 0;
-            while i < self.fec.len() {
-                let (first, second) = {
-                    let f = &self.fec[i];
-                    let mut missing = f
-                        .header
-                        .offsets
-                        .iter()
-                        .map(|&o| f.base + u64::from(o))
-                        .filter(|e| !self.media.contains_key(e));
-                    (missing.next(), missing.next())
-                };
-                match (first, second) {
-                    (None, _) => {
-                        self.fec.swap_remove(i);
-                    }
-                    (Some(e), None) => {
-                        let f = self.fec.swap_remove(i);
-                        if let Some(p) = self.rebuild(&f, e) {
-                            self.media.insert(e, p.clone());
-                            self.recovered += 1;
-                            out.push(p);
-                            progress = true;
+            for fi in 0..self.fec.len() {
+                for li in 0..self.fec[fi].levels.len() {
+                    let Some(level) = &self.fec[fi].levels[li] else {
+                        continue;
+                    };
+                    match self.missing(level, li == 0) {
+                        None => {}
+                        Some(None) => self.fec[fi].levels[li] = None,
+                        Some(Some(e)) => {
+                            if let Some(level) = self.fec[fi].levels[li].take() {
+                                if let Some(p) = self.rebuild(fi, &level, li == 0, e) {
+                                    out.push(p);
+                                }
+                                progress = true;
+                            }
                         }
                     }
-                    _ => i += 1,
                 }
             }
+            self.fec.retain(|f| f.levels.iter().any(Option::is_some));
             if !progress {
                 return out;
             }
         }
     }
 
-    fn rebuild(&self, f: &PendingFec, ext: u64) -> Option<Vec<u8>> {
-        let h = &f.header;
-        let mut par = Parity {
-            pxcc: h.pxcc_recovery,
-            mpt: h.mpt_recovery,
-            len: h.length_recovery,
-            ts: h.ts_recovery,
-            payload: f.repair.clone(),
-        };
-        for &o in &h.offsets {
-            let e = f.base + u64::from(o);
-            if e != ext {
-                par.add(self.media.get(&e)?);
+    /// Rebuilds the range of `level` (and for level 0 the header) of packet `ext`, all other
+    /// packets of the level being known; returns the packet if that completed it.
+    fn rebuild(&mut self, fi: usize, level: &Level, level0: bool, ext: u64) -> Option<Vec<u8>> {
+        let f = &self.fec[fi];
+        let need_header = level0 && !self.media.get(&ext).is_some_and(|m| m.header);
+        let (mut pxcc, mut mpt, mut len, mut ts) = (f.pxcc, f.mpt, f.len, f.ts);
+        let mut data = level.repair.clone();
+        for &e in level.exts.iter().filter(|&&e| e != ext) {
+            let m = self.media.get(&e)?;
+            if need_header {
+                pxcc ^= m.pkt[0] & 0x3f;
+                mpt ^= m.pkt[1];
+                len ^= (m.pkt.len() - 12) as u16;
+                ts ^= be32(&m.pkt, 4);
             }
+            m.xor_into(level.start, &mut data);
         }
-        let len = usize::from(par.len);
-        if par.payload.len() < len {
-            // ULPFEC with a short protection length cannot rebuild the whole packet.
+        let ssrc = self.ssrc;
+        let m = self.media.entry(ext).or_default();
+        if need_header {
+            let len = usize::from(len);
+            // The rebuilt header must at least hold its CSRCs.
+            if len < 4 * usize::from(pxcc & 0x0f) {
+                return None;
+            }
+            let mut head = [0u8; 12];
+            head[0] = 0x80 | pxcc;
+            head[1] = mpt;
+            head[2..4].copy_from_slice(&(ext as u16).to_be_bytes());
+            head[4..8].copy_from_slice(&ts.to_be_bytes());
+            head[8..12].copy_from_slice(&ssrc.to_be_bytes());
+            m.set_header(&head, len);
+        }
+        m.store(level.start, &data);
+        if m.done || !m.complete() {
             return None;
         }
-        let mut p = Vec::with_capacity(12 + len);
-        p.push(0x80 | par.pxcc);
-        p.push(par.mpt);
-        p.extend_from_slice(&(ext as u16).to_be_bytes());
-        p.extend_from_slice(&par.ts.to_be_bytes());
-        p.extend_from_slice(&self.ssrc.to_be_bytes());
-        p.extend_from_slice(&par.payload[..len]);
-        // The rebuilt header must at least hold its CSRCs.
-        (p.len() >= 12 + 4 * usize::from(p[0] & 0x0f)).then_some(p)
+        m.done = true;
+        self.recovered += 1;
+        Some(m.pkt.clone())
     }
 }
 
