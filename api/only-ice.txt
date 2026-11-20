@@ -130,6 +130,10 @@ impl core::marker::Unpin for only_ice::CandidateKind
 impl core::panic::unwind_safe::RefUnwindSafe for only_ice::CandidateKind
 impl core::panic::unwind_safe::UnwindSafe for only_ice::CandidateKind
 #[non_exhaustive] pub enum only_ice::IceEvent
+pub only_ice::IceEvent::ComponentSelectedPair
+pub only_ice::IceEvent::ComponentSelectedPair::component: u16
+pub only_ice::IceEvent::ComponentSelectedPair::local: core::net::socket_addr::SocketAddr
+pub only_ice::IceEvent::ComponentSelectedPair::remote: core::net::socket_addr::SocketAddr
 pub only_ice::IceEvent::SelectedPair
 pub only_ice::IceEvent::SelectedPair::local: core::net::socket_addr::SocketAddr
 pub only_ice::IceEvent::SelectedPair::remote: core::net::socket_addr::SocketAddr
@@ -238,6 +242,7 @@ pub fn only_ice::Candidate::server_reflexive(core::net::socket_addr::SocketAddr,
 pub fn only_ice::Candidate::tcp_type(&self) -> core::option::Option<only_ice::TcpType>
 pub fn only_ice::Candidate::to_sdp(&self) -> alloc::string::String
 pub fn only_ice::Candidate::ufrag(&self) -> core::option::Option<&str>
+pub fn only_ice::Candidate::with_component(self, u16) -> only_ice::Candidate
 pub fn only_ice::Candidate::with_hostname(self, impl core::convert::Into<alloc::string::String>) -> only_ice::Candidate
 pub fn only_ice::Candidate::with_related(self, core::option::Option<core::net::socket_addr::SocketAddr>) -> only_ice::Candidate
 impl core::clone::Clone for only_ice::Candidate
@@ -283,6 +288,7 @@ impl only_ice::IceAgent
 pub fn only_ice::IceAgent::add_local_candidate(&mut self, only_ice::Candidate) -> bool
 pub fn only_ice::IceAgent::add_remote_candidate(&mut self, only_ice::Candidate)
 pub fn only_ice::IceAgent::close(&mut self)
+pub fn only_ice::IceAgent::components(&self) -> u16
 pub fn only_ice::IceAgent::controlling(&self) -> bool
 pub fn only_ice::IceAgent::end_of_remote_candidates(&mut self)
 pub fn only_ice::IceAgent::handle_receive(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8]) -> bool
@@ -298,7 +304,9 @@ pub fn only_ice::IceAgent::remote_candidates(&self) -> &[only_ice::Candidate]
 pub fn only_ice::IceAgent::remote_credentials(&self) -> core::option::Option<&only_ice::Credentials>
 pub fn only_ice::IceAgent::restart(&mut self, only_ice::Credentials, bool)
 pub fn only_ice::IceAgent::selected_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn only_ice::IceAgent::selected_pair_of(&self, u16) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
 pub fn only_ice::IceAgent::send_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn only_ice::IceAgent::send_pair_of(&self, u16) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
 pub fn only_ice::IceAgent::set_controlling(&mut self, bool)
 pub fn only_ice::IceAgent::set_remote_credentials(&mut self, only_ice::Credentials)
 pub fn only_ice::IceAgent::set_remote_lite(&mut self, bool)
@@ -316,6 +324,7 @@ pub only_ice::IceConfig::aggressive_nomination: bool
 pub only_ice::IceConfig::check_max_sends: u32
 pub only_ice::IceConfig::check_rto: core::time::Duration
 pub only_ice::IceConfig::check_rto_max: core::time::Duration
+pub only_ice::IceConfig::components: u16
 pub only_ice::IceConfig::consent_interval: core::time::Duration
 pub only_ice::IceConfig::consent_timeout: core::time::Duration
 pub only_ice::IceConfig::controlling: bool

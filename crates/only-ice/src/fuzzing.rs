@@ -28,26 +28,43 @@ fn addr(s: &str) -> SocketAddr {
 
 #[cfg(test)]
 fn agent(lite: bool, controlling: bool, now: Instant) -> IceAgent {
-    agent_with(lite, controlling, false, now)
+    agent_with(lite, controlling, false, false, now)
 }
 
-/// `nominating`: aggressive nomination and renomination (both sides) on.
-fn agent_with(lite: bool, controlling: bool, nominating: bool, now: Instant) -> IceAgent {
+/// Component 2 (RTCP without rtcp-mux) of the two-component agents.
+const LOCAL_ADDR2: &str = "10.0.0.1:1001";
+const REMOTE_ADDR2: &str = "10.0.0.2:2001";
+
+/// `nominating`: aggressive nomination and renomination (both sides) on. `two`: a stream of
+/// two components (RTP on the usual addresses, RTCP on the ones above).
+fn agent_with(
+    lite: bool,
+    controlling: bool,
+    nominating: bool,
+    two: bool,
+    now: Instant,
+) -> IceAgent {
     let mut c = IceConfig::new(lite, controlling);
     c.local = Credentials::new(LOCAL.0, LOCAL.1);
     c.aggressive_nomination = nominating;
     c.renomination = nominating;
+    c.components = if two { 2 } else { 1 };
     let mut a = IceAgent::new(c, now);
     a.set_remote_renomination(nominating);
     a.add_local_candidate(Candidate::host(addr(LOCAL_ADDR)));
     a.set_remote_credentials(Credentials::new(REMOTE.0, REMOTE.1));
     a.add_remote_candidate(Candidate::host(addr(REMOTE_ADDR)));
+    if two {
+        a.add_local_candidate(Candidate::host(addr(LOCAL_ADDR2)).with_component(2));
+        a.add_remote_candidate(Candidate::host(addr(REMOTE_ADDR2)).with_component(2));
+    }
     a
 }
 
 /// `ice_stun`: arbitrary bytes as a datagram into full controlling, full controlled and lite
-/// agents, and full ones with aggressive nomination and renomination (remote credentials
-/// set, one check in flight), from the known remote address and
+/// agents, full ones with aggressive nomination and renomination, and agents of two
+/// components (on both components' addresses; remote credentials set, one check in flight),
+/// from the known remote addresses and
 /// from an unknown one, then timers far into the future; and every line of the input (if
 /// UTF-8) through [`Candidate::parse`], whose results must survive an SDP round trip.
 pub fn stun(data: &[u8]) {
@@ -63,17 +80,32 @@ pub fn stun(data: &[u8]) {
         }
     }
     let now = Instant::now();
-    for (lite, controlling, nominating) in [
-        (false, true, false),
-        (false, false, false),
-        (true, false, false),
-        (false, true, true),
-        (false, false, true),
+    for (lite, controlling, nominating, two) in [
+        (false, true, false, false),
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, true, false),
+        (false, false, true, false),
+        (false, true, false, true),
+        (false, false, true, true),
+        (true, false, false, true),
     ] {
-        let mut a = agent_with(lite, controlling, nominating, now);
+        let mut a = agent_with(lite, controlling, nominating, two, now);
         a.handle_timeout(now);
-        for src in [REMOTE_ADDR, "10.0.0.3:3000", "[2001:db8::3]:3000"] {
-            let _ = a.handle_receive(now, addr(src), addr(LOCAL_ADDR), data);
+        let locals: &[&str] = if two {
+            &[LOCAL_ADDR, LOCAL_ADDR2]
+        } else {
+            &[LOCAL_ADDR]
+        };
+        for local in locals {
+            for src in [
+                REMOTE_ADDR,
+                REMOTE_ADDR2,
+                "10.0.0.3:3000",
+                "[2001:db8::3]:3000",
+            ] {
+                let _ = a.handle_receive(now, addr(src), addr(local), data);
+            }
         }
         for secs in [1, 10, 40, 100] {
             a.handle_timeout(now + Duration::from_secs(secs));
@@ -81,7 +113,7 @@ pub fn stun(data: &[u8]) {
             while a.poll_transmit().is_some() {}
             while a.poll_event().is_some() {}
         }
-        let _ = a.send_pair();
+        let _ = (a.send_pair(), a.send_pair_of(2), a.selected_pair_of(2));
         a.restart(Credentials::new("fuz2", LOCAL.1), true);
         let _ = a.handle_receive(now, addr(REMOTE_ADDR), addr(LOCAL_ADDR), data);
         while a.poll_transmit().is_some() {}
@@ -227,6 +259,7 @@ mod seeds {
             "candidate:2 1 udp 41885439 198.51.100.9 3478 typ relay raddr 203.0.113.7 rport 61665",
             "candidate:3 1 tcp 1518280447 192.168.1.2 9 typ host tcptype active",
             "candidate:4 1 udp 2122260223 4c1f-ab.local 5000 typ host",
+            "candidate:5 2 udp 2122260222 10.0.0.2 2001 typ host",
         ] {
             out.push(line.as_bytes().to_vec());
         }

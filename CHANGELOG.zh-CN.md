@@ -10,6 +10,26 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：每个 ICE 数据流支持多个组件（only-ice）
+
+ADR-055（docs/adr/055-ice-components.zh-CN.md），只有新增（单组件代理的行为不变）：
+
+- `IceConfig::components`（默认 1）：代理（full 或 lite）可处理多组件数据流（RFC 8445），例如不使用
+  rtcp-mux、各用各的端口的 RTP（组件 1）与 RTCP（组件 2）。`Candidate::with_component(n)` 生成组件
+  `n` 的本地候选（优先级随之改变，foundation 不变）；远端候选照旧带着自己的组件号。
+- 所有组件共用一个检查列表，采用 RFC 8445 §6.1.2.6 的初始状态（每个 foundation 中组件号最小的候选对
+  为 Waiting、其余为 Frozen；候选以其他顺序 trickle 进来时也如此）并跨组件解冻；提名（常规、激进、
+  重新提名）、选定、同意新鲜度以及 lite 代理的状态都按组件进行；ICE 重启覆盖所有组件，每个组件在
+  新一代为它提名之前保留原选定候选对。每个组件都有选定候选对后状态才为 `Connected` / `Completed`，
+  任一组件同意失效时为 `Disconnected`，某个组件再也无法选定时为 `Failed`。
+- `IceEvent::ComponentSelectedPair { component, local, remote }`、
+  `IceAgent::{components, selected_pair_of, send_pair_of}`；`SelectedPair`、`selected_pair()` 与
+  `send_pair()` 仍是组件 1 的。
+- 互通：`tests/libnice.rs` 与 `tools/interop/ice/run.sh` 用两个组件与 libnice 0.1.21 互通五种组合
+  （libnice 控制方分别用激进提名与常规提名、受控、lite；only-ice lite）。`ice_stun` 模糊测试目标也
+  驱动双组件代理。only-webrtc 仍在组件 1 上复用 RTP 与 RTCP；在那里支持不带 rtcp-mux 的数据流是后续
+  工作。
+
 ### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：

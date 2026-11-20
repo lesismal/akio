@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
-//! Sans-io ICE (RFC 8445) for the `only` WebRTC stack: one component (RTP/RTCP muxed,
-//! BUNDLE) over UDP and TCP (RFC 6544), full and lite agents, regular and aggressive
-//! nomination and renomination, and an mDNS codec ([`mdns`]) for browsers' `.local`
-//! candidates.
+//! Sans-io ICE (RFC 8445) for the `only` WebRTC stack: streams of one component (RTP/RTCP
+//! muxed, BUNDLE) or several ([`IceConfig::components`]: RTP and RTCP on their own ports) over
+//! UDP and TCP (RFC 6544), full and lite agents, regular and aggressive nomination and
+//! renomination, and an mDNS codec ([`mdns`]) for browsers' `.local` candidates.
 //!
 //! An [`IceAgent`] owns no sockets, threads or clocks. The caller gathers local candidates
 //! (host addresses of its sockets, server-reflexive and relayed ones from its STUN/TURN
@@ -48,8 +48,9 @@
 //! # Implemented
 //!
 //! - Candidates (RFC 8445 §5.1): priorities (type preferences host 126, prflx 110, srflx 100,
-//!   relay 0; local preference IPv6 > IPv4 > IPv6 link-local; component 1), foundations from
-//!   type and base IP, the SDP `candidate` attribute (RFC 8839 §5.1, with the `generation`,
+//!   relay 0; local preference IPv6 > IPv4 > IPv6 link-local; component 1, or another with
+//!   [`Candidate::with_component`]), foundations from type, base IP and transport (shared by
+//!   the components), the SDP `candidate` attribute (RFC 8839 §5.1, with the `generation`,
 //!   `ufrag`, `network-id`, `network-cost` extensions). mDNS (`*.local`) and other FQDN
 //!   candidates parse to distinct [`ParseError`] variants; [`Candidate::parse_resolved`] takes
 //!   a resolver for them, [`Candidate::with_hostname`] writes such a name for a local one.
@@ -61,9 +62,19 @@
 //!   (active) candidate whose pair gets the triggered checks, nomination and consent. The
 //!   caller frames STUN and data on the connection (RFC 4571) and passes the connection's
 //!   remote address and the candidate's address as for UDP.
-//! - Checklist (§6.1): pairs of the same IP family, pair priority formula, redundant pairs
-//!   (same base and remote) pruned to the highest priority, Frozen/Waiting/InProgress/
-//!   Succeeded/Failed with per-foundation unfreezing, at most 100 pairs.
+//! - Checklist (§6.1): one per stream, for every component: pairs of the same component and
+//!   IP family, pair priority formula, redundant pairs (same base and remote) pruned to the
+//!   highest priority, Frozen/Waiting/InProgress/Succeeded/Failed with the §6.1.2.6 initial
+//!   states (of each foundation, the pair of the lowest component is Waiting, the others
+//!   Frozen) and per-foundation unfreezing across components (§7.2.5.3.3), at most 100 pairs.
+//! - Components (§2, [`IceConfig::components`]): nomination, selection and consent freshness
+//!   per component; the agent is [`IceState::Connected`] once every component has a selected
+//!   pair, [`IceState::Disconnected`] when consent expires on any of them and
+//!   [`IceState::Failed`] when a component without a selected pair has no pair left. Component
+//!   1's selection is [`IceEvent::SelectedPair`], [`IceAgent::selected_pair`] and
+//!   [`IceAgent::send_pair`]; the others' [`IceEvent::ComponentSelectedPair`],
+//!   [`IceAgent::selected_pair_of`] and [`IceAgent::send_pair_of`]. A received datagram
+//!   belongs to the component of the local candidate it arrived on.
 //! - Checks (§7): one new check every `Ta` (triggered queue first), retransmissions from
 //!   [`IceConfig::check_rto`] doubling to [`IceConfig::check_rto_max`], the pair fails after
 //!   [`IceConfig::check_max_sends`] sends (about 8 s by default); USERNAME, PRIORITY,
@@ -92,13 +103,13 @@
 //!   agent: without valid checks), back when they resume.
 //! - Trickle (RFC 8838): candidates may be added at any time;
 //!   [`IceAgent::end_of_remote_candidates`] lets the agent reach [`IceState::Failed`].
-//! - ICE restarts (§9) from either side, keeping the old selected pair (and answering
-//!   requests on the old credentials) until the new generation nominates.
+//! - ICE restarts (§9) from either side, for every component, each keeping its old selected
+//!   pair (and answering requests on the old credentials) until the new generation nominates
+//!   one.
 //!
 //! # Not implemented
 //!
-//! Several components (WebRTC muxes RTP and RTCP), gathering (the caller's STUN/TURN clients
-//! do it), sockets (mDNS, TCP connections), cancelling an in-progress check when a triggered
+//! Gathering (the caller's STUN/TURN clients do it), sockets (mDNS, TCP connections), cancelling an in-progress check when a triggered
 //! check is due on its pair (§7.3.1.4: the retransmissions continue instead), re-nominating a
 //! better pair after nomination without renomination support on both sides. A success response whose mapped address is new adds a peer-reflexive local
 //! candidate, but the valid pair is the checked one (both share the same base).
