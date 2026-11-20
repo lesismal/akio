@@ -387,6 +387,7 @@ pub(crate) fn verify_chain(
         .ok_or_else(|| Fatal::new(Alert::DecodeError, "empty certificate chain"))?;
     let leaf = only_x509::Certificate::from_der(leaf_der.clone())
         .map_err(|_| Fatal::new(Alert::BadCertificate, "unparsable certificate"))?;
+    check_signing_usage(&leaf)?;
     let mut inter = Vec::new();
     for c in &chain[1..] {
         inter.push(
@@ -474,6 +475,19 @@ pub(crate) fn check_stapled_ocsp(
     }
 }
 
+/// The peer's leaf signs the handshake (CertificateVerify, ServerKeyExchange): a keyUsage
+/// extension, when present, must allow digitalSignature (RFC 8446 section 4.4.2.2, RFC 5246
+/// section 7.4.2, RFC 5280 section 4.2.1.3).
+fn check_signing_usage(leaf: &only_x509::Certificate) -> Result<(), Fatal> {
+    match leaf.key_usage() {
+        Some(ku) if ku.0 & only_x509::KeyUsage::DIGITAL_SIGNATURE.0 == 0 => Err(Fatal::new(
+            Alert::BadCertificate,
+            "certificate key usage does not allow signing",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The leaf's public key without verifying anything (insecure mode).
 pub(crate) fn leaf_key(chain: &[Vec<u8>]) -> Result<only_crypto::pkey::PublicKey, Fatal> {
     let leaf_der = chain
@@ -481,6 +495,7 @@ pub(crate) fn leaf_key(chain: &[Vec<u8>]) -> Result<only_crypto::pkey::PublicKey
         .ok_or_else(|| Fatal::new(Alert::DecodeError, "empty certificate chain"))?;
     let leaf = only_x509::Certificate::from_der(leaf_der.clone())
         .map_err(|_| Fatal::new(Alert::BadCertificate, "unparsable certificate"))?;
+    check_signing_usage(&leaf)?;
     leaf.public_key()
         .map_err(|_| Fatal::new(Alert::UnsupportedCertificate, "unsupported public key"))
 }

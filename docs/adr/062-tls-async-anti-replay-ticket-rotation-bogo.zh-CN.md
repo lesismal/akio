@@ -102,15 +102,18 @@ CBC、RSA 密钥交换、PSK 套件、重协商、ECH、委托凭据、Channel I
 HelloRetryRequest 之后兼容 CCS 的位置、被拒的早期数据自动重发、不恢复没有 EMS 的 TLS 1.2 会话等），以及发现
 但尚未修复的 only-tls 缺陷。
 
-x86 主机上的结果：8,110 个测试中 **865 个通过、0 个失败**，1,122 个未实现，6,123 个被禁用（其中约 2,700 个是
-DTLS 与 QUIC）。这次运行发现了 11 个协议缺陷（另有一处跳过早期数据的上限比 RFC 宽松，现列为差异），本次修复其中 4 个（5 个测试）：不支持 TLS 1.3 的服务端拒绝 TLS_FALLBACK_SCSV
-（RFC 7507 第 3 节）、带 supported_groups 而没有 key_share 的 ClientHello 得到 HelloRetryRequest 而不是
-`missing_extension`（RFC 8446 第 9.2 节）、TLS 1.2 服务端不确认 server_name（RFC 6066 第 3 节）、接受超过
-2^14 + 1 字节的 TLS 1.3 带填充明文（RFC 8446 第 5.4 节，两个测试）。留待后续、均已列入配置：对端叶证书的
-keyUsage 不含 digitalSignature 时仍被接受用于签名；接受未请求的 CertificateEntry 扩展；只提供 TLS 1.2 的
-ClientHello 因其 TLS 1.3 pre_shared_key 的 binder 被拒；TLS 1.2 客户端接受非空的 server_name 确认；未请求的
-TLS 1.3 server_name 确认以 `illegal_parameter` 而非 `unsupported_extension` 回应；向只支持 psk_ke 的客户端发送
-票据；对多个 update_requested 的 KeyUpdate 逐一回应。修复之后，
+x86 主机上的结果：8,110 个测试中 **882 个通过、0 个失败**，1,122 个未实现，6,106 个被禁用（其中约 2,700 个是
+DTLS 与 QUIC）。这次运行发现了 11 个协议缺陷，均在本次修复（另有一处跳过早期数据的上限比 RFC 宽松，列为差异）：
+不支持 TLS 1.3 的服务端拒绝 TLS_FALLBACK_SCSV（RFC 7507 第 3 节）；带 supported_groups 而没有 key_share 的
+ClientHello 得到 HelloRetryRequest 而不是 `missing_extension`（RFC 8446 第 9.2 节）；TLS 1.2 服务端不确认
+server_name，TLS 1.2 客户端接受非空的确认（RFC 6066 第 3 节）；未请求的 TLS 1.3 server_name 确认以
+`illegal_parameter` 而非 `unsupported_extension` 回应；接受超过 2^14 + 1 字节的 TLS 1.3 带填充明文（RFC 8446
+第 5.4 节）；对端叶证书的 keyUsage 不含 digitalSignature 时仍被接受用于签名（RFC 8446 第 4.4.2.2 节、RFC 5246
+第 7.4.2 节），现在无论是否验证证书都以 `bad_certificate` 拒绝；接受未请求的 CertificateEntry 扩展（除已请求
+的 status_request 外均为 `unsupported_extension`，RFC 8446 第 4.4.2 节）；只提供 TLS 1.2 的 ClientHello 因其
+格式错误的 TLS 1.3 pre_shared_key 被拒（解析错误现在只在协商 TLS 1.3 时报出）；向不支持 psk_dhe_ke 的客户端
+发送票据（RFC 8446 第 4.2.9 节）；对多个 update_requested 的 KeyUpdate 逐一回应（现在在我方下一次发送应用数据
+之前只回应一次，RFC 8446 第 4.6.3 节，与 BoringSSL 相同）。修复之后，
 `tools/interop/tls/run.sh` 在 x86 主机上 175 个用例全部通过（OpenSSL 3.0.13、Go、curl）。
 
 ## 影响
@@ -123,6 +126,8 @@ TLS 1.3 server_name 确认以 `illegal_parameter` 而非 `unsupported_extension`
 - 挂起的握手在应答或超时之前持有它的 ClientHello 和其后到达的数据（有上限）；永不应答的存储让每次 0-RTT
   握手多花一个超时时间，而不会断开连接。
 - 防重放的强度仍取决于存储的原子性（ADR-013）。
+- 比以前更严格（BoGo 修复）：叶证书的 keyUsage 不含 digitalSignature，或发送未请求的 CertificateEntry 扩展的
+  对端，现在握手失败，在不验证证书的模式下也是如此；这样的对端违反 RFC，其他实现同样会拒绝。
 - `TicketKeys::derived` 让共享密钥成为长期密钥：持有它就能解开所有周期的所有票据。轮换它意味着换新密钥（持有
   票据的客户端各做一次完整握手）。
 - 默认路径上实测的代价：见下面的 A/B。

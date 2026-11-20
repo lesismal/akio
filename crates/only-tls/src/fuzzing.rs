@@ -113,7 +113,7 @@ pub fn server(data: &[u8]) {
     feed(&mut c, data);
     let _ = ClientHello::parse(data);
     let _ = crate::quic::client_hello_transport_params(data);
-    let _ = parse_certificate13(data);
+    let _ = parse_certificate13(data, data.first().is_some_and(|b| b & 2 == 2));
     let _ = parse_certificate12(data);
     let _ = decompress_certificate(data, 1 << 17, CompAlgs::ALL);
     if data.len() <= 4096 {

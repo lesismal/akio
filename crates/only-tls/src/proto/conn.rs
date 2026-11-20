@@ -140,6 +140,14 @@ impl Machine {
         matches!(self, Machine::Client(_))
     }
 
+    /// Application data is being sent: a later KeyUpdate request gets its own answer.
+    fn app_data_sent(&mut self) {
+        match self {
+            Machine::Client(c) => c.key_update_answered = false,
+            Machine::Server(s) => s.key_update_answered = false,
+        }
+    }
+
     /// A server waiting for an asynchronous anti-replay answer.
     pub(crate) fn suspended(&self) -> bool {
         matches!(self, Machine::Server(s) if s.suspended())
@@ -466,6 +474,7 @@ impl Connection {
             self.fail(&e, out);
             return Err(e);
         }
+        self.m.app_data_sent();
         Ok(())
     }
 

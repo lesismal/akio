@@ -109,11 +109,11 @@ ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），
   票据声明的有效期限制在一个周期内。
 - `status_request_v2`（RFC 6961）：从不发送，收到时忽略（决定与理由见 ADR）。OCSP 验证此前已完成（ADR-038、
   ADR-049）；已更正 DEV-PLAN。
-- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 865 个通过，没有意外失败，1,122 个未实现，6,123 个被禁用。
+- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 882 个通过，没有意外失败，1,122 个未实现，6,106 个被禁用。
 
 ### 修复（only-tls）
 
-- 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）。
+- 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）；TLS 1.2 客户端拒绝非空的 server_name 确认，未请求的 TLS 1.3 server_name 确认为 `unsupported_extension`；对端叶证书的 keyUsage 不含 digitalSignature 时为 `bad_certificate`（RFC 8446 §4.4.2.2）；未请求的 CertificateEntry 扩展为 `unsupported_extension`（RFC 8446 §4.4.2）；格式错误的 TLS 1.3 pre_shared_key 不再导致 TLS 1.2 握手失败；不向不支持 psk_dhe_ke 的客户端发送票据（RFC 8446 §4.2.9）；我方下一次发送应用数据之前的多个 update_requested KeyUpdate 只回应一次（RFC 8446 §4.6.3）。
 
 ### 新增：跨进程 BPF 分流、prefork 重载时的 listener 迁移与 AF_XDP（only-ebpf、only-prefork、only-dpdk）
 

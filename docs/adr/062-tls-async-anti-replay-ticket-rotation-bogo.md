@@ -139,19 +139,23 @@ and BoringSSL does differently (about 40: where the compatibility CCS goes after
 HelloRetryRequest, rejected early data resent automatically, no resumption of TLS 1.2
 sessions without EMS, ...), and the only-tls bugs found and not fixed yet.
 
-Result on the x86 host: of 8,110 tests, **865 pass, 0 fail**, 1,122 are unimplemented and
-6,123 disabled (about 2,700 of them DTLS and QUIC). The run found eleven protocol bugs (and a bound on skipped early data looser than the RFC's,
-now listed as a difference); four are fixed here (five tests): TLS_FALLBACK_SCSV refused by a server without TLS 1.3 (RFC 7507 section 3), a
-ClientHello with supported_groups and no key_share answered with a HelloRetryRequest instead
-of `missing_extension` (RFC 8446 section 9.2), the TLS 1.2 server not acknowledging
-server_name (RFC 6066 section 3), and TLS 1.3 padded plaintexts over 2^14 + 1 bytes accepted
-(RFC 8446 section 5.4, two tests). Left for a follow-up, each listed in the config: a peer
-leaf's keyUsage without digitalSignature accepted for signing; unrequested CertificateEntry
-extensions accepted; a TLS 1.2-only ClientHello refused over its TLS 1.3 pre_shared_key
-binder; the TLS 1.2 client accepting a non-empty server_name acknowledgement; an unsolicited
-TLS 1.3 server_name acknowledgement answered with `illegal_parameter` instead of
-`unsupported_extension`; tickets sent to a psk_ke-only client; each of several
-update_requested KeyUpdates answered. With the fixes, `tools/interop/tls/run.sh` passes
+Result on the x86 host: of 8,110 tests, **882 pass, 0 fail**, 1,122 are unimplemented and
+6,106 disabled (about 2,700 of them DTLS and QUIC). The run found eleven protocol bugs, all
+fixed here (and a bound on skipped early data looser than the RFC's, listed as a difference):
+TLS_FALLBACK_SCSV refused by a server without TLS 1.3 (RFC 7507 section 3); a ClientHello
+with supported_groups and no key_share answered with a HelloRetryRequest instead of
+`missing_extension` (RFC 8446 section 9.2); the TLS 1.2 server not acknowledging server_name,
+and the TLS 1.2 client accepting a non-empty acknowledgement (RFC 6066 section 3); an
+unsolicited TLS 1.3 server_name acknowledgement answered with `illegal_parameter` instead of
+`unsupported_extension`; TLS 1.3 padded plaintexts over 2^14 + 1 bytes accepted (RFC 8446
+section 5.4); a peer leaf whose keyUsage lacks digitalSignature accepted for signing
+(RFC 8446 section 4.4.2.2, RFC 5246 section 7.4.2), now `bad_certificate`, verified or not;
+CertificateEntry extensions not asked for accepted (anything but a requested status_request
+is `unsupported_extension`, RFC 8446 section 4.4.2); a TLS 1.2-only ClientHello refused over
+its malformed TLS 1.3 pre_shared_key (its parse error is now raised only if TLS 1.3 is
+negotiated); tickets sent to a client without psk_dhe_ke (RFC 8446 section 4.2.9); and each
+of several update_requested KeyUpdates answered (one answer now until our next application
+data, RFC 8446 section 4.6.3, as BoringSSL does). With the fixes, `tools/interop/tls/run.sh` passes
 175 of 175 cases on the x86 host (OpenSSL 3.0.13, Go, curl).
 
 ## Consequences
@@ -165,6 +169,10 @@ update_requested KeyUpdates answered. With the fixes, `tools/interop/tls/run.sh`
   answer or the timeout; a store that never answers costs each 0-RTT handshake the timeout, not
   the connection.
 - Replay protection is still as strong as the store's atomicity (ADR-013).
+- Stricter than before (the BoGo fixes): a peer whose leaf certificate has a keyUsage without
+  digitalSignature, or that sends CertificateEntry extensions not asked for, now fails the
+  handshake, also in insecure (unverified) mode; such peers break the RFCs and other stacks
+  refuse them too.
 - `TicketKeys::derived` makes the shared secret a long-term key: whoever has it can open every
   ticket of every period. Rotating it means a new secret (and full handshakes for the clients
   holding tickets).
