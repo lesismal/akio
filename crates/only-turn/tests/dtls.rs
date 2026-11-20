@@ -126,7 +126,8 @@ impl DtlsClient {
             if self.d.is_connected() {
                 self.c.handle_timeout(now);
             }
-            self.events.extend(std::iter::from_fn(|| self.c.poll_event()));
+            self.events
+                .extend(std::iter::from_fn(|| self.c.poll_event()));
         }
         done(self)
     }
@@ -254,7 +255,8 @@ fn new_handshake_replaces_the_association() {
 fn non_dtls_datagrams_are_dropped() {
     let srv = server();
     let s = udp();
-    s.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    s.set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
     let req = only_turn::stun::MessageBuilder::new(
         only_turn::stun::Method::BINDING,
         only_turn::stun::Class::Request,

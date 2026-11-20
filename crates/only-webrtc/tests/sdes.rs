@@ -210,7 +210,10 @@ fn sdes_refusals_and_dtls_unchanged() {
             api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
         })
         .unwrap();
-    assert!(matches!(dtls.accept_offer(&offer, Echo), Err(Error::Sdp(_))));
+    assert!(matches!(
+        dtls.accept_offer(&offer, Echo),
+        Err(Error::Sdp(_))
+    ));
     // An SDES offer whose lines are all unusable (MKIs).
     let mki: String = offer
         .lines()

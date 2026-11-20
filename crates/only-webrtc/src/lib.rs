@@ -801,7 +801,12 @@ impl Hub {
         match a {
             SocketAddr::V6(v) if v.scope_id() != 0 && mdns::is_link_local(v.ip()) => {
                 self.learn_scope(*v.ip(), v.scope_id());
-                SocketAddr::V6(std::net::SocketAddrV6::new(*v.ip(), v.port(), v.flowinfo(), 0))
+                SocketAddr::V6(std::net::SocketAddrV6::new(
+                    *v.ip(),
+                    v.port(),
+                    v.flowinfo(),
+                    0,
+                ))
             }
             a => a,
         }
@@ -1659,8 +1664,10 @@ impl Endpoint {
     /// started): the mDNS port 5353 shared with the system's responder and the
     /// `224.0.0.251` group, or, when that port cannot be bound, an ephemeral port asking for
     /// unicast answers (then [`conceal_host_candidates`](Self::conceal_host_candidates) is
-    /// not available). IPv4 mDNS only (names may still resolve to IPv6 addresses). Once per
-    /// endpoint.
+    /// not available). With IPv6, a second socket does the same over `ff02::fb`, joined on
+    /// every interface with a link-local address: queries go out on each, answers go back on
+    /// the link of their query, and a resolved link-local address is reached through the
+    /// interface its answer came from (ADR-054). Once per endpoint.
     pub fn resolve_mdns(&self, engine: &Engine, timeout: Duration) -> Result<(), Error> {
         if self.0.mdns.get().is_some() {
             return Err(Error::Io(io::Error::new(

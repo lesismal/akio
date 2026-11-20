@@ -21,7 +21,10 @@ use only_dtls::{Config, Connection, Event, HelloCheck, HelloVerifier, Identity, 
 /// certificates only when `cfg` asks for them, cookies left to the listener.
 pub(crate) fn server_config(cfg: &tls::ServerConfig) -> io::Result<Arc<Config>> {
     let bad = |what: &str, e: &dyn std::fmt::Display| {
-        io::Error::new(io::ErrorKind::InvalidInput, format!("turn dtls: {what}: {e}"))
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("turn dtls: {what}: {e}"),
+        )
     };
     let p = cfg.__parts();
     let key = only_crypto::pkey::PrivateKey::from_pkcs8_der(&p.key_pkcs8)
@@ -115,7 +118,11 @@ fn client_hello_random(d: &[u8]) -> Option<[u8; 32]> {
 
 impl DtlsSession {
     /// A session for the client whose address encodes as `peer`.
-    pub(crate) fn new(cfg: Arc<Config>, verifier: Arc<HelloVerifier>, peer: Vec<u8>) -> DtlsSession {
+    pub(crate) fn new(
+        cfg: Arc<Config>,
+        verifier: Arc<HelloVerifier>,
+        peer: Vec<u8>,
+    ) -> DtlsSession {
         DtlsSession {
             cfg,
             verifier,

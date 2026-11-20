@@ -155,7 +155,9 @@ pub(crate) struct MdnsUdp(Weak<Mdns>, bool);
 
 impl std::fmt::Debug for MdnsUdp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MdnsUdp").field("v6", &self.1).finish_non_exhaustive()
+        f.debug_struct("MdnsUdp")
+            .field("v6", &self.1)
+            .finish_non_exhaustive()
     }
 }
 
@@ -390,7 +392,10 @@ impl Mdns {
                 self.on_response(src, &m.records);
             }
         } else if !m.questions.is_empty()
-            && self.socks().iter().any(|s| s.v6 == src.is_ipv6() && s.shared)
+            && self
+                .socks()
+                .iter()
+                .any(|s| s.v6 == src.is_ipv6() && s.shared)
         {
             self.on_query(src, &m);
         }

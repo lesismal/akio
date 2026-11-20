@@ -178,8 +178,7 @@ pub fn turn_stream(data: &[u8]) {
 
 /// The DTLS configuration of the `turn_dtls` server (a certificate made once per process).
 fn dtls_config() -> std::sync::Arc<only_dtls::Config> {
-    static CFG: std::sync::OnceLock<std::sync::Arc<only_dtls::Config>> =
-        std::sync::OnceLock::new();
+    static CFG: std::sync::OnceLock<std::sync::Arc<only_dtls::Config>> = std::sync::OnceLock::new();
     CFG.get_or_init(|| {
         let id = only_dtls::Identity::generate_self_signed().expect("identity");
         std::sync::Arc::new(

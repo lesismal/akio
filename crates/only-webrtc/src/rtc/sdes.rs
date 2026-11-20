@@ -213,7 +213,10 @@ mod tests {
         // RFC 4568 §4's example key (inline key||salt, lifetime, MKI).
         let k = "WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz";
         let c = Crypto::parse(&format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}")).unwrap();
-        assert_eq!((c.tag, c.profile, c.key.len()), (1, Profile::Aes128CmHmacSha1_80, 30));
+        assert_eq!(
+            (c.tag, c.profile, c.key.len()),
+            (1, Profile::Aes128CmHmacSha1_80, 30)
+        );
         assert_eq!(c.to_attr(), format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}"));
         let (key, salt) = c.key_salt();
         assert_eq!((key.len(), salt.len()), (16, 14));
@@ -224,7 +227,7 @@ mod tests {
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|2^20|1:4"), // MKI
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4"),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k};inline:{k}"), // two keys
-            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"),    // session parameter
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"),      // session parameter
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} UNENCRYPTED_SRTP"),
             format!("1 F8_128_HMAC_SHA1_80 inline:{k}"), // unsupported suite
             format!("1 AES_256_CM_HMAC_SHA1_80 inline:{k}"), // key too short for the suite
@@ -275,7 +278,10 @@ mod tests {
         b.accept_offer(&offer).unwrap();
         assert_eq!(b.remote.as_ref(), Some(&k));
         let local = b.local.clone().unwrap();
-        assert_eq!((local.tag, local.profile), (7, Profile::Aes128CmHmacSha1_80));
+        assert_eq!(
+            (local.tag, local.profile),
+            (7, Profile::Aes128CmHmacSha1_80)
+        );
         assert_ne!(local.key, k.key);
         // A re-offer with the same line keeps our key.
         b.accept_offer(&offer).unwrap();
@@ -290,22 +296,37 @@ mod tests {
         ]);
         assert!(b.accept_offer(&split).is_err());
         // Nothing usable.
-        let none = sdp(&["m=audio 9 RTP/SAVP 0", "a=crypto:1 F8_128_HMAC_SHA1_80 inline:x"]);
+        let none = sdp(&[
+            "m=audio 9 RTP/SAVP 0",
+            "a=crypto:1 F8_128_HMAC_SHA1_80 inline:x",
+        ]);
         assert!(is_sdes_offer(&none));
         assert!(b.accept_offer(&none).is_err());
         // DTLS-SRTP offers are not SDES, even with a=crypto.
-        let dtls = sdp(&["m=audio 9 UDP/TLS/RTP/SAVPF 0", &format!("a=crypto:{}", k.to_attr())]);
+        let dtls = sdp(&[
+            "m=audio 9 UDP/TLS/RTP/SAVPF 0",
+            &format!("a=crypto:{}", k.to_attr()),
+        ]);
         assert!(!is_sdes_offer(&dtls));
 
         // The answer to `a`'s offer.
         let pick = offered[3].clone();
         let mine = Crypto::generate(pick.tag, pick.profile);
-        let answer = sdp(&["m=audio 9 RTP/SAVPF 0", &format!("a=crypto:{}", mine.to_attr())]);
+        let answer = sdp(&[
+            "m=audio 9 RTP/SAVPF 0",
+            &format!("a=crypto:{}", mine.to_attr()),
+        ]);
         a.accept_answer(&answer).unwrap();
-        assert_eq!((a.local.as_ref(), a.remote.as_ref()), (Some(&pick), Some(&mine)));
+        assert_eq!(
+            (a.local.as_ref(), a.remote.as_ref()),
+            (Some(&pick), Some(&mine))
+        );
         // A tag we did not offer with that suite, or two lines.
         let wrong = Crypto::generate(1, Profile::Aes128CmHmacSha1_80);
-        let answer = sdp(&["m=audio 9 RTP/SAVPF 0", &format!("a=crypto:{}", wrong.to_attr())]);
+        let answer = sdp(&[
+            "m=audio 9 RTP/SAVPF 0",
+            &format!("a=crypto:{}", wrong.to_attr()),
+        ]);
         assert!(a.accept_answer(&answer).is_err());
         let two = sdp(&[
             "m=audio 9 RTP/SAVPF 0",

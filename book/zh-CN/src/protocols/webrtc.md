@@ -136,6 +136,18 @@ let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret
 let relayed = ep.gather_relay_via(&engine, &turns, Duration::from_secs(5))?;
 ```
 
+DTLS 上的 TURN（RFC 7350）保留 UDP 并加密控制通道：`RelayServer::dtls(addr, server_name, tls_config, ..)`
+或 `turns:host[:port]?transport=udp`（再加 `tls_config`）。分配跑在 endpoint 自己 UDP socket 上的 DTLS
+关联中（DTLS 1.3，可像 coturn 那样回退到 1.2），服务器证书按 TLS 配置的根证书对 `server_name` 校验；
+候选是 UDP relay 候选，服务器给出的映射地址与普通 UDP 一样成为 server-reflexive 候选。关联丢失即丢失
+分配，随后以新的握手重新分配。
+
+```rust,ignore
+let dtls = RelayServer::from_url("turns:turn.example.com:5349?transport=udp", "alice", "secret")?
+    .tls_config(tls_client_config);
+let relayed = ep.gather_relay_via(&engine, &dtls, Duration::from_secs(5))?;
+```
+
 `candidate_filter(f)` 是 endpoint 的 `iceTransportPolicy`：新 peer 只使用并只发出 `f` 接受的本地候选，
 例如 `|c| c.kind() == "relay"`（只用中继）或 `|c| c.transport() == "tcp"`（只用 ICE-TCP）。
 
@@ -190,6 +202,11 @@ I/O 线程服务。描述中的或经 `add_remote_candidate` trickle 来的每�
 发出的通告都按 TTL 缓存。`conceal_host_candidates` 让新对端把每个主机候选以随机的 `<uuid>.local`
 名字发出（每个地址一个），并隐藏其他候选的相关地址（`0.0.0.0:0`）；套接字应答对这些名字的查询，
 浏览器或另一个 endpoint 因而能解析它们。
+
+IPv6 与 IPv4 并行（ADR-054）：`[::]:5353` 上的第二个套接字在每个有链路本地地址的接口上加入 `ff02::fb`
+（`Engine::bind_udp_multicast_on`），查询从每个接口发出，应答发回查询所来的链路。IPv6 主机地址与 IPv4
+的一样隐藏（AAAA 记录）。SDP 不携带作用域 ID，所以 endpoint 记住远端链路本地地址的接口（来自解析它的
+应答或它的流量），发送时加回去。没有 IPv6 的主机只跑 IPv4。
 
 ### 提名
 
@@ -268,6 +285,20 @@ let cfg = only_webrtc::rtc_config()
 提供的扩展选择加密变体。没有浏览器提供 RFC 6904，它适用于与本栈类似的对端。不协商 MKI：DTLS-SRTP
 没有对应的 SDP。
 
+### 面向 SIP 网关的 SDES-SRTP
+
+```rust,ignore
+let ep = ep.config(|| only_webrtc::rtc_config().enable_sdes_srtp(true));
+```
+
+SIP 网关常用 SDP 安全描述（RFC 4568）而不是 DTLS-SRTP 提供 SRTP 密钥。`enable_sdes_srtp(true)` 时
+offer 的媒体段为 `RTP/SAVPF`，每个套件一行 `a=crypto`（AEAD-AES-256/128-GCM、带 HMAC-SHA1-80 的
+AES-256-CM 与 AES-128-CM、带 HMAC-SHA1-32 的 AES-128-CM），各带随机密钥，没有 fingerprint；SDES offer
+（带 `a=crypto` 的 `RTP/SAVP` 或 `RTP/SAVPF`）以本方能用的第一行和本方自己的密钥应答。各方用自己的
+密钥加密、用对方的密钥解密；ICE 有了候选对即连通（网关需要 ICE 或 ICE-lite）。没有 DTLS，因此没有数据
+通道，密钥也只与信令一样机密。带 MKI 或会话参数的行不采用。DTLS-SRTP offer 仍以 DTLS-SRTP 应答，所以
+浏览器永远看不到 `a=crypto`。
+
 ### 带宽探测
 
 开启 `enable_bwe` 后，估计器会像 libwebrtc 一样探测路径（ADR-050）：以目标速率节奏发送短簇（15 ms
@@ -329,6 +360,20 @@ turn.set_engine(&engine);
 经连接建立的分配随连接结束。STUN 与 ChannelData 在流上按各自的长度分帧
 （`only_turn::framing::FrameReader`），ChannelData 填充到 4 字节。
 
+### DTLS 上的 TURN
+
+`turn.dtls(&tls_cfg)?` 是客户端说 DTLS 的 UDP listener 的 acceptor（RFC 7350，
+`turns:host:5349?transport=udp`），证书与 TLS listener 相同，分配、配额与凭据共享。在保存任何状态之前，
+ClientHello 先以无状态 cookie 应答；提供 DTLS 1.3，可回退到 1.2。每条记录携带一条 STUN 或 ChannelData
+消息，不填充。分配随其 DTLS 关联存在：close_notify、致命告警、`udp_idle_timeout` 的静默或同一地址上的
+新握手都会释放它。与 coturn 的 `turnutils_uclient -S` 以及 coturn 自己的 DTLS listener 互通
+（`tools/interop/webrtc/turn-dtls.sh`）。
+
+```rust,ignore
+Engine::builder()
+    .listen(Listener::udp("0.0.0.0:5349".parse()?).serve(turn.dtls(&tls_cfg)?))
+```
+
 ### TURN 客户端
 
 `only_turn::client::Client` 是单个分配的 sans-io 客户端，跑在 UDP 或 TCP/TLS 流上
@@ -372,6 +417,6 @@ DTLS 1.2。
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；DTLS 上的 TURN；IPv6 组播上的 mDNS；simulcast 行上的 FlexFEC、libwebrtc 的 FEC
-掩码表；WebRTC 中的 SRTP MKI。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045 与
-ADR-048。
+TCP 中继（RFC 6062）；simulcast 行上的 FlexFEC、libwebrtc 的 FEC 掩码表；WebRTC 中的 SRTP MKI；无 ICE
+或与数据通道并存的 SDES-SRTP。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048
+与 ADR-054。

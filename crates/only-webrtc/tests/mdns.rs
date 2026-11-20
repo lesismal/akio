@@ -183,7 +183,8 @@ fn raw_v6() -> Option<(UdpSocket, Vec<u32>)> {
     });
     match s {
         Ok(s) => {
-            s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            s.set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
             Some((s, ifs))
         }
         Err(e) => {
@@ -254,7 +255,10 @@ fn answers_aaaa_queries_over_ipv6_multicast() {
             api.add_channel("c");
         })
         .unwrap();
-    let line = host_lines(&offer).into_iter().next().expect("a host candidate");
+    let line = host_lines(&offer)
+        .into_iter()
+        .next()
+        .expect("a host candidate");
     assert!(!line.contains("::1"), "{line}");
     let name = line.split_whitespace().nth(4).unwrap().to_owned();
     let q = Message::query(&name, TYPE_AAAA, false).unwrap();
@@ -300,8 +304,11 @@ fn resolves_names_over_ipv6_multicast() {
     pa.add_remote_candidate(&cand).unwrap();
     // The query arrives over IPv6; answer it there.
     recv_v6(&raw, |_src, m| {
-        (!m.response && m.questions.iter().any(|q| q.name == name && q.qtype == TYPE_AAAA))
-            .then_some(())
+        (!m.response
+            && m.questions
+                .iter()
+                .any(|q| q.name == name && q.qtype == TYPE_AAAA))
+        .then_some(())
     })
     .expect("no AAAA query over IPv6");
     let rec = Record {
@@ -340,7 +347,11 @@ fn concealed_ipv6_endpoints_resolve_each_other() {
     let (pa, offer) = a
         .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
         .unwrap();
-    assert!(host_lines(&offer).iter().all(|l| l.contains(".local ") && !l.contains("::1")));
+    assert!(
+        host_lines(&offer)
+            .iter()
+            .all(|l| l.contains(".local ") && !l.contains("::1"))
+    );
     let (pb, answer) = b.accept_offer(&offer, Echo).unwrap();
     pa.accept_answer(&answer).unwrap();
     wait(&rx, b"open");

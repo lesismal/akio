@@ -39,7 +39,11 @@ fn turn() -> Turn {
     let engine = Arc::new(
         Engine::builder()
             .listen(Listener::udp(any).threads(1).serve(turn.clone()))
-            .listen(Listener::udp(any).threads(1).serve(turn.dtls(&scfg).unwrap()))
+            .listen(
+                Listener::udp(any)
+                    .threads(1)
+                    .serve(turn.dtls(&scfg).unwrap()),
+            )
             .build()
             .unwrap(),
     );
@@ -156,8 +160,12 @@ fn data_channel_through_dtls_allocations() {
     let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
     let server = dtls_server(&srv);
     assert_eq!(server.transport(), "dtls");
-    let ra = a.gather_relay_via(&e, &server, T).expect("allocation over DTLS");
-    let rb = b.gather_relay_via(&e, &server, T).expect("allocation over DTLS");
+    let ra = a
+        .gather_relay_via(&e, &server, T)
+        .expect("allocation over DTLS");
+    let rb = b
+        .gather_relay_via(&e, &server, T)
+        .expect("allocation over DTLS");
     assert_ne!(ra, rb);
     assert_eq!(srv.turn.stats().allocations, 2);
     let (la, lb) = (a.local_addr().unwrap(), b.local_addr().unwrap());
@@ -166,10 +174,17 @@ fn data_channel_through_dtls_allocations() {
     // A UDP relayed candidate (the mapped address is the host one on loopback).
     let c = a.candidates();
     assert_eq!(c.len(), 2, "{c:?}");
-    assert!(c[1].to_sdp().contains(" udp ") || c[1].to_sdp().contains(" UDP "), "{}", c[1].to_sdp());
+    assert!(
+        c[1].to_sdp().contains(" udp ") || c[1].to_sdp().contains(" UDP "),
+        "{}",
+        c[1].to_sdp()
+    );
     // The same server again over DTLS, or over plain UDP, is refused (one datagram relay per
     // server address); a plain UDP allocation on the other port is not.
-    assert!(matches!(a.gather_relay_via(&e, &server, T), Err(Error::Turn(_))));
+    assert!(matches!(
+        a.gather_relay_via(&e, &server, T),
+        Err(Error::Turn(_))
+    ));
     assert!(matches!(
         a.gather_relay_via(&e, &RelayServer::udp(srv.dtls, "alice", "wonderland"), T),
         Err(Error::Turn(_))
@@ -205,7 +220,13 @@ fn dtls_allocation_errors() {
     let e = engine();
     let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
     // Wrong credentials.
-    let wrong = RelayServer::dtls(srv.dtls, "localhost", tls_config(&srv.cert), "alice", "nope");
+    let wrong = RelayServer::dtls(
+        srv.dtls,
+        "localhost",
+        tls_config(&srv.cert),
+        "alice",
+        "nope",
+    );
     match a.gather_relay_via(&e, &wrong, T) {
         Err(Error::Turn(s)) => assert!(s.contains("401"), "{s}"),
         r => panic!("{r:?}"),
@@ -226,14 +247,30 @@ fn dtls_allocation_errors() {
     }
     assert!(t.elapsed() < Duration::from_secs(5));
     // The wrong name.
-    let bad = RelayServer::dtls(srv.dtls, "example.org", tls_config(&srv.cert), "alice", "wonderland");
-    assert!(matches!(a.gather_relay_via(&e, &bad, T), Err(Error::Turn(_))));
+    let bad = RelayServer::dtls(
+        srv.dtls,
+        "example.org",
+        tls_config(&srv.cert),
+        "alice",
+        "wonderland",
+    );
+    assert!(matches!(
+        a.gather_relay_via(&e, &bad, T),
+        Err(Error::Turn(_))
+    ));
     // A turns: URL over UDP without a TLS configuration.
-    let u = RelayServer::from_url(&format!("turns:{}?transport=udp", srv.dtls), "alice", "wonderland")
-        .unwrap();
+    let u = RelayServer::from_url(
+        &format!("turns:{}?transport=udp", srv.dtls),
+        "alice",
+        "wonderland",
+    )
+    .unwrap();
     assert!(matches!(a.gather_relay_via(&e, &u, T), Err(Error::Turn(_))));
     // With one, from the URL (an IP address: verified with insecure_skip_verify here).
-    let insecure = tls::ClientConfig::builder().insecure_skip_verify().build().unwrap();
+    let insecure = tls::ClientConfig::builder()
+        .insecure_skip_verify()
+        .build()
+        .unwrap();
     let r = a.gather_relay_via(&e, &u.tls_config(insecure), T).unwrap();
     assert_eq!(srv.turn.dtls_relay_of(a.local_addr().unwrap()), Some(r));
     a.close();

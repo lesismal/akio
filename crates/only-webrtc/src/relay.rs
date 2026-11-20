@@ -107,9 +107,9 @@ pub(crate) fn dtls_config(
         let name = server_name.to_owned();
         c = c.with_verifier(only_dtls::PeerVerifier::Custom(Arc::new(
             move |chain: &[Vec<u8>]| {
-                let mut certs = chain
-                    .iter()
-                    .map(|d| only_x509::Certificate::from_der(d.clone()).map_err(|e| e.to_string()));
+                let mut certs = chain.iter().map(|d| {
+                    only_x509::Certificate::from_der(d.clone()).map_err(|e| e.to_string())
+                });
                 let leaf = certs.next().ok_or("no certificate")??;
                 let rest = certs.collect::<Result<Vec<_>, _>>()?;
                 only_x509::Verifier::new(&roots)
@@ -435,7 +435,8 @@ impl Relay {
             if !d.is_connected() {
                 // A retransmission of a queued request (same transaction) is not queued again.
                 let tid = |x: &[u8]| (stun::is_stun(x) && x.len() >= 20).then(|| x[8..20].to_vec());
-                let dup = tid(&m).is_some_and(|t| st.dtls_queue.iter().any(|q| tid(q).as_ref() == Some(&t)));
+                let dup = tid(&m)
+                    .is_some_and(|t| st.dtls_queue.iter().any(|q| tid(q).as_ref() == Some(&t)));
                 if !dup
                     && st.dtls_queue.iter().map(Vec::len).sum::<usize>() + m.len() <= MAX_CONNECTING
                 {
@@ -586,7 +587,10 @@ impl Relay {
         let client_due = if st.down {
             None
         } else {
-            let dtls_due = st.dtls.as_ref().and_then(only_dtls::Connection::poll_timeout);
+            let dtls_due = st
+                .dtls
+                .as_ref()
+                .and_then(only_dtls::Connection::poll_timeout);
             match (st.client.poll_timeout(), dtls_due) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
@@ -679,8 +683,16 @@ impl timer::Due for Relay {
             if st.retry_at.is_some_and(|t| t <= now) && !me.closed.load(Ordering::Acquire) {
                 me.retry(st, now);
             }
-            if !st.down && st.dtls.as_ref().is_some_and(|d| d.poll_timeout().is_some_and(|t| t <= now)) {
-                let ok = st.dtls.as_mut().is_some_and(|d| d.handle_timeout(now).is_ok());
+            if !st.down
+                && st
+                    .dtls
+                    .as_ref()
+                    .is_some_and(|d| d.poll_timeout().is_some_and(|t| t <= now))
+            {
+                let ok = st
+                    .dtls
+                    .as_mut()
+                    .is_some_and(|d| d.handle_timeout(now).is_ok());
                 if ok {
                     let _ = me.dtls_events(st, now);
                 } else {

@@ -10,6 +10,29 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP（only-turn、only-webrtc、only）
+
+ADR-054（docs/adr/054-turn-dtls-mdns-ipv6-sdes.zh-CN.md）：
+
+- `TurnServer::dtls(&tls::ServerConfig)`：UDP 监听器上的 DTLS TURN（RFC 7350），使用 TLS 监听器的证书：
+  无状态 cookie，DTLS 1.3 可回退到 DTLS 1.2，每条记录一条 STUN / ChannelData 消息，分配随 DTLS 关联存在
+  （close_notify、致命告警、空闲超时或同一地址的新握手都会释放它）；`TurnServer::dtls_relay_of`。
+  only-turn 现在依赖 only-dtls。
+- `RelayServer::dtls` 与 `turns:host[:port]?transport=udp` URL（不再报错）：`Endpoint` 在自己 UDP 套接字
+  上的 DTLS 关联中分配，服务器证书按 TLS 客户端配置的根证书校验；得到 UDP relay 候选及 server-reflexive
+  候选；关联丢失后重新分配。
+- IPv6 上的 mDNS：`Endpoint::resolve_mdns` 增加一个 `[::]:5353` 套接字，在每个有链路本地地址的接口上加入
+  `ff02::fb`，按接口查询，在查询所来的链路上应答；远端链路本地地址保留其接口（SDP 不携带作用域 ID）。
+  IPv4 行为不变；没有 IPv6 的主机只跑 IPv4。`only`：`Engine::bind_udp_multicast_on(group, interfaces,
+  acceptor)` 按接口加入 IPv6 组。
+- `RtcConfig::enable_sdes_srtp`（默认关闭）：面向 SIP 网关的 SDES-SRTP（RFC 4568）：offer 为 `RTP/SAVPF`，
+  每个套件一行 `a=crypto`（AEAD-AES-256/128-GCM、AES-256/128-CM-HMAC-SHA1-80、AES-128-CM-HMAC-SHA1-32），
+  并应答 SDES offer；SRTP 密钥取自 SDP，没有 DTLS，没有数据通道；不支持 MKI 与会话参数。DTLS-SRTP offer
+  仍以 DTLS-SRTP 应答：浏览器永远看不到 `a=crypto`。
+- 模糊测试：新目标 `turn_dtls`；`webrtc_sdp` 试用 SDES 配置。
+- 互通：`tools/interop/webrtc/turn-dtls.sh`（Docker 中的 coturn 4.6）：`turnutils_uclient -S` 对 only-turn
+  的 DTLS 监听器，only_turn 客户端与两个经中继的 `Endpoint` 对 coturn 的 DTLS 监听器（协商为 DTLS 1.2）。
+
 ### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：
