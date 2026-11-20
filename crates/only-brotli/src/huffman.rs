@@ -27,75 +27,212 @@ fn reverse(code: u32, len: u32) -> u32 {
     code.reverse_bits() >> (32 - len)
 }
 
-/// Appends to `out` the decoding table of the canonical code with lengths `lens` (each
-/// 0..=15); links to second-level tables are relative to the table's start. The code must be
-/// complete (the callers check that); a code with a single symbol is built with [`single`]
-/// instead.
-pub(crate) fn build(lens: &[u8], out: &mut Vec<u32>) {
-    let mut count = [0u32; 16];
+/// Bits of each byte in reverse order (x86-64 has no instruction for it).
+const REV8: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = (i as u8).reverse_bits();
+        i += 1;
+    }
+    t
+};
+
+/// `code` (at most 15 bits long, `len` of them) bit-reversed.
+#[inline(always)]
+fn reverse15(code: u32, len: u32) -> usize {
+    let r = (u32::from(REV8[(code & 0xff) as usize]) << 8)
+        | u32::from(REV8[(code >> 8) as usize & 0xff]);
+    (r >> (16 - len)) as usize
+}
+
+/// The code lengths of a prefix code as they are read: the symbols with a non-zero length in
+/// symbol order and the number of codes of each length, so that [`Lengths::build`] needs no
+/// pass over the symbols without a code.
+#[derive(Default)]
+pub(crate) struct Lengths {
+    /// `(symbol, length)` in symbol order, lengths 1..=15.
+    pairs: Vec<(u16, u8)>,
+    count: [u16; 16],
+    /// Scratch: symbols sorted by length, then symbol.
+    sorted: Vec<u16>,
+}
+
+impl Lengths {
+    pub(crate) fn clear(&mut self) {
+        self.pairs.clear();
+        self.count = [0; 16];
+    }
+
+    /// Gives `sym` (greater than the symbols pushed before) the length `len` (1..=15).
+    #[inline(always)]
+    pub(crate) fn push(&mut self, sym: usize, len: u8) {
+        self.pairs.push((sym as u16, len));
+        self.count[usize::from(len & 15)] += 1;
+    }
+
+    /// Gives symbols `sym..sym + n` the length `len` (1..=15).
+    pub(crate) fn push_run(&mut self, sym: usize, n: usize, len: u8) {
+        self.pairs.extend((sym..sym + n).map(|s| (s as u16, len)));
+        self.count[usize::from(len & 15)] += n as u16;
+    }
+
+    /// Appends to `out` the decoding table of the canonical code with these lengths; links to
+    /// second-level tables are relative to the table's start. The code must be complete (the
+    /// callers check that); a code with a single symbol is built with [`single`] instead.
+    pub(crate) fn build(&mut self, out: &mut Vec<u32>) {
+        let mut count = self.count;
+        count[0] = 0;
+        // The first canonical code of each length.
+        let mut next = [0u32; 16];
+        let mut c = 0u32;
+        for len in 1..16 {
+            c = (c + u32::from(count[len - 1])) << 1;
+            next[len] = c;
+        }
+        let first_long = next[ROOT_BITS as usize + 1];
+        let long = count[ROOT_BITS as usize + 1..].iter().any(|&n| n != 0);
+        let base = out.len();
+        out.resize(base + ROOT_SIZE, entry(0, 0));
+        let Some(root) = out
+            .get_mut(base..base + ROOT_SIZE)
+            .and_then(|r| <&mut [u32; ROOT_SIZE]>::try_from(r).ok())
+        else {
+            return;
+        };
+        // Codes of up to `ROOT_BITS` go straight to the root, in symbol order; longer ones are
+        // sorted by length (then symbol) for the second level.
+        let mut long_next = [0u16; 16];
+        if long {
+            for len in ROOT_BITS as usize + 1..15 {
+                long_next[len + 1] = long_next[len] + count[len];
+            }
+            self.sorted.clear();
+            self.sorted.resize(
+                count[ROOT_BITS as usize + 1..]
+                    .iter()
+                    .map(|&n| usize::from(n))
+                    .sum(),
+                0,
+            );
+        }
+        for &(sym, len) in &self.pairs {
+            let len = u32::from(len & 15);
+            if len <= ROOT_BITS {
+                let code = &mut next[len as usize];
+                let e = entry(u32::from(sym), len);
+                let mut i = reverse15(*code, len);
+                *code += 1;
+                while i < ROOT_SIZE {
+                    root[i] = e;
+                    i += 1 << len;
+                }
+            } else {
+                let k = &mut long_next[len as usize];
+                if let Some(x) = self.sorted.get_mut(usize::from(*k)) {
+                    *x = sym;
+                }
+                *k += 1;
+            }
+        }
+        if !long {
+            return;
+        }
+        // Longer codes: a second-level table per root index, as large as the codes under it
+        // need (they come in one run each, in canonical order).
+        let mut syms = self.sorted.iter().map(|&s| u32::from(s));
+        let mut code = first_long;
+        let mut low = usize::MAX;
+        let (mut sub, mut sub_bits) = (0usize, 0u32);
+        for len in ROOT_BITS + 1..16 {
+            while count[len as usize] > 0 {
+                let r = reverse15(code, len);
+                if r & (ROOT_SIZE - 1) != low {
+                    low = r & (ROOT_SIZE - 1);
+                    sub_bits = next_table_bits(&count, len);
+                    sub = out.len() - base;
+                    out.resize(out.len() + (1 << sub_bits), entry(0, 0));
+                    out[base + low] = (sub as u32) << 16 | LINK | sub_bits;
+                }
+                let e = entry(syms.next().unwrap_or(0), len);
+                if let Some(t) = out.get_mut(base + sub..base + sub + (1 << sub_bits)) {
+                    let mut i = r >> ROOT_BITS;
+                    while i < t.len() {
+                        t[i] = e;
+                        i += 1 << (len - ROOT_BITS);
+                    }
+                }
+                count[len as usize] -= 1;
+                code += 1;
+            }
+            code <<= 1;
+        }
+    }
+}
+
+/// The decoding table of the code length code (RFC 7932 section 3.5: lengths of at most 5
+/// bits, `lens` indexed by code length symbol), indexed by the next 5 bits; entries as in the
+/// other tables. A code with a single symbol decodes it from zero bits.
+pub(crate) fn code_length_table(lens: &[u8; 18]) -> [u32; 32] {
+    let mut count = [0u32; 6];
     for &l in lens {
-        count[usize::from(l & 15)] += 1;
+        count[usize::from(l).min(5)] += 1;
     }
     count[0] = 0;
-    let mut first = [0u32; 16];
+    if count.iter().sum::<u32>() == 1 {
+        let s = lens.iter().position(|&l| l != 0).unwrap_or(0);
+        return [entry(s as u32, 0); 32];
+    }
+    let mut next = [0u32; 6];
     let mut c = 0u32;
-    for len in 1..16 {
+    for len in 1..6 {
         c = (c + count[len - 1]) << 1;
-        first[len] = c;
+        next[len] = c;
     }
-    let base = out.len();
-    out.resize(base + ROOT_SIZE, entry(0, 0));
-    // Second-level table sizes: the longest code under each root index.
-    let mut sub = [0u8; ROOT_SIZE];
-    if count[9..].iter().any(|&n| n != 0) {
-        let mut next = first;
-        for &l in lens {
-            let l = u32::from(l & 15);
-            if l > ROOT_BITS {
-                let code = next[l as usize];
-                next[l as usize] += 1;
-                let r = reverse(code, l) as usize & (ROOT_SIZE - 1);
-                sub[r] = sub[r].max((l - ROOT_BITS) as u8);
-            }
-        }
-        for (r, &sb) in sub.iter().enumerate() {
-            if sb != 0 {
-                let off = out.len() - base;
-                out.resize(base + off + (1 << sb), entry(0, 0));
-                out[base + r] = (off as u32) << 16 | LINK | u32::from(sb);
-            }
-        }
-    }
-    let table = &mut out[base..];
-    let mut next = first;
+    let mut t = [entry(0, 0); 32];
     for (sym, &l) in lens.iter().enumerate() {
-        let l = u32::from(l & 15);
+        let l = u32::from(l).min(5);
         if l == 0 {
             continue;
         }
         let code = next[l as usize];
         next[l as usize] += 1;
-        let r = reverse(code, l) as usize;
-        let e = entry(sym as u32, l);
-        if l <= ROOT_BITS {
-            let mut i = r;
-            while i < ROOT_SIZE {
-                table[i] = e;
-                i += 1 << l;
-            }
-        } else {
-            let link = table[r & (ROOT_SIZE - 1)];
-            let off = (link >> 16) as usize;
-            let sb = link & 0xff;
-            if let Some(t) = table.get_mut(off..off + (1 << sb)) {
-                let mut i = r >> ROOT_BITS;
-                while i < t.len() {
-                    t[i] = e;
-                    i += 1 << (l - ROOT_BITS);
-                }
-            }
+        let mut i = reverse15(code, l);
+        while i < 32 {
+            t[i] = entry(sym as u32, l);
+            i += 1 << l;
         }
     }
+    t
+}
+
+/// Index bits of the second-level table that starts with a code of length `len`, given the
+/// codes of each length still to place (`count`, from `len` on): enough for all the codes that
+/// share its root index (Google's `NextTableBitSize`).
+fn next_table_bits(count: &[u16; 16], mut len: u32) -> u32 {
+    let mut left = 1i32 << (len - ROOT_BITS);
+    while len < 15 {
+        left -= i32::from(count[len as usize]);
+        if left <= 0 {
+            break;
+        }
+        len += 1;
+        left <<= 1;
+    }
+    len - ROOT_BITS
+}
+
+/// Appends to `out` the decoding table of the canonical code with lengths `lens` (each
+/// 0..=15); see [`Lengths::build`].
+#[cfg(test)]
+pub(crate) fn build(lens: &[u8], out: &mut Vec<u32>) {
+    let mut l = Lengths::default();
+    for (s, &n) in lens.iter().enumerate() {
+        if n != 0 {
+            l.push(s, n);
+        }
+    }
+    l.build(out);
 }
 
 /// Decodes one symbol with `table`.
@@ -118,27 +255,9 @@ pub(crate) fn decode(table: &[u32], br: &mut BitReader<'_>) -> usize {
     (e >> 16) as usize
 }
 
-/// Decodes one symbol with `table` from the loaded bits: [`BitReader::refill`] must have run,
-/// and at most 57 bits (three 15-bit codes, say) be consumed before the next one.
-#[inline(always)]
-pub(crate) fn decode_loaded(table: &[u32], br: &mut BitReader<'_>) -> usize {
-    let bits = br.peek();
-    let e = table
-        .get((bits as usize) & (ROOT_SIZE - 1))
-        .copied()
-        .unwrap_or(0);
-    if e & LINK == 0 {
-        br.consume_loaded(e & 0xff);
-        return (e >> 16) as usize;
-    }
-    let sb = e & 0xff;
-    let i = (e >> 16) as usize + ((bits >> ROOT_BITS) as usize & ((1 << sb) - 1));
-    let e = table.get(i).copied().unwrap_or(0);
-    br.consume_loaded(e & 0xff);
-    (e >> 16) as usize
-}
-
-/// [`decode_loaded`] with the table at `start` in `tables` (one bounds check per level).
+/// Decodes one symbol with the table at `start` in `tables` from the loaded bits:
+/// [`BitReader::refill`] must have run, and at most 57 bits (three 15-bit codes, say) be
+/// consumed before the next one. One bounds check per level.
 #[inline(always)]
 pub(crate) fn decode_loaded_at(tables: &[u32], start: usize, br: &mut BitReader<'_>) -> usize {
     let bits = br.peek();
@@ -155,6 +274,46 @@ pub(crate) fn decode_loaded_at(tables: &[u32], start: usize, br: &mut BitReader<
     let e = tables.get(i).copied().unwrap_or(0);
     br.consume_loaded(e & 0xff);
     (e >> 16) as usize
+}
+
+/// A zero table, for trees that do not exist (which the decoder never asks for).
+static EMPTY: [u32; ROOT_SIZE] = [0; ROOT_SIZE];
+
+/// One decoding table: its root, of fixed size so that root lookups need no bounds check, and
+/// the whole table for second-level lookups.
+#[derive(Clone, Copy)]
+pub(crate) struct Tree<'a> {
+    root: &'a [u32; ROOT_SIZE],
+    all: &'a [u32],
+}
+
+impl<'a> Tree<'a> {
+    /// The table at `start` in `tables`.
+    pub(crate) fn at(tables: &'a [u32], start: usize) -> Self {
+        let all = tables.get(start..).unwrap_or(&[]);
+        let root = all
+            .get(..ROOT_SIZE)
+            .and_then(|r| r.try_into().ok())
+            .unwrap_or(&EMPTY);
+        Tree { root, all }
+    }
+
+    /// Decodes one symbol from the loaded bits: [`BitReader::refill`] must have run, and at
+    /// most 57 bits (three 15-bit codes, say) be consumed before the next one.
+    #[inline(always)]
+    pub(crate) fn decode_loaded(self, br: &mut BitReader<'_>) -> usize {
+        let bits = br.peek();
+        let e = self.root[(bits as usize) & (ROOT_SIZE - 1)];
+        if e & LINK == 0 {
+            br.consume_loaded(e & 0xff);
+            return (e >> 16) as usize;
+        }
+        let sb = e & 0xff;
+        let i = (e >> 16) as usize + ((bits >> ROOT_BITS) as usize & ((1 << sb) - 1));
+        let e = self.all.get(i).copied().unwrap_or(0);
+        br.consume_loaded(e & 0xff);
+        (e >> 16) as usize
+    }
 }
 
 // ---- Encoding --------------------------------------------------------------------------------
