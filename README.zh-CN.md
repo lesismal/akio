@@ -18,7 +18,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | 引擎 | 按 listener 选择后端：epoll（Linux）、kqueue（macOS）、io_uring（Linux 5.19+，不可用时回退到 epoll）；每核一线程的 I/O 线程；`SO_REUSEPORT` 分发连接；eBPF/经典 BPF 分流（`Accel::Ebpf`）以及内核内 sockmap 转发 |
 | 连接 | `Conn` 是 `Clone + Send + Sync`；任意线程非阻塞 `send`，支持直接写、cork、`writev`、`sendfile`；背压（水位线、`hold_reads`、`on_drain`、`max_queued_bytes`）；空闲超时；异步 dial；优雅停机 |
 | 阻塞任务 | 自适应、有界的逻辑线程池，`Conn::spawn_blocking` 的完成回调回到 I/O 线程，有序响应槽位，慢回调检测 |
-| UDP | 每个对端一个 `Conn`，`recvmmsg`/`sendmmsg`，UDP GSO/GRO，对端数量上限，UDP dial，共享端口上的组播组（IPv6 组按接口加入：`Engine::bind_udp_multicast_on`） |
+| UDP | 每个对端一个 `Conn`，或按批交给 `DatagramsHandler` 的无连接方式（没有对端表），`recvmmsg`/`sendmmsg`，UDP GSO/GRO，对端数量上限，UDP dial，共享端口上的组播组（IPv6 组按接口加入：`Engine::bind_udp_multicast_on`） |
 | TLS | 自研 TLS 1.3 / 1.2（`only-tls`，无第三方代码）作为连接 transport：服务端与客户端、ALPN、SNI、客户端证书、会话恢复 |
 | HTTP | 同一端口上的 HTTP/1.1 与 HTTP/2（h2spec 147/147），流水线，双向流式，Router（静态/正则/参数/通配），9 个中间件，基于 `sendfile` 的静态文件，HTTP/1 与 HTTP/2 客户端 |
 | WebSocket | 服务端与客户端，permessage-deflate，Autobahn 100%（服务端与客户端） |

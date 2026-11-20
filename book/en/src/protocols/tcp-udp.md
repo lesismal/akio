@@ -58,6 +58,46 @@ Protecting a public UDP port:
   transfers); request/response traffic is not measurably slower. Needs a `read_buffer` of at
   least 64 KiB; `ONLY_UDP_GRO=0` turns it off.
 
+## Connectionless UDP servers
+
+A peer table is what QUIC, DTLS or a game server need, but a DNS, syslog or StatsD server
+answers each datagram on its own and would only pay for it (a `Conn`, a handler and an idle
+timer per source address, and a table spoofed sources can fill). Serve the UDP listener with
+`serve_datagrams` instead of `serve` and it has no connections at all (ADR-065):
+
+```rust,ignore
+{{#include ../../../../crates/only/examples/udp-dns.rs:handler}}
+
+{{#include ../../../../crates/only/examples/udp-dns.rs:listener}}
+```
+
+- The factory runs **once per I/O thread** (on Linux each thread has its own `SO_REUSEPORT`
+  socket, and the kernel keeps a peer on one thread; elsewhere one thread serves the port), so
+  the handler's state is per thread and needs no lock.
+- `on_datagrams` gets each receive batch as `(peer, &[u8])` pairs, borrowed for the call
+  (GRO receives are already split back into datagrams). There is no `on_open`, `on_close` or
+  idle timeout, and `udp_max_peers` / `udp_idle_timeout` do not apply: memory does not depend on
+  how many addresses send.
+- `Replies::send_to(data, addr)` queues a datagram to **any** address; when the callback
+  returns, the batch's datagrams leave together: one `sendmmsg` per 64 messages on Linux, with
+  runs of equal-size datagrams to one address merged into one UDP GSO message (one `sendto` each
+  elsewhere). Datagrams the socket has no room for wait, and the thread stops reading until
+  they are out; the queue is bounded by `Config::max_queued_bytes` (`send_to` then fails with
+  `WouldBlock`).
+- From any other thread, a `DatagramSender` (`Send + Sync + Clone`; from the factory,
+  `Replies::sender()` or `Engine::datagram_sender(local)`) sends right away with one `sendto`;
+  a full socket drops the datagram with `WouldBlock`. Do slow work on your own threads and
+  answer from there with it: the callbacks run on the I/O thread and must not block.
+- `on_shutdown(out)` lets the handler send last datagrams; the engine waits up to
+  `shutdown_timeout` for them. A panic in a callback is logged and the handler keeps serving.
+- Backends: epoll, kqueue and io_uring (the ring reports readiness, the datagrams go through
+  the same `recvmmsg` / `sendmmsg` path). Not DPDK (`build` fails with `Unsupported`). The
+  thread count is fixed (`Engine::set_threads` refuses it), as for per-peer UDP listeners.
+
+The snippets are from `crates/only/examples/udp-dns.rs`, a small DNS-style responder. On the same
+host, a 64-byte echo served this way handles about as many requests as the per-peer listener
+with less server CPU per request (see `docs/BENCHMARKS.md`, "Connectionless UDP").
+
 ## UDP clients
 
 ```rust,ignore
@@ -78,6 +118,5 @@ another of the listener's threads, which then opens a peer through the listener'
 
 ## Not provided
 
-- A connectionless datagram API (one callback per datagram without per-peer state): every peer
-  is a `Conn`.
-- UDP on io_uring.
+- Per-peer UDP listeners on io_uring: they run on the epoll UDP loop (`recvmmsg` / `sendmmsg`
+  already make it one syscall per batch). Connectionless datagram listeners do run on io_uring.

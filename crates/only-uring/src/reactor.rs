@@ -12,8 +12,8 @@ use std::{
 };
 
 use only_core::{
-    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta, LoopStats,
-    Pool, Task,
+    Config, ConnInfo, ConnInner, DatagramPort, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta,
+    LoopStats, Pool, Task,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use only_sys::EventFd;
@@ -34,6 +34,8 @@ const OP_RESET: u64 = 6;
 /// A multishot recv on buffer group 1 (`OP_RECV` is group 0): the group a completion's buffer
 /// belongs to while a read-buffer reload swaps groups (`BufGroup`).
 const OP_RECV1: u64 = 7;
+/// A one-shot poll on a datagram listener socket (ADR-065); the id is its index in `dgrams`.
+const OP_DGRAM: u64 = 8;
 
 /// The recv operation kind for buffer group `bgid`.
 fn recv_op(bgid: u16) -> u64 {
@@ -665,6 +667,16 @@ pub(crate) struct Loop {
     inflight: usize,
     /// The command vector traded with `shared` (see `LoopShared::take_into`).
     spare_cmds: Vec<Cmd>,
+    /// Datagram listener sockets (ADR-065): readiness by a one-shot `POLL_ADD` each, I/O by the
+    /// port's `recvmmsg` / `sendmmsg` (the batching the epoll loops use too).
+    dgrams: Vec<Dgram>,
+}
+
+/// A datagram listener socket of a loop.
+struct Dgram {
+    port: DatagramPort,
+    /// Its poll is in flight.
+    armed: bool,
 }
 
 // SAFETY: a `Loop` is built on one thread and then moved to, and used only by, its I/O thread.
@@ -775,7 +787,37 @@ impl Loop {
             cqes: Vec::with_capacity(1024),
             inflight: 0,
             spare_cmds: Vec::new(),
+            dgrams: Vec::new(),
         })
+    }
+
+    /// Serves the datagram listener socket of `port` on this loop (before it starts).
+    pub(crate) fn add_port(&mut self, port: DatagramPort) {
+        self.dgrams.push(Dgram { port, armed: false });
+    }
+
+    /// No datagram reply waits for socket space (draining may end).
+    fn dgrams_idle(&self) -> bool {
+        self.dgrams.iter().all(|d| !d.port.wants_write())
+    }
+
+    /// A datagram socket's poll completed with `res` (the ready events, or `-errno`).
+    fn on_dgram(&mut self, i: usize, res: i32) {
+        let Some(d) = self.dgrams.get_mut(i) else {
+            return;
+        };
+        d.armed = false;
+        if res <= 0 {
+            return; // cancelled (shutdown) or an error: re-armed as needed
+        }
+        let ev = res as u32;
+        if ev & ffi::POLLOUT as u32 != 0 {
+            d.port.on_writable();
+        }
+        let rd = (ffi::POLLIN | ffi::POLLERR) as u32;
+        if ev & rd != 0 && d.port.wants_read() {
+            d.port.on_readable();
+        }
     }
 
     /// Runs on the I/O thread before the first submission: takes ownership of the ring (when it
@@ -903,7 +945,7 @@ impl Loop {
             if let Some(deadline) = self.draining {
                 // Done once every connection closed and the cancelled multishot accepts have
                 // ended: until then they may still deliver connections, which are served.
-                if self.slots.is_empty() && !self.accepts_armed() {
+                if self.slots.is_empty() && !self.accepts_armed() && self.dgrams_idle() {
                     self.quiesce();
                     break;
                 }
@@ -1005,6 +1047,25 @@ impl Loop {
                 self.push(e);
             }
         }
+        let draining = self.draining.is_some();
+        for i in 0..self.dgrams.len() {
+            let d = &self.dgrams[i];
+            if d.armed {
+                continue;
+            }
+            let mut mask = 0;
+            if d.port.wants_read() && !draining {
+                mask |= ffi::POLLIN as u32;
+            }
+            if d.port.wants_write() {
+                mask |= ffi::POLLOUT as u32;
+            }
+            if mask != 0 {
+                let e = Sqe::poll_add(d.port.fd(), mask).user_data(ud(i as u64, OP_DGRAM));
+                self.dgrams[i].armed = true;
+                self.push(e);
+            }
+        }
     }
 
     // ---- completions ----------------------------------------------------------------------
@@ -1021,6 +1082,7 @@ impl Loop {
             OP_RECV1 => self.on_recv(id, 1, res, flags),
             OP_POLL => self.on_poll(id),
             OP_RESET => self.on_reset_watch(id),
+            OP_DGRAM => self.on_dgram(id as usize, res),
             _ => {} // buffer provisioning, cancels
         }
     }
@@ -1537,6 +1599,9 @@ impl Loop {
     /// Live settings changed: re-arm idle timers for the new timeout and re-evaluate
     /// backpressure against the new watermark.
     fn on_reload(&mut self) {
+        for d in &mut self.dgrams {
+            d.port.on_reload();
+        }
         self.apply_read_buffer();
         let backlog = self.cfg.telemetry.live().backlog();
         if backlog != self.backlog {
@@ -1584,6 +1649,17 @@ impl Loop {
         let idxs: Vec<usize> = self.listeners.iter().map(|l| l.idx).collect();
         for idx in idxs {
             drop(self.drop_listener(idx));
+        }
+        // Datagram sockets stop reading: `on_shutdown`, then a poll only while replies wait.
+        let mut cancels = Vec::new();
+        for (i, d) in self.dgrams.iter_mut().enumerate() {
+            d.port.shutdown();
+            if d.armed {
+                cancels.push(Sqe::async_cancel(ud(i as u64, OP_DGRAM)).user_data(ud(0, OP_OTHER)));
+            }
+        }
+        for e in cancels {
+            self.push(e);
         }
         self.notify_shutdown();
     }

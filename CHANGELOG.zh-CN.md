@@ -24,6 +24,27 @@ ADR-066（docs/adr/066-static-files-change-notifications.zh-CN.md），只有新
 - only-sys：`FsWatcher`（`watch_dir`、`watch_file`、`unwatch`、`wait`、`wake`）、`FsEvent`、`WatchId`。
 - I/O 线程上的命中路径多读一个 relaxed 原子量；不打开 `watch` 时其余一切不变。
 
+### 新增：无连接的 UDP listener，`DatagramsHandler`（only、only-core、only-epoll、only-uring）
+
+ADR-065（docs/adr/065-connectionless-datagrams.zh-CN.md），只有新增（每对端连接的 UDP listener
+不变）：
+
+- `Listener::udp(addr).serve_datagrams(factory)`：每个 I/O 线程一个 `DatagramsHandler`，而不是每个
+  对端一个 `Conn`。`on_datagrams(&Datagrams, &mut Replies)` 以 `(peer, &[u8])` 对的形式拿到每个
+  接收批次；在 `Replies` 上排队的、发往任意地址的回复在它返回时一起发出（Linux 上用 `sendmmsg`，
+  发往同一地址、长度相同的连续数据报合并为 UDP GSO）。没有对端表、空闲超时和 `on_open` /
+  `on_close`：内存不随对端数量增长；`on_shutdown` 可发出最后的数据报。
+- `DatagramSender`（`Send + Sync + Clone`；来自工厂函数、`Replies::sender` 或
+  `Engine::datagram_sender`）可在任意线程向任意地址发送。
+- 有上限：回复队列计入 `Config::max_queued_bytes`（超出时 `send_to` 返回 `WouldBlock`）；有数据报
+  等待 socket 空间时，该线程暂停读取。
+- 支持 epoll、kqueue 和 io_uring（每个 socket 一个 ring poll，走同一条 `recvmmsg` / `sendmmsg`
+  路径；`ONLY_DEFAULT_BACKEND=uring` 生效）；不支持 DPDK（`Unsupported`）。与每对端 UDP listener
+  一样，`Engine::set_threads` 会被拒绝。
+- 示例 `udp-dns`（DNS 风格应答器）；`bench-server udp-dgram`。gpu51 上 64 B echo A/B：
+  每对端 UDP 不变（req/s 1.02 倍，每请求 CPU 1.00 倍）；`serve_datagrams` 的 req/s 为 1.08 倍（epoll）/
+  1.09 倍（io_uring），每请求服务端 CPU 少 7–8%。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

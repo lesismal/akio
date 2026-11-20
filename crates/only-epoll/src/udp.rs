@@ -26,6 +26,10 @@
 //! Peer tables are keyed by addresses the peer chooses, so they hash with the keyed folded
 //! multiply of `only_core::hash` (not SipHash); tables of our own ids with `IdHasher`.
 //!
+//! Connectionless datagram listeners (`Listener::serve_datagrams`, ADR-065): a loop built with
+//! `UdpLoop::with_port` has no peers; it polls one `only_core::DatagramPort` under `SOCK`, which
+//! does the batched receive, the handler call and the `sendmmsg` of its replies.
+//!
 //! io_uring: a UDP listener on the io_uring backend is served here. With `recvmmsg`/`sendmmsg`/GSO
 //! the syscall cost is already one per batch, so a ring buys little; a multishot `recvmsg` with
 //! provided buffers (per-datagram headers in the buffer, GRO control data) would be a second
@@ -48,8 +52,9 @@ use std::{
 
 use only_buf::slab::ChunkMut;
 use only_core::{
-    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, Group, IdHasher, IdMap, LoopMeta,
-    Pool, Task, UdpStats, hash::KeyedMap, telemetry::LoopCmd,
+    Config, ConnInfo, ConnInner, DatagramPort, DatagramSender, DatagramsFactory, DynAcceptor,
+    DynHandler, Error, Group, IdHasher, IdMap, LoopMeta, Pool, Task, UdpStats, hash::KeyedMap,
+    telemetry::LoopCmd,
 };
 use only_sys::{Event, Poller};
 use only_timer::{TimerId, Wheel};
@@ -177,6 +182,10 @@ struct UdpLoop {
     spare_cmds: Vec<Cmd>,
     /// Size of each receive slot (`Config::read_buffer`, reloadable; see `slot_size`).
     rb: usize,
+    /// A datagram listener's socket (ADR-065), polled under `SOCK` instead of `sock`, and the
+    /// interest it is registered with.
+    dgram: Option<DatagramPort>,
+    dgram_interest: (bool, bool),
 }
 
 /// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
@@ -281,7 +290,50 @@ impl UdpLoop {
             clock: Instant::now(),
             spare_cmds: Vec::new(),
             rb,
+            dgram: None,
+            dgram_interest: (false, false),
         })
+    }
+
+    /// A loop serving the datagram listener socket of `port` (ADR-065).
+    fn with_port(
+        poller: Poller,
+        shared: Arc<LoopShared>,
+        port: DatagramPort,
+        cfg: Arc<Config>,
+        stats: Arc<Stats>,
+    ) -> io::Result<UdpLoop> {
+        poller.add(port.fd(), SOCK, true, false)?;
+        let mut l = UdpLoop::new(poller, shared, None, cfg, stats)?;
+        l.dgram = Some(port);
+        l.dgram_interest = (true, false);
+        Ok(l)
+    }
+
+    /// Readiness of the datagram listener socket.
+    fn on_port(&mut self, readable: bool, writable: bool) {
+        let Some(p) = &mut self.dgram else {
+            return;
+        };
+        if writable {
+            p.on_writable();
+        }
+        if readable && p.wants_read() {
+            p.on_readable();
+        }
+        self.port_interest();
+    }
+
+    /// Polls the datagram listener socket for what its port wants.
+    fn port_interest(&mut self) {
+        let Some(p) = &self.dgram else {
+            return;
+        };
+        let want = (p.wants_read() && self.draining.is_none(), p.wants_write());
+        if want != self.dgram_interest {
+            self.dgram_interest = want;
+            let _ = self.poller.modify(p.fd(), SOCK, want.0, want.1);
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -292,6 +344,9 @@ impl UdpLoop {
     /// Live settings changed: the receive buffers take the new `read_buffer` (between two
     /// batches, so nothing borrows them), and peers' idle timers follow the new idle timeout.
     fn on_reload(&mut self) {
+        if let Some(p) = &mut self.dgram {
+            p.on_reload();
+        }
         let rb = slot_size(&self.cfg, self.cfg.telemetry.live().read_buffer());
         if rb != self.rb {
             self.rb = rb;
@@ -380,6 +435,7 @@ impl UdpLoop {
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker().drain(),
+                    SOCK if self.dgram.is_some() => self.on_port(ev.readable, ev.writable),
                     SOCK => {
                         if ev.readable {
                             self.recv_on(None);
@@ -413,7 +469,8 @@ impl UdpLoop {
                 // nothing is waiting for socket space, everything left is closed.
                 if (self.blocked.is_empty()
                     && self.blocked_own.is_empty()
-                    && self.binds.values().all(|b| b.blocked.is_empty()))
+                    && self.binds.values().all(|b| b.blocked.is_empty())
+                    && self.dgram.as_ref().is_none_or(|p| !p.wants_write()))
                     || Instant::now() >= deadline
                 {
                     let ids: Vec<u64> = self.conns.keys().copied().collect();
@@ -1192,6 +1249,10 @@ impl UdpLoop {
             return;
         }
         self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
+        if let Some(p) = &mut self.dgram {
+            p.shutdown();
+            self.port_interest();
+        }
         if let Some(sock) = &self.sock {
             self.poller.delete(sock.as_raw_fd());
             // Re-add for writing only if something is still waiting for socket space.
@@ -1276,6 +1337,8 @@ pub struct UdpGroup {
     pins: Mutex<Vec<Vec<usize>>>,
     rr: AtomicUsize,
     stats: Arc<Stats>,
+    /// A datagram listener's sender (on thread 0's socket).
+    sender: Option<DatagramSender>,
 }
 
 impl std::fmt::Debug for UdpGroup {
@@ -1348,6 +1411,67 @@ impl UdpGroup {
             pins: Mutex::new(Vec::new()),
             rr: AtomicUsize::new(0),
             stats,
+            sender: None,
+        })
+    }
+
+    /// Binds `addr` for a connectionless datagram listener (ADR-065): `threads` loops (one
+    /// elsewhere than Linux, as for [`bind`](Self::bind)), each with its own `SO_REUSEPORT`
+    /// socket on Linux served by a [`DatagramsHandler`](only_core::DatagramsHandler) from
+    /// `factory`. No peer table: `Config::udp_max_peers` and `udp_idle_timeout` do not apply.
+    pub fn bind_datagrams(
+        addr: SocketAddr,
+        factory: DatagramsFactory,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<UdpGroup> {
+        let threads = if cfg!(target_os = "linux") {
+            threads.max(1)
+        } else {
+            1
+        };
+        cfg.telemetry.bind(&cfg);
+        let cfg = Arc::new(cfg);
+        let first = only_sys::listen_udp(addr, cfg!(target_os = "linux"))?;
+        let bound = first.local_addr()?;
+        let mut socks = vec![first];
+        for _ in 1..threads {
+            socks.push(only_sys::listen_udp(bound, true)?);
+        }
+        let fds = if cfg!(target_os = "linux") {
+            socks.iter().map(AsRawFd::as_raw_fd).collect()
+        } else {
+            Vec::new()
+        };
+        let stats = Arc::new(Stats::default());
+        let (mut shared, mut loops, mut sender) = (Vec::new(), Vec::new(), None);
+        for (thread, sock) in socks.into_iter().enumerate() {
+            let poller = Poller::new()?;
+            let meta = LoopMeta::new("udp", Some(bound), thread);
+            let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
+            let port = DatagramPort::new(sock, &factory, sh.stats.clone(), cfg.clone())?;
+            sender.get_or_insert_with(|| port.sender());
+            loops.push(UdpLoop::with_port(
+                poller,
+                sh.clone(),
+                port,
+                cfg.clone(),
+                stats.clone(),
+            )?);
+            shared.push(sh);
+        }
+        Ok(UdpGroup {
+            addr: bound,
+            fds,
+            shared,
+            pending: Mutex::new(loops),
+            threads: Mutex::new(Vec::new()),
+            started: AtomicBool::new(false),
+            pins: Mutex::new(Vec::new()),
+            rr: AtomicUsize::new(0),
+            stats,
+            sender,
         })
     }
 }
@@ -1363,6 +1487,9 @@ impl Group for UdpGroup {
 
     fn listener_fds(&self) -> Vec<i32> {
         self.fds.clone()
+    }
+    fn datagram_sender(&self) -> Option<DatagramSender> {
+        self.sender.clone()
     }
     fn udp_stats(&self) -> UdpStats {
         let mut s = UdpStats::default();

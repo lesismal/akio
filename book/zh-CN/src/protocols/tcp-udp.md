@@ -54,6 +54,43 @@ Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmm
   传输）有帮助，请求/响应式流量没有可测的变慢。需要 `read_buffer` 至少 64 KiB；
   `ONLY_UDP_GRO=0` 可关闭。
 
+## 无连接的 UDP 服务端
+
+对端表是 QUIC、DTLS 或游戏服务器需要的，但 DNS、syslog、StatsD 一类服务器对每个数据报单独
+应答，对端表只是负担（每个源地址一个 `Conn`、一个 handler 和一个空闲定时器，伪造的源地址还能
+把表填满）。用 `serve_datagrams` 代替 `serve` 来服务 UDP listener，它就完全没有连接（ADR-065）：
+
+```rust,ignore
+{{#include ../../../../crates/only/examples/udp-dns.rs:handler}}
+
+{{#include ../../../../crates/only/examples/udp-dns.rs:listener}}
+```
+
+- 工厂函数**每个 I/O 线程执行一次**（Linux 上每个线程有自己的 `SO_REUSEPORT` socket，内核
+  把同一对端固定在一个线程；其他系统由一个线程服务该端口），所以 handler 的状态按线程划分，
+  不需要锁。
+- `on_datagrams` 以 `(peer, &[u8])` 对的形式拿到每个接收批次，只在这次调用内借用（GRO 合并的
+  接收已拆回单个数据报）。没有 `on_open`、`on_close` 和空闲超时，`udp_max_peers` /
+  `udp_idle_timeout` 不适用：内存不随发送方地址的数量变化。
+- `Replies::send_to(data, addr)` 把发往**任意**地址的数据报排队；回调返回时，这一批的数据报
+  一起发出：Linux 上每 64 条消息一次 `sendmmsg`，发往同一地址、长度相同的连续数据报合并为一条
+  UDP GSO 消息（其他系统每个数据报一次 `sendto`）。socket 放不下的数据报会等待，在它们发出前
+  该线程停止读取；队列受 `Config::max_queued_bytes` 限制（超出时 `send_to` 返回
+  `WouldBlock`）。
+- 在其他任意线程上，`DatagramSender`（`Send + Sync + Clone`；来自工厂函数、
+  `Replies::sender()` 或 `Engine::datagram_sender(local)`）用一次 `sendto` 立即发送；socket
+  满时以 `WouldBlock` 丢弃该数据报。慢的工作放到自己的线程上做，再用它从那里应答：回调运行在
+  I/O 线程上，不能阻塞。
+- `on_shutdown(out)` 让 handler 发出最后的数据报；engine 最多等待 `shutdown_timeout` 让它们
+  发完。回调中的 panic 会被记录，handler 继续服务。
+- 后端：epoll、kqueue 和 io_uring（由 ring 报告就绪，数据报走同一条 `recvmmsg` / `sendmmsg`
+  路径）。不支持 DPDK（`build` 返回 `Unsupported`）。线程数固定（`Engine::set_threads` 会拒绝），
+  与每对端连接的 UDP listener 相同。
+
+片段来自 `crates/only/examples/udp-dns.rs`，一个小型 DNS 风格应答器。在同一台主机上，
+这样服务的 64 字节 echo 与每对端连接的 listener 处理的请求数相当，每个请求的服务端 CPU 更少
+（见 `docs/BENCHMARKS.zh-CN.md`“无连接 UDP”）。
+
 ## UDP 客户端
 
 ```rust,ignore
@@ -73,5 +110,5 @@ socket 上打开一个对端 `Conn`：数据报从 listener 的端口发出，�
 
 ## 未提供
 
-- 无连接的数据报 API（每个数据报一次回调、没有每对端状态）：每个对端都是一个 `Conn`。
-- io_uring 上的 UDP。
+- io_uring 上的每对端连接 UDP listener：它们运行在 epoll 的 UDP 循环上（`recvmmsg` /
+  `sendmmsg` 已经做到每批一次系统调用）。无连接的数据报 listener 可以运行在 io_uring 上。

@@ -11,6 +11,9 @@
 //!   thread and queues the rest); a one-shot `poll(POLLOUT)` is armed while a queue is waiting.
 //! * Backpressure and `hold_reads` cancel the multishot `recv` and re-arm it on resume.
 //! * Wake-up: an eventfd read that other threads signal after posting a command.
+//! * Connectionless datagram listeners (ADR-065): a one-shot `POLL_ADD` per UDP socket, and on
+//!   completion the shared `only_core::DatagramPort` (`recvmmsg`, handler, `sendmmsg`). Per-peer
+//!   UDP listeners run on the epoll UDP loop.
 //!
 //! Measured and not used (docs/BENCHMARKS.md, "io_uring features evaluation"): ring-based sends
 //! (`IORING_OP_SEND`), `SEND_ZC`, registered files with direct accept, a registered ring fd and

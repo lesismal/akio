@@ -30,6 +30,28 @@ ADR-066 (docs/adr/066-static-files-change-notifications.md), additive (off by de
 - The hit path on the I/O thread reads one more relaxed atomic; with `watch` off, nothing else
   changes.
 
+### Added: connectionless UDP listeners, `DatagramsHandler` (only, only-core, only-epoll, only-uring)
+
+ADR-065 (docs/adr/065-connectionless-datagrams.md), additive (per-peer UDP listeners are
+unchanged):
+
+- `Listener::udp(addr).serve_datagrams(factory)`: one `DatagramsHandler` per I/O thread instead
+  of a `Conn` per peer. `on_datagrams(&Datagrams, &mut Replies)` gets each receive batch as
+  `(peer, &[u8])` pairs; replies to any address queued on `Replies` leave together when it
+  returns (`sendmmsg`, runs of equal-size datagrams to one address as UDP GSO, on Linux). No peer
+  table, idle timeout or `on_open` / `on_close`: memory does not grow with the number of peers;
+  `on_shutdown` sends last datagrams.
+- `DatagramSender` (`Send + Sync + Clone`; from the factory, `Replies::sender` or
+  `Engine::datagram_sender`) sends to any address from any thread.
+- Bounded: the reply queue counts against `Config::max_queued_bytes` (`send_to` then fails with
+  `WouldBlock`); datagrams waiting for socket space pause reading on that thread.
+- epoll, kqueue and io_uring (a ring poll per socket, the same `recvmmsg` / `sendmmsg` path;
+  `ONLY_DEFAULT_BACKEND=uring` applies); not DPDK (`Unsupported`). `Engine::set_threads` is
+  refused, as for per-peer UDP listeners.
+- Example `udp-dns` (a DNS-style responder); `bench-server udp-dgram`. 64 B echo A/B on
+  gpu51: per-peer UDP unchanged (1.02x req/s, 1.00x CPU per request); `serve_datagrams` 1.08x
+  (epoll) / 1.09x (io_uring) req/s with 7-8% less server CPU per request.
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

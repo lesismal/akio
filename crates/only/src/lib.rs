@@ -48,14 +48,15 @@ pub use only_log as log;
 pub use only_dpdk as dpdk;
 
 pub use only_core::{
-    Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
-    LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
-    ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
+    Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
+    DatagramsIter, Error, FnAcceptor, Handler, Live, LoopCounters, LoopMeta, LoopMetrics, Metrics,
+    Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot, ResponseStream, Result,
+    SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport, UdpBinding, UdpStats,
+    fn_acceptor, metrics, telemetry,
 };
+use only_core::{DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr};
 #[doc(hidden)]
 pub use only_core::{DynAcceptor, DynHandler};
-use only_core::{Group, Pool, telemetry::log_or_stderr};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
@@ -153,6 +154,8 @@ pub struct Listener {
     accel: Accel,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// The handler factory of a connectionless datagram listener (ADR-065).
+    datagrams: Option<DatagramsFactory>,
     /// An already listening socket to serve instead of binding `addr`.
     inherited: Option<std::net::TcpListener>,
 }
@@ -174,6 +177,7 @@ impl Listener {
             accel: Accel::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
+            datagrams: None,
             inherited: None,
         }
     }
@@ -200,6 +204,10 @@ impl Listener {
     /// `Config::udp_idle_timeout` is closed. Served by the epoll/kqueue backend; on Linux the
     /// threads share the port via `SO_REUSEPORT` (one peer always lands on the same thread), on
     /// other systems a single thread serves it.
+    ///
+    /// Served with [`serve_datagrams`](Self::serve_datagrams) instead of
+    /// [`serve`](Self::serve), the listener has no connections at all: one
+    /// [`DatagramsHandler`] per I/O thread gets the datagrams in batches.
     pub fn udp(addr: SocketAddr) -> Self {
         Listener {
             udp: true,
@@ -235,6 +243,33 @@ impl Listener {
     #[must_use]
     pub fn serve<A: Acceptor>(mut self, acceptor: A) -> Self {
         self.acceptor = Some(Arc::new(acceptor));
+        self
+    }
+
+    /// Serves this UDP listener connectionlessly (ADR-065): `factory` creates one
+    /// [`DatagramsHandler`] per I/O thread (given a [`DatagramSender`] on that thread's socket),
+    /// which gets every receive batch as `(peer, bytes)` pairs and queues replies to any
+    /// address on [`Replies`]; they leave together when the callback returns (`sendmmsg`, and
+    /// UDP GSO for runs of equal-size datagrams to one address, on Linux). There is no peer
+    /// table, no idle timeout and no `on_open` / `on_close`: memory does not grow with the number
+    /// of peers, and `Config::udp_max_peers` / `udp_idle_timeout` do not apply. Suits DNS,
+    /// syslog or StatsD servers; protocols with per-peer state (QUIC, DTLS) want
+    /// [`serve`](Self::serve).
+    ///
+    /// Threads as for [`Listener::udp`]: on Linux one `SO_REUSEPORT` socket per thread (the
+    /// kernel keeps a peer on one thread), elsewhere one thread. Backends: epoll, kqueue and
+    /// io_uring (readiness from the ring, the datagrams through the same `recvmmsg` /
+    /// `sendmmsg` path); not DPDK (`build` fails with `Unsupported`). The thread count is fixed
+    /// ([`Engine::set_threads`] refuses it). Other threads send with a [`DatagramSender`]
+    /// (also [`Engine::datagram_sender`]). `build` fails with `InvalidInput` on a TCP listener
+    /// or one that also has [`serve`](Self::serve).
+    #[must_use]
+    pub fn serve_datagrams<H, F>(mut self, factory: F) -> Self
+    where
+        H: DatagramsHandler,
+        F: Fn(&DatagramSender) -> H + Send + Sync + 'static,
+    {
+        self.datagrams = Some(datagrams_factory(factory));
         self
     }
 
@@ -313,11 +348,27 @@ impl EngineBuilder {
         let env_backend = env_default_backend(); // read once per build (ADR-029)
         for mut l in self.listeners {
             if let Some(b) = &env_backend {
-                if !l.backend_explicit && !l.udp {
+                // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners
+                // follow the default like TCP.
+                if !l.backend_explicit && (!l.udp || l.datagrams.is_some()) {
                     l.backend = b.clone();
                 }
             }
             accels.push(l.accel.clone());
+            if let Some(factory) = l.datagrams.take() {
+                if !l.udp || l.acceptor.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "serve_datagrams needs a UDP listener without .serve(..)",
+                    ));
+                }
+                // Never a target of `dial` (TCP) or of `dial_udp` / `bind_udp`.
+                udp_listeners.push(groups.len());
+                groups.push(bind_datagrams(
+                    l.addr, factory, &l.backend, l.threads, &self.cfg, &pool,
+                )?);
+                continue;
+            }
             let acceptor = l.acceptor.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
             })?;
@@ -464,6 +515,74 @@ impl EngineBuilder {
             accel,
             telemetry,
         })
+    }
+}
+
+/// The group serving a datagram listener (ADR-065) on `backend`.
+fn bind_datagrams(
+    addr: SocketAddr,
+    factory: DatagramsFactory,
+    backend: &Backend,
+    threads: usize,
+    cfg: &Config,
+    pool: &Arc<Pool>,
+) -> io::Result<Box<dyn Group>> {
+    let epoll = |factory: DatagramsFactory| -> io::Result<Box<dyn Group>> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return Ok(Box::new(only_epoll::UdpGroup::bind_datagrams(
+            addr,
+            factory,
+            threads,
+            cfg.clone(),
+            pool.clone(),
+        )?));
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = factory;
+            Err(unsupported("UDP on this platform"))
+        }
+    };
+    match backend {
+        Backend::Epoll => epoll(factory),
+        #[cfg(feature = "dpdk")]
+        Backend::Dpdk(_) => Err(unsupported(
+            "connectionless datagram handlers on the DPDK backend",
+        )),
+        Backend::IoUring(u) => {
+            #[cfg(target_os = "linux")]
+            match only_uring::probe() {
+                Ok(()) => Ok(Box::new(only_uring::UringGroup::bind_datagrams(
+                    addr,
+                    factory,
+                    threads,
+                    cfg.clone(),
+                    pool.clone(),
+                    only_uring::UringOptions {
+                        entries: u.entries,
+                        sqpoll: u.sqpoll,
+                    },
+                )?)),
+                Err(why) if u.strict => Err(unsupported(&format!("the io_uring backend ({why})"))),
+                Err(why) => {
+                    log_or_stderr(
+                        only_log::Level::Warn,
+                        format_args!("io_uring unavailable ({why}); using epoll"),
+                    );
+                    epoll(factory)
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                if u.strict {
+                    return Err(unsupported("the io_uring backend on this platform"));
+                }
+                log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!("io_uring is Linux-only; using epoll/kqueue"),
+                );
+                epoll(factory)
+            }
+        }
     }
 }
 
@@ -714,8 +833,8 @@ impl Engine {
     /// (it has no connection left) joins that thread first, so it is safe but not ideal to call
     /// from an I/O thread's callback.
     /// [`Metrics::loops`] shows retiring threads (`retiring`). Errors: `Unsupported` for UDP
-    /// listeners (a socket added or removed from a UDP `SO_REUSEPORT` group would move peers
-    /// between threads), DPDK groups and listeners with BPF steering (`Accel::Ebpf`); `NotFound`
+    /// listeners of both kinds (a socket added or removed from a UDP `SO_REUSEPORT` group would
+    /// move peers between threads), DPDK groups and listeners with BPF steering (`Accel::Ebpf`); `NotFound`
     /// for an index out of range; `InvalidInput` before [`start`](Self::start); `NotConnected`
     /// after [`shutdown`](Self::shutdown).
     pub fn set_threads(&self, index: usize, threads: usize) -> io::Result<()> {
@@ -747,6 +866,23 @@ impl Engine {
     /// Counters of the logical pool.
     pub fn pool_stats(&self) -> PoolStats {
         self.pool.stats()
+    }
+
+    /// A sender on the socket of the datagram listener (see [`Listener::serve_datagrams`])
+    /// bound at `local` (as [`local_addrs`](Self::local_addrs) reports it): sends to any
+    /// address from any thread. On Linux, where each I/O thread has its own socket on the port,
+    /// it sends from the first thread's. `InvalidInput` when there is no such listener.
+    pub fn datagram_sender(&self, local: SocketAddr) -> io::Result<DatagramSender> {
+        self.groups
+            .iter()
+            .filter(|g| g.local_addr() == local)
+            .find_map(|g| g.datagram_sender())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "no datagram listener at that address",
+                )
+            })
     }
 
     /// Peer counters of the UDP listeners, summed (see `Config::udp_max_peers`).

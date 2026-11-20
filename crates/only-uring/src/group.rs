@@ -10,7 +10,10 @@ use std::{
 
 use std::panic::AssertUnwindSafe;
 
-use only_core::{Config, DynAcceptor, Group, LoopMeta, LoopStats, Pool};
+use only_core::{
+    Config, DatagramPort, DatagramSender, DatagramsFactory, DynAcceptor, Group, LoopMeta,
+    LoopStats, Pool,
+};
 
 use crate::reactor::{Cmd, Loop, LoopShared, Roster};
 use crate::ring;
@@ -97,6 +100,10 @@ pub struct UringGroup {
     pool: Arc<Pool>,
     acceptor: AssertUnwindSafe<Option<Arc<dyn DynAcceptor>>>,
     opts: UringOptions,
+    /// A datagram listener's sender (on loop 0's socket), ADR-065. Such a group keeps its
+    /// thread count (a socket added to or removed from the `SO_REUSEPORT` group would move
+    /// peers between threads, as for the UDP listeners).
+    sender: Option<DatagramSender>,
 }
 
 /// How the loops of a group get their listening sockets.
@@ -243,7 +250,48 @@ impl UringGroup {
             pool,
             acceptor: AssertUnwindSafe(acceptor),
             opts,
+            sender: None,
         })
+    }
+
+    /// Binds `addr` for a connectionless datagram listener (ADR-065): `threads` rings, each
+    /// polling its own `SO_REUSEPORT` UDP socket served by a
+    /// [`DatagramsHandler`](only_core::DatagramsHandler) from `factory`. Readiness comes from
+    /// the ring (a one-shot `POLL_ADD`), the datagrams move with `recvmmsg` / `sendmmsg` as on
+    /// epoll. The thread count is fixed (`Group::set_threads` is refused).
+    pub fn bind_datagrams(
+        addr: SocketAddr,
+        factory: DatagramsFactory,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+        opts: UringOptions,
+    ) -> io::Result<UringGroup> {
+        let threads = threads.max(1);
+        let first = only_sys::listen_udp(addr, true)?;
+        let bound = first.local_addr()?;
+        let mut socks = vec![first];
+        for _ in 1..threads {
+            socks.push(only_sys::listen_udp(bound, true)?);
+        }
+        let fds = socks.iter().map(std::os::fd::AsRawFd::as_raw_fd).collect();
+        let none = (0..threads).map(|_| None).collect();
+        let mut g = Self::assemble(none, bound, fds, None, Listening::None, cfg, pool, opts)?;
+        let cfg = g.cfg.0.clone();
+        let mut sender = None;
+        {
+            let mut st = lock(&g.state);
+            for (slot, sock) in st.slots.iter_mut().zip(socks) {
+                let port =
+                    DatagramPort::new(sock, &factory, slot.shared.stats.clone(), cfg.clone())?;
+                sender.get_or_insert_with(|| port.sender());
+                if let Some(lp) = slot.pending.as_mut() {
+                    lp.add_port(port);
+                }
+            }
+        }
+        g.sender = sender;
+        Ok(g)
     }
 
     /// Builds loop `thread` (reusing the counters `stats` of an exited loop of that index).
@@ -262,7 +310,8 @@ impl UringGroup {
         let sh = match stats {
             Some(st) => LoopShared::with_stats(pool.clone(), cfg, st)?,
             None => {
-                let listener = acceptor.as_ref().map(|_| addr);
+                // A listener (TCP, or a datagram socket) has a port; a client-only group not.
+                let listener = (addr.port() != 0).then_some(addr);
                 let meta = LoopMeta::new("io_uring", listener, thread);
                 LoopShared::new(pool.clone(), cfg, meta)?
             }
@@ -419,6 +468,10 @@ impl Group for UringGroup {
         self.fds.clone()
     }
 
+    fn datagram_sender(&self) -> Option<DatagramSender> {
+        self.sender.clone()
+    }
+
     fn pin_threads(&self, cpus: Vec<Vec<usize>>) {
         *lock(&self.pins) = cpus;
     }
@@ -440,6 +493,12 @@ impl Group for UringGroup {
     }
 
     fn set_threads(&self, n: usize) -> io::Result<()> {
+        if self.sender.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a datagram listener keeps its thread count",
+            ));
+        }
         let n = n.max(1);
         let mut st = lock(&self.state);
         if st.stopping {

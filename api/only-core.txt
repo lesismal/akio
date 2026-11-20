@@ -572,6 +572,54 @@ impl core::marker::Sync for only_core::telemetry::ConnInfo
 impl core::marker::Unpin for only_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::ConnInfo
+pub struct only_core::DatagramSender
+impl only_core::DatagramSender
+pub fn only_core::DatagramSender::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_core::DatagramSender::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+impl core::clone::Clone for only_core::DatagramSender
+pub fn only_core::DatagramSender::clone(&self) -> Self
+impl core::fmt::Debug for only_core::DatagramSender
+pub fn only_core::DatagramSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::DatagramSender
+impl core::marker::Sync for only_core::DatagramSender
+impl core::marker::Unpin for only_core::DatagramSender
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::DatagramSender
+impl core::panic::unwind_safe::UnwindSafe for only_core::DatagramSender
+pub struct only_core::Datagrams<'a>
+impl<'a> only_core::Datagrams<'a>
+pub fn only_core::Datagrams<'a>::get(&self, usize) -> core::option::Option<(core::net::socket_addr::SocketAddr, &'a [u8])>
+pub fn only_core::Datagrams<'a>::is_empty(&self) -> bool
+pub fn only_core::Datagrams<'a>::iter(&self) -> only_core::DatagramsIter<'a>
+pub fn only_core::Datagrams<'a>::len(&self) -> usize
+impl core::fmt::Debug for only_core::Datagrams<'_>
+pub fn only_core::Datagrams<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for only_core::Datagrams<'a>
+pub fn only_core::Datagrams<'a>::clone(&self) -> Self
+impl<'a> core::iter::traits::collect::IntoIterator for &only_core::Datagrams<'a>
+pub type &only_core::Datagrams<'a>::IntoIter = only_core::DatagramsIter<'a>
+pub type &only_core::Datagrams<'a>::Item = (core::net::socket_addr::SocketAddr, &'a [u8])
+pub fn &only_core::Datagrams<'a>::into_iter(self) -> only_core::DatagramsIter<'a>
+impl<'a> core::marker::Copy for only_core::Datagrams<'a>
+impl<'a> !core::marker::Send for only_core::Datagrams<'a>
+impl<'a> !core::marker::Sync for only_core::Datagrams<'a>
+impl<'a> core::marker::Unpin for only_core::Datagrams<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_core::Datagrams<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_core::Datagrams<'a>
+pub struct only_core::DatagramsIter<'a>
+impl core::iter::traits::exact_size::ExactSizeIterator for only_core::DatagramsIter<'_>
+impl<'a> core::clone::Clone for only_core::DatagramsIter<'a>
+pub fn only_core::DatagramsIter<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for only_core::DatagramsIter<'a>
+pub fn only_core::DatagramsIter<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::iter::traits::iterator::Iterator for only_core::DatagramsIter<'a>
+pub type only_core::DatagramsIter<'a>::Item = (core::net::socket_addr::SocketAddr, &'a [u8])
+pub fn only_core::DatagramsIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn only_core::DatagramsIter<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> !core::marker::Send for only_core::DatagramsIter<'a>
+impl<'a> !core::marker::Sync for only_core::DatagramsIter<'a>
+impl<'a> core::marker::Unpin for only_core::DatagramsIter<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_core::DatagramsIter<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_core::DatagramsIter<'a>
 pub struct only_core::FnAcceptor<H, F>
 impl<H, F> core::fmt::Debug for only_core::FnAcceptor<H, F>
 pub fn only_core::FnAcceptor<H, F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -731,6 +779,19 @@ impl core::marker::Sync for only_core::telemetry::ReloadReport
 impl core::marker::Unpin for only_core::telemetry::ReloadReport
 impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::ReloadReport
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::ReloadReport
+pub struct only_core::Replies
+impl only_core::Replies
+pub fn only_core::Replies::is_empty(&self) -> bool
+pub fn only_core::Replies::len(&self) -> usize
+pub fn only_core::Replies::send_to(&mut self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+pub fn only_core::Replies::sender(&self) -> &only_core::DatagramSender
+impl core::fmt::Debug for only_core::Replies
+pub fn only_core::Replies::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::Replies
+impl !core::marker::Sync for only_core::Replies
+impl core::marker::Unpin for only_core::Replies
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::Replies
+impl core::panic::unwind_safe::UnwindSafe for only_core::Replies
 pub struct only_core::ResponseSlot
 impl only_core::ResponseSlot
 pub fn only_core::ResponseSlot::fill(self, alloc::vec::Vec<u8>)
@@ -868,6 +929,9 @@ pub type only_core::FnAcceptor<H, F>::Handler = H
 pub fn only_core::FnAcceptor<H, F>::on_open(&self, &only_core::Conn<H>) -> H
 pub fn only_core::FnAcceptor<H, F>::on_shutdown(&self, &only_core::Conn<Self::Handler>)
 pub fn only_core::FnAcceptor<H, F>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn only_core::Transport>>
+pub trait only_core::DatagramsHandler: core::marker::Send + 'static
+pub fn only_core::DatagramsHandler::on_datagrams(&mut self, &only_core::Datagrams<'_>, &mut only_core::Replies)
+pub fn only_core::DatagramsHandler::on_shutdown(&mut self, &mut only_core::Replies)
 pub trait only_core::Handler: core::marker::Send + core::marker::Sized + 'static
 pub fn only_core::Handler::on_close(&mut self, &only_core::Conn<Self>, core::option::Option<only_core::Error>)
 pub fn only_core::Handler::on_data(&mut self, &only_core::Conn<Self>, &[u8])
