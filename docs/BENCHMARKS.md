@@ -569,6 +569,30 @@ enter (about 12% at 4.6M requests/s, 3% at 0.7M); at 100% every request also all
 and the exporter thread encodes and sends ~2.5M spans/s on the same four CPUs. Sample in
 production (`sample_ratio`), or give the exporter thread its own CPU.
 
+### OTLP export additions (ADR-064, same-run A/B)
+
+Measured 2026-11-21 on gpu51 under `quiet.sh`. Question: do span events and links, OTLP logs,
+exemplars and the export changes cost anything while they are off? `base` is `main` at
+`b22519ae`, `new` the otlp-gaps branch, built in one session and run alternately, pinned to one
+CPU (micro-benchmarks) or with the server on CPUs 0–3 (4 threads, epoll) and `h2load` (8
+threads, 256 connections, 5 s) on CPUs 4–7 and 12–15. Medians; ratios are new / base.
+
+| Benchmark | rounds | base | new / base |
+|---|---:|---:|---:|
+| only-log `trace!` disabled, 2 key-values | 5 × 2 | 0.272 ns | 1.009 |
+| only-log `info_span!` with spans off, 2 fields | 5 × 2 | 0.615 ns | 0.998 |
+| only-log `span::enabled` (spans off) | 5 × 2 | 0.407 ns | 0.994 |
+| only-log `log_enabled!` disabled | 5 × 2 | 0.406 ns | 0.998 |
+| `Histogram::observe` (no exemplars) | 7 | 4.643 ns | 1.005 |
+| `HttpMetrics` middleware (exemplars off), HTTP/1.1 plaintext | 7 | 731,820 req/s | 0.999 |
+| `HttpMetrics` middleware (exemplars off), pipelined ×16 | 7 | 4,284,243 req/s | 1.001 |
+
+**Answers.** Disabled log and span statements are unchanged (within ±1%). A first version kept
+an exemplar flag inside `Histogram` and measured 1.15 (inlined offer), then 1.04 (out of line, a
+branch per observation); exemplars now live in their own `ExemplarHistogram`, and a plain
+histogram is back at 1.005. The `HttpMetrics` middleware with exemplars off is unchanged. The
+`only_export` code itself runs on its own thread.
+
 ### Hot reload (engine A/B, `tools/bench`)
 
 Measured 2026-11-18 on gpu51. Question (ADR-028): does the reloadable read buffer and backlog and

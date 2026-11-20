@@ -1,5 +1,6 @@
 //! A minimal blocking HTTP/1.1 client for OTLP/HTTP POSTs, used only on the exporter thread:
-//! plain TCP, keep-alive with one reconnect, timeouts on every step, bounded responses.
+//! TCP or TLS (only-tls), keep-alive with one reconnect, timeouts on every step, bounded
+//! responses.
 
 use std::{
     io::{self, Read, Write},
@@ -7,30 +8,30 @@ use std::{
     time::Duration,
 };
 
+use only_tls::{ClientConfig, stream::Stream};
+
 /// Largest response head and body read (OTLP responses are tiny).
 const MAX_HEAD: usize = 16 << 10;
 const MAX_BODY: usize = 1 << 20;
 
-/// `http://host:port[/path]`, split.
+/// `http[s]://host:port[/path]`, split.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Endpoint {
     pub(crate) host: String,
     pub(crate) port: u16,
     /// Without a trailing slash (`""` for the root).
     pub(crate) base: String,
+    /// `https://`.
+    pub(crate) tls: bool,
 }
 
 impl Endpoint {
     pub(crate) fn parse(url: &str) -> io::Result<Endpoint> {
         let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidInput, format!("{m}: {url}"));
-        let rest = match url.strip_prefix("http://") {
-            Some(r) => r,
-            None if url.starts_with("https://") => {
-                return Err(bad(
-                    "https endpoints are not supported (use a local collector or a TLS sidecar)",
-                ));
-            }
-            None => return Err(bad("expected an http:// URL")),
+        let (rest, tls) = match (url.strip_prefix("http://"), url.strip_prefix("https://")) {
+            (Some(r), _) => (r, false),
+            (_, Some(r)) => (r, true),
+            _ => return Err(bad("expected an http:// or https:// URL")),
         };
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
@@ -40,7 +41,7 @@ impl Endpoint {
             Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => {
                 (h, p.parse::<u16>().map_err(|_| bad("bad port"))?)
             }
-            _ => (authority, 80),
+            _ => (authority, if tls { 443 } else { 80 }),
         };
         let host = host.trim_start_matches('[').trim_end_matches(']');
         if host.is_empty() {
@@ -50,10 +51,25 @@ impl Endpoint {
             host: host.to_owned(),
             port,
             base: path.trim_end_matches('/').to_owned(),
+            tls,
         })
     }
 
-    fn host_header(&self) -> String {
+    /// `scheme://host:port`.
+    pub(crate) fn origin(&self) -> String {
+        format!(
+            "{}://{}",
+            if self.tls { "https" } else { "http" },
+            self.host_header()
+        )
+    }
+
+    /// Resolves the host (on the exporter thread).
+    pub(crate) fn addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        Ok((self.host.as_str(), self.port).to_socket_addrs()?.collect())
+    }
+
+    pub(crate) fn host_header(&self) -> String {
         if self.host.contains(':') {
             format!("[{}]:{}", self.host, self.port)
         } else {
@@ -62,47 +78,113 @@ impl Endpoint {
     }
 }
 
+/// A connection: plain TCP or TLS over it.
+#[derive(Debug)]
+enum Conn {
+    Plain(TcpStream),
+    Tls(Box<Stream<TcpStream>>),
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Conn::Plain(s) => s.read(buf),
+            Conn::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Conn::Plain(s) => s.write(buf),
+            Conn::Tls(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Conn::Plain(s) => s.flush(),
+            Conn::Tls(s) => s.flush(),
+        }
+    }
+}
+
+/// Connects to the first address of `ep` that answers within `timeout`.
+pub(crate) fn connect_tcp(ep: &Endpoint, timeout: Duration) -> io::Result<TcpStream> {
+    let mut last = io::Error::new(io::ErrorKind::NotFound, "no address");
+    for a in ep.addrs()? {
+        match TcpStream::connect_timeout(&a, timeout) {
+            Ok(s) => {
+                s.set_read_timeout(Some(timeout))?;
+                s.set_write_timeout(Some(timeout))?;
+                let _ = s.set_nodelay(true);
+                return Ok(s);
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// What a POST got back.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Response {
+    pub(crate) status: u16,
+    /// The connection can be reused.
+    pub(crate) keep: bool,
+    /// `Retry-After` in seconds (429 / 503).
+    pub(crate) retry_after: Option<Duration>,
+    pub(crate) body: Vec<u8>,
+}
+
 /// A keep-alive connection to one endpoint.
 #[derive(Debug)]
 pub(crate) struct Client {
     ep: Endpoint,
     timeout: Duration,
-    conn: Option<TcpStream>,
+    conn: Option<Conn>,
     headers: Vec<(String, String)>,
+    /// TLS: the config (ALPN `http/1.1`) and the name to verify.
+    tls: Option<(ClientConfig, String)>,
 }
 
 impl Client {
-    pub(crate) fn new(ep: Endpoint, timeout: Duration, headers: Vec<(String, String)>) -> Client {
+    pub(crate) fn new(
+        ep: Endpoint,
+        timeout: Duration,
+        headers: Vec<(String, String)>,
+        tls: Option<(ClientConfig, String)>,
+    ) -> Client {
         Client {
             ep,
             timeout,
             conn: None,
             headers,
+            tls,
         }
     }
 
-    fn connect(&self) -> io::Result<TcpStream> {
-        let addrs: Vec<SocketAddr> = (self.ep.host.as_str(), self.ep.port)
-            .to_socket_addrs()?
-            .collect();
-        let mut last = io::Error::new(io::ErrorKind::NotFound, "no address");
-        for a in addrs {
-            match TcpStream::connect_timeout(&a, self.timeout) {
-                Ok(s) => {
-                    s.set_read_timeout(Some(self.timeout))?;
-                    s.set_write_timeout(Some(self.timeout))?;
-                    let _ = s.set_nodelay(true);
-                    return Ok(s);
-                }
-                Err(e) => last = e,
+    fn connect(&self) -> io::Result<Conn> {
+        let tcp = connect_tcp(&self.ep, self.timeout)?;
+        match &self.tls {
+            None => Ok(Conn::Plain(tcp)),
+            Some((cfg, name)) => {
+                let mut s = Stream::client(cfg, name, tcp)?;
+                s.handshake()?;
+                Ok(Conn::Tls(Box::new(s)))
             }
         }
-        Err(last)
     }
 
-    /// POSTs `body` to `base + path`; the response status. Retries once on a fresh connection
-    /// when a reused one turns out to be closed.
-    pub(crate) fn post(&mut self, path: &str, content_type: &str, body: &[u8]) -> io::Result<u16> {
+    /// POSTs `body` to `base + path`. Retries once on a fresh connection when a reused one
+    /// turns out to be closed.
+    pub(crate) fn post(
+        &mut self,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> io::Result<Response> {
         let reused = self.conn.is_some();
         match self.try_post(path, content_type, body) {
             Ok(s) => Ok(s),
@@ -114,7 +196,7 @@ impl Client {
         }
     }
 
-    fn try_post(&mut self, path: &str, content_type: &str, body: &[u8]) -> io::Result<u16> {
+    fn try_post(&mut self, path: &str, content_type: &str, body: &[u8]) -> io::Result<Response> {
         if self.conn.is_none() {
             self.conn = Some(self.connect()?);
         }
@@ -142,11 +224,11 @@ impl Client {
             read_response(s)
         })();
         match res {
-            Ok((status, keep)) => {
-                if !keep {
+            Ok(r) => {
+                if !r.keep {
                     self.conn = None;
                 }
-                Ok(status)
+                Ok(r)
             }
             Err(e) => {
                 self.conn = None;
@@ -160,8 +242,8 @@ fn invalid(m: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, m)
 }
 
-/// Reads one response; (status, whether the connection can be reused).
-pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
+/// Reads one response.
+pub(crate) fn read_response(s: &mut impl Read) -> io::Result<Response> {
     let mut buf = Vec::with_capacity(512);
     let mut chunk = [0u8; 4096];
     let head_end = loop {
@@ -192,6 +274,7 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
     let mut len: Option<usize> = None;
     let mut chunked = false;
     let mut keep = version == "HTTP/1.1";
+    let mut retry_after = None;
     for l in lines {
         let Some((k, v)) = l.split_once(':') else {
             continue;
@@ -201,6 +284,12 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
             len = Some(v.parse().map_err(|_| invalid("bad content-length"))?);
         } else if k.eq_ignore_ascii_case("transfer-encoding") {
             chunked = v.to_ascii_lowercase().contains("chunked");
+        } else if k.eq_ignore_ascii_case("retry-after") {
+            // Seconds only (an HTTP date is ignored: the exporter's own backoff applies).
+            retry_after = v
+                .parse::<u32>()
+                .ok()
+                .map(|n| Duration::from_secs(u64::from(n)));
         } else if k.eq_ignore_ascii_case("connection") {
             if v.eq_ignore_ascii_case("close") {
                 keep = false;
@@ -223,12 +312,19 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
         }
         Ok(())
     };
+    let done = |keep: bool, body: Vec<u8>| Response {
+        status,
+        keep,
+        retry_after,
+        body,
+    };
     if status == 204 || status == 304 || (100..200).contains(&status) {
-        return Ok((status, keep));
+        return Ok(done(keep, Vec::new()));
     }
     if chunked {
         // Walk the chunks: size line, data, CRLF ... until the zero chunk and its CRLF.
         let mut pos = 0;
+        let mut data = Vec::new();
         loop {
             let line_end = loop {
                 if let Some(i) = body[pos..].windows(2).position(|w| w == b"\r\n") {
@@ -250,7 +346,7 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
                 loop {
                     if let Some(i) = body[pos..].windows(2).position(|w| w == b"\r\n") {
                         if i == 0 {
-                            return Ok((status, keep));
+                            return Ok(done(keep, data));
                         }
                         pos += i + 2;
                         continue;
@@ -260,6 +356,10 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
                 }
             }
             fill(&mut body, pos + size + 2)?;
+            if data.len() + size > MAX_BODY {
+                return Err(invalid("response body too large"));
+            }
+            data.extend_from_slice(&body[pos..pos + size]);
             pos += size + 2;
         }
     }
@@ -269,7 +369,9 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
                 return Err(invalid("response body too large"));
             }
             fill(&mut body, n)?;
-            Ok((status, keep && body.len() == n))
+            let exact = body.len() == n;
+            body.truncate(n);
+            Ok(done(keep && exact, body))
         }
         None => {
             // Delimited by the close.
@@ -278,7 +380,7 @@ pub(crate) fn read_response(s: &mut impl Read) -> io::Result<(u16, bool)> {
                     return Err(invalid("response body too large"));
                 }
                 match s.read(&mut chunk)? {
-                    0 => return Ok((status, false)),
+                    0 => return Ok(done(false, body)),
                     n => body.extend_from_slice(&chunk[..n]),
                 }
             }
@@ -303,8 +405,11 @@ mod tests {
             ("::1", 9, "/otlp")
         );
         assert_eq!(e.host_header(), "[::1]:9");
+        assert_eq!(e.origin(), "http://[::1]:9");
         assert_eq!(Endpoint::parse("http://h").unwrap().port, 80);
-        assert!(Endpoint::parse("https://h:1").is_err());
+        let t = Endpoint::parse("https://h").unwrap();
+        assert!(t.tls && t.port == 443 && t.origin() == "https://h:443");
+        assert!(Endpoint::parse("https://h:1").unwrap().tls);
         assert!(Endpoint::parse("ftp://h").is_err());
         assert!(Endpoint::parse("http://h:x").is_err());
         assert!(Endpoint::parse("http://:1").is_err());
@@ -312,20 +417,36 @@ mod tests {
 
     #[test]
     fn responses() {
-        let r = |s: &str| read_response(&mut s.as_bytes());
+        let r = |s: &str| {
+            read_response(&mut s.as_bytes()).map(|r| {
+                (
+                    r.status,
+                    r.keep,
+                    String::from_utf8(r.body).unwrap(),
+                    r.retry_after,
+                )
+            })
+        };
         assert_eq!(
             r("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap(),
-            (200, true)
+            (200, true, "ok".into(), None)
         );
         assert_eq!(
-            r("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n").unwrap(),
-            (200, true)
+            r("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n1\r\n!\r\n0\r\n\r\n").unwrap(),
+            (200, true, "ok!".into(), None)
         );
         assert_eq!(
             r("HTTP/1.1 400 Bad\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap(),
-            (400, false)
+            (400, false, String::new(), None)
         );
-        assert_eq!(r("HTTP/1.0 200 OK\r\n\r\nbody").unwrap(), (200, false));
+        assert_eq!(
+            r("HTTP/1.1 503 Busy\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n").unwrap(),
+            (503, true, String::new(), Some(Duration::from_secs(7)))
+        );
+        assert_eq!(
+            r("HTTP/1.0 200 OK\r\n\r\nbody").unwrap(),
+            (200, false, "body".into(), None)
+        );
         assert!(r("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nok").is_err());
         assert!(r("SSH-2.0\r\n\r\n").is_err());
         assert!(r("HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n").is_err());

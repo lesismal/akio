@@ -88,6 +88,13 @@ crate is involved.
 
 - `Registry` owns named `Counter`, `Gauge` and `Histogram` instruments (shared atomics, no lock per
   update); asking again for the same name and labels returns the same instrument.
+- **Exemplars.** `ExemplarHistogram::new(bounds)` (or `Registry::histogram_with_exemplars`) is
+  a histogram whose buckets each remember their latest observation made inside a sampled span, with that span's
+  trace and span ids (`HistogramSnapshot::exemplars`); `HttpMetrics::with_exemplars()` does the
+  same for the request latency histogram, from the request span. They are exported over OTLP
+  (the Prometheus text format has no place for them). A plain `Histogram` pays nothing for them
+  (a separate type); an `ExemplarHistogram` observation adds a thread-local read, and inside a
+  sampled span a clock read and a `try_lock` that never waits (ADR-064).
 - `fn_collector(|out| ...)` turns a closure into a collector run on every scrape; `out.counter`,
   `out.gauge` and `out.histogram` add samples. Invalid names, duplicate label names and kind clashes
   are dropped (counted in `Families::dropped()`), never a panic.
@@ -109,7 +116,7 @@ Ready-made collectors:
 |---|---|
 | `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`, `only_http_request_duration_seconds`, `only_http_requests_in_flight`, `only_http_requests_by_version_total{version}`; with `with_routes(n)` also `only_http_route_requests_total{method, route, class}` and `only_http_route_request_duration_seconds{method, route}` |
 | `only_http::observe::H2Stats` (set in `H2Config::stats`) | `only_http2_connections_open`, `only_http2_connections_total`, `only_http2_streams_open`, `only_http2_streams_total`, `only_http2_resets_total{direction}`, `only_http2_goaways_total{direction}` |
-| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`, `only_export_spans_exported_total`, `only_export_spans_dropped_total`, `only_export_spans_queued`, `only_export_statsd_dropped_series_total` |
+| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}` (signal `metrics`, `traces`, `logs`), `only_export_otlp_retries_total`, `only_export_metric_points_rejected_total`, `only_export_{spans,logs}_exported_total`, `_dropped_total`, `_rejected_total`, `_queued`, `only_export_statsd_dropped_series_total` |
 | `only_quic::QuicServer` (also what `only_h3::serve` returns) | `only_quic_connections_open` (gauge), `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`, `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`, `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`, `only_quic_congestion_events_total`, `only_quic_ecn_ce_events_total` |
 | `only::tls::TlsStats` from `Tls::stats()` | `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}`, `only_tls_early_data_total{side, outcome}` |
 
@@ -165,6 +172,13 @@ statement costs one relaxed atomic load and creates nothing.
   (`to_traceparent()`).
 - **Connection spans** (target `only_http::connection`, level `debug`) cover one connection from
   accept to close, with the client address and protocol version.
+- **Events and links.** `span.add_event("retry", &[("attempt", 2u64.into())])` records
+  something that happened at one moment of the span (`push_event` takes a ready `SpanEvent` with
+  its own time); `span.add_link(ctx, &[..])`, or `SpanBuilder::link(SpanLink::new(ctx))` when the
+  span starts, points at another span, of this trace or another (a batch linking the requests it
+  serves). A span keeps at most 128 of each (`MAX_EVENTS`, `MAX_LINKS`); more are counted in
+  `SpanData::dropped_events` / `dropped_links` and exported as such. On a span that does not
+  record they do nothing.
 - Sampling is decided once per trace by the tracer (`sample_ratio` of the exporter); a caller's
   `traceparent` flag is followed. An unsampled span still carries its ids (its children and
   outgoing headers stay unsampled) but records nothing.
@@ -179,8 +193,8 @@ anything else (ADR-020).
 
 ## Push export (OTLP and StatsD)
 
-The `only-export` crate pushes metrics and spans from one background thread, without
-dependencies:
+The `only-export` crate pushes metrics, spans and log records from one background thread, with
+the workspace's own HTTP, gRPC, TLS and protobuf code and no third-party dependency:
 
 ```rust,ignore
 {{#include ../../../crates/only-export/examples/guide-export.rs:export}}
@@ -188,32 +202,60 @@ dependencies:
 
 - **What is sent.** Every `interval` (default 10 s), the same snapshot a scrape renders: the
   engine's series and every registered collector (`Telemetry::collect_all()`), plus collectors
-  passed with `.collector(..)`. Spans every `span_interval` (default 2 s), or sooner once a batch
-  (512) is queued.
+  passed with `.collector(..)`. Spans and log records every `span_interval` (default 2 s), or
+  sooner once a batch (512) is queued.
 - **OTLP/HTTP** (`otlp_http`, or `otlp_http_with(endpoint, Encoding::Json, headers)`):
-  `POST /v1/metrics` and `/v1/traces` to a collector, protobuf (`application/x-protobuf`) or
-  OTLP/JSON. Counters become cumulative monotonic sums, gauges gauges, histograms explicit-bucket
-  histograms; labels become attributes, `service.name` and `resource_attr(..)` the resource.
-  Spans are grouped into one instrumentation scope per target. Plain `http://` only: send to a
-  local collector or agent (or a TLS-terminating sidecar). `otlp_traces_only()` keeps metrics
-  out of OTLP when they are scraped or go to StatsD.
+  `POST /v1/metrics`, `/v1/traces` and `/v1/logs`, protobuf (`application/x-protobuf`) or
+  OTLP/JSON. **OTLP/gRPC** (`otlp_grpc("http://collector:4317")`, `otlp_grpc_with(endpoint,
+  metadata)`): the unary `Export` methods of the three collector services, with only-grpc's
+  client on a private engine with one client I/O thread, started at the first push. Counters
+  become cumulative monotonic sums, gauges gauges, histograms explicit-bucket histograms with
+  their exemplars; labels become attributes, `service.name` and `resource_attr(..)` the resource.
+  Spans (with their events and links) and records are grouped into one instrumentation scope per
+  target. `otlp_traces_only()` keeps metrics out of OTLP when they are scraped or go to StatsD.
+- **TLS.** An `https://` endpoint (either protocol) is reached over only-tls, ALPN `h2` for gRPC
+  and `http/1.1` for HTTP. The collector's certificate is checked against the system's roots,
+  or against `tls_roots(RootCerts)` (a private CA); `tls_client_cert(chain, key)` answers a
+  collector that requires client certificates; `tls_server_name(..)` overrides the name checked
+  (the endpoint's host by default). TLS options with an `http://` endpoint fail at `start`.
+- **Logs.** `logs(level)` installs a logger (the process-wide only-log logger) that turns records
+  up to `level` into OTLP `LogRecord`s: the message as body, severity, key-values as attributes,
+  `code.file.path` and `code.line.number`, and the trace and span ids of the span current where
+  the record was logged, so a collector can show a request's logs next to its trace.
+  `forward_logs(FmtLogger::new(), LevelFilter::Warn)` also hands records to another logger. The
+  maximum log level becomes the more verbose of the two. Records logged on the exporter's own
+  threads are not exported. Like the tracer, a logger is installed once per process.
 - **StatsD** (`statsd(addr, Flavor::DogStatsd | Flavor::Statsd)`, `statsd_options(prefix,
   max_packet, max_series)`): counters as the delta since the previous push (`name:3|c`), gauges
   as values (`|g`), histograms as `.count`, `.sum` and per-bucket `.bucket` deltas (with an `le`
   tag). DogStatsD carries labels as tags (`|#route:/users/:id,class:2xx`); plain StatsD appends
   them to the name (`name.class.2xx`). Lines are packed into datagrams of at most 1432 bytes.
-  Spans are not sent to StatsD.
-- **Off the I/O threads, bounded.** The I/O threads only hand finished spans to a sharded queue
-  (default 4096 spans): past it, spans are dropped and counted, never waited for. A failed push is
-  counted and dropped, not retried: metrics are cumulative and complete again at the next push.
-  The StatsD delta table keeps at most `max_series` series (default 10 000). Each OTLP step
-  (connect, write, read) has a timeout (default 5 s) and responses are read up to 1 MiB.
-- `flush()` pushes now and waits; `shutdown()` (or dropping the exporter) pushes once more and
-  stops the thread. The tracer can be installed once per process: a second exporter with
-  `traces(..)` fails to start.
+  Spans and logs are not sent to StatsD.
+- **Off the I/O threads, bounded.** The I/O threads only hand finished spans and records to
+  sharded queues (default 4096 each, `span_queue` / `log_queue`): past them items are dropped
+  and counted, never waited for. The StatsD delta table keeps at most `max_series` series
+  (default 10 000). Each OTLP step (connect, TLS handshake, write, read, or a gRPC call) has a
+  timeout (default 5 s) and HTTP responses are read up to 1 MiB.
+- **When the collector is away.** A failure that may pass (no connection, a timeout, HTTP 429,
+  502, 503, 504, gRPC `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED` ...) backs the
+  collector off: `retry(initial, max, max_elapsed)`, by default 1 s doubling to 30 s with jitter,
+  or the server's `Retry-After`. Meanwhile each signal's failed batch waits (one per signal) and
+  new items wait in their bounded queues; when the backoff ends, the batch and the queues are
+  sent at once, and metrics are pushed again from a fresh snapshot (they are cumulative). A batch
+  still failing after `max_elapsed` (default 5 min; `Duration::ZERO` never retries) is dropped
+  and counted. Other failures (HTTP 400, gRPC `INVALID_ARGUMENT`, a TLS certificate the client
+  rejects ...) drop the batch at once. Items a collector rejects in a partial success are
+  counted (`spans_rejected`, `logs_rejected`, `metric_points_rejected`).
+- `flush()` pushes now, ignoring a backoff, and waits; a retryable failure ends it, leaving the
+  rest queued. `shutdown()` (or dropping the exporter) pushes once more and stops the thread.
+  The tracer and the logger can be installed once per process: a second exporter with
+  `traces(..)` or `logs(..)` fails to start.
 
-`tools/otel/e2e.sh` runs the end-to-end test against the OpenTelemetry Collector (contrib) in
-Docker: OTLP protobuf and JSON into its OTLP receiver, DogStatsD into its statsd receiver.
+`tools/otel/e2e.sh` runs the end-to-end tests against the OpenTelemetry Collector (contrib) in
+Docker: OTLP/HTTP protobuf and JSON and OTLP/gRPC, plain and over TLS with client certificates
+(a private CA made by the script), traces with events and links, logs correlated with request
+spans, metrics with exemplars, and DogStatsD into its statsd receiver; the collector's file
+exporters' output is checked.
 
 ## Logs
 

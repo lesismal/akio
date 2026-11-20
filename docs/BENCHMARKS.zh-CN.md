@@ -484,6 +484,26 @@ pipelined 时约占 10%，`main` 与本分支相同。
 box、两个随机 id 和线程局部的 enter（每秒 460 万请求时约 12%，70 万时约 3%）；100% 时每个请求还要分配字段，
 导出线程在同样四个 CPU 上每秒编码并发送约 250 万个 span。生产环境请采样（`sample_ratio`），或给导出线程单独的 CPU。
 
+### OTLP 导出新增功能（ADR-064，同一轮 A/B）
+
+2026-11-21 在 gpu51 上于 `quiet.sh` 下测量。问题：span 事件与链接、OTLP 日志、exemplar 和导出的改动在关闭时有没有开销？
+`base` 为 `main` 的 `b22519ae`，`new` 为 otlp-gaps 分支，同一会话内构建并交替运行；微基准绑定到一个 CPU，HTTP 测试中服务端在
+CPU 0–3（4 线程，epoll），`h2load`（8 线程，256 连接，5 秒）在 CPU 4–7 和 12–15。取中位数；比值为 new / base。
+
+| 基准 | 轮数 | base | new / base |
+|---|---:|---:|---:|
+| only-log `trace!` 关闭，2 个键值 | 5 × 2 | 0.272 ns | 1.009 |
+| only-log `info_span!`，span 关闭，2 个字段 | 5 × 2 | 0.615 ns | 0.998 |
+| only-log `span::enabled`（span 关闭） | 5 × 2 | 0.407 ns | 0.994 |
+| only-log `log_enabled!` 关闭 | 5 × 2 | 0.406 ns | 0.998 |
+| `Histogram::observe`（无 exemplar） | 7 | 4.643 ns | 1.005 |
+| `HttpMetrics` 中间件（exemplar 关闭），HTTP/1.1 plaintext | 7 | 731,820 req/s | 0.999 |
+| `HttpMetrics` 中间件（exemplar 关闭），pipelined ×16 | 7 | 4,284,243 req/s | 1.001 |
+
+**结论。** 关闭的日志与 span 语句不变（±1% 以内）。最初的版本把 exemplar 开关放在 `Histogram` 内部，测得 1.15（内联的提交
+路径），改为外联后为 1.04（每次观测一个分支）；现在 exemplar 放在单独的 `ExemplarHistogram` 中，普通直方图回到 1.005。exemplar
+关闭时 `HttpMetrics` 中间件不变。`only_export` 自身的代码运行在它自己的线程上。
+
 ### 热更新（引擎 A/B，`tools/bench`）
 
 2026-11-18 在 gpu51 上测量。问题（ADR-028）：可热更新的读缓冲区和 backlog、可扩缩容的线程组是否改变了

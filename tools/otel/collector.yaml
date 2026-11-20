@@ -1,10 +1,27 @@
-# OpenTelemetry Collector (contrib) for tools/otel/e2e.sh: OTLP/HTTP and StatsD in, every
-# signal written to /out as OTLP/JSON lines.
+# OpenTelemetry Collector (contrib) for tools/otel/e2e.sh: OTLP over gRPC and HTTP, plain and
+# over TLS with client certificates required (certificates made by e2e.sh in /certs), and
+# StatsD in; every signal written to /out as OTLP/JSON lines.
 receivers:
   otlp:
     protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  otlp/tls:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4319
+        tls:
+          cert_file: /certs/server.pem
+          key_file: /certs/server.key
+          client_ca_file: /certs/ca.pem
+      http:
+        endpoint: 0.0.0.0:4320
+        tls:
+          cert_file: /certs/server.pem
+          key_file: /certs/server.key
+          client_ca_file: /certs/ca.pem
   statsd:
     endpoint: 0.0.0.0:8125
     aggregation_interval: 1s
@@ -16,11 +33,17 @@ exporters:
   file/metrics:
     path: /out/metrics.jsonl
     flush_interval: 100ms
+  file/logs:
+    path: /out/logs.jsonl
+    flush_interval: 100ms
 service:
   pipelines:
     traces:
-      receivers: [otlp]
+      receivers: [otlp, otlp/tls]
       exporters: [file/traces]
     metrics:
-      receivers: [otlp, statsd]
+      receivers: [otlp, otlp/tls, statsd]
       exporters: [file/metrics]
+    logs:
+      receivers: [otlp, otlp/tls]
+      exporters: [file/logs]

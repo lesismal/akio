@@ -167,6 +167,36 @@ ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
   （±10–36%）之内；见 docs/BENCHMARKS.zh-CN.md。gpu51 上 fuzz：`h2_server` 480 万次、
   `h2_websocket` 230 万次（各 10 分钟），无崩溃。
 
+### 新增：gRPC 与 TLS 上的 OTLP、OTLP 日志、span 事件与链接、exemplar、导出重试（only-export、only-log、only-core、only-http）
+
+ADR-064（docs/adr/064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md），API 只有新增：
+
+- only-export：`ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` 用 only-grpc 的客户端经
+  OTLP/gRPC 导出（私有 engine，一个客户端 I/O 线程，首次推送时启动）。gRPC 和 HTTP 的 `https://` 端点经 only-tls
+  连接：系统根证书或 `tls_roots(RootCerts)`，`tls_client_cert(chain, key)` 用于双向 TLS，`tls_server_name`。
+- only-export：`logs(level)` 安装一个 only-log logger，记录作为 OTLP `LogRecord` 发出（`/v1/logs` 或
+  `LogsService/Export`）：body、严重级别、键值、`code.file.path` / `code.line.number`，以及记录所在处当前 span 的
+  trace id 和 span id。`forward_logs(logger, level)` 继续供给另一个 logger；`log_queue(max, batch)` 限定队列
+  （默认 4096 / 512）；导出器自身线程上的记录不导出。
+- only-log：span 事件与链接：`SpanEvent`、`SpanLink`、`Span::add_event` / `push_event` / `add_link`、
+  `SpanBuilder::link`，每个 span 各最多 `MAX_EVENTS` / `MAX_LINKS`（128）个，超出计入
+  `SpanData::dropped_events` / `dropped_links`；经 OTLP 导出。
+- only-core：exemplar：`Exemplar`、`ExemplarReservoir`、`ExemplarHistogram`、
+  `Registry::histogram_with_exemplars`、`HistogramSnapshot::exemplars` / `with_exemplars`。only-http：
+  `HttpMetrics::with_exemplars()` 在延迟直方图上保留请求 span 的 id。经 OTLP 导出（Prometheus 文本格式中没有）。
+- only-export：`ExportStats` 新增 `otlp_logs_ok` / `otlp_logs_failed`、`otlp_retried`、`metric_points_rejected`、
+  `spans_rejected`、`logs_exported` / `logs_dropped` / `logs_rejected` / `logs_queued`；统计收集器新增相应的
+  `only_export_*` 序列。
+
+### 变更：only-export 重试失败的推送
+
+- 可重试的失败（连不上、超时、HTTP 429 / 502 / 503 / 504、gRPC `UNAVAILABLE` 及其他可重试状态码）让 collector 进入
+  退避（`retry(initial, max, max_elapsed)`，默认 1 秒到 30 秒并带抖动，或按 `Retry-After`），并保留每种信号失败的那
+  一批直到它存在了 `max_elapsed`（默认 5 分钟），不再直接丢弃；退避结束时用新快照推送指标。
+  `retry(.., .., Duration::ZERO)` 恢复以前的丢弃行为。其他失败仍丢弃这一批。partial success 会被计数。
+- `flush()` 遇到第一个可重试的失败即停止（剩下的留在队列中）；`spans_queued` 包含等待重试的那一批。
+- 接受 `https://` 端点（以前报错）。
+
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP

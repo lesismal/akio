@@ -617,9 +617,14 @@ version = "1.0.0-rc.1"
 dependencies = [
  "only",
  "only-core",
+ "only-crypto",
+ "only-grpc",
  "only-http",
  "only-log",
  "only-protobuf",
+ "only-protobuf-build",
+ "only-tls",
+ "only-x509",
 ]
 
 [[package]]

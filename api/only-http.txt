@@ -601,6 +601,7 @@ pub fn only_http::observe::HttpMetrics::new() -> only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::observe(&self, u16, core::time::Duration)
 pub fn only_http::observe::HttpMetrics::route_snapshot(&self) -> alloc::vec::Vec<only_http::observe::RouteSnapshot>
 pub fn only_http::observe::HttpMetrics::snapshot(&self) -> only_http::observe::HttpSnapshot
+pub fn only_http::observe::HttpMetrics::with_exemplars(self) -> only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::with_routes(usize) -> only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::write_prometheus(&self, &mut alloc::string::String)
 impl core::clone::Clone for only_http::observe::HttpMetrics

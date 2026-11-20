@@ -199,6 +199,43 @@ ADR-060 (docs/adr/060-h2-websocket.md), additive:
   docs/BENCHMARKS.md. Fuzzing on gpu51: `h2_server` 4.8 M and `h2_websocket` 2.3 M runs
   (10 min each), no crashes.
 
+### Added: OTLP over gRPC and TLS, OTLP logs, span events and links, exemplars, export retry (only-export, only-log, only-core, only-http)
+
+ADR-064 (docs/adr/064-otlp-grpc-tls-logs-events-exemplars.md), additive API:
+
+- only-export: `ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` export over
+  OTLP/gRPC with only-grpc's client (a private engine with one client I/O thread, started at
+  the first push). `https://` endpoints, for gRPC and HTTP, go over only-tls: the system's roots
+  or `tls_roots(RootCerts)`, `tls_client_cert(chain, key)` for mutual TLS, `tls_server_name`.
+- only-export: `logs(level)` installs an only-log logger whose records go out as OTLP
+  `LogRecord`s (`/v1/logs` or `LogsService/Export`): body, severity, key-values,
+  `code.file.path` / `code.line.number`, and the trace and span ids of the span current where
+  they were logged. `forward_logs(logger, level)` keeps another logger fed; `log_queue(max,
+  batch)` bounds the queue (default 4096 / 512); records from the exporter's own threads are
+  not exported.
+- only-log: span events and links: `SpanEvent`, `SpanLink`, `Span::add_event` / `push_event` /
+  `add_link`, `SpanBuilder::link`, at most `MAX_EVENTS` / `MAX_LINKS` (128) per span with
+  `SpanData::dropped_events` / `dropped_links`; exported over OTLP.
+- only-core: exemplars: `Exemplar`, `ExemplarReservoir`, `ExemplarHistogram`,
+  `Registry::histogram_with_exemplars`, `HistogramSnapshot::exemplars` / `with_exemplars`.
+  only-http: `HttpMetrics::with_exemplars()` keeps the request span's ids on the latency
+  histogram. Exported over OTLP (not in the Prometheus text format).
+- only-export: `ExportStats` gains `otlp_logs_ok` / `otlp_logs_failed`, `otlp_retried`,
+  `metric_points_rejected`, `spans_rejected`, `logs_exported` / `logs_dropped` /
+  `logs_rejected` / `logs_queued`; the stats collector the matching `only_export_*` series.
+
+### Changed: only-export retries failed pushes
+
+- A retryable failure (no connection, timeout, HTTP 429 / 502 / 503 / 504, gRPC `UNAVAILABLE`
+  and the other retryable codes) backs the collector off (`retry(initial, max, max_elapsed)`,
+  default 1 s to 30 s with jitter, or `Retry-After`) and keeps each signal's failed batch until
+  it is `max_elapsed` old (default 5 min), instead of dropping it; metrics are pushed from a
+  fresh snapshot when the backoff ends. `retry(.., .., Duration::ZERO)` drops failed batches as
+  before. Other failures still drop the batch. Partial successes are counted.
+- `flush()` stops at the first retryable failure (what is left stays queued); `spans_queued`
+  includes the batch waiting to be retried.
+- `https://` endpoints are accepted (they were an error).
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's
