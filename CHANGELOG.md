@@ -10,6 +10,33 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: WebSocket over HTTP/2 (RFC 8441, only-http)
+
+ADR-060 (docs/adr/060-h2-websocket.md), additive:
+
+- Server: the HTTP/2 server advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL` and accepts extended
+  CONNECT (`:protocol`, with `:scheme`, `:path` and `:authority`; malformed ones are reset with
+  `PROTOCOL_ERROR`). `Context::upgrade_websocket` accepts `:protocol websocket` on HTTP/2 as it
+  does on HTTP/3 (version 13, origin policy, subprotocol, `permessage-deflate`, answered `200`),
+  and a `Router` GET route answers it, so one `.get("/ws", ...)` serves WebSocket over HTTP/1.1,
+  HTTP/2 and HTTP/3. `H2Config::enable_connect_protocol` (default on) turns it off.
+- Client: `H2Client::websocket(url, &H2WsOptions, handler, done)` and `websocket_blocking` open
+  a WebSocket on a stream of the client's connection, next to its requests; they wait for the
+  server's SETTINGS. New `H2WsOptions` (config, deflate offer, subprotocols, origin, headers,
+  close timeout, `timeout` 10 s, `max_queued_bytes` 8 MiB) and `ClientError::Status(u16)` for a
+  refusal.
+- Each WebSocket is paced by its stream's and the connection's flow control; sends fail with
+  `Overloaded` past `max_pending_bytes` (server, per stream; `max_conn_pending_bytes` per
+  connection) or `max_queued_bytes` (client). Close frames end our half of the stream, the
+  peer's END_STREAM ends its half; `RST_STREAM` and a lost connection are a close without
+  handshake (1006); graceful shutdown closes WebSockets with 1001. A peer that does not end its
+  half within 5 s of ours, or does not answer a client's close within its close timeout, is
+  reset (`CANCEL`).
+- Interop with Go's HTTP/2 both ways over h2c and TLS (`tools/interop/h2ws/run.sh`: net/http
+  server, golang.org/x/net/http2 client). New fuzz target `h2_websocket`; `h2_server` seeds with
+  extended CONNECT.
+- Performance: H2C_AB_EN
+
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 
 ADR-058 (docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.md), additive (a default peer's

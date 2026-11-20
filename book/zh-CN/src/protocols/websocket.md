@@ -40,8 +40,9 @@ pub trait WsHandler: Send + 'static {
 `ctx.upgrade_websocket(handler, &WsOptions)` 校验握手（GET、HTTP/1.1、`Upgrade`/`Connection`
 令牌、版本 13、key、origin 策略），应答 `101 Switching Protocols` 并切换连接；`on_open` 立即
 执行。握手不合法时它自己应答 400、403 或 426，返回 `false`，连接保持为 HTTP。不要在升级请求
-之后流水线发送其他请求。在 HTTP/3 上，同一个调用接受 extended CONNECT（RFC 9220）并应答 `200`，见
-[HTTP/3 上的 WebSocket](quic-h3.md#http3-上的-websocket)。
+之后流水线发送其他请求。在 HTTP/2（RFC 8441）和 HTTP/3（RFC 9220）上，同一个调用接受 extended CONNECT
+并应答 `200`；此后请求所在的流承载 WebSocket，与连接上的其他请求并存。见
+[HTTP/2 上的 WebSocket](#http2-上的-websocket) 和 [HTTP/3 上的 WebSocket](quic-h3.md#http3-上的-websocket)。
 
 `WsOptions`：
 
@@ -87,8 +88,24 @@ pub trait WsHandler: Send + 'static {
 运行 `cargo run -p only-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
 示例见 `crates/only-http/examples/ws-chat.rs`。
 
+## HTTP/2 上的 WebSocket
+
+HTTP/2 服务端宣告 `SETTINGS_ENABLE_CONNECT_PROTOCOL`，所以持有该源站 h2 连接的浏览器会在这条连接上打开
+WebSocket。路由仍是同一个 `.get("/ws", ...)`：`Router` 用该路径的 GET 路由应答 `websocket` 的
+extended CONNECT，`ctx.req().protocol` 为 `Some("websocket")`。`H2Config::enable_connect_protocol = false`
+可将其关闭。
+
+`H2Client::websocket(url, &H2WsOptions, handler, done)`（或 `websocket_blocking`）在 `H2Client` 的连接上
+打开一个（见 [HTTP 客户端](http-clients.md#http2h2clienth2client)）；`done` 得到 `WsSender`，服务端拒绝时
+得到 `ClientError::Status`。`H2WsOptions` 包含 `DialOptions` 中适用的字段（`config`、`pmd`、`protocols`、
+`origin`、`headers`、`close_timeout`），以及 `timeout`（10 秒）和 `max_queued_bytes`（8 MiB）。
+
+每个 WebSocket 是一条流，由流和连接的窗口调速。对端不打开窗口时，排队超过 `H2Config::max_pending_bytes`
+（服务端）或 `H2WsOptions::max_queued_bytes`（客户端）后发送返回 `Overloaded`；`WsSender::queued_bytes`
+告诉生产者何时该等待。close 帧结束我方这一半流，`RST_STREAM` 或连接丢失以 1006 到达 `on_close`，优雅
+关闭以 1001 关闭。
+
 ## 尚未完成
 
-客户端：到代理的 TLS、跨重定向携带 cookie。服务端：基于 HTTP/2 的 WebSocket（RFC 8441，
-应答 400）；基于 HTTP/3 的 WebSocket（RFC 9220）已完成，见
-[QUIC 与 HTTP/3](quic-h3.md#http3-上的-websocket)。
+客户端：到代理的 TLS、跨重定向携带 cookie；`client::dial` 仍是 HTTP/1.1（HTTP/2 上的 WebSocket 需要
+`H2Client`）。

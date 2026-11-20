@@ -109,6 +109,8 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
 - 双向流式：`open(req, on_event)` 返回用于写请求 body 的 `H2Upload`（`write`、`finish`），并在
   响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。only-grpc 的客户端
   就建立在它之上。
+- 同一连接上的 WebSocket（RFC 8441）：`websocket(url, &H2WsOptions, handler, done)` 或
+  `websocket_blocking`；见 [HTTP/2 上的 WebSocket](websocket.md#http2-上的-websocket)。
 - `is_open()`、`close()`。
 - 遵守 `ClientRequest::timeout`：该流被重置（`CANCEL`），请求以 `ClientError::Timeout` 失败；连接
   仍可使用。一条连接只对应一个源：不跟随重定向，不走代理。

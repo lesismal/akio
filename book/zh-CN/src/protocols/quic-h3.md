@@ -197,8 +197,8 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 子协议、origin 检查和 `permessage-deflate` 与 HTTP/1.1 上相同，应答为 `200`，此后请求流承载
 WebSocket，由 only-ws 分帧，`WsHandler` 回调和 `WsSender` 不变。`Router` 把 `websocket` 的
 extended CONNECT 路由到该路径的 GET 路由，所以一个 `.get("/ws", ...)` 同时服务 HTTP/1.1 升级和
-HTTP/3。这种请求的 `ctx.req().protocol` 为 `Some("websocket")`。不支持 HTTP/2 上的 WebSocket
-（RFC 8441）。
+HTTP/3。这种请求的 `ctx.req().protocol` 为 `Some("websocket")`。HTTP/2 上的 WebSocket（RFC 8441）
+用法相同，见 [WebSocket](websocket.md#http2-上的-websocket)。
 
 `H3Client::websocket(path, &H3WsOptions, handler, done)`（或 `websocket_blocking`）在客户端的连接
 上与普通请求并存地打开一个 WebSocket：它先等待服务端的 SETTINGS，服务端应答 `200` 后 `done` 拿到
@@ -239,5 +239,5 @@ sink，所以 router、中间件和 handler 都无需改动。见[架构](../arc
 
 ## 尚未完成
 
-服务端推送；HTTP/2 上的 WebSocket（RFC 8441）；客户端的流式响应（`H3Client` 缓冲响应）；我方 QPACK
+服务端推送；客户端的流式响应（`H3Client` 缓冲响应）；我方 QPACK
 编码器的 Duplicate 指令和动态名称引用。

@@ -110,7 +110,7 @@ fn check(c: &H2Client, base: &str, deflate: bool) -> Result<(), String> {
     let text = "compress me please ".repeat(4000);
     let msgs = [
         Message::Text("hello".into()),
-        Message::Binary(pattern(3 << 20, deflate as u8)),
+        Message::Binary(pattern(3 << 20, u8::from(deflate))),
         Message::Text(text.clone()),
         Message::Binary(Vec::new()),
     ];

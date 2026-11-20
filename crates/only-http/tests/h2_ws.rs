@@ -325,8 +325,10 @@ fn flow_control_paces_large_messages_both_ways() {
     let ws = c
         .websocket_blocking(&format!("http://{addr}/ws"), &o, Rec(tx))
         .unwrap();
-    for i in 0..3u8 {
-        let m = pattern((3 << 20) + i as usize, i);
+    // The last is larger than both queue bounds (8 MiB): taken, since nothing waits before it.
+    for (i, n) in [3usize << 20, (3 << 20) + 1, 10 << 20].into_iter().enumerate() {
+        let i = i as u8;
+        let m = pattern(n, i);
         ws.send_binary(&m).unwrap();
         assert_eq!(next(&rx), Ev::Msg(Message::Binary(m)));
     }

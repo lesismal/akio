@@ -329,6 +329,51 @@ pub fn h2_server_with<S: Service>(service: S, data: &[u8]) {
     run_session_with(service, &pieces);
 }
 
+/// The header block of an extended CONNECT (RFC 8441) for the WebSocket at `/ws`, offering the
+/// `chat` subprotocol and `permessage-deflate`.
+fn ws_connect_block(enc: &mut crate::hpack::Encoder) -> Vec<u8> {
+    enc.encode([
+        (&b":method"[..], &b"CONNECT"[..]),
+        (b":protocol", b"websocket"),
+        (b":scheme", b"https"),
+        (b":path", b"/ws"),
+        (b":authority", b"h"),
+        (b"sec-websocket-version", b"13"),
+        (b"sec-websocket-protocol", b"chat"),
+        (
+            b"sec-websocket-extensions",
+            b"permessage-deflate; client_max_window_bits",
+        ),
+    ])
+}
+
+/// `h2_websocket`: an HTTP/2 connection whose stream 1 is a WebSocket accepted on an extended
+/// CONNECT (RFC 8441). `data[0]` picks the mode: bit 0 clear, `data[1..]` is WebSocket bytes,
+/// cut into DATA frames on stream 1 as each piece's first byte says (and the last one ends the
+/// stream when bit 1 is set); bit 0 set, `data[1..]` is raw frames after the CONNECT (RST_STREAM,
+/// WINDOW_UPDATE, trailers, more streams).
+pub fn h2_websocket(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let mut wire = H2_START.to_vec();
+    let mut enc = crate::hpack::Encoder::new();
+    crate::h2::frame(&mut wire, 1, 0x4, 1, &ws_connect_block(&mut enc));
+    if mode & 1 == 1 {
+        wire.extend_from_slice(rest);
+    } else {
+        let mut rest = rest;
+        while let Some((&n, tail)) = rest.split_first() {
+            let take = (usize::from(n) + 1).min(tail.len());
+            let (piece, next) = tail.split_at(take);
+            rest = next;
+            let end = mode & 2 != 0 && rest.is_empty();
+            crate::h2::frame(&mut wire, 0, u8::from(end), 1, piece);
+        }
+    }
+    run_session(&[&wire]);
+}
+
 // ---- seeds -----------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -450,6 +495,62 @@ pub(crate) mod seeds {
         out
     }
 
+    /// A masked client WebSocket frame.
+    fn ws_frame(first: u8, payload: &[u8]) -> Vec<u8> {
+        let key = [1u8, 2, 3, 4];
+        let mut f = vec![first, 0x80 | payload.len() as u8];
+        f.extend_from_slice(&key);
+        f.extend(payload.iter().enumerate().map(|(i, b)| b ^ key[i % 4]));
+        f
+    }
+
+    /// WebSocket traffic for stream 1: a text message, the same compressed (RFC 7692
+    /// §7.2.3.1), a fragmented one, a ping and a close.
+    fn ws_traffic() -> Vec<u8> {
+        let mut v = ws_frame(0x81, b"hello");
+        v.extend(ws_frame(0xc1, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]));
+        v.extend(ws_frame(0x01, b"frag"));
+        v.extend(ws_frame(0x80, b"ment"));
+        v.extend(ws_frame(0x89, b"p"));
+        v.extend(ws_frame(0x88, &[0x03, 0xe8]));
+        v
+    }
+
+    pub(crate) fn h2_websocket() -> Vec<Vec<u8>> {
+        let t = ws_traffic();
+        let mut v = Vec::new();
+        // WebSocket bytes in pieces of 7, then 256 (and the stream ended after them).
+        for (mode, n) in [(0u8, 6u8), (2, 255)] {
+            let mut x = vec![mode];
+            for c in t.chunks(usize::from(n) + 1) {
+                x.push(n);
+                x.extend_from_slice(c);
+            }
+            v.push(x);
+        }
+        // Raw frames: data, then a reset; data, then trailers; a window update and a second
+        // WebSocket that a plain request follows.
+        let mut enc = crate::hpack::Encoder::new();
+        let _ = super::ws_connect_block(&mut enc); // the harness's block, for the table state
+        let mut raw = vec![1u8];
+        frame(&mut raw, 0, 0, 1, &t[..11]);
+        frame(&mut raw, 8, 0, 1, &(1u32 << 20).to_be_bytes());
+        frame(&mut raw, 3, 0, 1, &8u32.to_be_bytes());
+        frame(&mut raw, 1, 0x4, 3, &super::ws_connect_block(&mut enc));
+        frame(&mut raw, 0, 0, 3, &t);
+        let tr = enc.encode([(&b"x-t"[..], &b"1"[..])]);
+        frame(&mut raw, 1, 0x5, 3, &tr);
+        let get = enc.encode([
+            (&b":method"[..], &b"GET"[..]),
+            (b":scheme", b"https"),
+            (b":path", b"/"),
+            (b":authority", b"h"),
+        ]);
+        frame(&mut raw, 1, 0x5, 5, &get);
+        v.push(raw);
+        v
+    }
+
     pub(crate) fn h2_server() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
         let mut enc = crate::hpack::Encoder::new();
@@ -496,6 +597,20 @@ pub(crate) mod seeds {
         let tr = enc.encode([(&b"x-trailer"[..], &b"1"[..])]);
         frame(&mut p, 1, 0x5, 7, &tr);
         v.push(with(0, &p));
+        // An extended CONNECT (RFC 8441) carrying a WebSocket, a plain request beside it.
+        let mut enc = crate::hpack::Encoder::new();
+        let mut w = Vec::new();
+        frame(&mut w, 1, 0x4, 1, &super::ws_connect_block(&mut enc));
+        let get = enc.encode([
+            (&b":method"[..], &b"GET"[..]),
+            (b":scheme", b"https"),
+            (b":path", b"/"),
+            (b":authority", b"h"),
+        ]);
+        frame(&mut w, 1, 0x5, 3, &get);
+        frame(&mut w, 0, 0x1, 1, &ws_traffic());
+        v.push(with(0, &w));
+        v.push(with(13, &w));
         v
     }
 
@@ -555,6 +670,7 @@ mod tests {
         n += replay(DIR, "http1_client", http1_client);
         n += replay(DIR, "http1_server", http1_server);
         n += replay(DIR, "h2_server", h2_server);
+        n += replay(DIR, "h2_websocket", h2_websocket);
         n += replay(DIR, "regex_match", regex_match);
         assert!(n > 0, "no corpus found under fuzz/corpus");
     }
@@ -578,6 +694,9 @@ mod tests {
         }
         for s in &seeds::h2_server() {
             h2_server(s);
+        }
+        for s in &seeds::h2_websocket() {
+            h2_websocket(s);
         }
         for s in &seeds::regex_match() {
             regex_match(s);
@@ -652,6 +771,7 @@ mod tests {
         write_target_seeds(DIR, "http1_client", &seeds::http1_client());
         write_target_seeds(DIR, "http1_server", &seeds::http1_server());
         write_target_seeds(DIR, "h2_server", &seeds::h2_server());
+        write_target_seeds(DIR, "h2_websocket", &seeds::h2_websocket());
         write_target_seeds(DIR, "regex_match", &seeds::regex_match());
     }
 }

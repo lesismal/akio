@@ -104,7 +104,8 @@ pub struct H2WsOptions {
     pub timeout: Duration,
     /// Bytes the WebSocket may hold for the server (not yet written to the connection, because
     /// the stream's or the connection's window is closed) before sends fail with
-    /// `Overloaded`: [`WsSender::queued_bytes`] paces a producer. Default 8 MiB.
+    /// `Overloaded` (a message is taken whatever its size when nothing is queued):
+    /// [`WsSender::queued_bytes`] paces a producer. Default 8 MiB.
     pub max_queued_bytes: usize,
 }
 
@@ -252,7 +253,9 @@ impl WsLink for ClientLink {
             return Err(only::Error::Closed);
         }
         let n = data.len();
-        if self.sh.queued.load(Ordering::Acquire) + n > self.sh.max {
+        // One message is taken whatever its size when nothing is queued.
+        let queued = self.sh.queued.load(Ordering::Acquire);
+        if queued > 0 && queued + n > self.sh.max {
             return Err(only::Error::Overloaded);
         }
         let mut q = self.lock();

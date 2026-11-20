@@ -119,6 +119,8 @@ for the reasoning behind these rules.
 - Streaming both ways: `open(req, on_event)` returns an `H2Upload` (`write`, `finish`) for the
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
   arrives. only-grpc's client is built on it.
+- WebSockets on the same connection (RFC 8441): `websocket(url, &H2WsOptions, handler, done)`
+  or `websocket_blocking`; see [WebSocket over HTTP/2](websocket.md#websocket-over-http2).
 - `is_open()`, `close()`.
 - `ClientRequest::timeout` applies: the stream is reset (`CANCEL`) and the request fails with
   `ClientError::Timeout`; the connection stays usable. One connection to one origin: no redirects

@@ -1902,10 +1902,10 @@ impl Drop for H2Stream {
 }
 
 /// The stream of an accepted extended CONNECT carrying a WebSocket (RFC 8441): frames go out in
-/// DATA frames as the stream's and the connection's windows allow, at most
-/// `max_pending_bytes` queued per stream (and `max_conn_pending_bytes` per connection) before
-/// sends fail with `Overloaded`; closing ends the stream (END_STREAM), or resets it (`CANCEL`)
-/// when the peer has not ended its half.
+/// DATA frames as the stream's and the connection's windows allow; sends fail with
+/// `Overloaded` past `max_pending_bytes` queued on the stream (one message is taken whatever its
+/// size when nothing is queued) or `max_conn_pending_bytes` on the connection; closing ends the
+/// stream (END_STREAM), or resets it (`CANCEL`) when the peer has not ended its half.
 struct H2WsLink {
     core: Weak<Mutex<Core>>,
     sid: u32,
@@ -1930,7 +1930,9 @@ impl WsLink for H2WsLink {
         if st.sent_end || st.end_pending {
             return Err(only_core::Error::Closed);
         }
-        if conn_full || st.out_bytes + data.len() > max {
+        // A message is taken whatever its size when nothing waits (it is the application's,
+        // not the peer's): the bound is on what piles up behind a closed window.
+        if conn_full || (st.out_bytes > 0 && st.out_bytes + data.len() > max) {
             return Err(only_core::Error::Overloaded);
         }
         let n = data.len();
