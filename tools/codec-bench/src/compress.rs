@@ -9,6 +9,9 @@
 //! minimum time per round (default 300). Levels at or above `BENCH_SLOW` (brotli 10, zstd 16)
 //! compress once per run. `BENCH_ENC=0` skips the compression timings (for profiling decoders),
 //! `BENCH_C=0` the C library's (for a second run against another version of the crates).
+//! `BENCH_OWN=0` skips decoding each library's own output.
+//! `BENCH_DUMP=DIR` writes the zstd frames there (`FILE.LEVEL.zst` from the C library,
+//! `FILE.LEVEL.only.zst` from only-zstd), for inspecting what the decoders are timed on.
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -207,6 +210,10 @@ pub fn zstd(files: &[String]) {
             let mut dc = zstd::bulk::Decompressor::new().unwrap();
             let ours = only_zstd::compress(lv, &data);
             let theirs = cc.compress(&data).unwrap();
+            if let Ok(dir) = std::env::var("BENCH_DUMP") {
+                std::fs::write(format!("{dir}/{name}.{level}.zst"), &theirs).unwrap();
+                std::fs::write(format!("{dir}/{name}.{level}.only.zst"), &ours).unwrap();
+            }
             assert_eq!(only_zstd::decompress(&theirs, data.len()).unwrap(), data);
             assert_eq!(dc.decompress(&ours, data.len()).unwrap(), data);
             let ems = if env_u("BENCH_ENC", 1) == 0 { 0 } else { ms };
@@ -227,7 +234,8 @@ pub fn zstd(files: &[String]) {
                     black_box(dc.decompress(black_box(&theirs), data.len()).unwrap());
                 }),
             );
-            let own = mbps(data.len(), ms, false, || {
+            let oms = if env_u("BENCH_OWN", 1) == 0 { 0 } else { ms };
+            let own = mbps(data.len(), oms, false, || {
                 black_box(only_zstd::decompress(black_box(&ours), data.len()).unwrap());
             });
             print(&Row {

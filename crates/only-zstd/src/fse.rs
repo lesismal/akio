@@ -138,16 +138,17 @@ fn read_ncount_body(
     Some((charnum - 1, table_log, ip))
 }
 
-/// Builds the decoding table of a valid distribution (as checked by [`read_ncount`]).
-pub(crate) fn build_dtable(norm: &[i16], table_log: u32, table: &mut Vec<DEntry>) {
+/// Spreads the symbols of a valid distribution (as checked by [`read_ncount`]) over the first
+/// `1 << table_log` cells of `symbols`, in FSE's order. Returns each symbol's state counter
+/// for [`next_state`]: the cells of a symbol, in order, take the counter's successive values.
+pub(crate) fn spread(norm: &[i16], table_log: u32, symbols: &mut [u8]) -> [u16; 256] {
     let size = 1usize << table_log;
-    table.clear();
-    table.resize(size, DEntry::default());
+    let symbols = &mut symbols[..size];
     let mut next = [0u16; 256];
     let mut high = size - 1;
     for (s, &n) in norm.iter().enumerate() {
         if n == -1 {
-            table[high].symbol = s as u8;
+            symbols[high] = s as u8;
             high = high.wrapping_sub(1);
             next[s] = 1;
         } else {
@@ -157,22 +158,53 @@ pub(crate) fn build_dtable(norm: &[i16], table_log: u32, table: &mut Vec<DEntry>
     let mask = size - 1;
     let step = (size >> 1) + (size >> 3) + 3;
     let mut pos = 0usize;
-    for (s, &n) in norm.iter().enumerate() {
-        for _ in 0..n.max(0) {
-            table[pos].symbol = s as u8;
-            pos = (pos + step) & mask;
-            while pos > high {
+    if high == size - 1 {
+        // No "less than 1" symbols: no cell to skip.
+        for (s, &n) in norm.iter().enumerate() {
+            for _ in 0..n.max(0) {
+                symbols[pos] = s as u8;
                 pos = (pos + step) & mask;
             }
         }
+    } else {
+        for (s, &n) in norm.iter().enumerate() {
+            for _ in 0..n.max(0) {
+                symbols[pos] = s as u8;
+                pos = (pos + step) & mask;
+                while pos > high {
+                    pos = (pos + step) & mask;
+                }
+            }
+        }
     }
-    for e in table.iter_mut() {
-        let s = usize::from(e.symbol);
-        let x = u32::from(next[s]).max(1);
-        next[s] = next[s].wrapping_add(1);
-        let nb = table_log - highbit(x);
-        e.nb_bits = nb as u8;
-        e.base = ((x << nb) as usize).wrapping_sub(size) as u16;
+    next
+}
+
+/// The bits to read and the baseline of the next state, for a cell whose symbol's counter
+/// (see [`spread`]) is `x` (> 0).
+#[inline(always)]
+pub(crate) fn next_state(x: u32, table_log: u32) -> (u8, u16) {
+    let nb = table_log - highbit(x);
+    (
+        nb as u8,
+        ((x << nb) as usize).wrapping_sub(1 << table_log) as u16,
+    )
+}
+
+/// Builds the decoding table of a valid distribution (as checked by [`read_ncount`]) in the
+/// first `1 << table_log` (at most 512) cells of `table`.
+pub(crate) fn build_dtable(norm: &[i16], table_log: u32, table: &mut [DEntry]) {
+    let mut symbols = [0u8; 512];
+    let mut next = spread(norm, table_log, &mut symbols);
+    for (e, &s) in table[..1 << table_log].iter_mut().zip(&symbols) {
+        let x = &mut next[usize::from(s)];
+        let (nb_bits, base) = next_state(u32::from(*x), table_log);
+        *x += 1;
+        *e = DEntry {
+            symbol: s,
+            nb_bits,
+            base,
+        };
     }
 }
 
@@ -184,8 +216,9 @@ pub(crate) fn decode_weights(src: &[u8], out: &mut [u8; 256]) -> Option<usize> {
     if table_log > 6 {
         return None;
     }
-    let mut table = Vec::new();
+    let mut table = [DEntry::default(); 64];
     build_dtable(&norm[..=max_sv], table_log, &mut table);
+    let table = &table[..1 << table_log];
     let mut br = BackReader::new(&src[hsize..])?;
     let mut s1 = br.read(table_log) as usize;
     let mut s2 = br.read(table_log) as usize;

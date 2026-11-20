@@ -87,6 +87,22 @@ libwebrtc, so video ramps up in a fraction of a second instead of tens of second
   (`tools/interop/webrtc/bwe.sh`, new): 10 Mbps 0.2 s after the connection (the estimate used to
   stay at its 1 Mbps start).
 
+### Changed: faster Zstandard decoding, second pass (only-zstd)
+
+No public API change, output unchanged (docs/BENCHMARKS.md, "zstd decoding, second pass"; quiet
+gpu51, against libzstd 1.5.7 in `tools/codec-bench zstd`):
+
+- Decompression takes 1.16–1.39× libzstd's time on the HTTP payloads (was 1.46–1.64×): JavaScript
+  1.38–1.39× (was 1.59–1.61×), certificate chains 1.16–1.27× (was 1.49–1.64×), JSON 1.37–1.38×,
+  HTML 1.31–1.33×; Silesia 1.22–1.24× at levels 1 and 3 and 1.39× at 19 (was 1.32–1.33× and
+  1.57×). The decoder keeps its tables and literals buffer per thread between calls, as libzstd's
+  reused context does (about 20 KB, plus up to 32 KiB of literals), decodes sequences in batches
+  of 64 before executing them (one bit read per sequence when the extra bits allow), and decodes
+  the four Huffman streams with libzstd's fast loop. Still `#![forbid(unsafe_code)]`, no BMI2
+  paths. Fuzzed 16 min per target (`zstd_decompress`, `zstd_roundtrip`).
+- `tools/codec-bench`: `BENCH_OWN=0` skips decoding each library's own output, `BENCH_DUMP=DIR`
+  writes the zstd frames that are timed.
+
 ### Changed: faster brotli and Zstandard decoding and encoding (only-brotli, only-zstd)
 
 No public API change (docs/BENCHMARKS.md, "Brotli and Zstandard"; against libbrotli 1.2.1 and
