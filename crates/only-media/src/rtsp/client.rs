@@ -39,8 +39,23 @@
 //! URL is resolved there with the system resolver (`ToSocketAddrs`); an IP literal, or
 //! [`RtspClientConfig::addr`], needs no lookup.
 //!
-//! Left out: RTSPS and HTTP tunnelling, multicast, redirects, RTCP-based A/V sync (each track's
-//! times start at its first packet's arrival, as for RTSP publishers) and reconnecting.
+//! **A/V sync**: a pull lines its tracks up by the RTCP sender reports of the server
+//! ([`RtspClientConfig::rtcp_sync`], on by default): each track's times start at its first
+//! packet's arrival, then once a track has a sender report its RTP timestamps are mapped to
+//! the server's NTP clock, relative to the first track synchronized, so audio and video
+//! captured at the same instant carry the same time in the hub. Corrections only move a
+//! track's times forward, and are made before the stream goes live when the server sends its
+//! reports early (as ffmpeg and mediamtx do).
+//!
+//! **Reconnecting**: with [`RtspClientConfig::reconnect`] a session that ends with an error
+//! another try may cure is followed by a new one, after a bounded backoff ([`Reconnect`]),
+//! from a short-lived thread of its own (the handshake blocks). A pull keeps its hub path
+//! reserved throughout and republishes the new session's tracks (a timeline restart for the
+//! sinks); a push reads the hub stream's current tracks again (a stream that changed its
+//! codecs is announced anew) and continues from the cached GOP. The first session must come
+//! up: [`pull`] and [`push`] return its error.
+//!
+//! Left out: RTSPS and HTTP tunnelling, multicast and redirects.
 
 use std::{
     fmt,
@@ -60,9 +75,12 @@ use super::{
     describe_sdp,
     message::{self, Frame, MAX_BODY, MAX_HEAD, Parser, Reply, Response, Transport},
 };
+pub use crate::reconnect::Reconnect;
 use crate::{
     av::{Packet, Track, Tracks},
-    hub::{Dropper, Hub, HubError, PeerInfo, Sink, SubscribeOptions, Subscription, Timeline},
+    hub::{
+        Dropper, Hub, HubError, PeerInfo, Publisher, Sink, SubscribeOptions, Subscription, Timeline,
+    },
     rtp::{self, Packetizer},
     sdp,
 };
@@ -126,6 +144,12 @@ pub struct RtspClientConfig {
     pub user_agent: String,
     /// [`push`]: how long to wait for the hub stream to be live (default 10 s).
     pub push_wait: Duration,
+    /// [`pull`]: line the tracks up by the server's RTCP sender reports (default `true`);
+    /// `false` keeps each track's times from its first packet's arrival.
+    pub rtcp_sync: bool,
+    /// Connect again when a session fails ([`Reconnect`]). Default `None`: the client ends
+    /// with the first error.
+    pub reconnect: Option<Reconnect>,
 }
 
 impl Default for RtspClientConfig {
@@ -144,6 +168,8 @@ impl Default for RtspClientConfig {
             sender_report_interval: Duration::from_secs(3),
             user_agent: "only-media".to_owned(),
             push_wait: Duration::from_secs(10),
+            rtcp_sync: true,
+            reconnect: None,
         }
     }
 }
@@ -944,8 +970,9 @@ struct Inner {
     phase: Phase,
     conn: Option<Conn<ClientConn>>,
     m: Machine,
-    /// Pull: the reserved path, until DESCRIBE answers.
-    publisher: Option<crate::hub::Publisher>,
+    /// Pull: the reserved path, until DESCRIBE answers (shared with the [`Client`], which
+    /// keeps it across sessions).
+    publisher: Option<Arc<Publisher>>,
     recorder: Option<Arc<Mutex<Recorder>>>,
     sub: Option<Subscription>,
     /// UDP: RTP and RTCP sockets of each track, in order.
@@ -957,8 +984,11 @@ struct Inner {
     rr_ssrc: u32,
 }
 
-/// What the connection, the timer and the caller share.
+/// One session (one RTSP connection): what the connection, the timer and the caller share.
 struct Shared {
+    /// The client the session belongs to, told when it ends (none in the fuzzer, where the
+    /// session closes the hub side itself).
+    client: Weak<Client>,
     cfg: RtspClientConfig,
     path: String,
     record: bool,
@@ -975,13 +1005,15 @@ impl Shared {
     fn new(
         cfg: RtspClientConfig,
         m: Machine,
-        publisher: Option<crate::hub::Publisher>,
+        publisher: Option<Arc<Publisher>>,
         path: &str,
         timers: bool,
+        client: Weak<Client>,
     ) -> Arc<Shared> {
         let mut b = [0u8; 4];
         let _ = only_crypto::rand::fill_random(&mut b);
         Arc::new(Shared {
+            client,
             record: m.record,
             cfg,
             path: path.to_owned(),
@@ -1038,7 +1070,10 @@ impl Shared {
                         continue;
                     };
                     match Recorder::new(p, &medias) {
-                        Some(r) => g.recorder = Some(Arc::new(Mutex::new(r))),
+                        Some(r) => {
+                            let r = r.sync(self.cfg.rtcp_sync);
+                            g.recorder = Some(Arc::new(Mutex::new(r)));
+                        }
                         None => {
                             fail.get_or_insert(ClientError::NoTracks);
                         }
@@ -1084,7 +1119,9 @@ impl Shared {
             if let Some(rec) = rec {
                 let mut r = lock(&rec);
                 for (m, rtcp, d) in &media {
-                    if !rtcp && !rtp::is_rtcp(d) {
+                    if *rtcp || rtp::is_rtcp(d) {
+                        r.rtcp(*m, d);
+                    } else {
                         r.push(*m, d);
                     }
                 }
@@ -1189,12 +1226,13 @@ impl Shared {
     }
 
     /// Ends the session (idempotent): TEARDOWN when the server knows it, then the connection,
-    /// the hub side and the UDP sockets are closed.
+    /// the hub subscription and the UDP sockets are closed, and the client hears of it (it
+    /// decides about the hub path and reconnecting).
     fn finish(&self, err: Option<ClientError>) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (conn, bye, rec, publisher, sub, udp) = {
+        let (conn, bye, rec, publisher, sub, udp, err) = {
             let mut g = lock(&self.inner);
             if g.error.is_none() {
                 g.error = err;
@@ -1211,14 +1249,18 @@ impl Shared {
                 g.publisher.take(),
                 g.sub.take(),
                 std::mem::take(&mut g.udp),
+                g.error.clone(),
             )
         };
         self.cond.notify_all();
         drop(sub);
-        if let Some(r) = rec {
-            lock(&r).close();
+        let client = self.client.upgrade();
+        if client.is_none() {
+            if let Some(r) = &rec {
+                lock(r).close();
+            }
         }
-        drop(publisher);
+        drop((rec, publisher));
         for (a, b) in udp {
             a.close();
             b.close();
@@ -1229,6 +1271,9 @@ impl Shared {
             } else {
                 c.close();
             }
+        }
+        if let Some(c) = client {
+            c.ended(self, err);
         }
     }
 }
@@ -1299,8 +1344,10 @@ impl Handler for UdpRecv {
         if let Some(s) = self.shared.upgrade() {
             s.touch();
         }
-        if !self.rtcp && !rtp::is_rtcp(data) {
-            if let Some(r) = self.rec.upgrade() {
+        if let Some(r) = self.rec.upgrade() {
+            if self.rtcp || rtp::is_rtcp(data) {
+                lock(&r).rtcp(self.media, data);
+            } else {
                 lock(&r).push(self.media, data);
             }
         }
@@ -1676,11 +1723,224 @@ fn start_push(
     }
 }
 
+// ---- the client: sessions, reconnects -----------------------------------------------------
+
+/// What a client keeps across its sessions.
+struct Client {
+    url: Url,
+    addr: SocketAddr,
+    cfg: RtspClientConfig,
+    path: String,
+    /// Push: the hub the stream is read from.
+    hub: Option<Hub>,
+    /// Pull: the reserved hub path, held across sessions.
+    publisher: Option<Arc<Publisher>>,
+    st: Mutex<ClientSt>,
+    /// Over for good: set once the hub path is free again.
+    closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct ClientSt {
+    /// The current session.
+    session: Option<Arc<Shared>>,
+    /// Closed, or ending for good: no new session starts.
+    ending: bool,
+    /// A session went live: later failures reconnect (the first session's error is returned
+    /// by [`pull`] / [`push`] instead).
+    established: bool,
+    /// Tries since the last live session.
+    attempts: u32,
+    reconnects: u64,
+    /// The error that ended the client.
+    error: Option<ClientError>,
+    /// The error that ended the last session.
+    last_error: Option<ClientError>,
+}
+
+/// Whether a session that ended with `err` is worth trying again.
+fn retryable(err: Option<&ClientError>) -> bool {
+    match err {
+        None
+        | Some(
+            ClientError::Url(_)
+            | ClientError::Resolve(_)
+            | ClientError::Unauthorized
+            | ClientError::NoTracks
+            | ClientError::Hub(_),
+        ) => false,
+        Some(ClientError::Status { status, .. }) => !matches!(status, 401 | 403),
+        Some(_) => true,
+    }
+}
+
+impl Client {
+    /// The session machine: playing, or recording the hub stream's `tracks`.
+    fn machine(&self, tracks: Option<&Tracks>) -> Result<Machine, ClientError> {
+        Ok(match tracks {
+            Some(t) => Machine::record(self.url.clone(), t, &self.cfg)?,
+            None => Machine::play(self.url.clone(), &self.cfg),
+        })
+    }
+
+    /// Starts a session of `m` on `engine` and drives it until it plays or records (a push
+    /// subscribes to the hub stream, of `tracks`). Its failures also reach
+    /// [`ended`](Self::ended).
+    fn session(
+        self: &Arc<Self>,
+        engine: &Engine,
+        m: Machine,
+        tracks: Option<&Tracks>,
+    ) -> Result<(), ClientError> {
+        let s = Shared::new(
+            self.cfg.clone(),
+            m,
+            self.publisher.clone(),
+            &self.path,
+            true,
+            Arc::downgrade(self),
+        );
+        {
+            let mut g = lock(&self.st);
+            if g.ending {
+                return Err(ClientError::Closed);
+            }
+            g.session = Some(s.clone());
+        }
+        establish(engine, self.addr, &s)?;
+        if let (Some(hub), Some(t)) = (&self.hub, tracks) {
+            start_push(&s, hub, t, self.addr)?;
+        }
+        let mut g = lock(&self.st);
+        if g.established {
+            g.reconnects += 1;
+        }
+        g.established = true;
+        g.attempts = 0;
+        g.last_error = None;
+        Ok(())
+    }
+
+    /// Session `s` ended with `err`: reconnect, or end the client.
+    fn ended(self: &Arc<Self>, s: &Shared, err: Option<ClientError>) {
+        {
+            let mut g = lock(&self.st);
+            if !g
+                .session
+                .as_ref()
+                .is_some_and(|x| std::ptr::eq(&raw const **x, s))
+            {
+                return; // replaced, or taken by close
+            }
+            g.session = None;
+            if g.ending || !g.established {
+                return;
+            }
+        }
+        self.failed(err);
+    }
+
+    /// A session (or a try before one existed) failed with `err`.
+    fn failed(self: &Arc<Self>, err: Option<ClientError>) {
+        let mut g = lock(&self.st);
+        if g.ending {
+            return;
+        }
+        g.last_error.clone_from(&err);
+        let retry = self
+            .cfg
+            .reconnect
+            .as_ref()
+            .filter(|r| retryable(err.as_ref()) && r.allows(g.attempts));
+        if let Some(r) = retry {
+            let delay = r.delay(g.attempts);
+            g.attempts += 1;
+            drop(g);
+            let w = Arc::downgrade(self);
+            crate::timer::after(delay, move || {
+                let Some(c) = w.upgrade() else { return };
+                if lock(&c.st).ending {
+                    return;
+                }
+                // The handshake blocks: a short-lived thread of its own, not the timer's.
+                let c2 = c.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("only-rtsp-reconnect".into())
+                    .spawn(move || c2.attempt());
+                if let Err(e) = spawned {
+                    c.end(Some(ClientError::Io(e.to_string())));
+                }
+            });
+            return;
+        }
+        drop(g);
+        self.end(err);
+    }
+
+    /// One reconnect try (on its own thread).
+    fn attempt(self: &Arc<Self>) {
+        let Some(engine) = self.cfg.reconnect.as_ref().and_then(Reconnect::engine) else {
+            return self.end(Some(ClientError::Closed));
+        };
+        let tracks = match &self.hub {
+            Some(hub) => match wait_tracks(hub, &self.path, self.cfg.push_wait) {
+                Ok(t) => Some(t),
+                Err(e) => return self.failed(Some(e)),
+            },
+            None => None,
+        };
+        match self.machine(tracks.as_ref()) {
+            // Its failures go through `ended`.
+            Ok(m) => drop(self.session(&engine, m, tracks.as_ref())),
+            Err(e) => self.failed(Some(e)),
+        }
+    }
+
+    /// Ends the client for good with `err`: the hub path is freed before it says so.
+    fn end(&self, err: Option<ClientError>) {
+        let session = {
+            let mut g = lock(&self.st);
+            if g.ending && self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            g.ending = true;
+            if g.error.is_none() {
+                g.error = err;
+            }
+            g.session.take()
+        };
+        if let Some(s) = session {
+            s.finish(None);
+        }
+        if let Some(p) = &self.publisher {
+            p.close();
+        }
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+/// Waits up to `wait` for the hub stream at `path` to be live, returning its tracks.
+fn wait_tracks(hub: &Hub, path: &str, wait: Duration) -> Result<Tracks, ClientError> {
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Some(i) = hub
+            .stream_info(path)
+            .filter(|i| i.publishing && !i.tracks.is_empty())
+        {
+            return Ok(i.tracks);
+        }
+        if Instant::now() >= deadline {
+            return Err(ClientError::Hub(HubError::NotFound));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 // ---- the public API ------------------------------------------------------------------------
 
-/// A running RTSP client session ([`pull`] or [`push`]). Dropping it closes the session, like
-/// [`close`](Self::close).
-pub struct RtspClient(Arc<Shared>);
+/// A running RTSP client ([`pull`] or [`push`]): its session, and the ones that follow when it
+/// reconnects. Dropping it closes the client, like [`close`](Self::close).
+pub struct RtspClient(Arc<Client>);
 
 impl fmt::Debug for RtspClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1692,26 +1952,41 @@ impl fmt::Debug for RtspClient {
 }
 
 impl RtspClient {
-    /// The hub path the session publishes to ([`pull`]) or reads from ([`push`]).
+    /// The hub path the client publishes to ([`pull`]) or reads from ([`push`]).
     pub fn path(&self) -> &str {
         &self.0.path
     }
 
-    /// Ends the session: sends TEARDOWN (best effort, not waited for) and closes the
+    /// Ends the client: sends TEARDOWN (best effort, not waited for) and closes the
     /// connection, the UDP sockets and the hub side (a pulled stream is unpublished, a push
-    /// unsubscribes). Idempotent; [`error`](Self::error) stays `None` if nothing failed first.
+    /// unsubscribes); a pending reconnect is called off. A pull's hub path is free again when
+    /// this returns. Idempotent; [`error`](Self::error) stays `None` if nothing failed first.
     pub fn close(&self) {
-        self.0.finish(None);
+        self.0.end(None);
     }
 
-    /// Whether the session is over: closed, or ended by an error.
+    /// Whether the client is over: closed, or ended by an error it does not reconnect after.
+    /// A pull's hub path is free once this says so.
     pub fn is_closed(&self) -> bool {
         self.0.closed.load(Ordering::Acquire)
     }
 
-    /// The error that ended the session, if one did.
+    /// The error that ended the client; while it reconnects, the one that ended the last
+    /// session.
     pub fn error(&self) -> Option<ClientError> {
-        lock(&self.0.inner).error.clone()
+        let g = lock(&self.0.st);
+        g.error.clone().or_else(|| g.last_error.clone())
+    }
+
+    /// Sessions made after the first ([`RtspClientConfig::reconnect`]).
+    pub fn reconnects(&self) -> u64 {
+        lock(&self.0.st).reconnects
+    }
+
+    /// Whether a session currently plays or records (`false` while connecting again).
+    pub fn is_live(&self) -> bool {
+        let s = lock(&self.0.st).session.clone();
+        s.is_some_and(|s| lock(&s.inner).phase == Phase::Live)
     }
 }
 
@@ -1725,7 +2000,8 @@ impl Drop for RtspClient {
 /// (a second publisher is refused; the stream goes live once its tracks are known). Returns
 /// once the server answered PLAY; afterwards the session runs on the engine's I/O threads
 /// until [`RtspClient::close`], a drop, or an error ([`RtspClient::error`]): the connection
-/// closing, no media for [`RtspClientConfig::idle_timeout`], or a keep-alive unanswered.
+/// closing, no media for [`RtspClientConfig::idle_timeout`], or a keep-alive unanswered. With
+/// [`RtspClientConfig::reconnect`] such an error starts a new session instead, the path kept.
 ///
 /// Dials with [`Engine::dial`] (the engine must be started); [`RtspTransport::Udp`] also needs
 /// `EngineBuilder::udp_client_threads` (or a UDP listener). Blocks the caller for the
@@ -1742,10 +2018,23 @@ pub fn pull(
     let publisher = hub
         .reserve(path, PeerInfo::new("rtsp", Some(addr), ""))
         .map_err(ClientError::Hub)?;
-    let m = Machine::play(url, &cfg);
-    let s = Shared::new(cfg, m, Some(publisher), path, true);
-    establish(engine, addr, &s)?;
-    Ok(RtspClient(s))
+    let c = Arc::new(Client {
+        url,
+        addr,
+        cfg,
+        path: path.to_owned(),
+        hub: None,
+        publisher: Some(Arc::new(publisher)),
+        st: Mutex::new(ClientSt::default()),
+        closed: AtomicBool::new(false),
+    });
+    match c.machine(None).and_then(|m| c.session(engine, m, None)) {
+        Ok(()) => Ok(RtspClient(c)),
+        Err(e) => {
+            c.end(Some(e.clone()));
+            Err(e)
+        }
+    }
 }
 
 /// Records the hub stream at `path` to `url` (RTSP ANNOUNCE and RECORD), from its cached GOP
@@ -1753,7 +2042,9 @@ pub fn pull(
 /// into the ANNOUNCE's SDP), then returns once the server answered RECORD; afterwards the
 /// session runs until [`RtspClient::close`], a drop, or an error ([`RtspClient::error`]): the
 /// connection closing, the stream ending ([`ClientError::Hub`]) or changing its codecs, or the
-/// server reading too slowly ([`ClientError::WriteQueueFull`]).
+/// server reading too slowly ([`ClientError::WriteQueueFull`]). With
+/// [`RtspClientConfig::reconnect`] such an error (but the stream ending) starts a new session
+/// instead, announcing the stream's current tracks.
 ///
 /// Dials with [`Engine::dial`] (the engine must be started); [`RtspTransport::Udp`] also needs
 /// `EngineBuilder::udp_client_threads` (or a UDP listener). Blocks the caller while waiting
@@ -1768,24 +2059,27 @@ pub fn push(
 ) -> Result<RtspClient, ClientError> {
     let url = Url::parse(url)?;
     let addr = url.resolve(&cfg)?;
-    let deadline = Instant::now() + cfg.push_wait;
-    let tracks = loop {
-        if let Some(i) = hub
-            .stream_info(path)
-            .filter(|i| i.publishing && !i.tracks.is_empty())
-        {
-            break i.tracks;
+    let tracks = wait_tracks(hub, path, cfg.push_wait)?;
+    let c = Arc::new(Client {
+        url,
+        addr,
+        cfg,
+        path: path.to_owned(),
+        hub: Some(hub.clone()),
+        publisher: None,
+        st: Mutex::new(ClientSt::default()),
+        closed: AtomicBool::new(false),
+    });
+    match c
+        .machine(Some(&tracks))
+        .and_then(|m| c.session(engine, m, Some(&tracks)))
+    {
+        Ok(()) => Ok(RtspClient(c)),
+        Err(e) => {
+            c.end(Some(e.clone()));
+            Err(e)
         }
-        if Instant::now() >= deadline {
-            return Err(ClientError::Hub(HubError::NotFound));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let m = Machine::record(url, &tracks, &cfg)?;
-    let s = Shared::new(cfg, m, None, path, true);
-    establish(engine, addr, &s)?;
-    start_push(&s, hub, &tracks, addr)?;
-    Ok(RtspClient(s))
+    }
 }
 
 // ---- fuzzing -------------------------------------------------------------------------------
@@ -1817,13 +2111,13 @@ pub(crate) fn fuzz(record: bool, udp: bool, pieces: &[&[u8]]) {
         let Ok(m) = Machine::record(url, &tracks, &cfg) else {
             return;
         };
-        Shared::new(cfg, m, None, "src", false)
+        Shared::new(cfg, m, None, "src", false, Weak::new())
     } else {
         let Ok(p) = hub.reserve("dst", PeerInfo::default()) else {
             return;
         };
         let m = Machine::play(url, &cfg);
-        Shared::new(cfg, m, Some(p), "dst", false)
+        Shared::new(cfg, m, Some(Arc::new(p)), "dst", false, Weak::new())
     };
     let c = only_core::fuzzing::conn::<ClientConn>();
     let mut h = ClientAcceptor(s.clone()).on_open(&c);

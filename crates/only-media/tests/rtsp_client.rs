@@ -1,6 +1,8 @@
 //! The RTSP client against the RTSP server of this crate over loopback: pull (PLAY) and push
 //! (RECORD), over TCP and UDP, with the sample files fed into a hub; Digest authentication;
-//! TEARDOWN on close.
+//! TEARDOWN on close; reconnecting to a server that goes away and comes back on the same port
+//! (a killable TCP forwarder in between; the pulled path kept, the new session's tracks
+//! republished).
 
 use std::{
     sync::{
@@ -12,7 +14,7 @@ use std::{
 
 use only::{Engine, Listener};
 use only_media::{
-    Codec, Hub, Packet, PeerInfo, Sink, SubscribeOptions, Tracks,
+    Codec, Hub, HubError, Packet, PeerInfo, Reconnect, Sink, SubscribeOptions, Tracks,
     av::MILLISECOND,
     flv::{Decoder, Demuxer, Event},
     mpegts,
@@ -321,10 +323,7 @@ fn sessions_end_with_their_source() {
     // The feeder ends and drops its publisher: "src" is unpublished.
     stop.store(true, Ordering::Relaxed);
     wait("push ended", 10, || push.is_closed());
-    assert_eq!(
-        push.error(),
-        Some(ClientError::Hub(only_media::HubError::Unpublished))
-    );
+    assert_eq!(push.error(), Some(ClientError::Hub(HubError::Unpublished)));
     wait("pull ended", 10, || pull.is_closed());
     assert!(
         matches!(
@@ -563,4 +562,197 @@ fn ffmpeg_listen_receives_push() {
     }
     let _ = std::fs::remove_dir_all(&dir);
     engine.shutdown();
+}
+
+// ---- reconnecting ---------------------------------------------------------------------------
+
+/// Counts the tracks announcements and packets a subscriber hears.
+#[derive(Clone, Default)]
+struct Heard(Arc<(AtomicU64, AtomicU64)>);
+
+impl Sink for Heard {
+    fn on_tracks(&mut self, _t: &Tracks) {
+        self.0.0.fetch_add(1, Ordering::Relaxed);
+    }
+    fn on_packet(&mut self, _p: &Arc<Packet>) {
+        self.0.1.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn reconnecting(t: RtspTransport, e: &Arc<Engine>) -> RtspClientConfig {
+    let mut c = cfg(t);
+    c.idle_timeout = Duration::from_secs(2);
+    c.reconnect = Some(
+        Reconnect::new(e)
+            .initial_delay(Duration::from_millis(100))
+            .max_delay(Duration::from_millis(400)),
+    );
+    c
+}
+
+/// A TCP forwarder to `to` on `at` (port 0 picks one) whose connections can be cut at once,
+/// standing for a server that goes away.
+struct Proxy {
+    addr: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    conns: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>>,
+}
+
+impl Proxy {
+    fn start(at: std::net::SocketAddr, to: std::net::SocketAddr) -> Proxy {
+        use std::net::{TcpListener, TcpStream};
+        let l = TcpListener::bind(at).unwrap();
+        l.set_nonblocking(true).unwrap();
+        let addr = l.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let conns = Arc::new(std::sync::Mutex::new(Vec::<TcpStream>::new()));
+        let (s, c) = (stop.clone(), conns.clone());
+        std::thread::spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                let Ok((a, _)) = l.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                a.set_nonblocking(false).unwrap();
+                let Ok(b) = TcpStream::connect(to) else {
+                    continue;
+                };
+                let mut g = c.lock().unwrap();
+                for (mut from, mut into) in [
+                    (a.try_clone().unwrap(), b.try_clone().unwrap()),
+                    (b.try_clone().unwrap(), a.try_clone().unwrap()),
+                ] {
+                    std::thread::spawn(move || {
+                        let _ = std::io::copy(&mut from, &mut into);
+                        let _ = into.shutdown(std::net::Shutdown::Both);
+                    });
+                }
+                g.extend([a, b]);
+            }
+        });
+        Proxy { addr, stop, conns }
+    }
+
+    /// Stops listening and cuts every connection.
+    fn kill(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for c in self.conns.lock().unwrap().drain(..) {
+            let _ = c.shutdown(std::net::Shutdown::Both);
+        }
+        std::thread::sleep(Duration::from_millis(20)); // the listener goes with its thread
+    }
+}
+
+/// A reconnecting pull: the server goes away (its connections cut, nothing listening) and
+/// another comes back on the same port with other codecs; the client keeps the hub path and
+/// the subscriber, plays again and republishes the new tracks; closing frees the path at once.
+fn pull_reconnects(t: RtspTransport) {
+    let (src_hub, src_engine, server) = start(RtspConfig::default());
+    let (_, stop) = feed(&src_hub, "src", "h264_aac.flv");
+    wait("src live", 5, || {
+        src_hub.stream_info("src").is_some_and(|i| i.publishing)
+    });
+    let proxy = Proxy::start("127.0.0.1:0".parse().unwrap(), server);
+    let addr = proxy.addr;
+    let ce = Arc::new(client_engine());
+    let hub = Hub::default();
+    let url = format!("rtsp://{addr}/src");
+    let pull = client::pull(&ce, &url, &hub, "dst", reconnecting(t, &ce)).unwrap();
+    let heard = Heard::default();
+    let opts = SubscribeOptions::new(PeerInfo::default()).wait(Duration::from_secs(10));
+    let _sub = hub.subscribe("dst", heard.clone(), opts).unwrap();
+    wait("packets", 10, || heard.0.1.load(Ordering::Relaxed) > 20);
+    assert!(pull.is_live());
+    // The server goes away.
+    proxy.kill();
+    stop.store(true, Ordering::Relaxed);
+    src_engine.shutdown();
+    wait("session over", 10, || !pull.is_live());
+    std::thread::sleep(Duration::from_millis(600)); // a few tries fail meanwhile
+    assert!(!pull.is_closed());
+    assert!(pull.error().is_some());
+    assert_eq!(
+        hub.reserve("dst", PeerInfo::default()).unwrap_err(),
+        HubError::StreamBusy
+    );
+    // Another server on the same port, with H.265.
+    let (src_hub, src_engine, server) = start(RtspConfig::default());
+    let (tracks, stop) = feed(&src_hub, "src", "h265_aac.flv");
+    let proxy = Proxy::start(addr, server);
+    wait("reconnected", 15, || {
+        pull.reconnects() == 1 && pull.is_live()
+    });
+    let before = heard.0.1.load(Ordering::Relaxed);
+    wait("republished", 10, || {
+        heard.0.0.load(Ordering::Relaxed) == 2 && heard.0.1.load(Ordering::Relaxed) > before + 20
+    });
+    let info = hub.stream_info("dst").unwrap();
+    assert_eq!(codecs(&info.tracks), codecs(&tracks));
+    assert_eq!(info.subscribers, 1);
+    assert!(pull.error().is_none());
+    pull.close();
+    assert!(pull.is_closed());
+    drop(
+        hub.reserve("dst", PeerInfo::default())
+            .expect("free at once"),
+    );
+    stop.store(true, Ordering::Relaxed);
+    proxy.kill();
+    src_engine.shutdown();
+    ce.shutdown();
+}
+
+#[test]
+fn pull_reconnects_over_tcp() {
+    pull_reconnects(RtspTransport::Tcp);
+}
+
+#[test]
+fn pull_reconnects_over_udp() {
+    pull_reconnects(RtspTransport::Udp);
+}
+
+/// A reconnecting push: the receiving server goes away (its connections cut, nothing
+/// listening) and comes back on the same port; the push records to it again, from the cached
+/// GOP.
+#[test]
+fn push_reconnects() {
+    let hub = Hub::default();
+    let (tracks, stop) = feed(&hub, "src", "h264_aac.flv");
+    wait("src live", 5, || {
+        hub.stream_info("src").is_some_and(|i| i.publishing)
+    });
+    let (dst_hub, dst_engine, server) = start(RtspConfig::default());
+    let proxy = Proxy::start("127.0.0.1:0".parse().unwrap(), server);
+    let addr = proxy.addr;
+    let ce = Arc::new(client_engine());
+    let url = format!("rtsp://{addr}/pushed");
+    let push = client::push(
+        &ce,
+        &url,
+        &hub,
+        "src",
+        reconnecting(RtspTransport::Tcp, &ce),
+    )
+    .unwrap();
+    check_live(&dst_hub, "pushed", &tracks);
+    proxy.kill();
+    wait("session over", 10, || !push.is_live());
+    std::thread::sleep(Duration::from_millis(600)); // a few tries fail meanwhile
+    assert!(!push.is_closed());
+    wait("server's session over", 10, || {
+        dst_hub.stream_info("pushed").is_none_or(|i| !i.publishing)
+    });
+    let proxy = Proxy::start(addr, server);
+    wait("reconnected", 15, || {
+        push.reconnects() == 1 && push.is_live()
+    });
+    check_live(&dst_hub, "pushed", &tracks);
+    // The source ending ends the push for good.
+    stop.store(true, Ordering::Relaxed);
+    wait("push over", 10, || push.is_closed());
+    assert_eq!(push.error(), Some(ClientError::Hub(HubError::Unpublished)));
+    proxy.kill();
+    dst_engine.shutdown();
+    ce.shutdown();
 }
