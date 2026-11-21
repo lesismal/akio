@@ -84,7 +84,7 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMechanism, Frequency,
+    Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec, Direction, Event, FecMechanism, Frequency,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
     MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
     XrBlocks,
@@ -328,6 +328,24 @@ impl Peer {
                 Err(e) => Err(rtc_err(e)),
             },
         )?
+    }
+
+    /// The priority of data channel `id` ([`ChannelConfig::priority`]; for a channel the
+    /// remote opened, the one its DCEP open message carried).
+    pub fn channel_priority(&self, id: ChannelId) -> Result<ChannelPriority, Error> {
+        self.with_rtc_inner(|rtc| rtc.channel_priority(id))?
+            .ok_or(Error::UnknownChannel)
+    }
+
+    /// Changes how the SCTP stream scheduler ([`RtcConfig::set_sctp_scheduler`]) weighs data
+    /// channel `id` against the others on this side; the remote keeps the priority it was told
+    /// when the channel opened (DCEP has no update message).
+    pub fn set_channel_priority(&self, id: ChannelId, priority: ChannelPriority) -> Result<(), Error> {
+        if self.with_rtc_inner(|rtc| rtc.set_channel_priority(id, priority))? {
+            Ok(())
+        } else {
+            Err(Error::UnknownChannel)
+        }
     }
 
     /// Opens a data channel with `cfg` (label, ordered or not, reliable or not). On a

@@ -140,6 +140,10 @@ pub struct ChannelConfig {
     pub negotiated: Option<u16>,
     /// Sub-protocol name (default empty).
     pub protocol: String,
+    /// How the SCTP stream scheduler weighs this channel against the others
+    /// ([`RtcConfig::set_sctp_scheduler`]); sent to the peer in the DCEP open message
+    /// (default [`ChannelPriority::Low`], the W3C default).
+    pub priority: ChannelPriority,
 }
 
 impl Default for ChannelConfig {
@@ -150,6 +154,7 @@ impl Default for ChannelConfig {
             reliability: Reliability::Reliable,
             negotiated: None,
             protocol: String::new(),
+            priority: ChannelPriority::Low,
         }
     }
 }
@@ -179,7 +184,96 @@ impl ChannelConfig {
         if let Some(id) = self.negotiated {
             o = o.with_negotiated(id);
         }
-        o
+        o.with_priority(self.priority.dcep_value())
+    }
+
+    /// Sets [`priority`](Self::priority).
+    #[must_use]
+    pub fn with_priority(mut self, priority: ChannelPriority) -> ChannelConfig {
+        self.priority = priority;
+        self
+    }
+}
+
+/// The priority of a data channel (W3C `RTCPriorityType`, RFC 8831 §6.4): the DCEP open
+/// message carries it as 128, 256, 512 or 1024 (RFC 8832 §5.1: higher is more important),
+/// and the SCTP stream scheduler serves channels by it ([`ChannelScheduler`]). With the
+/// default weighted fair queueing, a channel of one level gets twice the bytes of one a
+/// level lower while both have data queued.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum ChannelPriority {
+    /// `very-low` (DCEP 128).
+    VeryLow,
+    /// `low` (DCEP 256), the default.
+    #[default]
+    Low,
+    /// `medium` (DCEP 512).
+    Medium,
+    /// `high` (DCEP 1024).
+    High,
+}
+
+impl ChannelPriority {
+    /// The DCEP priority value: 128, 256, 512 or 1024.
+    pub fn dcep_value(self) -> u16 {
+        match self {
+            ChannelPriority::VeryLow => 128,
+            ChannelPriority::Low => 256,
+            ChannelPriority::Medium => 512,
+            ChannelPriority::High => 1024,
+        }
+    }
+
+    /// The level of a DCEP priority value a peer sent: the nearest of the four (geometric
+    /// midpoints: up to 191 very-low, 192..=383 low, 384..=767 medium, from 768 high); 0,
+    /// which some stacks send when the application set none, is low.
+    pub fn from_dcep_value(v: u16) -> ChannelPriority {
+        match v {
+            0 => ChannelPriority::Low,
+            1..=191 => ChannelPriority::VeryLow,
+            192..=383 => ChannelPriority::Low,
+            384..=767 => ChannelPriority::Medium,
+            _ => ChannelPriority::High,
+        }
+    }
+}
+
+/// The SCTP stream scheduler of a peer's data channels (RFC 8260 §3,
+/// [`RtcConfig::set_sctp_scheduler`]): which channel the next chunk of queued data comes
+/// from. Retransmissions always go first; with message interleaving (I-DATA, negotiated with
+/// browsers and pion) the unit is a chunk, otherwise a whole message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ChannelScheduler {
+    /// Messages in the order they were queued, across channels (§3.1).
+    FirstComeFirstServed,
+    /// Channels with queued data take turns, one unit each (§3.2).
+    RoundRobin,
+    /// Round robin where each packet is filled from one channel (§3.3).
+    RoundRobinPerPacket,
+    /// The channels of the highest [`ChannelPriority`] first, round robin among equals;
+    /// lower ones only when those have nothing queued (§3.4).
+    Priority,
+    /// Every channel with queued data gets the same share of bytes (§3.5).
+    FairCapacity,
+    /// Shares of bytes in proportion to the channels' DCEP priority values (§3.6): `medium`
+    /// gets twice what `low` gets. The default (RFC 8831 §6.4 asks for priorities to be
+    /// honoured this way).
+    #[default]
+    WeightedFairQueueing,
+}
+
+impl ChannelScheduler {
+    pub(crate) fn to_sctp(self) -> only_sctp::Scheduler {
+        match self {
+            ChannelScheduler::FirstComeFirstServed => only_sctp::Scheduler::FirstComeFirstServed,
+            ChannelScheduler::RoundRobin => only_sctp::Scheduler::RoundRobin,
+            ChannelScheduler::RoundRobinPerPacket => only_sctp::Scheduler::RoundRobinPerPacket,
+            ChannelScheduler::Priority => only_sctp::Scheduler::Priority,
+            ChannelScheduler::FairCapacity => only_sctp::Scheduler::FairCapacity,
+            ChannelScheduler::WeightedFairQueueing => only_sctp::Scheduler::WeightedFairQueueing,
+        }
     }
 }
 
@@ -714,6 +808,8 @@ pub(crate) struct ConfigInner {
     pub(crate) reorder_audio: usize,
     pub(crate) reorder_video: usize,
     pub(crate) sctp_max_buffered: usize,
+    /// The SCTP stream scheduler of the data channels.
+    pub(crate) sctp_scheduler: ChannelScheduler,
     pub(crate) fec: Option<FecMechanism>,
     pub(crate) fec_min: u8,
     pub(crate) fec_max: u8,
@@ -758,6 +854,7 @@ impl Default for ConfigInner {
             reorder_audio: 15,
             reorder_video: 30,
             sctp_max_buffered: 1 << 20,
+            sctp_scheduler: ChannelScheduler::WeightedFairQueueing,
             fec: None,
             fec_min: 0,
             fec_max: 128,
@@ -887,6 +984,16 @@ impl RtcConfig {
     #[must_use]
     pub fn set_sctp_max_buffered_amount(mut self, bytes: usize) -> Self {
         self.0.sctp_max_buffered = bytes;
+        self
+    }
+
+    /// The SCTP stream scheduler of the data channels (RFC 8260 §3): how the channels with
+    /// data queued share the association, by their [`ChannelPriority`]
+    /// ([`ChannelConfig::priority`], [`Peer::set_channel_priority`](crate::Peer::set_channel_priority)).
+    /// Default [`ChannelScheduler::WeightedFairQueueing`].
+    #[must_use]
+    pub fn set_sctp_scheduler(mut self, scheduler: ChannelScheduler) -> Self {
+        self.0.sctp_scheduler = scheduler;
         self
     }
 

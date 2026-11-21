@@ -25,7 +25,7 @@ use only_srtp::{Context as Srtp, Profile};
 
 use crate::sdp::{Attr, Media, Sdp};
 use crate::types::{
-    Change, Changes, ChannelConfig, ChannelId, Codec, ConfigInner, Direction, FecMechanism,
+    Change, Changes, ChannelConfig, ChannelId, ChannelPriority, Codec, ConfigInner, Direction, FecMechanism,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
     MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
 };
@@ -1992,7 +1992,8 @@ impl Rtc {
             .with_mtu(SCTP_MTU)
             .with_max_message_size(self.remote_max_message)
             .with_max_receive_message_size(MAX_MESSAGE_SIZE)
-            .with_max_buffered_amount(self.cfg.sctp_max_buffered);
+            .with_max_buffered_amount(self.cfg.sctp_max_buffered)
+            .with_scheduler(self.cfg.sctp_scheduler.to_sctp());
         let mut a = Association::new(cfg, now);
         if client {
             a.connect(now);
@@ -3417,6 +3418,7 @@ impl Rtc {
                             if let Some(i) = info {
                                 cfg.ordered = i.ordered;
                                 cfg.protocol = i.protocol;
+                                cfg.priority = ChannelPriority::from_dcep_value(i.priority);
                             }
                             self.channels.insert(
                                 id,
@@ -3668,6 +3670,7 @@ fn abs_send_time_now() -> u32 {
     only_rtp::abs_send_time(d)
 }
 
+mod channels;
 mod feedback;
 mod pacing;
 mod receipts;
@@ -3679,3 +3682,5 @@ use receipts::{line_xr_blocks, remote_xr_blocks};
 mod tests;
 #[cfg(test)]
 mod tests_mux;
+#[cfg(test)]
+mod tests_transports;
