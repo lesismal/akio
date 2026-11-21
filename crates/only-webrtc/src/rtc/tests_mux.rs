@@ -551,7 +551,13 @@ fn xr_receipt_blocks_and_voip_metrics_round_trip() {
     // Loss rate in 1/256 (10 % = 26), the round trip from the reports (~30 ms).
     assert!(m.loss_rate > 8 && m.loss_rate < 60, "{m:?}");
     assert!(m.round_trip_delay > 10 && m.round_trip_delay < 80, "{m:?}");
-    assert_eq!((m.gmin, m.mos_lq), (16, only_rtp::VOIP_UNAVAILABLE));
+    assert_eq!(m.gmin, 16);
+    // The E-model (G.711 with concealment) at ~10 % loss: R about 65, MOS about 3.3.
+    assert!(m.r_factor > 45 && m.r_factor < 80, "{m:?}");
+    assert!(
+        m.mos_lq >= 25 && m.mos_lq <= 40 && m.mos_cq <= m.mos_lq,
+        "{m:?}"
+    );
     // Without negotiation nothing is sent.
     let (mut a, mut b, mids, _, _, now) = negotiate(
         xr_cfg(XrBlocks::ALL),

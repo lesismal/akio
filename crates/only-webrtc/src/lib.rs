@@ -84,7 +84,7 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMechanism, Frequency,
+    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMask, FecMechanism, Frequency,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
     MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
     XrBlocks,
@@ -504,6 +504,13 @@ impl Peer {
         })?
     }
 
+    /// Changes the bounds of the bandwidth estimate (bits per second; see
+    /// [`RtcConfig::set_bwe_bounds`]): a maximum raised above the estimate is probed at once.
+    /// Nothing happens without the estimator ([`RtcConfig::enable_bwe`]).
+    pub fn set_bitrate_bounds(&self, min_bps: u64, max_bps: u64) {
+        let _ = self.with_rtc_inner(|rtc| rtc.set_bitrate_bounds(Instant::now(), min_bps, max_bps));
+    }
+
     /// Closes the peer (DTLS close notify, SCTP shutdown where possible); `on_close` follows.
     pub fn close(&self) {
         {
@@ -531,8 +538,9 @@ impl Peer {
         self.deliver();
     }
 
-    /// One datagram for this peer (`tcp`: a frame from an ICE-TCP connection).
-    fn input(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], tcp: bool) {
+    /// One datagram for this peer (`tcp`: a frame from an ICE-TCP connection) that arrived
+    /// with ECN codepoint `ecn` (0 when not ECN-capable or not known).
+    fn input(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], tcp: bool, ecn: u8) {
         {
             let mut st = lock(&self.0.state);
             if st.closed {
@@ -541,6 +549,7 @@ impl Peer {
             if tcp && !st.tcp_remotes.contains(&source) && st.tcp_remotes.len() < ADDRS_PER_PEER {
                 st.tcp_remotes.push(source);
             }
+            st.rtc.set_rx_ecn(ecn);
             st.rtc
                 .handle_receive(Instant::now(), source, destination, data);
         }
@@ -1078,7 +1087,7 @@ impl Hub {
             .unwrap_or(local)
     }
 
-    fn on_datagram(&self, source: SocketAddr, local: SocketAddr, data: &[u8]) {
+    fn on_datagram(&self, source: SocketAddr, local: SocketAddr, data: &[u8], ecn: u8) {
         let source = self.unscope(source);
         let is_stun = stun::is_stun(data);
         if is_stun && !lock(&self.stun_waiters).is_empty() {
@@ -1094,15 +1103,15 @@ impl Hub {
         }
         if let Some(r) = self.relay_of_server(source) {
             for (peer, relayed, data) in r.input(data) {
-                self.route(peer, relayed, &data);
+                self.route(peer, relayed, &data, 0);
             }
             return;
         }
-        self.route(source, self.destination(local), data);
+        self.route(source, self.destination(local), data, ecn);
     }
 
     /// A datagram from `source` that arrived on the local address `destination`, for a peer.
-    fn route(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) {
+    fn route(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], ecn: u8) {
         let is_stun = stun::is_stun(data);
         let mut id = lock(&self.by_addr).get(&source).copied();
         if id.is_none() && is_stun {
@@ -1126,7 +1135,7 @@ impl Hub {
         let Some(id) = id else { return };
         let p = lock(&self.peers).get(&id).cloned();
         if let Some(p) = p {
-            p.input(source, destination, data, false);
+            p.input(source, destination, data, false, ecn);
         }
     }
 
@@ -1153,7 +1162,7 @@ impl fmt::Debug for RtcUdp {
 impl Handler for RtcUdp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         if let Some(hub) = self.hub.upgrade() {
-            hub.on_datagram(c.peer_addr(), c.local_addr(), data);
+            hub.on_datagram(c.peer_addr(), c.local_addr(), data, c.rx_ecn());
         }
     }
 

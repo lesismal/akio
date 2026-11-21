@@ -291,6 +291,7 @@ impl CcfbSender {
                 let Some(p) = s.sent.get(&ext).copied() else {
                     continue;
                 };
+                let ecn = r.map(|m| m.ecn & 3);
                 let received = match r {
                     None => None,
                     Some(m) if m.arrival_offset >= CCFB_ATO_OVERRANGE => {
@@ -319,6 +320,7 @@ impl CcfbSender {
                     size: p.size,
                     received,
                     probe: p.probe,
+                    ecn,
                 };
                 if received.is_some() {
                     out.insert(p.index, res);

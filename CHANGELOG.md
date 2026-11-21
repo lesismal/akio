@@ -136,6 +136,63 @@ ADR-070 (docs/adr/070-media-reconnect-av-sync-iframes-hevc-cbcs.md), additive:
   dispatch per NAL unit); RTMP pull ingest 1.013 and RTSP pull ingest 1.015 (246 and 269 ns per
   message / RTP packet, `tests/client_bench.rs`).
 
+### Added: a pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, network-state and raised-maximum probing (only-webrtc, only-rtp)
+
+ADR-073 (docs/adr/073-webrtc-pacer-fec-policy-ecn.md):
+
+- **Pacer** (only-webrtc): with the bandwidth estimator on, video, FEC and retransmissions leave
+  through a queue drained at 2.5 times the estimate with a 40 ms burst allowance
+  (retransmissions first, the queue bounded at 8192 packets / 8 MB, drained faster when its
+  oldest packet would wait 2 s); audio is never delayed; transport-wide sequence numbers and
+  abs-send-time are written as packets leave; queued media fills probe slots; optional padding
+  (`RtcConfig::set_padding_rate`). `RtcConfig::enable_pacing(false)` turns it off; without the
+  estimator nothing is queued.
+- **Probing** (only-rtp `BandwidthEstimator`): `set_bounds` at run time probes a raised maximum
+  (only-webrtc: `RtcConfig::set_bwe_bounds`, `Peer::set_bitrate_bounds`);
+  `set_network_state_estimate` caps probes at an external link-capacity estimate and probes
+  towards it (every 5 s, every 3 s while the delay-based rate holds the estimate under 70 % of
+  it); the estimator's own link capacity estimate (`link_capacity`) drives the 3 s probes.
+- **FEC** (only-rtp `fec`): libwebrtc's random / bursty mask tables for groups of up to 12
+  packets (`packet_masks`, `FecMaskType`), its group rules across frames and key-frame factors
+  (`FecProtection`, `FecEncoder::{set_protection, push_frame}`), and its protection policy
+  (`ProtectionPolicy`, `protection_factors`: the code-rate table by loss and bits per frame,
+  the RTT-aware NACK/FEC hybrid). only-webrtc uses them per sent stream; `set_fec_protection`
+  bounds the factors; `RtcConfig::set_fec_mask(FecMask::{Random, Bursty})`.
+- **ECN in RFC 8888 reports**: the endpoint passes each datagram's ECN codepoint (already read
+  by the UDP backends) to the peer, RFC 8888 feedback reports it, and the estimator counts
+  CE-marked packets as lost (`PacketResult::ecn`, `BandwidthEstimator::ecn_counts`).
+- **FlexFEC on simulcast lines** (one unsignaled FlexFEC stream per encoding, named by MID and
+  the repaired RID); **RED for PCMU, PCMA and G.722** (`RtcConfig::enable_audio_red`,
+  `red/8000`); **video RED without FEC** (`FecMechanism::Red`; `red` without `ulpfec` accepted).
+- **Partially rebuilt ULPFEC packets** reach the depacketizer (`FecDecoder::take_partials`,
+  `FrameAssembler::push_partial`, `Frame::partial`; such frames are not `contiguous`).
+- **R factor and MOS** from the E-model (ITU-T G.107: `EModel`, `mos_from_r`,
+  `BurstLossModel::{loss_fraction, burst_ratio}`) in only-webrtc's RTCP XR VoIP metrics.
+- Statistics (`PeerStats` event): `fec_partial`, `paced_dropped`, `ecn_ect_received`,
+  `ecn_ce_received`, `ecn_ce_reported`.
+- Changed behaviour: media is paced when the estimator runs; FEC protection follows
+  libwebrtc's policy instead of three times the loss (with NACK and an RTT under 20 ms, delta
+  frames get no FEC); FlexFEC is offered on simulcast lines; VoIP metrics carry R and MOS.
+  only-rtp (internal tier): `PacketResult` has a new field `ecn` and `Frame` a new field
+  `partial`.
+- Tests: simulated time (a keyframe spread over 156 ms at a 1 Mbps estimate while audio leaves at
+  once, retransmission order, queue bounds, a raised maximum probed, ECN through RFC 8888, PCMU
+  RED at 10 % loss 297-298 of 300 frames against 263-268, partial frames, simulcast FlexFEC);
+  libwebrtc's tables and policy values; estimator links (a raised maximum reached in 0.15 s, a
+  network state estimate holding probes, 20 % CE cutting the estimate as 20 % loss). Interop:
+  `tools/interop/webrtc/pacing.sh` with Chrome 157 (largest burst towards Chrome 4 packets
+  paced against 7 unpaced, 0 against 15 bursts of 6+; Chrome decodes 299-300 of 300 frames),
+  `fec.sh` unchanged (ULPFEC 381/400, FlexFEC 391/400 frames at 5 % loss without NACK); real
+  loss (`tests/netem.rs`, `tc netem loss 5%` in Docker, NACK removed): 251 of 300 frames whole
+  without FEC, 300 with ULPFEC, 299 with FlexFEC, 300 with FlexFEC paced.
+- Benchmarks (gpu51, same-run A/B): same-run A/B against the branch point 57696b6b on gpu51 (`quiet.sh`,
+  CPUs 2-9, 7 alternating rounds, medians), one-way VP8 between two loopback `Endpoint`s:
+  default configuration (no estimator, so no pacer) 0.999x (142.7 vs 142.8 MB/s); FEC held at
+  64/256, ULPFEC 0.993x (120.2 vs 121.1 MB/s) and FlexFEC 0.994x (122.2 vs 122.9 MB/s), the
+  difference being libwebrtc's masks, whose FEC packets cover more media packets than the
+  interleaved ones did (a first build that re-evaluated the policy per frame measured 0.988x /
+  0.981x).
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

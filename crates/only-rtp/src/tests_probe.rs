@@ -40,6 +40,10 @@ struct Link<'a> {
     secs: u64,
     seed: u32,
     probing: bool,
+    /// The estimator's maximum at a time since the start (`None`: the default bounds).
+    max_at: Option<&'a dyn Fn(Duration) -> u64>,
+    /// A network state estimate set from the start.
+    nse: Option<u64>,
 }
 
 impl Default for Link<'_> {
@@ -53,6 +57,8 @@ impl Default for Link<'_> {
             secs: 30,
             seed: 1,
             probing: true,
+            max_at: None,
+            nse: None,
         }
     }
 }
@@ -110,6 +116,10 @@ impl Run {
 fn run(link: &Link<'_>) -> Run {
     let t0 = Instant::now();
     let mut bwe = BandwidthEstimator::new(link.initial).with_probing(link.probing);
+    if let Some(m) = link.max_at {
+        bwe = bwe.with_bounds(crate::DEFAULT_MIN_BITRATE, m(Duration::ZERO));
+    }
+    bwe.set_network_state_estimate(link.nse);
     let mut tx = TwccSender::new();
     let mut rx = TwccReceiver::new();
     let mut rng = Rng(link.seed.max(1));
@@ -144,6 +154,12 @@ fn run(link: &Link<'_>) -> Run {
     for step in 0..link.secs * 1000 {
         let now = t0 + ms(step);
         let t = ms(step);
+        if let Some(m) = link.max_at {
+            let max = m(t);
+            if max != bwe.bounds().1 {
+                bwe.set_bounds(now, crate::DEFAULT_MIN_BITRATE, max);
+            }
+        }
         // Feedback arriving now.
         while feedback.front().is_some_and(|(at, _)| *at <= now) {
             let Some((_, Rtcp::TransportCc(fb))) = feedback.pop_front() else {
@@ -528,4 +544,146 @@ fn ccfb_carries_probe_clusters() {
     let res = tx.on_feedback(at, &fb);
     let probes: Vec<_> = res.iter().map(|r| r.probe).collect();
     assert_eq!(probes, [None, Some(42)]);
+}
+
+#[test]
+fn probing_when_the_maximum_is_raised() {
+    // A 10 Mbps link, the application allowing 1 Mbps until 10 s, then 10 Mbps.
+    let capacity = |_| 10e6;
+    let max_at = |t: Duration| {
+        if t < ms(10_000) {
+            1_000_000
+        } else {
+            10_000_000
+        }
+    };
+    let on = run(&Link {
+        capacity: &capacity,
+        max_at: Some(&max_at),
+        ..Link::default()
+    });
+    let t = on.reach(ms(10_000), 10e6, 0.9);
+    println!("max raised to 10 Mbps: 90 % after {}", secs(t));
+    assert!(t.expect("reaches 90 %") <= ms(1500), "{t:?}");
+    assert!(on.peak(ms(0), ms(10_000), 1e6) <= 1.0);
+    assert!(on.peak(ms(10_000), ms(30_000), 10e6) < 1.5);
+    let now = Instant::now();
+    // Raising it during the initial probing leaves the initial probes alone.
+    let mut b = BandwidthEstimator::new(300_000).with_bounds(30_000, 1_000_000);
+    let first = b.poll_probe(now).expect("initial probe");
+    b.set_bounds(now, 30_000, 5_000_000);
+    assert_eq!(b.poll_probe(now).map(|p| p.cluster), Some(first.cluster));
+    // A lowered maximum caps the estimate at once and probes nothing.
+    let mut b = BandwidthEstimator::new(3_000_000).with_probing(false);
+    b.set_bounds(now, 30_000, 1_000_000);
+    assert_eq!(b.estimate(), 1_000_000);
+    assert!(b.poll_probe(now).is_none());
+}
+
+#[test]
+fn network_state_estimate_bounds_and_drives_probes() {
+    let capacity = |_| 10e6;
+    // An estimate of 4 Mbps set from outside: probes stay at or below it, so the estimate
+    // stops there while the link carries 10 Mbps.
+    let capped = run(&Link {
+        capacity: &capacity,
+        nse: Some(4_000_000),
+        secs: 20,
+        ..Link::default()
+    });
+    let free = run(&Link {
+        capacity: &capacity,
+        secs: 20,
+        ..Link::default()
+    });
+    let reach_capped = capped.reach(ms(0), 4e6, 0.9);
+    println!(
+        "nse 4 Mbps: 90 % of it after {}, peak {:.2} of 10 Mbps (free: {:.2})",
+        secs(reach_capped),
+        capped.peak(ms(0), ms(20_000), 10e6),
+        free.peak(ms(0), ms(20_000), 10e6),
+    );
+    assert!(reach_capped.expect("reaches the estimate") <= ms(1500));
+    // Growth past the estimate is the AIMD's only (8 % per second at most).
+    assert!(capped.peak(ms(0), ms(3000), 4e6) < 1.2);
+    assert!(free.peak(ms(0), ms(3000), 10e6) > 0.9);
+    // A link that drops to 2 Mbps for 10 s and comes back: with the estimate (10 Mbps) set,
+    // the low-estimate probes bring it back as fast as the recovery probes or faster.
+    let step = |t: Duration| {
+        if t >= ms(10_000) && t < ms(20_000) {
+            2e6
+        } else {
+            10e6
+        }
+    };
+    let with = run(&Link {
+        capacity: &step,
+        nse: Some(10_000_000),
+        secs: 40,
+        ..Link::default()
+    });
+    let without = run(&Link {
+        capacity: &step,
+        secs: 40,
+        ..Link::default()
+    });
+    let (a, b) = (
+        with.reach(ms(20_000), 10e6, 0.8),
+        without.reach(ms(20_000), 10e6, 0.8),
+    );
+    println!(
+        "2 -> 10 Mbps: 80 % after {} with nse, {} without",
+        secs(a),
+        secs(b)
+    );
+    let a = a.expect("recovers with the estimate");
+    assert!(a <= ms(8000), "{a:?}");
+    assert!(b.is_none_or(|b| a <= b + ms(500)), "{a:?} {b:?}");
+    // The estimator's own link capacity estimate is known after the drop.
+    let mut bwe = BandwidthEstimator::new(300_000);
+    assert!(bwe.link_capacity().is_none());
+    bwe.set_network_state_estimate(Some(1_000_000));
+    bwe.set_network_state_estimate(None);
+}
+
+#[test]
+fn ecn_ce_marks_count_as_congestion() {
+    use crate::PacketResult;
+    let t0 = Instant::now();
+    let feed = |ce_every: Option<u64>, ect: bool| {
+        let mut bwe = BandwidthEstimator::new(2_000_000).with_probing(false);
+        let mut seq = 0u64;
+        for step in 0..100u64 {
+            let now = t0 + ms(step * 50 + 60);
+            let res: Vec<PacketResult> = (0..30)
+                .map(|i| {
+                    seq += 1;
+                    let sent = t0 + ms(step * 50) + Duration::from_micros(i * 1500);
+                    PacketResult {
+                        seq,
+                        sent,
+                        size: 1200,
+                        received: Some(sent + ms(20)),
+                        probe: None,
+                        ecn: match (ce_every, ect) {
+                            (Some(n), _) if seq % n == 0 => Some(3),
+                            (_, true) => Some(2),
+                            _ => None,
+                        },
+                    }
+                })
+                .collect();
+            bwe.on_packet_results(now, &res);
+        }
+        (bwe.estimate(), bwe.ecn_counts())
+    };
+    let (clean, counts) = feed(None, true);
+    assert_eq!(counts, (3000, 0));
+    let (marked, counts) = feed(Some(5), true);
+    assert_eq!(counts, (3000, 600));
+    let (_, none) = feed(None, false);
+    assert_eq!(none, (0, 0));
+    // 20 % CE: the loss-based rate backs off as for 20 % loss.
+    println!("estimate after 5 s: {clean} clean, {marked} with 20 % CE");
+    assert!(marked < clean / 2, "{marked} vs {clean}");
 }

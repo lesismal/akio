@@ -72,3 +72,4 @@
 - [ADR-068：用户态协议栈的 IPv6 自动配置、Accurate ECN，以及 AF_XDP 共享 UMEM / 多缓冲帧](068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md)（2026-11-21 采纳）
 - [ADR-070：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`](070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md)（2026-11-21 采纳）
 - [ADR-071：机制由应用提供的 SOCKS5 GSS-API 认证](071-socks-gssapi-pluggable-mechanism.zh-CN.md)（2026-11-21 采纳）
+- [ADR-073：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测](073-webrtc-pacer-fec-policy-ecn.zh-CN.md)（2026-11-21 采纳）

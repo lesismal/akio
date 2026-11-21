@@ -32,6 +32,9 @@ pub struct Frame {
     /// Best effort keyframe flag ([`Depacketizer::is_keyframe`] of any packet; always `true`
     /// for audio).
     pub keyframe: bool,
+    /// A packet of the frame was only rebuilt in part ([`FrameAssembler::push_partial`]): its
+    /// payload is the start of the original one, so the frame may be truncated or corrupt.
+    pub partial: bool,
 }
 
 #[derive(Debug)]
@@ -41,6 +44,7 @@ struct Pkt {
     end: bool,
     payload: Vec<u8>,
     arrival: Instant,
+    partial: bool,
 }
 
 /// What is known about the packet before the head of the buffer.
@@ -158,6 +162,33 @@ impl FrameAssembler {
         payload: &[u8],
         arrival: Instant,
     ) {
+        self.insert(ext_seq, timestamp, marker, payload, arrival, false);
+    }
+
+    /// Adds a packet of which only the start of the payload is known (FEC rebuilt it in part,
+    /// [`FecDecoder::take_partials`](crate::fec::FecDecoder::take_partials)) in place of a
+    /// lost one: its frame is emitted with [`Frame::partial`] instead of being given up (if
+    /// the depacketizer accepts the truncated payload).
+    pub fn push_partial(
+        &mut self,
+        ext_seq: u64,
+        timestamp: u32,
+        marker: bool,
+        payload: &[u8],
+        arrival: Instant,
+    ) {
+        self.insert(ext_seq, timestamp, marker, payload, arrival, true);
+    }
+
+    fn insert(
+        &mut self,
+        ext_seq: u64,
+        timestamp: u32,
+        marker: bool,
+        payload: &[u8],
+        arrival: Instant,
+        partial: bool,
+    ) {
         if self.next.is_some_and(|n| ext_seq < n)
             || ext_seq > u64::MAX / 2
             || self.buf.contains_key(&ext_seq)
@@ -173,6 +204,7 @@ impl FrameAssembler {
             end: single || self.depack.is_frame_end(payload, marker),
             payload: payload.to_vec(),
             arrival,
+            partial,
         };
         self.bytes += pkt.payload.len();
         self.buf.insert(ext_seq, pkt);
@@ -373,6 +405,7 @@ impl FrameAssembler {
         self.depack.reset();
         let mut data = Vec::new();
         let mut keyframe = false;
+        let mut partial = false;
         let mut ok = true;
         let mut first_arrival: Option<Instant> = None;
         let mut ts = 0;
@@ -382,6 +415,7 @@ impl FrameAssembler {
                 ts = p.ts;
             }
             first_arrival = Some(first_arrival.map_or(p.arrival, |a| a.min(p.arrival)));
+            partial |= p.partial;
             if ok {
                 keyframe |= self.depack.is_keyframe(&p.payload);
                 ok = self.depack.depacketize(&p.payload, &mut data).is_ok()
@@ -404,6 +438,7 @@ impl FrameAssembler {
             first_seq: head,
             last_seq: end,
             keyframe,
+            partial,
         })
     }
 }

@@ -17,11 +17,22 @@
 //! ULPFEC can also protect packets unequally (RFC 5109 §5, §7.4): level 0 of a FEC packet
 //! covers the first L0 bytes after the fixed header of its level-0 packets (and their header
 //! fields), level 1 the next L1 bytes of its level-1 packets, and so on.
-//! [`FecEncoder::set_ulp_level0`] protects the start of every packet with the interleaved
+//! [`FecEncoder::set_ulp_level0`] protects the start of every packet with the group's
 //! FEC packets and the rest once per group; [`FecEncoder::encode_ulp`] takes explicit levels.
 //! The decoder rebuilds packets piecewise from any levels and returns them once complete.
+//! Packets it could only rebuild in part can be taken out with [`FecDecoder::take_partials`].
+//!
+//! Groups are protected as libwebrtc protects them: its packet mask tables
+//! ([`packet_masks`], [`FecMaskType`]), its rules for closing a group that spans several
+//! frames ([`FecProtection`]), and its protection policy ([`ProtectionPolicy`]: the factors
+//! from the loss, the bits per frame and the resolution, RTT-aware with NACK).
 
 use std::collections::BTreeMap;
+
+mod policy;
+mod tables;
+
+pub use policy::{ProtectionPolicy, protection_factors};
 
 /// The FEC payload format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -383,6 +394,43 @@ pub fn interleaved_masks(k: usize, m: usize) -> Vec<Vec<usize>> {
     (0..m).map(|i| (i..k).step_by(m).collect()).collect()
 }
 
+/// Which of libwebrtc's packet mask tables protects groups of up to 12 media packets
+/// ([`packet_masks`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FecMaskType {
+    /// For random (independent) losses; libwebrtc's default and what Chrome sends.
+    #[default]
+    Random,
+    /// For bursts of consecutive losses with little reordering.
+    Bursty,
+}
+
+/// libwebrtc's packet masks (`PacketMaskTable::LookUp`): `k` media packets protected by `m`
+/// FEC packets, each mask listing the media packets (indices into the group) its FEC packet
+/// protects. Up to 12 media packets the masks come from libwebrtc's tables of `mask` type
+/// (optimised for the recovery of random or bursty losses), above that they are
+/// [`interleaved_masks`]. `m` is clamped to 1..=k; `k` 0 gives no masks.
+#[must_use]
+pub fn packet_masks(k: usize, m: usize, mask: FecMaskType) -> Vec<Vec<usize>> {
+    if k == 0 {
+        return Vec::new();
+    }
+    let m = m.clamp(1, k);
+    if k > 12 {
+        return interleaved_masks(k, m);
+    }
+    let table: &[u16] = match mask {
+        FecMaskType::Random => &tables::RANDOM,
+        FecMaskType::Bursty => &tables::BURSTY,
+    };
+    // Rows of every smaller group size, then of every smaller FEC count of this one.
+    let start = (1..k).map(|j| j * (j + 1) / 2).sum::<usize>() + m * (m - 1) / 2;
+    table[start..start + m]
+        .iter()
+        .map(|&row| (0..k).filter(|&j| row & (0x8000 >> j) != 0).collect())
+        .collect()
+}
+
 /// The XOR accumulator of one FEC packet.
 #[derive(Default)]
 struct Parity {
@@ -575,19 +623,64 @@ fn encode_ulp(ssrc: u32, media: &[&[u8]], fec: &[Vec<UlpLevelSpec>]) -> Option<V
     Some(out)
 }
 
-/// The sending side: collects the media packets of one SSRC and emits FEC payloads at the
-/// end of each frame (or when the group reaches [`MAX_FEC_GROUP`] packets).
+/// How [`FecEncoder`] protects a stream (libwebrtc's `FecProtectionParams`, for delta and key
+/// frames), as [`ProtectionPolicy`] chooses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FecProtection {
+    /// Protection factor of groups without a keyframe packet: FEC packets per 256 media
+    /// packets (0 = no FEC).
+    pub delta_rate: u8,
+    /// Protection factor of groups with a keyframe packet.
+    pub key_rate: u8,
+    /// A group spans at most this many frames (0 is taken as 1); it closes earlier at a
+    /// frame end once the FEC packets it needs come close to the factor (at most 50 / 256
+    /// more) and it has enough packets (1, or 4 when the factor is above 80; one more when
+    /// frames have two packets or more on average), as libwebrtc's `UlpfecGenerator`.
+    pub max_frames: u8,
+    /// The packet masks of groups of up to 12 packets.
+    pub mask: FecMaskType,
+}
+
+impl FecProtection {
+    /// One factor for every frame, one frame per group, random masks.
+    #[must_use]
+    pub fn rate(rate: u8) -> FecProtection {
+        FecProtection {
+            delta_rate: rate,
+            key_rate: rate,
+            max_frames: 1,
+            mask: FecMaskType::Random,
+        }
+    }
+}
+
+/// libwebrtc's `ForwardErrorCorrection::NumFecPackets`: `rate` / 256 of `k`, rounded, at least
+/// one while `rate` is not 0, at most `k`.
+fn num_fec(k: usize, rate: u8) -> usize {
+    if rate == 0 || k == 0 {
+        return 0;
+    }
+    ((k * usize::from(rate) + 128) >> 8).clamp(1, k)
+}
+
+/// The sending side: collects the media packets of one SSRC and emits FEC payloads when a
+/// group closes: at a frame end (one frame per group by default, see
+/// [`FecProtection::max_frames`]) or when the group reaches [`MAX_FEC_GROUP`] packets.
 ///
 /// The rate is libwebrtc's protection factor: FEC packets per 256 media packets (rounded,
 /// at least one per group when non-zero, at most one per media packet). Masks are
-/// [`interleaved_masks`].
+/// [`packet_masks`] (libwebrtc's tables up to 12 packets, interleaved above), so a group
+/// protects as Chrome's does.
 #[derive(Debug)]
 pub struct FecEncoder {
     scheme: FecScheme,
     ssrc: u32,
-    rate: u8,
+    prot: FecProtection,
     ulp_level0: Option<usize>,
     group: Vec<Vec<u8>>,
+    /// Frames ended in the group, and whether one of its packets belongs to a keyframe.
+    frames: usize,
+    key: bool,
 }
 
 impl FecEncoder {
@@ -597,14 +690,16 @@ impl FecEncoder {
         FecEncoder {
             scheme,
             ssrc,
-            rate,
+            prot: FecProtection::rate(rate),
             ulp_level0: None,
             group: Vec::new(),
+            frames: 0,
+            key: false,
         }
     }
 
-    /// ULPFEC unequal protection (RFC 5109 §5): with `Some(l0)`, the interleaved FEC packets
-    /// of a group protect only the first `l0` bytes after each packet's fixed header (the
+    /// ULPFEC unequal protection (RFC 5109 §5): with `Some(l0)`, the FEC packets of a group
+    /// protect only the first `l0` bytes after each packet's fixed header (the
     /// part most media formats need to decode anything: CSRCs, extensions, payload
     /// descriptors), and the last of them also carries a level 1 protecting the rest of
     /// every packet of the group once. With `m` FEC packets per group this costs about
@@ -612,30 +707,63 @@ impl FecEncoder {
     /// packets can repair gets its start back, and the whole packet when it is the only
     /// loss of the group. `None` (the default) and the other schemes protect whole packets.
     /// Only for receivers that implement levels (this decoder): libwebrtc reads level 0
-    /// alone and would rebuild packets longer than `l0` wrongly.
+    /// alone and would rebuild packets longer than `l0` wrongly. Groups then span one frame.
     pub fn set_ulp_level0(&mut self, l0: Option<usize>) {
         self.ulp_level0 = l0.map(|l| l.min(0xffff));
     }
 
-    /// Changes the protection factor (takes effect with the next group).
+    /// Changes the protection factor of every frame (takes effect with the next group).
     pub fn set_rate(&mut self, rate: u8) {
-        self.rate = rate;
+        self.prot.delta_rate = rate;
+        self.prot.key_rate = rate;
     }
 
-    /// The protection factor.
+    /// The protection factor of delta frames.
     #[must_use]
     pub fn rate(&self) -> u8 {
-        self.rate
+        self.prot.delta_rate
+    }
+
+    /// Sets the whole protection (factors, frames per group, masks).
+    pub fn set_protection(&mut self, p: FecProtection) {
+        self.prot = p;
+    }
+
+    /// The protection in use.
+    #[must_use]
+    pub fn protection(&self) -> FecProtection {
+        self.prot
+    }
+
+    /// The factor of the open group (its key factor once it holds a keyframe packet).
+    fn group_rate(&self) -> u8 {
+        if self.key {
+            self.prot.key_rate
+        } else {
+            self.prot.delta_rate
+        }
     }
 
     /// Adds an outgoing media packet (the plain RTP packet, before RED or SRTP);
-    /// `end_of_frame` (normally the marker bit) closes the group. Returns the FEC payloads
+    /// `end_of_frame` (normally the marker bit) may close the group. Returns the FEC payloads
     /// to send now (empty while the group is open, the rate is 0, or the packet is not RTP
     /// of this SSRC). A packet whose sequence number does not fit the group's mask closes
     /// the group first.
     pub fn push(&mut self, packet: &[u8], end_of_frame: bool) -> Vec<Vec<u8>> {
-        if self.rate == 0 || !rtp_ok(packet) || be32(packet, 8) != self.ssrc {
-            self.group.clear();
+        self.push_frame(packet, end_of_frame, false)
+    }
+
+    /// [`push`](Self::push) of a packet that belongs to a keyframe when `keyframe`: its group
+    /// is protected with [`FecProtection::key_rate`].
+    pub fn push_frame(
+        &mut self,
+        packet: &[u8],
+        end_of_frame: bool,
+        keyframe: bool,
+    ) -> Vec<Vec<u8>> {
+        let off = self.prot.delta_rate == 0 && self.prot.key_rate == 0;
+        if off || !rtp_ok(packet) || be32(packet, 8) != self.ssrc {
+            self.reset();
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -646,22 +774,58 @@ impl FecEncoder {
             }
         }
         self.group.push(packet.to_vec());
-        if end_of_frame || self.group.len() >= MAX_FEC_GROUP {
+        self.key |= keyframe;
+        if end_of_frame {
+            self.frames += 1;
+        }
+        let max_frames = if self.ulp_level0.is_some() {
+            1
+        } else {
+            usize::from(self.prot.max_frames.max(1))
+        };
+        let close = end_of_frame
+            && (self.frames >= max_frames || (self.overhead_ok() && self.enough_packets()));
+        if close || self.group.len() >= MAX_FEC_GROUP {
             out.extend(self.flush());
         }
         out
     }
 
+    /// libwebrtc's `ExcessOverheadBelowMax`: the FEC packets the group needs exceed the
+    /// factor by less than 50 / 256 of its media packets.
+    fn overhead_ok(&self) -> bool {
+        let k = self.group.len();
+        let rate = self.group_rate();
+        let overhead = (num_fec(k, rate) << 8) / k.max(1);
+        (overhead as i64 - i64::from(rate)) < 50
+    }
+
+    /// libwebrtc's `MinimumMediaPacketsReached`.
+    fn enough_packets(&self) -> bool {
+        let k = self.group.len();
+        let min = if self.group_rate() > 80 { 4 } else { 1 };
+        let per_frame = k as f64 / self.frames.max(1) as f64;
+        if per_frame < 2.0 { k >= min } else { k > min }
+    }
+
+    fn reset(&mut self) {
+        self.group.clear();
+        self.frames = 0;
+        self.key = false;
+    }
+
     /// Emits FEC for the packets collected so far and starts a new group.
     pub fn flush(&mut self) -> Vec<Vec<u8>> {
+        let rate = self.group_rate();
         let group = std::mem::take(&mut self.group);
+        self.reset();
         let k = group.len();
-        if k == 0 || self.rate == 0 {
+        let m = num_fec(k, rate);
+        if m == 0 {
             return Vec::new();
         }
-        let m = ((k * usize::from(self.rate) + 128) >> 8).clamp(1, k);
         let refs: Vec<&[u8]> = group.iter().map(Vec::as_slice).collect();
-        let masks = interleaved_masks(k, m);
+        let masks = packet_masks(k, m, self.prot.mask);
         let longest = refs.iter().map(|p| p.len() - 12).max().unwrap_or(0);
         match self.ulp_level0 {
             Some(l0) if self.scheme == FecScheme::Ulpfec && longest > l0 => {
@@ -823,6 +987,16 @@ impl Media {
     }
 }
 
+/// A media packet [`FecDecoder::take_partials`] could only rebuild in part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialPacket {
+    /// The fixed header and the known start of the rest (CSRCs, extensions, payload), the P
+    /// bit cleared.
+    pub packet: Vec<u8>,
+    /// The length of the whole packet after the fixed header.
+    pub length: usize,
+}
+
 /// The receiving side: keeps recent media packets and FEC payloads of one protected SSRC
 /// and rebuilds missing media packets.
 ///
@@ -868,6 +1042,37 @@ impl FecDecoder {
             .values()
             .filter(|m| !m.done && (m.header || !m.known.is_empty()))
             .count()
+    }
+
+    /// Takes the packets rebuilt only in part whose RTP timestamp is not `ts` (call it with
+    /// the timestamp of a newly received media packet: once a later frame arrives, the FEC
+    /// that could complete an earlier one has normally been sent, as encoders close a group
+    /// at the end of a frame), oldest first. A packet qualifies when its header (with length)
+    /// is known and some bytes after it from the start; it comes back truncated to that
+    /// prefix (the P bit cleared, its padding being unknown) and is not rebuilt again. A
+    /// depacketizer can often still use the start of a payload (payload descriptors, the
+    /// first partition, the beginning of a NAL unit).
+    pub fn take_partials(&mut self, ts: u32) -> Vec<PartialPacket> {
+        let mut out = Vec::new();
+        for m in self.media.values_mut() {
+            if m.done || !m.header || be32(&m.pkt, 4) == ts {
+                continue;
+            }
+            let Some(&(0, end)) = m.known.first() else {
+                continue;
+            };
+            if end == 0 {
+                continue;
+            }
+            m.done = true;
+            let mut packet = m.pkt[..12 + end].to_vec();
+            packet[0] &= !0x20;
+            out.push(PartialPacket {
+                packet,
+                length: m.pkt.len() - 12,
+            });
+        }
+        out
     }
 
     fn ext(&mut self, seq: u16) -> Option<u64> {

@@ -287,9 +287,11 @@ the `RtcConfig` (ADR-039, ADR-048):
 
 ```rust,ignore
 let cfg = only_webrtc::rtc_config()
-    .enable_fec(Some(FecMechanism::FlexFec)) // or FecMechanism::Ulpfec (red + ulpfec)
+    .enable_fec(Some(FecMechanism::FlexFec)) // or Ulpfec (red + ulpfec), Red (red, no FEC)
     .set_fec_protection(0, 128)              // FEC per 256 media packets: bounds
+    .set_fec_mask(FecMask::Random)           // libwebrtc's mask tables: Random or Bursty
     .enable_opus_red(Some(1))                // Opus RED, one redundant packet (at most 2)
+    .enable_audio_red(Some(1))               // RED for PCMU, PCMA and G.722 (red/8000)
     .enable_ccfb(true)                       // RFC 8888 feedback instead of transport-wide
     .enable_rtcp_xr(true)                    // XR receiver reference time / DLRR: receiver RTT
     .enable_rtcp_xr_blocks(XrBlocks::ALL)    // XR loss / duplicate RLE, receipt times, VoIP metrics
@@ -301,13 +303,23 @@ let cfg = only_webrtc::rtc_config()
 - **FEC** on video lines. FlexFEC is libwebrtc's `flexfec-03`, a separate FEC
   stream signaled with `a=ssrc-group:FEC-FR` (Chrome needs the field trials
   `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`); ULPFEC travels in RED on
-  the media stream, and browsers offer it by default. On a simulcast line only ULPFEC is used,
-  per encoding (each RID's stream has its own FEC, at its own loss), which is what Chrome sends:
-  RID-based simulcast signals no SSRCs, so there is no FlexFEC stream to name. Received FEC repairs packets before the
-  frame assembler and NACK (repaired packets are not NACKed, but receiver reports still count
-  them as lost, as Chrome's do). Sent video is protected at three times the loss before repair
-  (the reported loss, or the share of packets the receiver had retransmitted), within the bounds
-  of `set_fec_protection`; a `min` above 0 protects from the start.
+  the media stream, and browsers offer it by default. On a simulcast line each encoding has its
+  own FEC at its own loss: ULPFEC in the encoding's RED stream (what Chrome sends), or a FlexFEC
+  stream per encoding, which is not signaled (RID simulcast names no SSRCs) but carries the MID and
+  the RID it repairs, so only peers that are this stack use it. Received FEC repairs packets
+  before the frame assembler and NACK (repaired packets are not NACKed, but receiver reports
+  still count them as lost, as Chrome's do); a packet FEC could only rebuild in part (ULPFEC
+  levels) is handed to the depacketizer once a later frame arrives, and its frame comes with
+  `contiguous: false`. Groups are protected as libwebrtc protects them (ADR-073): its mask tables
+  for groups of up to 12 packets, and its protection policy, which takes the loss before repair
+  (the reported loss, or the share of packets the receiver had retransmitted; the maximum of the
+  last 10 s), the bits per frame and, when the receiver NACKs, the round-trip time: no FEC on
+  delta frames below 20 ms of RTT, groups spanning more frames as the RTT grows, none for small
+  frames below 200 ms. Key frames get more. `set_fec_protection` bounds the factors; a `min`
+  above 0 protects from the start.
+- **RED for other codecs** (`enable_audio_red`): `red/8000` for PCMU, PCMA and G.722, listed
+  before each codec, with up to two earlier packets in each. `FecMechanism::Red` sends video in
+  RED without FEC packets (and `red` without `ulpfec` from a peer is accepted either way).
 - **Opus RED** (RFC 2198, `red/48000/2`): `enable_opus_red(Some(n))` lists RED *before* Opus,
   because libwebrtc sends RED only to a peer that lists it first (Chrome's own offers put it
   after Opus). Received RED is split: a redundant copy stands in for a lost packet (copies of
@@ -315,14 +327,19 @@ let cfg = only_webrtc::rtc_config()
   plain Opus but still takes RED).
 - **RFC 8888**: when both sides offer `ack ccfb`, received media is acknowledged with RFC 8888
   feedback instead of transport-wide feedback and the bandwidth estimator runs on it; Chrome
-  needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`.
+  needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`. The reports carry the
+  ECN codepoint each packet arrived with (the UDP backends read it); on the sending side a
+  packet reported CE counts as lost for the estimator. This side does not mark its own packets
+  ECN-capable.
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
 - **XR blocks about received streams** (ADR-058, `pkt-loss-rle pkt-dup-rle pkt-rcpt-times
   voip-metrics`): a block goes out when both sides list its format, once a second per received
   stream, about the sequence numbers since the last report (thinned to fit a datagram); VoIP
-  metrics on audio lines only, with the loss, burst and gap fields measured and the round-trip
-  time, the codec's quality fields unavailable. Received ones arrive as `XrReceipts` and
+  metrics on audio lines only, with the loss, burst and gap fields measured, the round-trip
+  time, and the R factor, MOS-LQ and MOS-CQ of the E-model (ITU-T G.107, with G.711 values for
+  every codec) from the loss, its burstiness, the round trip and the jitter; the levels and the
+  jitter buffer fields unavailable. Received ones arrive as `XrReceipts` and
   `VoipMetrics` events, with totals in the statistics.
 - **ULPFEC levels** (RFC 5109 §5): with `set_ulpfec_level0(Some(l0))` the FEC packets of a frame
   protect the first `l0` bytes of each packet and one more level covers the rest once: a single
@@ -405,6 +422,26 @@ another pair. A result only ever lifts the estimate; the delay and loss detector
 down. On a simulated 10 Mbps link a sender starting at 300 kbps reaches 90 % in 0.35 s instead of
 44 s; `tools/interop/webrtc/bwe.sh` checks it with Chrome as the receiver (the estimate reaches
 10 Mbps 0.2 s after the connection; it used to stay at its start).
+
+The estimate's bounds are `set_bwe_bounds(min, max)` (30 kbps and 20 Mbps by default);
+`Peer::set_bitrate_bounds` changes them on a running peer, and a raised maximum is probed at
+once (ADR-073). only-rtp's `BandwidthEstimator::set_network_state_estimate` also takes an
+external link-capacity estimate, toward which it probes and above which it never does.
+
+### Pacing
+
+With the estimator on, sent media is paced (ADR-073), as libwebrtc paces it: video, FEC and
+retransmissions leave through a queue drained at 2.5 times the estimate, and up to 40 ms worth
+of bytes may leave at once, so an ordinary frame goes out whole while a keyframe is spread out
+(at a 1 Mbps estimate a 60 kB keyframe takes about 150 ms). Retransmissions go first; audio is
+never queued. Transport-wide sequence numbers and abs-send-time are written as packets leave,
+so the estimator sees the real send times. `set_padding_rate(bps)` adds padding (RTX copies of
+recent media) while there is nothing to send, to keep the estimate measured during quiet
+periods; `enable_pacing(false)` turns pacing off. The queue holds at most 8192 packets (8 MB)
+and drains faster when its oldest packet would wait 2 s: an application should follow the
+`EgressBitrateEstimate` event, or it loses frames at the bound. `tools/interop/webrtc/pacing.sh`
+shows it with Chrome: with the estimate capped at 300 kbps the largest burst of RTP towards
+Chrome is 4 packets paced and 7 unpaced.
 
 ## TURN
 
@@ -528,8 +565,8 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); FlexFEC on simulcast lines, libwebrtc's FEC mask tables; SRTP MKIs in
+TCP relays (RFC 6062); sending ECN-capable packets; SRTP MKIs in
 WebRTC; SDES-SRTP without ICE or next to data channels; without rtcp-mux, several media
 sections or data channels in one session, server-reflexive and relayed RTCP candidates and
-`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054 and ADR-058 have the
-details of what was added.
+`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058 and ADR-073
+have the details of what was added.

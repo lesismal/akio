@@ -28,6 +28,50 @@ const BETA: f64 = 0.85;
 const ACK_WINDOW: Duration = Duration::from_millis(500);
 /// Minimum interval between loss-based updates.
 const LOSS_INTERVAL: Duration = Duration::from_millis(200);
+/// Network state estimate: probes go up to this multiple of it, and a further probe follows
+/// only a result below the second multiple (libwebrtc's `network_state_scale` and
+/// `further_probe_threshold`).
+const NSE_SCALE: f64 = 1.0;
+const NSE_FURTHER: f64 = 0.7;
+/// Link capacity estimate (libwebrtc's `LinkCapacityEstimator`): smoothing of the acknowledged
+/// rate at over-use and of probe results, and the bounds of the normalised deviation.
+const LINK_ALPHA_OVERUSE: f64 = 0.05;
+const LINK_ALPHA_PROBE: f64 = 0.5;
+const LINK_DEV_MIN: f64 = 0.4;
+const LINK_DEV_MAX: f64 = 2.5;
+
+/// libwebrtc's `LinkCapacityEstimator`: an exponentially smoothed estimate of the link
+/// capacity from the acknowledged rate at over-use and from probe results, with a deviation.
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkCapacity {
+    kbps: Option<f64>,
+    dev: f64,
+}
+
+impl LinkCapacity {
+    fn update(&mut self, sample_bps: f64, alpha: f64) {
+        let sample = sample_bps / 1000.0;
+        let est = match self.kbps {
+            None => sample,
+            Some(e) => (1.0 - alpha) * e + alpha * sample,
+        };
+        self.kbps = Some(est);
+        let norm = est.max(1.0);
+        let err = est - sample;
+        self.dev =
+            ((1.0 - alpha) * self.dev + alpha * err * err / norm).clamp(LINK_DEV_MIN, LINK_DEV_MAX);
+    }
+
+    /// (lower, upper) in bits per second: the estimate -/+ 3 deviations.
+    fn bounds(&self) -> Option<(u64, u64)> {
+        let e = self.kbps?;
+        let d = (self.dev * e).sqrt();
+        Some((
+            ((e - 3.0 * d).max(0.0) * 1000.0) as u64,
+            ((e + 3.0 * d) * 1000.0) as u64,
+        ))
+    }
+}
 
 /// The detector's view of the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +108,8 @@ struct Group {
 /// - The estimate is the minimum of both and of the last REMB
 ///   ([`set_remote_estimate`](Self::set_remote_estimate)), clamped to
 ///   [`with_bounds`](Self::with_bounds) (default 30 kbps .. 20 Mbps).
+/// - ECN (RFC 8888 feedback, [`PacketResult::ecn`]): a packet that arrived marked CE counts as
+///   lost for the loss-based control, the classic ECN response (RFC 3168 §5).
 /// - Probing (ADR-050, on unless [`with_probing(false)`](Self::with_probing)): short
 ///   clusters of probe packets paced at a target rate ([`poll_probe`](Self::poll_probe)) whose
 ///   feedback measures what the path delivers. It starts with probes at 3 and 6 times the start
@@ -72,6 +118,17 @@ struct Group {
 ///   estimate (below 66 %) at up to 85 % of the earlier rate (when the queues have drained,
 ///   then every 3 s for 30 s); [`on_network_change`](Self::on_network_change) starts over. A
 ///   result raises both the delay-based and the loss-based rate unless the link is over-used.
+///   Raising the maximum with [`set_bounds`](Self::set_bounds) probes at the new maximum
+///   when the estimate is below it (libwebrtc's `SetBitrates`).
+/// - Network state estimate (libwebrtc's `ProbeController` with a `NetworkStateEstimate`): with
+///   one set ([`set_network_state_estimate`](Self::set_network_state_estimate), the upper
+///   bound of the link capacity, from outside), probes never go above it (nor above the
+///   estimate when that is higher), a further probe only follows a result below 70 % of it,
+///   and it probes at twice the estimate (capped at it) every 5 s while the estimate is below
+///   it, every 3 s while the delay-based rate holds the estimate below 70 % of it. Without
+///   one, the estimator's own link capacity estimate ([`link_capacity`](Self::link_capacity):
+///   the acknowledged rate at over-use and probe results, smoothed, plus three deviations)
+///   drives the 3 s probes, without capping anything.
 #[derive(Debug)]
 pub struct BandwidthEstimator {
     initial: u64,
@@ -104,6 +161,12 @@ pub struct BandwidthEstimator {
     loss_lost: usize,
     loss_total: usize,
     last_loss_update: Option<Instant>,
+    // network state
+    link: LinkCapacity,
+    network_estimate: Option<u64>,
+    // ECN
+    ect_received: u64,
+    ce_received: u64,
 }
 
 impl BandwidthEstimator {
@@ -139,6 +202,10 @@ impl BandwidthEstimator {
             loss_lost: 0,
             loss_total: 0,
             last_loss_update: None,
+            link: LinkCapacity::default(),
+            network_estimate: None,
+            ect_received: 0,
+            ce_received: 0,
         }
     }
 
@@ -148,6 +215,51 @@ impl BandwidthEstimator {
         self.min = min_bps.min(max_bps);
         self.max = max_bps.max(min_bps);
         self
+    }
+
+    /// Changes the bounds at `now` (bits per second). A maximum raised above both the old one
+    /// and the estimate starts a probe at the new maximum once the initial probing is over,
+    /// as libwebrtc probes when the application allows more.
+    pub fn set_bounds(&mut self, now: Instant, min_bps: u64, max_bps: u64) {
+        let old_max = self.max;
+        self.min = min_bps.min(max_bps);
+        self.max = max_bps.max(min_bps);
+        self.clamp_rates();
+        if self.probe.enabled() && self.max > old_max {
+            let e = self.estimate() as f64;
+            let cap = self.max_probe();
+            self.probe.on_max_raised(now, e, self.max as f64, cap);
+        }
+    }
+
+    /// The bounds (min, max) in bits per second.
+    #[must_use]
+    pub fn bounds(&self) -> (u64, u64) {
+        (self.min, self.max)
+    }
+
+    /// Sets (or with `None` removes) a network state estimate: the upper bound of the link
+    /// capacity in bits per second, from a source outside the estimator (a remote estimate,
+    /// a known access link). Probes stay below it and are sent toward it while the estimate is
+    /// lower (see the type's documentation).
+    pub fn set_network_state_estimate(&mut self, upper_bps: Option<u64>) {
+        self.network_estimate = upper_bps;
+        self.probe
+            .set_further_limit(upper_bps.map_or(f64::INFINITY, |u| u as f64 * NSE_FURTHER));
+    }
+
+    /// The estimator's own link capacity estimate (lower, upper bound) in bits per second,
+    /// once an over-use or a probe result gave one.
+    #[must_use]
+    pub fn link_capacity(&self) -> Option<(u64, u64)> {
+        self.link.bounds()
+    }
+
+    /// Packets the feedback reported arriving ECN-capable (ECT(0), ECT(1) or CE), and those
+    /// of them marked CE (congestion experienced), so far.
+    #[must_use]
+    pub fn ecn_counts(&self) -> (u64, u64) {
+        (self.ect_received, self.ce_received)
     }
 
     /// Turns probing on (the default) or off. Without it the estimator only ever grows by its
@@ -195,10 +307,12 @@ impl BandwidthEstimator {
     pub fn on_network_change(&mut self, now: Instant) {
         let fresh = BandwidthEstimator::new(self.initial).with_bounds(self.min, self.max);
         let remote = self.remote;
+        let nse = self.network_estimate;
         let probe = std::mem::replace(&mut self.probe, ProbeController::new(false));
         *self = BandwidthEstimator { probe, ..fresh };
         self.remote = remote;
         self.probe.reset();
+        self.set_network_state_estimate(nse);
         let e = self.estimate() as f64;
         self.probe.start(now, e, self.max_probe());
     }
@@ -214,6 +328,9 @@ impl BandwidthEstimator {
         let mut m = self.max as f64;
         if let Some(r) = self.remote {
             m = m.min(r as f64);
+        }
+        if let Some(n) = self.network_estimate {
+            m = m.min((self.estimate() as f64).max(n as f64 * NSE_SCALE));
         }
         m
     }
@@ -270,6 +387,13 @@ impl BandwidthEstimator {
             match r.received {
                 None => self.loss_lost += 1,
                 Some(at) => {
+                    if let Some(e @ 1..=3) = r.ecn {
+                        self.ect_received += 1;
+                        if e == 3 {
+                            self.ce_received += 1;
+                            self.loss_lost += 1;
+                        }
+                    }
                     self.acked.push_back((at, r.size));
                     self.on_arrival(r.sent, at);
                 }
@@ -285,6 +409,7 @@ impl BandwidthEstimator {
         self.update_rate(now);
         // A probe result lifts the estimate unless the link is over-used.
         if let Some(p) = probed.filter(|_| self.usage != BandwidthUsage::Overusing) {
+            self.link.update(p, LINK_ALPHA_PROBE);
             let p = p.min(self.max_probe());
             if p > self.delay_rate {
                 self.delay_rate = p;
@@ -300,6 +425,17 @@ impl BandwidthEstimator {
             let normal = self.usage == BandwidthUsage::Normal;
             let recovered = prev_usage == BandwidthUsage::Underusing && normal;
             self.probe.on_estimate(now, prev, e, max, normal, recovered);
+            // Network state probing: from the estimate set from outside (periodic and when
+            // low), else from the own link capacity estimate (when low).
+            let delay_limited = self.delay_rate <= self.loss_rate;
+            let (upper, external) = match self.network_estimate {
+                Some(n) => (Some(n as f64), true),
+                None => (self.link.bounds().map(|b| b.1 as f64), false),
+            };
+            if let Some(u) = upper.filter(|_| normal) {
+                self.probe
+                    .network_state_probe(now, e, u, external, delay_limited, max);
+            }
         }
     }
 
@@ -409,6 +545,9 @@ impl BandwidthEstimator {
                     .last_decrease
                     .is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(200));
                 if !recently {
+                    if let Some(a) = acked {
+                        self.link.update(a, LINK_ALPHA_OVERUSE);
+                    }
                     let base = acked.unwrap_or(self.delay_rate);
                     let new = (BETA * base).min(self.delay_rate);
                     self.delay_rate = new;

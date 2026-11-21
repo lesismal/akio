@@ -30,6 +30,9 @@ pub struct PacketResult {
     /// The probe cluster it belonged to ([`TwccSender::on_sent_probe`],
     /// [`CcfbSender::on_sent_probe`](crate::CcfbSender::on_sent_probe)), if any.
     pub probe: Option<u32>,
+    /// The ECN codepoint it arrived with (RFC 3168: 0 not ECN-capable, 1 ECT(1), 2 ECT(0),
+    /// 3 CE), when the feedback reports it (RFC 8888; `None` with transport-wide feedback).
+    pub ecn: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,6 +167,7 @@ impl TwccSender {
                 size: p.size,
                 received,
                 probe: p.probe,
+                ecn: None,
             });
         }
         out

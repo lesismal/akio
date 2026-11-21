@@ -46,6 +46,7 @@
 //! ```
 //! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
 //!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
+//!     [bwemax=<bps>] [nopace] [pli=<ms>]
 //!                                                      the server with FEC (protection factor at
 //!                                                      least <n>/256), RFC 8888, RTCP XR and
 //!                                                      TMMBR (a request for <bps> after 3 s);
@@ -53,8 +54,12 @@
 //!                                                      a UDP proxy to <udp-addr> that drops
 //!                                                      that share of the RTP it forwards
 //!                                                      (out: to the browser; at random, or
-//!                                                      one in 100/<%> with periodic); prints the
-//!                                                      statistics every second
+//!                                                      one in 100/<%> with periodic) and logs
+//!                                                      the bursts of RTP to the browser
+//!                                                      (packets less than 300 us apart); prints
+//!                                                      the statistics every second; bwemax caps
+//!                                                      the estimate, nopace turns pacing off,
+//!                                                      pli asks for a keyframe every <ms>
 //! webrtc-interop client <http-addr> media-in           offers audio (and a data channel), sends
 //!                                                      Opus and waits for 100 audio frames from
 //!                                                      the answerer
@@ -1155,6 +1160,9 @@ struct FecEcho {
     keyframes: u64,
     /// Frames received per simulcast RID, and how many of them were whole (`contiguous`).
     rids: std::collections::BTreeMap<String, (u64, u64)>,
+    /// Ask the browser for a keyframe this often, and when it was last asked.
+    pli: Option<Duration>,
+    last_pli: Option<Instant>,
 }
 
 impl PeerHandler for FecEcho {
@@ -1170,6 +1178,12 @@ impl PeerHandler for FecEcho {
             e.1 += u64::from(d.contiguous);
         }
         let _ = p.write_media(d.mid, d.pt, Instant::now(), d.time, &d.data);
+        if let Some(every) = self.pli.filter(|_| d.codec == Some(Codec::Vp8)) {
+            if self.last_pli.is_none_or(|t| t.elapsed() >= every) {
+                self.last_pli = Some(Instant::now());
+                let _ = p.request_keyframe(d.mid, KeyframeRequestKind::Pli);
+            }
+        }
         if let (Some(b), Some(t), false) = (self.tmmbr, self.connected, self.asked) {
             if t.elapsed() > Duration::from_secs(3) && d.codec.is_some_and(|c| c == Codec::Vp8) {
                 self.asked = true;
@@ -1233,14 +1247,31 @@ fn lossy_proxy(public: SocketAddr, inner: SocketAddr, loss_in: u64, loss_out: u6
                     let mut buf = [0u8; 2048];
                     let mut x = 0x0fed_cba9_8765_4321u64;
                     let (mut fwd, mut drop) = (0u64, 0u64);
+                    // Bursts of RTP: packets less than 300 us apart.
+                    let (mut last, mut burst, mut max_burst, mut big) =
+                        (Instant::now(), 0u64, 0u64, 0u64);
                     while let Ok((n, _)) = back.recv_from(&mut buf) {
                         if is_rtp(&buf[..n]) && drop_it(&mut x, loss_out) {
                             drop += 1;
                             continue;
                         }
+                        if is_rtp(&buf[..n]) {
+                            let now = Instant::now();
+                            if now.duration_since(last) < Duration::from_micros(300) {
+                                burst += 1;
+                            } else {
+                                big += u64::from(burst >= 6);
+                                max_burst = max_burst.max(burst);
+                                burst = 1;
+                            }
+                            last = now;
+                        }
                         fwd += 1;
-                        if (fwd + drop) % 2000 == 0 {
-                            eprintln!("proxy: out to {from} {fwd} forwarded, {drop} RTP dropped");
+                        if (fwd + drop) % 200 == 0 {
+                            eprintln!(
+                                "proxy: out to {from} {fwd} forwarded, {drop} RTP dropped, \
+                                 max burst {max_burst}, bursts of 6+ {big}"
+                            );
                         }
                         let _ = outer.send_to(&buf[..n], from);
                     }
@@ -1282,6 +1313,7 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
     );
     let tmmbr = opt("tmmbr").and_then(|v| v.parse::<u64>().ok());
     let periodic = opt("periodic").is_some();
+    let (bwemax, pace, pli) = (num("bwemax"), opt("nopace").is_none(), num("pli"));
     lossy_proxy(public, udp, num("loss-in"), num("loss-out"), periodic);
     let rtc = RtcServer::new(vec![public]).config(move || {
         let mut c = extras(only_webrtc::rtc_config())
@@ -1292,7 +1324,10 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
             .enable_tmmbr(tmmbr.is_some())
             .set_stats_interval(Some(Duration::from_secs(1)));
         if bwe {
-            c = c.enable_bwe(Some(1_000_000));
+            c = c.enable_bwe(Some(1_000_000)).enable_pacing(pace);
+            if bwemax > 0 {
+                c = c.set_bwe_bounds(30_000, bwemax);
+            }
         }
         c
     });
@@ -1315,6 +1350,8 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
             media: 0,
             keyframes: 0,
             rids: std::collections::BTreeMap::new(),
+            pli: (pli > 0).then(|| Duration::from_millis(pli)),
+            last_pli: None,
         };
         respond(
             &mut s,

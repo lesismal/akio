@@ -5,7 +5,10 @@
 
 use std::time::{Duration, Instant};
 
-use crate::fec::{FecDecoder, FecEncoder, FecHeader, FecScheme, interleaved_masks, red};
+use crate::fec::{
+    FecDecoder, FecEncoder, FecHeader, FecMaskType, FecProtection, FecScheme, interleaved_masks,
+    red,
+};
 use crate::tests::hex;
 use crate::*;
 
@@ -837,14 +840,24 @@ fn media_packet(ssrc: u32, seq: u16, i: u32) -> Vec<u8> {
 
 /// Sends `n` packets through `scheme` FEC with `rate`, drops packets per `drop(index)`
 /// (FEC packets are indexed after the media), and returns (lost media, recovered media).
-fn run_fec(
+fn run_fec(scheme: FecScheme, rate: u8, n: u32, drop: impl FnMut(bool) -> bool) -> (usize, usize) {
+    run_fec_masks(scheme, rate, FecMaskType::Random, n, drop)
+}
+
+/// [`run_fec`] with `mask` tables.
+fn run_fec_masks(
     scheme: FecScheme,
     rate: u8,
+    mask: FecMaskType,
     n: u32,
     mut drop: impl FnMut(bool) -> bool,
 ) -> (usize, usize) {
     let ssrc = 0x1234;
     let mut enc = FecEncoder::new(scheme, ssrc, rate);
+    enc.set_protection(FecProtection {
+        mask,
+        ..FecProtection::rate(rate)
+    });
     let mut dec = FecDecoder::new(scheme, ssrc);
     let mut sent = std::collections::HashMap::new();
     let mut lost = std::collections::HashSet::new();
@@ -895,10 +908,10 @@ fn run_fec(
 #[test]
 fn fec_recovers_bursts_within_a_group() {
     for scheme in [FecScheme::Ulpfec, FecScheme::Flexfec03, FecScheme::Flexfec] {
-        // 50 %: 5 interleaved FEC packets per 10-packet frame; lose the first 5 media
-        // packets of every frame (a burst) and no FEC.
+        // 50 %: 5 FEC packets per 10-packet frame with libwebrtc's bursty masks; lose the
+        // first 5 media packets of every frame (a burst) and no FEC: all come back.
         let mut k = 0u32;
-        let (lost, rec) = run_fec(scheme, 128, 200, |is_fec| {
+        let (lost, rec) = run_fec_masks(scheme, 128, FecMaskType::Bursty, 200, |is_fec| {
             if is_fec {
                 return false;
             }
@@ -906,16 +919,26 @@ fn fec_recovers_bursts_within_a_group() {
             (k - 1) % 10 < 5
         });
         assert_eq!((lost, rec), (100, 100), "{scheme:?}");
-        // A burst of 6 in a frame protected by 5 interleaved packets: 4 recoverable.
+        // The random masks are made for scattered losses: one of the burst comes back.
         let mut k = 0u32;
-        let (lost, rec) = run_fec(scheme, 128, 100, |is_fec| {
+        let (lost, rec) = run_fec_masks(scheme, 128, FecMaskType::Random, 200, |is_fec| {
+            if is_fec {
+                return false;
+            }
+            k += 1;
+            (k - 1) % 10 < 5
+        });
+        assert_eq!((lost, rec), (100, 20), "{scheme:?}");
+        // A burst of 6 in a frame protected by 5 packets: beyond the bursty masks.
+        let mut k = 0u32;
+        let (lost, rec) = run_fec_masks(scheme, 128, FecMaskType::Bursty, 100, |is_fec| {
             if is_fec {
                 return false;
             }
             k += 1;
             (k - 1) % 10 < 6
         });
-        assert_eq!((lost, rec), (60, 40), "{scheme:?}");
+        assert_eq!((lost, rec), (60, 0), "{scheme:?}");
     }
 }
 
