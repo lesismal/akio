@@ -311,7 +311,7 @@ fn raw_dictionaries() {
         assert!(d.is_done());
     }
     // Longer than the window: the dictionary is used only while the output is within it.
-    let big = [similar.clone(), text(3_000_000, 23), similar.clone()].concat();
+    let big = [similar.clone(), text(3_000_000, 23), similar].concat();
     let packed = compress_with_dictionary(Level::new(5), &big, &dict);
     assert!(decompress_with_dictionary(&packed, big.len(), &dict).unwrap() == big);
     let mut c = Compressor::with_dictionary(Level::new(5), &dict).window_bits(16);

@@ -150,6 +150,7 @@ impl Decompressor {
 
     /// Refuses streams whose window is larger than `2^bits` bytes (`bits` clamped to
     /// 10..=24), to bound memory.
+    #[must_use]
     pub fn max_window_bits(mut self, bits: u32) -> Decompressor {
         self.max_window_bits = bits.clamp(10, 24);
         self

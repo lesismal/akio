@@ -47,7 +47,7 @@ fn text(n: usize, seed: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(n + 16);
     while out.len() < n {
         let i = (r.next() % WORDS.len() as u64) as usize;
-        let i = i * (r.next() % (WORDS.len() as u64) as u64 + 1) as usize / WORDS.len();
+        let i = i * (r.next() % (WORDS.len() as u64) + 1) as usize / WORDS.len();
         out.extend_from_slice(WORDS[i % WORDS.len()].as_bytes());
         out.push(if r.next() % 11 == 0 { b'\n' } else { b' ' });
     }

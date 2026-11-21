@@ -98,6 +98,7 @@ impl Compressor {
 
     /// Sets the window to `2^log` bytes (`log` clamped to 10..=23), for a peer that decodes
     /// with less memory or to keep less per stream. Before the first input only.
+    #[must_use]
     pub fn window_log(mut self, log: u32) -> Compressor {
         self.window_log = log.clamp(10, 23);
         self

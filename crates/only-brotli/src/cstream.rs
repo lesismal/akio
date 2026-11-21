@@ -87,6 +87,7 @@ impl Compressor {
 
     /// Sets the window to `2^bits` bytes (`bits` clamped to 10..=24), for a decoder with
     /// less memory or to keep less per stream. Before the first input only.
+    #[must_use]
     pub fn window_bits(mut self, bits: u32) -> Compressor {
         self.wbits = bits.clamp(10, 24);
         self

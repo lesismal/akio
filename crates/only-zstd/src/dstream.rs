@@ -149,6 +149,7 @@ impl Decompressor {
 
     /// Sets the largest window accepted (at least 1 KiB, at most 3.75 GiB). Memory is about
     /// twice the window plus 256 KiB.
+    #[must_use]
     pub fn max_window(mut self, bytes: usize) -> Decompressor {
         self.max_window = bytes.clamp(1 << 10, 0xF000_0000);
         self
