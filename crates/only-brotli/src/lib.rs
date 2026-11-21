@@ -29,8 +29,10 @@
 #![warn(clippy::unwrap_used)]
 
 mod bits;
+mod cstream;
 mod decode;
 mod dictionary;
+mod dstream;
 mod encode;
 mod huffman;
 mod tables;
@@ -39,8 +41,37 @@ mod tables;
 #[doc(hidden)]
 pub mod fuzzing;
 
-pub use decode::decompress;
-pub use encode::compress;
+pub use cstream::Compressor;
+pub use decode::{decompress, decompress_with_dictionary};
+pub use dstream::Decompressor;
+pub use encode::{compress, compress_with_dictionary};
+
+/// What a streaming [`Compressor::compress`] call does after taking its input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Flush {
+    /// Nothing: input may stay buffered until a meta-block is full (best compression).
+    #[default]
+    None,
+    /// End the current meta-block and pad to a byte boundary with an empty metadata block, so
+    /// that a decoder can produce everything taken so far; later data may still refer back
+    /// to earlier data.
+    Flush,
+    /// Write everything and end the stream.
+    Finish,
+}
+
+/// What one [`Decompressor`] call did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Progress {
+    /// Input bytes consumed (taken into the decompressor: they are not passed again).
+    pub consumed: usize,
+    /// Output bytes written.
+    pub produced: usize,
+    /// The stream ended and all of its output was delivered.
+    pub done: bool,
+}
 
 /// Compression level, 0 (fastest) to 11 (smallest output); brotli's quality scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -100,6 +131,9 @@ pub enum Error {
     Truncated,
     /// The output would exceed the limit.
     TooLarge,
+    /// The stream's window is larger than the streaming decoder accepts
+    /// ([`Decompressor::max_window_bits`]).
+    WindowTooLarge,
 }
 
 impl std::fmt::Display for Error {
@@ -116,6 +150,7 @@ impl std::fmt::Display for Error {
             Error::TrailingData => "data after the end of the brotli stream",
             Error::Truncated => "truncated stream",
             Error::TooLarge => "decompressed data too large",
+            Error::WindowTooLarge => "brotli window larger than allowed",
         })
     }
 }
