@@ -157,7 +157,7 @@ feature 不在承诺之内。
 |---|---|---|
 | 1 | Linux x86_64 与 aarch64（glibc）：任何受支持内核上的 epoll 后端；5.19+ 上的 io_uring 后端；UDP GSO/GRO、`sendmmsg`/`recvmmsg`；BPF 分流（经典 BPF 无需特权，eBPF 需要 `CAP_BPF`）；6.15+ 上的 sockmap relay（或 `Relay::new_any_kernel`） | 每次提交都构建并完整测试（两种后端）；有基准测试；缺陷会阻塞发布。运行内核缺少的特性会被探测并回退（io_uring 回退到 epoll，eBPF 回退到经典 BPF 或不加速），除非设置了 `strict`。 |
 | 2 | macOS（aarch64、x86_64）：kqueue 后端 | 在 CI 中构建并测试；用于开发。未针对性能调优；仅 Linux 支持的特性（io_uring、BPF、UDP GSO/GRO）按文档返回 `Unsupported` 或回退。 |
-| 2 | 使用 musl 的 Linux x86_64 与 aarch64（`*-unknown-linux-musl`，如 Alpine）：与 glibc 相同的后端 | 已测试：在 Alpine 容器中，`only_sys::ffi` 的布局与常量与 `libc` crate 的 musl 定义对比，并运行 only-sys、only-core、only-epoll、only-uring、only-ebpf 与 `only` 的测试（epoll 与 io_uring）。musl 的 `struct cmsghdr` 按 4 字节对齐，内核（以及我们）的按 8 字节对齐；大小与偏移一致。没有基准测试；并非每个 crate 的测试都运行。 |
+| 2 | 使用 musl 的 Linux x86_64 与 aarch64（`*-unknown-linux-musl`，如 Alpine）：与 glibc 相同的后端 | 已在 Alpine 容器中测试：`only_sys::ffi` 的布局与常量与 `libc` crate 的 musl 定义对比；两种架构上运行 only-sys、only-core、only-epoll、only-uring 与 only-ebpf 的测试（epoll 与 io_uring），aarch64 上另外运行 `only` 的测试。musl 的 `struct cmsghdr` 按 4 字节对齐，内核（以及我们）的按 8 字节对齐；大小与偏移一致。没有基准测试；并非每个 crate 的测试都运行。 |
 | 3 | 其他 Unix 系统 | 可能可以编译；不测试。没有可用后端时 `Engine::build` 返回 `Unsupported`。 |
 | — | Windows | 2.0 之前不支持（没有 IOCP 后端）。 |
 

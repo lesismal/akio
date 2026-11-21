@@ -531,7 +531,9 @@ impl Handshake {
         out.extend_from_slice(&port.to_be_bytes());
     }
 
-    /// Consumes bytes from the proxy, appending what must be sent to it to `out`. Returns how
+    /// Consumes bytes from the proxy, appending what must be sent to it to `out`. While a
+    /// GSS-API step is pending every byte is held; a proxy cannot send tunnel bytes then (it
+    /// waits for the request), and any it sent anyway are dropped. Returns how
     /// many bytes of `data` were used and, when a successful reply completed, the reply; call
     /// again with the rest (a `BIND`'s second reply may follow in the same read). Once
     /// [`is_done`](Self::is_done), `data[used..]` is tunnel data. A refusal is an error
