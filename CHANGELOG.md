@@ -10,6 +10,34 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TURN TCP allocations, RFC 6062 (only-turn)
+
+ADR-076 (docs/adr/076-turn-tcp-allocations.md):
+
+- Server: TCP and TLS clients may ask for `REQUESTED-TRANSPORT` TCP. The relayed address is a
+  listening TCP socket (one accept thread per server polls them all and hands connections to
+  the engine); Connect opens a connection to the peer from the relayed address (446, 447);
+  peers holding a permission that connect to it are announced with ConnectionAttempt; a
+  ConnectionBind on a new client connection (same credentials, the control connection's nonce
+  accepted) turns it into a raw pipe to the peer. Bound connections bypass the allocation
+  shards; backpressure is linked both ways (`hold_reads` / `on_drain`), a peer's bytes before
+  the bind are held up to the same mark. Unbound connections close after 30 s; closing either
+  side closes the other; the allocation going closes all of them.
+- `TurnConfig::{tcp_relays (true), max_tcp_connections (64), tcp_relay_buffer (64 KiB)}`,
+  `TurnStats::tcp_connections`; `TurnEnv` gains defaulted methods for TCP relays and
+  connections, `TurnCore` gains `tcp_connected`, `tcp_incoming`, `tcp_closed`.
+- Client: `ClientConfig::tcp_allocation`, `Client::{connect, create_permission,
+  data_connection}`, `ClientEvent::{Connected, ConnectFailed, ConnectionAttempt}`,
+  `client::{DataConnection, DataState}` (a sans-io ConnectionBind that hands back the peer's
+  first bytes).
+- STUN: `Method::{CONNECT, CONNECTION_BIND, CONNECTION_ATTEMPT}`, `attr::CONNECTION_ID`.
+- Changed: an Allocate for TCP over UDP or DTLS is now 400 (RFC 6062 section 5.1) instead of
+  442; transports other than UDP and TCP stay 442.
+- Fuzz target `turn_tcp`; `tools/interop/webrtc/turn-tcp.sh`: coturn's
+  `turnutils_uclient -T` against only-turn, the only_turn client against coturn, pion/turn and
+  only-turn, pion/turn's TCP allocation client against only-turn and coturn, over TCP and TLS.
+- UDP relay path unchanged: same-run A/B against main on gpu51, `turn-relay-bench 8 6 4` (8 pairs, 100-byte datagrams both ways), 6 alternating rounds under quiet.sh: 308.6k vs 268.0k datagrams/s mean total (1.15x; rounds vary by about ±20 %, so read it as no regression, not a gain).
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:

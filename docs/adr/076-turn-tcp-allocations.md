@@ -161,7 +161,9 @@ TCP allocations with 442): `open_tcp_relay`, `close_tcp_relay`, `connect_peer`, 
   closed may fail with 447 while the 4-tuple sits in TIME_WAIT on the server; RFC 6062 asks
   clients to wait 10 s before retrying the same peer anyway.
 - UDP relays are untouched on the hot path: the per-datagram code paths only gained a
-  `tcp.is_some()` test on the allocation they already read.
+  `tcp.is_some()` test on the allocation they already read. Same-run A/B against main on gpu51
+  (`turn-relay-bench 8 6 4`, 6 alternating rounds under quiet.sh): 308.6k vs 268.0k datagrams/s
+  mean total, 1.15x, within the ±20 % spread between rounds: no regression.
 
 Tests: `TurnCore` unit tests (Connect answered on report, 446 while connecting, the 30 s bind
 deadline, 447 on failure and from the 60 s guard, port 0 refused, ChannelBind refused,
