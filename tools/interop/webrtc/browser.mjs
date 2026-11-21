@@ -13,6 +13,12 @@
 //                                                               relayed one; mdns: checks it is
 //                                                               host to host, both sides' host
 //                                                               candidates being mDNS names)
+//   node browser.mjs <cdp-port> offer-maxcompat <http-addr>     Chrome offers with bundlePolicy
+//                                                               "max-compat" and a "high"
+//                                                               priority channel to a server
+//                                                               that refuses BUNDLE: a transport
+//                                                               per section (checked in Chrome's
+//                                                               statistics), data and media echo
 //   node browser.mjs <cdp-port> offer-tcp <http-addr>           Chrome offers, the answer's UDP
 //                                                               candidates are dropped: ICE-TCP
 //                                                               only, media and data
@@ -163,7 +169,8 @@ async function offerMode(how, turnUrl) {
   await p.evaluate(DTLS_LIB);
   const config = how === "relay"
     ? { iceServers: [{ urls: turnUrl, username: "alice", credential: "wonderland" }], iceTransportPolicy: "relay" }
-    : {};
+    : how === "maxcompat" ? { bundlePolicy: "max-compat" } : {};
+  const dcInit = how === "maxcompat" ? { priority: "high" } : {};
   Object.assign(config, JSON.parse(PC));
   const offer = await p.evaluate(`(async () => {
     const pc = new RTCPeerConnection(${JSON.stringify(config)});
@@ -172,7 +179,7 @@ async function offerMode(how, turnUrl) {
     for (const t of media.getTracks()) pc.addTrack(t, media);
     window.remoteTracks = [];
     pc.ontrack = (e) => window.remoteTracks.push(e.track);
-    const dc = pc.createDataChannel("chrome");
+    const dc = pc.createDataChannel("chrome", ${JSON.stringify(dcInit)});
     window.dc = dc; window.got = [];
     dc.onmessage = (m) => window.got.push(typeof m.data === "string" ? m.data : "bin:" + m.data.byteLength);
     const lossy = pc.createDataChannel("chrome-lossy", { ordered: false, maxRetransmits: 0 });
@@ -186,6 +193,7 @@ async function offerMode(how, turnUrl) {
   const resp = await fetch(`http://${addr}/`, { method: "POST", body: offer, headers: { "content-type": "application/sdp" } });
   let answer = await resp.text();
   if (!resp.ok) fail("signalling: " + answer);
+  if (how === "maxcompat" && /a=group:BUNDLE/.test(answer)) fail("the answer bundles:\n" + answer);
   if (how === "tcp") {
     answer = onlyTcp(answer);
     if (!/ tcp .*tcptype passive/.test(answer)) fail("no passive TCP candidate in the answer:\n" + answer);
@@ -220,8 +228,13 @@ async function offerMode(how, turnUrl) {
     const how = ${JSON.stringify(how || "")};
     if (how === "tcp" && !(sel && sel.localProtocol === "tcp" && sel.remoteProtocol === "tcp")) throw new Error("not over TCP: " + JSON.stringify(sel));
     if (how === "relay" && !(sel && sel.localType === "relay")) throw new Error("not relayed: " + JSON.stringify(sel));
+    let transports = 0, connected = 0;
+    (await pc.getStats()).forEach((s) => { if (s.type === "transport") { transports++; if (s.dtlsState === "connected") connected++; } });
+    if (how === "maxcompat" && !(transports >= 3 && connected >= 3)) throw new Error("transports: " + transports + ", connected " + connected);
+    if (how === "maxcompat") st.transports = transports + " (Chrome's channel priority: " + dc.priority + ")";
     return "ok: Chrome offers" + (how ? " (" + how + " only)" : "") + ": 100 ordered messages + a 70000-byte binary one + an unordered/unreliable one echoed; " +
-      st.v + " echoed VP8 frames decoded, " + st.a + " echoed Opus packets received (Chrome sent " + st.pli + " PLI, " + st.nack + " NACK it got); pair " +
+      st.v + " echoed VP8 frames decoded, " + st.a + " echoed Opus packets received (Chrome sent " + st.pli + " PLI, " + st.nack + " NACK it got); " +
+      (st.transports ? st.transports + " transports; " : "") + "pair " +
       (sel ? sel.local + " -> " + sel.remote : "?") + "; dtls " + JSON.stringify(dtls);
   })()`);
   console.log(r);
@@ -242,9 +255,9 @@ async function answerMode(how) {
       const answer = await p.evaluate(`(async () => {
         const pc = new RTCPeerConnection(${PC});
         window.pc2 = pc;
-        pc.ondatachannel = (e) => { const dc = e.channel; dc.onmessage = (m) => dc.send(m.data); };
+        pc.ondatachannel = (e) => { const dc = e.channel; window.dcPriority = dc.priority; dc.onmessage = (m) => dc.send(m.data); };
         await pc.setRemoteDescription({ type: "offer", sdp: ${JSON.stringify(body)} });
-        if (${JSON.stringify(how || "")} === "media") {
+        if (${JSON.stringify(how || "")} === "media" || ${JSON.stringify(how || "")} === "nobundle") {
           // Our microphone to the offerer's audio line.
           const mic = (await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
           for (const t of pc.getTransceivers()) if (t.receiver.track.kind === "audio") { t.direction = "sendrecv"; await t.sender.replaceTrack(mic); }
@@ -264,6 +277,17 @@ async function answerMode(how) {
           if (st[0] > 100 && st[1] > 100) break;
         }
         console.log("chrome: audio " + st[0] + " " + st[1] + " " + JSON.stringify(await p.evaluate("dtlsInfo(window.pc2)")));
+      } else if (how === "nobundle") {
+        // A transport per section of an offer without BUNDLE, and the channel's priority.
+        // (Chrome 157 has no RTCDataChannel.priority: it prints "undefined".)
+        let r = null;
+        for (let i = 0; i < 75; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          r = await p.evaluate(`(async () => { let t = 0, c = 0; (await pc2.getStats()).forEach((s) => { if (s.type === "transport") { t++; if (s.dtlsState === "connected") c++; } }); return [t, c, String(window.dcPriority)]; })()`);
+          if (r[1] >= 2) break;
+        }
+        const ok = r && r[1] >= 2 && !/a=group:BUNDLE/.test(answer);
+        console.log((ok ? "chrome: nobundle ok" : "FAIL chrome: nobundle") + ": transports " + r[0] + ", connected " + r[1] + ", channel priority " + r[2]);
       } else if (how) {
         // The pair Chrome uses: over TCP ("tcp"), to the offer's relayed candidate ("relay"),
         // or host to host, the offer's host candidate being an mDNS name ("mdns").
@@ -489,6 +513,7 @@ async function simulcastFecMode(secs) {
 // The one-shot modes exit when done (a closing DevTools socket must not keep Node alive).
 if (mode === "offer") await offerMode();
 else if (mode === "offer-tcp") await offerMode("tcp");
+else if (mode === "offer-maxcompat") await offerMode("maxcompat");
 else if (mode === "offer-relay") await offerMode("relay", process.argv[5]);
 else if (mode === "answer") await answerMode(process.argv[5]);
 else if (mode === "simulcast") await simulcastMode();
