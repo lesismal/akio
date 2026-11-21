@@ -394,6 +394,7 @@ impl only_turn::TurnServer
 pub fn only_turn::TurnServer::close_all(&self)
 pub fn only_turn::TurnServer::dtls(&self, &only_tls::config::ServerConfig) -> core::io::error::Result<only_turn::TurnDtls>
 pub fn only_turn::TurnServer::dtls_relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnServer::dtls_with_connection_ids(&self, &only_tls::config::ServerConfig, core::option::Option<u8>) -> core::io::error::Result<only_turn::TurnDtls>
 pub fn only_turn::TurnServer::new(only_turn::TurnConfig) -> only_turn::TurnServer
 pub fn only_turn::TurnServer::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnServer::set_engine(&self, &alloc::rcs::arc::Arc<only::Engine>)
