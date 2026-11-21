@@ -1897,3 +1897,68 @@ fn components_outside_the_stream_are_ignored() {
     assert!(ag.poll_transmit().is_none());
     assert_eq!(ag.state(), IceState::New);
 }
+
+#[test]
+fn fixed_pairs_without_ice() {
+    let now = Instant::now();
+    let mut ag = IceAgent::new(two_comps(full(true)), now);
+    ag.add_local_candidate(Candidate::host(a("10.0.0.1:1000")));
+    ag.set_remote_credentials(Credentials::random());
+    ag.add_remote_candidate(Candidate::host(a("10.0.0.2:2000")));
+    ag.handle_timeout(now);
+    assert!(ag.poll_transmit().is_some(), "a check before");
+    assert!(!ag.set_fixed_pair(3, a("10.0.0.1:1000"), a("10.0.0.2:2000")));
+    assert!(ag.set_fixed_pair(1, a("10.0.0.1:1000"), a("10.0.0.2:2000")));
+    assert!(ag.is_fixed());
+    assert_eq!(
+        ag.send_pair(),
+        Some((a("10.0.0.1:1000"), a("10.0.0.2:2000")))
+    );
+    assert_ne!(
+        ag.state(),
+        IceState::Completed,
+        "component 2 has no pair yet"
+    );
+    assert!(ag.set_fixed_pair(2, a("10.0.0.1:1001"), a("10.0.0.2:2001")));
+    assert_eq!(ag.state(), IceState::Completed);
+    let evs: Vec<IceEvent> = std::iter::from_fn(|| ag.poll_event()).collect();
+    assert!(evs.contains(&IceEvent::SelectedPair {
+        local: a("10.0.0.1:1000"),
+        remote: a("10.0.0.2:2000")
+    }));
+    assert!(evs.contains(&IceEvent::ComponentSelectedPair {
+        component: 2,
+        local: a("10.0.0.1:1001"),
+        remote: a("10.0.0.2:2001")
+    }));
+    assert!(evs.contains(&IceEvent::StateChanged(IceState::Completed)));
+    // Nothing runs from then on: no checks, consent or timers, STUN is not consumed.
+    assert!(ag.poll_transmit().is_none());
+    assert_eq!(ag.poll_timeout(), None);
+    ag.handle_timeout(now + Duration::from_secs(120));
+    assert!(ag.poll_transmit().is_none());
+    assert_eq!(ag.state(), IceState::Completed);
+    let req = stun::binding_request(stun::transaction_id());
+    assert!(!ag.handle_receive(now, a("10.0.0.2:2000"), a("10.0.0.1:1000"), &req));
+    ag.add_remote_candidate(Candidate::host(a("10.0.0.3:3000")));
+    assert!(
+        ag.remote_candidates()
+            .iter()
+            .all(|c| c.addr() != a("10.0.0.3:3000"))
+    );
+    // Moving a component (latching onto where media comes from).
+    assert!(ag.set_fixed_pair(1, a("10.0.0.1:1000"), a("192.0.2.9:4000")));
+    assert_eq!(
+        ag.selected_pair(),
+        Some((a("10.0.0.1:1000"), a("192.0.2.9:4000")))
+    );
+    assert_eq!(
+        ag.poll_event(),
+        Some(IceEvent::SelectedPair {
+            local: a("10.0.0.1:1000"),
+            remote: a("192.0.2.9:4000")
+        })
+    );
+    assert!(ag.set_fixed_pair(1, a("10.0.0.1:1000"), a("192.0.2.9:4000")));
+    assert_eq!(ag.poll_event(), None, "unchanged: no event");
+}

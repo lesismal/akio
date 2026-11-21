@@ -97,6 +97,9 @@ pub(crate) fn dtls_config(
     } else {
         vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12]
     });
+    // The server's connection ID goes into our records when it asks for one (RFC 9146): an
+    // association that outlives a change of our address (NAT rebinding) keeps the allocation.
+    c = c.with_connection_id(Some(0));
     if !p.insecure {
         let mut roots = only_x509::RootStore::new();
         for r in &p.roots {
@@ -167,6 +170,9 @@ struct State {
 pub(crate) struct Relay {
     pub(crate) server: SocketAddr,
     pub(crate) wire: Wire,
+    /// ICE component 2 (RTCP without rtcp-mux, ADR-072): the allocation is made from the
+    /// endpoint's RTCP socket and its candidates are component 2's.
+    pub(crate) rtcp: bool,
     cfg: ClientConfig,
     /// TURN over DTLS: the association's configuration.
     dtls_cfg: Option<Arc<only_dtls::Config>>,
@@ -184,12 +190,14 @@ impl Relay {
         wire: Wire,
         dtls_cfg: Option<Arc<only_dtls::Config>>,
         cfg: ClientConfig,
+        rtcp: bool,
         waiter: mpsc::Sender<Allocated>,
     ) -> Arc<Relay> {
         let cfg = cfg.stream(wire.is_stream());
         Arc::new_cyclic(|me| Relay {
             server: cfg.server,
             wire,
+            rtcp,
             dtls_cfg,
             engine,
             closed: AtomicBool::new(false),
@@ -272,11 +280,22 @@ impl Relay {
 
     /// The candidate of relayed address `relayed` reached from `base`.
     pub(crate) fn candidate(&self, relayed: SocketAddr, base: SocketAddr) -> only_ice::Candidate {
-        match &self.wire {
+        let c = match &self.wire {
             Wire::Udp => only_ice::Candidate::relayed(relayed, base),
             Wire::Tcp => only_ice::Candidate::relayed_over_stream(relayed, base, false),
             Wire::Tls(..) => only_ice::Candidate::relayed_over_stream(relayed, base, true),
             Wire::Dtls(..) => only_ice::Candidate::relayed(relayed, base),
+        };
+        if self.rtcp { c.with_component(2) } else { c }
+    }
+
+    /// The endpoint socket a datagram allocation runs on: the RTCP socket for component 2.
+    fn socket(&self) -> Option<only::UdpBinding> {
+        let hub = self.hub.upgrade()?;
+        if self.rtcp {
+            hub.rtcp.get().cloned()
+        } else {
+            hub.binding().cloned()
         }
     }
 
@@ -372,7 +391,7 @@ impl Relay {
     /// Sends the DTLS association's datagrams.
     fn flush_dtls(&self, st: &mut State) {
         let Some(d) = st.dtls.as_mut() else { return };
-        let b = self.hub.upgrade().and_then(|h| h.binding().cloned());
+        let b = self.socket();
         while let Some(m) = d.poll_transmit() {
             if let Some(b) = &b {
                 let _ = b.send_to(&m, self.server);
@@ -415,11 +434,16 @@ impl Relay {
 
     fn udp_base(&self) -> Option<SocketAddr> {
         let hub = self.hub.upgrade()?;
+        let comp = if self.rtcp { 2 } else { 1 };
         let cs = lock(&hub.candidates);
         cs.iter()
-            .find(|c| c.kind() == only_ice::CandidateKind::Host && c.tcp_type().is_none())
+            .find(|c| {
+                c.kind() == only_ice::CandidateKind::Host
+                    && c.tcp_type().is_none()
+                    && c.component() == comp
+            })
             .map(only_ice::Candidate::addr)
-            .or_else(|| hub.binding().map(only::UdpBinding::local_addr))
+            .or_else(|| self.socket().map(|b| b.local_addr()))
     }
 
     /// A new connection (generation bumped) whose dial runs once the lock is released.
@@ -449,7 +473,7 @@ impl Relay {
         }
         match &mut st.link {
             Link::None if !self.wire.is_stream() => {
-                if let Some(b) = self.hub.upgrade().as_ref().and_then(|h| h.binding()) {
+                if let Some(b) = self.socket() {
                     let _ = b.send_to(&m, self.server);
                 }
             }

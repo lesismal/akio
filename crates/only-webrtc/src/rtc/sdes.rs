@@ -16,7 +16,7 @@
 //!   serves the transport, so a remote description whose sections disagree is refused.
 
 use only_crypto::base64::STANDARD as B64;
-use only_srtp::Profile;
+use only_srtp::{Context as Srtp, Profile};
 
 use crate::fill_random;
 use crate::sdp::{Media, Sdp};
@@ -33,13 +33,28 @@ pub(super) const OFFERED: [Profile; 5] = [
 /// The protocols of an SDES media section (an offer of ours uses the first).
 pub(super) const PROTOS: [&str; 2] = ["RTP/SAVPF", "RTP/SAVP"];
 
+/// Most master keys taken from one `a=crypto` line (several need MKIs).
+const MAX_KEYS: usize = 16;
+
+/// One master key of an `a=crypto` line and its MKI (empty without).
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct MasterKey {
+    /// Master key then master salt.
+    pub(super) key: Vec<u8>,
+    /// The MKI value as it appears in packets ([`Crypto::mki_len`] bytes, big-endian).
+    pub(super) mki: Vec<u8>,
+}
+
 /// One usable `a=crypto` line.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Crypto {
     pub(super) tag: u32,
     pub(super) profile: Profile,
-    /// Master key then master salt.
-    pub(super) key: Vec<u8>,
+    /// The master keys (at least one); the first protects what the side that sent the line
+    /// sends (RFC 4568 §6.1: the others are for re-keying, chosen by MKI on reception).
+    pub(super) keys: Vec<MasterKey>,
+    /// The MKI length of every packet (RFC 3711 §3.1), 0 without MKI.
+    pub(super) mki_len: usize,
 }
 
 impl std::fmt::Debug for Crypto {
@@ -47,31 +62,63 @@ impl std::fmt::Debug for Crypto {
         f.debug_struct("Crypto")
             .field("tag", &self.tag)
             .field("profile", &self.profile)
+            .field("keys", &self.keys.len())
+            .field("mki_len", &self.mki_len)
             .finish_non_exhaustive()
     }
 }
 
 impl Crypto {
-    /// A fresh random key for `profile`.
-    pub(super) fn generate(tag: u32, profile: Profile) -> Crypto {
+    /// A fresh random key for `profile`, with an MKI of value 1 on `mki_len` bytes (0: none).
+    pub(super) fn generate(tag: u32, profile: Profile, mki_len: usize) -> Crypto {
         let mut key = vec![0u8; profile.key_len() + profile.salt_len()];
         fill_random(&mut key);
-        Crypto { tag, profile, key }
+        let mut mki = vec![0u8; mki_len];
+        if let Some(last) = mki.last_mut() {
+            *last = 1;
+        }
+        Crypto {
+            tag,
+            profile,
+            keys: vec![MasterKey { key, mki }],
+            mki_len,
+        }
     }
 
-    /// The master key and salt.
+    /// The master key and salt of the first key.
     pub(super) fn key_salt(&self) -> (&[u8], &[u8]) {
-        self.key.split_at(self.profile.key_len())
+        self.keys[0].key.split_at(self.profile.key_len())
+    }
+
+    /// An SRTP context with every master key, protecting with the first.
+    pub(super) fn context(&self) -> Option<Srtp> {
+        let (k, s) = self.key_salt();
+        if self.mki_len == 0 {
+            return Srtp::new(self.profile, k, s).ok();
+        }
+        let mut c = Srtp::new_with_mki(self.profile, &self.keys[0].mki, k, s).ok()?;
+        for m in &self.keys[1..] {
+            let (k, s) = m.key.split_at(self.profile.key_len());
+            c.add_master_key(&m.mki, k, s).ok()?;
+        }
+        Some(c)
     }
 
     /// The value of the `a=crypto` attribute.
     pub(super) fn to_attr(&self) -> String {
-        format!(
-            "{} {} inline:{}",
-            self.tag,
-            self.profile.sdes_name().unwrap_or("?"),
-            B64.encode(&self.key)
-        )
+        let mut s = format!("{} {} ", self.tag, self.profile.sdes_name().unwrap_or("?"));
+        for (i, m) in self.keys.iter().enumerate() {
+            if i > 0 {
+                s.push(';');
+            }
+            s.push_str("inline:");
+            s.push_str(&B64.encode(&m.key));
+            if self.mki_len > 0 {
+                let v = m.mki.iter().fold(0u128, |v, b| (v << 8) | u128::from(*b));
+                s.push_str(&format!("|{v}:{}", self.mki_len));
+            }
+        }
+        s
     }
 
     /// Parses an `a=crypto` value; `None` when the line cannot be used here (see the module
@@ -85,28 +132,103 @@ impl Crypto {
         let tag = tag.parse().ok()?;
         let profile = Profile::from_sdes_name(it.next()?)?;
         let params = it.next()?;
-        if it.next().is_some() || params.contains(';') {
-            return None; // session parameters, or several keys (which need MKIs)
-        }
-        let inline = params.strip_prefix("inline:")?;
-        let mut parts = inline.split('|');
-        let key = B64.decode(parts.next()?).ok()?;
-        for p in parts {
-            // A lifetime (`2^31` or decimal) is fine; anything with ':' is an MKI.
-            let ok = match p.strip_prefix("2^") {
-                Some(e) => e.parse::<u8>().is_ok_and(|e| e <= 64),
-                None => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()),
-            };
-            if !ok {
+        for p in it {
+            // Session parameters (RFC 4568 §6.3): the window size hint is only a hint (the
+            // replay window is ours); KDR, UNENCRYPTED_*, FEC_* change the transform.
+            let wsh = p.strip_prefix("WSH=").is_some_and(|n| {
+                !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit())
+            });
+            if !wsh {
                 return None;
             }
         }
-        (key.len() == profile.key_len() + profile.salt_len()).then_some(Crypto {
+        let mut keys = Vec::new();
+        let mut mki_len = None;
+        for kp in params.split(';') {
+            if keys.len() >= MAX_KEYS {
+                return None;
+            }
+            let inline = kp.strip_prefix("inline:")?;
+            let mut parts = inline.split('|');
+            let key = B64.decode(parts.next()?).ok()?;
+            if key.len() != profile.key_len() + profile.salt_len() {
+                return None;
+            }
+            let mut mki = None;
+            for p in parts {
+                if mki.is_some() {
+                    return None; // the MKI comes last
+                }
+                if let Some((value, len)) = p.split_once(':') {
+                    mki = Some(parse_mki(value, len)?);
+                    continue;
+                }
+                // A lifetime (`2^31` or decimal), before the MKI.
+                let ok = match p.strip_prefix("2^") {
+                    Some(e) => e.parse::<u8>().is_ok_and(|e| e <= 64),
+                    None => !p.is_empty() && p.len() <= 20 && p.bytes().all(|b| b.is_ascii_digit()),
+                };
+                if !ok {
+                    return None;
+                }
+            }
+            let mki = mki.unwrap_or_default();
+            // Every key has an MKI of the same length, or (one key only) none.
+            match mki_len {
+                None => mki_len = Some(mki.len()),
+                Some(l) if l == mki.len() => {}
+                Some(_) => return None,
+            }
+            keys.push(MasterKey { key, mki });
+        }
+        let mki_len = mki_len?;
+        if keys.len() > 1 && mki_len == 0 {
+            return None; // several keys need MKIs to tell them apart
+        }
+        if keys
+            .iter()
+            .enumerate()
+            .any(|(i, k)| keys[..i].iter().any(|o| o.mki == k.mki))
+        {
+            return None;
+        }
+        Some(Crypto {
             tag,
             profile,
-            key,
+            keys,
+            mki_len,
         })
     }
+}
+
+/// The `webrtc_sdes` fuzz target: an `a=crypto` value; one that parses writes back to the
+/// same line and keys an SRTP context.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_crypto_line(s: &str) {
+    let Some(c) = Crypto::parse(s) else { return };
+    assert!(!c.keys.is_empty() && c.keys.len() <= MAX_KEYS);
+    assert!(c.keys.iter().all(|k| k.mki.len() == c.mki_len));
+    assert_eq!(Crypto::parse(&c.to_attr()).as_ref(), Some(&c), "{s}");
+    assert!(c.context().is_some(), "{s}");
+}
+
+/// `<value>:<length>` (RFC 4568 §9.1: decimal MKI value, length in bytes 1..=128) as the
+/// bytes packets carry.
+fn parse_mki(value: &str, len: &str) -> Option<Vec<u8>> {
+    let dec = |s: &str| !s.is_empty() && s.len() <= 39 && s.bytes().all(|b| b.is_ascii_digit());
+    if !dec(value) || !dec(len) {
+        return None;
+    }
+    let len: usize = len.parse().ok()?;
+    let v: u128 = value.parse().ok()?;
+    if !(1..=128).contains(&len) || (len < 16 && v >> (8 * len) != 0) {
+        return None;
+    }
+    let mut out = vec![0u8; len];
+    for (i, b) in v.to_be_bytes().iter().rev().enumerate().take(len) {
+        out[len - 1 - i] = *b;
+    }
+    Some(out)
 }
 
 /// The SDES state of a peer connection.
@@ -158,13 +280,13 @@ fn section_lines(m: &Media) -> Vec<Crypto> {
 }
 
 impl Sdes {
-    /// The lines of our offer, made on first use.
-    pub(super) fn offer_lines(&mut self) -> &[Crypto] {
+    /// The lines of our offer, made on first use (with MKIs of `mki_len` bytes, 0: none).
+    pub(super) fn offer_lines(&mut self, mki_len: usize) -> &[Crypto] {
         if self.offered.is_empty() {
             self.offered = OFFERED
                 .iter()
                 .zip(1u32..)
-                .map(|(&p, tag)| Crypto::generate(tag, p))
+                .map(|(&p, tag)| Crypto::generate(tag, p, mki_len))
                 .collect();
         }
         &self.offered
@@ -194,12 +316,14 @@ impl Sdes {
             .into_iter()
             .next()
             .ok_or("SDES: no usable a=crypto line in the offer (suites, MKIs, parameters)")?;
+        // Our key has an MKI of the offer's length (peers that use MKIs expect them both
+        // ways).
         let keep = self
             .local
             .as_ref()
-            .is_some_and(|l| l.tag == r.tag && l.profile == r.profile);
+            .is_some_and(|l| l.tag == r.tag && l.profile == r.profile && l.mki_len == r.mki_len);
         if !keep {
-            self.local = Some(Crypto::generate(r.tag, r.profile));
+            self.local = Some(Crypto::generate(r.tag, r.profile, r.mki_len));
         }
         self.remote = Some(r);
         Ok(())
@@ -216,8 +340,8 @@ mod tests {
         let k = "WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz";
         let c = Crypto::parse(&format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}")).unwrap();
         assert_eq!(
-            (c.tag, c.profile, c.key.len()),
-            (1, Profile::Aes128CmHmacSha1_80, 30)
+            (c.tag, c.profile, c.keys[0].key.len(), c.mki_len),
+            (1, Profile::Aes128CmHmacSha1_80, 30, 0)
         );
         assert_eq!(c.to_attr(), format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}"));
         let (key, salt) = c.key_salt();
@@ -232,11 +356,41 @@ mod tests {
             Crypto::parse(&format!("4 SEED_CTR_128_HMAC_SHA1_80 inline:{k}")).map(|c| c.profile),
             Some(Profile::SeedCtrHmacSha1_80)
         );
-        for bad in [
-            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|2^20|1:4"), // MKI
+        // MKIs (RFC 4568 §4's example has `|2^20|1:4`), several keys with MKIs, a window size
+        // hint.
+        let m = Crypto::parse(&format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|2^20|1:4")).unwrap();
+        assert_eq!((m.mki_len, m.keys[0].mki.clone()), (4, vec![0, 0, 0, 1]));
+        assert_eq!(
+            m.to_attr(),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4"),
-            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k};inline:{k}"), // two keys
-            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"),      // session parameter
+            "the lifetime is not written back"
+        );
+        let two = Crypto::parse(&format!(
+            "1 AES_CM_128_HMAC_SHA1_80 inline:{k}|258:2;inline:{k}|2^31|3:2 WSH=64"
+        ))
+        .unwrap();
+        assert_eq!(two.keys.len(), 2);
+        assert_eq!(
+            (two.keys[0].mki.clone(), two.keys[1].mki.clone()),
+            (vec![1, 2], vec![0, 3])
+        );
+        assert_eq!(Crypto::parse(&two.to_attr()), Some(two));
+        let long = Crypto::parse(&format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|7:20")).unwrap();
+        assert_eq!(long.keys[0].mki.len(), 20);
+        assert_eq!(long.keys[0].mki[19], 7);
+        assert_eq!(Crypto::parse(&long.to_attr()), Some(long));
+        for bad in [
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k};inline:{k}"), // two keys, no MKI
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4;inline:{k}|1:4"), // same MKI
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4;inline:{k}|2:2"), // lengths differ
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4;inline:{k}"),
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|256:1"), // value too big
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:0"),
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:129"),
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4|2^20"), // MKI before the lifetime
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|x:4"),
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"), // session parameter
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} WSH=x"),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} UNENCRYPTED_SRTP"),
             format!("1 ARIA_128_CTR_HMAC_SHA1_80 inline:{k}"), // unsupported suite (RFC 8269)
             format!("1 AES_256_CM_HMAC_SHA1_80 inline:{k}"),   // key too short for the suite
@@ -252,8 +406,11 @@ mod tests {
         }
         // Every offered suite round-trips with a generated key.
         for (tag, p) in (1..).zip(OFFERED) {
-            let c = Crypto::generate(tag, p);
+            let c = Crypto::generate(tag, p, 0);
             assert_eq!(Crypto::parse(&c.to_attr()), Some(c));
+            let c = Crypto::generate(tag, p, 4);
+            assert_eq!(Crypto::parse(&c.to_attr()), Some(c.clone()));
+            assert_eq!(c.context().map(|x| x.mki_len()), Some(4));
         }
     }
 
@@ -269,11 +426,11 @@ mod tests {
     #[test]
     fn offer_and_answer() {
         let mut a = Sdes::default();
-        let offered = a.offer_lines().to_vec();
+        let offered = a.offer_lines(0).to_vec();
         assert_eq!(offered.len(), OFFERED.len());
-        assert_eq!(a.offer_lines(), &offered[..], "made once");
+        assert_eq!(a.offer_lines(0), &offered[..], "made once");
         // The remote offers a suite we do not take first, then one we do.
-        let k = Crypto::generate(7, Profile::Aes128CmHmacSha1_80);
+        let k = Crypto::generate(7, Profile::Aes128CmHmacSha1_80, 0);
         let offer = sdp(&[
             "m=audio 9 RTP/SAVPF 0",
             "a=crypto:3 ARIA_128_CTR_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
@@ -291,12 +448,12 @@ mod tests {
             (local.tag, local.profile),
             (7, Profile::Aes128CmHmacSha1_80)
         );
-        assert_ne!(local.key, k.key);
+        assert!(local.keys != k.keys);
         // A re-offer with the same line keeps our key.
         b.accept_offer(&offer).unwrap();
         assert_eq!(b.local.as_ref(), Some(&local));
         // Sections that disagree.
-        let k2 = Crypto::generate(7, Profile::Aes128CmHmacSha1_80);
+        let k2 = Crypto::generate(7, Profile::Aes128CmHmacSha1_80, 0);
         let split = sdp(&[
             "m=audio 9 RTP/SAVPF 0",
             &format!("a=crypto:{}", k.to_attr()),
@@ -320,7 +477,7 @@ mod tests {
 
         // The answer to `a`'s offer.
         let pick = offered[3].clone();
-        let mine = Crypto::generate(pick.tag, pick.profile);
+        let mine = Crypto::generate(pick.tag, pick.profile, 0);
         let answer = sdp(&[
             "m=audio 9 RTP/SAVPF 0",
             &format!("a=crypto:{}", mine.to_attr()),
@@ -331,7 +488,7 @@ mod tests {
             (Some(&pick), Some(&mine))
         );
         // A tag we did not offer with that suite, or two lines.
-        let wrong = Crypto::generate(1, Profile::Aes128CmHmacSha1_80);
+        let wrong = Crypto::generate(1, Profile::Aes128CmHmacSha1_80, 0);
         let answer = sdp(&[
             "m=audio 9 RTP/SAVPF 0",
             &format!("a=crypto:{}", wrong.to_attr()),

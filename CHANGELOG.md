@@ -193,6 +193,39 @@ ADR-073 (docs/adr/073-webrtc-pacer-fec-policy-ecn.md):
   interleaved ones did (a first build that re-evaluated the policy per frame measured 0.988x /
   0.981x).
 
+### Added: WebRTC transports without BUNDLE or ICE, SDES MKIs and data channels, channel priorities, TURN DTLS connection IDs (only-webrtc, only-turn, only-ice)
+
+ADR-072 (docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.md), additive:
+
+- Data channel priorities (`ChannelPriority` in `ChannelConfig`, sent in DCEP and read from the
+  peer's; `Peer::channel_priority` / `set_channel_priority`) and the SCTP stream scheduler
+  (`ChannelScheduler`, `RtcConfig::set_sctp_scheduler`; weighted fair queueing by default).
+- Sessions without BUNDLE: `RtcConfig::set_bundle_policy(BundlePolicy::Disabled)`, remote offers
+  without `a=group:BUNDLE` and answers that refuse ours get an ICE agent, DTLS association and
+  SRTP keys per section (Chrome `bundlePolicy: "max-compat"` works both ways);
+  `Endpoint::bind_transport_socket` gives the transports sockets of their own;
+  `Peer::add_remote_candidate_in` trickles a candidate to its section. Without rtcp-mux such a
+  session may now carry several sections and data channels. Transport-wide congestion control
+  is not negotiated in an unbundled session.
+- RTCP on component 2: server-reflexive and relayed candidates gathered from the RTCP socket by
+  `gather_srflx` / `gather_relay(_via)`; `RtcServer::rtcp_candidates` and `RtcServer::rtcp()`
+  (`RtcRtcp`) for an ICE-lite server's RTCP listener.
+- SDES-SRTP without ICE (`RtcConfig::enable_ice(false)`, or a remote SDP without ICE: plain
+  `c=` / `m=` port media, `a=rtcp`), with MKIs and several master keys
+  (`RtcConfig::set_sdes_mki_length` for our offers), and next to data channels (DTLS in the
+  application section).
+- only-turn: the TURN-over-DTLS listener negotiates 8-byte connection IDs; a client's path
+  follows an authenticated record from a new address while its allocation stays
+  (`TurnServer::dtls_with_connection_ids` for another length or none). only-webrtc's DTLS relay
+  client sends the server's CID.
+- only-ice: `mdns::MULTICAST_V6`, `mdns::multicast_v6_on`, `Candidate::with_scope_id`,
+  `IceAgent::set_fixed_pair` / `is_fixed` (paths without ICE).
+
+### Changed: remote offers without BUNDLE (only-webrtc)
+
+A remote offer of several sections without `a=group:BUNDLE` is answered with a transport per
+section (it was answered with a BUNDLE group the offer did not ask for, which did not connect).
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

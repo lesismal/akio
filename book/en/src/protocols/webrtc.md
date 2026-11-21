@@ -387,9 +387,30 @@ SIP gateways often key SRTP with SDP security descriptions (RFC 4568) instead of
 HMAC-SHA1-32), each with a random key, and no fingerprint; an SDES offer (`RTP/SAVP` or
 `RTP/SAVPF` with `a=crypto`) is answered with the first line this side can use and a key of its
 own. Each side encrypts with its own key and decrypts with the other's; the peer connects once
-ICE has a pair (the gateway needs ICE or ICE-lite). There is no DTLS, so no data channels, and the
-keys are only as secret as the signalling. Lines with an MKI or session parameters are not
-taken. DTLS-SRTP offers are still answered with DTLS-SRTP, so browsers never see `a=crypto`.
+ICE has a pair. The keys are only as secret as the signalling. Lines with MKIs (`|1:4`) and
+several master keys are taken, and our answer's key then has an MKI of the same length;
+`set_sdes_mki_length(4)` puts MKIs in our offers. Session parameters other than the window size
+hint (`WSH=`) make a line unusable. DTLS-SRTP offers are still answered with DTLS-SRTP, so
+browsers never see `a=crypto`.
+
+Data channels can sit next to SDES media: the application section carries `a=fingerprint` and
+`a=setup`, DTLS runs there for SCTP only, and the media keeps its SDP keys (ADR-072).
+
+Many gateways do not do ICE at all. A remote SDP without `a=ice-ufrag` is taken as plain media:
+RTP goes to its `c=` address and `m=` port, RTCP to `a=rtcp` (or the next port), and the answer
+carries our host address and port the same way. `enable_ice(false)` makes our offers plain too:
+
+```rust,ignore
+let ep = ep.config(|| {
+    only_webrtc::rtc_config()
+        .enable_sdes_srtp(true)
+        .enable_ice(false)
+        .set_rtcp_mux_policy(RtcpMuxPolicy::Off) // RTCP on the RTCP socket's port
+});
+```
+
+Without ICE nothing checks the path or finds a way through NATs: the remote must be reachable at
+the address it wrote (ADR-072).
 
 ### RTCP on its own port (no rtcp-mux)
 
@@ -408,8 +429,52 @@ by component 2's), SDES-SRTP keys both from the SDP; the peer is connected once 
 components are. Offers with `a=rtcp-mux` are answered with it as before. Our offers say what
 `set_rtcp_mux_policy` asks: `Require` (default) rtcp-mux only, `Negotiate` rtcp-mux plus `a=rtcp`
 and component-2 candidates (the answer decides), `Off` no rtcp-mux. There is no BUNDLE without
-rtcp-mux, so such a session has one media section and no data channels; component 2 has host
-and peer-reflexive candidates only, and `RtcServer` has no component 2 (ADR-058).
+rtcp-mux (RFC 8843 §9.1), so a session with several sections needs one transport per section
+(next section). Bind the RTCP socket before gathering: `gather_srflx` and `gather_relay` then
+also gather component 2's server-reflexive and relayed candidates from it. An `RtcServer` gets a
+second listener for component 2:
+
+```rust,ignore
+let server = RtcServer::new(vec![main]).rtcp_candidates(vec![rtcp]);
+Engine::builder()
+    .listen(Listener::udp(main).serve(server.clone()))
+    .listen(Listener::udp(rtcp).serve(server.rtcp()))
+```
+
+### Without BUNDLE: a transport per section
+
+```rust,ignore
+let ep = ep.config(|| only_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
+ep.bind_transport_socket(&engine, "0.0.0.0:0".parse()?)?; // optional: one per extra section
+```
+
+By default the sections of a session share one transport (BUNDLE). A peer that does not bundle
+gets one per section: an offer without `a=group:BUNDLE`, an answer that leaves ours out, or our
+own offers with `BundlePolicy::Disabled` (which also refuse a remote's group). Each section then
+has its own ICE agent (its own credentials and candidates in the SDP), DTLS association, SRTP
+keys and, without rtcp-mux, RTCP component; media, RTCP and SCTP go out on their section's
+transport, and `on_connected` fires once all of them are up. Chrome with
+`bundlePolicy: "max-compat"` works this way in both directions (`tools/interop/webrtc/bundle.sh`).
+The transports share the endpoint's socket unless `bind_transport_socket` gives them their own;
+they are then told apart by the remote's addresses, which a peer that does not bundle always
+has one of per section. Transport-wide congestion control (transport-cc, RFC 8888) needs one
+transport and is not negotiated in such a session. Trickled candidates name their section with
+`Peer::add_remote_candidate_in(mid, candidate)`.
+
+### Data channel priorities
+
+```rust,ignore
+let ch = api.add_channel_with_config(&ChannelConfig::new("video-meta").with_priority(ChannelPriority::High));
+let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
+```
+
+A channel's priority goes to the peer in the DCEP open message (128, 256, 512 or 1024; a
+remote channel's is `Peer::channel_priority`) and decides how the SCTP stream scheduler shares
+the association among channels with data queued: by default weighted fair queueing (a channel
+gets bytes in proportion to its priority value), or strict priority, round robin, round robin
+per packet, fair capacity or first come first served. `Peer::set_channel_priority` changes this
+side's weighting later (DCEP has no update message). Chrome 157 has no
+`RTCDataChannel.priority` and sends 256.
 
 ### Bandwidth probing
 
@@ -504,8 +569,11 @@ allocations, quotas and credentials. ClientHellos are answered with stateless co
 any state is kept; DTLS 1.3 is offered with a fallback to 1.2. Each record carries one STUN or
 ChannelData message, unpadded. An allocation lives as long as its DTLS association: close_notify,
 a fatal alert, `udp_idle_timeout` of silence or a new handshake from the same address frees it.
-coturn's `turnutils_uclient -S` and coturn's own DTLS listener interoperate
-(`tools/interop/webrtc/turn-dtls.sh`).
+Clients that support connection IDs (RFC 9146, RFC 9147 §9) are asked for 8-byte ones: when a
+client's address changes (a NAT rebinding), its records still name its association, and its path
+moves to the new address once one of them authenticates there; the allocation stays.
+`turn.dtls_with_connection_ids(&tls_cfg, None)` turns them off. coturn's `turnutils_uclient -S`
+and coturn's own DTLS listener interoperate (`tools/interop/webrtc/turn-dtls.sh`).
 
 ```rust,ignore
 Engine::builder()
@@ -565,8 +633,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); sending ECN-capable packets; SRTP MKIs in
-WebRTC; SDES-SRTP without ICE or next to data channels; without rtcp-mux, several media
-sections or data channels in one session, server-reflexive and relayed RTCP candidates and
-`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058 and ADR-073
-have the details of what was added.
+TCP relays (RFC 6062); sending ECN-capable packets; SRTP MKIs with DTLS-SRTP; latching plain
+(no-ICE) media onto the address it really comes from; transport-wide congestion control across
+the transports of a session without BUNDLE. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045,
+ADR-048, ADR-054, ADR-058, ADR-072 and ADR-073 have the details of what was added.

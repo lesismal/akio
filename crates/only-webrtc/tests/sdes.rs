@@ -1,6 +1,7 @@
 //! SDES-SRTP (RFC 4568) between two `Endpoint`s: `a=crypto` keys in the SDP instead of
-//! DTLS-SRTP, every offered suite, renegotiation, and the refusals (data channels, SDES off,
-//! browsers' DTLS offers left alone).
+//! DTLS-SRTP, every offered suite, renegotiation, without ICE (SIP style, RTCP on its own
+//! port), MKIs, data channels next to SDES media, and the refusals (SDES off, browsers' DTLS
+//! offers left alone).
 #![allow(missing_docs)]
 
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -198,12 +199,23 @@ fn sdes_refusals_and_dtls_unchanged() {
     let e = engine();
     let sdes = endpoint(&e, true);
     let dtls = endpoint(&e, false);
-    // No data channels in an SDES session.
-    let r = sdes.create_offer(Echo, |api| {
-        api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
-        api.add_channel("c");
-    });
-    assert!(matches!(r, Err(Error::Rtc(_))), "{r:?}");
+    // Data channels next to SDES media: DTLS in the application section only.
+    let (_pc, offer) = sdes
+        .create_offer(Echo, |api| {
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+            api.add_channel("c");
+        })
+        .unwrap();
+    let app = &offer[offer.find("m=application").expect("an application section")..];
+    let media = &offer[..offer.find("m=application").unwrap()];
+    assert!(
+        app.contains("a=fingerprint:") && !app.contains("a=crypto:"),
+        "{offer}"
+    );
+    assert!(
+        media.contains("a=crypto:") && !media.contains("a=fingerprint:"),
+        "{offer}"
+    );
     // An SDES offer to an endpoint with SDES off.
     let (_p, offer) = sdes
         .create_offer(Echo, |api| {
@@ -214,18 +226,19 @@ fn sdes_refusals_and_dtls_unchanged() {
         dtls.accept_offer(&offer, Echo),
         Err(Error::Sdp(_))
     ));
-    // An SDES offer whose lines are all unusable (MKIs).
-    let mki: String = offer
+    // An SDES offer whose lines are all unusable (a session parameter changing the
+    // transform).
+    let kdr: String = offer
         .lines()
         .map(|l| {
             if l.starts_with("a=crypto:") {
-                format!("{l}|2^31|1:4\r\n")
+                format!("{l} KDR=1\r\n")
             } else {
                 format!("{l}\r\n")
             }
         })
         .collect();
-    assert!(matches!(sdes.accept_offer(&mki, Echo), Err(Error::Sdp(_))));
+    assert!(matches!(sdes.accept_offer(&kdr, Echo), Err(Error::Sdp(_))));
     // A DTLS-SRTP offer (a browser's) to an SDES endpoint: answered with DTLS-SRTP, no
     // a=crypto, and the session works with data channels.
     let (tx, rx) = channel();
@@ -244,5 +257,143 @@ fn sdes_refusals_and_dtls_unchanged() {
     pd.close();
     sdes.close();
     dtls.close();
+    e.shutdown();
+}
+
+#[derive(Debug)]
+enum Seen {
+    Connected,
+    Open,
+    Data(Vec<u8>),
+    Media,
+}
+
+struct Watch(Mutex<Sender<Seen>>);
+impl PeerHandler for Watch {
+    fn on_connected(&mut self, _p: &Peer) {
+        let _ = self.0.lock().unwrap().send(Seen::Connected);
+    }
+    fn on_channel_open(&mut self, _p: &Peer, _id: only_webrtc::ChannelId, _label: &str) {
+        let _ = self.0.lock().unwrap().send(Seen::Open);
+    }
+    fn on_channel_data(&mut self, _p: &Peer, _id: only_webrtc::ChannelId, d: &[u8], _b: bool) {
+        let _ = self.0.lock().unwrap().send(Seen::Data(d.to_vec()));
+    }
+    fn on_media_data(&mut self, _p: &Peer, _d: &MediaData) {
+        let _ = self.0.lock().unwrap().send(Seen::Media);
+    }
+}
+
+struct EchoAll;
+impl PeerHandler for EchoAll {
+    fn on_media_data(&mut self, p: &Peer, d: &MediaData) {
+        let _ = p.write_media(d.mid, d.pt, Instant::now(), d.time, &d.data);
+    }
+    fn on_channel_data(&mut self, p: &Peer, id: only_webrtc::ChannelId, d: &[u8], b: bool) {
+        let _ = p.send(id, d, b);
+    }
+}
+
+fn seen(rx: &Receiver<Seen>, what: &str, f: impl Fn(&Seen) -> bool) {
+    let deadline = Instant::now() + T;
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(g) if f(&g) => return,
+            Ok(_) => {}
+            Err(_) => panic!("timed out waiting for {what}"),
+        }
+    }
+}
+
+#[test]
+fn sdes_without_ice_between_endpoints() {
+    // SIP style: no ICE, media to c= / m= port, RTCP on the endpoints' RTCP sockets; MKIs.
+    let e = engine();
+    let plain = || {
+        rtc_config()
+            .enable_sdes_srtp(true)
+            .enable_ice(false)
+            .set_sdes_mki_length(4)
+            .set_rtcp_mux_policy(only_webrtc::RtcpMuxPolicy::Off)
+    };
+    let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
+        .unwrap()
+        .config(plain);
+    let a_rtcp = a.bind_rtcp(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let b = endpoint(&e, true);
+    let b_rtcp = b.bind_rtcp(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let (tx, rx) = channel();
+    let mut audio = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| {
+            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
+        })
+        .unwrap();
+    let port = a.local_addr().unwrap().port();
+    assert!(
+        offer.contains(&format!("m=audio {port} RTP/SAVPF")),
+        "{offer}"
+    );
+    assert!(offer.contains("c=IN IP4 127.0.0.1"), "{offer}");
+    assert!(
+        offer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", a_rtcp.port())),
+        "{offer}"
+    );
+    assert!(
+        !offer.contains("a=ice-ufrag") && offer.contains("|1:4"),
+        "{offer}"
+    );
+    let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    assert!(!answer.contains("a=ice-ufrag"), "{answer}");
+    assert!(
+        answer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", b_rtcp.port())),
+        "{answer}"
+    );
+    pa.accept_answer(&answer).unwrap();
+    wait_connected(&rx);
+    echo(&pa, &rx, audio.unwrap(), 9);
+    pa.close();
+    a.close();
+    b.close();
+    e.shutdown();
+}
+
+#[test]
+fn sdes_media_and_data_channels_between_endpoints() {
+    let e = engine();
+    let a = endpoint(&e, true);
+    let b = endpoint(&e, true);
+    let (tx, rx) = channel();
+    let (mut audio, mut ch) = (None, None);
+    let (pa, offer) = a
+        .create_offer(Watch(Mutex::new(tx)), |api| {
+            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
+            ch = Some(api.add_channel("c"));
+        })
+        .unwrap();
+    let (_pb, answer) = b.accept_offer(&offer, EchoAll).unwrap();
+    pa.accept_answer(&answer).unwrap();
+    seen(&rx, "connected", |g| matches!(g, Seen::Connected));
+    seen(&rx, "open", |g| matches!(g, Seen::Open));
+    pa.send(ch.unwrap(), b"over dtls", true).unwrap();
+    seen(
+        &rx,
+        "echo",
+        |g| matches!(g, Seen::Data(d) if d == b"over dtls"),
+    );
+    let (audio, pt) = (
+        audio.unwrap(),
+        pa.payload_type(audio.unwrap(), Codec::Opus).unwrap(),
+    );
+    for i in 0..50u64 {
+        let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+        pa.write_media(audio, pt, Instant::now(), t, &[0xfc, 1, 2])
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    seen(&rx, "media echo", |g| matches!(g, Seen::Media));
+    pa.close();
+    a.close();
+    b.close();
     e.shutdown();
 }

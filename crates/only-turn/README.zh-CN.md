@@ -42,6 +42,9 @@ engine.run().unwrap();
 `COTURN=1`；DTLS 上：`tools/interop/webrtc/turn-dtls.sh`，它还让 `only-webrtc` 的 `Endpoint` 经
 coturn 的 DTLS 监听器中继），以及经中继连到 only WebRTC 服务器的 pion WebRTC peer。
 
-未实现：TCP 中继（RFC 6062）、DTLS 监听器上的 DTLS 连接 ID。
+DTLS 监听器协商连接 ID（RFC 9146、RFC 9147 §9；默认 8 字节，`dtls_with_connection_ids`）：地址变化的
+客户端保留其关联与分配，路径跟随新地址上第一条通过认证的记录（ADR-072）。
+
+未实现：TCP 中继（RFC 6062）。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

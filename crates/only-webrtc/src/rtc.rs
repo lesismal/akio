@@ -25,9 +25,9 @@ use only_srtp::{Context as Srtp, Profile};
 
 use crate::sdp::{Attr, Media, Sdp};
 use crate::types::{
-    Change, Changes, ChannelConfig, ChannelId, Codec, ConfigInner, Direction, FecMechanism,
-    IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
+    Change, Changes, ChannelConfig, ChannelId, ChannelPriority, Codec, ConfigInner, Direction,
+    FecMechanism, IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData,
+    MediaKind, MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
 };
 use crate::{Frequency, fill_random};
 
@@ -936,6 +936,8 @@ pub(crate) struct Rtc {
     pacer: pacing::Pacer,
     /// The ECN codepoint of the datagram being received ([`Rtc::set_rx_ecn`]).
     rx_ecn: u8,
+    /// Transports beyond the primary (no BUNDLE) and plain ones (no ICE), ADR-072.
+    xt: transports::Extra,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -1066,6 +1068,7 @@ impl Rtc {
             remote_sdes: HashMap::new(),
             pacer: pacing::Pacer::default(),
             rx_ecn: 0,
+            xt: transports::Extra::default(),
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -1084,6 +1087,9 @@ impl Rtc {
     }
 
     pub(crate) fn add_local_candidate(&mut self, c: IceCandidate) {
+        if self.tp_entry() {
+            self.tp_each(|s| s.add_local_candidate(c.clone()));
+        }
         if c.component() == 2 {
             // Kept for a session without rtcp-mux (the agent has one component until then).
             self.rtcp.add_candidate(&c);
@@ -1125,6 +1131,12 @@ impl Rtc {
     /// The mDNS candidates received since the last call, with the remote ufrag they belong
     /// to; `None` (and no allocation: this runs on every drive) when there are none.
     pub(crate) fn take_mdns(&mut self) -> Option<(Vec<(String, String)>, String)> {
+        if self.tp_entry() && self.mdns_wanted.is_empty() {
+            let k = self.tp_with_mdns()?;
+            return self
+                .with_tp(k, Rtc::take_mdns)
+                .map(|(v, u)| (v, Self::mdns_token(k, &u)));
+        }
         if self.mdns_wanted.is_empty() {
             return None;
         }
@@ -1139,6 +1151,10 @@ impl Rtc {
     /// A resolved mDNS candidate, unless the remote restarted ICE since (`ufrag` is the
     /// remote ufrag when it arrived).
     pub(crate) fn add_resolved_candidate(&mut self, c: IceCandidate, ufrag: &str) {
+        let (k, ufrag) = Self::mdns_untoken(ufrag);
+        if k != 0 && self.tp_entry() {
+            return self.with_tp(k, |s| s.add_resolved_candidate(c, ufrag));
+        }
         if self
             .ice
             .remote_credentials()
@@ -1152,6 +1168,7 @@ impl Rtc {
         self.dtls_connected
             && self.ice.send_pair().is_some()
             && (self.ice.components() == 1 || self.ice.send_pair_of(2).is_some())
+            && (!self.tp_entry() || self.tp_all_connected())
     }
 
     pub(crate) fn is_alive(&self) -> bool {
@@ -1196,11 +1213,8 @@ impl Rtc {
             if self.sdes.active {
                 sdes::PROTOS[0].clone_into(&mut self.sdes.proto);
             }
-        }
-        if self.sdes.active && ch.ops.iter().any(|o| matches!(o, Change::AddChannel(..))) {
-            return Err(err(
-                "data channels need DTLS: an SDES-SRTP session carries media only",
-            ));
+            // ... and whether ICE runs.
+            self.xt.plain = !self.cfg.ice;
         }
         let first_offer = !self.negotiated && self.pending.is_none();
         if first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off && !self.rtcp.has_candidates() {
@@ -1208,11 +1222,15 @@ impl Rtc {
                 "RTCP without rtcp-mux needs component-2 candidates (Endpoint::bind_rtcp)",
             ));
         }
+        let unbundled = self.unbundled()
+            || (first_offer && self.cfg.bundle == crate::types::BundlePolicy::Disabled);
         if (self.ice.components() == 2 || (first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off))
             && self.sections_after(&ch.ops) > 1
+            && !unbundled
         {
             return Err(err(
-                "a session without rtcp-mux has one media section and no data channels",
+                "a bundled session without rtcp-mux has one media section and no data channels \
+                 (BundlePolicy::Disabled gives each section its own transport)",
             ));
         }
         if first_offer && self.cfg.rtcp_mux == RtcpMuxPolicy::Off {
@@ -1225,6 +1243,7 @@ impl Rtc {
                 && !self.app_negotiated
                 && self.app_mid.is_none());
         let mut new_lines = Vec::new();
+        let mut restart = None;
         for op in ch.ops {
             match op {
                 Change::AddChannel(id, cfg) => {
@@ -1269,8 +1288,12 @@ impl Rtc {
                 }
                 Change::IceRestart(keep) => {
                     self.ice.restart(Credentials::random(), keep);
+                    restart = Some(keep);
                 }
             }
+        }
+        if let Some(keep) = restart {
+            self.restart_extra(keep);
         }
         if !self.channels.is_empty() && self.app_mid.is_none() {
             self.app_mid = Some(self.alloc_mid());
@@ -1282,24 +1305,42 @@ impl Rtc {
         if !self.lite {
             self.ice.set_controlling(true);
         }
-        if self.sdes.active {
-            self.sdes.offer_lines();
-        }
+        // BundlePolicy::Disabled: a transport per section in use (new sections get theirs).
+        self.split_for_offer(now);
+        self.drop_transport_cc();
+        let mki = usize::from(self.cfg.sdes_mki);
+        let offer_keys = |s: &mut Rtc| {
+            if !s.lite {
+                s.ice.set_controlling(true);
+            }
+            if s.sdes.active {
+                s.sdes.offer_lines(mki);
+            }
+        };
+        offer_keys(self);
+        self.tp_each(offer_keys);
         self.pending = Some(Pending { new_lines });
-        Ok(Some(self.write_sdp(true)))
+        Ok(Some(self.write_sdp_tp(true)))
     }
 
     /// Applies the remote answer to our pending offer.
     pub(crate) fn accept_answer(&mut self, now: Instant, answer: &str) -> Result<(), RtcErr> {
         let sdp = Sdp::parse(answer).map_err(err)?;
         let pending = self.pending.take().ok_or_else(|| err("no offer pending"))?;
-        if self.sdes.active {
+        // An answer that leaves our BUNDLE group out: a transport per section (RFC 9143
+        // §7.3.3), on the credentials our offer gave every section.
+        let refused = !self.unbundled() && !transports::bundles(&sdp);
+        if refused && self.negotiated && rtcp_mux::sections_in_use(&sdp) > 1 {
+            return Err(err("the answer stopped bundling an established session"));
+        }
+        let refused = refused && !self.negotiated;
+        if self.sdes.active && !self.unbundled() && !refused {
             self.sdes.accept_answer(&sdp).map_err(err)?;
         }
         if !self.negotiated && self.ice.components() == 1 && self.offers_rtcp_component() {
             // A `Negotiate` offer: the answer picks (RFC 5761 §5.1.1).
             if !rtcp_mux::muxed(&sdp) {
-                if rtcp_mux::sections_in_use(&sdp) > 1 {
+                if rtcp_mux::sections_in_use(&sdp) > 1 && !refused && !self.unbundled() {
                     return Err(err(
                         "an answer without rtcp-mux must keep one section in use (no BUNDLE)",
                     ));
@@ -1307,16 +1348,25 @@ impl Rtc {
                 self.use_rtcp_component(now);
             }
         }
-        self.apply_remote_transport(&sdp, false)?;
+        if refused || self.unbundled() {
+            // Transports of the sections the answer rejected close.
+            self.split_transports(now, &Self::remote_mids(&sdp), true);
+            self.apply_split_transport(&sdp, false)?;
+        } else if self.xt.plain {
+            self.apply_plain_bundled(&sdp)?;
+        } else {
+            self.apply_remote_transport(&sdp, false)?;
+        }
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
-        if self.dtls_role.is_none() && !self.sdes.active {
-            let setup = sdp
-                .media
-                .iter()
-                .find_map(|m| m.get("setup"))
-                .or_else(|| sdp.get("setup"))
-                .unwrap_or("active");
-            self.dtls_role = Some(if setup == "passive" {
+        // DTLS runs for DTLS-SRTP, and for data channels next to SDES media.
+        let setup = sdp
+            .media
+            .iter()
+            .filter(|m| m.port != 0)
+            .find_map(|m| m.get("setup"))
+            .or_else(|| sdp.get("setup"));
+        if self.dtls_role.is_none() && (!self.sdes.active || setup.is_some()) {
+            self.dtls_role = Some(if setup == Some("passive") {
                 Role::Client
             } else {
                 Role::Server
@@ -1377,6 +1427,7 @@ impl Rtc {
             }
         }
         self.key_sdes();
+        self.tp_each(Rtc::key_sdes);
         self.after_negotiation(now);
         Ok(())
     }
@@ -1398,39 +1449,60 @@ impl Rtc {
                 "an SDES-SRTP offer (a=crypto): SDES is off (RtcConfig::enable_sdes_srtp)",
             ));
         }
+        // ICE, or plain addresses (SIP endpoints), decided by the first offer.
+        let plain = !transports::has_ice(&sdp);
+        if self.negotiated && plain != self.xt.plain {
+            return Err(err("the remote switched between ICE and plain addresses"));
+        }
+        self.xt.plain = plain;
+        // A transport per section without BUNDLE (or when ours is disabled).
+        let in_use = rtcp_mux::sections_in_use(&sdp);
+        let unbundled = if self.negotiated {
+            if !self.unbundled() && in_use > 1 && !transports::bundles(&sdp) {
+                return Err(err("the offer stopped bundling an established session"));
+            }
+            self.unbundled()
+        } else {
+            !transports::bundles(&sdp) || self.cfg.bundle == crate::types::BundlePolicy::Disabled
+        };
         self.sdes.active = sdes_offer;
         if sdes_offer {
-            self.sdes.accept_offer(&sdp).map_err(err)?;
-            if let Some(m) = sdp.media.iter().find(|m| m.port != 0) {
+            if !unbundled {
+                self.sdes.accept_offer(&sdp).map_err(err)?;
+            }
+            if let Some(m) = sdp
+                .media
+                .iter()
+                .find(|m| m.port != 0 && m.kind != "application")
+            {
                 self.sdes.proto.clone_from(&m.proto);
             }
         }
-        let split = if self.negotiated {
+        let two = if self.negotiated {
             self.ice.components() == 2
         } else {
             // RTCP on component 2 for an offer without rtcp-mux, when this side has an RTCP
             // socket; without one the answer keeps rtcp-mux as before (ADR-058).
             !rtcp_mux::muxed(&sdp) && self.rtcp.has_candidates()
         };
-        if split && rtcp_mux::sections_in_use(&sdp) > 1 {
+        if two && in_use > 1 && !unbundled {
             return Err(err(
-                "an offer without rtcp-mux must have one section in use: several transports \
-                 (no BUNDLE) are not supported",
+                "a bundled offer without rtcp-mux must have one section in use",
             ));
         }
-        if split {
+        if two {
             self.use_rtcp_component(now);
         }
-        self.apply_remote_transport(&sdp, true)?;
         self.cryptex = self.cfg.cryptex && has_cryptex(&sdp);
-        if self.dtls_role.is_none() && !self.sdes.active {
-            let setup = sdp
-                .media
-                .iter()
-                .find_map(|m| m.get("setup"))
-                .or_else(|| sdp.get("setup"))
-                .unwrap_or("actpass");
-            self.dtls_role = Some(if setup == "active" {
+        // DTLS runs for DTLS-SRTP, and for data channels next to SDES media.
+        let setup = sdp
+            .media
+            .iter()
+            .filter(|m| m.port != 0)
+            .find_map(|m| m.get("setup"))
+            .or_else(|| sdp.get("setup"));
+        if self.dtls_role.is_none() && (!self.sdes.active || setup.is_some()) {
+            self.dtls_role = Some(if setup == Some("active") {
                 Role::Server
             } else {
                 Role::Client
@@ -1448,8 +1520,14 @@ impl Rtc {
                 _ => None,
             };
             if m.kind == "application" && m.proto.contains("SCTP") {
-                // Data channels need DTLS: refused in an SDES session.
-                if !self.sdes.active && (self.app_mid.is_none() || self.app_mid == Some(mid)) {
+                // Data channels run over DTLS (in an SDES session too, in their section).
+                let dtls = m.has("fingerprint") || sdp.has("fingerprint");
+                // A mid is one section's (a media line's mid is not the application's).
+                let taken = self.media.iter().any(|l| l.mid == mid);
+                if (!self.sdes.active || dtls)
+                    && !taken
+                    && (self.app_mid.is_none() || self.app_mid == Some(mid))
+                {
                     self.app_mid = Some(mid);
                     self.app_negotiated = m.port != 0;
                     if let Some(v) = m.get("max-message-size").and_then(|v| v.parse().ok()) {
@@ -1465,6 +1543,11 @@ impl Rtc {
                 order.push(Section::Rejected(m.clone(), mid));
                 continue;
             };
+            if self.app_mid == Some(mid) {
+                // The application section has this mid.
+                order.push(Section::Rejected(m.clone(), mid));
+                continue;
+            }
             let remote_dir = m
                 .attrs
                 .iter()
@@ -1531,7 +1614,27 @@ impl Rtc {
             }
             order.push(Section::Line(mid));
         }
+        if unbundled {
+            let mids: Vec<Mid> = Self::remote_mids(&sdp)
+                .into_iter()
+                .filter(|m| {
+                    self.app_mid == Some(*m)
+                        || self
+                            .media
+                            .iter()
+                            .any(|l| l.mid == *m && !l.codecs.is_empty())
+                })
+                .collect();
+            self.split_transports(now, &mids, false);
+            self.apply_split_transport(&sdp, true)?;
+        } else if plain {
+            self.apply_plain_bundled(&sdp)?;
+        } else {
+            self.apply_remote_transport(&sdp, true)?;
+        }
+        self.drop_transport_cc();
         self.key_sdes();
+        self.tp_each(Rtc::key_sdes);
         // Our lines must follow the offer's order.
         let answer = self.write_answer(&order);
         self.after_negotiation(now);
@@ -1548,8 +1651,10 @@ impl Rtc {
         };
         let ufrag = get("ice-ufrag").ok_or_else(|| err("no a=ice-ufrag"))?;
         let pwd = get("ice-pwd").ok_or_else(|| err("no a=ice-pwd"))?;
-        if !self.sdes.active {
-            let fp = get("fingerprint").ok_or_else(|| err("no a=fingerprint"))?;
+        // SDES media has none; its data channels' section has (DTLS carries SCTP there).
+        let fp = get("fingerprint").or_else(|| sdp.media.iter().find_map(|m| m.get("fingerprint")));
+        if !self.sdes.active || fp.is_some() {
+            let fp = fp.ok_or_else(|| err("no a=fingerprint"))?;
             let fp = Fingerprint::parse(fp).map_err(|e| err(format!("fingerprint: {e}")))?;
             if self.remote_fp.as_ref().is_some_and(|f| *f != fp) && self.dtls.is_some() {
                 return Err(err("the remote DTLS fingerprint changed"));
@@ -1560,7 +1665,8 @@ impl Rtc {
         let restart = self.ice.remote_credentials().is_some_and(|c| *c != creds);
         if restart && is_offer {
             // The remote restarts ICE: so do we (RFC 8839 §4.4.1.1.1).
-            self.ice.restart(Credentials::random(), true);
+            let creds = self.restart_creds();
+            self.ice.restart(creds, true);
         }
         self.ice.set_remote_credentials(creds);
         let renomination = get("ice-options")
@@ -1597,16 +1703,12 @@ impl Rtc {
         };
         let mut changed = false;
         if self.sdes.keyed_tx.as_ref() != Some(&local) {
-            let (k, s) = local.key_salt();
-            self.srtp_tx = Srtp::new(local.profile, k, s).ok();
+            self.srtp_tx = local.context();
             self.sdes.keyed_tx = Some(local);
             changed = true;
         }
         if self.sdes.keyed_rx.as_ref() != Some(&remote) {
-            let (k, s) = remote.key_salt();
-            self.srtp_rx = Srtp::new(remote.profile, k, s)
-                .ok()
-                .map(|c| c.with_replay_window(512));
+            self.srtp_rx = remote.context().map(|c| c.with_replay_window(512));
             self.sdes.keyed_rx = Some(remote);
             changed = true;
         }
@@ -1618,6 +1720,7 @@ impl Rtc {
 
     fn after_negotiation(&mut self, now: Instant) {
         self.negotiated = true;
+        self.drop_transport_cc();
         self.sdp_version += 1;
         let mut ext = ExtensionMap::new();
         for l in &self.media {
@@ -1657,11 +1760,42 @@ impl Rtc {
         }
         self.enc_ids = enc_ids;
         self.apply_srtp_options();
+        self.tp_each(Rtc::apply_srtp_options);
         self.start_sctp(now);
         self.open_pending_channels(now);
     }
 
     fn write_sdp(&self, offer: bool) -> String {
+        let (mut sdp, order) = self.sdp_head(offer);
+        for (i, mid) in order.iter().enumerate() {
+            if let Some((m, conn)) = self.offer_section(*mid, i, offer) {
+                sdp.media.push(m);
+                sdp.media_conn.push(conn);
+            }
+        }
+        sdp.write()
+    }
+
+    /// [`write_sdp`](Self::write_sdp) with each section written by its own transport (no
+    /// BUNDLE).
+    fn write_sdp_tp(&mut self, offer: bool) -> String {
+        if !self.tp_entry() {
+            return self.write_sdp(offer);
+        }
+        let (mut sdp, order) = self.sdp_head(offer);
+        for (i, mid) in order.iter().enumerate() {
+            let k = self.tp_of_mid(*mid);
+            if let Some((m, conn)) = self.with_tp(k, |s| s.offer_section(*mid, i, offer)) {
+                sdp.media.push(m);
+                sdp.media_conn.push(conn);
+            }
+        }
+        sdp.write()
+    }
+
+    /// The session part of our offer (or of a description written like one) and the mids of
+    /// its sections in order.
+    fn sdp_head(&self, offer: bool) -> (Sdp, Vec<Mid>) {
         let mut sdp = Sdp {
             session_id: self.session_id,
             version: self.sdp_version,
@@ -1687,7 +1821,7 @@ impl Rtc {
             })
             .map(Mid::as_str)
             .collect();
-        if self.rtcp_mux_attrs(offer).0 {
+        if self.rtcp_mux_attrs(offer).0 && !self.unbundled() {
             // No BUNDLE without rtcp-mux (RFC 8843 §9.1).
             sdp.attrs
                 .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
@@ -1700,25 +1834,35 @@ impl Rtc {
             // Session level, as Chrome writes it (RFC 9335 §6: it applies to the BUNDLE group).
             sdp.attrs.push(Attr::flag("cryptex"));
         }
-        for (i, mid) in order.iter().enumerate() {
-            let setup = if offer {
-                "actpass"
-            } else {
-                self.setup_answer()
-            };
-            let sec = if Some(*mid) == self.app_mid {
-                self.app_section(*mid, setup, i == 0)
-            } else if let Some(l) = self.media.iter().find(|l| l.mid == *mid) {
-                self.line_section(l, setup, i == 0, offer)
-            } else {
-                continue;
-            };
-            sdp.media.push(sec);
-        }
-        sdp.write()
+        (sdp, order)
     }
 
-    fn write_answer(&self, order: &[Section]) -> String {
+    /// Section `i` (mid `mid`) of our offer, written by the current transport, and its `c=`
+    /// address (without ICE).
+    fn offer_section(
+        &self,
+        mid: Mid,
+        i: usize,
+        offer: bool,
+    ) -> Option<(Media, Option<std::net::IpAddr>)> {
+        let setup = if offer {
+            "actpass"
+        } else {
+            self.setup_answer()
+        };
+        // Without BUNDLE every section carries its transport's candidates.
+        let candidates = i == 0 || self.unbundled();
+        let mut m = if Some(mid) == self.app_mid {
+            self.app_section(mid, setup, candidates)
+        } else {
+            let l = self.media.iter().find(|l| l.mid == mid)?;
+            self.line_section(l, setup, candidates, offer)
+        };
+        let conn = self.plain_fixup_media(&mut m);
+        Some((m, conn))
+    }
+
+    fn write_answer(&mut self, order: &[Section]) -> String {
         let mut sdp = Sdp {
             session_id: self.session_id,
             version: self.sdp_version,
@@ -1740,7 +1884,7 @@ impl Rtc {
                 _ => {}
             }
         }
-        if self.ice.components() == 1 {
+        if self.ice.components() == 1 && !self.unbundled() {
             sdp.attrs
                 .push(Attr::kv("group", format!("BUNDLE {}", bundle.join(" "))));
         }
@@ -1753,9 +1897,20 @@ impl Rtc {
         }
         let setup = self.setup_answer();
         let mut first = true;
+        let all = self.unbundled();
         for s in order {
             let sec = match s {
-                Section::App(mid, true) => self.app_section(*mid, setup, first),
+                Section::App(mid, true) => {
+                    let k = self.tp_of_mid(*mid);
+                    let (m, conn) = self.with_tp(k, |s| {
+                        let mut m = s.app_section(*mid, setup, first || all);
+                        let c = s.plain_fixup_media(&mut m);
+                        (m, c)
+                    });
+                    sdp.media_conn.resize(sdp.media.len(), None);
+                    sdp.media_conn.push(conn);
+                    m
+                }
                 Section::App(mid, false) => rejected(
                     &Media {
                         kind: "application".into(),
@@ -1767,13 +1922,21 @@ impl Rtc {
                     *mid,
                 ),
                 Section::Rejected(m, mid) => rejected(m, *mid),
-                Section::Line(mid) => match self.media.iter().find(|l| l.mid == *mid) {
-                    Some(l) if !l.stopped && !l.codecs.is_empty() => {
-                        self.line_section(l, setup, first, false)
+                Section::Line(mid) => match self.media.iter().position(|l| l.mid == *mid) {
+                    Some(i) if !self.media[i].stopped && !self.media[i].codecs.is_empty() => {
+                        let k = self.tp_of_mid(*mid);
+                        let (m, conn) = self.with_tp(k, |s| {
+                            let mut m = s.line_section(&s.media[i], setup, first || all, false);
+                            let c = s.plain_fixup_media(&mut m);
+                            (m, c)
+                        });
+                        sdp.media_conn.resize(sdp.media.len(), None);
+                        sdp.media_conn.push(conn);
+                        m
                     }
-                    Some(l) => rejected(
+                    Some(i) => rejected(
                         &Media {
-                            kind: l.kind.as_str().into(),
+                            kind: self.media[i].kind.as_str().into(),
                             port: 0,
                             proto: self.media_proto(),
                             fmts: vec!["0".into()],
@@ -1841,18 +2004,35 @@ impl Rtc {
     }
 
     fn transport_attrs(&self, attrs: &mut Vec<Attr>, setup: &str, candidates: bool, offer: bool) {
-        let c = self.ice.local_credentials();
-        attrs.push(Attr::kv("ice-ufrag", c.ufrag.clone()));
-        attrs.push(Attr::kv("ice-pwd", c.pwd.clone()));
-        attrs.push(Attr::kv(
-            "ice-options",
-            if self.cfg.ice_renomination {
-                "trickle renomination"
-            } else {
-                "trickle"
-            },
-        ));
-        if self.sdes.active {
+        self.transport_attrs_of(attrs, setup, candidates, offer, false);
+    }
+
+    /// [`transport_attrs`](Self::transport_attrs) of a media section, or of the application
+    /// section (`app`: DTLS even next to SDES media).
+    fn transport_attrs_of(
+        &self,
+        attrs: &mut Vec<Attr>,
+        setup: &str,
+        candidates: bool,
+        offer: bool,
+        app: bool,
+    ) {
+        // Without ICE the section's own address and port say where media goes.
+        let candidates = candidates && !self.xt.plain;
+        if !self.xt.plain {
+            let c = self.ice.local_credentials();
+            attrs.push(Attr::kv("ice-ufrag", c.ufrag.clone()));
+            attrs.push(Attr::kv("ice-pwd", c.pwd.clone()));
+            attrs.push(Attr::kv(
+                "ice-options",
+                if self.cfg.ice_renomination {
+                    "trickle renomination"
+                } else {
+                    "trickle"
+                },
+            ));
+        }
+        if self.sdes.active && !app {
             // SDES: the keys themselves, no DTLS (RFC 4568).
             let lines = if offer {
                 &self.sdes.offered[..]
@@ -1892,7 +2072,7 @@ impl Rtc {
 
     fn app_section(&self, mid: Mid, setup: &str, candidates: bool) -> Media {
         let mut attrs = Vec::new();
-        self.transport_attrs(&mut attrs, setup, candidates, false);
+        self.transport_attrs_of(&mut attrs, setup, candidates, false, true);
         attrs.push(Attr::kv("mid", mid.as_str()));
         attrs.push(Attr::kv("sctp-port", "5000"));
         attrs.push(Attr::kv("max-message-size", MAX_MESSAGE_SIZE.to_string()));
@@ -2087,7 +2267,16 @@ impl Rtc {
     // ---- data channels ----
 
     fn start_sctp(&mut self, now: Instant) {
-        if self.sctp.is_some() || !self.app_negotiated || !self.dtls_connected {
+        if let Some(k) = self.tp_redirect_app() {
+            return self.with_tp(k, |s| s.start_sctp(now));
+        }
+        // Next to SDES media, `dtls_connected` says the SDP keys are in place: SCTP waits
+        // for the DTLS handshake.
+        if self.sctp.is_some()
+            || !self.app_negotiated
+            || !self.dtls_connected
+            || (self.sdes.active && !self.dtls_up)
+        {
             return;
         }
         let client = self.dtls_role == Some(Role::Client);
@@ -2095,7 +2284,8 @@ impl Rtc {
             .with_mtu(SCTP_MTU)
             .with_max_message_size(self.remote_max_message)
             .with_max_receive_message_size(MAX_MESSAGE_SIZE)
-            .with_max_buffered_amount(self.cfg.sctp_max_buffered);
+            .with_max_buffered_amount(self.cfg.sctp_max_buffered)
+            .with_scheduler(self.cfg.sctp_scheduler.to_sctp());
         let mut a = Association::new(cfg, now);
         if client {
             a.connect(now);
@@ -2177,6 +2367,9 @@ impl Rtc {
         time: MediaTime,
         data: &[u8],
     ) -> Result<bool, RtcErr> {
+        if let Some(k) = self.tp_redirect(mid) {
+            return self.with_tp(k, |s| s.write_media(now, mid, rid, pt, time, data));
+        }
         let Some(idx) = self.media.iter().position(|l| l.mid == mid) else {
             return Ok(false);
         };
@@ -2469,6 +2662,9 @@ impl Rtc {
     }
 
     fn send_rtcp(&mut self, pkts: &[Rtcp]) {
+        if let Some(k) = self.tp_redirect_rtcp(pkts) {
+            return self.with_tp(k, |s| s.send_rtcp(pkts));
+        }
         // Without rtcp-mux: on component 2, with its own DTLS keys (RFC 5764 §4.1) or the
         // SDES keys.
         let split = self.ice.components() == 2;
@@ -2511,6 +2707,12 @@ impl Rtc {
         if !self.alive {
             return;
         }
+        if self.tp_entry() {
+            let k = self.tp_demux(source, destination, data);
+            if k != 0 {
+                return self.with_tp(k, |s| s.handle_receive(now, source, destination, data));
+            }
+        }
         let Some(&b) = data.first() else { return };
         // Component 2 (RTCP without rtcp-mux): what arrives on its local addresses.
         let rtcp_comp = self.ice.components() == 2 && self.rtcp.is_local(destination);
@@ -2549,6 +2751,9 @@ impl Rtc {
         if !self.alive {
             return;
         }
+        if self.tp_entry() {
+            self.tp_each(|s| s.tp_handle_timeout(now));
+        }
         self.ice.handle_timeout(now);
         for d in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
             .into_iter()
@@ -2578,6 +2783,9 @@ impl Rtc {
 
     /// Sends DTLS close_notify; the peer is dead afterwards.
     pub(crate) fn close(&mut self, now: Instant) {
+        if self.tp_entry() {
+            self.tp_each(|s| s.tp_close(now));
+        }
         if let Some(s) = self.sctp.as_mut() {
             s.abort();
         }
@@ -3332,7 +3540,7 @@ impl Rtc {
 
     /// NACKs, RTCP reports, TWCC feedback, statistics.
     fn media_timers(&mut self, now: Instant) {
-        if self.srtp_tx.is_none() {
+        if self.srtp_tx.is_none() && !self.tp_any_srtp() {
             return;
         }
         // NACKs.
@@ -3510,7 +3718,7 @@ impl Rtc {
                 progress = true;
                 match e {
                     IceEvent::StateChanged(s) => {
-                        let s = IceConnectionState::from_ice(s);
+                        let s = self.tp_ice_state(IceConnectionState::from_ice(s));
                         if s != self.ice_state {
                             self.ice_state = s;
                             self.events.push_back(RtcEvent::IceState(s));
@@ -3588,7 +3796,9 @@ impl Rtc {
             match e {
                 DtlsEvent::Connected(info) => {
                     let role = self.dtls_role.unwrap_or(Role::Client);
-                    if let Some(keys) = info.srtp_keys {
+                    // SDES media keeps its SDP keys: DTLS only carries data channels then.
+                    let keys = info.srtp_keys.filter(|_| !self.sdes.active);
+                    if let Some(keys) = keys {
                         if let Some(p) = Profile::from_id(keys.profile.id()) {
                             let (lk, ls) = keys.local(role);
                             let (rk, rs) = keys.remote(role);
@@ -3624,6 +3834,11 @@ impl Rtc {
 
     /// SCTP packets into DTLS records, SCTP events out.
     fn flush_sctp(&mut self, now: Instant) -> bool {
+        if self.sctp.is_some() {
+            if let Some(k) = self.tp_redirect_app() {
+                return self.with_tp(k, |s| s.flush_sctp(now));
+            }
+        }
         let Some(s) = self.sctp.as_mut() else {
             return false;
         };
@@ -3649,6 +3864,7 @@ impl Rtc {
                             if let Some(i) = info {
                                 cfg.ordered = i.ordered;
                                 cfg.protocol = i.protocol;
+                                cfg.priority = ChannelPriority::from_dcep_value(i.priority);
                             }
                             self.channels.insert(
                                 id,
@@ -3710,7 +3926,8 @@ impl Rtc {
         min(self.dtls.as_ref().and_then(Connection::poll_timeout));
         min(self.rtcp.dtls.as_ref().and_then(Connection::poll_timeout));
         min(self.sctp.as_ref().and_then(Association::poll_timeout));
-        if self.srtp_tx.is_some() {
+        min(self.tp_timeout());
+        if self.srtp_tx.is_some() || self.tp_any_srtp() {
             min(self.next_rtcp);
             min(self.next_stats);
             min(self
@@ -3901,11 +4118,15 @@ fn abs_send_time_now() -> u32 {
     only_rtp::abs_send_time(d)
 }
 
+mod channels;
 mod feedback;
 mod pacing;
 mod receipts;
 mod rtcp_mux;
 mod sdes;
+mod transports;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) use sdes::fuzz_crypto_line;
 
 use receipts::{line_xr_blocks, remote_xr_blocks};
 #[cfg(test)]
@@ -3914,3 +4135,5 @@ mod tests;
 mod tests_mux;
 #[cfg(test)]
 mod tests_pacing;
+#[cfg(test)]
+mod tests_transports;

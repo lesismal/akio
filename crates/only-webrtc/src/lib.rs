@@ -84,10 +84,10 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, FecMask, FecMechanism, Frequency,
-    IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
-    XrBlocks,
+    BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec,
+    Direction, Event, FecMask, FecMechanism, Frequency, IceConnectionState, KeyframeRequest,
+    KeyframeRequestKind, MediaAdded, MediaData, MediaKind, MediaTime, Mid, OtherEvent, Pt,
+    Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -330,6 +330,28 @@ impl Peer {
         )?
     }
 
+    /// The priority of data channel `id` ([`ChannelConfig::priority`]; for a channel the
+    /// remote opened, the one its DCEP open message carried).
+    pub fn channel_priority(&self, id: ChannelId) -> Result<ChannelPriority, Error> {
+        self.with_rtc_inner(|rtc| rtc.channel_priority(id))?
+            .ok_or(Error::UnknownChannel)
+    }
+
+    /// Changes how the SCTP stream scheduler ([`RtcConfig::set_sctp_scheduler`]) weighs data
+    /// channel `id` against the others on this side; the remote keeps the priority it was told
+    /// when the channel opened (DCEP has no update message).
+    pub fn set_channel_priority(
+        &self,
+        id: ChannelId,
+        priority: ChannelPriority,
+    ) -> Result<(), Error> {
+        if self.with_rtc_inner(|rtc| rtc.set_channel_priority(id, priority))? {
+            Ok(())
+        } else {
+            Err(Error::UnknownChannel)
+        }
+    }
+
     /// Opens a data channel with `cfg` (label, ordered or not, reliable or not). On a
     /// connection that already has an SCTP association (any data channel negotiated) it opens
     /// at once and the result carries no offer; otherwise the returned SDP offer must reach
@@ -399,6 +421,26 @@ impl Peer {
             Ok(c) => self.with_rtc_inner(|rtc| rtc.add_remote_candidate(c)),
             Err(only_ice::ParseError::Mdns) if resolving => self.with_rtc_inner(|rtc| {
                 let _ = rtc.add_remote_candidate_line(s);
+            }),
+            Err(e) => Err(Error::Sdp(e.to_string())),
+        }
+    }
+
+    /// [`add_remote_candidate`](Self::add_remote_candidate) for the media section `mid`
+    /// (`sdpMid`): in a session without BUNDLE each section has its own ICE agent, and the
+    /// candidate goes to the one of `mid` (with BUNDLE, or for a mid the session does not
+    /// have, to the shared one, as `add_remote_candidate` does).
+    pub fn add_remote_candidate_in(&self, mid: Mid, candidate: &str) -> Result<(), Error> {
+        let s = candidate.trim();
+        let s = s.strip_prefix("a=").unwrap_or(s);
+        let resolving = self.0.hub.upgrade().is_some_and(|h| h.mdns.get().is_some());
+        match only_ice::Candidate::parse(s) {
+            Ok(_) => self.with_rtc_inner(|rtc| {
+                rtc.add_remote_candidate_in(mid, s)
+                    .map_err(|e| Error::Sdp(e.to_string()))
+            })?,
+            Err(only_ice::ParseError::Mdns) if resolving => self.with_rtc_inner(|rtc| {
+                let _ = rtc.add_remote_candidate_in(mid, s);
             }),
             Err(e) => Err(Error::Sdp(e.to_string())),
         }
@@ -576,6 +618,15 @@ impl Peer {
                 return;
             }
             mdns_wanted = st.rtc.take_mdns();
+            // Media without ICE: datagrams from the remote's plain addresses are this peer's
+            // before it sends anything there.
+            let plain = st.rtc.take_plain_remotes();
+            if let (false, Some(hub)) = (plain.is_empty(), &hub) {
+                let mut by_addr = lock(&hub.by_addr);
+                for a in plain {
+                    by_addr.insert(a, self.0.id);
+                }
+            }
             if st.rtc.is_connected() {
                 st.connect_by = None;
             } else if st.connect_by.is_some_and(|d| d <= Instant::now()) {
@@ -712,6 +763,9 @@ impl timer::Due for Shared {
 
 type ConfigFn = dyn Fn() -> RtcConfig + Send + Sync;
 
+/// Where the mapped address of a STUN transaction goes (with its transaction id).
+type StunWaiter = mpsc::Sender<([u8; 12], SocketAddr)>;
+
 enum Tx {
     /// A listener: datagrams go out through the peer address's connection.
     Listener(Mutex<HashMap<SocketAddr, Conn<RtcUdp>>>),
@@ -742,7 +796,7 @@ struct Hub {
     peers: Mutex<HashMap<u64, Peer>>,
     by_ufrag: Mutex<HashMap<String, u64>>,
     by_addr: Mutex<HashMap<SocketAddr, u64>>,
-    stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<SocketAddr>>>,
+    stun_waiters: Mutex<HashMap<[u8; 12], StunWaiter>>,
     /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
     relays: Mutex<Vec<Arc<relay::Relay>>>,
     /// `relays.len()`, read without the lock on every datagram (endpoints without TURN
@@ -765,6 +819,17 @@ struct Hub {
     scopes: Mutex<HashMap<std::net::Ipv6Addr, u32>>,
     /// The socket of ICE component 2 (RTCP without rtcp-mux, [`Endpoint::bind_rtcp`]).
     rtcp: OnceLock<UdpBinding>,
+    /// An [`RtcServer`]'s RTCP listener ([`RtcServer::rtcp_candidates`]): its component-2
+    /// host addresses and its connections by peer address. `rtcp_listener` is read without
+    /// a lock on every datagram sent (servers without one never take the locks).
+    rtcp_listener: AtomicBool,
+    rtcp_bases: Mutex<Vec<SocketAddr>>,
+    rtcp_conns: Mutex<HashMap<SocketAddr, Conn<RtcUdp>>>,
+    /// Sockets of the transports beyond the first (no BUNDLE,
+    /// [`Endpoint::bind_transport_socket`]) and their host candidates; `tp_count` is read
+    /// without a lock on every datagram sent.
+    tp_socks: Mutex<Vec<(UdpBinding, only_ice::Candidate)>>,
+    tp_count: AtomicUsize,
 }
 
 /// Link-local addresses whose interface is remembered.
@@ -772,7 +837,7 @@ const MAX_SCOPES: usize = 256;
 
 type CandidateFilter = dyn Fn(&Candidate) -> bool + Send + Sync;
 
-/// Most TURN allocations of one [`Endpoint`].
+/// Most TURN allocations of one [`Endpoint`] per ICE component.
 const MAX_RELAYS: usize = 4;
 
 impl Hub {
@@ -797,6 +862,11 @@ impl Hub {
             conceal: AtomicBool::new(false),
             scopes: Mutex::new(HashMap::new()),
             rtcp: OnceLock::new(),
+            rtcp_listener: AtomicBool::new(false),
+            rtcp_bases: Mutex::new(Vec::new()),
+            rtcp_conns: Mutex::new(HashMap::new()),
+            tp_socks: Mutex::new(Vec::new()),
+            tp_count: AtomicUsize::new(0),
         }
     }
 
@@ -882,14 +952,16 @@ impl Hub {
             .find_map(|r| r.owns(addr).map(|cur| (r.clone(), cur)))
     }
 
-    /// The UDP or DTLS relay whose TURN server is at `addr`.
-    fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+    /// The UDP or DTLS relay whose TURN server is at `addr`, on the socket at `local` (the
+    /// RTCP socket's allocations are component 2's).
+    fn relay_of_server(&self, addr: SocketAddr, local: SocketAddr) -> Option<Arc<relay::Relay>> {
         if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
         }
+        let rtcp = self.rtcp.get().is_some_and(|r| r.local_addr() == local);
         lock(&self.relays)
             .iter()
-            .find(|r| r.server == addr && !r.wire.is_stream())
+            .find(|r| r.server == addr && !r.wire.is_stream() && r.rtcp == rtcp)
             .cloned()
     }
 
@@ -941,6 +1013,11 @@ impl Hub {
         for c in cs {
             if self.uses(&c) {
                 rtc.add_local_candidate(self.concealed(c));
+            }
+        }
+        if self.tp_count.load(Ordering::Acquire) != 0 {
+            for (k, (_, c)) in lock(&self.tp_socks).iter().enumerate() {
+                rtc.add_transport_candidate(k + 1, self.concealed(c.clone()));
             }
         }
         Ok(rtc)
@@ -1056,18 +1133,36 @@ impl Hub {
         let dest = self.rescope(dest);
         match &self.tx {
             Tx::Listener(conns) => {
-                let c = lock(conns).get(&dest).cloned();
+                // Component 2's candidates send through the RTCP listener.
+                let c = if self.rtcp_listener.load(Ordering::Relaxed)
+                    && lock(&self.rtcp_bases).contains(&src)
+                {
+                    lock(&self.rtcp_conns).get(&dest).cloned()
+                } else {
+                    lock(conns).get(&dest).cloned()
+                };
                 if let Some(c) = c {
                     let _ = c.send(data);
                 }
             }
             Tx::Bound(b) => {
-                // Component 2's candidates send from the RTCP socket (its own port).
-                let b = match self.rtcp.get() {
-                    Some(r) if rtcp_source(r.local_addr(), src) => Some(r),
-                    _ => b.get(),
-                };
-                if let Some(b) = b {
+                // Component 2's candidates send from the RTCP socket (its own port), those of
+                // other transports from theirs.
+                if let Some(r) = self.rtcp.get().filter(|r| rtcp_source(r.local_addr(), src)) {
+                    let _ = r.send_to(data, dest);
+                    return;
+                }
+                if self.tp_count.load(Ordering::Relaxed) != 0 {
+                    let socks = lock(&self.tp_socks);
+                    let s = socks
+                        .iter()
+                        .find(|(s, c)| c.addr() == src || rtcp_source(s.local_addr(), src));
+                    if let Some((s, _)) = s {
+                        let _ = s.send_to(data, dest);
+                        return;
+                    }
+                }
+                if let Some(b) = b.get() {
                     let _ = b.send_to(data, dest);
                 }
             }
@@ -1080,10 +1175,17 @@ impl Hub {
         if !local.ip().is_unspecified() {
             return local;
         }
-        lock(&self.candidates)
+        let found = lock(&self.candidates)
             .iter()
             .map(only_ice::Candidate::addr)
-            .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4())
+            .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4());
+        found
+            .or_else(|| {
+                lock(&self.tp_socks)
+                    .iter()
+                    .map(|(_, c)| c.addr())
+                    .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4())
+            })
             .unwrap_or(local)
     }
 
@@ -1095,13 +1197,13 @@ impl Hub {
                 let tx = lock(&self.stun_waiters).remove(&m.transaction_id());
                 if let Some(tx) = tx {
                     if let Some(a) = stun::parse_binding_response(data, &m.transaction_id()) {
-                        let _ = tx.send(a);
+                        let _ = tx.send((m.transaction_id(), a));
                     }
                     return;
                 }
             }
         }
-        if let Some(r) = self.relay_of_server(source) {
+        if let Some(r) = self.relay_of_server(source, local) {
             for (peer, relayed, data) in r.input(data) {
                 self.route(peer, relayed, &data, 0);
             }
@@ -1119,7 +1221,14 @@ impl Hub {
             if let Ok(m) = stun::Message::parse(data) {
                 if let Some(u) = m.get_str(stun::attr::USERNAME) {
                     let ours = u.split(':').next().unwrap_or("");
-                    id = lock(&self.by_ufrag).get(ours).copied();
+                    id = {
+                        // A transport of its own per section (no BUNDLE) has the peer's ufrag
+                        // followed by a digit.
+                        let m = lock(&self.by_ufrag);
+                        m.get(ours)
+                            .or_else(|| ours.get(..8).and_then(|b| m.get(b)))
+                            .copied()
+                    };
                     if let Some(i) = id {
                         // The ufrag is public (it is in the SDP): checks from spoofed sources
                         // must not grow the address table without bound.
@@ -1151,6 +1260,8 @@ impl Hub {
 #[doc(hidden)]
 pub struct RtcUdp {
     hub: Weak<Hub>,
+    /// A connection of an [`RtcServer`]'s RTCP listener.
+    rtcp: bool,
 }
 
 impl fmt::Debug for RtcUdp {
@@ -1169,7 +1280,11 @@ impl Handler for RtcUdp {
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
         if let Some(hub) = self.hub.upgrade() {
             if let Tx::Listener(conns) = &hub.tx {
-                let mut conns = lock(conns);
+                let mut conns = if self.rtcp {
+                    lock(&hub.rtcp_conns)
+                } else {
+                    lock(conns)
+                };
                 if conns.get(&c.peer_addr()).is_some_and(|x| x.id() == c.id()) {
                     conns.remove(&c.peer_addr());
                 }
@@ -1300,6 +1415,37 @@ impl RtcServer {
         RtcTcp(Arc::downgrade(&self.0.tcp_side()))
     }
 
+    /// RTCP on its own port (RFC 5761 without rtcp-mux, ICE component 2, ADR-058): adds
+    /// component-2 host candidates `addrs` (the addresses remote peers reach a second UDP
+    /// listener at, served with [`rtcp`](Self::rtcp)) for new peers. Offers without
+    /// `a=rtcp-mux` (SIP endpoints, older RTP stacks) are then answered with `a=rtcp` and RTCP
+    /// on that listener, and [`RtcConfig::set_rtcp_mux_policy`] can offer it; offers with
+    /// `a=rtcp-mux` (browsers) are answered as before. The listener's port must differ from
+    /// the main one's. Call before cloning the server.
+    #[must_use]
+    pub fn rtcp_candidates(self, addrs: Vec<SocketAddr>) -> Self {
+        let addrs: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|a| !a.ip().is_unspecified() && a.port() != 0)
+            .collect();
+        lock(&self.0.rtcp_bases).extend(&addrs);
+        self.0
+            .rtcp_listener
+            .store(!lock(&self.0.rtcp_bases).is_empty(), Ordering::Relaxed);
+        lock(&self.0.candidates).extend(
+            addrs
+                .iter()
+                .map(|a| only_ice::Candidate::host(*a).with_component(2)),
+        );
+        self
+    }
+
+    /// The acceptor for the server's RTCP listener (`Listener::udp(addr).serve(server.rtcp())`),
+    /// whose addresses were given to [`rtcp_candidates`](Self::rtcp_candidates).
+    pub fn rtcp(&self) -> RtcRtcp {
+        RtcRtcp(Arc::downgrade(&self.0))
+    }
+
     /// Accepts a remote SDP offer for a new peer served by `handler`; returns the peer and
     /// the SDP answer (with this server's candidates) for the signalling to send back.
     pub fn accept_offer<H: PeerHandler>(
@@ -1339,11 +1485,36 @@ impl Acceptor for RtcServer {
         }
         RtcUdp {
             hub: Arc::downgrade(&self.0),
+            rtcp: false,
         }
     }
 
     fn on_shutdown(&self, _c: &Conn<RtcUdp>) {
         self.0.close_all();
+    }
+}
+
+/// The acceptor of an [`RtcServer`]'s RTCP listener: ICE component 2 for peers without
+/// rtcp-mux ([`RtcServer::rtcp_candidates`], [`RtcServer::rtcp`]).
+#[derive(Clone)]
+pub struct RtcRtcp(Weak<Hub>);
+
+impl fmt::Debug for RtcRtcp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RtcRtcp").finish_non_exhaustive()
+    }
+}
+
+impl Acceptor for RtcRtcp {
+    type Handler = RtcUdp;
+    fn on_open(&self, c: &Conn<RtcUdp>) -> RtcUdp {
+        if let Some(hub) = self.0.upgrade() {
+            lock(&hub.rtcp_conns).insert(c.peer_addr(), c.clone());
+        }
+        RtcUdp {
+            hub: self.0.clone(),
+            rtcp: true,
+        }
     }
 }
 
@@ -1369,6 +1540,7 @@ impl Acceptor for BoundAcceptor {
     fn on_open(&self, _c: &Conn<RtcUdp>) -> RtcUdp {
         RtcUdp {
             hub: self.0.clone(),
+            rtcp: false,
         }
     }
 }
@@ -1432,8 +1604,10 @@ impl Endpoint {
     /// given to new peers. With it, peers answer offers without `a=rtcp-mux` (SIP endpoints,
     /// older RTP stacks) with RTCP on that socket, and offer it with
     /// [`RtcConfig::set_rtcp_mux_policy`]; offers with `a=rtcp-mux` (browsers) are answered
-    /// with it as before. Component 2 has host and peer-reflexive candidates only (no
-    /// server-reflexive or relayed ones). Once per endpoint: [`Error::Io`] otherwise.
+    /// with it as before. Bind it before gathering: [`gather_srflx`](Self::gather_srflx),
+    /// [`gather_relay`](Self::gather_relay) and [`gather_relay_via`](Self::gather_relay_via)
+    /// then also gather component 2's server-reflexive and relayed candidates from it. Once
+    /// per endpoint: [`Error::Io`] otherwise.
     pub fn bind_rtcp(&self, engine: &Engine, addr: SocketAddr) -> Result<SocketAddr, Error> {
         if self.0.rtcp.get().is_some() {
             return Err(Error::Io(io::Error::new(
@@ -1457,6 +1631,36 @@ impl Endpoint {
             )));
         }
         lock(&self.0.candidates).push(only_ice::Candidate::host(host).with_component(2));
+        Ok(local)
+    }
+
+    /// Binds another socket at `addr` on `engine` for a transport of its own (ADR-072) and
+    /// returns its address. A session without BUNDLE ([`RtcConfig::set_bundle_policy`], or a
+    /// remote that does not bundle) runs an ICE agent, DTLS association and SRTP keys per
+    /// section; the first section uses the endpoint's socket, and the n-th one after it the
+    /// n-th socket bound here (or the endpoint's when there are fewer), with that socket's host
+    /// candidate (server-reflexive and relayed candidates stay the endpoint's). Transports on
+    /// one socket are told apart by the remote's addresses, which is enough toward peers with
+    /// an address per section (browsers, SIP endpoints); a remote that is also one socket per
+    /// session (this stack without these sockets) needs them on one side. Component 2 (RTCP
+    /// without rtcp-mux) of every transport stays on [`bind_rtcp`](Self::bind_rtcp)'s socket.
+    pub fn bind_transport_socket(
+        &self,
+        engine: &Engine,
+        addr: SocketAddr,
+    ) -> Result<SocketAddr, Error> {
+        let b = engine
+            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
+            .map_err(Error::Io)?;
+        let local = b.local_addr();
+        let host = if local.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(local.is_ipv6()), local.port())
+        } else {
+            local
+        };
+        let mut socks = lock(&self.0.tp_socks);
+        socks.push((b, only_ice::Candidate::host(host)));
+        self.0.tp_count.store(socks.len(), Ordering::Release);
         Ok(local)
     }
 
@@ -1487,43 +1691,78 @@ impl Endpoint {
 
     /// Asks the STUN server at `stun_server` for this socket's public (server-reflexive)
     /// address, waiting up to `timeout` (retransmitting every 250 ms), and adds it as a
-    /// candidate for new peers. Blocks: do not call it from a `only` I/O thread or a callback.
+    /// candidate for new peers. With an RTCP socket ([`bind_rtcp`](Self::bind_rtcp), bound
+    /// before), its public address is asked for at the same time and added as a component-2
+    /// candidate (RTCP without rtcp-mux); both must answer. Returns the main socket's.
+    /// Blocks: do not call it from a `only` I/O thread or a callback.
     pub fn gather_srflx(
         &self,
         stun_server: SocketAddr,
         timeout: Duration,
     ) -> Result<SocketAddr, Error> {
         let b = self.binding().ok_or(Error::Closed)?.clone();
-        let tid = stun::transaction_id();
+        let mut socks = vec![(b, 1u16)];
+        if let Some(r) = self.0.rtcp.get() {
+            socks.push((r.clone(), 2));
+        }
         let (tx, rx) = mpsc::channel();
-        lock(&self.0.stun_waiters).insert(tid, tx);
-        let req = stun::binding_request(tid);
+        let mut asks = Vec::new();
+        for (sock, comp) in socks {
+            let tid = stun::transaction_id();
+            lock(&self.0.stun_waiters).insert(tid, tx.clone());
+            asks.push((sock, comp, tid, stun::binding_request(tid), None));
+        }
+        drop(tx);
         let deadline = Instant::now() + timeout;
         let r = loop {
-            let _ = b.send_to(&req, stun_server);
+            for (sock, _, _, req, got) in &asks {
+                if got.is_none() {
+                    let _ = sock.send_to(req, stun_server);
+                }
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break Err(Error::Timeout);
             }
             match rx.recv_timeout(left.min(Duration::from_millis(250))) {
-                Ok(a) => break Ok(a),
+                Ok((tid, a)) => {
+                    if let Some(x) = asks.iter_mut().find(|x| x.2 == tid) {
+                        x.4 = Some(a);
+                    }
+                    if asks.iter().all(|x| x.4.is_some()) {
+                        break Ok(());
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break Err(Error::Closed),
             }
         };
-        lock(&self.0.stun_waiters).remove(&tid);
-        let mapped = r?;
-        let base = lock(&self.0.candidates)
-            .first()
-            .map_or_else(|| b.local_addr(), only_ice::Candidate::addr);
         {
-            let c = only_ice::Candidate::server_reflexive(mapped, base);
-            let mut cs = lock(&self.0.candidates);
-            if !cs.iter().any(|x| x.addr() == mapped) {
-                cs.push(c);
+            let mut w = lock(&self.0.stun_waiters);
+            for x in &asks {
+                w.remove(&x.2);
             }
         }
-        Ok(mapped)
+        r?;
+        let mut mapped1 = None;
+        for (sock, comp, _, _, got) in asks {
+            let Some(mapped) = got else { continue };
+            let mut cs = lock(&self.0.candidates);
+            let base = cs
+                .iter()
+                .find(|c| c.kind() == only_ice::CandidateKind::Host && c.component() == comp)
+                .map_or_else(|| sock.local_addr(), only_ice::Candidate::addr);
+            if comp == 1 {
+                mapped1 = Some(mapped);
+            }
+            if !cs
+                .iter()
+                .any(|x| x.addr() == mapped && x.component() == comp)
+            {
+                cs.push(only_ice::Candidate::server_reflexive(mapped, base).with_component(comp));
+            }
+        }
+        mapped1.ok_or(Error::Timeout)
     }
 
     /// Allocates a relayed address on the TURN server at `turn_server` (over UDP from this
@@ -1532,7 +1771,10 @@ impl Endpoint {
     /// address the server saw is added too when it differs from the host candidates. The
     /// allocation, its permissions and channels are refreshed while the endpoint lives, and
     /// shared by every peer; one that is lost is made again (see
-    /// [`gather_relay_via`](Self::gather_relay_via)). At most 4 allocations per endpoint.
+    /// [`gather_relay_via`](Self::gather_relay_via)). With an RTCP socket
+    /// ([`bind_rtcp`](Self::bind_rtcp)), a second allocation is made at the same time from it
+    /// for ICE component 2 (RTCP without rtcp-mux), with its own relayed and server-reflexive
+    /// candidates; both must succeed. At most 4 allocations per endpoint and component.
     /// Blocks: do not call it from a `only` I/O thread or a callback.
     pub fn gather_relay(
         &self,
@@ -1582,24 +1824,84 @@ impl Endpoint {
                 "a turns: server needs RelayServer::tls_config".into(),
             ));
         }
+        let b = self.binding().ok_or(Error::Closed)?.clone();
+        let deadline = Instant::now() + timeout;
+        // Component 2's allocation (RTCP socket) runs next to component 1's.
+        let mut started = vec![self.start_relay(&engine, server, false)?];
+        if self.0.rtcp.get().is_some() {
+            match self.start_relay(&engine, server, true) {
+                Ok(r) => started.push(r),
+                Err(e) => {
+                    self.drop_relay(&started[0].0);
+                    return Err(e);
+                }
+            }
+        }
+        let mut done = Vec::new();
+        let mut failed = None;
+        for (r, rx) in &started {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(Ok(a)) => done.push((r.clone(), a)),
+                Ok(Err(e)) => failed = Some(Error::Turn(e)),
+                Err(_) => failed = Some(Error::Timeout),
+            }
+            if failed.is_some() {
+                break;
+            }
+        }
+        if let Some(e) = failed {
+            for (r, _) in &started {
+                self.drop_relay(r);
+            }
+            return Err(e);
+        }
+        let mut cs = lock(&self.0.candidates);
+        let mut first = None;
+        for (r, (relayed, mapped)) in done {
+            let comp = if r.rtcp { 2 } else { 1 };
+            let base = r.base().unwrap_or_else(|| b.local_addr());
+            if !server.wire.is_stream() {
+                if let Some(m) =
+                    mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m && x.component() == comp))
+                {
+                    cs.push(only_ice::Candidate::server_reflexive(m, base).with_component(comp));
+                }
+            }
+            if !cs.iter().any(|x| x.addr() == relayed) {
+                cs.push(r.candidate(relayed, base));
+            }
+            first.get_or_insert(relayed);
+        }
+        first.ok_or(Error::Timeout)
+    }
+
+    /// Registers and starts an allocation on `server` for component 1, or for component 2
+    /// from the RTCP socket (`rtcp`); its result arrives on the receiver.
+    fn start_relay(
+        &self,
+        engine: &Weak<Engine>,
+        server: &RelayServer,
+        rtcp: bool,
+    ) -> Result<(Arc<relay::Relay>, mpsc::Receiver<relay::Allocated>), Error> {
         let dtls_cfg = match &server.wire {
             relay::Wire::Dtls(c, name) => Some(relay::dtls_config(c, name).map_err(Error::Turn)?),
             _ => None,
         };
-        let b = self.binding().ok_or(Error::Closed)?.clone();
         let (tx, rx) = mpsc::channel();
         let cfg =
             only_turn::client::ClientConfig::new(server.addr, &server.username, &server.password);
         let r = self.0.with_relays(|relays| {
             relays.retain(|r| !r.is_dead());
-            if relays.len() >= MAX_RELAYS {
+            if relays.iter().filter(|r| r.rtcp == rtcp).count() >= MAX_RELAYS {
                 return Err(Error::Turn("too many TURN allocations".into()));
             }
-            // Datagrams from the server's address go to one relay: UDP and DTLS ones share
-            // that.
+            // Datagrams from the server's address to one socket go to one relay: UDP and DTLS
+            // ones share that.
             let datagram = !server.wire.is_stream();
             if relays.iter().any(|r| {
                 r.server == server.addr
+                    && r.rtcp == rtcp
                     && (r.wire.code() == server.wire.code() || datagram && !r.wire.is_stream())
             }) {
                 return Err(Error::Turn(format!(
@@ -1608,37 +1910,27 @@ impl Endpoint {
                     server.transport()
                 )));
             }
-            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), dtls_cfg, cfg, tx);
+            let r = relay::Relay::new(
+                &self.0,
+                engine.clone(),
+                server.wire.clone(),
+                dtls_cfg,
+                cfg,
+                rtcp,
+                tx,
+            );
             relays.push(r.clone());
             Ok(r)
         })?;
         // The first Allocate goes out (or the connection is dialed) here.
         r.start();
-        let res = match rx.recv_timeout(timeout) {
-            Ok(Ok(a)) => Ok(a),
-            Ok(Err(e)) => Err(Error::Turn(e)),
-            Err(_) => Err(Error::Timeout),
-        };
-        let (relayed, mapped) = match res {
-            Ok(a) => a,
-            Err(e) => {
-                r.close();
-                self.0
-                    .with_relays(|relays| relays.retain(|x| !Arc::ptr_eq(x, &r)));
-                return Err(e);
-            }
-        };
-        let base = r.base().unwrap_or_else(|| b.local_addr());
-        let mut cs = lock(&self.0.candidates);
-        if !server.wire.is_stream() {
-            if let Some(m) = mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m)) {
-                cs.push(only_ice::Candidate::server_reflexive(m, base));
-            }
-        }
-        if !cs.iter().any(|x| x.addr() == relayed) {
-            cs.push(r.candidate(relayed, base));
-        }
-        Ok(relayed)
+        Ok((r, rx))
+    }
+
+    fn drop_relay(&self, r: &Arc<relay::Relay>) {
+        r.close();
+        self.0
+            .with_relays(|relays| relays.retain(|x| !Arc::ptr_eq(x, r)));
     }
 
     /// Listens for ICE-TCP connections (RFC 6544) on `addr` and adds a passive TCP host

@@ -1,0 +1,46 @@
+v=0
+o=- 4465465151343058577 1 IN IP4 0.0.0.0
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+a=msid-semantic: WMS *
+m=audio 9 RTP/SAVPF 111 0 8
+c=IN IP4 0.0.0.0
+a=ice-ufrag:4ebcJO9r
+a=ice-pwd:3HVgL6SjP4XWMGF4FV0HVp+z
+a=ice-options:trickle
+a=crypto:1 AEAD_AES_256_GCM inline:UbAl/2YAIxM5fKnRNmLHjw+sEK1UEKFt5lbqFYhRaQ241/VwM6gsOOXmh4I=
+a=crypto:2 AEAD_AES_128_GCM inline:gLsAvjNV8HbQPsizbtWcUebVDD1Dq8XKMTG9qw==
+a=crypto:3 AES_256_CM_HMAC_SHA1_80 inline:+lR0SRJufShjaSpi8lGgCDKwH0LOws64sSaw1ee8ot6F7LpEO0Uy2yzba8w5Fw==
+a=crypto:4 AES_CM_128_HMAC_SHA1_80 inline:3w4Kyc/fxRNfRlvkUetWX/7G3ZZSTuJcZ1oMiCdd
+a=crypto:5 AES_CM_128_HMAC_SHA1_32 inline:bWjd5G6lIh6I9O7Q9bb88Cu+BRFYUTHd9tBwYen9
+a=candidate:985140319 1 udp 2122317823 192.0.2.1 5000 typ host
+a=end-of-candidates
+a=mid:0
+a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+a=sendrecv
+a=msid:vkpO0Dxf2U7j MJOFmbrvhpJu
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:111 opus/48000/2
+a=rtcp-fb:111 transport-cc
+a=fmtp:111 minptime=10;useinbandfec=1
+a=rtpmap:0 PCMU/8000
+a=rtcp-fb:0 transport-cc
+a=rtpmap:8 PCMA/8000
+a=rtcp-fb:8 transport-cc
+a=ssrc:789503635 cname:Hy2MdBO2Urm/KkZi
+a=ssrc:789503635 msid:vkpO0Dxf2U7j MJOFmbrvhpJu
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=ice-ufrag:4ebcJO9r
+a=ice-pwd:3HVgL6SjP4XWMGF4FV0HVp+z
+a=ice-options:trickle
+a=fingerprint:sha-256 3D:33:26:A3:27:79:A1:14:9C:FC:21:07:CC:EC:38:C0:C4:CD:9A:0D:F0:20:A2:F6:86:7C:4D:DC:E0:E4:3C:CE
+a=setup:actpass
+a=mid:1
+a=sctp-port:5000
+a=max-message-size:262144

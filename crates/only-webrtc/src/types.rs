@@ -140,6 +140,10 @@ pub struct ChannelConfig {
     pub negotiated: Option<u16>,
     /// Sub-protocol name (default empty).
     pub protocol: String,
+    /// How the SCTP stream scheduler weighs this channel against the others
+    /// ([`RtcConfig::set_sctp_scheduler`]); sent to the peer in the DCEP open message
+    /// (default [`ChannelPriority::Low`], the W3C default).
+    pub priority: ChannelPriority,
 }
 
 impl Default for ChannelConfig {
@@ -150,6 +154,7 @@ impl Default for ChannelConfig {
             reliability: Reliability::Reliable,
             negotiated: None,
             protocol: String::new(),
+            priority: ChannelPriority::Low,
         }
     }
 }
@@ -179,7 +184,96 @@ impl ChannelConfig {
         if let Some(id) = self.negotiated {
             o = o.with_negotiated(id);
         }
-        o
+        o.with_priority(self.priority.dcep_value())
+    }
+
+    /// Sets [`priority`](Self::priority).
+    #[must_use]
+    pub fn with_priority(mut self, priority: ChannelPriority) -> ChannelConfig {
+        self.priority = priority;
+        self
+    }
+}
+
+/// The priority of a data channel (W3C `RTCPriorityType`, RFC 8831 §6.4): the DCEP open
+/// message carries it as 128, 256, 512 or 1024 (RFC 8832 §5.1: higher is more important),
+/// and the SCTP stream scheduler serves channels by it ([`ChannelScheduler`]). With the
+/// default weighted fair queueing, a channel of one level gets twice the bytes of one a
+/// level lower while both have data queued.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum ChannelPriority {
+    /// `very-low` (DCEP 128).
+    VeryLow,
+    /// `low` (DCEP 256), the default.
+    #[default]
+    Low,
+    /// `medium` (DCEP 512).
+    Medium,
+    /// `high` (DCEP 1024).
+    High,
+}
+
+impl ChannelPriority {
+    /// The DCEP priority value: 128, 256, 512 or 1024.
+    pub fn dcep_value(self) -> u16 {
+        match self {
+            ChannelPriority::VeryLow => 128,
+            ChannelPriority::Low => 256,
+            ChannelPriority::Medium => 512,
+            ChannelPriority::High => 1024,
+        }
+    }
+
+    /// The level of a DCEP priority value a peer sent: the nearest of the four (geometric
+    /// midpoints: up to 191 very-low, 192..=383 low, 384..=767 medium, from 768 high); 0,
+    /// which some stacks send when the application set none, is low.
+    pub fn from_dcep_value(v: u16) -> ChannelPriority {
+        match v {
+            0 => ChannelPriority::Low,
+            1..=191 => ChannelPriority::VeryLow,
+            192..=383 => ChannelPriority::Low,
+            384..=767 => ChannelPriority::Medium,
+            _ => ChannelPriority::High,
+        }
+    }
+}
+
+/// The SCTP stream scheduler of a peer's data channels (RFC 8260 §3,
+/// [`RtcConfig::set_sctp_scheduler`]): which channel the next chunk of queued data comes
+/// from. Retransmissions always go first; with message interleaving (I-DATA, negotiated with
+/// browsers and pion) the unit is a chunk, otherwise a whole message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ChannelScheduler {
+    /// Messages in the order they were queued, across channels (§3.1).
+    FirstComeFirstServed,
+    /// Channels with queued data take turns, one unit each (§3.2).
+    RoundRobin,
+    /// Round robin where each packet is filled from one channel (§3.3).
+    RoundRobinPerPacket,
+    /// The channels of the highest [`ChannelPriority`] first, round robin among equals;
+    /// lower ones only when those have nothing queued (§3.4).
+    Priority,
+    /// Every channel with queued data gets the same share of bytes (§3.5).
+    FairCapacity,
+    /// Shares of bytes in proportion to the channels' DCEP priority values (§3.6): `medium`
+    /// gets twice what `low` gets. The default (RFC 8831 §6.4 asks for priorities to be
+    /// honoured this way).
+    #[default]
+    WeightedFairQueueing,
+}
+
+impl ChannelScheduler {
+    pub(crate) fn to_sctp(self) -> only_sctp::Scheduler {
+        match self {
+            ChannelScheduler::FirstComeFirstServed => only_sctp::Scheduler::FirstComeFirstServed,
+            ChannelScheduler::RoundRobin => only_sctp::Scheduler::RoundRobin,
+            ChannelScheduler::RoundRobinPerPacket => only_sctp::Scheduler::RoundRobinPerPacket,
+            ChannelScheduler::Priority => only_sctp::Scheduler::Priority,
+            ChannelScheduler::FairCapacity => only_sctp::Scheduler::FairCapacity,
+            ChannelScheduler::WeightedFairQueueing => only_sctp::Scheduler::WeightedFairQueueing,
+        }
     }
 }
 
@@ -725,6 +819,8 @@ pub(crate) struct ConfigInner {
     pub(crate) reorder_audio: usize,
     pub(crate) reorder_video: usize,
     pub(crate) sctp_max_buffered: usize,
+    /// The SCTP stream scheduler of the data channels.
+    pub(crate) sctp_scheduler: ChannelScheduler,
     pub(crate) fec: Option<FecMechanism>,
     pub(crate) fec_min: u8,
     pub(crate) fec_max: u8,
@@ -745,6 +841,12 @@ pub(crate) struct ConfigInner {
     pub(crate) sdes: bool,
     /// What offers this side makes say about RTP/RTCP multiplexing.
     pub(crate) rtcp_mux: RtcpMuxPolicy,
+    /// SDES: the MKI length of our offered keys (0: none).
+    pub(crate) sdes_mki: u8,
+    /// ICE runs (else plain `c=` / port transports).
+    pub(crate) ice: bool,
+    /// BUNDLE in our offers and answers.
+    pub(crate) bundle: BundlePolicy,
     /// RTCP XR report blocks about received streams offered and accepted (RFC 3611 §5.1).
     pub(crate) xr_blocks: XrBlocks,
     /// ULPFEC: the level-0 protection length (RFC 5109 §5), `None` for whole packets.
@@ -779,6 +881,7 @@ impl Default for ConfigInner {
             reorder_audio: 15,
             reorder_video: 30,
             sctp_max_buffered: 1 << 20,
+            sctp_scheduler: ChannelScheduler::WeightedFairQueueing,
             fec: None,
             fec_min: 0,
             fec_max: 128,
@@ -793,6 +896,9 @@ impl Default for ConfigInner {
             opus_red: None,
             sdes: false,
             rtcp_mux: RtcpMuxPolicy::Require,
+            sdes_mki: 0,
+            ice: true,
+            bundle: BundlePolicy::Balanced,
             xr_blocks: XrBlocks::NONE,
             ulpfec_level0: None,
             bwe_bounds: (only_rtp::DEFAULT_MIN_BITRATE, only_rtp::DEFAULT_MAX_BITRATE),
@@ -970,6 +1076,16 @@ impl RtcConfig {
         self
     }
 
+    /// The SCTP stream scheduler of the data channels (RFC 8260 §3): how the channels with
+    /// data queued share the association, by their [`ChannelPriority`]
+    /// ([`ChannelConfig::priority`], [`Peer::set_channel_priority`](crate::Peer::set_channel_priority)).
+    /// Default [`ChannelScheduler::WeightedFairQueueing`].
+    #[must_use]
+    pub fn set_sctp_scheduler(mut self, scheduler: ChannelScheduler) -> Self {
+        self.0.sctp_scheduler = scheduler;
+        self
+    }
+
     /// Forward error correction on video lines (`None`, the default, offers and accepts
     /// none). [`FecMechanism::FlexFec`] negotiates `flexfec-03` with an
     /// `a=ssrc-group:FEC-FR` FEC stream, [`FecMechanism::Ulpfec`] negotiates `red` (with its
@@ -1105,14 +1221,52 @@ impl RtcConfig {
     /// AES-128-CM with HMAC-SHA1-80, AES-128-CM with HMAC-SHA1-32, each with its own random
     /// key) and no `a=fingerprint`; and a remote offer in that form (`RTP/SAVP` or
     /// `RTP/SAVPF` with `a=crypto`) is answered with the first line it can use and a key of
-    /// this side's. The SRTP contexts are keyed from the SDP: no DTLS handshake runs, so an
-    /// SDES session has no data channels (adding one fails) and its keys are only as secret
-    /// as the signalling channel. ICE still runs (the remote needs ICE or ICE-lite); lines
-    /// with an MKI or session parameters are not taken. DTLS-SRTP offers are answered with
-    /// DTLS-SRTP either way, so browsers never see `a=crypto`. Default off.
+    /// this side's. The SRTP contexts are keyed from the SDP, so the keys are only as secret
+    /// as the signalling channel. Lines with MKIs (and several master keys) are taken, and the
+    /// answer's key then has an MKI of the same length ([`set_sdes_mki_length`](Self::set_sdes_mki_length)
+    /// for our offers); session parameters other than the window size hint are not. Data
+    /// channels next to SDES media run over DTLS in their own section (`a=fingerprint` there
+    /// only; the DTLS keys are not used for SRTP). Without ICE ([`enable_ice`](Self::enable_ice),
+    /// or a remote SDP without `a=ice-ufrag`), media goes to the `c=` address and `m=` port.
+    /// DTLS-SRTP offers are answered with DTLS-SRTP either way, so browsers never see
+    /// `a=crypto`. Default off.
     #[must_use]
     pub fn enable_sdes_srtp(mut self, enabled: bool) -> Self {
         self.0.sdes = enabled;
+        self
+    }
+
+    /// The MKI length (RFC 3711 §3.1, RFC 4568 `|<value>:<length>`) of the SDES keys our
+    /// offers carry: 0 (the default) for none, else 1..=128 bytes (larger values are clamped);
+    /// for gateways that want an MKI in every packet. Answers follow the offer's length.
+    #[must_use]
+    pub fn set_sdes_mki_length(mut self, len: u8) -> Self {
+        self.0.sdes_mki = len.min(128);
+        self
+    }
+
+    /// Whether ICE runs (default `true`). Without ICE, for SIP endpoints and other RTP stacks
+    /// that do not do it: our descriptions carry no `a=ice-ufrag`, `a=ice-pwd` or candidates
+    /// but the address and port of the first host candidate (and `a=rtcp` with component 2's
+    /// without rtcp-mux), and media goes to the address and port of the remote description
+    /// (`c=` and `m=`, RTCP to `a=rtcp` or the next port without rtcp-mux) as soon as it
+    /// arrives, with no connectivity checks or consent freshness. A remote description
+    /// without ICE attributes is taken that way whatever this says. Meant for SDES-SRTP
+    /// ([`enable_sdes_srtp`](Self::enable_sdes_srtp)) and DTLS-SRTP toward peers on a known
+    /// address; nothing finds a path through NATs.
+    #[must_use]
+    pub fn enable_ice(mut self, enabled: bool) -> Self {
+        self.0.ice = enabled;
+        self
+    }
+
+    /// Whether the media sections and data channels of a session share one transport
+    /// (BUNDLE, RFC 9143) or each has its own ICE agent, DTLS association and SRTP keys
+    /// ([`BundlePolicy`]). Remote offers without BUNDLE are answered with a transport per
+    /// section whatever this says, and so is an answer that leaves BUNDLE out.
+    #[must_use]
+    pub fn set_bundle_policy(mut self, policy: BundlePolicy) -> Self {
+        self.0.bundle = policy;
         self
     }
 
@@ -1171,6 +1325,25 @@ pub enum RtcpMuxPolicy {
     Negotiate,
     /// `a=rtcp` with component-2 candidates, no `a=rtcp-mux`: RTCP on its own port.
     Off,
+}
+
+/// Whether a session's sections share one transport (BUNDLE, RFC 9143) or each has its own
+/// ([`RtcConfig::set_bundle_policy`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BundlePolicy {
+    /// Offers group every section in `a=group:BUNDLE` (one ICE agent, DTLS association and
+    /// pair of SRTP contexts), as browsers do; an answer without the group gives each section
+    /// its own transport (the offered sections share our credentials and candidates, as a
+    /// browser's offer does). Answers accept BUNDLE when offered. The default.
+    #[default]
+    Balanced,
+    /// No BUNDLE: our offers give every section its own ICE credentials (and our candidates),
+    /// DTLS association and SRTP keys, and our answers refuse an offered BUNDLE group (RFC
+    /// 9143 §7.3.3), for peers that do not support it (browsers with
+    /// `bundlePolicy: "max-compat"` accept that). The remote must reach each transport at an
+    /// address of its own (as every such peer does: an ICE agent per section).
+    Disabled,
 }
 
 /// A set of RTCP XR report blocks ([`RtcConfig::enable_rtcp_xr_blocks`]); combine with `|`.

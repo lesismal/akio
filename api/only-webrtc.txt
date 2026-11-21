@@ -1,4 +1,80 @@
 pub mod only_webrtc
+#[non_exhaustive] pub enum only_webrtc::BundlePolicy
+pub only_webrtc::BundlePolicy::Balanced
+pub only_webrtc::BundlePolicy::Disabled
+impl core::clone::Clone for only_webrtc::BundlePolicy
+pub fn only_webrtc::BundlePolicy::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::BundlePolicy
+impl core::cmp::PartialEq for only_webrtc::BundlePolicy
+pub fn only_webrtc::BundlePolicy::eq(&self, &Self) -> bool
+impl core::default::Default for only_webrtc::BundlePolicy
+pub fn only_webrtc::BundlePolicy::default() -> Self
+impl core::fmt::Debug for only_webrtc::BundlePolicy
+pub fn only_webrtc::BundlePolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::BundlePolicy
+pub fn only_webrtc::BundlePolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::BundlePolicy
+impl core::marker::StructuralPartialEq for only_webrtc::BundlePolicy
+impl core::marker::Send for only_webrtc::BundlePolicy
+impl core::marker::Sync for only_webrtc::BundlePolicy
+impl core::marker::Unpin for only_webrtc::BundlePolicy
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::BundlePolicy
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::BundlePolicy
+#[non_exhaustive] pub enum only_webrtc::ChannelPriority
+pub only_webrtc::ChannelPriority::High
+pub only_webrtc::ChannelPriority::Low
+pub only_webrtc::ChannelPriority::Medium
+pub only_webrtc::ChannelPriority::VeryLow
+impl only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::dcep_value(self) -> u16
+pub fn only_webrtc::ChannelPriority::from_dcep_value(u16) -> only_webrtc::ChannelPriority
+impl core::clone::Clone for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::ChannelPriority
+impl core::cmp::Ord for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::default() -> Self
+impl core::fmt::Debug for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::ChannelPriority
+pub fn only_webrtc::ChannelPriority::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::ChannelPriority
+impl core::marker::StructuralPartialEq for only_webrtc::ChannelPriority
+impl core::marker::Send for only_webrtc::ChannelPriority
+impl core::marker::Sync for only_webrtc::ChannelPriority
+impl core::marker::Unpin for only_webrtc::ChannelPriority
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::ChannelPriority
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::ChannelPriority
+#[non_exhaustive] pub enum only_webrtc::ChannelScheduler
+pub only_webrtc::ChannelScheduler::FairCapacity
+pub only_webrtc::ChannelScheduler::FirstComeFirstServed
+pub only_webrtc::ChannelScheduler::Priority
+pub only_webrtc::ChannelScheduler::RoundRobin
+pub only_webrtc::ChannelScheduler::RoundRobinPerPacket
+pub only_webrtc::ChannelScheduler::WeightedFairQueueing
+impl core::clone::Clone for only_webrtc::ChannelScheduler
+pub fn only_webrtc::ChannelScheduler::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::ChannelScheduler
+impl core::cmp::PartialEq for only_webrtc::ChannelScheduler
+pub fn only_webrtc::ChannelScheduler::eq(&self, &Self) -> bool
+impl core::default::Default for only_webrtc::ChannelScheduler
+pub fn only_webrtc::ChannelScheduler::default() -> Self
+impl core::fmt::Debug for only_webrtc::ChannelScheduler
+pub fn only_webrtc::ChannelScheduler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::ChannelScheduler
+pub fn only_webrtc::ChannelScheduler::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::ChannelScheduler
+impl core::marker::StructuralPartialEq for only_webrtc::ChannelScheduler
+impl core::marker::Send for only_webrtc::ChannelScheduler
+impl core::marker::Sync for only_webrtc::ChannelScheduler
+impl core::marker::Unpin for only_webrtc::ChannelScheduler
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::ChannelScheduler
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::ChannelScheduler
 #[non_exhaustive] pub enum only_webrtc::Codec
 pub only_webrtc::Codec::Av1
 pub only_webrtc::Codec::G722
@@ -251,10 +327,12 @@ impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Candidate
 pub only_webrtc::ChannelConfig::label: alloc::string::String
 pub only_webrtc::ChannelConfig::negotiated: core::option::Option<u16>
 pub only_webrtc::ChannelConfig::ordered: bool
+pub only_webrtc::ChannelConfig::priority: only_webrtc::ChannelPriority
 pub only_webrtc::ChannelConfig::protocol: alloc::string::String
 pub only_webrtc::ChannelConfig::reliability: only_webrtc::Reliability
 impl only_webrtc::ChannelConfig
 pub fn only_webrtc::ChannelConfig::new(impl core::convert::Into<alloc::string::String>) -> only_webrtc::ChannelConfig
+pub fn only_webrtc::ChannelConfig::with_priority(self, only_webrtc::ChannelPriority) -> only_webrtc::ChannelConfig
 impl core::clone::Clone for only_webrtc::ChannelConfig
 pub fn only_webrtc::ChannelConfig::clone(&self) -> Self
 impl core::cmp::Eq for only_webrtc::ChannelConfig
@@ -293,6 +371,7 @@ pub fn only_webrtc::Endpoint::accept_offer<H: only_webrtc::PeerHandler>(&self, &
 pub fn only_webrtc::Endpoint::add_candidate(&self, only_webrtc::Candidate)
 pub fn only_webrtc::Endpoint::bind(&only::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<only_webrtc::Endpoint, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::bind_rtcp(&self, &only::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
+pub fn only_webrtc::Endpoint::bind_transport_socket(&self, &only::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::candidate_filter(self, impl core::ops::function::Fn(&only_webrtc::Candidate) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn only_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<only_webrtc::Candidate>
 pub fn only_webrtc::Endpoint::close(&self)
@@ -464,6 +543,8 @@ impl only_webrtc::Peer
 pub fn only_webrtc::Peer::accept_answer(&self, &str) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::accept_offer(&self, &str) -> core::result::Result<alloc::string::String, only_webrtc::Error>
 pub fn only_webrtc::Peer::add_remote_candidate(&self, &str) -> core::result::Result<(), only_webrtc::Error>
+pub fn only_webrtc::Peer::add_remote_candidate_in(&self, only_webrtc::Mid, &str) -> core::result::Result<(), only_webrtc::Error>
+pub fn only_webrtc::Peer::channel_priority(&self, only_webrtc::ChannelId) -> core::result::Result<only_webrtc::ChannelPriority, only_webrtc::Error>
 pub fn only_webrtc::Peer::close(&self)
 pub fn only_webrtc::Peer::id(&self) -> u64
 pub fn only_webrtc::Peer::is_closed(&self) -> bool
@@ -477,6 +558,7 @@ pub fn only_webrtc::Peer::request_layer_keyframe(&self, only_webrtc::Mid, &str, 
 pub fn only_webrtc::Peer::request_max_bitrate(&self, only_webrtc::Mid, core::option::Option<u64>) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::send(&self, only_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, only_webrtc::Error>
 pub fn only_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
+pub fn only_webrtc::Peer::set_channel_priority(&self, only_webrtc::ChannelId, only_webrtc::ChannelPriority) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_media(&self, only_webrtc::Mid, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_simulcast(&self, only_webrtc::Mid, &str, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 impl core::clone::Clone for only_webrtc::Peer
@@ -547,6 +629,7 @@ pub fn only_webrtc::RtcConfig::enable_encrypted_header_extensions(self, bool) ->
 pub fn only_webrtc::RtcConfig::enable_fec(self, core::option::Option<only_webrtc::FecMechanism>) -> Self
 pub fn only_webrtc::RtcConfig::enable_h264(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_h265(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_ice(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_ice_aggressive_nomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_ice_renomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus(self, bool) -> Self
@@ -560,6 +643,7 @@ pub fn only_webrtc::RtcConfig::enable_sdes_srtp(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::set_bundle_policy(self, only_webrtc::BundlePolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_bwe_bounds(self, u64, u64) -> Self
 pub fn only_webrtc::RtcConfig::set_fec_mask(self, only_webrtc::FecMask) -> Self
 pub fn only_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
@@ -568,6 +652,8 @@ pub fn only_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
 pub fn only_webrtc::RtcConfig::set_rtcp_mux_policy(self, only_webrtc::RtcpMuxPolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::set_sctp_max_buffered_amount(self, usize) -> Self
+pub fn only_webrtc::RtcConfig::set_sctp_scheduler(self, only_webrtc::ChannelScheduler) -> Self
+pub fn only_webrtc::RtcConfig::set_sdes_mki_length(self, u8) -> Self
 pub fn only_webrtc::RtcConfig::set_stats_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_webrtc::RtcConfig::set_ulpfec_level0(self, core::option::Option<usize>) -> Self
 impl core::fmt::Debug for only_webrtc::RtcConfig
@@ -588,6 +674,19 @@ impl core::marker::Sync for only_webrtc::RtcError
 impl core::marker::Unpin for only_webrtc::RtcError
 impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcError
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcError
+pub struct only_webrtc::RtcRtcp(_)
+impl core::clone::Clone for only_webrtc::RtcRtcp
+pub fn only_webrtc::RtcRtcp::clone(&self) -> Self
+impl core::fmt::Debug for only_webrtc::RtcRtcp
+pub fn only_webrtc::RtcRtcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_webrtc::RtcRtcp
+pub type only_webrtc::RtcRtcp::Handler = RtcUdp
+pub fn only_webrtc::RtcRtcp::on_open(&self, &only_core::conn::Conn<RtcUdp>) -> RtcUdp
+impl core::marker::Send for only_webrtc::RtcRtcp
+impl core::marker::Sync for only_webrtc::RtcRtcp
+impl core::marker::Unpin for only_webrtc::RtcRtcp
+impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcRtcp
+impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcRtcp
 pub struct only_webrtc::RtcServer(_)
 impl only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::accept_offer<H: only_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
@@ -600,6 +699,8 @@ pub fn only_webrtc::RtcServer::ice_lite(self, bool) -> Self
 pub fn only_webrtc::RtcServer::max_peers(self, usize) -> Self
 pub fn only_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::peers(&self) -> usize
+pub fn only_webrtc::RtcServer::rtcp(&self) -> only_webrtc::RtcRtcp
+pub fn only_webrtc::RtcServer::rtcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
 pub fn only_webrtc::RtcServer::tcp(&self) -> only_webrtc::RtcTcp
 pub fn only_webrtc::RtcServer::tcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
 impl core::clone::Clone for only_webrtc::RtcServer

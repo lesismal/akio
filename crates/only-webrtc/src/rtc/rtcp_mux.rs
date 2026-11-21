@@ -229,6 +229,12 @@ impl Rtc {
     /// Whether it just became connected.
     pub(super) fn check_connected(&mut self, now: Instant) -> bool {
         if self.dtls_connected {
+            // SDES media is connected by its SDP keys; data channels next to it wait for
+            // DTLS, which may complete later.
+            if self.sdes.active && self.dtls_up && self.sctp.is_none() {
+                self.start_sctp(now);
+                self.open_pending_channels(now);
+            }
             return false;
         }
         let two = self.ice.components() == 2;
@@ -243,7 +249,10 @@ impl Rtc {
             return false;
         }
         self.dtls_connected = true;
-        self.events.push_back(RtcEvent::Connected);
+        // With several transports (no BUNDLE), once the last one is connected.
+        if self.tp_others_connected() {
+            self.events.push_back(RtcEvent::Connected);
+        }
         self.next_rtcp = Some(now + Duration::from_millis(200));
         self.start_sctp(now);
         self.open_pending_channels(now);

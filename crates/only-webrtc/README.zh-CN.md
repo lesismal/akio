@@ -20,8 +20,10 @@
   RFC 7714）支持 AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM，防重放，ROC 处理；密钥来自 DTLS
   导出器。可选开启（ADR-048）：cryptex（`a=cryptex`，RFC 9335，`enable_cryptex`）与 RFC 6904 加密头部
   扩展（`enable_encrypted_header_extensions`）。面向 SIP 网关等非浏览器对端可选开启（ADR-054）：
-  SDES-SRTP（`enable_sdes_srtp`，SDP 中的 RFC 4568 `a=crypto` 密钥，`RTP/SAVPF`，没有 DTLS，因此没有
-  数据通道；DTLS-SRTP offer 仍以 DTLS-SRTP 应答，浏览器永远看不到 `a=crypto`）。
+  SDES-SRTP（`enable_sdes_srtp`，SDP 中的 RFC 4568 `a=crypto` 密钥，`RTP/SAVPF`；支持 MKI 与多个主密钥，
+  `set_sdes_mki_length`；与之并存的数据通道在自己的段中运行 DTLS；无 ICE 时（`enable_ice(false)` 或远端
+  SDP 不带 ICE）媒体发往 `c=` 地址与 `m=` 端口，ADR-072；DTLS-SRTP offer 仍以 DTLS-SRTP 应答，浏览器
+  永远看不到 `a=crypto`）。
 - **数据通道**（[`only-sctp`](../only-sctp/README.zh-CN.md)）：基于 DTLS 的 SCTP（RFC 8261），
   拥塞控制、重传、PR-SCTP FORWARD-TSN（RFC 3758）、用于关闭通道的流重置（RFC 6525）、CRC32C；
   DCEP（RFC 8832）；可靠 / 最大重传次数 / 最大生存期，有序或无序，二进制 / 字符串 / 空消息，
@@ -41,7 +43,14 @@
 - **RTCP 走独立端口**（ADR-058，不复用 RTCP 的 RFC 5761，ICE 组件 2）：调用 `Endpoint::bind_rtcp`
   后，不带 `a=rtcp-mux` 的 offer（SIP 终端、较老的 RTP 栈）以 `a=rtcp` 应答，RTCP 走单独的套接字；
   `RtcConfig::set_rtcp_mux_policy` 让我方 offer 提议（`Negotiate`）或要求（`Off`）这种方式。DTLS-SRTP
-  每个组件各握手一次（RFC 5764），SDES-SRTP 两个组件都加密。浏览器仍用 rtcp-mux 与 BUNDLE。
+  每个组件各握手一次（RFC 5764），SDES-SRTP 两个组件都加密。浏览器仍用 rtcp-mux 与 BUNDLE。组件 2
+  从 RTCP 套接字获得服务器反射与中继候选（ADR-072），ICE-lite 的 `RtcServer` 可为它另设监听器
+  （`rtcp_candidates`、`rtcp()`）。
+- **无 BUNDLE**（ADR-072）：`set_bundle_policy(BundlePolicy::Disabled)`、不带 `a=group:BUNDLE` 的远端
+  offer 或拒绝我方 BUNDLE 的应答，使每个段拥有自己的 ICE 代理、DTLS 关联与 SRTP 密钥（与 Chrome
+  `max-compat` 双向互通）；`Endpoint::bind_transport_socket` 为传输提供各自的套接字。此时没有传输级拥塞控制。
+- **数据通道优先级**（ADR-072）：`ChannelPriority`（DCEP 128 到 1024）与 SCTP 流调度器
+  （`set_sctp_scheduler`：默认加权公平排队，另有优先级、轮询等）。
 - **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux（或 `a=rtcp`）、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
   sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
@@ -87,11 +96,12 @@ TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`t
 `turns:...?transport=udp` 由它中继的 `Endpoint`）：`tools/interop/webrtc/turn-dtls.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不发送）、SRTP MKI
-（DTLS-SRTP 没有对应的 SDP，也没有浏览器使用；带 MKI 的 SDES 行同样不采用）、无 ICE 或带数据通道的
-SDES-SRTP、与浏览器的 RFC 6904（没有浏览器提供）；不复用 RTCP 时：多个媒体段或数据通道（没有 BUNDLE：
-每个会话一个传输）、RTCP 的 server-reflexive 与中继候选、`RtcServer`（pion 没有非复用模式：在 `Endpoint`
-之间测试）。浏览器和 pion 都没有同时打开的 ICE-TCP 候选：
-`listen_tcp_so` 在 `Endpoint` 之间测试。
+与 Chrome（`max-compat`）双向的无 BUNDLE 互通：`tools/interop/webrtc/bundle.sh`。
+
+未实现：simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不发送）、DTLS-SRTP
+下的 MKI（没有对应的 SDP，也没有浏览器使用）、与浏览器的 RFC 6904（没有浏览器提供）、让普通（无 ICE）
+媒体锁定其实际来源地址、不做 BUNDLE 的会话中跨传输的传输级拥塞控制。pion 没有非复用或非 BUNDLE 模式，
+Chrome 157 没有 `RTCDataChannel.priority`：这些在 `Endpoint` 之间测试。浏览器和 pion 都没有同时打开的
+ICE-TCP 候选：`listen_tcp_so` 在 `Endpoint` 之间测试。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

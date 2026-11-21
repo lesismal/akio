@@ -268,3 +268,123 @@ fn non_dtls_datagrams_are_dropped() {
     assert!(s.recv(&mut [0u8; 64]).is_err());
     srv.engine.shutdown();
 }
+
+/// Connection IDs (RFC 9146 / RFC 9147 §9): a client whose address changes mid-association
+/// (NAT rebinding) keeps its association and allocation; its path moves to the new address
+/// once one of its records authenticates there, and a forged record moves nothing.
+fn moves_with_its_connection_id(version: only_dtls::Version) {
+    let srv = server();
+    let cfg = Config::without_identity()
+        .with_versions(vec![version])
+        .with_verifier(pinned(&srv.cert))
+        .with_connection_id(Some(0));
+    let mut c = DtlsClient::new(udp(), srv.addr, cfg);
+    let relayed = c.allocate();
+    let first = c.s.local_addr().unwrap();
+    assert_eq!(
+        c.d.peer_connection_id().map(<[u8]>::len),
+        Some(8),
+        "a CID was negotiated"
+    );
+    // A record with the CID but a forged body, from another address: no answer, no move.
+    let forger = udp();
+    forger.connect(srv.addr).unwrap();
+    let p = peer();
+    let pa = p.local_addr().unwrap();
+    assert!(c.c.send_to(Instant::now(), pa, b"hi"));
+    c.flush();
+    assert!(c.run(Duration::from_secs(5), |s| s.c.pending_bytes() == 0));
+    let mut b = [0u8; 2048];
+    assert_eq!(p.recv_from(&mut b).unwrap().0, 2);
+    // Capture a real record by sending one more message, then corrupt it.
+    assert!(c.c.send_to(Instant::now(), pa, b"again"));
+    while let Some(m) = c.c.poll_transmit() {
+        c.d.send_application_data(&m).unwrap();
+    }
+    let rec = c.d.poll_transmit().expect("a record");
+    let mut forged = rec.clone();
+    let last = forged.len() - 1;
+    forged[last] ^= 0x55;
+    forger.send(&forged).unwrap();
+    // The real one, from the first address.
+    c.s.send(&rec).unwrap();
+    assert_eq!(p.recv_from(&mut b).unwrap().0, 5);
+    p.send_to(b"back", relayed).unwrap();
+    assert!(c.run(Duration::from_secs(5), |s| !s.got.is_empty()));
+    assert_eq!(c.got.remove(0), (pa, b"back".to_vec()));
+    // The client moves to a new socket (its NAT binding changed).
+    let moved = udp();
+    moved.connect(srv.addr).unwrap();
+    moved
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    c.s = moved;
+    assert!(c.c.send_to(Instant::now(), pa, b"from the new address"));
+    c.flush();
+    assert_eq!(p.recv_from(&mut b).unwrap().0, 20);
+    // Relayed data and responses now go to the new address; the allocation is the same one,
+    // still known by the address the association started from.
+    p.send_to(b"to the new address", relayed).unwrap();
+    assert!(c.run(Duration::from_secs(5), |s| !s.got.is_empty()));
+    assert_eq!(c.got.remove(0), (pa, b"to the new address".to_vec()));
+    assert_eq!(srv.turn.stats().allocations, 1);
+    assert_eq!(srv.turn.dtls_relay_of(first), Some(relayed));
+    relay_both_ways(&mut c, relayed);
+    // The forger got nothing.
+    forger
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    assert!(forger.recv(&mut b).is_err());
+    // close_notify from the new address frees the allocation.
+    c.d.close();
+    c.flush();
+    wait_until(|| srv.turn.stats().allocations == 0);
+    srv.engine.shutdown();
+}
+
+#[test]
+fn connection_id_dtls13() {
+    moves_with_its_connection_id(only_dtls::Version::Dtls13);
+}
+
+#[test]
+fn connection_id_dtls12() {
+    moves_with_its_connection_id(only_dtls::Version::Dtls12);
+}
+
+#[test]
+fn without_connection_ids_a_new_address_is_a_new_client() {
+    // dtls_with_connection_ids(None): no CID is negotiated even if the client offers one.
+    let auth = static_auth("only", [("alice", "wonderland")]);
+    let cfg = TurnConfig::new("only", auth, "127.0.0.1".parse().unwrap()).allow_private_peers(true);
+    let turn = TurnServer::new(cfg);
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = tls::ServerConfig::builder(
+        vec![tls::Certificate::from_der(cert.clone())],
+        tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let engine = Arc::new(
+        Engine::builder()
+            .listen(
+                Listener::udp("127.0.0.1:0".parse().unwrap())
+                    .threads(1)
+                    .serve(turn.dtls_with_connection_ids(&scfg, None).unwrap()),
+            )
+            .udp_client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    turn.set_engine(&engine);
+    engine.start().unwrap();
+    let addr = engine.local_addrs()[0];
+    let c = Config::without_identity()
+        .with_verifier(pinned(&cert))
+        .with_connection_id(Some(0));
+    let mut c = DtlsClient::new(udp(), addr, c);
+    c.allocate();
+    assert_eq!(c.d.peer_connection_id(), None);
+    engine.shutdown();
+}

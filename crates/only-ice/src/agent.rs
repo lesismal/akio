@@ -327,6 +327,8 @@ pub struct IceAgent {
     transmits: VecDeque<Transmit>,
     events: VecDeque<IceEvent>,
     closed: bool,
+    /// [`IceAgent::set_fixed_pair`]: no ICE runs, the selected pairs are given.
+    fixed: bool,
     now: Instant,
 }
 
@@ -360,6 +362,7 @@ impl IceAgent {
             transmits: VecDeque::new(),
             events: VecDeque::new(),
             closed: false,
+            fixed: false,
             now,
         }
     }
@@ -495,6 +498,9 @@ impl IceAgent {
     /// the remote credentials. A signaled candidate replaces a peer-reflexive one with the
     /// same address.
     pub fn add_remote_candidate(&mut self, c: Candidate) {
+        if self.fixed {
+            return;
+        }
         if !self.has_component(c.component()) {
             return;
         }
@@ -618,7 +624,7 @@ impl IceAgent {
         destination: SocketAddr,
         data: &[u8],
     ) -> bool {
-        if self.closed || !only_turn::stun::is_stun(data) {
+        if self.closed || self.fixed || !only_turn::stun::is_stun(data) {
             return false;
         }
         let Ok(m) = Message::parse(data) else {
@@ -1393,7 +1399,7 @@ impl IceAgent {
 
     /// Drives timers: retransmissions, paced checks, nomination, consent.
     pub fn handle_timeout(&mut self, now: Instant) {
-        if self.closed {
+        if self.closed || self.fixed {
             return;
         }
         self.now = self.now.max(now);
@@ -1536,7 +1542,7 @@ impl IceAgent {
     }
 
     fn update_state(&mut self, now: Instant) {
-        if self.closed {
+        if self.closed || self.fixed {
             return;
         }
         let all_selected = self.comps.iter().all(|c| c.selected.is_some());
@@ -1617,7 +1623,7 @@ impl IceAgent {
 
     /// When [`IceAgent::handle_timeout`] wants to be called next (`None`: no timer).
     pub fn poll_timeout(&self) -> Option<Instant> {
-        if self.closed {
+        if self.closed || self.fixed {
             return None;
         }
         let mut t: Option<Instant> = None;
@@ -1723,6 +1729,75 @@ impl IceAgent {
             .filter(|p| p.component == component && p.state == PairState::Succeeded)
             .max_by_key(|p| p.prio)
             .map(|p| (p.local, p.remote))
+    }
+
+    /// Uses `local` -> `remote` as the path of `component` without ICE, for a peer that does
+    /// not do ICE (an SDP without `a=ice-ufrag`: plain `c=` address and `m=` port, as SIP
+    /// endpoints write it; the RTCP component at `a=rtcp` or the next port). The pair is
+    /// selected at once ([`IceEvent::SelectedPair`] or [`IceEvent::ComponentSelectedPair`]),
+    /// and from the first call on the agent runs no checks, consent freshness or timers, and
+    /// ignores remote candidates and STUN; once every component has its pair the state is
+    /// [`IceState::Completed`]. Calling it again moves the component to another pair (for
+    /// example to latch onto the address media really comes from). `false` (and nothing
+    /// changes) for a component the stream does not have.
+    pub fn set_fixed_pair(
+        &mut self,
+        component: u16,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> bool {
+        if !self.has_component(component) || self.closed {
+            return false;
+        }
+        if !self.fixed {
+            self.fixed = true;
+            self.pairs.clear();
+            self.triggered.clear();
+            self.transmits.clear();
+            self.checking_since = None;
+        }
+        let generation = self.generation;
+        let changed = self
+            .comp(component)
+            .selected
+            .as_ref()
+            .is_none_or(|s| s.local != local || s.remote != remote);
+        let sel = Selected {
+            local,
+            remote,
+            local_ufrag: self.config.local.ufrag.clone(),
+            remote_creds: None,
+            local_pref: 65_535,
+            generation,
+            prio: 0,
+        };
+        let c = self.comp_mut(component);
+        c.selected = Some(sel);
+        c.nominating = None;
+        c.consent_next = None;
+        c.consent_lost = false;
+        c.consent_txs.clear();
+        if changed {
+            self.events.push_back(if component == 1 {
+                IceEvent::SelectedPair { local, remote }
+            } else {
+                IceEvent::ComponentSelectedPair {
+                    component,
+                    local,
+                    remote,
+                }
+            });
+        }
+        if self.comps.iter().all(|c| c.selected.is_some()) {
+            self.completed_gen = Some(generation);
+            self.set_state(IceState::Completed);
+        }
+        true
+    }
+
+    /// Whether the paths are given ([`IceAgent::set_fixed_pair`]) instead of found by ICE.
+    pub fn is_fixed(&self) -> bool {
+        self.fixed
     }
 
     /// Stops the agent: no more timers or transmissions; received datagrams are no longer

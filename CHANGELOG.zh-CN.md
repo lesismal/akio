@@ -159,6 +159,34 @@ ADR-073（docs/adr/073-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
   libwebrtc 的掩码：其每个 FEC 包覆盖的媒体包比原来的交织掩码多（最初每帧都重新计算策略的版本测得
   0.988x / 0.981x）。
 
+### 新增：无 BUNDLE 或无 ICE 的 WebRTC 传输、SDES 的 MKI 与数据通道、通道优先级、TURN DTLS 连接 ID（only-webrtc、only-turn、only-ice）
+
+ADR-072（docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md），只有新增：
+
+- 数据通道优先级（`ChannelConfig` 中的 `ChannelPriority`，随 DCEP 发送并读取对端的值；
+  `Peer::channel_priority` / `set_channel_priority`）与 SCTP 流调度器（`ChannelScheduler`、
+  `RtcConfig::set_sctp_scheduler`；默认加权公平排队）。
+- 无 BUNDLE 的会话：`RtcConfig::set_bundle_policy(BundlePolicy::Disabled)`、不带 `a=group:BUNDLE` 的
+  远端 offer、拒绝我方 BUNDLE 的应答，都使每个段拥有自己的 ICE 代理、DTLS 关联与 SRTP 密钥（与
+  `bundlePolicy: "max-compat"` 的 Chrome 双向可用）；`Endpoint::bind_transport_socket` 为传输提供各自的
+  套接字；`Peer::add_remote_candidate_in` 把 trickle 候选交给其段。不带 rtcp-mux 的此类会话现在可以有
+  多个段和数据通道。不做 BUNDLE 的会话不协商传输级拥塞控制。
+- 组件 2 上的 RTCP：`gather_srflx` / `gather_relay(_via)` 从 RTCP 套接字收集服务器反射与中继候选；
+  `RtcServer::rtcp_candidates` 与 `RtcServer::rtcp()`（`RtcRtcp`）用于 ICE-lite 服务器的 RTCP 监听器。
+- 无 ICE 的 SDES-SRTP（`RtcConfig::enable_ice(false)`，或不带 ICE 的远端 SDP：普通 `c=` / `m=` 端口
+  媒体与 `a=rtcp`）、带 MKI 与多个主密钥（我方 offer 用 `RtcConfig::set_sdes_mki_length`）、与数据通道
+  并存（应用段中运行 DTLS）。
+- only-turn：基于 DTLS 的 TURN 监听器协商 8 字节连接 ID；客户端路径跟随来自新地址且通过认证的记录，
+  分配保持不变（`TurnServer::dtls_with_connection_ids` 设置其他长度或关闭）。only-webrtc 的 DTLS 中继
+  客户端发送服务器的 CID。
+- only-ice：`mdns::MULTICAST_V6`、`mdns::multicast_v6_on`、`Candidate::with_scope_id`、
+  `IceAgent::set_fixed_pair` / `is_fixed`（无 ICE 的路径）。
+
+### 变更：不带 BUNDLE 的远端 offer（only-webrtc）
+
+不带 `a=group:BUNDLE` 的多段远端 offer 现在以每段一个传输应答（此前的应答带一个 offer 未要求的
+BUNDLE 组，无法连通）。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

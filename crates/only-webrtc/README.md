@@ -23,8 +23,10 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   AEAD-AES-128/256-GCM, replay protection, ROC handling; keys from the DTLS exporter. Opt-in
   (ADR-048): cryptex (`a=cryptex`, RFC 9335, `enable_cryptex`) and RFC 6904 encrypted header
   extensions (`enable_encrypted_header_extensions`). Opt-in for non-browser peers such as SIP
-  gateways (ADR-054): SDES-SRTP (`enable_sdes_srtp`, RFC 4568 `a=crypto` keys in the SDP,
-  `RTP/SAVPF`, no DTLS and so no data channels; DTLS-SRTP offers are still answered with
+  gateways (ADR-054, ADR-072): SDES-SRTP (`enable_sdes_srtp`, RFC 4568 `a=crypto` keys in the
+  SDP, `RTP/SAVPF`; MKIs and several master keys, `set_sdes_mki_length`; data channels next to it
+  run DTLS in their own section; without ICE, `enable_ice(false)` or a remote SDP without it,
+  media goes to the `c=` address and `m=` port; DTLS-SRTP offers are still answered with
   DTLS-SRTP, browsers never see `a=crypto`).
 - **Data channels** ([`only-sctp`](../only-sctp/README.md)): SCTP over DTLS (RFC 8261) with
   congestion control, retransmission, PR-SCTP FORWARD-TSN (RFC 3758), stream reset (RFC 6525)
@@ -51,7 +53,16 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   `Endpoint::bind_rtcp`, offers without `a=rtcp-mux` (SIP endpoints, older RTP stacks) are
   answered with `a=rtcp` and RTCP on its own socket; `RtcConfig::set_rtcp_mux_policy` lets our
   offers propose it (`Negotiate`) or require it (`Off`). DTLS-SRTP runs a handshake per
-  component (RFC 5764), SDES-SRTP keys both. Browsers keep rtcp-mux and BUNDLE.
+  component (RFC 5764), SDES-SRTP keys both. Browsers keep rtcp-mux and BUNDLE. Component 2
+  gets server-reflexive and relayed candidates from the RTCP socket (ADR-072), and an ICE-lite
+  `RtcServer` a second listener for it (`rtcp_candidates`, `rtcp()`).
+- **Without BUNDLE** (ADR-072): `set_bundle_policy(BundlePolicy::Disabled)`, a remote offer
+  without `a=group:BUNDLE`, or an answer refusing ours give each section its own ICE agent, DTLS
+  association and SRTP keys (Chrome `max-compat` both ways); `Endpoint::bind_transport_socket`
+  gives the transports sockets of their own. No transport-wide congestion control there.
+- **Data channel priorities** (ADR-072): `ChannelPriority` (DCEP 128 to 1024) and the SCTP
+  stream scheduler (`set_sctp_scheduler`: weighted fair queueing by default, priority, round
+  robin, ...).
 - **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux (or `a=rtcp`), mid/msid, ssrc/FID, extmap,
   rtpmap/fmtp/rtcp-fb negotiation, setup/fingerprint, ice-ufrag/pwd/options/lite, candidates,
   sctp-port/max-message-size; renegotiation (media added, directions, ICE restart);
@@ -104,12 +115,14 @@ listener (`Endpoint`s relayed through it over `turns:...?transport=udp`):
 `tools/interop/webrtc/turn-dtls.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
+Without BUNDLE against Chrome (`max-compat`), both directions: `tools/interop/webrtc/bundle.sh`.
+
 Not implemented: FlexFEC on simulcast lines (RID-based simulcast signals no FEC stream; Chrome
-sends none), SRTP MKIs (DTLS-SRTP has no SDP for them and no browser uses them; SDES lines with
-an MKI are not taken either), SDES-SRTP without ICE or with data channels, RFC 6904 with
-browsers (none offers it); without rtcp-mux: several media sections or data channels (no
-BUNDLE: one transport per session), server-reflexive and relayed RTCP candidates, `RtcServer`
-(pion has no non-mux mode: tested between `Endpoint`s). Browsers and pion have no simultaneous-open ICE-TCP
-candidates: `listen_tcp_so` is tested between `Endpoint`s.
+sends none), MKIs with DTLS-SRTP (no SDP for them, no browser uses them), RFC 6904 with
+browsers (none offers it), latching plain (no-ICE) media onto the address it really comes from,
+transport-wide congestion control across the transports of an unbundled session. pion has no
+non-mux or non-BUNDLE mode and Chrome 157 no `RTCDataChannel.priority`: those are tested between
+`Endpoint`s. Browsers and pion have no simultaneous-open ICE-TCP candidates: `listen_tcp_so` is
+tested between `Endpoint`s.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

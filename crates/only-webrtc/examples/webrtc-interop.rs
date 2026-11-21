@@ -112,6 +112,9 @@ fn extras(mut c: only_webrtc::RtcConfig) -> only_webrtc::RtcConfig {
     if env("ONLY_INTEROP_STATS").is_some() {
         c = c.set_stats_interval(Some(Duration::from_secs(1)));
     }
+    if env("ONLY_INTEROP_BUNDLE").as_deref() == Some("off") {
+        c = c.set_bundle_policy(only_webrtc::BundlePolicy::Disabled);
+    }
     c
 }
 
@@ -123,8 +126,9 @@ struct Echo {
 }
 
 impl PeerHandler for Echo {
-    fn on_channel_open(&mut self, _p: &Peer, id: ChannelId, label: &str) {
-        eprintln!("server: channel {label:?} open");
+    fn on_channel_open(&mut self, p: &Peer, id: ChannelId, label: &str) {
+        let prio = p.channel_priority(id).ok();
+        eprintln!("server: channel {label:?} open, priority {prio:?}");
         self.first.get_or_insert(id);
     }
     fn on_channel_data(&mut self, p: &Peer, id: ChannelId, data: &[u8], binary: bool) {
@@ -351,11 +355,21 @@ fn client(http: &str, what: &str, args: &[String]) {
     let mut video = None;
     let (peer, offer) = ep
         .create_offer(Probe(Mutex::new(tx)), |api| {
-            api.add_channel(if what == "simulcast" {
+            // ONLY_INTEROP_PRIORITY=high: the channel's DCEP priority.
+            let prio = match std::env::var("ONLY_INTEROP_PRIORITY").as_deref() {
+                Ok("high") => only_webrtc::ChannelPriority::High,
+                Ok("medium") => only_webrtc::ChannelPriority::Medium,
+                Ok("very-low") => only_webrtc::ChannelPriority::VeryLow,
+                _ => only_webrtc::ChannelPriority::Low,
+            };
+            let label = if what == "simulcast" {
                 "stats"
             } else {
                 "interop"
-            });
+            };
+            api.add_channel_with_config(
+                &only_webrtc::ChannelConfig::new(label).with_priority(prio),
+            );
             if what == "media" || what == "media-in" {
                 audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
             }
