@@ -176,6 +176,121 @@ pub fn turn_stream(data: &[u8]) {
     }
 }
 
+/// The environment of the `turn_tcp` server: TCP relays, dials and connections recorded.
+#[derive(Default)]
+struct TcpNullEnv {
+    relays: Vec<SocketAddr>,
+    /// Connections asked for and not yet reported on.
+    dials: Vec<u32>,
+    /// Connections the core told about (accepted or dialed), for closing.
+    known: Vec<u32>,
+}
+
+impl TurnEnv for TcpNullEnv {
+    fn send_to_client(&mut self, _client: SocketAddr, data: &[u8]) {
+        stun_message(data);
+    }
+    fn send_to_peer(&mut self, _relay: SocketAddr, _peer: SocketAddr, _data: &[u8]) {}
+    fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        Ok(SocketAddr::new(addr.ip(), 50000))
+    }
+    fn close_relay(&mut self, _relay: SocketAddr) {}
+    fn pads_channel_data(&self, _client: SocketAddr) -> bool {
+        true
+    }
+    fn open_tcp_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        if self.relays.len() >= 8 {
+            return Err(io::Error::other("no ports"));
+        }
+        let r = SocketAddr::new(addr.ip(), 40000 + self.relays.len() as u16);
+        self.relays.push(r);
+        Ok(r)
+    }
+    fn close_tcp_relay(&mut self, relay: SocketAddr) {
+        self.relays.retain(|r| *r != relay);
+    }
+    fn connect_peer(&mut self, _c: SocketAddr, _r: SocketAddr, _p: SocketAddr, id: u32) {
+        self.dials.push(id);
+        self.known.push(id);
+    }
+    fn accept_peer(&mut self, _c: SocketAddr, _r: SocketAddr, _p: SocketAddr, id: u32) {
+        self.known.push(id);
+    }
+    fn close_connection(&mut self, id: u32) {
+        self.dials.retain(|d| *d != id);
+    }
+}
+
+/// `turn_tcp`: TCP allocations (RFC 6062). The first byte picks the side.
+///
+/// - even: a [`TurnCore`] whose environment offers TCP relays. Each packet's first byte picks
+///   the event: `0` a message on the control connection, `1` a message on a data connection
+///   (`10.0.0.1:(5000 + second byte)`), `2` a peer `10.0.0.(second byte)` connecting to the
+///   first relay, `3` / `4` the oldest Connect succeeds / fails, `5` a known connection closes,
+///   `0xff` the clock moves 31 seconds (deadlines).
+/// - odd: a [`DataConnection`](crate::client::DataConnection) fed the packets as reads of its
+///   connection (responses, challenges, then the peer's bytes).
+pub fn turn_tcp(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let start = Instant::now();
+    if mode % 2 == 1 {
+        let mut d = crate::client::DataConnection::for_fuzzing(start);
+        for p in packets(rest) {
+            let n = d.handle_input(p);
+            assert!(n <= p.len());
+            while d.poll_transmit().is_some() {}
+            d.handle_timeout(start + Duration::from_secs(1));
+        }
+        return;
+    }
+    let mut core = turn_core(start);
+    let mut env = TcpNullEnv::default();
+    let mut now = start;
+    for p in packets(rest) {
+        let Some((&sel, body)) = p.split_first() else {
+            continue;
+        };
+        let arg = body.first().copied().unwrap_or(0);
+        match sel {
+            0 => core.handle_client(now, CLIENT, body, &mut env),
+            1 => {
+                let from = SocketAddr::new(CLIENT.ip(), 5000 + u16::from(arg));
+                core.handle_client(now, from, body.get(1..).unwrap_or(&[]), &mut env);
+            }
+            2 => {
+                if let Some(&relay) = env.relays.first() {
+                    let peer = SocketAddr::new(IpAddr::V4([10, 0, 0, arg].into()), 7000);
+                    let _ = core.tcp_incoming(now, relay, peer, &mut env);
+                }
+            }
+            3 | 4 => {
+                if !env.dials.is_empty() {
+                    let id = env.dials.remove(0);
+                    let _ = core.tcp_connected(now, CLIENT, id, sel == 3, &mut env);
+                }
+            }
+            5 => {
+                if !env.known.is_empty() {
+                    let id = env.known[usize::from(arg) % env.known.len()];
+                    core.tcp_closed(CLIENT, id, &mut env);
+                }
+            }
+            0xff => {
+                now += Duration::from_secs(31);
+                core.handle_timeout(now, &mut env);
+            }
+            _ => {}
+        }
+        assert!(core.stats().tcp_connections <= core.config().max_tcp_connections * 8);
+    }
+    core.remove_client(CLIENT, &mut env);
+    assert_eq!(core.stats().allocations, 0);
+    assert_eq!(core.stats().tcp_connections, 0);
+    assert!(env.relays.is_empty());
+}
+
 /// The DTLS configuration of the `turn_dtls` server (a certificate made once per process).
 fn dtls_config() -> std::sync::Arc<only_dtls::Config> {
     static CFG: std::sync::OnceLock<std::sync::Arc<only_dtls::Config>> = std::sync::OnceLock::new();
@@ -327,6 +442,83 @@ pub(crate) mod seeds {
         vec![join(&pkts)]
     }
 
+    /// A TCP allocation's life: challenge, allocate, a Connect that succeeds and is bound from
+    /// a data connection with the control connection's nonce, one that fails, a permission
+    /// and a peer connecting, a bind on the wrong connection, deadlines; and a data
+    /// connection fed a challenge, then a success followed by the peer's bytes.
+    pub(crate) fn turn_tcp() -> Vec<Vec<u8>> {
+        let start = Instant::now();
+        let core = turn_core(start);
+        let nonce = core.fuzz_nonce(start, CLIENT);
+        let key = long_term_key(USER.0, REALM, USER.1);
+        let auth = |b: MessageBuilder| {
+            b.attr(attr::USERNAME, USER.0.as_bytes())
+                .attr(attr::REALM, REALM.as_bytes())
+                .attr(attr::NONCE, nonce.as_bytes())
+                .integrity(&key)
+                .fingerprint()
+                .build()
+        };
+        let req = |m| MessageBuilder::new(m, Class::Request, transaction_id());
+        let peer: SocketAddr = "10.0.0.9:80".parse().expect("addr");
+        let peer2: SocketAddr = "10.0.0.10:80".parse().expect("addr");
+        let ctl = |m: Vec<u8>| [&[0u8][..], &m].concat();
+        // Connection ids count from 1 in a fuzz run: the Connect that succeeds is 1, the one
+        // that fails 2, the peers connecting 3 and 4.
+        let bind = |id: u32, port: u8| {
+            [
+                &[1u8, port][..],
+                &auth(req(Method::CONNECTION_BIND).u32(attr::CONNECTION_ID, id)),
+            ]
+            .concat()
+        };
+        let pkts = vec![
+            ctl(req(Method::ALLOCATE)
+                .u32(attr::REQUESTED_TRANSPORT, 6 << 24)
+                .build()),
+            ctl(auth(
+                req(Method::ALLOCATE).u32(attr::REQUESTED_TRANSPORT, 6 << 24),
+            )),
+            ctl(auth(
+                req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+            )),
+            vec![3],
+            bind(1, 1),
+            ctl(auth(
+                req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, peer2),
+            )),
+            vec![4],
+            ctl(auth(
+                req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+            )),
+            vec![2, 9],
+            vec![2, 11],
+            bind(3, 2),
+            bind(2, 3),
+            vec![5, 0],
+            vec![0xff],
+            ctl(auth(req(Method::REFRESH).u32(attr::LIFETIME, 0))),
+        ];
+        let server = [&[0u8][..], &join(&pkts)].concat();
+        let tid = [9u8; 12];
+        let dkey = long_term_key("u", "r", "p");
+        let challenge = MessageBuilder::new(Method::CONNECTION_BIND, Class::Error, tid)
+            .error(438, "Stale Nonce")
+            .attr(attr::REALM, b"r")
+            .attr(attr::NONCE, b"fresh")
+            .build();
+        let ok = MessageBuilder::new(Method::CONNECTION_BIND, Class::Success, tid)
+            .integrity(&dkey)
+            .fingerprint()
+            .build();
+        let mut ok_then_data = ok;
+        ok_then_data.extend_from_slice(b"peer bytes");
+        let cut: Vec<Vec<u8>> = ok_then_data.chunks(7).map(<[u8]>::to_vec).collect();
+        let client_side = [&[1u8][..], &join(&[challenge])].concat();
+        let client_ok = [&[3u8][..], &join(&cut)].concat();
+        vec![server, client_side, client_ok]
+    }
+
     /// First flights of DTLS 1.2 and 1.3 clients (with the cookie-less and the accepted start),
     /// a junk record and a timer tick.
     pub(crate) fn turn_dtls() -> Vec<Vec<u8>> {
@@ -400,7 +592,8 @@ mod tests {
         let n = replay(DIR, "stun_message", stun_message)
             + replay(DIR, "turn_server", turn_server)
             + replay(DIR, "turn_stream", turn_stream)
-            + replay(DIR, "turn_dtls", turn_dtls);
+            + replay(DIR, "turn_dtls", turn_dtls)
+            + replay(DIR, "turn_tcp", turn_tcp);
         assert!(n > 0);
     }
 
@@ -418,6 +611,9 @@ mod tests {
         for s in &seeds::turn_dtls() {
             turn_dtls(s);
         }
+        for s in &seeds::turn_tcp() {
+            turn_tcp(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p only-turn --lib write_fuzz_seeds -- --ignored`.
@@ -428,5 +624,6 @@ mod tests {
         write_target_seeds(DIR, "turn_server", &seeds::turn_server());
         write_target_seeds(DIR, "turn_stream", &seeds::turn_stream());
         write_target_seeds(DIR, "turn_dtls", &seeds::turn_dtls());
+        write_target_seeds(DIR, "turn_tcp", &seeds::turn_tcp());
     }
 }

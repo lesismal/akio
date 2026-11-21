@@ -94,7 +94,23 @@ impl FrameReader {
 
     /// Feeds bytes read from the stream; `f` gets every complete message (with its padding), in
     /// order. On an error the stream is unusable (messages before the bad one were delivered).
-    pub fn push(&mut self, mut data: &[u8], mut f: impl FnMut(&[u8])) -> Result<(), FrameError> {
+    pub fn push(&mut self, data: &[u8], mut f: impl FnMut(&[u8])) -> Result<(), FrameError> {
+        self.push_until(data, |m| {
+            f(m);
+            true
+        })
+        .map(drop)
+    }
+
+    /// [`push`](Self::push) that stops after the message for which `f` returns false and
+    /// returns the bytes of `data` that follow it, untouched (nothing is held then): a
+    /// ConnectionBind turns the stream into raw data (RFC 6062). Empty when every byte was
+    /// taken.
+    pub(crate) fn push_until<'d>(
+        &mut self,
+        mut data: &'d [u8],
+        mut f: impl FnMut(&[u8]) -> bool,
+    ) -> Result<&'d [u8], FrameError> {
         // Finish the message carried over from the last read.
         while !self.buf.is_empty() {
             // Enough of the header to know the length (4 bytes for ChannelData, 8 for STUN:
@@ -103,7 +119,7 @@ impl FrameReader {
                 let hdr = if self.buf[0] >> 6 == 1 { 4 } else { 8 };
                 let take = data.len().min(hdr - self.buf.len());
                 if take == 0 {
-                    return Ok(());
+                    return Ok(&[]);
                 }
                 self.buf.extend_from_slice(&data[..take]);
                 data = &data[take..];
@@ -113,17 +129,23 @@ impl FrameReader {
             self.buf.extend_from_slice(&data[..take]);
             data = &data[take..];
             if self.buf.len() < need {
-                return Ok(());
+                return Ok(&[]);
             }
-            f(&self.buf);
+            let go = f(&self.buf);
             self.buf.clear();
+            if !go {
+                return Ok(data);
+            }
         }
         // Whole messages straight from the read buffer.
         loop {
             match frame_len(data)? {
                 Some(n) if n <= data.len() => {
-                    f(&data[..n]);
+                    let go = f(&data[..n]);
                     data = &data[n..];
+                    if !go {
+                        return Ok(data);
+                    }
                 }
                 _ => break,
             }
@@ -134,7 +156,7 @@ impl FrameReader {
             }
             self.buf.extend_from_slice(data);
         }
-        Ok(())
+        Ok(&[])
     }
 }
 
@@ -206,6 +228,36 @@ mod tests {
         r.push(&stream[2..30], |m| got.push(m.to_vec())).unwrap();
         r.push(&stream[30..], |m| got.push(m.to_vec())).unwrap();
         assert_eq!(got, msgs);
+    }
+
+    /// `push_until` hands back what follows the message it stopped at, whether that message
+    /// was held from an earlier read or whole in this one.
+    #[test]
+    fn reader_stops_and_returns_the_rest() {
+        let stun = MessageBuilder::new(Method::BINDING, Class::Request, transaction_id()).build();
+        let mut stream = [channel(3), stun.clone()].concat();
+        stream.extend_from_slice(b"\xffraw bytes");
+        for cut in 1..stream.len() {
+            let mut r = FrameReader::new();
+            let mut got = Vec::new();
+            let mut rest = Vec::new();
+            for part in [&stream[..cut], &stream[cut..]] {
+                if !rest.is_empty() || got.len() == 2 {
+                    rest.extend_from_slice(part);
+                    continue;
+                }
+                let tail = r
+                    .push_until(part, |m| {
+                        got.push(m.to_vec());
+                        m != stun.as_slice()
+                    })
+                    .unwrap();
+                rest.extend_from_slice(tail);
+            }
+            assert_eq!(got, vec![channel(3), stun.clone()], "cut {cut}");
+            assert_eq!(rest, b"\xffraw bytes", "cut {cut}");
+            assert_eq!(r.buffered(), 0);
+        }
     }
 
     #[test]

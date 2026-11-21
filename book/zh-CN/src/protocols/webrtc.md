@@ -449,8 +449,8 @@ socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 ### TCP 与 TLS 上的 TURN
 
 `turn.stream()` 是 TCP listener 的 acceptor，用 `only::tls::Tls` 包装后用于 TLS listener（`turns:`，通常
-为 5349 或 443 端口）：与 UDP listener 共享分配、配额与凭据。中继仍走 UDP；不提供 TCP 中继（RFC 6062，
-回 `442`）。
+为 5349 或 443 端口）：与 UDP listener 共享分配、配额与凭据。中继走 UDP；客户端请求 TCP 分配时走 TCP
+（见下一节）。
 
 ```rust,ignore
 let engine = Arc::new(
@@ -470,6 +470,35 @@ turn.set_engine(&engine);
 
 经连接建立的分配随连接结束。STUN 与 ChannelData 在流上按各自的长度分帧
 （`only_turn::framing::FrameReader`），ChannelData 填充到 4 字节。
+
+### TCP 分配（RFC 6062）
+
+TCP 或 TLS 客户端可以请求 `REQUESTED-TRANSPORT` TCP：此时它的中继地址是一个监听中的 TCP socket，
+中继的是 TCP 连接而不是数据报。浏览器从不请求它；SIP、XMPP 客户端以及经 TURN 隧道传输 TCP 协议的应用会用到，
+coturn 与 pion/turn 也都提供。
+
+- **Connect**：客户端指定一个对端；服务器*从中继地址*连接它，回复 `CONNECTION-ID`（对端连不上时回 447，
+  与该对端地址已有连接时回 446）。适用对端策略（403）；不需要权限。
+- **对端连入**中继地址时需要其 IP 的权限（CreatePermission，与 UDP 相同）；没有权限的连接被立即关闭，
+  有权限时客户端收到带 `CONNECTION-ID` 的 ConnectionAttempt 指示。
+- **ConnectionBind**：客户端向服务器打开一条*新*连接，并把它绑定到该 ID（同一凭据；接受控制连接的 nonce）。
+  成功之后，这条连接与对端连接双向传输原始字节；关闭任一侧都会关闭另一侧，分配结束（控制连接关闭、删除、
+  过期）时全部关闭。无人绑定的连接 30 秒后关闭。
+
+服务器让已绑定连接的字节不经过分配分片：两侧直接写入对方，当一侧排队超过 `tcp_relay_buffer` 时，暂停读取
+另一侧直到它排空（`hold_reads` / `on_drain`），因此慢读者会减慢对端，而不是让内存增长。绑定之前，对端的字节
+最多保留到同一水位，然后暂停读取它。每个服务器用一个线程轮询各中继地址的监听 socket，把接受的连接交给引擎；
+没有 I/O 线程等待 `accept`。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `tcp_relays` | true | 提供 TCP 分配（false：442） |
+| `max_tcp_connections` | 64 | 一个 TCP 分配的连接数（超出时 Connect 回 508，连入的对端被关闭） |
+| `tcp_relay_buffer` | 64 KiB | 每个方向保留的量：绑定前对端的字节，以及使另一侧暂停的队列水位 |
+
+Connect 受引擎的 `Config::connect_timeout`（默认 10 秒）限制；RFC 6062 要求至少 30 秒，需要时在服务 TURN 的
+引擎上调大它。到某个对端的连接刚关闭时，再次 Connect 同一对端地址可能失败（447），因为旧的四元组仍处于
+TIME_WAIT；RFC 6062 本就要求客户端等 10 秒再重试同一对端。
 
 ### DTLS 上的 TURN
 
@@ -495,6 +524,33 @@ Engine::builder()
 搬运字节：`poll_transmit` 发往服务器，把收到的内容交给 `handle_input`（中继数据以 `(peer, payload)` 返回），
 在 `poll_timeout` 时调用 `handle_timeout`。上限：64 个对端、等待绑定的数据 64 KiB。`Endpoint::gather_relay`
 在 UDP 上驱动一个客户端。
+
+TCP 分配用 `ClientConfig::tcp_allocation(true)`（经 TCP 或 TLS）。`connect(peer)` 发送 Connect，回应为
+`ClientEvent::Connected { peer, id }` 或 `ConnectFailed`；`create_permission(peer)` 安装一个持续刷新的权限，
+此后连入的对端以 `ClientEvent::ConnectionAttempt { peer, id }` 出现。要使用一条连接，向服务器打开一条新连接，
+在其上驱动 `client.data_connection(now, id)` 得到的 `DataConnection`：发送 `poll_transmit` 给出的内容
+（ConnectionBind），把读到的内容交给 `handle_input`，它返回取走的字节数；`state()` 变为 `DataState::Bound`
+后，这次读取的剩余部分及之后的一切都是对端的字节，写入的内容发往对端。
+
+```rust,ignore
+let mut ctl = Client::new(ClientConfig::new(server, "alice", "secret").tcp_allocation(true), now);
+// ……在一条 TCP 连接上驱动 ctl，直到 ClientEvent::Allocated……
+ctl.connect(now, peer);
+// ……ClientEvent::Connected { id, .. }……
+let mut data_conn = TcpStream::connect(server)?;
+let mut bind = ctl.data_connection(now, id).unwrap();
+while let Some(m) = bind.poll_transmit() {
+    data_conn.write_all(&m)?;
+}
+let n = data_conn.read(&mut buf)?;
+let used = bind.handle_input(&buf[..n]);
+if *bind.state() == DataState::Bound {
+    peer_bytes(&buf[used..n]); // data_conn 现在是通向对端的管道
+}
+```
+
+`tools/interop/webrtc/turn-tcp.sh` 对 coturn（`turnutils_uclient -T` 及其服务器）与 pion/turn（其 TCP 分配
+客户端与服务器）做互通检查，经 TCP 与 TLS。
 
 ## DTLS 层：DTLS 1.3，可回退到 DTLS 1.2
 
@@ -530,6 +586,6 @@ DTLS 1.2。
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；发送支持 ECN 的包；DTLS-SRTP 下的 SRTP MKI；让普通（无 ICE）媒体锁定其实际来源地址；
+发送支持 ECN 的包；DTLS-SRTP 下的 SRTP MKI；让普通（无 ICE）媒体锁定其实际来源地址；
 不做 BUNDLE 的会话中跨传输的传输级拥塞控制。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、
-ADR-045、ADR-048、ADR-054、ADR-058、ADR-072 与 ADR-073。
+ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073 与 ADR-076。

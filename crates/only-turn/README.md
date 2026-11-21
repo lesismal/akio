@@ -15,13 +15,17 @@ and DTLS listeners, and a sans-io TURN client.
   Binding requests too. Relay sockets are bound at run time with `only::Engine::bind_udp`.
 - `TurnServer::stream()`: the same server for TCP listeners and TLS ones (`only::tls::Tls`):
   STUN and ChannelData framed on the stream (`framing`), relays over UDP, an allocation per
-  connection. TCP relays (RFC 6062) are not offered.
+  connection; and TCP allocations (RFC 6062, ADR-076): a TCP relayed address, Connect,
+  ConnectionAttempt for peers with a permission, ConnectionBind on new client connections,
+  then raw bytes both ways with linked backpressure.
 - `TurnServer::dtls(&tls_config)`: the same server for UDP listeners whose clients talk DTLS
   (RFC 7350, `turns:...?transport=udp`, on `only-dtls`): stateless cookies, DTLS 1.3 with
   fallback to 1.2, one STUN or ChannelData message per record, an allocation per DTLS
   association (ADR-054).
 - `client::Client`: a sans-io TURN client over UDP or a stream (allocate, refresh, channels,
-  permissions); `only-webrtc`'s `Endpoint::gather_relay` drives one.
+  permissions), and of TCP allocations (`ClientConfig::tcp_allocation`, `Client::connect`,
+  `client::DataConnection` for ConnectionBind); `only-webrtc`'s `Endpoint::gather_relay` drives
+  one.
 - `TurnCore`: the same server as a sans-io state machine.
 
 ```rust,no_run
@@ -43,13 +47,12 @@ engine.run().unwrap();
 
 Interop: the pion/turn client and coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`,
 `COTURN=1`; over DTLS: `tools/interop/webrtc/turn-dtls.sh`, which also relays `only-webrtc`
-`Endpoint`s through coturn's DTLS listener), and pion WebRTC peers relayed to a `only` WebRTC
-server.
+`Endpoint`s through coturn's DTLS listener; TCP allocations: `tools/interop/webrtc/turn-tcp.sh`,
+coturn and pion/turn clients and servers both ways), and pion WebRTC peers relayed to a `only`
+WebRTC server.
 
 The DTLS listener negotiates connection IDs (RFC 9146, RFC 9147 §9; 8 bytes by default,
 `dtls_with_connection_ids`): a client whose address changes keeps its association and
 allocation, its path following the first authenticated record from the new address (ADR-072).
-
-Not implemented: TCP relays (RFC 6062).
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

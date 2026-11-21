@@ -21,13 +21,22 @@
 //!   [`ClientConfig::max_sends`] sends) and time out after [`ClientConfig::timeout`] on a
 //!   stream.
 //! - Bounds: [`ClientConfig::max_peers`] peers, [`ClientConfig::max_pending`] bytes waiting.
+//!
+//! TCP allocations (RFC 6062, [`ClientConfig::tcp_allocation`], over a stream): the relayed
+//! address is a TCP one. [`Client::connect`] asks the server to open a connection to a peer
+//! ([`ClientEvent::Connected`] or [`ClientEvent::ConnectFailed`]); a peer holding a permission
+//! ([`Client::create_permission`]) that connects to the relayed address shows up as
+//! [`ClientEvent::ConnectionAttempt`]. Either way the caller opens a new TCP (or TLS)
+//! connection to the server and binds it to the connection id with a [`DataConnection`]
+//! (a ConnectionBind with the allocation's credentials); once bound, that connection carries
+//! the peer's bytes as they are, both ways, and closing it closes the peer's.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use crate::framing::channel_data_padding;
+use crate::framing::{channel_data_padding, frame_len};
 use crate::stun::{
     Class, Message, MessageBuilder, Method, attr, is_channel_data, is_stun, long_term_key,
     transaction_id,
@@ -77,6 +86,10 @@ pub struct ClientConfig {
     pub use_channels: bool,
     /// Sent as `SOFTWARE`, if set.
     pub software: Option<String>,
+    /// Asks for a TCP allocation (RFC 6062; needs [`stream`](Self::stream)): the relayed
+    /// address is a TCP one, used with [`Client::connect`] and [`DataConnection`] instead of
+    /// [`Client::send_to`] (false).
+    pub tcp_allocation: bool,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -85,6 +98,7 @@ impl fmt::Debug for ClientConfig {
             .field("server", &self.server)
             .field("username", &self.username)
             .field("stream", &self.stream)
+            .field("tcp_allocation", &self.tcp_allocation)
             .field("lifetime", &self.lifetime)
             .finish_non_exhaustive()
     }
@@ -106,6 +120,7 @@ impl ClientConfig {
             max_pending: 64 * 1024,
             use_channels: true,
             software: None,
+            tcp_allocation: false,
         }
     }
 
@@ -113,6 +128,15 @@ impl ClientConfig {
     #[must_use]
     pub fn stream(mut self, yes: bool) -> Self {
         self.stream = yes;
+        self
+    }
+
+    /// Sets [`tcp_allocation`](Self::tcp_allocation) (and, with `true`,
+    /// [`stream`](Self::stream): TCP allocations are made over TCP or TLS only).
+    #[must_use]
+    pub fn tcp_allocation(mut self, yes: bool) -> Self {
+        self.tcp_allocation = yes;
+        self.stream |= yes;
         self
     }
 
@@ -178,6 +202,27 @@ pub enum ClientEvent {
     PeerFailed(SocketAddr, ClientError),
     /// [`Client::close`] finished (the deletion was answered or timed out).
     Closed,
+    /// A [`Client::connect`] succeeded (TCP allocations): the server's connection to `peer`
+    /// is up as connection `id`. Bind a new connection to the server to it with a
+    /// [`DataConnection`] within 30 seconds, or the server closes it.
+    Connected {
+        /// The peer.
+        peer: SocketAddr,
+        /// Its `CONNECTION-ID`.
+        id: u32,
+    },
+    /// A [`Client::connect`] failed: 447 when the server could not reach the peer, 446 when a
+    /// connection with it exists already.
+    ConnectFailed(SocketAddr, ClientError),
+    /// A peer with a permission connected to the relayed address (TCP allocations): bind a new
+    /// connection to the server to connection `id` with a [`DataConnection`] within 30
+    /// seconds to take it, or let the server close it.
+    ConnectionAttempt {
+        /// The peer.
+        peer: SocketAddr,
+        /// Its `CONNECTION-ID`.
+        id: u32,
+    },
 }
 
 /// The state of a [`Client`].
@@ -201,6 +246,7 @@ enum Kind {
     Refresh(u32),
     ChannelBind(SocketAddr, u16),
     Permission(SocketAddr),
+    Connect(SocketAddr),
 }
 
 struct Tx {
@@ -227,6 +273,9 @@ struct Peer {
     last_used: Option<Instant>,
     failed_until: Option<Instant>,
     pending: VecDeque<Vec<u8>>,
+    /// Installed by [`Client::create_permission`]: kept and refreshed until the client is
+    /// closed, used or not.
+    pinned: bool,
 }
 
 /// A TURN client: one allocation (see the module docs).
@@ -308,6 +357,75 @@ impl Client {
         self.pending_bytes
     }
 
+    /// Installs a permission for `peer`'s address now and keeps it refreshed until the
+    /// client is closed: what a TCP allocation needs before a peer can connect to the relayed
+    /// address (UDP allocations get theirs on first [`send_to`](Self::send_to)). A refusal is
+    /// reported as [`ClientEvent::PeerFailed`]. `false`: not allocated, or too many peers.
+    pub fn create_permission(&mut self, now: Instant, peer: SocketAddr) -> bool {
+        if self.state != ClientState::Allocated {
+            return false;
+        }
+        if !self.peers.contains_key(&peer) && self.peers.len() >= self.cfg.max_peers {
+            self.forget_idle(now);
+            if self.peers.len() >= self.cfg.max_peers {
+                return false;
+            }
+        }
+        let p = self.peers.entry(peer).or_default();
+        p.pinned = true;
+        p.failed_until = None;
+        if p.ready || p.busy {
+            return true;
+        }
+        // A channel when UDP data may follow; a bare permission on a TCP allocation.
+        if self.cfg.tcp_allocation {
+            p.no_channel = true;
+        }
+        self.bind_peer(now, peer);
+        true
+    }
+
+    /// Asks the server for a TCP connection from the relayed address to `peer` (a Connect,
+    /// RFC 6062 section 4.3); [`ClientEvent::Connected`] or [`ClientEvent::ConnectFailed`]
+    /// follows. `false`: not a TCP allocation, not allocated, or a Connect to `peer` is in
+    /// flight already. The server needs no permission for it.
+    pub fn connect(&mut self, now: Instant, peer: SocketAddr) -> bool {
+        if self.state != ClientState::Allocated || !self.cfg.tcp_allocation {
+            return false;
+        }
+        if self.txs.values().any(|t| t.kind == Kind::Connect(peer)) {
+            return false;
+        }
+        self.start(now, Kind::Connect(peer), 0);
+        true
+    }
+
+    /// A [`DataConnection`] binding a new connection to the server to connection `id` (from
+    /// [`ClientEvent::Connected`] or [`ClientEvent::ConnectionAttempt`]) with this
+    /// allocation's credentials. `None` until the client has authenticated (allocated).
+    pub fn data_connection(&self, now: Instant, id: u32) -> Option<DataConnection> {
+        let (Some(realm), Some(nonce), Some(key)) = (&self.realm, &self.nonce, self.key) else {
+            return None;
+        };
+        let mut d = DataConnection {
+            id,
+            username: self.cfg.username.clone(),
+            password: self.cfg.password.clone(),
+            software: self.cfg.software.clone(),
+            realm: realm.clone(),
+            nonce: nonce.clone(),
+            key,
+            tid: [0; 12],
+            state: DataState::Binding,
+            buf: Vec::new(),
+            transmits: VecDeque::new(),
+            deadline: now + self.cfg.timeout,
+            auth_tries: 0,
+        };
+        d.send();
+        Some(d)
+    }
+
     // ---- requests ----
 
     fn build(&self, kind: &Kind, tid: [u8; 12]) -> Vec<u8> {
@@ -316,6 +434,7 @@ impl Client {
             Kind::Refresh(_) => Method::REFRESH,
             Kind::ChannelBind(..) => Method::CHANNEL_BIND,
             Kind::Permission(_) => Method::CREATE_PERMISSION,
+            Kind::Connect(_) => Method::CONNECT,
         };
         let mut b = MessageBuilder::new(method, Class::Request, tid);
         if let Some(s) = &self.cfg.software {
@@ -323,7 +442,8 @@ impl Client {
         }
         match kind {
             Kind::Allocate => {
-                b = b.u32(attr::REQUESTED_TRANSPORT, 17 << 24);
+                let proto: u32 = if self.cfg.tcp_allocation { 6 } else { 17 };
+                b = b.u32(attr::REQUESTED_TRANSPORT, proto << 24);
                 b = b.u32(attr::LIFETIME, self.cfg.lifetime.as_secs() as u32);
             }
             Kind::Refresh(l) => b = b.u32(attr::LIFETIME, *l),
@@ -332,7 +452,9 @@ impl Client {
                     .attr(attr::CHANNEL_NUMBER, &[(ch >> 8) as u8, *ch as u8, 0, 0])
                     .xor_addr(attr::XOR_PEER_ADDRESS, *peer);
             }
-            Kind::Permission(peer) => b = b.xor_addr(attr::XOR_PEER_ADDRESS, *peer),
+            Kind::Permission(peer) | Kind::Connect(peer) => {
+                b = b.xor_addr(attr::XOR_PEER_ADDRESS, *peer);
+            }
         }
         if let (Some(realm), Some(nonce), Some(key)) = (&self.realm, &self.nonce, &self.key) {
             b = b
@@ -411,7 +533,7 @@ impl Client {
     /// peers, too much waiting, or the peer was refused recently). The first datagrams to a
     /// peer wait for its binding.
     pub fn send_to(&mut self, now: Instant, peer: SocketAddr, data: &[u8]) -> bool {
-        if self.state != ClientState::Allocated || data.len() > 0xffff {
+        if self.state != ClientState::Allocated || data.len() > 0xffff || self.cfg.tcp_allocation {
             return false;
         }
         if !self.peers.contains_key(&peer) && self.peers.len() >= self.cfg.max_peers {
@@ -485,7 +607,9 @@ impl Client {
         let idle: Vec<SocketAddr> = self
             .peers
             .iter()
-            .filter(|(_, p)| !p.busy && p.last_used.is_none_or(|t| t + PEER_IDLE <= now))
+            .filter(|(_, p)| {
+                !p.busy && !p.pinned && p.last_used.is_none_or(|t| t + PEER_IDLE <= now)
+            })
             .map(|(a, _)| *a)
             .collect();
         for a in idle {
@@ -555,6 +679,15 @@ impl Client {
                 let payload = m.get(attr::DATA)?;
                 // Only peers we installed a permission for (the server checks too).
                 self.peers.contains_key(&peer).then_some((peer, payload))
+            }
+            Class::Indication if m.method() == Method::CONNECTION_ATTEMPT => {
+                if self.cfg.tcp_allocation && self.state == ClientState::Allocated {
+                    let peer = m.get_xor_addr(attr::XOR_PEER_ADDRESS)?;
+                    let id = u32::from_be_bytes(m.get(attr::CONNECTION_ID)?.try_into().ok()?);
+                    self.events
+                        .push_back(ClientEvent::ConnectionAttempt { peer, id });
+                }
+                None
             }
             Class::Success | Class::Error => {
                 self.on_response(now, &m);
@@ -636,6 +769,7 @@ impl Client {
                 }
                 self.events.push_back(ClientEvent::PeerFailed(peer, e));
             }
+            Kind::Connect(peer) => self.events.push_back(ClientEvent::ConnectFailed(peer, e)),
         }
     }
 
@@ -676,6 +810,18 @@ impl Client {
                     p.refresh_at = Some(now + BINDING_REFRESH);
                 }
                 self.flush_peer(peer);
+            }
+            Kind::Connect(peer) => {
+                let id = m
+                    .get(attr::CONNECTION_ID)
+                    .and_then(|v| <[u8; 4]>::try_from(v).ok())
+                    .map(u32::from_be_bytes);
+                self.events.push_back(match id {
+                    Some(id) => ClientEvent::Connected { peer, id },
+                    None => {
+                        ClientEvent::ConnectFailed(peer, ClientError::Protocol("no CONNECTION-ID"))
+                    }
+                });
             }
         }
     }
@@ -741,7 +887,7 @@ impl Client {
             let idle = self
                 .peers
                 .get(&peer)
-                .is_none_or(|p| p.last_used.is_none_or(|t| t + PEER_IDLE <= now));
+                .is_none_or(|p| !p.pinned && p.last_used.is_none_or(|t| t + PEER_IDLE <= now));
             if idle {
                 self.drop_peer(peer);
             } else {
@@ -791,6 +937,189 @@ impl Tx {
     /// Whether this request carried credentials.
     fn packet_authed(&self) -> bool {
         Message::parse(&self.packet).is_ok_and(|m| m.has(attr::MESSAGE_INTEGRITY))
+    }
+}
+
+/// The state of a [`DataConnection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataState {
+    /// The ConnectionBind is in flight.
+    Binding,
+    /// Bound: the connection now carries the peer's bytes as they are.
+    Bound,
+    /// The server refused (400: no such connection waiting, or it waited too long) or did not
+    /// answer in time: close the connection.
+    Failed(ClientError),
+}
+
+/// Binds a new TCP or TLS connection to the server to a connection of a TCP allocation (RFC
+/// 6062 sections 4.3 and 4.4), from [`Client::data_connection`]. Sans-io, like [`Client`]:
+/// send what [`poll_transmit`](Self::poll_transmit) returns on the new connection, feed what
+/// it reads to [`handle_input`](Self::handle_input) until the state is no longer
+/// [`DataState::Binding`], and call [`handle_timeout`](Self::handle_timeout) at
+/// [`poll_timeout`](Self::poll_timeout). A 401 or 438 challenge is answered (a few times)
+/// with the realm and nonce it brings. Once [`DataState::Bound`], the bytes after the response
+/// (see `handle_input`) and everything read later are the peer's, and what is written goes to
+/// the peer.
+pub struct DataConnection {
+    id: u32,
+    username: String,
+    password: String,
+    software: Option<String>,
+    realm: String,
+    nonce: String,
+    key: [u8; 16],
+    tid: [u8; 12],
+    state: DataState,
+    buf: Vec<u8>,
+    transmits: VecDeque<Vec<u8>>,
+    deadline: Instant,
+    auth_tries: u8,
+}
+
+impl fmt::Debug for DataConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DataConnection")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DataConnection {
+    /// The connection id being bound.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// The state.
+    pub fn state(&self) -> &DataState {
+        &self.state
+    }
+
+    /// A ConnectionBind with a new transaction id.
+    fn send(&mut self) {
+        self.tid = transaction_id();
+        let mut b = MessageBuilder::new(Method::CONNECTION_BIND, Class::Request, self.tid);
+        if let Some(s) = &self.software {
+            b = b.attr(attr::SOFTWARE, s.as_bytes());
+        }
+        let out = b
+            .u32(attr::CONNECTION_ID, self.id)
+            .attr(attr::USERNAME, self.username.as_bytes())
+            .attr(attr::REALM, self.realm.as_bytes())
+            .attr(attr::NONCE, self.nonce.as_bytes())
+            .integrity(&self.key)
+            .fingerprint()
+            .build();
+        self.transmits.push_back(out);
+    }
+
+    /// The next message for the server, on the data connection.
+    pub fn poll_transmit(&mut self) -> Option<Vec<u8>> {
+        self.transmits.pop_front()
+    }
+
+    /// A binding of connection 1 for user `u` in realm `r` (password `p`), transaction id
+    /// `[9; 12]`, so fuzz seeds can answer it.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn for_fuzzing(now: Instant) -> DataConnection {
+        DataConnection {
+            id: 1,
+            username: "u".into(),
+            password: "p".into(),
+            software: None,
+            realm: "r".into(),
+            nonce: "n".into(),
+            key: long_term_key("u", "r", "p"),
+            tid: [9; 12],
+            state: DataState::Binding,
+            buf: Vec::new(),
+            transmits: VecDeque::new(),
+            deadline: now + Duration::from_secs(10),
+            auth_tries: 0,
+        }
+    }
+
+    /// Bytes read from the data connection while [`DataState::Binding`]. Returns how many of
+    /// them were taken (the server's response, or part of it, held until whole); when the
+    /// state is then [`DataState::Bound`], `data[taken..]` is the peer's first bytes. A stream
+    /// that does not carry STUN fails the binding.
+    pub fn handle_input(&mut self, data: &[u8]) -> usize {
+        let mut used = 0;
+        while self.state == DataState::Binding && used < data.len() {
+            // Up to the 8 bytes that tell a STUN message's length, then up to its end.
+            let need = match frame_len(&self.buf) {
+                Ok(Some(n)) => n,
+                _ => 8,
+            };
+            let take = (need - self.buf.len()).min(data.len() - used);
+            self.buf.extend_from_slice(&data[used..used + take]);
+            used += take;
+            let stun = self.buf[0] >> 6 == 0;
+            match frame_len(&self.buf) {
+                Ok(Some(n)) if stun && n == self.buf.len() => {
+                    let msg = std::mem::take(&mut self.buf);
+                    self.on_message(&msg);
+                }
+                Ok(Some(_)) if stun => {}
+                Ok(None) => {}
+                // ChannelData or anything else: this is not a TURN server's answer.
+                Ok(Some(_)) | Err(_) => {
+                    self.state = DataState::Failed(ClientError::Protocol("not STUN"));
+                }
+            }
+        }
+        used
+    }
+
+    fn on_message(&mut self, msg: &[u8]) {
+        let Ok(m) = Message::parse(msg) else {
+            self.state = DataState::Failed(ClientError::Protocol("bad STUN message"));
+            return;
+        };
+        if m.transaction_id() != self.tid || m.method() != Method::CONNECTION_BIND {
+            return;
+        }
+        if m.has(attr::FINGERPRINT) && !m.check_fingerprint() {
+            return;
+        }
+        match m.class() {
+            Class::Success if m.check_integrity(&self.key) => self.state = DataState::Bound,
+            Class::Error => {
+                let (code, reason) = m.error_code().unwrap_or((0, ""));
+                let challenge = (m.get_str(attr::REALM), m.get_str(attr::NONCE));
+                if let (401 | 438, (Some(realm), Some(nonce))) = (code, challenge) {
+                    if self.auth_tries < AUTH_RETRIES {
+                        self.auth_tries += 1;
+                        if realm != self.realm {
+                            self.key = long_term_key(&self.username, realm, &self.password);
+                            self.realm = realm.to_owned();
+                        }
+                        self.nonce = nonce.to_owned();
+                        self.send();
+                        return;
+                    }
+                }
+                // Authenticated errors only, but for the challenges (RFC 8489 section 9.2.5).
+                if matches!(code, 401 | 438) || m.check_integrity(&self.key) {
+                    self.state = DataState::Failed(ClientError::Rejected(code, reason.to_owned()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Fails the binding once [`ClientConfig::timeout`] has passed since it started.
+    pub fn handle_timeout(&mut self, now: Instant) {
+        if self.state == DataState::Binding && now >= self.deadline {
+            self.state = DataState::Failed(ClientError::Timeout);
+        }
+    }
+
+    /// When [`handle_timeout`](Self::handle_timeout) wants to run next.
+    pub fn poll_timeout(&self) -> Option<Instant> {
+        (self.state == DataState::Binding).then_some(self.deadline)
     }
 }
 

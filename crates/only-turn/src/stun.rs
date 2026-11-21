@@ -38,6 +38,12 @@ impl Method {
     pub const CREATE_PERMISSION: Method = Method(0x008);
     /// ChannelBind (TURN).
     pub const CHANNEL_BIND: Method = Method(0x009);
+    /// Connect (TURN TCP relays, RFC 6062).
+    pub const CONNECT: Method = Method(0x00a);
+    /// ConnectionBind (TURN TCP relays, RFC 6062).
+    pub const CONNECTION_BIND: Method = Method(0x00b);
+    /// ConnectionAttempt (TURN TCP relays, RFC 6062, indication).
+    pub const CONNECTION_ATTEMPT: Method = Method(0x00c);
 }
 
 /// The class of a STUN message.
@@ -127,6 +133,8 @@ pub mod attr {
     pub const PRIORITY: u16 = 0x0024;
     /// USE-CANDIDATE (ICE).
     pub const USE_CANDIDATE: u16 = 0x0025;
+    /// CONNECTION-ID (TURN TCP relays, RFC 6062): a 32-bit connection identifier.
+    pub const CONNECTION_ID: u16 = 0x002A;
     /// ADDITIONAL-ADDRESS-FAMILY (TURN).
     pub const ADDITIONAL_ADDRESS_FAMILY: u16 = 0x8000;
     /// PASSWORD-ALGORITHMS.
