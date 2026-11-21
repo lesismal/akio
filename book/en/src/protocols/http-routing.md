@@ -117,7 +117,8 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 `br` and `zstd` (the in-house `only-brotli` and `only-zstd`, ADR-041) are off by default: set
 `Compress::brotli` / `Compress::zstd` to a level to answer clients that accept them, preferred in
 the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files are served by
-`Files`.
+`Files`. The middleware compresses whole buffered bodies; streamed responses
+(`Context::stream_response`) are sent as written, uncompressed (ADR-069).
 
 ## Static files
 

@@ -102,7 +102,8 @@
 
 `br` 和 `zstd`（自研的 `only-brotli` 与 `only-zstd`，ADR-041）默认关闭：把 `Compress::brotli` /
 `Compress::zstd` 设为某个级别，即对接受它们的客户端使用，优先顺序为 br、zstd、gzip、deflate。预压缩的
-`.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。
+`.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。中间件压缩的是完整缓冲的消息体；流式响应
+（`Context::stream_response`）按写入原样发送，不压缩（ADR-069）。
 
 ## 静态文件
 
