@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-[docs/BENCHMARKS.zh-CN.md](../../docs/BENCHMARKS.zh-CN.md) 背后的脚本：`only` 与 tokio、hyper、fib（`only`
+[docs/BENCHMARKS.zh-CN.md](../../docs/BENCHMARKS.zh-CN.md) 背后的脚本：`only` 与 tokio、hyper、monoio、fib（`only`
 所对应的 Go 库）使用相同的处理逻辑，绑定到不同的 CPU，跑多轮，每次运行都启动新的服务端。仅限 Linux
 （taskset、`/proc`、perf）。
 
@@ -23,7 +23,9 @@
 
 `only` 的服务端是 `crates/only-http/examples/http-bench.rs` 和 `crates/only/examples/bench-server.rs`
 （`only-epoll`、`only-uring`），参照实现放在仓库外的工作区 `tools/bench-ref/` 中（`tokio-ref`、
-`hyper-ref`、`fib-ref`）。
+`hyper-ref`、`monoio-ref`、`fib-ref`）。`monoio-ref`（monoio 0.2，每核一线程：每个线程一个运行时和一个
+`SO_REUSEPORT` listener）提供 TCP echo 和 HTTP/1.1（`/plaintext`、`/json`、流水线；用 httparse 解析，
+没有 HTTP/2），分两种运行：`monoio-uring`（它的 io_uring driver）和 `monoio-epoll`（它的 legacy epoll driver）。
 
 ## 压测客户端
 
@@ -52,6 +54,7 @@ A/B 对比：把旧版本的二进制（`http-bench`、`bench-server`）复制�
 export CARGO_TARGET_DIR=/path/to/target
 cargo build --release -p only-http --example http-bench
 (cd tools/bench-ref/hyper-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
+(cd tools/bench-ref/monoio-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 cp -r tools/bench-ref/fib-ref /tmp/fibref && cd /tmp/fibref &&
   go mod edit -replace github.com/lesismal/fib=/path/to/fib && go build -o $CARGO_TARGET_DIR/fib-ref . && cd -
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \

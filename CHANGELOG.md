@@ -55,6 +55,22 @@ Additive:
   `struct cmsghdr` is 4-aligned where the kernel's and ours are 8-aligned (sizes and offsets
   agree); nothing else differs. docs/api-stability.md lists Linux with musl as tier 2.
 
+### Added: monoio in the benchmark harness, quiche interop (tools)
+
+- `tools/bench-ref/monoio-ref`: a monoio 0.2 reference server (thread-per-core, one runtime and
+  one `SO_REUSEPORT` listener per thread; TCP echo, HTTP/1.1 `/plaintext` and `/json` with
+  pipelining), run by `tools/bench` as `monoio-uring` and `monoio-epoll` (its io_uring and legacy
+  drivers); `http.sh` skips the h2c cases for servers without HTTP/2 (`has_h2`). Results and
+  method in docs/BENCHMARKS.md.
+- `tools/interop/quic/quiche.sh`: quiche 0.30.1 (built from its release tag in Docker) against
+  `only-h3` / `only-quic` both ways: quiche-client against the HTTP/3 server (Version
+  Negotiation, 50 requests on one connection, a 300 KB POST, a streamed response, 0-RTT, client
+  migration) and over HTTP/0.9 (`hq-interop`) against `only-quic`; `H3Client` and only-quic's
+  client against quiche-server with and without Retry (405 after STOP_SENDING on a 3 MiB upload,
+  more concurrent requests than its 100-stream limit, a paused streamed response). The
+  `quic-interop` example gains an `hq` mode (server and client), `h3-interop` a `client-quiche`
+  mode. No bug found on either side.
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

@@ -12,7 +12,7 @@ mkdir -p "$D"
 B=$(dirname "$0")
 OUT=$D/echo.tsv "$B/echo.sh"
 OUT=$D/http.tsv "$B/http.sh"
-OUT=$D/mem.tsv KINDS="${MEM_KINDS:-only-epoll only-uring tokio hyper fib}" "$B/mem.sh"
+OUT=$D/mem.tsv KINDS="${MEM_KINDS:-only-epoll only-uring tokio hyper monoio-uring monoio-epoll fib}" "$B/mem.sh"
 if [ -n "${BASE_DIR:-}" ]; then
   OUT=$D/ab.tsv KINDS="base-epoll only-epoll base-uring only-uring" "$B/http.sh" plaintext,pipelined,json,h2
   OUT=$D/ab.tsv KINDS="base-epoll only-epoll base-uring only-uring" SIZES=64 CONNS="64 1024" "$B/echo.sh" tcp

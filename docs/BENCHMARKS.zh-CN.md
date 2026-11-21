@@ -28,7 +28,7 @@
   一列 `only`。
 - **服务端**（处理逻辑一致）：`crates/only/examples/bench-server.rs`（TCP/TLS/UDP echo）和
   `crates/only-http/examples/http-bench.rs`（HTTP/1.1 + h2c + TLS 上的 h2，`/plaintext`、`/json`，
-  `/ws` 上的 WebSocket echo）；参照实现在 `tools/bench-ref/`（`tokio-ref`、`hyper-ref`、`fib-ref`）。
+  `/ws` 上的 WebSocket echo）；参照实现在 `tools/bench-ref/`（`tokio-ref`、`hyper-ref`、`fib-ref`；单独的 [monoio](#monoio2026-11-21同一次运行toolsbench-refmonoio-ref) 运行用 `monoio-ref`）。
   TLS 统一为 TLS 1.3 + ECDSA P-256 自签名证书（`only` 用 only-tls，tokio 用 tokio-rustls，fib 用
   `fib/tls`）。JSON：`only` 在示例里用一个手写的小序列化器，hyper 用 serde_json，fib 用 `encoding/json`。
 - **压测工具**：HTTP/1.1 用 `h2load --h1`（主机上没有 wrk；流水线为 `-m 16`），HTTP/2 用 `h2load`
@@ -40,7 +40,8 @@
 - **只走回环**：客户端与服务端在同一台机器上，共享内存带宽和内核回环路径；没有网卡、没有真实延迟、
   没有丢包。**DPDK 没有测**：主机上没有 DPDK 能驱动的网卡，`only-dpdk` 只通过进程内内存线路上的
   用户态 TCP/IP 协议栈出现。
-- **h2load 上限**：8 线程的 h2load 最多约 400–500 万请求/秒。`only` 的 h2c 与 TLS 上 h2 的数字就在这个
+- **h2load 上限**：8 线程的 h2load 跑 HTTP/2 最多约 400–500 万请求/秒（HTTP/1.1 流水线更高：对 monoio-ref
+  达到 790 万，见 [monoio](#monoio2026-11-21同一次运行toolsbench-refmonoio-ref)）。`only` 的 h2c 与 TLS 上 h2 的数字就在这个
   水平（服务端 4 个 CPU 跑满，但客户端也接近饱和），所以它们是 `only` 的下限。
 - **受客户端限制的格子**：TLS 握手速率受客户端限制（8 个线程用 rustls 做每次握手的客户端一半）；
   keep-alive 的 HTTP/1.1 受内核限制（每个请求一次读一次写）。
@@ -1540,12 +1541,79 @@ AF_PACKET 每收一帧要付出一次 `recvfrom` 系统调用和一个 skb，每
 每一行两个方向都有（h2c 64 × 16 逐轮比值 0.54–1.26，16 × 128 为 0.82–1.14），逐轮比值的中位数相差
 不到 1%。
 
+### monoio（2026-11-21，同一次运行，`tools/bench-ref/monoio-ref`）
+
+单独的一次运行，不属于 2026-11-15 那一轮：同一台主机、同一套脚本、同样的绑核和轮数（5 秒一轮取 3 轮
+中位数，`±` 含义同上），提交 `e1129f98`，在 `only`、tokio、hyper 旁边加入 monoio 0.2.4。每张表里的各列
+都来自同一次运行，请在表内比较，不要和上面那一轮的表比（`only` 的内存数字之后有变化）。
+HTTP 行来自第一遍。echo 和内存行来自两小时后用同一批二进制跑的第二遍：第一遍沿用了 shell 的 1024 个
+文件描述符上限，1024 连接的 echo 场景和内存测试因此出错。两遍运行期间主机是安静的（CPU 上只有基准进程），
+但开始时负载均值还没从之前的任务降下来（6.3 和 12.7）。
+
+**monoio-ref** 和 `only` 一样是每核一线程：4 个线程，每个线程有自己的 monoio 运行时和自己的
+`SO_REUSEPORT` 监听；`monoio-uring` 用 io_uring 驱动（1024 项），`monoio-epoll` 用 legacy（epoll）驱动。
+TCP echo 是 read/`write_all` 循环，和 `bench-server`、`tokio-ref` 的处理函数一样。HTTP/1.1 是一个
+**最小的手写应答器**：在读缓冲上跑 httparse，对路径做一次 `match`，每批读到的请求把响应写进同一个输出缓冲
+（流水线请求一次写回），`Date` 头按线程缓存，JSON 响应体每个请求用 serde_json 序列化一次。它的响应和
+`only` 的 `http-bench` 对 `/plaintext` 发出的一样是 130 字节（状态行、`Content-Type`、`Content-Length`、
+`Date`、响应体），但没有路由、请求/响应对象、头部表，也没有连接状态机。monoio 本身除了这样的循环之外没有
+HTTP 服务端（monoio-http 是单独的 crate，没有测），也没有测 HTTP/2 或 TLS 监听。
+
+HTTP/1.1（请求/秒，256 个连接，`h2load --h1`，流水线 `-m 16`）：
+
+| 场景 | only-epoll | only-uring | hyper | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|
+| `GET /plaintext` | 696,854 (±17%) | 700,768 (±8%) | 643,562 | 881,367 (±11%) | 741,333 (±11%) |
+| `GET /plaintext`，流水线 ×16 | 4,322,201 (±5%) | 4,321,865 (±8%) | 754,404 (±9%) | 7,921,846 | 6,919,708 (±8%) |
+| `GET /json` | 662,192 (±6%) | 736,998 (±9%) | 624,301 | 900,928 | 734,315 (±10%) |
+
+TCP echo（请求/秒；消息大小 × 连接数）：
+
+| 负载 | only-epoll | only-uring | tokio | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|
+| 64 B × 64 | 706,547 (±6%) | 733,788 (±11%) | 724,719 | 786,760 | 624,480 |
+| 64 B × 256 | 698,432 | 764,664 | 744,965 | 797,432 (±15%) | 678,869 (±19%) |
+| 64 B × 1024 | 726,553 (±20%) | 791,075 (±4%) | 754,597 (±10%) | 836,726 | 705,594 |
+| 1 KiB × 64 | 675,190 (±13%) | 756,785 (±23%) | 701,517 | 749,488 | 593,584 (±10%) |
+| 1 KiB × 256 | 721,026 (±8%) | 692,644 (±10%) | 724,442 | 809,909 (±4%) | 649,071 (±7%) |
+| 1 KiB × 1024 | 722,416 | 748,299 | 592,807 (±19%) | 828,701 | 664,771 |
+| 16 KiB × 64 | 370,764 (±8%) | 414,190 | 443,602 | 432,135 (±4%) | 377,337 (±6%) |
+| 16 KiB × 256 | 396,327 | 400,136 (±7%) | 440,823 | 448,014 | 359,079 (±6%) |
+| 16 KiB × 1024 | 420,904 | 407,363 (±4%) | 438,138 (±6%) | 458,455 | 420,380 |
+
+每连接内存（字节，10,000 个连接在一次交换后空闲，`tools/bench/mem.sh`，3 轮，全部在 ±1% 内；这里
+tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_BUF`）：
+
+| 连接状态 | only-epoll | only-uring | tokio | hyper | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|---:|
+| 一次 64 B echo 之后的 TCP | 675 | 724 | 5,008 | – | 4,692 | 4,712 |
+| 一个请求之后的 HTTP/1.1 keep-alive | 1,087 | 1,139 | – | 17,446 | 8,987 | 9,006 |
+
+结论：
+
+- **TCP echo**：monoio-uring 是 only-uring 的 0.99–1.17 倍，多数行里是最快的一列；monoio-epoll 是
+  only-epoll 的 0.88–1.02 倍。各行和那一轮一样停在 0.6–0.85 M 的平台上，这和服务端一样也指向闭环客户端
+  （见上文），所以读作"同一档，monoio 的 io_uring 驱动略领先"。
+- **keep-alive HTTP/1.1**：monoio-uring 在 `/plaintext` 上是 only-uring 的 1.26 倍，`/json` 1.22 倍；
+  monoio-epoll 是 only-epoll 的 1.06–1.11 倍，在波动范围内。**流水线**：monoio-uring 是 `only` 的 1.83 倍，
+  monoio-epoll 1.60 倍。两边都是每批 16 个请求一次读一次写，差别在每个请求的工作量：`only` 的每个请求都走
+  only-http（解析器、路由、请求与响应对象、头部处理），monoio-ref 只走 httparse 加一个固定响应。所以这几行
+  测的更多是 `only` 的 HTTP/1 框架开销对一个几乎为空的处理函数，而不是 monoio 对 `only` 的运行时；它们也
+  给出了 `only` 的 HTTP/1 流水线路径值得去追的上限。
+- **内存**：`only` 不为空闲连接保留读缓冲（epoll 读进每线程的缓冲；io_uring 用 provided-buffer 环），
+  每连接 0.7–1.1 KB。monoio 的 I/O 在整个读期间拿走缓冲的所有权，所以在 `read` 上等待的空闲连接一直持有
+  它的缓冲：echo 用 4 KiB 缓冲是 4.7 KB，HTTP/1.1 是 9 KB（读缓冲加上 monoio-ref 保留的输出缓冲）。这既是
+  monoio 的特点，也是 monoio-ref 写法的结果（处理函数可以在请求之间释放缓冲），但这是它最自然的写法。
+- 这里达到 790 万请求/秒，说明本机上 h2load 的 HTTP/1.1 流水线上限高于"局限"里写的 400–500 万；那个数字
+  指的是 HTTP/2。
+
 ## 未测项
 
 - 真实网卡上的 **DPDK**（主机没有）；`only-dpdk` 只通过上面的协议栈基准出现。
 - QUIC 与 HTTP/3 对比 quic-go 或其他实现（测试工具里没有参照服务端）。
 - TLS 上的 hyper（hyper-ref 没有 TLS 监听）；hyper 的 TCP/UDP/WebSocket（不是它的用途）。
-- 延迟分位数、持续负载下的内存（只测一次交换后空闲时）、真实网络、monoio。
+- 延迟分位数、持续负载下的内存（只测一次交换后空闲时）、真实网络。
+- TLS 或 HTTP/2 上的 monoio（monoio-ref 都没有）以及 monoio-http；上面只通过最小的 monoio-ref 处理函数测了 monoio。
 
 ## 历史
 

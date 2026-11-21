@@ -9,7 +9,11 @@ with Retry, key updates, a 150 MB transfer, version 2 and client migration:
 with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`); ngtcp2 and OpenSSL 3.5's QUIC
 stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`), and
 ngtcp2's own client and server for compatible version negotiation, both ways
-(`tools/interop/quic/ngtcp2-cvn.sh`).
+(`tools/interop/quic/ngtcp2-cvn.sh`). quiche (0.30.1) is checked both ways in Docker:
+quiche-client against our HTTP/3 server (Version Negotiation, many requests, uploads, 0-RTT,
+migration) and, over raw QUIC streams with HTTP/0.9 (`hq-interop`), against `only-quic`; `H3Client`
+and `only-quic`'s client against quiche-server, with and without Retry
+(`tools/interop/quic/quiche.sh`).
 
 ## QUIC
 
