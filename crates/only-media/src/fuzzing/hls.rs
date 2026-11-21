@@ -4,7 +4,7 @@ use only_crypto::aes::Aes;
 
 use crate::{
     av::{Codec, MILLISECOND, Packet, Track},
-    codec::h264,
+    codec::{h264, h265},
     fmp4,
     mpegts::{
         Muxer,
@@ -86,6 +86,87 @@ pub fn h264_sample_encryption(data: &[u8]) {
     m.flush(None, &mut out);
 }
 
+/// Splits fuzz input into NAL units with 2-byte big-endian lengths (a short last one takes
+/// the rest).
+fn nal_units(mut rest: &[u8]) -> Vec<&[u8]> {
+    let mut nals = Vec::new();
+    while rest.len() >= 2 {
+        let n = usize::from(u16::from_be_bytes([rest[0], rest[1]])).min(rest.len() - 2);
+        if n > 0 {
+            nals.push(&rest[2..2 + n]);
+        }
+        rest = &rest[2 + n..];
+    }
+    nals
+}
+
+/// `h265_sample_encryption`: H.265 parameter sets and slices through the slice segment header
+/// parsers and the `cbcs` fMP4 muxer. The input is NAL units as for
+/// [`h264_sample_encryption`]; `data[0]` bit 0 makes the first three the configuration
+/// record's VPS, SPS and PPS (otherwise they arrive in band). A header is never longer than
+/// its NAL unit, and every access unit (up to four NAL units) the muxer takes decrypts back
+/// to itself from its `senc` subsamples.
+pub fn h265_sample_encryption(data: &[u8]) {
+    let Some((&cfg, rest)) = data.split_first() else {
+        return;
+    };
+    let nals = nal_units(rest);
+    let (sps, pps): (Vec<_>, Vec<_>) = (
+        nals.iter().filter_map(|n| h265::slice_sps(n)).collect(),
+        nals.iter().filter_map(|n| h265::slice_pps(n)).collect(),
+    );
+    for n in &nals {
+        if let Some(h) = h265::slice_header_len(n, &sps, &pps) {
+            assert!(h <= n.len(), "slice header past its NAL unit");
+        }
+    }
+    let config = (cfg & 1 == 1 && nals.len() >= 3)
+        .then(|| h265::Config::from_sets(nals[0], nals[1], nals[2]))
+        .flatten()
+        .map_or_else(|| vec![1; 23], |c| c.encode());
+    let tracks = [Track::video(Codec::H265, config)];
+    let aes = Aes::new128(&[0x5a; 16]);
+    let mut m = fmp4::Muxer::cbcs(&tracks);
+    m.set_sample_key(aes.clone());
+    let mut out = Vec::new();
+    let mut want = Vec::new();
+    for (i, au) in nals.chunks(4).enumerate() {
+        let t = i as i64 * 40 * MILLISECOND;
+        let p = Packet::new(0, t, t, i % 8 == 0, h264::to_avcc(au.iter().copied()));
+        if m.write_packet(&p) {
+            want.push(p.data);
+        }
+    }
+    m.flush(None, &mut out);
+    if want.is_empty() {
+        return;
+    }
+    let init = m.init_segment().to_vec();
+    let iv = init
+        .windows(4)
+        .position(|w| w == b"tenc")
+        .map(|p| <[u8; 16]>::try_from(&init[p + 29..p + 45]).expect("constant IV"))
+        .expect("tenc");
+    let (got, subs) = fmp4::cbcs_samples(&out).expect("fragment parses");
+    assert_eq!(got.len(), want.len());
+    for ((mut d, subs), w) in got.into_iter().zip(subs).zip(&want) {
+        let mut at = 0;
+        for (clear, prot) in subs {
+            at += clear;
+            let mut v = iv;
+            let mut x = 0;
+            while prot - x >= 16 {
+                let _ = aes.decrypt_cbc(&mut v, &mut d[at + x..at + x + 16]);
+                x += 16;
+                x += (prot - x).min(144);
+            }
+            at += prot;
+        }
+        assert_eq!(at, d.len());
+        assert_eq!(&d, w, "an access unit does not decrypt to itself");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,11 +218,61 @@ mod tests {
         assert!(replay(DIR, "h264_sample_encryption", h264_sample_encryption) > 0);
     }
 
+    /// The H.265 samples' parameter sets and first slices, length-prefixed: the record's
+    /// sets with the FLV sample, in band with the multi-slice one.
+    fn hevc_seeds() -> Vec<Vec<u8>> {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let data = std::fs::read(format!("{DIR}/testdata/h265_aac.flv")).unwrap();
+        let mut dec = Decoder::new();
+        let mut flv: Vec<Vec<u8>> = Vec::new();
+        for t in Demuxer::new().feed(&data).unwrap() {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => {
+                        let c = h265::Config::parse(&t[0].config).unwrap();
+                        flv.extend([c.vps[0].clone(), c.sps[0].clone(), c.pps[0].clone()]);
+                    }
+                    Event::Packet(p) if p.track == 0 => {
+                        flv.extend(h264::avcc_nalus(&p.data).into_iter().map(<[u8]>::to_vec));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let es = std::fs::read(format!("{DIR}/testdata/h265_slices.hevc")).unwrap();
+        let slices: Vec<Vec<u8>> = h264::split_annexb(&es)
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut v = Vec::new();
+        for (cfg, nals, take) in [(1u8, &flv, 14usize), (0, &slices, 40), (1, &flv, 5)] {
+            let mut s = vec![cfg];
+            for n in nals.iter().take(take) {
+                let n = &n[..n.len().min(1200)];
+                s.extend_from_slice(&(n.len() as u16).to_be_bytes());
+                s.extend_from_slice(n);
+            }
+            v.push(s);
+        }
+        v
+    }
+
+    #[test]
+    fn hevc_seeds_run_clean_and_replay() {
+        for s in hevc_seeds() {
+            h265_sample_encryption(&s);
+        }
+        h265_sample_encryption(&[]);
+        h265_sample_encryption(&[1, 0, 2, 0x26, 0x01]);
+        assert!(replay(DIR, "h265_sample_encryption", h265_sample_encryption) > 0);
+    }
+
     /// Regenerates the seed files: `cargo test -p only-media --lib write_hls_fuzz_seeds --
     /// --ignored`.
     #[test]
     #[ignore]
     fn write_hls_fuzz_seeds() {
         write_target_seeds(DIR, "h264_sample_encryption", &seeds());
+        write_target_seeds(DIR, "h265_sample_encryption", &hevc_seeds());
     }
 }

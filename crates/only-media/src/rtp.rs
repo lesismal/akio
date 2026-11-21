@@ -488,6 +488,25 @@ impl Depacketizer {
         self
     }
 
+    /// The offset added to every time.
+    pub(crate) fn current_offset(&self) -> Time {
+        self.offset
+    }
+
+    /// Changes the offset added to the times of the packets that follow (RTCP-based sync
+    /// moves it forward only, so times keep increasing).
+    pub(crate) fn set_offset(&mut self, offset: Time) {
+        self.offset = offset;
+    }
+
+    /// The time of RTP timestamp `ts` relative to the first packet's (unwrapped around the
+    /// newest one), before the offset; `None` before the first packet.
+    pub(crate) fn rtp_time(&self, ts: u32) -> Option<Time> {
+        let base = self.base?;
+        let d = ts.wrapping_sub(self.last_ext as u32) as i32;
+        Some(from_ticks(self.last_ext + i64::from(d) - base, self.clock))
+    }
+
     /// The codec configuration built from the parameter sets seen in band (H.264, H.265) or
     /// from the last keyframe (VP8, VP9: a `VPCodecConfigurationRecord`; AV1: an
     /// `AV1CodecConfigurationRecord` from its sequence header), if it changed since the last

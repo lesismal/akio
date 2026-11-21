@@ -850,6 +850,7 @@ pub only_media::hls::HlsConfig::cors_origin: core::option::Option<alloc::string:
 pub only_media::hls::HlsConfig::encryption: core::option::Option<only_media::hls::HlsEncryption>
 pub only_media::hls::HlsConfig::format: only_media::hls::SegmentFormat
 pub only_media::hls::HlsConfig::idle_timeout: core::time::Duration
+pub only_media::hls::HlsConfig::iframe_playlist: bool
 pub only_media::hls::HlsConfig::keep_segments: usize
 pub only_media::hls::HlsConfig::max_bytes: usize
 pub only_media::hls::HlsConfig::part_duration: core::option::Option<core::time::Duration>
@@ -1298,6 +1299,25 @@ pub const only_media::mpegts::STREAM_MP2_AUDIO: u8
 pub const only_media::mpegts::STREAM_MP3: u8
 pub const only_media::mpegts::STREAM_PRIVATE: u8
 pub fn only_media::mpegts::crc32(&[u8]) -> u32
+pub mod only_media::reconnect
+#[non_exhaustive] pub struct only_media::reconnect::Reconnect
+pub only_media::reconnect::Reconnect::initial_delay: core::time::Duration
+pub only_media::reconnect::Reconnect::max_attempts: core::option::Option<u32>
+pub only_media::reconnect::Reconnect::max_delay: core::time::Duration
+impl only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::initial_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_attempts(self, core::option::Option<u32>) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::new(&alloc::rcs::arc::Arc<only::Engine>) -> only_media::reconnect::Reconnect
+impl core::clone::Clone for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::clone(&self) -> Self
+impl core::fmt::Debug for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::reconnect::Reconnect
+impl core::panic::unwind_safe::UnwindSafe for only_media::reconnect::Reconnect
+impl core::marker::Send for only_media::reconnect::Reconnect
+impl core::marker::Sync for only_media::reconnect::Reconnect
+impl core::marker::Unpin for only_media::reconnect::Reconnect
 pub mod only_media::record
 #[non_exhaustive] pub enum only_media::record::RecordFormat
 pub only_media::record::RecordFormat::Flv
@@ -1526,6 +1546,7 @@ pub only_media::rtmp::client::ClientState::Closed
 pub only_media::rtmp::client::ClientState::Connecting
 pub only_media::rtmp::client::ClientState::Handshaking
 pub only_media::rtmp::client::ClientState::Negotiating
+pub only_media::rtmp::client::ClientState::Reconnecting
 pub only_media::rtmp::client::ClientState::Streaming
 impl core::clone::Clone for only_media::rtmp::client::ClientState
 pub fn only_media::rtmp::client::ClientState::clone(&self) -> Self
@@ -1541,12 +1562,31 @@ impl core::marker::Sync for only_media::rtmp::client::ClientState
 impl core::marker::Unpin for only_media::rtmp::client::ClientState
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::ClientState
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::ClientState
+#[non_exhaustive] pub struct only_media::rtmp::client::Reconnect
+pub only_media::rtmp::client::Reconnect::initial_delay: core::time::Duration
+pub only_media::rtmp::client::Reconnect::max_attempts: core::option::Option<u32>
+pub only_media::rtmp::client::Reconnect::max_delay: core::time::Duration
+impl only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::initial_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_attempts(self, core::option::Option<u32>) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::new(&alloc::rcs::arc::Arc<only::Engine>) -> only_media::reconnect::Reconnect
+impl core::clone::Clone for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::clone(&self) -> Self
+impl core::fmt::Debug for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::reconnect::Reconnect
+impl core::panic::unwind_safe::UnwindSafe for only_media::reconnect::Reconnect
+impl core::marker::Send for only_media::reconnect::Reconnect
+impl core::marker::Sync for only_media::reconnect::Reconnect
+impl core::marker::Unpin for only_media::reconnect::Reconnect
 pub struct only_media::rtmp::client::RtmpClient
 impl only_media::rtmp::client::RtmpClient
 pub fn only_media::rtmp::client::RtmpClient::addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn only_media::rtmp::client::RtmpClient::close(&self)
 pub fn only_media::rtmp::client::RtmpClient::error(&self) -> core::option::Option<only_media::rtmp::client::ClientError>
 pub fn only_media::rtmp::client::RtmpClient::is_closed(&self) -> bool
+pub fn only_media::rtmp::client::RtmpClient::reconnects(&self) -> u64
 pub fn only_media::rtmp::client::RtmpClient::state(&self) -> only_media::rtmp::client::ClientState
 pub fn only_media::rtmp::client::RtmpClient::url(&self) -> &only_media::rtmp::client::RtmpUrl
 impl core::fmt::Debug for only_media::rtmp::client::RtmpClient
@@ -1569,6 +1609,7 @@ pub only_media::rtmp::client::RtmpClientConfig::handshake_timeout: core::time::D
 pub only_media::rtmp::client::RtmpClientConfig::idle_timeout: core::time::Duration
 pub only_media::rtmp::client::RtmpClientConfig::max_message_size: usize
 pub only_media::rtmp::client::RtmpClientConfig::max_write_queue: usize
+pub only_media::rtmp::client::RtmpClientConfig::reconnect: core::option::Option<only_media::reconnect::Reconnect>
 pub only_media::rtmp::client::RtmpClientConfig::response_timeout: core::time::Duration
 pub only_media::rtmp::client::RtmpClientConfig::simple_handshake: bool
 pub only_media::rtmp::client::RtmpClientConfig::source_wait: core::option::Option<core::time::Duration>
@@ -1821,12 +1862,32 @@ impl core::marker::Sync for only_media::rtsp::client::RtspTransport
 impl core::marker::Unpin for only_media::rtsp::client::RtspTransport
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspTransport
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspTransport
+#[non_exhaustive] pub struct only_media::rtsp::client::Reconnect
+pub only_media::rtsp::client::Reconnect::initial_delay: core::time::Duration
+pub only_media::rtsp::client::Reconnect::max_attempts: core::option::Option<u32>
+pub only_media::rtsp::client::Reconnect::max_delay: core::time::Duration
+impl only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::initial_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_attempts(self, core::option::Option<u32>) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::new(&alloc::rcs::arc::Arc<only::Engine>) -> only_media::reconnect::Reconnect
+impl core::clone::Clone for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::clone(&self) -> Self
+impl core::fmt::Debug for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::reconnect::Reconnect
+impl core::panic::unwind_safe::UnwindSafe for only_media::reconnect::Reconnect
+impl core::marker::Send for only_media::reconnect::Reconnect
+impl core::marker::Sync for only_media::reconnect::Reconnect
+impl core::marker::Unpin for only_media::reconnect::Reconnect
 pub struct only_media::rtsp::client::RtspClient(_)
 impl only_media::rtsp::client::RtspClient
 pub fn only_media::rtsp::client::RtspClient::close(&self)
 pub fn only_media::rtsp::client::RtspClient::error(&self) -> core::option::Option<only_media::rtsp::client::ClientError>
 pub fn only_media::rtsp::client::RtspClient::is_closed(&self) -> bool
+pub fn only_media::rtsp::client::RtspClient::is_live(&self) -> bool
 pub fn only_media::rtsp::client::RtspClient::path(&self) -> &str
+pub fn only_media::rtsp::client::RtspClient::reconnects(&self) -> u64
 impl core::fmt::Debug for only_media::rtsp::client::RtspClient
 pub fn only_media::rtsp::client::RtspClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for only_media::rtsp::client::RtspClient
@@ -1845,7 +1906,9 @@ pub only_media::rtsp::client::RtspClientConfig::max_body: usize
 pub only_media::rtsp::client::RtspClientConfig::max_head: usize
 pub only_media::rtsp::client::RtspClientConfig::max_write_queue: usize
 pub only_media::rtsp::client::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::reconnect: core::option::Option<only_media::reconnect::Reconnect>
 pub only_media::rtsp::client::RtspClientConfig::response_timeout: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::rtcp_sync: bool
 pub only_media::rtsp::client::RtspClientConfig::sender_report_interval: core::time::Duration
 pub only_media::rtsp::client::RtspClientConfig::transport: only_media::rtsp::client::RtspTransport
 pub only_media::rtsp::client::RtspClientConfig::user_agent: alloc::string::String
@@ -2197,7 +2260,9 @@ impl only_media::rtsp::client::RtspClient
 pub fn only_media::rtsp::client::RtspClient::close(&self)
 pub fn only_media::rtsp::client::RtspClient::error(&self) -> core::option::Option<only_media::rtsp::client::ClientError>
 pub fn only_media::rtsp::client::RtspClient::is_closed(&self) -> bool
+pub fn only_media::rtsp::client::RtspClient::is_live(&self) -> bool
 pub fn only_media::rtsp::client::RtspClient::path(&self) -> &str
+pub fn only_media::rtsp::client::RtspClient::reconnects(&self) -> u64
 impl core::fmt::Debug for only_media::rtsp::client::RtspClient
 pub fn only_media::rtsp::client::RtspClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for only_media::rtsp::client::RtspClient
@@ -2216,7 +2281,9 @@ pub only_media::rtsp::RtspClientConfig::max_body: usize
 pub only_media::rtsp::RtspClientConfig::max_head: usize
 pub only_media::rtsp::RtspClientConfig::max_write_queue: usize
 pub only_media::rtsp::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::reconnect: core::option::Option<only_media::reconnect::Reconnect>
 pub only_media::rtsp::RtspClientConfig::response_timeout: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::rtcp_sync: bool
 pub only_media::rtsp::RtspClientConfig::sender_report_interval: core::time::Duration
 pub only_media::rtsp::RtspClientConfig::transport: only_media::rtsp::client::RtspTransport
 pub only_media::rtsp::RtspClientConfig::user_agent: alloc::string::String
@@ -3066,6 +3133,24 @@ impl core::marker::Sync for only_media::hub::Publisher
 impl core::marker::Unpin for only_media::hub::Publisher
 impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Publisher
 impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Publisher
+#[non_exhaustive] pub struct only_media::Reconnect
+pub only_media::Reconnect::initial_delay: core::time::Duration
+pub only_media::Reconnect::max_attempts: core::option::Option<u32>
+pub only_media::Reconnect::max_delay: core::time::Duration
+impl only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::initial_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_attempts(self, core::option::Option<u32>) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::max_delay(self, core::time::Duration) -> only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::new(&alloc::rcs::arc::Arc<only::Engine>) -> only_media::reconnect::Reconnect
+impl core::clone::Clone for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::clone(&self) -> Self
+impl core::fmt::Debug for only_media::reconnect::Reconnect
+pub fn only_media::reconnect::Reconnect::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::reconnect::Reconnect
+impl core::panic::unwind_safe::UnwindSafe for only_media::reconnect::Reconnect
+impl core::marker::Send for only_media::reconnect::Reconnect
+impl core::marker::Sync for only_media::reconnect::Reconnect
+impl core::marker::Unpin for only_media::reconnect::Reconnect
 #[non_exhaustive] pub struct only_media::SubscribeOptions
 pub only_media::SubscribeOptions::info: only_media::hub::PeerInfo
 pub only_media::SubscribeOptions::no_gop_cache: bool

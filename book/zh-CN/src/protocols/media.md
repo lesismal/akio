@@ -117,7 +117,15 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
   音频组分段的峰值码率之和，此时还有 `AVERAGE-BANDWIDTH`）、`CODECS`（分段格式所承载轨道的 RFC 6381 字符串）、
   `RESOLUTION` 与 `AUDIO`，并为每个 `AudioRendition` 列出一条 `EXT-X-MEDIA:TYPE=AUDIO`。URI 是相对路径，并带上
   请求的 query string。首个请求会启动每个 rendition 的 muxer，在每个 rendition 都已知轨道且有一个分段后作答
-  （尚未发布的 rendition 在三个目标时长后被略去）。两种分段格式与 LL-HLS 都适用。
+  （尚未发布的 rendition 在三个目标时长后被略去）。两种分段格式与 LL-HLS 都适用。启用 LL-HLS 分片时，每个
+  rendition 的媒体播放列表末尾会为其所在多码率播放列表中的其余每个 rendition 写一行
+  `EXT-X-RENDITION-REPORT`（`LAST-MSN`、`LAST-PART`），切换码率的播放器因此能立即对新码率发出第一次阻塞式刷新。
+- **I 帧播放列表**：设置 `HlsConfig::iframe_playlist` 后，带视频的流还提供 `GET /app/name/iframes.m3u8`
+  （`EXT-X-I-FRAMES-ONLY`，用于拖动预览与快进快退）：所列分段中每个关键帧一项，一个指向其分段、可单独解码的
+  `EXT-X-BYTERANGE`（MPEG-TS：PAT、PMT 与关键帧的 PES；fMP4：只含该关键帧的 `moof` + `mdat` 分片，此时 muxer
+  在每个关键帧处切分片，并写在 `EXT-X-MAP` 之后）。分段、分片与 init 的响应以 206 应答单个 `Range: bytes=…`。
+  多码率播放列表以 `EXT-X-I-FRAME-STREAM-INF` 列出每个变体的 I 帧播放列表（`BANDWIDTH` 为其 I 帧的峰值码率）。
+  AES-128 下不提供（其密文无法从分段中间读取）；SAMPLE-AES 可用。
 - **加密**：`HlsConfig::encryption` 用 AES-128（`#EXT-X-KEY:METHOD=AES-128`，CBC 加 PKCS #7）加密每个
   分段和 LL-HLS 分片，MPEG-TS 与 fMP4 相同：
 
@@ -150,8 +158,8 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // 每 10 个�
   （用于测试，或链接本身保密的场景）。
 
 - **SAMPLE-AES**：`HlsEncryption::new(keys).method(EncryptionMethod::SampleAes)` 在容器内部加密样本，
-  容器结构保持明文，密钥提供者、轮换与密钥 URI 都不变（`#EXT-X-KEY:METHOD=SAMPLE-AES`）。只承载 H.264 与
-  AAC；其它轨道不进入分段，而不是以明文发出。
+  容器结构保持明文，密钥提供者、轮换与密钥 URI 都不变（`#EXT-X-KEY:METHOD=SAMPLE-AES`）。承载 H.264 与
+  AAC，fMP4 中还有 H.265；其它轨道不进入分段，而不是以明文发出。
   - MPEG-TS：Apple 的样本加密。长于 48 字节的编码 slice 保留前 32 字节明文，之后每十个 16 字节块加密一个
     （AES-128-CBC，每个 NAL 单元从 IV 重新开始，作用于去除防竞争字节后的 NAL，加密后重新加入防竞争字节）；
     AAC 帧保留 ADTS 头和其后 16 字节明文，加密其余完整的块。PMT 会标明（流类型 0xdb 与 0xcf、`zavc` /
@@ -159,7 +167,11 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // 每 10 个�
     播放器解错，ffmpeg 就是如此）。
   - fMP4：ISO/IEC 23001-7 的 `cbcs` 方案。初始化分段使用 `encv` / `enca` 条目及 `sinf`（`frma`、`schm`
     `cbcs`、带常量 IV 的 `tenc`）；分片带 `senc`、`saiz` 与 `saio`。每个 slice 的 NAL 头与 slice 头保持明文
-    （解析 H.264 slice 头：参考列表修改、加权预测、参考帧标记），slice 数据按 1:9 模式加密；AAC 样本整体加密。
+    （解析 H.264 slice 头：参考列表修改、加权预测、参考帧标记；也解析 H.265 slice segment 头：短期参考图像集、
+    长期参考图像、加权预测、tile 与波前入口点），slice 数据按 1:9 模式加密；AAC 样本整体加密。
+
+  加密的多码率播放列表以 `EXT-X-SESSION-KEY` 写出每个 rendition 的当前密钥，播放器因此能在取第一个媒体
+  播放列表之前就获取密钥。
 
   ffmpeg 能播放两者，逐帧解密正确。它对已预读的所有数据使用同一把密钥（fMP4 则一直使用打开时的密钥），
   因此在密钥轮换处会解出错误数据；Safari 与 hls.js 按分段获取密钥。
@@ -185,6 +197,25 @@ let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in"
 `RtmpClientConfig::addr`。每一步都有超时（连接、握手、每条命令的应答各 10 s；拉流 30 s 收不到数据即结束），
 收到的消息有上限（16 MiB），推流落后时先削减到关键帧再断开，与服务端的播放者相同。H.265 与 Opus 以
 Enhanced RTMP 发送。
+
+设置 `RtmpClientConfig::reconnect` 后，客户端能挺过对端离开：再试一次可能好转的错误（连接被关闭或被拒、
+超时、服务端结束或拒绝该流且原因不是凭据）会使其进入 `ClientState::Reconnecting`，并在退避后重新拨号，退避
+时间翻倍直到上限，会话一旦开始推流 / 播放就重置：
+
+```rust,ignore
+use std::{sync::Arc, time::Duration};
+use only_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
+
+let engine = Arc::new(engine); // 客户端在它上面重新拨号（弱引用持有）
+let mut cfg = RtmpClientConfig::default();
+cfg.reconnect = Some(Reconnect::new(&engine).max_delay(Duration::from_secs(10)));
+let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in", cfg)?;
+// 等待期间 pull.state() == ClientState::Reconnecting；pull.reconnects() 计数。
+```
+
+期间拉流保持对 hub 路径的预占：播放者保持订阅，并把新会话的轨道当作重新发布（时间线重启，HLS 写入
+discontinuity）。推流重新订阅，并从缓存的 GOP 开始。URL 错误、hub 拒绝与凭据被拒仍会结束客户端；
+`max_attempts` 限制连续尝试次数。`close()` 在 `is_closed()` 返回真之前释放拉流的路径。
 
 ## 录制
 
@@ -262,15 +293,17 @@ ffprobe / ffmpeg 作为播放端：
 | RTMP 客户端推流 | `ffmpeg -listen 1 -i rtmp://…`、mediamtx（`--ignored`） | H.264 + AAC、H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`、mediamtx | RTMP 客户端拉流 | H.264 + AAC、H.265 + AAC |
 | hub 推流者，AES-128 加密并轮换密钥 | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`，MPEG-TS 与 fMP4，普通与 LL-HLS | H.264 + AAC |
-| hub 推流者，SAMPLE-AES（MPEG-TS）与 `cbcs`（fMP4） | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`：每一帧都与源相同，普通与 LL-HLS | H.264 + AAC |
+| hub 推流者，SAMPLE-AES（MPEG-TS）与 `cbcs`（fMP4） | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`：每一帧都与源相同，普通与 LL-HLS | H.264 + AAC；H.265 + AAC（`cbcs`） |
+| hub 推流者（2 个 rendition），I 帧播放列表 | 每个 `EXT-X-BYTERANGE` 以 `Range` 获取后由 `ffmpeg` 解码为恰好一帧源画面；对多码率播放列表执行 `ffprobe` | H.264 + AAC、H.265 + AAC；MPEG-TS 与 fMP4 LL-HLS |
+| ffmpeg → mediamtx（重启两次，`--ignored`） | RTMP 与 RTSP 客户端的拉流与推流自动重连 | H.264 + AAC |
 | hub 推流者，`Recorder` | 对每个 fMP4、FLV 与 MPEG-TS 文件执行 `ffprobe` / `ffmpeg -i` | H.264 + AAC、H.265 + AAC |
 
 RTSP 与 SRT 的互通表在各自章节中。模糊测试覆盖 RTMP 会话（`rtmp_server`）与客户端（`rtmp_client`）、
 FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS（含 AV1）和 SRT
 （含 rendezvous 握手，`srt_rendezvous`）的解析器，还有 H.264 slice 头解析器与两种样本加密
-（`h264_sample_encryption`）。
+（`h264_sample_encryption`），以及 H.265 slice segment 头解析器与 `cbcs`（`h265_sample_encryption`）。
 
 ## 不支持
 
-H.265 及 H.264 / AAC 以外编码的 SAMPLE-AES、`EXT-X-SESSION-KEY`、I-frame 播放列表与 rendition report、
+H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES、AES-128 下的 I 帧播放列表、
 MPEG-TS 中的 VP8 / VP9（无规范）、RTMPS 客户端、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、转码。

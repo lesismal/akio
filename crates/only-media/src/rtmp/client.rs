@@ -26,6 +26,13 @@
 //! answer, and while pulling, the time without any byte from the server. Received messages are
 //! bounded by [`RtmpClientConfig::max_message_size`] (the [`ChunkReader`] limits).
 //!
+//! **Reconnecting**: with [`RtmpClientConfig::reconnect`] an error another try may cure (the
+//! connection closing or failing, a timeout, the server ending the stream or refusing it
+//! other than for credentials) does not end the client: it waits a bounded backoff
+//! ([`Reconnect`], [`ClientState::Reconnecting`]) and dials again, from the first connection
+//! on. A pull keeps its hub path reserved throughout and republishes the new session's tracks
+//! (sinks restart their timelines); a push subscribes again from the cached GOP.
+//!
 //! Not supported: `rtmps://` (TLS), RTMPE/RTMPT, AMF3 command encoding, Enhanced RTMP
 //! multitrack.
 
@@ -40,6 +47,8 @@ use std::{
 };
 
 use only::{Acceptor, Conn, Engine, Handler};
+
+pub use crate::reconnect::Reconnect;
 
 use super::{
     chunk::{self, ChunkReader, Message},
@@ -107,6 +116,9 @@ pub struct RtmpClientConfig {
     /// Use the simple handshake rather than the Flash digest one (some old servers only take
     /// the simple one; every server takes both in practice). Default `false`.
     pub simple_handshake: bool,
+    /// Connect again when the session fails ([`Reconnect`]). Default `None`: the client ends
+    /// with the first error.
+    pub reconnect: Option<Reconnect>,
 }
 
 impl Default for RtmpClientConfig {
@@ -127,6 +139,7 @@ impl Default for RtmpClientConfig {
             encoder: EncoderConfig::default(),
             flash_ver: None,
             simple_handshake: false,
+            reconnect: None,
         }
     }
 }
@@ -315,6 +328,9 @@ pub enum ClientState {
     /// Media flows: the server accepted the publish (and the hub path is subscribed) or the
     /// play.
     Streaming,
+    /// The session failed and the client waits to dial again
+    /// ([`RtmpClientConfig::reconnect`]); a pull's hub path stays reserved.
+    Reconnecting,
     /// Over: [`RtmpClient::error`] says why, `None` after [`RtmpClient::close`].
     Closed,
 }
@@ -357,8 +373,19 @@ impl RtmpClient {
     }
 
     /// The error that ended the client; `None` while it runs and after [`close`](Self::close).
+    /// While it reconnects, the error that ended the last session.
     pub fn error(&self) -> Option<ClientError> {
-        self.shared.lock().error.clone()
+        let g = self.shared.lock();
+        g.error.clone().or_else(|| {
+            (g.state != ClientState::Closed)
+                .then(|| g.last_error.clone())
+                .flatten()
+        })
+    }
+
+    /// Sessions that streamed after the first one that did ([`RtmpClientConfig::reconnect`]).
+    pub fn reconnects(&self) -> u64 {
+        self.shared.lock().reconnects
     }
 
     /// Ends the client: a push sends `FCUnpublish` and `deleteStream`, a pull `deleteStream`,
@@ -471,21 +498,29 @@ pub fn pull(
 
 fn start(engine: &Engine, setup: Setup, publisher: Option<Publisher>) -> RtmpClient {
     let shared = Shared::new(setup, publisher);
+    arm(Arc::downgrade(&shared));
+    dial(engine, &shared, 0);
+    RtmpClient { shared }
+}
+
+/// Dials the connection of generation `epoch` (the client is [`ClientState::Connecting`]).
+fn dial(engine: &Engine, shared: &Arc<Shared>, epoch: u64) {
     {
         let mut g = shared.lock();
         let t = shared.setup.cfg.connect_timeout;
         g.deadline = (!t.is_zero()).then(|| (Instant::now() + t, "connect"));
     }
-    arm(Arc::downgrade(&shared));
-    let on_err = Arc::downgrade(&shared);
+    let on_err = Arc::downgrade(shared);
     engine.dial(
         shared.setup.addr,
         Dialer {
             shared: shared.clone(),
+            epoch,
         },
         move |e| {
             if let Some(s) = on_err.upgrade() {
                 s.fail(
+                    epoch,
                     if e.kind() == std::io::ErrorKind::TimedOut {
                         ClientError::TimedOut("connect")
                     } else {
@@ -496,7 +531,17 @@ fn start(engine: &Engine, setup: Setup, publisher: Option<Publisher>) -> RtmpCli
             }
         },
     );
-    RtmpClient { shared }
+}
+
+/// Whether a session that ended with `err` is worth trying again.
+fn retryable(err: &ClientError) -> bool {
+    match err {
+        ClientError::BadUrl(_) | ClientError::Resolve(_) | ClientError::Hub(_) => false,
+        ClientError::Rejected { code, .. } => {
+            !(code.ends_with("Connect.Rejected") || code.ends_with(".Denied"))
+        }
+        _ => true,
+    }
 }
 
 /// What a client was started with.
@@ -525,6 +570,14 @@ struct Status {
     publisher: Option<Arc<Publisher>>,
     /// The stream id from `createStream`.
     stream_id: Option<u32>,
+    /// Reconnect tries since the last session that streamed.
+    attempts: u32,
+    /// Sessions that streamed after the first one that did.
+    reconnects: u64,
+    /// A session streamed.
+    streamed: bool,
+    /// The error that ended the last session (while reconnecting).
+    last_error: Option<ClientError>,
 }
 
 /// Shared by the handle, the connection's handler and the timer.
@@ -533,6 +586,9 @@ struct Shared {
     start: Instant,
     /// Milliseconds since `start` of the last bytes received.
     last_rx: AtomicU64,
+    /// The generation of the current connection: each reconnect starts a new one, and what
+    /// an older connection's handler does is ignored (changed under `st`'s lock).
+    epoch: AtomicU64,
     st: Mutex<Status>,
 }
 
@@ -542,6 +598,7 @@ impl Shared {
             setup,
             start: Instant::now(),
             last_rx: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
             st: Mutex::new(Status {
                 state: ClientState::Connecting,
                 error: None,
@@ -549,6 +606,10 @@ impl Shared {
                 deadline: None,
                 publisher: publisher.map(Arc::new),
                 stream_id: None,
+                attempts: 0,
+                reconnects: 0,
+                streamed: false,
+                last_error: None,
             }),
         })
     }
@@ -562,11 +623,25 @@ impl Shared {
             .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// Moves to `state` and arms the deadline `what` (none when `t` is zero).
-    fn enter(&self, state: ClientState, wait: Option<(Duration, &'static str)>) {
+    /// Whether `epoch` is the current connection's generation.
+    fn current(&self, epoch: u64) -> bool {
+        self.epoch.load(Ordering::Acquire) == epoch
+    }
+
+    /// Moves the connection of generation `epoch` to `state` and arms the deadline `what`
+    /// (none when `t` is zero).
+    fn enter(&self, epoch: u64, state: ClientState, wait: Option<(Duration, &'static str)>) {
         let mut g = self.lock();
-        if g.state == ClientState::Closed {
+        if g.state == ClientState::Closed || !self.current(epoch) {
             return;
+        }
+        if state == ClientState::Streaming && g.state != ClientState::Streaming {
+            if g.streamed {
+                g.reconnects += 1;
+            }
+            g.streamed = true;
+            g.attempts = 0;
+            g.last_error = None;
         }
         g.state = state;
         g.deadline = wait
@@ -603,11 +678,54 @@ impl Shared {
         Some(out)
     }
 
-    /// Ends the client with `err` (unless it already ended). `graceful` lets queued output
-    /// leave first.
-    fn fail(&self, err: ClientError, graceful: bool) {
-        let Some((conn, _)) = self.end(Some(err)) else {
-            return;
+    /// The connection of generation `epoch` failed with `err`: reconnect when the client does
+    /// and `err` is worth it, else end the client (unless it already ended). `graceful` lets
+    /// queued output leave first.
+    fn fail(self: &Arc<Self>, epoch: u64, err: ClientError, graceful: bool) {
+        let retry = self
+            .setup
+            .cfg
+            .reconnect
+            .as_ref()
+            .filter(|_| retryable(&err))
+            .cloned();
+        let conn = match retry {
+            Some(r) => {
+                let mut g = self.lock();
+                if g.state == ClientState::Closed || !self.current(epoch) {
+                    return;
+                }
+                if r.allows(g.attempts) {
+                    let delay = r.delay(g.attempts);
+                    g.attempts += 1;
+                    g.state = ClientState::Reconnecting;
+                    g.deadline = None;
+                    g.stream_id = None;
+                    g.last_error = Some(err);
+                    let next = epoch + 1;
+                    self.epoch.store(next, Ordering::Release);
+                    let conn = g.conn.take();
+                    drop(g);
+                    let w = Arc::downgrade(self);
+                    crate::timer::after(delay, move || redial(&w, &r, next));
+                    conn
+                } else {
+                    drop(g);
+                    match self.end(Some(err)) {
+                        Some((conn, _)) => conn,
+                        None => return,
+                    }
+                }
+            }
+            None => {
+                if !self.current(epoch) {
+                    return;
+                }
+                match self.end(Some(err)) {
+                    Some((conn, _)) => conn,
+                    None => return,
+                }
+            }
         };
         if let Some(c) = conn {
             if graceful {
@@ -619,7 +737,7 @@ impl Shared {
     }
 
     /// One timer check: `false` once the client is over.
-    fn check(&self) -> bool {
+    fn check(self: &Arc<Self>) -> bool {
         let fire = {
             let g = self.lock();
             if g.state == ClientState::Closed {
@@ -642,11 +760,33 @@ impl Shared {
         };
         match fire {
             Some(what) => {
-                self.fail(ClientError::TimedOut(what), false);
-                false
+                // Still running while reconnecting.
+                let epoch = self.epoch.load(Ordering::Acquire);
+                self.fail(epoch, ClientError::TimedOut(what), false);
+                self.lock().state != ClientState::Closed
             }
             None => true,
         }
+    }
+}
+
+/// Dials again (generation `epoch`) unless the client was closed or moved on meanwhile.
+fn redial(w: &Weak<Shared>, r: &Reconnect, epoch: u64) {
+    let Some(s) = w.upgrade() else { return };
+    {
+        let mut g = s.lock();
+        if g.state != ClientState::Reconnecting || !s.current(epoch) {
+            return;
+        }
+        g.state = ClientState::Connecting;
+    }
+    match r.engine() {
+        Some(engine) => dial(&engine, &s, epoch),
+        None => s.fail(
+            epoch,
+            ClientError::Disconnected("the engine is gone".into()),
+            false,
+        ),
     }
 }
 
@@ -680,9 +820,10 @@ fn arm(w: Weak<Shared>) {
     });
 }
 
-/// The engine-side acceptor of the one dialed connection.
+/// The engine-side acceptor of a dialed connection (of generation `epoch`).
 pub(crate) struct Dialer {
     shared: Arc<Shared>,
+    epoch: u64,
 }
 
 impl Acceptor for Dialer {
@@ -690,28 +831,34 @@ impl Acceptor for Dialer {
 
     fn on_open(&self, c: &Conn<Session>) -> Session {
         let sh = &self.shared;
+        let epoch = self.epoch;
         let publisher = {
             let mut g = sh.lock();
-            if g.state == ClientState::Closed {
-                // Timed out or closed before the connection was made.
+            if g.state != ClientState::Connecting || !sh.current(epoch) {
+                // Timed out, closed or replaced before the connection was made.
                 drop(g);
                 c.close();
-                return Session::new(sh.clone(), None, Phase::Dead);
+                return Session::new(sh.clone(), None, Phase::Dead, epoch);
             }
             g.conn = Some(c.clone());
             g.publisher.clone()
         };
         sh.touch();
         sh.enter(
+            epoch,
             ClientState::Handshaking,
             Some((sh.setup.cfg.handshake_timeout, "handshake")),
         );
         if c.send_owned(handshake::client_hello(sh.setup.cfg.simple_handshake))
             .is_err()
         {
-            sh.fail(ClientError::Disconnected("send failed".into()), false);
+            sh.fail(
+                epoch,
+                ClientError::Disconnected("send failed".into()),
+                false,
+            );
         }
-        Session::new(sh.clone(), publisher, Phase::Handshake)
+        Session::new(sh.clone(), publisher, Phase::Handshake, epoch)
     }
 }
 
@@ -755,12 +902,20 @@ pub(crate) struct Session {
     decoder: Decoder,
     /// Push: the hub subscription.
     sub: Option<Subscription>,
+    /// The connection's generation ([`Shared::epoch`]).
+    epoch: u64,
 }
 
 impl Session {
-    fn new(shared: Arc<Shared>, publisher: Option<Arc<Publisher>>, phase: Phase) -> Session {
+    fn new(
+        shared: Arc<Shared>,
+        publisher: Option<Arc<Publisher>>,
+        phase: Phase,
+        epoch: u64,
+    ) -> Session {
         let max = shared.setup.cfg.max_message_size;
         Session {
+            epoch,
             shared,
             phase,
             hs: Vec::new(),
@@ -780,7 +935,7 @@ impl Session {
 
     fn fail(&mut self, c: &Conn<Self>, err: ClientError) {
         self.phase = Phase::Dead;
-        self.shared.fail(err, false);
+        self.shared.fail(self.epoch, err, false);
         c.close();
     }
 
@@ -870,8 +1025,11 @@ impl Session {
         ];
         let resp = self.setup().cfg.response_timeout;
         self.phase = Phase::Connect;
-        self.shared
-            .enter(ClientState::Negotiating, Some((resp, "connect response")));
+        self.shared.enter(
+            self.epoch,
+            ClientState::Negotiating,
+            Some((resp, "connect response")),
+        );
         self.command(c, 0, &vals);
     }
 
@@ -940,6 +1098,9 @@ impl Session {
         let Some(publisher) = self.publisher.as_ref() else {
             return;
         };
+        if !self.shared.current(self.epoch) {
+            return; // a connection replaced by a reconnect
+        }
         let (tag, body) = match m.msg_type {
             chunk::AUDIO => (flv::TAG_AUDIO, &m.payload[..]),
             chunk::VIDEO => (flv::TAG_VIDEO, &m.payload[..]),
@@ -955,7 +1116,7 @@ impl Session {
         if self.phase == Phase::Start {
             // Some servers send media before (or without) NetStream.Play.Start.
             self.phase = Phase::Streaming;
-            self.shared.enter(ClientState::Streaming, None);
+            self.shared.enter(self.epoch, ClientState::Streaming, None);
         }
     }
 
@@ -1017,6 +1178,7 @@ impl Session {
                     self.phase = Phase::CreateStream;
                     let resp = self.setup().cfg.response_timeout;
                     self.shared.enter(
+                        self.epoch,
                         ClientState::Negotiating,
                         Some((resp, "createStream response")),
                     );
@@ -1046,7 +1208,11 @@ impl Session {
                         );
                     };
                     self.stream_id = id as u32;
-                    self.shared.lock().stream_id = Some(self.stream_id);
+                    let mut g = self.shared.lock();
+                    if self.shared.current(self.epoch) {
+                        g.stream_id = Some(self.stream_id);
+                    }
+                    drop(g);
                     self.start_stream(c);
                 }
                 _ => {}
@@ -1060,14 +1226,15 @@ impl Session {
                     (Phase::Start, "NetStream.Publish.Start") if push => self.start_push(c),
                     (Phase::Start, "NetStream.Play.Start") if !push => {
                         self.phase = Phase::Streaming;
-                        self.shared.enter(ClientState::Streaming, None);
+                        self.shared.enter(self.epoch, ClientState::Streaming, None);
                     }
                     (
                         Phase::Start | Phase::Streaming,
                         "NetStream.Play.Stop" | "NetStream.Play.Complete",
                     ) if !push => {
                         self.phase = Phase::Dead;
-                        self.shared.fail(ClientError::Ended(code), false);
+                        self.shared
+                            .fail(self.epoch, ClientError::Ended(code), false);
                         c.close();
                     }
                     _ => {}
@@ -1088,8 +1255,11 @@ impl Session {
         let push = s.push.is_some();
         self.phase = Phase::Start;
         if push {
-            self.shared
-                .enter(ClientState::Negotiating, Some((resp, "publish response")));
+            self.shared.enter(
+                self.epoch,
+                ClientState::Negotiating,
+                Some((resp, "publish response")),
+            );
             self.command(
                 c,
                 sid,
@@ -1102,8 +1272,11 @@ impl Session {
                 ],
             );
         } else {
-            self.shared
-                .enter(ClientState::Negotiating, Some((resp, "play response")));
+            self.shared.enter(
+                self.epoch,
+                ClientState::Negotiating,
+                Some((resp, "play response")),
+            );
             self.command(
                 c,
                 sid,
@@ -1129,10 +1302,11 @@ impl Session {
             return;
         };
         self.phase = Phase::Streaming;
-        self.shared.enter(ClientState::Streaming, None);
+        self.shared.enter(self.epoch, ClientState::Streaming, None);
         let cfg = &self.shared.setup.cfg;
         let egress = Egress {
             conn: c.clone(),
+            epoch: self.epoch,
             shared: Arc::downgrade(&self.shared),
             stream_id: self.stream_id,
             chunk_size: self.shared.setup.chunk_size(),
@@ -1172,6 +1346,7 @@ impl Handler for Session {
         self.sub = None;
         let publisher = self.publisher.take();
         self.shared.fail(
+            self.epoch,
             ClientError::Disconnected(match err {
                 Some(e) => e.to_string(),
                 None => "closed by the server".into(),
@@ -1195,6 +1370,8 @@ fn command_bytes(chunk_size: usize, stream_id: u32, vals: &[Value]) -> Vec<u8> {
 /// A hub sink publishing to the server: FLV tag bodies as RTMP messages.
 struct Egress {
     conn: Conn<Session>,
+    /// The connection's generation.
+    epoch: u64,
     shared: Weak<Shared>,
     stream_id: u32,
     chunk_size: usize,
@@ -1225,7 +1402,7 @@ impl Egress {
 
     fn end(&self, err: ClientError, graceful: bool) {
         match self.shared.upgrade() {
-            Some(s) => s.fail(err, graceful),
+            Some(s) => s.fail(self.epoch, err, graceful),
             None => self.conn.close(),
         }
     }
@@ -1335,6 +1512,7 @@ pub(crate) fn detached(push: bool, hub: &Hub) -> (Dialer, RtmpClient) {
     (
         Dialer {
             shared: shared.clone(),
+            epoch: 0,
         },
         RtmpClient { shared },
     )
@@ -1947,6 +2125,188 @@ mod tests {
         drop(client);
         assert!(hub.stream_info("p").is_none_or(|s| !s.reserved));
         while srv.next().is_some() {}
+        e.shutdown();
+    }
+
+    /// Answers a pull's commands up to `NetStream.Play.Start` and sends the sample's first
+    /// `tags` tags.
+    fn serve_play(srv: &mut Server, tags: usize) {
+        srv.connect(0, |_| {});
+        srv.create_stream();
+        let (_, v) = srv.command();
+        assert_eq!(v[0].as_str(), Some("play"));
+        srv.status(1, "status", "NetStream.Play.Start");
+        for t in Demuxer::new().feed(SAMPLE).unwrap().iter().take(tags) {
+            let mt = match t.tag_type {
+                8 => chunk::AUDIO,
+                9 => chunk::VIDEO,
+                _ => chunk::DATA_AMF0,
+            };
+            srv.send(&Message::new(4, mt, 1, t.ts, t.body.clone()));
+        }
+    }
+
+    /// Counts what a hub subscriber hears.
+    #[derive(Clone, Default)]
+    struct Heard(Arc<Mutex<(usize, usize)>>);
+
+    impl Sink for Heard {
+        fn on_tracks(&mut self, _t: &Tracks) {
+            self.0.lock().unwrap().0 += 1;
+        }
+        fn on_packet(&mut self, _p: &Arc<Packet>) {
+            self.0.lock().unwrap().1 += 1;
+        }
+    }
+
+    fn reconnecting(e: &Arc<Engine>, attempts: Option<u32>) -> RtmpClientConfig {
+        RtmpClientConfig {
+            reconnect: Some(
+                Reconnect::new(e)
+                    .initial_delay(Duration::from_millis(20))
+                    .max_delay(Duration::from_millis(80))
+                    .max_attempts(attempts),
+            ),
+            ..RtmpClientConfig::default()
+        }
+    }
+
+    /// A reconnecting pull: the server dropping the connection (twice), then ending the
+    /// stream, keeps the hub path reserved and the subscriber on; each new session republishes
+    /// (the subscriber hears the tracks again); closing frees the path at once.
+    #[test]
+    fn pull_reconnects_keeping_the_path() {
+        let (l, url) = listener();
+        let hub = Hub::default();
+        let e = Arc::new(engine());
+        let client = pull(&e, &url, &hub, "p", reconnecting(&e, None)).unwrap();
+        let heard = Heard::default();
+        let opts = SubscribeOptions::new(PeerInfo::default()).wait(Duration::from_secs(5));
+        let _sub = hub.subscribe("p", heard.clone(), opts).unwrap();
+        for round in 1..=3usize {
+            let mut srv = Server::accept(&l);
+            serve_play(&mut srv, 30);
+            wait_for("packets", || {
+                let h = heard.0.lock().unwrap();
+                h.0 == round && h.1 > 10 * round
+            });
+            assert_eq!(client.state(), ClientState::Streaming);
+            assert_eq!(client.reconnects(), round as u64 - 1);
+            assert!(client.error().is_none());
+            if round == 3 {
+                // The server ends the stream: a reconnect too.
+                srv.status(1, "status", "NetStream.Play.Stop");
+            }
+            drop(srv);
+            wait_for("reconnecting", || {
+                matches!(
+                    client.state(),
+                    ClientState::Reconnecting | ClientState::Connecting
+                )
+            });
+            assert!(client.error().is_some());
+            // The path stays claimed, the subscriber stays.
+            assert_eq!(
+                hub.reserve("p", PeerInfo::default()).unwrap_err(),
+                HubError::StreamBusy
+            );
+            assert!(hub.stream_info("p").unwrap().subscribers == 1);
+        }
+        client.close();
+        assert!(client.is_closed());
+        drop(hub.reserve("p", PeerInfo::default()).expect("free at once"));
+        assert_eq!(client.error(), None);
+        e.shutdown();
+    }
+
+    /// Errors no try cures end a reconnecting client (a refused connect), as does running out
+    /// of tries (nothing listens any more), with the path freed by then.
+    #[test]
+    fn reconnects_end_on_refusals_and_after_the_tries() {
+        let (l, url) = listener();
+        let hub = Hub::default();
+        let e = Arc::new(engine());
+        let client = pull(&e, &url, &hub, "p", reconnecting(&e, None)).unwrap();
+        let mut srv = Server::accept(&l);
+        let (_, v) = srv.command();
+        assert_eq!(v[0].as_str(), Some("connect"));
+        srv.reply(
+            0,
+            &[
+                Value::from("_error"),
+                Value::Number(1.0),
+                Value::Null,
+                Value::object([
+                    ("level", Value::from("error")),
+                    ("code", Value::from("NetConnection.Connect.Rejected")),
+                ]),
+            ],
+        );
+        wait_for("closed", || client.is_closed());
+        assert!(matches!(client.error(), Some(ClientError::Rejected { .. })));
+        drop(hub.reserve("p", PeerInfo::default()).expect("free"));
+        // Nothing listens: three failed dials, then the end.
+        drop((srv, l));
+        let client = pull(&e, &url, &hub, "q", reconnecting(&e, Some(3))).unwrap();
+        wait_for("given up", || client.is_closed());
+        assert!(
+            matches!(client.error(), Some(ClientError::Connect(_))),
+            "{:?}",
+            client.error()
+        );
+        drop(hub.reserve("q", PeerInfo::default()).expect("free"));
+        e.shutdown();
+    }
+
+    /// A reconnecting push: after the server drops it, it publishes again and sends the
+    /// stream from the cached GOP (a keyframe first).
+    #[test]
+    fn push_reconnects_and_resends_from_the_gop() {
+        let (l, url) = listener();
+        let hub = Hub::default();
+        let e = Arc::new(engine());
+        let (tracks, pkts) = sample();
+        let src = hub.publish("src", tracks, PeerInfo::default()).unwrap();
+        for p in &pkts {
+            src.write(p.clone());
+        }
+        let client = push(&e, &url, &hub, "src", reconnecting(&e, None)).unwrap();
+        for round in 0..2 {
+            let mut srv = Server::accept(&l);
+            srv.connect(0, |_| {});
+            loop {
+                let (_, v) = srv.command();
+                if v[0].as_str() == Some("createStream") {
+                    srv.reply(
+                        0,
+                        &[
+                            Value::from("_result"),
+                            v[1].clone(),
+                            Value::Null,
+                            Value::Number(1.0),
+                        ],
+                    );
+                    break;
+                }
+            }
+            let (_, v) = srv.command();
+            assert_eq!(v[0].as_str(), Some("publish"));
+            srv.status(1, "status", "NetStream.Publish.Start");
+            // The first video message is a sequence header, then a keyframe.
+            let mut video = Vec::new();
+            while video.len() < 2 {
+                let m = srv.next().expect("closed early");
+                if m.msg_type == chunk::VIDEO {
+                    video.push(m.payload);
+                }
+            }
+            assert_eq!(video[1][0] >> 4, 1, "a keyframe first (round {round})");
+            assert_eq!(client.reconnects(), round);
+            drop(srv);
+            wait_for("reconnecting", || client.state() != ClientState::Streaming);
+            assert!(!client.is_closed());
+        }
+        client.close();
         e.shutdown();
     }
 }

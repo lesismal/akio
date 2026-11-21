@@ -818,6 +818,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "h265_sample_encryption"
+path = "fuzz_targets/h265_sample_encryption.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "brotli_decompress"
 path = "fuzz_targets/brotli_decompress.rs"
 test = false

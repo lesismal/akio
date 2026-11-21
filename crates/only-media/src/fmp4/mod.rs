@@ -74,5 +74,74 @@ pub(crate) const TRUN_SIZE: u32 = 0x200;
 pub(crate) const TRUN_FLAGS: u32 = 0x400;
 pub(crate) const TRUN_CTS: u32 = 0x800;
 
+/// The samples of the first track of the `moof` + `mdat` fragments in `data` (as stored) with
+/// the `senc` subsamples of each (`(clear, protected)` pairs; none for a track without
+/// `senc`): what a `cbcs` decryptor reads, for the fuzzer's round trip. `None` when a box does
+/// not parse.
+#[cfg(any(test, feature = "fuzzing"))]
+#[allow(clippy::type_complexity)]
+pub(crate) fn cbcs_samples(data: &[u8]) -> Option<(Vec<Vec<u8>>, Vec<Vec<(usize, usize)>>)> {
+    fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+        b.get(at..at + 4)
+            .map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
+    }
+    fn boxes(mut b: &[u8]) -> Option<Vec<([u8; 4], &[u8], usize)>> {
+        let (mut v, mut off) = (Vec::new(), 0);
+        while b.len() >= 8 {
+            let n = u32_at(b, 0)? as usize;
+            if n < 8 || n > b.len() {
+                return None;
+            }
+            v.push(([b[4], b[5], b[6], b[7]], &b[8..n], off));
+            off += n;
+            b = &b[n..];
+        }
+        b.is_empty().then_some(v)
+    }
+    let (mut samples, mut subs) = (Vec::new(), Vec::new());
+    for (t, moof, at) in boxes(data)? {
+        if &t != b"moof" {
+            continue;
+        }
+        let traf = boxes(moof)?.into_iter().find(|(t, _, _)| t == b"traf")?.1;
+        let kids = boxes(traf)?;
+        let trun = kids.iter().find(|(t, _, _)| t == b"trun")?.1;
+        let flags = u32_at(trun, 0)? & 0xff_ffff;
+        let n = u32_at(trun, 4)? as usize;
+        let mut off = at + u32_at(trun, 8)? as usize;
+        let per = [TRUN_DURATION, TRUN_SIZE, TRUN_FLAGS, TRUN_CTS]
+            .iter()
+            .filter(|&&f| flags & f != 0)
+            .count()
+            * 4;
+        let size_at = usize::from(flags & TRUN_DURATION != 0) * 4;
+        let first = 12 + usize::from(flags & TRUN_FIRST_SAMPLE_FLAGS != 0) * 4;
+        let mut aux = kids
+            .iter()
+            .find(|(t, _, _)| t == b"senc")
+            .map(|(_, s, _)| s.get(8..))
+            .map(|s| s.unwrap_or_default());
+        for i in 0..n {
+            let size = u32_at(trun, first + i * per + size_at)? as usize;
+            samples.push(data.get(off..off + size)?.to_vec());
+            off += size;
+            let mut v = Vec::new();
+            if let Some(a) = aux.as_mut() {
+                let count = usize::from(u16::from_be_bytes([*a.first()?, *a.get(1)?]));
+                for j in 0..count {
+                    let e = a.get(2 + 6 * j..8 + 6 * j)?;
+                    v.push((
+                        usize::from(u16::from_be_bytes([e[0], e[1]])),
+                        u32_at(e, 2)? as usize,
+                    ));
+                }
+                *a = &a[2 + 6 * count..];
+            }
+            subs.push(v);
+        }
+    }
+    Some((samples, subs))
+}
+
 #[cfg(test)]
 mod tests;

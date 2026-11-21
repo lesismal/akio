@@ -299,26 +299,67 @@ enum Path {
 /// The ingest of a recording session (and of the RTSP client's play): depacketizes each
 /// media's RTP into the publisher; the stream goes live once every video track's parameter
 /// sets are known.
+///
+/// Each track's times start at its first packet's arrival. With [`sync`](Self::sync) the RTCP
+/// sender reports of the tracks then line them up on the sender's NTP clock: once a track
+/// has a report and a packet, its offset becomes the NTP time of its first RTP timestamp
+/// relative to that of the first track synchronized. Offsets only move forward (when a track
+/// would go back, those already synchronized move forward instead), so times keep
+/// increasing; before the stream is live nothing of this is seen.
 pub(crate) struct Recorder {
-    publisher: Publisher,
+    publisher: Arc<Publisher>,
     /// Per announced media: its track, whether the hub carries it, its hub index.
     media: Vec<RecMedia>,
     tracks: Vec<Track>,
     live: bool,
     start: Instant,
     scratch: Vec<Packet>,
+    /// RTCP sender reports line the tracks up.
+    sync: bool,
+    /// The NTP time (ns) that times count from, once a track is synchronized.
+    ntp_ref: Option<i128>,
 }
 
 struct RecMedia {
     track: Option<Track>,
     hub_index: Option<usize>,
     depack: Option<Depacketizer>,
+    /// The newest sender report: NTP time and RTP timestamp.
+    sr: Option<(u64, u32)>,
+    synced: bool,
+}
+
+/// An NTP timestamp (RFC 5905, 32.32 fixed point) in nanoseconds.
+fn ntp_ns(ntp: u64) -> i128 {
+    i128::from(ntp >> 32) * 1_000_000_000 + ((i128::from(ntp & 0xffff_ffff) * 1_000_000_000) >> 32)
+}
+
+/// A larger correction than this means the reports' clocks do not agree (or the sender's
+/// clock is not a clock): the track keeps its arrival-based times.
+const MAX_SYNC_SHIFT: crate::av::Time = 10 * crate::av::SECOND;
+
+/// The NTP and RTP timestamps of the first sender report of an RTCP compound packet.
+fn sender_report(mut b: &[u8]) -> Option<(u64, u32)> {
+    while b.len() >= 4 {
+        if b[0] >> 6 != 2 {
+            return None;
+        }
+        let len = (usize::from(u16::from_be_bytes([b[2], b[3]])) + 1) * 4;
+        let pkt = b.get(..len)?;
+        if pkt[1] == 200 && len >= 28 {
+            let ntp = u64::from_be_bytes(pkt[8..16].try_into().ok()?);
+            let rtp = u32::from_be_bytes(pkt[16..20].try_into().ok()?);
+            return (ntp != 0).then_some((ntp, rtp));
+        }
+        b = &b[len..];
+    }
+    None
 }
 
 impl Recorder {
     /// The ingest of `media` (an SDP's media descriptions, in order) into `publisher`, or
     /// `None` when no media maps to a track. Media that map to none are ignored.
-    pub(crate) fn new(publisher: Publisher, medias: &[sdp::Media]) -> Option<Recorder> {
+    pub(crate) fn new(publisher: Arc<Publisher>, medias: &[sdp::Media]) -> Option<Recorder> {
         let mut media = Vec::new();
         let mut tracks = Vec::new();
         for m in medias {
@@ -333,6 +374,8 @@ impl Recorder {
                 track: t,
                 hub_index,
                 depack: None,
+                sr: None,
+                synced: false,
             });
         }
         if tracks.is_empty() {
@@ -345,12 +388,75 @@ impl Recorder {
             live: false,
             start: Instant::now(),
             scratch: Vec::new(),
+            sync: false,
+            ntp_ref: None,
         })
+    }
+
+    /// Lines the tracks up by their RTCP sender reports ([`rtcp`](Self::rtcp)).
+    pub(crate) fn sync(mut self, on: bool) -> Recorder {
+        self.sync = on;
+        self
     }
 
     /// Closes the publisher.
     pub(crate) fn close(&self) {
         self.publisher.close();
+    }
+
+    /// Feeds one RTCP packet of media `media`: its sender report, if any, synchronizes the
+    /// track ([`sync`](Self::sync)).
+    pub(crate) fn rtcp(&mut self, media: usize, data: &[u8]) {
+        if !self.sync {
+            return;
+        }
+        let Some(m) = self.media.get_mut(media) else {
+            return;
+        };
+        if let Some(sr) = sender_report(data) {
+            m.sr = Some(sr);
+            self.resync(media);
+        }
+    }
+
+    /// Synchronizes track `media` once it has a sender report and a packet.
+    fn resync(&mut self, media: usize) {
+        let Some(m) = self.media.get(media) else {
+            return;
+        };
+        let (Some((ntp, rtp)), Some(d), false) = (m.sr, m.depack.as_ref(), m.synced) else {
+            return;
+        };
+        let Some(rel) = d.rtp_time(rtp) else { return };
+        // The NTP time of the track's first RTP timestamp.
+        let base = ntp_ns(ntp) - i128::from(rel);
+        let cur = d.current_offset();
+        let Some(r) = self.ntp_ref else {
+            self.ntp_ref = Some(base - i128::from(cur));
+            self.media[media].synced = true;
+            return;
+        };
+        let Ok(want) = crate::av::Time::try_from(base - r) else {
+            return;
+        };
+        if (want - cur).abs() > MAX_SYNC_SHIFT {
+            return;
+        }
+        if want >= cur {
+            if let Some(d) = self.media[media].depack.as_mut() {
+                d.set_offset(want);
+            }
+        } else {
+            // Moving this track back would send its times backwards: move the others forward.
+            let delta = cur - want;
+            self.ntp_ref = Some(r - i128::from(delta));
+            for o in self.media.iter_mut().filter(|o| o.synced) {
+                if let Some(d) = o.depack.as_mut() {
+                    d.set_offset(d.current_offset() + delta);
+                }
+            }
+        }
+        self.media[media].synced = true;
     }
 
     /// Feeds one RTP packet of media `media`.
@@ -362,6 +468,7 @@ impl Recorder {
         let (Some(track), Some(index)) = (m.track.as_ref(), m.hub_index) else {
             return;
         };
+        let first = m.depack.is_none();
         let depack = m.depack.get_or_insert_with(|| {
             let off = i64::try_from(start.elapsed().as_nanos()).unwrap_or(0);
             Depacketizer::new(track).offset(off)
@@ -371,6 +478,24 @@ impl Recorder {
             self.scratch = out;
             return;
         }
+        if first && self.sync {
+            // A report that came before the first packet (as ffmpeg sends them) applies to
+            // the packets it completed too.
+            let before = depack.current_offset();
+            self.resync(media);
+            let after = self.media[media]
+                .depack
+                .as_ref()
+                .map_or(before, Depacketizer::current_offset);
+            for p in &mut out {
+                p.dts += after - before;
+                p.pts += after - before;
+            }
+        }
+        let Some(depack) = self.media[media].depack.as_mut() else {
+            self.scratch = out;
+            return;
+        };
         if let Some(cfg) = depack.take_config() {
             let mut t = Track::video(self.tracks[index].codec, cfg);
             if t.width == 0 {
@@ -629,7 +754,7 @@ impl RtspSession {
             Ok(p) => p,
             Err(e) => return Response::new(hub_status(&e)),
         };
-        let Some(rec) = Recorder::new(publisher, &s.media) else {
+        let Some(rec) = Recorder::new(Arc::new(publisher), &s.media) else {
             return Response::new(415);
         };
         self.announced = s.media;
@@ -911,5 +1036,171 @@ mod tests {
         assert_eq!(track_id("trackID=3"), Some(3));
         assert_eq!(track_id("streamid=1"), Some(1));
         assert_eq!(track_id("x=1"), None);
+    }
+
+    /// Packets of the H.264 + AAC sample.
+    fn sample() -> (Tracks, Vec<Packet>) {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        for t in Demuxer::new()
+            .feed(include_bytes!("../../testdata/h264_aac.flv"))
+            .expect("flv")
+        {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => tracks = Some(t),
+                    Event::Packet(p) => pkts.push(p),
+                }
+            }
+        }
+        (tracks.expect("tracks"), pkts)
+    }
+
+    /// Collects what a hub subscriber hears: (track, pts) of every packet, and how many times
+    /// it heard the tracks.
+    #[derive(Clone, Default)]
+    struct Collect(Arc<Mutex<Heard>>);
+
+    /// (track, pts) of the packets, and the tracks announcements.
+    type Heard = (Vec<(usize, crate::av::Time)>, usize);
+
+    impl Sink for Collect {
+        fn on_tracks(&mut self, _t: &Tracks) {
+            lock(&self.0).1 += 1;
+        }
+        fn on_packet(&mut self, p: &Arc<Packet>) {
+            lock(&self.0).0.push((p.track, p.pts));
+        }
+        fn on_close(&mut self, _e: HubError) {}
+    }
+
+    /// Two tracks whose packets arrive together but whose sender reports put audio 500 ms
+    /// after video: with sync the hub's times follow the reports (whether they come before
+    /// the first packets or after the stream is live, in which case times only move
+    /// forward); without, they follow the arrival.
+    #[test]
+    fn rtcp_sender_reports_line_tracks_up() {
+        use crate::av::{MILLISECOND, SECOND};
+        let (tracks, pkts) = sample();
+        let medias = describe_sdp(&tracks).media;
+        // Media times of video and audio, from 0.
+        let v0 = pkts.iter().find(|p| p.track == 0).map_or(0, |p| p.pts);
+        let a0 = pkts.iter().find(|p| p.track == 1).map_or(0, |p| p.pts);
+        let ntp = |t: crate::av::Time| -> u64 {
+            let t = t + 3_900_000_000 * SECOND;
+            let secs = (t / SECOND) as u64;
+            let frac = (((t % SECOND) as u128) << 32) / SECOND as u128;
+            (secs << 32) | frac as u64
+        };
+        for (sync, early) in [(true, true), (true, false), (false, true)] {
+            let hub = Hub::default();
+            let p = hub.reserve("s", PeerInfo::default()).expect("reserve");
+            let mut rec = Recorder::new(Arc::new(p), &medias)
+                .expect("recorder")
+                .sync(sync);
+            let got = Collect::default();
+            let mut opts = SubscribeOptions::new(PeerInfo::default());
+            opts.wait = Some(Duration::from_secs(5));
+            let _sub = hub.subscribe("s", got.clone(), opts).expect("subscribe");
+            let mut packers: Vec<Packetizer> = tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Packetizer::new(t, 96 + i as u8))
+                .collect();
+            // The reports: video's first frame at NTP 0, audio's first frame at NTP 500 ms.
+            let srs: Vec<Vec<u8>> = (0..2)
+                .map(|i| {
+                    let (first, at) = if i == 0 {
+                        (v0, 0)
+                    } else {
+                        (a0, 500 * MILLISECOND)
+                    };
+                    let pk = &packers[i];
+                    pk.sender_report(ntp(at), pk.timestamp(first))
+                })
+                .collect();
+            if early {
+                rec.rtcp(0, &srs[0]);
+                rec.rtcp(1, &srs[1]);
+            }
+            let mut out = Vec::new();
+            for (n, pkt) in pkts.iter().enumerate() {
+                if !early && n == pkts.len() / 2 {
+                    rec.rtcp(1, &srs[1]);
+                    rec.rtcp(0, &srs[0]);
+                }
+                out.clear();
+                packers[pkt.track].packetize(pkt, &mut out);
+                for r in &out {
+                    rec.push(pkt.track, r);
+                }
+            }
+            let g = lock(&got.0);
+            assert_eq!(g.1, 1, "went live once");
+            let first = |t: usize, after: usize| {
+                g.0.iter()
+                    .skip(after)
+                    .find(|(k, _)| *k == t)
+                    .map(|(_, d)| *d)
+                    .expect("packet")
+            };
+            // Audio times keep increasing.
+            let d: Vec<_> =
+                g.0.iter()
+                    .filter(|(k, _)| *k == 1)
+                    .map(|(_, d)| *d)
+                    .collect();
+            assert!(d.windows(2).all(|w| w[1] >= w[0]), "audio goes back");
+            // Audio relative to video, at the same media time (the sample's own offset taken
+            // out): the reports' 500 ms with sync, about nothing without.
+            let skew = |after: usize| {
+                let (v, a) = (first(0, after), first(1, after));
+                (a - v) - (a0 - v0)
+            };
+            if !sync {
+                assert!(skew(0).abs() < 50 * MILLISECOND, "{}", skew(0));
+                continue;
+            }
+            if early {
+                assert!(
+                    (skew(0) - 500 * MILLISECOND).abs() < 30 * MILLISECOND,
+                    "{}",
+                    skew(0)
+                );
+            } else {
+                // Late reports: the packets after them carry the offset.
+                let n = g.0.len();
+                let late: Vec<_> = g.0[n / 2..].to_vec();
+                let v = late
+                    .iter()
+                    .find(|(k, _)| *k == 0)
+                    .map(|x| x.1)
+                    .expect("video");
+                let src_v = pkts
+                    .iter()
+                    .filter(|p| p.track == 0)
+                    .nth(g.0[..n / 2].iter().filter(|(k, _)| *k == 0).count());
+                let src_a = pkts
+                    .iter()
+                    .filter(|p| p.track == 1)
+                    .nth(g.0[..n / 2].iter().filter(|(k, _)| *k == 1).count());
+                let a = late
+                    .iter()
+                    .find(|(k, _)| *k == 1)
+                    .map(|x| x.1)
+                    .expect("audio");
+                let (sv, sa) = (src_v.expect("v").pts, src_a.expect("a").pts);
+                let skew = (a - v) - (sa - sv);
+                assert!(
+                    (skew - 500 * MILLISECOND).abs() < 60 * MILLISECOND,
+                    "{skew}"
+                );
+            }
+        }
+        assert_eq!(sender_report(&[0x80, 201, 0, 1, 0, 0, 0, 0]), None);
+        assert_eq!(sender_report(&[0x80, 200, 0, 1]), None);
+        assert_eq!(ntp_ns(1 << 32), 1_000_000_000);
+        assert_eq!(ntp_ns(1 << 31), 500_000_000);
     }
 }

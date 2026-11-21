@@ -70,4 +70,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-066: Change notifications for the static file cache (inotify / kqueue)](066-static-files-change-notifications.md) (accepted 2026-11-20)
 - [ADR-067: Kernel TLS for engine connections, hardware-first](067-kernel-tls-engine-offload.md) (accepted 2026-11-21)
 - [ADR-068: IPv6 autoconfiguration, Accurate ECN and AF_XDP shared UMEM / multi-buffer in the userspace stack](068-userspace-stack-slaac-accecn-af-xdp-multibuffer.md) (accepted 2026-11-21)
+- [ADR-070: Reconnecting RTMP / RTSP clients, RTCP A/V sync, HLS I-frame playlists, rendition reports, session keys, H.265 `cbcs`](070-media-reconnect-av-sync-iframes-hevc-cbcs.md) (accepted 2026-11-21)
 - [ADR-071: SOCKS5 GSS-API authentication with the mechanism supplied by the application](071-socks-gssapi-pluggable-mechanism.md) (accepted 2026-11-21)

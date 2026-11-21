@@ -50,22 +50,40 @@
 //! served while the key is (they leave the window together).
 //!
 //! With [`EncryptionMethod::SampleAes`] the samples are encrypted inside the container instead
-//! (`#EXT-X-KEY:METHOD=SAMPLE-AES`), H.264 and AAC tracks only (others are left out of the
-//! segments): in MPEG-TS Apple's sample encryption (stream types 0xdb / 0xcf, slices in a 1:9
+//! (`#EXT-X-KEY:METHOD=SAMPLE-AES`), H.264 and AAC tracks only, plus H.265 in fMP4 (others
+//! are left out of the segments): in MPEG-TS Apple's sample encryption (stream types 0xdb / 0xcf, slices in a 1:9
 //! pattern after 32 clear bytes, AAC frames after the header and 16 bytes), one random IV per
 //! key written as the `IV` attribute; in fMP4 the `cbcs` scheme (`encv` / `enca`, a constant
 //! IV in `tenc`, `senc` / `saiz` / `saio` with each slice's NAL and slice headers clear, AAC
-//! frames whole). Init segments and LL-HLS parts need nothing more: they are plain slices of
-//! the encrypted stream.
+//! frames whole; H.265 slice segment headers are parsed and kept clear the same way). Init
+//! segments and LL-HLS parts need nothing more: they are plain slices of the encrypted stream.
+//! A multivariant playlist names the current key of each encrypted rendition with
+//! `EXT-X-SESSION-KEY`, so players can fetch keys before the first media playlist.
 //!
-//! Not supported: SAMPLE-AES for H.265 and other codecs (H.265 `cbcs` needs its slice segment
-//! header parsed), `EXT-X-SESSION-KEY`, delta updates (`_HLS_skip`), rendition reports,
-//! `I-FRAME` playlists, subtitles and closed captions.
+//! **I-frame playlists**: with [`HlsConfig::iframe_playlist`] each stream with video also
+//! serves `/<path>/iframes.m3u8` (`EXT-X-I-FRAMES-ONLY`): one entry per video keyframe of the
+//! listed segments, an `EXT-X-BYTERANGE` into its segment that a player can decode on its own
+//! (MPEG-TS: the PAT, PMT and the keyframe's PES; fMP4: a `moof` + `mdat` fragment of the
+//! keyframe, which the muxer then cuts at every keyframe, with `EXT-X-MAP`). Multivariant
+//! playlists list it with `EXT-X-I-FRAME-STREAM-INF` (`BANDWIDTH` the peak bitrate of the
+//! I-frames). Not offered with AES-128, whose ciphertext cannot be read from the middle of a
+//! segment; SAMPLE-AES leaves the containers clear and works.
+//!
+//! **Rendition reports**: with LL-HLS parts, the media playlist of a rendition of a
+//! multivariant playlist ends with an `EXT-X-RENDITION-REPORT` (`LAST-MSN`, `LAST-PART`) for
+//! every other rendition of the playlists it is in whose muxer runs, so a player switching
+//! renditions can issue its first blocking reload at once.
+//!
+//! Not supported: SAMPLE-AES for codecs other than H.264, H.265 and AAC, delta updates
+//! (`_HLS_skip`), subtitles and closed captions.
 
 use std::{
     collections::{HashMap, VecDeque},
     fmt::{self, Write as _},
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{
+        Arc, Mutex, MutexGuard, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -140,6 +158,11 @@ pub struct HlsConfig {
     /// When set, segments and parts are encrypted (`EXT-X-KEY`): whole with AES-128, or
     /// sample by sample with SAMPLE-AES ([`HlsEncryption::method`]).
     pub encryption: Option<HlsEncryption>,
+    /// Serve an I-frame playlist (`/<path>/iframes.m3u8`, `EXT-X-I-FRAMES-ONLY`) for streams
+    /// with video, and list it in multivariant playlists (`EXT-X-I-FRAME-STREAM-INF`). In fMP4
+    /// every keyframe then gets a fragment of its own. Ignored with AES-128 encryption.
+    /// Default `false`.
+    pub iframe_playlist: bool,
 }
 
 impl Default for HlsConfig {
@@ -155,6 +178,7 @@ impl Default for HlsConfig {
             cors_origin: Some("*".to_owned()),
             format: SegmentFormat::MpegTs,
             encryption: None,
+            iframe_playlist: false,
         }
     }
 }
@@ -254,9 +278,10 @@ pub enum EncryptionMethod {
     /// `SAMPLE-AES`: the samples encrypted inside the container, its structure and the codec
     /// headers clear. MPEG-TS: Apple's MPEG-2 stream encryption format (H.264 slices with a
     /// 1:9 pattern after 32 clear bytes, AAC frames after 16), stream types 0xdb / 0xcf. fMP4:
-    /// the `cbcs` scheme of ISO/IEC 23001-7 (`encv` / `enca`, a constant IV, H.264 slice
-    /// headers clear and the slice data in a 1:9 pattern, AAC frames whole). Only H.264 and
-    /// AAC tracks are carried: others are left out of the segments rather than sent clear.
+    /// the `cbcs` scheme of ISO/IEC 23001-7 (`encv` / `enca`, a constant IV, H.264 and H.265
+    /// slice headers clear and the slice data in a 1:9 pattern, AAC frames whole). Only H.264
+    /// and AAC tracks, and H.265 in fMP4, are carried: others are left out of the segments
+    /// rather than sent clear.
     SampleAes,
 }
 
@@ -505,6 +530,8 @@ struct Desc {
     resolution: Option<(u32, u32)>,
     /// Channels of the first carried audio track.
     channels: Option<u8>,
+    /// The RFC 6381 string of the first carried video track.
+    video_codec: Option<String>,
 }
 
 /// A rendition's description and bitrates (peak, average; 0 without segments).
@@ -512,6 +539,10 @@ struct Rendition {
     desc: Desc,
     peak: u64,
     average: u64,
+    /// The peak bitrate of its I-frames, when it serves an I-frame playlist and has some.
+    iframe_peak: Option<u64>,
+    /// Its current key: the URI (relative to its media playlist) and the `IV` attribute.
+    key: Option<(String, Option<[u8; 16]>)>,
 }
 
 /// The URI of `target` relative to the directory of `from` (both hub-style paths).
@@ -567,9 +598,23 @@ struct Part {
     data: Arc<Vec<u8>>,
 }
 
+/// A video keyframe of a segment, for the I-frame playlist.
+#[derive(Debug, Clone, Copy)]
+struct IFrame {
+    /// Its number in the I-frame playlist (its media sequence number there), set when its
+    /// segment is closed.
+    n: u64,
+    /// The byte range in the segment.
+    offset: usize,
+    len: usize,
+    /// Its decode time.
+    time: Time,
+}
+
 #[derive(Debug)]
 struct Segment {
     seq: u64,
+    start: Time,
     duration: Time,
     discontinuity: bool,
     /// The init segment it needs (fMP4).
@@ -578,6 +623,7 @@ struct Segment {
     key: Option<u64>,
     data: Arc<Vec<u8>>,
     parts: Vec<Part>,
+    iframes: Vec<IFrame>,
 }
 
 /// The segment being written.
@@ -593,9 +639,19 @@ struct Building {
     part_offset: usize,
     part_independent: bool,
     last: Time,
-    /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed: the
-    /// building segment is moved in and out of the state for every packet).
+    /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed, to keep
+    /// the state the packet path touches small).
     enc: Option<Box<Encrypting>>,
+    /// Its keyframes so far (I-frame playlists; boxed, as `enc`).
+    iframes: Option<Box<BuildIFrames>>,
+}
+
+/// The keyframes of the segment being written.
+#[derive(Debug, Default)]
+struct BuildIFrames {
+    list: Vec<IFrame>,
+    /// fMP4: the start and time of a keyframe whose fragment is still pending.
+    open: Option<(usize, Time)>,
 }
 
 impl Building {
@@ -610,6 +666,26 @@ impl Building {
     fn key(&self) -> Option<u64> {
         self.enc.as_ref().map(|e| e.key.n)
     }
+
+    /// Moves what `mux` has pending into the segment as a fragment ending at `end`, and
+    /// records the keyframe fragment that was pending, if any.
+    fn flush(&mut self, mux: &mut SegMuxer, end: Time) {
+        mux.flush(end, &mut self.data);
+        let Some(f) = self.iframes.as_mut() else {
+            return;
+        };
+        if let Some((offset, time)) = f.open.take() {
+            let len = self.data.len() - offset;
+            if len > 0 {
+                f.list.push(IFrame {
+                    n: 0,
+                    offset,
+                    len,
+                    time,
+                });
+            }
+        }
+    }
 }
 
 enum Want {
@@ -621,12 +697,67 @@ enum Want {
     Segment(u64),
     Part(u64, usize),
     Init(u64),
+    /// The I-frame playlist (once a segment is out).
+    IFrames,
 }
 
 struct Waiter {
     want: Want,
     resp: Detached,
     deadline: Instant,
+    /// The request's byte range (I-frame playlists name ranges of segments).
+    range: Option<Range>,
+}
+
+/// A single byte range of a request (`Range: bytes=a-b`, `a-` or `-n`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Range {
+    /// From the first offset to the second, inclusive (to the end with `None`).
+    From(usize, Option<usize>),
+    /// The last this many bytes.
+    Last(usize),
+}
+
+/// Parses a `Range` header with one byte range (others are ignored: the whole body is sent).
+fn parse_range(v: Option<&str>) -> Option<Range> {
+    let spec = v?.trim().strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
+    let (a, b) = (a.trim(), b.trim());
+    if a.is_empty() {
+        return b.parse().ok().map(Range::Last);
+    }
+    let a: usize = a.parse().ok()?;
+    let b = if b.is_empty() {
+        None
+    } else {
+        Some(b.parse::<usize>().ok().filter(|&b| b >= a)?)
+    };
+    Some(Range::From(a, b))
+}
+
+/// Answers a media resource request with a byte range: 206 with that part of `r`'s body, or
+/// 416 when the range starts past its end.
+fn ranged(mut r: Response, range: Option<Range>) -> Response {
+    let Some(range) = range.filter(|_| r.status == 200) else {
+        return r;
+    };
+    let len = r.body.len();
+    let (a, end) = match range {
+        Range::From(a, b) => (a, b.map_or(len, |b| b.saturating_add(1).min(len))),
+        Range::Last(n) => (len - n.min(len), len),
+    };
+    if a >= end {
+        r.status = 416;
+        r.body.clear();
+        return r.header("Content-Range", format!("bytes */{len}"));
+    }
+    r.status = 206;
+    r.body.truncate(end);
+    r.body.drain(..a);
+    r.header("Content-Range", format!("bytes {a}-{}/{len}", end - 1))
 }
 
 #[derive(Default)]
@@ -656,6 +787,10 @@ struct State {
     keys: VecDeque<Arc<Key>>,
     /// Segments started with the current key (the last of `keys`).
     key_segments: u32,
+    /// Whether the tracks have video the format carries (known with the tracks).
+    video: Option<bool>,
+    /// The number the next I-frame gets.
+    next_iframe: u64,
 }
 
 impl State {
@@ -706,6 +841,9 @@ impl State {
     }
 }
 
+/// [`Stream::last`] before any part.
+const NO_PART: u64 = u64::MAX;
+
 /// One stream's muxer.
 struct Stream {
     path: String,
@@ -713,14 +851,53 @@ struct Stream {
     cors: Option<String>,
     state: Mutex<State>,
     sub: Mutex<Option<Subscription>>,
+    /// The service, for the rendition reports of multivariant playlists.
+    hls: Weak<Inner>,
+    /// The newest part, for the rendition reports of other streams: its media sequence number
+    /// shifted left by 20 bits, or'ed with its index; [`NO_PART`] before any. Read without the
+    /// state's lock (a playlist of another stream is built under that one's).
+    last: AtomicU64,
 }
 
 impl Stream {
+    fn new(path: &str, cfg: &HlsConfig, hls: Weak<Inner>) -> Stream {
+        Stream {
+            path: path.to_owned(),
+            cfg: cfg.clone(),
+            cors: cfg.cors_origin.clone(),
+            state: Mutex::new(State {
+                target: dur_ns(cfg.target_duration),
+                last_access: Some(Instant::now()),
+                ..State::default()
+            }),
+            sub: Mutex::new(None),
+            hls,
+            last: AtomicU64::new(NO_PART),
+        }
+    }
+
     fn sample_aes(&self) -> bool {
         self.cfg
             .encryption
             .as_ref()
             .is_some_and(|e| e.method == EncryptionMethod::SampleAes)
+    }
+
+    /// Whether it serves an I-frame playlist (not with AES-128, read from segment starts
+    /// only).
+    fn iframes(&self) -> bool {
+        self.cfg.iframe_playlist
+            && self
+                .cfg
+                .encryption
+                .as_ref()
+                .is_none_or(|e| e.method != EncryptionMethod::Aes128)
+    }
+
+    /// `(LAST-MSN, LAST-PART)` of its newest part, if any.
+    fn last_part(&self) -> Option<(u64, u64)> {
+        let v = self.last.load(Ordering::Acquire);
+        (v != NO_PART).then_some((v >> 20, v & 0xf_ffff))
     }
 }
 
@@ -767,10 +944,30 @@ impl Hls {
         let average = (bytes * SECOND as u128)
             .checked_div(dur)
             .map_or(0, |v| u64::try_from(v).unwrap_or(u64::MAX));
+        let iframe_peak = st
+            .iframes()
+            .then(|| {
+                let first = g.segments.len().saturating_sub(st.cfg.playlist_size);
+                iframe_entries(&g, first)
+                    .iter()
+                    .map(|e| {
+                        let b = e.iframe.len as u128 * 8 * SECOND as u128;
+                        u64::try_from(b / e.duration.max(1) as u128).unwrap_or(u64::MAX)
+                    })
+                    .max()
+            })
+            .flatten();
+        let key = g.keys.back().map(|k| {
+            let uri = k.uri.clone().unwrap_or_else(|| format!("key-{}.key", k.n));
+            let ts = st.cfg.format == SegmentFormat::MpegTs;
+            (uri, (ts && st.sample_aes()).then_some(k.iv))
+        });
         Some(Rendition {
             desc,
             peak,
             average,
+            iframe_peak,
+            key,
         })
     }
 
@@ -809,7 +1006,50 @@ impl Hls {
         let fmp4 = self.0.cfg.format == SegmentFormat::Fmp4;
         let mut s = String::with_capacity(512);
         s.push_str("#EXTM3U\n");
-        let _ = writeln!(s, "#EXT-X-VERSION:{}", if fmp4 { 7 } else { 3 });
+        let iframes = variants.iter().any(|(_, r)| r.iframe_peak.is_some());
+        let version = match (fmp4, iframes) {
+            (true, _) => 7,
+            (false, true) => 4,
+            (false, false) => 3,
+        };
+        let _ = writeln!(s, "#EXT-X-VERSION:{version}");
+        // The current key of every encrypted rendition (each has keys of its own), its URI
+        // made relative to this playlist.
+        let method = match self.0.cfg.encryption.as_ref().map(|e| e.method) {
+            Some(EncryptionMethod::SampleAes) => "SAMPLE-AES",
+            _ => "AES-128",
+        };
+        let mut session_keys: Vec<String> = Vec::new();
+        let keyed = variants
+            .iter()
+            .map(|(v, r)| (v.path.as_str(), r))
+            .chain(audio.iter().map(|(a, r)| (a.path.as_str(), r)));
+        for (path, r) in keyed {
+            let Some((uri, iv)) = &r.key else { continue };
+            let uri = if uri.contains("://") || uri.starts_with('/') {
+                uri.clone()
+            } else {
+                let dir = relative(name, &format!("{path}/x"));
+                format!("{}{uri}", &dir[..dir.len() - 1])
+            };
+            let mut line = format!(
+                "#EXT-X-SESSION-KEY:METHOD={method},URI=\"{}\"",
+                quoted(&uri)
+            );
+            if let Some(iv) = iv {
+                line.push_str(",IV=0x");
+                for b in iv {
+                    let _ = write!(line, "{b:02X}");
+                }
+            }
+            if !session_keys.contains(&line) {
+                session_keys.push(line);
+            }
+        }
+        for k in &session_keys {
+            s.push_str(k);
+            s.push('\n');
+        }
         for (a, r) in &audio {
             let _ = write!(
                 s,
@@ -858,6 +1098,19 @@ impl Hls {
             }
             let _ = writeln!(s, "\n{}", uri(&v.path));
         }
+        for (v, r) in &variants {
+            let Some(bw) = r.iframe_peak else { continue };
+            let _ = write!(s, "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH={}", bw.max(1));
+            // The codec of the video track only.
+            if let Some(c) = &r.desc.video_codec {
+                let _ = write!(s, ",CODECS=\"{c}\"");
+            }
+            if let Some((w, h)) = r.desc.resolution {
+                let _ = write!(s, ",RESOLUTION={w}x{h}");
+            }
+            let iframes = format!("{}/iframes.m3u8", v.path);
+            let _ = writeln!(s, ",URI=\"{}{suffix}\"", relative(name, &iframes));
+        }
         Some(s)
     }
 
@@ -903,36 +1156,20 @@ impl Hls {
     }
 
     fn stream(&self, path: &str, ctx: &Context) -> Result<Arc<Stream>, HubError> {
-        if let Some(s) = lock(&self.0.muxers).get(path) {
+        // The map's lock is never held while a stream's is taken: a playlist built under a
+        // stream's lock looks other streams up for its rendition reports.
+        let running = lock(&self.0.muxers).get(path).cloned();
+        if let Some(s) = running {
             if !lock(&s.state).ended {
-                return Ok(s.clone());
+                return Ok(s);
             }
         }
         let cfg = &self.0.cfg;
-        let st = Arc::new(Stream {
-            path: path.to_owned(),
-            cfg: cfg.clone(),
-            cors: cfg.cors_origin.clone(),
-            state: Mutex::new(State {
-                target: dur_ns(cfg.target_duration),
-                last_access: Some(Instant::now()),
-                ..State::default()
-            }),
-            sub: Mutex::new(None),
-        });
+        let st = Arc::new(Stream::new(path, cfg, Arc::downgrade(&self.0)));
         let info = PeerInfo::new("hls", Some(ctx.peer()), ctx.req().query().unwrap_or(""));
         let mut opts = SubscribeOptions::new(info);
         opts.wait = cfg.play_wait;
-        let sink = HlsSink {
-            st: st.clone(),
-            muxer: None,
-            timeline: Timeline::from_zero(),
-            video: Vec::new(),
-            has_video: false,
-            started: false,
-            disc_pending: false,
-            forced_cut: false,
-        };
+        let sink = HlsSink::new(st.clone());
         let sub = self.0.hub.subscribe(path, sink, opts)?;
         *lock(&st.sub) = Some(sub);
         lock(&self.0.muxers).insert(path.to_owned(), st.clone());
@@ -1061,6 +1298,12 @@ impl Service for Hls {
         let want = if file == "index.m3u8" {
             let (msn, part) = blocking_params(ctx.req().query());
             Want::Playlist { msn, part }
+        } else if file == "iframes.m3u8" {
+            let aes128 = self.0.cfg.encryption.as_ref().map(|e| e.method);
+            if !self.0.cfg.iframe_playlist || aes128 == Some(EncryptionMethod::Aes128) {
+                return ctx.text(404, "not found");
+            }
+            Want::IFrames
         } else if let Some(n) = file
             .strip_prefix("init-")
             .and_then(|f| f.strip_suffix(".mp4"))
@@ -1087,7 +1330,7 @@ impl Service for Hls {
         } else {
             return ctx.text(404, "not found");
         };
-        let st = if matches!(want, Want::Playlist { .. }) {
+        let st = if matches!(want, Want::Playlist { .. } | Want::IFrames) {
             match self.stream(path, ctx) {
                 Ok(s) => s,
                 Err(HubError::Denied(r)) => return ctx.text(403, r),
@@ -1099,11 +1342,15 @@ impl Service for Hls {
                 None => return ctx.text(404, "not found"),
             }
         };
+        let range = match want {
+            Want::Segment(_) | Want::Part(..) | Want::Init(_) => parse_range(ctx.header("range")),
+            _ => None,
+        };
         let mut g = lock(&st.state);
         g.last_access = Some(Instant::now());
         if let Some(resp) = st.answer(&g, &want) {
             drop(g);
-            return ctx.respond(resp);
+            return ctx.respond(ranged(resp, range));
         }
         if !st.may_wait(&g, &want) {
             drop(g);
@@ -1115,6 +1362,7 @@ impl Service for Hls {
             want,
             resp: d,
             deadline: Instant::now() + wait,
+            range,
         });
         drop(g);
         let weak = Arc::downgrade(&st);
@@ -1144,7 +1392,9 @@ impl Stream {
         if playlist {
             r = r.header("Cache-Control", "no-cache");
         } else {
-            r = r.header("Cache-Control", "max-age=60");
+            r = r
+                .header("Cache-Control", "max-age=60")
+                .header("Accept-Ranges", "bytes");
         }
         if let Some(o) = &self.cors {
             r = r.header("Access-Control-Allow-Origin", o);
@@ -1179,6 +1429,19 @@ impl Stream {
             Want::Init(n) => {
                 let (_, data) = g.inits.iter().find(|(id, _)| *id == n)?;
                 Some(self.headers(Response::with_body(200, "video/mp4", data.to_vec()), false))
+            }
+            Want::IFrames => {
+                if g.video == Some(false) {
+                    return Some(self.headers(Response::text(404, "no video"), true));
+                }
+                if g.segments.is_empty() {
+                    return None;
+                }
+                let body = self.iframe_playlist(g);
+                Some(self.headers(
+                    Response::with_body(200, "application/vnd.apple.mpegurl", body.into_bytes()),
+                    true,
+                ))
             }
             Want::Part(n, m) => {
                 let part = if let Some(s) = g.segments.iter().find(|s| s.seq == n) {
@@ -1223,18 +1486,161 @@ impl Stream {
             Want::Segment(n) => n == next,
             Want::Part(n, _) => n == next || n == next + 1,
             Want::Init(_) => false,
+            Want::IFrames => true,
         }
     }
 
+    /// The configured target (rounded up) or the longest segment so far (rounded to the
+    /// nearest second): it only grows, so reloads see the same value unless a segment
+    /// outgrows it.
+    fn target_secs(g: &State) -> u64 {
+        let target = (g.target.max(1) + SECOND - 1) / SECOND;
+        (target as u64).max(g.longest)
+    }
+
+    /// The media playlist, with the rendition reports of LL-HLS.
     fn playlist(&self, g: &State) -> String {
+        let mut s = self.media_playlist(g);
+        if self.cfg.part_duration.is_some() {
+            self.rendition_reports(&mut s);
+        }
+        s
+    }
+
+    /// Appends an `EXT-X-RENDITION-REPORT` for every other rendition of the multivariant
+    /// playlists that list this stream and have parts out. Runs under this stream's lock:
+    /// takes only the service's map locks (never held while a stream's lock is taken) and
+    /// reads the other streams' [`Stream::last`].
+    fn rendition_reports(&self, s: &mut String) {
+        let Some(hls) = self.hls.upgrade() else {
+            return;
+        };
+        let mut peers: Vec<String> = Vec::new();
+        for m in lock(&hls.masters).values() {
+            if !m.paths().any(|p| p == self.path) {
+                continue;
+            }
+            for p in m.paths() {
+                if p != self.path && !peers.iter().any(|q| q == p) {
+                    peers.push(p.to_owned());
+                }
+            }
+        }
+        if peers.is_empty() {
+            return;
+        }
+        let from = format!("{}/index.m3u8", self.path);
+        for p in peers {
+            let Some(other) = lock(&hls.muxers).get(&p).cloned() else {
+                continue;
+            };
+            let Some((msn, part)) = other.last_part() else {
+                continue;
+            };
+            let uri = relative(&from, &format!("{p}/index.m3u8"));
+            let _ = writeln!(
+                s,
+                "#EXT-X-RENDITION-REPORT:URI=\"{}\",LAST-MSN={msn},LAST-PART={part}",
+                quoted(&uri)
+            );
+        }
+    }
+
+    /// The I-frame playlist: the keyframes of the listed segments, by byte range.
+    fn iframe_playlist(&self, g: &State) -> String {
+        let first = g.segments.len().saturating_sub(self.cfg.playlist_size);
+        let entries = iframe_entries(g, first);
+        let fmp4 = self.cfg.format == SegmentFormat::Fmp4;
+        let ext = self.cfg.format.extension();
+        let longest = entries
+            .iter()
+            .map(|e| ((e.duration + SECOND / 2) / SECOND) as u64)
+            .max()
+            .unwrap_or(0);
+        let target = Self::target_secs(g).max(longest);
+        let mut s = String::with_capacity(512);
+        s.push_str("#EXTM3U\n");
+        let _ = writeln!(s, "#EXT-X-VERSION:{}", if fmp4 { 7 } else { 4 });
+        let _ = writeln!(s, "#EXT-X-TARGETDURATION:{target}");
+        let msn = entries.first().map_or(g.next_iframe, |e| e.iframe.n);
+        let _ = writeln!(s, "#EXT-X-MEDIA-SEQUENCE:{msn}");
+        let disc_before = g.disc_seq
+            + g.segments
+                .iter()
+                .take(entries.first().map_or(first, |e| e.segment))
+                .filter(|s| s.discontinuity)
+                .count() as u64;
+        if disc_before > 0 {
+            let _ = writeln!(s, "#EXT-X-DISCONTINUITY-SEQUENCE:{disc_before}");
+        }
+        s.push_str("#EXT-X-I-FRAMES-ONLY\n");
+        let mut map: Option<u64> = None;
+        let mut key: Option<Option<u64>> = None;
+        let mut prev: Option<usize> = None;
+        for e in &entries {
+            let seg = &g.segments[e.segment];
+            let disc = match prev {
+                Some(p) => g.segments.range(p + 1..=e.segment).any(|s| s.discontinuity),
+                None => false,
+            };
+            if disc {
+                s.push_str("#EXT-X-DISCONTINUITY\n");
+            }
+            prev = Some(e.segment);
+            if fmp4 && map != Some(seg.init) {
+                if key.take().flatten().is_some() {
+                    s.push_str("#EXT-X-KEY:METHOD=NONE\n");
+                }
+                let _ = writeln!(s, "#EXT-X-MAP:URI=\"init-{}.mp4\"", seg.init);
+                map = Some(seg.init);
+            }
+            if key != Some(seg.key) {
+                self.write_key(&mut s, g, seg.key);
+                key = Some(seg.key);
+            }
+            let _ = writeln!(
+                s,
+                "#EXTINF:{:.3},\n#EXT-X-BYTERANGE:{}@{}\nseg-{}{ext}",
+                e.duration as f64 / SECOND as f64,
+                e.iframe.len,
+                e.iframe.offset,
+                seg.seq
+            );
+        }
+        s
+    }
+
+    /// Writes the `EXT-X-KEY` of key `k` (`METHOD=NONE` for none).
+    fn write_key(&self, s: &mut String, g: &State, k: Option<u64>) {
+        let method = if self.sample_aes() {
+            "SAMPLE-AES"
+        } else {
+            "AES-128"
+        };
+        let sample_ts = self.sample_aes() && self.cfg.format == SegmentFormat::MpegTs;
+        match k.and_then(|n| g.keys.iter().find(|x| x.n == n)) {
+            Some(x) => {
+                let _ = match &x.uri {
+                    Some(u) => write!(s, "#EXT-X-KEY:METHOD={method},URI=\"{}\"", quoted(u)),
+                    None => write!(s, "#EXT-X-KEY:METHOD={method},URI=\"key-{}.key\"", x.n),
+                };
+                if sample_ts {
+                    s.push_str(",IV=0x");
+                    for b in x.iv {
+                        let _ = write!(s, "{b:02X}");
+                    }
+                }
+                s.push('\n');
+            }
+            None => s.push_str("#EXT-X-KEY:METHOD=NONE\n"),
+        }
+    }
+
+    fn media_playlist(&self, g: &State) -> String {
         let parts = self.cfg.part_duration.map(dur_ns);
         let first = g.segments.len().saturating_sub(self.cfg.playlist_size);
         let listed: Vec<&Segment> = g.segments.iter().skip(first).collect();
-        // The configured target (rounded up) or the longest segment so far (rounded to the
-        // nearest second): it only grows, so reloads see the same value unless a segment
-        // outgrows it.
-        let target = (g.target.max(1) + SECOND - 1) / SECOND;
-        let target = (target as u64).max(g.longest);
+        let target = Self::target_secs(g);
         let mut s = String::with_capacity(512);
         s.push_str("#EXTM3U\n");
         let fmp4 = self.cfg.format == SegmentFormat::Fmp4;
@@ -1280,12 +1686,6 @@ impl Stream {
         // key is preceded by METHOD=NONE).
         let mut map: Option<u64> = None;
         let mut key: Option<u64> = None;
-        let sample_ts = self.sample_aes() && !fmp4;
-        let method = if self.sample_aes() {
-            "SAMPLE-AES"
-        } else {
-            "AES-128"
-        };
         let mut write_media = |s: &mut String, init: u64, k: Option<u64>| {
             if fmp4 && map != Some(init) {
                 if key.take().is_some() {
@@ -1295,24 +1695,7 @@ impl Stream {
                 map = Some(init);
             }
             if k != key {
-                match k.and_then(|n| g.keys.iter().find(|x| x.n == n)) {
-                    Some(x) => {
-                        let _ = match &x.uri {
-                            Some(u) => {
-                                write!(s, "#EXT-X-KEY:METHOD={method},URI=\"{}\"", quoted(u))
-                            }
-                            None => write!(s, "#EXT-X-KEY:METHOD={method},URI=\"key-{}.key\"", x.n),
-                        };
-                        if sample_ts {
-                            s.push_str(",IV=0x");
-                            for b in x.iv {
-                                let _ = write!(s, "{b:02X}");
-                            }
-                        }
-                        s.push('\n');
-                    }
-                    None => s.push_str("#EXT-X-KEY:METHOD=NONE\n"),
-                }
+                self.write_key(s, g, k);
                 key = k;
             }
         };
@@ -1375,7 +1758,7 @@ impl Stream {
         let waiters = std::mem::take(&mut g.waiters);
         for w in waiters {
             match self.answer(g, &w.want) {
-                Some(r) => out.push((w.resp, r)),
+                Some(r) => out.push((w.resp, ranged(r, w.range))),
                 None => g.waiters.push(w),
             }
         }
@@ -1397,6 +1780,40 @@ impl Stream {
                 .respond(Response::text(503, "timed out waiting for the stream"));
         }
     }
+}
+
+/// An entry of an I-frame playlist.
+struct IFrameEntry {
+    /// The index of its segment in [`State::segments`].
+    segment: usize,
+    iframe: IFrame,
+    /// Until the next keyframe, or the end of its segment when the next one is past a
+    /// discontinuity or not cut yet.
+    duration: Time,
+}
+
+/// The I-frames of the segments from index `first` on.
+fn iframe_entries(g: &State, first: usize) -> Vec<IFrameEntry> {
+    let mut out: Vec<IFrameEntry> = Vec::new();
+    for (i, seg) in g.segments.iter().enumerate().skip(first) {
+        for f in &seg.iframes {
+            if let Some(prev) = out.last_mut() {
+                let gap = g
+                    .segments
+                    .range(prev.segment + 1..=i)
+                    .any(|s| s.discontinuity);
+                if !gap {
+                    prev.duration = (f.time - prev.iframe.time).max(1);
+                }
+            }
+            out.push(IFrameEntry {
+                segment: i,
+                iframe: *f,
+                duration: (seg.start + seg.duration - f.time).max(1),
+            });
+        }
+    }
+    out
 }
 
 fn write_part(s: &mut String, seq: u64, k: usize, p: &Part, ext: &str) {
@@ -1464,16 +1881,32 @@ struct HlsSink {
     disc_pending: bool,
     /// The last segment was cut at `max_bytes` without a keyframe: the next one starts at once.
     forced_cut: bool,
+    /// Keyframes are recorded for the I-frame playlist ([`Stream::iframes`]).
+    iframes: bool,
 }
 
 impl HlsSink {
+    fn new(st: Arc<Stream>) -> HlsSink {
+        HlsSink {
+            iframes: st.iframes(),
+            st,
+            muxer: None,
+            timeline: Timeline::from_zero(),
+            video: Vec::new(),
+            has_video: false,
+            started: false,
+            disc_pending: false,
+            forced_cut: false,
+        }
+    }
+
     /// Closes the segment being written at `end` (the next segment's start).
     fn close_segment(st: &Stream, g: &mut State, end: Time, mux: Option<&mut SegMuxer>) {
         let Some(mut b) = g.building.take() else {
             return;
         };
         if let Some(m) = mux {
-            m.flush(end, &mut b.data);
+            b.flush(m, end);
         }
         if b.data.is_empty() {
             g.building = None;
@@ -1488,14 +1921,21 @@ impl HlsSink {
         g.bytes += data.len() + b.parts.iter().map(|p| p.data.len()).sum::<usize>();
         let duration = (end - b.start).max(1);
         g.longest = g.longest.max(((duration + SECOND / 2) / SECOND) as u64);
+        let mut iframes = b.iframes.map(|f| f.list).unwrap_or_default();
+        for f in &mut iframes {
+            f.n = g.next_iframe;
+            g.next_iframe += 1;
+        }
         g.segments.push_back(Segment {
             seq: b.seq,
+            start: b.start,
             duration,
             discontinuity: b.discontinuity,
             init: b.init,
             key,
             data,
             parts: b.parts,
+            iframes,
         });
         g.next_seq = b.seq + 1;
         let keep = st.cfg.playlist_size + st.cfg.keep_segments;
@@ -1517,7 +1957,7 @@ impl HlsSink {
             return;
         }
         if let Some(m) = mux {
-            m.flush(end, &mut b.data);
+            b.flush(m, end);
         }
         if b.data.len() == b.part_offset {
             return;
@@ -1534,6 +1974,32 @@ impl HlsSink {
         });
         b.part_offset = b.data.len();
         b.part_start = end;
+        let last = (b.seq << 20) | (b.parts.len() as u64 - 1).min(0xf_ffff);
+        st.last.store(last, Ordering::Release);
+    }
+}
+
+impl HlsSink {
+    /// Records the video keyframe just written at `at` for the I-frame playlist (MPEG-TS: the
+    /// tables and its PES; fMP4: once its fragment is cut).
+    #[cold]
+    #[inline(never)]
+    fn keyframe(b: &mut Building, m: &SegMuxer, at: usize, dts: Time) {
+        match m {
+            SegMuxer::Ts(_) => b
+                .iframes
+                .get_or_insert_with(Box::default)
+                .list
+                .push(IFrame {
+                    n: 0,
+                    offset: at,
+                    len: b.data.len() - at,
+                    time: dts,
+                }),
+            SegMuxer::Mp4(_) => {
+                b.iframes.get_or_insert_with(Box::default).open = Some((b.data.len(), dts));
+            }
+        }
     }
 }
 
@@ -1581,6 +2047,7 @@ impl Sink for HlsSink {
                 .map(|(i, t)| t.codec.is_video() && m.is_some_and(|m| m.carries(i)))
                 .collect();
             self.has_video = self.video.iter().any(|&v| v);
+            g.video = Some(self.has_video);
             let carried = |i: usize| m.is_some_and(|m| m.carries(i));
             let mut desc = Desc::default();
             let kept = tracks.iter().enumerate().filter(|&(i, _)| carried(i));
@@ -1590,6 +2057,9 @@ impl Sink for HlsSink {
                 }
                 if t.is_video() && t.width > 0 && desc.resolution.is_none() {
                     desc.resolution = Some((t.width, t.height));
+                }
+                if t.is_video() && desc.video_codec.is_none() {
+                    desc.video_codec = t.codec_string();
                 }
                 if t.codec.is_audio() && desc.channels.is_none() && t.channels > 0 {
                     desc.channels = Some(t.channels);
@@ -1667,21 +2137,32 @@ impl Sink for HlsSink {
                     part_independent: true,
                     last: dts,
                     enc,
+                    iframes: None,
                 });
             }
-            let Some(mut b) = g.building.take() else {
+            // Borrowed in place (moving it out and back cost two copies per packet).
+            let Some(b) = g.building.as_mut() else {
                 return;
             };
             if let Some(pt) = part_target {
                 let part_len = b.data.len() - b.part_offset + m.pending();
                 if !first && part_len > 0 && dts - b.part_start >= pt {
-                    Self::close_part(&self.st, &mut b, dts, Some(&mut *m));
+                    Self::close_part(&self.st, b, dts, Some(&mut *m));
                     b.part_independent = video && pkt.keyframe;
                     woke = true;
                 } else if part_len == 0 && video && pkt.keyframe {
                     b.part_independent = true;
                 }
             }
+            if self.iframes && video {
+                // fMP4: a keyframe's fragment ends at the next video sample, and starts after
+                // what was pending (so it holds the keyframe and the audio in between).
+                let open = b.iframes.as_ref().is_some_and(|f| f.open.is_some());
+                if open || pkt.keyframe && m.pending() > 0 {
+                    b.flush(m, dts);
+                }
+            }
+            let at = b.data.len();
             match m {
                 SegMuxer::Ts(m) => {
                     if b.data.is_empty() || video && pkt.keyframe {
@@ -1690,15 +2171,17 @@ impl Sink for HlsSink {
                     let p = Packet::new(pkt.track, dts, pts, pkt.keyframe, pkt.data.clone());
                     m.write_packet(&p, &mut b.data);
                 }
-                SegMuxer::Mp4(m) => {
-                    m.write_sample(pkt.track, dts, pts, pkt.keyframe, &pkt.data);
+                SegMuxer::Mp4(mm) => {
+                    mm.write_sample(pkt.track, dts, pts, pkt.keyframe, &pkt.data);
                 }
+            }
+            if self.iframes && video && pkt.keyframe {
+                Self::keyframe(b, m, at, dts);
             }
             b.last = b.last.max(dts);
             if let Some(e) = &mut b.enc {
                 e.step(&b.data);
             }
-            g.building = Some(b);
             if woke {
                 self.st.wake(&mut g)
             } else {
@@ -1756,25 +2239,11 @@ mod tests {
     }
 
     fn sink(cfg: HlsConfig) -> HlsSink {
-        HlsSink {
-            st: Arc::new(Stream {
-                path: "t".to_owned(),
-                cors: None,
-                state: Mutex::new(State {
-                    target: dur_ns(cfg.target_duration),
-                    ..State::default()
-                }),
-                cfg,
-                sub: Mutex::new(None),
-            }),
-            muxer: None,
-            timeline: Timeline::from_zero(),
-            video: Vec::new(),
-            has_video: false,
-            started: false,
-            disc_pending: false,
-            forced_cut: false,
-        }
+        sink_in(cfg, "t", Weak::new())
+    }
+
+    fn sink_in(cfg: HlsConfig, path: &str, hls: Weak<Inner>) -> HlsSink {
+        HlsSink::new(Arc::new(Stream::new(path, &cfg, hls)))
     }
 
     /// A video stream with a single keyframe: before the fix the segment being written grew
@@ -2065,7 +2534,7 @@ mod tests {
 
     /// Feeds `pkts` of `tracks` into a sink registered in `hls` under `path`.
     fn rendition(hls: &Hls, path: &str, tracks: &Tracks, pkts: &[Packet], rounds: i64) {
-        let mut s = sink(hls.0.cfg.clone());
+        let mut s = sink_in(hls.0.cfg.clone(), path, Arc::downgrade(&hls.0));
         s.on_tracks(tracks);
         feed(&mut s, pkts, rounds, 2 * SECOND);
         lock(&hls.0.muxers).insert(path.to_owned(), s.st.clone());
@@ -2512,5 +2981,341 @@ mod tests {
             key.aes.encrypt_cbc_padded(&iv_of(9), &data, &mut want);
             assert_eq!(got, want, "{n}");
         }
+    }
+
+    /// `(duration, len, offset, uri)` of each entry of an I-frame playlist.
+    fn iframe_lines(pl: &str) -> Vec<(f64, usize, usize, String)> {
+        let lines: Vec<&str> = pl.lines().collect();
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            let Some(d) = l.strip_prefix("#EXTINF:") else {
+                continue;
+            };
+            let d: f64 = d.trim_end_matches(',').parse().expect("duration");
+            let r = lines[i + 1]
+                .strip_prefix("#EXT-X-BYTERANGE:")
+                .expect("byte range");
+            let (len, off) = r.split_once('@').expect("len@offset");
+            out.push((
+                d,
+                len.parse().expect("len"),
+                off.parse().expect("offset"),
+                lines[i + 2].to_owned(),
+            ));
+        }
+        out
+    }
+
+    /// I-frame playlists in both formats: one entry per keyframe, durations to the next one,
+    /// and every byte range a whole I-frame a demuxer reads on its own (MPEG-TS: tables first;
+    /// fMP4: moof + mdat holding one video sample, a keyframe).
+    #[test]
+    fn iframe_playlists() {
+        let (tracks, pkts) = sample(); // a keyframe every second
+        for format in [SegmentFormat::MpegTs, SegmentFormat::Fmp4] {
+            for parts in [false, true] {
+                let mut cfg = fmp4_cfg(parts);
+                cfg.format = format;
+                cfg.target_duration = Duration::from_secs(2);
+                cfg.iframe_playlist = true;
+                let mut s = sink(cfg);
+                s.on_tracks(&tracks);
+                feed(&mut s, &pkts, 4, 2 * SECOND + 40 * crate::av::MILLISECOND);
+                let g = lock(&s.st.state);
+                assert!(s.st.answer(&g, &Want::IFrames).is_some());
+                let pl = s.st.iframe_playlist(&g);
+                let fmp4 = format == SegmentFormat::Fmp4;
+                assert!(pl.contains("#EXT-X-I-FRAMES-ONLY\n"), "{pl}");
+                assert!(
+                    pl.contains(if fmp4 {
+                        "#EXT-X-VERSION:7\n"
+                    } else {
+                        "#EXT-X-VERSION:4\n"
+                    }),
+                    "{pl}"
+                );
+                assert_eq!(pl.contains("#EXT-X-MAP:URI=\"init-0.mp4\""), fmp4, "{pl}");
+                assert!(pl.contains("#EXT-X-MEDIA-SEQUENCE:0\n"), "{pl}");
+                let entries = iframe_lines(&pl);
+                let keyframes: usize = g.segments.iter().map(|seg| seg.iframes.len()).sum();
+                assert_eq!(entries.len(), keyframes, "{pl}");
+                assert!(entries.len() >= 6, "{pl}");
+                let total: f64 = entries.iter().map(|e| e.0).sum();
+                let segs: f64 = g.segments.iter().map(|s| s.duration as f64 / 1e9).sum();
+                let first = g.segments[0].iframes[0].time - g.segments[0].start;
+                assert!(
+                    (total + first as f64 / 1e9 - segs).abs() < 0.01,
+                    "{total} {segs}"
+                );
+                for (d, _, _, _) in &entries {
+                    assert!((0.5..=2.5).contains(d), "{pl}");
+                }
+                let init = g.inits.front().map(|(_, d)| d.to_vec()).unwrap_or_default();
+                for (_, len, off, uri) in &entries {
+                    let seq: u64 = uri[4..uri.find('.').expect("ext")].parse().expect("seq");
+                    let seg = g.segments.iter().find(|s| s.seq == seq).expect("segment");
+                    let range = &seg.data[*off..off + len];
+                    let got: Vec<Packet> = if fmp4 {
+                        assert_eq!(&range[4..8], b"moof");
+                        let mut all = init.clone();
+                        all.extend_from_slice(range);
+                        fmp4::demux_all(&all).expect("I-frame parses").1
+                    } else {
+                        assert_eq!(range[0], 0x47);
+                        assert_eq!(range[1..3], [0x40, 0x00], "starts with the PAT");
+                        assert_eq!(range.len() % 188, 0);
+                        let mut d = crate::mpegts::demux::Demuxer::new();
+                        let mut got = Vec::new();
+                        let mut emit = |e| {
+                            if let crate::mpegts::demux::Event::Packet(p) = e {
+                                got.push(p);
+                            }
+                        };
+                        d.feed(range, &mut emit).expect("I-frame demuxes");
+                        d.flush(&mut emit);
+                        got
+                    };
+                    let video: Vec<&Packet> = got.iter().filter(|p| p.track == 0).collect();
+                    assert_eq!(video.len(), 1, "{uri} {off}");
+                    assert!(video[0].keyframe, "{uri} {off}");
+                    if !fmp4 {
+                        assert!(got.iter().all(|p| p.track == 0), "only the keyframe");
+                    }
+                }
+            }
+        }
+    }
+
+    /// I-frame playlists are left out with AES-128 (and offered with SAMPLE-AES), and an
+    /// audio-only stream has none.
+    #[test]
+    fn iframe_playlist_availability() {
+        let keys = |m| Some(HlsEncryption::new(TestKeys).method(m));
+        let mut cfg = fmp4_cfg(false);
+        cfg.iframe_playlist = true;
+        assert!(sink(cfg.clone()).iframes);
+        cfg.encryption = keys(EncryptionMethod::Aes128);
+        assert!(!sink(cfg.clone()).iframes);
+        cfg.encryption = keys(EncryptionMethod::SampleAes);
+        let mut s = sink(cfg);
+        assert!(s.iframes);
+        let (tracks, pkts) = sample();
+        s.on_tracks(&tracks);
+        feed(&mut s, &pkts, 3, 2 * SECOND);
+        {
+            let g = lock(&s.st.state);
+            let pl = s.st.iframe_playlist(&g);
+            assert!(
+                pl.contains("#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key-0.key\"\n"),
+                "{pl}"
+            );
+            assert!(iframe_lines(&pl).len() >= 3, "{pl}");
+        }
+        let (atracks, apkts) = audio_only(&tracks, &pkts);
+        let mut cfg = fmp4_cfg(false);
+        cfg.iframe_playlist = true;
+        let mut a = sink(cfg);
+        let g = lock(&a.st.state);
+        assert!(
+            a.st.answer(&g, &Want::IFrames).is_none(),
+            "waits for the tracks"
+        );
+        drop(g);
+        a.on_tracks(&atracks);
+        feed(&mut a, &apkts, 2, 2 * SECOND);
+        let g = lock(&a.st.state);
+        let r = a.st.answer(&g, &Want::IFrames).expect("answered");
+        assert_eq!(r.status, 404);
+    }
+
+    /// LL-HLS media playlists of a multivariant group report the other renditions' newest
+    /// part; without parts, or outside a group, nothing is reported.
+    #[test]
+    fn rendition_reports() {
+        for parts in [true, false] {
+            let hls = Hls::new(Hub::default(), fmp4_cfg(parts));
+            let (tracks, pkts) = sample();
+            rendition(&hls, "live/cam_hi", &tracks, &pkts, 2);
+            rendition(&hls, "live/cam_lo", &tracks, &pkts, 3);
+            rendition(&hls, "other", &tracks, &pkts, 1);
+            let mut m = Multivariant::new();
+            m.variants = vec![Variant::new("live/cam_hi"), Variant::new("live/cam_lo")];
+            m.audio = vec![AudioRendition::new("aud", "x", "live/cam_none")];
+            hls.add_multivariant("live/cam", m);
+            let muxers = lock(&hls.0.muxers).clone();
+            let pl = |p: &str| {
+                let st = &muxers[p];
+                let g = lock(&st.state);
+                st.playlist(&g)
+            };
+            let hi = pl("live/cam_hi");
+            let lo = muxers["live/cam_lo"].clone();
+            if !parts {
+                assert!(!hi.contains("RENDITION-REPORT"), "{hi}");
+                continue;
+            }
+            let (msn, part) = {
+                let g = lock(&lo.state);
+                match g.building.as_ref().filter(|b| !b.parts.is_empty()) {
+                    Some(b) => (b.seq, b.parts.len() as u64 - 1),
+                    None => {
+                        let s = g.segments.back().expect("segment");
+                        (s.seq, s.parts.len() as u64 - 1)
+                    }
+                }
+            };
+            let want = format!(
+                "#EXT-X-RENDITION-REPORT:URI=\"../cam_lo/index.m3u8\",LAST-MSN={msn},LAST-PART={part}\n"
+            );
+            assert!(hi.ends_with(&want), "{hi}");
+            assert_eq!(hi.matches("RENDITION-REPORT").count(), 1, "{hi}");
+            let lo_pl = pl("live/cam_lo");
+            assert!(lo_pl.contains("URI=\"../cam_hi/index.m3u8\""), "{lo_pl}");
+            assert!(!pl("other").contains("RENDITION-REPORT"));
+            assert!(hls.remove_multivariant("live/cam"));
+            assert!(!pl("live/cam_hi").contains("RENDITION-REPORT"));
+        }
+    }
+
+    /// Keys named by URI, for the session key test (`TestKeys` checks the path).
+    struct AnyKeys;
+
+    impl KeyProvider for AnyKeys {
+        fn key(&self, path: &str, n: u64) -> HlsKey {
+            if path.ends_with("_lo") {
+                HlsKey::with_uri([1; 16], format!("https://keys.example/{n}"))
+            } else {
+                HlsKey::new([2; 16])
+            }
+        }
+    }
+
+    /// Encrypted multivariant playlists name each rendition's current key with
+    /// `EXT-X-SESSION-KEY` (URIs relative to the multivariant playlist; the `IV` of SAMPLE-AES
+    /// in MPEG-TS), and list the I-frame playlists.
+    #[test]
+    fn session_keys_and_iframe_streams() {
+        for (format, method) in [
+            (SegmentFormat::MpegTs, EncryptionMethod::Aes128),
+            (SegmentFormat::MpegTs, EncryptionMethod::SampleAes),
+            (SegmentFormat::Fmp4, EncryptionMethod::SampleAes),
+        ] {
+            let mut cfg = fmp4_cfg(false);
+            cfg.format = format;
+            cfg.iframe_playlist = true;
+            cfg.encryption = Some(HlsEncryption::new(AnyKeys).method(method));
+            let hls = Hls::new(Hub::default(), cfg);
+            let (tracks, pkts) = sample();
+            rendition(&hls, "live/cam_hi", &tracks, &pkts, 2);
+            rendition(&hls, "live/cam_lo", &tracks, &pkts, 2);
+            let mut m = Multivariant::new();
+            m.variants = vec![Variant::new("live/cam_hi"), Variant::new("live/cam_lo")];
+            let pl = hls
+                .master_playlist("live/cam", &m, "t=1", false)
+                .expect("ready");
+            let name = if method == EncryptionMethod::Aes128 {
+                "AES-128"
+            } else {
+                "SAMPLE-AES"
+            };
+            let sample_ts =
+                method == EncryptionMethod::SampleAes && format == SegmentFormat::MpegTs;
+            let keys: Vec<&str> = pl
+                .lines()
+                .filter(|l| l.starts_with("#EXT-X-SESSION-KEY:"))
+                .collect();
+            assert_eq!(keys.len(), 2, "{pl}");
+            assert!(
+                keys[0].starts_with(&format!(
+                    "#EXT-X-SESSION-KEY:METHOD={name},URI=\"cam_hi/key-0.key\""
+                )),
+                "{pl}"
+            );
+            assert!(
+                keys[1].starts_with(&format!(
+                    "#EXT-X-SESSION-KEY:METHOD={name},URI=\"https://keys.example/0\""
+                )),
+                "{pl}"
+            );
+            for k in &keys {
+                assert_eq!(k.contains(",IV=0x"), sample_ts, "{k}");
+            }
+            if sample_ts {
+                // The same IV as the media playlist's key.
+                let st = lock(&hls.0.muxers)["live/cam_hi"].clone();
+                let g = lock(&st.state);
+                let media = st.playlist(&g);
+                let iv = keys[0].split(",IV=").nth(1).expect("iv");
+                assert!(media.contains(&format!(",IV={iv}\n")), "{media}");
+            }
+            let iframes: Vec<&str> = pl
+                .lines()
+                .filter(|l| l.starts_with("#EXT-X-I-FRAME-STREAM-INF:"))
+                .collect();
+            if method == EncryptionMethod::Aes128 {
+                assert!(iframes.is_empty(), "{pl}");
+                continue;
+            }
+            assert_eq!(iframes.len(), 2, "{pl}");
+            assert!(
+                iframes[0].ends_with(
+                    ",CODECS=\"avc1.64000D\",RESOLUTION=320x240,URI=\"cam_hi/iframes.m3u8?t=1\""
+                ),
+                "{pl}"
+            );
+            let bw: u64 = iframes[0]["#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=".len()..]
+                .split(',')
+                .next()
+                .and_then(|v| v.parse().ok())
+                .expect("bandwidth");
+            assert!((1_000..2_000_000).contains(&bw), "{pl}");
+            assert!(pl.contains(if format == SegmentFormat::Fmp4 {
+                "#EXT-X-VERSION:7\n"
+            } else {
+                "#EXT-X-VERSION:4\n"
+            }));
+        }
+        // Without encryption: no session key.
+        let mut cfg = fmp4_cfg(false);
+        cfg.iframe_playlist = true;
+        let hls = Hls::new(Hub::default(), cfg);
+        let (tracks, pkts) = sample();
+        rendition(&hls, "a", &tracks, &pkts, 2);
+        let mut m = Multivariant::new();
+        m.variants = vec![Variant::new("a")];
+        let pl = hls.master_playlist("m", &m, "", false).expect("ready");
+        assert!(!pl.contains("SESSION-KEY"), "{pl}");
+        assert!(pl.contains("#EXT-X-I-FRAME-STREAM-INF:"), "{pl}");
+    }
+
+    #[test]
+    fn byte_ranges() {
+        assert_eq!(
+            parse_range(Some("bytes=10-19")),
+            Some(Range::From(10, Some(19)))
+        );
+        assert_eq!(parse_range(Some("bytes=10-")), Some(Range::From(10, None)));
+        assert_eq!(parse_range(Some("bytes=-5")), Some(Range::Last(5)));
+        for bad in [
+            "bytes=5-1",
+            "bytes=1-2,4-5",
+            "items=1-2",
+            "bytes=x-",
+            "bytes=-",
+        ] {
+            assert_eq!(parse_range(Some(bad)), None, "{bad}");
+        }
+        assert_eq!(parse_range(None), None);
+        let body: Vec<u8> = (0..100u8).collect();
+        let r = |range| ranged(Response::with_body(200, "x", body.clone()), Some(range));
+        let a = r(Range::From(10, Some(19)));
+        assert_eq!((a.status, a.body.len(), a.body[0]), (206, 10, 10));
+        let b = r(Range::From(90, Some(500)));
+        assert_eq!((b.status, b.body.len()), (206, 10));
+        let c = r(Range::Last(3));
+        assert_eq!(c.body, [97, 98, 99]);
+        assert_eq!(r(Range::From(100, None)).status, 416);
+        let plain = ranged(Response::with_body(404, "x", vec![1]), Some(Range::Last(1)));
+        assert_eq!(plain.status, 404);
     }
 }

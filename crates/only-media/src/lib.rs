@@ -38,6 +38,7 @@ pub mod http;
 pub mod httpflv;
 pub mod hub;
 pub mod mpegts;
+pub mod reconnect;
 pub mod record;
 pub mod rtmp;
 pub mod rtp;
@@ -54,3 +55,4 @@ pub use av::{Codec, Packet, Track, Tracks};
 pub use hub::{
     Hub, HubConfig, HubError, PeerInfo, Publisher, Sink, SubscribeOptions, Subscription,
 };
+pub use reconnect::Reconnect;

@@ -144,7 +144,19 @@ chunk streams of a connection to 32 MiB.
   `AUDIO`, and an `EXT-X-MEDIA:TYPE=AUDIO` per `AudioRendition`. URIs are relative and carry the
   request's query string. The first request starts every rendition's muxer and is answered
   once each has its tracks and a segment (renditions not published yet are left out after
-  three target durations). It works with both formats and with LL-HLS.
+  three target durations). It works with both formats and with LL-HLS. With LL-HLS parts,
+  each rendition's media playlist ends with an `EXT-X-RENDITION-REPORT` (`LAST-MSN`,
+  `LAST-PART`) for every other rendition of its multivariant playlists, so a player switching
+  renditions can issue its first blocking reload of the new one at once.
+- **I-frame playlists**: with `HlsConfig::iframe_playlist`, a stream with video also serves
+  `GET /app/name/iframes.m3u8` (`EXT-X-I-FRAMES-ONLY`, for scrubbing and trick play): one
+  entry per keyframe of the listed segments, an `EXT-X-BYTERANGE` into its segment that decodes
+  on its own (MPEG-TS: the PAT, PMT and the keyframe's PES; fMP4: a `moof` + `mdat` fragment
+  holding the keyframe, which the muxer then cuts at every keyframe, behind the `EXT-X-MAP`).
+  Segment, part and init responses answer a single `Range: bytes=…` with 206. Multivariant
+  playlists list each variant's I-frame playlist with `EXT-X-I-FRAME-STREAM-INF` (`BANDWIDTH`
+  the peak bitrate of its I-frames). Not with AES-128, whose ciphertext cannot be read from the
+  middle of a segment; SAMPLE-AES works.
 - **Encryption**: `HlsConfig::encryption` encrypts every segment and LL-HLS part with
   AES-128 (`#EXT-X-KEY:METHOD=AES-128`, CBC with PKCS #7), MPEG-TS and fMP4 alike:
 
@@ -180,8 +192,8 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // a new key e
 
 - **SAMPLE-AES**: `HlsEncryption::new(keys).method(EncryptionMethod::SampleAes)` encrypts the
   samples inside the container and leaves its structure clear, with the same key provider,
-  rotation and key URIs (`#EXT-X-KEY:METHOD=SAMPLE-AES`). It carries H.264 and AAC only; other
-  tracks are left out of the segments rather than sent in the clear.
+  rotation and key URIs (`#EXT-X-KEY:METHOD=SAMPLE-AES`). It carries H.264 and AAC, and H.265
+  in fMP4; other tracks are left out of the segments rather than sent in the clear.
   - MPEG-TS: Apple's sample encryption. Coded slices longer than 48 bytes keep 32 bytes clear,
     then one 16-byte block in ten is encrypted (AES-128-CBC from the IV in every NAL unit, on
     the unescaped NAL unit, emulation prevention applied again); AAC frames keep the ADTS
@@ -192,8 +204,13 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // a new key e
   - fMP4: the `cbcs` scheme of ISO/IEC 23001-7. The init segment has `encv` / `enca` entries
     with `sinf` (`frma`, `schm` `cbcs`, `tenc` with a constant IV); fragments have `senc`,
     `saiz` and `saio`. Each slice's NAL header and slice header stay clear (the H.264 slice
-    header is parsed: reference list changes, weighted prediction, reference marking) and its
-    slice data is encrypted in a 1:9 pattern; AAC samples are encrypted whole.
+    header is parsed: reference list changes, weighted prediction, reference marking; so is
+    the H.265 slice segment header: short-term reference picture sets, long-term pictures,
+    weighted prediction, tile and wavefront entry points) and its slice data is encrypted in a
+    1:9 pattern; AAC samples are encrypted whole.
+
+  An encrypted multivariant playlist names the current key of each rendition with
+  `EXT-X-SESSION-KEY`, so players can fetch the keys before the first media playlist.
 
   ffmpeg plays both, decrypted frame for frame. It applies one key to everything it has read
   ahead (and, for fMP4, the key it opened with), so with key rotation it decodes garbage
@@ -222,6 +239,28 @@ name is resolved on the calling thread, so call them off the I/O threads or set
 10 s; a pull that receives nothing for 30 s ends), received messages are bounded (16 MiB), and a
 push that falls behind is cut back to keyframes and then disconnected, like a player of the
 server. H.265 and Opus go out as Enhanced RTMP.
+
+With `RtmpClientConfig::reconnect` the client survives the far end going away: an error
+another try may cure (the connection closing or refused, a timeout, the server ending or
+refusing the stream other than for credentials) moves it to `ClientState::Reconnecting`, and it
+dials again after a backoff that doubles up to a bound and resets once a session streams:
+
+```rust,ignore
+use std::{sync::Arc, time::Duration};
+use only_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
+
+let engine = Arc::new(engine); // the client dials again on it (held weakly)
+let mut cfg = RtmpClientConfig::default();
+cfg.reconnect = Some(Reconnect::new(&engine).max_delay(Duration::from_secs(10)));
+let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in", cfg)?;
+// pull.state() == ClientState::Reconnecting while it waits; pull.reconnects() counts.
+```
+
+A pull keeps its hub path reserved meanwhile: players stay subscribed and hear the new
+session's tracks as a republish (their timelines restart, HLS writes a discontinuity). A push
+subscribes again and starts from the cached GOP. Bad URLs, hub refusals and refused
+credentials still end the client; `max_attempts` bounds the tries in a row. `close()` frees a
+pull's path before `is_closed()` says so.
 
 ## Recording
 
@@ -308,17 +347,20 @@ installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 | RTMP client push | `ffmpeg -listen 1 -i rtmp://…`, mediamtx (`--ignored`) | H.264 + AAC, H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`, mediamtx | RTMP client pull | H.264 + AAC, H.265 + AAC |
 | hub publisher, AES-128 with key rotation | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`, MPEG-TS and fMP4, plain and LL-HLS | H.264 + AAC |
-| hub publisher, SAMPLE-AES (MPEG-TS) and `cbcs` (fMP4) | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`: every frame equals the source's, plain and LL-HLS | H.264 + AAC |
+| hub publisher, SAMPLE-AES (MPEG-TS) and `cbcs` (fMP4) | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`: every frame equals the source's, plain and LL-HLS | H.264 + AAC; H.265 + AAC (`cbcs`) |
+| hub publishers (2 renditions), I-frame playlists | every `EXT-X-BYTERANGE` fetched with `Range` and decoded by `ffmpeg` to exactly one source frame; `ffprobe` of the multivariant playlist | H.264 + AAC, H.265 + AAC; MPEG-TS and fMP4 LL-HLS |
+| ffmpeg → mediamtx (restarted twice, `--ignored`) | RTMP and RTSP client pulls and pushes reconnecting | H.264 + AAC |
 | hub publisher, `Recorder` | `ffprobe` / `ffmpeg -i` of each fMP4, FLV and MPEG-TS file | H.264 + AAC, H.265 + AAC |
 
 RTSP and SRT have their own tables in their chapters. Fuzz targets cover the RTMP session
 (`rtmp_server`) and client (`rtmp_client`), FLV (`flv_demux`), fMP4 (`fmp4_demux`), AMF
 (`amf_decode`), RTSP, SDP, RTP, MPEG-TS (with AV1) and SRT parsers (with the rendezvous
-handshake, `srt_rendezvous`), and the H.264 slice header parser with both sample encryptions
-(`h264_sample_encryption`).
+handshake, `srt_rendezvous`), the H.264 slice header parser with both sample encryptions
+(`h264_sample_encryption`) and the H.265 slice segment header parser with `cbcs`
+(`h265_sample_encryption`).
 
 ## Not supported
 
-SAMPLE-AES for H.265 and other codecs than H.264 / AAC, `EXT-X-SESSION-KEY`, I-frame
-playlists and rendition reports, VP8 / VP9 in MPEG-TS (unspecified), RTMPS client, RTMPE /
-RTMPT, AMF3 replies, Enhanced RTMP multitrack, transcoding.
+SAMPLE-AES for codecs other than H.264, H.265 (fMP4) and AAC, I-frame playlists with AES-128,
+VP8 / VP9 in MPEG-TS (unspecified), RTMPS client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP
+multitrack, transcoding.

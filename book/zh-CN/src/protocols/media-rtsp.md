@@ -121,9 +121,20 @@ OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp
 引擎需要 `udp_client_threads` 或一个 UDP 监听器。上限：连接与每次应答 10 s，拉流 10 s 无媒体即结束，
 应答受解析器的头部与 body 上限约束，TCP 推流落后时先削减到关键帧再断开。
 
+**音视频同步**：拉流按服务器的 RTCP 发送端报告对齐各轨（`RtspClientConfig::rtcp_sync`，默认开启）。每轨时间
+从其首包到达时开始；一轨一旦收到报告，其 RTP 时间戳就按服务器的 NTP 时钟映射，相对于第一个完成同步的轨，
+因此同时采集的音频与视频在 hub 中带有相同的时间。修正只让时间向前移动；早发报告的服务器（ffmpeg、mediamtx）
+在流进入直播之前就已对齐。
+
+**自动重连**：设置 `RtspClientConfig::reconnect`（一个基于 `Arc<Engine>` 构建的 `only_media::Reconnect`）后，
+以再试一次可能好转的错误失败的会话会在有上限、逐次翻倍的退避之后由新会话接替；由于握手会阻塞，每次尝试在
+自己的短命线程上运行。拉流保留其 hub 路径与订阅者，并重新发布新会话的轨道（时间线重启）；推流重新 ANNOUNCE
+hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成功（`pull` / `push` 返回它的错误）；`reconnects()`
+与 `is_live()` 反映进展。
+
 互通：ffmpeg 的监听模式接收我们的推流（TCP 与 UDP）；mediamtx 接收我们的推流并供我们拉流，TCP 与 UDP 均测
 （`tools/interop/media/rtsp-client.sh`；由于 Docker Desktop 的 NAT 会丢弃 UDP，UDP 在 mediamtx 所在网络的
-容器中运行）。
+容器中运行）；mediamtx 在我们自动重连的拉流与推流下被重启两次（`tests/mediamtx_reconnect.rs`，`--ignored`）。
 
 ## 统计
 
@@ -134,4 +145,5 @@ OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp
 ## 不支持
 
 RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话；不向推流端发送
-RTCP 接收者报告。客户端：重定向、重连与基于 RTCP 的音视频同步。WebRTC：simulcast、转码。
+RTCP 接收者报告，录制会话也没有基于 RTCP 的音视频同步（客户端拉流有）。客户端：重定向、重连时重新解析
+主机名。WebRTC：simulcast、转码。
