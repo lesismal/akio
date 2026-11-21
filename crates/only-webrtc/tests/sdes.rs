@@ -198,12 +198,17 @@ fn sdes_refusals_and_dtls_unchanged() {
     let e = engine();
     let sdes = endpoint(&e, true);
     let dtls = endpoint(&e, false);
-    // No data channels in an SDES session.
-    let r = sdes.create_offer(Echo, |api| {
-        api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
-        api.add_channel("c");
-    });
-    assert!(matches!(r, Err(Error::Rtc(_))), "{r:?}");
+    // Data channels next to SDES media: DTLS in the application section only.
+    let (_pc, offer) = sdes
+        .create_offer(Echo, |api| {
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+            api.add_channel("c");
+        })
+        .unwrap();
+    let app = &offer[offer.find("m=application").expect("an application section")..];
+    let media = &offer[..offer.find("m=application").unwrap()];
+    assert!(app.contains("a=fingerprint:") && !app.contains("a=crypto:"), "{offer}");
+    assert!(media.contains("a=crypto:") && !media.contains("a=fingerprint:"), "{offer}");
     // An SDES offer to an endpoint with SDES off.
     let (_p, offer) = sdes
         .create_offer(Echo, |api| {

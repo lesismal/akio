@@ -72,6 +72,9 @@ pub(super) struct Extra {
     pub(super) plain: bool,
     /// Plain remote addresses not reported to the endpoint yet ([`Rtc::take_plain_remotes`]).
     new_remotes: Vec<SocketAddr>,
+    /// Local candidates of the transports made later, by creation index (1..): such a
+    /// transport takes these instead of the primary's (tests: a socket per transport).
+    own_cands: Vec<(usize, IceCandidate)>,
 }
 
 impl std::fmt::Debug for Extra {
@@ -216,6 +219,13 @@ impl Rtc {
         !self.xt.tps.is_empty() && self.xt.cur == 0
     }
 
+    /// Gives the `k`-th transport made later (1..) local candidate `c`, instead of the
+    /// primary's (a socket per transport).
+    #[cfg(test)]
+    pub(crate) fn add_transport_candidate(&mut self, k: usize, c: IceCandidate) {
+        self.xt.own_cands.push((k, c));
+    }
+
     /// Adds a remote candidate line for section `mid`: to its transport's agent.
     pub(crate) fn add_remote_candidate_in(
         &mut self,
@@ -272,8 +282,9 @@ impl Rtc {
         (k != self.xt.cur).then_some(k)
     }
 
-    /// The transport a datagram from `source` belongs to (called with the primary current).
-    pub(super) fn tp_demux(&self, source: SocketAddr, data: &[u8]) -> usize {
+    /// The transport a datagram from `source` to our `destination` belongs to (called with
+    /// the primary current).
+    pub(super) fn tp_demux(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) -> usize {
         let n = self.xt.tps.len() + 1;
         let ice = |k: usize| {
             if k == 0 {
@@ -296,6 +307,20 @@ impl Rtc {
                 || first(k) == Some(source)
                 || a.remote_candidates().iter().any(|c| c.addr() == source)
         };
+        let rtcp = |k: usize| {
+            if k == 0 {
+                &self.rtcp
+            } else {
+                &self.xt.tps[k - 1].1.rtcp
+            }
+        };
+        let to = |k: usize| {
+            ice(k)
+                .local_candidates()
+                .iter()
+                .any(|c| c.base() == destination || c.addr() == destination)
+                || rtcp(k).is_local(destination)
+        };
         let mut candidates: Vec<usize> = (0..n).collect();
         if data.first().is_some_and(|b| *b < 4) {
             if let Ok(m) = only_turn::stun::Message::parse(data) {
@@ -312,6 +337,15 @@ impl Rtc {
                     }
                 }
             }
+        }
+        // Transports on sockets of their own are told apart by the local address, those
+        // sharing ours by the remote's.
+        let local: Vec<usize> = candidates.iter().copied().filter(|k| to(*k)).collect();
+        if local.len() == 1 {
+            return local[0];
+        }
+        if !local.is_empty() {
+            candidates = local;
         }
         candidates
             .iter()
@@ -414,23 +448,43 @@ impl Rtc {
 
     /// A new transport for section `mid`: an agent like the primary's (role, options,
     /// candidates; `components` of them), with `creds`.
-    fn new_tp(&self, creds: Credentials, components: u16, now: Instant) -> Tp {
+    fn new_tp(&self, k: usize, creds: Credentials, components: u16, now: Instant) -> Tp {
         let mut cfg = IceConfig::new(self.lite, self.ice.controlling());
         cfg.local = creds;
         cfg.aggressive_nomination = self.cfg.ice_aggressive;
         cfg.renomination = self.cfg.ice_renomination;
         cfg.components = components;
         let mut ice = IceAgent::new(cfg, now);
-        for c in self.ice.local_candidates() {
-            if c.kind() != only_ice::CandidateKind::PeerReflexive && c.component() == 1 {
-                ice.add_local_candidate(c.clone());
+        let own: Vec<IceCandidate> = self
+            .xt
+            .own_cands
+            .iter()
+            .filter(|(i, _)| *i == k)
+            .map(|(_, c)| c.clone())
+            .collect();
+        let (c1, c2): (Vec<IceCandidate>, Vec<IceCandidate>) = if own.is_empty() {
+            (
+                self.ice
+                    .local_candidates()
+                    .iter()
+                    .filter(|c| c.component() == 1)
+                    .cloned()
+                    .collect(),
+                self.rtcp.candidates().to_vec(),
+            )
+        } else {
+            own.into_iter().partition(|c| c.component() == 1)
+        };
+        for c in c1 {
+            if c.kind() != only_ice::CandidateKind::PeerReflexive {
+                ice.add_local_candidate(c);
             }
         }
         let mut rtcp = rtcp_mux::RtcpComponent::default();
-        for c in self.rtcp.candidates() {
-            rtcp.add_candidate(c);
+        for c in c2 {
+            rtcp.add_candidate(&c);
             if components == 2 {
-                ice.add_local_candidate(c.clone());
+                ice.add_local_candidate(c);
             }
         }
         Tp {
@@ -487,7 +541,7 @@ impl Rtc {
                 self.ice.components()
             };
             let k = self.xt.tps.len() + 1;
-            let mut t = self.new_tp(self.tp_creds(k, shared), comps, now);
+            let mut t = self.new_tp(k, self.tp_creds(k, shared), comps, now);
             // The application section runs DTLS even next to SDES media.
             t.sdes.active = self.sdes.active && Some(*m) != self.app_mid;
             t.sdes.proto.clone_from(&self.sdes.proto);
