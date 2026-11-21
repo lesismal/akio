@@ -56,7 +56,9 @@ ADR-068 (docs/adr/068-webrtc-pacer-fec-policy-ecn.md):
   network state estimate holding probes, 20 % CE cutting the estimate as 20 % loss). Interop:
   `tools/interop/webrtc/pacing.sh` with Chrome 157 (largest burst towards Chrome 4 packets
   paced against 7 unpaced, 0 against 15 bursts of 6+; Chrome decodes 299-300 of 300 frames),
-  `fec.sh` unchanged (ULPFEC 381/400, FlexFEC 391/400 frames at 5 % loss without NACK).
+  `fec.sh` unchanged (ULPFEC 381/400, FlexFEC 391/400 frames at 5 % loss without NACK); real
+  loss (`tests/netem.rs`, `tc netem loss 5%` in Docker, NACK removed): 251 of 300 frames whole
+  without FEC, 300 with ULPFEC, 299 with FlexFEC, 300 with FlexFEC paced.
 - Benchmarks (gpu51, same-run A/B): AB_RESULTS
 
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)

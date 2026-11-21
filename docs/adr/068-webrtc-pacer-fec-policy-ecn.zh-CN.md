@@ -142,6 +142,9 @@ packet_masks, protection_factors}`、`FecEncoder::{set_protection, protection, p
   的突发）；Chrome 解码 300 帧中的 299-300 帧，transport-wide 与 RFC 8888 反馈均如此。`fec.sh` 在新表与
   新策略下结果不变（5 % 丢包、无 NACK 时 ULPFEC 解码 381/400 帧、FlexFEC 391/400 帧；RED、RFC 8888、
   TMMBR、按层 ULPFEC 均通过）。
+- 真实丢包（`crates/only-webrtc/tests/netem.rs`，需显式开启；Linux arm64 Docker，回环接口上
+  `tc netem loss 5%`，两个 `Endpoint`，去掉 NACK）：300 帧中完整收到的帧数，无 FEC 251，ULPFEC 300，
+  FlexFEC 299，打开估计器与 pacer 的 FlexFEC 300。
 - 基准：见 CHANGELOG（gpu51，同轮 A/B）。
 - 按节拍发送按设计会给大帧增加时延（1 Mbps 下一个关键帧需 150 ms），libwebrtc 相同。应用必须跟随
   `EgressBitrateEstimate`：写入远超估计值时，现在会在队列上限处丢帧，而不是冲垮路径。

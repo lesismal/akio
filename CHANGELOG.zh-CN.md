@@ -46,7 +46,9 @@ ADR-068（docs/adr/068-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
   simulcast FlexFEC）；libwebrtc 表值与策略值；估计器模拟链路（调高的上限 0.15 s 达到；网络状态估计限制
   探测；20 % CE 与 20 % 丢包一样压低估计值）。互通：`tools/interop/webrtc/pacing.sh` 对 Chrome 157（发往
   Chrome 的最大突发 pacing 时 4 个包、不 pacing 时 7 个；6 个以上的突发 0 次对 15 次；Chrome 解码 300 帧中的
-  299-300 帧），`fec.sh` 结果不变（5 % 丢包、无 NACK 时 ULPFEC 381/400、FlexFEC 391/400 帧）。
+  299-300 帧），`fec.sh` 结果不变（5 % 丢包、无 NACK 时 ULPFEC 381/400、FlexFEC 391/400 帧）；真实丢包（`tests/netem.rs`，
+  Docker 中 `tc netem loss 5%`，去掉 NACK）：300 帧完整收到无 FEC 251 帧，ULPFEC 300，FlexFEC 299，
+  pacing 下 FlexFEC 300。
 - 基准（gpu51，同轮 A/B）：AB_RESULTS_ZH
 
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
