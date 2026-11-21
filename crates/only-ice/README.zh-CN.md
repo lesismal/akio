@@ -94,8 +94,9 @@ loop {
 
 未实现：候选收集（STUN/TURN 客户端由
 调用方负责）、任何套接字（mDNS 解析器与应答器、TCP 连接都在 only-webrtc 的 `Endpoint` 中）、远端
-不支持重新提名时的改选（那要靠 ICE 重启）。only-webrtc 总是复用 RTP 与 RTCP（rtcp-mux、BUNDLE），
-只用组件 1：在那里提供或接受不带 rtcp-mux 的媒体是后续工作。
+不支持重新提名时的改选（那要靠 ICE 重启）。不做 ICE 的对端（以普通 `c=` / 端口描述媒体的 SIP 终端）
+用 `IceAgent::set_fixed_pair` 设置固定候选对（此后不做检查和 consent，ADR-072）；`mdns::MULTICAST_V6` /
+`multicast_v6_on` 给出 IPv6 组，`Candidate::with_scope_id` 为链路本地候选指定接口。
 
 ## 测试
 

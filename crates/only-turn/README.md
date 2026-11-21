@@ -46,6 +46,10 @@ Interop: the pion/turn client and coturn's `turnutils_uclient` (`tools/interop/w
 `Endpoint`s through coturn's DTLS listener), and pion WebRTC peers relayed to a `only` WebRTC
 server.
 
-Not implemented: TCP relays (RFC 6062), DTLS connection IDs on the DTLS listener.
+The DTLS listener negotiates connection IDs (RFC 9146, RFC 9147 §9; 8 bytes by default,
+`dtls_with_connection_ids`): a client whose address changes keeps its association and
+allocation, its path following the first authenticated record from the new address (ADR-072).
+
+Not implemented: TCP relays (RFC 6062).
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

@@ -105,9 +105,10 @@ loop {
 
 Not implemented: gathering (STUN/TURN clients are the caller's), sockets of any kind (the mDNS resolver and
 responder, the TCP connections: only-webrtc's `Endpoint` has them), renominating when the
-remote does not support renomination (an ICE restart does that). only-webrtc always muxes RTP
-and RTCP (rtcp-mux, BUNDLE) and uses component 1 only: offering or accepting media without
-rtcp-mux there is a follow-up.
+remote does not support renomination (an ICE restart does that). Peers without ICE (SIP
+endpoints with plain `c=` / port media) get fixed pairs with `IceAgent::set_fixed_pair` (no
+checks or consent then, ADR-072); `mdns::MULTICAST_V6` / `multicast_v6_on` name the IPv6 group
+and `Candidate::with_scope_id` gives a link-local candidate its interface.
 
 ## Testing
 

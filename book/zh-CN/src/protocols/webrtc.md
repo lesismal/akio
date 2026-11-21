@@ -304,9 +304,28 @@ SIP 网关常用 SDP 安全描述（RFC 4568）而不是 DTLS-SRTP 提供 SRTP �
 offer 的媒体段为 `RTP/SAVPF`，每个套件一行 `a=crypto`（AEAD-AES-256/128-GCM、带 HMAC-SHA1-80 的
 AES-256-CM 与 AES-128-CM、带 HMAC-SHA1-32 的 AES-128-CM），各带随机密钥，没有 fingerprint；SDES offer
 （带 `a=crypto` 的 `RTP/SAVP` 或 `RTP/SAVPF`）以本方能用的第一行和本方自己的密钥应答。各方用自己的
-密钥加密、用对方的密钥解密；ICE 有了候选对即连通（网关需要 ICE 或 ICE-lite）。没有 DTLS，因此没有数据
-通道，密钥也只与信令一样机密。带 MKI 或会话参数的行不采用。DTLS-SRTP offer 仍以 DTLS-SRTP 应答，所以
-浏览器永远看不到 `a=crypto`。
+密钥加密、用对方的密钥解密；ICE 有了候选对即连通。密钥只与信令一样机密。带 MKI（`|1:4`）与多个主密钥的行
+可以采用，此时我方应答的密钥带相同长度的 MKI；`set_sdes_mki_length(4)` 让我方 offer 带 MKI。窗口大小提示
+（`WSH=`）以外的会话参数使该行不可用。DTLS-SRTP offer 仍以 DTLS-SRTP 应答，所以浏览器永远看不到
+`a=crypto`。
+
+数据通道可以与 SDES 媒体并存：应用段带 `a=fingerprint` 与 `a=setup`，DTLS 在那里只承载 SCTP，媒体仍用
+SDP 中的密钥（ADR-072）。
+
+许多网关根本不做 ICE。不带 `a=ice-ufrag` 的远端 SDP 按普通媒体处理：RTP 发往其 `c=` 地址与 `m=` 端口，
+RTCP 发往 `a=rtcp`（或下一个端口），应答也以同样方式写出我方主机地址与端口。`enable_ice(false)` 让我方
+offer 也成为普通形式：
+
+```rust,ignore
+let ep = ep.config(|| {
+    only_webrtc::rtc_config()
+        .enable_sdes_srtp(true)
+        .enable_ice(false)
+        .set_rtcp_mux_policy(RtcpMuxPolicy::Off) // RTCP 走 RTCP 套接字的端口
+});
+```
+
+没有 ICE 就没有任何东西检查路径或穿越 NAT：远端必须能在它写出的地址上到达（ADR-072）。
 
 ### RTCP 走独立端口（不复用 RTCP）
 
@@ -322,8 +341,45 @@ let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolic
 自己的选中候选对。DTLS-SRTP 每个组件各握手一次（RFC 5764：SRTCP 用组件 2 的密钥），SDES-SRTP 两个组件
 都用 SDP 中的密钥；两个组件都就绪对端才算连接。带 `a=rtcp-mux` 的 offer 照旧以它应答。我方 offer 按
 `set_rtcp_mux_policy` 书写：`Require`（默认）只写 rtcp-mux，`Negotiate` 写 rtcp-mux 加 `a=rtcp` 与
-组件 2 候选（由应答决定），`Off` 不写 rtcp-mux。没有 rtcp-mux 就没有 BUNDLE，因此这种会话只有一个媒体段、
-没有数据通道；组件 2 只有主机与 peer-reflexive 候选，`RtcServer` 没有组件 2（ADR-058）。
+组件 2 候选（由应答决定），`Off` 不写 rtcp-mux。没有 rtcp-mux 就没有 BUNDLE（RFC 8843 §9.1），因此多段的
+会话需要每段一个传输（见下一节）。请在收集候选之前绑定 RTCP 套接字：之后 `gather_srflx` 与
+`gather_relay` 也会从它收集组件 2 的服务器反射与中继候选。`RtcServer` 可为组件 2 另设监听器：
+
+```rust,ignore
+let server = RtcServer::new(vec![main]).rtcp_candidates(vec![rtcp]);
+Engine::builder()
+    .listen(Listener::udp(main).serve(server.clone()))
+    .listen(Listener::udp(rtcp).serve(server.rtcp()))
+```
+
+### 无 BUNDLE：每段一个传输
+
+```rust,ignore
+let ep = ep.config(|| only_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
+ep.bind_transport_socket(&engine, "0.0.0.0:0".parse()?)?; // 可选：每个额外的段一个
+```
+
+默认情况下会话的各段共享一个传输（BUNDLE）。不做 BUNDLE 的对端得到每段一个传输：没有 `a=group:BUNDLE`
+的 offer、未带上我方组的应答，或我方以 `BundlePolicy::Disabled` 发出的 offer（它也会拒绝远端的组）。此时
+每个段有自己的 ICE 代理（SDP 中有自己的凭据与候选）、DTLS 关联、SRTP 密钥，以及不复用 RTCP 时的 RTCP
+组件；媒体、RTCP 与 SCTP 从各自段的传输发出，所有传输都就绪后才触发 `on_connected`。
+`bundlePolicy: "max-compat"` 的 Chrome 在两个方向上都以这种方式工作（`tools/interop/webrtc/bundle.sh`）。
+除非 `bind_transport_socket` 为它们提供各自的套接字，这些传输共享端点的套接字，并靠远端地址区分（不做
+BUNDLE 的对端每段总有一个地址）。传输级拥塞控制（transport-cc、RFC 8888）需要单一传输，这种会话中不协商。
+trickle 候选用 `Peer::add_remote_candidate_in(mid, candidate)` 指明其段。
+
+### 数据通道优先级
+
+```rust,ignore
+let ch = api.add_channel_with_config(&ChannelConfig::new("video-meta").with_priority(ChannelPriority::High));
+let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
+```
+
+通道的优先级随 DCEP 打开消息发给对端（128、256、512 或 1024；远端通道的优先级见
+`Peer::channel_priority`），并决定 SCTP 流调度器如何在有数据排队的通道间分配关联：默认为加权公平排队
+（通道按其优先级值成比例地获得字节），也可选严格优先级、轮询、按包轮询、公平容量或先来先服务。
+`Peer::set_channel_priority` 之后可以改变本端的权重（DCEP 没有更新消息）。Chrome 157 没有
+`RTCDataChannel.priority`，总是发送 256。
 
 ### 带宽探测
 
@@ -392,8 +448,10 @@ turn.set_engine(&engine);
 `turns:host:5349?transport=udp`），证书与 TLS listener 相同，分配、配额与凭据共享。在保存任何状态之前，
 ClientHello 先以无状态 cookie 应答；提供 DTLS 1.3，可回退到 1.2。每条记录携带一条 STUN 或 ChannelData
 消息，不填充。分配随其 DTLS 关联存在：close_notify、致命告警、`udp_idle_timeout` 的静默或同一地址上的
-新握手都会释放它。与 coturn 的 `turnutils_uclient -S` 以及 coturn 自己的 DTLS listener 互通
-（`tools/interop/webrtc/turn-dtls.sh`）。
+新握手都会释放它。支持连接 ID（RFC 9146、RFC 9147 §9）的客户端会被要求使用 8 字节的连接 ID：客户端地址
+变化（NAT 重新绑定）时，其记录仍指向原关联，一旦其中某条在新地址上通过认证，路径就移到新地址；分配保持不变。
+`turn.dtls_with_connection_ids(&tls_cfg, None)` 关闭它。与 coturn 的 `turnutils_uclient -S` 以及 coturn
+自己的 DTLS listener 互通（`tools/interop/webrtc/turn-dtls.sh`）。
 
 ```rust,ignore
 Engine::builder()
@@ -443,7 +501,6 @@ DTLS 1.2。
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；simulcast 行上的 FlexFEC、libwebrtc 的 FEC 掩码表；WebRTC 中的 SRTP MKI；无 ICE
-或与数据通道并存的 SDES-SRTP；不复用 RTCP 时一个会话中的多个媒体段或数据通道、RTCP 的 server-reflexive
-与中继候选以及 `RtcServer`。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、
-ADR-054 与 ADR-058。
+TCP 中继（RFC 6062）；simulcast 行上的 FlexFEC、libwebrtc 的 FEC 掩码表；DTLS-SRTP 下的 SRTP MKI；
+让普通（无 ICE）媒体锁定其实际来源地址；不做 BUNDLE 的会话中跨传输的传输级拥塞控制。新增内容的细节见
+ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058 与 ADR-072。
