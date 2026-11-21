@@ -174,6 +174,8 @@ impl Loop {
             ip6: cfg.address6,
             prefix_len6: cfg.prefix_len6,
             gateway6: cfg.gateway6,
+            slaac: cfg.ipv6_slaac,
+            dad: cfg.ipv6_dad,
             mtu,
             tcp,
             backlog: cfg.tcp_backlog.max(1),
@@ -250,6 +252,11 @@ impl Loop {
             }
             let now = Instant::now();
             self.iface.poll(now, &mut self.port);
+            if self.index == 0 {
+                if let Some(a) = self.iface.ipv6_changed() {
+                    *self.ctl.ipv6.lock().unwrap_or_else(|p| p.into_inner()) = a;
+                }
+            }
             for (q, f) in self.iface.take_forward() {
                 self.port.forward(q, f);
             }
@@ -397,7 +404,7 @@ impl Loop {
         if !self.iface.has_family(remote.ip()) {
             return on_error(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the userspace stack has no IPv6 address (set DpdkConfig::address6)",
+                "the userspace stack has no IPv6 (set DpdkConfig::address6 or ipv6_slaac)",
             ));
         }
         if self.groups.get(&gid).is_none_or(|rt| rt.draining.is_some()) {

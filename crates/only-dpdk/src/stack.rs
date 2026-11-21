@@ -5,7 +5,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     io,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
@@ -175,6 +175,8 @@ pub(crate) struct StackCtl {
     pub(crate) ip: Ipv4Addr,
     /// The device's MAC (the IPv6 link-local address derives from it).
     pub(crate) mac: [u8; 6],
+    /// The usable IPv6 addresses (kept by queue 0's thread).
+    pub(crate) ipv6: Mutex<Vec<Ipv6Addr>>,
 }
 
 struct CtlState {
@@ -270,6 +272,19 @@ fn device_key(d: &Device) -> String {
     }
 }
 
+/// The usable IPv6 addresses of the stack open on `device` (`None`: no stack is open on it).
+pub(crate) fn ipv6_addresses(device: &Device) -> Option<Vec<Ipv6Addr>> {
+    let key = device_key(device);
+    let reg = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let s = reg
+        .iter()
+        .find(|(k, _)| *k == key)
+        .and_then(|(_, w)| w.upgrade())?;
+    drop(reg);
+    let v = s.ctl.ipv6.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    Some(v)
+}
+
 impl Stack {
     /// The live stack for `cfg.device`, or a new one; registers a group on it and reserves
     /// `listen` (`(udp, port)`, port 0 = an ephemeral one). Returns the stack and the port.
@@ -359,6 +374,7 @@ impl Stack {
             next_ephemeral: AtomicU16::new(EPHEMERAL_FIRST),
             ip: cfg.address,
             mac,
+            ipv6: Mutex::new(Vec::new()),
         });
         let queues = links.len();
         let mut loops = Vec::with_capacity(queues);

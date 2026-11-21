@@ -35,11 +35,13 @@
 //! * With several queues, the NIC's RSS keeps a flow on one queue; ARP and NDP frames are copied
 //!   to every queue so each stack resolves its neighbours, and dialed connections use local ports
 //!   that name their queue (`port % queues`), so replies RSS puts elsewhere are handed over.
-//! * IPv6 is on when [`DpdkConfig::address6`] is set: the stack then also has a link-local
-//!   address derived from the MAC, answers neighbor solicitations and pings, and listeners
-//!   accept both families on their port (dual-stack). Addresses are static: no SLAAC, router
-//!   advertisements are not processed, and no duplicate address detection is run (our
-//!   addresses are defended against other nodes' detection).
+//! * IPv6 is on when [`DpdkConfig::address6`] is set or [`DpdkConfig::ipv6_slaac`] is on: the
+//!   stack then also has a link-local address derived from the MAC, answers neighbor
+//!   solicitations and pings, and listeners accept both families on their port (dual-stack).
+//!   With `ipv6_slaac` it configures addresses, default routers, the MTU and the hop limit from
+//!   router advertisements (RFC 4862); with [`DpdkConfig::ipv6_dad`] it runs duplicate address
+//!   detection before using an address. Our addresses are defended against other nodes'
+//!   detection either way.
 //!
 //! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
 //! (中文: [内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)).
@@ -242,6 +244,19 @@ pub struct DpdkConfig {
     pub prefix_len6: u8,
     /// IPv6 default router (usually its link-local address), for peers off the link.
     pub gateway6: Option<Ipv6Addr>,
+    /// IPv6 stateless address autoconfiguration (RFC 4862), default `false`: the stack sends
+    /// router solicitations at start and takes from router advertisements a global address per
+    /// advertised /64 prefix (the prefix plus the modified EUI-64 interface identifier of its
+    /// MAC, kept for the advertised lifetimes), the default routers, the on-link prefixes, the
+    /// link MTU and the hop limit. Turns IPv6 on even without [`address6`](Self::address6);
+    /// [`ipv6_addresses`] reports what was configured.
+    pub ipv6_slaac: bool,
+    /// Duplicate address detection (RFC 4862 5.4, with RFC 7527's nonce), default `false`:
+    /// each of the stack's IPv6 addresses (link-local, static, SLAAC) is probed for about a
+    /// second before it is used, and given up if another node answers (a duplicate link-local
+    /// address turns IPv6 off). Without it the addresses are used at once (other nodes' probes
+    /// for them are answered either way).
+    pub ipv6_dad: bool,
     /// MAC address. `None`: the DPDK port's or AF_XDP interface's own address, or a locally
     /// administered address derived from `address` for the other devices.
     pub mac: Option<[u8; 6]>,
@@ -287,6 +302,8 @@ impl DpdkConfig {
             address6: None,
             prefix_len6: 64,
             gateway6: None,
+            ipv6_slaac: false,
+            ipv6_dad: false,
             mac: None,
             mtu: 1500,
             tcp_buffer: 64 << 10,
@@ -308,6 +325,15 @@ impl DpdkConfig {
             [0x02, 0xf1, o[0], o[1], o[2], o[3]]
         })
     }
+}
+
+/// The IPv6 addresses the stack open on `device` uses now: its link-local address, the static
+/// [`DpdkConfig::address6`] and the addresses SLAAC formed ([`DpdkConfig::ipv6_slaac`]), each
+/// once duplicate address detection passed ([`DpdkConfig::ipv6_dad`]); deprecated SLAAC
+/// addresses (past their preferred lifetime) are included. Empty when IPv6 is off, `None`
+/// when no stack is open on `device` (it starts with the first listener's group).
+pub fn ipv6_addresses(device: &Device) -> Option<Vec<Ipv6Addr>> {
+    stack::ipv6_addresses(device)
 }
 
 /// TCP congestion control of a userspace stack.

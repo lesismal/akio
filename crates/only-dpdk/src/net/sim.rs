@@ -229,6 +229,8 @@ pub(super) fn config(ip: Ipv4Addr, mac: [u8; 6], p: Params) -> Config {
         ip6: None,
         prefix_len6: 64,
         gateway6: None,
+        slaac: false,
+        dad: false,
         mtu: 1500,
         tcp: p,
         backlog: 64,
@@ -1856,4 +1858,371 @@ fn bench_connection_cycle() {
         "CC {n} connections: {:.1} ns each",
         el.as_nanos() as f64 / f64::from(n)
     );
+}
+
+// ---- IPv6 autoconfiguration (RFC 4861 / RFC 4862) -------------------------------------------
+
+const MAC_R: [u8; 6] = [2, 0, 0, 0, 0, 0x99];
+
+/// A router advertisement from the router `fe80::99` (MAC `MAC_R`) to all nodes: `lifetime`
+/// seconds as a default router, hop limit `hops`, an MTU option when `mtu` is non-zero, its
+/// link-layer address, and the prefix-information options `prefixes`
+/// (prefix, length, flags, valid, preferred).
+fn ra_frame(
+    lifetime: u16,
+    hops: u8,
+    mtu: u32,
+    prefixes: &[(Ipv6Addr, u8, u8, u32, u32)],
+) -> Vec<u8> {
+    let src = wire6::link_local(MAC_R);
+    let dst = wire6::ALL_NODES;
+    let mut body = vec![0u8; 8]; // reachable time, retrans timer
+    body.extend_from_slice(&[1, 1]);
+    body.extend_from_slice(&MAC_R);
+    if mtu != 0 {
+        body.extend_from_slice(&[5, 1, 0, 0]);
+        body.extend_from_slice(&mtu.to_be_bytes());
+    }
+    for &(p, len, flags, valid, preferred) in prefixes {
+        body.extend_from_slice(&[3, 4, len, flags]);
+        body.extend_from_slice(&valid.to_be_bytes());
+        body.extend_from_slice(&preferred.to_be_bytes());
+        body.extend_from_slice(&[0; 4]);
+        body.extend_from_slice(&p.octets());
+    }
+    let lt = lifetime.to_be_bytes();
+    let mut m = vec![0u8; wire6::ICMP6_HDR + body.len()];
+    wire6::write_icmp6(
+        &mut m,
+        src,
+        dst,
+        wire6::ND_ROUTER_ADVERT,
+        0,
+        [hops, 0, lt[0], lt[1]],
+        &body,
+    );
+    frame6(
+        MAC_R,
+        wire6::multicast_mac(dst),
+        src,
+        dst,
+        wire::PROTO_ICMPV6,
+        255,
+        &m,
+    )
+}
+
+const PFX: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0);
+
+/// Autoconfiguration frames (fuzz seeds): a router advertisement with prefix, MTU and
+/// link-layer options, and a duplicate address detection probe.
+pub(crate) fn autoconf_frames() -> Vec<Vec<u8>> {
+    let mut ns = [0u8; wire6::DAD_NS];
+    let target = slaac_addr(PFX, MAC_B);
+    wire6::write_dad_ns(&mut ns, target, [1, 2, 3, 4, 5, 6]);
+    let sn = wire6::solicited_node(target);
+    vec![
+        ra_frame(1800, 64, 1500, &[(PFX, 64, 0xc0, 86400, 14400)]),
+        frame6(
+            MAC_A,
+            wire6::multicast_mac(sn),
+            Ipv6Addr::UNSPECIFIED,
+            sn,
+            wire::PROTO_ICMPV6,
+            255,
+            &ns,
+        ),
+    ]
+}
+
+/// `prefix` (a /64) with `mac`'s modified EUI-64 interface identifier.
+fn slaac_addr(prefix: Ipv6Addr, mac: [u8; 6]) -> Ipv6Addr {
+    let iid = u128::from(wire6::link_local(mac)) & u128::from(u64::MAX);
+    Ipv6Addr::from(u128::from(prefix) | iid)
+}
+
+fn auto_config(mac: [u8; 6], slaac: bool, dad: bool, ip6: Option<Ipv6Addr>) -> Config {
+    let mut c = config(B, mac, params());
+    c.slaac = slaac;
+    c.dad = dad;
+    c.ip6 = ip6;
+    c
+}
+
+/// Polls `i` at `now`, returning what it sent.
+fn poll_at(i: &mut Iface, now: Instant) -> Vec<Vec<u8>> {
+    let mut cap = Cap::default();
+    i.poll(now, &mut cap);
+    cap.0
+}
+
+#[test]
+fn ipv6_slaac_from_router_advertisements() {
+    let t0 = Instant::now();
+    let mut i = Iface::new(auto_config(MAC_B, true, false, None), t0);
+    let ll = wire6::link_local(MAC_B);
+    assert_eq!(i.ipv6_changed(), Some(vec![ll]));
+    // A router solicitation within MAX_RTR_SOLICITATION_DELAY, from the link-local address with
+    // our link-layer address.
+    let mut rs = None;
+    let mut t = t0;
+    while t < t0 + Duration::from_millis(1100) && rs.is_none() {
+        rs = find_icmp6(&poll_at(&mut i, t), wire6::ND_ROUTER_SOLICIT);
+        t += Duration::from_millis(10);
+    }
+    let (src, dst, hops, m) = rs.expect("router solicitation");
+    assert_eq!((src, dst, hops), (ll, wire6::ALL_ROUTERS, 255));
+    assert_eq!(&m[8..16], &[1, 1, 2, 0, 0, 0, 0, 2]);
+    // Nothing off the link is reachable yet.
+    let far = Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 5);
+    assert!(i.tcp_connect(50000, sa(far, 80), t).is_err());
+    // A router advertisement: a /64 to autoconfigure, an on-link-only /48 (no address: our
+    // identifier is 64 bits), MTU 1400, hop limit 32, 600 s as default router.
+    let onlink48 = Ipv6Addr::new(0x2001, 0xdb8, 0x77, 0, 0, 0, 0, 0);
+    let ra = ra_frame(
+        600,
+        32,
+        1400,
+        &[
+            (PFX, 64, 0xc0, 3600, 1800),
+            (onlink48, 48, 0xc0, 3600, 1800),
+        ],
+    );
+    let mut out = Cap::default();
+    i.receive(t, &ra, &mut out);
+    let me = slaac_addr(PFX, MAC_B);
+    assert_eq!(i.ipv6_changed(), Some(vec![ll, me]));
+    assert!(i.ipv6_changed().is_none());
+    // The router answered: no more solicitations.
+    for k in 1..20 {
+        let f = poll_at(&mut i, t + Duration::from_secs(k));
+        assert!(find_icmp6(&f, wire6::ND_ROUTER_SOLICIT).is_none());
+    }
+    // An off-link dial goes to the router's MAC (learned from the advertisement), from the
+    // SLAAC address, with the advertised hop limit and an MSS for MTU 1400.
+    let h = i.tcp_connect(50000, sa(far, 80), t).expect("routable");
+    assert_eq!(i.tcp_local(h).map(|a| a.ip()), Some(IpAddr::V6(me)));
+    let f = poll_at(&mut i, t);
+    let syn = f
+        .iter()
+        .find(|f| Eth::parse(f).is_some_and(|e| e.dst == MAC_R))
+        .expect("SYN to the router");
+    let ip = wire6::Ipv6::parse(&syn[ETH_HDR..]).unwrap();
+    assert_eq!((ip.src, ip.dst, ip.hop_limit), (me, far, 32));
+    let seg = Tcp::parse(ip.payload, me.into(), far.into(), true).unwrap();
+    assert_eq!(seg.opts.mss, Some(1400 - 60));
+    // The /48 is on the link: no router for it.
+    let near = Ipv6Addr::new(0x2001, 0xdb8, 0x77, 1, 0, 0, 0, 9);
+    let _ = i.tcp_connect(50001, sa(near, 80), t).expect("on link");
+    let f = poll_at(&mut i, t);
+    let (_, _, _, m) = find_icmp6(&f, wire6::ND_NEIGHBOR_SOLICIT).expect("resolves it");
+    assert_eq!(&m[8..24], &near.octets());
+    // An advertisement cutting the valid lifetime to 60 s is ignored for it (RFC 4862 5.5.3 e:
+    // the remaining hour is under two hours), the preferred lifetime follows it.
+    i.receive(
+        t,
+        &ra_frame(600, 32, 0, &[(PFX, 64, 0x40, 60, 30)]),
+        &mut out,
+    );
+    let t1 = t + Duration::from_secs(100);
+    poll_at(&mut i, t1);
+    // Deprecated (past 30 s preferred) but still ours, and still the only global source.
+    assert_eq!(i.ipv6_changed(), None);
+    let h = i.tcp_connect(50003, sa(far, 81), t1).expect("routable");
+    assert_eq!(i.tcp_local(h).map(|a| a.ip()), Some(IpAddr::V6(me)));
+    // Past the router's 600 s: off-link is unreachable again; past the hour: the address goes.
+    let t2 = t + Duration::from_secs(601);
+    poll_at(&mut i, t2);
+    assert!(i.tcp_connect(50002, sa(far, 80), t2).is_err());
+    let t3 = t + Duration::from_secs(3601);
+    poll_at(&mut i, t3);
+    assert_eq!(i.ipv6_changed(), Some(vec![ll]));
+    // Invalid advertisements are ignored: hop limit below 255, a global source.
+    let mut bad = ra_frame(600, 64, 0, &[(PFX, 64, 0xc0, 3600, 1800)]);
+    bad[ETH_HDR + 7] = 64;
+    i.receive(t3, &bad, &mut out);
+    assert!(i.ipv6_changed().is_none());
+}
+
+#[test]
+fn ipv6_slaac_off_ignores_advertisements() {
+    let t = Instant::now();
+    let mut i = Iface::new(auto_config(MAC_B, false, false, Some(B6)), t);
+    let f = poll_at(&mut i, t + Duration::from_secs(2));
+    assert!(find_icmp6(&f, wire6::ND_ROUTER_SOLICIT).is_none());
+    let _ = i.ipv6_changed();
+    let mut out = Cap::default();
+    i.receive(
+        t,
+        &ra_frame(600, 32, 0, &[(PFX, 64, 0xc0, 3600, 1800)]),
+        &mut out,
+    );
+    assert!(i.ipv6_changed().is_none());
+    let far = Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 5);
+    assert!(i.tcp_connect(50000, sa(far, 80), t).is_err());
+}
+
+/// The duplicate address detection probes in `frames`: (target, nonce).
+fn dad_probes(frames: &[Vec<u8>]) -> Vec<(Ipv6Addr, Option<[u8; 6]>)> {
+    frames
+        .iter()
+        .filter_map(|f| {
+            let eth = Eth::parse(f)?;
+            let ip = wire6::Ipv6::parse(eth.payload)?;
+            let m = wire6::Icmp6::parse(ip.payload, ip.src, ip.dst, true)?;
+            let nd = wire6::Nd::parse(&m, ip.src, ip.dst, ip.hop_limit)?;
+            (ip.src.is_unspecified() && nd.kind == wire6::ND_NEIGHBOR_SOLICIT)
+                .then_some((nd.target, nd.nonce))
+        })
+        .collect()
+}
+
+#[test]
+fn ipv6_dad_before_use() {
+    let t0 = Instant::now();
+    let mut i = Iface::new(auto_config(MAC_B, false, true, Some(B6)), t0);
+    let ll = wire6::link_local(MAC_B);
+    // Nothing usable while tentative: the MLD report comes from `::`, dials fail, and packets
+    // to the tentative address are dropped.
+    assert_eq!(i.ipv6_changed(), Some(vec![]));
+    let f = poll_at(&mut i, t0);
+    let (src, _, _, _) = find_icmp6(&f, wire6::MLD2_REPORT).expect("report");
+    assert!(src.is_unspecified());
+    assert!(i.tcp_connect(50000, sa(A6, 80), t0).is_err());
+    let mut out = Cap::default();
+    i.receive(t0, &echo6(MAC_A, MAC_B, A6, B6, b"x"), &mut out);
+    assert!(out.0.is_empty());
+    // One probe per address, from `::` with our nonce, within a second.
+    let mut probes = Vec::new();
+    let mut t = t0;
+    while probes.len() < 2 && t < t0 + Duration::from_millis(1100) {
+        probes.extend(dad_probes(&poll_at(&mut i, t)));
+        t += Duration::from_millis(10);
+    }
+    let targets: Vec<Ipv6Addr> = probes.iter().map(|p| p.0).collect();
+    assert_eq!(targets, vec![ll, B6]);
+    assert!(probes.iter().all(|p| p.1.is_some()));
+    // Our own probe looped back is not a conflict.
+    let mut ns = [0u8; wire6::DAD_NS];
+    wire6::write_dad_ns(&mut ns, B6, probes[1].1.unwrap());
+    let sn = wire6::solicited_node(B6);
+    let looped = frame6(
+        MAC_B,
+        wire6::multicast_mac(sn),
+        Ipv6Addr::UNSPECIFIED,
+        sn,
+        wire::PROTO_ICMPV6,
+        255,
+        &ns,
+    );
+    i.receive(t, &looped, &mut out);
+    // A second later both are ours.
+    poll_at(&mut i, t + Duration::from_millis(1100));
+    assert_eq!(i.dad_failures(), 0);
+    assert_eq!(i.ipv6_changed(), Some(vec![ll, B6]));
+    let mut out = Cap::default();
+    i.receive(t, &echo6(MAC_A, MAC_B, A6, B6, b"x"), &mut out);
+    assert!(find_icmp6(&out.0, wire6::ND_NEIGHBOR_SOLICIT).is_some());
+}
+
+#[test]
+fn ipv6_dad_conflicts() {
+    // B owns B6; C comes up with B6 too, and probes first: B defends, C gives it up.
+    let mut ca = auto_config(MAC_A, false, true, Some(B6));
+    ca.ip = A;
+    let cb = auto_config(MAC_B, false, false, Some(B6));
+    let mut s = Sim::with(LinkCfg::default(), ca, cb);
+    for _ in 0..400 {
+        s.step(Duration::from_millis(20));
+    }
+    assert_eq!(s.a.dad_failures(), 1);
+    assert_eq!(s.a.ipv6_changed(), Some(vec![wire6::link_local(MAC_A)]));
+    // Another node's probe for our tentative address (no nonce of ours) is a conflict too, and
+    // a duplicate link-local address turns IPv6 off.
+    let t = Instant::now();
+    let mut i = Iface::new(auto_config(MAC_B, true, true, None), t);
+    let ll = wire6::link_local(MAC_B);
+    let sn = wire6::solicited_node(ll);
+    let mut ns = [0u8; wire6::DAD_NS];
+    wire6::write_dad_ns(&mut ns, ll, [9; 6]);
+    let probe = frame6(
+        MAC_A,
+        wire6::multicast_mac(sn),
+        Ipv6Addr::UNSPECIFIED,
+        sn,
+        wire::PROTO_ICMPV6,
+        255,
+        &ns,
+    );
+    let mut out = Cap::default();
+    i.receive(t, &probe, &mut out);
+    assert_eq!(i.dad_failures(), 1);
+    assert_eq!(i.ipv6_changed(), Some(vec![]));
+    // Off: no solicitations, no reports, advertisements ignored.
+    let f = poll_at(&mut i, t + Duration::from_secs(5));
+    assert!(f.is_empty(), "{f:?}");
+    i.receive(
+        t,
+        &ra_frame(600, 32, 0, &[(PFX, 64, 0xc0, 3600, 1800)]),
+        &mut out,
+    );
+    assert!(i.ipv6_changed().is_none());
+    // A SLAAC address found duplicate by an advertisement is dropped, the rest stays.
+    let mut i = Iface::new(auto_config(MAC_B, true, true, None), t);
+    poll_at(&mut i, t + Duration::from_secs(3));
+    i.receive(
+        t + Duration::from_secs(3),
+        &ra_frame(600, 64, 0, &[(PFX, 64, 0xc0, 3600, 1800)]),
+        &mut out,
+    );
+    let me = slaac_addr(PFX, MAC_B);
+    let f = poll_at(&mut i, t + Duration::from_secs(3));
+    assert_eq!(dad_probes(&f).first().map(|p| p.0), Some(me));
+    let mut na = [0u8; wire6::ND_MSG];
+    wire6::write_na(&mut na, me, wire6::ALL_NODES, wire6::NA_OVERRIDE, me, MAC_A);
+    let claim = frame6(
+        MAC_A,
+        wire6::multicast_mac(wire6::ALL_NODES),
+        me,
+        wire6::ALL_NODES,
+        wire::PROTO_ICMPV6,
+        255,
+        &na,
+    );
+    i.receive(t + Duration::from_secs(3), &claim, &mut out);
+    poll_at(&mut i, t + Duration::from_secs(5));
+    assert_eq!(i.dad_failures(), 1);
+    assert_eq!(i.ipv6_changed(), Some(vec![ll]));
+}
+
+#[test]
+fn ipv6_autoconf_only_queue_zero_speaks() {
+    let t = Instant::now();
+    let mut c = auto_config(MAC_B, true, true, None);
+    c.queue = 1;
+    c.queues = 2;
+    let mut i = Iface::new(c, t);
+    let mut sent = Vec::new();
+    for k in 0..300 {
+        sent.extend(poll_at(&mut i, t + Duration::from_millis(10 * k)));
+    }
+    assert!(sent.is_empty(), "queue 1 transmitted {} frames", sent.len());
+    // It follows the same timeline: the link-local address is ours after the probe's wait.
+    assert_eq!(i.ipv6_changed(), Some(vec![wire6::link_local(MAC_B)]));
+    // And acts on advertisements.
+    let mut out = Cap::default();
+    let now = t + Duration::from_secs(3);
+    i.receive(
+        now,
+        &ra_frame(600, 64, 0, &[(PFX, 64, 0xc0, 3600, 1800)]),
+        &mut out,
+    );
+    assert!(poll_at(&mut i, now).is_empty());
+    assert_eq!(i.ipv6_changed(), None); // tentative
+    assert!(poll_at(&mut i, now + Duration::from_millis(1100)).is_empty());
+    assert_eq!(
+        i.ipv6_changed(),
+        Some(vec![wire6::link_local(MAC_B), slaac_addr(PFX, MAC_B)])
+    );
+    assert!(super::is_neighbor_frame(&ra_frame(600, 64, 0, &[])));
 }

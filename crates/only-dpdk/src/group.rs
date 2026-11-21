@@ -60,10 +60,10 @@ impl DpdkGroup {
                         format!("{ip} is not the stack's address ({})", dcfg.address),
                     ));
                 }
-                IpAddr::V6(_) if dcfg.address6.is_none() => {
+                IpAddr::V6(_) if dcfg.address6.is_none() && !dcfg.ipv6_slaac => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
-                        "the userspace stack has no IPv6 address (set DpdkConfig::address6)",
+                        "the userspace stack has no IPv6 (set DpdkConfig::address6 or ipv6_slaac)",
                     ));
                 }
                 IpAddr::V6(_) => {}
