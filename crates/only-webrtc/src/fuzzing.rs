@@ -152,8 +152,14 @@ fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
         );
         // RTCP on component 2 (`a=rtcp`) or muxed, never both, and BUNDLE only when muxed;
         // `a=rtcp` in every media section in use once the peer runs two components.
-        let (mux, rtcp) = (answer.contains("a=rtcp-mux"), answer.contains("a=rtcp:"));
-        assert!(!(mux && rtcp), "{answer}");
+        // (per section: without BUNDLE each section has a transport of its own).
+        let rtcp = answer.contains("a=rtcp:");
+        assert!(
+            !answer
+                .split("\r\nm=")
+                .any(|sec| sec.contains("a=rtcp-mux") && sec.contains("a=rtcp:")),
+            "{answer}"
+        );
         assert!(!rtcp || !answer.contains("a=group:BUNDLE"), "{answer}");
         assert!(!rtcp || rtc.two_components(), "{answer}");
         let in_use = answer.lines().any(|l| {

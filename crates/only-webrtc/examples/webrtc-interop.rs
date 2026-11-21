@@ -362,7 +362,9 @@ fn client(http: &str, what: &str, args: &[String]) {
             } else {
                 "interop"
             };
-            api.add_channel_with_config(&only_webrtc::ChannelConfig::new(label).with_priority(prio));
+            api.add_channel_with_config(
+                &only_webrtc::ChannelConfig::new(label).with_priority(prio),
+            );
             if what == "media" || what == "media-in" {
                 audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
             }

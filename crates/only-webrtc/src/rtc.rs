@@ -1427,7 +1427,10 @@ impl Rtc {
             if m.kind == "application" && m.proto.contains("SCTP") {
                 // Data channels run over DTLS (in an SDES session too, in their section).
                 let dtls = m.has("fingerprint") || sdp.has("fingerprint");
+                // A mid is one section's (a media line's mid is not the application's).
+                let taken = self.media.iter().any(|l| l.mid == mid);
                 if (!self.sdes.active || dtls)
+                    && !taken
                     && (self.app_mid.is_none() || self.app_mid == Some(mid))
                 {
                     self.app_mid = Some(mid);
@@ -1445,6 +1448,11 @@ impl Rtc {
                 order.push(Section::Rejected(m.clone(), mid));
                 continue;
             };
+            if self.app_mid == Some(mid) {
+                // The application section has this mid.
+                order.push(Section::Rejected(m.clone(), mid));
+                continue;
+            }
             let remote_dir = m
                 .attrs
                 .iter()
