@@ -32,7 +32,10 @@
 #![warn(clippy::unwrap_used)]
 
 mod bits;
+mod cstream;
 mod decode;
+mod dict;
+mod dstream;
 mod encode;
 mod fse;
 mod huffman;
@@ -43,9 +46,38 @@ mod xxhash;
 #[doc(hidden)]
 pub mod fuzzing;
 
+pub use cstream::Compressor;
 pub use decode::decompress;
-pub use encode::compress;
+pub use dict::Dictionary;
+pub use dstream::{DEFAULT_MAX_WINDOW, Decompressor, decompress_with_dictionary};
+pub use encode::{compress, compress_with_dictionary};
 pub use xxhash::xxh64;
+
+/// What a streaming [`Compressor::compress`] call does after taking its input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Flush {
+    /// Nothing: input may stay buffered until a block (128 KiB) is full (best compression).
+    #[default]
+    None,
+    /// Write everything taken so far as complete blocks, so that a decoder can produce all of
+    /// it; later data may still refer back to earlier data.
+    Flush,
+    /// Write everything and end the frame (last block, content checksum).
+    Finish,
+}
+
+/// What one [`Decompressor`] call did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Progress {
+    /// Input bytes consumed (taken into the decompressor: they are not passed again).
+    pub consumed: usize,
+    /// Output bytes written.
+    pub produced: usize,
+    /// The input so far ends with a complete frame and all of its output was delivered.
+    pub done: bool,
+}
 
 /// Compression level on zstd's scale, 1 (fastest) to 22 (smallest output).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -92,8 +124,13 @@ pub enum Error {
     BadFrameHeader,
     /// The frame announces a window larger than 2³¹ + 2³⁰ · 7/8 bytes (libzstd's limit).
     WindowTooLarge,
-    /// The frame names a dictionary (not supported).
+    /// The frame names a dictionary and none was given.
     DictionaryRequired,
+    /// The frame names a dictionary other than the one given.
+    WrongDictionary,
+    /// A trained dictionary is malformed: invalid entropy tables, or repeat offsets that are
+    /// zero or larger than its content.
+    BadDictionary,
     /// A block of the reserved type, or larger than the frame's maximum block size.
     BadBlock,
     /// The literals section header is invalid, or repeats a Huffman table that does not exist.
@@ -128,6 +165,8 @@ impl std::fmt::Display for Error {
             Error::BadFrameHeader => "invalid frame header",
             Error::WindowTooLarge => "window size too large",
             Error::DictionaryRequired => "frame needs a dictionary",
+            Error::WrongDictionary => "frame needs another dictionary",
+            Error::BadDictionary => "malformed dictionary",
             Error::BadBlock => "invalid block",
             Error::BadLiterals => "invalid literals section",
             Error::BadHuffmanTable => "invalid Huffman tree description",

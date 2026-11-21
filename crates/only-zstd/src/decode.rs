@@ -94,17 +94,106 @@ fn decompress_with(d: &mut Decoder, data: &[u8], out: &mut Out) -> Result<(), Er
     Ok(())
 }
 
+/// A frame header (RFC 8878 section 3.1.1.1).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameHeader {
+    /// Size of the header, magic number included.
+    pub(crate) size: usize,
+    /// Window size (the content size for a single-segment frame).
+    pub(crate) window: u64,
+    pub(crate) dict_id: u32,
+    pub(crate) content_size: Option<u64>,
+    pub(crate) checksum: bool,
+}
+
+/// Parses the header of the frame at the start of `src` (whose magic number was checked):
+/// `None` when `src` is shorter than the header.
+pub(crate) fn frame_header(src: &[u8]) -> Result<Option<FrameHeader>, Error> {
+    let Some(&fhd) = src.get(4) else {
+        return Ok(None);
+    };
+    let single = fhd & 0x20 != 0;
+    let dict_size = [0, 1, 2, 4][usize::from(fhd & 3)];
+    let fcs_size = [usize::from(single), 2, 4, 8][usize::from(fhd >> 6)];
+    let size = 5 + usize::from(!single) + dict_size + fcs_size;
+    if src.len() < size {
+        return Ok(None);
+    }
+    if fhd & 0x08 != 0 {
+        return Err(Error::BadFrameHeader);
+    }
+    let mut p = 5;
+    let mut window = 0u64;
+    if !single {
+        let wd = src[5];
+        let log = 10 + u32::from(wd >> 3);
+        if log > 31 {
+            return Err(Error::WindowTooLarge);
+        }
+        window = (1u64 << log) + ((1u64 << log) >> 3) * u64::from(wd & 7);
+        p += 1;
+    }
+    let dict_id = le_n(src, p, dict_size) as u32;
+    p += dict_size;
+    let content_size = match (fhd >> 6, single) {
+        (0, false) => None,
+        (1, _) => Some(le_n(src, p, 2) + 256),
+        _ => Some(le_n(src, p, fcs_size)),
+    };
+    if single {
+        window = content_size.unwrap_or(0);
+    }
+    Ok(Some(FrameHeader {
+        size,
+        window,
+        dict_id,
+        content_size,
+        checksum: fhd & 0x04 != 0,
+    }))
+}
+
+/// The entropy tables and repeat offsets of a dictionary, as the decoder starts a frame with.
+#[derive(Clone)]
+pub(crate) struct DictTables {
+    huf: huffman::DTable,
+    seq: SeqTables,
+    reps: [u32; 3],
+}
+
+impl DictTables {
+    /// Tables from a Huffman tree description and the normalized counts of the literal length,
+    /// offset and match length codes (checked by the caller).
+    pub(crate) fn new(
+        huf_desc: &[u8],
+        norms: [(&[i16], u32); 3],
+        reps: [u32; 3],
+    ) -> Option<DictTables> {
+        let mut huf = huffman::DTable::default();
+        huffman::read_table(huf_desc, &mut huf)?;
+        let mut seq = SeqTables::default();
+        for (i, kind) in [Kind::LitLen, Kind::Offset, Kind::MatchLen]
+            .into_iter()
+            .enumerate()
+        {
+            let (norm, log) = norms[i];
+            build_seq_table(kind, norm, log, &mut seq.cells[i]);
+            seq.log[i] = log;
+        }
+        Some(DictTables { huf, seq, reps })
+    }
+}
+
 /// Bytes past the end of a literal run or a match that the fast paths may overwrite (with
 /// bytes that are overwritten again later, or cut off at the end).
-const WILD: usize = 32;
+pub(crate) const WILD: usize = 32;
 
 /// The output, which is also the window. `buf[..pos]` is the output so far; the rest of `buf`
 /// is zeroed room for the next block, so that literals and matches can be copied in whole
 /// 16-byte chunks. `buf` never grows past `limit` (neither its length nor its capacity).
-struct Out {
-    buf: Vec<u8>,
-    pos: usize,
-    limit: usize,
+pub(crate) struct Out {
+    pub(crate) buf: Vec<u8>,
+    pub(crate) pos: usize,
+    pub(crate) limit: usize,
 }
 
 impl Out {
@@ -278,6 +367,7 @@ fn build_seq_table(kind: Kind, norm: &[i16], log: u32, cells: &mut Cells) {
 
 /// The decoding tables of the three fields of sequences, in the order of [`Kind`], next to
 /// each other so that one register addresses all three.
+#[derive(Clone)]
 struct SeqTables {
     cells: Box<[Cells; 3]>,
     log: [u32; 3],
@@ -617,7 +707,7 @@ fn exec_exact(
 
 /// Decoding state kept across the blocks of a frame (and scratch space across frames).
 #[derive(Default)]
-struct Decoder {
+pub(crate) struct Decoder {
     huf: huffman::DTable,
     have_huf: bool,
     seq_ready: bool,
@@ -627,45 +717,40 @@ struct Decoder {
 }
 
 impl Decoder {
+    /// Resets the state carried from block to block for a new frame: no Huffman or sequence
+    /// tables and the initial repeat offsets, or those of a dictionary.
+    pub(crate) fn start_frame(&mut self, dict: Option<&DictTables>) {
+        match dict {
+            None => {
+                self.have_huf = false;
+                self.seq_ready = false;
+                self.reps = [1, 4, 8];
+            }
+            Some(d) => {
+                self.huf.clone_from(&d.huf);
+                self.have_huf = true;
+                *self.seq.cells = *d.seq.cells;
+                self.seq.log = d.seq.log;
+                self.seq.predef = [false; 3];
+                self.seq_ready = true;
+                self.reps = d.reps.map(u64::from);
+            }
+        }
+    }
+
     /// Decodes the frame at the start of `src` (whose magic number was checked); returns its
     /// size.
     fn frame(&mut self, src: &[u8], out: &mut Out) -> Result<usize, Error> {
-        let fhd = src[4];
-        let single = fhd & 0x20 != 0;
-        let dict_size = [0, 1, 2, 4][usize::from(fhd & 3)];
-        let fcs_size = [usize::from(single), 2, 4, 8][usize::from(fhd >> 6)];
-        let header = 5 + usize::from(!single) + dict_size + fcs_size;
-        if src.len() < header + 3 {
-            return Err(Error::Truncated);
-        }
-        if fhd & 0x08 != 0 {
-            return Err(Error::BadFrameHeader);
-        }
-        let mut p = 5;
-        let mut window = 0u64;
-        if !single {
-            let wd = src[5];
-            let log = 10 + u32::from(wd >> 3);
-            if log > 31 {
-                return Err(Error::WindowTooLarge);
-            }
-            window = (1u64 << log) + ((1u64 << log) >> 3) * u64::from(wd & 7);
-            p += 1;
-        }
-        let dict_id = le_n(src, p, dict_size);
-        p += dict_size;
-        let content_size = match (fhd >> 6, single) {
-            (0, false) => None,
-            (1, _) => Some(le_n(src, p, 2) + 256),
-            _ => Some(le_n(src, p, fcs_size)),
+        let h = match frame_header(src)? {
+            Some(h) if src.len() >= h.size + 3 => h,
+            _ => return Err(Error::Truncated),
         };
-        p += fcs_size;
-        if single {
-            window = content_size.unwrap_or(0);
-        }
-        if dict_id != 0 {
+        if h.dict_id != 0 {
             return Err(Error::DictionaryRequired);
         }
+        let mut p = h.size;
+        let window = h.window;
+        let content_size = h.content_size;
         let block_max = window.min(BLOCK_MAX as u64) as usize;
         if let Some(n) = content_size {
             // A hint only: refuse early what cannot fit, reserve at most the limit.
@@ -673,9 +758,7 @@ impl Decoder {
             let want = (out.pos + n as usize).saturating_add(WILD).min(out.limit);
             out.buf.reserve_exact(want.saturating_sub(out.buf.len()));
         }
-        self.have_huf = false;
-        self.seq_ready = false;
-        self.reps = [1, 4, 8];
+        self.start_frame(None);
         let start = out.pos;
         loop {
             if src.len() - p < 3 {
@@ -730,7 +813,7 @@ impl Decoder {
                 return Err(Error::ContentSizeMismatch);
             }
         }
-        if fhd & 0x04 != 0 {
+        if h.checksum {
             if src.len() - p < 4 {
                 return Err(Error::Truncated);
             }
@@ -743,7 +826,7 @@ impl Decoder {
     }
 
     /// Decodes a compressed block.
-    fn block(
+    pub(crate) fn block(
         &mut self,
         b: &[u8],
         out: &mut Out,

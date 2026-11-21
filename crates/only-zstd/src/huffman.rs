@@ -8,7 +8,7 @@ use crate::tables::highbit;
 
 /// A decoding table: `1 << log` entries of `code_length | symbol << 8`, and the double-symbol
 /// table made from it when a large literals section asks for one (see [`double_pays`]).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct DTable {
     log: u32,
     entries: Vec<u16>,
@@ -25,6 +25,15 @@ pub(crate) struct DTable {
 /// to 12, a total that the implied last weight completes to a power of two, an even number of
 /// codes of the longest length). Returns the size of the description.
 pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
+    let (w, nsym, size) = read_weights(src)?;
+    build_table(&w[..nsym], table);
+    Some(size)
+}
+
+/// Reads a Huffman tree description: the weights of all symbols (the last one implied and
+/// filled in), the number of symbols and the size of the description, with the checks of
+/// [`read_table`].
+pub(crate) fn read_weights(src: &[u8]) -> Option<([u8; 258], usize, usize)> {
     let &head = src.first()?;
     let mut w = [0u8; 258];
     let (count, size) = if head >= 128 {
@@ -76,7 +85,18 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
     if rank[1] < 2 || rank[1] & 1 == 1 {
         return None;
     }
-    let nsym = count + 1;
+    Some((w, count + 1, size))
+}
+
+/// Builds the decoding table of valid weights (as [`read_weights`] returns them).
+fn build_table(w: &[u8], table: &mut DTable) {
+    let mut rank = [0u32; 13];
+    let mut total = 0u32;
+    for &x in w {
+        rank[usize::from(x)] += 1;
+        total += (1 << x) >> 1;
+    }
+    let log = highbit(total);
     // Codes in order of weight (longest first), then of symbol.
     let mut start = [0usize; 14];
     for wt in 1..=log as usize {
@@ -89,7 +109,7 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
     if table.entries.len() < TABLE_SIZE {
         table.entries.resize(TABLE_SIZE, 0);
     }
-    for (s, &wt) in w[..nsym].iter().enumerate() {
+    for (s, &wt) in w.iter().enumerate() {
         if wt == 0 {
             continue;
         }
@@ -99,7 +119,6 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
         table.entries[start[wt]..start[wt] + len].fill(e);
         start[wt] += len;
     }
-    Some(size)
 }
 
 /// Size of the decoding table: codes are at most 12 bits long (`read_table` checks it), and a
@@ -677,6 +696,7 @@ fn package_merge(counts: &[u32; 256], limit: u32) -> [u8; 256] {
 }
 
 /// A Huffman code of the literals and its tree description.
+#[derive(Clone)]
 pub(crate) struct Encoder {
     codes: [u16; 256],
     lens: [u8; 256],
@@ -703,23 +723,7 @@ impl Encoder {
         }
         let last = lens.iter().rposition(|&l| l > 0)?;
         let description = describe(&w[..last])?;
-        // Canonical codes, laid out as the decoder's table is.
-        let mut rank = [0usize; 13];
-        for &x in &w {
-            rank[usize::from(x)] += 1;
-        }
-        let mut start = [0usize; 14];
-        for wt in 1..=12 {
-            start[wt + 1] = start[wt] + (rank[wt] << (wt - 1));
-        }
-        let mut codes = [0u16; 256];
-        for s in 0..256 {
-            let wt = usize::from(w[s]);
-            if wt > 0 {
-                codes[s] = (start[wt] >> (wt - 1)) as u16;
-                start[wt] += 1 << (wt - 1);
-            }
-        }
+        let codes = canonical_codes(&w);
         Some(Encoder {
             codes,
             lens,
@@ -727,6 +731,58 @@ impl Encoder {
         })
     }
 
+    /// The code of a tree description's weights (valid ones, as `read_weights` returns them:
+    /// the last symbol's included), without a description (a dictionary's table, repeated).
+    pub(crate) fn from_weights(weights: &[u8]) -> Encoder {
+        let mut w = [0u8; 256];
+        let n = weights.len().min(256);
+        w[..n].copy_from_slice(&weights[..n]);
+        let total: u32 = w.iter().map(|&x| (1u32 << x) >> 1).sum();
+        let log = highbit(total.max(1));
+        let mut lens = [0u8; 256];
+        for s in 0..256 {
+            if w[s] > 0 {
+                lens[s] = (log + 1 - u32::from(w[s])) as u8;
+            }
+        }
+        Encoder {
+            codes: canonical_codes(&w),
+            lens,
+            description: Vec::new(),
+        }
+    }
+
+    /// Whether every symbol counted in `counts` has a code.
+    pub(crate) fn covers(&self, counts: &[u32; 256]) -> bool {
+        counts
+            .iter()
+            .zip(&self.lens)
+            .all(|(&c, &l)| c == 0 || l > 0)
+    }
+}
+
+/// Canonical codes of weights `w`, laid out as the decoder's table is.
+fn canonical_codes(w: &[u8; 256]) -> [u16; 256] {
+    let mut rank = [0usize; 13];
+    for &x in w {
+        rank[usize::from(x)] += 1;
+    }
+    let mut start = [0usize; 14];
+    for wt in 1..=12 {
+        start[wt + 1] = start[wt] + (rank[wt] << (wt - 1));
+    }
+    let mut codes = [0u16; 256];
+    for s in 0..256 {
+        let wt = usize::from(w[s]);
+        if wt > 0 {
+            codes[s] = (start[wt] >> (wt - 1)) as u16;
+            start[wt] += 1 << (wt - 1);
+        }
+    }
+    codes
+}
+
+impl Encoder {
     /// Size in bits of `counts` coded with this code.
     pub(crate) fn cost_bits(&self, counts: &[u32; 256]) -> usize {
         counts
