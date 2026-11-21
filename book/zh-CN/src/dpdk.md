@@ -32,7 +32,10 @@ Rust，`#![forbid(unsafe_code)]`，无依赖），再把数据交给与其他后
 - 协议栈的 MAC 默认取接口自己的，因此网卡不需要混杂模式。
 
 它不需要 DPDK、大页或重新绑定驱动，接口对 `ip` 与 `ethtool` 依然可见，但内核不再看到这些队列的流量。每帧放在
-一个 4 KiB 的块中（MTU 最大 3826），因此对端不能发送 GSO 聚合包：veth 上的 native XDP 会自动关掉它们，generic
+一个 4 KiB 的块中（MTU 最大 3826），除非开启 `multi_buffer`（ADR-068，Linux 6.6+：一帧可双向跨多个块，
+`DpdkConfig::mtu` 可达 9000 以使用巨帧；此时重定向程序支持 frags，veth 在这样的 MTU 下也能运行 native XDP）。
+`shared_umem`（Linux 5.10+）让所有队列共用一个 UMEM，`frames` 为各队列平分的总数。未开启 `multi_buffer`
+时对端不能发送 GSO 聚合包：veth 上的 native XDP 会自动关掉它们，generic
 模式下要关闭 TSO、GSO 与 GRO。`only::dpdk::af_xdp_info(iface)`（隐藏）报告实际选用的模式。
 
 ## 启用
@@ -94,6 +97,8 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 | `address6` | 无 | 协议栈的 IPv6 地址；设置后启用 IPv6（外加由 MAC 派生的链路本地地址） |
 | `prefix_len6` | 64 | IPv6 子网（子网内与链路本地目的地址视为在链路上） |
 | `gateway6` | 无 | IPv6 默认路由器（通常是其链路本地地址） |
+| `ipv6_slaac` | false | 根据路由器通告自动配置 IPv6（地址、默认路由器、MTU、跳数限制）；无需 `address6` 即可启用 IPv6 |
+| `ipv6_dad` | false | IPv6 地址使用前做重复地址检测 |
 | `mac` | 端口 MAC（DPDK）/ 由 `address` 派生 | 以太网地址 |
 | `mtu` | 1500 | IP MTU（TCP MSS = `mtu - 40`，IPv6 上为 `mtu - 60`）；更大的 UDP 数据报会分片发送，收到的分片会重组 |
 | `tcp_buffer` | 64 KiB | 每个 TCP 连接的收、发缓冲区（限制窗口；超过 64 KiB 时使用窗口缩放） |
@@ -102,6 +107,7 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 | `syn_cookies` | true | backlog 满后用无状态 SYN cookie 应答 SYN |
 | `congestion` | `Congestion::Cubic` | TCP 拥塞控制：CUBIC（RFC 9438）或 NewReno |
 | `tcp_ecn` | false | 协商 ECN（RFC 3168）：数据以 ECN-capable 发送，CE 标记按丢包处理但不重传 |
+| `tcp_accecn` | false | 协商 Accurate ECN（RFC 9768）：每个 ACK 报告 CE 标记的包数与字节数；对只懂 RFC 3168 的对端退回 RFC 3168 ECN |
 | `tcp_pacing` | false | 以 `cwnd / srtt`（慢启动时 2 倍，之后 1.2 倍）的速率平滑发送，而不是整窗突发 |
 | `tcp_keepalive` | 无 | 开始发送 TCP keepalive 探测前的空闲时间（9 次探测，间隔 `min(keepalive, 75 s)`） |
 | `busy_poll` | false | 从不休眠（DPDK 风格，每个队列占满一个核）；否则空闲时最多休眠 1 ms |
@@ -121,9 +127,30 @@ let listener = Listener::tcp("[::]:8080".parse()?).backend(Backend::Dpdk(cfg)).s
 
 设置 `address6` 后 listener 为双栈：端口同时接受 IPv4 与 IPv6 连接（listener 地址可以是 `0.0.0.0`、
 IPv4 地址、`::`、`address6` 或链路本地地址）。`dial` 与 `dial_udp` 接受两种地址族；连到链路本地对端时
-连接使用链路本地地址，否则使用 `address6`。地址为静态配置：没有 SLAAC，忽略路由器通告，协议栈不做
-重复地址检测（但会回应其他节点针对本栈地址的探测，让对方发现冲突）。在开启 MLD snooping 的交换机上，
-协议栈发送的 MLDv2 报告保证邻居请求能够送达。
+连接使用链路本地地址，否则使用 `address6`。在开启 MLD snooping 的交换机上，协议栈发送的 MLDv2 报告保证
+邻居请求能够送达。
+
+开启 `ipv6_slaac` 后，协议栈根据路由器通告自行配置（ADR-068）：启动时发送路由器请求，为每个通告的 /64
+前缀生成全局地址（前缀加上 MAC 的修改型 EUI-64 标识），并取得默认路由器、链路上前缀、链路 MTU 与跳数
+限制，各按通告的生存期保留；此时 `address6` 可以不设。开启 `ipv6_dad` 后，每个地址（链路本地、静态、
+SLAAC）使用前先探测约一秒，若其他节点已占用则放弃。`only::dpdk::ipv6_addresses(&device)` 返回正在使用的地址：
+
+```rust,ignore
+let mut cfg = DpdkConfig::new(Device::AfPacket("eth1".into()), "10.0.0.2".parse()?);
+cfg.ipv6_slaac = true;
+cfg.ipv6_dad = true;
+// ……引擎运行后：
+let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
+```
+
+无论哪种方式，协议栈都会回应其他节点针对本栈地址的重复地址检测。
+
+### Accurate ECN
+
+`tcp_accecn` 在 TCP 连接上协商 Accurate ECN（RFC 9768）：每个 ACK 携带 CE 标记的包数（3 位的 ACE 字段），
+并在 AccECN 选项中携带按 ECN 码点统计的接收字节数，而不是 RFC 3168 每个往返一个 ECE 位。Linux 6.18+ 在
+`net.ipv4.tcp_ecn = 3` 时应答；只懂 RFC 3168 ECN 的对端则用 RFC 3168。协议栈对 CE 标记的反应与 RFC 3168
+相同（每个往返减窗一次）。
 
 ## 工作原理
 
@@ -183,7 +210,8 @@ F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更�
 
 - 没有校验和、TSO 或 LRO 卸载：手头可用的 PMD（`net_tap`、`net_af_packet`）在驱动内部用软件完成，
   卸载所需的元数据也无法在硬件上验证。
-- IPv6 不支持 SLAAC、路由器通告、DAD、巨型帧和 MLDv1；没有 Accurate ECN / L4S；没有 TCP Fast Open；
+- IPv6 不支持稳定隐私地址或临时地址、DHCPv6、巨型帧（jumbogram）和 MLDv1；没有 L4S 拥塞控制（Accurate ECN
+  反馈已有）；没有 TCP Fast Open；
   除 ICMP“需要分片” / packet too big 外不做路径 MTU 探测。
 - ECN 与 pacing 默认关闭：在模拟的 20 帧瓶颈队列上，ECN 把 29 次丢包变成 10 次标记，pacing 让丢包
   减半，但二者都还没有在真实网卡上测量过。

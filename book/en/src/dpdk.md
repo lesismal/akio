@@ -38,7 +38,11 @@ The device under the stack is one of:
 
 It needs no DPDK, no hugepages and no driver rebinding, and the interface stays visible to `ip`
 and `ethtool`. The kernel no longer sees the traffic of those queues, though. Each frame fits one
-4 KiB chunk (MTU at most 3826), so the peer must not send GSO aggregates. Native XDP on a veth
+4 KiB chunk (MTU at most 3826) unless `multi_buffer` is on (ADR-068, Linux 6.6+: a frame spans
+several chunks both ways, so `DpdkConfig::mtu` may be up to 9000 for jumbo frames; the redirect
+program is then frags-aware, which also lets a veth run native XDP at such MTUs).
+`shared_umem` (Linux 5.10+) gives all the queues one UMEM, `frames` being the total split
+between them. Without `multi_buffer` the peer must not send GSO aggregates. Native XDP on a veth
 turns them off by itself; in generic mode turn TSO, GSO and GRO off.
 `only::dpdk::af_xdp_info(iface)` (hidden) says which modes were picked.
 
@@ -103,6 +107,8 @@ unreachable" is closed with `ConnectionRefused`, as on the kernel backends.
 | `address6` | none | the stack's IPv6 address; setting it turns IPv6 on (plus a link-local address from the MAC) |
 | `prefix_len6` | 64 | IPv6 subnet (destinations inside it and link-local ones are on the link) |
 | `gateway6` | none | IPv6 default router (usually its link-local address) |
+| `ipv6_slaac` | false | IPv6 autoconfiguration from router advertisements (addresses, default routers, MTU, hop limit); turns IPv6 on without `address6` |
+| `ipv6_dad` | false | duplicate address detection before an IPv6 address is used |
 | `mac` | port MAC (DPDK) / derived from `address` | Ethernet address |
 | `mtu` | 1500 | IP MTU (TCP MSS = `mtu - 40`, `mtu - 60` over IPv6); larger UDP datagrams are fragmented, fragments are reassembled |
 | `tcp_buffer` | 64 KiB | receive and send buffer per TCP connection (bounds the window; window scaling above 64 KiB) |
@@ -111,6 +117,7 @@ unreachable" is closed with `ConnectionRefused`, as on the kernel backends.
 | `syn_cookies` | true | answer SYNs with stateless SYN cookies once the backlog is full |
 | `congestion` | `Congestion::Cubic` | TCP congestion control: CUBIC (RFC 9438) or NewReno |
 | `tcp_ecn` | false | negotiate ECN (RFC 3168): data sent ECN-capable, CE marks answered like a loss without retransmitting |
+| `tcp_accecn` | false | negotiate Accurate ECN (RFC 9768): per-ACK counts of CE-marked packets and bytes, RFC 3168 ECN with peers that only know it |
 | `tcp_pacing` | false | pace transmissions at `cwnd / srtt` (2x in slow start, 1.2x after) instead of sending windows as bursts |
 | `tcp_keepalive` | none | idle time before TCP keepalive probes (9 probes, every `min(keepalive, 75 s)`) |
 | `busy_poll` | false | never sleep (DPDK style, one core per queue at 100%); otherwise sleep up to 1 ms when idle |
@@ -132,10 +139,34 @@ let listener = Listener::tcp("[::]:8080".parse()?).backend(Backend::Dpdk(cfg)).s
 With `address6` set, listeners are dual-stack: the port takes IPv4 and IPv6 connections (the
 listener address may be `0.0.0.0`, the IPv4 address, `::`, `address6` or the link-local
 address). `dial` and `dial_udp` take either family; to a link-local peer the connection uses the
-link-local address, otherwise `address6`. Addresses are static: no SLAAC, router advertisements
-are ignored, and the stack runs no duplicate address detection (it answers other nodes' probes
-for its addresses so they see the conflict). On a switch with MLD snooping the stack's MLDv2
+link-local address, otherwise `address6`. On a switch with MLD snooping the stack's MLDv2
 report keeps neighbor solicitations flowing.
+
+With `ipv6_slaac` the stack configures itself from router advertisements (ADR-068): it sends
+router solicitations at start and takes a global address for each advertised /64 (the prefix
+plus the modified EUI-64 identifier of its MAC), the default routers, the on-link prefixes, the
+link MTU and the hop limit, keeping each for its advertised lifetime. `address6` is then
+optional. With `ipv6_dad` every address (link-local, static, SLAAC) is probed for about a second
+before it is used, and given up if another node has it. `only::dpdk::ipv6_addresses(&device)`
+returns the addresses in use:
+
+```rust,ignore
+let mut cfg = DpdkConfig::new(Device::AfPacket("eth1".into()), "10.0.0.2".parse()?);
+cfg.ipv6_slaac = true;
+cfg.ipv6_dad = true;
+// ... once the engine runs:
+let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
+```
+
+Either way, the stack answers other nodes' duplicate address detection for its addresses.
+
+### Accurate ECN
+
+`tcp_accecn` negotiates Accurate ECN (RFC 9768) on TCP connections: every ACK carries the count
+of CE-marked packets (the 3-bit ACE field) and, in the AccECN option, the bytes received with
+each ECN codepoint, instead of RFC 3168's single ECE bit per round trip. Linux 6.18+ answers
+with `net.ipv4.tcp_ecn = 3`; peers that only know RFC 3168 ECN get that. The stack reacts to CE
+marks as RFC 3168 does (one window reduction per round trip).
 
 ## How it works
 
@@ -205,8 +236,8 @@ C/C++ runtime with its own threading model and a large amount of `unsafe` FFI on
 
 - No checksum, TSO or LRO offloads: the PMDs in reach (`net_tap`, `net_af_packet`) do them in
   software inside the driver, and the offload metadata could not be validated on hardware.
-- IPv6 without SLAAC, router advertisements, DAD, jumbograms or MLDv1; no Accurate ECN / L4S; no
-  TCP Fast Open; no path-MTU probing beyond ICMP "fragmentation needed" / packet too big.
+- IPv6 without stable privacy or temporary addresses, DHCPv6, jumbograms or MLDv1; no L4S
+  congestion control (Accurate ECN feedback is there); no TCP Fast Open; no path-MTU probing beyond ICMP "fragmentation needed" / packet too big.
 - ECN and pacing are off by default: on a simulated 20-frame bottleneck ECN turns 29 drops into
   10 marks and pacing halves the drops, but neither has been measured on a real NIC.
 - Idle timeouts are checked by a scan every 50 ms (not per iteration).

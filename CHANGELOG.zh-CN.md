@@ -10,6 +10,22 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：用户态协议栈的 IPv6 自动配置、Accurate ECN 与 AF_XDP 共享 UMEM / 巨帧（only-dpdk、only-ebpf）
+
+ADR-068（docs/adr/068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md），仅新增（默认全部关闭）：
+
+- `DpdkConfig::ipv6_slaac`：发送路由器请求，并从路由器通告中为每个 /64 前缀生成全局地址
+  （EUI-64），取得默认路由器、链路上前缀、MTU 与跳数限制，按 RFC 4862 生存期维护。即使没有
+  `address6` 也会打开 IPv6。`only_dpdk::ipv6_addresses(&Device)` 报告可用地址。
+- `DpdkConfig::ipv6_dad`：地址使用前做重复地址检测（RFC 4862 5.4，带 RFC 7527 nonce）；链路本地
+  地址重复则关闭 IPv6。
+- `DpdkConfig::tcp_accecn`：用户态 TCP 的 Accurate ECN（RFC 9768），可回退到 RFC 3168 ECN 或不用
+  ECN；与 Linux 6.18+（`net.ipv4.tcp_ecn = 3`）互通。
+- `AfXdpConfig::shared_umem`（`XDP_SHARED_UMEM`：所有队列共用一个 UMEM，`frames` 为总数）与
+  `AfXdpConfig::multi_buffer`（`XDP_USE_SG`：一帧跨多个 chunk，AF_XDP 上 `DpdkConfig::mtu` 可达
+  9000）；底层为 `only_ebpf::xsk::XskConfig::shared_umem` / `multi_buffer` 与 `XskSocket::send_frags`。
+- 多队列设备上，路由器通告与邻居发现一样复制到每个队列；新增 `#[doc(hidden)] only_dpdk::tcp_ecn_stats`。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

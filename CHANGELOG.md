@@ -10,6 +10,26 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: IPv6 autoconfiguration, Accurate ECN and AF_XDP shared UMEM / jumbo frames in the userspace stack (only-dpdk, only-ebpf)
+
+ADR-068 (docs/adr/068-userspace-stack-slaac-accecn-af-xdp-multibuffer.md), additive (all off by
+default):
+
+- `DpdkConfig::ipv6_slaac`: router solicitations, and from router advertisements a global address
+  per /64 prefix (EUI-64), default routers, on-link prefixes, the MTU and the hop limit, with
+  RFC 4862 lifetimes. Turns IPv6 on without `address6`. `only_dpdk::ipv6_addresses(&Device)`
+  reports the usable addresses.
+- `DpdkConfig::ipv6_dad`: duplicate address detection (RFC 4862 5.4, RFC 7527 nonce) before an
+  address is used; a duplicate link-local address turns IPv6 off.
+- `DpdkConfig::tcp_accecn`: Accurate ECN (RFC 9768) in the userspace TCP, falling back to RFC 3168
+  ECN or none; interoperates with Linux 6.18+ (`net.ipv4.tcp_ecn = 3`).
+- `AfXdpConfig::shared_umem` (`XDP_SHARED_UMEM`: one UMEM for all queues, `frames` in total) and
+  `AfXdpConfig::multi_buffer` (`XDP_USE_SG`: frames over several chunks, so `DpdkConfig::mtu` up
+  to 9000 over AF_XDP); `only_ebpf::xsk::XskConfig::shared_umem` / `multi_buffer` and
+  `XskSocket::send_frags` underneath.
+- Router advertisements are copied to every queue of a multi-queue device, like neighbor
+  discovery; `#[doc(hidden)] only_dpdk::tcp_ecn_stats`.
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):
