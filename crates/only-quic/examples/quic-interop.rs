@@ -1,9 +1,14 @@
 //! Raw QUIC interop peer for tools/interop/quic (quic-go): an echo of streams and datagrams,
-//! ALPN `echo`.
+//! ALPN `echo`; and HTTP/0.9 over QUIC (`hq-interop`, the raw-stream protocol of the QUIC
+//! interop runner) for quiche (tools/interop/quic/quiche.sh).
 //!
 //! ```text
 //! quic-interop server 127.0.0.1:9501 [retry] [ku N]   echoes every stream and datagram
+//! quic-interop server 127.0.0.1:9501 hq [retry]       HTTP/0.9: `GET /N` answers N bytes of
+//!                                                     'W', any other path "hello hq\n"
 //! quic-interop client 127.0.0.1:9500 [bulk MB] [ku N] checks a quic-go echo server
+//! quic-interop client 127.0.0.1:9500 hq SIZE          HTTP/0.9 client: 20 concurrent GETs of
+//!                                                     /index.html, then /SIZE (SIZE bytes of 'W')
 //! ```
 //!
 //! `retry` validates every client address with a Retry first; `ku N` starts a 1-RTT key update
@@ -40,6 +45,38 @@ fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+/// HTTP/0.9 over QUIC (`hq-interop`): a request is `GET /path` and the stream's FIN; the
+/// response is the body and FIN.
+#[derive(Default)]
+struct Hq {
+    reqs: HashMap<StreamId, Vec<u8>>,
+}
+impl QuicHandler for Hq {
+    fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
+        let req = self.reqs.entry(id).or_default();
+        req.extend_from_slice(&data);
+        if req.len() > 4096 {
+            let _ = c.reset(id, 0x101);
+            self.reqs.remove(&id);
+            return;
+        }
+        if !fin {
+            return;
+        }
+        let req = self.reqs.remove(&id).unwrap_or_default();
+        let line = String::from_utf8_lossy(&req);
+        let path = line
+            .strip_prefix("GET ")
+            .map_or("", |p| p.trim_end_matches(['\r', '\n']).trim());
+        let body = match path.strip_prefix('/').and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) if n <= 64 << 20 => vec![b'W'; n],
+            _ => b"hello hq\n".to_vec(),
+        };
+        let _ = c.send(id, body);
+        let _ = c.finish(id);
+    }
 }
 
 #[derive(Default)]
@@ -118,7 +155,8 @@ fn certs() -> (Vec<only::tls::Certificate>, only::tls::PrivateKey) {
 
 fn server(addr: SocketAddr, args: &[String]) {
     let (certs, key) = certs();
-    let alpn = opt(args, "alpn").unwrap_or_else(|| "echo".into());
+    let hq = has(args, "hq");
+    let alpn = opt(args, "alpn").unwrap_or_else(|| if hq { "hq-interop" } else { "echo" }.into());
     let mut cfg = only_quic::server_config(certs, key, &[alpn.as_bytes()])
         .expect("config")
         .retry(args.iter().any(|a| a == "retry"));
@@ -138,10 +176,13 @@ fn server(addr: SocketAddr, args: &[String]) {
         cfg = cfg.transport(&transport_bbr());
     }
     cfg = cfg.zero_rtt(has(args, "0rtt"));
-    let e = Engine::builder()
-        .listen(Listener::udp(addr).serve(QuicServer::new(cfg, |_c: &Connection| Echo::default())))
-        .build()
-        .expect("engine");
+    let l = Listener::udp(addr);
+    let l = if hq {
+        l.serve(QuicServer::new(cfg, |_c: &Connection| Hq::default()))
+    } else {
+        l.serve(QuicServer::new(cfg, |_c: &Connection| Echo::default()))
+    };
+    let e = Engine::builder().listen(l).build().expect("engine");
     e.start().expect("start");
     println!("ready");
     e.wait();
@@ -153,7 +194,9 @@ fn client(addr: SocketAddr, args: &[String]) {
         .build()
         .expect("engine");
     e.start().expect("start");
-    let alpn = opt(args, "alpn").unwrap_or_else(|| "echo".into());
+    let hq = opt(args, "hq");
+    let alpn = opt(args, "alpn")
+        .unwrap_or_else(|| if hq.is_some() { "hq-interop" } else { "echo" }.into());
     let mut cfg = only_quic::client_config_insecure(&[alpn.as_bytes()]).expect("config");
     if let Some(n) = opt(args, "ku") {
         cfg = cfg.key_update_interval(n.parse().expect("ku"));
@@ -251,6 +294,59 @@ fn client(addr: SocketAddr, args: &[String]) {
     if has(args, "handshake-only") {
         c.close(0, b"done");
         println!("ok: handshake in {:?}", c.version());
+        e.shutdown();
+        return;
+    }
+    if let Some(size) = hq {
+        // HTTP/0.9: 20 concurrent small GETs, then one large one.
+        let size: usize = size.parse().expect("hq SIZE");
+        let get = |path: &str| {
+            let id = c
+                .open_bi()
+                .unwrap_or_else(|| fail("no stream credit".into()));
+            c.send(id, format!("GET {path}\r\n").into_bytes())
+                .unwrap_or_else(|e| fail(format!("send: {e}")));
+            c.finish(id)
+                .unwrap_or_else(|e| fail(format!("finish: {e}")));
+            id
+        };
+        let mut small: Vec<StreamId> = (0..20).map(|_| get("/index.html")).collect();
+        let mut first = None;
+        while !small.is_empty() {
+            if let Got::Stream(id, b) = next(30) {
+                let i = small
+                    .iter()
+                    .position(|s| *s == id)
+                    .unwrap_or_else(|| fail(format!("unknown stream {id}")));
+                small.swap_remove(i);
+                if first.get_or_insert_with(|| b.clone()) != &b || b.is_empty() {
+                    fail(format!(
+                        "GET /index.html: {:?}",
+                        String::from_utf8_lossy(&b)
+                    ));
+                }
+            }
+        }
+        let start = Instant::now();
+        let id = get(&format!("/{size}"));
+        loop {
+            if let Got::Stream(sid, b) = next(120) {
+                if sid == id {
+                    if b.len() != size || b.iter().any(|&x| x != b'W') {
+                        fail(format!("GET /{size}: {} bytes", b.len()));
+                    }
+                    break;
+                }
+            }
+        }
+        let el = start.elapsed();
+        c.close(0, b"done");
+        println!(
+            "ok: hq-interop, 20 x /index.html ({:?}), /{size} in {el:?}, {:?}, {:?}",
+            String::from_utf8_lossy(first.as_deref().unwrap_or_default()).trim_end(),
+            c.version(),
+            c.stats()
+        );
         e.shutdown();
         return;
     }

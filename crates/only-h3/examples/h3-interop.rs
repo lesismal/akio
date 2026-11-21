@@ -12,6 +12,9 @@
 //!                                    configuration (tickets from one resume on the other)
 //! h3-interop client 127.0.0.1:9400   checks a quic-go server
 //! h3-interop client-fib 127.0.0.1:9402   checks a fib server (/ and /echo only)
+//! h3-interop client-quiche 127.0.0.1:9411   checks quiche-server (tools/interop/quic/quiche.sh):
+//!                                    its root holds index.html ("hello from quiche"); it
+//!                                    serves /stream-bytes/N and answers POST with 405
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -150,6 +153,12 @@ fn main() {
     let cc = only_quic::client_config_insecure(&[b"h3"]).expect("client config");
     let c = H3Client::dial(&e, addr, "localhost", cc).expect("connect");
     let t = Duration::from_secs(20);
+    if a[1] == "client-quiche" {
+        quiche(&c, t);
+        c.close();
+        println!("ok: only-h3 client -> quiche server");
+        return;
+    }
     let r = c.get("/", t).unwrap_or_else(|e| fail(e.to_string()));
     let body = String::from_utf8_lossy(&r.body).into_owned();
     let fib = a[1] == "client-fib";
@@ -242,6 +251,92 @@ fn main() {
         "ok: only-h3 client -> quic-go server (incl. WebSocket over HTTP/3, streamed upload, \
          streamed responses)"
     );
+}
+
+/// Against quiche-server (0.30): files from its root, `/stream-bytes/N` (N bytes of 'W'), 405
+/// for any other method, sent after it stops reading the request (STOP_SENDING) so that a
+/// request body still in flight is cut off; at most 100 concurrent streams.
+fn quiche(c: &H3Client, t: Duration) {
+    let r = c.get("/", t).unwrap_or_else(|e| fail(e.to_string()));
+    let body = String::from_utf8_lossy(&r.body).into_owned();
+    if r.status != 200 || body.trim_end() != "hello from quiche" {
+        fail(format!("GET /: {} {body:?}", r.status));
+    }
+    if r.headers.get("server") != Some("quiche") {
+        fail(format!("GET /: server {:?}", r.headers.get("server")));
+    }
+    let n = 4 << 20;
+    let r = c
+        .get(&format!("/stream-bytes/{n}"), t)
+        .unwrap_or_else(|e| fail(e.to_string()));
+    if r.status != 200 || r.body.len() != n || r.body.iter().any(|&b| b != b'W') {
+        fail(format!(
+            "GET /stream-bytes: {} {} bytes",
+            r.status,
+            r.body.len()
+        ));
+    }
+    let r = c.get("/missing", t).unwrap_or_else(|e| fail(e.to_string()));
+    if r.status != 404 {
+        fail(format!("GET /missing: {}", r.status));
+    }
+    // POST: quiche answers 405 and stops reading; a small body and one far larger than its
+    // stream window (1 MB by default), which it never reads.
+    for size in [100, 3 << 20] {
+        let r = c
+            .request_blocking(Method::Post, "/echo", &Headers::new(), pattern(size), t)
+            .unwrap_or_else(|e| fail(format!("POST {size} bytes: {e}")));
+        if r.status != 405 {
+            fail(format!("POST {size} bytes: {}", r.status));
+        }
+    }
+    // More requests at once than the 100 streams quiche allows.
+    parallel(c, t);
+    // A streamed response, paused and resumed.
+    let (tx, rx) = mpsc::channel();
+    let mut got = (0u16, 0usize, 0usize);
+    let slot = Arc::new(std::sync::Mutex::new(None::<Arc<only_h3::H3Upload>>));
+    let s2 = slot.clone();
+    let up = Arc::new(c.open(
+        Method::Get,
+        &format!("/stream-bytes/{n}"),
+        &Headers::new(),
+        move |ev| match ev {
+            H3Event::Head { status, .. } => got.0 = status,
+            H3Event::Data(d) => {
+                got.1 += d.len();
+                got.2 += 1;
+                if got.2 == 1 {
+                    let up = s2.lock().unwrap().clone();
+                    if let Some(up) = up {
+                        up.hold_reads(true);
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(300));
+                            up.hold_reads(false);
+                        });
+                    }
+                }
+            }
+            H3Event::End => {
+                let _ = tx.send(Ok(got));
+            }
+            H3Event::Error(e) => {
+                let _ = tx.send(Err(e));
+            }
+            _ => {}
+        },
+    ));
+    *slot.lock().unwrap() = Some(up.clone());
+    up.finish();
+    let (status, len, pieces) = rx
+        .recv_timeout(t)
+        .unwrap_or_else(|_| fail("open /stream-bytes: timeout".into()))
+        .unwrap_or_else(|e| fail(format!("open /stream-bytes: {e}")));
+    if status != 200 || len != n || pieces < 2 {
+        fail(format!(
+            "open /stream-bytes: {status} {len} bytes in {pieces}"
+        ));
+    }
 }
 
 /// What a streamed response (`H3Client::open`) brought: status, body, trailers, pieces.

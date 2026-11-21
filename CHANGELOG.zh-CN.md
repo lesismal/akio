@@ -10,6 +10,19 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：基准测试脚本加入 monoio，与 quiche 互通（工具）
+
+- `tools/bench-ref/monoio-ref`：monoio 0.2 参照服务端（每核一线程，每个线程一个运行时和一个
+  `SO_REUSEPORT` listener；TCP echo，HTTP/1.1 `/plaintext` 与 `/json`，支持流水线），由 `tools/bench`
+  以 `monoio-uring` 和 `monoio-epoll`（它的 io_uring driver 与 legacy driver）运行；`http.sh` 对没有
+  HTTP/2 的服务端跳过 h2c 用例（`has_h2`）。结果与方法见 docs/BENCHMARKS.zh-CN.md。
+- `tools/interop/quic/quiche.sh`：quiche 0.30.1（在 Docker 中按发布标签构建）与 `only-h3` / `only-quic`
+  双向互通：quiche-client 对 HTTP/3 服务端（版本协商、单连接 50 个请求、300 KB POST、流式响应、
+  0-RTT、客户端迁移），并以 HTTP/0.9（`hq-interop`）对 `only-quic`；`H3Client` 与 only-quic 客户端对
+  quiche-server，有无 Retry 各一遍（3 MiB 上传时对方 STOP_SENDING 后回 405、超过其 100 流上限的并发
+  请求、暂停后恢复的流式响应）。`quic-interop` 示例新增 `hq` 模式（服务端与客户端），`h3-interop`
+  新增 `client-quiche` 模式。双方均未发现缺陷。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

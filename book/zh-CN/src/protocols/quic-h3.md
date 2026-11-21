@@ -7,7 +7,10 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 `tools/interop/quic/run.sh`），HTTP/3
 则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）；ngtcp2 与 OpenSSL 3.5
 的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`），兼容版本协商则
-与 ngtcp2 自己的客户端和服务端双向验证（`tools/interop/quic/ngtcp2-cvn.sh`）。
+与 ngtcp2 自己的客户端和服务端双向验证（`tools/interop/quic/ngtcp2-cvn.sh`）。quiche（0.30.1）在 Docker
+中双向验证：quiche-client 对我方 HTTP/3 服务端（版本协商、单连接多请求、上传、0-RTT、迁移），并以 HTTP/0.9
+（`hq-interop`）在原生 QUIC 流上对 `only-quic`；`H3Client` 与 `only-quic` 客户端对 quiche-server，有无 Retry
+各一遍（`tools/interop/quic/quiche.sh`）。
 
 ## QUIC
 
