@@ -243,7 +243,10 @@ impl Rtc {
             return false;
         }
         self.dtls_connected = true;
-        self.events.push_back(RtcEvent::Connected);
+        // With several transports (no BUNDLE), once the last one is connected.
+        if self.tp_others_connected() {
+            self.events.push_back(RtcEvent::Connected);
+        }
         self.next_rtcp = Some(now + Duration::from_millis(200));
         self.start_sctp(now);
         self.open_pending_channels(now);

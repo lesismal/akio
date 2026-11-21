@@ -2,6 +2,7 @@
 //! ordered attribute lists. The WebRTC meaning (JSEP, RFC 8829) is in `rtc.rs`.
 
 use std::fmt::Write as _;
+use std::net::IpAddr;
 
 /// Inputs bigger than this are refused (an SDP is a few KiB).
 const MAX_SDP: usize = 256 * 1024;
@@ -69,6 +70,30 @@ pub(crate) struct Sdp {
     pub(crate) version: u64,
     pub(crate) attrs: Vec<Attr>,
     pub(crate) media: Vec<Media>,
+    /// The session's `c=` address, if any (unicast `IN IP4` / `IN IP6`).
+    pub(crate) conn: Option<IpAddr>,
+    /// Each media section's own `c=` address, by index (missing or `None`: none; written
+    /// as `0.0.0.0`).
+    pub(crate) media_conn: Vec<Option<IpAddr>>,
+}
+
+/// The address of a `c=` value: `IN IP4 <addr>` or `IN IP6 <addr>` (a TTL or count after a
+/// `/` is dropped; FQDNs and the unspecified address, which JSEP writes, are not taken).
+fn conn_addr(v: &str) -> Option<IpAddr> {
+    let mut f = v.split_ascii_whitespace();
+    if f.next()? != "IN" {
+        return None;
+    }
+    let fam = f.next()?;
+    let a = f.next()?.split('/').next()?;
+    let ip: IpAddr = a.parse().ok()?;
+    if ip.is_unspecified() {
+        return None;
+    }
+    match (fam, ip) {
+        ("IP4", IpAddr::V4(_)) | ("IP6", IpAddr::V6(_)) => Some(ip),
+        _ => None,
+    }
 }
 
 impl Sdp {
@@ -125,6 +150,14 @@ impl Sdp {
                         fmts,
                         attrs: Vec::new(),
                     });
+                    sdp.media_conn.push(None);
+                }
+                "c" => {
+                    let a = conn_addr(v);
+                    match sdp.media_conn.last_mut() {
+                        Some(c) => *c = a,
+                        None => sdp.conn = a,
+                    }
                 }
                 "a" => {
                     let attr = match v.split_once(':') {
@@ -168,20 +201,32 @@ impl Sdp {
     /// The SDP text (CRLF line ends).
     pub(crate) fn write(&self) -> String {
         let mut s = String::with_capacity(2048);
+        let ip4 = |a: Option<IpAddr>| match a {
+            Some(IpAddr::V6(v)) => format!("IN IP6 {v}"),
+            Some(IpAddr::V4(v)) => format!("IN IP4 {v}"),
+            None => "IN IP4 0.0.0.0".to_owned(),
+        };
         let _ = write!(
             s,
-            "v=0\r\no=- {} {} IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n",
-            self.session_id, self.version
+            "v=0\r\no=- {} {} {}\r\ns=-\r\n",
+            self.session_id,
+            self.version,
+            ip4(self.conn)
         );
+        if self.conn.is_some() {
+            let _ = write!(s, "c={}\r\n", ip4(self.conn));
+        }
+        s.push_str("t=0 0\r\n");
         for a in &self.attrs {
             write_attr(&mut s, a);
         }
-        for m in &self.media {
+        for (i, m) in self.media.iter().enumerate() {
             let _ = write!(s, "m={} {} {}", m.kind, m.port, m.proto);
             for f in &m.fmts {
                 let _ = write!(s, " {f}");
             }
-            s.push_str("\r\nc=IN IP4 0.0.0.0\r\n");
+            let c = self.media_conn.get(i).copied().flatten();
+            let _ = write!(s, "\r\nc={}\r\n", ip4(c));
             for a in &m.attrs {
                 write_attr(&mut s, a);
             }
@@ -225,5 +270,26 @@ mod tests {
         assert!(Sdp::parse("x").is_err());
         assert!(Sdp::parse("a=b\r\nv=0").is_err());
         assert!(Sdp::parse("v=0\r\nm=audio\r\n").is_err());
+    }
+
+    #[test]
+    fn connection_lines() {
+        let text = "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1/127\r\n\
+            t=0 0\r\nm=audio 4000 RTP/SAVP 0\r\nm=video 4002 RTP/SAVP 96\r\n\
+            c=IN IP6 2001:db8::1\r\nm=audio 4004 RTP/SAVP 0\r\nc=IN IP4 host.example\r\n";
+        let sdp = Sdp::parse(text).unwrap();
+        assert_eq!(sdp.conn, Some("192.0.2.1".parse().unwrap()));
+        assert_eq!(
+            sdp.media_conn,
+            vec![None, Some("2001:db8::1".parse().unwrap()), None]
+        );
+        let again = Sdp::parse(&sdp.write()).unwrap();
+        assert_eq!((again.conn, again.media_conn), (sdp.conn, sdp.media_conn));
+        assert_eq!(conn_addr("IN IP4 ::1"), None);
+        assert_eq!(conn_addr("IN IP6 10.0.0.1"), None);
+        assert_eq!(conn_addr("ATM NSAP x"), None);
+        // Without addresses the lines are what they always were.
+        let plain = Sdp::default().write();
+        assert!(plain.contains("o=- 0 0 IN IP4 0.0.0.0\r\n") && !plain.contains("c="));
     }
 }

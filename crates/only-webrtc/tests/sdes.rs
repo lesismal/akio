@@ -214,18 +214,19 @@ fn sdes_refusals_and_dtls_unchanged() {
         dtls.accept_offer(&offer, Echo),
         Err(Error::Sdp(_))
     ));
-    // An SDES offer whose lines are all unusable (MKIs).
-    let mki: String = offer
+    // An SDES offer whose lines are all unusable (a session parameter changing the
+    // transform).
+    let kdr: String = offer
         .lines()
         .map(|l| {
             if l.starts_with("a=crypto:") {
-                format!("{l}|2^31|1:4\r\n")
+                format!("{l} KDR=1\r\n")
             } else {
                 format!("{l}\r\n")
             }
         })
         .collect();
-    assert!(matches!(sdes.accept_offer(&mki, Echo), Err(Error::Sdp(_))));
+    assert!(matches!(sdes.accept_offer(&kdr, Echo), Err(Error::Sdp(_))));
     // A DTLS-SRTP offer (a browser's) to an SDES endpoint: answered with DTLS-SRTP, no
     // a=crypto, and the session works with data channels.
     let (tx, rx) = channel();

@@ -422,6 +422,23 @@ impl Peer {
         }
     }
 
+    /// [`add_remote_candidate`](Self::add_remote_candidate) for the media section `mid`
+    /// (`sdpMid`): in a session without BUNDLE each section has its own ICE agent, and the
+    /// candidate goes to the one of `mid` (with BUNDLE, or for a mid the session does not
+    /// have, to the shared one, as `add_remote_candidate` does).
+    pub fn add_remote_candidate_in(&self, mid: Mid, candidate: &str) -> Result<(), Error> {
+        let s = candidate.trim();
+        let s = s.strip_prefix("a=").unwrap_or(s);
+        let resolving = self.0.hub.upgrade().is_some_and(|h| h.mdns.get().is_some());
+        match only_ice::Candidate::parse(s) {
+            Ok(_) => self.with_rtc_inner(|rtc| rtc.add_remote_candidate_in(mid, s).map_err(|e| Error::Sdp(e.to_string())))?,
+            Err(only_ice::ParseError::Mdns) if resolving => self.with_rtc_inner(|rtc| {
+                let _ = rtc.add_remote_candidate_in(mid, s);
+            }),
+            Err(e) => Err(Error::Sdp(e.to_string())),
+        }
+    }
+
     /// Writes one media sample (a frame: an Opus packet, a VP8 frame, H.264 access unit ...)
     /// on `mid` with payload type `pt`; it is packetized here. `rtp_time` is in the codec's clock
     /// (90 kHz video, 48 kHz Opus), `wallclock` when it was captured. Dropped before the peer
@@ -585,6 +602,15 @@ impl Peer {
                 return;
             }
             mdns_wanted = st.rtc.take_mdns();
+            // Media without ICE: datagrams from the remote's plain addresses are this peer's
+            // before it sends anything there.
+            let plain = st.rtc.take_plain_remotes();
+            if let (false, Some(hub)) = (plain.is_empty(), &hub) {
+                let mut by_addr = lock(&hub.by_addr);
+                for a in plain {
+                    by_addr.insert(a, self.0.id);
+                }
+            }
             if st.rtc.is_connected() {
                 st.connect_by = None;
             } else if st.connect_by.is_some_and(|d| d <= Instant::now()) {
@@ -1146,7 +1172,14 @@ impl Hub {
             if let Ok(m) = stun::Message::parse(data) {
                 if let Some(u) = m.get_str(stun::attr::USERNAME) {
                     let ours = u.split(':').next().unwrap_or("");
-                    id = lock(&self.by_ufrag).get(ours).copied();
+                    id = {
+                        // A transport of its own per section (no BUNDLE) has the peer's ufrag
+                        // followed by a digit.
+                        let m = lock(&self.by_ufrag);
+                        m.get(ours)
+                            .or_else(|| ours.get(..8).and_then(|b| m.get(b)))
+                            .copied()
+                    };
                     if let Some(i) = id {
                         // The ufrag is public (it is in the SDP): checks from spoofed sources
                         // must not grow the address table without bound.
