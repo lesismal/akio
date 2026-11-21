@@ -54,17 +54,22 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   their histograms (contexts with fewer than 32 literals start out as one cluster; below level
   10 a meta-block needs 4096 literals for this) and the map is kept when the estimate says it
   pays. Block splitting from level 4: literals, insert-and-copy symbols and distances get block
-  types and block switch commands. Levels 4..=9 split in one pass like Google's greedy
-  `BlockSplitter` (a block of 512 or 1024 symbols gets a new type when coding it with either of
-  the last two types would cost a threshold more bits), each literal block type coding the
-  context map's clusters with codes of its own where that pays and with codes shared by all
-  types elsewhere. Levels 10 and 11 split like Google's `block_splitter`: histograms seeded from
+  types and block switch commands. Levels 4..=9 split meta-blocks of 64 KiB or more in one pass
+  like Google's greedy `BlockSplitter` (a block of 512 or 1024 symbols gets a new type when
+  coding it with either of the last two types would cost a threshold more bits), each literal
+  block type coding the context map's clusters with codes of its own where that pays and with
+  codes shared by all types elsewhere; the types are kept only when the estimate says they save
+  at least 1% of the meta-block (block switches cost time to write: JSON and HTML stay
+  unsplit, mixed or binary data is split). Levels 10 and 11 split meta-blocks of 8 KiB or more
+  like Google's `block_splitter`: histograms seeded from
   samples, three (10) or ten (11) rounds of a cheapest-path assignment of symbols to histograms
   with a block switch cost, then the blocks clustered into at most 256 types; each literal block
   type takes its cheapest context mode, and the contexts of all literal block types (4 distance
   contexts per distance block type) are clustered into one context map with Google's
   histogram-cost clustering. At 10 and 11 the meta-block is written with one literal code, with
-  the context map and with block types, and the smallest is kept. Prefix codes are limited to
+  the context map and with block types, and the smallest is kept. Level 11's second parse pass
+  prices each literal by the histogram of the literal block type its position falls in after
+  splitting the first pass's literals, so the parse fits the blocks it is coded with. Prefix codes are limited to
   15 bits, written in the simple form when they have at most
   four symbols, with Google's run-length coding of code lengths; context maps try move-to-front
   and every run-length setting and keep the shortest. A meta-block that would come out larger
