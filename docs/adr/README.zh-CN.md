@@ -76,4 +76,5 @@
 - [ADR-072：无 BUNDLE 或无 ICE 的传输、SDES 变体、数据通道优先级与 TURN DTLS 连接 ID](072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md)（2026-11-21 采纳）
 - [ADR-073：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测](073-webrtc-pacer-fec-policy-ecn.zh-CN.md)（2026-11-21 采纳）
 - [ADR-074：only-http 压缩流式响应](074-compressed-streamed-responses.zh-CN.md)（2026-11-21 采纳）
+- [ADR-076：TURN TCP 分配（RFC 6062）](076-turn-tcp-allocations.zh-CN.md)（2026-11-22 采纳）
 - [ADR-078：IPv6 上的 mDNS：跳数限制 255、纯 IPv6 链路、与 Chrome、avahi 和 mDNSResponder 互通](078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md)（2026-11-22 采纳）

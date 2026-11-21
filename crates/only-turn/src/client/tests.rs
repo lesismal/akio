@@ -23,6 +23,9 @@ struct Env {
     to_peer: Vec<(SocketAddr, Vec<u8>)>,
     relays: u16,
     pad: bool,
+    /// TCP allocations: connections asked for (peer, id), connections bound.
+    dials: Vec<(SocketAddr, u32)>,
+    bound: Vec<u32>,
 }
 
 impl TurnEnv for Env {
@@ -39,6 +42,16 @@ impl TurnEnv for Env {
     fn close_relay(&mut self, _relay: SocketAddr) {}
     fn pads_channel_data(&self, _client: SocketAddr) -> bool {
         self.pad
+    }
+    fn open_tcp_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        self.relays += 1;
+        Ok(SocketAddr::new(addr.ip(), 50000 + self.relays))
+    }
+    fn connect_peer(&mut self, _client: SocketAddr, _relay: SocketAddr, peer: SocketAddr, id: u32) {
+        self.dials.push((peer, id));
+    }
+    fn connection_bound(&mut self, _data_client: SocketAddr, id: u32) {
+        self.bound.push(id);
     }
 }
 
@@ -386,4 +399,139 @@ fn lossy_link() {
     assert_eq!(n.client.pending_bytes(), 0);
     let ip: IpAddr = "203.0.113.9".parse().unwrap();
     assert!(n.env.to_peer.iter().any(|(p, d)| p.ip() == ip && d == b"x"));
+}
+
+/// Binds connection `id` from a new client connection at `data` against the core; the
+/// response is delivered one byte at a time, followed by the peer's first bytes.
+fn bind(n: &mut Net, data: SocketAddr, id: u32) -> DataConnection {
+    let mut d = n.client.data_connection(n.now, id).unwrap();
+    assert_eq!(d.id(), id);
+    for _ in 0..4 {
+        let Some(m) = d.poll_transmit() else { break };
+        n.core.handle_client(n.now, data, &m, &mut n.env);
+        let mut out = std::mem::take(&mut n.env.to_client).concat();
+        out.extend_from_slice(b"PEER");
+        let mut i = 0;
+        while i < out.len() && *d.state() == DataState::Binding {
+            i += d.handle_input(&out[i..=i]);
+        }
+        if *d.state() == DataState::Bound {
+            assert_eq!(&out[i..], b"PEER");
+        }
+    }
+    d
+}
+
+#[test]
+fn tcp_allocation_connect_and_attempts() {
+    let mut n = Net::new(
+        server_cfg().allow_private_peers(true),
+        client_cfg().tcp_allocation(true),
+    );
+    assert!(n.client.config().stream);
+    let relayed = allocated(&mut n);
+    // No UDP data on a TCP allocation.
+    assert!(!n.client.send_to(n.now, a(PEER), b"x"));
+    // Connect: the event follows the server's answer.
+    assert!(n.client.connect(n.now, a(PEER)));
+    assert!(
+        !n.client.connect(n.now, a(PEER)),
+        "one Connect per peer at a time"
+    );
+    n.pump();
+    let (peer, id) = n.env.dials[0];
+    assert_eq!(peer, a(PEER));
+    assert!(n.events().is_empty());
+    assert!(n.core.tcp_connected(n.now, a(CLIENT), id, true, &mut n.env));
+    n.pump();
+    assert_eq!(n.events(), vec![ClientEvent::Connected { peer, id }]);
+    let d = bind(&mut n, a("198.51.100.7:40001"), id);
+    assert_eq!(*d.state(), DataState::Bound);
+    assert_eq!(d.poll_timeout(), None);
+    assert_eq!(n.env.bound, vec![id]);
+    // A failed one.
+    let other = a("203.0.113.10:80");
+    assert!(n.client.connect(n.now, other));
+    n.pump();
+    let id2 = n.env.dials[1].1;
+    assert!(
+        !n.core
+            .tcp_connected(n.now, a(CLIENT), id2, false, &mut n.env)
+    );
+    n.pump();
+    assert!(matches!(
+        n.events()[..],
+        [ClientEvent::ConnectFailed(p, ClientError::Rejected(447, _))] if p == other
+    ));
+    // A peer connecting: needs the permission, which stays installed while unused.
+    let p3 = a("203.0.113.11:5000");
+    assert_eq!(
+        n.core
+            .tcp_incoming(n.now, relayed_local(relayed), p3, &mut n.env),
+        None
+    );
+    assert!(n.client.create_permission(n.now, p3));
+    n.pump();
+    n.advance(Duration::from_secs(900));
+    assert_eq!(n.client.state(), ClientState::Allocated);
+    let id3 = n
+        .core
+        .tcp_incoming(n.now, relayed_local(relayed), p3, &mut n.env)
+        .unwrap();
+    n.pump();
+    assert_eq!(
+        n.events(),
+        vec![ClientEvent::ConnectionAttempt { peer: p3, id: id3 }]
+    );
+    // A binding the server refuses (bound already): failed, not retried.
+    let d = bind(&mut n, a("198.51.100.7:40002"), id);
+    assert!(matches!(
+        d.state(),
+        DataState::Failed(ClientError::Rejected(400, _))
+    ));
+    // A stale nonce is renewed once (the data connection's own).
+    n.advance(Duration::from_secs(10));
+    let p4 = a("203.0.113.11:5001");
+    let id4 = n
+        .core
+        .tcp_incoming(n.now, relayed_local(relayed), p4, &mut n.env)
+        .unwrap();
+    n.now += Duration::from_secs(700); // past the nonce lifetime, not the bind deadline...
+    let mut d = n.client.data_connection(n.now, id4).unwrap();
+    let m = d.poll_transmit().unwrap();
+    n.core
+        .handle_client(n.now, a("198.51.100.7:40003"), &m, &mut n.env);
+    let out = std::mem::take(&mut n.env.to_client).concat();
+    assert_eq!(d.handle_input(&out), out.len());
+    assert_eq!(
+        *d.state(),
+        DataState::Binding,
+        "retrying with the new nonce"
+    );
+    assert!(d.poll_transmit().is_some());
+    // Garbage instead of STUN fails it; so does the deadline.
+    let mut d = n.client.data_connection(n.now, id4).unwrap();
+    assert!(d.handle_input(b"\x80junk") > 0);
+    assert!(matches!(
+        d.state(),
+        DataState::Failed(ClientError::Protocol(_))
+    ));
+    let mut d = n.client.data_connection(n.now, id4).unwrap();
+    let t = d.poll_timeout().unwrap();
+    d.handle_timeout(t);
+    assert_eq!(*d.state(), DataState::Failed(ClientError::Timeout));
+}
+
+/// The relay's own address: the core keys TCP relays by the listener's bound address, which
+/// the test environment makes equal to the relayed one.
+fn relayed_local(relayed: SocketAddr) -> SocketAddr {
+    relayed
+}
+
+#[test]
+fn udp_clients_cannot_connect() {
+    let mut n = Net::new(server_cfg(), client_cfg());
+    allocated(&mut n);
+    assert!(!n.client.connect(n.now, a(PEER)));
+    assert!(n.client.data_connection(n.now, 1).is_some());
 }

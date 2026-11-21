@@ -56,6 +56,28 @@ ADR-078（docs/adr/078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md），只有新增�
   Chrome 157 与唯一主机候选为被隐藏 IPv6 地址的端点互通。`webrtc-interop` 新增 `mdns-conceal` 与
   `mdns-resolve` 模式。
 
+### 新增：TURN TCP 分配，RFC 6062（only-turn）
+
+ADR-076（docs/adr/076-turn-tcp-allocations.zh-CN.md）：
+
+- 服务器：TCP 与 TLS 客户端可以请求 `REQUESTED-TRANSPORT` TCP。中继地址是一个监听中的 TCP socket（每个服务器
+  一个接受线程轮询全部监听 socket，把连接交给引擎）；Connect 从中继地址向对端打开连接（446、447）；持有权限的
+  对端连入时以 ConnectionAttempt 通告；在新的客户端连接上发送 ConnectionBind（同一凭据，接受控制连接的
+  nonce）后，它变成通向对端的原始管道。已绑定的连接绕过分配分片；背压双向联动（`hold_reads` / `on_drain`），
+  绑定前对端的字节最多保留到同一水位。未绑定的连接 30 秒后关闭；关闭任一侧即关闭另一侧；分配结束时全部关闭。
+- `TurnConfig::{tcp_relays（true）, max_tcp_connections（64）, tcp_relay_buffer（64 KiB）}`、
+  `TurnStats::tcp_connections`；`TurnEnv` 新增用于 TCP 中继与连接的带默认实现的方法，`TurnCore` 新增
+  `tcp_connected`、`tcp_incoming`、`tcp_closed`。
+- 客户端：`ClientConfig::tcp_allocation`、`Client::{connect, create_permission, data_connection}`、
+  `ClientEvent::{Connected, ConnectFailed, ConnectionAttempt}`、`client::{DataConnection, DataState}`
+  （sans-io 的 ConnectionBind，交回对端的首批字节）。
+- STUN：`Method::{CONNECT, CONNECTION_BIND, CONNECTION_ATTEMPT}`、`attr::CONNECTION_ID`。
+- 变更：经 UDP 或 DTLS 的 TCP Allocate 现在回 400（RFC 6062 第 5.1 节）而不是 442；UDP 与 TCP 之外的传输仍回 442。
+- fuzz 目标 `turn_tcp`；`tools/interop/webrtc/turn-tcp.sh`：coturn 的 `turnutils_uclient -T` 对 only-turn，
+  only_turn 客户端对 coturn、pion/turn 与 only-turn，pion/turn 的 TCP 分配客户端对 only-turn 与 coturn，经 TCP
+  与 TLS。
+- UDP 中继路径不变：gpu51 上与 main 同轮 A/B，`turn-relay-bench 8 6 4`（8 对，双向 100 字节数据报），quiet.sh 下交替 6 轮：平均总量 30.86 万 vs 26.80 万数据报/秒（1.15 倍；各轮波动约 ±20%，应理解为无回退而非提升）。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：

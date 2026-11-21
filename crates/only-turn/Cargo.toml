@@ -22,6 +22,8 @@ only-crypto = { workspace = true }
 # TURN over DTLS (RFC 7350): `TurnServer::dtls`.
 only-dtls = { workspace = true }
 only-x509 = { workspace = true }
+# TCP relays (RFC 6062): the relayed addresses' listeners and the poller accepting on them.
+only-sys = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }

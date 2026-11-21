@@ -829,6 +829,7 @@ dependencies = [
  "only-core",
  "only-crypto",
  "only-dtls",
+ "only-sys",
  "only-x509",
 ]
 

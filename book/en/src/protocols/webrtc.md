@@ -545,7 +545,7 @@ is bound before any lock is taken. The quotas stay server-wide.
 
 `turn.stream()` is the acceptor for TCP listeners, and wrapped in `only::tls::Tls` for TLS ones
 (`turns:`, usually port 5349 or 443): the same allocations, quotas and credentials as the UDP
-listener. Relays stay UDP; TCP relays (RFC 6062) are not offered (`442`).
+listener. Relays are UDP, or TCP when the client asks for a TCP allocation (next section).
 
 ```rust,ignore
 let engine = Arc::new(
@@ -565,6 +565,44 @@ turn.set_engine(&engine);
 
 An allocation made over a connection ends with it. STUN and ChannelData are framed on the stream
 by their own lengths (`only_turn::framing::FrameReader`), ChannelData padded to four bytes.
+
+### TCP allocations (RFC 6062)
+
+A TCP or TLS client may ask for `REQUESTED-TRANSPORT` TCP: its relayed address is then a
+listening TCP socket, and it relays TCP connections instead of datagrams. Browsers never ask for
+this; SIP and XMPP clients and applications tunnelling a TCP protocol through TURN do, and coturn
+and pion/turn offer it too.
+
+- **Connect**: the client names a peer; the server connects to it *from the relayed address*
+  and answers with a `CONNECTION-ID` (or 447 when the peer cannot be reached, 446 when a
+  connection with that peer address exists). The peer policy applies (403); no permission is
+  needed.
+- **Peers connecting** to the relayed address need a permission for their IP (CreatePermission,
+  as for UDP); without one the connection is closed at once, with one the client gets a
+  ConnectionAttempt indication with a `CONNECTION-ID`.
+- **ConnectionBind**: the client opens a *new* connection to the server and binds it to the id
+  (same credentials; the nonce of the control connection is accepted). From its success on,
+  that connection and the peer's carry raw bytes both ways; closing either closes the other,
+  and the allocation going (its control connection closing, a deletion, expiry) closes all of
+  them. A connection nobody binds is closed after 30 s.
+
+The server keeps the bytes of a bound connection off its allocation shards: each side writes
+straight into the other, and when one side has more than `tcp_relay_buffer` queued, reading the
+other pauses until it drains (`hold_reads` / `on_drain`), so a slow reader slows the peer down
+instead of growing memory. Before the bind, a peer's bytes are held up to the same mark, then
+reading it pauses. One thread per server polls the relayed addresses' listeners and hands
+accepted connections to the engine; no I/O thread waits on `accept`.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `tcp_relays` | true | offer TCP allocations (false: 442) |
+| `max_tcp_connections` | 64 | connections of one TCP allocation (Connect beyond: 508; peers beyond: closed) |
+| `tcp_relay_buffer` | 64 KiB | held per direction: a peer's bytes before the bind, the queue at which the other side pauses |
+
+The engine's `Config::connect_timeout` (10 s by default) bounds a Connect; RFC 6062 asks for at
+least 30 s, so raise it on the engine serving TURN if that matters. Right after a connection to
+a peer closes, a new Connect to the same peer address may fail (447) while the old 4-tuple sits
+in TIME_WAIT; RFC 6062 has clients wait 10 s before retrying anyway.
 
 ### TURN over DTLS
 
@@ -595,6 +633,35 @@ retransmits over UDP. The caller moves bytes: `poll_transmit` to the server, `ha
 with what comes back (it returns relayed data as `(peer, payload)`), `handle_timeout` at
 `poll_timeout`. Bounds: 64 peers, 64 KiB waiting for bindings. `Endpoint::gather_relay` drives
 one over UDP.
+
+For a TCP allocation, `ClientConfig::tcp_allocation(true)` (over TCP or TLS). `connect(peer)`
+sends a Connect and is answered by `ClientEvent::Connected { peer, id }` or `ConnectFailed`;
+`create_permission(peer)` installs a permission that stays refreshed, after which peers that
+connect show up as `ClientEvent::ConnectionAttempt { peer, id }`. To use a connection, open a new
+connection to the server and drive a `DataConnection` from `client.data_connection(now, id)` on
+it: send what `poll_transmit` gives (the ConnectionBind), feed what is read to `handle_input`,
+which returns how many bytes it took; once `state()` is `DataState::Bound`, the rest of that
+read and everything after it are the peer's bytes, and what you write goes to the peer.
+
+```rust,ignore
+let mut ctl = Client::new(ClientConfig::new(server, "alice", "secret").tcp_allocation(true), now);
+// ... drive ctl over a TCP connection until ClientEvent::Allocated ...
+ctl.connect(now, peer);
+// ... ClientEvent::Connected { id, .. } ...
+let mut data_conn = TcpStream::connect(server)?;
+let mut bind = ctl.data_connection(now, id).unwrap();
+while let Some(m) = bind.poll_transmit() {
+    data_conn.write_all(&m)?;
+}
+let n = data_conn.read(&mut buf)?;
+let used = bind.handle_input(&buf[..n]);
+if *bind.state() == DataState::Bound {
+    peer_bytes(&buf[used..n]); // and data_conn is now a pipe to the peer
+}
+```
+
+`tools/interop/webrtc/turn-tcp.sh` checks it against coturn (`turnutils_uclient -T`, its server)
+and pion/turn (its TCP allocation client and server), over TCP and TLS.
 
 ## The DTLS layer: DTLS 1.3 with a DTLS 1.2 fallback
 
@@ -638,7 +705,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); sending ECN-capable packets; SRTP MKIs with DTLS-SRTP; latching plain
+Sending ECN-capable packets; SRTP MKIs with DTLS-SRTP; latching plain
 (no-ICE) media onto the address it really comes from; transport-wide congestion control across
 the transports of a session without BUNDLE. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045,
-ADR-048, ADR-054, ADR-058, ADR-072 and ADR-073 have the details of what was added.
+ADR-048, ADR-054, ADR-058, ADR-072, ADR-073 and ADR-076 have the details of what was added.

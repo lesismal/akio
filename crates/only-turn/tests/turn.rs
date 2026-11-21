@@ -232,8 +232,14 @@ fn wrong_password_and_unsupported_transport() {
     assert!(turn.stats().auth_failures >= 2);
 
     let mut c = Client::new(addr, "wonderland");
+    // TCP allocations are for TCP and TLS clients only (RFC 6062 section 5.1).
     let resp = c.request(Method::ALLOCATE, |b| {
         b.u32(attr::REQUESTED_TRANSPORT, 6 << 24)
+    });
+    assert_eq!(Message::parse(&resp).unwrap().error_code().unwrap().0, 400);
+    // Neither UDP nor TCP (SCTP).
+    let resp = c.request(Method::ALLOCATE, |b| {
+        b.u32(attr::REQUESTED_TRANSPORT, 132 << 24)
     });
     assert_eq!(Message::parse(&resp).unwrap().error_code().unwrap().0, 442);
     let resp = c.request(Method::REFRESH, |b| b);

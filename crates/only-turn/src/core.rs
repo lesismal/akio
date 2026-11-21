@@ -2,12 +2,20 @@
 //! and the time, and acts through a [`TurnEnv`] (send to a client, send to a peer, open or close
 //! a relay socket). [`TurnServer`](crate::TurnServer) drives it over `only` sockets; tests and
 //! fuzzers drive it directly.
+//!
+//! TCP allocations (RFC 6062) are decided here too: the Allocate, Connect and ConnectionBind
+//! requests, permissions for connections from peers, ConnectionAttempt indications, the
+//! deadlines of connections waiting for a ConnectionBind. The connections themselves belong to
+//! the [`TurnEnv`] ([`TurnEnv::open_tcp_relay`], [`TurnEnv::connect_peer`],
+//! [`TurnEnv::accept_peer`], [`TurnEnv::close_connection`]), which reports back with
+//! [`TurnCore::tcp_connected`], [`TurnCore::tcp_incoming`] and [`TurnCore::tcp_closed`]; the
+//! bytes of a bound connection never pass through the state machine.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -34,10 +42,55 @@ pub trait TurnEnv {
         let _ = relay;
     }
     /// Whether ChannelData to `client` must be padded to a multiple of four bytes: a client on a
-    /// TCP or TLS stream (RFC 8656 section 12.5). Default: no (UDP).
+    /// TCP or TLS stream (RFC 8656 section 12.5). Default: no (UDP). This is also how the core
+    /// tells a stream client: only those may ask for TCP allocations or bind connections.
     fn pads_channel_data(&self, client: SocketAddr) -> bool {
         let _ = client;
         false
+    }
+
+    /// TCP allocations (RFC 6062): opens a listening TCP socket for `client` bound on `addr`
+    /// (port 0: any free port), the relayed transport address, returning its bound address.
+    /// Connections it accepts go to [`TurnCore::tcp_incoming`]; connections to peers
+    /// ([`connect_peer`](Self::connect_peer)) leave from the same address. Default:
+    /// [`io::ErrorKind::Unsupported`], and TCP allocations are refused with 442.
+    fn open_tcp_relay(&mut self, client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        let _ = (client, addr);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Closes the TCP listener bound at `relay` (its connections are closed one by one with
+    /// [`close_connection`](Self::close_connection) first).
+    fn close_tcp_relay(&mut self, relay: SocketAddr) {
+        let _ = relay;
+    }
+
+    /// A Connect request of `client`: open a TCP connection from `relay` to `peer`, connection
+    /// `id`, and report the outcome with [`TurnCore::tcp_connected`] (not from inside this
+    /// call). The data the peer sends before the connection is bound is held (bounded).
+    fn connect_peer(&mut self, client: SocketAddr, relay: SocketAddr, peer: SocketAddr, id: u32) {
+        let _ = (client, relay, peer, id);
+    }
+
+    /// The connection from `peer` accepted on `relay` (being handled by
+    /// [`TurnCore::tcp_incoming`]) is connection `id` of `client`'s allocation. Called before
+    /// the client hears of it in a ConnectionAttempt, so a ConnectionBind cannot outrun it.
+    fn accept_peer(&mut self, client: SocketAddr, relay: SocketAddr, peer: SocketAddr, id: u32) {
+        let _ = (client, relay, peer, id);
+    }
+
+    /// The stream client at `data_client` bound connection `id` with a ConnectionBind (the
+    /// success response was just sent to it): from now on its bytes and the peer's are relayed
+    /// as they are. Called only when the request reached [`TurnCore::handle_client`].
+    fn connection_bound(&mut self, data_client: SocketAddr, id: u32) {
+        let _ = (data_client, id);
+    }
+
+    /// Closes connection `id`: the peer's connection and the client's data connection, if
+    /// bound. Called when its allocation goes, when it waited too long for a ConnectionBind,
+    /// and from [`TurnCore::tcp_closed`]; may be called for a connection already closed.
+    fn close_connection(&mut self, id: u32) {
+        let _ = id;
     }
 }
 
@@ -92,6 +145,17 @@ pub struct TurnConfig {
     /// that connection has more than this many bytes queued (256 KiB): relayed traffic keeps
     /// its datagram semantics instead of piling up behind a slow reader.
     pub max_stream_queue: usize,
+    /// Offers TCP allocations (RFC 6062) to TCP and TLS clients (true): `REQUESTED-TRANSPORT`
+    /// TCP gets a TCP relayed address; when false it is refused with 442. Peers are checked
+    /// against the same policy as UDP ones.
+    pub tcp_relays: bool,
+    /// Connections of one TCP allocation, connecting, waiting for a ConnectionBind or bound
+    /// (64): Connect beyond is refused with 508, peers' connections beyond are closed.
+    pub max_tcp_connections: usize,
+    /// Bytes a TCP relay holds per direction (64 KiB): a peer's data waiting for the client's
+    /// ConnectionBind (reading the peer pauses at this mark, which closes its TCP window), and
+    /// the send queue of one side at which reading the other side pauses until it drains.
+    pub tcp_relay_buffer: usize,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -128,6 +192,9 @@ impl TurnConfig {
             allow_private_peers: false,
             stream_allocate_timeout: Duration::from_secs(30),
             max_stream_queue: 256 * 1024,
+            tcp_relays: true,
+            max_tcp_connections: 64,
+            tcp_relay_buffer: 64 * 1024,
         }
     }
 
@@ -149,6 +216,13 @@ impl TurnConfig {
     #[must_use]
     pub fn peer_allowed(mut self, f: impl Fn(SocketAddr) -> bool + Send + Sync + 'static) -> Self {
         self.peer_allowed = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets [`tcp_relays`](Self::tcp_relays).
+    #[must_use]
+    pub fn tcp_relays(mut self, yes: bool) -> Self {
+        self.tcp_relays = yes;
         self
     }
 
@@ -209,7 +283,39 @@ struct Allocation {
     perms: HashMap<IpAddr, Instant>,
     chans: HashMap<u16, (SocketAddr, Instant)>,
     chan_of: HashMap<SocketAddr, u16>,
+    /// A TCP allocation (RFC 6062): its connections. `relay` is then its listener.
+    tcp: Option<Box<TcpAlloc>>,
 }
+
+/// The connections of a TCP allocation.
+#[derive(Default)]
+struct TcpAlloc {
+    /// Connections by id.
+    conns: HashMap<u32, TcpConn>,
+    /// Connection ids by peer transport address: one connection per peer (RFC 6062 section 3).
+    by_peer: HashMap<SocketAddr, u32>,
+}
+
+struct TcpConn {
+    peer: SocketAddr,
+    state: TcpState,
+}
+
+enum TcpState {
+    /// A Connect request waiting for its outgoing connection: the request's transaction id,
+    /// whether it carried `FINGERPRINT`, and when the core gives up on the environment.
+    Connecting([u8; 12], bool, Instant),
+    /// Connected or accepted, waiting for a ConnectionBind until then.
+    Pending(Instant),
+    /// Bound to a client data connection.
+    Bound,
+}
+
+/// How long a peer connection waits for its ConnectionBind (RFC 6062 sections 5.2 and 5.3).
+pub(crate) const TCP_BIND_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a Connect waits for [`TurnCore::tcp_connected`] before the core answers 447 itself
+/// (the environment's own connect timeout normally answers first).
+const TCP_CONNECT_GUARD: Duration = Duration::from_secs(60);
 
 /// Counters a [`TurnCore`] keeps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -223,6 +329,9 @@ pub struct TurnStats {
     pub to_client: u64,
     /// Requests refused for bad or missing credentials (401/438).
     pub auth_failures: u64,
+    /// Connections of TCP allocations open now (RFC 6062: connecting, waiting for a
+    /// ConnectionBind, or bound).
+    pub tcp_connections: usize,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -243,12 +352,16 @@ pub(crate) struct Shared {
     /// Relays set aside by `EVEN-PORT` with the R bit, by `RESERVATION-TOKEN`: the token may
     /// come from another 5-tuple, which may live in another shard.
     reservations: Mutex<HashMap<[u8; 8], (SocketAddr, Instant)>>,
+    /// The next `CONNECTION-ID` (from a random start, never 0), server-wide.
+    next_conn: AtomicU32,
 }
 
 impl Shared {
     pub(crate) fn new(cfg: TurnConfig) -> Shared {
         let mut nonce_key = [0u8; 32];
         crate::fill_random(&mut nonce_key);
+        let mut start = [0u8; 4];
+        crate::fill_random(&mut start);
         Shared {
             cfg,
             nonce_key,
@@ -256,6 +369,17 @@ impl Shared {
             allocations: AtomicUsize::new(0),
             per_user: Mutex::new(HashMap::new()),
             reservations: Mutex::new(HashMap::new()),
+            next_conn: AtomicU32::new(u32::from_be_bytes(start)),
+        }
+    }
+
+    /// A new `CONNECTION-ID`: unique among the server's connections until 2^32 more were made.
+    fn connection_id(&self) -> u32 {
+        loop {
+            let id = self.next_conn.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                return id;
+            }
         }
     }
 
@@ -362,6 +486,10 @@ pub struct TurnCore {
     shared: Arc<Shared>,
     allocs: HashMap<SocketAddr, Allocation>,
     by_relay: HashMap<SocketAddr, SocketAddr>,
+    /// Clients of TCP allocations by their listener's address.
+    by_tcp_relay: HashMap<SocketAddr, SocketAddr>,
+    /// Clients of TCP allocations by connection id.
+    by_conn: HashMap<u32, SocketAddr>,
     stats: TurnStats,
 }
 
@@ -391,6 +519,8 @@ impl TurnCore {
             shared,
             allocs: HashMap::new(),
             by_relay: HashMap::new(),
+            by_tcp_relay: HashMap::new(),
+            by_conn: HashMap::new(),
             stats: TurnStats::default(),
         }
     }
@@ -404,6 +534,7 @@ impl TurnCore {
     pub fn stats(&self) -> TurnStats {
         let mut s = self.stats;
         s.allocations = self.allocs.len();
+        s.tcp_connections = self.by_conn.len();
         s
     }
 
@@ -471,7 +602,7 @@ impl TurnCore {
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
-        if a.expires <= now {
+        if a.expires <= now || a.tcp.is_some() {
             return;
         }
         let Some(&(peer, exp)) = a.chans.get(&ch) else {
@@ -500,7 +631,8 @@ impl TurnCore {
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
-        if a.expires <= now || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
+        if a.expires <= now || a.tcp.is_some() || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now)
+        {
             return;
         }
         if !self.peer_ok(peer) {
@@ -596,6 +728,7 @@ impl TurnCore {
         for c in dead {
             self.remove(c, env);
         }
+        self.tcp_timeouts(now, env);
         for a in self.allocs.values_mut() {
             a.perms.retain(|_, e| *e > now);
             let gone: Vec<u16> = a
@@ -636,9 +769,22 @@ impl TurnCore {
 
     fn remove(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {
         if let Some(a) = self.allocs.remove(&client) {
-            self.by_relay.remove(&a.relay);
             self.shared.release(&a.user);
-            env.close_relay(a.relay);
+            match a.tcp {
+                Some(tcp) => {
+                    // RFC 6062 section 5.5: the data connections go with the allocation.
+                    for id in tcp.conns.keys() {
+                        self.by_conn.remove(id);
+                        env.close_connection(*id);
+                    }
+                    self.by_tcp_relay.remove(&a.relay);
+                    env.close_tcp_relay(a.relay);
+                }
+                None => {
+                    self.by_relay.remove(&a.relay);
+                    env.close_relay(a.relay);
+                }
+            }
         }
     }
 
@@ -699,9 +845,25 @@ impl TurnCore {
             env.send_to_client(client, &Self::finish(b, m, None));
             return;
         }
+        if m.method() == Method::CONNECTION_BIND {
+            // On a new connection of the client, with the credentials of its control
+            // connection (RFC 6062 section 5.4).
+            let stream = env.pads_channel_data(client);
+            if let Some((out, bound)) = self.connection_bind(now, client, m, None, stream) {
+                env.send_to_client(client, &out);
+                if let Some(id) = bound {
+                    env.connection_bound(client, id);
+                }
+            }
+            return;
+        }
         if !matches!(
             m.method(),
-            Method::ALLOCATE | Method::REFRESH | Method::CREATE_PERMISSION | Method::CHANNEL_BIND
+            Method::ALLOCATE
+                | Method::REFRESH
+                | Method::CREATE_PERMISSION
+                | Method::CHANNEL_BIND
+                | Method::CONNECT
         ) {
             let r = Reject(400, "Bad Request");
             env.send_to_client(client, &self.error(m, &r, None));
@@ -754,6 +916,11 @@ impl TurnCore {
             Method::ALLOCATE => self.allocate(now, client, m, user, key, env),
             Method::REFRESH => self.refresh(now, client, m, env),
             Method::CREATE_PERMISSION => self.create_permission(now, client, m),
+            Method::CONNECT => match self.connect(now, client, m, env) {
+                // Answered once the connection is up or has failed (`tcp_connected`).
+                Ok(()) => return,
+                Err(r) => Err(r),
+            },
             _ => self.channel_bind(now, client, m),
         };
         let out = match out {
@@ -787,14 +954,38 @@ impl TurnCore {
         let Some(t) = m.get(attr::REQUESTED_TRANSPORT) else {
             return Err(Reject(400, "Bad Request"));
         };
-        if t.len() != 4 || t[0] != 17 {
-            return Err(Reject(442, "Unsupported Transport Protocol"));
+        let unsupported = || Reject(442, "Unsupported Transport Protocol");
+        if t.len() != 4 || !matches!(t[0], 6 | 17) {
+            return Err(unsupported());
+        }
+        if t[0] == 6 {
+            return self.allocate_tcp(now, client, m, user, key, env);
         }
         let token = m.get(attr::RESERVATION_TOKEN);
         let even = m.get(attr::EVEN_PORT);
         if token.is_some() && (even.is_some() || m.has(attr::REQUESTED_ADDRESS_FAMILY)) {
             return Err(Reject(400, "Bad Request"));
         }
+        self.check_family(m)?;
+        let token: Option<[u8; 8]> = match token {
+            Some(t) => Some(t.try_into().map_err(|_| Reject(400, "Bad Request"))?),
+            None => None,
+        };
+        // Server-wide and per-user quotas: O(1), shared by every shard.
+        self.shared.reserve(user)?;
+        match self.open_for(now, client, token, even, env) {
+            Ok((relay, reserved)) => {
+                Ok(self.allocated(now, client, m, user, key, relay, reserved, false))
+            }
+            Err(r) => {
+                self.shared.release(user);
+                Err(r)
+            }
+        }
+    }
+
+    /// `REQUESTED-ADDRESS-FAMILY`, if present, must name the relay's family.
+    fn check_family(&self, m: &Message<'_>) -> Result<(), Reject> {
         if let Some(f) = m.get(attr::REQUESTED_ADDRESS_FAMILY) {
             let want_v6 = match f.first() {
                 Some(1) => false,
@@ -805,17 +996,42 @@ impl TurnCore {
                 return Err(Reject(440, "Address Family not Supported"));
             }
         }
-        let token: Option<[u8; 8]> = match token {
-            Some(t) => Some(t.try_into().map_err(|_| Reject(400, "Bad Request"))?),
-            None => None,
-        };
-        // Server-wide and per-user quotas: O(1), shared by every shard.
+        Ok(())
+    }
+
+    /// An Allocate for a TCP relayed address (RFC 6062 section 5.1).
+    fn allocate_tcp(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        m: &Message<'_>,
+        user: &str,
+        key: [u8; 16],
+        env: &mut dyn TurnEnv,
+    ) -> Result<MessageBuilder, Reject> {
+        let unsupported = || Reject(442, "Unsupported Transport Protocol");
+        if !self.shared.cfg.tcp_relays {
+            return Err(unsupported());
+        }
+        // Only over TCP or TLS, and without the UDP-only attributes.
+        if !env.pads_channel_data(client)
+            || m.has(attr::DONT_FRAGMENT)
+            || m.has(attr::EVEN_PORT)
+            || m.has(attr::RESERVATION_TOKEN)
+        {
+            return Err(Reject(400, "Bad Request"));
+        }
+        self.check_family(m)?;
         self.shared.reserve(user)?;
-        match self.open_for(now, client, token, even, env) {
-            Ok((relay, reserved)) => Ok(self.allocated(now, client, m, user, key, relay, reserved)),
-            Err(r) => {
+        match env.open_tcp_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0)) {
+            Ok(relay) => Ok(self.allocated(now, client, m, user, key, relay, None, true)),
+            Err(e) => {
                 self.shared.release(user);
-                Err(r)
+                Err(if e.kind() == io::ErrorKind::Unsupported {
+                    unsupported()
+                } else {
+                    Reject(508, "Insufficient Capacity")
+                })
             }
         }
     }
@@ -876,6 +1092,7 @@ impl TurnCore {
         key: [u8; 16],
         relay: SocketAddr,
         reserved: Option<[u8; 8]>,
+        tcp: bool,
     ) -> MessageBuilder {
         let public = SocketAddr::new(
             self.shared.cfg.public_ip.unwrap_or_else(|| relay.ip()),
@@ -894,9 +1111,14 @@ impl TurnCore {
                 perms: HashMap::new(),
                 chans: HashMap::new(),
                 chan_of: HashMap::new(),
+                tcp: tcp.then(Box::default),
             },
         );
-        self.by_relay.insert(relay, client);
+        if tcp {
+            self.by_tcp_relay.insert(relay, client);
+        } else {
+            self.by_relay.insert(relay, client);
+        }
         let mut b = self
             .base(m, Class::Success)
             .xor_addr(attr::XOR_RELAYED_ADDRESS, public)
@@ -1035,6 +1257,9 @@ impl TurnCore {
         let Some(a) = self.allocs.get_mut(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
+        if a.tcp.is_some() {
+            return Err(Reject(400, "Bad Request")); // no channels on a TCP allocation
+        }
         if let Some(&(p, e)) = a.chans.get(&ch) {
             if p != peer && e > now {
                 return Err(Reject(400, "Bad Request"));
@@ -1060,6 +1285,293 @@ impl TurnCore {
         Ok(self.base(m, Class::Success))
     }
 
+    // ---- TCP allocations (RFC 6062) ----
+
+    /// A Connect request (RFC 6062 section 5.2): the connection is opened by the environment
+    /// and the request answered by [`tcp_connected`](Self::tcp_connected).
+    fn connect(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        m: &Message<'_>,
+        env: &mut dyn TurnEnv,
+    ) -> Result<(), Reject> {
+        let max = self.shared.cfg.max_tcp_connections;
+        let v6 = self.shared.cfg.relay_ip.is_ipv6();
+        if !self.allocs.contains_key(&client) {
+            return Err(Reject(437, "Allocation Mismatch"));
+        }
+        let Some(peer) = m.get_xor_addr(attr::XOR_PEER_ADDRESS) else {
+            return Err(Reject(400, "Bad Request"));
+        };
+        if peer.is_ipv6() != v6 {
+            return Err(Reject(443, "Peer Address Family Mismatch"));
+        }
+        if !self.peer_ok(peer) || peer.port() == 0 {
+            return Err(Reject(403, "Forbidden"));
+        }
+        let id = self.shared.connection_id();
+        let Some(a) = self.allocs.get_mut(&client) else {
+            return Err(Reject(437, "Allocation Mismatch"));
+        };
+        let relay = a.relay;
+        let Some(tcp) = a.tcp.as_mut() else {
+            return Err(Reject(400, "Bad Request")); // a UDP allocation
+        };
+        if tcp.by_peer.contains_key(&peer) {
+            return Err(Reject(446, "Connection Already Exists"));
+        }
+        if tcp.conns.len() >= max {
+            return Err(Reject(508, "Insufficient Capacity"));
+        }
+        let state = TcpState::Connecting(
+            m.transaction_id(),
+            m.has(attr::FINGERPRINT),
+            now + TCP_CONNECT_GUARD,
+        );
+        tcp.conns.insert(id, TcpConn { peer, state });
+        tcp.by_peer.insert(peer, id);
+        self.by_conn.insert(id, client);
+        env.connect_peer(client, relay, peer, id);
+        Ok(())
+    }
+
+    /// The outcome of [`TurnEnv::connect_peer`] for connection `id` of `client`'s allocation:
+    /// the Connect is answered (with its `CONNECTION-ID`, or 447 Connection Timeout or
+    /// Failure). Returns whether the connection is wanted: false when it failed, its
+    /// allocation is gone or it was given up on; the environment then closes it.
+    pub fn tcp_connected(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        id: u32,
+        ok: bool,
+        env: &mut dyn TurnEnv,
+    ) -> bool {
+        let Some(a) = self.allocs.get_mut(&client) else {
+            return false;
+        };
+        let key = a.key;
+        let Some(tcp) = a.tcp.as_mut() else {
+            return false;
+        };
+        let Some(c) = tcp.conns.get_mut(&id) else {
+            return false;
+        };
+        let TcpState::Connecting(tid, fingerprint, _) = c.state else {
+            return false;
+        };
+        let b = if ok && a.expires > now {
+            c.state = TcpState::Pending(now + TCP_BIND_TIMEOUT);
+            self.reply(Method::CONNECT, Class::Success, tid)
+                .u32(attr::CONNECTION_ID, id)
+        } else {
+            let peer = c.peer;
+            tcp.conns.remove(&id);
+            tcp.by_peer.remove(&peer);
+            self.by_conn.remove(&id);
+            self.reply(Method::CONNECT, Class::Error, tid)
+                .error(447, "Connection Timeout or Failure")
+        };
+        env.send_to_client(client, &Self::seal(b, &key, fingerprint));
+        ok && self.by_conn.contains_key(&id)
+    }
+
+    /// A TCP connection from `peer` was accepted on the TCP relay bound at `relay` (RFC 6062
+    /// section 5.3). With a permission for the peer's address (and room), it becomes a
+    /// connection of the allocation: [`TurnEnv::accept_peer`] hears of it, then the client a
+    /// ConnectionAttempt, and its id is returned. `None`: close it.
+    pub fn tcp_incoming(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        env: &mut dyn TurnEnv,
+    ) -> Option<u32> {
+        let client = *self.by_tcp_relay.get(&relay)?;
+        let max = self.shared.cfg.max_tcp_connections;
+        if !self.peer_ok(peer) {
+            return None;
+        }
+        let id = self.shared.connection_id();
+        let a = self.allocs.get_mut(&client)?;
+        if a.expires <= now || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
+            return None;
+        }
+        let tcp = a.tcp.as_mut()?;
+        if tcp.by_peer.contains_key(&peer) || tcp.conns.len() >= max {
+            return None;
+        }
+        let state = TcpState::Pending(now + TCP_BIND_TIMEOUT);
+        tcp.conns.insert(id, TcpConn { peer, state });
+        tcp.by_peer.insert(peer, id);
+        self.by_conn.insert(id, client);
+        env.accept_peer(client, relay, peer, id);
+        let ind = MessageBuilder::new(
+            Method::CONNECTION_ATTEMPT,
+            Class::Indication,
+            crate::stun::transaction_id(),
+        )
+        .xor_addr(attr::XOR_PEER_ADDRESS, peer)
+        .u32(attr::CONNECTION_ID, id)
+        .build();
+        env.send_to_client(client, &ind);
+        Some(id)
+    }
+
+    /// Connection `id` of `client`'s allocation closed (the peer's connection or the client's
+    /// data connection ended): it is forgotten, and [`TurnEnv::close_connection`] closes the
+    /// other side.
+    pub fn tcp_closed(&mut self, client: SocketAddr, id: u32, env: &mut dyn TurnEnv) {
+        if self.by_conn.get(&id) != Some(&client) {
+            return;
+        }
+        self.by_conn.remove(&id);
+        if let Some(tcp) = self.allocs.get_mut(&client).and_then(|a| a.tcp.as_mut()) {
+            if let Some(c) = tcp.conns.remove(&id) {
+                tcp.by_peer.remove(&c.peer);
+            }
+        }
+        env.close_connection(id);
+    }
+
+    /// A ConnectionBind request from the stream client at `data_client` (RFC 6062 section
+    /// 5.4): the response for that connection, and the connection id when it is now bound.
+    /// `alloc` names the client whose allocation holds the id, when the caller knows (the
+    /// sharded server looks it up across shards); else this core's own allocations are
+    /// searched. `stream`: the request came over TCP or TLS (else 400). The nonce may be one
+    /// issued to the data connection or to the allocation's control connection (clients reuse
+    /// the latter). `None`: not answered (not a ConnectionBind request, or a bad
+    /// `FINGERPRINT`).
+    pub(crate) fn connection_bind(
+        &mut self,
+        now: Instant,
+        data_client: SocketAddr,
+        m: &Message<'_>,
+        alloc: Option<SocketAddr>,
+        stream: bool,
+    ) -> Option<(Vec<u8>, Option<u32>)> {
+        if m.class() != Class::Request || m.method() != Method::CONNECTION_BIND {
+            return None;
+        }
+        if m.has(attr::FINGERPRINT) && !m.check_fingerprint() {
+            return None;
+        }
+        if !stream {
+            return Some((self.error(m, &Reject(400, "Bad Request"), None), None));
+        }
+        if !m.has(attr::MESSAGE_INTEGRITY) {
+            return Some((
+                self.challenge(now, data_client, m, 401, "Unauthorized"),
+                None,
+            ));
+        }
+        let (Some(user), Some(realm), Some(nonce)) = (
+            m.get_str(attr::USERNAME),
+            m.get_str(attr::REALM),
+            m.get_str(attr::NONCE),
+        ) else {
+            return Some((self.error(m, &Reject(400, "Bad Request"), None), None));
+        };
+        let id = m
+            .get(attr::CONNECTION_ID)
+            .and_then(|v| <[u8; 4]>::try_from(v).ok())
+            .map(u32::from_be_bytes);
+        let owner = alloc.or_else(|| id.and_then(|id| self.by_conn.get(&id).copied()));
+        if !self.nonce_valid(now, data_client, nonce)
+            && !owner.is_some_and(|o| self.nonce_valid(now, o, nonce))
+        {
+            return Some((
+                self.challenge(now, data_client, m, 438, "Stale Nonce"),
+                None,
+            ));
+        }
+        let key = (self.shared.cfg.auth)(user, realm);
+        let Some(key) = key.filter(|k| realm == self.shared.cfg.realm && m.check_integrity(k))
+        else {
+            return Some((
+                self.challenge(now, data_client, m, 401, "Unauthorized"),
+                None,
+            ));
+        };
+        let bad =
+            |core: &Self| Some((core.error(m, &Reject(400, "Bad Request"), Some(&key)), None));
+        let (Some(id), Some(owner)) = (id, owner) else {
+            return bad(self);
+        };
+        // A data connection is a new one: never a control connection (it would lose its
+        // allocation's client).
+        if self.allocs.contains_key(&data_client) {
+            return bad(self);
+        }
+        if self.by_conn.get(&id) != Some(&owner) {
+            return bad(self);
+        }
+        let Some(a) = self.allocs.get_mut(&owner) else {
+            return bad(self);
+        };
+        if a.user != user || a.expires <= now {
+            return bad(self);
+        }
+        let Some(c) = a.tcp.as_mut().and_then(|t| t.conns.get_mut(&id)) else {
+            return bad(self);
+        };
+        if !matches!(c.state, TcpState::Pending(_)) {
+            return bad(self);
+        }
+        c.state = TcpState::Bound;
+        let out = Self::finish(self.base(m, Class::Success), m, Some(&key));
+        Some((out, Some(id)))
+    }
+
+    /// Connections past their deadline: waiting for a ConnectionBind too long (closed), or a
+    /// Connect the environment never answered (447).
+    fn tcp_timeouts(&mut self, now: Instant, env: &mut dyn TurnEnv) {
+        let mut late: Vec<(SocketAddr, u32)> = Vec::new();
+        for (client, a) in &self.allocs {
+            let Some(tcp) = &a.tcp else { continue };
+            for (id, c) in &tcp.conns {
+                if matches!(c.state, TcpState::Pending(t) | TcpState::Connecting(_, _, t) if t <= now)
+                {
+                    late.push((*client, *id));
+                }
+            }
+        }
+        for (client, id) in late {
+            let connecting = self
+                .allocs
+                .get(&client)
+                .and_then(|a| a.tcp.as_ref())
+                .and_then(|t| t.conns.get(&id))
+                .is_some_and(|c| matches!(c.state, TcpState::Connecting(..)));
+            if connecting {
+                self.tcp_connected(now, client, id, false, env);
+                env.close_connection(id);
+            } else {
+                self.tcp_closed(client, id, env);
+            }
+        }
+    }
+
+    /// A message of `method` and `class` answering transaction `tid` (`SOFTWARE` added).
+    fn reply(&self, method: Method, class: Class, tid: [u8; 12]) -> MessageBuilder {
+        let mut b = MessageBuilder::new(method, class, tid);
+        if let Some(s) = &self.shared.cfg.software {
+            b = b.attr(attr::SOFTWARE, s.as_bytes());
+        }
+        b
+    }
+
+    /// Integrity with `key`, and a `FINGERPRINT` if the request had one.
+    fn seal(b: MessageBuilder, key: &[u8; 16], fingerprint: bool) -> Vec<u8> {
+        let b = b.integrity(key);
+        if fingerprint {
+            b.fingerprint().build()
+        } else {
+            b.build()
+        }
+    }
+
     /// The key of `client`'s allocation (for tests).
     #[doc(hidden)]
     pub fn key_of(&self, client: SocketAddr) -> Option<[u8; 16]> {
@@ -1074,6 +1586,7 @@ impl TurnCore {
         let mut sh = Shared::new(self.shared.cfg.clone());
         sh.nonce_key = [0x42; 32];
         sh.epoch = start;
+        sh.next_conn = AtomicU32::new(1);
         self.shared = Arc::new(sh);
     }
 
@@ -1105,6 +1618,7 @@ fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
         attr::DONT_FRAGMENT,
         attr::XOR_MAPPED_ADDRESS,
         attr::RESERVATION_TOKEN,
+        attr::CONNECTION_ID,
     ];
     let unknown: Vec<u8> = m
         .attr_types()
@@ -1155,6 +1669,395 @@ mod tests {
         let b = MessageBuilder::new(Method::REFRESH, Class::Request, transaction_id()).build();
         assert!(!sh.authenticated_allocate(now, CLIENT, &b));
         assert!(!sh.authenticated_allocate(now, CLIENT, b"\x40\x00\x00\x00"));
+    }
+
+    /// What the TCP side of the core asks of its environment.
+    #[derive(Default)]
+    struct TcpEnv {
+        sent: Vec<(SocketAddr, Vec<u8>)>,
+        dials: Vec<(SocketAddr, SocketAddr, u32)>,
+        accepted: Vec<u32>,
+        closed: Vec<u32>,
+        relays: Vec<SocketAddr>,
+        bound: Vec<(SocketAddr, u32)>,
+    }
+
+    impl TurnEnv for TcpEnv {
+        fn send_to_client(&mut self, client: SocketAddr, data: &[u8]) {
+            self.sent.push((client, data.to_vec()));
+        }
+        fn send_to_peer(&mut self, _: SocketAddr, _: SocketAddr, _: &[u8]) {}
+        fn open_relay(&mut self, _: SocketAddr, _: SocketAddr) -> io::Result<SocketAddr> {
+            Err(io::Error::other("udp"))
+        }
+        fn close_relay(&mut self, _: SocketAddr) {}
+        fn pads_channel_data(&self, _: SocketAddr) -> bool {
+            true
+        }
+        fn open_tcp_relay(&mut self, _: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+            let r = SocketAddr::new(addr.ip(), 40000 + self.relays.len() as u16);
+            self.relays.push(r);
+            Ok(r)
+        }
+        fn close_tcp_relay(&mut self, relay: SocketAddr) {
+            self.relays.retain(|r| *r != relay);
+        }
+        fn connect_peer(&mut self, _: SocketAddr, relay: SocketAddr, peer: SocketAddr, id: u32) {
+            self.dials.push((relay, peer, id));
+        }
+        fn accept_peer(&mut self, _: SocketAddr, _: SocketAddr, _: SocketAddr, id: u32) {
+            self.accepted.push(id);
+        }
+        fn connection_bound(&mut self, data_client: SocketAddr, id: u32) {
+            self.bound.push((data_client, id));
+        }
+        fn close_connection(&mut self, id: u32) {
+            self.closed.push(id);
+        }
+    }
+
+    impl TcpEnv {
+        /// The last message sent, parsed: method, class, error code, CONNECTION-ID.
+        fn last(&self) -> (Method, Class, Option<u16>, Option<u32>) {
+            let m = Message::parse(&self.sent.last().expect("sent").1).expect("stun");
+            let id = m.get_u32(attr::CONNECTION_ID);
+            (m.method(), m.class(), m.error_code().map(|e| e.0), id)
+        }
+    }
+
+    fn authed(core: &TurnCore, now: Instant, from: SocketAddr, b: MessageBuilder) -> Vec<u8> {
+        b.attr(attr::USERNAME, USER.0.as_bytes())
+            .attr(attr::REALM, REALM.as_bytes())
+            .attr(attr::NONCE, core.fuzz_nonce(now, from).as_bytes())
+            .integrity(&long_term_key(USER.0, REALM, USER.1))
+            .fingerprint()
+            .build()
+    }
+
+    fn req(m: Method) -> MessageBuilder {
+        MessageBuilder::new(m, Class::Request, transaction_id())
+    }
+
+    fn tcp_allocated(now: Instant) -> (TurnCore, TcpEnv, SocketAddr) {
+        let mut core = turn_core(now);
+        let mut env = TcpEnv::default();
+        let a = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::ALLOCATE).u32(attr::REQUESTED_TRANSPORT, 6 << 24),
+        );
+        core.handle_client(now, CLIENT, &a, &mut env);
+        assert_eq!(env.last().1, Class::Success);
+        let relay = env.relays[0];
+        assert_eq!(core.by_tcp_relay.get(&relay), Some(&CLIENT));
+        (core, env, relay)
+    }
+
+    /// Connect: answered when the environment reports; one connection per peer; 447 on
+    /// failure; the ConnectionBind deadline closes connections nobody binds.
+    #[test]
+    fn tcp_connect_lifecycle() {
+        let now = Instant::now();
+        let (mut core, mut env, relay) = tcp_allocated(now);
+        let peer: SocketAddr = "10.1.1.1:80".parse().unwrap();
+        let c = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        let n = env.sent.len();
+        core.handle_client(now, CLIENT, &c, &mut env);
+        assert_eq!(env.sent.len(), n, "answered only once connected");
+        let (r, p, id) = env.dials[0];
+        assert_eq!((r, p), (relay, peer));
+        // The same peer again while connecting: 446.
+        core.handle_client(now, CLIENT, &c, &mut env);
+        assert_eq!(env.last().2, Some(446));
+        assert!(core.tcp_connected(now, CLIENT, id, true, &mut env));
+        assert_eq!(
+            env.last(),
+            (Method::CONNECT, Class::Success, None, Some(id))
+        );
+        assert!(
+            !core.tcp_connected(now, CLIENT, id, true, &mut env),
+            "answered once"
+        );
+        assert_eq!(core.stats().tcp_connections, 1);
+        // Nobody binds it: closed after 30 s.
+        core.handle_timeout(now + Duration::from_secs(29), &mut env);
+        assert!(env.closed.is_empty());
+        core.handle_timeout(now + TCP_BIND_TIMEOUT, &mut env);
+        assert_eq!(env.closed, vec![id]);
+        assert_eq!(core.stats().tcp_connections, 0);
+        // A failed connect: 447, and the peer is free again.
+        let c = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        core.handle_client(now, CLIENT, &c, &mut env);
+        let id2 = env.dials[1].2;
+        assert_ne!(id2, id);
+        assert!(!core.tcp_connected(now, CLIENT, id2, false, &mut env));
+        assert_eq!(env.last().2, Some(447));
+        // A connect the environment never reports on: 447 from the core's own guard.
+        core.handle_client(now, CLIENT, &c, &mut env);
+        let id3 = env.dials[2].2;
+        core.handle_timeout(now + TCP_CONNECT_GUARD, &mut env);
+        assert_eq!(env.last().2, Some(447));
+        assert!(env.closed.contains(&id3));
+        assert_eq!(core.stats().tcp_connections, 0);
+        // Port 0 is 403; a ChannelBind on a TCP allocation is 400.
+        let zero: SocketAddr = "10.1.1.1:0".parse().unwrap();
+        let c = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, zero),
+        );
+        core.handle_client(now, CLIENT, &c, &mut env);
+        assert_eq!(env.last().2, Some(403));
+        let cb = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CHANNEL_BIND)
+                .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+                .xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        core.handle_client(now, CLIENT, &cb, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        // Deleting the allocation closes the listener.
+        let r0 = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::REFRESH).u32(attr::LIFETIME, 0),
+        );
+        core.handle_client(now, CLIENT, &r0, &mut env);
+        assert!(env.relays.is_empty());
+    }
+
+    /// Peers connecting to the relayed address need a permission; each gets a
+    /// ConnectionAttempt; the connection limit holds; ConnectionBind takes the control
+    /// connection's nonce or one of its own, and only the allocation's user.
+    #[test]
+    fn tcp_incoming_and_bind() {
+        let now = Instant::now();
+        let (mut core, mut env, relay) = tcp_allocated(now);
+        let peer: SocketAddr = "10.1.1.2:5555".parse().unwrap();
+        assert_eq!(core.tcp_incoming(now, relay, peer, &mut env), None);
+        let other: SocketAddr = "192.0.2.99:1".parse().unwrap();
+        assert_eq!(
+            core.tcp_incoming(now, other, peer, &mut env),
+            None,
+            "not a relay"
+        );
+        let cp = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        core.handle_client(now, CLIENT, &cp, &mut env);
+        let id = core.tcp_incoming(now, relay, peer, &mut env).unwrap();
+        assert_eq!(env.accepted, vec![id]);
+        let (m, c, _, cid) = env.last();
+        assert_eq!(
+            (m, c, cid),
+            (Method::CONNECTION_ATTEMPT, Class::Indication, Some(id))
+        );
+        // One connection per peer address; another port of the same host is fine.
+        assert_eq!(core.tcp_incoming(now, relay, peer, &mut env), None);
+        let peer2: SocketAddr = "10.1.1.2:5556".parse().unwrap();
+        let id2 = core.tcp_incoming(now, relay, peer2, &mut env).unwrap();
+        // ConnectionBind from a new connection, with the control connection's nonce.
+        let data: SocketAddr = "10.0.0.1:4001".parse().unwrap();
+        let bind = |core: &TurnCore, from, id: u32| {
+            authed(
+                core,
+                now,
+                from,
+                req(Method::CONNECTION_BIND).u32(attr::CONNECTION_ID, id),
+            )
+        };
+        let b = bind(&core, CLIENT, id);
+        core.handle_client(now, data, &b, &mut env);
+        assert_eq!(env.last().1, Class::Success);
+        assert_eq!(env.bound, vec![(data, id)]);
+        // Not on the control connection itself.
+        let id9 = core.tcp_incoming(now, relay, "10.1.1.2:5559".parse().unwrap(), &mut env);
+        let b = bind(&core, CLIENT, id9.unwrap());
+        core.handle_client(now, CLIENT, &b, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        core.tcp_closed(CLIENT, id9.unwrap(), &mut env);
+        // Bound already: 400. A nonce of its own works too.
+        let b = bind(&core, data, id);
+        core.handle_client(now, data, &b, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        let data2: SocketAddr = "10.0.0.1:4002".parse().unwrap();
+        let b = bind(&core, data2, id2);
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().1, Class::Success);
+        // A nonce of a third address: 438; none at all: 401; unknown id: 400.
+        let b = bind(&core, "10.0.0.9:1".parse().unwrap(), id2);
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().2, Some(438));
+        let b = req(Method::CONNECTION_BIND)
+            .u32(attr::CONNECTION_ID, id2)
+            .build();
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().2, Some(401));
+        // An unknown id cannot vouch for the control connection's nonce (438); with a nonce
+        // of its own, 400.
+        let b = bind(&core, CLIENT, id ^ 1);
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().2, Some(438));
+        let b = bind(&core, data2, id ^ 1);
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        // Another user with valid credentials cannot take it.
+        let mut cfg = core.shared.cfg.clone();
+        cfg.auth = crate::static_auth(REALM, [USER, ("v", "w")]);
+        let mut sh = Shared::new(cfg);
+        sh.nonce_key = core.shared.nonce_key;
+        sh.epoch = core.shared.epoch;
+        core.shared = Arc::new(sh);
+        let peer3: SocketAddr = "10.1.1.2:5557".parse().unwrap();
+        let id3 = core.tcp_incoming(now, relay, peer3, &mut env).unwrap();
+        let b = req(Method::CONNECTION_BIND)
+            .u32(attr::CONNECTION_ID, id3)
+            .attr(attr::USERNAME, b"v")
+            .attr(attr::REALM, REALM.as_bytes())
+            .attr(attr::NONCE, core.fuzz_nonce(now, CLIENT).as_bytes())
+            .integrity(&long_term_key("v", REALM, "w"))
+            .build();
+        core.handle_client(now, data2, &b, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        assert_eq!(core.stats().tcp_connections, 3);
+        // A closed connection is forgotten (and its other side closed).
+        core.tcp_closed(CLIENT, id, &mut env);
+        assert!(env.closed.contains(&id));
+        assert_eq!(core.stats().tcp_connections, 2);
+        // The connection limit.
+        let mut cfg = core.shared.cfg.clone();
+        cfg.max_tcp_connections = 2;
+        let mut sh = Shared::new(cfg);
+        sh.nonce_key = core.shared.nonce_key;
+        sh.epoch = core.shared.epoch;
+        core.shared = Arc::new(sh);
+        assert_eq!(
+            core.tcp_incoming(now, relay, "10.1.1.2:1".parse().unwrap(), &mut env),
+            None
+        );
+        // The allocation going closes everything.
+        core.remove_client(CLIENT, &mut env);
+        assert!(env.closed.contains(&id2) && env.closed.contains(&id3));
+        assert_eq!(core.stats().tcp_connections, 0);
+        assert!(env.relays.is_empty());
+        // No permission expiry race: an expired permission refuses peers again.
+        let (mut core, mut env, relay) = tcp_allocated(now);
+        let cp = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        core.handle_client(now, CLIENT, &cp, &mut env);
+        let later = now + Duration::from_secs(301);
+        assert_eq!(core.tcp_incoming(later, relay, peer, &mut env), None);
+    }
+
+    /// TCP allocations need a stream client, no UDP-only attributes, and the setting.
+    #[test]
+    fn tcp_allocate_rules() {
+        struct Udp(TcpEnv);
+        impl TurnEnv for Udp {
+            fn send_to_client(&mut self, c: SocketAddr, d: &[u8]) {
+                self.0.send_to_client(c, d);
+            }
+            fn send_to_peer(&mut self, _: SocketAddr, _: SocketAddr, _: &[u8]) {}
+            fn open_relay(&mut self, _: SocketAddr, a: SocketAddr) -> io::Result<SocketAddr> {
+                Ok(a)
+            }
+            fn close_relay(&mut self, _: SocketAddr) {}
+        }
+        let now = Instant::now();
+        let mut core = turn_core(now);
+        let tcp = || req(Method::ALLOCATE).u32(attr::REQUESTED_TRANSPORT, 6 << 24);
+        let mut udp = Udp(TcpEnv::default());
+        core.handle_client(now, CLIENT, &authed(&core, now, CLIENT, tcp()), &mut udp);
+        assert_eq!(udp.0.last().2, Some(400));
+        let mut env = TcpEnv::default();
+        for extra in [
+            attr::EVEN_PORT,
+            attr::RESERVATION_TOKEN,
+            attr::DONT_FRAGMENT,
+        ] {
+            let a = authed(&core, now, CLIENT, tcp().attr(extra, &[0; 8]));
+            core.handle_client(now, CLIENT, &a, &mut env);
+            assert_eq!(env.last().2, Some(400), "{extra:#x}");
+        }
+        let a = authed(
+            &core,
+            now,
+            CLIENT,
+            tcp().attr(attr::REQUESTED_ADDRESS_FAMILY, &[2, 0, 0, 0]),
+        );
+        core.handle_client(now, CLIENT, &a, &mut env);
+        assert_eq!(env.last().2, Some(440));
+        // An environment without TCP support: 442, and the quota is given back.
+        struct NoTcp(TcpEnv);
+        impl TurnEnv for NoTcp {
+            fn send_to_client(&mut self, c: SocketAddr, d: &[u8]) {
+                self.0.send_to_client(c, d);
+            }
+            fn send_to_peer(&mut self, _: SocketAddr, _: SocketAddr, _: &[u8]) {}
+            fn open_relay(&mut self, _: SocketAddr, a: SocketAddr) -> io::Result<SocketAddr> {
+                Ok(a)
+            }
+            fn close_relay(&mut self, _: SocketAddr) {}
+            fn pads_channel_data(&self, _: SocketAddr) -> bool {
+                true
+            }
+        }
+        let mut no = NoTcp(TcpEnv::default());
+        core.handle_client(now, CLIENT, &authed(&core, now, CLIENT, tcp()), &mut no);
+        assert_eq!(no.0.last().2, Some(442));
+        assert_eq!(core.shared.allocations.load(Ordering::Relaxed), 0);
+        // The setting off: 442.
+        let mut cfg = core.shared.cfg.clone();
+        cfg.tcp_relays = false;
+        let mut sh = Shared::new(cfg);
+        sh.nonce_key = core.shared.nonce_key;
+        sh.epoch = core.shared.epoch;
+        core.shared = Arc::new(sh);
+        core.handle_client(now, CLIENT, &authed(&core, now, CLIENT, tcp()), &mut env);
+        assert_eq!(env.last().2, Some(442));
+        // Connect on no allocation: 437; on a UDP allocation: 400.
+        let peer: SocketAddr = "10.1.1.1:80".parse().unwrap();
+        let c = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::CONNECT).xor_addr(attr::XOR_PEER_ADDRESS, peer),
+        );
+        core.handle_client(now, CLIENT, &c, &mut env);
+        assert_eq!(env.last().2, Some(437));
+        let mut udp = Udp(TcpEnv::default());
+        let a = authed(
+            &core,
+            now,
+            CLIENT,
+            req(Method::ALLOCATE).u32(attr::REQUESTED_TRANSPORT, 17 << 24),
+        );
+        core.handle_client(now, CLIENT, &a, &mut udp);
+        assert_eq!(udp.0.last().1, Class::Success);
+        core.handle_client(now, CLIENT, &c, &mut udp);
+        assert_eq!(udp.0.last().2, Some(400));
     }
 
     /// The per-user count is kept in a map (not by scanning allocations): taken at, refused over

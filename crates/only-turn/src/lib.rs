@@ -12,15 +12,19 @@
 //!   [`only::Engine::bind_udp`]. It also answers Binding requests, so it is a STUN server too.
 //! - [`TurnStream`] ([`TurnServer::stream`]): the same server for TCP listeners, and for TLS
 //!   ones through [`only::tls::Tls`] (`turns:`, RFC 8656 section 3.1): STUN and ChannelData
-//!   framed on the stream ([`framing`]), relays still over UDP. An allocation lives as long as
-//!   its connection. TCP relays (RFC 6062) are not offered: `REQUESTED-TRANSPORT` TCP is
-//!   refused with 442.
+//!   framed on the stream ([`framing`]). An allocation lives as long as its connection. Its
+//!   relay is UDP, or TCP when the client asks for it (RFC 6062, `TurnConfig::tcp_relays`):
+//!   a listening socket on the relayed address, Connect requests opening connections to peers
+//!   from it, ConnectionAttempt indications for peers with a permission connecting to it, and
+//!   ConnectionBind requests on new client connections, after which bytes are relayed as they
+//!   are, with backpressure linking both sides.
 //! - [`TurnDtls`] ([`TurnServer::dtls`]): the same server for UDP listeners whose clients talk
 //!   DTLS (RFC 7350, `turns:` with `transport=udp`), on `only-dtls`: stateless cookies, DTLS
 //!   1.3 with fallback to 1.2, one STUN or ChannelData message per record. An allocation lives
 //!   as long as its DTLS association.
 //! - [`client::Client`]: a sans-io TURN client (allocate, refresh, permissions, channels) over
-//!   UDP or a stream.
+//!   UDP or a stream, and TCP allocations ([`client::ClientConfig::tcp_allocation`],
+//!   [`client::Client::connect`], [`client::DataConnection`]).
 //! - [`TurnCore`]: the same server as a sans-io state machine.
 //!
 //! Callbacks run on the I/O thread that read the datagram (the listener's or a relay's) and
@@ -57,6 +61,7 @@ pub mod framing;
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod stun;
+mod tcp;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -72,6 +77,8 @@ use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth};
 use crate::core::Shared;
 pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
+#[doc(hidden)]
+pub use crate::tcp::TcpPeer;
 
 pub(crate) fn fill_random(buf: &mut [u8]) {
     if only_crypto::rand::fill_random(buf).is_err() {
@@ -177,6 +184,8 @@ struct Inner {
     /// Keyed per server, so clients cannot choose to crowd into one shard.
     hasher: RandomState,
     engine: OnceLock<Weak<Engine>>,
+    /// TCP allocations' listeners and connections (RFC 6062).
+    tcp: tcp::TcpRelays,
     me: Weak<Inner>,
 }
 
@@ -226,12 +235,23 @@ impl Inner {
             shard: i,
             clients,
             prebound,
+            incoming: None,
+            dials: Vec::new(),
         };
         let r = f(core, &mut env);
         let unused = env.prebound.take();
+        let dials = std::mem::take(&mut env.dials);
         drop(g);
         if let Some((b, _)) = unused {
             b.close();
+        }
+        // Started without the lock: a dial may fail at once, and its failure locks the shard.
+        if !dials.is_empty() {
+            if let Some(me) = self.me.upgrade() {
+                for (relay, peer, id) in dials {
+                    tcp::dial(&me, relay, peer, id);
+                }
+            }
         }
         r
     }
@@ -251,6 +271,10 @@ struct Env<'a> {
     clients: &'a mut HashMap<SocketAddr, ClientConn>,
     /// A relay bound before the shard was locked, for an authenticated Allocate.
     prebound: Option<(UdpBinding, Arc<AtomicUsize>)>,
+    /// The connections of a peer just accepted on a TCP relay, for `accept_peer`.
+    incoming: Option<Arc<tcp::Pair>>,
+    /// Connections to peers to start once the shard is unlocked: relay, peer, id.
+    dials: Vec<(SocketAddr, SocketAddr, u32)>,
 }
 
 impl TurnEnv for Env<'_> {
@@ -318,6 +342,40 @@ impl TurnEnv for Env<'_> {
             r.route.store(self.shard, Ordering::Relaxed);
         }
     }
+
+    fn open_tcp_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        self.inner.engine()?;
+        self.inner.tcp.open(self.inner, addr, self.shard)
+    }
+
+    fn close_tcp_relay(&mut self, relay: SocketAddr) {
+        self.inner.tcp.close(relay);
+    }
+
+    fn connect_peer(&mut self, client: SocketAddr, relay: SocketAddr, peer: SocketAddr, id: u32) {
+        let link = tcp::Link {
+            client,
+            shard: self.shard,
+            pair: Arc::default(),
+        };
+        self.inner.tcp.insert(id, link);
+        self.dials.push((relay, peer, id));
+    }
+
+    fn accept_peer(&mut self, client: SocketAddr, _relay: SocketAddr, _peer: SocketAddr, id: u32) {
+        if let Some(pair) = self.incoming.take() {
+            let link = tcp::Link {
+                client,
+                shard: self.shard,
+                pair,
+            };
+            self.inner.tcp.insert(id, link);
+        }
+    }
+
+    fn close_connection(&mut self, id: u32) {
+        self.inner.tcp.close_link(id);
+    }
 }
 
 /// A TURN server (and STUN server) for a [`only::Listener::udp`]. Clone it to keep a handle.
@@ -364,6 +422,7 @@ impl TurnServer {
             shared,
             hasher: RandomState::new(),
             engine: OnceLock::new(),
+            tcp: tcp::TcpRelays::default(),
             me: me.clone(),
         });
         let weak = Arc::downgrade(&inner);
@@ -426,6 +485,7 @@ impl TurnServer {
             t.to_peer += st.to_peer;
             t.to_client += st.to_client;
             t.auth_failures += st.auth_failures;
+            t.tcp_connections += st.tcp_connections;
         }
         t
     }
@@ -437,7 +497,8 @@ impl TurnServer {
             .relay_of(client)
     }
 
-    /// The relayed address of the allocation of the TCP or TLS client at `client`.
+    /// The relayed address of the allocation of the TCP or TLS client at `client` (a UDP
+    /// relay, or a TCP one for a TCP allocation).
     pub fn stream_relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
         lock(&self.0.shards[self.0.shard_of(client, Wire::Stream)])
             .core
@@ -619,6 +680,7 @@ impl Acceptor for TurnStream {
             inner: self.0.clone(),
             shard,
             reader: framing::FrameReader::new(),
+            peer: None,
         }
     }
 
@@ -633,6 +695,9 @@ pub struct TurnStreamClient {
     inner: Arc<Inner>,
     shard: usize,
     reader: framing::FrameReader,
+    /// A client data connection of a TCP allocation (RFC 6062), once bound: the peer's
+    /// connection, which its bytes go to as they are.
+    peer: Option<Conn<TcpPeer>>,
 }
 
 impl fmt::Debug for TurnStreamClient {
@@ -643,11 +708,21 @@ impl fmt::Debug for TurnStreamClient {
 
 impl Handler for TurnStreamClient {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let inner = &self.inner;
+        if let Some(p) = &self.peer {
+            tcp::forward(c, p, data, self.inner.shared.config().tcp_relay_buffer);
+            return;
+        }
+        let inner = self.inner.clone();
         let shard = self.shard;
         let client = c.peer_addr();
-        let r = self.reader.push(data, |msg| {
+        let mut reader = std::mem::take(&mut self.reader);
+        let mut peer = None;
+        let r = reader.push_until(data, |msg| {
             let now = Instant::now();
+            if is_connection_bind(msg) {
+                peer = self.connection_bind(c, now, msg);
+                return peer.is_none(); // bound: what follows is the client's data
+            }
             let prebound = if inner.shared.authenticated_allocate(now, client, msg) {
                 inner
                     .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), shard)
@@ -658,13 +733,27 @@ impl Handler for TurnStreamClient {
             inner.with_shard(shard, prebound, |core, env| {
                 core.handle_client(now, client, msg, env);
             });
+            true
         });
-        if r.is_err() {
-            c.close();
+        self.reader = reader;
+        match r {
+            Ok(rest) => {
+                if let Some(p) = peer {
+                    if !rest.is_empty() {
+                        tcp::forward(c, &p, rest, inner.shared.config().tcp_relay_buffer);
+                    }
+                    self.peer = Some(p);
+                }
+            }
+            Err(_) => c.close(),
         }
     }
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
+        if let Some(p) = &self.peer {
+            p.close(); // RFC 6062 section 5.5: the peer's connection goes with it
+            return;
+        }
         let client = c.peer_addr();
         self.inner.with_shard(self.shard, None, |core, env| {
             if matches!(env.clients.get(&client), Some(ClientConn::Stream(x, _)) if x.id() == c.id())
@@ -674,6 +763,55 @@ impl Handler for TurnStreamClient {
                 core.remove_client(client, env);
             }
         });
+    }
+}
+
+/// Whether `msg` is a ConnectionBind request (RFC 6062).
+fn is_connection_bind(msg: &[u8]) -> bool {
+    stun::is_stun(msg)
+        && stun::Message::parse(msg).is_ok_and(|m| {
+            m.method() == stun::Method::CONNECTION_BIND && m.class() == stun::Class::Request
+        })
+}
+
+impl TurnStreamClient {
+    /// A ConnectionBind request on this connection: answered by the shard of the allocation
+    /// holding the connection id. Returns the peer's connection when this connection is now
+    /// bound to it.
+    fn connection_bind(&self, c: &Conn<Self>, now: Instant, msg: &[u8]) -> Option<Conn<TcpPeer>> {
+        let m = stun::Message::parse(msg).ok()?;
+        let client = c.peer_addr();
+        let id = m
+            .get(stun::attr::CONNECTION_ID)
+            .and_then(|v| <[u8; 4]>::try_from(v).ok())
+            .map(u32::from_be_bytes);
+        // Never on a connection that holds an allocation (its control connection): that one's
+        // own shard answers (400).
+        let has_alloc = self
+            .inner
+            .with_shard(self.shard, None, |core, _| core.relay_of(client).is_some());
+        let link = id
+            .filter(|_| !has_alloc)
+            .and_then(|id| self.inner.tcp.link(id));
+        let shard = link.as_ref().map_or(self.shard, |l| l.1);
+        let owner = link.as_ref().map(|l| l.0);
+        let (out, bound) = self.inner.with_shard(shard, None, |core, _| {
+            core.connection_bind(now, client, &m, owner, true)
+        })?;
+        let (Some(_), Some((_, _, pair))) = (bound, link) else {
+            let _ = c.send_owned(out);
+            return None;
+        };
+        let peer = tcp::bind(&pair, c, out)?;
+        // A data connection now: no allocation of its own, out of the client table (and of
+        // the sweep of connections that never allocate).
+        self.inner.with_shard(self.shard, None, |_, env| {
+            if matches!(env.clients.get(&client), Some(ClientConn::Stream(x, _)) if x.id() == c.id())
+            {
+                env.clients.remove(&client);
+            }
+        });
+        Some(peer)
     }
 }
 

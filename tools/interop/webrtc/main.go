@@ -10,6 +10,10 @@
 //	                                                 send and receive through the relay
 //	webrtc-pion turn-raw-tcp <turn> <user> <pass>    the same over TCP
 //	webrtc-pion turn-raw-tls <turn> <user> <pass>    the same over TLS (certificate not checked)
+//	webrtc-pion turn-tcp-raw <turn> <user> <pass>    pion/turn TCP allocation (RFC 6062) over TCP:
+//	                                                 Dial (Connect + ConnectionBind) to a TCP echo
+//	                                                 peer, then Accept a peer connecting to the
+//	                                                 relayed address; data both ways on each
 //	webrtc-pion server-tcp <http-addr>               answerer with ICE-TCP only (active candidates)
 //	webrtc-pion server-tcp-passive <http-addr> <tcp-addr>
 //	                                                 answerer with ICE-TCP only, passive
@@ -387,6 +391,76 @@ func turnRaw(server, user, pass, transport string) {
 	c.Close()
 }
 
+// turnTCPRaw: a pion/turn TCP allocation (RFC 6062). pion binds data connections over plain
+// TCP to the server's address, so the control connection is TCP too.
+func turnTCPRaw(server, user, pass string) {
+	c0, err := net.Dial("tcp4", server)
+	check(err)
+	c, err := turn.NewClient(&turn.ClientConfig{
+		STUNServerAddr: server, TURNServerAddr: server, Conn: turn.NewSTUNConn(c0),
+		Username: user, Password: pass, Realm: "only",
+	})
+	check(err)
+	check(c.Listen())
+	alloc, err := c.AllocateTCP()
+	check(err)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	check(err)
+	go func() { // a TCP echo peer
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(conn, conn); conn.Close() }()
+		}
+	}()
+	echo := func(conn net.Conn, what string) {
+		check(conn.SetDeadline(time.Now().Add(10 * time.Second)))
+		buf := make([]byte, 1<<20)
+		for i := 0; i < 20; i++ {
+			msg := fmt.Sprintf("through the tcp relay %d", i)
+			_, err := conn.Write([]byte(msg))
+			check(err)
+			_, err = io.ReadFull(conn, buf[:len(msg)])
+			check(err)
+			if string(buf[:len(msg)]) != msg {
+				fail("%s echo %d: %q", what, i, buf[:len(msg)])
+			}
+		}
+		big := make([]byte, 1<<20)
+		for i := range big {
+			big[i] = byte(i * 7)
+		}
+		go func() { _, _ = conn.Write(big) }()
+		_, err := io.ReadFull(conn, buf)
+		check(err)
+		if !bytes.Equal(buf, big) {
+			fail("%s: 1 MiB echo differs", what)
+		}
+	}
+	dc, err := alloc.Dial("tcp4", ln.Addr().String())
+	check(err)
+	echo(dc, "dial")
+	dc.Close()
+	// A peer connecting to the relayed address needs a permission.
+	check(alloc.CreatePermissions(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}))
+	go func() {
+		p, err := net.Dial("tcp4", alloc.Addr().String())
+		check(err)
+		_, _ = io.Copy(p, p)
+		p.Close()
+	}()
+	check(alloc.SetDeadline(time.Now().Add(10 * time.Second)))
+	ac, err := alloc.AcceptTCP()
+	check(err)
+	echo(ac, "accept")
+	ac.Close()
+	fmt.Printf("ok: pion/turn TCP allocation %v: Dial and Accept, 20 messages and 1 MiB echoed on each\n", alloc.Addr())
+	_ = alloc.Close()
+	c.Close()
+}
+
 func main() {
 	if len(os.Args) < 3 {
 		fail("usage: webrtc-pion server|client-dc|client-media|client-turn|turn-raw ...")
@@ -407,6 +481,8 @@ func main() {
 		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tcp")
 	case "turn-raw-tls":
 		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tls")
+	case "turn-tcp-raw":
+		turnTCPRaw(os.Args[2], os.Args[3], os.Args[4])
 	case "server-tcp":
 		serverWith(os.Args[2], tcpOnlyAPI(), nil)
 	case "server-tcp-passive":
