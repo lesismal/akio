@@ -40,19 +40,26 @@ fn attach(cfg: &XdpLimit) -> Option<RateLimiter> {
 
 /// Sends `n` datagrams from `from` to a fresh socket and counts what arrives.
 fn udp_burst(from: &str, n: usize) -> usize {
+    udp_burst_timed(from, n).0
+}
+
+/// [`udp_burst`], also returning how long the sends took (the buckets refill meanwhile).
+fn udp_burst_timed(from: &str, n: usize) -> (usize, Duration) {
     let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
     rx.set_read_timeout(Some(Duration::from_millis(200)))
         .unwrap();
     let tx = UdpSocket::bind(from).unwrap();
+    let start = std::time::Instant::now();
     for _ in 0..n {
         tx.send_to(b"x", rx.local_addr().unwrap()).unwrap();
     }
+    let took = start.elapsed();
     let mut got = 0;
     let mut b = [0u8; 8];
     while rx.recv_from(&mut b).is_ok() {
         got += 1;
     }
-    got
+    (got, took)
 }
 
 #[test]
@@ -63,11 +70,13 @@ fn udp_flood_is_cut_to_the_burst_per_source() {
     };
     assert_eq!(l.mode(), XdpMode::Generic, "lo has no native XDP");
     assert_eq!(l.attachment(), Attachment::Link);
-    // Each source has its own bucket; one second refills one packet.
-    let a = udp_burst("127.0.0.2:0", 200);
-    let b = udp_burst("127.0.0.3:0", 200);
-    assert!((10..=11).contains(&a), "{a} datagrams from .2 passed");
-    assert!((10..=11).contains(&b), "{b} datagrams from .3 passed");
+    // Each source has its own bucket; one second refills one packet (a loaded host may take
+    // more than a second over the sends: one more packet per second it took).
+    let (a, ta) = udp_burst_timed("127.0.0.2:0", 200);
+    let (b, tb) = udp_burst_timed("127.0.0.3:0", 200);
+    let max = |t: Duration| 11 + t.as_secs() as usize;
+    assert!((10..=max(ta)).contains(&a), "{a} datagrams from .2 passed in {ta:?}");
+    assert!((10..=max(tb)).contains(&b), "{b} datagrams from .3 passed in {tb:?}");
     let s = l.stats().unwrap();
     assert!(s.dropped >= 2 * 189, "{s:?}");
     assert!(s.new_sources >= 2, "{s:?}");

@@ -127,7 +127,11 @@ fn metrics_count_connections_bytes_and_render_prometheus() {
         c.write_all(&[7u8; 1000]).unwrap();
         assert_eq!(read_n(c, 1000), vec![7u8; 1000]);
     }
-    let m = settled(&e, |m| m.total.bytes_out >= 3000 && m.total.writes >= 3);
+    // The write queue empties after the bytes are counted: wait for both (a loaded host ran
+    // the assertions in between).
+    let m = settled(&e, |m| {
+        m.total.bytes_out >= 3000 && m.total.writes >= 3 && m.total.queued_bytes == 0
+    });
     assert_eq!(m.loops.len(), 2, "one entry per I/O thread");
     assert!(m.loops.iter().all(|l| l.running));
     assert_eq!(m.total.accepted, 3);
