@@ -66,8 +66,16 @@ fn config() -> Config {
     v
 }
 
-/// A GSS-API SOCKS server (toy acceptor) requiring at least `min`.
+/// A GSS-API SOCKS server (toy acceptor) granting at least `min`.
 fn server(min: Protection, more: impl FnOnce(Socks) -> Socks) -> Arc<Engine> {
+    server_levels(min..=Protection::Confidentiality, more)
+}
+
+/// A GSS-API SOCKS server (toy acceptor) granting `levels`.
+fn server_levels(
+    levels: std::ops::RangeInclusive<Protection>,
+    more: impl FnOnce(Socks) -> Socks,
+) -> Arc<Engine> {
     let er = EngineRef::new();
     let s = more(
         Socks::new(er.clone())
@@ -76,7 +84,7 @@ fn server(min: Protection, more: impl FnOnce(Socks) -> Socks) -> Arc<Engine> {
             .udp_associate(true)
             .gssapi(
                 || Ok(Box::new(Toy::acceptor(SECRET)) as Box<dyn GssContext>),
-                min,
+                levels,
             ),
     );
     let e = Arc::new(
@@ -474,6 +482,28 @@ fn wire_format_against_the_server() {
     s.write_all(&out).unwrap();
     assert_eq!(read_msg(&mut s).0, 0xff);
     assert_eq!(s.read(&mut m).unwrap_or(0), 0);
+    // A server capped at integrity grants no more, and a client asking for confidentiality
+    // then refuses it.
+    let capped = server_levels(Protection::None..=Protection::Integrity, |s| s);
+    let echo = echo_server();
+    let ce = client_engine();
+    let c = client(
+        capped.local_addrs()[0],
+        "alice",
+        SECRET,
+        Protection::Integrity,
+    );
+    echo_through(&ce, &c, echo.into(), 1000).unwrap();
+    let c = client(
+        capped.local_addrs()[0],
+        "alice",
+        SECRET,
+        Protection::Confidentiality,
+    );
+    let err = echo_through(&ce, &c, echo.into(), 10).unwrap_err();
+    assert!(err.to_string().contains("protection"), "{err}");
+    stop(&ce);
+    stop(&capped);
     // SOCKS4 is off on a GSS-API server.
     let mut s = TcpStream::connect(proxy).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

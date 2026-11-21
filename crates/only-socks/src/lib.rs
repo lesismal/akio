@@ -401,6 +401,7 @@ pub type Allow = Arc<dyn Fn(&Request<'_>) -> bool + Send + Sync>;
 struct GssServer {
     factory: gssapi::ServerFactory,
     min: gssapi::Protection,
+    max: gssapi::Protection,
 }
 
 /// What a SOCKS client asks for, as the access-control hook ([`Socks::allow`]) sees it.
@@ -573,8 +574,10 @@ impl Socks {
 
     /// Accepts GSS-API authentication (RFC 1961, method 1) and turns SOCKS4 off. `factory` makes
     /// the acceptor's security context of each connection, on the logical pool (it may load a
-    /// keytab); `min` is the least per-message protection allowed: a client asking for less
-    /// gets `min`, one asking for more gets what it asked. With [`auth`](Self::auth) as well,
+    /// keytab); `levels` are the per-message protection levels granted: a client asking for
+    /// less than the lowest gets the lowest, one asking for more than the highest gets the
+    /// highest (`Protection::None..=Protection::Confidentiality` grants what is asked; a range
+    /// whose end is below its start grants the start). With [`auth`](Self::auth) as well,
     /// a client may use either; without, no-authentication is no longer accepted. The
     /// context's [`peer_name`](gssapi::GssContext::peer_name) is the [`Request::user`] the
     /// access-control hook sees.
@@ -587,11 +590,13 @@ impl Socks {
     pub fn gssapi(
         mut self,
         factory: impl Fn() -> std::io::Result<Box<dyn gssapi::GssContext>> + Send + Sync + 'static,
-        min: gssapi::Protection,
+        levels: std::ops::RangeInclusive<gssapi::Protection>,
     ) -> Socks {
+        let (min, max) = levels.into_inner();
         self.gss = Some(Arc::new(GssServer {
             factory: Arc::new(factory),
             min,
+            max: max.max(min),
         }));
         self.allow_socks4 = false;
         self
@@ -1337,7 +1342,7 @@ impl SocksSession {
             self.gss_abort(c);
             return false;
         };
-        let level = asked.max(gss.min);
+        let level = asked.clamp(gss.min, gss.max);
         let mut out = Vec::new();
         if gssapi::protection_msg(ctx.as_mut(), level, &mut out).is_err() {
             self.gss_abort(c);

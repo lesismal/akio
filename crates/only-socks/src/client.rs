@@ -490,6 +490,7 @@ impl SocksClient {
     pub fn dial_blocking(&self, to: &Dest) -> io::Result<TcpStream> {
         let (s, mut hs, dl) = self.open_blocking(Cmd::Connect, to)?;
         read_reply(&s, &mut hs, &dl)?;
+        unprotected(&hs)?;
         dl.clear(&s)?;
         Ok(s)
     }
@@ -499,6 +500,7 @@ impl SocksClient {
     pub fn bind_blocking(&self, from: &Dest) -> io::Result<BlockingBind> {
         let (s, mut hs, dl) = self.open_blocking(Cmd::Bind, from)?;
         let first = read_reply(&s, &mut hs, &dl)?;
+        unprotected(&hs)?;
         let proxy = s.peer_addr()?;
         Ok(BlockingBind {
             bound: reply_addr(&first.addr, proxy),
@@ -1068,6 +1070,19 @@ impl Deadline {
 
 /// Reads byte by byte (so that nothing past the reply is consumed: it belongs to the caller)
 /// until the handshake yields a reply.
+/// A proxy may grant more GSS-API protection than asked for (none): a `TcpStream` cannot carry
+/// it.
+fn unprotected(hs: &Handshake) -> io::Result<()> {
+    match hs.protection() {
+        Some(p) if p != crate::gssapi::Protection::None => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the proxy requires GSS-API per-message protection, which the blocking helpers \
+             cannot carry (use the engine methods)",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn read_reply(
     mut s: &TcpStream,
     hs: &mut Handshake,
