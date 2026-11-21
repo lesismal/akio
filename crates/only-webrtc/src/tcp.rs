@@ -660,7 +660,7 @@ impl Handler for IceTcp {
             }
             match target {
                 Some(p) if !p.is_closed() => {
-                    p.input(source, local, f, true);
+                    p.input(source, local, f, true, 0);
                     true
                 }
                 _ => {

@@ -658,19 +658,50 @@ fn fec_negotiation() {
 }
 
 #[test]
-fn fec_rate_policy() {
+fn fec_protection_policy() {
+    use only_rtp::fec::ProtectionPolicy;
+    let t0 = Instant::now();
+    // 30 fps of 3-packet, 3 kB frames (720 kbps) with 5 % loss reported.
+    let feed = |pol: &mut ProtectionPolicy| {
+        for i in 0..30u32 {
+            pol.on_frame(
+                t0 + Duration::from_millis(33 * u64::from(i)),
+                3,
+                3000,
+                i == 0,
+            );
+        }
+        pol.on_loss(t0, 0.05);
+    };
+    let at = t0 + Duration::from_millis(990);
     let cfg = ConfigInner::default();
-    assert_eq!(fec_rate(&cfg, 0.0), 0);
-    assert_eq!(fec_rate(&cfg, 0.005), 0);
-    assert_eq!(fec_rate(&cfg, 0.05), 38);
-    assert_eq!(fec_rate(&cfg, 0.5), 128);
+    // No loss: no FEC.
+    let pol = ProtectionPolicy::new(false);
+    assert_eq!(fec_protection(&cfg, &pol, at).delta_rate, 0);
+    // FEC alone: libwebrtc's table for 5 % at 24 kbits per frame.
+    let mut pol = ProtectionPolicy::new(false);
+    feed(&mut pol);
+    let p = fec_protection(&cfg, &pol, at);
+    assert!(p.delta_rate >= 64 && p.key_rate >= p.delta_rate, "{p:?}");
+    assert_eq!(p.max_frames, 1);
+    // With NACK: below 20 ms of RTT delta frames get none; at 100 ms groups of 6 frames.
+    let mut pol = ProtectionPolicy::new(true);
+    feed(&mut pol);
+    pol.set_rtt(Duration::from_millis(5));
+    assert_eq!(fec_protection(&cfg, &pol, at).delta_rate, 0);
+    pol.set_rtt(Duration::from_millis(100));
+    let p = fec_protection(&cfg, &pol, at);
+    assert!(p.delta_rate > 0 && p.max_frames == 6, "{p:?}");
+    // The configured bounds clamp both factors.
     let cfg = ConfigInner {
         fec_min: 20,
         fec_max: 60,
         ..ConfigInner::default()
     };
-    assert_eq!(fec_rate(&cfg, 0.0), 20);
-    assert_eq!(fec_rate(&cfg, 0.3), 60);
+    let p = fec_protection(&cfg, &pol, at);
+    assert_eq!((p.delta_rate, p.key_rate), (60, 60));
+    let pol = ProtectionPolicy::new(false);
+    assert_eq!(fec_protection(&cfg, &pol, at).delta_rate, 20);
 }
 
 /// Video over a link with 8 % loss and no NACK: FEC alone repairs it.
@@ -741,7 +772,9 @@ fn fec_rate_follows_reported_loss() {
         fec: Some(FecMechanism::FlexFec),
         ..ConfigInner::default()
     };
-    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    // Without NACK the receiver's loss drives FEC (libwebrtc's `Fec` method).
+    let (mut a, mut b, video, now) =
+        pair_with(cfg.clone(), cfg.clone(), Direction::SendRecv, no_nack);
     let mut net = Net {
         rng: 3,
         loss: 0,
@@ -755,9 +788,26 @@ fn fec_rate_follows_reported_loss() {
     // 15 % loss: the receiver reports it, FEC starts.
     net.loss = 15;
     send_video(&mut a, &mut b, &mut net, video, 150, now);
-    let rate = a.rtc.media[0].fec.enc.as_ref().unwrap().rate();
-    assert!(rate > 40, "rate {rate}");
+    let p = a.rtc.media[0].fec.enc.as_ref().unwrap().protection();
+    assert!(p.delta_rate > 40 && p.key_rate >= p.delta_rate, "{p:?}");
     assert!(a.rtc.stats.fec_sent > 20);
+    // With NACK the hybrid spreads groups over more frames as the round trip grows (here
+    // about 60 ms at 25 fps: 2 x 25 x 0.06 = 3 frames); under 20 ms it would leave delta frames
+    // to NACK (`fec_protection_policy`).
+    let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
+    let mut net = Net {
+        rng: 3,
+        loss: 0,
+        jitter_ms: 40,
+        queue: Vec::new(),
+    };
+    let now = connect(&mut a, &mut b, &mut net, now);
+    net.loss = 15;
+    send_video(&mut a, &mut b, &mut net, video, 150, now);
+    let rtt = a.rtc.media[0].rtt().expect("rtt");
+    let p = a.rtc.media[0].fec.enc.as_ref().unwrap().protection();
+    assert!(rtt >= Duration::from_millis(30), "{rtt:?}");
+    assert!(p.delta_rate > 0 && p.max_frames >= 2, "{p:?} at {rtt:?}");
 }
 
 #[test]
@@ -782,8 +832,8 @@ fn bwe_probes_ramp_up() {
         // Probes do not disturb the media: every frame arrives, the copies are duplicates.
         assert_eq!(whole, 50);
         let dups: u64 = b.rtc.recv.values().map(|r| r.stream.duplicates()).sum();
-        assert!(dups > 20, "{dups}");
         let est = a.rtc.bwe.as_ref().unwrap().estimate();
+        assert!(dups > 20, "{dups}");
         assert!(est > 2_000_000, "ccfb {ccfb}: estimate {est}");
         assert!(a.events.iter().any(|e| matches!(
             e,
@@ -1442,29 +1492,17 @@ fn simulcast_fec(fec: Option<FecMechanism>, seed: u64) -> (Side, Side, Vec<Optio
 }
 
 #[test]
-fn ulpfec_on_simulcast_encodings() {
-    for seed in [5, 13] {
-        let (_, _, plain) = simulcast_fec(None, seed);
-        let (a, b, rids) = simulcast_fec(Some(FecMechanism::Ulpfec), seed);
-        let l = &a.rtc.media[0];
-        assert_eq!(l.fec_send_scheme(), Some(FecScheme::Ulpfec));
-        assert!(
-            l.sim.iter().all(|e| e.fec.enc.is_some()),
-            "an encoder per encoding"
-        );
-        assert!(b.rtc.stats.fec_recovered > 20, "{:?}", b.rtc.stats);
-        assert!(b.rtc.fec_rx.len() >= 2, "a decoder per encoding");
-        for r in ["h", "l"] {
-            let n = |v: &[Option<String>]| v.iter().filter(|x| x.as_deref() == Some(r)).count();
-            assert!(
-                n(&rids) >= 180 && n(&rids) > n(&plain) + 20,
-                "seed {seed} rid {r}: {} with FEC, {} without",
-                n(&rids),
-                n(&plain)
-            );
+fn fec_on_simulcast_encodings() {
+    for (m, scheme) in [
+        (FecMechanism::Ulpfec, FecScheme::Ulpfec),
+        (FecMechanism::FlexFec, FecScheme::Flexfec03),
+    ] {
+        for seed in [5, 13] {
+            simulcast_fec_check(m, scheme, seed);
         }
     }
-    // FlexFEC: none on a simulcast line (no signaled FEC stream with RIDs).
+    // FlexFEC on a simulcast line: the payload type, but no signaled FEC stream (each
+    // encoding's FlexFEC stream carries the MID and its repaired RID).
     let now = Instant::now();
     let mut o = Rtc::new(fec_cfg(Some(FecMechanism::FlexFec)), false, now).unwrap();
     let mut ch = o.changes();
@@ -1479,7 +1517,31 @@ fn ulpfec_on_simulcast_encodings() {
         .unwrap();
     let offer = o.apply(now, ch).unwrap().unwrap();
     assert!(
-        !offer.contains("flexfec") && !offer.contains("FEC-FR"),
+        offer.contains("flexfec-03") && !offer.contains("FEC-FR"),
         "{offer}"
     );
+}
+
+fn simulcast_fec_check(m: FecMechanism, scheme: FecScheme, seed: u64) {
+    {
+        let (_, _, plain) = simulcast_fec(None, seed);
+        let (a, b, rids) = simulcast_fec(Some(m), seed);
+        let l = &a.rtc.media[0];
+        assert_eq!(l.fec_send_scheme(), Some(scheme));
+        assert!(
+            l.sim.iter().all(|e| e.fec.enc.is_some()),
+            "an encoder per encoding"
+        );
+        assert!(b.rtc.stats.fec_recovered > 20, "{:?}", b.rtc.stats);
+        assert!(b.rtc.fec_rx.len() >= 2, "a decoder per encoding");
+        for r in ["h", "l"] {
+            let n = |v: &[Option<String>]| v.iter().filter(|x| x.as_deref() == Some(r)).count();
+            assert!(
+                n(&rids) >= 180 && n(&rids) > n(&plain) + 20,
+                "{m:?} seed {seed} rid {r}: {} with FEC, {} without",
+                n(&rids),
+                n(&plain)
+            );
+        }
+    }
 }

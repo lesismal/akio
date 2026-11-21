@@ -74,6 +74,7 @@
 mod bwe;
 mod ccfb;
 pub mod codec;
+mod emodel;
 pub mod fec;
 mod packet;
 mod probe;
@@ -99,6 +100,7 @@ mod tests_probe;
 
 pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
 pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
+pub use emodel::{EModel, EModelScore, mos_from_r};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
 pub use probe::ProbePacket;
 pub use rtcp::{

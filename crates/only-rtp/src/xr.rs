@@ -514,6 +514,8 @@ pub struct BurstLossModel {
     c22: u64,
     c23: u64,
     c33: u64,
+    /// Packets recorded.
+    total: u64,
 }
 
 impl Default for BurstLossModel {
@@ -539,12 +541,14 @@ impl BurstLossModel {
             c22: 0,
             c23: 0,
             c33: 0,
+            total: 0,
         }
     }
 
     /// Records the next expected packet: received and played, lost, or received but
     /// discarded by the jitter buffer.
     pub fn on_packet(&mut self, lost: bool, discarded: bool) {
+        self.total += 1;
         if lost {
             self.loss_count += 1;
         }
@@ -573,6 +577,33 @@ impl BurstLossModel {
             }
         }
         self.pkt = 0;
+    }
+
+    /// The fraction of the packets recorded that were lost or discarded.
+    #[must_use]
+    pub fn loss_fraction(&self) -> f64 {
+        let bad = (self.loss_count + self.discard_count).min(self.total);
+        if self.total == 0 {
+            0.0
+        } else {
+            bad as f64 / self.total as f64
+        }
+    }
+
+    /// The burst ratio of ITU-T G.107 (BurstR, for [`EModel`](crate::EModel)): the mean
+    /// length of the runs of lost (or discarded) packets over the one random loss of the
+    /// same rate would give, `(1 - loss) x mean run`; 1 for random loss (and with no loss),
+    /// above 1 when losses come in bursts.
+    #[must_use]
+    pub fn burst_ratio(&self) -> f64 {
+        let bad = (self.loss_count + self.discard_count).min(self.total);
+        if bad == 0 || bad == self.total {
+            return 1.0;
+        }
+        // A loss right after a loss (c33) continues a run.
+        let runs = bad.saturating_sub(self.c33).max(1);
+        let mean_run = bad as f64 / runs as f64;
+        ((1.0 - self.loss_fraction()) * mean_run).max(0.1)
     }
 
     /// The metrics so far for `ssrc`, with `packet_ms` milliseconds of media per packet;

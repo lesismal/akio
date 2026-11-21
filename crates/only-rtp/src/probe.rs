@@ -62,6 +62,13 @@ const SEND_WINDOW: Duration = Duration::from_millis(500);
 /// Media packets kept for that window at most (about 40 Mbps of 1200-byte packets).
 const MAX_MEDIA: usize = 2048;
 const MIN_SEND_SPAN: Duration = Duration::from_millis(200);
+/// Network state probing (libwebrtc's `network_state_interval`,
+/// `est_lower_than_network_ratio`, `est_lower_than_network_interval`): periodic probes while
+/// the estimate is below an estimate set from outside, and probes while the delay-based rate
+/// holds it below this fraction of the network state estimate.
+const NSE_INTERVAL: Duration = Duration::from_secs(5);
+const NSE_LOW_RATIO: f64 = 0.7;
+const NSE_LOW_INTERVAL: Duration = Duration::from_secs(3);
 
 /// One probe packet to send now: about `size` bytes (RTX of recent media or padding), logged
 /// with [`TwccSender::on_sent_probe`](crate::TwccSender::on_sent_probe) (or
@@ -167,6 +174,8 @@ pub(crate) struct ProbeController {
     /// received, size), for application-limited detection and probe measurements.
     media: VecDeque<(Instant, Option<Instant>, usize)>,
     alr: bool,
+    /// A further probe follows only results up to this rate (a network state estimate).
+    further_limit: f64,
 }
 
 impl ProbeController {
@@ -183,6 +192,7 @@ impl ProbeController {
             last_recovery: None,
             media: VecDeque::new(),
             alr: false,
+            further_limit: f64::INFINITY,
         }
     }
 
@@ -196,9 +206,51 @@ impl ProbeController {
 
     /// Forgets everything; the next [`start`](Self::start) probes from scratch.
     pub(crate) fn reset(&mut self) {
-        let (enabled, next_id) = (self.enabled, self.next_id);
+        let (enabled, next_id, limit) = (self.enabled, self.next_id, self.further_limit);
         *self = ProbeController::new(enabled);
         self.next_id = next_id;
+        self.further_limit = limit;
+    }
+
+    pub(crate) fn set_further_limit(&mut self, limit: f64) {
+        self.further_limit = limit;
+    }
+
+    /// The configured maximum went up to `new_max` (probes capped at `cap`): probe at it once
+    /// the initial probing is over, if the estimate is below it.
+    pub(crate) fn on_max_raised(&mut self, now: Instant, estimate: f64, new_max: f64, cap: f64) {
+        if !self.enabled || self.state != State::Complete || estimate >= new_max {
+            return;
+        }
+        self.probe(now, &[new_max], cap, false);
+    }
+
+    /// Network state probing after an estimator update with the detector normal: with a
+    /// network state estimate of upper bound `upper` set from outside (`external`), every 5 s
+    /// while `estimate` is below it; with any, every 3 s while the delay-based rate
+    /// (`delay_limited`) holds the estimate below 70 % of it. The probe goes at twice the
+    /// estimate, capped at `max(estimate, upper)`.
+    pub(crate) fn network_state_probe(
+        &mut self,
+        now: Instant,
+        estimate: f64,
+        upper: f64,
+        external: bool,
+        delay_limited: bool,
+        max: f64,
+    ) {
+        if !self.enabled || self.state != State::Complete || upper <= 0.0 {
+            return;
+        }
+        let since = self
+            .last_probe
+            .map_or(Duration::MAX, |t| now.saturating_duration_since(t));
+        let low = delay_limited && estimate < NSE_LOW_RATIO * upper && since >= NSE_LOW_INTERVAL;
+        let periodic = external && estimate < upper && since >= NSE_INTERVAL;
+        if low || periodic {
+            let cap = max.min(estimate.max(upper));
+            self.probe(now, &[ALR_SCALE * estimate], cap, true);
+        }
     }
 
     /// The initial exponential probes at 3 and 6 times `estimate`, once.
@@ -391,7 +443,7 @@ impl ProbeController {
         }
         let since_probe = |t: Option<Instant>| t.map(|t| now.saturating_duration_since(t));
         if self.state == State::Waiting {
-            if estimate > self.further_above {
+            if estimate > self.further_above && estimate <= self.further_limit {
                 self.probe(now, &[FURTHER_SCALE * estimate], max, true);
             } else if since_probe(self.last_probe).is_some_and(|d| d > WAIT_FOR_RESULT) {
                 self.state = State::Complete;

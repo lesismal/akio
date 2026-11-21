@@ -635,6 +635,17 @@ pub(crate) enum Other {
         fec_received: u64,
         /// Media packets rebuilt from FEC.
         fec_recovered: u64,
+        /// Media packets FEC rebuilt only in part, handed to the depacketizer (their frames
+        /// are not contiguous).
+        fec_partial: u64,
+        /// Media packets the pacer dropped because its queue was full.
+        paced_dropped: u64,
+        /// Received RTP packets that arrived ECN-capable (ECT(0), ECT(1) or CE), and of them
+        /// marked CE (reported in RFC 8888 feedback).
+        ecn_ect_received: u64,
+        ecn_ce_received: u64,
+        /// Sent packets the remote's RFC 8888 feedback reports marked CE.
+        ecn_ce_reported: u64,
         /// RFC 8888 congestion control feedback is in use instead of transport-wide feedback.
         ccfb: bool,
         /// The DTLS version of the connection (`None` before it is up).
@@ -738,6 +749,16 @@ pub(crate) struct ConfigInner {
     pub(crate) xr_blocks: XrBlocks,
     /// ULPFEC: the level-0 protection length (RFC 5109 §5), `None` for whole packets.
     pub(crate) ulpfec_level0: Option<usize>,
+    /// Bounds of the bandwidth estimate (bits per second).
+    pub(crate) bwe_bounds: (u64, u64),
+    /// Media is paced while the estimator runs (ADR-068).
+    pub(crate) pacing: bool,
+    /// Padding the pacer sends while it has no media (bits per second, at most the estimate).
+    pub(crate) padding_rate: u64,
+    /// The FEC packet masks of groups of up to 12 packets.
+    pub(crate) fec_mask: only_rtp::fec::FecMaskType,
+    /// RED (RFC 2198) on audio lines of codecs other than Opus: the redundant blocks sent.
+    pub(crate) audio_red: Option<u8>,
 }
 
 impl Default for ConfigInner {
@@ -774,6 +795,11 @@ impl Default for ConfigInner {
             rtcp_mux: RtcpMuxPolicy::Require,
             xr_blocks: XrBlocks::NONE,
             ulpfec_level0: None,
+            bwe_bounds: (only_rtp::DEFAULT_MIN_BITRATE, only_rtp::DEFAULT_MAX_BITRATE),
+            pacing: true,
+            padding_rate: 0,
+            fec_mask: only_rtp::fec::FecMaskType::Random,
+            audio_red: None,
         }
     }
 }
@@ -802,6 +828,11 @@ impl fmt::Debug for RtcConfig {
             .field("rtcp_mux", &self.0.rtcp_mux)
             .field("rtcp_xr_blocks", &self.0.xr_blocks)
             .field("ulpfec_level0", &self.0.ulpfec_level0)
+            .field("bwe_bounds", &self.0.bwe_bounds)
+            .field("pacing", &self.0.pacing)
+            .field("padding_rate", &self.0.padding_rate)
+            .field("fec_mask", &self.0.fec_mask)
+            .field("audio_red", &self.0.audio_red)
             .finish_non_exhaustive()
     }
 }
@@ -872,6 +903,55 @@ impl RtcConfig {
     #[must_use]
     pub fn enable_bwe(mut self, initial_bps: Option<u64>) -> Self {
         self.0.bwe = Some(initial_bps.unwrap_or(300_000));
+        self
+    }
+
+    /// Bounds of the bandwidth estimate in bits per second (defaults 30 kbps and 20 Mbps);
+    /// [`Peer::set_bitrate_bounds`](crate::Peer::set_bitrate_bounds) changes them on a
+    /// running peer (a raised maximum is probed at once).
+    #[must_use]
+    pub fn set_bwe_bounds(mut self, min_bps: u64, max_bps: u64) -> Self {
+        self.0.bwe_bounds = (min_bps.min(max_bps), max_bps.max(min_bps));
+        self
+    }
+
+    /// Pacing of sent media while the bandwidth estimator runs ([`enable_bwe`](Self::enable_bwe);
+    /// default on): video, FEC and retransmissions leave at 2.5 times the estimate with a
+    /// burst allowance of 40 ms, retransmissions first; audio is never delayed. Without the
+    /// estimator nothing is paced.
+    #[must_use]
+    pub fn enable_pacing(mut self, enabled: bool) -> Self {
+        self.0.pacing = enabled;
+        self
+    }
+
+    /// Padding the pacer sends while it has no media to send, in bits per second (at most the
+    /// estimate; default 0): RTX copies of recent media (or padding-only packets) that keep
+    /// the estimate measured while the encoder sends little. Only while pacing.
+    #[must_use]
+    pub fn set_padding_rate(mut self, bps: u64) -> Self {
+        self.0.padding_rate = bps;
+        self
+    }
+
+    /// The FEC packet masks of groups of up to 12 packets: libwebrtc's random-loss tables
+    /// (the default, what Chrome uses) or its bursty-loss tables.
+    #[must_use]
+    pub fn set_fec_mask(mut self, mask: FecMask) -> Self {
+        self.0.fec_mask = match mask {
+            FecMask::Random => only_rtp::fec::FecMaskType::Random,
+            FecMask::Bursty => only_rtp::fec::FecMaskType::Bursty,
+        };
+        self
+    }
+
+    /// RED (RFC 2198) on audio lines for codecs other than Opus (PCMU, PCMA, G.722, ...):
+    /// offers and accepts `red/<clock>` for them (Opus has
+    /// [`enable_opus_red`](Self::enable_opus_red)) and sends `redundancy` earlier packets
+    /// (0..=2) in each one; received RED is always taken apart. `None` (the default): off.
+    #[must_use]
+    pub fn enable_audio_red(mut self, redundancy: Option<u8>) -> Self {
+        self.0.audio_red = redundancy.map(|n| n.min(2));
         self
     }
 
@@ -1181,6 +1261,20 @@ pub enum FecMechanism {
     /// ULPFEC (RFC 5109) carried in RED (RFC 2198) on the media stream; browsers offer it
     /// by default.
     Ulpfec,
+    /// RED (RFC 2198) without FEC: `red` (with its RTX) and no `ulpfec`; video goes out in
+    /// RED, received RED is taken apart.
+    Red,
+}
+
+/// The FEC packet masks of groups of up to 12 packets ([`RtcConfig::set_fec_mask`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FecMask {
+    /// libwebrtc's tables for random losses (the default).
+    #[default]
+    Random,
+    /// libwebrtc's tables for bursts of consecutive losses.
+    Bursty,
 }
 
 /// One change requested through [`SdpChanges`].
