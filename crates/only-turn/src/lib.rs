@@ -459,8 +459,12 @@ impl TurnServer {
     /// answered with stateless cookies; each STUN or ChannelData message travels in its own
     /// record, unpadded. An allocation lives as long as its DTLS association (close_notify, a
     /// fatal alert, a new handshake from the same address, or `Config::udp_idle_timeout` of
-    /// silence ends it), so keep that timeout above the client's refresh interval. Fails when
-    /// the key or certificate cannot be used.
+    /// silence ends it), so keep that timeout above the client's refresh interval. Clients
+    /// are asked for 8-byte connection IDs (RFC 9146, RFC 9147 §9; negotiated, so clients
+    /// without them are unaffected): a client whose address changes (NAT rebinding) keeps its
+    /// association and allocation, and its path moves to the new address once a record from
+    /// it authenticates ([`dtls_with_connection_ids`](Self::dtls_with_connection_ids) sets
+    /// another length or none). Fails when the key or certificate cannot be used.
     ///
     /// ```no_run
     /// # use std::sync::Arc;
@@ -477,9 +481,19 @@ impl TurnServer {
     /// # Ok(()) }
     /// ```
     pub fn dtls(&self, tls: &only::tls::ServerConfig) -> io::Result<TurnDtls> {
+        self.dtls_with_connection_ids(tls, Some(dtls::CID_LEN))
+    }
+
+    /// [`dtls`](Self::dtls) asking clients for connection IDs of `len` bytes (1 to 255;
+    /// `None` or `Some(0)`: no connection IDs, every client is its 5-tuple).
+    pub fn dtls_with_connection_ids(
+        &self,
+        tls: &only::tls::ServerConfig,
+        len: Option<u8>,
+    ) -> io::Result<TurnDtls> {
         Ok(TurnDtls(
             self.0.clone(),
-            Arc::new(dtls::DtlsShared::new(tls)?),
+            Arc::new(dtls::DtlsShared::new(tls, len)?),
         ))
     }
 
@@ -686,7 +700,9 @@ impl Acceptor for TurnDtls {
             .insert(c.peer_addr(), ClientConn::Dtls(c.clone(), session.clone()));
         TurnDtlsClient {
             inner: self.0.clone(),
+            dtls: self.1.clone(),
             shard,
+            client: c.peer_addr(),
             session,
         }
     }
@@ -712,7 +728,11 @@ impl Acceptor for TurnDtls {
 #[doc(hidden)]
 pub struct TurnDtlsClient {
     inner: Arc<Inner>,
+    dtls: Arc<dtls::DtlsShared>,
     shard: usize,
+    /// The client's identity: this 5-tuple's address, or, once a connection ID moved an
+    /// association here, the address that association started from (its allocation's key).
+    client: SocketAddr,
     session: Arc<Mutex<dtls::DtlsSession>>,
 }
 
@@ -724,12 +744,52 @@ impl fmt::Debug for TurnDtlsClient {
 
 impl Handler for TurnDtlsClient {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let inner = &self.inner;
-        let shard = self.shard;
-        let client = c.peer_addr();
         let now = Instant::now();
         let mut out = dtls::DtlsOutput::default();
-        lock(&self.session).input(now, data, &mut out);
+        // A 5-tuple without an association of its own whose datagram carries the CID of
+        // another one: the client moved (RFC 9146 §6), if a record of it authenticates.
+        let moved = self.client == c.peer_addr()
+            && self.dtls.cid_len.is_some()
+            && !lock(&self.session).has_connection();
+        if let Some((first, session)) = moved.then(|| self.dtls.by_cid(data)).flatten() {
+            lock(&session).input(now, data, &mut out);
+            if out.messages.is_empty() {
+                return; // nothing authenticated: the path stays
+            }
+            let own = c.peer_addr();
+            self.inner.with_shard(self.shard, None, |_, env| {
+                if matches!(env.clients.get(&own), Some(ClientConn::Dtls(x, _)) if x.id() == c.id())
+                {
+                    env.clients.remove(&own);
+                }
+            });
+            self.client = first;
+            self.shard = self.inner.shard_of(first, Wire::Dtls);
+            self.session = session;
+        } else {
+            lock(&self.session).input(now, data, &mut out);
+        }
+        let inner = &self.inner;
+        let shard = self.shard;
+        let client = self.client;
+        if self.dtls.cid_len.is_some() {
+            let (moved, cids) = lock(&self.session).after_input(c.id(), !out.messages.is_empty());
+            if moved {
+                // The path goes where the latest authenticated record came from.
+                let session = &self.session;
+                inner.with_shard(shard, None, |_, env| match env.clients.get(&client) {
+                    Some(ClientConn::Dtls(x, _)) if x.id() == c.id() => {}
+                    Some(ClientConn::Dtls(..)) | None => {
+                        env.clients
+                            .insert(client, ClientConn::Dtls(c.clone(), session.clone()));
+                    }
+                    Some(_) => {}
+                });
+            }
+            if cids || out.closed {
+                self.dtls.sync_cids(client, &self.session, out.closed);
+            }
+        }
         for d in out.transmit {
             let _ = c.send_owned(d);
         }
@@ -755,15 +815,21 @@ impl Handler for TurnDtlsClient {
     }
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
-        let client = c.peer_addr();
-        self.inner.with_shard(self.shard, None, |core, env| {
+        let client = self.client;
+        let owned = self.inner.with_shard(self.shard, None, |core, env| {
             if matches!(env.clients.get(&client), Some(ClientConn::Dtls(x, _)) if x.id() == c.id())
             {
                 env.clients.remove(&client);
                 // The allocation lives as long as its DTLS association.
                 core.remove_client(client, env);
+                true
+            } else {
+                false
             }
         });
+        if owned {
+            self.dtls.sync_cids(client, &self.session, true);
+        }
     }
 }
 

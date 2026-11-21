@@ -15,6 +15,8 @@ use only_webrtc::{
 
 const T: Duration = Duration::from_secs(10);
 
+type Cfg = fn() -> only_webrtc::RtcConfig;
+
 fn engine() -> Arc<Engine> {
     let e = Arc::new(Engine::builder().udp_client_threads(1).build().unwrap());
     e.start().unwrap();
@@ -68,12 +70,16 @@ fn wait(rx: &Receiver<Got>, what: &str, f: impl Fn(&Got) -> bool) {
 
 fn session(offerer_splits: bool) {
     let e = engine();
-    let (cfg_a, cfg_b): (fn() -> only_webrtc::RtcConfig, fn() -> only_webrtc::RtcConfig) =
-        if offerer_splits {
-            (|| rtc_config().set_bundle_policy(BundlePolicy::Disabled), rtc_config)
-        } else {
-            (rtc_config, || rtc_config().set_bundle_policy(BundlePolicy::Disabled))
-        };
+    let (cfg_a, cfg_b): (Cfg, Cfg) = if offerer_splits {
+        (
+            || rtc_config().set_bundle_policy(BundlePolicy::Disabled),
+            rtc_config,
+        )
+    } else {
+        (rtc_config, || {
+            rtc_config().set_bundle_policy(BundlePolicy::Disabled)
+        })
+    };
     let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
         .config(cfg_a);
@@ -134,7 +140,10 @@ fn session(offerer_splits: bool) {
             break;
         }
     }
-    assert!(got_a >= 20 && got_v >= 20, "{got_a} audio, {got_v} video echoed");
+    assert!(
+        got_a >= 20 && got_v >= 20,
+        "{got_a} audio, {got_v} video echoed"
+    );
     pa.close();
     a.close();
     b.close();

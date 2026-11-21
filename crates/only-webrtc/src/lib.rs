@@ -84,10 +84,10 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec, Direction, Event, FecMechanism, Frequency,
-    IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
-    XrBlocks,
+    BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec,
+    Direction, Event, FecMechanism, Frequency, IceConnectionState, KeyframeRequest,
+    KeyframeRequestKind, MediaAdded, MediaData, MediaKind, MediaTime, Mid, OtherEvent, Pt,
+    Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -340,7 +340,11 @@ impl Peer {
     /// Changes how the SCTP stream scheduler ([`RtcConfig::set_sctp_scheduler`]) weighs data
     /// channel `id` against the others on this side; the remote keeps the priority it was told
     /// when the channel opened (DCEP has no update message).
-    pub fn set_channel_priority(&self, id: ChannelId, priority: ChannelPriority) -> Result<(), Error> {
+    pub fn set_channel_priority(
+        &self,
+        id: ChannelId,
+        priority: ChannelPriority,
+    ) -> Result<(), Error> {
         if self.with_rtc_inner(|rtc| rtc.set_channel_priority(id, priority))? {
             Ok(())
         } else {
@@ -431,7 +435,10 @@ impl Peer {
         let s = s.strip_prefix("a=").unwrap_or(s);
         let resolving = self.0.hub.upgrade().is_some_and(|h| h.mdns.get().is_some());
         match only_ice::Candidate::parse(s) {
-            Ok(_) => self.with_rtc_inner(|rtc| rtc.add_remote_candidate_in(mid, s).map_err(|e| Error::Sdp(e.to_string())))?,
+            Ok(_) => self.with_rtc_inner(|rtc| {
+                rtc.add_remote_candidate_in(mid, s)
+                    .map_err(|e| Error::Sdp(e.to_string()))
+            })?,
             Err(only_ice::ParseError::Mdns) if resolving => self.with_rtc_inner(|rtc| {
                 let _ = rtc.add_remote_candidate_in(mid, s);
             }),
@@ -747,6 +754,9 @@ impl timer::Due for Shared {
 
 type ConfigFn = dyn Fn() -> RtcConfig + Send + Sync;
 
+/// Where the mapped address of a STUN transaction goes (with its transaction id).
+type StunWaiter = mpsc::Sender<([u8; 12], SocketAddr)>;
+
 enum Tx {
     /// A listener: datagrams go out through the peer address's connection.
     Listener(Mutex<HashMap<SocketAddr, Conn<RtcUdp>>>),
@@ -777,7 +787,7 @@ struct Hub {
     peers: Mutex<HashMap<u64, Peer>>,
     by_ufrag: Mutex<HashMap<String, u64>>,
     by_addr: Mutex<HashMap<SocketAddr, u64>>,
-    stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<([u8; 12], SocketAddr)>>>,
+    stun_waiters: Mutex<HashMap<[u8; 12], StunWaiter>>,
     /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
     relays: Mutex<Vec<Arc<relay::Relay>>>,
     /// `relays.len()`, read without the lock on every datagram (endpoints without TURN
@@ -1625,7 +1635,11 @@ impl Endpoint {
     /// an address per section (browsers, SIP endpoints); a remote that is also one socket per
     /// session (this stack without these sockets) needs them on one side. Component 2 (RTCP
     /// without rtcp-mux) of every transport stays on [`bind_rtcp`](Self::bind_rtcp)'s socket.
-    pub fn bind_transport_socket(&self, engine: &Engine, addr: SocketAddr) -> Result<SocketAddr, Error> {
+    pub fn bind_transport_socket(
+        &self,
+        engine: &Engine,
+        addr: SocketAddr,
+    ) -> Result<SocketAddr, Error> {
         let b = engine
             .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
             .map_err(Error::Io)?;
@@ -1732,7 +1746,10 @@ impl Endpoint {
             if comp == 1 {
                 mapped1 = Some(mapped);
             }
-            if !cs.iter().any(|x| x.addr() == mapped && x.component() == comp) {
+            if !cs
+                .iter()
+                .any(|x| x.addr() == mapped && x.component() == comp)
+            {
                 cs.push(only_ice::Candidate::server_reflexive(mapped, base).with_component(comp));
             }
         }

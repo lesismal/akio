@@ -333,7 +333,12 @@ fn turn() -> (Arc<Engine>, TurnServer, std::net::SocketAddr) {
 
 /// The component of a candidate (its SDP line's second field).
 fn component(c: &only_webrtc::Candidate) -> u16 {
-    c.to_sdp().split_whitespace().nth(1).unwrap().parse().unwrap()
+    c.to_sdp()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 /// Keeps only the relayed candidates of an SDP.
@@ -385,13 +390,19 @@ fn rtcp_through_relayed_candidates() {
     let (echo, _rxb) = Probe::new(true);
     let (pb, answer) = b.accept_offer(&offer, echo).unwrap();
     let answer = relay_only(&answer);
-    assert!(answer.contains("a=rtcp:") && !answer.contains("a=rtcp-mux"), "{answer}");
+    assert!(
+        answer.contains("a=rtcp:") && !answer.contains("a=rtcp-mux"),
+        "{answer}"
+    );
     pa.accept_answer(&answer).unwrap();
     wait_connected(&rx);
     let before = turn.stats();
     let (echoed, events) = exchange(&pa, &rx, audio.unwrap(), 2);
     assert!(echoed >= 90, "{echoed} packets echoed");
-    assert!(has(&events, "SenderReport") && has(&events, "rtcp_mux: false"), "{events:#?}");
+    assert!(
+        has(&events, "SenderReport") && has(&events, "rtcp_mux: false"),
+        "{events:#?}"
+    );
     assert!(turn.stats().to_peer > before.to_peer);
     pa.close();
     pb.close();
@@ -433,8 +444,14 @@ fn rtcp_server_reflexive_candidate() {
         .filter(|c| c.to_sdp().contains(" typ srflx"))
         .map(|c| (component(c), c.addr().port()))
         .collect();
-    assert!(srflx.contains(&(1, main.port().wrapping_add(1000))), "{srflx:?}");
-    assert!(srflx.contains(&(2, rtcp.port().wrapping_add(1000))), "{srflx:?}");
+    assert!(
+        srflx.contains(&(1, main.port().wrapping_add(1000))),
+        "{srflx:?}"
+    );
+    assert!(
+        srflx.contains(&(2, rtcp.port().wrapping_add(1000))),
+        "{srflx:?}"
+    );
     // Both go into an offer without rtcp-mux, related to their own host candidates.
     let (probe, _rx) = Probe::new(false);
     let (pa, offer) = a
@@ -449,8 +466,16 @@ fn rtcp_server_reflexive_candidate() {
             .unwrap_or_else(|| panic!("{offer}"))
             .to_owned()
     };
-    assert!(line(2).ends_with(&format!("rport {}", rtcp.port())), "{}", line(2));
-    assert!(line(1).ends_with(&format!("rport {}", main.port())), "{}", line(1));
+    assert!(
+        line(2).ends_with(&format!("rport {}", rtcp.port())),
+        "{}",
+        line(2)
+    );
+    assert!(
+        line(1).ends_with(&format!("rport {}", main.port())),
+        "{}",
+        line(1)
+    );
     pa.close();
     a.close();
     e.shutdown();
@@ -487,7 +512,10 @@ fn ice_lite_server_with_an_rtcp_listener() {
         .unwrap();
     let (echo, _rxb) = Probe::new(true);
     let (ps, answer) = server.accept_offer(&offer, echo).unwrap();
-    assert!(answer.contains("a=ice-lite") && answer.contains("a=rtcp:"), "{answer}");
+    assert!(
+        answer.contains("a=ice-lite") && answer.contains("a=rtcp:"),
+        "{answer}"
+    );
     assert!(!answer.contains("a=rtcp-mux"), "{answer}");
     assert!(
         answer
@@ -499,7 +527,10 @@ fn ice_lite_server_with_an_rtcp_listener() {
     wait_connected(&rx);
     let (echoed, events) = exchange(&pa, &rx, audio.unwrap(), 2);
     assert!(echoed >= 90, "{echoed} packets echoed");
-    assert!(has(&events, "SenderReport") && has(&events, "rtcp_mux: false"), "{events:#?}");
+    assert!(
+        has(&events, "SenderReport") && has(&events, "rtcp_mux: false"),
+        "{events:#?}"
+    );
     pa.close();
     ps.close();
     a.close();

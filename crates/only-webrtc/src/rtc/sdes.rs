@@ -135,9 +135,9 @@ impl Crypto {
         for p in it {
             // Session parameters (RFC 4568 §6.3): the window size hint is only a hint (the
             // replay window is ours); KDR, UNENCRYPTED_*, FEC_* change the transform.
-            let wsh = p
-                .strip_prefix("WSH=")
-                .is_some_and(|n| !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()));
+            let wsh = p.strip_prefix("WSH=").is_some_and(|n| {
+                !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit())
+            });
             if !wsh {
                 return None;
             }
@@ -374,7 +374,7 @@ mod tests {
             (two.keys[0].mki.clone(), two.keys[1].mki.clone()),
             (vec![1, 2], vec![0, 3])
         );
-        assert_eq!(Crypto::parse(&two.to_attr()), Some(two.clone()));
+        assert_eq!(Crypto::parse(&two.to_attr()), Some(two));
         let long = Crypto::parse(&format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|7:20")).unwrap();
         assert_eq!(long.keys[0].mki.len(), 20);
         assert_eq!(long.keys[0].mki[19], 7);
@@ -389,7 +389,7 @@ mod tests {
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:129"),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|1:4|2^20"), // MKI before the lifetime
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k}|x:4"),
-            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"),      // session parameter
+            format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} KDR=1"), // session parameter
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} WSH=x"),
             format!("1 AES_CM_128_HMAC_SHA1_80 inline:{k} UNENCRYPTED_SRTP"),
             format!("1 ARIA_128_CTR_HMAC_SHA1_80 inline:{k}"), // unsupported suite (RFC 8269)

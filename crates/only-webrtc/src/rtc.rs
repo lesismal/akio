@@ -25,9 +25,9 @@ use only_srtp::{Context as Srtp, Profile};
 
 use crate::sdp::{Attr, Media, Sdp};
 use crate::types::{
-    Change, Changes, ChannelConfig, ChannelId, ChannelPriority, Codec, ConfigInner, Direction, FecMechanism,
-    IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
+    Change, Changes, ChannelConfig, ChannelId, ChannelPriority, Codec, ConfigInner, Direction,
+    FecMechanism, IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData,
+    MediaKind, MediaTime, Mid, Other, Pt, RtcpMuxPolicy, RtpPacket, XrBlocks,
 };
 use crate::{Frequency, fill_random};
 
@@ -1375,7 +1375,11 @@ impl Rtc {
             if !unbundled {
                 self.sdes.accept_offer(&sdp).map_err(err)?;
             }
-            if let Some(m) = sdp.media.iter().find(|m| m.port != 0 && m.kind != "application") {
+            if let Some(m) = sdp
+                .media
+                .iter()
+                .find(|m| m.port != 0 && m.kind != "application")
+            {
                 self.sdes.proto.clone_from(&m.proto);
             }
         }
@@ -1510,7 +1514,13 @@ impl Rtc {
         if unbundled {
             let mids: Vec<Mid> = Self::remote_mids(&sdp)
                 .into_iter()
-                .filter(|m| self.app_mid == Some(*m) || self.media.iter().any(|l| l.mid == *m && !l.codecs.is_empty()))
+                .filter(|m| {
+                    self.app_mid == Some(*m)
+                        || self
+                            .media
+                            .iter()
+                            .any(|l| l.mid == *m && !l.codecs.is_empty())
+                })
                 .collect();
             self.split_transports(now, &mids, false);
             self.apply_split_transport(&sdp, true)?;
@@ -1724,7 +1734,12 @@ impl Rtc {
 
     /// Section `i` (mid `mid`) of our offer, written by the current transport, and its `c=`
     /// address (without ICE).
-    fn offer_section(&self, mid: Mid, i: usize, offer: bool) -> Option<(Media, Option<std::net::IpAddr>)> {
+    fn offer_section(
+        &self,
+        mid: Mid,
+        i: usize,
+        offer: bool,
+    ) -> Option<(Media, Option<std::net::IpAddr>)> {
         let setup = if offer {
             "actpass"
         } else {

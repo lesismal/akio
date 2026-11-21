@@ -1910,8 +1910,15 @@ fn fixed_pairs_without_ice() {
     assert!(!ag.set_fixed_pair(3, a("10.0.0.1:1000"), a("10.0.0.2:2000")));
     assert!(ag.set_fixed_pair(1, a("10.0.0.1:1000"), a("10.0.0.2:2000")));
     assert!(ag.is_fixed());
-    assert_eq!(ag.send_pair(), Some((a("10.0.0.1:1000"), a("10.0.0.2:2000"))));
-    assert_ne!(ag.state(), IceState::Completed, "component 2 has no pair yet");
+    assert_eq!(
+        ag.send_pair(),
+        Some((a("10.0.0.1:1000"), a("10.0.0.2:2000")))
+    );
+    assert_ne!(
+        ag.state(),
+        IceState::Completed,
+        "component 2 has no pair yet"
+    );
     assert!(ag.set_fixed_pair(2, a("10.0.0.1:1001"), a("10.0.0.2:2001")));
     assert_eq!(ag.state(), IceState::Completed);
     let evs: Vec<IceEvent> = std::iter::from_fn(|| ag.poll_event()).collect();
@@ -1934,10 +1941,17 @@ fn fixed_pairs_without_ice() {
     let req = stun::binding_request(stun::transaction_id());
     assert!(!ag.handle_receive(now, a("10.0.0.2:2000"), a("10.0.0.1:1000"), &req));
     ag.add_remote_candidate(Candidate::host(a("10.0.0.3:3000")));
-    assert!(ag.remote_candidates().iter().all(|c| c.addr() != a("10.0.0.3:3000")));
+    assert!(
+        ag.remote_candidates()
+            .iter()
+            .all(|c| c.addr() != a("10.0.0.3:3000"))
+    );
     // Moving a component (latching onto where media comes from).
     assert!(ag.set_fixed_pair(1, a("10.0.0.1:1000"), a("192.0.2.9:4000")));
-    assert_eq!(ag.selected_pair(), Some((a("10.0.0.1:1000"), a("192.0.2.9:4000"))));
+    assert_eq!(
+        ag.selected_pair(),
+        Some((a("10.0.0.1:1000"), a("192.0.2.9:4000")))
+    );
     assert_eq!(
         ag.poll_event(),
         Some(IceEvent::SelectedPair {

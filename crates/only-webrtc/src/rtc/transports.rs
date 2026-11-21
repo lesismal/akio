@@ -277,14 +277,22 @@ impl Rtc {
             return None;
         }
         let ssrc = pkts.iter().find_map(rtcp_sender)?;
-        let line = self.media.iter().position(|l| l.sends_ssrc(ssrc) || l.send.ssrc() == ssrc)?;
+        let line = self
+            .media
+            .iter()
+            .position(|l| l.sends_ssrc(ssrc) || l.send.ssrc() == ssrc)?;
         let k = self.tp_of_line(line);
         (k != self.xt.cur).then_some(k)
     }
 
     /// The transport a datagram from `source` to our `destination` belongs to (called with
     /// the primary current).
-    pub(super) fn tp_demux(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) -> usize {
+    pub(super) fn tp_demux(
+        &self,
+        source: SocketAddr,
+        destination: SocketAddr,
+        data: &[u8],
+    ) -> usize {
         let n = self.xt.tps.len() + 1;
         let ice = |k: usize| {
             if k == 0 {
@@ -584,7 +592,10 @@ impl Rtc {
             .iter()
             .enumerate()
             .filter(|(_, m)| m.port != 0 || (m.port == 0 && m.has("bundle-only")))
-            .map(|(i, m)| m.get("mid").map_or_else(|| Mid::new(&i.to_string()), Mid::new))
+            .map(|(i, m)| {
+                m.get("mid")
+                    .map_or_else(|| Mid::new(&i.to_string()), Mid::new)
+            })
             .collect()
     }
 
@@ -617,12 +628,18 @@ impl Rtc {
 
     /// The remote description's ICE credentials, candidates and options for each transport
     /// (section by section), or its plain addresses.
-    pub(super) fn apply_split_transport(&mut self, sdp: &Sdp, is_offer: bool) -> Result<(), RtcErr> {
+    pub(super) fn apply_split_transport(
+        &mut self,
+        sdp: &Sdp,
+        is_offer: bool,
+    ) -> Result<(), RtcErr> {
         for (i, m) in sdp.media.iter().enumerate() {
             if m.port == 0 {
                 continue;
             }
-            let mid = m.get("mid").map_or_else(|| Mid::new(&i.to_string()), Mid::new);
+            let mid = m
+                .get("mid")
+                .map_or_else(|| Mid::new(&i.to_string()), Mid::new);
             let k = self.tp_of_mid(mid);
             if k == 0 && Some(mid) != self.xt.primary {
                 continue;
@@ -706,8 +723,8 @@ impl Rtc {
 
     /// Without ICE: fixed pairs to the section's addresses (section 0 of `sdp`).
     pub(super) fn apply_plain(&mut self, sdp: &Sdp) -> Result<(), RtcErr> {
-        let (rtp, rtcp) =
-            plain_addrs(sdp, 0).ok_or_else(|| err("no c= address and port for media without ICE"))?;
+        let (rtp, rtcp) = plain_addrs(sdp, 0)
+            .ok_or_else(|| err("no c= address and port for media without ICE"))?;
         let local = |comp: u16, v6: bool| {
             let cands: Vec<IceCandidate> = if comp == 1 {
                 self.ice.local_candidates().to_vec()
@@ -724,7 +741,8 @@ impl Rtc {
                 .find(|c| c.addr().is_ipv6() == v6)
                 .map(IceCandidate::addr)
         };
-        let l1 = local(1, rtp.is_ipv6()).ok_or_else(|| err("no host candidate for media without ICE"))?;
+        let l1 = local(1, rtp.is_ipv6())
+            .ok_or_else(|| err("no host candidate for media without ICE"))?;
         let mut news = vec![rtp];
         if self.ice.components() == 2 {
             let l2 = local(2, rtcp.is_ipv6())
@@ -752,9 +770,8 @@ impl Rtc {
     /// The local address and port a section without ICE is written with: the first host
     /// candidate of the current transport (component 1, and component 2's for `a=rtcp`).
     pub(super) fn plain_local(&self) -> (Option<SocketAddr>, Option<SocketAddr>) {
-        let host = |c: &&IceCandidate| {
-            c.kind() == only_ice::CandidateKind::Host && c.tcp_type().is_none()
-        };
+        let host =
+            |c: &&IceCandidate| c.kind() == only_ice::CandidateKind::Host && c.tcp_type().is_none();
         let peer = self.ice.send_pair().map(|p| p.0);
         let c1 = peer.or_else(|| {
             self.ice
@@ -842,28 +859,49 @@ mod tests {
         let s = sdp(&format!("{base}m=audio 4000 RTP/SAVP 0\r\n"));
         assert_eq!(
             plain_addrs(&s, 0),
-            Some(("192.0.2.1:4000".parse().unwrap(), "192.0.2.1:4001".parse().unwrap()))
+            Some((
+                "192.0.2.1:4000".parse().unwrap(),
+                "192.0.2.1:4001".parse().unwrap()
+            ))
         );
         let s = sdp(&format!(
             "{base}m=audio 4000 RTP/SAVP 0\r\nc=IN IP4 192.0.2.7\r\na=rtcp:5005 IN IP4 192.0.2.9\r\n"
         ));
         assert_eq!(
             plain_addrs(&s, 0),
-            Some(("192.0.2.7:4000".parse().unwrap(), "192.0.2.9:5005".parse().unwrap()))
+            Some((
+                "192.0.2.7:4000".parse().unwrap(),
+                "192.0.2.9:5005".parse().unwrap()
+            ))
         );
         let s = sdp(&format!("{base}m=audio 4000 RTP/SAVP 0\r\na=rtcp:4002\r\n"));
-        assert_eq!(plain_addrs(&s, 0).unwrap().1, "192.0.2.1:4002".parse().unwrap());
+        assert_eq!(
+            plain_addrs(&s, 0).unwrap().1,
+            "192.0.2.1:4002".parse().unwrap()
+        );
         let s = sdp(&format!("{base}m=audio 4000 RTP/SAVP 0\r\na=rtcp-mux\r\n"));
-        assert_eq!(plain_addrs(&s, 0).unwrap().1, "192.0.2.1:4000".parse().unwrap());
-        let s = sdp(&format!(
-            "v=0\r\no=- 1 1 IN IP6 ::1\r\ns=-\r\nt=0 0\r\nm=audio 4000 RTP/SAVP 0\r\nc=IN IP6 2001:db8::5\r\n"
-        ));
-        assert_eq!(plain_addrs(&s, 0).unwrap().0, "[2001:db8::5]:4000".parse().unwrap());
+        assert_eq!(
+            plain_addrs(&s, 0).unwrap().1,
+            "192.0.2.1:4000".parse().unwrap()
+        );
+        let s = sdp(
+            "v=0\r\no=- 1 1 IN IP6 ::1\r\ns=-\r\nt=0 0\r\nm=audio 4000 RTP/SAVP 0\r\nc=IN IP6 2001:db8::5\r\n",
+        );
+        assert_eq!(
+            plain_addrs(&s, 0).unwrap().0,
+            "[2001:db8::5]:4000".parse().unwrap()
+        );
         // No address, an unspecified one, a rejected section, a bad a=rtcp.
-        assert_eq!(plain_addrs(&sdp("v=0\r\nm=audio 4000 RTP/SAVP 0\r\n"), 0), None);
+        assert_eq!(
+            plain_addrs(&sdp("v=0\r\nm=audio 4000 RTP/SAVP 0\r\n"), 0),
+            None
+        );
         let s = sdp("v=0\r\nc=IN IP4 0.0.0.0\r\nm=audio 4000 RTP/SAVP 0\r\n");
         assert_eq!(plain_addrs(&s, 0), None);
-        assert_eq!(plain_addrs(&sdp(&format!("{base}m=audio 0 RTP/SAVP 0\r\n")), 0), None);
+        assert_eq!(
+            plain_addrs(&sdp(&format!("{base}m=audio 0 RTP/SAVP 0\r\n")), 0),
+            None
+        );
         let s = sdp(&format!("{base}m=audio 4000 RTP/SAVP 0\r\na=rtcp:x\r\n"));
         assert_eq!(plain_addrs(&s, 0), None);
         assert!(!has_ice(&s) && !bundles(&s));

@@ -208,8 +208,14 @@ fn sdes_refusals_and_dtls_unchanged() {
         .unwrap();
     let app = &offer[offer.find("m=application").expect("an application section")..];
     let media = &offer[..offer.find("m=application").unwrap()];
-    assert!(app.contains("a=fingerprint:") && !app.contains("a=crypto:"), "{offer}");
-    assert!(media.contains("a=crypto:") && !media.contains("a=fingerprint:"), "{offer}");
+    assert!(
+        app.contains("a=fingerprint:") && !app.contains("a=crypto:"),
+        "{offer}"
+    );
+    assert!(
+        media.contains("a=crypto:") && !media.contains("a=fingerprint:"),
+        "{offer}"
+    );
     // An SDES offer to an endpoint with SDES off.
     let (_p, offer) = sdes
         .create_offer(Echo, |api| {
@@ -324,13 +330,25 @@ fn sdes_without_ice_between_endpoints() {
         })
         .unwrap();
     let port = a.local_addr().unwrap().port();
-    assert!(offer.contains(&format!("m=audio {port} RTP/SAVPF")), "{offer}");
+    assert!(
+        offer.contains(&format!("m=audio {port} RTP/SAVPF")),
+        "{offer}"
+    );
     assert!(offer.contains("c=IN IP4 127.0.0.1"), "{offer}");
-    assert!(offer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", a_rtcp.port())), "{offer}");
-    assert!(!offer.contains("a=ice-ufrag") && offer.contains("|1:4"), "{offer}");
+    assert!(
+        offer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", a_rtcp.port())),
+        "{offer}"
+    );
+    assert!(
+        !offer.contains("a=ice-ufrag") && offer.contains("|1:4"),
+        "{offer}"
+    );
     let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
     assert!(!answer.contains("a=ice-ufrag"), "{answer}");
-    assert!(answer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", b_rtcp.port())), "{answer}");
+    assert!(
+        answer.contains(&format!("a=rtcp:{} IN IP4 127.0.0.1", b_rtcp.port())),
+        "{answer}"
+    );
     pa.accept_answer(&answer).unwrap();
     wait_connected(&rx);
     echo(&pa, &rx, audio.unwrap(), 9);
@@ -358,11 +376,19 @@ fn sdes_media_and_data_channels_between_endpoints() {
     seen(&rx, "connected", |g| matches!(g, Seen::Connected));
     seen(&rx, "open", |g| matches!(g, Seen::Open));
     pa.send(ch.unwrap(), b"over dtls", true).unwrap();
-    seen(&rx, "echo", |g| matches!(g, Seen::Data(d) if d == b"over dtls"));
-    let (audio, pt) = (audio.unwrap(), pa.payload_type(audio.unwrap(), Codec::Opus).unwrap());
+    seen(
+        &rx,
+        "echo",
+        |g| matches!(g, Seen::Data(d) if d == b"over dtls"),
+    );
+    let (audio, pt) = (
+        audio.unwrap(),
+        pa.payload_type(audio.unwrap(), Codec::Opus).unwrap(),
+    );
     for i in 0..50u64 {
         let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
-        pa.write_media(audio, pt, Instant::now(), t, &[0xfc, 1, 2]).unwrap();
+        pa.write_media(audio, pt, Instant::now(), t, &[0xfc, 1, 2])
+            .unwrap();
         std::thread::sleep(Duration::from_millis(5));
     }
     seen(&rx, "media echo", |g| matches!(g, Seen::Media));

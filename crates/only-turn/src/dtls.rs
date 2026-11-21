@@ -8,18 +8,35 @@
 //! (no framing, no padding: RFC 7350 section 4). An allocation lives as long as its DTLS
 //! association: close_notify, a fatal alert, the listener's idle timeout or a new handshake
 //! from the same 5-tuple free it.
+//!
+//! Connection IDs (RFC 9146 for DTLS 1.2, RFC 9147 §9 for 1.3; [`CID_LEN`] bytes, on by
+//! default): the server asks clients to put one in their records, and keeps an index from
+//! its live CIDs to their association. A datagram from a 5-tuple the listener does not know
+//! whose CID names an association is fed to that association; once one of its records
+//! authenticates (an application-data record came out of it), the client's path moves there
+//! (RFC 9146 §6): responses and relayed data go to the new 5-tuple, while the allocation keeps
+//! the identity of the address the association started from. Records that do not
+//! authenticate (spoofed, replayed) move nothing.
 
+use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use only::tls;
 use only_dtls::{Config, Connection, Event, HelloCheck, HelloVerifier, Identity, PeerVerifier};
 
+/// The length of the connection IDs the server asks clients for.
+pub(crate) const CID_LEN: u8 = 8;
+/// Most CIDs indexed per listener (each live association has one or a few).
+const MAX_CIDS: usize = 1 << 17;
+
 /// The DTLS configuration of a TURN server: the certificate and key of `cfg` (its default
 /// chain), DTLS 1.3 with fallback to 1.2 (1.3 only if `cfg` is TLS 1.3 only), client
-/// certificates only when `cfg` asks for them, cookies left to the listener.
-pub(crate) fn server_config(cfg: &tls::ServerConfig) -> io::Result<Arc<Config>> {
+/// certificates only when `cfg` asks for them, cookies left to the listener, connection IDs
+/// of `cid` bytes asked for (`None`: none).
+pub(crate) fn server_config(cfg: &tls::ServerConfig, cid: Option<u8>) -> io::Result<Arc<Config>> {
     let bad = |what: &str, e: &dyn std::fmt::Display| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -38,7 +55,8 @@ pub(crate) fn server_config(cfg: &tls::ServerConfig) -> io::Result<Arc<Config>> 
     let mut c = Config::new(identity)
         .with_versions(versions)
         .with_hello_verify(false)
-        .with_require_client_certificate(false);
+        .with_require_client_certificate(false)
+        .with_connection_id(cid);
     if let Some((roots, required)) = &p.client_auth {
         c = c
             .with_require_client_certificate(*required)
@@ -96,6 +114,11 @@ pub(crate) struct DtlsSession {
     /// new handshake.
     random: [u8; 32],
     closed: bool,
+    /// The CIDs of ours indexed for this session ([`DtlsShared::sync_cids`]).
+    indexed: Vec<Vec<u8>>,
+    /// The listener connection (5-tuple) the client's path is on, once a record
+    /// authenticated (0: not yet).
+    path: u64,
 }
 
 impl std::fmt::Debug for DtlsSession {
@@ -130,7 +153,52 @@ impl DtlsSession {
             conn: None,
             random: [0; 32],
             closed: false,
+            indexed: Vec::new(),
+            path: 0,
         }
+    }
+
+    /// After an input on listener connection `conn` that authenticated (`authenticated`):
+    /// whether the path just moved to `conn`, and whether the live CIDs changed.
+    pub(crate) fn after_input(&mut self, conn: u64, authenticated: bool) -> (bool, bool) {
+        let moved = authenticated && self.path != conn;
+        if moved {
+            self.path = conn;
+        }
+        let live: &[Vec<u8>] = match &self.conn {
+            Some(c) if !self.closed && c.is_connected() => c.local_connection_ids(),
+            _ => &[],
+        };
+        (moved, live != self.indexed.as_slice())
+    }
+
+    /// Whether a DTLS connection exists (a ClientHello with a valid cookie arrived).
+    pub(crate) fn has_connection(&self) -> bool {
+        self.conn.is_some()
+    }
+
+    /// The CIDs of ours now live, and those indexed before: (to add, to remove).
+    fn cid_changes(&mut self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let live: &[Vec<u8>] = match &self.conn {
+            Some(c) if !self.closed && c.is_connected() => c.local_connection_ids(),
+            _ => &[],
+        };
+        if live == self.indexed.as_slice() {
+            return (Vec::new(), Vec::new());
+        }
+        let add = live
+            .iter()
+            .filter(|c| !self.indexed.contains(c))
+            .cloned()
+            .collect();
+        let remove = self
+            .indexed
+            .iter()
+            .filter(|c| !live.contains(c))
+            .cloned()
+            .collect();
+        self.indexed = live.to_vec();
+        (add, remove)
     }
 
     /// Fuzzing: a connection as if the ClientHello's cookie had been checked.
@@ -240,23 +308,91 @@ impl DtlsSession {
     }
 }
 
+/// The association a CID names: the address it started from (the allocation's identity)
+/// and its session.
+pub(crate) type CidTarget = (SocketAddr, Arc<Mutex<DtlsSession>>);
+
+/// An indexed CID: the association's first address and its session.
+type CidEntry = (SocketAddr, Weak<Mutex<DtlsSession>>);
+
 /// Shared by the clients of one DTLS listener.
 pub(crate) struct DtlsShared {
     pub(crate) cfg: Arc<Config>,
     pub(crate) verifier: Arc<HelloVerifier>,
+    /// The CID length asked for (`None`: no CIDs).
+    pub(crate) cid_len: Option<u8>,
+    /// Live CIDs of ours -> (the association's first address, its session).
+    cids: Mutex<HashMap<Vec<u8>, CidEntry>>,
 }
 
 impl DtlsShared {
-    pub(crate) fn new(cfg: &tls::ServerConfig) -> io::Result<DtlsShared> {
+    pub(crate) fn new(cfg: &tls::ServerConfig, cid_len: Option<u8>) -> io::Result<DtlsShared> {
+        let cid_len = cid_len.filter(|l| *l > 0);
         Ok(DtlsShared {
-            cfg: server_config(cfg)?,
+            cfg: server_config(cfg, cid_len)?,
             verifier: Arc::new(
                 HelloVerifier::new(Instant::now()).map_err(|e| io::Error::other(e.to_string()))?,
             ),
+            cid_len,
+            cids: Mutex::new(HashMap::new()),
         })
     }
 
-    pub(crate) fn session(&self, peer: std::net::SocketAddr) -> Arc<Mutex<DtlsSession>> {
+    /// The association whose CID a datagram from an unknown 5-tuple carries.
+    pub(crate) fn by_cid(&self, datagram: &[u8]) -> Option<CidTarget> {
+        let len = usize::from(self.cid_len?);
+        let cid = only_dtls::connection_id(datagram, len)?;
+        let m = self
+            .cids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (addr, s) = m.get(cid)?;
+        Some((*addr, s.upgrade()?))
+    }
+
+    /// Keeps the index in step with the CIDs `session` (whose association started at
+    /// `client`) accepts now; with `gone`, forgets them all.
+    pub(crate) fn sync_cids(
+        &self,
+        client: SocketAddr,
+        session: &Arc<Mutex<DtlsSession>>,
+        gone: bool,
+    ) {
+        if self.cid_len.is_none() {
+            return;
+        }
+        let (add, remove) = {
+            let mut s = session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if gone {
+                (Vec::new(), std::mem::take(&mut s.indexed))
+            } else {
+                s.cid_changes()
+            }
+        };
+        if add.is_empty() && remove.is_empty() {
+            return;
+        }
+        let mut m = self
+            .cids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for c in remove {
+            if m.get(&c)
+                .is_some_and(|(_, w)| w.as_ptr() == Arc::as_ptr(session))
+            {
+                m.remove(&c);
+            }
+        }
+        for c in add {
+            if m.len() < MAX_CIDS {
+                m.insert(c, (client, Arc::downgrade(session)));
+            }
+        }
+    }
+
+    pub(crate) fn session(&self, peer: SocketAddr) -> Arc<Mutex<DtlsSession>> {
         Arc::new(Mutex::new(DtlsSession::new(
             self.cfg.clone(),
             self.verifier.clone(),

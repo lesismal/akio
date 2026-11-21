@@ -1740,7 +1740,12 @@ impl IceAgent {
     /// [`IceState::Completed`]. Calling it again moves the component to another pair (for
     /// example to latch onto the address media really comes from). `false` (and nothing
     /// changes) for a component the stream does not have.
-    pub fn set_fixed_pair(&mut self, component: u16, local: SocketAddr, remote: SocketAddr) -> bool {
+    pub fn set_fixed_pair(
+        &mut self,
+        component: u16,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> bool {
         if !self.has_component(component) || self.closed {
             return false;
         }

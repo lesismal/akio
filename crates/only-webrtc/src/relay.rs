@@ -97,6 +97,9 @@ pub(crate) fn dtls_config(
     } else {
         vec![only_dtls::Version::Dtls13, only_dtls::Version::Dtls12]
     });
+    // The server's connection ID goes into our records when it asks for one (RFC 9146): an
+    // association that outlives a change of our address (NAT rebinding) keeps the allocation.
+    c = c.with_connection_id(Some(0));
     if !p.insecure {
         let mut roots = only_x509::RootStore::new();
         for r in &p.roots {

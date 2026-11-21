@@ -2,6 +2,8 @@
 //! BUNDLE, SDES-SRTP variants (no ICE, MKIs, next to data channels) and component 2's
 //! server-reflexive and relayed candidates.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use super::*;
 use crate::SdpChanges;
 use crate::types::{BundlePolicy, ChannelPriority, ChannelScheduler};
@@ -214,7 +216,11 @@ fn priority_run(
                 order.push(if names[&id] == "low" { "low" } else { "high" });
             }
         }
-        assert!(now - start < Duration::from_secs(60), "stalled at {}", order.len());
+        assert!(
+            now - start < Duration::from_secs(60),
+            "stalled at {}",
+            order.len()
+        );
     }
     (order, prios)
 }
@@ -307,10 +313,19 @@ fn dcep_priority_values() {
         assert_eq!(ChannelPriority::from_dcep_value(p.dcep_value()), p);
     }
     assert_eq!(ChannelPriority::from_dcep_value(0), ChannelPriority::Low);
-    assert_eq!(ChannelPriority::from_dcep_value(1), ChannelPriority::VeryLow);
+    assert_eq!(
+        ChannelPriority::from_dcep_value(1),
+        ChannelPriority::VeryLow
+    );
     assert_eq!(ChannelPriority::from_dcep_value(300), ChannelPriority::Low);
-    assert_eq!(ChannelPriority::from_dcep_value(700), ChannelPriority::Medium);
-    assert_eq!(ChannelPriority::from_dcep_value(u16::MAX), ChannelPriority::High);
+    assert_eq!(
+        ChannelPriority::from_dcep_value(700),
+        ChannelPriority::Medium
+    );
+    assert_eq!(
+        ChannelPriority::from_dcep_value(u16::MAX),
+        ChannelPriority::High
+    );
     assert_eq!(ChannelConfig::default().priority, ChannelPriority::Low);
 }
 
@@ -333,7 +348,11 @@ fn exchange(
         if let Some(a) = audio {
             let pt = from.rtc.payload_type(a, Codec::Opus).expect("opus");
             let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
-            assert!(from.rtc.write_media(now, a, None, pt, t, &[0xfc, i as u8, 1, 2]).unwrap());
+            assert!(
+                from.rtc
+                    .write_media(now, a, None, pt, t, &[0xfc, i as u8, 1, 2])
+                    .unwrap()
+            );
         }
         if let Some(v) = video {
             let pt = from.rtc.payload_type(v, Codec::Vp8).expect("vp8");
@@ -379,7 +398,8 @@ fn per_section(sdp: &str, key: &str) -> Vec<Vec<String>> {
     for l in sdp.lines() {
         if l.starts_with("m=") {
             out.push(Vec::new());
-        } else if let (Some(v), Some(cur)) = (l.strip_prefix(&format!("a={key}:")), out.last_mut()) {
+        } else if let (Some(v), Some(cur)) = (l.strip_prefix(&format!("a={key}:")), out.last_mut())
+        {
             cur.push(v.to_owned());
         }
     }
@@ -417,7 +437,12 @@ fn transports_per_section_without_bundle() {
     let now = Instant::now();
     let mut ca = ConfigInner::default();
     ca.bundle = BundlePolicy::Disabled;
-    let mut a = split_peer(ca, "10.0.0.1:1000", &["10.0.0.1:1001", "10.0.0.1:1002"], now);
+    let mut a = split_peer(
+        ca,
+        "10.0.0.1:1000",
+        &["10.0.0.1:1001", "10.0.0.1:1002"],
+        now,
+    );
     let mut b = split_peer(
         ConfigInner::default(),
         "10.0.0.2:2000",
@@ -445,7 +470,10 @@ fn transports_per_section_without_bundle() {
     assert_eq!(u.len(), 3, "{offer}");
     assert!(ufrags.iter().all(|v| v[0].starts_with(&ufrags[0][0][..8])));
     let cands = per_section(&offer, "candidate");
-    assert!(cands[0][0].contains(" 1000 ") && cands[1][0].contains(" 1001 "), "{offer}");
+    assert!(
+        cands[0][0].contains(" 1000 ") && cands[1][0].contains(" 1001 "),
+        "{offer}"
+    );
     assert!(cands[2][0].contains(" 1002 "), "{offer}");
     assert!(!offer.contains("transport-cc"), "{offer}");
     let answer = b.rtc.accept_offer(now, &offer).unwrap();
@@ -463,7 +491,16 @@ fn transports_per_section_without_bundle() {
         step(&mut a, &mut b, now, &mut net);
         assert!(now - start < Duration::from_secs(30), "no channel");
     }
-    let now = exchange(&mut a, &mut b, &mut net, now, Some(audio), Some(video), Some(chan), 50);
+    let now = exchange(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        Some(audio),
+        Some(video),
+        Some(chan),
+        50,
+    );
     assert!(media_count(&b, audio) >= 48, "{}", media_count(&b, audio));
     assert!(media_count(&b, video) >= 48, "{}", media_count(&b, video));
     assert_eq!(channel_data(&b), 50);
@@ -477,7 +514,16 @@ fn transports_per_section_without_bundle() {
         })
         .collect();
     assert_eq!(bmids.len(), 2);
-    let _ = exchange(&mut b, &mut a, &mut net, now, Some(audio), Some(video), None, 20);
+    let _ = exchange(
+        &mut b,
+        &mut a,
+        &mut net,
+        now,
+        Some(audio),
+        Some(video),
+        None,
+        20,
+    );
     assert!(media_count(&a, audio) >= 18 && media_count(&a, video) >= 18);
     // Each transport kept to its own pair of addresses: DTLS on three, RTP / RTCP on the
     // two media ones, ICE checks only within a transport.
@@ -488,12 +534,19 @@ fn transports_per_section_without_bundle() {
         ("10.0.0.1:1001", "10.0.0.2:2001"),
         ("10.0.0.1:1002", "10.0.0.2:2002"),
     ] {
-        assert!(dtls.contains(&pair(x, y)) && dtls.contains(&pair(y, x)), "{dtls:?}");
+        assert!(
+            dtls.contains(&pair(x, y)) && dtls.contains(&pair(y, x)),
+            "{dtls:?}"
+        );
     }
     assert_eq!(dtls.len(), 6, "{dtls:?}");
     let srtp = paths(&net, 128..=191);
     assert_eq!(srtp.len(), 4, "{srtp:?}");
-    assert!(!srtp.iter().any(|(f, _)| f.port() == 1002 || f.port() == 2002));
+    assert!(
+        !srtp
+            .iter()
+            .any(|(f, _)| f.port() == 1002 || f.port() == 2002)
+    );
     let stun = paths(&net, 0..=3);
     assert!(
         stun.iter().all(|(f, t)| f.port() % 1000 == t.port() % 1000),
@@ -530,11 +583,26 @@ fn answer_refusing_bundle_splits_the_offerer() {
     assert!(a.rtc.unbundled());
     let mut net = Net::new(5);
     let now = connect(&mut a, &mut b, &mut net, now);
-    let _ = exchange(&mut a, &mut b, &mut net, now, Some(audio), Some(video), None, 40);
+    let _ = exchange(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        Some(audio),
+        Some(video),
+        None,
+        40,
+    );
     assert!(media_count(&b, audio) >= 38 && media_count(&b, video) >= 38);
     let srtp = paths(&net, 128..=191);
-    assert!(srtp.contains(&(addr("10.0.0.1:1000"), addr("10.0.0.2:2001"))), "{srtp:?}");
-    assert!(srtp.contains(&(addr("10.0.0.1:1000"), addr("10.0.0.2:2000"))), "{srtp:?}");
+    assert!(
+        srtp.contains(&(addr("10.0.0.1:1000"), addr("10.0.0.2:2001"))),
+        "{srtp:?}"
+    );
+    assert!(
+        srtp.contains(&(addr("10.0.0.1:1000"), addr("10.0.0.2:2000"))),
+        "{srtp:?}"
+    );
     assert_eq!((connected_events(&a), connected_events(&b)), (1, 1));
 }
 
@@ -549,11 +617,14 @@ fn transports_without_bundle_and_rtcp_mux() {
     let mk = |cfg: ConfigInner, h: &str, i: u16| {
         let (mut r, mut addrs) = peer(
             cfg,
-            &[&format!("{h}:{}", i)],
+            &[&format!("{h}:{i}")],
             &[&format!("{h}:{}", i + 1)],
             now,
         );
-        let (c1, c2) = (addr(&format!("{h}:{}", i + 2)), addr(&format!("{h}:{}", i + 3)));
+        let (c1, c2) = (
+            addr(&format!("{h}:{}", i + 2)),
+            addr(&format!("{h}:{}", i + 3)),
+        );
         r.add_transport_candidate(1, IceCandidate::host(c1));
         r.add_transport_candidate(1, IceCandidate::host(c2).with_component(2));
         addrs.extend([c1, c2]);
@@ -570,13 +641,28 @@ fn transports_without_bundle_and_rtcp_mux() {
         )
     };
     let offer = a.rtc.apply(now, ch).unwrap().unwrap();
-    assert!(!offer.contains("a=rtcp-mux") && !offer.contains("BUNDLE"), "{offer}");
+    assert!(
+        !offer.contains("a=rtcp-mux") && !offer.contains("BUNDLE"),
+        "{offer}"
+    );
     let answer = b.rtc.accept_offer(now, &offer).unwrap();
-    assert!(!answer.contains("a=rtcp-mux") && answer.contains("a=rtcp:"), "{answer}");
+    assert!(
+        !answer.contains("a=rtcp-mux") && answer.contains("a=rtcp:"),
+        "{answer}"
+    );
     a.rtc.accept_answer(now, &answer).unwrap();
     let mut net = Net::new(9);
     let now = connect(&mut a, &mut b, &mut net, now);
-    let _ = exchange(&mut a, &mut b, &mut net, now, Some(audio), Some(video), None, 60);
+    let _ = exchange(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        Some(audio),
+        Some(video),
+        None,
+        60,
+    );
     assert!(media_count(&b, audio) >= 55 && media_count(&b, video) >= 55);
     // RTCP on each transport's component 2, RTP on its component 1.
     let rtcp: Vec<(SocketAddr, SocketAddr)> = net
@@ -631,7 +717,10 @@ fn sdes_without_ice() {
     let mut ch = a.rtc.changes();
     let audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
     let offer = a.rtc.apply(now, ch).unwrap().unwrap();
-    assert!(!offer.contains("ice-ufrag") && !offer.contains("a=candidate"), "{offer}");
+    assert!(
+        !offer.contains("ice-ufrag") && !offer.contains("a=candidate"),
+        "{offer}"
+    );
     assert!(offer.contains("m=audio 4000 RTP/SAVPF"), "{offer}");
     assert!(offer.contains("c=IN IP4 10.0.0.1\r\n"), "{offer}");
     assert!(offer.contains("a=rtcp:4001 IN IP4 10.0.0.1"), "{offer}");
@@ -682,7 +771,10 @@ fn plain_offer_with_rtcp_mux() {
     );
     let answer = b.accept_offer(now, &offer).unwrap();
     assert!(answer.contains("m=audio 5000 RTP/SAVP"), "{answer}");
-    assert!(answer.contains("a=rtcp-mux") && !answer.contains("a=rtcp:"), "{answer}");
+    assert!(
+        answer.contains("a=rtcp-mux") && !answer.contains("a=rtcp:"),
+        "{answer}"
+    );
     // Our key has a 2-byte MKI too.
     let crypto = per_section(&answer, "crypto");
     assert!(crypto[0][0].ends_with("|1:2"), "{answer}");
@@ -705,7 +797,10 @@ fn sdes_with_mkis() {
     let crypto = per_section(&offer, "crypto");
     assert!(crypto[0].iter().all(|c| c.ends_with("|1:4")), "{offer}");
     let answer = b.rtc.accept_offer(now, &offer).unwrap();
-    assert!(per_section(&answer, "crypto")[0][0].ends_with("|1:4"), "{answer}");
+    assert!(
+        per_section(&answer, "crypto")[0][0].ends_with("|1:4"),
+        "{answer}"
+    );
     a.rtc.accept_answer(now, &answer).unwrap();
     let mut net = Net::new(2);
     let now = connect(&mut a, &mut b, &mut net, now);
@@ -748,7 +843,16 @@ fn sdes_media_next_to_data_channels() {
         step(&mut a, &mut b, now, &mut net);
         assert!(now - start < Duration::from_secs(30), "no channel");
     }
-    let _ = exchange(&mut a, &mut b, &mut net, now, Some(audio), None, Some(chan), 30);
+    let _ = exchange(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        Some(audio),
+        None,
+        Some(chan),
+        30,
+    );
     assert!(media_count(&b, audio) >= 30);
     assert_eq!(channel_data(&b), 30);
     // DTLS ran (for SCTP), and SRTP still uses the SDES keys: b decrypted the media.
