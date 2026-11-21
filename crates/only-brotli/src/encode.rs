@@ -1009,6 +1009,8 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
 /// Bit costs of symbols, from code lengths of a previous pass (or a first estimate).
 struct CostModel {
     lit: [f32; 256],
+    /// Per position of the block (when not empty): the cost of its byte as a literal.
+    local: Vec<f32>,
     cmd: Vec<f32>,
     dist: [f32; 64],
 }
@@ -1025,6 +1027,48 @@ fn costs_of(hist: &[u32], out: &mut [f32]) {
     }
 }
 
+/// The cost of each byte of `block` as a literal after block splitting the literals of
+/// `cmds` (a parse of `block`): from the histogram of the literal block type its position falls
+/// in (copied bytes take the type of the literals before them).
+fn split_costs(block: &[u8], cmds: &[Command]) -> Vec<f32> {
+    let mut lits = Vec::new();
+    let mut pos = 0;
+    for c in cmds {
+        lits.extend_from_slice(&block[pos..pos + c.insert as usize]);
+        pos += c.advance();
+    }
+    let s = split::split(&lits, 256, &split::LITERALS, 3);
+    if s.ntypes == 1 {
+        return Vec::new();
+    }
+    let mut hist = vec![[0u32; 256]; s.ntypes];
+    let mut cur = Cursor::new(&s);
+    for &b in &lits {
+        hist[cur.next()][usize::from(b)] += 1;
+    }
+    let mut costs = vec![[0f32; 256]; s.ntypes];
+    for (c, h) in costs.iter_mut().zip(&hist) {
+        costs_of(h, c);
+    }
+    let mut out = Vec::with_capacity(block.len());
+    let mut cur = Cursor::new(&s);
+    let mut t = 0;
+    let mut pos = 0;
+    for c in cmds {
+        for p in pos..pos + c.insert as usize {
+            t = cur.next();
+            out.push(costs[t][usize::from(block[p])]);
+        }
+        pos += c.insert as usize;
+        let n = c.advance() - c.insert as usize;
+        for p in pos..pos + n {
+            out.push(costs[t][usize::from(block[p])]);
+        }
+        pos += n;
+    }
+    out
+}
+
 impl CostModel {
     fn initial(block: &[u8]) -> Self {
         let mut h = [0u32; 256];
@@ -1035,6 +1079,7 @@ impl CostModel {
         costs_of(&h, &mut lit);
         CostModel {
             lit,
+            local: Vec::new(),
             cmd: (0..704).map(|i| ((11 + i) as f32).log2()).collect(),
             dist: std::array::from_fn(|i| ((20 + i) as f32).log2()),
         }
@@ -1059,6 +1104,7 @@ impl CostModel {
         }
         let mut m = CostModel {
             lit: [0.0; 256],
+            local: Vec::new(),
             cmd: vec![0.0; 704],
             dist: [0.0; 64],
         };
@@ -1200,6 +1246,10 @@ impl Encoder<'_> {
             self.shortest_path(start, end, &mstart, &mlist, &words, &model, cmds);
             if pass + 1 < self.p.optimal {
                 model = CostModel::from_commands(data, start, cmds, self.last);
+                // Literals priced by their block type: the meta-block will be split.
+                if self.p.split_iters > 0 {
+                    model.local = split_costs(&data[start..end], cmds);
+                }
             }
         }
     }
@@ -1238,7 +1288,11 @@ impl Encoder<'_> {
                 continue;
             }
             let pos = start + i;
-            let c = node.cost + model.lit[usize::from(data[pos])];
+            let c = node.cost
+                + match model.local.get(i) {
+                    Some(&l) => l,
+                    None => model.lit[usize::from(data[pos])],
+                };
             if c < nodes[i + 1].cost {
                 nodes[i + 1] = Node {
                     cost: c,

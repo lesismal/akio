@@ -594,7 +594,7 @@ pub(super) fn split<T: Copy + Into<usize>>(
     }
     let mut ids = vec![0u8; len];
     let mut nblocks = 1;
-    let mut costs = vec![0f32; size * sp.max_histos];
+    let mut costs = vec![0f32; size * sp.max_histos.div_ceil(8) * 8];
     let mut signal = Vec::new();
     for _ in 0..iters {
         nblocks = find_blocks(
@@ -642,34 +642,41 @@ fn find_blocks<T: Copy + Into<usize>>(
         ids.fill(0);
         return 1;
     }
-    // The bits of each symbol in each histogram (absent symbols: 2 more than the rarest).
+    // The bits of each symbol in each histogram (absent symbols: 2 more than the rarest), in
+    // rows of a multiple of 8 histograms (the padding never wins) for vectorized loops.
     let size = histos[0].h.len();
-    let costs = &mut costs[..size * nh];
+    let nhp = nh.div_ceil(8) * 8;
+    let costs = &mut costs[..size * nhp];
+    for s in 0..size {
+        costs[s * nhp + nh..(s + 1) * nhp].fill(1e30);
+    }
     for (j, h) in histos.iter().enumerate() {
         let lt = log2(h.total);
         for s in 0..size {
             let c = h.h[s];
-            costs[s * nh + j] = (if c == 0 { lt + 2.0 } else { lt - log2(c) }) as f32;
+            costs[s * nhp + j] = (if c == 0 { lt + 2.0 } else { lt - log2(c) }) as f32;
         }
     }
     // cost[k]: the cheapest way to arrive here ending with histogram k, minus the cheapest
     // way overall, capped at the switch cost; a cap means a switch here when tracing back.
-    let bitmap = nh.div_ceil(8);
+    // (Selects rather than `f32::min`: one instruction each even with SSE2.)
+    let bitmap = nhp / 8;
     signal.clear();
     signal.resize(len * bitmap, 0);
-    let mut cost = vec![0f32; nh];
+    let mut cost = vec![0f32; nhp];
     for (i, &s) in data.iter().enumerate() {
-        let row = &costs[s.into() * nh..][..nh];
-        let mut min = f32::INFINITY;
-        let mut arg = 0;
-        for (k, (c, &r)) in cost.iter_mut().zip(row).enumerate() {
-            *c += r;
-            if *c < min {
-                min = *c;
-                arg = k;
+        let row = &costs[s.into() * nhp..][..nhp];
+        let mut lanes = [f32::INFINITY; 8];
+        for (cs, rs) in cost.chunks_exact_mut(8).zip(row.chunks_exact(8)) {
+            for ((c, &r), m) in cs.iter_mut().zip(rs).zip(&mut lanes) {
+                *c += r;
+                *m = if *c < *m { *c } else { *m };
             }
         }
-        ids[i] = arg as u8;
+        let min = lanes
+            .iter()
+            .fold(f32::INFINITY, |a, &b| if b < a { b } else { a });
+        ids[i] = cost.iter().position(|&c| c == min).unwrap_or(0) as u8;
         let mut sw = switch_cost;
         if i < 2000 {
             // More blocks at the start.
@@ -677,12 +684,14 @@ fn find_blocks<T: Copy + Into<usize>>(
         }
         let sw = sw as f32;
         let sig = &mut signal[i * bitmap..][..bitmap];
-        for (k, c) in cost.iter_mut().enumerate() {
-            *c -= min;
-            if *c >= sw {
-                *c = sw;
-                sig[k >> 3] |= 1 << (k & 7);
+        for (bits, cs) in sig.iter_mut().zip(cost.chunks_exact_mut(8)) {
+            let mut m = 0u8;
+            for (j, c) in cs.iter_mut().enumerate() {
+                let v = *c - min;
+                m |= u8::from(v >= sw) << j;
+                *c = if v < sw { v } else { sw };
             }
+            *bits = m;
         }
     }
     // Trace back from the end, switching at the marks.
