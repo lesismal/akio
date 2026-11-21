@@ -145,8 +145,23 @@ pub fn stream_roundtrip_stream(data: &[u8]) -> Option<(Vec<u8>, &[u8], &[u8])> {
     }
     .window_bits(bits);
     let mut out = Vec::new();
+    // After each flush everything so far decodes.
+    let mut live = if dict.is_empty() {
+        Decompressor::new()
+    } else {
+        Decompressor::with_dictionary(dict)
+    };
+    let mut seen = Vec::new();
+    let mut taken = 0;
     for p in body.chunks(step) {
+        let at = out.len();
         c.compress(p, &mut out, flush);
+        taken += p.len();
+        if flush == Flush::Flush {
+            live.decompress_vec(&out[at..], &mut seen, usize::MAX)
+                .expect("flushed stream decodes");
+            assert!(seen == body[..taken], "flushed data not decodable");
+        }
     }
     c.compress(&[], &mut out, Flush::Finish);
     let back = decompress_with_dictionary(&out, body.len(), dict).expect("own stream decodes");

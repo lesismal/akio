@@ -7,10 +7,18 @@
 //!   blocks; raw, RLE, Huffman (one or four streams) and treeless literals; predefined, RLE,
 //!   FSE-compressed and repeated sequence tables; repeat offsets; Frame_Content_Size and the
 //!   XXH64 content checksum are verified.
-//! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 over hash
-//!   chains (greedy, lazy or lazy2 matching by level, repeat offsets tried first), Huffman-coded
-//!   literals and FSE-coded sequences with tables chosen per block by size, raw or RLE blocks
-//!   when those are smaller. Levels follow zstd's 1..=22 scale.
+//! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 with libzstd's
+//!   `fast` / `double_fast` match finders (levels 1..=4), hash chains with lazy matching
+//!   (5..=15) and, from level 16, a shortest-path parse priced with the symbol statistics of a
+//!   previous pass (libzstd's `btopt` / `btultra`); Huffman-coded literals and FSE-coded
+//!   sequences with tables chosen per block by size, the previous block's tables repeated when
+//!   cheaper, raw or RLE blocks when those are smaller. Levels follow zstd's 1..=22 scale.
+//! - [`Compressor`] / [`Decompressor`]: streaming, with bounded memory: input in pieces of any
+//!   size, output a block at a time ([`Flush`] makes everything so far decodable); the decoder
+//!   holds the frame's window (at most 8 MiB by default) and one block of input.
+//! - [`Dictionary`]: raw content or the trained format of `zstd --train` (Dictionary_ID,
+//!   entropy tables, repeat offsets), for [`compress_with_dictionary`],
+//!   [`decompress_with_dictionary`] and the streaming types.
 //! - [`xxh64`]: the XXH64 hash behind the content checksum.
 //!
 //! ```
@@ -27,8 +35,10 @@
 //! The decoder accepts and rejects what libzstd does, with one intentional difference: it
 //! requires every Huffman-coded literal stream to end exactly where its symbols do
 //! ([`Error::BadHuffmanStream`]), which libzstd's fast four-stream decoder does not check.
-//! Frames that need a dictionary are refused ([`Error::DictionaryRequired`]), as by libzstd
-//! without one. There is no streaming decoder: the whole input is decoded at once.
+//! Frames that need a dictionary are refused without one ([`Error::DictionaryRequired`]), as by
+//! libzstd. The streaming decoder holds the frame's window, not the whole frame, so a match
+//! reaching further back than the window (and what it still holds beyond it) is refused
+//! ([`Error::BadOffset`]), as by libzstd's streaming decoder.
 #![warn(clippy::unwrap_used)]
 
 mod bits;

@@ -963,9 +963,9 @@ impl<'a, 'd> Decoder<'a, 'd> {
     ) -> Result<Option<Meta>, Error> {
         loop {
             let cp = self.br;
-            let mark = h.mark();
+            let mark = if STREAM { Some(h.mark()) } else { None };
             let r = self.header_unit(h);
-            if STREAM && self.br.overrun() {
+            if let Some(mark) = mark.filter(|_| self.br.overrun()) {
                 // The unit used bits past the input (whatever it concluded from them).
                 self.br = cp;
                 h.restore(mark);

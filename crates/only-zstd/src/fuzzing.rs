@@ -193,8 +193,22 @@ pub fn stream_roundtrip_frame(data: &[u8]) -> Option<Streamed<'_>> {
     }
     .window_log(log);
     let mut frame = Vec::new();
+    // After each flush everything so far decodes.
+    let mut live = match &dict {
+        Some(d) => Decompressor::with_dictionary(d),
+        None => Decompressor::new(),
+    };
+    let mut seen = Vec::new();
+    let mut taken = 0;
     for p in body.chunks(step) {
+        let at = frame.len();
         c.compress(p, &mut frame, flush);
+        taken += p.len();
+        if flush == Flush::Flush {
+            live.decompress_vec(&frame[at..], &mut seen, usize::MAX)
+                .expect("flushed frame decodes");
+            assert!(seen == body[..taken], "flushed data not decodable");
+        }
     }
     c.compress(&[], &mut frame, Flush::Finish);
     let (back, st) = match &dict {

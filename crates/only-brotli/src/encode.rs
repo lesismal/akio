@@ -1,6 +1,6 @@
 //! Brotli compression.
 //!
-//! The input is cut into meta-blocks (1 MiB, or 256 KiB at the levels with optimal parsing),
+//! The input is cut into meta-blocks of 1 MiB,
 //! each parsed into insert-and-copy commands by LZ77 (candidates from per-hash buckets of the
 //! last positions at levels 0..=6, from hash chains above): greedy matching at levels 0..=3,
 //! lazy matching (up to four steps, as in Google's encoder) at levels 4..=9, and at levels 10
@@ -18,6 +18,8 @@ use crate::Level;
 use crate::bits::BitWriter;
 use crate::huffman::{codes, lengths};
 use crate::tables::{CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA};
+
+mod sdict;
 
 /// Compresses `data` into one complete brotli stream at `level`.
 ///
@@ -133,24 +135,33 @@ fn params(level: u8) -> Params {
         9 => p(256, 258, true, 17, ALL, true),
         10 => Params {
             optimal: 1,
-            block: 1 << 18,
+            block: 1 << 20,
             ..p(128, 256, false, 17, ALL, true)
         },
         _ => Params {
             optimal: 2,
-            block: 1 << 18,
+            block: 1 << 20,
             ..p(512, 512, false, 17, ALL, true)
         },
     }
 }
 
 /// An insert-and-copy command: `insert` literals, then `copy` bytes from `dist` back (`copy`
-/// 0: the last command of a meta-block, literals only).
+/// 0: the last command of a meta-block, literals only), or a static dictionary word of length
+/// `copy` producing `out` bytes (`out` 0: a backward copy).
 #[derive(Clone, Copy, Debug)]
 struct Command {
     insert: u32,
     copy: u32,
     dist: u32,
+    out: u32,
+}
+
+impl Command {
+    /// The bytes the command produces.
+    fn advance(&self) -> usize {
+        (self.insert + if self.out > 0 { self.out } else { self.copy }) as usize
+    }
 }
 
 const NIL: u32 = u32::MAX;
@@ -652,6 +663,7 @@ impl<'a> Encoder<'a> {
                 insert: (i - lit_start) as u32,
                 copy: cur.len as u32,
                 dist: cur.dist as u32,
+                out: 0,
             });
             if cur.dist as u32 != ring[0] {
                 ring = [cur.dist as u32, ring[0], ring[1], ring[2]];
@@ -669,6 +681,7 @@ impl<'a> Encoder<'a> {
                 insert: (end - lit_start) as u32,
                 copy: 0,
                 dist: 0,
+                out: 0,
             });
         }
     }
@@ -773,7 +786,7 @@ impl<'a> Encoder<'a> {
                         lit_hist[usize::from(model.map[ctx])][usize::from(b)] += 1;
                     }
                 }
-                pos += (c.insert + c.copy) as usize;
+                pos += c.advance();
             }
         }
 
@@ -822,7 +835,7 @@ impl<'a> Encoder<'a> {
                 dist_code.put(w, usize::from(k.dsym));
                 w.bits(u32::from(k.dist_n), u64::from(k.dist_x));
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
     }
 }
@@ -878,7 +891,7 @@ impl CostModel {
             for &b in &data[pos..pos + c.insert as usize] {
                 lh[usize::from(b)] += 1;
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
         let mut m = CostModel {
             lit: [0.0; 256],
@@ -910,12 +923,20 @@ impl CostModel {
 struct Node {
     cost: f32,
     prev: u32,
-    /// Copy length of the step into this node (0: a literal).
+    /// Bytes the copy of the step into this node produces (0: a literal).
     len: u32,
+    /// Its copy length when it is a static dictionary word (0: a backward copy of `len`).
+    word: u32,
     dist: u32,
     /// Literals since the last copy.
     ins: u32,
     ring: [u32; 4],
+}
+
+/// The static dictionary references of each position of a meta-block.
+struct Words<'a> {
+    start: &'a [u32],
+    list: &'a [sdict::DictMatch],
 }
 
 /// How many lengths of one match the shortest-path search tries one by one; longer ones only
@@ -994,23 +1015,39 @@ impl Encoder<'_> {
             }
         }
         mstart.push(mlist.len() as u32);
+        // Static dictionary references of every position.
+        let mut dstart = Vec::with_capacity(n + 1);
+        let mut dlist: Vec<sdict::DictMatch> = Vec::new();
+        let mut found = Vec::new();
+        for i in start..end {
+            dstart.push(dlist.len() as u32);
+            sdict::matches(&data[i..end], &mut found);
+            dlist.extend_from_slice(&found);
+        }
+        dstart.push(dlist.len() as u32);
+        let words = Words {
+            start: &dstart,
+            list: &dlist,
+        };
 
         let mut model = CostModel::initial(&data[start..end]);
         for pass in 0..self.p.optimal {
             cmds.clear();
-            self.shortest_path(start, end, &mstart, &mlist, &model, cmds);
+            self.shortest_path(start, end, &mstart, &mlist, &words, &model, cmds);
             if pass + 1 < self.p.optimal {
                 model = CostModel::from_commands(data, start, cmds, self.last);
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shortest_path(
         &self,
         start: usize,
         end: usize,
         mstart: &[u32],
         mlist: &[(u32, u32)],
+        words: &Words<'_>,
         model: &CostModel,
         cmds: &mut Vec<Command>,
     ) {
@@ -1021,6 +1058,7 @@ impl Encoder<'_> {
                 cost: f32::INFINITY,
                 prev: 0,
                 len: 0,
+                word: 0,
                 dist: 0,
                 ins: 0,
                 ring: [0; 4],
@@ -1042,6 +1080,7 @@ impl Encoder<'_> {
                     cost: c,
                     prev: i as u32,
                     len: 0,
+                    word: 0,
                     dist: 0,
                     ins: node.ins + 1,
                     ring: node.ring,
@@ -1061,6 +1100,7 @@ impl Encoder<'_> {
                         cost,
                         prev: i as u32,
                         len: len as u32,
+                        word: 0,
                         dist: dist as u32,
                         ins: 0,
                         ring: if dist as u32 == r[0] {
@@ -1127,6 +1167,35 @@ impl Encoder<'_> {
                 }
                 from = len + 1;
             }
+            // Static dictionary words: each at the length it produces, leaving the ring alone.
+            let (a, b) = (words.start[i] as usize, words.start[i + 1] as usize);
+            for m in words.list.get(a..b).unwrap_or(&[]) {
+                let out = usize::from(m.out);
+                if out > max_len || out <= ring_best {
+                    continue;
+                }
+                let dist = max_dist + 1 + self.back + m.addr as usize;
+                let (dsym, dbits) = match node.ring.iter().position(|&r| r as usize == dist) {
+                    Some(k) => (k, 0),
+                    None => {
+                        let (s, _, nb) = explicit_distance(dist);
+                        (usize::from(s), u32::from(nb))
+                    }
+                };
+                let cost = node.cost + model.copy_cost(ins, usize::from(m.len), dsym, dbits);
+                let j = i + out;
+                if cost < nodes[j].cost {
+                    nodes[j] = Node {
+                        cost,
+                        prev: i as u32,
+                        len: out as u32,
+                        word: u32::from(m.len),
+                        dist: dist as u32,
+                        ins: 0,
+                        ring: node.ring,
+                    };
+                }
+            }
             // A long match is taken whole: the positions inside it are not expanded (as
             // Google's encoder does), which keeps long runs linear.
             if longest.0 >= self.p.nice {
@@ -1142,16 +1211,22 @@ impl Encoder<'_> {
         while j > 0 {
             let nd = nodes[j];
             if nd.len > 0 {
-                steps.push((nd.prev as usize, nd.len as usize, nd.dist));
+                steps.push((nd.prev as usize, nd.len as usize, nd.word, nd.dist));
             }
             j = nd.prev as usize;
         }
         let mut lit_start = 0;
-        for &(p, len, dist) in steps.iter().rev() {
+        for &(p, len, word, dist) in steps.iter().rev() {
+            let (copy, out) = if word > 0 {
+                (word, len as u32)
+            } else {
+                (len as u32, 0)
+            };
             cmds.push(Command {
                 insert: (p - lit_start) as u32,
-                copy: len as u32,
+                copy,
                 dist,
+                out,
             });
             lit_start = p + len;
         }
@@ -1160,6 +1235,7 @@ impl Encoder<'_> {
                 insert: (n - lit_start) as u32,
                 copy: 0,
                 dist: 0,
+                out: 0,
             });
         }
     }
@@ -1261,7 +1337,8 @@ fn code_command(c: &Command, ring: &mut [u32; 4]) -> Coded {
         Some(k) => (k as u16, 0, 0),
         None => explicit_distance(d as usize),
     };
-    if dsym != 0 {
+    if dsym != 0 && c.out == 0 {
+        // (Static dictionary references leave the ring alone.)
         *ring = [d, r[0], r[1], r[2]];
     }
     let implicit = dsym == 0 && ic < 8 && cc < 16;
@@ -1409,7 +1486,7 @@ fn literal_model(
             for p in pos..pos + c.insert as usize {
                 hist[context(data, p, lut)][usize::from(data[p])] += 1;
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
         let (map, ntrees, cost) = cluster(&hist);
         if cost < best_cost {

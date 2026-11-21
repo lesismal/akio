@@ -13,10 +13,15 @@
 //!   fuzz target checks that against `brotli-decompressor`), refuses the non-standard
 //!   large-window extension and refuses data after the end of the stream.
 //! - [`compress`]: LZ77 over hash chains (greedy at the low levels, lazy matching from level 4,
-//!   cost-based optimal parsing at levels 10 and 11), one block type per category, literals
-//!   coded with a context map over clustered context histograms from level 5, prefix codes
-//!   limited to 15 bits, uncompressed meta-blocks where those are smaller. Levels follow the
-//!   brotli quality scale 0..=11.
+//!   cost-based optimal parsing at levels 10 and 11, where static dictionary words are
+//!   candidates too), one block type per category, literals coded with a context map over
+//!   clustered context histograms from level 5, prefix codes limited to 15 bits, uncompressed
+//!   meta-blocks where those are smaller. Levels follow the brotli quality scale 0..=11.
+//! - [`Compressor`] / [`Decompressor`]: streaming, with bounded memory: input in pieces of any
+//!   size, output a meta-block at a time ([`Flush`] makes everything so far decodable); the
+//!   decoder resumes where its input ran out at the last command or header unit.
+//! - [`compress_with_dictionary`] / [`decompress_with_dictionary`]: raw (LZ77 prefix)
+//!   dictionaries, as `brotli -D` and Google's `BROTLI_SHARED_DICTIONARY_RAW` use them.
 //!
 //! ```
 //! use only_brotli::{Level, compress, decompress};
