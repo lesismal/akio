@@ -1818,6 +1818,12 @@ impl Client {
             start_push(&s, hub, t, self.addr)?;
         }
         let mut g = lock(&self.st);
+        if !g.session.as_ref().is_some_and(|x| Arc::ptr_eq(x, &s)) {
+            // It ended right after going live: `ended` took it (and, after a first session,
+            // scheduled the next try); the first one's error goes to the caller.
+            drop(g);
+            return Err(lock(&s.inner).error.clone().unwrap_or(ClientError::Closed));
+        }
         if g.established {
             g.reconnects += 1;
         }
