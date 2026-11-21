@@ -168,6 +168,15 @@ impl Connection {
             && self.read_keys.is_some()
     }
 
+    /// TLS 1.3 or not, and the AEAD, once [`tx_offload_ready`](Self::tx_offload_ready): what
+    /// the decision to offload needs, without deriving any key.
+    pub fn tx_offload_params(&self) -> Option<(bool, AeadAlg)> {
+        if !self.tx_offload_ready() {
+            return None;
+        }
+        Some((self.m.version() == TLS13, self.m.suite()?.aead))
+    }
+
     /// The version, AEAD and send keys for the kernel, `None` unless
     /// [`tx_offload_ready`](Self::tx_offload_ready). Nothing changes until
     /// [`commit_tx_offload`](Self::commit_tx_offload).

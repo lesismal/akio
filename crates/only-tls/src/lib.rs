@@ -351,7 +351,13 @@ impl<A: Acceptor> Acceptor for Tls<A> {
                 }
                 Some(Box::new(TlsTransport {
                     #[cfg(all(target_os = "linux", feature = "ktls"))]
-                    ktls: (ktls.mode != Ktls::Off).then(|| {
+                    // `Hardware` on a host without a NIC that offloads TLS: as `Off`.
+                    ktls: match ktls.mode {
+                        Ktls::Off => false,
+                        Ktls::Hardware => ktls::any_hardware(),
+                        _ => true,
+                    }
+                    .then(|| {
                         conn.set_keep_keys(true);
                         Box::new(ktls::KtlsState::new(ktls, self.stats.clone()))
                     }),

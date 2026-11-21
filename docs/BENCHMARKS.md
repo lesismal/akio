@@ -406,10 +406,9 @@ AES-256-GCM and ChaCha20-Poly1305; the keys and sequence numbers exported after 
 (only when nothing is buffered); alerts, close_notify and post-handshake messages (NewSessionTicket,
 KeyUpdate) through the record-type control message; TLS 1.3 KeyUpdate in both directions by
 re-installing keys (Linux 6.14+; older kernels keep TLS 1.3 in user space, since a peer can rekey
-at any time); fallback to user space when the `tls` module or the suite is missing. Not done:
-the engine integration (epoll / io_uring receive with `TLS_GET_RECORD_TYPE`, control records in
-the write queue), `TLS_RX_EXPECT_NO_PAD`, and sending our own KeyUpdate before the AES-GCM record
-limit (the kernel does not count for us).
+at any time); fallback to user space when the `tls` module or the suite is missing. The engine
+integration, `TLS_RX_EXPECT_NO_PAD` and our own KeyUpdate before the AES-GCM record limit came
+later (ADR-067, next section).
 
 ### io_uring features evaluation (`tools/bench/uring-eval.sh`, engine A/B)
 

@@ -31,7 +31,9 @@ kTLS; no vendor-specific code (the kernel's device-offload interface only); the 
   owns the connection's local address has `tls-hw-tx-offload` on, the receive direction too when
   it also has `tls-hw-rx-offload`; AES-GCM only. The interface table (`getifaddrs` plus the
   ethtool `SIOCETHTOOL` feature ioctls, no privilege needed) is cached for 30 s; while no
-  interface offloads TLS the check is two relaxed atomic loads per connection. After installing
+  interface offloads TLS, a new connection reads two relaxed atomics and keeps no kernel TLS
+  state at all, exactly as under `Off` (the key derivation for the kernel happens only once a NIC
+  is known to take the connection). After installing
   a direction, the kernel's `TlsTxDevice` / `TlsRxDevice` counters (read around the install
   under a process-wide lock) confirm the NIC took it. If the kernel fell back to software (the
   driver lacks this version or key size), that interface, version and AEAD are remembered and

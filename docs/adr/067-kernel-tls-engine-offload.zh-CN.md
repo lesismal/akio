@@ -28,8 +28,9 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
 - `Off`（默认）：什么都不变。
 - `Hardware`：只卸载网卡自己完成的部分。连接本地地址所在接口开启了 `tls-hw-tx-offload` 时卸载发送
   方向，同时开启 `tls-hw-rx-offload` 时也卸载接收方向；仅限 AES-GCM。接口表（`getifaddrs` 加上
-  ethtool 的 `SIOCETHTOOL` 特性 ioctl，无需特权）缓存 30 秒；只要没有接口支持 TLS 卸载，每个连接的
-  检查就只是两次 relaxed 原子读。安装某个方向后，用内核的 `TlsTxDevice` / `TlsRxDevice` 计数器（在
+  ethtool 的 `SIOCETHTOOL` 特性 ioctl，无需特权）缓存 30 秒；只要没有接口支持 TLS 卸载，新连接只做两次
+  relaxed 原子读，完全不保存内核 TLS 状态，与 `Off` 完全相同（只有在确认网卡会接管连接之后，才为内核
+  派生密钥）。安装某个方向后，用内核的 `TlsTxDevice` / `TlsRxDevice` 计数器（在
   进程级锁下于安装前后各读一次）确认网卡确实接管了它。如果内核回退到软件（驱动不支持该版本或密钥
   长度），就记住这个接口、版本与 AEAD 的组合，不再交给网卡，所以每种组合最多有一个连接以软件方式运行。
 - `Software`：总是卸载两个方向（没有网卡帮忙时为软件 kTLS）。在当前 CPU 上更慢；用于对比、内核

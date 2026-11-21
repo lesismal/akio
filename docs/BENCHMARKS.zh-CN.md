@@ -349,9 +349,8 @@ kTLS 仍可能划算的情况：带 TLS 卸载的网卡（`tls-hw-tx-offload`，
 3.0.13 与 Go 1.27 通过 107/107）：TLS 1.3 与 1.2 的 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305；
 握手后导出密钥与序列号（仅当没有任何缓冲数据时）；通过记录类型控制消息收发告警、close_notify 与握手后
 消息（NewSessionTicket、KeyUpdate）；通过重新安装密钥实现双向 TLS 1.3 KeyUpdate（Linux 6.14+；更旧的
-内核让 TLS 1.3 留在用户态，因为对端随时可能更新密钥）；`tls` 模块或套件缺失时回退到用户态。未做：引擎
-集成（epoll / io_uring 接收时处理 `TLS_GET_RECORD_TYPE`、写队列中的控制记录）、`TLS_RX_EXPECT_NO_PAD`，
-以及在 AES-GCM 记录数上限之前主动发送 KeyUpdate（内核不替我们计数）。
+内核让 TLS 1.3 留在用户态，因为对端随时可能更新密钥）；`tls` 模块或套件缺失时回退到用户态。引擎集成、
+`TLS_RX_EXPECT_NO_PAD` 以及在 AES-GCM 记录数上限之前主动发送 KeyUpdate 后来完成（ADR-067，见下一节）。
 
 ### io_uring 特性评估（`tools/bench/uring-eval.sh`、引擎 A/B）
 

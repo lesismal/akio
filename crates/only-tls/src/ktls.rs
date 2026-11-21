@@ -163,20 +163,26 @@ fn look(n: &mut Netdevs) {
 /// version and AEAD, and the interface: `None` when none would (no such NIC, ChaCha20, or
 /// refused before). Lock-free while the host has no such NIC.
 pub(crate) fn hardware_dirs(local: IpAddr, tls13: bool, aead: AeadAlg) -> Option<(String, bool)> {
-    if aead == AeadAlg::ChaCha20Poly1305 {
+    if aead == AeadAlg::ChaCha20Poly1305 || !any_hardware() {
         return None;
     }
-    let now = now_ms();
-    let due = now >= NEXT_LOOK.load(Ordering::Relaxed);
-    if !due && !ANY_HW.load(Ordering::Relaxed) {
-        return None;
-    }
-    let mut n = NETDEVS.lock().unwrap_or_else(|p| p.into_inner());
-    if now >= NEXT_LOOK.load(Ordering::Relaxed) {
-        look(&mut n);
-        NEXT_LOOK.store(now + NETDEV_TTL_MS, Ordering::Relaxed);
-    }
+    let n = NETDEVS.lock().unwrap_or_else(|p| p.into_inner());
     hw_lookup(&n, local, tls13, aead)
+}
+
+/// Whether some interface of the host offloads TLS (looked up again every 30 s). Lock-free
+/// between looks; [`crate::Ktls::Hardware`] connections on a host without such a NIC keep no
+/// kernel TLS state at all.
+pub(crate) fn any_hardware() -> bool {
+    let now = now_ms();
+    if now >= NEXT_LOOK.load(Ordering::Relaxed) {
+        let mut n = NETDEVS.lock().unwrap_or_else(|p| p.into_inner());
+        if now >= NEXT_LOOK.load(Ordering::Relaxed) {
+            look(&mut n);
+            NEXT_LOOK.store(now + NETDEV_TTL_MS, Ordering::Relaxed);
+        }
+    }
+    ANY_HW.load(Ordering::Relaxed)
 }
 
 fn hw_lookup(n: &Netdevs, local: IpAddr, tls13: bool, aead: AeadAlg) -> Option<(String, bool)> {
@@ -358,7 +364,7 @@ impl KtlsState {
             return Ok(self.current());
         }
         if self.tx.is_none() {
-            let Some((tls13, aead, tx_keys)) = conn.tx_offload_keys() else {
+            let Some((tls13, aead)) = conn.tx_offload_params() else {
                 if conn.failed_or_closed() {
                     self.finish(conn);
                 }
@@ -370,6 +376,7 @@ impl KtlsState {
                 self.finish(conn);
                 return Ok(self.current());
             }
+            // Decided before any key is derived: a connection no NIC takes costs nothing more.
             let hw = hardware_dirs(local, tls13, aead);
             let (rx, iface) = match (self.cfg.mode, hw) {
                 (crate::Ktls::Hardware, Some((name, rx))) => (rx, Some(name)),
@@ -379,6 +386,10 @@ impl KtlsState {
                     self.finish(conn);
                     return Ok(self.current());
                 }
+            };
+            let Some((_, _, tx_keys)) = conn.tx_offload_keys() else {
+                self.finish(conn);
+                return Ok(self.current());
             };
             if let Err(e) = only_sys::ktls::ktls_attach(fd) {
                 // No `tls` module (or another ULP): nothing changed.
