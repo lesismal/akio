@@ -171,3 +171,8 @@ Not done: SDES with MKIs or session parameters, SDES without ICE (plain `c=` / p
 data channels next to SDES; TURN over DTLS with connection IDs; ICE over link-local addresses
 learnt any other way than mDNS or inbound traffic. A follow-up for `only-ice`: export
 `MULTICAST_V6` next to `MULTICAST_V4`, and let a resolved candidate carry a scope id.
+
+Done since (2026-11-22, ADR-078): IPv6 mDNS goes out with hop limit 255 (new only-sys
+`set_multicast_hops_v6`), names are concealed on IPv6-only links (the IPv6 socket answers when
+the IPv4 one has no shared port), and it is checked against Chrome 157, avahi 0.8 (IPv6 only,
+`check-response-ttl=yes`) and mDNSResponder.

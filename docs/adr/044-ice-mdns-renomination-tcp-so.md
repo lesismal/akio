@@ -131,3 +131,10 @@ uses rtcp-mux and BUNDLE, and so do the stack's own SDP offers and answers.
   IPv6 addresses) and probing / announcing our own names (they are random UUIDs, so conflicts are
   not expected); resolving FQDN candidates through DNS; renomination when the remote does not
   advertise it (an ICE restart is the way then).
+
+Note (2026-11-22): mDNS over IPv6 multicast is done. ADR-054 (2026-11-20) added the `ff02::fb`
+socket (per-interface joins, AAAA answers on the link of the query, scope ids of remote
+link-local addresses); ADR-078 sends it with hop limit 255 (RFC 6762 §11), conceals on
+IPv6-only links, and checks it against Chrome 157, avahi 0.8 and mDNSResponder
+(`tools/interop/webrtc/mdns6.sh`, `browser.sh`). Probing / announcing our own names is still
+not done.

@@ -10,6 +10,21 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：以跳数限制 255 发送、可用于纯 IPv6 链路的 IPv6 mDNS（only-sys、only、only-webrtc）
+
+ADR-078（docs/adr/078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md），只有新增：
+
+- `only_sys::set_multicast_hops_v6` / `multicast_hops_v6`（`IPV6_MULTICAST_HOPS`，std 没有）。带 IPv6
+  组的 `Engine::bind_udp_multicast_on` 现在以跳数限制 255 发送并打开组播回环，与 IPv4 路径以 TTL 255
+  发送一致（RFC 6762 §11；设置 `check-response-ttl=yes` 的 avahi 会忽略以默认跳数限制 1 发出的 IPv6
+  应答）。
+- IPv4 或 IPv6 的 mDNS 套接字持有共享端口时，`Endpoint::conceal_host_candidates` 即可用：在纯 IPv6
+  链路上（`224.0.0.251` 无路由）名字经 `ff02::fb` 应答，而不是调用失败。
+- `tools/interop/webrtc/mdns6.sh`：纯 IPv6 容器（veth，链路本地与 ULA 地址）中在 epoll 与 io_uring 上
+  运行 mDNS 测试，avahi 0.8 解析我方被隐藏的名字，并发布一个由我方解析并连通的名字；`browser.sh` 检查
+  Chrome 157 与唯一主机候选为被隐藏 IPv6 地址的端点互通。`webrtc-interop` 新增 `mdns-conceal` 与
+  `mdns-resolve` 模式。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：

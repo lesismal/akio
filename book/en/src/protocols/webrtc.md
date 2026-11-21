@@ -41,7 +41,7 @@ over UDP, TCP and TLS, an `Endpoint` whose only candidates were allocated over T
 simulcast: three VP8 layers from Chrome into an SFU, sent back as simulcast and as one selected
 layer switched while Chrome decodes it; an `Endpoint` with aggressive nomination; and an
 `Endpoint` that hides its host address behind an mDNS name offering to a Chrome that does the
-same (its default), each resolving the other's name, host to host
+same (its default), each resolving the other's name, host to host, over IPv4 and over IPv6
 (`tools/interop/webrtc/browser.sh`). pion negotiates
 I-DATA with us; Chrome 157 uses DATA chunks unless its `WebRTC-DataChannelMessageInterleaving`
 field trial is on (with it on, the same tests pass over I-DATA). The SCTP layer alone is also
@@ -250,6 +250,11 @@ them, and an answer goes back on the link its query came from. IPv6 host address
 concealed like IPv4 ones (AAAA records). SDP carries no scope id, so the endpoint remembers the
 interface of a remote link-local address (from the answer that resolved it, or from its
 traffic) and puts it back on what it sends. A host without IPv6 runs IPv4 only.
+IPv6 answers leave with hop limit 255 as RFC 6762 asks (ADR-078; the engine's IPv6 multicast
+bindings set it), and either family can answer: on an IPv6-only link, where `224.0.0.251` has
+no route, `conceal_host_candidates` answers over `ff02::fb` alone. `tools/interop/webrtc/mdns6.sh`
+checks this in an IPv6-only container against avahi, and `browser.sh` against Chrome with an
+endpoint whose only host candidate is a concealed IPv6 address.
 
 ### Nomination
 

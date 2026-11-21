@@ -111,6 +111,7 @@ fn common_constants() {
         SO_REUSEPORT,
         IPPROTO_IPV6,
         IPV6_V6ONLY,
+        IPV6_MULTICAST_HOPS,
         SIGHUP,
         SIGINT,
         SIGQUIT,

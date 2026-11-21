@@ -10,7 +10,7 @@
 # rtpHeaderEncryptionPolicy "require", which fails without cryptex; DTLS 1.3 and AES-GCM SRTP as
 # well), and the SFU sending its simulcast line with ULPFEC per encoding through 5 % loss with
 # NACK off (without FEC the line does not decode).
-# Ports 9510-9533 (run.sh uses 9510-9520: do not run both at once).
+# Ports 9510-9534 (run.sh uses 9510-9520: do not run both at once).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
@@ -83,6 +83,30 @@ for _ in 1 2 3; do
   grep -qE "mdns: [0-9a-f-]+\.local is" "$W/client-mdns.log"
   grep -qE "mdns: answering" "$W/client-mdns.log"
 done
+echo "== only Endpoint on its IPv6 address (behind an mDNS name) offers to Chrome with mDNS concealment on"
+# ADR-078: the Endpoint's only host candidate is its primary IPv6 address, concealed; Chrome's
+# IPv6 candidate is a name too. Chrome queries ours over ff02::fb (we answer with AAAA on the
+# link of the query), we resolve Chrome's (over either family), and the pair is IPv6. Needs an
+# IPv6 address on the LAN (skipped otherwise).
+if route -n get -inet6 2001:db8::1 >/dev/null 2>&1 || ip -6 route get 2001:db8::1 >/dev/null 2>&1; then
+  node "$ROOT/tools/interop/webrtc/browser.mjs" 9521 answer 127.0.0.1:9534 mdns >"$W/answer.log" 2>&1 &
+  NP=$!
+  sleep 1
+  ONLY_INTEROP_BIND="[::]:0" ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9534 dc-mdns \
+    2>"$W/client-mdns6.log"
+  for _ in $(seq 50); do grep -q "chrome: pair" "$W/answer.log" && break; sleep 0.2; done
+  kill $NP 2>/dev/null || true
+  grep "chrome: pair" "$W/answer.log"
+  grep -q "chrome: pair ok" "$W/answer.log"
+  grep -E "IcePair \{ local: \[" "$W/client-mdns6.log" | head -1
+  grep -E "mdns: answering \[[0-9a-f:]+%[0-9]+\]:5353" "$W/client-mdns6.log" | head -1
+  grep -E "mdns: [0-9a-f-]+\.local is \[[0-9a-f]*:[0-9a-f:]*\]" "$W/client-mdns6.log" | head -1
+  grep -qE "IcePair \{ local: \[" "$W/client-mdns6.log"
+  grep -qE "mdns: answering \[[0-9a-f:]+%[0-9]+\]:5353" "$W/client-mdns6.log"
+  grep -qE "mdns: [0-9a-f-]+\.local is \[[0-9a-f]*:[0-9a-f:]*\]" "$W/client-mdns6.log"
+else
+  echo "skipped: no IPv6 route"
+fi
 echo "== Chrome simulcast through the only SFU (layers in, simulcast and layer selection out)"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 simulcast 127.0.0.1:9519
 

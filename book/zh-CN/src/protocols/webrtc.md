@@ -30,7 +30,7 @@
 TLS，`Endpoint` 只带经 TCP 或 TLS 分配的中继候选）；以及 simulcast：Chrome 向 SFU 发送三层 VP8，SFU 以
 simulcast 及所选的一层发回，在 Chrome 解码时切换层；启用激进提名的 `Endpoint`；以及把主机地址隐藏在
 mDNS 名字之后的 `Endpoint` 向同样这样做（默认如此）的 Chrome 发起 offer，双方互相解析对方名字，主机
-对主机连通（`tools/interop/webrtc/browser.sh`）。pion 与我们
+对主机连通，IPv4 与 IPv6 都验证（`tools/interop/webrtc/browser.sh`）。pion 与我们
 协商 I-DATA；Chrome 157 使用 DATA chunk，除非打开其 `WebRTC-DataChannelMessageInterleaving` field trial
 （打开后同样的测试经 I-DATA 通过）。SCTP 层本身也经 UDP 与 pion/sctp 互通测试，交错开与关、有无丢包、
 零校验和（`tools/interop/sctp/run.sh`）。无头 Firefox（usrsctp）经 WebDriver BiDi 在两个 offer 方向上测试：
@@ -206,7 +206,10 @@ I/O 线程服务。描述中的或经 `add_remote_candidate` trickle 来的每�
 IPv6 与 IPv4 并行（ADR-054）：`[::]:5353` 上的第二个套接字在每个有链路本地地址的接口上加入 `ff02::fb`
 （`Engine::bind_udp_multicast_on`），查询从每个接口发出，应答发回查询所来的链路。IPv6 主机地址与 IPv4
 的一样隐藏（AAAA 记录）。SDP 不携带作用域 ID，所以 endpoint 记住远端链路本地地址的接口（来自解析它的
-应答或它的流量），发送时加回去。没有 IPv6 的主机只跑 IPv4。
+应答或它的流量），发送时加回去。没有 IPv6 的主机只跑 IPv4。IPv6 应答按 RFC 6762 的要求以跳数限制 255
+发出（ADR-078；引擎的 IPv6 组播绑定会设置它），两个地址族都能应答：在 `224.0.0.251` 无路由的纯 IPv6 链路
+上，`conceal_host_candidates` 只经 `ff02::fb` 应答。`tools/interop/webrtc/mdns6.sh` 在纯 IPv6 容器中对
+avahi 验证这一点，`browser.sh` 则用唯一主机候选为被隐藏 IPv6 地址的 endpoint 对 Chrome 验证。
 
 ### 提名
 

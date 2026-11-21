@@ -100,3 +100,8 @@
 - 未做：多组件（WebRTC 中 rtcp-mux 是通行做法）；候选收集（STUN / TURN 客户端仍由调用方负责）；
   IPv6 组播上的 mDNS（`ff02::fb`；名字仍可解析为 IPv6 地址）以及对我方名字的探测 / 通告（它们是随机
   UUID，预计不会冲突）；通过 DNS 解析 FQDN 候选；远端不通告时的重新提名（此时应使用 ICE 重启）。
+
+注（2026-11-22）：IPv6 组播上的 mDNS 已完成。ADR-054（2026-11-20）加入了 `ff02::fb` 套接字（按接口加入
+组播组、在查询所来的链路上应答 AAAA、记住远端链路本地地址的作用域 ID）；ADR-078 以跳数限制 255 发送
+（RFC 6762 §11），在纯 IPv6 链路上也能隐藏地址，并与 Chrome 157、avahi 0.8 和 mDNSResponder 互通验证
+（`tools/interop/webrtc/mdns6.sh`、`browser.sh`）。对我方名字的探测 / 通告仍未做。

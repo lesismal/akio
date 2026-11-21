@@ -40,6 +40,7 @@ pub const SO_REUSEPORT: c_int = 0x0200;
 pub const IPPROTO_IP: c_int = 0;
 pub const IPPROTO_IPV6: c_int = 41;
 pub const IPV6_V6ONLY: c_int = 27;
+pub const IPV6_MULTICAST_HOPS: c_int = 10;
 pub const IP_TOS: c_int = 3;
 pub const IP_RECVTOS: c_int = 27;
 pub const IPV6_RECVTCLASS: c_int = 35;
@@ -183,6 +184,13 @@ unsafe extern "C" {
         name: c_int,
         value: *const c_void,
         len: socklen_t,
+    ) -> c_int;
+    pub fn getsockopt(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        value: *mut c_void,
+        len: *mut socklen_t,
     ) -> c_int;
     pub fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
     pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
