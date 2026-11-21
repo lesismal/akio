@@ -37,7 +37,7 @@ ADR-075 (docs/adr/075-media-aes-iframes-record-sync-report-queries.md):
   early and late; 60 s ignored; sync off). `tools/interop/media/hls-iframes.sh`: hls.js and
   Shaka Player (trick play over fMP4) in headless Chrome. New benchmark `rtsp-record` in
   `tests/client_bench.rs`.
-- AB_PLACEHOLDER
+- Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, 7 alternating rounds, medians, head / base): hub fan-out 1.005 / 0.994 / 0.996 (1 / 16 / 256 subscribers; a first version that checked the new floor per subscriber and packet cost 1.043 at 256, now the loop checks floors only while a subscriber has one to pass); RTSP RECORD ingest (`rtsp-record`, new) 1.007, RTSP pull 1.003, RTMP pull 0.996; `bench_segmenting` MPEG-TS 1.065, MPEG-TS LL-HLS 0.981, fMP4 0.961, fMP4 LL-HLS 1.020, AES-128 0.995 to 0.998, SAMPLE-AES MPEG-TS 1.015, `cbcs` 1.002. Nothing changed on the segmenting packet path (sealed I-frames, queries and the new routes are per segment or per request, and not in this benchmark); the plain MPEG-TS and fMP4 cases move in opposite directions and `cbcs` moved from 1.055 to 1.002 between two runs that differed only in hub.rs: code layout. On macOS aarch64 the same comparison is 0.97 to 1.03 throughout.
 
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 

@@ -307,6 +307,11 @@ struct State {
     tracks: Option<Tracks>,
     video: Vec<bool>,
     has_video: bool,
+    /// Every track is video (no floor to pass, [`Sub::floor`]).
+    all_video: bool,
+    /// Some subscriber may still have a floor to pass: the delivery loop checks floors only
+    /// then (set when a subscriber starts or restarts, cleared by the loop).
+    floors: bool,
     subs: Vec<Sub>,
     gop: VecDeque<Arc<Packet>>,
     gop_bytes: usize,
@@ -323,8 +328,10 @@ struct Sub {
     /// The decode time of the first packet it heard since its tracks: audio (and data) timed
     /// before it is left out, as a sink starting its clock there would clamp them to one time
     /// (audio lined up by sender reports, or an encoder's priming, can lead the keyframe a GOP
-    /// starts with). Only until the first such packet at or after it ([`Time::MIN`] then).
-    floor: Option<Time>,
+    /// starts with). [`FLOOR_UNSET`] before the first packet, [`FLOOR_PASSED`] once a non-video
+    /// packet reached it, or at once on a stream of video only. Looked at only while
+    /// [`State::floors`]: the steady state costs the delivery loop nothing.
+    floor: Time,
     started: bool,
     wait: Option<Duration>,
     start_wait: Option<Duration>,
@@ -335,24 +342,32 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// [`Sub::floor`] before the subscriber's first packet.
+const FLOOR_UNSET: Time = Time::MAX;
+/// [`Sub::floor`] once a non-video packet reached the first packet's time.
+const FLOOR_PASSED: Time = Time::MIN;
+
 impl Sub {
     /// Whether `pkt` goes to the sink: anything but video timed before the first packet it
-    /// heard is left out ([`Sub::floor`]).
-    #[inline]
-    fn admits(&mut self, pkt: &Packet, video: bool) -> bool {
-        match self.floor {
-            Some(Time::MIN) => true,
-            None => {
-                self.floor = Some(pkt.dts);
-                true
-            }
-            Some(_) if video => true,
-            Some(f) if pkt.dts >= f => {
-                self.floor = Some(Time::MIN);
-                true
-            }
-            Some(_) => false,
+    /// heard is left out ([`Sub::floor`]). Moves the floor along.
+    #[cold]
+    #[inline(never)]
+    fn admits(&mut self, pkt: &Packet, video: bool, all_video: bool) -> bool {
+        if self.floor == FLOOR_PASSED {
+            return true;
         }
+        if self.floor == FLOOR_UNSET {
+            self.floor = if all_video { FLOOR_PASSED } else { pkt.dts };
+            return true;
+        }
+        if video {
+            return true;
+        }
+        if pkt.dts >= self.floor {
+            self.floor = FLOOR_PASSED;
+            return true;
+        }
+        false
     }
 }
 
@@ -364,6 +379,7 @@ impl State {
     fn set_tracks(&mut self, tracks: Tracks) {
         self.video = tracks.iter().map(|t| t.codec.is_video()).collect();
         self.has_video = self.video.iter().any(|&v| v);
+        self.all_video = self.video.iter().all(|&v| v);
         self.tracks = Some(tracks);
         self.clear_gop();
     }
@@ -721,7 +737,7 @@ impl Hub {
                 closed: closed.clone(),
                 sink: Box::new(NullSink),
                 wait_key: false,
-                floor: None,
+                floor: FLOOR_UNSET,
                 started: false,
                 wait: opts.wait,
                 start_wait: opts.start_wait,
@@ -736,7 +752,7 @@ impl Hub {
                 if !opts.no_gop_cache && (g.gop_valid || !g.has_video) {
                     for p in &g.gop {
                         let video = g.video.get(p.track).copied().unwrap_or(false);
-                        if s.admits(p, video) {
+                        if s.admits(p, video, g.all_video) {
                             sink.on_packet(p);
                         }
                     }
@@ -747,6 +763,7 @@ impl Hub {
                 State::arm_timer(&st, &mut s);
             }
             s.sink = sink;
+            g.floors = true;
             g.subs.push(s);
             st.release(g);
             if need_key {
@@ -828,6 +845,7 @@ fn go_live(st: &Arc<Stream>, g: &mut State, tracks: Tracks) {
     let _ = st;
     g.reserved = false;
     g.set_tracks(tracks.clone());
+    g.floors = true;
     let has_video = g.has_video;
     for s in &mut g.subs {
         if s.closed.load(Ordering::Acquire) {
@@ -836,7 +854,7 @@ fn go_live(st: &Arc<Stream>, g: &mut State, tracks: Tracks) {
         s.timer_gen += 1; // cancels a pending wait timeout
         s.started = true;
         s.wait_key = has_video;
-        s.floor = None;
+        s.floor = FLOOR_UNSET;
         s.sink.on_tracks(&tracks);
     }
 }
@@ -897,19 +915,31 @@ impl Publisher {
         g.packets_in += 1;
         let video = g.video[pkt.track];
         g.cache(&pkt, video, self.limit);
+        let (floors, all_video) = (g.floors, g.all_video);
+        // Whether a subscriber still has its floor to pass (only looked at while `floors`).
+        let mut pending = false;
         for s in &mut g.subs {
             if s.closed.load(Ordering::Acquire) {
                 continue;
             }
             if video && s.wait_key {
                 if !pkt.keyframe {
+                    pending |= floors;
                     continue;
                 }
                 s.wait_key = false;
             }
-            if s.admits(&pkt, video) {
-                s.sink.on_packet(&pkt);
+            if floors {
+                let admitted = s.admits(&pkt, video, all_video);
+                pending |= s.floor != FLOOR_PASSED;
+                if !admitted {
+                    continue;
+                }
             }
+            s.sink.on_packet(&pkt);
+        }
+        if floors {
+            g.floors = pending;
         }
         self.st.release(g);
     }
@@ -935,9 +965,10 @@ impl Publisher {
                 continue;
             }
             s.wait_key = has_video;
-            s.floor = None;
+            s.floor = FLOOR_UNSET;
             s.sink.on_tracks(&tracks);
         }
+        g.floors = true;
         self.st.release(g);
     }
 

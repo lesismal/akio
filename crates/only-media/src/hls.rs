@@ -1997,7 +1997,9 @@ impl HlsSink {
         }
     }
 
-    /// Closes the segment being written at `end` (the next segment's start).
+    /// Closes the segment being written at `end` (the next segment's start). Once per segment:
+    /// kept out of line, away from the packet path.
+    #[inline(never)]
     fn close_segment(st: &Stream, g: &mut State, end: Time, mux: Option<&mut SegMuxer>) {
         let Some(mut b) = g.building.take() else {
             return;

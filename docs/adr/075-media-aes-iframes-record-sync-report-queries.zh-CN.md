@@ -50,7 +50,8 @@ ADR-070 在 `only-media` 中留下三处空缺：
    起始时间，发出多个时间戳相同的音频帧（ffmpeg：“non monotonically increasing dts”）。hub 现在
    为每个订阅者记住其自 tracks 以来收到的第一个包的解码时间，在有包达到该时间之前，丢弃时间
    早于它的非视频包（因此同一次推流中后来的时间跳变仍会送达；新的推流或 `set_tracks` 重新
-   开始）。视频总是送达。每个订阅者每个包一个分支。
+   开始；只有视频的流没有下限）。视频总是送达。仅当可能还有订阅者尚未越过下限时，分发循环才
+   检查下限（每条流一个标志，订阅者开始或重新开始时置位，由循环清除）：稳态下没有开销。
 4. **rendition report 的 URI 带上请求的查询串**，去掉其中的 `_HLS_` 指令（RFC 8216bis 6.2.5
    保留了该前缀：`_HLS_msn`、`_HLS_part`、`_HLS_skip`……）：播放器在该 URI 上追加自己的指令，
    与对当前播放列表做阻塞重载时完全一样。播放列表请求（以及挂起的阻塞重载）保存查询串用于
@@ -78,8 +79,6 @@ ADR-070 在 `only-media` 中留下三处空缺：
   这两项由脚本报告，不作要求。现有的 RTSP 互通（`ffmpeg -f rtsp` 推流，ffmpeg 经 TCP 与 UDP
   播放）在开启同步后发现了决定 3 中预滚音频被钳位的问题。
 - 模糊测试目标：不变，均可构建。
-- 代价：见 DEV-PLAN 与 CHANGELOG 中的 A/B（gpu51，`quiet.sh`）：HLS 分片（`bench_segmenting`）、
-  hub 扇出（`bench_fanout`）与 RTSP 服务器的 RECORD 入流（`tests/client_bench.rs`，新增
-  `rtsp-record`：交织路径检查 RTCP 通道与包类型）。
+- 代价：与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替 7 轮，取中位数，head / base）：hub 扇出 1.005 / 0.994 / 0.996（1 / 16 / 256 个订阅者；最初逐订阅者逐包检查新下限的版本在 256 时为 1.043，现在仅当有订阅者尚未越过下限时循环才检查）；RTSP RECORD 入流（新增 `rtsp-record`）1.007、RTSP 拉流 1.003、RTMP 拉流 0.996；`bench_segmenting` MPEG-TS 1.065、MPEG-TS LL-HLS 0.981、fMP4 0.961、fMP4 LL-HLS 1.020、AES-128 0.995 至 0.998、SAMPLE-AES MPEG-TS 1.015、`cbcs` 1.002。分片的逐包路径没有改动（独立加密的 I 帧、查询串与新路由都是按分片或按请求，且不在此基准中）；普通 MPEG-TS 与 fMP4 反向变化，`cbcs` 在仅 hub.rs 不同的两轮之间从 1.055 变为 1.002：属于代码布局。macOS aarch64 上同样的比较全部在 0.97 至 1.03 之间。新基准 `rtsp-record`（`tests/client_bench.rs`）以每轨每轮一个发送者报告驱动 RECORD 会话；交织路径现在匹配 RTCP 通道并检查包类型。
 - 未做：H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES；向推流端发送 RTCP 接收者报告；重连
   时重新解析主机名。

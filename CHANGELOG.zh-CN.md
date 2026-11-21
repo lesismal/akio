@@ -32,7 +32,7 @@ ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）�
   偏斜的发送者报告（500 ms，早到与迟到；60 s 被忽略；关闭同步）。
   `tools/interop/media/hls-iframes.sh`：无头 Chrome 中的 hls.js 与 Shaka Player（fMP4 上的
   trick play）。`tests/client_bench.rs` 新增基准 `rtsp-record`。
-- AB_PLACEHOLDER
+- 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替 7 轮，取中位数，head / base）：hub 扇出 1.005 / 0.994 / 0.996（1 / 16 / 256 个订阅者；最初逐订阅者逐包检查新下限的版本在 256 时为 1.043，现在仅当有订阅者尚未越过下限时循环才检查）；RTSP RECORD 入流（新增 `rtsp-record`）1.007、RTSP 拉流 1.003、RTMP 拉流 0.996；`bench_segmenting` MPEG-TS 1.065、MPEG-TS LL-HLS 0.981、fMP4 0.961、fMP4 LL-HLS 1.020、AES-128 0.995 至 0.998、SAMPLE-AES MPEG-TS 1.015、`cbcs` 1.002。分片的逐包路径没有改动（独立加密的 I 帧、查询串与新路由都是按分片或按请求，且不在此基准中）；普通 MPEG-TS 与 fMP4 反向变化，`cbcs` 在仅 hub.rs 不同的两轮之间从 1.055 变为 1.002：属于代码布局。macOS aarch64 上同样的比较全部在 0.97 至 1.03 之间。
 
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 

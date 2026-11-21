@@ -64,8 +64,10 @@ ADR-070 left three gaps in `only-media`:
    monotonically increasing dts"). The hub now remembers, per subscriber, the decode time of
    the first packet it heard since its tracks, and leaves out non-video packets timed before
    it until one reaches it (so a later timestamp jump within a publish is still delivered;
-   a new publish or `set_tracks` starts over). Video always goes. One branch per subscriber
-   and packet.
+   a new publish or `set_tracks` starts over; a stream of video only has no floor). Video
+   always goes. The delivery loop looks at floors only while a subscriber may still have one
+   to pass (a flag per stream, set when a subscriber starts or restarts, cleared by the
+   loop): the steady state costs nothing.
 4. **Rendition report URIs carry the request's query** without its `_HLS_` directives
    (RFC 8216bis 6.2.5 reserves the prefix: `_HLS_msn`, `_HLS_part`, `_HLS_skip`...): a
    player appends its own to that URI, exactly as for the blocking reloads of the playlist it
@@ -100,9 +102,6 @@ ADR-070 left three gaps in `only-media`:
   The existing RTSP interop (`ffmpeg -f rtsp` publishing, ffmpeg playing over TCP and UDP)
   found the priming-audio clamp of decision 3 once sync was on.
 - Fuzz targets: unchanged, all build.
-- Cost: see the A/B in DEV-PLAN and the CHANGELOG (gpu51, `quiet.sh`): HLS segmenting
-  (`bench_segmenting`), hub fan-out (`bench_fanout`), and the RTSP server's RECORD ingest
-  (`tests/client_bench.rs`, new `rtsp-record`: the interleaved path checks the RTCP channel
-  and the packet type).
+- Cost: same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, 7 alternating rounds, medians, head / base): hub fan-out 1.005 / 0.994 / 0.996 (1 / 16 / 256 subscribers; a first version that checked the new floor per subscriber and packet cost 1.043 at 256, now the loop checks floors only while a subscriber has one to pass); RTSP RECORD ingest (`rtsp-record`, new) 1.007, RTSP pull 1.003, RTMP pull 0.996; `bench_segmenting` MPEG-TS 1.065, MPEG-TS LL-HLS 0.981, fMP4 0.961, fMP4 LL-HLS 1.020, AES-128 0.995 to 0.998, SAMPLE-AES MPEG-TS 1.015, `cbcs` 1.002. Nothing changed on the segmenting packet path (sealed I-frames, queries and the new routes are per segment or per request, and not in this benchmark); the plain MPEG-TS and fMP4 cases move in opposite directions and `cbcs` moved from 1.055 to 1.002 between two runs that differed only in hub.rs: code layout. On macOS aarch64 the same comparison is 0.97 to 1.03 throughout. The new `rtsp-record` benchmark (`tests/client_bench.rs`) drives a RECORD session with a sender report per track and round; the interleaved path now matches the RTCP channel and checks the packet type.
 - Not done: SAMPLE-AES for codecs other than H.264, H.265 (fMP4) and AAC; RTCP receiver
   reports to recorders; re-resolving a host name on reconnect.
