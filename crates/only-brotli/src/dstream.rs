@@ -280,7 +280,7 @@ impl Decompressor {
             let stop = if self.inbuf.is_empty() {
                 // Straight from the caller's input; what a unit leaves unfinished is kept.
                 let data = &input[*ip..];
-                if data.is_empty() {
+                if data.is_empty() && self.state != State::End {
                     return Ok(());
                 }
                 let stop = self.step(data)?;
