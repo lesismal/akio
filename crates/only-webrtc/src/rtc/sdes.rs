@@ -201,6 +201,17 @@ impl Crypto {
     }
 }
 
+/// The `webrtc_sdes` fuzz target: an `a=crypto` value; one that parses writes back to the
+/// same line and keys an SRTP context.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_crypto_line(s: &str) {
+    let Some(c) = Crypto::parse(s) else { return };
+    assert!(!c.keys.is_empty() && c.keys.len() <= MAX_KEYS);
+    assert!(c.keys.iter().all(|k| k.mki.len() == c.mki_len));
+    assert_eq!(Crypto::parse(&c.to_attr()).as_ref(), Some(&c), "{s}");
+    assert!(c.context().is_some(), "{s}");
+}
+
 /// `<value>:<length>` (RFC 4568 §9.1: decimal MKI value, length in bytes 1..=128) as the
 /// bytes packets carry.
 fn parse_mki(value: &str, len: &str) -> Option<Vec<u8>> {

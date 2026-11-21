@@ -342,6 +342,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "webrtc_sdes"
+path = "fuzz_targets/webrtc_sdes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "bt_tracker"
 path = "fuzz_targets/bt_tracker.rs"
 test = false

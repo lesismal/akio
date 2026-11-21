@@ -1235,12 +1235,11 @@ impl Rtc {
         let pending = self.pending.take().ok_or_else(|| err("no offer pending"))?;
         // An answer that leaves our BUNDLE group out: a transport per section (RFC 9143
         // §7.3.3), on the credentials our offer gave every section.
-        let refused = !self.unbundled()
-            && !transports::bundles(&sdp)
-            && rtcp_mux::sections_in_use(&sdp) > 1;
-        if refused && self.negotiated {
+        let refused = !self.unbundled() && !transports::bundles(&sdp);
+        if refused && self.negotiated && rtcp_mux::sections_in_use(&sdp) > 1 {
             return Err(err("the answer stopped bundling an established session"));
         }
+        let refused = refused && !self.negotiated;
         if self.sdes.active && !self.unbundled() && !refused {
             self.sdes.accept_answer(&sdp).map_err(err)?;
         }
@@ -1369,9 +1368,7 @@ impl Rtc {
             }
             self.unbundled()
         } else {
-            in_use > 1
-                && (!transports::bundles(&sdp)
-                    || self.cfg.bundle == crate::types::BundlePolicy::Disabled)
+            !transports::bundles(&sdp) || self.cfg.bundle == crate::types::BundlePolicy::Disabled
         };
         self.sdes.active = sdes_offer;
         if sdes_offer {
@@ -3872,6 +3869,8 @@ mod receipts;
 mod rtcp_mux;
 mod sdes;
 mod transports;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) use sdes::fuzz_crypto_line;
 
 use receipts::{line_xr_blocks, remote_xr_blocks};
 #[cfg(test)]

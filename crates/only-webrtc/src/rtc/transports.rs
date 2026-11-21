@@ -552,7 +552,7 @@ impl Rtc {
     /// Our offer makes the session unbundled ([`BundlePolicy::Disabled`]): a transport for
     /// every section in use, with credentials of its own.
     pub(super) fn split_for_offer(&mut self, now: Instant) {
-        if self.cfg.bundle != BundlePolicy::Disabled {
+        if self.cfg.bundle != BundlePolicy::Disabled && !self.xt.split {
             return;
         }
         let mids = self.mids_in_use();
