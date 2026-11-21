@@ -615,6 +615,30 @@ enter (about 12% at 4.6M requests/s, 3% at 0.7M); at 100% every request also all
 and the exporter thread encodes and sends ~2.5M spans/s on the same four CPUs. Sample in
 production (`sample_ratio`), or give the exporter thread its own CPU.
 
+### OTLP export additions (ADR-064, same-run A/B)
+
+Measured 2026-11-21 on gpu51 under `quiet.sh`. Question: do span events and links, OTLP logs,
+exemplars and the export changes cost anything while they are off? `base` is `main` at
+`b22519ae`, `new` the otlp-gaps branch, built in one session and run alternately, pinned to one
+CPU (micro-benchmarks) or with the server on CPUs 0–3 (4 threads, epoll) and `h2load` (8
+threads, 256 connections, 5 s) on CPUs 4–7 and 12–15. Medians; ratios are new / base.
+
+| Benchmark | rounds | base | new / base |
+|---|---:|---:|---:|
+| only-log `trace!` disabled, 2 key-values | 5 × 2 | 0.272 ns | 1.009 |
+| only-log `info_span!` with spans off, 2 fields | 5 × 2 | 0.615 ns | 0.998 |
+| only-log `span::enabled` (spans off) | 5 × 2 | 0.407 ns | 0.994 |
+| only-log `log_enabled!` disabled | 5 × 2 | 0.406 ns | 0.998 |
+| `Histogram::observe` (no exemplars) | 7 | 4.643 ns | 1.005 |
+| `HttpMetrics` middleware (exemplars off), HTTP/1.1 plaintext | 7 | 731,820 req/s | 0.999 |
+| `HttpMetrics` middleware (exemplars off), pipelined ×16 | 7 | 4,284,243 req/s | 1.001 |
+
+**Answers.** Disabled log and span statements are unchanged (within ±1%). A first version kept
+an exemplar flag inside `Histogram` and measured 1.15 (inlined offer), then 1.04 (out of line, a
+branch per observation); exemplars now live in their own `ExemplarHistogram`, and a plain
+histogram is back at 1.005. The `HttpMetrics` middleware with exemplars off is unchanged. The
+`only_export` code itself runs on its own thread.
+
 ### Hot reload (engine A/B, `tools/bench`)
 
 Measured 2026-11-18 on gpu51. Question (ADR-028): does the reloadable read buffer and backlog and
@@ -1765,6 +1789,23 @@ send, and one `sendmsg` kick per batch. The difference is largest for bulk TCP, 
 direction carries full-size frames. Connection churn gains least: most of its cost is in the
 kernel clients' own connect and close. This measures copy mode; zero-copy on a NIC that supports
 it is not measured (the host's NICs are not used).
+
+### WebSocket over HTTP/2 (ADR-060, h2c A/B)
+
+Measured 2026-11-21 on gpu51. Question: does accepting extended CONNECT change the h2c request
+path? The changes there are a `:protocol` check in the header decoder, a `tunnel` flag on the
+stream, and the parked context as a two-case enum. `base` is `main` at `b22519ae`, `new` the
+branch (`http-bench`, epoll); both built in one session and run interleaved under `quiet.sh`,
+7 rounds (5 s runs, a fresh server per run; server on CPUs 0–3 with 4 threads, `h2load` with
+8 threads on CPUs 4–7 and 12–15). `±` is half the min–max spread of the rounds.
+
+| Load | base median | new median | new / base (medians) | per-round ratio median |
+|---|---:|---:|---:|---:|
+| h2c 64 conns × 16 streams | 3,607,629 (±22%) | 3,801,917 (±36%) | 1.054 | 0.991 |
+| h2c 16 conns × 128 streams | 5,373,158 (±10%) | 5,022,618 (±11%) | 0.935 | 1.004 |
+
+**Answer: no measurable change.** h2c rounds on this host spread far wider than the difference: both directions appear in each row (h2c 64 × 16
+per-round ratios 0.54–1.26, 16 × 128 0.82–1.14), and the per-round ratio medians are within 1%.
 
 ## Not measured
 

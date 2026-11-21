@@ -138,11 +138,11 @@ ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），
   票据声明的有效期限制在一个周期内。
 - `status_request_v2`（RFC 6961）：从不发送，收到时忽略（决定与理由见 ADR）。OCSP 验证此前已完成（ADR-038、
   ADR-049）；已更正 DEV-PLAN。
-- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 865 个通过，没有意外失败，1,122 个未实现，6,123 个被禁用。
+- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 882 个通过，没有意外失败，1,122 个未实现，6,106 个被禁用。
 
 ### 修复（only-tls）
 
-- 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）。
+- 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）；TLS 1.2 客户端拒绝非空的 server_name 确认，未请求的 TLS 1.3 server_name 确认为 `unsupported_extension`；对端叶证书的 keyUsage 不含 digitalSignature 时为 `bad_certificate`（RFC 8446 §4.4.2.2）；未请求的 CertificateEntry 扩展为 `unsupported_extension`（RFC 8446 §4.4.2）；格式错误的 TLS 1.3 pre_shared_key 不再导致 TLS 1.2 握手失败；不向不支持 psk_dhe_ke 的客户端发送票据（RFC 8446 §4.2.9）；我方下一次发送应用数据之前的多个 update_requested KeyUpdate 只回应一次（RFC 8446 §4.6.3）。
 
 ### 新增：跨进程 BPF 分流、prefork 重载时的 listener 迁移与 AF_XDP（only-ebpf、only-prefork、only-dpdk）
 
@@ -169,6 +169,62 @@ ADR-063（docs/adr/063-shared-steering-migration-af-xdp.zh-CN.md），只有新�
   下的重载与先停止后杀死的 worker（没有丢失，accept 计数吻合），外加 AF_XDP 的内核对端测试（native、
   generic、IPv6、两个队列）。降级路径在去掉 capability 后测试。`tools/bench/afxdp.sh` 与示例
   `link-bench` 对比 AF_XDP 与 AF_PACKET（docs/BENCHMARKS.zh-CN.md）。
+
+### 新增：HTTP/2 上的 WebSocket（RFC 8441，only-http）
+
+ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
+
+- 服务端：HTTP/2 服务端宣告 `SETTINGS_ENABLE_CONNECT_PROTOCOL` 并接受 extended CONNECT（`:protocol`，
+  同时带 `:scheme`、`:path` 和 `:authority`；畸形请求以 `PROTOCOL_ERROR` 重置）。
+  `Context::upgrade_websocket` 在 HTTP/2 上像在 HTTP/3 上一样接受 `:protocol websocket`（版本 13、
+  origin 策略、子协议、`permessage-deflate`，应答 `200`），由 `Router` 的 GET 路由应答，所以一个
+  `.get("/ws", ...)` 同时服务 HTTP/1.1、HTTP/2 和 HTTP/3 上的 WebSocket。
+  `H2Config::enable_connect_protocol`（默认开启）可将其关闭。
+- 客户端：`H2Client::websocket(url, &H2WsOptions, handler, done)` 与 `websocket_blocking` 在客户端
+  连接的一条流上打开 WebSocket，与其请求并存；它们会先等待服务端的 SETTINGS。新增 `H2WsOptions`（config、
+  deflate 提议、子协议、origin、额外头、关闭超时、`timeout` 10 秒、`max_queued_bytes` 8 MiB），以及表示
+  被拒绝的 `ClientError::Status(u16)`。
+- 每个 WebSocket 受其流和连接的流量控制约束；超过 `max_pending_bytes`（服务端每流；每连接为
+  `max_conn_pending_bytes`）或 `max_queued_bytes`（客户端）后发送返回 `Overloaded`。close 帧结束我方
+  这一半流，对端的 END_STREAM 结束它那一半；`RST_STREAM` 和连接丢失是无握手关闭（1006）；优雅关闭以
+  1001 关闭 WebSocket。对端在我方结束后 5 秒内不结束它那一半，或在客户端关闭超时内不应答客户端的关闭，
+  流被重置（`CANCEL`）。
+- 与 Go 的 HTTP/2 在 h2c 和 TLS 上双向互通（`tools/interop/h2ws/run.sh`：net/http 服务端，
+  golang.org/x/net/http2 客户端），并与无头 Chrome 互通：它在所加载页面的 HTTP/2 连接上打开 WebSocket。新增 fuzz 目标 `h2_websocket`；`h2_server` 增加 extended CONNECT 种子。
+- 性能：不带 `:protocol` 的请求走与之前相同的分支。gpu51 上对 `b22519ae` 的同轮 A/B（`quiet.sh` 下
+  交错 7 轮，epoll）：h2c 64 × 16 逐轮比值中位数 0.991，h2c 16 × 128 为 1.004，都在各轮波动
+  （±10–36%）之内；见 docs/BENCHMARKS.zh-CN.md。gpu51 上 fuzz：`h2_server` 480 万次、
+  `h2_websocket` 230 万次（各 10 分钟），无崩溃。
+
+### 新增：gRPC 与 TLS 上的 OTLP、OTLP 日志、span 事件与链接、exemplar、导出重试（only-export、only-log、only-core、only-http）
+
+ADR-064（docs/adr/064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md），API 只有新增：
+
+- only-export：`ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` 用 only-grpc 的客户端经
+  OTLP/gRPC 导出（私有 engine，一个客户端 I/O 线程，首次推送时启动）。gRPC 和 HTTP 的 `https://` 端点经 only-tls
+  连接：系统根证书或 `tls_roots(RootCerts)`，`tls_client_cert(chain, key)` 用于双向 TLS，`tls_server_name`。
+- only-export：`logs(level)` 安装一个 only-log logger，记录作为 OTLP `LogRecord` 发出（`/v1/logs` 或
+  `LogsService/Export`）：body、严重级别、键值、`code.file.path` / `code.line.number`，以及记录所在处当前 span 的
+  trace id 和 span id。`forward_logs(logger, level)` 继续供给另一个 logger；`log_queue(max, batch)` 限定队列
+  （默认 4096 / 512）；导出器自身线程上的记录不导出。
+- only-log：span 事件与链接：`SpanEvent`、`SpanLink`、`Span::add_event` / `push_event` / `add_link`、
+  `SpanBuilder::link`，每个 span 各最多 `MAX_EVENTS` / `MAX_LINKS`（128）个，超出计入
+  `SpanData::dropped_events` / `dropped_links`；经 OTLP 导出。
+- only-core：exemplar：`Exemplar`、`ExemplarReservoir`、`ExemplarHistogram`、
+  `Registry::histogram_with_exemplars`、`HistogramSnapshot::exemplars` / `with_exemplars`。only-http：
+  `HttpMetrics::with_exemplars()` 在延迟直方图上保留请求 span 的 id。经 OTLP 导出（Prometheus 文本格式中没有）。
+- only-export：`ExportStats` 新增 `otlp_logs_ok` / `otlp_logs_failed`、`otlp_retried`、`metric_points_rejected`、
+  `spans_rejected`、`logs_exported` / `logs_dropped` / `logs_rejected` / `logs_queued`；统计收集器新增相应的
+  `only_export_*` 序列。
+
+### 变更：only-export 重试失败的推送
+
+- 可重试的失败（连不上、超时、HTTP 429 / 502 / 503 / 504、gRPC `UNAVAILABLE` 及其他可重试状态码）让 collector 进入
+  退避（`retry(initial, max, max_elapsed)`，默认 1 秒到 30 秒并带抖动，或按 `Retry-After`），并保留每种信号失败的那
+  一批直到它存在了 `max_elapsed`（默认 5 分钟），不再直接丢弃；退避结束时用新快照推送指标。
+  `retry(.., .., Duration::ZERO)` 恢复以前的丢弃行为。其他失败仍丢弃这一批。partial success 会被计数。
+- `flush()` 遇到第一个可重试的失败即停止（剩下的留在队列中）；`spans_queued` 包含等待重试的那一批。
+- 接受 `https://` 端点（以前报错）。
 
 ### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
 

@@ -160,6 +160,43 @@ pub(crate) struct OfferedPsk<'a> {
     pub(crate) binders_len: usize,
 }
 
+/// Parses a pre_shared_key extension body (`last`: it is the last extension, as required).
+fn parse_psk(d: &[u8], last: bool) -> DResult<OfferedPsk<'_>> {
+    if !last {
+        return fatal(Alert::IllegalParameter, "pre_shared_key not last");
+    }
+    let mut x = Reader::new(d);
+    let mut ids = x.sub16()?;
+    let mut identities = Vec::new();
+    while !ids.is_empty() {
+        let id = ids.vec16()?;
+        let age = ids.u32()?;
+        if id.is_empty() {
+            return fatal(Alert::DecodeError, "empty psk identity");
+        }
+        identities.push((id, age));
+    }
+    let rest_len = x.clone().rest().len();
+    let mut bs = x.sub16()?;
+    let mut binders = Vec::new();
+    while !bs.is_empty() {
+        let b = bs.vec8()?;
+        if b.len() < 32 {
+            return fatal(Alert::DecodeError, "short psk binder");
+        }
+        binders.push(b);
+    }
+    x.finish()?;
+    if identities.is_empty() || identities.len() != binders.len() {
+        return fatal(Alert::IllegalParameter, "psk identities and binders");
+    }
+    Ok(OfferedPsk {
+        identities,
+        binders,
+        binders_len: rest_len,
+    })
+}
+
 /// A parsed ClientHello.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ClientHello<'a> {
@@ -177,6 +214,8 @@ pub(crate) struct ClientHello<'a> {
     pub(crate) alpn: Option<Vec<&'a [u8]>>,
     pub(crate) psk_modes: Option<&'a [u8]>,
     pub(crate) psk: Option<OfferedPsk<'a>>,
+    /// Why a pre_shared_key extension did not parse (raised by the TLS 1.3 path only).
+    pub(crate) psk_error: Option<Fatal>,
     pub(crate) early_data: bool,
     pub(crate) cookie: Option<&'a [u8]>,
     pub(crate) ems: bool,
@@ -273,37 +312,12 @@ impl<'a> ClientHello<'a> {
                     ch.psk_modes = Some(m);
                 }
                 EXT_PRE_SHARED_KEY => {
-                    if i + 1 != n {
-                        return fatal(Alert::IllegalParameter, "pre_shared_key not last");
+                    // TLS 1.3 only: a malformed one fails the handshake only if TLS 1.3 is
+                    // negotiated (a TLS 1.2 server ignores it).
+                    match parse_psk(x.rest(), i + 1 == n) {
+                        Ok(p) => ch.psk = Some(p),
+                        Err(e) => ch.psk_error = Some(e),
                     }
-                    let mut ids = x.sub16()?;
-                    let mut identities = Vec::new();
-                    while !ids.is_empty() {
-                        let id = ids.vec16()?;
-                        let age = ids.u32()?;
-                        if id.is_empty() {
-                            return fatal(Alert::DecodeError, "empty psk identity");
-                        }
-                        identities.push((id, age));
-                    }
-                    let rest_len = x.clone().rest().len();
-                    let mut bs = x.sub16()?;
-                    let mut binders = Vec::new();
-                    while !bs.is_empty() {
-                        let b = bs.vec8()?;
-                        if b.len() < 32 {
-                            return fatal(Alert::DecodeError, "short psk binder");
-                        }
-                        binders.push(b);
-                    }
-                    if identities.is_empty() || identities.len() != binders.len() {
-                        return fatal(Alert::IllegalParameter, "psk identities and binders");
-                    }
-                    ch.psk = Some(OfferedPsk {
-                        identities,
-                        binders,
-                        binders_len: rest_len,
-                    });
                 }
                 EXT_EARLY_DATA => {
                     ch.early_data = true;
@@ -541,9 +555,10 @@ pub(crate) struct Certificate13 {
     pub(crate) ocsp: Option<Vec<u8>>,
 }
 
-/// Parses a TLS 1.3 Certificate body. Entry extensions are checked for well-formedness; the
-/// leaf's status_request (an OCSP response) is kept.
-pub(crate) fn parse_certificate13(body: &[u8]) -> DResult<Certificate13> {
+/// Parses a TLS 1.3 Certificate body. Entry extensions must have been asked for
+/// (RFC 8446 section 4.4.2: status_request when `ocsp_asked`, nothing else; others are
+/// `unsupported_extension`); the leaf's status_request (an OCSP response) is kept.
+pub(crate) fn parse_certificate13(body: &[u8], ocsp_asked: bool) -> DResult<Certificate13> {
     let mut r = Reader::new(body);
     let mut out = Certificate13 {
         context: r.vec8()?.to_vec(),
@@ -565,7 +580,13 @@ pub(crate) fn parse_certificate13(body: &[u8]) -> DResult<Certificate13> {
                 return fatal(Alert::IllegalParameter, "duplicate extension");
             }
             seen.push(t);
-            if t == EXT_STATUS_REQUEST && out.chain.is_empty() {
+            if t != EXT_STATUS_REQUEST || !ocsp_asked {
+                return fatal(
+                    Alert::UnsupportedExtension,
+                    "unrequested certificate extension",
+                );
+            }
+            if out.chain.is_empty() {
                 let mut x = Reader::new(d);
                 out.ocsp = Some(parse_certificate_status(&mut x)?);
                 x.finish()?;
@@ -739,10 +760,49 @@ mod tests {
     }
 
     #[test]
+    fn certificate_entry_extensions_must_be_asked_for() {
+        let chain = vec![vec![1, 2, 3]];
+        let mut stapled = Vec::new();
+        certificate13_body(&mut stapled, b"", &chain, Some(&[0x30, 0]));
+        // status_request only when asked (RFC 8446 section 4.4.2).
+        assert!(parse_certificate13(&stapled, true).unwrap().ocsp.is_some());
+        let e = parse_certificate13(&stapled, false).unwrap_err();
+        assert_eq!(e.alert, Alert::UnsupportedExtension);
+        // Any other extension: never asked for.
+        let mut other = Vec::new();
+        put_vec8(&mut other, b"");
+        put_vec(&mut other, 3, |o| {
+            put_u24(o, 3);
+            o.extend_from_slice(&[1, 2, 3]);
+            put_vec(o, 2, |o| ext(o, 18, |_| {}));
+        });
+        let e = parse_certificate13(&other, true).unwrap_err();
+        assert_eq!(e.alert, Alert::UnsupportedExtension);
+    }
+
+    #[test]
+    fn malformed_pre_shared_key_is_deferred() {
+        // A pre_shared_key that does not parse (a short binder) is kept as an error for the
+        // TLS 1.3 path: a TLS 1.2 server ignores the extension.
+        let mut psk = Vec::new();
+        put_vec(&mut psk, 2, |o| {
+            put_vec(o, 2, |o| o.extend_from_slice(b"ticket"));
+            o.extend_from_slice(&[0, 0, 0, 0]);
+        });
+        put_vec(&mut psk, 2, |o| put_vec8(o, &[7; 8]));
+        let e = parse_psk(&psk, true).unwrap_err();
+        assert_eq!(e.alert, Alert::DecodeError);
+        assert_eq!(
+            parse_psk(&psk, false).unwrap_err().alert,
+            Alert::IllegalParameter
+        );
+    }
+
+    #[test]
     fn certificates_roundtrip() {
         let chain = vec![vec![1, 2, 3], vec![4]];
         let m = certificate13(b"ctx", &chain);
-        let c = parse_certificate13(&m[4..]).unwrap();
+        let c = parse_certificate13(&m[4..], false).unwrap();
         assert_eq!(
             (c.context.as_slice(), c.chain.clone()),
             (&b"ctx"[..], chain.clone())

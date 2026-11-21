@@ -246,7 +246,7 @@ answer is `200`, and the request stream then carries the WebSocket, framed by on
 same `WsHandler` callbacks and `WsSender`. `Router` routes an extended CONNECT for `websocket`
 to the path's GET route, so a single `.get("/ws", ...)` serves both HTTP/1.1 upgrades and
 HTTP/3. `ctx.req().protocol` is `Some("websocket")` for such a request. WebSocket over HTTP/2
-(RFC 8441) is not supported.
+(RFC 8441) works the same way, see [WebSocket](websocket.md#websocket-over-http2).
 
 `H3Client::websocket(path, &H3WsOptions, handler, done)` (or `websocket_blocking`) opens one on
 the client's connection, next to its requests: it waits for the server's SETTINGS, and `done`
@@ -299,6 +299,5 @@ Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BE
 
 ## Not done
 
-WebSocket over HTTP/2 (RFC 8441). Server push is left out on purpose: browsers dropped it, and
-103 Early Hints replaced its use
+Server push is left out on purpose: browsers dropped it, and 103 Early Hints replaced its use
 ([ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)).

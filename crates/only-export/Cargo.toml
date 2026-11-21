@@ -1,6 +1,6 @@
 [package]
 name = "only-export"
-description = "only push export: metrics and spans to an OpenTelemetry collector (OTLP/HTTP, protobuf or JSON) and StatsD/DogStatsD, from a background thread, without dependencies"
+description = "only push export: metrics, spans and logs to an OpenTelemetry collector (OTLP over HTTP or gRPC, plain or TLS) and metrics to StatsD/DogStatsD, from a background thread, without third-party dependencies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,14 +16,22 @@ categories = ["development-tools::debugging", "network-programming"]
 only-core = { workspace = true }
 only-log = { workspace = true }
 only-protobuf = { workspace = true }
+# OTLP/gRPC (ADR-064): only-grpc's client over only-http's HTTP/2 client, on a private engine.
+only = { workspace = true }
+only-http = { workspace = true }
+only-grpc = { workspace = true }
+# TLS to the collector (ADR-064): the blocking stream for OTLP/HTTP, configs for both.
+only-tls = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_export::fuzzing`); not a public API.
 fuzzing = []
 
 [dev-dependencies]
-only = { workspace = true }
-only-http = { workspace = true }
+# Round trips: OTLP bodies decoded with descriptors compiled from tests/otlp.proto.
+only-protobuf-build = { workspace = true }
+only-x509 = { workspace = true }
+only-crypto = { workspace = true }
 
 [lints]
 workspace = true

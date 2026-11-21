@@ -42,13 +42,22 @@ impl core::marker::Unpin for only_export::Flavor
 impl core::panic::unwind_safe::RefUnwindSafe for only_export::Flavor
 impl core::panic::unwind_safe::UnwindSafe for only_export::Flavor
 #[non_exhaustive] pub struct only_export::ExportStats
+pub only_export::ExportStats::logs_dropped: u64
+pub only_export::ExportStats::logs_exported: u64
+pub only_export::ExportStats::logs_queued: u64
+pub only_export::ExportStats::logs_rejected: u64
+pub only_export::ExportStats::metric_points_rejected: u64
+pub only_export::ExportStats::otlp_logs_failed: u64
+pub only_export::ExportStats::otlp_logs_ok: u64
 pub only_export::ExportStats::otlp_metrics_failed: u64
 pub only_export::ExportStats::otlp_metrics_ok: u64
+pub only_export::ExportStats::otlp_retried: u64
 pub only_export::ExportStats::otlp_traces_failed: u64
 pub only_export::ExportStats::otlp_traces_ok: u64
 pub only_export::ExportStats::spans_dropped: u64
 pub only_export::ExportStats::spans_exported: u64
 pub only_export::ExportStats::spans_queued: u64
+pub only_export::ExportStats::spans_rejected: u64
 pub only_export::ExportStats::statsd_dropped_series: u64
 pub only_export::ExportStats::statsd_failed: u64
 pub only_export::ExportStats::statsd_ok: u64
@@ -87,11 +96,17 @@ impl core::panic::unwind_safe::UnwindSafe for only_export::Exporter
 pub struct only_export::ExporterBuilder
 impl only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::collector(self, alloc::rcs::arc::Arc<dyn only_core::metrics::Collector>) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::forward_logs(self, impl only_log::Logger + 'static, only_log::LevelFilter) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::interval(self, core::time::Duration) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::log_queue(self, usize, usize) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::logs(self, only_log::LevelFilter) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::otlp_grpc(self, &str) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::otlp_grpc_with(self, &str, &[(&str, &str)]) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::otlp_http(self, &str) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::otlp_http_with(self, &str, only_export::Encoding, &[(&str, &str)]) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::otlp_traces_only(self) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::resource_attr(self, &str, &str) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::retry(self, core::time::Duration, core::time::Duration, core::time::Duration) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::sample_ratio(self, f64) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::service_name(self, &str) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::span_interval(self, core::time::Duration) -> only_export::ExporterBuilder
@@ -101,6 +116,9 @@ pub fn only_export::ExporterBuilder::statsd(self, &str, only_export::Flavor) -> 
 pub fn only_export::ExporterBuilder::statsd_options(self, &str, usize, usize) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::telemetry(self, alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::timeout(self, core::time::Duration) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::tls_client_cert(self, alloc::vec::Vec<only_tls::config::Certificate>, only_tls::config::PrivateKey) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::tls_roots(self, only_tls::config::RootCerts) -> only_export::ExporterBuilder
+pub fn only_export::ExporterBuilder::tls_server_name(self, &str) -> only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::traces(self, only_log::LevelFilter) -> only_export::ExporterBuilder
 impl core::clone::Clone for only_export::ExporterBuilder
 pub fn only_export::ExporterBuilder::clone(&self) -> Self
@@ -116,7 +134,11 @@ impl !core::panic::unwind_safe::UnwindSafe for only_export::ExporterBuilder
 pub const only_export::DEFAULT_INTERVAL: core::time::Duration
 pub const only_export::DEFAULT_MAX_BATCH: usize
 pub const only_export::DEFAULT_MAX_PACKET: usize
+pub const only_export::DEFAULT_MAX_QUEUED_LOGS: usize
 pub const only_export::DEFAULT_MAX_QUEUED_SPANS: usize
 pub const only_export::DEFAULT_MAX_SERIES: usize
+pub const only_export::DEFAULT_RETRY_INITIAL: core::time::Duration
+pub const only_export::DEFAULT_RETRY_MAX: core::time::Duration
+pub const only_export::DEFAULT_RETRY_MAX_ELAPSED: core::time::Duration
 pub const only_export::DEFAULT_SPAN_INTERVAL: core::time::Duration
 pub const only_export::DEFAULT_TIMEOUT: core::time::Duration

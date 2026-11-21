@@ -164,11 +164,11 @@ configurations behave as before):
   (`TicketKeys::random`). Scheduled keys cap the advertised ticket lifetime at one period.
 - `status_request_v2` (RFC 6961): never sent, ignored when received (decision and reasons in
   the ADR). OCSP validation was already done (ADR-038, ADR-049); DEV-PLAN corrected.
-- BoGo: a shim (`crates/only-tls/examples/bogo-shim.rs`) and `tools/interop/tls/bogo.sh` run BoringSSL's test runner at a pinned commit with `tools/interop/tls/bogo_config.json` (disabled areas and known failures, each with a reason): 865 of 8,110 tests pass, none fail unexpectedly, 1,122 unimplemented, 6,123 disabled.
+- BoGo: a shim (`crates/only-tls/examples/bogo-shim.rs`) and `tools/interop/tls/bogo.sh` run BoringSSL's test runner at a pinned commit with `tools/interop/tls/bogo_config.json` (disabled areas and known failures, each with a reason): 882 of 8,110 tests pass, none fail unexpectedly, 1,122 unimplemented, 6,106 disabled.
 
 ### Fixed (only-tls)
 
-- Found by BoGo: a server without TLS 1.3 no longer refuses TLS_FALLBACK_SCSV (RFC 7507); a ClientHello with supported_groups and no key_share gets `missing_extension` instead of a HelloRetryRequest (RFC 8446 §9.2); the TLS 1.2 server acknowledges server_name (RFC 6066 §3); TLS 1.3 padded plaintexts over 2^14 + 1 bytes are `record_overflow` (RFC 8446 §5.4).
+- Found by BoGo: a server without TLS 1.3 no longer refuses TLS_FALLBACK_SCSV (RFC 7507); a ClientHello with supported_groups and no key_share gets `missing_extension` instead of a HelloRetryRequest (RFC 8446 §9.2); the TLS 1.2 server acknowledges server_name (RFC 6066 §3); TLS 1.3 padded plaintexts over 2^14 + 1 bytes are `record_overflow` (RFC 8446 §5.4); the TLS 1.2 client refuses a non-empty server_name acknowledgement, and an unsolicited TLS 1.3 one is `unsupported_extension`; a peer leaf whose keyUsage lacks digitalSignature is `bad_certificate` (RFC 8446 §4.4.2.2); CertificateEntry extensions not asked for are `unsupported_extension` (RFC 8446 §4.4.2); a malformed TLS 1.3 pre_shared_key no longer fails a TLS 1.2 handshake; no tickets for a client without psk_dhe_ke (RFC 8446 §4.2.9); several update_requested KeyUpdates before our next application data get one answer (RFC 8446 §4.6.3).
 
 ### Added: cross-process BPF steering, listener migration on prefork reloads, and AF_XDP (only-ebpf, only-prefork, only-dpdk)
 
@@ -201,6 +201,75 @@ asked for):
   (nothing lost, accept counts add up), and the AF_XDP kernel-peer suite (native, generic,
   IPv6, two queues). Fallbacks are tested without capabilities. `tools/bench/afxdp.sh` and the
   `link-bench` example compare AF_XDP with AF_PACKET (docs/BENCHMARKS).
+
+### Added: WebSocket over HTTP/2 (RFC 8441, only-http)
+
+ADR-060 (docs/adr/060-h2-websocket.md), additive:
+
+- Server: the HTTP/2 server advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL` and accepts extended
+  CONNECT (`:protocol`, with `:scheme`, `:path` and `:authority`; malformed ones are reset with
+  `PROTOCOL_ERROR`). `Context::upgrade_websocket` accepts `:protocol websocket` on HTTP/2 as it
+  does on HTTP/3 (version 13, origin policy, subprotocol, `permessage-deflate`, answered `200`),
+  and a `Router` GET route answers it, so one `.get("/ws", ...)` serves WebSocket over HTTP/1.1,
+  HTTP/2 and HTTP/3. `H2Config::enable_connect_protocol` (default on) turns it off.
+- Client: `H2Client::websocket(url, &H2WsOptions, handler, done)` and `websocket_blocking` open
+  a WebSocket on a stream of the client's connection, next to its requests; they wait for the
+  server's SETTINGS. New `H2WsOptions` (config, deflate offer, subprotocols, origin, headers,
+  close timeout, `timeout` 10 s, `max_queued_bytes` 8 MiB) and `ClientError::Status(u16)` for a
+  refusal.
+- Each WebSocket is paced by its stream's and the connection's flow control; sends fail with
+  `Overloaded` past `max_pending_bytes` (server, per stream; `max_conn_pending_bytes` per
+  connection) or `max_queued_bytes` (client). Close frames end our half of the stream, the
+  peer's END_STREAM ends its half; `RST_STREAM` and a lost connection are a close without
+  handshake (1006); graceful shutdown closes WebSockets with 1001. A peer that does not end its
+  half within 5 s of ours, or does not answer a client's close within its close timeout, is
+  reset (`CANCEL`).
+- Interop with Go's HTTP/2 both ways over h2c and TLS (`tools/interop/h2ws/run.sh`: net/http
+  server, golang.org/x/net/http2 client), and with headless Chrome, which opens the WebSocket on
+  the HTTP/2 connection of the page it loaded. New fuzz target `h2_websocket`; `h2_server` seeds with
+  extended CONNECT.
+- Performance: requests without `:protocol` take the same branches as before. Same-run A/B on
+  gpu51 against `b22519ae` (7 interleaved rounds under `quiet.sh`, epoll): h2c 64 × 16 per-round
+  ratio median 0.991, h2c 16 × 128 1.004, both inside the rounds' spread (±10–36%); see
+  docs/BENCHMARKS.md. Fuzzing on gpu51: `h2_server` 4.8 M and `h2_websocket` 2.3 M runs
+  (10 min each), no crashes.
+
+### Added: OTLP over gRPC and TLS, OTLP logs, span events and links, exemplars, export retry (only-export, only-log, only-core, only-http)
+
+ADR-064 (docs/adr/064-otlp-grpc-tls-logs-events-exemplars.md), additive API:
+
+- only-export: `ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` export over
+  OTLP/gRPC with only-grpc's client (a private engine with one client I/O thread, started at
+  the first push). `https://` endpoints, for gRPC and HTTP, go over only-tls: the system's roots
+  or `tls_roots(RootCerts)`, `tls_client_cert(chain, key)` for mutual TLS, `tls_server_name`.
+- only-export: `logs(level)` installs an only-log logger whose records go out as OTLP
+  `LogRecord`s (`/v1/logs` or `LogsService/Export`): body, severity, key-values,
+  `code.file.path` / `code.line.number`, and the trace and span ids of the span current where
+  they were logged. `forward_logs(logger, level)` keeps another logger fed; `log_queue(max,
+  batch)` bounds the queue (default 4096 / 512); records from the exporter's own threads are
+  not exported.
+- only-log: span events and links: `SpanEvent`, `SpanLink`, `Span::add_event` / `push_event` /
+  `add_link`, `SpanBuilder::link`, at most `MAX_EVENTS` / `MAX_LINKS` (128) per span with
+  `SpanData::dropped_events` / `dropped_links`; exported over OTLP.
+- only-core: exemplars: `Exemplar`, `ExemplarReservoir`, `ExemplarHistogram`,
+  `Registry::histogram_with_exemplars`, `HistogramSnapshot::exemplars` / `with_exemplars`.
+  only-http: `HttpMetrics::with_exemplars()` keeps the request span's ids on the latency
+  histogram. Exported over OTLP (not in the Prometheus text format).
+- only-export: `ExportStats` gains `otlp_logs_ok` / `otlp_logs_failed`, `otlp_retried`,
+  `metric_points_rejected`, `spans_rejected`, `logs_exported` / `logs_dropped` /
+  `logs_rejected` / `logs_queued`; the stats collector the matching `only_export_*` series.
+
+### Changed: only-export retries failed pushes
+
+- A retryable failure (no connection, timeout, HTTP 429 / 502 / 503 / 504, gRPC `UNAVAILABLE`
+  and the other retryable codes) backs the collector off (`retry(initial, max, max_elapsed)`,
+  default 1 s to 30 s with jitter, or `Retry-After`) and keeps each signal's failed batch until
+  it is `max_elapsed` old (default 5 min), instead of dropping it; metrics are pushed from a
+  fresh snapshot when the backoff ends. `retry(.., .., Duration::ZERO)` drops failed batches as
+  before. Other failures still drop the batch. Partial successes are counted.
+- `flush()` stops at the first retryable failure (what is left stays queued); `spans_queued`
+  includes the batch waiting to be retried.
+- `https://` endpoints are accepted (they were an error).
 
 ### Added: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in WebRTC peers (only-webrtc)
 

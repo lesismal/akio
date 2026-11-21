@@ -432,6 +432,7 @@ dependencies = [
  "only-ebpf",
  "only-epoll",
  "only-log",
+ "only-sys",
  "only-tls",
  "only-uring",
 ]
@@ -530,9 +531,13 @@ dependencies = [
 name = "only-export"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only",
  "only-core",
+ "only-grpc",
+ "only-http",
  "only-log",
  "only-protobuf",
+ "only-tls",
 ]
 
 [[package]]
@@ -623,6 +628,7 @@ dependencies = [
  "only-crypto",
  "only-deflate",
  "only-log",
+ "only-regex",
  "only-ws",
  "only-zstd",
 ]
@@ -647,6 +653,9 @@ dependencies = [
 [[package]]
 name = "only-log"
 version = "1.0.0-rc.1"
+dependencies = [
+ "only-regex",
+]
 
 [[package]]
 name = "only-media"
@@ -755,6 +764,8 @@ version = "1.0.0-rc.1"
 dependencies = [
  "only",
  "only-crypto",
+ "only-dtls",
+ "only-x509",
 ]
 
 [[package]]
@@ -779,7 +790,9 @@ dependencies = [
  "only-rtp",
  "only-sctp",
  "only-srtp",
+ "only-sys",
  "only-turn",
+ "only-x509",
 ]
 
 [[package]]

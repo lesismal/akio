@@ -139,7 +139,7 @@ fn rfc8448_messages_parse() {
         context: ctx,
         chain,
         ..
-    } = msgs::parse_certificate13(&unhex(v::S_CERT)[4..]).unwrap();
+    } = msgs::parse_certificate13(&unhex(v::S_CERT)[4..], false).unwrap();
     assert!(ctx.is_empty());
     assert_eq!(chain.len(), 1);
     let hrr_raw = unhex(v::H_HRR);

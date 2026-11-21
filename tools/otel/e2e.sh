@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of only-export against the OpenTelemetry Collector (contrib): OTLP/HTTP in
-# protobuf and JSON, and DogStatsD into the collector's statsd receiver.
+# protobuf and JSON, OTLP/gRPC, both plain and over TLS with client certificates (a private CA
+# made here with openssl), traces, metrics (exemplars) and logs, and DogStatsD into the
+# collector's statsd receiver.
 #
 #   tools/otel/e2e.sh                 # cargo test on this host against a collector container
 #   NETWORK=name tools/otel/e2e.sh    # the collector joins this docker network as `otelcol`
@@ -8,36 +10,64 @@
 #                                     # it prints the env to pass and leaves the collector up
 #                                     # until the command in $RUN exits)
 #
-# Needs docker. The image is pinned; the test is `crates/only-export/tests/collector.rs`, which
-# does nothing unless ONLY_OTEL_COLLECTOR is set.
+# Needs docker and openssl. The image is pinned; the tests are
+# `crates/only-export/tests/collector.rs` (plain) and `collector_tls.rs` (gRPC, TLS), which do
+# nothing unless ONLY_OTEL_COLLECTOR is set.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 IMAGE=${IMAGE:-otel/opentelemetry-collector-contrib:0.115.1}
 OUT=${OUT:-$(mktemp -d /tmp/only-otel.XXXXXX)}
-mkdir -p "$OUT"
+CERTS="$OUT/certs"
+mkdir -p "$OUT" "$CERTS"
 chmod 777 "$OUT"
+
+# A private CA, a server certificate for localhost / 127.0.0.1 / otelcol and a client one.
+key() { openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$1" 2>/dev/null; }
+key "$CERTS/ca.key"
+openssl req -x509 -new -key "$CERTS/ca.key" -subj "/CN=only e2e CA" -days 2 \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -out "$CERTS/ca.pem" 2>/dev/null
+leaf() { # name subject extensions
+  key "$CERTS/$1.key"
+  openssl req -new -key "$CERTS/$1.key" -subj "/CN=$2" -out "$CERTS/$1.csr" 2>/dev/null
+  printf '%s\n' "$3" > "$CERTS/$1.ext"
+  openssl x509 -req -in "$CERTS/$1.csr" -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca.key" \
+    -CAcreateserial -days 2 -extfile "$CERTS/$1.ext" -out "$CERTS/$1.pem" 2>/dev/null
+}
+leaf server localhost "subjectAltName=DNS:localhost,DNS:otelcol,IP:127.0.0.1
+extendedKeyUsage=serverAuth"
+leaf client only-export "extendedKeyUsage=clientAuth"
+chmod 644 "$CERTS"/*
+
 NAME=only-otel-$$
 NET_ARGS=()
 if [ -n "${NETWORK:-}" ]; then
   NET_ARGS=(--network "$NETWORK" --network-alias otelcol)
 fi
 docker run -d --rm --name "$NAME" "${NET_ARGS[@]}" \
-  -p 127.0.0.1::4318 -p 127.0.0.1::8125/udp \
+  -p 127.0.0.1::4317 -p 127.0.0.1::4318 -p 127.0.0.1::4319 -p 127.0.0.1::4320 \
+  -p 127.0.0.1::8125/udp \
   -v "$ROOT/tools/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
-  -v "$OUT:/out" "$IMAGE" > /dev/null
+  -v "$CERTS:/certs:ro" -v "$OUT:/out" "$IMAGE" > /dev/null
 trap 'docker logs "$NAME" > "$OUT/collector.log" 2>&1 || true; docker rm -f "$NAME" > /dev/null 2>&1 || true' EXIT
-HTTP=$(docker port "$NAME" 4318/tcp | head -1)
-UDP=$(docker port "$NAME" 8125/udp | head -1)
+port() { docker port "$NAME" "$1" | head -1 | sed 's/.*://'; }
+HTTP=127.0.0.1:$(port 4318/tcp)
+UDP=127.0.0.1:$(port 8125/udp)
 for _ in $(seq 1 60); do
   if curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d '{}' "http://$HTTP/v1/metrics"; then break; fi
   sleep 1
 done
-export ONLY_OTEL_OUT="$OUT"
+export ONLY_OTEL_OUT="$OUT" ONLY_OTEL_CERTS="$CERTS"
 if [ -n "${RUN:-}" ]; then
   # Another container on $NETWORK runs the test; it sees the output through $OUT.
-  ONLY_OTEL_COLLECTOR=http://otelcol:4318 ONLY_OTEL_STATSD=otelcol:8125 bash -c "$RUN"
+  ONLY_OTEL_COLLECTOR=http://otelcol:4318 ONLY_OTEL_STATSD=otelcol:8125 \
+    ONLY_OTEL_GRPC=http://otelcol:4317 ONLY_OTEL_GRPCS=https://otelcol:4319 \
+    ONLY_OTEL_HTTPS=https://otelcol:4320 bash -c "$RUN"
 else
   ONLY_OTEL_COLLECTOR=http://$HTTP ONLY_OTEL_STATSD=$UDP \
-    cargo test --manifest-path "$ROOT/Cargo.toml" -p only-export --test collector -- --nocapture
+    ONLY_OTEL_GRPC=http://127.0.0.1:$(port 4317/tcp) \
+    ONLY_OTEL_GRPCS=https://localhost:$(port 4319/tcp) \
+    ONLY_OTEL_HTTPS=https://127.0.0.1:$(port 4320/tcp) \
+    cargo test --manifest-path "$ROOT/Cargo.toml" -p only-export --test collector --test collector_tls -- --nocapture
 fi
 echo "collector output in $OUT"

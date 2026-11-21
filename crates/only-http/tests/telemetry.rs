@@ -359,3 +359,39 @@ fn spans_off_cost_nothing_observable() {
     stop(&e);
     assert!(CAP.0.lock().unwrap().is_empty());
 }
+
+#[test]
+fn latency_exemplars_carry_the_request_trace() {
+    let _g = serial(LevelFilter::Info);
+    let http = HttpMetrics::new().with_exemplars();
+    let e = start(HttpConfig::default(), app().layer(http.middleware()));
+    let addr = e.local_addrs()[0];
+    let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    assert_eq!(get(addr, "/a", &format!("traceparent: {tp}\r\n")), 200);
+    // An unsampled remote parent leaves no exemplar.
+    let unsampled = "00-11111111111111111111111111111111-00f067aa0ba902b7-00";
+    assert_eq!(
+        get(addr, "/b", &format!("traceparent: {unsampled}\r\n")),
+        200
+    );
+    let req = spans_until(1, |s| s.name == "GET /a");
+    let mut f = Families::new();
+    only::metrics::Collector::collect(&http, &mut f);
+    let fam = f.get("only_http_request_duration_seconds").unwrap();
+    let only::metrics::Value::Histogram(h) = &fam.samples[0].value else {
+        panic!("{fam:?}")
+    };
+    assert_eq!(h.exemplars.len(), 1, "{h:?}");
+    let ex = h.exemplars[0];
+    assert_eq!(ex.trace_id, 0x4bf92f3577b34da6a3ce929d0e0e4736);
+    assert_eq!(ex.span_id, req[0].context.span_id());
+    assert!(ex.value >= 0.0 && ex.value < 10.0);
+    // Without `with_exemplars`, none.
+    let mut f = Families::new();
+    only::metrics::Collector::collect(&HttpMetrics::new(), &mut f);
+    match &f.get("only_http_request_duration_seconds").unwrap().samples[0].value {
+        only::metrics::Value::Histogram(h) => assert!(h.exemplars.is_empty()),
+        v => panic!("{v:?}"),
+    }
+    stop(&e);
+}

@@ -594,10 +594,20 @@ fn malformed_key_update_alerts() {
         (&[][..], Alert::DecodeError),
         (&[2][..], Alert::IllegalParameter),
     ] {
-        let e = super::client::key_update(suite, body, &mut r, &mut w, &mut out).unwrap_err();
+        let e = super::client::key_update(suite, body, &mut r, &mut w, &mut false, &mut out)
+            .unwrap_err();
         assert_eq!(e.alert, alert, "{body:?}");
     }
-    assert!(super::client::key_update(suite, &[1], &mut r, &mut w, &mut out).is_ok());
+    // Requests before our next application data are answered once.
+    let mut answered = false;
+    for _ in 0..3 {
+        super::client::key_update(suite, &[1], &mut r, &mut w, &mut answered, &mut out).unwrap();
+    }
+    let replies = out
+        .iter()
+        .filter(|a| matches!(a, super::common::Action::Msg(..)))
+        .count();
+    assert_eq!(replies, 1);
 }
 
 #[test]

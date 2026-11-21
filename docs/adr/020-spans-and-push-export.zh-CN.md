@@ -94,4 +94,5 @@ only-http 在三个分派点（HTTP/1.x、HTTP/2 流和 push、only-h3 使用的
   （docs/BENCHMARKS.zh-CN.md“可观测性开销”）。开启时：`H2Stats` 无开销，按路由标签约 0.5%，在每秒 460 万
   pipelined 请求下 span 采样 1% 约 12%，100% 并导出约 46%。
 - tracer 按进程安装：每个进程一个带 traces 的导出器。
-- 未完成：gRPC 上的 OTLP、到 collector 的 TLS、OTLP 日志、span 事件和链接、exemplar、`tracing` 桥接。
+- 未完成：gRPC 上的 OTLP、到 collector 的 TLS、OTLP 日志、span 事件和链接、exemplar、`tracing` 桥接。除桥接外均由
+  [ADR-064](064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md) 补齐，它还把“推送失败即丢弃”改为退避重试。

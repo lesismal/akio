@@ -1,7 +1,8 @@
 #![no_main]
-//! OTLP bodies built from strings a peer controls (span names, fields): the JSON must parse
-//! (serde_json) and carry the same strings back, the protobuf must decode to them, and StatsD
-//! lines must keep their framing whatever the label values hold.
+//! OTLP bodies built from strings a peer controls (span names, fields, span events and links,
+//! log messages and key-values): the JSON must parse (serde_json) and carry the same strings
+//! back, the protobuf must decode to them, and StatsD lines must keep their framing whatever the
+//! label values hold.
 
 use only_protobuf::encoding::{Reader, WireType};
 
@@ -36,6 +37,27 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     assert_eq!(span["name"].as_str(), Some(name));
     assert_eq!(span["attributes"][0]["key"].as_str(), Some(key));
     assert_eq!(span["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    assert_eq!(span["events"][0]["name"].as_str(), Some(key));
+    assert_eq!(span["events"][0]["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    assert_eq!(span["links"][0]["attributes"][0]["key"].as_str(), Some(key));
+
+    let js = only_export::fuzzing::otlp_log_json(key, name, key, value);
+    let v: serde_json::Value = serde_json::from_str(&js).expect("valid JSON");
+    let scope = &v["resourceLogs"][0]["scopeLogs"][0];
+    assert_eq!(scope["scope"]["name"].as_str(), Some(key));
+    let rec = &scope["logRecords"][0];
+    assert_eq!(rec["body"]["stringValue"].as_str(), Some(name));
+    assert_eq!(rec["attributes"][0]["key"].as_str(), Some(key));
+    assert_eq!(rec["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    let pb = only_export::fuzzing::otlp_log_protobuf(key, name, key, value);
+    let records: Vec<&[u8]> = len_fields(&pb, 1)
+        .into_iter()
+        .flat_map(|rl| len_fields(rl, 2))
+        .flat_map(|sl| len_fields(sl, 2))
+        .collect();
+    assert_eq!(records.len(), 1);
+    let body = len_fields(records[0], 5);
+    assert_eq!(len_fields(body[0], 1), [name.as_bytes()]);
 
     let pb = only_export::fuzzing::otlp_span_protobuf(name, key, value);
     let spans: Vec<&[u8]> = len_fields(&pb, 1)

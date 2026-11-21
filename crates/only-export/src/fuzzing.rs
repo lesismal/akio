@@ -8,13 +8,22 @@ use std::{
 use only_core::metrics::Families;
 use only_log::{
     Level,
-    span::{FieldValue, SpanContext, SpanData, SpanKind, SpanStatus},
+    span::{FieldValue, SpanContext, SpanData, SpanEvent, SpanKind, SpanLink, SpanStatus},
 };
+
+use crate::logs::LogData;
 
 /// Parses `data` as an OTLP/HTTP response (status line, headers, a body framed by
 /// `Content-Length`, chunked or the close). Must never panic or read past its limits.
 pub fn http_response(data: &[u8]) {
     let _ = crate::http::read_response(&mut &data[..]);
+}
+
+/// Reads `data` as an `Export*ServiceResponse` (its `partial_success`), as the exporter does
+/// with every OTLP answer: (rejected items, message). Must never panic.
+pub fn otlp_response(data: &[u8]) -> (u64, String) {
+    let (n, m) = crate::otlp::partial_success(data);
+    (n, m.into_owned())
 }
 
 fn span(name: &str, key: &str, value: &str) -> SpanData {
@@ -30,7 +39,39 @@ fn span(name: &str, key: &str, value: &str) -> SpanData {
     d.level = Level::Info;
     d.start = UNIX_EPOCH + Duration::from_secs(1);
     d.end = d.start;
+    // An event named `key` and a link, both with the field.
+    d.events =
+        vec![SpanEvent::new(key.to_owned(), d.start).field(key.to_owned(), value.to_owned())];
+    d.links = vec![SpanLink::new(ctx).field(key.to_owned(), value.to_owned())];
     d
+}
+
+fn log(target: &str, message: &str, key: &str, value: &str) -> LogData {
+    LogData {
+        time: UNIX_EPOCH + Duration::from_secs(1),
+        level: Level::Warn,
+        target: target.to_owned(),
+        message: message.to_owned(),
+        fields: vec![(
+            key.to_owned(),
+            FieldValue::Str(Cow::Owned(value.to_owned())),
+        )],
+        file: Some(value.to_owned()),
+        line: Some(7),
+        span: SpanContext::new(1, 2, true, false),
+    }
+}
+
+/// An `ExportLogsServiceRequest` with one record carrying these strings, as OTLP/JSON.
+pub fn otlp_log_json(target: &str, message: &str, key: &str, value: &str) -> String {
+    let req = crate::otlp::logs_request(&[log(target, message, key, value)], &[]);
+    String::from_utf8(crate::Encoding::Json.encode(req)).unwrap_or_default()
+}
+
+/// The same request in protobuf.
+pub fn otlp_log_protobuf(target: &str, message: &str, key: &str, value: &str) -> Vec<u8> {
+    let req = crate::otlp::logs_request(&[log(target, message, key, value)], &[]);
+    crate::Encoding::Protobuf.encode(req)
 }
 
 /// An `ExportTraceServiceRequest` with one span carrying these strings, as OTLP/JSON.
@@ -91,6 +132,12 @@ mod tests {
         }
     }
 
+    fn js_quoted(s: &str) -> String {
+        let mut out = String::new();
+        crate::tree::json_str(&mut out, s);
+        out
+    }
+
     /// Undoes `tree::json_str` (with its quotes).
     fn unjson(s: &str) -> String {
         let inner = &s[1..s.len() - 1];
@@ -132,6 +179,17 @@ mod tests {
     }
 
     #[test]
+    fn random_responses_give_a_count_or_nothing() {
+        let seed: &[u8] = &[0x0a, 0x06, 0x08, 0x07, 0x12, 0x02, b'n', b'o'];
+        assert_eq!(otlp_response(seed), (7, "no".into()));
+        let mut r = Rng(7);
+        for _ in 0..200_000 {
+            let v = r.bytes(seed, b"\x00\x08\x0a\x12\x80\xffno");
+            let _ = otlp_response(&v);
+        }
+    }
+
+    #[test]
     fn random_strings_keep_json_protobuf_and_statsd_framing() {
         let mut r = Rng(42);
         for _ in 0..20_000 {
@@ -143,6 +201,13 @@ mod tests {
             let pb = otlp_span_protobuf(&s, "k", "v");
             let needle = s.as_bytes();
             assert!(pb.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty());
+            let pb = otlp_log_protobuf("t", &s, "k", "v");
+            assert!(pb.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty());
+            let js = otlp_log_json("t", &s, &s, &s);
+            assert!(
+                js.matches(&js_quoted(&s)).count() >= 3 || s.is_empty(),
+                "{js}"
+            );
             for line in statsd_lines("m", "l", &s) {
                 assert!(!line.contains('\n'), "{line:?}");
                 let pipes = line.matches('|').count();
