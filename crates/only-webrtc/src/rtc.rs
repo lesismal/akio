@@ -1189,7 +1189,7 @@ impl Rtc {
             self.ice.set_controlling(true);
         }
         if self.sdes.active {
-            self.sdes.offer_lines();
+            self.sdes.offer_lines(usize::from(self.cfg.sdes_mki));
         }
         self.pending = Some(Pending { new_lines });
         Ok(Some(self.write_sdp(true)))
@@ -1502,16 +1502,12 @@ impl Rtc {
         };
         let mut changed = false;
         if self.sdes.keyed_tx.as_ref() != Some(&local) {
-            let (k, s) = local.key_salt();
-            self.srtp_tx = Srtp::new(local.profile, k, s).ok();
+            self.srtp_tx = local.context();
             self.sdes.keyed_tx = Some(local);
             changed = true;
         }
         if self.sdes.keyed_rx.as_ref() != Some(&remote) {
-            let (k, s) = remote.key_salt();
-            self.srtp_rx = Srtp::new(remote.profile, k, s)
-                .ok()
-                .map(|c| c.with_replay_window(512));
+            self.srtp_rx = remote.context().map(|c| c.with_replay_window(512));
             self.sdes.keyed_rx = Some(remote);
             changed = true;
         }

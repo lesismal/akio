@@ -830,6 +830,12 @@ pub(crate) struct ConfigInner {
     pub(crate) sdes: bool,
     /// What offers this side makes say about RTP/RTCP multiplexing.
     pub(crate) rtcp_mux: RtcpMuxPolicy,
+    /// SDES: the MKI length of our offered keys (0: none).
+    pub(crate) sdes_mki: u8,
+    /// ICE runs (else plain `c=` / port transports).
+    pub(crate) ice: bool,
+    /// BUNDLE in our offers and answers.
+    pub(crate) bundle: BundlePolicy,
     /// RTCP XR report blocks about received streams offered and accepted (RFC 3611 §5.1).
     pub(crate) xr_blocks: XrBlocks,
     /// ULPFEC: the level-0 protection length (RFC 5109 §5), `None` for whole packets.
@@ -869,6 +875,9 @@ impl Default for ConfigInner {
             opus_red: None,
             sdes: false,
             rtcp_mux: RtcpMuxPolicy::Require,
+            sdes_mki: 0,
+            ice: true,
+            bundle: BundlePolicy::Balanced,
             xr_blocks: XrBlocks::NONE,
             ulpfec_level0: None,
         }
@@ -1128,14 +1137,52 @@ impl RtcConfig {
     /// AES-128-CM with HMAC-SHA1-80, AES-128-CM with HMAC-SHA1-32, each with its own random
     /// key) and no `a=fingerprint`; and a remote offer in that form (`RTP/SAVP` or
     /// `RTP/SAVPF` with `a=crypto`) is answered with the first line it can use and a key of
-    /// this side's. The SRTP contexts are keyed from the SDP: no DTLS handshake runs, so an
-    /// SDES session has no data channels (adding one fails) and its keys are only as secret
-    /// as the signalling channel. ICE still runs (the remote needs ICE or ICE-lite); lines
-    /// with an MKI or session parameters are not taken. DTLS-SRTP offers are answered with
-    /// DTLS-SRTP either way, so browsers never see `a=crypto`. Default off.
+    /// this side's. The SRTP contexts are keyed from the SDP, so the keys are only as secret
+    /// as the signalling channel. Lines with MKIs (and several master keys) are taken, and the
+    /// answer's key then has an MKI of the same length ([`set_sdes_mki_length`](Self::set_sdes_mki_length)
+    /// for our offers); session parameters other than the window size hint are not. Data
+    /// channels next to SDES media run over DTLS in their own section (`a=fingerprint` there
+    /// only; the DTLS keys are not used for SRTP). Without ICE ([`enable_ice`](Self::enable_ice),
+    /// or a remote SDP without `a=ice-ufrag`), media goes to the `c=` address and `m=` port.
+    /// DTLS-SRTP offers are answered with DTLS-SRTP either way, so browsers never see
+    /// `a=crypto`. Default off.
     #[must_use]
     pub fn enable_sdes_srtp(mut self, enabled: bool) -> Self {
         self.0.sdes = enabled;
+        self
+    }
+
+    /// The MKI length (RFC 3711 §3.1, RFC 4568 `|<value>:<length>`) of the SDES keys our
+    /// offers carry: 0 (the default) for none, else 1..=128 bytes (larger values are clamped);
+    /// for gateways that want an MKI in every packet. Answers follow the offer's length.
+    #[must_use]
+    pub fn set_sdes_mki_length(mut self, len: u8) -> Self {
+        self.0.sdes_mki = len.min(128);
+        self
+    }
+
+    /// Whether ICE runs (default `true`). Without ICE, for SIP endpoints and other RTP stacks
+    /// that do not do it: our descriptions carry no `a=ice-ufrag`, `a=ice-pwd` or candidates
+    /// but the address and port of the first host candidate (and `a=rtcp` with component 2's
+    /// without rtcp-mux), and media goes to the address and port of the remote description
+    /// (`c=` and `m=`, RTCP to `a=rtcp` or the next port without rtcp-mux) as soon as it
+    /// arrives, with no connectivity checks or consent freshness. A remote description
+    /// without ICE attributes is taken that way whatever this says. Meant for SDES-SRTP
+    /// ([`enable_sdes_srtp`](Self::enable_sdes_srtp)) and DTLS-SRTP toward peers on a known
+    /// address; nothing finds a path through NATs.
+    #[must_use]
+    pub fn enable_ice(mut self, enabled: bool) -> Self {
+        self.0.ice = enabled;
+        self
+    }
+
+    /// Whether the media sections and data channels of a session share one transport
+    /// (BUNDLE, RFC 9143) or each has its own ICE agent, DTLS association and SRTP keys
+    /// ([`BundlePolicy`]). Remote offers without BUNDLE are answered with a transport per
+    /// section whatever this says, and so is an answer that leaves BUNDLE out.
+    #[must_use]
+    pub fn set_bundle_policy(mut self, policy: BundlePolicy) -> Self {
+        self.0.bundle = policy;
         self
     }
 
@@ -1194,6 +1241,25 @@ pub enum RtcpMuxPolicy {
     Negotiate,
     /// `a=rtcp` with component-2 candidates, no `a=rtcp-mux`: RTCP on its own port.
     Off,
+}
+
+/// Whether a session's sections share one transport (BUNDLE, RFC 9143) or each has its own
+/// ([`RtcConfig::set_bundle_policy`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BundlePolicy {
+    /// Offers group every section in `a=group:BUNDLE` (one ICE agent, DTLS association and
+    /// pair of SRTP contexts), as browsers do; an answer without the group gives each section
+    /// its own transport (the offered sections share our credentials and candidates, as a
+    /// browser's offer does). Answers accept BUNDLE when offered. The default.
+    #[default]
+    Balanced,
+    /// No BUNDLE: our offers give every section its own ICE credentials (and our candidates),
+    /// DTLS association and SRTP keys, and our answers refuse an offered BUNDLE group (RFC
+    /// 9143 §7.3.3), for peers that do not support it (browsers with
+    /// `bundlePolicy: "max-compat"` accept that). The remote must reach each transport at an
+    /// address of its own (as every such peer does: an ICE agent per section).
+    Disabled,
 }
 
 /// A set of RTCP XR report blocks ([`RtcConfig::enable_rtcp_xr_blocks`]); combine with `|`.

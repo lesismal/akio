@@ -84,7 +84,7 @@ use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
 pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
-    Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec, Direction, Event, FecMechanism, Frequency,
+    BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec, Direction, Event, FecMechanism, Frequency,
     IceConnectionState, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
     MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges,
     XrBlocks,
