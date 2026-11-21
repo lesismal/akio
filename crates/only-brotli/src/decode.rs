@@ -772,7 +772,10 @@ impl<'a, 'd> Decoder<'a, 'd> {
 
     /// Reads the next unit of a compressed meta-block's header into `h`; `Some` with the
     /// decoded header after the last one.
-    fn header_unit(&mut self, h: &mut HeaderBuild) -> Result<Option<Meta>, Error> {
+    fn header_unit<const STREAM: bool>(
+        &mut self,
+        h: &mut HeaderBuild,
+    ) -> Result<Option<Meta>, Error> {
         match h.stage {
             0 => h.lit = self.blocks()?,
             1 => h.cmd = self.blocks()?,
@@ -792,7 +795,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
                 };
             }
             4 | 5 => {
-                if !self.context_map_unit(&mut h.map)? {
+                if !self.context_map_unit::<STREAM>(&mut h.map)? {
                     return Ok(None);
                 }
                 let st = std::mem::take(&mut h.map);
@@ -840,9 +843,10 @@ impl<'a, 'd> Decoder<'a, 'd> {
         Ok(None)
     }
 
-    /// Reads the next unit of a context map: its tree count and code, one entry or run, or
-    /// the inverse move-to-front bit at the end. `true` when the map is complete.
-    fn context_map_unit(&mut self, st: &mut MapState) -> Result<bool, Error> {
+    /// Reads the next unit of a context map: its tree count and code, one entry or run (all
+    /// of them in one go without `STREAM`), or the inverse move-to-front bit at the end.
+    /// `true` when the map is complete.
+    fn context_map_unit<const STREAM: bool>(&mut self, st: &mut MapState) -> Result<bool, Error> {
         if st.i == usize::MAX {
             st.ntrees = self.var_len_u8() + 1;
             st.map = vec![0u8; st.size];
@@ -862,21 +866,26 @@ impl<'a, 'd> Decoder<'a, 'd> {
             return Ok(false);
         }
         if st.i < st.size {
-            self.check()?;
-            let code = decode(&st.table, &mut self.br);
-            if code == 0 {
-                st.map[st.i] = 0;
-                st.i += 1;
-            } else if code <= st.rle {
-                let reps = (1usize << code) + self.br.read(code as u32) as usize;
-                if st.i + reps > st.size {
-                    return Err(Error::BadContextMap);
+            loop {
+                self.check()?;
+                let code = decode(&st.table, &mut self.br);
+                if code == 0 {
+                    st.map[st.i] = 0;
+                    st.i += 1;
+                } else if code <= st.rle {
+                    let reps = (1usize << code) + self.br.read(code as u32) as usize;
+                    if st.i + reps > st.size {
+                        return Err(Error::BadContextMap);
+                    }
+                    st.map[st.i..st.i + reps].fill(0);
+                    st.i += reps;
+                } else {
+                    st.map[st.i] = (code - st.rle) as u8;
+                    st.i += 1;
                 }
-                st.map[st.i..st.i + reps].fill(0);
-                st.i += reps;
-            } else {
-                st.map[st.i] = (code - st.rle) as u8;
-                st.i += 1;
+                if STREAM || st.i >= st.size {
+                    break;
+                }
             }
             self.check()?;
             return Ok(false);
@@ -964,7 +973,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
         loop {
             let cp = self.br;
             let mark = if STREAM { Some(h.mark()) } else { None };
-            let r = self.header_unit(h);
+            let r = self.header_unit::<STREAM>(h);
             if let Some(mark) = mark.filter(|_| self.br.overrun()) {
                 // The unit used bits past the input (whatever it concluded from them).
                 self.br = cp;
