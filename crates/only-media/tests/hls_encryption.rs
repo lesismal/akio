@@ -626,3 +626,95 @@ fn sample_aes_fmp4() {
 fn sample_aes_fmp4_ll() {
     check_sample_aes(SegmentFormat::Fmp4, true, ffmpeg_present());
 }
+
+/// SAMPLE-AES `cbcs` fMP4 of H.265 (slice segment headers parsed and kept clear), plain and
+/// LL-HLS: `encv` with `frma` `hvc1`, `senc` in every segment, and ffmpeg plays the live
+/// playlist frame for frame (every decoded frame is the source's), while a segment read as
+/// plain media does not decode to the source's frames.
+fn check_sample_aes_hevc(parts: bool) {
+    let ff = ffmpeg_present();
+    let src = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/h265_aac.flv");
+    let sample = flv_sample(include_bytes!("../testdata/h265_aac.flv"));
+    let path = "live/e";
+    let mut cfg = HlsConfig::default();
+    cfg.format = SegmentFormat::Fmp4;
+    cfg.target_duration = Duration::from_secs(1);
+    cfg.part_duration = parts.then(|| Duration::from_millis(250));
+    cfg.play_wait = Some(Duration::from_secs(5));
+    cfg.encryption = Some(HlsEncryption::new(Keys).method(EncryptionMethod::SampleAes));
+    let srv = start(cfg);
+    let publisher = publish(&srv.hub, path, sample, 6);
+    let (status, head, _) = get(srv.http, &format!("/{path}/index.m3u8"), "");
+    assert_eq!(status, 200, "{head}");
+    std::thread::sleep(Duration::from_secs(4));
+    let (_, _, body) = get(srv.http, &format!("/{path}/index.m3u8"), "");
+    let pl = String::from_utf8(body).unwrap();
+    assert!(
+        pl.contains("#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key-0.key\"\n"),
+        "{pl}"
+    );
+    let m = pl
+        .lines()
+        .find_map(|l| l.strip_prefix("#EXT-X-MAP:URI=\""))
+        .unwrap()
+        .trim_end_matches('"');
+    let (_, _, init) = get(srv.http, &format!("/{path}/{m}"), "");
+    let frma = init.windows(4).position(|w| w == b"frma").expect("frma");
+    assert_eq!(&init[frma + 4..frma + 8], b"hvc1");
+    assert!(init.windows(4).any(|w| w == b"encv") && init.windows(4).any(|w| w == b"enca"));
+    let segs: Vec<&str> = pl.lines().filter(|l| l.starts_with("seg-")).collect();
+    assert!(segs.len() >= 2, "{pl}");
+    let source = if ff {
+        frame_md5s(&[], src, &[])
+    } else {
+        Vec::new()
+    };
+    for (i, seg) in segs.iter().enumerate() {
+        let (status, _, data) = get(srv.http, &format!("/{path}/{seg}"), "");
+        assert_eq!(status, 200);
+        assert!(data.windows(4).any(|w| w == b"senc"), "{seg}");
+        if ff && i == 1 {
+            let file = format!(
+                "{}/hlssaes-hevc-{}.mp4",
+                env!("CARGO_TARGET_TMPDIR"),
+                u8::from(parts)
+            );
+            let mut all = init.clone();
+            all.extend_from_slice(&data);
+            std::fs::write(&file, &all).unwrap();
+            let got = frame_md5s(&[], &file, &[]);
+            let known = got.iter().filter(|m| source.contains(m)).count();
+            // The keyframe's slices start encrypted too: at most a stray identical frame.
+            assert!(
+                known < got.len() / 2 || got.is_empty(),
+                "{seg} is not encrypted"
+            );
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+    if ff {
+        let url = format!("http://{}/{path}/index.m3u8", srv.http);
+        let headers = ["-headers", "X-Key-Token: secret\r\n"];
+        let codecs = probe_codecs(&headers, &url);
+        assert!(codecs.lines().any(|l| l.trim() == "hevc"), "{codecs}");
+        let err = decode(&headers, &url, &["-t", "3"]);
+        assert!(err.trim().is_empty(), "{url}: {err}");
+        let got = frame_md5s(&headers, &url, &["-t", "3"]);
+        assert!(got.len() > 30, "{got:?}");
+        for m in &got {
+            assert!(source.contains(m), "a frame not in the source: {m}");
+        }
+    }
+    publisher.join().unwrap();
+    srv.engine.shutdown();
+}
+
+#[test]
+fn sample_aes_fmp4_hevc() {
+    check_sample_aes_hevc(false);
+}
+
+#[test]
+fn sample_aes_fmp4_hevc_ll() {
+    check_sample_aes_hevc(true);
+}

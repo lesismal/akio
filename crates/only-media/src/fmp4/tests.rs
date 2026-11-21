@@ -557,12 +557,19 @@ fn child<'a>(b: &'a [u8], t: &[u8; 4]) -> Option<&'a [u8]> {
     boxes(b).into_iter().find(|(x, _)| x == t).map(|(_, p)| p)
 }
 
-/// `cbcs`: H.264 and AAC in `encv` / `enca` with a constant IV; fragments under two keys
-/// decrypt (from `senc` subsamples for video, whole blocks for audio) to the source samples.
+/// `cbcs`: H.264 / H.265 and AAC in `encv` / `enca` with a constant IV; fragments under two
+/// keys decrypt (from `senc` subsamples for video, whole blocks for audio) to the source
+/// samples.
 #[test]
 fn cbcs_encryption() {
+    // The shortest slice header of each sample (NAL header included).
+    check_cbcs(include_bytes!("../../testdata/h264_aac.flv"), b"avc1", 6);
+    check_cbcs(include_bytes!("../../testdata/h265_aac.flv"), b"hvc1", 10);
+}
+
+fn check_cbcs(data: &[u8], original: &[u8; 4], min_header: usize) {
     use only_crypto::aes::Aes;
-    let (tracks, pkts) = flv_sample(include_bytes!("../../testdata/h264_aac.flv"));
+    let (tracks, pkts) = flv_sample(data);
     let mut m = Muxer::cbcs(&tracks);
     let init = m.init_segment().to_vec();
     // The tenc of each track: pattern and constant IV.
@@ -585,7 +592,7 @@ fn cbcs_encryption() {
         let sinf = child(kids, b"sinf").unwrap();
         assert_eq!(
             child(sinf, b"frma").unwrap(),
-            if fourcc == b"encv" { b"avc1" } else { b"mp4a" }
+            if fourcc == b"encv" { original } else { b"mp4a" }
         );
         assert_eq!(&child(sinf, b"schm").unwrap()[4..8], b"cbcs");
         let tenc = child(child(sinf, b"schi").unwrap(), b"tenc").unwrap();
@@ -659,7 +666,7 @@ fn cbcs_encryption() {
                         }
                         // The slice header (and NAL length) is clear.
                         if prot > 0 {
-                            assert!(clear >= 4 + 6, "{clear}");
+                            assert!(clear >= 4 + min_header, "{clear}");
                         }
                         at += prot;
                     }

@@ -2,7 +2,7 @@ use only_crypto::aes::Aes;
 
 use crate::{
     av::{Codec, Packet, Time, Track, to_ticks},
-    codec::{aac, av1, h264, opus, vp9},
+    codec::{aac, av1, h264, h265, opus, vp9},
 };
 
 use super::{
@@ -58,9 +58,14 @@ struct TrackEnc {
     /// Video: subsamples (NAL unit and slice headers clear, slice data in a 1:9 pattern);
     /// audio: whole samples, every whole block encrypted.
     video: bool,
+    /// H.265 rather than H.264.
+    hevc: bool,
     /// The H.264 parameter sets seen (configuration record and in band).
     sps: Vec<h264::SpsInfo>,
     pps: Vec<h264::PpsInfo>,
+    /// The H.265 ones.
+    hsps: Vec<h265::SliceSps>,
+    hpps: Vec<h265::SlicePps>,
     /// `senc` entries of the fragment's samples (video), and their sizes (`saiz`).
     aux: Vec<u8>,
     aux_sizes: Vec<u8>,
@@ -102,9 +107,48 @@ fn cbcs_range(aes: &Aes, iv: &[u8; 16], data: &mut [u8], pattern: bool) {
 }
 
 impl TrackEnc {
-    /// Encrypts an H.264 sample (AVCC, 4-byte lengths) in place and appends its `senc`
-    /// entry: every coded slice is a subsample whose clear bytes end with its slice header.
-    /// NAL units of other types (and slices whose header does not parse) stay clear.
+    /// Keeps the parameter set `nal` (H.264 or H.265) for the slice headers that follow.
+    fn param_set(&mut self, nal: &[u8]) {
+        fn keep<T: PartialEq>(v: &mut Vec<T>, x: Option<T>) {
+            if let Some(x) = x {
+                v.retain(|y| y != &x);
+                // Bounded: an id repeats (a new set replaces the old one with that id) and
+                // there are at most 32 SPSs and 256 PPSs (64 and 64 in H.265).
+                if v.len() >= 256 {
+                    v.remove(0);
+                }
+                v.push(x);
+            }
+        }
+        if self.hevc {
+            match h265::nal_type(nal[0]) {
+                h265::NAL_SPS => keep(&mut self.hsps, h265::slice_sps(nal)),
+                h265::NAL_PPS => keep(&mut self.hpps, h265::slice_pps(nal)),
+                _ => {}
+            }
+        } else {
+            match h264::nal_type(nal[0]) {
+                h264::NAL_SPS => keep(&mut self.sps, h264::sps_info(nal)),
+                h264::NAL_PPS => keep(&mut self.pps, h264::pps_info(nal)),
+                _ => {}
+            }
+        }
+    }
+
+    /// The slice header length of `nal` (NAL header included), `None` for NAL units that are
+    /// not slices or do not parse.
+    fn header_len(&self, nal: &[u8]) -> Option<usize> {
+        if self.hevc {
+            h265::slice_header_len(nal, &self.hsps, &self.hpps)
+        } else {
+            h264::slice_header_len(nal, &self.sps, &self.pps)
+        }
+    }
+
+    /// Encrypts an H.264 or H.265 sample (AVCC / HVCC, 4-byte lengths) in place and appends
+    /// its `senc` entry: every coded slice is a subsample whose clear bytes end with its slice
+    /// (segment) header. NAL units of other types (and slices whose header does not parse)
+    /// stay clear.
     fn video_sample(&mut self, aes: &Aes, iv: &[u8; 16], data: &mut [u8]) {
         let mut subs: Vec<(usize, usize)> = Vec::new();
         let mut clear = 0usize;
@@ -116,22 +160,8 @@ impl TrackEnc {
                 break;
             }
             let nal = &data[pos + 4..pos + 4 + n];
-            match h264::nal_type(nal[0]) {
-                h264::NAL_SPS => {
-                    if let Some(i) = h264::sps_info(nal) {
-                        self.sps.retain(|x| x != &i);
-                        self.sps.push(i);
-                    }
-                }
-                h264::NAL_PPS => {
-                    if let Some(i) = h264::pps_info(nal) {
-                        self.pps.retain(|x| x != &i);
-                        self.pps.push(i);
-                    }
-                }
-                _ => {}
-            }
-            let header = h264::slice_header_len(nal, &self.sps, &self.pps).filter(|&h| h < n);
+            self.param_set(nal);
+            let header = self.header_len(nal).filter(|&h| h < n);
             match header {
                 Some(h) => {
                     subs.push((clear + 4 + h, n - h));
@@ -208,7 +238,7 @@ impl Muxer {
     }
 
     /// A muxer encrypting with the `cbcs` scheme (ISO/IEC 23001-7) for HLS `SAMPLE-AES`:
-    /// H.264 and AAC tracks only (`encv` / `enca` with a `tenc` holding a random constant
+    /// H.264, H.265 and AAC tracks only (`encv` / `enca` with a `tenc` holding a random constant
     /// IV); samples are encrypted with the key [`set_sample_key`](Self::set_sample_key) sets
     /// (none are taken before).
     pub(crate) fn cbcs(tracks: &[Track]) -> Muxer {
@@ -234,19 +264,28 @@ impl Muxer {
         let mut outs = Vec::with_capacity(tracks.len());
         let mut id = 0u32;
         for t in tracks {
-            let encrypted = matches!(t.codec, Codec::H264 | Codec::Aac);
+            let encrypted = matches!(t.codec, Codec::H264 | Codec::H265 | Codec::Aac);
             if !carried(t) || cbcs.is_some() && !encrypted {
                 outs.push(None);
                 continue;
             }
             let enc = cbcs.as_ref().map(|_| {
                 let mut e = TrackEnc {
-                    video: t.codec == Codec::H264,
+                    video: t.codec.is_video(),
+                    hevc: t.codec == Codec::H265,
                     ..TrackEnc::default()
                 };
-                if let Some(c) = h264::Config::parse(&t.config).ok().filter(|_| e.video) {
-                    e.sps = c.sps.iter().filter_map(|s| h264::sps_info(s)).collect();
-                    e.pps = c.pps.iter().filter_map(|s| h264::pps_info(s)).collect();
+                let sets: Vec<Vec<u8>> = match t.codec {
+                    Codec::H264 => h264::Config::parse(&t.config)
+                        .map(|c| c.sps.into_iter().chain(c.pps).collect())
+                        .unwrap_or_default(),
+                    Codec::H265 => h265::Config::parse(&t.config)
+                        .map(|c| c.sps.into_iter().chain(c.pps).collect())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                for s in sets.iter().filter(|s| !s.is_empty()) {
+                    e.param_set(s);
                 }
                 Box::new(e)
             });
