@@ -78,6 +78,29 @@ ADR-076（docs/adr/076-turn-tcp-allocations.zh-CN.md）：
   与 TLS。
 - UDP 中继路径不变：gpu51 上与 main 同轮 A/B，`turn-relay-bench 8 6 4`（8 对，双向 100 字节数据报），quiet.sh 下交替 6 轮：平均总量 30.86 万 vs 26.80 万数据报/秒（1.15 倍；各轮波动约 ±20%，应理解为无回退而非提升）。
 
+### 新增：ECN 可用的 RTP、无 ICE 媒体的锁定、无 BUNDLE 时的拥塞控制（only-webrtc、only-core、only-sys）
+
+ADR-077（docs/adr/077-webrtc-ecn-latching-unbundled-cc.zh-CN.md），只有新增：
+
+- ECN 可用的 RTP（`RtcConfig::set_ecn_marking(EcnMarking::{Ect0, Ect1})`，默认关闭）：在使用 RFC 8888
+  反馈且带宽估计器运行时标记 RTP（从不标记 RTCP、STUN、DTLS 或 SCTP），先每四个包标记一个，直到有十个
+  已标记包被报告带着标记到达，之后全部标记；标记被清除或改写，或已标记包丢失而未标记包没有丢失，都会
+  停止该路径上的标记（RFC 6679 §7.2-7.4）；CE 对估计器按丢包计。按传输分别进行，换新路径重新开始。
+  Chrome 157 接收 ECT(1) 并使路径通过验证（`tools/interop/webrtc/ecn.sh`）。
+- 无 ICE 媒体的锁定（`RtcConfig::set_latching(Latching::{Once, Rebind(quiet)})`，默认关闭）：在传输的
+  SRTP 密钥下通过认证（且通过重放检查）的 RTP / RTCP 包把该组件的地址对移到其来源；端点把来自未知来源的
+  数据报交给正在锁定的 peer，只用于这一检查。`tools/interop/webrtc/latch.sh`：位于 iptables NAT 之后的
+  SIP 风格话机，含重新绑定。
+- 不做 BUNDLE 的会话重新协商 transport-cc 与 RFC 8888，并以一个估计器和一个 pacer 处理所有传输的反馈：
+  RFC 8888 按传输进行；传输级序号跟随远端的编号方式（一个空间，如 libwebrtc / Chrome；或在远端表现出
+  按传输编号后每个传输一个空间），按传输的结果经对齐和排序后交给估计器；排队的包、填充和探测都从各自的
+  传输发出。
+- `PeerStats` 新增 `ecn_marked_sent`、`ecn_failures`、`ecn_state`、`latched`、`twcc_spaces`。only-core：
+  `UdpBinding::send_to_ecn`（文档隐藏）；only-sys：Linux 上的 `send_to_ecn`。
+- 行为变化：不做 BUNDLE 的会话的 offer 与 answer 带有 transport-cc / `ack ccfb`（ADR-072 曾去掉它们）。
+- 工具：`webrtc-bench` 示例（两个回环 `Endpoint` 之间的媒体 / 数据通道吞吐）；`webrtc-interop` 新增
+  `sip-gateway`、`client … sip`、fec-server 的 `direct` 以及 `ONLY_INTEROP_{ECN,LATCH,SIP,BWE}`。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：

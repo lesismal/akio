@@ -47,6 +47,8 @@ pub(super) struct Queued {
     pub(super) ast: Option<u8>,
     pub(super) fec: bool,
     pub(super) at: Instant,
+    /// The transport it leaves on (sessions without BUNDLE; set by [`Rtc::send_rtp`]).
+    pub(super) tp: usize,
 }
 
 /// What a sent packet is to the pacer.
@@ -269,7 +271,8 @@ impl Rtc {
 
     /// Sends `q` now (or queues it while paced, `class` deciding how): sequence numbers of
     /// transport-wide feedback and abs-send-time are written as it leaves.
-    pub(super) fn send_rtp(&mut self, now: Instant, class: Class, q: Queued) {
+    pub(super) fn send_rtp(&mut self, now: Instant, class: Class, mut q: Queued) {
+        q.tp = self.xt.cur;
         if self.pacing() && class != Class::Audio {
             self.pacer.push(class, q);
             self.pace(now);
@@ -285,6 +288,11 @@ impl Rtc {
     /// `probe`), protects and transmits it; returns its size before SRTP (0 if it could not be
     /// sent).
     pub(super) fn release(&mut self, now: Instant, mut q: Queued, probe: Option<u32>) -> usize {
+        if q.tp != self.xt.cur && q.tp <= self.xt.tps.len() {
+            // Queued on another transport (no BUNDLE): it leaves there.
+            let k = q.tp;
+            return self.with_tp(k, |s| s.release(now, q, probe));
+        }
         let (Some(_), Some((src, dest))) = (self.srtp_tx.as_ref(), self.ice.send_pair()) else {
             return 0;
         };
@@ -312,9 +320,14 @@ impl Rtc {
         if probe.is_none() {
             self.note_sent(now, raw);
         }
+        if tw.is_some() || self.ccfb {
+            self.cc_on_sent(now);
+        }
         if q.fec {
             self.stats.fec_sent += 1;
         }
+        let ecn = self.ecn_mark(&q.raw, (src, dest));
+        let raw = &q.raw;
         let Some(tx) = self.srtp_tx.as_mut() else {
             return 0;
         };
@@ -322,7 +335,7 @@ impl Rtc {
             Ok(o) => {
                 self.stats.bytes_sent += o.len() as u64;
                 self.stats.packets_sent += 1;
-                self.transmits.push_back((src, dest, o));
+                self.transmits.push_back((src, dest, o, ecn));
                 raw.len()
             }
             Err(_) => 0,
@@ -386,10 +399,17 @@ impl Rtc {
     /// control feedback, logged under probe cluster `cluster`; the bytes sent, `None` if no
     /// stream can carry it (nothing sent yet, no path).
     fn send_padding(&mut self, now: Instant, size: usize, cluster: Option<u32>) -> Option<usize> {
+        let (li, enc) = self.padding_stream()?;
+        if !self.xt.tps.is_empty() {
+            // On the stream's own transport (no BUNDLE).
+            let k = self.tp_of_line(li);
+            if k != self.xt.cur {
+                return self.with_tp(k, |s| s.send_padding(now, size, cluster));
+            }
+        }
         let (true, Some((src, dest))) = (self.srtp_tx.is_some(), self.ice.send_pair()) else {
             return None;
         };
-        let (li, enc) = self.padding_stream()?;
         let line = &mut self.media[li];
         let rtx_pt = match line.last_pt {
             Some(p) if line.fec_pts.red == Some(p) => line.fec_pts.red_rtx,
@@ -438,11 +458,13 @@ impl Rtc {
             }
             (None, _) => {}
         }
+        self.cc_on_sent(now);
+        let ecn = self.ecn_mark(&raw, (src, dest));
         let tx = self.srtp_tx.as_mut()?;
         let o = tx.protect_rtp(&raw).ok()?;
         self.stats.bytes_sent += o.len() as u64;
         self.stats.packets_sent += 1;
-        self.transmits.push_back((src, dest, o));
+        self.transmits.push_back((src, dest, o, ecn));
         Some(raw.len())
     }
 
@@ -455,10 +477,7 @@ impl Rtc {
             return;
         }
         // Nothing before media was sent (the first poll starts the initial probing).
-        if self.srtp_tx.is_none()
-            || self.ice.send_pair().is_none()
-            || self.padding_stream().is_none()
-        {
+        if !self.padding_ready() {
             if let Some(b) = self.bwe.as_mut() {
                 b.cancel_probes();
             }
@@ -486,6 +505,23 @@ impl Rtc {
             if let Some(b) = self.bwe.as_mut() {
                 b.on_probe_sent(now, p.cluster, n);
             }
+        }
+    }
+
+    /// Whether padding and probes can go out: a stream to carry them, and its transport has
+    /// keys and a path.
+    fn padding_ready(&self) -> bool {
+        let Some((li, _)) = self.padding_stream() else {
+            return false;
+        };
+        let k = if self.xt.tps.is_empty() {
+            self.xt.cur
+        } else {
+            self.tp_of_line(li)
+        };
+        match self.tp_state(k) {
+            None => self.srtp_tx.is_some() && self.ice.send_pair().is_some(),
+            Some(t) => t.ready(),
         }
     }
 

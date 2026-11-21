@@ -59,8 +59,8 @@ const RTCP_INTERVAL: Duration = Duration::from_millis(1000);
 pub(crate) enum Output {
     /// Call [`Rtc::handle_timeout`] then.
     Timeout(Instant),
-    /// Send `2` from the local address `0` to `1`.
-    Transmit(SocketAddr, SocketAddr, Vec<u8>),
+    /// Send `2` from the local address `0` to `1` with ECN codepoint `3` (0: Not-ECT).
+    Transmit(SocketAddr, SocketAddr, Vec<u8>, u8),
     /// Something happened.
     Event(RtcEvent),
 }
@@ -885,8 +885,8 @@ pub(crate) struct Rtc {
     next_rtcp: Option<Instant>,
     next_stats: Option<Instant>,
     cname: String,
-    /// (local address to send from, destination, datagram).
-    transmits: VecDeque<(SocketAddr, SocketAddr, Vec<u8>)>,
+    /// (local address to send from, destination, datagram, ECN codepoint).
+    transmits: VecDeque<(SocketAddr, SocketAddr, Vec<u8>, u8)>,
     events: VecDeque<RtcEvent>,
     alive: bool,
     closed_emitted: bool,
@@ -938,6 +938,14 @@ pub(crate) struct Rtc {
     rx_ecn: u8,
     /// Transports beyond the primary (no BUNDLE) and plain ones (no ICE), ADR-072.
     xt: transports::Extra,
+    /// ECN marking of the current transport's path (ADR-077).
+    ecn: ecn::EcnPath,
+    /// Latching the current transport's remote without ICE (ADR-077), the source and local
+    /// address of the datagram being received while latching, and whether a packet
+    /// authenticated during [`Rtc::latch_receive`].
+    latch: latch::Latch,
+    latch_rx: Option<(SocketAddr, SocketAddr)>,
+    latch_took: bool,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -1069,6 +1077,10 @@ impl Rtc {
             pacer: pacing::Pacer::default(),
             rx_ecn: 0,
             xt: transports::Extra::default(),
+            ecn: ecn::EcnPath::default(),
+            latch: latch::Latch::default(),
+            latch_rx: None,
+            latch_took: false,
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -1307,7 +1319,6 @@ impl Rtc {
         }
         // BundlePolicy::Disabled: a transport per section in use (new sections get theirs).
         self.split_for_offer(now);
-        self.drop_transport_cc();
         let mki = usize::from(self.cfg.sdes_mki);
         let offer_keys = |s: &mut Rtc| {
             if !s.lite {
@@ -1632,7 +1643,6 @@ impl Rtc {
         } else {
             self.apply_remote_transport(&sdp, true)?;
         }
-        self.drop_transport_cc();
         self.key_sdes();
         self.tp_each(Rtc::key_sdes);
         // Our lines must follow the offer's order.
@@ -1720,7 +1730,6 @@ impl Rtc {
 
     fn after_negotiation(&mut self, now: Instant) {
         self.negotiated = true;
-        self.drop_transport_cc();
         self.sdp_version += 1;
         let mut ext = ExtensionMap::new();
         for l in &self.media {
@@ -2593,6 +2602,7 @@ impl Rtc {
                 ast: ast_id,
                 fec,
                 at: now,
+                tp: 0,
             };
             self.send_rtp(now, class, q);
         }
@@ -2684,7 +2694,7 @@ impl Rtc {
         let raw = only_rtp::write_compound(pkts);
         if let Ok(out) = tx.protect_rtcp(&raw) {
             self.stats.bytes_sent += out.len() as u64;
-            self.transmits.push_back((src, dest, out));
+            self.transmits.push_back((src, dest, out, 0));
         }
     }
 
@@ -2710,10 +2720,15 @@ impl Rtc {
         if self.tp_entry() {
             let k = self.tp_demux(source, destination, data);
             if k != 0 {
-                return self.with_tp(k, |s| s.handle_receive(now, source, destination, data));
+                self.with_tp(k, |s| s.handle_receive(now, source, destination, data));
+                self.cc_apply();
+                return;
             }
         }
         let Some(&b) = data.first() else { return };
+        if self.xt.plain && self.latching() {
+            self.latch_rx = Some((source, destination));
+        }
         // Component 2 (RTCP without rtcp-mux): what arrives on its local addresses.
         let rtcp_comp = self.ice.components() == 2 && self.rtcp.is_local(destination);
         match b {
@@ -2744,6 +2759,8 @@ impl Rtc {
             _ => {}
         }
         self.rx_ecn = 0;
+        self.latch_rx = None;
+        self.cc_apply();
         self.pump(now);
     }
 
@@ -2772,6 +2789,7 @@ impl Rtc {
             }
         }
         self.media_timers(now);
+        self.cc_flush(now);
         self.pace(now);
         self.send_probes(now);
         self.pump(now);
@@ -2882,10 +2900,13 @@ impl Rtc {
         let Ok(pkt) = rx.unprotect_rtp(data) else {
             return;
         };
+        if self.latch_rx.is_some() {
+            self.latch_auth(now, 1);
+        }
         if is_cryptex(data) {
             self.stats.cryptex_received += 1;
         }
-        let Some(h) = RtpHeader::parse(&pkt, &self.ext) else {
+        let Some(h) = RtpHeader::parse(&pkt, self.rx_ext()) else {
             return;
         };
         let ecn = std::mem::take(&mut self.rx_ecn);
@@ -2900,8 +2921,7 @@ impl Rtc {
             self.ccfb_rx
                 .on_received(h.ssrc, h.sequence_number, now, ecn);
         } else if let Some(seq) = h.ext.transport_cc {
-            self.twcc_rx.on_received(seq, now);
-            self.twcc_media_ssrc = h.ssrc;
+            self.cc_received(now, seq, h.ssrc);
         }
         let Some(route) = self.route(&h) else {
             return;
@@ -2927,7 +2947,7 @@ impl Rtc {
             let Some(inner) = only_rtp::fec::red::unwrap_primary(&pkt) else {
                 return;
             };
-            let Some(ih) = RtpHeader::parse(&inner, &self.ext) else {
+            let Some(ih) = RtpHeader::parse(&inner, self.rx_ext()) else {
                 return;
             };
             if fp.ulpfec == Some(ih.payload_type) {
@@ -3093,7 +3113,7 @@ impl Rtc {
     /// Media packets rebuilt by FEC.
     fn deliver_recovered(&mut self, now: Instant, line: usize, rec: Vec<Vec<u8>>) {
         for r in rec {
-            let Some(h) = RtpHeader::parse(&r, &self.ext) else {
+            let Some(h) = RtpHeader::parse(&r, self.rx_ext()) else {
                 continue;
             };
             self.stats.fec_recovered += 1;
@@ -3116,7 +3136,7 @@ impl Rtc {
         if self.cfg.rtp_mode {
             return;
         }
-        let Some(h) = RtpHeader::parse(packet, &self.ext) else {
+        let Some(h) = RtpHeader::parse(packet, self.rx_ext()) else {
             return; // its header extensions were not rebuilt
         };
         let payload = h.payload(packet);
@@ -3341,6 +3361,9 @@ impl Rtc {
         let Ok(pkt) = rx.unprotect_rtcp(data) else {
             return;
         };
+        if self.latch_rx.is_some() {
+            self.latch_auth(now, if rtcp_comp { 2 } else { 1 });
+        }
         let Ok(pkts) = only_rtp::parse_compound(&pkt) else {
             return;
         };
@@ -3376,25 +3399,8 @@ impl Rtc {
                         self.keyframe_request(s, KeyframeRequestKind::Fir);
                     }
                 }
-                Rtcp::TransportCc(fb) => {
-                    let res = self.twcc_tx.on_feedback(now, &fb);
-                    // With RFC 8888 negotiated its feedback drives the estimator.
-                    if !self.ccfb {
-                        if let Some(b) = self.bwe.as_mut() {
-                            b.on_packet_results(now, &res);
-                        }
-                        self.bwe_event();
-                    }
-                }
-                Rtcp::CongestionControl(fb) => {
-                    let res = self.ccfb_tx.on_feedback(now, &fb);
-                    if self.ccfb {
-                        if let Some(b) = self.bwe.as_mut() {
-                            b.on_packet_results(now, &res);
-                        }
-                        self.bwe_event();
-                    }
-                }
+                Rtcp::TransportCc(fb) => self.cc_twcc(now, &fb),
+                Rtcp::CongestionControl(fb) => self.cc_ccfb(now, &fb),
                 Rtcp::Remb { bitrate, .. } => {
                     self.remb = (bitrate > 0).then_some(bitrate);
                     self.apply_remote_caps();
@@ -3490,6 +3496,17 @@ impl Rtc {
     }
 
     fn resend(&mut self, now: Instant, media_ssrc: u32, lost: &[u16]) {
+        if !self.xt.tps.is_empty() {
+            // Retransmissions go out on their line's transport.
+            let mid = self
+                .media
+                .iter()
+                .find(|l| l.sends_ssrc(media_ssrc))
+                .map(|l| l.mid);
+            if let Some(k) = mid.and_then(|m| self.tp_redirect(m)) {
+                return self.with_tp(k, |s| s.resend(now, media_ssrc, lost));
+            }
+        }
         let Some((line, enc)) = self
             .media
             .iter_mut()
@@ -3533,6 +3550,7 @@ impl Rtc {
                 ast: ast_id,
                 fec: false,
                 at: now,
+                tp: 0,
             };
             self.send_rtp(now, pacing::Class::Retransmission, q);
         }
@@ -3555,30 +3573,11 @@ impl Rtc {
                 });
             }
         }
-        // Congestion control feedback: RFC 8888 when negotiated, else transport-wide.
-        let sender = self.media.first().map_or(1, |l| l.send.ssrc());
-        if self.ccfb {
-            let ntp = self.ntp(now);
-            while let Some(fb) = self.ccfb_rx.poll_feedback(now, ntp, sender) {
-                out.push(fb);
-                if out.len() > 32 {
-                    break;
-                }
-            }
-        } else {
-            while let Some(fb) = self
-                .twcc_rx
-                .poll_feedback(now, sender, self.twcc_media_ssrc)
-            {
-                out.push(fb);
-                if out.len() > 32 {
-                    break;
-                }
-            }
-        }
         for p in out {
             self.send_rtcp(std::slice::from_ref(&p));
         }
+        // Congestion control feedback: RFC 8888 when negotiated, else transport-wide.
+        self.send_cc_feedback(now);
         // Reports.
         if self.next_rtcp.is_none_or(|t| t <= now) {
             self.next_rtcp = Some(now + RTCP_INTERVAL);
@@ -3614,6 +3613,20 @@ impl Rtc {
                     xr_lost: self.stats.xr_lost,
                     xr_duplicated: self.stats.xr_duplicated,
                     rtcp_mux: self.ice.components() == 1,
+                    ecn_marked_sent: self.ecn.marked_sent + self.xt_sum(|t| t.ecn.marked_sent),
+                    ecn_failures: self.ecn.failures + self.xt_sum(|t| t.ecn.failures),
+                    ecn_state: match self.ecn.phase {
+                        ecn::Phase::Off => "off",
+                        ecn::Phase::Testing => "testing",
+                        ecn::Phase::Capable => "capable",
+                        ecn::Phase::Failed => "failed",
+                    },
+                    latched: self.latch_moves(),
+                    twcc_spaces: self.xt.split.then_some(match self.xt.cc.spaces {
+                        cc::Spaces::Unknown => "unknown",
+                        cc::Spaces::Shared => "shared",
+                        cc::Spaces::PerTransport => "per-transport",
+                    }),
                 }));
             }
         }
@@ -3712,7 +3725,7 @@ impl Rtc {
             let mut progress = false;
             while let Some(t) = self.ice.poll_transmit() {
                 self.transmits
-                    .push_back((t.source, t.destination, t.contents));
+                    .push_back((t.source, t.destination, t.contents, 0));
             }
             while let Some(e) = self.ice.poll_event() {
                 progress = true;
@@ -3784,7 +3797,7 @@ impl Rtc {
             .or_else(|| self.remote_local.zip(self.remote_addr));
         while let Some(t) = d.poll_transmit() {
             if let Some((src, dest)) = path {
-                self.transmits.push_back((src, dest, t));
+                self.transmits.push_back((src, dest, t, 0));
             }
         }
         let mut evs = Vec::new();
@@ -3910,8 +3923,8 @@ impl Rtc {
         if self.transmits.is_empty() && self.events.is_empty() {
             self.pump(now);
         }
-        if let Some((s, d, t)) = self.transmits.pop_front() {
-            return Output::Transmit(s, d, t);
+        if let Some((s, d, t, e)) = self.transmits.pop_front() {
+            return Output::Transmit(s, d, t, e);
         }
         if let Some(e) = self.events.pop_front() {
             return Output::Event(e);
@@ -3935,6 +3948,7 @@ impl Rtc {
                 .as_ref()
                 .and_then(BandwidthEstimator::probe_timeout));
             min(self.pacer_timeout(now));
+            min(self.xt.cc.merge.waiting());
             for r in self.recv.values() {
                 min(r.stream.poll_timeout());
             }
@@ -4118,8 +4132,11 @@ fn abs_send_time_now() -> u32 {
     only_rtp::abs_send_time(d)
 }
 
+mod cc;
 mod channels;
+mod ecn;
 mod feedback;
+mod latch;
 mod pacing;
 mod receipts;
 mod rtcp_mux;
@@ -4131,6 +4148,8 @@ pub(crate) use sdes::fuzz_crypto_line;
 use receipts::{line_xr_blocks, remote_xr_blocks};
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ecn;
 #[cfg(test)]
 mod tests_mux;
 #[cfg(test)]

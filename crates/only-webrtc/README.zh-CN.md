@@ -98,11 +98,14 @@ TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`t
 （经 IPv6 与 Chrome 的互通在 `browser.sh` 中）。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-与 Chrome（`max-compat`）双向的无 BUNDLE 互通：`tools/interop/webrtc/bundle.sh`。
+与 Chrome（`max-compat`）双向的无 BUNDLE 互通，估计器运行在每个传输的反馈上：
+`tools/interop/webrtc/bundle.sh`。发往 Chrome 的 ECN 可用 RTP（ECT(1) 被接收并通过验证，清除标记的代理
+使标记停止）：`tools/interop/webrtc/ecn.sh`。无 ICE 媒体锁定位于真实 NAT 之后的 SIP 风格话机（Docker
+中的网络命名空间，含重新绑定）：`tools/interop/webrtc/latch.sh`。
 
 未实现：simulcast 线路上的 FlexFEC（基于 RID 的 simulcast 不声明 FEC 流；Chrome 也不发送）、DTLS-SRTP
-下的 MKI（没有对应的 SDP，也没有浏览器使用）、与浏览器的 RFC 6904（没有浏览器提供）、让普通（无 ICE）
-媒体锁定其实际来源地址、不做 BUNDLE 的会话中跨传输的传输级拥塞控制。pion 没有非复用或非 BUNDLE 模式，
+下的 MKI（没有对应的 SDP，也没有浏览器使用）、与浏览器的 RFC 6904（没有浏览器提供）、对 CE 的可伸缩
+（L4S）响应与 RFC 6679 自身的 ECN 信令、DTLS-SRTP 密钥就绪前的锁定。pion 没有非复用或非 BUNDLE 模式，
 Chrome 157 没有 `RTCDataChannel.priority`：这些在 `Endpoint` 之间测试。浏览器和 pion 都没有同时打开的
 ICE-TCP 候选：`listen_tcp_so` 在 `Endpoint` 之间测试。
 

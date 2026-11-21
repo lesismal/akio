@@ -334,8 +334,16 @@ let cfg = only_webrtc::rtc_config()
   feedback instead of transport-wide feedback and the bandwidth estimator runs on it; Chrome
   needs `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`. The reports carry the
   ECN codepoint each packet arrived with (the UDP backends read it); on the sending side a
-  packet reported CE counts as lost for the estimator. This side does not mark its own packets
-  ECN-capable.
+  packet reported CE counts as lost for the estimator. This side marks its own RTP when asked
+  (next section).
+- **ECN-capable RTP** (ADR-077, `set_ecn_marking(EcnMarking::Ect1)` or `Ect0`): with RFC 8888
+  in use and the estimator on, RTP leaves ECT(1) / ECT(0) once the path has shown the marks get
+  through: one packet in four while unknown, every one after ten marked packets came back with
+  their mark (RFC 6679 §7.2). A report showing a mark cleared or changed, or marked packets lost
+  where unmarked ones are not, stops marking on that path (a new ICE pair or latched address
+  starts over). RTCP, STUN, DTLS and SCTP are never marked. Chrome 157 receives ECT(1) (its
+  `packetsReceivedWithEct1`) and validates the path; Chrome does not mark what it sends
+  (`tools/interop/webrtc/ecn.sh`, which also shows a proxy that clears the codepoint ending it).
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
 - **XR blocks about received streams** (ADR-058, `pkt-loss-rle pkt-dup-rle pkt-rcpt-times
@@ -414,8 +422,21 @@ let ep = ep.config(|| {
 });
 ```
 
-Without ICE nothing checks the path or finds a way through NATs: the remote must be reachable at
-the address it wrote (ADR-072).
+Without ICE nothing checks the path: by default the remote must be reachable at the address it
+wrote (ADR-072). A phone behind a NAT writes its private address and sends from the NAT's
+mapping; latching (symmetric RTP, "comedia", ADR-077) follows it:
+
+```rust,ignore
+.set_latching(Latching::Once)                              // the first authenticated source
+.set_latching(Latching::Rebind(Duration::from_secs(2)))    // and again after 2 s of silence
+```
+
+A datagram from an address the endpoint does not know is tried against the SRTP keys of the
+peers that may still latch; one that authenticates (and is not a replay) is received and moves
+the transport (RTP, and RTCP on its own port separately) to its source. Forged or replayed
+packets move nothing. With DTLS-SRTP nothing latches before the handshake, which needs the SDP
+address. `tools/interop/webrtc/latch.sh` runs a SIP-style phone behind an iptables NAT in a
+network namespace, including a NAT rebinding.
 
 ### RTCP on its own port (no rtcp-mux)
 
@@ -462,8 +483,12 @@ transport, and `on_connected` fires once all of them are up. Chrome with
 `bundlePolicy: "max-compat"` works this way in both directions (`tools/interop/webrtc/bundle.sh`).
 The transports share the endpoint's socket unless `bind_transport_socket` gives them their own;
 they are then told apart by the remote's addresses, which a peer that does not bundle always
-has one of per section. Transport-wide congestion control (transport-cc, RFC 8888) needs one
-transport and is not negotiated in such a session. Trickled candidates name their section with
+has one of per section. Congestion control feedback (transport-cc, RFC 8888) is negotiated as
+with BUNDLE and one estimator and pacer serve every transport (ADR-077): RFC 8888 runs per
+transport; transport-wide sequence numbers follow the remote's numbering, one space over all
+transports as libwebrtc numbers them (Chrome's, checked in `bundle.sh`), or one per transport
+when the remote numbers that way; paced packets leave on their own transport. Trickled
+candidates name their section with
 `Peer::add_remote_candidate_in(mid, candidate)`.
 
 ### Data channel priorities
@@ -705,7 +730,6 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-Sending ECN-capable packets; SRTP MKIs with DTLS-SRTP; latching plain
-(no-ICE) media onto the address it really comes from; transport-wide congestion control across
-the transports of a session without BUNDLE. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045,
-ADR-048, ADR-054, ADR-058, ADR-072, ADR-073 and ADR-076 have the details of what was added.
+SRTP MKIs with DTLS-SRTP; a scalable (L4S) response to CE marks; latching before DTLS-SRTP
+keys exist. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072,
+ADR-073, ADR-076 and ADR-077 have the details of what was added.

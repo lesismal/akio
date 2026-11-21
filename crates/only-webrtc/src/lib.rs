@@ -85,9 +85,9 @@ pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
     BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec,
-    Direction, Event, FecMask, FecMechanism, Frequency, IceConnectionState, KeyframeRequest,
-    KeyframeRequestKind, MediaAdded, MediaData, MediaKind, MediaTime, Mid, OtherEvent, Pt,
-    Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
+    Direction, EcnMarking, Event, FecMask, FecMechanism, Frequency, IceConnectionState,
+    KeyframeRequest, KeyframeRequestKind, Latching, MediaAdded, MediaData, MediaKind, MediaTime,
+    Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -232,6 +232,9 @@ struct State {
     /// connection (at most [`ADDRS_PER_PEER`]). Kept here, under the peer's own lock, so that
     /// the UDP path of a hub with TCP candidates takes no shared lock.
     tcp_remotes: Vec<SocketAddr>,
+    /// Registered with the hub for datagrams from unknown sources (latching media without
+    /// ICE, ADR-077).
+    latching: bool,
 }
 
 struct Shared {
@@ -278,6 +281,7 @@ impl Peer {
                 closed: false,
                 connect_by: (*lock(&hub.connect_timeout)).map(|d| Instant::now() + d),
                 tcp_remotes: Vec::new(),
+                latching: false,
             }),
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(Some(handler)),
@@ -598,6 +602,24 @@ impl Peer {
         self.drive();
     }
 
+    /// A datagram from `source`, which no peer is known at, offered for latching (ADR-077):
+    /// `true` if it authenticated as this peer's RTP or RTCP (it was then taken).
+    fn try_latch(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], ecn: u8) -> bool {
+        let took = {
+            let mut st = lock(&self.0.state);
+            if st.closed {
+                return false;
+            }
+            st.rtc.set_rx_ecn(ecn);
+            st.rtc
+                .latch_receive(Instant::now(), source, destination, data)
+        };
+        if took {
+            self.drive();
+        }
+        took
+    }
+
     /// Polls the peer until it returns a timeout: datagrams are sent, events delivered, the timer
     /// armed.
     ///
@@ -621,10 +643,25 @@ impl Peer {
             // Media without ICE: datagrams from the remote's plain addresses are this peer's
             // before it sends anything there.
             let plain = st.rtc.take_plain_remotes();
-            if let (false, Some(hub)) = (plain.is_empty(), &hub) {
+            let gone = st.rtc.take_gone_remotes();
+            if let (false, Some(hub)) = (plain.is_empty() && gone.is_empty(), &hub) {
                 let mut by_addr = lock(&hub.by_addr);
+                for a in gone {
+                    if by_addr.get(&a) == Some(&self.0.id) {
+                        by_addr.remove(&a);
+                    }
+                }
                 for a in plain {
                     by_addr.insert(a, self.0.id);
+                }
+            }
+            // Latching: the hub offers datagrams from unknown sources while a transport may
+            // still move.
+            let wanted = st.rtc.latch_wanted();
+            if wanted != st.latching {
+                if let Some(hub) = &hub {
+                    st.latching = wanted;
+                    hub.set_latching(self.0.id, wanted);
                 }
             }
             if st.rtc.is_connected() {
@@ -644,10 +681,10 @@ impl Peer {
                         }
                         break;
                     }
-                    Output::Transmit(src, dest, contents) => {
+                    Output::Transmit(src, dest, contents, ecn) => {
                         if let Some(hub) = &hub {
                             let tcp = !st.tcp_remotes.is_empty() && st.tcp_remotes.contains(&dest);
-                            hub.transmit(self.0.id, src, dest, &contents, tcp);
+                            hub.transmit(self.0.id, src, dest, &contents, tcp, ecn);
                         }
                     }
                     Output::Event(e) => {
@@ -830,7 +867,16 @@ struct Hub {
     /// without a lock on every datagram sent.
     tp_socks: Mutex<Vec<(UdpBinding, only_ice::Candidate)>>,
     tp_count: AtomicUsize,
+    /// Peers latching media without ICE (ADR-077): datagrams from unknown sources are
+    /// offered to them; `latch_count` is read without a lock on every unrouted datagram.
+    latching: Mutex<Vec<u64>>,
+    latch_count: AtomicUsize,
+    /// Where the next offer starts (fairness among many latching peers).
+    latch_next: AtomicUsize,
 }
+
+/// Latching peers a datagram from an unknown source is offered to at most.
+const MAX_LATCH_TRIES: usize = 64;
 
 /// Link-local addresses whose interface is remembered.
 const MAX_SCOPES: usize = 256;
@@ -867,6 +913,9 @@ impl Hub {
             rtcp_conns: Mutex::new(HashMap::new()),
             tp_socks: Mutex::new(Vec::new()),
             tp_count: AtomicUsize::new(0),
+            latching: Mutex::new(Vec::new()),
+            latch_count: AtomicUsize::new(0),
+            latch_next: AtomicUsize::new(0),
         }
     }
 
@@ -1101,7 +1150,18 @@ impl Hub {
         Ok((p, offer))
     }
 
+    /// Registers (or not) peer `id` for datagrams from unknown sources.
+    fn set_latching(&self, id: u64, on: bool) {
+        let mut l = lock(&self.latching);
+        l.retain(|x| *x != id);
+        if on {
+            l.push(id);
+        }
+        self.latch_count.store(l.len(), Ordering::Relaxed);
+    }
+
     fn remove(&self, id: u64) {
+        self.set_latching(id, false);
         let p = lock(&self.peers).remove(&id);
         if let Some(p) = p {
             lock(&self.by_ufrag).remove(&p.0.ufrag);
@@ -1113,7 +1173,16 @@ impl Hub {
     }
 
     /// Sends a datagram of peer `id`; `tcp` when `dest` reached the peer over ICE-TCP.
-    fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8], tcp: bool) {
+    /// `ecn`: the ECN codepoint for UDP (0: Not-ECT; relays and ICE-TCP send none).
+    fn transmit(
+        &self,
+        id: u64,
+        src: SocketAddr,
+        dest: SocketAddr,
+        data: &[u8],
+        tcp: bool,
+        ecn: u8,
+    ) {
         // ICE-TCP: to a remote that came over a connection, or from the active candidate (a
         // server's TCP and UDP candidates may share an address, so `src` alone does not tell).
         if let Some(t) = self.tcp.get() {
@@ -1142,14 +1211,18 @@ impl Hub {
                     lock(conns).get(&dest).cloned()
                 };
                 if let Some(c) = c {
-                    let _ = c.send(data);
+                    let _ = if ecn == 0 {
+                        c.send(data)
+                    } else {
+                        c.send_segments_ecn(data.to_vec(), 0, ecn)
+                    };
                 }
             }
             Tx::Bound(b) => {
                 // Component 2's candidates send from the RTCP socket (its own port), those of
                 // other transports from theirs.
                 if let Some(r) = self.rtcp.get().filter(|r| rtcp_source(r.local_addr(), src)) {
-                    let _ = r.send_to(data, dest);
+                    let _ = r.send_to_ecn(data, dest, ecn);
                     return;
                 }
                 if self.tp_count.load(Ordering::Relaxed) != 0 {
@@ -1158,12 +1231,16 @@ impl Hub {
                         .iter()
                         .find(|(s, c)| c.addr() == src || rtcp_source(s.local_addr(), src));
                     if let Some((s, _)) = s {
-                        let _ = s.send_to(data, dest);
+                        let _ = s.send_to_ecn(data, dest, ecn);
                         return;
                     }
                 }
                 if let Some(b) = b.get() {
-                    let _ = b.send_to(data, dest);
+                    let _ = if ecn == 0 {
+                        b.send_to(data, dest)
+                    } else {
+                        b.send_to_ecn(data, dest, ecn)
+                    };
                 }
             }
         }
@@ -1241,10 +1318,40 @@ impl Hub {
                 }
             }
         }
-        let Some(id) = id else { return };
+        let Some(id) = id else {
+            if !is_stun
+                && self.latch_count.load(Ordering::Relaxed) != 0
+                && matches!(data.first(), Some(128..=191))
+            {
+                self.latch(source, destination, data, ecn);
+            }
+            return;
+        };
         let p = lock(&self.peers).get(&id).cloned();
         if let Some(p) = p {
             p.input(source, destination, data, false, ecn);
+        }
+    }
+
+    /// An RTP / RTCP datagram from an unknown source, offered to the latching peers (at most
+    /// [`MAX_LATCH_TRIES`], starting where the last offer stopped) until one authenticates
+    /// it; that peer then routes the source to itself if it latched.
+    fn latch(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], ecn: u8) {
+        let ids: Vec<u64> = lock(&self.latching).clone();
+        if ids.is_empty() {
+            return;
+        }
+        let start = self.latch_next.fetch_add(1, Ordering::Relaxed) % ids.len();
+        let peers: Vec<Peer> = {
+            let all = lock(&self.peers);
+            (0..ids.len().min(MAX_LATCH_TRIES))
+                .filter_map(|i| all.get(&ids[(start + i) % ids.len()]).cloned())
+                .collect()
+        };
+        for p in peers {
+            if p.try_latch(source, destination, data, ecn) {
+                return;
+            }
         }
     }
 

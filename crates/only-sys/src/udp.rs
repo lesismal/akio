@@ -605,10 +605,107 @@ impl<'d> Batch<'_, 'd> {
     }
 }
 
+/// Sends `data` as one datagram to `dest` (`None`: the connected peer) with ECN codepoint `ecn`
+/// (its low two bits; 0 sends no control message), through `IPV6_TCLASS` when `v6_socket` (the
+/// socket is IPv6; an IPv4 `dest` is then reached at its IPv4-mapped address), else `IP_TOS`.
+/// One `sendmsg`, without blocking (as macOS's `send_to_ecn`).
+pub fn send_to_ecn(
+    fd: RawFd,
+    data: &[u8],
+    dest: Option<&SocketAddr>,
+    ecn: u8,
+    v6_socket: bool,
+) -> io::Result<usize> {
+    let (mut ss, slen) = match dest {
+        Some(d) => {
+            let d = match (v6_socket, d) {
+                (true, SocketAddr::V4(a)) => {
+                    SocketAddr::new(a.ip().to_ipv6_mapped().into(), a.port())
+                }
+                _ => *d,
+            };
+            crate::net::sockaddr(&d)
+        }
+        // SAFETY: sockaddr_storage is plain-old-data; all-zero is a valid value.
+        None => (unsafe { mem::zeroed() }, 0),
+    };
+    let mut iov = ffi::iovec {
+        iov_base: data.as_ptr().cast_mut().cast(),
+        iov_len: data.len(),
+    };
+    let mut ctrl: Ctrl = [0; 8];
+    // SAFETY: a zeroed msghdr is a valid empty one; its fields are filled in below.
+    let mut h: ffi::msghdr = unsafe { mem::zeroed() };
+    if slen > 0 {
+        h.msg_name = (&raw mut ss).cast();
+        h.msg_namelen = slen;
+    }
+    h.msg_iov = &raw mut iov;
+    h.msg_iovlen = 1;
+    if ecn & 3 != 0 {
+        h.msg_control = (&raw mut ctrl).cast();
+        h.msg_controllen = ffi::cmsg_space(size_of::<ffi::c_int>()) as _;
+        // SAFETY: `msg_control` points to `ctrl` (64 bytes, 8-aligned, zeroed), room for the
+        // one cmsghdr CMSG_SPACE counted; the header comes from CMSG_FIRSTHDR within it.
+        unsafe {
+            let c = ffi::cmsg_firsthdr(&raw const h);
+            if !c.is_null() {
+                (*c).cmsg_level = if v6_socket { IPPROTO_IPV6 } else { IPPROTO_IP };
+                (*c).cmsg_type = if v6_socket { IPV6_TCLASS } else { IP_TOS };
+                (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
+                let v = ffi::c_int::from(ecn & 3);
+                std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
+            }
+        }
+    }
+    loop {
+        // SAFETY: every pointer in `h` points into a live local (`ss`, `iov` -> `data`,
+        // `ctrl`) with the length given next to it, or is null with length 0; sendmsg only
+        // reads them.
+        let n = unsafe { ffi::sendmsg(fd, &raw const h, ffi::MSG_DONTWAIT) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{net::UdpSocket, os::fd::AsRawFd};
+
+    #[test]
+    fn send_to_ecn_marks_one_datagram() {
+        for (bind, v6) in [("127.0.0.1:0", false), ("[::1]:0", true)] {
+            let Ok(rx) = UdpSocket::bind(bind) else {
+                continue; // no IPv6 loopback
+            };
+            rx.set_nonblocking(true).unwrap();
+            assert!(enable_ecn(rx.as_raw_fd()));
+            let tx = UdpSocket::bind(bind).unwrap();
+            let dest = rx.local_addr().unwrap();
+            for ecn in [1u8, 2, 3, 0] {
+                let n = send_to_ecn(tx.as_raw_fd(), b"marked", Some(&dest), ecn, v6).unwrap();
+                assert_eq!(n, 6);
+                let mut rb = RecvBatch::new(2, 2048);
+                let mut k = 0;
+                for _ in 0..200 {
+                    k = rb.recv(rx.as_raw_fd()).unwrap();
+                    if k > 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert_eq!(k, 1);
+                assert_eq!(rb.get(0).unwrap().0, b"marked");
+                assert_eq!(rb.ecn(0), ecn, "{bind} ecn {ecn}");
+            }
+        }
+    }
 
     #[test]
     #[should_panic(expected = "overflows")]

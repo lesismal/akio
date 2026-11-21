@@ -64,7 +64,7 @@ fn drain(s: &mut Side, now: Instant, net: &mut Net) {
                 s.wake = t;
                 break;
             }
-            Output::Transmit(from, to, d) => {
+            Output::Transmit(from, to, d, _) => {
                 assert!(s.addrs.contains(&from), "sent from {from}");
                 net.send(now, from, to, d);
             }
@@ -459,8 +459,8 @@ fn transports_per_section_without_bundle() {
         )
     };
     let offer = a.rtc.apply(now, ch).unwrap().unwrap();
-    // No BUNDLE, credentials and candidates of its own in every section, no transport-wide
-    // congestion control.
+    // No BUNDLE, credentials and candidates of its own in every section, transport-wide
+    // congestion control on every media section (ADR-077).
     assert!(!offer.contains("a=group:BUNDLE"), "{offer}");
     let ufrags = per_section(&offer, "ice-ufrag");
     assert_eq!(ufrags.len(), 3);
@@ -475,11 +475,11 @@ fn transports_per_section_without_bundle() {
         "{offer}"
     );
     assert!(cands[2][0].contains(" 1002 "), "{offer}");
-    assert!(!offer.contains("transport-cc"), "{offer}");
+    assert!(offer.matches("transport-cc").count() >= 2, "{offer}");
     let answer = b.rtc.accept_offer(now, &offer).unwrap();
     assert!(!answer.contains("a=group:BUNDLE"), "{answer}");
     assert_eq!(per_section(&answer, "ice-ufrag").len(), 3);
-    assert!(!answer.contains("transport-cc"), "{answer}");
+    assert!(answer.contains("transport-cc"), "{answer}");
     a.rtc.accept_answer(now, &answer).unwrap();
     let mut net = Net::new(3);
     let now = connect(&mut a, &mut b, &mut net, now);
