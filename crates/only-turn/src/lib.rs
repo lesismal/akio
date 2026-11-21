@@ -785,7 +785,14 @@ impl TurnStreamClient {
             .get(stun::attr::CONNECTION_ID)
             .and_then(|v| <[u8; 4]>::try_from(v).ok())
             .map(u32::from_be_bytes);
-        let link = id.and_then(|id| self.inner.tcp.link(id));
+        // Never on a connection that holds an allocation (its control connection): that one's
+        // own shard answers (400).
+        let has_alloc = self
+            .inner
+            .with_shard(self.shard, None, |core, _| core.relay_of(client).is_some());
+        let link = id
+            .filter(|_| !has_alloc)
+            .and_then(|id| self.inner.tcp.link(id));
         let shard = link.as_ref().map_or(self.shard, |l| l.1);
         let owner = link.as_ref().map(|l| l.0);
         let (out, bound) = self.inner.with_shard(shard, None, |core, _| {

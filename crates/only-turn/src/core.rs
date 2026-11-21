@@ -1499,6 +1499,11 @@ impl TurnCore {
         let (Some(id), Some(owner)) = (id, owner) else {
             return bad(self);
         };
+        // A data connection is a new one: never a control connection (it would lose its
+        // allocation's client).
+        if self.allocs.contains_key(&data_client) {
+            return bad(self);
+        }
         if self.by_conn.get(&id) != Some(&owner) {
             return bad(self);
         }
@@ -1883,6 +1888,12 @@ mod tests {
         core.handle_client(now, data, &b, &mut env);
         assert_eq!(env.last().1, Class::Success);
         assert_eq!(env.bound, vec![(data, id)]);
+        // Not on the control connection itself.
+        let id9 = core.tcp_incoming(now, relay, "10.1.1.2:5559".parse().unwrap(), &mut env);
+        let b = bind(&core, CLIENT, id9.unwrap());
+        core.handle_client(now, CLIENT, &b, &mut env);
+        assert_eq!(env.last().2, Some(400));
+        core.tcp_closed(CLIENT, id9.unwrap(), &mut env);
         // Bound already: 400. A nonce of its own works too.
         let b = bind(&core, data, id);
         core.handle_client(now, data, &b, &mut env);

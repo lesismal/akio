@@ -374,6 +374,28 @@ fn connect_and_bind_errors() {
         ClientEvent::ConnectFailed(_, ClientError::Rejected(508, _)) => {}
         e => panic!("{e:?}"),
     }
+    // ConnectionBind on the control connection itself: 400, and the allocation stays.
+    let mut own = ctl.c.data_connection(Instant::now(), id).unwrap();
+    while let Some(m) = own.poll_transmit() {
+        ctl.s.write_all(&m).unwrap();
+    }
+    let mut buf = vec![0u8; 4096];
+    let mut r = FrameReader::new();
+    let mut got = None;
+    let end = Instant::now() + WAIT;
+    while got.is_none() && Instant::now() < end {
+        if let Some(n) = read_some(&mut ctl.s, &mut buf) {
+            r.push(&buf[..n], |m| {
+                let msg = Message::parse(m).unwrap();
+                if msg.method() == Method::CONNECTION_BIND {
+                    got = msg.error_code().map(|e| e.0);
+                }
+            })
+            .unwrap();
+        }
+    }
+    assert_eq!(got, Some(400));
+    assert_eq!(srv.turn.stats().allocations, 1);
     // ConnectionBind: an unknown id, and another user's connection, are 400.
     let mut d = tcp(srv.tcp);
     assert!(matches!(

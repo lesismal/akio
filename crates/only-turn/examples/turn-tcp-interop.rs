@@ -190,14 +190,12 @@ fn client(transport: &str, server: &str, user: &str, pass: &str) {
         let mut r = p.try_clone().expect("clone");
         let _ = std::io::copy(&mut r, &mut p);
     });
-    let id = loop {
-        match ctl.event() {
-            ClientEvent::ConnectionAttempt { peer, id } => {
-                assert_eq!(peer.ip(), pa.ip());
-                break id;
-            }
-            e => panic!("{e:?}"),
+    let id = match ctl.event() {
+        ClientEvent::ConnectionAttempt { peer, id } => {
+            assert_eq!(peer.ip(), pa.ip());
+            id
         }
+        e => panic!("{e:?}"),
     };
     let (mut data, first) = bind(&ctl, transport, id);
     echo(&mut *data, first, "connection attempt");
