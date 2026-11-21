@@ -10,6 +10,35 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`（only-media）
+
+ADR-068（docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），均为新增：
+
+- **自动重连**：`only_media::Reconnect`（`initial_delay` 500 ms、`max_delay` 30 s、
+  `max_attempts` `None`；`Reconnect::new(&Arc<Engine>)` 弱引用持有引擎），用于新增的
+  `RtmpClientConfig::reconnect` 与 `RtspClientConfig::reconnect`（默认 `None`）。再试一次可能好转
+  的错误会在逐次翻倍、有上限的退避后重连，会话进入直播后重置；URL 错误、hub 错误与凭据被拒仍为
+  终止性错误。拉流保留其 hub 路径与订阅者，并重新发布新会话的轨道（对 sink 而言是时间线重启）；
+  推流从缓存的 GOP 重新订阅（RTSP 会重新 ANNOUNCE 流当前的轨道）。RTMP：
+  `ClientState::Reconnecting`、`RtmpClient::reconnects()`，第一次连接也会重试。RTSP：在短命线程上
+  尝试，`RtspClient::{reconnects, is_live}`；第一个会话必须成功。
+- **RTSP 音视频同步**：`RtspClientConfig::rtcp_sync`（默认 `true`）：拉流依据服务器的 RTCP 发送端
+  报告把各轨 RTP 时间戳映射到服务器的 NTP 时钟，相对于第一个完成同步的轨；修正只让时间向前，报告
+  早到时在流进入直播前生效。
+- **HLS I 帧播放列表**：`HlsConfig::iframe_playlist`（默认 `false`）：`/<path>/iframes.m3u8`
+  （`EXT-X-I-FRAMES-ONLY`、`EXT-X-BYTERANGE`；MPEG-TS 范围为 PAT、PMT 与关键帧 PES，fMP4 中每个
+  关键帧一个分片），多码率播放列表中的 `EXT-X-I-FRAME-STREAM-INF`；AES-128 下不提供。分段、分片与
+  init 的响应支持单个字节范围（206 / 416，`Accept-Ranges: bytes`）。
+- **rendition report**：多码率组中的 LL-HLS 媒体播放列表为其余码率写
+  `EXT-X-RENDITION-REPORT`（`LAST-MSN`、`LAST-PART`）。
+- **`EXT-X-SESSION-KEY`**：多码率播放列表中写出每个加密码率的当前密钥。
+- **fMP4 中 H.265 的 SAMPLE-AES `cbcs`**：H.265 SPS / PPS / slice segment 头解析器让每个 slice 头
+  保持明文（在 200 个 slice 上与 ffmpeg 的 `trace_headers` 一致）。
+- 顺带修复：RTSP 客户端在 `is_closed()` 为真时其 hub 路径已释放（与 RTMP 相同）。
+- 模糊测试目标 `h265_sample_encryption`；`tests/client_bench.rs` 测量 RTMP 与 RTSP 拉流的接入开销。
+- 性能（gpu51，`quiet.sh`，固定一个核，7 轮交替，取中位数，新 / 旧）：
+  AB_RESULTS_ZH
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

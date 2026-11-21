@@ -1740,6 +1740,12 @@ struct Client {
     closed: AtomicBool,
 }
 
+// `RtspClient` stays unwind safe (as it was before the client kept the hub and the publisher
+// itself): its state is behind locks that ignore poisoning, and the hub and the publisher
+// guard their own state the same way, so nothing is seen half updated after a panic.
+impl std::panic::UnwindSafe for Client {}
+impl std::panic::RefUnwindSafe for Client {}
+
 #[derive(Default)]
 struct ClientSt {
     /// The current session.

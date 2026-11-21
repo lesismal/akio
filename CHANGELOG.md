@@ -10,6 +10,41 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: reconnecting RTMP / RTSP clients, RTCP A/V sync, HLS I-frame playlists, rendition reports, session keys, H.265 `cbcs` (only-media)
+
+ADR-068 (docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.md), additive:
+
+- **Reconnects**: `only_media::Reconnect` (`initial_delay` 500 ms, `max_delay` 30 s,
+  `max_attempts` `None`; `Reconnect::new(&Arc<Engine>)` holds the engine weakly) in the new
+  `RtmpClientConfig::reconnect` and `RtspClientConfig::reconnect` (default `None`). Errors
+  another try may cure reconnect after a doubling, bounded backoff that resets once a session
+  is live; bad URLs, hub errors and refused credentials stay final. A pull keeps its hub path
+  and subscribers and republishes the new session's tracks (a timeline restart for the sinks);
+  a push resubscribes from the cached GOP (RTSP: the stream's current tracks announced again).
+  RTMP: `ClientState::Reconnecting`, `RtmpClient::reconnects()`, the first connection retried
+  too. RTSP: tries on a short-lived thread, `RtspClient::{reconnects, is_live}`; the first
+  session must come up.
+- **RTSP A/V sync**: `RtspClientConfig::rtcp_sync` (default `true`): a pull maps each track's
+  RTP timestamps to the server's NTP clock from its RTCP sender reports, relative to the first
+  track synchronized; corrections only move times forward and apply before the stream goes
+  live when the reports come early.
+- **HLS I-frame playlists**: `HlsConfig::iframe_playlist` (default `false`):
+  `/<path>/iframes.m3u8` (`EXT-X-I-FRAMES-ONLY`, `EXT-X-BYTERANGE`; MPEG-TS ranges of the PAT,
+  PMT and keyframe PES, an fMP4 fragment per keyframe), `EXT-X-I-FRAME-STREAM-INF` in
+  multivariant playlists; not with AES-128. Segment, part and init responses answer a single
+  byte range (206 / 416, `Accept-Ranges: bytes`).
+- **Rendition reports**: LL-HLS media playlists of a multivariant group carry
+  `EXT-X-RENDITION-REPORT` (`LAST-MSN`, `LAST-PART`) for the other renditions.
+- **`EXT-X-SESSION-KEY`**: the current key of each encrypted rendition in multivariant
+  playlists.
+- **SAMPLE-AES `cbcs` for H.265 in fMP4**: the H.265 SPS / PPS / slice segment header parser
+  keeps every slice header clear (matches ffmpeg's `trace_headers` on 200 slices).
+- Fixed on the way: an RTSP client's hub path is free once `is_closed()` is true (as for RTMP).
+- Fuzz target `h265_sample_encryption`; `tests/client_bench.rs` benchmarks the RTMP and RTSP
+  pull ingest.
+- Performance (gpu51, `quiet.sh`, one pinned core, 7 alternating rounds, medians, head / base):
+  AB_RESULTS
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

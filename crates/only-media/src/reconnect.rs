@@ -86,6 +86,12 @@ impl Reconnect {
     }
 }
 
+// The configs that carry a `Reconnect` stay unwind safe: it only holds delays and a weak
+// engine handle it upgrades to dial, and no state of it can be seen half updated after a
+// panic (the engine's own state is behind its locks, which ignore poisoning or recover).
+impl std::panic::UnwindSafe for Reconnect {}
+impl std::panic::RefUnwindSafe for Reconnect {}
+
 impl fmt::Debug for Reconnect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Reconnect")
