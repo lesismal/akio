@@ -1798,16 +1798,23 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
         return Layout::single(model);
     }
     let data = mb.data;
-    let syms = symbols(mb);
+    // The literals first: where they do not pay for block types, the other categories rarely
+    // do (and looking costs a few percent of the time).
+    let mut lits = Vec::new();
+    mb.literals(|pos, c, _| lits.extend_from_slice(&data[pos..pos + c.insert as usize]));
     // Each literal block type gets the trees of the context map, clustered across types: at
     // most about a thousand of them, or the clustering costs more than the parse.
     let max_lit = (1024 / model.ntrees).clamp(16, 256);
-    let mut lit = split::greedy(&syms.lits, 256, &split::GREEDY_LITERALS, max_lit);
+    let mut lit = split::greedy(&lits, 256, &split::GREEDY_LITERALS, max_lit);
+    let l = split::split_gain(&lits, 256, &lit);
+    if l.1 > 0.99 * l.0 {
+        return Layout::single(model);
+    }
+    let syms = symbols(mb);
     let mut cmd = split::greedy(&syms.cmds, 704, &split::GREEDY_COMMANDS, 256);
     let mut dist = split::greedy(&syms.dists, 64, &split::GREEDY_DISTANCES, 256);
     // Block types are kept only if they save at least 1% of the meta-block's estimated bits:
     // block switches cost time to write, and smaller savings are not worth it at these levels.
-    let l = split::split_gain(&syms.lits, 256, &lit);
     let c = split::split_gain(&syms.cmds, 704, &cmd);
     let d = split::split_gain(&syms.dists, 64, &dist);
     let (mut one, mut apart) = (0.0, 0.0);
