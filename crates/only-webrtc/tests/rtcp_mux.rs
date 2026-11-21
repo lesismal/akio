@@ -8,10 +8,11 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use only::Engine;
+use only::{Engine, Listener};
+use only_turn::{TurnConfig, TurnServer, static_auth, stun};
 use only_webrtc::{
     Codec, Direction, Endpoint, Event, Frequency, MediaData, MediaKind, MediaTime, Mid, Peer,
-    PeerHandler, RtcConfig, RtcpMuxPolicy, XrBlocks, rtc_config,
+    PeerHandler, RtcConfig, RtcServer, RtcpMuxPolicy, XrBlocks, rtc_config,
 };
 
 const T: Duration = Duration::from_secs(10);
@@ -306,6 +307,201 @@ fn rtcp_socket_sends_from_its_own_port() {
     assert!(n >= 20 && buf[0] < 4, "a STUN check");
     assert_eq!(Some(from), a.rtcp_addr());
     pa.close();
+    a.close();
+    e.shutdown();
+}
+
+fn turn() -> (Arc<Engine>, TurnServer, std::net::SocketAddr) {
+    let auth = static_auth("only", [("alice", "wonderland")]);
+    let cfg = TurnConfig::new("only", auth, "127.0.0.1".parse().unwrap()).allow_private_peers(true);
+    let t = TurnServer::new(cfg);
+    let e = Arc::new(
+        Engine::builder()
+            .listen(
+                Listener::udp("127.0.0.1:0".parse().unwrap())
+                    .threads(1)
+                    .serve(t.clone()),
+            )
+            .build()
+            .unwrap(),
+    );
+    t.set_engine(&e);
+    e.start().unwrap();
+    let a = e.local_addrs()[0];
+    (e, t, a)
+}
+
+/// The component of a candidate (its SDP line's second field).
+fn component(c: &only_webrtc::Candidate) -> u16 {
+    c.to_sdp().split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+/// Keeps only the relayed candidates of an SDP.
+fn relay_only(sdp: &str) -> String {
+    sdp.lines()
+        .filter(|l| !l.starts_with("a=candidate") || l.contains(" typ relay"))
+        .map(|l| format!("{l}\r\n"))
+        .collect()
+}
+
+#[test]
+fn rtcp_through_relayed_candidates() {
+    // Both endpoints allocate for component 1 and, from their RTCP sockets, component 2; the
+    // session signals relayed candidates only, so RTP and RTCP each cross the TURN server.
+    let (te, turn, server) = turn();
+    let e = engine();
+    let a = endpoint(&e, off);
+    let b = endpoint(&e, stats);
+    let ra = a.gather_relay(server, "alice", "wonderland", T).unwrap();
+    b.gather_relay(server, "alice", "wonderland", T).unwrap();
+    assert_eq!(turn.stats().allocations, 4);
+    let relayed = |ep: &Endpoint, comp: u16| {
+        ep.candidates()
+            .iter()
+            .filter(|c| c.to_sdp().contains(" typ relay") && component(c) == comp)
+            .count()
+    };
+    assert_eq!((relayed(&a, 1), relayed(&a, 2)), (1, 1));
+    assert_eq!((relayed(&b, 1), relayed(&b, 2)), (1, 1));
+    // A second one on the same server is refused for either component.
+    assert!(a.gather_relay(server, "alice", "wonderland", T).is_err());
+    assert_eq!(turn.stats().allocations, 4);
+
+    let (probe, rx) = Probe::new(false);
+    let mut audio = None;
+    let (pa, offer) = a
+        .create_offer(probe, |api| {
+            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
+        })
+        .unwrap();
+    let offer = relay_only(&offer);
+    assert!(offer.contains(&format!("{} {} typ relay", ra.ip(), ra.port())));
+    assert!(
+        offer
+            .lines()
+            .any(|l| l.contains(" 2 udp ") && l.contains(" typ relay")),
+        "{offer}"
+    );
+    let (echo, _rxb) = Probe::new(true);
+    let (pb, answer) = b.accept_offer(&offer, echo).unwrap();
+    let answer = relay_only(&answer);
+    assert!(answer.contains("a=rtcp:") && !answer.contains("a=rtcp-mux"), "{answer}");
+    pa.accept_answer(&answer).unwrap();
+    wait_connected(&rx);
+    let before = turn.stats();
+    let (echoed, events) = exchange(&pa, &rx, audio.unwrap(), 2);
+    assert!(echoed >= 90, "{echoed} packets echoed");
+    assert!(has(&events, "SenderReport") && has(&events, "rtcp_mux: false"), "{events:#?}");
+    assert!(turn.stats().to_peer > before.to_peer);
+    pa.close();
+    pb.close();
+    a.close();
+    b.close();
+    let t = Instant::now();
+    while turn.stats().allocations != 0 {
+        assert!(t.elapsed() < T, "{:?}", turn.stats());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    e.shutdown();
+    te.shutdown();
+}
+
+#[test]
+fn rtcp_server_reflexive_candidate() {
+    // A STUN server that reports every client 1000 ports up, so the mapped addresses differ
+    // from the host candidates.
+    let stun_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let stun_addr = stun_sock.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, from)) = stun_sock.recv_from(&mut buf) {
+            let mapped = std::net::SocketAddr::new(from.ip(), from.port().wrapping_add(1000));
+            if let Some(r) = stun::binding_response(&buf[..n], mapped, None) {
+                let _ = stun_sock.send_to(&r, from);
+            }
+        }
+    });
+    let e = engine();
+    let a = endpoint(&e, off);
+    let main = a.local_addr().unwrap();
+    let rtcp = a.rtcp_addr().unwrap();
+    let mapped = a.gather_srflx(stun_addr, T).unwrap();
+    assert_eq!(mapped.port(), main.port().wrapping_add(1000));
+    let srflx: Vec<(u16, u16)> = a
+        .candidates()
+        .iter()
+        .filter(|c| c.to_sdp().contains(" typ srflx"))
+        .map(|c| (component(c), c.addr().port()))
+        .collect();
+    assert!(srflx.contains(&(1, main.port().wrapping_add(1000))), "{srflx:?}");
+    assert!(srflx.contains(&(2, rtcp.port().wrapping_add(1000))), "{srflx:?}");
+    // Both go into an offer without rtcp-mux, related to their own host candidates.
+    let (probe, _rx) = Probe::new(false);
+    let (pa, offer) = a
+        .create_offer(probe, |api| {
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        })
+        .unwrap();
+    let line = |comp: u16| {
+        offer
+            .lines()
+            .find(|l| l.contains(&format!(" {comp} udp ")) && l.contains(" typ srflx"))
+            .unwrap_or_else(|| panic!("{offer}"))
+            .to_owned()
+    };
+    assert!(line(2).ends_with(&format!("rport {}", rtcp.port())), "{}", line(2));
+    assert!(line(1).ends_with(&format!("rport {}", main.port())), "{}", line(1));
+    pa.close();
+    a.close();
+    e.shutdown();
+}
+
+#[test]
+fn ice_lite_server_with_an_rtcp_listener() {
+    // An RtcServer with a second listener for component 2 answers an offer without
+    // rtcp-mux with RTCP on that listener.
+    let pick = || {
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap()
+    };
+    let (main, rtcp) = (pick(), pick());
+    let server = RtcServer::new(vec![main])
+        .config(stats)
+        .rtcp_candidates(vec![rtcp]);
+    let e = Arc::new(
+        Engine::builder()
+            .udp_client_threads(1)
+            .listen(Listener::udp(main).threads(1).serve(server.clone()))
+            .listen(Listener::udp(rtcp).threads(1).serve(server.rtcp()))
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let a = endpoint(&e, off);
+    let (probe, rx) = Probe::new(false);
+    let mut audio = None;
+    let (pa, offer) = a
+        .create_offer(probe, |api| {
+            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
+        })
+        .unwrap();
+    let (echo, _rxb) = Probe::new(true);
+    let (ps, answer) = server.accept_offer(&offer, echo).unwrap();
+    assert!(answer.contains("a=ice-lite") && answer.contains("a=rtcp:"), "{answer}");
+    assert!(!answer.contains("a=rtcp-mux"), "{answer}");
+    assert!(
+        answer
+            .lines()
+            .any(|l| l.contains(" 2 udp ") && l.contains(&format!(" {} typ host", rtcp.port()))),
+        "{answer}"
+    );
+    pa.accept_answer(&answer).unwrap();
+    wait_connected(&rx);
+    let (echoed, events) = exchange(&pa, &rx, audio.unwrap(), 2);
+    assert!(echoed >= 90, "{echoed} packets echoed");
+    assert!(has(&events, "SenderReport") && has(&events, "rtcp_mux: false"), "{events:#?}");
+    pa.close();
+    ps.close();
     a.close();
     e.shutdown();
 }
