@@ -13,6 +13,8 @@ use crate::tables::{
 };
 use crate::xxhash::xxh64;
 
+mod opt;
+
 /// Largest window the encoder uses (the limit of RFC 9659 for HTTP): inputs up to this size
 /// are one segment, larger ones have an 8 MiB window.
 pub(crate) const MAX_WINDOW: usize = 8 << 20;
@@ -46,6 +48,9 @@ enum Strategy {
     DoubleFast,
     /// Hash chains, `depth` candidates, lazy matching (`lazy` / `lazy2`).
     Chain,
+    /// Hash chains, `depth` candidates per position, and a shortest-path parse priced by
+    /// symbol statistics, in `n` passes (libzstd's `btopt` / `btultra`).
+    Optimal(u32),
 }
 
 fn params(level: Level) -> Params {
@@ -65,9 +70,9 @@ fn params(level: Level) -> Params {
         13 => (96, 2, 256, 0, 20, 21),
         14 => (128, 2, 256, 0, 20, 21),
         15 => (160, 2, 256, 0, 21, 21),
-        16 => (192, 2, 512, 0, 21, 22),
-        17 => (256, 2, 512, 0, 21, 22),
-        18 => (320, 2, 512, 0, 22, 22),
+        16 => (96, 2, 256, 0, 21, 22),
+        17 => (128, 2, 512, 0, 21, 22),
+        18 => (256, 2, 512, 0, 22, 22),
         19 => (384, 2, 512, 0, 22, 23),
         20 => (512, 2, 1024, 0, 22, 23),
         21 => (640, 2, 1024, 0, 22, 23),
@@ -77,6 +82,9 @@ fn params(level: Level) -> Params {
         1 => Strategy::Fast(6),
         2 => Strategy::Fast(6),
         3 | 4 => Strategy::DoubleFast,
+        16 => Strategy::Optimal(1),
+        17 | 18 => Strategy::Optimal(2),
+        19..=22 => Strategy::Optimal(3),
         _ => Strategy::Chain,
     };
     Params {
@@ -425,7 +433,7 @@ impl<'a> Encoder<'a> {
                     self.chain[hash_n(d, i, 5, slog)] = i as u32 + 1;
                 }
             }
-            Strategy::Chain => {}
+            Strategy::Chain | Strategy::Optimal(_) => {}
         }
     }
 
@@ -784,6 +792,7 @@ impl<'a> Encoder<'a> {
             Strategy::Fast(n) => self.parse_fast(start, end, n),
             Strategy::DoubleFast => self.parse_double_fast(start, end),
             Strategy::Chain => self.parse(start, end),
+            Strategy::Optimal(passes) => self.parse_optimal(start, end, passes),
         }
         let mut body = Vec::with_capacity(len);
         encode_literals(&self.lits, &mut body, &mut self.tables);
