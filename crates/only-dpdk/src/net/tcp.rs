@@ -2,8 +2,9 @@
 //! (RFC 6298 timer, fast retransmit / recovery with SACK, RFC 2018 / RFC 6675, or NewReno,
 //! RFC 6582, without it), congestion control (`cc`), window scaling and timestamps with PAWS
 //! (RFC 7323), delayed ACKs, zero-window probing, keepalive and TIME-WAIT; optionally ECN
-//! (RFC 3168: ECT(0) on new data, ECE / CWR) and pacing (a rate of `gain * cwnd / srtt`,
-//! timer driven). Connections run over IPv4 or IPv6 (the MSS accounts for the larger header).
+//! (RFC 3168: ECT(0) on new data, ECE / CWR), Accurate ECN (RFC 9768: the ACE counter and the
+//! AccECN option, falling back to RFC 3168 or no ECN as the peer answers) and pacing (a rate of
+//! `gain * cwnd / srtt`, timer driven). Connections run over IPv4 or IPv6 (the MSS accounts for the larger header).
 //!
 //! A `Tcb` never touches the network itself: segments go out through [`SegOut`], and what the
 //! application should learn is left in [`Notes`] for the interface to turn into events.
@@ -16,8 +17,21 @@ use std::{
 use super::{
     buf::{Assembler, Ring},
     cc::{Cc, CcKind, MAX_RTO, Rtt},
-    wire::{ACK, CWR, ECE, ECN_CE, ECN_MASK, FIN, MAX_SACK, PSH, RST, SYN, Tcp, TcpOpts, TcpOut},
+    wire::{
+        ACK, AccOpt, CWR, ECE, ECN_CE, ECN_MASK, ECT0, ECT1, FIN, MAX_SACK, PSH, RST, SYN, Tcp,
+        TcpOpts, TcpOut,
+    },
 };
+
+/// Connections that negotiated Accurate ECN / RFC 3168 ECN, CE marks received on AccECN
+/// connections, and congestion responses to AccECN feedback (process-wide, for tests and
+/// benchmarks: `only_dpdk::tcp_ecn_stats`).
+pub(crate) static ECN_STATS: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+fn bump(i: usize) {
+    ECN_STATS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
 // ---- sequence arithmetic --------------------------------------------------------------------
 
@@ -87,6 +101,9 @@ pub(crate) struct Params {
     pub(crate) sack: bool,
     /// Negotiate ECN (RFC 3168).
     pub(crate) ecn: bool,
+    /// Negotiate Accurate ECN (RFC 9768), falling back to RFC 3168 ECN when the peer offers or
+    /// answers only that.
+    pub(crate) accecn: bool,
     /// Pace transmissions.
     pub(crate) pacing: bool,
 }
@@ -213,6 +230,125 @@ impl Endpoints {
     }
 }
 
+/// The ACE field of a segment: AE, CWR and ECE as a 3-bit number (RFC 9768 3.2.2).
+#[inline]
+fn ace_of(seg: &Tcp<'_>) -> u8 {
+    (u8::from(seg.ae) << 2) | ((seg.flags >> 6) & 3)
+}
+
+/// Writes `ace` into the AE, CWR and ECE flags of `hdr`.
+#[inline]
+fn set_ace(hdr: &mut TcpOut, ace: u8) {
+    hdr.flags = (hdr.flags & !(CWR | ECE)) | ((ace & 3) << 6);
+    hdr.ae = ace & 4 != 0;
+}
+
+/// The handshake encoding of an IP-ECN codepoint (RFC 9768 Tables 2 and 3): Not-ECT, ECT(1),
+/// ECT(0), CE.
+const HANDSHAKE_ACE: [u8; 4] = [0b010, 0b011, 0b100, 0b110];
+
+/// Accurate ECN state (RFC 9768), boxed: only AccECN connections carry it.
+#[derive(Debug)]
+struct Acc {
+    // Data receiver: what arrived.
+    /// CE-marked packets (initial 5), and payload bytes received ECT(0), CE, ECT(1).
+    r_cep: u32,
+    r_e0b: u32,
+    r_ceb: u32,
+    r_e1b: u32,
+    /// The previous packet was CE (change-triggered ACKs, 3.2.2.5.1).
+    last_ce: bool,
+    /// CE marks since our last ACK (increment-triggered ACKs).
+    ce_unacked: u8,
+    /// Byte counters changed since the last option sent, and ever (bit 0: e0b, 1: ceb, 2: e1b).
+    changed: u8,
+    ever: u8,
+    /// Segments that carry a full option whatever changed (the client's first ACK and data,
+    /// 3.2.3.2.1).
+    probe_opts: u8,
+    /// Client: the handshake encoding of the SYN-ACK's IP-ECN, for the first ACK.
+    hs_ace: Option<u8>,
+    /// Send AccECN options (off after an unanswered SYN-ACK that carried one).
+    send_opts: bool,
+    // Data sender: what the peer reports.
+    s_cep: u32,
+    s_e0b: u32,
+    s_ceb: u32,
+    s_e1b: u32,
+    /// The peer's options arrive (and were not zeroed): less conservative ACE decoding.
+    opts_in: bool,
+    /// The peer's first option was zeroed by the path: options ignored (3.2.3.2.4).
+    opts_bad: bool,
+    /// `s_ceb` is in step with `s_cep` (the last feedback carried the CE byte counter, or
+    /// no CE mark since).
+    ceb_synced: bool,
+    /// Newly acknowledged full segments per ACK, moving average times 8.
+    avg_acked: u32,
+    /// TSval of the last ACK whose feedback was taken (reordered ACKs are superseded).
+    last_ts: Option<u32>,
+    /// Data goes out ECN-capable (cleared on mangling or a (0,0,0) handshake, 3.1.5, 3.2.2.3).
+    ect: bool,
+    /// Respond to congestion feedback (cleared by a zero ACE on the handshake ACK, 3.2.2.1).
+    respond: bool,
+    /// Server: the IP-ECN field of the latest SYN, fed back on SYN-ACKs.
+    syn_ecn: u8,
+    /// Server in SYN-RECEIVED: the first ACK carries the handshake encoding.
+    hs_pending: bool,
+}
+
+impl Acc {
+    fn new() -> Box<Acc> {
+        Box::new(Acc {
+            r_cep: 5,
+            r_e0b: 1,
+            r_ceb: 0,
+            r_e1b: 1,
+            last_ce: false,
+            ce_unacked: 0,
+            changed: 0,
+            ever: 0,
+            probe_opts: 0,
+            hs_ace: None,
+            send_opts: true,
+            s_cep: 5,
+            s_e0b: 1,
+            s_ceb: 0,
+            s_e1b: 1,
+            opts_in: false,
+            opts_bad: false,
+            ceb_synced: false,
+            avg_acked: 8,
+            last_ts: None,
+            ect: true,
+            respond: true,
+            syn_ecn: 0,
+            hs_pending: false,
+        })
+    }
+
+    /// The option to send now, given `room` bytes of option space (`None`: none is due or
+    /// none fits with every changed counter).
+    fn option(&self, room: usize) -> Option<AccOpt> {
+        if !self.send_opts || (self.probe_opts == 0 && self.changed == 0) {
+            return None;
+        }
+        // Every counter that ever changed (all three on a probe), at least the changed ones.
+        // Fields up to the highest bit set of a counter mask (order 0: e0b, ceb, e1b).
+        let fields = |m: u8| 8 - m.leading_zeros() as u8;
+        let want = if self.probe_opts > 0 {
+            3
+        } else {
+            fields(self.ever)
+        };
+        let need = fields(self.changed);
+        (need..=want.max(need)).rev().find_map(|n| {
+            let o = AccOpt::order0(n, self.r_e0b, self.r_ceb, self.r_e1b);
+            let len = (2 + 3 * usize::from(n) + 3) & !3;
+            (len <= room).then_some(o)
+        })
+    }
+}
+
 /// Pacing state of a connection.
 #[derive(Debug)]
 struct Pace {
@@ -276,6 +412,8 @@ pub(crate) struct Tcb {
     cwr_pending: bool,
     /// Sender: no further ECE reduction until `snd_una` passes this (once per window).
     ecn_recover: u32,
+    /// Accurate ECN negotiated (RFC 9768).
+    acc: Option<Box<Acc>>,
 
     // loss recovery
     /// Sacked ranges above `snd_una`, sorted, disjoint.
@@ -371,6 +509,7 @@ impl Tcb {
             ece_pending: false,
             cwr_pending: false,
             ecn_recover: iss,
+            acc: None,
             sacked: Vec::new(),
             sacked_bytes: 0,
             dupacks: 0,
@@ -437,8 +576,7 @@ impl Tcb {
         t.irs = syn.seq;
         t.rcv_nxt = syn.seq.wrapping_add(1);
         t.apply_syn_opts(SynOpts::of(&syn.opts), clock);
-        // RFC 3168 6.1.1: an ECN-setup SYN carries ECE and CWR.
-        t.ecn_ok = p.ecn && syn.flags & (ECE | CWR) == ECE | CWR;
+        t.negotiate_syn(syn);
         // The SYN's window is never scaled.
         t.snd_wnd = u32::from(syn.window);
         t.snd_wl1 = syn.seq;
@@ -475,7 +613,58 @@ impl Tcb {
         t.state = State::Established;
         t.notes.0 |= Notes::ESTABLISHED;
         t.arm_keepalive(clock.now);
+        // RFC 9768 5.1: a cookie SYN-ACK confirmed AccECN when the SYN asked for it (see
+        // `Iface::send_cookie`); an ACE of 0 or 1 says the client is not in AccECN mode.
+        let ace = ace_of(ack);
+        if p.accecn && ace >= 2 {
+            let mut a = Acc::new();
+            a.s_cep = if ace == 0b110 { 6 } else { 5 };
+            a.ect = !matches!(ace, 0b011 | 0b100 | 0b110);
+            a.opts_in = ack.opts.acc.is_some();
+            t.acc = Some(a);
+        }
         t
+    }
+
+    /// The ECN feedback mode a SYN asks for, as a server (RFC 9768 Table 2, 3.1.3; RFC 3168
+    /// 6.1.1).
+    fn negotiate_syn(&mut self, syn: &Tcp<'_>) {
+        let (cwr, ece) = (syn.flags & CWR != 0, syn.flags & ECE != 0);
+        match (syn.ae, cwr, ece) {
+            (false, false, false) => {}
+            (false, true, true) => self.ecn_ok = self.p.ecn || self.p.accecn,
+            // (1,1,1) and, for forward compatibility, every other combination.
+            _ if self.p.accecn => {
+                let mut a = Acc::new();
+                a.syn_ecn = syn.ecn & ECN_MASK;
+                a.hs_pending = true;
+                self.acc = Some(a);
+            }
+            _ => self.ecn_ok = self.p.ecn && cwr && ece,
+        }
+    }
+
+    /// AccECN counters (tests): r.cep, r.ceb, r.e0b, s.cep, s.ceb, s.e0b, and whether data is
+    /// sent ECN-capable.
+    #[cfg(test)]
+    pub(crate) fn acc_counters(&self) -> Option<([u32; 6], bool)> {
+        self.acc.as_deref().map(|a| {
+            (
+                [a.r_cep, a.r_ceb, a.r_e0b, a.s_cep, a.s_ceb, a.s_e0b],
+                a.ect,
+            )
+        })
+    }
+
+    /// AccECN (`Some(true)`) or RFC 3168 ECN (`Some(false)`) is in use.
+    pub(crate) fn ecn_mode(&self) -> Option<bool> {
+        if self.acc.is_some() {
+            Some(true)
+        } else if self.ecn_ok {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     fn apply_syn_opts(&mut self, o: SynOpts, clock: Clock) {
@@ -660,6 +849,7 @@ impl Tcb {
                 window: 0,
                 opts: TcpOpts::default(),
                 ect: false,
+                ae: false,
             };
             out.segment(&self.addrs, &hdr, (&[], &[]));
         }
@@ -722,8 +912,34 @@ impl Tcb {
         self.rcv_nxt = seg.seq.wrapping_add(1);
         self.apply_syn_opts(SynOpts::of(&seg.opts), clock);
         if f & ACK != 0 {
-            // RFC 3168 6.1.1: an ECN-setup SYN-ACK carries ECE but not CWR.
-            self.ecn_ok = self.p.ecn && f & (ECE | CWR) == ECE;
+            let mut ce_fed_back = false;
+            if self.p.accecn {
+                // RFC 9768 Table 2: the SYN-ACK confirms AccECN by feeding back our SYN's
+                // IP-ECN field (sent Not-ECT; anything else means the path changes it).
+                match ace_of(seg) {
+                    ace @ 0b010..=0b110 => {
+                        let mut a = Acc::new();
+                        a.ect = matches!(ace, 0b010 | 0b101);
+                        ce_fed_back = ace == 0b110;
+                        // CE on the SYN-ACK itself counts once (3.2.2.2).
+                        if seg.ecn & ECN_MASK == ECN_CE {
+                            a.r_cep = 6;
+                        }
+                        a.hs_ace = Some(HANDSHAKE_ACE[usize::from(seg.ecn & ECN_MASK)]);
+                        a.probe_opts = 2;
+                        if let Some(o) = seg.opts.acc {
+                            a.opts_bad = o.e0b() == Some(0) || o.e1b() == Some(0);
+                            a.opts_in = !a.opts_bad;
+                        }
+                        self.acc = Some(a);
+                    }
+                    0b001 => self.ecn_ok = true,
+                    _ => {} // (0,0,0): no ECN; (1,1,1): a broken server
+                }
+            } else {
+                // RFC 3168 6.1.1: an ECN-setup SYN-ACK carries ECE but not CWR.
+                self.ecn_ok = self.p.ecn && f & (ECE | CWR) == ECE;
+            }
             self.snd_una = seg.ack;
             self.syn_pending = false;
             self.on_rtt_ack(seg, clock);
@@ -736,6 +952,9 @@ impl Tcb {
             self.notes.0 |= Notes::ESTABLISHED;
             self.ack_now = true;
             self.arm_keepalive(clock.now);
+            if ce_fed_back {
+                self.on_ece(seg.ack);
+            }
             // Data on the SYN-ACK (rare): accept it.
             if !seg.payload.is_empty() {
                 self.on_data(seg.seq.wrapping_add(1), seg.payload, clock);
@@ -744,7 +963,8 @@ impl Tcb {
                 self.state = State::FinWait1;
             }
         } else {
-            // Simultaneous open.
+            // Simultaneous open: answer as a server would (RFC 9768 3.1.2).
+            self.negotiate_syn(seg);
             self.state = State::SynReceived;
             self.snd_wnd = u32::from(seg.window);
             self.snd_wl1 = seg.seq;
@@ -819,7 +1039,14 @@ impl Tcb {
         // SYN in a synchronized state: challenge ACK (RFC 5961 4.2).
         if f & SYN != 0 {
             if self.state == State::SynReceived && seg.seq == self.irs {
-                // Retransmitted SYN: resend the SYN-ACK.
+                // Retransmitted SYN: resend the SYN-ACK (feeding back this SYN's IP-ECN; a
+                // (0,0,0) SYN forbids ECT for the rest of the connection, RFC 9768 3.1.5).
+                if let Some(a) = self.acc.as_deref_mut() {
+                    a.syn_ecn = seg.ecn & ECN_MASK;
+                    if !seg.ae && f & (CWR | ECE) == 0 {
+                        a.ect = false;
+                    }
+                }
                 self.syn_pending = true;
                 self.snd_max = self.iss;
                 return;
@@ -830,6 +1057,9 @@ impl Tcb {
         if f & ACK == 0 {
             return;
         }
+        if self.acc.is_some() {
+            self.acc_received(seg);
+        }
         // Timestamp recording (RFC 7323 4.3): the segment covers rcv_nxt (last ACK sent).
         if self.ts_ok {
             if let Some((val, _)) = seg.opts.ts {
@@ -839,8 +1069,10 @@ impl Tcb {
                 }
             }
         }
+        let mut handshake_ace = false;
         if self.state == State::SynReceived {
             if seq_lt(self.snd_una, seg.ack) && seq_le(seg.ack, self.snd_max) {
+                handshake_ace = self.acc.is_some() && self.acc_handshake_ack(seg);
                 self.state = State::Established;
                 self.syn_pending = false;
                 self.snd_wnd = u32::from(seg.window) << self.snd_wscale;
@@ -860,7 +1092,7 @@ impl Tcb {
             self.keepalive_probes = 0;
             self.arm_keepalive(clock.now);
         }
-        if !self.on_ack(seg, clock) {
+        if !self.on_ack(seg, clock, handshake_ace) {
             return;
         }
         if self.state == State::Closed {
@@ -896,8 +1128,9 @@ impl Tcb {
         }
     }
 
-    /// ACK processing. Returns `false` if the segment must be dropped.
-    fn on_ack(&mut self, seg: &Tcp<'_>, clock: Clock) -> bool {
+    /// ACK processing (`handshake_ace`: its ACE field was the handshake encoding, already
+    /// taken). Returns `false` if the segment must be dropped.
+    fn on_ack(&mut self, seg: &Tcp<'_>, clock: Clock, handshake_ace: bool) -> bool {
         let ack = seg.ack;
         if seq_gt(ack, self.snd_max) {
             self.ack_now = true;
@@ -917,6 +1150,7 @@ impl Tcb {
                 self.persist_backoff = 0;
             }
         }
+        let sacked_before = self.sacked_bytes;
         if self.sack_ok && seg.opts.sack_n > 0 {
             self.update_sacks(seg.opts.sacks());
         }
@@ -927,6 +1161,11 @@ impl Tcb {
             return true; // old duplicate: ignore its ACK
         }
         let acked = ack.wrapping_sub(self.snd_una);
+        // Newly covered: cumulatively acknowledged plus newly selectively acknowledged.
+        let covered = acked + self.sacked_bytes.saturating_sub(sacked_before);
+        if !handshake_ace && self.acc.is_some() && self.acc_feedback(seg, acked, covered) {
+            self.on_ece(ack);
+        }
         if acked == 0 {
             // Duplicate ACK (RFC 5681 2): no data, no window change, outstanding data.
             let flight = self.snd_max.wrapping_sub(self.snd_una);
@@ -1025,6 +1264,173 @@ impl Tcb {
         self.cc.on_loss(flight, self.mss());
         self.ecn_recover = self.snd_max;
         self.cwr_pending = true;
+    }
+
+    /// AccECN data receiver (RFC 9768 3.2): counts an acceptable segment's IP-ECN field (CE
+    /// packets, payload bytes per codepoint) and asks for the ACKs that keep the 3-bit ACE
+    /// field unambiguous (3.2.2.5.1).
+    #[inline(never)]
+    fn acc_received(&mut self, seg: &Tcp<'_>) {
+        let unacked = self.delack_at.is_some() || self.unacked_segs > 0;
+        let Some(a) = self.acc.as_deref_mut() else {
+            return;
+        };
+        let ecn = seg.ecn & ECN_MASK;
+        let ce = ecn == ECN_CE;
+        let n = seg.payload.len() as u32;
+        if ce {
+            a.r_cep = a.r_cep.wrapping_add(1);
+            a.ce_unacked = a.ce_unacked.saturating_add(1);
+            bump(2);
+        }
+        if n > 0 {
+            let bit = match ecn {
+                ECT0 => {
+                    a.r_e0b = a.r_e0b.wrapping_add(n);
+                    1
+                }
+                ECN_CE => {
+                    a.r_ceb = a.r_ceb.wrapping_add(n);
+                    2
+                }
+                ECT1 => {
+                    a.r_e1b = a.r_e1b.wrapping_add(n);
+                    4
+                }
+                _ => 0,
+            };
+            a.changed |= bit;
+            a.ever |= bit;
+        }
+        // Change-triggered (a CE data packet after a non-CE one) and increment-triggered (2
+        // CE marks with data to acknowledge, else 3) ACKs.
+        let limit = if n > 0 || unacked { 2 } else { 3 };
+        if (ce && n > 0 && !a.last_ce) || a.ce_unacked >= limit {
+            self.ack_now = true;
+        }
+        a.last_ce = ce;
+    }
+
+    /// AccECN server in SYN-RECEIVED (RFC 9768 3.2.2.1, Table 4): a pure ACK without SACK
+    /// blocks feeds back, in its ACE field, the IP-ECN field our SYN-ACK arrived with. Returns
+    /// whether the ACE field was taken that way.
+    fn acc_handshake_ack(&mut self, seg: &Tcp<'_>) -> bool {
+        let pure = seg.payload.is_empty() && seg.opts.sack_n == 0 && seg.flags & FIN == 0;
+        let Some(a) = self.acc.as_deref_mut() else {
+            return false;
+        };
+        if !std::mem::take(&mut a.hs_pending) {
+            return false;
+        }
+        // 3.2.3.2.3 / 3.2.3.2.4: options arrive on the first ACK, and were not zeroed.
+        match seg.opts.acc {
+            Some(o) if o.e0b() == Some(0) || o.e1b() == Some(0) => a.opts_bad = true,
+            Some(_) => a.opts_in = true,
+            None => {}
+        }
+        if !pure {
+            return false;
+        }
+        let ace = ace_of(seg);
+        let ce = ace == 0b110;
+        match ace {
+            // Note 1: the client is not in AccECN mode (or the field was zeroed).
+            0 => {
+                a.ect = false;
+                a.respond = false;
+            }
+            0b110 => a.s_cep = 6,
+            _ => a.s_cep = 5,
+        }
+        // Our SYN-ACK went Not-ECT: ECT(0), ECT(1) or CE means the path rewrites the field
+        // (3.2.2.3): send Not-ECT from now on, still respond to feedback.
+        if matches!(ace, 0b011 | 0b100 | 0b110) {
+            a.ect = false;
+        }
+        if ce && a.respond {
+            bump(3);
+            self.on_ece(seg.ack);
+        }
+        true
+    }
+
+    /// AccECN data sender (RFC 9768 3.2.2.2, 3.2.3.1, Appendix A.2): takes the feedback of an
+    /// ACK that is not superseded (`acked` bytes newly acknowledged cumulatively, `covered`
+    /// with the newly sacked ones). Returns whether it reports new CE marks to respond to.
+    #[inline(never)]
+    fn acc_feedback(&mut self, seg: &Tcp<'_>, acked: u32, covered: u32) -> bool {
+        let mss = self.mss();
+        let Some(a) = self.acc.as_deref_mut() else {
+            return false;
+        };
+        // An ACK of the same number reordered behind a later one carries stale counters.
+        if let Some((v, _)) = seg.opts.ts {
+            if acked == 0 && a.last_ts.is_some_and(|l| seq_lt(v, l)) {
+                return false;
+            }
+            a.last_ts = Some(v);
+        }
+        // Byte counters from the option (24 bits, the smallest positive increment).
+        let mut d_ceb = None;
+        if let Some(o) = seg.opts.acc {
+            if !a.opts_in && !a.opts_bad && (o.e0b() == Some(0) || o.e1b() == Some(0)) {
+                a.opts_bad = true;
+            }
+            if !a.opts_bad {
+                a.opts_in = true;
+                let take = |s: &mut u32, f: Option<u32>| {
+                    f.map(|f| {
+                        let d = f.wrapping_sub(*s) & 0xff_ffff;
+                        *s = s.wrapping_add(d);
+                        d
+                    })
+                };
+                take(&mut a.s_e0b, o.e0b());
+                d_ceb = take(&mut a.s_ceb, o.ceb());
+                take(&mut a.s_e1b, o.e1b());
+            }
+        }
+        // The ACE counter: the smallest increment, or (A.2.1) as many CE marks as the ACK
+        // could cover if a run of lost ACKs may have hidden a wrap of the 3 bits.
+        let d = u32::from(ace_of(seg).wrapping_sub(a.s_cep as u8) & 7);
+        let pkts = covered / mss.max(1);
+        let mut d_cep = d;
+        if pkts >= 8 {
+            let safer = pkts - ((pkts - d) % 8);
+            if safer > d {
+                d_cep = match d_ceb {
+                    // A.2.2: with the option, d is safe enough unless the CE bytes cannot fit
+                    // in d segments.
+                    Some(ceb) if a.opts_in => {
+                        if ceb <= mss * d && ceb / safer < mss / 2 {
+                            d
+                        } else {
+                            safer
+                        }
+                    }
+                    // Without it, only when ACKs usually cover few segments (a gap, not
+                    // stretch ACKs, A.2.1's "prevailing conditions").
+                    _ if a.avg_acked < 4 * 8 => safer,
+                    _ => d,
+                };
+            }
+        }
+        a.avg_acked = (a.avg_acked * 7 + pkts.min(1 << 16) * 8) / 8;
+        a.s_cep = a.s_cep.wrapping_add(d_cep);
+        // 3.2.3.2.5: CE bytes without CE packets, where the ACE field cannot have wrapped, is
+        // feedback mangling: stop sending ECN-capable packets.
+        // (Only between two ACKs that both carry the CE byte counter: an ACK of a Not-ECT
+        // retransmission brings the ACE increment without an option.)
+        if a.ceb_synced && d_ceb.is_some_and(|c| c > 0) && d_cep == 0 && covered > 0 && pkts < 8 {
+            a.ect = false;
+        }
+        a.ceb_synced = d_ceb.is_some() || (a.ceb_synced && d_cep == 0);
+        let ce = d_cep > 0 || d_ceb.is_some_and(|c| c > 0);
+        if ce && a.respond {
+            bump(3);
+            return true;
+        }
+        false
     }
 
     fn on_rtt_ack(&mut self, seg: &Tcp<'_>, clock: Clock) {
@@ -1563,11 +1969,56 @@ impl Tcb {
             opts.sack_n = n;
         }
         let mut flags = flags;
+        let mut ae = false;
         if syn {
-            if self.p.ecn && self.state == State::SynSent {
+            if self.state == State::SynSent && self.p.accecn {
+                // RFC 9768 3.1.4.1: AccECN on the SYN and its first retransmission, then
+                // without ECN.
+                if self.retries < 2 {
+                    flags |= ECE | CWR;
+                    ae = true;
+                }
+            } else if self.state == State::SynSent && self.p.ecn {
                 flags |= ECE | CWR;
-            } else if self.ecn_ok && self.state == State::SynReceived {
-                flags |= ECE;
+            } else if self.state == State::SynReceived {
+                if let Some(a) = self.acc.as_deref_mut() {
+                    // Feed back the latest SYN's IP-ECN (Table 2) with an option to test the
+                    // path; a retransmission drops the option, a second one the AccECN flags
+                    // too (3.2.3.2.2), and with them ECT for good (3.1.5).
+                    if self.retries < 2 {
+                        let ace = HANDSHAKE_ACE[usize::from(a.syn_ecn)];
+                        flags |= (ace & 3) << 6;
+                        ae = ace & 4 != 0;
+                        if self.retries == 0 && opts.len() + 12 <= 40 {
+                            opts.acc = Some(AccOpt::order0(3, a.r_e0b, a.r_ceb, a.r_e1b));
+                        } else {
+                            a.send_opts = false;
+                        }
+                    } else {
+                        a.ect = false;
+                    }
+                } else if self.ecn_ok {
+                    flags |= ECE;
+                }
+            }
+        } else if let Some(a) = self.acc.as_deref_mut() {
+            // The ACE field carries the CE packet counter (3.2.2.2); the option the byte
+            // counters, where it fits next to at least two SACK blocks (3.2.3.3).
+            let ace = (a.r_cep & 7) as u8;
+            flags = (flags & !(CWR | ECE)) | ((ace & 3) << 6);
+            ae = ace & 4 != 0;
+            a.ce_unacked = 0;
+            if a.send_opts && (a.probe_opts > 0 || a.changed != 0) {
+                let mut o = a.option(40 - opts.len());
+                while o.is_none() && opts.sack_n > 2 {
+                    opts.sack_n -= 1;
+                    o = a.option(40 - opts.len());
+                }
+                if o.is_some() {
+                    opts.acc = o;
+                    a.changed = 0;
+                    a.probe_opts = a.probe_opts.saturating_sub(1);
+                }
             }
         } else if self.ece_pending {
             // (Set only once ECN was negotiated; RSTs are not built here.)
@@ -1587,7 +2038,23 @@ impl Tcb {
             window,
             opts,
             ect: false,
+            ae,
         }
+    }
+
+    /// Bytes of AccECN option the next segments carry (taken off their payload).
+    #[inline]
+    fn acc_opt_len(&self) -> usize {
+        match self.acc.as_deref() {
+            Some(a) if a.send_opts && (a.probe_opts > 0 || a.changed != 0) => 12,
+            _ => 0,
+        }
+    }
+
+    /// New data goes out ECN-capable.
+    #[inline]
+    fn ect(&self) -> bool {
+        self.ecn_ok || self.acc.as_deref().is_some_and(|a| a.ect)
     }
 
     /// Bytes of SACK option the next segment carries.
@@ -1625,7 +2092,7 @@ impl Tcb {
             flags |= CWR;
         }
         let mut hdr = self.header(seq, flags, clock, true);
-        hdr.ect = fresh && len > 0 && self.ecn_ok;
+        hdr.ect = fresh && len > 0 && self.ect();
         let payload = self.tx.slices(off, len);
         out.segment(&self.addrs, &hdr, payload);
         self.last_send = clock.now;
@@ -1733,9 +2200,17 @@ impl Tcb {
         {
             self.cc.on_idle(self.mss());
         }
-        // Payload per segment: the MSS less the SACK option the segment will carry (RFC 6691).
+        // AccECN client: the first ACK feeds back the SYN-ACK's IP-ECN field, on a pure ACK
+        // of its own (RFC 9768 3.2.2.1).
+        if let Some(h) = self.acc.as_deref_mut().and_then(|a| a.hs_ace.take()) {
+            let mut hdr = self.header(self.snd_max, ACK, clock, false);
+            set_ace(&mut hdr, h);
+            out.segment(&self.addrs, &hdr, (&[], &[]));
+        }
+        // Payload per segment: the MSS less the SACK and AccECN options the segment will
+        // carry (RFC 6691).
         let mss = (self.mss() as usize)
-            .saturating_sub(self.sack_opt_len())
+            .saturating_sub(self.sack_opt_len() + self.acc_opt_len())
             .max(64);
         let data_end = self.tx_seq.wrapping_add(self.tx.len() as u32);
         let fin_can = self.fin_queued

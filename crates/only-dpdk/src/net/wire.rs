@@ -27,6 +27,7 @@ pub(crate) const PROTO_ICMPV6: u8 = 58;
 /// ECN codepoints (RFC 3168 5), the low two bits of the IPv4 TOS / IPv6 traffic class.
 pub(crate) const ECN_MASK: u8 = 0x03;
 pub(crate) const ECT0: u8 = 0x02;
+pub(crate) const ECT1: u8 = 0x01;
 pub(crate) const ECN_CE: u8 = 0x03;
 
 pub(crate) fn be16(b: &[u8], at: usize) -> u16 {
@@ -462,6 +463,63 @@ pub(crate) const CWR: u8 = 0x80;
 /// Most SACK blocks carried (4 without timestamps, 3 with).
 pub(crate) const MAX_SACK: usize = 4;
 
+/// AccECN option kinds (RFC 9768 3.2.3): order 0 carries EE0B, ECEB, EE1B; order 1 the
+/// reverse.
+pub(crate) const OPT_ACCECN0: u8 = 172;
+pub(crate) const OPT_ACCECN1: u8 = 174;
+
+/// An AccECN option: the first `n` (0 to 3) of its three 24-bit byte counters, in wire order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AccOpt {
+    /// Order 1 (kind 174: EE1B, ECEB, EE0B) rather than order 0 (kind 172).
+    pub(crate) order1: bool,
+    pub(crate) n: u8,
+    pub(crate) fields: [u32; 3],
+}
+
+impl AccOpt {
+    /// An order-0 option with the low 24 bits of the first `n` of (e0b, ceb, e1b).
+    pub(crate) fn order0(n: u8, e0b: u32, ceb: u32, e1b: u32) -> AccOpt {
+        let n = n.min(3);
+        let mut fields = [e0b & 0xff_ffff, ceb & 0xff_ffff, e1b & 0xff_ffff];
+        fields[usize::from(n)..].fill(0); // what is not sent (parsing gives the same)
+        AccOpt {
+            order1: false,
+            n,
+            fields,
+        }
+    }
+
+    fn field(&self, i: usize) -> Option<u32> {
+        (i < usize::from(self.n)).then(|| self.fields[i])
+    }
+
+    /// EE0B: bytes received ECT(0), modulo 2^24.
+    pub(crate) fn e0b(&self) -> Option<u32> {
+        self.field(if self.order1 { 2 } else { 0 })
+    }
+
+    /// ECEB: bytes received CE, modulo 2^24.
+    pub(crate) fn ceb(&self) -> Option<u32> {
+        self.field(1)
+    }
+
+    /// EE1B: bytes received ECT(1), modulo 2^24.
+    pub(crate) fn e1b(&self) -> Option<u32> {
+        self.field(if self.order1 { 0 } else { 2 })
+    }
+
+    /// Option length (2 + 3 per field).
+    fn wire_len(&self) -> usize {
+        2 + 3 * usize::from(self.n)
+    }
+
+    /// Bytes on the wire, NOP-padded to 4.
+    fn padded_len(&self) -> usize {
+        (self.wire_len() + 3) & !3
+    }
+}
+
 /// TCP options this stack understands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TcpOpts {
@@ -472,6 +530,8 @@ pub(crate) struct TcpOpts {
     pub(crate) ts: Option<(u32, u32)>,
     pub(crate) sack: [(u32, u32); MAX_SACK],
     pub(crate) sack_n: usize,
+    /// AccECN option (RFC 9768).
+    pub(crate) acc: Option<AccOpt>,
 }
 
 impl TcpOpts {
@@ -508,6 +568,19 @@ impl TcpOpts {
                     }
                 }
                 (8, 8) => o.ts = Some((be32(v, 0), be32(v, 4))),
+                (OPT_ACCECN0 | OPT_ACCECN1, n) => {
+                    // Whole 3-byte fields; the rest is padding (3.2.3, forward compatibility).
+                    let n = (n / 3).min(3);
+                    let mut f = [0u32; 3];
+                    for (i, x) in f.iter_mut().enumerate().take(n) {
+                        *x = u32::from_be_bytes([0, v[3 * i], v[3 * i + 1], v[3 * i + 2]]);
+                    }
+                    o.acc = Some(AccOpt {
+                        order1: kind == OPT_ACCECN1,
+                        n: n as u8,
+                        fields: f,
+                    });
+                }
                 _ => {}
             }
             b = &b[len..];
@@ -531,6 +604,9 @@ impl TcpOpts {
         }
         if self.sack_n > 0 {
             n += 4 + 8 * self.sack_n; // NOP NOP + 2 + 8n
+        }
+        if let Some(a) = self.acc {
+            n += a.padded_len();
         }
         n
     }
@@ -574,6 +650,17 @@ impl TcpOpts {
                 i += 8;
             }
         }
+        if let Some(a) = self.acc {
+            let pad = a.padded_len() - a.wire_len();
+            b[i..i + pad].fill(1); // NOPs
+            i += pad;
+            b[i] = if a.order1 { OPT_ACCECN1 } else { OPT_ACCECN0 };
+            b[i + 1] = a.wire_len() as u8;
+            for k in 0..usize::from(a.n) {
+                b[i + 2 + 3 * k..i + 5 + 3 * k].copy_from_slice(&a.fields[k].to_be_bytes()[1..]);
+            }
+            i += a.wire_len();
+        }
         i
     }
 }
@@ -590,6 +677,8 @@ pub(crate) struct Tcp<'a> {
     pub(crate) payload: &'a [u8],
     /// ECN codepoint of the IP packet that carried it (set by the interface).
     pub(crate) ecn: u8,
+    /// The AE flag (RFC 9768: the former NS bit; with CWR and ECE the ACE field).
+    pub(crate) ae: bool,
 }
 
 impl Tcp<'_> {
@@ -622,6 +711,7 @@ impl Tcp<'_> {
             opts: TcpOpts::parse(&b[TCP_HDR..off]),
             payload: &b[off..],
             ecn: 0,
+            ae: b[12] & 1 != 0,
         })
     }
 
@@ -645,6 +735,8 @@ pub(crate) struct TcpOut {
     pub(crate) opts: TcpOpts,
     /// Send the segment ECN-capable (ECT(0) in the IP header).
     pub(crate) ect: bool,
+    /// The AE flag (AccECN).
+    pub(crate) ae: bool,
 }
 
 impl TcpOut {
@@ -667,7 +759,7 @@ impl TcpOut {
         b[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
         b[4..8].copy_from_slice(&self.seq.to_be_bytes());
         b[8..12].copy_from_slice(&self.ack.to_be_bytes());
-        b[12] = ((hl / 4) as u8) << 4;
+        b[12] = ((hl / 4) as u8) << 4 | u8::from(self.ae);
         b[13] = self.flags;
         b[14..16].copy_from_slice(&self.window.to_be_bytes());
         b[16..20].copy_from_slice(&[0, 0, 0, 0]);
@@ -779,6 +871,7 @@ mod tests {
             window: 5,
             opts: o,
             ect: false,
+            ae: true,
         };
         let hl = out.header_len();
         assert_eq!(hl % 4, 0);
@@ -788,6 +881,7 @@ mod tests {
         let t = Tcp::parse(&b, A, B, true).unwrap();
         assert_eq!(t.opts, o);
         assert_eq!((t.seq, t.ack, t.flags, t.window), (3, 4, SYN | ACK, 5));
+        assert!(t.ae);
         assert_eq!(t.payload, b"abc");
         assert_eq!(t.seg_len(), 4);
     }

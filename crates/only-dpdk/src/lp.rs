@@ -164,6 +164,7 @@ impl Loop {
             timestamps: true,
             sack: true,
             ecn: cfg.tcp_ecn,
+            accecn: cfg.tcp_accecn,
             pacing: cfg.tcp_pacing,
         };
         let icfg = net::Config {

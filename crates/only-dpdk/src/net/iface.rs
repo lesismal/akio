@@ -1424,6 +1424,10 @@ impl Iface {
         }
         if !notes.is_empty() && !tcb.orphan {
             if notes.has(Notes::ESTABLISHED) {
+                if let Some(acc) = tcb.ecn_mode() {
+                    super::tcp::ECN_STATS[usize::from(!acc)]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 match tcb.listener {
                     Some(port) if self.listeners.contains_key(&port) => {
                         slot.known = true;
@@ -2531,15 +2535,21 @@ impl Iface {
         } else {
             window = window.min(0xffff);
         }
+        // An AccECN SYN gets an AccECN SYN-ACK (feeding back its IP-ECN field) even from a
+        // cookie: the client's ACE field on the ACK tells the connection's mode back
+        // (RFC 9768 5.1, `Tcb::from_cookie`).
+        let acc = p.accecn && syn.ae && syn.flags & (wire::CWR | wire::ECE) != 0;
+        let ace = [0b010u8, 0b011, 0b100, 0b110][usize::from(syn.ecn & ECN_MASK)];
         let hdr = TcpOut {
             src_port: local.port(),
             dst_port: remote.port(),
             seq: iss,
             ack: syn.seq.wrapping_add(1),
-            flags: SYN | ACK,
+            flags: SYN | ACK | if acc { (ace & 3) << 6 } else { 0 },
             window: window as u16,
             opts,
             ect: false,
+            ae: acc && ace & 4 != 0,
         };
         let mut out = NetOut {
             net: &mut self.net,

@@ -216,6 +216,7 @@ pub(super) fn params() -> Params {
         timestamps: true,
         sack: true,
         ecn: false,
+        accecn: false,
         pacing: false,
     }
 }
@@ -276,6 +277,11 @@ impl Sim {
     /// Drops frames from A to B matching `f`.
     pub(super) fn filter_ab(&mut self, f: impl FnMut(&[u8]) -> bool + 'static) {
         self.ab.filter = Some(Box::new(f));
+    }
+
+    /// Drops frames from B to A matching `f`.
+    pub(super) fn filter_ba(&mut self, f: impl FnMut(&[u8]) -> bool + 'static) {
+        self.ba.filter = Some(Box::new(f));
     }
 
     pub(super) fn dropped(&self) -> (u64, u64) {
@@ -2225,4 +2231,309 @@ fn ipv6_autoconf_only_queue_zero_speaks() {
         Some(vec![wire6::link_local(MAC_B), slaac_addr(PFX, MAC_B)])
     );
     assert!(super::is_neighbor_frame(&ra_frame(600, 64, 0, &[])));
+}
+
+// ---- Accurate ECN (RFC 9768) -----------------------------------------------------------------
+
+fn params_acc(accecn: bool, ecn: bool) -> Params {
+    Params {
+        accecn,
+        ecn,
+        ..params()
+    }
+}
+
+/// A TCP segment's (flags, ACE field as AE/CWR/ECE, AccECN option, payload length, IP ECN).
+fn seg_of(frame: &[u8]) -> Option<(u8, u8, Option<wire::AccOpt>, usize, u8)> {
+    let eth = Eth::parse(frame)?;
+    let (src, dst, payload, ecn) = match eth.ethertype {
+        wire::ETHERTYPE_IPV4 => {
+            let ip = Ipv4::parse(eth.payload, false)?;
+            (
+                IpAddr::V4(ip.src),
+                IpAddr::V4(ip.dst),
+                ip.payload,
+                ip.tos & 3,
+            )
+        }
+        wire::ETHERTYPE_IPV6 => {
+            let ip = wire6::Ipv6::parse(eth.payload)?;
+            (
+                IpAddr::V6(ip.src),
+                IpAddr::V6(ip.dst),
+                ip.payload,
+                ip.tclass & 3,
+            )
+        }
+        _ => return None,
+    };
+    let t = Tcp::parse(payload, src, dst, false)?;
+    let ace = (u8::from(t.ae) << 2) | ((t.flags >> 6) & 3);
+    Some((t.flags, ace, t.opts.acc, t.payload.len(), ecn))
+}
+
+#[test]
+fn accecn_negotiation() {
+    // (A accecn, A ecn, B accecn, B ecn) -> mode on both ends (Some(true): AccECN,
+    // Some(false): RFC 3168, None: no ECN).
+    for (aa, ae, ba, be, want) in [
+        (true, false, true, false, Some(true)),
+        (true, false, false, true, Some(false)),
+        (false, true, true, false, Some(false)),
+        (true, false, false, false, None),
+        (false, false, true, false, None),
+    ] {
+        let mut s = Sim::new(LinkCfg::default(), params_acc(aa, ae), params_acc(ba, be));
+        s.ab.log = Some(Vec::new());
+        s.ba.log = Some(Vec::new());
+        let (ha, hb) = s.connect(80, 50000);
+        s.transfer(ha, hb, &pattern(30_000), Duration::from_secs(5));
+        s.run_until(Duration::from_millis(200), |_| false); // the last (delayed) ACK
+        let ma = s.a.tcb(ha).unwrap().ecn_mode();
+        let mb = s.b.tcb(hb).unwrap().ecn_mode();
+        assert_eq!((ma, mb), (want, want), "a=({aa},{ae}) b=({ba},{be})");
+        let ab: Vec<_> =
+            s.ab.log
+                .take()
+                .unwrap()
+                .iter()
+                .filter_map(|f| seg_of(f))
+                .collect();
+        let ba_: Vec<_> =
+            s.ba.log
+                .take()
+                .unwrap()
+                .iter()
+                .filter_map(|f| seg_of(f))
+                .collect();
+        let syn = ab.iter().find(|t| t.0 & wire::SYN != 0).unwrap();
+        if aa {
+            assert_eq!(syn.1, 0b111, "AccECN SYN");
+        }
+        // Data is ECT(0) exactly when ECN is on.
+        assert_eq!(
+            ab.iter().any(|t| t.3 > 0 && t.4 == wire::ECT0),
+            want.is_some()
+        );
+        if want == Some(true) {
+            // The SYN-ACK feeds back the SYN's Not-ECT (0,1,0) with a full option; the first
+            // ACK feeds back the SYN-ACK's Not-ECT in the handshake encoding with an option;
+            // later ACE fields carry r.cep = 5.
+            let synack = ba_.iter().find(|t| t.0 & wire::SYN != 0).unwrap();
+            assert_eq!(synack.1, 0b010);
+            assert_eq!(
+                synack.2.map(|o| (o.n, o.e0b(), o.ceb(), o.e1b())),
+                Some((3, Some(1), Some(0), Some(1)))
+            );
+            let first_ack = ab.iter().find(|t| t.0 & wire::SYN == 0).unwrap();
+            assert_eq!((first_ack.1, first_ack.3), (0b010, 0));
+            assert!(first_ack.2.is_some());
+            assert!(
+                ab.iter()
+                    .filter(|t| t.0 & wire::SYN == 0)
+                    .skip(1)
+                    .all(|t| t.1 == 0b101)
+            );
+            // B's ACKs report the ECT(0) bytes it received.
+            let last = ba_
+                .iter()
+                .rev()
+                .find_map(|t| t.2.and_then(|o| o.e0b()))
+                .unwrap();
+            assert_eq!(last, 1 + 30_000);
+            let (c, ect) = s.a.tcb(ha).unwrap().acc_counters().unwrap();
+            assert!(ect);
+            assert_eq!(c[5], 1 + 30_000, "s.e0b");
+        }
+    }
+}
+
+/// `bottleneck` with AccECN on both ends: (drops, CE marks, sender s.cep - 5, receiver
+/// r.cep - 5, sender s.ceb, receiver r.ceb).
+fn bottleneck_acc(v6: bool, ack_loss: f64, ce_mark: usize) -> (u64, u64, u32, u32, u32, u32) {
+    let link = LinkCfg {
+        delay: Duration::from_millis(5),
+        rate: 2_500_000,
+        queue: 20,
+        ce_mark,
+        ..LinkCfg::default()
+    };
+    let p = params_acc(true, false);
+    let mut s = if v6 {
+        Sim::new6(link, p, p)
+    } else {
+        Sim::new(link, p, p)
+    };
+    let to = if v6 { IpAddr::V6(B6) } else { IpAddr::V4(B) };
+    let (ha, hb) = s.connect_to(to, 80, 50000);
+    if ack_loss > 0.0 {
+        let mut rng = Rng(77);
+        s.filter_ba(move |_| rng.chance(ack_loss));
+    }
+    s.transfer(ha, hb, &pattern(1 << 20), Duration::from_secs(60));
+    // Let the last ACKs arrive.
+    s.filter_ba(|_| false);
+    s.run_until(Duration::from_millis(500), |_| false);
+    let (sa_, ect) = s.a.tcb(ha).unwrap().acc_counters().unwrap();
+    let (sb, _) = s.b.tcb(hb).unwrap().acc_counters().unwrap();
+    assert!(ect, "no false mangling verdict");
+    (
+        s.dropped().0,
+        s.ab_stats().1,
+        sa_[3] - 5,
+        sb[0] - 5,
+        sa_[4],
+        sb[1],
+    )
+}
+
+#[test]
+fn accecn_marks_are_fed_back_exactly() {
+    for v6 in [false, true] {
+        let (drops_plain, _, _, _) = bottleneck(v6, false, false);
+        let (drops, marks, s_cep, r_cep, s_ceb, r_ceb) = bottleneck_acc(v6, 0.0, 8);
+        eprintln!(
+            "v6={v6}: plain {drops_plain} drops; accecn {drops} drops {marks} marks, r.cep {r_cep} s.cep {s_cep}, r.ceb {r_ceb} s.ceb {s_ceb}"
+        );
+        assert!(marks > 0);
+        assert!(
+            drops < drops_plain,
+            "AccECN avoids drops ({drops} vs {drops_plain})"
+        );
+        // Every CE mark the receiver saw (data and the odd control packet) reached the sender.
+        assert_eq!(u64::from(r_cep), marks);
+        assert_eq!(s_cep, r_cep);
+        assert_eq!(s_ceb, r_ceb);
+    }
+}
+
+#[test]
+fn accecn_survives_ack_loss() {
+    // A fifth of the ACKs lost while nearly every queued packet is marked (hundreds of
+    // marks): the byte counters of the option stay exact, the 3-bit packet counter never
+    // falls behind (a possible wrap is counted, A.2.2), and no ACK of a retransmission (which
+    // carries no option) passes for mangled feedback.
+    let (_, marks, s_cep, r_cep, s_ceb, r_ceb) = bottleneck_acc(false, 0.2, 1);
+    eprintln!("ack loss: {marks} marks, r.cep {r_cep} s.cep {s_cep}, r.ceb {r_ceb} s.ceb {s_ceb}");
+    assert!(marks > 100);
+    assert_eq!(s_ceb, r_ceb);
+    assert!(s_cep >= r_cep);
+}
+
+#[test]
+fn accecn_syn_cookies() {
+    let mut cb = config(B, MAC_B, params_acc(true, false));
+    cb.backlog = 0;
+    let mut s = Sim::with(
+        LinkCfg::default(),
+        config(A, MAC_A, params_acc(true, false)),
+        cb,
+    );
+    let (ha, hb) = s.connect(80, 50000);
+    assert_eq!(s.a.tcb(ha).unwrap().ecn_mode(), Some(true));
+    assert_eq!(s.b.tcb(hb).unwrap().ecn_mode(), Some(true));
+    s.transfer(ha, hb, &pattern(50_000), Duration::from_secs(5));
+    // A cookie server without AccECN gives no ECN.
+    let mut cb = config(B, MAC_B, params());
+    cb.backlog = 0;
+    let mut s = Sim::with(
+        LinkCfg::default(),
+        config(A, MAC_A, params_acc(true, false)),
+        cb,
+    );
+    let (ha, hb) = s.connect(80, 50000);
+    assert_eq!(s.a.tcb(ha).unwrap().ecn_mode(), None);
+    assert_eq!(s.b.tcb(hb).unwrap().ecn_mode(), None);
+}
+
+#[test]
+fn accecn_handshake_fallbacks() {
+    // Two lost SYNs: the third goes without AE/CWR/ECE (RFC 9768 3.1.4.1), no ECN.
+    let mut s = Sim::new(
+        LinkCfg::default(),
+        params_acc(true, false),
+        params_acc(true, false),
+    );
+    let mut syns = 0;
+    s.filter_ab(move |f| {
+        let syn = seg_of(f).is_some_and(|t| t.0 & wire::SYN != 0);
+        syns += u32::from(syn);
+        syn && syns <= 2
+    });
+    let (ha, hb) = s.connect(80, 50000);
+    assert_eq!(s.a.tcb(ha).unwrap().ecn_mode(), None);
+    assert_eq!(s.b.tcb(hb).unwrap().ecn_mode(), None);
+    // Two lost SYN-ACKs: the server stays in AccECN mode but its third SYN-ACK has no AccECN
+    // flags, so the client has no ECN and the server sends nothing ECN-capable (3.1.5).
+    let mut s = Sim::new(
+        LinkCfg::default(),
+        params_acc(true, false),
+        params_acc(true, false),
+    );
+    let mut synacks = 0;
+    s.filter_ba(move |f| {
+        let synack = seg_of(f).is_some_and(|t| t.0 & wire::SYN != 0);
+        synacks += u32::from(synack);
+        synack && synacks <= 2
+    });
+    s.ba.log = Some(Vec::new());
+    let (ha, hb) = s.connect(80, 50000);
+    assert_eq!(s.a.tcb(ha).unwrap().ecn_mode(), None);
+    let (_, ect) = s.b.tcb(hb).unwrap().acc_counters().unwrap();
+    assert!(!ect);
+    // B -> A data is Not-ECT.
+    let data = pattern(20_000);
+    let mut sent = 0;
+    let mut got = 0;
+    let mut buf = vec![0u8; 65536];
+    s.run_until(Duration::from_secs(5), |s| {
+        sent += s.b.tcp_send(hb, &data[sent..]);
+        got += s.a.tcp_recv(ha, &mut buf);
+        got == data.len()
+    });
+    let log = s.ba.log.take().unwrap();
+    assert!(
+        log.iter()
+            .filter_map(|f| seg_of(f))
+            .filter(|t| t.3 > 0)
+            .all(|t| t.4 == 0)
+    );
+    let synacks: Vec<u8> = log
+        .iter()
+        .filter_map(|f| seg_of(f))
+        .filter(|t| t.0 & wire::SYN != 0)
+        .map(|t| t.1)
+        .collect();
+    assert_eq!(synacks, vec![0b010, 0b010, 0]);
+}
+
+#[test]
+fn accecn_option_wire_format() {
+    let o = wire::AccOpt::order0(2, 0x0102_0304, 7, 9);
+    let mut opts = wire::TcpOpts {
+        ts: Some((1, 2)),
+        acc: Some(o),
+        ..wire::TcpOpts::default()
+    };
+    let mut b = [0u8; 40];
+    let n = opts.write(&mut b);
+    assert_eq!(n, opts.len());
+    assert_eq!(n % 4, 0);
+    let back = wire::TcpOpts::parse(&b[..n]);
+    assert_eq!(back.acc, Some(o));
+    assert_eq!(
+        (o.e0b(), o.ceb(), o.e1b()),
+        (Some(0x02_0304), Some(7), None)
+    );
+    // Order 1 and odd lengths (whole fields only).
+    let order1 = [174u8, 11, 0, 0, 1, 0, 0, 2, 0, 0, 3];
+    let a = wire::TcpOpts::parse(&order1).acc.unwrap();
+    assert_eq!((a.e1b(), a.ceb(), a.e0b()), (Some(1), Some(2), Some(3)));
+    let odd = [172u8, 7, 0, 0, 5, 9, 9];
+    let a = wire::TcpOpts::parse(&odd).acc.unwrap();
+    assert_eq!((a.n, a.e0b(), a.ceb()), (1, Some(5), None));
+    assert_eq!(a, wire::AccOpt::order0(1, 5, 0, 0));
+    opts.acc = Some(wire::AccOpt::order0(0, 0, 0, 0));
+    let n = opts.write(&mut b);
+    assert_eq!(wire::TcpOpts::parse(&b[..n]).acc.map(|a| a.n), Some(0));
 }

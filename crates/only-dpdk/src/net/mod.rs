@@ -27,7 +27,7 @@ pub(crate) mod sim;
 
 pub(crate) use cc::CcKind;
 pub(crate) use iface::{CallError, Config, Event, Iface, TcpHandle, Tx};
-pub(crate) use tcp::{Params, TcpError};
+pub(crate) use tcp::{ECN_STATS, Params, TcpError};
 pub(crate) use wire6::link_local;
 
 /// An ARP frame, or an IPv6 neighbor solicitation / advertisement or router advertisement

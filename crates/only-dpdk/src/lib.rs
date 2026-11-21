@@ -1,7 +1,7 @@
 #![deny(unsafe_code)] // `unsafe` is confined to the DPDK FFI (`pmd`) and TAP / AF_PACKET (`sys`)
 //! `only`'s kernel-bypass backend (experimental): its own userspace TCP/IP stack (Ethernet,
-//! ARP, IPv4, ICMP, IPv6 with NDP and ICMPv6, UDP, TCP with SACK, CUBIC / NewReno, window
-//! scaling and timestamps, optional ECN and pacing; safe Rust, `#![forbid(unsafe_code)]`, no
+//! ARP, IPv4, ICMP, IPv6 with NDP, SLAAC and ICMPv6, UDP, TCP with SACK, CUBIC / NewReno,
+//! window scaling and timestamps, optional ECN, Accurate ECN and pacing; safe Rust, `#![forbid(unsafe_code)]`, no
 //! dependencies) driven by `only` I/O threads, over
 //!
 //! * a **DPDK** port ([`Device::Dpdk`], cargo feature `pmd`, Linux, links `libdpdk`): the EAL is
@@ -277,6 +277,14 @@ pub struct DpdkConfig {
     /// Negotiate ECN on TCP connections (RFC 3168: data sent ECN-capable, congestion marks
     /// answered like a loss without the retransmission). Default `false`.
     pub tcp_ecn: bool,
+    /// Negotiate Accurate ECN on TCP connections (RFC 9768), default `false`: SYNs ask for it,
+    /// and with a peer that agrees each ACK reports how many packets arrived CE-marked (the
+    /// 3-bit ACE field) and how many bytes arrived with each ECN codepoint (the AccECN option),
+    /// instead of RFC 3168's one ECE bit per round trip. Data is sent ECN-capable and CE
+    /// feedback answered like a loss without the retransmission, once per window. Peers that
+    /// only know RFC 3168 ECN get it (this implies [`tcp_ecn`](Self::tcp_ecn) towards them),
+    /// others none. Linux 6.18+ answers with `net.ipv4.tcp_ecn = 3` (or 4 / 5).
+    pub tcp_accecn: bool,
     /// Pace TCP transmissions at about `cwnd / srtt` (twice that in slow start) instead of
     /// sending each window as a burst: fewer drops at shallow bottleneck queues, at some CPU
     /// cost. Default `false`.
@@ -312,6 +320,7 @@ impl DpdkConfig {
             syn_cookies: true,
             congestion: Congestion::Cubic,
             tcp_ecn: false,
+            tcp_accecn: false,
             tcp_pacing: false,
             tcp_keepalive: None,
             busy_poll: false,
@@ -334,6 +343,35 @@ impl DpdkConfig {
 /// when no stack is open on `device` (it starts with the first listener's group).
 pub fn ipv6_addresses(device: &Device) -> Option<Vec<Ipv6Addr>> {
     stack::ipv6_addresses(device)
+}
+
+/// Process-wide ECN counters of the userspace TCP (`#[doc(hidden)]`: for tests and
+/// benchmarks).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TcpEcnStats {
+    /// Connections established in Accurate ECN mode.
+    pub accecn: u64,
+    /// Connections established with RFC 3168 ECN.
+    pub classic: u64,
+    /// CE-marked packets received on AccECN connections.
+    pub ce_received: u64,
+    /// Congestion responses to AccECN feedback.
+    pub ce_responses: u64,
+}
+
+/// The process-wide [`TcpEcnStats`] (`#[doc(hidden)]`).
+#[doc(hidden)]
+pub fn tcp_ecn_stats() -> TcpEcnStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = &net::ECN_STATS;
+    TcpEcnStats {
+        accecn: s[0].load(Relaxed),
+        classic: s[1].load(Relaxed),
+        ce_received: s[2].load(Relaxed),
+        ce_responses: s[3].load(Relaxed),
+    }
 }
 
 /// TCP congestion control of a userspace stack.
