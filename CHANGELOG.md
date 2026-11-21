@@ -10,6 +10,51 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
+
+ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:
+
+- RFC 1961 (method 1) in the server (`Socks::gssapi(factory, levels)`) and the client
+  (`SocksClient::gssapi(factory, level)`): context establishment, the protection-level
+  negotiation, and at `Protection::Integrity` / `Protection::Confidentiality` the wrapping of the
+  request, the replies and the whole tunnel (`Protection::None`: authentication only). The
+  GSS-API mechanism is the application's, behind `only_socks::gssapi::GssContext` (`step`,
+  `wrap`, `unwrap`, `peer_name`); the workspace links no GSS-API library.
+- Establishment steps never run on an I/O thread: the server runs them on the logical pool, the
+  client on a helper thread resumed through `TransportWaker`. The server's access hook sees the
+  GSS-API peer as `Request::user()`. A GSS-API server turns SOCKS4 and "no authentication" off.
+- Refused with protection: `UDP ASSOCIATE` (server reply 7; the client refuses GSS-API for UDP),
+  the client's blocking helpers (also when the proxy grants more than asked), `sockmap`
+  splicing, a server inside `Tls::server`.
+- `tools/interop/socks/gssapi.sh`: MIT Kerberos KDC in Docker, only-socks client and server
+  (through a test-only `python3-gssapi` shim), Dante rebuilt with GSS-API and an independent
+  RFC 1961 client: 15/15 at every level.
+
+### Added: protobuf `utf8_validation = NONE` (only-protobuf, only-protobuf-build)
+
+Additive:
+
+- `string` fields with `features.utf8_validation = NONE` are generated as
+  `only_protobuf::ProtoString` (bytes, decoded without a UTF-8 check: `to_str`,
+  `to_string_lossy`, `as_bytes`; codec `encoding::ProtoStringCodec`), in every shape (singular,
+  repeated, map keys and values, oneofs, extensions); their getters return `&[u8]`.
+  `Config::proto2_unchecked_strings(true)` does the same for proto2 strings (their legacy NONE);
+  by default proto2 strings stay `String` and are checked, as before.
+- Dynamic messages follow the descriptor: a `string` field that does not require UTF-8 (`NONE`,
+  and proto2) keeps contents that are not UTF-8 as `Value::Bytes` (`DynamicMessage::set` accepts
+  it there); JSON prints them lossily, the text format escapes and parses them. Behaviour change:
+  dynamic decoding of a proto2 string that is not UTF-8 now succeeds (it failed before).
+- Descriptors: a map field's features are copied to its entry's key and value, as protoc does.
+- Generated code of files without `NONE` is byte-identical; conformance runner v35.1 still
+  5627 + 909 passed / 0 failed.
+
+### Changed: musl layout tests (only-sys)
+
+- `only_sys::ffi`'s layouts and constants are now checked against the `libc` crate on
+  `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` (Alpine) too. musl's
+  `struct cmsghdr` is 4-aligned where the kernel's and ours are 8-aligned (sizes and offsets
+  agree); nothing else differs. docs/api-stability.md lists Linux with musl as tier 2.
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

@@ -10,7 +10,9 @@ use crate::{Destinations, Socks};
 /// (method choice, RFC 1929 status, one or two replies with every address type) both bare and
 /// as the proxy tunnel transport the HTTP/WebSocket clients and `SocksClient::dial` use, the
 /// UDP datagram header, and UDP fragment reassembly. `data[0]`: bits 0-1 the version (5, 4,
-/// 4a), bits 2-3 the command (CONNECT, BIND, UDP ASSOCIATE), bit 4 credentials; `data[1]`
+/// 4a), bits 2-3 the command (CONNECT, BIND, UDP ASSOCIATE), bit 4 credentials, bit 5 GSS-API
+/// with the toy mechanism (`only_ws::gss::toy`, secret 0x42) and bits 6-7 the protection asked
+/// for (none, integrity, confidentiality); `data[1]`
 /// splits the proxy's bytes. The bytes after `data[0]` are also read as datagrams (a length
 /// byte, a clock step byte, then the datagram) fed to one reassembly queue.
 pub fn socks_client(data: &[u8]) {
@@ -37,7 +39,23 @@ pub fn socks_client(data: &[u8]) {
     } else {
         Target::Name("example.com".into(), 80)
     };
-    if let Ok(h) = Handshake::new(version, cmd, target, auth) {
+    let h = Handshake::new(version, cmd, target, auth).and_then(|h| {
+        // Bit 5: GSS-API with the toy mechanism; bits 6-7 the protection asked for.
+        if cfg & 32 == 0 {
+            return Ok(h);
+        }
+        let want = match cfg >> 6 {
+            0 => crate::gssapi::Protection::None,
+            1 => crate::gssapi::Protection::Integrity,
+            _ => crate::gssapi::Protection::Confidentiality,
+        };
+        let f: only_ws::gss::GssFactory = std::sync::Arc::new(|_: &str| {
+            Ok(Box::new(only_ws::gss::toy::Toy::initiator("fuzz", 0x42))
+                as Box<dyn crate::gssapi::GssContext>)
+        });
+        h.gssapi(f, "proxy", want)
+    });
+    if let Ok(h) = h {
         // Bare: consumed counts stay within what was given, tunnel bytes only after the end.
         let mut bare = h.clone();
         let mut out = Vec::new();
@@ -52,6 +70,14 @@ pub fn socks_client(data: &[u8]) {
                     Ok((n, reply)) => {
                         assert!(n <= p.len());
                         p = &p[n..];
+                        // GSS-API steps, inline; then what was buffered meanwhile.
+                        while let Some(job) = bare.take_gss_job() {
+                            if bare.gss_done(job.run(), &mut out).is_err()
+                                || bare.feed(&[], &mut out).is_err()
+                            {
+                                break 'feed;
+                            }
+                        }
                         if reply.is_none() || p.is_empty() {
                             break;
                         }
@@ -234,6 +260,51 @@ mod tests {
         }
         v.push(frags);
         v
+    }
+
+    #[test]
+    fn gssapi_seeds_open_a_protected_tunnel() {
+        use only_ws::socks::{Cmd, Handshake, Target, Version};
+        for (name, want) in [
+            (
+                "seed-gssapi-integrity",
+                crate::gssapi::Protection::Integrity,
+            ),
+            (
+                "seed-gssapi-confidentiality",
+                crate::gssapi::Protection::Confidentiality,
+            ),
+        ] {
+            let data =
+                std::fs::read(format!("{DIR}/../../fuzz/corpus/socks_client/{name}")).unwrap();
+            let f: only_ws::gss::GssFactory = std::sync::Arc::new(|_: &str| {
+                Ok(Box::new(only_ws::gss::toy::Toy::initiator("fuzz", 0x42))
+                    as Box<dyn crate::gssapi::GssContext>)
+            });
+            let mut h = Handshake::new(
+                Version::Socks5,
+                Cmd::Connect,
+                Target::Name("example.com".into(), 80),
+                None,
+            )
+            .unwrap()
+            .gssapi(f, "proxy", want)
+            .unwrap();
+            let mut out = Vec::new();
+            h.start(&mut out);
+            // One read: what follows the reply here came while a step was pending, which a
+            // proxy cannot do (it waits for the request); the handshake drops it.
+            let mut p = &data[2..];
+            while !h.is_done() {
+                let (n, _) = h.feed(p, &mut out).unwrap();
+                p = &p[n..];
+                while let Some(job) = h.take_gss_job() {
+                    h.gss_done(job.run(), &mut out).unwrap();
+                }
+            }
+            let (_, level, _) = h.take_protection().unwrap();
+            assert_eq!(level, want);
+        }
     }
 
     #[test]

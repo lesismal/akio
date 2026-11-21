@@ -217,10 +217,49 @@ Spliced bytes bypass the engine's write watermarks. Timeouts and closing still w
 With io_uring, if a read that completed before the splice delivers payload while both ends are
 open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh).
 
+## GSS-API authentication (RFC 1961)
+
+`only_socks::gssapi` (ADR-071) runs RFC 1961 on both sides, method 1: the context-establishment
+tokens, the protection-level negotiation, and at levels above none the wrapping of the SOCKS
+request, its replies and every byte of the tunnel. The GSS-API mechanism itself is the
+application's: implement `GssContext` over the system's GSS-API library (MIT or Heimdal Kerberos
+through a binding of your choice), SSPI, or anything else.
+
+```rust,ignore
+use only_socks::gssapi::{GssContext, Protection};
+
+// Server: an acceptor context per connection (made on the logical pool), levels granted.
+let socks = Socks::new(engine_ref.clone())
+    .gssapi(|| Ok(Box::new(MyKerberos::acceptor()?) as Box<dyn GssContext>),
+            Protection::Integrity..=Protection::Confidentiality);
+
+// Client: an initiator context for the proxy's host name; the level asked for is the least
+// accepted.
+let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
+    .gssapi(|host| Ok(Box::new(MyKerberos::initiator(&format!("rcmd@{host}"))?) as Box<dyn GssContext>),
+            Protection::Confidentiality);
+```
+
+- Establishment steps may block (a Kerberos initiator asks the KDC for a service ticket): the
+  server runs them on the logical pool, the client on a short-lived helper thread per step;
+  neither ever runs them on an I/O thread. `wrap` / `unwrap` run on the I/O thread for each
+  message.
+- Levels: `None` (authentication only; Dante's `clear`), `Integrity`, `Confidentiality`; the
+  server grants the client's level clamped to its range, the client refuses less than it asked.
+- The server sees the GSS-API peer's name as `Request::user()` in its access-control hook.
+- Not with protection: `UDP ASSOCIATE` (the server answers reply 7, the client refuses GSS-API
+  for UDP at any level), the client's blocking helpers (they return a `TcpStream`), the
+  `sockmap` fast path, and a server served inside `Tls::server` (its own transport is needed).
+
+Interop (`tools/interop/socks/gssapi.sh`, MIT Kerberos with a KDC in Docker; the workspace links
+no GSS-API library, a test-only `python3-gssapi` shim stands in for the application's
+mechanism): only-socks' client and server, Dante rebuilt with GSS-API and an independent Python
+RFC 1961 client, at every level, 15/15.
+
 ## Not supported
 
-GSSAPI authentication; a Linux `splice(2)` relay path (not attempted: the engine's relay with
-two-way backpressure stays, and `only::ebpf::Relay` covers in-kernel relaying).
+A Linux `splice(2)` relay path (not attempted: the engine's relay with two-way backpressure
+stays, and `only::ebpf::Relay` covers in-kernel relaying).
 
 Since ADR-059: datagrams can be sent in fragments (RFC 1928 `FRAG`) both ways
 (`UdpAssociation::send_fragmented`, `BlockingUdp::send_fragmented`, and on the server

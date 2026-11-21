@@ -326,6 +326,11 @@ impl<'a> Parser<'a, '_> {
                 }
                 if k == Kind::Bytes {
                     Value::Bytes(b)
+                } else if !fd.requires_utf8() {
+                    match String::from_utf8(b) {
+                        Ok(s) => Value::String(s),
+                        Err(e) => Value::Bytes(e.into_bytes()),
+                    }
                 } else {
                     Value::String(String::from_utf8(b).map_err(|_| {
                         self.err_at(at, format!("field {} is not valid UTF-8", fd.name()))

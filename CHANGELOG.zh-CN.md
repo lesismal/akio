@@ -10,6 +10,44 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
+
+ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：
+
+- 服务端（`Socks::gssapi(factory, levels)`）与客户端（`SocksClient::gssapi(factory, level)`）实现
+  RFC 1961（方法 1）：上下文建立、保护级别协商，以及在 `Protection::Integrity` /
+  `Protection::Confidentiality` 下对请求、应答与整个隧道的封装（`Protection::None`：只认证）。GSS-API
+  机制由应用通过 `only_socks::gssapi::GssContext`（`step`、`wrap`、`unwrap`、`peer_name`）提供；workspace
+  不链接任何 GSS-API 库。
+- 建立步骤从不在 I/O 线程上执行：服务端在逻辑池中执行，客户端在辅助线程中执行并通过 `TransportWaker`
+  恢复。服务端的访问钩子通过 `Request::user()` 看到 GSS-API 对端。GSS-API 服务端关闭 SOCKS4 与“无认证”。
+- 有保护时拒绝：`UDP ASSOCIATE`（服务端回复 7；客户端拒绝经 GSS-API 的 UDP）、客户端的阻塞辅助函数（代理
+  授予的级别高于请求时也拒绝）、`sockmap` 拼接、放在 `Tls::server` 里的服务端。
+- `tools/interop/socks/gssapi.sh`：Docker 中的 MIT Kerberos KDC、only-socks 客户端与服务端（经仅用于测试
+  的 `python3-gssapi` 垫片）、重新编译并启用 GSS-API 的 Dante，以及一个独立的 RFC 1961 客户端：所有级别
+  15/15。
+
+### 新增：protobuf `utf8_validation = NONE`（only-protobuf、only-protobuf-build）
+
+只有新增：
+
+- 带 `features.utf8_validation = NONE` 的 `string` 字段生成为 `only_protobuf::ProtoString`（字节，解码时
+  不检查 UTF-8：`to_str`、`to_string_lossy`、`as_bytes`；编解码器 `encoding::ProtoStringCodec`），各种形态
+  （单个、repeated、map 的键与值、oneof、extension）都是如此；其 getter 返回 `&[u8]`。
+  `Config::proto2_unchecked_strings(true)` 对 proto2 字符串（其旧有的 NONE）同样处理；默认情况下 proto2
+  字符串仍是 `String` 并照旧检查。
+- 动态消息遵循描述符：不要求 UTF-8 的 `string` 字段（`NONE` 以及 proto2）把不是 UTF-8 的内容保存为
+  `Value::Bytes`（`DynamicMessage::set` 在这类字段上接受它）；JSON 输出时有损替换，文本格式输出时转义并能
+  解析回来。行为变化：动态解码不是 UTF-8 的 proto2 字符串现在会成功（之前失败）。
+- 描述符：map 字段的 features 会复制到其 entry 的 key 与 value 上，与 protoc 一致。
+- 不含 `NONE` 的文件生成的代码逐字节不变；一致性运行器 v35.1 依旧通过 5627 + 909 项 / 失败 0 项。
+
+### 变更：musl 布局测试（only-sys）
+
+- `only_sys::ffi` 的布局与常量现在也在 `aarch64-unknown-linux-musl` 与 `x86_64-unknown-linux-musl`
+  （Alpine）上与 `libc` crate 对比。musl 的 `struct cmsghdr` 按 4 字节对齐，内核与我们的按 8 字节对齐
+  （大小与偏移一致）；其余没有差别。docs/api-stability.zh-CN.md 把使用 musl 的 Linux 列为第 2 级。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

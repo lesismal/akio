@@ -190,8 +190,11 @@ pub(crate) struct Resolved {
     pub(crate) packed: bool,
     /// Message fields: encoded as a group.
     pub(crate) delimited: bool,
-    /// String fields: UTF-8 is checked (always done in Rust; recorded for reflection).
+    /// String fields: UTF-8 is checked (`utf8_validation`: VERIFY, proto3).
     pub(crate) verify_utf8: bool,
+    /// String fields: `utf8_validation = NONE` in an editions file (generated as
+    /// `ProtoString`; proto2's legacy NONE only with `Config::proto2_unchecked_strings`).
+    pub(crate) utf8_none: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

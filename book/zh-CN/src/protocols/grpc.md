@@ -91,6 +91,7 @@ pub mod routeguide {
 |---|---|
 | `message Point { int32 latitude = 1; }` | `pub struct Point { pub latitude: i32, pub unknown_fields: UnknownFields }`（`Clone`、`PartialEq`、`Debug`、`Default`；不含浮点数时还有 `Eq`） |
 | `string`、`bytes` | `String`、`Vec<u8>` |
+| 设置了 `features.utf8_validation = NONE` 的 `string`（editions）；`Config::proto2_unchecked_strings(true)` 时的 proto2 `string` | `only_protobuf::ProtoString`：通常是 UTF-8 的字节，解码时不检查（`to_str()`、`to_string_lossy()`、`as_bytes()`）；getter 返回 `&[u8]` |
 | 消息类型字段、proto3 `optional`、proto2 `optional` | `Option<T>`（递归时为 `Option<Box<T>>`）；proto2 默认值通过 getter 获取（`p.a()`） |
 | `repeated T` / `map<K, V>` | `Vec<T>` / `HashMap<K, V>`（`Config::btree_maps(true)` 时为 `BTreeMap`） |
 | `oneof kind { .. }` | `pub kind: Option<point::Kind>`，枚举位于消息对应的模块中 |
@@ -100,7 +101,9 @@ pub mod routeguide {
 
 消息会保留未知字段并在编码时写回（`Config::unknown_fields(false)` 去掉该成员，结构体字面量就不再
 需要 `..Default::default()`）。编码结果与 protoc 的 C++ 运行时逐字节一致；解码有界（最多 100 层
-嵌套、检查长度、检查 UTF-8）。
+嵌套、检查长度、检查 UTF-8，`utf8_validation = NONE` 的字段除外）。动态消息遵循描述符：不要求 UTF-8 的
+`string` 字段（`NONE`、proto2）把不是 UTF-8 的内容存为 `Value::Bytes`，JSON 输出时有损替换，文本格式
+输出时转义。
 
 ### Service
 

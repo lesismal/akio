@@ -26,7 +26,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |
 | HTTP/3 and QUIC | own QUIC v1 (RFC 9000/9001/9002, datagrams, migration, Retry, key updates, GSO), HTTP/3 serving the same `Router` (QPACK dynamic table, WebSocket over HTTP/3, streamed request bodies), H3 client with streamed uploads and responses; interop with quic-go, fib, curl (ngtcp2, OpenSSL) |
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
-| Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (only-mux) |
+| Proxies | SOCKS5/4/4a (username/password or GSS-API authentication), HTTP CONNECT, port sharing by first-byte sniffing (only-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
 | BitTorrent | trackers (HTTP/UDP, client and server), peer wire with MSE, Fast extension, metadata exchange and PEX, uTP (LEDBAT), mainline DHT, a client; interop with libtorrent and aria2 |
 | Streaming media | only-media: one stream hub (GOP cache, slow-player dropping, auth hooks, stats) behind RTMP (digest handshake, Enhanced RTMP H.265/Opus), RTSP server (TCP and UDP, record and play), SRT live (ARQ, TSBPD, AES encryption, caller push/pull), HTTP-FLV, WS-FLV, HLS (MPEG-TS or fMP4, LL-HLS parts, blocking reload) and WHIP/WHEP with WebRTC media, plus RTMP and RTSP clients for relaying; interop-tested with ffmpeg, mediamtx and pion |

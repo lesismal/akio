@@ -458,6 +458,7 @@ impl Ctx {
             packed,
             delimited,
             verify_utf8: f.verify_utf8,
+            utf8_none: !f.verify_utf8 && self.edition.is_editions(),
         };
         let _ = msg;
         Ok(())

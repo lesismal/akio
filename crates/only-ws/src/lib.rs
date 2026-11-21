@@ -24,6 +24,7 @@ pub mod deflate;
 #[doc(hidden)]
 pub mod fuzzing;
 // The HTTP/1 head parser shared with only-http: `#[doc(hidden)]`, outside the semver promise.
+pub mod gss;
 #[doc(hidden)]
 pub mod http1;
 pub mod protocol;

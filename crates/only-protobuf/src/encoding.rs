@@ -509,6 +509,36 @@ impl Codec for StringCodec {
     }
 }
 
+/// `string` with `features.utf8_validation = NONE`: a [`ProtoString`](crate::ProtoString),
+/// decoded without a UTF-8 check.
+#[derive(Clone, Copy, Debug)]
+pub struct ProtoStringCodec;
+
+impl Codec for ProtoStringCodec {
+    type Value = crate::ProtoString;
+    const WIRE_TYPE: WireType = WireType::Len;
+    #[inline]
+    fn encode(v: &crate::ProtoString, buf: &mut Vec<u8>) {
+        put_bytes(buf, v.as_bytes());
+    }
+    #[inline]
+    fn len(v: &crate::ProtoString) -> usize {
+        varint_len(v.len() as u64) + v.len()
+    }
+    #[inline]
+    fn merge(v: &mut crate::ProtoString, r: &mut Reader<'_>) -> Result<(), DecodeError> {
+        let b = r.read_bytes()?;
+        let v = v.as_mut_vec();
+        v.clear();
+        v.extend_from_slice(b);
+        Ok(())
+    }
+    #[inline]
+    fn is_default(v: &crate::ProtoString) -> bool {
+        v.is_empty()
+    }
+}
+
 /// `bytes`.
 #[derive(Clone, Copy, Debug)]
 pub struct BytesCodec;

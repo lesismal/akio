@@ -24,7 +24,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | WebSocket | 服务端与客户端，permessage-deflate，Autobahn 100%（服务端与客户端） |
 | HTTP/3 与 QUIC | 自研 QUIC v1（RFC 9000/9001/9002，数据报、迁移、Retry、密钥更新、GSO），HTTP/3 提供同一个 `Router`（QPACK 动态表、HTTP/3 上的 WebSocket、流式请求 body），H3 客户端（流式上传与流式响应）；与 quic-go、fib、curl（ngtcp2、OpenSSL）互通 |
 | RPC | gRPC（unary 与流式，与 grpc-go 互通），arpc（与 lesismal/arpc 和 fib 线路兼容） |
-| 代理 | SOCKS5/4/4a、HTTP CONNECT、按首字节嗅探的端口复用（only-mux） |
+| 代理 | SOCKS5/4/4a（用户名/密码或 GSS-API 认证）、HTTP CONNECT、按首字节嗅探的端口复用（only-mux） |
 | KCP | 与 skywind3000/kcp 和 kcp-go 线路兼容（FEC、加密） |
 | BitTorrent | tracker（HTTP/UDP，客户端与服务端）、带 MSE 的 peer wire、Fast 扩展、元数据交换与 PEX、uTP（LEDBAT）、主线 DHT、客户端；与 libtorrent 和 aria2 互通 |
 | 流媒体 | only-media：统一的流 hub（GOP 缓存、慢播放者丢帧、鉴权钩子、统计），前接 RTMP（digest 握手、Enhanced RTMP 的 H.265/Opus）、RTSP 服务端（TCP 与 UDP，推流与播放）、SRT live（ARQ、TSBPD、AES 加密、主叫推拉流）、HTTP-FLV、WS-FLV、HLS（MPEG-TS 或 fMP4、LL-HLS 分片、阻塞式刷新）以及承载 WebRTC 媒体的 WHIP/WHEP，另有用于转发的 RTMP 与 RTSP 客户端；已与 ffmpeg、mediamtx 与 pion 互通测试 |

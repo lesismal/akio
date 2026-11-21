@@ -16,6 +16,18 @@ fn main() {
     )
     .expect("generate");
     // ANCHOR_END: build
+    // `utf8_validation = NONE`; proto2 strings as `ProtoString` too (their legacy NONE).
+    only_protobuf_build::Config::new()
+        .proto2_unchecked_strings(true)
+        .compile(
+            &[
+                "proto/utf8.proto",
+                "proto/utf8_file.proto",
+                "proto/utf8_proto2.proto",
+            ],
+            &out,
+        )
+        .expect("generate utf8");
     // The conformance suite's messages (`conformance/proto`, from the protobuf repository).
     only_protobuf_build::Config::new()
         .include("conformance/proto")

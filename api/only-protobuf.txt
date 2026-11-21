@@ -214,6 +214,24 @@ impl<M> core::marker::Sync for only_protobuf::encoding::MessageCodec<M> where co
 impl<M> core::marker::Unpin for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::marker::Unpin
 impl<M> core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::panic::unwind_safe::RefUnwindSafe
 impl<M> core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::panic::unwind_safe::UnwindSafe
+pub struct only_protobuf::encoding::ProtoStringCodec
+impl core::clone::Clone for only_protobuf::encoding::ProtoStringCodec
+pub fn only_protobuf::encoding::ProtoStringCodec::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::ProtoStringCodec
+pub fn only_protobuf::encoding::ProtoStringCodec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::ProtoStringCodec
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::ProtoStringCodec
+pub type only_protobuf::encoding::ProtoStringCodec::Value = only_protobuf::ProtoString
+pub const only_protobuf::encoding::ProtoStringCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::ProtoStringCodec::encode(&only_protobuf::ProtoString, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::ProtoStringCodec::is_default(&only_protobuf::ProtoString) -> bool
+pub fn only_protobuf::encoding::ProtoStringCodec::len(&only_protobuf::ProtoString) -> usize
+pub fn only_protobuf::encoding::ProtoStringCodec::merge(&mut only_protobuf::ProtoString, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::ProtoStringCodec
+impl core::marker::Sync for only_protobuf::encoding::ProtoStringCodec
+impl core::marker::Unpin for only_protobuf::encoding::ProtoStringCodec
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::ProtoStringCodec
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::ProtoStringCodec
 pub struct only_protobuf::encoding::Reader<'a>
 impl<'a> only_protobuf::encoding::Reader<'a>
 pub const fn only_protobuf::encoding::Reader<'a>::depth(&self) -> u32
@@ -428,6 +446,13 @@ pub fn only_protobuf::encoding::Int64::encode(&i64, &mut alloc::vec::Vec<u8>)
 pub fn only_protobuf::encoding::Int64::is_default(&i64) -> bool
 pub fn only_protobuf::encoding::Int64::len(&i64) -> usize
 pub fn only_protobuf::encoding::Int64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::ProtoStringCodec
+pub type only_protobuf::encoding::ProtoStringCodec::Value = only_protobuf::ProtoString
+pub const only_protobuf::encoding::ProtoStringCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::ProtoStringCodec::encode(&only_protobuf::ProtoString, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::ProtoStringCodec::is_default(&only_protobuf::ProtoString) -> bool
+pub fn only_protobuf::encoding::ProtoStringCodec::len(&only_protobuf::ProtoString) -> usize
+pub fn only_protobuf::encoding::ProtoStringCodec::merge(&mut only_protobuf::ProtoString, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
 impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sfixed32
 pub type only_protobuf::encoding::Sfixed32::Value = i32
 pub const only_protobuf::encoding::Sfixed32::WIRE_TYPE: only_protobuf::encoding::WireType
@@ -4901,6 +4926,69 @@ impl core::marker::Sync for only_protobuf::ExtensionSet
 impl core::marker::Unpin for only_protobuf::ExtensionSet
 impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::ExtensionSet
 impl core::panic::unwind_safe::UnwindSafe for only_protobuf::ExtensionSet
+pub struct only_protobuf::ProtoString(_)
+impl only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::as_bytes(&self) -> &[u8]
+pub fn only_protobuf::ProtoString::as_mut_vec(&mut self) -> &mut alloc::vec::Vec<u8>
+pub fn only_protobuf::ProtoString::clear(&mut self)
+pub fn only_protobuf::ProtoString::into_bytes(self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::ProtoString::into_string(self) -> core::result::Result<alloc::string::String, alloc::string::FromUtf8Error>
+pub fn only_protobuf::ProtoString::is_empty(&self) -> bool
+pub fn only_protobuf::ProtoString::is_utf8(&self) -> bool
+pub fn only_protobuf::ProtoString::len(&self) -> usize
+pub const fn only_protobuf::ProtoString::new() -> only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::to_str(&self) -> core::result::Result<&str, core::str::error::Utf8Error>
+pub fn only_protobuf::ProtoString::to_string_lossy(&self) -> alloc::borrow::Cow<'_, str>
+impl core::borrow::Borrow<[u8]> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::borrow(&self) -> &[u8]
+impl core::clone::Clone for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::ProtoString
+impl core::cmp::Ord for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<&[u8]> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &&[u8]) -> bool
+impl core::cmp::PartialEq<&str> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &&str) -> bool
+impl core::cmp::PartialEq<[u8]> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &[u8]) -> bool
+impl core::cmp::PartialEq<alloc::string::String> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &alloc::string::String) -> bool
+impl core::cmp::PartialEq<str> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::eq(&self, &str) -> bool
+impl core::cmp::PartialOrd for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::AsRef<[u8]> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::as_ref(&self) -> &[u8]
+impl core::convert::From<&[u8]> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::from(&[u8]) -> only_protobuf::ProtoString
+impl core::convert::From<&str> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::from(&str) -> only_protobuf::ProtoString
+impl core::convert::From<alloc::string::String> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::from(alloc::string::String) -> only_protobuf::ProtoString
+impl core::convert::From<alloc::vec::Vec<u8>> for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::from(alloc::vec::Vec<u8>) -> only_protobuf::ProtoString
+impl core::convert::From<only_protobuf::ProtoString> for alloc::vec::Vec<u8>
+pub fn alloc::vec::Vec<u8>::from(only_protobuf::ProtoString) -> alloc::vec::Vec<u8>
+impl core::convert::TryFrom<only_protobuf::ProtoString> for alloc::string::String
+pub type alloc::string::String::Error = alloc::string::FromUtf8Error
+pub fn alloc::string::String::try_from(only_protobuf::ProtoString) -> core::result::Result<alloc::string::String, alloc::string::FromUtf8Error>
+impl core::default::Default for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::default() -> Self
+impl core::fmt::Debug for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_protobuf::ProtoString
+pub fn only_protobuf::ProtoString::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_protobuf::ProtoString
+impl core::marker::Send for only_protobuf::ProtoString
+impl core::marker::Sync for only_protobuf::ProtoString
+impl core::marker::Unpin for only_protobuf::ProtoString
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::ProtoString
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::ProtoString
 pub struct only_protobuf::RepeatedExtension<M, C>
 impl<M, C> only_protobuf::RepeatedExtension<M, C>
 pub const fn only_protobuf::RepeatedExtension<M, C>::full_name(&self) -> &'static str

@@ -73,7 +73,10 @@ fn common_layouts() {
     );
     assert_eq!(size_of::<super::pid_t>(), size_of::<libc::pid_t>());
     assert_eq!(size_of::<super::off_t>(), size_of::<libc::off_t>());
-    assert_eq!(size_of::<super::time_t>(), size_of::<libc::time_t>());
+    // libc marks its musl `time_t` deprecated (a note about 32-bit targets); it is 64-bit here.
+    #[allow(deprecated)]
+    let libc_time_t = size_of::<libc::time_t>();
+    assert_eq!(size_of::<super::time_t>(), libc_time_t);
     assert_eq!(size_of::<super::sigset_t>(), size_of::<libc::sigset_t>());
     assert_eq!(
         size_of::<super::sighandler_t>(),
@@ -144,6 +147,7 @@ fn linux_layouts() {
         msg_flags
     );
     same_layout!(super::mmsghdr, libc::mmsghdr, msg_hdr, msg_len);
+    #[cfg(not(target_env = "musl"))]
     same_layout!(
         super::cmsghdr,
         libc::cmsghdr,
@@ -151,6 +155,24 @@ fn linux_layouts() {
         cmsg_level,
         cmsg_type
     );
+    // musl spells `cmsg_len` as `socklen_t` plus an `int` of padding, so its `struct cmsghdr`
+    // is 4-aligned; ours (and the kernel's, whose `cmsg_len` is `__kernel_size_t`) is
+    // 8-aligned. Size and offsets are the same, and the CMSG_* macros of both libraries align
+    // to `size_t`, so a header we build or read sits where musl's would.
+    #[cfg(target_env = "musl")]
+    {
+        assert_eq!(size_of::<super::cmsghdr>(), size_of::<libc::cmsghdr>());
+        assert_eq!(align_of::<super::cmsghdr>(), 8);
+        assert_eq!(align_of::<libc::cmsghdr>(), 4);
+        assert_eq!(
+            offset_of!(super::cmsghdr, cmsg_level),
+            offset_of!(libc::cmsghdr, cmsg_level)
+        );
+        assert_eq!(
+            offset_of!(super::cmsghdr, cmsg_type),
+            offset_of!(libc::cmsghdr, cmsg_type)
+        );
+    }
     same_layout!(super::epoll_event, libc::epoll_event, events, u64);
     same_layout!(
         super::tls_crypto_info,

@@ -14,7 +14,11 @@
 //! 4a `CONNECT` and `BIND`, on the engine or blocking. The HTTP and WebSocket clients take SOCKS
 //! proxies through `only_ws::proxy::Proxy` (`socks5h://…`) with the same handshake.
 //!
-//! Not supported: GSSAPI authentication.
+//! GSS-API authentication (RFC 1961, method 1; ADR-071), server and client, with the
+//! per-message protection levels (integrity, confidentiality) or none: the GSS-API mechanism
+//! (Kerberos through the system library, SSPI, ...) is the application's, behind the
+//! [`gssapi::GssContext`] trait. Over GSS-API the server refuses `UDP ASSOCIATE` above level
+//! none, the client does not do UDP at all, and its blocking helpers need level none.
 //!
 //! Linux fast path (opt-in, [`ProxyConfig::sockmap`]): `CONNECT` tunnels (SOCKS and HTTP) are
 //! spliced in the kernel with `only::ebpf::Relay` once the upstream is connected, so their bytes
@@ -42,6 +46,7 @@ use std::{
 
 mod guard;
 use guard::Watch;
+pub mod gssapi;
 mod splice;
 use splice::SpliceCtl;
 pub use splice::spliced_tunnels;
@@ -57,6 +62,9 @@ use only_http::{
 /// off. The largest valid SOCKS5 message is 513 bytes; SOCKS4's user id and 4a's host name are
 /// NUL-terminated, so without a bound a client could make the buffer grow forever.
 const MAX_HANDSHAKE: usize = 4096;
+
+/// The same while GSS-API tokens are exchanged: one message (64 KiB token) and a little.
+const MAX_GSS_HANDSHAKE: usize = 4 + 65_535 + 4096;
 
 /// Queue size on the outgoing side above which reading from the incoming side pauses; also the
 /// most early data (sent before the upstream is connected) held for the upstream.
@@ -389,6 +397,13 @@ pub type Auth = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 /// Access-control hook: whether a [`Request`] may proceed.
 pub type Allow = Arc<dyn Fn(&Request<'_>) -> bool + Send + Sync>;
 
+/// GSS-API settings of a server.
+struct GssServer {
+    factory: gssapi::ServerFactory,
+    min: gssapi::Protection,
+    max: gssapi::Protection,
+}
+
 /// What a SOCKS client asks for, as the access-control hook ([`Socks::allow`]) sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -461,8 +476,9 @@ impl<'a> Request<'a> {
         self.client
     }
 
-    /// The SOCKS5 user name, when authentication is on ([`Socks::auth`]); the SOCKS4 user id
-    /// otherwise, if not empty.
+    /// The SOCKS5 user name, when authentication is on ([`Socks::auth`]), or the GSS-API
+    /// peer's name ([`gssapi::GssContext::peer_name`]); the SOCKS4 user id otherwise, if not
+    /// empty.
     pub fn user(&self) -> Option<&'a str> {
         self.user
     }
@@ -487,6 +503,7 @@ impl<'a> Request<'a> {
 pub struct Socks {
     engine: EngineRef,
     auth: Option<Auth>,
+    gss: Option<Arc<GssServer>>,
     allow: Option<Allow>,
     allow_socks4: bool,
     cfg: Arc<ProxyConfig>,
@@ -513,6 +530,7 @@ impl Socks {
         Socks {
             engine,
             auth: None,
+            gss: None,
             allow: None,
             allow_socks4: true,
             cfg: Arc::new(ProxyConfig::default()),
@@ -550,6 +568,36 @@ impl Socks {
     #[must_use]
     pub fn auth(mut self, check: impl Fn(&str, &str) -> bool + Send + Sync + 'static) -> Socks {
         self.auth = Some(Arc::new(check));
+        self.allow_socks4 = false;
+        self
+    }
+
+    /// Accepts GSS-API authentication (RFC 1961, method 1) and turns SOCKS4 off. `factory` makes
+    /// the acceptor's security context of each connection, on the logical pool (it may load a
+    /// keytab); `levels` are the per-message protection levels granted: a client asking for
+    /// less than the lowest gets the lowest, one asking for more than the highest gets the
+    /// highest (`Protection::None..=Protection::Confidentiality` grants what is asked; a range
+    /// whose end is below its start grants the start). With [`auth`](Self::auth) as well,
+    /// a client may use either; without, no-authentication is no longer accepted. The
+    /// context's [`peer_name`](gssapi::GssContext::peer_name) is the [`Request::user`] the
+    /// access-control hook sees.
+    ///
+    /// Protection levels other than none need the session's own transport: serve the server
+    /// on a plain TCP listener (not inside TLS), else such clients are refused. `UDP ASSOCIATE`
+    /// is refused (reply 7) at those levels, and the `sockmap` fast path does not apply to
+    /// their tunnels.
+    #[must_use]
+    pub fn gssapi(
+        mut self,
+        factory: impl Fn() -> std::io::Result<Box<dyn gssapi::GssContext>> + Send + Sync + 'static,
+        levels: std::ops::RangeInclusive<gssapi::Protection>,
+    ) -> Socks {
+        let (min, max) = levels.into_inner();
+        self.gss = Some(Arc::new(GssServer {
+            factory: Arc::new(factory),
+            min,
+            max: max.max(min),
+        }));
         self.allow_socks4 = false;
         self
     }
@@ -632,6 +680,12 @@ impl Socks {
 enum St {
     Greeting,
     Auth,
+    /// GSS-API: waiting for the client's next establishment token.
+    GssAuth,
+    /// GSS-API: an establishment step runs on the pool.
+    GssWait,
+    /// GSS-API: waiting for the protection-level message.
+    GssProt,
     Request,
     Socks4,
     /// Waiting for the upstream connection.
@@ -647,6 +701,11 @@ enum St {
 pub struct SocksSession {
     engine: EngineRef,
     auth: Option<Auth>,
+    gss: Option<Arc<GssServer>>,
+    /// In a mutex only to keep the session `Sync`; reached through `&mut self` (`get_mut`).
+    gss_ctx: Mutex<Option<Box<dyn gssapi::GssContext>>>,
+    /// The protection agreed over GSS-API (none otherwise).
+    protection: gssapi::Protection,
     allow: Option<Allow>,
     allow_socks4: bool,
     bind: bool,
@@ -685,6 +744,9 @@ impl Acceptor for Socks {
         SocksSession {
             engine: self.engine.clone(),
             auth: self.auth.clone(),
+            gss: self.gss.clone(),
+            gss_ctx: Mutex::new(None),
+            protection: gssapi::Protection::None,
             allow: self.allow.clone(),
             allow_socks4: self.allow_socks4,
             bind: self.bind,
@@ -703,6 +765,13 @@ impl Acceptor for Socks {
             bind_cancel: None,
             splice: SpliceCtl::new(self.cfg.sockmap.as_ref()),
         }
+    }
+
+    fn transport(&self) -> Option<Box<dyn only::Transport>> {
+        // Pass-through until a GSS-API client agrees on per-message protection.
+        self.gss
+            .as_ref()
+            .map(|_| Box::new(gssapi::GssLayer::passthrough()) as Box<dyn only::Transport>)
     }
 }
 
@@ -1057,14 +1126,55 @@ impl SocksSession {
                         return;
                     }
                     let methods = &b[2..2 + b[1] as usize];
-                    let want = if self.auth.is_some() { 2 } else { 0 };
                     let n = 2 + b[1] as usize;
-                    if !methods.contains(&want) {
+                    // GSS-API first, then username/password; none only when neither is on.
+                    let want = [
+                        (self.gss.is_some(), 1),
+                        (self.auth.is_some(), 2),
+                        (self.gss.is_none() && self.auth.is_none(), 0),
+                    ]
+                    .into_iter()
+                    .find(|(on, m)| *on && methods.contains(m))
+                    .map(|(_, m)| m);
+                    let Some(want) = want else {
                         return self.fail(c, vec![5, 0xff]);
-                    }
+                    };
                     let _ = c.send(&[5, want]);
                     self.buf.drain(..n);
-                    self.st = if want == 2 { St::Auth } else { St::Request };
+                    self.st = match want {
+                        1 => St::GssAuth,
+                        2 => St::Auth,
+                        _ => St::Request,
+                    };
+                }
+                St::GssWait => return,
+                St::GssAuth => {
+                    let msg = match gssapi::parse_msg(b) {
+                        Ok(Some(m)) => m,
+                        Ok(None) => return,
+                        Err(_) => return self.gss_abort(c),
+                    };
+                    let (gssapi::MTYP_AUTH, token, n) = msg else {
+                        return self.gss_abort(c);
+                    };
+                    let token = token.to_vec();
+                    self.buf.drain(..n);
+                    return self.gss_step(c, token);
+                }
+                St::GssProt => {
+                    let msg = match gssapi::parse_msg(b) {
+                        Ok(Some(m)) => m,
+                        Ok(None) => return,
+                        Err(_) => return self.gss_abort(c),
+                    };
+                    let (gssapi::MTYP_PROTECTION, token, n) = msg else {
+                        return self.gss_abort(c);
+                    };
+                    let token = token.to_vec();
+                    self.buf.drain(..n);
+                    if !self.gss_protection(c, &token) {
+                        return;
+                    }
                 }
                 St::Auth => {
                     // RFC 1929: VER=1 ULEN UNAME PLEN PASSWD
@@ -1102,7 +1212,10 @@ impl SocksSession {
                     let command = match cmd {
                         1 => Command::Connect,
                         2 if self.bind => Command::Bind,
-                        3 if self.udp => Command::UdpAssociate,
+                        // Datagrams are not wrapped: only without per-message protection.
+                        3 if self.udp && self.protection == gssapi::Protection::None => {
+                            Command::UdpAssociate
+                        }
                         _ => return self.fail(c, socks5_reply(REP_CMD, None)),
                     };
                     self.buf.drain(..4 + n);
@@ -1156,6 +1269,130 @@ impl SocksSession {
                     };
                 }
                 St::Connecting | St::Binding | St::Associated | St::Relaying => return,
+            }
+        }
+    }
+
+    /// The GSS-API context slot.
+    fn ctx(&mut self) -> &mut Option<Box<dyn gssapi::GssContext>> {
+        self.gss_ctx
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// RFC 1961: an establishment failure gets `VER = 1, MTYP = 0xff`, then the close.
+    fn gss_abort(&mut self, c: &Conn<Self>) {
+        *self.ctx() = None;
+        self.fail(c, gssapi::ABORT.to_vec());
+    }
+
+    /// Runs one establishment step on the logical pool (it may block: keytab, replay cache).
+    fn gss_step(&mut self, c: &Conn<Self>, token: Vec<u8>) {
+        let Some(gss) = self.gss.clone() else {
+            return self.gss_abort(c);
+        };
+        let ctx = self.ctx().take();
+        self.st = St::GssWait;
+        let r = c.spawn_blocking(
+            move || {
+                let mut ctx = match ctx {
+                    Some(ctx) => ctx,
+                    None => match (gss.factory)() {
+                        Ok(ctx) => ctx,
+                        Err(e) => return (None, Err(e)),
+                    },
+                };
+                let r = ctx.step(&token);
+                (Some(ctx), r)
+            },
+            |me: &mut SocksSession, c, (ctx, r)| {
+                if !matches!(me.st, St::GssWait) {
+                    return; // closed meanwhile
+                }
+                *me.ctx() = ctx;
+                let Ok(step) = r else {
+                    return me.gss_abort(c);
+                };
+                let mut out = Vec::new();
+                let (token, done) = match step {
+                    gssapi::GssStep::Continue(t) => (t, false),
+                    gssapi::GssStep::Complete(t) => (t, true),
+                };
+                if (!done || !token.is_empty())
+                    && gssapi::push_msg(&mut out, gssapi::MTYP_AUTH, &token).is_err()
+                {
+                    return me.gss_abort(c);
+                }
+                let _ = c.send_owned(out);
+                if done {
+                    me.user = me.ctx().as_ref().and_then(|x| x.peer_name());
+                    me.st = St::GssProt;
+                } else {
+                    me.st = St::GssAuth;
+                }
+                // Go on with what came meanwhile.
+                me.step(c);
+            },
+        );
+        if r.is_err() {
+            c.close();
+        }
+    }
+
+    /// The protection-level message: answers with the level and, unless it is none, turns
+    /// the session's transport on. `false` when the session failed.
+    fn gss_protection(&mut self, c: &Conn<Self>, token: &[u8]) -> bool {
+        let (Some(ctx), Some(gss)) = (
+            self.gss_ctx
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut(),
+            self.gss.as_ref(),
+        ) else {
+            self.gss_abort(c);
+            return false;
+        };
+        let Ok(asked) = gssapi::protection_of(ctx.as_mut(), token) else {
+            self.gss_abort(c);
+            return false;
+        };
+        let level = asked.clamp(gss.min, gss.max);
+        let mut out = Vec::new();
+        if gssapi::protection_msg(ctx.as_mut(), level, &mut out).is_err() {
+            self.gss_abort(c);
+            return false;
+        }
+        let _ = c.send_owned(out);
+        self.st = St::Request;
+        if level == gssapi::Protection::None {
+            *self.ctx() = None;
+            return true;
+        }
+        // What follows, in this read and later ones, is wrapped.
+        let Some(ctx) = self.ctx().take() else {
+            return false;
+        };
+        let pending = std::mem::take(&mut self.buf);
+        let mut plain = Vec::new();
+        let activated = c.with_transport(|t| {
+            t.as_any()
+                .downcast_mut::<gssapi::GssLayer>()
+                .map(|l| l.activate(ctx, level, &pending, &mut plain))
+        });
+        match activated {
+            Some(Some(Ok(()))) => {
+                self.protection = level;
+                self.buf = plain;
+                // The kernel cannot wrap: these tunnels stay in userspace.
+                self.splice = None;
+                true
+            }
+            _ => {
+                // No GSS-API layer under the session (served inside TLS), or the pending
+                // bytes did not unwrap.
+                c.close();
+                self.st = St::Relaying;
+                false
             }
         }
     }
@@ -1218,8 +1455,21 @@ impl Handler for SocksSession {
         }
         self.buf.extend_from_slice(data);
         self.step(c);
-        if matches!(self.st, St::Greeting | St::Auth | St::Request | St::Socks4)
-            && self.buf.len() > MAX_HANDSHAKE
+        let limit = if matches!(self.st, St::GssAuth | St::GssWait | St::GssProt) {
+            MAX_GSS_HANDSHAKE
+        } else {
+            MAX_HANDSHAKE
+        };
+        if matches!(
+            self.st,
+            St::Greeting
+                | St::Auth
+                | St::Request
+                | St::Socks4
+                | St::GssAuth
+                | St::GssWait
+                | St::GssProt
+        ) && self.buf.len() > limit
         {
             self.buf = Vec::new();
             self.st = St::Relaying; // ignore anything else

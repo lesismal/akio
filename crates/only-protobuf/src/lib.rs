@@ -8,7 +8,8 @@
 //! * [`well_known`]: `google.protobuf` `Empty`, `Timestamp`, `Duration`, `Any`, the wrappers,
 //!   `FieldMask`, `Struct` / `Value` / `ListValue`, with conversions to `std` types.
 //! * Decoding is bounded: messages and groups nest at most [`encoding::RECURSION_LIMIT`] deep,
-//!   lengths are checked against the input, strings must be UTF-8.
+//!   lengths are checked against the input, strings must be UTF-8 (except fields with
+//!   `features.utf8_validation = NONE`, which are [`ProtoString`]s: bytes, not checked).
 //!
 //! Messages are generated from `.proto` files by `only-protobuf-build` in `build.rs`
 //! (no `protoc`), and included with [`include_proto!`]:
@@ -73,12 +74,14 @@ mod extension;
 pub mod json;
 mod message;
 pub mod reflect;
+mod string;
 pub mod text;
 pub mod well_known;
 
 pub use error::{DecodeError, DecodeErrorKind};
 pub use extension::{Extendable, Extension, ExtensionSet, RepeatedExtension};
 pub use message::{Enumeration, Message, Name, UnknownFields};
+pub use string::ProtoString;
 
 /// Includes the code `only-protobuf-build` generated for a protobuf package:
 /// `include_proto!("helloworld")` includes `$OUT_DIR/helloworld.rs` (`_` for files without a

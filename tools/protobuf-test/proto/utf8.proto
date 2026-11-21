@@ -1,0 +1,29 @@
+// utf8_validation: VERIFY (the edition's default) and NONE on every kind of string field.
+edition = "2023";
+
+package test.utf8;
+
+message Strings {
+  string checked = 1;
+  string raw = 2 [features.utf8_validation = NONE];
+  repeated string raw_list = 3 [features.utf8_validation = NONE];
+  map<string, string> raw_map = 4 [features.utf8_validation = NONE];
+  map<string, string> checked_map = 5;
+  oneof choice {
+    string raw_choice = 6 [features.utf8_validation = NONE];
+    string checked_choice = 7;
+  }
+  string raw_default = 8 [features.utf8_validation = NONE, default = "d\303\251"];
+  string implicit_raw = 9 [
+    features.utf8_validation = NONE,
+    features.field_presence = IMPLICIT
+  ];
+  map<int32, string> raw_values = 10 [features.utf8_validation = NONE];
+
+  extensions 100 to 199;
+}
+
+extend Strings {
+  string raw_ext = 100 [features.utf8_validation = NONE];
+  string checked_ext = 101;
+}

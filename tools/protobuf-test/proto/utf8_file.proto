@@ -1,0 +1,12 @@
+// A file-wide utf8_validation = NONE, set back to VERIFY on one field.
+edition = "2023";
+
+package test.utf8f;
+
+option features.utf8_validation = NONE;
+
+message Relaxed {
+  string raw = 1;
+  string checked = 2 [features.utf8_validation = VERIFY];
+  map<string, string> raw_map = 3;
+}
