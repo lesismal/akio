@@ -2387,3 +2387,78 @@ fn write_context_map(w: &mut BitWriter, map: &[u8], ntrees: usize) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pieces of 4 KiB alternating between two random sources (lower-case letters and bytes
+    /// above 0x80): literals of two distributions, so block types pay.
+    pub(crate) fn interleaved(n: usize) -> Vec<u8> {
+        const LETTERS: &[u8; 16] = b"etaoin shrdlucmf";
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        (0..n)
+            .map(|i| {
+                let r = next();
+                if i / 4096 % 2 == 0 {
+                    LETTERS[(r % 16) as usize]
+                } else {
+                    0x80 | (r % 48) as u8
+                }
+            })
+            .collect()
+    }
+
+    /// The block types the level's splitter finds for `data` as one meta-block.
+    fn types(level: u8, data: &[u8]) -> (usize, usize, usize) {
+        let p = params(level);
+        let mut e = Encoder::new(p, window_bits(data.len()), data, 0);
+        let mut cmds = Vec::new();
+        if p.optimal > 0 {
+            e.parse_optimal(0, data.len(), &mut cmds);
+        } else {
+            e.parse_lazy(0, data.len(), &mut cmds);
+        }
+        let mut ring = e.last;
+        let coded: Vec<Coded> = cmds.iter().map(|c| code_command(c, &mut ring)).collect();
+        let mb = MetaBlock {
+            data,
+            start: 0,
+            end: data.len(),
+            last: true,
+            cmds: &cmds,
+            coded: &coded,
+        };
+        let model = literal_model(data, 0, &cmds, p.modes, 0);
+        let lay = if p.optimal > 0 {
+            split_layout(&mb, model.mode, p.split_iters)
+        } else {
+            greedy_layout(&mb, &model)
+        };
+        let lens: u64 = lay.lit.lens.iter().map(|&l| u64::from(l)).sum();
+        assert!(lay.lit.ntypes == 1 || lens >= mb.cmds.iter().map(|c| u64::from(c.insert)).sum());
+        (lay.lit.ntypes, lay.cmd.ntypes, lay.dist.ntypes)
+    }
+
+    #[test]
+    fn block_types() {
+        let data = interleaved(60_000);
+        for level in [4, 5, 9, 10, 11] {
+            let (lit, _, _) = types(level, &data);
+            assert!(lit >= 2, "level {level}: {lit} literal block types");
+            let z = compress(Level::new(u32::from(level)), &data);
+            assert!(crate::decompress(&z, data.len()).unwrap() == data);
+            // The stream uses them: a one-bit window header, ISLAST, ISLASTEMPTY, MNIBBLES
+            // and a 16-bit MLEN - 1, then NBLTYPESL (a first bit of 1: two or more).
+            assert_eq!(z[2] >> 5 & 1, 1, "level {level}: NBLTYPESL");
+        }
+        // Too short to split.
+        assert_eq!(types(11, &data[..2000]).0, 1);
+    }
+}

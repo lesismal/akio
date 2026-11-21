@@ -150,6 +150,20 @@ fn corpora() -> Vec<(&'static str, Vec<u8>)> {
         ("long-period", random(40_000, 3).repeat(4)),
         // Repeats of a 300-byte pattern: very long matches.
         ("period-300", random(300, 4).repeat(1000)),
+        // Pieces of 4 KiB from two sources (letters, bytes above 0x80): block types.
+        ("interleaved", {
+            let mut r = Rng(9);
+            (0..300_000)
+                .map(|i| {
+                    let v = r.next();
+                    if i / 4096 % 2 == 0 {
+                        b"etaoin shrdlucmf"[(v % 16) as usize]
+                    } else {
+                        0x80 | (v % 48) as u8
+                    }
+                })
+                .collect()
+        }),
         // Text, then random bytes, then text again (an uncompressed meta-block in between).
         ("mixed", {
             let mut v = text(1_200_000, 5);
