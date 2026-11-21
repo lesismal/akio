@@ -942,17 +942,13 @@ pub(super) fn greedy<T: Copy + Into<usize>>(
     out
 }
 
-/// `split` if its block types save at least 1% of the estimated bits of `data` (symbols below
-/// `size`) with one code, the block switches and the codes of the types included; else one
-/// block type.
-pub(super) fn paying<T: Copy + Into<usize>>(
+/// The estimated bits of `data` (symbols below `size`) with one code and with the block types
+/// of `split` (their codes and block switches included).
+pub(super) fn split_gain<T: Copy + Into<usize>>(
     data: &[T],
     size: usize,
-    split: BlockSplit,
-) -> BlockSplit {
-    if split.ntypes == 1 {
-        return split;
-    }
+    split: &BlockSplit,
+) -> (f64, f64) {
     let mut all = Histo::new(size);
     let mut types = vec![Histo::new(size); split.ntypes];
     let mut pos = 0;
@@ -966,13 +962,15 @@ pub(super) fn paying<T: Copy + Into<usize>>(
     for h in &types {
         all.add_histo(h);
     }
+    let one = population_cost(&all);
+    if split.ntypes == 1 {
+        return (one, one);
+    }
     // A block switch: a type code and a count code with its extra bits, about 8 bits; the
     // codes for them about 64 bits.
     let switches = 8.0 * split.types.len() as f64 + 64.0;
-    let apart: f64 = types.iter().map(population_cost).sum::<f64>() + switches;
-    if apart < 0.99 * population_cost(&all) {
-        split
-    } else {
-        BlockSplit::single()
-    }
+    (
+        one,
+        types.iter().map(population_cost).sum::<f64>() + switches,
+    )
 }
