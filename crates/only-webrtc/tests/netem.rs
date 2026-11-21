@@ -1,5 +1,5 @@
 //! FEC and pacing between two `Endpoint`s over a loopback interface that `tc netem` makes lossy
-//! (ADR-068). Opt-in: `ONLY_NETEM_TEST=1` with the loss already set up, for example in a
+//! (ADR-073). Opt-in: `ONLY_NETEM_TEST=1` with the loss already set up, for example in a
 //! container with `NET_ADMIN`:
 //!
 //! ```text

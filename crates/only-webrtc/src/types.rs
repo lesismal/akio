@@ -751,7 +751,7 @@ pub(crate) struct ConfigInner {
     pub(crate) ulpfec_level0: Option<usize>,
     /// Bounds of the bandwidth estimate (bits per second).
     pub(crate) bwe_bounds: (u64, u64),
-    /// Media is paced while the estimator runs (ADR-068).
+    /// Media is paced while the estimator runs (ADR-073).
     pub(crate) pacing: bool,
     /// Padding the pacer sends while it has no media (bits per second, at most the estimate).
     pub(crate) padding_rate: u64,
@@ -988,7 +988,7 @@ impl RtcConfig {
 
     /// Bounds of the FEC protection factor, in FEC packets per 256 media packets (at least
     /// one FEC packet protects each group while the factor is not 0). Within them the
-    /// factors (of delta and key frames) follow libwebrtc's policy (ADR-068): the code rate of
+    /// factors (of delta and key frames) follow libwebrtc's policy (ADR-073): the code rate of
     /// its table for the loss the remote receiver reports (the maximum of the last 10 s) and
     /// the bits per frame; when the receiver NACKs, none on delta frames below 20 ms of RTT,
     /// groups over more frames as the RTT grows, and none for small frames below 200 ms.

@@ -932,7 +932,7 @@ pub(crate) struct Rtc {
     rtcp: rtcp_mux::RtcpComponent,
     /// The SDES items last received per remote SSRC.
     remote_sdes: HashMap<u32, Vec<only_rtp::SdesItem>>,
-    /// The pacer of the send path (ADR-068): queued media while the estimator is on.
+    /// The pacer of the send path (ADR-073): queued media while the estimator is on.
     pacer: pacing::Pacer,
     /// The ECN codepoint of the datagram being received ([`Rtc::set_rx_ecn`]).
     rx_ecn: u8,

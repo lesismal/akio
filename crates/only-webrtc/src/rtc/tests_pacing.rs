@@ -1,4 +1,4 @@
-//! ADR-068 in simulated time: the pacer (spread video, audio on time, retransmissions first),
+//! ADR-073 in simulated time: the pacer (spread video, audio on time, retransmissions first),
 //! probing on a raised maximum, ECN in RFC 8888 feedback, RED for PCMU, partially rebuilt
 //! ULPFEC packets.
 

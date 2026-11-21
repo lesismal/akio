@@ -1,5 +1,5 @@
 //! libwebrtc's FEC masks and group rules, the protection policy, partially rebuilt packets and
-//! the E-model (ADR-068).
+//! the E-model (ADR-073).
 
 use std::time::{Duration, Instant};
 

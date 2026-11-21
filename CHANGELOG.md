@@ -12,7 +12,7 @@ All notable changes to `only` are documented here. The format follows
 
 ### Added: a pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, network-state and raised-maximum probing (only-webrtc, only-rtp)
 
-ADR-068 (docs/adr/068-webrtc-pacer-fec-policy-ecn.md):
+ADR-073 (docs/adr/073-webrtc-pacer-fec-policy-ecn.md):
 
 - **Pacer** (only-webrtc): with the bandwidth estimator on, video, FEC and retransmissions leave
   through a queue drained at 2.5 times the estimate with a 40 ms burst allowance

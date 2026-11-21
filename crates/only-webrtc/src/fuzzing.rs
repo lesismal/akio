@@ -13,7 +13,7 @@ fn fresh(lite: bool, cfg: ConfigInner) -> Option<Rtc> {
 /// The configurations an SDP is tried with: the default, every ADR-039 and ADR-048 option
 /// on (FEC as `fec`), SDES-SRTP on (ADR-054), and RTCP without rtcp-mux offered with XR
 /// receipt blocks and ULPFEC levels (ADR-058; its peers get component-2 candidates), and video
-/// RED without FEC with RED for the other audio codecs (ADR-068).
+/// RED without FEC with RED for the other audio codecs (ADR-073).
 fn configs() -> [ConfigInner; 6] {
     let full = |fec| ConfigInner {
         fec: Some(fec),

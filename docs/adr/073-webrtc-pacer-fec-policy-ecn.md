@@ -1,6 +1,6 @@
-# ADR-068: A pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, and more probing
+# ADR-073: A pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, and more probing
 
-English | [简体中文](068-webrtc-pacer-fec-policy-ecn.zh-CN.md)
+English | [简体中文](073-webrtc-pacer-fec-policy-ecn.zh-CN.md)
 
 Status: accepted (2026-11-21)
 

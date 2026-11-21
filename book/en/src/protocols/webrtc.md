@@ -310,7 +310,7 @@ let cfg = only_webrtc::rtc_config()
   before the frame assembler and NACK (repaired packets are not NACKed, but receiver reports
   still count them as lost, as Chrome's do); a packet FEC could only rebuild in part (ULPFEC
   levels) is handed to the depacketizer once a later frame arrives, and its frame comes with
-  `contiguous: false`. Groups are protected as libwebrtc protects them (ADR-068): its mask tables
+  `contiguous: false`. Groups are protected as libwebrtc protects them (ADR-073): its mask tables
   for groups of up to 12 packets, and its protection policy, which takes the loss before repair
   (the reported loss, or the share of packets the receiver had retransmitted; the maximum of the
   last 10 s), the bits per frame and, when the receiver NACKs, the round-trip time: no FEC on
@@ -425,12 +425,12 @@ down. On a simulated 10 Mbps link a sender starting at 300 kbps reaches 90 % in 
 
 The estimate's bounds are `set_bwe_bounds(min, max)` (30 kbps and 20 Mbps by default);
 `Peer::set_bitrate_bounds` changes them on a running peer, and a raised maximum is probed at
-once (ADR-068). only-rtp's `BandwidthEstimator::set_network_state_estimate` also takes an
+once (ADR-073). only-rtp's `BandwidthEstimator::set_network_state_estimate` also takes an
 external link-capacity estimate, toward which it probes and above which it never does.
 
 ### Pacing
 
-With the estimator on, sent media is paced (ADR-068), as libwebrtc paces it: video, FEC and
+With the estimator on, sent media is paced (ADR-073), as libwebrtc paces it: video, FEC and
 retransmissions leave through a queue drained at 2.5 times the estimate, and up to 40 ms worth
 of bytes may leave at once, so an ordinary frame goes out whole while a keyframe is spread out
 (at a 1 Mbps estimate a 60 kB keyframe takes about 150 ms). Retransmissions go first; audio is
@@ -568,5 +568,5 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 TCP relays (RFC 6062); sending ECN-capable packets; SRTP MKIs in
 WebRTC; SDES-SRTP without ICE or next to data channels; without rtcp-mux, several media
 sections or data channels in one session, server-reflexive and relayed RTCP candidates and
-`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058 and ADR-068
+`RtcServer`. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058 and ADR-073
 have the details of what was added.

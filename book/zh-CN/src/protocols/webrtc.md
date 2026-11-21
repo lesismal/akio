@@ -257,7 +257,7 @@ let cfg = only_webrtc::rtc_config()
   所修复的 RID，因此只用于对端也是本栈时。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被
   NACK，但接收报告仍把它们算作丢失，与 Chrome 一致）；FEC 只能部分重建的包（ULPFEC 保护级别）在后一帧
   到达时交给 depacketizer，其所在帧以 `contiguous: false` 交出。分组保护方式与 libwebrtc 相同
-  （ADR-068）：最多 12 个包的组用它的掩码表；保护策略综合修复前丢包率（报告的丢包，或接收方要求重传的
+  （ADR-073）：最多 12 个包的组用它的掩码表；保护策略综合修复前丢包率（报告的丢包，或接收方要求重传的
   包所占比例；取最近 10 s 的最大值）、每帧比特数，以及接收方 NACK 时的往返时间：RTT 低于 20 ms 时 delta
   帧不加 FEC，RTT 越大一组跨越的帧越多，RTT 低于 200 ms 时小帧不加 FEC。关键帧保护更多。
   `set_fec_protection` 限定保护因子；`min` 大于 0 时从一开始就保护。
@@ -350,12 +350,12 @@ let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolic
 一直停在起始值）。
 
 估计值的上下限为 `set_bwe_bounds(min, max)`（默认 30 kbps 与 20 Mbps）；`Peer::set_bitrate_bounds`
-在运行中的 peer 上修改，调高的上限会立即被探测（ADR-068）。only-rtp 的
+在运行中的 peer 上修改，调高的上限会立即被探测（ADR-073）。only-rtp 的
 `BandwidthEstimator::set_network_state_estimate` 还接受外部的链路容量估计：向它探测，且从不超过它。
 
 ### 发送节拍（pacing）
 
-估计器打开时，发送的媒体按节拍发出（ADR-068），与 libwebrtc 相同：视频、FEC 与重传经一个队列发出，
+估计器打开时，发送的媒体按节拍发出（ADR-073），与 libwebrtc 相同：视频、FEC 与重传经一个队列发出，
 排空速率为估计值的 2.5 倍，一次最多可发出 40 ms 的字节量，所以普通帧整帧发出，关键帧被摊开（1 Mbps
 估计值下 60 kB 的关键帧约需 150 ms）。重传优先；音频从不排队。transport-wide 序号与 abs-send-time 在
 包离开时写入，因此估计器看到的是真实发送时间。`set_padding_rate(bps)` 在无数据可发时加入填充（近期
@@ -475,4 +475,4 @@ DTLS 1.2。
 TCP 中继（RFC 6062）；发送支持 ECN 的包；WebRTC 中的 SRTP MKI；无 ICE
 或与数据通道并存的 SDES-SRTP；不复用 RTCP 时一个会话中的多个媒体段或数据通道、RTCP 的 server-reflexive
 与中继候选以及 `RtcServer`。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、
-ADR-054、ADR-058 与 ADR-068。
+ADR-054、ADR-058 与 ADR-073。

@@ -1,6 +1,6 @@
-# ADR-068：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测
+# ADR-073：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测
 
-[English](068-webrtc-pacer-fec-policy-ecn.md) | 简体中文
+[English](073-webrtc-pacer-fec-policy-ecn.md) | 简体中文
 
 状态：已采纳（2026-11-21）
 

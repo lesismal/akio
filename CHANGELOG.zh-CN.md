@@ -12,7 +12,7 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ### 新增：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN、网络状态估计与调高上限时的探测（only-webrtc、only-rtp）
 
-ADR-068（docs/adr/068-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
+ADR-073（docs/adr/073-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
 
 - **Pacer**（only-webrtc）：带宽估计器打开时，视频、FEC 与重传经一个队列发出，排空速率为估计值的
   2.5 倍，突发额度 40 ms（重传优先；队列上限 8192 个包 / 8 MB；最老的包将等待 2 s 时加速排空）；音频从不

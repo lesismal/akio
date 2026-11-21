@@ -1,4 +1,4 @@
-//! The send path's pacing and probing (ADR-050, ADR-068).
+//! The send path's pacing and probing (ADR-050, ADR-073).
 //!
 //! - **Pacer** (libwebrtc's `PacingController`): with the bandwidth estimator on, video, FEC
 //!   and retransmissions leave through a queue drained at 2.5 times the estimate, with a
