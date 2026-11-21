@@ -8,7 +8,8 @@
 //! responder), where queries go to the group and the answers come back by multicast; if that
 //! port cannot be bound, an ephemeral port, from which queries are "legacy unicast" one-shot
 //! queries (RFC 6762 §6.7: responders answer to the source port) and nothing can be concealed
-//! over that family. A host without IPv6 runs IPv4 only, as before.
+//! over that family (names are still answered over the other one: an IPv6-only link, where
+//! `224.0.0.251` has no route, conceals over `ff02::fb`). A host without IPv6 runs IPv4 only.
 //!
 //! IPv6 multicast is link-scoped: a query goes to `ff02::fb` on each interface the endpoint
 //! knows (the scope ids of its link-local IPv6 host candidates, and the default multicast
@@ -234,9 +235,10 @@ impl Mdns {
         self.socks.get().map_or(&[], Vec::as_slice)
     }
 
-    /// Whether names can be answered (the IPv4 socket is on the shared mDNS port).
+    /// Whether names can be answered: a socket of either family is on the shared mDNS port
+    /// (on an IPv6-only link the IPv4 one is not, and answers go over IPv6 only).
     pub(crate) fn can_respond(&self) -> bool {
-        self.socks().first().is_some_and(|s| s.shared)
+        self.socks().iter().any(|s| s.shared)
     }
 
     pub(crate) fn close(&self) {
@@ -446,7 +448,7 @@ impl Mdns {
                 let Some(q) = st.queries.remove(name) else {
                     continue;
                 };
-                only_log::debug!(target: "only_webrtc", "mdns: {name} is {ips:?}");
+                only_log::debug!(target: "only_webrtc", "mdns: {name} is {ips:?} (from {src})");
                 done.push((ips, q.waiters, name.to_owned()));
             }
         }

@@ -93,7 +93,9 @@ Chrome 互相解析对方名字后连通；两种 DTLS 角色的 DTLS 1.3；在 
 TMMBR、双向丢包下的 Opus RED、simulcast 上 Chrome 的按层 ULPFEC：`tools/interop/webrtc/fec.sh`；以 Chrome 为接收方时估计值的爬升（探测）：
 `tools/interop/webrtc/bwe.sh`；与无头 Firefox
 双向互通（与 usrsctp 之间的数据通道）：`tools/interop/webrtc/firefox.sh`；coturn 的 DTLS 监听器（经
-`turns:...?transport=udp` 由它中继的 `Endpoint`）：`tools/interop/webrtc/turn-dtls.sh`。STUN 与 TURN
+`turns:...?transport=udp` 由它中继的 `Endpoint`）：`tools/interop/webrtc/turn-dtls.sh`；纯 IPv6 链路上
+的 IPv6 mDNS（avahi 解析我方被隐藏的名字并发布由我方解析的名字）：`tools/interop/webrtc/mdns6.sh`
+（经 IPv6 与 Chrome 的互通在 `browser.sh` 中）。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
 与 Chrome（`max-compat`）双向的无 BUNDLE 互通：`tools/interop/webrtc/bundle.sh`。

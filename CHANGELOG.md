@@ -49,6 +49,23 @@ ADR-074 (docs/adr/074-compressed-streamed-responses.md), additive:
   26%, HTML to 18% / 6.1% / 5.4%. Server RSS per held stream (1,000 streams) 148 / 112 /
   424 KiB after 3 events and 268 / 324 / 1,106 KiB after 6,000, against 1.2-2.6 KiB uncompressed; docs/BENCHMARKS.md).
 
+### Added: mDNS over IPv6 with hop limit 255, on IPv6-only links (only-sys, only, only-webrtc)
+
+ADR-078 (docs/adr/078-mdns-ipv6-hop-limit-ipv6-only.md), additive:
+
+- `only_sys::set_multicast_hops_v6` / `multicast_hops_v6` (`IPV6_MULTICAST_HOPS`, which std
+  lacks). `Engine::bind_udp_multicast_on` with an IPv6 group now sends with hop limit 255 and
+  multicast loopback on, as the IPv4 path sends with TTL 255 (RFC 6762 §11; avahi with
+  `check-response-ttl=yes` ignored IPv6 answers sent with the default hop limit 1).
+- `Endpoint::conceal_host_candidates` works when the IPv4 or the IPv6 mDNS socket holds the
+  shared port: on an IPv6-only link (no route to `224.0.0.251`) names are answered over
+  `ff02::fb` instead of the call failing.
+- `tools/interop/webrtc/mdns6.sh`: an IPv6-only container (veth, link-local and ULA addresses)
+  running the mDNS tests on epoll and io_uring, and avahi 0.8 resolving our concealed name and
+  publishing one we resolve and connect to; `browser.sh` checks Chrome 157 against an endpoint
+  whose only host candidate is a concealed IPv6 address. New `webrtc-interop` modes
+  `mdns-conceal` and `mdns-resolve`.
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:

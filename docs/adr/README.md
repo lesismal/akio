@@ -76,3 +76,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-072: Transports without BUNDLE or ICE, SDES variants, data channel priorities and TURN DTLS connection IDs](072-webrtc-transports-sdes-priorities-turn-cids.md) (accepted 2026-11-21)
 - [ADR-073: A pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, and more probing](073-webrtc-pacer-fec-policy-ecn.md) (accepted 2026-11-21)
 - [ADR-074: Compressed streamed responses in only-http](074-compressed-streamed-responses.md) (accepted 2026-11-21)
+- [ADR-078: mDNS over IPv6: hop limit 255, IPv6-only links, interop with Chrome, avahi and mDNSResponder](078-mdns-ipv6-hop-limit-ipv6-only.md) (accepted 2026-11-22)

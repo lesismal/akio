@@ -220,6 +220,38 @@ pub fn listen_udp(addr: SocketAddr, reuseport: bool) -> io::Result<std::net::Udp
     Ok(std::net::UdpSocket::from(fd))
 }
 
+/// Sets the hop limit of the IPv6 multicast datagrams `socket` sends (`IPV6_MULTICAST_HOPS`):
+/// the IPv6 counterpart of `UdpSocket::set_multicast_ttl_v4`, which std lacks. 0 to 255; the
+/// kernel's default is 1 (the link). mDNS sends with 255 (RFC 6762 §11), as some responders
+/// check it on reception.
+pub fn set_multicast_hops_v6(socket: &std::net::UdpSocket, hops: u32) -> io::Result<()> {
+    let hops = ffi::c_int::try_from(hops)
+        .ok()
+        .filter(|h| *h <= 255)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "hop limit above 255"))?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(socket);
+    setsockopt_int(raw, ffi::IPPROTO_IPV6, ffi::IPV6_MULTICAST_HOPS, hops)
+}
+
+/// The hop limit of the IPv6 multicast datagrams `socket` sends (see
+/// [`set_multicast_hops_v6`]).
+pub fn multicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(socket);
+    let mut v: ffi::c_int = 0;
+    let mut len = size_of::<ffi::c_int>() as ffi::socklen_t;
+    // SAFETY: `v` is valid for `len` bytes of writes; the kernel writes at most `len`.
+    cvt(unsafe {
+        ffi::getsockopt(
+            raw,
+            ffi::IPPROTO_IPV6,
+            ffi::IPV6_MULTICAST_HOPS,
+            (&raw mut v).cast::<ffi::c_void>(),
+            &raw mut len,
+        )
+    })?;
+    Ok(u32::try_from(v).unwrap_or(0))
+}
+
 /// Starts a non-blocking connect. The stream becomes writable when the connect finished; check
 /// `TcpStream::take_error` then.
 pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
@@ -297,5 +329,29 @@ pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Resul
             return Err(e);
         }
         Ok(len as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multicast_hops_v6_round_trip() {
+        let Ok(s) = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)) else {
+            return; // no IPv6 on this host
+        };
+        assert_eq!(multicast_hops_v6(&s).unwrap(), 1, "kernel default");
+        set_multicast_hops_v6(&s, 255).unwrap();
+        assert_eq!(multicast_hops_v6(&s).unwrap(), 255);
+        set_multicast_hops_v6(&s, 0).unwrap();
+        assert_eq!(multicast_hops_v6(&s).unwrap(), 0);
+        let e = set_multicast_hops_v6(&s, 256).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            multicast_hops_v6(&s).unwrap(),
+            0,
+            "unchanged by the refused value"
+        );
     }
 }

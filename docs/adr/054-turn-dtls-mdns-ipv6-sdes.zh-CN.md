@@ -133,3 +133,7 @@ coturn 的 DTLS 监听器（提供 DTLS 1.3，协商为 1.2）；两个 `Endpoin
 未做：带 MKI 或会话参数的 SDES、无 ICE 的 SDES（普通 `c=` / 端口媒体）、与 SDES 并存的数据通道；
 带连接 ID 的 DTLS 上的 TURN；除 mDNS 或入站流量之外其他途径学到的链路本地地址上的 ICE。留给
 `only-ice` 的后续工作：在 `MULTICAST_V4` 旁导出 `MULTICAST_V6`，并让解析出的候选携带作用域 ID。
+
+此后已完成（2026-11-22，ADR-078）：IPv6 mDNS 以跳数限制 255 发送（only-sys 新增
+`set_multicast_hops_v6`），纯 IPv6 链路上也能隐藏名字（IPv4 套接字没有共享端口时由 IPv6 套接字应答），
+并与 Chrome 157、avahi 0.8（仅 IPv6，`check-response-ttl=yes`）和 mDNSResponder 互通验证。

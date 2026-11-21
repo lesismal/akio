@@ -2021,8 +2021,9 @@ impl Endpoint {
     /// threads: [`only::EngineBuilder::udp_client_threads`] or a UDP listener, and must be
     /// started): the mDNS port 5353 shared with the system's responder and the
     /// `224.0.0.251` group, or, when that port cannot be bound, an ephemeral port asking for
-    /// unicast answers (then [`conceal_host_candidates`](Self::conceal_host_candidates) is
-    /// not available). With IPv6, a second socket does the same over `ff02::fb`, joined on
+    /// unicast answers (when neither family has the shared port,
+    /// [`conceal_host_candidates`](Self::conceal_host_candidates) is not available). With
+    /// IPv6, a second socket does the same over `ff02::fb`, joined on
     /// every interface with a link-local address: queries go out on each, answers go back on
     /// the link of their query, and a resolved link-local address is reached through the
     /// interface its answer came from (ADR-054). Once per endpoint.
@@ -2044,8 +2045,9 @@ impl Endpoint {
     /// candidate with a random mDNS name (`<uuid>.local`, one per address) instead of its
     /// IP, and the related address of server-reflexive and relayed candidates as
     /// `0.0.0.0:0`; the endpoint answers mDNS queries for those names on the local network.
-    /// Needs [`resolve_mdns`](Self::resolve_mdns) first, on the shared mDNS port
-    /// ([`Error::Io`] otherwise). The remote must resolve the names (browsers do) or reach
+    /// Needs [`resolve_mdns`](Self::resolve_mdns) first, with the shared mDNS port bound
+    /// over IPv4 or IPv6 ([`Error::Io`] otherwise; on an IPv6-only link the names are
+    /// answered over `ff02::fb` only). The remote must resolve the names (browsers do) or reach
     /// this endpoint through other candidates. Applies to the peers created after the call.
     pub fn conceal_host_candidates(&self) -> Result<(), Error> {
         match self.0.mdns.get() {

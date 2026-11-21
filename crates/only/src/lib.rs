@@ -987,7 +987,8 @@ impl Engine {
     /// the group `group.ip()` on the default interface and serves the socket with `acceptor`:
     /// datagrams sent to the group (or to the port) arrive from their sources as on any bound
     /// socket, and [`UdpBinding::send_to`] with `group` multicasts (looped back to this host's
-    /// members too). For multicast protocols such as mDNS (RFC 6762). Needs
+    /// members too) with a TTL / hop limit of 255. For multicast protocols such as mDNS (RFC
+    /// 6762). Needs
     /// [`EngineBuilder::udp_client_threads`] or a UDP listener; the engine must have been
     /// [`start`](Self::start)ed.
     pub fn bind_udp_multicast<A: Acceptor>(
@@ -1049,6 +1050,7 @@ impl Engine {
             std::net::IpAddr::V4(ip) => {
                 sock.join_multicast_v4(&ip, &std::net::Ipv4Addr::UNSPECIFIED)?;
                 sock.set_multicast_ttl_v4(255)?;
+                sock.set_multicast_loop_v4(true)?;
             }
             std::net::IpAddr::V6(ip) => {
                 let mut last = None;
@@ -1062,6 +1064,10 @@ impl Engine {
                 if !joined {
                     return Err(last.unwrap_or_else(|| io::Error::other("no interface")));
                 }
+                // As the IPv4 TTL above: 255, which link-local protocols (mDNS, RFC 6762 §11)
+                // send with and some receivers check; the kernel's default is 1.
+                only_sys::set_multicast_hops_v6(&sock, 255)?;
+                sock.set_multicast_loop_v6(true)?;
             }
         }
         sock.set_nonblocking(true)?;

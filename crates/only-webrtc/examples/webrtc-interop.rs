@@ -43,6 +43,15 @@
 //!                                                      two Endpoints with relayed candidates only
 //!                                                      from that server (UDP, TCP, TLS or DTLS),
 //!                                                      a data channel echo between them
+//! webrtc-interop mdns-conceal <udp-addr> <secs>        an Endpoint on <udp-addr> concealing its
+//!                                                      host candidate: prints "name <uuid>.local"
+//!                                                      and answers mDNS queries for <secs> s
+//! webrtc-interop mdns-resolve <addr-a> <addr-b> <name> two Endpoints: B (on <addr-b>) offers its
+//!                                                      host candidate as <name>, which another
+//!                                                      responder publishes; A (on <addr-a>)
+//!                                                      resolves it over mDNS and connects (B gets
+//!                                                      no candidates, so only A's resolution can
+//!                                                      connect them), 20 data channel echoes
 //! ```
 //! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
 //!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
@@ -892,6 +901,106 @@ fn relay_echo(url: &str, user: &str, pass: &str) {
     b.close();
 }
 
+/// An engine with one UDP and one TCP I/O thread, started.
+fn small_engine() -> Arc<Engine> {
+    let engine = Arc::new(
+        Engine::builder()
+            .udp_client_threads(1)
+            .client_threads(1)
+            .build()
+            .expect("engine"),
+    );
+    engine.start().expect("start");
+    engine
+}
+
+fn mdns_conceal(bind: SocketAddr, secs: u64) {
+    let engine = small_engine();
+    let ep = Endpoint::bind(&engine, bind).expect("bind");
+    ep.resolve_mdns(&engine, Duration::from_secs(5))
+        .expect("mdns");
+    ep.conceal_host_candidates().expect("conceal");
+    let (peer, offer) = ep
+        .create_offer(EchoBack, |api| {
+            api.add_channel("x");
+        })
+        .expect("offer");
+    let name = offer
+        .lines()
+        .filter(|l| l.starts_with("a=candidate") && l.contains(" typ host"))
+        .find_map(|l| {
+            l.split_whitespace()
+                .nth(4)
+                .filter(|a| a.ends_with(".local"))
+        })
+        .expect("a concealed host candidate")
+        .to_owned();
+    println!("name {name}");
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(Duration::from_secs(secs));
+    peer.close();
+    ep.close();
+}
+
+fn mdns_resolve(a_bind: SocketAddr, b_bind: SocketAddr, name: &str) {
+    let engine = small_engine();
+    let a = Endpoint::bind(&engine, a_bind).expect("bind a");
+    a.resolve_mdns(&engine, Duration::from_secs(10))
+        .expect("mdns");
+    let b = Endpoint::bind(&engine, b_bind).expect("bind b");
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pb, offer) = b
+        .create_offer(Collect(Mutex::new(tx)), |api| {
+            ch = Some(api.add_channel("echo"));
+        })
+        .expect("offer");
+    // B's host candidate as `name`; its other candidates dropped.
+    let ip = b_bind.ip().to_string();
+    let offer: String = offer
+        .lines()
+        .filter_map(|l| {
+            if !l.starts_with("a=candidate") {
+                return Some(format!("{l}\r\n"));
+            }
+            let mut f: Vec<&str> = l.split(' ').collect();
+            (f.len() > 7 && f[2] == "udp" && f[4] == ip && f[7] == "host").then(|| {
+                f[4] = name;
+                format!("{}\r\n", f.join(" "))
+            })
+        })
+        .collect();
+    assert!(offer.contains(name), "{offer}");
+    let (_pa, answer) = a.accept_offer(&offer, EchoBack).expect("answer");
+    // B gets none of A's candidates: A's checks (to the resolved address) connect them.
+    pb.accept_answer(&filter_candidates(&answer, |_| false))
+        .expect("accept");
+    let ch = ch.expect("channel");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut back = 0;
+    while back < 20 {
+        assert!(
+            Instant::now() < deadline,
+            "mdns-resolve: timed out ({back} back)"
+        );
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(None) => pb.send(ch, b"resolved 0", true).map(drop).expect("send"),
+            Ok(Some(d)) => {
+                assert_eq!(d, format!("resolved {back}").as_bytes());
+                back += 1;
+                if back < 20 {
+                    let m = format!("resolved {back}");
+                    pb.send(ch, m.as_bytes(), true).map(drop).expect("send");
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    println!("ok: {name} resolved over mDNS, data channel, 20 echoes");
+    a.close();
+    b.close();
+}
+
 /// Sends `None` when the channel opens, then each message.
 struct Collect(Mutex<Sender<Option<Vec<u8>>>>);
 impl PeerHandler for Collect {
@@ -935,6 +1044,14 @@ fn main() {
         Some("turn") => turn(a[2].parse().expect("udp"), &a[3], &a[4], &a[5], &a[6..]),
         Some("turn-client") => turn_client(&a[2], &a[3], &a[4], &a[5]),
         Some("relay-echo") => relay_echo(&a[2], &a[3], &a[4]),
+        Some("mdns-conceal") => {
+            mdns_conceal(a[2].parse().expect("addr"), a[3].parse().expect("secs"));
+        }
+        Some("mdns-resolve") => mdns_resolve(
+            a[2].parse().expect("addr a"),
+            a[3].parse().expect("addr b"),
+            &a[4],
+        ),
         _ => eprintln!("usage: webrtc-interop server|client|turn|turn-client ..."),
     }
 }

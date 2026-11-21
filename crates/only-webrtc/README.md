@@ -112,7 +112,9 @@ with headless Chrome: `tools/interop/webrtc/fec.sh`; the estimate's ramp-up with
 receiver (probing): `tools/interop/webrtc/bwe.sh`; headless Firefox in both
 offer directions (data channels against usrsctp): `tools/interop/webrtc/firefox.sh`; coturn's DTLS
 listener (`Endpoint`s relayed through it over `turns:...?transport=udp`):
-`tools/interop/webrtc/turn-dtls.sh`. STUN and TURN servers are in
+`tools/interop/webrtc/turn-dtls.sh`; mDNS over IPv6 on an IPv6-only link, with avahi resolving
+our concealed names and publishing names we resolve: `tools/interop/webrtc/mdns6.sh` (Chrome
+over IPv6 is in `browser.sh`). STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
 Without BUNDLE against Chrome (`max-compat`), both directions: `tools/interop/webrtc/bundle.sh`.
