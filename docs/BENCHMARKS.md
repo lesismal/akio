@@ -1691,6 +1691,25 @@ driver. This measures the protocol code and its I/O loop only.
 The UDP row swings by 2.5× between runs (it is one exchange at a time, so it measures the wake-up
 latency of the two engine threads).
 
+**ADR-068 (SLAAC / DAD, Accurate ECN, AF_XDP shared UMEM / multi-buffer) against its branch point**
+(2026-11-21; gpu51, Linux 7.0, under `quiet.sh`, `taskset -c 2-5`; branch
+`claude/dpdk-stack-30891b` against `57696b6b`, 8 alternating rounds of the full `stack-bench`;
+medians, all three features off as by default):
+
+| Case | before | after | after / before |
+|---|---:|---:|---:|
+| TCP echo, 64 KiB buffers | 2,657 MB/s | 2,678 MB/s | 1.01 |
+| TCP echo, 1 MiB buffers | 2,074 MB/s | 2,084 MB/s | 1.00 |
+| sequential connections | 78,337/s | 78,308/s | 1.00 |
+| median first response | 12.31 µs | 12.29 µs | 1.00 |
+| 100 concurrent: established / req-resp per second | 1.27 ms / 968 k | 1.25 ms / 956 k | 0.98 / 0.99 |
+| 1000 concurrent: established / req-resp per second | 16.5 ms / 1,065 k | 16.4 ms / 1,047 k | 0.99 / 0.98 |
+| UDP request/response | 274,798/s | 275,130/s | 1.00 |
+
+The paired per-round ratios of the concurrent cases range from 0.93 to 1.05, so their 1–2% gap is
+inside the run-to-run spread. The figures are higher than the table above because this host was
+quiet and the run used 4 CPUs.
+
 ### eBPF acceleration (`tools/bench/ebpf.sh`)
 
 Run on 2026-11-18 on the same host (Linux 7.0, root, under `quiet.sh`), from branch

@@ -1,7 +1,7 @@
 #![deny(unsafe_code)] // `unsafe` is confined to the DPDK FFI (`pmd`) and TAP / AF_PACKET (`sys`)
 //! `only`'s kernel-bypass backend (experimental): its own userspace TCP/IP stack (Ethernet,
-//! ARP, IPv4, ICMP, IPv6 with NDP and ICMPv6, UDP, TCP with SACK, CUBIC / NewReno, window
-//! scaling and timestamps, optional ECN and pacing; safe Rust, `#![forbid(unsafe_code)]`, no
+//! ARP, IPv4, ICMP, IPv6 with NDP, SLAAC and ICMPv6, UDP, TCP with SACK, CUBIC / NewReno,
+//! window scaling and timestamps, optional ECN, Accurate ECN and pacing; safe Rust, `#![forbid(unsafe_code)]`, no
 //! dependencies) driven by `only` I/O threads, over
 //!
 //! * a **DPDK** port ([`Device::Dpdk`], cargo feature `pmd`, Linux, links `libdpdk`): the EAL is
@@ -35,11 +35,13 @@
 //! * With several queues, the NIC's RSS keeps a flow on one queue; ARP and NDP frames are copied
 //!   to every queue so each stack resolves its neighbours, and dialed connections use local ports
 //!   that name their queue (`port % queues`), so replies RSS puts elsewhere are handed over.
-//! * IPv6 is on when [`DpdkConfig::address6`] is set: the stack then also has a link-local
-//!   address derived from the MAC, answers neighbor solicitations and pings, and listeners
-//!   accept both families on their port (dual-stack). Addresses are static: no SLAAC, router
-//!   advertisements are not processed, and no duplicate address detection is run (our
-//!   addresses are defended against other nodes' detection).
+//! * IPv6 is on when [`DpdkConfig::address6`] is set or [`DpdkConfig::ipv6_slaac`] is on: the
+//!   stack then also has a link-local address derived from the MAC, answers neighbor
+//!   solicitations and pings, and listeners accept both families on their port (dual-stack).
+//!   With `ipv6_slaac` it configures addresses, default routers, the MTU and the hop limit from
+//!   router advertisements (RFC 4862); with [`DpdkConfig::ipv6_dad`] it runs duplicate address
+//!   detection before using an address. Our addresses are defended against other nodes'
+//!   detection either way.
 //!
 //! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
 //! (中文: [内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)).
@@ -137,8 +139,19 @@ pub struct AfXdpConfig {
     /// Zero-copy or copy mode (default [`ZeroCopy::Auto`]).
     pub zero_copy: ZeroCopy,
     /// UMEM chunks of 4 KiB per queue, half for receiving and half for sending (default 4096,
-    /// 16 MiB per queue; at least 128). Rings have `min(2048, frames / 2)` entries.
+    /// 16 MiB per queue; at least 128). Rings have `min(2048, frames / 2)` entries. With
+    /// [`shared_umem`](Self::shared_umem), the chunks of all queues together.
     pub frames: u32,
+    /// One UMEM for all the queues (`XDP_SHARED_UMEM`, Linux 5.10+) instead of one per queue
+    /// (default `false`): one registration and one pinned area, `frames` split evenly between
+    /// the queues (each queue still owns its chunks: no locking between I/O threads). The
+    /// sockets after the first take its mode (zero-copy or copy).
+    pub shared_umem: bool,
+    /// Multi-buffer frames (`XDP_USE_SG`, Linux 6.6+; default `false`): a frame larger than a
+    /// chunk spans several descriptors both ways, so [`DpdkConfig::mtu`] may go up to 9000
+    /// (jumbo frames; without it the MTU is at most 3826). The redirect program is loaded
+    /// frags-aware, which also lets a veth carry an MTU above about 3.5 KB with native XDP.
+    pub multi_buffer: bool,
 }
 
 impl AfXdpConfig {
@@ -150,6 +163,8 @@ impl AfXdpConfig {
             mode: XdpMode::Auto,
             zero_copy: ZeroCopy::Auto,
             frames: 4096,
+            shared_umem: false,
+            multi_buffer: false,
         }
     }
 }
@@ -166,6 +181,10 @@ pub struct AfXdpInfo {
     pub zero_copy: bool,
     /// Queues (sockets).
     pub queues: u16,
+    /// The queues share one UMEM.
+    pub shared_umem: bool,
+    /// Frames may span several chunks.
+    pub multi_buffer: bool,
 }
 
 static AF_XDP_INFO: Mutex<Vec<(String, AfXdpInfo)>> = Mutex::new(Vec::new());
@@ -242,10 +261,23 @@ pub struct DpdkConfig {
     pub prefix_len6: u8,
     /// IPv6 default router (usually its link-local address), for peers off the link.
     pub gateway6: Option<Ipv6Addr>,
+    /// IPv6 stateless address autoconfiguration (RFC 4862), default `false`: the stack sends
+    /// router solicitations at start and takes from router advertisements a global address per
+    /// advertised /64 prefix (the prefix plus the modified EUI-64 interface identifier of its
+    /// MAC, kept for the advertised lifetimes), the default routers, the on-link prefixes, the
+    /// link MTU and the hop limit. Turns IPv6 on even without [`address6`](Self::address6);
+    /// [`ipv6_addresses`] reports what was configured.
+    pub ipv6_slaac: bool,
+    /// Duplicate address detection (RFC 4862 5.4, with RFC 7527's nonce), default `false`:
+    /// each of the stack's IPv6 addresses (link-local, static, SLAAC) is probed for about a
+    /// second before it is used, and given up if another node answers (a duplicate link-local
+    /// address turns IPv6 off). Without it the addresses are used at once (other nodes' probes
+    /// for them are answered either way).
+    pub ipv6_dad: bool,
     /// MAC address. `None`: the DPDK port's or AF_XDP interface's own address, or a locally
     /// administered address derived from `address` for the other devices.
     pub mac: Option<[u8; 6]>,
-    /// IP MTU (default 1500).
+    /// IP MTU (default 1500, at most 9000: jumbo frames).
     pub mtu: usize,
     /// Receive and send buffer of each TCP connection, bytes each (default 64 KiB). Also bounds
     /// the TCP window.
@@ -262,6 +294,14 @@ pub struct DpdkConfig {
     /// Negotiate ECN on TCP connections (RFC 3168: data sent ECN-capable, congestion marks
     /// answered like a loss without the retransmission). Default `false`.
     pub tcp_ecn: bool,
+    /// Negotiate Accurate ECN on TCP connections (RFC 9768), default `false`: SYNs ask for it,
+    /// and with a peer that agrees each ACK reports how many packets arrived CE-marked (the
+    /// 3-bit ACE field) and how many bytes arrived with each ECN codepoint (the AccECN option),
+    /// instead of RFC 3168's one ECE bit per round trip. Data is sent ECN-capable and CE
+    /// feedback answered like a loss without the retransmission, once per window. Peers that
+    /// only know RFC 3168 ECN get it (this implies [`tcp_ecn`](Self::tcp_ecn) towards them),
+    /// others none. Linux 6.18+ answers with `net.ipv4.tcp_ecn = 3` (or 4 / 5).
+    pub tcp_accecn: bool,
     /// Pace TCP transmissions at about `cwnd / srtt` (twice that in slow start) instead of
     /// sending each window as a burst: fewer drops at shallow bottleneck queues, at some CPU
     /// cost. Default `false`.
@@ -287,6 +327,8 @@ impl DpdkConfig {
             address6: None,
             prefix_len6: 64,
             gateway6: None,
+            ipv6_slaac: false,
+            ipv6_dad: false,
             mac: None,
             mtu: 1500,
             tcp_buffer: 64 << 10,
@@ -295,6 +337,7 @@ impl DpdkConfig {
             syn_cookies: true,
             congestion: Congestion::Cubic,
             tcp_ecn: false,
+            tcp_accecn: false,
             tcp_pacing: false,
             tcp_keepalive: None,
             busy_poll: false,
@@ -307,6 +350,44 @@ impl DpdkConfig {
             // Locally administered, unicast.
             [0x02, 0xf1, o[0], o[1], o[2], o[3]]
         })
+    }
+}
+
+/// The IPv6 addresses the stack open on `device` uses now: its link-local address, the static
+/// [`DpdkConfig::address6`] and the addresses SLAAC formed ([`DpdkConfig::ipv6_slaac`]), each
+/// once duplicate address detection passed ([`DpdkConfig::ipv6_dad`]); deprecated SLAAC
+/// addresses (past their preferred lifetime) are included. Empty when IPv6 is off, `None`
+/// when no stack is open on `device` (it starts with the first listener's group).
+pub fn ipv6_addresses(device: &Device) -> Option<Vec<Ipv6Addr>> {
+    stack::ipv6_addresses(device)
+}
+
+/// Process-wide ECN counters of the userspace TCP (`#[doc(hidden)]`: for tests and
+/// benchmarks).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TcpEcnStats {
+    /// Connections established in Accurate ECN mode.
+    pub accecn: u64,
+    /// Connections established with RFC 3168 ECN.
+    pub classic: u64,
+    /// CE-marked packets received on AccECN connections.
+    pub ce_received: u64,
+    /// Congestion responses to AccECN feedback.
+    pub ce_responses: u64,
+}
+
+/// The process-wide [`TcpEcnStats`] (`#[doc(hidden)]`).
+#[doc(hidden)]
+pub fn tcp_ecn_stats() -> TcpEcnStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = &net::ECN_STATS;
+    TcpEcnStats {
+        accecn: s[0].load(Relaxed),
+        classic: s[1].load(Relaxed),
+        ce_received: s[2].load(Relaxed),
+        ce_responses: s[3].load(Relaxed),
     }
 }
 

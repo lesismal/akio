@@ -399,6 +399,20 @@ pub(crate) fn prog_load(
     insns: &[crate::ebpf::Insn],
     name: &str,
 ) -> io::Result<OwnedFd> {
+    prog_load_flags(prog_type, expected_attach_type, insns, name, 0)
+}
+
+/// `BPF_F_XDP_HAS_FRAGS`: an XDP program that handles multi-buffer frames (Linux 5.18+).
+pub(crate) const BPF_F_XDP_HAS_FRAGS: u32 = 1 << 5;
+
+/// [`prog_load`] with `prog_flags`.
+pub(crate) fn prog_load_flags(
+    prog_type: u32,
+    expected_attach_type: u32,
+    insns: &[crate::ebpf::Insn],
+    name: &str,
+    prog_flags: u32,
+) -> io::Result<OwnedFd> {
     let mut log = vec![0u8; 16 << 10];
     let mut prog_name = [0u8; 16];
     for (d, s) in prog_name.iter_mut().zip(name.bytes().take(15)) {
@@ -414,7 +428,7 @@ pub(crate) fn prog_load(
         log_size: log.len() as u32,
         log_buf: log.as_mut_ptr() as u64,
         kern_version: 0,
-        prog_flags: 0,
+        prog_flags,
         prog_name,
         prog_ifindex: 0,
         expected_attach_type,

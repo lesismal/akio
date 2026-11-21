@@ -1,7 +1,9 @@
 //! IPv6 frame formats: the fixed header (RFC 8200 3) and the extension-header chain (hop-by-hop
 //! and destination options, routing, fragment) walked with limits, ICMPv6 (RFC 4443), Neighbor
 //! Discovery (RFC 4861: neighbor solicitation and advertisement with their link-layer address
-//! options) and MLDv2 reports (RFC 3810 5.2, so MLD-snooping switches forward our
+//! options, router solicitation, router advertisements with their prefix-information, MTU and
+//! link-layer options; the RFC 3971 nonce option of RFC 7527 duplicate address detection) and
+//! MLDv2 reports (RFC 3810 5.2, so MLD-snooping switches forward our
 //! solicited-node multicast). Like `wire`, parsers are bounds-checked views that never panic
 //! (fuzzed: `dpdk_ipv6`, `dpdk_icmpv6`, `dpdk_ndp`).
 
@@ -34,6 +36,8 @@ pub(crate) const ICMP6_ECHO_REQUEST: u8 = 128;
 pub(crate) const ICMP6_ECHO_REPLY: u8 = 129;
 pub(crate) const MLD_QUERY: u8 = 130;
 pub(crate) const MLD2_REPORT: u8 = 143;
+pub(crate) const ND_ROUTER_SOLICIT: u8 = 133;
+pub(crate) const ND_ROUTER_ADVERT: u8 = 134;
 pub(crate) const ND_NEIGHBOR_SOLICIT: u8 = 135;
 pub(crate) const ND_NEIGHBOR_ADVERT: u8 = 136;
 
@@ -54,6 +58,13 @@ pub(crate) const ND_LEN: usize = ICMP6_HDR + 16;
 pub(crate) const LLA_OPT: usize = 8;
 const OPT_SOURCE_LLA: u8 = 1;
 const OPT_TARGET_LLA: u8 = 2;
+const OPT_PREFIX_INFO: u8 = 3;
+const OPT_MTU: u8 = 5;
+const OPT_NONCE: u8 = 14;
+/// A nonce option with a 6-byte nonce (RFC 3971 5.3.2, as RFC 7527 uses it).
+pub(crate) const NONCE_OPT: usize = 8;
+/// Most prefix-information options of one router advertisement that are looked at.
+pub(crate) const MAX_RA_PREFIXES: usize = 8;
 
 /// Neighbor advertisement flags (first byte of the reserved word).
 pub(crate) const NA_ROUTER: u8 = 0x80;
@@ -61,6 +72,7 @@ pub(crate) const NA_SOLICITED: u8 = 0x40;
 pub(crate) const NA_OVERRIDE: u8 = 0x20;
 
 pub(crate) const ALL_NODES: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+pub(crate) const ALL_ROUTERS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 2);
 pub(crate) const ALL_MLDV2_ROUTERS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x16);
 
 fn ip6_at(b: &[u8], at: usize) -> Ipv6Addr {
@@ -467,6 +479,8 @@ pub(crate) struct Nd {
     pub(crate) target: Ipv6Addr,
     /// Source (NS) or target (NA) link-layer address option.
     pub(crate) lla: Option<Mac>,
+    /// Nonce option (a duplicate address detection probe, RFC 7527).
+    pub(crate) nonce: Option<[u8; 6]>,
 }
 
 impl Nd {
@@ -485,6 +499,7 @@ impl Nd {
             return None;
         }
         let mut lla = None;
+        let mut nonce = None;
         let mut o = &m.body[16..];
         let want = if m.kind == ND_NEIGHBOR_SOLICIT {
             OPT_SOURCE_LLA
@@ -501,6 +516,11 @@ impl Nd {
             }
             if o[0] == want && len == LLA_OPT {
                 lla = Some(mac_at(o, 2));
+            }
+            if o[0] == OPT_NONCE && len == NONCE_OPT {
+                let mut n = [0u8; 6];
+                n.copy_from_slice(&o[2..8]);
+                nonce = Some(n);
             }
             o = &o[len..];
         }
@@ -523,6 +543,7 @@ impl Nd {
             flags,
             target,
             lla,
+            nonce,
         })
     }
 }
@@ -597,6 +618,130 @@ fn write_nd(
         ND_LEN
     };
     icmp6_checksum(&mut b[..len], src, dst);
+}
+
+/// Length of a duplicate address detection probe: a neighbor solicitation with a nonce option.
+pub(crate) const DAD_NS: usize = ND_LEN + NONCE_OPT;
+
+/// Writes a duplicate address detection probe for `target` (RFC 4862 5.4.2): from the
+/// unspecified address to `target`'s solicited-node group, no link-layer option, with `nonce`
+/// (RFC 7527: our own probe looped back is recognised by it). `b` is `DAD_NS` bytes.
+pub(crate) fn write_dad_ns(b: &mut [u8], target: Ipv6Addr, nonce: [u8; 6]) {
+    b[0] = ND_NEIGHBOR_SOLICIT;
+    b[1] = 0;
+    b[4..8].copy_from_slice(&[0; 4]);
+    b[8..24].copy_from_slice(&target.octets());
+    b[24] = OPT_NONCE;
+    b[25] = 1;
+    b[26..32].copy_from_slice(&nonce);
+    icmp6_checksum(
+        &mut b[..DAD_NS],
+        Ipv6Addr::UNSPECIFIED,
+        solicited_node(target),
+    );
+}
+
+/// Length of a router solicitation, with a source link-layer option when `lla`.
+pub(crate) fn rs_len(lla: bool) -> usize {
+    ICMP6_HDR + if lla { LLA_OPT } else { 0 }
+}
+
+/// Writes a router solicitation (RFC 4861 4.1) from `src` to all-routers; the source
+/// link-layer option is included when `mac` is given (never from the unspecified address).
+/// `b` is `rs_len(mac.is_some())` bytes.
+pub(crate) fn write_rs(b: &mut [u8], src: Ipv6Addr, mac: Option<Mac>) {
+    b[0] = ND_ROUTER_SOLICIT;
+    b[1] = 0;
+    b[4..8].copy_from_slice(&[0; 4]);
+    let mut len = ICMP6_HDR;
+    if let Some(m) = mac {
+        b[8] = OPT_SOURCE_LLA;
+        b[9] = 1;
+        b[10..16].copy_from_slice(&m);
+        len += LLA_OPT;
+    }
+    icmp6_checksum(&mut b[..len], src, ALL_ROUTERS);
+}
+
+/// A prefix-information option (RFC 4861 4.6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrefixInfo {
+    pub(crate) prefix: Ipv6Addr,
+    pub(crate) len: u8,
+    /// L: the prefix is on the link.
+    pub(crate) on_link: bool,
+    /// A: addresses may be formed from it (SLAAC).
+    pub(crate) autonomous: bool,
+    /// Seconds; `u32::MAX` is infinite.
+    pub(crate) valid: u32,
+    pub(crate) preferred: u32,
+}
+
+/// A router advertisement (RFC 4861 4.2), validated per 6.1.2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ra {
+    /// Hop limit for our packets (0: unspecified).
+    pub(crate) hop_limit: u8,
+    /// Seconds the router is a default router (0: it is not).
+    pub(crate) lifetime: u16,
+    /// Source link-layer address option.
+    pub(crate) lla: Option<Mac>,
+    /// MTU option.
+    pub(crate) mtu: Option<u32>,
+    /// The first `MAX_RA_PREFIXES` prefix-information options.
+    pub(crate) prefixes: [Option<PrefixInfo>; MAX_RA_PREFIXES],
+}
+
+impl Ra {
+    /// Validates a router advertisement received from `src` with `hop_limit` (`m` is the
+    /// parsed, checksum-verified ICMPv6 message): from a link-local address, hop limit 255,
+    /// code 0, at least 16 bytes, every option of non-zero length.
+    pub(crate) fn parse(m: &Icmp6<'_>, src: Ipv6Addr, hop_limit: u8) -> Option<Ra> {
+        if m.kind != ND_ROUTER_ADVERT
+            || hop_limit != 255
+            || m.code != 0
+            || !is_link_local(src)
+            || m.body.len() < 8
+        {
+            return None;
+        }
+        let mut ra = Ra {
+            hop_limit: m.rest[0],
+            lifetime: u16::from_be_bytes([m.rest[2], m.rest[3]]),
+            lla: None,
+            mtu: None,
+            prefixes: [None; MAX_RA_PREFIXES],
+        };
+        let mut n = 0;
+        let mut o = &m.body[8..];
+        while !o.is_empty() {
+            if o.len() < 2 {
+                return None;
+            }
+            let len = usize::from(o[1]) * 8;
+            if len == 0 || len > o.len() {
+                return None;
+            }
+            match (o[0], len) {
+                (OPT_SOURCE_LLA, LLA_OPT) => ra.lla = Some(mac_at(o, 2)),
+                (OPT_MTU, 8) => ra.mtu = Some(be32(o, 4)),
+                (OPT_PREFIX_INFO, 32) if n < MAX_RA_PREFIXES => {
+                    ra.prefixes[n] = Some(PrefixInfo {
+                        prefix: ip6_at(o, 16),
+                        len: o[2],
+                        on_link: o[3] & 0x80 != 0,
+                        autonomous: o[3] & 0x40 != 0,
+                        valid: be32(o, 4),
+                        preferred: be32(o, 8),
+                    });
+                    n += 1;
+                }
+                _ => {}
+            }
+            o = &o[len..];
+        }
+        Some(ra)
+    }
 }
 
 // ---- MLDv2 ----------------------------------------------------------------------------------
@@ -856,5 +1001,76 @@ mod tests {
         write_mld2_report(&mut b, ll, &groups);
         let m = Icmp6::parse(&b, ll, ALL_MLDV2_ROUTERS, true).unwrap();
         assert_eq!((m.kind, m.rest[3]), (MLD2_REPORT, 2));
+    }
+
+    #[test]
+    fn router_discovery_messages() {
+        let ll = link_local([2, 0, 0, 0, 0, 9]);
+        let mac = [2, 0, 0, 0, 0, 9];
+        // Router solicitation with and without the link-layer option.
+        let mut b = [0u8; ICMP6_HDR + LLA_OPT];
+        write_rs(&mut b, ll, Some(mac));
+        let m = Icmp6::parse(&b, ll, ALL_ROUTERS, true).unwrap();
+        assert_eq!(
+            (m.kind, m.body),
+            (ND_ROUTER_SOLICIT, &[1, 1, 2, 0, 0, 0, 0, 9][..])
+        );
+        write_rs(&mut b[..rs_len(false)], Ipv6Addr::UNSPECIFIED, None);
+        assert!(Icmp6::parse(&b[..ICMP6_HDR], Ipv6Addr::UNSPECIFIED, ALL_ROUTERS, true).is_some());
+        // A DAD probe carries its nonce and no link-layer option.
+        let mut ns = [0u8; DAD_NS];
+        write_dad_ns(&mut ns, A, [1, 2, 3, 4, 5, 6]);
+        let sn = solicited_node(A);
+        let m = Icmp6::parse(&ns, Ipv6Addr::UNSPECIFIED, sn, true).unwrap();
+        let nd = Nd::parse(&m, Ipv6Addr::UNSPECIFIED, sn, 255).unwrap();
+        assert_eq!(
+            (nd.target, nd.lla, nd.nonce),
+            (A, None, Some([1, 2, 3, 4, 5, 6]))
+        );
+        // Router advertisement: hop limit 64, lifetime 1800, LLA, MTU 1480, one prefix.
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(&[1, 1, 2, 0, 0, 0, 0, 9, 5, 1, 0, 0, 0, 0, 0x05, 0xc8]);
+        body.extend_from_slice(&[
+            3, 4, 64, 0xc0, 0, 0, 0x0e, 0x10, 0, 0, 0x07, 0x08, 0, 0, 0, 0,
+        ]);
+        body.extend_from_slice(&A.octets());
+        let mut m = vec![0u8; ICMP6_HDR + body.len()];
+        write_icmp6(
+            &mut m,
+            ll,
+            ALL_NODES,
+            ND_ROUTER_ADVERT,
+            0,
+            [64, 0, 0x07, 0x08],
+            &body,
+        );
+        let i = Icmp6::parse(&m, ll, ALL_NODES, true).unwrap();
+        let ra = Ra::parse(&i, ll, 255).unwrap();
+        assert_eq!(
+            (ra.hop_limit, ra.lifetime, ra.lla, ra.mtu),
+            (64, 1800, Some(mac), Some(1480))
+        );
+        assert_eq!(
+            ra.prefixes[0],
+            Some(PrefixInfo {
+                prefix: A,
+                len: 64,
+                on_link: true,
+                autonomous: true,
+                valid: 3600,
+                preferred: 1800,
+            })
+        );
+        // Not from a link-local source, a forwarded one, a zero-length option, truncated.
+        assert!(Ra::parse(&i, A, 255).is_none());
+        assert!(Ra::parse(&i, ll, 254).is_none());
+        let mut bad = m.clone();
+        bad[ICMP6_HDR + 9] = 0;
+        assert!(Ra::parse(&Icmp6::parse(&bad, ll, ALL_NODES, false).unwrap(), ll, 255).is_none());
+        for n in ICMP6_HDR..m.len() {
+            if let Some(i) = Icmp6::parse(&m[..n], ll, ALL_NODES, false) {
+                let _ = Ra::parse(&i, ll, 255);
+            }
+        }
     }
 }

@@ -52,6 +52,12 @@ pub(crate) struct Config {
     pub(crate) prefix_len6: u8,
     /// IPv6 default router (often a link-local address).
     pub(crate) gateway6: Option<Ipv6Addr>,
+    /// IPv6 stateless autoconfiguration (RFC 4862): router solicitations at start, addresses,
+    /// default routers, on-link prefixes, MTU and hop limit from router advertisements. Turns
+    /// IPv6 on without `ip6`.
+    pub(crate) slaac: bool,
+    /// Duplicate address detection (RFC 4862 5.4) of our addresses before they are used.
+    pub(crate) dad: bool,
     /// IP MTU.
     pub(crate) mtu: usize,
     pub(crate) tcp: Params,
@@ -268,72 +274,194 @@ struct Body {
     tos: u8,
 }
 
+/// Where one of our IPv6 addresses stands (RFC 4862 5.4, 5.5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddrState {
+    /// Duplicate address detection in progress: `probes` solicitations still to send, the
+    /// next one (or, with none left, the verdict) at `at`. Not used, packets to it dropped.
+    Tentative {
+        probes: u8,
+        at: Instant,
+    },
+    Preferred,
+    /// Past its preferred lifetime: still ours, no longer picked as a source.
+    Deprecated,
+    /// Another node has it: never used.
+    Duplicate,
+}
+
+/// One of our IPv6 addresses.
+#[derive(Clone, Copy, Debug)]
+struct Addr6 {
+    ip: Ipv6Addr,
+    state: AddrState,
+    /// Formed from a router advertisement's prefix (SLAAC): its lifetimes apply.
+    slaac: bool,
+    /// `None`: infinite.
+    preferred_until: Option<Instant>,
+    valid_until: Option<Instant>,
+}
+
+impl Addr6 {
+    fn usable(&self) -> bool {
+        matches!(self.state, AddrState::Preferred | AddrState::Deprecated)
+    }
+}
+
+/// An on-link prefix (static, or from a router advertisement's L flag).
+#[derive(Clone, Copy, Debug)]
+struct Prefix6 {
+    net: u128,
+    mask: u128,
+    /// `None`: infinite (the static address's subnet).
+    until: Option<Instant>,
+}
+
+/// A default router learned from router advertisements.
+#[derive(Clone, Copy, Debug)]
+struct Router6 {
+    ip: Ipv6Addr,
+    until: Instant,
+}
+
+/// Most addresses formed by SLAAC, on-link prefixes and default routers kept (all three are
+/// driven by advertisements anyone on the link can send).
+const MAX_SLAAC_ADDRS: usize = 8;
+const MAX_PREFIXES: usize = 16;
+const MAX_ROUTERS: usize = 4;
+/// Neighbor solicitations per duplicate address detection (RFC 4862 `DupAddrDetectTransmits`)
+/// and the wait after each (RFC 4861 `RetransTimer`).
+const DAD_TRANSMITS: u8 = 1;
+const RETRANS_TIMER: Duration = Duration::from_secs(1);
+/// Router solicitations at start and their spacing (RFC 4861 10:
+/// `MAX_RTR_SOLICITATIONS`, `RTR_SOLICITATION_INTERVAL`), and the random delay before the
+/// first message after start (`MAX_RTR_SOLICITATION_DELAY`).
+const RTR_SOLICITATIONS: u8 = 3;
+const RTR_SOLICITATION_INTERVAL: Duration = Duration::from_secs(4);
+const MAX_RTR_SOLICITATION_DELAY: Duration = Duration::from_secs(1);
+/// RFC 4862 5.5.3 e): an advertisement may shorten a SLAAC address's remaining valid lifetime
+/// to no less than this.
+const TWO_HOURS: Duration = Duration::from_secs(7200);
+
 /// IPv6 addressing and neighbour state.
 #[derive(Debug)]
 struct Net6 {
-    /// Link-local address (from the MAC).
+    /// Link-local address (from the MAC); also `addrs[0]`.
     ll: Ipv6Addr,
-    global: Option<Ipv6Addr>,
-    /// Prefix of `global`'s subnet, as a mask.
-    mask: u128,
+    /// Our addresses: the link-local one first, then the static one, then SLAAC ones.
+    addrs: Vec<Addr6>,
+    /// On-link prefixes (link-local is always on link).
+    prefixes: Vec<Prefix6>,
+    /// Static default router.
     gateway: Option<Ipv6Addr>,
+    /// Default routers from router advertisements (after the static one).
+    routers: Vec<Router6>,
+    /// IPv6 link MTU (an advertisement's MTU option may lower it below the device's).
+    mtu: usize,
+    /// Hop limit of our packets (an advertisement may set it).
+    hop_limit: u8,
     ndp: NdpCache,
     frag_id: u32,
     /// Path MTUs learned from packet-too-big messages: destination -> (MTU, expiry).
     pmtu: HashMap<Ipv6Addr, (usize, Instant)>,
     /// Ethernet multicast addresses we receive (all-nodes, our solicited-node groups).
     mcast_macs: Vec<Mac>,
-    /// When to send an MLDv2 report (at start, and after a query).
+    /// When to send an MLDv2 report (at start, after a query, when our groups change).
     mld_at: Option<Instant>,
+    /// Stateless autoconfiguration from router advertisements (RFC 4862).
+    slaac: bool,
+    /// This queue transmits the device's solicitations, probes and reports (queue 0; the others
+    /// follow the same timeline and see the answers, which are copied to every queue).
+    speaker: bool,
+    /// Router solicitations left to send and when the next goes out.
+    rs: Option<(u8, Instant)>,
+    /// Nonce of our duplicate address detection probes (RFC 7527).
+    nonce: [u8; 6],
+    /// The link-local address is a duplicate: IPv6 is off (RFC 4862 5.4.5).
+    disabled: bool,
+    /// The addresses may have changed since `reported` (see `Iface::ipv6_changed`).
+    changed: bool,
+    /// The usable addresses last reported to the owner.
+    reported: Option<Vec<Ipv6Addr>>,
+    /// Earliest autoconfiguration deadline (probes, solicitations, lifetimes).
+    auto_at: Option<Instant>,
 }
 
 impl Net6 {
+    #[inline]
     fn ours(&self, a: Ipv6Addr) -> bool {
-        a == self.ll || Some(a) == self.global
+        self.addrs.iter().any(|x| x.ip == a && x.usable())
     }
 
-    /// A multicast group we listen to.
+    /// One of our addresses, tentative or usable (not a duplicate).
+    fn claimed(&self, a: Ipv6Addr) -> Option<&Addr6> {
+        self.addrs
+            .iter()
+            .find(|x| x.ip == a && x.state != AddrState::Duplicate)
+    }
+
+    /// A multicast group we listen to (the solicited-node groups of tentative addresses too:
+    /// duplicate address detection hears other nodes' probes for them there).
     fn listening(&self, a: Ipv6Addr) -> bool {
         a == wire6::ALL_NODES
-            || a == wire6::solicited_node(self.ll)
-            || self.global.is_some_and(|g| a == wire6::solicited_node(g))
+            || self
+                .addrs
+                .iter()
+                .any(|x| x.state != AddrState::Duplicate && a == wire6::solicited_node(x.ip))
     }
 
     fn on_link(&self, dst: Ipv6Addr) -> bool {
-        wire6::is_link_local(dst)
-            || self
-                .global
-                .is_some_and(|g| u128::from(dst) & self.mask == u128::from(g) & self.mask)
+        let d = u128::from(dst);
+        wire6::is_link_local(dst) || self.prefixes.iter().any(|p| d & p.mask == p.net)
     }
 
     fn next_hop(&self, dst: Ipv6Addr) -> Option<Ipv6Addr> {
         if self.on_link(dst) || dst.is_multicast() {
             Some(dst)
         } else {
-            self.gateway
+            self.gateway.or_else(|| self.routers.first().map(|r| r.ip))
         }
     }
 
-    /// Source address for a packet to `dst` (RFC 6724, reduced to two candidates: the
-    /// link-local address for link-local and multicast-link-scope destinations, the global one
-    /// otherwise).
+    /// Source address for a packet to `dst` (RFC 6724, reduced: link-scope destinations get
+    /// the link-local address; others the usable global address sharing the longest prefix
+    /// with `dst`, a preferred one before a deprecated one, else the link-local address).
+    /// Unspecified while no address is usable (duplicate address detection still running).
     fn src_for(&self, dst: Ipv6Addr) -> Ipv6Addr {
         let link_scope =
             wire6::is_link_local(dst) || (dst.is_multicast() && dst.segments()[0] & 0x000f <= 2);
-        match self.global {
-            Some(g) if !link_scope => g,
-            _ => self.ll,
+        let ll = self.addrs[0];
+        if !link_scope {
+            let d = u128::from(dst);
+            let best = self.addrs[1..]
+                .iter()
+                .filter(|a| a.usable())
+                .max_by_key(|a| {
+                    (
+                        a.state == AddrState::Preferred,
+                        (u128::from(a.ip) ^ d).leading_zeros(),
+                    )
+                });
+            if let Some(a) = best {
+                return a.ip;
+            }
+        }
+        if ll.usable() {
+            ll.ip
+        } else {
+            Ipv6Addr::UNSPECIFIED
         }
     }
 
-    fn path_mtu(&self, dst: Ipv6Addr, link: usize, now: Instant) -> usize {
+    fn path_mtu(&self, dst: Ipv6Addr, now: Instant) -> usize {
         match self.pmtu.get(&dst) {
-            Some(&(m, exp)) if now < exp => m.min(link),
-            _ => link,
+            Some(&(m, exp)) if now < exp => m.min(self.mtu),
+            _ => self.mtu,
         }
     }
 
-    fn learn_pmtu(&mut self, dst: Ipv6Addr, mtu: usize, link: usize, now: Instant) {
+    fn learn_pmtu(&mut self, dst: Ipv6Addr, mtu: usize, now: Instant) {
+        let link = self.mtu;
         let mtu = mtu.clamp(wire6::MIN_MTU, link);
         if mtu >= link {
             return;
@@ -356,6 +484,76 @@ impl Net6 {
             *e = (mtu, now + PMTU_LIFE);
         }
     }
+
+    /// Our usable addresses.
+    fn usable(&self) -> impl Iterator<Item = Ipv6Addr> + '_ {
+        self.addrs.iter().filter(|a| a.usable()).map(|a| a.ip)
+    }
+
+    /// Recomputes the multicast MACs we receive after our addresses changed, and schedules an
+    /// MLD report when the groups changed.
+    fn refresh_groups(&mut self, now: Instant) {
+        let mut macs = vec![wire6::multicast_mac(wire6::ALL_NODES)];
+        for a in &self.addrs {
+            if a.state == AddrState::Duplicate {
+                continue;
+            }
+            let m = wire6::multicast_mac(wire6::solicited_node(a.ip));
+            if !macs.contains(&m) {
+                macs.push(m);
+            }
+        }
+        if macs != self.mcast_macs {
+            self.mcast_macs = macs;
+            if self.speaker {
+                self.mld_at = Some(now);
+            }
+        }
+    }
+
+    /// Recomputes the earliest autoconfiguration deadline.
+    fn rearm(&mut self) {
+        let mut at: Option<Instant> = self.rs.map(|(_, t)| t);
+        let mut take = |t: Option<Instant>| {
+            if let Some(t) = t {
+                at = Some(at.map_or(t, |a| a.min(t)));
+            }
+        };
+        for a in &self.addrs {
+            if let AddrState::Tentative { at, .. } = a.state {
+                take(Some(at));
+            }
+            if a.slaac {
+                if a.state == AddrState::Preferred {
+                    take(a.preferred_until);
+                }
+                take(a.valid_until);
+            }
+        }
+        for p in &self.prefixes {
+            take(p.until);
+        }
+        for r in &self.routers {
+            take(Some(r.until));
+        }
+        self.auto_at = at;
+    }
+}
+
+/// `seconds` from an advertisement as an expiry (`u32::MAX`: never).
+fn lifetime(now: Instant, seconds: u32) -> Option<Instant> {
+    (seconds != u32::MAX).then(|| now + Duration::from_secs(u64::from(seconds)))
+}
+
+/// `a`'s top `len` bits as (network, mask).
+fn prefix_of(a: Ipv6Addr, len: u8) -> (u128, u128) {
+    let len = u32::from(len.min(128));
+    let mask = if len == 0 {
+        0
+    } else {
+        u128::MAX << (128 - len)
+    };
+    (u128::from(a) & mask, mask)
 }
 
 /// IP output: addresses, routing, ARP / NDP, fragmentation.
@@ -395,7 +593,10 @@ impl Net {
     fn routable(&self, dst: IpAddr) -> bool {
         match dst {
             IpAddr::V4(d) => self.next_hop(d).is_some(),
-            IpAddr::V6(d) => self.v6.as_ref().is_some_and(|v| v.next_hop(d).is_some()),
+            IpAddr::V6(d) => self
+                .v6
+                .as_ref()
+                .is_some_and(|v| v.next_hop(d).is_some() && !v.src_for(d).is_unspecified()),
         }
     }
 
@@ -559,6 +760,9 @@ impl Net {
     fn send_ns(&self, tx: &mut dyn Tx, target: Ipv6Addr, known: Option<Mac>) {
         let Some(v6) = &self.v6 else { return };
         let src = v6.src_for(target);
+        if src.is_unspecified() {
+            return; // no usable address yet (only probes come from `::`)
+        }
         let (dst, dmac) = match known {
             Some(m) => (target, m),
             None => {
@@ -595,16 +799,63 @@ impl Net {
         tx.commit();
     }
 
+    /// A duplicate address detection probe for our tentative `target` (RFC 4862 5.4.2).
+    fn send_dad_ns(&self, tx: &mut dyn Tx, target: Ipv6Addr, nonce: [u8; 6]) {
+        let dst = wire6::solicited_node(target);
+        let b = tx.buffer(ETH_HDR + IPV6_HDR + wire6::DAD_NS);
+        wire::write_eth(b, wire6::multicast_mac(dst), self.mac, ETHERTYPE_IPV6);
+        wire6::write_ipv6(
+            &mut b[ETH_HDR..],
+            Ipv6Addr::UNSPECIFIED,
+            dst,
+            PROTO_ICMPV6,
+            255,
+            0,
+            wire6::DAD_NS,
+        );
+        wire6::write_dad_ns(&mut b[ETH_HDR + IPV6_HDR..], target, nonce);
+        tx.commit();
+    }
+
+    /// A router solicitation (RFC 4861 6.3.7): from the link-local address with our link-layer
+    /// address, or from `::` without it while the link-local address is tentative.
+    fn send_rs(&self, tx: &mut dyn Tx) {
+        let Some(v6) = &self.v6 else { return };
+        let src = if v6.addrs[0].usable() {
+            v6.ll
+        } else {
+            Ipv6Addr::UNSPECIFIED
+        };
+        let lla = !src.is_unspecified();
+        let len = wire6::rs_len(lla);
+        let dst = wire6::ALL_ROUTERS;
+        let b = tx.buffer(ETH_HDR + IPV6_HDR + len);
+        wire::write_eth(b, wire6::multicast_mac(dst), self.mac, ETHERTYPE_IPV6);
+        wire6::write_ipv6(&mut b[ETH_HDR..], src, dst, PROTO_ICMPV6, 255, 0, len);
+        wire6::write_rs(&mut b[ETH_HDR + IPV6_HDR..], src, lla.then_some(self.mac));
+        tx.commit();
+    }
+
     /// An MLDv2 report joining our solicited-node groups (RFC 3810 5.2: from the link-local
-    /// address, hop limit 1, with a router alert).
+    /// address, or the unspecified one while it is tentative (5.2.13), hop limit 1, with a
+    /// router alert).
     fn send_mld_report(&self, tx: &mut dyn Tx) {
         let Some(v6) = &self.v6 else { return };
-        let mut groups = vec![wire6::solicited_node(v6.ll)];
-        if let Some(g) = v6.global.map(wire6::solicited_node) {
-            if !groups.contains(&g) {
+        if v6.disabled {
+            return;
+        }
+        let mut groups = Vec::with_capacity(v6.addrs.len());
+        for a in &v6.addrs {
+            let g = wire6::solicited_node(a.ip);
+            if a.state != AddrState::Duplicate && !groups.contains(&g) {
                 groups.push(g);
             }
         }
+        let src = if v6.addrs[0].usable() {
+            v6.ll
+        } else {
+            Ipv6Addr::UNSPECIFIED
+        };
         let mlen = wire6::mld2_report_len(groups.len());
         let hbh = wire6::HBH_ROUTER_ALERT.len();
         let dst = wire6::ALL_MLDV2_ROUTERS;
@@ -612,7 +863,7 @@ impl Net {
         wire::write_eth(b, wire6::multicast_mac(dst), self.mac, ETHERTYPE_IPV6);
         wire6::write_ipv6(
             &mut b[ETH_HDR..],
-            v6.ll,
+            src,
             dst,
             wire6::NH_HOPOPT,
             1,
@@ -621,7 +872,7 @@ impl Net {
         );
         let at = ETH_HDR + IPV6_HDR;
         b[at..at + hbh].copy_from_slice(&wire6::HBH_ROUTER_ALERT);
-        wire6::write_mld2_report(&mut b[at + hbh..], v6.ll, &groups);
+        wire6::write_mld2_report(&mut b[at + hbh..], src, &groups);
         tx.commit();
     }
 
@@ -638,7 +889,8 @@ impl Net {
         let Some(hop) = v6.next_hop(dst) else {
             return false;
         };
-        let mtu = v6.path_mtu(dst, self.mtu, now);
+        let mtu = v6.path_mtu(dst, now);
+        let hops = v6.hop_limit;
         let mac = self.resolve6(now, tx, hop);
         let (proto, len, tos) = (o.proto, o.len, o.tos);
         if IPV6_HDR + len <= mtu {
@@ -647,14 +899,14 @@ impl Net {
                     let b = tx.buffer(ETH_HDR + IPV6_HDR + len);
                     wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV6);
                     write(&mut b[ETH_HDR + IPV6_HDR..]);
-                    wire6::write_ipv6(&mut b[ETH_HDR..], src, dst, proto, TTL, tos, len);
+                    wire6::write_ipv6(&mut b[ETH_HDR..], src, dst, proto, hops, tos, len);
                     tx.commit();
                     true
                 }
                 None => {
                     let mut p = vec![0u8; IPV6_HDR + len];
                     write(&mut p[IPV6_HDR..]);
-                    wire6::write_ipv6(&mut p, src, dst, proto, TTL, tos, len);
+                    wire6::write_ipv6(&mut p, src, dst, proto, hops, tos, len);
                     self.v6.as_mut().is_some_and(|v| v.ndp.queue_packet(hop, p))
                 }
             }
@@ -681,7 +933,7 @@ impl Net {
                 let piece = &payload[off..off + n];
                 let plen = FRAG_HDR + n;
                 let fill = |p: &mut [u8]| {
-                    wire6::write_ipv6(p, src, dst, wire6::NH_FRAGMENT, TTL, tos, plen);
+                    wire6::write_ipv6(p, src, dst, wire6::NH_FRAGMENT, hops, tos, plen);
                     wire6::write_frag(&mut p[IPV6_HDR..], proto, off, more, id);
                     p[IPV6_HDR + FRAG_HDR..].copy_from_slice(piece);
                 };
@@ -899,6 +1151,8 @@ pub(crate) struct Iface {
     nd_failed: Vec<Ipv6Addr>,
     /// When a SYN cookie was last sent.
     cookie_sent: Option<Instant>,
+    /// Our addresses found to be duplicates.
+    dad_failed: u32,
 }
 
 impl Iface {
@@ -912,34 +1166,69 @@ impl Iface {
             u32::MAX << (32 - u32::from(cfg.prefix_len.min(32)))
         };
         let mtu = cfg.mtu.clamp(576, 65535);
-        let v6 = cfg.ip6.filter(|_| mtu >= wire6::MIN_MTU).map(|global| {
+        let v6_on = (cfg.ip6.is_some() || cfg.slaac) && mtu >= wire6::MIN_MTU;
+        let v6 = v6_on.then(|| {
             let ll = wire6::link_local(cfg.mac);
-            let plen = u32::from(cfg.prefix_len6.min(128));
-            let mask = if plen == 0 {
-                0
-            } else {
-                u128::MAX << (128 - plen)
-            };
-            let global = (!global.is_unspecified() && global != ll).then_some(global);
-            let mut mcast_macs = vec![wire6::multicast_mac(wire6::ALL_NODES)];
-            for a in std::iter::once(ll).chain(global) {
-                let m = wire6::multicast_mac(wire6::solicited_node(a));
-                if !mcast_macs.contains(&m) {
-                    mcast_macs.push(m);
+            // RFC 4862 5.4.2: the first probe after start waits a random time.
+            let start = now
+                + Duration::from_nanos(
+                    seed.rotate_left(17) % MAX_RTR_SOLICITATION_DELAY.as_nanos() as u64,
+                );
+            let state = if cfg.dad {
+                AddrState::Tentative {
+                    probes: DAD_TRANSMITS,
+                    at: start,
                 }
+            } else {
+                AddrState::Preferred
+            };
+            let addr = |ip| Addr6 {
+                ip,
+                state,
+                slaac: false,
+                preferred_until: None,
+                valid_until: None,
+            };
+            let mut addrs = vec![addr(ll)];
+            let mut prefixes = Vec::new();
+            if let Some(g) = cfg.ip6.filter(|g| !g.is_unspecified() && *g != ll) {
+                addrs.push(addr(g));
+                let (net, mask) = prefix_of(g, cfg.prefix_len6);
+                prefixes.push(Prefix6 {
+                    net,
+                    mask,
+                    until: None,
+                });
             }
-            Net6 {
+            let speaker = cfg.queue == 0;
+            let n = seed.wrapping_mul(0x2545_f491_4f6c_dd1d).to_be_bytes();
+            let mut v = Net6 {
                 ll,
-                global,
-                mask,
+                addrs,
+                prefixes,
                 gateway: cfg.gateway6,
+                routers: Vec::new(),
+                mtu,
+                hop_limit: TTL,
                 ndp: NdpCache::default(),
                 frag_id: (seed >> 16) as u32,
                 pmtu: HashMap::new(),
-                mcast_macs,
-                // One report for the device (queue 0); any queue answers a query.
-                mld_at: (cfg.queue == 0).then_some(now),
-            }
+                mcast_macs: Vec::new(),
+                mld_at: None,
+                slaac: cfg.slaac,
+                speaker,
+                rs: cfg.slaac.then_some((RTR_SOLICITATIONS, start)),
+                nonce: [n[0], n[1], n[2], n[3], n[4], n[5]],
+                disabled: false,
+                changed: true,
+                reported: None,
+                auto_at: None,
+            };
+            v.refresh_groups(now);
+            // One report for the device (queue 0); any queue answers a query.
+            v.mld_at = speaker.then_some(now);
+            v.rearm();
+            v
         });
         let net = Net {
             mac: cfg.mac,
@@ -978,6 +1267,7 @@ impl Iface {
             nd_retry: Vec::new(),
             nd_failed: Vec::new(),
             cookie_sent: None,
+            dad_failed: 0,
             cfg,
         }
     }
@@ -1028,17 +1318,16 @@ impl Iface {
     /// The earliest time `poll` has work (timers, ARP retries, reassembly expiry).
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let t = self.timers.peek().map(|Reverse((t, _, _))| *t);
-        let (nd, mld) = self
-            .net
-            .v6
-            .as_ref()
-            .map_or((None, None), |v| (v.ndp.next_deadline(), v.mld_at));
+        let (nd, mld, auto) = self.net.v6.as_ref().map_or((None, None, None), |v| {
+            (v.ndp.next_deadline(), v.mld_at, v.auto_at)
+        });
         [
             t,
             self.net.arp.next_deadline(),
             self.reasm.next_deadline(),
             nd,
             mld,
+            auto,
         ]
         .into_iter()
         .flatten()
@@ -1135,6 +1424,10 @@ impl Iface {
         }
         if !notes.is_empty() && !tcb.orphan {
             if notes.has(Notes::ESTABLISHED) {
+                if let Some(acc) = tcb.ecn_mode() {
+                    super::tcp::ECN_STATS[usize::from(!acc)]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 match tcb.listener {
                     Some(port) if self.listeners.contains_key(&port) => {
                         slot.known = true;
@@ -1240,11 +1533,28 @@ impl Iface {
         }
         let local = SocketAddr::new(self.net.src_for(remote.ip()), port);
         let iss = self.isn(local, remote, now);
-        let tcb = Tcb::connect(self.cfg.tcp, local, remote, iss, self.clock(now));
+        let tcb = Tcb::connect(
+            self.tcp_params(remote.ip()),
+            local,
+            remote,
+            iss,
+            self.clock(now),
+        );
         let idx = self.alloc(tcb);
         self.slots[idx as usize].known = true;
         self.mark_dirty(idx);
         Ok(self.handle(idx))
+    }
+
+    /// TCP parameters for a connection with `remote`: an IPv6 link MTU lowered by a router
+    /// advertisement lowers the MSS (`Tcb::new` takes IPv6's 20 extra header bytes off).
+    #[inline]
+    fn tcp_params(&self, remote: IpAddr) -> Params {
+        let mut p = self.cfg.tcp;
+        if let (IpAddr::V6(_), Some(v6)) = (remote, &self.net.v6) {
+            p.mss = p.mss.min((v6.mtu - IPV4_HDR - wire::TCP_HDR) as u16);
+        }
+        p
     }
 
     /// Whether a connection exists for `(port, remote)` (dial port selection).
@@ -1528,9 +1838,7 @@ impl Iface {
                 ip.tos,
                 d.payload.len(),
             );
-            if let Some(q) =
-                Self::dst_port(d.proto, &d.payload).and_then(|p| self.dial_port_owner(d.proto, p))
-            {
+            if let Some(q) = self.dial_owner(d.proto, &d.payload) {
                 let mut f = Vec::with_capacity(ETH_HDR + pkt.len());
                 f.extend_from_slice(&frame[..ETH_HDR]);
                 f.extend_from_slice(&pkt);
@@ -1543,9 +1851,7 @@ impl Iface {
             self.on_packet(now, &Self::pkt4(&whole, &pkt, bcast, src_mac), false, tx);
             return;
         }
-        if let Some(q) =
-            Self::dst_port(ip.proto, ip.payload).and_then(|p| self.dial_port_owner(ip.proto, p))
-        {
+        if let Some(q) = self.dial_owner(ip.proto, ip.payload) {
             self.forward.push((q, frame.to_vec()));
             return;
         }
@@ -1577,6 +1883,9 @@ impl Iface {
     fn on_ipv6(&mut self, now: Instant, frame: &[u8], src_mac: Mac, b: &[u8], tx: &mut dyn Tx) {
         let Some(ip) = Ipv6::parse(b) else { return };
         let Some(v6) = &self.net.v6 else { return };
+        if v6.disabled {
+            return;
+        }
         let mcast = ip.dst.is_multicast();
         if !(v6.ours(ip.dst) || (mcast && v6.listening(ip.dst))) || ip.src.is_multicast() {
             return;
@@ -1614,9 +1923,7 @@ impl Iface {
                 up.nh_field,
                 src_mac,
             );
-            if let Some(q) = Self::dst_port(p.proto, p.payload)
-                .and_then(|port| self.dial_port_owner(p.proto, port))
-            {
+            if let Some(q) = self.dial_owner(p.proto, p.payload) {
                 self.forward.push((q, frame.to_vec()));
                 return;
             }
@@ -1671,9 +1978,7 @@ impl Iface {
             upper.len(),
         );
         pkt[IPV6_HDR..].copy_from_slice(upper);
-        if let Some(q) =
-            Self::dst_port(u.proto, upper).and_then(|p| self.dial_port_owner(u.proto, p))
-        {
+        if let Some(q) = self.dial_owner(u.proto, upper) {
             let mut fr = Vec::with_capacity(ETH_HDR + pkt.len());
             fr.extend_from_slice(&frame[..ETH_HDR]);
             fr.extend_from_slice(&pkt);
@@ -1710,11 +2015,49 @@ impl Iface {
         }
     }
 
-    fn dst_port(proto: u8, payload: &[u8]) -> Option<u16> {
-        if !(proto == PROTO_TCP || proto == PROTO_UDP) || payload.len() < 4 {
+    /// The queue owning the dialed connection a packet (`proto`, `payload`) is for, when that
+    /// is another queue: see [`dial_port_owner`](Self::dial_port_owner).
+    fn dial_owner(&self, proto: u8, payload: &[u8]) -> Option<usize> {
+        if self.cfg.queues <= 1 {
             return None;
         }
-        Some(u16::from_be_bytes([payload[2], payload[3]]))
+        let (proto, port) = Self::local_port(proto, payload)?;
+        self.dial_port_owner(proto, port)
+    }
+
+    /// The transport protocol and local port a packet is for: a TCP or UDP destination port,
+    /// or, for an ICMP / ICMPv6 error, the source port of the segment or datagram of ours it
+    /// quotes (RSS hashes an ICMP error by its addresses only, so it can land on any queue,
+    /// while the connection it reports on lives on one).
+    fn local_port(proto: u8, payload: &[u8]) -> Option<(u8, u16)> {
+        let port = |b: &[u8], at: usize| Some(u16::from_be_bytes([*b.get(at)?, *b.get(at + 1)?]));
+        match proto {
+            PROTO_TCP | PROTO_UDP => Some((proto, port(payload, 2)?)),
+            PROTO_ICMP if payload.first() == Some(&wire::ICMP_UNREACHABLE) => {
+                let q = payload.get(ICMP_HDR..)?;
+                let (version, inner) = (q.first()? >> 4, *q.get(9)?);
+                if version != 4 || !matches!(inner, PROTO_TCP | PROTO_UDP) {
+                    return None;
+                }
+                Some((inner, port(q, usize::from(q[0] & 0x0f) * 4)?))
+            }
+            PROTO_ICMPV6
+                if matches!(
+                    payload.first(),
+                    Some(&(wire6::ICMP6_UNREACHABLE | wire6::ICMP6_PACKET_TOO_BIG))
+                ) =>
+            {
+                // Only a transport header right after the quoted IPv6 header (what this stack
+                // sends; a quoted fragment header is left to the queue it landed on).
+                let q = payload.get(ICMP6_HDR..)?;
+                let (version, inner) = (q.first()? >> 4, *q.get(6)?);
+                if version != 6 || !matches!(inner, PROTO_TCP | PROTO_UDP) {
+                    return None;
+                }
+                Some((inner, port(q, IPV6_HDR)?))
+            }
+            _ => None,
+        }
     }
 
     fn on_packet(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
@@ -1835,6 +2178,7 @@ impl Iface {
                 });
             }
             wire6::ND_NEIGHBOR_SOLICIT => self.on_ns(now, p, src, dst, &m, tx),
+            wire6::ND_ROUTER_ADVERT => self.on_ra(now, src, p.hops, &m, tx),
             wire6::ND_NEIGHBOR_ADVERT => {
                 let Some(nd) = Nd::parse(&m, src, dst, p.hops) else {
                     return;
@@ -1842,8 +2186,13 @@ impl Iface {
                 let Some(v6) = self.net.v6.as_mut() else {
                     return;
                 };
-                if v6.ours(nd.target) {
-                    return; // someone else claims our address: we keep it (no DAD)
+                if let Some(a) = v6.claimed(nd.target) {
+                    // An advertisement for a tentative address of ours: a duplicate (RFC 4862
+                    // 5.4.4). For an address in use, someone else claims it: we keep it.
+                    if matches!(a.state, AddrState::Tentative { .. }) {
+                        self.duplicate(now, nd.target);
+                    }
+                    return;
                 }
                 // RFC 4861 7.2.5: only updates an entry that exists (pending or resolved).
                 if let Some(mac) = nd.lla {
@@ -1855,9 +2204,8 @@ impl Iface {
             wire6::ICMP6_PACKET_TOO_BIG => {
                 let mtu = u32::from_be_bytes(m.rest);
                 let Some(q) = m.quoted() else { return };
-                let link = self.net.mtu;
                 if let (Some(v6), IpAddr::V6(d)) = (self.net.v6.as_mut(), q.dst) {
-                    v6.learn_pmtu(d, mtu as usize, link, now);
+                    v6.learn_pmtu(d, mtu as usize, now);
                 }
                 let mtu = mtu.max(wire6::MIN_MTU as u32);
                 self.on_icmp_error(q, IcmpError::TooBig(mtu), false);
@@ -1905,8 +2253,18 @@ impl Iface {
         let Some(v6) = self.net.v6.as_mut() else {
             return;
         };
-        if !v6.ours(nd.target) {
-            return;
+        match v6.claimed(nd.target).map(|a| a.state) {
+            None => return,
+            Some(AddrState::Tentative { .. }) => {
+                // RFC 4862 5.4.3: another node's probe for our tentative address (not our own
+                // looped back, RFC 7527) makes it a duplicate; address resolution of it from a
+                // unicast source is ignored.
+                if src.is_unspecified() && nd.nonce != Some(v6.nonce) {
+                    self.duplicate(now, nd.target);
+                }
+                return;
+            }
+            Some(_) => {}
         }
         if src.is_unspecified() {
             // Another node's duplicate address detection for our address: defend it with an
@@ -2047,8 +2405,16 @@ impl Iface {
                 if let Some(opts) = self.check_cookie(local, remote, &seg, clock) {
                     let iss = seg.ack.wrapping_sub(1);
                     let irs = seg.seq.wrapping_sub(1);
-                    let mut tcb =
-                        Tcb::from_cookie(self.cfg.tcp, local, remote, iss, irs, opts, &seg, clock);
+                    let mut tcb = Tcb::from_cookie(
+                        self.tcp_params(p.src),
+                        local,
+                        remote,
+                        iss,
+                        irs,
+                        opts,
+                        &seg,
+                        clock,
+                    );
                     tcb.listener = Some(seg.dst_port);
                     let idx = self.alloc(tcb);
                     if !seg.payload.is_empty() || seg.flags & wire::FIN != 0 {
@@ -2087,7 +2453,7 @@ impl Iface {
             return;
         }
         let iss = self.isn(local, remote, now);
-        let mut tcb = Tcb::accept(self.cfg.tcp, local, remote, iss, &seg, clock);
+        let mut tcb = Tcb::accept(self.tcp_params(p.src), local, remote, iss, &seg, clock);
         tcb.listener = Some(seg.dst_port);
         let idx = self.alloc(tcb);
         self.slots[idx as usize].half_open = Some(seg.dst_port);
@@ -2165,7 +2531,7 @@ impl Iface {
         let h = self.cookie_hash(local, remote, syn.seq, count, mss_idx);
         let iss = (count << 27) | (mss_idx << 24) | h;
         self.cookie_sent = Some(now);
-        let p = self.cfg.tcp;
+        let p = self.tcp_params(remote.ip());
         let mss = if remote.is_ipv6() {
             p.mss.saturating_sub(20)
         } else {
@@ -2199,15 +2565,21 @@ impl Iface {
         } else {
             window = window.min(0xffff);
         }
+        // An AccECN SYN gets an AccECN SYN-ACK (feeding back its IP-ECN field) even from a
+        // cookie: the client's ACE field on the ACK tells the connection's mode back
+        // (RFC 9768 5.1, `Tcb::from_cookie`).
+        let acc = p.accecn && syn.ae && syn.flags & (wire::CWR | wire::ECE) != 0;
+        let ace = [0b010u8, 0b011, 0b100, 0b110][usize::from(syn.ecn & ECN_MASK)];
         let hdr = TcpOut {
             src_port: local.port(),
             dst_port: remote.port(),
             seq: iss,
             ack: syn.seq.wrapping_add(1),
-            flags: SYN | ACK,
+            flags: SYN | ACK | if acc { (ace & 3) << 6 } else { 0 },
             window: window as u16,
             opts,
             ect: false,
+            ae: acc && ace & 4 != 0,
         };
         let mut out = NetOut {
             net: &mut self.net,
@@ -2352,6 +2724,243 @@ impl Iface {
                 self.net.send_mld_report(tx);
             }
         }
+        if self
+            .net
+            .v6
+            .as_ref()
+            .is_some_and(|v| v.auto_at.is_some_and(|t| now >= t))
+        {
+            self.poll_auto(now, tx);
+        }
+    }
+
+    /// Autoconfiguration timers: duplicate address detection probes and verdicts, router
+    /// solicitations, the end of addresses', prefixes' and routers' lifetimes.
+    fn poll_auto(&mut self, now: Instant, tx: &mut dyn Tx) {
+        let Some(v6) = self.net.v6.as_mut() else {
+            return;
+        };
+        let mut probes: Vec<Ipv6Addr> = Vec::new();
+        let mut changed = false;
+        for a in &mut v6.addrs {
+            if let AddrState::Tentative { probes: n, at } = a.state {
+                if now >= at {
+                    if n > 0 {
+                        probes.push(a.ip);
+                        a.state = AddrState::Tentative {
+                            probes: n - 1,
+                            at: now + RETRANS_TIMER,
+                        };
+                    } else {
+                        // No answer to any probe: the address is ours (RFC 4862 5.4.5).
+                        a.state = AddrState::Preferred;
+                        changed = true;
+                    }
+                }
+            }
+            if a.state == AddrState::Preferred && a.preferred_until.is_some_and(|t| now >= t) {
+                a.state = AddrState::Deprecated;
+                changed = true;
+            }
+        }
+        let before = v6.addrs.len();
+        v6.addrs
+            .retain(|a| !(a.slaac && a.valid_until.is_some_and(|t| now >= t)));
+        changed |= v6.addrs.len() != before;
+        v6.prefixes.retain(|p| p.until.is_none_or(|t| now < t));
+        v6.routers.retain(|r| now < r.until);
+        let rs = match v6.rs {
+            Some((n, at)) if now >= at => {
+                v6.rs = (n > 1).then(|| (n - 1, now + RTR_SOLICITATION_INTERVAL));
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            v6.changed = true;
+            v6.refresh_groups(now);
+        }
+        v6.rearm();
+        let (speaker, nonce) = (v6.speaker, v6.nonce);
+        if speaker {
+            for ip in probes {
+                self.net.send_dad_ns(tx, ip, nonce);
+            }
+            if rs {
+                self.net.send_rs(tx);
+            }
+        }
+    }
+
+    /// One of our tentative addresses is somebody else's (RFC 4862 5.4.5): never used. A
+    /// duplicate link-local address (formed from the MAC) turns IPv6 off.
+    fn duplicate(&mut self, now: Instant, ip: Ipv6Addr) {
+        let Some(v6) = self.net.v6.as_mut() else {
+            return;
+        };
+        let Some(i) = v6.addrs.iter().position(|a| a.ip == ip) else {
+            return;
+        };
+        v6.addrs[i].state = AddrState::Duplicate;
+        if i == 0 {
+            v6.disabled = true;
+            v6.rs = None;
+        }
+        self.dad_failed += 1;
+        v6.changed = true;
+        v6.refresh_groups(now);
+        v6.rearm();
+    }
+
+    /// A router advertisement (RFC 4861 6.3.4, RFC 4862 5.5.3), with autoconfiguration on:
+    /// default router, hop limit, MTU, on-link prefixes and SLAAC addresses.
+    fn on_ra(&mut self, now: Instant, src: Ipv6Addr, hops: u8, m: &Icmp6<'_>, tx: &mut dyn Tx) {
+        let Some(ra) = wire6::Ra::parse(m, src, hops) else {
+            return;
+        };
+        let link_mtu = self.net.mtu;
+        let dad = self.cfg.dad;
+        let Some(v6) = self.net.v6.as_mut() else {
+            return;
+        };
+        if !v6.slaac || v6.disabled || v6.claimed(src).is_some() {
+            return;
+        }
+        v6.rs = None; // a router answered
+        if ra.hop_limit != 0 {
+            v6.hop_limit = ra.hop_limit;
+        }
+        let life = now + Duration::from_secs(u64::from(ra.lifetime));
+        match v6.routers.iter().position(|r| r.ip == src) {
+            Some(i) if ra.lifetime == 0 => {
+                v6.routers.remove(i);
+            }
+            Some(i) => v6.routers[i].until = life,
+            None if ra.lifetime > 0 && v6.routers.len() < MAX_ROUTERS => {
+                v6.routers.push(Router6 {
+                    ip: src,
+                    until: life,
+                });
+            }
+            None => {}
+        }
+        if let Some(mtu) = ra.mtu {
+            let mtu = mtu as usize;
+            if (wire6::MIN_MTU..=link_mtu).contains(&mtu) {
+                v6.mtu = mtu;
+            }
+        }
+        let iid = u128::from(v6.ll) & u128::from(u64::MAX);
+        let mut changed = false;
+        for pi in ra.prefixes.iter().flatten() {
+            if wire6::is_link_local(pi.prefix) {
+                continue;
+            }
+            if pi.on_link {
+                let (net, mask) = prefix_of(pi.prefix, pi.len);
+                let until = lifetime(now, pi.valid);
+                match v6
+                    .prefixes
+                    .iter()
+                    .position(|p| p.net == net && p.mask == mask)
+                {
+                    // The static address's subnet stays.
+                    Some(i) if v6.prefixes[i].until.is_none() => {}
+                    Some(i) if pi.valid == 0 => {
+                        v6.prefixes.remove(i);
+                    }
+                    Some(i) => v6.prefixes[i].until = until,
+                    None if pi.valid > 0 && v6.prefixes.len() < MAX_PREFIXES => {
+                        v6.prefixes.push(Prefix6 { net, mask, until });
+                    }
+                    None => {}
+                }
+            }
+            // SLAAC (5.5.3): a 64-bit prefix (our interface identifier is 64 bits).
+            if !pi.autonomous || pi.preferred > pi.valid || pi.len != 64 {
+                continue;
+            }
+            let (net, _) = prefix_of(pi.prefix, 64);
+            let ip = Ipv6Addr::from(net | iid);
+            let preferred_until = lifetime(now, pi.preferred);
+            match v6.addrs.iter().position(|a| a.ip == ip) {
+                Some(i) if !v6.addrs[i].slaac => {} // the static address
+                Some(i) => {
+                    let a = &mut v6.addrs[i];
+                    a.preferred_until = preferred_until;
+                    if a.state == AddrState::Deprecated && pi.preferred > 0 {
+                        a.state = AddrState::Preferred;
+                        changed = true;
+                    }
+                    // 5.5.3 e): the "two hours" rule against advertisements cutting the
+                    // valid lifetime short.
+                    let remaining = a.valid_until.map(|t| t.saturating_duration_since(now));
+                    let received = Duration::from_secs(u64::from(pi.valid));
+                    if pi.valid == u32::MAX
+                        || received > TWO_HOURS
+                        || remaining.is_some_and(|r| received > r)
+                    {
+                        a.valid_until = lifetime(now, pi.valid);
+                    } else if remaining.is_none_or(|r| r > TWO_HOURS) {
+                        a.valid_until = Some(now + TWO_HOURS);
+                    }
+                }
+                None if pi.valid > 0
+                    && v6.addrs.iter().filter(|a| a.slaac).count() < MAX_SLAAC_ADDRS =>
+                {
+                    let state = if dad {
+                        AddrState::Tentative {
+                            probes: DAD_TRANSMITS,
+                            at: now,
+                        }
+                    } else if pi.preferred == 0 {
+                        AddrState::Deprecated
+                    } else {
+                        AddrState::Preferred
+                    };
+                    v6.addrs.push(Addr6 {
+                        ip,
+                        state,
+                        slaac: true,
+                        preferred_until,
+                        valid_until: lifetime(now, pi.valid),
+                    });
+                    changed = true;
+                }
+                None => {}
+            }
+        }
+        if changed {
+            v6.changed = true;
+            v6.refresh_groups(now);
+        }
+        v6.rearm();
+        // RFC 4861 6.3.4: record the router's link-layer address.
+        if let Some(mac) = ra.lla {
+            if let Some(q) = v6.ndp.learn(src, mac, now, true) {
+                self.net.release(tx, mac, ETHERTYPE_IPV6, q);
+            }
+        }
+    }
+
+    /// Our usable IPv6 addresses, when they changed since the last call (or `None`).
+    pub(crate) fn ipv6_changed(&mut self) -> Option<Vec<Ipv6Addr>> {
+        let v6 = self.net.v6.as_mut()?;
+        if !std::mem::take(&mut v6.changed) {
+            return None;
+        }
+        let now: Vec<Ipv6Addr> = v6.usable().collect();
+        if v6.reported.as_ref() == Some(&now) {
+            return None;
+        }
+        v6.reported = Some(now.clone());
+        Some(now)
+    }
+
+    /// Duplicate address detection failures (tests).
+    #[cfg(test)]
+    pub(crate) fn dad_failures(&self) -> u32 {
+        self.dad_failed
     }
 
     /// Connections in the table (tests, stats).

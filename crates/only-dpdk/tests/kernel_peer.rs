@@ -16,6 +16,14 @@
 //! stack `DpdkConfig::address6`; neighbor discovery both ways, `ping -6`, UDP with fragments,
 //! TCP both ways, and the netem loss run.
 //!
+//! Accurate ECN (`af_packet_accecn_kernel_peer`) runs against the kernel's own (Linux 6.18+,
+//! `net.ipv4.tcp_ecn = 3`, read back from the kernel's `TCP_INFO`); SLAAC and duplicate address
+//! detection (`af_packet_ipv6_slaac_and_dad_with_radvd`) against radvd and the kernel's DAD.
+//! Both change sysctls of their network namespace only where `ONLY_TEST_NETNS_SYSCTL=1` says
+//! it is a test container's, and skip otherwise. AF_XDP adds a shared UMEM over two queues and
+//! jumbo frames with multi-buffer (`af_xdp_shared_umem_two_queues`,
+//! `af_xdp_multi_buffer_jumbo_frames`).
+//!
 //! Needs `CAP_NET_ADMIN`, `/dev/net/tun` and the `ip` / `tc` / `ss` tools, so the tests only run
 //! when asked: `ONLY_TAP_TEST=1` (TAP, AF_PACKET) and `ONLY_DPDK_TEST=1` (DPDK). The AF_XDP ones
 //! (`af_xdp_*`, also `CAP_BPF` and `ethtool`) run with `ONLY_XDP_TEST=1` or
@@ -388,38 +396,50 @@ fn dial_kernel(engine: &Engine, kernel: IpAddr) {
     }
     // UDP dial: echo, then a closed port.
     for (port, refused) in [(9002u16, false), (9003, true)] {
-        let (tx, rx) = mpsc::channel();
-        let etx = tx.clone();
-        let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
-        let s2 = slot.clone();
-        engine.dial_udp(
-            SocketAddr::from((kernel, port)),
-            fn_acceptor(move |c: &Conn<Client>| {
-                let _ = c.send(b"udp dial");
-                *s2.lock().unwrap() = Some(c.clone());
-                Client(tx.clone())
-            }),
-            move |e| {
-                let _ = etx.send(Err(Some(format!("dial_udp: {e}"))));
-            },
-        );
-        match rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("udp dial result")
-        {
-            Ok(d) => {
-                assert!(!refused);
-                assert_eq!(d, b"udp dial");
-                let opened = slot.lock().unwrap().take();
-                if let Some(c) = opened {
+        for attempt in 1.. {
+            let limited = kernel_icmp_rate_limited();
+            let (tx, rx) = mpsc::channel();
+            let etx = tx.clone();
+            let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
+            let s2 = slot.clone();
+            engine.dial_udp(
+                SocketAddr::from((kernel, port)),
+                fn_acceptor(move |c: &Conn<Client>| {
+                    let _ = c.send(b"udp dial");
+                    *s2.lock().unwrap() = Some(c.clone());
+                    Client(tx.clone())
+                }),
+                move |e| {
+                    let _ = etx.send(Err(Some(format!("dial_udp: {e}"))));
+                },
+            );
+            let r = rx.recv_timeout(Duration::from_secs(5));
+            if r.is_err() && refused && attempt < 4 && kernel_icmp_rate_limited() > limited {
+                // The kernel's per-host ICMP rate limit (`net.ipv4.icmp_ratelimit`) swallowed
+                // its port unreachable: nothing reached the stack. Dial again.
+                eprintln!("udp dial to port {port}: the kernel rate-limited its ICMP error");
+                if let Some(c) = slot.lock().unwrap().take() {
                     c.close();
                 }
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
             }
-            Err(e) => {
-                assert!(refused, "{e:?}");
-                let e = e.unwrap_or_default();
-                assert!(e.contains("unreachable") || e.contains("refused"), "{e}");
+            match r.unwrap_or_else(|e| panic!("udp dial to port {port}: {e:?}")) {
+                Ok(d) => {
+                    assert!(!refused);
+                    assert_eq!(d, b"udp dial");
+                    let opened = slot.lock().unwrap().take();
+                    if let Some(c) = opened {
+                        c.close();
+                    }
+                }
+                Err(e) => {
+                    assert!(refused, "{e:?}");
+                    let e = e.unwrap_or_default();
+                    assert!(e.contains("unreachable") || e.contains("refused"), "{e}");
+                }
             }
+            break;
         }
     }
 }
@@ -1039,4 +1059,532 @@ fn dpdk_net_tap_kernel_peer_ipv6() {
         v6(80, 2),
         v6(80, 1),
     );
+}
+
+// ---- Accurate ECN, SLAAC / DAD and AF_XDP multi-buffer / shared UMEM -------------------------
+
+/// What the kernel's `TCP_INFO` says about a connection (Linux 6.18+ fields; zeros before).
+#[derive(Debug, Default)]
+struct KernelTcpInfo {
+    snd_mss: u32,
+    /// `TCPI_ECN_MODE_*`: 0 disabled, 1 RFC 3168, 2 AccECN.
+    ecn_mode: u32,
+    /// `TCP_ACCECN_OPT_*`: 2 = options with counters seen.
+    opt_seen: u32,
+    /// `TCP_ACCECN_*_FAIL_*` bits.
+    fail_mode: u32,
+    received_ce: u32,
+    delivered_e0_bytes: u32,
+    delivered_ce_bytes: u32,
+    received_ce_bytes: u32,
+}
+
+/// The kernel side's `TCP_INFO` of `fd`.
+fn kernel_tcp_info(fd: std::os::fd::RawFd) -> KernelTcpInfo {
+    let mut b = [0u8; 512];
+    let mut len = b.len() as only_sys::ffi::socklen_t;
+    // SAFETY: `b` is valid for `len` bytes of writes, `len` for one socklen_t; the kernel
+    // writes at most `len` bytes.
+    let r = unsafe {
+        only_sys::ffi::getsockopt(
+            fd,
+            only_sys::ffi::IPPROTO_TCP,
+            only_sys::ffi::TCP_INFO,
+            b.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    };
+    assert_eq!(r, 0, "TCP_INFO");
+    let u = |at: usize| u32::from_ne_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let mut i = KernelTcpInfo {
+        snd_mss: u(16),
+        ..KernelTcpInfo::default()
+    };
+    if len as usize >= 280 {
+        let bits = u(276);
+        i.ecn_mode = bits & 3;
+        i.opt_seen = (bits >> 2) & 3;
+        i.fail_mode = (bits >> 4) & 0xf;
+        i.received_ce = u(248);
+        i.delivered_e0_bytes = u(256);
+        i.delivered_ce_bytes = u(260);
+        i.received_ce_bytes = u(272);
+    }
+    i
+}
+
+/// Reads sysctl `name` (`/proc/sys/...` path below `net/`).
+fn sysctl(name: &str) -> String {
+    std::fs::read_to_string(format!("/proc/sys/net/{name}"))
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// Sets sysctl `name` to `v` when this network namespace may be changed
+/// (`ONLY_TEST_NETNS_SYSCTL=1`: a test container, never a shared host); returns whether `name`
+/// now has that value.
+fn netns_sysctl(name: &str, v: &str) -> bool {
+    if sysctl(name) == v {
+        return true;
+    }
+    if std::env::var("ONLY_TEST_NETNS_SYSCTL").is_ok_and(|x| x == "1") {
+        let _ = std::fs::write(format!("/proc/sys/net/{name}"), v);
+    }
+    sysctl(name) == v
+}
+
+/// The stack dials `to` and echoes `size` bytes through it; returns the kernel side's
+/// `TCP_INFO` once the echo is complete.
+fn dial_echo(engine: &Engine, listener: TcpListener, to: SocketAddr, size: usize) -> KernelTcpInfo {
+    use std::os::fd::AsRawFd;
+    let (itx, irx) = mpsc::channel();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut b = [0u8; 16 << 10];
+            let mut total = 0;
+            while let Ok(n) = retry(|| s.read(&mut b)) {
+                if n == 0 || retry(|| s.write_all(&b[..n])).is_err() {
+                    break;
+                }
+                total += n;
+                if total == size {
+                    let _ = itx.send(kernel_tcp_info(s.as_raw_fd()));
+                }
+            }
+        }
+    });
+    let (tx, rx) = mpsc::channel();
+    let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
+    let s2 = slot.clone();
+    let etx = tx.clone();
+    engine.dial(
+        to,
+        fn_acceptor(move |c: &Conn<Client>| {
+            *s2.lock().unwrap() = Some(c.clone());
+            Client(tx.clone())
+        }),
+        move |e| {
+            let _ = etx.send(Err(Some(format!("dial: {e}"))));
+        },
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let c = loop {
+        let opened = slot.lock().unwrap().clone();
+        if let Some(c) = opened {
+            break c;
+        }
+        if let Ok(Err(e)) = rx.try_recv() {
+            panic!("dial {to}: {e:?}");
+        }
+        assert!(Instant::now() < deadline, "dial {to} timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let msg = pattern(size, 3);
+    let mut got = Vec::new();
+    let mut sent = 0;
+    for chunk in msg.chunks(64 << 10) {
+        c.send(chunk).unwrap();
+        sent += chunk.len();
+        while got.len() + (256 << 10) < sent {
+            match rx.recv_timeout(Duration::from_secs(30)).expect("dial echo") {
+                Ok(d) => got.extend(d),
+                Err(e) => panic!("dialed connection closed: {e:?}"),
+            }
+        }
+    }
+    while got.len() < msg.len() {
+        match rx.recv_timeout(Duration::from_secs(30)).expect("dial echo") {
+            Ok(d) => got.extend(d),
+            Err(e) => panic!("dialed connection closed: {e:?}"),
+        }
+    }
+    assert!(got == msg, "dial {to}: echo differs");
+    let info = irx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("kernel tcp_info");
+    c.close();
+    info
+}
+
+/// Accurate ECN against the kernel's (`net.ipv4.tcp_ecn = 3`, Linux 6.18+): over a veth with
+/// netem marking CE instead of dropping (both ways), the kernel's echo client and the stack's
+/// dial both end up in AccECN mode on both sides, each side's CE marks reach the other through
+/// the ACE field and the AccECN option, and nobody detects a failure.
+#[test]
+fn af_packet_accecn_kernel_peer() {
+    if !enabled("ONLY_TAP_TEST") {
+        return;
+    }
+    let old = sysctl("ipv4/tcp_ecn");
+    struct Restore(String);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if !self.0.is_empty() {
+                netns_sysctl("ipv4/tcp_ecn", &self.0);
+            }
+        }
+    }
+    let _restore = Restore(old);
+    if !netns_sysctl("ipv4/tcp_ecn", "3") {
+        let need = std::env::var("ONLY_TEST_EXPECT_ACCECN").is_ok_and(|v| v == "1");
+        assert!(!need, "net.ipv4.tcp_ecn is not 3 here");
+        eprintln!("skipped: net.ipv4.tcp_ecn is not 3 in this namespace (and may not be set)");
+        return;
+    }
+    let local: IpAddr = Ipv4Addr::new(10, 66, 0, 2).into();
+    let kernel: IpAddr = Ipv4Addr::new(10, 66, 0, 1).into();
+    let _v = Veth::new("flacc", kernel, Some("loss 1% ecn delay 1ms"));
+    let mut d = dcfg(Device::AfPacket("flacc0".to_owned()), local);
+    d.tcp_accecn = true;
+    d.tcp_buffer = 1 << 20;
+    let engine = echo_engine(d);
+    engine.start().unwrap();
+    let before = only::dpdk::tcp_ecn_stats();
+    // The kernel connects (it asks for AccECN on its SYN) and echoes 4 MiB.
+    let mut t =
+        TcpStream::connect_timeout(&SocketAddr::from((local, 7001)), Duration::from_secs(10))
+            .expect("tcp connect");
+    t.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    tcp_echo(&mut t, &pattern(4 << 20, 11));
+    let k = kernel_tcp_info(std::os::fd::AsRawFd::as_raw_fd(&t));
+    eprintln!("accecn, kernel client: {k:?}");
+    assert_eq!(k.ecn_mode, 2, "the kernel is in AccECN mode: {k:?}");
+    assert_eq!(k.opt_seen, 2, "the kernel saw our AccECN options: {k:?}");
+    assert_eq!(k.fail_mode, 0, "the kernel saw no AccECN failure: {k:?}");
+    assert!(k.received_ce > 0, "netem marked our echo: {k:?}");
+    assert!(
+        k.delivered_e0_bytes > 1 << 20,
+        "our option reported its ECT(0) bytes: {k:?}"
+    );
+    assert!(
+        k.delivered_ce_bytes > 0,
+        "our option reported its CE bytes: {k:?}"
+    );
+    drop(t);
+    // The stack dials the kernel.
+    let l = TcpListener::bind((kernel, 9201)).unwrap();
+    let k = dial_echo(&engine, l, SocketAddr::new(kernel, 9201), 4 << 20);
+    eprintln!("accecn, stack client: {k:?}");
+    assert_eq!((k.ecn_mode, k.opt_seen, k.fail_mode), (2, 2, 0), "{k:?}");
+    assert!(k.received_ce > 0 && k.delivered_ce_bytes > 0, "{k:?}");
+    let after = only::dpdk::tcp_ecn_stats();
+    eprintln!("accecn: stack stats {before:?} -> {after:?}");
+    assert!(
+        after.accecn >= before.accecn + 2,
+        "both connections in AccECN mode"
+    );
+    assert!(after.ce_received > before.ce_received, "CE marks counted");
+    assert!(
+        after.ce_responses > before.ce_responses,
+        "the kernel's feedback of our CE marks was answered"
+    );
+    engine.shutdown();
+    engine.wait();
+}
+
+/// IPv6 autoconfiguration against Linux routers and hosts: radvd on the kernel side of a veth
+/// advertises a /64 (MTU 1400, hop limit 32); the stack (`ipv6_slaac` + `ipv6_dad`) forms its
+/// address after duplicate address detection, the kernel reaches it with an MSS for MTU 1400,
+/// and the stack reaches an address of the kernel's off the /64 through the advertised default
+/// router. Then duplicate address detection both ways: the kernel cannot take the stack's
+/// address (we defend it), and the stack gives up a static address the kernel already has.
+#[test]
+fn af_packet_ipv6_slaac_and_dad_with_radvd() {
+    if !enabled("ONLY_TAP_TEST") {
+        return;
+    }
+    if Command::new("radvd").arg("--version").output().is_err() {
+        let need = std::env::var("ONLY_TEST_EXPECT_RADVD").is_ok_and(|v| v == "1");
+        assert!(!need, "radvd not installed");
+        eprintln!("skipped: radvd not installed");
+        return;
+    }
+    // radvd wants forwarding on (a router); only where this namespace may be changed.
+    if !netns_sysctl("ipv6/conf/all/forwarding", "1") {
+        eprintln!("skipped: net.ipv6.conf.all.forwarding is 0 and may not be set");
+        return;
+    }
+    let _ = Command::new("ip").args(["link", "del", "flra0"]).status();
+    ip("link add flra0 type veth peer name flra1");
+    ip("link set flra0 up");
+    ip("link set flra1 up");
+    ip("-6 addr add fd00:77::1/64 dev flra1 nodad");
+    ip("-6 addr add fd00:88::1/128 dev flra1 nodad");
+    let conf = std::env::temp_dir().join("only-flra.conf");
+    std::fs::write(
+        &conf,
+        "interface flra1 {\n  AdvSendAdvert on;\n  MinRtrAdvInterval 3;\n  MaxRtrAdvInterval 4;\n  \
+         AdvLinkMTU 1400;\n  AdvCurHopLimit 32;\n  AdvDefaultLifetime 60;\n  \
+         prefix fd00:77::/64 {\n    AdvOnLink on;\n    AdvAutonomous on;\n    \
+         AdvValidLifetime 300;\n    AdvPreferredLifetime 120;\n  };\n};\n",
+    )
+    .unwrap();
+    let pid = std::env::temp_dir().join("only-flra.pid");
+    let mut radvd = Command::new("radvd")
+        .args(["-n", "-m", "stderr", "-C"])
+        .arg(&conf)
+        .arg("-p")
+        .arg(&pid)
+        .spawn()
+        .expect("radvd");
+    struct Kill<'a>(&'a mut std::process::Child);
+    impl Drop for Kill<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+            let _ = Command::new("ip").args(["link", "del", "flra0"]).status();
+        }
+    }
+    let _k = Kill(&mut radvd);
+    let mac = [0x02, 0xf1, 0x77, 0, 0, 0x02];
+    let mut d = DpdkConfig::new(
+        Device::AfPacket("flra0".to_owned()),
+        Ipv4Addr::new(10, 65, 0, 2),
+    );
+    d.mac = Some(mac);
+    d.ipv6_slaac = true;
+    d.ipv6_dad = true;
+    let dev = d.device.clone();
+    let engine = echo_engine(d);
+    engine.start().unwrap();
+    // fd00:77:: + the modified EUI-64 identifier of `mac`.
+    let me = Ipv6Addr::new(0xfd00, 0x77, 0, 0, 0xf1, 0x77ff, 0xfe00, 0x0002);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let a = only::dpdk::ipv6_addresses(&dev).unwrap_or_default();
+        if a.contains(&me) {
+            eprintln!("slaac: {a:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no SLAAC address after 20 s: {a:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let out = run("ping", &format!("-6 -c 3 -i 0.2 -W 2 {me}"));
+    assert!(out.contains("3 received"), "{out}");
+    // The kernel connects to the SLAAC address; our SYN-ACK's MSS follows the advertised MTU.
+    let mut t = TcpStream::connect_timeout(&SocketAddr::from((me, 7001)), Duration::from_secs(10))
+        .expect("tcp connect to the SLAAC address");
+    t.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    tcp_echo(&mut t, &pattern(1 << 20, 4));
+    let k = kernel_tcp_info(std::os::fd::AsRawFd::as_raw_fd(&t));
+    eprintln!("slaac: kernel snd_mss {}", k.snd_mss);
+    assert!(
+        k.snd_mss <= 1400 - 60,
+        "MSS for the advertised MTU: {}",
+        k.snd_mss
+    );
+    drop(t);
+    // Off the /64: through the default router (the kernel's link-local address).
+    let l = TcpListener::bind("[fd00:88::1]:9301").unwrap();
+    dial_echo(&engine, l, "[fd00:88::1]:9301".parse().unwrap(), 256 << 10);
+    // The kernel's duplicate address detection of our address fails: we defend it.
+    ip(&format!("-6 addr add {me}/128 dev flra1"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = run("ip", "-6 addr show dev flra1");
+        if shown.contains("dadfailed") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "kernel DAD did not fail: {shown}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    ip(&format!("-6 addr del {me}/128 dev flra1"));
+    engine.shutdown();
+    engine.wait();
+    // A static address the kernel already has fails our duplicate address detection.
+    let mut d = DpdkConfig::new(
+        Device::AfPacket("flra0".to_owned()),
+        Ipv4Addr::new(10, 65, 0, 2),
+    );
+    d.mac = Some(mac);
+    d.address6 = Some("fd00:77::1".parse().unwrap());
+    d.ipv6_dad = true;
+    // (Listening on the IPv4 address: listeners are dual-stack.)
+    let engine = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(SocketAddr::from(([10, 65, 0, 2], 7001)))
+                .backend(Backend::Dpdk(d))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .expect("build");
+    engine.start().unwrap();
+    let ll = Ipv6Addr::new(0xfe80, 0, 0, 0, 0xf1, 0x77ff, 0xfe00, 0x0002);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let a = only::dpdk::ipv6_addresses(&dev).unwrap_or_default();
+        if a == vec![ll] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "DAD did not give up fd00:77::1: {a:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(only::dpdk::ipv6_addresses(&dev), Some(vec![ll]));
+    engine.shutdown();
+    engine.wait();
+}
+
+/// Two AF_XDP queues sharing one UMEM (`XDP_SHARED_UMEM`, copy mode on a veth): the same run
+/// as `af_xdp_two_queues_and_many_connections`.
+#[test]
+fn af_xdp_shared_umem_two_queues() {
+    if !xdp_enabled() {
+        return;
+    }
+    let local: IpAddr = Ipv4Addr::new(10, 64, 0, 2).into();
+    let kernel: IpAddr = Ipv4Addr::new(10, 64, 0, 1).into();
+    xdp_veth("flxds", 2);
+    let mut c = AfXdpConfig::new("flxds0");
+    c.queues = 2;
+    c.frames = 8192;
+    c.shared_umem = true;
+    let engine = echo_engine(dcfg(Device::AfXdp(c), local));
+    kernel_addr("flxds1", kernel);
+    ip("link set flxds1 up");
+    engine.start().unwrap();
+    let took = echo_many(local, 200, 32 << 10);
+    eprintln!("AF_XDP, shared UMEM, 2 queues: 200 connections x 32 KiB echoed in {took:?}");
+    dial_kernel(&engine, kernel);
+    let m = engine.metrics().to_prometheus();
+    let per_queue: Vec<u64> = m
+        .lines()
+        .filter(|l| l.starts_with("only_connections_accepted_total{") && l.contains(":7001"))
+        .filter_map(|l| l.rsplit(" ").next()?.parse::<u64>().ok())
+        .collect();
+    eprintln!("AF_XDP, shared UMEM: accepted per queue {per_queue:?}");
+    assert_eq!(per_queue.iter().sum::<u64>(), 200);
+    assert!(
+        per_queue.len() == 2 && per_queue.iter().all(|&n| n > 0),
+        "{per_queue:?}"
+    );
+    let info = only::dpdk::af_xdp_info("flxds0").unwrap();
+    eprintln!("flxds0: {info:?}");
+    assert!(info.shared_umem && info.queues == 2, "{info:?}");
+    engine.shutdown();
+    engine.wait();
+    ip("link del flxds0");
+}
+
+/// Jumbo frames over AF_XDP with multi-buffer (`XDP_USE_SG`): MTU 9000 on both ends of a veth,
+/// in native and generic mode. Frames of up to 9014 bytes span three 4 KiB chunks each way;
+/// UDP datagrams of 8000 bytes travel unfragmented, TCP uses an MSS of about 8960.
+#[test]
+fn af_xdp_multi_buffer_jumbo_frames() {
+    if !xdp_enabled() {
+        return;
+    }
+    for (name, mode, net) in [
+        ("flxdj", XdpMode::Auto, 63u8),
+        ("flxdk", XdpMode::Generic, 62),
+    ] {
+        let local: IpAddr = Ipv4Addr::new(10, net, 0, 2).into();
+        let kernel: IpAddr = Ipv4Addr::new(10, net, 0, 1).into();
+        xdp_veth(name, 1);
+        ip(&format!("link set {name}0 mtu 9000"));
+        ip(&format!("link set {name}1 mtu 9000"));
+        let mut c = AfXdpConfig::new(format!("{name}0"));
+        c.mode = mode;
+        c.zero_copy = ZeroCopy::Off;
+        c.multi_buffer = true;
+        let mut d = dcfg(Device::AfXdp(c), local);
+        d.mtu = 9000;
+        d.tcp_buffer = 1 << 20;
+        let engine = echo_engine(d);
+        kernel_addr(&format!("{name}1"), kernel);
+        ip(&format!("link set {name}1 up"));
+        engine.start().unwrap();
+        // UDP: 8000-byte datagrams in one frame each (the kernel does not fragment them).
+        let u = UdpSocket::bind((kernel, 0)).unwrap();
+        u.connect((local, 7000)).unwrap();
+        u.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut buf = vec![0u8; 65536];
+        let start = Instant::now();
+        let mut answered = false;
+        while start.elapsed() < Duration::from_secs(10) && !answered {
+            u.send(b"hello?").unwrap();
+            answered = matches!(retry(|| u.recv(&mut buf)), Ok(6));
+        }
+        assert!(answered, "{name}: no UDP echo");
+        let frag_before = kernel_reasm_ok();
+        for i in 0..200usize {
+            let msg = pattern(8000 + i % 900, i);
+            u.send(&msg).unwrap();
+            let n = retry(|| u.recv(&mut buf)).expect("jumbo udp echo");
+            assert!(buf[..n] == msg[..], "{name}: datagram {i}");
+        }
+        assert_eq!(
+            kernel_reasm_ok(),
+            frag_before,
+            "{name}: echoes came unfragmented"
+        );
+        // TCP: 8 MiB with jumbo segments.
+        let mut t =
+            TcpStream::connect_timeout(&SocketAddr::from((local, 7001)), Duration::from_secs(5))
+                .expect("tcp connect");
+        t.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let t0 = Instant::now();
+        tcp_echo(&mut t, &pattern(8 << 20, 2));
+        let k = kernel_tcp_info(std::os::fd::AsRawFd::as_raw_fd(&t));
+        eprintln!(
+            "{name} ({mode:?}): 8 MiB echoed in {:?}, kernel snd_mss {}; {:?}",
+            t0.elapsed(),
+            k.snd_mss,
+            only::dpdk::af_xdp_info(&format!("{name}0"))
+        );
+        assert!(k.snd_mss > 8000, "jumbo MSS: {}", k.snd_mss);
+        let info = only::dpdk::af_xdp_info(&format!("{name}0")).unwrap();
+        assert!(info.multi_buffer, "{info:?}");
+        drop(t);
+        engine.shutdown();
+        engine.wait();
+        ip(&format!("link del {name}0"));
+    }
+}
+
+/// The kernel's count of IPv4 datagrams reassembled (`Ip: ReasmOKs`).
+fn kernel_reasm_ok() -> u64 {
+    kernel_snmp("Ip:", "ReasmOKs")
+}
+
+/// A counter of `/proc/net/snmp` (the line pair starting with `group`).
+fn kernel_snmp(group: &str, field: &str) -> u64 {
+    let text = std::fs::read_to_string("/proc/net/snmp").unwrap_or_default();
+    let mut lines = text.lines().filter(|l| l.starts_with(group));
+    let (Some(names), Some(values)) = (lines.next(), lines.next()) else {
+        return 0;
+    };
+    names
+        .split_whitespace()
+        .zip(values.split_whitespace())
+        .find(|(n, _)| *n == field)
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// ICMP and ICMPv6 errors the kernel did not send because of its rate limits.
+fn kernel_icmp_rate_limited() -> u64 {
+    let v6: u64 = std::fs::read_to_string("/proc/net/snmp6")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (name, value) = l.split_once(char::is_whitespace)?;
+            name.starts_with("Icmp6OutRateLimit")
+                .then(|| value.trim().parse::<u64>().ok())
+                .flatten()
+        })
+        .sum();
+    kernel_snmp("Icmp:", "OutRateLimitGlobal") + kernel_snmp("Icmp:", "OutRateLimitHost") + v6
 }

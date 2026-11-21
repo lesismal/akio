@@ -162,6 +162,7 @@ fn ipv6_packet(data: &[u8]) {
             if let Some(m) = Icmp6::parse(upper, ip.src, ip.dst, false) {
                 let _ = m.quoted();
                 let _ = Nd::parse(&m, ip.src, ip.dst, ip.hop_limit);
+                let _ = wire6::Ra::parse(&m, ip.src, ip.hop_limit);
             }
         }
         _ => {}
@@ -169,7 +170,8 @@ fn ipv6_packet(data: &[u8]) {
 }
 
 /// `dpdk_icmpv6`: an ICMPv6 message (from `SRC6` to `DST6`): checksum, the packet an error
-/// quotes (through its extension headers), and neighbor discovery validation.
+/// quotes (through its extension headers), and neighbor discovery validation (neighbor
+/// solicitations and advertisements, router advertisements from a link-local source).
 pub fn dpdk_icmpv6(data: &[u8]) {
     let _ = Icmp6::parse(data, SRC6, DST6, true);
     let Some(m) = Icmp6::parse(data, SRC6, DST6, false) else {
@@ -179,6 +181,9 @@ pub fn dpdk_icmpv6(data: &[u8]) {
         assert!(q.src.is_ipv6() && q.dst.is_ipv6());
     }
     let _ = Nd::parse(&m, SRC6, DST6, 255);
+    if let Some(ra) = wire6::Ra::parse(&m, wire6::link_local([2, 0, 0, 0, 0, 1]), 255) {
+        assert!(ra.prefixes.iter().flatten().count() <= wire6::MAX_RA_PREFIXES);
+    }
 }
 
 /// `dpdk_ndp`: a neighbor solicitation or advertisement; what validates writes back to a
@@ -222,7 +227,11 @@ pub fn dpdk_ndp(data: &[u8]) {
         wire6::ND_MSG
     };
     let back = Icmp6::parse(&b[..len], src, dst, true).expect("checksum written");
-    assert_eq!(Nd::parse(&back, src, dst, 255), Some(nd));
+    // (The nonce option of a duplicate address detection probe is not written back.)
+    assert_eq!(
+        Nd::parse(&back, src, dst, 255),
+        Some(Nd { nonce: None, ..nd })
+    );
 }
 
 /// `dpdk_tcp`: a TCP segment; its options write back to the same options.
@@ -289,6 +298,7 @@ fn stack(now: Instant) -> Iface {
         timestamps: true,
         sack: true,
         ecn: true,
+        accecn: true,
         pacing: true,
     };
     let cfg = net::Config {
@@ -299,6 +309,8 @@ fn stack(now: Instant) -> Iface {
         ip6: Some(DST6),
         prefix_len6: 64,
         gateway6: Some(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+        slaac: true,
+        dad: false,
         mtu: 1500,
         tcp: p,
         backlog: 4,
@@ -481,6 +493,8 @@ mod tests {
         let mut icmp = l4(wire::PROTO_ICMP);
         icmp.truncate(8);
         stack_seeds.push([&[1u8][..], &join(&ba6)].concat());
+        let auto = net::sim::autoconf_frames();
+        stack_seeds.push([&[1u8][..], &join(&auto)].concat());
         for chunk in ba6.chunks(6) {
             stack_seeds.push([&[0x21u8][..], &join(chunk)].concat());
         }
@@ -510,7 +524,15 @@ mod tests {
                 v.extend(net::sim::ext_header_packets());
                 v
             }),
-            ("dpdk_icmpv6", icmp6.into_iter().take(16).collect()),
+            ("dpdk_icmpv6", {
+                let mut v: Vec<Vec<u8>> = icmp6.into_iter().take(16).collect();
+                v.extend(
+                    auto.iter()
+                        .filter_map(|f| Ipv6::parse(&f[wire::ETH_HDR..]))
+                        .map(|ip| ip.payload.to_vec()),
+                );
+                v
+            }),
             ("dpdk_ndp", nd),
         ]
     }
