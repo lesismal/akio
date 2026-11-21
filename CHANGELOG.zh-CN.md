@@ -125,6 +125,21 @@ ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）�
   trick play）。`tests/client_bench.rs` 新增基准 `rtsp-record`。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替 7 轮，取中位数，head / base）：hub 扇出 1.005 / 0.994 / 0.996（1 / 16 / 256 个订阅者；最初逐订阅者逐包检查新下限的版本在 256 时为 1.043，现在仅当有订阅者尚未越过下限时循环才检查）；RTSP RECORD 入流（新增 `rtsp-record`）1.007、RTSP 拉流 1.003、RTMP 拉流 0.996；`bench_segmenting` MPEG-TS 1.065、MPEG-TS LL-HLS 0.981、fMP4 0.961、fMP4 LL-HLS 1.020、AES-128 0.995 至 0.998、SAMPLE-AES MPEG-TS 1.015、`cbcs` 1.002。分片的逐包路径没有改动（独立加密的 I 帧、查询串与新路由都是按分片或按请求，且不在此基准中）；普通 MPEG-TS 与 fMP4 反向变化，`cbcs` 在仅 hub.rs 不同的两轮之间从 1.055 变为 1.002：属于代码布局。macOS aarch64 上同样的比较全部在 0.97 至 1.03 之间。
 
+### 变更：brotli 块分割（only-brotli）
+
+ADR-069 的 2026-11-22 补记，API 不变；从 4 级起输出有变化：
+
+- 字面量、插入-复制符号与距离被分成块类型并写出块切换命令。10–11 级：Google 的迭代块分割器与直方图聚类，
+  字面量与距离的上下文映射覆盖块类型与上下文，最多为窗口两倍的 meta-block（一次性压缩），11 级第二遍解析
+  按块类型为字面量定价。4–9 级：对 64 KiB 及以上的 meta-block 使用 Google 一遍完成的贪心分割器，只有省下
+  meta-block 的 1% 时才保留。
+- 11 级在 Silesia 前 20 MB 上从比 libbrotli 1.2.1 大 4.7% 变为小 4.5%，10 级从 +7.6% 变为 +0.8%；
+  HTTP 负载上 11 级为 +0.9–1.3%（之前 +0.9–2.6%），证书链不变；4–9 级在 Silesia 上小 0.2–0.75%，在混合
+  数据上小 3–4.4%，HTTP 负载逐字节相同（docs/BENCHMARKS.zh-CN.md，“brotli 块分割”）。
+- 10–11 级在 Silesia 上慢约 30%（文本与证书链上不变），4 级在 Silesia 上慢 12%，在 64 KiB 以上最终未分割
+  的负载上慢 1–6%；1 级不变。解码器不变；带块类型的流与 libbrotli 的流一样解码。
+- 测试：4–11 级找到并写出块类型，CLI 互通测试加入交错语料，`brotli_roundtrip` 加入产生多块类型流的种子。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：
@@ -321,7 +336,7 @@ ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），�
 - 压缩率：zstd 16..=22 级做最优解析（libzstd 的 `btopt` / `btultra`：二叉树匹配查找、按在块之间沿用的
   符号统计定价的最短路径、1–3 遍），各级别都可复用上一个块的码表；brotli 10..=11 级使用静态字典词。在
   基准语料上 zstd 19 现在比 libzstd 大 0.3–1.4%（之前 1.3–7.6%），级别 16 在 Silesia 与 JSON 上更小，brotli 11 比 libbrotli 大 0.9–4.7%（之前 3.5–11.4%；
-  brotli 块分割仍未完成）。
+  块分割随后完成，见上文“brotli 块分割”）。
 - 这些级别的压缩变慢，与参考编码器一样：zstd 19 为 3.5–10.9 MB/s（libzstd 3.9–12），brotli 10–11 在
   文本上约为之前速度的一半（docs/BENCHMARKS.zh-CN.md）。
 - 解码速度基本不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%；小证书链至多慢 2%，约 0.15 µs；

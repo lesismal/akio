@@ -209,6 +209,18 @@ impl BitWriter {
         self.n = m.2;
     }
 
+    /// Appends the bits written to `o`.
+    pub(crate) fn append(&mut self, o: BitWriter) {
+        let mut chunks = o.out.chunks_exact(4);
+        for c in &mut chunks {
+            self.bits(32, u64::from(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+        }
+        for &b in chunks.remainder() {
+            self.bits(8, u64::from(b));
+        }
+        self.bits(o.n, o.acc);
+    }
+
     /// Moves the whole bytes written so far to `dst` (the bits of an unfinished byte stay).
     pub(crate) fn drain_into(&mut self, dst: &mut Vec<u8>) {
         dst.append(&mut self.out);

@@ -46,13 +46,31 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   distance ring alone, as the decoder does). Below level 10, after
   64 literals without a match only every second position is looked at, after 320 every fourth
   (Google's heuristic for data that does not compress). The four distances of the distance ring
-  are always candidates (short codes instead of extra bits). Meta-blocks of 1 MiB (256 KiB at
-  levels 10 and 11), one block type per category, `NPOSTFIX` = `NDIRECT` = 0; from level 5
-  literals use a context map: the 64 contexts of each context mode (UTF-8 and signed at 5..=6, all
-  four from 7) are clustered greedily by the estimated cost of their histograms (contexts with
-  fewer than 32 literals start out as one cluster; below level 10 a meta-block needs 4096
-  literals for this) and the map is kept when the estimate says it pays (at 10 and 11: only when
-  it makes the meta-block  smaller). Prefix codes are limited to 15 bits, written in the simple form when they have at most
+  are always candidates (short codes instead of extra bits). Meta-blocks of 1 MiB (at levels
+  10 and 11 up to twice the window, parsed in blocks of 256 KiB, and ending early at an eighth
+  of that in literals or commands, as Google's are; 256 KiB when streaming), `NPOSTFIX` =
+  `NDIRECT` = 0; from level 5 literals use a context map: the 64 contexts of each context mode
+  (UTF-8 and signed at 5..=6, all four from 7) are clustered greedily by the estimated cost of
+  their histograms (contexts with fewer than 32 literals start out as one cluster; below level
+  10 a meta-block needs 4096 literals for this) and the map is kept when the estimate says it
+  pays. Block splitting from level 4: literals, insert-and-copy symbols and distances get block
+  types and block switch commands. Levels 4..=9 split meta-blocks of 64 KiB or more in one pass
+  like Google's greedy `BlockSplitter` (a block of 512 or 1024 symbols gets a new type when
+  coding it with either of the last two types would cost a threshold more bits), each literal
+  block type coding the context map's clusters with codes of its own where that pays and with
+  codes shared by all types elsewhere; the types are kept only when the estimate says they save
+  at least 1% of the meta-block (block switches cost time to write: JSON and HTML stay
+  unsplit, mixed or binary data is split). Levels 10 and 11 split meta-blocks of 8 KiB or more
+  like Google's `block_splitter`: histograms seeded from
+  samples, three (10) or ten (11) rounds of a cheapest-path assignment of symbols to histograms
+  with a block switch cost, then the blocks clustered into at most 256 types; each literal block
+  type takes its cheapest context mode, and the contexts of all literal block types (4 distance
+  contexts per distance block type) are clustered into one context map with Google's
+  histogram-cost clustering. At 10 and 11 the meta-block is written with one literal code, with
+  the context map and with block types, and the smallest is kept. Level 11's second parse pass
+  prices each literal by the histogram of the literal block type its position falls in after
+  splitting the first pass's literals, so the parse fits the blocks it is coded with. Prefix codes are limited to
+  15 bits, written in the simple form when they have at most
   four symbols, with Google's run-length coding of code lengths; context maps try move-to-front
   and every run-length setting and keep the shortest. A meta-block that would come out larger
   than its bytes is stored. The window is the smallest of 2^16..2^22 that holds the input.
@@ -125,12 +143,12 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `tools/codec-bench/corpus.sh` builds the corpus, then
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
-Limitations: the encoder uses one block type per category (no block splitting), searches the
-static dictionary only at levels 10 and 11 and not under the omit-first transforms, and
-supports raw dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom
-word lists and transforms), which Google's CLI does not offer either. Its output at level 11 is
-1-5% larger than Google's on the benchmark corpus (docs/BENCHMARKS.md), the most on mixed binary
-data where block splitting pays. Prefix codes are stored from the exact code lengths or from
+Limitations: the encoder searches the static dictionary only at levels 10 and 11 and not under
+the omit-first transforms, always uses `NPOSTFIX` = `NDIRECT` = 0, and supports raw
+dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom word lists and
+transforms), which Google's CLI does not offer either. Its output at level 11 is 0.9-1.3%
+larger than Google's on the HTTP payloads of the benchmark corpus and 4.5% smaller on its
+Silesia part (docs/BENCHMARKS.md, "Brotli block splitting"). Prefix codes are stored from the exact code lengths or from
 counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,
 which matters for small inputs: on DER certificate chains of a few kilobytes level 11 is 4-5%
 smaller than zlib level 9 and 1-1.5% larger than `brotli -q 11` (github.com's chain: 1640, zlib

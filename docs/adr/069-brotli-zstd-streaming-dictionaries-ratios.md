@@ -100,6 +100,32 @@ are. Errors are sticky until `reset`. The one-shot functions are unchanged.
   (Google's iterative histogram assignment), and pays mostly on mixed binary data. Larger
   meta-blocks at 10-11 were tried and dropped (JSON 0.3% smaller, Silesia 0.17% larger).
 
+  **Note 2026-11-22: block splitting done** (no API change). Literals, insert-and-copy symbols
+  and distances get block types (`encode/split.rs`). Levels 10 and 11 port Google's
+  `block_splitter`: histograms seeded from samples, 3 (10) or 10 (11) rounds of a cheapest-path
+  assignment of symbols to histograms with a block switch cost, then the blocks clustered into
+  at most 256 types with Google's histogram-cost clustering, which also builds the context maps
+  over (literal block type, 64 contexts) and (distance block type, 4 copy-length contexts); the
+  meta-block is written with one literal code, with the single-type context map and with block
+  types, and the smallest is kept; meta-blocks under 8 KiB are not split. With block types,
+  meta-blocks of up to twice the window pay at 10 and 11 (still parsed in 256 KiB blocks;
+  streaming keeps 256 KiB meta-blocks). Level 11's second parse pass prices each literal by the
+  histogram of the literal block type its position falls in after splitting the first pass's
+  literals; without that, the parse priced from one histogram fitted the split meta-block worse
+  than level 10's single pass on x-ray. Levels 4..=9 split meta-blocks of 64 KiB or more with
+  Google's one-pass greedy `BlockSplitter`, each literal block type coding the context map's
+  clusters with codes of its own where that pays, and keep the types only if they save 1% of
+  the meta-block (writing block switches costs time; HTTP text stays unsplit). Results on the
+  benchmark corpus (docs/BENCHMARKS.md, "Brotli block splitting"): level 11 on the first 20 MB
+  of Silesia from +4.7% to -4.5% of libbrotli's size (5,104,415 / 5,346,776), level 10 from
+  +7.6% to +0.8%, HTTP payloads at 11 +0.9..1.3% (was +0.9..2.6%), certificate chains
+  unchanged; levels 4-9 0.2-0.75% smaller on Silesia, 3-4.4% on a mixed file, HTTP payloads
+  byte-identical. Costs: levels 10-11 about 30% slower on Silesia (unchanged on text and
+  certificate chains), level 4 12% slower on Silesia and 1-6% on unsplit payloads above
+  64 KiB; the decoder is unchanged, our own block-typed streams decode like libbrotli's
+  (8-22% slower than our old single-type streams on Silesia). Tried and dropped: a context mode
+  per literal block type, sliding-window literal costs, the full splitter at the middle levels.
+
 ### 4. HTTP
 
 `only-http` was checked for buffering: buffered responses are compressed whole by the

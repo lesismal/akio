@@ -1,25 +1,36 @@
 //! Brotli compression.
 //!
-//! The input is cut into meta-blocks (1 MiB, or 256 KiB at the levels with optimal parsing),
-//! each parsed into insert-and-copy commands by LZ77 (candidates from per-hash buckets of the
-//! last positions at levels 0..=6, from hash chains above): greedy matching at levels 0..=3,
-//! lazy matching (up to four steps, as in Google's encoder) at levels 4..=9, and at levels 10
-//! and 11 a shortest-path parse over all candidate matches priced with the code lengths of a
-//! previous pass (one pass at level 10, two at 11). Candidates also include the four distances
-//! of the distance ring, which cost a short code instead of extra bits. Each meta-block has one
-//! block type per category; from level 5 the literals are coded with a context map: the 64
-//! contexts of each context mode are clustered greedily by the cost of their histograms and the
-//! cheapest mode is kept. Prefix codes are limited to 15 bits (5
-//! for the code length code), written in the simple form when they have at most four symbols,
-//! and their code length sequences are run-length coded like Google's encoder does. A
-//! meta-block that would come out larger than its bytes is stored uncompressed instead.
+//! The input is cut into meta-blocks (1 MiB below level 10; at levels 10 and 11 up to twice the
+//! window, parsed in blocks of 256 KiB, or 256 KiB when streaming), each parsed into
+//! insert-and-copy commands by LZ77 (candidates from per-hash buckets of the last positions at
+//! levels 0..=6, from hash chains above): greedy matching at levels 0..=3, lazy matching (up to
+//! four steps, as in Google's encoder) at levels 4..=9, and at levels 10 and 11 a shortest-path
+//! parse over all candidate matches priced with the code lengths of a previous pass (one pass
+//! at level 10, two at 11). Candidates also include the four distances of the distance ring,
+//! which cost a short code instead of extra bits. From level 5 the literals are coded with a
+//! context map: the 64 contexts of each context mode are clustered greedily by the cost of
+//! their histograms and the cheapest mode is kept. From level 4 the literals, insert-and-copy
+//! symbols and distances are split into block types (`split`): greedily in one pass at levels
+//! 4..=9, each literal block type with its own codes for the context map's clusters where they
+//! pay; at 10 and 11 as Google's block splitter does, with a context map over block types and
+//! contexts for literals and distances, kept only when that makes the meta-block smaller.
+//! Prefix codes are limited to 15 bits (5 for the code length code), written in the simple form
+//! when they have at most four symbols, and their code length sequences are run-length coded
+//! like Google's encoder does. A meta-block that would come out larger than its bytes is stored
+//! uncompressed instead.
 
 use crate::Level;
 use crate::bits::BitWriter;
 use crate::huffman::{codes, lengths};
-use crate::tables::{CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA};
+use crate::tables::{
+    BLOCK_LEN, CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA,
+    split_command,
+};
 
 mod sdict;
+mod split;
+
+use split::{BlockSplit, Histo};
 
 /// Compresses `data` into one complete brotli stream at `level`.
 ///
@@ -56,24 +67,25 @@ pub(crate) fn compress_impl(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
         w.bits(2, 0b11); // ISLAST, ISLASTEMPTY
         return w.finish();
     }
-    if dict.is_empty() {
-        let mut e = Encoder::new(p, wbits, data, 0);
-        let mut pos = 0;
-        while pos < data.len() {
-            let end = (pos + p.block).min(data.len());
-            e.meta_block(&mut w, pos, end, end == data.len());
-            pos = end;
-        }
+    let mut buf = Vec::new();
+    let all = if dict.is_empty() {
+        data
     } else {
-        let mut buf = Vec::with_capacity(dict.len() + data.len());
+        buf.reserve_exact(dict.len() + data.len());
         buf.extend_from_slice(dict);
         buf.extend_from_slice(data);
-        let mut e = Encoder::new(p, wbits, &buf, dict.len());
-        e.insert_until(dict.len());
-        let mut pos = dict.len();
-        while pos < buf.len() {
-            let end = (pos + p.block).min(buf.len());
-            e.meta_block(&mut w, pos, end, end == buf.len());
+        &buf[..]
+    };
+    let mut e = Encoder::new(p, wbits, all, dict.len());
+    e.insert_until(dict.len());
+    let mut pos = dict.len();
+    while pos < all.len() {
+        if p.optimal > 0 {
+            // Up to twice the window per meta-block, parsed in blocks (Google's sizes).
+            pos = e.long_meta_block(&mut w, pos, (pos + (2 << wbits)).min(all.len()));
+        } else {
+            let end = (pos + p.block).min(all.len());
+            e.meta_block(&mut w, pos, end, end == all.len());
             pos = end;
         }
     }
@@ -106,6 +118,10 @@ struct Params {
     /// long matches).
     insert_all: bool,
     block: usize,
+    /// Rounds of block splitting (0: one block type per category, or greedy).
+    split_iters: usize,
+    /// Greedy block splitting (levels 4..=9).
+    greedy: bool,
 }
 
 fn params(level: u8) -> Params {
@@ -121,6 +137,8 @@ fn params(level: u8) -> Params {
         optimal: 0,
         insert_all,
         block: 1 << 20,
+        split_iters: 0,
+        greedy: level >= 4,
     };
     match level {
         0 => p(1, 16, false, 14, NONE, false),
@@ -136,11 +154,13 @@ fn params(level: u8) -> Params {
         10 => Params {
             optimal: 1,
             block: 1 << 18,
+            split_iters: 3,
             ..p(128, 256, false, 17, ALL, true)
         },
         _ => Params {
             optimal: 2,
             block: 1 << 18,
+            split_iters: 10,
             ..p(512, 512, false, 17, ALL, true)
         },
     }
@@ -693,39 +713,118 @@ impl<'a> Encoder<'a> {
         } else {
             self.parse_lazy(start, end, &mut cmds);
         }
+        self.write_meta_block(w, start, end, last, &cmds);
+    }
+
+    /// Writes one meta-block from `start` to at most `limit`, parsed (optimally) in blocks of
+    /// the level's size, ending early once it holds as many literals or commands as an eighth
+    /// of its size limit; returns its end.
+    fn long_meta_block(&mut self, w: &mut BitWriter, start: usize, limit: usize) -> usize {
+        let max = (limit - start) / 8;
+        let ring = self.last;
+        let mut cmds: Vec<Command> = Vec::new();
+        let mut literals = 0;
+        let mut pos = start;
+        while pos < limit {
+            let end = (pos + self.p.block).min(limit);
+            let mut part = Vec::new();
+            self.parse_optimal(pos, end, &mut part);
+            let mut r = self.last;
+            for c in &part {
+                code_command(c, &mut r);
+            }
+            self.last = r;
+            // The literals ending the previous block go before the first command of this one.
+            if let (Some(prev), Some(first)) = (cmds.last(), part.first_mut()) {
+                if prev.copy == 0 {
+                    first.insert += prev.insert;
+                    literals -= prev.insert as usize;
+                    cmds.pop();
+                }
+            }
+            literals += part.iter().map(|c| c.insert as usize).sum::<usize>();
+            cmds.extend_from_slice(&part);
+            pos = end;
+            if literals > max || cmds.len() > max {
+                break;
+            }
+        }
+        self.last = ring;
+        let last = pos == self.data.len();
+        self.write_meta_block(w, start, pos, last, &cmds);
+        pos
+    }
+
+    /// Writes the meta-block of `start..end` parsed into `cmds`, compressed or stored.
+    fn write_meta_block(
+        &mut self,
+        w: &mut BitWriter,
+        start: usize,
+        end: usize,
+        last: bool,
+        cmds: &[Command],
+    ) {
         let mark = w.mark();
         let before = w.bit_len();
         let ring = self.last;
+        let z = self.zero;
+        // Resolve the commands into symbols and extra bits.
+        let mut coded = Vec::with_capacity(cmds.len());
+        for c in cmds {
+            coded.push(code_command(c, &mut self.last));
+        }
         let mut model = LiteralModel::single();
         if !self.p.modes.is_empty() {
             // Clustering costs about as much as compressing a few kilobytes: below the optimal
             // parsing levels it is worth it only for more literals.
             let min_literals = if self.p.optimal > 0 { 2048 } else { 4096 };
-            let z = self.zero;
-            let m = literal_model(
-                &self.data[z..],
-                start - z,
-                &cmds,
-                self.p.modes,
-                min_literals,
-            );
-            if m.ntrees > 1 && self.p.optimal == 0 {
-                // The clustering's estimate says the context map pays for itself.
-                model = m;
-            } else if m.ntrees > 1 {
-                // Keep the context map only if it pays for itself.
-                let mut a = BitWriter::with_capacity(0);
-                self.write_compressed(&mut a, start, end, last, &cmds, &m);
-                self.last = ring;
-                let mut b = BitWriter::with_capacity(0);
-                self.write_compressed(&mut b, start, end, last, &cmds, &model);
-                self.last = ring;
-                if a.bit_len() < b.bit_len() {
-                    model = m;
+            model = literal_model(&self.data[z..], start - z, cmds, self.p.modes, min_literals);
+        }
+        let mb = MetaBlock {
+            data: &self.data[z..],
+            start: start - z,
+            end: end - z,
+            last,
+            cmds,
+            coded: &coded,
+        };
+        if self.p.optimal == 0 {
+            // The clustering's estimate says whether the context map pays for itself, and the
+            // greedy split creates block types only where they pay.
+            let lay = if self.p.greedy {
+                greedy_layout(&mb, &model)
+            } else {
+                Layout::single(&model)
+            };
+            write_compressed(w, &mb, &lay);
+        } else {
+            // The smallest of: one literal code, the context map, block types.
+            let mut layouts = vec![Layout::single(&LiteralModel::single())];
+            if model.ntrees > 1 {
+                layouts.push(Layout::single(&model));
+            }
+            // (Block types never paid on inputs of a few kilobytes, and cost several times
+            // their parse.)
+            if self.p.split_iters > 0 && end - start >= 8 << 10 {
+                let mode = if model.ntrees > 1 {
+                    model.mode
+                } else {
+                    literal_model(mb.data, mb.start, cmds, self.p.modes, 0).mode
+                };
+                layouts.push(split_layout(&mb, mode, self.p.split_iters));
+            }
+            let mut best: Option<BitWriter> = None;
+            for lay in &layouts {
+                let mut t = BitWriter::with_capacity((end - start) / 2);
+                write_compressed(&mut t, &mb, lay);
+                if best.as_ref().is_none_or(|b| t.bit_len() < b.bit_len()) {
+                    best = Some(t);
                 }
             }
+            if let Some(b) = best {
+                w.append(b);
+            }
         }
-        self.write_compressed(w, start, end, last, &cmds, &model);
         let len = end - start;
         // An uncompressed meta-block: header, padding, bytes (and an empty last meta-block).
         let unc = 4 + 4 * nibbles(len) + 7 + 8 * len + if last { 2 + 7 } else { 0 };
@@ -741,103 +840,168 @@ impl<'a> Encoder<'a> {
             }
         }
     }
+}
 
-    fn write_compressed(
-        &mut self,
-        w: &mut BitWriter,
-        start: usize,
-        end: usize,
-        last: bool,
-        cmds: &[Command],
-        model: &LiteralModel,
-    ) {
-        // Positions from the start of the stream (literal contexts see no dictionary bytes).
-        let data = &self.data[self.zero..];
-        let (start, end) = (start - self.zero, end - self.zero);
-        // Resolve the commands into symbols and extra bits.
-        let mut coded = Vec::with_capacity(cmds.len());
-        let mut ring = self.last;
-        let mut cmd_hist = vec![0u32; 704];
-        let mut dist_hist = [0u32; 64];
-        for c in cmds {
-            let k = code_command(c, &mut ring);
-            cmd_hist[usize::from(k.cmd)] += 1;
-            if k.dsym != NO_DIST {
-                dist_hist[usize::from(k.dsym)] += 1;
-            }
-            coded.push(k);
-        }
-        self.last = ring;
+/// A parsed meta-block: `data[start..end]` (positions from the start of the stream: literal
+/// contexts see no dictionary bytes) as commands, and their symbols and extra bits.
+struct MetaBlock<'a> {
+    data: &'a [u8],
+    start: usize,
+    end: usize,
+    last: bool,
+    cmds: &'a [Command],
+    coded: &'a [Coded],
+}
 
-        // Literal contexts.
-        let mut lit_hist = vec![[0u32; 256]; model.ntrees];
-        let lut = 512 * usize::from(model.mode);
-        {
-            let mut pos = start;
-            for c in cmds {
-                let lits = &data[pos..pos + c.insert as usize];
-                if model.ntrees == 1 {
-                    for &b in lits {
-                        lit_hist[0][usize::from(b)] += 1;
-                    }
-                } else {
-                    for (p, &b) in (pos..).zip(lits) {
-                        let ctx = context(data, p, lut);
-                        lit_hist[usize::from(model.map[ctx])][usize::from(b)] += 1;
-                    }
-                }
-                pos += c.advance();
-            }
-        }
-
-        // Header.
-        w.bits(1, u64::from(last));
-        if last {
-            w.bits(1, 0); // ISLASTEMPTY
-        }
-        write_mlen(w, end - start);
-        if !last {
-            w.bits(1, 0); // ISUNCOMPRESSED
-        }
-        w.bits(3, 0); // one block type of literals, commands and distances
-        w.bits(6, 0); // NPOSTFIX, NDIRECT
-        w.bits(2, u64::from(model.mode));
-        write_var_len_u8(w, model.ntrees - 1);
-        if model.ntrees > 1 {
-            write_context_map(w, &model.map, model.ntrees);
-        }
-        write_var_len_u8(w, 0); // one distance tree
-        let mut lit_codes = Vec::with_capacity(model.ntrees);
-        for h in &lit_hist {
-            lit_codes.push(write_prefix_code(w, h, 256));
-        }
-        let cmd_code = write_prefix_code(w, &cmd_hist, 704);
-        let dist_code = write_prefix_code(w, &dist_hist, 64);
-
-        // Commands.
-        let mut pos = start;
-        for (c, k) in cmds.iter().zip(&coded) {
-            cmd_code.put(w, usize::from(k.cmd));
-            w.bits(u32::from(k.ins_n), u64::from(k.ins_x));
-            w.bits(u32::from(k.copy_n), u64::from(k.copy_x));
-            let lits = &data[pos..pos + c.insert as usize];
-            if model.ntrees == 1 {
-                for &b in lits {
-                    lit_codes[0].put(w, usize::from(b));
-                }
-            } else {
-                for (p, &b) in (pos..).zip(lits) {
-                    let tree = usize::from(model.map[context(data, p, lut)]);
-                    lit_codes[tree].put(w, usize::from(b));
-                }
-            }
-            if k.dsym != NO_DIST {
-                dist_code.put(w, usize::from(k.dsym));
-                w.bits(u32::from(k.dist_n), u64::from(k.dist_x));
-            }
+impl MetaBlock<'_> {
+    /// Calls `f` with the position of each command's literals.
+    fn literals(&self, mut f: impl FnMut(usize, &Command, &Coded)) {
+        let mut pos = self.start;
+        for (c, k) in self.cmds.iter().zip(self.coded) {
+            f(pos, c, k);
             pos += c.advance();
         }
     }
+}
+
+/// Writes `mb` as a compressed meta-block coded as `lay` says.
+fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
+    if lay.lit.ntypes > 1 || lay.cmd.ntypes > 1 || lay.dist.ntypes > 1 || lay.dist_trees > 1 {
+        write_body::<true>(w, mb, lay);
+    } else {
+        // Without block switches (and with one distance code): no cursors in the loops.
+        write_body::<false>(w, mb, lay);
+    }
+}
+
+/// [`write_compressed`]; `SPLIT`: with block types (else one per category, one distance code).
+fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
+    let data = mb.data;
+    // Histograms: insert-and-copy symbols per block type, literals and distances per tree.
+    let mut cmd_hist = vec![vec![0u32; 704]; lay.cmd.ntypes];
+    let mut lit_hist = vec![[0u32; 256]; lay.lit_trees];
+    let mut dist_hist = vec![[0u32; 64]; lay.dist_trees];
+    // Whether the literal tree depends on the context (or only on the block type).
+    let lit_ctx = lay.lit_map.chunks(64).any(|m| m.iter().any(|&t| t != m[0]));
+    let lit_map = &lay.lit_map[..];
+    {
+        let (mut cc, mut lc, mut dc) = (
+            Cursor::new(&lay.cmd),
+            Cursor::new(&lay.lit),
+            Cursor::new(&lay.dist),
+        );
+        mb.literals(|pos, c, k| {
+            let t = if SPLIT { cc.next() } else { 0 };
+            cmd_hist[t][usize::from(k.cmd)] += 1;
+            let (mut p, end) = (pos, pos + c.insert as usize);
+            while p < end {
+                // A run of literals in one block.
+                let (t, n) = if SPLIT {
+                    lc.take(end - p)
+                } else {
+                    (0, end - p)
+                };
+                let map = &lit_map[t * 64..t * 64 + 64];
+                if lit_ctx {
+                    let lut = 512 * usize::from(lay.modes[t]);
+                    for q in p..p + n {
+                        let tree = usize::from(map[context(data, q, lut)]);
+                        lit_hist[tree][usize::from(data[q])] += 1;
+                    }
+                } else {
+                    let h = &mut lit_hist[usize::from(map[0])];
+                    for &b in &data[p..p + n] {
+                        h[usize::from(b)] += 1;
+                    }
+                }
+                p += n;
+            }
+            if k.dsym != NO_DIST {
+                let tree = if SPLIT {
+                    usize::from(lay.dist_map[dc.next() * 4 + dist_context(k.cmd)])
+                } else {
+                    0
+                };
+                dist_hist[tree][usize::from(k.dsym)] += 1;
+            }
+        });
+    }
+
+    // Header.
+    w.bits(1, u64::from(mb.last));
+    if mb.last {
+        w.bits(1, 0); // ISLASTEMPTY
+    }
+    write_mlen(w, mb.end - mb.start);
+    if !mb.last {
+        w.bits(1, 0); // ISUNCOMPRESSED
+    }
+    let mut lsw = Switcher::write(w, &lay.lit);
+    let mut csw = Switcher::write(w, &lay.cmd);
+    let mut dsw = Switcher::write(w, &lay.dist);
+    w.bits(6, 0); // NPOSTFIX, NDIRECT
+    for &m in &lay.modes {
+        w.bits(2, u64::from(m));
+    }
+    write_var_len_u8(w, lay.lit_trees - 1);
+    if lay.lit_trees > 1 {
+        write_context_map(w, lit_map, lay.lit_trees);
+    }
+    write_var_len_u8(w, lay.dist_trees - 1);
+    if lay.dist_trees > 1 {
+        write_context_map(w, &lay.dist_map, lay.dist_trees);
+    }
+    let mut lit_codes = Vec::with_capacity(lay.lit_trees);
+    for h in &lit_hist {
+        lit_codes.push(write_prefix_code(w, h, 256));
+    }
+    let mut cmd_codes = Vec::with_capacity(lay.cmd.ntypes);
+    for h in &cmd_hist {
+        cmd_codes.push(write_prefix_code(w, h, 704));
+    }
+    let mut dist_codes = Vec::with_capacity(lay.dist_trees);
+    for h in &dist_hist {
+        dist_codes.push(write_prefix_code(w, h, 64));
+    }
+
+    // Commands.
+    mb.literals(|pos, c, k| {
+        let t = if SPLIT { csw.next(w) } else { 0 };
+        cmd_codes[t].put(w, usize::from(k.cmd));
+        w.bits(u32::from(k.ins_n), u64::from(k.ins_x));
+        w.bits(u32::from(k.copy_n), u64::from(k.copy_x));
+        let (mut p, end) = (pos, pos + c.insert as usize);
+        while p < end {
+            let (t, n) = if SPLIT {
+                lsw.take(w, end - p)
+            } else {
+                (0, end - p)
+            };
+            let map = &lit_map[t * 64..t * 64 + 64];
+            if lit_ctx {
+                let lut = 512 * usize::from(lay.modes[t]);
+                for q in p..p + n {
+                    let tree = usize::from(map[context(data, q, lut)]);
+                    lit_codes[tree].put(w, usize::from(data[q]));
+                }
+            } else {
+                let code = &lit_codes[usize::from(map[0])];
+                for &b in &data[p..p + n] {
+                    code.put(w, usize::from(b));
+                }
+            }
+            p += n;
+        }
+        if k.dsym != NO_DIST {
+            let tree = if SPLIT {
+                usize::from(lay.dist_map[dsw.next(w) * 4 + dist_context(k.cmd)])
+            } else {
+                0
+            };
+            dist_codes[tree].put(w, usize::from(k.dsym));
+            w.bits(u32::from(k.dist_n), u64::from(k.dist_x));
+        }
+    });
 }
 
 // ---- Optimal parsing -------------------------------------------------------------------------
@@ -845,6 +1009,8 @@ impl<'a> Encoder<'a> {
 /// Bit costs of symbols, from code lengths of a previous pass (or a first estimate).
 struct CostModel {
     lit: [f32; 256],
+    /// Per position of the block (when not empty): the cost of its byte as a literal.
+    local: Vec<f32>,
     cmd: Vec<f32>,
     dist: [f32; 64],
 }
@@ -861,6 +1027,48 @@ fn costs_of(hist: &[u32], out: &mut [f32]) {
     }
 }
 
+/// The cost of each byte of `block` as a literal after block splitting the literals of
+/// `cmds` (a parse of `block`): from the histogram of the literal block type its position falls
+/// in (copied bytes take the type of the literals before them).
+fn split_costs(block: &[u8], cmds: &[Command]) -> Vec<f32> {
+    let mut lits = Vec::new();
+    let mut pos = 0;
+    for c in cmds {
+        lits.extend_from_slice(&block[pos..pos + c.insert as usize]);
+        pos += c.advance();
+    }
+    let s = split::split(&lits, 256, &split::LITERALS, 3);
+    if s.ntypes == 1 {
+        return Vec::new();
+    }
+    let mut hist = vec![[0u32; 256]; s.ntypes];
+    let mut cur = Cursor::new(&s);
+    for &b in &lits {
+        hist[cur.next()][usize::from(b)] += 1;
+    }
+    let mut costs = vec![[0f32; 256]; s.ntypes];
+    for (c, h) in costs.iter_mut().zip(&hist) {
+        costs_of(h, c);
+    }
+    let mut out = Vec::with_capacity(block.len());
+    let mut cur = Cursor::new(&s);
+    let mut t = 0;
+    let mut pos = 0;
+    for c in cmds {
+        for p in pos..pos + c.insert as usize {
+            t = cur.next();
+            out.push(costs[t][usize::from(block[p])]);
+        }
+        pos += c.insert as usize;
+        let n = c.advance() - c.insert as usize;
+        for p in pos..pos + n {
+            out.push(costs[t][usize::from(block[p])]);
+        }
+        pos += n;
+    }
+    out
+}
+
 impl CostModel {
     fn initial(block: &[u8]) -> Self {
         let mut h = [0u32; 256];
@@ -871,6 +1079,7 @@ impl CostModel {
         costs_of(&h, &mut lit);
         CostModel {
             lit,
+            local: Vec::new(),
             cmd: (0..704).map(|i| ((11 + i) as f32).log2()).collect(),
             dist: std::array::from_fn(|i| ((20 + i) as f32).log2()),
         }
@@ -895,6 +1104,7 @@ impl CostModel {
         }
         let mut m = CostModel {
             lit: [0.0; 256],
+            local: Vec::new(),
             cmd: vec![0.0; 704],
             dist: [0.0; 64],
         };
@@ -1036,6 +1246,10 @@ impl Encoder<'_> {
             self.shortest_path(start, end, &mstart, &mlist, &words, &model, cmds);
             if pass + 1 < self.p.optimal {
                 model = CostModel::from_commands(data, start, cmds, self.last);
+                // Literals priced by their block type: the meta-block will be split.
+                if self.p.split_iters > 0 {
+                    model.local = split_costs(&data[start..end], cmds);
+                }
             }
         }
     }
@@ -1074,7 +1288,11 @@ impl Encoder<'_> {
                 continue;
             }
             let pos = start + i;
-            let c = node.cost + model.lit[usize::from(data[pos])];
+            let c = node.cost
+                + match model.local.get(i) {
+                    Some(&l) => l,
+                    None => model.lit[usize::from(data[pos])],
+                };
             if c < nodes[i + 1].cost {
                 nodes[i + 1] = Node {
                     cost: c,
@@ -1376,6 +1594,316 @@ impl LiteralModel {
             ntrees: 1,
             map: [0; 64],
         }
+    }
+}
+
+/// How a meta-block is coded: the block types of each category, the literal context mode of
+/// each literal block type, and the context maps from block type and context to prefix code.
+struct Layout {
+    modes: Vec<u8>,
+    lit: BlockSplit,
+    /// 64 entries per literal block type.
+    lit_map: Vec<u8>,
+    lit_trees: usize,
+    cmd: BlockSplit,
+    dist: BlockSplit,
+    /// 4 entries per distance block type.
+    dist_map: Vec<u8>,
+    dist_trees: usize,
+}
+
+impl Layout {
+    /// One block type per category, literals coded with `m`.
+    fn single(m: &LiteralModel) -> Self {
+        Layout {
+            modes: vec![m.mode],
+            lit: BlockSplit::single(),
+            lit_map: m.map.to_vec(),
+            lit_trees: m.ntrees,
+            cmd: BlockSplit::single(),
+            dist: BlockSplit::single(),
+            dist_map: vec![0; 4],
+            dist_trees: 1,
+        }
+    }
+}
+
+/// The block type of each next symbol of a category.
+struct Cursor<'a> {
+    s: &'a BlockSplit,
+    i: usize,
+    left: u32,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(s: &'a BlockSplit) -> Self {
+        Cursor {
+            s,
+            i: 0,
+            left: s.lens[0],
+        }
+    }
+
+    #[inline(always)]
+    fn next(&mut self) -> usize {
+        if self.left == 0 {
+            self.i += 1;
+            self.left = self.s.lens[self.i];
+        }
+        self.left -= 1;
+        usize::from(self.s.types[self.i])
+    }
+
+    /// The block type of the next symbols and how many of them, up to `max`, it covers.
+    #[inline(always)]
+    fn take(&mut self, max: usize) -> (usize, usize) {
+        if self.left == 0 {
+            self.i += 1;
+            self.left = self.s.lens[self.i];
+        }
+        let n = max.min(self.left as usize);
+        self.left -= n as u32;
+        (usize::from(self.s.types[self.i]), n)
+    }
+}
+
+/// [`Cursor`] that writes the block switch commands.
+struct Switcher<'a> {
+    c: Cursor<'a>,
+    /// The block type code of each block.
+    codes: Vec<u16>,
+    types: Option<Code>,
+    lens: Option<Code>,
+}
+
+fn block_len_code(len: u32) -> usize {
+    BLOCK_LEN.partition_point(|&(b, _)| b <= len) - 1
+}
+
+fn put_block_len(w: &mut BitWriter, code: &Code, len: u32) {
+    let c = block_len_code(len);
+    code.put(w, c);
+    let (base, extra) = BLOCK_LEN[c];
+    w.bits(u32::from(extra), u64::from(len - base));
+}
+
+impl<'a> Switcher<'a> {
+    /// Writes the block types header of `s` (section 6): their number and, with two or more,
+    /// the prefix codes of block types and counts and the first block's count.
+    fn write(w: &mut BitWriter, s: &'a BlockSplit) -> Self {
+        let mut sw = Switcher {
+            c: Cursor::new(s),
+            codes: Vec::new(),
+            types: None,
+            lens: None,
+        };
+        write_var_len_u8(w, s.ntypes - 1);
+        if s.ntypes == 1 {
+            return sw;
+        }
+        let (mut last, mut second) = (1usize, 0usize);
+        let mut th = vec![0u32; s.ntypes + 2];
+        let mut lh = [0u32; 26];
+        for (i, (&t, &l)) in s.types.iter().zip(&s.lens).enumerate() {
+            let t = usize::from(t);
+            let code = if t == last + 1 {
+                1
+            } else if t == second {
+                0
+            } else {
+                t + 2
+            };
+            second = last;
+            last = t;
+            sw.codes.push(code as u16);
+            if i > 0 {
+                th[code] += 1;
+            }
+            lh[block_len_code(l)] += 1;
+        }
+        let types = write_prefix_code(w, &th, s.ntypes + 2);
+        let lens = write_prefix_code(w, &lh, 26);
+        put_block_len(w, &lens, s.lens[0]);
+        sw.types = Some(types);
+        sw.lens = Some(lens);
+        sw
+    }
+
+    /// The block type of the next symbol, after the block switch command it needs, if any.
+    #[inline(always)]
+    fn next(&mut self, w: &mut BitWriter) -> usize {
+        self.switch(w);
+        self.c.next()
+    }
+
+    /// Writes the block switch command if the current block is used up.
+    #[inline(always)]
+    fn switch(&self, w: &mut BitWriter) {
+        if self.c.left == 0 {
+            let i = self.c.i + 1;
+            if let (Some(t), Some(l)) = (&self.types, &self.lens) {
+                t.put(w, usize::from(self.codes[i]));
+                put_block_len(w, l, self.c.s.lens[i]);
+            }
+        }
+    }
+
+    /// [`Cursor::take`], after the block switch command it needs, if any.
+    #[inline(always)]
+    fn take(&mut self, w: &mut BitWriter, max: usize) -> (usize, usize) {
+        self.switch(w);
+        self.c.take(max)
+    }
+}
+
+/// The distance context of an insert-and-copy symbol: from its copy length (2, 3, 4, more).
+fn dist_context(cmd: u16) -> usize {
+    split_command(usize::from(cmd)).1.min(3)
+}
+
+/// The symbol sequences of the three categories of `cmds`: literals, insert-and-copy symbols,
+/// distance symbols and their contexts.
+struct Symbols {
+    lits: Vec<u8>,
+    cmds: Vec<u16>,
+    dists: Vec<u16>,
+    dctx: Vec<u8>,
+}
+
+fn symbols(mb: &MetaBlock<'_>) -> Symbols {
+    let mut s = Symbols {
+        lits: Vec::new(),
+        cmds: Vec::with_capacity(mb.cmds.len()),
+        dists: Vec::new(),
+        dctx: Vec::new(),
+    };
+    mb.literals(|pos, c, k| {
+        s.cmds.push(k.cmd);
+        s.lits
+            .extend_from_slice(&mb.data[pos..pos + c.insert as usize]);
+        if k.dsym != NO_DIST {
+            s.dists.push(k.dsym);
+            s.dctx.push(dist_context(k.cmd) as u8);
+        }
+    });
+    s
+}
+
+/// Block types found in one pass (levels 5..=9): the literal context map of `model` within
+/// each literal block type (its codes clustered across types), one distance code per
+/// distance block type.
+fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
+    if mb.end - mb.start < 64 << 10 {
+        // Block types rarely pay below this (and cost a few percent of the time).
+        return Layout::single(model);
+    }
+    let data = mb.data;
+    // The literals first: where they do not pay for block types, the other categories rarely
+    // do (and looking costs a few percent of the time).
+    let mut lits = Vec::new();
+    mb.literals(|pos, c, _| lits.extend_from_slice(&data[pos..pos + c.insert as usize]));
+    // Each literal block type gets the trees of the context map, clustered across types: at
+    // most about a thousand of them, or the clustering costs more than the parse.
+    let max_lit = (1024 / model.ntrees).clamp(16, 256);
+    let mut lit = split::greedy(&lits, 256, &split::GREEDY_LITERALS, max_lit);
+    let l = split::split_gain(&lits, 256, &lit);
+    if l.1 > 0.99 * l.0 {
+        return Layout::single(model);
+    }
+    let syms = symbols(mb);
+    let mut cmd = split::greedy(&syms.cmds, 704, &split::GREEDY_COMMANDS, 256);
+    let mut dist = split::greedy(&syms.dists, 64, &split::GREEDY_DISTANCES, 256);
+    // Block types are kept only if they save at least 1% of the meta-block's estimated bits:
+    // block switches cost time to write, and smaller savings are not worth it at these levels.
+    let c = split::split_gain(&syms.cmds, 704, &cmd);
+    let d = split::split_gain(&syms.dists, 64, &dist);
+    let (mut one, mut apart) = (0.0, 0.0);
+    for (g, s) in [(l, &mut lit), (c, &mut cmd), (d, &mut dist)] {
+        one += g.0;
+        if g.1 < g.0 {
+            apart += g.1;
+        } else {
+            apart += g.0;
+            *s = BlockSplit::single();
+        }
+    }
+    if apart > 0.99 * one {
+        return Layout::single(model);
+    }
+    let (lit_map, lit_trees) = if lit.ntypes == 1 {
+        (model.map.to_vec(), model.ntrees)
+    } else {
+        let nt = model.ntrees;
+        let lut = 512 * usize::from(model.mode);
+        let mut hs = vec![Histo::new(256); lit.ntypes * nt];
+        let mut cur = Cursor::new(&lit);
+        mb.literals(|pos, c, _| {
+            for p in pos..pos + c.insert as usize {
+                let t = cur.next();
+                let tree = if nt > 1 {
+                    usize::from(model.map[context(data, p, lut)])
+                } else {
+                    0
+                };
+                hs[t * nt + tree].add(usize::from(data[p]));
+            }
+        });
+        let (m, n) = split::type_tree_map(&hs, lit.ntypes, nt, 256);
+        let map = (0..lit.ntypes * 64)
+            .map(|i| m[i / 64 * nt + usize::from(model.map[i % 64])])
+            .collect();
+        (map, n)
+    };
+    Layout {
+        modes: vec![model.mode; lit.ntypes],
+        lit,
+        lit_map,
+        lit_trees,
+        cmd,
+        dist_map: (0..dist.ntypes * 4).map(|i| (i / 4) as u8).collect(),
+        dist_trees: dist.ntypes,
+        dist,
+    }
+}
+
+/// Block types for the literals, insert-and-copy symbols and distances of `mb` (levels 10 and
+/// 11), with context maps for literals (context mode `mode`) and distances.
+fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
+    let data = mb.data;
+    let Symbols {
+        lits,
+        cmds: csyms,
+        dists: dsyms,
+        dctx,
+    } = symbols(mb);
+    let lit = split::split(&lits, 256, &split::LITERALS, iters);
+    let cmd = split::split(&csyms, 704, &split::COMMANDS, iters);
+    let dist = split::split(&dsyms, 64, &split::DISTANCES, iters);
+    let lut = 512 * usize::from(mode);
+    let mut hs = vec![Histo::new(256); lit.ntypes * 64];
+    let mut cur = Cursor::new(&lit);
+    mb.literals(|pos, c, _| {
+        for p in pos..pos + c.insert as usize {
+            let t = cur.next();
+            hs[t * 64 + context(data, p, lut)].add(usize::from(data[p]));
+        }
+    });
+    let (lit_map, lit_trees) = split::context_map(&hs, 64, 4, 256);
+    let mut hs = vec![Histo::new(64); dist.ntypes * 4];
+    let mut cur = Cursor::new(&dist);
+    for (&d, &x) in dsyms.iter().zip(&dctx) {
+        hs[cur.next() * 4 + usize::from(x)].add(usize::from(d));
+    }
+    let (dist_map, dist_trees) = split::context_map(&hs, 4, 0, 256);
+    Layout {
+        modes: vec![mode; lit.ntypes],
+        lit,
+        lit_map,
+        lit_trees,
+        cmd,
+        dist,
+        dist_map,
+        dist_trees,
     }
 }
 
@@ -1970,5 +2498,81 @@ fn write_context_map(w: &mut BitWriter, map: &[u8], ntrees: usize) {
         for i in 0..n {
             w.bits(1, u64::from(bytes[i / 8] >> (i % 8) & 1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pieces of 4 KiB alternating between two random sources (lower-case letters and bytes
+    /// above 0x80): literals of two distributions, so block types pay.
+    pub(crate) fn interleaved(n: usize) -> Vec<u8> {
+        const LETTERS: &[u8; 16] = b"etaoin shrdlucmf";
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        (0..n)
+            .map(|i| {
+                let r = next();
+                if i / 4096 % 2 == 0 {
+                    LETTERS[(r % 16) as usize]
+                } else {
+                    0x80 | (r % 48) as u8
+                }
+            })
+            .collect()
+    }
+
+    /// The block types the level's splitter finds for `data` as one meta-block.
+    fn types(level: u8, data: &[u8]) -> (usize, usize, usize) {
+        let p = params(level);
+        let mut e = Encoder::new(p, window_bits(data.len()), data, 0);
+        let mut cmds = Vec::new();
+        if p.optimal > 0 {
+            e.parse_optimal(0, data.len(), &mut cmds);
+        } else {
+            e.parse_lazy(0, data.len(), &mut cmds);
+        }
+        let mut ring = e.last;
+        let coded: Vec<Coded> = cmds.iter().map(|c| code_command(c, &mut ring)).collect();
+        let mb = MetaBlock {
+            data,
+            start: 0,
+            end: data.len(),
+            last: true,
+            cmds: &cmds,
+            coded: &coded,
+        };
+        let model = literal_model(data, 0, &cmds, p.modes, 0);
+        let lay = if p.optimal > 0 {
+            split_layout(&mb, model.mode, p.split_iters)
+        } else {
+            greedy_layout(&mb, &model)
+        };
+        let lens: u64 = lay.lit.lens.iter().map(|&l| u64::from(l)).sum();
+        assert!(lay.lit.ntypes == 1 || lens >= mb.cmds.iter().map(|c| u64::from(c.insert)).sum());
+        (lay.lit.ntypes, lay.cmd.ntypes, lay.dist.ntypes)
+    }
+
+    #[test]
+    fn block_types() {
+        let data = interleaved(100_000);
+        for level in [4, 5, 9, 10, 11] {
+            let (lit, _, _) = types(level, &data);
+            assert!(lit >= 2, "level {level}: {lit} literal block types");
+            let z = compress(Level::new(u32::from(level)), &data);
+            assert!(crate::decompress(&z, data.len()).unwrap() == data);
+            // The stream uses them: a 7-bit window header (2^17), ISLAST, ISLASTEMPTY,
+            // MNIBBLES and a 20-bit MLEN - 1, then NBLTYPESL (a first bit of 1: two or more).
+            assert_eq!(z[3] >> 7, 1, "level {level}: NBLTYPESL");
+        }
+        // Too short to split.
+        assert_eq!(types(11, &data[..2000]).0, 1);
+        assert_eq!(types(5, &data[..60_000]).0, 1);
     }
 }
