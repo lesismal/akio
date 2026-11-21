@@ -9,10 +9,10 @@ HTTP-FLV、WS-FLV、HLS 以及 WHIP/WHEP。每个协议都与 `only_media::av` �
 | 模块 | 功能 |
 |---|---|
 | `hub` | 按路径区分的流，一个推流者多个订阅者，GOP 缓存（秒开），慢播放者丢帧至下一个关键帧，推流 / 播放鉴权钩子，等待推流者与重新推流，时间戳规整（`Timeline`），统计 |
-| `rtmp` | 服务端与客户端（`rtmp::client::{push, pull}`）：简单握手与 Flash digest 握手、chunk 流、推流 / 播放、Enhanced RTMP（H.265 `hvc1`、VP9 `vp09`、AV1 `av01`、VP8 `vp08`、Opus） |
-| `rtsp`、`rtp`、`sdp` | RTSP 1.0 服务端与客户端（`rtsp::client::{pull, push}`）：基于 TCP 交织与 UDP 的 ANNOUNCE/RECORD 和 DESCRIBE/SETUP/PLAY，Digest/Basic 鉴权；H.264、H.265、VP8、VP9、AV1、AAC、Opus、G.711 的 RTP |
+| `rtmp` | 服务端与客户端（`rtmp::client::{push, pull}`，可按需以有上限的退避自动重连）：简单握手与 Flash digest 握手、chunk 流、推流 / 播放、Enhanced RTMP（H.265 `hvc1`、VP9 `vp09`、AV1 `av01`、VP8 `vp08`、Opus） |
+| `rtsp`、`rtp`、`sdp` | RTSP 1.0 服务端与客户端（`rtsp::client::{pull, push}`，可按需自动重连，拉流的各轨按 RTCP 发送端报告对齐）：基于 TCP 交织与 UDP 的 ANNOUNCE/RECORD 和 DESCRIBE/SETUP/PLAY，Digest/Basic 鉴权；H.264、H.265、VP8、VP9、AV1、AAC、Opus、G.711 的 RTP |
 | `srt` | SRT live 模式：HSv5 主叫、监听与 rendezvous、ARQ、TSBPD 延迟、基于密码的 AES-CTR、stream ID 访问控制；`push` / `pull`（以及经 rendezvous 的 `push_rendezvous` / `pull_rendezvous`） |
-| `httpflv`、`hls`、`http` | HTTP-FLV 与 WS-FLV；MPEG-TS 或 fMP4（CMAF）分段的 HLS，LL-HLS 分片、预加载提示与阻塞式刷新，以及由分别发布的多路流组成的多码率播放列表，带密钥轮换与密钥提供者钩子的 AES-128 或 SAMPLE-AES 加密（MPEG-TS 中为 Apple 的样本加密，fMP4 中为 `cbcs`；H.264 与 AAC）；同时分发二者的 `MediaHttp` |
+| `httpflv`、`hls`、`http` | HTTP-FLV 与 WS-FLV；MPEG-TS 或 fMP4（CMAF）分段的 HLS，LL-HLS 分片、预加载提示与阻塞式刷新，以及由分别发布的多路流组成的多码率播放列表（含 I 帧播放列表、rendition report 与会话密钥），带密钥轮换与密钥提供者钩子的 AES-128 或 SAMPLE-AES 加密（MPEG-TS 中为 Apple 的样本加密，用于 H.264 与 AAC；fMP4 中为 `cbcs`，用于 H.264、H.265 与 AAC）；同时分发二者的 `MediaHttp` |
 | `record` | 把 hub 中的流录制为 fMP4、FLV 或 MPEG-TS 文件：按时长或大小在关键帧处切换文件、轮换、开始 / 结束钩子，由独立线程（从不是 I/O 线程）在有界队列之后写入 |
 | `whip`、`webrtc` | WHIP / WHEP HTTP 信令与 `WebRtcEngine` trait；开启 `webrtc` feature 后，`webrtc::RtcMedia` 经 only-webrtc 承载 H.264 / H.265 / VP8 / VP9 / AV1 / Opus / G.711，观众的 PLI 会到达推流者 |
 | `flv`、`mpegts`、`fmp4`、`amf`、`codec` | FLV 封装/解封装（传统与 Enhanced RTMP tag）、MPEG-TS 封装/解封装（H.264、H.265、AV1、AAC、Opus、MP3）、分片 MP4 封装/解封装、AMF0/AMF3、H.264 / H.265 / VP8 / VP9 / AV1 / AAC / Opus 工具 |
@@ -44,6 +44,6 @@ engine.run().unwrap();
 [RTSP 与 WHIP/WHEP](https://lesismal.github.io/only/zh-CN/protocols/media-rtsp.html)、
 [SRT](https://lesismal.github.io/only/zh-CN/protocols/media-srt.html)。
 
-不支持：H.265 及 H.264 / AAC 以外编码的 SAMPLE-AES、转码，以及 MPEG-TS 中的 VP8 / VP9（没有任何规范定义它们的映射，也没有解封装器读取）。MPEG-TS 中的 AV1 遵循 AOM 的映射，ffmpeg 目前还不能解封装（其支持仍在评审中）。
+不支持：H.264 / H.265（fMP4）/ AAC 以外编码的 SAMPLE-AES、转码，以及 MPEG-TS 中的 VP8 / VP9（没有任何规范定义它们的映射，也没有解封装器读取）。MPEG-TS 中的 AV1 遵循 AOM 的映射，ffmpeg 目前还不能解封装（其支持仍在评审中）。
 
 许可证：MIT。

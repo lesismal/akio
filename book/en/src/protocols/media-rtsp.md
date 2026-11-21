@@ -136,9 +136,25 @@ RTP/RTCP port pair per track with `Engine::bind_udp`, so the engine needs
 media for 10 s ends, responses under the parser's head and body limits, and a TCP push that falls
 behind is cut back to keyframes, then disconnected.
 
+**A/V sync**: a pull lines its tracks up by the server's RTCP sender reports
+(`RtspClientConfig::rtcp_sync`, on by default). Each track's times start at its first packet's
+arrival; once a track has a report, its RTP timestamps are mapped to the server's NTP clock
+relative to the first track synchronized, so audio and video captured together carry the same
+time in the hub. Corrections only move times forward, and servers that send their reports
+early (ffmpeg, mediamtx) have the stream aligned before it goes live.
+
+**Reconnecting**: with `RtspClientConfig::reconnect` (an `only_media::Reconnect`, built on an
+`Arc<Engine>`) a session that fails with an error another try may cure is followed by a new
+one after a bounded, doubling backoff; the tries run on a short-lived thread of their own, as
+the handshake blocks. A pull keeps its hub path and subscribers and republishes the new
+session's tracks (a timeline restart); a push announces the hub stream's current tracks again
+and continues from the cached GOP. The first session must come up (`pull` / `push` return its
+error); `reconnects()` and `is_live()` tell how it goes.
+
 Interop: ffmpeg's listen mode receives our push (TCP and UDP); mediamtx records our push and
 serves our pull, TCP and UDP (`tools/interop/media/rtsp-client.sh`; UDP runs in a container on
-mediamtx's network because Docker Desktop's NAT drops it).
+mediamtx's network because Docker Desktop's NAT drops it); mediamtx restarted twice under our
+reconnecting pulls and pushes (`tests/mediamtx_reconnect.rs`, `--ignored`).
 
 ## Statistics
 
@@ -149,5 +165,6 @@ mediamtx's network because Docker Desktop's NAT drops it).
 ## Not supported
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
-outlive their connection; RTCP receiver reports to recorders. Client: redirects, reconnects and
-RTCP-based A/V sync. WebRTC: simulcast, transcoding.
+outlive their connection; RTCP receiver reports to recorders, and RTCP-based A/V sync for
+recording sessions (the client's pull has it). Client: redirects, re-resolving the host name on
+reconnect. WebRTC: simulcast, transcoding.
