@@ -119,7 +119,9 @@ fn rtsp_input(tracks: &Tracks, pkts: &[Packet]) -> (Vec<u8>, usize) {
         ),
         ("RTSP/1.0 200 OK\r\nSession: 1234", ""),
     ];
-    let mut w = vec![0u8, 0]; // pull over TCP, one read
+    // Pull over TCP, in reads of up to 255 bytes (one read of everything would gather every
+    // frame before ingesting any, and measure the allocator).
+    let mut w = vec![0u8, 255];
     for (i, (head, body)) in replies.iter().enumerate() {
         w.extend_from_slice(
             format!(
@@ -159,13 +161,17 @@ fn rtsp_input(tracks: &Tracks, pkts: &[Packet]) -> (Vec<u8>, usize) {
 }
 
 fn best_of_seven(n: usize, f: impl Fn()) -> f64 {
-    (0..7)
+    let v: Vec<f64> = (0..7)
         .map(|_| {
             let t = Instant::now();
             f();
             t.elapsed().as_nanos() as f64 / n as f64
         })
-        .fold(f64::INFINITY, f64::min)
+        .collect();
+    if std::env::var("BENCH_ALL").is_ok() {
+        eprintln!("{v:?}");
+    }
+    v.into_iter().fold(f64::INFINITY, f64::min)
 }
 
 #[test]

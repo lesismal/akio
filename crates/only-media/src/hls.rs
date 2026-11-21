@@ -642,10 +642,16 @@ struct Building {
     /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed: the
     /// building segment is moved in and out of the state for every packet).
     enc: Option<Box<Encrypting>>,
-    /// Its keyframes so far (I-frame playlists).
-    iframes: Vec<IFrame>,
+    /// Its keyframes so far (I-frame playlists; boxed, as `enc`, to keep this small).
+    iframes: Option<Box<BuildIFrames>>,
+}
+
+/// The keyframes of the segment being written.
+#[derive(Debug, Default)]
+struct BuildIFrames {
+    list: Vec<IFrame>,
     /// fMP4: the start and time of a keyframe whose fragment is still pending.
-    iframe_open: Option<(usize, Time)>,
+    open: Option<(usize, Time)>,
 }
 
 impl Building {
@@ -665,10 +671,13 @@ impl Building {
     /// records the keyframe fragment that was pending, if any.
     fn flush(&mut self, mux: &mut SegMuxer, end: Time) {
         mux.flush(end, &mut self.data);
-        if let Some((offset, time)) = self.iframe_open.take() {
+        let Some(f) = self.iframes.as_mut() else {
+            return;
+        };
+        if let Some((offset, time)) = f.open.take() {
             let len = self.data.len() - offset;
             if len > 0 {
-                self.iframes.push(IFrame {
+                f.list.push(IFrame {
                     n: 0,
                     offset,
                     len,
@@ -1912,7 +1921,7 @@ impl HlsSink {
         g.bytes += data.len() + b.parts.iter().map(|p| p.data.len()).sum::<usize>();
         let duration = (end - b.start).max(1);
         g.longest = g.longest.max(((duration + SECOND / 2) / SECOND) as u64);
-        let mut iframes = b.iframes;
+        let mut iframes = b.iframes.map(|f| f.list).unwrap_or_default();
         for f in &mut iframes {
             f.n = g.next_iframe;
             g.next_iframe += 1;
@@ -1977,13 +1986,19 @@ impl HlsSink {
     #[inline(never)]
     fn keyframe(b: &mut Building, m: &SegMuxer, at: usize, dts: Time) {
         match m {
-            SegMuxer::Ts(_) => b.iframes.push(IFrame {
-                n: 0,
-                offset: at,
-                len: b.data.len() - at,
-                time: dts,
-            }),
-            SegMuxer::Mp4(_) => b.iframe_open = Some((b.data.len(), dts)),
+            SegMuxer::Ts(_) => b
+                .iframes
+                .get_or_insert_with(Box::default)
+                .list
+                .push(IFrame {
+                    n: 0,
+                    offset: at,
+                    len: b.data.len() - at,
+                    time: dts,
+                }),
+            SegMuxer::Mp4(_) => {
+                b.iframes.get_or_insert_with(Box::default).open = Some((b.data.len(), dts));
+            }
         }
     }
 }
@@ -2122,8 +2137,7 @@ impl Sink for HlsSink {
                     part_independent: true,
                     last: dts,
                     enc,
-                    iframes: Vec::new(),
-                    iframe_open: None,
+                    iframes: None,
                 });
             }
             let Some(mut b) = g.building.take() else {
@@ -2142,7 +2156,8 @@ impl Sink for HlsSink {
             if self.iframes && video {
                 // fMP4: a keyframe's fragment ends at the next video sample, and starts after
                 // what was pending (so it holds the keyframe and the audio in between).
-                if b.iframe_open.is_some() || pkt.keyframe && m.pending() > 0 {
+                let open = b.iframes.as_ref().is_some_and(|f| f.open.is_some());
+                if open || pkt.keyframe && m.pending() > 0 {
                     b.flush(m, dts);
                 }
             }
