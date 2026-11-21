@@ -2233,6 +2233,64 @@ fn ipv6_autoconf_only_queue_zero_speaks() {
     assert!(super::is_neighbor_frame(&ra_frame(600, 64, 0, &[])));
 }
 
+/// Multi-queue: an ICMP / ICMPv6 error quoting a dialed connection's datagram or segment goes
+/// to the queue owning its port, like the connection's own packets (RSS hashes an ICMP error by
+/// its addresses only, so it lands on any queue).
+#[test]
+fn icmp_errors_for_dialed_ports_go_to_their_queue() {
+    let t = Instant::now();
+    let mut c = config(B, MAC_B, params());
+    c.ip6 = Some(B6);
+    c.queues = 2;
+    let mut i = Iface::new(c, t);
+    let mut out = Cap::default();
+    // Port 49153 belongs to queue 1, 49152 to queue 0 (this one).
+    for (proto, port, owner) in [
+        (wire::PROTO_UDP, 49153u16, Some(1usize)),
+        (wire::PROTO_TCP, 49153, Some(1)),
+        (wire::PROTO_UDP, 49152, None),
+    ] {
+        let mut quoted = vec![0u8; wire::IPV4_HDR + 8];
+        wire::write_ipv4(&mut quoted, B, A, proto, 1, 0, 64, 0, 8);
+        quoted[wire::IPV4_HDR..wire::IPV4_HDR + 2].copy_from_slice(&port.to_be_bytes());
+        quoted[wire::IPV4_HDR + 2..wire::IPV4_HDR + 4].copy_from_slice(&9003u16.to_be_bytes());
+        let mut m = vec![0u8; wire::ICMP_HDR + quoted.len()];
+        wire::write_icmp(&mut m, wire::ICMP_UNREACHABLE, 3, [0; 4], &quoted);
+        let mut f = vec![0u8; ETH_HDR + wire::IPV4_HDR + m.len()];
+        wire::write_eth(&mut f, MAC_B, MAC_A, wire::ETHERTYPE_IPV4);
+        wire::write_ipv4(
+            &mut f[ETH_HDR..],
+            A,
+            B,
+            wire::PROTO_ICMP,
+            2,
+            0,
+            64,
+            0,
+            m.len(),
+        );
+        f[ETH_HDR + wire::IPV4_HDR..].copy_from_slice(&m);
+        i.receive(t, &f, &mut out);
+        let want: Vec<_> = owner.map(|q| (q, f.clone())).into_iter().collect();
+        assert_eq!(i.take_forward(), want, "ICMP, {proto} port {port}");
+
+        let mut quoted = vec![0u8; wire6::IPV6_HDR + 8];
+        wire6::write_ipv6(&mut quoted, B6, A6, proto, 64, 0, 8);
+        quoted[wire6::IPV6_HDR..wire6::IPV6_HDR + 2].copy_from_slice(&port.to_be_bytes());
+        for (kind, rest) in [
+            (wire6::ICMP6_UNREACHABLE, [0; 4]),
+            (wire6::ICMP6_PACKET_TOO_BIG, 1280u32.to_be_bytes()),
+        ] {
+            let mut m = vec![0u8; wire6::ICMP6_HDR + quoted.len()];
+            wire6::write_icmp6(&mut m, A6, B6, kind, 4, rest, &quoted);
+            let f = frame6(MAC_A, MAC_B, A6, B6, wire::PROTO_ICMPV6, 64, &m);
+            i.receive(t, &f, &mut out);
+            let want: Vec<_> = owner.map(|q| (q, f.clone())).into_iter().collect();
+            assert_eq!(i.take_forward(), want, "ICMPv6 {kind}, {proto} port {port}");
+        }
+    }
+}
+
 // ---- Accurate ECN (RFC 9768) -----------------------------------------------------------------
 
 fn params_acc(accecn: bool, ecn: bool) -> Params {

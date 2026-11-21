@@ -1838,9 +1838,7 @@ impl Iface {
                 ip.tos,
                 d.payload.len(),
             );
-            if let Some(q) =
-                Self::dst_port(d.proto, &d.payload).and_then(|p| self.dial_port_owner(d.proto, p))
-            {
+            if let Some(q) = self.dial_owner(d.proto, &d.payload) {
                 let mut f = Vec::with_capacity(ETH_HDR + pkt.len());
                 f.extend_from_slice(&frame[..ETH_HDR]);
                 f.extend_from_slice(&pkt);
@@ -1853,9 +1851,7 @@ impl Iface {
             self.on_packet(now, &Self::pkt4(&whole, &pkt, bcast, src_mac), false, tx);
             return;
         }
-        if let Some(q) =
-            Self::dst_port(ip.proto, ip.payload).and_then(|p| self.dial_port_owner(ip.proto, p))
-        {
+        if let Some(q) = self.dial_owner(ip.proto, ip.payload) {
             self.forward.push((q, frame.to_vec()));
             return;
         }
@@ -1927,9 +1923,7 @@ impl Iface {
                 up.nh_field,
                 src_mac,
             );
-            if let Some(q) = Self::dst_port(p.proto, p.payload)
-                .and_then(|port| self.dial_port_owner(p.proto, port))
-            {
+            if let Some(q) = self.dial_owner(p.proto, p.payload) {
                 self.forward.push((q, frame.to_vec()));
                 return;
             }
@@ -1984,9 +1978,7 @@ impl Iface {
             upper.len(),
         );
         pkt[IPV6_HDR..].copy_from_slice(upper);
-        if let Some(q) =
-            Self::dst_port(u.proto, upper).and_then(|p| self.dial_port_owner(u.proto, p))
-        {
+        if let Some(q) = self.dial_owner(u.proto, upper) {
             let mut fr = Vec::with_capacity(ETH_HDR + pkt.len());
             fr.extend_from_slice(&frame[..ETH_HDR]);
             fr.extend_from_slice(&pkt);
@@ -2023,11 +2015,49 @@ impl Iface {
         }
     }
 
-    fn dst_port(proto: u8, payload: &[u8]) -> Option<u16> {
-        if !(proto == PROTO_TCP || proto == PROTO_UDP) || payload.len() < 4 {
+    /// The queue owning the dialed connection a packet (`proto`, `payload`) is for, when that
+    /// is another queue: see [`dial_port_owner`](Self::dial_port_owner).
+    fn dial_owner(&self, proto: u8, payload: &[u8]) -> Option<usize> {
+        if self.cfg.queues <= 1 {
             return None;
         }
-        Some(u16::from_be_bytes([payload[2], payload[3]]))
+        let (proto, port) = Self::local_port(proto, payload)?;
+        self.dial_port_owner(proto, port)
+    }
+
+    /// The transport protocol and local port a packet is for: a TCP or UDP destination port,
+    /// or, for an ICMP / ICMPv6 error, the source port of the segment or datagram of ours it
+    /// quotes (RSS hashes an ICMP error by its addresses only, so it can land on any queue,
+    /// while the connection it reports on lives on one).
+    fn local_port(proto: u8, payload: &[u8]) -> Option<(u8, u16)> {
+        let port = |b: &[u8], at: usize| Some(u16::from_be_bytes([*b.get(at)?, *b.get(at + 1)?]));
+        match proto {
+            PROTO_TCP | PROTO_UDP => Some((proto, port(payload, 2)?)),
+            PROTO_ICMP if payload.first() == Some(&wire::ICMP_UNREACHABLE) => {
+                let q = payload.get(ICMP_HDR..)?;
+                let (version, inner) = (q.first()? >> 4, *q.get(9)?);
+                if version != 4 || !matches!(inner, PROTO_TCP | PROTO_UDP) {
+                    return None;
+                }
+                Some((inner, port(q, usize::from(q[0] & 0x0f) * 4)?))
+            }
+            PROTO_ICMPV6
+                if matches!(
+                    payload.first(),
+                    Some(&(wire6::ICMP6_UNREACHABLE | wire6::ICMP6_PACKET_TOO_BIG))
+                ) =>
+            {
+                // Only a transport header right after the quoted IPv6 header (what this stack
+                // sends; a quoted fragment header is left to the queue it landed on).
+                let q = payload.get(ICMP6_HDR..)?;
+                let (version, inner) = (q.first()? >> 4, *q.get(6)?);
+                if version != 6 || !matches!(inner, PROTO_TCP | PROTO_UDP) {
+                    return None;
+                }
+                Some((inner, port(q, IPV6_HDR)?))
+            }
+            _ => None,
+        }
     }
 
     fn on_packet(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {

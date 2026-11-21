@@ -413,7 +413,7 @@ fn dial_kernel(engine: &Engine, kernel: IpAddr) {
         );
         match rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("udp dial result")
+            .unwrap_or_else(|e| panic!("udp dial to port {port}: {e:?}"))
         {
             Ok(d) => {
                 assert!(!refused);
