@@ -450,7 +450,8 @@ async function fecMode(nack, secs, kind = "video") {
         if (s.type === "outbound-rtp" && s.kind === "audio") o.audioOut = { packetsSent: s.packetsSent, bytesSent: s.bytesSent, codec: s.codecId };
         if (s.type === "inbound-rtp" && s.kind === "video") o.in = { framesDecoded: s.framesDecoded, packetsReceived: s.packetsReceived, packetsLost: s.packetsLost,
           fecPacketsReceived: s.fecPacketsReceived, fecPacketsDiscarded: s.fecPacketsDiscarded, fecBytesReceived: s.fecBytesReceived, nackCount: s.nackCount, pliCount: s.pliCount,
-          freezeCount: s.freezeCount, totalFreezesDuration: s.totalFreezesDuration, framesDropped: s.framesDropped, retransmittedPacketsReceived: s.retransmittedPacketsReceived };
+          freezeCount: s.freezeCount, totalFreezesDuration: s.totalFreezesDuration, framesDropped: s.framesDropped, retransmittedPacketsReceived: s.retransmittedPacketsReceived,
+          packetsReceivedWithEct1: s.packetsReceivedWithEct1, packetsReceivedWithCe: s.packetsReceivedWithCe };
         if (s.type === "transport" && s.tlsVersion) o.dtls = { tlsVersion: s.tlsVersion, srtpCipher: s.srtpCipher };
         if (s.type === "outbound-rtp" && s.kind === "video") o.out = { packetsSent: s.packetsSent, bytesSent: s.bytesSent, retransmittedPacketsSent: s.retransmittedPacketsSent,
           nackCount: s.nackCount, pliCount: s.pliCount, targetBitrate: s.targetBitrate, framesSent: s.framesSent };

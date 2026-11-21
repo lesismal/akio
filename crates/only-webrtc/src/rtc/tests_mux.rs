@@ -60,7 +60,7 @@ fn drain(s: &mut Side, now: Instant, net: &mut Net) {
                 s.wake = t;
                 break;
             }
-            Output::Transmit(from, to, d) => {
+            Output::Transmit(from, to, d, _) => {
                 assert!(s.addrs.contains(&from), "sent from {from}");
                 net.send(now, from, to, d);
             }

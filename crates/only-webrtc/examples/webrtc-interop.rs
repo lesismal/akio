@@ -46,7 +46,7 @@
 //! ```
 //! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
 //!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
-//!     [bwemax=<bps>] [nopace] [pli=<ms>]
+//!     [bwemax=<bps>] [nopace] [pli=<ms>] [direct]
 //!                                                      the server with FEC (protection factor at
 //!                                                      least <n>/256), RFC 8888, RTCP XR and
 //!                                                      TMMBR (a request for <bps> after 3 s);
@@ -63,12 +63,24 @@
 //! webrtc-interop client <http-addr> media-in           offers audio (and a data channel), sends
 //!                                                      Opus and waits for 100 audio frames from
 //!                                                      the answerer
+//! webrtc-interop client <http-addr> sip [<n>]          a SIP-style phone (ADR-077): SDES-SRTP
+//!                                                      without ICE, audio only, its bound address
+//!                                                      in c= / m=; sends Opus first and waits for
+//!                                                      <n> (100) packets echoed
+//! webrtc-interop sip-gateway <udp-addr> <http-addr>    a SIP-style gateway: an Endpoint on
+//!                                                      <udp-addr> taking offers without ICE
+//!                                                      (SDES-SRTP), latching as ONLY_INTEROP_LATCH
+//!                                                      says, echoing media
 //! Signalling is one HTTP POST: the offer as the body, the answer as the response body.
 //!
 //! Every mode takes these from the environment (ADR-048): ONLY_INTEROP_DTLS13=0|1 (DTLS 1.2
 //! only, or the default DTLS 1.3 with 1.2 fallback), ONLY_INTEROP_CRYPTEX=1, ONLY_INTEROP_RED=<0..2> (Opus RED),
 //! ONLY_INTEROP_FEC=ulpfec|flexfec with ONLY_INTEROP_FEC_MIN=<n>, ONLY_INTEROP_STATS=1
-//! (statistics events every second, printed). With ONLY_LOG=only_webrtc=debug the DTLS
+//! (statistics events every second, printed), ONLY_INTEROP_ECN=ect0|ect1 (ECN-capable RTP,
+//! ADR-077), ONLY_INTEROP_LATCH=once|rebind (latching media without ICE; rebind: after 1 s
+//! of silence), ONLY_INTEROP_SIP=1 (SDES-SRTP without ICE), ONLY_INTEROP_BWE=<bps> (the
+//! bandwidth estimator, starting there). fec-server's `direct` option
+//! serves <proxy-addr> itself, without the proxy (which would clear ECN marks). With ONLY_LOG=only_webrtc=debug the DTLS
 //! version of each connection is logged.
 #![allow(missing_docs)]
 
@@ -114,6 +126,24 @@ fn extras(mut c: only_webrtc::RtcConfig) -> only_webrtc::RtcConfig {
     }
     if env("ONLY_INTEROP_BUNDLE").as_deref() == Some("off") {
         c = c.set_bundle_policy(only_webrtc::BundlePolicy::Disabled);
+    }
+    match env("ONLY_INTEROP_ECN").as_deref() {
+        Some("ect0") => c = c.set_ecn_marking(only_webrtc::EcnMarking::Ect0),
+        Some("ect1") => c = c.set_ecn_marking(only_webrtc::EcnMarking::Ect1),
+        _ => {}
+    }
+    match env("ONLY_INTEROP_LATCH").as_deref() {
+        Some("once") => c = c.set_latching(only_webrtc::Latching::Once),
+        Some("rebind") => {
+            c = c.set_latching(only_webrtc::Latching::Rebind(Duration::from_secs(1)));
+        }
+        _ => {}
+    }
+    if let Some(b) = env("ONLY_INTEROP_BWE").and_then(|v| v.parse::<u64>().ok()) {
+        c = c.enable_bwe(Some(b));
+    }
+    if env("ONLY_INTEROP_SIP").is_some() {
+        c = c.enable_sdes_srtp(true).enable_ice(false);
     }
     c
 }
@@ -219,6 +249,38 @@ fn server(udp: SocketAddr, http: SocketAddr, tcp: Option<SocketAddr>) {
             }
         };
         let _ = s.write_all(resp.as_bytes());
+    }
+}
+
+/// A SIP-style gateway (ADR-077): an Endpoint taking offers without ICE over SDES-SRTP, which
+/// echoes media and latches as `ONLY_INTEROP_LATCH` says.
+fn sip_gateway(udp: SocketAddr, http: SocketAddr) {
+    let engine = Engine::builder()
+        .udp_client_threads(1)
+        .build()
+        .expect("engine");
+    engine.start().expect("start");
+    let ep = Endpoint::bind(&engine, udp).expect("bind").config(|| {
+        extras(only_webrtc::rtc_config())
+            .enable_sdes_srtp(true)
+            .enable_ice(false)
+            .set_stats_interval(Some(Duration::from_secs(1)))
+    });
+    let l = TcpListener::bind(http).expect("http bind");
+    eprintln!("gateway: udp {udp}, signalling http://{http}/");
+    for s in l.incoming() {
+        let Ok(mut s) = s else { continue };
+        let (_, offer) = read_http(&mut s);
+        let h = Echo {
+            first: None,
+            media: 0,
+        };
+        respond(
+            &mut s,
+            ep.accept_offer(&offer, h)
+                .map(|(_, a)| a)
+                .map_err(|e| e.to_string()),
+        );
     }
 }
 
@@ -367,10 +429,12 @@ fn client(http: &str, what: &str, args: &[String]) {
             } else {
                 "interop"
             };
-            api.add_channel_with_config(
-                &only_webrtc::ChannelConfig::new(label).with_priority(prio),
-            );
-            if what == "media" || what == "media-in" {
+            if what != "sip" {
+                api.add_channel_with_config(
+                    &only_webrtc::ChannelConfig::new(label).with_priority(prio),
+                );
+            }
+            if what == "media" || what == "media-in" || what == "sip" {
                 audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
             }
             if what == "simulcast" {
@@ -420,6 +484,31 @@ fn client(http: &str, what: &str, args: &[String]) {
         rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .expect("timed out")
     };
+    if what == "sip" {
+        // The phone speaks first: the gateway knows only the address in our description.
+        let mid = audio.expect("audio");
+        let pt = peer.payload_type(mid, Codec::Opus).expect("opus");
+        let want: usize = args.first().and_then(|v| v.parse().ok()).unwrap_or(100);
+        let deadline = Instant::now() + Duration::from_secs(5 + want as u64 / 25);
+        let (mut n, mut i) = (0, 0u64);
+        while n < want {
+            let payload = [0xfc, (i % 256) as u8, 0xaa, 0xbb];
+            let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+            peer.write_media(mid, pt, Instant::now(), t, &payload)
+                .expect("write");
+            i += 1;
+            while let Ok(g) = rx.recv_timeout(Duration::from_millis(20)) {
+                if let Got::Media(d) = g {
+                    assert_eq!(&d[2..], &[0xaa, 0xbb]);
+                    n += 1;
+                }
+            }
+            assert!(Instant::now() < deadline, "no echo ({n} back of {i})");
+        }
+        println!("ok: {n} Opus packets echoed back to the phone (sent {i})");
+        peer.close();
+        return;
+    }
     let ch = loop {
         if let Got::Open(id) = next() {
             break id;
@@ -932,6 +1021,7 @@ fn main() {
             &a[5..],
         ),
         Some("client") => client(&a[2], &a[3], &a[4..]),
+        Some("sip-gateway") => sip_gateway(a[2].parse().expect("udp"), a[3].parse().expect("http")),
         Some("turn") => turn(a[2].parse().expect("udp"), &a[3], &a[4], &a[5], &a[6..]),
         Some("turn-client") => turn_client(&a[2], &a[3], &a[4], &a[5]),
         Some("relay-echo") => relay_echo(&a[2], &a[3], &a[4]),
@@ -1328,7 +1418,14 @@ fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[Str
     let tmmbr = opt("tmmbr").and_then(|v| v.parse::<u64>().ok());
     let periodic = opt("periodic").is_some();
     let (bwemax, pace, pli) = (num("bwemax"), opt("nopace").is_none(), num("pli"));
-    lossy_proxy(public, udp, num("loss-in"), num("loss-out"), periodic);
+    // `direct`: no proxy (it would clear ECN marks); the server listens on <proxy-addr>.
+    let direct = opt("direct").is_some();
+    let udp = if direct {
+        public
+    } else {
+        lossy_proxy(public, udp, num("loss-in"), num("loss-out"), periodic);
+        udp
+    };
     let rtc = RtcServer::new(vec![public]).config(move || {
         let mut c = extras(only_webrtc::rtc_config())
             .enable_fec(fec)

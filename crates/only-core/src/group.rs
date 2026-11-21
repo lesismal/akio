@@ -185,6 +185,28 @@ impl UdpBinding {
         }
     }
 
+    /// (internal, outside the stability promise) [`send_to`](Self::send_to) with ECN codepoint
+    /// `ecn` (RFC 3168: 2 = ECT(0), 1 = ECT(1), 3 = CE, 0 = not ECN-capable), in an `IP_TOS` /
+    /// `IPV6_TCLASS` control message on Linux and macOS (unless `ONLY_UDP_ECN=0`); elsewhere,
+    /// and for `ecn` 0, the datagram goes out unmarked.
+    #[doc(hidden)]
+    pub fn send_to_ecn(&self, data: &[u8], addr: SocketAddr, ecn: u8) -> io::Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if ecn & 3 != 0 && only_sys::ecn_available() {
+            use std::os::fd::AsRawFd;
+            let fd = self.sock.as_raw_fd();
+            let v6 = self.local.is_ipv6();
+            loop {
+                match only_sys::send_to_ecn(fd, data, Some(&addr), ecn, v6) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    r => return r.map(|_| ()),
+                }
+            }
+        }
+        let _ = ecn;
+        self.send_to(data, addr)
+    }
+
     /// Closes the socket: its connections are closed (their `on_close` runs on the I/O thread)
     /// and it stops receiving. Idempotent.
     pub fn close(&self) {

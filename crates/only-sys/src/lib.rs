@@ -43,7 +43,7 @@ pub use random::fill_random;
 #[cfg(target_os = "linux")]
 pub use udp::{
     Batch, MAX_GSO_BYTES, MAX_GSO_SEGMENTS, RecvBatch, SEND_BATCH, SendBatch, disable_gso,
-    ecn_available, enable_ecn, enable_gro, gro_available, gso_enabled,
+    ecn_available, enable_ecn, enable_gro, gro_available, gso_enabled, send_to_ecn,
 };
 #[cfg(target_os = "macos")]
 pub use udp_mac::{ecn_available, enable_ecn, recv_from_ecn, send_to_ecn};

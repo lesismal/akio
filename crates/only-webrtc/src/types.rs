@@ -755,6 +755,17 @@ pub(crate) enum Other {
         xr_duplicated: u64,
         /// RTP and RTCP share ICE component 1 (`false`: RTCP on component 2, ADR-058).
         rtcp_mux: bool,
+        /// RTP packets sent ECN-capable, and paths on which marking stopped (ADR-077).
+        ecn_marked_sent: u64,
+        ecn_failures: u64,
+        /// The ECN state of the (primary transport's) path: "off", "testing", "capable" or
+        /// "failed".
+        ecn_state: &'static str,
+        /// Times media without ICE latched onto a new source address (ADR-077).
+        latched: u64,
+        /// Without BUNDLE: how the remote numbers transport-wide sequence numbers ("unknown",
+        /// "shared", "per-transport"; `None` with BUNDLE).
+        twcc_spaces: Option<&'static str>,
     },
     /// A sender report arrived for a received stream.
     SenderReport {
@@ -861,6 +872,10 @@ pub(crate) struct ConfigInner {
     pub(crate) fec_mask: only_rtp::fec::FecMaskType,
     /// RED (RFC 2198) on audio lines of codecs other than Opus: the redundant blocks sent.
     pub(crate) audio_red: Option<u8>,
+    /// ECN marking of sent RTP (ADR-077).
+    pub(crate) ecn: EcnMarking,
+    /// Latching plain media onto the address it comes from (ADR-077).
+    pub(crate) latching: Latching,
 }
 
 impl Default for ConfigInner {
@@ -906,6 +921,8 @@ impl Default for ConfigInner {
             padding_rate: 0,
             fec_mask: only_rtp::fec::FecMaskType::Random,
             audio_red: None,
+            ecn: EcnMarking::Off,
+            latching: Latching::Off,
         }
     }
 }
@@ -1270,6 +1287,38 @@ impl RtcConfig {
         self
     }
 
+    /// ECN-capable RTP (RFC 6679 with RFC 8888 feedback, ADR-077): sent RTP packets carry
+    /// ECT(0) ([`EcnMarking::Ect0`], classic ECN) or ECT(1) ([`EcnMarking::Ect1`], L4S, RFC
+    /// 9331) once a path has shown that marks get through. It needs RFC 8888 feedback
+    /// ([`enable_ccfb`](Self::enable_ccfb), negotiated by both sides: it reports the codepoint
+    /// each packet arrived with) and the bandwidth estimator ([`enable_bwe`](Self::enable_bwe):
+    /// packets reported CE count as lost for it); without them nothing is marked. A path
+    /// starts with one RTP packet in four marked, marks every one once ten marked packets
+    /// are reported with their mark, and stops marking for good (until the path changes)
+    /// when a mark is reported cleared or changed, or marked packets are lost where
+    /// unmarked ones are not. RTCP, STUN, DTLS and SCTP are never marked. Linux and macOS
+    /// UDP sockets carry the codepoint (unless `ONLY_UDP_ECN=0`); TURN relays and ICE-TCP do
+    /// not. Default [`EcnMarking::Off`].
+    #[must_use]
+    pub fn set_ecn_marking(mut self, marking: EcnMarking) -> Self {
+        self.0.ecn = marking;
+        self
+    }
+
+    /// Latching media without ICE ([`enable_ice(false)`](Self::enable_ice), or a remote
+    /// description without ICE) onto the address it really comes from (symmetric RTP,
+    /// "comedia", RFC 7362), for remotes behind NATs whose SDP names an address they cannot
+    /// be reached at: an RTP or RTCP packet that authenticates under the transport's SRTP
+    /// keys moves the transport's pair (per component) to its source, as [`Latching`] allows.
+    /// Datagrams from unknown sources are only tried for authentication. Before the SRTP keys
+    /// exist nothing latches (with DTLS-SRTP the handshake needs the SDP address). Default
+    /// [`Latching::Off`]: media goes to and comes from the description's addresses only.
+    #[must_use]
+    pub fn set_latching(mut self, latching: Latching) -> Self {
+        self.0.latching = latching;
+        self
+    }
+
     /// RTP/RTCP multiplexing (RFC 5761) in the offers this peer makes (ADR-058). The default,
     /// [`RtcpMuxPolicy::Require`], offers `a=rtcp-mux` alone, as browsers do. With the
     /// others, and an [`Endpoint`](crate::Endpoint) with an RTCP socket
@@ -1344,6 +1393,34 @@ pub enum BundlePolicy {
     /// `bundlePolicy: "max-compat"` accept that). The remote must reach each transport at an
     /// address of its own (as every such peer does: an ICE agent per section).
     Disabled,
+}
+
+/// ECN marking of sent RTP ([`RtcConfig::set_ecn_marking`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EcnMarking {
+    /// Not ECN-capable (the default).
+    #[default]
+    Off,
+    /// ECT(0): classic ECN (RFC 3168, RFC 6679's default).
+    Ect0,
+    /// ECT(1): L4S (RFC 9331), as libwebrtc marks.
+    Ect1,
+}
+
+/// How media without ICE follows the address it comes from ([`RtcConfig::set_latching`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Latching {
+    /// The description's addresses only (the default).
+    #[default]
+    Off,
+    /// The source of the first authenticated packet (per component), for good.
+    Once,
+    /// The first authenticated source, then another one once the latched source has sent
+    /// nothing authenticated for the given time (NAT rebinding); `Duration::ZERO` follows
+    /// every authenticated packet from a new source.
+    Rebind(Duration),
 }
 
 /// A set of RTCP XR report blocks ([`RtcConfig::enable_rtcp_xr_blocks`]); combine with `|`.

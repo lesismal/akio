@@ -26,6 +26,8 @@ fn configs() -> [ConfigInner; 8] {
         cryptex: true,
         encrypt_ext: true,
         opus_red: Some(2),
+        ecn: crate::EcnMarking::Ect1,
+        bwe: Some(300_000),
         ..ConfigInner::default()
     };
     [
@@ -47,12 +49,15 @@ fn configs() -> [ConfigInner; 8] {
             sdes: true,
             sdes_mki: 4,
             ice: false,
+            latching: crate::Latching::Rebind(std::time::Duration::ZERO),
             ..ConfigInner::default()
         },
         ConfigInner {
             bundle: crate::BundlePolicy::Disabled,
             rtcp_mux: crate::RtcpMuxPolicy::Negotiate,
             sdes: true,
+            ccfb: true,
+            bwe: Some(300_000),
             ..ConfigInner::default()
         },
         ConfigInner {

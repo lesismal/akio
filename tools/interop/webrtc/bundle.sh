@@ -6,8 +6,10 @@
 # server logs the channel's DCEP priority; then the only Endpoint offers audio and a "high"
 # channel without BUNDLE to Chrome, which answers with a transport per section and sends its
 # microphone. Chrome 157 has no RTCDataChannel.priority (it sends 256 and reports undefined),
-# so the priority lines are informative only. Needs Node >= 22 and Chrome (CHROME=...). Ports
-# 9540-9544.
+# so the priority lines are informative only. The server runs its bandwidth estimator (ADR-077):
+# Chrome's transport-wide feedback from all three transports drives it, and the server reads
+# Chrome's numbering as one space across transports ("shared"). Needs Node >= 22 and Chrome
+# (CHROME=...). Ports 9540-9544.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
@@ -22,12 +24,18 @@ trap 'kill $PIDS 2>/dev/null || true; sleep 1; rm -rf "$W" 2>/dev/null || true' 
   --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
   --disable-features=WebRtcHideLocalIpsWithMdns ${CHROME_ARGS:-} \
   about:blank >"$W/chrome.log" 2>&1 & PIDS="$PIDS $!"
-ONLY_INTEROP_BUNDLE=off $RS server 127.0.0.1:9541 127.0.0.1:9542 2>"$W/server.log" & PIDS="$PIDS $!"
+ONLY_INTEROP_BUNDLE=off ONLY_INTEROP_STATS=1 ONLY_INTEROP_BWE=300000 \
+  $RS server 127.0.0.1:9541 127.0.0.1:9542 2>"$W/server.log" & PIDS="$PIDS $!"
 sleep 2
 
 echo "== Chrome (max-compat) offers to the only server, which refuses BUNDLE"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9540 offer-maxcompat 127.0.0.1:9542
 grep 'channel "chrome" open' "$W/server.log"
+for _ in $(seq 20); do grep -q 'twcc_spaces: Some("shared")' "$W/server.log" && break; sleep 0.2; done
+grep -o 'twcc_spaces: Some("shared")' "$W/server.log" | head -1
+top=$(grep -o 'EgressBitrateEstimate([0-9]*)' "$W/server.log" | tr -dc '0-9\n' | sort -n | tail -1)
+echo "server: estimate up to ${top:-0} bps on the feedback of every transport"
+[ "${top:-0}" -gt 1000000 ]
 
 echo "== the only Endpoint offers audio and a high-priority channel without BUNDLE to Chrome"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9540 answer 127.0.0.1:9543 nobundle >"$W/answer.log" 2>&1 &

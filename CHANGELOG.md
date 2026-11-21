@@ -10,6 +10,35 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: ECN-capable RTP, latching media without ICE, congestion control without BUNDLE (only-webrtc, only-core, only-sys)
+
+ADR-077 (docs/adr/077-webrtc-ecn-latching-unbundled-cc.md), additive:
+
+- ECN-capable RTP (`RtcConfig::set_ecn_marking(EcnMarking::{Ect0, Ect1})`, off by default):
+  with RFC 8888 feedback and the bandwidth estimator, RTP (never RTCP, STUN, DTLS or SCTP) is
+  marked, one packet in four until ten marked packets are reported with their mark, then all;
+  a cleared or re-marked mark, or marked packets lost where unmarked ones are not, end marking
+  on the path (RFC 6679 §7.2-7.4); CE counts as loss for the estimator. Per transport; a new
+  path starts over. Chrome 157 receives ECT(1) and validates the path
+  (`tools/interop/webrtc/ecn.sh`).
+- Latching media without ICE (`RtcConfig::set_latching(Latching::{Once, Rebind(quiet)})`, off by
+  default): an RTP / RTCP packet that authenticates under the transport's SRTP keys (and passes
+  the replay check) moves the component's pair to its source; the endpoint offers datagrams from
+  unknown sources to latching peers for that check only. `tools/interop/webrtc/latch.sh`: a
+  SIP-style phone behind an iptables NAT, rebinding included.
+- Sessions without BUNDLE negotiate transport-cc and RFC 8888 again and run one estimator and
+  pacer over every transport's feedback: RFC 8888 per transport, transport-wide numbering
+  following the remote's (one space, as libwebrtc / Chrome number it, or one per transport once
+  the remote shows that), per-transport results aligned and ordered for the estimator; paced
+  packets, padding and probes leave on their own transport.
+- `PeerStats` gains `ecn_marked_sent`, `ecn_failures`, `ecn_state`, `latched`, `twcc_spaces`.
+  only-core: `UdpBinding::send_to_ecn` (doc-hidden); only-sys: `send_to_ecn` on Linux.
+- Behaviour change: an unbundled session's offers and answers carry transport-cc / `ack ccfb`
+  (ADR-072 removed them).
+- Tools: `webrtc-bench` example (media / data channel throughput between two loopback
+  `Endpoint`s); `webrtc-interop` gains `sip-gateway`, `client … sip`, fec-server `direct` and
+  `ONLY_INTEROP_{ECN,LATCH,SIP,BWE}`.
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:

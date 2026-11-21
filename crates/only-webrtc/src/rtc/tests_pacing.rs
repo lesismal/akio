@@ -75,7 +75,7 @@ fn drain(s: &mut Side, now: Instant, net: &mut Net) {
                 s.wake = t;
                 break;
             }
-            Output::Transmit(_, to, d) => net.send(now, s.addr, to, d),
+            Output::Transmit(_, to, d, _) => net.send(now, s.addr, to, d),
             Output::Event(e) => s.events.push(e),
         }
     }
@@ -274,6 +274,7 @@ fn pacer_queue_rules() {
         ast: None,
         fec: false,
         at,
+        tp: 0,
     };
     let mut p = Pacer::default();
     p.set_rates(800_000, 0); // 250 kB/s, 10 kB of burst

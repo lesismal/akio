@@ -270,8 +270,14 @@ let cfg = only_webrtc::rtc_config()
   发送普通 Opus，但仍接收 RED）。
 - **RFC 8888**：双方都提供 `ack ccfb` 时，收到的媒体用 RFC 8888 反馈确认，替代传输层反馈，带宽估计器
   也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。报告携带每个
-  包到达时的 ECN 码点（UDP 后端读取）；发送端把被报告为 CE 的包在估计器中按丢失计。本端不把自己的包
-  标记为支持 ECN。
+  包到达时的 ECN 码点（UDP 后端读取）；发送端把被报告为 CE 的包在估计器中按丢失计。按配置，本端也标记自己的
+  RTP（见下一条）。
+- **ECN 可用的 RTP**（ADR-077，`set_ecn_marking(EcnMarking::Ect1)` 或 `Ect0`）：使用 RFC 8888 且估计器
+  运行时，路径表明标记能到达后，RTP 以 ECT(1) / ECT(0) 发出：未知时每四个包标记一个，十个已标记包带着
+  标记返回后全部标记（RFC 6679 §7.2）。报告显示标记被清除或改变，或已标记包丢失而未标记包没有丢失，会
+  停止该路径上的标记（新的 ICE 地址对或锁定的地址重新开始）。RTCP、STUN、DTLS 与 SCTP 从不标记。
+  Chrome 157 接收 ECT(1)（其 `packetsReceivedWithEct1`）并使路径通过验证；Chrome 不标记它发出的包
+  （`tools/interop/webrtc/ecn.sh`，其中也展示了清除码点的代理使标记停止）。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
@@ -339,7 +345,18 @@ let ep = ep.config(|| {
 });
 ```
 
-没有 ICE 就没有任何东西检查路径或穿越 NAT：远端必须能在它写出的地址上到达（ADR-072）。
+没有 ICE 就没有任何东西检查路径：默认情况下远端必须能在它写出的地址上到达（ADR-072）。位于 NAT 之后的
+话机写出自己的私有地址，却从 NAT 的映射地址发送；锁定（对称 RTP、"comedia"，ADR-077）会跟随它：
+
+```rust,ignore
+.set_latching(Latching::Once)                              // 第一个通过认证的来源
+.set_latching(Latching::Rebind(Duration::from_secs(2)))    // 静默 2 秒后可再次移动
+```
+
+来自端点不认识的地址的数据报会用仍可锁定的 peer 的 SRTP 密钥去验证；通过认证（且不是重放）的包会被接收，
+并把传输（RTP，以及独立端口上的 RTCP，各自分开）移到它的来源。伪造或重放的包不会移动任何东西。使用
+DTLS-SRTP 时，握手之前不会锁定，而握手需要 SDP 中的地址。`tools/interop/webrtc/latch.sh` 在网络命名空间
+中运行位于 iptables NAT 之后的 SIP 风格话机，包括 NAT 重新绑定。
 
 ### RTCP 走独立端口（不复用 RTCP）
 
@@ -379,7 +396,10 @@ ep.bind_transport_socket(&engine, "0.0.0.0:0".parse()?)?; // 可选：每个额�
 组件；媒体、RTCP 与 SCTP 从各自段的传输发出，所有传输都就绪后才触发 `on_connected`。
 `bundlePolicy: "max-compat"` 的 Chrome 在两个方向上都以这种方式工作（`tools/interop/webrtc/bundle.sh`）。
 除非 `bind_transport_socket` 为它们提供各自的套接字，这些传输共享端点的套接字，并靠远端地址区分（不做
-BUNDLE 的对端每段总有一个地址）。传输级拥塞控制（transport-cc、RFC 8888）需要单一传输，这种会话中不协商。
+BUNDLE 的对端每段总有一个地址）。拥塞控制反馈（transport-cc、RFC 8888）像 BUNDLE 时一样协商，一个估计器和
+一个 pacer 服务所有传输（ADR-077）：RFC 8888 按传输进行；传输级序号跟随远端的编号方式，像 libwebrtc 那样在
+所有传输上共用一个空间（Chrome 即如此，`bundle.sh` 中检查），或在远端按传输编号时每个传输一个空间；排队的
+包从各自的传输发出。
 trickle 候选用 `Peer::add_remote_candidate_in(mid, candidate)` 指明其段。
 
 ### 数据通道优先级
@@ -530,6 +550,6 @@ DTLS 1.2。
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；发送支持 ECN 的包；DTLS-SRTP 下的 SRTP MKI；让普通（无 ICE）媒体锁定其实际来源地址；
-不做 BUNDLE 的会话中跨传输的传输级拥塞控制。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、
-ADR-045、ADR-048、ADR-054、ADR-058、ADR-072 与 ADR-073。
+TCP 中继（RFC 6062）；DTLS-SRTP 下的 SRTP MKI；对 CE 标记的可伸缩（L4S）响应；DTLS-SRTP 密钥就绪前的锁定。
+新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、
+ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073 与 ADR-077。

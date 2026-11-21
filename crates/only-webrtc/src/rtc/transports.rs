@@ -23,8 +23,9 @@
 //!   bundle does (it runs an ICE agent, or has a port, per section).
 //! - **Sending.** Media goes out on its line's transport; RTCP on the transport of the line
 //!   whose SSRC sends it (the first packet's sender SSRC); SCTP on the application section's.
-//!   Transport-wide congestion control (transport-cc, RFC 8888 feedback) needs one transport:
-//!   it is not negotiated in a session that is not bundled.
+//!   Congestion control feedback (transport-cc, RFC 8888) runs per transport into one
+//!   estimator and pacer (ADR-077, [`super::cc`]); paced packets go out on their own
+//!   transport.
 //! - **Without ICE** a transport's agent gets fixed pairs ([`IceAgent::set_fixed_pair`]):
 //!   from our first host candidate of the remote's family to the `c=` address and `m=` port,
 //!   and on component 2 to `a=rtcp` (or the next port) when RTCP is not multiplexed.
@@ -33,27 +34,82 @@ use super::*;
 use crate::types::BundlePolicy;
 
 /// The state of one transport (see the module docs): swapped with [`Rtc`]'s fields.
-#[derive(Default)]
 pub(super) struct Tp {
     ice: Option<IceAgent>,
     dtls: Option<Connection>,
     dtls_connected: bool,
     dtls_up: bool,
     sdes: sdes::Sdes,
-    srtp_tx: Option<Srtp>,
-    srtp_rx: Option<Srtp>,
+    pub(super) srtp_tx: Option<Srtp>,
+    pub(super) srtp_rx: Option<Srtp>,
     srtp_enc_ids: Vec<u8>,
     remote_addr: Option<SocketAddr>,
     remote_local: Option<SocketAddr>,
-    rtcp: rtcp_mux::RtcpComponent,
+    pub(super) rtcp: rtcp_mux::RtcpComponent,
     dtls_version: Option<DtlsVersion>,
     probe_pair: Option<(SocketAddr, SocketAddr)>,
     mdns_wanted: Vec<(String, String)>,
+    /// ECN marking of the transport's path and latching of its remote (ADR-077).
+    pub(super) ecn: ecn::EcnPath,
+    pub(super) latch: latch::Latch,
+    /// RFC 8888: the transport's receiver (its report goes out on it).
+    ccfb_rx: CcfbReceiver,
+    /// Transport-wide CC of the transport when the remote numbers per transport (else the
+    /// session's are used; see [`super::cc`]).
+    twcc_tx: TwccSender,
+    twcc_rx: TwccReceiver,
+    twcc_media_ssrc: u32,
+}
+
+impl Default for Tp {
+    fn default() -> Tp {
+        Tp {
+            ice: None,
+            dtls: None,
+            dtls_connected: false,
+            dtls_up: false,
+            sdes: sdes::Sdes::default(),
+            srtp_tx: None,
+            srtp_rx: None,
+            srtp_enc_ids: Vec::new(),
+            remote_addr: None,
+            remote_local: None,
+            rtcp: rtcp_mux::RtcpComponent::default(),
+            dtls_version: None,
+            probe_pair: None,
+            mdns_wanted: Vec::new(),
+            ecn: ecn::EcnPath::default(),
+            latch: latch::Latch::default(),
+            ccfb_rx: CcfbReceiver::new(),
+            twcc_tx: TwccSender::new(),
+            twcc_rx: TwccReceiver::new(),
+            twcc_media_ssrc: 0,
+        }
+    }
 }
 
 impl Tp {
-    fn agent(&self) -> &IceAgent {
+    pub(super) fn agent(&self) -> &IceAgent {
         self.ice.as_ref().expect("a transport has an agent")
+    }
+
+    /// The next transport-wide number of the transport's own sender (tests).
+    #[cfg(test)]
+    pub(super) fn twcc_tx_next(&mut self) -> u16 {
+        self.twcc_tx.next_seq()
+    }
+
+    /// Starts the transport's own transport-wide numbering at `next` (a switch to per-transport
+    /// numbering, [`super::cc`]).
+    pub(super) fn skip_twcc(&mut self, next: u16) {
+        for _ in 0..next {
+            self.twcc_tx.next_seq();
+        }
+    }
+
+    /// The transport has SRTP keys and a path for RTP.
+    pub(super) fn ready(&self) -> bool {
+        self.srtp_tx.is_some() && self.agent().send_pair().is_some()
     }
 }
 
@@ -61,17 +117,23 @@ impl Tp {
 #[derive(Default)]
 pub(super) struct Extra {
     /// The other transports (section mid, state).
-    tps: Vec<(Mid, Tp)>,
+    pub(super) tps: Vec<(Mid, Tp)>,
     /// The current transport (0: the primary).
-    cur: usize,
+    pub(super) cur: usize,
     /// The section the primary transport serves when the session is not bundled.
     primary: Option<Mid>,
     /// The session is not bundled (decided once, at the first negotiation).
-    split: bool,
+    pub(super) split: bool,
     /// The transports have no ICE: the remote's and our descriptions carry plain addresses.
     pub(super) plain: bool,
     /// Plain remote addresses not reported to the endpoint yet ([`Rtc::take_plain_remotes`]).
-    new_remotes: Vec<SocketAddr>,
+    pub(super) new_remotes: Vec<SocketAddr>,
+    /// The descriptions' plain remote addresses, and addresses latched away from that the
+    /// endpoint should forget ([`Rtc::take_gone_remotes`]).
+    pub(super) sdp_remotes: Vec<SocketAddr>,
+    pub(super) gone_remotes: Vec<SocketAddr>,
+    /// Congestion control across the transports (ADR-077).
+    pub(super) cc: cc::UnbundledCc,
     /// Local candidates of the transports made later, by creation index (1..): such a
     /// transport takes these instead of the primary's (a socket per transport,
     /// [`Endpoint::bind_transport_socket`](crate::Endpoint::bind_transport_socket)).
@@ -180,6 +242,14 @@ impl Rtc {
         std::mem::swap(&mut self.dtls_version, &mut t.dtls_version);
         std::mem::swap(&mut self.probe_pair, &mut t.probe_pair);
         std::mem::swap(&mut self.mdns_wanted, &mut t.mdns_wanted);
+        std::mem::swap(&mut self.ecn, &mut t.ecn);
+        std::mem::swap(&mut self.latch, &mut t.latch);
+        std::mem::swap(&mut self.ccfb_rx, &mut t.ccfb_rx);
+        if self.xt.cc.per_transport() {
+            std::mem::swap(&mut self.twcc_tx, &mut t.twcc_tx);
+            std::mem::swap(&mut self.twcc_rx, &mut t.twcc_rx);
+            std::mem::swap(&mut self.twcc_media_ssrc, &mut t.twcc_media_ssrc);
+        }
     }
 
     /// Toggles transport `k` (1..) with the primary: in when the primary is current, out when
@@ -236,6 +306,43 @@ impl Rtc {
         self.with_tp(k, |s| s.add_remote_candidate_line(line))
     }
 
+    /// Sum of `f` over the transports beyond the current one's slot (statistics).
+    pub(super) fn xt_sum(&self, f: impl Fn(&Tp) -> u64) -> u64 {
+        self.xt.tps.iter().map(|(_, t)| f(t)).sum()
+    }
+
+    /// The header extension map of received RTP: the current transport's line's when the
+    /// session is not bundled (each section may number extensions its own way), else the
+    /// session's.
+    pub(super) fn rx_ext(&self) -> &ExtensionMap {
+        if self.xt.split && !self.xt.tps.is_empty() {
+            let k = self.xt.cur;
+            if let Some(l) = self
+                .media
+                .iter()
+                .enumerate()
+                .find(|(i, l)| !l.stopped && self.tp_of_line(*i) == k)
+                .map(|(_, l)| l)
+            {
+                return &l.ext;
+            }
+        }
+        &self.ext
+    }
+
+    /// Where transport `k`'s state is while another is current: `None` when `k` is the
+    /// current one (its state is on `self`).
+    pub(super) fn tp_state(&self, k: usize) -> Option<&Tp> {
+        let cur = self.xt.cur;
+        if k == cur {
+            None
+        } else if k == 0 {
+            self.xt.tps.get(cur - 1).map(|(_, t)| t)
+        } else {
+            self.xt.tps.get(k - 1).map(|(_, t)| t)
+        }
+    }
+
     /// The session is not bundled.
     pub(super) fn unbundled(&self) -> bool {
         self.xt.split
@@ -251,7 +358,7 @@ impl Rtc {
     }
 
     /// The transport of media line `line`.
-    fn tp_of_line(&self, line: usize) -> usize {
+    pub(super) fn tp_of_line(&self, line: usize) -> usize {
         self.media.get(line).map_or(0, |l| self.tp_of_mid(l.mid))
     }
 
@@ -599,21 +706,6 @@ impl Rtc {
             .collect()
     }
 
-    /// Transport-wide congestion control needs one transport: dropped from every line of an
-    /// unbundled session.
-    pub(super) fn drop_transport_cc(&mut self) {
-        if !self.xt.split {
-            return;
-        }
-        for l in &mut self.media {
-            for c in &mut l.codecs {
-                c.fb.retain(|f| f != "transport-cc" && f != FB_CCFB);
-            }
-            l.ext.remove(Extension::TransportCc);
-        }
-        self.ccfb = false;
-    }
-
     /// ICE restart (`keep`: our candidates stay) of the transports beyond the primary, after
     /// the primary's.
     pub(super) fn restart_extra(&mut self, keep: bool) {
@@ -747,10 +839,20 @@ impl Rtc {
         if self.ice.components() == 2 {
             let l2 = local(2, rtcp.is_ipv6())
                 .ok_or_else(|| err("no component-2 host candidate for RTCP without ICE"))?;
-            self.ice.set_fixed_pair(2, l2, rtcp);
+            // A description repeating the address keeps a latched pair.
+            if !self.latch_keep(2, rtcp) {
+                self.ice.set_fixed_pair(2, l2, rtcp);
+            }
             news.push(rtcp);
         }
-        self.ice.set_fixed_pair(1, l1, rtp);
+        if !self.latch_keep(1, rtp) {
+            self.ice.set_fixed_pair(1, l1, rtp);
+        }
+        for a in &news {
+            if !self.xt.sdp_remotes.contains(a) && self.xt.sdp_remotes.len() < 16 {
+                self.xt.sdp_remotes.push(*a);
+            }
+        }
         for a in news {
             if !self.xt.new_remotes.contains(&a) && self.xt.new_remotes.len() < 16 {
                 self.xt.new_remotes.push(a);

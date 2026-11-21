@@ -115,12 +115,16 @@ listener (`Endpoint`s relayed through it over `turns:...?transport=udp`):
 `tools/interop/webrtc/turn-dtls.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Without BUNDLE against Chrome (`max-compat`), both directions: `tools/interop/webrtc/bundle.sh`.
+Without BUNDLE against Chrome (`max-compat`), both directions, with the estimator running on the
+feedback of every transport: `tools/interop/webrtc/bundle.sh`. ECN-capable RTP toward Chrome
+(ECT(1) received and validated, and a proxy clearing the marks ending them):
+`tools/interop/webrtc/ecn.sh`. Latching media without ICE onto a SIP-style phone behind a real
+NAT (network namespaces in Docker, rebinding included): `tools/interop/webrtc/latch.sh`.
 
 Not implemented: FlexFEC on simulcast lines (RID-based simulcast signals no FEC stream; Chrome
 sends none), MKIs with DTLS-SRTP (no SDP for them, no browser uses them), RFC 6904 with
-browsers (none offers it), latching plain (no-ICE) media onto the address it really comes from,
-transport-wide congestion control across the transports of an unbundled session. pion has no
+browsers (none offers it), a scalable (L4S) response to CE and RFC 6679's own ECN signalling,
+latching before DTLS-SRTP keys exist. pion has no
 non-mux or non-BUNDLE mode and Chrome 157 no `RTCDataChannel.priority`: those are tested between
 `Endpoint`s. Browsers and pion have no simultaneous-open ICE-TCP candidates: `listen_tcp_so` is
 tested between `Endpoint`s.
