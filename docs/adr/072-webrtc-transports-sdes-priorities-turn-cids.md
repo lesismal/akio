@@ -189,7 +189,8 @@ field is not a break.
   `a=rtcp-mux` and `a=rtcp`; new seeds. On Linux arm64: `webrtc_sdes` 31 M runs in 15 minutes,
   clean; `webrtc_sdp` found two bugs, both fixed and kept as regression inputs (a disabled BUNDLE
   written as an empty group when every offered section was rejected; an application section
-  taking the mid of a media line, which then ran on the data channel's transport).
+  taking the mid of a media line, which then ran on the data channel's transport); after the fixes
+  170 k runs in 15 minutes, clean.
 - Performance (same-run A/B against 57696b6b on gpu51, `quiet.sh`, CPUs 2-9, 7 alternating
   rounds, medians): RTP media between two loopback `Endpoint`s 92.1 vs 92.1 MB/s (1.000x), data
   channels 189.7 vs 189.7 MB/s (1.000x), TURN over DTLS through the listener and relay 230,804

@@ -144,7 +144,7 @@ add_remote_candidate_in}`、`Endpoint::bind_transport_socket`、`RtcServer::{rtc
   无 ICE SDES 与协商 RTCP 的无 BUNDLE 配置，并检查密钥从不与指纹同段、对无 ICE offer 的应答不带 ICE、
   禁用的 BUNDLE 从不出现、没有任何段同时带 `a=rtcp-mux` 与 `a=rtcp`；新增种子。Linux arm64 上：`webrtc_sdes`
   15 分钟 3100 万次运行，无问题；`webrtc_sdp` 发现两个缺陷，均已修复并保留为回归输入（所有提供的段都被拒绝时，
-  禁用的 BUNDLE 被写成空组；应用段占用了某个媒体行的 mid，导致该媒体行运行在数据通道的传输上）。
+  禁用的 BUNDLE 被写成空组；应用段占用了某个媒体行的 mid，导致该媒体行运行在数据通道的传输上）；修复后 15 分钟 17 万次运行，无问题。
 - 性能（gpu51 上与 57696b6b 的同轮 A/B，`quiet.sh`，CPU 2-9，7 轮交替，取中位数）：两个回环 `Endpoint`
   之间的 RTP 媒体 92.1 对 92.1 MB/s（1.000 倍），数据通道 189.7 对 189.7 MB/s（1.000 倍），经监听器与中继
   的 DTLS 上的 TURN 230,804 对 231,015 数据报/秒（1.001 倍；100 字节 ChannelData，CID 路径开启）：无回退。
