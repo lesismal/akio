@@ -518,10 +518,10 @@ impl Rtc {
     /// transports keep the primary's credentials. Sections that already have one keep it;
     /// transports of sections no longer listed are closed. Called with the primary current.
     pub(super) fn split_transports(&mut self, now: Instant, mids: &[Mid], shared: bool) {
+        self.xt.split = true;
         if mids.is_empty() {
             return;
         }
-        self.xt.split = true;
         let is_media = |m: &Mid| self.media.iter().any(|l| l.mid == *m && !l.stopped);
         let primary = *self
             .xt
