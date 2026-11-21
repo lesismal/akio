@@ -27,7 +27,9 @@ pub enum Value {
     F64(f64),
     /// `string`.
     String(String),
-    /// `bytes`.
+    /// `bytes`, and a `string` field that does not require UTF-8
+    /// ([`FieldDescriptor::requires_utf8`] false: `utf8_validation = NONE`, proto2) whose
+    /// contents are not UTF-8.
     Bytes(Vec<u8>),
     /// An enum number (known or not).
     EnumNumber(i32),
@@ -442,7 +444,7 @@ impl DynamicMessage {
             let b = r.read_bytes().map_err(|e| e.in_field(n))?;
             let mut sub = Reader::new(b);
             while !sub.is_empty() {
-                let v = read_scalar(fd.kind(), &mut sub).map_err(|e| e.in_field(n))?;
+                let v = read_scalar(fd.kind(), true, &mut sub).map_err(|e| e.in_field(n))?;
                 if let Some(v) = self.closed_check(fd, v) {
                     self.push(fd, v);
                 }
@@ -480,7 +482,7 @@ impl DynamicMessage {
             }
             return Ok(());
         }
-        let v = read_scalar(fd.kind(), r).map_err(|e| e.in_field(n))?;
+        let v = read_scalar(fd.kind(), fd.requires_utf8(), r).map_err(|e| e.in_field(n))?;
         let Some(v) = self.closed_check(fd, v) else {
             return Ok(());
         };
@@ -546,6 +548,10 @@ impl DynamicMessage {
         let k = entry.get(&kf).into_owned();
         let v = entry.get(&vf).into_owned();
         let Some(k) = MapKey::from_value(k) else {
+            // A `string` key that does not require UTF-8 and is not: `MapKey` holds a `String`.
+            if kf.kind() == Kind::String {
+                return Err(DecodeError::new(DecodeErrorKind::InvalidUtf8));
+            }
             return Err(DecodeError::new(DecodeErrorKind::WireTypeMismatch));
         };
         match self
@@ -649,7 +655,9 @@ fn accepts(fd: &FieldDescriptor, wt: WireType) -> bool {
             && is_packable(fd.kind()))
 }
 
-fn read_scalar(k: Kind, r: &mut Reader<'_>) -> Result<Value, DecodeError> {
+/// One value of kind `k`; `utf8`: a `string` must be UTF-8 (else one that is not is kept as
+/// [`Value::Bytes`]).
+fn read_scalar(k: Kind, utf8: bool, r: &mut Reader<'_>) -> Result<Value, DecodeError> {
     Ok(match k {
         Kind::Double => Value::F64(f64::from_bits(r.read_fixed64()?)),
         Kind::Float => Value::F32(f32::from_bits(r.read_fixed32()?)),
@@ -666,11 +674,11 @@ fn read_scalar(k: Kind, r: &mut Reader<'_>) -> Result<Value, DecodeError> {
         Kind::Bool => Value::Bool(r.read_varint()? != 0),
         Kind::String => {
             let b = r.read_bytes()?;
-            Value::String(
-                std::str::from_utf8(b)
-                    .map_err(|_| DecodeError::new(DecodeErrorKind::InvalidUtf8))?
-                    .to_owned(),
-            )
+            match std::str::from_utf8(b) {
+                Ok(s) => Value::String(s.to_owned()),
+                Err(_) if !utf8 => Value::Bytes(b.to_vec()),
+                Err(_) => return Err(DecodeError::new(DecodeErrorKind::InvalidUtf8)),
+            }
         }
         Kind::Bytes => Value::Bytes(r.read_bytes()?.to_vec()),
         Kind::Enum(_) => Value::EnumNumber(r.read_varint()? as i32),
@@ -696,7 +704,7 @@ fn write_scalar(v: &Value, k: Kind, buf: &mut Vec<u8>) {
         (Kind::Sfixed64, Value::I64(x)) => buf.extend_from_slice(&x.to_le_bytes()),
         (Kind::Bool, Value::Bool(x)) => encoding::put_varint(buf, u64::from(*x)),
         (Kind::String, Value::String(s)) => encoding::put_bytes(buf, s.as_bytes()),
-        (Kind::Bytes, Value::Bytes(b)) => encoding::put_bytes(buf, b),
+        (Kind::String | Kind::Bytes, Value::Bytes(b)) => encoding::put_bytes(buf, b),
         (Kind::Enum(_), Value::EnumNumber(x)) => encoding::put_varint(buf, i64::from(*x) as u64),
         _ => {}
     }
@@ -791,6 +799,7 @@ fn single_fits(fd: &FieldDescriptor, v: &Value) -> bool {
         (Kind::Message(_), Value::Message(m)) => fd
             .message_type()
             .is_some_and(|t| t.full_name() == m.descriptor().full_name()),
+        (Kind::String, Value::Bytes(_)) => !fd.requires_utf8(),
         (k, v) => scalar_fits(k, v),
     }
 }

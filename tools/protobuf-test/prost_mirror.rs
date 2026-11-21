@@ -673,6 +673,10 @@ pub fn differential_dynamic(data: &[u8]) {
             // Generated code keeps extension fields undecoded (an error inside one surfaces
             // when it is read); the dynamic message decodes them eagerly.
             (Ok(t), Err(_)) if lazy(t) => {}
+            // A proto2 string that is not UTF-8: the descriptor does not ask for UTF-8 (proto2's
+            // legacy `utf8_validation = NONE`), so the dynamic message keeps the bytes; generated
+            // code checks proto2 strings unless `Config::proto2_unchecked_strings` is on.
+            (Err(e), Ok(_)) if e.kind() == only_protobuf::DecodeErrorKind::InvalidUtf8 => {}
             (t, d) => panic!("typed {t:?} vs dynamic {d:?}\ninput: {data:02x?}"),
         }
     }

@@ -7,7 +7,7 @@ use super::{
     tree::write_str,
     wkt::{self, base64_encode, f32_text, f64_text},
 };
-use crate::reflect::{Cardinality, DynamicMessage, FieldDescriptor, MapKey, Value};
+use crate::reflect::{Cardinality, DynamicMessage, FieldDescriptor, Kind, MapKey, Value};
 
 /// Writes `m`, with the special forms of the well-known types.
 pub(crate) fn message(m: &DynamicMessage, o: &PrintOptions, out: &mut String) -> JResult<()> {
@@ -124,6 +124,9 @@ fn single(fd: &FieldDescriptor, v: &Value, o: &PrintOptions, out: &mut String) -
         Value::F32(x) => out.push_str(&f32_text(*x)),
         Value::F64(x) => out.push_str(&f64_text(*x)),
         Value::String(s) => write_str(out, s),
+        // A `string` field without UTF-8 validation holding bytes that are not UTF-8: JSON text
+        // is Unicode, so they are written lossily (U+FFFD), as Java and C# do.
+        Value::Bytes(b) if fd.kind() == Kind::String => write_str(out, &String::from_utf8_lossy(b)),
         Value::Bytes(b) => write_str(out, &base64_encode(b)),
         Value::EnumNumber(n) => {
             let e = fd.enum_type();

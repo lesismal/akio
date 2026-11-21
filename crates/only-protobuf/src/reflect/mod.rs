@@ -772,8 +772,10 @@ impl FieldDescriptor {
         self.info().delimited
     }
 
-    /// Whether string values must be UTF-8 (only-protobuf always checks; this is what the
-    /// `.proto` file asks).
+    /// Whether string values must be UTF-8: false for `features.utf8_validation = NONE` and for
+    /// proto2 strings. Such a field accepts any bytes when decoding; a [`DynamicMessage`] holds
+    /// contents that are not UTF-8 as [`Value::Bytes`], and generated code
+    /// types it as [`ProtoString`](crate::ProtoString) (proto2: when asked for).
     pub fn requires_utf8(&self) -> bool {
         self.info().verify_utf8
     }

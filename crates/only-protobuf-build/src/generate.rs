@@ -869,9 +869,26 @@ impl Gen<'_> {
         })
     }
 
+    /// Whether the `string` values (or keys) of `f` are `ProtoString`s: `utf8_validation =
+    /// NONE` in an editions file, or proto2 with `Config::proto2_unchecked_strings`.
+    fn unchecked(&self, f: &Field) -> bool {
+        f.resolved.utf8_none || (self.cfg.proto2_unchecked_strings && !f.resolved.verify_utf8)
+    }
+
+    /// Whether `f` is a `string` field whose values are `ProtoString`s.
+    fn unchecked_string(&self, f: &Field) -> bool {
+        matches!(f.ty, TypeRef::Scalar(Scalar::String)) && self.unchecked(f)
+    }
+
     /// The Rust type and codec of a field's values, seen from module `from` (a delimited message
     /// field uses the group codec).
     fn field_value(&self, f: &Field, from: &[String]) -> (String, String) {
+        if self.unchecked_string(f) {
+            return (
+                "::only_protobuf::ProtoString".to_owned(),
+                "__pb::ProtoStringCodec".to_owned(),
+            );
+        }
         let (ty, codec) = self.value(&f.ty, from);
         if f.resolved.delimited {
             let codec = format!("__pb::GroupCodec<{ty}, {}>", f.number);
@@ -912,6 +929,12 @@ impl Gen<'_> {
                     }
                 };
                 let key = f.map_key.map(|k| {
+                    if k == Scalar::String && self.unchecked(f) {
+                        return (
+                            "__pb::ProtoStringCodec".to_owned(),
+                            "::only_protobuf::ProtoString".to_owned(),
+                        );
+                    }
                     let (t, c) = scalar_ty(k);
                     (format!("__pb::{c}"), t.to_owned())
                 });
@@ -1089,6 +1112,7 @@ impl Gen<'_> {
                 let d = match &p.f.default {
                     Some(d) => self.default_value(p, d, module, false),
                     None => match &p.f.ty {
+                        TypeRef::Scalar(Scalar::String) if self.unchecked(p.f) => "&[]".to_owned(),
                         TypeRef::Scalar(Scalar::String) => "\"\"".to_owned(),
                         TypeRef::Scalar(Scalar::Bytes) => "&[]".to_owned(),
                         _ => "::core::default::Default::default()".to_owned(),
@@ -1104,6 +1128,13 @@ impl Gen<'_> {
                     }
                 );
                 match &p.f.ty {
+                    TypeRef::Scalar(Scalar::String) if self.unchecked(p.f) => {
+                        let _ = writeln!(
+                            out,
+                            "    pub fn {}(&self) -> &[u8] {{\n        self.{}.as_ref().map_or({d}, |v| v.as_bytes())\n    }}",
+                            p.name, p.name
+                        );
+                    }
                     TypeRef::Scalar(Scalar::String) => {
                         let _ = writeln!(
                             out,
@@ -1220,7 +1251,7 @@ impl Gen<'_> {
                     camel(&o.name)
                 );
                 for p in members {
-                    let (ty, _) = self.value(&p.f.ty, &inner);
+                    let (ty, _) = self.field_value(p.f, &inner);
                     let ty = if matches!(p.shape, Shape::Oneof { boxed: true }) {
                         format!("::std::boxed::Box<{ty}>")
                     } else {
@@ -1608,6 +1639,17 @@ impl Gen<'_> {
     /// (`String`, `Vec<u8>`), otherwise a getter's (`&str`, `&[u8]`, a copy).
     fn default_value(&self, p: &Plan<'_>, d: &Constant, from: &[String], owned: bool) -> String {
         match (&p.f.ty, d) {
+            (TypeRef::Scalar(Scalar::String), Constant::Str(s)) if self.unchecked(p.f) => {
+                let items: Vec<String> = s.iter().map(u8::to_string).collect();
+                if owned {
+                    format!(
+                        "::only_protobuf::ProtoString::from(::std::vec![{}])",
+                        items.join(", ")
+                    )
+                } else {
+                    format!("&[{}]", items.join(", "))
+                }
+            }
             (TypeRef::Scalar(Scalar::String), Constant::Str(s)) => {
                 let lit = format!("{:?}", String::from_utf8_lossy(s));
                 if owned {

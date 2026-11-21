@@ -289,12 +289,22 @@ impl Builder<'_> {
 
     /// The `<Field>Entry` type of a map field.
     fn map_entry(&self, f: &Field, scope: &str) -> DResult<DescriptorProto> {
+        // protoc copies the map field's features (`utf8_validation`, ...) to the entry's key and
+        // value, so that they resolve as the map field does.
+        let features: Vec<OptionDef> = f
+            .options
+            .iter()
+            .filter(|o| o.name == "features" || o.name.starts_with("features."))
+            .cloned()
+            .collect();
+        let options = self.options(".google.protobuf.FieldOptions", &features, scope)?;
         let key = FieldDescriptorProto {
             name: Some("key".into()),
             number: Some(1),
             label: Some(fdp::Label::OPTIONAL),
             r#type: f.map_key.map(|k| fdp::Type(k.type_number())),
             json_name: Some("key".into()),
+            options: options.clone(),
             ..Default::default()
         };
         let (ty, type_name) = type_of(&f.ty, false);
@@ -305,6 +315,7 @@ impl Builder<'_> {
             r#type: Some(ty),
             type_name,
             json_name: Some("value".into()),
+            options,
             ..Default::default()
         };
         let mut opts = Vec::new();

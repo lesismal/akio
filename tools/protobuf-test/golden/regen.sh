@@ -23,7 +23,7 @@ done
 protoc --version
 # Descriptor sets (with imports, without source info) for tests/descriptors.rs.
 for p in proto/all_types.proto proto/proto2.proto proto/route_guide.proto proto/options.proto \
-    proto/ext.proto proto/ed2024.proto \
+    proto/ext.proto proto/ed2024.proto proto/utf8.proto proto/utf8_file.proto \
     conformance/proto/conformance/conformance.proto \
     conformance/proto/google/protobuf/test_messages_proto2.proto \
     conformance/proto/google/protobuf/test_messages_proto3.proto \

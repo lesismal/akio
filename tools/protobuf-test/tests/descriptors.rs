@@ -68,6 +68,11 @@ fn test_files() {
     compare("options.pb", &["proto/options.proto"]);
     compare("ext.pb", &["proto/ext.proto"]);
     compare("ed2024.pb", &["proto/ed2024.proto"]);
+    // Features of a map field are copied to its entry's key and value, as protoc does.
+    compare("utf8.pb", &["proto/utf8.proto"]);
+    compare("utf8_file.pb", &["proto/utf8_file.proto"]);
+    // Not `utf8_proto2.proto`: its string default is not UTF-8, which protoc writes as is and
+    // only-protobuf's `FieldDescriptorProto` (a `String`) cannot hold; it is written lossily.
 }
 
 #[test]

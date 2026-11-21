@@ -64,6 +64,7 @@ pub struct Config {
     compile_well_known_types: bool,
     descriptors: bool,
     descriptor_set_path: Option<PathBuf>,
+    proto2_unchecked_strings: bool,
 }
 
 impl Default for Config {
@@ -77,6 +78,7 @@ impl Default for Config {
             compile_well_known_types: false,
             descriptors: true,
             descriptor_set_path: None,
+            proto2_unchecked_strings: false,
         }
     }
 }
@@ -152,6 +154,17 @@ impl Config {
     #[must_use]
     pub fn descriptors(mut self, on: bool) -> Config {
         self.descriptors = on;
+        self
+    }
+
+    /// Generates proto2 `string` fields as `only_protobuf::ProtoString` (bytes, decoded without
+    /// a UTF-8 check), as proto2's legacy `utf8_validation = NONE` allows. Default off: proto2
+    /// strings stay `String` and decoding rejects what is not UTF-8. Editions fields with
+    /// `features.utf8_validation = NONE` are `ProtoString` either way; proto3 strings are always
+    /// checked.
+    #[must_use]
+    pub fn proto2_unchecked_strings(mut self, on: bool) -> Config {
+        self.proto2_unchecked_strings = on;
         self
     }
 

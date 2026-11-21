@@ -24,6 +24,18 @@ pub mod test {
     pub mod ed {
         only_protobuf::include_proto!("test.ed");
     }
+    /// `test.utf8` (`utf8_validation = NONE` on single fields, edition 2023).
+    pub mod utf8 {
+        only_protobuf::include_proto!("test.utf8");
+    }
+    /// `test.utf8f` (`utf8_validation = NONE` for a whole file).
+    pub mod utf8f {
+        only_protobuf::include_proto!("test.utf8f");
+    }
+    /// `test.utf8p2` (proto2 strings compiled with `proto2_unchecked_strings`).
+    pub mod utf8p2 {
+        only_protobuf::include_proto!("test.utf8p2");
+    }
     /// `test.btree` (BTreeMap maps, no unknown fields).
     pub mod btree {
         only_protobuf::include_proto!("test.btree");
