@@ -49,7 +49,11 @@ ADR-068（docs/adr/068-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
   299-300 帧），`fec.sh` 结果不变（5 % 丢包、无 NACK 时 ULPFEC 381/400、FlexFEC 391/400 帧）；真实丢包（`tests/netem.rs`，
   Docker 中 `tc netem loss 5%`，去掉 NACK）：300 帧完整收到无 FEC 251 帧，ULPFEC 300，FlexFEC 299，
   pacing 下 FlexFEC 300。
-- 基准（gpu51，同轮 A/B）：AB_RESULTS_ZH
+- 基准（gpu51，同轮 A/B）：与分支点 57696b6b 在 gpu51 上的同轮 A/B（`quiet.sh`，CPU 2-9，交替 7 轮，取中位数），两个回环
+  `Endpoint` 之间单向 VP8：默认配置（无估计器，因此无 pacer）0.999x（142.7 对 142.8 MB/s）；FEC 固定在
+  64/256 时 ULPFEC 0.993x（120.2 对 121.1 MB/s）、FlexFEC 0.994x（122.2 对 122.9 MB/s），差距来自
+  libwebrtc 的掩码：其每个 FEC 包覆盖的媒体包比原来的交织掩码多（最初每帧都重新计算策略的版本测得
+  0.988x / 0.981x）。
 
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 

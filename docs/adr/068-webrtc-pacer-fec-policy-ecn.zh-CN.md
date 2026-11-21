@@ -145,7 +145,9 @@ packet_masks, protection_factors}`、`FecEncoder::{set_protection, protection, p
 - 真实丢包（`crates/only-webrtc/tests/netem.rs`，需显式开启；Linux arm64 Docker，回环接口上
   `tc netem loss 5%`，两个 `Endpoint`，去掉 NACK）：300 帧中完整收到的帧数，无 FEC 251，ULPFEC 300，
   FlexFEC 299，打开估计器与 pacer 的 FlexFEC 300。
-- 基准：见 CHANGELOG（gpu51，同轮 A/B）。
+- 基准（gpu51，与分支点同轮 A/B，两个回环 `Endpoint` 单向 VP8）：默认配置 0.999x；FEC 固定在
+  64/256 时 ULPFEC 0.993x、FlexFEC 0.994x（libwebrtc 的掩码每个 FEC 包异或的包更多）。策略每秒以及
+  每次收到接收报告时重新计算，而不是每帧（每帧计算的代价为 1-2 %）。
 - 按节拍发送按设计会给大帧增加时延（1 Mbps 下一个关键帧需 150 ms），libwebrtc 相同。应用必须跟随
   `EgressBitrateEstimate`：写入远超估计值时，现在会在队列上限处丢帧，而不是冲垮路径。
 - 未完成：发送 ECT（only-webrtc 的输出需要把每个数据报的码点一直带到 `UdpBinding::send_to` 与监听器

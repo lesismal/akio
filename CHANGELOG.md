@@ -59,7 +59,13 @@ ADR-068 (docs/adr/068-webrtc-pacer-fec-policy-ecn.md):
   `fec.sh` unchanged (ULPFEC 381/400, FlexFEC 391/400 frames at 5 % loss without NACK); real
   loss (`tests/netem.rs`, `tc netem loss 5%` in Docker, NACK removed): 251 of 300 frames whole
   without FEC, 300 with ULPFEC, 299 with FlexFEC, 300 with FlexFEC paced.
-- Benchmarks (gpu51, same-run A/B): AB_RESULTS
+- Benchmarks (gpu51, same-run A/B): same-run A/B against the branch point 57696b6b on gpu51 (`quiet.sh`,
+  CPUs 2-9, 7 alternating rounds, medians), one-way VP8 between two loopback `Endpoint`s:
+  default configuration (no estimator, so no pacer) 0.999x (142.7 vs 142.8 MB/s); FEC held at
+  64/256, ULPFEC 0.993x (120.2 vs 121.1 MB/s) and FlexFEC 0.994x (122.2 vs 122.9 MB/s), the
+  difference being libwebrtc's masks, whose FEC packets cover more media packets than the
+  interleaved ones did (a first build that re-evaluated the policy per frame measured 0.988x /
+  0.981x).
 
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 

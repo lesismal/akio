@@ -176,7 +176,10 @@ FlexFEC is offered on simulcast lines; VoIP metrics carry R and MOS.
 - Real loss (`crates/only-webrtc/tests/netem.rs`, opt-in, Linux arm64 in Docker with `tc netem loss
   5%` on loopback, two `Endpoint`s, NACK removed): whole frames out of 300 without FEC 251,
   ULPFEC 300, FlexFEC 299, FlexFEC with the estimator and the pacer on 300.
-- Benchmarks: see the CHANGELOG entry (gpu51, same-run A/B).
+- Benchmarks (gpu51, same-run A/B against the branch point, two loopback `Endpoint`s, one-way
+  VP8): default configuration 0.999x; FEC held at 64/256, ULPFEC 0.993x and FlexFEC 0.994x
+  (libwebrtc's masks XOR more packets per FEC packet). The policy is re-evaluated once a second
+  and with each receiver report, not per frame (per frame cost 1-2 %).
 - A paced sender adds latency to large frames by design (a keyframe at 1 Mbps takes 150 ms);
   libwebrtc behaves the same. An application must follow `EgressBitrateEstimate`: writing far
   above it now loses frames at the queue bound instead of flooding the path.
