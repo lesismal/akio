@@ -147,7 +147,9 @@ chunk streams of a connection to 32 MiB.
   three target durations). It works with both formats and with LL-HLS. With LL-HLS parts,
   each rendition's media playlist ends with an `EXT-X-RENDITION-REPORT` (`LAST-MSN`,
   `LAST-PART`) for every other rendition of its multivariant playlists, so a player switching
-  renditions can issue its first blocking reload of the new one at once.
+  renditions can issue its first blocking reload of the new one at once. The report's URI
+  carries the playlist request's query string (its `_HLS_` directives taken out), so a token
+  reaches the other rendition as it reaches blocking reloads.
 - **I-frame playlists**: with `HlsConfig::iframe_playlist`, a stream with video also serves
   `GET /app/name/iframes.m3u8` (`EXT-X-I-FRAMES-ONLY`, for scrubbing and trick play): one
   entry per keyframe of the listed segments, an `EXT-X-BYTERANGE` into its segment that decodes
@@ -155,8 +157,11 @@ chunk streams of a connection to 32 MiB.
   holding the keyframe, which the muxer then cuts at every keyframe, behind the `EXT-X-MAP`).
   Segment, part and init responses answer a single `Range: bytes=…` with 206. Multivariant
   playlists list each variant's I-frame playlist with `EXT-X-I-FRAME-STREAM-INF` (`BANDWIDTH`
-  the peak bitrate of its I-frames). Not with AES-128, whose ciphertext cannot be read from the
-  middle of a segment; SAMPLE-AES works.
+  the peak bitrate of its I-frames). SAMPLE-AES keeps the byte ranges (its containers are
+  clear). With AES-128, whose CBC ciphertext players cannot decrypt from the middle of a
+  segment, each I-frame is a resource of its own instead, `iframe-<n>.ts` (`.m4s`): the same
+  bytes encrypted whole with its segment's key, the IV its media sequence number in the I-frame
+  playlist, listed without `EXT-X-BYTERANGE` after the segment's `EXT-X-KEY`.
 - **Encryption**: `HlsConfig::encryption` encrypts every segment and LL-HLS part with
   AES-128 (`#EXT-X-KEY:METHOD=AES-128`, CBC with PKCS #7), MPEG-TS and fMP4 alike:
 
@@ -349,6 +354,7 @@ installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 | hub publisher, AES-128 with key rotation | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`, MPEG-TS and fMP4, plain and LL-HLS | H.264 + AAC |
 | hub publisher, SAMPLE-AES (MPEG-TS) and `cbcs` (fMP4) | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`: every frame equals the source's, plain and LL-HLS | H.264 + AAC; H.265 + AAC (`cbcs`) |
 | hub publishers (2 renditions), I-frame playlists | every `EXT-X-BYTERANGE` fetched with `Range` and decoded by `ffmpeg` to exactly one source frame; `ffprobe` of the multivariant playlist | H.264 + AAC, H.265 + AAC; MPEG-TS and fMP4 LL-HLS |
+| hub publishers (2 renditions), AES-128 I-frame playlists with key rotation | every `iframe-<n>` decrypted and decoded by `ffmpeg` to one source frame; `ffmpeg` plays the I-frame playlist; hls.js (multivariant and I-frame playlists) and Shaka Player (trick play, fMP4) in headless Chrome (`tools/interop/media/hls-iframes.sh`) | H.264 + AAC, H.265 + AAC; MPEG-TS and fMP4 |
 | ffmpeg → mediamtx (restarted twice, `--ignored`) | RTMP and RTSP client pulls and pushes reconnecting | H.264 + AAC |
 | hub publisher, `Recorder` | `ffprobe` / `ffmpeg -i` of each fMP4, FLV and MPEG-TS file | H.264 + AAC, H.265 + AAC |
 
@@ -361,6 +367,6 @@ handshake, `srt_rendezvous`), the H.264 slice header parser with both sample enc
 
 ## Not supported
 
-SAMPLE-AES for codecs other than H.264, H.265 (fMP4) and AAC, I-frame playlists with AES-128,
+SAMPLE-AES for codecs other than H.264, H.265 (fMP4) and AAC,
 VP8 / VP9 in MPEG-TS (unspecified), RTMPS client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP
 multitrack, transcoding.

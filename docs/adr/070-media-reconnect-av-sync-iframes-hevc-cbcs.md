@@ -162,3 +162,7 @@ All additions are additive (new config fields default to the old behaviour, but
   with AES-128; query strings on rendition report URIs (the media playlist's query is not
   known where playlists are built); RTCP sync in the RTSP server's RECORD sessions (the
   recorder supports it, the server does not turn it on); re-resolving a host name on reconnect.
+
+Note (2026-11-22): I-frame playlists with AES-128, RTCP sync in the RTSP server's RECORD
+sessions and query strings on rendition report URIs are done in
+[ADR-075](075-media-aes-iframes-record-sync-report-queries.md).

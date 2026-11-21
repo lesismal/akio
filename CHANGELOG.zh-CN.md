@@ -10,6 +10,30 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：AES-128 的 I 帧播放列表、RTSP RECORD 会话的 RTCP 同步、rendition report 的查询串（only-media）
+
+ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）：
+
+- AES-128 下的 HLS I 帧播放列表（此前 `HlsConfig::iframe_playlist` 在此被忽略）：每个 I 帧是
+  独立资源 `/<path>/iframe-<n>.ts`（`.m4s`），即 ADR-070 的范围所指字节，用其分片的密钥整体
+  加密，IV 为它在 I 帧播放列表中的媒体序列号；列表中不带 `EXT-X-BYTERANGE`，位于其分片的
+  `EXT-X-KEY` 之后。随分片保存并计入 `max_bytes`。播放器无法解密 AES-128 分片中间的字节范围
+  （分片中间没有 PKCS #7 填充）。明文 I 帧播放列表不再以 `EXT-X-KEY:METHOD=NONE` 开头。
+- `RtspConfig::rtcp_sync`（新增，默认开启）：RECORD 会话按推流端的 RTCP 发送者报告对齐轨道，
+  与客户端拉流相同（ADR-070）：交织 RTCP 通道、复用在 RTP 通道上的 RTCP、UDP 的 RTP 与 RTCP
+  端口。`false` 保持之前按到达计时。
+- 行为变更，hub：时间早于订阅者收到的第一个包的音频（任何非视频包）在音频达到该时间之前被
+  丢弃，而不再交给会把它钳成同一时间戳的 sink（同步后的流与 AAC 预滚可能早于 GOP 的关键帧；
+  ffmpeg 经 RTSP 播放时报告 DTS 非单调）。
+- LL-HLS 的 `EXT-X-RENDITION-REPORT` URI 带上请求的查询串（去掉 `_HLS_` 指令），令牌因此能
+  到达另一 rendition 的阻塞重载。
+- 测试：AES-128 I 帧解密后等于未加密的范围（两种格式、分段、密钥轮换）；ffmpeg 把每个 AES-128
+  I 帧解码为一帧源画面并能播放 I 帧播放列表；经 TCP、RTP 复用 RTCP 与 UDP 的 RECORD 会话收到
+  偏斜的发送者报告（500 ms，早到与迟到；60 s 被忽略；关闭同步）。
+  `tools/interop/media/hls-iframes.sh`：无头 Chrome 中的 hls.js 与 Shaka Player（fMP4 上的
+  trick play）。`tests/client_bench.rs` 新增基准 `rtsp-record`。
+- AB_PLACEHOLDER
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：

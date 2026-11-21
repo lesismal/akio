@@ -20,7 +20,11 @@
 //! with video keeps every packet from the last video keyframe on (audio included), an
 //! audio-only stream its last second, bounded by [`HubConfig::gop_cache_bytes`]. Subscribe
 //! delivers the tracks and the cache under the stream's mutex, so the subscriber's packets
-//! continue it with nothing lost or out of order.
+//! continue it with nothing lost or out of order. Audio (any non-video packet) timed before the
+//! first packet a subscriber hears since its tracks is left out until audio reaches that time:
+//! a stream whose tracks are lined up by RTCP sender reports, or an encoder's priming audio,
+//! can lead the keyframe a GOP starts with, and sinks starting their clock at their first
+//! packet would give such audio one repeated timestamp.
 //!
 //! A subscription with [`SubscribeOptions::wait`] may exist before its publisher (a player
 //! that connects first) and survives the publisher leaving for up to that long, hearing
@@ -316,6 +320,11 @@ struct Sub {
     closed: Arc<AtomicBool>,
     sink: Box<dyn Sink>,
     wait_key: bool,
+    /// The decode time of the first packet it heard since its tracks: audio (and data) timed
+    /// before it is left out, as a sink starting its clock there would clamp them to one time
+    /// (audio lined up by sender reports, or an encoder's priming, can lead the keyframe a GOP
+    /// starts with). Only until the first such packet at or after it ([`Time::MIN`] then).
+    floor: Option<Time>,
     started: bool,
     wait: Option<Duration>,
     start_wait: Option<Duration>,
@@ -324,6 +333,27 @@ struct Sub {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl Sub {
+    /// Whether `pkt` goes to the sink: anything but video timed before the first packet it
+    /// heard is left out ([`Sub::floor`]).
+    #[inline]
+    fn admits(&mut self, pkt: &Packet, video: bool) -> bool {
+        match self.floor {
+            Some(Time::MIN) => true,
+            None => {
+                self.floor = Some(pkt.dts);
+                true
+            }
+            Some(_) if video => true,
+            Some(f) if pkt.dts >= f => {
+                self.floor = Some(Time::MIN);
+                true
+            }
+            Some(_) => false,
+        }
+    }
 }
 
 impl State {
@@ -691,6 +721,7 @@ impl Hub {
                 closed: closed.clone(),
                 sink: Box::new(NullSink),
                 wait_key: false,
+                floor: None,
                 started: false,
                 wait: opts.wait,
                 start_wait: opts.start_wait,
@@ -704,7 +735,10 @@ impl Hub {
                 s.wait_key = g.has_video;
                 if !opts.no_gop_cache && (g.gop_valid || !g.has_video) {
                     for p in &g.gop {
-                        sink.on_packet(p);
+                        let video = g.video.get(p.track).copied().unwrap_or(false);
+                        if s.admits(p, video) {
+                            sink.on_packet(p);
+                        }
                     }
                     s.wait_key = false;
                 }
@@ -802,6 +836,7 @@ fn go_live(st: &Arc<Stream>, g: &mut State, tracks: Tracks) {
         s.timer_gen += 1; // cancels a pending wait timeout
         s.started = true;
         s.wait_key = has_video;
+        s.floor = None;
         s.sink.on_tracks(&tracks);
     }
 }
@@ -872,7 +907,9 @@ impl Publisher {
                 }
                 s.wait_key = false;
             }
-            s.sink.on_packet(&pkt);
+            if s.admits(&pkt, video) {
+                s.sink.on_packet(&pkt);
+            }
         }
         self.st.release(g);
     }
@@ -898,6 +935,7 @@ impl Publisher {
                 continue;
             }
             s.wait_key = has_video;
+            s.floor = None;
             s.sink.on_tracks(&tracks);
         }
         self.st.release(g);
@@ -1294,6 +1332,69 @@ mod tests {
         drop(p);
         assert!(hub.stream_info("live/a").is_none());
         assert!(hub.streams().is_empty());
+    }
+
+    /// Audio timed before the first packet a subscriber hears (the GOP's keyframe, or the
+    /// first live packet) is left out, until audio reaches that time; video always goes; a new
+    /// publish starts over; a later jump back in time is delivered.
+    #[test]
+    fn audio_before_the_start_is_left_out() {
+        let hub = Hub::default();
+        let p = hub
+            .publish("live/a", av_tracks(), PeerInfo::default())
+            .unwrap();
+        p.write(pkt(0, 100, true));
+        p.write(pkt(1, 80, true)); // audio leading the keyframe (priming, sender reports)
+        p.write(pkt(1, 100, true));
+        p.write(pkt(0, 140, false));
+        let (r, log) = rec();
+        let _sub = hub
+            .subscribe("live/a", r, SubscribeOptions::default())
+            .unwrap();
+        p.write(pkt(1, 120, true));
+        p.write(pkt(1, 5, true)); // the floor is past once audio reached it
+        assert_eq!(
+            *lock(&log),
+            vec![
+                "tracks 2",
+                "pkt 0 100 true",
+                "pkt 1 100 true",
+                "pkt 0 140 false",
+                "pkt 1 120 true",
+                "pkt 1 5 true"
+            ]
+        );
+        // Live from the first packet: a waiting subscriber's clock starts at the keyframe.
+        drop(p);
+        let (r, log) = rec();
+        let mut opts = SubscribeOptions::default();
+        opts.wait = Some(Duration::from_secs(5));
+        let _w = hub.subscribe("live/b", r, opts).unwrap();
+        let p = hub
+            .publish("live/b", av_tracks(), PeerInfo::default())
+            .unwrap();
+        p.write(pkt(0, 1000, true));
+        p.write(pkt(1, 990, true));
+        p.write(pkt(0, 1040, false));
+        p.write(pkt(1, 1010, true));
+        drop(p);
+        let p = hub
+            .publish("live/b", av_tracks(), PeerInfo::default())
+            .unwrap();
+        p.write(pkt(1, 0, true)); // a new publish: a new start
+        p.write(pkt(0, 10, true));
+        assert_eq!(
+            *lock(&log),
+            vec![
+                "tracks 2",
+                "pkt 0 1000 true",
+                "pkt 0 1040 false",
+                "pkt 1 1010 true",
+                "tracks 2",
+                "pkt 1 0 true",
+                "pkt 0 10 true"
+            ]
+        );
     }
 
     #[test]

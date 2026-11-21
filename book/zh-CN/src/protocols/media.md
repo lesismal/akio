@@ -120,12 +120,15 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
   （尚未发布的 rendition 在三个目标时长后被略去）。两种分段格式与 LL-HLS 都适用。启用 LL-HLS 分片时，每个
   rendition 的媒体播放列表末尾会为其所在多码率播放列表中的其余每个 rendition 写一行
   `EXT-X-RENDITION-REPORT`（`LAST-MSN`、`LAST-PART`），切换码率的播放器因此能立即对新码率发出第一次阻塞式刷新。
+  该 URI 带上播放列表请求的 query string（去掉其中的 `_HLS_` 指令），令牌因此能像到达阻塞式刷新那样到达另一 rendition。
 - **I 帧播放列表**：设置 `HlsConfig::iframe_playlist` 后，带视频的流还提供 `GET /app/name/iframes.m3u8`
   （`EXT-X-I-FRAMES-ONLY`，用于拖动预览与快进快退）：所列分段中每个关键帧一项，一个指向其分段、可单独解码的
   `EXT-X-BYTERANGE`（MPEG-TS：PAT、PMT 与关键帧的 PES；fMP4：只含该关键帧的 `moof` + `mdat` 分片，此时 muxer
   在每个关键帧处切分片，并写在 `EXT-X-MAP` 之后）。分段、分片与 init 的响应以 206 应答单个 `Range: bytes=…`。
   多码率播放列表以 `EXT-X-I-FRAME-STREAM-INF` 列出每个变体的 I 帧播放列表（`BANDWIDTH` 为其 I 帧的峰值码率）。
-  AES-128 下不提供（其密文无法从分段中间读取）；SAMPLE-AES 可用。
+  SAMPLE-AES 保留字节范围（其容器是明文）。AES-128 的 CBC 密文无法被播放器从分段中间解密，因此每个 I 帧改为独立
+  资源 `iframe-<n>.ts`（`.m4s`）：相同字节用其分段的密钥整体加密，IV 为它在 I 帧播放列表中的媒体序列号，列表中
+  不带 `EXT-X-BYTERANGE`，位于分段的 `EXT-X-KEY` 之后。
 - **加密**：`HlsConfig::encryption` 用 AES-128（`#EXT-X-KEY:METHOD=AES-128`，CBC 加 PKCS #7）加密每个
   分段和 LL-HLS 分片，MPEG-TS 与 fMP4 相同：
 
@@ -295,6 +298,7 @@ ffprobe / ffmpeg 作为播放端：
 | hub 推流者，AES-128 加密并轮换密钥 | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`，MPEG-TS 与 fMP4，普通与 LL-HLS | H.264 + AAC |
 | hub 推流者，SAMPLE-AES（MPEG-TS）与 `cbcs`（fMP4） | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`：每一帧都与源相同，普通与 LL-HLS | H.264 + AAC；H.265 + AAC（`cbcs`） |
 | hub 推流者（2 个 rendition），I 帧播放列表 | 每个 `EXT-X-BYTERANGE` 以 `Range` 获取后由 `ffmpeg` 解码为恰好一帧源画面；对多码率播放列表执行 `ffprobe` | H.264 + AAC、H.265 + AAC；MPEG-TS 与 fMP4 LL-HLS |
+| hub 推流者（2 个 rendition），AES-128 I 帧播放列表并轮换密钥 | 每个 `iframe-<n>` 解密后由 `ffmpeg` 解码为一帧源画面；`ffmpeg` 播放 I 帧播放列表；无头 Chrome 中的 hls.js（多码率与 I 帧播放列表）与 Shaka Player（trick play，fMP4）（`tools/interop/media/hls-iframes.sh`） | H.264 + AAC、H.265 + AAC；MPEG-TS 与 fMP4 |
 | ffmpeg → mediamtx（重启两次，`--ignored`） | RTMP 与 RTSP 客户端的拉流与推流自动重连 | H.264 + AAC |
 | hub 推流者，`Recorder` | 对每个 fMP4、FLV 与 MPEG-TS 文件执行 `ffprobe` / `ffmpeg -i` | H.264 + AAC、H.265 + AAC |
 
@@ -305,5 +309,5 @@ FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP
 
 ## 不支持
 
-H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES、AES-128 下的 I 帧播放列表、
+H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES、
 MPEG-TS 中的 VP8 / VP9（无规范）、RTMPS 客户端、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、转码。

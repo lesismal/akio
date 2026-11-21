@@ -1,13 +1,14 @@
-//! Ingest benchmarks of the RTMP and RTSP clients' pulls (ignored by default; run in release
-//! with the `fuzzing` feature, whose entry points drive a client session over a detached
-//! connection):
+//! Ingest benchmarks of the RTMP and RTSP clients' pulls and of the RTSP server's RECORD
+//! sessions (ignored by default; run in release with the `fuzzing` feature, whose entry points
+//! drive a session over a detached connection):
 //!
 //! ```text
 //! cargo test -p only-media --release --features fuzzing --test client_bench -- --ignored --nocapture
 //! ```
 //!
 //! Each prints `BENCH <name> <ns>`: the best of seven runs, in nanoseconds per media message
-//! (RTMP) or RTP packet (RTSP), handshake and commands included (amortized over the sample
+//! (RTMP) or RTP packet (RTSP; RTCP sender reports of a recording not counted), handshake and
+//! commands included (amortized over the sample
 //! looped 40 times). Only public API, so the file runs on older trees too, for same-run A/B
 //! comparisons between commits.
 #![cfg(feature = "fuzzing")]
@@ -160,6 +161,68 @@ fn rtsp_input(tracks: &Tracks, pkts: &[Packet]) -> (Vec<u8>, usize) {
     (w, n)
 }
 
+/// What an RTSP publisher sends the server over TCP: ANNOUNCE, two SETUPs and RECORD, then
+/// the sample's RTP packets interleaved, `ROUNDS` times, with a sender report per track and
+/// round on its RTCP channel; and the number of RTP packets.
+fn rtsp_record_input(tracks: &Tracks, pkts: &[Packet]) -> (Vec<u8>, usize) {
+    let sdp = describe_sdp(tracks).to_string();
+    let url = "rtsp://127.0.0.1:8554/live/s";
+    let requests = [
+        format!(
+            "ANNOUNCE {url} RTSP/1.0\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+            sdp.len()
+        ),
+        format!(
+            "SETUP {url}/trackID=0 RTSP/1.0\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;mode=record\r\n\r\n"
+        ),
+        format!(
+            "SETUP {url}/trackID=1 RTSP/1.0\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3;mode=record\r\n\r\n"
+        ),
+        format!("RECORD {url} RTSP/1.0\r\nSession: x\r\n\r\n"),
+    ];
+    // Reads of up to 255 bytes, as for the client.
+    let mut w = vec![255u8];
+    for (i, r) in requests.iter().enumerate() {
+        let (line, rest) = r.split_once("\r\n").unwrap();
+        w.extend_from_slice(format!("{line}\r\nCSeq: {}\r\n{rest}", i + 1).as_bytes());
+    }
+    let mut packers: Vec<Packetizer> = tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Packetizer::new(t, 96 + i as u8))
+        .collect();
+    let span = pkts.iter().map(|p| p.dts).max().unwrap_or(0) + 40 * MILLISECOND;
+    let mut out = Vec::new();
+    let mut n = 0;
+    for r in 0..ROUNDS {
+        for (i, pk) in packers.iter().enumerate() {
+            let t = pkts.iter().find(|p| p.track == i).map_or(0, |p| p.pts) + r * span;
+            let ntp = (3_900_000_000u64 + (t / 1_000_000_000) as u64) << 32;
+            interleaved(
+                2 * i as u8 + 1,
+                &pk.sender_report(ntp, pk.timestamp(t)),
+                &mut w,
+            );
+        }
+        for p in pkts {
+            let q = Packet::new(
+                p.track,
+                p.dts + r * span,
+                p.pts + r * span,
+                p.keyframe,
+                p.data.clone(),
+            );
+            out.clear();
+            packers[p.track].packetize(&q, &mut out);
+            for rtp in &out {
+                interleaved(2 * p.track as u8, rtp, &mut w);
+                n += 1;
+            }
+        }
+    }
+    (w, n)
+}
+
 fn best_of_seven(n: usize, f: impl Fn()) -> f64 {
     let v: Vec<f64> = (0..7)
         .map(|_| {
@@ -184,4 +247,7 @@ fn bench_client_ingest() {
     let (rtsp, n) = rtsp_input(&tracks, &pkts);
     let ns = best_of_seven(n, || only_media::fuzzing::rtsp::rtsp_client(&rtsp));
     println!("BENCH rtsp-pull {ns:.1}");
+    let (rec, n) = rtsp_record_input(&tracks, &pkts);
+    let ns = best_of_seven(n, || only_media::fuzzing::rtsp::rtsp_server(&rec));
+    println!("BENCH rtsp-record {ns:.1}");
 }
