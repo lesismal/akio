@@ -639,10 +639,10 @@ struct Building {
     part_offset: usize,
     part_independent: bool,
     last: Time,
-    /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed: the
-    /// building segment is moved in and out of the state for every packet).
+    /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed, to keep
+    /// the state the packet path touches small).
     enc: Option<Box<Encrypting>>,
-    /// Its keyframes so far (I-frame playlists; boxed, as `enc`, to keep this small).
+    /// Its keyframes so far (I-frame playlists; boxed, as `enc`).
     iframes: Option<Box<BuildIFrames>>,
 }
 
@@ -2140,13 +2140,14 @@ impl Sink for HlsSink {
                     iframes: None,
                 });
             }
-            let Some(mut b) = g.building.take() else {
+            // Borrowed in place (moving it out and back cost two copies per packet).
+            let Some(b) = g.building.as_mut() else {
                 return;
             };
             if let Some(pt) = part_target {
                 let part_len = b.data.len() - b.part_offset + m.pending();
                 if !first && part_len > 0 && dts - b.part_start >= pt {
-                    Self::close_part(&self.st, &mut b, dts, Some(&mut *m));
+                    Self::close_part(&self.st, b, dts, Some(&mut *m));
                     b.part_independent = video && pkt.keyframe;
                     woke = true;
                 } else if part_len == 0 && video && pkt.keyframe {
@@ -2175,13 +2176,12 @@ impl Sink for HlsSink {
                 }
             }
             if self.iframes && video && pkt.keyframe {
-                Self::keyframe(&mut b, m, at, dts);
+                Self::keyframe(b, m, at, dts);
             }
             b.last = b.last.max(dts);
             if let Some(e) = &mut b.enc {
                 e.step(&b.data);
             }
-            g.building = Some(b);
             if woke {
                 self.st.wake(&mut g)
             } else {

@@ -108,6 +108,7 @@ fn cbcs_range(aes: &Aes, iv: &[u8; 16], data: &mut [u8], pattern: bool) {
 
 impl TrackEnc {
     /// Keeps the parameter set `nal` (H.264 or H.265) for the slice headers that follow.
+    #[inline]
     fn param_set(&mut self, nal: &[u8]) {
         fn keep<T: PartialEq>(v: &mut Vec<T>, x: Option<T>) {
             if let Some(x) = x {
@@ -137,6 +138,7 @@ impl TrackEnc {
 
     /// The slice header length of `nal` (NAL header included), `None` for NAL units that are
     /// not slices or do not parse.
+    #[inline]
     fn header_len(&self, nal: &[u8]) -> Option<usize> {
         if self.hevc {
             h265::slice_header_len(nal, &self.hsps, &self.hpps)
