@@ -2,8 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
-The scripts behind [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md): `only` against tokio, hyper
-and fib (the Go library `only` is the counterpart of) with the same handlers, pinned to separate
+The scripts behind [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md): `only` against tokio, hyper,
+monoio and fib (the Go library `only` is the counterpart of) with the same handlers, pinned to separate
 CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf).
 
 | Script | What it runs |
@@ -23,7 +23,10 @@ CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf
 
 The servers are `crates/only-http/examples/http-bench.rs` and `crates/only/examples/bench-server.rs`
 for `only` (`only-epoll`, `only-uring`), and the out-of-tree references in `tools/bench-ref/`
-(`tokio-ref`, `hyper-ref`, `fib-ref`).
+(`tokio-ref`, `hyper-ref`, `monoio-ref`, `fib-ref`). `monoio-ref` (monoio 0.2, thread-per-core: one
+runtime and one `SO_REUSEPORT` listener per thread) serves TCP echo and HTTP/1.1 (`/plaintext`,
+`/json`, pipelining; httparse, no HTTP/2); it runs as `monoio-uring` (its io_uring driver) and
+`monoio-epoll` (its legacy epoll driver).
 
 ## Load generators
 
@@ -56,6 +59,7 @@ fib-ref.
 export CARGO_TARGET_DIR=/path/to/target
 cargo build --release -p only-http --example http-bench
 (cd tools/bench-ref/hyper-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
+(cd tools/bench-ref/monoio-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 cp -r tools/bench-ref/fib-ref /tmp/fibref && cd /tmp/fibref &&
   go mod edit -replace github.com/lesismal/fib=/path/to/fib && go build -o $CARGO_TARGET_DIR/fib-ref . && cd -
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \

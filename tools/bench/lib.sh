@@ -24,13 +24,15 @@ BENCH_SERVER=$T/release/examples/bench-server
 HTTP_BENCH=$T/release/examples/http-bench
 TOKIO_REF=$T/ref/release/tokio-ref
 HYPER_REF=$T/ref/release/hyper-ref
+MONOIO_REF=$T/ref/release/monoio-ref
 FIB_REF=$T/fib-ref
 PORT=${PORT:-7400} # below the ephemeral range (docker.sh sets it to 10000-65535)
 SPID=
 
 # server_cmd <kind> <proto> <addr>: the command line of one server. Protocols: tcp, tls, udp
 # (echo), http (HTTP/1.1 + h2c: /plaintext, /json), https (the same over TLS 1.3, ALPN h2 and
-# http/1.1), ws (echo on /ws). Empty when unsupported.
+# http/1.1), ws (echo on /ws). Empty when unsupported. monoio-uring / monoio-epoll serve http
+# without h2c (see has_h2).
 server_cmd() {
   local kind=$1 proto=$2 addr=$3
   case $kind in
@@ -49,6 +51,8 @@ server_cmd() {
     only-uring:https) echo "$HTTP_BENCH $addr $THREADS uring tls" ;;
     tokio:tcp | tokio:tls | tokio:udp | tokio:ws) [ -x "$TOKIO_REF" ] && echo "$TOKIO_REF $proto $addr $THREADS" ;;
     hyper:http) [ -x "$HYPER_REF" ] && echo "$HYPER_REF $addr $THREADS" ;;
+    monoio-uring:tcp | monoio-uring:http) [ -x "$MONOIO_REF" ] && echo "$MONOIO_REF $proto $addr $THREADS uring" ;;
+    monoio-epoll:tcp | monoio-epoll:http) [ -x "$MONOIO_REF" ] && echo "$MONOIO_REF $proto $addr $THREADS legacy" ;;
     fib:tcp | fib:tls | fib:udp | fib:http | fib:https | fib:ws) [ -x "$FIB_REF" ] && echo "$FIB_REF $proto $addr" ;;
   esac
   return 0
@@ -57,11 +61,14 @@ server_cmd() {
 # kinds_for <proto>: the servers (of $KINDS) that can serve it.
 kinds_for() {
   local k out=
-  for k in ${KINDS:-only-epoll only-uring tokio hyper fib}; do
+  for k in ${KINDS:-only-epoll only-uring tokio hyper monoio-uring monoio-epoll fib}; do
     [ -n "$(server_cmd "$k" "$1" x)" ] && out="$out $k"
   done
   echo "$out"
 }
+
+# has_h2 <kind>: whether its http server also speaks h2c (monoio-ref is HTTP/1.1 only).
+has_h2() { case $1 in monoio-*) return 1 ;; esac; return 0; }
 
 wait_port() { # <port>: until something accepts on it (5 s at most)
   local i

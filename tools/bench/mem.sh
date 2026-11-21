@@ -9,14 +9,16 @@
 # keep-alive GET, ws = upgrade + one 64-byte echo, tls = handshake + one 64-byte echo.
 # Connections are spread over 127.0.0.1-4 so one client can hold more than 64k.
 #
-# The tokio reference reads into a per-connection buffer; it gets TOKIO_REF_BUF=4096 here (the
-# 64 KiB of the throughput runs would mostly be untouched memory anyway).
+# The tokio and monoio references read into a per-connection buffer; they get TOKIO_REF_BUF /
+# MONOIO_REF_BUF=4096 here (the 64 KiB of the throughput runs would mostly be untouched memory
+# anyway).
 set -u
 . "$(dirname "$0")/lib.sh"
 OUT=${OUT:-/tmp/bench-mem.tsv}
 QUIET=0
 SPECS=${*:-tcp:tcp:10000 tcp:tcp:100000 tcp:echo:10000 http:http:10000 ws:ws:10000 tls:tls:10000}
 export TOKIO_REF_BUF=${TOKIO_REF_BUF:-4096}
+export MONOIO_REF_BUF=${MONOIO_REF_BUF:-4096}
 ADDRS() { echo "127.0.0.1:$PORT,127.0.0.2:$PORT,127.0.0.3:$PORT,127.0.0.4:$PORT"; }
 
 for r in $(seq "${MEM_RUNS:-1}"); do

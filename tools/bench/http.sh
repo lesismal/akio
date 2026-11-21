@@ -62,8 +62,10 @@ for r in $(seq "$RUNS"); do
     want plaintext && record h1 "plaintext x $HCONNS" "$kind" "$r" "$(wrk_rps /plaintext)"
     want pipelined && record h1 "plaintext pipelined 16 x $HCONNS" "$kind" "$r" "$(wrk_rps /plaintext -s "$LUA")"
     want json && record h1 "json x $HCONNS" "$kind" "$r" "$(wrk_rps /json)"
-    want h2 && record h2 "h2c 64 conns x 16 streams" "$kind" "$r" "$(h2_rps 64 16)"
-    want h2many && record h2 "h2c 16 conns x 128 streams" "$kind" "$r" "$(h2_rps 16 128)"
+    if has_h2 "$kind"; then
+      want h2 && record h2 "h2c 64 conns x 16 streams" "$kind" "$r" "$(h2_rps 64 16)"
+      want h2many && record h2 "h2c 16 conns x 128 streams" "$kind" "$r" "$(h2_rps 16 128)"
+    fi
     stop_server
   done
   if want h2tls; then
