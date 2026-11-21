@@ -1,5 +1,5 @@
-//! Optimal parsing for the highest levels: every position's candidate matches from the hash
-//! chains, then a shortest path through the block priced with the bit costs of the literals and
+//! Optimal parsing for the highest levels: every position's candidate matches from binary
+//! trees of suffixes (libzstd's `bt` match finder), then a shortest path through the block priced with the bit costs of the literals and
 //! of the literal length, match length and offset codes (estimated at first, then taken from
 //! the previous pass), with the repeat offsets followed along each path, as libzstd's `btopt`
 //! and `btultra` do.
@@ -16,12 +16,49 @@ const ENUM_LENGTHS: usize = 64;
 /// Candidates kept per position (the longest ones).
 const MAX_CANDIDATES: usize = 16;
 
+/// Suffixes are compared this far in the binary trees; equal beyond it counts as the end of
+/// the data (the subtrees below are dropped), which bounds long runs.
+const BT_CAP: usize = 4096;
+
+/// Symbol counts of a parse.
+pub(super) struct Stats {
+    lit: [u32; 256],
+    ll: [u32; 36],
+    ml: [u32; 53],
+    of: [u32; 32],
+}
+
+impl Stats {
+    fn from_parse(lits: &[u8], seqs: &[Seq]) -> Box<Stats> {
+        let mut st = Box::new(Stats {
+            lit: [0; 256],
+            ll: [0; 36],
+            ml: [0; 53],
+            of: [0; 32],
+        });
+        for &b in lits {
+            st.lit[usize::from(b)] += 1;
+        }
+        for s in seqs {
+            st.ll[usize::from(ll_code(s.ll))] += 1;
+            st.ml[usize::from(ml_code(s.ml))] += 1;
+            st.of[highbit(s.off) as usize] += 1;
+        }
+        st
+    }
+}
+
 /// Bit costs of the symbols of a block.
 struct Costs {
     lit: [f32; 256],
     ll: [f32; 36],
     ml: [f32; 53],
     of: [f32; 32],
+    /// Match length prices up to [`ENUM_LENGTHS`], with the literal length code of no
+    /// literals (see [`Costs::seq`]).
+    mlp: [f32; ENUM_LENGTHS + 1],
+    /// What one more literal costs in literal length code after `i` (for `i` below 64).
+    lld: [f32; 64],
 }
 
 /// Costs from counts: `log2(total / count)`, a little more than the rarest for unseen ones.
@@ -55,44 +92,61 @@ impl Costs {
         for &b in block {
             h[usize::from(b)] += 1;
         }
-        let mut c = Costs {
-            lit: [0.0; 256],
-            ll: [0.0; 36],
-            ml: [0.0; 53],
-            of: [0.0; 32],
-        };
+        let mut c = Costs::empty();
         from_counts(&h, &mut c.lit);
         from_norm(&LL_DEFAULT_NORM, LL_DEFAULT_LOG, &mut c.ll);
         from_norm(&ML_DEFAULT_NORM, ML_DEFAULT_LOG, &mut c.ml);
         from_norm(&OF_DEFAULT_NORM, OF_DEFAULT_LOG, &mut c.of);
+        c.finish();
         c
     }
 
-    /// The statistics of a parse.
-    fn from_parse(lits: &[u8], seqs: &[Seq]) -> Costs {
-        let mut lh = [0u32; 256];
-        for &b in lits {
-            lh[usize::from(b)] += 1;
-        }
-        let (mut llh, mut mlh, mut ofh) = ([0u32; 36], [0u32; 53], [0u32; 32]);
-        for s in seqs {
-            llh[usize::from(ll_code(s.ll))] += 1;
-            mlh[usize::from(ml_code(s.ml))] += 1;
-            ofh[highbit(s.off) as usize] += 1;
-        }
-        let mut c = Costs {
+    fn empty() -> Costs {
+        Costs {
             lit: [0.0; 256],
             ll: [0.0; 36],
             ml: [0.0; 53],
             of: [0.0; 32],
-        };
-        from_counts(&lh, &mut c.lit);
+            mlp: [0.0; ENUM_LENGTHS + 1],
+            lld: [0.0; 64],
+        }
+    }
+
+    /// Fills the price tables from the symbol costs.
+    fn finish(&mut self) {
+        let ll0 = self.lit_len(0);
+        for len in MIN_MATCH.min(3)..=ENUM_LENGTHS {
+            self.mlp[len] = ll0 + self.ml_cost(len);
+        }
+        for i in 0..64 {
+            self.lld[i] = self.lit_len(i + 1) - self.lit_len(i);
+        }
+    }
+
+    #[inline]
+    fn ml_cost(&self, len: usize) -> f32 {
+        let mlc = usize::from(ml_code(len as u32));
+        self.ml[mlc] + f32::from(ML_BITS[mlc])
+    }
+
+    /// The cost of Offset_Value `off`.
+    #[inline]
+    fn off(&self, off: u32) -> f32 {
+        let ofc = highbit(off);
+        self.of[ofc as usize] + ofc as f32
+    }
+
+    /// Costs from the statistics of a parse.
+    fn from_stats(st: &Stats) -> Costs {
+        let mut c = Costs::empty();
+        from_counts(&st.lit, &mut c.lit);
         for x in &mut c.lit {
             *x = x.max(1.0); // Huffman codes are at least a bit long
         }
-        from_counts(&llh, &mut c.ll);
-        from_counts(&mlh, &mut c.ml);
-        from_counts(&ofh, &mut c.of);
+        from_counts(&st.ll, &mut c.ll);
+        from_counts(&st.ml, &mut c.ml);
+        from_counts(&st.of, &mut c.of);
+        c.finish();
         c
     }
 
@@ -108,20 +162,21 @@ impl Costs {
     /// already paid for, as libzstd prices them).
     #[inline]
     fn literal(&self, b: u8, ins: usize) -> f32 {
-        self.lit[usize::from(b)] + self.lit_len(ins + 1) - self.lit_len(ins)
+        let ll = match self.lld.get(ins) {
+            Some(&x) => x,
+            None => self.lit_len(ins + 1) - self.lit_len(ins),
+        };
+        self.lit[usize::from(b)] + ll
     }
 
-    /// The cost of a match of `len` with Offset_Value `off` after literals (whose length code
-    /// was paid as they came, from that of no literals).
+    /// The cost of a match of `len` after literals (whose length code was paid as they came,
+    /// from that of no literals), without its offset ([`Costs::off`]).
     #[inline]
-    fn seq(&self, _ll: usize, len: usize, off: u32) -> f32 {
-        let mlc = usize::from(ml_code(len as u32));
-        let ofc = highbit(off);
-        self.lit_len(0)
-            + self.ml[mlc]
-            + f32::from(ML_BITS[mlc])
-            + self.of[ofc as usize]
-            + ofc as f32
+    fn seq(&self, len: usize) -> f32 {
+        match self.mlp.get(len) {
+            Some(&x) => x,
+            None => self.lit_len(0) + self.ml_cost(len),
+        }
     }
 }
 
@@ -138,6 +193,81 @@ struct Node {
 }
 
 impl Encoder<'_> {
+    /// Enters `pos` into the binary tree of its hash, as libzstd's `ZSTD_insertBt1`: `head`
+    /// holds the root, the most recent position, and `chain` two links per position, to the
+    /// subtrees of the older positions whose suffixes sort before and after it. The walk
+    /// from the root re-links the tree around `pos` (which becomes the root), at most `depth`
+    /// nodes, comparing each suffix from the shorter of the lengths already shared on either
+    /// side. With `found`, each match longer than all closer ones is added (lengths limited to
+    /// `max`). Returns the longest length seen.
+    pub(super) fn bt_insert(
+        &mut self,
+        pos: usize,
+        max: usize,
+        mut found: Option<&mut Vec<(u32, u32)>>,
+    ) -> usize {
+        let d = self.data;
+        let mask = self.chain_mask;
+        let limit = (d.len() - pos).min(BT_CAP);
+        let maxdist = mask.min(self.window);
+        let h = self.hash(pos);
+        let mut m = self.head[h] as usize;
+        self.head[h] = pos as u32 + 1;
+        let mut smaller = Some(2 * (pos & mask));
+        let mut larger = Some(2 * (pos & mask) + 1);
+        let (mut same_s, mut same_l) = (0, 0);
+        let mut best = 0;
+        let mut recorded = MIN_MATCH - 1;
+        let mut depth = self.p.depth;
+        while m > 0 && depth > 0 {
+            let c = m - 1;
+            let dist = pos - c;
+            if c >= pos || dist > maxdist {
+                break;
+            }
+            depth -= 1;
+            let node = 2 * (c & mask);
+            let mut len = same_s.min(same_l);
+            len += self.common(pos + len, c + len, limit - len);
+            if len > best {
+                best = len;
+                if let Some(f) = found.as_deref_mut() {
+                    let full = if len == limit && len < max {
+                        len + self.common(pos + len, c + len, max - len)
+                    } else {
+                        len.min(max)
+                    };
+                    if full > recorded {
+                        recorded = full;
+                        f.push((full as u32, dist as u32));
+                    }
+                }
+            }
+            if len == limit {
+                break; // order unknown: the subtrees below are dropped
+            }
+            if d[c + len] < d[pos + len] {
+                if let Some(s) = smaller {
+                    self.chain[s] = m as u32;
+                }
+                same_s = len;
+                smaller = Some(node + 1);
+                m = self.chain[node + 1] as usize;
+            } else {
+                if let Some(l) = larger {
+                    self.chain[l] = m as u32;
+                }
+                same_l = len;
+                larger = Some(node);
+                m = self.chain[node] as usize;
+            }
+        }
+        for slot in [smaller, larger].into_iter().flatten() {
+            self.chain[slot] = 0;
+        }
+        best
+    }
+
     /// Finds the sequences of `[start, end)` into `self.lits` / `self.seqs` by optimal parsing
     /// in `passes` passes.
     pub(super) fn parse_optimal(&mut self, start: usize, end: usize, passes: u32) {
@@ -163,53 +293,49 @@ impl Encoder<'_> {
                 continue;
             }
             self.insert_to(i);
-            let mut cand = self.head[self.hash(i)] as usize;
-            let mut depth = self.p.depth;
-            let mut best = MIN_MATCH - 1;
-            let first = mlist.len();
-            while cand > 0 && depth > 0 {
-                let c = cand - 1;
-                let dist = i - c;
-                if dist > self.window || dist > self.chain_mask {
-                    break;
-                }
-                if d[c + best.min(max - 1)] == d[i + best.min(max - 1)] {
-                    let len = self.common(i, c, max);
-                    if len > best {
-                        best = len;
-                        mlist.push((len as u32, dist as u32));
-                        if len >= self.p.nice || len == max {
-                            break;
-                        }
-                    }
-                }
-                let next = self.chain[c & self.chain_mask] as usize;
-                if next >= cand {
-                    break; // stale link
-                }
-                cand = next;
-                depth -= 1;
+            if self.inserted > i {
+                continue; // skipped after a long match, as libzstd does
             }
+            let first = mlist.len();
+            self.bt_insert(i, max, Some(&mut mlist));
+            self.inserted = i + 1;
             if mlist.len() - first > MAX_CANDIDATES {
                 mlist.drain(first..mlist.len() - MAX_CANDIDATES);
             }
+            let best = if mlist.len() > first {
+                mlist[mlist.len() - 1].0 as usize
+            } else {
+                0
+            };
             if best >= self.p.nice {
-                if let Some(&(l, dist)) = mlist.last() {
-                    long = Some((i, l as usize, dist as usize));
-                }
+                let (l, dist) = mlist[mlist.len() - 1];
+                long = Some((i, l as usize, dist as usize));
             }
         }
         mstart.push(mlist.len() as u32);
 
+        // The first pass is priced with the previous block's statistics (libzstd carries them
+        // over too), the first block's with estimates, so it gets at least two; further passes
+        // with their own.
+        let passes = if self.stats.is_none() {
+            passes.max(2)
+        } else {
+            passes
+        };
         let reps = self.reps;
-        let mut costs = Costs::initial(&d[start..end]);
+        let mut costs = match &self.stats {
+            Some(st) => Costs::from_stats(st),
+            None => Costs::initial(&d[start..end]),
+        };
         let mut nodes = Vec::new();
         for pass in 0..passes {
             self.reps = reps;
             self.shortest_path(start, end, &mstart, &mlist, &costs, &mut nodes);
+            let st = Stats::from_parse(&self.lits, &self.seqs);
             if pass + 1 < passes {
-                costs = Costs::from_parse(&self.lits, &self.seqs);
+                costs = Costs::from_stats(&st);
             }
+            self.stats = Some(st);
         }
     }
 
@@ -304,11 +430,12 @@ impl Encoder<'_> {
                 if len > longest.0 {
                     longest = (len, dist, off);
                 }
+                let base = node.cost + costs.off(off);
                 for l in rep_best + 1..=len.min(ENUM_LENGTHS) {
-                    relax(nodes, l, dist, off, node.cost + costs.seq(ins, l, off));
+                    relax(nodes, l, dist, off, base + costs.mlp[l]);
                 }
                 if len > ENUM_LENGTHS {
-                    relax(nodes, len, dist, off, node.cost + costs.seq(ins, len, off));
+                    relax(nodes, len, dist, off, base + costs.seq(len));
                 }
                 rep_best = len;
             }
@@ -324,11 +451,12 @@ impl Encoder<'_> {
                 if len > longest.0 {
                     longest = (len, dist, off);
                 }
+                let base = node.cost + costs.off(off);
                 for l in from..=len.min(ENUM_LENGTHS.max(from)) {
-                    relax(nodes, l, dist, off, node.cost + costs.seq(ins, l, off));
+                    relax(nodes, l, dist, off, base + costs.seq(l));
                 }
                 if len > ENUM_LENGTHS {
-                    relax(nodes, len, dist, off, node.cost + costs.seq(ins, len, off));
+                    relax(nodes, len, dist, off, base + costs.seq(len));
                 }
                 from = len + 1;
             }
@@ -336,7 +464,13 @@ impl Encoder<'_> {
             // keeps long runs linear.
             if longest.0 >= self.p.nice {
                 let (len, dist, off) = longest;
-                relax(nodes, len, dist, off, node.cost + costs.seq(ins, len, off));
+                relax(
+                    nodes,
+                    len,
+                    dist,
+                    off,
+                    node.cost + costs.off(off) + costs.seq(len),
+                );
                 skip_to = i + len;
             }
         }

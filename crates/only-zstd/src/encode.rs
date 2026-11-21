@@ -48,9 +48,18 @@ enum Strategy {
     DoubleFast,
     /// Hash chains, `depth` candidates, lazy matching (`lazy` / `lazy2`).
     Chain,
-    /// Hash chains, `depth` candidates per position, and a shortest-path parse priced by
-    /// symbol statistics, in `n` passes (libzstd's `btopt` / `btultra`).
+    /// Binary trees of suffixes (`depth` nodes per position), and a shortest-path parse priced
+    /// by symbol statistics, in `n` passes (libzstd's `btopt` / `btultra`).
     Optimal(u32),
+}
+
+/// Links per position in `chain`: two in the binary trees of the optimal parser.
+fn links(p: &Params) -> usize {
+    if let Strategy::Optimal(_) = p.strategy {
+        2
+    } else {
+        1
+    }
 }
 
 fn params(level: Level) -> Params {
@@ -70,13 +79,13 @@ fn params(level: Level) -> Params {
         13 => (96, 2, 256, 0, 20, 21),
         14 => (128, 2, 256, 0, 20, 21),
         15 => (160, 2, 256, 0, 21, 21),
-        16 => (96, 2, 256, 0, 21, 22),
-        17 => (128, 2, 512, 0, 21, 22),
-        18 => (256, 2, 512, 0, 22, 22),
-        19 => (384, 2, 512, 0, 22, 23),
-        20 => (512, 2, 1024, 0, 22, 23),
-        21 => (640, 2, 1024, 0, 22, 23),
-        _ => (768, 2, 1024, 0, 22, 23),
+        16 => (48, 2, 256, 0, 21, 22),
+        17 => (64, 2, 512, 0, 21, 22),
+        18 => (96, 2, 512, 0, 22, 22),
+        19 => (128, 2, 512, 0, 22, 23),
+        20 => (256, 2, 1024, 0, 22, 23),
+        21 => (384, 2, 1024, 0, 22, 23),
+        _ => (512, 2, 1024, 0, 22, 23),
     };
     let strategy = match level.get() {
         1 => Strategy::Fast(6),
@@ -293,6 +302,8 @@ pub(crate) struct Encoder<'a> {
     lits: Vec<u8>,
     seqs: Vec<Seq>,
     tables: Tables,
+    /// Symbol statistics of the optimal parser's last block.
+    stats: Option<Box<opt::Stats>>,
 }
 
 /// The state of an [`Encoder`] between the blocks of a stream, apart from the data.
@@ -308,6 +319,8 @@ pub(crate) struct State {
     lits: Vec<u8>,
     seqs: Vec<Seq>,
     tables: Tables,
+    /// Symbol statistics of the optimal parser's last block.
+    stats: Option<Box<opt::Stats>>,
 }
 
 impl State {
@@ -323,13 +336,14 @@ impl State {
             window,
             hash_log,
             head: vec![0; 1 << hash_log],
-            chain: vec![0; 1 << chain_log],
+            chain: vec![0; links(&p) << chain_log],
             chain_mask: (1 << chain_log) - 1,
             inserted: 0,
             reps: [1, 4, 8],
             lits: Vec::new(),
             seqs: Vec::new(),
             tables: Tables::new(None),
+            stats: None,
         }
     }
 
@@ -360,13 +374,14 @@ impl<'a> Encoder<'a> {
             window,
             hash_log,
             head: vec![0; 1 << hash_log],
-            chain: vec![0; 1 << chain_log],
+            chain: vec![0; links(&p) << chain_log],
             chain_mask: (1 << chain_log) - 1,
             inserted: 0,
             reps: [1, 4, 8],
             lits: Vec::new(),
             seqs: Vec::new(),
             tables: Tables::new(None),
+            stats: None,
         }
     }
 
@@ -385,6 +400,7 @@ impl<'a> Encoder<'a> {
             lits: s.lits,
             seqs: s.seqs,
             tables: s.tables,
+            stats: s.stats,
         }
     }
 
@@ -402,6 +418,7 @@ impl<'a> Encoder<'a> {
             lits: self.lits,
             seqs: self.seqs,
             tables: self.tables,
+            stats: self.stats,
         }
     }
 
@@ -458,6 +475,16 @@ impl<'a> Encoder<'a> {
 
     fn insert_to(&mut self, pos: usize) {
         let last = self.data.len().saturating_sub(MIN_MATCH - 1);
+        if let Strategy::Optimal(_) = self.p.strategy {
+            while self.inserted < pos.min(last) {
+                let i = self.inserted;
+                let best = self.bt_insert(i, 0, None);
+                // After a long match, positions are skipped (libzstd's speed-up).
+                self.inserted = i + 1 + best.saturating_sub(384).min(192);
+            }
+            self.inserted = self.inserted.max(pos);
+            return;
+        }
         while self.inserted < pos.min(last) {
             let i = self.inserted;
             let h = self.hash(i);

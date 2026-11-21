@@ -25,8 +25,9 @@ pub(crate) struct DTable {
 /// to 12, a total that the implied last weight completes to a power of two, an even number of
 /// codes of the longest length). Returns the size of the description.
 pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
-    let (w, nsym, size) = read_weights(src)?;
-    build_table(&w[..nsym], table);
+    let mut w = [0u8; 258];
+    let (nsym, size, rank, log) = parse_weights(src, &mut w)?;
+    build_table(&w[..nsym], &rank, log, table);
     Some(size)
 }
 
@@ -34,8 +35,16 @@ pub(crate) fn read_table(src: &[u8], table: &mut DTable) -> Option<usize> {
 /// filled in), the number of symbols and the size of the description, with the checks of
 /// [`read_table`].
 pub(crate) fn read_weights(src: &[u8]) -> Option<([u8; 258], usize, usize)> {
-    let &head = src.first()?;
     let mut w = [0u8; 258];
+    let (nsym, size, _, _) = parse_weights(src, &mut w)?;
+    Some((w, nsym, size))
+}
+
+/// The weights of a tree description into `w`: the number of symbols, the size of the
+/// description, the number of symbols of each weight and the log of the total.
+#[inline(always)]
+fn parse_weights(src: &[u8], w: &mut [u8; 258]) -> Option<(usize, usize, [u32; 13], u32)> {
+    let &head = src.first()?;
     let (count, size) = if head >= 128 {
         // Direct: 4 bits per weight.
         let count = usize::from(head) - 127;
@@ -85,18 +94,13 @@ pub(crate) fn read_weights(src: &[u8]) -> Option<([u8; 258], usize, usize)> {
     if rank[1] < 2 || rank[1] & 1 == 1 {
         return None;
     }
-    Some((w, count + 1, size))
+    Some((count + 1, size, rank, log))
 }
 
-/// Builds the decoding table of valid weights (as [`read_weights`] returns them).
-fn build_table(w: &[u8], table: &mut DTable) {
-    let mut rank = [0u32; 13];
-    let mut total = 0u32;
-    for &x in w {
-        rank[usize::from(x)] += 1;
-        total += (1 << x) >> 1;
-    }
-    let log = highbit(total);
+/// Builds the decoding table of valid weights (as [`parse_weights`] returns them; `log` is
+/// the longest code length).
+#[inline(always)]
+fn build_table(w: &[u8], rank: &[u32; 13], log: u32, table: &mut DTable) {
     // Codes in order of weight (longest first), then of symbol.
     let mut start = [0usize; 14];
     for wt in 1..=log as usize {

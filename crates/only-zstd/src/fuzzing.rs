@@ -113,7 +113,7 @@ fn agree(one: Result<Vec<u8>, Error>, st: Result<(Vec<u8>, bool), Error>, empty:
             assert!(
                 !done || b.len() > LIMIT,
                 "streaming accepts what one-shot refuses ({e})"
-            )
+            );
         }
         (Err(_), Err(_)) => {}
     }

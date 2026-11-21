@@ -14,13 +14,16 @@ use crate::dictionary::{
 
 const BUCKET_BITS: u32 = 15;
 
+/// A transform searched after a prefix: its id, kind and suffix.
+type Searched = (u8, T, &'static [u8]);
+
 struct Index {
     /// Per bucket: the start of its entries in `entries` (and the next bucket's start).
     starts: Vec<u32>,
     /// `length << 16 | word index`.
     entries: Vec<u32>,
     /// The prefixes of the searched transforms, each with its transforms: id, kind, suffix.
-    prefixes: Vec<(&'static [u8], Vec<(u8, T, &'static [u8])>)>,
+    prefixes: Vec<(&'static [u8], Vec<Searched>)>,
 }
 
 fn bucket(b: &[u8]) -> usize {
@@ -42,8 +45,7 @@ fn index() -> &'static Index {
     static INDEX: OnceLock<Index> = OnceLock::new();
     INDEX.get_or_init(|| {
         let mut keyed: Vec<(u32, u32)> = Vec::new();
-        for len in 4..=24usize {
-            let bits = SIZE_BITS_BY_LENGTH[len];
+        for (len, &bits) in SIZE_BITS_BY_LENGTH.iter().enumerate().take(25).skip(4) {
             for idx in 0..1usize << bits {
                 let w = word(len, idx);
                 keyed.push((bucket(w) as u32, (len as u32) << 16 | idx as u32));
@@ -58,7 +60,7 @@ fn index() -> &'static Index {
             starts[i + 1] += starts[i];
         }
         let entries = keyed.into_iter().map(|(_, e)| e).collect();
-        let mut prefixes: Vec<(&'static [u8], Vec<(u8, T, &'static [u8])>)> = Vec::new();
+        let mut prefixes: Vec<(&'static [u8], Vec<Searched>)> = Vec::new();
         for (t, tr) in TRANSFORMS.iter().enumerate() {
             if matches!(tr.1, T::OmitFirst(_)) {
                 continue;
@@ -142,7 +144,7 @@ pub(super) fn matches(s: &[u8], found: &mut Vec<DictMatch>) {
                     continue;
                 }
                 let n = j + wl + suffix.len();
-                if n < 4 || n >= 64 {
+                if !(4..64).contains(&n) {
                     continue;
                 }
                 if !ascii && matches!(kind, T::UppercaseFirst | T::UppercaseAll) {
