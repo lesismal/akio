@@ -37,7 +37,11 @@ ADR-068（docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），�
 - 顺带修复：RTSP 客户端在 `is_closed()` 为真时其 hub 路径已释放（与 RTMP 相同）。
 - 模糊测试目标 `h265_sample_encryption`；`tests/client_bench.rs` 测量 RTMP 与 RTSP 拉流的接入开销。
 - 性能（gpu51，`quiet.sh`，固定一个核，7 轮交替，取中位数，新 / 旧）：
-  AB_RESULTS_ZH
+  HLS 切片（`bench_segmenting`，每包纳秒）MPEG-TS 0.939、MPEG-TS LL-HLS 0.996、fMP4 0.950、
+  fMP4 LL-HLS 0.921（正在写入的分段现在原地借用，不再每个包都从流状态中移出再放回；I 帧状态装箱），
+  AES-128 0.987 至 0.996，SAMPLE-AES MPEG-TS 0.997，`cbcs` fMP4 1.019（每个 NAL 单元按 H.264 /
+  H.265 分派）；RTMP 拉流接入 1.013，RTSP 拉流接入 1.015（每条消息 / 每个 RTP 包 246 与 269 ns，
+  `tests/client_bench.rs`）。
 
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 

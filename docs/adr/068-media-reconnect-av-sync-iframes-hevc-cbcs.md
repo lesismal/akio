@@ -149,9 +149,15 @@ All additions are additive (new config fields default to the old behaviour, but
 - Fuzzing: new target `h265_sample_encryption` (parameter sets and slices through the parsers
   and the `cbcs` muxer, every access unit decrypted back from its `senc` subsamples), with
   seeds from both H.265 samples.
-- Cost: A/B on gpu51 (see the commit and CHANGELOG): the HLS segmenting path gained a flag
-  check per video packet and an atomic store per part, the RTSP ingest one check per RTP
-  packet, the RTMP pull one atomic load per media message.
+- Cost: the HLS segmenting path gained a flag check per video packet and an atomic store per
+  part, the RTSP ingest one check per RTP packet, the RTMP pull one atomic load per media
+  message. A first A/B showed fMP4 segmenting 20 % slower: the segment being written, moved out
+  of the stream state and back for every packet, had grown by the I-frame fields. It is now
+  borrowed in place and the I-frame state boxed. Same-run A/B on gpu51 (`quiet.sh`, one pinned
+  core, 7 alternating rounds, medians, head / base): `bench_segmenting` MPEG-TS 0.939,
+  MPEG-TS LL-HLS 0.996, fMP4 0.950, fMP4 LL-HLS 0.921, AES-128 0.987 to 0.996, SAMPLE-AES
+  MPEG-TS 0.997, `cbcs` fMP4 1.019; `tests/client_bench.rs` (new: the RTMP and RTSP pull
+  ingest through the fuzz entry points) RTMP 1.013, RTSP 1.015.
 - Not done: SAMPLE-AES for codecs other than H.264, H.265 (fMP4) and AAC; I-frame playlists
   with AES-128; query strings on rendition report URIs (the media playlist's query is not
   known where playlists are built); RTCP sync in the RTSP server's RECORD sessions (the

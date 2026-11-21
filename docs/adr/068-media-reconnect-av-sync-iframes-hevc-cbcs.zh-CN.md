@@ -116,8 +116,13 @@
   130 ms），与到达时间的步调差在 250 ms 以内（`tests/mediamtx_reconnect.rs`，默认忽略）。
 - 模糊测试：新目标 `h265_sample_encryption`（参数集与 slice 经过解析器与 `cbcs` muxer，每个
   访问单元按其 `senc` 子样本解密回原样），种子来自两个 H.265 样本。
-- 开销：gpu51 上的 A/B 见提交与 CHANGELOG：HLS 切片路径每个视频包多一次标志判断、每个分片
-  多一次原子写，RTSP 接入每个 RTP 包多一次判断，RTMP 拉流每条媒体消息多一次原子读取。
+- 开销：HLS 切片路径每个视频包多一次标志判断、每个分片多一次原子写，RTSP 接入每个 RTP 包多一次
+  判断，RTMP 拉流每条媒体消息多一次原子读取。第一次 A/B 显示 fMP4 切片慢了 20 %：正在写入的分段
+  每个包都要从流状态中移出再放回，而它因 I 帧字段变大了。现在改为原地借用，I 帧状态装箱。gpu51 上
+  同一轮的 A/B（`quiet.sh`，固定一个核，7 轮交替，取中位数，新 / 旧）：`bench_segmenting`
+  MPEG-TS 0.939、MPEG-TS LL-HLS 0.996、fMP4 0.950、fMP4 LL-HLS 0.921、AES-128 0.987 至 0.996、
+  SAMPLE-AES MPEG-TS 0.997、`cbcs` fMP4 1.019；`tests/client_bench.rs`（新增：经模糊测试入口测量
+  RTMP 与 RTSP 拉流接入）RTMP 1.013、RTSP 1.015。
 - 未完成：H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES；AES-128 下的 I 帧播放列表；
   rendition report URI 上的查询串（构建播放列表处不知道媒体播放列表的查询串）；RTSP 服务端
   RECORD 会话中的 RTCP 同步（recorder 已支持，服务端未开启）；重连时重新解析主机名。

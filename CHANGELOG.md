@@ -43,7 +43,12 @@ ADR-068 (docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.md), additive:
 - Fuzz target `h265_sample_encryption`; `tests/client_bench.rs` benchmarks the RTMP and RTSP
   pull ingest.
 - Performance (gpu51, `quiet.sh`, one pinned core, 7 alternating rounds, medians, head / base):
-  AB_RESULTS
+  HLS segmenting (`bench_segmenting`, ns per packet) MPEG-TS 0.939, MPEG-TS LL-HLS 0.996,
+  fMP4 0.950, fMP4 LL-HLS 0.921 (the segment being written is now borrowed in place instead of
+  moved out of the stream state and back for every packet; the I-frame state is boxed),
+  AES-128 0.987 to 0.996, SAMPLE-AES MPEG-TS 0.997, `cbcs` fMP4 1.019 (the H.264 / H.265
+  dispatch per NAL unit); RTMP pull ingest 1.013 and RTSP pull ingest 1.015 (246 and 269 ns per
+  message / RTP packet, `tests/client_bench.rs`).
 
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
