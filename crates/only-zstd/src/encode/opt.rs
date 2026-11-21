@@ -431,8 +431,9 @@ impl Encoder<'_> {
                     longest = (len, dist, off);
                 }
                 let base = node.cost + costs.off(off);
-                for l in rep_best + 1..=len.min(ENUM_LENGTHS) {
-                    relax(nodes, l, dist, off, base + costs.mlp[l]);
+                let hi = len.min(ENUM_LENGTHS);
+                for (l, &c) in costs.mlp.iter().enumerate().take(hi + 1).skip(rep_best + 1) {
+                    relax(nodes, l, dist, off, base + c);
                 }
                 if len > ENUM_LENGTHS {
                     relax(nodes, len, dist, off, base + costs.seq(len));

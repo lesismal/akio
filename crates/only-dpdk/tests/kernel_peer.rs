@@ -418,7 +418,8 @@ fn dial_kernel(engine: &Engine, kernel: IpAddr) {
                 // The kernel's per-host ICMP rate limit (`net.ipv4.icmp_ratelimit`) swallowed
                 // its port unreachable: nothing reached the stack. Dial again.
                 eprintln!("udp dial to port {port}: the kernel rate-limited its ICMP error");
-                if let Some(c) = slot.lock().unwrap().take() {
+                let taken = slot.lock().unwrap().take();
+                if let Some(c) = taken {
                     c.close();
                 }
                 std::thread::sleep(Duration::from_secs(1));
