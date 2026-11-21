@@ -55,8 +55,21 @@ pub(crate) fn af_xdp(
     let mut c = xsk::XskConfig::default();
     c.queues = u32::from(x.queues.max(1));
     c.frames = x.frames;
+    c.shared_umem = x.shared_umem;
+    c.multi_buffer = x.multi_buffer;
     c.frame_size = 4096;
-    c.ring_size = (x.frames / 2).min(2048);
+    let per_queue = if x.shared_umem {
+        x.frames / c.queues
+    } else {
+        x.frames
+    };
+    if per_queue < 128 {
+        return Err(bad(format!(
+            "AF_XDP: {} frames give {per_queue} per queue, at least 128 are needed",
+            x.frames
+        )));
+    }
+    c.ring_size = (per_queue / 2).min(2048);
     c.ring_size = 1 << (31 - c.ring_size.leading_zeros()); // a power of two
     c.mode = x.mode;
     c.zero_copy = match x.zero_copy {
@@ -65,9 +78,9 @@ pub(crate) fn af_xdp(
         _ => xsk::ZeroCopy::Auto,
     };
     // The kernel keeps 256 bytes of XDP headroom in every chunk.
-    if cfg.mtu + 14 > c.frame_size as usize - 256 {
+    if !x.multi_buffer && cfg.mtu + 14 > c.frame_size as usize - 256 {
         return Err(bad(format!(
-            "AF_XDP: MTU {} above {}",
+            "AF_XDP: MTU {} above {} (multi_buffer allows jumbo frames)",
             cfg.mtu,
             c.frame_size - 256 - 14
         )));
@@ -85,6 +98,8 @@ pub(crate) fn af_xdp(
             native: info.mode == crate::XdpMode::Native,
             zero_copy: info.zero_copy,
             queues: info.queues as u16,
+            shared_umem: info.shared_umem,
+            multi_buffer: info.multi_buffer,
         },
     );
     Ok((
@@ -296,7 +311,9 @@ impl net::Tx for Port {
             }
             #[cfg(target_os = "linux")]
             Link::Xdp(x) => {
-                if x.alloc(len) {
+                if len > x.max_frame() && x.multi_buffer() {
+                    Staged::Scratch // over several chunks at `commit`
+                } else if x.alloc(len) {
                     Staged::Xsk
                 } else {
                     Staged::Drop
@@ -333,7 +350,9 @@ impl net::Tx for Port {
                 Link::Fd(fd) => fd.send(&self.scratch),
                 Link::Memory(m) => m.send(std::mem::take(&mut self.scratch)),
                 #[cfg(target_os = "linux")]
-                Link::Xdp(_) => {}
+                Link::Xdp(x) => {
+                    x.send_frags(&self.scratch);
+                }
                 Link::Dpdk(_) => {}
             },
             Staged::Drop | Staged::None => {}

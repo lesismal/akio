@@ -139,8 +139,19 @@ pub struct AfXdpConfig {
     /// Zero-copy or copy mode (default [`ZeroCopy::Auto`]).
     pub zero_copy: ZeroCopy,
     /// UMEM chunks of 4 KiB per queue, half for receiving and half for sending (default 4096,
-    /// 16 MiB per queue; at least 128). Rings have `min(2048, frames / 2)` entries.
+    /// 16 MiB per queue; at least 128). Rings have `min(2048, frames / 2)` entries. With
+    /// [`shared_umem`](Self::shared_umem), the chunks of all queues together.
     pub frames: u32,
+    /// One UMEM for all the queues (`XDP_SHARED_UMEM`, Linux 5.10+) instead of one per queue
+    /// (default `false`): one registration and one pinned area, `frames` split evenly between
+    /// the queues (each queue still owns its chunks: no locking between I/O threads). The
+    /// sockets after the first take its mode (zero-copy or copy).
+    pub shared_umem: bool,
+    /// Multi-buffer frames (`XDP_USE_SG`, Linux 6.6+; default `false`): a frame larger than a
+    /// chunk spans several descriptors both ways, so [`DpdkConfig::mtu`] may go up to 9000
+    /// (jumbo frames; without it the MTU is at most 3826). The redirect program is loaded
+    /// frags-aware, which also lets a veth carry an MTU above about 3.5 KB with native XDP.
+    pub multi_buffer: bool,
 }
 
 impl AfXdpConfig {
@@ -152,6 +163,8 @@ impl AfXdpConfig {
             mode: XdpMode::Auto,
             zero_copy: ZeroCopy::Auto,
             frames: 4096,
+            shared_umem: false,
+            multi_buffer: false,
         }
     }
 }
@@ -168,6 +181,10 @@ pub struct AfXdpInfo {
     pub zero_copy: bool,
     /// Queues (sockets).
     pub queues: u16,
+    /// The queues share one UMEM.
+    pub shared_umem: bool,
+    /// Frames may span several chunks.
+    pub multi_buffer: bool,
 }
 
 static AF_XDP_INFO: Mutex<Vec<(String, AfXdpInfo)>> = Mutex::new(Vec::new());
@@ -260,7 +277,7 @@ pub struct DpdkConfig {
     /// MAC address. `None`: the DPDK port's or AF_XDP interface's own address, or a locally
     /// administered address derived from `address` for the other devices.
     pub mac: Option<[u8; 6]>,
-    /// IP MTU (default 1500).
+    /// IP MTU (default 1500, at most 9000: jumbo frames).
     pub mtu: usize,
     /// Receive and send buffer of each TCP connection, bytes each (default 64 KiB). Also bounds
     /// the TCP window.
