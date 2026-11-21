@@ -2309,7 +2309,9 @@ impl Rtc {
             ext.transport_cc = has_twcc.then_some(0);
             ext
         };
-        let keyframe = line_kind == MediaKind::Video
+        // Only FEC (key frames' own protection) needs to know.
+        let keyframe = scheme.is_some()
+            && line_kind == MediaKind::Video
             && only_rtp::codec::depacketizer(codec.codec.rtp())
                 .is_keyframe(payloads.first().map_or(&[][..], |(p, _)| p.as_slice()));
         let media_bytes: usize = payloads.iter().map(|(p, _)| p.len()).sum();
@@ -2520,6 +2522,7 @@ impl Rtc {
             }
             _ => {}
         }
+        self.rx_ecn = 0;
         self.pump(now);
     }
 
