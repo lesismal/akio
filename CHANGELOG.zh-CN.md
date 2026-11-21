@@ -26,6 +26,10 @@ ADR-068（docs/adr/068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md�
   9000）；底层为 `only_ebpf::xsk::XskConfig::shared_umem` / `multi_buffer` 与 `XskSocket::send_frags`。
 - 多队列设备上，路由器通告与邻居发现一样复制到每个队列；新增 `#[doc(hidden)] only_dpdk::tcp_ecn_stats`。
 
+修复：多队列设备上，拨出连接的 ICMP / ICMPv6 差错（目的不可达、包过大）与该连接的其他包一样交给
+拥有它的队列。RSS 只按地址对这类差错做哈希，它可能落到别的队列而丢失（拨向关闭端口的 UDP 连接因此
+超时，而不是以“不可达”失败）。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

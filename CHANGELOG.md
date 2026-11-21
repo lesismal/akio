@@ -30,6 +30,11 @@ default):
 - Router advertisements are copied to every queue of a multi-queue device, like neighbor
   discovery; `#[doc(hidden)] only_dpdk::tcp_ecn_stats`.
 
+Fixed: on a multi-queue device an ICMP / ICMPv6 error (destination unreachable, packet too big)
+for a dialed connection is handed to the queue owning that connection, like its other packets.
+RSS hashes such an error by its addresses only, so it could land on another queue and be lost
+(a UDP dial to a closed port then timed out instead of failing with "unreachable").
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

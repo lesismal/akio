@@ -396,38 +396,50 @@ fn dial_kernel(engine: &Engine, kernel: IpAddr) {
     }
     // UDP dial: echo, then a closed port.
     for (port, refused) in [(9002u16, false), (9003, true)] {
-        let (tx, rx) = mpsc::channel();
-        let etx = tx.clone();
-        let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
-        let s2 = slot.clone();
-        engine.dial_udp(
-            SocketAddr::from((kernel, port)),
-            fn_acceptor(move |c: &Conn<Client>| {
-                let _ = c.send(b"udp dial");
-                *s2.lock().unwrap() = Some(c.clone());
-                Client(tx.clone())
-            }),
-            move |e| {
-                let _ = etx.send(Err(Some(format!("dial_udp: {e}"))));
-            },
-        );
-        match rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap_or_else(|e| panic!("udp dial to port {port}: {e:?}"))
-        {
-            Ok(d) => {
-                assert!(!refused);
-                assert_eq!(d, b"udp dial");
-                let opened = slot.lock().unwrap().take();
-                if let Some(c) = opened {
+        for attempt in 1.. {
+            let limited = kernel_icmp_rate_limited();
+            let (tx, rx) = mpsc::channel();
+            let etx = tx.clone();
+            let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
+            let s2 = slot.clone();
+            engine.dial_udp(
+                SocketAddr::from((kernel, port)),
+                fn_acceptor(move |c: &Conn<Client>| {
+                    let _ = c.send(b"udp dial");
+                    *s2.lock().unwrap() = Some(c.clone());
+                    Client(tx.clone())
+                }),
+                move |e| {
+                    let _ = etx.send(Err(Some(format!("dial_udp: {e}"))));
+                },
+            );
+            let r = rx.recv_timeout(Duration::from_secs(5));
+            if r.is_err() && refused && attempt < 4 && kernel_icmp_rate_limited() > limited {
+                // The kernel's per-host ICMP rate limit (`net.ipv4.icmp_ratelimit`) swallowed
+                // its port unreachable: nothing reached the stack. Dial again.
+                eprintln!("udp dial to port {port}: the kernel rate-limited its ICMP error");
+                if let Some(c) = slot.lock().unwrap().take() {
                     c.close();
                 }
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
             }
-            Err(e) => {
-                assert!(refused, "{e:?}");
-                let e = e.unwrap_or_default();
-                assert!(e.contains("unreachable") || e.contains("refused"), "{e}");
+            match r.unwrap_or_else(|e| panic!("udp dial to port {port}: {e:?}")) {
+                Ok(d) => {
+                    assert!(!refused);
+                    assert_eq!(d, b"udp dial");
+                    let opened = slot.lock().unwrap().take();
+                    if let Some(c) = opened {
+                        c.close();
+                    }
+                }
+                Err(e) => {
+                    assert!(refused, "{e:?}");
+                    let e = e.unwrap_or_default();
+                    assert!(e.contains("unreachable") || e.contains("refused"), "{e}");
+                }
             }
+            break;
         }
     }
 }
@@ -1544,15 +1556,35 @@ fn af_xdp_multi_buffer_jumbo_frames() {
 
 /// The kernel's count of IPv4 datagrams reassembled (`Ip: ReasmOKs`).
 fn kernel_reasm_ok() -> u64 {
+    kernel_snmp("Ip:", "ReasmOKs")
+}
+
+/// A counter of `/proc/net/snmp` (the line pair starting with `group`).
+fn kernel_snmp(group: &str, field: &str) -> u64 {
     let text = std::fs::read_to_string("/proc/net/snmp").unwrap_or_default();
-    let mut lines = text.lines().filter(|l| l.starts_with("Ip:"));
+    let mut lines = text.lines().filter(|l| l.starts_with(group));
     let (Some(names), Some(values)) = (lines.next(), lines.next()) else {
         return 0;
     };
     names
         .split_whitespace()
         .zip(values.split_whitespace())
-        .find(|(n, _)| *n == "ReasmOKs")
+        .find(|(n, _)| *n == field)
         .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0)
+}
+
+/// ICMP and ICMPv6 errors the kernel did not send because of its rate limits.
+fn kernel_icmp_rate_limited() -> u64 {
+    let v6: u64 = std::fs::read_to_string("/proc/net/snmp6")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (name, value) = l.split_once(char::is_whitespace)?;
+            name.starts_with("Icmp6OutRateLimit")
+                .then(|| value.trim().parse::<u64>().ok())
+                .flatten()
+        })
+        .sum();
+    kernel_snmp("Icmp:", "OutRateLimitGlobal") + kernel_snmp("Icmp:", "OutRateLimitHost") + v6
 }
