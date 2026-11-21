@@ -101,9 +101,9 @@ limit)` 与 `decompress(input, &mut [u8])`，返回 `Progress { consumed, produc
 - 最高级别的压缩变慢，与 libzstd 中最优解析的代价一样：zstd 19 为 3.5–10.9 MB/s（之前 7–59；libzstd
   3.9–12），zstd 16 为 6.5–14（libzstd 9.6–18.6），brotli 10–11 在文本上约为之前速度的一半。树链接使
   16–22 级的 zstd 匹配表翻倍（19–22 级、8 MiB 窗口时 64 MiB，与 libzstd 相同）。
-- 解码速度不变：在安静主机上与 main 同批 A/B，zstd 每格 −1.8..+3.1%，brotli −2.2..+4.9%；小证书链在
-  专门的三轮循环中、默认与基准两种构建配置下均在 ±0.9% 之内（docs/BENCHMARKS.zh-CN.md，“流式、字典与
-  压缩率”）。
+- 解码速度：在安静主机上与 main 同批 A/B，zstd 每格 −1.8..+3.1%，brotli −2.2..+4.9%；在专门针对小证书链
+  的循环中 zstd −1.1..+2.3%、brotli 0..+2.0%（每条证书链至多约 0.15 µs，brotli 部分来自按单元读取头部），
+  随构建配置而不同（docs/BENCHMARKS.zh-CN.md，“流式、字典与压缩率”）。
 - 四个模糊测试目标：`zstd_stream`、`brotli_stream`（分片输入的流式解码器对照一次性解码器，带或不带
   字典；任意字节作为 zstd 字典）、`zstd_stream_roundtrip`、`brotli_stream_roundtrip`（流式压缩器的分片、
   刷新、窗口与字典取自输入；每次刷新后均可解码；以 libzstd 与 brotli-decompressor 为参照）。

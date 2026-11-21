@@ -132,10 +132,11 @@ later; the streaming APIs make it possible. The HTTP client decodes no content c
   MB/s (was 7-59; libzstd 3.9-12), zstd 16 at 6.5-14 (libzstd 9.6-18.6), brotli 10-11 at
   about half the speed on text. Tree links double the zstd match tables at 16-22 (64 MiB at
   19-22 with an 8 MiB window, as libzstd's).
-- Decoding speed unchanged: same-run A/B against main on the quiet host, zstd -1.8..+3.1% and
-  brotli -2.2..+4.9% per cell, and the small certificate chains within +-0.9% in a dedicated
-  three-round loop under both the default and the benchmark build profile (docs/BENCHMARKS.md,
-  "Streaming, dictionaries and ratios").
+- Decoding speed: same-run A/B against main on the quiet host, zstd -1.8..+3.1% and brotli
+  -2.2..+4.9% per cell; in a dedicated loop over the small certificate chains zstd -1.1..+2.3%
+  and brotli 0..+2.0% (at most about 0.15 us per chain, the brotli part from reading headers
+  unit by unit), depending on the build profile (docs/BENCHMARKS.md, "Streaming, dictionaries
+  and ratios").
 - Four fuzz targets: `zstd_stream`, `brotli_stream` (streaming decoder in pieces against the
   one-shot decoder, with and without dictionaries; arbitrary bytes as a zstd dictionary),
   `zstd_stream_roundtrip`, `brotli_stream_roundtrip` (streaming compressor with pieces, flushes,

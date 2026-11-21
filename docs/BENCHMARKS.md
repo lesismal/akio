@@ -1638,14 +1638,21 @@ Same quiet host (`quiet.sh`), `tools/codec-bench` built (codegen-units 1, thin L
 five HTTP payloads and the first 20 MB of Silesia, best of two alternated rounds each): zstd
 −1.8…+3.1% per cell (JSON −0.8…−1.8%, JavaScript +1.5…+3.1%, Silesia +0.2…+0.7%), brotli
 −2.2…+4.9% (certificate chains −0.7…−2.2%, JavaScript +3.3…+4.9%, Silesia +0.1…+0.9%).
-Single cells move by about ±2% between rounds. The certificate chains were checked again with a
-dedicated loop (one-shot decoding of the C libraries' streams of both chains, zstd levels 1 and
-3, brotli 1, 5 and 11, plus zstd level 1 HTML; three alternated rounds, best of each), built both
-with the workspace's default release profile (16 codegen units) and with the benchmark's: all
-within −0.9…+0.9% (zstd 2.7 KB chain level 1: 3,335 → 3,316 ns default, 3,351 → 3,340 ns
-benchmark profile; brotli 2.7 KB chain level 5: 7,200 → 7,192 ns and 7,129 → 7,189 ns). The
-streaming decoders share the one-shot decoders' code (the brotli command loop and header reader
-are `const STREAM: bool` generics whose one-shot instantiation compiles the checkpoints out).
+Single cells move by about ±2% between rounds. Small streams were checked again with a dedicated
+loop (one-shot decoding of the C libraries' streams of both certificate chains at zstd levels 1
+and 3 and brotli 1, 5 and 11, plus zstd level 1 HTML; three or four alternated rounds, best of
+each), built with the benchmark's profile and with the workspace's default release profile (16
+codegen units): zstd −1.1…−0.3% (benchmark profile) and +1.3…+2.3% (default; 2.7 KB chain level
+1: 3,301 → 3,343 ns), brotli +0.7…+2.0% and −0.0…+1.6% (2.7 KB chain level 5: 7,211 → 7,357 ns
+and 7,263 → 7,279 ns), that is at most about 0.15 µs per certificate chain. The brotli residual
+is the resumable header reader (a meta-block header read unit by unit); reading a context map's
+entries in one unit in the one-shot instantiation took the default profile from +1.0…+1.9% to
+this. The streaming decoders share the one-shot decoders' code (the brotli command loop and
+header reader are `const STREAM: bool` generics whose one-shot instantiation compiles the
+checkpoints out). A first run of this check compared base with base: both checkouts are members
+of a workspace at the same relative paths, so cargo gave their crates the same artifact names in
+the shared target directory and took the newer base build as fresh; the branch's sources had to
+be touched.
 One regression was found and fixed on the way: reading a Huffman table through the dictionary
 loader's two-step path (weights, then table) made zstd level 1 on the 2.7 KB chain 5.6% slower
 (Huffman literals in a tiny frame); the decoder reads tables in one step again.

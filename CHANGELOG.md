@@ -38,8 +38,8 @@ ADR-069 (docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.md), additive AP
   than libbrotli (was 3.5-11.4%; brotli block splitting is still not done).
 - Compression at those levels is slower, as in the reference encoders: zstd 19 3.5-10.9 MB/s
   (libzstd 3.9-12), brotli 10-11 about half the speed on text (docs/BENCHMARKS.md).
-- Decoding speed unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per cell,
-  small certificate chains within 1%; docs/BENCHMARKS.md).
+- Decoding speed about unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per
+  cell; small certificate chains up to 2% slower, about 0.15 us; docs/BENCHMARKS.md).
 - Fuzz targets `zstd_stream`, `zstd_stream_roundtrip`, `brotli_stream`, `brotli_stream_roundtrip`.
 - only-http unchanged: streamed responses stay uncompressed (ADR-069 section 4).
 

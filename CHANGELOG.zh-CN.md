@@ -31,7 +31,7 @@ ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），�
   brotli 块分割仍未完成）。
 - 这些级别的压缩变慢，与参考编码器一样：zstd 19 为 3.5–10.9 MB/s（libzstd 3.9–12），brotli 10–11 在
   文本上约为之前速度的一半（docs/BENCHMARKS.zh-CN.md）。
-- 解码速度不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%，小证书链在 1% 之内；
+- 解码速度基本不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%；小证书链至多慢 2%，约 0.15 µs；
   docs/BENCHMARKS.zh-CN.md）。
 - 模糊测试目标 `zstd_stream`、`zstd_stream_roundtrip`、`brotli_stream`、`brotli_stream_roundtrip`。
 - only-http 不变：流式响应仍不压缩（ADR-069 第 4 节）。
