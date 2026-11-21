@@ -142,7 +142,7 @@ ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），
 
 ### 修复（only-media）
 
-- RTMP 拉流：`RtmpClient::is_closed` 为真之后（或 `close`、丢弃句柄返回之后），hub 路径即已释放；此前已连接的拉流要等连接关闭完成才释放，立即再拉同一路径可能得到 `HubError::StreamBusy`。
+- RTMP 拉流：`RtmpClient::is_closed` 为真之后（或 `close`、丢弃句柄返回之后），hub 路径即已释放；此前已连接的拉流要等连接关闭完成才释放，立即再拉同一路径可能得到 `HubError::StreamBusy`。会话现在通过 `Arc` 共享 publisher；gpu51 上同一轮 A/B（`quiet.sh`，固定单核，向拉流会话灌入示例 FLV 的 282,001 条消息）为 47.17 ms，修改前 47.24 ms（0.999 倍）。
 
 ### 修复（only-tls）
 

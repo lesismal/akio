@@ -168,7 +168,7 @@ configurations behave as before):
 
 ### Fixed (only-media)
 
-- RTMP pull: once `RtmpClient::is_closed` is true (or `close` / dropping the handle returns), the hub path is free again; before, a connected pull released it only when its connection finished closing, so pulling the same path right away could fail with `HubError::StreamBusy`.
+- RTMP pull: once `RtmpClient::is_closed` is true (or `close` / dropping the handle returns), the hub path is free again; before, a connected pull released it only when its connection finished closing, so pulling the same path right away could fail with `HubError::StreamBusy`. The session now shares the publisher through an `Arc`; a same-run A/B on gpu51 (`quiet.sh`, one pinned core, a pull session fed 282,001 messages of the sample FLV) measured 47.17 ms against 47.24 ms before (0.999×).
 
 ### Fixed (only-tls)
 
