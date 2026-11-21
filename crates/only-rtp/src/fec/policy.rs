@@ -119,7 +119,7 @@ fn code_rates(p: &Params) -> (u8, u8) {
     // Key frames: boosted by their size relative to delta frames.
     let pf_delta = sat_u8(0.5 + p.packets_per_frame);
     let pf_key = sat_u8(0.5 + p.packets_per_key_frame);
-    let ratio = if pf_delta > 0 { pf_key / pf_delta } else { 1 };
+    let ratio = pf_key.checked_div(pf_delta).unwrap_or(1);
     let boost = i64::from(ratio.max(2));
     let key_index = (1 + (boost * eff_rate - rate_par1) / rate_par1).clamp(0, rate_par2) as usize;
     let key_idx = (key_index * LOSS_MAX + loss).min(tables::FEC_RATE.len() - 1);

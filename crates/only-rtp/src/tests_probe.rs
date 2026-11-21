@@ -654,11 +654,11 @@ fn ecn_ce_marks_count_as_congestion() {
         let mut bwe = BandwidthEstimator::new(2_000_000).with_probing(false);
         let mut seq = 0u64;
         for step in 0..100u64 {
-            let now = t0 + ms(step * 50);
+            let now = t0 + ms(step * 50 + 60);
             let res: Vec<PacketResult> = (0..30)
                 .map(|i| {
                     seq += 1;
-                    let sent = now - ms(60) + Duration::from_micros(i * 1500);
+                    let sent = t0 + ms(step * 50) + Duration::from_micros(i * 1500);
                     PacketResult {
                         seq,
                         sent,
