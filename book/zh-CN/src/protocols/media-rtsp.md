@@ -27,7 +27,8 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   退化为只发关键帧（`hub::Dropper`），超过 `RtspConfig::max_write_queue` 则断开。
 - 推流端：`ANNOUNCE` 预占路径（第二个推流者立即收到 453），带 `mode=record` 的 `SETUP`，然后
   `RECORD`。参数集一旦已知（来自 SDP 或码流内；VP8、VP9、AV1 来自第一个关键帧）流即上线。RTP 只携带显示时间，因此服务端为带
-  B 帧的视频推算解码时间（估计重排深度，不缓存帧）。
+  B 帧的视频推算解码时间（估计重排深度，不缓存帧）。各轨道按推流端的 RTCP 发送者报告对齐（`RtspConfig::rtcp_sync`，
+  默认开启；交织 RTCP 通道、复用在 RTP 通道上的 RTCP、UDP 端口），与下文客户端拉流相同，音视频因此保持采集时的偏移。
 - 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、VP8（RFC 7741）、VP9（RFC 9628）、
   AV1（AOM 的 RTP 负载格式；这三种经 only-rtp 处理，缺包的帧被丢弃）、AAC（`mpeg4-generic` `AAC-hbr`）、
   Opus、G.711。
@@ -45,6 +46,9 @@ ffmpeg -re ... -c:v libx265 -c:a libopus -f rtsp -rtsp_transport udp rtsp://127.
 ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/live/cam            # 以及 udp
 ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 ```
+
+同一文件还以发送者报告录制：报告把音频放在视频之后 500 ms，而数据包同时到达（TCP、复用在 RTP 通道上的 RTCP、
+UDP；报告在媒体之前与在中途）：hub 中的时间跟随报告，相差 60 s 的报告被忽略，关闭 `rtcp_sync` 时按到达计时。
 
 ## WHIP 与 WHEP
 
@@ -145,5 +149,5 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 ## 不支持
 
 RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话；不向推流端发送
-RTCP 接收者报告，录制会话也没有基于 RTCP 的音视频同步（客户端拉流有）。客户端：重定向、重连时重新解析
+RTCP 接收者报告。客户端：重定向、重连时重新解析
 主机名。WebRTC：simulcast、转码。

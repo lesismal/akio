@@ -101,6 +101,30 @@ ADR-077（docs/adr/077-webrtc-ecn-latching-unbundled-cc.zh-CN.md），只有新�
 - 工具：`webrtc-bench` 示例（两个回环 `Endpoint` 之间的媒体 / 数据通道吞吐）；`webrtc-interop` 新增
   `sip-gateway`、`client … sip`、fec-server 的 `direct` 以及 `ONLY_INTEROP_{ECN,LATCH,SIP,BWE}`。
 
+### 新增：AES-128 的 I 帧播放列表、RTSP RECORD 会话的 RTCP 同步、rendition report 的查询串（only-media）
+
+ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）：
+
+- AES-128 下的 HLS I 帧播放列表（此前 `HlsConfig::iframe_playlist` 在此被忽略）：每个 I 帧是
+  独立资源 `/<path>/iframe-<n>.ts`（`.m4s`），即 ADR-070 的范围所指字节，用其分片的密钥整体
+  加密，IV 为它在 I 帧播放列表中的媒体序列号；列表中不带 `EXT-X-BYTERANGE`，位于其分片的
+  `EXT-X-KEY` 之后。随分片保存并计入 `max_bytes`。播放器无法解密 AES-128 分片中间的字节范围
+  （分片中间没有 PKCS #7 填充）。明文 I 帧播放列表不再以 `EXT-X-KEY:METHOD=NONE` 开头。
+- `RtspConfig::rtcp_sync`（新增，默认开启）：RECORD 会话按推流端的 RTCP 发送者报告对齐轨道，
+  与客户端拉流相同（ADR-070）：交织 RTCP 通道、复用在 RTP 通道上的 RTCP、UDP 的 RTP 与 RTCP
+  端口。`false` 保持之前按到达计时。
+- 行为变更，hub：时间早于订阅者收到的第一个包的音频（任何非视频包）在音频达到该时间之前被
+  丢弃，而不再交给会把它钳成同一时间戳的 sink（同步后的流与 AAC 预滚可能早于 GOP 的关键帧；
+  ffmpeg 经 RTSP 播放时报告 DTS 非单调）。
+- LL-HLS 的 `EXT-X-RENDITION-REPORT` URI 带上请求的查询串（去掉 `_HLS_` 指令），令牌因此能
+  到达另一 rendition 的阻塞重载。
+- 测试：AES-128 I 帧解密后等于未加密的范围（两种格式、分段、密钥轮换）；ffmpeg 把每个 AES-128
+  I 帧解码为一帧源画面并能播放 I 帧播放列表；经 TCP、RTP 复用 RTCP 与 UDP 的 RECORD 会话收到
+  偏斜的发送者报告（500 ms，早到与迟到；60 s 被忽略；关闭同步）。
+  `tools/interop/media/hls-iframes.sh`：无头 Chrome 中的 hls.js 与 Shaka Player（fMP4 上的
+  trick play）。`tests/client_bench.rs` 新增基准 `rtsp-record`。
+- 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替 7 轮，取中位数，head / base）：hub 扇出 1.005 / 0.994 / 0.996（1 / 16 / 256 个订阅者；最初逐订阅者逐包检查新下限的版本在 256 时为 1.043，现在仅当有订阅者尚未越过下限时循环才检查）；RTSP RECORD 入流（新增 `rtsp-record`）1.007、RTSP 拉流 1.003、RTMP 拉流 0.996；`bench_segmenting` MPEG-TS 1.065、MPEG-TS LL-HLS 0.981、fMP4 0.961、fMP4 LL-HLS 1.020、AES-128 0.995 至 0.998、SAMPLE-AES MPEG-TS 1.015、`cbcs` 1.002。分片的逐包路径没有改动（独立加密的 I 帧、查询串与新路由都是按分片或按请求，且不在此基准中）；普通 MPEG-TS 与 fMP4 反向变化，`cbcs` 在仅 hub.rs 不同的两轮之间从 1.055 变为 1.002：属于代码布局。macOS aarch64 上同样的比较全部在 0.97 至 1.03 之间。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：

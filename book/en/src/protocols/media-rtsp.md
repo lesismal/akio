@@ -32,7 +32,10 @@ tokens travel).
 - Publishers: `ANNOUNCE` reserves the path (a second publisher gets 453 at once), `SETUP` with
   `mode=record`, `RECORD`. The stream goes live as soon as the parameter sets are known, from
   the SDP or in band (VP8, VP9, AV1: from the first keyframe). RTP carries presentation times only, so the server derives decode times
-  for B-frame video (a reorder-depth estimate, no frame held back).
+  for B-frame video (a reorder-depth estimate, no frame held back). The tracks are lined up by
+  the publisher's RTCP sender reports (`RtspConfig::rtcp_sync`, on by default; interleaved RTCP
+  channels, RTCP muxed on the RTP channel, the UDP ports), as in the client's pull below, so
+  audio and video keep the offset they were captured with.
 - Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), VP8 (RFC 7741), VP9
   (RFC 9628), AV1 (AOM RTP payload; the three through only-rtp, a frame missing a packet is
   dropped), AAC (`mpeg4-generic` `AAC-hbr`), Opus, G.711.
@@ -51,6 +54,11 @@ ffmpeg -re ... -c:v libx265 -c:a libopus -f rtsp -rtsp_transport udp rtsp://127.
 ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/live/cam            # and udp
 ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 ```
+
+The same file records with sender reports that put audio 500 ms after video while the packets
+arrive together (TCP, RTCP muxed on the RTP channels, UDP; reports before the media and
+halfway): the hub's times follow the reports, reports 60 s apart are ignored, and with
+`rtcp_sync` off the times follow the arrival.
 
 ## WHIP and WHEP
 
@@ -165,6 +173,5 @@ reconnecting pulls and pushes (`tests/mediamtx_reconnect.rs`, `--ignored`).
 ## Not supported
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
-outlive their connection; RTCP receiver reports to recorders, and RTCP-based A/V sync for
-recording sessions (the client's pull has it). Client: redirects, re-resolving the host name on
+outlive their connection; RTCP receiver reports to recorders. Client: redirects, re-resolving the host name on
 reconnect. WebRTC: simulcast, transcoding.

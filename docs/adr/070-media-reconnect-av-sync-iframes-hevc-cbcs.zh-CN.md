@@ -126,3 +126,7 @@
 - 未完成：H.264、H.265（fMP4）与 AAC 以外编码的 SAMPLE-AES；AES-128 下的 I 帧播放列表；
   rendition report URI 上的查询串（构建播放列表处不知道媒体播放列表的查询串）；RTSP 服务端
   RECORD 会话中的 RTCP 同步（recorder 已支持，服务端未开启）；重连时重新解析主机名。
+
+注（2026-11-22）：AES-128 下的 I 帧播放列表、RTSP 服务端 RECORD 会话中的 RTCP 同步与
+rendition report URI 上的查询串已在 [ADR-075](075-media-aes-iframes-record-sync-report-queries.zh-CN.md)
+中完成。

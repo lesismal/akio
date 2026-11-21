@@ -123,6 +123,35 @@ ADR-077 (docs/adr/077-webrtc-ecn-latching-unbundled-cc.md), additive:
   `Endpoint`s); `webrtc-interop` gains `sip-gateway`, `client … sip`, fec-server `direct` and
   `ONLY_INTEROP_{ECN,LATCH,SIP,BWE}`.
 
+### Added: AES-128 I-frame playlists, RTCP sync for RTSP RECORD sessions, query strings on rendition reports (only-media)
+
+ADR-075 (docs/adr/075-media-aes-iframes-record-sync-report-queries.md):
+
+- HLS I-frame playlists with AES-128 (`HlsConfig::iframe_playlist` was ignored there): each
+  I-frame is a resource of its own, `/<path>/iframe-<n>.ts` (`.m4s`), the bytes ADR-070's range
+  names encrypted whole with its segment's key, the IV its media sequence number in the I-frame
+  playlist; listed without `EXT-X-BYTERANGE` after its segment's `EXT-X-KEY`. Kept with its
+  segment and counted against `max_bytes`. Byte ranges into AES-128 segments cannot be
+  decrypted by players (no PKCS #7 padding mid-segment). Clear I-frame playlists no longer
+  start with `EXT-X-KEY:METHOD=NONE`.
+- `RtspConfig::rtcp_sync` (new, default on): RECORD sessions line their tracks up by the
+  publisher's RTCP sender reports, as the client's pull does (ADR-070): interleaved RTCP
+  channels, RTCP muxed on the RTP channel, the UDP RTP and RTCP ports. `false` keeps the
+  arrival-based times of before.
+- Behaviour change, the hub: audio (any non-video packet) timed before the first packet a
+  subscriber hears is left out until audio reaches that time, rather than handed to sinks that
+  clamped it to one repeated timestamp (synchronized streams and AAC priming can lead the GOP's
+  keyframe; ffmpeg playing over RTSP reported non-monotonic DTS).
+- LL-HLS `EXT-X-RENDITION-REPORT` URIs carry the request's query string without its `_HLS_`
+  directives, so tokens reach the other rendition's blocking reloads.
+- Tests: AES-128 I-frames decrypting to the unencrypted ranges (both formats, parts, key
+  rotation); ffmpeg decoding every AES-128 I-frame to one source frame and playing the I-frame
+  playlist; RECORD sessions over TCP, RTP-muxed RTCP and UDP fed skewed sender reports (500 ms,
+  early and late; 60 s ignored; sync off). `tools/interop/media/hls-iframes.sh`: hls.js and
+  Shaka Player (trick play over fMP4) in headless Chrome. New benchmark `rtsp-record` in
+  `tests/client_bench.rs`.
+- Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, 7 alternating rounds, medians, head / base): hub fan-out 1.005 / 0.994 / 0.996 (1 / 16 / 256 subscribers; a first version that checked the new floor per subscriber and packet cost 1.043 at 256, now the loop checks floors only while a subscriber has one to pass); RTSP RECORD ingest (`rtsp-record`, new) 1.007, RTSP pull 1.003, RTMP pull 0.996; `bench_segmenting` MPEG-TS 1.065, MPEG-TS LL-HLS 0.981, fMP4 0.961, fMP4 LL-HLS 1.020, AES-128 0.995 to 0.998, SAMPLE-AES MPEG-TS 1.015, `cbcs` 1.002. Nothing changed on the segmenting packet path (sealed I-frames, queries and the new routes are per segment or per request, and not in this benchmark); the plain MPEG-TS and fMP4 cases move in opposite directions and `cbcs` moved from 1.055 to 1.002 between two runs that differed only in hub.rs: code layout. On macOS aarch64 the same comparison is 0.97 to 1.03 throughout.
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:

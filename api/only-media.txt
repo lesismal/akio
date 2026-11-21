@@ -2305,6 +2305,7 @@ pub only_media::rtsp::RtspConfig::max_write_queue: usize
 pub only_media::rtsp::RtspConfig::play_wait: core::option::Option<core::time::Duration>
 pub only_media::rtsp::RtspConfig::realm: alloc::string::String
 pub only_media::rtsp::RtspConfig::request_timeout: core::time::Duration
+pub only_media::rtsp::RtspConfig::rtcp_sync: bool
 pub only_media::rtsp::RtspConfig::sender_report_interval: core::time::Duration
 pub only_media::rtsp::RtspConfig::session_timeout: core::time::Duration
 pub only_media::rtsp::RtspConfig::write_queue_limit: usize

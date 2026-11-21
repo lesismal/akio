@@ -8,7 +8,10 @@
 //! SET_PARAMETER (keep-alives), and ANNOUNCE, SETUP with `mode=record` and RECORD for
 //! publishers. ANNOUNCE reserves the path ([`Hub::reserve`]): a second publisher is refused at
 //! once and the stream goes live when the parameter sets are known (from the SDP's
-//! `sprop-*`, or in band; for VP8, VP9 and AV1, from the first keyframe).
+//! `sprop-*`, or in band; for VP8, VP9 and AV1, from the first keyframe). A recording's
+//! tracks are lined up by the publisher's RTCP sender reports ([`RtspConfig::rtcp_sync`], on
+//! by default), so audio and video keep the offset they were captured with rather than the
+//! one their first packets arrived with.
 //!
 //! A player starts with the hub's cached GOP and gets RTCP sender reports; over TCP it is cut
 //! back to keyframes ([`Dropper`]) when it falls behind and closed when it falls further.
@@ -95,6 +98,14 @@ pub struct RtspConfig {
     /// byte arrived; a client trickling a request is closed. Default 10 s; `Duration::ZERO`
     /// disables it.
     pub request_timeout: Duration,
+    /// Line a recording session's tracks up by the publisher's RTCP sender reports (over the
+    /// interleaved RTCP channels, RTCP muxed on the RTP channel or port, and the UDP RTCP
+    /// port): each track's times start at its first packet's arrival, then move to the
+    /// publisher's NTP clock relative to the first track synchronized, forward only, before
+    /// the stream goes live when the reports come first (as the RTSP client's
+    /// [`RtspClientConfig::rtcp_sync`]). Corrections over 10 s and reports with no NTP time
+    /// are ignored. Default `true`; `false` keeps arrival-based times.
+    pub rtcp_sync: bool,
 }
 
 impl Default for RtspConfig {
@@ -108,6 +119,7 @@ impl Default for RtspConfig {
             sender_report_interval: Duration::from_secs(3),
             session_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(10),
+            rtcp_sync: true,
         }
     }
 }
@@ -120,6 +132,7 @@ impl fmt::Debug for RtspConfig {
             .field("max_write_queue", &self.max_write_queue)
             .field("session_timeout", &self.session_timeout)
             .field("request_timeout", &self.request_timeout)
+            .field("rtcp_sync", &self.rtcp_sync)
             .finish_non_exhaustive()
     }
 }
@@ -239,7 +252,10 @@ fn read_udp(sock: &UdpSocket, server: &Weak<Inner>) {
         });
         if let Some((rec, media)) = route {
             if let Some(rec) = rec.upgrade() {
-                if !rtp::is_rtcp(&buf[..n]) {
+                // From the RTCP port, or muxed on the RTP port: sender reports sync the track.
+                if rtp::is_rtcp(&buf[..n]) {
+                    lock(&rec).rtcp(media, &buf[..n]);
+                } else {
                     lock(&rec).push(media, &buf[..n]);
                 }
             }
@@ -639,11 +655,17 @@ impl RtspSession {
     fn interleaved(&self, channel: u8, data: &[u8]) {
         let Some(rec) = &self.recorder else { return };
         let media = self.setups.iter().find_map(|(&m, p)| match *p {
-            Path::Tcp { rtp, .. } if rtp == channel => Some(m),
+            Path::Tcp { rtp, .. } if rtp == channel => Some((m, false)),
+            Path::Tcp { rtcp, .. } if rtcp == channel => Some((m, true)),
             _ => None,
         });
-        if let Some(m) = media {
-            lock(rec).push(m, data);
+        if let Some((m, rtcp)) = media {
+            // The RTCP channel, or RTCP muxed on the RTP one: sender reports sync the track.
+            if rtcp || rtp::is_rtcp(data) {
+                lock(rec).rtcp(m, data);
+            } else {
+                lock(rec).push(m, data);
+            }
         }
     }
 
@@ -757,6 +779,7 @@ impl RtspSession {
         let Some(rec) = Recorder::new(Arc::new(publisher), &s.media) else {
             return Response::new(415);
         };
+        let rec = rec.sync(self.srv.cfg.rtcp_sync);
         self.announced = s.media;
         self.path = Some(path);
         self.recorder = Some(Arc::new(Mutex::new(rec)));

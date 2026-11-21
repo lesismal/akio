@@ -627,3 +627,248 @@ fn session_timeout_is_enforced() {
         assert!(closed_within(&mut c.s, Duration::from_millis(100)).is_none());
     }
 }
+
+/// The H.264 + AAC sample: its tracks and packets.
+fn av_sample() -> (only_media::Tracks, Vec<Packet>) {
+    use only_media::flv;
+    let mut dec = flv::Decoder::new();
+    let (mut tracks, mut pkts) = (None, Vec::new());
+    for t in flv::Demuxer::new()
+        .feed(include_bytes!("../testdata/h264_aac.flv"))
+        .unwrap()
+    {
+        for e in dec.write(t.tag_type, t.ts, &t.body) {
+            match e {
+                flv::Event::Tracks(t) => tracks = Some(t),
+                flv::Event::Packet(p) => pkts.push(p),
+                _ => {}
+            }
+        }
+    }
+    (tracks.unwrap(), pkts)
+}
+
+/// What a hub subscriber hears: (track, pts) of every packet.
+#[derive(Clone, Default)]
+struct Heard(Arc<std::sync::Mutex<Vec<(usize, only_media::av::Time)>>>);
+
+impl only_media::Sink for Heard {
+    fn on_tracks(&mut self, _t: &only_media::Tracks) {}
+    fn on_packet(&mut self, p: &Arc<Packet>) {
+        self.0.lock().unwrap().push((p.track, p.pts));
+    }
+    fn on_close(&mut self, _e: only_media::HubError) {}
+}
+
+/// How a test publisher sends RTP and RTCP.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Carry {
+    /// Interleaved, RTCP on its own channel.
+    Tcp,
+    /// Interleaved, RTCP muxed on the RTP channel.
+    TcpMux,
+    /// UDP, RTCP from its own port to the server's RTCP port.
+    Udp,
+}
+
+/// An NTP timestamp (32.32) of `t` after an arbitrary epoch.
+fn ntp(t: only_media::av::Time) -> u64 {
+    use only_media::av::SECOND;
+    let t = t + 3_900_000_000 * SECOND;
+    let secs = (t / SECOND) as u64;
+    let frac = (((t % SECOND) as u128) << 32) / SECOND as u128;
+    (secs << 32) | frac as u64
+}
+
+/// Records the H.264 + AAC sample into a server with `cfg` over `carry`, with sender reports
+/// that put audio `skew` after video (at their first frames), sent before the media (`early`)
+/// or halfway through. Every packet goes out at once, so arrival says nothing of the skew.
+/// Returns how much later audio is than video at the start and at the end of what the hub's
+/// subscriber heard (each against the source's own offset), and whether audio times only
+/// increase.
+fn record_with_reports(
+    cfg: RtspConfig,
+    carry: Carry,
+    early: bool,
+    skew: only_media::av::Time,
+) -> (only_media::av::Time, only_media::av::Time, bool) {
+    use only_media::{SubscribeOptions, rtp::Packetizer};
+    let (hub, engine, addr) = start(cfg);
+    let (tracks, pkts) = av_sample();
+    let mut s = sdp::Session::new("rec");
+    for (i, t) in tracks.iter().enumerate() {
+        s.media
+            .push(sdp::track_media(t, 96 + i as u8, &format!("streamid={i}")).unwrap());
+    }
+    let url = format!("rtsp://{addr}/live/sync");
+    let mut c = Client::connect(addr);
+    let (st, head, _) = c.request(
+        "ANNOUNCE",
+        &url,
+        "Content-Type: application/sdp\r\n",
+        &s.to_string(),
+    );
+    assert_eq!(st, 200, "{head}");
+    // Per track: UDP sockets (RTP, RTCP) and the server's ports.
+    let mut udp = Vec::new();
+    for i in 0..tracks.len() {
+        let transport = if carry == Carry::Udp {
+            let a = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let b = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let t = format!(
+                "RTP/AVP;unicast;client_port={}-{};mode=record",
+                a.local_addr().unwrap().port(),
+                b.local_addr().unwrap().port()
+            );
+            udp.push((a, b));
+            t
+        } else {
+            format!(
+                "RTP/AVP/TCP;unicast;interleaved={}-{};mode=record",
+                2 * i,
+                2 * i + 1
+            )
+        };
+        let (st, head, _) = c.request(
+            "SETUP",
+            &format!("{url}/streamid={i}"),
+            &format!("Transport: {transport}\r\n"),
+            "",
+        );
+        assert_eq!(st, 200, "{head}");
+        if carry == Carry::Udp {
+            let ports = head
+                .lines()
+                .find_map(|l| l.split("server_port=").nth(1))
+                .unwrap();
+            let (r, t) = ports.split(';').next().unwrap().split_once('-').unwrap();
+            let srv = |p: &str| SocketAddr::new(addr.ip(), p.trim().parse().unwrap());
+            udp[i].0.connect(srv(r)).unwrap();
+            udp[i].1.connect(srv(t)).unwrap();
+        }
+    }
+    let heard = Heard::default();
+    let mut opts = SubscribeOptions::new(PeerInfo::default());
+    opts.wait = Some(Duration::from_secs(5));
+    let _sub = hub.subscribe("live/sync", heard.clone(), opts).unwrap();
+    let (st, head, _) = c.request("RECORD", &url, "Session: x\r\n", "");
+    assert_eq!(st, 200, "{head}");
+
+    let mut packers: Vec<Packetizer> = tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Packetizer::new(t, 96 + i as u8))
+        .collect();
+    let first = |k: usize| pkts.iter().find(|p| p.track == k).unwrap().pts;
+    let (v0, a0) = (first(0), first(1));
+    // Video's first frame at NTP 0, audio's at `skew`.
+    let srs: Vec<Vec<u8>> = [(v0, 0), (a0, skew)]
+        .iter()
+        .enumerate()
+        .map(|(i, &(t, at))| packers[i].sender_report(ntp(at), packers[i].timestamp(t)))
+        .collect();
+    let mut wire = Vec::new();
+    let send = |wire: &mut Vec<u8>, track: usize, rtcp: bool, data: &[u8]| match carry {
+        Carry::Tcp => interleaved((2 * track + usize::from(rtcp)) as u8, data, wire),
+        Carry::TcpMux => interleaved((2 * track) as u8, data, wire),
+        Carry::Udp => {
+            let (a, b) = &udp[track];
+            (if rtcp { b } else { a }).send(data).unwrap();
+            // Paced a little, so nothing is dropped on the way.
+            std::thread::sleep(Duration::from_micros(200));
+        }
+    };
+    if early {
+        for (i, sr) in srs.iter().enumerate() {
+            send(&mut wire, i, true, sr);
+        }
+    }
+    let mut out = Vec::new();
+    for (n, p) in pkts.iter().enumerate() {
+        if !early && n == pkts.len() / 2 {
+            for (i, sr) in srs.iter().enumerate().rev() {
+                send(&mut wire, i, true, sr);
+            }
+        }
+        out.clear();
+        packers[p.track].packetize(p, &mut out);
+        for r in &out {
+            send(&mut wire, p.track, false, r);
+        }
+    }
+    c.s.write_all(&wire).unwrap();
+    let count = |k: usize| pkts.iter().filter(|p| p.track == k).count();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let g = heard.0.lock().unwrap();
+        let n = |k: usize| g.iter().filter(|(t, _)| *t == k).count();
+        if n(0) >= count(0) && n(1) >= count(1) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "heard {} / {} video, {} / {} audio ({carry:?})",
+            n(0),
+            count(0),
+            n(1),
+            count(1)
+        );
+        drop(g);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let g = heard.0.lock().unwrap().clone();
+    engine.shutdown();
+    // Each track's offset (heard - source) at its first and last packet; RTP timestamps
+    // carry the source's spacing, so it only changes where a report moved the track.
+    let offset = |k: usize, last: bool| {
+        let mut src = pkts.iter().filter(|p| p.track == k);
+        let mut got = g.iter().filter(|(t, _)| *t == k);
+        if last {
+            got.next_back().unwrap().1 - src.next_back().unwrap().pts
+        } else {
+            got.next().unwrap().1 - src.next().unwrap().pts
+        }
+    };
+    let audio: Vec<_> = g.iter().filter(|(t, _)| *t == 1).map(|x| x.1).collect();
+    (
+        offset(1, false) - offset(0, false),
+        offset(1, true) - offset(0, true),
+        audio.windows(2).all(|w| w[1] >= w[0]),
+    )
+}
+
+/// RECORD sessions line their tracks up by the publisher's RTCP sender reports, which put
+/// audio 500 ms after video while the packets arrive together: over TCP (RTCP channels and
+/// RTCP muxed on the RTP channels) and UDP (RTCP port), reports before the media (aligned
+/// from the first packet) and halfway (later packets move, times keep increasing). Reports
+/// 60 s apart are ignored, and with `rtcp_sync` off the times follow the arrival.
+#[test]
+fn record_sessions_follow_sender_reports() {
+    let ms = |v: i64| v * MILLISECOND;
+    let near = |got: only_media::av::Time, want: only_media::av::Time, what: &str| {
+        assert!((got - want).abs() < ms(40), "{what}: {got} ns, want {want}");
+    };
+    for carry in [Carry::Tcp, Carry::TcpMux, Carry::Udp] {
+        let (start, end, rising) = record_with_reports(RtspConfig::default(), carry, true, ms(500));
+        near(start, ms(500), &format!("{carry:?} early, start"));
+        near(end, ms(500), &format!("{carry:?} early, end"));
+        assert!(rising, "{carry:?}");
+    }
+    for carry in [Carry::Tcp, Carry::Udp] {
+        let (start, end, rising) =
+            record_with_reports(RtspConfig::default(), carry, false, ms(500));
+        near(start, 0, &format!("{carry:?} late, start"));
+        near(end, ms(500), &format!("{carry:?} late, end"));
+        assert!(rising, "{carry:?} late: audio times go back");
+    }
+    let (start, end, _) = record_with_reports(RtspConfig::default(), Carry::Tcp, true, ms(60_000));
+    near(start, 0, "60 s apart, start");
+    near(end, 0, "60 s apart, end");
+    let mut off = RtspConfig::default();
+    off.rtcp_sync = false;
+    for carry in [Carry::Tcp, Carry::Udp] {
+        let (start, end, _) = record_with_reports(off.clone(), carry, true, ms(500));
+        near(start, 0, &format!("{carry:?} sync off, start"));
+        near(end, 0, &format!("{carry:?} sync off, end"));
+    }
+}
