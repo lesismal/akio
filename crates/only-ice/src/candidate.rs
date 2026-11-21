@@ -336,6 +336,30 @@ impl Candidate {
         self
     }
 
+    /// The same candidate reached through interface `scope`: an IPv6 link-local address
+    /// (`fe80::/10`) needs a scope id to be used, and SDP carries none, so a caller that knows
+    /// the link (the interface the mDNS answer that resolved it came from, or that a datagram
+    /// from it arrived on) sets it here; the address (and the base of a remote candidate, which
+    /// is the address) then carries it. Other addresses are returned unchanged. The agent
+    /// compares addresses with their scope id, so datagrams from this candidate must be fed
+    /// with the same one. The SDP line ([`Candidate::to_sdp`]) never shows it.
+    #[must_use]
+    pub fn with_scope_id(mut self, scope: u32) -> Candidate {
+        fn scoped(a: SocketAddr, scope: u32) -> SocketAddr {
+            match a {
+                SocketAddr::V6(v) if v.ip().segments()[0] & 0xffc0 == 0xfe80 => SocketAddr::V6(
+                    std::net::SocketAddrV6::new(*v.ip(), v.port(), v.flowinfo(), scope),
+                ),
+                a => a,
+            }
+        }
+        if self.base == self.addr {
+            self.base = scoped(self.base, scope);
+        }
+        self.addr = scoped(self.addr, scope);
+        self
+    }
+
     /// The name the SDP gives instead of the IP address: set by
     /// [`Candidate::with_hostname`], or the mDNS name a candidate parsed by
     /// [`Candidate::parse_resolved`] was resolved from.
@@ -666,6 +690,31 @@ impl fmt::Display for Candidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_ids() {
+        let c = Candidate::parse("candidate:1 1 udp 2122260223 fe80::1 5000 typ host").unwrap();
+        let s = c.clone().with_scope_id(4);
+        match (s.addr(), s.base()) {
+            (SocketAddr::V6(a), SocketAddr::V6(b)) => {
+                assert_eq!((a.scope_id(), b.scope_id(), a.port()), (4, 4, 5000));
+            }
+            _ => panic!("not IPv6"),
+        }
+        // The SDP line has no scope id.
+        assert_eq!(s.to_sdp(), c.to_sdp());
+        // Global IPv6 and IPv4 addresses are left alone.
+        let g = Candidate::parse("candidate:1 1 udp 2122260223 2001:db8::1 5000 typ host")
+            .unwrap()
+            .with_scope_id(4);
+        assert_eq!(g.addr().to_string(), "[2001:db8::1]:5000");
+        let v4 = Candidate::host("192.0.2.1:9".parse().unwrap()).with_scope_id(4);
+        assert_eq!(v4.addr().to_string(), "192.0.2.1:9");
+        // A local candidate's base is its own (the socket's) and stays.
+        let base: SocketAddr = "[fe80::2]:7".parse().unwrap();
+        let r = Candidate::server_reflexive("[fe80::1]:9".parse().unwrap(), base).with_scope_id(2);
+        assert_eq!(r.base(), base);
+    }
 
     fn a(s: &str) -> SocketAddr {
         s.parse().unwrap()

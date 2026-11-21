@@ -24,7 +24,7 @@
 //! address family the name has), unless that peer's remote ICE credentials changed meanwhile.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -77,7 +77,7 @@ struct State {
 /// The group of `v6`'s family on interface `scope` (IPv4 has no scope).
 fn group(v6: bool, scope: u32) -> SocketAddr {
     if v6 {
-        SocketAddr::V6(SocketAddrV6::new(mdns::GROUP_V6, mdns::PORT, 0, scope))
+        mdns::multicast_v6_on(scope)
     } else {
         mdns::MULTICAST_V4
     }

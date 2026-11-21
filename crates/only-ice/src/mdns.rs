@@ -22,6 +22,16 @@ pub const GROUP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 pub const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 /// The IPv4 mDNS group and port, where queries and multicast answers go.
 pub const MULTICAST_V4: SocketAddr = SocketAddr::new(IpAddr::V4(GROUP_V4), PORT);
+/// The IPv6 mDNS group and port, `[ff02::fb]:5353`. The group is link-scoped: to send to it,
+/// set the interface with [`multicast_v6_on`] (macOS refuses a datagram to it without one).
+pub const MULTICAST_V6: SocketAddr =
+    SocketAddr::V6(std::net::SocketAddrV6::new(GROUP_V6, PORT, 0, 0));
+
+/// [`MULTICAST_V6`] on interface `scope` (its index, the scope id of the link-local addresses
+/// on that link).
+pub const fn multicast_v6_on(scope: u32) -> SocketAddr {
+    SocketAddr::V6(std::net::SocketAddrV6::new(GROUP_V6, PORT, 0, scope))
+}
 
 /// Record type `A` (an IPv4 address).
 pub const TYPE_A: u16 = 1;
@@ -354,6 +364,18 @@ pub fn random_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multicast_groups() {
+        assert_eq!(MULTICAST_V6.to_string(), "[ff02::fb]:5353");
+        assert_eq!(MULTICAST_V4.to_string(), "224.0.0.251:5353");
+        match multicast_v6_on(3) {
+            SocketAddr::V6(a) => {
+                assert_eq!((*a.ip(), a.port(), a.scope_id()), (GROUP_V6, PORT, 3));
+            }
+            SocketAddr::V4(_) => panic!("IPv4"),
+        }
+    }
 
     #[test]
     fn query_round_trip() {
