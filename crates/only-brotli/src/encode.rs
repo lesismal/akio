@@ -1,18 +1,24 @@
 //! Brotli compression.
 //!
-//! The input is cut into meta-blocks (1 MiB, or 256 KiB at the levels with optimal parsing),
-//! each parsed into insert-and-copy commands by LZ77 (candidates from per-hash buckets of the
-//! last positions at levels 0..=6, from hash chains above): greedy matching at levels 0..=3,
-//! lazy matching (up to four steps, as in Google's encoder) at levels 4..=9, and at levels 10
-//! and 11 a shortest-path parse over all candidate matches priced with the code lengths of a
-//! previous pass (one pass at level 10, two at 11). Candidates also include the four distances
-//! of the distance ring, which cost a short code instead of extra bits. Each meta-block has one
-//! block type per category; from level 5 the literals are coded with a context map: the 64
-//! contexts of each context mode are clustered greedily by the cost of their histograms and the
-//! cheapest mode is kept. Prefix codes are limited to 15 bits (5
-//! for the code length code), written in the simple form when they have at most four symbols,
-//! and their code length sequences are run-length coded like Google's encoder does. A
-//! meta-block that would come out larger than its bytes is stored uncompressed instead.
+//! The input is cut into meta-blocks (1 MiB below level 10; at levels 10 and 11 up to twice the
+//! window, parsed in blocks of 256 KiB, or 256 KiB when streaming), each parsed into
+//! insert-and-copy commands by LZ77 (candidates from per-hash buckets of the last positions at
+//! levels 0..=6, from hash chains above): greedy matching at levels 0..=3, lazy matching (up to
+//! four steps, as in Google's encoder) at levels 4..=9, and at levels 10 and 11 a shortest-path
+//! parse over all candidate matches priced with the code lengths of a previous pass (one pass
+//! at level 10, two at 11). Candidates also include the four distances of the distance ring,
+//! which cost a short code instead of extra bits. From level 5 the literals are coded with a
+//! context map: the 64 contexts of each context mode are clustered greedily by the cost of
+//! their histograms and the cheapest mode is kept. From level 4 the literals, insert-and-copy
+//! symbols and distances are split into block types (`split`): greedily in one pass at levels
+//! 4..=9, each literal block type with its own codes for the context map's clusters where they
+//! pay; at 10 and 11 as Google's block splitter does, each literal block type with its own
+//! context mode, and a context map over block types and contexts for literals and distances,
+//! kept only when that makes the meta-block smaller.
+//! Prefix codes are limited to 15 bits (5 for the code length code), written in the simple form
+//! when they have at most four symbols, and their code length sequences are run-length coded
+//! like Google's encoder does. A meta-block that would come out larger than its bytes is stored
+//! uncompressed instead.
 
 use crate::Level;
 use crate::bits::BitWriter;
@@ -804,7 +810,7 @@ impl<'a> Encoder<'a> {
                 } else {
                     literal_model(mb.data, mb.start, cmds, self.p.modes, 0).mode
                 };
-                layouts.push(split_layout(&mb, mode, self.p.split_iters));
+                layouts.push(split_layout(&mb, mode, self.p.modes, self.p.split_iters));
             }
             let mut best: Option<BitWriter> = None;
             for lay in &layouts {
@@ -864,7 +870,6 @@ fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
     let mut cmd_hist = vec![vec![0u32; 704]; lay.cmd.ntypes];
     let mut lit_hist = vec![[0u32; 256]; lay.lit_trees];
     let mut dist_hist = vec![[0u32; 64]; lay.dist_trees];
-    let lut = 512 * usize::from(lay.mode);
     // Whether the literal tree depends on the context (or only on the block type).
     let lit_ctx = lay.lit_map.chunks(64).any(|m| m.iter().any(|&t| t != m[0]));
     let lit_map = &lay.lit_map[..];
@@ -882,6 +887,7 @@ fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
                 let (t, n) = lc.take(end - p);
                 let map = &lit_map[t * 64..t * 64 + 64];
                 if lit_ctx {
+                    let lut = 512 * usize::from(lay.modes[t]);
                     for q in p..p + n {
                         let tree = usize::from(map[context(data, q, lut)]);
                         lit_hist[tree][usize::from(data[q])] += 1;
@@ -914,8 +920,8 @@ fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
     let mut csw = Switcher::write(w, &lay.cmd);
     let mut dsw = Switcher::write(w, &lay.dist);
     w.bits(6, 0); // NPOSTFIX, NDIRECT
-    for _ in 0..lay.lit.ntypes {
-        w.bits(2, u64::from(lay.mode));
+    for &m in &lay.modes {
+        w.bits(2, u64::from(m));
     }
     write_var_len_u8(w, lay.lit_trees - 1);
     if lay.lit_trees > 1 {
@@ -949,6 +955,7 @@ fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
             let (t, n) = lsw.take(w, end - p);
             let map = &lit_map[t * 64..t * 64 + 64];
             if lit_ctx {
+                let lut = 512 * usize::from(lay.modes[t]);
                 for q in p..p + n {
                     let tree = usize::from(map[context(data, q, lut)]);
                     lit_codes[tree].put(w, usize::from(data[q]));
@@ -1508,10 +1515,10 @@ impl LiteralModel {
     }
 }
 
-/// How a meta-block is coded: the block types of each category, the literal context mode,
-/// and the context maps from block type and context to prefix code.
+/// How a meta-block is coded: the block types of each category, the literal context mode of
+/// each literal block type, and the context maps from block type and context to prefix code.
 struct Layout {
-    mode: u8,
+    modes: Vec<u8>,
     lit: BlockSplit,
     /// 64 entries per literal block type.
     lit_map: Vec<u8>,
@@ -1527,7 +1534,7 @@ impl Layout {
     /// One block type per category, literals coded with `m`.
     fn single(m: &LiteralModel) -> Self {
         Layout {
-            mode: m.mode,
+            modes: vec![m.mode],
             lit: BlockSplit::single(),
             lit_map: m.map.to_vec(),
             lit_trees: m.ntrees,
@@ -1742,7 +1749,7 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
         (map, n)
     };
     Layout {
-        mode: model.mode,
+        modes: vec![model.mode; lit.ntypes],
         lit,
         lit_map,
         lit_trees,
@@ -1753,9 +1760,10 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
     }
 }
 
-/// Block types for the literals, insert-and-copy symbols and distances of `cmds` (levels 10
-/// and 11), with context maps for literals (mode `mode`) and distances.
-fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
+/// Block types for the literals, insert-and-copy symbols and distances of `mb` (levels 10 and
+/// 11), with context maps for literals and distances; each literal block type takes the
+/// cheapest of `modes` (`mode` with one block type).
+fn split_layout(mb: &MetaBlock<'_>, mode: u8, modes: &[u8], iters: usize) -> Layout {
     let data = mb.data;
     let Symbols {
         lits,
@@ -1766,12 +1774,35 @@ fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
     let lit = split::split(&lits, 256, &split::LITERALS, iters);
     let cmd = split::split(&csyms, 704, &split::COMMANDS, iters);
     let dist = split::split(&dsyms, 64, &split::DISTANCES, iters);
-    let lut = 512 * usize::from(mode);
+    // Each literal block type's context mode: the cheapest after clustering its contexts.
+    let mut types_modes = vec![mode; lit.ntypes];
+    if lit.ntypes > 1 && modes.len() > 1 {
+        let mut best = vec![f64::INFINITY; lit.ntypes];
+        for &m in modes {
+            let lut = 512 * usize::from(m);
+            let mut hist = vec![[0u32; 256]; lit.ntypes * 64];
+            let mut cur = Cursor::new(&lit);
+            mb.literals(|pos, c, _| {
+                for p in pos..pos + c.insert as usize {
+                    let t = cur.next();
+                    hist[t * 64 + context(data, p, lut)][usize::from(data[p])] += 1;
+                }
+            });
+            for t in 0..lit.ntypes {
+                let (_, _, cost) = cluster(&hist[t * 64..t * 64 + 64]);
+                if cost < best[t] {
+                    best[t] = cost;
+                    types_modes[t] = m;
+                }
+            }
+        }
+    }
     let mut hs = vec![Histo::new(256); lit.ntypes * 64];
     let mut cur = Cursor::new(&lit);
     mb.literals(|pos, c, _| {
         for p in pos..pos + c.insert as usize {
             let t = cur.next();
+            let lut = 512 * usize::from(types_modes[t]);
             hs[t * 64 + context(data, p, lut)].add(usize::from(data[p]));
         }
     });
@@ -1783,7 +1814,7 @@ fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
     }
     let (dist_map, dist_trees) = split::context_map(&hs, 4, 0, 256);
     Layout {
-        mode,
+        modes: types_modes,
         lit,
         lit_map,
         lit_trees,
@@ -2437,7 +2468,7 @@ mod tests {
         };
         let model = literal_model(data, 0, &cmds, p.modes, 0);
         let lay = if p.optimal > 0 {
-            split_layout(&mb, model.mode, p.split_iters)
+            split_layout(&mb, model.mode, p.modes, p.split_iters)
         } else {
             greedy_layout(&mb, &model)
         };
