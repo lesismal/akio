@@ -35,7 +35,7 @@ The earlier per-area before/after figures are summarised under [History](#histor
 - **Servers** (the same handlers everywhere): `crates/only/examples/bench-server.rs` (TCP/TLS/UDP
   echo) and `crates/only-http/examples/http-bench.rs` (HTTP/1.1 + h2c + h2 over TLS, `/plaintext`,
   `/json`, WebSocket echo on `/ws`); the references in `tools/bench-ref/` (`tokio-ref`,
-  `hyper-ref`, `fib-ref`). TLS is TLS 1.3 with an ECDSA P-256 self-signed certificate everywhere
+  `hyper-ref`, `fib-ref`; `monoio-ref` for the separate [monoio](#monoio-2026-11-21-same-run-toolsbench-refmonoio-ref) run). TLS is TLS 1.3 with an ECDSA P-256 self-signed certificate everywhere
   (only-tls for `only`, tokio-rustls for tokio, `fib/tls` for fib). JSON: `only` uses a small
   hand-written serializer in the example, hyper serde_json, fib `encoding/json`.
 - **Load generators**: `h2load --h1` for HTTP/1.1 (wrk is not installed on the host; pipelining
@@ -49,7 +49,8 @@ The earlier per-area before/after figures are summarised under [History](#histor
   loopback path; there is no NIC, no real latency, no packet loss. **DPDK is not measured**: the
   host has no NIC that DPDK could drive, so `only-dpdk` appears only through its userspace TCP/IP
   stack over the in-process memory wire.
-- **h2load ceiling**: with 8 threads h2load tops out around 4–5 M requests/s. The h2c and h2-over-
+- **h2load ceiling**: with 8 threads h2load tops out around 4–5 M requests/s for HTTP/2 (HTTP/1.1
+  pipelined goes higher: 7.9 M against monoio-ref, see [monoio](#monoio-2026-11-21-same-run-toolsbench-refmonoio-ref)). The h2c and h2-over-
   TLS rows of `only` sit at that level (the server kept its 4 CPUs busy, but the client was close
   to saturated too), so they are lower bounds for `only`.
 - **Client-bound cells**: the TLS handshake rate is limited by the client (8 threads doing the
@@ -1807,13 +1808,92 @@ branch (`http-bench`, epoll); both built in one session and run interleaved unde
 **Answer: no measurable change.** h2c rounds on this host spread far wider than the difference: both directions appear in each row (h2c 64 × 16
 per-round ratios 0.54–1.26, 16 × 128 0.82–1.14), and the per-round ratio medians are within 1%.
 
+### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
+
+A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and
+rounds (median of 3 rounds of 5 s, `±` as above), from commit `e1129f98`, with monoio 0.2.4 added
+next to `only`, tokio and hyper. Every column in a table comes from the same run, so compare within
+a table rather than with the campaign tables above (`only`'s memory rows moved since then).
+The HTTP rows come from the first pass. The echo and memory rows come from a second pass two hours
+later with the same binaries: the first pass ran with the shell's 1024-descriptor limit, which
+broke the 1024-connection echo cases and the memory runs. The host was quiet during both passes
+(only the bench processes on the CPUs), but the load average had not decayed from earlier jobs
+when they started (6.3 and 12.7).
+
+**monoio-ref** is thread-per-core like `only`: 4 threads, each with its own monoio runtime and its
+own `SO_REUSEPORT` listener; `monoio-uring` uses the io_uring driver (1024 entries) and
+`monoio-epoll` the legacy (epoll) driver. TCP echo is a read/`write_all` loop, the same handler as
+`bench-server` and `tokio-ref`. HTTP/1.1 is a **minimal hand-written responder**: httparse on the
+read buffer, a `match` on the path, the response written into one output buffer per read batch
+(pipelined requests answered in one write), a `Date` header cached per thread, the JSON body
+serialised per request with serde_json. Its response is the same 130 bytes `only`'s `http-bench`
+sends for `/plaintext` (status line, `Content-Type`, `Content-Length`, `Date`, body), but it has no
+router, request or response object, header map, or connection state machine. monoio has no HTTP
+server of its own beyond such a loop (monoio-http is a separate crate, not measured), and no HTTP/2 or
+TLS listener is measured.
+
+HTTP/1.1 (requests/s, 256 connections, `h2load --h1`, pipelining `-m 16`):
+
+| Case | only-epoll | only-uring | hyper | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|
+| `GET /plaintext` | 696,854 (±17%) | 700,768 (±8%) | 643,562 | 881,367 (±11%) | 741,333 (±11%) |
+| `GET /plaintext`, pipelined ×16 | 4,322,201 (±5%) | 4,321,865 (±8%) | 754,404 (±9%) | 7,921,846 | 6,919,708 (±8%) |
+| `GET /json` | 662,192 (±6%) | 736,998 (±9%) | 624,301 | 900,928 | 734,315 (±10%) |
+
+TCP echo (requests/s; message size × connections):
+
+| Load | only-epoll | only-uring | tokio | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|
+| 64 B × 64 | 706,547 (±6%) | 733,788 (±11%) | 724,719 | 786,760 | 624,480 |
+| 64 B × 256 | 698,432 | 764,664 | 744,965 | 797,432 (±15%) | 678,869 (±19%) |
+| 64 B × 1024 | 726,553 (±20%) | 791,075 (±4%) | 754,597 (±10%) | 836,726 | 705,594 |
+| 1 KiB × 64 | 675,190 (±13%) | 756,785 (±23%) | 701,517 | 749,488 | 593,584 (±10%) |
+| 1 KiB × 256 | 721,026 (±8%) | 692,644 (±10%) | 724,442 | 809,909 (±4%) | 649,071 (±7%) |
+| 1 KiB × 1024 | 722,416 | 748,299 | 592,807 (±19%) | 828,701 | 664,771 |
+| 16 KiB × 64 | 370,764 (±8%) | 414,190 | 443,602 | 432,135 (±4%) | 377,337 (±6%) |
+| 16 KiB × 256 | 396,327 | 400,136 (±7%) | 440,823 | 448,014 | 359,079 (±6%) |
+| 16 KiB × 1024 | 420,904 | 407,363 (±4%) | 438,138 (±6%) | 458,455 | 420,380 |
+
+Memory per connection (bytes, 10,000 connections idle after one exchange, `tools/bench/mem.sh`, 3
+rounds, all within ±1%; tokio-ref and monoio-ref read with a 4 KiB buffer here, `TOKIO_REF_BUF`,
+`MONOIO_REF_BUF`):
+
+| Connection state | only-epoll | only-uring | tokio | hyper | monoio-uring | monoio-epoll |
+|---|---:|---:|---:|---:|---:|---:|
+| TCP after one 64 B echo | 675 | 724 | 5,008 | – | 4,692 | 4,712 |
+| HTTP/1.1 keep-alive after one request | 1,087 | 1,139 | – | 17,446 | 8,987 | 9,006 |
+
+What this shows:
+
+- **TCP echo**: monoio-uring is 0.99–1.17× only-uring and the fastest column in most rows;
+  monoio-epoll is 0.88–1.02× only-epoll. The rows sit at the same 0.6–0.85 M plateau as in the
+  campaign, which points at the closed-loop client as much as at the servers (see above), so read
+  them as "same class, monoio's io_uring driver a little ahead".
+- **Keep-alive HTTP/1.1**: monoio-uring is 1.26× only-uring for `/plaintext` and 1.22× for
+  `/json`; monoio-epoll is 1.06–1.11× only-epoll, inside the spread. **Pipelined**: monoio-uring
+  is 1.83× and monoio-epoll 1.60× `only`. With one read and one write per batch of 16 requests on
+  both sides, the difference is the work per request: `only` runs every request through
+  only-http (parser, router, request and response objects, header handling), monoio-ref through
+  httparse and a fixed response. So these rows measure `only`'s HTTP/1 framework overhead
+  against a near-empty handler more than monoio against `only`'s runtime; they are also an upper
+  bound worth chasing in `only`'s HTTP/1 pipelined path.
+- **Memory**: `only` keeps no read buffer per idle connection (epoll reads into a per-thread
+  buffer; io_uring uses its provided-buffer ring), 0.7–1.1 KB per connection. monoio's I/O takes
+  ownership of the buffer for the whole read, so an idle connection waiting in `read` holds its
+  buffer: 4.7 KB with a 4 KiB buffer for echo and 9 KB for HTTP/1.1 (read buffer plus the output
+  buffer monoio-ref keeps). That is a property of monoio-ref's design as much as of monoio (a
+  handler could release its buffers between requests), but it is the natural way to write it.
+- With 7.9 M requests/s here, h2load's HTTP/1.1 pipelined ceiling on this host is above the 4–5 M
+  noted under Limits; that figure stands for HTTP/2.
+
 ## Not measured
 
 - **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.
 - QUIC and HTTP/3 against quic-go or another implementation (no reference server in the harness).
 - hyper over TLS (hyper-ref has no TLS listener); hyper for raw TCP/UDP/WebSocket (not its job).
-- Latency percentiles, memory under sustained load (only idle after one exchange), real networks,
-  monoio.
+- Latency percentiles, memory under sustained load (only idle after one exchange), real networks.
+- monoio over TLS or HTTP/2 (monoio-ref has neither), and monoio-http; monoio is measured above
+  only through the minimal monoio-ref handlers.
 
 ## History
 

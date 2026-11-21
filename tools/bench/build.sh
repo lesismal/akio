@@ -21,4 +21,4 @@ if [ -d "$FIB_SRC" ] && command -v go >/dev/null; then
   (cd /tmp/fibref && go mod edit -replace "github.com/lesismal/fib=$FIB_SRC" && go mod tidy >/dev/null 2>&1 &&
     go build -o "$T/fib-ref" .)
 fi
-ls -1 "$T"/release/echo-bench "$T"/release/examples/{bench-server,http-bench} "$T"/ref/release/{tokio-ref,hyper-ref,monoio-ref} "$T"/fib-ref 2>&1
+ls -1 "$T"/release/echo-bench "$T"/release/examples/{bench-server,http-bench} "$T"/ref/release/{tokio-ref,hyper-ref,monoio-ref} "$T"/fib-ref 2>&1 || true  # fib-ref is optional
