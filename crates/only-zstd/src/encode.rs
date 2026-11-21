@@ -3,6 +3,7 @@
 
 use crate::Level;
 use crate::bits::BitWriter;
+use crate::dict::Dictionary;
 use crate::fse::{self, CTable};
 use crate::huffman;
 use crate::tables::{
@@ -12,9 +13,11 @@ use crate::tables::{
 };
 use crate::xxhash::xxh64;
 
+mod opt;
+
 /// Largest window the encoder uses (the limit of RFC 9659 for HTTP): inputs up to this size
 /// are one segment, larger ones have an 8 MiB window.
-const MAX_WINDOW: usize = 8 << 20;
+pub(crate) const MAX_WINDOW: usize = 8 << 20;
 const MIN_MATCH: usize = 4;
 
 /// Match-finder settings of a level.
@@ -45,6 +48,18 @@ enum Strategy {
     DoubleFast,
     /// Hash chains, `depth` candidates, lazy matching (`lazy` / `lazy2`).
     Chain,
+    /// Binary trees of suffixes (`depth` nodes per position), and a shortest-path parse priced
+    /// by symbol statistics, in `n` passes (libzstd's `btopt` / `btultra`).
+    Optimal(u32),
+}
+
+/// Links per position in `chain`: two in the binary trees of the optimal parser.
+fn links(p: &Params) -> usize {
+    if let Strategy::Optimal(_) = p.strategy {
+        2
+    } else {
+        1
+    }
 }
 
 fn params(level: Level) -> Params {
@@ -64,18 +79,21 @@ fn params(level: Level) -> Params {
         13 => (96, 2, 256, 0, 20, 21),
         14 => (128, 2, 256, 0, 20, 21),
         15 => (160, 2, 256, 0, 21, 21),
-        16 => (192, 2, 512, 0, 21, 22),
-        17 => (256, 2, 512, 0, 21, 22),
-        18 => (320, 2, 512, 0, 22, 22),
-        19 => (384, 2, 512, 0, 22, 23),
-        20 => (512, 2, 1024, 0, 22, 23),
-        21 => (640, 2, 1024, 0, 22, 23),
-        _ => (768, 2, 1024, 0, 22, 23),
+        16 => (48, 2, 256, 0, 21, 22),
+        17 => (64, 2, 512, 0, 21, 22),
+        18 => (96, 2, 512, 0, 22, 22),
+        19 => (128, 2, 512, 0, 22, 23),
+        20 => (256, 2, 1024, 0, 22, 23),
+        21 => (384, 2, 1024, 0, 22, 23),
+        _ => (512, 2, 1024, 0, 22, 23),
     };
     let strategy = match level.get() {
         1 => Strategy::Fast(6),
         2 => Strategy::Fast(6),
         3 | 4 => Strategy::DoubleFast,
+        16 => Strategy::Optimal(1),
+        17 | 18 => Strategy::Optimal(2),
+        19..=22 => Strategy::Optimal(3),
         _ => Strategy::Chain,
     };
     Params {
@@ -93,37 +111,85 @@ fn params(level: Level) -> Params {
 /// output decodes with any Zstandard decoder (inputs up to 8 MiB are a single segment; larger
 /// ones use an 8 MiB window).
 pub fn compress(level: Level, data: &[u8]) -> Vec<u8> {
+    compress_impl(level, data, None)
+}
+
+/// [`compress`] with a dictionary: matches may refer back into its content, a trained
+/// dictionary's entropy tables and repeat offsets are where the frame starts, and the frame
+/// names its Dictionary_ID (none for raw content). Decode with the same dictionary
+/// ([`decompress_with_dictionary`](crate::decompress_with_dictionary), `zstd -D`).
+pub fn compress_with_dictionary(level: Level, data: &[u8], dict: &Dictionary) -> Vec<u8> {
+    compress_impl(level, data, Some(dict))
+}
+
+/// Writes a frame header: magic number, descriptor, window descriptor (none for a single
+/// segment), Dictionary_ID, Frame_Content_Size (`None`: unknown, never for a single segment).
+pub(crate) fn frame_header(
+    out: &mut Vec<u8>,
+    content_size: Option<u64>,
+    window_log: Option<u32>,
+    dict_id: u32,
+) {
+    out.extend_from_slice(&MAGIC.to_le_bytes());
+    let single = window_log.is_none();
+    let fcs_flag: u8 = match content_size {
+        None => 0,
+        Some(n) if single && n < 256 => 0,
+        Some(n) if (256..=65791).contains(&n) => 1,
+        Some(n) if u32::try_from(n).is_ok() => 2,
+        Some(_) => 3,
+    };
+    let did_flag: u8 = match dict_id {
+        0 => 0,
+        1..=255 => 1,
+        256..=65535 => 2,
+        _ => 3,
+    };
+    out.push(fcs_flag << 6 | u8::from(single) << 5 | 0x04 | did_flag);
+    if let Some(log) = window_log {
+        out.push(((log - 10) << 3) as u8);
+    }
+    out.extend_from_slice(&dict_id.to_le_bytes()[..[0, 1, 2, 4][usize::from(did_flag)]]);
+    if let Some(size) = content_size {
+        match fcs_flag {
+            0 => out.push(size as u8),
+            1 => out.extend_from_slice(&((size - 256) as u16).to_le_bytes()),
+            2 => out.extend_from_slice(&(size as u32).to_le_bytes()),
+            _ => out.extend_from_slice(&size.to_le_bytes()),
+        }
+    }
+}
+
+pub(crate) fn compress_impl(level: Level, data: &[u8], dict: Option<&Dictionary>) -> Vec<u8> {
     let p = params(level);
     let n = data.len();
     let mut out = Vec::with_capacity(n / 2 + 32);
-    out.extend_from_slice(&MAGIC.to_le_bytes());
     let single = n <= MAX_WINDOW;
-    let size = n as u64;
-    let fcs_flag: u8 = if single && size < 256 {
-        0
-    } else if (256..=65791).contains(&size) {
-        1
-    } else if u32::try_from(size).is_ok() {
-        2
-    } else {
-        3
-    };
-    out.push(fcs_flag << 6 | u8::from(single) << 5 | 0x04);
-    let window = if single {
-        n
-    } else {
-        // Window_Descriptor of 8 MiB: exponent 13, mantissa 0.
-        out.push(13 << 3);
-        MAX_WINDOW
-    };
-    match fcs_flag {
-        0 => out.push(size as u8),
-        1 => out.extend_from_slice(&((size - 256) as u16).to_le_bytes()),
-        2 => out.extend_from_slice(&(size as u32).to_le_bytes()),
-        _ => out.extend_from_slice(&size.to_le_bytes()),
-    }
+    // Window_Descriptor of 8 MiB when not a single segment: exponent 13, mantissa 0.
+    frame_header(
+        &mut out,
+        Some(n as u64),
+        (!single).then_some(23),
+        dict.map_or(0, Dictionary::id),
+    );
+    let window = if single { n } else { MAX_WINDOW };
     if n == 0 {
         out.extend_from_slice(&[1, 0, 0]); // last, raw, empty
+    } else if let Some(d) = dict {
+        // The dictionary's content right before the data.
+        let base = d.content().len();
+        let mut buf = Vec::with_capacity(base + n);
+        buf.extend_from_slice(d.content());
+        buf.extend_from_slice(data);
+        let mut e = Encoder::new(&buf, p, window);
+        e.load_dictionary(d);
+        let mut start = base;
+        while start < buf.len() {
+            let end = (start + BLOCK_MAX).min(buf.len());
+            e.dict_window(end - base, window);
+            e.block(start, end, end == buf.len(), &mut out);
+            start = end;
+        }
     } else {
         let mut e = Encoder::new(data, p, window);
         let mut start = 0;
@@ -222,7 +288,7 @@ fn update_reps(reps: &mut [u32; 3], off: u32, dist: usize, ll0: bool) {
     }
 }
 
-struct Encoder<'a> {
+pub(crate) struct Encoder<'a> {
     data: &'a [u8],
     p: Params,
     window: usize,
@@ -235,6 +301,66 @@ struct Encoder<'a> {
     reps: [u32; 3],
     lits: Vec<u8>,
     seqs: Vec<Seq>,
+    tables: Tables,
+    /// Symbol statistics of the optimal parser's last block.
+    stats: Option<Box<opt::Stats>>,
+}
+
+/// The state of an [`Encoder`] between the blocks of a stream, apart from the data.
+pub(crate) struct State {
+    p: Params,
+    window: usize,
+    hash_log: u32,
+    head: Vec<u32>,
+    chain: Vec<u32>,
+    chain_mask: usize,
+    inserted: usize,
+    reps: [u32; 3],
+    lits: Vec<u8>,
+    seqs: Vec<Seq>,
+    tables: Tables,
+    /// Symbol statistics of the optimal parser's last block.
+    stats: Option<Box<opt::Stats>>,
+}
+
+impl State {
+    /// A fresh state at `level` for a window of `window` bytes, with tables sized for inputs
+    /// of `size` bytes.
+    pub(crate) fn new(level: Level, window: usize, size: usize) -> State {
+        let p = params(level);
+        let bits = (usize::BITS - size.leading_zeros()).max(8);
+        let hash_log = p.hash_log.min(bits + 1);
+        let chain_log = p.chain_log.min(bits);
+        State {
+            p,
+            window,
+            hash_log,
+            head: vec![0; 1 << hash_log],
+            chain: vec![0; links(&p) << chain_log],
+            chain_mask: (1 << chain_log) - 1,
+            inserted: 0,
+            reps: [1, 4, 8],
+            lits: Vec::new(),
+            seqs: Vec::new(),
+            tables: Tables::new(None),
+            stats: None,
+        }
+    }
+
+    /// Positions are moved `drop` bytes down (the data before them was dropped); `drop` is a
+    /// multiple of [`State::align`].
+    pub(crate) fn rebase(&mut self, drop: usize) {
+        let d = drop as u32;
+        for v in self.head.iter_mut().chain(self.chain.iter_mut()) {
+            *v = v.saturating_sub(d);
+        }
+        self.inserted = self.inserted.saturating_sub(drop);
+    }
+
+    /// What dropped data must be a multiple of: the hash chains are indexed by position.
+    pub(crate) fn align(&self) -> usize {
+        self.chain_mask + 1
+    }
 }
 
 impl<'a> Encoder<'a> {
@@ -248,13 +374,96 @@ impl<'a> Encoder<'a> {
             window,
             hash_log,
             head: vec![0; 1 << hash_log],
-            chain: vec![0; 1 << chain_log],
+            chain: vec![0; links(&p) << chain_log],
             chain_mask: (1 << chain_log) - 1,
             inserted: 0,
             reps: [1, 4, 8],
             lits: Vec::new(),
             seqs: Vec::new(),
+            tables: Tables::new(None),
+            stats: None,
         }
+    }
+
+    /// An encoder over `data` (the stream so far, in the coordinates of `s`) continuing `s`.
+    pub(crate) fn resume(data: &'a [u8], s: State) -> Self {
+        Encoder {
+            data,
+            p: s.p,
+            window: s.window,
+            hash_log: s.hash_log,
+            head: s.head,
+            chain: s.chain,
+            chain_mask: s.chain_mask,
+            inserted: s.inserted,
+            reps: s.reps,
+            lits: s.lits,
+            seqs: s.seqs,
+            tables: s.tables,
+            stats: s.stats,
+        }
+    }
+
+    /// The state to continue from with [`Encoder::resume`].
+    pub(crate) fn suspend(self) -> State {
+        State {
+            p: self.p,
+            window: self.window,
+            hash_log: self.hash_log,
+            head: self.head,
+            chain: self.chain,
+            chain_mask: self.chain_mask,
+            inserted: self.inserted,
+            reps: self.reps,
+            lits: self.lits,
+            seqs: self.seqs,
+            tables: self.tables,
+            stats: self.stats,
+        }
+    }
+
+    /// Starts from `d` (whose content is `data[..d.content().len()]`): its repeat offsets and
+    /// entropy tables, and its positions in the hash tables of the fast match finders (hash
+    /// chains take them in as they go).
+    pub(crate) fn load_dictionary(&mut self, d: &Dictionary) {
+        if let Some(e) = &d.0.entropy {
+            self.reps = e.reps;
+        }
+        self.tables = Tables::new(Some(d));
+        self.fill_tables(0, d.content().len());
+    }
+
+    /// Enters the positions of `[from, to)` into the tables of the fast match finders.
+    pub(crate) fn fill_tables(&mut self, from: usize, to: usize) {
+        let d = self.data;
+        let to = to.min(d.len().saturating_sub(8));
+        match self.p.strategy {
+            Strategy::Fast(mls) => {
+                for i in from..to {
+                    self.head[hash_n(d, i, mls, self.hash_log)] = i as u32 + 1;
+                }
+            }
+            Strategy::DoubleFast => {
+                let slog = self.chain_mask.count_ones();
+                for i in from..to {
+                    self.head[hash_n(d, i, 8, self.hash_log)] = i as u32 + 1;
+                    self.chain[hash_n(d, i, 5, slog)] = i as u32 + 1;
+                }
+            }
+            Strategy::Chain | Strategy::Optimal(_) => {}
+        }
+    }
+
+    /// The farthest match for a block whose end is `end` bytes into a frame of `window`, with
+    /// a dictionary: everything, dictionary included, while the frame is within its window (a
+    /// decoder holds all of it then); the window after.
+    pub(crate) fn dict_window(&mut self, end: usize, window: usize) {
+        self.window = if end <= window { usize::MAX } else { window };
+    }
+
+    /// Sets the farthest match.
+    pub(crate) fn set_window(&mut self, window: usize) {
+        self.window = window;
     }
 
     #[inline]
@@ -266,6 +475,16 @@ impl<'a> Encoder<'a> {
 
     fn insert_to(&mut self, pos: usize) {
         let last = self.data.len().saturating_sub(MIN_MATCH - 1);
+        if let Strategy::Optimal(_) = self.p.strategy {
+            while self.inserted < pos.min(last) {
+                let i = self.inserted;
+                let best = self.bt_insert(i, 0, None);
+                // After a long match, positions are skipped (libzstd's speed-up).
+                self.inserted = i + 1 + best.saturating_sub(384).min(192);
+            }
+            self.inserted = self.inserted.max(pos);
+            return;
+        }
         while self.inserted < pos.min(last) {
             let i = self.inserted;
             let h = self.hash(i);
@@ -582,7 +801,7 @@ impl<'a> Encoder<'a> {
     }
 
     /// Writes the block `[start, end)`.
-    fn block(&mut self, start: usize, end: usize, last: bool, out: &mut Vec<u8>) {
+    pub(crate) fn block(&mut self, start: usize, end: usize, last: bool, out: &mut Vec<u8>) {
         let src = &self.data[start..end];
         let len = src.len();
         let header = |kind: u32, size: usize| {
@@ -595,19 +814,22 @@ impl<'a> Encoder<'a> {
             return;
         }
         let saved = self.reps;
+        let saved_tables = self.tables.clone();
         match self.p.strategy {
             Strategy::Fast(n) => self.parse_fast(start, end, n),
             Strategy::DoubleFast => self.parse_double_fast(start, end),
             Strategy::Chain => self.parse(start, end),
+            Strategy::Optimal(passes) => self.parse_optimal(start, end, passes),
         }
         let mut body = Vec::with_capacity(len);
-        encode_literals(&self.lits, &mut body);
-        encode_sequences(&self.seqs, &mut body);
+        encode_literals(&self.lits, &mut body, &mut self.tables);
+        encode_sequences(&self.seqs, &mut body, &mut self.tables);
         if body.len() < len {
             out.extend_from_slice(&header(2, body.len()));
             out.extend_from_slice(&body);
         } else {
             self.reps = saved;
+            self.tables = saved_tables;
             out.extend_from_slice(&header(0, len));
             out.extend_from_slice(src);
         }
@@ -627,7 +849,7 @@ fn raw_literals_header(kind: u8, n: usize, out: &mut Vec<u8>) {
 }
 
 #[inline(never)]
-fn encode_literals(lits: &[u8], out: &mut Vec<u8>) {
+fn encode_literals(lits: &[u8], out: &mut Vec<u8>, t: &mut Tables) {
     let n = lits.len();
     if n > 1 && lits.iter().all(|&b| b == lits[0]) {
         raw_literals_header(1, n, out);
@@ -644,39 +866,96 @@ fn encode_literals(lits: &[u8], out: &mut Vec<u8>) {
         for &b in lits {
             counts[usize::from(b)] += 1;
         }
-        if let Some(enc) = huffman::Encoder::new(&counts) {
-            let estimate = enc.description.len() + enc.cost_bits(&counts) / 8;
-            if estimate < limit {
-                let four = n >= 256;
-                let mut body = enc.description.clone();
-                if enc.encode(lits, four, &mut body).is_some() {
-                    let c = body.len();
-                    let (sf, lh) = if !four {
-                        (0u64, 3)
-                    } else if n <= 1023 && c <= 1023 {
-                        (1, 3)
-                    } else if n <= 16383 && c <= 16383 {
-                        (2, 4)
-                    } else {
-                        (3, 5)
+        let fresh = huffman::Encoder::new(&counts);
+        let fresh_cost = fresh
+            .as_ref()
+            .map(|e| e.description.len() + e.cost_bits(&counts) / 8);
+        // The previous block's (or the dictionary's) table again, without a description
+        // (Treeless_Literals_Block), when it codes every literal and comes out smaller.
+        let repeat_cost = t
+            .huf
+            .as_ref()
+            .filter(|e| e.covers(&counts))
+            .map(|e| e.cost_bits(&counts) / 8);
+        let repeat = match (repeat_cost, fresh_cost) {
+            (Some(r), Some(f)) => r < f,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let (enc, estimate, kind) = if repeat {
+            (t.huf.as_ref(), repeat_cost.unwrap_or(usize::MAX), 3u64)
+        } else {
+            (fresh.as_ref(), fresh_cost.unwrap_or(usize::MAX), 2u64)
+        };
+        if let Some(enc) = enc.filter(|_| estimate < limit) {
+            let four = n >= 256;
+            let mut body = if kind == 2 {
+                enc.description.clone()
+            } else {
+                Vec::new()
+            };
+            if enc.encode(lits, four, &mut body).is_some() {
+                let c = body.len();
+                let (sf, lh) = if !four {
+                    (0u64, 3)
+                } else if n <= 1023 && c <= 1023 {
+                    (1, 3)
+                } else if n <= 16383 && c <= 16383 {
+                    (2, 4)
+                } else {
+                    (3, 5)
+                };
+                if c < limit && (four || c <= 1023) {
+                    let shift = match lh {
+                        3 => 14,
+                        4 => 18,
+                        _ => 22,
                     };
-                    if c < limit && (four || c <= 1023) {
-                        let shift = match lh {
-                            3 => 14,
-                            4 => 18,
-                            _ => 22,
-                        };
-                        let v = 2 | sf << 2 | (n as u64) << 4 | (c as u64) << shift;
-                        out.extend_from_slice(&v.to_le_bytes()[..lh]);
-                        out.extend_from_slice(&body);
-                        return;
+                    let v = kind | sf << 2 | (n as u64) << 4 | (c as u64) << shift;
+                    out.extend_from_slice(&v.to_le_bytes()[..lh]);
+                    out.extend_from_slice(&body);
+                    if kind == 2 {
+                        t.huf = fresh;
                     }
+                    return;
                 }
             }
         }
     }
     raw_literals_header(0, n, out);
     out.extend_from_slice(lits);
+}
+
+/// A sequence field's table as the decoder holds it after a block, for the repeat mode.
+#[derive(Clone, Debug)]
+enum Prev {
+    None,
+    Predef,
+    Rle(u8),
+    Fse(Vec<i16>, u32),
+}
+
+/// The tables a decoder holds after the blocks so far (or from a dictionary): the Huffman
+/// code of the literals and the literal length, offset and match length tables.
+#[derive(Clone)]
+pub(crate) struct Tables {
+    huf: Option<huffman::Encoder>,
+    seq: [Prev; 3],
+}
+
+impl Tables {
+    pub(crate) fn new(dict: Option<&Dictionary>) -> Tables {
+        match dict.and_then(|d| d.0.entropy.as_ref()) {
+            None => Tables {
+                huf: None,
+                seq: [Prev::None, Prev::None, Prev::None],
+            },
+            Some(e) => Tables {
+                huf: Some(huffman::Encoder::from_weights(&e.huf_weights)),
+                seq: e.norms.clone().map(|(n, l)| Prev::Fse(n, l)),
+            },
+        }
+    }
 }
 
 /// How one sequence field is coded.
@@ -707,13 +986,14 @@ impl FieldCode {
     }
 }
 
-/// Chooses the cheapest of RLE, predefined and FSE-compressed tables for `codes`: returns the
-/// mode, the coder and the table description.
+/// Chooses the cheapest of RLE, predefined, FSE-compressed and repeated tables for `codes`:
+/// returns the mode, the coder and the table description, and updates `prev`.
 fn choose_table(
     codes: &[u8],
     default_norm: &[i16],
     default_log: u32,
     max_log: u32,
+    prev: &mut Prev,
 ) -> (u8, FieldCode, Vec<u8>) {
     let mut counts = [0u32; 64];
     for &c in codes {
@@ -723,6 +1003,10 @@ fn choose_table(
     let counts = &counts[..=last];
     let distinct = counts.iter().filter(|&&c| c > 0).count();
     if distinct == 1 {
+        if matches!(prev, Prev::Rle(s) if usize::from(*s) == last) {
+            return (3, FieldCode::Rle, Vec::new());
+        }
+        *prev = Prev::Rle(last as u8);
         return (1, FieldCode::Rle, vec![last as u8]);
     }
     let mut best_mode = 0u8;
@@ -732,6 +1016,13 @@ fn choose_table(
         f64::INFINITY
     };
     let mut best_table: Option<(Vec<i16>, u32, Vec<u8>)> = None;
+    if let Prev::Fse(norm, log) = prev {
+        let cost = fse::cost_bits(counts, norm, *log);
+        if cost < best_cost {
+            best_cost = cost;
+            best_mode = 3;
+        }
+    }
     let min_log = (highbit(distinct as u32) + 1).max(5);
     let useful = (highbit(codes.len() as u32) + 2).max(min_log);
     for log in min_log..=max_log.min(useful) {
@@ -745,20 +1036,26 @@ fn choose_table(
             best_table = Some((norm, log, desc));
         }
     }
-    match best_table {
-        Some((norm, log, desc)) if best_mode == 2 => {
-            (2, FieldCode::Table(CTable::new(&norm, log)), desc)
+    match (best_mode, best_table, &*prev) {
+        (2, Some((norm, log, desc)), _) => {
+            let c = CTable::new(&norm, log);
+            *prev = Prev::Fse(norm, log);
+            (2, FieldCode::Table(c), desc)
         }
-        _ => (
-            0,
-            FieldCode::Table(CTable::new(default_norm, default_log)),
-            Vec::new(),
-        ),
+        (3, _, Prev::Fse(norm, log)) => (3, FieldCode::Table(CTable::new(norm, *log)), Vec::new()),
+        _ => {
+            *prev = Prev::Predef;
+            (
+                0,
+                FieldCode::Table(CTable::new(default_norm, default_log)),
+                Vec::new(),
+            )
+        }
     }
 }
 
 #[inline(never)]
-fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>) {
+fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>, t: &mut Tables) {
     let n = seqs.len();
     if n < 128 {
         out.push(n as u8);
@@ -774,9 +1071,13 @@ fn encode_sequences(seqs: &[Seq], out: &mut Vec<u8>) {
     let ll: Vec<u8> = seqs.iter().map(|s| ll_code(s.ll)).collect();
     let ml: Vec<u8> = seqs.iter().map(|s| ml_code(s.ml)).collect();
     let of: Vec<u8> = seqs.iter().map(|s| highbit(s.off) as u8).collect();
-    let (ll_mode, ll_c, ll_d) = choose_table(&ll, &LL_DEFAULT_NORM, LL_DEFAULT_LOG, LL_MAX_LOG);
-    let (of_mode, of_c, of_d) = choose_table(&of, &OF_DEFAULT_NORM, OF_DEFAULT_LOG, OF_MAX_LOG);
-    let (ml_mode, ml_c, ml_d) = choose_table(&ml, &ML_DEFAULT_NORM, ML_DEFAULT_LOG, ML_MAX_LOG);
+    let [p_ll, p_of, p_ml] = &mut t.seq;
+    let (ll_mode, ll_c, ll_d) =
+        choose_table(&ll, &LL_DEFAULT_NORM, LL_DEFAULT_LOG, LL_MAX_LOG, p_ll);
+    let (of_mode, of_c, of_d) =
+        choose_table(&of, &OF_DEFAULT_NORM, OF_DEFAULT_LOG, OF_MAX_LOG, p_of);
+    let (ml_mode, ml_c, ml_d) =
+        choose_table(&ml, &ML_DEFAULT_NORM, ML_DEFAULT_LOG, ML_MAX_LOG, p_ml);
     out.push(ll_mode << 6 | of_mode << 4 | ml_mode << 2);
     out.extend_from_slice(&ll_d);
     out.extend_from_slice(&of_d);

@@ -7,10 +7,19 @@
 //!   blocks; raw, RLE, Huffman (one or four streams) and treeless literals; predefined, RLE,
 //!   FSE-compressed and repeated sequence tables; repeat offsets; Frame_Content_Size and the
 //!   XXH64 content checksum are verified.
-//! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 over hash
-//!   chains (greedy, lazy or lazy2 matching by level, repeat offsets tried first), Huffman-coded
-//!   literals and FSE-coded sequences with tables chosen per block by size, raw or RLE blocks
-//!   when those are smaller. Levels follow zstd's 1..=22 scale.
+//! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 with libzstd's
+//!   `fast` / `double_fast` match finders (levels 1..=4), hash chains with lazy matching
+//!   (5..=15) and, from level 16, binary trees of suffixes and a shortest-path parse priced
+//!   with the symbol statistics of a previous pass or block (libzstd's `btopt` / `btultra`);
+//!   Huffman-coded literals and FSE-coded sequences with tables chosen per block by size, the
+//!   previous block's tables repeated when cheaper, raw or RLE blocks when those are smaller.
+//!   Levels follow zstd's 1..=22 scale.
+//! - [`Compressor`] / [`Decompressor`]: streaming, with bounded memory: input in pieces of any
+//!   size, output a block at a time ([`Flush`] makes everything so far decodable); the decoder
+//!   holds the frame's window (at most 8 MiB by default) and one block of input.
+//! - [`Dictionary`]: raw content or the trained format of `zstd --train` (Dictionary_ID,
+//!   entropy tables, repeat offsets), for [`compress_with_dictionary`],
+//!   [`decompress_with_dictionary`] and the streaming types.
 //! - [`xxh64`]: the XXH64 hash behind the content checksum.
 //!
 //! ```
@@ -27,12 +36,17 @@
 //! The decoder accepts and rejects what libzstd does, with one intentional difference: it
 //! requires every Huffman-coded literal stream to end exactly where its symbols do
 //! ([`Error::BadHuffmanStream`]), which libzstd's fast four-stream decoder does not check.
-//! Frames that need a dictionary are refused ([`Error::DictionaryRequired`]), as by libzstd
-//! without one. There is no streaming decoder: the whole input is decoded at once.
+//! Frames that need a dictionary are refused without one ([`Error::DictionaryRequired`]), as by
+//! libzstd. The streaming decoder holds the frame's window, not the whole frame, so a match
+//! reaching further back than the window (and what it still holds beyond it) is refused
+//! ([`Error::BadOffset`]), as by libzstd's streaming decoder.
 #![warn(clippy::unwrap_used)]
 
 mod bits;
+mod cstream;
 mod decode;
+mod dict;
+mod dstream;
 mod encode;
 mod fse;
 mod huffman;
@@ -43,9 +57,38 @@ mod xxhash;
 #[doc(hidden)]
 pub mod fuzzing;
 
+pub use cstream::Compressor;
 pub use decode::decompress;
-pub use encode::compress;
+pub use dict::Dictionary;
+pub use dstream::{DEFAULT_MAX_WINDOW, Decompressor, decompress_with_dictionary};
+pub use encode::{compress, compress_with_dictionary};
 pub use xxhash::xxh64;
+
+/// What a streaming [`Compressor::compress`] call does after taking its input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Flush {
+    /// Nothing: input may stay buffered until a block (128 KiB) is full (best compression).
+    #[default]
+    None,
+    /// Write everything taken so far as complete blocks, so that a decoder can produce all of
+    /// it; later data may still refer back to earlier data.
+    Flush,
+    /// Write everything and end the frame (last block, content checksum).
+    Finish,
+}
+
+/// What one [`Decompressor`] call did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Progress {
+    /// Input bytes consumed (taken into the decompressor: they are not passed again).
+    pub consumed: usize,
+    /// Output bytes written.
+    pub produced: usize,
+    /// The input so far ends with a complete frame and all of its output was delivered.
+    pub done: bool,
+}
 
 /// Compression level on zstd's scale, 1 (fastest) to 22 (smallest output).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -92,8 +135,13 @@ pub enum Error {
     BadFrameHeader,
     /// The frame announces a window larger than 2³¹ + 2³⁰ · 7/8 bytes (libzstd's limit).
     WindowTooLarge,
-    /// The frame names a dictionary (not supported).
+    /// The frame names a dictionary and none was given.
     DictionaryRequired,
+    /// The frame names a dictionary other than the one given.
+    WrongDictionary,
+    /// A trained dictionary is malformed: invalid entropy tables, or repeat offsets that are
+    /// zero or larger than its content.
+    BadDictionary,
     /// A block of the reserved type, or larger than the frame's maximum block size.
     BadBlock,
     /// The literals section header is invalid, or repeats a Huffman table that does not exist.
@@ -128,6 +176,8 @@ impl std::fmt::Display for Error {
             Error::BadFrameHeader => "invalid frame header",
             Error::WindowTooLarge => "window size too large",
             Error::DictionaryRequired => "frame needs a dictionary",
+            Error::WrongDictionary => "frame needs another dictionary",
+            Error::BadDictionary => "malformed dictionary",
             Error::BadBlock => "invalid block",
             Error::BadLiterals => "invalid literals section",
             Error::BadHuffmanTable => "invalid Huffman tree description",

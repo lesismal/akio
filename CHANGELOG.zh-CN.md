@@ -187,6 +187,32 @@ ADR-072（docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md）�
 不带 `a=group:BUNDLE` 的多段远端 offer 现在以每段一个传输应答（此前的应答带一个 offer 未要求的
 BUNDLE 组，无法连通）。
 
+### 新增：only-brotli 与 only-zstd 的流式 API、字典与更好的最高级别压缩率
+
+ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），增量 API：
+
+- 两个 crate 都有流式 API，形状同 only-deflate：`Compressor::compress(input, &mut out, Flush)`
+  （`Flush::{None, Flush, Finish}`、窗口设置、`reset`）以及 `Decompressor::decompress_vec` /
+  `decompress`，返回 `Progress { consumed, produced, done }`；无论输入如何内存都有界：zstd 解码器至多
+  收集一个块，持有帧的窗口（`max_window`，默认 8 MiB）；brotli 解码器从最后一条完整命令或头部单元处
+  继续，因此在任何位置切分输入（包括逐字节）代价都与整体输入相差无几，且至多比交付提前解码 1 MiB
+  （`max_window_bits`）。zstd 的 `Flush` 把待压缩输入写成一个块，brotli 的则以空元数据块结束 meta-block。
+- zstd 字典：`Dictionary`（原始内容，或 `zstd --train` 的训练格式，带 Dictionary_ID、码表与重复偏移）、
+  `compress_with_dictionary`、`decompress_with_dictionary`、流式类型上的 `with_dictionary`；新错误
+  `WrongDictionary`、`BadDictionary`。brotli 原始（LZ77 前缀）字典，用法同 `brotli -D` 与 Google 的
+  `BROTLI_SHARED_DICTIONARY_RAW`：`compress_with_dictionary`、`decompress_with_dictionary`、
+  `with_dictionary`；新错误 `WindowTooLarge`。两者都与命令行工具双向核对。
+- 压缩率：zstd 16..=22 级做最优解析（libzstd 的 `btopt` / `btultra`：二叉树匹配查找、按在块之间沿用的
+  符号统计定价的最短路径、1–3 遍），各级别都可复用上一个块的码表；brotli 10..=11 级使用静态字典词。在
+  基准语料上 zstd 19 现在比 libzstd 大 0.3–1.4%（之前 1.3–7.6%），级别 16 在 Silesia 与 JSON 上更小，brotli 11 比 libbrotli 大 0.9–4.7%（之前 3.5–11.4%；
+  brotli 块分割仍未完成）。
+- 这些级别的压缩变慢，与参考编码器一样：zstd 19 为 3.5–10.9 MB/s（libzstd 3.9–12），brotli 10–11 在
+  文本上约为之前速度的一半（docs/BENCHMARKS.zh-CN.md）。
+- 解码速度基本不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%；小证书链至多慢 2%，约 0.15 µs；
+  docs/BENCHMARKS.zh-CN.md）。
+- 模糊测试目标 `zstd_stream`、`zstd_stream_roundtrip`、`brotli_stream`、`brotli_stream_roundtrip`。
+- only-http 不变：流式响应仍不压缩（ADR-069 第 4 节）。
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

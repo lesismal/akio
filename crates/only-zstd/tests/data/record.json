@@ -1,0 +1,12 @@
+{
+ "id": 7,
+ "name": "margaret",
+ "email": "barbara@example.com",
+ "roles": [
+  "billing",
+  "admin"
+ ],
+ "active": true,
+ "created": "2026-12-06T19:12:00Z",
+ "tags": []
+}

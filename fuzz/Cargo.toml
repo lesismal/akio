@@ -865,3 +865,31 @@ path = "fuzz_targets/qpack_encoder.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "brotli_stream"
+path = "fuzz_targets/brotli_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "brotli_stream_roundtrip"
+path = "fuzz_targets/brotli_stream_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd_stream"
+path = "fuzz_targets/zstd_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd_stream_roundtrip"
+path = "fuzz_targets/zstd_stream_roundtrip.rs"
+test = false
+doc = false
+bench = false

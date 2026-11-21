@@ -11,6 +11,7 @@ pub only_brotli::Error::BadWindow
 pub only_brotli::Error::TooLarge
 pub only_brotli::Error::TrailingData
 pub only_brotli::Error::Truncated
+pub only_brotli::Error::WindowTooLarge
 impl core::clone::Clone for only_brotli::Error
 pub fn only_brotli::Error::clone(&self) -> Self
 impl core::cmp::Eq for only_brotli::Error
@@ -30,6 +31,64 @@ impl core::marker::Sync for only_brotli::Error
 impl core::marker::Unpin for only_brotli::Error
 impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Error
 impl core::panic::unwind_safe::UnwindSafe for only_brotli::Error
+#[non_exhaustive] pub enum only_brotli::Flush
+pub only_brotli::Flush::Finish
+pub only_brotli::Flush::Flush
+pub only_brotli::Flush::None
+impl core::clone::Clone for only_brotli::Flush
+pub fn only_brotli::Flush::clone(&self) -> Self
+impl core::cmp::Eq for only_brotli::Flush
+impl core::cmp::PartialEq for only_brotli::Flush
+pub fn only_brotli::Flush::eq(&self, &Self) -> bool
+impl core::default::Default for only_brotli::Flush
+pub fn only_brotli::Flush::default() -> Self
+impl core::fmt::Debug for only_brotli::Flush
+pub fn only_brotli::Flush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_brotli::Flush
+pub fn only_brotli::Flush::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_brotli::Flush
+impl core::marker::StructuralPartialEq for only_brotli::Flush
+impl core::marker::Send for only_brotli::Flush
+impl core::marker::Sync for only_brotli::Flush
+impl core::marker::Unpin for only_brotli::Flush
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Flush
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::Flush
+pub struct only_brotli::Compressor
+impl only_brotli::Compressor
+pub fn only_brotli::Compressor::compress(&mut self, &[u8], &mut alloc::vec::Vec<u8>, only_brotli::Flush)
+pub fn only_brotli::Compressor::is_finished(&self) -> bool
+pub fn only_brotli::Compressor::new(only_brotli::Level) -> only_brotli::Compressor
+pub fn only_brotli::Compressor::reset(&mut self)
+pub fn only_brotli::Compressor::total_in(&self) -> u64
+pub fn only_brotli::Compressor::window_bits(self, u32) -> only_brotli::Compressor
+pub fn only_brotli::Compressor::with_dictionary(only_brotli::Level, &[u8]) -> only_brotli::Compressor
+impl core::fmt::Debug for only_brotli::Compressor
+pub fn only_brotli::Compressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_brotli::Compressor
+impl core::marker::Sync for only_brotli::Compressor
+impl core::marker::Unpin for only_brotli::Compressor
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Compressor
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::Compressor
+pub struct only_brotli::Decompressor
+impl only_brotli::Decompressor
+pub fn only_brotli::Decompressor::decompress(&mut self, &[u8], &mut [u8]) -> core::result::Result<only_brotli::Progress, only_brotli::Error>
+pub fn only_brotli::Decompressor::decompress_vec(&mut self, &[u8], &mut alloc::vec::Vec<u8>, usize) -> core::result::Result<only_brotli::Progress, only_brotli::Error>
+pub fn only_brotli::Decompressor::is_done(&self) -> bool
+pub fn only_brotli::Decompressor::max_window_bits(self, u32) -> only_brotli::Decompressor
+pub fn only_brotli::Decompressor::new() -> only_brotli::Decompressor
+pub fn only_brotli::Decompressor::reset(&mut self)
+pub fn only_brotli::Decompressor::total_in(&self) -> u64
+pub fn only_brotli::Decompressor::total_out(&self) -> u64
+pub fn only_brotli::Decompressor::with_dictionary(&[u8]) -> only_brotli::Decompressor
+impl core::default::Default for only_brotli::Decompressor
+pub fn only_brotli::Decompressor::default() -> Self
+impl core::fmt::Debug for only_brotli::Decompressor
+pub fn only_brotli::Decompressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_brotli::Decompressor
+impl core::marker::Sync for only_brotli::Decompressor
+impl core::marker::Unpin for only_brotli::Decompressor
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Decompressor
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::Decompressor
 pub struct only_brotli::Level(_)
 impl only_brotli::Level
 pub const only_brotli::Level::BEST: only_brotli::Level
@@ -59,5 +118,27 @@ impl core::marker::Sync for only_brotli::Level
 impl core::marker::Unpin for only_brotli::Level
 impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Level
 impl core::panic::unwind_safe::UnwindSafe for only_brotli::Level
+#[non_exhaustive] pub struct only_brotli::Progress
+pub only_brotli::Progress::consumed: usize
+pub only_brotli::Progress::done: bool
+pub only_brotli::Progress::produced: usize
+impl core::clone::Clone for only_brotli::Progress
+pub fn only_brotli::Progress::clone(&self) -> Self
+impl core::cmp::Eq for only_brotli::Progress
+impl core::cmp::PartialEq for only_brotli::Progress
+pub fn only_brotli::Progress::eq(&self, &Self) -> bool
+impl core::default::Default for only_brotli::Progress
+pub fn only_brotli::Progress::default() -> Self
+impl core::fmt::Debug for only_brotli::Progress
+pub fn only_brotli::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_brotli::Progress
+impl core::marker::StructuralPartialEq for only_brotli::Progress
+impl core::marker::Send for only_brotli::Progress
+impl core::marker::Sync for only_brotli::Progress
+impl core::marker::Unpin for only_brotli::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Progress
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::Progress
 pub fn only_brotli::compress(only_brotli::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_brotli::compress_with_dictionary(only_brotli::Level, &[u8], &[u8]) -> alloc::vec::Vec<u8>
 pub fn only_brotli::decompress(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>
+pub fn only_brotli::decompress_with_dictionary(&[u8], usize, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>

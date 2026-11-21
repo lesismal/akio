@@ -226,6 +226,39 @@ ADR-072 (docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.md), additive:
 A remote offer of several sections without `a=group:BUNDLE` is answered with a transport per
 section (it was answered with a BUNDLE group the offer did not ask for, which did not connect).
 
+### Added: streaming, dictionaries and better top-level ratios in only-brotli and only-zstd
+
+ADR-069 (docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.md), additive API:
+
+- Streaming in both crates, shaped like only-deflate's: `Compressor::compress(input, &mut out,
+  Flush)` (`Flush::{None, Flush, Finish}`, a window setting, `reset`) and
+  `Decompressor::decompress_vec` / `decompress` returning `Progress { consumed, produced, done }`,
+  with bounded memory whatever the input: the zstd decoder gathers at most a block and holds the
+  frame's window (`max_window`, 8 MiB by default); the brotli decoder resumes at the last
+  complete command or header unit, so input split anywhere (a byte at a time included) costs
+  little more than whole input, and decodes at most 1 MiB ahead of delivery
+  (`max_window_bits`). zstd `Flush` writes the pending input as a block, brotli's ends the
+  meta-block with an empty metadata block.
+- zstd dictionaries: `Dictionary` (raw content, or the trained format of `zstd --train` with
+  its Dictionary_ID, tables and repeat offsets), `compress_with_dictionary`,
+  `decompress_with_dictionary`, `with_dictionary` on the streaming types; new errors
+  `WrongDictionary`, `BadDictionary`. brotli raw (LZ77 prefix) dictionaries, as `brotli -D` and
+  Google's `BROTLI_SHARED_DICTIONARY_RAW` use them: `compress_with_dictionary`,
+  `decompress_with_dictionary`, `with_dictionary`; new error `WindowTooLarge`. Both checked
+  against the CLIs in both directions.
+- Ratios: zstd levels 16..=22 parse optimally (libzstd's `btopt` / `btultra`: binary-tree match
+  finder, a shortest path priced from symbol statistics carried from block to block, 1-3
+  passes) and every level may repeat the previous block's tables; brotli 10..=11 use static
+  dictionary words. zstd 19 is now 0.3-1.4% larger than libzstd on the benchmark corpus (was
+  1.3-7.6%) and level 16 smaller on Silesia and JSON, brotli 11 0.9-4.7% larger
+  than libbrotli (was 3.5-11.4%; brotli block splitting is still not done).
+- Compression at those levels is slower, as in the reference encoders: zstd 19 3.5-10.9 MB/s
+  (libzstd 3.9-12), brotli 10-11 about half the speed on text (docs/BENCHMARKS.md).
+- Decoding speed about unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per
+  cell; small certificate chains up to 2% slower, about 0.15 us; docs/BENCHMARKS.md).
+- Fuzz targets `zstd_stream`, `zstd_stream_roundtrip`, `brotli_stream`, `brotli_stream_roundtrip`.
+- only-http unchanged: streamed responses stay uncompressed (ADR-069 section 4).
+
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 
 ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):

@@ -1626,7 +1626,89 @@ JSON, 0.7–0.8% larger on HTML and JavaScript and 2–3% larger on the certific
 rest; it had looked at four times Google's candidates). Level 11 and zstd level 19 are
 unchanged in speed (0.7× and 1.3× the C libraries' speed on Silesia) and stay 3–11% (brotli 11)
 and 1–8% (zstd 19) larger than the reference encoders' output, which use block splitting,
-static-dictionary references and optimal parsing (`btultra2`) that these encoders do not have.
+static-dictionary references and optimal parsing (`btultra2`) that these encoders do not have
+(since then: static-dictionary references and optimal parsing, see "Streaming, dictionaries and
+ratios" below).
+
+### Streaming, dictionaries and ratios (ADR-069, same-run A/B, CPU 2, 2026-11-21)
+
+Same quiet host (`quiet.sh`), `tools/codec-bench` built (codegen-units 1, thin LTO) against main
+(`57696b6b`, "before") and this branch, run alternately in one session pinned to CPU 2.
+
+**Decoding** (the C library's stream decoded by ours, levels 1/3/19 zstd and 1/5/11 brotli on the
+five HTTP payloads and the first 20 MB of Silesia, best of two alternated rounds each): zstd
+−1.8…+3.1% per cell (JSON −0.8…−1.8%, JavaScript +1.5…+3.1%, Silesia +0.2…+0.7%), brotli
+−2.2…+4.9% (certificate chains −0.7…−2.2%, JavaScript +3.3…+4.9%, Silesia +0.1…+0.9%).
+Single cells move by about ±2% between rounds. Small streams were checked again with a dedicated
+loop (one-shot decoding of the C libraries' streams of both certificate chains at zstd levels 1
+and 3 and brotli 1, 5 and 11, plus zstd level 1 HTML; three or four alternated rounds, best of
+each), built with the benchmark's profile and with the workspace's default release profile (16
+codegen units): zstd −1.1…−0.3% (benchmark profile) and +1.3…+2.3% (default; 2.7 KB chain level
+1: 3,301 → 3,343 ns), brotli +0.7…+2.0% and −0.0…+1.6% (2.7 KB chain level 5: 7,211 → 7,357 ns
+and 7,263 → 7,279 ns), that is at most about 0.15 µs per certificate chain. The brotli residual
+is the resumable header reader (a meta-block header read unit by unit); reading a context map's
+entries in one unit in the one-shot instantiation took the default profile from +1.0…+1.9% to
+this. The streaming decoders share the one-shot decoders' code (the brotli command loop and
+header reader are `const STREAM: bool` generics whose one-shot instantiation compiles the
+checkpoints out). A first run of this check compared base with base: both checkouts are members
+of a workspace at the same relative paths, so cargo gave their crates the same artifact names in
+the shared target directory and took the newer base build as fresh; the branch's sources had to
+be touched.
+One regression was found and fixed on the way: reading a Huffman table through the dictionary
+loader's two-step path (weights, then table) made zstd level 1 on the 2.7 KB chain 5.6% slower
+(Huffman literals in a tiny frame); the decoder reads tables in one step again.
+
+**zstd levels 16 and 19** (sizes: before → now / libzstd 1.5.7; compression MB/s: before → now
+/ libzstd; one call per cell):
+
+| Corpus | Level | Size before → now / C | Compress MB/s before → now / C |
+|---|---:|---|---|
+| Silesia, first 20 MB | 16 | 6,188,665 → 5,822,635 / 5,946,994 | 10.8 → 6.6 / 14.6 |
+| Silesia, first 20 MB | 19 | 6,160,823 → 5,785,046 / 5,723,399 | 7.1 → 3.5 / 5.5 |
+| JSON (655 KB) | 16 | 47,113 → 45,122 / 47,463 | 30.4 → 6.5 / 18.6 |
+| JSON (655 KB) | 19 | 46,894 → 44,386 / 44,267 | 25.3 → 3.7 / 4.3 |
+| HTML (45 KB) | 16 | 7,179 → 6,996 / 6,984 | 62.0 → 7.7 / 9.6 |
+| HTML (45 KB) | 19 | 7,173 → 6,985 / 6,967 | 57.2 → 5.3 / 3.9 |
+| JS (92 KB) | 16 | 20,729 → 20,212 / 20,132 | 29.4 → 9.1 / 11.7 |
+| JS (92 KB) | 19 | 20,726 → 20,190 / 20,102 | 26.6 → 6.9 / 5.6 |
+| cert chain (2.7 KB) | 16 | 1,736 → 1,725 / 1,702 | 52.7 → 13.4 / 15.8 |
+| cert chain (2.7 KB) | 19 | 1,736 → 1,724 / 1,701 | 50.7 → 10.3 / 11.0 |
+| cert chain (4.1 KB) | 16 | 2,563 → 2,546 / 2,535 | 55.6 → 14.2 / 15.8 |
+| cert chain (4.1 KB) | 19 | 2,563 → 2,545 / 2,531 | 58.6 → 10.9 / 12.0 |
+
+Level 19 is now 0.3–1.4% larger than libzstd's (was 1.3–7.6%), at 0.6–1.4× its speed; level 16
+is smaller than libzstd's on Silesia and JSON. The old levels 16–19 were lazy hash-chain parsers,
+so the speed drop is the cost of optimal parsing, as in libzstd. The first optimal parser took
+its candidates from the hash chains: JSON level 19 came out at 44,588 bytes and 0.8 MB/s (30×
+slower than before), the long chains of near-equal candidates taking 75–85% of the time, and
+level 16, priced from the predefined distributions in every block, was 3.7% *larger* than before
+on Silesia (6,418,358). Binary trees of suffixes (libzstd's `bt` match finder) cut the candidate
+search on JSON from about 630 to 80 ms with better candidates (44,386), and carrying the symbol
+statistics from block to block brought level 16 on Silesia to 5,822,635.
+
+**brotli levels 10 and 11** (static dictionary references; sizes before → now / libbrotli 1.2.1;
+compression MB/s before → now):
+
+| Corpus | Level | Size before → now / C | Compress MB/s before → now |
+|---|---:|---|---|
+| Silesia, first 20 MB | 10 | 5,820,990 → 5,821,005 / 5,384,216 | 1.8 → 1.6 |
+| Silesia, first 20 MB | 11 | 5,599,939 → 5,599,939 / 5,348,162 | 0.7 → 0.6 |
+| JSON (655 KB) | 10 | 44,598 → 43,755 / 43,022 | 2.1 → 1.4 |
+| JSON (655 KB) | 11 | 43,638 → 42,754 / 41,813 | 0.6 → 0.5 |
+| HTML (45 KB) | 10 | 6,780 → 6,227 / 6,220 | 3.7 → 1.4 |
+| HTML (45 KB) | 11 | 6,739 → 6,202 / 6,048 | 2.0 → 1.1 |
+| JS (92 KB) | 10 | 20,203 → 19,617 / 19,655 | 4.9 → 1.9 |
+| JS (92 KB) | 11 | 19,936 → 19,252 / 19,077 | 3.0 → 1.5 |
+| cert chain (2.7 KB) | 10 | 1,701 → 1,648 / 1,620 | 10.2 → 4.7 |
+| cert chain (2.7 KB) | 11 | 1,693 → 1,640 / 1,615 | 6.3 → 3.6 |
+| cert chain (4.1 KB) | 10 | 2,517 → 2,460 / 2,442 | 2.4 → 2.3 |
+| cert chain (4.1 KB) | 11 | 2,515 → 2,454 / 2,430 | 2.2 → 2.0 |
+
+Level 11 is now 0.9–4.7% larger than libbrotli's (was 3.5–11.4%); the gap left is mostly
+Silesia's mixed binary data, where Google's block splitting pays. Silesia gains almost nothing
+from the dictionary's words (two bytes on a 2 MB prefix; 5 MB of repeated HTML at a 4 MiB window
+shrinks from 6,976 to 6,439 bytes, so the references work at every window). Searching the
+dictionary at every position halves the speed on text. Levels below 10 are unchanged.
 
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 

@@ -5,6 +5,7 @@
 /// Past the end of the input it supplies zero bits and counts them; [`BitReader::overrun`]
 /// tells whether any of them were consumed, which the decoder checks at least once per command
 /// (a truncated stream then fails with `Truncated` instead of decoding zeros for ever).
+#[derive(Clone, Copy)]
 pub(crate) struct BitReader<'a> {
     data: &'a [u8],
     /// Next byte to load.
@@ -27,6 +28,25 @@ impl<'a> BitReader<'a> {
             nbits: 0,
             phantom: 0,
         }
+    }
+
+    /// A reader of `data` from bit `bit` on (`bit` <= 8 * `data.len()`).
+    pub(crate) fn at(data: &'a [u8], bit: u64) -> Self {
+        let mut br = BitReader {
+            data,
+            pos: (bit / 8) as usize,
+            bits: 0,
+            nbits: 0,
+            phantom: 0,
+        };
+        br.refill();
+        br.consume((bit % 8) as u32);
+        br
+    }
+
+    /// Bits consumed from the start of the data (past its end included).
+    pub(crate) fn bit_pos(&self) -> u64 {
+        (self.pos as u64 * 8 + self.phantom).saturating_sub(u64::from(self.nbits))
     }
 
     /// Makes at least 57 bits available. Without a branch on the bits left: the 8 bytes at
@@ -187,6 +207,11 @@ impl BitWriter {
         self.out.truncate(m.0);
         self.acc = m.1;
         self.n = m.2;
+    }
+
+    /// Moves the whole bytes written so far to `dst` (the bits of an unfinished byte stay).
+    pub(crate) fn drain_into(&mut self, dst: &mut Vec<u8>) {
+        dst.append(&mut self.out);
     }
 
     pub(crate) fn finish(mut self) -> Vec<u8> {

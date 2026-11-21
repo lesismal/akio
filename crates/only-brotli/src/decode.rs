@@ -1,13 +1,15 @@
-//! One-shot brotli decompression (RFC 7932).
+//! Brotli decompression (RFC 7932): one-shot, and the resumable pieces the streaming
+//! [`Decompressor`](crate::Decompressor) is made of.
 //!
 //! The output vector is the sliding window: back-references read the bytes already written,
-//! and distances beyond `min(output so far, window - 16)` address the static dictionary. Every
-//! length declared by the stream is checked against the meta-block length and the caller's
-//! limit before any byte is produced or any space is reserved for it, so memory stays within
-//! the limit plus the prefix code tables (a few megabytes at most, whatever the stream says).
-//! Reading past the end of the input yields zero bits that are counted, and the decoder checks
-//! at least once per command and per literal that none of them was consumed, so a truncated
-//! stream costs no more than its own length plus the output limit.
+//! and distances beyond `min(output so far, window - 16)` address a raw dictionary, if any,
+//! then the static dictionary. Every length declared by the stream is checked against the
+//! meta-block length and the caller's limit before any byte is produced or any space is
+//! reserved for it, so memory stays within the limit plus the prefix code tables (a few
+//! megabytes at most, whatever the stream says). Reading past the end of the input yields zero
+//! bits that are counted, and the decoder checks at least once per command and per literal
+//! that none of them was consumed, so a truncated stream costs no more than its own length
+//! plus the output limit.
 
 use crate::Error;
 use crate::bits::BitReader;
@@ -22,14 +24,20 @@ use crate::tables::{BLOCK_LEN, CMD_LUT, CODE_LENGTH_ORDER, CONTEXT_LUT};
 /// memory for it), with [`Error::Truncated`] if `data` ends early and with
 /// [`Error::TrailingData`] if bytes follow the end of the stream.
 pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
-    let mut d = Decoder {
-        br: BitReader::new(data),
-        buf: Vec::new(),
-        pos: 0,
-        limit,
-        last: [4, 11, 15, 16],
-        lens: Lengths::default(),
-    };
+    decompress_with_dictionary(data, limit, &[])
+}
+
+/// [`decompress`] with a raw (LZ77 prefix) dictionary, as `brotli -D` and Google's
+/// `BrotliDecoderAttachDictionary(BROTLI_SHARED_DICTIONARY_RAW, ...)` use one: distances just
+/// beyond the window (beyond the output so far while it is shorter than the window) copy
+/// from `dict`, as if it preceded the output, and the static dictionary's addresses start
+/// after it. The stream must have been compressed with the same dictionary.
+pub fn decompress_with_dictionary(
+    data: &[u8],
+    limit: usize,
+    dict: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let mut d = Decoder::new(BitReader::new(data), Vec::new(), 0, limit, dict);
     d.stream(data.len())?;
     d.buf.truncate(d.pos);
     Ok(d.buf)
@@ -155,9 +163,11 @@ fn make_room(
     Ok(fast_end(buf, end, limit))
 }
 
-/// Writes the static dictionary word that distance `dist` (beyond `max_distance`) and length
-/// `copy` address at `pos`; returns its length.
+/// What a distance beyond the window refers to, written at `pos`: bytes of the raw
+/// dictionary `dict` (`Ok((n, true))`: the distance enters the ring like a backward copy's) or
+/// a static dictionary word (`Ok((n, false))`); `max_distance` is the window's reach.
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn dictionary_word(
     buf: &mut Vec<u8>,
     pos: usize,
@@ -166,15 +176,33 @@ fn dictionary_word(
     copy: usize,
     end: usize,
     limit: usize,
-) -> Result<usize, Error> {
+    dict: &[u8],
+) -> Result<(usize, bool), Error> {
     if dist > MAX_ALLOWED_DISTANCE {
         return Err(Error::BadDistance);
+    }
+    let beyond = dist - max_distance - 1;
+    if beyond < dict.len() {
+        // As Google's decoder: the copy stays within the dictionary.
+        let at = dict.len() - beyond - 1;
+        if copy > dict.len() - at {
+            return Err(Error::BadDistance);
+        }
+        if copy > end - pos {
+            return Err(Error::BadBlockLength);
+        }
+        if copy > limit - pos {
+            return Err(Error::TooLarge);
+        }
+        reserve(buf, pos, copy, end, limit);
+        buf[pos..pos + copy].copy_from_slice(&dict[at..at + copy]);
+        return Ok((copy, true));
     }
     if !(4..=24).contains(&copy) {
         return Err(Error::BadDictionaryReference);
     }
     let shift = SIZE_BITS_BY_LENGTH[copy];
-    let address = dist - max_distance - 1;
+    let address = beyond - dict.len();
     let word = address & ((1 << shift) - 1);
     let t = address >> shift;
     if t >= 121 {
@@ -194,7 +222,7 @@ fn dictionary_word(
     }
     reserve(buf, pos, n, end, limit);
     buf[pos..pos + n].copy_from_slice(&tmp[..n]);
-    Ok(n)
+    Ok((n, false))
 }
 
 /// Distance codes 0..16: which of the last four distances (most recent first) and what to add
@@ -241,31 +269,27 @@ fn switch(br: &mut BitReader<'_>, b: &mut Blocks) {
     b.left = block_len(br, &b.len_code);
 }
 
-fn check(br: &BitReader<'_>) -> Result<(), Error> {
-    if br.overrun() {
-        Err(Error::Truncated)
-    } else {
-        Ok(())
-    }
-}
-
 /// Code lengths of the code length code: bit length and symbol for each value of the next four
 /// bits (RFC 7932 section 3.5).
 const CL_CODE_LEN: [u8; 16] = [2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4];
 const CL_CODE_VAL: [u8; 16] = [0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5];
 
-struct Decoder<'a> {
-    br: BitReader<'a>,
+pub(crate) struct Decoder<'a, 'd> {
+    pub(crate) br: BitReader<'a>,
     /// The output, which is also the window: `buf[..pos]`. The rest of `buf` is zeroed room
     /// ahead (never past `limit`, in length or capacity), so that matches can be copied in
     /// whole chunks.
-    buf: Vec<u8>,
-    pos: usize,
-    limit: usize,
+    pub(crate) buf: Vec<u8>,
+    pub(crate) pos: usize,
+    pub(crate) limit: usize,
+    /// The stream position of `buf[0]`: 0, unless a streaming decoder slid its window.
+    pub(crate) base: usize,
     /// The last four distances, most recent first.
-    last: [usize; 4],
+    pub(crate) last: [usize; 4],
     /// Scratch space for code lengths.
-    lens: Lengths,
+    pub(crate) lens: Lengths,
+    /// The raw dictionary (empty: none).
+    dict: &'d [u8],
 }
 
 /// A group of prefix codes (the trees of one category), stored back to back.
@@ -285,6 +309,7 @@ impl Group {
 }
 
 /// Block switching state of one category (literals, commands or distances).
+#[derive(Default)]
 struct Blocks {
     types: usize,
     type_code: Vec<u32>,
@@ -301,7 +326,150 @@ impl Blocks {
     }
 }
 
-impl Decoder<'_> {
+/// What a meta-block header (RFC 7932 section 9.2) up to its length says.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MetaHead {
+    /// ISLAST and ISLASTEMPTY: the stream ends.
+    LastEmpty,
+    /// Metadata of `len` bytes (skipped), after the byte alignment.
+    Metadata { len: usize, last: bool },
+    /// `len` uncompressed bytes, after the byte alignment.
+    Uncompressed { len: usize },
+    /// A compressed meta-block of `len` bytes.
+    Compressed { len: usize, last: bool },
+}
+
+/// A compressed meta-block's header, decoded: what its commands need. The block switching
+/// state in it changes as the commands are decoded.
+#[derive(Default)]
+pub(crate) struct Meta {
+    lit: Blocks,
+    cmd: Blocks,
+    dst: Blocks,
+    npostfix: u32,
+    modes: Vec<u8>,
+    lit_codes: Group,
+    cmd_codes: Group,
+    dist_codes: Group,
+    dist_map: Vec<u8>,
+    /// Distance symbol -> (offset, extra bits), RFC 7932 section 4.
+    dist_lut: Vec<(u32, u8)>,
+    /// Per literal block type: the one tree of all its contexts, if its context map says so.
+    uniform: Vec<Option<usize>>,
+    /// Per literal block type: where the tree of each context starts in `lit_codes.tables`.
+    ctx_starts: Vec<[u32; 64]>,
+}
+
+/// A context map being read.
+#[derive(Default)]
+struct MapState {
+    size: usize,
+    ntrees: usize,
+    rle: usize,
+    table: Vec<u32>,
+    map: Vec<u8>,
+    /// Entries read; `usize::MAX` before the tree count and code are.
+    i: usize,
+}
+
+/// A compressed meta-block's header being read, one unit at a time (a block type
+/// description, a context map entry, a prefix code), so that a streaming decoder short of
+/// input resumes at the last unit instead of starting the header again.
+#[derive(Default)]
+pub(crate) struct HeaderBuild {
+    stage: u8,
+    lit: Blocks,
+    cmd: Blocks,
+    dst: Blocks,
+    npostfix: u32,
+    ndirect: usize,
+    modes: Vec<u8>,
+    map: MapState,
+    lit_map: (usize, Vec<u8>),
+    dist_map: (usize, Vec<u8>),
+    lit_codes: Group,
+    cmd_codes: Group,
+    dist_codes: Group,
+}
+
+/// What [`HeaderBuild::restore`] puts back: the stage, the context map's position and the
+/// sizes of the prefix code groups.
+#[derive(Clone, Copy)]
+struct HeaderMark {
+    stage: u8,
+    map_i: usize,
+    groups: [(usize, usize); 3],
+}
+
+impl HeaderBuild {
+    fn mark(&self) -> HeaderMark {
+        let g = |g: &Group| (g.tables.len(), g.starts.len());
+        HeaderMark {
+            stage: self.stage,
+            map_i: self.map.i,
+            groups: [g(&self.lit_codes), g(&self.cmd_codes), g(&self.dist_codes)],
+        }
+    }
+
+    fn restore(&mut self, m: HeaderMark) {
+        self.stage = m.stage;
+        self.map.i = m.map_i;
+        for (g, (t, s)) in [
+            &mut self.lit_codes,
+            &mut self.cmd_codes,
+            &mut self.dist_codes,
+        ]
+        .into_iter()
+        .zip(m.groups)
+        {
+            g.tables.truncate(t);
+            g.starts.truncate(s);
+        }
+    }
+}
+
+/// How [`Decoder::commands`] stopped (other than with an error).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Run {
+    /// The meta-block is complete.
+    Done,
+    /// The output reached the pause position (at a command boundary).
+    Paused,
+    /// The input ran out; the state is back at the last command boundary.
+    Suspended,
+}
+
+/// The state of the command loop at a command boundary.
+#[derive(Clone, Copy)]
+struct Checkpoint<'a> {
+    br: BitReader<'a>,
+    pos: usize,
+    last: [usize; 4],
+    lit: ([usize; 2], u32),
+    cmd: ([usize; 2], u32),
+    dst: ([usize; 2], u32),
+}
+
+impl<'a, 'd> Decoder<'a, 'd> {
+    pub(crate) fn new(
+        br: BitReader<'a>,
+        buf: Vec<u8>,
+        pos: usize,
+        limit: usize,
+        dict: &'d [u8],
+    ) -> Self {
+        Decoder {
+            br,
+            buf,
+            pos,
+            limit,
+            base: 0,
+            last: [4, 11, 15, 16],
+            lens: Lengths::default(),
+            dict,
+        }
+    }
+
     fn check(&self) -> Result<(), Error> {
         if self.br.overrun() {
             Err(Error::Truncated)
@@ -311,7 +479,7 @@ impl Decoder<'_> {
     }
 
     /// Appends `src` (whose length was checked against the limit).
-    fn extend(&mut self, src: &[u8]) {
+    pub(crate) fn extend(&mut self, src: &[u8]) {
         let end = self.pos + src.len();
         reserve(&mut self.buf, self.pos, src.len(), end, self.limit);
         self.buf[self.pos..self.pos + src.len()].copy_from_slice(src);
@@ -330,64 +498,35 @@ impl Decoder<'_> {
         let wbits = self.window_bits()?;
         let max_backward = (1usize << wbits) - 16;
         loop {
-            let is_last = self.br.read(1) == 1;
-            if is_last && self.br.read(1) == 1 {
-                break; // ISLASTEMPTY
-            }
-            let mnibbles = self.br.read(2);
-            if mnibbles == 3 {
-                // Metadata: skipped.
-                if self.br.read(1) != 0 {
-                    return Err(Error::BadHeader);
-                }
-                let nbytes = self.br.read(2);
-                let mut len = 0usize;
-                for i in 0..nbytes {
-                    let b = self.br.read(8) as usize;
-                    if i + 1 == nbytes && nbytes > 1 && b == 0 {
-                        return Err(Error::BadHeader);
+            match self.meta_head()? {
+                MetaHead::LastEmpty => break,
+                MetaHead::Metadata { len, last } => {
+                    self.br.take_bytes(len).ok_or(Error::Truncated)?;
+                    if last {
+                        break;
                     }
-                    len |= b << (8 * i);
                 }
-                if nbytes > 0 {
-                    len += 1;
+                MetaHead::Uncompressed { len } => {
+                    let bytes = self.br.take_bytes(len).ok_or(Error::Truncated)?;
+                    self.room(len)?;
+                    self.extend(bytes);
                 }
-                self.check()?;
-                if !self.br.align() {
-                    return Err(Error::BadPadding);
+                MetaHead::Compressed { len, last } => {
+                    let mut h = HeaderBuild::default();
+                    let mut m = self.header::<false>(&mut h)?.ok_or(Error::Truncated)?;
+                    let end = self.pos.saturating_add(len);
+                    self.commands::<false>(&mut m, end, max_backward, usize::MAX)?;
+                    if last {
+                        break;
+                    }
                 }
-                self.br.take_bytes(len).ok_or(Error::Truncated)?;
-                if is_last {
-                    break;
-                }
-                continue;
-            }
-            let nibbles = 4 + mnibbles;
-            let mut mlen = 0usize;
-            for i in 0..nibbles {
-                let v = self.br.read(4) as usize;
-                if i + 1 == nibbles && nibbles > 4 && v == 0 {
-                    return Err(Error::BadHeader);
-                }
-                mlen |= v << (4 * i);
-            }
-            mlen += 1;
-            let uncompressed = !is_last && self.br.read(1) == 1;
-            self.check()?;
-            if uncompressed {
-                if !self.br.align() {
-                    return Err(Error::BadPadding);
-                }
-                let bytes = self.br.take_bytes(mlen).ok_or(Error::Truncated)?;
-                self.room(mlen)?;
-                self.extend(bytes);
-                continue;
-            }
-            self.meta_block(mlen, max_backward)?;
-            if is_last {
-                break;
             }
         }
+        self.end_of_stream(input_len)
+    }
+
+    /// After the last meta-block: the padding bits are zero and the input ends there.
+    pub(crate) fn end_of_stream(&mut self, input_len: usize) -> Result<(), Error> {
         self.check()?;
         if !self.br.align() {
             return Err(Error::BadPadding);
@@ -399,7 +538,61 @@ impl Decoder<'_> {
         }
     }
 
-    fn window_bits(&mut self) -> Result<u32, Error> {
+    /// Reads a meta-block header up to its length (and the alignment that follows metadata and
+    /// uncompressed lengths).
+    pub(crate) fn meta_head(&mut self) -> Result<MetaHead, Error> {
+        let is_last = self.br.read(1) == 1;
+        if is_last && self.br.read(1) == 1 {
+            return Ok(MetaHead::LastEmpty);
+        }
+        let mnibbles = self.br.read(2);
+        if mnibbles == 3 {
+            if self.br.read(1) != 0 {
+                return Err(Error::BadHeader);
+            }
+            let nbytes = self.br.read(2);
+            let mut len = 0usize;
+            for i in 0..nbytes {
+                let b = self.br.read(8) as usize;
+                if i + 1 == nbytes && nbytes > 1 && b == 0 {
+                    return Err(Error::BadHeader);
+                }
+                len |= b << (8 * i);
+            }
+            if nbytes > 0 {
+                len += 1;
+            }
+            self.check()?;
+            if !self.br.align() {
+                return Err(Error::BadPadding);
+            }
+            return Ok(MetaHead::Metadata { len, last: is_last });
+        }
+        let nibbles = 4 + mnibbles;
+        let mut mlen = 0usize;
+        for i in 0..nibbles {
+            let v = self.br.read(4) as usize;
+            if i + 1 == nibbles && nibbles > 4 && v == 0 {
+                return Err(Error::BadHeader);
+            }
+            mlen |= v << (4 * i);
+        }
+        mlen += 1;
+        let uncompressed = !is_last && self.br.read(1) == 1;
+        self.check()?;
+        if uncompressed {
+            if !self.br.align() {
+                return Err(Error::BadPadding);
+            }
+            return Ok(MetaHead::Uncompressed { len: mlen });
+        }
+        Ok(MetaHead::Compressed {
+            len: mlen,
+            last: is_last,
+        })
+    }
+
+    pub(crate) fn window_bits(&mut self) -> Result<u32, Error> {
         if self.br.read(1) == 0 {
             return Ok(16);
         }
@@ -556,63 +749,6 @@ impl Decoder<'_> {
         Ok(())
     }
 
-    fn group(&mut self, n: usize, size: usize) -> Result<Group, Error> {
-        let mut g = Group {
-            tables: Vec::with_capacity(n * 320),
-            starts: Vec::with_capacity(n),
-        };
-        for _ in 0..n {
-            g.starts.push(g.tables.len());
-            self.prefix_code(size, &mut g.tables)?;
-        }
-        Ok(g)
-    }
-
-    fn context_map(&mut self, size: usize) -> Result<(usize, Vec<u8>), Error> {
-        let ntrees = self.var_len_u8() + 1;
-        let mut map = vec![0u8; size];
-        if ntrees == 1 {
-            return Ok((1, map));
-        }
-        let rle = if self.br.read(1) == 1 {
-            self.br.read(4) as usize + 1
-        } else {
-            0
-        };
-        let mut table = Vec::new();
-        self.prefix_code(ntrees + rle, &mut table)?;
-        let mut i = 0;
-        while i < size {
-            self.check()?;
-            let code = decode(&table, &mut self.br);
-            if code == 0 {
-                i += 1;
-            } else if code <= rle {
-                let reps = (1usize << code) + self.br.read(code as u32) as usize;
-                if i + reps > size {
-                    return Err(Error::BadContextMap);
-                }
-                i += reps;
-            } else {
-                map[i] = (code - rle) as u8;
-                i += 1;
-            }
-        }
-        if self.br.read(1) == 1 {
-            // Inverse move-to-front.
-            let mut mtf: [u8; 256] = std::array::from_fn(|i| i as u8);
-            for v in &mut map {
-                let idx = usize::from(*v);
-                let val = mtf[idx];
-                *v = val;
-                mtf.copy_within(0..idx, 1);
-                mtf[0] = val;
-            }
-        }
-        self.check()?;
-        Ok((ntrees, map))
-    }
-
     fn blocks(&mut self) -> Result<Blocks, Error> {
         let types = self.var_len_u8() + 1;
         let mut b = Blocks {
@@ -634,24 +770,147 @@ impl Decoder<'_> {
         Ok(b)
     }
 
-    fn meta_block(&mut self, mlen: usize, max_backward: usize) -> Result<(), Error> {
-        let mut lit = self.blocks()?;
-        let mut cmd = self.blocks()?;
-        let mut dst = self.blocks()?;
-        let npostfix = self.br.read(2);
-        let ndirect = (self.br.read(4) as usize) << npostfix;
-        let mut modes = vec![0u8; lit.types];
-        for m in &mut modes {
-            *m = self.br.read(2) as u8;
+    /// Reads the next unit of a compressed meta-block's header into `h`; `Some` with the
+    /// decoded header after the last one.
+    fn header_unit<const STREAM: bool>(
+        &mut self,
+        h: &mut HeaderBuild,
+    ) -> Result<Option<Meta>, Error> {
+        match h.stage {
+            0 => h.lit = self.blocks()?,
+            1 => h.cmd = self.blocks()?,
+            2 => h.dst = self.blocks()?,
+            3 => {
+                h.npostfix = self.br.read(2);
+                h.ndirect = (self.br.read(4) as usize) << h.npostfix;
+                h.modes = vec![0u8; h.lit.types];
+                for m in &mut h.modes {
+                    *m = self.br.read(2) as u8;
+                }
+                self.check()?;
+                h.map = MapState {
+                    size: 64 * h.lit.types,
+                    i: usize::MAX,
+                    ..MapState::default()
+                };
+            }
+            4 | 5 => {
+                if !self.context_map_unit::<STREAM>(&mut h.map)? {
+                    return Ok(None);
+                }
+                let st = std::mem::take(&mut h.map);
+                if h.stage == 4 {
+                    h.lit_map = (st.ntrees, st.map);
+                    h.map = MapState {
+                        size: 4 * h.dst.types,
+                        i: usize::MAX,
+                        ..MapState::default()
+                    };
+                } else {
+                    h.dist_map = (st.ntrees, st.map);
+                }
+            }
+            6..=8 => {
+                let (g, n, size) = match h.stage {
+                    6 => (&mut h.lit_codes, h.lit_map.0, 256),
+                    7 => (&mut h.cmd_codes, h.cmd.types, 704),
+                    _ => (
+                        &mut h.dist_codes,
+                        h.dist_map.0,
+                        16 + h.ndirect + (48 << h.npostfix),
+                    ),
+                };
+                if g.starts.len() < n {
+                    if g.tables.capacity() == 0 {
+                        g.tables.reserve(n * 320);
+                        g.starts.reserve(n);
+                    }
+                    let at = g.tables.len();
+                    let r = self.prefix_code(size, &mut g.tables);
+                    if r.is_err() {
+                        g.tables.truncate(at);
+                    }
+                    r?;
+                    g.starts.push(at);
+                    if g.starts.len() < n {
+                        return Ok(None);
+                    }
+                }
+            }
+            _ => return Ok(Some(Self::finish_header(h))),
         }
+        h.stage += 1;
+        Ok(None)
+    }
+
+    /// Reads the next unit of a context map: its tree count and code, one entry or run (all
+    /// of them in one go without `STREAM`), or the inverse move-to-front bit at the end.
+    /// `true` when the map is complete.
+    fn context_map_unit<const STREAM: bool>(&mut self, st: &mut MapState) -> Result<bool, Error> {
+        if st.i == usize::MAX {
+            st.ntrees = self.var_len_u8() + 1;
+            st.map = vec![0u8; st.size];
+            if st.ntrees == 1 {
+                st.i = st.size;
+                return Ok(true);
+            }
+            st.rle = if self.br.read(1) == 1 {
+                self.br.read(4) as usize + 1
+            } else {
+                0
+            };
+            let mut table = Vec::new();
+            self.prefix_code(st.ntrees + st.rle, &mut table)?;
+            st.table = table;
+            st.i = 0;
+            return Ok(false);
+        }
+        if st.i < st.size {
+            loop {
+                self.check()?;
+                let code = decode(&st.table, &mut self.br);
+                if code == 0 {
+                    st.map[st.i] = 0;
+                    st.i += 1;
+                } else if code <= st.rle {
+                    let reps = (1usize << code) + self.br.read(code as u32) as usize;
+                    if st.i + reps > st.size {
+                        return Err(Error::BadContextMap);
+                    }
+                    st.map[st.i..st.i + reps].fill(0);
+                    st.i += reps;
+                } else {
+                    st.map[st.i] = (code - st.rle) as u8;
+                    st.i += 1;
+                }
+                if STREAM || st.i >= st.size {
+                    break;
+                }
+            }
+            self.check()?;
+            return Ok(false);
+        }
+        let imtf = self.br.read(1) == 1;
         self.check()?;
-        let (lit_trees, lit_map) = self.context_map(64 * lit.types)?;
-        let (dist_trees, dist_map) = self.context_map(4 * dst.types)?;
-        let lit_codes = self.group(lit_trees, 256)?;
-        let cmd_codes = self.group(cmd.types, 704)?;
+        if imtf {
+            // Inverse move-to-front.
+            let mut mtf: [u8; 256] = std::array::from_fn(|i| i as u8);
+            for v in &mut st.map {
+                let idx = usize::from(*v);
+                let val = mtf[idx];
+                *v = val;
+                mtf.copy_within(0..idx, 1);
+                mtf[0] = val;
+            }
+        }
+        Ok(true)
+    }
+
+    fn finish_header(h: &mut HeaderBuild) -> Meta {
+        let h = std::mem::take(h);
+        let npostfix = h.npostfix;
+        let ndirect = h.ndirect;
         let dist_size = 16 + ndirect + (48 << npostfix);
-        let dist_codes = self.group(dist_trees, dist_size)?;
-        // Distance symbol -> (offset, extra bits), RFC 7932 section 4.
         let mut dist_lut = vec![(0u32, 0u8); dist_size];
         for (j, e) in dist_lut[16..16 + ndirect].iter_mut().enumerate() {
             *e = (j as u32 + 1, 0);
@@ -672,7 +931,8 @@ impl Decoder<'_> {
                 half ^= 1;
             }
         }
-
+        let lit_codes = h.lit_codes;
+        let lit_map = h.lit_map.1;
         // Literal trees: one for all 64 contexts of a block type when its context map says
         // so (then the literals of that block type need no context).
         let uniform: Vec<Option<usize>> = lit_map
@@ -683,14 +943,72 @@ impl Decoder<'_> {
                     .then(|| lit_codes.start(usize::from(m[0])))
             })
             .collect();
-        let lit_tree_of = |t: usize| uniform.get(t).copied().flatten();
-        // Per block type: where the tree of each context starts in `lit_codes.tables`.
         let ctx_starts: Vec<[u32; 64]> = lit_map
             .chunks_exact(64)
             .map(|m| std::array::from_fn(|c| lit_codes.start(usize::from(m[c])) as u32))
             .collect();
+        Meta {
+            lit: h.lit,
+            cmd: h.cmd,
+            dst: h.dst,
+            npostfix,
+            modes: h.modes,
+            lit_codes,
+            cmd_codes: h.cmd_codes,
+            dist_codes: h.dist_codes,
+            dist_map: h.dist_map.1,
+            dist_lut,
+            uniform,
+            ctx_starts,
+        }
+    }
+
+    /// Reads a compressed meta-block's header (after its length) into `h`. A streaming
+    /// decoder (`STREAM`) short of input gets `Ok(None)`, with the reader at the end of the
+    /// last complete unit (in `h`) to resume from with more input.
+    pub(crate) fn header<const STREAM: bool>(
+        &mut self,
+        h: &mut HeaderBuild,
+    ) -> Result<Option<Meta>, Error> {
+        loop {
+            let cp = self.br;
+            let mark = if STREAM { Some(h.mark()) } else { None };
+            let r = self.header_unit::<STREAM>(h);
+            if let Some(mark) = mark.filter(|_| self.br.overrun()) {
+                // The unit used bits past the input (whatever it concluded from them).
+                self.br = cp;
+                h.restore(mark);
+                return Ok(None);
+            }
+            if let Some(m) = r? {
+                return Ok(Some(m));
+            }
+        }
+    }
+
+    /// Decodes the commands of the meta-block `m` ending at `end` (in `buf`) with distances
+    /// up to `max_backward`. A streaming decoder (`STREAM`) stops at a command boundary when
+    /// the input runs out ([`Run::Suspended`], with the reader and the output back at that
+    /// boundary) or once the output reaches `pause_at` ([`Run::Paused`]).
+    pub(crate) fn commands<const STREAM: bool>(
+        &mut self,
+        m: &mut Meta,
+        end: usize,
+        max_backward: usize,
+        pause_at: usize,
+    ) -> Result<Run, Error> {
+        let mut lit = std::mem::take(&mut m.lit);
+        let mut cmd = std::mem::take(&mut m.cmd);
+        let mut dst = std::mem::take(&mut m.dst);
+        let mr: &Meta = m;
+        let npostfix = mr.npostfix;
+        let lit_codes = &mr.lit_codes;
+        let cmd_codes = &mr.cmd_codes;
+        let dist_codes = &mr.dist_codes;
+        let dist_lut = &mr.dist_lut[..];
+        let lit_tree_of = |t: usize| mr.uniform.get(t).copied().flatten();
         let lut_of = |t: usize| -> &'static [u8; 512] {
-            let m = usize::from(modes.get(t).copied().unwrap_or(0) & 3);
+            let m = usize::from(mr.modes.get(t).copied().unwrap_or(0) & 3);
             CONTEXT_LUT[512 * m..512 * m + 512]
                 .try_into()
                 .unwrap_or(&[0; 512])
@@ -698,10 +1016,12 @@ impl Decoder<'_> {
         // Per distance block type: the start of the tree of each of the four distance contexts.
         let dist_trees_of = |t: usize| -> [Tree<'_>; 4] {
             std::array::from_fn(|c| {
-                let tree = dist_map.get(4 * t + c).copied().unwrap_or(0);
+                let tree = mr.dist_map.get(4 * t + c).copied().unwrap_or(0);
                 Tree::at(&dist_codes.tables, dist_codes.start(usize::from(tree)))
             })
         };
+        let dict = self.dict;
+        let base = if STREAM { self.base } else { 0 };
         // The decoding state lives in locals, so that it can stay in registers (stores to the
         // output through `self` would otherwise force it back to memory); it is put back at the
         // end (on errors the decoder is dropped).
@@ -710,18 +1030,59 @@ impl Decoder<'_> {
         let mut pos = self.pos;
         let mut last = self.last;
         let limit = self.limit;
-        let end = pos.saturating_add(mlen);
         // `pos + n <= fast` means that `n` more bytes are within the meta-block and the limit,
         // and that `buf` has `WILD` bytes of room past them; otherwise `make_room` sorts it out.
         let mut fast = fast_end(&buf, end, limit);
-        let mut lit_type = 0usize;
-        let mut lut = lut_of(0);
-        let mut lit_tree = lit_tree_of(0);
-        let mut cmd_tree = Tree::at(&cmd_codes.tables, cmd_codes.start(0));
-        let mut dist_trees = dist_trees_of(0);
+        let mut lit_type = lit.current();
+        let mut lut = lut_of(lit_type);
+        let mut lit_tree = lit_tree_of(lit_type);
+        let mut cmd_tree = Tree::at(&cmd_codes.tables, cmd_codes.start(cmd.current()));
+        let mut dist_trees = dist_trees_of(dst.current());
         let lit_tables = &lit_codes.tables[..];
-        loop {
-            check(&br)?;
+        let mut cp = Checkpoint {
+            br,
+            pos,
+            last,
+            lit: (lit.ring, lit.left),
+            cmd: (cmd.ring, cmd.left),
+            dst: (dst.ring, dst.left),
+        };
+        // A streaming decoder short of input goes back to the last command boundary; an
+        // error is the stream's only if no bit past the input was used.
+        macro_rules! bail {
+            ($e:expr) => {{
+                let e = $e;
+                if STREAM && br.overrun() {
+                    break Run::Suspended;
+                }
+                return Err(e);
+            }};
+        }
+        macro_rules! tryb {
+            ($r:expr) => {
+                match $r {
+                    Ok(v) => v,
+                    Err(e) => bail!(e),
+                }
+            };
+        }
+        let run = loop {
+            if br.overrun() {
+                bail!(Error::Truncated);
+            }
+            if STREAM {
+                cp = Checkpoint {
+                    br,
+                    pos,
+                    last,
+                    lit: (lit.ring, lit.left),
+                    cmd: (cmd.ring, cmd.left),
+                    dst: (dst.ring, dst.left),
+                };
+                if pos >= pause_at {
+                    break Run::Paused;
+                }
+            }
             if cmd.left == 0 && cmd.types > 1 {
                 switch(&mut br, &mut cmd);
                 cmd_tree = Tree::at(&cmd_codes.tables, cmd_codes.start(cmd.current()));
@@ -739,7 +1100,7 @@ impl Decoder<'_> {
             br.consume_loaded(u32::from(c.ins_extra) + u32::from(c.copy_extra));
             if insert > 0 {
                 if pos + insert > fast {
-                    fast = make_room(&mut buf, pos, insert, end, limit)?;
+                    fast = tryb!(make_room(&mut buf, pos, insert, end, limit));
                 }
                 let mut left = insert;
                 loop {
@@ -773,7 +1134,7 @@ impl Decoder<'_> {
                     } else {
                         let mut p1 = if pos > 0 { buf[pos - 1] } else { 0 };
                         let mut p2 = if pos > 1 { buf[pos - 2] } else { 0 };
-                        let starts = ctx_starts.get(lit_type).unwrap_or(&[0; 64]);
+                        let starts = mr.ctx_starts.get(lit_type).unwrap_or(&[0; 64]);
                         let out = &mut buf[pos..pos + n];
                         let mut chunks = out.chunks_exact_mut(3);
                         for c in &mut chunks {
@@ -804,10 +1165,10 @@ impl Decoder<'_> {
                     }
                 }
                 if br.overrun() {
-                    return Err(Error::Truncated);
+                    bail!(Error::Truncated);
                 }
                 if pos == end {
-                    break;
+                    break Run::Done;
                 }
             }
 
@@ -831,7 +1192,7 @@ impl Decoder<'_> {
                     let (i, delta) = SHORT_DISTANCES[code];
                     let d = last[usize::from(i)] as i64 + i64::from(delta);
                     if d <= 0 {
-                        return Err(Error::BadDistance);
+                        bail!(Error::BadDistance);
                     }
                     dist = d as usize;
                     push = code != 0;
@@ -842,10 +1203,24 @@ impl Decoder<'_> {
                     dist = off as usize + (x << npostfix);
                 }
             }
-            check(&br)?;
-            let max_distance = pos.min(max_backward);
+            if br.overrun() {
+                bail!(Error::Truncated);
+            }
+            let max_distance = (pos + base).min(max_backward);
             if dist > max_distance {
-                let n = dictionary_word(&mut buf, pos, dist, max_distance, copy, end, limit)?;
+                let (n, ring) = tryb!(dictionary_word(
+                    &mut buf,
+                    pos,
+                    dist,
+                    max_distance,
+                    copy,
+                    end,
+                    limit,
+                    dict
+                ));
+                if ring && push {
+                    last = [dist, last[0], last[1], last[2]];
+                }
                 pos += n;
                 fast = fast_end(&buf, end, limit);
             } else {
@@ -853,20 +1228,31 @@ impl Decoder<'_> {
                     last = [dist, last[0], last[1], last[2]];
                 }
                 if pos + copy > fast {
-                    fast = make_room(&mut buf, pos, copy, end, limit)?;
+                    fast = tryb!(make_room(&mut buf, pos, copy, end, limit));
                 }
                 copy_match(&mut buf, pos - dist, pos, copy);
                 pos += copy;
             }
             if pos == end {
-                break;
+                break Run::Done;
             }
+        };
+        if STREAM && run == Run::Suspended {
+            br = cp.br;
+            pos = cp.pos;
+            last = cp.last;
+            (lit.ring, lit.left) = cp.lit;
+            (cmd.ring, cmd.left) = cp.cmd;
+            (dst.ring, dst.left) = cp.dst;
         }
         self.br = br;
         self.buf = buf;
         self.pos = pos;
         self.last = last;
-        Ok(())
+        m.lit = lit;
+        m.cmd = cmd;
+        m.dst = dst;
+        Ok(run)
     }
 }
 

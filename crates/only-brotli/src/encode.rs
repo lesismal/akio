@@ -19,30 +19,63 @@ use crate::bits::BitWriter;
 use crate::huffman::{codes, lengths};
 use crate::tables::{CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA};
 
+mod sdict;
+
 /// Compresses `data` into one complete brotli stream at `level`.
 ///
 /// The output decodes with any brotli decoder (Google's `brotli`, `brotli-decompressor`) and
 /// with [`decompress`](crate::decompress).
 pub fn compress(level: Level, data: &[u8]) -> Vec<u8> {
-    let p = params(level.get());
-    let wbits = window_bits(data.len());
-    let mut w = BitWriter::with_capacity(data.len() / 2 + 16);
+    compress_impl(level, data, &[])
+}
+
+/// [`compress`] with a raw (LZ77 prefix) dictionary: matches may copy from `dict` as if it
+/// preceded the data, while the output is shorter than the window (Google's raw shared
+/// dictionaries, `brotli -D`). Decode with the same dictionary
+/// ([`decompress_with_dictionary`](crate::decompress_with_dictionary), `brotli -d -D`).
+pub fn compress_with_dictionary(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
+    compress_impl(level, data, dict)
+}
+
+/// Writes the stream header (the window size).
+pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32) {
     match wbits {
         16 => w.bits(1, 0),
         17 => w.bits(7, 1),
         18..=24 => w.bits(4, u64::from((wbits - 17) << 1 | 1)),
         _ => w.bits(7, u64::from((wbits - 8) << 4 | 1)),
     }
+}
+
+pub(crate) fn compress_impl(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
+    let p = params(level.get());
+    let wbits = window_bits(data.len());
+    let mut w = BitWriter::with_capacity(data.len() / 2 + 16);
+    write_window_bits(&mut w, wbits);
     if data.is_empty() {
         w.bits(2, 0b11); // ISLAST, ISLASTEMPTY
         return w.finish();
     }
-    let mut e = Encoder::new(p, wbits, data);
-    let mut pos = 0;
-    while pos < data.len() {
-        let end = (pos + p.block).min(data.len());
-        e.meta_block(&mut w, pos, end, end == data.len());
-        pos = end;
+    if dict.is_empty() {
+        let mut e = Encoder::new(p, wbits, data, 0);
+        let mut pos = 0;
+        while pos < data.len() {
+            let end = (pos + p.block).min(data.len());
+            e.meta_block(&mut w, pos, end, end == data.len());
+            pos = end;
+        }
+    } else {
+        let mut buf = Vec::with_capacity(dict.len() + data.len());
+        buf.extend_from_slice(dict);
+        buf.extend_from_slice(data);
+        let mut e = Encoder::new(p, wbits, &buf, dict.len());
+        e.insert_until(dict.len());
+        let mut pos = dict.len();
+        while pos < buf.len() {
+            let end = (pos + p.block).min(buf.len());
+            e.meta_block(&mut w, pos, end, end == buf.len());
+            pos = end;
+        }
     }
     w.finish()
 }
@@ -114,19 +147,28 @@ fn params(level: u8) -> Params {
 }
 
 /// An insert-and-copy command: `insert` literals, then `copy` bytes from `dist` back (`copy`
-/// 0: the last command of a meta-block, literals only).
+/// 0: the last command of a meta-block, literals only), or a static dictionary word of length
+/// `copy` producing `out` bytes (`out` 0: a backward copy).
 #[derive(Clone, Copy, Debug)]
 struct Command {
     insert: u32,
     copy: u32,
     dist: u32,
+    out: u32,
+}
+
+impl Command {
+    /// The bytes the command produces.
+    fn advance(&self) -> usize {
+        (self.insert + if self.out > 0 { self.out } else { self.copy }) as usize
+    }
 }
 
 const NIL: u32 = u32::MAX;
 const MIN_SCORE: i64 = 1920 + 100;
 const LAZY_MARGIN: i64 = 175;
 
-struct Encoder<'a> {
+pub(crate) struct Encoder<'a> {
     data: &'a [u8],
     p: Params,
     /// Largest backward distance (window - 16).
@@ -147,6 +189,57 @@ struct Encoder<'a> {
     ins: usize,
     /// The distance ring, most recent first.
     last: [u32; 4],
+    /// `data[..zero]` is a raw dictionary (0: none, or no longer reachable).
+    zero: usize,
+    /// The stream position of `data[i]` is `i + fwd - back` (`back`: the dictionary's length;
+    /// `fwd`: bytes a streaming encoder dropped from the front).
+    fwd: usize,
+    back: usize,
+}
+
+impl State {
+    /// Positions are moved `drop` bytes down (the data before them was dropped, the
+    /// dictionary with it); `drop` is a multiple of [`State::align`].
+    pub(crate) fn rebase(&mut self, drop: usize) {
+        let d = drop as u32;
+        for v in self.head.iter_mut().chain(self.prev.iter_mut()) {
+            *v = if *v == NIL || *v < d { NIL } else { *v - d };
+        }
+        for v in &mut self.buckets {
+            *v = v.saturating_sub(d);
+        }
+        self.ins = self.ins.saturating_sub(drop);
+        self.fwd += drop;
+        self.zero = 0;
+    }
+
+    /// What dropped data must be a multiple of: the chains are indexed by position.
+    pub(crate) fn align(&self) -> usize {
+        self.wmask + 1
+    }
+
+    /// The meta-block size of the level.
+    pub(crate) fn block(&self) -> usize {
+        self.p.block
+    }
+}
+
+/// The state of an [`Encoder`] between the meta-blocks of a stream, apart from the data.
+pub(crate) struct State {
+    p: Params,
+    max_dist: usize,
+    head: Vec<u32>,
+    prev: Vec<u32>,
+    wmask: usize,
+    block_bits: u32,
+    hash5: bool,
+    num: Vec<u32>,
+    buckets: Vec<u32>,
+    ins: usize,
+    last: [u32; 4],
+    zero: usize,
+    fwd: usize,
+    back: usize,
 }
 
 #[inline(always)]
@@ -208,8 +301,15 @@ struct Found {
 }
 
 impl<'a> Encoder<'a> {
-    fn new(p: Params, wbits: u32, data: &'a [u8]) -> Self {
-        let wsize = (1usize << wbits).min(data.len().next_power_of_two().max(1024));
+    /// An encoder of `data` whose first `dict` bytes are a raw dictionary.
+    fn new(p: Params, wbits: u32, data: &'a [u8], dict: usize) -> Self {
+        // The chains reach the dictionary as well as the window.
+        let reach = if dict > 0 {
+            2usize << wbits
+        } else {
+            1usize << wbits
+        };
+        let wsize = reach.min(data.len().next_power_of_two().max(1024));
         let len_bits = usize::BITS - data.len().max(1).leading_zeros();
         let bucketed = p.optimal == 0 && p.depth <= 32;
         let (hash_bits, block_bits) = if bucketed {
@@ -252,6 +352,98 @@ impl<'a> Encoder<'a> {
             },
             ins: 0,
             last: [4, 11, 15, 16],
+            zero: dict,
+            fwd: 0,
+            back: dict,
+        }
+    }
+
+    /// A fresh state at `level` for a stream with a window of `2^wbits` bytes whose data
+    /// starts with a raw dictionary of `dict` bytes.
+    pub(crate) fn state(level: Level, wbits: u32, dict: usize) -> State {
+        // Sized as for an input of three windows (what a streaming encoder holds at most).
+        let mut e = Encoder::new(params(level.get()), wbits, &[], dict);
+        let len_bits = wbits + 2;
+        let p = params(level.get());
+        let bucketed = p.optimal == 0 && p.depth <= 32;
+        if bucketed {
+            let bits = p
+                .hash_bits
+                .min(15)
+                .min((len_bits + 1).saturating_sub(e.block_bits));
+            e.p.hash_bits = bits.max(8);
+            e.num = vec![0; 1 << e.p.hash_bits];
+            e.buckets = vec![0; 1 << (e.p.hash_bits + e.block_bits)];
+        } else {
+            e.p.hash_bits = p.hash_bits.min(len_bits + 1).max(10);
+            e.head = vec![NIL; 1 << e.p.hash_bits];
+            let wsize = if dict > 0 {
+                2usize << wbits
+            } else {
+                1usize << wbits
+            };
+            e.prev = vec![NIL; wsize];
+            e.wmask = wsize - 1;
+        }
+        e.suspend()
+    }
+
+    /// An encoder over `data` (the stream so far, in the coordinates of `s`) continuing `s`.
+    pub(crate) fn resume(data: &'a [u8], s: State) -> Self {
+        Encoder {
+            data,
+            p: s.p,
+            max_dist: s.max_dist,
+            head: s.head,
+            prev: s.prev,
+            wmask: s.wmask,
+            block_bits: s.block_bits,
+            hash5: s.hash5,
+            num: s.num,
+            buckets: s.buckets,
+            ins: s.ins,
+            last: s.last,
+            zero: s.zero,
+            fwd: s.fwd,
+            back: s.back,
+        }
+    }
+
+    /// The state to continue from with [`Encoder::resume`].
+    pub(crate) fn suspend(self) -> State {
+        State {
+            p: self.p,
+            max_dist: self.max_dist,
+            head: self.head,
+            prev: self.prev,
+            wmask: self.wmask,
+            block_bits: self.block_bits,
+            hash5: self.hash5,
+            num: self.num,
+            buckets: self.buckets,
+            ins: self.ins,
+            last: self.last,
+            zero: self.zero,
+            fwd: self.fwd,
+            back: self.back,
+        }
+    }
+
+    /// The farthest backward distance at `i`: the output so far, up to the window.
+    #[inline(always)]
+    fn reach(&self, i: usize) -> usize {
+        (i + self.fwd - self.back).min(self.max_dist)
+    }
+
+    /// The longest copy from dictionary position `c` at `i` (0: none): the decoder takes a
+    /// distance beyond the output so far as one into the dictionary while the output is within
+    /// the window, and the copy must end within the dictionary.
+    #[inline(always)]
+    fn dict_room(&self, i: usize, c: usize) -> usize {
+        if c < self.zero && i + self.fwd - self.back <= self.max_dist {
+            self.zero - c
+        } else {
+            0
         }
     }
 
@@ -265,7 +457,7 @@ impl<'a> Encoder<'a> {
     }
 
     /// Enters positions up to `upto` (exclusive) into the hash chains.
-    fn insert_until(&mut self, upto: usize) {
+    pub(crate) fn insert_until(&mut self, upto: usize) {
         let lim = upto.min(self.data.len().saturating_sub(3));
         if !self.num.is_empty() {
             let mask = (1u32 << self.block_bits) - 1;
@@ -300,7 +492,7 @@ impl<'a> Encoder<'a> {
         if max_len < 2 {
             return None;
         }
-        let max_dist = i.min(self.max_dist);
+        let max_dist = self.reach(i);
         let mut best: Option<Found> = None;
         let mut best_score = MIN_SCORE;
         let mut best_len = 0;
@@ -346,10 +538,22 @@ impl<'a> Encoder<'a> {
                     .copied()
                     .unwrap_or(0) as usize;
                 // Entries are positions before `i`: `c >= i` wraps around and stops too.
+                let mut max_len = max_len;
                 if i.wrapping_sub(c).wrapping_sub(1) >= max_dist {
-                    break;
+                    // Beyond the window: the dictionary, if any (the oldest entries).
+                    let room = if c < i { self.dict_room(i, c) } else { 0 };
+                    if room < 4 {
+                        if room == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    max_len = max_len.min(room);
                 }
                 if best_len >= max_len {
+                    if max_len < end - i {
+                        continue;
+                    }
                     break;
                 }
                 // `c + best_len < i + best_len < end`.
@@ -376,11 +580,22 @@ impl<'a> Encoder<'a> {
         let mut n = self.p.depth;
         while cand != NIL && n > 0 {
             let c = cand as usize;
+            let mut max_len = max_len;
             if c >= i || i - c > max_dist {
-                break;
+                // Beyond the window: the dictionary, if any.
+                let room = if c < i { self.dict_room(i, c) } else { 0 };
+                if room == 0 {
+                    break;
+                }
+                max_len = max_len.min(room);
             }
             n -= 1;
-            cand = self.prev[c & self.wmask];
+            let next = self.prev[c & self.wmask];
+            cand = if next == NIL || next as usize >= c {
+                NIL
+            } else {
+                next
+            };
             if best_len >= max_len || d.get(c + best_len) != d.get(i + best_len) {
                 continue;
             }
@@ -448,6 +663,7 @@ impl<'a> Encoder<'a> {
                 insert: (i - lit_start) as u32,
                 copy: cur.len as u32,
                 dist: cur.dist as u32,
+                out: 0,
             });
             if cur.dist as u32 != ring[0] {
                 ring = [cur.dist as u32, ring[0], ring[1], ring[2]];
@@ -465,11 +681,12 @@ impl<'a> Encoder<'a> {
                 insert: (end - lit_start) as u32,
                 copy: 0,
                 dist: 0,
+                out: 0,
             });
         }
     }
 
-    fn meta_block(&mut self, w: &mut BitWriter, start: usize, end: usize, last: bool) {
+    pub(crate) fn meta_block(&mut self, w: &mut BitWriter, start: usize, end: usize, last: bool) {
         let mut cmds = Vec::new();
         if self.p.optimal > 0 {
             self.parse_optimal(start, end, &mut cmds);
@@ -484,7 +701,14 @@ impl<'a> Encoder<'a> {
             // Clustering costs about as much as compressing a few kilobytes: below the optimal
             // parsing levels it is worth it only for more literals.
             let min_literals = if self.p.optimal > 0 { 2048 } else { 4096 };
-            let m = literal_model(self.data, start, &cmds, self.p.modes, min_literals);
+            let z = self.zero;
+            let m = literal_model(
+                &self.data[z..],
+                start - z,
+                &cmds,
+                self.p.modes,
+                min_literals,
+            );
             if m.ntrees > 1 && self.p.optimal == 0 {
                 // The clustering's estimate says the context map pays for itself.
                 model = m;
@@ -527,7 +751,9 @@ impl<'a> Encoder<'a> {
         cmds: &[Command],
         model: &LiteralModel,
     ) {
-        let data = self.data;
+        // Positions from the start of the stream (literal contexts see no dictionary bytes).
+        let data = &self.data[self.zero..];
+        let (start, end) = (start - self.zero, end - self.zero);
         // Resolve the commands into symbols and extra bits.
         let mut coded = Vec::with_capacity(cmds.len());
         let mut ring = self.last;
@@ -560,7 +786,7 @@ impl<'a> Encoder<'a> {
                         lit_hist[usize::from(model.map[ctx])][usize::from(b)] += 1;
                     }
                 }
-                pos += (c.insert + c.copy) as usize;
+                pos += c.advance();
             }
         }
 
@@ -609,7 +835,7 @@ impl<'a> Encoder<'a> {
                 dist_code.put(w, usize::from(k.dsym));
                 w.bits(u32::from(k.dist_n), u64::from(k.dist_x));
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
     }
 }
@@ -665,7 +891,7 @@ impl CostModel {
             for &b in &data[pos..pos + c.insert as usize] {
                 lh[usize::from(b)] += 1;
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
         let mut m = CostModel {
             lit: [0.0; 256],
@@ -697,12 +923,20 @@ impl CostModel {
 struct Node {
     cost: f32,
     prev: u32,
-    /// Copy length of the step into this node (0: a literal).
+    /// Bytes the copy of the step into this node produces (0: a literal).
     len: u32,
+    /// Its copy length when it is a static dictionary word (0: a backward copy of `len`).
+    word: u32,
     dist: u32,
     /// Literals since the last copy.
     ins: u32,
     ring: [u32; 4],
+}
+
+/// The static dictionary references of each position of a meta-block.
+struct Words<'a> {
+    start: &'a [u32],
+    list: &'a [sdict::DictMatch],
 }
 
 /// How many lengths of one match the shortest-path search tries one by one; longer ones only
@@ -735,26 +969,37 @@ impl Encoder<'_> {
             if max_len < 4 {
                 continue;
             }
-            let max_dist = i.min(self.max_dist);
+            let max_dist = self.reach(i);
             let mut cand = self.head[self.hash(i)];
             let mut depth = self.p.depth;
             let mut best = 3;
             let first = mlist.len();
             while cand != NIL && depth > 0 {
                 let c = cand as usize;
+                let mut max_len = max_len;
                 if c >= i || i - c > max_dist {
-                    break;
+                    // Beyond the window: the dictionary, if any.
+                    let room = if c < i { self.dict_room(i, c) } else { 0 };
+                    if room == 0 {
+                        break;
+                    }
+                    max_len = max_len.min(room);
                 }
                 depth -= 1;
-                cand = self.prev[c & self.wmask];
-                if data.get(c + best) != data.get(i + best) {
+                let next = self.prev[c & self.wmask];
+                cand = if next == NIL || next as usize >= c {
+                    NIL
+                } else {
+                    next
+                };
+                if best >= max_len || data.get(c + best) != data.get(i + best) {
                     continue;
                 }
                 let len = match_len(data, c, i, max_len);
                 if len > best {
                     best = len;
                     mlist.push((len as u32, (i - c) as u32));
-                    if len >= self.p.nice || len == max_len {
+                    if len >= self.p.nice || len == end - i {
                         break;
                     }
                 }
@@ -770,23 +1015,39 @@ impl Encoder<'_> {
             }
         }
         mstart.push(mlist.len() as u32);
+        // Static dictionary references of every position.
+        let mut dstart = Vec::with_capacity(n + 1);
+        let mut dlist: Vec<sdict::DictMatch> = Vec::new();
+        let mut found = Vec::new();
+        for i in start..end {
+            dstart.push(dlist.len() as u32);
+            sdict::matches(&data[i..end], &mut found);
+            dlist.extend_from_slice(&found);
+        }
+        dstart.push(dlist.len() as u32);
+        let words = Words {
+            start: &dstart,
+            list: &dlist,
+        };
 
         let mut model = CostModel::initial(&data[start..end]);
         for pass in 0..self.p.optimal {
             cmds.clear();
-            self.shortest_path(start, end, &mstart, &mlist, &model, cmds);
+            self.shortest_path(start, end, &mstart, &mlist, &words, &model, cmds);
             if pass + 1 < self.p.optimal {
                 model = CostModel::from_commands(data, start, cmds, self.last);
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shortest_path(
         &self,
         start: usize,
         end: usize,
         mstart: &[u32],
         mlist: &[(u32, u32)],
+        words: &Words<'_>,
         model: &CostModel,
         cmds: &mut Vec<Command>,
     ) {
@@ -797,6 +1058,7 @@ impl Encoder<'_> {
                 cost: f32::INFINITY,
                 prev: 0,
                 len: 0,
+                word: 0,
                 dist: 0,
                 ins: 0,
                 ring: [0; 4],
@@ -818,6 +1080,7 @@ impl Encoder<'_> {
                     cost: c,
                     prev: i as u32,
                     len: 0,
+                    word: 0,
                     dist: 0,
                     ins: node.ins + 1,
                     ring: node.ring,
@@ -827,7 +1090,7 @@ impl Encoder<'_> {
             if max_len < 2 {
                 continue;
             }
-            let max_dist = pos.min(self.max_dist);
+            let max_dist = self.reach(pos);
             let ins = node.ins as usize;
             let relax = |nodes: &mut [Node], len: usize, dist: usize, cost: f32| {
                 let j = i + len;
@@ -837,6 +1100,7 @@ impl Encoder<'_> {
                         cost,
                         prev: i as u32,
                         len: len as u32,
+                        word: 0,
                         dist: dist as u32,
                         ins: 0,
                         ring: if dist as u32 == r[0] {
@@ -880,7 +1144,7 @@ impl Encoder<'_> {
             let mut from = (ring_best + 1).max(4);
             for &(len, dist) in mlist.get(a..b).unwrap_or(&[]) {
                 let (len, dist) = ((len as usize).min(max_len), dist as usize);
-                if len < from || dist > max_dist {
+                if len < from || (dist > max_dist && self.dict_room(pos, pos - dist) < len) {
                     continue;
                 }
                 let (dsym, dbits) = match node.ring.iter().position(|&r| r as usize == dist) {
@@ -903,6 +1167,35 @@ impl Encoder<'_> {
                 }
                 from = len + 1;
             }
+            // Static dictionary words: each at the length it produces, leaving the ring alone.
+            let (a, b) = (words.start[i] as usize, words.start[i + 1] as usize);
+            for m in words.list.get(a..b).unwrap_or(&[]) {
+                let out = usize::from(m.out);
+                if out > max_len || out <= ring_best {
+                    continue;
+                }
+                let dist = max_dist + 1 + self.back + m.addr as usize;
+                let (dsym, dbits) = match node.ring.iter().position(|&r| r as usize == dist) {
+                    Some(k) => (k, 0),
+                    None => {
+                        let (s, _, nb) = explicit_distance(dist);
+                        (usize::from(s), u32::from(nb))
+                    }
+                };
+                let cost = node.cost + model.copy_cost(ins, usize::from(m.len), dsym, dbits);
+                let j = i + out;
+                if cost < nodes[j].cost {
+                    nodes[j] = Node {
+                        cost,
+                        prev: i as u32,
+                        len: out as u32,
+                        word: u32::from(m.len),
+                        dist: dist as u32,
+                        ins: 0,
+                        ring: node.ring,
+                    };
+                }
+            }
             // A long match is taken whole: the positions inside it are not expanded (as
             // Google's encoder does), which keeps long runs linear.
             if longest.0 >= self.p.nice {
@@ -918,16 +1211,22 @@ impl Encoder<'_> {
         while j > 0 {
             let nd = nodes[j];
             if nd.len > 0 {
-                steps.push((nd.prev as usize, nd.len as usize, nd.dist));
+                steps.push((nd.prev as usize, nd.len as usize, nd.word, nd.dist));
             }
             j = nd.prev as usize;
         }
         let mut lit_start = 0;
-        for &(p, len, dist) in steps.iter().rev() {
+        for &(p, len, word, dist) in steps.iter().rev() {
+            let (copy, out) = if word > 0 {
+                (word, len as u32)
+            } else {
+                (len as u32, 0)
+            };
             cmds.push(Command {
                 insert: (p - lit_start) as u32,
-                copy: len as u32,
+                copy,
                 dist,
+                out,
             });
             lit_start = p + len;
         }
@@ -936,6 +1235,7 @@ impl Encoder<'_> {
                 insert: (n - lit_start) as u32,
                 copy: 0,
                 dist: 0,
+                out: 0,
             });
         }
     }
@@ -1037,7 +1337,8 @@ fn code_command(c: &Command, ring: &mut [u32; 4]) -> Coded {
         Some(k) => (k as u16, 0, 0),
         None => explicit_distance(d as usize),
     };
-    if dsym != 0 {
+    if dsym != 0 && c.out == 0 {
+        // (Static dictionary references leave the ring alone.)
         *ring = [d, r[0], r[1], r[2]];
     }
     let implicit = dsym == 0 && ic < 8 && cc < 16;
@@ -1185,7 +1486,7 @@ fn literal_model(
             for p in pos..pos + c.insert as usize {
                 hist[context(data, p, lut)][usize::from(data[p])] += 1;
             }
-            pos += (c.insert + c.copy) as usize;
+            pos += c.advance();
         }
         let (map, ntrees, cost) = cluster(&hist);
         if cost < best_cost {

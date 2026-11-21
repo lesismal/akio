@@ -70,6 +70,7 @@
 - [ADR-066：静态文件缓存的变更通知（inotify / kqueue）](066-static-files-change-notifications.zh-CN.md)（2026-11-20 采纳）
 - [ADR-067：引擎连接的内核 TLS，硬件优先](067-kernel-tls-engine-offload.zh-CN.md)（2026-11-21 采纳）
 - [ADR-068：用户态协议栈的 IPv6 自动配置、Accurate ECN，以及 AF_XDP 共享 UMEM / 多缓冲帧](068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md)（2026-11-21 采纳）
+- [ADR-069：only-brotli 与 only-zstd 的流式 API、字典与最高级别压缩率](069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md)（2026-11-21 采纳）
 - [ADR-070：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`](070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md)（2026-11-21 采纳）
 - [ADR-071：机制由应用提供的 SOCKS5 GSS-API 认证](071-socks-gssapi-pluggable-mechanism.zh-CN.md)（2026-11-21 采纳）
 - [ADR-072：无 BUNDLE 或无 ICE 的传输、SDES 变体、数据通道优先级与 TURN DTLS 连接 ID](072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md)（2026-11-21 采纳）
