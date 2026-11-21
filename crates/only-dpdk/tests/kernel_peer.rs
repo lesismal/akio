@@ -1204,6 +1204,16 @@ fn af_packet_accecn_kernel_peer() {
     if !enabled("ONLY_TAP_TEST") {
         return;
     }
+    let old = sysctl("ipv4/tcp_ecn");
+    struct Restore(String);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if !self.0.is_empty() {
+                netns_sysctl("ipv4/tcp_ecn", &self.0);
+            }
+        }
+    }
+    let _restore = Restore(old);
     if !netns_sysctl("ipv4/tcp_ecn", "3") {
         let need = std::env::var("ONLY_TEST_EXPECT_ACCECN").is_ok_and(|v| v == "1");
         assert!(!need, "net.ipv4.tcp_ecn is not 3 here");
