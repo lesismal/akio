@@ -9,7 +9,7 @@ use crate::{Flush, Level};
 
 /// A streaming brotli compressor: one stream, input taken in pieces of any size.
 ///
-/// Input is compressed a meta-block at a time (1 MiB), so output
+/// Input is compressed a meta-block at a time (1 MiB, 256 KiB at levels 10 and 11), so output
 /// lags input until a meta-block fills up or [`Flush::Flush`] / [`Flush::Finish`] asks for
 /// everything: `Flush` ends the meta-block and pads to a byte boundary with an empty metadata
 /// block, as Google's encoder does for `BROTLI_OPERATION_FLUSH`. The window is `2^22` bytes
@@ -181,7 +181,10 @@ impl Compressor {
     }
 
     fn block_size(&self) -> usize {
-        1 << 20
+        match self.level.get() {
+            10 | 11 => 1 << 18,
+            _ => 1 << 20,
+        }
     }
 
     /// Compresses `buf[pos..end]` as one meta-block.

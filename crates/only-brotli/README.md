@@ -38,7 +38,12 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   hashes of the next four bytes, five at levels 5 and 6), at 7..=11 hash chains; greedy at levels
   0..=3, lazy matching at 4..=9 (Google's backward reference score, up to four steps ahead), and
   at 10 and 11 a shortest-path parse over all candidate matches priced with the symbol costs of
-  a previous pass (one pass at 10, two at 11), long matches taken whole. Below level 10, after
+  a previous pass (one pass at 10, two at 11), long matches taken whole; there the static
+  dictionary's words are candidates too: the words are indexed by their first four bytes in
+  lower case, and at each position the input is looked up after each transform prefix it starts
+  with and checked against the identity, uppercase (first or all, ASCII) and omit-last
+  transforms with their suffixes, the cheapest address kept per length (a reference leaves the
+  distance ring alone, as the decoder does). Below level 10, after
   64 literals without a match only every second position is looked at, after 320 every fourth
   (Google's heuristic for data that does not compress). The four distances of the distance ring
   are always candidates (short codes instead of extra bits). Meta-blocks of 1 MiB (256 KiB at
@@ -51,6 +56,30 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   four symbols, with Google's run-length coding of code lengths; context maps try move-to-front
   and every run-length setting and keep the shortest. A meta-block that would come out larger
   than its bytes is stored. The window is the smallest of 2^16..2^22 that holds the input.
+
+- `Compressor` / `Decompressor`: streaming. The compressor takes input in pieces and writes a
+  meta-block at a time; `Flush::Flush` ends the meta-block and pads to a byte boundary with an
+  empty metadata block (as Google's `BROTLI_OPERATION_FLUSH`), `Flush::Finish` ends the stream
+  (a stream whose input all arrived before anything was written is the one `compress` writes).
+  Streamed output has a window of 2^22 bytes (`window_bits(10..=24)`), and the compressor's
+  buffer slides, keeping the window. The decompressor takes the stream in pieces of any size and
+  decodes it with the one-shot decoder's code, resumed where the input ran out at the last
+  complete unit: a command, or a part of a meta-block header (a block type description, a
+  context map entry, a prefix code). A unit that used bits past the input is undone (output,
+  bit position, distance ring and block switching state go back to the unit's start) and taken
+  again with more input, so input split anywhere, a byte at a time included, costs little more
+  than whole input. Output is decoded at most 1 MiB ahead of delivery, under a size limit
+  (`decompress_vec`) or into a slice (`decompress`), and the window slides once it holds twice
+  the stream's window; `max_window_bits` refuses larger windows (`Error::WindowTooLarge`).
+  Memory is bounded whatever the input: the window up to twice over, 1 MiB of output, the
+  meta-block's prefix codes and the input of one unit.
+- `compress_with_dictionary` / `decompress_with_dictionary` (and `with_dictionary` on the
+  streaming types): raw (LZ77 prefix) dictionaries, as `brotli -D` and Google's
+  `BrotliDecoderAttachDictionary(BROTLI_SHARED_DICTIONARY_RAW, ...)` use them: a distance just
+  beyond the window's reach (the output so far while it is shorter than the window) copies from
+  the dictionary as if it preceded the output, the copy staying within it, and static
+  dictionary addresses start after it. The encoder takes dictionary positions as match
+  candidates while the output is within the window.
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -71,9 +100,20 @@ stream, every single-bit flip and random junk (an error, never a panic); exact l
 made by hand for every window size, metadata, uncompressed meta-blocks, bad headers and
 padding, dictionary words and transforms, invalid dictionary references and distances; and a
 decompression bomb (817 bytes that would expand to 1 GiB) refused with `TooLarge` without
-allocating more than the limit. Fuzz targets `brotli_decompress` (differential against
-`brotli-decompressor`: same verdict, same output) and `brotli_roundtrip` (our output decodes
-with both decoders).
+allocating more than the limit. Streaming and dictionaries (`tests/stream.rs`): streamed
+output at levels 0..=11, several piece sizes and flush modes decodes with both decoders, fed
+whole, in pieces and a byte at a time; windows of 1 KiB to 256 KiB with sliding buffers; every
+flush makes everything so far decodable; output limits, slices, truncation, trailing bytes;
+every truncation and bit flip of a stream gives the same verdict streamed (in 3-byte pieces) as
+one-shot; raw dictionaries at every level, within and beyond the window; and with `brotli(1)`:
+our streams decode with `brotli -d`, its streams at qualities 0..=11 and windows 2^16 and 2^24
+decode streamed, and dictionary streams decode both ways with `-D`. Fuzz targets
+`brotli_decompress` (differential against `brotli-decompressor`: same verdict, same output),
+`brotli_roundtrip` (our output decodes with both decoders), `brotli_stream` (the streaming
+decoder in pieces agrees with the one-shot decoder, with and without a raw dictionary) and
+`brotli_stream_roundtrip` (the streaming compressor with piece sizes, flushes, windows and
+dictionaries from the input: everything decodable after each flush, both decoders and
+`brotli-decompressor` give the input back).
 
 Benchmark: `cargo run --release -p only-brotli --example brotli-bench [FILE...]` prints the size,
 ratio and compression and decompression throughput at levels 0..=11 (`BENCH_LEVELS=1,6,11`
@@ -85,13 +125,13 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `tools/codec-bench/corpus.sh` builds the corpus, then
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
-Limitations: decompression is one-shot (the whole stream in, the whole output out, as
-certificate compression and buffered HTTP bodies need); there is no streaming decoder or
-encoder. The encoder uses one block type per category (no block splitting), no static
-dictionary references and no custom dictionaries, so its output is a few percent larger than
-Google's at the same quality on text. Prefix codes are stored from the exact code lengths or
-from counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is
-cheaper, which matters for small inputs: on DER certificate chains of a few kilobytes level 11
-is 1-3% smaller than zlib level 9 (a lone small leaf about 1% larger) and 2-5% larger than
-`brotli -q 11` (a 375-byte leaf: 353 bytes, zlib 348,
-`brotli` 352; github.com's chain: 1693, 1719, 1615; wikipedia.org's: 2515, 2589, 2430).
+Limitations: the encoder uses one block type per category (no block splitting), searches the
+static dictionary only at levels 10 and 11 and not under the omit-first transforms, and
+supports raw dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom
+word lists and transforms), which Google's CLI does not offer either. Its output at level 11 is
+1-5% larger than Google's on the benchmark corpus (docs/BENCHMARKS.md), the most on mixed binary
+data where block splitting pays. Prefix codes are stored from the exact code lengths or from
+counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,
+which matters for small inputs: on DER certificate chains of a few kilobytes level 11 is 4-5%
+smaller than zlib level 9 and 1-1.5% larger than `brotli -q 11` (github.com's chain: 1640, zlib
+1719, `brotli` 1615; wikipedia.org's: 2454, 2589, 2430).

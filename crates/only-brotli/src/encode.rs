@@ -1,6 +1,6 @@
 //! Brotli compression.
 //!
-//! The input is cut into meta-blocks of 1 MiB,
+//! The input is cut into meta-blocks (1 MiB, or 256 KiB at the levels with optimal parsing),
 //! each parsed into insert-and-copy commands by LZ77 (candidates from per-hash buckets of the
 //! last positions at levels 0..=6, from hash chains above): greedy matching at levels 0..=3,
 //! lazy matching (up to four steps, as in Google's encoder) at levels 4..=9, and at levels 10
@@ -135,12 +135,12 @@ fn params(level: u8) -> Params {
         9 => p(256, 258, true, 17, ALL, true),
         10 => Params {
             optimal: 1,
-            block: 1 << 20,
+            block: 1 << 18,
             ..p(128, 256, false, 17, ALL, true)
         },
         _ => Params {
             optimal: 2,
-            block: 1 << 20,
+            block: 1 << 18,
             ..p(512, 512, false, 17, ALL, true)
         },
     }

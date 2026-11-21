@@ -28,7 +28,9 @@
   一个桶，保存其最近的 1、2、2、4、4、16 或 32 个位置（对应 Google 的 `H2`..`H6`；以后续四字节为键，
   5、6 级为五字节），7..=11 级用哈希链；0..=3 级贪心，4..=9 级惰性匹配（Google 的反向引用评分，最多
   向前看四步），10 和 11 级在全部候选匹配上做最短路径解析，用上一遍的符号代价定价（10 级一遍，11 级
-  两遍），长匹配整体采用。10 级以下，连续 64 个字面量没有匹配后只查看每隔一个的位置，320 个之后每隔
+  两遍），长匹配整体采用；此时静态字典的词也是候选：词按其前四字节的小写形式建立索引，在每个位置对输入
+  开头匹配的每个变换前缀之后查找，并按恒等、大写（首字母或全部，ASCII）与省略末尾的变换及其后缀核对，
+  每个长度保留地址最小者（与解码器一致，字典引用不改变距离环）。10 级以下，连续 64 个字面量没有匹配后只查看每隔一个的位置，320 个之后每隔
   三个（Google 针对不可压缩数据的启发式）。距离环中的四个距离始终是候选（用短码代替额外位）。
   meta-block 为 1 MiB（10、11 级为 256 KiB），每类一个块类型，`NPOSTFIX` = `NDIRECT` = 0；从 5 级起
   字面量使用上下文映射：对每种上下文模式（5..=6 级为 UTF-8 与 signed，7 级起四种都试）的 64 个上下文，
@@ -37,6 +39,23 @@
   前缀码长度限制为 15 位，至多四个符号时用简单形式
   写出，码长序列采用 Google 的游程编码；上下文映射尝试 move-to-front 与每种游程设置，取最短者。
   压缩后比原字节更大的 meta-block 以未压缩形式存储。窗口取 2^16..2^22 中能容纳输入的最小值。
+
+- `Compressor` / `Decompressor`：流式。压缩器分片接收输入，每次写出一个 meta-block；`Flush::Flush`
+  结束当前 meta-block，并用一个空的元数据块填充到字节边界（同 Google 的 `BROTLI_OPERATION_FLUSH`），
+  `Flush::Finish` 结束流（若在写出任何内容之前全部输入已到达，流与 `compress` 写出的相同）。流式输出的
+  窗口为 2^22 字节（可用 `window_bits(10..=24)` 指定），压缩器的缓冲区滑动，保留窗口。解压器接收任意
+  大小分片的流，用一次性解码器的代码解码，在输入用尽处从最后一个完整单元继续：一条命令，或 meta-block
+  头部的一部分（一个块类型描述、一个上下文映射项、一个前缀码）。用到了输入之外比特的单元会被撤销（输出、
+  比特位置、距离环与块切换状态回到单元开始处），等有更多输入时重来，因此无论在何处切分输入（包括逐字节），
+  代价都与整体输入相差无几。输出至多比交付提前解码 1 MiB，在大小上限下输出（`decompress_vec`）或输出到
+  切片（`decompress`），窗口持有两倍流窗口的数据后滑动；`max_window_bits` 拒绝更大的窗口
+  （`Error::WindowTooLarge`）。无论输入如何，内存都有界：至多两倍窗口、1 MiB 输出、meta-block 的前缀码
+  以及一个单元的输入。
+- `compress_with_dictionary` / `decompress_with_dictionary`（以及流式类型上的 `with_dictionary`）：
+  原始（LZ77 前缀）字典，用法同 `brotli -D` 与 Google 的
+  `BrotliDecoderAttachDictionary(BROTLI_SHARED_DICTIONARY_RAW, ...)`：刚超出窗口可达范围（输出比窗口
+  短时即迄今的输出）的距离从字典复制，如同字典位于输出之前，复制不越出字典；静态字典的地址排在其后。
+  输出在窗口之内时，编码器把字典中的位置当作匹配候选。
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -54,8 +73,15 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 流的每个前缀、每个单比特翻转和随机垃圾（报错，绝不 panic）；精确上限；手工构造的流，覆盖
 每种窗口大小、元数据、未压缩 meta-block、错误的头部和填充、字典词与变换、无效字典引用和
 距离；以及解压炸弹（817 字节，展开后为 1 GiB）在不分配超过上限内存的情况下以 `TooLarge`
-拒绝。模糊测试目标 `brotli_decompress`（与 `brotli-decompressor` 差分：结论相同、输出相同）
-和 `brotli_roundtrip`（我们的输出能被两个解码器解码）。
+拒绝。流式与字典（`tests/stream.rs`）：0..=11 级、多种分片大小与刷新方式的流式输出都能被两个解码器
+解码，整体输入、分片与逐字节输入均可；1 KiB 到 256 KiB 的窗口与滑动缓冲区；每次刷新后已有内容都可解码；
+输出上限、切片输出、截断、尾随字节；流的每个截断与比特翻转，流式（3 字节分片）与一次性解码结论相同；
+每个级别的原始字典，窗口之内与之外；以及与 `brotli(1)`：我们的流可由 `brotli -d` 解码，它在质量
+0..=11、窗口 2^16 与 2^24 下的流可流式解码，字典流用 `-D` 双向互通。模糊测试目标
+`brotli_decompress`（与 `brotli-decompressor` 差分：结论相同、输出相同）、`brotli_roundtrip`（我们的
+输出能被两个解码器解码）、`brotli_stream`（分片输入的流式解码器与一次性解码器结果一致，带或不带原始
+字典）与 `brotli_stream_roundtrip`（流式压缩器的分片大小、刷新、窗口与字典取自输入：每次刷新后均可
+解码，两个解码器与 `brotli-decompressor` 都得到原输入）。
 
 基准：`cargo run --release -p only-brotli --example brotli-bench [FILE...]` 在生成的文本、JSON、
 随机数据以及给定的每个文件上，打印 0..=11 级（`BENCH_LEVELS=1,6,11` 选择部分级别）的大小、
@@ -66,9 +92,9 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `tools/codec-bench/corpus.sh` 构造语料，再运行
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`。
 
-局限：解压是一次性的（整个流输入、整个输出返回，这正是证书压缩和缓冲的 HTTP body 所需）；
-没有流式解码器或编码器。编码器每类只用一个块类型（无块分割），不使用静态字典引用，也不支持
-自定义字典，因此在文本上它的输出比 Google 同质量的输出大几个百分点。前缀码按精确码长或按为游程
-编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，这对小输入很重要：在几 KB 的 DER
-证书链上 11 级比 zlib 9 级小 1–3%（单个小叶证书约大 1%），比 `brotli -q 11` 大 2–5%（375 字节的叶证书：353 字节，zlib 348，
-`brotli` 352；github.com 的证书链：1693、1719、1615；wikipedia.org 的：2515、2589、2430）。
+局限：编码器每类只用一个块类型（无块分割），只在 10、11 级搜索静态字典且不搜索省略开头的变换，只支持
+原始字典，不支持 RFC 9841 的序列化共享字典（自定义词表与变换；Google 的命令行工具也不提供）。11 级输出在
+基准语料上比 Google 的大 1–5%（docs/BENCHMARKS.zh-CN.md），在块分割最有用的混合二进制数据上差距最大。
+前缀码按精确码长或按为游程编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，
+这对小输入很重要：在几 KB 的 DER 证书链上 11 级比 zlib 9 级小 4–5%，比 `brotli -q 11` 大 1–1.5%
+（github.com 的证书链：1640，zlib 1719，`brotli` 1615；wikipedia.org 的：2454、2589、2430）。
