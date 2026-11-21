@@ -236,9 +236,11 @@ kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/we
 
 ```rust,ignore
 let cfg = only_webrtc::rtc_config()
-    .enable_fec(Some(FecMechanism::FlexFec)) // 或 FecMechanism::Ulpfec（red + ulpfec）
+    .enable_fec(Some(FecMechanism::FlexFec)) // 或 Ulpfec（red + ulpfec）、Red（只有 red，无 FEC）
     .set_fec_protection(0, 128)              // 每 256 个媒体包的 FEC 包数：上下界
+    .set_fec_mask(FecMask::Random)           // libwebrtc 的掩码表：Random 或 Bursty
     .enable_opus_red(Some(1))                // Opus RED，一个冗余包（最多 2 个）
+    .enable_audio_red(Some(1))               // PCMU、PCMA 与 G.722 的 RED（red/8000）
     .enable_ccfb(true)                       // 用 RFC 8888 反馈代替传输层反馈
     .enable_rtcp_xr(true)                    // XR 接收方参考时间 / DLRR：接收方 RTT
     .enable_rtcp_xr_blocks(XrBlocks::ALL)    // XR 丢包 / 重复 RLE、接收时间、VoIP 指标
@@ -250,20 +252,32 @@ let cfg = only_webrtc::rtc_config()
 - **FEC** 用于视频行。FlexFEC 即 libwebrtc 的 `flexfec-03`，是用
   `a=ssrc-group:FEC-FR` 声明的独立 FEC 流（Chrome 需要 field trial
   `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`）；ULPFEC 在媒体流上经 RED 承载，
-  浏览器默认就会提供。simulcast 行上只用 ULPFEC，按编码各自保护（每个 RID 的流有自己的 FEC，按自己的
-  丢包率），这正是 Chrome 的做法：基于 RID 的 simulcast 不声明 SSRC，无从指明 FlexFEC 流。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被 NACK，但接收报告仍把它们
-  算作丢失，与 Chrome 一致）。发送的视频按修复前丢包率（报告的丢包，或接收方要求重传的包所占比例）的
-  三倍保护，并限制在 `set_fec_protection` 的上下界内；`min` 大于 0 时从一开始就保护。
+  浏览器默认就会提供。simulcast 行上每个编码按自己的丢包率各自保护：ULPFEC 走该编码的 RED 流（Chrome
+  的做法），或每个编码一个 FlexFEC 流——它不在 SDP 中声明（RID simulcast 不指明 SSRC），而是携带 MID 与
+  所修复的 RID，因此只用于对端也是本栈时。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被
+  NACK，但接收报告仍把它们算作丢失，与 Chrome 一致）；FEC 只能部分重建的包（ULPFEC 保护级别）在后一帧
+  到达时交给 depacketizer，其所在帧以 `contiguous: false` 交出。分组保护方式与 libwebrtc 相同
+  （ADR-068）：最多 12 个包的组用它的掩码表；保护策略综合修复前丢包率（报告的丢包，或接收方要求重传的
+  包所占比例；取最近 10 s 的最大值）、每帧比特数，以及接收方 NACK 时的往返时间：RTT 低于 20 ms 时 delta
+  帧不加 FEC，RTT 越大一组跨越的帧越多，RTT 低于 200 ms 时小帧不加 FEC。关键帧保护更多。
+  `set_fec_protection` 限定保护因子；`min` 大于 0 时从一开始就保护。
+- **其他编解码器的 RED**（`enable_audio_red`）：PCMU、PCMA 与 G.722 的 `red/8000`，排在各编解码器之前，
+  每个包带最多两个之前的包。`FecMechanism::Red` 以 RED 发送视频但不发 FEC 包（无论哪种配置，都接受对端
+  只有 `red` 没有 `ulpfec`）。
 - **Opus RED**（RFC 2198，`red/48000/2`）：`enable_opus_red(Some(n))` 把 RED 排在 Opus *之前*，因为
   libwebrtc 只向把 RED 排在前面的对端发送 RED（Chrome 自己的 offer 把它放在 Opus 之后）。收到的 RED
   会被拆开：冗余副本代替丢失的包（已到达的包的副本被丢弃）；发送的 Opus 携带前 `n` 个包（`Some(0)`
   发送普通 Opus，但仍接收 RED）。
 - **RFC 8888**：双方都提供 `ack ccfb` 时，收到的媒体用 RFC 8888 反馈确认，替代传输层反馈，带宽估计器
-  也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。
+  也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。报告携带每个
+  包到达时的 ECN 码点（UDP 后端读取）；发送端把被报告为 CE 的包在估计器中按丢失计。本端不把自己的包
+  标记为支持 ECN。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
-  音频行发送，丢包、突发与间隙字段实测，带往返时间，编解码器相关的质量字段为不可用。收到的块以
+  音频行发送，丢包、突发与间隙字段实测，带往返时间，以及由 E-model（ITU-T G.107，所有编解码器均按
+  G.711 的值）根据丢包、其突发性、往返时间与抖动算出的 R 因子、MOS-LQ 与 MOS-CQ；电平与抖动缓冲字段为
+  不可用。收到的块以
   `XrReceipts` 与 `VoipMetrics` 事件报告，并累计到统计中。
 - **ULPFEC 保护级别**（RFC 5109 §5）：`set_ulpfec_level0(Some(l0))` 时一帧的 FEC 包保护每个包的前
   `l0` 字节，另有一个级别覆盖其余部分一次：单个丢包能完整修复，修复字节少得多。libwebrtc 只读级别 0
@@ -334,6 +348,21 @@ let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolic
 检测器负责。在模拟的 10 Mbps 链路上，从 300 kbps 起步的发送方 0.35 s 即达到 90 %，而不是 44 s；
 `tools/interop/webrtc/bwe.sh` 以 Chrome 为接收方检查这一点（连接后 0.2 s 估计值达到 10 Mbps，以前
 一直停在起始值）。
+
+估计值的上下限为 `set_bwe_bounds(min, max)`（默认 30 kbps 与 20 Mbps）；`Peer::set_bitrate_bounds`
+在运行中的 peer 上修改，调高的上限会立即被探测（ADR-068）。only-rtp 的
+`BandwidthEstimator::set_network_state_estimate` 还接受外部的链路容量估计：向它探测，且从不超过它。
+
+### 发送节拍（pacing）
+
+估计器打开时，发送的媒体按节拍发出（ADR-068），与 libwebrtc 相同：视频、FEC 与重传经一个队列发出，
+排空速率为估计值的 2.5 倍，一次最多可发出 40 ms 的字节量，所以普通帧整帧发出，关键帧被摊开（1 Mbps
+估计值下 60 kB 的关键帧约需 150 ms）。重传优先；音频从不排队。transport-wide 序号与 abs-send-time 在
+包离开时写入，因此估计器看到的是真实发送时间。`set_padding_rate(bps)` 在无数据可发时加入填充（近期
+媒体的 RTX 副本），使安静期间估计值仍有测量；`enable_pacing(false)` 关闭 pacing。队列最多 8192 个包
+（8 MB），最老的包将等待 2 s 时加速排空：应用应跟随 `EgressBitrateEstimate` 事件，否则会在上限处丢帧。
+`tools/interop/webrtc/pacing.sh` 用 Chrome 展示：估计值上限 300 kbps 时，发往 Chrome 的 RTP 最大突发
+pacing 时为 4 个包，不 pacing 时为 7 个。
 
 ## TURN
 
@@ -443,7 +472,7 @@ DTLS 1.2。
 
 ## 尚未完成
 
-TCP 中继（RFC 6062）；simulcast 行上的 FlexFEC、libwebrtc 的 FEC 掩码表；WebRTC 中的 SRTP MKI；无 ICE
+TCP 中继（RFC 6062）；发送支持 ECN 的包；WebRTC 中的 SRTP MKI；无 ICE
 或与数据通道并存的 SDES-SRTP；不复用 RTCP 时一个会话中的多个媒体段或数据通道、RTCP 的 server-reflexive
 与中继候选以及 `RtcServer`。新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、
-ADR-054 与 ADR-058。
+ADR-054、ADR-058 与 ADR-068。

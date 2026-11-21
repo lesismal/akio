@@ -526,6 +526,7 @@ fn red_for_pcmu() {
     for seed in [3, 17] {
         let (plain, _, _) = pcmu_red_run(None, 10, seed);
         let (got, _, b) = pcmu_red_run(Some(1), 10, seed);
+        println!("seed {seed}: {got} of 300 with RED, {plain} without");
         assert!(b.rtc.stats.red_recovered > 10, "{:?}", b.rtc.stats);
         assert!(
             got >= 290 && got > plain + 15,

@@ -10,6 +10,45 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN、网络状态估计与调高上限时的探测（only-webrtc、only-rtp）
+
+ADR-068（docs/adr/068-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
+
+- **Pacer**（only-webrtc）：带宽估计器打开时，视频、FEC 与重传经一个队列发出，排空速率为估计值的
+  2.5 倍，突发额度 40 ms（重传优先；队列上限 8192 个包 / 8 MB；最老的包将等待 2 s 时加速排空）；音频从不
+  延迟；transport-wide 序号与 abs-send-time 在包离开时写入；队列中的媒体填充探测时隙；可选填充
+  （`RtcConfig::set_padding_rate`）。`RtcConfig::enable_pacing(false)` 关闭；没有估计器时不排队。
+- **探测**（only-rtp `BandwidthEstimator`）：运行时 `set_bounds` 在调高上限时探测（only-webrtc：
+  `RtcConfig::set_bwe_bounds`、`Peer::set_bitrate_bounds`）；`set_network_state_estimate` 把探测限制在
+  外部链路容量估计以内并向其探测（每 5 s；延迟控制把估计值压在其 70 % 以下时每 3 s）；估计器自己的链路
+  容量估计（`link_capacity`）驱动 3 s 探测。
+- **FEC**（only-rtp `fec`）：最多 12 个包的组使用 libwebrtc 的 random / bursty 掩码表（`packet_masks`、
+  `FecMaskType`），跨帧分组规则与关键帧因子（`FecProtection`、`FecEncoder::{set_protection, push_frame}`），
+  以及其保护策略（`ProtectionPolicy`、`protection_factors`：按丢包率与每帧比特数查码率表，RTT 感知的
+  NACK/FEC 混合）。only-webrtc 为每个发送流使用它们；`set_fec_protection` 限定因子；
+  `RtcConfig::set_fec_mask(FecMask::{Random, Bursty})`。
+- **RFC 8888 报告中的 ECN**：endpoint 把每个数据报的 ECN 码点（UDP 后端本已读取）交给 peer，RFC 8888
+  反馈报告它，估计器把标记 CE 的包按丢失计（`PacketResult::ecn`、`BandwidthEstimator::ecn_counts`）。
+- **simulcast 线路上的 FlexFEC**（每个编码一个不声明的 FlexFEC 流，以 MID 与所修复的 RID 标识）；
+  **PCMU、PCMA 与 G.722 的 RED**（`RtcConfig::enable_audio_red`，`red/8000`）；**不带 FEC 的视频 RED**
+  （`FecMechanism::Red`；接受只有 `red` 没有 `ulpfec` 的对端）。
+- **部分重建的 ULPFEC 包**交给 depacketizer（`FecDecoder::take_partials`、`FrameAssembler::push_partial`、
+  `Frame::partial`；这样的帧不是 `contiguous`）。
+- only-webrtc 的 RTCP XR VoIP 指标携带由 E-model 计算的 **R 因子与 MOS**（ITU-T G.107：`EModel`、
+  `mos_from_r`、`BurstLossModel::{loss_fraction, burst_ratio}`）。
+- 统计（`PeerStats` 事件）：`fec_partial`、`paced_dropped`、`ecn_ect_received`、`ecn_ce_received`、
+  `ecn_ce_reported`。
+- 行为变化：估计器运行时媒体按节拍发送；FEC 保护遵循 libwebrtc 的策略，不再是三倍丢包率（有 NACK 且
+  RTT 低于 20 ms 时 delta 帧不加 FEC）；simulcast 线路提供 FlexFEC；VoIP 指标携带 R 与 MOS。only-rtp
+  （内部层）：`PacketResult` 新增字段 `ecn`，`Frame` 新增字段 `partial`。
+- 测试：模拟时间（1 Mbps 估计值下关键帧摊开到 156 ms，同时音频立即发出；重传顺序；队列上限；调高上限
+  时的探测；经 RFC 8888 的 ECN；10 % 丢包下 PCMU RED 收到 300 帧中的 297-298 帧，无 RED 263-268 帧；部分帧；
+  simulcast FlexFEC）；libwebrtc 表值与策略值；估计器模拟链路（调高的上限 0.15 s 达到；网络状态估计限制
+  探测；20 % CE 与 20 % 丢包一样压低估计值）。互通：`tools/interop/webrtc/pacing.sh` 对 Chrome 157（发往
+  Chrome 的最大突发 pacing 时 4 个包、不 pacing 时 7 个；6 个以上的突发 0 次对 15 次；Chrome 解码 300 帧中的
+  299-300 帧），`fec.sh` 结果不变（5 % 丢包、无 NACK 时 ULPFEC 381/400、FlexFEC 391/400 帧）。
+- 基准（gpu51，同轮 A/B）：AB_RESULTS_ZH
+
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：

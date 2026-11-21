@@ -973,12 +973,13 @@ impl RtcConfig {
     /// Forward error correction on video lines (`None`, the default, offers and accepts
     /// none). [`FecMechanism::FlexFec`] negotiates `flexfec-03` with an
     /// `a=ssrc-group:FEC-FR` FEC stream, [`FecMechanism::Ulpfec`] negotiates `red` (with its
-    /// RTX) and `ulpfec`; either way received FEC repairs lost packets before the
-    /// jitter buffer and NACK, and sent video is protected at a rate that follows the loss
-    /// the remote receiver reports (see [`set_fec_protection`](Self::set_fec_protection)).
-    /// On a simulcast line ULPFEC protects each encoding on its own (its RED stream carries
-    /// the encoding's RID), as Chrome sends it; FlexFEC needs an SSRC-signaled FEC stream, which
-    /// RID-based simulcast does not have, so simulcast lines get no FlexFEC.
+    /// RTX) and `ulpfec`, [`FecMechanism::Red`] `red` alone (video in RED, no FEC); received
+    /// FEC repairs lost packets before the jitter buffer and NACK, and sent video is protected
+    /// as libwebrtc protects it (its mask tables and protection policy, see
+    /// [`set_fec_protection`](Self::set_fec_protection)). On a simulcast line each encoding is
+    /// protected on its own: ULPFEC in the encoding's RED stream (as Chrome sends it), or a
+    /// FlexFEC stream per encoding that is not signaled (RID simulcast names no SSRCs) but
+    /// carries the MID and the RID it repairs, so only this stack's peers use it.
     #[must_use]
     pub fn enable_fec(mut self, mechanism: Option<FecMechanism>) -> Self {
         self.0.fec = mechanism;
@@ -986,9 +987,12 @@ impl RtcConfig {
     }
 
     /// Bounds of the FEC protection factor, in FEC packets per 256 media packets (at least
-    /// one FEC packet protects each frame while the factor is not 0). Within them the
-    /// factor is three times the loss fraction the remote's receiver reports give (smoothed),
-    /// 0 below 1 % loss. Defaults: 0 and 128 (at most 50 % overhead).
+    /// one FEC packet protects each group while the factor is not 0). Within them the
+    /// factors (of delta and key frames) follow libwebrtc's policy (ADR-068): the code rate of
+    /// its table for the loss the remote receiver reports (the maximum of the last 10 s) and
+    /// the bits per frame; when the receiver NACKs, none on delta frames below 20 ms of RTT,
+    /// groups over more frames as the RTT grows, and none for small frames below 200 ms.
+    /// Defaults: 0 and 128 (at most 50 % overhead).
     #[must_use]
     pub fn set_fec_protection(mut self, min: u8, max: u8) -> Self {
         self.0.fec_min = min.min(max);

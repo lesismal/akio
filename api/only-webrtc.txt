@@ -79,8 +79,30 @@ impl core::marker::Sync for only_webrtc::Event
 impl core::marker::Unpin for only_webrtc::Event
 impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Event
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Event
+#[non_exhaustive] pub enum only_webrtc::FecMask
+pub only_webrtc::FecMask::Bursty
+pub only_webrtc::FecMask::Random
+impl core::clone::Clone for only_webrtc::FecMask
+pub fn only_webrtc::FecMask::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::FecMask
+impl core::cmp::PartialEq for only_webrtc::FecMask
+pub fn only_webrtc::FecMask::eq(&self, &Self) -> bool
+impl core::default::Default for only_webrtc::FecMask
+pub fn only_webrtc::FecMask::default() -> Self
+impl core::fmt::Debug for only_webrtc::FecMask
+pub fn only_webrtc::FecMask::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::FecMask
+pub fn only_webrtc::FecMask::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::FecMask
+impl core::marker::StructuralPartialEq for only_webrtc::FecMask
+impl core::marker::Send for only_webrtc::FecMask
+impl core::marker::Sync for only_webrtc::FecMask
+impl core::marker::Unpin for only_webrtc::FecMask
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::FecMask
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::FecMask
 #[non_exhaustive] pub enum only_webrtc::FecMechanism
 pub only_webrtc::FecMechanism::FlexFec
+pub only_webrtc::FecMechanism::Red
 pub only_webrtc::FecMechanism::Ulpfec
 impl core::clone::Clone for only_webrtc::FecMechanism
 pub fn only_webrtc::FecMechanism::clone(&self) -> Self
@@ -454,6 +476,7 @@ pub fn only_webrtc::Peer::request_keyframe(&self, only_webrtc::Mid, only_webrtc:
 pub fn only_webrtc::Peer::request_layer_keyframe(&self, only_webrtc::Mid, &str, only_webrtc::KeyframeRequestKind) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::request_max_bitrate(&self, only_webrtc::Mid, core::option::Option<u64>) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::send(&self, only_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, only_webrtc::Error>
+pub fn only_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
 pub fn only_webrtc::Peer::write_media(&self, only_webrtc::Mid, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_simulcast(&self, only_webrtc::Mid, &str, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 impl core::clone::Clone for only_webrtc::Peer
@@ -514,6 +537,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RelayServer
 pub struct only_webrtc::RtcConfig(_)
 impl only_webrtc::RtcConfig
 pub fn only_webrtc::RtcConfig::clear_codecs(self) -> Self
+pub fn only_webrtc::RtcConfig::enable_audio_red(self, core::option::Option<u8>) -> Self
 pub fn only_webrtc::RtcConfig::enable_av1(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_bwe(self, core::option::Option<u64>) -> Self
 pub fn only_webrtc::RtcConfig::enable_ccfb(self, bool) -> Self
@@ -527,6 +551,7 @@ pub fn only_webrtc::RtcConfig::enable_ice_aggressive_nomination(self, bool) -> S
 pub fn only_webrtc::RtcConfig::enable_ice_renomination(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus_red(self, core::option::Option<u8>) -> Self
+pub fn only_webrtc::RtcConfig::enable_pacing(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_rtcp_xr(self, bool) -> Self
@@ -535,7 +560,10 @@ pub fn only_webrtc::RtcConfig::enable_sdes_srtp(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::set_bwe_bounds(self, u64, u64) -> Self
+pub fn only_webrtc::RtcConfig::set_fec_mask(self, only_webrtc::FecMask) -> Self
 pub fn only_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
+pub fn only_webrtc::RtcConfig::set_padding_rate(self, u64) -> Self
 pub fn only_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
 pub fn only_webrtc::RtcConfig::set_rtcp_mux_policy(self, only_webrtc::RtcpMuxPolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self

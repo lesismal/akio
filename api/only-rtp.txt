@@ -97,6 +97,7 @@ pub only_rtp::codec::Frame::first_arrival: std::time::Instant
 pub only_rtp::codec::Frame::first_seq: u64
 pub only_rtp::codec::Frame::keyframe: bool
 pub only_rtp::codec::Frame::last_seq: u64
+pub only_rtp::codec::Frame::partial: bool
 pub only_rtp::codec::Frame::timestamp: u64
 impl core::clone::Clone for only_rtp::codec::Frame
 pub fn only_rtp::codec::Frame::clone(&self) -> Self
@@ -118,6 +119,7 @@ pub fn only_rtp::codec::FrameAssembler::kind(&self) -> only_rtp::codec::CodecKin
 pub fn only_rtp::codec::FrameAssembler::new(only_rtp::codec::CodecKind, usize) -> only_rtp::codec::FrameAssembler
 pub fn only_rtp::codec::FrameAssembler::pop(&mut self) -> core::option::Option<only_rtp::codec::Frame>
 pub fn only_rtp::codec::FrameAssembler::push(&mut self, u64, u32, bool, &[u8], std::time::Instant)
+pub fn only_rtp::codec::FrameAssembler::push_partial(&mut self, u64, u32, bool, &[u8], std::time::Instant)
 pub fn only_rtp::codec::FrameAssembler::skip(&mut self, u64)
 impl core::fmt::Debug for only_rtp::codec::FrameAssembler
 pub fn only_rtp::codec::FrameAssembler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -387,6 +389,27 @@ pub fn only_rtp::fec::red::parse(&[u8]) -> core::option::Option<alloc::vec::Vec<
 pub fn only_rtp::fec::red::unwrap_primary(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::red::wrap(&[u8], u8) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::red::write(&[only_rtp::fec::red::RedBlock<'_>]) -> alloc::vec::Vec<u8>
+pub enum only_rtp::fec::FecMaskType
+pub only_rtp::fec::FecMaskType::Bursty
+pub only_rtp::fec::FecMaskType::Random
+impl core::clone::Clone for only_rtp::fec::FecMaskType
+pub fn only_rtp::fec::FecMaskType::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::FecMaskType
+impl core::cmp::PartialEq for only_rtp::fec::FecMaskType
+pub fn only_rtp::fec::FecMaskType::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::fec::FecMaskType
+pub fn only_rtp::fec::FecMaskType::default() -> Self
+impl core::fmt::Debug for only_rtp::fec::FecMaskType
+pub fn only_rtp::fec::FecMaskType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::fec::FecMaskType
+pub fn only_rtp::fec::FecMaskType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::fec::FecMaskType
+impl core::marker::StructuralPartialEq for only_rtp::fec::FecMaskType
+impl core::marker::Send for only_rtp::fec::FecMaskType
+impl core::marker::Sync for only_rtp::fec::FecMaskType
+impl core::marker::Unpin for only_rtp::fec::FecMaskType
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecMaskType
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecMaskType
 pub enum only_rtp::fec::FecScheme
 pub only_rtp::fec::FecScheme::Flexfec
 pub only_rtp::fec::FecScheme::Flexfec03
@@ -414,6 +437,7 @@ pub fn only_rtp::fec::FecDecoder::on_fec(&mut self, &[u8]) -> alloc::vec::Vec<al
 pub fn only_rtp::fec::FecDecoder::on_media(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecDecoder::partially_recovered(&self) -> usize
 pub fn only_rtp::fec::FecDecoder::recovered(&self) -> u64
+pub fn only_rtp::fec::FecDecoder::take_partials(&mut self, u32) -> alloc::vec::Vec<only_rtp::fec::PartialPacket>
 impl core::fmt::Debug for only_rtp::fec::FecDecoder
 pub fn only_rtp::fec::FecDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_rtp::fec::FecDecoder
@@ -427,8 +451,11 @@ pub fn only_rtp::fec::FecEncoder::encode(&self, &[&[u8]], &[alloc::vec::Vec<usiz
 pub fn only_rtp::fec::FecEncoder::encode_ulp(&self, &[&[u8]], &[alloc::vec::Vec<only_rtp::fec::UlpLevelSpec>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn only_rtp::fec::FecEncoder::flush(&mut self) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecEncoder::new(only_rtp::fec::FecScheme, u32, u8) -> only_rtp::fec::FecEncoder
+pub fn only_rtp::fec::FecEncoder::protection(&self) -> only_rtp::fec::FecProtection
 pub fn only_rtp::fec::FecEncoder::push(&mut self, &[u8], bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecEncoder::push_frame(&mut self, &[u8], bool, bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub fn only_rtp::fec::FecEncoder::rate(&self) -> u8
+pub fn only_rtp::fec::FecEncoder::set_protection(&mut self, only_rtp::fec::FecProtection)
 pub fn only_rtp::fec::FecEncoder::set_rate(&mut self, u8)
 pub fn only_rtp::fec::FecEncoder::set_ulp_level0(&mut self, core::option::Option<usize>)
 impl core::fmt::Debug for only_rtp::fec::FecEncoder
@@ -466,6 +493,62 @@ impl core::marker::Sync for only_rtp::fec::FecHeader
 impl core::marker::Unpin for only_rtp::fec::FecHeader
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecHeader
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecHeader
+pub struct only_rtp::fec::FecProtection
+pub only_rtp::fec::FecProtection::delta_rate: u8
+pub only_rtp::fec::FecProtection::key_rate: u8
+pub only_rtp::fec::FecProtection::mask: only_rtp::fec::FecMaskType
+pub only_rtp::fec::FecProtection::max_frames: u8
+impl only_rtp::fec::FecProtection
+pub fn only_rtp::fec::FecProtection::rate(u8) -> only_rtp::fec::FecProtection
+impl core::clone::Clone for only_rtp::fec::FecProtection
+pub fn only_rtp::fec::FecProtection::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::FecProtection
+impl core::cmp::PartialEq for only_rtp::fec::FecProtection
+pub fn only_rtp::fec::FecProtection::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::fec::FecProtection
+pub fn only_rtp::fec::FecProtection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::fec::FecProtection
+pub fn only_rtp::fec::FecProtection::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::fec::FecProtection
+impl core::marker::StructuralPartialEq for only_rtp::fec::FecProtection
+impl core::marker::Send for only_rtp::fec::FecProtection
+impl core::marker::Sync for only_rtp::fec::FecProtection
+impl core::marker::Unpin for only_rtp::fec::FecProtection
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecProtection
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecProtection
+pub struct only_rtp::fec::PartialPacket
+pub only_rtp::fec::PartialPacket::length: usize
+pub only_rtp::fec::PartialPacket::packet: alloc::vec::Vec<u8>
+impl core::clone::Clone for only_rtp::fec::PartialPacket
+pub fn only_rtp::fec::PartialPacket::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::PartialPacket
+impl core::cmp::PartialEq for only_rtp::fec::PartialPacket
+pub fn only_rtp::fec::PartialPacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::fec::PartialPacket
+pub fn only_rtp::fec::PartialPacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::fec::PartialPacket
+impl core::marker::Send for only_rtp::fec::PartialPacket
+impl core::marker::Sync for only_rtp::fec::PartialPacket
+impl core::marker::Unpin for only_rtp::fec::PartialPacket
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::PartialPacket
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::PartialPacket
+pub struct only_rtp::fec::ProtectionPolicy
+impl only_rtp::fec::ProtectionPolicy
+pub fn only_rtp::fec::ProtectionPolicy::new(bool) -> only_rtp::fec::ProtectionPolicy
+pub fn only_rtp::fec::ProtectionPolicy::on_frame(&mut self, std::time::Instant, usize, usize, bool)
+pub fn only_rtp::fec::ProtectionPolicy::on_loss(&mut self, std::time::Instant, f64)
+pub fn only_rtp::fec::ProtectionPolicy::protection(&self, std::time::Instant) -> only_rtp::fec::FecProtection
+pub fn only_rtp::fec::ProtectionPolicy::set_mask(&mut self, only_rtp::fec::FecMaskType)
+pub fn only_rtp::fec::ProtectionPolicy::set_nack(&mut self, bool)
+pub fn only_rtp::fec::ProtectionPolicy::set_pixels(&mut self, core::option::Option<u32>)
+pub fn only_rtp::fec::ProtectionPolicy::set_rtt(&mut self, core::time::Duration)
+impl core::fmt::Debug for only_rtp::fec::ProtectionPolicy
+pub fn only_rtp::fec::ProtectionPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::fec::ProtectionPolicy
+impl core::marker::Sync for only_rtp::fec::ProtectionPolicy
+impl core::marker::Unpin for only_rtp::fec::ProtectionPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::ProtectionPolicy
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::ProtectionPolicy
 pub struct only_rtp::fec::UlpLevel
 pub only_rtp::fec::UlpLevel::offsets: alloc::vec::Vec<u16>
 pub only_rtp::fec::UlpLevel::payload_offset: usize
@@ -505,6 +588,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::UlpLevelSpec
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::UlpLevelSpec
 pub const only_rtp::fec::MAX_FEC_GROUP: usize
 pub fn only_rtp::fec::interleaved_masks(usize, usize) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
+pub fn only_rtp::fec::packet_masks(usize, usize, only_rtp::fec::FecMaskType) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
+pub fn only_rtp::fec::protection_factors(f64, u64, f64, f64, f64, core::option::Option<u32>, bool, core::time::Duration) -> only_rtp::fec::FecProtection
 pub enum only_rtp::BandwidthUsage
 pub only_rtp::BandwidthUsage::Normal
 pub only_rtp::BandwidthUsage::Overusing
@@ -730,14 +815,19 @@ pub struct only_rtp::BandwidthEstimator
 impl only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option::Option<u64>
 pub fn only_rtp::BandwidthEstimator::application_limited(&self) -> bool
+pub fn only_rtp::BandwidthEstimator::bounds(&self) -> (u64, u64)
 pub fn only_rtp::BandwidthEstimator::cancel_probes(&mut self)
+pub fn only_rtp::BandwidthEstimator::ecn_counts(&self) -> (u64, u64)
 pub fn only_rtp::BandwidthEstimator::estimate(&self) -> u64
+pub fn only_rtp::BandwidthEstimator::link_capacity(&self) -> core::option::Option<(u64, u64)>
 pub fn only_rtp::BandwidthEstimator::new(u64) -> only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::on_network_change(&mut self, std::time::Instant)
 pub fn only_rtp::BandwidthEstimator::on_packet_results(&mut self, std::time::Instant, &[only_rtp::PacketResult])
 pub fn only_rtp::BandwidthEstimator::on_probe_sent(&mut self, std::time::Instant, u32, usize)
 pub fn only_rtp::BandwidthEstimator::poll_probe(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ProbePacket>
 pub fn only_rtp::BandwidthEstimator::probe_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_rtp::BandwidthEstimator::set_bounds(&mut self, std::time::Instant, u64, u64)
+pub fn only_rtp::BandwidthEstimator::set_network_state_estimate(&mut self, core::option::Option<u64>)
 pub fn only_rtp::BandwidthEstimator::set_remote_estimate(&mut self, u64)
 pub fn only_rtp::BandwidthEstimator::usage(&self) -> only_rtp::BandwidthUsage
 pub fn only_rtp::BandwidthEstimator::with_bounds(self, u64, u64) -> only_rtp::BandwidthEstimator
@@ -751,6 +841,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BandwidthEstimator
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::BandwidthEstimator
 pub struct only_rtp::BurstLossModel
 impl only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::burst_ratio(&self) -> f64
+pub fn only_rtp::BurstLossModel::loss_fraction(&self) -> f64
 pub fn only_rtp::BurstLossModel::metrics(&self, u32, u16) -> only_rtp::VoipMetrics
 pub fn only_rtp::BurstLossModel::new(u8) -> only_rtp::BurstLossModel
 pub fn only_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
@@ -874,6 +966,48 @@ impl core::marker::Sync for only_rtp::DlrrItem
 impl core::marker::Unpin for only_rtp::DlrrItem
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::DlrrItem
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::DlrrItem
+pub struct only_rtp::EModel
+impl only_rtp::EModel
+pub fn only_rtp::EModel::codec(f64, f64) -> only_rtp::EModel
+pub fn only_rtp::EModel::delay_impairment(core::time::Duration) -> f64
+pub fn only_rtp::EModel::equipment_impairment(&self, f64, f64) -> f64
+pub fn only_rtp::EModel::estimate(&self, f64, f64, core::option::Option<core::time::Duration>, core::time::Duration, core::time::Duration, core::option::Option<core::time::Duration>) -> only_rtp::EModelScore
+pub fn only_rtp::EModel::score(&self, f64, f64, core::time::Duration) -> only_rtp::EModelScore
+impl core::clone::Clone for only_rtp::EModel
+pub fn only_rtp::EModel::clone(&self) -> Self
+impl core::cmp::PartialEq for only_rtp::EModel
+pub fn only_rtp::EModel::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EModel
+pub fn only_rtp::EModel::default() -> only_rtp::EModel
+impl core::fmt::Debug for only_rtp::EModel
+pub fn only_rtp::EModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EModel
+impl core::marker::StructuralPartialEq for only_rtp::EModel
+impl core::marker::Send for only_rtp::EModel
+impl core::marker::Sync for only_rtp::EModel
+impl core::marker::Unpin for only_rtp::EModel
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EModel
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EModel
+pub struct only_rtp::EModelScore
+pub only_rtp::EModelScore::mos_cq: f64
+pub only_rtp::EModelScore::mos_lq: f64
+pub only_rtp::EModelScore::r_factor: f64
+pub only_rtp::EModelScore::r_lq: f64
+impl only_rtp::EModelScore
+pub fn only_rtp::EModelScore::apply(&self, &mut only_rtp::VoipQuality)
+impl core::clone::Clone for only_rtp::EModelScore
+pub fn only_rtp::EModelScore::clone(&self) -> Self
+impl core::cmp::PartialEq for only_rtp::EModelScore
+pub fn only_rtp::EModelScore::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::EModelScore
+pub fn only_rtp::EModelScore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EModelScore
+impl core::marker::StructuralPartialEq for only_rtp::EModelScore
+impl core::marker::Send for only_rtp::EModelScore
+impl core::marker::Sync for only_rtp::EModelScore
+impl core::marker::Unpin for only_rtp::EModelScore
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EModelScore
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EModelScore
 pub struct only_rtp::ExtensionMap
 impl only_rtp::ExtensionMap
 pub fn only_rtp::ExtensionMap::default_audio() -> only_rtp::ExtensionMap
@@ -969,6 +1103,7 @@ impl core::marker::Unpin for only_rtp::JitterStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterStats
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterStats
 pub struct only_rtp::PacketResult
+pub only_rtp::PacketResult::ecn: core::option::Option<u8>
 pub only_rtp::PacketResult::probe: core::option::Option<u32>
 pub only_rtp::PacketResult::received: core::option::Option<std::time::Instant>
 pub only_rtp::PacketResult::sent: std::time::Instant
@@ -1411,6 +1546,7 @@ pub fn only_rtp::bounded_bitrate(&[only_rtp::TmmbItem], f64) -> core::option::Op
 pub fn only_rtp::bounding_set(&[only_rtp::TmmbItem]) -> alloc::vec::Vec<only_rtp::TmmbItem>
 pub fn only_rtp::compact_ntp(u64) -> u32
 pub fn only_rtp::is_rtcp(&[u8]) -> bool
+pub fn only_rtp::mos_from_r(f64) -> f64
 pub fn only_rtp::ntp_time(std::time::SystemTime) -> u64
 pub fn only_rtp::parse_compound(&[u8]) -> core::result::Result<alloc::vec::Vec<only_rtp::Rtcp>, only_rtp::Error>
 pub fn only_rtp::pcm_level_dbm0(&[i16]) -> core::option::Option<i8>
