@@ -493,7 +493,7 @@ fn check_aes128_iframes(format: SegmentFormat) {
             let (status, head, cipher) = get(srv.http, &format!("/{path}/{uri}"), "");
             assert_eq!(status, 200, "{uri}: {head}");
             assert_eq!(cipher.len() % 16, 0);
-            let mut plain = cipher.clone();
+            let mut plain = cipher;
             Aes::new128(&key.try_into().unwrap())
                 .decrypt_cbc_padded(&u128::from(n).to_be_bytes(), &mut plain)
                 .expect("decrypts with the IV of its number");

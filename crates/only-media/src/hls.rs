@@ -3394,7 +3394,7 @@ mod tests {
                     query: q.into(),
                 };
                 let r = st.answer(&g, &want).expect("answered");
-                let body = String::from_utf8(r.body.clone()).expect("utf-8");
+                let body = String::from_utf8(r.body).expect("utf-8");
                 assert!(
                     body.contains(
                         "#EXT-X-RENDITION-REPORT:URI=\"../cam_lo/index.m3u8?token=a%22b&k=1\","
