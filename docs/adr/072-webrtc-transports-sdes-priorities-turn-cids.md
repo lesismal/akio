@@ -185,7 +185,16 @@ field is not a break.
 - Fuzzing: new target `webrtc_sdes` (an `a=crypto` value round-trips and keys a context);
   `webrtc_sdp` also tries SDES without ICE with MKIs and no BUNDLE with RTCP negotiation, and
   checks that keys never share a section with a fingerprint, that answers to offers without ICE
-  carry none, and that a disabled BUNDLE never appears; new seeds.
+  carry none, that a disabled BUNDLE never appears, and that no section carries both
+  `a=rtcp-mux` and `a=rtcp`; new seeds. On Linux arm64: `webrtc_sdes` 31 M runs in 15 minutes,
+  clean; `webrtc_sdp` found two bugs, both fixed and kept as regression inputs (a disabled BUNDLE
+  written as an empty group when every offered section was rejected; an application section
+  taking the mid of a media line, which then ran on the data channel's transport).
+- Performance (same-run A/B against 57696b6b on gpu51, `quiet.sh`, CPUs 2-9, 7 alternating
+  rounds, medians): RTP media between two loopback `Endpoint`s 92.1 vs 92.1 MB/s (1.000x), data
+  channels 189.7 vs 189.7 MB/s (1.000x), TURN over DTLS through the listener and relay 230,804
+  vs 231,015 datagrams per second (1.001x; 100-byte ChannelData, the CID path on): no
+  regression.
 - Costs: a session without BUNDLE runs an ICE agent, a DTLS handshake and consent checks per
   section; the swap is a handful of field moves per redirected call (none in a bundled session:
   every hook checks an empty table first). A TURN DTLS listener keeps one index entry per live
