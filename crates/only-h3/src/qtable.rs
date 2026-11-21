@@ -626,6 +626,11 @@ impl Encoder {
     }
 
     /// An indexed field line for entry `abs` (relative to Base, or post-base).
+    // `&mut self` for the post-base counter of tests and fuzzing.
+    #[cfg_attr(
+        not(any(test, feature = "fuzzing")),
+        allow(clippy::needless_pass_by_ref_mut)
+    )]
     fn indexed(&mut self, lines: &mut Vec<u8>, sec: &mut Section, abs: u64) {
         if abs < sec.base {
             put_int(lines, 0x80, 6, sec.base - 1 - abs);
@@ -641,6 +646,11 @@ impl Encoder {
 
     /// A literal field line: a static name reference, a dynamic one when usable, else a
     /// literal name.
+    // `&mut self` for the post-base counter of tests and fuzzing.
+    #[cfg_attr(
+        not(any(test, feature = "fuzzing")),
+        allow(clippy::needless_pass_by_ref_mut)
+    )]
     fn literal(&mut self, lines: &mut Vec<u8>, sec: &mut Section, n: &[u8], v: &[u8]) {
         if crate::qpack::static_name(n).is_none() {
             if let Some(&abs) = self.names.get(n) {
