@@ -17,8 +17,8 @@
 //! GSS-API authentication (RFC 1961, method 1; ADR-071), server and client, with the
 //! per-message protection levels (integrity, confidentiality) or none: the GSS-API mechanism
 //! (Kerberos through the system library, SSPI, ...) is the application's, behind the
-//! [`gssapi::GssContext`] trait. Over GSS-API, `UDP ASSOCIATE` is refused unless the level is
-//! none, and the client's blocking helpers need level none.
+//! [`gssapi::GssContext`] trait. Over GSS-API the server refuses `UDP ASSOCIATE` above level
+//! none, the client does not do UDP at all, and its blocking helpers need level none.
 //!
 //! Linux fast path (opt-in, [`ProxyConfig::sockmap`]): `CONNECT` tunnels (SOCKS and HTTP) are
 //! spliced in the kernel with `only::ebpf::Relay` once the upstream is connected, so their bytes
@@ -702,7 +702,8 @@ pub struct SocksSession {
     engine: EngineRef,
     auth: Option<Auth>,
     gss: Option<Arc<GssServer>>,
-    gss_ctx: Option<Box<dyn gssapi::GssContext>>,
+    /// In a mutex only to keep the session `Sync`; reached through `&mut self` (`get_mut`).
+    gss_ctx: Mutex<Option<Box<dyn gssapi::GssContext>>>,
     /// The protection agreed over GSS-API (none otherwise).
     protection: gssapi::Protection,
     allow: Option<Allow>,
@@ -744,7 +745,7 @@ impl Acceptor for Socks {
             engine: self.engine.clone(),
             auth: self.auth.clone(),
             gss: self.gss.clone(),
-            gss_ctx: None,
+            gss_ctx: Mutex::new(None),
             protection: gssapi::Protection::None,
             allow: self.allow.clone(),
             allow_socks4: self.allow_socks4,
@@ -1272,9 +1273,16 @@ impl SocksSession {
         }
     }
 
+    /// The GSS-API context slot.
+    fn ctx(&mut self) -> &mut Option<Box<dyn gssapi::GssContext>> {
+        self.gss_ctx
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// RFC 1961: an establishment failure gets `VER = 1, MTYP = 0xff`, then the close.
     fn gss_abort(&mut self, c: &Conn<Self>) {
-        self.gss_ctx = None;
+        *self.ctx() = None;
         self.fail(c, gssapi::ABORT.to_vec());
     }
 
@@ -1283,7 +1291,7 @@ impl SocksSession {
         let Some(gss) = self.gss.clone() else {
             return self.gss_abort(c);
         };
-        let ctx = self.gss_ctx.take();
+        let ctx = self.ctx().take();
         self.st = St::GssWait;
         let r = c.spawn_blocking(
             move || {
@@ -1301,7 +1309,7 @@ impl SocksSession {
                 if !matches!(me.st, St::GssWait) {
                     return; // closed meanwhile
                 }
-                me.gss_ctx = ctx;
+                *me.ctx() = ctx;
                 let Ok(step) = r else {
                     return me.gss_abort(c);
                 };
@@ -1317,7 +1325,7 @@ impl SocksSession {
                 }
                 let _ = c.send_owned(out);
                 if done {
-                    me.user = me.gss_ctx.as_ref().and_then(|x| x.peer_name());
+                    me.user = me.ctx().as_ref().and_then(|x| x.peer_name());
                     me.st = St::GssProt;
                 } else {
                     me.st = St::GssAuth;
@@ -1334,7 +1342,13 @@ impl SocksSession {
     /// The protection-level message: answers with the level and, unless it is none, turns
     /// the session's transport on. `false` when the session failed.
     fn gss_protection(&mut self, c: &Conn<Self>, token: &[u8]) -> bool {
-        let (Some(ctx), Some(gss)) = (self.gss_ctx.as_mut(), self.gss.as_ref()) else {
+        let (Some(ctx), Some(gss)) = (
+            self.gss_ctx
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut(),
+            self.gss.as_ref(),
+        ) else {
             self.gss_abort(c);
             return false;
         };
@@ -1351,11 +1365,11 @@ impl SocksSession {
         let _ = c.send_owned(out);
         self.st = St::Request;
         if level == gssapi::Protection::None {
-            self.gss_ctx = None;
+            *self.ctx() = None;
             return true;
         }
         // What follows, in this read and later ones, is wrapped.
-        let Some(ctx) = self.gss_ctx.take() else {
+        let Some(ctx) = self.ctx().take() else {
             return false;
         };
         let pending = std::mem::take(&mut self.buf);

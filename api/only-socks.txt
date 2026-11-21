@@ -1,5 +1,9 @@
 pub mod only_socks
 pub use only_socks::ProxyRefused
+pub mod only_socks::gssapi
+pub use only_socks::gssapi::GssContext
+pub use only_socks::gssapi::GssStep
+pub use only_socks::gssapi::Protection
 #[non_exhaustive] pub enum only_socks::Command
 pub only_socks::Command::Bind
 pub only_socks::Command::Connect
@@ -150,6 +154,7 @@ pub fn only_socks::Socks::bind(self, bool) -> only_socks::Socks
 pub fn only_socks::Socks::bind_timeout(self, core::time::Duration) -> only_socks::Socks
 pub fn only_socks::Socks::config(self, only_socks::ProxyConfig) -> only_socks::Socks
 pub fn only_socks::Socks::destinations(self, only_socks::Destinations) -> only_socks::Socks
+pub fn only_socks::Socks::gssapi(self, impl core::ops::function::Fn() -> core::io::error::Result<alloc::boxed::Box<dyn only_ws::gss::GssContext>> + core::marker::Send + core::marker::Sync + 'static, core::ops::range::RangeInclusive<only_ws::gss::Protection>) -> only_socks::Socks
 pub fn only_socks::Socks::new(only::EngineRef) -> only_socks::Socks
 pub fn only_socks::Socks::sockmap(self, only_ebpf::relay::Relay) -> only_socks::Socks
 pub fn only_socks::Socks::udp_associate(self, bool) -> only_socks::Socks
@@ -160,6 +165,7 @@ pub fn only_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt
 impl only_core::handler::Acceptor for only_socks::Socks
 pub type only_socks::Socks::Handler = only_socks::SocksSession
 pub fn only_socks::Socks::on_open(&self, &only_core::conn::Conn<only_socks::SocksSession>) -> only_socks::SocksSession
+pub fn only_socks::Socks::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn only_core::conn::Transport>>
 impl core::marker::Send for only_socks::Socks
 impl core::marker::Sync for only_socks::Socks
 impl core::marker::Unpin for only_socks::Socks
@@ -174,6 +180,7 @@ pub fn only_socks::SocksClient::bind_timeout(self, core::option::Option<core::ti
 pub fn only_socks::SocksClient::dial<A: only_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<only::Engine>, only_socks::Dest, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn only_socks::SocksClient::dial_blocking(&self, &only_socks::Dest) -> core::io::error::Result<std::net::tcp::TcpStream>
 pub fn only_socks::SocksClient::from_url(&str) -> core::io::error::Result<only_socks::SocksClient>
+pub fn only_socks::SocksClient::gssapi(self, impl core::ops::function::Fn(&str) -> core::io::error::Result<alloc::boxed::Box<dyn only_ws::gss::GssContext>> + core::marker::Send + core::marker::Sync + 'static, only_ws::gss::Protection) -> only_socks::SocksClient
 pub fn only_socks::SocksClient::handshake_timeout(self, core::option::Option<core::time::Duration>) -> only_socks::SocksClient
 pub fn only_socks::SocksClient::new(only_socks::Version, core::net::socket_addr::SocketAddr) -> only_socks::SocksClient
 pub fn only_socks::SocksClient::tls(self, only_tls::config::ClientConfig, core::option::Option<&str>) -> only_socks::SocksClient

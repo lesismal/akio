@@ -191,9 +191,42 @@ let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
 使用 io_uring 时，若两端都开着而一个在拼接前已完成的读交来了负载，隧道会被关闭，避免乱序。
 吞吐量见[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
 
+## GSS-API 认证（RFC 1961）
+
+`only_socks::gssapi`（ADR-071）在两端实现 RFC 1961，方法 1：上下文建立的令牌、保护级别协商，以及级别
+高于 none 时对 SOCKS 请求、应答和隧道中每个字节的封装。GSS-API 机制本身由应用提供：在系统的 GSS-API 库
+（通过自选绑定使用 MIT 或 Heimdal Kerberos）、SSPI 或其他实现之上实现 `GssContext`。
+
+```rust,ignore
+use only_socks::gssapi::{GssContext, Protection};
+
+// 服务端：每个连接一个 acceptor 上下文（在逻辑池中创建），以及授予的级别范围。
+let socks = Socks::new(engine_ref.clone())
+    .gssapi(|| Ok(Box::new(MyKerberos::acceptor()?) as Box<dyn GssContext>),
+            Protection::Integrity..=Protection::Confidentiality);
+
+// 客户端：为代理主机名创建 initiator 上下文；请求的级别即可接受的最低级别。
+let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
+    .gssapi(|host| Ok(Box::new(MyKerberos::initiator(&format!("rcmd@{host}"))?) as Box<dyn GssContext>),
+            Protection::Confidentiality);
+```
+
+- 建立步骤可能阻塞（Kerberos initiator 会向 KDC 申请服务票据）：服务端在逻辑池中执行，客户端每一步在
+  一个短命的辅助线程中执行；都不会在 I/O 线程上执行。`wrap` / `unwrap` 对每条消息在 I/O 线程上执行。
+- 级别：`None`（只认证；即 Dante 的 `clear`）、`Integrity`、`Confidentiality`；服务端把客户端请求的级别
+  限制在自己的范围内后授予，客户端拒绝低于自己请求的级别。
+- 服务端的访问控制钩子通过 `Request::user()` 看到 GSS-API 对端的名字。
+- 有保护时不支持：`UDP ASSOCIATE`（服务端回复 7，客户端在任何级别都拒绝经 GSS-API 的 UDP）、客户端的
+  阻塞辅助函数（它们返回 `TcpStream`）、`sockmap` 快速路径，以及放在 `Tls::server` 里的服务端（需要它
+  自己的 transport）。
+
+互操作（`tools/interop/socks/gssapi.sh`，Docker 中带 KDC 的 MIT Kerberos；workspace 不链接任何 GSS-API
+库，由仅用于测试的 `python3-gssapi` 垫片代替应用的机制）：only-socks 的客户端与服务端、重新编译并启用
+GSS-API 的 Dante，以及一个独立的 Python RFC 1961 客户端，所有级别，15/15。
+
 ## 不支持
 
-GSSAPI 认证；Linux `splice(2)` 转发路径（没有尝试：保留 engine 上带双向背压的转发，内核内转发由
+Linux `splice(2)` 转发路径（没有尝试：保留 engine 上带双向背压的转发，内核内转发由
 `only::ebpf::Relay` 提供）。
 
 ADR-059 起：数据报可以双向分片发送（RFC 1928 `FRAG`；`UdpAssociation::send_fragmented`、

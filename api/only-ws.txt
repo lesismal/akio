@@ -129,6 +129,55 @@ impl core::marker::Unpin for only_ws::deflate::PmdParams
 impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::PmdParams
 impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::PmdParams
 pub fn only_ws::deflate::negotiate<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::option::Option<(only_ws::deflate::PmdParams, alloc::string::String)>
+pub mod only_ws::gss
+pub enum only_ws::gss::GssStep
+pub only_ws::gss::GssStep::Complete(alloc::vec::Vec<u8>)
+pub only_ws::gss::GssStep::Continue(alloc::vec::Vec<u8>)
+impl core::clone::Clone for only_ws::gss::GssStep
+pub fn only_ws::gss::GssStep::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::gss::GssStep
+impl core::cmp::PartialEq for only_ws::gss::GssStep
+pub fn only_ws::gss::GssStep::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ws::gss::GssStep
+pub fn only_ws::gss::GssStep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::gss::GssStep
+impl core::marker::Send for only_ws::gss::GssStep
+impl core::marker::Sync for only_ws::gss::GssStep
+impl core::marker::Unpin for only_ws::gss::GssStep
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::gss::GssStep
+impl core::panic::unwind_safe::UnwindSafe for only_ws::gss::GssStep
+pub enum only_ws::gss::Protection
+pub only_ws::gss::Protection::Confidentiality
+pub only_ws::gss::Protection::Integrity
+pub only_ws::gss::Protection::None
+impl only_ws::gss::Protection
+pub fn only_ws::gss::Protection::from_level(u8) -> core::option::Option<only_ws::gss::Protection>
+pub fn only_ws::gss::Protection::level(self) -> u8
+impl core::clone::Clone for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::gss::Protection
+impl core::cmp::Ord for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ws::gss::Protection
+pub fn only_ws::gss::Protection::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_ws::gss::Protection
+impl core::marker::StructuralPartialEq for only_ws::gss::Protection
+impl core::marker::Send for only_ws::gss::Protection
+impl core::marker::Sync for only_ws::gss::Protection
+impl core::marker::Unpin for only_ws::gss::Protection
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::gss::Protection
+impl core::panic::unwind_safe::UnwindSafe for only_ws::gss::Protection
+pub trait only_ws::gss::GssContext: core::marker::Send
+pub fn only_ws::gss::GssContext::peer_name(&self) -> core::option::Option<alloc::string::String>
+pub fn only_ws::gss::GssContext::step(&mut self, &[u8]) -> core::io::error::Result<only_ws::gss::GssStep>
+pub fn only_ws::gss::GssContext::unwrap(&mut self, &[u8]) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn only_ws::gss::GssContext::wrap(&mut self, bool, &[u8]) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub mod only_ws::protocol
 pub mod only_ws::protocol::close
 pub const only_ws::protocol::close::GOING_AWAY: u16

@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+#[doc(inline)]
 pub use only_ws::gss::{GssContext, GssStep, Protection};
 
 // Internal: the messages and the protection layer, shared with the client in only-ws.

@@ -95,6 +95,7 @@ What a `.proto` construct becomes:
 |---|---|
 | `message Point { int32 latitude = 1; }` | `pub struct Point { pub latitude: i32, pub unknown_fields: UnknownFields }` (`Clone`, `PartialEq`, `Debug`, `Default`; `Eq` when there are no floats) |
 | `string`, `bytes` | `String`, `Vec<u8>` |
+| `string` with `features.utf8_validation = NONE` (editions); proto2 `string` with `Config::proto2_unchecked_strings(true)` | `only_protobuf::ProtoString`: bytes that are usually UTF-8, not checked when decoding (`to_str()`, `to_string_lossy()`, `as_bytes()`); getters return `&[u8]` |
 | message-typed field, proto3 `optional`, proto2 `optional` | `Option<T>` (`Option<Box<T>>` when recursive); proto2 defaults through getters (`p.a()`) |
 | `repeated T` / `map<K, V>` | `Vec<T>` / `HashMap<K, V>` (`BTreeMap` with `Config::btree_maps(true)`) |
 | `oneof kind { .. }` | `pub kind: Option<point::Kind>`, an enum in the message's module |
@@ -104,7 +105,10 @@ What a `.proto` construct becomes:
 
 Messages keep unknown fields and write them back (`Config::unknown_fields(false)` removes the
 member, so struct literals need no `..Default::default()`). Encoding matches protoc's C++
-runtime byte for byte; decoding is bounded (100 nesting levels, checked lengths, UTF-8).
+runtime byte for byte; decoding is bounded (100 nesting levels, checked lengths, UTF-8 except
+where `utf8_validation = NONE` says not to). Dynamic messages follow the descriptor: a `string`
+field that does not require UTF-8 (`NONE`, proto2) holds what is not UTF-8 as `Value::Bytes`, which
+JSON prints lossily and the text format escapes.
 
 ### Services
 

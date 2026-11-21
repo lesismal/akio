@@ -10,7 +10,9 @@
 //! confidentiality at level 2). An establishment failure is answered with `VER = 1`,
 //! `MTYP = 0xff` and nothing else.
 //!
-//! Not public API on its own: `only_socks::gssapi` re-exports what applications use.
+//! Applications use [`GssContext`], [`GssStep`] and [`Protection`] (re-exported by
+//! `only_socks::gssapi`); the messages and the protection layer are internals shared with
+//! only-socks (`#[doc(hidden)]`, outside the semver promise).
 
 use std::{any::Any, fmt, io, sync::Arc};
 
@@ -53,6 +55,7 @@ pub enum GssStep {
     Complete(Vec<u8>),
 }
 
+#[doc(hidden)]
 /// Makes the [`GssContext`] of one connection (called once per handshake, off the I/O
 /// threads). The client's factory is given the proxy's host name, to name the service
 /// (`rcmd@proxy.example.com`, the RFC 1961 convention, or the application's own).
@@ -92,18 +95,25 @@ impl Protection {
     }
 }
 
+#[doc(hidden)]
 /// RFC 1961 message version.
 pub const VERSION: u8 = 1;
+#[doc(hidden)]
 /// `MTYP`: a context-establishment token.
 pub const MTYP_AUTH: u8 = 1;
+#[doc(hidden)]
 /// `MTYP`: the protection-level negotiation.
 pub const MTYP_PROTECTION: u8 = 2;
+#[doc(hidden)]
 /// `MTYP`: encapsulated data.
 pub const MTYP_DATA: u8 = 3;
+#[doc(hidden)]
 /// `MTYP`: the establishment failed (the message has no length and no token).
 pub const MTYP_ABORT: u8 = 0xff;
+#[doc(hidden)]
 /// The abort message.
 pub const ABORT: [u8; 2] = [VERSION, MTYP_ABORT];
+#[doc(hidden)]
 /// Plaintext per encapsulated message: the wrapped token must fit in 65,535 bytes with the
 /// mechanism's overhead (Kerberos adds well under 100 bytes).
 pub const MAX_CHUNK: usize = 32 << 10;
@@ -112,6 +122,7 @@ fn bad(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
+#[doc(hidden)]
 /// Appends one message.
 pub fn push_msg(out: &mut Vec<u8>, mtyp: u8, token: &[u8]) -> io::Result<()> {
     let len = u16::try_from(token.len())
@@ -122,6 +133,7 @@ pub fn push_msg(out: &mut Vec<u8>, mtyp: u8, token: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[doc(hidden)]
 /// One message from the front of `b`: its type, its token and its length on the wire; `None`
 /// when incomplete. An abort is `(MTYP_ABORT, [], 2)`.
 pub fn parse_msg(b: &[u8]) -> io::Result<Option<(u8, &[u8], usize)>> {
@@ -141,6 +153,7 @@ pub fn parse_msg(b: &[u8]) -> io::Result<Option<(u8, &[u8], usize)>> {
     Ok(b.get(4..4 + len).map(|t| (mtyp, t, 4 + len)))
 }
 
+#[doc(hidden)]
 /// The protection-negotiation message for `p`.
 pub fn protection_msg(
     ctx: &mut dyn GssContext,
@@ -151,6 +164,7 @@ pub fn protection_msg(
     push_msg(out, MTYP_PROTECTION, &token)
 }
 
+#[doc(hidden)]
 /// The level in a protection-negotiation token.
 pub fn protection_of(ctx: &mut dyn GssContext, token: &[u8]) -> io::Result<Protection> {
     match ctx.unwrap(token)?.as_slice() {
@@ -159,6 +173,7 @@ pub fn protection_of(ctx: &mut dyn GssContext, token: &[u8]) -> io::Result<Prote
     }
 }
 
+#[doc(hidden)]
 /// Wraps `plain` in encapsulated-data messages.
 pub fn seal_data(
     ctx: &mut dyn GssContext,
@@ -173,6 +188,7 @@ pub fn seal_data(
     Ok(())
 }
 
+#[doc(hidden)]
 /// Unwraps the complete encapsulated-data messages at the front of `rx` into `plain`, keeping
 /// an incomplete one.
 pub fn open_data(
@@ -198,6 +214,7 @@ pub fn open_data(
     Ok(())
 }
 
+#[doc(hidden)]
 /// The per-message protection of a SOCKS GSS-API connection, as a [`Transport`]: what is read
 /// is unwrapped (then given to `inner`, the target's own transport, if any), what is sent is
 /// sealed by `inner` and then wrapped.

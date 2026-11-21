@@ -11,6 +11,7 @@ pub fn only_protobuf_build::Config::generate(&self, &[impl core::convert::AsRef<
 pub fn only_protobuf_build::Config::grpc(self, bool) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::include(self, impl core::convert::Into<std::path::PathBuf>) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::new() -> only_protobuf_build::Config
+pub fn only_protobuf_build::Config::proto2_unchecked_strings(self, bool) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::unknown_fields(self, bool) -> only_protobuf_build::Config
 impl core::clone::Clone for only_protobuf_build::Config
 pub fn only_protobuf_build::Config::clone(&self) -> Self

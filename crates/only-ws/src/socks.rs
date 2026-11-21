@@ -128,13 +128,17 @@ const MAX_CRED: usize = 255;
 /// Most unwrapped bytes held while a wrapped reply is incomplete (a reply is at most 262).
 const MAX_WRAPPED_REPLY: usize = 64 << 10;
 
-/// GSS-API settings of a handshake.
+/// GSS-API settings of a handshake. The factory is the application's and is only called, so
+/// the handshake keeps the unwind safety it had before GSS-API.
 #[derive(Clone)]
 struct GssConf {
     factory: GssFactory,
     host: String,
     want: Protection,
 }
+
+impl std::panic::UnwindSafe for GssConf {}
+impl std::panic::RefUnwindSafe for GssConf {}
 
 /// GSS-API state of one handshake (not cloned). The context and the job sit in mutexes only
 /// to make the handshake `Sync`; they are reached through `&mut self` (`get_mut`, no locking).

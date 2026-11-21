@@ -24,9 +24,6 @@ pub mod deflate;
 #[doc(hidden)]
 pub mod fuzzing;
 // The HTTP/1 head parser shared with only-http: `#[doc(hidden)]`, outside the semver promise.
-// SOCKS GSS-API (RFC 1961) messages and protection layer, shared with only-socks (which
-// re-exports what applications use): `#[doc(hidden)]`, outside the semver promise.
-#[doc(hidden)]
 pub mod gss;
 #[doc(hidden)]
 pub mod http1;
