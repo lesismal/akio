@@ -699,6 +699,9 @@ impl<A: Acceptor> Acceptor for Connect<A> {
             held: Vec::new(),
             inner,
             refusal: self.refusal.clone(),
+            waker: None,
+            gss: Arc::default(),
+            gss_running: false,
         });
         match self.outer.as_ref().and_then(Acceptor::transport) {
             Some(outer) => {
@@ -822,6 +825,11 @@ impl Transport for Layered {
         self.outer.handshaking() || self.inner.handshaking()
     }
 
+    fn set_waker(&mut self, waker: only_core::TransportWaker) {
+        self.outer.set_waker(waker.clone());
+        self.inner.set_waker(waker);
+    }
+
     fn handshake_timeout(&self) -> Option<std::time::Duration> {
         self.inner
             .handshake_timeout()
@@ -849,9 +857,40 @@ struct Tunnel {
     held: Vec<u8>,
     inner: Option<Box<dyn Transport>>,
     refusal: Refusal,
+    /// Resumes the tunnel when a GSS-API step finishes on its thread.
+    waker: Option<only_core::TransportWaker>,
+    /// The finished GSS-API step.
+    gss: Arc<Mutex<Option<crate::socks::GssDone>>>,
+    gss_running: bool,
 }
 
 impl Tunnel {
+    /// Runs the handshake's pending GSS-API step on a thread of its own (it may block on the
+    /// KDC), resuming through the waker; inline when there is no waker (no engine).
+    fn run_gss(&mut self, out: &mut Vec<u8>) -> io::Result<bool> {
+        let Some(Ok(hs)) = self.socks.as_mut() else {
+            return Ok(false);
+        };
+        let Some(job) = hs.take_gss_job() else {
+            return Ok(false);
+        };
+        let Some(waker) = self.waker.clone() else {
+            hs.gss_done(job.run(), out)?;
+            return Ok(true);
+        };
+        let slot = self.gss.clone();
+        self.gss_running = true;
+        std::thread::Builder::new()
+            .name("only-socks-gss".into())
+            .spawn(move || {
+                let d = job.run();
+                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(d);
+                waker.wake();
+            })
+            .map_err(|e| io::Error::other(format!("GSS-API worker thread: {e}")))?;
+        Ok(false)
+    }
+
     fn pass(&mut self, data: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
         match &mut self.inner {
             Some(t) => t.recv(data, plain, out),
@@ -889,14 +928,36 @@ impl Tunnel {
             hs.start(out);
             self.first_flight()?;
         }
-        if data.is_empty() {
+        let mut resumed = false;
+        if self.gss_running {
+            let done = take(&self.gss);
+            match done {
+                Some(d) => {
+                    self.gss_running = false;
+                    resumed = true;
+                    if let Some(Ok(hs)) = self.socks.as_mut() {
+                        let r = hs.gss_done(d, out);
+                        self.note_refusal(r)?;
+                    }
+                }
+                // Still running: keep what came for later.
+                None => {
+                    if let Some(Ok(hs)) = self.socks.as_mut() {
+                        hs.feed(data, out)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        if data.is_empty() && !resumed {
             return Ok(());
         }
         loop {
             let Some(Ok(hs)) = self.socks.as_mut() else {
                 return Ok(());
             };
-            let (used, reply) = match hs.feed(data, out) {
+            let fed = hs.feed(data, out);
+            let (used, reply) = match fed {
                 Ok(v) => v,
                 Err(e) => {
                     if let Some(r) = e.get_ref().and_then(|r| r.downcast_ref::<ProxyRefused>()) {
@@ -906,6 +967,15 @@ impl Tunnel {
                 }
             };
             data = &data[used..];
+            if self.run_gss(out)? {
+                continue; // run inline: go on with what is buffered
+            }
+            if self.gss_running {
+                return Ok(());
+            }
+            let Some(Ok(hs)) = self.socks.as_mut() else {
+                return Ok(());
+            };
             let done = hs.is_done();
             if let Some(r) = reply {
                 if !done {
@@ -918,14 +988,38 @@ impl Tunnel {
             if !done {
                 return Ok(());
             }
+            let protection = hs.take_protection();
             self.opened();
-            out.append(&mut self.held);
+            let Some((ctx, level, leftover)) = protection else {
+                out.append(&mut self.held);
+                return if data.is_empty() {
+                    Ok(())
+                } else {
+                    self.pass(data, plain, out)
+                };
+            };
+            // GSS-API per-message protection: everything from here on is wrapped, the target's
+            // transport (and what it already sealed) inside.
+            let mut layer = crate::gss::GssLayer::new(ctx, level, self.inner.take());
+            layer.wrap_raw(&std::mem::take(&mut self.held), out)?;
+            layer.recv_unwrapped(&leftover, plain, out)?;
+            self.inner = Some(Box::new(layer));
             return if data.is_empty() {
                 Ok(())
             } else {
                 self.pass(data, plain, out)
             };
         }
+    }
+
+    /// Records a refusal for the client to report.
+    fn note_refusal<T>(&self, r: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &r {
+            if let Some(p) = e.get_ref().and_then(|r| r.downcast_ref::<ProxyRefused>()) {
+                *self.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(p.clone());
+            }
+        }
+        r
     }
 }
 
@@ -1069,6 +1163,13 @@ impl Transport for Tunnel {
 
     fn handshaking(&self) -> bool {
         !self.open || self.inner.as_ref().is_some_and(|t| t.handshaking())
+    }
+
+    fn set_waker(&mut self, waker: only_core::TransportWaker) {
+        if let Some(t) = &mut self.inner {
+            t.set_waker(waker.clone());
+        }
+        self.waker = Some(waker);
     }
 
     fn handshake_timeout(&self) -> Option<std::time::Duration> {

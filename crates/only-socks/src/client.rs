@@ -103,7 +103,17 @@ pub struct SocksClient {
     bind_timeout: Option<Duration>,
     /// TLS to the proxy: the configuration and the name to verify (the proxy's host if none).
     tls: Option<ProxyTls>,
+    /// GSS-API authentication.
+    gss: Option<ClientGss>,
 }
+
+/// GSS-API settings: the context factory and the protection asked for. The factory is the
+/// application's; like `ProxyTls`, the client only clones it.
+#[derive(Clone)]
+struct ClientGss(only_ws::gss::GssFactory, crate::gssapi::Protection);
+
+impl std::panic::UnwindSafe for ClientGss {}
+impl std::panic::RefUnwindSafe for ClientGss {}
 
 /// TLS settings for the proxy. `ClientConfig` is not unwind-safe (it reserves the right to
 /// hold interior state); a `SocksClient` only clones it, so it stays unwind-safe as before
@@ -122,6 +132,7 @@ impl std::fmt::Debug for SocksClient {
             .field("version", &self.version)
             .field("auth", &self.auth.is_some())
             .field("tls", &self.tls.is_some())
+            .field("gssapi", &self.gss.as_ref().map(|g| g.1))
             .finish_non_exhaustive()
     }
 }
@@ -146,6 +157,7 @@ impl SocksClient {
             handshake_timeout: Some(DEFAULT_CLIENT_HANDSHAKE_TIMEOUT),
             bind_timeout: Some(DEFAULT_BIND_TIMEOUT),
             tls: None,
+            gss: None,
         }
     }
 
@@ -215,6 +227,48 @@ impl SocksClient {
         self
     }
 
+    /// GSS-API authentication (RFC 1961; SOCKS5 only): offered instead of "no authentication"
+    /// (and next to username/password when [`auth`](Self::auth) is set too). `factory` makes
+    /// the initiator's security context for each connection, given the proxy's host name; it
+    /// and the establishment steps run on a helper thread, never on an I/O thread (they may
+    /// block on the KDC). `protection` is the level asked for and the least accepted: a proxy
+    /// that grants less is refused.
+    ///
+    /// At [`Protection::Integrity`](crate::gssapi::Protection::Integrity) and above, every
+    /// byte of the tunnel is wrapped, so only the engine methods ([`dial`](Self::dial),
+    /// [`bind`](Self::bind)) can carry it: the blocking helpers refuse with `Unsupported`, and
+    /// `UDP ASSOCIATE` (whose datagrams RFC 1961 would wrap too) is refused at every level.
+    #[must_use]
+    pub fn gssapi(
+        mut self,
+        factory: impl Fn(&str) -> io::Result<Box<dyn crate::gssapi::GssContext>> + Send + Sync + 'static,
+        protection: crate::gssapi::Protection,
+    ) -> SocksClient {
+        self.gss = Some(ClientGss(Arc::new(factory), protection));
+        self
+    }
+
+    fn no_blocking_gss(&self) -> io::Result<()> {
+        match &self.gss {
+            Some(g) if g.1 != crate::gssapi::Protection::None => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GSS-API per-message protection needs the engine methods (the blocking ones \
+                 return a TcpStream)",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn no_udp_gss(&self) -> io::Result<()> {
+        if self.gss.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "UDP ASSOCIATE over GSS-API is not supported",
+            ));
+        }
+        Ok(())
+    }
+
     /// The TLS configuration and name to reach the proxy with, if any.
     fn proxy_tls(&self) -> Option<(TlsClientConfig, String)> {
         self.tls.as_ref().map(|t| {
@@ -245,7 +299,11 @@ impl SocksClient {
     }
 
     fn handshake(&self, cmd: Cmd, to: &Dest) -> io::Result<Handshake> {
-        Handshake::new(self.version.wire(), cmd, target(to), self.creds())
+        let hs = Handshake::new(self.version.wire(), cmd, target(to), self.creds())?;
+        match &self.gss {
+            Some(ClientGss(f, p)) => hs.gssapi(f.clone(), &self.host, *p),
+            None => Ok(hs),
+        }
     }
 
     /// Whether `to` must be resolved here before asking (a name over SOCKS4).
@@ -373,6 +431,9 @@ impl SocksClient {
                 "UDP ASSOCIATE needs SOCKS5",
             )));
         }
+        if let Err(e) = self.no_udp_gss() {
+            return done(Err(e));
+        }
         let me = self.clone();
         let engine = engine.clone();
         let on_datagram: OnDatagram = Arc::new(on_datagram);
@@ -393,6 +454,7 @@ impl SocksClient {
     /// within [`handshake_timeout`](Self::handshake_timeout).
     fn open_blocking(&self, cmd: Cmd, to: &Dest) -> io::Result<(TcpStream, Handshake, Deadline)> {
         self.no_blocking_tls()?;
+        self.no_blocking_gss()?;
         let dl = Deadline::new(self.handshake_timeout);
         let resolved;
         let to = match self.local_name(to) {
@@ -451,6 +513,7 @@ impl SocksClient {
     /// the proxy's family, announces it and returns the association.
     pub fn udp_associate_blocking(&self) -> io::Result<BlockingUdp> {
         self.no_blocking_tls()?;
+        self.no_udp_gss()?;
         if self.version != Version::Socks5 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -1032,7 +1095,17 @@ fn read_reply(
             Err(e) => return Err(e),
         }
         let mut out = Vec::new();
-        let (_, reply) = hs.feed(&b, &mut out)?;
+        let (_, mut reply) = hs.feed(&b, &mut out)?;
+        // GSS-API steps: blocking is allowed here.
+        while let Some(job) = hs.take_gss_job() {
+            let r = hs.gss_done(job.run(), &mut out);
+            if r.is_err() && !out.is_empty() {
+                let _ = dl.write(s, &out); // the abort
+            }
+            r?;
+            let (_, r) = hs.feed(&[], &mut out)?;
+            reply = reply.or(r);
+        }
         if !out.is_empty() {
             dl.write(s, &out)?;
         }

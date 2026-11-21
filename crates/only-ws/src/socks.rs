@@ -1,6 +1,7 @@
 //! The client side of a SOCKS handshake, sans-io (ADR-019): SOCKS5 (RFC 1928) with no
-//! authentication or username/password (RFC 1929), SOCKS4 and SOCKS4a, for `CONNECT`, `BIND`
-//! and (SOCKS5) `UDP ASSOCIATE`.
+//! authentication, username/password (RFC 1929) or GSS-API (RFC 1961, ADR-071, the mechanism
+//! supplied by the application: [`Handshake::gssapi`]), SOCKS4 and SOCKS4a, for `CONNECT`,
+//! `BIND` and (SOCKS5) `UDP ASSOCIATE`.
 //!
 //! Not public API: [`proxy::Connect`](crate::proxy::Connect) runs it as a transport under the
 //! HTTP and WebSocket clients (`socks5://` / `socks4a://` proxies), and `only-socks`' client
@@ -31,9 +32,13 @@
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::{Mutex, PoisonError},
 };
 
+use crate::gss;
 use crate::proxy::ProxyRefused;
+
+pub use crate::gss::{GssContext, GssFactory, GssLayer, GssStep, Protection};
 
 /// The protocol spoken to the proxy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -104,6 +109,12 @@ enum St {
     Method,
     /// SOCKS5: waiting for the RFC 1929 status.
     Auth,
+    /// GSS-API: an establishment step is to run, or running ([`Handshake::take_gss_job`]).
+    GssWait,
+    /// GSS-API: waiting for the proxy's next establishment token.
+    GssAuth,
+    /// GSS-API: waiting for the proxy's protection level.
+    GssProt,
     /// Waiting for the (first) reply.
     Reply,
     /// `BIND`: waiting for the second reply.
@@ -114,15 +125,112 @@ enum St {
 /// Longest SOCKS5 user name or password (one length byte).
 const MAX_CRED: usize = 255;
 
-/// One client handshake.
+/// Most unwrapped bytes held while a wrapped reply is incomplete (a reply is at most 262).
+const MAX_WRAPPED_REPLY: usize = 64 << 10;
+
+/// GSS-API settings of a handshake.
 #[derive(Clone)]
+struct GssConf {
+    factory: GssFactory,
+    host: String,
+    want: Protection,
+}
+
+/// GSS-API state of one handshake (not cloned). The context and the job sit in mutexes only
+/// to make the handshake `Sync`; they are reached through `&mut self` (`get_mut`, no locking).
+#[derive(Default)]
+struct GssState {
+    ctx: Mutex<Option<Box<dyn GssContext>>>,
+    job: Mutex<Option<GssJob>>,
+    /// The agreed protection.
+    level: Option<Protection>,
+    /// Unwrapped bytes of the proxy's replies.
+    plain: Vec<u8>,
+}
+
+/// One client handshake. Cloning gives a handshake that has not started (GSS-API state is not
+/// copied).
 pub struct Handshake {
     version: Version,
     cmd: Cmd,
     target: Target,
     auth: Option<(String, String)>,
+    gss: Option<GssConf>,
+    g: Box<GssState>,
     st: St,
     buf: Vec<u8>,
+}
+
+impl Clone for Handshake {
+    fn clone(&self) -> Handshake {
+        Handshake {
+            version: self.version,
+            cmd: self.cmd,
+            target: self.target.clone(),
+            auth: self.auth.clone(),
+            gss: self.gss.clone(),
+            g: Box::default(),
+            st: St::Start,
+            buf: Vec::new(),
+        }
+    }
+}
+
+/// A GSS-API establishment step for the caller to run off the I/O thread
+/// ([`Handshake::take_gss_job`]): [`run`](Self::run) it (it may block) and give the result to
+/// [`Handshake::gss_done`].
+pub struct GssJob {
+    /// Set for the first step: the context is created first.
+    factory: Option<(GssFactory, String)>,
+    ctx: Option<Box<dyn GssContext>>,
+    token: Vec<u8>,
+}
+
+impl std::fmt::Debug for GssJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GssJob").finish_non_exhaustive()
+    }
+}
+
+/// The outcome of a [`GssJob`].
+pub struct GssDone {
+    ctx: Option<Box<dyn GssContext>>,
+    result: io::Result<GssStep>,
+}
+
+impl std::fmt::Debug for GssDone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GssDone").finish_non_exhaustive()
+    }
+}
+
+impl GssJob {
+    /// Creates the context (first step) and runs `GSS_Init_sec_context` with the proxy's token.
+    pub fn run(self) -> GssDone {
+        let mut ctx = match (self.ctx, self.factory) {
+            (Some(c), _) => c,
+            (None, Some((f, host))) => match f(&host) {
+                Ok(c) => c,
+                Err(e) => {
+                    return GssDone {
+                        ctx: None,
+                        result: Err(e),
+                    };
+                }
+            },
+            (None, None) => {
+                return GssDone {
+                    ctx: None,
+                    result: Err(io::Error::other("GSS-API job without a context")),
+                };
+            }
+        };
+        let result = ctx.step(&self.token);
+        GssDone {
+            ctx: Some(ctx),
+            result,
+        }
+    }
 }
 
 impl std::fmt::Debug for Handshake {
@@ -200,9 +308,129 @@ impl Handshake {
             cmd,
             target,
             auth: auth.map(|(u, p)| (u.to_owned(), p.to_owned())),
+            gss: None,
+            g: Box::default(),
             st: St::Start,
             buf: Vec::new(),
         })
+    }
+
+    /// Offers GSS-API authentication (RFC 1961, method 1; SOCKS5 only), with the
+    /// username/password method too when credentials were given, but not "no authentication".
+    /// `factory` makes the security context (it is given `host`, the proxy's host name);
+    /// `protection` is the level asked for after authentication, and the least accepted.
+    ///
+    /// Establishment steps are not run by [`feed`](Self::feed): after each call, take the step
+    /// with [`take_gss_job`](Self::take_gss_job), run it where blocking is allowed and hand the
+    /// result to [`gss_done`](Self::gss_done). With protection, the request, the replies and the
+    /// tunnel are wrapped: [`take_protection`](Self::take_protection) hands over the context
+    /// once done.
+    pub fn gssapi(
+        mut self,
+        factory: GssFactory,
+        host: &str,
+        protection: Protection,
+    ) -> io::Result<Handshake> {
+        if self.version != Version::Socks5 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GSS-API authentication needs SOCKS5",
+            ));
+        }
+        self.gss = Some(GssConf {
+            factory,
+            host: host.to_owned(),
+            want: protection,
+        });
+        Ok(self)
+    }
+
+    /// The GSS-API establishment step waiting to be run, if any.
+    pub fn take_gss_job(&mut self) -> Option<GssJob> {
+        self.g
+            .job
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Continues with the outcome of a [`GssJob`], appending what must be sent to the proxy to
+    /// `out`; then call [`feed`](Self::feed) (with no new bytes, if none came) to go on with
+    /// what the proxy already sent. A failed step is a refusal ([`ProxyRefused`]); the abort
+    /// message is appended to `out` for the proxy.
+    pub fn gss_done(&mut self, d: GssDone, out: &mut Vec<u8>) -> io::Result<()> {
+        if self.st != St::GssWait {
+            return Err(io::Error::other("no GSS-API step was pending"));
+        }
+        let ctx_slot = self.g.ctx.get_mut().unwrap_or_else(PoisonError::into_inner);
+        *ctx_slot = d.ctx;
+        let Ok(step) = d.result else {
+            out.extend_from_slice(&gss::ABORT);
+            return Err(refused(self.version, Refusal::Auth));
+        };
+        match step {
+            GssStep::Continue(t) => {
+                gss::push_msg(out, gss::MTYP_AUTH, &t)?;
+                self.st = St::GssAuth;
+            }
+            GssStep::Complete(t) => {
+                if !t.is_empty() {
+                    gss::push_msg(out, gss::MTYP_AUTH, &t)?;
+                }
+                let (Some(ctx), Some(conf)) = (ctx_slot.as_mut(), &self.gss) else {
+                    return Err(io::Error::other("GSS-API step without a context"));
+                };
+                gss::protection_msg(ctx.as_mut(), conf.want, out)?;
+                self.st = St::GssProt;
+            }
+        }
+        Ok(())
+    }
+
+    /// The protection agreed with the proxy (GSS-API only, once negotiated).
+    pub fn protection(&self) -> Option<Protection> {
+        self.g.level
+    }
+
+    /// Once [`is_done`](Self::is_done) with per-message protection: the security context, the
+    /// level, and tunnel bytes the proxy sent inside the last reply's message (already
+    /// unwrapped). What follows on the wire is wrapped: put a [`GssLayer`] on the connection.
+    pub fn take_protection(&mut self) -> Option<(Box<dyn GssContext>, Protection, Vec<u8>)> {
+        let level = self.g.level.filter(|l| *l != Protection::None)?;
+        if self.st != St::Done {
+            return None;
+        }
+        let ctx = self
+            .g
+            .ctx
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()?;
+        Some((ctx, level, std::mem::take(&mut self.g.plain)))
+    }
+
+    /// Whether the request and replies are wrapped.
+    fn wrapped(&self) -> bool {
+        self.g.level.is_some_and(|l| l != Protection::None)
+    }
+
+    /// Appends the SOCKS5 request, wrapped when protection is on.
+    fn send_request(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
+        if !self.wrapped() {
+            self.socks5_request(out);
+            return Ok(());
+        }
+        let mut req = Vec::new();
+        self.socks5_request(&mut req);
+        let conf = self.g.level == Some(Protection::Confidentiality);
+        let ctx = self
+            .g
+            .ctx
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .ok_or_else(|| io::Error::other("GSS-API protection without a context"))?;
+        gss::seal_data(ctx.as_mut(), conf, &req, out)
     }
 
     /// The protocol.
@@ -229,10 +457,11 @@ impl Handshake {
         }
         match self.version {
             Version::Socks5 => {
-                if self.auth.is_some() {
-                    out.extend_from_slice(&[5, 2, 0, 2]);
-                } else {
-                    out.extend_from_slice(&[5, 1, 0]);
+                match (self.gss.is_some(), self.auth.is_some()) {
+                    (true, true) => out.extend_from_slice(&[5, 2, 1, 2]),
+                    (true, false) => out.extend_from_slice(&[5, 1, 1]),
+                    (false, true) => out.extend_from_slice(&[5, 2, 0, 2]),
+                    (false, false) => out.extend_from_slice(&[5, 1, 0]),
                 }
                 self.st = St::Method;
             }
@@ -328,6 +557,23 @@ impl Handshake {
         }
     }
 
+    /// A complete reply (`n`: its bytes in `buf`): success moves on, anything else is a refusal.
+    fn replied(&mut self, code: u8, addr: Target, n: usize) -> io::Result<(usize, Option<Reply>)> {
+        let ok = match self.version {
+            Version::Socks5 => code == 0,
+            _ => code == 0x5a,
+        };
+        if !ok {
+            return Err(refused(self.version, Refusal::Reply(code)));
+        }
+        self.st = if self.cmd == Cmd::Bind && self.st == St::Reply {
+            St::Second
+        } else {
+            St::Done
+        };
+        Ok((n, Some(Reply { addr })))
+    }
+
     /// Parses one message from `buf`: `None` when incomplete, else the bytes it took and the
     /// reply it completed, if any.
     fn step(&mut self, out: &mut Vec<u8>) -> io::Result<Option<(usize, Option<Reply>)>> {
@@ -342,9 +588,22 @@ impl Handshake {
                     return Err(malformed("not a SOCKS5 proxy"));
                 }
                 match (b[1], &self.auth) {
-                    (0, _) => {
+                    (0, _) if self.gss.is_none() => {
                         self.socks5_request(out);
                         self.st = St::Reply;
+                    }
+                    (1, _) if self.gss.is_some() => {
+                        let conf = self
+                            .gss
+                            .as_ref()
+                            .map(|g| (g.factory.clone(), g.host.clone()));
+                        *self.g.job.get_mut().unwrap_or_else(PoisonError::into_inner) =
+                            Some(GssJob {
+                                factory: conf,
+                                ctx: None,
+                                token: Vec::new(),
+                            });
+                        self.st = St::GssWait;
                     }
                     (2, Some((u, p))) => {
                         out.push(1);
@@ -376,6 +635,84 @@ impl Handshake {
                 self.st = St::Reply;
                 Ok(Some((2, None)))
             }
+            // Held until `gss_done`.
+            St::GssWait => Ok(None),
+            St::GssAuth => {
+                let Some((mtyp, token, n)) = gss::parse_msg(b)? else {
+                    return Ok(None);
+                };
+                match mtyp {
+                    gss::MTYP_AUTH => {
+                        let ctx = self
+                            .g
+                            .ctx
+                            .get_mut()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take();
+                        *self.g.job.get_mut().unwrap_or_else(PoisonError::into_inner) =
+                            Some(GssJob {
+                                factory: None,
+                                ctx,
+                                token: token.to_vec(),
+                            });
+                        self.st = St::GssWait;
+                        Ok(Some((n, None)))
+                    }
+                    gss::MTYP_ABORT => Err(refused(self.version, Refusal::Auth)),
+                    _ => Err(malformed("unexpected SOCKS GSS-API message")),
+                }
+            }
+            St::GssProt => {
+                let Some((mtyp, token, n)) = gss::parse_msg(b)? else {
+                    return Ok(None);
+                };
+                match mtyp {
+                    gss::MTYP_PROTECTION => {}
+                    gss::MTYP_ABORT => return Err(refused(self.version, Refusal::Auth)),
+                    _ => return Err(malformed("unexpected SOCKS GSS-API message")),
+                }
+                let ctx = self.g.ctx.get_mut().unwrap_or_else(PoisonError::into_inner);
+                let (Some(ctx), Some(conf)) = (ctx.as_mut(), &self.gss) else {
+                    return Err(io::Error::other("GSS-API negotiation without a context"));
+                };
+                let level = gss::protection_of(ctx.as_mut(), token)?;
+                if level < conf.want {
+                    out.extend_from_slice(&gss::ABORT);
+                    return Err(refused(self.version, Refusal::Protection));
+                }
+                self.g.level = Some(level);
+                self.send_request(out)?;
+                self.st = St::Reply;
+                Ok(Some((n, None)))
+            }
+            St::Reply | St::Second if self.wrapped() => {
+                // A complete reply among the unwrapped bytes?
+                if let Some((code, addr, n)) = parse_socks5_reply(&self.g.plain)? {
+                    self.g.plain.drain(..n);
+                    return self.replied(code, addr, 0).map(Some);
+                }
+                let Some((mtyp, token, n)) = gss::parse_msg(b)? else {
+                    return Ok(None);
+                };
+                match mtyp {
+                    gss::MTYP_DATA => {}
+                    gss::MTYP_ABORT => return Err(refused(self.version, Refusal::Auth)),
+                    _ => return Err(malformed("unexpected SOCKS GSS-API message")),
+                }
+                let ctx = self
+                    .g
+                    .ctx
+                    .get_mut()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("GSS-API protection without a context"))?;
+                let opened = ctx.unwrap(token)?;
+                self.g.plain.extend_from_slice(&opened);
+                if self.g.plain.len() > MAX_WRAPPED_REPLY {
+                    return Err(malformed("oversized SOCKS5 reply"));
+                }
+                Ok(Some((n, None)))
+            }
             St::Reply | St::Second => {
                 let parsed = match self.version {
                     Version::Socks5 => parse_socks5_reply(b)?,
@@ -384,19 +721,7 @@ impl Handshake {
                 let Some((code, addr, n)) = parsed else {
                     return Ok(None);
                 };
-                let ok = match self.version {
-                    Version::Socks5 => code == 0,
-                    _ => code == 0x5a,
-                };
-                if !ok {
-                    return Err(refused(self.version, Refusal::Reply(code)));
-                }
-                self.st = if self.cmd == Cmd::Bind && self.st == St::Reply {
-                    St::Second
-                } else {
-                    St::Done
-                };
-                Ok(Some((n, Some(Reply { addr }))))
+                self.replied(code, addr, n).map(Some)
             }
         }
     }
@@ -498,6 +823,7 @@ pub fn push_addr(out: &mut Vec<u8>, t: &Target) {
 enum Refusal {
     NoMethod,
     Auth,
+    Protection,
     Reply(u8),
 }
 
@@ -505,6 +831,7 @@ fn refused(version: Version, r: Refusal) -> io::Error {
     let (code, status, text) = match r {
         Refusal::NoMethod => (0xff, 407, "no acceptable authentication method"),
         Refusal::Auth => (0xff, 407, "authentication failed"),
+        Refusal::Protection => (0xff, 407, "GSS-API protection weaker than required"),
         Refusal::Reply(c) => {
             let (status, text) = reply_text(version, c);
             (c, status, text)
@@ -701,6 +1028,164 @@ mod tests {
         let mut h = new(None);
         h.feed(&[5, 0], &mut out).unwrap();
         assert!(h.feed(&[5, 0, 0, 3, 0, 0, 1], &mut out).is_err());
+    }
+
+    /// The proxy side of a GSS-API exchange, by hand, with the toy mechanism.
+    fn gss_client(secret: u8, want: Protection) -> Handshake {
+        let f: GssFactory = std::sync::Arc::new(move |_host: &str| {
+            Ok(Box::new(gss::toy::Toy::initiator("alice", secret)) as Box<dyn GssContext>)
+        });
+        Handshake::new(
+            Version::Socks5,
+            Cmd::Connect,
+            Target::parse("1.2.3.4", 80),
+            None,
+        )
+        .unwrap()
+        .gssapi(f, "proxy", want)
+        .unwrap()
+    }
+
+    /// Runs the pending job inline.
+    fn run_job(h: &mut Handshake, out: &mut Vec<u8>) -> io::Result<()> {
+        let job = h.take_gss_job().expect("a GSS-API step is pending");
+        h.gss_done(job.run(), out)
+    }
+
+    #[test]
+    fn gssapi_with_each_protection() {
+        for (want, granted) in [
+            (Protection::None, Protection::None),
+            (Protection::Integrity, Protection::Integrity),
+            (Protection::Integrity, Protection::Confidentiality),
+            (Protection::Confidentiality, Protection::Confidentiality),
+        ] {
+            let mut h = gss_client(7, want);
+            let mut srv = gss::toy::Toy::acceptor(7);
+            let mut out = Vec::new();
+            h.start(&mut out);
+            assert_eq!(out, [5, 1, 1]); // GSS-API only
+            out.clear();
+            assert_eq!(h.feed(&[5, 1], &mut out).unwrap(), (2, None));
+            assert!(out.is_empty());
+            run_job(&mut h, &mut out).unwrap();
+            let (t, tok, n) = gss::parse_msg(&out).unwrap().unwrap();
+            assert_eq!((t, n), (gss::MTYP_AUTH, out.len()));
+            let GssStep::Complete(reply) = srv.step(tok).unwrap() else {
+                panic!("toy acceptor completes at once");
+            };
+            assert_eq!(srv.peer_name().as_deref(), Some("alice"));
+            let mut wire = Vec::new();
+            gss::push_msg(&mut wire, gss::MTYP_AUTH, &reply).unwrap();
+            out.clear();
+            // Byte by byte: the step is queued once the token is complete.
+            for b in &wire {
+                h.feed(std::slice::from_ref(b), &mut out).unwrap();
+            }
+            run_job(&mut h, &mut out).unwrap();
+            let (t, tok, n) = gss::parse_msg(&out).unwrap().unwrap();
+            assert_eq!((t, n), (gss::MTYP_PROTECTION, out.len()));
+            assert_eq!(gss::protection_of(&mut srv, tok).unwrap(), want);
+            let mut wire = Vec::new();
+            gss::protection_msg(&mut srv, granted, &mut wire).unwrap();
+            out.clear();
+            assert_eq!(h.feed(&wire, &mut out).unwrap(), (wire.len(), None));
+            assert_eq!(h.protection(), Some(granted));
+            // The request, wrapped unless the level is none.
+            let request = [5, 1, 0, 1, 1, 2, 3, 4, 0, 80];
+            let mut reply = vec![5, 0, 0, 1, 10, 0, 0, 1, 0x1f, 0x90];
+            if granted == Protection::None {
+                assert_eq!(out, request);
+                reply.extend_from_slice(b"tunnel");
+                let (n, r) = h.feed(&reply, &mut out).unwrap();
+                assert_eq!((n, r.is_some()), (10, true));
+                assert!(h.take_protection().is_none());
+                continue;
+            }
+            let mut rx = out.clone();
+            let mut plain = Vec::new();
+            gss::open_data(&mut srv, &mut rx, &mut plain).unwrap();
+            assert!(rx.is_empty());
+            assert_eq!(plain, request);
+            // The reply and some tunnel bytes in one message, then a wrapped tunnel message.
+            let conf = granted == Protection::Confidentiality;
+            reply.extend_from_slice(b"early");
+            let mut wire = Vec::new();
+            gss::seal_data(&mut srv, conf, &reply, &mut wire).unwrap();
+            let first = wire.len();
+            gss::seal_data(&mut srv, conf, b"later", &mut wire).unwrap();
+            let (n, r) = h.feed(&wire[..first + 3], &mut out).unwrap();
+            assert_eq!(n, first);
+            assert_eq!(r.unwrap().addr, Target::parse("10.0.0.1", 8080));
+            let (ctx, level, leftover) = h.take_protection().unwrap();
+            assert_eq!((level, leftover.as_slice()), (granted, &b"early"[..]));
+            let mut layer = GssLayer::new(ctx, level, None);
+            let (mut p, mut o) = (Vec::new(), Vec::new());
+            only::Transport::recv(&mut layer, &wire[first..], &mut p, &mut o).unwrap();
+            assert_eq!(p, b"later");
+        }
+    }
+
+    #[test]
+    fn gssapi_failures() {
+        // The proxy offers no acceptable method / aborts the establishment.
+        let mut out = Vec::new();
+        let e = gss_client(7, Protection::None)
+            .feed(&[5, 0xff], &mut out)
+            .unwrap_err();
+        assert_eq!(refusal(&e).status(), 407);
+        // Method 0 was not offered with GSS-API.
+        assert!(
+            gss_client(7, Protection::None)
+                .feed(&[5, 0], &mut out)
+                .is_err()
+        );
+        let mut h = gss_client(7, Protection::None);
+        h.feed(&[5, 1], &mut out).unwrap();
+        run_job(&mut h, &mut out).unwrap();
+        let e = h.feed(&gss::ABORT, &mut out).unwrap_err();
+        assert_eq!(refusal(&e).status(), 407);
+        // A proof made with another secret: the step fails, the abort goes to the proxy.
+        let mut h = gss_client(7, Protection::None);
+        h.feed(&[5, 1], &mut out).unwrap();
+        run_job(&mut h, &mut out).unwrap();
+        let mut wire = Vec::new();
+        gss::push_msg(&mut wire, gss::MTYP_AUTH, &[b'P', 1]).unwrap();
+        h.feed(&wire, &mut out).unwrap();
+        out.clear();
+        let e = run_job(&mut h, &mut out).unwrap_err();
+        assert_eq!(refusal(&e).status(), 407);
+        assert_eq!(out, gss::ABORT);
+        // Weaker protection than asked for.
+        let mut h = gss_client(7, Protection::Confidentiality);
+        let mut srv = gss::toy::Toy::acceptor(7);
+        h.feed(&[5, 1], &mut out).unwrap();
+        out.clear();
+        run_job(&mut h, &mut out).unwrap();
+        let (_, tok, _) = gss::parse_msg(&out).unwrap().unwrap();
+        let GssStep::Complete(proof) = srv.step(tok).unwrap() else {
+            unreachable!()
+        };
+        let mut wire = Vec::new();
+        gss::push_msg(&mut wire, gss::MTYP_AUTH, &proof).unwrap();
+        h.feed(&wire, &mut out).unwrap();
+        out.clear();
+        run_job(&mut h, &mut out).unwrap();
+        let (_, tok, _) = gss::parse_msg(&out).unwrap().unwrap();
+        gss::protection_of(&mut srv, tok).unwrap();
+        let mut wire = Vec::new();
+        gss::protection_msg(&mut srv, Protection::Integrity, &mut wire).unwrap();
+        let e = h.feed(&wire, &mut out).unwrap_err();
+        assert!(refusal(&e).to_string().contains("protection"), "{e}");
+        // SOCKS4 has no GSS-API.
+        let f: GssFactory = std::sync::Arc::new(|_: &str| Err(io::Error::other("unused")));
+        let h4 = Handshake::new(
+            Version::Socks4,
+            Cmd::Connect,
+            Target::parse("1.2.3.4", 1),
+            None,
+        );
+        assert!(h4.unwrap().gssapi(f, "p", Protection::None).is_err());
     }
 
     #[test]
