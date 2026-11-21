@@ -12,7 +12,7 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ### 新增：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`（only-media）
 
-ADR-068（docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），均为新增：
+ADR-070（docs/adr/070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），均为新增：
 
 - **自动重连**：`only_media::Reconnect`（`initial_delay` 500 ms、`max_delay` 30 s、
   `max_attempts` `None`；`Reconnect::new(&Arc<Engine>)` 弱引用持有引擎），用于新增的

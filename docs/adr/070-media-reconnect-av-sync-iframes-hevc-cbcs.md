@@ -1,6 +1,6 @@
-# ADR-068: Reconnecting RTMP / RTSP clients, RTCP A/V sync, HLS I-frame playlists, rendition reports, session keys, H.265 `cbcs`
+# ADR-070: Reconnecting RTMP / RTSP clients, RTCP A/V sync, HLS I-frame playlists, rendition reports, session keys, H.265 `cbcs`
 
-English | [简体中文](068-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md)
+English | [简体中文](070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md)
 
 Status: accepted (2026-11-21)
 

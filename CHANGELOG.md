@@ -12,7 +12,7 @@ All notable changes to `only` are documented here. The format follows
 
 ### Added: reconnecting RTMP / RTSP clients, RTCP A/V sync, HLS I-frame playlists, rendition reports, session keys, H.265 `cbcs` (only-media)
 
-ADR-068 (docs/adr/068-media-reconnect-av-sync-iframes-hevc-cbcs.md), additive:
+ADR-070 (docs/adr/070-media-reconnect-av-sync-iframes-hevc-cbcs.md), additive:
 
 - **Reconnects**: `only_media::Reconnect` (`initial_delay` 500 ms, `max_delay` 30 s,
   `max_attempts` `None`; `Reconnect::new(&Arc<Engine>)` holds the engine weakly) in the new

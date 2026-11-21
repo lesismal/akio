@@ -1,6 +1,6 @@
-# ADR-068：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`
+# ADR-070：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`
 
-[English](068-media-reconnect-av-sync-iframes-hevc-cbcs.md) | 简体中文
+[English](070-media-reconnect-av-sync-iframes-hevc-cbcs.md) | 简体中文
 
 状态：已采纳（2026-11-21）
 
