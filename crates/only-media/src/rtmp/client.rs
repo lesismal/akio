@@ -362,24 +362,12 @@ impl RtmpClient {
     }
 
     /// Ends the client: a push sends `FCUnpublish` and `deleteStream`, a pull `deleteStream`,
-    /// then the connection closes once that is sent. A pull's hub publisher is closed. Never
-    /// blocks; idempotent.
+    /// then the connection closes once that is sent. A pull's hub path is free again when this
+    /// returns. Never blocks; idempotent.
     pub fn close(&self) {
-        let (conn, publisher, stream_id) = {
-            let mut g = self.shared.lock();
-            if g.state == ClientState::Closed {
-                return;
-            }
-            let streaming = g.state == ClientState::Streaming;
-            g.state = ClientState::Closed;
-            g.deadline = None;
-            (
-                g.conn.take(),
-                g.publisher.take(),
-                g.stream_id.filter(|_| streaming),
-            )
+        let Some((conn, stream_id)) = self.shared.end(None) else {
+            return;
         };
-        drop(publisher);
         if let Some(c) = conn {
             if let Some(sid) = stream_id {
                 let setup = &self.shared.setup;
@@ -532,8 +520,9 @@ struct Status {
     conn: Option<Conn<Session>>,
     /// The pending wait and its name.
     deadline: Option<(Instant, &'static str)>,
-    /// A pull's publisher until the connection opens.
-    publisher: Option<Publisher>,
+    /// A pull's publisher, shared with the session once the connection opens, so whoever
+    /// ends the client can unpublish before the state says [`ClientState::Closed`].
+    publisher: Option<Arc<Publisher>>,
     /// The stream id from `createStream`.
     stream_id: Option<u32>,
 }
@@ -558,7 +547,7 @@ impl Shared {
                 error: None,
                 conn: None,
                 deadline: None,
-                publisher,
+                publisher: publisher.map(Arc::new),
                 stream_id: None,
             }),
         })
@@ -585,20 +574,41 @@ impl Shared {
             .map(|(t, what)| (Instant::now() + t, what));
     }
 
+    /// Moves to [`ClientState::Closed`] with `err` (`None` unless it already ended), returning
+    /// the connection and, if it was streaming, the stream id. A pull's hub path is freed
+    /// first: once [`RtmpClient::is_closed`] says so, the path can be pulled again.
+    fn end(&self, err: Option<ClientError>) -> Option<(Option<Conn<Session>>, Option<u32>)> {
+        let publisher = {
+            let g = self.lock();
+            if g.state == ClientState::Closed {
+                return None;
+            }
+            g.publisher.clone()
+        };
+        if let Some(p) = &publisher {
+            p.close(); // idempotent; packets the session writes after it are dropped
+        }
+        let mut g = self.lock();
+        if g.state == ClientState::Closed {
+            return None;
+        }
+        let streaming = g.state == ClientState::Streaming;
+        g.state = ClientState::Closed;
+        g.deadline = None;
+        g.error = err;
+        let held = g.publisher.take();
+        let out = (g.conn.take(), g.stream_id.filter(|_| streaming));
+        drop(g);
+        drop((held, publisher)); // the session may still hold the last reference
+        Some(out)
+    }
+
     /// Ends the client with `err` (unless it already ended). `graceful` lets queued output
     /// leave first.
     fn fail(&self, err: ClientError, graceful: bool) {
-        let (conn, publisher) = {
-            let mut g = self.lock();
-            if g.state == ClientState::Closed {
-                return;
-            }
-            g.state = ClientState::Closed;
-            g.deadline = None;
-            g.error = Some(err);
-            (g.conn.take(), g.publisher.take())
+        let Some((conn, _)) = self.end(Some(err)) else {
+            return;
         };
-        drop(publisher);
         if let Some(c) = conn {
             if graceful {
                 c.close_after_send();
@@ -689,7 +699,7 @@ impl Acceptor for Dialer {
                 return Session::new(sh.clone(), None, Phase::Dead);
             }
             g.conn = Some(c.clone());
-            g.publisher.take()
+            g.publisher.clone()
         };
         sh.touch();
         sh.enter(
@@ -740,15 +750,15 @@ pub(crate) struct Session {
     peer_window: u32,
     acked: u64,
     stream_id: u32,
-    /// Pull: the hub publisher and the tag decoder.
-    publisher: Option<Publisher>,
+    /// Pull: the hub publisher (shared with [`Status`]) and the tag decoder.
+    publisher: Option<Arc<Publisher>>,
     decoder: Decoder,
     /// Push: the hub subscription.
     sub: Option<Subscription>,
 }
 
 impl Session {
-    fn new(shared: Arc<Shared>, publisher: Option<Publisher>, phase: Phase) -> Session {
+    fn new(shared: Arc<Shared>, publisher: Option<Arc<Publisher>>, phase: Phase) -> Session {
         let max = shared.setup.cfg.max_message_size;
         Session {
             shared,
@@ -1761,10 +1771,10 @@ mod tests {
             client.error(),
             Some(ClientError::Ended("NetStream.Play.Stop".into()))
         );
-        wait_for("unpublish", || {
+        assert!(
             hub.stream_info("pulled")
                 .is_none_or(|s| !s.publishing && !s.reserved)
-        });
+        );
         e.shutdown();
     }
 
@@ -1815,9 +1825,7 @@ mod tests {
             Some(ClientError::Rejected { code, .. }) if code == "NetConnection.Connect.Rejected"
         ));
         // The reserved path is free again.
-        wait_for("release", || {
-            hub.stream_info("p").is_none_or(|s| !s.reserved)
-        });
+        assert!(hub.stream_info("p").is_none_or(|s| !s.reserved));
         e.shutdown();
     }
 
@@ -1889,6 +1897,11 @@ mod tests {
             .unwrap();
         wait_for("close", || client.is_closed());
         assert!(matches!(client.error(), Some(ClientError::Protocol(_))));
+        // The path is free as soon as the client says it is closed.
+        assert!(
+            hub.stream_info("p")
+                .is_none_or(|s| !s.reserved && !s.publishing)
+        );
         // At the limit is fine.
         let client = pull(&e, &url, &hub, "p", cfg).unwrap();
         let mut srv = Server::accept(&l);
@@ -1908,6 +1921,10 @@ mod tests {
         client.close();
         assert!(client.is_closed());
         assert_eq!(client.error(), None);
+        assert!(
+            hub.stream_info("p")
+                .is_none_or(|s| !s.reserved && !s.publishing)
+        );
         // S0 with another version.
         let client = push(&e, &url, &hub, "src", RtmpClientConfig::default()).unwrap();
         let (mut s, _) = l.accept().unwrap();
@@ -1928,10 +1945,8 @@ mod tests {
         let mut srv = Server::accept(&l);
         srv.connect(0, |_| {});
         drop(client);
+        assert!(hub.stream_info("p").is_none_or(|s| !s.reserved));
         while srv.next().is_some() {}
-        wait_for("release", || {
-            hub.stream_info("p").is_none_or(|s| !s.reserved)
-        });
         e.shutdown();
     }
 }

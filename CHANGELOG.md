@@ -166,6 +166,10 @@ configurations behave as before):
   the ADR). OCSP validation was already done (ADR-038, ADR-049); DEV-PLAN corrected.
 - BoGo: a shim (`crates/only-tls/examples/bogo-shim.rs`) and `tools/interop/tls/bogo.sh` run BoringSSL's test runner at a pinned commit with `tools/interop/tls/bogo_config.json` (disabled areas and known failures, each with a reason): 882 of 8,110 tests pass, none fail unexpectedly, 1,122 unimplemented, 6,106 disabled.
 
+### Fixed (only-media)
+
+- RTMP pull: once `RtmpClient::is_closed` is true (or `close` / dropping the handle returns), the hub path is free again; before, a connected pull released it only when its connection finished closing, so pulling the same path right away could fail with `HubError::StreamBusy`.
+
 ### Fixed (only-tls)
 
 - Found by BoGo: a server without TLS 1.3 no longer refuses TLS_FALLBACK_SCSV (RFC 7507); a ClientHello with supported_groups and no key_share gets `missing_extension` instead of a HelloRetryRequest (RFC 8446 §9.2); the TLS 1.2 server acknowledges server_name (RFC 6066 §3); TLS 1.3 padded plaintexts over 2^14 + 1 bytes are `record_overflow` (RFC 8446 §5.4); the TLS 1.2 client refuses a non-empty server_name acknowledgement, and an unsolicited TLS 1.3 one is `unsupported_extension`; a peer leaf whose keyUsage lacks digitalSignature is `bad_certificate` (RFC 8446 §4.4.2.2); CertificateEntry extensions not asked for are `unsupported_extension` (RFC 8446 §4.4.2); a malformed TLS 1.3 pre_shared_key no longer fails a TLS 1.2 handshake; no tickets for a client without psk_dhe_ke (RFC 8446 §4.2.9); several update_requested KeyUpdates before our next application data get one answer (RFC 8446 §4.6.3).
