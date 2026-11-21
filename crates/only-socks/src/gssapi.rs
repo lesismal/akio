@@ -43,7 +43,8 @@ pub use only_ws::gss::{GssContext, GssStep, Protection};
 
 // Internal: the messages and the protection layer, shared with the client in only-ws.
 pub(crate) use only_ws::gss::{
-    ABORT, GssLayer, MTYP_AUTH, MTYP_PROTECTION, parse_msg, protection_msg, protection_of, push_msg,
+    ABORT, DatagramGss, GssLayer, MTYP_AUTH, MTYP_PROTECTION, parse_msg, protection_msg,
+    protection_of, push_msg,
 };
 
 /// The server's factory: one acceptor context per connection.

@@ -14,7 +14,11 @@
 //! `only_socks::gssapi`); the messages and the protection layer are internals shared with
 //! only-socks (`#[doc(hidden)]`, outside the semver promise).
 
-use std::{any::Any, fmt, io, sync::Arc};
+use std::{
+    any::Any,
+    fmt, io,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use only::Transport;
 
@@ -27,6 +31,12 @@ use only::Transport;
 ///   an I/O thread — the server runs it on the logical pool, the client on a helper thread.
 /// * [`wrap`](Self::wrap) / [`unwrap`](Self::unwrap) are `GSS_Wrap` / `GSS_Unwrap`, called on
 ///   the connection's I/O thread for every protected message: they must not block.
+///
+/// A UDP association (RFC 1961 §5) wraps each datagram with the control connection's context,
+/// from the relay's I/O threads: datagrams may be lost or reordered, so `unwrap` should accept
+/// a token that is out of sequence or follows a gap (RFC 2743's `GSS_S_UNSEQ_TOKEN` /
+/// `GSS_S_GAP_TOKEN` are supplementary information, not errors). A duplicate may be refused;
+/// the datagram is then dropped.
 pub trait GssContext: Send {
     /// One establishment step: `token` is the peer's last token (empty on the initiator's first
     /// call). Returns the token to send and whether the context is now established.
@@ -215,6 +225,59 @@ pub fn open_data(
 }
 
 #[doc(hidden)]
+/// A security context shared by a connection's [`GssLayer`] and its UDP association.
+pub type SharedGss = Arc<Mutex<Box<dyn GssContext>>>;
+
+fn lock(ctx: &SharedGss) -> MutexGuard<'_, Box<dyn GssContext>> {
+    ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[doc(hidden)]
+/// Per-message protection of UDP datagrams (RFC 1961 §5): each datagram, its SOCKS UDP request
+/// header included, travels as one encapsulated-data message (`VER 1, MTYP 3, LEN, TOKEN`)
+/// wrapped with the control connection's context.
+#[derive(Clone)]
+pub struct DatagramGss {
+    ctx: SharedGss,
+    confidential: bool,
+}
+
+impl fmt::Debug for DatagramGss {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatagramGss")
+            .field("confidential", &self.confidential)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DatagramGss {
+    /// Datagram protection with `ctx` at level `p` (not [`Protection::None`]).
+    pub fn new(ctx: SharedGss, p: Protection) -> DatagramGss {
+        DatagramGss {
+            ctx,
+            confidential: p == Protection::Confidentiality,
+        }
+    }
+
+    /// The protected form of one datagram. `InvalidInput` when the token would not fit the
+    /// 16-bit length.
+    pub fn seal(&self, datagram: &[u8]) -> io::Result<Vec<u8>> {
+        let token = lock(&self.ctx).wrap(self.confidential, datagram)?;
+        let mut out = Vec::with_capacity(token.len() + 4);
+        push_msg(&mut out, MTYP_DATA, &token)?;
+        Ok(out)
+    }
+
+    /// The datagram inside a protected one: a single encapsulated-data message filling it.
+    pub fn open(&self, wire: &[u8]) -> io::Result<Vec<u8>> {
+        match parse_msg(wire)? {
+            Some((MTYP_DATA, token, n)) if n == wire.len() => lock(&self.ctx).unwrap(token),
+            _ => Err(bad("bad SOCKS GSS-API datagram")),
+        }
+    }
+}
+
+#[doc(hidden)]
 /// The per-message protection of a SOCKS GSS-API connection, as a [`Transport`]: what is read
 /// is unwrapped (then given to `inner`, the target's own transport, if any), what is sent is
 /// sealed by `inner` and then wrapped.
@@ -224,7 +287,7 @@ pub fn open_data(
 /// under its tunnel when the handshake ends.
 pub struct GssLayer {
     /// `None`: pass-through (not activated).
-    ctx: Option<Box<dyn GssContext>>,
+    ctx: Option<SharedGss>,
     confidential: bool,
     /// Received bytes of an incomplete message.
     rx: Vec<u8>,
@@ -258,7 +321,7 @@ impl GssLayer {
         inner: Option<Box<dyn Transport>>,
     ) -> GssLayer {
         GssLayer {
-            ctx: Some(ctx),
+            ctx: Some(Arc::new(Mutex::new(ctx))),
             confidential: p == Protection::Confidentiality,
             rx: Vec::new(),
             inner,
@@ -268,6 +331,17 @@ impl GssLayer {
     /// Whether messages are wrapped.
     pub fn is_active(&self) -> bool {
         self.ctx.is_some()
+    }
+
+    /// Protection for the datagrams of a UDP association made over this connection, with the
+    /// same context (`None` until activated).
+    pub fn datagrams(&self) -> Option<DatagramGss> {
+        let p = if self.confidential {
+            Protection::Confidentiality
+        } else {
+            Protection::Integrity
+        };
+        self.ctx.as_ref().map(|c| DatagramGss::new(c.clone(), p))
     }
 
     /// Starts protecting with `ctx` at level `p`. `pending`: bytes already read past the
@@ -281,15 +355,15 @@ impl GssLayer {
         plain: &mut Vec<u8>,
     ) -> io::Result<()> {
         self.confidential = p == Protection::Confidentiality;
-        let ctx = self.ctx.insert(ctx);
+        let ctx = self.ctx.insert(Arc::new(Mutex::new(ctx)));
         self.rx.extend_from_slice(pending);
-        open_data(ctx.as_mut(), &mut self.rx, plain)
+        open_data(lock(ctx).as_mut(), &mut self.rx, plain)
     }
 
     /// Wraps bytes `inner` already sealed (the client's held first flight).
     pub fn wrap_raw(&mut self, raw: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
         match &mut self.ctx {
-            Some(ctx) => seal_data(ctx.as_mut(), self.confidential, raw, out),
+            Some(ctx) => seal_data(lock(ctx).as_mut(), self.confidential, raw, out),
             None => {
                 out.extend_from_slice(raw);
                 Ok(())
@@ -325,7 +399,7 @@ impl Transport for GssLayer {
         };
         self.rx.extend_from_slice(cipher);
         let mut opened = Vec::new();
-        open_data(ctx.as_mut(), &mut self.rx, &mut opened)?;
+        open_data(lock(ctx).as_mut(), &mut self.rx, &mut opened)?;
         if self.inner.is_none() {
             plain.append(&mut opened);
             return Ok(());
@@ -385,7 +459,8 @@ pub mod toy {
     use super::{GssContext, GssStep};
     use std::io;
 
-    /// The toy mechanism's context.
+    /// The toy mechanism's context. Tokens carry their sequence number, so (like Kerberos
+    /// without strict sequencing) reordered or lost messages do not break the ones after.
     #[derive(Debug)]
     pub struct Toy {
         secret: u8,
@@ -394,7 +469,6 @@ pub mod toy {
         peer: Option<String>,
         state: u8,
         seq_out: u32,
-        seq_in: u32,
     }
 
     impl Toy {
@@ -407,7 +481,6 @@ pub mod toy {
                 peer: None,
                 state: 0,
                 seq_out: 0,
-                seq_in: 0,
             }
         }
 
@@ -464,6 +537,7 @@ pub mod toy {
 
         fn wrap(&mut self, confidential: bool, msg: &[u8]) -> io::Result<Vec<u8>> {
             let mut t = vec![u8::from(confidential), self.sum(self.seq_out, msg)];
+            t.extend_from_slice(&self.seq_out.to_be_bytes());
             let k = if confidential { self.secret } else { 0 };
             t.extend(msg.iter().map(|b| b ^ k));
             self.seq_out += 1;
@@ -471,7 +545,7 @@ pub mod toy {
         }
 
         fn unwrap(&mut self, token: &[u8]) -> io::Result<Vec<u8>> {
-            let [conf, sum, body @ ..] = token else {
+            let [conf, sum, s0, s1, s2, s3, body @ ..] = token else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "toy: short token",
@@ -479,13 +553,12 @@ pub mod toy {
             };
             let k = if *conf == 1 { self.secret } else { 0 };
             let msg: Vec<u8> = body.iter().map(|b| b ^ k).collect();
-            if *sum != self.sum(self.seq_in, &msg) {
+            if *sum != self.sum(u32::from_be_bytes([*s0, *s1, *s2, *s3]), &msg) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "toy: bad checksum",
                 ));
             }
-            self.seq_in += 1;
             Ok(msg)
         }
 
@@ -582,6 +655,44 @@ mod tests {
             rx2.recv(&ABORT, &mut plain, &mut out).unwrap_err().kind(),
             io::ErrorKind::ConnectionAborted
         );
+    }
+
+    #[test]
+    fn datagrams_share_the_connection_context() {
+        let tx = GssLayer::new(
+            Box::new(Toy::initiator("c", 5)),
+            Protection::Confidentiality,
+            None,
+        );
+        let mut rx = GssLayer::passthrough();
+        assert!(rx.datagrams().is_none());
+        rx.activate(
+            Box::new(Toy::acceptor(5)),
+            Protection::Confidentiality,
+            &[],
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let (dtx, drx) = (tx.datagrams().unwrap(), rx.datagrams().unwrap());
+        let a = dtx.seal(b"\0\0\0\x01first").unwrap();
+        let b = dtx.seal(b"second").unwrap();
+        assert_eq!(&a[..2], &[VERSION, MTYP_DATA]);
+        assert!(a.windows(5).all(|w| w != b"first"));
+        // Out of order, as UDP may deliver them.
+        assert_eq!(drx.open(&b).unwrap(), b"second");
+        assert_eq!(drx.open(&a).unwrap(), b"\0\0\0\x01first");
+        // Trailing bytes, a truncated message, another type or a tampered token: refused.
+        let mut long = b.clone();
+        long.push(0);
+        assert!(drx.open(&long).is_err());
+        assert!(drx.open(&b[..b.len() - 1]).is_err());
+        let mut other = b.clone();
+        other[1] = MTYP_AUTH;
+        assert!(drx.open(&other).is_err());
+        let mut bad = b;
+        *bad.last_mut().unwrap() ^= 1;
+        assert!(drx.open(&bad).is_err());
+        assert!(dtx.seal(&vec![0; 65_535]).is_err());
     }
 
     #[test]

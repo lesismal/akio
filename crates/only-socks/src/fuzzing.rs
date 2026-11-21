@@ -14,7 +14,8 @@ use crate::{Destinations, Socks};
 /// with the toy mechanism (`only_ws::gss::toy`, secret 0x42) and bits 6-7 the protection asked
 /// for (none, integrity, confidentiality); `data[1]`
 /// splits the proxy's bytes. The bytes after `data[0]` are also read as datagrams (a length
-/// byte, a clock step byte, then the datagram) fed to one reassembly queue.
+/// byte, a clock step byte, then the datagram) fed to one reassembly queue, and each is opened
+/// as a GSS-API protected datagram (RFC 1961 §5, toy mechanism).
 pub fn socks_client(data: &[u8]) {
     use only_ws::{
         proxy::{Connect, Refusal},
@@ -106,7 +107,13 @@ pub fn socks_client(data: &[u8]) {
             }
         }
     }
-    // Datagrams through one reassembly queue.
+    // Datagrams through one reassembly queue; each also as a GSS-API protected datagram.
+    let gss = crate::gssapi::DatagramGss::new(
+        std::sync::Arc::new(std::sync::Mutex::new(Box::new(only_ws::gss::toy::Toy::acceptor(
+            0x42,
+        )) as Box<dyn crate::gssapi::GssContext>)),
+        crate::gssapi::Protection::Integrity,
+    );
     let mut r = crate::frag::Reassembly::default();
     let mut now = std::time::Instant::now();
     let mut d = rest;
@@ -115,6 +122,9 @@ pub fn socks_client(data: &[u8]) {
         let (dgram, next) = tail.split_at(n);
         d = next;
         now += std::time::Duration::from_millis(u64::from(*step) * 40);
+        if let Ok(inner) = gss.open(dgram) {
+            let _ = crate::udp::parse_header(&inner);
+        }
         if let Some((frag, dest, h)) = crate::udp::parse_header(dgram) {
             if let crate::frag::Frag::Complete(_, whole) = r.push(now, frag, &dest, &dgram[h..]) {
                 assert!(whole.len() <= crate::frag::MAX_DATAGRAM);

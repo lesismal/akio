@@ -2,9 +2,11 @@
 """An independent RFC 1961 SOCKS5 GSS-API client (python3-gssapi, MIT Kerberos), for
 tools/interop/socks/gssapi.sh: run against Dante first (so the client is right), then against
 only-socks' server. CONNECTs to an echo server through the proxy at the given protection level
-and checks a 300 KiB echo.
+and checks a 300 KiB echo; with `udp`, makes a UDP ASSOCIATE instead and checks datagrams
+through the relay, each one an RFC 1961 encapsulated message (VER 1, MTYP 3, LEN, TOKEN) at
+levels 1 and 2.
 
-    gss_client.py PROXY_PORT SERVICE@HOST LEVEL(0|1|2) [EXPECT_LEVEL]
+    gss_client.py PROXY_PORT SERVICE@HOST LEVEL(0|1|2) [EXPECT_LEVEL] [udp]
 """
 import os
 import socket
@@ -14,8 +16,12 @@ import threading
 
 import gssapi
 
-port, service, level = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
-expect = int(sys.argv[4]) if len(sys.argv) > 4 else level
+args = sys.argv[1:]
+udp = args[-1] == "udp"
+if udp:
+    args = args[:-1]
+port, service, level = int(args[0]), args[1], int(args[2])
+expect = int(args[3]) if len(args) > 3 else level
 
 
 def recv_exact(s, n):
@@ -107,6 +113,50 @@ def recv(n):
     out, rx = rx[:n], rx[n:]
     return out
 
+
+def udp_associate():
+    """RFC 1961 section 5: with protection, every datagram is one encapsulated message."""
+    uecho = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    uecho.bind(("127.0.0.1", 0))
+
+    def userve():
+        while True:
+            d, a = uecho.recvfrom(65536)
+            uecho.sendto(d, a)
+
+    threading.Thread(target=userve, daemon=True).start()
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.bind(("127.0.0.1", 0))
+    u.settimeout(5)
+    send(b"\x05\x03\x00\x01" + socket.inet_aton("127.0.0.1")
+         + struct.pack(">H", u.getsockname()[1]))
+    rep = recv(10)
+    assert rep[:2] == b"\x05\x00", rep
+    rhost = socket.inet_ntoa(rep[4:8])
+    relay = ("127.0.0.1" if rhost == "0.0.0.0" else rhost, struct.unpack(">H", rep[8:10])[0])
+    eh, ep = uecho.getsockname()
+    header = b"\x00\x00\x00\x01" + socket.inet_aton(eh) + struct.pack(">H", ep)
+    for n in (1, 500, 1400):
+        payload = os.urandom(n)
+        d = header + payload
+        if granted:
+            w = ctx.wrap(d, granted == 2).message
+            d = bytes([1, 3]) + struct.pack(">H", len(w)) + w
+        u.sendto(d, relay)
+        r, _ = u.recvfrom(65536)
+        if granted:
+            assert r[:2] == b"\x01\x03", r[:4]
+            (ln,) = struct.unpack(">H", r[2:4])
+            assert len(r) == 4 + ln, "trailing bytes after the encapsulated message"
+            r = ctx.unwrap(r[4:]).message
+        assert r[:10] == header, r[:10]
+        assert r[10:] == payload, f"{n}-byte datagram differs"
+    print(f"ok: level {granted}, UDP datagrams of 1, 500 and 1400 bytes")
+    sys.exit(0)
+
+
+if udp:
+    udp_associate()
 
 host, eport = echo.getsockname()
 send(b"\x05\x01\x00\x01" + socket.inet_aton(host) + struct.pack(">H", eport))

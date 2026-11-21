@@ -247,9 +247,14 @@ let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
 - Levels: `None` (authentication only; Dante's `clear`), `Integrity`, `Confidentiality`; the
   server grants the client's level clamped to its range, the client refuses less than it asked.
 - The server sees the GSS-API peer's name as `Request::user()` in its access-control hook.
-- Not with protection: `UDP ASSOCIATE` (the server answers reply 7, the client refuses GSS-API
-  for UDP at any level), the client's blocking helpers (they return a `TcpStream`), the
-  `sockmap` fast path, and a server served inside `Tls::server` (its own transport is needed).
+- `UDP ASSOCIATE` works at every level: with protection each datagram between the client and
+  the relay (its SOCKS header included) is one RFC 1961 encapsulated-data message wrapped with
+  the control connection's context, on the server, the engine client and the blocking client;
+  datagrams that do not unwrap are dropped. A mechanism should therefore accept out-of-sequence
+  tokens in `unwrap` (datagrams get lost and reordered).
+- Not with protection: the client's blocking `CONNECT` / `BIND` helpers (they return a
+  `TcpStream`), the `sockmap` fast path, and a server served inside `Tls::server` (its own
+  transport is needed).
 
 Interop (`tools/interop/socks/gssapi.sh`, MIT Kerberos with a KDC in Docker; the workspace links
 no GSS-API library, a test-only `python3-gssapi` shim stands in for the application's

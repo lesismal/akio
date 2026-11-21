@@ -216,9 +216,11 @@ let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
 - 级别：`None`（只认证；即 Dante 的 `clear`）、`Integrity`、`Confidentiality`；服务端把客户端请求的级别
   限制在自己的范围内后授予，客户端拒绝低于自己请求的级别。
 - 服务端的访问控制钩子通过 `Request::user()` 看到 GSS-API 对端的名字。
-- 有保护时不支持：`UDP ASSOCIATE`（服务端回复 7，客户端在任何级别都拒绝经 GSS-API 的 UDP）、客户端的
-  阻塞辅助函数（它们返回 `TcpStream`）、`sockmap` 快速路径，以及放在 `Tls::server` 里的服务端（需要它
-  自己的 transport）。
+- `UDP ASSOCIATE` 在所有级别都可用：有保护时，客户端与转发端之间的每个数据报（包括 SOCKS 头）是一条用
+  控制连接的上下文封装的 RFC 1961 封装数据消息，服务端、engine 客户端与阻塞客户端都如此；无法解封装的
+  数据报被丢弃。因此机制的 `unwrap` 应接受乱序的令牌（数据报会丢失和乱序）。
+- 有保护时不支持：客户端阻塞的 `CONNECT` / `BIND` 辅助函数（它们返回 `TcpStream`）、`sockmap` 快速路径，
+  以及放在 `Tls::server` 里的服务端（需要它自己的 transport）。
 
 互操作（`tools/interop/socks/gssapi.sh`，Docker 中带 KDC 的 MIT Kerberos；workspace 不链接任何 GSS-API
 库，由仅用于测试的 `python3-gssapi` 垫片代替应用的机制）：only-socks 的客户端与服务端、重新编译并启用

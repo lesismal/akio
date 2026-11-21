@@ -72,6 +72,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
   GSS-API（设置了凭据时再加用户名/密码），从不提供“无认证”，因此对端无法降级。
 - 级别高于 none 时拒绝 `UDP ASSOCIATE`（RFC 1961 要封装每个数据报；转发 socket 不共享控制连接的上下文，
   而 Kerberos 的序列检查也不适合乱序的数据报）：服务端回复 7，客户端在任何级别都返回 `Unsupported`。
+  已于 2026-11-22 取代：见文末的更新。
 - 客户端的阻塞辅助函数返回 `TcpStream`：它们拒绝高于 none 的保护，代理授予的级别高于请求时也拒绝。
 - 受保护的隧道不走 `sockmap` 快速路径（内核无法封装）。
 - 失败遵循 RFC 1961：失败的步骤或错误的令牌以 `VER 1, MTYP 0xff` 回应并关闭；客户端报告拒绝
@@ -96,5 +97,26 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
   测试）。
 - 每个建立步骤花费一个逻辑池任务（服务端）或一次线程创建（客户端）：对握手而言没有问题，并且让 KDC 的延迟
   远离 I/O 线程。
-- 未做：带保护的 UDP ASSOCIATE；HTTP 与 WebSocket 客户端的 `socks5://` 代理使用 GSS-API（握手支持，但
+- 未做：HTTP 与 WebSocket 客户端的 `socks5://` 代理使用 GSS-API（握手支持，但
   代理 URL 无法指定机制）。
+
+## 更新（2026-11-22）：带保护的 UDP ASSOCIATE
+
+`UDP ASSOCIATE` 现在在所有级别、两端都可用；第 4 节中的拒绝取消。
+
+- 线上格式（RFC 1961 §5）：有保护时，客户端与转发端之间的每个数据报（包括其 SOCKS UDP 请求头）是一条
+  占满整个数据报的封装数据消息（`VER 1, MTYP 3, LEN, TOKEN`），令牌由 `GSS_Wrap` 生成（级别 2 时带机密
+  性）。不恰好是一条这种消息、或无法解封装的数据报被丢弃。SOCKS `FRAG` 分片逐片封装。转发端与目的地之间
+  的流量保持明文。
+- 只有一个上下文：控制连接的。`GssLayer` 把它放在 `Arc<Mutex<_>>` 中（`SharedGss`，内部类型），并把一个
+  `DatagramGss`（内部类型）交给关联，因此转发端的 I/O 线程与控制连接在同一把锁下封装与解封装。
+- 序列：数据报会丢失和乱序，并且与控制连接的消息共用上下文的序列号。`GssContext` 的文档现在要求
+  `unwrap` 接受乱序或跟在空缺之后的令牌（RFC 2743 的 `GSS_S_UNSEQ_TOKEN` / `GSS_S_GAP_TOKEN` 是补充信息，
+  不是错误）；被拒绝的重复令牌就是一个被丢弃的数据报。toy 机制的令牌出于同样的原因携带自己的序列号。
+- 客户端：关联的控制连接在逻辑池中执行建立步骤（它是 `Handler`，不同于隧道 transport，后者保留辅助线程）；
+  阻塞的 `udp_associate_blocking` 直接执行这些步骤，现在也接受保护，因为 `BlockingUdp` 是我们自己的类型，
+  可以封装。阻塞的 `CONNECT` / `BIND` 辅助函数仍拒绝保护（它们返回 `TcpStream`）。
+- 公开 API 没有变化。没有保护时，转发路径每个数据报多一次 `Option` 判断；没有为此运行基准测试。
+- 互操作（`tools/interop/socks/gssapi.sh`）：独立的 Python RFC 1961 客户端先对 Dante（启用 GSS-API 的
+  `udpassociate`），再对 only-socks 服务端，在级别 0、1、2 建立 UDP 关联；only-socks 的客户端（engine 与
+  阻塞）在每个级别对 Dante 和 only-socks 服务端。连同原有用例共 27/27（其中 12 个是新增的）。

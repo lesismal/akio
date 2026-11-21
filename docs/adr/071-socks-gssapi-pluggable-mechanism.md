@@ -88,6 +88,7 @@ thread: replies sent from the upstream's I/O thread, the BIND thread or the pool
 - `UDP ASSOCIATE` is refused above level none (RFC 1961 wraps each datagram; the relay sockets
   do not share the control connection's context, and Kerberos sequence checks do not suit
   reordered datagrams): reply 7 from the server, `Unsupported` from the client at any level.
+  Superseded on 2026-11-22: see the update at the end.
 - The client's blocking helpers return a `TcpStream`: they refuse protection above none, also
   when the proxy grants more than was asked.
 - The `sockmap` fast path does not apply to protected tunnels (the kernel cannot wrap).
@@ -115,5 +116,34 @@ thread: replies sent from the upstream's I/O thread, the BIND thread or the pool
   relay and the tunnel's data path are untouched (no benchmark needed).
 - The establishment steps cost a pool task (server) or a thread spawn (client) each: fine for
   a handshake, and it keeps KDC latency off the I/O threads.
-- Not done: UDP ASSOCIATE with protection; GSS-API for the HTTP and WebSocket clients'
+- Not done: GSS-API for the HTTP and WebSocket clients'
   `socks5://` proxies (the handshake supports it, the proxy URL has no way to name a mechanism).
+
+## Update (2026-11-22): UDP ASSOCIATE with protection
+
+`UDP ASSOCIATE` now works at every level, on both sides; the refusal in section 4 is lifted.
+
+- Wire format (RFC 1961 §5): with protection, each datagram between the client and the relay,
+  its SOCKS UDP request header included, is one encapsulated-data message (`VER 1, MTYP 3, LEN,
+  TOKEN`) filling the datagram, the token made by `GSS_Wrap` (with confidentiality at level 2).
+  Datagrams that are not exactly one such message, or do not unwrap, are dropped. SOCKS `FRAG`
+  fragments are wrapped one by one. Traffic between the relay and the destinations stays plain.
+- One context: the control connection's. `GssLayer` keeps it in an `Arc<Mutex<_>>`
+  (`SharedGss`, internal) and hands a `DatagramGss` (internal) to the association, so the
+  relay's I/O threads wrap and unwrap under the same lock as the control connection.
+- Sequencing: datagrams are lost and reordered, and they share the context's sequence numbers
+  with the control connection's messages. The `GssContext` documentation now asks `unwrap` to
+  accept tokens that are out of sequence or follow a gap (RFC 2743's `GSS_S_UNSEQ_TOKEN` /
+  `GSS_S_GAP_TOKEN` are supplementary information, not errors); a refused duplicate is a dropped
+  datagram. The toy mechanism's tokens carry their sequence number for the same reason.
+- Client: the association's control connection runs the establishment steps on the logical
+  pool (it is a `Handler`, unlike the tunnel transport, which keeps its helper thread); the
+  blocking `udp_associate_blocking` runs them inline and now accepts protection, since
+  `BlockingUdp` is our type and can wrap. The blocking `CONNECT` / `BIND` helpers still refuse
+  protection (they return a `TcpStream`).
+- No public API change. Without protection the relay path gains one `Option` test per
+  datagram; no benchmark was run for that.
+- Interop (`tools/interop/socks/gssapi.sh`): the independent Python RFC 1961 client makes a UDP
+  association at levels 0, 1 and 2 against Dante first (Dante's `udpassociate` with GSS-API),
+  then against only-socks' server; only-socks' client (engine and blocking) against Dante and
+  only-socks' server at each level. 27/27 together with the earlier cases (12 of them new).

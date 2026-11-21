@@ -10,6 +10,21 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
+
+ADR-071's update of 2026-11-22, no API change:
+
+- With GSS-API per-message protection, `UDP ASSOCIATE` is no longer refused: each datagram
+  between the client and the relay is one RFC 1961 encapsulated-data message (§5) wrapped with
+  the control connection's context, in the server's relay, `SocksClient::udp_associate` and
+  `SocksClient::udp_associate_blocking` (which now accepts protection); datagrams that do not
+  unwrap are dropped.
+- `GssContext` documentation: `unwrap` should accept out-of-sequence tokens, since datagrams are
+  lost and reordered.
+- `tools/interop/socks/gssapi.sh` gains UDP cases: the independent Python client against Dante
+  and only-socks' server, only-socks' client (engine and blocking) against both, levels 0 to 2.
+  27/27 in all.
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:
@@ -23,8 +38,9 @@ ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:
 - Establishment steps never run on an I/O thread: the server runs them on the logical pool, the
   client on a helper thread resumed through `TransportWaker`. The server's access hook sees the
   GSS-API peer as `Request::user()`. A GSS-API server turns SOCKS4 and "no authentication" off.
-- Refused with protection: `UDP ASSOCIATE` (server reply 7; the client refuses GSS-API for UDP),
-  the client's blocking helpers (also when the proxy grants more than asked), `sockmap`
+- Refused with protection: `UDP ASSOCIATE` (server reply 7; the client refuses GSS-API for UDP;
+  lifted since, see the entry above), the client's blocking helpers (also when the proxy grants
+  more than asked), `sockmap`
   splicing, a server inside `Tls::server`.
 - `tools/interop/socks/gssapi.sh`: MIT Kerberos KDC in Docker, only-socks client and server
   (through a test-only `python3-gssapi` shim), Dante rebuilt with GSS-API and an independent

@@ -1,13 +1,14 @@
 //! GSS-API authentication (RFC 1961, ADR-071) between only-socks' client and server, with the
 //! test mechanism `only_ws::gss::toy`: every protection level, large tunnels both ways, TLS to
-//! the target inside a protected tunnel, BIND, refusals, the access hook's user name, what is
-//! refused (UDP, blocking helpers with protection), and the RFC 1961 messages on the wire.
+//! the target inside a protected tunnel, BIND, UDP ASSOCIATE with wrapped datagrams (engine and
+//! blocking clients, fragments), refusals, the access hook's user name, what is refused
+//! (blocking `CONNECT` with protection), and the RFC 1961 messages on the wire.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
@@ -41,6 +42,19 @@ fn echo_server() -> SocketAddr {
                     }
                 }
             });
+        }
+    });
+    a
+}
+
+/// A UDP echo server on the loopback interface.
+fn udp_echo_server() -> SocketAddr {
+    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let a = s.local_addr().unwrap();
+    thread::spawn(move || {
+        let mut b = vec![0u8; 65_536];
+        while let Ok((n, from)) = s.recv_from(&mut b) {
+            let _ = s.send_to(&b[..n], from);
         }
     });
     a
@@ -406,22 +420,91 @@ fn what_is_refused() {
         c.dial_blocking(&echo.into()).unwrap_err().kind(),
         io::ErrorKind::Unsupported
     );
-    // UDP ASSOCIATE over GSS-API: refused by the client.
-    let ce = client_engine();
-    let (tx, rx) = mpsc::channel();
-    c.udp_associate(&ce, |_, _, _| {}, move |r| tx.send(r.map(|_| ())).unwrap());
-    let err = rx
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap()
-        .unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::Unsupported);
-    assert!(c.udp_associate_blocking().is_err());
-    stop(&ce);
     stop(&e);
 }
 
+/// Datagrams of `sizes` through an association on the engine, whole and in fragments, echoed
+/// back by `echo`.
+fn udp_through(ce: &Arc<Engine>, c: &SocksClient, echo: SocketAddr, sizes: &[usize]) {
+    let (dtx, drx) = mpsc::channel::<(Dest, Vec<u8>)>();
+    let dtx = Mutex::new(dtx);
+    let (tx, rx) = mpsc::channel();
+    c.udp_associate(
+        ce,
+        move |_, from, d| {
+            let _ = dtx.lock().unwrap().send((from, d.to_vec()));
+        },
+        move |r| tx.send(r).unwrap(),
+    );
+    let a = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    for &n in sizes {
+        let p = payload(n);
+        // UDP on the loopback interface does not lose datagrams this small; retried in case.
+        let mut got = None;
+        for _ in 0..3 {
+            if n > 1000 {
+                a.send_fragmented(&p, &echo.into(), 700).unwrap();
+            } else {
+                a.send_to(&p, &echo.into()).unwrap();
+            }
+            if let Ok(r) = drx.recv_timeout(Duration::from_secs(2)) {
+                got = Some(r);
+                break;
+            }
+        }
+        let (from, d) = got.unwrap_or_else(|| panic!("no echo of {n} bytes"));
+        assert_eq!(from, Dest::from(echo));
+        assert!(d == p, "{n} bytes differ");
+    }
+    a.close();
+}
+
+#[test]
+fn udp_associate_at_every_level() {
+    let echo = udp_echo_server();
+    let ce = client_engine();
+    for min in [
+        Protection::None,
+        Protection::Integrity,
+        Protection::Confidentiality,
+    ] {
+        // Fragments relayed back in pieces of 900 bytes too.
+        let e = server(min, |s| s.udp_fragment_size(Some(900)));
+        let proxy = e.local_addrs()[0];
+        for want in [
+            Protection::None,
+            Protection::Integrity,
+            Protection::Confidentiality,
+        ] {
+            let c = client(proxy, "alice", SECRET, want);
+            udp_through(&ce, &c, echo, &[1, 512, 1400, 5000]);
+            // Blocking.
+            let u = c.udp_associate_blocking().unwrap();
+            u.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut b = vec![0u8; 8192];
+            for n in [3, 1200, 4000] {
+                let p = payload(n);
+                if n > 1000 {
+                    u.send_fragmented(&p, &echo.into(), 600).unwrap();
+                } else {
+                    u.send_to(&p, &echo.into()).unwrap();
+                }
+                let (k, from) = u
+                    .recv_from(&mut b)
+                    .unwrap_or_else(|e| panic!("server {min:?}, client {want:?}, {n}: {e}"));
+                assert_eq!(from, Dest::from(echo));
+                assert!(b[..k] == p[..], "{n} bytes differ");
+            }
+            assert!(u.is_open());
+        }
+        stop(&e);
+    }
+    stop(&ce);
+}
+
 /// The server's side of the wire, by hand: RFC 1961 messages, the protection level a client
-/// asking for less gets, UDP ASSOCIATE refused once protected, the abort on a bad token.
+/// asking for less gets, UDP ASSOCIATE with wrapped datagrams (RFC 1961 §5), the abort on a bad
+/// token.
 #[test]
 fn wire_format_against_the_server() {
     use only_ws::gss::{self, GssStep};
@@ -471,7 +554,33 @@ fn wire_format_against_the_server() {
     let (mtyp, t) = read_msg(&mut s);
     assert_eq!(mtyp, gss::MTYP_DATA);
     let reply = ctx.unwrap(&t).unwrap();
-    assert_eq!(&reply[..2], &[5, 7]); // command not supported
+    assert_eq!(&reply[..4], &[5, 0, 0, 1]);
+    let relay = SocketAddr::from((
+        [reply[4], reply[5], reply[6], reply[7]],
+        u16::from_be_bytes([reply[8], reply[9]]),
+    ));
+    // A datagram for the UDP echo server: `VER 1, MTYP 3, LEN, TOKEN`, the token wrapping the
+    // SOCKS UDP request header and the payload.
+    let uecho = udp_echo_server();
+    let u = UdpSocket::bind("127.0.0.1:0").unwrap();
+    u.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut d = vec![0, 0, 0, 1, 127, 0, 0, 1];
+    d.extend_from_slice(&uecho.port().to_be_bytes());
+    d.extend_from_slice(b"hello");
+    // Unwrapped: dropped.
+    u.send_to(&d, relay).unwrap();
+    let mut b = [0u8; 2048];
+    assert!(u.recv_from(&mut b).is_err());
+    let mut w = Vec::new();
+    gss::push_msg(&mut w, gss::MTYP_DATA, &ctx.wrap(false, &d).unwrap()).unwrap();
+    u.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    u.send_to(&w, relay).unwrap();
+    let (n, _) = u.recv_from(&mut b).unwrap();
+    let (mtyp, token, len) = gss::parse_msg(&b[..n]).unwrap().unwrap();
+    assert_eq!((mtyp, len), (gss::MTYP_DATA, n));
+    // The reply header names the echo server, then the payload.
+    assert_eq!(ctx.unwrap(token).unwrap(), d);
     // A token the acceptor refuses: VER 1, MTYP 0xff, then the close.
     let mut s = TcpStream::connect(proxy).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

@@ -10,6 +10,17 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
+
+ADR-071 的 2026-11-22 更新，API 没有变化：
+
+- 有 GSS-API 逐消息保护时不再拒绝 `UDP ASSOCIATE`：客户端与转发端之间的每个数据报是一条用控制连接的上下文
+  封装的 RFC 1961 封装数据消息（§5），服务端的转发、`SocksClient::udp_associate` 与
+  `SocksClient::udp_associate_blocking`（现在接受保护）都如此；无法解封装的数据报被丢弃。
+- `GssContext` 文档：`unwrap` 应接受乱序的令牌，因为数据报会丢失和乱序。
+- `tools/interop/socks/gssapi.sh` 增加 UDP 用例：独立的 Python 客户端对 Dante 与 only-socks 服务端，
+  only-socks 的客户端（engine 与阻塞）对两者，级别 0 到 2。共 27/27。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：
@@ -21,7 +32,8 @@ ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新�
   不链接任何 GSS-API 库。
 - 建立步骤从不在 I/O 线程上执行：服务端在逻辑池中执行，客户端在辅助线程中执行并通过 `TransportWaker`
   恢复。服务端的访问钩子通过 `Request::user()` 看到 GSS-API 对端。GSS-API 服务端关闭 SOCKS4 与“无认证”。
-- 有保护时拒绝：`UDP ASSOCIATE`（服务端回复 7；客户端拒绝经 GSS-API 的 UDP）、客户端的阻塞辅助函数（代理
+- 有保护时拒绝：`UDP ASSOCIATE`（服务端回复 7；客户端拒绝经 GSS-API 的 UDP；此后已取消，见上一条）、
+  客户端的阻塞辅助函数（代理
   授予的级别高于请求时也拒绝）、`sockmap` 拼接、放在 `Tls::server` 里的服务端。
 - `tools/interop/socks/gssapi.sh`：Docker 中的 MIT Kerberos KDC、only-socks 客户端与服务端（经仅用于测试
   的 `python3-gssapi` 垫片）、重新编译并启用 GSS-API 的 Dante，以及一个独立的 RFC 1961 客户端：所有级别

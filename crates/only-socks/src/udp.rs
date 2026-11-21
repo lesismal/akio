@@ -14,7 +14,10 @@
 //!   [`Socks::udp_fragment_size`](crate::Socks::udp_fragment_size) set, larger ones go in
 //!   fragments of that size (ADR-059);
 //! - the association ends with the control TCP connection, or after the idle timeout without
-//!   a datagram either way (the sweeper closes the control connection).
+//!   a datagram either way (the sweeper closes the control connection);
+//! - over GSS-API with per-message protection (RFC 1961 §5), every datagram between the client
+//!   and the relay is one encapsulated-data message wrapped with the control connection's
+//!   context; datagrams that do not unwrap are dropped.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -32,6 +35,7 @@ use only_core::ConnInner;
 use crate::{
     Allow, Command, Dest, Destinations, Request,
     frag::{Frag, Reassembly},
+    gssapi::DatagramGss,
 };
 
 /// Remote addresses remembered per association (for filtering their answers).
@@ -155,6 +159,8 @@ pub(crate) struct Assoc {
     closed: AtomicBool,
     /// Datagrams to the client larger than this go in fragments.
     frag_size: Option<usize>,
+    /// GSS-API per-message protection of the client's datagrams.
+    gss: Option<DatagramGss>,
 }
 
 impl Assoc {
@@ -170,6 +176,7 @@ impl Assoc {
         sweeper: &Arc<Sweeper>,
         idle: Duration,
         frag_size: Option<usize>,
+        gss: Option<DatagramGss>,
     ) -> std::io::Result<(Arc<Assoc>, SocketAddr)> {
         let client_tcp = canon(control.peer_addr());
         // The client's declared address only counts when it is its own IP (behind NAT it
@@ -196,6 +203,7 @@ impl Assoc {
             idle_ms: idle.as_millis().max(1) as u64,
             closed: AtomicBool::new(false),
             frag_size,
+            gss,
         });
         let b = engine.bind_udp(local, RelayAcceptor(a.clone()))?;
         let bound = canon(b.local_addr());
@@ -278,6 +286,17 @@ impl Assoc {
     }
 
     fn relay_from_client(&self, c: &Conn<RelayPeer>, reasm: &mut Reassembly, data: &[u8]) {
+        let opened;
+        let data = match &self.gss {
+            Some(g) => match g.open(data) {
+                Ok(d) => {
+                    opened = d;
+                    &opened[..]
+                }
+                Err(_) => return,
+            },
+            None => data,
+        };
         let Some((frag, dest, n)) = parse_header(data) else {
             return;
         };
@@ -347,15 +366,30 @@ impl Assoc {
                 push_header(&mut out, peer);
                 out[2] = frag;
                 out.extend_from_slice(piece);
-                let _ = b.send_to(&out, client);
+                self.to_client(b, &out, client);
             }
             return true;
         }
         let mut out = Vec::with_capacity(data.len() + 22);
         push_header(&mut out, peer);
         out.extend_from_slice(data);
-        let _ = b.send_to(&out, client);
+        self.to_client(b, &out, client);
         true
+    }
+
+    /// Sends one datagram (header included) to the client, wrapped under GSS-API protection.
+    fn to_client(&self, b: &UdpBinding, d: &[u8], client: SocketAddr) {
+        match &self.gss {
+            // Too large to wrap within the 16-bit length: cannot be expressed.
+            Some(g) => {
+                if let Ok(w) = g.seal(d) {
+                    let _ = b.send_to(&w, client);
+                }
+            }
+            None => {
+                let _ = b.send_to(d, client);
+            }
+        }
     }
 }
 

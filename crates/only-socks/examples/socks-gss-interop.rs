@@ -5,14 +5,18 @@
 //! ```text
 //! socks-gss-interop server <listen> <lowest level> [highest level, default confidentiality]
 //! socks-gss-interop client <proxy> <service@host> <none|integrity|confidentiality> [bytes]
+//! socks-gss-interop udp <proxy> <service@host> <none|integrity|confidentiality>
 //! ```
 //!
 //! The client relays `bytes` (default 1 MiB) through the proxy to an echo server of its own
-//! and checks them, on the engine; with `none` it also tries the blocking helper.
+//! and checks them, on the engine; with `none` it also tries the blocking helper. `udp` makes
+//! a UDP association (on the engine, then blocking) and checks datagrams echoed by a UDP echo
+//! server of its own; with protection they are wrapped (RFC 1961 §5). The server accepts
+//! `UDP ASSOCIATE`.
 
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, UdpSocket},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -21,7 +25,7 @@ use std::{
 
 use only::{Conn, Engine, EngineRef, Handler, Listener};
 use only_socks::{
-    Destinations, Socks, SocksClient, Version,
+    Dest, Destinations, Socks, SocksClient, Version,
     gssapi::{GssContext, GssStep, Protection},
 };
 
@@ -110,6 +114,7 @@ fn server(addr: SocketAddr, levels: std::ops::RangeInclusive<Protection>) -> io:
     let er = EngineRef::new();
     let socks = Socks::new(er.clone())
         .destinations(Destinations::Any)
+        .udp_associate(true)
         .allow(|r| {
             println!("request from {:?}", r.user());
             true
@@ -121,6 +126,7 @@ fn server(addr: SocketAddr, levels: std::ops::RangeInclusive<Protection>) -> io:
     let e = Arc::new(
         Engine::builder()
             .listen(Listener::tcp(addr).serve(socks))
+            .udp_client_threads(1)
             .build()?,
     );
     er.set(&e);
@@ -227,6 +233,79 @@ fn client(proxy: SocketAddr, service: String, p: Protection, n: usize) -> io::Re
     Ok(())
 }
 
+/// A UDP echo server on 127.0.0.1.
+fn udp_echo() -> SocketAddr {
+    let s = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let a = s.local_addr().expect("addr");
+    thread::spawn(move || {
+        let mut b = vec![0u8; 65_536];
+        while let Ok((n, from)) = s.recv_from(&mut b) {
+            let _ = s.send_to(&b[..n], from);
+        }
+    });
+    a
+}
+
+/// Datagram sizes checked (whole datagrams: Dante does not take fragments).
+const SIZES: [usize; 3] = [1, 500, 1400];
+
+fn udp(proxy: SocketAddr, service: String, p: Protection) -> io::Result<()> {
+    let target = udp_echo();
+    let svc = service;
+    let c = SocksClient::new(Version::Socks5, proxy).gssapi(
+        move |_host: &str| Ok(Box::new(Shim::spawn(&["initiate", &svc])?) as Box<dyn GssContext>),
+        p,
+    );
+    let e = Arc::new(
+        Engine::builder()
+            .client_threads(1)
+            .udp_client_threads(1)
+            .build()?,
+    );
+    e.start()?;
+    let (dtx, drx) = mpsc::channel::<(Dest, Vec<u8>)>();
+    let dtx = Mutex::new(dtx);
+    let (tx, rx) = mpsc::channel();
+    c.udp_associate(
+        &e,
+        move |_, from, d| {
+            let _ = dtx.lock().expect("lock").send((from, d.to_vec()));
+        },
+        move |r| {
+            let _ = tx.send(r);
+        },
+    );
+    let a = rx
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|_| io::Error::other("no association"))??;
+    for n in SIZES {
+        let d: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
+        a.send_to(&d, &target.into())?;
+        let (from, got) = drx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| io::Error::other(format!("engine: no echo of {n} bytes ({p:?})")))?;
+        if from != Dest::from(target) || got != d {
+            return Err(io::Error::other(format!("engine: {n}-byte echo differs")));
+        }
+    }
+    a.close();
+    println!("engine association ok ({p:?})");
+    let u = c.udp_associate_blocking()?;
+    u.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut b = vec![0u8; 4096];
+    for n in SIZES {
+        let d: Vec<u8> = (0..n).map(|i| (i * 11 % 251) as u8).collect();
+        u.send_to(&d, &target.into())?;
+        let (k, from) = u.recv_from(&mut b)?;
+        if from != Dest::from(target) || b[..k] != d[..] {
+            return Err(io::Error::other(format!("blocking: {n}-byte echo differs")));
+        }
+    }
+    println!("blocking association ok ({p:?})");
+    e.shutdown();
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -240,6 +319,11 @@ fn main() -> io::Result<()> {
             args[2].clone(),
             protection(&args[3]),
             args.get(4).map_or(1 << 20, |n| n.parse().expect("bytes")),
+        ),
+        Some("udp") => udp(
+            args[1].parse().expect("proxy address"),
+            args[2].clone(),
+            protection(&args[3]),
         ),
         _ => {
             eprintln!("usage: socks-gss-interop server|client ...");

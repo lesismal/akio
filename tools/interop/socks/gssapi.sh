@@ -11,6 +11,9 @@
 #   only -> Dante    our client against Dante with `socksmethod: gssapi` (the reference
 #                    server; Debian's source package rebuilt --with-gssapi, as the packaged
 #                    one has no GSS-API), each protection level.
+#   UDP ASSOCIATE    datagrams wrapped per RFC 1961 section 5 at each level: gss_client.py on
+#                    Dante, then on only-socks' server; only-socks' client (engine and
+#                    blocking) on Dante and on only-socks' server.
 # Not curl: Debian 12's curl 7.88 resets `allow_gssapi` when its SOCKS state machine resumes
 # after a partial read (lib/socks.c), so its --socks5-gssapi fails against any server, Dante
 # included ("per-message authentication is not supported").
@@ -119,7 +122,7 @@ client pass {
 }
 socks pass {
   from: 0.0.0.0/0 to: 0.0.0.0/0
-  command: connect
+  command: connect udpassociate udpreply
   gssapi.enctype: clear integrity confidentiality
 }
 CONF
@@ -141,6 +144,15 @@ for l in 0 1 2; do
 done
 check "gss_client.py (level 0) -> only server requiring integrity: granted 1" \
   python3 tools/interop/socks/gss_client.py 1091 $SVC 0 1
+# ---- UDP ASSOCIATE, datagrams wrapped (RFC 1961 section 5) --------------------------------------
+for l in 0 1 2; do
+  check "gss_client.py UDP -> Dante, level $l" python3 tools/interop/socks/gss_client.py 1092 $SVC $l udp
+  check "gss_client.py UDP -> only server, level $l" python3 tools/interop/socks/gss_client.py 1090 $SVC $l udp
+done
+for p in none integrity confidentiality; do
+  check "only client UDP -> Dante, protection $p" "$EX" udp 127.0.0.1:1092 $SVC $p
+  check "only client UDP -> only server, protection $p" "$EX" udp 127.0.0.1:1090 $SVC $p
+done
 check "the server saw the Kerberos principal" grep -q 'Some("alice@ONLY.TEST")' "$W/only-none.log"
 
 if [ -n "${GSS_DEBUG:-}" ]; then

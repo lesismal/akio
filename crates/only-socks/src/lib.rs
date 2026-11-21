@@ -17,8 +17,9 @@
 //! GSS-API authentication (RFC 1961, method 1; ADR-071), server and client, with the
 //! per-message protection levels (integrity, confidentiality) or none: the GSS-API mechanism
 //! (Kerberos through the system library, SSPI, ...) is the application's, behind the
-//! [`gssapi::GssContext`] trait. Over GSS-API the server refuses `UDP ASSOCIATE` above level
-//! none, the client does not do UDP at all, and its blocking helpers need level none.
+//! [`gssapi::GssContext`] trait. With protection, `UDP ASSOCIATE` datagrams are wrapped too
+//! (RFC 1961 §5, with the control connection's context), on both sides; the client's blocking
+//! `CONNECT` / `BIND` helpers need level none.
 //!
 //! Linux fast path (opt-in, [`ProxyConfig::sockmap`]): `CONNECT` tunnels (SOCKS and HTTP) are
 //! spliced in the kernel with `only::ebpf::Relay` once the upstream is connected, so their bytes
@@ -583,9 +584,11 @@ impl Socks {
     /// access-control hook sees.
     ///
     /// Protection levels other than none need the session's own transport: serve the server
-    /// on a plain TCP listener (not inside TLS), else such clients are refused. `UDP ASSOCIATE`
-    /// is refused (reply 7) at those levels, and the `sockmap` fast path does not apply to
-    /// their tunnels.
+    /// on a plain TCP listener (not inside TLS), else such clients are refused. At those
+    /// levels a `UDP ASSOCIATE` relay wraps and unwraps every datagram exchanged with the
+    /// client (RFC 1961 §5; one encapsulated-data message per datagram, the control
+    /// connection's context; datagrams that do not unwrap are dropped), and the `sockmap` fast
+    /// path does not apply to their tunnels.
     #[must_use]
     pub fn gssapi(
         mut self,
@@ -1078,6 +1081,23 @@ impl SocksSession {
             Dest::Addr(a) => Some(a),
             Dest::Name(..) => None,
         };
+        // RFC 1961 §5: with per-message protection the datagrams are wrapped too, with the
+        // control connection's context.
+        let gss = if self.protection == gssapi::Protection::None {
+            None
+        } else {
+            let d = c
+                .with_transport(|t| {
+                    t.as_any()
+                        .downcast_mut::<gssapi::GssLayer>()
+                        .and_then(|l| l.datagrams())
+                })
+                .flatten();
+            if d.is_none() {
+                return self.fail(c, socks5_reply(REP_FAILURE, None));
+            }
+            d
+        };
         match udp::Assoc::open(
             &engine,
             c.inner().clone(),
@@ -1088,6 +1108,7 @@ impl SocksSession {
             &self.sweeper,
             self.udp_idle,
             self.udp_frag,
+            gss,
         ) {
             Ok((a, bound)) => {
                 // The association has its own idle timeout (its datagrams never touch the
@@ -1212,10 +1233,7 @@ impl SocksSession {
                     let command = match cmd {
                         1 => Command::Connect,
                         2 if self.bind => Command::Bind,
-                        // Datagrams are not wrapped: only without per-message protection.
-                        3 if self.udp && self.protection == gssapi::Protection::None => {
-                            Command::UdpAssociate
-                        }
+                        3 if self.udp => Command::UdpAssociate,
                         _ => return self.fail(c, socks5_reply(REP_CMD, None)),
                     };
                     self.buf.drain(..4 + n);

@@ -33,6 +33,7 @@ pub use only_ws::proxy::ProxyRefused;
 use crate::{
     Dest, UpstreamSlot,
     frag::{Frag, Reassembly},
+    gssapi::DatagramGss,
     guard::Watch,
     udp::canon,
 };
@@ -230,14 +231,16 @@ impl SocksClient {
     /// GSS-API authentication (RFC 1961; SOCKS5 only): offered instead of "no authentication"
     /// (and next to username/password when [`auth`](Self::auth) is set too). `factory` makes
     /// the initiator's security context for each connection, given the proxy's host name; it
-    /// and the establishment steps run on a helper thread, never on an I/O thread (they may
-    /// block on the KDC). `protection` is the level asked for and the least accepted: a proxy
+    /// and the establishment steps run on a helper thread (for a UDP association's control
+    /// connection, on the logical pool), never on an I/O thread (they may block on the KDC). `protection` is the level asked for and the least accepted: a proxy
     /// that grants less is refused.
     ///
     /// At [`Protection::Integrity`](crate::gssapi::Protection::Integrity) and above, every
     /// byte of the tunnel is wrapped, so only the engine methods ([`dial`](Self::dial),
-    /// [`bind`](Self::bind)) can carry it: the blocking helpers refuse with `Unsupported`, and
-    /// `UDP ASSOCIATE` (whose datagrams RFC 1961 would wrap too) is refused at every level.
+    /// [`bind`](Self::bind)) can carry it: the blocking `CONNECT` / `BIND` helpers refuse with
+    /// `Unsupported`. `UDP ASSOCIATE` works at every level, on the engine and blocking: with
+    /// protection each datagram is wrapped with the control connection's context (RFC 1961
+    /// §5), and relayed datagrams that do not unwrap are dropped.
     #[must_use]
     pub fn gssapi(
         mut self,
@@ -257,16 +260,6 @@ impl SocksClient {
             )),
             _ => Ok(()),
         }
-    }
-
-    fn no_udp_gss(&self) -> io::Result<()> {
-        if self.gss.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "UDP ASSOCIATE over GSS-API is not supported",
-            ));
-        }
-        Ok(())
     }
 
     /// The TLS configuration and name to reach the proxy with, if any.
@@ -299,7 +292,11 @@ impl SocksClient {
     }
 
     fn handshake(&self, cmd: Cmd, to: &Dest) -> io::Result<Handshake> {
-        let hs = Handshake::new(self.version.wire(), cmd, target(to), self.creds())?;
+        self.handshake_to(cmd, target(to))
+    }
+
+    fn handshake_to(&self, cmd: Cmd, to: Target) -> io::Result<Handshake> {
+        let hs = Handshake::new(self.version.wire(), cmd, to, self.creds())?;
         match &self.gss {
             Some(ClientGss(f, p)) => hs.gssapi(f.clone(), &self.host, *p),
             None => Ok(hs),
@@ -431,9 +428,6 @@ impl SocksClient {
                 "UDP ASSOCIATE needs SOCKS5",
             )));
         }
-        if let Err(e) = self.no_udp_gss() {
-            return done(Err(e));
-        }
         let me = self.clone();
         let engine = engine.clone();
         let on_datagram: OnDatagram = Arc::new(on_datagram);
@@ -515,7 +509,6 @@ impl SocksClient {
     /// the proxy's family, announces it and returns the association.
     pub fn udp_associate_blocking(&self) -> io::Result<BlockingUdp> {
         self.no_blocking_tls()?;
-        self.no_udp_gss()?;
         if self.version != Version::Socks5 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -538,12 +531,7 @@ impl SocksClient {
             };
             let sock = UdpSocket::bind(unspecified(addr))?;
             let declared = unspecified_port(addr, sock.local_addr()?.port());
-            let mut hs = Handshake::new(
-                only_ws::socks::Version::Socks5,
-                Cmd::UdpAssociate,
-                Target::Addr(declared),
-                self.creds(),
-            )?;
+            let mut hs = self.handshake_to(Cmd::UdpAssociate, Target::Addr(declared))?;
             let mut out = Vec::new();
             hs.start(&mut out);
             dl.write(&s, &out)?;
@@ -554,6 +542,7 @@ impl SocksClient {
                 control: s,
                 sock,
                 relay,
+                gss: datagram_gss(&mut hs),
                 rx: Mutex::new((Reassembly::default(), vec![0u8; 65_536])),
             });
         }
@@ -694,6 +683,8 @@ fn dial_tunnel<A: Acceptor>(
 struct UdpShared {
     binding: UdpBinding,
     relay: OnceLock<SocketAddr>,
+    /// GSS-API per-message protection of the datagrams, set with `relay`.
+    gss: OnceLock<DatagramGss>,
     control: OnceLock<Arc<ConnInner>>,
     closed: AtomicBool,
 }
@@ -709,6 +700,25 @@ impl std::fmt::Debug for UdpAssociation {
             .field("local", &self.local_addr())
             .field("relay", &self.0.relay.get())
             .finish_non_exhaustive()
+    }
+}
+
+/// The datagram protection a finished handshake agreed (RFC 1961 §5): the control
+/// connection's context, wrapping each datagram.
+fn datagram_gss(hs: &mut Handshake) -> Option<DatagramGss> {
+    hs.take_protection()
+        .map(|(ctx, level, _)| DatagramGss::new(Arc::new(Mutex::new(ctx)), level))
+}
+
+/// Sends one datagram (header included), wrapped when `gss` is set.
+fn send_datagram(
+    gss: Option<&DatagramGss>,
+    d: &[u8],
+    mut send: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    match gss {
+        Some(g) => send(&g.seal(d)?),
+        None => send(d),
     }
 }
 
@@ -766,7 +776,7 @@ impl UdpAssociation {
         let mut d = Vec::with_capacity(payload.len() + 22);
         udp_header(&mut d, to)?;
         d.extend_from_slice(payload);
-        self.0.binding.send_to(&d, relay)
+        send_datagram(self.0.gss.get(), &d, |d| self.0.binding.send_to(d, relay))
     }
 
     /// Sends `payload` to `to` in fragments of at most `max` bytes each (RFC 1928 `FRAG`
@@ -785,7 +795,9 @@ impl UdpAssociation {
         let relay = *self.0.relay.get().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "association not established")
         })?;
-        send_fragments(payload, to, max, |d| self.0.binding.send_to(d, relay))
+        send_fragments(payload, to, max, |d| {
+            send_datagram(self.0.gss.get(), d, |d| self.0.binding.send_to(d, relay))
+        })
     }
 
     /// The proxy's relay address datagrams go to.
@@ -848,12 +860,7 @@ fn udp_open(
         Err(e) => return done(Err(e)),
     };
     let declared = unspecified_port(proxy, binding.local_addr().port());
-    let hs = match Handshake::new(
-        only_ws::socks::Version::Socks5,
-        Cmd::UdpAssociate,
-        Target::Addr(declared),
-        client.creds(),
-    ) {
+    let hs = match client.handshake_to(Cmd::UdpAssociate, Target::Addr(declared)) {
         Ok(h) => h,
         Err(e) => {
             binding.close();
@@ -863,6 +870,7 @@ fn udp_open(
     let assoc = UdpAssociation(Arc::new(UdpShared {
         binding,
         relay: OnceLock::new(),
+        gss: OnceLock::new(),
         control: OnceLock::new(),
         closed: AtomicBool::new(false),
     }));
@@ -942,6 +950,55 @@ impl Control {
             cb(r);
         }
     }
+
+    fn fail(&mut self, c: &Conn<Self>, e: io::Error) {
+        self.err = Some(e);
+        c.close();
+    }
+
+    /// Continues the handshake with `data` (empty: with what is buffered).
+    fn advance(&mut self, c: &Conn<Self>, data: &[u8]) {
+        let mut out = Vec::new();
+        let fed = self.hs.feed(data, &mut out);
+        if !out.is_empty() {
+            let _ = c.send_owned(out);
+        }
+        let reply = match fed {
+            Ok((_, r)) => r,
+            Err(e) => return self.fail(c, e),
+        };
+        if let Some(job) = self.hs.take_gss_job() {
+            // A GSS-API establishment step may block (a Kerberos initiator asking the KDC for
+            // a ticket): on the logical pool; what arrives meanwhile waits in the handshake.
+            let spawned = c.spawn_blocking(
+                move || job.run(),
+                |me: &mut Control, c, d| {
+                    let mut out = Vec::new();
+                    let r = me.hs.gss_done(d, &mut out);
+                    if !out.is_empty() {
+                        let _ = c.send_owned(out); // the next token, or the abort
+                    }
+                    match r {
+                        Ok(()) => me.advance(c, &[]),
+                        Err(e) => me.fail(c, e),
+                    }
+                },
+            );
+            if spawned.is_err() {
+                self.fail(c, io::Error::other("cannot run the GSS-API step"));
+            }
+            return;
+        }
+        let Some(r) = reply else { return };
+        if let Some(w) = &self.watch {
+            w.disarm();
+        }
+        if let Some(g) = datagram_gss(&mut self.hs) {
+            let _ = self.assoc.0.gss.set(g);
+        }
+        let _ = self.assoc.0.relay.set(reply_addr(&r.addr, self.proxy));
+        self.finish(Ok(self.assoc.clone()));
+    }
 }
 
 impl Handler for Control {
@@ -949,25 +1006,7 @@ impl Handler for Control {
         if self.hs.is_done() {
             return; // RFC 1928: nothing more comes on the control connection
         }
-        let mut out = Vec::new();
-        match self.hs.feed(data, &mut out) {
-            Ok((_, Some(r))) => {
-                if let Some(w) = &self.watch {
-                    w.disarm();
-                }
-                let _ = self.assoc.0.relay.set(reply_addr(&r.addr, self.proxy));
-                self.finish(Ok(self.assoc.clone()));
-            }
-            Ok((_, None)) => {
-                if !out.is_empty() {
-                    let _ = c.send_owned(out);
-                }
-            }
-            Err(e) => {
-                self.err = Some(e);
-                c.close();
-            }
-        }
+        self.advance(c, data);
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, err: Option<only::Error>) {
@@ -1012,6 +1051,17 @@ impl Handler for RelayPeer {
         if a.0.relay.get() != Some(&canon(c.peer_addr())) || !a.is_open() {
             return;
         }
+        let opened;
+        let data = match a.0.gss.get() {
+            Some(g) => match g.open(data) {
+                Ok(d) => {
+                    opened = d;
+                    &opened[..]
+                }
+                Err(_) => return,
+            },
+            None => data,
+        };
         let Some((frag, from, n)) = crate::udp::parse_header(data) else {
             return;
         };
@@ -1164,6 +1214,8 @@ pub struct BlockingUdp {
     control: TcpStream,
     sock: UdpSocket,
     relay: SocketAddr,
+    /// GSS-API per-message protection of the datagrams.
+    gss: Option<DatagramGss>,
     /// Reassembly queue and receive buffer.
     rx: Mutex<(Reassembly, Vec<u8>)>,
 }
@@ -1174,13 +1226,17 @@ impl BlockingUdp {
         let mut d = Vec::with_capacity(payload.len() + 22);
         udp_header(&mut d, to)?;
         d.extend_from_slice(payload);
-        self.sock.send_to(&d, self.relay).map(|_| ())
+        send_datagram(self.gss.as_ref(), &d, |d| {
+            self.sock.send_to(d, self.relay).map(|_| ())
+        })
     }
 
     /// [`UdpAssociation::send_fragmented`], blocking.
     pub fn send_fragmented(&self, payload: &[u8], to: &Dest, max: usize) -> io::Result<()> {
         send_fragments(payload, to, max, |d| {
-            self.sock.send_to(d, self.relay).map(|_| ())
+            send_datagram(self.gss.as_ref(), d, |d| {
+                self.sock.send_to(d, self.relay).map(|_| ())
+            })
         })
     }
 
@@ -1196,6 +1252,17 @@ impl BlockingUdp {
             if canon(peer) != self.relay {
                 continue;
             }
+            let opened;
+            let (tmp, n) = match &self.gss {
+                Some(g) => match g.open(&tmp[..n]) {
+                    Ok(d) => {
+                        opened = d;
+                        (&opened[..], opened.len())
+                    }
+                    Err(_) => continue,
+                },
+                None => (&tmp[..], n),
+            };
             let Some((frag, from, h)) = crate::udp::parse_header(&tmp[..n]) else {
                 continue;
             };
