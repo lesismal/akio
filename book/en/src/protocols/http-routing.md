@@ -107,7 +107,7 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 | `cors(Cors { allow_origin, allow_methods, allow_headers, max_age })` | answers preflights with 204, adds `Access-Control-Allow-Origin` |
 | `logger(fn(&LogRecord))` | calls your function after each request (method, target, peer, status, elapsed) |
 | `response_time()` | adds an `X-Response-Time` header |
-| `compress(Compress { min_bytes, level, brotli, zstd })` | br/zstd (when set)/gzip/deflate for text-like bodies the client accepts |
+| `compress(Compress { min_bytes, level, brotli, zstd, stream })` | br/zstd (when set)/gzip/deflate for text-like bodies the client accepts |
 | `etag()` | adds an `ETag`, answers `If-None-Match` with 304 |
 | `csrf()` | double-submit cookie: `csrf_token` cookie, checked against the `X-CSRF-Token` header on unsafe methods |
 | `limiter(rate, burst)` | per-client-IP token bucket, 429 with `Retry-After` |
@@ -117,8 +117,17 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 `br` and `zstd` (the in-house `only-brotli` and `only-zstd`, ADR-041) are off by default: set
 `Compress::brotli` / `Compress::zstd` to a level to answer clients that accept them, preferred in
 the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files are served by
-`Files`. The middleware compresses whole buffered bodies; streamed responses
-(`Context::stream_response`) are sent as written, uncompressed (ADR-069).
+`Files`. The middleware compresses whole buffered bodies. Streamed responses
+(`Context::stream_response`) are sent as written unless `Compress::stream` is set
+(ADR-074): then they are compressed write by write, the encoder flushed after every write so
+that each server-sent event still reaches the client at once, with small per-stream defaults
+(`StreamCompress`: gzip 1, zstd 1 with a 128 KiB window, brotli 4 with a 256 KiB window; about
+0.3, 0.5 and 1.3 MiB per open stream). Brotli costs the most CPU per small write, so for
+high-rate event streams offer zstd or let gzip serve them.
+
+```rust,ignore
+{{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
+```
 
 ## Static files
 

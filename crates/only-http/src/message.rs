@@ -369,6 +369,9 @@ pub struct Response {
     pub file: Option<FileBody>,
     /// The body is streamed: no `Content-Length` is added.
     pub(crate) streaming: bool,
+    /// The coding a streamed body is compressed with, set by the `compress` middleware's
+    /// filter when the head goes out (ADR-074).
+    pub(crate) stream_coding: Option<crate::coding::StreamCoding>,
     /// Trailer fields sent after the body (HTTP/2; ignored on HTTP/1).
     pub trailers: Option<Headers>,
 }
@@ -401,6 +404,7 @@ impl Response {
             body: Vec::new(),
             file: None,
             streaming: false,
+            stream_coding: None,
             trailers: None,
         }
     }

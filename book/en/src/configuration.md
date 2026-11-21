@@ -89,7 +89,8 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB, `max_conn_pending_bytes`: 32 MiB, `max_resets`: 100, `max_control_frames`: 1000, `reset_window`: 30 s |
 | `only_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `watch`: off, `max_watches`: 1024, `cache_control`: none |
 | `only_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |
-| `only_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6 |
+| `only_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6, `stream`: `None` (streamed responses uncompressed) |
+| `only_http::middleware::StreamCompress` | `level`: 1, `brotli`: 4, `brotli_window_bits`: 18, `zstd`: 1, `zstd_window_log`: 17 |
 | `only_http::client::ClientOptions` | `max_head_bytes`: 64 KiB, `max_body_bytes`: 64 MiB, `idle_timeout`: 90 s, `max_idle_per_host`: 32, `max_idle`: 256 |
 | `only_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false, `max_header_list`: 64 KiB, `max_body_bytes`: 64 MiB (buffered responses) |
 | `only_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |

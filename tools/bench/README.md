@@ -15,6 +15,7 @@ CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf
 | `ktls-engine.sh` | kernel TLS in the engine (ADR-067): interleaved A/B of TLS echo, handshakes and HTTPS between two builds and `ONLY_KTLS` modes, waiting for a quiet host before each run |
 | `uring-eval.sh` | io_uring send mechanisms on a raw ring: `write(2)` vs `IORING_OP_SEND` vs `SEND_ZC`, with and without registered files, by response size (the ignored `eval_server` test of only-uring; server CPU per request from `/proc`) |
 | `udp-dgram.sh` | UDP 64 B echo A/B: per-peer listeners of a base and a new build, connectionless `serve_datagrams` listeners on epoll and io_uring (`bench-server udp-dgram`, ADR-065; server CPU per request from `/proc`) |
+| `stream-compress.sh [tput] [mem]` | compressed streamed responses A/B (ADR-074): a base build and the new one with `Compress::stream` off and on, per coding: throughput of 16 small events and of 16 x 16 KiB writes per response (h2load, server CPU per response, body bytes), and server RSS per held server-sent-events stream after 3 and 6000 events (`stream-bench` example) |
 | `mem.sh [proto:kind:conns ...]` | server memory per idle connection |
 | `profile.sh <case> <kind> [secs]` | perf profile of one server under one load (`h1`, `pipelined`, `h2`, `h2tls`, `ws`, `tcp`), with the CPUs the server kept busy |
 | `all.sh <dir>` | everything above, raw TSV into `<dir>` |

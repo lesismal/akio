@@ -15,6 +15,7 @@
 | `ktls-engine.sh` | 引擎中的内核 TLS（ADR-067）：两个构建与不同 `ONLY_KTLS` 模式之间交错进行的 TLS 回显、握手与 HTTPS A/B，每次运行前等待主机空闲 |
 | `uring-eval.sh` | 在裸 ring 上比较 io_uring 的发送方式：`write(2)`、`IORING_OP_SEND` 与 `SEND_ZC`，有无注册文件，按响应大小（only-uring 中被忽略的 `eval_server` 测试；每请求服务器 CPU 取自 `/proc`） |
 | `udp-dgram.sh` | UDP 64 B echo A/B：基准构建与新构建的每对端 listener，以及 epoll 和 io_uring 上的无连接 `serve_datagrams` listener（`bench-server udp-dgram`，ADR-065；每请求服务器 CPU 取自 `/proc`） |
+| `stream-compress.sh [tput] [mem]` | 压缩流式响应 A/B（ADR-074）：基准构建，以及关闭和开启 `Compress::stream` 的新构建，按编码分别测：每个响应 16 个小事件和 16 次 16 KiB 写入的吞吐量（h2load，每响应服务器 CPU，消息体字节数），以及 3 个和 6000 个事件后每个保持打开的 server-sent events 流的服务器 RSS（`stream-bench` 示例） |
 | `mem.sh [proto:kind:conns ...]` | 服务端每个空闲连接的内存 |
 | `profile.sh <case> <kind> [secs]` | 某个服务端在某种负载下的 perf 剖析（`h1`、`pipelined`、`h2`、`h2tls`、`ws`、`tcp`），并给出服务端占满了几个 CPU |
 | `all.sh <dir>` | 以上全部，原始 TSV 写到 `<dir>` |

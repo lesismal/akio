@@ -80,7 +80,7 @@ limit)` 与 `decompress(input, &mut [u8])`，返回 `Progress { consumed, produc
 `Content-Length` 已知）；流式响应（`Context::stream_response`）对任何编码都不压缩发送，包括 gzip：
 响应过滤器不作用于它们。没有地方缓冲流式消息体，所以那里现在不做改动。压缩流式响应（每个流一个编码器，
 为 server-sent events 每次写入刷新一次，一个 `Compress` 开关，缩小每个流的内存）是一项独立的功能，留待
-以后；流式 API 使其成为可能。HTTP 客户端不解码任何内容编码。
+以后；流式 API 使其成为可能。HTTP 客户端不解码任何内容编码。（此后已完成：ADR-074。）
 
 ## 影响
 

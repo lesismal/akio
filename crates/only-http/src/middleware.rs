@@ -13,6 +13,7 @@ use std::{
 };
 
 use crate::{
+    coding::StreamCoding,
     context::{Context, Middleware, Service},
     message::{Headers, Method, Request, Response},
 };
@@ -170,6 +171,11 @@ pub struct Compress {
     /// zstd level 1..=22 for clients accepting `zstd`, preferred over `gzip` and `deflate`
     /// (`None`, the default: `zstd` is not used).
     pub zstd: Option<u32>,
+    /// Compress streamed responses ([`Context::stream_response`]) too, with these settings
+    /// (`None`, the default: they are sent as written). The coding is negotiated as for
+    /// buffered responses, among the same encodings; `min_bytes` does not apply (the length
+    /// is not known).
+    pub stream: Option<StreamCompress>,
 }
 
 impl Default for Compress {
@@ -179,6 +185,42 @@ impl Default for Compress {
             level: 6,
             brotli: None,
             zstd: None,
+            stream: None,
+        }
+    }
+}
+
+/// Settings for streamed responses in [`Compress::stream`].
+///
+/// A streamed response keeps its encoder (window and match tables) for as long as it is open,
+/// and a server-sent-events stream may be open for hours, so the defaults are small: about
+/// 0.3 MiB per stream for `gzip` and `deflate`, 0.5 MiB for `zstd` and 1.3 MiB for `br` once
+/// a window of output has gone through (less before). Every write is flushed, so that the
+/// client can decode it at once.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct StreamCompress {
+    /// zlib level 0..=9 for `gzip` and `deflate` streams (default 1).
+    pub level: u32,
+    /// brotli quality 0..=11 for `br` streams, when [`Compress::brotli`] offers `br`
+    /// (default 4).
+    pub brotli: u32,
+    /// brotli window, `2^brotli_window_bits` bytes, 10..=24 (default 18: 256 KiB).
+    pub brotli_window_bits: u32,
+    /// zstd level 1..=22 for `zstd` streams, when [`Compress::zstd`] offers `zstd` (default 1).
+    pub zstd: u32,
+    /// zstd window, `2^zstd_window_log` bytes, 10..=23 (default 17: 128 KiB).
+    pub zstd_window_log: u32,
+}
+
+impl Default for StreamCompress {
+    fn default() -> Self {
+        StreamCompress {
+            level: 1,
+            brotli: 4,
+            brotli_window_bits: 18,
+            zstd: 1,
+            zstd_window_log: 17,
         }
     }
 }
@@ -206,7 +248,11 @@ fn accepted_encoding(accept: &str, encodings: &[&'static str]) -> Option<&'stati
 }
 
 /// Compresses text-like response bodies with `br` or `zstd` when configured, else `gzip` or
-/// `deflate`, whichever the client accepts first in that order.
+/// `deflate`, whichever the client accepts first in that order. Buffered bodies are
+/// compressed whole; streamed ones only with [`Compress::stream`], write by write.
+///
+/// Only `200` responses with a compressible `Content-Type` and no `Content-Encoding` are
+/// compressed; they lose `Content-Length` and get `Vary: Accept-Encoding`.
 pub fn compress(cfg: Compress) -> impl Middleware {
     // Decided once: the levels, and the encodings on offer in order of preference.
     let level = only_deflate::Level::new(cfg.level);
@@ -219,12 +265,44 @@ pub fn compress(cfg: Compress) -> impl Middleware {
         (false, false) => &["gzip", "deflate"],
     };
     let min_bytes = cfg.min_bytes;
+    // The coding of a streamed response, by encoding (levels and windows clamped once).
+    let stream = cfg.stream.map(|s| {
+        let level = only_deflate::Level::new(s.level).get();
+        move |enc: &str| match enc {
+            "br" => StreamCoding::Br {
+                quality: only_brotli::Level::new(s.brotli).get(),
+                window_bits: s.brotli_window_bits.clamp(10, 24) as u8,
+            },
+            "zstd" => StreamCoding::Zstd {
+                level: only_zstd::Level::new(s.zstd).get(),
+                window_log: s.zstd_window_log.clamp(10, 23) as u8,
+            },
+            "gzip" => StreamCoding::Gzip(level),
+            _ => StreamCoding::Deflate(level),
+        }
+    });
     move |ctx: &mut Context, next: &dyn Service| {
         if let Some(enc) = ctx
             .header("accept-encoding")
             .and_then(|a| accepted_encoding(a, encodings))
         {
             ctx.add_response_filter(move |resp: &mut Response, _req: &Request| {
+                if resp.streaming {
+                    // The head of a streamed response: the body is encoded write by write
+                    // (`BodyStream`).
+                    let Some(coding) = stream else { return };
+                    if resp.status != 200
+                        || resp.headers.get("content-encoding").is_some()
+                        || !compressible(resp.headers.get("content-type").unwrap_or(""))
+                    {
+                        return;
+                    }
+                    resp.stream_coding = Some(coding(enc));
+                    resp.headers.set("Content-Encoding", enc);
+                    resp.headers.remove("Content-Length");
+                    resp.headers.set("Vary", "Accept-Encoding");
+                    return;
+                }
                 if resp.status != 200
                     || resp.file.is_some()
                     || resp.body.len() < min_bytes
@@ -267,7 +345,9 @@ fn fnv64(data: &[u8]) -> u64 {
 pub fn etag() -> impl Middleware {
     |ctx: &mut Context, next: &dyn Service| {
         ctx.add_response_filter(|resp: &mut Response, req: &Request| {
+            // A streamed body is not known when its head goes out.
             if resp.status != 200
+                || resp.streaming
                 || resp.file.is_some()
                 || resp.headers.get("etag").is_some()
                 || !matches!(req.method, Method::Get | Method::Head)

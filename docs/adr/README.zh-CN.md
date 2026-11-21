@@ -75,3 +75,4 @@
 - [ADR-071：机制由应用提供的 SOCKS5 GSS-API 认证](071-socks-gssapi-pluggable-mechanism.zh-CN.md)（2026-11-21 采纳）
 - [ADR-072：无 BUNDLE 或无 ICE 的传输、SDES 变体、数据通道优先级与 TURN DTLS 连接 ID](072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md)（2026-11-21 采纳）
 - [ADR-073：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测](073-webrtc-pacer-fec-policy-ecn.zh-CN.md)（2026-11-21 采纳）
+- [ADR-074：only-http 压缩流式响应](074-compressed-streamed-responses.zh-CN.md)（2026-11-21 采纳）

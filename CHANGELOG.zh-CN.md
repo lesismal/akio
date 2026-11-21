@@ -10,6 +10,26 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：压缩流式响应（only-http、only-brotli）
+
+ADR-074（docs/adr/074-compressed-streamed-responses.zh-CN.md），只有新增：
+
+- `Compress::stream: Option<StreamCompress>`（默认关闭）：`compress` 中间件也压缩流式响应
+  （`Context::stream_response`），编码与缓冲响应一样按 `Accept-Encoding` 协商（br、提供时的 zstd、gzip、
+  deflate），条件是状态码 200、可压缩的类型、没有 `Content-Encoding`；去掉 `Content-Length`，设置
+  `Vary: Accept-Encoding`。每个流一个编码器，适用于 HTTP/1.1、HTTP/1.0、HTTP/2 和 HTTP/3。
+- 每次 `BodyStream::write` 都编码并刷新（deflate 同步刷新，zstd 与 brotli 的 `Flush::Flush`），所以每个
+  server-sent event 到达即可解码；`finish` 结束编码。默认值很小（`StreamCompress`）：gzip / deflate 1，
+  zstd 1 配 `zstd_window_log` 17，brotli 4 配 `brotli_window_bits` 18：每个打开的流约 0.3、0.5 和 1.3 MiB。
+- only-brotli 的流式 `Compressor` 在缓冲区积累两个窗口时滑动（原来要等一个窗口加一个 1 MiB 的元块），
+  小窗口的流因此保持小：质量 4、窗口位数 18 时每个流从 2.0 MiB 降到 1.3 MiB。输出不变。
+- 修复：`etag()` 给流式 200 响应打上空消息体的 ETag。
+- 测量（在 gpu51 上与 main 同批 A/B。未设置 `stream` 时流式响应的速度与 main 相同（每响应 16 个
+  小事件 0.999 倍，16 x 16 KiB 1.011 倍）；压缩时服务器 CPU 是瓶颈：gzip / zstd / br 每个 16 事件的响应
+  多花 6 / 27 / 110 us（不压缩 17 us），每核 HTML 0.93 / 0.54 / 0.16 GB/s，事件字节压到 35% / 34% /
+  26%，HTML 压到 18% / 6.1% / 5.4%。每个保持打开的流的服务器 RSS（1,000 个流）在 3 个事件后为 148 / 112 /
+  424 KiB，6,000 个事件后为 268 / 324 / 1,106 KiB，不压缩时为 1.2-2.6 KiB；docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：
@@ -211,7 +231,7 @@ ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），�
 - 解码速度基本不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%；小证书链至多慢 2%，约 0.15 µs；
   docs/BENCHMARKS.zh-CN.md）。
 - 模糊测试目标 `zstd_stream`、`zstd_stream_roundtrip`、`brotli_stream`、`brotli_stream_roundtrip`。
-- only-http 不变：流式响应仍不压缩（ADR-069 第 4 节）。
+- only-http 不变：流式响应仍不压缩（ADR-069 第 4 节；此后已压缩，ADR-074）。
 
 ### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
 

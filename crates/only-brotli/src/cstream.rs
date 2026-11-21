@@ -207,9 +207,11 @@ impl Compressor {
             }
         };
         debug_assert_eq!(st.block(), self.block_size());
-        // Slide: keep the window behind `pos`, once the dictionary is out of reach.
+        // Slide: keep the window behind `pos`, once the dictionary is out of reach. Sliding
+        // once the buffer holds two windows (not a window plus a meta-block) keeps a stream
+        // with a small window small; the copy is still amortized over a window of input.
         let mut end = end;
-        if self.pos > window + window.max(self.block_size()) && self.produced >= window as u64 {
+        if self.pos > 2 * window && self.produced >= window as u64 {
             let align = st.align();
             let drop = (self.pos - window) / align * align;
             if drop > 0 {
