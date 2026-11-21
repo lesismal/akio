@@ -69,3 +69,4 @@
 - [ADR-065：无连接的 UDP listener（`DatagramsHandler`）](065-connectionless-datagrams.zh-CN.md)（2026-11-21 采纳）
 - [ADR-066：静态文件缓存的变更通知（inotify / kqueue）](066-static-files-change-notifications.zh-CN.md)（2026-11-20 采纳）
 - [ADR-067：引擎连接的内核 TLS，硬件优先](067-kernel-tls-engine-offload.zh-CN.md)（2026-11-21 采纳）
+- [ADR-069：only-brotli 与 only-zstd 的流式 API、字典与最高级别压缩率](069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md)（2026-11-21 采纳）
