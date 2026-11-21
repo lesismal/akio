@@ -30,12 +30,16 @@ ADR-069 (docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.md), additive AP
   Google's `BROTLI_SHARED_DICTIONARY_RAW` use them: `compress_with_dictionary`,
   `decompress_with_dictionary`, `with_dictionary`; new error `WindowTooLarge`. Both checked
   against the CLIs in both directions.
-- Ratios: zstd levels 16..=22 parse optimally (libzstd's `btopt` / `btultra`: hash chain
-  candidates, a shortest path priced from symbol statistics, 1-3 passes) and every level may
-  repeat the previous block's tables; brotli 10..=11 use static dictionary words. zstd 19 is now
-  0.3-1.7% larger than libzstd on the benchmark corpus (was 1.3-7.6%), brotli 11 0.9-4.7% larger
+- Ratios: zstd levels 16..=22 parse optimally (libzstd's `btopt` / `btultra`: binary-tree match
+  finder, a shortest path priced from symbol statistics carried from block to block, 1-3
+  passes) and every level may repeat the previous block's tables; brotli 10..=11 use static
+  dictionary words. zstd 19 is now 0.3-1.4% larger than libzstd on the benchmark corpus (was
+  1.3-7.6%) and level 16 smaller on Silesia and JSON, brotli 11 0.9-4.7% larger
   than libbrotli (was 3.5-11.4%; brotli block splitting is still not done).
-- Decoding speed unchanged (same-run A/B against main on the quiet host, docs/BENCHMARKS.md).
+- Compression at those levels is slower, as in the reference encoders: zstd 19 3.5-10.9 MB/s
+  (libzstd 3.9-12), brotli 10-11 about half the speed on text (docs/BENCHMARKS.md).
+- Decoding speed unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per cell,
+  small certificate chains within 1%; docs/BENCHMARKS.md).
 - Fuzz targets `zstd_stream`, `zstd_stream_roundtrip`, `brotli_stream`, `brotli_stream_roundtrip`.
 - only-http unchanged: streamed responses stay uncompressed (ADR-069 section 4).
 

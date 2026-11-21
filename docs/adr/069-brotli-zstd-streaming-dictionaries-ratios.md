@@ -79,13 +79,18 @@ are. Errors are sticky until `reset`. The one-shot functions are unchanged.
 
 ### 3. Ratios at the top levels
 
-- **zstd 16..=22**: a shortest-path parse per block (libzstd's `btopt` / `btultra`). Candidates
-  of every position come from the hash chains (increasing lengths, at most 16); the path is
-  priced with literal and literal-length / match-length / offset code costs, from the predefined
-  distributions first and then from the previous pass (1 pass at 16, 2 at 17-18, 3 from 19),
-  the literal length code charged as literals come (libzstd's pricing), the repeat offsets
-  followed along each path. libzstd's binary-tree match finder and 3-byte matches are not
-  ported.
+- **zstd 16..=22**: a shortest-path parse per block (libzstd's `btopt` / `btultra`) over
+  candidates from libzstd's binary-tree match finder (a tree of suffixes per 4-byte hash,
+  re-linked around each inserted position; increasing lengths, at most 16). Hash chains were
+  tried first: on JSON the long chains of near-equal candidates made level 19 30 times slower
+  than before and 5 times slower than libzstd, and shortening them cost ratio; the trees find
+  better candidates in a fraction of the time. The path is priced with literal and
+  literal-length / match-length / offset code costs from the previous block's parse (libzstd
+  carries its statistics over too; starting every block from the predefined distributions made
+  level 16 3.7% larger than the lazy parser it replaced on Silesia), the first block from
+  estimates with at least two passes, then from the previous pass (1 pass at 16, 2 at 17-18, 3
+  from 19), the literal length code charged as literals come (libzstd's pricing), the repeat
+  offsets followed along each path. 3-byte matches are not ported.
 - **brotli 10-11**: static dictionary references, the main thing missing: an index of the
   dictionary's words by their first four bytes in lower case, each position looked up after
   each transform prefix and checked against the identity, uppercase and omit-last transforms
@@ -116,14 +121,21 @@ later; the streaming APIs make it possible. The HTTP client decodes no content c
   decoders, `zstd -d`, `brotli -d`, libzstd and brotli-decompressor decode them (tests and fuzz
   targets).
 - Ratios, sizes against the C libraries on the benchmark corpus (deterministic): zstd 19 from
-  +1.3..7.6% to +0.3..1.7% (Silesia 20 MB 6,158,589 → 5,823,518, libzstd 5,724,126; JSON 46,888
-  → 44,591 / 44,267; HTML 7,173 → 6,985 / 6,967; JavaScript 20,726 → 20,191 / 20,102; certificate
-  chains 1,736 → 1,724 / 1,701 and 2,563 → 2,545 / 2,531); brotli 11 from +3.5..11.4% to
+  +1.3..7.6% to +0.3..1.4% (Silesia 20 MB 6,160,823 → 5,785,046, libzstd 5,723,399; JSON 46,894
+  → 44,386 / 44,267; HTML 7,173 → 6,985 / 6,967; JavaScript 20,726 → 20,190 / 20,102; certificate
+  chains 1,736 → 1,724 / 1,701 and 2,563 → 2,545 / 2,531), level 16 smaller than libzstd's on
+  Silesia and JSON; brotli 11 from +3.5..11.4% to
   +0.9..4.7% (HTML 6,739 → 6,202, libbrotli 6,048; JSON 43,638 → 42,754 / 41,813; JavaScript
   19,936 → 19,252 / 19,077; chains 1,693 → 1,640 / 1,615 and 2,515 → 2,454 / 2,430; Silesia
-  unchanged at 5,599,939 / 5,348,162). Speeds in docs/BENCHMARKS.md.
-- Decoding speed: see docs/BENCHMARKS.md ("Streaming, dictionaries and ratios"): same-run A/B
-  against main on the quiet host.
+  unchanged at 5,599,939 / 5,348,162).
+- Compression at the top levels is slower, as optimal parsing is in libzstd: zstd 19 at 3.5-10.9
+  MB/s (was 7-59; libzstd 3.9-12), zstd 16 at 6.5-14 (libzstd 9.6-18.6), brotli 10-11 at
+  about half the speed on text. Tree links double the zstd match tables at 16-22 (64 MiB at
+  19-22 with an 8 MiB window, as libzstd's).
+- Decoding speed unchanged: same-run A/B against main on the quiet host, zstd -1.8..+3.1% and
+  brotli -2.2..+4.9% per cell, and the small certificate chains within +-0.9% in a dedicated
+  three-round loop under both the default and the benchmark build profile (docs/BENCHMARKS.md,
+  "Streaming, dictionaries and ratios").
 - Four fuzz targets: `zstd_stream`, `brotli_stream` (streaming decoder in pieces against the
   one-shot decoder, with and without dictionaries; arbitrary bytes as a zstd dictionary),
   `zstd_stream_roundtrip`, `brotli_stream_roundtrip` (streaming compressor with pieces, flushes,

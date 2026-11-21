@@ -32,7 +32,8 @@ crate (docs/api-stability.md): use it through those crates.
   `Flush::Finish` ends the frame (a frame whose input all arrived before anything was written is
   the one `compress` writes). Streamed frames have no content size and a window of 512 KiB
   (level 1) to 8 MiB (level 16 up), or `window_log(10..=23)`; the compressor's buffer slides,
-  keeping the window. The decompressor takes concatenated and skippable frames in pieces of any
+  keeping the window, and its match tables are sized for the window (at levels 19..=22 and an
+  8 MiB window 16 MiB of hash heads and 64 MiB of tree links, as libzstd's). The decompressor takes concatenated and skippable frames in pieces of any
   size: it gathers at most one block of input (128 KiB, or a header), decodes it with the
   one-shot block decoder into a window that slides once twice the frame's window is held, and
   delivers output under a size limit (`decompress_vec`) or into a slice (`decompress`); frames
@@ -91,12 +92,16 @@ repeat offset right after a match; levels 5..=15 walk hash chains of 4-byte hash
 candidates at level 5 to 160 at 15, stopping at a "nice" length) after trying the three repeat
 offsets, lazily (5) or lazy2 (6..=15: a better match one or two bytes later wins), comparing
 matches by length minus the cost of their offset as zstd does. Levels 16..=22 parse optimally,
-as libzstd's `btopt` / `btultra`: every position's candidate matches come from the hash chains
-(96 to 768 candidates, increasing lengths only, the 16 longest kept; positions inside a match of
-the "nice" length are not searched), then a shortest path through the block is found, priced
-with the bit costs of the literals and of the literal length, match length and offset codes
-(estimated from the predefined distributions at first, then from the previous pass: one pass at
-16, two at 17 and 18, three from 19), the literal length code paid as literals come, the three
+as libzstd's `btopt` / `btultra`: every position's candidate matches come from binary trees of
+suffixes, one per 4-byte hash (libzstd's `bt` match finder: inserting a position re-links the
+tree around it, 48 to 512 nodes visited, each compared from the length already shared on its
+side; increasing lengths only, the 16 longest kept; positions inside a match of the "nice"
+length are not searched, and after a match longer than 384 bytes up to 192 positions are not
+entered), then a shortest path through the block is found, priced with the bit costs of the
+literals and of the literal length, match length and offset codes (from the previous block's
+parse, or estimated from the block's bytes and the predefined distributions for the first
+block, then from the previous pass: one pass at 16, two at 17 and 18, three from 19, at least
+two on the first block), the literal length code paid as literals come, the three
 repeat offsets followed along each path (matches of length 3 at a repeat offset included), long
 matches taken whole. Blocks hold at most 128 KiB. Literals are Huffman-coded (code
 lengths of a plain Huffman code, or limited to 11 bits by package-merge when longer, one stream below 256 literals, four above, the tree
@@ -152,6 +157,5 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd FILE...`.
 
 Limitations: no long-distance matching, multithreading or dictionary training; the encoder's
-optimal parser takes candidates from hash chains of 4-byte hashes rather than libzstd's binary
-trees with 3-byte matches, so at level 19 it is 0.3-1.7% larger than libzstd on the benchmark
-corpus (docs/BENCHMARKS.md).
+optimal parser finds no 3-byte matches (its trees hash 4 bytes), so at level 19 it is 0.3-1.4%
+larger than libzstd on the benchmark corpus (docs/BENCHMARKS.md).

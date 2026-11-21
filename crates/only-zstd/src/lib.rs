@@ -9,10 +9,11 @@
 //!   XXH64 content checksum are verified.
 //! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 with libzstd's
 //!   `fast` / `double_fast` match finders (levels 1..=4), hash chains with lazy matching
-//!   (5..=15) and, from level 16, a shortest-path parse priced with the symbol statistics of a
-//!   previous pass (libzstd's `btopt` / `btultra`); Huffman-coded literals and FSE-coded
-//!   sequences with tables chosen per block by size, the previous block's tables repeated when
-//!   cheaper, raw or RLE blocks when those are smaller. Levels follow zstd's 1..=22 scale.
+//!   (5..=15) and, from level 16, binary trees of suffixes and a shortest-path parse priced
+//!   with the symbol statistics of a previous pass or block (libzstd's `btopt` / `btultra`);
+//!   Huffman-coded literals and FSE-coded sequences with tables chosen per block by size, the
+//!   previous block's tables repeated when cheaper, raw or RLE blocks when those are smaller.
+//!   Levels follow zstd's 1..=22 scale.
 //! - [`Compressor`] / [`Decompressor`]: streaming, with bounded memory: input in pieces of any
 //!   size, output a block at a time ([`Flush`] makes everything so far decodable); the decoder
 //!   holds the frame's window (at most 8 MiB by default) and one block of input.

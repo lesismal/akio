@@ -25,11 +25,14 @@ ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），�
   `WrongDictionary`、`BadDictionary`。brotli 原始（LZ77 前缀）字典，用法同 `brotli -D` 与 Google 的
   `BROTLI_SHARED_DICTIONARY_RAW`：`compress_with_dictionary`、`decompress_with_dictionary`、
   `with_dictionary`；新错误 `WindowTooLarge`。两者都与命令行工具双向核对。
-- 压缩率：zstd 16..=22 级做最优解析（libzstd 的 `btopt` / `btultra`：哈希链候选、按符号统计定价的最短
-  路径、1–3 遍），各级别都可复用上一个块的码表；brotli 10..=11 级使用静态字典词。在基准语料上 zstd 19
-  现在比 libzstd 大 0.3–1.7%（之前 1.3–7.6%），brotli 11 比 libbrotli 大 0.9–4.7%（之前 3.5–11.4%；
+- 压缩率：zstd 16..=22 级做最优解析（libzstd 的 `btopt` / `btultra`：二叉树匹配查找、按在块之间沿用的
+  符号统计定价的最短路径、1–3 遍），各级别都可复用上一个块的码表；brotli 10..=11 级使用静态字典词。在
+  基准语料上 zstd 19 现在比 libzstd 大 0.3–1.4%（之前 1.3–7.6%），级别 16 在 Silesia 与 JSON 上更小，brotli 11 比 libbrotli 大 0.9–4.7%（之前 3.5–11.4%；
   brotli 块分割仍未完成）。
-- 解码速度不变（安静主机上与 main 同批 A/B，docs/BENCHMARKS.zh-CN.md）。
+- 这些级别的压缩变慢，与参考编码器一样：zstd 19 为 3.5–10.9 MB/s（libzstd 3.9–12），brotli 10–11 在
+  文本上约为之前速度的一半（docs/BENCHMARKS.zh-CN.md）。
+- 解码速度不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%，小证书链在 1% 之内；
+  docs/BENCHMARKS.zh-CN.md）。
 - 模糊测试目标 `zstd_stream`、`zstd_stream_roundtrip`、`brotli_stream`、`brotli_stream_roundtrip`。
 - only-http 不变：流式响应仍不压缩（ADR-069 第 4 节）。
 
