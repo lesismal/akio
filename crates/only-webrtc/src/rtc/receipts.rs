@@ -9,12 +9,14 @@
 //!   duplicate RLE and receipt times blocks about the sequence numbers since the previous one
 //!   go out, thinned (§4.1 T) so the compound fits a datagram, after an empty receiver
 //!   report from the line's sender SSRC (RFC 3550 §6.1). VoIP metrics come from a
-//!   [`BurstLossModel`] fed with the interval's loss trace, with the round-trip time as the
-//!   only quality field known here.
+//!   [`BurstLossModel`] fed with the interval's loss trace, with the round-trip time and the
+//!   R factor, MOS-LQ and MOS-CQ of the E-model ([`EModel`], ITU-T G.107) from the loss so far,
+//!   its burst ratio, the round-trip time and the interarrival jitter (a jitter buffer of
+//!   twice the jitter assumed), with G.711-with-concealment codec values for every codec.
 //! - Receiving: the blocks about a stream this side sends become events.
 
 use super::*;
-use only_rtp::{BurstLossModel, SdesItem, VoipQuality, XrBlock};
+use only_rtp::{BurstLossModel, EModel, SdesItem, VoipQuality, XrBlock};
 
 /// Sequence numbers a receipt log keeps per interval.
 pub(super) const RECEIPT_LOG_CAPACITY: usize = 4096;
@@ -80,6 +82,12 @@ impl Rtc {
                 continue;
             }
             let rtt = r.stream.rtt();
+            let clock = r
+                .assembler
+                .as_ref()
+                .and_then(|(pt, _)| l.codec(*pt))
+                .map_or(48_000, |c| c.clock);
+            let jitter = Duration::from_secs_f64(f64::from(r.stream.jitter()) / f64::from(clock));
             let Some(log) = r.stream.receipt_log().filter(|l| !l.is_empty()) else {
                 continue;
             };
@@ -91,10 +99,21 @@ impl Rtc {
                     for (_, received) in trace.decode() {
                         m.on_packet(!received, false);
                     }
-                    let q = VoipQuality {
+                    let mut q = VoipQuality {
                         round_trip: rtt,
                         ..VoipQuality::default()
                     };
+                    let packet = Duration::from_millis(u64::from(VOIP_PACKET_MS));
+                    EModel::default()
+                        .estimate(
+                            m.loss_fraction(),
+                            m.burst_ratio(),
+                            rtt,
+                            jitter,
+                            packet,
+                            None,
+                        )
+                        .apply(&mut q);
                     xr.push(XrBlock::VoipMetrics(m.report(
                         log.ssrc(),
                         VOIP_PACKET_MS,

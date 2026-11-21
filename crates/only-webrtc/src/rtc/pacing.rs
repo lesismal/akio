@@ -33,6 +33,8 @@ const MAX_QUEUED_BYTES: usize = 8 << 20;
 /// Padding packets per call, and their size.
 const MAX_PADDING_PER_CALL: usize = 16;
 const PADDING_SIZE: usize = 1000;
+/// Bytes of slack in the budget comparisons.
+const SLACK: f64 = 1.0;
 
 /// A packet waiting in the pacer: the plain RTP packet (before SRTP) and the header extension
 /// ids to fill when it leaves.
@@ -119,9 +121,10 @@ impl Pacer {
         self.padding_debt = (self.padding_debt - self.padding_rate * s).max(0.0);
     }
 
-    /// Whether a queued packet may leave now (the debt is below the burst allowance).
+    /// Whether a queued packet may leave now (the debt is within the burst allowance, with a
+    /// byte of slack so that [`next_send`](Self::next_send) and this agree despite rounding).
     pub(super) fn can_send(&self, now: Instant) -> bool {
-        self.debt < self.drain_rate(now) * BURST.as_secs_f64()
+        self.debt <= self.drain_rate(now) * BURST.as_secs_f64() + SLACK
     }
 
     pub(super) fn push(&mut self, class: Class, q: Queued) {
@@ -166,7 +169,7 @@ impl Pacer {
 
     /// The size of a padding packet due now, if any: the queue is empty and both budgets
     /// allow it.
-    fn padding_due(&self, now: Instant) -> Option<usize> {
+    pub(super) fn padding_due(&self, now: Instant) -> Option<usize> {
         (self.padding_rate > 0.0
             && self.is_empty()
             && self.can_send(now)
@@ -182,7 +185,7 @@ impl Pacer {
             if rate <= 0.0 {
                 return None;
             }
-            let over = self.debt - rate * BURST.as_secs_f64();
+            let over = self.debt - rate * BURST.as_secs_f64() - SLACK;
             return Some(if over <= 0.0 {
                 now
             } else {

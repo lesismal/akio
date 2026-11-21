@@ -45,6 +45,10 @@ const MAX_RECV_STREAMS: usize = 64;
 const MAX_FEC_DECODERS: usize = 8;
 /// Our Opus RED payload type (Chrome's).
 const OPUS_RED_PT: u8 = 63;
+/// Our RED payload types (`red/8000`) for PCMU, PCMA and G.722 ([`RtcConfig::enable_audio_red`]).
+const PCMU_RED_PT: u8 = 110;
+const PCMA_RED_PT: u8 = 112;
+const G722_RED_PT: u8 = 113;
 /// RFC 6904: the URI an encrypted extension's `a=extmap` names before its own.
 pub(crate) const ENCRYPT_URI: &str = "urn:ietf:params:rtp-hdrext:encrypt";
 /// How often RTCP reports go out.
@@ -463,6 +467,56 @@ fn remote_extmap(m: &Media, encrypt: bool) -> (ExtensionMap, Vec<u8>) {
 }
 
 /// The Opus RED payload type of a remote audio section that this configuration accepts:
+/// The RED payload types of a remote audio section for codecs other than Opus: each
+/// `red/<clock>` whose blocks (`fmtp <pt> <c>/<c>...`) are all one negotiated codec `c` of
+/// that clock, with `c` (RED payload type, codec payload type).
+fn remote_red_other(cfg: &ConfigInner, m: &Media, codecs: &[CodecParams]) -> Vec<(u8, u8)> {
+    if cfg.audio_red.is_none() {
+        return Vec::new();
+    }
+    m.all("rtpmap")
+        .filter_map(|v| {
+            let (pt, enc) = v.split_once(' ')?;
+            let pt = pt.trim().parse::<u8>().ok()?;
+            let mut f = enc.trim().split('/');
+            if !f.next()?.eq_ignore_ascii_case("red") || !m.fmts.iter().any(|x| x.parse() == Ok(pt))
+            {
+                return None;
+            }
+            let clock: u32 = f.next()?.parse().ok()?;
+            let fmtp = m.all("fmtp").find_map(|v| {
+                let (p, rest) = v.split_once(' ')?;
+                (p.trim().parse::<u8>().ok()? == pt).then(|| rest.trim())
+            })?;
+            let mut blocks = fmtp.split('/').map(|b| b.trim().parse::<u8>().ok());
+            let first = blocks.next()??;
+            let c = codecs.iter().find(|c| c.pt == first)?;
+            (c.codec != Codec::Opus
+                && c.codec.kind() == MediaKind::Audio
+                && c.clock == clock
+                && blocks.all(|b| b == Some(first)))
+            .then_some((pt, first))
+        })
+        .take(4)
+        .collect()
+}
+
+/// Our `red/8000` payload types for the non-Opus audio codecs of a line.
+fn local_red_other(cfg: &ConfigInner, codecs: &[CodecParams]) -> Vec<(u8, u8)> {
+    if cfg.audio_red.is_none() {
+        return Vec::new();
+    }
+    codecs
+        .iter()
+        .filter_map(|c| match c.codec {
+            Codec::Pcmu => Some((PCMU_RED_PT, c.pt)),
+            Codec::Pcma => Some((PCMA_RED_PT, c.pt)),
+            Codec::G722 => Some((G722_RED_PT, c.pt)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// `red/48000/2` whose blocks (`fmtp <pt> <opus>/<opus>...`) are all a negotiated Opus.
 fn remote_red(cfg: &ConfigInner, m: &Media, codecs: &[CodecParams]) -> Option<u8> {
     cfg.opus_red?;
@@ -621,8 +675,12 @@ struct MediaLine {
     tmmbr_req: Option<u64>,
     /// The Opus RED payload type (offered, then negotiated) of an audio line.
     red: Option<u8>,
-    /// The last Opus payloads sent (RTP timestamp, payload), redundancy for the next RED.
+    /// The last audio payloads sent (RTP timestamp, payload), redundancy for the next RED,
+    /// and the payload type they are of.
     red_hist: VecDeque<(u32, Vec<u8>)>,
+    red_hist_pt: Option<u8>,
+    /// RED for audio codecs other than Opus: (RED payload type, codec payload type).
+    red_other: Vec<(u8, u8)>,
     /// RFC 6904 encrypted extension ids of [`ext`](Self::ext).
     enc_ids: Vec<u8>,
 }
@@ -683,6 +741,8 @@ impl MediaLine {
             tmmbr_req: None,
             red: None,
             red_hist: VecDeque::new(),
+            red_hist_pt: None,
+            red_other: Vec::new(),
             enc_ids: Vec::new(),
         }
     }
@@ -747,6 +807,7 @@ impl MediaLine {
         self.codec(pt).is_some()
             || self.rtx_of(pt).is_some()
             || [f.red, f.red_rtx, f.ulpfec, f.flexfec, self.red].contains(&Some(pt))
+            || self.red_other.iter().any(|r| r.0 == pt)
     }
 
     /// Whether `pt` is an RTX payload type of this line.
@@ -1180,6 +1241,9 @@ impl Rtc {
                         && self.cfg.opus_red.is_some()
                         && line.codecs.iter().any(|c| c.codec == Codec::Opus))
                     .then_some(OPUS_RED_PT);
+                    if kind == MediaKind::Audio {
+                        line.red_other = local_red_other(&self.cfg, &line.codecs);
+                    }
                     self.media.push(line);
                     new_lines.push(mid);
                 }
@@ -1279,6 +1343,7 @@ impl Rtc {
             line.codecs = remote_codecs(&cfg, m, line.kind);
             line.fec_pts = FecPts::remote(&cfg, m, line.kind);
             line.red = remote_red(&cfg, m, &line.codecs);
+            line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, line.kind);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
@@ -1424,6 +1489,7 @@ impl Rtc {
                 .collect();
             line.fec_pts = FecPts::remote(&cfg, m, kind);
             line.red = remote_red(&cfg, m, &line.codecs);
+            line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, kind);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
@@ -1566,7 +1632,9 @@ impl Rtc {
                     e.fec.enc = None;
                 }
             }
-            if l.red.is_none() || self.cfg.opus_red.unwrap_or(0) == 0 {
+            if (l.red.is_none() || self.cfg.opus_red.unwrap_or(0) == 0)
+                && (l.red_other.is_empty() || self.cfg.audio_red.unwrap_or(0) == 0)
+            {
                 l.red_hist.clear();
             }
         }
@@ -1872,6 +1940,12 @@ impl Rtc {
             }
         };
         for c in &l.codecs {
+            if let Some(&(r, _)) = l.red_other.iter().find(|r| r.1 == c.pt) {
+                fmts.push(r.to_string());
+                attrs.push(Attr::kv("rtpmap", format!("{r} red/{}", c.clock)));
+                ccfb_fb(&mut attrs, r);
+                attrs.push(Attr::kv("fmtp", format!("{r} {}/{}", c.pt, c.pt)));
+            }
             if let (Codec::Opus, Some(r)) = (c.codec, l.red) {
                 // Opus RED before Opus: libwebrtc sends RED only when the remote description
                 // lists it before the codec it carries (Chrome's own offers list it after
@@ -2167,13 +2241,25 @@ impl Rtc {
                 e.set_protection(prot);
             }
         }
-        // Opus RED: its payload type and the earlier packets that go with each.
+        // Audio RED (Opus, or the RED payload type of this codec): its payload type and the
+        // earlier packets that go with each.
         let audio_red = match (line.red, self.cfg.opus_red) {
             (Some(r), Some(n)) if n > 0 && line.negotiated && codec.codec == Codec::Opus => {
                 Some((r, usize::from(n)))
             }
-            _ => None,
+            _ => match (
+                line.red_other.iter().find(|r| r.1 == codec.pt),
+                self.cfg.audio_red,
+            ) {
+                (Some(&(r, _)), Some(n)) if n > 0 && line.negotiated => Some((r, usize::from(n))),
+                _ => None,
+            },
         };
+        if audio_red.is_some() && line.red_hist_pt != Some(codec.pt) {
+            // Redundancy is of the same codec.
+            line.red_hist.clear();
+            line.red_hist_pt = Some(codec.pt);
+        }
         line.last_pt = Some(red.map_or(codec.pt, |(r, _)| r));
         let MediaLine {
             ext: map,
@@ -2629,7 +2715,9 @@ impl Rtc {
             return;
         }
         let line = &self.media[route.line];
-        if route.repairs.is_none() && line.red.is_some() && line.red == Some(h.payload_type) {
+        let audio_red = line.red == Some(h.payload_type)
+            || line.red_other.iter().any(|r| r.0 == h.payload_type);
+        if route.repairs.is_none() && audio_red {
             self.opus_red(now, route.line, &pkt, &h);
             return;
         }
@@ -3801,3 +3889,5 @@ use receipts::{line_xr_blocks, remote_xr_blocks};
 mod tests;
 #[cfg(test)]
 mod tests_mux;
+#[cfg(test)]
+mod tests_pacing;

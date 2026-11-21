@@ -650,7 +650,7 @@ fn network_state_estimate_bounds_and_drives_probes() {
 fn ecn_ce_marks_count_as_congestion() {
     use crate::PacketResult;
     let t0 = Instant::now();
-    let mut feed = |ce_every: Option<u64>, ect: bool| {
+    let feed = |ce_every: Option<u64>, ect: bool| {
         let mut bwe = BandwidthEstimator::new(2_000_000).with_probing(false);
         let mut seq = 0u64;
         for step in 0..100u64 {

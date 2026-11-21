@@ -94,6 +94,8 @@ mod tests;
 #[cfg(test)]
 mod tests_ext;
 #[cfg(test)]
+mod tests_fec_policy;
+#[cfg(test)]
 mod tests_levels;
 #[cfg(test)]
 mod tests_probe;
