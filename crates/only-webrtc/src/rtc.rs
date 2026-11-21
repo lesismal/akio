@@ -270,6 +270,10 @@ impl FecPts {
     }
 }
 
+/// How often a sent stream's FEC protection is re-evaluated from its frames (receiver reports
+/// re-evaluate it too).
+const FEC_EVALUATION: Duration = Duration::from_secs(1);
+
 /// The FEC protection of a sent stream: libwebrtc's policy (the loss maxima of the last 10 s,
 /// the bits per frame, the RTT with NACK) with both factors within the configured bounds.
 pub(crate) fn fec_protection(
@@ -599,6 +603,11 @@ struct FecSend {
     /// libwebrtc's protection policy for the stream, fed with its frames and the receiver's
     /// loss.
     policy: Option<only_rtp::fec::ProtectionPolicy>,
+    /// When the policy last set the encoder's protection (it is re-evaluated every second and
+    /// with every receiver report, not per frame).
+    evaluated: Option<Instant>,
+    /// A depacketizer of the sent codec, to tell keyframes (key factors).
+    depack: Option<(u8, Box<dyn only_rtp::codec::Depacketizer>)>,
     prev: (u64, u64),
 }
 
@@ -2236,9 +2245,15 @@ impl Rtc {
             if let Some(r) = rtt {
                 pol.set_rtt(r);
             }
-            let prot = fec_protection(&self.cfg, pol, now);
-            if let Some(e) = fec.enc.as_mut() {
-                e.set_protection(prot);
+            if fec
+                .evaluated
+                .is_none_or(|t| now.saturating_duration_since(t) >= FEC_EVALUATION)
+            {
+                fec.evaluated = Some(now);
+                let prot = fec_protection(&self.cfg, pol, now);
+                if let Some(e) = fec.enc.as_mut() {
+                    e.set_protection(prot);
+                }
             }
         }
         // Audio RED (Opus, or the RED payload type of this codec): its payload type and the
@@ -2287,6 +2302,7 @@ impl Rtc {
         let FecSend {
             enc: fec_enc,
             policy: fec_policy,
+            depack,
             ..
         } = fec_state;
         let fec_policy = fec_policy.as_mut().filter(|_| scheme.is_some());
@@ -2310,10 +2326,13 @@ impl Rtc {
             ext
         };
         // Only FEC (key frames' own protection) needs to know.
-        let keyframe = scheme.is_some()
-            && line_kind == MediaKind::Video
-            && only_rtp::codec::depacketizer(codec.codec.rtp())
-                .is_keyframe(payloads.first().map_or(&[][..], |(p, _)| p.as_slice()));
+        let keyframe = scheme.is_some() && line_kind == MediaKind::Video && {
+            if depack.as_ref().is_none_or(|(p, _)| *p != codec.pt) {
+                *depack = Some((codec.pt, only_rtp::codec::depacketizer(codec.codec.rtp())));
+            }
+            let first = payloads.first().map_or(&[][..], |(p, _)| p.as_slice());
+            depack.as_ref().is_some_and(|(_, d)| d.is_keyframe(first))
+        };
         let media_bytes: usize = payloads.iter().map(|(p, _)| p.len()).sum();
         let n_packets = payloads.len();
         // (packet, is FEC)
@@ -3231,6 +3250,7 @@ impl Rtc {
                     let nacked = (resent.saturating_sub(pr) as f64 / (sent - ps) as f64).min(1.0);
                     let loss = (f64::from(b.fraction_lost) / 256.0).max(nacked);
                     if let Some(pol) = fec.policy.as_mut() {
+                        fec.evaluated = Some(now);
                         pol.on_loss(now, loss);
                         let prot = fec_protection(&self.cfg, pol, now);
                         if let Some(e) = fec.enc.as_mut() {

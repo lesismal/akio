@@ -12,8 +12,8 @@
 //! a factor of 128) most come back whole.
 #![allow(missing_docs)]
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use only::Engine;
@@ -64,7 +64,11 @@ fn run(fec: Option<FecMechanism>, bwe: bool) -> u64 {
         let c: RtcConfig = only_webrtc::rtc_config()
             .enable_fec(fec)
             .set_fec_protection(128, 128);
-        if bwe { c.enable_bwe(Some(2_000_000)) } else { c }
+        if bwe {
+            c.enable_bwe(Some(2_000_000))
+        } else {
+            c
+        }
     };
     let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
@@ -72,7 +76,10 @@ fn run(fec: Option<FecMechanism>, bwe: bool) -> u64 {
     let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
         .config(cfg);
-    let (whole, up) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
+    let (whole, up) = (
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
     let mut video = None;
     let (pa, offer) = a
         .create_offer(
@@ -102,7 +109,8 @@ fn run(fec: Option<FecMechanism>, bwe: bool) -> u64 {
     let vp8 = pa.payload_type(video, Codec::Vp8).unwrap();
     for i in 0..FRAMES {
         let t = MediaTime::new(i * 3000, Frequency::NINETY_KHZ);
-        pa.write_media(video, vp8, Instant::now(), t, &frame(i)).unwrap();
+        pa.write_media(video, vp8, Instant::now(), t, &frame(i))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(10));
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -123,6 +131,9 @@ fn fec_repairs_netem_loss() {
         "whole frames of {FRAMES}: no FEC {plain}, ULPFEC {ulp}, FlexFEC {flex}, FlexFEC paced {paced}"
     );
     for (n, what) in [(ulp, "ULPFEC"), (flex, "FlexFEC"), (paced, "FlexFEC paced")] {
-        assert!(n > plain + FRAMES / 20 && n >= FRAMES * 9 / 10, "{what}: {n} vs {plain}");
+        assert!(
+            n > plain + FRAMES / 20 && n >= FRAMES * 9 / 10,
+            "{what}: {n} vs {plain}"
+        );
     }
 }
