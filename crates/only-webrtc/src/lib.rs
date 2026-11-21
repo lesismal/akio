@@ -806,6 +806,11 @@ struct Hub {
     rtcp_listener: AtomicBool,
     rtcp_bases: Mutex<Vec<SocketAddr>>,
     rtcp_conns: Mutex<HashMap<SocketAddr, Conn<RtcUdp>>>,
+    /// Sockets of the transports beyond the first (no BUNDLE,
+    /// [`Endpoint::bind_transport_socket`]) and their host candidates; `tp_count` is read
+    /// without a lock on every datagram sent.
+    tp_socks: Mutex<Vec<(UdpBinding, only_ice::Candidate)>>,
+    tp_count: AtomicUsize,
 }
 
 /// Link-local addresses whose interface is remembered.
@@ -841,6 +846,8 @@ impl Hub {
             rtcp_listener: AtomicBool::new(false),
             rtcp_bases: Mutex::new(Vec::new()),
             rtcp_conns: Mutex::new(HashMap::new()),
+            tp_socks: Mutex::new(Vec::new()),
+            tp_count: AtomicUsize::new(0),
         }
     }
 
@@ -989,6 +996,11 @@ impl Hub {
                 rtc.add_local_candidate(self.concealed(c));
             }
         }
+        if self.tp_count.load(Ordering::Acquire) != 0 {
+            for (k, (_, c)) in lock(&self.tp_socks).iter().enumerate() {
+                rtc.add_transport_candidate(k + 1, self.concealed(c.clone()));
+            }
+        }
         Ok(rtc)
     }
 
@@ -1115,12 +1127,23 @@ impl Hub {
                 }
             }
             Tx::Bound(b) => {
-                // Component 2's candidates send from the RTCP socket (its own port).
-                let b = match self.rtcp.get() {
-                    Some(r) if rtcp_source(r.local_addr(), src) => Some(r),
-                    _ => b.get(),
-                };
-                if let Some(b) = b {
+                // Component 2's candidates send from the RTCP socket (its own port), those of
+                // other transports from theirs.
+                if let Some(r) = self.rtcp.get().filter(|r| rtcp_source(r.local_addr(), src)) {
+                    let _ = r.send_to(data, dest);
+                    return;
+                }
+                if self.tp_count.load(Ordering::Relaxed) != 0 {
+                    let socks = lock(&self.tp_socks);
+                    let s = socks
+                        .iter()
+                        .find(|(s, c)| c.addr() == src || rtcp_source(s.local_addr(), src));
+                    if let Some((s, _)) = s {
+                        let _ = s.send_to(data, dest);
+                        return;
+                    }
+                }
+                if let Some(b) = b.get() {
                     let _ = b.send_to(data, dest);
                 }
             }
@@ -1133,10 +1156,17 @@ impl Hub {
         if !local.ip().is_unspecified() {
             return local;
         }
-        lock(&self.candidates)
+        let found = lock(&self.candidates)
             .iter()
             .map(only_ice::Candidate::addr)
-            .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4())
+            .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4());
+        found
+            .or_else(|| {
+                lock(&self.tp_socks)
+                    .iter()
+                    .map(|(_, c)| c.addr())
+                    .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4())
+            })
             .unwrap_or(local)
     }
 
@@ -1582,6 +1612,32 @@ impl Endpoint {
             )));
         }
         lock(&self.0.candidates).push(only_ice::Candidate::host(host).with_component(2));
+        Ok(local)
+    }
+
+    /// Binds another socket at `addr` on `engine` for a transport of its own (ADR-068) and
+    /// returns its address. A session without BUNDLE ([`RtcConfig::set_bundle_policy`], or a
+    /// remote that does not bundle) runs an ICE agent, DTLS association and SRTP keys per
+    /// section; the first section uses the endpoint's socket, and the n-th one after it the
+    /// n-th socket bound here (or the endpoint's when there are fewer), with that socket's host
+    /// candidate (server-reflexive and relayed candidates stay the endpoint's). Transports on
+    /// one socket are told apart by the remote's addresses, which is enough toward peers with
+    /// an address per section (browsers, SIP endpoints); a remote that is also one socket per
+    /// session (this stack without these sockets) needs them on one side. Component 2 (RTCP
+    /// without rtcp-mux) of every transport stays on [`bind_rtcp`](Self::bind_rtcp)'s socket.
+    pub fn bind_transport_socket(&self, engine: &Engine, addr: SocketAddr) -> Result<SocketAddr, Error> {
+        let b = engine
+            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
+            .map_err(Error::Io)?;
+        let local = b.local_addr();
+        let host = if local.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(local.is_ipv6()), local.port())
+        } else {
+            local
+        };
+        let mut socks = lock(&self.0.tp_socks);
+        socks.push((b, only_ice::Candidate::host(host)));
+        self.0.tp_count.store(socks.len(), Ordering::Release);
         Ok(local)
     }
 

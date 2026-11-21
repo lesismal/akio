@@ -73,7 +73,8 @@ pub(super) struct Extra {
     /// Plain remote addresses not reported to the endpoint yet ([`Rtc::take_plain_remotes`]).
     new_remotes: Vec<SocketAddr>,
     /// Local candidates of the transports made later, by creation index (1..): such a
-    /// transport takes these instead of the primary's (tests: a socket per transport).
+    /// transport takes these instead of the primary's (a socket per transport,
+    /// [`Endpoint::bind_transport_socket`](crate::Endpoint::bind_transport_socket)).
     own_cands: Vec<(usize, IceCandidate)>,
 }
 
@@ -221,7 +222,6 @@ impl Rtc {
 
     /// Gives the `k`-th transport made later (1..) local candidate `c`, instead of the
     /// primary's (a socket per transport).
-    #[cfg(test)]
     pub(crate) fn add_transport_candidate(&mut self, k: usize, c: IceCandidate) {
         self.xt.own_cands.push((k, c));
     }
