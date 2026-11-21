@@ -25,6 +25,30 @@ ADR-071's update of 2026-11-22, no API change:
   and only-socks' server, only-socks' client (engine and blocking) against both, levels 0 to 2.
   27/27 in all.
 
+### Added: compressed streamed responses (only-http, only-brotli)
+
+ADR-074 (docs/adr/074-compressed-streamed-responses.md), additive:
+
+- `Compress::stream: Option<StreamCompress>` (off by default): the `compress` middleware also
+  compresses streamed responses (`Context::stream_response`), the coding negotiated from
+  `Accept-Encoding` as for buffered ones (br, zstd when offered, gzip, deflate), on status 200
+  with a compressible type and no `Content-Encoding`; `Content-Length` is dropped and
+  `Vary: Accept-Encoding` set. One encoder per stream, on HTTP/1.1, HTTP/1.0, HTTP/2 and HTTP/3.
+- Every `BodyStream::write` is encoded and flushed (deflate sync flush, zstd and brotli
+  `Flush::Flush`), so each server-sent event can be decoded on arrival; `finish` ends the
+  coding. Small defaults (`StreamCompress`): gzip / deflate 1, zstd 1 with `zstd_window_log` 17,
+  brotli 4 with `brotli_window_bits` 18: about 0.3, 0.5 and 1.3 MiB per open stream.
+- only-brotli's streaming `Compressor` slides its buffer at two windows (it waited for a window
+  plus a 1 MiB meta-block), so small windows keep a stream small: quality 4, window bits 18
+  from 2.0 to 1.3 MiB per stream. Output unchanged.
+- Fixed: `etag()` gave streamed 200 responses the ETag of an empty body.
+- Measured (same-run A/B against main on gpu51. With `stream` unset streamed responses run at
+  main's speed (16 small events per response 0.999x, 16 x 16 KiB 1.011x); compressed, the
+  server's CPU is the limit: 6 / 27 / 110 us more per 16-event response for gzip / zstd / br
+  (17 us uncompressed), 0.93 / 0.54 / 0.16 GB/s of HTML per core, event bytes down to 35% / 34% /
+  26%, HTML to 18% / 6.1% / 5.4%. Server RSS per held stream (1,000 streams) 148 / 112 /
+  424 KiB after 3 events and 268 / 324 / 1,106 KiB after 6,000, against 1.2-2.6 KiB uncompressed; docs/BENCHMARKS.md).
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:
@@ -273,7 +297,7 @@ ADR-069 (docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.md), additive AP
 - Decoding speed about unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per
   cell; small certificate chains up to 2% slower, about 0.15 us; docs/BENCHMARKS.md).
 - Fuzz targets `zstd_stream`, `zstd_stream_roundtrip`, `brotli_stream`, `brotli_stream_roundtrip`.
-- only-http unchanged: streamed responses stay uncompressed (ADR-069 section 4).
+- only-http unchanged: streamed responses stay uncompressed (ADR-069 section 4; compressed since, ADR-074).
 
 ### Added: kernel TLS for engine connections, hardware-first (only-tls, only-core, only-sys, only)
 

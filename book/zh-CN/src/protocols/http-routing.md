@@ -93,7 +93,7 @@
 | `cors(Cors { allow_origin, allow_methods, allow_headers, max_age })` | 以 204 应答预检请求，添加 `Access-Control-Allow-Origin` |
 | `logger(fn(&LogRecord))` | 每个请求结束后调用你的函数（方法、target、peer、状态、耗时） |
 | `response_time()` | 添加 `X-Response-Time` 头 |
-| `compress(Compress { min_bytes, level, brotli, zstd })` | 对客户端接受的文本类 body 做 br/zstd（设置时）/gzip/deflate |
+| `compress(Compress { min_bytes, level, brotli, zstd, stream })` | 对客户端接受的文本类 body 做 br/zstd（设置时）/gzip/deflate |
 | `etag()` | 添加 `ETag`，对 `If-None-Match` 返回 304 |
 | `csrf()` | double-submit cookie：`csrf_token` cookie，非安全方法须在 `X-CSRF-Token` 头中带上同样的值 |
 | `limiter(rate, burst)` | 按客户端 IP 的令牌桶，超出返回 429 和 `Retry-After` |
@@ -102,8 +102,15 @@
 
 `br` 和 `zstd`（自研的 `only-brotli` 与 `only-zstd`，ADR-041）默认关闭：把 `Compress::brotli` /
 `Compress::zstd` 设为某个级别，即对接受它们的客户端使用，优先顺序为 br、zstd、gzip、deflate。预压缩的
-`.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。中间件压缩的是完整缓冲的消息体；流式响应
-（`Context::stream_response`）按写入原样发送，不压缩（ADR-069）。
+`.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。中间件压缩的是完整缓冲的消息体。流式响应
+（`Context::stream_response`）按写入原样发送，除非设置了 `Compress::stream`（ADR-074）：这时逐次写入
+压缩，每次写入后刷新编码器，使每个 server-sent event 仍能立即到达客户端；每个流的默认值很小
+（`StreamCompress`：gzip 1，zstd 1 配 128 KiB 窗口，brotli 4 配 256 KiB 窗口；每个打开的流约 0.3、0.5 和
+1.3 MiB）。brotli 每次小写入的 CPU 开销最大，高频事件流宜提供 zstd，或交给 gzip。
+
+```rust,ignore
+{{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
+```
 
 ## 静态文件
 

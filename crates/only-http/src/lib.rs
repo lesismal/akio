@@ -44,6 +44,7 @@
 #![warn(clippy::unwrap_used)]
 
 pub mod client;
+mod coding;
 mod context;
 pub mod cookie;
 mod deadline;

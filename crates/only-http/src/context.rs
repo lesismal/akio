@@ -1,12 +1,18 @@
 //! The per-request [`Context`] and the [`Service`] / [`Middleware`] traits.
 
-use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    borrow::Cow,
+    net::SocketAddr,
+    sync::{Arc, Mutex, PoisonError},
+    time::Instant,
+};
 
 use only_core::{Part, ResponseSlot, ResponseStream};
 
 use crate::h2::{H2Responder, H2Stream};
 use only_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
+use crate::coding::StreamEncoder;
 use crate::message::{Headers, Method, Request, Response, Version};
 use crate::router::RouteInfo;
 use only_log::span::Span;
@@ -630,8 +636,10 @@ impl Context {
 
     /// Starts a response whose body is produced piece by piece (server-sent events, large
     /// generated downloads). `headers` are sent with the head; the framing is `chunked` on
-    /// keep-alive HTTP/1.1 and close-delimited otherwise. Response filters do not apply.
-    /// `None` if a response was already started. Write from any thread; dropping the stream
+    /// keep-alive HTTP/1.1 and close-delimited otherwise. Response filters see the head
+    /// (status and headers, no body); the [`compress`](crate::middleware::compress)
+    /// middleware compresses the body when [`Compress::stream`](crate::middleware::Compress)
+    /// is set, flushing the encoder on every write. `None` if a response was already started. Write from any thread; dropping the stream
     /// without [`BodyStream::finish`] closes the connection.
     pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
         let out = self.responder.take()?;
@@ -897,35 +905,42 @@ fn start_stream(
     let mut resp = Response::new(status);
     resp.headers = headers;
     resp.streaming = true;
-    match out {
+    // The filters run first: the compress middleware's picks the body's coding.
+    let chunked = matches!(&out, Out::H1(r) if r.version == Version::Http11 && r.keep_alive);
+    if chunked {
+        resp.headers.set("Transfer-Encoding", "chunked");
+    }
+    fin.apply(&mut resp, req);
+    // A HEAD answer has the coding's headers and no body to encode.
+    let coder = resp
+        .stream_coding
+        .take()
+        .filter(|_| req.method != Method::Head)
+        .map(|c| Box::new(Mutex::new(StreamEncoder::new(c))));
+    let inner = match out {
         Out::H1(r) => {
-            let chunked = r.version == Version::Http11 && r.keep_alive;
-            if chunked {
-                resp.headers.set("Transfer-Encoding", "chunked");
-            }
-            fin.apply(&mut resp, req);
             let mut head = Vec::with_capacity(192);
             resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
-            Some(BodyStream(Inner::H1 {
+            Inner::H1 {
                 stream: r.slot.stream(head),
                 chunked,
                 keep_alive: r.keep_alive,
                 head_only: r.head_only,
-            }))
+            }
         }
-        Out::H2(r) => {
-            fin.apply(&mut resp, req);
-            r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
-        }
-        Out::Ext(r) => {
-            fin.apply(&mut resp, req);
-            r.start_stream(resp).map(|s| BodyStream(Inner::Ext(s)))
-        }
-    }
+        Out::H2(r) => Inner::H2(r.start_stream(resp)?),
+        Out::Ext(r) => Inner::Ext(r.start_stream(resp)?),
+    };
+    Some(BodyStream { inner, coder })
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
-pub struct BodyStream(Inner);
+pub struct BodyStream {
+    inner: Inner,
+    /// The content coding's encoder (ADR-074); the lock also keeps concurrent writes in the
+    /// order they are encoded.
+    coder: Option<Box<Mutex<StreamEncoder>>>,
+}
 
 impl std::fmt::Debug for BodyStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -946,8 +961,54 @@ enum Inner {
 
 impl BodyStream {
     /// Appends body bytes. `Err` means the connection is gone or too far behind: stop producing.
+    ///
+    /// When the response is compressed, the bytes are encoded and the encoder flushed, so that
+    /// the client can decode everything written so far: each write goes out as it is made.
     pub fn write(&self, data: &[u8]) -> only_core::Result<()> {
-        match &self.0 {
+        match &self.coder {
+            None => self.inner.write(data),
+            Some(_) if data.is_empty() => Ok(()),
+            Some(c) => {
+                let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
+                self.inner.write(c.encode(data, false))
+            }
+        }
+    }
+
+    /// The encoder's last output, written before the stream ends.
+    fn end_coding(&mut self) {
+        if let Some(c) = self.coder.take() {
+            let mut c = c.into_inner().unwrap_or_else(PoisonError::into_inner);
+            let _ = self.inner.write(c.encode(&[], true));
+        }
+    }
+
+    /// Bytes written but not yet on the wire, for pacing the producer.
+    pub fn queued_bytes(&self) -> usize {
+        match &self.inner {
+            Inner::H1 { stream, .. } => stream.queued_bytes(),
+            Inner::H2(s) => s.queued_bytes(),
+            Inner::Ext(s) => s.queued_bytes(),
+        }
+    }
+
+    /// Completes the body (the final chunk) and lets later responses go out.
+    pub fn finish(mut self) {
+        self.end_coding();
+        self.inner.finish();
+    }
+
+    /// Like [`finish`](Self::finish), with trailer fields after the body (HTTP/2 trailers, or
+    /// the chunked trailer section on HTTP/1.1).
+    pub fn finish_with_trailers(mut self, trailers: Headers) {
+        self.end_coding();
+        self.inner.finish_with_trailers(trailers);
+    }
+}
+
+impl Inner {
+    fn write(&self, data: &[u8]) -> only_core::Result<()> {
+        match self {
             Inner::H1 {
                 stream,
                 chunked,
@@ -972,18 +1033,8 @@ impl BodyStream {
         }
     }
 
-    /// Bytes written but not yet on the wire, for pacing the producer.
-    pub fn queued_bytes(&self) -> usize {
-        match &self.0 {
-            Inner::H1 { stream, .. } => stream.queued_bytes(),
-            Inner::H2(s) => s.queued_bytes(),
-            Inner::Ext(s) => s.queued_bytes(),
-        }
-    }
-
-    /// Completes the body (the final chunk) and lets later responses go out.
-    pub fn finish(self) {
-        match self.0 {
+    fn finish(self) {
+        match self {
             Inner::H1 {
                 stream,
                 chunked,
@@ -1000,10 +1051,8 @@ impl BodyStream {
         }
     }
 
-    /// Like [`finish`](Self::finish), with trailer fields after the body (HTTP/2 trailers, or
-    /// the chunked trailer section on HTTP/1.1).
-    pub fn finish_with_trailers(self, trailers: Headers) {
-        match self.0 {
+    fn finish_with_trailers(self, trailers: Headers) {
+        match self {
             Inner::H1 {
                 stream,
                 chunked,

@@ -1710,6 +1710,55 @@ from the dictionary's words (two bytes on a 2 MB prefix; 5 MB of repeated HTML a
 shrinks from 6,976 to 6,439 bytes, so the references work at every window). Searching the
 dictionary at every position halves the speed on text. Levels below 10 are unchanged.
 
+### Compressed streamed responses (ADR-074, same-run A/B, 2026-11-22)
+
+Measured on gpu51 under `quiet.sh` with `tools/bench/stream-compress.sh` (`stream-bench`
+example): `base` is main at `04a32fb5` (streamed responses never compressed), `off` this branch
+without `Compress::stream`, `identity` with it but a client that accepts no coding, `gzip` /
+`zstd` / `br` with it and a client that accepts only that coding (`StreamCompress` defaults:
+gzip 1, zstd 1 with window log 17, brotli 4 with window bits 18). Server on CPUs 0–3 (4 threads,
+epoll), `h2load --h1` with 64 connections and 8 threads on CPUs 4–11, 3 alternating rounds of
+5 s, a fresh server per run; medians. CPU is the server's (user + system) per response. Both
+builds in separate target directories.
+
+| Response | Variant | Responses/s | vs base | Server CPU per response | Body bytes |
+|---|---|---:|---:|---:|---:|
+| 16 SSE events of ~83 B, a write each | base | 235,010 | 1.000 | 17.1 µs | 1,327 |
+| | off | 234,817 | 0.999 | 17.1 µs | 1,327 |
+| | identity | 235,879 | 1.004 | 17.0 µs | 1,327 |
+| | gzip | 172,918 | 0.736 | 23.2 µs | 471 |
+| | zstd | 91,597 | 0.390 | 43.8 µs | 446 |
+| | br | 31,488 | 0.134 | 127.4 µs | 347 |
+| 16 writes of 16 KiB of generated HTML | base | 66,515 | 1.000 | 60.3 µs | 260,989 |
+| | off | 67,268 | 1.011 | 59.5 µs | 260,998 |
+| | identity | 65,895 | 0.991 | 60.8 µs | 260,993 |
+| | gzip | 14,217 | 0.214 | 282.2 µs | 45,799 |
+| | zstd | 8,263 | 0.124 | 486.0 µs | 16,038 |
+| | br | 2,382 | 0.036 | 1,684.2 µs | 14,171 |
+
+Server memory per held server-sent-events stream: RSS growth of the server divided by 1,000
+streams held open by `stream-bench hold` (each stream's events written by a producer thread
+while less than 16 KiB is queued, then the stream idles):
+
+| Events written | base | off | gzip | zstd | br |
+|---|---:|---:|---:|---:|---:|
+| 3 | 1.2 KiB | 1.5 KiB | 148 KiB | 112 KiB | 424 KiB |
+| 6,000 (about 500 KB) | 2.6 KiB | 2.5 KiB | 268 KiB | 324 KiB | 1,106 KiB |
+
+**Answers.** With `stream` unset nothing changes: streamed responses run at main's speed within
+the rounds' spread (±1%; the 256 KiB case moves up to ±4% between rounds in every variant). Turned
+on, the server's CPU becomes the limit: about 6 µs (gzip), 27 µs (zstd) and 110 µs (brotli) more
+per 16-event response, and 0.93 GB/s, 0.54 GB/s and 0.16 GB/s of input per core on bulk HTML,
+for 35%, 34% and 26% of the event bytes and 18%, 6.1% and 5.4% of the HTML. Brotli pays
+a meta-block per flushed write and about 70 µs of setup per stream (the follow-up in ADR-074); for
+high-rate event streams zstd or gzip are the cheaper codings. Memory per idle stream is the
+encoder's window and tables: 0.15–0.42 MiB right after the first events (zeroed tables are
+not resident until used) and 0.26–1.1 MiB once a window of output has gone through, against
+about 2.5 KiB for an uncompressed stream. A counting allocator gives the allocated sizes
+(ADR-074 section 4: 320, 476 and 1,336 KiB in steady state); the RSS is lower because parts of
+the tables are never touched. only-brotli's new slide threshold took brotli 4 with window bits
+18 from 2,032 to 1,336 KiB allocated per stream.
+
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 
 A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay

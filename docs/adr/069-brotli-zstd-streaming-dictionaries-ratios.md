@@ -109,6 +109,7 @@ filters do not apply to them. Nothing buffers a streamed body, so nothing change
 Compressing streamed responses (an encoder per stream, a flush per write for server-sent
 events, a `Compress` switch, per-stream memory sized down) is a feature of its own, left for
 later; the streaming APIs make it possible. The HTTP client decodes no content codings.
+(Done since: ADR-074.)
 
 ## Consequences
 

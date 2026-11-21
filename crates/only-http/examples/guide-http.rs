@@ -19,7 +19,7 @@ use only_http::{
     client::{Client, ClientRequest},
     files::Files,
     h2client::{H2Client, H2Options},
-    middleware::{self, Compress, Cors},
+    middleware::{self, Compress, Cors, StreamCompress},
     serve_with,
 };
 
@@ -84,6 +84,18 @@ fn auth(ctx: &mut Context, next: &dyn Service) {
 }
 // ANCHOR_END: middleware
 
+// ANCHOR: compression
+/// gzip / deflate for every client that accepts them, zstd for those that accept it, and
+/// streamed responses too (ADR-074): each write is compressed and flushed, so a server-sent
+/// event still reaches the client as soon as it is written.
+fn compression() -> Compress {
+    let mut c = Compress::default();
+    c.zstd = Some(3);
+    c.stream = Some(StreamCompress::default()); // gzip 1, zstd 1, br 4, small windows
+    c
+}
+// ANCHOR_END: compression
+
 // ANCHOR: state
 /// Application state shared by handlers: capture an `Arc` in the closure (the counterpart of
 /// axum's `State` extractor).
@@ -120,7 +132,7 @@ fn app(static_dir: &str, state: Arc<AppState>) -> Router {
         .nest("/admin", admin) // a nested router keeps its own layers
         .fallback(|ctx: &mut Context| ctx.text(404, "nothing here\n"))
         // Layers wrap everything registered on this router; the last added runs first.
-        .layer(middleware::compress(Compress::default()))
+        .layer(middleware::compress(compression()))
         .layer(middleware::etag())
         .layer(middleware::cors(Cors::default()))
         .layer(middleware::limiter(1000.0, 200))
@@ -197,6 +209,15 @@ fn main() -> std::io::Result<()> {
             String::from_utf8_lossy(&r.body)
         );
     }
+    // The event stream again, compressed: the client hands the body over as it came.
+    let r = client
+        .send(ClientRequest::get(&format!("{base}/events")).header("accept-encoding", "gzip"))
+        .wait()
+        .expect("events");
+    assert_eq!(r.headers.get("content-encoding"), Some("gzip"));
+    let events = only_deflate::decompress(only_deflate::Format::Gzip, &r.body, 1 << 20)
+        .expect("a gzip stream");
+    println!("/events (gzip): {:?}", String::from_utf8_lossy(&events));
     let r = client
         .send(ClientRequest::post(
             &format!("{base}/api/upload"),

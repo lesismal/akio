@@ -499,6 +499,7 @@ pub mod only_http::middleware
 pub only_http::middleware::Compress::brotli: core::option::Option<u32>
 pub only_http::middleware::Compress::level: u32
 pub only_http::middleware::Compress::min_bytes: usize
+pub only_http::middleware::Compress::stream: core::option::Option<only_http::middleware::StreamCompress>
 pub only_http::middleware::Compress::zstd: core::option::Option<u32>
 impl core::clone::Clone for only_http::middleware::Compress
 pub fn only_http::middleware::Compress::clone(&self) -> Self
@@ -542,6 +543,23 @@ impl core::marker::Sync for only_http::middleware::LogRecord
 impl core::marker::Unpin for only_http::middleware::LogRecord
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::middleware::LogRecord
 impl core::panic::unwind_safe::UnwindSafe for only_http::middleware::LogRecord
+#[non_exhaustive] pub struct only_http::middleware::StreamCompress
+pub only_http::middleware::StreamCompress::brotli: u32
+pub only_http::middleware::StreamCompress::brotli_window_bits: u32
+pub only_http::middleware::StreamCompress::level: u32
+pub only_http::middleware::StreamCompress::zstd: u32
+pub only_http::middleware::StreamCompress::zstd_window_log: u32
+impl core::clone::Clone for only_http::middleware::StreamCompress
+pub fn only_http::middleware::StreamCompress::clone(&self) -> Self
+impl core::default::Default for only_http::middleware::StreamCompress
+pub fn only_http::middleware::StreamCompress::default() -> Self
+impl core::fmt::Debug for only_http::middleware::StreamCompress
+pub fn only_http::middleware::StreamCompress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_http::middleware::StreamCompress
+impl core::marker::Sync for only_http::middleware::StreamCompress
+impl core::marker::Unpin for only_http::middleware::StreamCompress
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::middleware::StreamCompress
+impl core::panic::unwind_safe::UnwindSafe for only_http::middleware::StreamCompress
 pub fn only_http::middleware::compress(only_http::middleware::Compress) -> impl only_http::Middleware
 pub fn only_http::middleware::cors(only_http::middleware::Cors) -> impl only_http::Middleware
 pub fn only_http::middleware::csrf() -> impl only_http::Middleware
@@ -774,7 +792,7 @@ impl core::marker::Sync for only_http::message::Version
 impl core::marker::Unpin for only_http::message::Version
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::message::Version
 impl core::panic::unwind_safe::UnwindSafe for only_http::message::Version
-pub struct only_http::BodyStream(_)
+pub struct only_http::BodyStream
 impl only_http::BodyStream
 pub fn only_http::BodyStream::finish(self)
 pub fn only_http::BodyStream::finish_with_trailers(self, only_http::message::Headers)
