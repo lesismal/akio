@@ -527,6 +527,12 @@ fn run_async(scfg: &ServerConfig, ccfg: &ClientConfig, early: &[u8]) -> (Run, bo
             s.recv(b"", &mut s_plain, &mut s2c).unwrap();
             assert!(s2c.is_empty());
             s.wait_resumable();
+            // The answer wakes `wait_resumable` before the waker is called (outside the
+            // slot's lock), so give the store's thread a moment to call it.
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while woken.load(SeqCst) == 0 && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
             assert_eq!(
                 woken.load(SeqCst),
                 1,
