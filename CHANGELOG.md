@@ -10,6 +10,26 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: brotli block splitting (only-brotli)
+
+ADR-069 note of 2026-11-22, no API change; output changes from level 4:
+
+- Literals, insert-and-copy symbols and distances are split into block types with block switch
+  commands. Levels 10-11: Google's iterative block splitter and histogram clustering, context
+  maps over block types and contexts for literals and distances, meta-blocks of up to twice the
+  window (one-shot), and level 11's second parse pass prices literals by block type. Levels
+  4-9: Google's one-pass greedy splitter on meta-blocks of 64 KiB or more, kept only when it
+  saves 1% of the meta-block.
+- Level 11 on the first 20 MB of Silesia went from 4.7% larger than libbrotli 1.2.1 to 4.5%
+  smaller, level 10 from +7.6% to +0.8%; HTTP payloads at 11 are +0.9-1.3% (was +0.9-2.6%),
+  certificate chains unchanged; levels 4-9 0.2-0.75% smaller on Silesia and 3-4.4% on mixed
+  data, HTTP payloads byte-identical (docs/BENCHMARKS.md, "Brotli block splitting").
+- Levels 10-11 are about 30% slower on Silesia (unchanged on text and certificate chains),
+  level 4 12% slower on Silesia and 1-6% on payloads above 64 KiB that end up unsplit; level 1
+  unchanged. The decoder is unchanged; block-typed streams decode like libbrotli's.
+- Tests: block types found and written at levels 4-11, an interleaved corpus in the CLI interop
+  tests, `brotli_roundtrip` seeds that produce multi-block-type streams.
+
 ### Added: SOCKS5 GSS-API authentication, mechanism supplied by the application (only-socks, only-ws)
 
 ADR-071 (docs/adr/071-socks-gssapi-pluggable-mechanism.md), additive:
@@ -251,7 +271,7 @@ ADR-069 (docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.md), additive AP
   passes) and every level may repeat the previous block's tables; brotli 10..=11 use static
   dictionary words. zstd 19 is now 0.3-1.4% larger than libzstd on the benchmark corpus (was
   1.3-7.6%) and level 16 smaller on Silesia and JSON, brotli 11 0.9-4.7% larger
-  than libbrotli (was 3.5-11.4%; brotli block splitting is still not done).
+  than libbrotli (was 3.5-11.4%; block splitting followed, see "brotli block splitting" above).
 - Compression at those levels is slower, as in the reference encoders: zstd 19 3.5-10.9 MB/s
   (libzstd 3.9-12), brotli 10-11 about half the speed on text (docs/BENCHMARKS.md).
 - Decoding speed about unchanged (same-run A/B against main on the quiet host: -2.2..+4.9% per

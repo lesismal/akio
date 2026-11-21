@@ -143,12 +143,12 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `tools/codec-bench/corpus.sh` builds the corpus, then
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
-Limitations: the encoder uses one block type per category (no block splitting), searches the
-static dictionary only at levels 10 and 11 and not under the omit-first transforms, and
-supports raw dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom
-word lists and transforms), which Google's CLI does not offer either. Its output at level 11 is
-1-5% larger than Google's on the benchmark corpus (docs/BENCHMARKS.md), the most on mixed binary
-data where block splitting pays. Prefix codes are stored from the exact code lengths or from
+Limitations: the encoder searches the static dictionary only at levels 10 and 11 and not under
+the omit-first transforms, always uses `NPOSTFIX` = `NDIRECT` = 0, and supports raw
+dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom word lists and
+transforms), which Google's CLI does not offer either. Its output at level 11 is 0.9-1.3%
+larger than Google's on the HTTP payloads of the benchmark corpus and 4.5% smaller on its
+Silesia part (docs/BENCHMARKS.md, "Brotli block splitting"). Prefix codes are stored from the exact code lengths or from
 counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,
 which matters for small inputs: on DER certificate chains of a few kilobytes level 11 is 4-5%
 smaller than zlib level 9 and 1-1.5% larger than `brotli -q 11` (github.com's chain: 1640, zlib

@@ -103,9 +103,10 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `tools/codec-bench/corpus.sh` 构造语料，再运行
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`。
 
-局限：编码器每类只用一个块类型（无块分割），只在 10、11 级搜索静态字典且不搜索省略开头的变换，只支持
-原始字典，不支持 RFC 9841 的序列化共享字典（自定义词表与变换；Google 的命令行工具也不提供）。11 级输出在
-基准语料上比 Google 的大 1–5%（docs/BENCHMARKS.zh-CN.md），在块分割最有用的混合二进制数据上差距最大。
+局限：编码器只在 10、11 级搜索静态字典且不搜索省略开头的变换，总是使用 `NPOSTFIX` = `NDIRECT` = 0，
+只支持原始字典，不支持 RFC 9841 的序列化共享字典（自定义词表与变换；Google 的命令行工具也不提供）。11 级
+输出在基准语料的 HTTP 负载上比 Google 的大 0.9–1.3%，在其 Silesia 部分小 4.5%（docs/BENCHMARKS.zh-CN.md，
+“brotli 块分割”）。
 前缀码按精确码长或按为游程编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，
 这对小输入很重要：在几 KB 的 DER 证书链上 11 级比 zlib 9 级小 4–5%，比 `brotli -q 11` 大 1–1.5%
 （github.com 的证书链：1640，zlib 1719，`brotli` 1615；wikipedia.org 的：2454、2589、2430）。
