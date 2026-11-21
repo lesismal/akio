@@ -410,6 +410,53 @@ at any time); fallback to user space when the `tls` module or the suite is missi
 integration, `TLS_RX_EXPECT_NO_PAD` and our own KeyUpdate before the AES-GCM record limit came
 later (ADR-067, next section).
 
+### Kernel TLS in the engine (ADR-067, engine A/B)
+
+What ADR-067 had to show: `Tls` connections are no slower by default (no `ktls` feature, or
+`Ktls::Off`), and `Ktls::Hardware` costs nothing on a host without a TLS-offload NIC (this host:
+igc and atlantic, `tls-hw-*: off [fixed]`; the hardware path itself is not measured here).
+Same-run A/B on the quiet host (Linux 7.0, Ryzen 7 7800X3D, `quiet.sh`; before every run the
+script waits until the host is under 15% busy): main at the branch point (`base`) against the
+branch built without the `ktls` feature (`new`) and with it, `ONLY_KTLS=hardware` (`hw`) and
+`ONLY_KTLS=software` (`sw`). Server on CPUs 0–3 (4 I/O threads), clients on 4–11; TLS 1.3,
+X25519, ECDSA P-256, AES-128-GCM. Cases: echo-bench `tls` (64 connections, 1 KiB and 16 KiB
+messages), full handshakes per second (echo-bench `tlshs`, 32 workers, no resumption), HTTPS
+`/plaintext` (`http-bench tls`, h2load `--h1`, 64 connections). Median of 8 rounds, 5 s each,
+interleaved; ratios against `base`.
+
+| Case | backend | base | new / base | hw / base | sw / base |
+|---|---|---:|---:|---:|---:|
+| handshakes/s | epoll | 33,958 | 1.002 | 1.000 | 0.976 |
+| handshakes/s | io_uring | 34,714 | 1.001 | 1.001 | 0.991 |
+| HTTPS req/s | epoll | 526,003 | 0.995 | 0.997 | 0.774 |
+| HTTPS req/s | io_uring | 527,172 | 0.998 | 1.001 | 0.777 |
+| TLS echo 1 KiB req/s | epoll | 518,080 | 1.037 | 1.018 | 0.835 |
+| TLS echo 1 KiB req/s | io_uring | 502,728 | 1.073 | 1.100 | 0.787 |
+| TLS echo 16 KiB req/s | epoll | 242,846 | 0.990 | 1.000 | 0.872 |
+| TLS echo 16 KiB req/s | io_uring | 183,268 | 0.989 | 0.959 | 1.140 |
+
+Handshakes and HTTPS varied by 2–6% between rounds and their `new` and `hw` ratios are within
+0.5% of 1: no change. The echo cases varied by 17–32% between rounds even on the quiet host
+(their ratios only say that nothing moved by more than that). Two 8-round runs: the handshake
+and HTTPS `base` / `new` / `hw` figures are from the second, on the final code; the `sw` column and
+the echo rows from the first (each ratio against its own run's `base`; the change in between only
+touches the per-connection path of `hw`). The first run found `hw` 2.1% behind on epoll handshakes, because the
+connection derived the kernel's send keys (two HKDF expansions) before learning that no NIC would
+take them. Now `Hardware` keeps no kernel TLS state on a host without such a NIC, as `Off`.
+
+`sw` (software kTLS, both directions) confirms the evaluation above: 0.77x on HTTPS, 0.79–0.87x
+on echo; the 16 KiB echo on io_uring came out 1.14x, within that case's noise, and is not a claim.
+Per-connection cost: 1–2.5% fewer handshakes per second (attaching the ULP and installing two
+directions).
+
+Checked along: the `ktls` engine tests (both backends, 20 runs each), the kernel's counters
+(`TlsTxSw` / `TlsRxSw` per connection, `TlsRxRekeyOk` / `TlsTxRekeyOk` for key updates both ways,
+no `TlsDecryptError`), curl and `openssl s_client` 3.0.13 against `http-bench` with software kTLS
+(TLS 1.3 and 1.2, AES-GCM and ChaCha20-Poly1305, a client KeyUpdate with update_requested
+mid-connection; epoll and io_uring: 10/10) and `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh`
+(175/175 against OpenSSL 3.0.13 and Go). Rerun with `tools/bench/ktls-engine.sh` (binaries of
+both revisions in `BASE_DIR` / `NEW_DIR`, this one with `--features only/ktls` in `NEWK_DIR`).
+
 ### io_uring features evaluation (`tools/bench/uring-eval.sh`, engine A/B)
 
 Measured 2026-11-16. Question (DEV-PLAN M2): should the io_uring backend use registered files, `SEND_ZC`, `MSG_RING`

@@ -99,7 +99,7 @@ Engine::builder()
 | --- | --- | --- | --- | --- |
 | TCP / Unix socket、异步 dial | ✓ | P0 | M1 | sendfile / splice / writev / cork / 半关闭 |
 | UDP（每 peer 一连接、批量收发） | ✓ | P0 | M2 | recvmmsg/sendmmsg、GRO/GSO |
-| TLS 1.2/1.3 | ✓（自研） | P0 | M2 | 自研 sans-io TLS（`only-tls`，已取代 rustls）；kTLS 已评估、未采用（更慢，见 docs/BENCHMARKS.zh-CN.md） |
+| TLS 1.2/1.3 | ✓（自研） | P0 | M2 | 自研 sans-io TLS（`only-tls`，已取代 rustls）；软件 kTLS 已评估、默认关闭（更慢，见 docs/BENCHMARKS.zh-CN.md）；引擎连接的内核 TLS，`Ktls::Hardware` 面向 TLS 卸载网卡（ADR-067） |
 | HTTP/1.x（含 pipelining、chunked、sendfile） | ✓ | P0 | M3 | 参考 httparse 的 SIMD 思路，自研或复用 |
 | Router / Middleware / 静态文件缓存 | ✓ | P0 | M3 | chi 风格，零分配路由 |
 | WebSocket（RFC 6455 + permessage-deflate） | ✓ | P0 | M3 | Autobahn 测试套件进 CI |

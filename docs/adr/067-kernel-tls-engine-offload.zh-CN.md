@@ -101,5 +101,10 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
   `TlsRxRekeyOk`、`TlsTxRekeyOk`；没有 `TlsDecryptError`）。
 - only-sys：ethtool 特性查询与 `ethtool -k lo` 对照、`/proc/net/tls_stat` 解析；only-tls：接口表
   查找（IPv4、IPv6、IPv4 映射地址、已拒绝的组合）。
-- 已有的 `experimental-ktls` 测试流测试，以及 `ONLY_INTEROP_KTLS=require` 下的
-  `tools/interop/tls/run.sh`。
+- 已有的测试流测试，以及 `ONLY_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（对 OpenSSL
+  3.0.13 与 Go 175/175）；curl 与 `openssl s_client` 对 epoll 与 io_uring 上启用软件 kTLS 的
+  `http-bench`（TLS 1.3 / 1.2、AES-GCM / ChaCha20-Poly1305、客户端发起带 update_requested 的
+  KeyUpdate：10/10）。
+- 性能（`tools/bench/ktls-engine.sh`，docs/BENCHMARKS.zh-CN.md“引擎中的内核 TLS”）：默认构建以及没有
+  网卡时的 `Hardware`，两个后端上每秒握手数与 HTTPS 请求数都在 main 的 0.5% 以内；软件 kTLS 的 HTTPS 为
+  0.77 倍。

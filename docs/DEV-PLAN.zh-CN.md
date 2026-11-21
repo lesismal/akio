@@ -21,7 +21,7 @@ only/
 │  ├─ only-uring/             # io_uring reactor
 │  ├─ only-ebpf/              # eBPF 加速层（aya），feature 门控
 │  ├─ only-dpdk/              # DPDK reactor + 用户态栈，feature 门控
-│  ├─ only-tls/               # 自研 TLS 1.3/1.2，sans-io（kTLS 已评估，未采用）
+│  ├─ only-tls/               # 自研 TLS 1.3/1.2，sans-io（内核 TLS 可选，硬件优先：ADR-067）
 │  ├─ only-http/              # HTTP/1.x、HTTP/2、Router、Context、静态文件
 │  ├─ only-ws/                # WebSocket
 │  ├─ only-mux/               # 同端口多协议嗅探
@@ -113,6 +113,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 无连接的 `DatagramsHandler`（2026-11-21，ADR-065）：`Listener::udp(..).serve_datagrams(factory)`，每个 I/O 线程一个处理器，以 `(peer, &[u8])` 的形式按批收到数据报，把发往任意地址的回复排进 `Replies`，返回时一起发出（`sendmmsg` + UDP GSO，同一套批量化）；没有对端表、空闲超时和 `on_open`/`on_close`（1 万个不同对端：没有对端、没有连接、RSS 不增长）；`DatagramSender`（`Send + Sync + Clone`，也可经 `Engine::datagram_sender` 取得）可在任意线程向任意地址发送；回复队列受 `max_queued_bytes` 限制，有回复等待 socket 空间时暂停读取。支持 epoll、kqueue 与 io_uring（每个 socket 一个 ring poll，驱动共享的 `DatagramPort`）；不支持 DPDK（`Unsupported`）；线程数固定。示例 `udp-dns`，`bench-server udp-dgram`。64 B echo A/B（gpu51，quiet.sh，9 轮）：每对端 UDP 不变（req/s 1.02 倍，每请求 CPU 1.00 倍），数据报 listener 的 req/s 为 1.08 倍（epoll）/ 1.09 倍（io_uring），每请求服务端 CPU 少 7–8%（docs/BENCHMARKS.zh-CN.md“无连接 UDP”）。
 - [x] `only-tls`：rustls 以 sans-io 方式通过 `Conn` 之下的 `Transport` 层驱动（服务端与客户端；`Tls::server` / `Tls::client` 包装任意 acceptor，handler 看到明文），握手在 IO 线程内完成，握手期间发送的应用数据先缓存，`close_after_send` 发送 close_notify，`tls_info`（ALPN、SNI、版本）。会话票据、SNI 证书选择、客户端认证、版本：通过 rustls 自己的配置。已在 epoll 与 io_uring 上测试：echo（3 MiB）、ALPN/SNI、明文垃圾数据与不受信证书的客户端、TLS 上的 `spawn_blocking` + 有序槽、only 拨 only
 - [x] kTLS 评估（2026-11-16）：未采用。Linux 7.0 的软件 kTLS 在所有情形下都比 only-tls 自己的记录层慢（TLS 上的 HTTP/1.1，`tools/bench/ktls.sh`：1 KiB 为 0.83 倍，16 KiB 为 0.65 倍，256 KiB 为 0.40 倍，10 MB 文件用 `sendfile` 对比 pread + 加密为 0.48 倍；每字节服务器 CPU 为 1.3–2.5 倍；内核把每个 16 KiB 记录单独推给 TCP）。见 docs/BENCHMARKS.zh-CN.md“内核 TLS（kTLS）评估”。卸载代码保留在 only-tls 的 `experimental-ktls` feature 之后（测试流、ktls-bench、对 OpenSSL/Go 互通 107/107），未接入 `Tls` 或引擎；在支持 TLS 卸载的网卡上值得重测。客户端证书用 only-tls 自己的构建器配置（`client_cert`、`client_auth_required` / `client_auth_optional`）；TLS 1.3 early data 与 QUIC 0-RTT 一起在性能优化第二轮中跟进。
+- [x] 引擎中的内核 TLS（2026-11-21，ADR-067）：`ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls`（`ktls` feature）在握手后把引擎连接的记录层移入 Linux，支持 epoll 与 io_uring、服务端与客户端，发送与接收方向分别移交（io_uring 先让 multishot recv 停在记录边界）。`Ktls::Hardware`（只卸载 TLS 卸载网卡自己完成的部分，经 ethtool 按接口检测，由内核设备计数器确认，记住被拒绝的组合；没有这类网卡的主机上完全不保存状态）、`Software`、`SoftwareTx`、`ktls_zerocopy_sendfile`。控制记录作为有序的 `SocketOp`，kTLS 下的 `sendfile`，双向 TLS 1.3 密钥更新（自己在 2^23 条记录后发起），`TLS_RX_EXPECT_NO_PAD`，`TlsInfo::ktls_tx/rx`，`only_tls_ktls_total`。默认构建以及没有网卡时的 `Hardware` 与 main 相比没有变化（两个后端上握手与 HTTPS 都在 0.5% 以内）；软件 kTLS 的 HTTPS 为 0.77 倍。测试：两个后端上的引擎 kTLS 测试（重复 20 次）、curl/openssl 10/10、测试流互通 175/175。未测量：硬件路径（测试主机没有 TLS 卸载网卡）。
 - [x] 测试：整套 engine/offload/stress 测试在 epoll 与 io_uring 上都跑（`ONLY_TEST_BACKEND=uring`，Linux CI 也跑）；跨后端混合 listener。另已完成：阻塞投递测试（IO 线程不被阻塞、完成回调在 IO 线程且带 handler 状态、池满、连接提前关闭、有序、槽丢弃、慢回调）
 - **交付**：`examples/blocking-offload`（已完成）、后端对比 benchmark 报告（已完成：[BENCHMARKS.zh-CN.md](BENCHMARKS.zh-CN.md)）
 

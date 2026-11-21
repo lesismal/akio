@@ -352,6 +352,45 @@ kTLS 仍可能划算的情况：带 TLS 卸载的网卡（`tls-hw-tx-offload`，
 内核让 TLS 1.3 留在用户态，因为对端随时可能更新密钥）；`tls` 模块或套件缺失时回退到用户态。引擎集成、
 `TLS_RX_EXPECT_NO_PAD` 以及在 AES-GCM 记录数上限之前主动发送 KeyUpdate 后来完成（ADR-067，见下一节）。
 
+### 引擎中的内核 TLS（ADR-067，引擎 A/B）
+
+ADR-067 需要证明：`Tls` 连接默认不变慢（不启用 `ktls` feature，或 `Ktls::Off`），并且 `Ktls::Hardware`
+在没有 TLS 卸载网卡的主机上没有任何开销（本机为 igc 与 atlantic，`tls-hw-*: off [fixed]`；硬件路径本身不在
+这里测量）。安静主机上的同批 A/B（Linux 7.0，Ryzen 7 7800X3D，`quiet.sh`；每次运行前脚本都等主机忙碌度
+低于 15%）：分支点上的 main（`base`）对比本分支不带 `ktls` feature 的构建（`new`），以及带该 feature 时的
+`ONLY_KTLS=hardware`（`hw`）与 `ONLY_KTLS=software`（`sw`）。服务器在 CPU 0–3（4 个 I/O 线程），客户端在
+4–11；TLS 1.3、X25519、ECDSA P-256、AES-128-GCM。用例：echo-bench `tls`（64 个连接，1 KiB 与 16 KiB
+消息）、每秒完整握手数（echo-bench `tlshs`，32 个工作线程，不恢复会话）、HTTPS `/plaintext`
+（`http-bench tls`，h2load `--h1`，64 个连接）。8 轮交错运行、每轮 5 秒取中位数；比值相对 `base`。
+
+| 用例 | 后端 | base | new / base | hw / base | sw / base |
+|---|---|---:|---:|---:|---:|
+| 握手/秒 | epoll | 33,958 | 1.002 | 1.000 | 0.976 |
+| 握手/秒 | io_uring | 34,714 | 1.001 | 1.001 | 0.991 |
+| HTTPS 请求/秒 | epoll | 526,003 | 0.995 | 0.997 | 0.774 |
+| HTTPS 请求/秒 | io_uring | 527,172 | 0.998 | 1.001 | 0.777 |
+| TLS 回显 1 KiB 请求/秒 | epoll | 518,080 | 1.037 | 1.018 | 0.835 |
+| TLS 回显 1 KiB 请求/秒 | io_uring | 502,728 | 1.073 | 1.100 | 0.787 |
+| TLS 回显 16 KiB 请求/秒 | epoll | 242,846 | 0.990 | 1.000 | 0.872 |
+| TLS 回显 16 KiB 请求/秒 | io_uring | 183,268 | 0.989 | 0.959 | 1.140 |
+
+握手与 HTTPS 各轮之间相差 2–6%，`new` 与 `hw` 的比值都在 1 的 0.5% 以内：没有变化。回显用例即使在安静的
+主机上各轮也相差 17–32%（它们的比值只能说明变化没有超过这个幅度）。共有两次 8 轮运行：握手与 HTTPS 的
+`base` / `new` / `hw` 数字来自第二次（最终代码）；`sw` 列与回显各行来自第一次（每个比值都相对本次运行的
+`base`；两次之间的改动只涉及 `hw` 的每连接路径）。第一次运行发现 `hw` 在 epoll 握手上落后 2.1%，原因是连接在得知没有网卡会接管之前就为内核派生了发送密钥
+（两次 HKDF 展开）。现在没有这类网卡时，`Hardware` 完全不保存内核 TLS 状态，与 `Off` 相同。
+
+`sw`（软件 kTLS，双向）印证了上面的评估：HTTPS 为 0.77 倍，回显为 0.79–0.87 倍；io_uring 上 16 KiB 回显
+得到 1.14 倍，在该用例的噪声范围之内，不作为结论。每个连接的开销：每秒握手数少 1–2.5%（挂上 ULP 并安装两个
+方向）。
+
+同时检查了：`ktls` 引擎测试（两个后端，各运行 20 次）、内核计数器（每个连接的 `TlsTxSw` / `TlsRxSw`，双向
+密钥更新的 `TlsRxRekeyOk` / `TlsTxRekeyOk`，没有 `TlsDecryptError`）、curl 与 `openssl s_client` 3.0.13
+对软件 kTLS 下的 `http-bench`（TLS 1.3 与 1.2，AES-GCM 与 ChaCha20-Poly1305，连接中途客户端发起带
+update_requested 的 KeyUpdate；epoll 与 io_uring：10/10），以及 `ONLY_INTEROP_KTLS=require
+tools/interop/tls/run.sh`（对 OpenSSL 3.0.13 与 Go 175/175）。用 `tools/bench/ktls-engine.sh` 重新测量
+（两个版本的二进制分别放在 `BASE_DIR` / `NEW_DIR`，本版本带 `--features only/ktls` 的放在 `NEWK_DIR`）。
+
 ### io_uring 特性评估（`tools/bench/uring-eval.sh`、引擎 A/B）
 
 2026-11-16 测量。问题（DEV-PLAN M2）：io_uring 后端是否应使用注册文件、`SEND_ZC`、`MSG_RING` 唤醒或基于 ring 的发送？

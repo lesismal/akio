@@ -34,7 +34,16 @@ ADR-067 (docs/adr/067-kernel-tls-engine-offload.md), additive (off by default):
 - only-sys: `netdev_tls_offload`, `netdev_features`, `interface_addrs`, `tls_stat`,
   `ktls_tx_zerocopy_ro`, `ktls_rx_expect_no_pad`, `kernel_at_least` (hidden module).
 - Features: `only-tls/ktls` and `only/ktls`; `experimental-ktls` stays as an alias.
-- The benchmark servers take `ONLY_KTLS=off|hardware|software|software-tx`.
+- The benchmark servers take `ONLY_KTLS=off|hardware|software|software-tx`;
+  `tools/bench/ktls-engine.sh` runs the engine A/B.
+- Performance (docs/BENCHMARKS.md, "Kernel TLS in the engine"): the default build and
+  `Ktls::Hardware` on a host without a TLS-offload NIC are unchanged against main (handshakes/s
+  and HTTPS req/s within 0.5% on epoll and io_uring). Software kTLS stays slower on this CPU
+  (HTTPS 0.77x), as evaluated before. The hardware path is not measured (no such NIC on the test
+  host).
+- Tests: `crates/only/tests/ktls.rs` (epoll and io_uring), curl / `openssl s_client` against
+  `http-bench` with kTLS (10/10), `tools/interop/tls/run.sh` with `ONLY_INTEROP_KTLS=require`
+  (175/175).
 
 ### Added: change notifications for the static file cache (only-http, only-sys)
 

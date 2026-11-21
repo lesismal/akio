@@ -30,7 +30,14 @@ ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（�
 - only-sys：`netdev_tls_offload`、`netdev_features`、`interface_addrs`、`tls_stat`、
   `ktls_tx_zerocopy_ro`、`ktls_rx_expect_no_pad`、`kernel_at_least`（隐藏模块）。
 - Feature：`only-tls/ktls` 与 `only/ktls`；`experimental-ktls` 保留为别名。
-- 基准服务器支持 `ONLY_KTLS=off|hardware|software|software-tx`。
+- 基准服务器支持 `ONLY_KTLS=off|hardware|software|software-tx`；`tools/bench/ktls-engine.sh` 运行引擎
+  A/B。
+- 性能（docs/BENCHMARKS.zh-CN.md，“引擎中的内核 TLS”）：默认构建，以及在没有 TLS 卸载网卡的主机上的
+  `Ktls::Hardware`，与 main 相比没有变化（epoll 与 io_uring 上每秒握手数与 HTTPS 请求数都在 0.5% 以内）。
+  软件 kTLS 在这颗 CPU 上仍然更慢（HTTPS 为 0.77 倍），与之前的评估一致。硬件路径未测量（测试主机没有这类
+  网卡）。
+- 测试：`crates/only/tests/ktls.rs`（epoll 与 io_uring）、curl / `openssl s_client` 对启用 kTLS 的
+  `http-bench`（10/10）、`ONLY_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（175/175）。
 
 ### 新增：静态文件缓存的变更通知（only-http、only-sys）
 

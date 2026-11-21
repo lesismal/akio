@@ -118,5 +118,10 @@ The receive direction may only move when no read can hold bytes the transport ha
   (`TlsTxSw`, `TlsRxSw`, `TlsRxRekeyOk`, `TlsTxRekeyOk`; no `TlsDecryptError`).
 - only-sys: the ethtool feature lookup against `ethtool -k lo`, `/proc/net/tls_stat` parsing;
   only-tls: the interface table lookup (IPv4, IPv6, IPv4-mapped, refused combinations).
-- The existing `experimental-ktls` stream tests and `tools/interop/tls/run.sh` with
-  `ONLY_INTEROP_KTLS=require`.
+- The existing stream tests and `tools/interop/tls/run.sh` with `ONLY_INTEROP_KTLS=require`
+  (175/175 against OpenSSL 3.0.13 and Go); curl and `openssl s_client` against `http-bench` with
+  software kTLS on epoll and io_uring (TLS 1.3 / 1.2, AES-GCM / ChaCha20-Poly1305, a client
+  KeyUpdate with update_requested: 10/10).
+- Performance (`tools/bench/ktls-engine.sh`, docs/BENCHMARKS.md "Kernel TLS in the engine"):
+  handshakes/s and HTTPS req/s of the default build and of `Hardware` without a NIC within 0.5%
+  of main on both backends; software kTLS 0.77x on HTTPS.
