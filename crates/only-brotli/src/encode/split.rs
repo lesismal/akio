@@ -11,6 +11,8 @@
 //! clustering of [`cluster`] (agglomerative, by the estimated cost of the merged histograms
 //! including their code descriptions) also builds the context maps.
 
+use super::nlog2n;
+
 /// `log2(n)` (0 for 0), from a table for small `n`.
 fn log2(n: u32) -> f64 {
     static TABLE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
@@ -73,12 +75,12 @@ fn bits_entropy(p: &[u32]) -> f64 {
     let mut sum = 0u32;
     let mut bits = 0.0;
     for &c in p {
-        sum += c;
-        bits -= f64::from(c) * log2(c);
+        if c != 0 {
+            sum += c;
+            bits -= nlog2n(c);
+        }
     }
-    if sum > 0 {
-        bits += f64::from(sum) * log2(sum);
-    }
+    bits += nlog2n(sum);
     bits.max(f64::from(sum))
 }
 
@@ -929,4 +931,39 @@ pub(super) fn greedy<T: Copy + Into<usize>>(
         return BlockSplit::single();
     }
     out
+}
+
+/// `split` if its block types save at least 1% of the estimated bits of `data` (symbols below
+/// `size`) with one code, the block switches and the codes of the types included; else one
+/// block type.
+pub(super) fn paying<T: Copy + Into<usize>>(
+    data: &[T],
+    size: usize,
+    split: BlockSplit,
+) -> BlockSplit {
+    if split.ntypes == 1 {
+        return split;
+    }
+    let mut all = Histo::new(size);
+    let mut types = vec![Histo::new(size); split.ntypes];
+    let mut pos = 0;
+    for (&t, &l) in split.types.iter().zip(&split.lens) {
+        let end = (pos + l as usize).min(data.len());
+        for &s in &data[pos..end] {
+            types[usize::from(t)].add(s.into());
+        }
+        pos = end;
+    }
+    for h in &types {
+        all.add_histo(h);
+    }
+    // A block switch: a type code and a count code with its extra bits, about 8 bits; the
+    // codes for them about 64 bits.
+    let switches = 8.0 * split.types.len() as f64 + 64.0;
+    let apart: f64 = types.iter().map(population_cost).sum::<f64>() + switches;
+    if apart < 0.99 * population_cost(&all) {
+        split
+    } else {
+        BlockSplit::single()
+    }
 }
