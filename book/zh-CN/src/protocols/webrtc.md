@@ -130,6 +130,10 @@ timeout)` 接受一个 `RelayServer`，可用 `RelayServer::udp`、`tcp` 或 `tl
 之后等待时间加倍至最多一分钟：新的中继候选为新 peer 替换旧候选，并加入已打开的 peer；对端可从中继到达时
 这些 peer 继续工作（否则用 ICE 重启把它提供给对端）。
 
+`RelayServer::dual_allocation(true)` 使其成为双分配（ADR-083）：每个地址族一个中继候选，于是经 IPv4 到达
+服务器的端点仍可经服务器的 IPv6 中继被纯 IPv6 的对端访问。默认关闭：它占用服务器的第二个端口，并且只对有
+IPv6 候选的对端有用。
+
 ```rust,ignore
 let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
     .tls_config(tls_client_config);
@@ -304,7 +308,8 @@ let cfg = only_webrtc::rtc_config()
   - 浏览器会忽略这些属性。
 - **TURN 与 TCP 路径**（ADR-082）：经 UDP 分配时，发往 TURN 服务器的数据报携带码点。RFC 8656 §12 要求服务器
   复制它，服务器是否这样做由验证得知。清除码点的中继与其他中间设备一样使路径失败。经 ICE-TCP 或经 TCP / TLS
-  到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。only-turn 自己的中继还不复制码点。
+  到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。only-turn 自己的中继经 UDP 与
+  DTLS 双向复制码点（ADR-083），因此验证可以穿过它。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
@@ -505,6 +510,7 @@ pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，
 |---|---|---|
 | `realm`、`auth` | – | 长期凭据：`static_auth(realm, users)` 或 `ephemeral_auth(secret)`（TURN REST API，由 `ephemeral_credentials` 签发） |
 | `relay_ip`、`public_ip` | –、无 | 中继绑定在 `relay_ip`；若设置了 `public_ip`，告诉客户端的是它（1:1 NAT） |
+| `additional_relay_ip`、`additional_public_ip` | 无、无 | 另一地址族的中继，用于请求该地址族的 `REQUESTED-ADDRESS-FAMILY` 与双分配（见下文） |
 | `default_lifetime`、`max_lifetime` | 600 秒、3600 秒 | 分配的生存期 |
 | `permission_lifetime`、`channel_lifetime` | 300 秒、600 秒 | RFC 8656 规定值 |
 | `nonce_lifetime` | 600 秒 | nonce 无状态（过期时间加上它与客户端地址的 HMAC） |
@@ -518,6 +524,35 @@ pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，
 监听器上的连接发送，因此静默超过 `Config::udp_idle_timeout`（60 秒）的客户端在再次发送之前收不到
 来自对端的数据：TURN 监听器应调大该超时。`TurnCore` 是不含 I/O 的同一服务器（由 `TurnEnv` 负责
 发送），便于嵌入或测试。单独的 `StunServer` 只应答 Binding 请求。
+
+**双分配**（RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`，ADR-083）。把 `additional_relay_ip` 设为另一地址族的
+地址后，客户端可在一次 Allocate 中同时请求一个 IPv4 与一个 IPv6 中继地址。成功响应带两个
+`XOR-RELAYED-ADDRESS`，IPv4 在前。
+
+- 每个地址中继到自己地址族的对端，各有自己的生存期。
+- 带 `REQUESTED-ADDRESS-FAMILY` 的 Refresh 刷新或删除其中一个（连同它的权限与通道）。不带时 Refresh 作用于
+  两者。
+- 分配所缺地址族的对端得到 443。
+- 只能部分满足请求的服务器以 IPv4 地址与 `ADDRESS-ERROR-CODE` 应答：没有配置 IPv6 中继时为 440，没有空闲的
+  IPv6 端口时为 508。
+- RFC 8656 7.2 节中格式不对的组合得到 400。
+- 两个属性都没有时，服务器中继 IPv4 就分配 IPv4。
+- TCP 分配仍是单一地址族：双分配请求得到 IPv4 加 `ADDRESS-ERROR-CODE` 440。
+
+```rust,ignore
+let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
+    .additional_relay_ip("2001:db8::7".parse()?);
+```
+
+**ECN**（RFC 8656 14 节，ADR-083）。中继的数据两个方向都保留到达时的 ECN 码点：
+
+- 来自 UDP 或 DTLS 客户端的 ChannelData 与 Send 指示带着客户端的码点发往对端。
+- 对端的数据报带着对端的码点发往客户端。
+- 在 Linux 与 macOS 上，码点从 `IP_RECVTOS` / `IPV6_RECVTCLASS` 读取，并以 `IP_TOS` / `IPV6_TCLASS`
+  控制消息设置。其他平台上数据报不带标记。
+- TCP 或 TLS 上的客户端既不提供也不接收码点。
+- 嵌入 `TurnCore` 的应用通过 `handle_client_ecn` / `handle_peer_ecn` 与 `TurnEnv::send_to_peer_ecn` /
+  `send_to_client_ecn` 得到码点。它们的默认实现丢弃码点。
 
 `TurnServer` 按客户端地址把分配分成若干分片（约每个 CPU 四个，至少 8 个），每个分片有自己的锁：
 不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
@@ -611,6 +646,13 @@ Engine::builder()
 在 `poll_timeout` 时调用 `handle_timeout`。上限：64 个对端、等待绑定的数据 64 KiB。`Endpoint::gather_relay`
 在 UDP 上驱动一个客户端。
 
+`ClientConfig::dual_allocation(true)` 请求双分配：
+
+- `relayed_addrs()` 给出两个地址，IPv4 在前；`relayed_addr()` 仍是第一个。
+- `relayed_addr_for(peer)` 给出与 `peer` 通信的那个。
+- `address_error()` 说明缺少某个地址族的原因。
+- `send_to` 对两个地址族的对端都可用；刷新会保持两者。
+
 TCP 分配用 `ClientConfig::tcp_allocation(true)`（经 TCP 或 TLS）。`connect(peer)` 发送 Connect，回应为
 `ClientEvent::Connected { peer, id }` 或 `ConnectFailed`；`create_permission(peer)` 安装一个持续刷新的权限，
 此后连入的对端以 `ClientEvent::ConnectionAttempt { peer, id }` 出现。要使用一条连接，向服务器打开一条新连接，
@@ -692,10 +734,9 @@ DTLS 1.2。
 ## 尚未完成
 
 - RFC 6679 的 "ice" 与 "leap" ECN 启动方法。
-- 在 only-turn 自己的中继中复制 ECN 码点。
 - 对已失败的路径重试 ECN。
 - 锁定 RTCP 自己的 DTLS 关联（不复用 RTCP 时），以及本端必须作为 DTLS 客户端时的锁定。
 - 会话内的 DTLS 换钥。
 
 新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073、
-ADR-076、ADR-077 与 ADR-082。
+ADR-076、ADR-077、ADR-082 与 ADR-083。

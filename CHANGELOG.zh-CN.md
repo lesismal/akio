@@ -10,6 +10,35 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：TURN 双分配与经中继保留 ECN（only-turn、only-webrtc）
+
+ADR-083，只有新增：
+
+- only-turn 服务器：`TurnConfig::additional_relay_ip` / `additional_public_ip`（另一地址族的中继）。双分配
+  遵循 RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`：
+  - 成功响应带两个 `XOR-RELAYED-ADDRESS`，IPv4 在前；
+  - 每个地址族有自己的生存期，带 `REQUESTED-ADDRESS-FAMILY` 的 Refresh 刷新或删除其中一个（连同它的权限与
+    通道）；
+  - 权限与通道交给对端所属地址族的中继地址（缺少时回 443）；
+  - 部分成功时带 `ADDRESS-ERROR-CODE` 440 或 508；7.2 节中格式不对的组合回 400，不支持的地址族回 440。
+  `TurnServer::relays_of` / `TurnCore::relays_of` 列出分配的中继地址。
+- only-turn 服务器：中继的数据经 UDP 与 DTLS 双向保留 ECN 码点（RFC 8656 14 节）：入口为 `Conn::rx_ecn`，
+  出口为 `UdpBinding::send_to_ecn` / `Conn::send_segments_ecn`。供嵌入者使用：
+  `TurnCore::handle_client_ecn` / `handle_peer_ecn`，以及 `TurnEnv::send_to_peer_ecn` /
+  `send_to_client_ecn`（默认实现丢弃码点）。
+- only-turn 客户端：`ClientConfig::dual_allocation`、`Client::relayed_addrs`、`relayed_addr_for`、
+  `address_error`。STUN：`attr::ADDRESS_ERROR_CODE`、`Message::address_error_code`、
+  `MessageBuilder::address_error`。
+- only-webrtc：`RelayServer::dual_allocation(true)` 让 `Endpoint::gather_relay_via` 为每个地址族加一个中继
+  候选。
+- 兼容 coturn 4.6：接受 turnbis 草案编号 0x8032 的 `ADDITIONAL-ADDRESS-FAMILY`（应答时也在 0x8033 带
+  `ADDRESS-ERROR-CODE`），客户端两个码点都发送。
+- 行为变化：设置了 `additional_relay_ip` 时，请求该地址族的 `REQUESTED-ADDRESS-FAMILY` 成功（原为 440）；
+  `relay_ip` 为 IPv6、附加地址为 IPv4 时默认分配 IPv4。未设置时，双分配请求以 `ADDRESS-ERROR-CODE` 440
+  应答（以前该属性被忽略）。
+- `turn-relay-bench` 支持 `TURN_BENCH_ECN`；新增 `tools/interop/webrtc/turn-dual.sh`（coturn、pion/turn）
+  与 pion 工具的 `turn-family-raw` 模式。中继与 main 的 A/B：没有可测出的变化（docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：

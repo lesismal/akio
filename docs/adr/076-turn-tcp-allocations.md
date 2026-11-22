@@ -313,5 +313,6 @@ from its accept thread) pass unchanged. All passed on gpu51 in Docker.
 No hot path changed (the UDP relay and the bound TCP relay are untouched; Connect and accept are
 control operations), so no A/B benchmark.
 
-Still not done: `ADDITIONAL-ADDRESS-FAMILY` dual allocations (not supported for UDP either);
-TCP allocations from `Endpoint` (above).
+Still not done: `ADDITIONAL-ADDRESS-FAMILY` dual allocations (not supported for UDP either;
+done 2026-11-22, ADR-083: a TCP allocation stays single-family and answers a dual request with
+IPv4 and `ADDRESS-ERROR-CODE` 440); TCP allocations from `Endpoint` (above).

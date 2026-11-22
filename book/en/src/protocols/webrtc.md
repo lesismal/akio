@@ -156,6 +156,11 @@ the new relayed candidate replaces the old one for new peers and is added to the
 which keep going if the other side is reachable from the relay (otherwise an ICE restart offers
 it).
 
+`RelayServer::dual_allocation(true)` makes it a dual allocation (ADR-083): one relayed
+candidate per family, so an endpoint reaching the server over IPv4 can still be reached from
+IPv6-only peers through the server's IPv6 relay. It is off by default: a second port on the
+server, and useful only against peers with IPv6 candidates.
+
 ```rust,ignore
 let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
     .tls_config(tls_client_config);
@@ -372,7 +377,8 @@ let cfg = only_webrtc::rtc_config()
   carries the codepoint. RFC 8656 §12 asks the server to copy it, and validation finds out
   whether it does. A relay that clears it fails the path like any other middlebox. Paths over
   ICE-TCP or over TURN reached by TCP / TLS have no codepoint to carry, so ECN stays off there
-  rather than failing. only-turn's own relay does not copy the codepoint yet.
+  rather than failing. only-turn's own relay copies the codepoint both ways over UDP and DTLS
+  (ADR-083), so validation passes through it.
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
 - **XR blocks about received streams** (ADR-058, `pkt-loss-rle pkt-dup-rle pkt-rcpt-times
@@ -611,6 +617,7 @@ Chrome is 4 packets paced and 7 unpaced. While the path is marked ECT(1), the qu
 |---|---|---|
 | `realm`, `auth` | – | long-term credentials: `static_auth(realm, users)` or `ephemeral_auth(secret)` (TURN REST API, `ephemeral_credentials` hands them out) |
 | `relay_ip`, `public_ip` | –, none | relays bind on `relay_ip`; clients are told `public_ip` if set (1:1 NAT) |
+| `additional_relay_ip`, `additional_public_ip` | none, none | relays of the other address family, for `REQUESTED-ADDRESS-FAMILY` of that family and dual allocations (next paragraphs) |
 | `default_lifetime`, `max_lifetime` | 600 s, 3600 s | allocation lifetimes |
 | `permission_lifetime`, `channel_lifetime` | 300 s, 600 s | RFC 8656 values |
 | `nonce_lifetime` | 600 s | nonces are stateless (an expiry and an HMAC of it with the client address) |
@@ -625,6 +632,38 @@ echoed. Relayed traffic goes through the client's listener connection, so a clie
 longer than `Config::udp_idle_timeout` (60 s) loses data from peers until it sends again: raise
 that timeout on a TURN listener. `TurnCore` is the same server without I/O (`TurnEnv` does the
 sending), for embedding or testing. `StunServer` alone answers Binding requests.
+
+**Dual allocations** (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`, ADR-083). With
+`additional_relay_ip` set to an address of the other family, a client can ask for an IPv4 and
+an IPv6 relayed address in one Allocate. The success response carries two
+`XOR-RELAYED-ADDRESS`, IPv4 first.
+
+- Each address relays to peers of its own family, and has its own lifetime.
+- A Refresh with `REQUESTED-ADDRESS-FAMILY` refreshes or deletes one of them, with its
+  permissions and channels. Without it, a Refresh applies to both.
+- A peer of a family the allocation lacks gets 443.
+- A server that can only partly meet the request answers with the IPv4 address and an
+  `ADDRESS-ERROR-CODE`: 440 with no IPv6 relay configured, 508 when no IPv6 port was free.
+- The malformed combinations of RFC 8656 section 7.2 get 400.
+- Without either attribute an allocation is IPv4 when the server relays IPv4.
+- TCP allocations stay single-family: a dual request gets IPv4 plus `ADDRESS-ERROR-CODE` 440.
+
+```rust,ignore
+let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
+    .additional_relay_ip("2001:db8::7".parse()?);
+```
+
+**ECN** (RFC 8656 section 14, ADR-083). Relayed data keeps the ECN codepoint it arrived with,
+both ways:
+
+- ChannelData and Send indications from a UDP or DTLS client go to the peer with the client's
+  codepoint.
+- A peer's datagram goes to the client with the peer's codepoint.
+- The codepoint is read from `IP_RECVTOS` / `IPV6_RECVTCLASS` and set with an `IP_TOS` /
+  `IPV6_TCLASS` control message on Linux and macOS. Elsewhere datagrams go unmarked.
+- Clients on TCP or TLS have no codepoint to give or get.
+- An embedding `TurnCore` gets the codepoints with `handle_client_ecn` / `handle_peer_ecn`
+  and `TurnEnv::send_to_peer_ecn` / `send_to_client_ecn`. Their defaults drop the codepoint.
 
 `TurnServer` splits allocations into shards by client address (about four per CPU, at least 8),
 each with its own lock: datagrams of different allocations do not contend across I/O threads,
@@ -736,6 +775,13 @@ with what comes back (it returns relayed data as `(peer, payload)`), `handle_tim
 `poll_timeout`. Bounds: 64 peers, 64 KiB waiting for bindings. `Endpoint::gather_relay` drives
 one over UDP.
 
+`ClientConfig::dual_allocation(true)` asks for a dual allocation:
+
+- `relayed_addrs()` gives both addresses, IPv4 first; `relayed_addr()` stays the first.
+- `relayed_addr_for(peer)` gives the one that talks to `peer`.
+- `address_error()` says why a family is missing.
+- `send_to` works for peers of either family; refreshes keep both.
+
 For a TCP allocation, `ClientConfig::tcp_allocation(true)` (over TCP or TLS). `connect(peer)`
 sends a Connect and is answered by `ClientEvent::Connected { peer, id }` or `ConnectFailed`;
 `create_permission(peer)` installs a permission that stays refreshed, after which peers that
@@ -830,11 +876,10 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 ## Not done yet
 
 - RFC 6679's "ice" and "leap" ECN initiation methods.
-- Copying the ECN codepoint in only-turn's own relay.
 - Retrying ECN on a path that failed.
 - Latching RTCP's own DTLS association (no rtcp-mux), or latching when this side must be the
   DTLS client.
 - DTLS re-keying within a session.
 
 ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072, ADR-073,
-ADR-076, ADR-077 and ADR-082 have the details of what was added.
+ADR-076, ADR-077, ADR-082 and ADR-083 have the details of what was added.

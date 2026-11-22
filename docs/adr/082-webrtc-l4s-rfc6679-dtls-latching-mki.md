@@ -123,7 +123,8 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
   on unmarked.
 - **only-turn's own server does not copy yet.** Its relay path is being worked on
   elsewhere (TCP allocations, ADR-076), so it is left as is. A path through it fails
-  validation after a few probes.
+  validation after a few probes. (Done 2026-11-22, ADR-083: it copies the codepoint both
+  ways over UDP and DTLS.)
 - **TCP paths.** A local candidate that is ICE-TCP (RFC 6544), or an allocation over TCP or
   TLS, has no codepoint to give. ECN there is TCP's own business, and a TURN server reached
   over a stream has nothing to copy. Such a path never starts ECN: it stays *off*, not
@@ -225,7 +226,7 @@ Additive.
 - **Not done:**
   - RFC 6679's "ice" and "leap" initiation, and following the remote's `ect=` preference.
   - ECN feedback for RTP over ICE-TCP (there is none to give).
-  - Copying the codepoint in only-turn's own relay.
+  - Copying the codepoint in only-turn's own relay (done 2026-11-22, ADR-083).
   - Retrying ECN on a path that failed.
   - Latching component 2's DTLS.
   - Latching when this side must be the DTLS client.
