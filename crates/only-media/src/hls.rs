@@ -6,7 +6,10 @@
 //! The first playlist request of a stream starts a muxer that subscribes to the hub (404 when
 //! the stream has no publisher, unless [`HlsConfig::play_wait`] lets it wait) and cuts the stream
 //! into segments held in memory: at the first video keyframe
-//! [`HlsConfig::target_duration`] after the segment start (audio-only streams on time). It keeps
+//! [`HlsConfig::target_duration`] after the segment start (audio-only streams on time); a
+//! segment past the target without one asks the publisher for a keyframe
+//! ([`Subscription::request_keyframe`]: a WebRTC ingest sends a PLI), at most once per
+//! target, since WebRTC encoders send keyframes on request only. It keeps
 //! a sliding window of [`HlsConfig::playlist_size`] segments plus a few more for late readers,
 //! bounded by [`HlsConfig::max_bytes`], and stops after [`HlsConfig::idle_timeout`] without
 //! requests. A republish or codec change starts a new segment after `EXT-X-DISCONTINUITY`.
@@ -1980,6 +1983,8 @@ struct HlsSink {
     forced_cut: bool,
     /// Keyframes are recorded for the I-frame playlist ([`Stream::iframes`]).
     iframes: bool,
+    /// When (dts) the publisher was last asked for a keyframe to end an overlong segment.
+    key_asked: Option<Time>,
 }
 
 impl HlsSink {
@@ -1994,6 +1999,7 @@ impl HlsSink {
             started: false,
             disc_pending: false,
             forced_cut: false,
+            key_asked: None,
         }
     }
 
@@ -2199,6 +2205,7 @@ impl Sink for HlsSink {
         let pts = (pkt.pts + self.timeline.offset()).max(dts);
         let target = dur_ns(self.st.cfg.target_duration);
         let part_target = self.st.cfg.part_duration.map(dur_ns);
+        let mut ask_key = false;
         let respond = {
             let mut g = lock(&self.st.state);
             let cut_point = if self.has_video {
@@ -2214,6 +2221,14 @@ impl Sink for HlsSink {
                     Self::close_segment(&self.st, &mut g, dts, Some(&mut *m));
                     woke = true;
                     self.forced_cut = !cut_point;
+                } else if self.has_video
+                    && dts - b.start >= target
+                    && self.key_asked.is_none_or(|t| dts - t >= target || dts < t)
+                {
+                    // Video past the target with no keyframe: a publisher that sends them on
+                    // request only (WebRTC) is asked for one, at most once per target.
+                    self.key_asked = Some(dts);
+                    ask_key = true;
                 }
             } else if self.has_video && !(video && pkt.keyframe) && !self.forced_cut {
                 // Segments start at a keyframe.
@@ -2304,6 +2319,12 @@ impl Sink for HlsSink {
                 Vec::new()
             }
         };
+        if ask_key {
+            let sub = lock(&self.st.sub);
+            if let Some(s) = sub.as_ref() {
+                s.request_keyframe();
+            }
+        }
         for (d, r) in respond {
             d.respond(r);
         }
@@ -2410,6 +2431,57 @@ mod tests {
         // Every packet after the cut went somewhere: segments keep coming (no drop until a
         // keyframe that never arrives).
         assert!(g.segments.iter().all(|seg| !seg.data.is_empty()));
+    }
+
+    /// A publisher that sends keyframes only on request (WebRTC: Chrome's AV1 encoder has no
+    /// periodic ones) is asked for one once the segment being written passes the target, at
+    /// most once per target of media time; segments then close at the keyframes it sends.
+    #[test]
+    fn overlong_segment_asks_the_publisher_for_a_keyframe() {
+        use crate::hub::HubConfig;
+        let (tracks, pkts) = sample();
+        let hub = Hub::new(HubConfig {
+            keyframe_request_interval: Duration::ZERO,
+            ..HubConfig::default()
+        });
+        let p = hub.publish("kf", tracks, PeerInfo::default()).unwrap();
+        let asked = Arc::new(AtomicU64::new(0));
+        let a = asked.clone();
+        p.on_keyframe_request(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+        });
+        let cfg = HlsConfig {
+            target_duration: Duration::from_secs(2),
+            ..HlsConfig::default()
+        };
+        let st = Arc::new(Stream::new("kf", &cfg, Weak::new()));
+        let sub = hub
+            .subscribe("kf", HlsSink::new(st.clone()), SubscribeOptions::default())
+            .unwrap();
+        *lock(&st.sub) = Some(sub);
+        // The subscriber joining without a cached keyframe asks once.
+        let joined = asked.load(Ordering::SeqCst);
+        let span = pkts.iter().map(|p| p.dts).max().unwrap_or(0) + 40 * crate::av::MILLISECOND;
+        let mut seen_key = false;
+        let mut end = 0;
+        for round in 0..5i64 {
+            for q in &pkts {
+                let key = q.keyframe && !seen_key;
+                seen_key |= key;
+                end = q.dts + round * span;
+                p.write(Packet::new(q.track, end, q.pts + round * span, key, q.data.clone()));
+            }
+        }
+        let n = asked.load(Ordering::SeqCst) - joined;
+        let want = u64::try_from(end / (2 * SECOND)).unwrap();
+        assert!(n >= want.saturating_sub(1) && n <= want, "{n} requests over {end} ns");
+        assert!(lock(&st.state).segments.is_empty(), "no keyframe came: no segment");
+        // The keyframe that answers closes the segment.
+        let k = pkts.iter().find(|q| q.keyframe).unwrap();
+        let at = end + 40 * crate::av::MILLISECOND;
+        p.write(Packet::new(k.track, at, at, true, k.data.clone()));
+        assert_eq!(lock(&st.state).segments.len(), 1);
+        st.stop();
     }
 
     /// With keyframes, segments are still cut only at keyframes when under `max_bytes`.
