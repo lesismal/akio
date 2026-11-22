@@ -11,7 +11,9 @@
 - `TurnServer`：UDP 上的 TURN 中继：长期凭据的分配（`static_auth`，以及用于 TURN REST API 的
   `ephemeral_auth`）、权限、通道、Send/Data 指示、刷新与生存期、`EVEN-PORT`/`RESERVATION-TOKEN`、
   无状态 nonce、配额，以及默认拒绝中继到回环与私有网络的对端策略。它也应答 STUN Binding 请求。
-  中继 socket 通过 `only::Engine::bind_udp` 在运行时绑定。
+  中继 socket 通过 `only::Engine::bind_udp` 在运行时绑定。配置 `TurnConfig::additional_relay_ip` 后可中继
+  两个地址族，并提供 RFC 8656 双分配（`ADDITIONAL-ADDRESS-FAMILY`、按地址族刷新、`ADDRESS-ERROR-CODE`）。
+  中继的数据报经 UDP 与 DTLS 双向保留 ECN 码点（ADR-083）。
 - `TurnServer::stream()`：用于 TCP 监听器与 TLS 监听器（`only::tls::Tls`）的同一服务器：STUN 与
   ChannelData 在流上分帧（`framing`），中继走 UDP，分配随连接存在；以及 TCP 分配（RFC 6062，ADR-076）：
   TCP 中继地址、Connect、有权限的对端连入时的 ConnectionAttempt、在新客户端连接上的 ConnectionBind，
@@ -20,8 +22,8 @@
   `turns:...?transport=udp`，基于 `only-dtls`）：无状态 cookie，DTLS 1.3 可回退到 1.2，每条记录一条
   STUN 或 ChannelData 消息，分配随 DTLS 关联存在（ADR-054）。
 - `client::Client`：UDP 或流上的 sans-io TURN 客户端（分配、刷新、channel、权限），也支持 TCP 分配
-  （`ClientConfig::tcp_allocation`、`Client::connect`、用于 ConnectionBind 的 `client::DataConnection`）；
-  `only-webrtc` 的 `Endpoint::gather_relay` 驱动它。
+  （`ClientConfig::tcp_allocation`、`Client::connect`、用于 ConnectionBind 的 `client::DataConnection`）
+  与双分配（`ClientConfig::dual_allocation`）；`only-webrtc` 的 `Endpoint::gather_relay` 驱动它。
 - `client::TcpAllocation`：由 `only` 引擎驱动的 TCP 分配，没有阻塞调用：控制连接及其定时器，`connect` /
   `accept` 的数据连接由应用自己的 acceptor 服务（ConnectionBind 是位于其 handler 之下的传输层）。
 - `TurnConfig::tcp_connect_timeout`（30 秒）：Connect 等待对端的时长，与引擎的 `connect_timeout` 无关。

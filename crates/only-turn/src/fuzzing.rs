@@ -62,15 +62,30 @@ pub const USER: (&str, &str) = ("u", "p");
 /// The fuzz server's realm.
 pub const REALM: &str = "r";
 
+#[derive(Default)]
 struct NullEnv {
     next_port: u16,
+    /// Relays open (when tracked: not for stream clients, whose relays are never driven).
+    open: Vec<SocketAddr>,
+    /// The ECN codepoint of the datagram being handled: relayed data must carry it.
+    ecn: u8,
 }
 
 impl TurnEnv for NullEnv {
     fn send_to_client(&mut self, _client: SocketAddr, data: &[u8]) {
         stun_message(data);
     }
+    fn send_to_client_ecn(&mut self, _client: SocketAddr, data: &[u8], ecn: u8) {
+        assert_eq!(ecn, self.ecn);
+        stun_message(data);
+    }
     fn send_to_peer(&mut self, _relay: SocketAddr, _peer: SocketAddr, _data: &[u8]) {}
+    fn send_to_peer_ecn(&mut self, relay: SocketAddr, peer: SocketAddr, _data: &[u8], ecn: u8) {
+        assert_eq!(ecn, self.ecn);
+        // From an open relay of the peer's family.
+        assert_eq!(relay.is_ipv6(), peer.is_ipv6());
+        assert!(self.open.contains(&relay));
+    }
     fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
         self.next_port = self.next_port.wrapping_add(1);
         if self.next_port % 7 == 0 {
@@ -81,47 +96,73 @@ impl TurnEnv for NullEnv {
         } else {
             addr.port()
         };
-        Ok(SocketAddr::new(addr.ip(), port))
+        let r = SocketAddr::new(addr.ip(), port);
+        self.open.push(r);
+        Ok(r)
     }
-    fn close_relay(&mut self, _relay: SocketAddr) {}
+    fn close_relay(&mut self, relay: SocketAddr) {
+        self.open.retain(|r| *r != relay);
+    }
 }
 
-/// A deterministic server (fixed nonce key and clock), so seeds can carry valid nonces.
+/// A deterministic server (fixed nonce key and clock), so seeds can carry valid nonces. It
+/// relays IPv4 from 192.0.2.1 and IPv6 from 2001:db8::1 (dual allocations).
 pub fn turn_core(start: Instant) -> TurnCore {
     let cfg = TurnConfig::new(
         REALM,
         static_auth(REALM, [USER]),
         "192.0.2.1".parse().expect("ip"),
     )
+    .additional_relay_ip("2001:db8::1".parse().expect("ip"))
     .allow_private_peers(true);
     let mut c = TurnCore::new(cfg);
     c.fuzz_reset(start);
     c
 }
 
-/// `turn_server`: a TURN server fed datagrams. Each packet's first byte picks the source: even
-/// from the client, odd from peer `10.0.0.(b/2)` to the first relay, and `0xff` advances the
-/// clock by a minute (then sweeps).
+/// `turn_server`: a TURN server fed datagrams. Each packet's first byte picks the source and
+/// the datagram's ECN codepoint (bits 1-2), which relayed data must keep: even from the
+/// client; odd from a peer, below `0x80` peer `10.0.0.(b/8)` to the first IPv4 relay open, from
+/// `0x80` up peer `2001:db8:1::(b/8)` to the first IPv6 one; and `0xff` advances the clock by
+/// a minute (then sweeps). At the end the server closes everything.
 pub fn turn_server(data: &[u8]) {
     let start = Instant::now();
     let mut core = turn_core(start);
-    let mut env = NullEnv { next_port: 0 };
+    let mut env = NullEnv::default();
     let mut now = start;
     for p in packets(data) {
         let Some((&sel, body)) = p.split_first() else {
             continue;
         };
+        env.ecn = (sel >> 1) & 3;
         if sel == 0xff {
             now += Duration::from_secs(60);
             core.handle_timeout(now, &mut env);
         } else if sel % 2 == 0 {
-            core.handle_client(now, CLIENT, body, &mut env);
+            core.handle_client_ecn(now, CLIENT, body, env.ecn, &mut env);
         } else {
-            let peer = SocketAddr::new(IpAddr::V4([10, 0, 0, sel / 2].into()), 7000);
-            let relay = SocketAddr::new("192.0.2.1".parse().expect("ip"), 50001);
-            core.handle_peer(now, relay, peer, body, &mut env);
+            let v6 = sel >= 0x80;
+            let peer = if v6 {
+                SocketAddr::new(
+                    IpAddr::V6([0x2001, 0xdb8, 1, 0, 0, 0, 0, u16::from(sel / 8)].into()),
+                    7000,
+                )
+            } else {
+                SocketAddr::new(IpAddr::V4([10, 0, 0, sel / 8].into()), 7000)
+            };
+            let relay = env
+                .open
+                .iter()
+                .copied()
+                .find(|r| r.is_ipv6() == v6)
+                .unwrap_or_else(|| SocketAddr::new(peer.ip(), 50001));
+            core.handle_peer_ecn(now, relay, peer, body, env.ecn, &mut env);
         }
+        assert!(core.relays_of(CLIENT).len() <= 2);
     }
+    core.close_all(&mut env);
+    assert!(env.open.is_empty(), "{:?}", env.open);
+    assert_eq!(core.stats().allocations, 0);
 }
 
 /// `turn_stream`: TURN over a byte stream. The first byte picks the side; the rest is a
@@ -140,7 +181,7 @@ pub fn turn_stream(data: &[u8]) {
     let mut reader = crate::framing::FrameReader::new();
     if mode % 2 == 0 {
         let mut core = turn_core(start);
-        let mut env = NullEnv { next_port: 0 };
+        let mut env = NullEnv::default();
         for p in packets(rest) {
             let r = reader.push(p, |m| core.handle_client(start, CLIENT, m, &mut env));
             assert!(reader.buffered() < crate::framing::MAX_FRAME);
@@ -152,7 +193,9 @@ pub fn turn_stream(data: &[u8]) {
         assert_eq!(core.stats().allocations, 0);
     } else {
         let server: SocketAddr = "192.0.2.1:3478".parse().expect("addr");
-        let cfg = crate::client::ClientConfig::new(server, USER.0, USER.1).stream(true);
+        let cfg = crate::client::ClientConfig::new(server, USER.0, USER.1)
+            .stream(true)
+            .dual_allocation(mode & 2 != 0);
         let mut c = crate::client::Client::new(cfg, start);
         let mut now = start;
         let peer: SocketAddr = "203.0.113.1:9".parse().expect("addr");
@@ -160,8 +203,10 @@ pub fn turn_stream(data: &[u8]) {
             let r = reader.push(p, |m| {
                 if let Some((from, d)) = c.handle_input(now, m) {
                     assert!(d.len() <= m.len());
-                    let _ = from;
+                    let _ = c.relayed_addr_for(from);
                 }
+                assert!(c.relayed_addrs().len() <= 2);
+                let _ = c.address_error();
             });
             if r.is_err() {
                 return;
@@ -322,7 +367,7 @@ pub fn turn_dtls(data: &[u8]) {
         s.fuzz_accept(start);
     }
     let mut core = turn_core(start);
-    let mut env = NullEnv { next_port: 0 };
+    let mut env = NullEnv::default();
     let mut now = start;
     for p in packets(rest) {
         let mut out = crate::dtls::DtlsOutput::default();
@@ -431,7 +476,7 @@ pub(crate) mod seeds {
             ]
             .concat(),
             [&[0u8][..], &cd].concat(),
-            [&[3u8][..], b"from peer"].concat(),
+            [&[9u8][..], b"from peer"].concat(),
             [
                 &[0u8][..],
                 &auth(req(Method::REFRESH).u32(attr::LIFETIME, 0)),
@@ -439,7 +484,65 @@ pub(crate) mod seeds {
             .concat(),
             vec![0xff],
         ];
-        vec![join(&pkts)]
+        // A dual allocation: both families permitted, a channel to the IPv6 peer, ChannelData
+        // and peer data with ECN codepoints, one family refreshed and the other deleted.
+        let peer6: SocketAddr = "[2001:db8:1::1]:7000".parse().expect("addr");
+        let mut cd6 = vec![0x40, 0x01, 0x00, 0x02];
+        cd6.extend_from_slice(b"v6");
+        let dual = vec![
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::ALLOCATE)
+                        .u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+                        .attr(attr::ADDITIONAL_ADDRESS_FAMILY, &[2, 0, 0, 0]),
+                ),
+            ]
+            .concat(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::CREATE_PERMISSION)
+                        .xor_addr(attr::XOR_PEER_ADDRESS, peer)
+                        .xor_addr(attr::XOR_PEER_ADDRESS, peer6),
+                ),
+            ]
+            .concat(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::CHANNEL_BIND)
+                        .u32(attr::CHANNEL_NUMBER, 0x4001 << 16)
+                        .xor_addr(attr::XOR_PEER_ADDRESS, peer6),
+                ),
+            ]
+            .concat(),
+            // ECT(0) from the client, ECT(1) and CE from the peers.
+            [&[4u8][..], &cd6].concat(),
+            [&[0x8bu8][..], b"v6 peer"].concat(),
+            [&[0x0fu8][..], b"v4 peer"].concat(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::REFRESH)
+                        .attr(attr::REQUESTED_ADDRESS_FAMILY, &[2, 0, 0, 0])
+                        .u32(attr::LIFETIME, 3600),
+                ),
+            ]
+            .concat(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::REFRESH)
+                        .attr(attr::REQUESTED_ADDRESS_FAMILY, &[1, 0, 0, 0])
+                        .u32(attr::LIFETIME, 0),
+                ),
+            ]
+            .concat(),
+            [&[2u8][..], &cd6].concat(),
+            vec![0xff],
+        ];
+        vec![join(&pkts), join(&dual)]
     }
 
     /// A TCP allocation's life: challenge, allocate, a Connect that succeeds and is bound from

@@ -646,6 +646,7 @@ pub struct only_webrtc::RelayServer
 impl only_webrtc::RelayServer
 pub fn only_webrtc::RelayServer::addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn only_webrtc::RelayServer::dtls(core::net::socket_addr::SocketAddr, &str, only_tls::config::ClientConfig, &str, &str) -> only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::dual_allocation(self, bool) -> Self
 pub fn only_webrtc::RelayServer::from_url(&str, &str, &str) -> core::result::Result<only_webrtc::RelayServer, only_webrtc::Error>
 pub fn only_webrtc::RelayServer::tcp(core::net::socket_addr::SocketAddr, &str, &str) -> only_webrtc::RelayServer
 pub fn only_webrtc::RelayServer::tls(core::net::socket_addr::SocketAddr, &str, only_tls::config::ClientConfig, &str, &str) -> only_webrtc::RelayServer

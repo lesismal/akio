@@ -1951,7 +1951,8 @@ impl Endpoint {
     /// [`only::EngineBuilder::client_threads`] or a TCP listener) dials the connection the
     /// allocation lives on, and the candidate ranks below a UDP-allocated one; no
     /// server-reflexive candidate comes from it (the server saw a TCP address). One allocation
-    /// per server and transport.
+    /// per server and transport. With [`RelayServer::dual_allocation`] it is a dual
+    /// allocation: relayed candidates of both families, and the IPv4 one is returned.
     ///
     /// An allocation lost after it was made (the connection closed, a refresh failed) is made
     /// again, after 1 second and then doubling waits up to a minute, while the endpoint lives:
@@ -2024,10 +2025,13 @@ impl Endpoint {
                     cs.push(only_ice::Candidate::server_reflexive(m, base).with_component(comp));
                 }
             }
-            if !cs.iter().any(|x| x.addr() == relayed) {
-                cs.push(r.candidate(relayed, base));
+            // One relayed candidate per family of a dual allocation.
+            for relayed in relayed {
+                if !cs.iter().any(|x| x.addr() == relayed) {
+                    cs.push(r.candidate(relayed, base));
+                }
+                first.get_or_insert(relayed);
             }
-            first.get_or_insert(relayed);
         }
         first.ok_or(Error::Timeout)
     }
@@ -2046,7 +2050,8 @@ impl Endpoint {
         };
         let (tx, rx) = mpsc::channel();
         let cfg =
-            only_turn::client::ClientConfig::new(server.addr, &server.username, &server.password);
+            only_turn::client::ClientConfig::new(server.addr, &server.username, &server.password)
+                .dual_allocation(server.dual);
         let r = self.0.with_relays(|relays| {
             relays.retain(|r| !r.is_dead());
             if relays.iter().filter(|r| r.rtcp == rtcp).count() >= MAX_RELAYS {

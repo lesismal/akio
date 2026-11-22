@@ -124,6 +124,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_turn::client::ServerTrans
 impl !core::panic::unwind_safe::UnwindSafe for only_turn::client::ServerTransport
 pub struct only_turn::client::Client
 impl only_turn::client::Client
+pub fn only_turn::client::Client::address_error(&self) -> core::option::Option<(u8, u16, &str)>
 pub fn only_turn::client::Client::close(&mut self, std::time::Instant)
 pub fn only_turn::client::Client::config(&self) -> &only_turn::client::ClientConfig
 pub fn only_turn::client::Client::connect(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr) -> bool
@@ -138,6 +139,8 @@ pub fn only_turn::client::Client::poll_event(&mut self) -> core::option::Option<
 pub fn only_turn::client::Client::poll_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_turn::client::Client::poll_transmit(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_turn::client::Client::relayed_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::client::Client::relayed_addr_for(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::client::Client::relayed_addrs(&self) -> &[core::net::socket_addr::SocketAddr]
 pub fn only_turn::client::Client::send_to(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8]) -> bool
 pub fn only_turn::client::Client::state(&self) -> only_turn::client::ClientState
 impl core::fmt::Debug for only_turn::client::Client
@@ -148,6 +151,7 @@ impl core::marker::Unpin for only_turn::client::Client
 impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::Client
 impl core::panic::unwind_safe::UnwindSafe for only_turn::client::Client
 #[non_exhaustive] pub struct only_turn::client::ClientConfig
+pub only_turn::client::ClientConfig::dual_allocation: bool
 pub only_turn::client::ClientConfig::lifetime: core::time::Duration
 pub only_turn::client::ClientConfig::max_peers: usize
 pub only_turn::client::ClientConfig::max_pending: usize
@@ -162,6 +166,7 @@ pub only_turn::client::ClientConfig::timeout: core::time::Duration
 pub only_turn::client::ClientConfig::use_channels: bool
 pub only_turn::client::ClientConfig::username: alloc::string::String
 impl only_turn::client::ClientConfig
+pub fn only_turn::client::ClientConfig::dual_allocation(self, bool) -> Self
 pub fn only_turn::client::ClientConfig::lifetime(self, core::time::Duration) -> Self
 pub fn only_turn::client::ClientConfig::new(core::net::socket_addr::SocketAddr, &str, &str) -> only_turn::client::ClientConfig
 pub fn only_turn::client::ClientConfig::stream(self, bool) -> Self
@@ -251,6 +256,7 @@ pub fn only_turn::framing::frame_len(&[u8]) -> core::result::Result<core::option
 pub mod only_turn::stun
 pub mod only_turn::stun::attr
 pub const only_turn::stun::attr::ADDITIONAL_ADDRESS_FAMILY: u16
+pub const only_turn::stun::attr::ADDRESS_ERROR_CODE: u16
 pub const only_turn::stun::attr::ALTERNATE_SERVER: u16
 pub const only_turn::stun::attr::CHANNEL_NUMBER: u16
 pub const only_turn::stun::attr::CONNECTION_ID: u16
@@ -326,6 +332,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::StunError
 impl core::panic::unwind_safe::UnwindSafe for only_turn::stun::StunError
 pub struct only_turn::stun::Message<'a>
 impl<'a> only_turn::stun::Message<'a>
+pub fn only_turn::stun::Message<'a>::address_error_code(&self) -> core::option::Option<(u8, u16, &'a str)>
 pub fn only_turn::stun::Message<'a>::attr_types(&self) -> impl core::iter::traits::iterator::Iterator<Item = u16> + '_
 pub fn only_turn::stun::Message<'a>::check_fingerprint(&self) -> bool
 pub fn only_turn::stun::Message<'a>::check_integrity(&self, &[u8]) -> bool
@@ -355,6 +362,7 @@ impl<'a> core::panic::unwind_safe::UnwindSafe for only_turn::stun::Message<'a>
 pub struct only_turn::stun::MessageBuilder
 impl only_turn::stun::MessageBuilder
 pub fn only_turn::stun::MessageBuilder::addr(self, u16, core::net::socket_addr::SocketAddr) -> Self
+pub fn only_turn::stun::MessageBuilder::address_error(self, u8, u16, &str) -> Self
 pub fn only_turn::stun::MessageBuilder::attr(self, u16, &[u8]) -> Self
 pub fn only_turn::stun::MessageBuilder::build(self) -> alloc::vec::Vec<u8>
 pub fn only_turn::stun::MessageBuilder::error(self, u16, &str) -> Self
@@ -429,6 +437,8 @@ impl core::marker::Unpin for only_turn::StunServer
 impl core::panic::unwind_safe::RefUnwindSafe for only_turn::StunServer
 impl core::panic::unwind_safe::UnwindSafe for only_turn::StunServer
 #[non_exhaustive] pub struct only_turn::TurnConfig
+pub only_turn::TurnConfig::additional_public_ip: core::option::Option<core::net::ip_addr::IpAddr>
+pub only_turn::TurnConfig::additional_relay_ip: core::option::Option<core::net::ip_addr::IpAddr>
 pub only_turn::TurnConfig::allow_private_peers: bool
 pub only_turn::TurnConfig::auth: only_turn::AuthFn
 pub only_turn::TurnConfig::channel_lifetime: core::time::Duration
@@ -452,6 +462,8 @@ pub only_turn::TurnConfig::tcp_connect_timeout: core::time::Duration
 pub only_turn::TurnConfig::tcp_relay_buffer: usize
 pub only_turn::TurnConfig::tcp_relays: bool
 impl only_turn::TurnConfig
+pub fn only_turn::TurnConfig::additional_public_ip(self, core::net::ip_addr::IpAddr) -> Self
+pub fn only_turn::TurnConfig::additional_relay_ip(self, core::net::ip_addr::IpAddr) -> Self
 pub fn only_turn::TurnConfig::allow_private_peers(self, bool) -> Self
 pub fn only_turn::TurnConfig::lifetimes(self, core::time::Duration, core::time::Duration) -> Self
 pub fn only_turn::TurnConfig::new(&str, only_turn::AuthFn, core::net::ip_addr::IpAddr) -> only_turn::TurnConfig
@@ -473,10 +485,13 @@ impl only_turn::TurnCore
 pub fn only_turn::TurnCore::close_all(&mut self, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::config(&self) -> &only_turn::TurnConfig
 pub fn only_turn::TurnCore::handle_client(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::handle_client_ecn(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::handle_peer(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::handle_peer_ecn(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::handle_timeout(&mut self, std::time::Instant, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::new(only_turn::TurnConfig) -> only_turn::TurnCore
 pub fn only_turn::TurnCore::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnCore::relays_of(&self, core::net::socket_addr::SocketAddr) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnCore::remove_client(&mut self, core::net::socket_addr::SocketAddr, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::stats(&self) -> only_turn::TurnStats
 pub fn only_turn::TurnCore::tcp_closed(&mut self, core::net::socket_addr::SocketAddr, u32, &mut dyn only_turn::TurnEnv)
@@ -511,6 +526,7 @@ pub fn only_turn::TurnServer::dtls_relay_of(&self, core::net::socket_addr::Socke
 pub fn only_turn::TurnServer::dtls_with_connection_ids(&self, &only_tls::config::ServerConfig, core::option::Option<u8>) -> core::io::error::Result<only_turn::TurnDtls>
 pub fn only_turn::TurnServer::new(only_turn::TurnConfig) -> only_turn::TurnServer
 pub fn only_turn::TurnServer::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnServer::relays_of(&self, core::net::socket_addr::SocketAddr) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnServer::set_engine(&self, &alloc::rcs::arc::Arc<only::Engine>)
 pub fn only_turn::TurnServer::stats(&self) -> only_turn::TurnStats
 pub fn only_turn::TurnServer::stream(&self) -> only_turn::TurnStream
@@ -576,7 +592,9 @@ pub fn only_turn::TurnEnv::open_relay(&mut self, core::net::socket_addr::SocketA
 pub fn only_turn::TurnEnv::open_tcp_relay(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::io::error::Result<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnEnv::pads_channel_data(&self, core::net::socket_addr::SocketAddr) -> bool
 pub fn only_turn::TurnEnv::send_to_client(&mut self, core::net::socket_addr::SocketAddr, &[u8])
+pub fn only_turn::TurnEnv::send_to_client_ecn(&mut self, core::net::socket_addr::SocketAddr, &[u8], u8)
 pub fn only_turn::TurnEnv::send_to_peer(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8])
+pub fn only_turn::TurnEnv::send_to_peer_ecn(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8)
 pub fn only_turn::denied_by_default(core::net::ip_addr::IpAddr) -> bool
 pub fn only_turn::ephemeral_auth(&[u8]) -> only_turn::AuthFn
 pub fn only_turn::ephemeral_credentials(&[u8], &str, core::time::Duration) -> (alloc::string::String, alloc::string::String)

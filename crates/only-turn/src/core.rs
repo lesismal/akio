@@ -31,6 +31,22 @@ pub trait TurnEnv {
     fn send_to_client(&mut self, client: SocketAddr, data: &[u8]);
     /// Sends `data` from the relay socket bound at `relay` to `peer`.
     fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]);
+    /// Relayed data for the client at `client` (ChannelData or a Data indication) whose
+    /// datagram from the peer arrived with ECN codepoint `ecn` (RFC 3168: 2 = ECT(0), 1 =
+    /// ECT(1), 3 = CE, 0 = not ECN-capable or unknown): RFC 8656 section 14 prefers it copied
+    /// onto the datagram to a UDP client. Default: [`send_to_client`](Self::send_to_client),
+    /// the codepoint dropped.
+    fn send_to_client_ecn(&mut self, client: SocketAddr, data: &[u8], ecn: u8) {
+        let _ = ecn;
+        self.send_to_client(client, data);
+    }
+    /// Relayed data for `peer` whose datagram from the client arrived with ECN codepoint
+    /// `ecn` (see [`send_to_client_ecn`](Self::send_to_client_ecn)), to copy onto the datagram
+    /// to the peer. Default: [`send_to_peer`](Self::send_to_peer), the codepoint dropped.
+    fn send_to_peer_ecn(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ecn: u8) {
+        let _ = ecn;
+        self.send_to_peer(relay, peer, data);
+    }
     /// Opens a relay socket for `client` bound on `addr` (port 0: any free port), returning
     /// its bound address.
     fn open_relay(&mut self, client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr>;
@@ -114,6 +130,15 @@ pub struct TurnConfig {
     /// The address clients are told their relay is at, when it differs from `relay_ip` (a
     /// server behind a 1:1 NAT). Default: `relay_ip`.
     pub public_ip: Option<IpAddr>,
+    /// Relay sockets of the other address family than `relay_ip` are bound on this address
+    /// (RFC 8656: an IPv6 relay next to an IPv4 one, or the reverse). Clients then get that
+    /// family with `REQUESTED-ADDRESS-FAMILY`, and both in one allocation with
+    /// `ADDITIONAL-ADDRESS-FAMILY` (a dual allocation). `None` (the default), or an address of
+    /// `relay_ip`'s own family: one family only, and dual allocations get theirs with an
+    /// `ADDRESS-ERROR-CODE` 440 for the other.
+    pub additional_relay_ip: Option<IpAddr>,
+    /// What `public_ip` is to `relay_ip`, for `additional_relay_ip`.
+    pub additional_public_ip: Option<IpAddr>,
     /// Sent as `SOFTWARE` in responses, if set.
     pub software: Option<String>,
     /// Lifetime of an allocation whose client asks for none or for less (600s).
@@ -174,6 +199,7 @@ impl fmt::Debug for TurnConfig {
             .field("realm", &self.realm)
             .field("relay_ip", &self.relay_ip)
             .field("public_ip", &self.public_ip)
+            .field("additional_relay_ip", &self.additional_relay_ip)
             .field("default_lifetime", &self.default_lifetime)
             .field("max_allocations", &self.max_allocations)
             .finish_non_exhaustive()
@@ -188,6 +214,8 @@ impl TurnConfig {
             auth,
             relay_ip,
             public_ip: None,
+            additional_relay_ip: None,
+            additional_public_ip: None,
             software: Some(concat!("only-turn ", env!("CARGO_PKG_VERSION")).to_owned()),
             default_lifetime: Duration::from_secs(600),
             max_lifetime: Duration::from_secs(3600),
@@ -214,6 +242,46 @@ impl TurnConfig {
     pub fn public_ip(mut self, ip: IpAddr) -> Self {
         self.public_ip = Some(ip);
         self
+    }
+
+    /// Sets [`additional_relay_ip`](Self::additional_relay_ip): relays of that address's
+    /// family too, and dual allocations.
+    #[must_use]
+    pub fn additional_relay_ip(mut self, ip: IpAddr) -> Self {
+        self.additional_relay_ip = Some(ip);
+        self
+    }
+
+    /// Sets [`additional_public_ip`](Self::additional_public_ip).
+    #[must_use]
+    pub fn additional_public_ip(mut self, ip: IpAddr) -> Self {
+        self.additional_public_ip = Some(ip);
+        self
+    }
+
+    /// Where relays of the IPv6 (`v6`) or IPv4 family are bound, if that family is offered.
+    pub(crate) fn relay_ip_for(&self, v6: bool) -> Option<IpAddr> {
+        if self.relay_ip.is_ipv6() == v6 {
+            Some(self.relay_ip)
+        } else {
+            self.additional_relay_ip.filter(|ip| ip.is_ipv6() == v6)
+        }
+    }
+
+    /// The family of an allocation that names none: IPv4 when offered (RFC 8656 section 7.2),
+    /// else `relay_ip`'s.
+    pub(crate) fn default_v6(&self) -> bool {
+        self.relay_ip_for(false).is_none()
+    }
+
+    /// The address clients are told of for the relay bound at `relay`.
+    fn public_of(&self, relay: SocketAddr) -> SocketAddr {
+        let public = if relay.is_ipv6() == self.relay_ip.is_ipv6() {
+            self.public_ip
+        } else {
+            self.additional_public_ip
+        };
+        SocketAddr::new(public.unwrap_or_else(|| relay.ip()), relay.port())
     }
 
     /// Sets [`allow_private_peers`](Self::allow_private_peers).
@@ -291,18 +359,69 @@ pub fn denied_by_default(ip: IpAddr) -> bool {
     }
 }
 
-struct Allocation {
+/// One relayed transport address of an allocation.
+#[derive(Clone, Copy)]
+struct RelayAddr {
+    /// Where its socket is bound.
     relay: SocketAddr,
+    /// What the client is told.
     public: SocketAddr,
+    expires: Instant,
+}
+
+struct Allocation {
+    /// One relayed address, or two of different families (a dual allocation, RFC 8656
+    /// `ADDITIONAL-ADDRESS-FAMILY`), each with its own lifetime: refreshed or deleted alone
+    /// with `REQUESTED-ADDRESS-FAMILY`. The allocation goes with the last one. A TCP
+    /// allocation has one, its listener.
+    relays: Vec<RelayAddr>,
     user: String,
     key: [u8; 16],
-    expires: Instant,
     created_tid: [u8; 12],
+    /// The `ADDRESS-ERROR-CODE` of a dual allocation that got one family (family, code), for
+    /// retransmissions of the Allocate.
+    addr_error: Option<(u8, u16)>,
     perms: HashMap<IpAddr, Instant>,
     chans: HashMap<u16, (SocketAddr, Instant)>,
     chan_of: HashMap<SocketAddr, u16>,
     /// A TCP allocation (RFC 6062): its connections. `relay` is then its listener.
     tcp: Option<Box<TcpAlloc>>,
+}
+
+impl Allocation {
+    /// Whether any relayed address is still alive.
+    fn alive(&self, now: Instant) -> bool {
+        self.relays.iter().any(|r| r.expires > now)
+    }
+
+    /// The live relayed address of `peer`'s family.
+    fn relay_for(&self, peer: SocketAddr, now: Instant) -> Option<&RelayAddr> {
+        self.relays
+            .iter()
+            .find(|r| r.relay.is_ipv6() == peer.is_ipv6() && r.expires > now)
+    }
+
+    /// Whether the allocation has a relayed address of `peer`'s family.
+    fn has_family(&self, peer: SocketAddr) -> bool {
+        self.relays
+            .iter()
+            .any(|r| r.relay.is_ipv6() == peer.is_ipv6())
+    }
+
+    /// Forgets the permissions and channels of the IPv6 (`v6`) or IPv4 family: its relayed
+    /// address is gone (RFC 8656 section 8.1: the other family's stay).
+    fn drop_family(&mut self, v6: bool) {
+        self.perms.retain(|ip, _| ip.is_ipv6() != v6);
+        let chans = &mut self.chans;
+        self.chan_of.retain(|p, c| {
+            let keep = p.is_ipv6() != v6;
+            if !keep {
+                chans.remove(c);
+            }
+            keep
+        });
+        self.chans.retain(|_, (p, _)| p.is_ipv6() != v6);
+    }
 }
 
 /// The connections of a TCP allocation.
@@ -457,21 +576,20 @@ impl Shared {
         exp >= now_s && nonce[16..] == self.nonce_mac(exp, client)
     }
 
-    /// Whether `data` is an authenticated Allocate that asks for a relay on any port (no
-    /// `EVEN-PORT`, no `RESERVATION-TOKEN`): the server binds that relay socket before taking
-    /// the shard's lock. Only a client holding valid credentials and a nonce issued to its own
-    /// address passes, so this cannot be used to make the server bind sockets for free.
-    pub(crate) fn authenticated_allocate(
-        &self,
-        now: Instant,
-        client: SocketAddr,
-        data: &[u8],
-    ) -> bool {
+    /// The addresses to bind relays on (any port) for `data` when it is an authenticated
+    /// Allocate of a UDP relay without `EVEN-PORT` or `RESERVATION-TOKEN`: the server binds
+    /// those sockets before taking the shard's lock. One address, or two for a dual allocation
+    /// the server can meet; none for anything else (the request is then handled, and maybe
+    /// refused, under the lock). Only a client holding valid credentials and a nonce issued to
+    /// its own address gets any, so this cannot be used to make the server bind sockets for
+    /// free.
+    pub(crate) fn prebind_ips(&self, now: Instant, client: SocketAddr, data: &[u8]) -> Vec<IpAddr> {
+        let mut ips = Vec::new();
         if !is_stun(data) {
-            return false;
+            return ips;
         }
         let Ok(m) = Message::parse(data) else {
-            return false;
+            return ips;
         };
         if m.class() != Class::Request
             || m.method() != Method::ALLOCATE
@@ -481,19 +599,95 @@ impl Shared {
                 .get(attr::REQUESTED_TRANSPORT)
                 .is_some_and(|t| t.len() == 4 && t[0] == 17)
         {
-            return false;
+            return ips;
         }
+        let Ok(Families { v6, additional }) = families(&self.cfg, &m) else {
+            return ips;
+        };
         let (Some(user), Some(realm), Some(nonce)) = (
             m.get_str(attr::USERNAME),
             m.get_str(attr::REALM),
             m.get_str(attr::NONCE),
         ) else {
-            return false;
+            return ips;
         };
-        realm == self.cfg.realm
+        let ok = realm == self.cfg.realm
             && self.nonce_valid(now, client, nonce)
-            && (self.cfg.auth)(user, realm).is_some_and(|k| m.check_integrity(&k))
+            && (self.cfg.auth)(user, realm).is_some_and(|k| m.check_integrity(&k));
+        if ok {
+            ips.extend(self.cfg.relay_ip_for(v6));
+            if additional {
+                ips.extend(self.cfg.relay_ip_for(true));
+            }
+        }
+        ips
     }
+}
+
+/// The address families an Allocate asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Families {
+    /// The first relayed address is IPv6.
+    v6: bool,
+    /// `ADDITIONAL-ADDRESS-FAMILY` IPv6 too (a dual allocation; the first is then IPv4).
+    additional: bool,
+}
+
+/// The families an Allocate asks for (RFC 8656 section 7.2, steps 6, 7 and 9): 400 for both
+/// `REQUESTED-ADDRESS-FAMILY` and `ADDITIONAL-ADDRESS-FAMILY`, or for an additional family
+/// other than IPv6; 440 for a requested family the server does not relay, an unknown one,
+/// or no IPv4 for a dual allocation. Without either, IPv4 when offered, else `relay_ip`'s.
+fn families(cfg: &TurnConfig, m: &Message<'_>) -> Result<Families, Reject> {
+    let family = |v: &[u8]| match v.first() {
+        Some(1) => Some(false),
+        Some(2) => Some(true),
+        _ => None,
+    };
+    let unsupported = || Reject(440, "Address Family not Supported");
+    match (m.get(attr::REQUESTED_ADDRESS_FAMILY), additional_family(m)) {
+        (Some(_), Some(_)) => Err(Reject(400, "Bad Request")),
+        (Some(r), None) => {
+            let v6 = family(r).ok_or_else(unsupported)?;
+            cfg.relay_ip_for(v6).ok_or_else(unsupported)?;
+            Ok(Families {
+                v6,
+                additional: false,
+            })
+        }
+        (None, Some(a)) => {
+            if family(a) != Some(true) {
+                return Err(Reject(400, "Bad Request"));
+            }
+            cfg.relay_ip_for(false).ok_or_else(unsupported)?;
+            Ok(Families {
+                v6: false,
+                additional: true,
+            })
+        }
+        (None, None) => Ok(Families {
+            v6: cfg.default_v6(),
+            additional: false,
+        }),
+    }
+}
+
+/// `ADDITIONAL-ADDRESS-FAMILY`, by its RFC 8656 codepoint or the draft one coturn 4.6 uses.
+fn additional_family<'a>(m: &Message<'a>) -> Option<&'a [u8]> {
+    m.get(attr::ADDITIONAL_ADDRESS_FAMILY)
+        .or_else(|| m.get(attr::ADDITIONAL_ADDRESS_FAMILY_DRAFT))
+}
+
+/// Adds `ADDRESS-ERROR-CODE` for `family` and `code` to a response to `m`: by its RFC 8656
+/// codepoint, and by the draft one too when `m` asked with the draft's attribute (coturn 4.6
+/// reads only that).
+fn with_address_error(b: MessageBuilder, m: &Message<'_>, family: u8, code: u16) -> MessageBuilder {
+    let b = b.address_error(family, code, reason(code));
+    if !m.has(attr::ADDITIONAL_ADDRESS_FAMILY_DRAFT) {
+        return b;
+    }
+    let mut v = vec![family, 0, (code / 100) as u8, (code % 100) as u8];
+    v.extend_from_slice(reason(code).as_bytes());
+    b.attr(attr::ADDRESS_ERROR_CODE_DRAFT, &v)
 }
 
 /// The TURN server state machine (see the module docs).
@@ -553,9 +747,22 @@ impl TurnCore {
         s
     }
 
-    /// The relayed address (as told to the client) of `client`'s allocation.
+    /// The relayed address (as told to the client) of `client`'s allocation: the first one of
+    /// a dual allocation (IPv4).
     pub fn relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
-        self.allocs.get(&client).map(|a| a.public)
+        self.allocs
+            .get(&client)
+            .and_then(|a| a.relays.first())
+            .map(|r| r.public)
+    }
+
+    /// The relayed addresses (as told to the client) of `client`'s allocation: one, or two of
+    /// a dual allocation (IPv4 first); empty without an allocation.
+    pub fn relays_of(&self, client: SocketAddr) -> Vec<SocketAddr> {
+        self.allocs
+            .get(&client)
+            .map(|a| a.relays.iter().map(|r| r.public).collect())
+            .unwrap_or_default()
     }
 
     fn peer_ok(&self, peer: SocketAddr) -> bool {
@@ -583,8 +790,22 @@ impl TurnCore {
         data: &[u8],
         env: &mut dyn TurnEnv,
     ) {
+        self.handle_client_ecn(now, client, data, 0, env);
+    }
+
+    /// [`handle_client`](Self::handle_client) for a datagram that arrived with ECN codepoint
+    /// `ecn`: relayed data goes to the peer with [`TurnEnv::send_to_peer_ecn`] and that
+    /// codepoint (RFC 8656 section 14).
+    pub fn handle_client_ecn(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        data: &[u8],
+        ecn: u8,
+        env: &mut dyn TurnEnv,
+    ) {
         if is_channel_data(data) {
-            self.channel_data(now, client, data, env);
+            self.channel_data(now, client, data, ecn, env);
             return;
         }
         if !is_stun(data) {
@@ -596,7 +817,7 @@ impl TurnCore {
         match m.class() {
             Class::Request => self.request(now, client, &m, env),
             Class::Indication if m.method() == Method::SEND => {
-                self.send_indication(now, client, &m, env);
+                self.send_indication(now, client, &m, ecn, env);
             }
             _ => {}
         }
@@ -607,6 +828,7 @@ impl TurnCore {
         now: Instant,
         client: SocketAddr,
         data: &[u8],
+        ecn: u8,
         env: &mut dyn TurnEnv,
     ) {
         let ch = u16::from_be_bytes([data[0], data[1]]);
@@ -617,18 +839,21 @@ impl TurnCore {
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
-        if a.expires <= now || a.tcp.is_some() {
+        if a.tcp.is_some() {
             return;
         }
         let Some(&(peer, exp)) = a.chans.get(&ch) else {
             return;
         };
+        let Some(r) = a.relay_for(peer, now) else {
+            return;
+        };
         if exp <= now || !self.peer_ok(peer) {
             return;
         }
-        let relay = a.relay;
+        let relay = r.relay;
         self.stats.to_peer += 1;
-        env.send_to_peer(relay, peer, &data[4..4 + len]);
+        env.send_to_peer_ecn(relay, peer, &data[4..4 + len], ecn);
     }
 
     fn send_indication(
@@ -636,6 +861,7 @@ impl TurnCore {
         now: Instant,
         client: SocketAddr,
         m: &Message<'_>,
+        ecn: u8,
         env: &mut dyn TurnEnv,
     ) {
         let (Some(peer), Some(payload)) =
@@ -646,16 +872,18 @@ impl TurnCore {
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
-        if a.expires <= now || a.tcp.is_some() || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now)
-        {
+        if a.tcp.is_some() || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
             return;
         }
+        let Some(r) = a.relay_for(peer, now) else {
+            return;
+        };
         if !self.peer_ok(peer) {
             return;
         }
-        let relay = a.relay;
+        let relay = r.relay;
         self.stats.to_peer += 1;
-        env.send_to_peer(relay, peer, payload);
+        env.send_to_peer_ecn(relay, peer, payload, ecn);
     }
 
     /// A datagram from `peer` on the relay socket bound at `relay`: relayed to the allocation's
@@ -669,13 +897,33 @@ impl TurnCore {
         data: &[u8],
         env: &mut dyn TurnEnv,
     ) {
+        self.handle_peer_ecn(now, relay, peer, data, 0, env);
+    }
+
+    /// [`handle_peer`](Self::handle_peer) for a datagram that arrived with ECN codepoint
+    /// `ecn`: it goes to the client with [`TurnEnv::send_to_client_ecn`] and that codepoint
+    /// (RFC 8656 section 14).
+    pub fn handle_peer_ecn(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        data: &[u8],
+        ecn: u8,
+        env: &mut dyn TurnEnv,
+    ) {
         let Some(&client) = self.by_relay.get(&relay) else {
             return;
         };
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
-        if a.expires <= now || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
+        // The relayed address it arrived on, alive, and of the peer's family.
+        let live = a
+            .relays
+            .iter()
+            .any(|r| r.relay == relay && r.expires > now && r.relay.is_ipv6() == peer.is_ipv6());
+        if !live || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
             return;
         }
         if !self.peer_ok(peer) || data.len() > usize::from(u16::MAX) {
@@ -699,7 +947,7 @@ impl TurnCore {
                     let pad = crate::framing::channel_data_padding(out.len());
                     out.resize(out.len() + pad, 0);
                 }
-                env.send_to_client(client, &out);
+                env.send_to_client_ecn(client, &out, ecn);
             }
             None => {
                 let msg = MessageBuilder::new(
@@ -710,7 +958,7 @@ impl TurnCore {
                 .xor_addr(attr::XOR_PEER_ADDRESS, peer)
                 .attr(attr::DATA, data)
                 .build();
-                env.send_to_client(client, &msg);
+                env.send_to_client_ecn(client, &msg, ecn);
             }
         }
     }
@@ -737,11 +985,21 @@ impl TurnCore {
         let dead: Vec<SocketAddr> = self
             .allocs
             .iter()
-            .filter(|(_, a)| a.expires <= now)
+            .filter(|(_, a)| a.relays.iter().any(|r| r.expires <= now))
             .map(|(c, _)| *c)
             .collect();
         for c in dead {
-            self.remove(c, env);
+            // One family of a dual allocation may outlive the other.
+            let gone: Vec<bool> = self.allocs.get(&c).map_or_else(Vec::new, |a| {
+                a.relays
+                    .iter()
+                    .filter(|r| r.expires <= now)
+                    .map(|r| r.relay.is_ipv6())
+                    .collect()
+            });
+            for v6 in gone {
+                self.remove_family(c, v6, env);
+            }
         }
         self.tcp_timeouts(now, env);
         for a in self.allocs.values_mut() {
@@ -792,15 +1050,38 @@ impl TurnCore {
                         self.by_conn.remove(id);
                         env.close_connection(*id);
                     }
-                    self.by_tcp_relay.remove(&a.relay);
-                    env.close_tcp_relay(a.relay);
+                    for r in &a.relays {
+                        self.by_tcp_relay.remove(&r.relay);
+                        env.close_tcp_relay(r.relay);
+                    }
                 }
                 None => {
-                    self.by_relay.remove(&a.relay);
-                    env.close_relay(a.relay);
+                    for r in &a.relays {
+                        self.by_relay.remove(&r.relay);
+                        env.close_relay(r.relay);
+                    }
                 }
             }
         }
+    }
+
+    /// Frees the relayed address of the IPv6 (`v6`) or IPv4 family of `client`'s allocation,
+    /// with its permissions and channels; the allocation goes with its last one.
+    fn remove_family(&mut self, client: SocketAddr, v6: bool, env: &mut dyn TurnEnv) {
+        let Some(a) = self.allocs.get_mut(&client) else {
+            return;
+        };
+        if a.tcp.is_some() || a.relays.iter().all(|r| r.relay.is_ipv6() == v6) {
+            self.remove(client, env);
+            return;
+        }
+        let Some(i) = a.relays.iter().position(|r| r.relay.is_ipv6() == v6) else {
+            return;
+        };
+        let r = a.relays.remove(i);
+        a.drop_family(v6);
+        self.by_relay.remove(&r.relay);
+        env.close_relay(r.relay);
     }
 
     fn base(&self, m: &Message<'_>, class: Class) -> MessageBuilder {
@@ -957,12 +1238,24 @@ impl TurnCore {
         if let Some(a) = self.allocs.get(&client) {
             // A retransmission of the request that created it gets the same answer.
             if a.created_tid == m.transaction_id() {
-                let left = a.expires.saturating_duration_since(now).as_secs() as u32;
-                return Ok(self
-                    .base(m, Class::Success)
-                    .xor_addr(attr::XOR_RELAYED_ADDRESS, a.public)
+                let left = a
+                    .relays
+                    .iter()
+                    .map(|r| r.expires.saturating_duration_since(now))
+                    .max()
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+                let mut b = self.base(m, Class::Success);
+                for r in &a.relays {
+                    b = b.xor_addr(attr::XOR_RELAYED_ADDRESS, r.public);
+                }
+                b = b
                     .u32(attr::LIFETIME, left)
-                    .xor_addr(attr::XOR_MAPPED_ADDRESS, client));
+                    .xor_addr(attr::XOR_MAPPED_ADDRESS, client);
+                if let Some((family, code)) = a.addr_error {
+                    b = with_address_error(b, m, family, code);
+                }
+                return Ok(b);
             }
             return Err(Reject(437, "Allocation Mismatch"));
         }
@@ -978,40 +1271,50 @@ impl TurnCore {
         }
         let token = m.get(attr::RESERVATION_TOKEN);
         let even = m.get(attr::EVEN_PORT);
-        if token.is_some() && (even.is_some() || m.has(attr::REQUESTED_ADDRESS_FAMILY)) {
+        if token.is_some()
+            && (even.is_some()
+                || m.has(attr::REQUESTED_ADDRESS_FAMILY)
+                || additional_family(m).is_some())
+        {
             return Err(Reject(400, "Bad Request"));
         }
-        self.check_family(m)?;
+        let fam = families(&self.shared.cfg, m)?;
+        // EVEN-PORT with the R bit and a dual allocation would need two tokens (step 8).
+        if fam.additional && even.is_some_and(|e| e.first().is_some_and(|b| b & 0x80 != 0)) {
+            return Err(Reject(400, "Bad Request"));
+        }
         let token: Option<[u8; 8]> = match token {
             Some(t) => Some(t.try_into().map_err(|_| Reject(400, "Bad Request"))?),
             None => None,
         };
-        // Server-wide and per-user quotas: O(1), shared by every shard.
+        let Some(ip) = self.shared.cfg.relay_ip_for(fam.v6) else {
+            return Err(Reject(440, "Address Family not Supported"));
+        };
+        // Server-wide and per-user quotas: O(1), shared by every shard. A dual allocation is
+        // one allocation.
         self.shared.reserve(user)?;
-        match self.open_for(now, client, token, even, env) {
-            Ok((relay, reserved)) => {
-                Ok(self.allocated(now, client, m, user, key, relay, reserved, false))
-            }
+        let (relay, reserved) = match self.open_for(now, client, ip, token, even, env) {
+            Ok(r) => r,
             Err(r) => {
                 self.shared.release(user);
-                Err(r)
+                return Err(r);
+            }
+        };
+        let mut relays = vec![relay];
+        let mut addr_error = None;
+        if fam.additional {
+            // The IPv6 one, or the reason it is missing (step 9: a partial success).
+            match self.shared.cfg.relay_ip_for(true) {
+                None => addr_error = Some((2, 440)),
+                Some(ip6) => match self.open_for(now, client, ip6, None, even, env) {
+                    Ok((r6, _)) => relays.push(r6),
+                    Err(_) => addr_error = Some((2, 508)),
+                },
             }
         }
-    }
-
-    /// `REQUESTED-ADDRESS-FAMILY`, if present, must name the relay's family.
-    fn check_family(&self, m: &Message<'_>) -> Result<(), Reject> {
-        if let Some(f) = m.get(attr::REQUESTED_ADDRESS_FAMILY) {
-            let want_v6 = match f.first() {
-                Some(1) => false,
-                Some(2) => true,
-                _ => return Err(Reject(440, "Address Family not Supported")),
-            };
-            if want_v6 != self.shared.cfg.relay_ip.is_ipv6() {
-                return Err(Reject(440, "Address Family not Supported"));
-            }
-        }
-        Ok(())
+        Ok(self.allocated(
+            now, client, m, user, key, &relays, reserved, addr_error, false,
+        ))
     }
 
     /// An Allocate for a TCP relayed address (RFC 6062 section 5.1).
@@ -1036,10 +1339,17 @@ impl TurnCore {
         {
             return Err(Reject(400, "Bad Request"));
         }
-        self.check_family(m)?;
+        let fam = families(&self.shared.cfg, m)?;
+        let Some(ip) = self.shared.cfg.relay_ip_for(fam.v6) else {
+            return Err(Reject(440, "Address Family not Supported"));
+        };
+        // RFC 6062 knows one relayed address: a dual request gets the IPv4 one, and says so.
+        let addr_error = fam.additional.then_some((2, 440));
         self.shared.reserve(user)?;
-        match env.open_tcp_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0)) {
-            Ok(relay) => Ok(self.allocated(now, client, m, user, key, relay, None, true)),
+        match env.open_tcp_relay(client, SocketAddr::new(ip, 0)) {
+            Ok(relay) => {
+                Ok(self.allocated(now, client, m, user, key, &[relay], None, addr_error, true))
+            }
             Err(e) => {
                 self.shared.release(user);
                 Err(if e.kind() == io::ErrorKind::Unsupported {
@@ -1051,11 +1361,12 @@ impl TurnCore {
         }
     }
 
-    /// The relay socket of a new allocation, and the token of the port set aside with it.
+    /// A relay socket of a new allocation on `ip`, and the token of the port set aside with it.
     fn open_for(
         &self,
         now: Instant,
         client: SocketAddr,
+        ip: IpAddr,
         token: Option<[u8; 8]>,
         even: Option<&[u8]>,
         env: &mut dyn TurnEnv,
@@ -1079,7 +1390,7 @@ impl TurnCore {
             }
             (None, Some(e)) => {
                 let reserve = e.first().is_some_and(|b| b & 0x80 != 0);
-                let (r, next) = self.open_even(client, reserve, env).ok_or_else(full)?;
+                let (r, next) = self.open_even(client, ip, reserve, env).ok_or_else(full)?;
                 let mut reserved = None;
                 if let Some(next) = next {
                     let mut t = [0u8; 8];
@@ -1090,13 +1401,14 @@ impl TurnCore {
                 Ok((r, reserved))
             }
             (None, None) => env
-                .open_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0))
+                .open_relay(client, SocketAddr::new(ip, 0))
                 .map(|r| (r, None))
                 .map_err(|_| full()),
         }
     }
 
-    /// Records a new allocation on `relay` and builds its success response.
+    /// Records a new allocation on `relays` (one, or two of different families) and builds
+    /// its success response.
     #[allow(clippy::too_many_arguments)]
     fn allocated(
         &mut self,
@@ -1105,43 +1417,52 @@ impl TurnCore {
         m: &Message<'_>,
         user: &str,
         key: [u8; 16],
-        relay: SocketAddr,
+        relays: &[SocketAddr],
         reserved: Option<[u8; 8]>,
+        addr_error: Option<(u8, u16)>,
         tcp: bool,
     ) -> MessageBuilder {
-        let public = SocketAddr::new(
-            self.shared.cfg.public_ip.unwrap_or_else(|| relay.ip()),
-            relay.port(),
-        );
         let life = self.lifetime(m);
+        let relays: Vec<RelayAddr> = relays
+            .iter()
+            .map(|&relay| RelayAddr {
+                relay,
+                public: self.shared.cfg.public_of(relay),
+                expires: now + life,
+            })
+            .collect();
+        let mut b = self.base(m, Class::Success);
+        for r in &relays {
+            if tcp {
+                self.by_tcp_relay.insert(r.relay, client);
+            } else {
+                self.by_relay.insert(r.relay, client);
+            }
+            b = b.xor_addr(attr::XOR_RELAYED_ADDRESS, r.public);
+        }
+        b = b
+            .u32(attr::LIFETIME, life.as_secs() as u32)
+            .xor_addr(attr::XOR_MAPPED_ADDRESS, client);
+        if let Some(t) = reserved {
+            b = b.attr(attr::RESERVATION_TOKEN, &t);
+        }
+        if let Some((family, code)) = addr_error {
+            b = with_address_error(b, m, family, code);
+        }
         self.allocs.insert(
             client,
             Allocation {
-                relay,
-                public,
+                relays,
                 user: user.to_owned(),
                 key,
-                expires: now + life,
                 created_tid: m.transaction_id(),
+                addr_error,
                 perms: HashMap::new(),
                 chans: HashMap::new(),
                 chan_of: HashMap::new(),
                 tcp: tcp.then(Box::default),
             },
         );
-        if tcp {
-            self.by_tcp_relay.insert(relay, client);
-        } else {
-            self.by_relay.insert(relay, client);
-        }
-        let mut b = self
-            .base(m, Class::Success)
-            .xor_addr(attr::XOR_RELAYED_ADDRESS, public)
-            .u32(attr::LIFETIME, life.as_secs() as u32)
-            .xor_addr(attr::XOR_MAPPED_ADDRESS, client);
-        if let Some(t) = reserved {
-            b = b.attr(attr::RESERVATION_TOKEN, &t);
-        }
         b
     }
 
@@ -1150,13 +1471,12 @@ impl TurnCore {
     fn open_even(
         &self,
         client: SocketAddr,
+        ip: IpAddr,
         reserve: bool,
         env: &mut dyn TurnEnv,
     ) -> Option<(SocketAddr, Option<SocketAddr>)> {
         for _ in 0..32 {
-            let r = env
-                .open_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0))
-                .ok()?;
+            let r = env.open_relay(client, SocketAddr::new(ip, 0)).ok()?;
             if r.port() % 2 != 0 || r.port() == u16::MAX {
                 env.close_relay(r);
                 continue;
@@ -1188,16 +1508,38 @@ impl TurnCore {
         m: &Message<'_>,
         env: &mut dyn TurnEnv,
     ) -> Result<MessageBuilder, Reject> {
-        if !self.allocs.contains_key(&client) {
+        let Some(a) = self.allocs.get(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
+        };
+        // RFC 8656 sections 8.1 and 8.2: REQUESTED-ADDRESS-FAMILY picks one relayed address of
+        // a dual allocation (443 for a family it does not have); without it, all of them.
+        let family = match m.get(attr::REQUESTED_ADDRESS_FAMILY) {
+            None => None,
+            Some(f) => match f.first() {
+                Some(1) => Some(false),
+                Some(2) => Some(true),
+                _ => return Err(Reject(400, "Bad Request")),
+            },
+        };
+        if let Some(v6) = family {
+            if !a.relays.iter().any(|r| r.relay.is_ipv6() == v6) {
+                return Err(Reject(443, "Peer Address Family Mismatch"));
+            }
         }
         if m.get_u32(attr::LIFETIME) == Some(0) {
-            self.remove(client, env);
+            match family {
+                Some(v6) => self.remove_family(client, v6, env),
+                None => self.remove(client, env),
+            }
             return Ok(self.base(m, Class::Success).u32(attr::LIFETIME, 0));
         }
         let life = self.lifetime(m);
         if let Some(a) = self.allocs.get_mut(&client) {
-            a.expires = now + life;
+            for r in &mut a.relays {
+                if family.is_none_or(|v6| r.relay.is_ipv6() == v6) {
+                    r.expires = now + life;
+                }
+            }
         }
         Ok(self
             .base(m, Class::Success)
@@ -1215,8 +1557,11 @@ impl TurnCore {
             return Err(Reject(400, "Bad Request"));
         }
         let peers: Vec<SocketAddr> = peers.into_iter().flatten().collect();
-        let v6 = self.shared.cfg.relay_ip.is_ipv6();
-        if peers.iter().any(|p| p.is_ipv6() != v6) {
+        // Each peer needs a relayed address of its family (both, in a dual allocation).
+        let Some(a) = self.allocs.get(&client) else {
+            return Err(Reject(437, "Allocation Mismatch"));
+        };
+        if peers.iter().any(|p| !a.has_family(*p)) {
             return Err(Reject(443, "Peer Address Family Mismatch"));
         }
         if peers
@@ -1260,7 +1605,7 @@ impl TurnCore {
         let Some(peer) = m.get_xor_addr(attr::XOR_PEER_ADDRESS) else {
             return Err(Reject(400, "Bad Request"));
         };
-        if peer.is_ipv6() != self.shared.cfg.relay_ip.is_ipv6() {
+        if !self.allocs.get(&client).is_none_or(|a| a.has_family(peer)) {
             return Err(Reject(443, "Peer Address Family Mismatch"));
         }
         if !self.peer_ok(peer) {
@@ -1312,14 +1657,13 @@ impl TurnCore {
         env: &mut dyn TurnEnv,
     ) -> Result<(), Reject> {
         let max = self.shared.cfg.max_tcp_connections;
-        let v6 = self.shared.cfg.relay_ip.is_ipv6();
-        if !self.allocs.contains_key(&client) {
+        let Some(a) = self.allocs.get(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
-        }
+        };
         let Some(peer) = m.get_xor_addr(attr::XOR_PEER_ADDRESS) else {
             return Err(Reject(400, "Bad Request"));
         };
-        if peer.is_ipv6() != v6 {
+        if !a.has_family(peer) {
             return Err(Reject(443, "Peer Address Family Mismatch"));
         }
         if !self.peer_ok(peer) || peer.port() == 0 {
@@ -1329,7 +1673,9 @@ impl TurnCore {
         let Some(a) = self.allocs.get_mut(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
-        let relay = a.relay;
+        let Some(relay) = a.relays.first().map(|r| r.relay) else {
+            return Err(Reject(437, "Allocation Mismatch"));
+        };
         let Some(tcp) = a.tcp.as_mut() else {
             return Err(Reject(400, "Bad Request")); // a UDP allocation
         };
@@ -1367,6 +1713,7 @@ impl TurnCore {
             return false;
         };
         let key = a.key;
+        let alive = a.alive(now);
         let Some(tcp) = a.tcp.as_mut() else {
             return false;
         };
@@ -1376,7 +1723,7 @@ impl TurnCore {
         let TcpState::Connecting(tid, fingerprint, _) = c.state else {
             return false;
         };
-        let b = if ok && a.expires > now {
+        let b = if ok && alive {
             c.state = TcpState::Pending(now + TCP_BIND_TIMEOUT);
             self.reply(Method::CONNECT, Class::Success, tid)
                 .u32(attr::CONNECTION_ID, id)
@@ -1410,7 +1757,7 @@ impl TurnCore {
         }
         let id = self.shared.connection_id();
         let a = self.allocs.get_mut(&client)?;
-        if a.expires <= now || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
+        if !a.alive(now) || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
             return None;
         }
         let tcp = a.tcp.as_mut()?;
@@ -1525,7 +1872,7 @@ impl TurnCore {
         let Some(a) = self.allocs.get_mut(&owner) else {
             return bad(self);
         };
-        if a.user != user || a.expires <= now {
+        if a.user != user || !a.alive(now) {
             return bad(self);
         }
         let Some(c) = a.tcp.as_mut().and_then(|t| t.conns.get_mut(&id)) else {
@@ -1613,6 +1960,14 @@ impl TurnCore {
 
 /// Comprehension-required attributes this server does not understand, encoded for
 /// `UNKNOWN-ATTRIBUTES`.
+/// The reason phrase of an `ADDRESS-ERROR-CODE` (RFC 8656 section 19).
+fn reason(code: u16) -> &'static str {
+    match code {
+        440 => "Address Family not Supported",
+        _ => "Insufficient Capacity",
+    }
+}
+
 fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
     const KNOWN: &[u16] = &[
         attr::MAPPED_ADDRESS,
@@ -1644,6 +1999,9 @@ fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+mod tests_dual;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::fuzzing::{CLIENT, REALM, USER, turn_core};
@@ -1666,24 +2024,35 @@ mod tests {
         let now = Instant::now();
         let core = turn_core(now);
         let sh = &core.shared;
-        assert!(sh.authenticated_allocate(now, CLIENT, &allocate(&core, now, USER.1, None)));
-        assert!(!sh.authenticated_allocate(now, CLIENT, &allocate(&core, now, "nope", None)));
+        assert!(
+            !sh.prebind_ips(now, CLIENT, &allocate(&core, now, USER.1, None))
+                .is_empty()
+        );
+        assert!(
+            sh.prebind_ips(now, CLIENT, &allocate(&core, now, "nope", None))
+                .is_empty()
+        );
         let forged = "0".repeat(32);
-        assert!(!sh.authenticated_allocate(
-            now,
-            CLIENT,
-            &allocate(&core, now, USER.1, Some(&forged))
-        ));
+        assert!(
+            sh.prebind_ips(now, CLIENT, &allocate(&core, now, USER.1, Some(&forged)))
+                .is_empty()
+        );
         // A nonce issued to another address.
         let other: SocketAddr = "10.9.9.9:1".parse().unwrap();
-        assert!(!sh.authenticated_allocate(now, other, &allocate(&core, now, USER.1, None)));
+        assert!(
+            sh.prebind_ips(now, other, &allocate(&core, now, USER.1, None))
+                .is_empty()
+        );
         // Expired nonce.
         let later = now + Duration::from_secs(3600);
-        assert!(!sh.authenticated_allocate(later, CLIENT, &allocate(&core, now, USER.1, None)));
+        assert!(
+            sh.prebind_ips(later, CLIENT, &allocate(&core, now, USER.1, None))
+                .is_empty()
+        );
         // Not an Allocate.
         let b = MessageBuilder::new(Method::REFRESH, Class::Request, transaction_id()).build();
-        assert!(!sh.authenticated_allocate(now, CLIENT, &b));
-        assert!(!sh.authenticated_allocate(now, CLIENT, b"\x40\x00\x00\x00"));
+        assert!(sh.prebind_ips(now, CLIENT, &b).is_empty());
+        assert!(sh.prebind_ips(now, CLIENT, b"\x40\x00\x00\x00").is_empty());
     }
 
     /// What the TCP side of the core asks of its environment.
@@ -2024,10 +2393,10 @@ mod tests {
             &core,
             now,
             CLIENT,
-            tcp().attr(attr::REQUESTED_ADDRESS_FAMILY, &[2, 0, 0, 0]),
+            tcp().attr(attr::REQUESTED_ADDRESS_FAMILY, &[3, 0, 0, 0]),
         );
         core.handle_client(now, CLIENT, &a, &mut env);
-        assert_eq!(env.last().2, Some(440));
+        assert_eq!(env.last().2, Some(440)); // no such family
         // An environment without TCP support: 442, and the quota is given back.
         struct NoTcp(TcpEnv);
         impl TurnEnv for NoTcp {

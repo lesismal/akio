@@ -10,6 +10,10 @@
 //	                                                 send and receive through the relay
 //	webrtc-pion turn-raw-tcp <turn> <user> <pass>    the same over TCP
 //	webrtc-pion turn-raw-tls <turn> <user> <pass>    the same over TLS (certificate not checked)
+//	webrtc-pion turn-family-raw <turn> <user> <pass> <4|6>
+//	                                                 turn-raw asking for that relay family
+//	                                                 (REQUESTED-ADDRESS-FAMILY), with a peer on
+//	                                                 127.0.0.1 or ::1
 //	webrtc-pion turn-tcp-raw <turn> <user> <pass>    pion/turn TCP allocation (RFC 6062) over TCP:
 //	                                                 Dial (Connect + ConnectionBind) to a TCP echo
 //	                                                 peer, then Accept a peer connecting to the
@@ -391,6 +395,57 @@ func turnRaw(server, user, pass, transport string) {
 	c.Close()
 }
 
+// turnFamilyRaw: a pion/turn allocation of the IPv4 or IPv6 family (REQUESTED-ADDRESS-FAMILY),
+// relaying to a peer of that family.
+func turnFamilyRaw(server, user, pass, family string) {
+	fam, peerNet, peerAddr := turn.RequestedAddressFamilyIPv4, "udp4", "127.0.0.1:0"
+	if family == "6" {
+		fam, peerNet, peerAddr = turn.RequestedAddressFamilyIPv6, "udp6", "[::1]:0"
+	}
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	check(err)
+	c, err := turn.NewClient(&turn.ClientConfig{
+		STUNServerAddr: server, TURNServerAddr: server, Conn: conn,
+		Username: user, Password: pass, Realm: "only", RequestedAddressFamily: fam,
+	})
+	check(err)
+	check(c.Listen())
+	relay, err := c.Allocate()
+	check(err)
+	ra, ok := relay.LocalAddr().(*net.UDPAddr)
+	if !ok || (ra.IP.To4() == nil) != (family == "6") {
+		fail("relayed address %v is not of family %s", relay.LocalAddr(), family)
+	}
+	peer, err := net.ListenPacket(peerNet, peerAddr)
+	check(err)
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := peer.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = peer.WriteTo(buf[:n], from)
+		}
+	}()
+	check(relay.SetReadDeadline(time.Now().Add(10 * time.Second)))
+	buf := make([]byte, 1500)
+	for i := 0; i < 20; i++ {
+		msg := fmt.Sprintf("family %s %d", family, i)
+		_, err = relay.WriteTo([]byte(msg), peer.LocalAddr())
+		check(err)
+		n, from, err := relay.ReadFrom(buf)
+		check(err)
+		if string(buf[:n]) != msg || from.String() != peer.LocalAddr().String() {
+			fail("relay echo %d: %q from %v", i, buf[:n], from)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fmt.Printf("ok: pion/turn REQUESTED-ADDRESS-FAMILY IPv%s: relayed %v, 20 datagrams echoed by %v\n", family, relay.LocalAddr(), peer.LocalAddr())
+	relay.Close()
+	c.Close()
+}
+
 // turnTCPRaw: a pion/turn TCP allocation (RFC 6062). pion binds data connections over plain
 // TCP to the server's address, so the control connection is TCP too.
 func turnTCPRaw(server, user, pass string) {
@@ -483,6 +538,8 @@ func main() {
 		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tls")
 	case "turn-tcp-raw":
 		turnTCPRaw(os.Args[2], os.Args[3], os.Args[4])
+	case "turn-family-raw":
+		turnFamilyRaw(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 	case "server-tcp":
 		serverWith(os.Args[2], tcpOnlyAPI(), nil)
 	case "server-tcp-passive":

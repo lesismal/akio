@@ -137,6 +137,13 @@ pub mod attr {
     pub const CONNECTION_ID: u16 = 0x002A;
     /// ADDITIONAL-ADDRESS-FAMILY (TURN).
     pub const ADDITIONAL_ADDRESS_FAMILY: u16 = 0x8000;
+    /// ADDRESS-ERROR-CODE (TURN): why one family of a dual allocation was not allocated.
+    pub const ADDRESS_ERROR_CODE: u16 = 0x8001;
+    /// `ADDITIONAL-ADDRESS-FAMILY` as draft-ietf-tram-turnbis numbered it, which coturn 4.6
+    /// still sends and understands (unassigned by IANA): accepted as an alias (ADR-083).
+    pub(crate) const ADDITIONAL_ADDRESS_FAMILY_DRAFT: u16 = 0x8032;
+    /// `ADDRESS-ERROR-CODE` as the same draft numbered it.
+    pub(crate) const ADDRESS_ERROR_CODE_DRAFT: u16 = 0x8033;
     /// PASSWORD-ALGORITHMS.
     pub const PASSWORD_ALGORITHMS: u16 = 0x8002;
     /// SOFTWARE.
@@ -360,6 +367,20 @@ impl<'a> Message<'a> {
         Some((code, std::str::from_utf8(&v[4..]).unwrap_or("")))
     }
 
+    /// `ADDRESS-ERROR-CODE` (RFC 8656 section 18.12): the address family a dual allocation
+    /// did not get (1 IPv4, 2 IPv6), the error code (440 or 508) and the reason phrase.
+    pub fn address_error_code(&self) -> Option<(u8, u16, &'a str)> {
+        // Or the draft-ietf-tram-turnbis codepoint coturn 4.6 answers with.
+        let v = self
+            .get(attr::ADDRESS_ERROR_CODE)
+            .or_else(|| self.get(attr::ADDRESS_ERROR_CODE_DRAFT))?;
+        if v.len() < 4 {
+            return None;
+        }
+        let code = u16::from(v[2] & 7) * 100 + u16::from(v[3]);
+        Some((v[0], code, std::str::from_utf8(&v[4..]).unwrap_or("")))
+    }
+
     /// Verifies `MESSAGE-INTEGRITY` with `key` (the short-term password, or the long-term key
     /// from [`long_term_key`]). `false` when it is absent or wrong.
     pub fn check_integrity(&self, key: &[u8]) -> bool {
@@ -553,6 +574,15 @@ impl MessageBuilder {
         let mut v = vec![0, 0, (code / 100) as u8, (code % 100) as u8];
         v.extend_from_slice(reason.as_bytes());
         self.attr(attr::ERROR_CODE, &v)
+    }
+
+    /// Appends `ADDRESS-ERROR-CODE` (RFC 8656 section 18.12) for address family `family` (1
+    /// IPv4, 2 IPv6).
+    #[must_use]
+    pub fn address_error(self, family: u8, code: u16, reason: &str) -> Self {
+        let mut v = vec![family, 0, (code / 100) as u8, (code % 100) as u8];
+        v.extend_from_slice(reason.as_bytes());
+        self.attr(attr::ADDRESS_ERROR_CODE, &v)
     }
 
     /// Appends `MESSAGE-INTEGRITY` keyed with `key`. Only `FINGERPRINT` may follow.
