@@ -31,6 +31,7 @@ ip netns exec phone sh -c "ip addr add 10.99.0.2/24 dev p1; ip link set p1 up; i
 ip netns exec gw sh -c "ip addr add 10.99.1.2/24 dev g1; ip link set g1 up; ip link set lo up"
 sysctl -qw net.ipv4.ip_forward=1
 iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -p udp -j MASQUERADE --to-ports 40000-40999 --random
+iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -j MASQUERADE
 export ONLY_INTEROP_ECN=ect1 ONLY_INTEROP_BWE=1000000 ONLY_INTEROP_LATCH=once ONLY_LOG=only_webrtc=debug
 PORT=5300
 gateway() {
