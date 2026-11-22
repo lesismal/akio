@@ -7,6 +7,8 @@ use crate::{
     decompress_with_dictionary,
 };
 
+pub mod shared;
+
 /// Output limit of the decoding targets.
 pub const LIMIT: usize = 1 << 20;
 
@@ -214,6 +216,11 @@ mod tests {
     #[test]
     fn brotli_stream_corpus() {
         replay("brotli_stream", super::stream);
+    }
+
+    #[test]
+    fn brotli_shared_corpus() {
+        replay("brotli_shared", super::shared::shared);
     }
 
     #[test]

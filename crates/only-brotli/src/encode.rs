@@ -19,13 +19,13 @@
 //! like Google's encoder does. A meta-block that would come out larger than its bytes is stored
 //! uncompressed instead.
 
-use crate::Level;
 use crate::bits::BitWriter;
 use crate::huffman::{codes, lengths};
 use crate::tables::{
     BLOCK_LEN, CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA,
     split_command,
 };
+use crate::{Level, SharedDictionary};
 
 mod sdict;
 mod split;
@@ -48,6 +48,22 @@ pub fn compress_with_dictionary(level: Level, data: &[u8], dict: &[u8]) -> Vec<u
     compress_impl(level, data, dict)
 }
 
+/// [`compress`] with a shared dictionary (RFC 9841): matches may copy from its LZ77 prefix as
+/// [`compress_with_dictionary`] does from a raw dictionary. Custom word lists are not
+/// searched: if the dictionary has custom static dictionaries
+/// ([`SharedDictionary::is_raw`] is false), no static dictionary words are used at all (the
+/// built-in ones would mean something else). Decode with the same dictionary
+/// ([`decompress_with_shared_dictionary`](crate::decompress_with_shared_dictionary)).
+pub fn compress_with_shared_dictionary(
+    level: Level,
+    data: &[u8],
+    dict: &SharedDictionary,
+) -> Vec<u8> {
+    let mut p = params(level.get());
+    p.static_words = dict.is_raw();
+    compress_with(p, data, dict.prefix())
+}
+
 /// Writes the stream header (the window size).
 pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32) {
     match wbits {
@@ -59,7 +75,10 @@ pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32) {
 }
 
 pub(crate) fn compress_impl(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
-    let p = params(level.get());
+    compress_with(params(level.get()), data, dict)
+}
+
+fn compress_with(p: Params, data: &[u8], dict: &[u8]) -> Vec<u8> {
     let wbits = window_bits(data.len());
     let mut w = BitWriter::with_capacity(data.len() / 2 + 16);
     write_window_bits(&mut w, wbits);
@@ -122,6 +141,9 @@ struct Params {
     split_iters: usize,
     /// Greedy block splitting (levels 4..=9).
     greedy: bool,
+    /// Static dictionary words are candidates (of the optimal parse); off for shared
+    /// dictionaries with custom static dictionaries.
+    static_words: bool,
 }
 
 fn params(level: u8) -> Params {
@@ -139,6 +161,7 @@ fn params(level: u8) -> Params {
         block: 1 << 20,
         split_iters: 0,
         greedy: level >= 4,
+        static_words: true,
     };
     match level {
         0 => p(1, 16, false, 14, NONE, false),
@@ -1231,8 +1254,10 @@ impl Encoder<'_> {
         let mut found = Vec::new();
         for i in start..end {
             dstart.push(dlist.len() as u32);
-            sdict::matches(&data[i..end], &mut found);
-            dlist.extend_from_slice(&found);
+            if self.p.static_words {
+                sdict::matches(&data[i..end], &mut found);
+                dlist.extend_from_slice(&found);
+            }
         }
         dstart.push(dlist.len() as u32);
         let words = Words {
