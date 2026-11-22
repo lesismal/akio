@@ -92,7 +92,7 @@ gateway once
 phone 100
 echo "gateway $(latched)"
 finish
-echo "== DTLS-SRTP without rtcp-mux, latching once: RTCP's own handshake latches too"
+echo "== DTLS-SRTP without rtcp-mux, latching once: the RTCP handshake latches too"
 RTCP=1
 gateway once
 phone 100
@@ -106,7 +106,7 @@ gateway off
 if phone 100; then echo "FAIL: echo without latching"; exit 1; fi
 echo "no echo; gateway $(latched)"
 finish
-echo "== DTLS-SRTP, the gateway the DTLS client, latching once onto the phone's keepalive"
+echo "== DTLS-SRTP, the gateway the DTLS client, latching once onto the keepalives of the phone"
 gateway once
 phone 100
 echo "gateway $(latched)"

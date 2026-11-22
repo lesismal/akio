@@ -83,8 +83,10 @@ pub fn webrtc_sdes(data: &[u8]) {
 
 /// Whether a section of `sdp` carries both `a=crypto` and `a=fingerprint`.
 fn crypto_next_to_fingerprint(sdp: &str) -> bool {
-    sdp.split("\r\nm=")
-        .any(|sec| sec.contains("a=crypto:") && sec.contains("a=fingerprint:"))
+    sdp.split("\r\nm=").any(|sec| {
+        let has = |k: &str| sec.lines().any(|l| l.starts_with(k));
+        has("a=crypto:") && has("a=fingerprint:")
+    })
 }
 
 /// Host candidates of both components for a peer whose configuration offers RTCP without
@@ -155,7 +157,8 @@ fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
         assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
         // Keys travel in SDP only when SDES is on, and never in a section with a DTLS
         // fingerprint (data channels next to SDES media have theirs in their own section).
-        let crypto = answer.contains("a=crypto:");
+        // (Whole lines: a rejected section echoes the offer's `m=` fields, whatever they hold.)
+        let crypto = answer.lines().any(|l| l.starts_with("a=crypto:"));
         assert!(!crypto || cfg.sdes, "{answer}");
         assert!(!crypto_next_to_fingerprint(&answer), "{answer}");
         // No ICE in the answer to an offer without it; no BUNDLE when it is disabled.
