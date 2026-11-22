@@ -164,6 +164,41 @@ No API change.
   handshakes 1.07× → 1.10× rustls + ring. The same change in the standalone field
   multiplication (latency-bound inversion chains) gained nothing and was left out.
 
+### Changed: brotli's cost per flushed write halved (only-brotli)
+
+ADR-074's second update of 2026-11-22, no API change. Writing a meta-block allocates nothing
+(buffers kept by the encoder and the stream), prefix codes are built in time proportional to the
+symbols used, and a stream sends the last code it wrote for a category again where that costs no
+more bits than a new one. Quality 4 on gpu51: 1.98 → 1.07 us per flushed 87-byte event, a
+16-event response 56.5 → 35.0 us and up to 7.5% smaller; `Compress::stream` br over HTTP 65.2 →
+46.3 us server CPU per 16-event response (1.41x responses/s). One-shot output is bit-for-bit the
+same at every level. A stream holds 15 KiB more.
+
+### Added: large-window brotli, the shared brotli framing format, custom word lists in the encoder (only-brotli)
+
+ADR-079, the rest of RFC 9841; additive API:
+
+- `decompress_large_window(data, limit)`, `Decompressor::large_window(bool)`: large-window
+  brotli (RFC 9841 section 6, Google's `BROTLI_DECODER_PARAM_LARGE_WINDOW`), windows 2^10..2^30
+  and distances up to 2^31 - 4, decoded as Google's decoder does (the distance alphabet's
+  limit included); `max_window_bits` now goes up to 30 and still defaults to 24. Regular decoding
+  still refuses such streams.
+- `compress_large_window(level, data)`, `Compressor::large_window(bool)` (`window_bits` up to 30).
+  Checked both ways against Google's `brotli --large_window` (built from source in Docker on
+  gpu51, and 1.2.1), distances past 64 MiB included.
+- `read_container(data, limit, lookup)`, `ContainerWriter`, `Resource`: the shared brotli
+  framing format (RFC 9841 section 8): containers of resources (data chunks, runs of partial
+  chunks continuing one stream), metadata (`id`, `mt`), dictionary references by pointer or by
+  hash code (resolved by `lookup`), central directory and final footer, all rules checked.
+  Hash codes are opaque: the RFC names HighwayHash but no key. New errors `BadContainer`,
+  `MissingDictionary`.
+- `compress_with_shared_dictionary` searches the custom word lists of a serialized dictionary
+  under their transforms at levels 10 and 11 (it used the prefix only): on alice29.txt level 11
+  is 7-11% smaller than before and within 0.4% of libbrotli's quality 11; libbrotli decodes it.
+- Fuzzing: new target `brotli_container`; `brotli_shared` also round-trips a dictionary's words
+  at levels 10 and 11. `tools/interop/brotli-shared/run.sh` checks large windows against
+  Google's CLI and has libbrotli decode our level-11 output.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

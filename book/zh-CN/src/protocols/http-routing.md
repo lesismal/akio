@@ -107,12 +107,14 @@
 压缩，每次写入后刷新编码器，使每个 server-sent event 仍能立即到达客户端；每个流的默认值很小
 （`StreamCompress`：gzip 1，zstd 1 配 128 KiB 窗口，brotli 4 配 256 KiB 窗口；每个打开的流约 0.3、0.5 和
 1.3 MiB，指输出了一个窗口之后；brotli 的匹配表随流增长，只发了几个事件的流只占几 KiB）。brotli 每次小写入的
-CPU 开销仍然最大（每次刷新的事件约 2 us，zstd 0.3 us），高频事件流宜提供 zstd，或交给 gzip。
+CPU 开销仍然最大（每次刷新的事件约 1 us，zstd 0.3 us），高频事件流宜提供 zstd，或交给 gzip。
 
 中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `only-brotli` 解码：原始（LZ77
 前缀）字典，即 `brotli -D` 与 RFC 9842 的 `dcb` 所用的那种（`decompress_with_dictionary`），以及带自定义
 词表与变换的 RFC 9841 序列化共享字典（`SharedDictionary::new`、`decompress_with_shared_dictionary`；
-ADR-069）。编码器只使用共享字典的前缀。
+ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词（ADR-079）。RFC 9841 的其余部分也在中间件之外
+提供：大窗口流（`decompress_large_window`、`Compressor::large_window`；窗口最大 1 GiB，只用于事先约定的
+对端），以及封装格式，即资源之间可以互作字典的容器（`read_container`、`ContainerWriter`）。
 
 ```rust,ignore
 {{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}

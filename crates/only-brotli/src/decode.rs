@@ -53,6 +53,23 @@ pub fn decompress_with_shared_dictionary(
     one_shot(data, limit, dict.view())
 }
 
+/// [`decompress`] that also accepts large-window brotli (RFC 9841 section 6, Google's
+/// `BROTLI_DECODER_PARAM_LARGE_WINDOW`): a stream header naming a window of up to 2³⁰ bytes
+/// (2¹⁰..2³⁰; RFC 9841 allows up to 2⁶², which no implementation supports), and distances up to
+/// 2³¹ - 4 with the larger distance alphabet that comes with it. Regular streams decode as
+/// with [`decompress`]. Memory is bounded by `limit` as there: the whole output is the window.
+///
+/// Such streams are not brotli as RFC 7932 defines it (a regular decoder rejects them), so
+/// they are only for peers that agreed to them, such as [`Compressor::large_window`](crate::Compressor::large_window)
+/// or `brotli --large_window`.
+pub fn decompress_large_window(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    let mut d = Decoder::new(BitReader::new(data), Vec::new(), 0, limit, Dict::default());
+    d.allow_large = true;
+    d.stream(data.len())?;
+    d.buf.truncate(d.pos);
+    Ok(d.buf)
+}
+
 fn one_shot(data: &[u8], limit: usize, dict: Dict<'_>) -> Result<Vec<u8>, Error> {
     let mut d = Decoder::new(BitReader::new(data), Vec::new(), 0, limit, dict);
     d.stream(data.len())?;
@@ -313,6 +330,24 @@ const SHORT_DISTANCES: [(u8, i8); 16] = [
 /// The largest distance the reference decoder accepts (`BROTLI_MAX_ALLOWED_DISTANCE`).
 const MAX_ALLOWED_DISTANCE: usize = 0x7fff_fffc;
 
+/// The distance symbols a meta-block with `npostfix` and `ndirect` may use: all of RFC 7932's
+/// alphabet; in a large-window stream those that cannot code a distance beyond
+/// [`MAX_ALLOWED_DISTANCE`] (Google's `BrotliCalculateDistanceCodeLimit`: whole groups of
+/// `2^npostfix` symbols with the same extra bits).
+fn dist_limit(large: bool, npostfix: u32, ndirect: usize) -> usize {
+    if !large {
+        return 16 + ndirect + (48 << npostfix);
+    }
+    // The first distance not allowed, past the direct codes, without its postfix, offset
+    // so that its group's `ndistbits` and `half` show in its bits.
+    let offset = ((MAX_ALLOWED_DISTANCE - ndirect) >> npostfix) + 4;
+    let ndistbits = (usize::BITS - 1 - (offset / 2).leading_zeros()) as usize;
+    let half = (offset >> ndistbits) & 1;
+    // The group that covers it; the one before is the last allowed.
+    let group = ((ndistbits - 1) << 1) | half;
+    (((group - 1) << npostfix) | ((1 << npostfix) - 1)) + ndirect + 16 + 1
+}
+
 fn block_len(br: &mut BitReader<'_>, code: &[u32]) -> u32 {
     let (base, extra) = BLOCK_LEN[decode(code, br) % 26];
     base + br.read(u32::from(extra))
@@ -354,6 +389,10 @@ pub(crate) struct Decoder<'a, 'd> {
     pub(crate) lens: Lengths,
     /// The raw prefix and custom static dictionaries.
     dict: Dict<'d>,
+    /// Large-window streams (RFC 9841 section 6) are accepted.
+    pub(crate) allow_large: bool,
+    /// The stream is a large-window stream (its distance alphabet is larger).
+    pub(crate) large: bool,
 }
 
 /// A group of prefix codes (the trees of one category), stored back to back.
@@ -454,6 +493,8 @@ pub(crate) struct HeaderBuild {
     lit_codes: Group,
     cmd_codes: Group,
     dist_codes: Group,
+    /// A large-window stream's meta-block.
+    large: bool,
 }
 
 /// What [`HeaderBuild::restore`] puts back: the stage, the context map's position and the
@@ -531,6 +572,8 @@ impl<'a, 'd> Decoder<'a, 'd> {
             last: [4, 11, 15, 16],
             lens: Lengths::default(),
             dict,
+            allow_large: false,
+            large: false,
         }
     }
 
@@ -665,7 +708,21 @@ impl<'a, 'd> Decoder<'a, 'd> {
             return Ok(17 + n);
         }
         match self.br.read(3) {
-            1 => Err(Error::BadWindow), // the large-window extension
+            // The large-window header (RFC 9841 section 6): 0x11 in 8 bits, then the window
+            // bits in 6. RFC 9841 allows up to 62; like Google's decoder (whose distances are
+            // 32-bit) this one takes 10..=30.
+            1 if self.allow_large => {
+                if self.br.read(1) != 0 {
+                    return Err(Error::BadWindow);
+                }
+                let w = self.br.read(6);
+                if !(10..=30).contains(&w) {
+                    return Err(Error::BadWindow);
+                }
+                self.large = true;
+                Ok(w)
+            }
+            1 => Err(Error::BadWindow),
             0 => Ok(17),
             m => Ok(8 + m),
         }
@@ -685,10 +742,24 @@ impl<'a, 'd> Decoder<'a, 'd> {
 
     /// Reads a prefix code over an alphabet of `size` symbols and appends its table to `out`.
     fn prefix_code(&mut self, size: usize, out: &mut Vec<u32>) -> Result<(), Error> {
+        self.prefix_code_limited(size, size, out)
+    }
+
+    /// [`Decoder::prefix_code`] over an alphabet of `size` symbols of which only the first
+    /// `limit` may be used (the distance alphabet of a large-window stream, as Google's
+    /// decoder reads it: symbols of a simple code take the bits of `size`, a complex code has
+    /// lengths for `limit` symbols).
+    fn prefix_code_limited(
+        &mut self,
+        size: usize,
+        limit: usize,
+        out: &mut Vec<u32>,
+    ) -> Result<(), Error> {
         let hskip = self.br.read(2);
         if hskip == 1 {
-            return self.simple_code(size, out);
+            return self.simple_code(size, limit, out);
         }
+        let size = limit;
         // Code lengths of the code length code.
         let mut cl = [0u8; 18];
         let mut space = 32i32;
@@ -766,13 +837,13 @@ impl<'a, 'd> Decoder<'a, 'd> {
         r
     }
 
-    fn simple_code(&mut self, size: usize, out: &mut Vec<u32>) -> Result<(), Error> {
+    fn simple_code(&mut self, size: usize, limit: usize, out: &mut Vec<u32>) -> Result<(), Error> {
         let nsym = self.br.read(2) as usize + 1;
         let max_bits = usize::BITS - (size - 1).leading_zeros();
         let mut syms = [0usize; 4];
         for s in syms.iter_mut().take(nsym) {
             *s = self.br.read(max_bits) as usize;
-            if *s >= size {
+            if *s >= limit {
                 return Err(Error::BadPrefixCode);
             }
         }
@@ -845,6 +916,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
             1 => h.cmd = self.blocks()?,
             2 => h.dst = self.blocks()?,
             3 => {
+                h.large = self.large;
                 h.npostfix = self.br.read(2);
                 h.ndirect = (self.br.read(4) as usize) << h.npostfix;
                 h.modes = vec![0u8; h.lit.types];
@@ -881,7 +953,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
                     _ => (
                         &mut h.dist_codes,
                         h.dist_map.0,
-                        16 + h.ndirect + (48 << h.npostfix),
+                        16 + h.ndirect + ((if h.large { 124 } else { 48 }) << h.npostfix),
                     ),
                 };
                 if g.starts.len() < n {
@@ -890,7 +962,12 @@ impl<'a, 'd> Decoder<'a, 'd> {
                         g.starts.reserve(n);
                     }
                     let at = g.tables.len();
-                    let r = self.prefix_code(size, &mut g.tables);
+                    let limit = if h.stage == 8 {
+                        dist_limit(h.large, h.npostfix, h.ndirect)
+                    } else {
+                        size
+                    };
+                    let r = self.prefix_code_limited(size, limit, &mut g.tables);
                     if r.is_err() {
                         g.tables.truncate(at);
                     }
@@ -974,7 +1051,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
         let h = std::mem::take(h);
         let npostfix = h.npostfix;
         let ndirect = h.ndirect;
-        let dist_size = 16 + ndirect + (48 << npostfix);
+        let dist_size = dist_limit(h.large, npostfix, ndirect);
         let mut dist_lut = vec![(0u32, 0u8); dist_size];
         for (j, e) in dist_lut[16..16 + ndirect].iter_mut().enumerate() {
             *e = (j as u32 + 1, 0);

@@ -10,8 +10,8 @@
 //!   maps (run lengths and inverse move-to-front), `NPOSTFIX` / `NDIRECT` distance codes, the
 //!   distance ring and its 16 short codes, and the static dictionary with its 121 transforms.
 //!   The decoder accepts and rejects the same streams as Google's decoder (the differential
-//!   fuzz target checks that against `brotli-decompressor`), refuses the non-standard
-//!   large-window extension and refuses data after the end of the stream.
+//!   fuzz target checks that against `brotli-decompressor`), refuses large-window streams
+//!   (they are not RFC 7932; see below) and refuses data after the end of the stream.
 //! - [`compress`]: LZ77 over hash chains (greedy at the low levels, lazy matching from level 4,
 //!   cost-based optimal parsing at levels 10 and 11, where static dictionary words are
 //!   candidates too), literals coded with a context map over clustered context histograms
@@ -26,7 +26,14 @@
 //! - [`SharedDictionary`] / [`decompress_with_shared_dictionary`]: RFC 9841 serialized shared
 //!   dictionaries (Google's `BROTLI_SHARED_DICTIONARY_SERIALIZED`): an LZ77 prefix plus custom
 //!   word lists and transforms, context-dependent if the dictionary says so; the encoder
-//!   ([`compress_with_shared_dictionary`]) uses the prefix.
+//!   ([`compress_with_shared_dictionary`]) uses the prefix and, at levels 10 and 11, searches
+//!   the custom words under their transforms.
+//! - [`compress_large_window`] / [`decompress_large_window`], [`Compressor::large_window`],
+//!   [`Decompressor::large_window`]: large-window brotli (RFC 9841 section 6, Google's
+//!   `BROTLI_PARAM_LARGE_WINDOW`): windows up to 2³⁰ bytes, for peers that agreed to it.
+//! - [`read_container`] / [`ContainerWriter`]: RFC 9841's framing format, a container of
+//!   resources compressed with brotli or shared brotli, with metadata and dictionary references
+//!   between them.
 //!
 //! ```
 //! use only_brotli::{Level, compress, decompress};
@@ -44,6 +51,7 @@ mod decode;
 mod dictionary;
 mod dstream;
 mod encode;
+mod frame;
 mod huffman;
 mod shared;
 mod tables;
@@ -53,9 +61,15 @@ mod tables;
 pub mod fuzzing;
 
 pub use cstream::Compressor;
-pub use decode::{decompress, decompress_with_dictionary, decompress_with_shared_dictionary};
+pub use decode::{
+    decompress, decompress_large_window, decompress_with_dictionary,
+    decompress_with_shared_dictionary,
+};
 pub use dstream::Decompressor;
-pub use encode::{compress, compress_with_dictionary, compress_with_shared_dictionary};
+pub use encode::{
+    compress, compress_large_window, compress_with_dictionary, compress_with_shared_dictionary,
+};
+pub use frame::{ContainerWriter, Resource, read_container};
 pub use shared::SharedDictionary;
 
 /// What a streaming [`Compressor::compress`] call does after taking its input.
@@ -148,6 +162,10 @@ pub enum Error {
     /// The stream's window is larger than the streaming decoder accepts
     /// ([`Decompressor::max_window_bits`]).
     WindowTooLarge,
+    /// A shared brotli framing format container ([`read_container`]) is malformed.
+    BadContainer,
+    /// A container's chunk references a dictionary by a hash code the caller does not know.
+    MissingDictionary,
 }
 
 impl std::fmt::Display for Error {
@@ -166,6 +184,8 @@ impl std::fmt::Display for Error {
             Error::Truncated => "truncated stream",
             Error::TooLarge => "decompressed data too large",
             Error::WindowTooLarge => "brotli window larger than allowed",
+            Error::BadContainer => "invalid shared brotli container",
+            Error::MissingDictionary => "unknown dictionary hash in shared brotli container",
         })
     }
 }

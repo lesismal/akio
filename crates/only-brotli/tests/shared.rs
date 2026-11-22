@@ -2,7 +2,7 @@
 //! `BROTLI_EXPERIMENTAL`) made from the first 20,000 bytes of alice29.txt with serialized
 //! dictionaries of each kind (`tests/data/shared`, written by
 //! `tools/interop/brotli-shared/run.sh` with `UPDATE=1`, which also checks the other
-//! direction and thousands of random dictionaries).
+//! direction and thousands of random dictionaries), and our encoder with them.
 
 use std::path::Path;
 
@@ -54,12 +54,26 @@ fn libbrotli_streams() {
         // The custom words are used: the prefix alone does not decode it.
         let raw = decompress_with_dictionary(&br, text.len(), dict.prefix());
         assert_eq!(raw.as_deref() == Ok(&text[..]), name == "prefix", "{name}");
-        // Our encoder with the dictionary (its prefix; no static words if custom).
-        let ours = compress_with_shared_dictionary(Level::BEST, &text, &dict);
-        assert_eq!(
-            decompress_with_shared_dictionary(&ours, text.len(), &dict).unwrap(),
-            text
-        );
+        // Our encoder with the dictionary: its prefix and, at levels 10 and 11, its custom
+        // words (for a dictionary with custom words, smaller than with its prefix alone).
+        for q in [5, 10, 11] {
+            let ours = compress_with_shared_dictionary(Level::new(q), &text, &dict);
+            assert_eq!(
+                decompress_with_shared_dictionary(&ours, text.len(), &dict).unwrap(),
+                text,
+                "{name} level {q}"
+            );
+            // At level 11 within 1% of libbrotli's quality 11 (custom words: 6,867..7,054
+            // bytes against 6,866..7,059; 7,609..7,692 without searching them).
+            if q == 11 {
+                assert!(
+                    ours.len() * 100 <= br.len() * 101,
+                    "{name}: {} against libbrotli's {}",
+                    ours.len(),
+                    br.len()
+                );
+            }
+        }
     }
 }
 

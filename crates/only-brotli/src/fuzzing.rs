@@ -188,6 +188,54 @@ pub fn stream_roundtrip(data: &[u8]) {
     let _ = stream_roundtrip_stream(data);
 }
 
+/// `brotli_container`: with bit 0 of `data[0]` clear, `data[1..]` as a shared brotli
+/// framing format container: never panics (a hash reference resolves to the hash's 32 bytes
+/// as a dictionary). With it set, a container written from pieces of `data[1..]` (named
+/// resources, hidden ones and resources compressed with an earlier one as their dictionary,
+/// at the level of `data[0] >> 4`) reads back as written.
+pub fn container(data: &[u8]) {
+    let Some((&cfg, body)) = data.split_first() else {
+        return;
+    };
+    if cfg & 1 == 0 {
+        let _ = crate::read_container(body, LIMIT, &mut |h| Some(h.to_vec()));
+        return;
+    }
+    let mut w = crate::ContainerWriter::new(Level::new(u32::from(cfg >> 4)));
+    let mut want: Vec<(String, &[u8], bool)> = Vec::new();
+    let mut dict = None;
+    let mut rest = body;
+    while let Some((&n, tail)) = rest.split_first() {
+        let n = usize::from(n).min(tail.len()) * 16 % (tail.len() + 1);
+        let (piece, tail) = tail.split_at(n);
+        rest = tail;
+        let name = format!("r{}", want.len());
+        let hidden = match (want.len() % 3, dict) {
+            (1, _) => {
+                dict = Some(w.add_dictionary(piece));
+                true
+            }
+            (2, Some(d)) => {
+                w.add_with_dictionary(&name, piece, d);
+                false
+            }
+            _ => {
+                w.add(&name, piece);
+                false
+            }
+        };
+        want.push((if hidden { String::new() } else { name }, piece, hidden));
+    }
+    let packed = w.finish();
+    let got = crate::read_container(&packed, usize::MAX, &mut |_| None).expect("reads back");
+    assert_eq!(got.len(), want.len());
+    for (g, (name, data, hidden)) in got.iter().zip(&want) {
+        assert!(g.data == *data && g.hidden == *hidden, "resource differs");
+        let gname = g.name.as_deref().unwrap_or(&[]);
+        assert!(gname == name.as_bytes(), "name differs");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     fn replay(target: &str, f: fn(&[u8])) {
@@ -226,5 +274,10 @@ mod tests {
     #[test]
     fn brotli_stream_roundtrip_corpus() {
         replay("brotli_stream_roundtrip", super::stream_roundtrip);
+    }
+
+    #[test]
+    fn brotli_container_corpus() {
+        replay("brotli_container", super::container);
     }
 }

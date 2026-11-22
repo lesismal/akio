@@ -79,12 +79,12 @@ fn index() -> &'static Index {
     })
 }
 
-/// A static dictionary reference: the bytes it produces, the word length (the command's copy
-/// length) and its address (`transform << NDBITS | word index`, to which the distance adds
+/// A static dictionary reference: the bytes it produces (up to 541 with a custom dictionary's
+/// transforms), the word length (the command's copy length) and its address (`transform << NDBITS | word index`, to which the distance adds
 /// the window's reach, one and a raw dictionary's length).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DictMatch {
-    pub(super) out: u8,
+    pub(super) out: u16,
     pub(super) len: u8,
     pub(super) addr: u32,
 }
@@ -157,7 +157,7 @@ pub(super) fn matches(s: &[u8], found: &mut Vec<DictMatch>) {
                 let addr = (u32::from(t) << SIZE_BITS_BY_LENGTH[len]) + idx as u32;
                 if best[n].is_none_or(|m| addr < m.addr) {
                     best[n] = Some(DictMatch {
-                        out: n as u8,
+                        out: n as u16,
                         len: len as u8,
                         addr,
                     });

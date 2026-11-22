@@ -399,7 +399,8 @@ pub fn random_references(
 /// parses decodes a reference stream); with bit 0 set, a random valid dictionary (checked to
 /// parse) and a stream of references to it decode to what the model says, one-shot and
 /// streamed in pieces sized by `data[0]`, and the rest of the bytes, as an arbitrary stream,
-/// decodes the same both ways, and compresses and decompresses with the dictionary.
+/// decodes the same both ways, and compresses and decompresses with the dictionary (as does
+/// the output of the reference stream, made of the dictionary's words, at levels 10 and 11).
 pub fn shared(data: &[u8]) {
     let Some((&cfg, body)) = data.split_first() else {
         return;
@@ -442,6 +443,16 @@ pub fn shared(data: &[u8]) {
         LIMIT + 1,
     );
     agree(one, st);
+    if let Some(w) = &want {
+        // Input made of the dictionary's words: the encoder's search of them (levels 10, 11).
+        let level = Level::new(10 + u32::from(cfg >> 7));
+        let packed = compress_with_shared_dictionary(level, w, &dict);
+        let back = decompress_with_shared_dictionary(&packed, w.len(), &dict);
+        assert!(
+            back.as_ref() == Ok(w),
+            "shared dictionary round trip of its words differs"
+        );
+    }
     let rest = s.rest();
     let one = decompress_with_shared_dictionary(rest, LIMIT, &dict);
     let st = streamed(

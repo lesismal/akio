@@ -135,6 +135,35 @@ ADR-080（docs/adr/080-rtsp-server-redirect-rtmp-lookups.zh-CN.md），只有新
 - **ChaCha20-Poly1305 解密 64 字节为 ring 的 0.84 倍 → 0.98 倍，加密 0.99 倍 → 1.11 倍**（Zen 4，安静主机，同次运行 A/B）。解密慢的原因是 Zen 4 无法转发的存储，而不是必须先校验标签：AVX-512 行内核用 zmm 存储写出密钥流头后立即读回 Poly1305 密钥，AAD 的不完整分组在栈上拼接后跨越较窄的存储读回。现在行内核还在通用寄存器中返回密钥，只存储地把密钥流头写进调用方拥有的未初始化存储（不清零，不拷贝 256 字节），不完整分组在寄存器中拼接。1 KiB 解密 +4%，1 KiB 的 TLS 1.3 ChaCha20 记录相对 rustls + ring 1.16 倍 → 1.21 倍。`tools/ct-dudect` 新增针对短消息路径的目标 `chacha20poly1305-open-tag-64`。
 - **x86_64 上的 P-256**：整点运算的 Montgomery 约简用移位计算 `m·p₃`（`p₃ = 2⁶⁴ - 2³² + 1`），不再每步一条 `mulx`，从而腾出唯一的乘法端口：验签 +5.2%（ring 的 1.09 倍 → 1.15 倍），ECDH +1.7%（1.17 倍），生成密钥 +1.2%，secp256r1 TLS 1.3 握手相对 rustls + ring 1.07 倍 → 1.10 倍。在独立的域乘法（受延迟限制的求逆链）中做同样的改动没有收益，未采用。
 
+### 变更：brotli 每次刷新写入的开销减半（only-brotli）
+
+ADR-074 在 2026-11-22 的第二次更新，API 不变。写一个元块不再分配内存（缓冲区由编码器和流保留），前缀码的构建
+时间与用到的符号数成正比，流在再次发送某类上一次写出的码不比新码多花比特时就再次发送。gpu51 上质量 4：每次刷新
+的 87 字节事件 1.98 → 1.07 us，16 个事件的响应 56.5 → 35.0 us、最多小 7.5%；HTTP 上 `Compress::stream` 的 br
+每个 16 事件响应的服务器 CPU 65.2 → 46.3 us（每秒响应数 1.41 倍）。各级别的一次性输出逐位不变。每个流多占 15 KiB。
+
+### 新增：大窗口 brotli、共享 brotli 封装格式、编码器搜索自定义词表（only-brotli）
+
+ADR-079，RFC 9841 的其余部分；只有新增 API：
+
+- `decompress_large_window(data, limit)`、`Decompressor::large_window(bool)`：大窗口 brotli
+  （RFC 9841 第 6 节，Google 的 `BROTLI_DECODER_PARAM_LARGE_WINDOW`），窗口 2^10..2^30，距离最大
+  2^31 - 4，解码方式与 Google 解码器相同（包括距离字母表的上限）；`max_window_bits` 现在最大可设 30，
+  默认仍为 24。常规解码仍然拒绝这种流。
+- `compress_large_window(level, data)`、`Compressor::large_window(bool)`（`window_bits` 最大 30）。
+  与 Google 的 `brotli --large_window`（gpu51 上 Docker 中从源码构建的版本，以及 1.2.1）双向核对，
+  包括超过 64 MiB 的距离。
+- `read_container(data, limit, lookup)`、`ContainerWriter`、`Resource`：共享 brotli 封装格式
+  （RFC 9841 第 8 节）：由资源（数据块、延续同一个流的一串部分数据块）、元数据（`id`、`mt`）、按指针
+  或按哈希码（由 `lookup` 解析）的字典引用、中央目录和最终尾部组成的容器，检查所有规则。哈希码视为
+  不透明值：RFC 规定了 HighwayHash 但没有给出密钥。新错误 `BadContainer`、`MissingDictionary`。
+- `compress_with_shared_dictionary` 在级别 10 和 11 搜索序列化字典的自定义词表在各变换下的结果
+  （原来只用前缀）：alice29.txt 上 11 级比原来小 7-11%，与 libbrotli 质量 11 的差距在 0.4% 以内；
+  libbrotli 能解码。
+- 模糊测试：新目标 `brotli_container`；`brotli_shared` 还在级别 10 和 11 对字典的词做往返。
+  `tools/interop/brotli-shared/run.sh` 增加与 Google 命令行的大窗口核对，并由 libbrotli 解码我们 11 级
+  的输出。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：

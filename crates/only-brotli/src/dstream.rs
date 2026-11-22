@@ -54,7 +54,8 @@ enum Stop {
 /// ran out at the last complete unit: a command, or a part of a meta-block header (a block type
 /// description, a context map entry, a prefix code); a piece of input that ends inside a
 /// unit is kept until the unit is complete, so input split anywhere costs little more than
-/// whole input. Memory is the window (up to 16 MiB, `2^window_bits`; streams asking for more
+/// whole input. Memory is the window (up to 16 MiB, `2^window_bits`, or 1 GiB for
+/// [large-window](Decompressor::large_window) streams; streams asking for more
 /// than [`max_window_bits`](Decompressor::max_window_bits) fail with
 /// [`Error::WindowTooLarge`]) up to twice over, about 1 MiB of output decoded ahead, the
 /// meta-block's prefix codes and the input of one unit.
@@ -76,6 +77,9 @@ enum Stop {
 pub struct Decompressor {
     dict: Option<SharedDictionary>,
     max_window_bits: u32,
+    /// Large-window streams are accepted; the current one is one.
+    allow_large: bool,
+    large: bool,
     state: State,
     /// Input bytes kept across calls; `bit` bits of them are consumed.
     inbuf: Vec<u8>,
@@ -116,11 +120,14 @@ impl Default for Decompressor {
 }
 
 impl Decompressor {
-    /// A decompressor without a dictionary that accepts every window size (up to 16 MiB).
+    /// A decompressor without a dictionary that accepts every window size of RFC 7932 (up to
+    /// 16 MiB).
     pub fn new() -> Decompressor {
         Decompressor {
             dict: None,
             max_window_bits: 24,
+            allow_large: false,
+            large: false,
             state: State::WindowBits,
             inbuf: Vec::new(),
             bit: 0,
@@ -155,16 +162,27 @@ impl Decompressor {
     }
 
     /// Refuses streams whose window is larger than `2^bits` bytes (`bits` clamped to
-    /// 10..=24), to bound memory.
+    /// 10..=30; above 24 only large-window streams have such windows), to bound memory.
     #[must_use]
     pub fn max_window_bits(mut self, bits: u32) -> Decompressor {
-        self.max_window_bits = bits.clamp(10, 24);
+        self.max_window_bits = bits.clamp(10, 30);
+        self
+    }
+
+    /// Accepts large-window brotli streams too (RFC 9841 section 6; see
+    /// [`decompress_large_window`](crate::decompress_large_window)). Their windows are still
+    /// bounded by [`max_window_bits`](Decompressor::max_window_bits) (2²⁴ unless raised, up to
+    /// 2³⁰): the memory is the window up to twice over.
+    #[must_use]
+    pub fn large_window(mut self, on: bool) -> Decompressor {
+        self.allow_large = on;
         self
     }
 
     /// Forgets the current stream to decode a new one; buffers are kept.
     pub fn reset(&mut self) {
         self.state = State::WindowBits;
+        self.large = false;
         self.inbuf.clear();
         self.bit = 0;
         self.wpos = 0;
@@ -350,7 +368,10 @@ impl Decompressor {
         d.base = self.base;
         d.last = self.last;
         d.lens = std::mem::take(&mut self.lens);
+        d.allow_large = self.allow_large;
+        d.large = self.large;
         let r = self.step_with(&mut d, data);
+        self.large = d.large;
         self.bit = d.br.bit_pos();
         self.win = d.buf;
         self.wpos = d.pos;
