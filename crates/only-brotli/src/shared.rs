@@ -122,6 +122,47 @@ impl SharedDictionary {
         self.inner.custom.is_none()
     }
 
+    /// This dictionary with `prefix` as its LZ77 prefix (its custom static dictionaries
+    /// kept): what several prefixes and a serialized dictionary attached together make (the
+    /// prefixes concatenated in order, as Google's compound dictionary).
+    pub(crate) fn with_prefix(&self, prefix: &[u8]) -> SharedDictionary {
+        let Some(custom) = &self.inner.custom else {
+            return SharedDictionary::raw(prefix);
+        };
+        // The custom lists index `bytes`: the new prefix goes after them.
+        let mut bytes = self.inner.bytes.to_vec();
+        let at = bytes.len();
+        bytes.extend_from_slice(prefix);
+        SharedDictionary {
+            inner: Arc::new(Shared {
+                bytes: bytes.into(),
+                prefix: at..at + prefix.len(),
+                custom: Some(Custom {
+                    words: custom
+                        .words
+                        .iter()
+                        .map(|w| WordList {
+                            size_bits: w.size_bits,
+                            offsets: w.offsets,
+                            data: w.data.clone(),
+                        })
+                        .collect(),
+                    transforms: custom
+                        .transforms
+                        .iter()
+                        .map(|t| TransformList {
+                            strings: t.strings.clone(),
+                            list: t.list.clone(),
+                        })
+                        .collect(),
+                    dicts: custom.dicts.clone(),
+                    context_map: custom.context_map,
+                }),
+                index: OnceLock::new(),
+            }),
+        }
+    }
+
     /// The custom static dictionaries, for the encoder (`None`: brotli's built-in one).
     pub(crate) fn custom(&self) -> Option<&Shared> {
         self.inner.custom.as_ref().map(|_| &*self.inner)

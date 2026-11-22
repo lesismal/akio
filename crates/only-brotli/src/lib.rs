@@ -44,6 +44,7 @@ mod decode;
 mod dictionary;
 mod dstream;
 mod encode;
+mod frame;
 mod huffman;
 mod shared;
 mod tables;
@@ -61,6 +62,7 @@ pub use dstream::Decompressor;
 pub use encode::{
     compress, compress_large_window, compress_with_dictionary, compress_with_shared_dictionary,
 };
+pub use frame::{ContainerWriter, Resource, read_container};
 pub use shared::SharedDictionary;
 
 /// What a streaming [`Compressor::compress`] call does after taking its input.
@@ -153,6 +155,10 @@ pub enum Error {
     /// The stream's window is larger than the streaming decoder accepts
     /// ([`Decompressor::max_window_bits`]).
     WindowTooLarge,
+    /// A shared brotli framing format container ([`read_container`]) is malformed.
+    BadContainer,
+    /// A container's chunk references a dictionary by a hash code the caller does not know.
+    MissingDictionary,
 }
 
 impl std::fmt::Display for Error {
@@ -171,6 +177,8 @@ impl std::fmt::Display for Error {
             Error::Truncated => "truncated stream",
             Error::TooLarge => "decompressed data too large",
             Error::WindowTooLarge => "brotli window larger than allowed",
+            Error::BadContainer => "invalid shared brotli container",
+            Error::MissingDictionary => "unknown dictionary hash in shared brotli container",
         })
     }
 }
