@@ -146,6 +146,7 @@ impl<'a> BitReader<'a> {
 }
 
 /// Writes bits into a byte vector.
+#[derive(Default)]
 pub(crate) struct BitWriter {
     out: Vec<u8>,
     acc: u64,
@@ -209,8 +210,35 @@ impl BitWriter {
         self.n = m.2;
     }
 
+    /// Forgets everything written (the buffer is kept).
+    pub(crate) fn clear(&mut self) {
+        self.out.clear();
+        self.acc = 0;
+        self.n = 0;
+    }
+
+    /// Copies the bits written to `dst` (replacing its contents), the last byte partly
+    /// filled; returns their number.
+    pub(crate) fn copy_to(&self, dst: &mut Vec<u8>) -> usize {
+        dst.clear();
+        dst.extend_from_slice(&self.out);
+        let mut acc = self.acc;
+        let mut n = self.n;
+        while n > 0 {
+            dst.push(acc as u8);
+            acc >>= 8;
+            n = n.saturating_sub(8);
+        }
+        self.bit_len()
+    }
+
     /// Appends the bits written to `o`.
     pub(crate) fn append(&mut self, o: BitWriter) {
+        self.append_ref(&o);
+    }
+
+    /// [`BitWriter::append`] without taking `o`.
+    pub(crate) fn append_ref(&mut self, o: &BitWriter) {
         let mut chunks = o.out.chunks_exact(4);
         for c in &mut chunks {
             self.bits(32, u64::from(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));

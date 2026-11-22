@@ -428,6 +428,27 @@ pub(crate) fn codes_into(lens: &[u8], out: &mut [u32]) {
     });
 }
 
+/// [`codes_into`] for the symbols `syms` (in increasing order: every symbol with a non-zero
+/// length in `lens`), touching only their entries of `out`: time in the symbols used, not in
+/// the alphabet.
+pub(crate) fn codes_sparse(syms: &[u16], lens: &[u8], out: &mut [u32]) {
+    let mut count = [0u32; 16];
+    for &s in syms {
+        count[usize::from(lens[usize::from(s)] & 15)] += 1;
+    }
+    let mut next = [0u32; 16];
+    let mut c = 0u32;
+    for len in 1..16 {
+        c = (c + count[len - 1]) << 1;
+        next[len] = c;
+    }
+    for &s in syms {
+        let l = usize::from(lens[usize::from(s)] & 15);
+        out[usize::from(s)] = (reverse15(next[l], l as u32) as u32) << 4 | l as u32;
+        next[l] += 1;
+    }
+}
+
 // Alphabets of a few hundred symbols of which a flushed write of a few dozen bytes uses a few
 // dozen: these skip 16 zeros at a time (an OR the compiler vectorizes) instead of updating a
 // counter per symbol.

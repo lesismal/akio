@@ -198,7 +198,8 @@ impl Compressor {
             None => {
                 self.started = true;
                 write_window_bits(&mut self.w, self.wbits);
-                let st = Encoder::state(self.level, self.wbits, dict_len);
+                let mut st = Encoder::state(self.level, self.wbits, dict_len);
+                st.keep_codes();
                 if dict_len > 0 {
                     let mut e = Encoder::resume(&self.buf, st);
                     e.insert_until(dict_len);
@@ -236,6 +237,34 @@ impl Compressor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream of similar small events sends codes of earlier meta-blocks again (most
+    /// insert-and-copy and distance codes here), and decodes.
+    #[test]
+    fn small_meta_blocks_send_kept_codes_again() {
+        for q in [1u32, 4, 5, 9, 11] {
+            let mut c = Compressor::new(Level::new(q)).window_bits(18);
+            let mut out = Vec::new();
+            let mut want = Vec::new();
+            let n = if q == 11 { 200 } else { 1000 };
+            for i in 0..n {
+                let e = format!(
+                    "event: tick\nid: {i}\ndata: {{\"seq\":{i},\"price\":{}.{:02}}}\n\n",
+                    100 + i % 37,
+                    i % 100
+                );
+                c.compress(e.as_bytes(), &mut out, Flush::Flush);
+                want.extend_from_slice(e.as_bytes());
+            }
+            let reused = c.st.as_ref().map_or([0; 3], |s| s.scratch().reused());
+            assert!(
+                reused[1] > n / 4 && reused[2] > n / 4,
+                "level {q}: {reused:?}"
+            );
+            c.compress(&[], &mut out, Flush::Finish);
+            assert_eq!(crate::decompress(&out, 1 << 22).unwrap(), want, "level {q}");
+        }
+    }
 
     /// The match tables grow with the stream, up to the level's size within the window.
     #[test]

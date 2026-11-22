@@ -144,6 +144,23 @@ struct Params {
     /// Static dictionary words are candidates (of the optimal parse); off for shared
     /// dictionaries with custom static dictionaries.
     static_words: bool,
+    /// A large-window stream (RFC 9841 section 6): windows up to 2^30, a larger distance
+    /// alphabet.
+    large: bool,
+}
+
+impl Params {
+    /// The distance symbols a meta-block may use: 64 (`NPOSTFIX` = `NDIRECT` = 0), or 74 in a
+    /// large-window stream (distances up to 2^31 - 4, Google's limit).
+    fn dist_size(&self) -> usize {
+        if self.large { 74 } else { 64 }
+    }
+
+    /// The bits of a distance symbol in a simple prefix code: of an alphabet of 64 symbols, or
+    /// of the large window's 140.
+    fn dist_bits(&self) -> u32 {
+        if self.large { 8 } else { 6 }
+    }
 }
 
 fn params(level: u8) -> Params {
@@ -162,6 +179,7 @@ fn params(level: u8) -> Params {
         split_iters: 0,
         greedy: level >= 4,
         static_words: true,
+        large: false,
     };
     match level {
         0 => p(1, 16, false, 14, NONE, false),
@@ -242,6 +260,7 @@ pub(crate) struct Encoder<'a> {
     level_bits: u32,
     /// How far back the tables need to reach: the window, and the dictionary if any.
     reach: usize,
+    scratch: Box<Scratch>,
 }
 
 impl State {
@@ -270,6 +289,18 @@ impl State {
         self.p.block
     }
 
+    /// Keep the codes of each meta-block, to send them again where that costs no more bits
+    /// than new ones (a stream's small meta-blocks).
+    pub(crate) fn keep_codes(&mut self) {
+        self.scratch.keep_codes();
+    }
+
+    /// The scratch buffers and kept codes.
+    #[cfg(test)]
+    pub(crate) fn scratch(&self) -> &Scratch {
+        &self.scratch
+    }
+
     /// Bytes allocated for the match tables.
     #[cfg(test)]
     pub(crate) fn table_bytes(&self) -> usize {
@@ -295,6 +326,7 @@ pub(crate) struct State {
     back: usize,
     level_bits: u32,
     reach: usize,
+    scratch: Box<Scratch>,
 }
 
 #[inline(always)]
@@ -388,6 +420,7 @@ impl<'a> Encoder<'a> {
             back: dict,
             level_bits: p.hash_bits,
             reach,
+            scratch: Box::default(),
         };
         let (hash_bits, wsize) = e.table_sizes(data.len());
         e.alloc_tables(hash_bits, wsize);
@@ -513,6 +546,7 @@ impl<'a> Encoder<'a> {
             back: s.back,
             level_bits: s.level_bits,
             reach: s.reach,
+            scratch: s.scratch,
         }
     }
 
@@ -535,6 +569,7 @@ impl<'a> Encoder<'a> {
             back: self.back,
             level_bits: self.level_bits,
             reach: self.reach,
+            scratch: self.scratch,
         }
     }
 
@@ -796,13 +831,15 @@ impl<'a> Encoder<'a> {
     }
 
     pub(crate) fn meta_block(&mut self, w: &mut BitWriter, start: usize, end: usize, last: bool) {
-        let mut cmds = Vec::new();
+        let mut cmds = std::mem::take(&mut self.scratch.cmds);
+        cmds.clear();
         if self.p.optimal > 0 {
             self.parse_optimal(start, end, &mut cmds);
         } else {
             self.parse_lazy(start, end, &mut cmds);
         }
         self.write_meta_block(w, start, end, last, &cmds);
+        self.scratch.cmds = cmds;
     }
 
     /// Writes one meta-block from `start` to at most `limit`, parsed (optimally) in blocks of
@@ -858,7 +895,8 @@ impl<'a> Encoder<'a> {
         let ring = self.last;
         let z = self.zero;
         // Resolve the commands into symbols and extra bits.
-        let mut coded = Vec::with_capacity(cmds.len());
+        let mut coded = std::mem::take(&mut self.scratch.coded);
+        coded.clear();
         for c in cmds {
             coded.push(code_command(c, &mut self.last));
         }
@@ -876,16 +914,27 @@ impl<'a> Encoder<'a> {
             last,
             cmds,
             coded: &coded,
+            dist_size: self.p.dist_size(),
+            dist_bits: self.p.dist_bits(),
         };
+        let s = &mut self.scratch;
         if self.p.optimal == 0 {
             // The clustering's estimate says whether the context map pays for itself, and the
             // greedy split creates block types only where they pay.
             let lay = if self.p.greedy {
                 greedy_layout(&mb, &model)
             } else {
-                Layout::single(&model)
+                None
             };
-            write_compressed(w, &mb, &lay);
+            match lay {
+                Some(lay) => write_compressed(w, &mb, &lay, s),
+                None => {
+                    let lay = s.single.take().unwrap_or_else(|| Layout::single(&model));
+                    let lay = lay.with_model(&model);
+                    write_compressed(w, &mb, &lay, s);
+                    s.single = Some(lay);
+                }
+            }
         } else {
             // The smallest of: one literal code, the context map, block types.
             let mut layouts = vec![Layout::single(&LiteralModel::single())];
@@ -902,18 +951,23 @@ impl<'a> Encoder<'a> {
                 };
                 layouts.push(split_layout(&mb, mode, self.p.split_iters));
             }
-            let mut best: Option<BitWriter> = None;
-            for lay in &layouts {
-                let mut t = BitWriter::with_capacity((end - start) / 2);
-                write_compressed(&mut t, &mb, lay);
-                if best.as_ref().is_none_or(|b| t.bit_len() < b.bit_len()) {
-                    best = Some(t);
+            if layouts.len() == 1 {
+                write_compressed(w, &mb, &layouts[0], s);
+            } else {
+                let mut best: Option<BitWriter> = None;
+                for lay in &layouts {
+                    let mut t = BitWriter::with_capacity((end - start) / 2);
+                    write_compressed(&mut t, &mb, lay, s);
+                    if best.as_ref().is_none_or(|b| t.bit_len() < b.bit_len()) {
+                        best = Some(t);
+                    }
+                }
+                if let Some(b) = best {
+                    w.append(b);
                 }
             }
-            if let Some(b) = best {
-                w.append(b);
-            }
         }
+        self.scratch.coded = coded;
         let len = end - start;
         // An uncompressed meta-block: header, padding, bytes (and an empty last meta-block).
         let unc = 4 + 4 * nibbles(len) + 7 + 8 * len + if last { 2 + 7 } else { 0 };
@@ -940,6 +994,10 @@ struct MetaBlock<'a> {
     last: bool,
     cmds: &'a [Command],
     coded: &'a [Coded],
+    /// The distance symbols counted (64; more in a large-window stream) and the bits of one
+    /// in a simple prefix code.
+    dist_size: usize,
+    dist_bits: u32,
 }
 
 impl MetaBlock<'_> {
@@ -953,23 +1011,74 @@ impl MetaBlock<'_> {
     }
 }
 
+/// Buffers that writing meta-blocks reuses (a stream of small flushed writes would otherwise
+/// allocate a few dozen times per meta-block), and the codes a stream keeps.
+#[derive(Default)]
+pub(crate) struct Scratch {
+    cmds: Vec<Command>,
+    coded: Vec<Coded>,
+    /// Histograms, all zero between meta-blocks: literals (256 per tree), insert-and-copy
+    /// symbols (704 per block type), distances (per tree).
+    lit_hist: Vec<u32>,
+    cmd_hist: Vec<u32>,
+    dist_hist: Vec<u32>,
+    codes: [Vec<Code>; 3],
+    prefix: PrefixScratch,
+    /// The layout of one block type per category and one literal code, ready.
+    single: Option<Layout>,
+    /// The codes kept for literals, insert-and-copy symbols and distances (streams only).
+    keep: Option<Box<[Kept; 3]>>,
+}
+
+impl Scratch {
+    /// Keep codes across meta-blocks, to send them again where that is cheaper.
+    pub(crate) fn keep_codes(&mut self) {
+        self.keep.get_or_insert_with(Box::default);
+    }
+
+    /// Meta-blocks that sent a kept code again (literals, commands, distances).
+    #[cfg(test)]
+    pub(crate) fn reused(&self) -> [u32; 3] {
+        self.keep
+            .as_ref()
+            .map_or([0; 3], |k| [k[0].reused, k[1].reused, k[2].reused])
+    }
+}
+
+/// `v` with at least `n` entries (new ones zero).
+fn at_least(v: &mut Vec<u32>, n: usize) -> &mut [u32] {
+    if v.len() < n {
+        v.resize(n, 0);
+    }
+    &mut v[..n]
+}
+
 /// Writes `mb` as a compressed meta-block coded as `lay` says.
-fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
+fn write_compressed(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout, s: &mut Scratch) {
     if lay.lit.ntypes > 1 || lay.cmd.ntypes > 1 || lay.dist.ntypes > 1 || lay.dist_trees > 1 {
-        write_body::<true>(w, mb, lay);
+        write_body::<true>(w, mb, lay, s);
     } else {
         // Without block switches (and with one distance code): no cursors in the loops.
-        write_body::<false>(w, mb, lay);
+        write_body::<false>(w, mb, lay, s);
     }
 }
 
 /// [`write_compressed`]; `SPLIT`: with block types (else one per category, one distance code).
-fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &Layout) {
+fn write_body<const SPLIT: bool>(
+    w: &mut BitWriter,
+    mb: &MetaBlock<'_>,
+    lay: &Layout,
+    s: &mut Scratch,
+) {
     let data = mb.data;
+    let dsize = mb.dist_size;
     // Histograms: insert-and-copy symbols per block type, literals and distances per tree.
-    let mut cmd_hist = vec![vec![0u32; 704]; lay.cmd.ntypes];
-    let mut lit_hist = vec![[0u32; 256]; lay.lit_trees];
-    let mut dist_hist = vec![[0u32; 64]; lay.dist_trees];
+    let mut cmd_hist = std::mem::take(&mut s.cmd_hist);
+    let mut lit_hist = std::mem::take(&mut s.lit_hist);
+    let mut dist_hist = std::mem::take(&mut s.dist_hist);
+    at_least(&mut cmd_hist, 704 * lay.cmd.ntypes);
+    at_least(&mut lit_hist, 256 * lay.lit_trees);
+    at_least(&mut dist_hist, dsize * lay.dist_trees);
     // Whether the literal tree depends on the context (or only on the block type).
     let lit_ctx = lay.lit_map.chunks(64).any(|m| m.iter().any(|&t| t != m[0]));
     let lit_map = &lay.lit_map[..];
@@ -981,7 +1090,7 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
         );
         mb.literals(|pos, c, k| {
             let t = if SPLIT { cc.next() } else { 0 };
-            cmd_hist[t][usize::from(k.cmd)] += 1;
+            cmd_hist[t * 704 + usize::from(k.cmd)] += 1;
             let (mut p, end) = (pos, pos + c.insert as usize);
             while p < end {
                 // A run of literals in one block.
@@ -995,10 +1104,11 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
                     let lut = 512 * usize::from(lay.modes[t]);
                     for q in p..p + n {
                         let tree = usize::from(map[context(data, q, lut)]);
-                        lit_hist[tree][usize::from(data[q])] += 1;
+                        lit_hist[tree * 256 + usize::from(data[q])] += 1;
                     }
                 } else {
-                    let h = &mut lit_hist[usize::from(map[0])];
+                    let tree = usize::from(map[0]);
+                    let h = &mut lit_hist[tree * 256..tree * 256 + 256];
                     for &b in &data[p..p + n] {
                         h[usize::from(b)] += 1;
                     }
@@ -1011,7 +1121,7 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
                 } else {
                     0
                 };
-                dist_hist[tree][usize::from(k.dsym)] += 1;
+                dist_hist[tree * dsize + usize::from(k.dsym)] += 1;
             }
         });
     }
@@ -1040,18 +1150,57 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
     if lay.dist_trees > 1 {
         write_context_map(w, &lay.dist_map, lay.dist_trees);
     }
-    let mut lit_codes = Vec::with_capacity(lay.lit_trees);
-    for h in &lit_hist {
-        lit_codes.push(write_prefix_code(w, h, 256));
+    // A category with a single code may send the stream's kept one again.
+    let [mut lit_codes, mut cmd_codes, mut dist_codes] = std::mem::take(&mut s.codes);
+    let mut keep = s.keep.take();
+    {
+        let [mut k0, mut k1, mut k2] = match keep.as_deref_mut() {
+            Some([a, b, c]) => [Some(a), Some(b), Some(c)],
+            None => [None, None, None],
+        };
+        let only = |k: &mut Option<&mut Kept>, n: usize| {
+            if n != 1 {
+                *k = None;
+            }
+        };
+        only(&mut k0, lay.lit_trees);
+        only(&mut k1, lay.cmd.ntypes);
+        only(&mut k2, lay.dist_trees);
+        // A small meta-block with one code per category: its symbols as bit sets.
+        let mut sets = None;
+        if !SPLIT && lay.lit_trees == 1 && mb.end - mb.start <= 2048 {
+            let (mut l, mut c, mut d) = ([0u64; 4], [0u64; 11], [0u64; 2]);
+            mb.literals(|pos, cmd, k| {
+                let x = usize::from(k.cmd);
+                c[x >> 6] |= 1 << (x & 63);
+                for &b in &data[pos..pos + cmd.insert as usize] {
+                    l[usize::from(b >> 6)] |= 1 << (b & 63);
+                }
+                if k.dsym != NO_DIST {
+                    let x = usize::from(k.dsym);
+                    d[x >> 6] |= 1 << (x & 63);
+                }
+            });
+            sets = Some((l, c, d));
+        }
+        let ps = &mut s.prefix;
+        for h in lit_hist[..256 * lay.lit_trees].chunks_exact_mut(256) {
+            let u = sets.as_ref().map(|s| &s.0[..]);
+            lit_codes.push(prefix_code(w, h, u, 8, ps, k0.as_deref_mut()));
+        }
+        for h in cmd_hist[..704 * lay.cmd.ntypes].chunks_exact_mut(704) {
+            let u = sets.as_ref().map(|s| &s.1[..]);
+            cmd_codes.push(prefix_code(w, h, u, 10, ps, k1.as_deref_mut()));
+        }
+        for h in dist_hist[..dsize * lay.dist_trees].chunks_exact_mut(dsize) {
+            let u = sets.as_ref().map(|s| &s.2[..]);
+            dist_codes.push(prefix_code(w, h, u, mb.dist_bits, ps, k2.as_deref_mut()));
+        }
     }
-    let mut cmd_codes = Vec::with_capacity(lay.cmd.ntypes);
-    for h in &cmd_hist {
-        cmd_codes.push(write_prefix_code(w, h, 704));
-    }
-    let mut dist_codes = Vec::with_capacity(lay.dist_trees);
-    for h in &dist_hist {
-        dist_codes.push(write_prefix_code(w, h, 64));
-    }
+    s.keep = keep;
+    s.cmd_hist = cmd_hist;
+    s.lit_hist = lit_hist;
+    s.dist_hist = dist_hist;
 
     // Commands.
     mb.literals(|pos, c, k| {
@@ -1091,6 +1240,10 @@ fn write_body<const SPLIT: bool>(w: &mut BitWriter, mb: &MetaBlock<'_>, lay: &La
             w.bits(u32::from(k.dist_n), u64::from(k.dist_x));
         }
     });
+    for v in [&mut lit_codes, &mut cmd_codes, &mut dist_codes] {
+        s.prefix.pool.extend(v.drain(..).map(|c| c.bits));
+    }
+    s.codes = [lit_codes, cmd_codes, dist_codes];
 }
 
 // ---- Optimal parsing -------------------------------------------------------------------------
@@ -1717,6 +1870,14 @@ impl Layout {
             dist_trees: 1,
         }
     }
+
+    /// This single layout with the literals coded with `m`.
+    fn with_model(mut self, m: &LiteralModel) -> Self {
+        self.modes[0] = m.mode;
+        self.lit_map.copy_from_slice(&m.map);
+        self.lit_trees = m.ntrees;
+        self
+    }
 }
 
 /// The block type of each next symbol of a category.
@@ -1880,13 +2041,13 @@ fn symbols(mb: &MetaBlock<'_>) -> Symbols {
     s
 }
 
-/// Block types found in one pass (levels 5..=9): the literal context map of `model` within
+/// Block types found in one pass (levels 4..=9): the literal context map of `model` within
 /// each literal block type (its codes clustered across types), one distance code per
-/// distance block type.
-fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
+/// distance block type; `None` where they do not pay (one block type per category).
+fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Option<Layout> {
     if mb.end - mb.start < 64 << 10 {
         // Block types rarely pay below this (and cost a few percent of the time).
-        return Layout::single(model);
+        return None;
     }
     let data = mb.data;
     // The literals first: where they do not pay for block types, the other categories rarely
@@ -1899,7 +2060,7 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
     let mut lit = split::greedy(&lits, 256, &split::GREEDY_LITERALS, max_lit);
     let l = split::split_gain(&lits, 256, &lit);
     if l.1 > 0.99 * l.0 {
-        return Layout::single(model);
+        return None;
     }
     let syms = symbols(mb);
     let mut cmd = split::greedy(&syms.cmds, 704, &split::GREEDY_COMMANDS, 256);
@@ -1919,7 +2080,7 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
         }
     }
     if apart > 0.99 * one {
-        return Layout::single(model);
+        return None;
     }
     let (lit_map, lit_trees) = if lit.ntypes == 1 {
         (model.map.to_vec(), model.ntrees)
@@ -1945,7 +2106,7 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
             .collect();
         (map, n)
     };
-    Layout {
+    Some(Layout {
         modes: vec![model.mode; lit.ntypes],
         lit,
         lit_map,
@@ -1954,7 +2115,7 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Layout {
         dist_map: (0..dist.ntypes * 4).map(|i| (i / 4) as u8).collect(),
         dist_trees: dist.ntypes,
         dist,
-    }
+    })
 }
 
 /// Block types for the literals, insert-and-copy symbols and distances of `mb` (levels 10 and
@@ -2275,81 +2436,339 @@ impl Code {
 }
 
 /// Writes a prefix code for `hist` over an alphabet of `size` symbols and returns it.
+fn write_prefix_code(w: &mut BitWriter, hist: &[u32], size: usize) -> Code {
+    let mut h = hist[..size].to_vec();
+    let mut s = PrefixScratch::default();
+    let bits = alphabet_bits(size);
+    prefix_code(w, &mut h, None, bits, &mut s, None)
+}
+
+/// The bits of a symbol of a simple prefix code over an alphabet of `size` symbols.
+fn alphabet_bits(size: usize) -> u32 {
+    usize::BITS - (size - 1).leading_zeros()
+}
+
+/// Buffers [`prefix_code`] reuses: building a code allocates nothing once they have grown.
+#[derive(Default)]
+struct PrefixScratch {
+    /// `(count, symbol)` of the used symbols.
+    used: Vec<(u32, u16)>,
+    /// The used symbols in order.
+    syms: Vec<u16>,
+    /// Code lengths per symbol; all zero between calls.
+    lens: Vec<u8>,
+    tokens: [Vec<(u8, u8)>; 2],
+    smooth: Vec<u32>,
+    alt: Vec<u8>,
+    /// Runs of counts [`optimize_for_rle_sparse`] leaves alone.
+    runs: Vec<(u32, u32)>,
+    /// A code's description, written apart to be kept ([`Kept`]).
+    head: BitWriter,
+    /// Code tables to reuse.
+    pool: Vec<Vec<u32>>,
+}
+
+impl PrefixScratch {
+    /// A code table of at least `size` entries (their values are stale: a code sets those of
+    /// its symbols, and only those are ever written).
+    fn table(&mut self, size: usize) -> Vec<u32> {
+        let mut t = self.pool.pop().unwrap_or_default();
+        if t.len() < size {
+            t.resize(size, 0);
+        }
+        t
+    }
+}
+
+/// The code a streaming encoder wrote last for a category (literals, insert-and-copy symbols
+/// or distances), kept to be sent again: a meta-block must describe its codes, but it may
+/// describe the same code as the one before, which costs no time to build. A stream of small
+/// events uses mostly the same symbols in each, so the code of the last one often codes the
+/// next as well as one of its own: [`prefix_code`] sends whichever of the two costs fewer bits.
+#[derive(Default)]
+pub(crate) struct Kept {
+    /// Code length per symbol (all of the alphabet; 0: not coded).
+    lens: Vec<u8>,
+    /// The single symbol of a one-symbol code (its length is 0).
+    single: Option<u16>,
+    /// `code << 4 | length` of the coded symbols.
+    code: Vec<u32>,
+    /// The description, as written, and its length in bits.
+    head: Vec<u8>,
+    head_bits: usize,
+    /// Symbols coded.
+    n: usize,
+    /// Meta-blocks that sent it again.
+    reused: u32,
+}
+
+impl Kept {
+    /// Whether this is the code with lengths `lens` for exactly the symbols `syms` (in order;
+    /// the Huffman lengths of a histogram, before a one-symbol code gets length 0): the code a
+    /// meta-block would describe for them.
+    fn is(&self, syms: &[u16], lens: &[u8]) -> bool {
+        if self.head_bits == 0 {
+            return false;
+        }
+        match (self.single, syms) {
+            (Some(only), []) => only == 0,
+            (Some(only), [x]) => only == *x,
+            (Some(_), _) | (None, [] | [_]) => false,
+            (None, _) => {
+                self.n == syms.len()
+                    && syms.iter().all(|&x| {
+                        let x = usize::from(x);
+                        self.lens.get(x) == Some(&lens[x])
+                    })
+            }
+        }
+    }
+
+    /// The bits of `used` (`(count, symbol)`) coded with this code, if it codes all of them.
+    fn cost(&self, used: &[(u32, u16)]) -> Option<usize> {
+        if self.head_bits == 0 {
+            return None;
+        }
+        if let Some(only) = self.single {
+            return used
+                .iter()
+                .all(|&(_, s)| s == only)
+                .then_some(self.head_bits);
+        }
+        let mut data = 0usize;
+        for &(c, s) in used {
+            let l = *self.lens.get(usize::from(s))?;
+            if l == 0 {
+                return None;
+            }
+            data += c as usize * usize::from(l);
+        }
+        Some(self.head_bits + data)
+    }
+}
+
+/// Writes a prefix code for `hist` (an alphabet of `hist.len()` symbols; `simple_bits` per
+/// symbol in the simple form) and returns it; `hist` is left all zero. `used`, if given, is a
+/// bit set of the symbols with a non-zero count (cheaper to go through than the histogram
+/// when they are few). With `keep`, the code
+/// kept from the stream's last meta-block is sent again if it codes `hist` in no more bits than
+/// a code of its own with exact lengths would (the cheaper alternative of a stream of small
+/// meta-blocks), and otherwise the code written is kept.
 ///
 /// The work is mostly over the used symbols: a meta-block of a flushed write of a few dozen
 /// bytes has a few dozen literals and a handful of commands in alphabets of 256 and 704.
-fn write_prefix_code(w: &mut BitWriter, hist: &[u32], size: usize) -> Code {
-    let hist = &hist[..size];
+fn prefix_code(
+    w: &mut BitWriter,
+    hist: &mut [u32],
+    used: Option<&[u64]>,
+    simple_bits: u32,
+    s: &mut PrefixScratch,
+    keep: Option<&mut Kept>,
+) -> Code {
+    let size = hist.len();
     // The used symbols, in symbol order.
-    let mut used = huffman::used(hist);
-    // Past the last used symbol every length is 0.
-    let hi = used.last().map_or(0, |&(_, s)| usize::from(s) + 1);
-    let mut syms: Vec<usize> = Vec::new();
-    if used.len() <= 4 {
-        syms.extend(used.iter().map(|&(_, s)| usize::from(s)));
-    }
-    let mut lens = vec![0u8; size];
-    huffman::depths(&mut used, 15, |s, d| lens[usize::from(s)] = d);
-    if used.len() <= 4 {
-        // Simple prefix code.
-        let alphabet_bits = usize::BITS - (size - 1).leading_zeros();
-        if syms.is_empty() {
-            syms.push(0);
+    s.used.clear();
+    s.syms.clear();
+    match used {
+        Some(bits) => {
+            for (k, &word) in bits.iter().enumerate() {
+                let mut word = word;
+                while word != 0 {
+                    let i = k * 64 + word.trailing_zeros() as usize;
+                    word &= word - 1;
+                    s.used.push((hist[i], i as u16));
+                    s.syms.push(i as u16);
+                }
+            }
         }
-        syms.sort_by_key(|&s| (lens[s], s));
-        w.bits(2, 1);
-        w.bits(2, (syms.len() - 1) as u64);
-        for &s in &syms {
-            w.bits(alphabet_bits, s as u64);
+        None => huffman::nonzero_u32(hist, |i, c| {
+            s.used.push((c, i as u16));
+            s.syms.push(i as u16);
+        }),
+    }
+    // Past the last used symbol every length is 0.
+    let hi = s.syms.last().map_or(0, |&x| usize::from(x) + 1);
+    if s.lens.len() < size {
+        s.lens.resize(size, 0);
+    }
+    let mut bits = s.table(size);
+    let n = s.used.len();
+    let lens = &mut s.lens;
+    huffman::depths(&mut s.used, 15, |x, d| lens[usize::from(x)] = d);
+    let data_exact = |s: &PrefixScratch, hist: &[u32]| -> usize {
+        s.syms
+            .iter()
+            .map(|&x| hist[usize::from(x)] as usize * usize::from(s.lens[usize::from(x)]))
+            .sum()
+    };
+    // `s.used` is sorted by count now; the symbol order is in `s.syms`.
+    if let Some(k) = keep.as_deref() {
+        if k.is(&s.syms, &s.lens) {
+            // The kept code is this one: no need to build its description again.
+            let kn = keep.map(|k| {
+                k.reused += 1;
+                &*k
+            });
+            if let Some(k) = kn {
+                replay(w, &k.head, k.head_bits);
+                for &x in &s.syms {
+                    let x = usize::from(x);
+                    bits[x] = if k.single.is_some() { 0 } else { k.code[x] };
+                }
+            }
+            return finish_code(s, hist, hi, None, bits);
+        }
+    }
+    let mut simple = [0usize; 4];
+    let mut complex = None;
+    if n <= 4 {
+        for (d, &x) in simple.iter_mut().zip(&s.syms) {
+            *d = usize::from(x);
+        }
+    } else {
+        complex = Some(Complex::new_in(
+            &s.lens[..hi],
+            std::mem::take(&mut s.tokens[0]),
+        ));
+    }
+    if let Some(k) = keep.as_deref() {
+        // This code with exact lengths (the smoothed ones below would cost no more) against
+        // the kept one.
+        let exact = match &complex {
+            Some(c) => c.bit_len() + data_exact(s, hist),
+            None => {
+                let k = n.max(1);
+                let data = if n == 1 { 0 } else { data_exact(s, hist) };
+                4 + k * simple_bits as usize + usize::from(k == 4) + data
+            }
+        };
+        s.used.clear();
+        s.used
+            .extend(s.syms.iter().map(|&x| (hist[usize::from(x)], x)));
+        if k.cost(&s.used).is_some_and(|c| c <= exact) {
+            // Sent again.
+            replay(w, &k.head, k.head_bits);
+            for &x in &s.syms {
+                let x = usize::from(x);
+                bits[x] = if k.single.is_some() { 0 } else { k.code[x] };
+            }
+            if let Some(k) = keep {
+                k.reused += 1;
+            }
+            return finish_code(s, hist, hi, complex, bits);
+        }
+    }
+    s.head.clear();
+    let kept_single;
+    if let Some(c) = complex.as_mut() {
+        // The exact lengths, or those of counts smoothed for run-length coding (cheaper to
+        // store, which matters for small inputs): whichever costs fewer bits in all.
+        s.smooth.clear();
+        s.smooth.extend_from_slice(&hist[..hi]);
+        // Counts the smoothing left alone give the exact lengths again, which never cost less.
+        let mut alt_used = 0;
+        if optimize_for_rle_sparse(&mut s.smooth, &s.syms, &mut s.runs) {
+            huffman::lengths(&s.smooth, 15, &mut s.alt);
+            huffman::nonzero_u8(&s.alt, |_, _| alt_used += 1);
+        }
+        let mut alt = false;
+        if alt_used > 4 {
+            let data = |l: &[u8]| -> usize {
+                hist[..hi]
+                    .iter()
+                    .zip(l)
+                    .map(|(&h, &n)| h as usize * usize::from(n))
+                    .sum()
+            };
+            let other = Complex::new_in(&s.alt, std::mem::take(&mut s.tokens[1]));
+            if other.bit_len() + data(&s.alt) < c.bit_len() + data(&s.lens[..hi]) {
+                s.lens[..hi].copy_from_slice(&s.alt);
+                s.tokens[1] = std::mem::replace(c, other).tokens;
+                alt = true;
+            } else {
+                s.tokens[1] = other.tokens;
+            }
+        }
+        c.write(&mut s.head);
+        if alt {
+            // Symbols from `hi` on are never written.
+            huffman::codes_into(&s.lens[..hi], &mut bits[..hi]);
+        } else {
+            huffman::codes_sparse(&s.syms, &s.lens, &mut bits);
+        }
+        kept_single = None;
+    } else {
+        // Simple prefix code.
+        let syms = &mut simple[..n.max(1)];
+        let lens = &mut s.lens;
+        syms.sort_by_key(|&x| (lens[x], x));
+        s.head.bits(2, 1);
+        s.head.bits(2, (syms.len() - 1) as u64);
+        for &x in syms.iter() {
+            s.head.bits(simple_bits, x as u64);
         }
         if syms.len() == 1 {
             lens[syms[0]] = 0;
+            bits[syms[0]] = 0;
+        } else {
+            huffman::codes_sparse(&s.syms, lens, &mut bits);
         }
         if syms.len() == 4 {
-            w.bits(1, u64::from(lens[syms[0]] == 1));
+            s.head.bits(1, u64::from(lens[syms[0]] == 1));
         }
-        return Code {
-            bits: huffman::codes(&lens),
-        };
+        kept_single = (syms.len() == 1).then_some(syms[0] as u16);
     }
-    // The exact lengths, or those of counts smoothed for run-length coding (cheaper to store,
-    // which matters for small inputs): whichever costs fewer bits in all.
-    let exact = Complex::new(&lens[..hi]);
-    let mut smooth = hist[..hi].to_vec();
-    optimize_for_rle(&mut smooth);
-    let mut chosen = exact;
-    // Counts the smoothing left alone give the exact lengths again, which never cost less.
-    let mut alt = Vec::new();
-    let mut alt_used = 0;
-    if smooth != hist[..hi] {
-        huffman::lengths(&smooth, 15, &mut alt);
-        huffman::nonzero_u8(&alt, |_, _| alt_used += 1);
+    w.append_ref(&s.head);
+    if let Some(k) = keep {
+        // Kept for the next meta-block.
+        k.head_bits = s.head.copy_to(&mut k.head);
+        k.single = kept_single;
+        k.lens.clear();
+        k.lens.extend_from_slice(&s.lens[..hi]);
+        k.n = k.lens.iter().filter(|&&l| l != 0).count();
+        k.code.clear();
+        k.code.extend_from_slice(&bits[..hi]);
     }
-    if alt_used > 4 {
-        let data = |l: &[u8]| -> usize {
-            hist[..hi]
-                .iter()
-                .zip(l)
-                .map(|(&h, &n)| h as usize * usize::from(n))
-                .sum()
-        };
-        let other = Complex::new(&alt);
-        if other.bit_len() + data(&alt) < chosen.bit_len() + data(&lens[..hi]) {
-            lens[..hi].copy_from_slice(&alt);
-            chosen = other;
-        }
+    finish_code(s, hist, hi, complex, bits)
+}
+
+/// Puts back what [`prefix_code`] borrowed and clears what it used.
+fn finish_code(
+    s: &mut PrefixScratch,
+    hist: &mut [u32],
+    hi: usize,
+    complex: Option<Complex>,
+    bits: Vec<u32>,
+) -> Code {
+    if let Some(c) = complex {
+        s.tokens[0] = c.tokens;
     }
-    chosen.write(w);
-    // Symbols from `hi` on are never written.
-    let mut bits = vec![0; size];
-    huffman::codes_into(&lens[..hi], &mut bits[..hi]);
+    for &x in &s.syms {
+        hist[usize::from(x)] = 0;
+    }
+    s.lens[..hi].fill(0);
     Code { bits }
+}
+
+/// Writes the `n` bits of `head` (as [`BitWriter::copy_to`] left them).
+fn replay(w: &mut BitWriter, head: &[u8], n: usize) {
+    let mut chunks = head[..n / 8].chunks_exact(4);
+    for c in &mut chunks {
+        w.bits(32, u64::from(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+    }
+    for &b in chunks.remainder() {
+        w.bits(8, u64::from(b));
+    }
+    if n % 8 > 0 {
+        w.bits((n % 8) as u32, u64::from(head[n / 8]));
+    }
 }
 
 /// Smooths `counts` so that their code lengths form longer runs (zopfli's
 /// `OptimizeHuffmanForRle`, as Google's brotli encoder does): strides of similar counts are
 /// replaced by their average; zero counts stay zero unless inside a collapsed stride.
-fn optimize_for_rle(counts: &mut [u32]) {
+#[cfg(test)]
+fn optimize_for_rle(counts: &mut [u32], good: &mut Vec<bool>) {
     let mut length = counts.len();
     while length > 0 && counts[length - 1] == 0 {
         length -= 1;
@@ -2359,7 +2778,8 @@ fn optimize_for_rle(counts: &mut [u32]) {
     }
     let counts = &mut counts[..length];
     // Runs that already code well.
-    let mut good = vec![false; length];
+    good.clear();
+    good.resize(length, false);
     let (mut symbol, mut stride) = (counts[0], 0usize);
     for i in 0..=length {
         if i == length || counts[i] != symbol {
@@ -2402,6 +2822,107 @@ fn optimize_for_rle(counts: &mut [u32]) {
     }
 }
 
+/// The number of bytes from `d[i]` on equal to it (at least 1), eight at a time: the code
+/// lengths of a small meta-block's codes are mostly long runs of zeros.
+#[inline]
+fn run_at(d: &[u8], i: usize) -> usize {
+    let v = d[i];
+    let pat = u64::from(v) * 0x0101_0101_0101_0101;
+    let mut j = i + 1;
+    while let Some(c) = d.get(j..j + 8) {
+        let x = u64::from_le_bytes(c.try_into().unwrap_or([0; 8])) ^ pat;
+        if x != 0 {
+            return j + (x.trailing_zeros() / 8) as usize - i;
+        }
+        j += 8;
+    }
+    while j < d.len() && d[j] == v {
+        j += 1;
+    }
+    j - i
+}
+
+/// [`optimize_for_rle`] of `counts`, whose last entry is not zero and whose non-zero entries
+/// are at `syms` (in order), in time proportional to the used symbols and the short runs of
+/// zeros between them: positions in a run of five or more zeros are all ends of strides, so
+/// only the first and the last of them need looking at. Returns whether a count changed.
+fn optimize_for_rle_sparse(counts: &mut [u32], syms: &[u16], runs: &mut Vec<(u32, u32)>) -> bool {
+    let length = counts.len();
+    if length == 0 {
+        return false;
+    }
+    debug_assert!(counts[length - 1] != 0);
+    // Runs that already code well (the first pass of `optimize_for_rle`), in order: runs of
+    // five zeros or more (the gaps between used symbols) and of seven equal counts or more.
+    runs.clear();
+    let mut prev = 0usize; // the end of the last used symbol
+    let mut k = 0;
+    while k < syms.len() {
+        let s = usize::from(syms[k]);
+        if s - prev >= 5 {
+            runs.push((prev as u32, s as u32));
+        }
+        // Equal counts at consecutive symbols.
+        let c = counts[s];
+        let mut e = k + 1;
+        while e < syms.len() && usize::from(syms[e]) == usize::from(syms[e - 1]) + 1 {
+            if counts[usize::from(syms[e])] != c {
+                break;
+            }
+            e += 1;
+        }
+        if e - k >= 7 {
+            runs.push((s as u32, (s + e - k) as u32));
+        }
+        prev = usize::from(syms[e - 1]) + 1;
+        k = e;
+    }
+    let mut r = 0usize;
+    let (mut stride, mut sum, mut limit) = (0usize, 0u64, u64::from(counts[0]));
+    let mut changed = false;
+    let mut i = 0usize;
+    loop {
+        while r < runs.len() && runs[r].1 as usize <= i {
+            r += 1;
+        }
+        let good = r < runs.len() && runs[r].0 as usize <= i;
+        if i == length || good || u64::from(counts[i]).abs_diff(limit) >= 4 {
+            if stride >= 4 || (stride >= 3 && sum == 0) {
+                let count = if sum == 0 {
+                    0
+                } else {
+                    ((sum + stride as u64 / 2) / stride as u64).max(1)
+                } as u32;
+                for c in &mut counts[i - stride..i] {
+                    changed |= *c != count;
+                    *c = count;
+                }
+            }
+            stride = 0;
+            sum = 0;
+            limit = if i + 3 < length {
+                (counts[i..i + 4].iter().map(|&c| u64::from(c)).sum::<u64>() + 2) / 4
+            } else if i < length {
+                u64::from(counts[i])
+            } else {
+                0
+            };
+        }
+        if i == length {
+            return changed;
+        }
+        stride += 1;
+        sum += u64::from(counts[i]);
+        // Inside a run of zeros that codes well each position ends a stride of one zero
+        // (nothing to fill) and sets the limit again: on to the run's last position.
+        if good && counts[i] == 0 && (runs[r].1 as usize) > i + 1 {
+            i = runs[r].1 as usize - 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// Run-length codes code lengths with symbols 0..=17 (Google's `BrotliWriteHuffmanTree`).
 fn rle_lengths(depth: &[u8], tokens: &mut Vec<(u8, u8)>) {
     let len = depth.iter().rposition(|&d| d != 0).map_or(0, |p| p + 1);
@@ -2412,7 +2933,7 @@ fn rle_lengths(depth: &[u8], tokens: &mut Vec<(u8, u8)>) {
         let mut i = 0;
         while i < depth.len() {
             let v = depth[i];
-            let reps = depth[i..].iter().take_while(|&&x| x == v).count();
+            let reps = run_at(depth, i);
             if reps >= 3 && v == 0 {
                 tz += reps;
                 cz += 1;
@@ -2431,7 +2952,7 @@ fn rle_lengths(depth: &[u8], tokens: &mut Vec<(u8, u8)>) {
     while i < depth.len() {
         let v = depth[i];
         let reps = if (v != 0 && rle_nonzero) || (v == 0 && rle_zero) {
-            depth[i..].iter().take_while(|&&x| x == v).count()
+            run_at(depth, i)
         } else {
             1
         };
@@ -2504,9 +3025,10 @@ struct Complex {
 }
 
 impl Complex {
-    /// The code with code lengths `lens` (trailing zeros may be left out).
-    fn new(lens: &[u8]) -> Complex {
-        let mut tokens = Vec::new();
+    /// The code with code lengths `lens` (trailing zeros may be left out), its tokens in
+    /// `tokens` (cleared first).
+    fn new_in(lens: &[u8], mut tokens: Vec<(u8, u8)>) -> Complex {
+        tokens.clear();
         rle_lengths(lens, &mut tokens);
         let mut hist = [0u32; 18];
         for &(t, _) in &tokens {
@@ -2708,16 +3230,74 @@ mod tests {
             last: true,
             cmds: &cmds,
             coded: &coded,
+            dist_size: p.dist_size(),
+            dist_bits: p.dist_bits(),
         };
         let model = literal_model(data, 0, &cmds, p.modes, 0);
         let lay = if p.optimal > 0 {
             split_layout(&mb, model.mode, p.split_iters)
         } else {
-            greedy_layout(&mb, &model)
+            greedy_layout(&mb, &model).unwrap_or_else(|| Layout::single(&model))
         };
         let lens: u64 = lay.lit.lens.iter().map(|&l| u64::from(l)).sum();
         assert!(lay.lit.ntypes == 1 || lens >= mb.cmds.iter().map(|c| u64::from(c.insert)).sum());
         (lay.lit.ntypes, lay.cmd.ntypes, lay.dist.ntypes)
+    }
+
+    /// The sparse smoothing and run counting give what the dense ones give.
+    #[test]
+    fn sparse_code_helpers_match_dense() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let mut runs = Vec::new();
+        let mut good = Vec::new();
+        for case in 0..20_000 {
+            let size = [8, 26, 64, 74, 256, 704][case % 6];
+            let density = 1 + rnd(100);
+            let mut h: Vec<u32> = (0..size)
+                .map(|_| {
+                    if rnd(100) < density {
+                        match rnd(4) {
+                            0 => 1 + rnd(3) as u32,
+                            1 => 5,
+                            2 => 1 + rnd(40) as u32,
+                            _ => 1 + rnd(2000) as u32,
+                        }
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            if case % 7 == 0 {
+                // Runs of equal counts.
+                let a = rnd(size as u64 / 2) as usize;
+                let n = rnd(12) as usize;
+                for v in h.iter_mut().skip(a).take(n) {
+                    *v = 9;
+                }
+            }
+            let Some(hi) = h.iter().rposition(|&c| c != 0).map(|p| p + 1) else {
+                continue;
+            };
+            let h = &h[..hi];
+            let syms: Vec<u16> = (0..hi as u16).filter(|&i| h[usize::from(i)] != 0).collect();
+            let mut dense = h.to_vec();
+            optimize_for_rle(&mut dense, &mut good);
+            let mut sparse = h.to_vec();
+            let changed = optimize_for_rle_sparse(&mut sparse, &syms, &mut runs);
+            assert_eq!(dense, sparse, "case {case}: {h:?}");
+            assert_eq!(changed, dense != h, "case {case}");
+            let lens: Vec<u8> = h.iter().map(|&c| (c % 5) as u8).collect();
+            for i in 0..lens.len() {
+                let naive = lens[i..].iter().take_while(|&&v| v == lens[i]).count();
+                assert_eq!(run_at(&lens, i), naive);
+            }
+        }
     }
 
     #[test]
