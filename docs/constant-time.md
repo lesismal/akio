@@ -65,6 +65,7 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
 | `rsa2048-sign-key` | RSA-2048 sign: test key A vs test key B (two fixed keys: a random 2048-bit key per measurement is too slow to make) |
 | `aes128-gcm-open-tag` | AES-128-GCM open, 256 bytes: tag wrong in the last byte vs random tag (how much of the tag matches) |
 | `chacha20poly1305-open-tag` | the same for ChaCha20-Poly1305 |
+| `chacha20poly1305-open-tag-64` | the same at 64 bytes: the short-message head (one row-kernel call on AVX-512 that hands the Poly1305 key over in registers, up to 192 bytes) |
 | `hmac-sha256-verify-tag` | `Hmac::verify`: tag wrong in the last byte vs random tag |
 | `hmac-sha256-verify-valid` | `Hmac::verify`: valid tag vs random tag (both compute the MAC and compare in full) |
 | `aes128-gcm-open-valid`, `chacha20poly1305-open-valid` | valid tag vs random tag; **public**: the caller learns anyway whether the tag verified, and the work differs by design (ChaCha20-Poly1305 decrypts only after a valid tag; the fused AES-GCM pass undoes the decryption on failure). Reported, never a leak |
@@ -190,3 +191,11 @@ SEED (2026-11-20, ADR-052), the same host quieted (`quiet.sh`), core 2, `rdtsc`,
 target; SEED has no hardware path, so one pass: `seed-key` 1.50 (15.5M measurements; key
 schedule and a sixteen-block CTR pass, about 15,700 cycles either way) and `seed-block` 1.52
 (50.6M; the one-word path, about 4,480 cycles either way). No difference seen.
+
+only-crypto short-message open and P-256 reduction (2026-11-22): the quiet host (`quiet.sh`),
+core 2, `rdtsc`. Hardware path, 60 s per target: `p256-ecdh` 2.74 (2.1M measurements),
+`p256-keygen` 2.07 (11.4M), `p256-sign` 1.98 (6.8M), `chacha20poly1305-open-tag` 1.98 (10⁸),
+the new `chacha20poly1305-open-tag-64` 0.67 (10⁸; the row-kernel head with the key in
+registers, about 600 cycles per open). Portable path, 30 s: `chacha20poly1305-open-tag` 1.29,
+`chacha20poly1305-open-tag-64` 0.99. `chacha20poly1305-open-valid` differs as it should
+(public). No difference seen.

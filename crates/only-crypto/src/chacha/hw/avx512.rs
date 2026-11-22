@@ -249,6 +249,23 @@ macro_rules! xs {
     };
 }
 
+/// Stores register `r` (the keystream itself) to the output at `off`, reading no input (`$m`
+/// unused): the keystream head of an AEAD message ([`keystream_row`]).
+macro_rules! ks {
+    ($w:literal, $size:literal, $r:literal, $off:literal, $m:literal) => {
+        concat!(
+            "vmovdqu64 ",
+            $size,
+            " ptr [rdi + ",
+            $off,
+            "], ",
+            $w,
+            $r,
+            "\n",
+        )
+    };
+}
+
 /// [`xs`] under a byte mask: the bytes of the mask at offset `m` of `{m}` (`off / 8`: 64 bits
 /// for a zmm store, 32 for a ymm one) select the bytes read and written; the others are neither
 /// read (no fault) nor written. A full mask takes the plain [`xs`] and an empty one skips the
@@ -441,6 +458,11 @@ macro_rules! row_shuffle {
 /// dependency chain of a round is about as long. For short messages, which wait for it.
 macro_rules! row_kernel {
     ($st:ident) => {
+        row_kernel!($st, "")
+    };
+    // `$tail` runs after the last group's stores, before `vzeroupper` (block 0 of that group
+    // still in zmm26).
+    ($st:ident, $tail:expr) => {
         concat!(
             "vbroadcasti32x4 zmm4, xmmword ptr [{s}]\n",
             "vbroadcasti32x4 zmm5, xmmword ptr [{s} + 16]\n",
@@ -472,6 +494,7 @@ macro_rules! row_kernel {
             "add rdi, 256\n",
             "dec rcx\n",
             "jnz 2b\n",
+            $tail,
             "vzeroupper\n",
         )
     };
@@ -517,6 +540,51 @@ pub(super) unsafe fn xor(state: &[u32; 16], src: *const u8, dst: *mut u8, n: usi
         Width::Y => kernel!(mid_kernel),
         Width::X => kernel!(row_kernel),
     }
+}
+
+/// Writes the keystream of the four blocks from block `state[12]` (256 bytes, the row kernel)
+/// to `dst`, reading no input, and returns its first 32 bytes (the Poly1305 key of an AEAD
+/// message) as little-endian words, moved from the vector register: read back from `dst` right
+/// away, they would wait for the zmm stores to retire (Zen 4 does not forward them to narrower
+/// loads), which stalls the start of the tag.
+///
+/// # Safety
+///
+/// The CPU must support AVX-512 F and VL with the OS saving the ZMM state; `dst` must be writable
+/// for 256 bytes.
+pub(super) unsafe fn keystream_row(state: &[u32; 16], dst: *mut u8) -> [u64; 4] {
+    let (k0, k1, k2, k3): (u64, u64, u64, u64);
+    // SAFETY: the caller guarantees the CPU and OS features and the 256 writable bytes at `dst`.
+    // The kernel reads the 64-byte state and the constants, writes 256 bytes to `dst` (its one
+    // iteration's four block stores; `rsi` is advanced but never read), uses no stack and
+    // clobbers only the registers declared here (all vector registers through
+    // `clobber_abi("C")`, the flags), ending with `vzeroupper`; the tail copies block 0 (zmm26)
+    // into zmm0 and moves its low 32 bytes into `rax`, `rcx`, `rsi`, `rdi` (free once the loop
+    // is done) with VEX instructions (no AVX-512 DQ needed).
+    unsafe {
+        core::arch::asm!(
+            row_kernel!(
+                ks,
+                concat!(
+                    "vmovdqa64 zmm0, zmm26\n",
+                    "vmovq rax, xmm0\n",
+                    "vpextrq rcx, xmm0, 1\n",
+                    "vextracti128 xmm1, ymm0, 1\n",
+                    "vmovq rsi, xmm1\n",
+                    "vpextrq rdi, xmm1, 1\n",
+                )
+            ),
+            s = in(reg) state.as_ptr(),
+            c = in(reg) &raw const CONSTS,
+            inout("rsi") 0usize => k2,
+            inout("rdi") dst => k3,
+            inout("rcx") 1usize => k1,
+            out("rax") k0,
+            clobber_abi("C"),
+            options(nostack),
+        );
+    }
+    [k0, k1, k2, k3]
 }
 
 /// [`xor`] of one group of width `w` of which only the first `len` bytes (`0 < len <=

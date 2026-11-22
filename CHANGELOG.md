@@ -10,6 +10,25 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Performance: opening short ChaCha20-Poly1305 messages; P-256 reduction without `mulx` (only-crypto)
+
+No API change.
+
+- **ChaCha20-Poly1305 64-byte open 0.84× → 0.98× ring, seal 0.99× → 1.11×** (Zen 4, quiet host,
+  same-run A/B). Opening was slow because of stores Zen 4 cannot forward, not because the tag must be
+  checked first: the Poly1305 key was read back right after the AVX-512 row kernel stored the
+  keystream head with zmm stores, and the AAD's partial block was assembled on the stack and
+  read back across narrower stores. The row kernel now also returns the key in general
+  registers, writes the head store-only into caller-owned uninitialised storage (no zero fill,
+  no 256-byte copy), and the partial block is assembled in registers. 1 KiB open +4%, TLS 1.3
+  ChaCha20 records at 1 KiB 1.16× → 1.21× rustls + ring. New `tools/ct-dudect` target
+  `chacha20poly1305-open-tag-64` for the short-message path.
+- **P-256 on x86_64**: the whole-point routines' Montgomery reduction computes `m·p₃` from shifts
+  (`p₃ = 2⁶⁴ - 2³² + 1`) instead of one `mulx` per step, which frees the single multiplier port:
+  verify +5.2% (1.09× → 1.15× ring), ECDH +1.7% (1.17×), key generation +1.2%, secp256r1 TLS 1.3
+  handshakes 1.07× → 1.10× rustls + ring. The same change in the standalone field
+  multiplication (latency-bound inversion chains) gained nothing and was left out.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

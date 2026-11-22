@@ -16,6 +16,8 @@
 //! assert_eq!(aead.decrypt(&nonce, b"header", &sealed).unwrap(), b"secret");
 //! ```
 
+use std::mem::MaybeUninit;
+
 use crate::Error;
 use crate::fill::{self, Fill};
 
@@ -449,12 +451,23 @@ impl Poly1305 {
 
     /// A Poly1305 instance that uses the IFMA kernel only with `lvl` [`Level::Wide`].
     fn with_level(key: &[u8], lvl: Level) -> Self {
-        Poly1305 {
-            r: [
-                le64(&key[0..]) & 0x0fff_fffc_0fff_ffff,
-                le64(&key[8..]) & 0x0fff_fffc_0fff_fffc,
+        Self::from_words(
+            [
+                le64(&key[0..]),
+                le64(&key[8..]),
+                le64(&key[16..]),
+                le64(&key[24..]),
             ],
-            s: [le64(&key[16..]), le64(&key[24..])],
+            lvl,
+        )
+    }
+
+    /// [`with_level`](Self::with_level) of the key given as four little-endian words.
+    #[inline]
+    fn from_words(k: [u64; 4], lvl: Level) -> Self {
+        Poly1305 {
+            r: [k[0] & 0x0fff_fffc_0fff_ffff, k[1] & 0x0fff_fffc_0fff_fffc],
+            s: [k[2], k[3]],
             h: [0; 3],
             buf: [0; 16],
             pos: 0,
@@ -526,23 +539,42 @@ impl Poly1305 {
     }
 
     /// Absorbs `data` padded with zeros to whole 16-byte blocks (the AEAD's padding; nothing
-    /// may be buffered), the last partial block assembled with fixed-size copies (no `memcpy`
+    /// may be buffered), the last partial block assembled from fixed-size loads (no `memcpy`
     /// call for these few bytes).
     fn absorb_padded(&mut self, data: &[u8], pw: Option<&hw::Powers>) {
         debug_assert_eq!(self.pos, 0);
         let whole = data.len() / 16 * 16;
-        self.full_blocks(&data[..whole], pw);
+        // Below both vector thresholds straight to the scalar loop (no dispatch, no frame for
+        // the IFMA powers).
+        if whole >= IFMA_MIN.min(AVX2_MIN) {
+            self.full_blocks(&data[..whole], pw);
+        } else {
+            self.blocks64(&data[..whole], 1);
+        }
         let rest = &data[whole..];
         if !rest.is_empty() {
-            let mut b = [0u8; 16];
+            // The zero-padded block as two words, from pieces of 8, 4, 2 and 1 bytes shifted
+            // into place in registers (a piece never straddles the words: after an 8-byte piece
+            // the rest is at most 7 bytes). Assembled in a stack buffer instead, the second word
+            // was read back across several narrower stores, which cannot be forwarded: the load
+            // waited for them to commit, and when opening that is after the ChaCha20 call still
+            // in flight retires.
+            let mut w = [0u64; 2];
             let mut o = 0;
-            for w in [8, 4, 2, 1] {
-                if rest.len() & w != 0 {
-                    b[o..o + w].copy_from_slice(&rest[o..o + w]);
-                    o += w;
+            for n in [8, 4, 2, 1] {
+                if rest.len() & n != 0 {
+                    let p = &rest[o..o + n];
+                    let v = match n {
+                        8 => le64(p),
+                        4 => u64::from(u32::from_le_bytes([p[0], p[1], p[2], p[3]])),
+                        2 => u64::from(u16::from_le_bytes([p[0], p[1]])),
+                        _ => u64::from(p[0]),
+                    };
+                    w[o / 8] |= v << (8 * (o % 8));
+                    o += n;
                 }
             }
-            self.block64(le64(&b[0..]), le64(&b[8..]), 1);
+            self.block64(w[0], w[1], 1);
         }
     }
 
@@ -705,10 +737,30 @@ impl std::fmt::Debug for ChaCha20Poly1305 {
     }
 }
 
-/// The first keystream blocks of a message: `n` blocks from block 0 (the Poly1305 key) in `ks`.
-struct Head {
-    ks: [u8; 512],
+/// The first keystream blocks of a message: `n` blocks from block 0 (the Poly1305 key) in `ks`
+/// (in the caller's [`HeadBuf`]).
+struct Head<'a> {
+    ks: &'a [u8],
     n: usize,
+    /// The first 32 bytes of `ks` (the Poly1305 key) as little-endian words.
+    key: [u64; 4],
+}
+
+/// Storage for a [`Head`], owned by the caller so that the keystream is written in place and
+/// never moved (a returned array was a 256-byte `memcpy`, 13% of a 64-byte seal): four blocks
+/// written straight by the AVX-512 row kernel, or up to eight in a zeroed buffer.
+struct HeadBuf {
+    row: MaybeUninit<[u8; 256]>,
+    buf: MaybeUninit<[u8; 512]>,
+}
+
+impl HeadBuf {
+    fn new() -> Self {
+        HeadBuf {
+            row: MaybeUninit::uninit(),
+            buf: MaybeUninit::uninit(),
+        }
+    }
 }
 
 impl ChaCha20Poly1305 {
@@ -747,10 +799,18 @@ impl ChaCha20Poly1305 {
     /// four or eight from one AVX-512 call (see [`hw::wide_cost`]); eight from one AVX2 call for
     /// messages of more than two blocks; else the blocks the message needs (at most four), one
     /// at a time.
-    fn start(&self, nonce: &[u8; NONCE_LEN], len: usize) -> (Level, [u32; 16], Head) {
+    // Inlined so that the key words stay in registers: a returned `Head` would carry them
+    // through memory (word stores read back by wider loads, which cannot be forwarded and stall
+    // the start of the tag).
+    #[inline(always)]
+    fn start<'a>(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        len: usize,
+        hb: &'a mut HeadBuf,
+    ) -> (Level, [u32; 16], Head<'a>) {
         let lvl = Level::current(self.cap);
         let st = ChaCha20::new(&self.key, nonce, 0).state;
-        let mut ks = [0u8; 512];
         // Four blocks (one row group) or eight (one ymm group), whichever leaves the cheaper
         // rest (a public length only).
         let wide = if len > 192
@@ -761,9 +821,15 @@ impl ChaCha20Poly1305 {
         } else {
             4
         };
+        if lvl == Level::Wide && wide == 4 {
+            if let Some((ks, key)) = hw::keystream_row(&st, &mut hb.row) {
+                return (lvl, st, Head { ks, n: 4, key });
+            }
+        }
+        let ks = hb.buf.write([0u8; 512]);
         let n = if lvl == Level::Wide && hw::xor_wide(&st, &mut ks[..64 * wide]) {
             wide
-        } else if lvl >= Level::Avx2 && len > 128 && hw::xor8(&st, &mut ks) {
+        } else if lvl >= Level::Avx2 && len > 128 && hw::xor8(&st, ks) {
             8
         } else {
             let n = 1 + len.min(192).div_ceil(64);
@@ -774,14 +840,27 @@ impl ChaCha20Poly1305 {
             }
             n
         };
-        (lvl, st, Head { ks, n })
+        (
+            lvl,
+            st,
+            Head {
+                key: [
+                    le64(&ks[0..]),
+                    le64(&ks[8..]),
+                    le64(&ks[16..]),
+                    le64(&ks[24..]),
+                ],
+                ks: &ks[..],
+                n,
+            },
+        )
     }
 
     /// XORs the keystream from block 1 into the message, written to `out`: without `src` the
     /// message is `out` (initialised), worked on in place; with `src` (nothing written to `out`
     /// from the front yet) it is `src` followed by the initialised bytes of `out` after
     /// `src.len()`. `head` holds the first blocks. `out` is full afterwards.
-    fn crypt(lvl: Level, st: &[u32; 16], head: &Head, src: Option<&[u8]>, out: &mut Fill<'_>) {
+    fn crypt(lvl: Level, st: &[u32; 16], head: &Head<'_>, src: Option<&[u8]>, out: &mut Fill<'_>) {
         let hb = 64 * (head.n - 1);
         let ks = &head.ks[64..64 * head.n];
         let len = out.len();
@@ -860,8 +939,9 @@ impl ChaCha20Poly1305 {
             "ChaCha20-Poly1305: plaintext too long"
         );
         let len = out.len();
-        let (lvl, st, head) = self.start(nonce, len);
-        let p = Poly1305::with_level(&head.ks[..32], lvl);
+        let mut hb = HeadBuf::new();
+        let (lvl, st, head) = self.start(nonce, len, &mut hb);
+        let p = Poly1305::from_words(head.key, lvl);
         // The powers of `r` for the IFMA kernel first: their scalar multiplications overlap the
         // vector work of the cipher.
         let pw = p.uses_ifma(len / 16 * 16).then(|| p.ifma_powers());
@@ -879,12 +959,13 @@ impl ChaCha20Poly1305 {
         out: &mut Fill<'_>,
         tag: &[u8],
     ) -> bool {
-        let (lvl, st, head) = self.start(nonce, out.len());
+        let mut hb = HeadBuf::new();
+        let (lvl, st, head) = self.start(nonce, out.len(), &mut hb);
         let ct: &[u8] = match src {
             Some(s) => s,
             None => out.filled(),
         };
-        let t = Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct, None);
+        let t = Self::tag(Poly1305::from_words(head.key, lvl), aad, ct, None);
         if !crate::ct_eq(&t, tag) {
             return false;
         }

@@ -66,7 +66,7 @@ fits).
 Conformance: RFC 8448 traces as unit tests, tlsfuzzer (`tools/interop/tls/tlsfuzzer.sh`), and an interop matrix against OpenSSL, Go
 `crypto/tls`, curl and rustls (`tools/interop/tls/run.sh`, `tools/interop/grpc/run.sh`, the
 `only` crate's TLS tests). Speed against rustls 0.23 with ring (`tls-bench`, x86_64 with VAES):
-X25519 full handshakes on par, AES-128-GCM records about 1.6x at 1 KiB and at 16 KiB.
+full handshakes about 1.1x with X25519 and with secp256r1 (an ECDSA P-256 certificate), AES-128-GCM records about 1.6x at 1 KiB and at 16 KiB, ChaCha20-Poly1305 records about 1.2x at 1 KiB and 1.5x at 16 KiB. The ChaCha20-Poly1305 AEAD itself matches ring on 64-byte messages (seal 1.11x, open 0.98x; docs/BENCHMARKS.md).
 
 ## Configuration
 

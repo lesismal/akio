@@ -857,6 +857,39 @@ condition). This pass:
 
 `tools/ct-dudect` on this machine: see docs/constant-time.md.
 
+#### P-256 reduction without `mulx` in the whole-point assembly (`--example pk_bench p256`, `tls-bench handshakes 2`, CPU 4)
+
+2026-11-22, three alternating rounds of `main` (`b789624f`'s `only-crypto`) and this change,
+against ring 0.17 / rustls 0.23 in the same runs, on the quiet host (`quiet.sh`); medians.
+
+| op/s (quiet host) | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| P-256 ECDSA sign | 113,497 | 114,140 | 75,462–76,607 | 1.48 | 1.49 |
+| P-256 ECDSA verify | 28,709 | 30,211 | 25,783–26,332 | 1.09 | 1.15 |
+| P-256 ECDH | 34,611 | 35,187 | 30,005–30,129 | 1.15 | 1.17 |
+| P-256 key generation | 176,170 | 178,270 | 113,214–113,631 | 1.55 | 1.57 |
+| TLS 1.3 full handshakes/s, secp256r1 | 5,512 | 5,655 | 5,133–5,146 | 1.07 | 1.10 |
+| TLS 1.3 full handshakes/s, X25519 | 5,429 | 5,536 | 5,028–5,051 | 1.08 | 1.10 |
+| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 3,284 | 3,289 | 1,790–1,807 | 1.82 | 1.82 |
+
+The change: each of the four steps of the point routines' Montgomery reduction (`f_redc_step`)
+added `m·p₃·2¹⁹²` with one `mulx`; `p₃ = 2⁶⁴ - 2³² + 1`, so the two words of `m·p₃` are
+`m - (m << 32)` and `m - (m >> 32) - borrow`, from the two shifts the step already makes for
+`m·2⁹⁶`. A product now issues 16 (multiplication) or 10 (squaring) `mulx` instead of 20 / 14, and
+the point routines are bound by the one multiplier port as much as by latency: in the timing
+loop (`ec::hw::tests::timings`, not on the quiet host) a doubling went from 77–79 to 74–75 ns,
+an addition from 144–147 to 141–142 ns, the variable-base multiplication from 28.6 to 27.7 µs.
+Verification gains most (its double-scalar loop is additions and doublings with little else).
+The X25519 handshake row moves too: its certificate is ECDSA P-256.
+
+Measured and not kept: the same rewrite in the standalone field multiplication and squaring
+(`reduce_p`), whose callers are latency-bound chains (the Fermat inversion): 1.25 → 1.26–1.28
+µs, as much as the unchanged scalar inversion moved in the same runs, so no gain, and left out. Reordering the doubling was not tried again
+(the existing order already starts the critical path `δ → α → α² → X₃ → Y₃` first and puts the
+products off it in between). Lower latency for the multiplication itself (an interleaved
+reduction) measured neutral in the 2026-11-17 pass. aarch64 is unchanged (its reduction uses
+shifts only already).
+
 #### RSA (`--example pk_bench rsa`, `tls-bench handshakes`, CPU 2)
 
 Three alternating rounds of the previous code (`7f5c483a`, with this pass's benchmark files) and
@@ -1066,7 +1099,7 @@ messages for every CPU with AES and carry-less multiplication instructions.
 What was left for AES-GCM after this pass (1 KiB to 1.4 KiB at 0.96–1.11× ring, the 128-bit
 path on CPUs with VAES but no AVX-512, the TLS record zero-fill) is the next subsection. Other
 gaps: ChaCha20-Poly1305 below 1.4 KiB
-was at 0.82–0.96× ring (now 0.98× for a 64-byte seal, 0.85× open, above ring from 1 KiB:
+was at 0.82–0.96× ring (now 1.11× for a 64-byte seal, 0.98× open, above ring from 1 KiB:
 "ChaCha20-Poly1305 short messages" below) and CPUs without AVX-512 / IFMA ran the AVX2 ChaCha20 with a scalar
 Poly1305 (now an AVX2 Poly1305: "Poly1305 on AVX2" below); P-256
 ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
@@ -1350,7 +1383,8 @@ Seal by size (`PROFILE_LEN`, three rounds): 192 B +15%, 256 B +47%, 448 B +38%, 
 rounds): 1 KiB 987 → 1,038 MB/s (+5.2%, 1.09× → 1.15× rustls + ring), 16 KiB 2,225 → 2,240, 64 KiB
 2,190 → 2,217. Left: opening 64-byte messages (0.85× ring; the tag must be checked before the
 plaintext is written, so the cipher and the scalar Poly1305 cannot overlap), and the 512-byte
-zeroed head buffer.
+zeroed head buffer. Both done on 2026-11-22 (0.98× ring, and the cause was store forwarding,
+not the order): "ChaCha20-Poly1305: opening short messages" below.
 
 #### Poly1305 on AVX2 (`--example chacha-sizes`, the `avx2` key, CPU 2)
 
@@ -1369,6 +1403,61 @@ Poly1305; no host without AVX-512 was available), median of five alternating rou
 `main`, MB/s: seal 1 KiB 1,654 → 1,767 (+6.8%), 1400 B 1,998 → 2,200 (+10.1%), 16 KiB 2,270 →
 2,729 (+20.2%), 64 KiB 2,311 → 2,795 (+20.9%); open 16 KiB 2,190 → 2,617 (+19.5%). The default
 path (AVX-512 + IFMA), the portable code and messages under 512 bytes are unchanged.
+
+#### ChaCha20-Poly1305: opening short messages (`--example chacha-sizes`, `tls-bench records`, CPU 4)
+
+Opening a 64-byte message was 0.84× ring while sealing one was 0.99×. The 2026-11-16 notes put
+it down to the order (the tag must be checked before anything is decrypted, so the cipher and
+the scalar Poly1305 cannot overlap); a profile on Zen 4 showed stalls instead: half of `open`'s
+own samples sat right after reading the Poly1305 key. All three causes were loads that waited
+for stores to commit, because Zen 4 cannot forward those stores to them:
+
+- **The key.** The four-block row kernel stored the head with zmm stores into a zeroed buffer,
+  and the key was read back with 8-byte loads at once. In a seal the XOR of the message runs in
+  between; in an open the tag starts on it immediately. The kernel now also returns block 0's
+  first 32 bytes in general registers (`vmovq`/`vpextrq` from a copy of the block before
+  `vzeroupper`), and `start` is inlined so that the words are not stored into a returned `Head`
+  and read back by the clamping as 16-byte loads (the next stall the profile showed).
+- **The head buffer.** The keystream is written by a store-only variant of the row kernel into
+  storage the caller owns (`HeadBuf`, uninitialised slots, borrowed by `Head`): no 512-byte
+  zero fill, no byte masks, and no 256-byte `memcpy` when the array was moved into the returned
+  `Head` (13% of a 64-byte seal or open in the profile).
+- **The AAD's partial block.** The 13 bytes of TLS AAD were put together in a stack block with
+  8-, 4- and 1-byte stores and read back as two words; the second spans several stores, so the
+  load waited for them to commit, and when opening that is only once the ChaCha20 call still in
+  flight retires. The two words are now assembled from the same loads by shifts, in registers.
+  Store-to-load conflicts (`ls_bad_status2.stli_other`) per 64-byte open went down to about 7.5.
+
+Also: below both vector thresholds `absorb_padded` goes straight to the scalar loop (the empty
+AAD call and the frame for the IFMA powers are gone). Lengths whose head is eight blocks (by
+the kernel costs: 193–448 bytes, then 705–960 and so on every 512 bytes, 1400 among them) keep
+the zeroed buffer and read the key back from it.
+
+Three alternating rounds of `main` (`b789624f`'s `only-crypto`) and this change on the quiet
+host, ring in the same runs, medians, MB/s (AVX-512 + IFMA path):
+
+| MB/s | before | after | after / before | ring | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|---:|
+| seal 64 B | 482 | 542 | 1.12 | 488 | 0.99 | 1.11 |
+| seal 1 KiB | 2,653 | 2,754 | 1.04 | 2,470 | 1.07 | 1.11 |
+| seal 1400 B | 3,141 | 3,197 | 1.02 | 2,640 | 1.19 | 1.21 |
+| seal 16 KiB | 4,686 | 4,644 | 0.99 | 3,511 | 1.33 | 1.32 |
+| open 64 B | 402 | 471 | 1.17 | 480 | 0.84 | 0.98 |
+| open 1 KiB | 2,585 | 2,697 | 1.04 | 2,465 | 1.05 | 1.09 |
+| open 1400 B | 3,059 | 3,122 | 1.02 | 2,618 | 1.17 | 1.19 |
+| open 16 KiB | 4,390 | 4,296 | 0.98 | 3,332 | 1.32 | 1.29 |
+
+The 16 KiB rows are within the run-to-run spread (open 4,302–4,390 before, 4,267–4,404 after;
+the code they run did not change). The AVX2 and portable keys at 64 B went from 311 / 277 to
+335 / 302 MB/s (seal / open, both keys alike) (the AAD block and the head move apply to them too). TLS 1.3 records with
+TLS_CHACHA20_POLY1305_SHA256, seal + open: 1 KiB 1,055 → 1,100 MB/s (1.16× → 1.21× rustls +
+ring), 16 KiB 2,237 → 2,252, 64 KiB 2,215 → 2,252. Before this, two smaller steps were measured
+on their own (same host, quiet): the store-only head without the key in registers took open
+64 B to 428–431 MB/s, the key in registers alone did not move it (the returned `Head` still sent
+it through memory). Left: opening is still about 13% slower than sealing at 64 bytes (the
+Poly1305 chain cannot start before the kernel ends, where sealing overlaps the XOR), and the
+eight-block heads (above) still go through the zeroed buffer.
+`tools/ct-dudect` (new target `chacha20poly1305-open-tag-64`): see docs/constant-time.md.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 

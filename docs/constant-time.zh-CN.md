@@ -53,6 +53,7 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/only-cr
 | `rsa2048-sign-key` | RSA-2048 签名：测试密钥 A 对测试密钥 B（两个固定密钥：每次测量生成一个随机 2048 位密钥太慢） |
 | `aes128-gcm-open-tag` | AES-128-GCM 解密，256 字节：只有最后一字节错误的标签对随机标签（标签匹配了多少） |
 | `chacha20poly1305-open-tag` | ChaCha20-Poly1305，同上 |
+| `chacha20poly1305-open-tag-64` | 同上，64 字节：短消息的密钥流头（AVX-512 上一次行内核调用，并经寄存器交出 Poly1305 密钥，最长 192 字节） |
 | `hmac-sha256-verify-tag` | `Hmac::verify`：只有最后一字节错误的标签对随机标签 |
 | `hmac-sha256-verify-valid` | `Hmac::verify`：有效标签对随机标签（两者都计算完整 MAC 并完整比较） |
 | `aes128-gcm-open-valid`、`chacha20poly1305-open-valid` | 有效标签对随机标签；**公开**：调用方本来就知道标签是否通过，两种情况的工作量按设计不同（ChaCha20-Poly1305 只在标签有效后解密；融合的 AES-GCM 在失败时撤销解密）。只报告，不算泄漏 |
@@ -155,3 +156,9 @@ sanity 目标都被发现（26,208 与 17,221）。`x25519-keygen` 出现了上�
 SEED（2026-11-20，ADR-052），同一台主机经 `quiet.sh` 静默，核心 2，`rdtsc`，每个目标 60 秒；SEED 没有
 硬件路径，只跑一轮：`seed-key` 1.50（1550 万次测量；密钥扩展加一趟 16 分组的 CTR，两类都约 15,700 个
 周期），`seed-block` 1.52（5060 万；单字路径，两类都约 4,480 个周期）。未见差异。
+
+only-crypto 短消息解密与 P-256 约简（2026-11-22）：安静主机（`quiet.sh`），核心 2，`rdtsc`。硬件路径，每个目标 60 秒：
+`p256-ecdh` 2.74（210 万次测量）、`p256-keygen` 2.07（1140 万）、`p256-sign` 1.98（680 万）、
+`chacha20poly1305-open-tag` 1.98（10⁸），新增的 `chacha20poly1305-open-tag-64` 0.67（10⁸；行内核密钥流头且密钥经寄存器交出，
+每次解密约 600 个周期）。可移植路径，30 秒：`chacha20poly1305-open-tag` 1.29，`chacha20poly1305-open-tag-64` 0.99。
+`chacha20poly1305-open-valid` 按预期有差异（公开）。未见差异。
