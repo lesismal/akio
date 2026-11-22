@@ -514,3 +514,62 @@ fn mediamtx_push_and_pull() {
         wait_for("pull end", 15, || puller.is_closed());
     }
 }
+
+/// The server's host name moves to another address while the clients reconnect: a push and a
+/// pull of `rtmp://$ONLY_MOVING_RTMP/live/mv`, both reconnecting, must find the server at
+/// its new address (the name is looked up again on every try). Run by
+/// `tools/interop/media/rtsp-server-redirect.sh rtmp`, which moves the name `rtmpsrv` from one
+/// mediamtx container to another on a Docker network; skipped without the variable.
+#[test]
+fn rtmp_server_moves_to_another_address() {
+    use std::io::Write as _;
+    let Ok(srv) = std::env::var("ONLY_MOVING_RTMP") else {
+        eprintln!(
+            "ONLY_MOVING_RTMP not set: skipped (see tools/interop/media/rtsp-server-redirect.sh)"
+        );
+        return;
+    };
+    let e = Arc::new(client_engine());
+    let mut cfg = RtmpClientConfig::default();
+    cfg.reconnect = Some(
+        only_media::Reconnect::new(&e)
+            .initial_delay(Duration::from_millis(200))
+            .max_delay(Duration::from_secs(1)),
+    );
+    let hub = Hub::default();
+    let _feeder = publish_paced(&hub, "src", H264, 1000);
+    let url = format!("rtmp://{srv}/live/mv");
+    let push = client::push(&e, &url, &hub, "src", cfg.clone()).unwrap();
+    let (got, _sub) = count(&hub, "back");
+    let pull = client::pull(&e, &url, &hub, "back", cfg).unwrap();
+    wait_for("media back", 30, || got.video.load(Ordering::Relaxed) > 50);
+    let first = (push.addr(), pull.addr());
+    println!("READY: push {} pull {}", first.0, first.1);
+    std::io::stdout().flush().unwrap();
+    let secs = std::env::var("ONLY_MOVING_WAIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    wait_for("both reconnected", secs, || {
+        push.reconnects() >= 1
+            && pull.reconnects() >= 1
+            && push.state() == ClientState::Streaming
+            && pull.state() == ClientState::Streaming
+    });
+    let before = got.video.load(Ordering::Relaxed);
+    wait_for("media from the new server", 30, || {
+        got.video.load(Ordering::Relaxed) > before + 50
+    });
+    assert_ne!(push.addr(), first.0, "push dialed the old address");
+    assert_ne!(pull.addr(), first.1, "pull dialed the old address");
+    println!(
+        "MOVED: push {} -> {} ({} reconnects), pull {} -> {} ({} reconnects)",
+        first.0,
+        push.addr(),
+        push.reconnects(),
+        first.1,
+        pull.addr(),
+        pull.reconnects()
+    );
+    drop((push, pull));
+}
