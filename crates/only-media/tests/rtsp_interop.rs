@@ -1079,3 +1079,53 @@ fn record_sessions_send_receiver_reports() {
         assert!(parsed.iter().any(|(_, b, _)| b[0].1 > 0), "a fraction lost");
     }
 }
+
+/// GStreamer's `rtspclientsink` records an H.264 test pattern to our server over TCP and UDP
+/// (`docker run --network host <ONLY_GST_IMAGE> gst-launch-1.0`, the image built by
+/// `tools/interop/media/rtsp-redirect.sh`); its RTP session must log our receiver reports
+/// (`got RR packet` and a report block about its own SSRC with the LSR of its last sender
+/// report). Skipped without `ONLY_GST_IMAGE`.
+#[test]
+fn gstreamer_record_gets_receiver_reports() {
+    let Ok(image) = std::env::var("ONLY_GST_IMAGE") else {
+        eprintln!("ONLY_GST_IMAGE not set: skipped (see tools/interop/media/rtsp-redirect.sh)");
+        return;
+    };
+    for proto in ["tcp", "udp"] {
+        let mut cfg = RtspConfig::default();
+        cfg.receiver_report_interval = Duration::from_secs(1);
+        let (hub, engine, addr) = start(cfg);
+        let path = format!("live/gst_{proto}");
+        let out = Command::new("docker")
+            .args(["run", "--rm", "--network", "host", "-e", "GST_DEBUG=rtpsession:5"])
+            .arg(&image)
+            .args(["timeout", "-s", "INT", "8", "gst-launch-1.0", "-e"])
+            .args(["videotestsrc", "is-live=true", "!", "video/x-raw,width=320,height=240"])
+            .args(["!", "x264enc", "tune=zerolatency", "key-int-max=25", "!", "h264parse"])
+            .args(["!", "rtspclientsink"])
+            .arg(format!("location=rtsp://{addr}/{path}"))
+            .arg(format!("protocols={proto}"))
+            .output()
+            .expect("docker");
+        let log = String::from_utf8_lossy(&out.stderr);
+        engine.shutdown();
+        let rrs: Vec<&str> = log.lines().filter(|l| l.contains("got RR packet")).collect();
+        let blocks: Vec<&str> = log.lines().filter(|l| l.contains("got RB packet")).collect();
+        let tail: Vec<&str> = log.lines().rev().take(30).collect();
+        assert!(
+            rrs.len() >= 3 && !blocks.is_empty(),
+            "{proto}: {} RR, {} RB; hub {:?}; log tail {tail:#?}",
+            rrs.len(),
+            blocks.len(),
+            hub.stream_info(&path)
+        );
+        // A block with a non-zero LSR: the sender report was seen.
+        let lsr = blocks.iter().any(|l| !l.contains("LSR 0000:0000"));
+        eprintln!(
+            "{proto}: {} RR from us, e.g. {:?}; LSR echoed: {lsr}",
+            rrs.len(),
+            blocks.last()
+        );
+        assert!(lsr, "{proto}: no LSR in {blocks:#?}");
+    }
+}
