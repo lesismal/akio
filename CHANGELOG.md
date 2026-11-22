@@ -10,6 +10,12 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: mDNS probe delay, link-local names on their own link (only-webrtc)
+
+ADR-078's second update of 2026-11-22, no API change: a concealed name's first probe waits a
+random 0–250 ms (RFC 6762 §8.1), and a link-local IPv6 address is probed, announced, withdrawn
+and answered on its own link only (§6.2); other addresses go out on every link as before.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

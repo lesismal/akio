@@ -613,3 +613,90 @@ fn simultaneous_probes_are_settled_by_the_tiebreak() {
     }
     e.shutdown();
 }
+
+/// A link-local address is claimed and answered on its own link only (RFC 6762 §6.2): its
+/// probes and announcements leave from that interface alone (their source is its link-local
+/// address; sent on another link they would carry that link's), a query from another link
+/// gets no answer (unless the two links are wired together, as a veth pair is), one from its
+/// link does.
+#[test]
+fn link_local_names_stay_on_their_link() {
+    let Some((raw, ifs)) = raw_v6() else { return };
+    let addr = ifaces().into_iter().find_map(|i| {
+        let s = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok()?;
+        s.connect(v6_group(i)).ok()?;
+        match s.local_addr().ok()? {
+            SocketAddr::V6(mut a) if a.ip().segments()[0] == 0xfe80 && a.scope_id() == i => {
+                a.set_port(0);
+                Some(a)
+            }
+            _ => None,
+        }
+    });
+    let Some(addr) = addr else {
+        eprintln!("skipped: no link-local IPv6 address");
+        return;
+    };
+    let link = addr.scope_id();
+    let Some(&other) = ifs.iter().find(|&&i| i != link) else {
+        eprintln!("skipped: one link only");
+        return;
+    };
+    let e = engine();
+    let Ok(ep) = Endpoint::bind(&e, SocketAddr::V6(addr)) else {
+        eprintln!("skipped: cannot bind {addr}");
+        return;
+    };
+    ep.resolve_mdns(&e, Duration::from_secs(5)).unwrap();
+    if let Err(err) = ep.conceal_host_candidates() {
+        eprintln!("skipped: {err}");
+        return;
+    }
+    let name = offered_name(&ep);
+    let mine = IpAddr::V6(*addr.ip());
+    let about_us = |m: &Message| {
+        m.records
+            .iter()
+            .chain(&m.authority)
+            .any(|r| r.name == name && r.addr == mine)
+    };
+    // Probes and announcements, for 2.5 s: every copy left from the address's link.
+    let mut seen = 0;
+    let _ = recv_v6_within(&raw, Duration::from_millis(2500), |src, m| {
+        if about_us(&m) {
+            assert_eq!(src.ip(), mine, "{name} sent on another link ({src})");
+            seen += 1;
+        }
+        None::<()>
+    });
+    assert!(seen >= 5, "{seen} probes and announcements");
+    let q = Message::query(&name, TYPE_AAAA, false).unwrap();
+    // From another link: no answer, unless our own query also reaches the address's link (the
+    // two links are one wire, as a veth pair's ends are: the endpoint then rightly answers).
+    raw.send_to(&q, v6_group(other)).unwrap();
+    let (mut wired, mut answered) = (false, false);
+    let _ = recv_v6_within(&raw, Duration::from_millis(1000), |src, m| {
+        let SocketAddr::V6(s) = src else { return None };
+        if !m.response && m.questions.iter().any(|x| x.name == name) && s.scope_id() == link {
+            wired = true;
+        }
+        answered |= m.response && about_us(&m);
+        None::<()>
+    });
+    if wired {
+        eprintln!("links {other} and {link} are connected: the other-link check does not apply");
+    } else {
+        assert!(!answered, "answered on link {other}");
+    }
+    // From its own link: answered there.
+    raw.send_to(&q, v6_group(link)).unwrap();
+    let answered = recv_v6_within(&raw, Duration::from_secs(3), |src, m| {
+        (m.response && about_us(&m)).then_some(src)
+    });
+    match answered {
+        Some(src) => assert_eq!(src.ip(), mine, "answered from another link"),
+        None => panic!("no answer on link {link}"),
+    }
+    ep.close();
+    e.shutdown();
+}
