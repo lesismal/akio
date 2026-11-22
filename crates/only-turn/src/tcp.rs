@@ -327,7 +327,7 @@ fn connected(inner: &Arc<Inner>, s: TcpStream, id: u32) {
 fn connect_failed(inner: &Inner, id: u32) {
     let l = lock(&inner.tcp.links).remove(&id);
     if let Some(l) = l {
-        inner.with_shard(l.shard, None, |core, env| {
+        inner.with_shard(l.shard, Vec::new(), |core, env| {
             core.tcp_connected(Instant::now(), l.client, id, false, env);
         });
     }
@@ -370,7 +370,7 @@ impl Acceptor for PeerAcceptor {
                     return dead();
                 };
                 lock(&pair.0).peer = Some(c.clone());
-                let ok = inner.with_shard(shard, None, |core, env| {
+                let ok = inner.with_shard(shard, Vec::new(), |core, env| {
                     core.tcp_connected(now, client, id, true, env)
                 });
                 if !ok {
@@ -392,7 +392,7 @@ impl Acceptor for PeerAcceptor {
                     return dead();
                 };
                 let pair = Pair::with_peer(c.clone());
-                let id = inner.with_shard(shard, None, |core, env| {
+                let id = inner.with_shard(shard, Vec::new(), |core, env| {
                     env.incoming = Some(pair.clone());
                     core.tcp_incoming(now, relay, c.peer_addr(), env)
                 });
@@ -476,7 +476,7 @@ impl Handler for TcpPeer {
         };
         let l = lock(&inner.tcp.links).remove(&self.id);
         if let Some(l) = l {
-            inner.with_shard(l.shard, None, |core, env| {
+            inner.with_shard(l.shard, Vec::new(), |core, env| {
                 core.tcp_closed(l.client, self.id, env);
             });
         }

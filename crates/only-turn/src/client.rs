@@ -96,6 +96,12 @@ pub struct ClientConfig {
     /// address is a TCP one, used with [`Client::connect`] and [`DataConnection`] instead of
     /// [`Client::send_to`] (false).
     pub tcp_allocation: bool,
+    /// Asks for a dual allocation (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`): an IPv4 and an IPv6
+    /// relayed address in one Allocate, each relaying to peers of its family
+    /// ([`Client::relayed_addrs`]). A server that cannot relay IPv6 answers with the IPv4 one
+    /// and says why ([`Client::address_error`]); one that does not know the attribute ignores
+    /// it (false).
+    pub dual_allocation: bool,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -105,6 +111,7 @@ impl fmt::Debug for ClientConfig {
             .field("username", &self.username)
             .field("stream", &self.stream)
             .field("tcp_allocation", &self.tcp_allocation)
+            .field("dual_allocation", &self.dual_allocation)
             .field("lifetime", &self.lifetime)
             .finish_non_exhaustive()
     }
@@ -127,6 +134,7 @@ impl ClientConfig {
             use_channels: true,
             software: None,
             tcp_allocation: false,
+            dual_allocation: false,
         }
     }
 
@@ -143,6 +151,13 @@ impl ClientConfig {
     pub fn tcp_allocation(mut self, yes: bool) -> Self {
         self.tcp_allocation = yes;
         self.stream |= yes;
+        self
+    }
+
+    /// Sets [`dual_allocation`](Self::dual_allocation).
+    #[must_use]
+    pub fn dual_allocation(mut self, yes: bool) -> Self {
+        self.dual_allocation = yes;
         self
     }
 
@@ -197,7 +212,8 @@ pub enum ClientEvent {
     /// The allocation exists: the relayed address peers send to, the client's address as the
     /// server saw it (server-reflexive), and the lifetime granted.
     Allocated {
-        /// The relayed transport address.
+        /// The relayed transport address (the IPv4 one of a dual allocation; both are in
+        /// [`Client::relayed_addrs`]).
         relayed: SocketAddr,
         /// `XOR-MAPPED-ADDRESS` of the response, when present.
         mapped: Option<SocketAddr>,
@@ -295,7 +311,10 @@ pub struct Client {
     realm: Option<String>,
     nonce: Option<String>,
     key: Option<[u8; 16]>,
-    relayed: Option<SocketAddr>,
+    /// One relayed address, or two of a dual allocation (IPv4 first).
+    relayed: Vec<SocketAddr>,
+    /// `ADDRESS-ERROR-CODE` of the Allocate response: family, code, reason.
+    address_error: Option<(u8, u16, String)>,
     mapped: Option<SocketAddr>,
     refresh_at: Option<Instant>,
     txs: HashMap<[u8; 12], Tx>,
@@ -327,7 +346,8 @@ impl Client {
             realm: None,
             nonce: None,
             key: None,
-            relayed: None,
+            relayed: Vec::new(),
+            address_error: None,
             mapped: None,
             refresh_at: None,
             txs: HashMap::new(),
@@ -352,9 +372,32 @@ impl Client {
         self.state
     }
 
-    /// The relayed address, once allocated.
+    /// The relayed address, once allocated (the first one of a dual allocation: IPv4).
     pub fn relayed_addr(&self) -> Option<SocketAddr> {
+        self.relayed.first().copied()
+    }
+
+    /// The relayed addresses, once allocated: one, or an IPv4 and an IPv6 one for a dual
+    /// allocation ([`ClientConfig::dual_allocation`]). Each relays to peers of its family.
+    pub fn relayed_addrs(&self) -> &[SocketAddr] {
+        &self.relayed
+    }
+
+    /// The relayed address that talks to `peer`: the one of its address family.
+    pub fn relayed_addr_for(&self, peer: SocketAddr) -> Option<SocketAddr> {
         self.relayed
+            .iter()
+            .copied()
+            .find(|r| r.is_ipv6() == peer.is_ipv6())
+    }
+
+    /// Why a dual allocation got one family only (RFC 8656 `ADDRESS-ERROR-CODE`): the family
+    /// missing (1 IPv4, 2 IPv6), 440 (not supported: do not ask again) or 508 (no capacity:
+    /// wait a minute), and the reason phrase.
+    pub fn address_error(&self) -> Option<(u8, u16, &str)> {
+        self.address_error
+            .as_ref()
+            .map(|(f, c, r)| (*f, *c, r.as_str()))
     }
 
     /// The client's address as the server saw it, once allocated.
@@ -455,6 +498,13 @@ impl Client {
                 let proto: u32 = if self.cfg.tcp_allocation { 6 } else { 17 };
                 b = b.u32(attr::REQUESTED_TRANSPORT, proto << 24);
                 b = b.u32(attr::LIFETIME, self.cfg.lifetime.as_secs() as u32);
+                if self.cfg.dual_allocation {
+                    // RFC 8656's codepoint, and the draft's that coturn 4.6 understands (each
+                    // server ignores the one it does not know: both are comprehension-optional).
+                    b = b
+                        .attr(attr::ADDITIONAL_ADDRESS_FAMILY, &[2, 0, 0, 0])
+                        .attr(attr::ADDITIONAL_ADDRESS_FAMILY_DRAFT, &[2, 0, 0, 0]);
+                }
             }
             Kind::Refresh(l) => b = b.u32(attr::LIFETIME, *l),
             Kind::ChannelBind(peer, ch) => {
@@ -792,12 +842,23 @@ impl Client {
     fn on_success(&mut self, now: Instant, kind: Kind, m: &Message<'_>) {
         match kind {
             Kind::Allocate => {
-                let Some(relayed) = m.get_xor_addr(attr::XOR_RELAYED_ADDRESS) else {
+                // One, or two of different families (a dual allocation).
+                let mut all: Vec<SocketAddr> = m
+                    .get_xor_addrs(attr::XOR_RELAYED_ADDRESS)
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let Some(&relayed) = all.first() else {
                     self.fail(ClientError::Protocol("no XOR-RELAYED-ADDRESS"));
                     return;
                 };
+                all.truncate(2);
+                if all.len() == 2 && all[0].is_ipv6() == all[1].is_ipv6() {
+                    all.pop();
+                }
                 let life = Duration::from_secs(u64::from(m.get_u32(attr::LIFETIME).unwrap_or(600)));
-                self.relayed = Some(relayed);
+                self.relayed = all;
+                self.address_error = m.address_error_code().map(|(f, c, r)| (f, c, r.to_owned()));
                 self.mapped = m.get_xor_addr(attr::XOR_MAPPED_ADDRESS);
                 if self.state == ClientState::Allocating {
                     self.state = ClientState::Allocated;

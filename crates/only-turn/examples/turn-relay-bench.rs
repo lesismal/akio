@@ -4,6 +4,9 @@
 //! second in each direction.
 //!
 //! `cargo run --release -p only-turn --example turn-relay-bench -- [PAIRS] [SECS] [THREADS]`
+//!
+//! `TURN_BENCH_ECN=<1|2|3>` marks every datagram of both senders with that ECN codepoint
+//! (Linux and macOS), which the relay copies (RFC 8656 section 14, ADR-083).
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -57,7 +60,23 @@ impl Client {
     }
 }
 
+/// Sends `d` to `to`, marked with ECN codepoint `ecn` where the platform allows.
+fn send(s: &UdpSocket, d: &[u8], to: SocketAddr, ecn: u8) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if ecn != 0 {
+        use std::os::fd::AsRawFd;
+        let _ = only_sys::send_to_ecn(s.as_raw_fd(), d, Some(&to), ecn, to.is_ipv6());
+        return;
+    }
+    let _ = ecn;
+    let _ = s.send_to(d, to);
+}
+
 fn main() {
+    let ecn: u8 = std::env::var("TURN_BENCH_ECN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let args: Vec<usize> = std::env::args()
         .skip(1)
         .filter_map(|a| a.parse().ok())
@@ -134,7 +153,7 @@ fn main() {
             d[2..4].copy_from_slice(&100u16.to_be_bytes());
             while !st.load(Ordering::Relaxed) {
                 for _ in 0..64 {
-                    let _ = cs.send_to(&d, server);
+                    send(&cs, &d, server, ecn);
                 }
             }
         }));
@@ -144,7 +163,7 @@ fn main() {
             let d = [7u8; 100];
             while !st.load(Ordering::Relaxed) {
                 for _ in 0..64 {
-                    let _ = ps.send_to(&d, relay);
+                    send(&ps, &d, relay, ecn);
                 }
             }
         }));
@@ -181,7 +200,7 @@ fn main() {
     let tp = (p1 - p0) as f64 / el;
     let tc = (c1 - c0) as f64 / el;
     println!(
-        "pairs={pairs} threads={threads} to_peer={tp:.0}/s to_client={tc:.0}/s total={:.0}/s",
+        "pairs={pairs} threads={threads} ecn={ecn} to_peer={tp:.0}/s to_client={tc:.0}/s total={:.0}/s",
         tp + tc
     );
     engine.shutdown();

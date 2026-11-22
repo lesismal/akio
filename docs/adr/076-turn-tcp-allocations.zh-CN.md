@@ -238,4 +238,5 @@ pion/turn v5.1.3 与 only-turn，经 TCP 与 TLS（Connect，然后一个有权�
 
 没有热路径改动（UDP 中继与已绑定的 TCP 中继未动；Connect 与接受属于控制操作），因此没有做 A/B 基准。
 
-仍未完成：`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持）；`Endpoint` 使用 TCP 分配（见上）。
+仍未完成：`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持；2026-11-22 已完成，ADR-083：TCP 分配仍是单一
+地址族，以 IPv4 与 `ADDRESS-ERROR-CODE` 440 应答双分配请求）；`Endpoint` 使用 TCP 分配（见上）。

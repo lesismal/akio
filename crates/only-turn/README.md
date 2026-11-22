@@ -13,6 +13,9 @@ and DTLS listeners, and a sans-io TURN client.
   refresh and lifetimes, `EVEN-PORT`/`RESERVATION-TOKEN`, stateless nonces, quotas, and a peer
   policy that refuses relaying into loopback and private networks by default. It answers STUN
   Binding requests too. Relay sockets are bound at run time with `only::Engine::bind_udp`.
+  With `TurnConfig::additional_relay_ip` it relays both address families, and serves RFC 8656
+  dual allocations (`ADDITIONAL-ADDRESS-FAMILY`, per-family refreshes, `ADDRESS-ERROR-CODE`).
+  Relayed datagrams keep their ECN codepoint both ways over UDP and DTLS (ADR-083).
 - `TurnServer::stream()`: the same server for TCP listeners and TLS ones (`only::tls::Tls`):
   STUN and ChannelData framed on the stream (`framing`), relays over UDP, an allocation per
   connection; and TCP allocations (RFC 6062, ADR-076): a TCP relayed address, Connect,
@@ -24,8 +27,8 @@ and DTLS listeners, and a sans-io TURN client.
   association (ADR-054).
 - `client::Client`: a sans-io TURN client over UDP or a stream (allocate, refresh, channels,
   permissions), and of TCP allocations (`ClientConfig::tcp_allocation`, `Client::connect`,
-  `client::DataConnection` for ConnectionBind); `only-webrtc`'s `Endpoint::gather_relay` drives
-  one.
+  `client::DataConnection` for ConnectionBind), and dual allocations
+  (`ClientConfig::dual_allocation`); `only-webrtc`'s `Endpoint::gather_relay` drives one.
 - `client::TcpAllocation`: TCP allocations driven by an `only` engine, nothing blocking: the
   control connection and its timers, `connect` / `accept` whose data connections are served by
   the application's own acceptor (the ConnectionBind is a transport layer under its handler).

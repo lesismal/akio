@@ -2162,6 +2162,40 @@ rounds.
 **Answer: no measurable change.** The ranges overlap in both modes (dc per-round ratios
 0.987–1.003). ADR-077 measured data channels at 0.990 / 0.993 against its own base.
 
+### TURN relay (ADR-083, same-run A/B)
+
+Measured 2026-11-22 on gpu51. Question: do dual allocations and ECN copying slow the UDP relay?
+Per relayed datagram the server now:
+
+- reads `Conn::rx_ecn()`;
+- finds the relayed address of the peer's family (a list of one or two) instead of a field;
+- tests the codepoint before the old send call.
+
+A marked datagram goes out through the ECN send path instead (a copy toward the client, an
+`IP_TOS` control message).
+
+`main` is `b789624f`, `branch` the branch. The workload is `turn-relay-bench 8 6 4`: 8
+client/peer pairs, 100-byte datagrams both ways for 6 s, 4 listener threads. Both binaries were
+built into separate target directories and run alternately under `quiet.sh`, the order swapped
+every round. `b-ecn` is the branch with every datagram marked ECT(0) (`TURN_BENCH_ECN=2`), so
+the relay copies the codepoint.
+
+| Run | Variant | Rounds | Mean (datagrams/s) | Median | Min–max |
+|---|---|---:|---:|---:|---:|
+| 1 | main | 6 | 306.9k | 297.3k | 276k–379k |
+| 1 | branch | 6 | 293.5k | 297.5k | 228k–345k |
+| 1 | b-ecn | 6 | 276.0k | 278.4k | 229k–311k |
+| 2 | main | 10 | 304.6k | 298.9k | 251k–388k |
+| 2 | branch | 10 | 305.7k | 302.3k | 245k–375k |
+
+- Run 1: branch / main per round 0.83–1.15, median 0.953.
+- Run 2 was added to settle that: per-round ratios 0.81–1.31, median 0.969, mean 1.013.
+
+**Answer: no measurable change.** The medians and the second run's means are equal within 1 %,
+and rounds vary by about ±20 %, as in ADR-076's run of the same bench. Marking every datagram
+costs about 6 % (b-ecn / branch per-round median 0.941, range 0.84–1.16), within the same
+spread. Unmarked traffic, the common case, takes the old path.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

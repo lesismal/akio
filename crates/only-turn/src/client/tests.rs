@@ -535,3 +535,65 @@ fn udp_clients_cannot_connect() {
     assert!(!n.client.connect(n.now, a(PEER)));
     assert!(n.client.data_connection(n.now, 1).is_some());
 }
+
+/// A dual allocation (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`): both relayed addresses, peers of
+/// both families, refreshes keeping both for half an hour, and the close deleting both.
+#[test]
+fn dual_allocation_both_families() {
+    let cfg = server_cfg()
+        .additional_relay_ip("2001:db8::1".parse().unwrap())
+        .allow_private_peers(true);
+    let mut n = Net::new(cfg, client_cfg().dual_allocation(true));
+    let relayed = allocated(&mut n);
+    let all = n.client.relayed_addrs().to_vec();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0], relayed);
+    assert!(all[0].is_ipv4() && all[1].is_ipv6());
+    assert_eq!(n.core.relays_of(a(CLIENT)), all);
+    assert_eq!(n.client.address_error(), None);
+    let peer6 = a("[2001:db8:9::9]:7000");
+    assert_eq!(n.client.relayed_addr_for(peer6), Some(all[1]));
+    assert_eq!(n.client.relayed_addr_for(a(PEER)), Some(all[0]));
+    for _ in 0..30 {
+        n.advance(Duration::from_secs(60));
+        assert!(n.client.send_to(n.now, a(PEER), b"four"));
+        assert!(n.client.send_to(n.now, peer6, b"six"));
+        n.pump();
+        let peers: Vec<SocketAddr> = n.env.to_peer.drain(..).map(|x| x.0).collect();
+        assert_eq!(peers, [a(PEER), peer6], "at {:?}", n.now);
+    }
+    assert_eq!(n.core.relays_of(a(CLIENT)), all);
+    // The IPv6 peer's datagrams come back through the IPv6 relay.
+    let r6 = SocketAddr::new(all[1].ip(), all[1].port());
+    n.core.handle_peer(n.now, r6, peer6, b"back6", &mut n.env);
+    n.pump();
+    assert_eq!(std::mem::take(&mut n.got), vec![(peer6, b"back6".to_vec())]);
+    assert!(n.events().is_empty());
+    n.client.close(n.now);
+    n.pump();
+    assert_eq!(n.events(), vec![ClientEvent::Closed]);
+    assert!(n.core.relays_of(a(CLIENT)).is_empty());
+}
+
+/// A server that relays IPv4 only meets a dual request partially: the client keeps one relayed
+/// address and the reason for the other.
+#[test]
+fn dual_allocation_partial() {
+    let mut cfg = server_cfg();
+    cfg.allow_private_peers = true;
+    let mut n = Net::new(cfg, client_cfg().dual_allocation(true));
+    allocated(&mut n);
+    assert_eq!(n.client.relayed_addrs().len(), 1);
+    assert_eq!(
+        n.client.address_error(),
+        Some((2, 440, "Address Family not Supported"))
+    );
+    // An IPv6 peer is refused by the server (443).
+    let peer6 = a("[2001:db8:9::9]:7000");
+    assert!(n.client.send_to(n.now, peer6, b"x"));
+    n.pump();
+    assert!(matches!(
+        n.events().as_slice(),
+        [ClientEvent::PeerFailed(p, ClientError::Rejected(443, _))] if *p == peer6
+    ));
+}

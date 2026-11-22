@@ -10,6 +10,9 @@
 //!   refreshes and lifetimes, quotas and a peer policy that refuses relaying into private
 //!   networks by default. Relay sockets are bound at run time with
 //!   [`only::Engine::bind_udp`]. It also answers Binding requests, so it is a STUN server too.
+//!   With [`TurnConfig::additional_relay_ip`] it relays both address families, with RFC 8656
+//!   dual allocations (`ADDITIONAL-ADDRESS-FAMILY`); relayed datagrams keep their ECN codepoint
+//!   both ways over UDP and DTLS (RFC 8656 section 14).
 //! - [`TurnStream`] ([`TurnServer::stream`]): the same server for TCP listeners, and for TLS
 //!   ones through [`only::tls::Tls`] (`turns:`, RFC 8656 section 3.1): STUN and ChannelData
 //!   framed on the stream ([`framing`]). An allocation lives as long as its connection. Its
@@ -222,11 +225,21 @@ impl Inner {
         Ok((b, route))
     }
 
+    /// The relays for `msg` from `client` bound before shard `route` is locked: those of an
+    /// authenticated Allocate (one, or two for a dual allocation).
+    fn prebind(&self, now: Instant, client: SocketAddr, msg: &[u8], route: usize) -> Prebound {
+        self.shared
+            .prebind_ips(now, client, msg)
+            .into_iter()
+            .filter_map(|ip| self.bind_relay(SocketAddr::new(ip, 0), route).ok())
+            .collect()
+    }
+
     /// Runs `f` on shard `i`'s state machine with the `only` environment.
     fn with_shard<R>(
         &self,
         i: usize,
-        prebound: Option<(UdpBinding, Arc<AtomicUsize>)>,
+        prebound: Prebound,
         f: impl FnOnce(&mut TurnCore, &mut Env<'_>) -> R,
     ) -> R {
         let mut g = lock(&self.shards[i]);
@@ -240,10 +253,10 @@ impl Inner {
             dials: Vec::new(),
         };
         let r = f(core, &mut env);
-        let unused = env.prebound.take();
+        let unused = std::mem::take(&mut env.prebound);
         let dials = std::mem::take(&mut env.dials);
         drop(g);
-        if let Some((b, _)) = unused {
+        for (b, _) in unused {
             b.close();
         }
         // Started without the lock: a dial may fail at once, and its failure locks the shard.
@@ -264,14 +277,17 @@ fn shard_count() -> usize {
     (cpus * 4).next_power_of_two().clamp(8, 256)
 }
 
+/// Relays bound before a shard was locked, and the shard their peers' datagrams go to.
+type Prebound = Vec<(UdpBinding, Arc<AtomicUsize>)>;
+
 /// The `only` side of [`TurnEnv`] for one shard: its listener connections for clients, the
 /// relay table for relays.
 struct Env<'a> {
     inner: &'a Inner,
     shard: usize,
     clients: &'a mut HashMap<SocketAddr, ClientConn>,
-    /// A relay bound before the shard was locked, for an authenticated Allocate.
-    prebound: Option<(UdpBinding, Arc<AtomicUsize>)>,
+    /// Relays bound before the shard was locked, for an authenticated Allocate.
+    prebound: Prebound,
     /// The connections of a peer just accepted on a TCP relay, for `accept_peer`.
     incoming: Option<Arc<tcp::Pair>>,
     /// Connections to peers to start once the shard is unlocked: relay, peer, id.
@@ -280,7 +296,16 @@ struct Env<'a> {
 
 impl TurnEnv for Env<'_> {
     fn send_to_client(&mut self, client: SocketAddr, data: &[u8]) {
+        self.send_to_client_ecn(client, data, 0);
+    }
+
+    fn send_to_client_ecn(&mut self, client: SocketAddr, data: &[u8], ecn: u8) {
         match self.clients.get(&client) {
+            // RFC 8656 section 14: the peer's codepoint, on UDP (and DTLS: a UDP datagram
+            // too); a stream has none to carry (section 16).
+            Some(ClientConn::Udp(c)) if ecn & 3 != 0 => {
+                let _ = c.send_segments_ecn(data.to_vec(), 0, ecn);
+            }
             Some(ClientConn::Udp(c)) => {
                 let _ = c.send(data);
             }
@@ -297,7 +322,11 @@ impl TurnEnv for Env<'_> {
                 let mut out = Vec::new();
                 lock(s).seal(data, &mut out);
                 for d in out {
-                    let _ = c.send_owned(d);
+                    let _ = if ecn & 3 != 0 {
+                        c.send_segments_ecn(d, 0, ecn)
+                    } else {
+                        c.send_owned(d)
+                    };
                 }
             }
             None => {}
@@ -309,21 +338,33 @@ impl TurnEnv for Env<'_> {
     }
 
     fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]) {
+        self.send_to_peer_ecn(relay, peer, data, 0);
+    }
+
+    fn send_to_peer_ecn(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ecn: u8) {
         if let Some(r) = lock(self.inner.relays_of(relay)).get(&relay) {
-            let _ = r.binding.send_to(data, peer);
+            // RFC 8656 section 14: the client's codepoint (0 from a stream, section 15).
+            let _ = if ecn & 3 != 0 {
+                r.binding.send_to_ecn(data, peer, ecn)
+            } else {
+                r.binding.send_to(data, peer)
+            };
         }
     }
 
     fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
-        let any_port = addr.port() == 0 && addr.ip() == self.inner.shared.config().relay_ip;
-        let (binding, route) = match self.prebound.take() {
-            Some(p) if any_port => p,
-            other => {
-                self.prebound = other;
-                // EVEN-PORT allocations (a given port, or retries until an even one) still
-                // bind here, under the shard's lock: they are rare.
-                self.inner.bind_relay(addr, self.shard)?
-            }
+        let pre = (addr.port() == 0)
+            .then(|| {
+                self.prebound
+                    .iter()
+                    .position(|(b, _)| b.local_addr().ip() == addr.ip())
+            })
+            .flatten();
+        let (binding, route) = match pre {
+            Some(i) => self.prebound.swap_remove(i),
+            // EVEN-PORT allocations (a given port, or retries until an even one) still bind
+            // here, under the shard's lock: they are rare.
+            None => self.inner.bind_relay(addr, self.shard)?,
         };
         route.store(self.shard, Ordering::Relaxed);
         let bound = binding.local_addr();
@@ -436,7 +477,7 @@ impl TurnServer {
                     // One shard at a time: datagrams of the others go on meanwhile.
                     let wait = inner.shared.config().stream_allocate_timeout;
                     for i in 0..inner.shards.len() {
-                        inner.with_shard(i, None, |core, env| {
+                        inner.with_shard(i, Vec::new(), |core, env| {
                             let now = Instant::now();
                             core.handle_timeout(now, env);
                             // Stream connections that never allocated.
@@ -496,6 +537,14 @@ impl TurnServer {
         lock(&self.0.shards[self.0.shard_of(client, Wire::Udp)])
             .core
             .relay_of(client)
+    }
+
+    /// The relayed addresses of `client`'s allocation (a UDP client): one, or an IPv4 and an
+    /// IPv6 one for a dual allocation ([`TurnConfig::additional_relay_ip`]); empty without one.
+    pub fn relays_of(&self, client: SocketAddr) -> Vec<SocketAddr> {
+        lock(&self.0.shards[self.0.shard_of(client, Wire::Udp)])
+            .core
+            .relays_of(client)
     }
 
     /// The relayed address of the allocation of the TCP or TLS client at `client` (a UDP
@@ -589,7 +638,8 @@ impl TurnServer {
     /// Frees every allocation and closes the relay sockets.
     pub fn close_all(&self) {
         for i in 0..self.0.shards.len() {
-            self.0.with_shard(i, None, |core, env| core.close_all(env));
+            self.0
+                .with_shard(i, Vec::new(), |core, env| core.close_all(env));
         }
     }
 }
@@ -630,19 +680,11 @@ impl Handler for TurnClient {
         let inner = &self.inner;
         let now = Instant::now();
         let client = c.peer_addr();
-        // An authenticated Allocate gets its relay socket bound before the shard is locked.
-        let prebound = if inner.shared.authenticated_allocate(now, client, data) {
-            inner
-                .bind_relay(
-                    SocketAddr::new(inner.shared.config().relay_ip, 0),
-                    self.shard,
-                )
-                .ok()
-        } else {
-            None
-        };
+        // An authenticated Allocate gets its relay sockets bound before the shard is locked.
+        let prebound = inner.prebind(now, client, data, self.shard);
+        let ecn = c.rx_ecn();
         inner.with_shard(self.shard, prebound, |core, env| {
-            core.handle_client(now, client, data, env);
+            core.handle_client_ecn(now, client, data, ecn, env);
         });
     }
 
@@ -724,13 +766,7 @@ impl Handler for TurnStreamClient {
                 peer = self.connection_bind(c, now, msg);
                 return peer.is_none(); // bound: what follows is the client's data
             }
-            let prebound = if inner.shared.authenticated_allocate(now, client, msg) {
-                inner
-                    .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), shard)
-                    .ok()
-            } else {
-                None
-            };
+            let prebound = inner.prebind(now, client, msg, shard);
             inner.with_shard(shard, prebound, |core, env| {
                 core.handle_client(now, client, msg, env);
             });
@@ -756,7 +792,7 @@ impl Handler for TurnStreamClient {
             return;
         }
         let client = c.peer_addr();
-        self.inner.with_shard(self.shard, None, |core, env| {
+        self.inner.with_shard(self.shard, Vec::new(), |core, env| {
             if matches!(env.clients.get(&client), Some(ClientConn::Stream(x, _)) if x.id() == c.id())
             {
                 env.clients.remove(&client);
@@ -788,15 +824,15 @@ impl TurnStreamClient {
             .map(u32::from_be_bytes);
         // Never on a connection that holds an allocation (its control connection): that one's
         // own shard answers (400).
-        let has_alloc = self
-            .inner
-            .with_shard(self.shard, None, |core, _| core.relay_of(client).is_some());
+        let has_alloc = self.inner.with_shard(self.shard, Vec::new(), |core, _| {
+            core.relay_of(client).is_some()
+        });
         let link = id
             .filter(|_| !has_alloc)
             .and_then(|id| self.inner.tcp.link(id));
         let shard = link.as_ref().map_or(self.shard, |l| l.1);
         let owner = link.as_ref().map(|l| l.0);
-        let (out, bound) = self.inner.with_shard(shard, None, |core, _| {
+        let (out, bound) = self.inner.with_shard(shard, Vec::new(), |core, _| {
             core.connection_bind(now, client, &m, owner, true)
         })?;
         let (Some(_), Some((_, _, pair))) = (bound, link) else {
@@ -806,7 +842,7 @@ impl TurnStreamClient {
         let peer = tcp::bind(&pair, c, out)?;
         // A data connection now: no allocation of its own, out of the client table (and of
         // the sweep of connections that never allocate).
-        self.inner.with_shard(self.shard, None, |_, env| {
+        self.inner.with_shard(self.shard, Vec::new(), |_, env| {
             if matches!(env.clients.get(&client), Some(ClientConn::Stream(x, _)) if x.id() == c.id())
             {
                 env.clients.remove(&client);
@@ -896,7 +932,7 @@ impl Handler for TurnDtlsClient {
                 return; // nothing authenticated: the path stays
             }
             let own = c.peer_addr();
-            self.inner.with_shard(self.shard, None, |_, env| {
+            self.inner.with_shard(self.shard, Vec::new(), |_, env| {
                 if matches!(env.clients.get(&own), Some(ClientConn::Dtls(x, _)) if x.id() == c.id())
                 {
                     env.clients.remove(&own);
@@ -916,7 +952,7 @@ impl Handler for TurnDtlsClient {
             if moved {
                 // The path goes where the latest authenticated record came from.
                 let session = &self.session;
-                inner.with_shard(shard, None, |_, env| match env.clients.get(&client) {
+                inner.with_shard(shard, Vec::new(), |_, env| match env.clients.get(&client) {
                     Some(ClientConn::Dtls(x, _)) if x.id() == c.id() => {}
                     Some(ClientConn::Dtls(..)) | None => {
                         env.clients
@@ -934,18 +970,16 @@ impl Handler for TurnDtlsClient {
         }
         if out.restarted {
             // The client started over: its old allocation goes with the old association.
-            inner.with_shard(shard, None, |core, env| core.remove_client(client, env));
+            inner.with_shard(shard, Vec::new(), |core, env| {
+                core.remove_client(client, env);
+            });
         }
+        // The datagram's codepoint goes with what its records carried (RFC 8656 section 14).
+        let ecn = c.rx_ecn();
         for msg in &out.messages {
-            let prebound = if inner.shared.authenticated_allocate(now, client, msg) {
-                inner
-                    .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), shard)
-                    .ok()
-            } else {
-                None
-            };
+            let prebound = inner.prebind(now, client, msg, shard);
             inner.with_shard(shard, prebound, |core, env| {
-                core.handle_client(now, client, msg, env);
+                core.handle_client_ecn(now, client, msg, ecn, env);
             });
         }
         if out.closed {
@@ -955,7 +989,7 @@ impl Handler for TurnDtlsClient {
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
         let client = self.client;
-        let owned = self.inner.with_shard(self.shard, None, |core, env| {
+        let owned = self.inner.with_shard(self.shard, Vec::new(), |core, env| {
             if matches!(env.clients.get(&client), Some(ClientConn::Dtls(x, _)) if x.id() == c.id())
             {
                 env.clients.remove(&client);
@@ -1008,8 +1042,9 @@ impl Handler for RelayPeer {
             return;
         };
         let shard = self.route.load(Ordering::Relaxed);
-        inner.with_shard(shard, None, |core, env| {
-            core.handle_peer(Instant::now(), self.relay, c.peer_addr(), data, env);
+        let ecn = c.rx_ecn();
+        inner.with_shard(shard, Vec::new(), |core, env| {
+            core.handle_peer_ecn(Instant::now(), self.relay, c.peer_addr(), data, ecn, env);
         });
     }
 }

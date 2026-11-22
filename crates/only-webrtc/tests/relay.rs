@@ -159,3 +159,69 @@ fn allocation_errors() {
     e.shutdown();
     te.shutdown();
 }
+
+/// A dual allocation (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`): an endpoint on IPv4 gets relayed
+/// candidates of both families, and reaches an IPv6-only endpoint through the server's IPv6
+/// relay.
+#[test]
+fn dual_allocation_reaches_an_ipv6_peer() {
+    let auth = static_auth("only", [("alice", "wonderland")]);
+    let cfg = TurnConfig::new("only", auth, "127.0.0.1".parse().unwrap())
+        .additional_relay_ip("::1".parse().unwrap())
+        .allow_private_peers(true);
+    let turn = TurnServer::new(cfg);
+    let te = Arc::new(
+        Engine::builder()
+            .listen(
+                Listener::udp("127.0.0.1:0".parse().unwrap())
+                    .threads(1)
+                    .serve(turn.clone()),
+            )
+            .build()
+            .unwrap(),
+    );
+    turn.set_engine(&te);
+    te.start().unwrap();
+    let server = te.local_addrs()[0];
+    let e = engine();
+    let Ok(b) = Endpoint::bind(&e, "[::1]:0".parse().unwrap()) else {
+        eprintln!("no IPv6 loopback: skipped");
+        return;
+    };
+    let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let rs = only_webrtc::RelayServer::udp(server, "alice", "wonderland").dual_allocation(true);
+    let ra = a.gather_relay_via(&e, &rs, T).expect("allocation");
+    assert!(ra.is_ipv4());
+    let relayed: Vec<SocketAddr> = a
+        .candidates()
+        .iter()
+        .filter(|c| c.kind() == "relay")
+        .map(|c| c.addr())
+        .collect();
+    assert_eq!(turn.relays_of(a.local_addr().unwrap()), relayed);
+    assert!(relayed.iter().any(SocketAddr::is_ipv6));
+    assert_eq!(turn.stats().allocations, 1);
+
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
+        .unwrap();
+    let offer = relay_only(&offer);
+    assert!(offer.contains(" ::1 "), "{offer}");
+    // B answers with its IPv6 host candidate: only A's IPv6 relayed one pairs with it.
+    let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    pa.accept_answer(&answer).unwrap();
+    wait(&rx, "open", |g| matches!(g, Got::Open));
+    pa.send(ch.unwrap(), b"over the v6 relay", true).unwrap();
+    let Got::Data(d) = wait(&rx, "echo", |g| matches!(g, Got::Data(_))) else {
+        unreachable!()
+    };
+    assert_eq!(d, b"over the v6 relay");
+    let st = turn.stats();
+    assert!(st.to_peer > 0 && st.to_client > 0, "{st:?}");
+    a.close();
+    b.close();
+    e.shutdown();
+    te.shutdown();
+}

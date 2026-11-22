@@ -30,8 +30,10 @@ use only_turn::stun;
 
 use crate::{Hub, lock, timer};
 
-/// What the waiter of an allocation gets: (relayed, mapped) or why it failed.
-pub(crate) type Allocated = Result<(SocketAddr, Option<SocketAddr>), String>;
+/// What the waiter of an allocation gets: (relayed addresses, mapped) or why it failed. One
+/// relayed address, or an IPv4 and an IPv6 one for a dual allocation
+/// ([`RelayServer::dual_allocation`]).
+pub(crate) type Allocated = Result<(Vec<SocketAddr>, Option<SocketAddr>), String>;
 
 /// First wait before an allocation that was lost is made again.
 pub(crate) const RETRY_MIN: Duration = Duration::from_secs(1);
@@ -162,7 +164,8 @@ struct State {
     generation: u64,
     /// The local address the allocation is reached from (the candidate's base).
     base: Option<SocketAddr>,
-    relayed: Option<SocketAddr>,
+    /// The relayed addresses of the current allocation (two for a dual one).
+    relayed: Vec<SocketAddr>,
     retired: VecDeque<SocketAddr>,
     deferred: Vec<Deferred>,
     /// The ECN codepoint for the relayed data being flushed ([`Relay::send`]).
@@ -215,7 +218,7 @@ impl Relay {
                 link: Link::None,
                 generation: 0,
                 base: None,
-                relayed: None,
+                relayed: Vec::new(),
                 retired: VecDeque::new(),
                 deferred: Vec::new(),
                 ecn: 0,
@@ -268,11 +271,11 @@ impl Relay {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// `Some(true)` if `addr` is the current relayed address, `Some(false)` if it is a retired
+    /// `Some(true)` if `addr` is a current relayed address, `Some(false)` if it is a retired
     /// one.
     pub(crate) fn owns(&self, addr: SocketAddr) -> Option<bool> {
         let st = lock(&self.state);
-        if st.relayed == Some(addr) {
+        if st.relayed.contains(&addr) {
             Some(true)
         } else if st.retired.contains(&addr) {
             Some(false)
@@ -308,7 +311,8 @@ impl Relay {
     }
 
     /// A datagram (or stream message) from the server: relayed data comes back as (peer,
-    /// relayed address, data); a DTLS datagram may carry several.
+    /// relayed address, data), the relayed address being the one of the peer's family; a DTLS
+    /// datagram may carry several.
     pub(crate) fn input(&self, data: &[u8]) -> Vec<(SocketAddr, SocketAddr, Vec<u8>)> {
         self.with(|me, st| {
             let mut out = Vec::new();
@@ -345,8 +349,10 @@ impl Relay {
             .client
             .handle_input(now, data)
             .map(|(p, d)| (p, d.to_vec()));
-        if let (Some((p, d)), Some(relayed)) = (r, st.client.relayed_addr()) {
-            out.push((p, relayed, d));
+        if let Some((p, d)) = r {
+            if let Some(relayed) = st.client.relayed_addr_for(p) {
+                out.push((p, relayed, d));
+            }
         }
     }
 
@@ -523,7 +529,7 @@ impl Relay {
     fn lose(&self, st: &mut State, now: Instant) {
         st.dtls = None;
         st.dtls_queue.clear();
-        if let Some(old) = st.relayed.take() {
+        for old in mem::take(&mut st.relayed) {
             st.retired.push_back(old);
             if st.retired.len() > RETIRED {
                 st.retired.pop_front();
@@ -594,17 +600,20 @@ impl Relay {
             self.flush(st);
             while let Some(e) = st.client.poll_event() {
                 match e {
-                    ClientEvent::Allocated {
-                        relayed, mapped, ..
-                    } => {
+                    ClientEvent::Allocated { mapped, .. } => {
                         st.backoff = RETRY_MIN;
-                        st.relayed = Some(relayed);
+                        st.relayed = st.client.relayed_addrs().to_vec();
+                        if let Some((f, code, why)) = st.client.address_error() {
+                            only_log::debug!(target: "only_webrtc", "turn {}: no relayed address of family {f}: {code} {why}", self.server);
+                        }
                         if let Some(w) = st.waiter.take() {
-                            let _ = w.send(Ok((relayed, mapped)));
+                            let _ = w.send(Ok((st.relayed.clone(), mapped)));
                         } else if let Some(base) = st.base {
-                            only_log::debug!(target: "only_webrtc", "turn {}: allocated again: {relayed}", self.server);
-                            st.deferred
-                                .push(Deferred::Reallocated(self.candidate(relayed, base)));
+                            for &relayed in &st.relayed {
+                                only_log::debug!(target: "only_webrtc", "turn {}: allocated again: {relayed}", self.server);
+                                st.deferred
+                                    .push(Deferred::Reallocated(self.candidate(relayed, base)));
+                            }
                         }
                     }
                     ClientEvent::Failed(e) => {
@@ -827,6 +836,8 @@ pub struct RelayServer {
     pub(crate) wire: Wire,
     pub(crate) username: String,
     pub(crate) password: String,
+    /// Ask for a dual allocation ([`dual_allocation`](Self::dual_allocation)).
+    pub(crate) dual: bool,
     /// `turns:` URL without a TLS configuration yet: its server name, and whether it is over
     /// DTLS (`transport=udp`).
     pending_tls: Option<(String, bool)>,
@@ -838,6 +849,7 @@ impl std::fmt::Debug for RelayServer {
             .field("addr", &self.addr)
             .field("transport", &self.transport())
             .field("username", &self.username)
+            .field("dual", &self.dual)
             .finish_non_exhaustive()
     }
 }
@@ -849,6 +861,7 @@ impl RelayServer {
             wire,
             username: username.to_owned(),
             password: password.to_owned(),
+            dual: false,
             pending_tls: None,
         }
     }
@@ -954,6 +967,18 @@ impl RelayServer {
             (None, Wire::Dtls(_, n)) => Wire::Dtls(config, n.clone()),
             (None, _) => Wire::Tls(config, self.addr.ip().to_string()),
         };
+        self
+    }
+
+    /// Asks for a dual allocation (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`): an IPv4 and an IPv6
+    /// relayed address from one Allocate, both added as relayed candidates (each pairs with
+    /// remote candidates of its family; the server relays to IPv6 peers even when this
+    /// endpoint reaches it over IPv4). A server without IPv6 relays answers with the IPv4 one
+    /// only, and one that does not know the attribute ignores it. Not for TCP or TLS servers'
+    /// TCP allocations, which have one address. Off by default.
+    #[must_use]
+    pub fn dual_allocation(mut self, yes: bool) -> Self {
+        self.dual = yes;
         self
     }
 

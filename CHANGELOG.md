@@ -16,6 +16,39 @@ ADR-078's second update of 2026-11-22, no API change: a concealed name's first p
 random 0–250 ms (RFC 6762 §8.1), and a link-local IPv6 address is probed, announced, withdrawn
 and answered on its own link only (§6.2); other addresses go out on every link as before.
 
+### Added: TURN dual allocations and ECN across the relay (only-turn, only-webrtc)
+
+ADR-083, additive:
+
+- only-turn server: `TurnConfig::additional_relay_ip` / `additional_public_ip` (relays of the
+  other address family). Dual allocations follow RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`:
+  - the success response carries two `XOR-RELAYED-ADDRESS`, IPv4 first;
+  - each family has its own lifetime, and a Refresh with `REQUESTED-ADDRESS-FAMILY` refreshes
+    or deletes one, with its permissions and channels;
+  - permissions and channels go to the relayed address of the peer's family (443 for a
+    missing one);
+  - a partial success carries `ADDRESS-ERROR-CODE` 440 or 508; section 7.2's malformed
+    combinations get 400 and unsupported families 440.
+  `TurnServer::relays_of` / `TurnCore::relays_of` list an allocation's relayed addresses.
+- only-turn server: relayed data keeps its ECN codepoint both ways over UDP and DTLS (RFC 8656
+  section 14): `Conn::rx_ecn` in, `UdpBinding::send_to_ecn` / `Conn::send_segments_ecn` out.
+  For embedders: `TurnCore::handle_client_ecn` / `handle_peer_ecn`, and
+  `TurnEnv::send_to_peer_ecn` / `send_to_client_ecn`, whose defaults drop the codepoint.
+- only-turn client: `ClientConfig::dual_allocation`, `Client::relayed_addrs`,
+  `relayed_addr_for`, `address_error`. STUN: `attr::ADDRESS_ERROR_CODE`,
+  `Message::address_error_code`, `MessageBuilder::address_error`.
+- only-webrtc: `RelayServer::dual_allocation(true)` makes `Endpoint::gather_relay_via` add a
+  relayed candidate per family.
+- coturn 4.6 compatibility: `ADDITIONAL-ADDRESS-FAMILY` at the turnbis draft's 0x8032 is
+  accepted (answered with `ADDRESS-ERROR-CODE` at 0x8033 too), and the client sends both
+  codepoints.
+- Behaviour change: with `additional_relay_ip` set, `REQUESTED-ADDRESS-FAMILY` of that family
+  succeeds (was 440), and an IPv6 `relay_ip` with an IPv4 additional one allocates IPv4 by
+  default. Without it, a dual request is answered with `ADDRESS-ERROR-CODE` 440 (the attribute
+  was ignored).
+- `turn-relay-bench` takes `TURN_BENCH_ECN`; new `tools/interop/webrtc/turn-dual.sh` (coturn,
+  pion/turn) and `turn-family-raw` mode of the pion tool. Relay A/B against main: no measurable change (docs/BENCHMARKS.md).
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:
