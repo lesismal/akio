@@ -72,3 +72,41 @@ ADR-054（2026-11-20）补上了它：第二个 `[::]:5353` 套接字在每个�
   AAAA，TTL 120）；`mdns-resolve` 从经 IPv6（`fe80::1%lo0`）到达的应答解析出用 `dns-sd -P` 发布的名字。
 - macOS 与 gpu51（epoll 与 io_uring）上 only-sys、only、only-webrtc 的 `cargo test`，两处 clippy 均无
   警告（rustc 1.100）。
+
+## 更新（2026-11-22）：声明我方名字、告别、单播跳数限制
+
+本 ADR 与 DEV-PLAN 留下的两项已完成：
+
+- **单播应答使用跳数限制 255。** RFC 6762 §11 要求每个响应（包括单播响应：对 QU 问题的应答、传统单播
+  回复）都以 TTL / 跳数限制 255 发出。共享的 mDNS 套接字现在也为单播设置它：新增
+  `UdpBinding::set_unicast_hops(u32)`（`IP_TTL` / `IPV6_UNICAST_HOPS`，0..=255，`only-core` 与 `only`
+  中只有新增）与 `only_sys::{set_unicast_hops_v6, unicast_hops_v6}`（std 只有 IPv4 的 `set_ttl`）。
+  `Engine::bind_udp_multicast_on` 本身不变：单播限制由协议决定，所以由 only-webrtc 在它的 mDNS 绑定上设置。
+- **探测与宣告（RFC 6762 §8）、冲突（§9）、告别（§10.1）。** 被隐藏的名字按唯一记录的要求声明：三次探测，
+  间隔 250 ms（带 QU 位的 `ANY` 问题，提议的 `A` / `AAAA` 记录放在权威段；only-ice 新增 `Message::probe`），
+  最后一次探测 250 ms 后声明成功，然后两次宣告，间隔 1 s（带缓存刷新位的主动响应）。声明不会推迟候选：
+  名字是随机 UUID，描述中立即携带，并且从一开始就应答。冲突时放弃名字：另一台主机以另一个地址应答它（§9），或在我方仍在探测时用在 §8.2 平局裁决中胜出的记录
+  探测它（依次比较类、类型、记录数据的字节；新增 `Record::tiebreak`）。放弃的名字不再应答，其地址为此后
+  创建的 peer 换一个新名字；已持有旧名字的 peer 保持不变（记录一条警告）。经组播回环回来的我方探测或相同
+  的声明由提议的记录识别，不予应答；声明之后到达的探测会得到应答，从而守住名字。`Endpoint::close` 在关闭
+  套接字前为每个名字发送告别（TTL 0）。
+- only-ice 的 `Message` 新增 `authority`（权威段的地址记录；only-ice 是内部 crate，其 API 可在任何版本中
+  变化）。
+
+未做：首次探测前 0–250 ms 的随机延迟（§8.1 要求主机启动时这样做，以错开同时的探测；每个地址一个名字、
+名字是随机 UUID，冲突几乎不可能）；按接口宣告、只带该接口的地址（§6.2；所有名字都在 endpoint 查询的每条
+链路上发出）。
+
+验证：
+
+- only-ice：探测往返（QU `ANY` 问题，权威段记录不带缓存刷新位，与应答分开）、平局裁决顺序；`ice_mdns`
+  模糊测试目标也把解析出的权威段记录重建为探测（新增种子）。
+- only-webrtc `tests/mdns.rs`，对 `ff02::fb` 上的原始套接字：新名字被探测三次，间隔至少 200 ms，最后一次
+  探测至少 200 ms 后声明，宣告两次，间隔至少 900 ms，不应答自己的探测，关闭 endpoint 时发送告别；以另一
+  地址应答会使名字被放弃（下一个 offer 带新名字，旧名字的查询不再得到应答）；同时到达的探测中，`A` 记录
+  输给我方的 `AAAA ::1`，`AAAA fd00::99` 胜出。only `tests/shared_ports.rs`：IPv4 与 IPv6 绑定上的
+  `set_unicast_hops`。only-sys：IPv6 单播跳数限制的往返。
+- `tools/interop/webrtc/mdns6.sh`（gpu51，纯 IPv6 容器）：epoll 与 io_uring 下的 mDNS 测试（各 9/9，
+  无跳过），avahi 0.8 仍能解析我方名字、发布我方能解析的名字，以及新的一步：avahi 用 fd00:6::2 发布
+  Endpoint 已声明的名字（`avahi-publish -a -R`），探测时得到我方应答并报告 "Name collision"；Endpoint
+  保住名字（avahi-publish 随后在为 UUID 标签寻找替代名时触发自身的断言而中止）。

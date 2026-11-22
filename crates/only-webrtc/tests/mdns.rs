@@ -405,3 +405,192 @@ fn link_local_ipv6_endpoints_connect() {
     b.close();
     e.shutdown();
 }
+
+// ---- Claiming our names (RFC 6762 §8, §9, §10.1) ----
+
+use only_ice::mdns::TYPE_ANY;
+
+/// Like [`recv_v6`] for at most `within`.
+fn recv_v6_within<T>(
+    s: &UdpSocket,
+    within: Duration,
+    mut f: impl FnMut(SocketAddr, Message) -> Option<T>,
+) -> Option<T> {
+    let deadline = Instant::now() + within;
+    let mut buf = [0u8; 9000];
+    while Instant::now() < deadline {
+        let Ok((n, src)) = s.recv_from(&mut buf) else {
+            continue;
+        };
+        if matches!(src, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_none()) {
+            if let Ok(m) = Message::parse(&buf[..n]) {
+                if let Some(t) = f(src, m) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// An endpoint on `::1` that conceals, and the name of its host candidate in a new offer.
+fn concealing_v6(e: &Engine) -> Option<Endpoint> {
+    let ep = bind_v6(e)?;
+    ep.resolve_mdns(e, Duration::from_secs(5)).unwrap();
+    match ep.conceal_host_candidates() {
+        Ok(()) => Some(ep),
+        Err(err) => {
+            eprintln!("skipped: {err}");
+            None
+        }
+    }
+}
+
+fn offered_name(ep: &Endpoint) -> String {
+    let (p, offer) = ep
+        .create_offer(Echo, |api| {
+            api.add_channel("c");
+        })
+        .unwrap();
+    p.close();
+    let line = host_lines(&offer).into_iter().next().expect("a host candidate");
+    line.split_whitespace().nth(4).unwrap().to_owned()
+}
+
+#[derive(Debug, PartialEq)]
+enum Seen {
+    Probe,
+    Announcement,
+    Goodbye,
+    Answer,
+}
+
+/// What a message says about our name `name` (for `::1`).
+fn seen(name: &str, m: &Message) -> Option<Seen> {
+    if !m.response {
+        let probe = m
+            .questions
+            .iter()
+            .any(|q| q.name == name && q.qtype == TYPE_ANY && q.unicast_response)
+            && m.authority
+                .iter()
+                .any(|r| r.name == name && r.addr == IpAddr::V6(Ipv6Addr::LOCALHOST));
+        return probe.then_some(Seen::Probe);
+    }
+    let r = m.records.iter().find(|r| r.name == name)?;
+    assert_eq!(r.addr, IpAddr::V6(Ipv6Addr::LOCALHOST));
+    Some(match (r.ttl, r.cache_flush) {
+        (0, _) => Seen::Goodbye,
+        (_, true) => Seen::Announcement,
+        _ => Seen::Answer,
+    })
+}
+
+/// A new concealed name is probed three times 250 ms apart, then announced twice 1 s apart,
+/// its own probes are not answered, and closing the endpoint says goodbye.
+#[test]
+fn names_are_probed_announced_and_withdrawn() {
+    let Some((raw, _ifs)) = raw_v6() else { return };
+    let e = engine();
+    let Some(ep) = concealing_v6(&e) else { return };
+    let name = offered_name(&ep);
+    // Each message may arrive once per interface: copies within 100 ms count once.
+    let mut events: Vec<(Seen, Instant)> = Vec::new();
+    let _ = recv_v6_within(&raw, Duration::from_secs(4), |_src, m| {
+        if let Some(s) = seen(&name, &m) {
+            let now = Instant::now();
+            let dup = events
+                .iter()
+                .any(|(k, t)| *k == s && now.duration_since(*t) < Duration::from_millis(100));
+            if !dup {
+                events.push((s, now));
+            }
+        }
+        None::<()>
+    });
+    let kinds: Vec<&Seen> = events.iter().map(|(k, _)| k).collect();
+    assert_eq!(
+        kinds,
+        [
+            &Seen::Probe,
+            &Seen::Probe,
+            &Seen::Probe,
+            &Seen::Announcement,
+            &Seen::Announcement
+        ],
+        "{events:?}"
+    );
+    let gap = |i: usize| events[i + 1].1.duration_since(events[i].1);
+    for i in 0..2 {
+        assert!(gap(i) >= Duration::from_millis(200), "probe gap {:?}", gap(i));
+    }
+    assert!(gap(2) >= Duration::from_millis(200), "claimed too early: {:?}", gap(2));
+    assert!(gap(3) >= Duration::from_millis(900), "announcement gap {:?}", gap(3));
+    ep.close();
+    let bye = recv_v6_within(&raw, Duration::from_secs(3), |_src, m| {
+        (seen(&name, &m) == Some(Seen::Goodbye)).then_some(())
+    });
+    assert!(bye.is_some(), "no goodbye for {name}");
+    e.shutdown();
+}
+
+/// Another host answering our name with another address takes it: the endpoint stops
+/// answering it and conceals its address under a new name.
+#[test]
+fn a_conflicting_answer_gives_the_name_up() {
+    let Some((raw, ifs)) = raw_v6() else { return };
+    let e = engine();
+    let Some(ep) = concealing_v6(&e) else { return };
+    let name = offered_name(&ep);
+    let theirs = Record {
+        name: name.clone(),
+        addr: "fd00::99".parse().unwrap(),
+        ttl: 120,
+        cache_flush: true,
+    };
+    multicast_v6(&raw, &ifs, &Message::response(0, &[], &[theirs]));
+    let again = (0..50)
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            offered_name(&ep)
+        })
+        .find(|n| *n != name);
+    assert!(again.is_some(), "{name} kept after a conflict");
+    // Past any announcement already under way, a query for it gets no answer from us.
+    std::thread::sleep(Duration::from_millis(2200));
+    multicast_v6(&raw, &ifs, &Message::query(&name, TYPE_AAAA, false).unwrap());
+    let answered = recv_v6_within(&raw, Duration::from_millis(1500), |_src, m| {
+        (m.response
+            && m.records
+                .iter()
+                .any(|r| r.name == name && r.addr == IpAddr::V6(Ipv6Addr::LOCALHOST)))
+        .then_some(())
+    });
+    assert!(answered.is_none(), "{name} still answered");
+    ep.close();
+    e.shutdown();
+}
+
+/// A probe for our name from another host while ours is being probed: the greater record
+/// wins (RFC 6762 §8.2). An `AAAA fd00::…` beats our `AAAA ::1`; an `A` record loses to it.
+#[test]
+fn simultaneous_probes_are_settled_by_the_tiebreak() {
+    let Some((raw, ifs)) = raw_v6() else { return };
+    let e = engine();
+    for (addr, we_keep) in [("10.0.0.1", true), ("fd00::99", false)] {
+        let Some(ep) = concealing_v6(&e) else { return };
+        let name = offered_name(&ep);
+        let theirs = Record {
+            name: name.clone(),
+            addr: addr.parse().unwrap(),
+            ttl: 120,
+            cache_flush: false,
+        };
+        multicast_v6(&raw, &ifs, &Message::probe(&name, &[theirs]).unwrap());
+        std::thread::sleep(Duration::from_millis(300));
+        let now = offered_name(&ep);
+        assert_eq!(now == name, we_keep, "probe with {addr}: {name} -> {now}");
+        ep.close();
+    }
+    e.shutdown();
+}

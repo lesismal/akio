@@ -112,6 +112,7 @@ fn common_constants() {
         IPPROTO_IPV6,
         IPV6_V6ONLY,
         IPV6_MULTICAST_HOPS,
+        IPV6_UNICAST_HOPS,
         SIGHUP,
         SIGINT,
         SIGQUIT,

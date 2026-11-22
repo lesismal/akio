@@ -19,12 +19,14 @@ impl core::marker::Unpin for only_ice::mdns::Error
 impl core::panic::unwind_safe::RefUnwindSafe for only_ice::mdns::Error
 impl core::panic::unwind_safe::UnwindSafe for only_ice::mdns::Error
 pub struct only_ice::mdns::Message
+pub only_ice::mdns::Message::authority: alloc::vec::Vec<only_ice::mdns::Record>
 pub only_ice::mdns::Message::id: u16
 pub only_ice::mdns::Message::questions: alloc::vec::Vec<only_ice::mdns::Question>
 pub only_ice::mdns::Message::records: alloc::vec::Vec<only_ice::mdns::Record>
 pub only_ice::mdns::Message::response: bool
 impl only_ice::mdns::Message
 pub fn only_ice::mdns::Message::parse(&[u8]) -> core::result::Result<only_ice::mdns::Message, only_ice::mdns::Error>
+pub fn only_ice::mdns::Message::probe(&str, &[only_ice::mdns::Record]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_ice::mdns::Message::query(&str, u16, bool) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_ice::mdns::Message::response(u16, &[only_ice::mdns::Question], &[only_ice::mdns::Record]) -> alloc::vec::Vec<u8>
 impl core::clone::Clone for only_ice::mdns::Message
@@ -62,6 +64,8 @@ pub only_ice::mdns::Record::addr: core::net::ip_addr::IpAddr
 pub only_ice::mdns::Record::cache_flush: bool
 pub only_ice::mdns::Record::name: alloc::string::String
 pub only_ice::mdns::Record::ttl: u32
+impl only_ice::mdns::Record
+pub fn only_ice::mdns::Record::tiebreak(&self, &only_ice::mdns::Record) -> core::cmp::Ordering
 impl core::clone::Clone for only_ice::mdns::Record
 pub fn only_ice::mdns::Record::clone(&self) -> Self
 impl core::cmp::Eq for only_ice::mdns::Record

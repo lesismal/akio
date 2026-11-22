@@ -79,6 +79,7 @@ pub const IPV6_RECVTCLASS: c_int = 66;
 pub const IPV6_TCLASS: c_int = 67;
 pub const IPV6_V6ONLY: c_int = 26;
 pub const IPV6_MULTICAST_HOPS: c_int = 18;
+pub const IPV6_UNICAST_HOPS: c_int = 16;
 pub const SOL_UDP: c_int = 17;
 pub const UDP_SEGMENT: c_int = 103;
 pub const UDP_GRO: c_int = 104;

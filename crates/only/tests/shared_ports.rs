@@ -188,6 +188,36 @@ fn multicast_on_checks_its_arguments() {
     e.shutdown();
 }
 
+/// `UdpBinding::set_unicast_hops` (the TTL / hop limit of unicast datagrams, 255 for mDNS
+/// answers): 0..=255 taken on both families, 256 refused, datagrams still delivered.
+#[test]
+fn unicast_hops_set_on_bindings() {
+    let e = engine();
+    let acc = || fn_acceptor(|_c: &Conn<Hello>| Hello);
+    for any in ["127.0.0.1:0", "[::1]:0"] {
+        let Ok(b) = e.bind_udp(any.parse().unwrap(), acc()) else {
+            eprintln!("skipped: cannot bind {any}");
+            continue;
+        };
+        for ok in [255, 1, 64] {
+            b.set_unicast_hops(ok).unwrap();
+        }
+        assert_eq!(
+            b.set_unicast_hops(256).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        b.set_unicast_hops(255).unwrap();
+        let peer = UdpSocket::bind(SocketAddr::new(b.local_addr().ip(), 0)).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        b.send_to(b"ttl 255", peer.local_addr().unwrap()).unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ttl 255");
+        b.close();
+    }
+    e.shutdown();
+}
+
 /// The interfaces with an IPv6 link-local address, and that address.
 fn link_local_interfaces() -> Vec<(u32, Ipv6Addr)> {
     (1..=64)

@@ -103,7 +103,8 @@ stream 互不影响。handler 一返回，I/O 线程就空闲了。
 - HTTP/2：HPACK、双向流控、h2c 升级、服务端推送、停机时发送 `GOAWAY`；h2spec strict 147/147。
 - 优雅停机：在途响应完成后关闭 HTTP/1 连接；HTTP/2 发送 `GOAWAY`。
 
-## 尚未完成
+## 对比
 
-与 hyper 和 fib 的 HTTP/1 对比报告
-（计划在基准测试阶段完成）。
+HTTP/1.1、流水线 HTTP/1.1、h2c 与 TLS 上的 HTTP/2 在 epoll 与 io_uring 下与 hyper 和 fib 的对比见
+[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)
+（本节曾把这份对比报告列为尚未完成）。

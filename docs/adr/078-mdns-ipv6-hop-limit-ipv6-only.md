@@ -87,3 +87,54 @@ shared port, and browsers do not either.
   `dns-sd -P` from the answer that arrived over IPv6 (`fe80::1%lo0`).
 - `cargo test` of only-sys, only and only-webrtc on macOS and on gpu51 (epoll and io_uring), clippy
   clean on both (rustc 1.100).
+
+## Update (2026-11-22): claiming our names, goodbyes, unicast hop limit
+
+The two gaps this ADR and the DEV-PLAN left open are closed:
+
+- **Unicast answers with hop limit 255.** RFC 6762 §11 asks for TTL / hop limit 255 on every
+  response, unicast ones included (answers to a QU question, legacy unicast replies). The
+  shared mDNS sockets now set it for unicast too: new `UdpBinding::set_unicast_hops(u32)`
+  (`IP_TTL` / `IPV6_UNICAST_HOPS`, 0..=255, additive in `only-core` and `only`) and
+  `only_sys::{set_unicast_hops_v6, unicast_hops_v6}` (std has `set_ttl` for IPv4 only).
+  `Engine::bind_udp_multicast_on` itself is unchanged: the unicast limit is the protocol's
+  choice, so only-webrtc sets it on its mDNS bindings.
+- **Probing and announcing (RFC 6762 §8), conflicts (§9), goodbyes (§10.1).** A concealed name
+  is claimed as unique records must be: three probes 250 ms apart (`ANY` with the QU bit, the
+  proposed `A` / `AAAA` record in the authority section; new `Message::probe` in only-ice), the
+  claim won 250 ms after the last, then two announcements 1 s apart (unsolicited responses with
+  the cache-flush bit). Claiming does not hold the candidate up: the name is a random UUID that
+  the description carries at once, and it is answered from the start. Conflicts give the name up: another host
+  answering it with another address (§9), or probing it with a record that wins the §8.2
+  tiebreak (class, type, then the record data as bytes; new `Record::tiebreak`) while ours is
+  still being probed. A given-up name is no longer answered and its address gets a fresh name for
+  the peers made after; peers already holding the old one keep it (a warning is logged). Probes
+  of our own that come back by multicast loopback, or identical claims, are recognised by the
+  proposed record and not answered; a probe after our claim is answered, which defends the
+  name. `Endpoint::close` sends goodbyes (TTL 0) for every name before closing the sockets.
+- only-ice's `Message` gains `authority` (the authority section's address records; only-ice is
+  an internal crate, its API may change in any release).
+
+Not done: the random 0–250 ms delay before the first probe (§8.1 asks for it at host start-up
+to spread out simultaneous probes; one name per address and a random UUID make collisions
+improbable), announcements per interface with only that interface's addresses (§6.2; all
+names go out on every link the endpoint queries on).
+
+Verification:
+
+- only-ice: probe round trip (QU `ANY` question, authority records without cache flush, answers
+  kept apart), tiebreak order; the `ice_mdns` fuzz target also rebuilds the authority records
+  of what it parses as a probe (new seed).
+- only-webrtc `tests/mdns.rs`, against a raw socket on `ff02::fb`: a new name is probed three
+  times at least 200 ms apart, claimed at least 200 ms after the last probe and announced twice
+  at least 900 ms apart, with no answer to its own probes, and closing the endpoint sends its
+  goodbye; an answer with another address gives the name up (the next offer carries a new
+  name, and a query for the old one is no longer answered); a simultaneous probe with an `A`
+  record loses to our `AAAA ::1`, one with `AAAA fd00::99` wins. only `tests/shared_ports.rs`:
+  `set_unicast_hops` on IPv4 and IPv6 bindings. only-sys: the IPv6 unicast hop limit round trip.
+- `tools/interop/webrtc/mdns6.sh` (gpu51, IPv6-only container): the mDNS tests with epoll and
+  io_uring (9/9 each, none skipped), avahi 0.8 still resolves our name and publishes one we
+  resolve, and a new step: avahi publishing the name an Endpoint has claimed (with fd00:6::2,
+  `avahi-publish -a -R`) probes it, gets our answers and reports "Name collision"; the Endpoint
+  keeps its name (avahi-publish then aborts on its own assertion looking for an alternative to
+  a UUID label).

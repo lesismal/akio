@@ -207,6 +207,25 @@ impl UdpBinding {
         self.send_to(data, addr)
     }
 
+    /// Sets the TTL (IPv4) or hop limit (IPv6) of the unicast datagrams this socket sends,
+    /// 0 to 255 (`IP_TTL` / `IPV6_UNICAST_HOPS`; above 255 fails with
+    /// [`io::ErrorKind::InvalidInput`]). Link-local protocols answer with 255 so receivers
+    /// can check that an answer came from the link (mDNS, RFC 6762 §11); multicast datagrams
+    /// keep their own limit (255 from `Engine::bind_udp_multicast`).
+    pub fn set_unicast_hops(&self, hops: u32) -> io::Result<()> {
+        if hops > 255 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "hop limit above 255",
+            ));
+        }
+        if self.local.is_ipv6() {
+            only_sys::set_unicast_hops_v6(&self.sock, hops)
+        } else {
+            self.sock.set_ttl(hops)
+        }
+    }
+
     /// Closes the socket: its connections are closed (their `on_close` runs on the I/O thread)
     /// and it stops receiving. Idempotent.
     pub fn close(&self) {

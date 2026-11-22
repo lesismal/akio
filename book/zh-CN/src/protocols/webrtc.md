@@ -211,6 +211,11 @@ IPv6 与 IPv4 并行（ADR-054）：`[::]:5353` 上的第二个套接字在每�
 上，`conceal_host_candidates` 只经 `ff02::fb` 应答。`tools/interop/webrtc/mdns6.sh` 在纯 IPv6 容器中对
 avahi 验证这一点，`browser.sh` 则用唯一主机候选为被隐藏 IPv6 地址的 endpoint 对 Chrome 验证。
 
+被隐藏的名字按 RFC 6762 的要求声明（ADR-078 的更新）：三次探测，间隔 250 ms，然后两次宣告，间隔 1 s，
+期间名字已在使用并会得到应答。如果另一台主机以另一个地址应答该名字，或在同时探测中胜出，endpoint 就放弃
+该名字，新 peer 得到新名字。关闭 endpoint 会撤回其名字（TTL 为 0 的告别），单播应答与组播应答一样以跳数
+限制 255 发出。
+
 ### 提名
 
 控制方（offer 方，或面对 ICE-lite 远端的任一方）提名一个候选对：在没有更好的候选对仍在检查时，选能用

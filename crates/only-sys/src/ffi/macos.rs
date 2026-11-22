@@ -41,6 +41,7 @@ pub const IPPROTO_IP: c_int = 0;
 pub const IPPROTO_IPV6: c_int = 41;
 pub const IPV6_V6ONLY: c_int = 27;
 pub const IPV6_MULTICAST_HOPS: c_int = 10;
+pub const IPV6_UNICAST_HOPS: c_int = 4;
 pub const IP_TOS: c_int = 3;
 pub const IP_RECVTOS: c_int = 27;
 pub const IPV6_RECVTCLASS: c_int = 35;

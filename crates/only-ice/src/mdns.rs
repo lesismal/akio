@@ -5,7 +5,9 @@
 //! only (no sockets): [`Message::query`] builds a one-shot query (RFC 6762 §5.1) for the `A`
 //! or `AAAA` record of a name (one question per message: Chromium's responder ignores
 //! messages with several), [`Message::parse`] reads the answers (and the queries a
-//! responder for our own concealed names must answer), [`Message::response`] builds an answer.
+//! responder for our own concealed names must answer, with the authority section of probes),
+//! [`Message::response`] builds an answer (or an announcement or goodbye), [`Message::probe`]
+//! a probe for a name about to be claimed (RFC 6762 §8.1).
 //!
 //! Names are compared case-insensitively (RFC 6762 §16): parsed names are lowercased.
 //! Compression pointers are followed on parsing (backwards only, at most
@@ -102,6 +104,9 @@ pub struct Message {
     /// The `A`/`AAAA` records of the answer and additional sections (at most
     /// [`MAX_RECORDS`]).
     pub records: Vec<Record>,
+    /// The `A`/`AAAA` records of the authority section (at most [`MAX_RECORDS`]): in a probe
+    /// (RFC 6762 §8.2), the records the prober proposes for the names it asks about.
+    pub authority: Vec<Record>,
 }
 
 /// Whether `name` is a valid name to put on the wire: dot-separated non-empty labels of at
@@ -118,6 +123,35 @@ fn put_name(out: &mut Vec<u8>, name: &str) {
         out.extend_from_slice(label.as_bytes());
     }
     out.push(0);
+}
+
+fn put_record(out: &mut Vec<u8>, r: &Record) {
+    put_name(out, &r.name);
+    let (t, data): (u16, &[u8]) = match &r.addr {
+        IpAddr::V4(a) => (TYPE_A, &a.octets()[..]),
+        IpAddr::V6(a) => (TYPE_AAAA, &a.octets()[..]),
+    };
+    out.extend_from_slice(&t.to_be_bytes());
+    let class = CLASS_IN | if r.cache_flush { CLASS_TOP } else { 0 };
+    out.extend_from_slice(&class.to_be_bytes());
+    out.extend_from_slice(&r.ttl.to_be_bytes());
+    out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    out.extend_from_slice(data);
+}
+
+impl Record {
+    /// How two records of one name compare in a simultaneous probe tiebreak (RFC 6762 §8.2):
+    /// class (always `IN` here), then type, then the record data as unsigned bytes. The
+    /// greater record wins.
+    pub fn tiebreak(&self, other: &Record) -> std::cmp::Ordering {
+        fn key(r: &Record) -> (u16, Vec<u8>) {
+            match r.addr {
+                IpAddr::V4(a) => (TYPE_A, a.octets().to_vec()),
+                IpAddr::V6(a) => (TYPE_AAAA, a.octets().to_vec()),
+            }
+        }
+        key(self).cmp(&key(other))
+    }
 }
 
 struct Reader<'a> {
@@ -250,24 +284,46 @@ impl Message {
             out.extend_from_slice(&CLASS_IN.to_be_bytes());
         }
         for r in records {
-            put_name(&mut out, &r.name);
-            let (t, data): (u16, Vec<u8>) = match r.addr {
-                IpAddr::V4(a) => (TYPE_A, a.octets().to_vec()),
-                IpAddr::V6(a) => (TYPE_AAAA, a.octets().to_vec()),
-            };
-            out.extend_from_slice(&t.to_be_bytes());
-            let class = CLASS_IN | if r.cache_flush { CLASS_TOP } else { 0 };
-            out.extend_from_slice(&class.to_be_bytes());
-            out.extend_from_slice(&r.ttl.to_be_bytes());
-            out.extend_from_slice(&(data.len() as u16).to_be_bytes());
-            out.extend_from_slice(&data);
+            put_record(&mut out, r);
         }
         out
     }
 
+    /// A probe (RFC 6762 §8.1) for `name`, about to be claimed with `records`: one question
+    /// for `name`, type [`TYPE_ANY`] with the QU bit, and `records` (the proposed ones, all
+    /// named `name`) in the authority section, without the cache-flush bit. `None` if the
+    /// name is not valid or a record has another name.
+    pub fn probe(name: &str, records: &[Record]) -> Option<Vec<u8>> {
+        if !valid_name(name)
+            || records.is_empty()
+            || records.len() > MAX_RECORDS
+            || records.iter().any(|r| r.name != name)
+        {
+            return None;
+        }
+        let mut out = Vec::with_capacity(12 + (name.len() + 30) * (1 + records.len()));
+        out.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 0]);
+        out.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        put_name(&mut out, name);
+        out.extend_from_slice(&TYPE_ANY.to_be_bytes());
+        out.extend_from_slice(&(CLASS_IN | CLASS_TOP).to_be_bytes());
+        for r in records {
+            put_record(
+                &mut out,
+                &Record {
+                    cache_flush: false,
+                    ..r.clone()
+                },
+            );
+        }
+        Some(out)
+    }
+
     /// Parses a message. Questions past [`MAX_QUESTIONS`] and address records past
-    /// [`MAX_RECORDS`] are ignored; records of other types and classes are skipped; the
-    /// authority section is skipped. Messages with a nonzero opcode or rcode are refused.
+    /// [`MAX_RECORDS`] (per list: answers and additional records, authority records) are
+    /// ignored; records of other types and classes are skipped. Messages with a nonzero
+    /// opcode or rcode are refused.
     pub fn parse(packet: &[u8]) -> Result<Message, Error> {
         let mut r = Reader {
             buf: packet,
@@ -300,6 +356,7 @@ impl Message {
             }
         }
         let mut records = Vec::new();
+        let mut authority = Vec::new();
         let total = u32::from(an) + u32::from(ns) + u32::from(ar);
         for i in 0..total {
             let name = r.name()?;
@@ -308,8 +365,13 @@ impl Message {
             let ttl = r.u32()?;
             let len = r.u16()?;
             let data = r.take(usize::from(len))?;
-            let authority = i >= u32::from(an) && i < u32::from(an) + u32::from(ns);
-            if authority || class & !CLASS_TOP != CLASS_IN || records.len() >= MAX_RECORDS {
+            let in_authority = i >= u32::from(an) && i < u32::from(an) + u32::from(ns);
+            let list = if in_authority {
+                &mut authority
+            } else {
+                &mut records
+            };
+            if class & !CLASS_TOP != CLASS_IN || list.len() >= MAX_RECORDS {
                 continue;
             }
             let addr = match (rtype, data.len()) {
@@ -322,7 +384,7 @@ impl Message {
                 (TYPE_A | TYPE_AAAA, _) => return Err(Error("bad address length")),
                 _ => continue,
             };
-            records.push(Record {
+            list.push(Record {
                 name,
                 addr,
                 ttl,
@@ -334,6 +396,7 @@ impl Message {
             response,
             questions,
             records,
+            authority,
         })
     }
 }
@@ -419,6 +482,58 @@ mod tests {
         assert!(m.response);
         assert_eq!(m.questions, questions);
         assert_eq!(m.records, records);
+    }
+
+    #[test]
+    fn probe_round_trip() {
+        let name = "1f3c8b2e-0d4a-4c11-9e2f-5a6b7c8d9e0f.local";
+        let rec = |a: &str| Record {
+            name: name.to_owned(),
+            addr: a.parse().unwrap(),
+            ttl: 120,
+            cache_flush: true,
+        };
+        let b = Message::probe(name, &[rec("192.168.1.20"), rec("fd00::5")]).unwrap();
+        let m = Message::parse(&b).unwrap();
+        assert!(!m.response && m.id == 0);
+        assert_eq!(
+            m.questions,
+            [Question {
+                name: name.to_owned(),
+                qtype: TYPE_ANY,
+                unicast_response: true,
+            }]
+        );
+        assert!(m.records.is_empty());
+        assert_eq!(m.authority.len(), 2);
+        assert!(m.authority.iter().all(|r| !r.cache_flush && r.ttl == 120));
+        assert_eq!(m.authority[1].addr, "fd00::5".parse::<IpAddr>().unwrap());
+        // Records of another name, no records, a bad name.
+        let mut other = rec("10.0.0.1");
+        other.name = "x.local".into();
+        assert!(Message::probe(name, &[other]).is_none());
+        assert!(Message::probe(name, &[]).is_none());
+        assert!(Message::probe("a..local", &[rec("10.0.0.1")]).is_none());
+        // Answers do not land in the authority list.
+        let r = Message::response(0, &[], &[rec("10.0.0.1")]);
+        let m = Message::parse(&r).unwrap();
+        assert!(m.authority.is_empty() && m.records.len() == 1);
+    }
+
+    #[test]
+    fn tiebreak_order() {
+        let rec = |a: &str| Record {
+            name: "n.local".into(),
+            addr: a.parse().unwrap(),
+            ttl: 120,
+            cache_flush: false,
+        };
+        use std::cmp::Ordering::*;
+        assert_eq!(rec("10.0.0.2").tiebreak(&rec("10.0.0.1")), Greater);
+        assert_eq!(rec("10.0.0.1").tiebreak(&rec("10.0.0.1")), Equal);
+        // Type first: AAAA (28) beats A (1) whatever the data.
+        assert_eq!(rec("::1").tiebreak(&rec("255.255.255.255")), Greater);
+        assert_eq!(rec("169.254.0.1").tiebreak(&rec("192.168.0.1")), Less);
     }
 
     #[test]
