@@ -67,8 +67,19 @@
 //! [`RtspClientConfig::addr`] applies to the client's own URL only. A `301` is remembered for
 //! later sessions; other redirects are followed again from the client's URL.
 //!
-//! Left out: RTSPS and HTTP tunnelling, multicast, the `REDIRECT` request of a server during a
-//! session (answered 501).
+//! **Server REDIRECT**: a server may move a live session with a `REDIRECT` request (RFC 2326
+//! 10.15, such as [`RtspServer::redirect_session`](super::RtspServer::redirect_session)). The
+//! client answers it, and when its `Range` start comes (a `clock=` UTC time, an `npt=` from
+//! PLAY or RECORD; at once without) tears the session down and starts a new one at the
+//! `Location` right away, without the backoff, on the [`RtspClientConfig::reconnect`] engine
+//! (it counts as a reconnect; later reconnects start from the client's URL again). Without
+//! `reconnect` the client ends with [`ClientError::Redirected`] and the location. A connection
+//! that closes after the `REDIRECT` but before its time moves too.
+//!
+//! **Addresses**: every session dials the addresses its server's name has, in the resolver's
+//! order, until one connects (a refused or timed-out connect tries the next).
+//!
+//! Left out: RTSPS and HTTP tunnelling, multicast.
 
 use std::{
     fmt,

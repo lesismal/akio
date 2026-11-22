@@ -20,6 +20,14 @@
 //! Authentication is Digest or Basic through [`RtspConfig::credentials`]; the hub's
 //! `on_publish` / `on_subscribe` hooks decide who may publish and play what.
 //!
+//! [`RtspServer::sessions`] lists the sessions; [`RtspServer::redirect_session`] and
+//! [`RtspServer::redirect_path`] move them to another URL, for load shedding or maintenance,
+//! with a `REDIRECT` request (RFC 2326 10.15; [`Redirect`]: the location, optionally when, as
+//! `Range: clock=`). The session keeps playing or recording until its client tears it down
+//! (then the server closes the connection), or until the redirect's grace passes after the
+//! move (then the server closes it): clients that ignore `REDIRECT` (ffmpeg, GStreamer, live555
+//! and mediamtx answer it and carry on) are ended cleanly all the same.
+//!
 //! ```no_run
 //! use only::{Engine, Listener};
 //! use only_media::{Hub, rtsp::{RtspConfig, RtspServer}};
@@ -297,7 +305,9 @@ impl RtspServer {
     /// or maintenance: sends its client a `REDIRECT` request ([`Redirect`]). Returns whether
     /// the session exists (and the request could be queued).
     pub fn redirect_session(&self, id: &str, r: &Redirect) -> bool {
-        let sent = {
+        // Built under the lock, sent without it (a send that fails may close the connection,
+        // whose handler takes the lock).
+        let (conn, req, n) = {
             let mut g = lock(&self.0.sessions);
             let Some(l) = g.get_mut(id) else {
                 return false;
@@ -316,14 +326,11 @@ impl RtspServer {
                 req.push_str("\r\n");
             }
             req.push_str("Server: only-media\r\n\r\n");
-            l.conn
-                .send_owned(req.into_bytes())
-                .is_ok()
-                .then(|| (l.conn.clone(), l.redirects))
+            (l.conn.clone(), req, l.redirects)
         };
-        let Some((conn, n)) = sent else {
+        if conn.send_owned(req.into_bytes()).is_err() {
             return false;
-        };
+        }
         let wait =
             r.at.and_then(|t| t.duration_since(SystemTime::now()).ok())
                 .unwrap_or_default()
