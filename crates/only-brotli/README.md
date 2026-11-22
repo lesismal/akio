@@ -8,8 +8,8 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
 (RFC 8879) in `only-tls`. An internal crate (docs/api-stability.md): use it through those crates.
 
 - `decompress(data, limit)`: one-shot decompression of one complete brotli stream into at most
-  `limit` bytes. The whole format is implemented: window sizes 2^10..2^24 (the non-standard
-  large-window extension is refused), empty, metadata (skipped) and uncompressed meta-blocks,
+  `limit` bytes. The whole format is implemented: window sizes 2^10..2^24 (large-window streams
+  are refused here; see `decompress_large_window` below), empty, metadata (skipped) and uncompressed meta-blocks,
   simple and complex prefix codes, block types and block counts for literals, commands and
   distances, the four literal context modes, context maps with run lengths and inverse
   move-to-front, `NPOSTFIX` / `NDIRECT` distance codes, the four-entry distance ring with its 16
@@ -114,8 +114,23 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   (prefix, operation, suffix), where RFC 9841's prose puts the operation last. The decoder
   resolves a static reference in the dictionary of the last two output bytes' literal context
   (the current literal block type's context mode) and continues past its end in the other
-  dictionaries, in order, as Google's decoder does. The encoder uses the prefix only, and no
-  static dictionary words at all when the dictionary has custom ones.
+  dictionaries, in order, as Google's decoder does. The encoder uses the prefix and, at levels
+  10 and 11 (where it searches brotli's own words otherwise), the custom words under every
+  transform of their lists, as Google's encoder does at its highest qualities: an index of the
+  transformed words per dictionary, built on first use; the dictionary of the literal context
+  first, the others after it (ADR-079). With a context-dependent dictionary every literal block
+  type uses the UTF8 context mode.
+- `compress_large_window` / `decompress_large_window`, `Compressor::large_window`,
+  `Decompressor::large_window`: large-window brotli (RFC 9841 section 6, Google's
+  `BROTLI_PARAM_LARGE_WINDOW`): the 14-bit stream header, windows 2^10..2^30, distances up to
+  2^31 - 4 with the larger distance alphabet (decoded with Google's limit on it). Only for peers
+  that agreed to it: regular decoders refuse such streams, ours included unless asked. Checked
+  both ways against Google's `brotli --large_window`, distances past 64 MiB included.
+- `read_container` / `ContainerWriter`: RFC 9841's framing format, a container of resources
+  (data chunks or runs of partial chunks continuing one stream, uncompressed, brotli or shared
+  brotli), metadata, dictionary references by pointer or by hash code, a central directory and
+  a final footer; the reader checks every rule of section 8. Hash codes are opaque (the RFC names
+  HighwayHash but no key): the caller resolves hash references.
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -175,8 +190,9 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
 Limitations: the encoder searches the static dictionary only at levels 10 and 11 and not under
-the omit-first transforms, always uses `NPOSTFIX` = `NDIRECT` = 0, and does not search the custom word lists of shared
-dictionaries; RFC 9841's large-window brotli and framing format are not implemented. Its output at level 11 is 0.9-1.3%
+the omit-first transforms (a custom dictionary's words: under all its transforms), always uses
+`NPOSTFIX` = `NDIRECT` = 0; the container writer writes one data chunk per resource and names
+as the only metadata. Its output at level 11 is 0.9-1.3%
 larger than Google's on the HTTP payloads of the benchmark corpus and 4.5% smaller on its
 Silesia part (docs/BENCHMARKS.md, "Brotli block splitting"). Prefix codes are stored from the exact code lengths or from
 counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,

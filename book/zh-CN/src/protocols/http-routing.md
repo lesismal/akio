@@ -112,7 +112,9 @@ CPU 开销仍然最大（每次刷新的事件约 2 us，zstd 0.3 us），高频
 中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `only-brotli` 解码：原始（LZ77
 前缀）字典，即 `brotli -D` 与 RFC 9842 的 `dcb` 所用的那种（`decompress_with_dictionary`），以及带自定义
 词表与变换的 RFC 9841 序列化共享字典（`SharedDictionary::new`、`decompress_with_shared_dictionary`；
-ADR-069）。编码器只使用共享字典的前缀。
+ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词（ADR-079）。RFC 9841 的其余部分也在中间件之外
+提供：大窗口流（`decompress_large_window`、`Compressor::large_window`；窗口最大 1 GiB，只用于事先约定的
+对端），以及封装格式，即资源之间可以互作字典的容器（`read_container`、`ContainerWriter`）。
 
 ```rust,ignore
 {{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}

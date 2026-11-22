@@ -131,8 +131,12 @@ The middleware uses no dictionaries. Applications that exchange brotli data comp
 shared dictionary can decode it with `only-brotli` directly: raw (LZ77 prefix) dictionaries,
 as `brotli -D` and RFC 9842's `dcb` use them (`decompress_with_dictionary`), and RFC 9841
 serialized shared dictionaries with custom word lists and transforms
-(`SharedDictionary::new`, `decompress_with_shared_dictionary`; ADR-069). The encoder uses a
-shared dictionary's prefix only.
+(`SharedDictionary::new`, `decompress_with_shared_dictionary`; ADR-069); the encoder uses the
+prefix and, at levels 10 and 11, the custom words (ADR-079). The rest of RFC 9841 is there too,
+outside the middleware: large-window streams (`decompress_large_window`,
+`Compressor::large_window`; windows up to 1 GiB, only between peers that agreed to them) and
+the framing format, a container of resources that may use one another as dictionaries
+(`read_container`, `ContainerWriter`).
 
 ```rust,ignore
 {{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}

@@ -1,6 +1,7 @@
 pub mod only_brotli
 #[non_exhaustive] pub enum only_brotli::Error
 pub only_brotli::Error::BadBlockLength
+pub only_brotli::Error::BadContainer
 pub only_brotli::Error::BadContextMap
 pub only_brotli::Error::BadDictionary
 pub only_brotli::Error::BadDictionaryReference
@@ -9,6 +10,7 @@ pub only_brotli::Error::BadHeader
 pub only_brotli::Error::BadPadding
 pub only_brotli::Error::BadPrefixCode
 pub only_brotli::Error::BadWindow
+pub only_brotli::Error::MissingDictionary
 pub only_brotli::Error::TooLarge
 pub only_brotli::Error::TrailingData
 pub only_brotli::Error::Truncated
@@ -58,6 +60,7 @@ pub struct only_brotli::Compressor
 impl only_brotli::Compressor
 pub fn only_brotli::Compressor::compress(&mut self, &[u8], &mut alloc::vec::Vec<u8>, only_brotli::Flush)
 pub fn only_brotli::Compressor::is_finished(&self) -> bool
+pub fn only_brotli::Compressor::large_window(self, bool) -> only_brotli::Compressor
 pub fn only_brotli::Compressor::new(only_brotli::Level) -> only_brotli::Compressor
 pub fn only_brotli::Compressor::reset(&mut self)
 pub fn only_brotli::Compressor::total_in(&self) -> u64
@@ -70,11 +73,27 @@ impl core::marker::Sync for only_brotli::Compressor
 impl core::marker::Unpin for only_brotli::Compressor
 impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Compressor
 impl core::panic::unwind_safe::UnwindSafe for only_brotli::Compressor
+pub struct only_brotli::ContainerWriter
+impl only_brotli::ContainerWriter
+pub fn only_brotli::ContainerWriter::add(&mut self, &str, &[u8]) -> usize
+pub fn only_brotli::ContainerWriter::add_dictionary(&mut self, &[u8]) -> usize
+pub fn only_brotli::ContainerWriter::add_with_dictionary(&mut self, &str, &[u8], usize) -> usize
+pub fn only_brotli::ContainerWriter::add_with_shared_dictionary(&mut self, &str, &[u8], &only_brotli::SharedDictionary, &[u8; 32]) -> usize
+pub fn only_brotli::ContainerWriter::finish(self) -> alloc::vec::Vec<u8>
+pub fn only_brotli::ContainerWriter::new(only_brotli::Level) -> only_brotli::ContainerWriter
+impl core::fmt::Debug for only_brotli::ContainerWriter
+pub fn only_brotli::ContainerWriter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_brotli::ContainerWriter
+impl core::marker::Sync for only_brotli::ContainerWriter
+impl core::marker::Unpin for only_brotli::ContainerWriter
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::ContainerWriter
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::ContainerWriter
 pub struct only_brotli::Decompressor
 impl only_brotli::Decompressor
 pub fn only_brotli::Decompressor::decompress(&mut self, &[u8], &mut [u8]) -> core::result::Result<only_brotli::Progress, only_brotli::Error>
 pub fn only_brotli::Decompressor::decompress_vec(&mut self, &[u8], &mut alloc::vec::Vec<u8>, usize) -> core::result::Result<only_brotli::Progress, only_brotli::Error>
 pub fn only_brotli::Decompressor::is_done(&self) -> bool
+pub fn only_brotli::Decompressor::large_window(self, bool) -> only_brotli::Decompressor
 pub fn only_brotli::Decompressor::max_window_bits(self, u32) -> only_brotli::Decompressor
 pub fn only_brotli::Decompressor::new() -> only_brotli::Decompressor
 pub fn only_brotli::Decompressor::reset(&mut self)
@@ -140,6 +159,27 @@ impl core::marker::Sync for only_brotli::Progress
 impl core::marker::Unpin for only_brotli::Progress
 impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Progress
 impl core::panic::unwind_safe::UnwindSafe for only_brotli::Progress
+#[non_exhaustive] pub struct only_brotli::Resource
+pub only_brotli::Resource::data: alloc::vec::Vec<u8>
+pub only_brotli::Resource::hash: core::option::Option<[u8; 32]>
+pub only_brotli::Resource::hidden: bool
+pub only_brotli::Resource::modified: core::option::Option<i64>
+pub only_brotli::Resource::name: core::option::Option<alloc::vec::Vec<u8>>
+impl core::clone::Clone for only_brotli::Resource
+pub fn only_brotli::Resource::clone(&self) -> Self
+impl core::cmp::Eq for only_brotli::Resource
+impl core::cmp::PartialEq for only_brotli::Resource
+pub fn only_brotli::Resource::eq(&self, &Self) -> bool
+impl core::default::Default for only_brotli::Resource
+pub fn only_brotli::Resource::default() -> Self
+impl core::fmt::Debug for only_brotli::Resource
+pub fn only_brotli::Resource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_brotli::Resource
+impl core::marker::Send for only_brotli::Resource
+impl core::marker::Sync for only_brotli::Resource
+impl core::marker::Unpin for only_brotli::Resource
+impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::Resource
+impl core::panic::unwind_safe::UnwindSafe for only_brotli::Resource
 pub struct only_brotli::SharedDictionary
 impl only_brotli::SharedDictionary
 pub fn only_brotli::SharedDictionary::is_raw(&self) -> bool
@@ -156,8 +196,11 @@ impl core::marker::Unpin for only_brotli::SharedDictionary
 impl core::panic::unwind_safe::RefUnwindSafe for only_brotli::SharedDictionary
 impl core::panic::unwind_safe::UnwindSafe for only_brotli::SharedDictionary
 pub fn only_brotli::compress(only_brotli::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_brotli::compress_large_window(only_brotli::Level, &[u8]) -> alloc::vec::Vec<u8>
 pub fn only_brotli::compress_with_dictionary(only_brotli::Level, &[u8], &[u8]) -> alloc::vec::Vec<u8>
 pub fn only_brotli::compress_with_shared_dictionary(only_brotli::Level, &[u8], &only_brotli::SharedDictionary) -> alloc::vec::Vec<u8>
 pub fn only_brotli::decompress(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>
+pub fn only_brotli::decompress_large_window(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>
 pub fn only_brotli::decompress_with_dictionary(&[u8], usize, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>
 pub fn only_brotli::decompress_with_shared_dictionary(&[u8], usize, &only_brotli::SharedDictionary) -> core::result::Result<alloc::vec::Vec<u8>, only_brotli::Error>
+pub fn only_brotli::read_container(&[u8], usize, &mut dyn core::ops::function::FnMut(&[u8; 32]) -> core::option::Option<alloc::vec::Vec<u8>>) -> core::result::Result<alloc::vec::Vec<only_brotli::Resource>, only_brotli::Error>

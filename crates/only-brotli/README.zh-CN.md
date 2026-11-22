@@ -8,7 +8,7 @@
 请通过上述 crate 使用。
 
 - `decompress(data, limit)`：把一个完整的 brotli 流一次性解压为至多 `limit` 字节。实现了完整
-  格式：窗口 2^10..2^24（拒绝非标准的 large-window 扩展）；空、元数据（跳过）与未压缩
+  格式：窗口 2^10..2^24（这里拒绝大窗口流；见下面的 `decompress_large_window`）；空、元数据（跳过）与未压缩
   meta-block；简单与复杂前缀码；字面量、命令和距离三类的块类型与块计数；四种字面量上下文
   模式；带游程与逆 move-to-front 的上下文映射；`NPOSTFIX` / `NDIRECT` 距离码；四项距离环及其
   16 个短码；静态字典（122,784 字节，Google v1.1.0 的 `dictionary.bin`，已与 RFC 7932 附录 A
@@ -77,8 +77,19 @@
   将二者配对的字典（任一半都可以是 brotli 自带的），以及从 64 个字面量上下文到首选字典的可选映射），格式错误
   一律以 `Error::BadDictionary` 拒绝；变换按 Google 代码中的布局（前缀、操作、后缀），而 RFC 9841 的文字把
   操作放在最后。解码器在最后两个输出字节的字面量上下文（按当前字面量块类型的上下文模式）对应的字典中解析
-  静态引用，超出其末尾时按顺序落到其他字典，与 Google 的解码器一致。编码器只使用前缀，字典带自定义词时完全
-  不使用静态字典词。
+  静态引用，超出其末尾时按顺序落到其他字典，与 Google 的解码器一致。编码器使用前缀，并在级别 10 和 11（否则
+  在这两级搜索 brotli 自己的词）搜索自定义词在其变换表各变换下的结果，与 Google 编码器在最高质量下的做法
+  相同：每个字典一个变换后词的索引，第一次使用时建立；先查字面量上下文对应的字典，再查其后的字典
+  （ADR-079）。使用按上下文选择的字典时，所有字面量块类型都用 UTF8 上下文模式。
+- `compress_large_window` / `decompress_large_window`、`Compressor::large_window`、
+  `Decompressor::large_window`：大窗口 brotli（RFC 9841 第 6 节，Google 的 `BROTLI_PARAM_LARGE_WINDOW`）：
+  14 位流头，窗口 2^10..2^30，距离最大 2^31 - 4，使用更大的距离字母表（按 Google 对它的上限解码）。只用于
+  事先约定的对端：常规解码器拒绝这种流，我们的解码器在未要求时也拒绝。与 Google 的
+  `brotli --large_window` 双向核对，包括超过 64 MiB 的距离。
+- `read_container` / `ContainerWriter`：RFC 9841 的封装格式，由资源（数据块，或延续同一个流的一串部分
+  数据块，不压缩、brotli 或共享 brotli）、元数据、按指针或按哈希码的字典引用、中央目录和最终尾部组成的
+  容器；读取时检查第 8 节的所有规则。哈希码视为不透明值（RFC 规定了 HighwayHash 但没有给出密钥）：哈希
+  引用由调用方解析。
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -123,8 +134,8 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `tools/codec-bench/corpus.sh` 构造语料，再运行
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`。
 
-局限：编码器只在 10、11 级搜索静态字典且不搜索省略开头的变换，总是使用 `NPOSTFIX` = `NDIRECT` = 0，
-不搜索共享字典的自定义词表；未实现 RFC 9841 的大窗口 brotli 与封装格式。11 级
+局限：编码器只在 10、11 级搜索静态字典且不搜索省略开头的变换（自定义字典的词：搜索其全部变换），总是使用
+`NPOSTFIX` = `NDIRECT` = 0；容器写入器每个资源只写一个数据块，元数据只写名称。11 级
 输出在基准语料的 HTTP 负载上比 Google 的大 0.9–1.3%，在其 Silesia 部分小 4.5%（docs/BENCHMARKS.zh-CN.md，
 “brotli 块分割”）。
 前缀码按精确码长或按为游程编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，

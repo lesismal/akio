@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：大窗口 brotli、共享 brotli 封装格式、编码器搜索自定义词表（only-brotli）
+
+ADR-079，RFC 9841 的其余部分；只有新增 API：
+
+- `decompress_large_window(data, limit)`、`Decompressor::large_window(bool)`：大窗口 brotli
+  （RFC 9841 第 6 节，Google 的 `BROTLI_DECODER_PARAM_LARGE_WINDOW`），窗口 2^10..2^30，距离最大
+  2^31 - 4，解码方式与 Google 解码器相同（包括距离字母表的上限）；`max_window_bits` 现在最大可设 30，
+  默认仍为 24。常规解码仍然拒绝这种流。
+- `compress_large_window(level, data)`、`Compressor::large_window(bool)`（`window_bits` 最大 30）。
+  与 Google 的 `brotli --large_window`（gpu51 上 Docker 中从源码构建的版本，以及 1.2.1）双向核对，
+  包括超过 64 MiB 的距离。
+- `read_container(data, limit, lookup)`、`ContainerWriter`、`Resource`：共享 brotli 封装格式
+  （RFC 9841 第 8 节）：由资源（数据块、延续同一个流的一串部分数据块）、元数据（`id`、`mt`）、按指针
+  或按哈希码（由 `lookup` 解析）的字典引用、中央目录和最终尾部组成的容器，检查所有规则。哈希码视为
+  不透明值：RFC 规定了 HighwayHash 但没有给出密钥。新错误 `BadContainer`、`MissingDictionary`。
+- `compress_with_shared_dictionary` 在级别 10 和 11 搜索序列化字典的自定义词表在各变换下的结果
+  （原来只用前缀）：alice29.txt 上 11 级比原来小 7-11%，与 libbrotli 质量 11 的差距在 0.4% 以内；
+  libbrotli 能解码。
+- 模糊测试：新目标 `brotli_container`；`brotli_shared` 还在级别 10 和 11 对字典的词做往返。
+  `tools/interop/brotli-shared/run.sh` 增加与 Google 命令行的大窗口核对，并由 libbrotli 解码我们 11 级
+  的输出。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：
