@@ -115,10 +115,9 @@ The two gaps this ADR and the DEV-PLAN left open are closed:
 - only-ice's `Message` gains `authority` (the authority section's address records; only-ice is
   an internal crate, its API may change in any release).
 
-Not done: the random 0–250 ms delay before the first probe (§8.1 asks for it at host start-up
-to spread out simultaneous probes; one name per address and a random UUID make collisions
-improbable), announcements per interface with only that interface's addresses (§6.2; all
-names go out on every link the endpoint queries on).
+Not done then: the random 0–250 ms delay before the first probe, announcements per interface
+with only that interface's addresses (§6.2). Both done later the same day (second update,
+below).
 
 Verification:
 
@@ -138,3 +137,29 @@ Verification:
   `avahi-publish -a -R`) probes it, gets our answers and reports "Name collision"; the Endpoint
   keeps its name (avahi-publish then aborts on its own assertion looking for an alternative to
   a UUID label).
+
+## Update 2 (2026-11-22): probe delay, link-local addresses on their own link
+
+- **Random delay before the first probe** (RFC 6762 §8.1): a name's first probe leaves after a
+  random 0–250 ms (`only_sys::fill_random`), so endpoints or hosts that start together do not
+  probe in lock step. The name is still in the description and answered at once.
+- **Link-local IPv6 addresses stay on their link** (§6.2: an address record should only go
+  out on an interface where the address is usable). The name of a link-local address keeps
+  the scope id of the host candidate it conceals; its probes, announcements and goodbyes go to
+  `ff02::fb` on that link only (not over IPv4, whose single group is on the default
+  interface), and a query that arrives over IPv6 on another link is not answered with it.
+  Queries over IPv4 are still answered (their link is not known). Other addresses (global,
+  ULA, IPv4) go out on every link as before: telling which interface holds them needs the
+  interface address list (`getifaddrs`), which the project does not read.
+
+Not done: interface-aware IPv4 and non-link-local IPv6 records (no interface address list);
+IPv4 multicast on interfaces other than the default one.
+
+Verification: only-webrtc `tests/mdns.rs` `link_local_names_stay_on_their_link` (an endpoint
+on a link-local address: every copy of its probes and announcements carries that address as
+source, which a send on another link would not; a query from another link gets no answer and
+one from its link does; skipped with fewer than two links), the claiming tests unchanged with
+the delay. macOS (lo0 and en*: all checks) and `tools/interop/webrtc/mdns6.sh` on gpu51 (epoll
+and io_uring, avahi steps; the container's two links are the ends of one veth pair, one wire,
+so the test notices that a query sent on one reaches the other and skips the other-link
+check there).

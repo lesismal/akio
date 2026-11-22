@@ -1120,7 +1120,7 @@ impl Hub {
         }
         let Some(m) = self.mdns.get() else { return c };
         if c.kind() == only_ice::CandidateKind::Host {
-            match m.name_for(c.addr().ip()) {
+            match m.name_for(c.addr()) {
                 Some(n) => c.with_hostname(n),
                 None => c,
             }

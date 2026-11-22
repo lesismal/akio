@@ -26,12 +26,15 @@
 //!
 //! A concealed name is claimed as RFC 6762 §8 asks of unique records, without holding up the
 //! candidate (the name is a random UUID, used in descriptions at once and answered from the
-//! start): three probes 250 ms apart (§8.1: `ANY` with the QU bit, the proposed record in the
-//! authority section), then two announcements 1 s apart (§8.3, unsolicited responses with the
+//! start): after a random 0-250 ms, three probes 250 ms apart (§8.1: `ANY` with the QU bit,
+//! the proposed record in the authority section), then two announcements 1 s apart (§8.3, unsolicited responses with the
 //! cache-flush bit). A conflict (another host answers the name with another address, or
 //! probes it with a record that wins the §8.2 tiebreak while ours is still being probed)
 //! gives the name up: it is no longer answered and the address gets a fresh name for the
-//! peers made after. Closing the endpoint sends goodbyes (§10.1, TTL 0) for its names. Every
+//! peers made after. A link-local IPv6 address is probed, announced and answered on its own
+//! link only (§6.2: it is of no use on another; other addresses go out on every link, and
+//! IPv4 has the default interface only). Closing the endpoint sends goodbyes (§10.1, TTL 0)
+//! for its names. Every
 //! response leaves with TTL / hop limit 255 (§11), unicast ones included.
 
 use std::collections::HashMap;
@@ -93,6 +96,9 @@ struct State {
     /// Our concealed names: address -> name, and back.
     own: HashMap<IpAddr, String>,
     own_names: HashMap<String, IpAddr>,
+    /// Our names for link-local IPv6 addresses, and the link (scope id) each is on: probed,
+    /// announced and answered on that link only (RFC 6762 §6.2).
+    link: HashMap<String, u32>,
     /// Our names still being probed or announced.
     claims: HashMap<String, Claim>,
     /// The earliest timer armed.
@@ -274,14 +280,21 @@ impl Mdns {
 
     /// Sends goodbyes for our names (RFC 6762 §10.1), then closes the sockets.
     pub(crate) fn close(&self) {
-        let names: Vec<(String, IpAddr)> = {
+        let names: Vec<(String, IpAddr, Option<u32>)> = {
             let mut st = lock(&self.state);
             st.claims.clear();
-            st.own_names.drain().collect()
+            let link = std::mem::take(&mut st.link);
+            st.own_names
+                .drain()
+                .map(|(n, ip)| {
+                    let l = link.get(&n).copied();
+                    (n, ip, l)
+                })
+                .collect()
         };
-        for (name, ip) in names {
+        for (name, ip, link) in names {
             let r = own_record(&name, ip, 0, false);
-            self.send_all(&Message::response(0, &[], &[r]));
+            self.send_all(&Message::response(0, &[], &[r]), link);
         }
         for s in self.socks() {
             s.binding.close();
@@ -289,14 +302,19 @@ impl Mdns {
     }
 
     /// Sends `packet` to the mDNS group over each socket on the shared port (IPv6: on every
-    /// link queries go out on).
-    fn send_all(&self, packet: &[u8]) {
-        let scopes = if self.socks().iter().any(|s| s.v6 && s.shared) {
-            self.scopes()
-        } else {
-            Vec::new()
+    /// link queries go out on), or only to `ff02::fb` on `link` (a record of a link-local
+    /// IPv6 address, which is of no use on another link: RFC 6762 §6.2).
+    fn send_all(&self, packet: &[u8], link: Option<u32>) {
+        let scopes = match link {
+            Some(l) => vec![l],
+            None if self.socks().iter().any(|s| s.v6 && s.shared) => self.scopes(),
+            None => Vec::new(),
         };
-        for s in self.socks().iter().filter(|s| s.shared) {
+        for s in self
+            .socks()
+            .iter()
+            .filter(|s| s.shared && (s.v6 || link.is_none()))
+        {
             if s.v6 {
                 for &i in &scopes {
                     let _ = s.binding.send_to(packet, group(true, i));
@@ -313,6 +331,7 @@ impl Mdns {
         if let Some(ip) = st.own_names.remove(name) {
             st.own.remove(&ip);
             st.claims.remove(name);
+            st.link.remove(name);
             only_log::warn!(target: "only_webrtc", "mdns: {name} given up ({why}); {ip} gets a new name for new peers");
         }
     }
@@ -337,9 +356,11 @@ impl Mdns {
         out
     }
 
-    /// The name concealing local address `ip` (made on first use); `None` past
+    /// The name concealing local address `addr` (made on first use; a link-local IPv6
+    /// address keeps its scope id: the link it is claimed and answered on); `None` past
     /// [`MAX_OWN`] addresses.
-    pub(crate) fn name_for(&self, ip: IpAddr) -> Option<String> {
+    pub(crate) fn name_for(&self, addr: SocketAddr) -> Option<String> {
+        let ip = addr.ip();
         let mut st = lock(&self.state);
         if let Some(n) = st.own.get(&ip) {
             return Some(n.clone());
@@ -350,15 +371,22 @@ impl Mdns {
         let n = mdns::random_name();
         st.own.insert(ip, n.clone());
         st.own_names.insert(n.clone(), ip);
+        if let SocketAddr::V6(a) = addr {
+            if is_link_local(a.ip()) && a.scope_id() != 0 {
+                st.link.insert(n.clone(), a.scope_id());
+            }
+        }
         if !self.can_respond() {
             return Some(n);
         }
+        // §8.1: the first probe after a random 0-250 ms, so hosts starting together do not
+        // probe in lock step.
         let now = Instant::now();
         st.claims.insert(
             n.clone(),
             Claim {
                 sends: 0,
-                next: now,
+                next: now + probe_delay(),
             },
         );
         drop(st);
@@ -423,6 +451,7 @@ impl Mdns {
             let State {
                 claims: c,
                 own_names,
+                link,
                 ..
             } = &mut *st;
             c.retain(|name, cl| {
@@ -432,7 +461,8 @@ impl Mdns {
                 if cl.next > now {
                     return true;
                 }
-                claims.push((name.clone(), ip, cl.sends < PROBES));
+                let l = link.get(name).copied();
+                claims.push((name.clone(), ip, l, cl.sends < PROBES));
                 cl.sends += 1;
                 // §8.1: the claim is won 250 ms after the last probe, then announced.
                 cl.next = now
@@ -471,14 +501,14 @@ impl Mdns {
             }
         };
         self.send_queries(&send);
-        for (name, ip, probe) in claims {
+        for (name, ip, link, probe) in claims {
             if probe {
                 if let Some(p) = Message::probe(&name, &[own_record(&name, ip, OWN_TTL, false)]) {
-                    self.send_all(&p);
+                    self.send_all(&p, link);
                 }
             } else {
                 let r = own_record(&name, ip, OWN_TTL, true);
-                self.send_all(&Message::response(0, &[], &[r]));
+                self.send_all(&Message::response(0, &[], &[r]), link);
             }
         }
         if let Some(n) = next {
@@ -616,6 +646,14 @@ impl Mdns {
                 let Some(&ip) = st.own_names.get(&q.name) else {
                     continue;
                 };
+                // A link-local IPv6 address is answered on its own link only (§6.2): a query
+                // that arrived over IPv6 on another link is not answered with it (over IPv4 the
+                // link is not known, and the answer goes out).
+                if let (Some(&l), SocketAddr::V6(a)) = (st.link.get(&q.name), src) {
+                    if a.scope_id() != 0 && a.scope_id() != l {
+                        continue;
+                    }
+                }
                 // A probe for the name (RFC 6762 §8.2): ours coming back by loopback (or an
                 // identical claim) needs no answer; another host's, while ours is still being
                 // probed, is a simultaneous probe settled by the tiebreak; after that, it is
@@ -712,6 +750,13 @@ impl timer::Due for Mdns {
         }
         self.tick(Instant::now());
     }
+}
+
+/// A random delay of 0 to 250 ms before a name's first probe (RFC 6762 §8.1).
+fn probe_delay() -> Duration {
+    let mut b = [0u8; 2];
+    let _ = only_sys::fill_random(&mut b);
+    Duration::from_millis(u64::from(u16::from_le_bytes(b)) % 251)
 }
 
 /// The address record of our name `name` for `ip`.
