@@ -49,13 +49,14 @@ impl PeerHandler for Sink {
     }
 }
 
-/// User plus system CPU time of this process (Linux `/proc/self/stat`, 100 ticks a second).
+/// CPU time of this process's threads (Linux `/proc/self/task/*/schedstat`, nanoseconds).
 fn cpu_time() -> Option<Duration> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    let rest = &stat[stat.rfind(')')? + 2..];
-    let f: Vec<&str> = rest.split(' ').collect();
-    let ticks: u64 = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
-    Some(Duration::from_millis(ticks * 10))
+    let mut ns = 0u64;
+    for t in std::fs::read_dir("/proc/self/task").ok()? {
+        let stat = std::fs::read_to_string(t.ok()?.path().join("schedstat")).ok()?;
+        ns += stat.split(' ').next()?.parse::<u64>().ok()?;
+    }
+    Some(Duration::from_nanos(ns))
 }
 
 fn main() {
