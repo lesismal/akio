@@ -80,7 +80,12 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   empty metadata block (as Google's `BROTLI_OPERATION_FLUSH`), `Flush::Finish` ends the stream
   (a stream whose input all arrived before anything was written is the one `compress` writes).
   Streamed output has a window of 2^22 bytes (`window_bits(10..=24)`), and the compressor's
-  buffer slides, keeping the window. The decompressor takes the stream in pieces of any size and
+  buffer slides, keeping the window. Its match tables start at a few kilobytes and grow with
+  the stream (entered again from the buffer) up to the level's size for an input of one window,
+  so a stream costs a few microseconds to set up and one that stays short stays small; prefix
+  codes are built and stored in time mostly proportional to the symbols a meta-block uses, so a
+  flushed write of a small event costs about 2 us (ADR-074's update of 2026-11-22). The
+  decompressor takes the stream in pieces of any size and
   decodes it with the one-shot decoder's code, resumed where the input ran out at the last
   complete unit: a command, or a part of a meta-block header (a block type description, a
   context map entry, a prefix code). A unit that used bits past the input is undone (output,
@@ -121,7 +126,9 @@ decompression bomb (817 bytes that would expand to 1 GiB) refused with `TooLarge
 allocating more than the limit. Streaming and dictionaries (`tests/stream.rs`): streamed
 output at levels 0..=11, several piece sizes and flush modes decodes with both decoders, fed
 whole, in pieces and a byte at a time; windows of 1 KiB to 256 KiB with sliding buffers; every
-flush makes everything so far decodable; output limits, slices, truncation, trailing bytes;
+flush makes everything so far decodable, and small flushed writes at levels 0..=11 with
+windows that slide or not decode after every flush with both decoders and `brotli -d`; the
+compressor's tables grow with the stream; output limits, slices, truncation, trailing bytes;
 every truncation and bit flip of a stream gives the same verdict streamed (in 3-byte pieces) as
 one-shot; raw dictionaries at every level, within and beyond the window; and with `brotli(1)`:
 our streams decode with `brotli -d`, its streams at qualities 0..=11 and windows 2^16 and 2^24
@@ -137,7 +144,10 @@ Benchmark: `cargo run --release -p only-brotli --example brotli-bench [FILE...]`
 ratio and compression and decompression throughput at levels 0..=11 (`BENCH_LEVELS=1,6,11`
 picks some) on generated text, JSON and random data plus each file given, with the zlib
 level 9 size as a baseline and, when `brotli(1)` is installed, its size at the same quality and
-its time to decode our stream.
+its time to decode our stream. `cargo run --release -p only-brotli --example stream-cost
+[QUALITY [WINDOW_BITS]]` measures the streaming compressor's fixed costs: a flushed write of an
+87-byte event, a new stream, a 16-event response, the memory a stream holds after 3 and 30,000
+events, and HTML in flushed 16 KiB writes.
 
 Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md):
 `tools/codec-bench/corpus.sh` builds the corpus, then

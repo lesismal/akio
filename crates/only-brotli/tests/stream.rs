@@ -183,6 +183,56 @@ fn flush_makes_everything_decodable() {
     }
 }
 
+/// Small flushed writes (server-sent events, with an occasional large one), at every level and
+/// with windows that slide many times or never: at each flush the bytes so far, ended with the
+/// byte `Finish` adds after a flush (an empty last meta-block), are a complete stream that our
+/// decoder and brotli(1) decode to the input so far.
+#[test]
+fn flushed_writes_decode_at_every_boundary() {
+    let cli = have_brotli();
+    let big = text(6000, 41);
+    for level in [0, 1, 2, 4, 5, 6, 7, 9, 10, 11] {
+        for wbits in [10, 18] {
+            let mut c = Compressor::new(Level::new(level)).window_bits(wbits);
+            let mut d = Decompressor::new();
+            let (mut wire, mut got, mut want) = (Vec::new(), Vec::new(), Vec::new());
+            for i in 0..400 {
+                let msg = if i % 97 == 50 {
+                    big[..1000 + i * 10].to_vec()
+                } else {
+                    format!(
+                        "event: tick\nid: {i}\ndata: {{\"seq\":{i},\"v\":{}}}\n\n",
+                        i * 7919 % 1000
+                    )
+                    .into_bytes()
+                };
+                want.extend_from_slice(&msg);
+                let at = wire.len();
+                c.compress(&msg, &mut wire, Flush::Flush);
+                d.decompress_vec(&wire[at..], &mut got, usize::MAX).unwrap();
+                assert!(got == want, "level {level} window {wbits}: after write {i}");
+                let mut whole = wire.clone();
+                whole.push(0x03);
+                let back = decompress(&whole, want.len()).unwrap();
+                assert!(
+                    back == want,
+                    "level {level} window {wbits}: ended after write {i}"
+                );
+                if cli && (i < 24 || i % 40 == 0) {
+                    let back = brotli_cli(&["-d", "-c"], &whole).unwrap();
+                    assert!(
+                        back == want,
+                        "brotli -d, level {level} window {wbits}: write {i}"
+                    );
+                }
+            }
+            let at = wire.len();
+            c.compress(&[], &mut wire, Flush::Finish);
+            assert_eq!(&wire[at..], [0x03]);
+        }
+    }
+}
+
 #[test]
 fn whole_input_before_output_is_the_one_shot_stream() {
     let data = text(50_000, 4);

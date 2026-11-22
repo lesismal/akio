@@ -6,7 +6,9 @@
 #   BASE=/path/target-base NEW=/path/target-new tools/bench/stream-compress.sh [tput] [mem]
 #
 # BASE and NEW are cargo target dirs holding release/examples/stream-bench (the base copy built
-# with its `STREAM-ONLY` line removed). Server on CPUs 0-3 (4 threads), h2load --h1 (64
+# with its `STREAM-ONLY` line removed when the base has no `Compress::stream`). VARIANTS and
+# MEM_VARIANTS pick the variants (default: all of them); `base-<coding>` is the base build with
+# `stream` and a client accepting only that coding, for an A/B of the encoders themselves. Server on CPUs 0-3 (4 threads), h2load --h1 (64
 # connections, 8 threads) on CPUs 4-11; SECS-second runs, ROUNDS rounds in rotating order.
 #
 # tput prints: round variant path req/s server-cpu-us-per-response body-bytes-per-response
@@ -25,6 +27,7 @@ start() { # <variant>: sets PID and PORT; the variant's Accept-Encoding goes to 
   local bin=$NEW/release/examples/stream-bench mode=stream
   case $1 in
     base) bin=$BASE/release/examples/stream-bench mode=plain AE=gzip ;;
+    base-*) bin=$BASE/release/examples/stream-bench AE=${1#base-} ;;
     off) mode=plain AE=gzip ;;
     identity) AE=identity ;;
     *) AE=$1 ;;
@@ -78,16 +81,17 @@ mem() { # <variant> <events>
   sleep 2
 }
 WHAT=${*:-tput mem}
-V=(base off identity gzip br zstd)
+read -r -a V <<<"${VARIANTS:-base off identity gzip br zstd}"
+read -r -a MV <<<"${MEM_VARIANTS:-base off gzip br zstd}"
 if [[ " $WHAT " == *" tput "* ]]; then
   for r in $(seq "$ROUNDS"); do
     for path in /sse /bulk; do
-      for k in 0 1 2 3 4 5; do tput "${V[$(((k + r) % 6))]}" "$path" "$r"; done
+      for k in $(seq 0 $((${#V[@]} - 1))); do tput "${V[$(((k + r) % ${#V[@]}))]}" "$path" "$r"; done
     done
   done
 fi
 if [[ " $WHAT " == *" mem "* ]]; then
   for events in 3 6000; do
-    for v in base off gzip br zstd; do mem "$v" "$events"; done
+    for v in "${MV[@]}"; do mem "$v" "$events"; done
   done
 fi

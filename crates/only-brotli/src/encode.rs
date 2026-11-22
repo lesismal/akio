@@ -21,7 +21,7 @@
 
 use crate::Level;
 use crate::bits::BitWriter;
-use crate::huffman::{codes, lengths};
+use crate::huffman;
 use crate::tables::{
     BLOCK_LEN, CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA,
     split_command,
@@ -215,6 +215,10 @@ pub(crate) struct Encoder<'a> {
     /// `fwd`: bytes a streaming encoder dropped from the front).
     fwd: usize,
     back: usize,
+    /// The level's hash bits (`p.hash_bits` is what the tables have).
+    level_bits: u32,
+    /// How far back the tables need to reach: the window, and the dictionary if any.
+    reach: usize,
 }
 
 impl State {
@@ -242,6 +246,12 @@ impl State {
     pub(crate) fn block(&self) -> usize {
         self.p.block
     }
+
+    /// Bytes allocated for the match tables.
+    #[cfg(test)]
+    pub(crate) fn table_bytes(&self) -> usize {
+        4 * (self.head.len() + self.prev.len() + self.num.len() + self.buckets.len())
+    }
 }
 
 /// The state of an [`Encoder`] between the meta-blocks of a stream, apart from the data.
@@ -260,6 +270,8 @@ pub(crate) struct State {
     zero: usize,
     fwd: usize,
     back: usize,
+    level_bits: u32,
+    reach: usize,
 }
 
 #[inline(always)]
@@ -329,83 +341,133 @@ impl<'a> Encoder<'a> {
         } else {
             1usize << wbits
         };
-        let wsize = reach.min(data.len().next_power_of_two().max(1024));
-        let len_bits = usize::BITS - data.len().max(1).leading_zeros();
         let bucketed = p.optimal == 0 && p.depth <= 32;
-        let (hash_bits, block_bits) = if bucketed {
-            let block_bits = p.depth.trailing_zeros();
-            // At most 2^15 buckets, and about twice as many entries as the input has bytes.
-            let bits = p
-                .hash_bits
-                .min(15)
-                .min((len_bits + 1).saturating_sub(block_bits));
-            (bits.max(8), block_bits)
+        let block_bits = if bucketed {
+            p.depth.trailing_zeros()
         } else {
-            (p.hash_bits.min(len_bits + 1).max(10), 0)
+            0
         };
-        Encoder {
+        let mut e = Encoder {
             data,
-            p: Params { hash_bits, ..p },
+            p,
             max_dist: (1usize << wbits) - 16,
-            head: if bucketed {
-                Vec::new()
-            } else {
-                vec![NIL; 1 << hash_bits]
-            },
-            prev: if bucketed {
-                Vec::new()
-            } else {
-                vec![NIL; wsize]
-            },
-            wmask: wsize - 1,
+            head: Vec::new(),
+            prev: Vec::new(),
+            wmask: 0,
             block_bits,
             hash5: bucketed && p.depth >= 16,
-            num: if bucketed {
-                vec![0; 1 << hash_bits]
-            } else {
-                Vec::new()
-            },
-            buckets: if bucketed {
-                vec![0; 1 << (hash_bits + block_bits)]
-            } else {
-                Vec::new()
-            },
+            num: Vec::new(),
+            buckets: Vec::new(),
             ins: 0,
             last: [4, 11, 15, 16],
             zero: dict,
             fwd: 0,
             back: dict,
+            level_bits: p.hash_bits,
+            reach,
+        };
+        let (hash_bits, wsize) = e.table_sizes(data.len());
+        e.alloc_tables(hash_bits, wsize);
+        e
+    }
+
+    /// The hash bits and chain size for tables over an input of `len` bytes: about twice as
+    /// many entries as it has bytes, at most the level's.
+    fn table_sizes(&self, len: usize) -> (u32, usize) {
+        let wsize = self.reach.min(len.next_power_of_two().max(1024));
+        let len_bits = usize::BITS - len.max(1).leading_zeros();
+        let bits = if self.p.optimal == 0 && self.p.depth <= 32 {
+            // At most 2^15 buckets.
+            self.level_bits
+                .min(15)
+                .min((len_bits + 1).saturating_sub(self.block_bits))
+                .max(8)
+        } else {
+            self.level_bits.min(len_bits + 1).max(10)
+        };
+        (bits, wsize)
+    }
+
+    /// Empty tables of `2^hash_bits` hashes (and a chain of `wsize` positions).
+    fn alloc_tables(&mut self, hash_bits: u32, wsize: usize) {
+        self.p.hash_bits = hash_bits;
+        self.wmask = wsize - 1;
+        if self.p.optimal == 0 && self.p.depth <= 32 {
+            self.num = vec![0; 1 << hash_bits];
+            self.buckets = vec![0; 1 << (hash_bits + self.block_bits)];
+        } else {
+            self.head = vec![NIL; 1 << hash_bits];
+            self.prev = vec![NIL; wsize];
         }
     }
 
     /// A fresh state at `level` for a stream with a window of `2^wbits` bytes whose data
-    /// starts with a raw dictionary of `dict` bytes.
+    /// starts with a raw dictionary of `dict` bytes. Its tables are those of an input of
+    /// `dict` bytes; [`Encoder::fit`] grows them with the stream.
     pub(crate) fn state(level: Level, wbits: u32, dict: usize) -> State {
-        // Sized as for an input of three windows (what a streaming encoder holds at most).
-        let mut e = Encoder::new(params(level.get()), wbits, &[], dict);
-        let len_bits = wbits + 2;
-        let p = params(level.get());
-        let bucketed = p.optimal == 0 && p.depth <= 32;
-        if bucketed {
-            let bits = p
-                .hash_bits
-                .min(15)
-                .min((len_bits + 1).saturating_sub(e.block_bits));
-            e.p.hash_bits = bits.max(8);
-            e.num = vec![0; 1 << e.p.hash_bits];
-            e.buckets = vec![0; 1 << (e.p.hash_bits + e.block_bits)];
-        } else {
-            e.p.hash_bits = p.hash_bits.min(len_bits + 1).max(10);
-            e.head = vec![NIL; 1 << e.p.hash_bits];
-            let wsize = if dict > 0 {
-                2usize << wbits
-            } else {
-                1usize << wbits
-            };
-            e.prev = vec![NIL; wsize];
-            e.wmask = wsize - 1;
+        Encoder::new(params(level.get()), wbits, &[], dict).suspend_sized(dict)
+    }
+
+    /// [`Encoder::suspend`] with tables sized for `len` bytes.
+    fn suspend_sized(mut self, len: usize) -> State {
+        let (hash_bits, wsize) = self.table_sizes(len);
+        self.alloc_tables(hash_bits, wsize);
+        self.suspend()
+    }
+
+    /// Grows the tables to those of an input of the data's length (or of the reach, if less:
+    /// a match never reaches further back, so a longer stream needs no larger tables),
+    /// entering again the positions entered so far. A stream's tables then grow as its data
+    /// does, as a one-shot encoder sizes them by its input: the first events of a stream
+    /// clear and hold kilobytes of tables, not the level's full size.
+    pub(crate) fn fit(&mut self) {
+        let (hash_bits, mut wsize) = self.table_sizes(self.data.len().min(self.reach));
+        if !self.num.is_empty() {
+            // Buckets have no chain (the size is what a slide drops a multiple of).
+            wsize = self.wmask + 1;
         }
-        e.suspend()
+        if hash_bits <= self.p.hash_bits && wsize <= self.wmask + 1 {
+            return;
+        }
+        // Room for the stream to grow fourfold before the next rebuild (a stream that has sent
+        // this much is likely to send as much again), and the full size once it holds a
+        // sixteenth of the reach: a response written in 16 KiB pieces gets its final tables at
+        // the first piece, an event stream rebuilds a few times in its first kilobytes.
+        let (hash_bits, wsize) = if wsize > self.wmask + 1 || hash_bits > self.p.hash_bits {
+            let len = self.data.len();
+            let target = if 16 * len >= self.reach {
+                self.reach
+            } else {
+                4 * len
+            };
+            let (h, w) = self.table_sizes(target.min(self.reach));
+            let w = if self.num.is_empty() {
+                w
+            } else {
+                self.wmask + 1
+            };
+            (h.max(self.p.hash_bits), w.max(self.wmask + 1))
+        } else {
+            (self.p.hash_bits, self.wmask + 1)
+        };
+        if hash_bits == self.p.hash_bits && self.num.is_empty() {
+            // Only the chain grows: its links move to their slots in the larger one (a link
+            // is a position, the same in both), with no hashing again.
+            let old = self.wmask + 1;
+            let mut prev = vec![NIL; wsize];
+            for i in self.ins.saturating_sub(old)..self.ins {
+                prev[i & (wsize - 1)] = self.prev[i & self.wmask];
+            }
+            self.prev = prev;
+            self.wmask = wsize - 1;
+            return;
+        }
+        self.alloc_tables(hash_bits, wsize);
+        // Positions from the reach back on only: older ones are never matched (the slide keeps
+        // up to two windows and the dictionary is within the reach).
+        let upto = self.ins;
+        self.ins = upto.saturating_sub(self.reach);
+        self.insert_until(upto);
     }
 
     /// An encoder over `data` (the stream so far, in the coordinates of `s`) continuing `s`.
@@ -426,6 +488,8 @@ impl<'a> Encoder<'a> {
             zero: s.zero,
             fwd: s.fwd,
             back: s.back,
+            level_bits: s.level_bits,
+            reach: s.reach,
         }
     }
 
@@ -446,6 +510,8 @@ impl<'a> Encoder<'a> {
             zero: self.zero,
             fwd: self.fwd,
             back: self.back,
+            level_bits: self.level_bits,
+            reach: self.reach,
         }
     }
 
@@ -2169,29 +2235,39 @@ fn write_var_len_u8(w: &mut BitWriter, v: usize) {
     }
 }
 
-/// A prefix code ready for writing: lengths and bit-reversed codes.
+/// A prefix code ready for writing: per symbol its bit-reversed code and length,
+/// `code << 4 | length`.
 struct Code {
-    lens: Vec<u8>,
-    codes: Vec<u16>,
+    bits: Vec<u32>,
 }
 
 impl Code {
     #[inline(always)]
     fn put(&self, w: &mut BitWriter, sym: usize) {
-        w.bits(u32::from(self.lens[sym]), u64::from(self.codes[sym]));
+        let e = self.bits[sym];
+        w.bits(e & 15, u64::from(e >> 4));
     }
 }
 
 /// Writes a prefix code for `hist` over an alphabet of `size` symbols and returns it.
+///
+/// The work is mostly over the used symbols: a meta-block of a flushed write of a few dozen
+/// bytes has a few dozen literals and a handful of commands in alphabets of 256 and 704.
 fn write_prefix_code(w: &mut BitWriter, hist: &[u32], size: usize) -> Code {
-    let mut lens = Vec::new();
-    lengths(hist, 15, &mut lens);
-    lens.resize(size, 0);
-    let used: Vec<usize> = (0..size).filter(|&s| lens[s] != 0).collect();
-    let alphabet_bits = usize::BITS - (size - 1).leading_zeros();
+    let hist = &hist[..size];
+    // The used symbols, in symbol order.
+    let mut used = huffman::used(hist);
+    // Past the last used symbol every length is 0.
+    let hi = used.last().map_or(0, |&(_, s)| usize::from(s) + 1);
+    let mut syms: Vec<usize> = Vec::new();
+    if used.len() <= 4 {
+        syms.extend(used.iter().map(|&(_, s)| usize::from(s)));
+    }
+    let mut lens = vec![0u8; size];
+    huffman::depths(&mut used, 15, |s, d| lens[usize::from(s)] = d);
     if used.len() <= 4 {
         // Simple prefix code.
-        let mut syms = used;
+        let alphabet_bits = usize::BITS - (size - 1).leading_zeros();
         if syms.is_empty() {
             syms.push(0);
         }
@@ -2207,35 +2283,42 @@ fn write_prefix_code(w: &mut BitWriter, hist: &[u32], size: usize) -> Code {
         if syms.len() == 4 {
             w.bits(1, u64::from(lens[syms[0]] == 1));
         }
-        let mut cs = Vec::new();
-        codes(&lens, &mut cs);
-        return Code { lens, codes: cs };
+        return Code {
+            bits: huffman::codes(&lens),
+        };
     }
     // The exact lengths, or those of counts smoothed for run-length coding (cheaper to store,
     // which matters for small inputs): whichever costs fewer bits in all.
-    let mut smooth = hist[..size].to_vec();
+    let exact = Complex::new(&lens[..hi]);
+    let mut smooth = hist[..hi].to_vec();
     optimize_for_rle(&mut smooth);
+    let mut chosen = exact;
+    // Counts the smoothing left alone give the exact lengths again, which never cost less.
     let mut alt = Vec::new();
-    lengths(&smooth, 15, &mut alt);
-    if alt.iter().filter(|&&l| l != 0).count() > 4 {
-        let total = |l: &[u8]| -> usize {
-            let mut t = BitWriter::with_capacity(0);
-            store_complex(&mut t, l);
-            t.bit_len()
-                + hist[..size]
-                    .iter()
-                    .zip(l)
-                    .map(|(&h, &n)| h as usize * usize::from(n))
-                    .sum::<usize>()
+    let mut alt_used = 0;
+    if smooth != hist[..hi] {
+        huffman::lengths(&smooth, 15, &mut alt);
+        huffman::nonzero_u8(&alt, |_, _| alt_used += 1);
+    }
+    if alt_used > 4 {
+        let data = |l: &[u8]| -> usize {
+            hist[..hi]
+                .iter()
+                .zip(l)
+                .map(|(&h, &n)| h as usize * usize::from(n))
+                .sum()
         };
-        if total(&alt) < total(&lens) {
-            lens = alt;
+        let other = Complex::new(&alt);
+        if other.bit_len() + data(&alt) < chosen.bit_len() + data(&lens[..hi]) {
+            lens[..hi].copy_from_slice(&alt);
+            chosen = other;
         }
     }
-    store_complex(w, &lens);
-    let mut cs = Vec::new();
-    codes(&lens, &mut cs);
-    Code { lens, codes: cs }
+    chosen.write(w);
+    // Symbols from `hi` on are never written.
+    let mut bits = vec![0; size];
+    huffman::codes_into(&lens[..hi], &mut bits[..hi]);
+    Code { bits }
 }
 
 /// Smooths `counts` so that their code lengths form longer runs (zopfli's
@@ -2382,49 +2465,102 @@ fn rle_lengths(depth: &[u8], tokens: &mut Vec<(u8, u8)>) {
 /// Code lengths of the code length alphabet: the static code (section 3.5), bit-reversed.
 const CL_STATIC_CODE: [(u32, u64); 6] = [(2, 0), (4, 7), (3, 3), (2, 2), (2, 1), (4, 15)];
 
-/// Writes a complex prefix code with code lengths `lens` (a complete code, at least two
-/// symbols).
-fn store_complex(w: &mut BitWriter, lens: &[u8]) {
-    let mut tokens = Vec::new();
-    rle_lengths(lens, &mut tokens);
-    let mut hist = [0u32; 18];
-    for &(t, _) in &tokens {
-        hist[usize::from(t)] += 1;
-    }
-    let mut cl = Vec::new();
-    lengths(&hist, 5, &mut cl);
-    let num = cl.iter().filter(|&&l| l != 0).count();
-    let mut to_store = 18;
-    if num > 1 {
-        while to_store > 0 && cl[CODE_LENGTH_ORDER[to_store - 1]] == 0 {
-            to_store -= 1;
+/// A complex prefix code (a complete code, at least two symbols) ready for writing: its code
+/// lengths run-length coded, and the code length code that codes them.
+struct Complex {
+    tokens: Vec<(u8, u8)>,
+    /// Code lengths of the code length symbols.
+    cl: [u8; 18],
+    /// Code length code lengths skipped at the start and stored (in `CODE_LENGTH_ORDER`).
+    skip: usize,
+    to_store: usize,
+    /// Code length symbols used.
+    num: usize,
+}
+
+impl Complex {
+    /// The code with code lengths `lens` (trailing zeros may be left out).
+    fn new(lens: &[u8]) -> Complex {
+        let mut tokens = Vec::new();
+        rle_lengths(lens, &mut tokens);
+        let mut hist = [0u32; 18];
+        for &(t, _) in &tokens {
+            hist[usize::from(t)] += 1;
+        }
+        let mut used = [(0u32, 0u16); 18];
+        let mut num = 0;
+        huffman::nonzero_u32(&hist, |s, c| {
+            used[num] = (c, s as u16);
+            num += 1;
+        });
+        let used = &mut used[..num];
+        let mut cl = [0u8; 18];
+        huffman::depths(used, 5, |s, d| cl[usize::from(s)] = d);
+        let mut to_store = 18;
+        if num > 1 {
+            while to_store > 0 && cl[CODE_LENGTH_ORDER[to_store - 1]] == 0 {
+                to_store -= 1;
+            }
+        }
+        let mut skip = 0;
+        if cl[CODE_LENGTH_ORDER[0]] == 0 && cl[CODE_LENGTH_ORDER[1]] == 0 {
+            skip = 2;
+            if cl[CODE_LENGTH_ORDER[2]] == 0 {
+                skip = 3;
+            }
+        }
+        Complex {
+            tokens,
+            cl,
+            skip,
+            to_store,
+            num,
         }
     }
-    let mut skip = 0;
-    if cl[CODE_LENGTH_ORDER[0]] == 0 && cl[CODE_LENGTH_ORDER[1]] == 0 {
-        skip = 2;
-        if cl[CODE_LENGTH_ORDER[2]] == 0 {
-            skip = 3;
+
+    /// The code lengths the tokens are written with: a single code length symbol is decoded
+    /// from zero bits.
+    fn token_lens(&self) -> [u8; 18] {
+        if self.num == 1 { [0; 18] } else { self.cl }
+    }
+
+    /// The bits [`Complex::write`] writes.
+    fn bit_len(&self) -> usize {
+        let header: usize = CODE_LENGTH_ORDER[self.skip..self.to_store]
+            .iter()
+            .map(|&s| CL_STATIC_CODE[usize::from(self.cl[s])].0 as usize)
+            .sum();
+        let tl = self.token_lens();
+        let body: usize = self
+            .tokens
+            .iter()
+            .map(|&(t, _)| {
+                usize::from(tl[usize::from(t)])
+                    + match t {
+                        16 => 2,
+                        17 => 3,
+                        _ => 0,
+                    }
+            })
+            .sum();
+        2 + header + body
+    }
+
+    fn write(&self, w: &mut BitWriter) {
+        w.bits(2, self.skip as u64);
+        for &s in &CODE_LENGTH_ORDER[self.skip..self.to_store] {
+            let (n, v) = CL_STATIC_CODE[usize::from(self.cl[s])];
+            w.bits(n, v);
         }
-    }
-    w.bits(2, skip as u64);
-    for &s in &CODE_LENGTH_ORDER[skip..to_store] {
-        let (n, v) = CL_STATIC_CODE[usize::from(cl[s])];
-        w.bits(n, v);
-    }
-    if num == 1 {
-        // A single code length symbol is decoded from zero bits.
-        cl.fill(0);
-    }
-    let mut cs = Vec::new();
-    codes(&cl, &mut cs);
-    for &(t, x) in &tokens {
-        let t = usize::from(t);
-        w.bits(u32::from(cl[t]), u64::from(cs[t]));
-        match t {
-            16 => w.bits(2, u64::from(x)),
-            17 => w.bits(3, u64::from(x)),
-            _ => {}
+        let cs = huffman::codes(&self.token_lens());
+        for &(t, x) in &self.tokens {
+            let e = cs[usize::from(t)];
+            w.bits(e & 15, u64::from(e >> 4));
+            match t {
+                16 => w.bits(2, u64::from(x)),
+                17 => w.bits(3, u64::from(x)),
+                _ => {}
+            }
         }
     }
 }
