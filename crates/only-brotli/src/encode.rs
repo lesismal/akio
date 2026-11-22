@@ -996,8 +996,9 @@ impl<'a> Encoder<'a> {
             // parsing levels it is worth it only for more literals.
             let min_literals = if self.p.optimal > 0 { 2048 } else { 4096 };
             model = literal_model(&self.data[z..], start - z, cmds, self.p.modes, min_literals);
-            if model.ntrees == 1 {
-                model = self.single_model();
+            if let Some(mode) = self.p.fixed_mode {
+                // (One literal code: the mode only selects the custom dictionary.)
+                model.mode = mode;
             }
         }
         let mb = MetaBlock {
@@ -2646,6 +2647,20 @@ pub(crate) struct Kept {
 }
 
 impl Kept {
+    /// Sends this code again: writes its description and sets the codes of `syms` in `bits`.
+    fn send(&mut self, w: &mut BitWriter, syms: &[u16], bits: &mut [u32]) {
+        replay(w, &self.head, self.head_bits);
+        for &x in syms {
+            let x = usize::from(x);
+            bits[x] = if self.single.is_some() {
+                0
+            } else {
+                self.code[x]
+            };
+        }
+        self.reused += 1;
+    }
+
     /// Whether this is the code with lengths `lens` for exactly the symbols `syms` (in order;
     /// the Huffman lengths of a histogram, before a one-symbol code gets length 0): the code a
     /// meta-block would describe for them.
@@ -2706,7 +2721,7 @@ fn prefix_code(
     used: Option<&[u64]>,
     simple_bits: u32,
     s: &mut PrefixScratch,
-    keep: Option<&mut Kept>,
+    mut keep: Option<&mut Kept>,
 ) -> Code {
     let size = hist.len();
     // The used symbols, in symbol order.
@@ -2745,20 +2760,10 @@ fn prefix_code(
             .sum()
     };
     // `s.used` is sorted by count now; the symbol order is in `s.syms`.
-    if let Some(k) = keep.as_deref() {
+    if let Some(k) = keep.as_deref_mut() {
         if k.is(&s.syms, &s.lens) {
             // The kept code is this one: no need to build its description again.
-            let kn = keep.map(|k| {
-                k.reused += 1;
-                &*k
-            });
-            if let Some(k) = kn {
-                replay(w, &k.head, k.head_bits);
-                for &x in &s.syms {
-                    let x = usize::from(x);
-                    bits[x] = if k.single.is_some() { 0 } else { k.code[x] };
-                }
-            }
+            k.send(w, &s.syms, &mut bits);
             return finish_code(s, hist, hi, None, bits);
         }
     }
@@ -2774,9 +2779,9 @@ fn prefix_code(
             std::mem::take(&mut s.tokens[0]),
         ));
     }
-    if let Some(k) = keep.as_deref() {
-        // This code with exact lengths (the smoothed ones below would cost no more) against
-        // the kept one.
+    if let Some(k) = keep.as_deref_mut() {
+        // The kept code against this one with exact lengths (an estimate of this one's cost
+        // from above: smoothed lengths are used below only where they cost less).
         let exact = match &complex {
             Some(c) => c.bit_len() + data_exact(s, hist),
             None => {
@@ -2789,15 +2794,7 @@ fn prefix_code(
         s.used
             .extend(s.syms.iter().map(|&x| (hist[usize::from(x)], x)));
         if k.cost(&s.used).is_some_and(|c| c <= exact) {
-            // Sent again.
-            replay(w, &k.head, k.head_bits);
-            for &x in &s.syms {
-                let x = usize::from(x);
-                bits[x] = if k.single.is_some() { 0 } else { k.code[x] };
-            }
-            if let Some(k) = keep {
-                k.reused += 1;
-            }
+            k.send(w, &s.syms, &mut bits);
             return finish_code(s, hist, hi, complex, bits);
         }
     }
