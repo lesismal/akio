@@ -415,10 +415,10 @@ impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Identity
 pub struct akio_dtls::MemoryAntiReplay
 impl akio_dtls::MemoryAntiReplay
 pub fn akio_dtls::MemoryAntiReplay::new(usize) -> akio_dtls::MemoryAntiReplay
-impl core::fmt::Debug for akio_dtls::MemoryAntiReplay
-pub fn akio_dtls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_dtls::AntiReplayStore for akio_dtls::MemoryAntiReplay
 pub fn akio_dtls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl core::fmt::Debug for akio_dtls::MemoryAntiReplay
+pub fn akio_dtls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_dtls::MemoryAntiReplay
 impl core::marker::Sync for akio_dtls::MemoryAntiReplay
 impl core::marker::Unpin for akio_dtls::MemoryAntiReplay

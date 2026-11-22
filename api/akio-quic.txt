@@ -170,14 +170,14 @@ impl core::convert::From<&'static [u8]> for akio_quic::Bytes
 pub fn akio_quic::Bytes::from(&'static [u8]) -> akio_quic::Bytes
 impl core::convert::From<&'static str> for akio_quic::Bytes
 pub fn akio_quic::Bytes::from(&'static str) -> akio_quic::Bytes
+impl core::convert::From<akio_quic::Bytes> for alloc::vec::Vec<u8>
+pub fn alloc::vec::Vec<u8>::from(akio_quic::Bytes) -> alloc::vec::Vec<u8>
 impl core::convert::From<alloc::boxed::Box<[u8]>> for akio_quic::Bytes
 pub fn akio_quic::Bytes::from(alloc::boxed::Box<[u8]>) -> akio_quic::Bytes
 impl core::convert::From<alloc::string::String> for akio_quic::Bytes
 pub fn akio_quic::Bytes::from(alloc::string::String) -> akio_quic::Bytes
 impl core::convert::From<alloc::vec::Vec<u8>> for akio_quic::Bytes
 pub fn akio_quic::Bytes::from(alloc::vec::Vec<u8>) -> akio_quic::Bytes
-impl core::convert::From<akio_quic::Bytes> for alloc::vec::Vec<u8>
-pub fn alloc::vec::Vec<u8>::from(akio_quic::Bytes) -> alloc::vec::Vec<u8>
 impl core::default::Default for akio_quic::Bytes
 pub fn akio_quic::Bytes::default() -> akio_quic::Bytes
 impl core::fmt::Debug for akio_quic::Bytes
@@ -281,15 +281,15 @@ pub fn akio_quic::QuicServer::close_all(&self, u32, &[u8])
 pub fn akio_quic::QuicServer::connections(&self) -> usize
 pub fn akio_quic::QuicServer::new<H: akio_quic::QuicHandler, F>(akio_quic::ServerConfig, F) -> akio_quic::QuicServer where F: core::ops::function::Fn(&akio_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
 pub fn akio_quic::QuicServer::refused_connections(&self) -> u64
-impl core::clone::Clone for akio_quic::QuicServer
-pub fn akio_quic::QuicServer::clone(&self) -> akio_quic::QuicServer
-impl core::fmt::Debug for akio_quic::QuicServer
-pub fn akio_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_quic::QuicServer
 pub type akio_quic::QuicServer::Handler = Udp
 pub fn akio_quic::QuicServer::on_open(&self, &akio_core::conn::Conn<Udp>) -> Udp
 impl akio_core::metrics::Collector for akio_quic::QuicServer
 pub fn akio_quic::QuicServer::collect(&self, &mut akio_core::metrics::Families)
+impl core::clone::Clone for akio_quic::QuicServer
+pub fn akio_quic::QuicServer::clone(&self) -> akio_quic::QuicServer
+impl core::fmt::Debug for akio_quic::QuicServer
+pub fn akio_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_quic::QuicServer
 impl core::marker::Sync for akio_quic::QuicServer
 impl core::marker::Unpin for akio_quic::QuicServer

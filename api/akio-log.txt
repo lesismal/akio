@@ -440,16 +440,16 @@ pub fn akio_log::FmtLogger::non_blocking(self, usize) -> akio_log::FmtLogger
 pub fn akio_log::FmtLogger::stdout(self) -> akio_log::FmtLogger
 pub fn akio_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, akio_log::LevelFilter) -> akio_log::FmtLogger
 pub fn akio_log::FmtLogger::without_timestamps(self) -> akio_log::FmtLogger
+impl akio_log::Logger for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::FmtLogger::flush(&self)
+pub fn akio_log::FmtLogger::log(&self, &akio_log::Record<'_>)
 impl core::clone::Clone for akio_log::FmtLogger
 pub fn akio_log::FmtLogger::clone(&self) -> Self
 impl core::default::Default for akio_log::FmtLogger
 pub fn akio_log::FmtLogger::default() -> Self
 impl core::fmt::Debug for akio_log::FmtLogger
 pub fn akio_log::FmtLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_log::Logger for akio_log::FmtLogger
-pub fn akio_log::FmtLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
-pub fn akio_log::FmtLogger::flush(&self)
-pub fn akio_log::FmtLogger::log(&self, &akio_log::Record<'_>)
 impl core::marker::Send for akio_log::FmtLogger
 impl core::marker::Sync for akio_log::FmtLogger
 impl core::marker::Unpin for akio_log::FmtLogger
@@ -626,6 +626,10 @@ impl core::marker::Unpin for akio_log::span::SpanContext
 impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanContext
 impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanContext
 pub struct akio_log::StderrLogger
+impl akio_log::Logger for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::StderrLogger::flush(&self)
+pub fn akio_log::StderrLogger::log(&self, &akio_log::Record<'_>)
 impl core::clone::Clone for akio_log::StderrLogger
 pub fn akio_log::StderrLogger::clone(&self) -> Self
 impl core::default::Default for akio_log::StderrLogger
@@ -633,10 +637,6 @@ pub fn akio_log::StderrLogger::default() -> Self
 impl core::fmt::Debug for akio_log::StderrLogger
 pub fn akio_log::StderrLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for akio_log::StderrLogger
-impl akio_log::Logger for akio_log::StderrLogger
-pub fn akio_log::StderrLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
-pub fn akio_log::StderrLogger::flush(&self)
-pub fn akio_log::StderrLogger::log(&self, &akio_log::Record<'_>)
 impl core::marker::Send for akio_log::StderrLogger
 impl core::marker::Sync for akio_log::StderrLogger
 impl core::marker::Unpin for akio_log::StderrLogger
@@ -653,12 +653,12 @@ pub fn akio_log::Value<'a>::to_f64(&self) -> core::option::Option<f64>
 pub fn akio_log::Value<'a>::to_i64(&self) -> core::option::Option<i64>
 pub fn akio_log::Value<'a>::to_str(&self) -> core::option::Option<&'a str>
 pub fn akio_log::Value<'a>::to_u64(&self) -> core::option::Option<u64>
+impl akio_log::ToValue for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
 impl core::fmt::Debug for akio_log::Value<'_>
 pub fn akio_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for akio_log::Value<'_>
 pub fn akio_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_log::ToValue for akio_log::Value<'_>
-pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
 impl<'a> core::clone::Clone for akio_log::Value<'a>
 pub fn akio_log::Value<'a>::clone(&self) -> Self
 impl<'a> core::marker::Copy for akio_log::Value<'a>
@@ -684,6 +684,8 @@ pub fn akio_log::StderrLogger::flush(&self)
 pub fn akio_log::StderrLogger::log(&self, &akio_log::Record<'_>)
 pub trait akio_log::ToValue
 pub fn akio_log::ToValue::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
 impl akio_log::ToValue for alloc::string::String
 pub fn alloc::string::String::to_value(&self) -> akio_log::Value<'_>
 impl akio_log::ToValue for bool
@@ -706,8 +708,6 @@ impl akio_log::ToValue for i8
 pub fn i8::to_value(&self) -> akio_log::Value<'_>
 impl akio_log::ToValue for isize
 pub fn isize::to_value(&self) -> akio_log::Value<'_>
-impl akio_log::ToValue for akio_log::Value<'_>
-pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
 impl akio_log::ToValue for str
 pub fn str::to_value(&self) -> akio_log::Value<'_>
 impl akio_log::ToValue for u128

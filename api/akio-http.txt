@@ -45,11 +45,11 @@ impl core::marker::Unpin for akio_http::client::Client
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::client::Client
 impl !core::panic::unwind_safe::UnwindSafe for akio_http::client::Client
 pub struct akio_http::client::ClientConn
-impl core::fmt::Debug for akio_http::client::ClientConn
-pub fn akio_http::client::ClientConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_http::client::ClientConn
 pub fn akio_http::client::ClientConn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_http::client::ClientConn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_http::client::ClientConn
+pub fn akio_http::client::ClientConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_http::client::ClientConn
 impl !core::marker::Sync for akio_http::client::ClientConn
 impl core::marker::Unpin for akio_http::client::ClientConn
@@ -247,12 +247,12 @@ pub fn akio_http::files::Files::max_open_files(self, usize) -> akio_http::files:
 pub fn akio_http::files::Files::max_watches(self, usize) -> akio_http::files::Files
 pub fn akio_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> akio_http::files::Files
 pub fn akio_http::files::Files::watch(self, bool) -> akio_http::files::Files
-impl core::fmt::Debug for akio_http::files::Files
-pub fn akio_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_http::Service for akio_http::files::Files
 pub fn akio_http::files::Files::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::files::Files::call(&self, &mut akio_http::Context)
 pub fn akio_http::files::Files::streams_bodies(&self) -> bool
+impl core::fmt::Debug for akio_http::files::Files
+pub fn akio_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_http::files::Files
 impl core::marker::Sync for akio_http::files::Files
 impl core::marker::Unpin for akio_http::files::Files
@@ -296,11 +296,11 @@ impl core::marker::Unpin for akio_http::h2client::H2Client
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Client
 impl !core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Client
 pub struct akio_http::h2client::H2Conn
-impl core::fmt::Debug for akio_http::h2client::H2Conn
-pub fn akio_http::h2client::H2Conn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_http::h2client::H2Conn
 pub fn akio_http::h2client::H2Conn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_http::h2client::H2Conn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_http::h2client::H2Conn
+pub fn akio_http::h2client::H2Conn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_http::h2client::H2Conn
 impl !core::marker::Sync for akio_http::h2client::H2Conn
 impl core::marker::Unpin for akio_http::h2client::H2Conn
@@ -599,14 +599,14 @@ pub struct akio_http::observe::H2Stats(_)
 impl akio_http::observe::H2Stats
 pub fn akio_http::observe::H2Stats::new() -> akio_http::observe::H2Stats
 pub fn akio_http::observe::H2Stats::snapshot(&self) -> akio_http::observe::H2Snapshot
+impl akio_core::metrics::Collector for akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::collect(&self, &mut akio_core::metrics::Families)
 impl core::clone::Clone for akio_http::observe::H2Stats
 pub fn akio_http::observe::H2Stats::clone(&self) -> Self
 impl core::default::Default for akio_http::observe::H2Stats
 pub fn akio_http::observe::H2Stats::default() -> Self
 impl core::fmt::Debug for akio_http::observe::H2Stats
 pub fn akio_http::observe::H2Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::metrics::Collector for akio_http::observe::H2Stats
-pub fn akio_http::observe::H2Stats::collect(&self, &mut akio_core::metrics::Families)
 impl core::marker::Send for akio_http::observe::H2Stats
 impl core::marker::Sync for akio_http::observe::H2Stats
 impl core::marker::Unpin for akio_http::observe::H2Stats
@@ -622,14 +622,14 @@ pub fn akio_http::observe::HttpMetrics::snapshot(&self) -> akio_http::observe::H
 pub fn akio_http::observe::HttpMetrics::with_exemplars(self) -> akio_http::observe::HttpMetrics
 pub fn akio_http::observe::HttpMetrics::with_routes(usize) -> akio_http::observe::HttpMetrics
 pub fn akio_http::observe::HttpMetrics::write_prometheus(&self, &mut alloc::string::String)
+impl akio_core::metrics::Collector for akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::collect(&self, &mut akio_core::metrics::Families)
 impl core::clone::Clone for akio_http::observe::HttpMetrics
 pub fn akio_http::observe::HttpMetrics::clone(&self) -> Self
 impl core::default::Default for akio_http::observe::HttpMetrics
 pub fn akio_http::observe::HttpMetrics::default() -> Self
 impl core::fmt::Debug for akio_http::observe::HttpMetrics
 pub fn akio_http::observe::HttpMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::metrics::Collector for akio_http::observe::HttpMetrics
-pub fn akio_http::observe::HttpMetrics::collect(&self, &mut akio_core::metrics::Families)
 impl core::marker::Send for akio_http::observe::HttpMetrics
 impl core::marker::Sync for akio_http::observe::HttpMetrics
 impl core::marker::Unpin for akio_http::observe::HttpMetrics
@@ -1038,14 +1038,14 @@ pub fn akio_http::Router::patch(self, &str, impl akio_http::Service) -> akio_htt
 pub fn akio_http::Router::post(self, &str, impl akio_http::Service) -> akio_http::Router
 pub fn akio_http::Router::put(self, &str, impl akio_http::Service) -> akio_http::Router
 pub fn akio_http::Router::route(self, akio_http::message::Method, &str, impl akio_http::Service) -> akio_http::Router
-impl core::default::Default for akio_http::Router
-pub fn akio_http::Router::default() -> Self
-impl core::fmt::Debug for akio_http::Router
-pub fn akio_http::Router::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_http::Service for akio_http::Router
 pub fn akio_http::Router::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::Router::call(&self, &mut akio_http::Context)
 pub fn akio_http::Router::streams_bodies(&self) -> bool
+impl core::default::Default for akio_http::Router
+pub fn akio_http::Router::default() -> Self
+impl core::fmt::Debug for akio_http::Router
+pub fn akio_http::Router::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_http::Router
 impl core::marker::Sync for akio_http::Router
 impl core::marker::Unpin for akio_http::Router

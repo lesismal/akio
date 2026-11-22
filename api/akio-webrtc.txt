@@ -750,13 +750,13 @@ impl core::marker::Unpin for akio_webrtc::RtcError
 impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcError
 impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcError
 pub struct akio_webrtc::RtcRtcp(_)
+impl akio_core::handler::Acceptor for akio_webrtc::RtcRtcp
+pub type akio_webrtc::RtcRtcp::Handler = RtcUdp
+pub fn akio_webrtc::RtcRtcp::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
 impl core::clone::Clone for akio_webrtc::RtcRtcp
 pub fn akio_webrtc::RtcRtcp::clone(&self) -> Self
 impl core::fmt::Debug for akio_webrtc::RtcRtcp
 pub fn akio_webrtc::RtcRtcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_webrtc::RtcRtcp
-pub type akio_webrtc::RtcRtcp::Handler = RtcUdp
-pub fn akio_webrtc::RtcRtcp::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
 impl core::marker::Send for akio_webrtc::RtcRtcp
 impl core::marker::Sync for akio_webrtc::RtcRtcp
 impl core::marker::Unpin for akio_webrtc::RtcRtcp
@@ -778,27 +778,27 @@ pub fn akio_webrtc::RtcServer::rtcp(&self) -> akio_webrtc::RtcRtcp
 pub fn akio_webrtc::RtcServer::rtcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
 pub fn akio_webrtc::RtcServer::tcp(&self) -> akio_webrtc::RtcTcp
 pub fn akio_webrtc::RtcServer::tcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
-impl core::clone::Clone for akio_webrtc::RtcServer
-pub fn akio_webrtc::RtcServer::clone(&self) -> Self
-impl core::fmt::Debug for akio_webrtc::RtcServer
-pub fn akio_webrtc::RtcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_webrtc::RtcServer
 pub type akio_webrtc::RtcServer::Handler = RtcUdp
 pub fn akio_webrtc::RtcServer::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
 pub fn akio_webrtc::RtcServer::on_shutdown(&self, &akio_core::conn::Conn<RtcUdp>)
+impl core::clone::Clone for akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_webrtc::RtcServer
 impl core::marker::Sync for akio_webrtc::RtcServer
 impl core::marker::Unpin for akio_webrtc::RtcServer
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcServer
 impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcServer
 pub struct akio_webrtc::RtcTcp(_)
+impl akio_core::handler::Acceptor for akio_webrtc::RtcTcp
+pub type akio_webrtc::RtcTcp::Handler = IceTcp
+pub fn akio_webrtc::RtcTcp::on_open(&self, &akio_core::conn::Conn<IceTcp>) -> IceTcp
 impl core::clone::Clone for akio_webrtc::RtcTcp
 pub fn akio_webrtc::RtcTcp::clone(&self) -> Self
 impl core::fmt::Debug for akio_webrtc::RtcTcp
 pub fn akio_webrtc::RtcTcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_webrtc::RtcTcp
-pub type akio_webrtc::RtcTcp::Handler = IceTcp
-pub fn akio_webrtc::RtcTcp::on_open(&self, &akio_core::conn::Conn<IceTcp>) -> IceTcp
 impl core::marker::Send for akio_webrtc::RtcTcp
 impl core::marker::Sync for akio_webrtc::RtcTcp
 impl core::marker::Unpin for akio_webrtc::RtcTcp

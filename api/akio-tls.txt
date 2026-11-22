@@ -200,10 +200,10 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_tls::Error
 pub struct akio_tls::MemoryAntiReplay
 impl akio_tls::MemoryAntiReplay
 pub fn akio_tls::MemoryAntiReplay::new(usize) -> akio_tls::MemoryAntiReplay
-impl core::fmt::Debug for akio_tls::MemoryAntiReplay
-pub fn akio_tls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_tls::AntiReplayStore for akio_tls::MemoryAntiReplay
 pub fn akio_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl core::fmt::Debug for akio_tls::MemoryAntiReplay
+pub fn akio_tls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_tls::MemoryAntiReplay
 impl core::marker::Sync for akio_tls::MemoryAntiReplay
 impl core::marker::Unpin for akio_tls::MemoryAntiReplay
@@ -386,14 +386,14 @@ impl core::panic::unwind_safe::UnwindSafe for akio_tls::TlsInfo
 pub struct akio_tls::TlsStats(_)
 impl akio_tls::TlsStats
 pub fn akio_tls::TlsStats::counts(&self) -> akio_tls::TlsCounts
+impl akio_core::metrics::Collector for akio_tls::TlsStats
+pub fn akio_tls::TlsStats::collect(&self, &mut akio_core::metrics::Families)
 impl core::clone::Clone for akio_tls::TlsStats
 pub fn akio_tls::TlsStats::clone(&self) -> Self
 impl core::default::Default for akio_tls::TlsStats
 pub fn akio_tls::TlsStats::default() -> Self
 impl core::fmt::Debug for akio_tls::TlsStats
 pub fn akio_tls::TlsStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::metrics::Collector for akio_tls::TlsStats
-pub fn akio_tls::TlsStats::collect(&self, &mut akio_core::metrics::Families)
 impl core::marker::Send for akio_tls::TlsStats
 impl core::marker::Sync for akio_tls::TlsStats
 impl core::marker::Unpin for akio_tls::TlsStats

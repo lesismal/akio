@@ -834,12 +834,12 @@ pub fn akio_media::hls::Hls::active(&self) -> alloc::vec::Vec<alloc::string::Str
 pub fn akio_media::hls::Hls::add_multivariant(&self, &str, akio_media::hls::Multivariant)
 pub fn akio_media::hls::Hls::new(akio_media::hub::Hub, akio_media::hls::HlsConfig) -> akio_media::hls::Hls
 pub fn akio_media::hls::Hls::remove_multivariant(&self, &str) -> bool
+impl akio_http::context::Service for akio_media::hls::Hls
+pub fn akio_media::hls::Hls::call(&self, &mut akio_http::context::Context)
 impl core::clone::Clone for akio_media::hls::Hls
 pub fn akio_media::hls::Hls::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::hls::Hls
 pub fn akio_media::hls::Hls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_http::context::Service for akio_media::hls::Hls
-pub fn akio_media::hls::Hls::call(&self, &mut akio_http::context::Context)
 impl core::marker::Send for akio_media::hls::Hls
 impl core::marker::Sync for akio_media::hls::Hls
 impl core::marker::Unpin for akio_media::hls::Hls
@@ -927,11 +927,11 @@ impl core::panic::unwind_safe::UnwindSafe for akio_media::hls::Multivariant
 pub struct akio_media::hls::RandomKeys(_)
 impl akio_media::hls::RandomKeys
 pub fn akio_media::hls::RandomKeys::new() -> core::io::error::Result<akio_media::hls::RandomKeys>
-impl core::fmt::Debug for akio_media::hls::RandomKeys
-pub fn akio_media::hls::RandomKeys::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_media::hls::KeyProvider for akio_media::hls::RandomKeys
 pub fn akio_media::hls::RandomKeys::authorize(&self, &str, u64, &akio_http::context::Context) -> bool
 pub fn akio_media::hls::RandomKeys::key(&self, &str, u64) -> akio_media::hls::HlsKey
+impl core::fmt::Debug for akio_media::hls::RandomKeys
+pub fn akio_media::hls::RandomKeys::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_media::hls::RandomKeys
 impl core::marker::Sync for akio_media::hls::RandomKeys
 impl core::marker::Unpin for akio_media::hls::RandomKeys
@@ -968,14 +968,14 @@ impl akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::flv(self, akio_media::httpflv::HttpFlv) -> akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::hls(self, akio_media::hls::Hls) -> akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::new() -> akio_media::http::MediaHttp
+impl akio_http::context::Service for akio_media::http::MediaHttp
+pub fn akio_media::http::MediaHttp::call(&self, &mut akio_http::context::Context)
 impl core::clone::Clone for akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::clone(&self) -> Self
 impl core::default::Default for akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::default() -> Self
 impl core::fmt::Debug for akio_media::http::MediaHttp
 pub fn akio_media::http::MediaHttp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_http::context::Service for akio_media::http::MediaHttp
-pub fn akio_media::http::MediaHttp::call(&self, &mut akio_http::context::Context)
 impl core::marker::Send for akio_media::http::MediaHttp
 impl core::marker::Sync for akio_media::http::MediaHttp
 impl core::marker::Unpin for akio_media::http::MediaHttp
@@ -985,12 +985,12 @@ pub mod akio_media::httpflv
 pub struct akio_media::httpflv::HttpFlv
 impl akio_media::httpflv::HttpFlv
 pub fn akio_media::httpflv::HttpFlv::new(akio_media::hub::Hub, akio_media::httpflv::HttpFlvConfig) -> akio_media::httpflv::HttpFlv
+impl akio_http::context::Service for akio_media::httpflv::HttpFlv
+pub fn akio_media::httpflv::HttpFlv::call(&self, &mut akio_http::context::Context)
 impl core::clone::Clone for akio_media::httpflv::HttpFlv
 pub fn akio_media::httpflv::HttpFlv::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::httpflv::HttpFlv
 pub fn akio_media::httpflv::HttpFlv::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_http::context::Service for akio_media::httpflv::HttpFlv
-pub fn akio_media::httpflv::HttpFlv::call(&self, &mut akio_http::context::Context)
 impl core::marker::Send for akio_media::httpflv::HttpFlv
 impl core::marker::Sync for akio_media::httpflv::HttpFlv
 impl core::marker::Unpin for akio_media::httpflv::HttpFlv
@@ -1344,6 +1344,11 @@ impl core::marker::Unpin for akio_media::record::RecordFormat
 impl core::panic::unwind_safe::RefUnwindSafe for akio_media::record::RecordFormat
 impl core::panic::unwind_safe::UnwindSafe for akio_media::record::RecordFormat
 pub struct akio_media::record::NoHooks
+impl akio_media::record::RecordHooks for akio_media::record::NoHooks
+pub fn akio_media::record::NoHooks::file_name(&self, &str, u64, std::time::SystemTime, &str) -> alloc::string::String
+pub fn akio_media::record::NoHooks::on_remove(&self, &std::path::Path)
+pub fn akio_media::record::NoHooks::on_start(&self, &akio_media::record::RecordFile)
+pub fn akio_media::record::NoHooks::on_stop(&self, &akio_media::record::RecordFile, core::result::Result<(), &core::io::error::Error>)
 impl core::clone::Clone for akio_media::record::NoHooks
 pub fn akio_media::record::NoHooks::clone(&self) -> Self
 impl core::default::Default for akio_media::record::NoHooks
@@ -1351,11 +1356,6 @@ pub fn akio_media::record::NoHooks::default() -> Self
 impl core::fmt::Debug for akio_media::record::NoHooks
 pub fn akio_media::record::NoHooks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for akio_media::record::NoHooks
-impl akio_media::record::RecordHooks for akio_media::record::NoHooks
-pub fn akio_media::record::NoHooks::file_name(&self, &str, u64, std::time::SystemTime, &str) -> alloc::string::String
-pub fn akio_media::record::NoHooks::on_remove(&self, &std::path::Path)
-pub fn akio_media::record::NoHooks::on_start(&self, &akio_media::record::RecordFile)
-pub fn akio_media::record::NoHooks::on_stop(&self, &akio_media::record::RecordFile, core::result::Result<(), &core::io::error::Error>)
 impl core::marker::Send for akio_media::record::NoHooks
 impl core::marker::Sync for akio_media::record::NoHooks
 impl core::marker::Unpin for akio_media::record::NoHooks
@@ -1701,24 +1701,24 @@ pub struct akio_media::rtmp::RtmpServer(_)
 impl akio_media::rtmp::RtmpServer
 pub fn akio_media::rtmp::RtmpServer::hub(&self) -> &akio_media::hub::Hub
 pub fn akio_media::rtmp::RtmpServer::new(akio_media::hub::Hub, akio_media::rtmp::RtmpConfig) -> akio_media::rtmp::RtmpServer
+impl akio_core::handler::Acceptor for akio_media::rtmp::RtmpServer
+pub type akio_media::rtmp::RtmpServer::Handler = akio_media::rtmp::RtmpSession
+pub fn akio_media::rtmp::RtmpServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtmp::RtmpSession>) -> akio_media::rtmp::RtmpSession
 impl core::clone::Clone for akio_media::rtmp::RtmpServer
 pub fn akio_media::rtmp::RtmpServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::rtmp::RtmpServer
 pub fn akio_media::rtmp::RtmpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_media::rtmp::RtmpServer
-pub type akio_media::rtmp::RtmpServer::Handler = akio_media::rtmp::RtmpSession
-pub fn akio_media::rtmp::RtmpServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtmp::RtmpSession>) -> akio_media::rtmp::RtmpSession
 impl core::marker::Send for akio_media::rtmp::RtmpServer
 impl core::marker::Sync for akio_media::rtmp::RtmpServer
 impl core::marker::Unpin for akio_media::rtmp::RtmpServer
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_media::rtmp::RtmpServer
 impl !core::panic::unwind_safe::UnwindSafe for akio_media::rtmp::RtmpServer
 pub struct akio_media::rtmp::RtmpSession
-impl core::fmt::Debug for akio_media::rtmp::RtmpSession
-pub fn akio_media::rtmp::RtmpSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_media::rtmp::RtmpSession
 pub fn akio_media::rtmp::RtmpSession::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_media::rtmp::RtmpSession::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_media::rtmp::RtmpSession
+pub fn akio_media::rtmp::RtmpSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_media::rtmp::RtmpSession
 impl core::marker::Sync for akio_media::rtmp::RtmpSession
 impl core::marker::Unpin for akio_media::rtmp::RtmpSession
@@ -2354,24 +2354,24 @@ pub fn akio_media::rtsp::RtspServer::new(akio_media::hub::Hub, akio_media::rtsp:
 pub fn akio_media::rtsp::RtspServer::redirect_path(&self, &str, &akio_media::rtsp::Redirect) -> usize
 pub fn akio_media::rtsp::RtspServer::redirect_session(&self, &str, &akio_media::rtsp::Redirect) -> bool
 pub fn akio_media::rtsp::RtspServer::sessions(&self) -> alloc::vec::Vec<akio_media::rtsp::RtspSessionInfo>
+impl akio_core::handler::Acceptor for akio_media::rtsp::RtspServer
+pub type akio_media::rtsp::RtspServer::Handler = akio_media::rtsp::RtspSession
+pub fn akio_media::rtsp::RtspServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtsp::RtspSession>) -> akio_media::rtsp::RtspSession
 impl core::clone::Clone for akio_media::rtsp::RtspServer
 pub fn akio_media::rtsp::RtspServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::rtsp::RtspServer
 pub fn akio_media::rtsp::RtspServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_media::rtsp::RtspServer
-pub type akio_media::rtsp::RtspServer::Handler = akio_media::rtsp::RtspSession
-pub fn akio_media::rtsp::RtspServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtsp::RtspSession>) -> akio_media::rtsp::RtspSession
 impl core::marker::Send for akio_media::rtsp::RtspServer
 impl core::marker::Sync for akio_media::rtsp::RtspServer
 impl core::marker::Unpin for akio_media::rtsp::RtspServer
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_media::rtsp::RtspServer
 impl !core::panic::unwind_safe::UnwindSafe for akio_media::rtsp::RtspServer
 pub struct akio_media::rtsp::RtspSession
-impl core::fmt::Debug for akio_media::rtsp::RtspSession
-pub fn akio_media::rtsp::RtspSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_media::rtsp::RtspSession
 pub fn akio_media::rtsp::RtspSession::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_media::rtsp::RtspSession::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_media::rtsp::RtspSession
+pub fn akio_media::rtsp::RtspSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_media::rtsp::RtspSession
 impl core::marker::Sync for akio_media::rtsp::RtspSession
 impl core::marker::Unpin for akio_media::rtsp::RtspSession
@@ -2758,11 +2758,11 @@ impl core::marker::Unpin for akio_media::srt::SrtConfig
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_media::srt::SrtConfig
 impl !core::panic::unwind_safe::UnwindSafe for akio_media::srt::SrtConfig
 pub struct akio_media::srt::SrtPeer
-impl core::fmt::Debug for akio_media::srt::SrtPeer
-pub fn akio_media::srt::SrtPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_media::srt::SrtPeer
 pub fn akio_media::srt::SrtPeer::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_media::srt::SrtPeer::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_media::srt::SrtPeer
+pub fn akio_media::srt::SrtPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_media::srt::SrtPeer
 impl core::marker::Sync for akio_media::srt::SrtPeer
 impl core::marker::Unpin for akio_media::srt::SrtPeer
@@ -2772,13 +2772,13 @@ pub struct akio_media::srt::SrtServer(_)
 impl akio_media::srt::SrtServer
 pub fn akio_media::srt::SrtServer::connections(&self) -> usize
 pub fn akio_media::srt::SrtServer::new(akio_media::hub::Hub, akio_media::srt::SrtConfig) -> akio_media::srt::SrtServer
+impl akio_core::handler::Acceptor for akio_media::srt::SrtServer
+pub type akio_media::srt::SrtServer::Handler = akio_media::srt::SrtPeer
+pub fn akio_media::srt::SrtServer::on_open(&self, &akio_core::conn::Conn<akio_media::srt::SrtPeer>) -> akio_media::srt::SrtPeer
 impl core::clone::Clone for akio_media::srt::SrtServer
 pub fn akio_media::srt::SrtServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::srt::SrtServer
 pub fn akio_media::srt::SrtServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_media::srt::SrtServer
-pub type akio_media::srt::SrtServer::Handler = akio_media::srt::SrtPeer
-pub fn akio_media::srt::SrtServer::on_open(&self, &akio_core::conn::Conn<akio_media::srt::SrtPeer>) -> akio_media::srt::SrtPeer
 impl core::marker::Send for akio_media::srt::SrtServer
 impl core::marker::Sync for akio_media::srt::SrtServer
 impl core::marker::Unpin for akio_media::srt::SrtServer
@@ -2876,13 +2876,13 @@ impl akio_media::webrtc::RtcMedia
 pub fn akio_media::webrtc::RtcMedia::new(akio_webrtc::RtcServer, akio_media::webrtc::RtcMediaConfig) -> akio_media::webrtc::RtcMedia
 pub fn akio_media::webrtc::RtcMedia::rtc_server(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> akio_webrtc::RtcServer
 pub fn akio_media::webrtc::RtcMedia::server(&self) -> &akio_webrtc::RtcServer
+impl akio_media::whip::WebRtcEngine for akio_media::webrtc::RtcMedia
+pub fn akio_media::webrtc::RtcMedia::play(&self, &akio_media::whip::OfferInfo, &akio_media::hub::Hub) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
+pub fn akio_media::webrtc::RtcMedia::publish(&self, &akio_media::whip::OfferInfo, akio_media::hub::Publisher) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
 impl core::clone::Clone for akio_media::webrtc::RtcMedia
 pub fn akio_media::webrtc::RtcMedia::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::webrtc::RtcMedia
 pub fn akio_media::webrtc::RtcMedia::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_media::whip::WebRtcEngine for akio_media::webrtc::RtcMedia
-pub fn akio_media::webrtc::RtcMedia::play(&self, &akio_media::whip::OfferInfo, &akio_media::hub::Hub) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
-pub fn akio_media::webrtc::RtcMedia::publish(&self, &akio_media::whip::OfferInfo, akio_media::hub::Publisher) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
 impl core::marker::Send for akio_media::webrtc::RtcMedia
 impl core::marker::Sync for akio_media::webrtc::RtcMedia
 impl core::marker::Unpin for akio_media::webrtc::RtcMedia
@@ -2942,6 +2942,9 @@ impl core::marker::Unpin for akio_media::whip::Answer
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_media::whip::Answer
 impl !core::panic::unwind_safe::UnwindSafe for akio_media::whip::Answer
 pub struct akio_media::whip::NoMedia
+impl akio_media::whip::WebRtcEngine for akio_media::whip::NoMedia
+pub fn akio_media::whip::NoMedia::play(&self, &akio_media::whip::OfferInfo, &akio_media::hub::Hub) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
+pub fn akio_media::whip::NoMedia::publish(&self, &akio_media::whip::OfferInfo, akio_media::hub::Publisher) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
 impl core::clone::Clone for akio_media::whip::NoMedia
 pub fn akio_media::whip::NoMedia::clone(&self) -> Self
 impl core::default::Default for akio_media::whip::NoMedia
@@ -2949,9 +2952,6 @@ pub fn akio_media::whip::NoMedia::default() -> Self
 impl core::fmt::Debug for akio_media::whip::NoMedia
 pub fn akio_media::whip::NoMedia::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for akio_media::whip::NoMedia
-impl akio_media::whip::WebRtcEngine for akio_media::whip::NoMedia
-pub fn akio_media::whip::NoMedia::play(&self, &akio_media::whip::OfferInfo, &akio_media::hub::Hub) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
-pub fn akio_media::whip::NoMedia::publish(&self, &akio_media::whip::OfferInfo, akio_media::hub::Publisher) -> core::result::Result<akio_media::whip::Answer, akio_media::whip::WhipError>
 impl core::marker::Send for akio_media::whip::NoMedia
 impl core::marker::Sync for akio_media::whip::NoMedia
 impl core::marker::Unpin for akio_media::whip::NoMedia

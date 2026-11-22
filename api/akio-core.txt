@@ -242,14 +242,14 @@ pub fn akio_core::metrics::Registry::gauge(&self, &str, &str, &[(&str, &str)]) -
 pub fn akio_core::metrics::Registry::histogram(&self, &str, &str, &[(&str, &str)], &[f64]) -> akio_core::metrics::Histogram
 pub fn akio_core::metrics::Registry::histogram_with_exemplars(&self, &str, &str, &[(&str, &str)], &[f64]) -> akio_core::metrics::ExemplarHistogram
 pub fn akio_core::metrics::Registry::new() -> akio_core::metrics::Registry
+impl akio_core::metrics::Collector for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::collect(&self, &mut akio_core::metrics::Families)
 impl core::clone::Clone for akio_core::metrics::Registry
 pub fn akio_core::metrics::Registry::clone(&self) -> Self
 impl core::default::Default for akio_core::metrics::Registry
 pub fn akio_core::metrics::Registry::default() -> Self
 impl core::fmt::Debug for akio_core::metrics::Registry
 pub fn akio_core::metrics::Registry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::metrics::Collector for akio_core::metrics::Registry
-pub fn akio_core::metrics::Registry::collect(&self, &mut akio_core::metrics::Families)
 impl core::marker::Send for akio_core::metrics::Registry
 impl core::marker::Sync for akio_core::metrics::Registry
 impl core::marker::Unpin for akio_core::metrics::Registry
@@ -673,13 +673,13 @@ impl<'a> core::marker::Unpin for akio_core::DatagramsIter<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_core::DatagramsIter<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for akio_core::DatagramsIter<'a>
 pub struct akio_core::FnAcceptor<H, F>
-impl<H, F> core::fmt::Debug for akio_core::FnAcceptor<H, F>
-pub fn akio_core::FnAcceptor<H, F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<H, F> akio_core::Acceptor for akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type akio_core::FnAcceptor<H, F>::Handler = H
 pub fn akio_core::FnAcceptor<H, F>::on_open(&self, &akio_core::Conn<H>) -> H
 pub fn akio_core::FnAcceptor<H, F>::on_shutdown(&self, &akio_core::Conn<Self::Handler>)
 pub fn akio_core::FnAcceptor<H, F>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::Transport>>
+impl<H, F> core::fmt::Debug for akio_core::FnAcceptor<H, F>
+pub fn akio_core::FnAcceptor<H, F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<H, F> core::marker::Send for akio_core::FnAcceptor<H, F> where F: core::marker::Send, core::marker::PhantomData<fn() -> H>: core::marker::Send
 impl<H, F> core::marker::Sync for akio_core::FnAcceptor<H, F> where F: core::marker::Sync, core::marker::PhantomData<fn() -> H>: core::marker::Sync
 impl<H, F> core::marker::Unpin for akio_core::FnAcceptor<H, F> where F: core::marker::Unpin, core::marker::PhantomData<fn() -> H>: core::marker::Unpin

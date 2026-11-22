@@ -172,11 +172,11 @@ impl akio_kcp::KcpServer
 pub fn akio_kcp::KcpServer::max_sessions(self, usize) -> akio_kcp::KcpServer
 pub fn akio_kcp::KcpServer::new<H: akio_kcp::KcpHandler, F>(akio_kcp::KcpConfig, F) -> core::io::error::Result<akio_kcp::KcpServer> where F: core::ops::function::Fn(&akio_kcp::Session) -> H + core::marker::Send + core::marker::Sync + 'static
 pub fn akio_kcp::KcpServer::sessions(&self) -> usize
-impl core::fmt::Debug for akio_kcp::KcpServer
-pub fn akio_kcp::KcpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_kcp::KcpServer
 pub type akio_kcp::KcpServer::Handler = Udp
 pub fn akio_kcp::KcpServer::on_open(&self, &akio_core::conn::Conn<Udp>) -> Udp
+impl core::fmt::Debug for akio_kcp::KcpServer
+pub fn akio_kcp::KcpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_kcp::KcpServer
 impl core::marker::Sync for akio_kcp::KcpServer
 impl core::marker::Unpin for akio_kcp::KcpServer

@@ -160,12 +160,12 @@ pub fn akio_socks::Socks::sockmap(self, akio_ebpf::relay::Relay) -> akio_socks::
 pub fn akio_socks::Socks::udp_associate(self, bool) -> akio_socks::Socks
 pub fn akio_socks::Socks::udp_fragment_size(self, core::option::Option<usize>) -> akio_socks::Socks
 pub fn akio_socks::Socks::udp_idle_timeout(self, core::time::Duration) -> akio_socks::Socks
-impl core::fmt::Debug for akio_socks::Socks
-pub fn akio_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_socks::Socks
 pub type akio_socks::Socks::Handler = akio_socks::SocksSession
 pub fn akio_socks::Socks::on_open(&self, &akio_core::conn::Conn<akio_socks::SocksSession>) -> akio_socks::SocksSession
 pub fn akio_socks::Socks::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::conn::Transport>>
+impl core::fmt::Debug for akio_socks::Socks
+pub fn akio_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_socks::Socks
 impl core::marker::Sync for akio_socks::Socks
 impl core::marker::Unpin for akio_socks::Socks
@@ -198,11 +198,11 @@ impl core::marker::Unpin for akio_socks::SocksClient
 impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::SocksClient
 impl core::panic::unwind_safe::UnwindSafe for akio_socks::SocksClient
 pub struct akio_socks::SocksSession
-impl core::fmt::Debug for akio_socks::SocksSession
-pub fn akio_socks::SocksSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_socks::SocksSession
 pub fn akio_socks::SocksSession::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_socks::SocksSession::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_socks::SocksSession
+pub fn akio_socks::SocksSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_socks::SocksSession
 impl core::marker::Sync for akio_socks::SocksSession
 impl core::marker::Unpin for akio_socks::SocksSession

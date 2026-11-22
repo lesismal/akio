@@ -422,15 +422,15 @@ pub struct akio_turn::StunServer
 impl akio_turn::StunServer
 pub fn akio_turn::StunServer::new() -> akio_turn::StunServer
 pub fn akio_turn::StunServer::software(self, &str) -> Self
+impl akio_core::handler::Acceptor for akio_turn::StunServer
+pub type akio_turn::StunServer::Handler = StunPeer
+pub fn akio_turn::StunServer::on_open(&self, &akio_core::conn::Conn<StunPeer>) -> StunPeer
 impl core::clone::Clone for akio_turn::StunServer
 pub fn akio_turn::StunServer::clone(&self) -> Self
 impl core::default::Default for akio_turn::StunServer
 pub fn akio_turn::StunServer::default() -> Self
 impl core::fmt::Debug for akio_turn::StunServer
 pub fn akio_turn::StunServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_turn::StunServer
-pub type akio_turn::StunServer::Handler = StunPeer
-pub fn akio_turn::StunServer::on_open(&self, &akio_core::conn::Conn<StunPeer>) -> StunPeer
 impl core::marker::Send for akio_turn::StunServer
 impl core::marker::Sync for akio_turn::StunServer
 impl core::marker::Unpin for akio_turn::StunServer
@@ -505,14 +505,14 @@ impl core::marker::Unpin for akio_turn::TurnCore
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_turn::TurnCore
 impl !core::panic::unwind_safe::UnwindSafe for akio_turn::TurnCore
 pub struct akio_turn::TurnDtls(_, _)
-impl core::clone::Clone for akio_turn::TurnDtls
-pub fn akio_turn::TurnDtls::clone(&self) -> Self
-impl core::fmt::Debug for akio_turn::TurnDtls
-pub fn akio_turn::TurnDtls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_turn::TurnDtls
 pub type akio_turn::TurnDtls::Handler = TurnDtlsClient
 pub fn akio_turn::TurnDtls::on_open(&self, &akio_core::conn::Conn<TurnDtlsClient>) -> TurnDtlsClient
 pub fn akio_turn::TurnDtls::on_shutdown(&self, &akio_core::conn::Conn<TurnDtlsClient>)
+impl core::clone::Clone for akio_turn::TurnDtls
+pub fn akio_turn::TurnDtls::clone(&self) -> Self
+impl core::fmt::Debug for akio_turn::TurnDtls
+pub fn akio_turn::TurnDtls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_turn::TurnDtls
 impl core::marker::Sync for akio_turn::TurnDtls
 impl core::marker::Unpin for akio_turn::TurnDtls
@@ -531,14 +531,14 @@ pub fn akio_turn::TurnServer::set_engine(&self, &alloc::rcs::arc::Arc<akio::Engi
 pub fn akio_turn::TurnServer::stats(&self) -> akio_turn::TurnStats
 pub fn akio_turn::TurnServer::stream(&self) -> akio_turn::TurnStream
 pub fn akio_turn::TurnServer::stream_relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
-impl core::clone::Clone for akio_turn::TurnServer
-pub fn akio_turn::TurnServer::clone(&self) -> Self
-impl core::fmt::Debug for akio_turn::TurnServer
-pub fn akio_turn::TurnServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_turn::TurnServer
 pub type akio_turn::TurnServer::Handler = TurnClient
 pub fn akio_turn::TurnServer::on_open(&self, &akio_core::conn::Conn<TurnClient>) -> TurnClient
 pub fn akio_turn::TurnServer::on_shutdown(&self, &akio_core::conn::Conn<TurnClient>)
+impl core::clone::Clone for akio_turn::TurnServer
+pub fn akio_turn::TurnServer::clone(&self) -> Self
+impl core::fmt::Debug for akio_turn::TurnServer
+pub fn akio_turn::TurnServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_turn::TurnServer
 impl core::marker::Sync for akio_turn::TurnServer
 impl core::marker::Unpin for akio_turn::TurnServer
@@ -567,14 +567,14 @@ impl core::marker::Unpin for akio_turn::TurnStats
 impl core::panic::unwind_safe::RefUnwindSafe for akio_turn::TurnStats
 impl core::panic::unwind_safe::UnwindSafe for akio_turn::TurnStats
 pub struct akio_turn::TurnStream(_)
-impl core::clone::Clone for akio_turn::TurnStream
-pub fn akio_turn::TurnStream::clone(&self) -> Self
-impl core::fmt::Debug for akio_turn::TurnStream
-pub fn akio_turn::TurnStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Acceptor for akio_turn::TurnStream
 pub type akio_turn::TurnStream::Handler = TurnStreamClient
 pub fn akio_turn::TurnStream::on_open(&self, &akio_core::conn::Conn<TurnStreamClient>) -> TurnStreamClient
 pub fn akio_turn::TurnStream::on_shutdown(&self, &akio_core::conn::Conn<TurnStreamClient>)
+impl core::clone::Clone for akio_turn::TurnStream
+pub fn akio_turn::TurnStream::clone(&self) -> Self
+impl core::fmt::Debug for akio_turn::TurnStream
+pub fn akio_turn::TurnStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_turn::TurnStream
 impl core::marker::Sync for akio_turn::TurnStream
 impl core::marker::Unpin for akio_turn::TurnStream

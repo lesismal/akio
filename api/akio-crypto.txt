@@ -387,12 +387,6 @@ impl akio_crypto::hash::Md5
 pub fn akio_crypto::hash::Md5::finalize(self) -> [u8; 16]
 pub const fn akio_crypto::hash::Md5::new() -> Self
 pub fn akio_crypto::hash::Md5::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Md5
-pub fn akio_crypto::hash::Md5::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Md5
-pub fn akio_crypto::hash::Md5::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Md5
-pub fn akio_crypto::hash::Md5::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Md5
 pub type akio_crypto::hash::Md5::Output = [u8; 16]
 pub const akio_crypto::hash::Md5::BLOCK_LEN: usize
@@ -400,6 +394,12 @@ pub const akio_crypto::hash::Md5::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
 pub fn akio_crypto::hash::Md5::finalize(self) -> [u8; 16]
 pub fn akio_crypto::hash::Md5::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Md5
 impl core::marker::Sync for akio_crypto::hash::Md5
 impl core::marker::Unpin for akio_crypto::hash::Md5
@@ -412,12 +412,6 @@ impl akio_crypto::hash::Sha1
 pub fn akio_crypto::hash::Sha1::finalize(self) -> [u8; 20]
 pub const fn akio_crypto::hash::Sha1::new() -> Self
 pub fn akio_crypto::hash::Sha1::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Sha1
-pub fn akio_crypto::hash::Sha1::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Sha1
-pub fn akio_crypto::hash::Sha1::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Sha1
-pub fn akio_crypto::hash::Sha1::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Sha1
 pub type akio_crypto::hash::Sha1::Output = [u8; 20]
 pub const akio_crypto::hash::Sha1::BLOCK_LEN: usize
@@ -425,6 +419,12 @@ pub const akio_crypto::hash::Sha1::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
 pub fn akio_crypto::hash::Sha1::finalize(self) -> [u8; 20]
 pub fn akio_crypto::hash::Sha1::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Sha1
 impl core::marker::Sync for akio_crypto::hash::Sha1
 impl core::marker::Unpin for akio_crypto::hash::Sha1
@@ -437,12 +437,6 @@ impl akio_crypto::hash::Sha224
 pub fn akio_crypto::hash::Sha224::finalize(self) -> [u8; 28]
 pub const fn akio_crypto::hash::Sha224::new() -> Self
 pub fn akio_crypto::hash::Sha224::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Sha224
-pub fn akio_crypto::hash::Sha224::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Sha224
-pub fn akio_crypto::hash::Sha224::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Sha224
-pub fn akio_crypto::hash::Sha224::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Sha224
 pub type akio_crypto::hash::Sha224::Output = [u8; 28]
 pub const akio_crypto::hash::Sha224::BLOCK_LEN: usize
@@ -450,6 +444,12 @@ pub const akio_crypto::hash::Sha224::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
 pub fn akio_crypto::hash::Sha224::finalize(self) -> [u8; 28]
 pub fn akio_crypto::hash::Sha224::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Sha224
 impl core::marker::Sync for akio_crypto::hash::Sha224
 impl core::marker::Unpin for akio_crypto::hash::Sha224
@@ -462,12 +462,6 @@ impl akio_crypto::hash::Sha256
 pub fn akio_crypto::hash::Sha256::finalize(self) -> [u8; 32]
 pub const fn akio_crypto::hash::Sha256::new() -> Self
 pub fn akio_crypto::hash::Sha256::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Sha256
-pub fn akio_crypto::hash::Sha256::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Sha256
-pub fn akio_crypto::hash::Sha256::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Sha256
-pub fn akio_crypto::hash::Sha256::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Sha256
 pub type akio_crypto::hash::Sha256::Output = [u8; 32]
 pub const akio_crypto::hash::Sha256::BLOCK_LEN: usize
@@ -475,6 +469,12 @@ pub const akio_crypto::hash::Sha256::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
 pub fn akio_crypto::hash::Sha256::finalize(self) -> [u8; 32]
 pub fn akio_crypto::hash::Sha256::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Sha256
 impl core::marker::Sync for akio_crypto::hash::Sha256
 impl core::marker::Unpin for akio_crypto::hash::Sha256
@@ -487,12 +487,6 @@ impl akio_crypto::hash::Sha384
 pub fn akio_crypto::hash::Sha384::finalize(self) -> [u8; 48]
 pub const fn akio_crypto::hash::Sha384::new() -> Self
 pub fn akio_crypto::hash::Sha384::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Sha384
-pub fn akio_crypto::hash::Sha384::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Sha384
-pub fn akio_crypto::hash::Sha384::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Sha384
-pub fn akio_crypto::hash::Sha384::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Sha384
 pub type akio_crypto::hash::Sha384::Output = [u8; 48]
 pub const akio_crypto::hash::Sha384::BLOCK_LEN: usize
@@ -500,6 +494,12 @@ pub const akio_crypto::hash::Sha384::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
 pub fn akio_crypto::hash::Sha384::finalize(self) -> [u8; 48]
 pub fn akio_crypto::hash::Sha384::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Sha384
 impl core::marker::Sync for akio_crypto::hash::Sha384
 impl core::marker::Unpin for akio_crypto::hash::Sha384
@@ -512,12 +512,6 @@ impl akio_crypto::hash::Sha512
 pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
 pub const fn akio_crypto::hash::Sha512::new() -> Self
 pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
-impl core::clone::Clone for akio_crypto::hash::Sha512
-pub fn akio_crypto::hash::Sha512::clone(&self) -> Self
-impl core::default::Default for akio_crypto::hash::Sha512
-pub fn akio_crypto::hash::Sha512::default() -> Self
-impl core::fmt::Debug for akio_crypto::hash::Sha512
-pub fn akio_crypto::hash::Sha512::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_crypto::hash::Hash for akio_crypto::hash::Sha512
 pub type akio_crypto::hash::Sha512::Output = [u8; 64]
 pub const akio_crypto::hash::Sha512::BLOCK_LEN: usize
@@ -525,6 +519,12 @@ pub const akio_crypto::hash::Sha512::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
 pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
 pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_crypto::hash::Sha512
 impl core::marker::Sync for akio_crypto::hash::Sha512
 impl core::marker::Unpin for akio_crypto::hash::Sha512
@@ -627,10 +627,10 @@ pub fn akio_crypto::mac::Hmac<H>::mac(&[u8], &[u8]) -> <H as akio_crypto::hash::
 pub fn akio_crypto::mac::Hmac<H>::new(&[u8]) -> Self
 pub fn akio_crypto::mac::Hmac<H>::update(&mut self, &[u8])
 pub fn akio_crypto::mac::Hmac<H>::verify(self, &[u8]) -> bool
-impl<H: core::clone::Clone + akio_crypto::hash::Hash> core::clone::Clone for akio_crypto::mac::Hmac<H>
-pub fn akio_crypto::mac::Hmac<H>::clone(&self) -> Self
 impl<H: akio_crypto::hash::Hash> core::fmt::Debug for akio_crypto::mac::Hmac<H>
 pub fn akio_crypto::mac::Hmac<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H: core::clone::Clone + akio_crypto::hash::Hash> core::clone::Clone for akio_crypto::mac::Hmac<H>
+pub fn akio_crypto::mac::Hmac<H>::clone(&self) -> Self
 impl<H> core::marker::Send for akio_crypto::mac::Hmac<H> where H: core::marker::Send + core::marker::Send
 impl<H> core::marker::Sync for akio_crypto::mac::Hmac<H> where H: core::marker::Sync + core::marker::Sync
 impl<H> core::marker::Unpin for akio_crypto::mac::Hmac<H> where H: core::marker::Unpin + core::marker::Unpin

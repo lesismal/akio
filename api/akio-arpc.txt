@@ -3,13 +3,13 @@ pub mod akio_arpc::coder
 pub struct akio_arpc::coder::Appender
 impl akio_arpc::coder::Appender
 pub fn akio_arpc::coder::Appender::new(&str, u8) -> akio_arpc::coder::Appender
+impl akio_arpc::coder::Coder for akio_arpc::coder::Appender
+pub fn akio_arpc::coder::Appender::decode(&self, &mut alloc::vec::Vec<u8>, &mut akio_arpc::coder::Values, usize) -> core::result::Result<(), akio_arpc::coder::CoderError>
+pub fn akio_arpc::coder::Appender::encode(&self, &mut alloc::vec::Vec<u8>, &akio_arpc::coder::Values)
 impl core::clone::Clone for akio_arpc::coder::Appender
 pub fn akio_arpc::coder::Appender::clone(&self) -> Self
 impl core::fmt::Debug for akio_arpc::coder::Appender
 pub fn akio_arpc::coder::Appender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_arpc::coder::Coder for akio_arpc::coder::Appender
-pub fn akio_arpc::coder::Appender::decode(&self, &mut alloc::vec::Vec<u8>, &mut akio_arpc::coder::Values, usize) -> core::result::Result<(), akio_arpc::coder::CoderError>
-pub fn akio_arpc::coder::Appender::encode(&self, &mut alloc::vec::Vec<u8>, &akio_arpc::coder::Values)
 impl core::marker::Send for akio_arpc::coder::Appender
 impl core::marker::Sync for akio_arpc::coder::Appender
 impl core::marker::Unpin for akio_arpc::coder::Appender
@@ -37,14 +37,14 @@ pub struct akio_arpc::coder::Gzip
 impl akio_arpc::coder::Gzip
 pub fn akio_arpc::coder::Gzip::level(self, u32) -> akio_arpc::coder::Gzip
 pub fn akio_arpc::coder::Gzip::new(usize) -> akio_arpc::coder::Gzip
+impl akio_arpc::coder::Coder for akio_arpc::coder::Gzip
+pub fn akio_arpc::coder::Gzip::decode(&self, &mut alloc::vec::Vec<u8>, &mut akio_arpc::coder::Values, usize) -> core::result::Result<(), akio_arpc::coder::CoderError>
+pub fn akio_arpc::coder::Gzip::encode(&self, &mut alloc::vec::Vec<u8>, &akio_arpc::coder::Values)
 impl core::clone::Clone for akio_arpc::coder::Gzip
 pub fn akio_arpc::coder::Gzip::clone(&self) -> Self
 impl core::fmt::Debug for akio_arpc::coder::Gzip
 pub fn akio_arpc::coder::Gzip::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for akio_arpc::coder::Gzip
-impl akio_arpc::coder::Coder for akio_arpc::coder::Gzip
-pub fn akio_arpc::coder::Gzip::decode(&self, &mut alloc::vec::Vec<u8>, &mut akio_arpc::coder::Values, usize) -> core::result::Result<(), akio_arpc::coder::CoderError>
-pub fn akio_arpc::coder::Gzip::encode(&self, &mut alloc::vec::Vec<u8>, &akio_arpc::coder::Values)
 impl core::marker::Send for akio_arpc::coder::Gzip
 impl core::marker::Sync for akio_arpc::coder::Gzip
 impl core::marker::Unpin for akio_arpc::coder::Gzip
@@ -216,11 +216,11 @@ impl<'a> core::marker::Unpin for akio_arpc::StreamEvent<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_arpc::StreamEvent<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for akio_arpc::StreamEvent<'a>
 pub struct akio_arpc::ArpcConn
-impl core::fmt::Debug for akio_arpc::ArpcConn
-pub fn akio_arpc::ArpcConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_arpc::ArpcConn
 pub fn akio_arpc::ArpcConn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_arpc::ArpcConn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_arpc::ArpcConn
+pub fn akio_arpc::ArpcConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_arpc::ArpcConn
 impl core::marker::Sync for akio_arpc::ArpcConn
 impl core::marker::Unpin for akio_arpc::ArpcConn
@@ -367,24 +367,24 @@ impl akio_arpc::Server
 pub fn akio_arpc::Server::broadcast(&self, &str, &[u8])
 pub fn akio_arpc::Server::new(alloc::rcs::arc::Arc<akio_arpc::Routes>) -> akio_arpc::Server
 pub fn akio_arpc::Server::peers(&self) -> alloc::vec::Vec<akio_arpc::Peer>
+impl akio_core::handler::Acceptor for akio_arpc::Server
+pub type akio_arpc::Server::Handler = akio_arpc::ServerConn
+pub fn akio_arpc::Server::on_open(&self, &akio_core::conn::Conn<akio_arpc::ServerConn>) -> akio_arpc::ServerConn
 impl core::clone::Clone for akio_arpc::Server
 pub fn akio_arpc::Server::clone(&self) -> Self
 impl core::fmt::Debug for akio_arpc::Server
 pub fn akio_arpc::Server::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_arpc::Server
-pub type akio_arpc::Server::Handler = akio_arpc::ServerConn
-pub fn akio_arpc::Server::on_open(&self, &akio_core::conn::Conn<akio_arpc::ServerConn>) -> akio_arpc::ServerConn
 impl core::marker::Send for akio_arpc::Server
 impl core::marker::Sync for akio_arpc::Server
 impl core::marker::Unpin for akio_arpc::Server
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_arpc::Server
 impl !core::panic::unwind_safe::UnwindSafe for akio_arpc::Server
 pub struct akio_arpc::ServerConn
-impl core::fmt::Debug for akio_arpc::ServerConn
-pub fn akio_arpc::ServerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_arpc::ServerConn
 pub fn akio_arpc::ServerConn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_arpc::ServerConn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_arpc::ServerConn
+pub fn akio_arpc::ServerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_arpc::ServerConn
 impl core::marker::Sync for akio_arpc::ServerConn
 impl core::marker::Unpin for akio_arpc::ServerConn

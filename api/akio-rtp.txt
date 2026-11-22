@@ -57,18 +57,18 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::CodecKind
 pub struct akio_rtp::codec::Av1Depacketizer
 impl akio_rtp::codec::Av1Depacketizer
 pub fn akio_rtp::codec::Av1Depacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::Av1Depacketizer
-pub fn akio_rtp::codec::Av1Depacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::Av1Depacketizer
-pub fn akio_rtp::codec::Av1Depacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::Av1Depacketizer
-pub fn akio_rtp::codec::Av1Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Av1Depacketizer
 pub fn akio_rtp::codec::Av1Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::Av1Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::Av1Depacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Av1Depacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Av1Depacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::Av1Depacketizer
 impl core::marker::Sync for akio_rtp::codec::Av1Depacketizer
 impl core::marker::Unpin for akio_rtp::codec::Av1Depacketizer
@@ -77,14 +77,14 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Av1Depacketizer
 pub struct akio_rtp::codec::Av1Packetizer
 impl akio_rtp::codec::Av1Packetizer
 pub fn akio_rtp::codec::Av1Packetizer::new() -> Self
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::Av1Packetizer
 pub fn akio_rtp::codec::Av1Packetizer::clone(&self) -> Self
 impl core::default::Default for akio_rtp::codec::Av1Packetizer
 pub fn akio_rtp::codec::Av1Packetizer::default() -> Self
 impl core::fmt::Debug for akio_rtp::codec::Av1Packetizer
 pub fn akio_rtp::codec::Av1Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::Av1Packetizer
-pub fn akio_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::Av1Packetizer
 impl core::marker::Sync for akio_rtp::codec::Av1Packetizer
 impl core::marker::Unpin for akio_rtp::codec::Av1Packetizer
@@ -131,18 +131,18 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::FrameAssembler
 pub struct akio_rtp::codec::H264Depacketizer
 impl akio_rtp::codec::H264Depacketizer
 pub fn akio_rtp::codec::H264Depacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::H264Depacketizer
-pub fn akio_rtp::codec::H264Depacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::H264Depacketizer
-pub fn akio_rtp::codec::H264Depacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::H264Depacketizer
-pub fn akio_rtp::codec::H264Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H264Depacketizer
 pub fn akio_rtp::codec::H264Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::H264Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::H264Depacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::H264Depacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::H264Depacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::H264Depacketizer
 impl core::marker::Sync for akio_rtp::codec::H264Depacketizer
 impl core::marker::Unpin for akio_rtp::codec::H264Depacketizer
@@ -151,14 +151,14 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H264Depacketizer
 pub struct akio_rtp::codec::H264Packetizer
 impl akio_rtp::codec::H264Packetizer
 pub fn akio_rtp::codec::H264Packetizer::new() -> Self
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::H264Packetizer
 pub fn akio_rtp::codec::H264Packetizer::clone(&self) -> Self
 impl core::default::Default for akio_rtp::codec::H264Packetizer
 pub fn akio_rtp::codec::H264Packetizer::default() -> Self
 impl core::fmt::Debug for akio_rtp::codec::H264Packetizer
 pub fn akio_rtp::codec::H264Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::H264Packetizer
-pub fn akio_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::H264Packetizer
 impl core::marker::Sync for akio_rtp::codec::H264Packetizer
 impl core::marker::Unpin for akio_rtp::codec::H264Packetizer
@@ -167,18 +167,18 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H264Packetizer
 pub struct akio_rtp::codec::H265Depacketizer
 impl akio_rtp::codec::H265Depacketizer
 pub fn akio_rtp::codec::H265Depacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::H265Depacketizer
-pub fn akio_rtp::codec::H265Depacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::H265Depacketizer
-pub fn akio_rtp::codec::H265Depacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::H265Depacketizer
-pub fn akio_rtp::codec::H265Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H265Depacketizer
 pub fn akio_rtp::codec::H265Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::H265Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::H265Depacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::H265Depacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::H265Depacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::H265Depacketizer
 impl core::marker::Sync for akio_rtp::codec::H265Depacketizer
 impl core::marker::Unpin for akio_rtp::codec::H265Depacketizer
@@ -187,14 +187,14 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H265Depacketizer
 pub struct akio_rtp::codec::H265Packetizer
 impl akio_rtp::codec::H265Packetizer
 pub fn akio_rtp::codec::H265Packetizer::new() -> Self
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::H265Packetizer
 pub fn akio_rtp::codec::H265Packetizer::clone(&self) -> Self
 impl core::default::Default for akio_rtp::codec::H265Packetizer
 pub fn akio_rtp::codec::H265Packetizer::default() -> Self
 impl core::fmt::Debug for akio_rtp::codec::H265Packetizer
 pub fn akio_rtp::codec::H265Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::H265Packetizer
-pub fn akio_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::H265Packetizer
 impl core::marker::Sync for akio_rtp::codec::H265Packetizer
 impl core::marker::Unpin for akio_rtp::codec::H265Packetizer
@@ -203,18 +203,18 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H265Packetizer
 pub struct akio_rtp::codec::PassthroughDepacketizer
 impl akio_rtp::codec::PassthroughDepacketizer
 pub fn akio_rtp::codec::PassthroughDepacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::PassthroughDepacketizer
-pub fn akio_rtp::codec::PassthroughDepacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::PassthroughDepacketizer
-pub fn akio_rtp::codec::PassthroughDepacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::PassthroughDepacketizer
-pub fn akio_rtp::codec::PassthroughDepacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::PassthroughDepacketizer
 pub fn akio_rtp::codec::PassthroughDepacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::PassthroughDepacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::PassthroughDepacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::PassthroughDepacketizer
 impl core::marker::Sync for akio_rtp::codec::PassthroughDepacketizer
 impl core::marker::Unpin for akio_rtp::codec::PassthroughDepacketizer
@@ -223,14 +223,14 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::PassthroughDepack
 pub struct akio_rtp::codec::PassthroughPacketizer
 impl akio_rtp::codec::PassthroughPacketizer
 pub fn akio_rtp::codec::PassthroughPacketizer::new() -> Self
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::PassthroughPacketizer
 pub fn akio_rtp::codec::PassthroughPacketizer::clone(&self) -> Self
 impl core::default::Default for akio_rtp::codec::PassthroughPacketizer
 pub fn akio_rtp::codec::PassthroughPacketizer::default() -> Self
 impl core::fmt::Debug for akio_rtp::codec::PassthroughPacketizer
 pub fn akio_rtp::codec::PassthroughPacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::PassthroughPacketizer
-pub fn akio_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::PassthroughPacketizer
 impl core::marker::Sync for akio_rtp::codec::PassthroughPacketizer
 impl core::marker::Unpin for akio_rtp::codec::PassthroughPacketizer
@@ -239,18 +239,18 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::PassthroughPacket
 pub struct akio_rtp::codec::Vp8Depacketizer
 impl akio_rtp::codec::Vp8Depacketizer
 pub fn akio_rtp::codec::Vp8Depacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::Vp8Depacketizer
-pub fn akio_rtp::codec::Vp8Depacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::Vp8Depacketizer
-pub fn akio_rtp::codec::Vp8Depacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::Vp8Depacketizer
-pub fn akio_rtp::codec::Vp8Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp8Depacketizer
 pub fn akio_rtp::codec::Vp8Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Vp8Depacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Vp8Depacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::Vp8Depacketizer
 impl core::marker::Sync for akio_rtp::codec::Vp8Depacketizer
 impl core::marker::Unpin for akio_rtp::codec::Vp8Depacketizer
@@ -260,12 +260,12 @@ pub struct akio_rtp::codec::Vp8Packetizer
 impl akio_rtp::codec::Vp8Packetizer
 pub fn akio_rtp::codec::Vp8Packetizer::new(u16) -> Self
 pub fn akio_rtp::codec::Vp8Packetizer::picture_id(&self) -> u16
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::Vp8Packetizer
 pub fn akio_rtp::codec::Vp8Packetizer::clone(&self) -> Self
 impl core::fmt::Debug for akio_rtp::codec::Vp8Packetizer
 pub fn akio_rtp::codec::Vp8Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp8Packetizer
-pub fn akio_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::Vp8Packetizer
 impl core::marker::Sync for akio_rtp::codec::Vp8Packetizer
 impl core::marker::Unpin for akio_rtp::codec::Vp8Packetizer
@@ -274,18 +274,18 @@ impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Vp8Packetizer
 pub struct akio_rtp::codec::Vp9Depacketizer
 impl akio_rtp::codec::Vp9Depacketizer
 pub fn akio_rtp::codec::Vp9Depacketizer::new() -> Self
-impl core::clone::Clone for akio_rtp::codec::Vp9Depacketizer
-pub fn akio_rtp::codec::Vp9Depacketizer::clone(&self) -> Self
-impl core::default::Default for akio_rtp::codec::Vp9Depacketizer
-pub fn akio_rtp::codec::Vp9Depacketizer::default() -> Self
-impl core::fmt::Debug for akio_rtp::codec::Vp9Depacketizer
-pub fn akio_rtp::codec::Vp9Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp9Depacketizer
 pub fn akio_rtp::codec::Vp9Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
 pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
 pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_start(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Vp9Depacketizer::is_keyframe(&self, &[u8]) -> bool
 pub fn akio_rtp::codec::Vp9Depacketizer::reset(&mut self)
+impl core::clone::Clone for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::codec::Vp9Depacketizer
 impl core::marker::Sync for akio_rtp::codec::Vp9Depacketizer
 impl core::marker::Unpin for akio_rtp::codec::Vp9Depacketizer
@@ -295,12 +295,12 @@ pub struct akio_rtp::codec::Vp9Packetizer
 impl akio_rtp::codec::Vp9Packetizer
 pub fn akio_rtp::codec::Vp9Packetizer::new(u16) -> Self
 pub fn akio_rtp::codec::Vp9Packetizer::picture_id(&self) -> u16
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::clone::Clone for akio_rtp::codec::Vp9Packetizer
 pub fn akio_rtp::codec::Vp9Packetizer::clone(&self) -> Self
 impl core::fmt::Debug for akio_rtp::codec::Vp9Packetizer
 pub fn akio_rtp::codec::Vp9Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp9Packetizer
-pub fn akio_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 impl core::marker::Send for akio_rtp::codec::Vp9Packetizer
 impl core::marker::Sync for akio_rtp::codec::Vp9Packetizer
 impl core::marker::Unpin for akio_rtp::codec::Vp9Packetizer

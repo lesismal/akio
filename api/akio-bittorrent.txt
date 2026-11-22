@@ -98,13 +98,13 @@ pub struct akio_bittorrent::client::storage::FileStorage
 impl akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &akio_bittorrent::metainfo::Info) -> akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std::path::Path
-impl core::fmt::Debug for akio_bittorrent::client::storage::FileStorage
-pub fn akio_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_bittorrent::client::storage::Storage for akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<akio_bittorrent::client::storage::FileStamp>>>
 pub fn akio_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn akio_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn akio_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_bittorrent::client::storage::FileStorage
+pub fn akio_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::client::storage::FileStorage
 impl core::marker::Sync for akio_bittorrent::client::storage::FileStorage
 impl core::marker::Unpin for akio_bittorrent::client::storage::FileStorage
@@ -115,13 +115,13 @@ impl akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::new(u64) -> akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::snapshot(&self) -> alloc::vec::Vec<u8>
 pub fn akio_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Vec<u8>) -> akio_bittorrent::client::storage::MemoryStorage
-impl core::fmt::Debug for akio_bittorrent::client::storage::MemoryStorage
-pub fn akio_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_bittorrent::client::storage::Storage for akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<akio_bittorrent::client::storage::FileStamp>>>
 pub fn akio_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn akio_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn akio_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_bittorrent::client::storage::MemoryStorage
+pub fn akio_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::client::storage::MemoryStorage
 impl core::marker::Sync for akio_bittorrent::client::storage::MemoryStorage
 impl core::marker::Unpin for akio_bittorrent::client::storage::MemoryStorage
@@ -341,13 +341,13 @@ pub struct akio_bittorrent::client::FileStorage
 impl akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &akio_bittorrent::metainfo::Info) -> akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std::path::Path
-impl core::fmt::Debug for akio_bittorrent::client::storage::FileStorage
-pub fn akio_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_bittorrent::client::storage::Storage for akio_bittorrent::client::storage::FileStorage
 pub fn akio_bittorrent::client::storage::FileStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<akio_bittorrent::client::storage::FileStamp>>>
 pub fn akio_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
 pub fn akio_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn akio_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_bittorrent::client::storage::FileStorage
+pub fn akio_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::client::storage::FileStorage
 impl core::marker::Sync for akio_bittorrent::client::storage::FileStorage
 impl core::marker::Unpin for akio_bittorrent::client::storage::FileStorage
@@ -358,13 +358,13 @@ impl akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::new(u64) -> akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::snapshot(&self) -> alloc::vec::Vec<u8>
 pub fn akio_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Vec<u8>) -> akio_bittorrent::client::storage::MemoryStorage
-impl core::fmt::Debug for akio_bittorrent::client::storage::MemoryStorage
-pub fn akio_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_bittorrent::client::storage::Storage for akio_bittorrent::client::storage::MemoryStorage
 pub fn akio_bittorrent::client::storage::MemoryStorage::file_stamps(&self) -> core::option::Option<alloc::vec::Vec<core::option::Option<akio_bittorrent::client::storage::FileStamp>>>
 pub fn akio_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
 pub fn akio_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
 pub fn akio_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_bittorrent::client::storage::MemoryStorage
+pub fn akio_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::client::storage::MemoryStorage
 impl core::marker::Sync for akio_bittorrent::client::storage::MemoryStorage
 impl core::marker::Unpin for akio_bittorrent::client::storage::MemoryStorage
@@ -759,10 +759,10 @@ pub akio_bittorrent::metainfo::MetaError::Invalid(&'static str)
 pub akio_bittorrent::metainfo::MetaError::Io(core::io::error::Error)
 pub akio_bittorrent::metainfo::MetaError::UnsafePath(alloc::string::String)
 pub akio_bittorrent::metainfo::MetaError::Unsupported(&'static str)
-impl core::convert::From<core::io::error::Error> for akio_bittorrent::metainfo::MetaError
-pub fn akio_bittorrent::metainfo::MetaError::from(core::io::error::Error) -> Self
 impl core::convert::From<akio_bittorrent::bencode::Error> for akio_bittorrent::metainfo::MetaError
 pub fn akio_bittorrent::metainfo::MetaError::from(akio_bittorrent::bencode::Error) -> Self
+impl core::convert::From<core::io::error::Error> for akio_bittorrent::metainfo::MetaError
+pub fn akio_bittorrent::metainfo::MetaError::from(core::io::error::Error) -> Self
 impl core::error::Error for akio_bittorrent::metainfo::MetaError
 impl core::fmt::Debug for akio_bittorrent::metainfo::MetaError
 pub fn akio_bittorrent::metainfo::MetaError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1113,24 +1113,24 @@ pub const akio_bittorrent::mse::CRYPTO_RC4: u32
 pub fn akio_bittorrent::mse::req2_hash(&akio_bittorrent::metainfo::InfoHash) -> [u8; 20]
 pub mod akio_bittorrent::port
 pub struct akio_bittorrent::port::PortAcceptor
+impl akio_core::handler::Acceptor for akio_bittorrent::port::PortAcceptor
+pub type akio_bittorrent::port::PortAcceptor::Handler = akio_bittorrent::port::PortPeer
+pub fn akio_bittorrent::port::PortAcceptor::on_open(&self, &akio_core::conn::Conn<akio_bittorrent::port::PortPeer>) -> akio_bittorrent::port::PortPeer
 impl core::clone::Clone for akio_bittorrent::port::PortAcceptor
 pub fn akio_bittorrent::port::PortAcceptor::clone(&self) -> Self
 impl core::fmt::Debug for akio_bittorrent::port::PortAcceptor
 pub fn akio_bittorrent::port::PortAcceptor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_bittorrent::port::PortAcceptor
-pub type akio_bittorrent::port::PortAcceptor::Handler = akio_bittorrent::port::PortPeer
-pub fn akio_bittorrent::port::PortAcceptor::on_open(&self, &akio_core::conn::Conn<akio_bittorrent::port::PortPeer>) -> akio_bittorrent::port::PortPeer
 impl core::marker::Send for akio_bittorrent::port::PortAcceptor
 impl core::marker::Sync for akio_bittorrent::port::PortAcceptor
 impl core::marker::Unpin for akio_bittorrent::port::PortAcceptor
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_bittorrent::port::PortAcceptor
 impl !core::panic::unwind_safe::UnwindSafe for akio_bittorrent::port::PortAcceptor
 pub struct akio_bittorrent::port::PortPeer
-impl core::fmt::Debug for akio_bittorrent::port::PortPeer
-pub fn akio_bittorrent::port::PortPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_bittorrent::port::PortPeer
 pub fn akio_bittorrent::port::PortPeer::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
 pub fn akio_bittorrent::port::PortPeer::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_bittorrent::port::PortPeer
+pub fn akio_bittorrent::port::PortPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::port::PortPeer
 impl core::marker::Sync for akio_bittorrent::port::PortPeer
 impl core::marker::Unpin for akio_bittorrent::port::PortPeer
@@ -1344,12 +1344,12 @@ impl core::marker::Unpin for akio_bittorrent::tracker::AnnounceResponse
 impl core::panic::unwind_safe::RefUnwindSafe for akio_bittorrent::tracker::AnnounceResponse
 impl core::panic::unwind_safe::UnwindSafe for akio_bittorrent::tracker::AnnounceResponse
 pub struct akio_bittorrent::tracker::HttpTracker(_)
+impl akio_http::context::Service for akio_bittorrent::tracker::HttpTracker
+pub fn akio_bittorrent::tracker::HttpTracker::call(&self, &mut akio_http::context::Context)
 impl core::clone::Clone for akio_bittorrent::tracker::HttpTracker
 pub fn akio_bittorrent::tracker::HttpTracker::clone(&self) -> Self
 impl core::fmt::Debug for akio_bittorrent::tracker::HttpTracker
 pub fn akio_bittorrent::tracker::HttpTracker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_http::context::Service for akio_bittorrent::tracker::HttpTracker
-pub fn akio_bittorrent::tracker::HttpTracker::call(&self, &mut akio_http::context::Context)
 impl core::marker::Send for akio_bittorrent::tracker::HttpTracker
 impl core::marker::Sync for akio_bittorrent::tracker::HttpTracker
 impl core::marker::Unpin for akio_bittorrent::tracker::HttpTracker
@@ -1427,23 +1427,23 @@ impl core::marker::Unpin for akio_bittorrent::tracker::TrackerServer
 impl core::panic::unwind_safe::RefUnwindSafe for akio_bittorrent::tracker::TrackerServer
 impl core::panic::unwind_safe::UnwindSafe for akio_bittorrent::tracker::TrackerServer
 pub struct akio_bittorrent::tracker::UdpTracker(_)
+impl akio_core::handler::Acceptor for akio_bittorrent::tracker::UdpTracker
+pub type akio_bittorrent::tracker::UdpTracker::Handler = akio_bittorrent::tracker::UdpTrackerConn
+pub fn akio_bittorrent::tracker::UdpTracker::on_open(&self, &akio_core::conn::Conn<akio_bittorrent::tracker::UdpTrackerConn>) -> akio_bittorrent::tracker::UdpTrackerConn
 impl core::clone::Clone for akio_bittorrent::tracker::UdpTracker
 pub fn akio_bittorrent::tracker::UdpTracker::clone(&self) -> Self
 impl core::fmt::Debug for akio_bittorrent::tracker::UdpTracker
 pub fn akio_bittorrent::tracker::UdpTracker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl akio_core::handler::Acceptor for akio_bittorrent::tracker::UdpTracker
-pub type akio_bittorrent::tracker::UdpTracker::Handler = akio_bittorrent::tracker::UdpTrackerConn
-pub fn akio_bittorrent::tracker::UdpTracker::on_open(&self, &akio_core::conn::Conn<akio_bittorrent::tracker::UdpTrackerConn>) -> akio_bittorrent::tracker::UdpTrackerConn
 impl core::marker::Send for akio_bittorrent::tracker::UdpTracker
 impl core::marker::Sync for akio_bittorrent::tracker::UdpTracker
 impl core::marker::Unpin for akio_bittorrent::tracker::UdpTracker
 impl core::panic::unwind_safe::RefUnwindSafe for akio_bittorrent::tracker::UdpTracker
 impl core::panic::unwind_safe::UnwindSafe for akio_bittorrent::tracker::UdpTracker
 pub struct akio_bittorrent::tracker::UdpTrackerConn(_)
-impl core::fmt::Debug for akio_bittorrent::tracker::UdpTrackerConn
-pub fn akio_bittorrent::tracker::UdpTrackerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl akio_core::handler::Handler for akio_bittorrent::tracker::UdpTrackerConn
 pub fn akio_bittorrent::tracker::UdpTrackerConn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::fmt::Debug for akio_bittorrent::tracker::UdpTrackerConn
+pub fn akio_bittorrent::tracker::UdpTrackerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_bittorrent::tracker::UdpTrackerConn
 impl core::marker::Sync for akio_bittorrent::tracker::UdpTrackerConn
 impl core::marker::Unpin for akio_bittorrent::tracker::UdpTrackerConn
