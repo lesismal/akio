@@ -8,7 +8,11 @@
 #      other than 255 are dropped) resolving the name an only Endpoint conceals fd00:6::1
 #      behind (avahi-resolve -6);
 #   3. an only Endpoint resolving a name only avahi publishes (avahi-publish -a, fd00:6::2)
-#      and connecting to it (webrtc-interop mdns-resolve), the answer arriving over IPv6.
+#      and connecting to it (webrtc-interop mdns-resolve), the answer arriving over IPv6;
+#   4. (ADR-078 update) an only Endpoint defending its claimed name: avahi publishing the same name
+#      with another address (fd00:6::2) probes it, gets our answer (a unicast one to its QU
+#      probe, hop limit 255) and reports a collision; the Endpoint keeps the name and says
+#      goodbye when it closes.
 # The examples and tests are built in rust:1; the image adds avahi, dbus and iproute2.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -100,4 +104,15 @@ x "ONLY_LOG=only_webrtc=debug $RS mdns-resolve '[fd00:6::1]:0' '[fd00:6::2]:0' $
 x "grep -m1 'mdns: $PUB is' /tmp/resolve.log"
 # Resolved from avahi's answer over IPv6 (an IPv6 source on the mDNS port: there is no IPv4).
 x "grep -qE 'mdns: $PUB is \\[fd00:6::2\\] \\(from \\[[0-9a-f:]+(%[0-9]+)?\\]:5353\\)' /tmp/resolve.log"
+echo "== avahi publishing a name an only Endpoint has claimed gets a collision"
+x "ONLY_LOG=only_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 8 >/tmp/claim.out 2>/tmp/claim.log &"
+for _ in $(seq 50); do x 'grep -q ^name /tmp/claim.out' && break; sleep 0.1; done
+CLAIMED=$(x 'sed -n "s/^name //p" /tmp/claim.out')
+sleep 3 # probed (750 ms) and announced (1.75 s)
+x "timeout 10 avahi-publish -a -R $CLAIMED fd00:6::2 >/tmp/collide.log 2>&1 || true"
+x 'cat /tmp/collide.log; grep "mdns:" /tmp/claim.log | tail -5'
+# avahi 0.8 then looks for an alternative name and aborts on a UUID label (its own assertion).
+x 'grep -q "Name collision" /tmp/collide.log'
+x "grep -m1 'mdns: answering' /tmp/claim.log"
+if x "grep -q 'given up' /tmp/claim.log"; then echo "FAIL: the Endpoint gave its name up"; exit 1; fi
 echo "mdns over ipv6 interop: all passed"

@@ -166,13 +166,33 @@ pub fn ice_tcp(data: &[u8]) {
 
 /// `ice_mdns`: arbitrary bytes as an mDNS message ([`crate::mdns::Message::parse`]): what
 /// parses must survive being rebuilt as a response and parsed again (the records and
-/// questions whose names can be written); and every line (if UTF-8) through
+/// questions whose names can be written), and its authority records as a probe
+/// ([`crate::mdns::Message::probe`]) for their first name; and every line (if UTF-8) through
 /// [`Candidate::parse_resolved`] with a resolver, whose results must survive an SDP round trip
 /// (the name kept).
 pub fn mdns(data: &[u8]) {
     use crate::mdns::{MAX_QUESTIONS, MAX_RECORDS, Message, valid_name};
     if let Ok(m) = Message::parse(data) {
         assert!(m.questions.len() <= MAX_QUESTIONS && m.records.len() <= MAX_RECORDS);
+        assert!(m.authority.len() <= MAX_RECORDS);
+        if let Some(first) = m.authority.first().filter(|r| valid_name(&r.name)) {
+            let proposed: Vec<_> = m
+                .authority
+                .iter()
+                .filter(|r| r.name == first.name)
+                .cloned()
+                .collect();
+            let p = Message::probe(&first.name, &proposed).expect("probe of valid records");
+            let again = Message::parse(&p).unwrap_or_else(|e| panic!("rebuilt probe refused: {e}"));
+            assert!(!again.response && again.records.is_empty());
+            assert_eq!(again.questions.len(), 1);
+            assert_eq!(again.authority.len(), proposed.len());
+            for (a, b) in again.authority.iter().zip(&proposed) {
+                assert_eq!((&a.name, a.addr, a.ttl), (&b.name, b.addr, b.ttl));
+                assert!(!a.cache_flush);
+                let _ = a.tiebreak(b);
+            }
+        }
         let qs: Vec<_> = m
             .questions
             .iter()
@@ -296,6 +316,8 @@ mod seeds {
                 &[q(TYPE_A, false)],
                 &[rec("192.168.1.20", 10, false)],
             ),
+            Message::probe(name, &[rec("192.168.1.20", 120, false), rec("fd00::7", 120, false)])
+                .unwrap_or_default(),
         ];
         // As a browser's responder writes it: the name once, then a compression pointer.
         let mut c = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 1];

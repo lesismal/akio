@@ -10,6 +10,19 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
+
+ADR-078 的 2026-11-22 更新，只有新增：
+
+- `UdpBinding::set_unicast_hops(u32)`：绑定发出的单播数据报的 TTL / 跳数限制（`IP_TTL` /
+  `IPV6_UNICAST_HOPS`）；`only_sys::set_unicast_hops_v6` / `unicast_hops_v6`。`Endpoint::resolve_mdns`
+  的 mDNS 套接字按 RFC 6762 §11 以 255 发送单播应答（QU、传统单播），与组播应答相同。
+- 被隐藏的名字（`Endpoint::conceal_host_candidates`）按 RFC 6762 §8 声明，不推迟候选：三次探测，间隔
+  250 ms，然后两次宣告，间隔 1 s。另一台主机以另一个地址应答该名字，或在同时探测的平局裁决中胜出，
+  endpoint 就放弃该名字（不再应答；新 peer 得到新名字）。`Endpoint::close` 为其名字发送告别（TTL 0）。
+- only-ice（内部）：`Message::probe`、`Message::authority`、`Record::tiebreak`。
+- `tools/interop/webrtc/mdns6.sh`：avahi 0.8 发布 Endpoint 已声明的名字时报告冲突。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

@@ -36,7 +36,7 @@ pub use fswatch::{FsEvent, FsWatcher, WatchId};
 pub use net::listen_backlog;
 pub use net::{
     connect_nonblocking, connect_nonblocking_from, listen, listen_udp, multicast_hops_v6, sendfile,
-    set_backlog, set_multicast_hops_v6,
+    set_backlog, set_multicast_hops_v6, set_unicast_hops_v6, unicast_hops_v6,
 };
 pub use poller::{Event, Poller};
 #[doc(hidden)]

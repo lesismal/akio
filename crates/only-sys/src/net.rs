@@ -225,17 +225,39 @@ pub fn listen_udp(addr: SocketAddr, reuseport: bool) -> io::Result<std::net::Udp
 /// kernel's default is 1 (the link). mDNS sends with 255 (RFC 6762 §11), as some responders
 /// check it on reception.
 pub fn set_multicast_hops_v6(socket: &std::net::UdpSocket, hops: u32) -> io::Result<()> {
-    let hops = ffi::c_int::try_from(hops)
-        .ok()
-        .filter(|h| *h <= 255)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "hop limit above 255"))?;
-    let raw = std::os::fd::AsRawFd::as_raw_fd(socket);
-    setsockopt_int(raw, ffi::IPPROTO_IPV6, ffi::IPV6_MULTICAST_HOPS, hops)
+    set_hops_v6(socket, ffi::IPV6_MULTICAST_HOPS, hops)
 }
 
 /// The hop limit of the IPv6 multicast datagrams `socket` sends (see
 /// [`set_multicast_hops_v6`]).
 pub fn multicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {
+    hops_v6(socket, ffi::IPV6_MULTICAST_HOPS)
+}
+
+/// Sets the hop limit of the IPv6 unicast datagrams `socket` sends (`IPV6_UNICAST_HOPS`):
+/// the IPv6 counterpart of `UdpSocket::set_ttl`, which std lacks. 0 to 255; the kernel's
+/// default is the route's (usually 64). mDNS sends its unicast responses with 255 too (RFC
+/// 6762 §11).
+pub fn set_unicast_hops_v6(socket: &std::net::UdpSocket, hops: u32) -> io::Result<()> {
+    set_hops_v6(socket, ffi::IPV6_UNICAST_HOPS, hops)
+}
+
+/// The hop limit of the IPv6 unicast datagrams `socket` sends (see [`set_unicast_hops_v6`]);
+/// 0 where the kernel reports the default as unset (macOS: -1).
+pub fn unicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {
+    hops_v6(socket, ffi::IPV6_UNICAST_HOPS)
+}
+
+fn set_hops_v6(socket: &std::net::UdpSocket, opt: ffi::c_int, hops: u32) -> io::Result<()> {
+    let hops = ffi::c_int::try_from(hops)
+        .ok()
+        .filter(|h| *h <= 255)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "hop limit above 255"))?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(socket);
+    setsockopt_int(raw, ffi::IPPROTO_IPV6, opt, hops)
+}
+
+fn hops_v6(socket: &std::net::UdpSocket, opt: ffi::c_int) -> io::Result<u32> {
     let raw = std::os::fd::AsRawFd::as_raw_fd(socket);
     let mut v: ffi::c_int = 0;
     let mut len = size_of::<ffi::c_int>() as ffi::socklen_t;
@@ -244,7 +266,7 @@ pub fn multicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {
         ffi::getsockopt(
             raw,
             ffi::IPPROTO_IPV6,
-            ffi::IPV6_MULTICAST_HOPS,
+            opt,
             (&raw mut v).cast::<ffi::c_void>(),
             &raw mut len,
         )
@@ -353,5 +375,20 @@ mod tests {
             0,
             "unchanged by the refused value"
         );
+    }
+
+    #[test]
+    fn unicast_hops_v6_round_trip() {
+        let Ok(s) = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)) else {
+            return; // no IPv6 on this host
+        };
+        // The default reads as the route's limit on Linux, as 0 (unset, -1) on macOS.
+        assert!(unicast_hops_v6(&s).unwrap() <= 255);
+        set_unicast_hops_v6(&s, 255).unwrap();
+        assert_eq!(unicast_hops_v6(&s).unwrap(), 255);
+        assert_eq!(multicast_hops_v6(&s).unwrap(), 1, "the multicast limit is apart");
+        let e = set_unicast_hops_v6(&s, 256).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(unicast_hops_v6(&s).unwrap(), 255);
     }
 }

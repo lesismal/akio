@@ -108,7 +108,8 @@ with any trailers. No size limit applies to streamed bodies: the sink decides.
 - Graceful shutdown: in-flight responses finish, then HTTP/1 connections close; HTTP/2 sends
   `GOAWAY`.
 
-## Not done
+## Comparison
 
-An HTTP/1
-comparison report against hyper and fib (planned for the benchmark pass).
+HTTP/1.1, pipelined HTTP/1.1, h2c and HTTP/2 over TLS against hyper and fib, on epoll and
+io_uring, are in [docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md)
+(the comparison report this section once listed as not done).

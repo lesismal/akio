@@ -256,6 +256,12 @@ no route, `conceal_host_candidates` answers over `ff02::fb` alone. `tools/intero
 checks this in an IPv6-only container against avahi, and `browser.sh` against Chrome with an
 endpoint whose only host candidate is a concealed IPv6 address.
 
+Concealed names are claimed as RFC 6762 asks (ADR-078's update): three probes 250 ms apart,
+then two announcements 1 s apart, all while the name is already in use and answered. If another
+host answers the name with another address, or wins a simultaneous probe, the endpoint gives the
+name up and new peers get a fresh one. Closing the endpoint withdraws its names (goodbyes with
+TTL 0), and unicast answers leave with hop limit 255 like multicast ones.
+
 ### Nomination
 
 The controlling side (the offerer, or any side facing an ICE-lite remote) nominates one pair:

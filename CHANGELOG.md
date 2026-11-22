@@ -10,6 +10,23 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
+
+ADR-078's update of 2026-11-22, additive:
+
+- `UdpBinding::set_unicast_hops(u32)`: the TTL / hop limit of a binding's unicast datagrams
+  (`IP_TTL` / `IPV6_UNICAST_HOPS`); `only_sys::set_unicast_hops_v6` / `unicast_hops_v6`. The
+  mDNS sockets of `Endpoint::resolve_mdns` send unicast answers (QU, legacy unicast) with 255,
+  as multicast ones, per RFC 6762 §11.
+- Concealed names (`Endpoint::conceal_host_candidates`) are claimed per RFC 6762 §8 without
+  holding the candidate up: three probes 250 ms apart, then two announcements 1 s apart. Another
+  host answering the name with another address, or winning a simultaneous probe's tiebreak,
+  makes the endpoint give the name up (no longer answered; new peers get a fresh name).
+  `Endpoint::close` sends goodbyes (TTL 0) for its names.
+- only-ice (internal): `Message::probe`, `Message::authority`, `Record::tiebreak`.
+- `tools/interop/webrtc/mdns6.sh`: avahi 0.8 publishing a name an Endpoint has claimed reports a
+  collision.
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

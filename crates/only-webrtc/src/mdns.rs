@@ -23,6 +23,16 @@
 //! cached for their TTL (at most 2 minutes, 256 names). When it
 //! resolves, each waiting peer gets the candidate line with the address (one candidate per
 //! address family the name has), unless that peer's remote ICE credentials changed meanwhile.
+//!
+//! A concealed name is claimed as RFC 6762 §8 asks of unique records, without holding up the
+//! candidate (the name is a random UUID, used in descriptions at once and answered from the
+//! start): three probes 250 ms apart (§8.1: `ANY` with the QU bit, the proposed record in the
+//! authority section), then two announcements 1 s apart (§8.3, unsolicited responses with the
+//! cache-flush bit). A conflict (another host answers the name with another address, or
+//! probes it with a record that wins the §8.2 tiebreak while ours is still being probed)
+//! gives the name up: it is no longer answered and the address gets a fresh name for the
+//! peers made after. Closing the endpoint sends goodbyes (§10.1, TTL 0) for its names. Every
+//! response leaves with TTL / hop limit 255 (§11), unicast ones included.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -48,6 +58,18 @@ const MAX_TTL: Duration = Duration::from_secs(120);
 /// unicast ones (§6.7: at most 10 s).
 const OWN_TTL: u32 = 120;
 const LEGACY_TTL: u32 = 10;
+/// Probes per claimed name and their spacing (RFC 6762 §8.1), then announcements and their
+/// spacing (§8.3).
+const PROBES: u32 = 3;
+const PROBE_GAP: Duration = Duration::from_millis(250);
+const ANNOUNCEMENTS: u32 = 2;
+const ANNOUNCE_GAP: Duration = Duration::from_secs(1);
+
+/// A concealed name being claimed: probes and announcements sent so far, the next one due.
+struct Claim {
+    sends: u32,
+    next: Instant,
+}
 
 struct Waiter {
     peer: u64,
@@ -71,6 +93,8 @@ struct State {
     /// Our concealed names: address -> name, and back.
     own: HashMap<IpAddr, String>,
     own_names: HashMap<String, IpAddr>,
+    /// Our names still being probed or announced.
+    claims: HashMap<String, Claim>,
     /// The earliest timer armed.
     armed: Option<Instant>,
 }
@@ -202,11 +226,18 @@ impl Mdns {
                 &[0]
             };
             match engine.bind_udp_multicast_on(group(v6, 0), ifaces, acc()) {
-                Ok(binding) => Ok(Sock {
-                    binding,
-                    v6,
-                    shared: true,
-                }),
+                Ok(binding) => {
+                    // Unicast answers (QU, legacy unicast) leave with 255 too, as multicast
+                    // ones do (RFC 6762 §11).
+                    if let Err(e) = binding.set_unicast_hops(255) {
+                        only_log::debug!(target: "only_webrtc", "mdns: unicast hop limit 255 refused over IPv{} ({e})", if v6 { 6 } else { 4 });
+                    }
+                    Ok(Sock {
+                        binding,
+                        v6,
+                        shared: true,
+                    })
+                }
                 Err(e) => {
                     only_log::debug!(target: "only_webrtc", "mdns: port {} unavailable over IPv{} ({e}); one-shot unicast queries", mdns::PORT, if v6 { 6 } else { 4 });
                     let any: IpAddr = if v6 {
@@ -241,9 +272,48 @@ impl Mdns {
         self.socks().iter().any(|s| s.shared)
     }
 
+    /// Sends goodbyes for our names (RFC 6762 §10.1), then closes the sockets.
     pub(crate) fn close(&self) {
+        let names: Vec<(String, IpAddr)> = {
+            let mut st = lock(&self.state);
+            st.claims.clear();
+            st.own_names.drain().collect()
+        };
+        for (name, ip) in names {
+            let r = own_record(&name, ip, 0, false);
+            self.send_all(&Message::response(0, &[], &[r]));
+        }
         for s in self.socks() {
             s.binding.close();
+        }
+    }
+
+    /// Sends `packet` to the mDNS group over each socket on the shared port (IPv6: on every
+    /// link queries go out on).
+    fn send_all(&self, packet: &[u8]) {
+        let scopes = if self.socks().iter().any(|s| s.v6 && s.shared) {
+            self.scopes()
+        } else {
+            Vec::new()
+        };
+        for s in self.socks().iter().filter(|s| s.shared) {
+            if s.v6 {
+                for &i in &scopes {
+                    let _ = s.binding.send_to(packet, group(true, i));
+                }
+            } else {
+                let _ = s.binding.send_to(packet, mdns::MULTICAST_V4);
+            }
+        }
+    }
+
+    /// Gives up our name `name` after a conflict: no longer answered, no longer claimed, and
+    /// its address gets a fresh name next time.
+    fn give_up(st: &mut State, name: &str, why: &str) {
+        if let Some(ip) = st.own_names.remove(name) {
+            st.own.remove(&ip);
+            st.claims.remove(name);
+            only_log::warn!(target: "only_webrtc", "mdns: {name} given up ({why}); {ip} gets a new name for new peers");
         }
     }
 
@@ -280,6 +350,13 @@ impl Mdns {
         let n = mdns::random_name();
         st.own.insert(ip, n.clone());
         st.own_names.insert(n.clone(), ip);
+        if !self.can_respond() {
+            return Some(n);
+        }
+        let now = Instant::now();
+        st.claims.insert(n.clone(), Claim { sends: 0, next: now });
+        drop(st);
+        self.tick(now);
         Some(n)
     }
 
@@ -330,11 +407,36 @@ impl Mdns {
         }
     }
 
-    /// Sends the queries that are due, drops the expired ones, arms the timer.
+    /// Sends the queries, probes and announcements that are due, drops the expired queries,
+    /// arms the timer.
     fn tick(&self, now: Instant) {
         let mut send = Vec::new();
+        let mut claims = Vec::new();
         let next = {
             let mut st = lock(&self.state);
+            let State {
+                claims: c,
+                own_names,
+                ..
+            } = &mut *st;
+            c.retain(|name, cl| {
+                let Some(&ip) = own_names.get(name) else {
+                    return false;
+                };
+                if cl.next > now {
+                    return true;
+                }
+                claims.push((name.clone(), ip, cl.sends < PROBES));
+                cl.sends += 1;
+                // §8.1: the claim is won 250 ms after the last probe, then announced.
+                cl.next = now
+                    + if cl.sends <= PROBES {
+                        PROBE_GAP
+                    } else {
+                        ANNOUNCE_GAP
+                    };
+                cl.sends < PROBES + ANNOUNCEMENTS
+            });
             st.queries.retain(|name, q| {
                 if q.deadline <= now {
                     only_log::debug!(target: "only_webrtc", "mdns: {name} not resolved in time");
@@ -348,7 +450,12 @@ impl Mdns {
                 }
                 true
             });
-            let next = st.queries.values().map(|q| q.next.min(q.deadline)).min();
+            let next = st
+                .queries
+                .values()
+                .map(|q| q.next.min(q.deadline))
+                .chain(st.claims.values().map(|c| c.next))
+                .min();
             match next {
                 Some(n) if st.armed.is_none_or(|a| n < a) => {
                     st.armed = Some(n);
@@ -358,6 +465,16 @@ impl Mdns {
             }
         };
         self.send_queries(&send);
+        for (name, ip, probe) in claims {
+            if probe {
+                if let Some(p) = Message::probe(&name, &[own_record(&name, ip, OWN_TTL, false)]) {
+                    self.send_all(&p);
+                }
+            } else {
+                let r = own_record(&name, ip, OWN_TTL, true);
+                self.send_all(&Message::response(0, &[], &[r]));
+            }
+        }
         if let Some(n) = next {
             let target: Weak<dyn timer::Due> = self.me.clone();
             timer::timer().schedule(n, target);
@@ -409,6 +526,22 @@ impl Mdns {
     }
 
     fn on_response(&self, src: SocketAddr, records: &[Record]) {
+        // Another host answering one of our names with another address is a conflict
+        // (RFC 6762 §9); our own answers come back by multicast loopback with our address.
+        {
+            let mut st = lock(&self.state);
+            if !st.own_names.is_empty() {
+                let lost: Vec<String> = records
+                    .iter()
+                    .filter(|r| r.ttl > 0)
+                    .filter(|r| st.own_names.get(&r.name).is_some_and(|ip| *ip != r.addr))
+                    .map(|r| r.name.clone())
+                    .collect();
+                for n in lost {
+                    Self::give_up(&mut st, &n, &format!("{src} answers it with another address"));
+                }
+            }
+        }
         // A link-local address is reached through the interface its answer came from.
         if let (SocketAddr::V6(s), Some(hub)) = (src, self.hub.upgrade()) {
             if s.scope_id() != 0 {
@@ -463,7 +596,7 @@ impl Mdns {
 
     fn on_query(&self, src: SocketAddr, m: &Message) {
         let (answers, questions) = {
-            let st = lock(&self.state);
+            let mut st = lock(&self.state);
             if st.own_names.is_empty() {
                 return;
             }
@@ -473,6 +606,29 @@ impl Mdns {
                 let Some(&ip) = st.own_names.get(&q.name) else {
                     continue;
                 };
+                // A probe for the name (RFC 6762 §8.2): ours coming back by loopback (or an
+                // identical claim) needs no answer; another host's, while ours is still being
+                // probed, is a simultaneous probe settled by the tiebreak; after that, it is
+                // answered (defended) below.
+                let proposed: Vec<&Record> =
+                    m.authority.iter().filter(|r| r.name == q.name).collect();
+                if !proposed.is_empty() {
+                    let mine = own_record(&q.name, ip, OWN_TTL, false);
+                    if proposed.iter().all(|r| r.addr == ip) {
+                        continue;
+                    }
+                    let probing = st.claims.get(&q.name).is_some_and(|c| c.sends <= PROBES);
+                    if probing {
+                        let theirs = proposed
+                            .iter()
+                            .max_by(|a, b| a.tiebreak(b))
+                            .map(|r| mine.tiebreak(r));
+                        if theirs == Some(std::cmp::Ordering::Less) {
+                            Self::give_up(&mut st, &q.name, &format!("{src} probes it and wins the tiebreak"));
+                        }
+                        continue;
+                    }
+                }
                 let fits = match q.qtype {
                     mdns::TYPE_A => ip.is_ipv4(),
                     mdns::TYPE_AAAA => ip.is_ipv6(),
@@ -541,6 +697,16 @@ impl timer::Due for Mdns {
             }
         }
         self.tick(Instant::now());
+    }
+}
+
+/// The address record of our name `name` for `ip`.
+fn own_record(name: &str, ip: IpAddr, ttl: u32, cache_flush: bool) -> Record {
+    Record {
+        name: name.to_owned(),
+        addr: ip,
+        ttl,
+        cache_flush,
     }
 }
 
