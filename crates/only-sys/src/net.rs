@@ -386,7 +386,11 @@ mod tests {
         assert!(unicast_hops_v6(&s).unwrap() <= 255);
         set_unicast_hops_v6(&s, 255).unwrap();
         assert_eq!(unicast_hops_v6(&s).unwrap(), 255);
-        assert_eq!(multicast_hops_v6(&s).unwrap(), 1, "the multicast limit is apart");
+        assert_eq!(
+            multicast_hops_v6(&s).unwrap(),
+            1,
+            "the multicast limit is apart"
+        );
         let e = set_unicast_hops_v6(&s, 256).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(unicast_hops_v6(&s).unwrap(), 255);

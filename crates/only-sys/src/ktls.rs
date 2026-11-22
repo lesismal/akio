@@ -406,13 +406,10 @@ pub fn interface_addrs() -> io::Result<Vec<(String, std::net::IpAddr)>> {
                 let ip = match i32::from(family) {
                     ffi::AF_INET => {
                         let a = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in>());
-                        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
-                            a.sin_addr.s_addr,
-                        ))))
+                        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr))))
                     }
                     ffi::AF_INET6 => {
-                        let a =
-                            std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in6>());
+                        let a = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in6>());
                         Some(IpAddr::V6(Ipv6Addr::from(a.sin6_addr.s6_addr)))
                     }
                     _ => None,

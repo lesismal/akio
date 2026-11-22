@@ -229,7 +229,8 @@ pub fn open_data(
 pub type SharedGss = Arc<Mutex<Box<dyn GssContext>>>;
 
 fn lock(ctx: &SharedGss) -> MutexGuard<'_, Box<dyn GssContext>> {
-    ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    ctx.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[doc(hidden)]

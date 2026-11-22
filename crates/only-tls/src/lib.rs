@@ -78,8 +78,8 @@ mod tickets;
 mod trust;
 
 pub use config::{
-    CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, Ktls,
-    PrivateKey, RevocationPolicy, RootCerts, ServerConfig, ServerConfigBuilder,
+    CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, Ktls, PrivateKey,
+    RevocationPolicy, RootCerts, ServerConfig, ServerConfigBuilder,
 };
 
 /// Who does one direction's record protection once a connection moved it into the kernel

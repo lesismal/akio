@@ -109,9 +109,9 @@ pub fn socks_client(data: &[u8]) {
     }
     // Datagrams through one reassembly queue; each also as a GSS-API protected datagram.
     let gss = crate::gssapi::DatagramGss::new(
-        std::sync::Arc::new(std::sync::Mutex::new(Box::new(only_ws::gss::toy::Toy::acceptor(
-            0x42,
-        )) as Box<dyn crate::gssapi::GssContext>)),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            Box::new(only_ws::gss::toy::Toy::acceptor(0x42)) as Box<dyn crate::gssapi::GssContext>,
+        )),
         crate::gssapi::Protection::Integrity,
     );
     let mut r = crate::frag::Reassembly::default();

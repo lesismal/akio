@@ -74,9 +74,9 @@ fn rustls_client(trust: &CertificateDer<'static>, tls12: bool, chacha: bool) -> 
     roots.add(trust.clone()).unwrap();
     let mut provider = rustls::crypto::ring::default_provider();
     if chacha {
-        provider.cipher_suites.retain(|s| {
-            format!("{:?}", s.suite()).contains("CHACHA20")
-        });
+        provider
+            .cipher_suites
+            .retain(|s| format!("{:?}", s.suite()).contains("CHACHA20"));
     }
     let versions: &[&rustls::SupportedProtocolVersion] = if tls12 {
         &[&rustls::version::TLS12]
@@ -223,7 +223,11 @@ fn expected(mode: Ktls, tls13: bool) -> (Option<KtlsPath>, Option<KtlsPath>) {
 }
 
 /// The receive direction moves once a read ends on a record boundary: after a small echo.
-fn settle(s: &Server, c: &mut StreamOwned<ClientConnection, TcpStream>, want: (Option<KtlsPath>, Option<KtlsPath>)) {
+fn settle(
+    s: &Server,
+    c: &mut StreamOwned<ClientConnection, TcpStream>,
+    want: (Option<KtlsPath>, Option<KtlsPath>),
+) {
     let t = Instant::now();
     loop {
         echo_small(c, b"sync");
@@ -231,7 +235,11 @@ fn settle(s: &Server, c: &mut StreamOwned<ClientConnection, TcpStream>, want: (O
         if (i.ktls_tx, i.ktls_rx) == want {
             return;
         }
-        assert!(t.elapsed() < Duration::from_secs(5), "ktls {:?} != {want:?}", (i.ktls_tx, i.ktls_rx));
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "ktls {:?} != {want:?}",
+            (i.ktls_tx, i.ktls_rx)
+        );
         thread::sleep(Duration::from_millis(5));
     }
 }
@@ -248,7 +256,11 @@ fn software_both_directions_echo_and_bulk() {
         echo_bulk(&mut c, &pattern(6 << 20));
         echo_small(&mut c, b"after bulk");
         let n = s.stats.counts();
-        assert_eq!(n.ktls_tx_software, u64::from(want.0.is_some()), "tls12={tls12} chacha={chacha}");
+        assert_eq!(
+            n.ktls_tx_software,
+            u64::from(want.0.is_some()),
+            "tls12={tls12} chacha={chacha}"
+        );
         assert_eq!(n.ktls_rx_software, u64::from(want.1.is_some()));
         assert_eq!(n.ktls_tx_hardware + n.ktls_rx_hardware, 0);
     }
@@ -322,7 +334,10 @@ fn send_file_goes_through_the_kernel() {
             c.write_all(b"FILE").unwrap();
             let mut got = vec![0u8; FILE_LEN];
             c.read_exact(&mut got).unwrap();
-            assert!(got == std::fs::read(file_path()).unwrap(), "{mode:?}: file differs");
+            assert!(
+                got == std::fs::read(file_path()).unwrap(),
+                "{mode:?}: file differs"
+            );
         }
     }
 }
@@ -375,7 +390,11 @@ fn only_client_with_ktls_dials_only_server() {
     let got = Arc::new(Mutex::new(Vec::new()));
     let info = Arc::new(Mutex::new(None));
     let data = pattern(2 << 20);
-    let client = Engine::builder().config(quick()).client_threads(1).build().unwrap();
+    let client = Engine::builder()
+        .config(quick())
+        .client_threads(1)
+        .build()
+        .unwrap();
     client.start().unwrap();
     let acc = Acc(got.clone(), info.clone(), data.clone());
     client.dial(s.addr(), Tls::client(cfg, "localhost", acc).unwrap(), |e| {
@@ -383,7 +402,10 @@ fn only_client_with_ktls_dials_only_server() {
     });
     let t = Instant::now();
     while got.lock().unwrap().len() < data.len() {
-        assert!(t.elapsed() < Duration::from_secs(10), "no echo through kTLS");
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "no echo through kTLS"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     assert!(*got.lock().unwrap() == data);

@@ -51,7 +51,10 @@ fn none_fields_keep_any_bytes() {
 
     let m = Strings::decode(&wire).expect("NONE fields accept any bytes");
     assert_eq!(m.raw(), BAD);
-    assert_eq!(m.raw_list, [ProtoString::from(BAD), ProtoString::from("ok")]);
+    assert_eq!(
+        m.raw_list,
+        [ProtoString::from(BAD), ProtoString::from("ok")]
+    );
     assert_eq!(m.raw_map.get(BAD), Some(&ProtoString::from(BAD)));
     assert_eq!(m.choice, Some(utf8::strings::Choice::RawChoice(BAD.into())));
     assert_eq!(m.implicit_raw, BAD);
@@ -59,7 +62,10 @@ fn none_fields_keep_any_bytes() {
     // Written back byte for byte (fields in number order, as decoded).
     assert_eq!(Strings::decode(&m.encode_to_vec()).unwrap(), m);
     assert_eq!(m.encode_to_vec().len(), m.encoded_len());
-    assert_eq!(m.raw.as_ref().unwrap().to_string_lossy(), "a\u{fffd}\u{fffd}b");
+    assert_eq!(
+        m.raw.as_ref().unwrap().to_string_lossy(),
+        "a\u{fffd}\u{fffd}b"
+    );
 }
 
 #[test]
@@ -142,7 +148,10 @@ fn dynamic_messages_follow_the_descriptor() {
         Value::List(vec![Value::Bytes(BAD.to_vec()), Value::String("ok".into())])
     );
     assert_eq!(dm.encode_to_vec(), wire);
-    assert_eq!(Strings::from_dynamic(&dm).unwrap(), Strings::decode(&wire).unwrap());
+    assert_eq!(
+        Strings::from_dynamic(&dm).unwrap(),
+        Strings::decode(&wire).unwrap()
+    );
     assert_eq!(Strings::decode(&wire).unwrap().to_dynamic().unwrap(), dm);
 
     let e = DynamicMessage::decode(d.clone(), &len_field(1, BAD)).unwrap_err();

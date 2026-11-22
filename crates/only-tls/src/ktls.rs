@@ -528,7 +528,10 @@ mod tests {
 
     fn table() -> Netdevs {
         let hw = NetdevTls { tx: true, rx: true };
-        let tx_only = NetdevTls { tx: true, rx: false };
+        let tx_only = NetdevTls {
+            tx: true,
+            rx: false,
+        };
         Netdevs {
             ifaces: vec![
                 (ip("192.0.2.1"), "eth0".into(), hw),

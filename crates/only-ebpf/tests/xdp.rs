@@ -75,8 +75,14 @@ fn udp_flood_is_cut_to_the_burst_per_source() {
     let (a, ta) = udp_burst_timed("127.0.0.2:0", 200);
     let (b, tb) = udp_burst_timed("127.0.0.3:0", 200);
     let max = |t: Duration| 11 + t.as_secs() as usize;
-    assert!((10..=max(ta)).contains(&a), "{a} datagrams from .2 passed in {ta:?}");
-    assert!((10..=max(tb)).contains(&b), "{b} datagrams from .3 passed in {tb:?}");
+    assert!(
+        (10..=max(ta)).contains(&a),
+        "{a} datagrams from .2 passed in {ta:?}"
+    );
+    assert!(
+        (10..=max(tb)).contains(&b),
+        "{b} datagrams from .3 passed in {tb:?}"
+    );
     let s = l.stats().unwrap();
     assert!(s.dropped >= 2 * 189, "{s:?}");
     assert!(s.new_sources >= 2, "{s:?}");

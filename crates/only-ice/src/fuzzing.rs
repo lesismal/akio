@@ -316,8 +316,11 @@ mod seeds {
                 &[q(TYPE_A, false)],
                 &[rec("192.168.1.20", 10, false)],
             ),
-            Message::probe(name, &[rec("192.168.1.20", 120, false), rec("fd00::7", 120, false)])
-                .unwrap_or_default(),
+            Message::probe(
+                name,
+                &[rec("192.168.1.20", 120, false), rec("fd00::7", 120, false)],
+            )
+            .unwrap_or_default(),
         ];
         // As a browser's responder writes it: the name once, then a compression pointer.
         let mut c = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 1];

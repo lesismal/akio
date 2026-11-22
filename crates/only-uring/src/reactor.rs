@@ -1195,10 +1195,7 @@ impl Loop {
                         // while `data` lives. `slice` bounds-checks the range.
                         let data = unsafe { g.bufs.slice(off, n.min(g.size)) };
                         // `refresh` ran after the previous completion, so `bp` is current.
-                        if !lc.held_in.is_empty()
-                            || lc.bp
-                            || lc.rx_offload
-                            || lc.inner.read_held()
+                        if !lc.held_in.is_empty() || lc.bp || lc.rx_offload || lc.inner.read_held()
                         {
                             // Reads are paused, but the multishot recv runs until its cancel
                             // lands (it can complete many more buffers first): keep the data,
