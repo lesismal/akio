@@ -125,6 +125,13 @@ that each server-sent event still reaches the client at once, with small per-str
 0.3, 0.5 and 1.3 MiB per open stream). Brotli costs the most CPU per small write, so for
 high-rate event streams offer zstd or let gzip serve them.
 
+The middleware uses no dictionaries. Applications that exchange brotli data compressed with a
+shared dictionary can decode it with `only-brotli` directly: raw (LZ77 prefix) dictionaries,
+as `brotli -D` and RFC 9842's `dcb` use them (`decompress_with_dictionary`), and RFC 9841
+serialized shared dictionaries with custom word lists and transforms
+(`SharedDictionary::new`, `decompress_with_shared_dictionary`; ADR-069). The encoder uses a
+shared dictionary's prefix only.
+
 ```rust,ignore
 {{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
 ```

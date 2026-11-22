@@ -10,6 +10,21 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：RFC 9841 共享字典（only-brotli）
+
+ADR-069 的 2026-11-22 补记，新增 API：
+
+- `SharedDictionary`（`new` 解析 RFC 9841 的序列化格式，`raw` 包装原始前缀；`prefix`、`is_raw`）、
+  `decompress_with_shared_dictionary`、`Decompressor::with_shared_dictionary`、
+  `compress_with_shared_dictionary`（只用前缀；字典带自定义词时不使用静态字典词）与 `Error::BadDictionary`。
+- 解码支持自定义词表（4 到 31 字节的词）、包含全部 23 种操作（含 `ShiftFirst` / `ShiftAll`）的自定义变换表，
+  以及按字面量上下文选择并回退的多个字典，与 Google 的解码器一致。变换按 Google 的字节布局（前缀、操作、
+  后缀），RFC 9841 的文字则把操作列在最后。
+- 测试：覆盖每种变换、移位、上下文选择与回退的手工构造流；libbrotli 用四种字典的输出（`tests/data/shared`）；
+  `tools/interop/brotli-shared/run.sh` 与 libbrotli（`BROTLI_EXPERIMENTAL`）双向核对，包括 20,000 个随机字典；
+  新的模糊测试目标 `brotli_shared`。
+- 无字典解码速度不变（gpu51 同批 A/B：libbrotli 的流为 main 速度的 0.996，我们自己的流 0.999（几何平均），在噪声之内；docs/BENCHMARKS.zh-CN.md，“brotli 共享字典”）。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

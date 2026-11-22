@@ -77,6 +77,41 @@ are. Errors are sticky until `reset`. The one-shot functions are unchanged.
   lists and transforms) is not implemented: Google's CLI cannot produce it, nothing here needs
   it, and its decoding changes the static-dictionary path of the hot loop.
 
+  **Note 2026-11-22: RFC 9841 serialized shared dictionaries done** (additive API:
+  `SharedDictionary`, `decompress_with_shared_dictionary`, `Decompressor::with_shared_dictionary`,
+  `compress_with_shared_dictionary`, `Error::BadDictionary`). `SharedDictionary::new` parses
+  the format of RFC 9841 section 5: the signature `0x91 0x00`, an LZ77 prefix, up to 64 word
+  lists (words of 4 to 31 bytes, at most 2^15 of a length), up to 64 transform lists (up to 256
+  prefix / suffix stringlets ending with the empty one, up to 255 transforms over 23
+  operations: RFC 7932's 21 plus `ShiftFirst` / `ShiftAll` with their 16-bit parameters), up to
+  64 dictionaries pairing a word list with a transform list (either may be brotli's own) and an
+  optional context map. Where the RFC's prose and Google's implementation
+  (`c/common/shared_dictionary.c`, the format's only producer and consumer) differ, Google's
+  wins: a transform is the triplet (prefix, operation, suffix), not (prefix, suffix,
+  operation); the prefix length is a varint of at most five bytes and at most 2^30 - 1. Unlike
+  Google's parser, bytes after the last field are refused. Decoding follows Google's decoder:
+  a distance beyond the window and the prefix is a static reference of length 4..=31 into the
+  dictionary that the context map gives for the literal context of the last two output bytes
+  (under the current literal block type's context mode; dictionary 0 without a map); an
+  address past that dictionary's words × transforms continues in the others, in order, skipping
+  those without words of the length; an empty transformed word at a distance of 120 or less is
+  an error (a reference that may take no bits would otherwise make no progress, forever). The
+  hot loop does not change: static references already left it for an `#[inline(never)]`
+  function, which now also gets the context lookup table and passes custom dictionaries on to a
+  cold function; the decoder holds the prefix and an optional pointer to the custom
+  dictionaries where it held the prefix. Same-run A/B on gpu51 without a dictionary: decoding speed unchanged (geometric mean of branch / main over HTTP payloads, certificate chains and 20 MB of Silesia at levels 1, 5, 9 and 11: 0.996 on libbrotli's streams, 0.999 on our own, Silesia 0.999..1.006, within the spread of the libbrotli control; docs/BENCHMARKS.md, "Brotli shared dictionaries").
+  The encoder uses the prefix only and, when the dictionary has custom static dictionaries,
+  emits no static references (built-in words would decode as custom ones); searching custom
+  word lists is not done, nor a streaming `Compressor` constructor (`with_dictionary(prefix)`
+  serves dictionaries that are `is_raw()`). Checked against libbrotli built with
+  `BROTLI_EXPERIMENTAL` (`tools/interop/brotli-shared/run.sh`): 20,000 random dictionaries with
+  hand-made streams of references (every operation, context maps, fallback, prefix copies)
+  decode to the same output or are refused by both; libbrotli's encoder with four dictionaries
+  (a prefix; custom words; custom words and transforms; two word lists and brotli's own chosen
+  by context) at q1/5/9/11 on alice29.txt decodes with ours (custom words in use from q5), and
+  ours decodes with libbrotli. Not done: RFC 9841's large-window brotli and framing format
+  (sections 6 and 8), compound dictionaries (several prefixes).
+
 ### 3. Ratios at the top levels
 
 - **zstd 16..=22**: a shortest-path parse per block (libzstd's `btopt` / `btultra`) over

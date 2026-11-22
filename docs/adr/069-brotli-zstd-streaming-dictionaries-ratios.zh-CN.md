@@ -58,6 +58,29 @@ limit)` 与 `decompress(input, &mut [u8])`，返回 `Progress { consumed, produc
   把字典中的位置当作候选。未实现 RFC 9841 的序列化共享字典格式（自定义词表与变换）：Google 的命令行工具
   无法生成它，这里没有用到它，而解码它会改变热循环中的静态字典路径。
 
+  **补记 2026-11-22：RFC 9841 序列化共享字典已完成**（API 为新增：`SharedDictionary`、
+  `decompress_with_shared_dictionary`、`Decompressor::with_shared_dictionary`、
+  `compress_with_shared_dictionary`、`Error::BadDictionary`）。`SharedDictionary::new` 解析 RFC 9841
+  第 5 节的格式：签名 `0x91 0x00`、LZ77 前缀、至多 64 个词表（4 到 31 字节的词，每种长度至多 2^15 个）、
+  至多 64 个变换表（至多 256 个以空串结尾的前缀/后缀串，至多 255 个变换，23 种操作：RFC 7932 的 21 种加上
+  带 16 位参数的 `ShiftFirst` / `ShiftAll`）、至多 64 个把词表与变换表配对的字典（两者都可以是 brotli
+  自带的），以及可选的上下文映射。RFC 的文字与 Google 的实现（`c/common/shared_dictionary.c`，该格式唯一的
+  生产者与消费者）不一致之处以 Google 为准：变换是（前缀、操作、后缀）三元组，而不是（前缀、后缀、操作）；
+  前缀长度是至多 5 字节、不超过 2^30 - 1 的 varint。与 Google 的解析器不同，最后一个字段之后的字节会被拒绝。
+  解码遵循 Google 的解码器：超出窗口和前缀的距离是长度 4..=31 的静态引用，指向上下文映射为最后两个输出字节的
+  字面量上下文（按当前字面量块类型的上下文模式；没有映射时为字典 0）给出的字典；超出该字典“词数 × 变换数”的
+  地址按顺序继续落到其他字典，跳过没有该长度词的字典；距离不超过 120 时变换后为空的词是错误（否则一个可能
+  不占任何比特的引用会永远没有进展）。热循环不变：静态引用本来就离开热循环进入一个 `#[inline(never)]`
+  函数，它现在多接收上下文查找表，并把自定义字典转交给一个冷函数；解码器原先持有前缀的地方现在持有前缀和
+  一个指向自定义字典的可选指针。gpu51 上无字典的同轮 A/B：解码速度不变（在 HTTP 负载、证书链与 20 MB Silesia 上，级别 1、5、9、11，分支 / main 的几何平均：libbrotli 的流 0.996，我们自己的流 0.999，Silesia 0.999..1.006，在 libbrotli 对照的波动范围之内；docs/BENCHMARKS.zh-CN.md，“brotli 共享字典”）。编码器只使用前缀；字典带自定义静态
+  字典时不输出任何静态引用（内置词会被解码成自定义词）；没有做搜索自定义词表，也没有流式 `Compressor` 的
+  构造函数（`is_raw()` 的字典可用 `with_dictionary(prefix)`）。与以 `BROTLI_EXPERIMENTAL` 构建的 libbrotli
+  核对（`tools/interop/brotli-shared/run.sh`）：20,000 个随机字典配手工构造的引用流（全部操作、上下文映射、
+  回退、前缀复制）输出相同或双方都拒绝；libbrotli 的编码器用四种字典（仅前缀；自定义词；自定义词与变换；
+  两个词表加 brotli 自带的、按上下文选择）以 q1/5/9/11 压缩 alice29.txt，我们都能解码（从 q5 起用到了自定义
+  词），我们的输出 libbrotli 也能解码。未完成：RFC 9841 的大窗口 brotli 与封装格式（第 6、8 节），复合字典
+  （多个前缀）。
+
 ### 3. 最高级别的压缩率
 
 - **zstd 16..=22**：每个块做最短路径解析（libzstd 的 `btopt` / `btultra`），候选来自 libzstd 的二叉树

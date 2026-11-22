@@ -1827,6 +1827,31 @@ for the parse (Google's `BrotliEstimateBitCostsForLiterals`: no difference), for
 clustering batches down to 16 clusters (no faster in a noisy run, slightly larger), the full
 splitter at the middle levels (-5% on mixed data but 5× slower at level 5).
 
+### Brotli shared dictionaries: decoding without one (ADR-069 note, same-run A/B, CPU 2, 2026-11-22)
+
+RFC 9841 shared dictionaries had been left out because they change the static-dictionary path
+of the decoder's hot loop. `tools/codec-bench brotli` built from main (`7e4db2d9`) and the
+shared-dictionary branch in separate target directories, 4 alternating rounds each under
+`quiet.sh`, pinned to CPU 2 (`BENCH_ENC=0`, levels 1, 5, 9, 11); medians of the 4 rounds,
+branch / main. Corpus from `corpus.sh` (HTTP payloads and certificate chains) plus the first
+20 MB of the Silesia tar (x-ray, part of nci; fetched from a mirror of the corpus's files).
+"C stream" decodes libbrotli's output, "own" our encoder's; libbrotli's own decoder in the same
+runs is the noise control.
+
+| File | Decode C stream, MB/s at q1 / q5 / q9 / q11 (main) | Ratio C stream | Ratio own | Control (libbrotli) |
+|---|---|---|---|---|
+| metadata.json (682 KB) | 1812 / 2330 / 2535 / 2141 | 1.007 / 0.994 / 0.978 / 0.999 | 1.002 / 0.991 / 1.008 / 1.009 | 0.997..1.005 |
+| page.html | 1209 / 1298 / 1319 / 1125 | 0.990 / 0.992 / 0.996 / 0.998 | 0.992..1.002 | 0.992..1.000 |
+| search.js | 852 / 978 / 1006 / 856 | 0.993..1.009 | 0.993..1.002 | 1.005..1.015 |
+| github.com chain | 353 / 367 / 367 / 364 | 0.991..0.998 | 0.992..0.999 | 1.001..1.007 |
+| wikipedia.org chain | 405 / 447 / 455 / 458 | 0.990..0.997 | 0.990..0.996 | 0.999..1.003 |
+| Silesia, first 20 MB | 603 / 594 / 652 / 510 | 1.006 / 0.999 / 0.999 / 1.001 | 1.004 / 1.006 / 1.013 / 1.003 | 0.996..1.001 |
+
+Geometric mean over the 24 cases: 0.996 (C streams), 0.999 (own streams); the static
+reference path is out of the loop and the loop itself did not change, so this is within the
+run-to-run spread (the control moves 0.992..1.015). Decoding with a raw dictionary takes the
+same code.
+
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 
 A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay
