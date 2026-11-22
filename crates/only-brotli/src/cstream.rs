@@ -34,6 +34,8 @@ use crate::{Flush, Level};
 pub struct Compressor {
     level: Level,
     wbits: u32,
+    /// A large-window stream (RFC 9841 section 6).
+    large: bool,
     dict: Option<Arc<[u8]>>,
     st: Option<State>,
     w: BitWriter,
@@ -52,7 +54,8 @@ impl std::fmt::Debug for Compressor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Compressor")
             .field("level", &self.level)
-            .field("window_bits", &self.wbits)
+            .field("window_bits", &self.wbits())
+            .field("large_window", &self.large)
             .field("dictionary_len", &self.dict.as_ref().map(|d| d.len()))
             .field("total_in", &self.total_in)
             .field("finished", &self.finished)
@@ -66,6 +69,7 @@ impl Compressor {
         Compressor {
             level,
             wbits: 22,
+            large: false,
             dict: None,
             st: None,
             w: BitWriter::with_capacity(0),
@@ -87,12 +91,34 @@ impl Compressor {
         c
     }
 
-    /// Sets the window to `2^bits` bytes (`bits` clamped to 10..=24), for a decoder with
-    /// less memory or to keep less per stream. Before the first input only.
+    /// Sets the window to `2^bits` bytes (`bits` clamped to 10..=24, or 10..=30 for a
+    /// [large-window](Compressor::large_window) stream), for a decoder with less memory or to
+    /// keep less per stream. Before the first input only.
     #[must_use]
     pub fn window_bits(mut self, bits: u32) -> Compressor {
-        self.wbits = bits.clamp(10, 24);
+        self.wbits = bits.clamp(10, 30);
         self
+    }
+
+    /// Writes a large-window brotli stream (RFC 9841 section 6; see
+    /// [`compress_large_window`](crate::compress_large_window)), whose window may be up to
+    /// 2³⁰ bytes ([`window_bits`](Compressor::window_bits) up to 30). Only large-window
+    /// decoders decode it. Memory is the window up to about three times over, as for any
+    /// stream; the match finder's chains reach back at most 32 MiB (2²⁵ positions), its
+    /// buckets (levels 0..=6) the whole window. Before the first input only.
+    #[must_use]
+    pub fn large_window(mut self, on: bool) -> Compressor {
+        self.large = on;
+        self
+    }
+
+    /// The window bits in effect.
+    fn wbits(&self) -> u32 {
+        if self.large {
+            self.wbits
+        } else {
+            self.wbits.min(24)
+        }
     }
 
     /// Starts a new stream: the input so far is forgotten.
@@ -171,6 +197,8 @@ impl Compressor {
                         self.level,
                         &self.buf[d..],
                         dict.as_deref().unwrap_or(&[]),
+                        self.large,
+                        self.wbits(),
                     ));
                 }
                 self.finished = true;
@@ -191,14 +219,15 @@ impl Compressor {
 
     /// Compresses `buf[pos..end]` as one meta-block.
     fn meta_block(&mut self, end: usize, last: bool) {
-        let window = 1usize << self.wbits;
+        let wbits = self.wbits();
+        let window = 1usize << wbits;
         let dict_len = self.dict_len();
         let mut st = match self.st.take() {
             Some(st) => st,
             None => {
                 self.started = true;
-                write_window_bits(&mut self.w, self.wbits);
-                let mut st = Encoder::state(self.level, self.wbits, dict_len);
+                write_window_bits(&mut self.w, wbits, self.large);
+                let mut st = Encoder::state(self.level, wbits, dict_len, self.large);
                 st.keep_codes();
                 if dict_len > 0 {
                     let mut e = Encoder::resume(&self.buf, st);

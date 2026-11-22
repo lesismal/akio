@@ -37,7 +37,7 @@ use split::{BlockSplit, Histo};
 /// The output decodes with any brotli decoder (Google's `brotli`, `brotli-decompressor`) and
 /// with [`decompress`](crate::decompress).
 pub fn compress(level: Level, data: &[u8]) -> Vec<u8> {
-    compress_impl(level, data, &[])
+    compress_impl(level, data, &[], false, 22)
 }
 
 /// [`compress`] with a raw (LZ77 prefix) dictionary: matches may copy from `dict` as if it
@@ -45,7 +45,7 @@ pub fn compress(level: Level, data: &[u8]) -> Vec<u8> {
 /// dictionaries, `brotli -D`). Decode with the same dictionary
 /// ([`decompress_with_dictionary`](crate::decompress_with_dictionary), `brotli -d -D`).
 pub fn compress_with_dictionary(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
-    compress_impl(level, data, dict)
+    compress_impl(level, data, dict, false, 22)
 }
 
 /// [`compress`] with a shared dictionary (RFC 9841): matches may copy from its LZ77 prefix as
@@ -61,11 +61,29 @@ pub fn compress_with_shared_dictionary(
 ) -> Vec<u8> {
     let mut p = params(level.get());
     p.static_words = dict.is_raw();
-    compress_with(p, data, dict.prefix())
+    compress_with(p, data, dict.prefix(), 22)
 }
 
-/// Writes the stream header (the window size).
-pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32) {
+/// [`compress`] into a large-window brotli stream (RFC 9841 section 6, Google's
+/// `BROTLI_PARAM_LARGE_WINDOW`): the window is the smallest that holds all of `data`, up to
+/// 2³⁰ bytes, so matches reach back over the whole input where a regular stream's reach at
+/// most 4 MiB (the window [`compress`] uses; RFC 7932 allows 16 MiB). Only large-window
+/// decoders decode it ([`decompress_large_window`](crate::decompress_large_window),
+/// [`Decompressor::large_window`](crate::Decompressor::large_window), `brotli -d
+/// --large_window`), even when the window is small: the header says large window.
+pub fn compress_large_window(level: Level, data: &[u8]) -> Vec<u8> {
+    let mut p = params(level.get());
+    p.large = true;
+    compress_with(p, data, &[], 30)
+}
+
+/// Writes the stream header (the window size; `large`: the large-window header).
+pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32, large: bool) {
+    if large {
+        // 0x11 in 8 bits (an invalid regular header), then the window bits in 6.
+        w.bits(14, 0x11 | u64::from(wbits) << 8);
+        return;
+    }
     match wbits {
         16 => w.bits(1, 0),
         17 => w.bits(7, 1),
@@ -74,14 +92,24 @@ pub(crate) fn write_window_bits(w: &mut BitWriter, wbits: u32) {
     }
 }
 
-pub(crate) fn compress_impl(level: Level, data: &[u8], dict: &[u8]) -> Vec<u8> {
-    compress_with(params(level.get()), data, dict)
+/// The one-shot stream of `data` at `level` (`large`: a large-window stream with a window of
+/// up to `2^max_wbits`).
+pub(crate) fn compress_impl(
+    level: Level,
+    data: &[u8],
+    dict: &[u8],
+    large: bool,
+    max_wbits: u32,
+) -> Vec<u8> {
+    let mut p = params(level.get());
+    p.large = large;
+    compress_with(p, data, dict, if large { max_wbits } else { 22 })
 }
 
-fn compress_with(p: Params, data: &[u8], dict: &[u8]) -> Vec<u8> {
-    let wbits = window_bits(data.len());
+fn compress_with(p: Params, data: &[u8], dict: &[u8], max_wbits: u32) -> Vec<u8> {
+    let wbits = window_bits(data.len(), max_wbits);
     let mut w = BitWriter::with_capacity(data.len() / 2 + 16);
-    write_window_bits(&mut w, wbits);
+    write_window_bits(&mut w, wbits, p.large);
     if data.is_empty() {
         w.bits(2, 0b11); // ISLAST, ISLASTEMPTY
         return w.finish();
@@ -100,8 +128,9 @@ fn compress_with(p: Params, data: &[u8], dict: &[u8]) -> Vec<u8> {
     let mut pos = dict.len();
     while pos < all.len() {
         if p.optimal > 0 {
-            // Up to twice the window per meta-block, parsed in blocks (Google's sizes).
-            pos = e.long_meta_block(&mut w, pos, (pos + (2 << wbits)).min(all.len()));
+            // Up to twice the window per meta-block, parsed in blocks (Google's sizes; a
+            // meta-block holds at most 2^24 bytes).
+            pos = e.long_meta_block(&mut w, pos, (pos + (2 << wbits.min(22))).min(all.len()));
         } else {
             let end = (pos + p.block).min(all.len());
             e.meta_block(&mut w, pos, end, end == all.len());
@@ -111,10 +140,11 @@ fn compress_with(p: Params, data: &[u8], dict: &[u8]) -> Vec<u8> {
     w.finish()
 }
 
-/// The smallest window holding all of `n` bytes, between 2^16 (a one-bit header) and 2^22.
-fn window_bits(n: usize) -> u32 {
+/// The smallest window holding all of `n` bytes, between 2^16 (a one-bit header) and
+/// `2^max` (22: Google's default).
+fn window_bits(n: usize, max: u32) -> u32 {
     let mut w = 16;
-    while w < 22 && (1usize << w) - 16 < n {
+    while w < max && (1usize << w) - 16 < n {
         w += 1;
     }
     w
@@ -430,7 +460,12 @@ impl<'a> Encoder<'a> {
     /// The hash bits and chain size for tables over an input of `len` bytes: about twice as
     /// many entries as it has bytes, at most the level's.
     fn table_sizes(&self, len: usize) -> (u32, usize) {
-        let wsize = self.reach.min(len.next_power_of_two().max(1024));
+        // A chain of at most 2^25 positions (a large window's would take gigabytes): older
+        // links are overwritten, and a candidate found through one is checked like any other.
+        let wsize = self
+            .reach
+            .min(1 << 25)
+            .min(len.next_power_of_two().max(1024));
         let len_bits = usize::BITS - len.max(1).leading_zeros();
         let bits = if self.p.optimal == 0 && self.p.depth <= 32 {
             // At most 2^15 buckets.
@@ -460,8 +495,10 @@ impl<'a> Encoder<'a> {
     /// A fresh state at `level` for a stream with a window of `2^wbits` bytes whose data
     /// starts with a raw dictionary of `dict` bytes. Its tables are those of an input of
     /// `dict` bytes; [`Encoder::fit`] grows them with the stream.
-    pub(crate) fn state(level: Level, wbits: u32, dict: usize) -> State {
-        Encoder::new(params(level.get()), wbits, &[], dict).suspend_sized(dict)
+    pub(crate) fn state(level: Level, wbits: u32, dict: usize, large: bool) -> State {
+        let mut p = params(level.get());
+        p.large = large;
+        Encoder::new(p, wbits, &[], dict).suspend_sized(dict)
     }
 
     /// [`Encoder::suspend`] with tables sized for `len` bytes.
@@ -1248,13 +1285,16 @@ fn write_body<const SPLIT: bool>(
 
 // ---- Optimal parsing -------------------------------------------------------------------------
 
+/// The most distance symbols a meta-block uses (see [`Params::dist_size`]).
+const MAX_DIST_SYMS: usize = 74;
+
 /// Bit costs of symbols, from code lengths of a previous pass (or a first estimate).
 struct CostModel {
     lit: [f32; 256],
     /// Per position of the block (when not empty): the cost of its byte as a literal.
     local: Vec<f32>,
     cmd: Vec<f32>,
-    dist: [f32; 64],
+    dist: [f32; MAX_DIST_SYMS],
 }
 
 fn costs_of(hist: &[u32], out: &mut [f32]) {
@@ -1330,7 +1370,7 @@ impl CostModel {
     fn from_commands(data: &[u8], start: usize, cmds: &[Command], ring: [u32; 4]) -> Self {
         let mut ring = ring;
         let mut ch = vec![0u32; 704];
-        let mut dh = [0u32; 64];
+        let mut dh = [0u32; MAX_DIST_SYMS];
         let mut lh = [0u32; 256];
         let mut pos = start;
         for c in cmds {
@@ -1348,7 +1388,7 @@ impl CostModel {
             lit: [0.0; 256],
             local: Vec::new(),
             cmd: vec![0.0; 704],
-            dist: [0.0; 64],
+            dist: [0.0; MAX_DIST_SYMS],
         };
         costs_of(&lh, &mut m.lit);
         costs_of(&ch, &mut m.cmd);
@@ -2064,11 +2104,11 @@ fn greedy_layout(mb: &MetaBlock<'_>, model: &LiteralModel) -> Option<Layout> {
     }
     let syms = symbols(mb);
     let mut cmd = split::greedy(&syms.cmds, 704, &split::GREEDY_COMMANDS, 256);
-    let mut dist = split::greedy(&syms.dists, 64, &split::GREEDY_DISTANCES, 256);
+    let mut dist = split::greedy(&syms.dists, mb.dist_size, &split::GREEDY_DISTANCES, 256);
     // Block types are kept only if they save at least 1% of the meta-block's estimated bits:
     // block switches cost time to write, and smaller savings are not worth it at these levels.
     let c = split::split_gain(&syms.cmds, 704, &cmd);
-    let d = split::split_gain(&syms.dists, 64, &dist);
+    let d = split::split_gain(&syms.dists, mb.dist_size, &dist);
     let (mut one, mut apart) = (0.0, 0.0);
     for (g, s) in [(l, &mut lit), (c, &mut cmd), (d, &mut dist)] {
         one += g.0;
@@ -2130,7 +2170,7 @@ fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
     } = symbols(mb);
     let lit = split::split(&lits, 256, &split::LITERALS, iters);
     let cmd = split::split(&csyms, 704, &split::COMMANDS, iters);
-    let dist = split::split(&dsyms, 64, &split::DISTANCES, iters);
+    let dist = split::split(&dsyms, mb.dist_size, &split::DISTANCES, iters);
     let lut = 512 * usize::from(mode);
     let mut hs = vec![Histo::new(256); lit.ntypes * 64];
     let mut cur = Cursor::new(&lit);
@@ -2141,7 +2181,7 @@ fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
         }
     });
     let (lit_map, lit_trees) = split::context_map(&hs, 64, 4, 256);
-    let mut hs = vec![Histo::new(64); dist.ntypes * 4];
+    let mut hs = vec![Histo::new(mb.dist_size); dist.ntypes * 4];
     let mut cur = Cursor::new(&dist);
     for (&d, &x) in dsyms.iter().zip(&dctx) {
         hs[cur.next() * 4 + usize::from(x)].add(usize::from(d));
@@ -3214,7 +3254,7 @@ mod tests {
     /// The block types the level's splitter finds for `data` as one meta-block.
     fn types(level: u8, data: &[u8]) -> (usize, usize, usize) {
         let p = params(level);
-        let mut e = Encoder::new(p, window_bits(data.len()), data, 0);
+        let mut e = Encoder::new(p, window_bits(data.len(), 22), data, 0);
         let mut cmds = Vec::new();
         if p.optimal > 0 {
             e.parse_optimal(0, data.len(), &mut cmds);

@@ -53,9 +53,14 @@ mod tables;
 pub mod fuzzing;
 
 pub use cstream::Compressor;
-pub use decode::{decompress, decompress_with_dictionary, decompress_with_shared_dictionary};
+pub use decode::{
+    decompress, decompress_large_window, decompress_with_dictionary,
+    decompress_with_shared_dictionary,
+};
 pub use dstream::Decompressor;
-pub use encode::{compress, compress_with_dictionary, compress_with_shared_dictionary};
+pub use encode::{
+    compress, compress_large_window, compress_with_dictionary, compress_with_shared_dictionary,
+};
 pub use shared::SharedDictionary;
 
 /// What a streaming [`Compressor::compress`] call does after taking its input.
