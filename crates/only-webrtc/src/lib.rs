@@ -1340,9 +1340,10 @@ impl Hub {
             }
         }
         let Some(id) = id else {
+            // RTP / RTCP, or DTLS before the keys exist (ADR-082).
             if !is_stun
                 && self.latch_count.load(Ordering::Relaxed) != 0
-                && matches!(data.first(), Some(128..=191))
+                && matches!(data.first(), Some(128..=191 | 20..=63))
             {
                 self.latch(source, destination, data, ecn);
             }

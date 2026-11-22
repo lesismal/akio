@@ -1537,7 +1537,10 @@ impl Rtc {
             .find_map(|m| m.get("setup"))
             .or_else(|| sdp.get("setup"));
         if self.dtls_role.is_none() && (!self.sdes.active || setup.is_some()) {
-            self.dtls_role = Some(if setup == Some("active") {
+            // Latching without ICE answers `actpass` with `passive`: the remote (perhaps
+            // behind a NAT) starts the handshake, which latches (ADR-082).
+            let latch = self.latching() && setup == Some("actpass");
+            self.dtls_role = Some(if setup == Some("active") || latch {
                 Role::Server
             } else {
                 Role::Client
@@ -2774,6 +2777,11 @@ impl Rtc {
                     self.rtcp_dtls_input(now, source, destination, data);
                 }
             }
+            20..=63 if self.dtls_latching(now, source, destination) => {
+                // From an address the endpoint routes here (a cookie exchange went there)
+                // but the pair is not on yet: the handshake latches first (ADR-082).
+                self.latch_dtls(now, source, destination, data);
+            }
             20..=63 => {
                 if self.remote_addr.is_none() {
                     self.remote_addr = Some(source);
@@ -2806,16 +2814,23 @@ impl Rtc {
             self.tp_each(|s| s.tp_handle_timeout(now));
         }
         self.ice.handle_timeout(now);
-        for d in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
+        self.latch_expire(now);
+        let mut failed = [false; 2];
+        for (i, d) in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
             .into_iter()
-            .flatten()
+            .enumerate()
         {
+            let Some(d) = d else { continue };
             if d.poll_timeout().is_some_and(|t| t <= now) {
                 if let Err(e) = d.handle_timeout(now) {
                     only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                    self.alive = false;
+                    failed[i] = true;
                 }
             }
+        }
+        // A handshake latched onto tentatively fails without harm (ADR-082).
+        if failed[1] || (failed[0] && !self.latch_dtls_failed()) {
+            self.alive = false;
         }
         if let Some(s) = self.sctp.as_mut() {
             if s.poll_timeout().is_some_and(|t| t <= now) {
@@ -2862,7 +2877,10 @@ impl Rtc {
         if let Some(data) = data {
             if let Err(e) = d.handle_datagram(now, data) {
                 only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                self.die();
+                // A handshake latched onto tentatively fails without harm (ADR-082).
+                if !self.latch_dtls_failed() {
+                    self.die();
+                }
             }
         }
     }
@@ -3878,6 +3896,7 @@ impl Rtc {
                         }
                     }
                     self.dtls_version = Some(info.version);
+                    self.latch_dtls_done(now);
                     only_log::debug!(target: "only_webrtc", "dtls: connected with {}", info.version);
                     self.dtls_up = true;
                     self.check_connected(now);
@@ -3893,7 +3912,12 @@ impl Rtc {
                         }
                     }
                 }
-                DtlsEvent::Closed => self.die(),
+                DtlsEvent::Closed => {
+                    if !self.latch_dtls_failed() {
+                        self.die();
+                    }
+                    break;
+                }
                 _ => {}
             }
         }

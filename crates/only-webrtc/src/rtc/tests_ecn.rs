@@ -938,3 +938,164 @@ fn no_ecn_on_paths_over_tcp() {
     ));
     assert_eq!(r.no_ecn, [addr("10.0.0.1:9")]);
 }
+
+// ---- latching before DTLS-SRTP keys (ADR-082) ----
+
+fn dtls_plain(latching: Latching) -> ConfigInner {
+    let mut c = ConfigInner::default();
+    c.ice = false;
+    c.latching = latching;
+    c
+}
+
+const ATTACKER: &str = "198.51.100.66:6000";
+
+/// A gateway `a` (latching as `latching`) and a phone `b` behind a NAT with DTLS-SRTP and no
+/// ICE: `gateway_offers` or the phone offers. Returns the sides, the network, the audio mid,
+/// the offer and the answer.
+fn dtls_call(latching: Latching, gateway_offers: bool) -> (Side, Side, Net, Mid, String, String) {
+    let now = Instant::now();
+    let mut a = peer(dtls_plain(latching), &[GW], &[], now);
+    let mut b = peer(dtls_plain(Latching::Off), &[PHONE], &[], now);
+    a.hub = true;
+    let (offer, answer, audio);
+    if gateway_offers {
+        let mut ch = a.rtc.changes();
+        audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        offer = a.rtc.apply(now, ch).unwrap().unwrap();
+        answer = b.rtc.accept_offer(now, &offer).unwrap();
+        a.rtc.accept_answer(now, &answer).unwrap();
+    } else {
+        let mut ch = b.rtc.changes();
+        audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        offer = b.rtc.apply(now, ch).unwrap().unwrap();
+        answer = a.rtc.accept_offer(now, &offer).unwrap();
+        b.rtc.accept_answer(now, &answer).unwrap();
+    }
+    let mut net = Net::new(Path::Keep);
+    net.nat.push((addr(PHONE), addr(NAT)));
+    drain(&mut a, now, &mut net);
+    drain(&mut b, now, &mut net);
+    (a, b, net, audio, offer, answer)
+}
+
+/// Runs `a` and `b` until both are connected (or `limit` passes); the time then.
+fn run_until_connected(a: &mut Side, b: &mut Side, net: &mut Net, limit: Duration) -> bool {
+    let start = Instant::now();
+    let mut now = start;
+    while now - start < limit {
+        now += Duration::from_millis(5);
+        step(a, b, now, net);
+        if a.rtc.is_connected() && b.rtc.is_connected() {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn dtls_handshake_latches_onto_a_natted_phone() {
+    for gateway_offers in [true, false] {
+        let (mut a, mut b, mut net, audio, offer, answer) =
+            dtls_call(Latching::Once, gateway_offers);
+        let ours = if gateway_offers { &offer } else { &answer };
+        // The gateway is the DTLS server: the phone's ClientHello comes from the NAT.
+        assert!(
+            ours.contains(if gateway_offers {
+                "a=setup:actpass"
+            } else {
+                "a=setup:passive"
+            }),
+            "{ours}"
+        );
+        assert!(
+            run_until_connected(&mut a, &mut b, &mut net, Duration::from_secs(10)),
+            "offers {gateway_offers}"
+        );
+        assert_eq!(a.rtc.latch_moves(), 1);
+        assert_eq!(a.rtc.ice.send_pair().unwrap().1, addr(NAT));
+        // A cookie exchange first: the gateway's first DTLS datagram to the NAT is a
+        // HelloVerifyRequest (or a DTLS 1.3 HelloRetryRequest), state-free.
+        let first = net
+            .log
+            .iter()
+            .find(|l| l.0 == addr(GW) && (20..=63).contains(&l.2))
+            .unwrap();
+        assert_eq!(first.1, addr(PHONE));
+        let now = Instant::now() + Duration::from_secs(11);
+        media(&mut a, &mut b, &mut net, now, (Some(audio), None), 50, true);
+        assert!(media_count(&a, audio) >= 45 && media_count(&b, audio) >= 45);
+    }
+}
+
+#[test]
+fn no_dtls_latching_without_the_option() {
+    let (mut a, mut b, mut net, _, _, _) = dtls_call(Latching::Off, true);
+    assert!(!run_until_connected(
+        &mut a,
+        &mut b,
+        &mut net,
+        Duration::from_secs(5)
+    ));
+    assert_eq!(a.rtc.latch_moves(), 0);
+    assert!(
+        net.log
+            .iter()
+            .all(|l| l.0 != addr(GW) || l.1 != addr(PHONE))
+    );
+}
+
+#[test]
+fn a_foreign_handshake_does_not_latch() {
+    // An attacker that read the offer starts a handshake with a certificate of its own from
+    // its own address: the gateway tries it tentatively, the fingerprint does not match, the
+    // pair goes back and the phone latches after.
+    let (mut a, mut b, mut net, _, offer, _) = dtls_call(Latching::Once, true);
+    let start = Instant::now();
+    let mut x = peer(dtls_plain(Latching::Off), &[ATTACKER], &[], start);
+    let _ = x.rtc.accept_offer(start, &offer).unwrap();
+    let mut now = start;
+    let mut tentative_seen = false;
+    let mut connected = false;
+    // The attacker gets going first: the phone's datagrams wait 300 ms.
+    while now - start < Duration::from_secs(15) {
+        now += Duration::from_millis(5);
+        let (due, keep): (Vec<_>, Vec<_>) = net.queue.drain(..).partition(|q| q.0 <= now);
+        net.queue = keep;
+        for (_, from, to, d, ecn) in due {
+            if to == addr(ATTACKER) {
+                deliver(&mut x, now, from, to, &d, ecn);
+            } else if a.addrs.contains(&to) {
+                if from == addr(NAT) && now - start < Duration::from_millis(300) {
+                    continue;
+                }
+                deliver(&mut a, now, from, to, &d, ecn);
+            } else if b.addrs.contains(&to) {
+                deliver(&mut b, now, from, to, &d, ecn);
+            }
+        }
+        for s in [&mut a, &mut b, &mut x] {
+            if s.wake <= now {
+                s.rtc.handle_timeout(now);
+            }
+            drain(s, now, &mut net);
+        }
+        tentative_seen |= a
+            .rtc
+            .latch
+            .tentative
+            .is_some_and(|t| t.source == addr(ATTACKER));
+        assert!(a.rtc.alive, "the gateway peer died");
+        if a.rtc.is_connected() && b.rtc.is_connected() {
+            connected = true;
+            break;
+        }
+    }
+    assert!(tentative_seen, "the attacker's handshake was never tried");
+    assert!(connected, "the phone never latched");
+    assert_eq!(a.rtc.ice.send_pair().unwrap().1, addr(NAT));
+    assert_eq!(a.rtc.latch_moves(), 1);
+    // (A DTLS 1.3 client counts itself connected once it sent its Finished: the attacker
+    // may, though the gateway refused its certificate.)
+    let _ = x;
+}

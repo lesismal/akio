@@ -17,8 +17,17 @@
 //! The SRTP tag is the gate: a packet from an unknown source reaches the peer only to be
 //! authenticated (nothing else is done with it otherwise), and SRTP's replay protection
 //! refuses copies of packets already received, so an off-path attacker cannot move the media.
-//! Before the keys exist nothing latches (DTLS-SRTP without ICE needs the remote at its SDP
-//! address for the handshake).
+//!
+//! **Before DTLS-SRTP keys exist** (ADR-082) the handshake latches: while this side is the
+//! DTLS server (the remote `a=setup:active`; an `actpass` offer is answered `passive` when
+//! latching) and nothing came from the description's address, a ClientHello from an unknown
+//! source is answered with a stateless cookie exchange (HelloVerifyRequest, or a DTLS 1.3
+//! HelloRetryRequest, [`only_dtls::HelloVerifier`]) and changes nothing. A ClientHello with
+//! a valid cookie proves the source receives at its address: the component's pair moves
+//! there *tentatively* and the handshake runs with it. The remote's certificate must match
+//! the description's fingerprint: a handshake that completes latches for good (as the policy
+//! says); one that fails, is closed, or has not completed within [`DTLS_TENTATIVE`] moves the
+//! pair back and lets another source try. Others' ClientHellos wait meanwhile.
 
 use super::*;
 use crate::types::Latching;
@@ -32,10 +41,24 @@ pub(super) struct LatchComp {
     heard: Option<Instant>,
 }
 
+/// How long a handshake latched onto tentatively has to complete.
+pub(super) const DTLS_TENTATIVE: Duration = Duration::from_secs(4);
+
+/// A DTLS handshake running with an unknown source (see the module docs).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Tentative {
+    pub(super) source: SocketAddr,
+    since: Instant,
+    /// The pair's remote before (the description's address).
+    sdp: SocketAddr,
+}
+
 /// The latching state of a transport (components 1 and 2).
 #[derive(Debug, Default)]
 pub(super) struct Latch {
     comps: [LatchComp; 2],
+    /// A handshake with an unknown source (ADR-082).
+    pub(super) tentative: Option<Tentative>,
     /// The description's address of each component.
     sdp: [Option<SocketAddr>; 2],
     /// Times the remote moved (statistics).
@@ -138,6 +161,15 @@ impl Rtc {
         if !self.latching() || !self.alive {
             return false;
         }
+        if self.dtls_latch_open(now, destination)
+            || self
+                .xt
+                .tps
+                .iter()
+                .any(|(_, t)| t.dtls_latch_open(&self.cfg, self.dtls_role, now, destination))
+        {
+            return true;
+        }
         let policy = self.cfg.latching;
         let one = |ice: &IceAgent, latch: &Latch, keys: bool| {
             keys && (1..=ice.components()).any(|c| {
@@ -183,7 +215,9 @@ impl Rtc {
         destination: SocketAddr,
         data: &[u8],
     ) -> bool {
-        if !matches!(data.first(), Some(128..=191)) || !self.latch_open(now, destination) {
+        let dtls = matches!(data.first(), Some(20..=63));
+        if !(dtls || matches!(data.first(), Some(128..=191))) || !self.latch_open(now, destination)
+        {
             self.rx_ecn = 0;
             return false;
         }
@@ -215,6 +249,12 @@ impl Rtc {
         if !comp1 && !rtcp_comp {
             return;
         }
+        if matches!(data.first(), Some(20..=63)) {
+            if comp1 {
+                self.latch_dtls(now, source, destination, data);
+            }
+            return;
+        }
         self.latch_rx = Some((source, destination));
         if only_rtp::is_rtcp(data) {
             self.handle_rtcp(now, data, rtcp_comp);
@@ -228,6 +268,128 @@ impl Rtc {
         }
     }
 
+    /// Whether the current transport latches a DTLS handshake onto a ClientHello arriving on
+    /// `destination` at `now` (see the module docs).
+    fn dtls_latch_open(&self, now: Instant, destination: SocketAddr) -> bool {
+        dtls_open(
+            &self.cfg,
+            &self.ice,
+            &self.latch,
+            (self.sdes.active, self.dtls_role, self.dtls_up),
+            self.remote_addr,
+            now,
+            destination,
+        )
+    }
+
+    /// Whether a DTLS datagram from `source` on `destination` goes to DTLS latching: the
+    /// handshake may latch and `source` is not the pair's remote.
+    pub(super) fn dtls_latching(
+        &self,
+        now: Instant,
+        source: SocketAddr,
+        destination: SocketAddr,
+    ) -> bool {
+        self.latching()
+            && self.ice.send_pair_of(1).is_some_and(|p| p.1 != source)
+            && self.dtls_latch_open(now, destination)
+    }
+
+    /// A DTLS datagram from the unknown `source` on the current transport (component 1).
+    pub(super) fn latch_dtls(
+        &mut self,
+        now: Instant,
+        source: SocketAddr,
+        destination: SocketAddr,
+        data: &[u8],
+    ) {
+        if !self.dtls_latch_open(now, destination) {
+            return;
+        }
+        self.latch_expire(now);
+        if self.latch.tentative.is_some() {
+            return; // another source's handshake runs
+        }
+        let Some((local, sdp)) = self.ice.send_pair_of(1) else {
+            return;
+        };
+        let Some(hv) = hello_verifier(now) else {
+            return;
+        };
+        let peer = source.to_string();
+        match hv.check(now, peer.as_bytes(), data) {
+            only_dtls::HelloCheck::Respond(m) => {
+                // Stateless: nothing changes until the source answers from where it is.
+                self.latch_took = true;
+                self.transmits.push_back((destination, source, m, 0));
+            }
+            only_dtls::HelloCheck::Accept => {
+                only_log::debug!(target: "only_webrtc", "latching the DTLS handshake: {sdp} -> {source} (tentative)");
+                self.latch_took = true;
+                self.latch.tentative = Some(Tentative {
+                    source,
+                    since: now,
+                    sdp,
+                });
+                self.ice.set_fixed_pair(1, local, source);
+                self.remote_addr = Some(source);
+                self.remote_local = Some(destination);
+                self.dtls = self.new_dtls(now, Some(source));
+                if !self.xt.new_remotes.contains(&source) && self.xt.new_remotes.len() < 16 {
+                    self.xt.new_remotes.push(source);
+                }
+                self.handle_dtls(now, Some(data));
+            }
+            _ => {}
+        }
+    }
+
+    /// The tentative handshake completed (its certificate matched): the latch holds.
+    pub(super) fn latch_dtls_done(&mut self, now: Instant) {
+        let Some(t) = self.latch.tentative.take() else {
+            return;
+        };
+        only_log::debug!(target: "only_webrtc", "latched the DTLS handshake onto {}", t.source);
+        let c = &mut self.latch.comps[0];
+        c.latched = true;
+        c.heard = Some(now);
+        self.latch.moves += 1;
+        if !self.xt.sdp_remotes.contains(&t.sdp) && self.xt.gone_remotes.len() < 16 {
+            self.xt.gone_remotes.push(t.sdp);
+        }
+    }
+
+    /// The tentative handshake failed or was closed: back to the description's address, the
+    /// association dropped; `true` if there was one (the peer lives on).
+    pub(super) fn latch_dtls_failed(&mut self) -> bool {
+        let Some(t) = self.latch.tentative.take() else {
+            return false;
+        };
+        only_log::debug!(target: "only_webrtc", "DTLS handshake with {} failed: not latched", t.source);
+        if let Some((local, _)) = self.ice.send_pair_of(1) {
+            self.ice.set_fixed_pair(1, local, t.sdp);
+        }
+        self.dtls = None;
+        self.remote_addr = None;
+        self.remote_local = None;
+        if self.xt.gone_remotes.len() < 16 {
+            self.xt.gone_remotes.push(t.source);
+        }
+        self.xt.new_remotes.retain(|a| *a != t.source);
+        true
+    }
+
+    /// Gives up on a tentative handshake that did not complete in time.
+    pub(super) fn latch_expire(&mut self, now: Instant) {
+        if self
+            .latch
+            .tentative
+            .is_some_and(|t| now.saturating_duration_since(t.since) >= DTLS_TENTATIVE)
+        {
+            self.latch_dtls_failed();
+        }
+    }
+
     /// Remote addresses the transports latched away from (not the descriptions' own): the
     /// endpoint stops routing them to this peer.
     pub(crate) fn take_gone_remotes(&mut self) -> Vec<SocketAddr> {
@@ -237,6 +399,56 @@ impl Rtc {
     /// Times a transport's remote moved.
     pub(super) fn latch_moves(&self) -> u64 {
         self.latch.moves + self.xt.tps.iter().map(|(_, t)| t.latch.moves).sum::<u64>()
+    }
+}
+
+/// The cookie verifier of DTLS latching, one per process: the endpoint offers a datagram to
+/// one latching peer after another, so a cookie one made must verify at the next.
+fn hello_verifier(now: Instant) -> Option<&'static only_dtls::HelloVerifier> {
+    static V: std::sync::OnceLock<Option<only_dtls::HelloVerifier>> = std::sync::OnceLock::new();
+    V.get_or_init(|| only_dtls::HelloVerifier::new(now).ok())
+        .as_ref()
+}
+
+/// Whether DTLS may latch on a transport: latching, DTLS-SRTP with this side the server
+/// before the handshake completed, nothing from the description's address yet (or the
+/// tentative source's), and component 1 on `destination` able to move.
+fn dtls_open(
+    cfg: &ConfigInner,
+    ice: &IceAgent,
+    latch: &Latch,
+    (sdes, role, up): (bool, Option<Role>, bool),
+    remote: Option<SocketAddr>,
+    now: Instant,
+    destination: SocketAddr,
+) -> bool {
+    !sdes
+        && role == Some(Role::Server)
+        && !up
+        && (remote.is_none() || remote == latch.tentative.map(|t| t.source))
+        && ice.send_pair_of(1).is_some_and(|p| p.0 == destination)
+        && latch.may_move(1, cfg.latching, now)
+}
+
+impl transports::Tp {
+    /// [`Rtc::dtls_latch_open`] of a transport that is not current.
+    pub(super) fn dtls_latch_open(
+        &self,
+        cfg: &ConfigInner,
+        role: Option<Role>,
+        now: Instant,
+        destination: SocketAddr,
+    ) -> bool {
+        let (sdes, up, remote) = self.dtls_view();
+        dtls_open(
+            cfg,
+            self.agent(),
+            &self.latch,
+            (sdes, role, up),
+            remote,
+            now,
+            destination,
+        )
     }
 }
 
