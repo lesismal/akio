@@ -16,7 +16,9 @@ use crate::{Flush, Level};
 /// (Google's default) unless set with [`window_bits`](Compressor::window_bits); when the
 /// whole input arrives before anything is written, the stream is the one
 /// [`compress`](crate::compress) writes. Memory is the window up to about three times over,
-/// a meta-block and the match finder's tables.
+/// a meta-block and the match finder's tables, which start at a few kilobytes and grow with
+/// the stream up to the level's size for an input of one window (so a new stream costs little
+/// to set up, and one that stays short stays small).
 ///
 /// ```
 /// use only_brotli::{Compressor, Flush, Level, decompress};
@@ -223,9 +225,59 @@ impl Compressor {
             }
         }
         let mut e = Encoder::resume(&self.buf[..end], st);
+        e.fit();
         e.meta_block(&mut self.w, self.pos, end, last);
         self.st = Some(e.suspend());
         self.produced += (end - self.pos) as u64;
         self.pos = end;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The match tables grow with the stream, up to the level's size within the window.
+    #[test]
+    fn tables_grow_with_the_stream() {
+        let event = b"event: tick\ndata: {\"seq\":1,\"price\":101.25}\n\n";
+        // (level, window bits, bytes after one event, bytes after many)
+        for (q, wbits, small, full) in [
+            // 2^8 hashes, 4 entries each; then 2^15 (the level's bound).
+            (
+                4,
+                18,
+                4 * ((1 << 8) + (1 << 10)),
+                4 * ((1 << 15) + (1 << 17)),
+            ),
+            // 16 entries per hash: 2^8; within a 64 KiB window 2^14 (the level's 2^15
+            // bounded by about two entries per byte of window).
+            (
+                5,
+                16,
+                4 * ((1 << 8) + (1 << 12)),
+                4 * ((1 << 14) + (1 << 18)),
+            ),
+            // Chains: 2^10 hashes and 1 KiB of positions; then 2^17 and the window.
+            (
+                9,
+                18,
+                4 * ((1 << 10) + (1 << 10)),
+                4 * ((1 << 17) + (1 << 18)),
+            ),
+        ] {
+            let mut c = Compressor::new(Level::new(q)).window_bits(wbits);
+            let mut out = Vec::new();
+            c.compress(event, &mut out, Flush::Flush);
+            let bytes = |c: &Compressor| c.st.as_ref().map_or(0, State::table_bytes);
+            assert_eq!(bytes(&c), small, "level {q}");
+            for _ in 0..(3 << wbits) / event.len() {
+                c.compress(event, &mut out, Flush::Flush);
+            }
+            assert_eq!(bytes(&c), full, "level {q}");
+            c.compress(&[], &mut out, Flush::Finish);
+            let want = event.repeat(1 + (3 << wbits) / event.len());
+            assert_eq!(crate::decompress(&out, 1 << 22).unwrap(), want);
+        }
     }
 }

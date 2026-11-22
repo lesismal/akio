@@ -1759,6 +1759,69 @@ about 2.5 KiB for an uncompressed stream. A counting allocator gives the allocat
 (ADR-074 section 4: 320, 476 and 1,336 KiB in steady state); the RSS is lower because parts of
 the tables are never touched. only-brotli's new slide threshold took brotli 4 with window bits
 18 from 2,032 to 1,336 KiB allocated per stream.
+### Brotli streaming encoder: fixed costs (ADR-074 update, same-run A/B, 2026-11-22)
+
+Main at `7e4db2d9` ("base") against this change ("new"), both with only-brotli's
+`stream-cost` example (the base copy added to main's tree), built in separate target
+directories on gpu51 and run alternately under `quiet.sh` pinned to CPU 2, 3 rounds of 1 s per
+measurement; medians (the rounds were within 2% of each other). *event*: a flushed write of an
+87-byte server-sent event on a stream past its first 256 events; *setup*: a new stream, one
+flushed event and the end; *16 events*: a new stream, 16 flushed events and the end (as
+`stream-bench`'s `/sse`); *16 x 16 KiB*: a new stream, 16 flushed writes of 16 KiB of
+generated HTML and the end (`/bulk`); *HTML*: input MB/s of 16 KiB flushed writes on one long
+stream; memory is allocated bytes (a counting allocator).
+
+| Quality, window bits | event | allocations / event | setup | 16 events | 16 x 16 KiB | HTML MB/s | after 3 events | after 30,000 |
+|---|---|---|---|---|---|---|---|---|
+| 1, 18 | 4.53 → 2.23 us | 62.9 → 37.2 | 11.0 → 5.3 us | 110.6 → 53.4 us | 1,055 → 954 us | 250 → 277 | 385 → 4 KiB | 1,041 KiB both |
+| 4, 18 (default) | 4.03 → 1.96 us | 49.3 → 32.4 | 13.5 → 5.3 us | 119.5 → 57.8 us | 1,681 → 1,619 us | 158 → 172 | 641 → 6 KiB | 1,297 KiB both |
+| 4, 16 | 5.52 → 2.43 us | 68.5 → 35.6 | 13.4 → 5.4 us | 117.1 → 57.2 us | 1,708 → 1,568 us | 152 → 165 | 641 → 6 KiB | 805 KiB both |
+| 5, 18 | 3.18 → 1.88 us | 37.0 → 30.0 | 27.0 → 5.6 us | 130.8 → 58.9 us | 2,279 → 2,251 us | 106 → 113 | 2,177 → 18 KiB | 2,833 KiB both |
+| 9, 18 | 9.60 → 8.37 us | 36.2 → 30.0 | 21.8 → 5.3 us | 125.6 → 59.3 us | 9,538 → 10,343 us | 18.8 → 18.5 | 1,537 → 9 KiB | 2,193 KiB both |
+| 9, 16 | 8.49 → 6.03 us | 58.6 → 33.6 | 15.0 → 5.3 us | 120.0 → 58.7 us | 7,981 → 8,418 us | 30.1 → 29.4 | 769 → 9 KiB | 933 KiB both |
+| 11, 18 | 86.3 → 82.7 us | 106.8 → 68.8 | 46.9 → 26.8 us | 537 → 463 us | 366.0 → 365.6 ms | 0.70 both | 1,537 → 9 KiB | 2,193 KiB both |
+
+Output bytes per event, per response and per HTML byte are the same in both columns (19.1 bytes
+per event at quality 4; the 16 x 16 KiB responses within 5 bytes of 13,501). Quality 9's 16 x
+16 KiB case is 5-8% slower: there the time is the chain search (`Encoder::find`, 89%), whose
+machine code is the same in both binaries (0xc5e bytes) at another alignment (64 bytes in base,
+16 here); the new binary runs as many instructions per response with about a third more branch
+misses, and at window 16, where both build the same tables from the first write, the gap is
+there too. Run again on CPU 7 (not quiet) the two are equal (10,084 and 10,072 us).
+
+**HTTP** (`tools/bench/stream-compress.sh` with `VARIANTS="identity base-br br base-zstd zstd"`,
+`base-br` / `base-zstd` being main's `stream-bench` with `Compress::stream`; otherwise as in
+"Compressed streamed responses" above: server on CPUs 0-3, `h2load --h1` with 64 connections,
+3 rotating rounds of 5 s, medians; server CPU per response):
+
+| Response | base-br | br | base-zstd | zstd | identity |
+|---|---:|---:|---:|---:|---:|
+| 16 SSE events, responses/s | 32,466 | 59,349 (1.83x) | 92,174 | 94,431 | 235,967 |
+| CPU per response | 123.5 us | 67.5 us | 43.5 us | 42.5 us | 17.0 us |
+| body bytes | 347 | 347 | 446 | 446 | 1,327 |
+| 16 x 16 KiB HTML, responses/s | 2,371 | 2,548 (1.07x) | 8,330 | 8,382 | 67,240 |
+| CPU per response | 1,694.6 us | 1,575.6 us | 481.4 us | 478.9 us | 59.6 us |
+| body bytes | 14,170 | 14,171 | 16,037 | 16,037 | 260,992 |
+
+Server memory per held server-sent-events stream (RSS growth / 1,000 streams), two runs:
+
+| Events written | base-br | br | zstd |
+|---|---:|---:|---:|
+| 3 | 424 / 424 KiB | 9.0 / 9.0 KiB | 112 / 112 KiB |
+| 6,000 | 1,147 / 1,007 KiB | 1,165 / 1,112 KiB | 370 / 396 KiB |
+
+**Answers.** A flushed brotli write of a small event costs half what it did (2 us at the
+default quality 4, against zstd's 0.27 us) and a stream's setup 5 us instead of 13-47 us,
+because the prefix codes are built over the symbols used and the match tables start at a few
+KiB instead of the level's full size; over HTTP that is 56 us less server CPU per 16-event
+response, 1.83x the responses per second, and 9 KiB per stream that has sent a few events
+instead of 424 KiB. Bulk HTML gains 7% (less work per meta-block's codes). Streams that run
+past a window hold what they held (the allocated size is the same; the RSS of 1,000 streams
+moves by ±10% between runs). Ratios are unchanged: one-shot output is bit-identical at every
+level (hashes of every level's output over the test vectors and generated corpora), and
+streamed output moves by +0.00..0.11% on the round-trip corpus (windows 2^16..2^22), by 0 bytes
+on these HTTP bodies.
+
 ### Brotli block splitting (ADR-069 note, same-run A/B, CPU 2, 2026-11-22)
 
 `tools/codec-bench brotli` built from main (`04a32fb5`, "before") and the block-splitting branch

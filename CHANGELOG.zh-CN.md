@@ -157,6 +157,22 @@ ADR-084（docs/adr/084-rtsp-receiver-reports-redirects-lookups.zh-CN.md）：
   服务器名字在两个 mediamtx 容器之间迁移时我们的推流与拉流完成重连（main 的客户端超时）。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替多轮，取中位数，head / base）：RTSP 拉流 1.024、RTSP RECORD 入流 1.087、RTMP 拉流 0.998（`tests/client_bench.rs`，9 轮）；`bench_segmenting`（7 轮）MPEG-TS 0.981、MPEG-TS LL-HLS 0.995、fMP4 1.015、fMP4 LL-HLS 1.013、AES-128 0.998 至 1.001、SAMPLE-AES MPEG-TS 1.002、`cbcs` 1.004（分段超过目标时长后，关键帧请求是每包一次比较）。RECORD 的开销（每个 RTP 包 +18 ns）来自接收者报告所需的到达时间：每次带来 RTP 包的读取读一次时钟，而该基准每次读 255 字节，约每包一次读取；更大的读取让多个包共用一次时钟读取，`receiver_report_interval` 为零时完全跳过。最初每包读一次时钟并用 u128 除法换算的版本为 1.113（拉流）与 1.104（RECORD）。
 
+### 变更：brotli 流式编码器每次写入与每个流的固定开销（only-brotli）
+
+ADR-074 的 2026-11-22 更新，API 不变：
+
+- 前缀码的构建与写出时间主要与元块用到的符号数成正比（稀疏扫描直方图，Huffman 深度放在栈上，规范码只分配
+  给用到的符号，码长的游程编码只准备一次）。一次性输出在每个级别都逐位相同。
+- 流式 `Compressor` 的匹配表从几 KiB 起步，随流增长，至多为该级别对一个窗口的大小（之前一开始就按级别、
+  按三个窗口确定大小）。流式输出变化 +0.00..0.11%。
+- 测量（在 gpu51 上与 main 同批 A/B；docs/BENCHMARKS.zh-CN.md“Brotli 流式编码器：固定开销”）：质量 4、
+  窗口 18：每次 87 字节事件的刷新写入 4.03 → 1.96 us，每个流 13.5 → 5.3 us，3 个事件后 641 → 6 KiB，以
+  16 KiB 刷新写入的 HTML +8.6%。使用 only-http 的 `StreamCompress` 默认值时，br 每个 16 事件响应的服务器
+  CPU 123.5 → 67.5 us（每秒响应数 1.83 倍），16 x 16 KiB HTML -7%，每个保持打开的流的服务器 RSS 在 3 个
+  事件后 424 → 9 KiB。
+- `tools/bench/stream-compress.sh` 支持 `VARIANTS` / `MEM_VARIANTS` 与 `base-<编码>` 变体；新示例
+  `stream-cost`（only-brotli）。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

@@ -122,7 +122,9 @@ the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files 
 (ADR-074): then they are compressed write by write, the encoder flushed after every write so
 that each server-sent event still reaches the client at once, with small per-stream defaults
 (`StreamCompress`: gzip 1, zstd 1 with a 128 KiB window, brotli 4 with a 256 KiB window; about
-0.3, 0.5 and 1.3 MiB per open stream). Brotli costs the most CPU per small write, so for
+0.3, 0.5 and 1.3 MiB per open stream once a window of output has gone through; brotli's match
+tables grow with the stream, so a stream that has sent a few events holds a few KiB). Brotli
+still costs the most CPU per small write (about 2 us per flushed event, zstd 0.3 us), so for
 high-rate event streams offer zstd or let gzip serve them.
 
 The middleware uses no dictionaries. Applications that exchange brotli data compressed with a

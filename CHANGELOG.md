@@ -198,6 +198,25 @@ ADR-084 (docs/adr/084-rtsp-receiver-reports-redirects-lookups.md):
   containers on a Docker network while our push and pull reconnect (main's client times out).
 - Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, alternating rounds, medians, head / base): RTSP pull 1.024, RTSP RECORD ingest 1.087, RTMP pull 0.998 (`tests/client_bench.rs`, 9 rounds); `bench_segmenting` (7 rounds) MPEG-TS 0.981, MPEG-TS LL-HLS 0.995, fMP4 1.015, fMP4 LL-HLS 1.013, AES-128 0.998 to 1.001, SAMPLE-AES MPEG-TS 1.002, `cbcs` 1.004 (the keyframe request is one comparison per packet once a segment passes the target). The RECORD cost (+18 ns per RTP packet) is the receiver reports' arrival time: the clock is read once per read that brings an RTP packet, and the benchmark reads 255 bytes at a time, about one read per packet; larger reads share one clock read across their packets, and `receiver_report_interval` zero skips it. A first version that read the clock per packet and converted with a u128 division cost 1.113 (pull) and 1.104 (RECORD).
 
+### Changed: brotli streaming encoder, fixed costs per write and per stream (only-brotli)
+
+ADR-074's update of 2026-11-22, no API change:
+
+- Prefix codes are built and stored in time mostly proportional to the symbols a meta-block
+  uses (sparse histogram scans, Huffman depths on the stack, canonical codes for used symbols
+  only, run-length coded code lengths prepared once). One-shot output is bit for bit the same
+  at every level.
+- The streaming `Compressor`'s match tables start at a few KiB and grow with the stream up to
+  the level's size for one window (they were sized for three windows by level from the
+  start). Streamed output changes by +0.00..0.11%.
+- Measured (same-run A/B against main on gpu51; docs/BENCHMARKS.md "Brotli streaming encoder:
+  fixed costs"): quality 4, window 18: 4.03 → 1.96 us per flushed 87-byte event, 13.5 → 5.3 us
+  per stream, 641 → 6 KiB after 3 events, HTML in flushed 16 KiB writes +8.6%. With only-http's
+  `StreamCompress` defaults, br server CPU per 16-event response 123.5 → 67.5 us (1.83x
+  responses/s), 16 x 16 KiB HTML -7%, server RSS per held stream 424 → 9 KiB after 3 events.
+- `tools/bench/stream-compress.sh` takes `VARIANTS` / `MEM_VARIANTS` and `base-<coding>`
+  variants; new example `stream-cost` (only-brotli).
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

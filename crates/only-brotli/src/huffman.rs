@@ -23,10 +23,6 @@ pub(crate) fn single(sym: usize, out: &mut Vec<u32>) {
     out.resize(out.len() + ROOT_SIZE, entry(sym as u32, 0));
 }
 
-fn reverse(code: u32, len: u32) -> u32 {
-    code.reverse_bits() >> (32 - len)
-}
-
 /// Bits of each byte in reverse order (x86-64 has no instruction for it).
 const REV8: [u8; 256] = {
     let mut t = [0u8; 256];
@@ -323,16 +319,18 @@ impl<'a> Tree<'a> {
 pub(crate) fn lengths(hist: &[u32], limit: u8, out: &mut Vec<u8>) {
     out.clear();
     out.resize(hist.len(), 0);
-    let mut syms: Vec<(u32, u16)> = hist
-        .iter()
-        .enumerate()
-        .filter(|&(_, &c)| c != 0)
-        .map(|(s, &c)| (c, s as u16))
-        .collect();
-    match syms.len() {
-        0 => return,
-        1 => {
-            out[usize::from(syms[0].1)] = 1;
+    let mut syms = used(hist);
+    depths(&mut syms, limit, |s, d| out[usize::from(s)] = d);
+}
+
+/// [`lengths`] of the used symbols only: `syms` holds `(count, symbol)` of each symbol with a
+/// non-zero count (each symbol once, in any order; they are sorted), and `set(symbol, length)`
+/// is called for each of them.
+pub(crate) fn depths(syms: &mut [(u32, u16)], limit: u8, mut set: impl FnMut(u16, u8)) {
+    match syms {
+        [] => return,
+        [(_, s)] => {
+            set(*s, 1);
             return;
         }
         _ => {}
@@ -342,46 +340,54 @@ pub(crate) fn lengths(hist: &[u32], limit: u8, out: &mut Vec<u8>) {
     // Callers have at most 2^limit symbols (704 <= 2^15, 18 <= 2^5), so the loop below ends:
     // once every weight is the same the tree is balanced.
     debug_assert!(n <= 1 << limit);
-    // Two-queue Huffman construction; nodes 0..n are leaves (sorted), n.. internal nodes.
+    // Nodes 0..n are leaves (sorted), n.. internal nodes; on the stack for the small codes of
+    // short meta-blocks.
+    let total = 2 * n - 1;
+    let mut small = [Node::default(); 127];
+    let mut big = Vec::new();
+    let nodes = if total <= small.len() {
+        &mut small[..total]
+    } else {
+        big.resize(total, Node::default());
+        &mut big[..]
+    };
     let mut floor = 1u32;
     loop {
-        let w = |i: usize| syms[i].0.max(floor);
-        let mut weight: Vec<u64> = Vec::with_capacity(2 * n);
-        let mut parent: Vec<u32> = vec![0; 2 * n];
-        for i in 0..n {
-            weight.push(u64::from(w(i)));
+        // Two-queue Huffman construction.
+        for (nd, &(c, _)) in nodes.iter_mut().zip(syms.iter()) {
+            nd.weight = u64::from(c.max(floor));
         }
         let (mut li, mut ii) = (0usize, n);
-        let take = |weight: &Vec<u64>, li: &mut usize, ii: &mut usize| -> usize {
-            if *li < n && (*ii >= weight.len() || weight[*li] <= weight[*ii]) {
-                *li += 1;
-                *li - 1
-            } else {
-                *ii += 1;
-                *ii - 1
+        // Node `len` is made of the two lightest of the leaves and nodes before it.
+        for len in n..total {
+            let mut pick = [0usize; 2];
+            for p in &mut pick {
+                *p = if li < n && (ii >= len || nodes[li].weight <= nodes[ii].weight) {
+                    li += 1;
+                    li - 1
+                } else {
+                    ii += 1;
+                    ii - 1
+                };
             }
-        };
-        for _ in 0..n - 1 {
-            let a = take(&weight, &mut li, &mut ii);
-            let b = take(&weight, &mut li, &mut ii);
-            let id = weight.len();
-            weight.push(weight[a] + weight[b]);
-            parent[a] = id as u32;
-            parent[b] = id as u32;
+            let [a, b] = pick;
+            nodes[len].weight = nodes[a].weight + nodes[b].weight;
+            nodes[a].parent = len as u32;
+            nodes[b].parent = len as u32;
         }
         // Depths: the root is the last node.
-        let total = weight.len();
-        let mut depth = vec![0u8; total];
+        nodes[total - 1].depth = 0;
         let mut max = 0u8;
         for i in (0..total - 1).rev() {
-            depth[i] = depth[parent[i] as usize].saturating_add(1);
+            let d = nodes[nodes[i].parent as usize].depth.saturating_add(1);
+            nodes[i].depth = d;
             if i < n {
-                max = max.max(depth[i]);
+                max = max.max(d);
             }
         }
         if max <= limit {
-            for i in 0..n {
-                out[usize::from(syms[i].1)] = depth[i];
+            for (&(_, s), nd) in syms.iter().zip(nodes.iter()) {
+                set(s, nd.depth);
             }
             return;
         }
@@ -389,29 +395,78 @@ pub(crate) fn lengths(hist: &[u32], limit: u8, out: &mut Vec<u8>) {
     }
 }
 
-/// Canonical codes for `lens`, bit-reversed for writing least significant bit first.
-pub(crate) fn codes(lens: &[u8], out: &mut Vec<u16>) {
+/// A node of the Huffman tree [`depths`] builds.
+#[derive(Clone, Copy, Default)]
+struct Node {
+    weight: u64,
+    parent: u32,
+    depth: u8,
+}
+
+/// Canonical codes for `lens` (each 0..=15), bit-reversed for writing least significant bit
+/// first, with their lengths: `code << 4 | length` per symbol (0 for a symbol without a code).
+pub(crate) fn codes(lens: &[u8]) -> Vec<u32> {
+    let mut out = vec![0u32; lens.len()];
+    codes_into(lens, &mut out);
+    out
+}
+
+/// [`codes`] into `out` (as long as `lens`, zero).
+pub(crate) fn codes_into(lens: &[u8], out: &mut [u32]) {
     let mut count = [0u32; 16];
-    for &l in lens {
-        count[usize::from(l & 15)] += 1;
-    }
-    count[0] = 0;
+    nonzero_u8(lens, |_, l| count[usize::from(l & 15)] += 1);
     let mut next = [0u32; 16];
     let mut c = 0u32;
     for len in 1..16 {
         c = (c + count[len - 1]) << 1;
         next[len] = c;
     }
-    out.clear();
-    out.extend(lens.iter().map(|&l| {
-        let l = u32::from(l & 15);
-        if l == 0 {
-            return 0;
+    nonzero_u8(lens, |s, l| {
+        let l = usize::from(l & 15);
+        out[s] = (reverse15(next[l], l as u32) as u32) << 4 | l as u32;
+        next[l] += 1;
+    });
+}
+
+// Alphabets of a few hundred symbols of which a flushed write of a few dozen bytes uses a few
+// dozen: these skip 16 zeros at a time (an OR the compiler vectorizes) instead of updating a
+// counter per symbol.
+
+/// Calls `f(index, value)` for each non-zero value of `xs`, in order.
+#[inline]
+pub(crate) fn nonzero_u8(xs: &[u8], mut f: impl FnMut(usize, u8)) {
+    for (k, chunk) in xs.chunks(16).enumerate() {
+        if chunk.iter().fold(0, |a, &x| a | x) == 0 {
+            continue;
         }
-        let code = next[l as usize];
-        next[l as usize] += 1;
-        reverse(code, l) as u16
-    }));
+        for (j, &x) in chunk.iter().enumerate() {
+            if x != 0 {
+                f(k * 16 + j, x);
+            }
+        }
+    }
+}
+
+/// [`nonzero_u8`] for counts.
+#[inline]
+pub(crate) fn nonzero_u32(xs: &[u32], mut f: impl FnMut(usize, u32)) {
+    for (k, chunk) in xs.chunks(16).enumerate() {
+        if chunk.iter().fold(0, |a, &x| a | x) == 0 {
+            continue;
+        }
+        for (j, &x) in chunk.iter().enumerate() {
+            if x != 0 {
+                f(k * 16 + j, x);
+            }
+        }
+    }
+}
+
+/// `(count, symbol)` of the symbols with a non-zero count in `hist`, in symbol order.
+pub(crate) fn used(hist: &[u32]) -> Vec<(u32, u16)> {
+    let mut v = Vec::with_capacity(64);
+    nonzero_u32(hist, |s, c| v.push((c, s as u16)));
+    v
 }
 
 #[cfg(test)]
@@ -443,13 +498,13 @@ mod tests {
         let hist: Vec<u32> = (0..300u32).map(|i| (i * 7919) % 1000 + 1).collect();
         let mut lens = Vec::new();
         lengths(&hist, 15, &mut lens);
-        let mut cs = Vec::new();
-        codes(&lens, &mut cs);
+        let cs = codes(&lens);
         let mut table = Vec::new();
         build(&lens, &mut table);
         let mut w = crate::bits::BitWriter::with_capacity(1000);
         for s in 0..300 {
-            w.bits(u32::from(lens[s]), u64::from(cs[s]));
+            assert_eq!(cs[s] & 15, u32::from(lens[s]));
+            w.bits(cs[s] & 15, u64::from(cs[s] >> 4));
         }
         let buf = w.finish();
         let mut br = BitReader::new(&buf);
