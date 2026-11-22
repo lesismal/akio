@@ -26,6 +26,7 @@
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
 pub mod dns;
+pub mod numa;
 
 /// TLS: wrap an acceptor in [`tls::Tls`] to serve or dial over TLS (configs: [`tls::ServerConfig`],
 /// [`tls::ClientConfig`]).
@@ -57,6 +58,7 @@ pub use akio_core::{
 use akio_core::{DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr};
 #[doc(hidden)]
 pub use akio_core::{DynAcceptor, DynHandler};
+pub use numa::{NumaConfig, NumaPlacement, NumaReport, NumaStatus, ThreadPlacement};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
@@ -296,6 +298,7 @@ pub struct EngineBuilder {
     udp_client_threads: usize,
     cfg: Config,
     pool: PoolConfig,
+    numa: Option<NumaConfig>,
 }
 
 impl EngineBuilder {
@@ -337,8 +340,31 @@ impl EngineBuilder {
         self
     }
 
+    /// Places the I/O threads (and the logical pool) on NUMA nodes ([`numa`] module, ADR-088;
+    /// default: off, or what `AKIO_NUMA` says when this is not called). Linux only; see
+    /// [`Engine::numa_status`] for what was done.
+    #[must_use]
+    pub fn numa(mut self, numa: NumaConfig) -> Self {
+        self.numa = Some(numa);
+        self
+    }
+
     /// Validates the configuration, binds every listener and prepares the I/O threads.
     pub fn build(mut self) -> io::Result<Engine> {
+        let numa_cfg = self
+            .numa
+            .take()
+            .or_else(NumaConfig::from_env)
+            .unwrap_or_default();
+        let numa_nodes = numa_nodes(&numa_cfg)?;
+        let mut pool_cpus = Vec::new();
+        if let (Ok(nodes), true, None) = (&numa_nodes, numa_cfg.pool, &self.pool.on_start) {
+            pool_cpus = nodes.iter().flat_map(|n| n.cpus.iter().copied()).collect();
+            pool_cpus.sort_unstable();
+            if !pool_cpus.is_empty() {
+                self.pool.on_start = Some(akio_pool_hook(pool_cpus.clone()));
+            }
+        }
         if self.cfg.telemetry.is_bound() {
             // Another engine adopted this config's hub: metrics must not mix.
             self.cfg.telemetry = Telemetry::new();
@@ -352,6 +378,9 @@ impl EngineBuilder {
         let mut udp_listeners: Vec<usize> = Vec::new();
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
+        // Groups whose threads NUMA placement leaves alone (DPDK places its own lcores).
+        #[cfg_attr(not(feature = "dpdk"), allow(unused_mut))]
+        let mut unplaced: Vec<usize> = Vec::new();
         let env_backend = env_default_backend(); // read once per build (ADR-029)
         for mut l in self.listeners {
             if let Some(b) = &env_backend {
@@ -384,6 +413,7 @@ impl EngineBuilder {
                 if l.udp {
                     udp_last = Some(groups.len());
                 }
+                unplaced.push(groups.len());
                 groups.push(Box::new(akio_dpdk::DpdkGroup::bind(
                     Some((l.addr, acceptor)),
                     l.udp,
@@ -513,6 +543,7 @@ impl EngineBuilder {
                 )?));
             }
         }
+        let numa = place_threads(&numa_cfg, numa_nodes, &groups, &accel, &unplaced, pool_cpus);
         Ok(Engine {
             groups,
             pool,
@@ -521,6 +552,7 @@ impl EngineBuilder {
             tcp_dial,
             accel,
             telemetry,
+            numa,
         })
     }
 }
@@ -730,6 +762,115 @@ impl EngineRef {
 /// falls back to epoll with a warning where the kernel lacks io_uring; unset, empty or `epoll`
 /// keeps the default. Linux only: elsewhere the variable is ignored. A test and diagnostic knob
 /// (run an unchanged program on io_uring), not a tuning setting.
+/// The nodes NUMA placement uses: `Ok(empty)` when off, `Err(reason)` when it cannot be done
+/// (an `io::Error` instead with [`NumaConfig::strict`]).
+fn numa_nodes(cfg: &NumaConfig) -> io::Result<std::result::Result<Vec<numa::UsableNode>, String>> {
+    if cfg.placement == NumaPlacement::Off {
+        return Ok(Ok(Vec::new()));
+    }
+    #[cfg(target_os = "linux")]
+    let r = match (akio_sys::numa::nodes(), akio_sys::process::allowed_cpus()) {
+        (Ok(nodes), Ok(allowed)) => numa::choose(
+            &cfg.placement,
+            &nodes,
+            &allowed,
+            akio_sys::numa::interface_node,
+        ),
+        (Err(e), _) | (_, Err(e)) => Err(format!("NUMA topology unavailable: {e}")),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let r: std::result::Result<Vec<numa::UsableNode>, String> =
+        Err("NUMA placement is Linux-only".into());
+    match r {
+        Err(why) if cfg.strict => Err(io::Error::new(
+            if cfg!(target_os = "linux") {
+                io::ErrorKind::InvalidInput
+            } else {
+                io::ErrorKind::Unsupported
+            },
+            why,
+        )),
+        Err(why) => {
+            log_or_stderr(
+                akio_log::Level::Warn,
+                format_args!("NUMA placement off: {why}"),
+            );
+            Ok(Err(why))
+        }
+        ok => Ok(ok),
+    }
+}
+
+/// A pool thread hook that pins the thread to `cpus` (best effort).
+fn akio_pool_hook(cpus: Vec<usize>) -> akio_core::ThreadHook {
+    akio_core::ThreadHook(Arc::new(move || {
+        let _ = akio_sys::process::pin_current_thread(&cpus);
+    }))
+}
+
+/// Gives each group's I/O threads their NUMA CPU sets (before `start`) and, with
+/// `incoming_cpu`, their listening sockets `SO_INCOMING_CPU`; reports what was done.
+fn place_threads(
+    cfg: &NumaConfig,
+    nodes: std::result::Result<Vec<numa::UsableNode>, String>,
+    groups: &[Box<dyn Group>],
+    accel: &[AccelStatus],
+    unplaced: &[usize],
+    pool_cpus: Vec<usize>,
+) -> NumaStatus {
+    let nodes = match nodes {
+        Ok(n) if n.is_empty() => return NumaStatus::Off,
+        Ok(n) => n,
+        Err(why) => return NumaStatus::Degraded(why),
+    };
+    let usable: usize = nodes.iter().map(|n| n.cpus.len()).sum();
+    let mut report = Vec::new();
+    for (i, g) in groups.iter().enumerate() {
+        let steered =
+            matches!(accel.get(i), Some(AccelStatus::Steering(s)) if s.pinned_threads > 0);
+        if steered || unplaced.contains(&i) {
+            report.push(Vec::new());
+            continue;
+        }
+        let count = g.threads();
+        // Sets for threads added later too (`set_threads`), up to one per usable CPU.
+        let sets = numa::thread_sets(&nodes, cfg.per_cpu, count.max(usable));
+        let fds = if cfg.incoming_cpu {
+            g.listener_fds()
+        } else {
+            Vec::new()
+        };
+        let mut placed = Vec::new();
+        for (t, (node, cpus)) in sets.iter().enumerate().take(count) {
+            let incoming = fds.get(t).and_then(|&fd| {
+                #[cfg(target_os = "linux")]
+                {
+                    akio_sys::numa::set_incoming_cpu(fd, cpus[0])
+                        .ok()
+                        .map(|()| cpus[0])
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = fd;
+                    None
+                }
+            });
+            placed.push(ThreadPlacement {
+                node: *node,
+                cpus: cpus.clone(),
+                incoming_cpu: incoming,
+            });
+        }
+        g.pin_threads(sets.into_iter().map(|(_, c)| c).collect());
+        report.push(placed);
+    }
+    NumaStatus::Placed(NumaReport {
+        nodes: nodes.iter().map(|n| n.id).collect(),
+        groups: report,
+        pool_cpus,
+    })
+}
+
 fn env_default_backend() -> Option<Backend> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -765,6 +906,7 @@ pub struct Engine {
     tcp_dial: Option<usize>,
     accel: Vec<AccelStatus>,
     telemetry: Arc<Telemetry>,
+    numa: NumaStatus,
 }
 
 impl std::fmt::Debug for Engine {
@@ -782,6 +924,11 @@ impl Engine {
     /// Bound addresses of the listeners, in the order they were added (resolves port 0).
     pub fn local_addrs(&self) -> Vec<SocketAddr> {
         self.groups.iter().map(|g| g.local_addr()).collect()
+    }
+
+    /// The NUMA placement of the engine's threads ([`EngineBuilder::numa`]).
+    pub fn numa_status(&self) -> &NumaStatus {
+        &self.numa
     }
 
     /// What acceleration each listener got, in the order they were added.

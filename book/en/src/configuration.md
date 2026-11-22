@@ -117,6 +117,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `AKIO_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
 | `AKIO_UDP_GRO=0` | never enable UDP GRO, whatever `Config::udp_gro` says (Linux 5.0+) |
 | `AKIO_UDP_ECN=0` | never set an ECN codepoint on outgoing UDP datagrams (QUIC marks ECT(0) on Linux and macOS otherwise) |
+| `AKIO_NUMA=...` | NUMA placement when the builder sets none (ADR-088): `spread`, `nodes:0,1`, `iface:eth0`, `off`, with `+cpu`, `+incoming`, `+nopool`, `+strict` |
 | `AKIO_LOG=...` | log filter directives (`info,akio_http=debug`), read only when the application calls `akio::log::init_from_env` |
 
 Test and diagnostic knob (ADR-029), not a tuning setting: `AKIO_DEFAULT_BACKEND=uring` (Linux)

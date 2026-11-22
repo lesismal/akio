@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
+
+ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：
+
+- `EngineBuilder::numa(NumaConfig)`：`NumaPlacement::{Off, Spread, Nodes, Interface}` 把每组的 I/O 线程放到 NUMA
+  节点上（线程 `i` 放在节点 `i % n`、指定的节点或网卡所在的节点），限制在节点的 CPU 上，或用 `per_cpu` 每线程一个
+  CPU；`incoming_cpu` 在每个线程的监听套接字上设置 `SO_INCOMING_CPU`；`pool`（默认）限制逻辑池；`strict` 在无法放置
+  时让构建失败。`AKIO_NUMA`（`spread`、`nodes:0,1`、`iface:eth0`、`+cpu`、`+incoming`、`+nopool`、`+strict`）在构建器
+  未被告知时提供配置。`Engine::numa_status()` 报告 `Off`、`Placed(NumaReport)` 或 `Degraded(原因)`。仅 Linux；由 eBPF
+  CPU 分流绑核的组与 DPDK 组保持不变。
+- `akio_sys::numa`：`nodes`、`interface_node`、`parse_cpulist`、`set_incoming_cpu`、`incoming_cpu`（sysfs、
+  `SO_INCOMING_CPU`）。
+- `tools/bench/numa.sh`：通过 `AKIO_NUMA` 做放置 A/B。在单节点的 gpu51 上，各模式与关闭放置相比都在噪声范围内
+  （HTTP 0.995–1.005x）。
+
 ### 更名：项目现在叫 `akio`
 
 crates.io 上的 `ak` 名称已被占用，因此项目从 **only** 更名为 **akio**（在 crates.io 上连同所有子 crate 名称都未被占用）。

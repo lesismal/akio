@@ -2381,6 +2381,24 @@ the relay copies the codepoint.
 and rounds vary by about ±20 %, as in ADR-076's run of the same bench. Marking every datagram
 costs about 6 % (b-ecn / branch per-round median 0.941, range 0.84–1.16), within the same
 spread. Unmarked traffic, the common case, takes the old path.
+### NUMA placement (ADR-088, same-run A/B)
+
+Measured 2026-11-23 on gpu51 (`tools/bench/numa.sh`, `quiet.sh`, 5 interleaved rounds, 5 s each):
+`http-bench` / `bench-server` on CPUs 0-3 with 4 epoll threads, the load generators on 4-11.
+gpu51 has one NUMA node, so this shows what placement costs, not what it gains across nodes.
+Medians, ratio to placement off:
+
+| Case | off | `spread` | `spread+cpu` | `spread+cpu+incoming` |
+|---|---:|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns (req/s) | 582,693 | 1.000x | 0.996x | 1.001x |
+| HTTP/1.1 pipelined 16 x 256 | 3,821,952 | 0.998x | 0.997x | 0.997x |
+| h2c 64 x 16 | 3,313,033 | 0.995x | 1.000x | 1.005x |
+| TCP echo 64 B x 256 | 647,922 | 1.026x | 1.006x | 0.982x |
+
+Spread between rounds is 0.1–0.8 % for the HTTP cases and 2–8 % for TCP echo. `spread` on one node
+gives each thread the same CPUs `taskset` already did; `+cpu` pins one CPU per thread;
+`+incoming` cannot match on loopback (the client's CPUs process the packets).
+
 ### Audio jitter buffer (ADR-087, same-run A/B)
 
 Measured 2026-11-22 on gpu51. The questions:

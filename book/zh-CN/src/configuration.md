@@ -115,6 +115,7 @@ false）、`pin_threads`（把 n 个 I/O 线程中的线程 `i` 绑到 `cpu % n 
 | `AKIO_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
 | `AKIO_UDP_GRO=0` | 无论 `Config::udp_gro` 如何都不启用 UDP GRO（Linux 5.0+） |
 | `AKIO_UDP_ECN=0` | 发出的 UDP 数据报一律不带 ECN 码点（否则 QUIC 在 Linux 与 macOS 上标记 ECT(0)） |
+| `AKIO_NUMA=...` | 构建器未设置时的 NUMA 放置（ADR-088）：`spread`、`nodes:0,1`、`iface:eth0`、`off`，可加 `+cpu`、`+incoming`、`+nopool`、`+strict` |
 | `AKIO_LOG=...` | 日志过滤指令（`info,akio_http=debug`），仅当应用调用 `akio::log::init_from_env` 时读取 |
 
 测试与诊断开关（ADR-029），不是调优设置：`AKIO_DEFAULT_BACKEND=uring`（Linux）让每个未调用

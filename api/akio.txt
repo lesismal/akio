@@ -97,6 +97,104 @@ pub fn akio::dns::interleave(&[core::net::socket_addr::SocketAddr]) -> alloc::ve
 pub fn akio::dns::literal(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
 pub fn akio::dns::resolve(&str, u16, impl core::ops::function::FnOnce(core::io::error::Result<alloc::vec::Vec<core::net::socket_addr::SocketAddr>>) + core::marker::Send + 'static)
 pub fn akio::dns::set_cache(akio::dns::CacheConfig)
+pub mod akio::numa
+#[non_exhaustive] pub enum akio::numa::NumaPlacement
+pub akio::numa::NumaPlacement::Interface(alloc::string::String)
+pub akio::numa::NumaPlacement::Nodes(alloc::vec::Vec<usize>)
+pub akio::numa::NumaPlacement::Off
+pub akio::numa::NumaPlacement::Spread
+impl core::clone::Clone for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaPlacement
+impl core::cmp::PartialEq for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::eq(&self, &Self) -> bool
+impl core::default::Default for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::default() -> Self
+impl core::fmt::Debug for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaPlacement
+impl core::marker::Send for akio::numa::NumaPlacement
+impl core::marker::Sync for akio::numa::NumaPlacement
+impl core::marker::Unpin for akio::numa::NumaPlacement
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaPlacement
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaPlacement
+#[non_exhaustive] pub enum akio::numa::NumaStatus
+pub akio::numa::NumaStatus::Degraded(alloc::string::String)
+pub akio::numa::NumaStatus::Off
+pub akio::numa::NumaStatus::Placed(akio::numa::NumaReport)
+impl core::clone::Clone for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaStatus
+impl core::cmp::PartialEq for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaStatus
+impl core::marker::Send for akio::numa::NumaStatus
+impl core::marker::Sync for akio::numa::NumaStatus
+impl core::marker::Unpin for akio::numa::NumaStatus
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaStatus
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaStatus
+#[non_exhaustive] pub struct akio::numa::NumaConfig
+pub akio::numa::NumaConfig::incoming_cpu: bool
+pub akio::numa::NumaConfig::per_cpu: bool
+pub akio::numa::NumaConfig::placement: akio::numa::NumaPlacement
+pub akio::numa::NumaConfig::pool: bool
+pub akio::numa::NumaConfig::strict: bool
+impl akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::from_env() -> core::option::Option<akio::numa::NumaConfig>
+pub fn akio::numa::NumaConfig::interface(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn akio::numa::NumaConfig::nodes(impl core::convert::Into<alloc::vec::Vec<usize>>) -> Self
+pub fn akio::numa::NumaConfig::spread() -> Self
+impl core::clone::Clone for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaConfig
+impl core::cmp::PartialEq for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::default() -> Self
+impl core::fmt::Debug for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaConfig
+impl core::marker::Send for akio::numa::NumaConfig
+impl core::marker::Sync for akio::numa::NumaConfig
+impl core::marker::Unpin for akio::numa::NumaConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaConfig
+#[non_exhaustive] pub struct akio::numa::NumaReport
+pub akio::numa::NumaReport::groups: alloc::vec::Vec<alloc::vec::Vec<akio::numa::ThreadPlacement>>
+pub akio::numa::NumaReport::nodes: alloc::vec::Vec<usize>
+pub akio::numa::NumaReport::pool_cpus: alloc::vec::Vec<usize>
+impl core::clone::Clone for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaReport
+impl core::cmp::PartialEq for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaReport
+impl core::marker::Send for akio::numa::NumaReport
+impl core::marker::Sync for akio::numa::NumaReport
+impl core::marker::Unpin for akio::numa::NumaReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaReport
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaReport
+#[non_exhaustive] pub struct akio::numa::ThreadPlacement
+pub akio::numa::ThreadPlacement::cpus: alloc::vec::Vec<usize>
+pub akio::numa::ThreadPlacement::incoming_cpu: core::option::Option<usize>
+pub akio::numa::ThreadPlacement::node: usize
+impl core::clone::Clone for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::ThreadPlacement
+impl core::cmp::PartialEq for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::ThreadPlacement
+impl core::marker::Send for akio::numa::ThreadPlacement
+impl core::marker::Sync for akio::numa::ThreadPlacement
+impl core::marker::Unpin for akio::numa::ThreadPlacement
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::ThreadPlacement
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::ThreadPlacement
 #[non_exhaustive] pub enum akio::Accel
 pub akio::Accel::Ebpf(akio::EbpfConfig)
 pub akio::Accel::None
@@ -142,6 +240,43 @@ impl core::marker::Sync for akio::Backend
 impl core::marker::Unpin for akio::Backend
 impl core::panic::unwind_safe::RefUnwindSafe for akio::Backend
 impl core::panic::unwind_safe::UnwindSafe for akio::Backend
+#[non_exhaustive] pub enum akio::NumaPlacement
+pub akio::NumaPlacement::Interface(alloc::string::String)
+pub akio::NumaPlacement::Nodes(alloc::vec::Vec<usize>)
+pub akio::NumaPlacement::Off
+pub akio::NumaPlacement::Spread
+impl core::clone::Clone for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaPlacement
+impl core::cmp::PartialEq for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::eq(&self, &Self) -> bool
+impl core::default::Default for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::default() -> Self
+impl core::fmt::Debug for akio::numa::NumaPlacement
+pub fn akio::numa::NumaPlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaPlacement
+impl core::marker::Send for akio::numa::NumaPlacement
+impl core::marker::Sync for akio::numa::NumaPlacement
+impl core::marker::Unpin for akio::numa::NumaPlacement
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaPlacement
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaPlacement
+#[non_exhaustive] pub enum akio::NumaStatus
+pub akio::NumaStatus::Degraded(alloc::string::String)
+pub akio::NumaStatus::Off
+pub akio::NumaStatus::Placed(akio::numa::NumaReport)
+impl core::clone::Clone for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaStatus
+impl core::cmp::PartialEq for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::NumaStatus
+pub fn akio::numa::NumaStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaStatus
+impl core::marker::Send for akio::numa::NumaStatus
+impl core::marker::Sync for akio::numa::NumaStatus
+impl core::marker::Unpin for akio::numa::NumaStatus
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaStatus
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaStatus
 #[non_exhaustive] pub struct akio::EbpfConfig
 pub akio::EbpfConfig::ebpf_programs: bool
 pub akio::EbpfConfig::pin_threads: bool
@@ -175,6 +310,7 @@ pub fn akio::Engine::dial_udp<A: akio_core::handler::Acceptor>(&self, core::net:
 pub fn akio::Engine::dial_udp_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn akio::Engine::metrics(&self) -> akio_core::telemetry::Metrics
+pub fn akio::Engine::numa_status(&self) -> &akio::numa::NumaStatus
 pub fn akio::Engine::pool_stats(&self) -> akio_pool::PoolStats
 pub fn akio::Engine::reload(&self, &akio_core::config::Config) -> akio_core::telemetry::ReloadReport
 pub fn akio::Engine::run(&self) -> core::io::error::Result<()>
@@ -199,6 +335,7 @@ pub fn akio::EngineBuilder::build(self) -> core::io::error::Result<akio::Engine>
 pub fn akio::EngineBuilder::client_threads(self, usize) -> Self
 pub fn akio::EngineBuilder::config(self, akio_core::config::Config) -> Self
 pub fn akio::EngineBuilder::listen(self, akio::Listener) -> Self
+pub fn akio::EngineBuilder::numa(self, akio::numa::NumaConfig) -> Self
 pub fn akio::EngineBuilder::pool(self, akio_pool::PoolConfig) -> Self
 pub fn akio::EngineBuilder::udp_client_threads(self, usize) -> Self
 impl core::default::Default for akio::EngineBuilder
@@ -244,6 +381,66 @@ impl core::marker::Sync for akio::Listener
 impl core::marker::Unpin for akio::Listener
 impl !core::panic::unwind_safe::RefUnwindSafe for akio::Listener
 impl !core::panic::unwind_safe::UnwindSafe for akio::Listener
+#[non_exhaustive] pub struct akio::NumaConfig
+pub akio::NumaConfig::incoming_cpu: bool
+pub akio::NumaConfig::per_cpu: bool
+pub akio::NumaConfig::placement: akio::numa::NumaPlacement
+pub akio::NumaConfig::pool: bool
+pub akio::NumaConfig::strict: bool
+impl akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::from_env() -> core::option::Option<akio::numa::NumaConfig>
+pub fn akio::numa::NumaConfig::interface(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn akio::numa::NumaConfig::nodes(impl core::convert::Into<alloc::vec::Vec<usize>>) -> Self
+pub fn akio::numa::NumaConfig::spread() -> Self
+impl core::clone::Clone for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaConfig
+impl core::cmp::PartialEq for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::default() -> Self
+impl core::fmt::Debug for akio::numa::NumaConfig
+pub fn akio::numa::NumaConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaConfig
+impl core::marker::Send for akio::numa::NumaConfig
+impl core::marker::Sync for akio::numa::NumaConfig
+impl core::marker::Unpin for akio::numa::NumaConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaConfig
+#[non_exhaustive] pub struct akio::NumaReport
+pub akio::NumaReport::groups: alloc::vec::Vec<alloc::vec::Vec<akio::numa::ThreadPlacement>>
+pub akio::NumaReport::nodes: alloc::vec::Vec<usize>
+pub akio::NumaReport::pool_cpus: alloc::vec::Vec<usize>
+impl core::clone::Clone for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::NumaReport
+impl core::cmp::PartialEq for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::NumaReport
+pub fn akio::numa::NumaReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::NumaReport
+impl core::marker::Send for akio::numa::NumaReport
+impl core::marker::Sync for akio::numa::NumaReport
+impl core::marker::Unpin for akio::numa::NumaReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaReport
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaReport
+#[non_exhaustive] pub struct akio::ThreadPlacement
+pub akio::ThreadPlacement::cpus: alloc::vec::Vec<usize>
+pub akio::ThreadPlacement::incoming_cpu: core::option::Option<usize>
+pub akio::ThreadPlacement::node: usize
+impl core::clone::Clone for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::clone(&self) -> Self
+impl core::cmp::Eq for akio::numa::ThreadPlacement
+impl core::cmp::PartialEq for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::numa::ThreadPlacement
+pub fn akio::numa::ThreadPlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::numa::ThreadPlacement
+impl core::marker::Send for akio::numa::ThreadPlacement
+impl core::marker::Sync for akio::numa::ThreadPlacement
+impl core::marker::Unpin for akio::numa::ThreadPlacement
+impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::ThreadPlacement
+impl core::panic::unwind_safe::UnwindSafe for akio::numa::ThreadPlacement
 #[non_exhaustive] pub struct akio::UringConfig
 pub akio::UringConfig::entries: u32
 pub akio::UringConfig::sqpoll: bool

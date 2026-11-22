@@ -35,6 +35,22 @@ pub struct PoolConfig {
     pub queue_capacity: usize,
     /// How long a thread above `min_threads` may sit idle before it exits.
     pub keep_alive: Duration,
+    /// Run by each pool thread when it starts, before any job (the engine's NUMA placement
+    /// pins the thread here, ADR-088). `#[doc(hidden)]`: engine-facing.
+    #[doc(hidden)]
+    pub on_start: Option<ThreadHook>,
+}
+
+/// A function each pool thread runs when it starts ([`PoolConfig::on_start`]).
+/// `#[doc(hidden)]`: engine-facing.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ThreadHook(pub Arc<dyn Fn() + Send + Sync + std::panic::RefUnwindSafe>);
+
+impl std::fmt::Debug for ThreadHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ThreadHook")
+    }
 }
 
 impl Default for PoolConfig {
@@ -45,6 +61,7 @@ impl Default for PoolConfig {
             max_threads: (cores * 8).max(8),
             queue_capacity: 65_536,
             keep_alive: Duration::from_secs(30),
+            on_start: None,
         }
     }
 }
@@ -170,6 +187,9 @@ impl Pool {
     }
 
     fn worker(self: Arc<Self>) {
+        if let Some(h) = &self.cfg.on_start {
+            (h.0)();
+        }
         let mut st = self.lock();
         loop {
             if let Some(job) = st.queue.pop_front() {
@@ -242,7 +262,32 @@ mod tests {
             max_threads: max,
             queue_capacity: cap,
             keep_alive: Duration::from_millis(100),
+            on_start: None,
         }
+    }
+
+    #[test]
+    fn on_start_runs_once_per_thread() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let s = started.clone();
+        let mut c = cfg(2, 2, 16);
+        c.on_start = Some(ThreadHook(Arc::new(move || {
+            s.fetch_add(1, Ordering::SeqCst);
+        })));
+        let pool = Pool::new(c);
+        let done = Arc::new(AtomicUsize::new(0));
+        for _ in 0..8 {
+            let d = done.clone();
+            pool.try_execute(Box::new(move || {
+                d.fetch_add(1, Ordering::SeqCst);
+            }))
+            .ok()
+            .unwrap();
+        }
+        wait_until(|| done.load(Ordering::SeqCst) == 8);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        pool.shutdown();
+        pool.join();
     }
 
     fn wait_until(mut c: impl FnMut() -> bool) {
