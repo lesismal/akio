@@ -2,7 +2,7 @@
 
 English | [简体中文](074-compressed-streamed-responses.zh-CN.md)
 
-Status: accepted (2026-11-21)
+Status: accepted (2026-11-21), updated 2026-11-22
 
 ## Context
 
@@ -126,3 +126,63 @@ holds the same window), and brotli 4 with window 18 went from 2,032 to 1,336 KiB
   70 us per stream; match tables sized by window rather than by level (libzstd's
   `ZSTD_adjustCParams`), which would shrink small-window streams further; compressing
   streamed requests on the client.
+
+## Update (2026-11-22): brotli's fixed costs per write and per stream
+
+The first two items of "Not done" above. Profiled on gpu51 (perf, quality 4, window bits 18):
+a flushed write of an 87-byte event took 3.95 us, two thirds of it building and storing the
+meta-block's three prefix codes (alphabets of 256, 704 and 64 symbols, of which an event uses a
+few dozen, a handful and one or two): passes over the whole alphabet that updated a counter in
+memory per symbol (a store-to-load dependency per symbol, mostly on the counter of length 0),
+the code lengths run-length coded three times for the choice between exact and smoothed
+lengths, and about 50 allocations. Setting up a stream (one event and the end) took 13 us, 40%
+of it clearing 640 KiB of bucket tables, sized by level whatever the window and the data.
+
+Decision, in only-brotli's encoder (the decoder and the API are unchanged):
+
+1. **Prefix codes in time mostly proportional to the symbols used.** Histograms are scanned
+   16 entries at a time (an OR the compiler vectorizes) for the used symbols; Huffman depths
+   are built from those alone, on the stack for up to 64 symbols; canonical codes are assigned
+   to used symbols only, packed with their lengths (`code << 4 | length`, one load per symbol
+   written); a complex code's run-length tokens and code length code are prepared once
+   (`Complex`), priced in closed form and written from the same preparation; the smoothed
+   alternative is skipped when smoothing changed no count (it would give the same lengths).
+   The choices are the same, so the output of `compress` is **bit for bit the same at every
+   level** (hashes of every level's output over the test vectors and generated corpora
+   compared before and after): level 11 and Silesia sizes cannot change.
+2. **Stream tables that grow with the stream, sized by window.** A stream's match tables
+   start as those of an empty input (2^8 buckets, or 2^10 hashes and a 1 KiB chain: a few
+   KiB) and are sized before each meta-block for the data the stream holds, as `compress`
+   sizes them for its input (about two entries per byte, at most the level's): for up to the
+   reach (the window, or two with a raw dictionary), not three windows as before, since a match
+   never reaches further. Growing takes room for fourfold growth, and the full size once the
+   stream holds a sixteenth of the reach, so a response written in 16 KiB pieces gets its final
+   tables with its first piece and an event stream rebuilds a few times in its first kilobytes.
+   A rebuild enters the buffered positions again (from the reach back); a hash chain that only
+   grows longer moves its links to their new slots instead. Streams' output changes slightly
+   (smaller tables while the stream is short, as for a short one-shot input, and the window
+   bound at small windows): +0.00 to +0.11% on the round-trip corpus with windows 2^16..2^22,
+   and the same bytes as before on the HTTP benchmark's events and HTML.
+
+Measured (same-run A/B against main `7e4db2d9` on gpu51 under `quiet.sh`; docs/BENCHMARKS.md
+"Brotli streaming encoder: fixed costs"). `stream-cost` example, quality 4, window 18, CPU 2:
+4.03 → 1.96 us per flushed 87-byte event (49 → 32 allocations), 13.5 → 5.3 us per one-event
+stream, 119 → 58 us per 16-event response, 641 → 6 KiB allocated after 3 events (1,297 KiB in
+steady state, unchanged), HTML in flushed 16 KiB writes +8.6%. Quality 1 and 5 alike (5: setup
+27 → 5.6 us, 2,177 → 18 KiB after 3 events); at quality 9, responses of 16 KiB pieces are 5-8%
+slower in this build, the time being the unchanged chain search at another code alignment (same
+machine code and instruction count, more branch misses; equal when run on another CPU). Over HTTP (`stream-bench`, the defaults): br
+server CPU per 16-event server-sent-events response 123.5 → 67.5 us (17 us uncompressed, zstd
+43 us), responses per second 1.83x; 16 x 16 KiB HTML responses 1,695 → 1,576 us (-7%,
+0.155 → 0.166 GB/s per core); server RSS per held stream 424 → 9 KiB after 3 events and about the
+same after 6,000 (1,007-1,147 KiB before, 1,112-1,165 after, across two runs; the allocated
+size is the same). Fuzzing: `brotli_roundtrip` and `brotli_stream_roundtrip` 10 minutes each,
+no failure. New tests: small flushed writes at levels 0..=11 with windows that slide and do not
+decode after every flush with both decoders and `brotli -d` (the stream so far plus the byte
+`Finish` adds); the tables grow as described.
+
+Still not done: brotli's write still costs about 7 times zstd's (2 us against 0.27 us), the
+three prefix codes per meta-block being inherent to the format (a cheaper code at high event
+rates would be a static or reused code chosen by cost, as Google's encoder does at quality
+0..2); at quality 9 a flushed event costs 8 us, mostly the chain search, and at 10..11
+83 us (optimal parsing), so they stay unsuited to event streams.

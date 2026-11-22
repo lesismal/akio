@@ -10,6 +10,25 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: brotli streaming encoder, fixed costs per write and per stream (only-brotli)
+
+ADR-074's update of 2026-11-22, no API change:
+
+- Prefix codes are built and stored in time mostly proportional to the symbols a meta-block
+  uses (sparse histogram scans, Huffman depths on the stack, canonical codes for used symbols
+  only, run-length coded code lengths prepared once). One-shot output is bit for bit the same
+  at every level.
+- The streaming `Compressor`'s match tables start at a few KiB and grow with the stream up to
+  the level's size for one window (they were sized for three windows by level from the
+  start). Streamed output changes by +0.00..0.11%.
+- Measured (same-run A/B against main on gpu51; docs/BENCHMARKS.md "Brotli streaming encoder:
+  fixed costs"): quality 4, window 18: 4.03 → 1.96 us per flushed 87-byte event, 13.5 → 5.3 us
+  per stream, 641 → 6 KiB after 3 events, HTML in flushed 16 KiB writes +8.6%. With only-http's
+  `StreamCompress` defaults, br server CPU per 16-event response 123.5 → 67.5 us (1.83x
+  responses/s), 16 x 16 KiB HTML -7%, server RSS per held stream 424 → 9 KiB after 3 events.
+- `tools/bench/stream-compress.sh` takes `VARIANTS` / `MEM_VARIANTS` and `base-<coding>`
+  variants; new example `stream-cost` (only-brotli).
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

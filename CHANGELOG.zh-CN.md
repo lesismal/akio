@@ -10,6 +10,22 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：brotli 流式编码器每次写入与每个流的固定开销（only-brotli）
+
+ADR-074 的 2026-11-22 更新，API 不变：
+
+- 前缀码的构建与写出时间主要与元块用到的符号数成正比（稀疏扫描直方图，Huffman 深度放在栈上，规范码只分配
+  给用到的符号，码长的游程编码只准备一次）。一次性输出在每个级别都逐位相同。
+- 流式 `Compressor` 的匹配表从几 KiB 起步，随流增长，至多为该级别对一个窗口的大小（之前一开始就按级别、
+  按三个窗口确定大小）。流式输出变化 +0.00..0.11%。
+- 测量（在 gpu51 上与 main 同批 A/B；docs/BENCHMARKS.zh-CN.md“Brotli 流式编码器：固定开销”）：质量 4、
+  窗口 18：每次 87 字节事件的刷新写入 4.03 → 1.96 us，每个流 13.5 → 5.3 us，3 个事件后 641 → 6 KiB，以
+  16 KiB 刷新写入的 HTML +8.6%。使用 only-http 的 `StreamCompress` 默认值时，br 每个 16 事件响应的服务器
+  CPU 123.5 → 67.5 us（每秒响应数 1.83 倍），16 x 16 KiB HTML -7%，每个保持打开的流的服务器 RSS 在 3 个
+  事件后 424 → 9 KiB。
+- `tools/bench/stream-compress.sh` 支持 `VARIANTS` / `MEM_VARIANTS` 与 `base-<编码>` 变体；新示例
+  `stream-cost`（only-brotli）。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：
