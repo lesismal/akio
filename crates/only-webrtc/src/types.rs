@@ -854,6 +854,8 @@ pub(crate) struct ConfigInner {
     pub(crate) rtcp_mux: RtcpMuxPolicy,
     /// SDES: the MKI length of our offered keys (0: none).
     pub(crate) sdes_mki: u8,
+    /// DTLS-SRTP: the MKI length offered in `use_srtp` (0: none; ADR-082).
+    pub(crate) dtls_mki: u8,
     /// ICE runs (else plain `c=` / port transports).
     pub(crate) ice: bool,
     /// BUNDLE in our offers and answers.
@@ -912,6 +914,7 @@ impl Default for ConfigInner {
             sdes: false,
             rtcp_mux: RtcpMuxPolicy::Require,
             sdes_mki: 0,
+            dtls_mki: 0,
             ice: true,
             bundle: BundlePolicy::Balanced,
             xr_blocks: XrBlocks::NONE,
@@ -948,6 +951,7 @@ impl fmt::Debug for RtcConfig {
             .field("encrypted_header_extensions", &self.0.encrypt_ext)
             .field("opus_red", &self.0.opus_red)
             .field("sdes_srtp", &self.0.sdes)
+            .field("dtls_srtp_mki", &self.0.dtls_mki)
             .field("rtcp_mux", &self.0.rtcp_mux)
             .field("rtcp_xr_blocks", &self.0.xr_blocks)
             .field("ulpfec_level0", &self.0.ulpfec_level0)
@@ -1259,6 +1263,19 @@ impl RtcConfig {
     #[must_use]
     pub fn set_sdes_mki_length(mut self, len: u8) -> Self {
         self.0.sdes_mki = len.min(128);
+        self
+    }
+
+    /// SRTP Master Key Identifiers with DTLS-SRTP (RFC 5764 §4.1.3, ADR-082): 0 (the
+    /// default) for none, else 1..=128 bytes (larger values are clamped). As the DTLS client
+    /// this side offers an MKI of that length in `use_srtp` (its value counts the handshakes
+    /// of the session, so the keys of a later one are told apart); as the server it agrees to
+    /// the client's MKI, whatever its length. When both agree, every SRTP and SRTCP packet
+    /// carries the MKI, both ways; a remote that does not answers with an empty one and SRTP
+    /// runs without (browsers do).
+    #[must_use]
+    pub fn set_dtls_srtp_mki_length(mut self, len: u8) -> Self {
+        self.0.dtls_mki = len.min(128);
         self
     }
 

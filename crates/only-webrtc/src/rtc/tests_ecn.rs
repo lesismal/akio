@@ -1099,3 +1099,76 @@ fn a_foreign_handshake_does_not_latch() {
     // may, though the gateway refused its certificate.)
     let _ = x;
 }
+
+// ---- SRTP MKIs with DTLS-SRTP (ADR-082) ----
+
+/// A DTLS-SRTP call (with ICE) between `a` (MKI length `ma`) and `b` (`mb`): the MKI
+/// lengths of `a`'s send and receive contexts and of `b`'s, once audio flowed both ways.
+fn mki_call(ma: u8, mb: u8, mux: bool) -> ((usize, usize), (usize, usize), usize, usize) {
+    let now = Instant::now();
+    let cfg = |m: u8| {
+        let mut c = ConfigInner::default();
+        c.dtls_mki = m;
+        if !mux {
+            c.rtcp_mux = RtcpMuxPolicy::Off;
+        }
+        c
+    };
+    let (c2a, c2b): (&[&str], &[&str]) = if mux {
+        (&[], &[])
+    } else {
+        (&["10.0.0.1:1001"], &["10.0.0.2:2001"])
+    };
+    let mut a = peer(cfg(ma), &["10.0.0.1:1000"], c2a, now);
+    let mut b = peer(cfg(mb), &["10.0.0.2:2000"], c2b, now);
+    let mut ch = a.rtc.changes();
+    let audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+    let offer = a.rtc.apply(now, ch).unwrap().unwrap();
+    let answer = b.rtc.accept_offer(now, &offer).unwrap();
+    a.rtc.accept_answer(now, &answer).unwrap();
+    let mut net = Net::new(Path::Keep);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    media(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        (Some(audio), None),
+        100,
+        true,
+    );
+    let l = |s: &Side| {
+        (
+            s.rtc.srtp_tx.as_ref().map_or(99, Srtp::mki_len),
+            s.rtc.srtp_rx.as_ref().map_or(99, Srtp::mki_len),
+        )
+    };
+    let (la, lb) = (l(&a), l(&b));
+    if !mux {
+        // RTCP's own association agreed the same way.
+        let r = a.rtc.rtcp.srtcp_tx.as_ref().map_or(99, Srtp::mki_len);
+        assert_eq!(r, la.0);
+    }
+    (la, lb, media_count(&a, audio), media_count(&b, audio))
+}
+
+#[test]
+fn dtls_srtp_mki_when_both_agree() {
+    // a offers actpass, b answers active: b is the DTLS client and offers the MKI.
+    for mux in [true, false] {
+        let (la, lb, na, nb) = mki_call(4, 4, mux);
+        assert_eq!((la, lb), ((4, 4), (4, 4)), "mux {mux}");
+        assert!(na >= 95 && nb >= 95, "{na} {nb}");
+    }
+    // The server agrees to whatever the client offers.
+    let (la, lb, na, nb) = mki_call(1, 7, true);
+    assert_eq!((la, lb), ((7, 7), (7, 7)));
+    assert!(na >= 95 && nb >= 95);
+    // Off on either side: none (a client offering to a server that does not agree, or a
+    // server that would agree to a client that offers none).
+    for (ma, mb) in [(4, 0), (0, 4)] {
+        let (la, lb, na, nb) = mki_call(ma, mb, true);
+        assert_eq!((la, lb), ((0, 0), (0, 0)), "{ma} {mb}");
+        assert!(na >= 95 && nb >= 95);
+    }
+}

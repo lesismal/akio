@@ -557,6 +557,15 @@ fn has_cryptex(sdp: &Sdp) -> bool {
     sdp.has("cryptex") || sdp.media.iter().any(|m| m.port != 0 && m.has("cryptex"))
 }
 
+/// An SRTP context keyed by DTLS-SRTP, with the negotiated MKI if there is one (RFC 5764
+/// §4.1.3).
+pub(super) fn dtls_srtp(p: Profile, mki: Option<&[u8]>, key: &[u8], salt: &[u8]) -> Option<Srtp> {
+    match mki.filter(|m| !m.is_empty()) {
+        Some(m) => Srtp::new_with_mki(p, m, key, salt).ok(),
+        None => Srtp::new(p, key, salt).ok(),
+    }
+}
+
 fn local_extmap(kind: MediaKind) -> ExtensionMap {
     match kind {
         MediaKind::Audio => ExtensionMap::default_audio(),
@@ -950,6 +959,8 @@ pub(crate) struct Rtc {
     ecn: ecn::EcnPath,
     /// RFC 6679 signalling (ADR-082): its receiving side, and what was negotiated.
     ecn6679: ecn_fb::Session,
+    /// DTLS handshakes made with an MKI offered (its value; ADR-082).
+    dtls_mki_gen: u32,
     /// Local candidate addresses whose paths carry no ECN codepoint (ICE-TCP, TURN over
     /// TCP / TLS): no marking there (ADR-082).
     no_ecn: Vec<SocketAddr>,
@@ -1097,6 +1108,7 @@ impl Rtc {
             xt: transports::Extra::default(),
             ecn: ecn::EcnPath::default(),
             ecn6679: ecn_fb::Session::default(),
+            dtls_mki_gen: 0,
             no_ecn: Vec::new(),
             latch: latch::Latch::default(),
             latch_rx: None,
@@ -2906,6 +2918,17 @@ impl Rtc {
             // A DTLS 1.3 ClientHello DTLS 1.2 servers answer; a server takes either.
             cfg = cfg.with_versions(vec![DtlsVersion::Dtls13, DtlsVersion::Dtls12]);
         }
+        if self.cfg.dtls_mki > 0 {
+            // RFC 5764 §4.1.3 (ADR-082): the MKI's value counts the session's handshakes.
+            self.dtls_mki_gen = self.dtls_mki_gen.wrapping_add(1);
+            let n = usize::from(self.cfg.dtls_mki);
+            let count = self.dtls_mki_gen.to_be_bytes();
+            let mut mki = vec![0u8; n];
+            for (d, g) in mki.iter_mut().rev().zip(count.iter().rev()) {
+                *d = *g;
+            }
+            cfg = cfg.with_srtp_mki(mki).with_srtp_accept_mki(true);
+        }
         let cfg = Arc::new(cfg);
         let r = match role {
             Role::Client => Connection::client(cfg, now),
@@ -3888,9 +3911,10 @@ impl Rtc {
                         if let Some(p) = Profile::from_id(keys.profile.id()) {
                             let (lk, ls) = keys.local(role);
                             let (rk, rs) = keys.remote(role);
-                            self.srtp_tx = Srtp::new(p, lk, ls).ok();
+                            let mki = info.srtp_mki.as_deref();
+                            self.srtp_tx = dtls_srtp(p, mki, lk, ls);
                             self.srtp_rx =
-                                Srtp::new(p, rk, rs).ok().map(|c| c.with_replay_window(512));
+                                dtls_srtp(p, mki, rk, rs).map(|c| c.with_replay_window(512));
                             self.srtp_enc_ids.clear();
                             self.apply_srtp_options();
                         }
