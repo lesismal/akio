@@ -665,6 +665,8 @@ pub only_rtp::Plc::Disabled
 pub only_rtp::Plc::Enhanced
 pub only_rtp::Plc::Standard
 pub only_rtp::Plc::Unspecified
+impl only_rtp::Plc
+pub fn only_rtp::Plc::of_codec(&str) -> only_rtp::Plc
 impl core::clone::Clone for only_rtp::Plc
 pub fn only_rtp::Plc::clone(&self) -> Self
 impl core::cmp::Eq for only_rtp::Plc
@@ -972,7 +974,11 @@ pub fn only_rtp::EModel::codec(f64, f64) -> only_rtp::EModel
 pub fn only_rtp::EModel::delay_impairment(core::time::Duration) -> f64
 pub fn only_rtp::EModel::equipment_impairment(&self, f64, f64) -> f64
 pub fn only_rtp::EModel::estimate(&self, f64, f64, core::option::Option<core::time::Duration>, core::time::Duration, core::time::Duration, core::option::Option<core::time::Duration>) -> only_rtp::EModelScore
+pub fn only_rtp::EModel::estimate_report(&self, &only_rtp::BurstLossModel, &only_rtp::VoipQuality, core::time::Duration, core::time::Duration) -> only_rtp::EModelScore
+pub fn only_rtp::EModel::for_codec(&str, only_rtp::Plc) -> core::option::Option<only_rtp::EModel>
+pub fn only_rtp::EModel::is_wideband(&self) -> bool
 pub fn only_rtp::EModel::score(&self, f64, f64, core::time::Duration) -> only_rtp::EModelScore
+pub fn only_rtp::EModel::wideband(f64, f64) -> only_rtp::EModel
 impl core::clone::Clone for only_rtp::EModel
 pub fn only_rtp::EModel::clone(&self) -> Self
 impl core::cmp::PartialEq for only_rtp::EModel
@@ -995,6 +1001,7 @@ pub only_rtp::EModelScore::r_factor: f64
 pub only_rtp::EModelScore::r_lq: f64
 impl only_rtp::EModelScore
 pub fn only_rtp::EModelScore::apply(&self, &mut only_rtp::VoipQuality)
+pub fn only_rtp::EModelScore::fill(&self, &mut only_rtp::VoipQuality)
 impl core::clone::Clone for only_rtp::EModelScore
 pub fn only_rtp::EModelScore::clone(&self) -> Self
 impl core::cmp::PartialEq for only_rtp::EModelScore
@@ -1484,6 +1491,8 @@ pub only_rtp::VoipMetrics::round_trip_delay: u16
 pub only_rtp::VoipMetrics::rx_config: u8
 pub only_rtp::VoipMetrics::signal_level: u8
 pub only_rtp::VoipMetrics::ssrc: u32
+impl only_rtp::VoipMetrics
+pub fn only_rtp::VoipMetrics::quality(&self) -> only_rtp::VoipQuality
 impl core::clone::Clone for only_rtp::VoipMetrics
 pub fn only_rtp::VoipMetrics::clone(&self) -> Self
 impl core::cmp::Eq for only_rtp::VoipMetrics
