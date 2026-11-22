@@ -39,6 +39,23 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
 - 超时：首个请求，以及任何已开始的请求，须在 `request_timeout`（10 s）内收齐。`Session: <id>;timeout=<s>`
   通告 `session_timeout`（60 s）并强制执行：客户端这么久什么都没发送（请求、交织的 RTCP，UDP 传输时来自其
   端口的数据报）的会话被拆除。
+- 迁移会话：`RtspServer::sessions()` 列出会话（id、路径、对端、是否录制）；
+  `redirect_session(id, &Redirect)` 与 `redirect_path(path, &Redirect)` 向其客户端发送 `REDIRECT` 请求
+  （RFC 2326 10.15），用于为维护而摘下服务器或分流负载：
+
+  ```rust,ignore
+  use std::time::{Duration, SystemTime};
+  use only_media::rtsp::Redirect;
+
+  // live/cam 的所有播放端与推流端，30 s 后迁到另一台服务器。
+  let moved = srv.redirect_path("live/cam", &Redirect::new("rtsp://198.51.100.8:8554/live/cam")
+      .at(SystemTime::now() + Duration::from_secs(30)));
+  ```
+
+  `at` 以 `Range: clock=<UTC>-` 发出。会话继续播放或录制，直到客户端拆除它（服务器随后关闭连接），或直到迁移生效
+  后 `grace`（10 s）过去，由服务器关闭：忽略该请求的客户端同样被干净地结束。我们试过的第三方客户端都不跟随它：ffmpeg 回答 `501`、
+  GStreamer 回答 `200`，两者照常继续直到宽限期把它们关闭；从服务器拉流的 mediamtx 拆除会话并重新拉同一 URL
+  （`tools/interop/media/rtsp-server-redirect.sh`）；本 crate 的客户端会跟随（见下）。
 
 已用 ffmpeg 9 测试（`crates/only-media/tests/rtsp_interop.rs`）：
 
@@ -125,7 +142,7 @@ let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cam
 
 `pull` 与 `push` 在 PLAY 或 RECORD 得到应答后才返回：它们等待握手完成，因此请在 I/O 线程之外调用（主机名
 也在此解析；`RtspClientConfig::addr` 可免去解析）。每个新会话（重连、重定向）都会重新解析主机名，因此服务器
-换了地址而名字不变时也能找到。之后会话运行在引擎上；`error()` 说明结束原因，`close()`
+换了地址而名字不变时也能找到，并且每个会话依次拨该名字的各个地址，直到有一个连上。之后会话运行在引擎上；`error()` 说明结束原因，`close()`
 （或丢弃句柄）发送 TEARDOWN。URL 中的凭据用于应答 Digest 或 Basic 质询。保活（GET_PARAMETER，否则
 OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp` 为每条轨道绑定一对 RTP/RTCP 端口，因此
 引擎需要 `udp_client_threads` 或一个 UDP 监听器。上限：连接与每次应答 10 s，拉流 10 s 无媒体即结束，
@@ -142,6 +159,12 @@ OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp
 超过则以最后一次的状态失败。URL 中的凭据只带给同一主机与端口，除非该位置自带凭据；`RtspClientConfig::addr`
 只用于客户端自己的 URL。`301` 会被记住：重连从它的位置开始，其他重定向则每次从原 URL 重新跟随。
 
+**服务器的 REDIRECT**：服务器可以用 `REDIRECT` 请求迁移活动会话（本 crate 的服务器用 `redirect_session` /
+`redirect_path` 发送）。客户端回答它，并在请求的 `Range` 起点到达时（`clock=` 为 UTC 时间，`npt=` 从 PLAY 或
+RECORD 起算；没有则立即）拆除会话，并立即在新位置建立会话，不经退避，使用 `reconnect` 的 engine：拉流保留其路径
+并重新发布，推流重新 ANNOUNCE，`reconnects()` 计入一次。之后的重连再从客户端的 URL 开始。没有 `reconnect` 时
+客户端以 `ClientError::Redirected(location)` 结束。
+
 **自动重连**：设置 `RtspClientConfig::reconnect`（一个基于 `Arc<Engine>` 构建的 `only_media::Reconnect`）后，
 以再试一次可能好转的错误失败的会话会在有上限、逐次翻倍的退避之后由新会话接替；由于握手会阻塞，每次尝试在
 自己的短命线程上运行。拉流保留其 hub 路径与订阅者，并重新发布新会话的轨道（时间线重启）；推流重新 ANNOUNCE
@@ -154,6 +177,8 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 拉取配置为 `source: redirect` 的 mediamtx 路径时跟随其 `302`（TCP 与 UDP），UDP 拉流保持 75 s，超过 mediamtx 60 s
 的会话超时，靠接收者报告维持；在 Docker 网络中，我们自动重连的推流与拉流所用的名字从一个 mediamtx 移到另一个地址
 上的另一个 mediamtx，两者都找到了新的（`tools/interop/media/rtsp-redirect.sh`）。
+被本 crate 的服务器用 `REDIRECT` 迁移后，拉流从 mediamtx 继续，推流录制到它那里，TCP 与 UDP 均如此
+（`tools/interop/media/rtsp-server-redirect.sh target`）。
 
 ## 统计
 
@@ -163,5 +188,4 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 
 ## 不支持
 
-RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话。客户端：服务器在会话中
-可能发送的 `REDIRECT` 请求（应答 501；3xx 应答会被跟随）。WebRTC：simulcast、转码。
+RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话。WebRTC：simulcast、转码。

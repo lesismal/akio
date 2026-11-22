@@ -48,6 +48,26 @@ tokens travel).
   `request_timeout` (10 s). `Session: <id>;timeout=<s>` advertises `session_timeout` (60 s) and
   it is enforced: a session whose client sends nothing (requests, interleaved RTCP, or for UDP
   transports datagrams from its ports) for that long is torn down.
+- Moving sessions: `RtspServer::sessions()` lists them (id, path, peer, recording or not);
+  `redirect_session(id, &Redirect)` and `redirect_path(path, &Redirect)` send their clients a
+  `REDIRECT` request (RFC 2326 10.15) to drain a server for maintenance or shed load:
+
+  ```rust,ignore
+  use std::time::{Duration, SystemTime};
+  use only_media::rtsp::Redirect;
+
+  // Every player and the publisher of live/cam, to the other server in 30 s.
+  let moved = srv.redirect_path("live/cam", &Redirect::new("rtsp://198.51.100.8:8554/live/cam")
+      .at(SystemTime::now() + Duration::from_secs(30)));
+  ```
+
+  `at` goes out as `Range: clock=<UTC>-`. The session keeps playing or recording until its
+  client tears it down (the server then closes the connection) or until `grace` (10 s) after
+  the move takes effect, when the server closes it: clients that ignore the request end
+  cleanly as well. None of the third-party clients we tried follows it: ffmpeg answers `501`
+  and GStreamer `200`, both carrying on until the grace closes them, and mediamtx pulling from
+  the server tears the session down and pulls the same URL again
+  (`tools/interop/media/rtsp-server-redirect.sh`); this crate's client does (below).
 
 Tested with ffmpeg 9 (`crates/only-media/tests/rtsp_interop.rs`):
 
@@ -144,7 +164,8 @@ let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cam
 `pull` and `push` return once PLAY or RECORD is answered: they wait for the handshake, so call
 them off the I/O threads (host names are resolved there too; `RtspClientConfig::addr` skips the
 lookup). Host names are looked up again for every new session (a reconnect, a redirect), so a
-server that moved to another address under the same name is found. The session then runs on the engine; `error()` says why it ended and `close()` (or
+server that moved to another address under the same name is found, and each session dials the
+name's addresses in turn until one connects. The session then runs on the engine; `error()` says why it ended and `close()` (or
 dropping the handle) sends TEARDOWN. Credentials in the URL answer Digest or Basic challenges.
 Keep-alives (GET_PARAMETER, else OPTIONS) go at half the server's session timeout. UDP binds an
 RTP/RTCP port pair per track with `Engine::bind_udp`, so the engine needs
@@ -170,6 +191,14 @@ the same host and port, unless the location carries its own; `RtspClientConfig::
 to the client's own URL only. A `301` is remembered: reconnects start at its location, other
 redirects are followed again from the original URL.
 
+**Server REDIRECT**: a server may move a live session with a `REDIRECT` request (this crate's
+server does with `redirect_session` / `redirect_path`). The client answers it and, when the
+request's `Range` start comes (`clock=` a UTC time, `npt=` counted from PLAY or RECORD; at once
+without), tears the session down and sets up at the location at once, without the backoff, on
+the `reconnect` engine: a pull keeps its path and republishes, a push announces again, and
+`reconnects()` counts it. Later reconnects start from the client's URL again. Without
+`reconnect` the client ends with `ClientError::Redirected(location)`.
+
 **Reconnecting**: with `RtspClientConfig::reconnect` (an `only_media::Reconnect`, built on an
 `Arc<Engine>`) a session that fails with an error another try may cure is followed by a new
 one after a bounded, doubling backoff; the tries run on a short-lived thread of their own, as
@@ -186,6 +215,8 @@ configured as `source: redirect` follows its `302`, over TCP and UDP, and a UDP 
 75 s past mediamtx's 60 s session timeout is kept alive by its receiver reports; on a Docker
 network, the name our reconnecting push and pull use moves from one mediamtx to another at
 another address, and both find the new one (`tools/interop/media/rtsp-redirect.sh`).
+Moved by this crate's server with `REDIRECT`, a pull goes on from mediamtx and a push records
+to it, over TCP and UDP (`tools/interop/media/rtsp-server-redirect.sh target`).
 
 ## Statistics
 
@@ -196,5 +227,4 @@ another address, and both find the new one (`tools/interop/media/rtsp-redirect.s
 ## Not supported
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
-outlive their connection. Client: the `REDIRECT` request a server may send during a session
-(answered 501; 3xx responses are followed). WebRTC: simulcast, transcoding.
+outlive their connection. WebRTC: simulcast, transcoding.

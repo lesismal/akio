@@ -265,7 +265,11 @@ let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in"
 
 A pull keeps its hub path reserved meanwhile: players stay subscribed and hear the new
 session's tracks as a republish (their timelines restart, HLS writes a discontinuity). A push
-subscribes again and starts from the cached GOP. Bad URLs, hub refusals and refused
+subscribes again and starts from the cached GOP. Each try looks the URL's host name up again
+(on a short-lived thread, as the lookup blocks), so a server that came back at another address
+under the same name is found, and dials the name's addresses in turn until one connects;
+`addr()` is the address dialed last. A name that fails to resolve is tried again like a refused
+connect. Bad URLs, hub refusals and refused
 credentials still end the client; `max_attempts` bounds the tries in a row. `close()` frees a
 pull's path before `is_closed()` says so.
 

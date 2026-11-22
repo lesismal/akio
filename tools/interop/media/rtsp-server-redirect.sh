@@ -2,7 +2,8 @@
 # The RTSP server's REDIRECT and the RTMP client's lookups on reconnect against third-party
 # software, in Docker (Linux with Docker Engine: host networking for RTSP over UDP):
 #   1. clients: what ffmpeg (the host's), GStreamer (rtspsrc, rtspclientsink; in an image built
-#      here from ubuntu:24.04), live555 (openRTSP, the library VLC plays RTSP with) and mediamtx
+#      here from ubuntu:24.04), live555 (openRTSP, the library VLC plays RTSP with; only when an
+#      image L555_IMAGE with openRTSP exists, no distribution packages it now) and mediamtx
 #      (a path whose source is our server) do when our server sends REDIRECT
 #      (tests/rtsp_interop.rs third_party_redirect, one run per client and transport): the
 #      answer, whether it moves to the other server, and that our server ends the session once
@@ -19,6 +20,7 @@
 # and RTCP on +46 and +47; the proxy of step 1 listens on +1), MOVE_SUBNET (172.31.248.0/24);
 # CARGO_TARGET_DIR as for cargo.
 set -eu
+FAIL=0
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 STEP=${1:-all}
 MTX_IMAGE=${MTX_IMAGE:-bluenviron/mediamtx:latest}
@@ -26,7 +28,7 @@ PORT=${RTSP_PORT:-18754}
 SUBNET=${MOVE_SUBNET:-172.31.248.0/24}
 NET=only-media-rtmp-move
 GST_IMAGE=only-media-gst
-L555_IMAGE=only-media-live555
+L555_IMAGE=${L555_IMAGE:-only-media-live555}
 W=$(mktemp -d)
 cleanup() {
     docker rm -f only-media-rd-client only-media-rd-mtx only-media-rtmp-a only-media-rtmp-b \
@@ -37,12 +39,12 @@ cleanup() {
 trap cleanup EXIT
 cd "$ROOT"
 
-image() { # name, packages
+image() { # name, base, packages
     docker image inspect "$1" >/dev/null 2>&1 && return
     docker build -q -t "$1" - >/dev/null <<EOF
-FROM ubuntu:24.04
+FROM $2
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    $2 && rm -rf /var/lib/apt/lists/*
+    $3 && rm -rf /var/lib/apt/lists/*
 EOF
 }
 
@@ -52,16 +54,15 @@ redirect() {
     out=$(ONLY_REDIRECT_MODE=$mode ONLY_REDIRECT_CLIENT="$cmd" ONLY_REDIRECT_PORT=$((PORT + 1)) \
         ONLY_REDIRECT_STOP="docker rm -f only-media-rd-client only-media-rd-mtx >/dev/null 2>&1" \
         cargo test -q -p only-media --test rtsp_interop third_party_redirect -- --nocapture 2>&1) \
-        || { echo "$out" | tail -20; echo "FAILED: $label"; return 1; }
+        || { echo "$out" | grep -E "REDIRECT-RESULT|panicked" | tail -5; echo "FAILED: $label"; FAIL=1; return 0; }
     echo "$label: $(echo "$out" | grep REDIRECT-RESULT | sed 's/^REDIRECT-RESULT //')"
 }
 
 if [ "$STEP" = all ] || [ "$STEP" = clients ]; then
     echo "== clients: our server sends REDIRECT"
     cargo test -q -p only-media --test rtsp_interop --no-run 2>/dev/null
-    image "$GST_IMAGE" "gstreamer1.0-tools gstreamer1.0-rtsp gstreamer1.0-plugins-base \
+    image "$GST_IMAGE" ubuntu:24.04 "gstreamer1.0-tools gstreamer1.0-rtsp gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly"
-    image "$L555_IMAGE" "livemedia-utils"
     D="docker run --rm --name only-media-rd-client --network host"
     ffmpeg -version | head -1
     for t in tcp udp; do
@@ -80,9 +81,14 @@ if [ "$STEP" = all ] || [ "$STEP" = clients ]; then
              ! video/x-raw,width=320,height=240,framerate=25/1 ! x264enc tune=zerolatency \
              key-int-max=25 ! rtspclientsink location={url} protocols=$t"
     done
-    docker run --rm "$L555_IMAGE" sh -c 'dpkg-query -W livemedia-utils'
-    redirect play "live555 openRTSP tcp" "exec $D $L555_IMAGE openRTSP -t -d 60 -F /tmp/o {url}"
-    redirect play "live555 openRTSP udp" "exec $D $L555_IMAGE openRTSP -d 60 -F /tmp/o {url}"
+    # live555 (openRTSP): neither Ubuntu 24.04 nor Debian 12 packages it any more; runs when an
+    # image of that name with openRTSP on its PATH exists (L555_IMAGE).
+    if docker image inspect "$L555_IMAGE" >/dev/null 2>&1; then
+        redirect play "live555 openRTSP tcp" "exec $D $L555_IMAGE openRTSP -t -d 60 -F /tmp/o {url}"
+        redirect play "live555 openRTSP udp" "exec $D $L555_IMAGE openRTSP -d 60 -F /tmp/o {url}"
+    else
+        echo "live555: no $L555_IMAGE image, skipped"
+    fi
     for t in tcp udp; do
         cat >"$W/mtx-$t.yml" <<EOF
 rtspAddress: :$PORT
@@ -102,6 +108,7 @@ EOF
              -v $W/mtx-$t.yml:/mediamtx.yml:ro $MTX_IMAGE"
     done
     docker run --rm "$MTX_IMAGE" --version 2>&1 | head -1 || true
+    [ "$FAIL" = 0 ]
 fi
 
 if [ "$STEP" = all ] || [ "$STEP" = target ]; then

@@ -25,8 +25,9 @@
 //! with a `REDIRECT` request (RFC 2326 10.15; [`Redirect`]: the location, optionally when, as
 //! `Range: clock=`). The session keeps playing or recording until its client tears it down
 //! (then the server closes the connection), or until the redirect's grace passes after the
-//! move (then the server closes it): clients that ignore `REDIRECT` (ffmpeg, GStreamer, live555
-//! and mediamtx answer it and carry on) are ended cleanly all the same.
+//! move (then the server closes it): clients that do not follow `REDIRECT` (ffmpeg answers
+//! 501 and GStreamer 200, both carry on; mediamtx pulls the same URL again) are ended cleanly
+//! all the same.
 //!
 //! ```no_run
 //! use only::{Engine, Listener};
