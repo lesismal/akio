@@ -354,6 +354,14 @@ impl Rtc {
         self.cfg.ecn != EcnMarking::Off && (self.ccfb || self.ecn6679.tx) && self.bwe.is_some()
     }
 
+    /// Paths from local address `addr` carry no ECN codepoint (a TURN allocation over TCP or
+    /// TLS; ICE-TCP candidates are recognised on their own): ECN stays off there.
+    pub(crate) fn set_no_ecn(&mut self, addr: SocketAddr) {
+        if !self.no_ecn.contains(&addr) {
+            self.no_ecn.push(addr);
+        }
+    }
+
     /// Whether the current path marks ECT(1), whose CE marks the estimator answers scalably
     /// (L4S): the pacer then sends smoothly.
     pub(super) fn ecn_scalable(&self) -> bool {
@@ -368,7 +376,9 @@ impl Rtc {
         if raw.len() < 12 {
             return 0;
         }
-        if !self.ecn_enabled() {
+        if !self.ecn_enabled() || self.no_ecn.contains(&path.0) {
+            // Off, or a path over TCP: ECN is TCP's own business there (RFC 6544), and a
+            // TURN server reached over TCP or TLS has no codepoint to copy (RFC 8656 §12).
             if self.ecn.phase != Phase::Off {
                 self.ecn.start(0, None);
             }

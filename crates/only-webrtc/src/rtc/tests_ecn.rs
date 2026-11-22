@@ -307,8 +307,23 @@ fn ecn_run_with(
     ccfb: bool,
     path: Path,
 ) -> ((Side, Side, Net), String, String) {
+    ecn_run_on(marking, b_marking, ccfb, path, false)
+}
+
+/// [`ecn_run_with`]; `tcp`: `a`'s candidate is one whose paths carry no codepoint (as the
+/// endpoint says of TURN allocations over TCP or TLS).
+fn ecn_run_on(
+    marking: EcnMarking,
+    b_marking: EcnMarking,
+    ccfb: bool,
+    path: Path,
+    tcp: bool,
+) -> ((Side, Side, Net), String, String) {
     let now = Instant::now();
     let mut a = peer(ecn_cfg(marking, ccfb), &["10.0.0.1:1000"], &[], now);
+    if tcp {
+        a.rtc.set_no_ecn(addr("10.0.0.1:1000"));
+    }
     let mut b = peer(ecn_cfg(b_marking, ccfb), &["10.0.0.2:2000"], &[], now);
     let mut ch = a.rtc.changes();
     let (audio, video) = {
@@ -896,4 +911,30 @@ fn rfc6679_needs_the_remote() {
     assert!(!a.rtc.ecn6679.rx);
     assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
     assert!(net.log.iter().all(|l| l.3 == 0));
+}
+
+// ---- paths without a codepoint (ADR-082) ----
+
+#[test]
+fn no_ecn_on_paths_over_tcp() {
+    for ccfb in [true, false] {
+        let ((a, _, net), _, _) =
+            ecn_run_on(EcnMarking::Ect1, EcnMarking::Ect1, ccfb, Path::Keep, true);
+        // Off, not failed: nothing marked, nothing given up on.
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
+        assert_eq!(a.rtc.ecn.failures, 0);
+        assert!(
+            rtp_marks(&net, addr("10.0.0.1:1000"))
+                .iter()
+                .all(|m| *m == 0)
+        );
+    }
+    // ICE-TCP candidates are recognised by the peer itself.
+    let now = Instant::now();
+    let mut r = Rtc::new(ecn_cfg(EcnMarking::Ect1, true), false, now).unwrap();
+    r.add_local_candidate(IceCandidate::host_tcp(
+        addr("10.0.0.1:9"),
+        only_ice::TcpType::Active,
+    ));
+    assert_eq!(r.no_ecn, [addr("10.0.0.1:9")]);
 }

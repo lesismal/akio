@@ -950,6 +950,9 @@ pub(crate) struct Rtc {
     ecn: ecn::EcnPath,
     /// RFC 6679 signalling (ADR-082): its receiving side, and what was negotiated.
     ecn6679: ecn_fb::Session,
+    /// Local candidate addresses whose paths carry no ECN codepoint (ICE-TCP, TURN over
+    /// TCP / TLS): no marking there (ADR-082).
+    no_ecn: Vec<SocketAddr>,
     /// Latching the current transport's remote without ICE (ADR-077), the source and local
     /// address of the datagram being received while latching, and whether a packet
     /// authenticated during [`Rtc::latch_receive`].
@@ -1094,6 +1097,7 @@ impl Rtc {
             xt: transports::Extra::default(),
             ecn: ecn::EcnPath::default(),
             ecn6679: ecn_fb::Session::default(),
+            no_ecn: Vec::new(),
             latch: latch::Latch::default(),
             latch_rx: None,
             latch_took: false,
@@ -1115,6 +1119,9 @@ impl Rtc {
     }
 
     pub(crate) fn add_local_candidate(&mut self, c: IceCandidate) {
+        if c.tcp_type().is_some() {
+            self.set_no_ecn(c.addr());
+        }
         if self.tp_entry() {
             self.tp_each(|s| s.add_local_candidate(c.clone()));
         }
