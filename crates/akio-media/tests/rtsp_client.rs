@@ -903,7 +903,7 @@ fn server_redirect_to_mediamtx() {
         )
         .unwrap();
         check_live(&hub, &back, &tracks);
-        assert_eq!(srv.redirect_path("src", &Redirect::new(target.clone())), 1);
+        assert_eq!(srv.redirect_path("src", &Redirect::new(target)), 1);
         wait("pull moved to mediamtx", 15, || {
             pull.reconnects() == 1 && pull.is_live() && srv.sessions().is_empty()
         });
