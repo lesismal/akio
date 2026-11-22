@@ -1080,30 +1080,32 @@ fn record_sessions_send_receiver_reports() {
     }
 }
 
-/// GStreamer's `rtspclientsink` records an H.264 test pattern to our server over TCP and UDP
+/// GStreamer's `rtspclientsink` records an H.264 test pattern to our server over UDP and TCP
 /// (`docker run --network host <ONLY_GST_IMAGE> gst-launch-1.0`, the image built by
-/// `tools/interop/media/rtsp-redirect.sh`); its RTP session must log our receiver reports
-/// (`got RR packet` and a report block about its own SSRC with the LSR of its last sender
-/// report). Skipped without `ONLY_GST_IMAGE`.
+/// `tools/interop/media/rtsp-redirect.sh`). Over UDP its RTP session must parse our receiver
+/// reports (`got RR packet`, and a report block about its SSRC with the LSR of its last sender
+/// report); over TCP the reports must reach it, though rtspclientsink drops interleaved data
+/// in RECORD mode (`ignoring data message`) before its RTP session sees them. Skipped without
+/// `ONLY_GST_IMAGE`.
 #[test]
 fn gstreamer_record_gets_receiver_reports() {
     let Ok(image) = std::env::var("ONLY_GST_IMAGE") else {
         eprintln!("ONLY_GST_IMAGE not set: skipped (see tools/interop/media/rtsp-redirect.sh)");
         return;
     };
-    for proto in ["tcp", "udp"] {
+    for proto in ["udp", "tcp"] {
         let mut cfg = RtspConfig::default();
         cfg.receiver_report_interval = Duration::from_secs(1);
         let (hub, engine, addr) = start(cfg);
         let path = format!("live/gst_{proto}");
-        let out = Command::new("docker")
+        let child = Command::new("docker")
             .args([
                 "run",
                 "--rm",
                 "--network",
                 "host",
                 "-e",
-                "GST_DEBUG=rtpsession:5",
+                "GST_DEBUG=*:1,rtpsession:5,rtpsource:5,rtspclientsink:5",
             ])
             .arg(&image)
             .args(["timeout", "-s", "INT", "8", "gst-launch-1.0", "-e"])
@@ -1124,33 +1126,74 @@ fn gstreamer_record_gets_receiver_reports() {
             .args(["!", "rtspclientsink"])
             .arg(format!("location=rtsp://{addr}/{path}"))
             .arg(format!("protocols={proto}"))
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .expect("docker");
+        // What the session recorded, while it lasts.
+        let mut packets = 0;
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(7) {
+            packets = packets.max(hub.stream_info(&path).map_or(0, |i| i.packets_in));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let out = child.wait_with_output().expect("gst-launch");
         let log = String::from_utf8_lossy(&out.stderr);
         engine.shutdown();
-        let rrs: Vec<&str> = log
-            .lines()
-            .filter(|l| l.contains("got RR packet"))
-            .collect();
-        let blocks: Vec<&str> = log
+        let file = std::env::temp_dir().join(format!("only-gst-{proto}.log"));
+        let _ = std::fs::write(&file, [&out.stdout[..], &out.stderr[..]].concat());
+        // Strip the colours of GStreamer's log.
+        let plain = |l: &str| {
+            let mut out = String::new();
+            let mut esc = false;
+            for c in l.chars() {
+                match (esc, c) {
+                    (false, '\u{1b}') => esc = true,
+                    (true, 'm') => esc = false,
+                    (true, _) => {}
+                    (false, c) => out.push(c),
+                }
+            }
+            out
+        };
+        let count = |what: &str| log.lines().filter(|l| l.contains(what)).count();
+        assert!(
+            packets > 50,
+            "{proto}: {packets} packets recorded; log in {}",
+            file.display()
+        );
+        if proto == "tcp" {
+            // rtspclientsink drops interleaved data in RECORD mode ("ignoring data message"):
+            // the reports reach it, its RTP session never sees them.
+            let ignored = count("ignoring data message");
+            assert!(
+                ignored >= 3,
+                "tcp: {ignored} interleaved messages; log in {}",
+                file.display()
+            );
+            eprintln!(
+                "tcp: {ignored} receiver reports reached rtspclientsink, which ignores interleaved data"
+            );
+            continue;
+        }
+        let blocks: Vec<String> = log
             .lines()
             .filter(|l| l.contains("got RB packet"))
+            .map(plain)
             .collect();
-        let tail: Vec<&str> = log.lines().rev().take(30).collect();
+        let rrs = count("got RR packet");
         assert!(
-            rrs.len() >= 3 && !blocks.is_empty(),
-            "{proto}: {} RR, {} RB; hub {:?}; log tail {tail:#?}",
-            rrs.len(),
+            rrs >= 3 && !blocks.is_empty(),
+            "{proto}: {rrs} RR, {} RB; log in {}",
             blocks.len(),
-            hub.stream_info(&path)
+            file.display()
         );
         // A block with a non-zero LSR: the sender report was seen.
         let lsr = blocks.iter().any(|l| !l.contains("LSR 0000:0000"));
-        eprintln!(
-            "{proto}: {} RR from us, e.g. {:?}; LSR echoed: {lsr}",
-            rrs.len(),
-            blocks.last()
-        );
+        let last = blocks
+            .last()
+            .map_or("", |l| &l[l.find("got RB").unwrap_or(0)..]);
+        eprintln!("{proto}: {rrs} RR from us parsed, the last {last:?}; LSR echoed: {lsr}");
         assert!(lsr, "{proto}: no LSR in {blocks:#?}");
     }
 }
