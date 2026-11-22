@@ -49,6 +49,41 @@ ADR-083, additive:
 - `turn-relay-bench` takes `TURN_BENCH_ECN`; new `tools/interop/webrtc/turn-dual.sh` (coturn,
   pion/turn) and `turn-family-raw` mode of the pion tool. Relay A/B against main: no measurable change (docs/BENCHMARKS.md).
 
+### Added: fullband and per-bitrate E-model, an audio jitter buffer (only-rtp, only-webrtc)
+
+ADR-087 (docs/adr/087-fullband-emodel-audio-jitter-buffer.md), additive:
+
+- `EModel::fullband(ie_fb, bpl_fb)` (ITU-T G.107.2: `R = 148 - 1.48 Idd - Ie,eff,FB`,
+  Eq. 7-10 with the burst ratio and `with_burst_robustness(brf)`, rated `R / 1.48`),
+  `EModel::is_fullband`, `EModel::scaled_delay_impairment`.
+- `EModel::for_codec_rate(name, plc, bitrate)`: G.113's values by bitrate:
+  - G.722 at 64 / 56 / 48 kbit/s, with Appendix III / IV concealment (`Bpl,wb` 7.1 / 5.1);
+  - AMR-WB by mode, from Tables IV.3 / IV.4;
+  - EVS (SWB mode) by rate from Table V.3, with `Brf` 3.28 at 13.2;
+  - G.723.1 at 5.3 kbit/s;
+  - Opus, fullband by bitrate, with P.863-derived `Ie,FB` (not ITU-T) and EVS's `Bpl`.
+
+  `Plc::of_codec` knows EVS and AMR / AMR-WB.
+- `JitterBuffer<T>` (with `PlayoutDelay`, `JitterBufferStats`, `JitterFrame`, `JitterPush`), a
+  sans-IO jitter buffer for audio:
+  - adaptive playout delay: the 95th percentile of the delay beyond the fastest transit, longer
+    at once, shorter at talkspurts (or a frame per second);
+  - reordering, duplicates, late and overflow discards, FEC numbers skipped;
+  - bounded to 1024 frames and 256 KiB;
+  - its RFC 3611 jitter buffer configuration.
+- only-webrtc:
+  - `RtcConfig::set_audio_jitter_buffer(Option<PlayoutDelay>)` (off by default). Received audio
+    frames go out in order at their playout instants, with `MediaData::playout_time`. Its
+    discards and delay fill the XR VoIP metrics' discard and jitter buffer fields.
+  - `Peer::jitter_buffer_stats(mid)`.
+  - VoIP metrics rate Opus by its measured bitrate.
+- Changed values without an API change:
+  - The wideband E-model now follows G.107.1 (06/2019, Corrigendum 1): 95 in `Ie,eff,WB`, its
+    own talker echo and `1.29 Idd`. ADR-085 had used 129 and the narrowband echo terms.
+  - G.722 takes G.113's diotic `Ie,wb` 5 (was 13).
+  - In only-webrtc, Opus streams rate fullband at their measured bitrate.
+- `webrtc-bench audio` / `audio-jb` and only-rtp's `jitter-bench` example.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

@@ -80,6 +80,7 @@ pub mod codec;
 mod ecn;
 mod emodel;
 pub mod fec;
+mod jitter;
 mod packet;
 mod probe;
 mod rtcp;
@@ -100,6 +101,8 @@ mod tests_ext;
 #[cfg(test)]
 mod tests_fec_policy;
 #[cfg(test)]
+mod tests_jitter;
+#[cfg(test)]
 mod tests_levels;
 #[cfg(test)]
 mod tests_probe;
@@ -114,6 +117,10 @@ pub use ecn::{
     ECN_FEEDBACK_FMT, ECN_SUMMARY_BT, EcnCounters, EcnDelta, EcnFeedback, EcnReceiver, EcnSummary,
 };
 pub use emodel::{EModel, EModelScore, mos_from_r};
+pub use jitter::{
+    JITTER_BUFFER_MAX_BYTES, JITTER_BUFFER_MAX_FRAMES, JitterBuffer, JitterBufferStats,
+    JitterFrame, JitterPush, MAX_PLAYOUT_DELAY, PlayoutDelay,
+};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
 pub use probe::ProbePacket;
 pub use rtcp::{

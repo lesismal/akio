@@ -2195,6 +2195,54 @@ the relay copies the codepoint.
 and rounds vary by about ±20 %, as in ADR-076's run of the same bench. Marking every datagram
 costs about 6 % (b-ecn / branch per-round median 0.941, range 0.84–1.16), within the same
 spread. Unmarked traffic, the common case, takes the old path.
+### Audio jitter buffer (ADR-087, same-run A/B)
+
+Measured 2026-11-22 on gpu51. The questions:
+
+1. Does ADR-087 slow the receive path with the jitter buffer off (the default)?
+2. What does the buffer cost when it is on?
+
+With the buffer off, the receive path gains:
+
+- a flag check per media packet;
+- for audio, a length check and two counter adds (the bitrate the E-model uses);
+- an `Option` check per received stream when the next timeout is computed.
+
+`base` is `main` at `b789624f` with the branch's `webrtc-bench` example copied in; `new` is the
+branch.
+
+- Two loopback `Endpoint`s carry one-way RTP: VP8 in `media`, Opus in `audio`.
+- In `audio` the frames are 160 bytes and their timestamps follow the wall clock (at most one
+  frame per 48 kHz tick, so a jitter buffer plays them in real time).
+- `audio-jb` is `audio` into the receiver's buffer (`PlayoutDelay::default()`), on the new build
+  only.
+- The `audio` rate is paced by the sender, so the column that answers the questions is CPU per
+  frame: the CPU time of all the process's threads (`/proc/self/task/*/schedstat`) per frame
+  received, both peers included.
+
+Both builds were made in one session into separate target directories, and run interleaved under
+`quiet.sh` on CPUs 2–9, 5 s per run, base first in each pair: 7 rounds of `media`, 11 of `audio`.
+`±` is half the min–max spread of the rounds.
+
+| Mode | base median | new median | new / base (medians) | per-round ratio median |
+|---|---:|---:|---:|---:|
+| media (MB/s) | 178.1 (±0.6%) | 177.9 (±1.5%) | 0.999 | 0.998 |
+| audio (k frames/s) | 44.5 (±0.9%) | 44.3 (±0.5%) | 0.996 | 0.998 |
+| audio, CPU per frame (µs) | 8.48 (±1.9%) | 8.47 (±0.8%) | 0.999 | 0.994 |
+| audio-jb, CPU per frame (µs) | | 9.80 (±0.7%) | 1.157 against new `audio` | |
+
+`only-rtp --example jitter-bench` (CPU 2) times the buffer alone: push and pop of 20 ms frames
+under 0..60 ms of jitter with 2 % loss. It takes 46.7 ns per frame (best of 5, three runs
+46.6–46.8).
+
+**Answer:**
+
+1. Off: no measurable change. Every range overlaps, and the CPU per frame is 8.47 against 8.48
+   µs (per-round ratios 0.968–1.008).
+2. On: 1.3 µs more CPU per frame (+16 %) at 44k frames per second. That is about 30 times the
+   buffer's own 47 ns: most of it is the timer wake-up and the peer's drive / dispatch, once
+   for each frame handed out at its playout instant rather than with the packet that brought
+   it. At 50 frames per second, one Opus call, that is 65 µs of CPU per second.
 
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 

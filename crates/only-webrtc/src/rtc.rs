@@ -584,6 +584,11 @@ struct Recv {
     rid: Option<String>,
     /// The burst / gap loss model of VoIP metrics (RFC 3611 §4.7), fed from the receipt log.
     burst: Option<only_rtp::BurstLossModel>,
+    /// The audio jitter buffer (ADR-087), in place of the assembler.
+    jitter: Option<Box<playout::AudioJitter>>,
+    /// Audio payload bytes and packets (of more than 2 bytes: not Opus DTX) since the last
+    /// VoIP metrics report: the codec's bitrate for the E-model.
+    audio_rate: (u64, u64),
 }
 
 /// How an incoming SSRC maps to a media line.
@@ -2857,6 +2862,9 @@ impl Rtc {
             }
         }
         self.media_timers(now);
+        if self.cfg.jitter.is_some() {
+            self.jitter_release(now);
+        }
         self.cc_flush(now);
         self.pace(now);
         self.send_probes(now);
@@ -3254,8 +3262,12 @@ impl Rtc {
     /// missing.
     fn fec_seq(&mut self, now: Instant, line: usize, ssrc: u32, seq: u16, ts: u32) {
         if let Some(r) = recv_entry(&mut self.recv, &self.media, line, ssrc, 90_000) {
-            if let (Some(e), Some((_, a))) = (r.stream.receive(now, seq, ts), r.assembler.as_mut())
-            {
+            let e = r.stream.receive(now, seq, ts);
+            if let (Some(e), Some(j)) = (e, r.jitter.as_mut()) {
+                j.buf.skip(e);
+                return;
+            }
+            if let (Some(e), Some((_, a))) = (e, r.assembler.as_mut()) {
                 a.skip(e);
                 // The number may have been the last thing the frames after it waited for
                 // (a repaired FEC packet arriving after them): emit them now, not with the
@@ -3294,6 +3306,7 @@ impl Rtc {
                 network_time: f.first_arrival,
                 // A frame with a packet rebuilt in part may be corrupt.
                 contiguous: f.contiguous && !f.partial,
+                playout_time: None,
                 data: Arc::from(f.data),
             }));
         }
@@ -3319,7 +3332,8 @@ impl Rtc {
         let Some(codec) = self.media[line_idx].codec(p.pt).cloned() else {
             return false;
         };
-        let reorder = if codec.codec.kind() == MediaKind::Audio {
+        let audio = codec.codec.kind() == MediaKind::Audio;
+        let reorder = if audio {
             self.cfg.reorder_audio
         } else {
             self.cfg.reorder_video
@@ -3340,6 +3354,10 @@ impl Rtc {
         let Some(ext_seq) = got else {
             return false;
         };
+        if audio && payload.len() > 2 {
+            recv.audio_rate.0 += payload.len() as u64;
+            recv.audio_rate.1 += 1;
+        }
         let (ssrc, pt) = (p.ssrc, p.pt);
         if rtp_mode {
             self.events.push_back(RtcEvent::Rtp(RtpPacket {
@@ -3355,6 +3373,19 @@ impl Rtc {
                 received: now,
                 payload: Arc::from(payload),
             }));
+            return true;
+        }
+        if let (true, Some(bounds)) = (audio, self.cfg.jitter) {
+            self.jitter_push(
+                now,
+                line_idx,
+                ssrc,
+                ext_seq,
+                p,
+                payload,
+                codec.clock,
+                bounds,
+            );
             return true;
         }
         if recv.assembler.as_ref().is_none_or(|(x, _)| *x != pt) {
@@ -4061,6 +4092,9 @@ impl Rtc {
             min(self.xt.cc.merge.waiting());
             for r in self.recv.values() {
                 min(r.stream.poll_timeout());
+                if let Some(j) = &r.jitter {
+                    min(j.buf.poll_timeout());
+                }
             }
             if self.ccfb && !self.recv.is_empty() {
                 min(Some(now + only_rtp::CCFB_FEEDBACK_INTERVAL));
@@ -4163,6 +4197,8 @@ fn recv_entry<'a>(
         assembler: None,
         rid: None,
         burst: None,
+        jitter: None,
+        audio_rate: (0, 0),
     }))
 }
 
@@ -4249,6 +4285,7 @@ mod ecn_fb;
 mod feedback;
 mod latch;
 mod pacing;
+mod playout;
 mod receipts;
 mod rtcp_mux;
 mod sdes;

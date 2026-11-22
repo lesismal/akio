@@ -33,8 +33,9 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   for closing, CRC32C; DCEP (RFC 8832); reliable / max-retransmits / max-lifetime, ordered or
   unordered, binary / string / empty messages, buffered-amount-low events.
 - **Media** ([`only-rtp`](../only-rtp/README.md)): RTP/RTCP, packetization of Opus, G.711,
-  G.722, VP8, VP9, H.264, H.265 and AV1; a jitter-free frame assembler (`on_media_data`) or RTP
-  mode (`on_rtp`); sender/receiver reports, generic NACK with RTX (RFC 4588), PLI/FIR, REMB,
+  G.722, VP8, VP9, H.264, H.265 and AV1; a jitter-free frame assembler (`on_media_data`; for audio
+  optionally an adaptive jitter buffer, `set_audio_jitter_buffer`, ADR-087) or RTP mode
+  (`on_rtp`); sender/receiver reports, generic NACK with RTX (RFC 4588), PLI/FIR, REMB,
   transport-wide congestion control (TWCC header extension + feedback) with a delay- and
   loss-based bandwidth estimator that probes the path (ADR-050: RTX copies of recent media paced
   in short clusters at start, while application-limited, after a drop and on a new ICE pair).

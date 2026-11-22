@@ -163,8 +163,18 @@ pub fn rtp_rtcp(data: &[u8]) {
                                 // Decoding is stable through another report.
                                 let got = v.quality();
                                 assert_eq!(m.report(*ssrc, 20, &got).quality(), got);
-                                for codec in ["opus", "PCMU", "g722", "G729"] {
-                                    let e = EModel::for_codec(codec, got.plc).unwrap_or_default();
+                                let rate = Some(u32::from(v.burst_duration) * 64);
+                                for (codec, rate) in [
+                                    ("opus", None),
+                                    ("opus", rate),
+                                    ("PCMU", None),
+                                    ("g722", rate),
+                                    ("G729", None),
+                                    ("evs", rate),
+                                    ("AMR-WB", rate),
+                                ] {
+                                    let e = EModel::for_codec_rate(codec, got.plc, rate)
+                                        .unwrap_or_default();
                                     let s = e.estimate_report(
                                         &m,
                                         &got,

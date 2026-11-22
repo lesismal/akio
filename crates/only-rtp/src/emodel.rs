@@ -1,6 +1,6 @@
-//! Call quality estimation with the E-model (ITU-T G.107, wideband codecs with G.107.1): the
-//! transmission rating R and the mean opinion scores the VoIP metrics block of RTCP XR carries
-//! (RFC 3611 §4.7.5).
+//! Call quality estimation with the E-model (ITU-T G.107; wideband codecs with G.107.1,
+//! fullband ones with G.107.2): the transmission rating R and the mean opinion scores the VoIP
+//! metrics block of RTCP XR carries (RFC 3611 §4.7.5).
 //!
 //! Every parameter the RTP receiver cannot know (loudness ratings, room noise, sidetone,
 //! talker echo) has its G.107 Table 3 default; what it measures goes in: the loss of packets
@@ -26,10 +26,18 @@ const QDU: f64 = 1.0;
 /// The absolute delay below which there is no delay impairment (`mT`, ms).
 const MT: f64 = 100.0;
 
-/// The highest rating of G.107.1's wideband scale (`Ro,wb`; its `Is,wb` is 0).
+/// The highest rating of G.107.1's wideband scale (`Ro,WB`, Eq. 7-2; `Is,WB` is 0).
 const RO_WB: f64 = 129.0;
-/// The wideband scale over the narrowband one (G.107.1: `R_wb = 1.29 R_nb`).
+/// G.107.1 Annex A: the wideband rating over this is the narrowband-scale `Rx` of the MOS.
 const WB_SCALE: f64 = 1.29;
+/// The highest rating of G.107.2's fullband scale (`Ro,FB`; `Is,FB` is 0).
+const RO_FB: f64 = 148.0;
+/// G.107.2 Annex A: the fullband rating over this is the `Rx` of the MOS.
+const FB_SCALE: f64 = 1.48;
+/// The top of the loss term of `Ie,eff,FB` (G.107.2 Eq. 7-10).
+const FB_LOSS_TOP: f64 = 132.0;
+/// The top of the loss term of `Ie,eff` and `Ie,eff,WB` (G.107 Eq. 7-29, G.107.1 Eq. 7-15).
+const LOSS_TOP: f64 = 95.0;
 
 /// The circuit noise `No` (dBm0p) of the default parameters (-61.18).
 fn noise_no() -> f64 {
@@ -69,33 +77,71 @@ fn is(t: f64) -> f64 {
     iolr + ist + iq
 }
 
+/// G.107's absolute-delay impairment `Idd` (Eq. 7-27/7-28, delay class "default": `sT` 1,
+/// `mT` 100 ms) of absolute delay `t` ms; G.107.1 (Eq. 7-13) and G.107.2 (Eq. 7-8b) scale it
+/// by 1.29 and 1.48.
+fn idd(t: f64) -> f64 {
+    if t <= MT {
+        return 0.0;
+    }
+    let x = (t / MT).log2();
+    25.0 * ((1.0 + x.powi(6)).powf(1.0 / 6.0) - 3.0 * (1.0 + (x / 3.0).powi(6)).powf(1.0 / 6.0)
+        + 2.0)
+}
+
+/// The listener echo impairment `Idle` (G.107 Eq. 7-23, G.107.1 Eq. 7-11) with round trip
+/// `Tr = 2T`, on a scale of highest rating `ro`.
+fn idle(t: f64, ro: f64) -> f64 {
+    let rle = 10.5 * (WEPL + 7.0) * (2.0 * t + 1.0).powf(-0.25);
+    (ro - rle) / 2.0 + ((ro - rle).powi(2) / 4.0 + 169.0).sqrt()
+}
+
+/// The talker echo impairment `Idte` from `Roe` and `Re`.
+fn idte(t: f64, roe: f64, re: f64) -> f64 {
+    ((roe - re) / 2.0 + ((roe - re).powi(2) / 4.0 + 100.0).sqrt() - 1.0) * (1.0 - (-t).exp())
+}
+
 /// The delay impairment `Id = Idte + Idle + Idd` of G.107 §7.4 for mean one-way delay `t`
-/// ms, absolute delay `Ta = T` and round trip `Tr = 2T`, on a scale of highest rating `ro`.
+/// ms, absolute delay `Ta = T` and round trip `Tr = 2T`.
 fn id(t: f64, ro: f64) -> f64 {
     let t = t.max(0.0);
-    // Talker echo.
     let terv =
         TELR - 40.0 * ((1.0 + t / 10.0) / (1.0 + t / 150.0)).log10() + 6.0 * (-0.3 * t * t).exp();
     let re = 80.0 + 2.5 * (terv - 14.0);
     let roe = -1.5 * (noise_no() - RLR);
-    let idte =
-        ((roe - re) / 2.0 + ((roe - re).powi(2) / 4.0 + 100.0).sqrt() - 1.0) * (1.0 - (-t).exp());
-    // Listener echo.
-    let rle = 10.5 * (WEPL + 7.0) * (2.0 * t + 1.0).powf(-0.25);
-    let idle = (ro - rle) / 2.0 + ((ro - rle).powi(2) / 4.0 + 169.0).sqrt();
-    // Too long an absolute delay.
-    let idd = if t <= MT {
-        0.0
-    } else {
-        let x = (t / MT).log2();
-        25.0 * ((1.0 + x.powi(6)).powf(1.0 / 6.0) - 3.0 * (1.0 + (x / 3.0).powi(6)).powf(1.0 / 6.0)
-            + 2.0)
-    };
-    idte + idle + idd
+    idte(t, roe, re) + idle(t, ro) + idd(t)
+}
+
+/// The wideband delay impairment `Id,WB = Idte,WB + Idle,WB + Idd` of G.107.1 §7.4 (with its
+/// Corrigendum 1: `Roe = -1.5 (-69 - RLR)`), `Ta = T`, `Tr = 2T`.
+fn id_wb(t: f64) -> f64 {
+    let t = t.max(0.0);
+    let k = if t < 100.0 { 0.08 * t + 10.0 } else { 18.0 };
+    let terv = TELR + k - 40.0 * ((1.0 + t / 10.0) / (1.0 + t / 150.0)).log10()
+        + 6.0 * (-0.3 * t * t).exp();
+    let re = 80.0 + 3.0 * (terv - 14.0);
+    let roe = -1.5 * (-69.0 - RLR);
+    idte(t, roe, re) + idle(t, RO_WB) + WB_SCALE * idd(t)
+}
+
+/// The fullband delay impairment `Id,FB = Idd` of G.107.2 §7.4 (absolute delay only).
+fn id_fb(t: f64) -> f64 {
+    FB_SCALE * idd(t.max(0.0))
 }
 
 fn millis(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+/// The rating scale of a codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    /// G.107: 300-3400 Hz, R up to 93.2 with the defaults.
+    Narrow,
+    /// G.107.1: 50-7000 Hz, up to 129.
+    Wide,
+    /// G.107.2: 20-20000 Hz, up to 148.
+    Full,
 }
 
 /// The E-model of a speech path (ITU-T G.107 §7) with every parameter the receiver cannot
@@ -106,19 +152,28 @@ fn millis(d: Duration) -> f64 {
 ///
 /// `R = Ro - Is - Id - Ie,eff`, `Ie,eff = Ie + (95 - Ie) Ppl / (Ppl / BurstR + Bpl)`.
 ///
-/// A wideband codec ([`EModel::wideband`]) is rated on G.107.1's scale (`R_wb = 129 - Id -
-/// Ie,wb,eff`, 129 in place of 95 in `Ie,wb,eff`) and the rating divided by 1.29 onto the
-/// narrowband scale the VoIP metrics block and the MOS formula use (G.107.1), so a clean
-/// wideband call rates 100 and a clean G.711 one 93.2.
+/// A wideband codec ([`EModel::wideband`]) is rated with G.107.1 (2019, Corrigendum 1):
+/// `R = 129 - Id,WB - Ie,eff,WB` with its own talker echo and `Idd` scaled by 1.29, and
+/// `Ie,eff,WB = Ie,WB + (95 - Ie,WB) Ppl / (Ppl / BurstR + Bpl)` (Eq. 7-15 for random loss;
+/// G.107.1 has no burst ratio, G.107's is kept). A fullband codec ([`EModel::fullband`]) is
+/// rated with G.107.2: `R = 148 - 1.48 Idd - Ie,eff,FB`,
+/// `Ie,eff,FB = Ie,FB + (132 - Ie,FB) (Ppl - (1 - BurstR) / Brf) / (Ppl + Bpl)` (Eq. 7-10,
+/// `Brf` the codec's burstiness robustness, 1 when unknown). `Ro,FB` is the scale's top, 148
+/// (G.107.2 06/2019; the 03/2023 edition derives it from noise levels without defaults for
+/// the room noise, and gives 147.5 without room noise). The VoIP metrics block and the MOS
+/// take the rating divided by 1.29 or 1.48 (G.107.1 / G.107.2 Annex A), so a clean wideband
+/// or fullband call rates 100 and a clean G.711 one 93.2.
 ///
 /// The default codec is G.711 with packet loss concealment (G.113 Appendix I: `Ie = 0`,
-/// `Bpl = 25.1`); [`EModel::for_codec`] has the planning values of the usual RTP codecs and
-/// [`EModel::codec`] / [`EModel::wideband`] take any others.
+/// `Bpl = 25.1`); [`EModel::for_codec_rate`] has the planning values of the usual RTP codecs
+/// by bitrate and [`EModel::codec`] / [`EModel::wideband`] / [`EModel::fullband`] take any
+/// others.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EModel {
     ie: f64,
     bpl: f64,
-    wideband: bool,
+    brf: f64,
+    scale: Scale,
 }
 
 impl Default for EModel {
@@ -177,6 +232,63 @@ const BPL_G711_PLC: f64 = 25.1;
 /// G.107's default packet-loss robustness: no concealment credit.
 const BPL_NONE: f64 = 4.3;
 
+/// G.113 Table IV.3 (diotic `Ie,wb`) and Table IV.4 (`Bpl,wb`, diotic, uniform loss) for
+/// AMR-WB (G.722.2) by mode (bit/s): `(rate, Ie,wb, Bpl,wb)`; 4.3 (G.107.1's default) where
+/// Table IV.4 has none.
+const AMR_WB: [(u32, f64, f64); 6] = [
+    (6_600, 56.0, BPL_NONE),
+    (8_850, 41.0, BPL_NONE),
+    (12_650, 20.0, 4.3),
+    (15_850, 17.0, BPL_NONE),
+    (23_050, 8.0, 4.6),
+    (23_850, 10.0, 4.9),
+];
+
+/// G.113 Table V.3 (EVS in SWB mode, diotic): `(rate, Ie,fb, Bpl,fb, Brf)`, `Brf` 1 where
+/// it is for further study.
+const EVS: [(u32, f64, f64, f64); 6] = [
+    (9_600, 22.7, 13.0, 1.0),
+    (13_200, 17.1, 11.7, 3.28),
+    (16_400, 10.8, 10.3, 1.0),
+    (24_400, 7.2, 11.4, 1.0),
+    (32_000, 8.7, 9.3, 1.0),
+    (48_000, 10.2, 9.6, 1.0),
+];
+
+/// `Ie,FB` of Opus 1.3 derived from ITU-T P.863 (Michael, Mittag, Möller, DAGA 2021,
+/// Table 2): `(rate, Ie,FB)`; not ITU-T planning values.
+const OPUS_FB: [(u32, f64); 5] = [
+    (13_000, 37.85),
+    (16_000, 21.96),
+    (24_000, 9.82),
+    (32_000, 2.58),
+    (48_000, 0.0),
+];
+
+/// The row of `table` for `rate`: the highest rate not above it, else the lowest.
+fn step<T: Copy>(table: &[T], rate: u32, key: impl Fn(&T) -> u32) -> T {
+    table
+        .iter()
+        .rev()
+        .find(|r| key(r) <= rate)
+        .copied()
+        .unwrap_or(table[0])
+}
+
+/// Opus's `Ie,FB` at `rate`: linear between [`OPUS_FB`]'s rates, held beyond them.
+fn opus_ie_fb(rate: u32) -> f64 {
+    let (lo, hi) = (OPUS_FB[0], OPUS_FB[OPUS_FB.len() - 1]);
+    if rate <= lo.0 {
+        return lo.1;
+    }
+    if rate >= hi.0 {
+        return hi.1;
+    }
+    let i = OPUS_FB.iter().position(|r| r.0 > rate).unwrap_or(1);
+    let ((r0, v0), (r1, v1)) = (OPUS_FB[i - 1], OPUS_FB[i]);
+    v0 + (v1 - v0) * f64::from(rate - r0) / f64::from(r1 - r0)
+}
+
 impl EModel {
     /// The narrowband model for a codec of equipment impairment `ie` and packet-loss
     /// robustness `bpl`.
@@ -185,7 +297,8 @@ impl EModel {
         EModel {
             ie: ie.clamp(0.0, 95.0),
             bpl: bpl.max(1.0),
-            wideband: false,
+            brf: 1.0,
+            scale: Scale::Narrow,
         }
     }
 
@@ -196,33 +309,83 @@ impl EModel {
         EModel {
             ie: ie_wb.clamp(0.0, RO_WB),
             bpl: bpl_wb.max(1.0),
-            wideband: true,
+            brf: 1.0,
+            scale: Scale::Wide,
         }
     }
 
-    /// Whether the codec is rated on the wideband scale.
+    /// The fullband model (G.107.2) for a codec of fullband equipment impairment `ie_fb`
+    /// (0..=148) and packet-loss robustness `bpl_fb`; burstiness robustness 1 (see
+    /// [`with_burst_robustness`](Self::with_burst_robustness)).
+    #[must_use]
+    pub fn fullband(ie_fb: f64, bpl_fb: f64) -> EModel {
+        EModel {
+            ie: ie_fb.clamp(0.0, RO_FB),
+            bpl: bpl_fb.max(1.0),
+            brf: 1.0,
+            scale: Scale::Full,
+        }
+    }
+
+    /// The codec's burstiness robustness factor `Brf` (G.107.2 Eq. 7-10, at least 1; only
+    /// the fullband model uses it).
+    #[must_use]
+    pub fn with_burst_robustness(mut self, brf: f64) -> EModel {
+        self.brf = if brf.is_finite() { brf.max(1.0) } else { 1.0 };
+        self
+    }
+
+    /// Whether the codec is rated on the wideband scale (G.107.1).
     #[must_use]
     pub fn is_wideband(&self) -> bool {
-        self.wideband
+        self.scale == Scale::Wide
+    }
+
+    /// Whether the codec is rated on the fullband scale (G.107.2).
+    #[must_use]
+    pub fn is_fullband(&self) -> bool {
+        self.scale == Scale::Full
     }
 
     /// The model for the RTP encoding `name` (SDP `a=rtpmap` name, any case) whose receiver
-    /// conceals losses as `plc` says; `None` for a codec without planning values here.
+    /// conceals losses as `plc` says; `None` for a codec without planning values here. The
+    /// same as [`for_codec_rate`](Self::for_codec_rate) without a bitrate.
+    #[must_use]
+    pub fn for_codec(name: &str, plc: Plc) -> Option<EModel> {
+        EModel::for_codec_rate(name, plc, None)
+    }
+
+    /// The model for the RTP encoding `name` (SDP `a=rtpmap` name, any case) at `bitrate`
+    /// (the codec's bits per second, if known) whose receiver conceals losses as `plc` says;
+    /// `None` for a codec without planning values here. A rate between two of a table's
+    /// takes the lower one's values (Opus: interpolated), one below its lowest the lowest's.
     ///
     /// | encoding | scale | Ie | Bpl | source |
     /// |---|---|---|---|---|
-    /// | PCMU, PCMA | narrow | 0 | 25.1 (4.3 with [`Plc::Disabled`]) | G.113 App. I (G.711 App. I PLC) |
-    /// | G729 | narrow | 11 | 19 | G.113 App. I (G.729A + VAD) |
-    /// | G723 | narrow | 15 | 16.1 | G.113 App. I (G.723.1 6.3 kbit/s + VAD) |
-    /// | G722 | wide | 13 | 4.3 | G.113 App. IV `Ie,wb` (64 kbit/s); G.107.1's default `Bpl` |
-    /// | opus | wide | 0 | 25.1 | none in G.113: assumed (see below) |
+    /// | PCMU, PCMA | narrow | 0 | 25.1 (4.3 with [`Plc::Disabled`]) | G.113 Table I.4 |
+    /// | G729 | narrow | 11 | 19 | G.113 Table I.4 (G.729A + VAD) |
+    /// | G723 | narrow | 15 (19 below 5.8 kbit/s) | 16.1 | G.113 Tables I.1, I.4 (6.3 kbit/s + VAD) |
+    /// | G722 64 kbit/s | wide | 5 | 7.1 [`Plc::Enhanced`], 5.1 [`Plc::Standard`], else 4.3 | G.113 Tables IV.3, IV.4 (G.722 App. III / IV PLC) |
+    /// | G722 56 / 48 kbit/s | wide | 10 / 41 | 4.3 | G.113 Table IV.3 |
+    /// | AMR-WB | wide | 56 .. 8 by mode (12.65 kbit/s without a rate) | 4.3, 4.6, 4.9 at 12.65, 23.05, 23.85 | G.113 Tables IV.3, IV.4 |
+    /// | EVS | full | 22.7 .. 7.2 by rate (13.2 kbit/s without one) | 13 .. 9.3, `Brf` 3.28 at 13.2 | G.113 Table V.3 (SWB mode) |
+    /// | opus, with a rate | full | 37.85 at 13 kbit/s .. 0 at 48 | EVS's at that rate | not ITU-T: P.863-derived (DAGA 2021) |
+    /// | opus, without | wide | 0 | 25.1 | none: assumed |
     ///
-    /// G.722's concealment is optional (G.722 Appendices III, IV), so it gets no robustness
-    /// credit. ITU-T has no planning values for Opus: it is taken as transparent at the
-    /// bitrates WebRTC uses (the wideband reference, `Ie,wb = 0`) with concealment as robust
-    /// as G.711 Appendix I's. Measured values go in with [`EModel::wideband`].
+    /// The wideband values are G.113's diotic ones (headset or loudspeaker listening, the
+    /// tables that come with `Bpl,wb`); its monotic (handset) Table IV.1 rates G.722 at 13,
+    /// 20, 31 and can be given with [`EModel::wideband`]. G.722 rated with concealment takes
+    /// Appendix III's (high quality) for [`Plc::Enhanced`] and Appendix IV's (low complexity)
+    /// for [`Plc::Standard`]; on RTP G.722 runs at 64 kbit/s (RFC 3551), so the 48 and 56
+    /// kbit/s rows only apply when the application knows its mode. G.729 without VAD is
+    /// `EModel::codec(10.0, 19.0)` (Table I.1's `Ie`; no `Bpl` is published). ITU-T has no
+    /// planning values for Opus: with its bitrate it is rated fullband with the `Ie,FB` that
+    /// Michael, Mittag and Möller derived for Opus 1.3 from P.863 (interpolated, 0 at
+    /// 48 kbit/s and above, 37.85 at 13 kbit/s and below) and EVS's `Bpl,fb` at the same
+    /// rate (an assumption: no `Bpl` is published); without, it is taken as transparent on
+    /// the wideband scale with concealment as robust as G.711 Appendix I's (ADR-085).
     #[must_use]
-    pub fn for_codec(name: &str, plc: Plc) -> Option<EModel> {
+    pub fn for_codec_rate(name: &str, plc: Plc, bitrate: Option<u32>) -> Option<EModel> {
         let n = name.to_ascii_lowercase();
         Some(match n.as_str() {
             "pcmu" | "pcma" => EModel::codec(
@@ -234,9 +397,41 @@ impl EModel {
                 },
             ),
             "g729" => EModel::codec(11.0, 19.0),
-            "g723" => EModel::codec(15.0, 16.1),
-            "g722" => EModel::wideband(13.0, BPL_NONE),
-            "opus" => EModel::wideband(0.0, BPL_G711_PLC),
+            "g723" => EModel::codec(
+                if bitrate.is_some_and(|r| r < 5_800) {
+                    19.0
+                } else {
+                    15.0
+                },
+                16.1,
+            ),
+            "g722" => match bitrate.unwrap_or(64_000) {
+                r if r >= 60_000 => EModel::wideband(
+                    5.0,
+                    match plc {
+                        Plc::Enhanced => 7.1,
+                        Plc::Standard => 5.1,
+                        _ => BPL_NONE,
+                    },
+                ),
+                r if r >= 52_000 => EModel::wideband(10.0, BPL_NONE),
+                _ => EModel::wideband(41.0, BPL_NONE),
+            },
+            "amr-wb" => {
+                let (_, ie, bpl) = step(&AMR_WB, bitrate.unwrap_or(12_650), |r| r.0);
+                EModel::wideband(ie, bpl)
+            }
+            "evs" => {
+                let (_, ie, bpl, brf) = step(&EVS, bitrate.unwrap_or(13_200), |r| r.0);
+                EModel::fullband(ie, bpl).with_burst_robustness(brf)
+            }
+            "opus" => match bitrate {
+                Some(r) => {
+                    let (_, _, bpl, _) = step(&EVS, r, |r| r.0);
+                    EModel::fullband(opus_ie_fb(r), bpl)
+                }
+                None => EModel::wideband(0.0, BPL_G711_PLC),
+            },
             _ => return None,
         })
     }
@@ -249,9 +444,22 @@ impl EModel {
         id(millis(d), ro())
     }
 
-    /// The effective equipment impairment `Ie,eff` (`Ie,wb,eff` on the wideband scale of a
-    /// wideband model) with `loss` (0..=1) of the packets lost or discarded and burst ratio
-    /// `burst_ratio` (1 for random loss).
+    /// The delay impairment on this model's scale: [`delay_impairment`](Self::delay_impairment)
+    /// for a narrowband codec, G.107.1's `Id,WB` (Corrigendum 1) for a wideband one, G.107.2's
+    /// `Id,FB = 1.48 Idd` for a fullband one.
+    #[must_use]
+    pub fn scaled_delay_impairment(&self, d: Duration) -> f64 {
+        let t = millis(d);
+        match self.scale {
+            Scale::Narrow => id(t, ro()),
+            Scale::Wide => id_wb(t),
+            Scale::Full => id_fb(t),
+        }
+    }
+
+    /// The effective equipment impairment `Ie,eff` (`Ie,eff,WB` / `Ie,eff,FB` on the scale
+    /// of a wideband / fullband model) with `loss` (0..=1) of the packets lost or discarded
+    /// and burst ratio `burst_ratio` (1 for random loss).
     #[must_use]
     pub fn equipment_impairment(&self, loss: f64, burst_ratio: f64) -> f64 {
         let ppl = (loss * 100.0).clamp(0.0, 100.0);
@@ -260,8 +468,14 @@ impl EModel {
         } else {
             1.0
         };
-        let top = if self.wideband { RO_WB } else { 95.0 };
-        self.ie + (top - self.ie) * ppl / (ppl / burst + self.bpl)
+        if self.scale == Scale::Full {
+            if ppl == 0.0 {
+                return self.ie;
+            }
+            let share = ((ppl - (1.0 - burst) / self.brf) / (ppl + self.bpl)).clamp(0.0, 1.0);
+            return self.ie + (FB_LOSS_TOP - self.ie).max(0.0) * share;
+        }
+        self.ie + (LOSS_TOP - self.ie).max(0.0) * ppl / (ppl / burst + self.bpl)
     }
 
     /// The ratings and scores of a path losing `loss` (0..=1, lost and discarded packets) with
@@ -270,14 +484,19 @@ impl EModel {
     pub fn score(&self, loss: f64, burst_ratio: f64, one_way: Duration) -> EModelScore {
         let t = millis(one_way);
         let ie = self.equipment_impairment(loss, burst_ratio);
-        let (r_lq, r) = if self.wideband {
-            (
-                (RO_WB - id(0.0, RO_WB) - ie) / WB_SCALE,
-                (RO_WB - id(t, RO_WB) - ie) / WB_SCALE,
-            )
-        } else {
-            let ro = ro();
-            (ro - is(0.0) - id(0.0, ro) - ie, ro - is(t) - id(t, ro) - ie)
+        let (r_lq, r) = match self.scale {
+            Scale::Narrow => {
+                let ro = ro();
+                (ro - is(0.0) - id(0.0, ro) - ie, ro - is(t) - id(t, ro) - ie)
+            }
+            Scale::Wide => (
+                (RO_WB - id_wb(0.0) - ie) / WB_SCALE,
+                (RO_WB - id_wb(t) - ie) / WB_SCALE,
+            ),
+            Scale::Full => (
+                (RO_FB - id_fb(0.0) - ie) / FB_SCALE,
+                (RO_FB - id_fb(t) - ie) / FB_SCALE,
+            ),
         };
         let (r, r_lq) = (r.clamp(0.0, 100.0), r_lq.clamp(0.0, 100.0));
         EModelScore {
@@ -337,14 +556,15 @@ impl EModel {
 
 impl Plc {
     /// The concealment an RTP encoding's decoder always does (SDP name, any case): Opus
-    /// (RFC 6716 §4.4) is [`Plc::Enhanced`], G.729 (§4.4) and G.723.1 (frame erasure
-    /// concealment) [`Plc::Standard`]; others (G.711's Appendix I and G.722's Appendices III /
+    /// (RFC 6716 §4.4) and EVS (3GPP TS 26.447) are [`Plc::Enhanced`], G.729 (§4.4), G.723.1
+    /// (frame erasure concealment) and AMR / AMR-WB (TS 26.091 / 26.191) [`Plc::Standard`];
+    /// others (G.711's Appendix I and G.722's Appendices III /
     /// IV are optional) [`Plc::Unspecified`].
     #[must_use]
     pub fn of_codec(name: &str) -> Plc {
         match name.to_ascii_lowercase().as_str() {
-            "opus" => Plc::Enhanced,
-            "g729" | "g723" => Plc::Standard,
+            "opus" | "evs" => Plc::Enhanced,
+            "g729" | "g723" | "amr-wb" | "amr" => Plc::Standard,
             _ => Plc::Unspecified,
         }
     }

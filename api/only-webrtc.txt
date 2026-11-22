@@ -511,6 +511,7 @@ pub only_webrtc::MediaData::contiguous: bool
 pub only_webrtc::MediaData::data: alloc::rcs::arc::Arc<[u8]>
 pub only_webrtc::MediaData::mid: only_webrtc::Mid
 pub only_webrtc::MediaData::network_time: std::time::Instant
+pub only_webrtc::MediaData::playout_time: core::option::Option<std::time::Instant>
 pub only_webrtc::MediaData::pt: only_webrtc::Pt
 pub only_webrtc::MediaData::rid: core::option::Option<alloc::string::String>
 pub only_webrtc::MediaData::time: only_webrtc::MediaTime
@@ -593,6 +594,7 @@ pub fn only_webrtc::Peer::close(&self)
 pub fn only_webrtc::Peer::id(&self) -> u64
 pub fn only_webrtc::Peer::is_closed(&self) -> bool
 pub fn only_webrtc::Peer::is_connected(&self) -> bool
+pub fn only_webrtc::Peer::jitter_buffer_stats(&self, only_webrtc::Mid) -> core::result::Result<alloc::vec::Vec<(u32, only_rtp::jitter::JitterBufferStats)>, only_webrtc::Error>
 pub fn only_webrtc::Peer::local_ufrag(&self) -> &str
 pub fn only_webrtc::Peer::open_channel(&self, &only_webrtc::ChannelConfig) -> core::result::Result<(only_webrtc::ChannelId, core::option::Option<alloc::string::String>), only_webrtc::Error>
 pub fn only_webrtc::Peer::payload_type(&self, only_webrtc::Mid, only_webrtc::Codec) -> core::option::Option<only_webrtc::Pt>
@@ -689,6 +691,7 @@ pub fn only_webrtc::RtcConfig::enable_sdes_srtp(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::set_audio_jitter_buffer(self, core::option::Option<only_rtp::jitter::PlayoutDelay>) -> Self
 pub fn only_webrtc::RtcConfig::set_bundle_policy(self, only_webrtc::BundlePolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_bwe_bounds(self, u64, u64) -> Self
 pub fn only_webrtc::RtcConfig::set_dtls_srtp_mki_length(self, u8) -> Self

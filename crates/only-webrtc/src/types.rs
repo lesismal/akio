@@ -554,6 +554,11 @@ pub struct MediaData {
     pub network_time: Instant,
     /// No packets are missing since the previous sample.
     pub contiguous: bool,
+    /// When to play the sample: set for audio received through the jitter buffer
+    /// ([`RtcConfig::set_audio_jitter_buffer`]), which hands samples out at this instant (or
+    /// at once, for one that came after it but before the next sample went out); `None`
+    /// otherwise.
+    pub playout_time: Option<Instant>,
     /// The sample.
     pub data: Arc<[u8]>,
 }
@@ -879,6 +884,8 @@ pub(crate) struct ConfigInner {
     pub(crate) ecn: EcnMarking,
     /// Latching plain media onto the address it comes from (ADR-077).
     pub(crate) latching: Latching,
+    /// The audio jitter buffer (ADR-087): `None` off.
+    pub(crate) jitter: Option<only_rtp::PlayoutDelay>,
 }
 
 impl Default for ConfigInner {
@@ -927,6 +934,7 @@ impl Default for ConfigInner {
             audio_red: None,
             ecn: EcnMarking::Off,
             latching: Latching::Off,
+            jitter: None,
         }
     }
 }
@@ -961,6 +969,7 @@ impl fmt::Debug for RtcConfig {
             .field("padding_rate", &self.0.padding_rate)
             .field("fec_mask", &self.0.fec_mask)
             .field("audio_red", &self.0.audio_red)
+            .field("audio_jitter_buffer", &self.0.jitter)
             .finish_non_exhaustive()
     }
 }
@@ -1080,6 +1089,25 @@ impl RtcConfig {
     #[must_use]
     pub fn enable_audio_red(mut self, redundancy: Option<u8>) -> Self {
         self.0.audio_red = redundancy.map(|n| n.min(2));
+        self
+    }
+
+    /// A jitter buffer for received audio (ADR-087; frame mode only, see
+    /// [`set_rtp_mode`](Self::set_rtp_mode)): each received audio stream's frames are handed
+    /// out in sequence order at their playout instants ([`MediaData::playout_time`]) instead
+    /// of as soon as they arrive. The delay adapts to the measured jitter within `delay`'s
+    /// bounds ([`only_rtp::PlayoutDelay::adaptive`], or fixed); a missing frame is given up
+    /// when a later one is due (the later one then has `contiguous = false`), and a packet
+    /// arriving after that is discarded. Its delay and discards fill the jitter buffer and
+    /// discard fields of the RTCP XR VoIP metrics this side sends
+    /// ([`enable_rtcp_xr_blocks`](Self::enable_rtcp_xr_blocks)), unless the application
+    /// gives its own ([`Peer::set_voip_quality`](crate::Peer::set_voip_quality));
+    /// [`Peer::jitter_buffer_stats`](crate::Peer::jitter_buffer_stats) reads its counters.
+    /// Replaces [`set_reordering_size`](Self::set_reordering_size)'s wait for audio. `None`
+    /// (the default): off, audio frames go out as they arrive.
+    #[must_use]
+    pub fn set_audio_jitter_buffer(mut self, delay: Option<only_rtp::PlayoutDelay>) -> Self {
+        self.0.jitter = delay;
         self
     }
 
