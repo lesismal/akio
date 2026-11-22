@@ -10,6 +10,29 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：服务端每个 HTTP 请求只剩一次分配（only-http、only-h3、only-core，ADR-081）
+
+ADR-025 之后每请求剩下的分配都已去掉，只剩处理函数自己的响应体
+（docs/adr/081-per-thread-head-storage.zh-CN.md）。公开 API 不变。
+
+- **头部存储按线程复用。** 每个线程为请求头和响应头各保留一份备用的 `Headers` 存储（缓冲区不超过
+  4 KiB，字段位置不超过 64 个）。HTTP/1.1、HTTP/2 和 HTTP/3 的请求头取用请求备用；处理函数用完一个
+  未 detach、未升级的请求后，存储随 target 一起交回。`Response::with_body`（以及 `text`）取用响应
+  备用，响应头编码完成后交回。`with_body` 的两个字段位置内联存放，不再为四个字段预留向量。
+- **HTTP/1.1 响应头使用 only-buf 的池。** 连接写出后把缓冲区交回池中。only-core 还会把 `send_owned`
+  立即完整写出的池化缓冲区，以及 TLS 封装过的明文缓冲区交回池中。
+- **HTTP/2 请求在栈上的 `Context` 中运行**，不再 `Box<Context>`。连接的 action 向量按线程复用，输出
+  缓冲区从池中取，不再每次 flush 后从零增长。
+- only-http 的 `#[doc(hidden)]` transport 钩子新增 `request_headers` 和 `recycle_response_headers`，
+  供 only-h3 使用。only-http 现在依赖 only-buf。
+- 每请求分配器调用（bpftrace，gpu51，epoll 与 io_uring）：HTTP/1.1 5.0 → 1.0，pipeline 5.0 → 1.0，
+  h2c 5.5 → 1.0，`quic-bench h3` 两端 9.0 → 6.0。剩下的一次是处理函数的响应体：
+  `ctx.text(200, "...")` 把 `&str` 转成 `String`。
+- gpu51 上 `quiet.sh` 下的同轮 A/B（7 轮，中位数）：
+  - 服务端每请求用户态周期：HTTP/1.1 0.987 倍，pipeline 0.938 倍，h2c 0.940 倍。
+  - 每请求指令：0.937 倍、0.898 倍、0.929 倍。
+  - req/s：pipeline 1.031 倍，h2c 1.042 倍，HTTP/3 1.016 倍；普通 HTTP/1.1 不变（受限于客户端）。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

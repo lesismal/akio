@@ -80,3 +80,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-076: TURN TCP allocations (RFC 6062)](076-turn-tcp-allocations.md) (accepted 2026-11-22)
 - [ADR-077: ECN-capable RTP, latching media without ICE, and congestion control across transports without BUNDLE](077-webrtc-ecn-latching-unbundled-cc.md) (accepted 2026-11-22)
 - [ADR-078: mDNS over IPv6: hop limit 255, IPv6-only links, interop with Chrome, avahi and mDNSResponder](078-mdns-ipv6-hop-limit-ipv6-only.md) (accepted 2026-11-22)
+- [ADR-081: Per-thread header storage, pooled response heads, HTTP/2 requests without a boxed context](081-per-thread-head-storage.md) (accepted 2026-11-22)

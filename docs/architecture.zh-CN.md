@@ -348,7 +348,7 @@ flowchart TB
 - **HTTP/3 的 transport 钩子。** `only_http::transport` 让 crate 之外的 transport 也能提供
   `Service`：它解析出请求后调用 `dispatch_conn(service, request, sink, tag)`，sink 是连接的
   `ConnSink`（`send`，以及返回 `BodySink` 的 `start_stream`，都会带上请求的 tag），经瘦句柄
-  `SharedSink` 共享；target 用 `request_target` 构造，复用按线程保留的已完成请求的缓冲（ADR-025）。only-h3 在 QUIC stream 上实现了这些，所以 router、
+  `SharedSink` 共享；target 用 `request_target`、头部用 `request_headers` 构造，复用按线程保留的已完成请求的存储（ADR-025、ADR-081）。only-h3 在 QUIC stream 上实现了这些，所以 router、
   中间件、`detach` 和 `stream_response` 在 HTTP/3 上表现一致。旧的按请求 `ResponseSink`
   （`dispatch`、`start`）已弃用。
 - **升级。** `Context::upgrade_websocket` 应答 101，并在同一连接上用 `WsSession` 替换 HTTP 状态

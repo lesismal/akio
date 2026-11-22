@@ -72,6 +72,14 @@ Responding:
 Only the first response counts. `Response::header` sets a header; `Content-Length`, `Date` and
 `Connection` are added when missing.
 
+What a request costs: on HTTP/1.1, HTTP/2 and HTTP/3 the server itself allocates nothing per
+request in the steady state. A request's target and header storage, and a response's header
+storage, are reused from the thread's last request and response. The response head goes into a
+pooled buffer, and an HTTP/2 request runs in a `Context` on the stack. What your handler hands
+over is its own: `ctx.text(200, "...")` turns the `&str` into a `String`, which is the one
+allocation per request left in a hello-world benchmark (ADR-025, ADR-081). A request the
+handler keeps (`detach`, a WebSocket upgrade) keeps its own storage.
+
 ## Detaching: never block a handler
 
 `ctx.detach()` hands the right to respond to a `Detached` value you can move to any thread.

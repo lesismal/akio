@@ -68,7 +68,7 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
   in `send`). No API change, but detached responses are sent from other threads, so the list
   needs a lock, and the three `Arc` clones per request stay.
 - **Recycling the whole `Request`** (headers buffer, body) the same way. Possible later; out
-  of scope here.
+  of scope here. (Done for the header storage, of requests and responses, in ADR-081.)
 
 ## Consequences
 

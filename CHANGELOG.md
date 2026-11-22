@@ -10,6 +10,34 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: one allocation per HTTP request on the server (only-http, only-h3, only-core, ADR-081)
+
+The allocations per request left after ADR-025 are gone, except the handler's own body
+(docs/adr/081-per-thread-head-storage.md). No public API change.
+
+- **Header storage is reused per thread.** Each thread keeps one spare `Headers` storage for
+  request heads and one for response heads (a buffer of up to 4 KiB and up to 64 field
+  positions). Request heads take the request spare on HTTP/1.1, HTTP/2 and HTTP/3, and give it
+  back with the target when the handler is done with a request it did not detach or upgrade.
+  `Response::with_body` (and `text`) takes the response spare, and gets it back once the head is
+  encoded. `with_body` keeps its two field positions inline instead of reserving a vector for
+  four.
+- **HTTP/1.1 response heads use only-buf's pool.** The connection gives the buffer back once it
+  is written. only-core also gives back a pooled buffer that `send_owned` wrote in full right
+  away, and the plaintext buffer TLS has sealed.
+- **HTTP/2 requests run in a `Context` on the stack**, not a `Box<Context>`. The connection's
+  vector of actions is reused per thread, and its output buffer is taken from the pool instead
+  of growing from nothing after every flush.
+- only-http's `#[doc(hidden)]` transport hook gains `request_headers` and
+  `recycle_response_headers`, which only-h3 uses. only-http depends on only-buf.
+- Allocator calls per request (bpftrace, gpu51, epoll and io_uring): HTTP/1.1 5.0 → 1.0,
+  pipelined 5.0 → 1.0, h2c 5.5 → 1.0, `quic-bench h3` both ends 9.0 → 6.0. The one left is the
+  handler's response body: `ctx.text(200, "...")` makes a `String` from the `&str`.
+- Same-run A/B on gpu51 under `quiet.sh` (7 rounds, medians):
+  - Server user cycles per request: HTTP/1.1 0.987×, pipelined 0.938×, h2c 0.940×.
+  - Instructions per request: 0.937×, 0.898×, 0.929×.
+  - req/s: pipelined 1.031×, h2c 1.042×, HTTP/3 1.016×; plain HTTP/1.1 unchanged (client-bound).
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:
