@@ -1402,10 +1402,9 @@ fn dtls_client_refuses_a_foreign_server() {
     let mut xc = dtls_plain(Latching::Off);
     xc.keepalive = Duration::from_millis(500);
     let mut x = peer(xc, &[ATTACKER], &[], start);
-    // The attacker answers the phone's offer as if it were the gateway would: it is a DTLS
-    // server (the offer says passive) with its own certificate, toward the gateway.
-    let mut fake = offer.clone();
-    fake = fake.replace(PHONE.split(':').next().unwrap(), "198.51.100.66");
+    // The attacker takes the phone's offer at its own address: a DTLS server (the offer says
+    // passive) with a certificate of its own.
+    let fake = offer.replace(PHONE.split(':').next().unwrap(), "198.51.100.66");
     let _ = x.rtc.accept_offer(start, &fake);
     x.rtc.dtls_role = Some(Role::Server);
     let mut now = start;

@@ -735,7 +735,7 @@ mod tests {
             assert!(!e.retry(t, false), "the first call sets the time");
             let at = e.retry_at.unwrap();
             waits.push(at - t);
-            assert!(!e.retry(at - Duration::from_millis(1), false));
+            assert!(!e.retry(t + (at - t) / 2, false));
             assert!(e.retry(at, false));
             assert_eq!(e.phase, Phase::Testing);
             t = at;

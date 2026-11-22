@@ -3870,6 +3870,7 @@ impl Rtc {
                             .push_back(RtcEvent::Other(Other::IcePair { local, remote }));
                     }
                     IceEvent::EcnChecked { local, remote, ecn } => {
+                        only_log::debug!(target: "only_webrtc", "ECN check {local} -> {remote}: the remote saw {ecn:?}");
                         self.ecn.on_ice_check((local, remote), ecn);
                     }
                     _ => {}

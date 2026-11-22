@@ -50,6 +50,11 @@ fn configs() -> [ConfigInner; 8] {
             sdes_mki: 4,
             ice: false,
             latching: crate::Latching::Rebind(std::time::Duration::ZERO),
+            // ADR-086: leap of faith offered first, the remote's ect= followed, keepalives.
+            ecn: crate::EcnMarking::Ect0,
+            ecn_init: crate::EcnInitiation::LeapOfFaith,
+            bwe: Some(300_000),
+            keepalive: std::time::Duration::from_secs(1),
             ..ConfigInner::default()
         },
         ConfigInner {
@@ -323,6 +328,29 @@ pub(crate) mod seeds {
             let answer = answerer.accept_offer(now, &offer).expect("answer");
             out.push(offer.into_bytes());
             out.push(answer.into_bytes());
+        }
+        // ADR-086: other RFC 6679 initiation lists, modes and ect= preferences, and an offer
+        // that wants to be the DTLS server.
+        let base = String::from_utf8(out[6].clone()).expect("utf-8");
+        if let Some(line) = base
+            .lines()
+            .find(|l| l.starts_with("a=ecn-capable-rtp:"))
+            .map(str::to_owned)
+        {
+            for v in [
+                "leap",
+                "ice",
+                "leap,ice,rtp mode=readonly; ect=random",
+                "ice,rtp mode=setonly; ect=1",
+                "rtp ect=0; foo=bar",
+                "zrtp,quux mode=setread",
+            ] {
+                out.push(
+                    base.replace(&line, &format!("a=ecn-capable-rtp:{v}"))
+                        .replace("a=setup:actpass", "a=setup:passive")
+                        .into_bytes(),
+                );
+            }
         }
         out
     }

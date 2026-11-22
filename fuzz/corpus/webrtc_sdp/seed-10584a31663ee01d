@@ -1,0 +1,36 @@
+v=0
+o=- 1787501681477756214 1 IN IP4 0.0.0.0
+s=-
+t=0 0
+a=group:BUNDLE 0
+a=msid-semantic: WMS *
+m=audio 5000 RTP/SAVPF 111 0 8
+c=IN IP4 192.0.2.1
+a=crypto:1 AEAD_AES_256_GCM inline:5izKlfNbuBHBxzJVJfy3FePdTNoMH0feeLP/j1QtFN9PEE159pgnQw7GZOk=|1:4
+a=crypto:2 AEAD_AES_128_GCM inline:NnLeXkZDleFuE8rsGqucots/DmgCqYQngCWXrw==|1:4
+a=crypto:3 AES_256_CM_HMAC_SHA1_80 inline:UtPMwL28/I0hmcZh5nyqiTyPpfgKjJRlOZ9Db6O9S6qsbrbpxRTahXsqEPkdtg==|1:4
+a=crypto:4 AES_CM_128_HMAC_SHA1_80 inline:fG92mZS60sbqYhxLThSr3i6aAXvjJyHmFJ5GyLiv|1:4
+a=crypto:5 AES_CM_128_HMAC_SHA1_32 inline:qjf6el/sScAeYAfyK5h+sYzg8UoZxbTonh4ls+Vz|1:4
+a=mid:0
+a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+a=sendrecv
+a=msid:AlsoKC41qqrU OpCtxlnUWI9C
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:111 opus/48000/2
+a=rtcp-fb:111 transport-cc
+a=rtcp-fb:111 nack ecn
+a=fmtp:111 minptime=10;useinbandfec=1
+a=rtpmap:0 PCMU/8000
+a=rtcp-fb:0 transport-cc
+a=rtcp-fb:0 nack ecn
+a=rtpmap:8 PCMA/8000
+a=rtcp-fb:8 transport-cc
+a=rtcp-fb:8 nack ecn
+a=ecn-capable-rtp:leap,rtp mode=setread; ect=0
+a=rtcp-xr:ecn-sum
+a=ssrc:1622536216 cname:SQLnaSbZtDPG/8w5
+a=ssrc:1622536216 msid:AlsoKC41qqrU OpCtxlnUWI9C
