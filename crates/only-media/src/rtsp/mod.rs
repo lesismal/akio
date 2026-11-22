@@ -20,6 +20,15 @@
 //! Authentication is Digest or Basic through [`RtspConfig::credentials`]; the hub's
 //! `on_publish` / `on_subscribe` hooks decide who may publish and play what.
 //!
+//! [`RtspServer::sessions`] lists the sessions; [`RtspServer::redirect_session`] and
+//! [`RtspServer::redirect_path`] move them to another URL, for load shedding or maintenance,
+//! with a `REDIRECT` request (RFC 2326 10.15; [`Redirect`]: the location, optionally when, as
+//! `Range: clock=`). The session keeps playing or recording until its client tears it down
+//! (then the server closes the connection), or until the redirect's grace passes after the
+//! move (then the server closes it): clients that do not follow `REDIRECT` (ffmpeg answers
+//! 501 and GStreamer 200, both carry on; mediamtx pulls the same URL again) are ended cleanly
+//! all the same.
+//!
 //! ```no_run
 //! use only::{Engine, Listener};
 //! use only_media::{Hub, rtsp::{RtspConfig, RtspServer}};
@@ -50,7 +59,7 @@ use std::{
     fmt, io,
     net::{SocketAddr, UdpSocket},
     sync::{Arc, Mutex, MutexGuard, Weak},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use only::{Acceptor, Conn, Handler};
@@ -174,7 +183,87 @@ struct Inner {
     cfg: RtspConfig,
     udp: Mutex<Option<Arc<Udp>>>,
     routes: Mutex<HashMap<SocketAddr, Route>>,
+    /// The sessions (set up or announced), by id.
+    sessions: Mutex<HashMap<String, Live>>,
 }
+
+/// What the server's API sees of a session ([`RtspServer::sessions`],
+/// [`RtspServer::redirect_session`]).
+struct Live {
+    conn: Conn<RtspSession>,
+    path: String,
+    /// The session's URL (the request URI of the server's requests).
+    uri: String,
+    recording: bool,
+    /// The CSeq of the server's last request.
+    cseq: u32,
+    /// Redirects sent: a redirect's grace timer closes the connection only while it is the
+    /// latest.
+    redirects: u64,
+}
+
+/// A session of an [`RtspServer`] ([`RtspServer::sessions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RtspSessionInfo {
+    /// The session id (the `Session` header's).
+    pub id: String,
+    /// The hub path it plays or records.
+    pub path: String,
+    /// The client's address.
+    pub peer: SocketAddr,
+    /// Whether it records (ANNOUNCE and RECORD) rather than plays.
+    pub recording: bool,
+    /// Whether a `REDIRECT` was sent to it.
+    pub redirected: bool,
+}
+
+/// Where and when [`RtspServer::redirect_session`] and [`RtspServer::redirect_path`] move a
+/// session: the server sends the client a `REDIRECT` request (RFC 2326 10.15) with this
+/// `Location` and, with [`at`](Self::at), a `Range: clock=` saying when the move takes effect.
+/// The session keeps playing or recording meanwhile; a client that follows tears it down
+/// (TEARDOWN) and sets up at the location, and the server closes the connection after its
+/// TEARDOWN answer. One that does not is closed [`grace`](Self::grace) after the move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Redirect {
+    /// The URL the client should use from now on: `rtsp://host[:port]/path`, or an absolute
+    /// path on this server.
+    pub location: String,
+    /// When the move takes effect (`None`: at once). Sent as `Range: clock=<UTC>-`.
+    pub at: Option<SystemTime>,
+    /// How long after the move takes effect the server closes a connection whose client has
+    /// not torn the session down. Default 10 s.
+    pub grace: Duration,
+}
+
+impl Redirect {
+    /// A move to `location`, effective at once, with the default grace.
+    pub fn new(location: impl Into<String>) -> Redirect {
+        Redirect {
+            location: location.into(),
+            at: None,
+            grace: Duration::from_secs(10),
+        }
+    }
+
+    /// Sets [`at`](Self::at).
+    #[must_use]
+    pub fn at(mut self, t: SystemTime) -> Redirect {
+        self.at = Some(t);
+        self
+    }
+
+    /// Sets [`grace`](Self::grace).
+    #[must_use]
+    pub fn grace(mut self, d: Duration) -> Redirect {
+        self.grace = d;
+        self
+    }
+}
+
+/// The longest a redirect's timer waits (a move far in the future is bounded by it).
+const MAX_REDIRECT_WAIT: Duration = Duration::from_secs(86_400);
 
 /// The RTSP server: an [`Acceptor`] to serve on a TCP listener. Cheap to clone.
 #[derive(Clone)]
@@ -194,7 +283,84 @@ impl RtspServer {
             cfg,
             udp: Mutex::new(None),
             routes: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// The sessions: connections that set a stream up (SETUP to play, ANNOUNCE to record),
+    /// until they tear it down or close.
+    pub fn sessions(&self) -> Vec<RtspSessionInfo> {
+        lock(&self.0.sessions)
+            .iter()
+            .map(|(id, l)| RtspSessionInfo {
+                id: id.clone(),
+                path: l.path.clone(),
+                peer: l.conn.peer_addr(),
+                recording: l.recording,
+                redirected: l.redirects > 0,
+            })
+            .collect()
+    }
+
+    /// Moves the session `id` ([`RtspSessionInfo::id`]) to another URL, for load shedding
+    /// or maintenance: sends its client a `REDIRECT` request ([`Redirect`]). Returns whether
+    /// the session exists (and the request could be queued).
+    pub fn redirect_session(&self, id: &str, r: &Redirect) -> bool {
+        // Built under the lock, sent without it (a send that fails may close the connection,
+        // whose handler takes the lock).
+        let (conn, req, n) = {
+            let mut g = lock(&self.0.sessions);
+            let Some(l) = g.get_mut(id) else {
+                return false;
+            };
+            l.cseq += 1;
+            l.redirects += 1;
+            let mut req = format!(
+                "REDIRECT {} RTSP/1.0\r\nCSeq: {}\r\nSession: {id}\r\nLocation: {}\r\n",
+                l.uri,
+                l.cseq,
+                r.location.replace(['\r', '\n'], "")
+            );
+            if let Some(t) = r.at {
+                req.push_str("Range: ");
+                req.push_str(&message::clock_range(t));
+                req.push_str("\r\n");
+            }
+            req.push_str("Server: only-media\r\n\r\n");
+            (l.conn.clone(), req, l.redirects)
+        };
+        if conn.send_owned(req.into_bytes()).is_err() {
+            return false;
+        }
+        let wait =
+            r.at.and_then(|t| t.duration_since(SystemTime::now()).ok())
+                .unwrap_or_default()
+                .saturating_add(r.grace)
+                .min(MAX_REDIRECT_WAIT);
+        let (srv, id) = (Arc::downgrade(&self.0), id.to_owned());
+        crate::timer::after(wait, move || {
+            // Still the latest redirect of a session not torn down: the client did not follow.
+            let current = srv
+                .upgrade()
+                .is_some_and(|s| lock(&s.sessions).get(&id).is_some_and(|l| l.redirects == n));
+            if current {
+                conn.close();
+            }
+        });
+        true
+    }
+
+    /// Moves every session of the hub path `path` (players and its publisher) to `r`'s
+    /// location ([`redirect_session`](Self::redirect_session)). Returns how many were sent a
+    /// `REDIRECT`.
+    pub fn redirect_path(&self, path: &str, r: &Redirect) -> usize {
+        let path = path.trim_matches('/');
+        let ids: Vec<String> = lock(&self.0.sessions)
+            .iter()
+            .filter(|(_, l)| l.path == path)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter(|id| self.redirect_session(id, r)).count()
     }
 
     /// The hub.
@@ -314,6 +480,9 @@ impl Acceptor for RtspServer {
         let id = random_hex(8);
         RtspSession {
             session_hdr: format!("{id};timeout={secs}"),
+            id,
+            registered: false,
+            close_after: false,
             watch,
             srv: self.0.clone(),
             parser: Parser::default(),
@@ -676,6 +845,13 @@ pub struct RtspSession {
     parser: Parser,
     /// `Session` header value: the id and the advertised timeout.
     session_hdr: String,
+    /// The session id.
+    id: String,
+    /// In the server's [`Inner::sessions`].
+    registered: bool,
+    /// Close the connection once the response being sent is out (a redirected session torn
+    /// down).
+    close_after: bool,
     watch: Arc<crate::watch::Watch>,
     nonce: String,
     path: Option<String>,
@@ -753,6 +929,11 @@ impl Handler for RtspSession {
                     if req.method == "PLAY" && resp.status == 200 {
                         self.start_play(c);
                     }
+                    if self.close_after {
+                        // Redirected and torn down: the client goes elsewhere.
+                        c.close_after_send();
+                        return;
+                    }
                 }
                 Frame::Interleaved { channel, data } => {
                     self.interleaved(c, channel, &data, &mut now);
@@ -768,7 +949,40 @@ impl Handler for RtspSession {
 }
 
 impl RtspSession {
+    /// Lists the session in the server's [`Inner::sessions`] once it has a stream.
+    fn register(&mut self, c: &Conn<Self>, uri: String) {
+        if self.registered {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.registered = true;
+        lock(&self.srv.sessions).insert(
+            self.id.clone(),
+            Live {
+                conn: c.clone(),
+                path,
+                uri,
+                recording: self.recorder.is_some(),
+                cseq: 0,
+                redirects: 0,
+            },
+        );
+    }
+
+    /// Takes the session out of the server's list; whether it had been redirected.
+    fn unregister(&mut self) -> bool {
+        if !std::mem::take(&mut self.registered) {
+            return false;
+        }
+        lock(&self.srv.sessions)
+            .remove(&self.id)
+            .is_some_and(|l| l.redirects > 0)
+    }
+
     fn teardown(&mut self) {
+        self.unregister();
         self.sub = None;
         self.playing = false;
         if let Some(rec) = self.recorder.take() {
@@ -858,6 +1072,10 @@ impl RtspSession {
                 Response::new(200).header(s, v)
             }
             "TEARDOWN" => {
+                self.close_after = self.registered
+                    && lock(&self.srv.sessions)
+                        .get(&self.id)
+                        .is_some_and(|l| l.redirects > 0);
                 self.teardown();
                 let (s, v) = session();
                 Response::new(200).header(s, v)
@@ -928,6 +1146,8 @@ impl RtspSession {
         self.announced = s.media;
         self.path = Some(path);
         self.recorder = Some(Arc::new(Mutex::new(rec)));
+        let uri = req.uri.clone();
+        self.register(c, uri);
         Response::new(200)
     }
 
@@ -1016,6 +1236,12 @@ impl RtspSession {
             }
         };
         self.setups.insert(index, path);
+        // The session's URL: the SETUP's, without the track.
+        let uri = match track_id(last) {
+            Some(_) => uri.rsplit_once('/').map_or(uri, |(b, _)| b),
+            None => uri,
+        };
+        self.register(c, uri.to_owned());
         Response::new(200)
             .header("Transport", reply.to_string())
             .header("Session", self.session_hdr.clone())

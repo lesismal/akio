@@ -90,3 +90,9 @@ ADR-075 之后，书中 RTSP 一章的“不支持”里仍列着：
 - 代价：与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替多轮，取中位数，head / base）：RTSP 拉流 1.024、RTSP RECORD 入流 1.087、RTMP 拉流 0.998（`tests/client_bench.rs`，9 轮）；`bench_segmenting`（7 轮）MPEG-TS 0.981、MPEG-TS LL-HLS 0.995、fMP4 1.015、fMP4 LL-HLS 1.013、AES-128 0.998 至 1.001、SAMPLE-AES MPEG-TS 1.002、`cbcs` 1.004（分段超过目标时长后，关键帧请求是每包一次比较）。RECORD 的开销（每个 RTP 包 +18 ns）来自接收者报告所需的到达时间：每次带来 RTP 包的读取读一次时钟，而该基准每次读 255 字节，约每包一次读取；更大的读取让多个包共用一次时钟读取，`receiver_report_interval` 为零时完全跳过。最初每包读一次时钟并用 u128 除法换算的版本为 1.113（拉流）与 1.104（RECORD）。
 - 未做：服务器的 `REDIRECT` 请求（见上）；RTSP 2.0、RTSPS 与 HTTP 隧道、组播与拖动仍不在范围内；扩展报告
   （RFC 3611）以及服务端播放端的报告；RTMP 客户端重连时仍拨最初的地址。
+
+## 更新（2026-11-22）
+
+上文的两项已在 [ADR-080](080-rtsp-server-redirect-rtmp-lookups.zh-CN.md) 中完成：服务器在会话中发送
+`REDIRECT`（`RtspServer::redirect_session` / `redirect_path`），客户端跟随它而不再回答 `501`（推翻决定 2 中的
+否决）；RTMP 客户端在每次重连时重新解析主机名，并与 RTSP 客户端一样依次拨该名字的各个地址，直到有一个连上。

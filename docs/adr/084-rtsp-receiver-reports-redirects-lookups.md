@@ -131,3 +131,11 @@ ready`.
 - Not done: the server's `REDIRECT` request (above); RTSP 2.0, RTSPS and HTTP tunnelling,
   multicast and seeking stay out of scope; extended reports (RFC 3611) and reports in the
   server's players; the RTMP client still dials its first address on reconnect.
+
+## Update (2026-11-22)
+
+Two of the items above are done in [ADR-080](080-rtsp-server-redirect-rtmp-lookups.md): the
+server sends `REDIRECT` during a session (`RtspServer::redirect_session` /
+`redirect_path`) and the client follows it instead of answering `501` (the rejection in
+decision 2 is reversed); the RTMP client looks its host name up again on every reconnect and,
+like the RTSP client, dials a name's addresses in turn until one connects.

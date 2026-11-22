@@ -3,7 +3,10 @@
 //! [`interleaved`] write them; [`Transport`] reads and writes the `Transport` header. A parser
 //! made with [`Parser::client`] returns whole responses ([`Reply`]), as an RTSP client needs.
 
-use std::fmt::{self, Write as _};
+use std::{
+    fmt::{self, Write as _},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 /// Default bound of a message head.
 pub const MAX_HEAD: usize = 16 << 10;
@@ -382,6 +385,123 @@ pub fn interleaved(channel: u8, data: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(&data[..n]);
 }
 
+/// Where a `Range` header starts (RFC 2326 12.29): an absolute UTC time (`clock=`), or a
+/// normal play time (`npt=`, `now` being zero).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RangeStart {
+    Clock(SystemTime),
+    Npt(Duration),
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = i64::from((m + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The date of day `z` since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// The `Range` value of an open range from the UTC time `t`: `clock=YYYYMMDDThhmmss.fffZ-`
+/// (RFC 2326 3.7; times before 1970 are written as 1970).
+pub(crate) fn clock_range(t: SystemTime) -> String {
+    let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = d.as_secs() as i64;
+    let (y, mo, da) = civil_from_days(secs.div_euclid(86_400));
+    let s = secs.rem_euclid(86_400);
+    format!(
+        "clock={y:04}{mo:02}{da:02}T{:02}{:02}{:02}.{:03}Z-",
+        s / 3600,
+        s / 60 % 60,
+        s % 60,
+        d.subsec_millis()
+    )
+}
+
+/// Seconds with an optional fraction (`12`, `12.5`).
+fn seconds(v: &str) -> Option<Duration> {
+    let (w, f) = v.split_once('.').unwrap_or((v, ""));
+    if w.is_empty()
+        || !w.bytes().all(|b| b.is_ascii_digit())
+        || !f.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let w: u64 = w.parse().ok()?;
+    let mut nanos = 0u32;
+    for (i, b) in f.bytes().take(9).enumerate() {
+        nanos += u32::from(b - b'0') * 10u32.pow(8 - i as u32);
+    }
+    Some(Duration::new(w, nanos))
+}
+
+/// Where the `Range` header value `v` starts: `clock=` (`YYYYMMDDThhmmss[.fraction]Z`) or
+/// `npt=` (`now`, seconds, or `h:mm:ss`, each with a fraction); `None` for other units or
+/// malformed values.
+pub(crate) fn range_start(v: &str) -> Option<RangeStart> {
+    let (unit, rest) = v.trim().split_once('=')?;
+    let start = rest.split(['-', ';']).next()?.trim();
+    match unit.trim().to_ascii_lowercase().as_str() {
+        "clock" => {
+            let t = start.strip_suffix('Z')?;
+            let (date, time) = t.split_once('T')?;
+            let (hms, frac) = time.split_once('.').unwrap_or((time, ""));
+            if date.len() != 8
+                || hms.len() != 6
+                || !date.bytes().chain(hms.bytes()).all(|b| b.is_ascii_digit())
+            {
+                return None;
+            }
+            let n = |s: &str| s.parse::<u32>().ok();
+            let (y, mo, d) = (n(&date[..4])?, n(&date[4..6])?, n(&date[6..])?);
+            let (h, mi, s) = (n(&hms[..2])?, n(&hms[2..4])?, n(&hms[4..])?);
+            if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
+                return None;
+            }
+            let days = days_from_civil(i64::from(y), mo, d);
+            let secs = days * 86_400 + i64::from(h * 3600 + mi * 60 + s);
+            let frac = if frac.is_empty() {
+                Duration::ZERO
+            } else {
+                seconds(&format!("0.{frac}"))?
+            };
+            let secs = u64::try_from(secs).ok()?;
+            UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs) + frac)
+                .map(RangeStart::Clock)
+        }
+        "npt" => {
+            if start.eq_ignore_ascii_case("now") {
+                return Some(RangeStart::Npt(Duration::ZERO));
+            }
+            let mut parts = start.rsplitn(3, ':');
+            let s = seconds(parts.next()?)?;
+            let mut total = s;
+            for (k, p) in parts.enumerate() {
+                let v: u64 = p.parse().ok()?;
+                total += Duration::from_secs(v * if k == 0 { 60 } else { 3600 });
+            }
+            Some(RangeStart::Npt(total))
+        }
+        _ => None,
+    }
+}
+
 /// One transport specification of a `Transport` header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -515,6 +635,57 @@ mod tests {
         );
         let mut p = Parser::default();
         assert_eq!(p.feed(b"bad\r\n\r\n", &mut out), Err(RtspError::Malformed));
+    }
+
+    #[test]
+    fn range_times() {
+        // RFC 2326 10.15's example, and a fraction.
+        let t = UNIX_EPOCH + Duration::from_secs(824_221_925);
+        assert_eq!(
+            range_start("clock=19960213T143205Z-"),
+            Some(RangeStart::Clock(t))
+        );
+        assert_eq!(clock_range(t), "clock=19960213T143205.000Z-");
+        let t2 = t + Duration::from_millis(250);
+        assert_eq!(clock_range(t2), "clock=19960213T143205.250Z-");
+        assert_eq!(range_start(&clock_range(t2)), Some(RangeStart::Clock(t2)));
+        // Round trips over leap years and centuries.
+        for secs in [0u64, 951_782_400, 4_107_542_399, 1_798_761_600 + 86_399] {
+            let t = UNIX_EPOCH + Duration::from_secs(secs);
+            assert_eq!(
+                range_start(&clock_range(t)),
+                Some(RangeStart::Clock(t)),
+                "{secs}"
+            );
+        }
+        assert_eq!(
+            clock_range(UNIX_EPOCH + Duration::from_secs(951_782_400)),
+            "clock=20000229T000000.000Z-"
+        );
+        assert_eq!(
+            range_start("npt=now-"),
+            Some(RangeStart::Npt(Duration::ZERO))
+        );
+        assert_eq!(
+            range_start(" NPT = 12.5-20"),
+            Some(RangeStart::Npt(Duration::from_millis(12_500)))
+        );
+        assert_eq!(
+            range_start("npt=1:02:03.25-"),
+            Some(RangeStart::Npt(Duration::from_millis(3_723_250)))
+        );
+        for bad in [
+            "smpte=0:10:00-",
+            "clock=1996021T143205Z-",
+            "clock=19961313T143205Z-",
+            "clock=19960213T143205-",
+            "clock=19960213T143205.xZ-",
+            "npt=-5",
+            "npt=a:b",
+            "clock",
+        ] {
+            assert_eq!(range_start(bad), None, "{bad}");
+        }
     }
 
     #[test]

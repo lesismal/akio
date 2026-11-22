@@ -1818,6 +1818,7 @@ pub only_media::rtsp::client::ClientError::Hub(only_media::hub::HubError)
 pub only_media::rtsp::client::ClientError::Io(alloc::string::String)
 pub only_media::rtsp::client::ClientError::NoTracks
 pub only_media::rtsp::client::ClientError::Protocol(alloc::string::String)
+pub only_media::rtsp::client::ClientError::Redirected(alloc::string::String)
 pub only_media::rtsp::client::ClientError::Resolve(alloc::string::String)
 pub only_media::rtsp::client::ClientError::Status
 pub only_media::rtsp::client::ClientError::Status::method: &'static str
@@ -2089,6 +2090,7 @@ pub only_media::rtsp::ClientError::Hub(only_media::hub::HubError)
 pub only_media::rtsp::ClientError::Io(alloc::string::String)
 pub only_media::rtsp::ClientError::NoTracks
 pub only_media::rtsp::ClientError::Protocol(alloc::string::String)
+pub only_media::rtsp::ClientError::Redirected(alloc::string::String)
 pub only_media::rtsp::ClientError::Resolve(alloc::string::String)
 pub only_media::rtsp::ClientError::Status
 pub only_media::rtsp::ClientError::Status::method: &'static str
@@ -2187,6 +2189,27 @@ impl core::marker::Sync for only_media::rtsp::message::Parser
 impl core::marker::Unpin for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Parser
+#[non_exhaustive] pub struct only_media::rtsp::Redirect
+pub only_media::rtsp::Redirect::at: core::option::Option<std::time::SystemTime>
+pub only_media::rtsp::Redirect::grace: core::time::Duration
+pub only_media::rtsp::Redirect::location: alloc::string::String
+impl only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::at(self, std::time::SystemTime) -> only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::grace(self, core::time::Duration) -> only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::new(impl core::convert::Into<alloc::string::String>) -> only_media::rtsp::Redirect
+impl core::clone::Clone for only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::Redirect
+impl core::cmp::PartialEq for only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::Redirect
+pub fn only_media::rtsp::Redirect::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::Redirect
+impl core::marker::Send for only_media::rtsp::Redirect
+impl core::marker::Sync for only_media::rtsp::Redirect
+impl core::marker::Unpin for only_media::rtsp::Redirect
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::Redirect
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::Redirect
 #[non_exhaustive] pub struct only_media::rtsp::Reply
 pub only_media::rtsp::Reply::body: alloc::vec::Vec<u8>
 pub only_media::rtsp::Reply::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
@@ -2328,6 +2351,9 @@ impl only_media::rtsp::RtspServer
 pub fn only_media::rtsp::RtspServer::hub(&self) -> &only_media::hub::Hub
 pub fn only_media::rtsp::RtspServer::listen_udp(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<(u16, u16)>
 pub fn only_media::rtsp::RtspServer::new(only_media::hub::Hub, only_media::rtsp::RtspConfig) -> only_media::rtsp::RtspServer
+pub fn only_media::rtsp::RtspServer::redirect_path(&self, &str, &only_media::rtsp::Redirect) -> usize
+pub fn only_media::rtsp::RtspServer::redirect_session(&self, &str, &only_media::rtsp::Redirect) -> bool
+pub fn only_media::rtsp::RtspServer::sessions(&self) -> alloc::vec::Vec<only_media::rtsp::RtspSessionInfo>
 impl core::clone::Clone for only_media::rtsp::RtspServer
 pub fn only_media::rtsp::RtspServer::clone(&self) -> Self
 impl core::fmt::Debug for only_media::rtsp::RtspServer
@@ -2351,6 +2377,25 @@ impl core::marker::Sync for only_media::rtsp::RtspSession
 impl core::marker::Unpin for only_media::rtsp::RtspSession
 impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::RtspSession
 impl !core::panic::unwind_safe::UnwindSafe for only_media::rtsp::RtspSession
+#[non_exhaustive] pub struct only_media::rtsp::RtspSessionInfo
+pub only_media::rtsp::RtspSessionInfo::id: alloc::string::String
+pub only_media::rtsp::RtspSessionInfo::path: alloc::string::String
+pub only_media::rtsp::RtspSessionInfo::peer: core::net::socket_addr::SocketAddr
+pub only_media::rtsp::RtspSessionInfo::recording: bool
+pub only_media::rtsp::RtspSessionInfo::redirected: bool
+impl core::clone::Clone for only_media::rtsp::RtspSessionInfo
+pub fn only_media::rtsp::RtspSessionInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::RtspSessionInfo
+impl core::cmp::PartialEq for only_media::rtsp::RtspSessionInfo
+pub fn only_media::rtsp::RtspSessionInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::RtspSessionInfo
+pub fn only_media::rtsp::RtspSessionInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::RtspSessionInfo
+impl core::marker::Send for only_media::rtsp::RtspSessionInfo
+impl core::marker::Sync for only_media::rtsp::RtspSessionInfo
+impl core::marker::Unpin for only_media::rtsp::RtspSessionInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::RtspSessionInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::RtspSessionInfo
 #[non_exhaustive] pub struct only_media::rtsp::Transport
 pub only_media::rtsp::Transport::client_port: core::option::Option<(u16, u16)>
 pub only_media::rtsp::Transport::interleaved: core::option::Option<(u8, u8)>

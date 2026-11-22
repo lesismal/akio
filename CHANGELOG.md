@@ -119,6 +119,32 @@ ADR-086, additive API:
   `ecn6679.sh` runs rtp / leap / ice and a clearing router between two only peers over a
   Linux NAT.
 
+### Added: the RTSP server's REDIRECT, the client following it; RTMP lookups on reconnect (only-media)
+
+ADR-080 (docs/adr/080-rtsp-server-redirect-rtmp-lookups.md), additive:
+
+- `RtspServer::sessions()` (`RtspSessionInfo`: id, path, peer, recording, redirected),
+  `RtspServer::redirect_session(id, &Redirect)` and `RtspServer::redirect_path(path, &Redirect)`
+  move live sessions to another URL with a `REDIRECT` request (RFC 2326 10.15): `Redirect::new(location)`,
+  `.at(SystemTime)` (sent as `Range: clock=`), `.grace(Duration)` (10 s). The session keeps
+  running until its client tears it down (the server then closes the connection) or until the
+  grace after the move passes (the server closes it), so clients that ignore the request end
+  cleanly too.
+- The RTSP client follows a server's `REDIRECT` in a live session: it answers `200`, tears the
+  session down when the `Range` start comes (`clock=` or `npt=`; at once without) and sets up at
+  the location right away on the `reconnect` engine (a reconnect, no backoff); without
+  `reconnect` it ends with the new `ClientError::Redirected(location)`. Behaviour change: it
+  answered `501` before.
+- Both clients dial the addresses of a host name in turn until one connects. The RTMP client
+  looks the name up again on every reconnect try (on a short-lived thread) and retries a failed
+  lookup; `RtmpClient::addr` is the address dialed last. Behaviour change: it dialed the address
+  resolved at start on every reconnect.
+- Tests: `Range` times, the machine's answers, this crate's server moving reconnecting pulls and
+  pushes (TCP, UDP, a `Range` time) to another server, a client that ignores the request closed
+  after the grace, address walks, an RTMP name that stops resolving and moves. New
+  `tools/interop/media/rtsp-server-redirect.sh`: ffmpeg 6.1.1 (gpu51, playing and recording over TCP and UDP; 9.0.2 on macOS too, but for a UDP recording, not tried) answers our server's `REDIRECT` `501` and carries on; GStreamer 1.24.2 `rtspsrc` and `rtspclientsink` (TCP, UDP) answer `200` and carry on; mediamtx 1.15.3 pulling from our server (a path's `source`, TCP and UDP) does not answer, tears the session down at once and pulls the same URL again. None moves to the location; our server ended each of those sessions at its TEARDOWN or 4 s (the test's grace) after the request. Our client moved by our server to mediamtx: the pull keeps carrying media from it (310 to 335 packets in the check) and the push, moved at a `Range` time, is read back from mediamtx, over TCP and UDP. RTMP: on a Docker network the name `rtmpsrv` moves from mediamtx A (172.31.248.10, removed) to mediamtx B (.20) and our reconnecting push and pull, run in a container there, dial .20 (the pull reconnected 11 times while B's path waited for the push to come back). live555 (openRTSP) was not tried: Ubuntu 24.04 and Debian 12 no longer package it.
+- Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, 9 alternating rounds, medians, head / base): RTMP pull 0.997, RTSP pull 1.000, RTSP RECORD ingest 1.002 (`tests/client_bench.rs`); hub fan-out 0.987 / 0.994 / 1.000 (1 / 16 / 256 subscribers), FLV decode 1.010 (H.264) and 1.006 (H.265) (`tests/media_bench.rs`), all within the noise: nothing on the media path changed (the session list is touched at SETUP / ANNOUNCE and TEARDOWN, the lookups at connect time).
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

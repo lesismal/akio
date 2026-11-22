@@ -858,3 +858,97 @@ fn server_moves_to_another_address() {
     stop.store(true, Ordering::Relaxed);
     engine.shutdown();
 }
+
+/// This crate's server moves a pull and a push to mediamtx (`ONLY_MEDIAMTX_TARGET=host:port`
+/// of its RTSP listener, as `tools/interop/media/rtsp-server-redirect.sh target` starts it)
+/// with `REDIRECT`: the pull of `src` goes to a mediamtx path our push feeds and keeps
+/// carrying media; the push to `rec` goes to mediamtx one second later (a `Range` time), and
+/// is read back from there. Transports from `ONLY_MEDIAMTX_TRANSPORTS`. Skipped without
+/// `ONLY_MEDIAMTX_TARGET`.
+#[test]
+fn server_redirect_to_mediamtx() {
+    use only_media::rtsp::Redirect;
+    let Ok(mtx) = std::env::var("ONLY_MEDIAMTX_TARGET") else {
+        eprintln!(
+            "ONLY_MEDIAMTX_TARGET not set: skipped (see tools/interop/media/rtsp-server-redirect.sh)"
+        );
+        return;
+    };
+    let engine = Arc::new(client_engine());
+    let hub = Hub::default();
+    let srv = RtspServer::new(hub.clone(), RtspConfig::default());
+    srv.listen_udp("127.0.0.1:0".parse().unwrap()).unwrap();
+    let e_srv = Engine::builder()
+        .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(srv.clone()))
+        .build()
+        .unwrap();
+    e_srv.start().unwrap();
+    let a = e_srv.local_addrs()[0];
+    let (tracks, stop) = feed(&hub, "src", "h264_aac.flv");
+    wait("src live", 5, || {
+        hub.stream_info("src").is_some_and(|i| i.publishing)
+    });
+    for (t, name) in transports("ONLY_MEDIAMTX_TRANSPORTS") {
+        // mediamtx gets the stream (a push of ours), the pull from `a` is moved there.
+        let target = format!("rtsp://{mtx}/only_mv_{name}");
+        let feeder = client::push(&engine, &target, &hub, "src", cfg(t)).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let back = format!("moved_{name}");
+        let pull = client::pull(
+            &engine,
+            &format!("rtsp://{a}/src"),
+            &hub,
+            &back,
+            reconnecting(t, &engine),
+        )
+        .unwrap();
+        check_live(&hub, &back, &tracks);
+        assert_eq!(srv.redirect_path("src", &Redirect::new(target.clone())), 1);
+        wait("pull moved to mediamtx", 15, || {
+            pull.reconnects() == 1 && pull.is_live() && srv.sessions().is_empty()
+        });
+        let before = hub.stream_info(&back).map_or(0, |i| i.packets_in);
+        wait("media from mediamtx", 15, || {
+            hub.stream_info(&back)
+                .is_some_and(|i| i.packets_in > before + 100)
+        });
+        // A push to `a`, moved to mediamtx in a second.
+        let rec = format!("rtsp://{mtx}/only_rec_{name}");
+        let push = client::push(
+            &engine,
+            &format!("rtsp://{a}/rec"),
+            &hub,
+            "src",
+            reconnecting(t, &engine),
+        )
+        .unwrap();
+        wait("rec live on a", 10, || {
+            hub.stream_info("rec")
+                .is_some_and(|i| i.publishing && i.packets_in > 20)
+        });
+        let at = std::time::SystemTime::now() + Duration::from_secs(1);
+        assert_eq!(
+            srv.redirect_path("rec", &Redirect::new(rec.clone()).at(at)),
+            1
+        );
+        wait("push moved to mediamtx", 15, || {
+            push.reconnects() == 1 && push.is_live()
+        });
+        std::thread::sleep(Duration::from_millis(1500));
+        let rec_back = format!("rec_back_{name}");
+        let check = client::pull(&engine, &rec, &hub, &rec_back, cfg(t)).unwrap();
+        check_live(&hub, &rec_back, &tracks);
+        println!(
+            "MOVED-TO-MEDIAMTX ({name}): pull {} reconnect(s), {} packets since; push {} reconnect(s), read back from {rec}",
+            pull.reconnects(),
+            hub.stream_info(&back).map_or(0, |i| i.packets_in) - before,
+            push.reconnects()
+        );
+        assert!(pull.error().is_none(), "{:?}", pull.error());
+        drop((check, push, pull, feeder));
+        wait("a's sessions gone", 5, || srv.sessions().is_empty());
+    }
+    stop.store(true, Ordering::Relaxed);
+    engine.shutdown();
+    e_srv.shutdown();
+}

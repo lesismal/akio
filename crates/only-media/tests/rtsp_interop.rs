@@ -1197,3 +1197,228 @@ fn gstreamer_record_gets_receiver_reports() {
         assert!(lsr, "{proto}: no LSR in {blocks:#?}");
     }
 }
+
+// ---- REDIRECT and third-party clients ------------------------------------------------------
+
+/// A server of `cfg` and its handle.
+fn start_server(cfg: RtspConfig) -> (Hub, RtspServer, Arc<Engine>, SocketAddr) {
+    let hub = Hub::default();
+    let srv = RtspServer::new(hub.clone(), cfg);
+    srv.listen_udp("127.0.0.1:0".parse().unwrap()).unwrap();
+    let engine = Arc::new(
+        Engine::builder()
+            .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(srv.clone()))
+            .build()
+            .unwrap(),
+    );
+    engine.start().unwrap();
+    let addr = engine.local_addrs()[0];
+    (hub, srv, engine, addr)
+}
+
+/// The H.264 + AAC sample published at `path`, looped in real time until `stop`.
+fn feed_looped(hub: &Hub, path: &str, stop: Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    let (tracks, pkts) = av_sample();
+    let p = hub.publish(path, tracks, PeerInfo::default()).unwrap();
+    std::thread::spawn(move || {
+        let span = pkts.iter().map(|p| p.dts).max().unwrap_or(0) + 40 * MILLISECOND;
+        let start = Instant::now();
+        for round in 0i64.. {
+            for pkt in &pkts {
+                if stop.load(Ordering::Relaxed) {
+                    p.close();
+                    return;
+                }
+                let off = round * span;
+                let at = Duration::from_nanos((pkt.dts + off).max(0) as u64);
+                if let Some(d) = at.checked_sub(start.elapsed()) {
+                    std::thread::sleep(d);
+                }
+                let mut q = pkt.clone();
+                q.dts += off;
+                q.pts += off;
+                p.write(q);
+            }
+        }
+    });
+}
+
+/// A TCP proxy on `port` (0: any) to `to` that keeps what clients send once `armed`.
+struct Tap {
+    addr: SocketAddr,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    seen: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl Tap {
+    fn new(port: u16, to: SocketAddr) -> Tap {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let l = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let addr = l.local_addr().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let seen: Arc<std::sync::Mutex<Vec<u8>>> = Arc::default();
+        let (a2, s2) = (armed.clone(), seen.clone());
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(c) = c else { continue };
+                let Ok(s) = TcpStream::connect(to) else {
+                    continue;
+                };
+                let (mut c1, mut s1) = (c.try_clone().unwrap(), s.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut s1, &mut c1);
+                    let _ = c1.shutdown(std::net::Shutdown::Both);
+                });
+                let (a3, s3) = (a2.clone(), s2.clone());
+                std::thread::spawn(move || {
+                    let (mut c, mut s) = (c, s);
+                    let mut b = vec![0u8; 65536];
+                    loop {
+                        let n = match c.read(&mut b) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        };
+                        if a3.load(Ordering::Relaxed) {
+                            let mut g = s3.lock().unwrap();
+                            if g.len() < 8 << 20 {
+                                g.extend_from_slice(&b[..n]);
+                            }
+                        }
+                        if s.write_all(&b[..n]).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                });
+            }
+        });
+        Tap { addr, armed, seen }
+    }
+
+    /// The status of the first response the client sent once armed, and the requests after.
+    fn answer(&self) -> (Option<u16>, Vec<String>) {
+        let g = self.seen.lock().unwrap();
+        let text: String = g
+            .iter()
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' || b == b'\n' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        let status = text
+            .find("RTSP/1.0 ")
+            .and_then(|i| text.get(i + 9..i + 12)?.parse().ok());
+        let methods = text
+            .lines()
+            .filter_map(|l| {
+                let (m, rest) = l.split_once(' ')?;
+                (rest.starts_with("rtsp://")
+                    && m.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
+                .then(|| m.trim_start_matches('.').to_owned())
+            })
+            .collect();
+        (status, methods)
+    }
+}
+
+/// What a third-party RTSP client does with the server's `REDIRECT`. Run by
+/// `tools/interop/media/rtsp-server-redirect.sh` (skipped without `ONLY_REDIRECT_CLIENT`):
+/// `ONLY_REDIRECT_CLIENT` is a shell command with `{url}`, the stream on server A through a
+/// proxy that sees the client's answer; `ONLY_REDIRECT_MODE` `play` (default: the client
+/// plays `src`) or `record` (it records to `pushed`); `ONLY_REDIRECT_PORT` the proxy's port;
+/// `ONLY_REDIRECT_STOP` a command run at the end; `ONLY_REDIRECT_FOLLOWS=1` asserts the client
+/// moves to server B. Server A redirects the path to B with a 4 s grace and must have ended
+/// the session (closed the connection) once the grace passed, whatever the client does.
+#[test]
+fn third_party_redirect() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Ok(cmd) = std::env::var("ONLY_REDIRECT_CLIENT") else {
+        eprintln!(
+            "ONLY_REDIRECT_CLIENT not set: skipped (see tools/interop/media/rtsp-server-redirect.sh)"
+        );
+        return;
+    };
+    let record = std::env::var("ONLY_REDIRECT_MODE").is_ok_and(|m| m == "record");
+    let port = std::env::var("ONLY_REDIRECT_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0);
+    let (hub_a, srv_a, e_a, a) = start_server(RtspConfig::default());
+    let (hub_b, srv_b, e_b, b) = start_server(RtspConfig::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    feed_looped(&hub_a, "src", stop.clone());
+    feed_looped(&hub_b, "src", stop.clone());
+    let tap = Tap::new(port, a);
+    let path = if record { "pushed" } else { "src" };
+    let url = format!("rtsp://{}/{path}", tap.addr);
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd.replace("{url}", &url))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let live = || {
+        let s = srv_a.sessions();
+        let flowing = !record
+            || hub_a
+                .stream_info("pushed")
+                .is_some_and(|i| i.publishing && i.packets_in > 50);
+        s.iter().any(|s| s.path == path && s.recording == record) && flowing
+    };
+    while !live() {
+        assert!(Instant::now() < deadline, "the client never set {path} up");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    tap.armed.store(true, Ordering::Relaxed);
+    let grace = Duration::from_secs(4);
+    let sent = srv_a.redirect_path(
+        path,
+        &only_media::rtsp::Redirect::new(format!("rtsp://{b}/{path}")).grace(grace),
+    );
+    assert_eq!(sent, 1);
+    let t0 = Instant::now();
+    let (mut gone, mut followed) = (None, false);
+    while t0.elapsed() < grace + Duration::from_secs(3) {
+        if gone.is_none() && srv_a.sessions().is_empty() {
+            gone = Some(t0.elapsed());
+        }
+        followed |= srv_b.sessions().iter().any(|s| s.path == path)
+            && (!record
+                || hub_b
+                    .stream_info("pushed")
+                    .is_some_and(|i| i.publishing && i.packets_in > 20));
+        if gone.is_some() && followed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (status, after) = tap.answer();
+    println!(
+        "REDIRECT-RESULT mode={} answer={} requests-after={after:?} followed={followed} session-ended-after={}",
+        if record { "record" } else { "play" },
+        status.map_or_else(|| "none".to_owned(), |s| s.to_string()),
+        gone.map_or_else(|| "never".to_owned(), |d| format!("{} ms", d.as_millis())),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    if let Ok(stop_cmd) = std::env::var("ONLY_REDIRECT_STOP") {
+        let _ = Command::new("sh").arg("-c").arg(stop_cmd).status();
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(
+        gone.is_some_and(|d| d <= grace + Duration::from_secs(2)),
+        "the session was not ended"
+    );
+    if std::env::var("ONLY_REDIRECT_FOLLOWS").is_ok_and(|v| v == "1") {
+        assert!(followed, "the client did not move to server B");
+    }
+    e_a.shutdown();
+    e_b.shutdown();
+}

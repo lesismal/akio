@@ -2,6 +2,7 @@
 
 use std::{
     fmt,
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -20,10 +21,10 @@ use only::Engine;
 /// discontinuity). A push subscribes again and starts from the cached GOP.
 ///
 /// The client dials again on the engine given to [`new`](Self::new), which it holds weakly:
-/// once the engine is dropped the client ends. The RTSP client looks the URL's host name up
-/// again for every try (on the reconnecting thread; a name that fails to resolve is tried
-/// again like a refused connect), so a server that moved is found; the RTMP client dials the
-/// address resolved when it started.
+/// once the engine is dropped the client ends. Both clients look the URL's host name up again
+/// for every try (on a short-lived thread, the lookup blocks; a name that fails to resolve is
+/// tried again like a refused connect), so a server that moved is found, and within a try
+/// dial the addresses the name has in turn until one connects.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct Reconnect {
@@ -101,6 +102,59 @@ impl fmt::Debug for Reconnect {
             .field("max_delay", &self.max_delay)
             .field("max_attempts", &self.max_attempts)
             .finish_non_exhaustive()
+    }
+}
+
+/// The addresses of `host` (an IP literal as it is, a name looked up with the system resolver,
+/// which blocks), in the resolver's order, duplicates left out.
+pub(crate) fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    #[cfg(test)]
+    if let Some(a) = names::resolved(host, port) {
+        return a;
+    }
+    let mut out: Vec<SocketAddr> = Vec::new();
+    for a in (host, port).to_socket_addrs().map_err(|e| e.to_string())? {
+        if !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("{host}: no address"));
+    }
+    Ok(out)
+}
+
+/// Test lookups: names under `.test` resolve to what the tests set (each test with names of
+/// its own), whatever the port, instead of going to the system resolver.
+#[cfg(test)]
+pub(crate) mod names {
+    use std::{net::SocketAddr, sync::Mutex};
+
+    static NAMES: Mutex<Vec<(String, Vec<SocketAddr>)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn resolved(host: &str, _port: u16) -> Option<Result<Vec<SocketAddr>, String>> {
+        if !host.ends_with(".test") {
+            return None;
+        }
+        let g = NAMES.lock().unwrap_or_else(|p| p.into_inner());
+        Some(
+            g.iter()
+                .find(|(h, _)| h == host)
+                .map(|(_, a)| a.clone())
+                .ok_or_else(|| format!("{host}: unknown")),
+        )
+    }
+
+    /// Makes `host` resolve to `addrs` (no address: unknown).
+    pub(crate) fn set(host: &str, addrs: &[SocketAddr]) {
+        let mut g = NAMES.lock().unwrap_or_else(|p| p.into_inner());
+        g.retain(|(h, _)| h != host);
+        if !addrs.is_empty() {
+            g.push((host.to_owned(), addrs.to_vec()));
+        }
     }
 }
 
