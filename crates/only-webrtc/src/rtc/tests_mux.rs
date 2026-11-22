@@ -1,6 +1,6 @@
 //! ADR-058 in simulated time: RTCP on ICE component 2 (no rtcp-mux) with DTLS-SRTP and
 //! SDES-SRTP, the mux policies, RTCP XR receipt blocks and VoIP metrics, SDES items, ULPFEC
-//! levels.
+//! levels; the audio jitter buffer (ADR-087) under jitter and loss.
 
 use super::*;
 use crate::SdpChanges;
@@ -10,6 +10,8 @@ use only_rtp::SdesItem;
 struct Net {
     rng: u64,
     loss: u32,
+    /// Delays are 10 ms plus 0..spread ms.
+    spread: u64,
     queue: Vec<(Instant, SocketAddr, SocketAddr, Vec<u8>)>,
     /// (from, to, first byte, an RTCP packet) of every datagram sent.
     log: Vec<(SocketAddr, SocketAddr, u8, bool)>,
@@ -20,6 +22,7 @@ impl Net {
         Net {
             rng: seed,
             loss: 0,
+            spread: 6,
             queue: Vec::new(),
             log: Vec::new(),
         }
@@ -40,7 +43,7 @@ impl Net {
         if (128..=191).contains(&b) && !rtcp && (self.rand() % 100) < u64::from(self.loss) {
             return;
         }
-        let delay = 10 + self.rand() % 6;
+        let delay = 10 + self.rand() % self.spread;
         self.queue
             .push((now + Duration::from_millis(delay), from, to, d));
     }
@@ -552,10 +555,11 @@ fn xr_receipt_blocks_and_voip_metrics_round_trip() {
     assert!(m.loss_rate > 8 && m.loss_rate < 60, "{m:?}");
     assert!(m.round_trip_delay > 10 && m.round_trip_delay < 80, "{m:?}");
     assert_eq!(m.gmin, 16);
-    // The E-model for Opus (wideband, G.107.1) at ~10 % loss: R about 70, MOS about 3.6.
-    assert!(m.r_factor > 50 && m.r_factor < 85, "{m:?}");
+    // The E-model for Opus at its measured bitrate (4-byte frames: 1.6 kbit/s, rated as
+    // 13 kbit/s, G.107.2 fullband Ie,FB 37.85) at ~10 % loss: R about 42, MOS about 2.2.
+    assert!(m.r_factor > 30 && m.r_factor < 60, "{m:?}");
     assert!(
-        m.mos_lq >= 28 && m.mos_lq <= 43 && m.mos_cq <= m.mos_lq,
+        m.mos_lq >= 15 && m.mos_lq <= 32 && m.mos_cq <= m.mos_lq,
         "{m:?}"
     );
     // Opus conceals losses itself: enhanced PLC; jitter buffer unknown. What only the
@@ -777,4 +781,163 @@ fn ulpfec_levels_repair_loss() {
             "{bytes_lvl} bytes with levels, {bytes_fec} without"
         );
     }
+}
+
+#[test]
+fn audio_jitter_buffer_under_jitter_and_loss() {
+    use only_rtp::PlayoutDelay;
+    let jb_cfg = || ConfigInner {
+        jitter: Some(PlayoutDelay::default()),
+        ..xr_cfg(XrBlocks::VOIP_METRICS)
+    };
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        xr_cfg(XrBlocks::VOIP_METRICS),
+        jb_cfg(),
+        &[MediaKind::Audio],
+        same,
+        same,
+    );
+    let mut net = Net::new(29);
+    let mut now = connect(&mut a, &mut b, &mut net, now);
+    // 10..70 ms one way (reordering 20 ms packets), 3 % loss; 32 kbit/s Opus.
+    net.spread = 60;
+    net.loss = 3;
+    let pt = a.rtc.payload_type(mids[0], Codec::Opus).unwrap();
+    let start = b.events.len();
+    let mut frames: Vec<(Instant, MediaData)> = Vec::new();
+    let mut seen = start;
+    let n = 500u64;
+    for i in 0..n + 100 {
+        if i < n {
+            let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+            let mut f = vec![0xfc; 80];
+            f[1] = i as u8;
+            a.rtc.write_media(now, mids[0], None, pt, t, &f).unwrap();
+        }
+        for _ in 0..4 {
+            now += Duration::from_millis(5);
+            step(&mut a, &mut b, now, &mut net);
+            for e in &b.events[seen..] {
+                if let RtcEvent::MediaData(d) = e {
+                    frames.push((now, d.clone()));
+                }
+            }
+            seen = b.events.len();
+        }
+    }
+    // In order, each at (or, for one that came after it, soon after) its playout instant.
+    assert!(frames.len() as u64 > n * 9 / 10, "{}", frames.len());
+    for w in frames.windows(2) {
+        assert!(w[1].1.time.ticks() > w[0].1.time.ticks());
+        assert!(w[1].1.playout_time >= w[0].1.playout_time);
+    }
+    let on_time = frames
+        .iter()
+        .filter(|(at, d)| {
+            let p = d.playout_time.expect("playout time");
+            p <= *at && *at - p <= Duration::from_millis(5)
+        })
+        .count();
+    assert!(
+        on_time * 100 >= frames.len() * 90,
+        "{on_time} of {}",
+        frames.len()
+    );
+    // A frame after a gap is not contiguous.
+    let gaps = frames
+        .windows(2)
+        .filter(|w| w[1].1.time.ticks() != w[0].1.time.ticks() + 960)
+        .count();
+    let broken = frames.iter().filter(|(_, d)| !d.contiguous).count();
+    assert_eq!(broken, gaps);
+    let stats = b.rtc.jitter_buffer_stats(mids[0]).expect("line");
+    let [(ssrc, s)] = stats.as_slice() else {
+        panic!("{stats:?}")
+    };
+    assert_eq!(*ssrc, a.rtc.media[0].send.ssrc());
+    assert_eq!(s.played, frames.len() as u64);
+    assert!(s.reordered > 20, "{s:?}");
+    assert!(
+        s.delay >= Duration::from_millis(30) && s.delay <= Duration::from_millis(70),
+        "{s:?}"
+    );
+    assert!(s.late * 100 < n * 3, "{s:?}");
+    assert!(b.rtc.jitter_buffer_stats(Mid::new("nope")).is_none());
+    // a's view of b's reports: the buffer's delay, bounds and discards; Opus at 32 kbit/s.
+    let m = a
+        .events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            RtcEvent::Other(Other::VoipMetrics { metrics, .. }) => Some(*metrics),
+            _ => None,
+        })
+        .expect("VoIP metrics");
+    let q = m.quality();
+    let jb = q.jitter_buffer.expect("jitter buffer");
+    assert!(jb.adaptive && jb.rate == 1, "{m:?}");
+    assert_eq!(m.jb_abs_max, 500);
+    assert!(m.jb_nominal >= 20 && m.jb_nominal <= 80, "{m:?}");
+    if s.late > 0 {
+        assert!(m.discard_rate > 0, "{m:?} {s:?}");
+    }
+    // Fullband Opus (Ie,FB 2.58) at ~3 % loss: R about 75 with the buffer's delay.
+    assert!(m.r_factor > 60 && m.r_factor < 95, "{m:?}");
+    // Without the buffer (a's side) frames carry no playout instant.
+    assert!(a.events.iter().all(|e| match e {
+        RtcEvent::MediaData(d) => d.playout_time.is_none(),
+        _ => true,
+    }));
+}
+
+#[test]
+fn audio_jitter_buffer_discards_reach_voip_metrics() {
+    use only_rtp::PlayoutDelay;
+    // A fixed buffer of no delay beyond the fastest packet: jitter makes frames late.
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        xr_cfg(XrBlocks::VOIP_METRICS),
+        ConfigInner {
+            jitter: Some(PlayoutDelay::fixed(Duration::ZERO)),
+            ..xr_cfg(XrBlocks::VOIP_METRICS | XrBlocks::LOSS_RLE)
+        },
+        &[MediaKind::Audio],
+        same,
+        same,
+    );
+    let mut net = Net::new(31);
+    let mut now = connect(&mut a, &mut b, &mut net, now);
+    net.spread = 60;
+    let pt = a.rtc.payload_type(mids[0], Codec::Opus).unwrap();
+    for i in 0..400u64 {
+        let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
+        a.rtc
+            .write_media(now, mids[0], None, pt, t, &[0xfc; 60])
+            .unwrap();
+        for _ in 0..4 {
+            now += Duration::from_millis(5);
+            step(&mut a, &mut b, now, &mut net);
+        }
+    }
+    for _ in 0..300 {
+        now += Duration::from_millis(5);
+        step(&mut a, &mut b, now, &mut net);
+    }
+    let stats = b.rtc.jitter_buffer_stats(mids[0]).expect("line");
+    let s = stats[0].1;
+    assert!(s.late > 40, "{s:?}");
+    assert_eq!(s.lost, s.late);
+    // The burst model's rates are cumulative: discarded, not lost (nothing was lost on the
+    // network; a reordered packet still missing when an interval ends counts as lost in it).
+    let m = a.events.iter().rev().find_map(|e| match e {
+        RtcEvent::Other(Other::VoipMetrics { metrics, .. }) => Some(*metrics),
+        _ => None,
+    });
+    let v = m.expect("VoIP metrics");
+    assert!(
+        v.discard_rate > 10 && v.loss_rate < v.discard_rate / 2,
+        "{v:?}"
+    );
+    let q = m.expect("VoIP metrics").quality();
+    let jb = q.jitter_buffer.expect("jitter buffer");
+    assert!(!jb.adaptive && jb.abs_max.is_zero(), "{q:?}");
 }

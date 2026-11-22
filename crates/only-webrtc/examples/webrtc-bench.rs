@@ -5,6 +5,9 @@
 //! webrtc-bench media [secs]   one-way VP8 RTP (8 kB frames written as fast as they go out):
 //!                             media bytes the receiver got per second
 //! webrtc-bench dc [secs]      one data channel, 64 kB messages kept queued: bytes per second
+//! webrtc-bench audio [secs]   one-way Opus RTP (160-byte frames, timestamps following the wall
+//!                             clock, written as fast as they go out): frames per second (k)
+//! webrtc-bench audio-jb [secs]  the same into the receiver's audio jitter buffer (ADR-087)
 //! ```
 //!
 //! Prints one `BENCH <mode> <MB/s>` line. Default configurations on both sides (no estimator,
@@ -25,6 +28,8 @@ use only_webrtc::{
 struct Sink {
     bytes: Arc<AtomicU64>,
     up: Mutex<Sender<()>>,
+    /// Count frames, not bytes.
+    frames: bool,
 }
 
 impl PeerHandler for Sink {
@@ -35,7 +40,8 @@ impl PeerHandler for Sink {
         let _ = self.up.lock().unwrap().send(());
     }
     fn on_media_data(&mut self, _p: &Peer, d: &MediaData) {
-        self.bytes.fetch_add(d.data.len() as u64, Ordering::Relaxed);
+        let n = if self.frames { 1 } else { d.data.len() as u64 };
+        self.bytes.fetch_add(n, Ordering::Relaxed);
     }
     fn on_channel_data(&mut self, _p: &Peer, _id: ChannelId, d: &[u8], _b: bool) {
         self.bytes.fetch_add(d.len() as u64, Ordering::Relaxed);
@@ -48,26 +54,38 @@ fn main() {
     let secs: u64 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
     let e = Arc::new(Engine::builder().udp_client_threads(1).build().unwrap());
     e.start().unwrap();
+    let jb = mode == "audio-jb";
     let cfg = || rtc_config().set_sctp_max_buffered_amount(8 << 20);
     let ea = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
         .config(cfg);
     let eb = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
-        .config(cfg);
+        .config(move || {
+            let c = cfg();
+            if jb {
+                c.set_audio_jitter_buffer(Some(only_rtp::PlayoutDelay::default())) // JB-ONLY
+            } else {
+                c
+            }
+        });
     let (txa, rxa) = channel();
     let (txb, rxb) = channel();
     let got = Arc::new(AtomicU64::new(0));
-    let (mut video, mut ch) = (None, None);
-    let media = mode == "media";
+    let (mut video, mut ch, mut voice) = (None, None, None);
+    let audio = mode.starts_with("audio");
+    let media = mode == "media" || audio;
     let (pa, offer) = ea
         .create_offer(
             Sink {
                 bytes: Arc::new(AtomicU64::new(0)),
                 up: Mutex::new(txa),
+                frames: audio,
             },
             |api| {
-                if media {
+                if audio {
+                    voice = Some(api.add_media(MediaKind::Audio, Direction::SendOnly, None, None));
+                } else if media {
                     video = Some(api.add_media(MediaKind::Video, Direction::SendOnly, None, None));
                 } else {
                     ch = Some(api.add_channel("bench"));
@@ -81,6 +99,7 @@ fn main() {
             Sink {
                 bytes: got.clone(),
                 up: Mutex::new(txb),
+                frames: audio,
             },
         )
         .unwrap();
@@ -112,6 +131,26 @@ fn main() {
                 std::thread::sleep(Duration::from_micros(200));
             }
         }
+    } else if let Some(v) = voice {
+        let pt = pa.payload_type(v, Codec::Opus).unwrap();
+        let mut f = vec![0xfcu8; 160];
+        let mut i = 0u64;
+        let mut last = 0;
+        while start.elapsed() < warm + Duration::from_secs(secs) {
+            if base.is_none() && start.elapsed() >= warm {
+                base = Some((Instant::now(), got.load(Ordering::Relaxed)));
+            }
+            f[1] = i as u8;
+            // 48 kHz ticks of the wall clock, strictly increasing.
+            let ticks = (start.elapsed().as_micros() as u64 * 48 / 1000).max(last + 1);
+            last = ticks;
+            let t = MediaTime::new(ticks, Frequency::FORTY_EIGHT_KHZ);
+            pa.write_media(v, pt, Instant::now(), t, &f).unwrap();
+            i += 1;
+            if i % 16 == 0 {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
     } else if let Some(c) = ch {
         let msg = vec![7u8; 64 * 1024];
         while start.elapsed() < warm + Duration::from_secs(secs) {
@@ -124,8 +163,12 @@ fn main() {
         }
     }
     let (t0, b0) = base.expect("warmed up");
-    let mb = (got.load(Ordering::Relaxed) - b0) as f64 / t0.elapsed().as_secs_f64() / 1e6;
-    println!("BENCH {mode} {mb:.1}");
+    let per_s = (got.load(Ordering::Relaxed) - b0) as f64 / t0.elapsed().as_secs_f64();
+    if audio {
+        println!("BENCH {mode} {:.1}", per_s / 1e3);
+    } else {
+        println!("BENCH {mode} {:.1}", per_s / 1e6);
+    }
     pa.close();
     ea.close();
     eb.close();

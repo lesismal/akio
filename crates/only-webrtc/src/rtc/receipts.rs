@@ -21,7 +21,7 @@
 //! - Receiving: the blocks about a stream this side sends become events.
 
 use super::*;
-use only_rtp::{BurstLossModel, EModel, Plc, SdesItem, VoipQuality, XrBlock};
+use only_rtp::{BurstLossModel, EModel, JitterBufferConfig, Plc, SdesItem, VoipQuality, XrBlock};
 
 /// Sequence numbers a receipt log keeps per interval.
 pub(super) const RECEIPT_LOG_CAPACITY: usize = 4096;
@@ -68,16 +68,20 @@ fn block_size(b: &XrBlock) -> usize {
 }
 
 /// The VoIP quality fields of a report about a stream received on a line: what the
-/// application gave (`app`) wins; the round-trip time is measured; the concealment is the
-/// received codec's own when the application did not say; R, MOS-LQ and MOS-CQ come from the
-/// E-model with the codec's planning values (`model` when the application chose them, G.711
-/// with concealment for a codec without any) and the loss so far of `m`.
+/// application gave (`app`) wins; the round-trip time is measured; the jitter buffer is
+/// the audio jitter buffer's (`jb`) when there is one; the concealment is the received
+/// codec's own when the application did not say; R, MOS-LQ and MOS-CQ come from the E-model
+/// with the codec's planning values at its measured `bitrate` (`model` when the application
+/// chose them, G.711 with concealment for a codec without any) and the loss so far of `m`.
+#[allow(clippy::too_many_arguments)]
 fn voip_quality(
     app: VoipQuality,
     model: Option<EModel>,
     codec: Option<&CodecParams>,
+    bitrate: Option<u32>,
     rtt: Option<Duration>,
     jitter: Duration,
+    jb: Option<JitterBufferConfig>,
     m: &BurstLossModel,
 ) -> VoipQuality {
     let name = codec.map_or("", |c| c.codec.name());
@@ -88,10 +92,11 @@ fn voip_quality(
         } else {
             app.plc
         },
+        jitter_buffer: app.jitter_buffer.or(jb),
         ..app
     };
     let model = model
-        .or_else(|| EModel::for_codec(name, q.plc))
+        .or_else(|| EModel::for_codec_rate(name, q.plc, bitrate))
         .unwrap_or_default();
     let packet = Duration::from_millis(u64::from(VOIP_PACKET_MS));
     model.estimate_report(m, &q, jitter, packet).fill(&mut q);
@@ -134,7 +139,12 @@ impl Rtc {
                 continue;
             }
             let rtt = r.stream.rtt();
-            let codec = r.assembler.as_ref().and_then(|(pt, _)| l.codec(*pt));
+            let pt = match (&r.jitter, &r.assembler) {
+                (Some(j), _) => Some(j.pt),
+                (None, Some((pt, _))) => Some(*pt),
+                (None, None) => None,
+            };
+            let codec = pt.and_then(|pt| l.codec(pt));
             let clock = codec.map_or(48_000, |c| c.clock);
             let jitter = Duration::from_secs_f64(f64::from(r.stream.jitter()) / f64::from(clock));
             let Some(log) = r.stream.receipt_log().filter(|l| !l.is_empty()) else {
@@ -144,11 +154,32 @@ impl Rtc {
             let mut xr = Vec::new();
             if blocks.contains(XrBlocks::VOIP_METRICS) {
                 if let Some(XrBlock::LossRle(trace)) = log.loss_rle(0) {
+                    // Received but discarded by the jitter buffer (late or overflow).
+                    let mut discarded: Vec<u16> = r
+                        .jitter
+                        .as_mut()
+                        .map(|j| j.buf.drain_discarded().map(|s| s as u16).collect())
+                        .unwrap_or_default();
+                    discarded.sort_unstable();
                     let m = r.burst.get_or_insert_with(BurstLossModel::default);
-                    for (_, received) in trace.decode() {
-                        m.on_packet(!received, false);
+                    for (seq, received) in trace.decode() {
+                        let dropped = received && discarded.binary_search(&seq).is_ok();
+                        m.on_packet(!received, dropped);
                     }
-                    let q = voip_quality(l.voip, l.voip_model, codec, rtt, jitter, m);
+                    // The codec's bitrate: payload bits per packet over the packet length
+                    // (the frame length the jitter buffer measured, else 20 ms); packets of
+                    // at most 2 bytes (Opus DTX) left out of the average.
+                    let (bytes, packets) = std::mem::take(&mut r.audio_rate);
+                    let frame = r
+                        .jitter
+                        .as_ref()
+                        .and_then(|j| j.buf.frame_duration())
+                        .unwrap_or_else(|| Duration::from_millis(u64::from(VOIP_PACKET_MS)));
+                    let bitrate = (packets > 0 && !frame.is_zero()).then(|| {
+                        (bytes as f64 * 8.0 / packets as f64 / frame.as_secs_f64()) as u32
+                    });
+                    let jb = r.jitter.as_ref().map(|j| j.buf.xr_config());
+                    let q = voip_quality(l.voip, l.voip_model, codec, bitrate, rtt, jitter, jb, m);
                     xr.push(XrBlock::VoipMetrics(m.report(
                         log.ssrc(),
                         VOIP_PACKET_MS,

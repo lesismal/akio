@@ -89,10 +89,11 @@ fn emodel_g113_equipment_impairment() {
     assert!((plc.equipment_impairment(0.01, 1.0) - 95.0 / 26.1).abs() < 1e-9);
     assert!((none.equipment_impairment(0.01, 1.0) - 95.0 / 5.3).abs() < 1e-9);
     assert_eq!(plc, EModel::default());
-    // G.722 (Ie,wb 13) at 1 % on the wideband scale: 13 + 116 / 5.3.
+    // G.722 without concealment (diotic Ie,wb 5, G.107.1's Bpl 4.3) at 1 %: G.107.1
+    // Eq. 7-15, 5 + 90 / 5.3.
     let g722 = EModel::for_codec("g722", Plc::Unspecified).expect("table");
     assert!(g722.is_wideband());
-    assert!((g722.equipment_impairment(0.01, 1.0) - (13.0 + 116.0 / 5.3)).abs() < 1e-9);
+    assert!((g722.equipment_impairment(0.01, 1.0) - (5.0 + 90.0 / 5.3)).abs() < 1e-9);
     // Unimpaired wideband codecs rate above G.711; G.722 sits between.
     let opus = EModel::for_codec("opus", Plc::Unspecified).expect("table");
     let r = |e: EModel| e.score(0.0, 1.0, ms(40)).r_factor;
@@ -230,4 +231,129 @@ fn voip_quality_round_trip() {
     r.mos_cq = 9;
     assert_eq!((r.quality().r_factor, r.quality().mos_cq), (None, None));
     assert_eq!(r.signal_level, VOIP_UNAVAILABLE);
+}
+
+/// G.107.1 (2019, Corrigendum 1) and G.113 Appendix IV: the wideband model.
+#[test]
+fn emodel_g107_1_wideband() {
+    // Defaults: Idle,WB alone (Rle = 10.5 x 117 = 1228.5): 0.1537, R = 128.846.
+    let clean = EModel::wideband(0.0, 4.3);
+    assert!((clean.scaled_delay_impairment(Duration::ZERO) - 0.153_685).abs() < 1e-5);
+    let s = clean.score(0.0, 1.0, Duration::ZERO);
+    assert!((s.r_factor * 1.29 - 128.846_315).abs() < 1e-5, "{s:?}");
+    assert!((s.mos_cq - 4.499_152).abs() < 1e-5, "{s:?}");
+    // G.722 64 kbit/s with Appendix III concealment (Table IV.4: Ie,wb 5, Bpl,wb 7.1) at
+    // 2 % uniform loss: Ie,eff,WB = 5 + 90 x 2 / 9.1 = 24.7802, R = 104.0661, MOS 4.0491.
+    let g722 = EModel::for_codec("G722", Plc::Enhanced).expect("table");
+    assert!((g722.equipment_impairment(0.02, 1.0) - 24.780_22).abs() < 1e-4);
+    let s = g722.score(0.02, 1.0, Duration::ZERO);
+    assert!((s.r_factor * 1.29 - 104.066_1).abs() < 1e-3, "{s:?}");
+    assert!((s.mos_lq - 4.0491).abs() < 1e-4, "{s:?}");
+    // Appendix IV's low-complexity concealment (Bpl,wb 5.1): 5 + 180 / 7.1 = 30.3521.
+    let low = EModel::for_codec("g722", Plc::Standard).expect("table");
+    assert!((low.equipment_impairment(0.02, 1.0) - 30.352_11).abs() < 1e-4);
+    // Without concealment G.107.1's default 4.3; 56 and 48 kbit/s from Table IV.3.
+    assert_eq!(
+        EModel::for_codec("g722", Plc::Disabled),
+        Some(EModel::wideband(5.0, 4.3))
+    );
+    assert_eq!(
+        EModel::for_codec_rate("g722", Plc::Enhanced, Some(56_000)),
+        Some(EModel::wideband(10.0, 4.3))
+    );
+    assert_eq!(
+        EModel::for_codec_rate("g722", Plc::Enhanced, Some(48_000)),
+        Some(EModel::wideband(41.0, 4.3))
+    );
+    // Idd,WB = 1.29 Idd: 3.927294 at 200 ms and 19.041296 at 300 ms (Ta = T); talker echo
+    // with K and Roe = 106.5 (Cor. 1) is small at the default TELR.
+    let idd_wb = |t: u64| {
+        let all = clean.scaled_delay_impairment(ms(t));
+        let rle = 10.5 * 117.0 * (2.0 * t as f64 + 1.0).powf(-0.25);
+        let idle = (129.0 - rle) / 2.0 + ((129.0f64 - rle).powi(2) / 4.0 + 169.0).sqrt();
+        let terv =
+            65.0 + 18.0 - 40.0 * ((1.0 + t as f64 / 10.0) / (1.0 + t as f64 / 150.0)).log10();
+        let re = 80.0 + 3.0 * (terv - 14.0);
+        let idte = (106.5 - re) / 2.0 + ((106.5 - re).powi(2) / 4.0 + 100.0).sqrt() - 1.0;
+        all - idle - idte
+    };
+    assert!((idd_wb(200) - 3.927_294).abs() < 1e-5, "{}", idd_wb(200));
+    assert!((idd_wb(300) - 19.041_296).abs() < 1e-5, "{}", idd_wb(300));
+    // AMR-WB by mode (Tables IV.3, IV.4): 12.65 without a rate; 23.85 with Bpl,wb 4.9; 14.25
+    // takes 12.65's row, 7 kbit/s 6.6's.
+    let amr = |r| EModel::for_codec_rate("AMR-WB", Plc::Standard, r).expect("table");
+    assert_eq!(amr(None), EModel::wideband(20.0, 4.3));
+    assert_eq!(amr(Some(23_850)), EModel::wideband(10.0, 4.9));
+    assert_eq!(amr(Some(23_050)), EModel::wideband(8.0, 4.6));
+    assert_eq!(amr(Some(14_250)), amr(Some(12_650)));
+    assert_eq!(amr(Some(6_000)), EModel::wideband(56.0, 4.3));
+    assert_eq!(Plc::of_codec("AMR-WB"), Plc::Standard);
+}
+
+/// G.107.2 (03/2023) and G.113 Appendix V: the fullband model.
+#[test]
+fn emodel_g107_2_fullband() {
+    // Unimpaired: R = 148, MOS 4.5 (Annex A: R / 1.48); 100 on the VoIP block's scale.
+    let clean = EModel::fullband(0.0, 4.3);
+    assert!(clean.is_fullband() && !clean.is_wideband());
+    let s = clean.score(0.0, 1.0, Duration::ZERO);
+    assert!(
+        (s.r_factor - 100.0).abs() < 1e-9 && s.mos_cq == 4.5,
+        "{s:?}"
+    );
+    // A rating of 129 on the fullband scale: Rx = 87.16, MOS 4.2634.
+    let s = EModel::fullband(19.0, 4.3).score(0.0, 1.0, Duration::ZERO);
+    assert!((s.mos_lq - 4.2634).abs() < 1e-4, "{s:?}");
+    // Id,FB = 1.48 Idd: 4.505733 at 200 ms, 21.845828 at 300 ms; nothing up to 100 ms.
+    let id = |t| clean.scaled_delay_impairment(ms(t));
+    assert_eq!(id(100), 0.0);
+    assert!((id(200) - 4.505_733).abs() < 1e-5, "{}", id(200));
+    assert!((id(300) - 21.845_828).abs() < 1e-5, "{}", id(300));
+    // EVS 13.2 kbit/s (Table V.3: Ie,fb 17.1, Bpl 11.7, Brf 3.28) at 2 % random loss:
+    // Ie,eff,FB = 17.1 + 114.9 x 2 / 13.7 = 33.8737, R = 114.1263, MOS 3.9103.
+    let evs = EModel::for_codec("EVS", Plc::Enhanced).expect("table");
+    assert!((evs.equipment_impairment(0.02, 1.0) - 33.873_72).abs() < 1e-4);
+    let s = evs.score(0.02, 1.0, Duration::ZERO);
+    assert!((s.r_factor * 1.48 - 114.126_3).abs() < 1e-3, "{s:?}");
+    assert!((s.mos_lq - 3.9103).abs() < 1e-4, "{s:?}");
+    // Bursty (BurstR 2, Eq. 7-10): 17.1 + 114.9 (2 + 1 / 3.28) / 13.7 = 36.4307.
+    assert!((evs.equipment_impairment(0.02, 2.0) - 36.430_7).abs() < 1e-4);
+    // EVS 48 kbit/s at 1 %: 10.2 + 121.8 / 10.6 = 21.6906.
+    let evs48 = EModel::for_codec_rate("evs", Plc::Enhanced, Some(48_000)).expect("table");
+    assert!((evs48.equipment_impairment(0.01, 1.0) - 21.690_57).abs() < 1e-4);
+    // Rates between modes take the lower mode; burstiness robustness only at 13.2.
+    let at = |r| EModel::for_codec_rate("evs", Plc::Enhanced, Some(r)).expect("table");
+    assert_eq!(at(20_000), EModel::fullband(10.8, 10.3));
+    assert_eq!(
+        at(13_200),
+        EModel::fullband(17.1, 11.7).with_burst_robustness(3.28)
+    );
+    assert_eq!(at(7_200), EModel::fullband(22.7, 13.0));
+    // No loss: Ie,FB whatever the burst ratio.
+    assert_eq!(evs.equipment_impairment(0.0, 4.0), 17.1);
+}
+
+#[test]
+fn emodel_opus_by_bitrate() {
+    let opus = |r| EModel::for_codec_rate("opus", Plc::Enhanced, r).expect("table");
+    // Without a rate: ADR-085's wideband assumption.
+    assert_eq!(opus(None), EModel::wideband(0.0, 25.1));
+    // With one: fullband, Ie,FB from P.863 (DAGA 2021), EVS's Bpl,fb at the rate.
+    assert_eq!(opus(Some(32_000)), EModel::fullband(2.58, 9.3));
+    assert_eq!(opus(Some(64_000)), EModel::fullband(0.0, 9.6));
+    assert_eq!(opus(Some(8_000)), EModel::fullband(37.85, 13.0));
+    let mid = opus(Some(20_000));
+    assert!((mid.equipment_impairment(0.0, 1.0) - (21.96 + 9.82) / 2.0).abs() < 1e-9);
+    // Monotone in the bitrate.
+    let r = |b| opus(Some(b)).score(0.0, 1.0, ms(50)).r_factor;
+    assert!((10..60).all(|k| r(k * 1000 + 1000) >= r(k * 1000)));
+    assert!(r(48_000) > r(24_000) && r(24_000) > r(13_000));
+    // Under loss a fullband rating stays in range.
+    let s = opus(Some(24_000)).score(0.2, 3.0, ms(400));
+    assert!((0.0..=100.0).contains(&s.r_factor) && (1.0..=4.5).contains(&s.mos_cq));
+    // G.723.1 at 5.3 kbit/s: Table I.1's Ie 19.
+    assert_eq!(
+        EModel::for_codec_rate("G723", Plc::Standard, Some(5_300)),
+        Some(EModel::codec(19.0, 16.1))
+    );
 }

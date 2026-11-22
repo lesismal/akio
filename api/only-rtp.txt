@@ -679,6 +679,25 @@ impl core::marker::Sync for only_rtp::Extension
 impl core::marker::Unpin for only_rtp::Extension
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Extension
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::Extension
+#[non_exhaustive] pub enum only_rtp::JitterPush
+pub only_rtp::JitterPush::Buffered
+pub only_rtp::JitterPush::Duplicate
+pub only_rtp::JitterPush::Late
+pub only_rtp::JitterPush::Overflow
+impl core::clone::Clone for only_rtp::JitterPush
+pub fn only_rtp::JitterPush::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::JitterPush
+impl core::cmp::PartialEq for only_rtp::JitterPush
+pub fn only_rtp::JitterPush::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::JitterPush
+pub fn only_rtp::JitterPush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::JitterPush
+impl core::marker::StructuralPartialEq for only_rtp::JitterPush
+impl core::marker::Send for only_rtp::JitterPush
+impl core::marker::Sync for only_rtp::JitterPush
+impl core::marker::Unpin for only_rtp::JitterPush
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterPush
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterPush
 pub enum only_rtp::Plc
 pub only_rtp::Plc::Disabled
 pub only_rtp::Plc::Enhanced
@@ -1000,9 +1019,14 @@ pub fn only_rtp::EModel::equipment_impairment(&self, f64, f64) -> f64
 pub fn only_rtp::EModel::estimate(&self, f64, f64, core::option::Option<core::time::Duration>, core::time::Duration, core::time::Duration, core::option::Option<core::time::Duration>) -> only_rtp::EModelScore
 pub fn only_rtp::EModel::estimate_report(&self, &only_rtp::BurstLossModel, &only_rtp::VoipQuality, core::time::Duration, core::time::Duration) -> only_rtp::EModelScore
 pub fn only_rtp::EModel::for_codec(&str, only_rtp::Plc) -> core::option::Option<only_rtp::EModel>
+pub fn only_rtp::EModel::for_codec_rate(&str, only_rtp::Plc, core::option::Option<u32>) -> core::option::Option<only_rtp::EModel>
+pub fn only_rtp::EModel::fullband(f64, f64) -> only_rtp::EModel
+pub fn only_rtp::EModel::is_fullband(&self) -> bool
 pub fn only_rtp::EModel::is_wideband(&self) -> bool
+pub fn only_rtp::EModel::scaled_delay_impairment(&self, core::time::Duration) -> f64
 pub fn only_rtp::EModel::score(&self, f64, f64, core::time::Duration) -> only_rtp::EModelScore
 pub fn only_rtp::EModel::wideband(f64, f64) -> only_rtp::EModel
+pub fn only_rtp::EModel::with_burst_robustness(self, f64) -> only_rtp::EModel
 impl core::clone::Clone for only_rtp::EModel
 pub fn only_rtp::EModel::clone(&self) -> Self
 impl core::cmp::PartialEq for only_rtp::EModel
@@ -1201,6 +1225,30 @@ impl core::marker::Sync for only_rtp::ExtensionValues
 impl core::marker::Unpin for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::ExtensionValues
+pub struct only_rtp::JitterBuffer<T>
+impl<T> only_rtp::JitterBuffer<T>
+pub fn only_rtp::JitterBuffer<T>::bounds(&self) -> only_rtp::PlayoutDelay
+pub fn only_rtp::JitterBuffer<T>::clock(&self) -> u32
+pub fn only_rtp::JitterBuffer<T>::delay(&self) -> core::time::Duration
+pub fn only_rtp::JitterBuffer<T>::drain(&mut self) -> alloc::vec::Vec<only_rtp::JitterFrame<T>>
+pub fn only_rtp::JitterBuffer<T>::drain_discarded(&mut self) -> alloc::vec::drain::Drain<'_, u64>
+pub fn only_rtp::JitterBuffer<T>::frame_duration(&self) -> core::option::Option<core::time::Duration>
+pub fn only_rtp::JitterBuffer<T>::is_empty(&self) -> bool
+pub fn only_rtp::JitterBuffer<T>::len(&self) -> usize
+pub fn only_rtp::JitterBuffer<T>::new(u32, only_rtp::PlayoutDelay) -> only_rtp::JitterBuffer<T>
+pub fn only_rtp::JitterBuffer<T>::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_rtp::JitterBuffer<T>::pop(&mut self, std::time::Instant) -> core::option::Option<only_rtp::JitterFrame<T>>
+pub fn only_rtp::JitterBuffer<T>::push(&mut self, u64, u32, bool, std::time::Instant, T, usize) -> only_rtp::JitterPush
+pub fn only_rtp::JitterBuffer<T>::skip(&mut self, u64)
+pub fn only_rtp::JitterBuffer<T>::stats(&self) -> only_rtp::JitterBufferStats
+pub fn only_rtp::JitterBuffer<T>::xr_config(&self) -> only_rtp::JitterBufferConfig
+impl<T: core::fmt::Debug> core::fmt::Debug for only_rtp::JitterBuffer<T>
+pub fn only_rtp::JitterBuffer<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for only_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Send
+impl<T> core::marker::Sync for only_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Sync
+impl<T> core::marker::Unpin for only_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for only_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::panic::unwind_safe::UnwindSafe
 pub struct only_rtp::JitterBufferConfig
 pub only_rtp::JitterBufferConfig::abs_max: core::time::Duration
 pub only_rtp::JitterBufferConfig::adaptive: bool
@@ -1223,6 +1271,53 @@ impl core::marker::Sync for only_rtp::JitterBufferConfig
 impl core::marker::Unpin for only_rtp::JitterBufferConfig
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterBufferConfig
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterBufferConfig
+#[non_exhaustive] pub struct only_rtp::JitterBufferStats
+pub only_rtp::JitterBufferStats::delay: core::time::Duration
+pub only_rtp::JitterBufferStats::duplicates: u64
+pub only_rtp::JitterBufferStats::late: u64
+pub only_rtp::JitterBufferStats::lost: u64
+pub only_rtp::JitterBufferStats::overflow: u64
+pub only_rtp::JitterBufferStats::played: u64
+pub only_rtp::JitterBufferStats::received: u64
+pub only_rtp::JitterBufferStats::reordered: u64
+pub only_rtp::JitterBufferStats::target: core::time::Duration
+impl core::clone::Clone for only_rtp::JitterBufferStats
+pub fn only_rtp::JitterBufferStats::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::JitterBufferStats
+impl core::cmp::PartialEq for only_rtp::JitterBufferStats
+pub fn only_rtp::JitterBufferStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::JitterBufferStats
+pub fn only_rtp::JitterBufferStats::default() -> Self
+impl core::fmt::Debug for only_rtp::JitterBufferStats
+pub fn only_rtp::JitterBufferStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::JitterBufferStats
+impl core::marker::StructuralPartialEq for only_rtp::JitterBufferStats
+impl core::marker::Send for only_rtp::JitterBufferStats
+impl core::marker::Sync for only_rtp::JitterBufferStats
+impl core::marker::Unpin for only_rtp::JitterBufferStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterBufferStats
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterBufferStats
+#[non_exhaustive] pub struct only_rtp::JitterFrame<T>
+pub only_rtp::JitterFrame::arrival: std::time::Instant
+pub only_rtp::JitterFrame::contiguous: bool
+pub only_rtp::JitterFrame::data: T
+pub only_rtp::JitterFrame::marker: bool
+pub only_rtp::JitterFrame::playout: std::time::Instant
+pub only_rtp::JitterFrame::seq: u64
+pub only_rtp::JitterFrame::timestamp: u64
+impl<T: core::clone::Clone> core::clone::Clone for only_rtp::JitterFrame<T>
+pub fn only_rtp::JitterFrame<T>::clone(&self) -> Self
+impl<T: core::cmp::Eq> core::cmp::Eq for only_rtp::JitterFrame<T>
+impl<T: core::cmp::PartialEq> core::cmp::PartialEq for only_rtp::JitterFrame<T>
+pub fn only_rtp::JitterFrame<T>::eq(&self, &Self) -> bool
+impl<T: core::cmp::PartialEq> core::marker::StructuralPartialEq for only_rtp::JitterFrame<T>
+impl<T: core::fmt::Debug> core::fmt::Debug for only_rtp::JitterFrame<T>
+pub fn only_rtp::JitterFrame<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for only_rtp::JitterFrame<T> where T: core::marker::Send
+impl<T> core::marker::Sync for only_rtp::JitterFrame<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for only_rtp::JitterFrame<T> where T: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterFrame<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for only_rtp::JitterFrame<T> where T: core::panic::unwind_safe::UnwindSafe
 pub struct only_rtp::JitterStats
 pub only_rtp::JitterStats::dev: u32
 pub only_rtp::JitterStats::max: u32
@@ -1265,6 +1360,29 @@ impl core::marker::Sync for only_rtp::PacketResult
 impl core::marker::Unpin for only_rtp::PacketResult
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::PacketResult
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::PacketResult
+pub struct only_rtp::PlayoutDelay
+impl only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::adaptive(core::time::Duration, core::time::Duration) -> only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::fixed(core::time::Duration) -> only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::is_fixed(&self) -> bool
+pub fn only_rtp::PlayoutDelay::max(&self) -> core::time::Duration
+pub fn only_rtp::PlayoutDelay::min(&self) -> core::time::Duration
+impl core::clone::Clone for only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::PlayoutDelay
+impl core::cmp::PartialEq for only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::default() -> only_rtp::PlayoutDelay
+impl core::fmt::Debug for only_rtp::PlayoutDelay
+pub fn only_rtp::PlayoutDelay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::PlayoutDelay
+impl core::marker::StructuralPartialEq for only_rtp::PlayoutDelay
+impl core::marker::Send for only_rtp::PlayoutDelay
+impl core::marker::Sync for only_rtp::PlayoutDelay
+impl core::marker::Unpin for only_rtp::PlayoutDelay
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::PlayoutDelay
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::PlayoutDelay
 pub struct only_rtp::ProbePacket
 pub only_rtp::ProbePacket::cluster: u32
 pub only_rtp::ProbePacket::size: usize
@@ -1680,6 +1798,9 @@ pub const only_rtp::DEFAULT_MAX_BITRATE: u64
 pub const only_rtp::DEFAULT_MIN_BITRATE: u64
 pub const only_rtp::ECN_FEEDBACK_FMT: u8
 pub const only_rtp::ECN_SUMMARY_BT: u8
+pub const only_rtp::JITTER_BUFFER_MAX_BYTES: usize
+pub const only_rtp::JITTER_BUFFER_MAX_FRAMES: usize
+pub const only_rtp::MAX_PLAYOUT_DELAY: core::time::Duration
 pub const only_rtp::MAX_TWCC_STATUSES: usize
 pub const only_rtp::MAX_XR_SPAN: usize
 pub const only_rtp::SEND_HISTORY_AGE: core::time::Duration
