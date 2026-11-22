@@ -18,8 +18,11 @@
 //!   initiation, which compares marked and unmarked losses again. A failed path stays
 //!   unmarked; a new path (ICE pair, latched address) starts over.
 //! - **Bookkeeping.** Sent RTP packets are remembered by SSRC and sequence number (the last
-//!   [`HISTORY`]) with their codepoint, and RFC 8888 report blocks are matched against them
-//!   before the estimator sees the results; CE marks reach the estimator as loss (ADR-073).
+//!   [`HISTORY`]) with their codepoint, and RFC 8888 report blocks (or the counter differences
+//!   of RFC 6679 reports, [`super::ecn_fb`]) are matched against them before the estimator sees
+//!   the results; CE marks reach the estimator, as loss for ECT(0) and to its scalable
+//!   response for ECT(1) (ADR-082).
+//! - **TCP paths** (ICE-TCP, TURN over TCP / TLS) carry no codepoint: ECN stays off there.
 
 use std::collections::{HashMap, VecDeque};
 

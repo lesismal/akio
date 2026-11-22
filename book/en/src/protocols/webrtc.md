@@ -344,6 +344,29 @@ let cfg = only_webrtc::rtc_config()
   starts over). RTCP, STUN, DTLS and SCTP are never marked. Chrome 157 receives ECT(1) (its
   `packetsReceivedWithEct1`) and validates the path; Chrome does not mark what it sends
   (`tools/interop/webrtc/ecn.sh`, which also shows a proxy that clears the codepoint ending it).
+- **How CE is answered** (ADR-082): ECT(0) gets the classic response, where CE counts as loss.
+  ECT(1) is L4S (RFC 9331), so its CE marks get a scalable response:
+  - The fraction of CE marks per round trip is smoothed with gain 1/16.
+  - A round with fresh marks cuts the rate by half that fraction, at most once per window.
+  - A clean round adds to the rate slowly.
+  - While marking ECT(1), pacing runs at 1.5 times the estimate with 1 ms bursts, because an
+    L4S queue marks a frame sent in one burst at any rate.
+
+  Through a simulated 6 Mbps L4S queue, ECT(1) reaches 4.9 Mbps with 1.3 ms of queueing, and
+  ECT(0) only 1.36 Mbps. `only_rtp::BandwidthEstimator::set_ecn_response` selects the response
+  for other uses.
+- **ECN without RFC 8888** (RFC 6679's own signalling, ADR-082): with marking on, the sections
+  also offer `a=ecn-capable-rtp:rtp mode=setread; ect=N`, `nack ecn` and `a=rtcp-xr:ecn-sum`.
+  - A remote that answers them reports per-source counters, in the RTCP ECN feedback message
+    and the XR ECN summary. Those drive validation and the CE response, with transport-wide
+    feedback driving the estimator.
+  - Receiving works the same way when both sides opt in.
+  - Browsers ignore the attributes.
+- **TURN and TCP paths** (ADR-082): over a UDP allocation the datagram to the TURN server
+  carries the codepoint. RFC 8656 §12 asks the server to copy it, and validation finds out
+  whether it does. A relay that clears it fails the path like any other middlebox. Paths over
+  ICE-TCP or over TURN reached by TCP / TLS have no codepoint to carry, so ECN stays off there
+  rather than failing. only-turn's own relay does not copy the codepoint yet.
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
 - **XR blocks about received streams** (ADR-058, `pkt-loss-rle pkt-dup-rle pkt-rcpt-times
@@ -386,7 +409,10 @@ and with "require" refuses a peer without it. **RFC 6904** encrypts chosen exten
 instead: the offer adds `a=extmap:<id> urn:ietf:params:rtp-hdrext:encrypt <uri>` variants (audio
 level, MID, RID, repaired RID, video orientation, playout delay, on free one-byte ids), and an
 answer takes the encrypted variant of whatever is offered both ways. No browser offers RFC 6904,
-so it is for peers like this one. MKIs are not negotiated: DTLS-SRTP has no SDP for them.
+so it is for peers like this one. MKIs with DTLS-SRTP travel in the handshake (RFC 5764
+§4.1.3, ADR-082). With `set_dtls_srtp_mki_length(4)`, as the DTLS client this side offers a
+4-byte MKI in `use_srtp`, and as the server it agrees to the client's. Every SRTP and SRTCP
+packet then carries it. Browsers answer with an empty MKI, and SRTP runs without one.
 
 ### SDES-SRTP for SIP gateways
 
@@ -434,9 +460,19 @@ mapping; latching (symmetric RTP, "comedia", ADR-077) follows it:
 A datagram from an address the endpoint does not know is tried against the SRTP keys of the
 peers that may still latch; one that authenticates (and is not a replay) is received and moves
 the transport (RTP, and RTCP on its own port separately) to its source. Forged or replayed
-packets move nothing. With DTLS-SRTP nothing latches before the handshake, which needs the SDP
-address. `tools/interop/webrtc/latch.sh` runs a SIP-style phone behind an iptables NAT in a
-network namespace, including a NAT rebinding.
+packets move nothing.
+
+With DTLS-SRTP the handshake latches first (ADR-082). When latching, this side answers an
+`actpass` offer with `passive`, so the phone starts the handshake:
+
+- Its ClientHello from the NAT's mapping first gets a stateless cookie exchange, which proves
+  the address receives.
+- The pair then moves there tentatively. It stays only if the handshake completes with the
+  certificate the SDP's fingerprint names.
+- A failed, closed or stalled (4 s) handshake moves the pair back, and the peer lives on.
+
+`tools/interop/webrtc/latch.sh` runs a SIP-style phone behind an iptables NAT in a network
+namespace, with SDES and with DTLS-SRTP, including a NAT rebinding.
 
 ### RTCP on its own port (no rtcp-mux)
 
@@ -536,7 +572,8 @@ periods; `enable_pacing(false)` turns pacing off. The queue holds at most 8192 p
 and drains faster when its oldest packet would wait 2 s: an application should follow the
 `EgressBitrateEstimate` event, or it loses frames at the bound. `tools/interop/webrtc/pacing.sh`
 shows it with Chrome: with the estimate capped at 300 kbps the largest burst of RTP towards
-Chrome is 4 packets paced and 7 unpaced.
+Chrome is 4 packets paced and 7 unpaced. While the path is marked ECT(1), the queue drains at
+1.5 times the estimate with 1 ms bursts instead (ADR-082).
 
 ## TURN
 
@@ -730,6 +767,12 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-SRTP MKIs with DTLS-SRTP; a scalable (L4S) response to CE marks; latching before DTLS-SRTP
-keys exist. ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072,
-ADR-073, ADR-076 and ADR-077 have the details of what was added.
+- RFC 6679's "ice" and "leap" ECN initiation methods.
+- Copying the ECN codepoint in only-turn's own relay.
+- Retrying ECN on a path that failed.
+- Latching RTCP's own DTLS association (no rtcp-mux), or latching when this side must be the
+  DTLS client.
+- DTLS re-keying within a session.
+
+ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072, ADR-073,
+ADR-076, ADR-077 and ADR-082 have the details of what was added.
