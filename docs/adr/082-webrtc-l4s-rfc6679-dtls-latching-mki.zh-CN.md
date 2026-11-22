@@ -160,6 +160,8 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
   RFC 6679 的提议与应答。
 - **互通：** 见 2026-11-22 的 CHANGELOG / DEV-PLAN 条目。Chrome 157 用 `ecn.sh`；`latch.sh` 中 NAT 之后是一台
   DTLS-SRTP 话机。
+- **性能：** gpu51 上与 main 7e4db2d9 的同轮 A/B（`webrtc-bench`，默认配置，7 轮，取中位数）：媒体 0.999 倍，
+  数据通道 0.997 倍，区间重叠（docs/BENCHMARKS.zh-CN.md）。
 - **代价：**
   - 开启 ECN 时：协商后每个收到的 RTP 包做一次 RFC 6679 计数器更新；每份报告遍历两份报告之间的序号。
   - 使用 ECT(1) 时：pacing 更平滑，帧在大约自身时长内发出，而不是一次性发出。

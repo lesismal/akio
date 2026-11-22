@@ -212,6 +212,9 @@ Additive.
   an `EcnReceiver`. `webrtc_sdp` seeds include RFC 6679 offers and answers.
 - **Interop:** see the CHANGELOG / DEV-PLAN entry of 2026-11-22. Chrome 157 with `ecn.sh`;
   `latch.sh` with a DTLS-SRTP phone behind the NAT.
+- **Performance:** a same-run A/B against main 7e4db2d9 on gpu51 (`webrtc-bench`, default
+  configurations, 7 rounds, medians) gives media 0.999x and data channels 0.997x, with the
+  ranges overlapping (docs/BENCHMARKS.md).
 - **Costs:**
   - With ECN on: per received RTP packet, an RFC 6679 counter update when negotiated; per
     report, a walk over the sequence numbers between two reports.

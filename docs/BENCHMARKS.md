@@ -2026,6 +2026,31 @@ branch (`http-bench`, epoll); both built in one session and run interleaved unde
 **Answer: no measurable change.** h2c rounds on this host spread far wider than the difference: both directions appear in each row (h2c 64 × 16
 per-round ratios 0.54–1.26, 16 × 128 0.82–1.14), and the per-round ratio medians are within 1%.
 
+### WebRTC endpoints (ADR-082, same-run A/B)
+
+Measured 2026-11-22 on gpu51. Question: do ADR-082's changes slow the default send and receive
+paths? With the default configuration (no ECN, no latching, no estimator), what is left on those
+paths is:
+
+- a flag check per received RTP packet (RFC 6679 counting);
+- one more guard per received DTLS record (handshake latching);
+- a third argument on relayed sends;
+- a smoothness flag in the pacer, which is off here.
+
+`base` is `main` at `7e4db2d9`, `new` the branch. The workload is `webrtc-bench`, two loopback
+`Endpoint`s: one-way VP8 RTP in `media`, one data channel with 64 kB messages in `dc`. Both were
+built in one session into separate target directories and run interleaved under `quiet.sh` on
+CPUs 2–9, 7 rounds of 5 s each, base first in each pair. `±` is half the min–max spread of the
+rounds.
+
+| Mode | base median (MB/s) | new median (MB/s) | new / base (medians) | per-round ratio median |
+|---|---:|---:|---:|---:|
+| media | 177.8 (±0.5%) | 177.6 (±0.4%) | 0.999 | 0.998 |
+| dc | 155.6 (±0.9%) | 155.2 (±0.5%) | 0.997 | 0.997 |
+
+**Answer: no measurable change.** The ranges overlap in both modes (dc per-round ratios
+0.987–1.003). ADR-077 measured data channels at 0.990 / 0.993 against its own base.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and
