@@ -623,11 +623,23 @@ accepted connections to the engine; no I/O thread waits on `accept`.
 | `tcp_relays` | true | offer TCP allocations (false: 442) |
 | `max_tcp_connections` | 64 | connections of one TCP allocation (Connect beyond: 508; peers beyond: closed) |
 | `tcp_relay_buffer` | 64 KiB | held per direction: a peer's bytes before the bind, the queue at which the other side pauses |
+| `tcp_connect_timeout` | 30 s | how long a Connect waits for the peer before 447 (RFC 6062: at least 30 s) |
 
-The engine's `Config::connect_timeout` (10 s by default) bounds a Connect; RFC 6062 asks for at
-least 30 s, so raise it on the engine serving TURN if that matters. Right after a connection to
-a peer closes, a new Connect to the same peer address may fail (447) while the old 4-tuple sits
-in TIME_WAIT; RFC 6062 has clients wait 10 s before retrying anyway.
+A Connect's connection is opened by the same thread that accepts (a non-blocking connect from the
+relayed address, then handed to the engine), so the engine's `Config::connect_timeout` does not
+apply: `tcp_connect_timeout` alone decides, and the core keeps that deadline itself. Right after a
+connection to a peer closes, a new Connect to the same peer address may fail (447) while the old
+4-tuple sits in TIME_WAIT; RFC 6062 has clients wait 10 s before retrying anyway.
+
+WebRTC does not use TCP allocations, and `Endpoint` does not gather relayed TCP candidates
+(RFC 6544 §5.5). Browsers' TURN clients ask for UDP allocations only, even over TCP or TLS, so no
+browser offers one. A browser could still reach a passive relayed TCP candidate of ours with its
+active TCP candidate, but the TURN server accepts that connection only with a permission for
+the address it comes from, and libwebrtc (Chrome, Edge, Safari) signals only active host TCP
+candidates (port 9), no server-reflexive TCP one: behind a NAT, that address is unknown exactly
+when TCP would matter.
+A UDP allocation made over TCP or TLS (`RelayServer::tcp` / `tls`) already serves those networks.
+ADR-076 has the reasoning.
 
 ### TURN over DTLS
 
@@ -685,8 +697,30 @@ if *bind.state() == DataState::Bound {
 }
 ```
 
-`tools/interop/webrtc/turn-tcp.sh` checks it against coturn (`turnutils_uclient -T`, its server)
-and pion/turn (its TCP allocation client and server), over TCP and TLS.
+`TcpAllocation` does the same on an `only` engine, without a blocking call: it dials the control
+connection (TCP, or TLS with `ServerTransport::Tls`), runs the client's timers on one shared thread
+and reports `AllocationEvent`s to a callback. `connect(peer, acceptor, on_error)` sends the Connect
+and, once the server has connected, dials a data connection served by *your* acceptor: its
+ConnectionBind is a transport layer under your handler (and over TLS's), like a TLS handshake, so
+`on_open` runs as soon as the TCP connection is up, what the handler sends waits for the bind, and
+`on_data` gets only the peer's bytes. `create_permission(peer)` and `accept(id, acceptor,
+on_error)` take a peer's ConnectionAttempt the same way. Whatever keeps a data connection from
+carrying the peer's bytes (the Connect refused, the dial or the bind failing) goes to `on_error`,
+once. Dropping the last handle closes the control connection, which ends the allocation.
+
+```rust,ignore
+let alloc = TcpAllocation::open(&engine, ClientConfig::new(server, "alice", "secret"),
+    ServerTransport::Tcp, |alloc, ev| match ev {
+        AllocationEvent::Allocated { relayed, .. } => println!("relayed at {relayed}"),
+        AllocationEvent::ConnectionAttempt { id, .. } => alloc.accept(id, MyAcceptor, |e| eprintln!("{e}")),
+        _ => {}
+    });
+// once allocated: MyAcceptor's handler talks to the peer as to any connection
+alloc.connect(peer, MyAcceptor, |e| eprintln!("connect: {e}"));
+```
+
+`tools/interop/webrtc/turn-tcp.sh` checks both clients against coturn (`turnutils_uclient -T`,
+its server) and pion/turn (its TCP allocation client and server), over TCP and TLS.
 
 ## The DTLS layer: DTLS 1.3 with a DTLS 1.2 fallback
 

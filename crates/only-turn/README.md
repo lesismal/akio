@@ -26,6 +26,11 @@ and DTLS listeners, and a sans-io TURN client.
   permissions), and of TCP allocations (`ClientConfig::tcp_allocation`, `Client::connect`,
   `client::DataConnection` for ConnectionBind); `only-webrtc`'s `Endpoint::gather_relay` drives
   one.
+- `client::TcpAllocation`: TCP allocations driven by an `only` engine, nothing blocking: the
+  control connection and its timers, `connect` / `accept` whose data connections are served by
+  the application's own acceptor (the ConnectionBind is a transport layer under its handler).
+- `TurnConfig::tcp_connect_timeout` (30 s): how long a Connect waits for the peer, independent
+  of the engine's `connect_timeout`.
 - `TurnCore`: the same server as a sans-io state machine.
 
 ```rust,no_run

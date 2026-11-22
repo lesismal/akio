@@ -2,7 +2,7 @@
 
 [English](076-turn-tcp-allocations.md) | 简体中文
 
-状态：已采纳（2026-11-22）
+状态：已采纳（2026-11-22）；2026-11-22 更新（由引擎驱动的客户端、Connect 超时、`Endpoint` 的决定）
 
 ## 背景
 
@@ -83,6 +83,7 @@ I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有�
 - 关闭任一连接会关闭另一条并告知核心（`tcp_closed`）；控制连接关闭会删除分配，连同所有链接。
 - Connect 等待引擎的 `Config::connect_timeout`（默认 10 秒）。RFC 6062 要求至少 30 秒：需要严格符合的部署
   在服务 TURN 的引擎上调大该设置；核心自己的 60 秒保护只对从不报告的环境有意义。
+  （已被下文的更新取代：`TurnConfig::tcp_connect_timeout`，30 秒。）
 
 ### 客户端（`only_turn::client`，sans-io）
 
@@ -146,3 +147,95 @@ only-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 only-turn 
 未完成：`only-webrtc` 的 `Endpoint` 使用 TCP 分配（没有 WebRTC 栈用它）；由引擎驱动的客户端封装（sans-io
 客户端与示例展示了衔接方式）；`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持）；独立于引擎的每个 Connect
 的连接超时。
+
+## 更新（2026-11-22）：由引擎驱动的客户端、服务器自己的 Connect 超时，以及 `Endpoint`
+
+上文遗留的三项，均已决定，其中两项已完成。
+
+### 服务器自己的 Connect 超时
+
+`TurnConfig::tcp_connect_timeout`（30 秒，RFC 6062 第 5.2 节允许的最小值）同时取代引擎的
+`Config::connect_timeout` 与核心固定的 60 秒保护：
+
+- 期限由核心维护：Connect 记录 `now + tcp_connect_timeout`，到期时 `handle_timeout` 回 447 并调用
+  `TurnEnv::close_connection`，与环境做什么无关。环境此时可以停止尝试。
+- `TurnServer` 不再用 `Engine::dial_from` 拨号（它使用引擎的 `connect_timeout`，默认 10 秒，且不改动每个
+  后端就无法为单次拨号另设超时）。原本就在轮询中继监听 socket 的接受线程现在也负责打开 Connect 的连接：
+  `only_sys::connect_nonblocking_from(relay, peer)`，注册可写事件；可写时由 `take_error` / `peer_addr`
+  判断成功，已连接的 socket 交给 `Engine::adopt_tcp`，使用与以前相同的 `PeerAcceptor`。它每秒丢弃链接已不
+  存在的尝试（核心已放弃，或分配已结束）并关闭其 socket。于是引擎自身的设置与 Connect 无关，两个方向都是：
+  更短不会截断它，更长也不会拉长它。
+- 行为变化：连接一个从不应答的对端，现在 30 秒后失败（默认引擎设置下原为 10 秒）。
+- 顺带发现：接受循环把 `Poller::wait` 的事件追加到一个从不清空的 vector 中，因此它在服务器整个生命周期内
+  随每个事件增长，并在每次唤醒时重放旧事件（多余的 `accept` 调用）。现在每次等待前都会清空。
+
+### 由引擎驱动的客户端：`client::TcpAllocation`
+
+以前应用必须自己驱动 sans-io 客户端和每个 `DataConnection`（互通示例用的是阻塞 socket）。`TcpAllocation`
+在 `only` 引擎上完成这些：
+
+- `TcpAllocation::open(&engine, cfg, ServerTransport::{Tcp, Tls(cfg, name)}, on_event)` 拨出控制连接，
+  用 `FrameReader` 切分其消息并交给 `Client`。定时器在整个进程共用的一个线程上运行（"only-turn-timer"，
+  与 `only-webrtc` 一样是弱引用目标的最小堆），而不是每个分配一个。`on_event` 收到
+  `AllocationEvent::{Allocated, ConnectionAttempt, PeerFailed, Failed, Closed}` 以及分配本身，因此可以接受
+  连入尝试；回调运行时不持有任何锁。
+- `connect(peer, acceptor, on_error)` 发送 Connect，收到 `Connected` 后拨出一条数据连接；
+  `accept(id, acceptor, on_error)` 对 `ConnectionAttempt` 做后一步。另有 `create_permission`、`close`、
+  `state`、`relayed_addr`、`mapped_addr`。
+- **ConnectionBind 是一个 `Transport` 层**（`only::Transport`，TLS 用的同一个钩子），有 TLS 时叠在 TLS 层之上。
+  应用的 acceptor 直接服务这条连接，所以它的 handler 拿到的是普通的 `Conn<H>`，中间没有包装类型。该层在第一次
+  `recv` 时发送请求（引擎在安装时以空输入调用它，让客户端传输层先说话；在 TLS 之下，请求在 TLS 自己的缓冲中等
+  握手完成），在成功响应之前保留应用 `seal` 的内容，把响应之后的字节交给 `on_data`，此后一律透传。绑定完成前
+  它报告 `handshaking`，`handshake_timeout` 为 `ClientConfig::timeout`，因此引擎的握手期限即可约束绑定，无需
+  另设定时器。语义与 TLS 相同：TCP 连接建立时 `on_open` 就运行，它发送的内容会等待。
+- 错误：传输层失败时，引擎关闭连接但不把错误传给 `on_close`（TLS 也是如此）。因此凡是让数据连接无法承载对端
+  字节的情况都交给该调用的 `on_error`，最多一次：Connect 被拒（447、446）、拨号失败、TLS 失败、绑定被拒
+  （400），或连接在应答之前结束（该层的 `Drop`）。由于该层在连接的锁内运行，它不在那里调用 `on_error`，而是
+  交给定时器线程（`Timer::defer`）。
+- 控制连接只持有弱引用：丢弃最后一个 `TcpAllocation` 会关闭它，服务器随后删除分配及其连接（RFC 6062）。
+  捕获了分配的回调会让它保持存活。
+- 新增 `ClientError::Io(kind, message)`（non-exhaustive 枚举）：连接失败。
+
+### `Endpoint` 使用 TCP 分配：有意不做
+
+RFC 6544 提供的是：被动中继 TCP 候选（第 5.5 节：通常 agent 只需要这一个，因为对端的服务器反射主动候选
+都应能与之配合），由远端经 TURN 服务器连入；以及主动中继候选（每次检查一个 Connect）。在这里实现它需要：
+每个 `Endpoint` 一个 TCP 分配，`only-ice` 中的 `Candidate::relayed_tcp`，ICE-TCP 代码接受远端为
+ConnectionAttempt 所指对端（而非 socket 对端）的数据连接，以及为每个远端候选的地址建立权限，而远端候选
+经 peer 代码的多条路径到达。
+
+价值太低，不值得这样做的原因：
+
+- 浏览器从不建立 TCP 分配：libwebrtc 的 `TurnPort` 与 Firefox 的 nICEr 即使经 TCP 或 TLS 也发送
+  `REQUESTED-TRANSPORT` UDP。没有浏览器提供中继 TCP 候选，所以我方的主动中继候选无处可连（libwebrtc 根本
+  没有被动 TCP 候选）。
+- 浏览器*可以*用其主动 TCP 候选连接我方的被动中继 TCP 候选。但 TURN 服务器只有在持有连接来源 IP 的权限时
+  才接受这条连接，而 libwebrtc 只通告主机 TCP 候选（端口 9，NAT 之后的私有地址），不通告服务器反射 TCP 候选。
+  在 TCP 真正有用的场景（浏览器一侧封锁 UDP），浏览器也没有服务器反射 UDP 候选，因此中继将看到的公网地址无从
+  得知，连接会被拒绝。只有当该地址经其他途径得知时才行得通，而这意味着 UDP 可用，此时我方的 UDP 分配（我方
+  需要时经 TCP 或 TLS 建立：ADR-032）同样能服务该浏览器。
+- 两个 `only` endpoint 之间，经 TCP/TLS 的 UDP 分配已经能穿过任何允许 TCP 出站的网络提供中继路径，其上还有
+  ICE 自己的 consent 与 DTLS。
+
+因此 `Endpoint` 继续收集 UDP 分配（经 UDP、DTLS、TCP 或 TLS），RFC 6062 在 WebRTC 之外有用的部分由
+`TcpAllocation` 提供。若将来有浏览器通告服务器反射 TCP 候选或建立 TCP 分配，再重新考虑。
+
+### 测试与互通
+
+`TurnCore`：Connect 的期限是 `tcp_connect_timeout`（早一毫秒什么也不发生，到期时回 447 并关闭）。
+真实 TCP 与 TLS 监听器上的 `tests/tcp_engine.rs`：在引擎上 connect 与 accept（handler 在 `on_open` 中发送的
+问候在绑定之后到达对端；对端的早到字节最先到达；双向各 256 KiB；关闭任一侧都会关闭另一侧；`close` 删除分配），
+失败情形（凭据错误得 401，447 交给 `on_error`，绑定未知 ID：400 交给 `on_error` 且只一次，连接被关闭；服务器
+不可达：`Failed(Io)`；丢弃最后一个句柄：服务器忘掉该分配），以及独立于引擎的服务器 Connect 超时（引擎
+`connect_timeout` 200 毫秒，`tcp_connect_timeout` 1.5 秒，一个接受队列已满的对端：1.5 秒后回 447；macOS 上
+跳过，因为它对这类连接回复重置而不是丢弃 SYN）。在 macOS，以及 gpu51（Linux，rustc 1.100）的 epoll 与
+`ONLY_TEST_BACKEND=uring` 下运行。
+
+`tools/interop/webrtc/turn-tcp.sh` 增加了引擎客户端（`turn-tcp-interop engine-client`）对 coturn 4.6、
+pion/turn v5.1.3 与 only-turn，经 TCP 与 TLS（Connect，然后一个有权限的对端连入，各回显 20 条消息与 1 MiB）；
+原有用例（coturn 的 `turnutils_uclient -T` 与 pion/turn 的客户端对服务器，服务器现在从接受线程拨出对端连接）
+照常通过。在 gpu51 的 Docker 中全部通过。
+
+没有热路径改动（UDP 中继与已绑定的 TCP 中继未动；Connect 与接受属于控制操作），因此没有做 A/B 基准。
+
+仍未完成：`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持）；`Endpoint` 使用 TCP 分配（见上）。

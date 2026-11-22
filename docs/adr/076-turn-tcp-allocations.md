@@ -2,7 +2,8 @@
 
 English | [简体中文](076-turn-tcp-allocations.zh-CN.md)
 
-Status: accepted (2026-11-22)
+Status: accepted (2026-11-22); updated 2026-11-22 (engine-driven client, Connect timeout,
+`Endpoint` decision)
 
 ## Context
 
@@ -115,6 +116,7 @@ TCP allocations with 442): `open_tcp_relay`, `close_tcp_relay`, `connect_peer`, 
 - Connect waits for the engine's `Config::connect_timeout` (10 s by default). RFC 6062 asks for
   at least 30 s: deployments wanting strict conformance raise that setting on the engine
   serving TURN; the core's own 60 s guard only matters for environments that never report.
+  (Superseded by the update below: `TurnConfig::tcp_connect_timeout`, 30 s.)
 
 ### Client (`only_turn::client`, sans-io)
 
@@ -195,3 +197,121 @@ Not done: TCP allocations from `only-webrtc`'s `Endpoint` (no WebRTC stack uses 
 engine-driven client wrapper (the sans-io client and the example show the plumbing);
 `ADDITIONAL-ADDRESS-FAMILY` dual allocations (not supported for UDP either); a per-Connect
 connect timeout separate from the engine's.
+
+## Update (2026-11-22): engine-driven client, the server's Connect timeout, and `Endpoint`
+
+The three items left above, decided and (two of them) done.
+
+### The server's own Connect timeout
+
+`TurnConfig::tcp_connect_timeout` (30 s, the least RFC 6062 section 5.2 allows) replaces both
+the engine's `Config::connect_timeout` and the core's fixed 60 s guard:
+
+- The core keeps the deadline: a Connect records `now + tcp_connect_timeout`, and
+  `handle_timeout` answers 447 and calls `TurnEnv::close_connection` when it passes, whatever
+  the environment does. Environments may stop trying then.
+- `TurnServer` no longer dials with `Engine::dial_from` (which applies the engine's
+  `connect_timeout`, 10 s by default, and cannot be given another per dial without changing every
+  backend). The accept thread that already polls the relay listeners now also opens Connect's
+  connections: `only_sys::connect_nonblocking_from(relay, peer)`, registered for writability;
+  when writable, `take_error` / `peer_addr` tell success, and a connected socket goes to
+  `Engine::adopt_tcp` with the same `PeerAcceptor` as before. Once a second it drops attempts
+  whose link is gone (the core gave up, or the allocation went), closing their sockets.
+  The engine's own setting is thus irrelevant to Connect, in both directions: shorter does not
+  cut it, longer does not stretch it.
+- Behaviour change: a Connect to a peer that never answers now fails after 30 s (it was 10 s
+  with the default engine settings).
+- Found on the way: the accept loop appended `Poller::wait`'s events to one vector that was
+  never cleared, so it grew by every event for the life of the server and replayed old events
+  (spurious `accept` calls) on each wakeup. It is cleared before each wait now.
+
+### Engine-driven client: `client::TcpAllocation`
+
+Applications had to drive the sans-io client and each `DataConnection` themselves (the interop
+example used blocking sockets). `TcpAllocation` does it on an `only` engine:
+
+- `TcpAllocation::open(&engine, cfg, ServerTransport::{Tcp, Tls(cfg, name)}, on_event)` dials
+  the control connection, cuts its messages with `FrameReader` and feeds a `Client`. Timers run
+  on one thread for the whole process ("only-turn-timer", a min-heap of weak targets, as in
+  `only-webrtc`), not one per allocation. `on_event` gets `AllocationEvent::{Allocated,
+  ConnectionAttempt, PeerFailed, Failed, Closed}` with the allocation itself, so it can accept
+  attempts; callbacks run with no lock held.
+- `connect(peer, acceptor, on_error)` sends a Connect and, on `Connected`, dials a data
+  connection; `accept(id, acceptor, on_error)` does the latter for a `ConnectionAttempt`.
+  `create_permission`, `close`, `state`, `relayed_addr`, `mapped_addr` complete it.
+- **The ConnectionBind is a `Transport` layer** (`only::Transport`, the hook TLS uses), stacked
+  over TLS's when there is one. The application's acceptor serves the connection directly, so
+  its handler is an ordinary `Conn<H>`: no wrapper type in the way. The layer sends the request
+  on the first `recv` (the engine calls it with nothing at install to let client transports
+  speak first; under TLS the request waits in TLS's own buffer for the handshake), holds what
+  the application `seal`s until the success response, hands the bytes after the response to
+  `on_data`, and from then on passes everything through. It reports `handshaking` until bound
+  and `handshake_timeout` = `ClientConfig::timeout`, so the engine's handshake deadline bounds
+  the bind without another timer. Semantics follow TLS: `on_open` runs when the TCP connection
+  is up and what it sends waits.
+- Errors: the engine closes a connection whose transport fails without passing the error to
+  `on_close` (as for TLS). So everything that keeps a data connection from carrying the peer's
+  bytes goes to the call's `on_error`, at most once: the Connect refused (447, 446), the dial
+  failing, TLS failing, the bind refused (400), or the connection ending before the answer (the
+  layer's `Drop`). Since the layer runs under the connection's lock, it does not call
+  `on_error` there: it hands it to the timer thread (`Timer::defer`).
+- The control connection holds only a weak reference: dropping the last `TcpAllocation` closes
+  it, and the server then deletes the allocation and its connections (RFC 6062). A callback
+  that captures the allocation keeps it alive.
+- `ClientError::Io(kind, message)` is new (non-exhaustive enum): connection failures.
+
+### TCP allocations from `Endpoint`: not done, deliberately
+
+What RFC 6544 offers: a passive relayed TCP candidate (section 5.5: "commonly" the only one an
+agent needs, since "any of the peer's server reflexive ... active candidates should work with"
+it), the remote connecting to it through the TURN server; and active relayed candidates (a
+Connect per check). What it would take here: a TCP allocation per `Endpoint`, a
+`Candidate::relayed_tcp` in `only-ice`, the ICE-TCP code accepting data connections whose remote
+is the peer named by the ConnectionAttempt rather than the socket's, and permissions for
+every remote candidate's address, which arrive through several paths of the peer code.
+
+Why its value is too low for that:
+
+- Browsers never make TCP allocations: libwebrtc's `TurnPort` and Firefox's nICEr send
+  `REQUESTED-TRANSPORT` UDP even over TCP or TLS. No browser offers a relayed TCP candidate, so
+  active relayed candidates of ours would have nothing to connect to (libwebrtc has no passive TCP
+  candidates at all).
+- A browser *could* connect to a passive relayed TCP candidate of ours with its active TCP
+  candidate. But the TURN server accepts that connection only with a permission for the IP it
+  comes from, and libwebrtc signals only host TCP candidates (port 9, the private address behind a
+  NAT) and no server-reflexive TCP candidates. In the case TCP is for (UDP blocked on the browser's
+  side), the browser has no server-reflexive UDP candidate either, so the public address the
+  relay will see is unknown and the connection is refused. It works only when that address was
+  learnt otherwise, which means UDP works, and then our UDP allocation (over TCP or TLS when our
+  side needs it: ADR-032) serves the browser just as well.
+- Between two `only` endpoints, a UDP allocation over TCP/TLS already gives a relayed path through
+  any network that lets TCP out, with ICE's own consent and DTLS on top.
+
+So `Endpoint` keeps gathering UDP allocations (over UDP, DTLS, TCP or TLS), and the parts of
+RFC 6062 that are useful outside WebRTC are served by `TcpAllocation`. Revisit if a browser ever
+signals server-reflexive TCP candidates or makes TCP allocations.
+
+### Tests and interop
+
+`TurnCore`: the Connect deadline is `tcp_connect_timeout` (nothing a millisecond before, 447 and
+the close at it). `tests/tcp_engine.rs` on real TCP and TLS listeners: connect and accept on an
+engine (the handler's greeting sent from `on_open` arrives at the peer after the bind; the peer's
+early bytes arrive first; 256 KiB each way; closing either side closes the other; `close` deletes
+the allocation), failures (401 for wrong credentials, 447 to `on_error`, a bind of an unknown id:
+400 to `on_error`, once, and the connection closed; an unreachable server: `Failed(Io)`; the last
+handle dropped: the server forgets the allocation), and the server's Connect timeout apart from
+the engine's (engine `connect_timeout` 200 ms, `tcp_connect_timeout` 1.5 s, a peer whose accept
+queue is full: 447 after 1.5 s; skipped on macOS, which resets such connects instead of dropping
+the SYN). macOS, and gpu51 (Linux, rustc 1.100) with epoll and `ONLY_TEST_BACKEND=uring`.
+
+`tools/interop/webrtc/turn-tcp.sh` gains the engine client (`turn-tcp-interop engine-client`)
+against coturn 4.6, pion/turn v5.1.3 and only-turn over TCP and TLS (Connect, then a peer
+connecting with a permission, 20 messages and 1 MiB echoed on each); the existing cases
+(coturn's `turnutils_uclient -T` and pion/turn's client against the server, now dialing peers
+from its accept thread) pass unchanged. All passed on gpu51 in Docker.
+
+No hot path changed (the UDP relay and the bound TCP relay are untouched; Connect and accept are
+control operations), so no A/B benchmark.
+
+Still not done: `ADDITIONAL-ADDRESS-FAMILY` dual allocations (not supported for UDP either);
+TCP allocations from `Endpoint` (above).
