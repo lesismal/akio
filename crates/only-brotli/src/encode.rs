@@ -1494,6 +1494,69 @@ struct Words<'a> {
 const ENUM_LENGTHS: usize = 48;
 
 impl Encoder<'_> {
+    /// The custom static dictionary words at `i` (see [`compress_with_shared_dictionary`]),
+    /// appended to `dlist`: the lowest address for each length produced. Apart from the parse's
+    /// loop, which stays as it was without a custom dictionary.
+    #[inline(never)]
+    fn custom_words(
+        &self,
+        i: usize,
+        end: usize,
+        dlist: &mut Vec<sdict::DictMatch>,
+        found: &mut Vec<sdict::DictMatch>,
+    ) {
+        let data = self.data;
+        let Some(sd) = self.custom.as_ref().and_then(SharedDictionary::custom) else {
+            return;
+        };
+
+        // The dictionary of the literal context here (the stream's last two bytes).
+        let at = i - self.back;
+        let p1 = if at >= 1 { data[i - 1] } else { 0 };
+        let p2 = if at >= 2 { data[i - 2] } else { 0 };
+        let lut = 512 * usize::from(self.p.fixed_mode.unwrap_or(0));
+        let ctx = usize::from(
+            CONTEXT_LUT[lut + usize::from(p1)] | CONTEXT_LUT[lut + 256 + usize::from(p2)],
+        );
+        // The lowest address for each length produced.
+        let from = dlist.len();
+        // (Addresses whose distance the distance alphabet cannot code are left out.)
+        let max = self
+            .p
+            .max_distance()
+            .saturating_sub(self.reach(i) + 1 + self.back);
+        sd.search(ctx, |search, base| match search {
+            Search::Builtin => {
+                sdict::matches(&data[i..end], found);
+                for m in found.iter() {
+                    let addr = base(usize::from(m.len)) + m.addr;
+                    if addr as usize <= max {
+                        dlist.push(sdict::DictMatch { addr, ..*m });
+                    }
+                }
+            }
+            Search::Index(ix) => ix.matches(&data[i..end], |out, len, addr| {
+                let addr = base(len) + addr;
+                if addr as usize <= max {
+                    dlist.push(sdict::DictMatch {
+                        out: out as u16,
+                        len: len as u8,
+                        addr,
+                    });
+                }
+            }),
+        });
+        dlist[from..].sort_unstable_by_key(|m| (m.out, m.addr));
+        let mut k = from;
+        for j in from..dlist.len() {
+            if k == from || dlist[k - 1].out != dlist[j].out {
+                dlist[k] = dlist[j];
+                k += 1;
+            }
+        }
+        dlist.truncate(k);
+    }
+
     fn parse_optimal(&mut self, start: usize, end: usize, cmds: &mut Vec<Command>) {
         let data = self.data;
         let n = end - start;
@@ -1571,52 +1634,8 @@ impl Encoder<'_> {
         let mut found = Vec::new();
         for i in start..end {
             dstart.push(dlist.len() as u32);
-            if let Some(sd) = self.custom.as_ref().and_then(SharedDictionary::custom) {
-                // The dictionary of the literal context here (the stream's last two bytes).
-                let at = i - self.back;
-                let p1 = if at >= 1 { data[i - 1] } else { 0 };
-                let p2 = if at >= 2 { data[i - 2] } else { 0 };
-                let lut = 512 * usize::from(self.p.fixed_mode.unwrap_or(0));
-                let ctx = usize::from(
-                    CONTEXT_LUT[lut + usize::from(p1)] | CONTEXT_LUT[lut + 256 + usize::from(p2)],
-                );
-                // The lowest address for each length produced.
-                let from = dlist.len();
-                // (Addresses whose distance the distance alphabet cannot code are left out.)
-                let max = self
-                    .p
-                    .max_distance()
-                    .saturating_sub(self.reach(i) + 1 + self.back);
-                sd.search(ctx, |search, base| match search {
-                    Search::Builtin => {
-                        sdict::matches(&data[i..end], &mut found);
-                        for m in &found {
-                            let addr = base(usize::from(m.len)) + m.addr;
-                            if addr as usize <= max {
-                                dlist.push(sdict::DictMatch { addr, ..*m });
-                            }
-                        }
-                    }
-                    Search::Index(ix) => ix.matches(&data[i..end], |out, len, addr| {
-                        let addr = base(len) + addr;
-                        if addr as usize <= max {
-                            dlist.push(sdict::DictMatch {
-                                out: out as u16,
-                                len: len as u8,
-                                addr,
-                            });
-                        }
-                    }),
-                });
-                dlist[from..].sort_unstable_by_key(|m| (m.out, m.addr));
-                let mut k = from;
-                for j in from..dlist.len() {
-                    if k == from || dlist[k - 1].out != dlist[j].out {
-                        dlist[k] = dlist[j];
-                        k += 1;
-                    }
-                }
-                dlist.truncate(k);
+            if self.custom.is_some() {
+                self.custom_words(i, end, &mut dlist, &mut found);
             } else if self.p.static_words {
                 sdict::matches(&data[i..end], &mut found);
                 dlist.extend_from_slice(&found);
