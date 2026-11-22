@@ -20,6 +20,7 @@ docker run --rm --privileged -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/ca
 set -eu
 apt-get -qq update >/dev/null && apt-get -qq install -y iproute2 iptables conntrack >/dev/null 2>&1
 cargo build -q --release -p only-webrtc --example webrtc-interop
+trap "echo --- logs; tail -n 25 /tmp/gw-*.log /tmp/phone*.log" ERR
 RS=/tmp/t/release/examples/webrtc-interop
 ip netns add phone; ip netns add gw
 ip link add p0 type veth peer name p1; ip link set p1 netns phone
