@@ -24,3 +24,7 @@ only-deflate = { workspace = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "shared-dict-interop"
+required-features = ["fuzzing"]

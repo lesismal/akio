@@ -67,6 +67,15 @@
   `BrotliDecoderAttachDictionary(BROTLI_SHARED_DICTIONARY_RAW, ...)`：刚超出窗口可达范围（输出比窗口
   短时即迄今的输出）的距离从字典复制，如同字典位于输出之前，复制不越出字典；静态字典的地址排在其后。
   输出在窗口之内时，编码器把字典中的位置当作匹配候选。
+- `SharedDictionary`、`decompress_with_shared_dictionary`、`Decompressor::with_shared_dictionary`、
+  `compress_with_shared_dictionary`：RFC 9841 共享字典，即 Google 的 `BROTLI_SHARED_DICTIONARY_SERIALIZED`
+  （以 `BROTLI_EXPERIMENTAL` 构建）所接受的字典。`SharedDictionary::new` 解析序列化格式（LZ77 前缀、由 4 到
+  31 字节的词组成的自定义词表、包含全部 23 种操作（含 `ShiftFirst` / `ShiftAll`）的自定义变换表、至多 64 个
+  将二者配对的字典（任一半都可以是 brotli 自带的），以及从 64 个字面量上下文到首选字典的可选映射），格式错误
+  一律以 `Error::BadDictionary` 拒绝；变换按 Google 代码中的布局（前缀、操作、后缀），而 RFC 9841 的文字把
+  操作放在最后。解码器在最后两个输出字节的字面量上下文（按当前字面量块类型的上下文模式）对应的字典中解析
+  静态引用，超出其末尾时按顺序落到其他字典，与 Google 的解码器一致。编码器只使用前缀，字典带自定义词时完全
+  不使用静态字典词。
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -92,7 +101,12 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `brotli_decompress`（与 `brotli-decompressor` 差分：结论相同、输出相同）、`brotli_roundtrip`（我们的
 输出能被两个解码器解码）、`brotli_stream`（分片输入的流式解码器与一次性解码器结果一致，带或不带原始
 字典）与 `brotli_stream_roundtrip`（流式压缩器的分片大小、刷新、窗口与字典取自输入：每次刷新后均可
-解码，两个解码器与 `brotli-decompressor` 都得到原输入）。
+解码，两个解码器与 `brotli-decompressor` 都得到原输入）以及 `brotli_shared`（任意序列化字典都不会 panic；
+随机字典配手工构造的引用流按模型解码，一次性与流式一致，并能经编码器往返）。共享字典（`src/shared.rs` 单元
+测试、`tests/shared.rs`）：每种变换操作、1 到 4 字节标量的移位、各上下文模式下的上下文选择、跨字典回退、
+格式错误的字典；libbrotli 编码器用四种字典生成的流；以及 `tools/interop/brotli-shared/run.sh`：它以
+`BROTLI_EXPERIMENTAL` 构建 libbrotli，用其解码器核对 20,000 个随机字典与引用流（输出相同或双方都拒绝），
+用我们的解码器核对其编码器在 alice29.txt 上的输出，并用其解码器核对我们的输出。
 
 基准：`cargo run --release -p only-brotli --example brotli-bench [FILE...]` 在生成的文本、JSON、
 随机数据以及给定的每个文件上，打印 0..=11 级（`BENCH_LEVELS=1,6,11` 选择部分级别）的大小、
@@ -104,7 +118,7 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`。
 
 局限：编码器只在 10、11 级搜索静态字典且不搜索省略开头的变换，总是使用 `NPOSTFIX` = `NDIRECT` = 0，
-只支持原始字典，不支持 RFC 9841 的序列化共享字典（自定义词表与变换；Google 的命令行工具也不提供）。11 级
+不搜索共享字典的自定义词表；未实现 RFC 9841 的大窗口 brotli 与封装格式。11 级
 输出在基准语料的 HTTP 负载上比 Google 的大 0.9–1.3%，在其 Silesia 部分小 4.5%（docs/BENCHMARKS.zh-CN.md，
 “brotli 块分割”）。
 前缀码按精确码长或按为游程编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，

@@ -98,6 +98,19 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   the dictionary as if it preceded the output, the copy staying within it, and static
   dictionary addresses start after it. The encoder takes dictionary positions as match
   candidates while the output is within the window.
+- `SharedDictionary`, `decompress_with_shared_dictionary`, `Decompressor::with_shared_dictionary`,
+  `compress_with_shared_dictionary`: RFC 9841 shared dictionaries, as Google's
+  `BROTLI_SHARED_DICTIONARY_SERIALIZED` (built with `BROTLI_EXPERIMENTAL`) takes them.
+  `SharedDictionary::new` parses the serialized format (an LZ77 prefix, custom word lists of
+  4- to 31-byte words, custom transform lists with all 23 operations including `ShiftFirst` /
+  `ShiftAll`, up to 64 dictionaries pairing them, either half possibly brotli's own, and an
+  optional map from the 64 literal contexts to the dictionary tried first), refusing anything
+  malformed with `Error::BadDictionary`; transforms are laid out as Google's code has them
+  (prefix, operation, suffix), where RFC 9841's prose puts the operation last. The decoder
+  resolves a static reference in the dictionary of the last two output bytes' literal context
+  (the current literal block type's context mode) and continues past its end in the other
+  dictionaries, in order, as Google's decoder does. The encoder uses the prefix only, and no
+  static dictionary words at all when the dictionary has custom ones.
 
 ```rust
 use only_brotli::{Level, compress, decompress};
@@ -131,7 +144,15 @@ decode streamed, and dictionary streams decode both ways with `-D`. Fuzz targets
 decoder in pieces agrees with the one-shot decoder, with and without a raw dictionary) and
 `brotli_stream_roundtrip` (the streaming compressor with piece sizes, flushes, windows and
 dictionaries from the input: everything decodable after each flush, both decoders and
-`brotli-decompressor` give the input back).
+`brotli-decompressor` give the input back) and `brotli_shared` (arbitrary serialized
+dictionaries never panic; random ones with hand-made reference streams decode as modelled,
+one-shot and streamed alike, and round-trip through the encoder). Shared dictionaries
+(`src/shared.rs` unit tests, `tests/shared.rs`): every transform operation, shifts of 1- to
+4-byte scalars, context selection under each context mode, fallback across dictionaries,
+malformed dictionaries; streams libbrotli's encoder made with four kinds of dictionary; and
+`tools/interop/brotli-shared/run.sh`, which builds libbrotli with `BROTLI_EXPERIMENTAL`, checks
+20,000 random dictionaries and reference streams against its decoder (same output or both
+refuse) and its encoder's output on alice29.txt against ours, and ours against its decoder.
 
 Benchmark: `cargo run --release -p only-brotli --example brotli-bench [FILE...]` prints the size,
 ratio and compression and decompression throughput at levels 0..=11 (`BENCH_LEVELS=1,6,11`
@@ -144,9 +165,8 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`.
 
 Limitations: the encoder searches the static dictionary only at levels 10 and 11 and not under
-the omit-first transforms, always uses `NPOSTFIX` = `NDIRECT` = 0, and supports raw
-dictionaries only, not the serialized shared dictionaries of RFC 9841 (custom word lists and
-transforms), which Google's CLI does not offer either. Its output at level 11 is 0.9-1.3%
+the omit-first transforms, always uses `NPOSTFIX` = `NDIRECT` = 0, and does not search the custom word lists of shared
+dictionaries; RFC 9841's large-window brotli and framing format are not implemented. Its output at level 11 is 0.9-1.3%
 larger than Google's on the HTTP payloads of the benchmark corpus and 4.5% smaller on its
 Silesia part (docs/BENCHMARKS.md, "Brotli block splitting"). Prefix codes are stored from the exact code lengths or from
 counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,

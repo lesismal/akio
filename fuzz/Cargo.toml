@@ -888,6 +888,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "brotli_shared"
+path = "fuzz_targets/brotli_shared.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "zstd_stream"
 path = "fuzz_targets/zstd_stream.rs"
 test = false

@@ -39,7 +39,7 @@ pub(crate) struct Transform(
 
 /// Uppercases the character at the start of `w` (the RFC's simplified UTF-8 model) and returns
 /// its length in bytes; bytes past the end of `w` are left alone.
-fn to_upper(w: &mut [u8]) -> usize {
+pub(crate) fn to_upper(w: &mut [u8]) -> usize {
     let Some(&b) = w.first() else {
         return 1;
     };

@@ -147,6 +147,25 @@ default:
   `ONLY_INTEROP_DTLS_MKI`. `tools/interop/webrtc/latch.sh` gains DTLS-SRTP phone cases. The
   `rtp_rtcp` fuzz target round-trips the RFC 6679 formats.
 
+### Added: RFC 9841 shared dictionaries (only-brotli)
+
+ADR-069 note of 2026-11-22, additive:
+
+- `SharedDictionary` (`new` parses RFC 9841's serialized format, `raw` wraps a raw prefix;
+  `prefix`, `is_raw`), `decompress_with_shared_dictionary`,
+  `Decompressor::with_shared_dictionary`, `compress_with_shared_dictionary` (the prefix only;
+  no static dictionary words when the dictionary has custom ones) and
+  `Error::BadDictionary`.
+- Decoding with custom word lists (words of 4 to 31 bytes), custom transform lists with all
+  23 operations (`ShiftFirst` / `ShiftAll` included) and several dictionaries chosen by literal
+  context with fallback, as Google's decoder does. Transforms follow Google's byte layout
+  (prefix, operation, suffix) where RFC 9841's prose lists the operation last.
+- Tests: hand-made streams for every transform, shift, context selection and fallback;
+  libbrotli's output with four kinds of dictionary (`tests/data/shared`);
+  `tools/interop/brotli-shared/run.sh` cross-checks with libbrotli (`BROTLI_EXPERIMENTAL`) both
+  ways, 20,000 random dictionaries included; new fuzz target `brotli_shared`.
+- Decoding without a dictionary keeps its speed (same-run A/B on gpu51: geometric mean 0.996 of main's speed on libbrotli's streams, 0.999 on our own, within the noise; docs/BENCHMARKS.md, "Brotli shared dictionaries").
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

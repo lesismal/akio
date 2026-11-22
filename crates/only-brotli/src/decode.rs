@@ -15,6 +15,7 @@ use crate::Error;
 use crate::bits::BitReader;
 use crate::dictionary::{DICTIONARY, OFFSETS_BY_LENGTH, SIZE_BITS_BY_LENGTH, transform_word};
 use crate::huffman::{Lengths, Tree, code_length_table, decode, decode_loaded_at, single};
+use crate::shared::{Dict, MAX_TRANSFORMED, Shared, SharedDictionary};
 use crate::tables::{BLOCK_LEN, CMD_LUT, CODE_LENGTH_ORDER, CONTEXT_LUT};
 
 /// Decompresses the brotli stream `data`, which must be exactly one complete stream, into at
@@ -37,6 +38,22 @@ pub fn decompress_with_dictionary(
     limit: usize,
     dict: &[u8],
 ) -> Result<Vec<u8>, Error> {
+    one_shot(data, limit, Dict::raw(dict))
+}
+
+/// [`decompress`] with a shared dictionary (RFC 9841): its LZ77 prefix as
+/// [`decompress_with_dictionary`] uses a raw dictionary, and its custom static dictionaries,
+/// if any, in place of brotli's built-in one (see [`SharedDictionary`]). The stream must have
+/// been compressed with the same dictionary.
+pub fn decompress_with_shared_dictionary(
+    data: &[u8],
+    limit: usize,
+    dict: &SharedDictionary,
+) -> Result<Vec<u8>, Error> {
+    one_shot(data, limit, dict.view())
+}
+
+fn one_shot(data: &[u8], limit: usize, dict: Dict<'_>) -> Result<Vec<u8>, Error> {
     let mut d = Decoder::new(BitReader::new(data), Vec::new(), 0, limit, dict);
     d.stream(data.len())?;
     d.buf.truncate(d.pos);
@@ -164,8 +181,10 @@ fn make_room(
 }
 
 /// What a distance beyond the window refers to, written at `pos`: bytes of the raw
-/// dictionary `dict` (`Ok((n, true))`: the distance enters the ring like a backward copy's) or
-/// a static dictionary word (`Ok((n, false))`); `max_distance` is the window's reach.
+/// dictionary `dict.prefix` (`Ok((n, true))`: the distance enters the ring like a backward
+/// copy's) or a static dictionary word (`Ok((n, false))`); `max_distance` is the window's
+/// reach, `lut` the context lookup of the current literal block type (which selects among the
+/// custom static dictionaries, if any).
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn dictionary_word(
@@ -176,13 +195,16 @@ fn dictionary_word(
     copy: usize,
     end: usize,
     limit: usize,
-    dict: &[u8],
+    dict: &Dict<'_>,
+    lut: &[u8; 512],
 ) -> Result<(usize, bool), Error> {
     if dist > MAX_ALLOWED_DISTANCE {
         return Err(Error::BadDistance);
     }
     let beyond = dist - max_distance - 1;
-    if beyond < dict.len() {
+    let prefix = dict.prefix;
+    if beyond < prefix.len() {
+        let dict = prefix;
         // As Google's decoder: the copy stays within the dictionary.
         let at = dict.len() - beyond - 1;
         if copy > dict.len() - at {
@@ -198,11 +220,14 @@ fn dictionary_word(
         buf[pos..pos + copy].copy_from_slice(&dict[at..at + copy]);
         return Ok((copy, true));
     }
+    let address = beyond - prefix.len();
+    if let Some(s) = dict.shared {
+        return custom_word(buf, pos, dist, address, copy, end, limit, s, lut);
+    }
     if !(4..=24).contains(&copy) {
         return Err(Error::BadDictionaryReference);
     }
     let shift = SIZE_BITS_BY_LENGTH[copy];
-    let address = beyond - dict.len();
     let word = address & ((1 << shift) - 1);
     let t = address >> shift;
     if t >= 121 {
@@ -214,6 +239,45 @@ fn dictionary_word(
         .ok_or(Error::BadDictionaryReference)?;
     let mut tmp = [0u8; 64];
     let n = transform_word(&mut tmp, w, t);
+    if n > end - pos {
+        return Err(Error::BadBlockLength);
+    }
+    if n > limit - pos {
+        return Err(Error::TooLarge);
+    }
+    reserve(buf, pos, n, end, limit);
+    buf[pos..pos + n].copy_from_slice(&tmp[..n]);
+    Ok((n, false))
+}
+
+/// [`dictionary_word`] for a static dictionary reference to the custom static dictionaries of
+/// `s`, the one tried first chosen by the literal context of the last two output bytes.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn custom_word(
+    buf: &mut Vec<u8>,
+    pos: usize,
+    dist: usize,
+    address: usize,
+    copy: usize,
+    end: usize,
+    limit: usize,
+    s: &Shared,
+    lut: &[u8; 512],
+) -> Result<(usize, bool), Error> {
+    let p1 = if pos > 0 { buf[pos - 1] } else { 0 };
+    let p2 = if pos > 1 { buf[pos - 2] } else { 0 };
+    let ctx = usize::from(lut[usize::from(p1)] | lut[256 + usize::from(p2)]);
+    let mut tmp = [0u8; MAX_TRANSFORMED];
+    let n = s
+        .word(address, copy, ctx, &mut tmp)
+        .ok_or(Error::BadDictionaryReference)?;
+    // As Google's decoder: an empty word at a distance that may take no bits to code (and
+    // could repeat forever) is an error.
+    if n == 0 && dist <= 120 {
+        return Err(Error::BadDictionaryReference);
+    }
     if n > end - pos {
         return Err(Error::BadBlockLength);
     }
@@ -288,8 +352,8 @@ pub(crate) struct Decoder<'a, 'd> {
     pub(crate) last: [usize; 4],
     /// Scratch space for code lengths.
     pub(crate) lens: Lengths,
-    /// The raw dictionary (empty: none).
-    dict: &'d [u8],
+    /// The raw prefix and custom static dictionaries.
+    dict: Dict<'d>,
 }
 
 /// A group of prefix codes (the trees of one category), stored back to back.
@@ -456,7 +520,7 @@ impl<'a, 'd> Decoder<'a, 'd> {
         buf: Vec<u8>,
         pos: usize,
         limit: usize,
-        dict: &'d [u8],
+        dict: Dict<'d>,
     ) -> Self {
         Decoder {
             br,
@@ -1216,7 +1280,8 @@ impl<'a, 'd> Decoder<'a, 'd> {
                     copy,
                     end,
                     limit,
-                    dict
+                    &dict,
+                    lut
                 ));
                 if ring && push {
                     last = [dist, last[0], last[1], last[2]];

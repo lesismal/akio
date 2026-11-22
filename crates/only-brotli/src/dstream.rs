@@ -1,11 +1,10 @@
 //! The streaming decoder: a brotli stream fed in pieces, decoded by the one-shot decoder's
 //! pieces resumed at unit boundaries (a header unit, a command), into a window that slides.
 
-use std::sync::Arc;
-
 use crate::bits::BitReader;
 use crate::decode::{Decoder, HeaderBuild, Meta, MetaHead, Run};
 use crate::huffman::Lengths;
+use crate::shared::SharedDictionary;
 use crate::{Error, Progress};
 
 /// Output decoded ahead of delivery at most (then the command loop pauses).
@@ -75,7 +74,7 @@ enum Stop {
 /// assert_eq!(out, b"hello brotli ".repeat(1000));
 /// ```
 pub struct Decompressor {
-    dict: Option<Arc<[u8]>>,
+    dict: Option<SharedDictionary>,
     max_window_bits: u32,
     state: State,
     /// Input bytes kept across calls; `bit` bits of them are consumed.
@@ -103,7 +102,7 @@ impl std::fmt::Debug for Decompressor {
         f.debug_struct("Decompressor")
             .field("state", &self.state)
             .field("max_window_bits", &self.max_window_bits)
-            .field("dictionary_len", &self.dict.as_ref().map(|d| d.len()))
+            .field("dictionary", &self.dict)
             .field("total_in", &self.total_in)
             .field("total_out", &self.total_out)
             .finish_non_exhaustive()
@@ -143,8 +142,15 @@ impl Decompressor {
     /// A decompressor with the raw (LZ77 prefix) dictionary `dict` (see
     /// [`decompress_with_dictionary`](crate::decompress_with_dictionary)).
     pub fn with_dictionary(dict: &[u8]) -> Decompressor {
+        Decompressor::with_shared_dictionary(&SharedDictionary::raw(dict))
+    }
+
+    /// A decompressor with the shared dictionary `dict` (see
+    /// [`decompress_with_shared_dictionary`](crate::decompress_with_shared_dictionary));
+    /// the dictionary is shared, not copied.
+    pub fn with_shared_dictionary(dict: &SharedDictionary) -> Decompressor {
         let mut d = Decompressor::new();
-        d.dict = Some(Arc::from(dict));
+        d.dict = Some(dict.clone());
         d
     }
 
@@ -337,7 +343,9 @@ impl Decompressor {
             std::mem::take(&mut self.win),
             self.wpos,
             NO_LIMIT,
-            dict.as_deref().unwrap_or(&[]),
+            dict.as_ref()
+                .map(SharedDictionary::view)
+                .unwrap_or_default(),
         );
         d.base = self.base;
         d.last = self.last;

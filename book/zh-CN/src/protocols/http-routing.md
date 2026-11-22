@@ -108,6 +108,11 @@
 （`StreamCompress`：gzip 1，zstd 1 配 128 KiB 窗口，brotli 4 配 256 KiB 窗口；每个打开的流约 0.3、0.5 和
 1.3 MiB）。brotli 每次小写入的 CPU 开销最大，高频事件流宜提供 zstd，或交给 gzip。
 
+中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `only-brotli` 解码：原始（LZ77
+前缀）字典，即 `brotli -D` 与 RFC 9842 的 `dcb` 所用的那种（`decompress_with_dictionary`），以及带自定义
+词表与变换的 RFC 9841 序列化共享字典（`SharedDictionary::new`、`decompress_with_shared_dictionary`；
+ADR-069）。编码器只使用共享字典的前缀。
+
 ```rust,ignore
 {{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
 ```
