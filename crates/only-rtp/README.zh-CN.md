@@ -65,6 +65,11 @@ let rb = recv.report_block(now);                                   // 用于 RR 
   RLE 与包接收时间块，支持稀疏化；`BurstLossModel`（RFC 3611 A.2）填写 VoIP 指标中的丢包 / 突发 /
   间隙字段，配合 `VoipQuality`（时延、电平、RERL、应用提供的 R / MOS、PLC、抖动缓冲）生成完整的块
   （`report`）；`pcm_level_dbm0` 测量信号与噪声电平（ADR-053）。
+- E-model（ITU-T G.107、宽带 G.107.1、全频带 G.107.2；ADR-073、ADR-085、ADR-087）：`EModel` 根据丢包、
+  突发性与时延评估路径的 R 因子、MOS-LQ 与 MOS-CQ；`EModel::for_codec_rate` 含 G.113 按编解码器与码率
+  的规划值。
+- 抖动缓冲（ADR-087）：`JitterBuffer<T>` 按顺序、在自适应的播放时刻交出单包成帧（音频）的帧。它处理
+  乱序、重复包、迟到与溢出丢弃，全部有上界，并给出它的 RFC 3611 配置。
 - SDES：`SdesItem` 把 `Rtcp::SourceDescription` 的 `(类型, 文本)` 对转换为类型化的项，包括 PRIV 的前缀与
   值，并为每个已注册类型（CNAME .. MID）提供常量；`random_cname` 生成 RFC 7022 的 CNAME。
 - TMMBR / TMMBN（RFC 5104）：`TmmbrHandler` 保存各接收方针对某媒体 SSRC 的请求，计算边界集
@@ -103,9 +108,8 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
 重建的包（不再被 NACK，但报告中仍计为丢失），`FrameAssembler::skip` 标记不承载媒体的序号（ULPFEC、
 填充包），使其不被当作缺口。
 
-未实现：FlexFEC 重传与固定 L/D 包、多个被保护 SSRC、libwebrtc 的掩码表；交出部分恢复的包；R 因子 /
-MOS 估算（由应用提供）。only-webrtc 尚未发送接收日志或 VoIP 的 XR 块，也未使用 ULPFEC 多级保护或随机
-CNAME。
+未实现：FlexFEC 重传与固定 L/D 包、多个被保护 SSRC、libwebrtc 的掩码表；交出部分恢复的包；多包成帧
+（视频）的抖动缓冲。
 
 ## 测试
 

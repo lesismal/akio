@@ -10,6 +10,41 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：全频带与按码率的 E-model、音频抖动缓冲（only-rtp、only-webrtc）
+
+ADR-087（docs/adr/087-fullband-emodel-audio-jitter-buffer.zh-CN.md），仅新增：
+
+- `EModel::fullband(ie_fb, bpl_fb)`（ITU-T G.107.2：`R = 148 - 1.48 Idd - Ie,eff,FB`，
+  式 7-10 含突发比与 `with_burst_robustness(brf)`，按 `R / 1.48` 评分）、`EModel::is_fullband`、
+  `EModel::scaled_delay_impairment`。
+- `EModel::for_codec_rate(name, plc, bitrate)`：按码率取 G.113 的值：
+  - 64 / 56 / 48 kbit/s 的 G.722，以及带附录 III / IV 丢包隐藏时的取值（`Bpl,wb` 7.1 / 5.1）；
+  - 按模式取 AMR-WB 的值，来自表 IV.3 / IV.4；
+  - 按码率取 EVS（SWB 模式）的值，来自表 V.3，13.2 时 `Brf` 为 3.28；
+  - 5.3 kbit/s 的 G.723.1；
+  - 按码率取全频带的 Opus，`Ie,FB` 由 P.863 推导（非 ITU-T），`Bpl` 取 EVS 的值。
+
+  `Plc::of_codec` 增加了 EVS 与 AMR / AMR-WB。
+- `JitterBuffer<T>`（以及 `PlayoutDelay`、`JitterBufferStats`、`JitterFrame`、`JitterPush`），
+  一个不做 I/O 的音频抖动缓冲：
+  - 自适应播放时延：超出最快传输时间的时延的第 95 百分位；变长立即生效，变短在讲话段开始时
+    生效（或每秒一帧）；
+  - 处理乱序、重复包、迟到与溢出丢弃，跳过 FEC 序号；
+  - 上限为 1024 帧和 256 KiB；
+  - 提供它的 RFC 3611 抖动缓冲配置。
+- only-webrtc：
+  - `RtcConfig::set_audio_jitter_buffer(Option<PlayoutDelay>)`（默认关闭）：收到的音频帧按顺序、
+    在各自的播放时刻交出，带 `MediaData::playout_time`；它的丢弃与时延填入 XR VoIP 指标的丢弃
+    字段与抖动缓冲字段。
+  - `Peer::jitter_buffer_stats(mid)`。
+  - VoIP 指标按测得的码率为 Opus 评分。
+- API 不变而数值改变的：
+  - 宽带 E-model 现在按 G.107.1（06/2019，勘误 1）计算：`Ie,eff,WB` 中用 95，采用它自己的
+    讲话者回声项与 `1.29 Idd`。ADR-085 用的是 129 和窄带的回声项。
+  - G.722 取 G.113 的双耳 `Ie,wb` 5（原为 13）。
+  - only-webrtc 中的 Opus 流按测得的码率评为全频带。
+- `webrtc-bench audio` / `audio-jb` 与 only-rtp 的 `jitter-bench` 示例。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：

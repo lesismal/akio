@@ -6,7 +6,8 @@
 //!                             media bytes the receiver got per second
 //! webrtc-bench dc [secs]      one data channel, 64 kB messages kept queued: bytes per second
 //! webrtc-bench audio [secs]   one-way Opus RTP (160-byte frames, timestamps following the wall
-//!                             clock, written as fast as they go out): frames per second (k)
+//!                             clock, up to one frame per 48 kHz tick): thousand frames per
+//!                             second, and the process's CPU microseconds per frame (Linux)
 //! webrtc-bench audio-jb [secs]  the same into the receiver's audio jitter buffer (ADR-087)
 //! ```
 //!
@@ -46,6 +47,15 @@ impl PeerHandler for Sink {
     fn on_channel_data(&mut self, _p: &Peer, _id: ChannelId, d: &[u8], _b: bool) {
         self.bytes.fetch_add(d.len() as u64, Ordering::Relaxed);
     }
+}
+
+/// User plus system CPU time of this process (Linux `/proc/self/stat`, 100 ticks a second).
+fn cpu_time() -> Option<Duration> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    let f: Vec<&str> = rest.split(' ').collect();
+    let ticks: u64 = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
+    Some(Duration::from_millis(ticks * 10))
 }
 
 fn main() {
@@ -112,6 +122,7 @@ fn main() {
     let warm = Duration::from_secs(1);
     let start = Instant::now();
     let mut base = None;
+    let mut cpu: Option<Duration> = None;
     if let Some(v) = video {
         let pt = pa.payload_type(v, Codec::Vp8).unwrap();
         let mut f = vec![0x11u8; 8000];
@@ -136,12 +147,19 @@ fn main() {
         let mut f = vec![0xfcu8; 160];
         let mut i = 0u64;
         let mut last = 0;
+        let mut cpu0 = None;
         while start.elapsed() < warm + Duration::from_secs(secs) {
             if base.is_none() && start.elapsed() >= warm {
                 base = Some((Instant::now(), got.load(Ordering::Relaxed)));
+                cpu0 = cpu_time();
             }
             f[1] = i as u8;
-            // 48 kHz ticks of the wall clock, strictly increasing.
+            // 48 kHz ticks of the wall clock, strictly increasing: at most a frame per tick,
+            // so media time keeps up with real time (a jitter buffer plays it in real time).
+            let real = start.elapsed().as_micros() as u64 * 48 / 1000;
+            if last + 1 > real + 16 {
+                std::thread::sleep(Duration::from_micros((last + 1 - real) * 1000 / 48));
+            }
             let ticks = (start.elapsed().as_micros() as u64 * 48 / 1000).max(last + 1);
             last = ticks;
             let t = MediaTime::new(ticks, Frequency::FORTY_EIGHT_KHZ);
@@ -151,6 +169,7 @@ fn main() {
                 std::thread::sleep(Duration::from_micros(200));
             }
         }
+        cpu = cpu0.zip(cpu_time()).and_then(|(a, b)| b.checked_sub(a));
     } else if let Some(c) = ch {
         let msg = vec![7u8; 64 * 1024];
         while start.elapsed() < warm + Duration::from_secs(secs) {
@@ -165,7 +184,10 @@ fn main() {
     let (t0, b0) = base.expect("warmed up");
     let per_s = (got.load(Ordering::Relaxed) - b0) as f64 / t0.elapsed().as_secs_f64();
     if audio {
-        println!("BENCH {mode} {:.1}", per_s / 1e3);
+        // Process CPU time (both peers) per frame received, where /proc tells it.
+        let frames = got.load(Ordering::Relaxed) - b0;
+        let us = cpu.map_or(0.0, |c| c.as_secs_f64() * 1e6 / frames.max(1) as f64);
+        println!("BENCH {mode} {:.1} {us:.2}", per_s / 1e3);
     } else {
         println!("BENCH {mode} {:.1}", per_s / 1e6);
     }

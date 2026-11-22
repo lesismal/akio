@@ -308,10 +308,11 @@ let cfg = only_webrtc::rtc_config()
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
-  音频行发送，丢包、突发与间隙字段实测，带往返时间，以及由 E-model（ITU-T G.107，宽带编解码器用
-  G.107.1；ADR-085）根据丢包、其突发性、往返时间与端系统时延算出的 R 因子、MOS-LQ 与 MOS-CQ，使用所收
-  编解码器在 G.113 中的规划值（`EModel::for_codec`：PCMU、PCMA、G.722、G.729、G.723.1，以及 Opus 的一条
-  假定值，因为它没有规划值），并在接收方配置中带上它的丢包隐藏。只有解码、播放音频的应用才知道的值，由
+  音频行发送，丢包、突发与间隙字段实测，带往返时间，以及由 E-model（ITU-T G.107；宽带编解码器用
+  G.107.1，全频带的用 G.107.2；ADR-085、ADR-087）根据丢包、其突发性、往返时间与端系统时延算出的 R
+  因子、MOS-LQ 与 MOS-CQ，使用所收编解码器在测得码率下的 G.113 规划值（`EModel::for_codec_rate`：
+  PCMU、PCMA、G.722、G.729、G.723.1、AMR-WB、EVS，以及没有 ITU-T 取值的 Opus：按码率以由 P.863
+  推导的值评为全频带），并在接收方配置中带上它的丢包隐藏。只有解码、播放音频的应用才知道的值，由
   应用经 `set_voip_quality` 提供；其余以不可用（127）发送。收到的块以 `XrReceipts` 与 `VoipMetrics`
   事件报告（后者可用 `metrics.quality()` 解码），并累计到统计中。
 
@@ -331,6 +332,25 @@ let cfg = only_webrtc::rtc_config()
       }),
       ..VoipQuality::default()
   }, None)?; // None：使用所收编解码器的 E-model 值
+  ```
+- **音频抖动缓冲**（ADR-087）：`set_audio_jitter_buffer(Some(PlayoutDelay::default()))` 让每条
+  收到的音频流经过一个抖动缓冲。
+  - 帧按顺序、各在自己的播放时刻（`d.playout_time`）到达 `on_media_data`，应用可以来一帧放一帧。
+  - 时延随测得的抖动调整（第 95 百分位，默认 0 到 500 ms，在讲话段开始时缩短），也可以固定
+    （`PlayoutDelay::fixed`）。
+  - 缺失的帧在后面某一帧到期时放弃，那一帧带 `contiguous = false`，这就是做丢包隐藏的时机；此后
+    才到的包被丢弃。
+  - 除非 `set_voip_quality` 给出应用自己的值，缓冲的时延与丢弃填入 VoIP 指标的抖动缓冲字段和丢弃
+    字段。
+  - `Peer::jitter_buffer_stats(mid)` 给出它的计数。
+  - 视频与 RTP 模式不受影响。不经 peer 时，可直接用同一个缓冲 `only_rtp::JitterBuffer`。
+
+  ```rust,ignore
+  use only_rtp::PlayoutDelay;
+
+  let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
+      Duration::from_millis(20), Duration::from_millis(300))));
+  // 在处理函数中：音频的 d.playout_time 为 Some(时刻)；空缺之后 !d.contiguous。
   ```
 - **ULPFEC 保护级别**（RFC 5109 §5）：`set_ulpfec_level0(Some(l0))` 时一帧的 FEC 包保护每个包的前
   `l0` 字节，另有一个级别覆盖其余部分一次：单个丢包能完整修复，修复字节少得多。libwebrtc 只读级别 0

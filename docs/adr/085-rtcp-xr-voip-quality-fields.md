@@ -106,3 +106,18 @@ Additive. only-rtp: `EModel::{wideband, is_wideband, for_codec, estimate_report}
 - Not done: G.107.2 fullband for Opus at fullband bitrates; codec values that follow the
   negotiated bitrate (Opus, G.722 at 48 / 56 kbit/s, G.729 without VAD); `Bpl,wb` for G.722
   with its appendix concealment; measuring the jitter buffer inside only-webrtc (it has none).
+
+## Update (2026-11-22): ADR-087
+
+ADR-087 does this ADR's "not done" items: G.107.2 fullband, codec values by bitrate
+(`EModel::for_codec_rate`), G.722's `Bpl,wb` with its Appendix III / IV concealment, and a
+jitter buffer in only-webrtc (`RtcConfig::set_audio_jitter_buffer`) that feeds the jitter
+buffer and discard fields.
+
+It also corrects the wideband model above to G.107.1 (06/2019) with Corrigendum 1:
+
+- `Ie,eff,WB` has 95 where this ADR put 129.
+- `Id,WB` has its own talker echo and `1.29 Idd`.
+
+G.722 now takes G.113's diotic `Ie,wb` (5) in place of the monotic 13. The codec table above
+is replaced by ADR-087's.

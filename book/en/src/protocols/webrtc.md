@@ -379,11 +379,12 @@ let cfg = only_webrtc::rtc_config()
   voip-metrics`): a block goes out when both sides list its format, once a second per received
   stream, about the sequence numbers since the last report (thinned to fit a datagram); VoIP
   metrics on audio lines only, with the loss, burst and gap fields measured, the round-trip
-  time, and the R factor, MOS-LQ and MOS-CQ of the E-model (ITU-T G.107, wideband codecs with
-  G.107.1; ADR-085) from the loss, its burstiness, the round trip and the end system delay, with
-  the received codec's G.113 planning values (`EModel::for_codec`: PCMU, PCMA, G.722, G.729,
-  G.723.1, and an assumed entry for Opus, which has none) and its concealment in the receiver
-  configuration. What only the application knows, since it decodes and plays the audio, it
+  time, and the R factor, MOS-LQ and MOS-CQ of the E-model (ITU-T G.107; wideband codecs with
+  G.107.1, fullband ones with G.107.2; ADR-085, ADR-087) from the loss, its burstiness, the round
+  trip and the end system delay, with the received codec's G.113 planning values at its measured
+  bitrate (`EModel::for_codec_rate`: PCMU, PCMA, G.722, G.729, G.723.1, AMR-WB, EVS, and Opus,
+  which has no ITU-T value: rated fullband by bitrate with P.863-derived values) and its
+  concealment in the receiver configuration. What only the application knows, since it decodes and plays the audio, it
   gives with `set_voip_quality`; the rest is sent unavailable (127). Received ones arrive as
   `XrReceipts` and `VoipMetrics` events (`metrics.quality()` decodes the latter), with totals in
   the statistics.
@@ -404,6 +405,27 @@ let cfg = only_webrtc::rtc_config()
       }),
       ..VoipQuality::default()
   }, None)?; // None: the received codec's E-model values
+  ```
+- **Audio jitter buffer** (ADR-087): `set_audio_jitter_buffer(Some(PlayoutDelay::default()))`
+  holds each received audio stream in a jitter buffer.
+  - Frames reach `on_media_data` in order, each at its playout instant (`d.playout_time`), so
+    the application can play them as they come.
+  - The delay adapts to the measured jitter (the 95th percentile, 0 to 500 ms by default,
+    shorter at talkspurts) or is fixed (`PlayoutDelay::fixed`).
+  - A missing frame is given up when a later one is due, which then comes with
+    `contiguous = false`: the cue to conceal. A packet arriving after that is discarded.
+  - The buffer's delay and discards fill the jitter buffer and discard fields of the VoIP
+    metrics, unless `set_voip_quality` gives the application's own.
+  - `Peer::jitter_buffer_stats(mid)` gives its counters.
+  - Video and RTP mode are not affected. `only_rtp::JitterBuffer` is the same buffer for use
+    without a peer.
+
+  ```rust,ignore
+  use only_rtp::PlayoutDelay;
+
+  let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
+      Duration::from_millis(20), Duration::from_millis(300))));
+  // In the handler: d.playout_time is Some(when) for audio; !d.contiguous after a gap.
   ```
 - **ULPFEC levels** (RFC 5109 §5): with `set_ulpfec_level0(Some(l0))` the FEC packets of a frame
   protect the first `l0` bytes of each packet and one more level covers the rest once: a single

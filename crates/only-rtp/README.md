@@ -77,6 +77,12 @@ let rb = recv.report_block(now);                                   // for an RR 
   3611 A.2) fills the loss / burst / gap fields of VoIP metrics and, with `VoipQuality` (delays,
   levels, RERL, R / MOS when the application has them, PLC, jitter buffer), the whole block
   (`report`); `pcm_level_dbm0` measures signal and noise levels (ADR-053).
+- E-model (ITU-T G.107, G.107.1 wideband, G.107.2 fullband; ADR-073, ADR-085, ADR-087):
+  `EModel` rates a path's R factor, MOS-LQ and MOS-CQ from loss, burstiness and delay;
+  `EModel::for_codec_rate` has G.113's planning values by codec and bitrate.
+- Jitter buffer (ADR-087): `JitterBuffer<T>` plays single-packet (audio) frames out in order
+  at adaptive playout instants. It handles reordering, duplicates, and late and overflow
+  discards, all bounded, and gives its RFC 3611 configuration.
 - SDES: `SdesItem` converts the `(type, text)` pairs of `Rtcp::SourceDescription` to typed
   items, PRIV with its prefix and value included, with constants for every registered type
   (CNAME .. MID); `random_cname` makes an RFC 7022 CNAME.
@@ -123,9 +129,8 @@ and `FrameAssembler::skip` marks sequence numbers without media (ULPFEC, padding
 gaps.
 
 Not implemented: FlexFEC retransmission and fixed L/D packets, several protected SSRCs,
-libwebrtc's mask tables; handing out partially recovered packets; R factor / MOS estimation
-(the application supplies them). only-webrtc does not yet send receipt-log or VoIP XR blocks,
-use ULPFEC levels or random CNAMEs.
+libwebrtc's mask tables; handing out partially recovered packets; a jitter buffer for
+multi-packet (video) frames.
 
 ## Testing
 
