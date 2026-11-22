@@ -341,7 +341,7 @@ impl Rtc {
         if q.fec {
             self.stats.fec_sent += 1;
         }
-        let ecn = self.ecn_mark(&q.raw, (src, dest));
+        let ecn = self.ecn_mark(now, &q.raw, (src, dest));
         let raw = &q.raw;
         let Some(tx) = self.srtp_tx.as_mut() else {
             return 0;
@@ -476,7 +476,7 @@ impl Rtc {
             (None, _) => {}
         }
         self.cc_on_sent(now);
-        let ecn = self.ecn_mark(&raw, (src, dest));
+        let ecn = self.ecn_mark(now, &raw, (src, dest));
         let tx = self.srtp_tx.as_mut()?;
         let o = tx.protect_rtp(&raw).ok()?;
         self.stats.bytes_sent += o.len() as u64;

@@ -85,9 +85,10 @@ pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
     BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec,
-    Direction, EcnMarking, Event, FecMask, FecMechanism, Frequency, IceConnectionState,
-    KeyframeRequest, KeyframeRequestKind, Latching, MediaAdded, MediaData, MediaKind, MediaTime,
-    Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
+    Direction, EcnInitiation, EcnMarking, Event, FecMask, FecMechanism, Frequency,
+    IceConnectionState, KeyframeRequest, KeyframeRequestKind, Latching, MediaAdded, MediaData,
+    MediaKind, MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket,
+    SdpChanges, XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;

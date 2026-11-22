@@ -157,6 +157,17 @@ pub enum IceEvent {
         /// Remote address.
         remote: SocketAddr,
     },
+    /// The ECN check of [`IceAgent::check_ecn`] ended (RFC 6679 §7.2.2): `ecn` is the codepoint
+    /// the remote saw the check arrive with (`ecn & 3` as sent: the path carries it), or
+    /// `None` when that could not be learnt (no answer, or a remote that does not read ECN).
+    EcnChecked {
+        /// Local address of the pair checked.
+        local: SocketAddr,
+        /// Remote address of the pair checked.
+        remote: SocketAddr,
+        /// The codepoint the remote reported.
+        ecn: Option<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,12 +224,12 @@ struct Pair {
 }
 
 #[derive(Clone, Debug)]
-struct Selected {
-    local: SocketAddr,
-    remote: SocketAddr,
-    local_ufrag: String,
-    remote_creds: Option<Credentials>,
-    local_pref: u32,
+pub(crate) struct Selected {
+    pub(crate) local: SocketAddr,
+    pub(crate) remote: SocketAddr,
+    pub(crate) local_ufrag: String,
+    pub(crate) remote_creds: Option<Credentials>,
+    pub(crate) local_pref: u32,
     generation: u64,
     /// The pair priority (0 for a lite agent, which keeps no pairs).
     prio: u64,
@@ -228,8 +239,8 @@ struct Selected {
 /// (RFC 7675 runs per component) and, for a lite agent, the last valid check. The pairs of
 /// every component share one checklist (RFC 8445 §6.1.2), its pacing and triggered queue.
 #[derive(Debug)]
-struct Comp {
-    selected: Option<Selected>,
+pub(crate) struct Comp {
+    pub(crate) selected: Option<Selected>,
     /// Controlling: the pair being nominated.
     nominating: Option<(SocketAddr, SocketAddr)>,
     first_valid_at: Option<Instant>,
@@ -299,7 +310,7 @@ fn pairs_on_signal(c: &Candidate) -> bool {
 /// it.
 #[derive(Debug)]
 pub struct IceAgent {
-    config: IceConfig,
+    pub(crate) config: IceConfig,
     prev_local: Option<Credentials>,
     remote_creds: Option<Credentials>,
     remote_lite: bool,
@@ -317,19 +328,24 @@ pub struct IceAgent {
     end_of_candidates: bool,
     generation: u64,
     /// Component `i + 1` at index `i`.
-    comps: Vec<Comp>,
+    pub(crate) comps: Vec<Comp>,
     /// The generation in which every component's selection completed.
     completed_gen: Option<u64>,
     checking_since: Option<Instant>,
     next_check: Instant,
     done_tids: VecDeque<[u8; 12]>,
     state: IceState,
-    transmits: VecDeque<Transmit>,
-    events: VecDeque<IceEvent>,
-    closed: bool,
+    pub(crate) transmits: VecDeque<Transmit>,
+    pub(crate) events: VecDeque<IceEvent>,
+    pub(crate) closed: bool,
     /// [`IceAgent::set_fixed_pair`]: no ICE runs, the selected pairs are given.
-    fixed: bool,
+    pub(crate) fixed: bool,
     now: Instant,
+    /// RFC 6679 §7.2.2 ([`crate::ecn`]): the ECN check in flight, its datagrams (sent with a
+    /// codepoint), and the codepoint of the datagram being handled.
+    pub(crate) ecn_check: Option<crate::ecn::EcnCheck>,
+    pub(crate) ecn_transmits: VecDeque<(Transmit, u8)>,
+    pub(crate) rx_ecn: Option<u8>,
 }
 
 impl IceAgent {
@@ -364,6 +380,9 @@ impl IceAgent {
             closed: false,
             fixed: false,
             now,
+            ecn_check: None,
+            ecn_transmits: VecDeque::new(),
+            rx_ecn: None,
         }
     }
 
@@ -721,9 +740,9 @@ impl IceAgent {
                 None => {}
             }
         }
-        let b = MessageBuilder::response(m, Class::Success)
-            .xor_addr(attr::XOR_MAPPED_ADDRESS, source)
-            .integrity(pwd.as_bytes());
+        let b =
+            MessageBuilder::response(m, Class::Success).xor_addr(attr::XOR_MAPPED_ADDRESS, source);
+        let b = self.ecn_echo(m, b).integrity(pwd.as_bytes());
         self.respond(source, destination, b);
         if !current {
             return true;
@@ -818,6 +837,9 @@ impl IceAgent {
         let tid = m.transaction_id();
         if m.has(attr::FINGERPRINT) && !m.check_fingerprint() {
             return false;
+        }
+        if self.ecn_response(now, m) {
+            return true;
         }
         let Some(i) = self
             .pairs
@@ -964,7 +986,7 @@ impl IceAgent {
         c.consent_lost = false;
     }
 
-    fn retire(&mut self, tid: [u8; 12]) {
+    pub(crate) fn retire(&mut self, tid: [u8; 12]) {
         if self.done_tids.len() >= MAX_DONE_TX {
             self.done_tids.pop_front();
         }
@@ -1228,6 +1250,45 @@ impl IceAgent {
         use_candidate: bool,
         nomination: Option<u32>,
     ) -> ([u8; 12], Vec<u8>, u32) {
+        let (tid, b, priority) = self.request_builder(
+            remote,
+            local_ufrag,
+            local_pref,
+            component,
+            use_candidate,
+            nomination,
+        );
+        let packet = b.integrity(remote.pwd.as_bytes()).fingerprint().build();
+        (tid, packet, priority)
+    }
+
+    /// A connectivity check carrying the ECN-CHECK value `ecn_check` (RFC 6679 §7.2.2).
+    pub(crate) fn build_request_with(
+        &self,
+        remote: &Credentials,
+        local_ufrag: &str,
+        local_pref: u32,
+        component: u16,
+        ecn_check: Option<&[u8; 4]>,
+    ) -> ([u8; 12], Vec<u8>, u32) {
+        let (tid, mut b, priority) =
+            self.request_builder(remote, local_ufrag, local_pref, component, false, None);
+        if let Some(v) = ecn_check {
+            b = b.attr(crate::ecn::ATTR_ECN_CHECK, v);
+        }
+        let packet = b.integrity(remote.pwd.as_bytes()).fingerprint().build();
+        (tid, packet, priority)
+    }
+
+    fn request_builder(
+        &self,
+        remote: &Credentials,
+        local_ufrag: &str,
+        local_pref: u32,
+        component: u16,
+        use_candidate: bool,
+        nomination: Option<u32>,
+    ) -> ([u8; 12], MessageBuilder, u32) {
         let mut tid = [0u8; 12];
         random_bytes(&mut tid);
         // PRIORITY: that of a peer-reflexive candidate of the component (RFC 8445 §7.1.1).
@@ -1249,8 +1310,7 @@ impl IceAgent {
                 b = b.u32(ATTR_NOMINATION, n);
             }
         }
-        let packet = b.integrity(remote.pwd.as_bytes()).fingerprint().build();
-        (tid, packet, priority)
+        (tid, b, priority)
     }
 
     fn start_check(&mut self, i: usize, now: Instant) -> bool {
@@ -1458,6 +1518,7 @@ impl IceAgent {
         if !self.config.lite {
             self.consent_tick(now);
         }
+        self.ecn_tick(now);
         self.update_state(now);
     }
 
@@ -1628,6 +1689,9 @@ impl IceAgent {
         }
         let mut t: Option<Instant> = None;
         let mut at = |x: Instant| t = Some(t.map_or(x, |t| t.min(x)));
+        if let Some(x) = self.ecn_timeout() {
+            at(x);
+        }
         for p in &self.pairs {
             if let Some(tx) = &p.tx {
                 at(tx.next);
@@ -1754,6 +1818,8 @@ impl IceAgent {
             self.pairs.clear();
             self.triggered.clear();
             self.transmits.clear();
+            self.ecn_transmits.clear();
+            self.ecn_check = None;
             self.checking_since = None;
         }
         let generation = self.generation;
@@ -1805,6 +1871,8 @@ impl IceAgent {
     pub fn close(&mut self) {
         self.closed = true;
         self.transmits.clear();
+        self.ecn_transmits.clear();
+        self.ecn_check = None;
         self.pairs.iter_mut().for_each(|p| p.tx = None);
         self.triggered.clear();
     }

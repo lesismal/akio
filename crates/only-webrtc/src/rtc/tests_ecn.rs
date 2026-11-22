@@ -858,11 +858,13 @@ fn ect1_responds_to_ce_scalably() {
 fn rfc6679_negotiates_and_validates_without_rfc8888() {
     let ((a, b, net), offer, answer) =
         ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect0, false, Path::Keep);
-    for (sdp, ect) in [(&offer, 1), (&answer, 0)] {
+    // With ICE, "ice" first (ADR-086), answered alone; the ICE option says so (§6.4).
+    for (sdp, init, ect) in [(&offer, "ice,rtp", 1), (&answer, "ice", 0)] {
         assert!(
-            sdp.contains(&format!("a=ecn-capable-rtp:rtp mode=setread; ect={ect}")),
+            sdp.contains(&format!("a=ecn-capable-rtp:{init} mode=setread; ect={ect}")),
             "{sdp}"
         );
+        assert!(sdp.contains("a=ice-options:trickle rtp+ecn"), "{sdp}");
         assert!(
             sdp.contains(" nack ecn\r\n") && sdp.contains("ecn-sum"),
             "{sdp}"
@@ -871,9 +873,25 @@ fn rfc6679_negotiates_and_validates_without_rfc8888() {
     }
     assert!(a.rtc.ecn6679.tx && b.rtc.ecn6679.rx && !a.rtc.ccfb);
     assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    // a marks what b asks for (`ect=0`, ADR-086), and so responds to CE classically.
+    assert_eq!(
+        a.rtc.bwe.as_ref().unwrap().ecn_response(),
+        only_rtp::EcnResponse::Classic
+    );
     let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
     let tail = &marks[marks.len() - 200..];
-    assert!(tail.iter().all(|m| *m == 1), "{tail:?}");
+    assert!(tail.iter().all(|m| *m == 2), "{tail:?}");
+    // The path was verified by a marked STUN check, before any RTP was marked.
+    let first_rtp = net
+        .log
+        .iter()
+        .position(|l| l.0 == addr("10.0.0.1:1000") && l.3 != 0 && l.2 >= 128)
+        .unwrap();
+    assert!(
+        net.log[..first_rtp]
+            .iter()
+            .any(|l| l.0 == addr("10.0.0.1:1000") && l.2 < 4 && l.3 == 2)
+    );
     // RTCP stays unmarked; b's feedback reaches a.
     assert!(net.log.iter().filter(|l| l.4).all(|l| l.3 == 0));
     assert!(b.rtc.stats.ecn_ect_received > 300);
@@ -911,6 +929,159 @@ fn rfc6679_needs_the_remote() {
     assert!(!a.rtc.ecn6679.rx);
     assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
     assert!(net.log.iter().all(|l| l.3 == 0));
+}
+
+// ---- initiation methods, the remote's preference, retrying (ADR-086) ----
+
+/// [`ecn_run_on`] with initiation `init` on both sides and `prep` applied to the sides'
+/// configurations.
+fn ecn_run_init(
+    init: crate::types::EcnInitiation,
+    ccfb: bool,
+    path: Path,
+    plain: bool,
+) -> ((Side, Side, Net), String, String) {
+    let now = Instant::now();
+    let cfg = |m| {
+        let mut c = ecn_cfg(m, ccfb);
+        c.ecn_init = init;
+        c.ice = !plain;
+        c
+    };
+    let (ca, cb) = (["10.0.0.1:1000"], ["10.0.0.2:2000"]);
+    let mut a = peer(cfg(EcnMarking::Ect1), &ca, &[], now);
+    let mut b = peer(cfg(EcnMarking::Ect1), &cb, &[], now);
+    let mut ch = a.rtc.changes();
+    let (audio, video) = {
+        let mut api = SdpChanges(&mut ch);
+        (
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None),
+            api.add_media(MediaKind::Video, Direction::SendRecv, None, None),
+        )
+    };
+    let offer = a.rtc.apply(now, ch).unwrap().unwrap();
+    let answer = b.rtc.accept_offer(now, &offer).unwrap();
+    a.rtc.accept_answer(now, &answer).unwrap();
+    let mut net = Net::new(path);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    media(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        (Some(audio), Some(video)),
+        200,
+        false,
+    );
+    ((a, b, net), offer, answer)
+}
+
+#[test]
+fn ice_initiation_fails_a_clearing_path_without_marking_rtp() {
+    let ((a, _, net), offer, _) = ecn_run_init(
+        crate::types::EcnInitiation::Probe,
+        false,
+        Path::Bleach,
+        false,
+    );
+    assert!(offer.contains("a=ecn-capable-rtp:ice,rtp "));
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Failed);
+    // Only the STUN check carried a mark.
+    assert!(
+        rtp_marks(&net, addr("10.0.0.1:1000"))
+            .iter()
+            .all(|m| *m == 0)
+    );
+    assert!(
+        net.log
+            .iter()
+            .any(|l| l.0 == addr("10.0.0.1:1000") && l.2 < 4 && l.3 == 1)
+    );
+}
+
+#[test]
+fn leap_of_faith_marks_from_the_first_packet() {
+    for (ccfb, plain) in [(true, false), (false, false), (false, true)] {
+        let ((a, _, net), offer, answer) = ecn_run_init(
+            crate::types::EcnInitiation::LeapOfFaith,
+            ccfb,
+            Path::Keep,
+            plain,
+        );
+        let init = if plain { "leap,rtp" } else { "leap,ice,rtp" };
+        assert!(
+            offer.contains(&format!("a=ecn-capable-rtp:{init} ")),
+            "{offer}"
+        );
+        assert!(answer.contains("a=ecn-capable-rtp:leap "), "{answer}");
+        assert_eq!(
+            a.rtc.ecn.phase,
+            ecn::Phase::Capable,
+            "ccfb {ccfb} plain {plain}"
+        );
+        let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+        assert!(marks.iter().all(|m| *m == 1), "{marks:?}");
+        // A leap onto a clearing path still fails.
+        let ((a, _, _), _, _) = ecn_run_init(
+            crate::types::EcnInitiation::LeapOfFaith,
+            ccfb,
+            Path::Bleach,
+            plain,
+        );
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Failed);
+    }
+}
+
+#[test]
+fn rtp_initiation_without_ice() {
+    let ((a, _, net), offer, answer) =
+        ecn_run_init(crate::types::EcnInitiation::Probe, false, Path::Keep, true);
+    assert!(offer.contains("a=ecn-capable-rtp:rtp mode=setread; ect=1"));
+    assert!(answer.contains("a=ecn-capable-rtp:rtp mode=setread; ect=1"));
+    assert!(!offer.contains("rtp+ecn"));
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    // A quarter of the first packets, then all of them.
+    let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+    assert_eq!(marks[..8].iter().filter(|m| **m != 0).count(), 2);
+    assert!(marks[marks.len() - 100..].iter().all(|m| *m == 1));
+    assert_eq!(
+        a.rtc.bwe.as_ref().unwrap().ecn_response(),
+        only_rtp::EcnResponse::Scalable
+    );
+}
+
+#[test]
+fn failed_path_retries_and_recovers() {
+    for (ccfb, plain) in [(true, false), (false, false), (false, true)] {
+        let ((mut a, mut b, mut net), _, _) = ecn_run_init(
+            crate::types::EcnInitiation::Probe,
+            ccfb,
+            Path::Bleach,
+            plain,
+        );
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Failed);
+        assert_eq!(a.rtc.ecn.retried, 0);
+        // The middlebox goes away; within the first retry (10 s) marking comes back.
+        net.path = Path::Keep;
+        let now = a.wake.max(b.wake);
+        let mids = (a.rtc.media[0].mid, a.rtc.media[1].mid);
+        media(
+            &mut a,
+            &mut b,
+            &mut net,
+            now,
+            (Some(mids.0), Some(mids.1)),
+            700,
+            false,
+        );
+        assert!(a.rtc.ecn.retried >= 1, "ccfb {ccfb} plain {plain}");
+        assert_eq!(
+            a.rtc.ecn.phase,
+            ecn::Phase::Capable,
+            "ccfb {ccfb} plain {plain}"
+        );
+        assert_eq!(a.rtc.ecn.failures, 1);
+    }
 }
 
 // ---- paths without a codepoint (ADR-082) ----
