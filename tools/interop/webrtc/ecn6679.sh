@@ -16,7 +16,7 @@
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 docker run --rm --privileged -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-  -v only-ecnlatch-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
+  -v "${TARGET_VOLUME:-only-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
 set -eu
 apt-get -qq update >/dev/null && apt-get -qq install -y iproute2 iptables conntrack >/dev/null 2>&1
 cargo build -q --release -p only-webrtc --example webrtc-interop
