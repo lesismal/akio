@@ -27,7 +27,7 @@ ADR-080（docs/adr/080-rtsp-server-redirect-rtmp-lookups.zh-CN.md），只有新
 - 测试：`Range` 时间，状态机的回答，本 crate 的服务器把重连中的拉流与推流（TCP、UDP、带 `Range` 时间）迁移到
   另一台服务器，忽略请求的客户端在宽限后被关闭，地址遍历，RTMP 名字先不能解析再迁移。新增
   `tools/interop/media/rtsp-server-redirect.sh`：ffmpeg 6.1.1（gpu51，经 TCP 与 UDP 播放和录制；macOS 上的 9.0.2 亦然，只是未试经 UDP 录制），对我们服务器的 `REDIRECT` 回答 `501` 并照常继续；GStreamer 1.24.2 的 `rtspsrc` 与 `rtspclientsink`（TCP、UDP）回答 `200` 并照常继续；从我们服务器拉流的 mediamtx 1.15.3（路径的 `source`，TCP 与 UDP）不回答，立即拆除会话并重新拉同一 URL。它们都不迁到新位置；我们的服务器在其 TEARDOWN 时或请求后 4 s（测试的宽限期）结束了每一个这样的会话。我们的客户端被我们的服务器迁到 mediamtx：拉流继续从那里带来媒体（检查中 310 至 335 个包），在 `Range` 时间迁移的推流可从 mediamtx 读回，TCP 与 UDP 均如此。RTMP：在 Docker 网络中名字 `rtmpsrv` 从 mediamtx A（172.31.248.10，已移除）迁到 mediamtx B（.20），在该网络的容器中运行、自动重连的推流与拉流都拨到了 .20（B 的路径等待推流回来期间，拉流重连了 11 次）。未试 live555（openRTSP）：Ubuntu 24.04 与 Debian 12 都不再打包它。
-- BENCH
+- 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，9 轮交替，取中位数，head / base）：RTMP 拉流 0.997、RTSP 拉流 1.000、RTSP RECORD 入流 1.002（`tests/client_bench.rs`）；hub 分发 0.987 / 0.994 / 1.000（1 / 16 / 256 个订阅者），FLV 解码 1.010（H.264）与 1.006（H.265）（`tests/media_bench.rs`），都在噪声之内：媒体路径没有改动（会话列表只在 SETUP / ANNOUNCE 与 TEARDOWN 时访问，解析只在连接时进行）。
 
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
