@@ -157,7 +157,8 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
     关闭时不用。
   - 回环上的端点：应答中写了一个无效端口的 DTLS 话机，通过锁定找到。
 - **模糊测试：** `rtp_rtcp` 目标双向转换 ECN 反馈与摘要，并驱动一个 `EcnReceiver`。`webrtc_sdp` 的种子包含
-  RFC 6679 的提议与应答。
+  RFC 6679 的提议与应答。gpu51 上每个目标 5 分钟：`rtp_rtcp`
+  1.03M 次、`webrtc_sdp` 46.4k 次运行，无发现。
 - **互通：** 见 2026-11-22 的 CHANGELOG / DEV-PLAN 条目。Chrome 157 用 `ecn.sh`；`latch.sh` 中 NAT 之后是一台
   DTLS-SRTP 话机。
 - **性能：** gpu51 上与 main 7e4db2d9 的同轮 A/B（`webrtc-bench`，默认配置，7 轮，取中位数）：媒体 0.999 倍，
