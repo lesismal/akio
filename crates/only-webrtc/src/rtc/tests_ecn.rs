@@ -21,6 +21,9 @@ enum Path {
     Remark,
     /// One ECN-capable packet in `n` arrives CE.
     Ce(u64),
+    /// ECN-capable packets that queue at the bottleneck for longer than this (and than two
+    /// full-sized packets take) arrive CE (an L4S queue's step marking, RFC 9332).
+    Step(Duration),
 }
 
 /// A datagram in flight: arrival, from, to, payload, codepoint.
@@ -42,6 +45,8 @@ struct Net {
     /// again; datagrams queued for more than 300 ms are dropped.
     cap: Option<f64>,
     free: Option<Instant>,
+    /// Queueing delay of every datagram through the bottleneck.
+    queued: Vec<Duration>,
 }
 
 impl Net {
@@ -55,6 +60,7 @@ impl Net {
             captured: Vec::new(),
             cap: None,
             free: None,
+            queued: Vec::new(),
         }
     }
 
@@ -81,8 +87,8 @@ impl Net {
         let first = d.first().copied().unwrap_or(0);
         let rtcp = (128..=191).contains(&first) && only_rtp::is_rtcp(&d);
         self.log.push((from, to, first, ecn, rtcp));
-        let ecn = match (self.path, ecn) {
-            (_, 0) | (Path::Keep, _) => ecn,
+        let mut ecn = match (self.path, ecn) {
+            (_, 0) | (Path::Keep | Path::Step(_), _) => ecn,
             (Path::Bleach, _) => 0,
             (Path::Remark, 1) => 2,
             (Path::Remark, e) => e,
@@ -102,6 +108,15 @@ impl Net {
             }
             let done = start + Duration::from_secs_f64((d.len() + 28) as f64 / cap);
             self.free = Some(done);
+            let q = start.saturating_duration_since(now);
+            self.queued.push(q);
+            if let Path::Step(t) = self.path {
+                // At least two full-sized packets queued, as DualPI2 asks at low rates.
+                let two = Duration::from_secs_f64(2.0 * 1228.0 / cap);
+                if ecn != 0 && q > t.max(two) {
+                    ecn = 3;
+                }
+            }
             at = done + Duration::from_millis(10);
         }
         self.queue.push((at, from, to, d, ecn));
@@ -727,4 +742,81 @@ fn one_estimate_across_transports_follows_a_bottleneck() {
         let r = e as f64 / bundled as f64;
         assert!((0.6..=1.4).contains(&r), "{bundled} {shared} {split}");
     }
+}
+
+// ---- scalable (L4S) response ----
+
+const L4S_CAP: f64 = 6_000_000.0;
+
+/// `a` sends audio and video (an encoder following the estimate) through a 6 Mbps
+/// bottleneck that CE-marks ECN-capable packets queued for over 1 ms, marking `marking`:
+/// the rate received and the mean queueing delay over the second half.
+fn l4s_run(marking: EcnMarking) -> (Side, u64, Duration) {
+    let now = Instant::now();
+    let mut ca = ecn_cfg(marking, true);
+    ca.bwe = Some(3_000_000);
+    let mut a = peer(ca, &["10.0.0.1:1000"], &[], now);
+    let mut b = peer(ecn_cfg(EcnMarking::Off, true), &["10.0.0.2:2000"], &[], now);
+    let mut ch = a.rtc.changes();
+    let (audio, video) = {
+        let mut api = SdpChanges(&mut ch);
+        (
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None),
+            api.add_media(MediaKind::Video, Direction::SendRecv, None, None),
+        )
+    };
+    let offer = a.rtc.apply(now, ch).unwrap().unwrap();
+    let answer = b.rtc.accept_offer(now, &offer).unwrap();
+    a.rtc.accept_answer(now, &answer).unwrap();
+    let mut net = Net::new(Path::Step(Duration::from_millis(1)));
+    let mut now = connect(&mut a, &mut b, &mut net, now);
+    net.cap = Some(L4S_CAP / 8.0);
+    let mut size = 2500;
+    let (mut half, mut rx0, mut t0) = (0, 0, now);
+    for i in 0..60 {
+        if i == 30 {
+            half = net.queued.len();
+            rx0 = b.rtc.stats.bytes_received;
+            t0 = now;
+        }
+        now = media_sized(
+            &mut a,
+            &mut b,
+            &mut net,
+            now,
+            (Some(audio), Some(video)),
+            10,
+            false,
+            size,
+        );
+        let est = a.rtc.bwe.as_ref().unwrap().estimate();
+        size = ((est as f64 * 0.9 / 8.0 / 50.0) as usize).clamp(200, 20_000);
+    }
+    let q = &net.queued[half..];
+    let mean = q.iter().sum::<Duration>() / q.len().max(1) as u32;
+    let rate = (b.rtc.stats.bytes_received - rx0) as f64 * 8.0 / (now - t0).as_secs_f64();
+    (a, rate as u64, mean)
+}
+
+#[test]
+fn ect1_responds_to_ce_scalably() {
+    let (a, l4s, lq) = l4s_run(EcnMarking::Ect1);
+    let (c, classic, cq) = l4s_run(EcnMarking::Ect0);
+    let (_, plain, pq) = l4s_run(EcnMarking::Off);
+    println!("6 Mbps step-marking queue: ECT(1) {l4s} bps, queue {lq:?}; ECT(0) {classic} bps, queue {cq:?}; off {plain} bps, queue {pq:?}");
+    let bwe = a.rtc.bwe.as_ref().unwrap();
+    assert_eq!(bwe.ecn_response(), only_rtp::EcnResponse::Scalable);
+    assert_eq!(
+        c.rtc.bwe.as_ref().unwrap().ecn_response(),
+        only_rtp::EcnResponse::Classic
+    );
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    assert!(a.rtc.ecn.ce > 0 && bwe.ce_fraction().is_some());
+    // Near the capacity (as without ECN), with a short queue; the classic response backs
+    // off as for loss.
+    assert!(l4s as f64 > 0.7 * L4S_CAP, "{l4s}");
+    assert!(l4s as f64 > 0.85 * plain as f64, "{l4s} {plain}");
+    assert!(lq < Duration::from_millis(3) && lq * 2 < pq, "{lq:?} {pq:?}");
+    assert!(l4s > 2 * classic, "{l4s} {classic}");
+    let _ = cq;
 }

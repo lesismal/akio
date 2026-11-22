@@ -1006,9 +1006,14 @@ impl Rtc {
         ice_cfg.renomination = cfg.ice_renomination;
         let ice = IceAgent::new(ice_cfg, now);
         let (min, max) = cfg.bwe_bounds;
-        let bwe = cfg
-            .bwe
-            .map(|b| BandwidthEstimator::new(b).with_bounds(min, max));
+        let bwe = cfg.bwe.map(|b| {
+            let mut e = BandwidthEstimator::new(b).with_bounds(min, max);
+            if cfg.ecn == crate::types::EcnMarking::Ect1 {
+                // RFC 9331 §4.3: ECT(1) traffic responds to CE scalably (L4S).
+                e.set_ecn_response(only_rtp::EcnResponse::Scalable);
+            }
+            e
+        });
         Ok(Rtc {
             lite,
             ice,
@@ -3475,6 +3480,9 @@ impl Rtc {
                 if let Some(rtt) = l.rtt() {
                     for r in self.recv.values_mut() {
                         r.stream.set_rtt(rtt);
+                    }
+                    if let Some(b) = self.bwe.as_mut() {
+                        b.set_rtt(rtt);
                     }
                 }
             }

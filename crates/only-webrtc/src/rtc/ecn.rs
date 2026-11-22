@@ -292,6 +292,14 @@ impl Rtc {
         self.cfg.ecn != EcnMarking::Off && self.ccfb && self.bwe.is_some()
     }
 
+    /// Whether the current path marks ECT(1), whose CE marks the estimator answers scalably
+    /// (L4S): the pacer then sends smoothly.
+    pub(super) fn ecn_scalable(&self) -> bool {
+        self.cfg.ecn == EcnMarking::Ect1
+            && matches!(self.ecn.phase, Phase::Testing | Phase::Capable)
+            && self.ecn_enabled()
+    }
+
     /// The codepoint for RTP packet `raw` about to leave on the current transport's path
     /// `path` (0 when not marking).
     pub(super) fn ecn_mark(&mut self, raw: &[u8], path: (SocketAddr, SocketAddr)) -> u8 {

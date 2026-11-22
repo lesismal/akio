@@ -100,7 +100,9 @@ mod tests_levels;
 #[cfg(test)]
 mod tests_probe;
 
-pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
+pub use bwe::{
+    BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE, EcnResponse,
+};
 pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
 pub use emodel::{EModel, EModelScore, mos_from_r};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
