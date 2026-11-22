@@ -175,10 +175,12 @@ Some values change without an API change:
   - A fixed 0 ms buffer under the same jitter: late frames become the discard rate, not the
     loss rate.
 - **Fuzzing**: the `rtp_rtcp` fuzz target rates EVS, AMR-WB and Opus at a fuzzed bitrate.
-- **Costs**: see BENCHMARKS, "Audio jitter buffer (ADR-087, same-run A/B)".
-  - With the buffer off, the receive path gains a flag check per packet and two counter adds
-    per audio packet.
-  - The buffer itself costs about 40 ns per frame on an M-series laptop (`jitter-bench`).
+- **Costs** (BENCHMARKS, "Audio jitter buffer (ADR-087, same-run A/B)", gpu51):
+  - Off, the receive path gains a flag check per packet and two counter adds per audio packet.
+    No measurable change: VP8 `media` 0.999; Opus `audio` CPU per frame 8.47 against 8.48 µs.
+  - On, 1.3 µs more CPU per frame (+16 %), mostly the timer wake-up for each frame handed out
+    at its playout instant. The buffer alone takes 47 ns per frame (`jitter-bench`). One Opus
+    call (50 frames/s) costs about 65 µs of CPU per second.
 - **Not done**:
   - Video: frames still come from the assembler as soon as they are complete, with no playout
     timing.

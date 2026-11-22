@@ -1,32 +1,4 @@
-//! A receive-side jitter buffer (playout buffer) for audio: frames go in as their packets
-//! arrive, in any order, and come out in sequence order at their playout instants.
-//!
-//! - **Playout clock.** A frame of RTP time `ts` plays at `ts + offset`, both in local time.
-//!   The offset is the smallest transit time seen lately (arrival minus media time, the
-//!   minimum over two windows of 5 s, so a clock drift or a route change moves it) plus the
-//!   target delay.
-//! - **Target delay.** The 95th percentile of each packet's delay beyond that smallest transit
-//!   (rounded up to 2 ms), from a histogram of 2 ms buckets that forgets with a factor of 0.997 per packet (about
-//!   7 s at 50 packets per second), clamped to [`PlayoutDelay`]'s bounds. It is recomputed
-//!   every 8 packets, and at once when a packet comes later than it.
-//! - **Adapting.** A longer delay applies at once (the frames still buffered play later, and
-//!   the application conceals the pause). A shorter one applies at the start of a talkspurt
-//!   (the RTP marker bit, or a timestamp that jumps further than the sequence numbers do, as
-//!   after silence suppression or Opus DTX) while nothing is buffered; a stream that never
-//!   pauses shortens its delay by at most one frame per second, the frame after the change
-//!   then playing that much sooner than its predecessor's end (the application drops or
-//!   compresses that much).
-//! - **Losses.** A missing frame is given up when a later frame's playout instant comes: that
-//!   frame goes out with `contiguous = false`. A packet arriving after that is *late* and
-//!   discarded, as is one arriving when the buffer is full (*overflow*: more than
-//!   [`JITTER_BUFFER_MAX_FRAMES`] frames or [`JITTER_BUFFER_MAX_BYTES`] bytes); both are the
-//!   discards of RTCP XR VoIP metrics ([`JitterBuffer::drain_discarded`]). A frame arriving
-//!   after its own playout instant but before a later frame went out still plays, at once.
-//!   Duplicates are dropped.
-//!
-//! Memory is bounded (the slots, at most 1002 histogram buckets, at most 4096 discarded
-//! sequence numbers between reports) and so is time: a packet costs O(1) plus, every 8
-//! packets, a scan of the histogram up to the percentile.
+//! A receive-side jitter buffer (playout buffer) for audio (ADR-087): see [`JitterBuffer`].
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -192,8 +164,36 @@ enum Slot<T> {
     Frame(Entry<T>),
 }
 
-/// A jitter buffer for one RTP stream of single-packet frames (audio): see the
-/// [module documentation](self) for how it schedules, adapts and accounts.
+/// A jitter buffer (playout buffer) for one RTP stream of single-packet frames (audio): frames
+/// go in as their packets arrive, in any order, and come out in sequence order at their
+/// playout instants.
+///
+/// - **Playout clock.** A frame of RTP time `ts` plays at `ts + offset`, both in local time.
+///   The offset is the smallest transit time seen lately (arrival minus media time, the
+///   minimum over two windows of 5 s, so a clock drift or a route change moves it) plus the
+///   target delay.
+/// - **Target delay.** The 95th percentile of each packet's delay beyond that smallest transit
+///   (rounded up to 2 ms), from a histogram of 2 ms buckets that forgets with a factor of 0.997 per packet (about
+///   7 s at 50 packets per second), clamped to [`PlayoutDelay`]'s bounds. It is recomputed
+///   every 8 packets, and at once when a packet comes later than it.
+/// - **Adapting.** A longer delay applies at once (the frames still buffered play later, and
+///   the application conceals the pause). A shorter one applies at the start of a talkspurt
+///   (the RTP marker bit, or a timestamp that jumps further than the sequence numbers do, as
+///   after silence suppression or Opus DTX) while nothing is buffered; a stream that never
+///   pauses shortens its delay by at most one frame per second, the frame after the change
+///   then playing that much sooner than its predecessor's end (the application drops or
+///   compresses that much).
+/// - **Losses.** A missing frame is given up when a later frame's playout instant comes: that
+///   frame goes out with `contiguous = false`. A packet arriving after that is *late* and
+///   discarded, as is one arriving when the buffer is full (*overflow*: more than
+///   [`JITTER_BUFFER_MAX_FRAMES`] frames or [`JITTER_BUFFER_MAX_BYTES`] bytes); both are the
+///   discards of RTCP XR VoIP metrics ([`JitterBuffer::drain_discarded`]). A frame arriving
+///   after its own playout instant but before a later frame went out still plays, at once.
+///   Duplicates are dropped.
+///
+/// Memory is bounded (the slots, at most 1002 histogram buckets, at most 4096 discarded
+/// sequence numbers between reports) and so is time: a packet costs O(1) plus, every 8
+/// packets, a scan of the histogram up to the percentile.
 ///
 /// Sans-IO: [`push`](Self::push) frames as their packets arrive (extended sequence number,
 /// RTP timestamp, arrival instant), take frames with [`pop`](Self::pop) when
