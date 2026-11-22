@@ -872,3 +872,210 @@ fn record_sessions_follow_sender_reports() {
         near(end, 0, &format!("{carry:?} sync off, end"));
     }
 }
+
+/// A receiver report's sender SSRC and its report blocks (source, fraction lost, cumulative
+/// lost, extended highest sequence number, jitter, LSR, DLSR), and the CNAME of the SDES that
+/// must follow it in the compound packet.
+#[allow(clippy::type_complexity)]
+fn parse_rr(b: &[u8]) -> Option<(u32, Vec<(u32, u8, i32, u32, u32, u32, u32)>, String)> {
+    let (mut rest, mut rr, mut cname) = (b, None, None);
+    while rest.len() >= 4 {
+        let len = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
+        let p = rest.get(..len)?;
+        let be = |i: usize| u32::from_be_bytes(p[i..i + 4].try_into().unwrap());
+        match p[1] {
+            201 => {
+                let blocks = (0..usize::from(p[0] & 31))
+                    .map(|k| {
+                        let o = 8 + 24 * k;
+                        let lost = (be(o + 4) << 8) as i32 >> 8;
+                        (
+                            be(o),
+                            p[o + 4],
+                            lost,
+                            be(o + 8),
+                            be(o + 12),
+                            be(o + 16),
+                            be(o + 20),
+                        )
+                    })
+                    .collect();
+                rr = Some((be(4), blocks));
+            }
+            202 if p[8] == 1 => {
+                let n = usize::from(p[9]);
+                cname = Some(String::from_utf8_lossy(&p[10..10 + n]).into_owned());
+            }
+            _ => {}
+        }
+        rest = &rest[len..];
+    }
+    let (ssrc, blocks) = rr?;
+    Some((ssrc, blocks, cname?))
+}
+
+/// A RECORD session sends its publisher RTCP receiver reports on the track's RTCP channel
+/// (TCP) or to its RTCP port (UDP): the publisher's SSRC, the packets it skipped as lost, the
+/// highest sequence number (across a wrap), the last sender report's NTP middle bits with
+/// the delay since, and an SDES CNAME. `receiver_report_interval` zero sends none.
+#[test]
+fn record_sessions_send_receiver_reports() {
+    for (udp, every) in [(false, 100), (true, 100), (false, 0)] {
+        let mut cfg = RtspConfig::default();
+        cfg.receiver_report_interval = Duration::from_millis(every);
+        let (_hub, engine, addr) = start(cfg);
+        let track = Track::video(Codec::H264, h264::Config::from_sets(SPS, PPS).encode());
+        let mut s = sdp::Session::new("rec");
+        s.media
+            .push(sdp::track_media(&track, 96, "streamid=0").unwrap());
+        let url = format!("rtsp://{addr}/live/rr");
+        let mut c = Client::connect(addr);
+        let (st, _, _) = c.request(
+            "ANNOUNCE",
+            &url,
+            "Content-Type: application/sdp\r\n",
+            &s.to_string(),
+        );
+        assert_eq!(st, 200);
+        let socks = udp.then(|| {
+            let a = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let b = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            b.set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            (a, b)
+        });
+        let transport = match &socks {
+            Some((a, b)) => format!(
+                "RTP/AVP;unicast;client_port={}-{};mode=record",
+                a.local_addr().unwrap().port(),
+                b.local_addr().unwrap().port()
+            ),
+            None => "RTP/AVP/TCP;unicast;interleaved=0-1;mode=record".to_owned(),
+        };
+        let (st, head, _) = c.request(
+            "SETUP",
+            &format!("{url}/streamid=0"),
+            &format!("Transport: {transport}\r\n"),
+            "",
+        );
+        assert_eq!(st, 200, "{head}");
+        if let Some((a, b)) = &socks {
+            let ports = head
+                .lines()
+                .find_map(|l| l.split("server_port=").nth(1))
+                .unwrap();
+            let (r, t) = ports.split(';').next().unwrap().split_once('-').unwrap();
+            a.connect(SocketAddr::new(addr.ip(), r.trim().parse().unwrap()))
+                .unwrap();
+            b.connect(SocketAddr::new(addr.ip(), t.trim().parse().unwrap()))
+                .unwrap();
+        }
+        assert_eq!(c.request("RECORD", &url, "Session: x\r\n", "").0, 200);
+        c.s.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+
+        let ssrc = 0x1234_5678u32;
+        let ntp = 0xe000_0001_8000_0000u64;
+        let send = |c: &mut Client, rtcp: bool, data: &[u8]| match &socks {
+            Some((a, b)) => {
+                (if rtcp { b } else { a }).send(data).unwrap();
+            }
+            None => {
+                let mut w = Vec::new();
+                interleaved(u8::from(rtcp), data, &mut w);
+                c.s.write_all(&w).unwrap();
+            }
+        };
+        send(
+            &mut c,
+            true,
+            &only_media::rtp::sender_report(ssrc, ntp, 1000, 0, 0),
+        );
+        // 60 packets from sequence number 65510 (wrapping), every 10th one left out.
+        let (first, n) = (65_510u16, 60u16);
+        let mut lost = 0;
+        let mut reports = Vec::new();
+        let read = |c: &mut Client, reports: &mut Vec<Vec<u8>>| match &socks {
+            Some((_, b)) => {
+                let mut buf = [0u8; 1500];
+                while let Ok(k) = b.recv(&mut buf) {
+                    reports.push(buf[..k].to_vec());
+                }
+            }
+            None => {
+                let mut buf = [0u8; 4096];
+                if let Ok(k) = c.s.read(&mut buf) {
+                    c.buf.extend_from_slice(&buf[..k]);
+                }
+                while c.buf.len() >= 4 && c.buf[0] == b'$' {
+                    let len = 4 + usize::from(u16::from_be_bytes([c.buf[2], c.buf[3]]));
+                    if c.buf.len() < len {
+                        break;
+                    }
+                    assert_eq!(c.buf[1], 1, "reports go on the RTCP channel");
+                    reports.push(c.buf[4..len].to_vec());
+                    c.buf.drain(..len);
+                }
+            }
+        };
+        for i in 0..n {
+            let seq = first.wrapping_add(i);
+            if i % 10 == 5 {
+                lost += 1;
+                continue;
+            }
+            let mut p = vec![0x80, 96];
+            p.extend_from_slice(&seq.to_be_bytes());
+            p.extend_from_slice(&(1000 + u32::from(i) * 3000).to_be_bytes());
+            p.extend_from_slice(&ssrc.to_be_bytes());
+            p.extend_from_slice(&[0x41, 0x9a, 0x00, 0x11, 0x22]);
+            send(&mut c, false, &p);
+            std::thread::sleep(Duration::from_millis(10));
+            if i % 8 == 0 {
+                read(&mut c, &mut reports);
+            }
+        }
+        // One more packet after an interval: its report counts everything.
+        std::thread::sleep(Duration::from_millis(every + 20));
+        let last = first.wrapping_add(n);
+        let mut p = vec![0x80, 96];
+        p.extend_from_slice(&last.to_be_bytes());
+        p.extend_from_slice(&(1000 + u32::from(n) * 3000).to_be_bytes());
+        p.extend_from_slice(&ssrc.to_be_bytes());
+        p.extend_from_slice(&[0x41, 0x9a, 0x00, 0x11, 0x22]);
+        send(&mut c, false, &p);
+        for _ in 0..5 {
+            read(&mut c, &mut reports);
+        }
+        engine.shutdown();
+        if every == 0 {
+            assert!(reports.is_empty(), "reports while off: {reports:?}");
+            continue;
+        }
+        assert!(reports.len() >= 3, "udp {udp}: {} reports", reports.len());
+        let parsed: Vec<_> = reports
+            .iter()
+            .map(|r| parse_rr(r).unwrap_or_else(|| panic!("not an RR + SDES: {r:02x?}")))
+            .collect();
+        let (me, _, cname) = &parsed[0];
+        assert!(cname.starts_with("only-media-"), "{cname}");
+        let (_, blocks, _) = parsed.last().unwrap();
+        assert_eq!(blocks.len(), 1);
+        let (src, _fraction, cum, ext_max, _jitter, lsr, dlsr) = blocks[0];
+        assert_eq!(src, ssrc);
+        assert_eq!(cum, lost, "udp {udp}");
+        assert_eq!(
+            ext_max,
+            (1 << 16) + u32::from(last),
+            "udp {udp}: across the wrap"
+        );
+        assert_eq!(lsr, (ntp >> 16) as u32);
+        // The report followed the sender report by the 0.7 s or so the packets took.
+        let since = f64::from(dlsr) / 65536.0;
+        assert!((0.5..5.0).contains(&since), "DLSR {since} s");
+        // Every report comes from the same receiver SSRC, and an earlier one saw the losses
+        // of its interval.
+        assert!(parsed.iter().all(|(s, _, _)| s == me));
+        assert!(parsed.iter().any(|(_, b, _)| b[0].1 > 0), "a fraction lost");
+    }
+}

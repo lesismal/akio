@@ -147,6 +147,13 @@ pub struct RtspClientConfig {
     /// [`pull`]: line the tracks up by the server's RTCP sender reports (default `true`);
     /// `false` keeps each track's times from its first packet's arrival.
     pub rtcp_sync: bool,
+    /// [`pull`]: interval of the RTCP receiver reports (RFC 3550 6.4.2) to the server, one
+    /// per track on its RTCP channel or port (packets lost, highest sequence number, jitter,
+    /// delay since the track's last sender report, with a CNAME), the first half an interval
+    /// after the track's first packet. Default 5 s; `Duration::ZERO` sends none (over UDP an
+    /// empty receiver report then goes to each RTCP port with every keep-alive, for NAT
+    /// bindings).
+    pub receiver_report_interval: Duration,
     /// Connect again when a session fails ([`Reconnect`]). Default `None`: the client ends
     /// with the first error.
     pub reconnect: Option<Reconnect>,
@@ -169,6 +176,7 @@ impl Default for RtspClientConfig {
             user_agent: "only-media".to_owned(),
             push_wait: Duration::from_secs(10),
             rtcp_sync: true,
+            receiver_report_interval: Duration::from_secs(5),
             reconnect: None,
         }
     }
@@ -348,8 +356,18 @@ impl Url {
         if let Some(a) = cfg.addr {
             return Ok(a);
         }
+        self.lookup()
+    }
+
+    /// The address of the host (an IP literal as it is, a name looked up with the system
+    /// resolver, which blocks).
+    fn lookup(&self) -> Result<SocketAddr, ClientError> {
         if let Ok(ip) = self.host.parse::<IpAddr>() {
             return Ok(SocketAddr::new(ip, self.port));
+        }
+        #[cfg(test)]
+        if let Some(a) = tests::resolved(&self.host, self.port) {
+            return a;
         }
         (self.host.as_str(), self.port)
             .to_socket_addrs()
@@ -357,7 +375,35 @@ impl Url {
             .next()
             .ok_or_else(|| ClientError::Resolve(format!("{}: no address", self.host)))
     }
+
+    /// Whether `other` names the same server (host, case-insensitively, and port).
+    fn same_server(&self, other: &Url) -> bool {
+        self.host.eq_ignore_ascii_case(&other.host) && self.port == other.port
+    }
+
+    /// The URL a redirect's `location` points to: absolute (`rtsp://`), or an absolute path
+    /// on this server. The credentials go along to the same server only, unless the location
+    /// has its own.
+    pub(crate) fn follow(&self, location: &str) -> Result<Url, ClientError> {
+        let location = location.trim();
+        let abs = if location.starts_with('/') {
+            let rest = self.request.split_once("://").map_or("", |(_, r)| r);
+            let authority = &rest[..rest.find(['/', '?']).unwrap_or(rest.len())];
+            format!("rtsp://{authority}{location}")
+        } else {
+            location.to_owned()
+        };
+        let mut u = Url::parse(&abs)?;
+        if u.user.is_none() && self.same_server(&u) {
+            u.user.clone_from(&self.user);
+            u.pass.clone_from(&self.pass);
+        }
+        Ok(u)
+    }
 }
+
+/// Redirects followed in a row before the client gives up with the last one's status.
+const MAX_REDIRECTS: usize = 5;
 
 /// Resolves the control `control` of an SDP against `base` the way RTSP servers expect
 /// (appended as a path segment, before any query; absolute controls as they are).
@@ -433,6 +479,14 @@ pub(crate) enum Event {
     NeedPorts(usize),
     /// PLAY or RECORD succeeded.
     Live,
+    /// A 3xx response with a `Location` before the session went live: the session ends and
+    /// the client starts again there.
+    Redirect {
+        method: &'static str,
+        status: u16,
+        reason: String,
+        location: String,
+    },
     /// An interleaved frame of a track (`media` as in [`Plan::media`]).
     Media {
         media: usize,
@@ -780,6 +834,17 @@ impl Machine {
             return;
         }
         self.auth_tries = 0;
+        if (300..400).contains(&r.status) && self.step != Step::Live {
+            if let Some(loc) = r.header("location").filter(|l| clean(l.trim())) {
+                out.push(Event::Redirect {
+                    method: p.method,
+                    status: r.status,
+                    reason: r.reason.clone(),
+                    location: loc.trim().to_owned(),
+                });
+                return;
+            }
+        }
         let ok = (200..300).contains(&r.status);
         match self.step {
             Step::Options => {
@@ -982,6 +1047,8 @@ struct Inner {
     local_ip: Option<IpAddr>,
     keepalive_at: Option<Instant>,
     rr_ssrc: u32,
+    /// Where the server redirected the session (a 3xx before it went live).
+    redirect: Option<String>,
 }
 
 /// One session (one RTSP connection): what the connection, the timer and the caller share.
@@ -1034,6 +1101,7 @@ impl Shared {
                 local_ip: None,
                 keepalive_at: None,
                 rr_ssrc: u32::from_be_bytes(b),
+                redirect: None,
             }),
             cond: Condvar::new(),
         })
@@ -1071,7 +1139,9 @@ impl Shared {
                     };
                     match Recorder::new(p, &medias) {
                         Some(r) => {
-                            let r = r.sync(self.cfg.rtcp_sync);
+                            let r = r
+                                .sync(self.cfg.rtcp_sync)
+                                .reports(self.cfg.receiver_report_interval, g.rr_ssrc);
                             g.recorder = Some(Arc::new(Mutex::new(r)));
                         }
                         None => {
@@ -1094,6 +1164,19 @@ impl Shared {
                     rtcp,
                     data,
                 } => media.push((m, rtcp, data)),
+                Event::Redirect {
+                    method,
+                    status,
+                    reason,
+                    location,
+                } => {
+                    g.redirect = Some(location);
+                    fail.get_or_insert(ClientError::Status {
+                        method,
+                        status,
+                        reason,
+                    });
+                }
                 Event::Fail(e) => {
                     fail.get_or_insert(e);
                 }
@@ -1159,6 +1242,7 @@ impl Shared {
         let now = Instant::now();
         let mut fail = None;
         let mut rr = Vec::new();
+        let mut reports = None;
         {
             let mut g = lock(&self.inner);
             let resp = self.cfg.response_timeout;
@@ -1187,7 +1271,7 @@ impl Shared {
                     g.m.keepalive(now, &mut events);
                     let mut media = Vec::new();
                     self.handle(&mut g, events, &mut media, &mut fail);
-                    if !self.record {
+                    if !self.record && self.cfg.receiver_report_interval.is_zero() {
                         // UDP: an empty receiver report on each track's RTCP port keeps NAT
                         // bindings and servers that watch RTCP happy.
                         if let Some(ip) = g.server_ip {
@@ -1201,13 +1285,61 @@ impl Shared {
                         }
                     }
                 }
+                if let Some(rec) = g.recorder.clone() {
+                    let due = lock(&rec).take_reports();
+                    if !due.is_empty() {
+                        reports = Some((due, self.report_routes(&g)));
+                    }
+                }
             }
         }
         for (sock, to, pkt) in rr {
             let _ = sock.send_to(&pkt, to);
         }
+        if let Some((due, routes)) = reports {
+            for (media, pkt) in due {
+                match routes.iter().find(|r| r.0 == media) {
+                    Some((_, ReportRoute::Tcp(c, ch))) => {
+                        let mut b = Vec::with_capacity(pkt.len() + 4);
+                        message::interleaved(*ch, &pkt, &mut b);
+                        let _ = c.send_owned(b);
+                    }
+                    Some((_, ReportRoute::Udp(sock, to))) => {
+                        let _ = sock.send_to(&pkt, *to);
+                    }
+                    None => {}
+                }
+            }
+        }
         if let Some(e) = fail {
             self.finish(Some(e));
+        }
+    }
+
+    /// Where each set-up media's receiver reports go: its interleaved RTCP channel, or the
+    /// server's RTCP port from the track's RTCP socket.
+    fn report_routes(&self, g: &Inner) -> Vec<(usize, ReportRoute)> {
+        let media = g.m.plan_media();
+        if self.cfg.transport == RtspTransport::Tcp {
+            let Some(c) = &g.conn else { return Vec::new() };
+            media
+                .into_iter()
+                .zip(g.m.channels())
+                .map(|(m, (_, ch))| (m, ReportRoute::Tcp(c.clone(), ch)))
+                .collect()
+        } else {
+            let Some(ip) = g.server_ip else {
+                return Vec::new();
+            };
+            media
+                .into_iter()
+                .zip(g.m.server_ports())
+                .zip(&g.udp)
+                .filter_map(|((m, sp), (_, rtcp))| {
+                    let (_, p) = sp?;
+                    Some((m, ReportRoute::Udp(rtcp.clone(), SocketAddr::new(ip, p))))
+                })
+                .collect()
         }
     }
 
@@ -1276,6 +1408,12 @@ impl Shared {
             c.ended(self, err);
         }
     }
+}
+
+/// Where a receiver report goes ([`Shared::report_routes`]).
+enum ReportRoute {
+    Tcp(Conn<ClientConn>, u8),
+    Udp(Arc<UdpBinding>, SocketAddr),
 }
 
 fn arm(w: Weak<Shared>, every: Duration) {
@@ -1727,8 +1865,8 @@ fn start_push(
 
 /// What a client keeps across its sessions.
 struct Client {
+    /// The URL the client was given.
     url: Url,
-    addr: SocketAddr,
     cfg: RtspClientConfig,
     path: String,
     /// Push: the hub the stream is read from.
@@ -1762,15 +1900,34 @@ struct ClientSt {
     error: Option<ClientError>,
     /// The error that ended the last session.
     last_error: Option<ClientError>,
+    /// Where a `301 Moved Permanently` sent the client: later sessions start there.
+    moved: Option<Url>,
+}
+
+/// Why a session could not start: before it existed (a lookup, a redirect's URL, the hub;
+/// the caller handles it), or the session failed (and the client heard of it through
+/// [`Client::ended`]).
+enum Failed {
+    Before(ClientError),
+    Session(ClientError),
+}
+
+impl Failed {
+    fn error(self) -> ClientError {
+        match self {
+            Failed::Before(e) | Failed::Session(e) => e,
+        }
+    }
 }
 
 /// Whether a session that ended with `err` is worth trying again.
 fn retryable(err: Option<&ClientError>) -> bool {
+    // A lookup that fails on a reconnect is tried again (the name may come back); the first
+    // session's failures go to the caller instead.
     match err {
         None
         | Some(
             ClientError::Url(_)
-            | ClientError::Resolve(_)
             | ClientError::Unauthorized
             | ClientError::NoTracks
             | ClientError::Hub(_),
@@ -1781,60 +1938,101 @@ fn retryable(err: Option<&ClientError>) -> bool {
 }
 
 impl Client {
-    /// The session machine: playing, or recording the hub stream's `tracks`.
-    fn machine(&self, tracks: Option<&Tracks>) -> Result<Machine, ClientError> {
+    /// The session machine of `url`: playing, or recording the hub stream's `tracks`.
+    fn machine(&self, url: &Url, tracks: Option<&Tracks>) -> Result<Machine, ClientError> {
         Ok(match tracks {
-            Some(t) => Machine::record(self.url.clone(), t, &self.cfg)?,
-            None => Machine::play(self.url.clone(), &self.cfg),
+            Some(t) => Machine::record(url.clone(), t, &self.cfg)?,
+            None => Machine::play(url.clone(), &self.cfg),
         })
     }
 
-    /// Starts a session of `m` on `engine` and drives it until it plays or records (a push
-    /// subscribes to the hub stream, of `tracks`). Its failures also reach
-    /// [`ended`](Self::ended).
+    /// The address to dial for `url`: [`RtspClientConfig::addr`] for the URL the client was
+    /// given, else the host looked up now (again for every session, so a server that moved
+    /// to another address is found).
+    fn address(&self, url: &Url) -> Result<SocketAddr, ClientError> {
+        match self.cfg.addr {
+            Some(a) if self.url.same_server(url) => Ok(a),
+            _ => url.lookup(),
+        }
+    }
+
+    /// Starts a session on `engine` and drives it until it plays or records (a push
+    /// subscribes to the hub stream, of `tracks`), following up to [`MAX_REDIRECTS`]
+    /// redirects. `addr`: the address of the client's URL, when just looked up. A session's
+    /// failures also reach [`ended`](Self::ended).
     fn session(
         self: &Arc<Self>,
         engine: &Engine,
-        m: Machine,
         tracks: Option<&Tracks>,
-    ) -> Result<(), ClientError> {
-        let s = Shared::new(
-            self.cfg.clone(),
-            m,
-            self.publisher.clone(),
-            &self.path,
-            true,
-            Arc::downgrade(self),
-        );
-        {
-            let mut g = lock(&self.st);
-            if g.ending {
-                return Err(ClientError::Closed);
+        mut addr: Option<SocketAddr>,
+    ) -> Result<(), Failed> {
+        let mut url = lock(&self.st)
+            .moved
+            .clone()
+            .unwrap_or_else(|| self.url.clone());
+        let mut hops = 0;
+        loop {
+            let m = self.machine(&url, tracks).map_err(Failed::Before)?;
+            let to = match addr.take() {
+                Some(a) => a,
+                None => self.address(&url).map_err(Failed::Before)?,
+            };
+            let s = Shared::new(
+                self.cfg.clone(),
+                m,
+                self.publisher.clone(),
+                &self.path,
+                true,
+                Arc::downgrade(self),
+            );
+            {
+                let mut g = lock(&self.st);
+                if g.ending {
+                    return Err(Failed::Before(ClientError::Closed));
+                }
+                g.session = Some(s.clone());
             }
-            g.session = Some(s.clone());
+            if let Err(e) = establish(engine, to, &s) {
+                let Some(loc) = lock(&s.inner).redirect.take() else {
+                    return Err(Failed::Session(e));
+                };
+                // Redirected: [`ended`](Self::ended) left it to this loop.
+                if hops == MAX_REDIRECTS {
+                    return Err(Failed::Before(e));
+                }
+                hops += 1;
+                url = url.follow(&loc).map_err(Failed::Before)?;
+                if matches!(e, ClientError::Status { status: 301, .. }) {
+                    lock(&self.st).moved = Some(url.clone());
+                }
+                continue;
+            }
+            if let (Some(hub), Some(t)) = (&self.hub, tracks) {
+                start_push(&s, hub, t, to).map_err(Failed::Session)?;
+            }
+            let mut g = lock(&self.st);
+            if !g.session.as_ref().is_some_and(|x| Arc::ptr_eq(x, &s)) {
+                // It ended right after going live: `ended` took it (and, after a first session,
+                // scheduled the next try); the first one's error goes to the caller.
+                drop(g);
+                let e = lock(&s.inner).error.clone().unwrap_or(ClientError::Closed);
+                return Err(Failed::Session(e));
+            }
+            if g.established {
+                g.reconnects += 1;
+            }
+            g.established = true;
+            g.attempts = 0;
+            g.last_error = None;
+            return Ok(());
         }
-        establish(engine, self.addr, &s)?;
-        if let (Some(hub), Some(t)) = (&self.hub, tracks) {
-            start_push(&s, hub, t, self.addr)?;
-        }
-        let mut g = lock(&self.st);
-        if !g.session.as_ref().is_some_and(|x| Arc::ptr_eq(x, &s)) {
-            // It ended right after going live: `ended` took it (and, after a first session,
-            // scheduled the next try); the first one's error goes to the caller.
-            drop(g);
-            return Err(lock(&s.inner).error.clone().unwrap_or(ClientError::Closed));
-        }
-        if g.established {
-            g.reconnects += 1;
-        }
-        g.established = true;
-        g.attempts = 0;
-        g.last_error = None;
-        Ok(())
     }
 
     /// Session `s` ended with `err`: reconnect, or end the client.
     fn ended(self: &Arc<Self>, s: &Shared, err: Option<ClientError>) {
+        if lock(&s.inner).redirect.is_some() {
+            return; // [`session`](Self::session) follows it
+        }
         {
             let mut g = lock(&self.st);
             if !g
@@ -1901,10 +2099,9 @@ impl Client {
             },
             None => None,
         };
-        match self.machine(tracks.as_ref()) {
-            // Its failures go through `ended`.
-            Ok(m) => drop(self.session(&engine, m, tracks.as_ref())),
-            Err(e) => self.failed(Some(e)),
+        // A session's failures went through `ended`.
+        if let Err(Failed::Before(e)) = self.session(&engine, tracks.as_ref(), None) {
+            self.failed(Some(e));
         }
     }
 
@@ -2032,7 +2229,6 @@ pub fn pull(
         .map_err(ClientError::Hub)?;
     let c = Arc::new(Client {
         url,
-        addr,
         cfg,
         path: path.to_owned(),
         hub: None,
@@ -2040,9 +2236,10 @@ pub fn pull(
         st: Mutex::new(ClientSt::default()),
         closed: AtomicBool::new(false),
     });
-    match c.machine(None).and_then(|m| c.session(engine, m, None)) {
+    match c.session(engine, None, Some(addr)) {
         Ok(()) => Ok(RtspClient(c)),
         Err(e) => {
+            let e = e.error();
             c.end(Some(e.clone()));
             Err(e)
         }
@@ -2074,7 +2271,6 @@ pub fn push(
     let tracks = wait_tracks(hub, path, cfg.push_wait)?;
     let c = Arc::new(Client {
         url,
-        addr,
         cfg,
         path: path.to_owned(),
         hub: Some(hub.clone()),
@@ -2082,12 +2278,10 @@ pub fn push(
         st: Mutex::new(ClientSt::default()),
         closed: AtomicBool::new(false),
     });
-    match c
-        .machine(Some(&tracks))
-        .and_then(|m| c.session(engine, m, Some(&tracks)))
-    {
+    match c.session(engine, Some(&tracks), Some(addr)) {
         Ok(()) => Ok(RtspClient(c)),
         Err(e) => {
+            let e = e.error();
             c.end(Some(e.clone()));
             Err(e)
         }
@@ -2205,6 +2399,31 @@ mod tests {
     fn header<'a>(req: &'a str, name: &str) -> Option<&'a str> {
         req.lines()
             .find_map(|l| l.strip_prefix(&format!("{name}: ")))
+    }
+
+    /// Test lookups: host name -> address (whatever the URL's port), set by the tests (each
+    /// with names of its own) instead of the system resolver.
+    static NAMES: Mutex<Vec<(String, SocketAddr)>> = Mutex::new(Vec::new());
+
+    pub(super) fn resolved(host: &str, _port: u16) -> Option<Result<SocketAddr, ClientError>> {
+        let g = lock(&NAMES);
+        if !host.ends_with(".test") {
+            return None;
+        }
+        Some(
+            g.iter()
+                .find(|(h, _)| h == host)
+                .map(|(_, a)| *a)
+                .ok_or_else(|| ClientError::Resolve(format!("{host}: unknown"))),
+        )
+    }
+
+    fn set_name(host: &str, addr: Option<SocketAddr>) {
+        let mut g = lock(&NAMES);
+        g.retain(|(h, _)| h != host);
+        if let Some(a) = addr {
+            g.push((host.to_owned(), a));
+        }
     }
 
     #[test]
@@ -2677,6 +2896,563 @@ mod tests {
         let r = pull(&e, &format!("rtsp://{addr}/s"), &hub, "live/x", cfg);
         assert_eq!(r.unwrap_err(), ClientError::Timeout("response"));
         assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+        e.shutdown();
+    }
+
+    #[test]
+    fn redirect_urls() {
+        let u = Url::parse("rtsp://u:p@cam.local:8554/live/s?t=1").unwrap();
+        // Absolute path: same server, credentials kept.
+        let r = u.follow("/other/x?y=2").unwrap();
+        assert_eq!(r.request, "rtsp://cam.local:8554/other/x?y=2");
+        assert_eq!(
+            (r.user.as_deref(), r.pass.as_deref()),
+            (Some("u"), Some("p"))
+        );
+        // The same server named in another case: kept too.
+        let r = u.follow("rtsp://CAM.local:8554/a").unwrap();
+        assert_eq!(r.user.as_deref(), Some("u"));
+        // Another server (or port): dropped, unless the location has its own.
+        assert_eq!(u.follow("rtsp://other:8554/a").unwrap().user, None);
+        assert_eq!(u.follow("rtsp://cam.local:554/a").unwrap().user, None);
+        let r = u.follow("rtsp://v:q@other/a").unwrap();
+        assert_eq!(
+            (r.user.as_deref(), r.pass.as_deref()),
+            (Some("v"), Some("q"))
+        );
+        assert!(matches!(u.follow("http://x/y"), Err(ClientError::Url(_))));
+        assert!(matches!(
+            u.follow("relative/path"),
+            Err(ClientError::Url(_))
+        ));
+    }
+
+    /// A 3xx with a `Location` before the session is live is a redirect; without one, a
+    /// refusal; a 3xx answering a keep-alive is not followed.
+    #[test]
+    fn redirects_in_the_machine() {
+        let now = Instant::now();
+        let cfg = RtspClientConfig::default();
+        let mut m = Machine::play(Url::parse("rtsp://127.0.0.1/a").unwrap(), &cfg);
+        let mut ev = Vec::new();
+        m.start(now, &mut ev);
+        ev.clear();
+        m.feed(&reply(1, "RTSP/1.0 200 OK", ""), now, &mut ev);
+        ev.clear();
+        let r = b"RTSP/1.0 302 Found\r\nCSeq: 2\r\nLocation: rtsp://10.0.0.2/b\r\n\r\n";
+        m.feed(r, now, &mut ev);
+        assert!(matches!(
+            &ev[..],
+            [Event::Redirect { method: "DESCRIBE", status: 302, location, .. }]
+                if location == "rtsp://10.0.0.2/b"
+        ));
+        let mut m = Machine::play(Url::parse("rtsp://127.0.0.1/a").unwrap(), &cfg);
+        let mut ev = Vec::new();
+        m.start(now, &mut ev);
+        ev.clear();
+        m.feed(b"RTSP/1.0 301 Moved\r\nCSeq: 1\r\n\r\n", now, &mut ev);
+        // OPTIONS refused is not fatal (DESCRIBE follows); DESCRIBE without a location is.
+        ev.clear();
+        m.feed(b"RTSP/1.0 305 Use Proxy\r\nCSeq: 2\r\n\r\n", now, &mut ev);
+        assert!(matches!(
+            &ev[..],
+            [Event::Fail(ClientError::Status { status: 305, .. })]
+        ));
+    }
+
+    /// One looped sample published at `path` in real time until the flag is set.
+    fn feed_sample(hub: &Hub, path: &str) -> Arc<AtomicBool> {
+        use crate::flv::{Decoder, Demuxer, Event as F};
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        let data = include_bytes!("../../testdata/h264_aac.flv");
+        for t in Demuxer::new().feed(data).unwrap() {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    F::Tracks(t) => tracks = Some(t),
+                    F::Packet(p) => pkts.push(p),
+                }
+            }
+        }
+        let p = hub
+            .publish(path, tracks.unwrap(), PeerInfo::default())
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        std::thread::spawn(move || {
+            let span = pkts.iter().map(|p| p.dts).max().unwrap_or(0) + 40_000_000;
+            let start = Instant::now();
+            for round in 0.. {
+                for pkt in &pkts {
+                    if s.load(Ordering::Relaxed) {
+                        p.close();
+                        return;
+                    }
+                    let off = round * span;
+                    let at = Duration::from_nanos((pkt.dts + off).max(0) as u64);
+                    if let Some(d) = at.checked_sub(start.elapsed()) {
+                        std::thread::sleep(d);
+                    }
+                    p.write(Packet::new(
+                        pkt.track,
+                        pkt.dts + off,
+                        pkt.pts + off,
+                        pkt.keyframe,
+                        pkt.data.clone(),
+                    ));
+                }
+            }
+        });
+        stop
+    }
+
+    /// An RTSP server of this crate with `src` published, on an engine that also dials.
+    fn media_server() -> (Hub, Arc<Engine>, SocketAddr, Arc<AtomicBool>) {
+        let hub = Hub::default();
+        let srv = super::super::RtspServer::new(hub.clone(), super::super::RtspConfig::default());
+        let e = Arc::new(
+            Engine::builder()
+                .listen(only::Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(srv))
+                .client_threads(1)
+                .udp_client_threads(1)
+                .build()
+                .unwrap(),
+        );
+        e.start().unwrap();
+        let addr = e.local_addrs()[0];
+        let stop = feed_sample(&hub, "src");
+        (hub, e, addr, stop)
+    }
+
+    fn wait_until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !f() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Packets of `path` arriving from now on.
+    fn packets_after(hub: &Hub, path: &str) -> u64 {
+        hub.stream_info(path)
+            .filter(|i| i.publishing)
+            .map_or(0, |i| i.packets_in)
+    }
+
+    /// A server answering every request but OPTIONS with `status` and the `Location` that
+    /// `location` gives for the connection number; counts its connections.
+    fn redirector(
+        status: u16,
+        location: impl Fn(usize) -> String + Send + 'static,
+    ) -> (SocketAddr, Arc<AtomicU64>, Arc<AtomicBool>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let addr = l.local_addr().unwrap();
+        let (conns, stop) = (
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (c2, s2) = (conns.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !s2.load(Ordering::Relaxed) {
+                let Ok((mut s, _)) = l.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let n = c2.fetch_add(1, Ordering::SeqCst) as usize;
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = Vec::new();
+                let mut b = [0u8; 4096];
+                'conn: while let Ok(k) = s.read(&mut b) {
+                    if k == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&b[..k]);
+                    while let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                        buf.drain(..end + 4);
+                        let cseq = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("CSeq: "))
+                            .unwrap_or("0")
+                            .to_owned();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("Content-Length: "))
+                            .map_or(0, |v| v.trim().parse().unwrap());
+                        buf.drain(..len.min(buf.len()));
+                        let r = if head.starts_with("OPTIONS") {
+                            format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n\r\n")
+                        } else {
+                            format!(
+                                "RTSP/1.0 {status} Moved\r\nCSeq: {cseq}\r\nLocation: {}\r\n\r\n",
+                                location(n)
+                            )
+                        };
+                        if s.write_all(r.as_bytes()).is_err() {
+                            break 'conn;
+                        }
+                    }
+                }
+            }
+        });
+        (addr, conns, stop)
+    }
+
+    /// Pull and push follow 302s (two in a row) to the server that has the stream; a 301
+    /// is remembered for the next session; a redirect loop ends after `MAX_REDIRECTS` with
+    /// the last refusal.
+    #[test]
+    fn clients_follow_redirects() {
+        let (hub, e, media, stop) = media_server();
+        let (hop2, _, s2) = redirector(302, move |_| format!("rtsp://{media}/src"));
+        let (hop1, _, s1) = redirector(302, move |_| format!("rtsp://{hop2}/src"));
+        let pulled = pull(
+            &e,
+            &format!("rtsp://{hop1}/x"),
+            &hub,
+            "pulled",
+            RtspClientConfig::default(),
+        )
+        .unwrap();
+        wait_until("pulled live", 10, || packets_after(&hub, "pulled") > 20);
+        drop(pulled);
+        // Push: ANNOUNCE redirected.
+        let (hop, _, s3) = redirector(307, move |_| format!("rtsp://{media}/pushed"));
+        let pushed = push(
+            &e,
+            &format!("rtsp://{hop}/x"),
+            &hub,
+            "src",
+            RtspClientConfig::default(),
+        )
+        .unwrap();
+        wait_until("pushed live", 10, || packets_after(&hub, "pushed") > 20);
+        drop(pushed);
+        // A loop: the bound, with the last refusal.
+        let (lp, conns, s4) = redirector(302, |_| "/again".to_owned());
+        let r = pull(
+            &e,
+            &format!("rtsp://{lp}/x"),
+            &hub,
+            "loop",
+            RtspClientConfig::default(),
+        );
+        assert!(matches!(
+            r.unwrap_err(),
+            ClientError::Status {
+                method: "DESCRIBE",
+                status: 302,
+                ..
+            }
+        ));
+        assert_eq!(conns.load(Ordering::SeqCst) as usize, MAX_REDIRECTS + 1);
+        assert!(
+            hub.reserve("loop", PeerInfo::default()).is_ok(),
+            "path released"
+        );
+        // 301: reconnects go straight to the new place.
+        let (moved, conns, s5) = redirector(301, move |_| format!("rtsp://{media}/src"));
+        let cfg = RtspClientConfig {
+            reconnect: Some(Reconnect::new(&e).initial_delay(Duration::from_millis(50))),
+            ..RtspClientConfig::default()
+        };
+        let c = pull(&e, &format!("rtsp://{moved}/x"), &hub, "moved", cfg).unwrap();
+        wait_until("moved live", 10, || packets_after(&hub, "moved") > 20);
+        // Cut the session: the server drops its publisher and players.
+        stop.store(true, Ordering::Relaxed);
+        wait_until("moved session ends", 10, || !c.is_live());
+        let stop = feed_sample(&hub, "src");
+        wait_until("moved reconnected", 15, || {
+            c.reconnects() >= 1 && c.is_live()
+        });
+        assert_eq!(conns.load(Ordering::SeqCst), 1, "the 301 was remembered");
+        drop(c);
+        for s in [s1, s2, s3, s4, s5, stop] {
+            s.store(true, Ordering::Relaxed);
+        }
+        e.shutdown();
+    }
+
+    /// A TCP forwarder to `to` that can be cut: its connections closed and its port freed.
+    struct Forward {
+        addr: SocketAddr,
+        stop: Arc<AtomicBool>,
+        conns: Arc<Mutex<Vec<std::net::TcpStream>>>,
+    }
+
+    impl Forward {
+        fn new(to: SocketAddr) -> Forward {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.set_nonblocking(true).unwrap();
+            let addr = l.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let conns: Arc<Mutex<Vec<std::net::TcpStream>>> = Arc::default();
+            let (s2, c2) = (stop.clone(), conns.clone());
+            std::thread::spawn(move || {
+                while !s2.load(Ordering::Relaxed) {
+                    let Ok((a, _)) = l.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    let _ = a.set_nonblocking(false);
+                    let Ok(b) = std::net::TcpStream::connect(to) else {
+                        continue;
+                    };
+                    for (mut x, mut y) in [
+                        (a.try_clone().unwrap(), b.try_clone().unwrap()),
+                        (b.try_clone().unwrap(), a.try_clone().unwrap()),
+                    ] {
+                        std::thread::spawn(move || {
+                            let _ = std::io::copy(&mut x, &mut y);
+                            let _ = y.shutdown(std::net::Shutdown::Both);
+                        });
+                    }
+                    lock(&c2).extend([a, b]);
+                }
+            });
+            Forward { addr, stop, conns }
+        }
+
+        fn cut(&self) {
+            self.stop.store(true, Ordering::Relaxed);
+            for c in lock(&self.conns).drain(..) {
+                let _ = c.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    /// Each reconnect looks the host name up again: the server's name moves to another
+    /// address while the first one is gone, and the client finds it there (pull and push).
+    /// A name that stops resolving is tried again, not the end of the client.
+    #[test]
+    fn reconnects_look_the_name_up_again() {
+        let (hub, e, media, stop) = media_server();
+        let a = Forward::new(media);
+        set_name("cam-rr.test", Some(a.addr));
+        let cfg = RtspClientConfig {
+            reconnect: Some(Reconnect::new(&e).initial_delay(Duration::from_millis(50))),
+            idle_timeout: Duration::from_secs(2),
+            ..RtspClientConfig::default()
+        };
+        let pulled = pull(&e, "rtsp://cam-rr.test:9/src", &hub, "pulled", cfg.clone()).unwrap();
+        let pushed = push(&e, "rtsp://cam-rr.test:9/pushed", &hub, "src", cfg).unwrap();
+        wait_until("live", 10, || {
+            packets_after(&hub, "pulled") > 20 && packets_after(&hub, "pushed") > 20
+        });
+        // The name stops resolving, the server goes away: the clients keep trying.
+        set_name("cam-rr.test", None);
+        a.cut();
+        wait_until("sessions end", 10, || {
+            !pulled.is_live() && !pushed.is_live()
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!pulled.is_closed() && !pushed.is_closed());
+        assert!(
+            matches!(pulled.error(), Some(ClientError::Resolve(_))),
+            "{:?}",
+            pulled.error()
+        );
+        // The name comes back at another address.
+        let b = Forward::new(media);
+        set_name("cam-rr.test", Some(b.addr));
+        wait_until("reconnected", 20, || {
+            pulled.is_live()
+                && pushed.is_live()
+                && pulled.reconnects() >= 1
+                && pushed.reconnects() >= 1
+        });
+        let before = packets_after(&hub, "pulled");
+        wait_until("pulled flows again", 10, || {
+            packets_after(&hub, "pulled") > before + 20
+        });
+        drop((pulled, pushed));
+        b.cut();
+        set_name("cam-rr.test", None);
+        stop.store(true, Ordering::Relaxed);
+        e.shutdown();
+    }
+
+    /// A server that answers a pull's handshake (one H.264 track, TCP or UDP), then sends RTP
+    /// with gaps after a sender report, and collects the RTCP the client sends back.
+    type Collected = Arc<Mutex<Vec<Vec<u8>>>>;
+
+    fn reporting_server(udp: bool) -> (SocketAddr, Collected, Arc<AtomicBool>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let got: Collected = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (g2, s2) = (got.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+            let rtp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let rtcp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            rtcp.set_read_timeout(Some(Duration::from_millis(5)))
+                .unwrap();
+            let ports = (
+                rtp.local_addr().unwrap().port(),
+                rtcp.local_addr().unwrap().port(),
+            );
+            let sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=x\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1; sprop-parameter-sets=Z2QADazZQUH7ARAAAAMAEAAAAwMg8UKZYA==,aOvjyyLA\r\na=control:trackID=0\r\n";
+            let (mut buf, mut client_rtp, mut playing) = (Vec::new(), None, false);
+            let (mut seq, mut sent) = (100u16, 0u32);
+            let ssrc = 0x0bad_cafeu32;
+            let mut b = [0u8; 4096];
+            while !s2.load(Ordering::Relaxed) {
+                match s.read(&mut b) {
+                    Ok(0) => return,
+                    Ok(k) => buf.extend_from_slice(&b[..k]),
+                    Err(_) => {}
+                }
+                // Interleaved frames from the client.
+                loop {
+                    if buf.len() >= 4 && buf[0] == b'$' {
+                        let n = 4 + usize::from(u16::from_be_bytes([buf[2], buf[3]]));
+                        if buf.len() < n {
+                            break;
+                        }
+                        if buf[1] == 1 {
+                            lock(&g2).push(buf[4..n].to_vec());
+                        }
+                        buf.drain(..n);
+                        continue;
+                    }
+                    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        break;
+                    };
+                    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+                    buf.drain(..end + 4);
+                    let cseq = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("CSeq: "))
+                        .unwrap_or("0")
+                        .to_owned();
+                    let method = head.split(' ').next().unwrap_or("").to_owned();
+                    let extra = match method.as_str() {
+                        "DESCRIBE" => format!(
+                            "Content-Base: rtsp://{addr}/cam/\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+                            sdp.len()
+                        ),
+                        "SETUP" => {
+                            let t = if udp {
+                                let cp = head.split("client_port=").nth(1).unwrap();
+                                let cp = cp.split([';', '\r']).next().unwrap();
+                                let (a, _) = cp.split_once('-').unwrap();
+                                client_rtp = Some(SocketAddr::new(addr.ip(), a.parse().unwrap()));
+                                format!(
+                                    "RTP/AVP;unicast;client_port={cp};server_port={}-{}",
+                                    ports.0, ports.1
+                                )
+                            } else {
+                                "RTP/AVP/TCP;unicast;interleaved=0-1".to_owned()
+                            };
+                            format!("Transport: {t}\r\nSession: 77;timeout=60\r\n\r\n")
+                        }
+                        "PLAY" => {
+                            playing = true;
+                            "Session: 77\r\n\r\n".to_owned()
+                        }
+                        _ => "Public: OPTIONS, DESCRIBE, SETUP, PLAY, GET_PARAMETER\r\n\r\n"
+                            .to_owned(),
+                    };
+                    let r = format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n{extra}");
+                    s.write_all(r.as_bytes()).unwrap();
+                    if method == "PLAY" {
+                        // The sender report first.
+                        let sr = rtp::sender_report(ssrc, 0xe000_0000_0001_0000, 0, 0, 0);
+                        match client_rtp {
+                            Some(to) => {
+                                let to = SocketAddr::new(to.ip(), to.port() + 1);
+                                rtp.send_to(&sr, to).unwrap();
+                            }
+                            None => {
+                                let mut w = Vec::new();
+                                message::interleaved(1, &sr, &mut w);
+                                s.write_all(&w).unwrap();
+                            }
+                        }
+                    }
+                }
+                if let Ok((k, _)) = rtcp.recv_from(&mut b) {
+                    lock(&g2).push(b[..k].to_vec());
+                }
+                if playing {
+                    // One packet per round (about 20 ms), every 10th sequence number skipped.
+                    if seq % 10 == 5 {
+                        seq = seq.wrapping_add(1);
+                    }
+                    let mut p = vec![0x80, 96];
+                    p.extend_from_slice(&seq.to_be_bytes());
+                    p.extend_from_slice(&(sent * 1800).to_be_bytes());
+                    p.extend_from_slice(&ssrc.to_be_bytes());
+                    p.extend_from_slice(&[0x41, 0x9a, 0x00, 0x11]);
+                    seq = seq.wrapping_add(1);
+                    sent += 1;
+                    match client_rtp {
+                        Some(to) => {
+                            let _ = rtp.send_to(&p, to);
+                        }
+                        None => {
+                            let mut w = Vec::new();
+                            message::interleaved(0, &p, &mut w);
+                            if s.write_all(&w).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        (addr, got, stop)
+    }
+
+    /// A pull sends the server receiver reports on the track's RTCP channel or port: the
+    /// server's SSRC, its losses, the last sender report; none with the interval zero.
+    #[test]
+    fn pulls_send_receiver_reports() {
+        let e = engine();
+        for (udp, every) in [(false, 200), (true, 200), (false, 0)] {
+            let (addr, got, stop) = reporting_server(udp);
+            let hub = Hub::default();
+            let cfg = RtspClientConfig {
+                transport: if udp {
+                    RtspTransport::Udp
+                } else {
+                    RtspTransport::Tcp
+                },
+                receiver_report_interval: Duration::from_millis(every),
+                ..RtspClientConfig::default()
+            };
+            let c = pull(&e, &format!("rtsp://{addr}/cam"), &hub, "rr", cfg).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(c);
+            stop.store(true, Ordering::Relaxed);
+            let got = lock(&got).clone();
+            let rrs: Vec<&Vec<u8>> = got.iter().filter(|p| p.len() > 8 && p[1] == 201).collect();
+            if every == 0 {
+                assert!(rrs.iter().all(|p| p[0] & 31 == 0), "udp {udp}: {rrs:02x?}");
+                continue;
+            }
+            assert!(
+                rrs.len() >= 3,
+                "udp {udp}: {} reports in {got:02x?}",
+                rrs.len()
+            );
+            let last = rrs.last().unwrap();
+            assert_eq!(last[0], 0x81, "one report block");
+            let be = |i: usize| u32::from_be_bytes(last[i..i + 4].try_into().unwrap());
+            assert_eq!(be(8), 0x0bad_cafe);
+            let lost = be(12) & 0xff_ffff;
+            assert!(lost >= 3, "udp {udp}: lost {lost}");
+            assert_eq!(be(24), 0x0000_0001, "LSR");
+            // The SDES with the CNAME follows.
+            let sdes = &last[32..];
+            assert_eq!((sdes[1], sdes[8]), (202, 1));
+        }
         e.shutdown();
     }
 }

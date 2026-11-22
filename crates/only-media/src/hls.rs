@@ -2469,13 +2469,25 @@ mod tests {
                 let key = q.keyframe && !seen_key;
                 seen_key |= key;
                 end = q.dts + round * span;
-                p.write(Packet::new(q.track, end, q.pts + round * span, key, q.data.clone()));
+                p.write(Packet::new(
+                    q.track,
+                    end,
+                    q.pts + round * span,
+                    key,
+                    q.data.clone(),
+                ));
             }
         }
         let n = asked.load(Ordering::SeqCst) - joined;
         let want = u64::try_from(end / (2 * SECOND)).unwrap();
-        assert!(n >= want.saturating_sub(1) && n <= want, "{n} requests over {end} ns");
-        assert!(lock(&st.state).segments.is_empty(), "no keyframe came: no segment");
+        assert!(
+            n >= want.saturating_sub(1) && n <= want,
+            "{n} requests over {end} ns"
+        );
+        assert!(
+            lock(&st.state).segments.is_empty(),
+            "no keyframe came: no segment"
+        );
         // The keyframe that answers closes the segment.
         let k = pkts.iter().find(|q| q.keyframe).unwrap();
         let at = end + 40 * crate::av::MILLISECOND;
