@@ -552,7 +552,7 @@ impl EngineBuilder {
             tcp_dial,
             accel,
             telemetry,
-            numa,
+            numa: Box::new(numa),
         })
     }
 }
@@ -906,7 +906,8 @@ pub struct Engine {
     tcp_dial: Option<usize>,
     accel: Vec<AccelStatus>,
     telemetry: Arc<Telemetry>,
-    numa: NumaStatus,
+    /// Boxed: `Engine` is embedded by value in clients, keep it small.
+    numa: Box<NumaStatus>,
 }
 
 impl std::fmt::Debug for Engine {
