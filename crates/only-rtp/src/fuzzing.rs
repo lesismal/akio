@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::fec::{FecDecoder, FecEncoder, FecHeader, FecScheme, UlpLevelSpec, red};
 use crate::{
-    BurstLossModel, CcfbSender, Extension, ExtensionMap, ReceiptLog, RecvStream, RleReport,
+    BurstLossModel, CcfbSender, EModel, Extension, ExtensionMap, ReceiptLog, RecvStream, RleReport,
     RrtrResponder, Rtcp, RtpHeader, SdesItem, TmmbrHandler, TwccSender, VoipQuality, XrBlock,
     bounded_bitrate, bounding_set, parse_compound, write_compound,
 };
@@ -146,6 +146,21 @@ pub fn rtp_rtcp(data: &[u8]) {
                                 assert!(out.r_factor <= 100 || out.r_factor == 127);
                                 assert!((10..=50).contains(&out.mos_lq) || out.mos_lq == 127);
                                 assert!(out.rerl <= 126);
+                                // Decoding is stable through another report.
+                                let got = v.quality();
+                                assert_eq!(m.report(*ssrc, 20, &got).quality(), got);
+                                for codec in ["opus", "PCMU", "g722", "G729"] {
+                                    let e = EModel::for_codec(codec, got.plc).unwrap_or_default();
+                                    let s = e.estimate_report(
+                                        &m,
+                                        &got,
+                                        Duration::from_millis(u64::from(v.gap_duration)),
+                                        Duration::from_millis(20),
+                                    );
+                                    assert!((0.0..=100.0).contains(&s.r_factor));
+                                    assert!((1.0..=4.5).contains(&s.mos_cq));
+                                    assert!(s.r_factor <= s.r_lq + 1e-9);
+                                }
                             }
                             XrBlock::ReceiverReferenceTime { ntp } => {
                                 rrtr.on_rrtr(now, *ssrc, *ntp);

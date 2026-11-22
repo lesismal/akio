@@ -550,6 +550,33 @@ impl Peer {
         })?
     }
 
+    /// What the application knows of the call quality of the audio received on `mid`, for
+    /// the RTCP XR VoIP metrics about it (RFC 3611 §4.7,
+    /// [`RtcConfig::enable_rtcp_xr_blocks`]): only the application decodes and plays the
+    /// audio, so the speech and noise levels (for example [`only_rtp::pcm_level_dbm0`]),
+    /// the residual echo return loss, the jitter buffer, the end system delay, the
+    /// concealment and an external segment's R factor are its to give; anything left `None`
+    /// is sent unavailable (127). An R factor or MOS given replaces the estimate this side
+    /// makes (the E-model, ITU-T G.107 / G.107.1, from the loss, its burstiness, the round
+    /// trip and the end system delay); a known jitter buffer's nominal delay improves it.
+    /// `model` replaces the received codec's planning values ([`only_rtp::EModel::for_codec`];
+    /// G.711 with concealment for a codec without any). Applies from the next report.
+    /// [`Error::UnknownMedia`] when there is no such line.
+    pub fn set_voip_quality(
+        &self,
+        mid: Mid,
+        quality: only_rtp::VoipQuality,
+        model: Option<only_rtp::EModel>,
+    ) -> Result<(), Error> {
+        self.with_rtc_inner(|rtc| {
+            if rtc.set_voip_quality(mid, quality, model) {
+                Ok(())
+            } else {
+                Err(Error::UnknownMedia)
+            }
+        })?
+    }
+
     /// Changes the bounds of the bandwidth estimate (bits per second; see
     /// [`RtcConfig::set_bwe_bounds`]): a maximum raised above the estimate is probed at once.
     /// Nothing happens without the estimator ([`RtcConfig::enable_bwe`]).

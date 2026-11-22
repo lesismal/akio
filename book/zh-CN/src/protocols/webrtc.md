@@ -284,10 +284,30 @@ let cfg = only_webrtc::rtc_config()
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
-  音频行发送，丢包、突发与间隙字段实测，带往返时间，以及由 E-model（ITU-T G.107，所有编解码器均按
-  G.711 的值）根据丢包、其突发性、往返时间与抖动算出的 R 因子、MOS-LQ 与 MOS-CQ；电平与抖动缓冲字段为
-  不可用。收到的块以
-  `XrReceipts` 与 `VoipMetrics` 事件报告，并累计到统计中。
+  音频行发送，丢包、突发与间隙字段实测，带往返时间，以及由 E-model（ITU-T G.107，宽带编解码器用
+  G.107.1；ADR-085）根据丢包、其突发性、往返时间与端系统时延算出的 R 因子、MOS-LQ 与 MOS-CQ，使用所收
+  编解码器在 G.113 中的规划值（`EModel::for_codec`：PCMU、PCMA、G.722、G.729、G.723.1，以及 Opus 的一条
+  假定值，因为它没有规划值），并在接收方配置中带上它的丢包隐藏。只有解码、播放音频的应用才知道的值，由
+  应用经 `set_voip_quality` 提供；其余以不可用（127）发送。收到的块以 `XrReceipts` 与 `VoipMetrics`
+  事件报告（后者可用 `metrics.quality()` 解码），并累计到统计中。
+
+  ```rust,ignore
+  use only_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+
+  // 解码之后：讲话段的语音电平，抖动缓冲的当前状态。
+  peer.set_voip_quality(mid, VoipQuality {
+      signal_level: pcm_level_dbm0(&talkspurt),
+      noise_level: pcm_level_dbm0(&silence),
+      jitter_buffer: Some(JitterBufferConfig {
+          adaptive: true,
+          rate: 4,
+          nominal: Duration::from_millis(60),
+          maximum: Duration::from_millis(120),
+          abs_max: Duration::from_millis(500),
+      }),
+      ..VoipQuality::default()
+  }, None)?; // None：使用所收编解码器的 E-model 值
+  ```
 - **ULPFEC 保护级别**（RFC 5109 §5）：`set_ulpfec_level0(Some(l0))` 时一帧的 FEC 包保护每个包的前
   `l0` 字节，另有一个级别覆盖其余部分一次：单个丢包能完整修复，修复字节少得多。libwebrtc 只读级别 0
   （Chrome 会把长包重建错），因此面向浏览器时不要开启。

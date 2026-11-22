@@ -680,6 +680,11 @@ struct MediaLine {
     xr: bool,
     /// The RTCP XR blocks about received streams both sides listed (`a=rtcp-xr`).
     xr_blocks: XrBlocks,
+    /// What the application knows of the VoIP quality of the streams received on this line
+    /// (levels, echo, jitter buffer, concealment, its own scores), for the XR VoIP metrics.
+    voip: only_rtp::VoipQuality,
+    /// The E-model codec values the application chose (`None`: by the received codec).
+    voip_model: Option<only_rtp::EModel>,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
     tmmbr_req: Option<u64>,
     /// The Opus RED payload type (offered, then negotiated) of an audio line.
@@ -747,6 +752,8 @@ impl MediaLine {
             remote_fec: HashMap::new(),
             xr: false,
             xr_blocks: XrBlocks::NONE,
+            voip: only_rtp::VoipQuality::default(),
+            voip_model: None,
             tmmbr_req: None,
             red: None,
             red_hist: VecDeque::new(),

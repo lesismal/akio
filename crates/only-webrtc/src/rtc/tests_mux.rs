@@ -552,11 +552,20 @@ fn xr_receipt_blocks_and_voip_metrics_round_trip() {
     assert!(m.loss_rate > 8 && m.loss_rate < 60, "{m:?}");
     assert!(m.round_trip_delay > 10 && m.round_trip_delay < 80, "{m:?}");
     assert_eq!(m.gmin, 16);
-    // The E-model (G.711 with concealment) at ~10 % loss: R about 65, MOS about 3.3.
-    assert!(m.r_factor > 45 && m.r_factor < 80, "{m:?}");
+    // The E-model for Opus (wideband, G.107.1) at ~10 % loss: R about 70, MOS about 3.6.
+    assert!(m.r_factor > 50 && m.r_factor < 85, "{m:?}");
     assert!(
-        m.mos_lq >= 25 && m.mos_lq <= 40 && m.mos_cq <= m.mos_lq,
+        m.mos_lq >= 28 && m.mos_lq <= 43 && m.mos_cq <= m.mos_lq,
         "{m:?}"
+    );
+    // Opus conceals losses itself: enhanced PLC; jitter buffer unknown. What only the
+    // application knows is unavailable.
+    let q = m.quality();
+    assert_eq!((q.plc, q.jitter_buffer), (only_rtp::Plc::Enhanced, None));
+    assert_eq!(m.rx_config, 0b1000_0000);
+    assert_eq!(
+        (q.signal_level, q.noise_level, q.rerl, q.ext_r_factor),
+        (None, None, None, None)
     );
     // Without negotiation nothing is sent.
     let (mut a, mut b, mids, _, _, now) = negotiate(
@@ -573,6 +582,84 @@ fn xr_receipt_blocks_and_voip_metrics_round_trip() {
         e,
         RtcEvent::Other(Other::XrReceipts { .. } | Other::VoipMetrics { .. })
     )));
+}
+
+#[test]
+fn xr_voip_metrics_application_fields() {
+    use only_rtp::{EModel, JitterBufferConfig, Plc, VoipQuality};
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        xr_cfg(XrBlocks::VOIP_METRICS),
+        xr_cfg(XrBlocks::VOIP_METRICS),
+        &[MediaKind::Audio],
+        same,
+        same,
+    );
+    // What b's application knows of the audio it plays.
+    let jb = JitterBufferConfig {
+        adaptive: true,
+        rate: 4,
+        nominal: Duration::from_millis(60),
+        maximum: Duration::from_millis(120),
+        abs_max: Duration::from_millis(500),
+    };
+    let app = VoipQuality {
+        signal_level: Some(-19),
+        noise_level: Some(-62),
+        rerl: Some(40),
+        ext_r_factor: Some(88),
+        plc: Plc::Standard,
+        jitter_buffer: Some(jb),
+        ..VoipQuality::default()
+    };
+    // As if it were G.711 without concealment: the worse codec model.
+    assert!(
+        b.rtc
+            .set_voip_quality(mids[0], app, Some(EModel::codec(0.0, 4.3)))
+    );
+    assert!(!b.rtc.set_voip_quality(Mid::new("nope"), app, None));
+    let mut net = Net::new(19);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    net.loss = 5;
+    talk(&mut a, &mut b, &mut net, mids[0], 300, now);
+    let last = |s: &Side| {
+        s.events.iter().rev().find_map(|e| match e {
+            RtcEvent::Other(Other::VoipMetrics { metrics, .. }) => Some(*metrics),
+            _ => None,
+        })
+    };
+    let m = last(&a).expect("VoIP metrics from b");
+    let q = m.quality();
+    assert_eq!(
+        (q.signal_level, q.noise_level, q.rerl, q.ext_r_factor),
+        (Some(-19), Some(-62), Some(40), Some(88))
+    );
+    assert_eq!((q.plc, q.jitter_buffer), (Plc::Standard, Some(jb)));
+    assert_eq!((m.jb_nominal, m.jb_maximum, m.jb_abs_max), (60, 120, 500));
+    // G.711 without concealment at ~5 % loss: Ie,eff about 51, R about 40.
+    assert!(m.r_factor > 20 && m.r_factor < 60, "{m:?}");
+    // a set nothing: its reports about b's Opus stream use Opus's planning values.
+    let o = last(&b).expect("VoIP metrics from a");
+    assert!(o.r_factor > m.r_factor + 10, "{o:?} vs {m:?}");
+    assert_eq!(o.quality().signal_level, None);
+    // The application's own scores replace the estimate.
+    let own = VoipQuality {
+        r_factor: Some(77),
+        mos_lq: Some(39),
+        mos_cq: Some(38),
+        ..app
+    };
+    assert!(b.rtc.set_voip_quality(mids[0], own, None));
+    let now = talk(
+        &mut a,
+        &mut b,
+        &mut net,
+        mids[0],
+        150,
+        now + Duration::from_secs(5),
+    );
+    let _ = now;
+    let m = last(&a).expect("VoIP metrics from b");
+    assert_eq!((m.r_factor, m.mos_lq, m.mos_cq), (77, 39, 38));
 }
 
 #[test]

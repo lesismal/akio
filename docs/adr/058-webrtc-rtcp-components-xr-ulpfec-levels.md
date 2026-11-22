@@ -161,4 +161,5 @@ enable_rtcp_xr_blocks, set_ulpfec_level0}`, `RtcpMuxPolicy` (`#[non_exhaustive]`
 - Not done: server-reflexive and relayed candidates of component 2; several transports (no
   BUNDLE) in one session, so sessions without rtcp-mux have one media section and no data
   channels; component 2 on `RtcServer`; the VoIP quality fields that need the codec (levels,
-  R factor, MOS, jitter buffer); signalling that a receiver reads ULPFEC levels.
+  R factor, MOS, jitter buffer; done since in ADR-085: per-codec G.107 / G.107.1 estimates and
+  `Peer::set_voip_quality` for the application's values); signalling that a receiver reads ULPFEC levels.
