@@ -105,12 +105,16 @@ pub fn stun(data: &[u8]) {
                 "[2001:db8::3]:3000",
             ] {
                 let _ = a.handle_receive(now, addr(src), addr(local), data);
+                // RFC 6679's ECN-CHECK echo (ADR-086).
+                let _ = a.handle_receive_ecn(now, addr(src), addr(local), data, 1);
             }
         }
+        let _ = a.check_ecn(now, 1);
+        let _ = a.handle_receive_ecn(now, addr(REMOTE_ADDR), addr(LOCAL_ADDR), data, 3);
         for secs in [1, 10, 40, 100] {
             a.handle_timeout(now + Duration::from_secs(secs));
             let _ = a.poll_timeout();
-            while a.poll_transmit().is_some() {}
+            while a.poll_transmit_ecn().is_some() {}
             while a.poll_event().is_some() {}
         }
         let _ = (a.send_pair(), a.send_pair_of(2), a.selected_pair_of(2));
@@ -269,6 +273,22 @@ mod seeds {
                     peer.handle_receive(t, x.source, x.destination, &x.contents);
                 }
                 t += Duration::from_millis(20);
+            }
+            // RFC 6679 ECN checks both ways and their echoes (ADR-086).
+            let _ = peer.check_ecn(t, 1);
+            let _ = me.check_ecn(t, 2);
+            for _ in 0..10 {
+                while let Some((x, e)) = peer.poll_transmit_ecn() {
+                    out.push(x.contents.clone());
+                    me.handle_receive_ecn(t, x.source, x.destination, &x.contents, e);
+                }
+                while let Some((x, e)) = me.poll_transmit_ecn() {
+                    out.push(x.contents.clone());
+                    peer.handle_receive_ecn(t, x.source, x.destination, &x.contents, e);
+                }
+                t += Duration::from_millis(100);
+                me.handle_timeout(t);
+                peer.handle_timeout(t);
             }
         }
         out.sort();

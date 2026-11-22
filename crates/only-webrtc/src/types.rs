@@ -763,8 +763,8 @@ pub(crate) enum Other {
         /// RTP packets sent ECN-capable, and paths on which marking stopped (ADR-077).
         ecn_marked_sent: u64,
         ecn_failures: u64,
-        /// The ECN state of the (primary transport's) path: "off", "testing", "capable" or
-        /// "failed".
+        /// The ECN state of the (primary transport's) path: "off", "testing", "capable",
+        /// "verifying" (RFC 6679's "ice" initiation, ADR-086) or "failed".
         ecn_state: &'static str,
         /// Times media without ICE latched onto a new source address (ADR-077).
         latched: u64,
@@ -882,10 +882,14 @@ pub(crate) struct ConfigInner {
     pub(crate) audio_red: Option<u8>,
     /// ECN marking of sent RTP (ADR-077).
     pub(crate) ecn: EcnMarking,
+    /// How a path starts marking (ADR-086).
+    pub(crate) ecn_init: EcnInitiation,
     /// Latching plain media onto the address it comes from (ADR-077).
     pub(crate) latching: Latching,
     /// The audio jitter buffer (ADR-087): `None` off.
     pub(crate) jitter: Option<only_rtp::PlayoutDelay>,
+    /// RFC 6263 keepalives without ICE (ADR-086); zero: none.
+    pub(crate) keepalive: Duration,
 }
 
 impl Default for ConfigInner {
@@ -933,8 +937,10 @@ impl Default for ConfigInner {
             fec_mask: only_rtp::fec::FecMaskType::Random,
             audio_red: None,
             ecn: EcnMarking::Off,
+            ecn_init: EcnInitiation::Probe,
             latching: Latching::Off,
             jitter: None,
+            keepalive: Duration::ZERO,
         }
     }
 }
@@ -1354,6 +1360,19 @@ impl RtcConfig {
         self
     }
 
+    /// How a path starts marking ECN ([`set_ecn_marking`](Self::set_ecn_marking)), ADR-086.
+    /// [`EcnInitiation::Probe`] (the default) marks a fraction of the packets until feedback
+    /// shows the marks arrive (RFC 6679's "rtp" initiation), or, toward a remote that
+    /// negotiated RFC 6679's "ice" initiation, waits for an ECN-marked STUN check to come back
+    /// confirmed. [`EcnInitiation::LeapOfFaith`] marks every RTP packet from the start (RFC 6679
+    /// §7.2.3, for paths known to carry ECN) and is offered first as `leap`; failure detection
+    /// runs as usual. A remote that offers only `leap` is answered with it either way.
+    #[must_use]
+    pub fn set_ecn_initiation(mut self, init: EcnInitiation) -> Self {
+        self.0.ecn_init = init;
+        self
+    }
+
     /// Latching media without ICE ([`enable_ice(false)`](Self::enable_ice), or a remote
     /// description without ICE) onto the address it really comes from (symmetric RTP,
     /// "comedia", RFC 7362), for remotes behind NATs whose SDP names an address they cannot
@@ -1363,11 +1382,27 @@ impl RtcConfig {
     /// handshake latches first (ADR-082): this side answers `actpass` with `passive`, a
     /// ClientHello from an unknown source gets a stateless cookie exchange, and one with a
     /// valid cookie moves RTP's pair there until the handshake completes with the SDP
-    /// fingerprint (or fails, closes or takes over 4 s, which moves it back). Default
+    /// fingerprint (or fails, closes or takes over 4 s, which moves it back); RTCP's own
+    /// handshake without rtcp-mux latches the same way. When this side must be the DTLS
+    /// client (the remote said `passive`), a datagram from an unknown source (the remote's
+    /// keepalive, see [`set_plain_keepalive`](Self::set_plain_keepalive)) starts a handshake
+    /// toward it tentatively, held to the same fingerprint (ADR-086). Default
     /// [`Latching::Off`]: media goes to and comes from the description's addresses only.
     #[must_use]
     pub fn set_latching(mut self, latching: Latching) -> Self {
         self.0.latching = latching;
+        self
+    }
+
+    /// Keepalives for media without ICE (RFC 6263, ADR-086): a STUN Binding Indication on
+    /// each component's path as soon as it exists, then every `every`. They keep NAT bindings
+    /// open through silence (RFC 6263 asks for one at least every 15 s), and let a remote that
+    /// latches and must start the DTLS handshake (this side answered or offered `passive`)
+    /// learn where this side is behind a NAT. Peers that do not expect them drop them (an ICE
+    /// agent ignores indications). `Duration::ZERO` (the default) sends none.
+    #[must_use]
+    pub fn set_plain_keepalive(mut self, every: Duration) -> Self {
+        self.0.keepalive = every;
         self
     }
 
@@ -1461,6 +1496,21 @@ pub enum EcnMarking {
     Ect0,
     /// ECT(1): L4S (RFC 9331), as libwebrtc marks.
     Ect1,
+}
+
+/// How a path starts marking ECN ([`RtcConfig::set_ecn_initiation`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EcnInitiation {
+    /// Mark a fraction of the RTP packets until feedback shows the marks arrive (or, with
+    /// RFC 6679's "ice" initiation negotiated, until an ECN-marked STUN check does). The
+    /// default.
+    #[default]
+    Probe,
+    /// Mark every RTP packet from the start (RFC 6679 §7.2.3 "leap of faith"): for paths known
+    /// to carry ECN. Failure detection still ends marking on a path that clears, re-marks or
+    /// drops the marks.
+    LeapOfFaith,
 }
 
 /// How media without ICE follows the address it comes from ([`RtcConfig::set_latching`]).

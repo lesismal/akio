@@ -85,9 +85,10 @@ pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
     BundlePolicy, Candidate, ChannelConfig, ChannelId, ChannelPriority, ChannelScheduler, Codec,
-    Direction, EcnMarking, Event, FecMask, FecMechanism, Frequency, IceConnectionState,
-    KeyframeRequest, KeyframeRequestKind, Latching, MediaAdded, MediaData, MediaKind, MediaTime,
-    Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket, SdpChanges, XrBlocks,
+    Direction, EcnInitiation, EcnMarking, Event, FecMask, FecMechanism, Frequency,
+    IceConnectionState, KeyframeRequest, KeyframeRequestKind, Latching, MediaAdded, MediaData,
+    MediaKind, MediaTime, Mid, OtherEvent, Pt, Reliability, RtcConfig, RtcpMuxPolicy, RtpPacket,
+    SdpChanges, XrBlocks,
 };
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use only_turn::stun;
@@ -1381,10 +1382,10 @@ impl Hub {
             }
         }
         let Some(id) = id else {
-            // RTP / RTCP, or DTLS before the keys exist (ADR-082).
-            if !is_stun
-                && self.latch_count.load(Ordering::Relaxed) != 0
-                && matches!(data.first(), Some(128..=191 | 20..=63))
+            // RTP / RTCP, DTLS before the keys exist (ADR-082), or STUN that no ICE agent
+            // knows: a keepalive that a DTLS client latches onto (ADR-086).
+            if self.latch_count.load(Ordering::Relaxed) != 0
+                && matches!(data.first(), Some(0..=3 | 128..=191 | 20..=63))
             {
                 self.latch(source, destination, data, ecn);
             }
@@ -1396,7 +1397,7 @@ impl Hub {
         }
     }
 
-    /// An RTP / RTCP datagram from an unknown source, offered to the latching peers (at most
+    /// A datagram from an unknown source, offered to the latching peers (at most
     /// [`MAX_LATCH_TRIES`], starting where the last offer stopped) until one authenticates
     /// it; that peer then routes the source to itself if it latched.
     fn latch(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], ecn: u8) {

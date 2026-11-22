@@ -13,14 +13,21 @@
 #   4. DTLS-SRTP instead of SDES (ADR-082): the gateway answers the phone's actpass offer with
 #      passive, the phone's ClientHello arrives from the NAT; latching off, no handshake and no
 #      echo; once, a cookie exchange, the handshake latches and 100 packets come back.
+#   5. DTLS-SRTP without rtcp-mux (ADR-086): RTCP's own handshake comes from the NAT's second
+#      mapping and latches too (the gateway counts 2 moves).
+#   6. the gateway as the DTLS client (ADR-086): the phone offers setup:passive and sends RFC
+#      6263 keepalives (STUN Binding Indications); without latching the gateway's ClientHello
+#      goes to the private address (no echo); with once it starts over toward the keepalive's
+#      source, the phone's certificate matches, 100 packets come back.
 # The gateway's statistics say how often it latched.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 docker run --rm --privileged -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-  -v only-ecnlatch-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
+  -v "${TARGET_VOLUME:-only-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
 set -eu
 apt-get -qq update >/dev/null && apt-get -qq install -y iproute2 iptables conntrack >/dev/null 2>&1
 cargo build -q --release -p only-webrtc --example webrtc-interop
+trap "echo --- logs; tail -n 25 /tmp/gw-*.log /tmp/phone*.log" ERR
 RS=/tmp/t/release/examples/webrtc-interop
 ip netns add phone; ip netns add gw
 ip link add p0 type veth peer name p1; ip link set p1 netns phone
@@ -34,7 +41,10 @@ iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -p udp -j MASQUERADE --to-p
 iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -j MASQUERADE
 PORT=5100
 gateway() { # <latch> -> starts the gateway on $PORT, its log in /tmp/gw-$PORT.log
-  ip netns exec gw env ONLY_INTEROP_LATCH=$1 ONLY_INTEROP_SIP=${SIP:-1} $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
+  GW_RTCP=""
+  if [ -n "${RTCP:-}" ]; then GW_RTCP=10.99.1.2:$((PORT + 2)); fi
+  ip netns exec gw env ONLY_INTEROP_LATCH=$1 ONLY_INTEROP_SIP=${SIP:-1} ONLY_INTEROP_RTCP=$GW_RTCP \
+    $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
     >/tmp/gw-$PORT.log 2>&1 &
   GW=$!
   sleep 0.5
@@ -43,7 +53,10 @@ phone() { # <n> [rebind-after-seconds]
   if [ -n "${2:-}" ]; then
     (sleep "$2"; conntrack -D -p udp -s 10.99.0.2 >/dev/null 2>&1 || true) &
   fi
+  PH_RTCP=""
+  if [ -n "${RTCP:-}" ]; then PH_RTCP=10.99.0.2:5005; fi
   ip netns exec phone env ONLY_INTEROP_SIP=${SIP:-1} ONLY_INTEROP_BIND=10.99.0.2:5004 \
+    ONLY_INTEROP_RTCP=$PH_RTCP ONLY_INTEROP_SETUP=${SETUP:-} ONLY_INTEROP_KEEPALIVE=${KEEPALIVE:-} \
     $RS client 10.99.1.2:$((PORT + 1)) sip "$1" 2>/tmp/phone.log
 }
 latched() { grep -o "latched: [0-9]*" /tmp/gw-$PORT.log | tail -1; }
@@ -79,6 +92,32 @@ echo "== DTLS-SRTP, latching once"
 gateway once
 phone 100
 echo "gateway $(latched)"
+finish
+echo "== DTLS-SRTP without rtcp-mux, latching once: the RTCP handshake latches too"
+RTCP=1
+gateway once
+phone 100
+echo "gateway $(latched)"
+[ "$(latched)" = "latched: 2" ] || { echo "FAIL: expected both components to latch"; exit 1; }
+finish
+RTCP=
+echo "== DTLS-SRTP, the gateway the DTLS client, latching off"
+SETUP=passive KEEPALIVE=500
+gateway off
+if phone 100; then echo "FAIL: echo without latching"; exit 1; fi
+echo "no echo; gateway $(latched)"
+finish
+echo "== DTLS-SRTP, the gateway the DTLS client, latching once onto the keepalives of the phone"
+gateway once
+phone 100
+echo "gateway $(latched)"
+finish
+echo "== the same without rtcp-mux"
+RTCP=1
+gateway once
+phone 100
+echo "gateway $(latched)"
+[ "$(latched)" = "latched: 2" ] || { echo "FAIL: expected both components to latch"; exit 1; }
 finish
 echo "ok: latch.sh"
 '

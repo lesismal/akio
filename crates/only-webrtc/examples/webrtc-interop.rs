@@ -88,8 +88,13 @@
 //! (statistics events every second, printed), ONLY_INTEROP_ECN=ect0|ect1 (ECN-capable RTP,
 //! ADR-077), ONLY_INTEROP_LATCH=once|rebind (latching media without ICE; rebind: after 1 s
 //! of silence), ONLY_INTEROP_SIP=1 (SDES-SRTP without ICE; `dtls`: DTLS-SRTP without ICE,
-//! for the phone and the gateway, ADR-082), ONLY_INTEROP_DTLS_MKI=<n> (an SRTP MKI of n
-//! bytes with DTLS-SRTP, ADR-082), ONLY_INTEROP_BWE=<bps> (the
+//! for the phone and the gateway, ADR-082; `ice`: DTLS-SRTP with full ICE on both, ADR-086),
+//! ONLY_INTEROP_DTLS_MKI=<n> (an SRTP MKI of n bytes with DTLS-SRTP, ADR-082),
+//! ONLY_INTEROP_ECN_INIT=leap (ECN's leap of faith, ADR-086), ONLY_INTEROP_KEEPALIVE=<ms>
+//! (RFC 6263 keepalives without ICE, ADR-086), ONLY_INTEROP_RTCP=<udp-addr> (the phone and
+//! the gateway: an RTCP socket there, and the phone offers without rtcp-mux, ADR-086),
+//! ONLY_INTEROP_SETUP=passive (the phone offers `a=setup:passive`: the gateway is the DTLS
+//! client, ADR-086), ONLY_INTEROP_BWE=<bps> (the
 //! bandwidth estimator, starting there). fec-server's `direct` option
 //! serves <proxy-addr> itself, without the proxy (which would clear ECN marks). With ONLY_LOG=only_webrtc=debug the DTLS
 //! version of each connection is logged.
@@ -156,8 +161,19 @@ fn extras(mut c: only_webrtc::RtcConfig) -> only_webrtc::RtcConfig {
     match env("ONLY_INTEROP_SIP").as_deref() {
         // DTLS-SRTP without ICE: the gateway's handshake latches (ADR-082).
         Some("dtls") => c = c.enable_ice(false),
+        // DTLS-SRTP with ICE (RFC 6679's "ice" ECN initiation, ADR-086).
+        Some("ice") => {}
         Some(_) => c = c.enable_sdes_srtp(true).enable_ice(false),
         None => {}
+    }
+    if env("ONLY_INTEROP_ECN_INIT").as_deref() == Some("leap") {
+        c = c.set_ecn_initiation(only_webrtc::EcnInitiation::LeapOfFaith);
+    }
+    if let Some(ms) = env("ONLY_INTEROP_KEEPALIVE").and_then(|v| v.parse::<u64>().ok()) {
+        c = c.set_plain_keepalive(Duration::from_millis(ms));
+    }
+    if env("ONLY_INTEROP_RTCP").is_some() {
+        c = c.set_rtcp_mux_policy(only_webrtc::RtcpMuxPolicy::Off);
     }
     if let Some(n) = env("ONLY_INTEROP_DTLS_MKI").and_then(|v| v.parse::<u8>().ok()) {
         c = c.set_dtls_srtp_mki_length(n);
@@ -277,13 +293,22 @@ fn sip_gateway(udp: SocketAddr, http: SocketAddr) {
         .build()
         .expect("engine");
     engine.start().expect("start");
-    let sdes = std::env::var("ONLY_INTEROP_SIP").as_deref() != Ok("dtls");
+    let sip = std::env::var("ONLY_INTEROP_SIP").unwrap_or_default();
+    let sdes = sip != "dtls" && sip != "ice";
+    let ice = sip == "ice";
     let ep = Endpoint::bind(&engine, udp).expect("bind").config(move || {
         extras(only_webrtc::rtc_config())
             .enable_sdes_srtp(sdes)
-            .enable_ice(false)
+            .enable_ice(ice)
             .set_stats_interval(Some(Duration::from_secs(1)))
     });
+    if let Some(a) = std::env::var("ONLY_INTEROP_RTCP")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        ep.bind_rtcp(&engine, a.parse().expect("rtcp addr"))
+            .expect("bind rtcp");
+    }
     let l = TcpListener::bind(http).expect("http bind");
     eprintln!("gateway: udp {udp}, signalling http://{http}/");
     for s in l.incoming() {
@@ -377,6 +402,13 @@ fn client(http: &str, what: &str, args: &[String]) {
         .into()
     });
     let ep = Endpoint::bind(&engine, bind.parse().expect("addr")).expect("bind");
+    if let Some(a) = std::env::var("ONLY_INTEROP_RTCP")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        ep.bind_rtcp(&engine, a.parse().expect("rtcp addr"))
+            .expect("bind rtcp");
+    }
     // ONLY_INTEROP_NOMINATION=aggressive|renomination: how this (controlling) side nominates.
     let nomination = std::env::var("ONLY_INTEROP_NOMINATION").unwrap_or_default();
     let ep = ep.config(move || {
@@ -474,6 +506,10 @@ fn client(http: &str, what: &str, args: &[String]) {
         "dc-tcp" => filter_candidates(&offer, |l| l.contains("tcptype passive")),
         "dc-active" => filter_candidates(&offer, |l| l.contains("tcptype active")),
         "dc-mdns" => filter_candidates(&offer, |l| l.contains(" udp ")),
+        // A phone that wants to be the DTLS server (ADR-086).
+        "sip" if std::env::var("ONLY_INTEROP_SETUP").as_deref() == Ok("passive") => {
+            offer.replace("a=setup:actpass", "a=setup:passive")
+        }
         _ => offer,
     };
     if what == "dc-mdns" {

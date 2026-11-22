@@ -50,6 +50,11 @@ fn configs() -> [ConfigInner; 8] {
             sdes_mki: 4,
             ice: false,
             latching: crate::Latching::Rebind(std::time::Duration::ZERO),
+            // ADR-086: leap of faith offered first, the remote's ect= followed, keepalives.
+            ecn: crate::EcnMarking::Ect0,
+            ecn_init: crate::EcnInitiation::LeapOfFaith,
+            bwe: Some(300_000),
+            keepalive: std::time::Duration::from_secs(1),
             ..ConfigInner::default()
         },
         ConfigInner {
@@ -78,8 +83,10 @@ pub fn webrtc_sdes(data: &[u8]) {
 
 /// Whether a section of `sdp` carries both `a=crypto` and `a=fingerprint`.
 fn crypto_next_to_fingerprint(sdp: &str) -> bool {
-    sdp.split("\r\nm=")
-        .any(|sec| sec.contains("a=crypto:") && sec.contains("a=fingerprint:"))
+    sdp.split("\r\nm=").any(|sec| {
+        let has = |k: &str| sec.lines().any(|l| l.starts_with(k));
+        has("a=crypto:") && has("a=fingerprint:")
+    })
 }
 
 /// Host candidates of both components for a peer whose configuration offers RTCP without
@@ -150,7 +157,8 @@ fn sdp_with(s: &str, now: Instant, cfg: ConfigInner) {
         assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
         // Keys travel in SDP only when SDES is on, and never in a section with a DTLS
         // fingerprint (data channels next to SDES media have theirs in their own section).
-        let crypto = answer.contains("a=crypto:");
+        // (Whole lines: a rejected section echoes the offer's `m=` fields, whatever they hold.)
+        let crypto = answer.lines().any(|l| l.starts_with("a=crypto:"));
         assert!(!crypto || cfg.sdes, "{answer}");
         assert!(!crypto_next_to_fingerprint(&answer), "{answer}");
         // No ICE in the answer to an offer without it; no BUNDLE when it is disabled.
@@ -323,6 +331,29 @@ pub(crate) mod seeds {
             let answer = answerer.accept_offer(now, &offer).expect("answer");
             out.push(offer.into_bytes());
             out.push(answer.into_bytes());
+        }
+        // ADR-086: other RFC 6679 initiation lists, modes and ect= preferences, and an offer
+        // that wants to be the DTLS server.
+        let base = String::from_utf8(out[6].clone()).expect("utf-8");
+        if let Some(line) = base
+            .lines()
+            .find(|l| l.starts_with("a=ecn-capable-rtp:"))
+            .map(str::to_owned)
+        {
+            for v in [
+                "leap",
+                "ice",
+                "leap,ice,rtp mode=readonly; ect=random",
+                "ice,rtp mode=setonly; ect=1",
+                "rtp ect=0; foo=bar",
+                "zrtp,quux mode=setread",
+            ] {
+                out.push(
+                    base.replace(&line, &format!("a=ecn-capable-rtp:{v}"))
+                        .replace("a=setup:actpass", "a=setup:passive")
+                        .into_bytes(),
+                );
+            }
         }
         out
     }

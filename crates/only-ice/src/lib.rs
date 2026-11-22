@@ -119,6 +119,7 @@
 
 mod agent;
 mod candidate;
+mod ecn;
 pub mod mdns;
 pub mod tcp;
 
@@ -128,3 +129,4 @@ pub mod fuzzing;
 
 pub use crate::agent::{IceAgent, IceConfig, IceEvent, IceState, Transmit};
 pub use crate::candidate::{Candidate, CandidateKind, Credentials, ParseError, TcpType};
+pub use crate::ecn::{ECN_CHECK_GIVE_UP, ECN_CHECK_INTERVAL, ECN_CHECK_SENDS};
