@@ -11,8 +11,8 @@
 //! in akio-brotli (`BadBlockLength`), but brotli-decompressor 5 only notices it in the last
 //! meta-block and accepts the overlong output otherwise; that case has no verdict.
 
-use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
 use akio_brotli::{Error, decompress, fuzzing};
+use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
 
 /// `Some(output)` for a complete stream that uses all of `data`, `None` for a rejected one;
 /// `Err(())` when the output passes the limit (no verdict).

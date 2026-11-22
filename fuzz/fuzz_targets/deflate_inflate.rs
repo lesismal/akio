@@ -23,7 +23,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             (Ok(a), Some(b)) => assert!(a == b, "{format:?}: outputs differ"),
             (Ok(_), None) => panic!("{format:?}: akio-deflate accepts what zlib-rs rejects"),
             (Err(Error::TooLarge), _) => {}
-            (Err(e), Some(_)) => panic!("{format:?}: zlib-rs accepts what akio-deflate rejects ({e})"),
+            (Err(e), Some(_)) => {
+                panic!("{format:?}: zlib-rs accepts what akio-deflate rejects ({e})")
+            }
             (Err(_), None) => {}
         }
     }

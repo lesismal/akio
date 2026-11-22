@@ -105,7 +105,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             let before = out.clone();
             let mut bad = tag;
             bad[usize::from(data[3]) % 16] ^= 1 << (data[3] >> 5);
-            assert!(k.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out).is_err());
+            assert!(
+                k.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out)
+                    .is_err()
+            );
             assert_eq!(out, before);
             k.decrypt_append(&nonce, aad, &before[head..], &tag, &mut out)
                 .unwrap();
@@ -122,10 +125,16 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         }
         let (theirs, opened) = if klen == 16 {
             let g = aes_gcm::Aes128Gcm::new_from_slice(key).unwrap();
-            (g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(), g.decrypt((&nonce).into(), Payload { msg, aad }))
+            (
+                g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(),
+                g.decrypt((&nonce).into(), Payload { msg, aad }),
+            )
         } else {
             let g = aes_gcm::Aes256Gcm::new_from_slice(key).unwrap();
-            (g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(), g.decrypt((&nonce).into(), Payload { msg, aad }))
+            (
+                g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(),
+                g.decrypt((&nonce).into(), Payload { msg, aad }),
+            )
         };
         assert_eq!(sealed, theirs);
         assert_eq!(gcm.decrypt(&nonce, aad, &sealed).unwrap(), msg);
@@ -179,7 +188,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             let before = out.clone();
             let mut bad = tag;
             bad[usize::from(data[3]) % 16] ^= 1 << (data[3] >> 5);
-            assert!(c.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out).is_err());
+            assert!(
+                c.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out)
+                    .is_err()
+            );
             assert_eq!(out, before);
             c.decrypt_append(&nonce, aad, &before[head..], &tag, &mut out)
                 .unwrap();
@@ -188,20 +200,29 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             if msg.len() >= 16 {
                 let (ct, t) = msg.split_at(msg.len() - 16);
                 let mut v = Vec::new();
-                assert_eq!(c.decrypt_append(&nonce, aad, ct, t, &mut v).is_ok(), forged_ok);
+                assert_eq!(
+                    c.decrypt_append(&nonce, aad, ct, t, &mut v).is_ok(),
+                    forged_ok
+                );
                 assert_eq!(v.len(), if forged_ok { ct.len() } else { 0 });
             }
         }
         assert_eq!(
             sealed,
             theirs
-                .encrypt((&nonce).into(), chacha20poly1305::aead::Payload { msg, aad })
+                .encrypt(
+                    (&nonce).into(),
+                    chacha20poly1305::aead::Payload { msg, aad }
+                )
                 .unwrap()
         );
         assert_eq!(
             ours.decrypt(&nonce, aad, msg).ok(),
             theirs
-                .decrypt((&nonce).into(), chacha20poly1305::aead::Payload { msg, aad })
+                .decrypt(
+                    (&nonce).into(),
+                    chacha20poly1305::aead::Payload { msg, aad }
+                )
                 .ok()
         );
     }

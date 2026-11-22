@@ -13,8 +13,8 @@ use std::{
     time::Duration,
 };
 
-use log::kv::{Key, Value, VisitSource};
 use akio::{Config, Conn, Engine, Handler, Listener, fn_acceptor};
+use log::kv::{Key, Value, VisitSource};
 
 #[derive(Debug, Clone)]
 struct Rec {

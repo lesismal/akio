@@ -3,7 +3,6 @@
 
 mod common;
 
-use common::{lines, unhex, wycheproof};
 use akio_crypto::Error;
 use akio_crypto::aes::Aes;
 use akio_crypto::chacha::ChaCha20Poly1305;
@@ -11,6 +10,7 @@ use akio_crypto::gcm::AesGcm;
 use akio_crypto::hash::{Hash, Sha1, Sha224, Sha256, Sha384, Sha512};
 use akio_crypto::kdf;
 use akio_crypto::mac::Hmac;
+use common::{lines, unhex, wycheproof};
 
 fn digest_of(alg: &str, msg: &[u8]) -> Vec<u8> {
     match alg {

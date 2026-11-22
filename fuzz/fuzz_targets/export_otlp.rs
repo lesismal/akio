@@ -36,9 +36,15 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let span = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
     assert_eq!(span["name"].as_str(), Some(name));
     assert_eq!(span["attributes"][0]["key"].as_str(), Some(key));
-    assert_eq!(span["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    assert_eq!(
+        span["attributes"][0]["value"]["stringValue"].as_str(),
+        Some(value)
+    );
     assert_eq!(span["events"][0]["name"].as_str(), Some(key));
-    assert_eq!(span["events"][0]["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    assert_eq!(
+        span["events"][0]["attributes"][0]["value"]["stringValue"].as_str(),
+        Some(value)
+    );
     assert_eq!(span["links"][0]["attributes"][0]["key"].as_str(), Some(key));
 
     let js = akio_export::fuzzing::otlp_log_json(key, name, key, value);
@@ -48,7 +54,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let rec = &scope["logRecords"][0];
     assert_eq!(rec["body"]["stringValue"].as_str(), Some(name));
     assert_eq!(rec["attributes"][0]["key"].as_str(), Some(key));
-    assert_eq!(rec["attributes"][0]["value"]["stringValue"].as_str(), Some(value));
+    assert_eq!(
+        rec["attributes"][0]["value"]["stringValue"].as_str(),
+        Some(value)
+    );
     let pb = akio_export::fuzzing::otlp_log_protobuf(key, name, key, value);
     let records: Vec<&[u8]> = len_fields(&pb, 1)
         .into_iter()
@@ -72,6 +81,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         assert!(!line.contains('\n'), "{line:?}");
         let pipes = line.matches('|').count();
         assert!(pipes == 1 || pipes == 2, "{line:?}");
-        assert!(line.split('|').nth(1).is_some_and(|t| t == "c" || t == "g"), "{line:?}");
+        assert!(
+            line.split('|').nth(1).is_some_and(|t| t == "c" || t == "g"),
+            "{line:?}"
+        );
     }
 });

@@ -74,11 +74,11 @@ pub mod trace;
 #[doc(hidden)]
 pub mod transport;
 
+pub use akio_ws as ws;
 pub use context::{
     BodyEvent, BodyMode, BodyStream, Context, Detached, Middleware, Service, Streaming, WsOptions,
 };
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};
-pub use akio_ws as ws;
 pub use router::{RouteInfo, RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

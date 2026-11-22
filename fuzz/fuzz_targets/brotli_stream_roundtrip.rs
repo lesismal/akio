@@ -3,8 +3,8 @@
 //! the first three bytes): both of its decoders give the input back, and so does
 //! `brotli-decompressor` for streams without a dictionary.
 
-use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
 use akio_brotli::fuzzing;
+use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Some((packed, body, dict)) = fuzzing::stream_roundtrip_stream(data) else {
@@ -37,5 +37,8 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         "brotli-decompressor rejects our stream"
     );
     assert_eq!(avail_in, 0, "brotli-decompressor leaves input");
-    assert!(out[..out_off] == *body, "brotli-decompressor output differs");
+    assert!(
+        out[..out_off] == *body,
+        "brotli-decompressor output differs"
+    );
 });

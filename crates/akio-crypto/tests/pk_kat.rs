@@ -4,11 +4,11 @@
 
 mod common;
 
-use common::{Json, data, unhex, wycheproof};
 use akio_crypto::hash::{Sha256, Sha384, Sha512};
 use akio_crypto::pkey::{PrivateKey, PssParams, PublicKey, SignatureAlgorithm};
 use akio_crypto::rsa::HashAlg;
 use akio_crypto::{ed25519, p256, p384, p521, x25519};
+use common::{Json, data, unhex, wycheproof};
 
 /// "valid" / "acceptable" / "invalid".
 fn result(t: &Json) -> &str {

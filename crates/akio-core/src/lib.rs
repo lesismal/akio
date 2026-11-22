@@ -28,6 +28,10 @@ pub mod metrics;
 mod sync;
 pub mod telemetry;
 
+pub use akio_buf::SharedBuf;
+#[doc(hidden)]
+pub use akio_pool::Pool;
+pub use akio_pool::{PoolConfig, PoolStats};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
@@ -47,10 +51,6 @@ pub use group::{UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]
 pub use handler::{DynAcceptor, DynHandler};
-pub use akio_buf::SharedBuf;
-#[doc(hidden)]
-pub use akio_pool::Pool;
-pub use akio_pool::{PoolConfig, PoolStats};
 #[doc(hidden)]
 pub use telemetry::LoopStats;
 pub use telemetry::{

@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use akio_deflate::{Deflater, Flush, Format, Inflater, Level};
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 const TAIL: [u8; 4] = [0, 0, 0xff, 0xff];
 

@@ -34,7 +34,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     for &x in data {
         r ^= u32::from(x);
         for _ in 0..8 {
-            r = if r & 1 != 0 { (r >> 1) ^ 0x82f6_3b78 } else { r >> 1 };
+            r = if r & 1 != 0 {
+                (r >> 1) ^ 0x82f6_3b78
+            } else {
+                r >> 1
+            };
         }
     }
     let mut c = akio_crypto::crc::Crc32c::new();

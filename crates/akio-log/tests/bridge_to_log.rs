@@ -4,8 +4,8 @@
 
 use std::sync::Mutex;
 
-use log::kv::{Key, Value, VisitSource};
 use akio_log::{Level, LevelFilter};
+use log::kv::{Key, Value, VisitSource};
 
 static RECORDS: Mutex<Vec<(log::Level, String, String, Vec<(String, String)>)>> =
     Mutex::new(Vec::new());

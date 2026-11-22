@@ -37,8 +37,18 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         };
         let fields = || list.iter().map(|(n, v)| (&n[..], &v[..]));
         let wire = our_enc.encode(fields());
-        assert_eq!(their_dec.decode(&wire).expect("loona-hpack decodes only's encoding"), list);
+        assert_eq!(
+            their_dec
+                .decode(&wire)
+                .expect("loona-hpack decodes only's encoding"),
+            list
+        );
         let wire = their_enc.encode(fields());
-        assert_eq!(our_dec.decode(&wire).expect("only decodes loona-hpack's encoding"), list);
+        assert_eq!(
+            our_dec
+                .decode(&wire)
+                .expect("only decodes loona-hpack's encoding"),
+            list
+        );
     }
 });

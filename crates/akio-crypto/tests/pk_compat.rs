@@ -4,11 +4,11 @@
 
 mod common;
 
-use common::wycheproof;
 use akio_crypto::pkey::{PrivateKey, PublicKey, SignatureAlgorithm};
 use akio_crypto::rand::ChaChaRng;
 use akio_crypto::rsa::HashAlg;
 use akio_crypto::{ed25519, p256 as op256, p384 as op384, x25519};
+use common::wycheproof;
 use ring::signature::{self as rs, KeyPair as _};
 
 fn rng() -> ChaChaRng {
