@@ -157,6 +157,34 @@ impl Spans {
         }
     }
 
+    /// Empties the positions, keeping a vector's capacity.
+    #[inline]
+    fn clear(&mut self) {
+        match self {
+            Spans::Inline(n, _) => *n = 0,
+            Spans::Heap(v) => v.clear(),
+        }
+    }
+
+    /// Room for `n` positions without growing (a vector when `n` is past the inline ones).
+    #[inline]
+    fn reserve(&mut self, n: usize) {
+        match self {
+            Spans::Inline(..) if n > INLINE => *self = Spans::Heap(Vec::with_capacity(n)),
+            Spans::Heap(v) => v.reserve(n),
+            Spans::Inline(..) => {}
+        }
+    }
+
+    /// The vector's capacity (0 inline).
+    #[inline]
+    fn heap_capacity(&self) -> usize {
+        match self {
+            Spans::Inline(..) => 0,
+            Spans::Heap(v) => v.capacity(),
+        }
+    }
+
     fn retain(&mut self, mut keep: impl FnMut(Span) -> bool) {
         match self {
             Spans::Inline(n, a) => {
@@ -175,10 +203,76 @@ impl Spans {
     }
 }
 
+/// A spare `Headers` storage larger than this (bytes of names and values) is not kept for the
+/// next request or response (an occasional large head should not pin its memory to the thread).
+pub(crate) const SPARE_HEADERS_MAX: usize = 4096;
+/// Nor one with room for more field positions than this.
+const SPARE_FIELDS_MAX: usize = 64;
+
+thread_local! {
+    /// The storage of the last request head this thread finished with, emptied, for the next
+    /// request's head (HTTP/1.1, HTTP/2 and HTTP/3). Per thread for the reason the spare
+    /// target is (ADR-025): it is still in cache when the next request is parsed here.
+    static SPARE_REQ: std::cell::Cell<Headers> = const { std::cell::Cell::new(Headers::EMPTY) };
+    /// The storage of the last response head this thread encoded, for the next response built
+    /// with [`Response::with_body`] (and [`Response::text`]) on this thread.
+    static SPARE_RESP: std::cell::Cell<Headers> = const { std::cell::Cell::new(Headers::EMPTY) };
+}
+
+/// Which spare a [`Headers`] storage comes from and goes back to.
+#[derive(Clone, Copy)]
+pub(crate) enum Spare {
+    /// Request heads.
+    Req,
+    /// Response heads.
+    Resp,
+}
+
+impl Spare {
+    #[inline]
+    fn with<R>(self, f: impl FnOnce(&std::cell::Cell<Headers>) -> R) -> R {
+        match self {
+            Spare::Req => SPARE_REQ.with(f),
+            Spare::Resp => SPARE_RESP.with(f),
+        }
+    }
+}
+
 impl Headers {
+    const EMPTY: Headers = Headers {
+        buf: String::new(),
+        fields: Spans::Inline(0, [[0; 3]; INLINE]),
+    };
+
     /// An empty set.
     pub fn new() -> Headers {
         Headers::default()
+    }
+
+    /// [`with_capacity`](Self::with_capacity) in the storage of a head this thread is done
+    /// with ([`recycle`](Self::recycle)), so a head allocates only when there is none or it is
+    /// too small.
+    #[inline]
+    pub(crate) fn spare(from: Spare, fields: usize, bytes: usize) -> Headers {
+        let mut h = from.with(std::cell::Cell::take);
+        h.buf.reserve(bytes);
+        h.fields.reserve(fields);
+        h
+    }
+
+    /// Empties `self` and keeps its storage for the next [`spare`](Self::spare) on this
+    /// thread, unless it is larger than worth keeping.
+    #[inline]
+    pub(crate) fn recycle(mut self, to: Spare) {
+        if self.buf.capacity() == 0
+            || self.buf.capacity() > SPARE_HEADERS_MAX
+            || self.fields.heap_capacity() > SPARE_FIELDS_MAX
+        {
+            return;
+        }
+        self.buf.clear();
+        self.fields.clear();
+        to.with(|c| c.set(self));
     }
 
     /// An empty set with room for `fields` fields totalling `bytes` bytes of names and values.
@@ -434,9 +528,11 @@ impl Response {
     /// A response with the given content type and body.
     pub fn with_body(status: u16, content_type: &str, body: Vec<u8>) -> Response {
         let mut r = Response::new(status);
-        // Room for the content type and a few more fields in one allocation (growing an empty
-        // buffer field by field reallocated it on every response).
-        r.headers = Headers::with_capacity(4, content_type.len() + 64);
+        // Room for the content type and a few more fields in one buffer (growing an empty one
+        // field by field reallocated it on every response): the storage of the last response
+        // this thread sent, when there is one. Two field positions are kept inline; a third
+        // field moves them into a vector.
+        r.headers = Headers::spare(Spare::Resp, INLINE, content_type.len() + 64);
         r.headers.append("Content-Type", content_type);
         r.body = body;
         r
@@ -616,6 +712,41 @@ pub fn format_http_date(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A head's storage goes back to the thread and comes out empty for the next head, with
+    /// its room; storage too large to keep, and an empty one, are not kept (ADR-081).
+    #[test]
+    fn spare_header_storage_is_reused_empty() {
+        let mut h = Headers::spare(Spare::Req, 5, 100);
+        for i in 0..5 {
+            h.append(format!("n{i}"), "v");
+        }
+        let (cap, ptr) = (h.buf.capacity(), h.buf.as_ptr());
+        assert!(matches!(h.fields, Spans::Heap(_)));
+        h.recycle(Spare::Req);
+        let mut h = Headers::spare(Spare::Req, 1, 10);
+        assert!(h.is_empty() && h.buf.is_empty());
+        assert_eq!((h.buf.capacity(), h.buf.as_ptr()), (cap, ptr));
+        h.append("a", "1");
+        assert_eq!(h.iter().collect::<Vec<_>>(), [("a", "1")]);
+        h.recycle(Spare::Req);
+        // The response spare is a different one.
+        let r = Headers::spare(Spare::Resp, 1, 10);
+        assert_ne!(r.buf.as_ptr(), ptr);
+        r.recycle(Spare::Resp);
+        // Too large: dropped, and the next head allocates afresh.
+        let big = Headers::spare(Spare::Req, 1, SPARE_HEADERS_MAX + 1);
+        big.recycle(Spare::Req);
+        let h = Headers::spare(Spare::Req, 3, 10);
+        assert_eq!(h.buf.capacity(), 10);
+        assert!(matches!(h.fields, Spans::Heap(ref v) if v.capacity() >= 3));
+        // A response built on this thread starts in the spare.
+        let r = Response::text(200, "x");
+        assert_eq!(
+            r.headers.iter().collect::<Vec<_>>(),
+            [("Content-Type", "text/plain; charset=utf-8")]
+        );
+    }
 
     #[test]
     fn http_date_matches_rfc_example() {

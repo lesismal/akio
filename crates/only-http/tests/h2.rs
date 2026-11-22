@@ -157,6 +157,90 @@ fn targets_reuse_the_buffer_and_stay_exact() {
     stop(&e);
 }
 
+/// Echoes the request's `x-` fields in order and answers with `:n` extra fields `r-0`, `r-1`...
+/// (from another thread when the path starts with `/hd/`).
+fn echo_fields(ctx: &mut Context) {
+    let n: usize = ctx.param("n").unwrap().parse().unwrap();
+    let body: String = ctx
+        .req()
+        .headers
+        .iter()
+        .filter(|(k, _)| k.starts_with("x-"))
+        .map(|(k, v)| format!("{k}={v};"))
+        .collect();
+    let mut r = only_http::Response::text(200, body);
+    for i in 0..n {
+        r = r.header(&format!("r-{i}"), format!("v{i}"));
+    }
+    if ctx.path().starts_with("/hd/") {
+        let d = ctx.detach().unwrap();
+        thread::spawn(move || d.respond(r));
+    } else {
+        ctx.respond(r);
+    }
+}
+
+/// Request and response heads of every size, one after another on a connection, as the
+/// per-thread spare header storage sees them (ADR-081): `(path, request x- fields)`.
+fn field_cases() -> Vec<(String, Vec<(String, String)>)> {
+    let f = |n: &str, v: &str| (n.to_owned(), v.to_owned());
+    vec![
+        (
+            "/h/5".into(),
+            (0..10)
+                .map(|i| f(&format!("x-f{i}"), &"v".repeat(i)))
+                .collect(),
+        ),
+        ("/h/0".into(), vec![f("x-one", "1")]),
+        ("/h/3".into(), vec![f("x-big", &"b".repeat(5000))]),
+        ("/h/0".into(), vec![]),
+        (
+            "/hd/4".into(),
+            vec![f("x-d1", "a"), f("x-d2", "b"), f("x-d3", "c")],
+        ),
+        ("/h/1".into(), vec![f("x-two", "2")]),
+        (
+            "/h/2".into(),
+            vec![f("x-m", "m"), f("x-n", ""), f("x-o", "o")],
+        ),
+    ]
+}
+
+/// The fields `echo_fields` should answer `path` with: `(body, r- fields)`.
+fn expected(path: &str, fs: &[(String, String)]) -> (String, usize) {
+    let body = fs.iter().map(|(n, v)| format!("{n}={v};")).collect();
+    (body, path.rsplit('/').next().unwrap().parse().unwrap())
+}
+
+/// Each request sees exactly its own fields and each response carries exactly its own,
+/// whatever the heads before them on the connection held (ADR-081).
+#[test]
+fn heads_reuse_header_storage_and_stay_exact() {
+    let app = Router::new()
+        .get("/h/:n", echo_fields)
+        .get("/hd/:n", echo_fields);
+    let e = start(serve(app));
+    let (c, base) = connect(&e, H2Options::default());
+    for _ in 0..2 {
+        for (p, fs) in field_cases() {
+            let mut req = ClientRequest::get(&format!("{base}{p}"));
+            for (n, v) in &fs {
+                req = req.header(n, v);
+            }
+            let r = c.send(req).wait().unwrap();
+            let (body, n) = expected(&p, &fs);
+            assert_eq!(String::from_utf8(r.body).unwrap(), body, "{p}");
+            for i in 0..8 {
+                let v = format!("v{i}");
+                let got = r.headers.get(&format!("r-{i}"));
+                assert_eq!(got, (i < n).then_some(v.as_str()), "{p}");
+            }
+            assert_eq!(r.headers.get_all("content-type").count(), 1, "{p}");
+        }
+    }
+    stop(&e);
+}
+
 #[test]
 fn basic_requests_headers_and_bodies() {
     let e = start(serve(app()));

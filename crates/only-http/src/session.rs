@@ -746,7 +746,7 @@ impl<S: Service> Session<S> {
         if !ctx.responded() && !ctx.is_detached() {
             ctx.respond(Response::text(500, "handler did not respond"));
         }
-        ctx.recycle_target();
+        ctx.recycle_request();
         if let Some(mut h) = ctx.take_raw() {
             let rc = crate::raw::RawConn(c.inner().clone());
             h.on_open(&rc);

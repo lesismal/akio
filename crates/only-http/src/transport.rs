@@ -11,7 +11,7 @@ use std::sync::Arc;
 use only_ws::{WsLink, WsSession};
 
 use crate::context::{BodyEvent, Context, ExtOut, Service};
-use crate::message::{Headers, Request, Response};
+use crate::message::{Headers, Request, Response, Spare};
 
 /// Where a connection's responses go: one sink per connection, shared by its requests, each
 /// request told apart by a `tag` the transport chooses (a stream id, flags) when it dispatches
@@ -129,8 +129,8 @@ pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn Re
 /// that arrives later.
 ///
 /// When the handler did not keep the request (it neither detached nor upgraded it), the
-/// request's target buffer is kept for the next target built with [`request_target`] on this
-/// thread.
+/// request's target buffer and header storage are kept for the next target and headers built
+/// with [`request_target`] and [`request_headers`] on this thread.
 #[inline(always)]
 pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &SharedSink, tag: u64) {
     let mut ctx = Context::new_ext(req, ExtOut(sink.clone(), tag));
@@ -138,7 +138,7 @@ pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &Shar
     service.call(&mut ctx);
     drop(g);
     finalize(&mut ctx);
-    ctx.recycle_target();
+    ctx.recycle_request();
 }
 
 /// A [`Request::target`] for a new request: `target` copied into the buffer of a request this
@@ -147,6 +147,23 @@ pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &Shar
 #[inline]
 pub fn request_target(target: &str) -> String {
     crate::context::new_target(target)
+}
+
+/// Storage for a new request's [`Request::headers`]: room for `fields` fields of `bytes` bytes
+/// of names and values (as [`Headers::with_capacity`]) in the storage of a request this thread
+/// finished with earlier (see [`dispatch_conn`]), so it allocates only when there is none or
+/// it is too small. HTTP/1.1 and HTTP/2 build their request headers the same way.
+#[inline]
+pub fn request_headers(fields: usize, bytes: usize) -> Headers {
+    Headers::spare(Spare::Req, fields, bytes)
+}
+
+/// Hands the headers of a response the transport has finished encoding back to this thread,
+/// for the next response built with [`Response::with_body`] (or [`Response::text`]) here, as
+/// HTTP/1.1 and HTTP/2 do after writing a response head.
+#[inline]
+pub fn recycle_response_headers(headers: Headers) {
+    headers.recycle(Spare::Resp);
 }
 
 #[inline]

@@ -1158,7 +1158,8 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
         return None;
     }
     // Room for `host` too; a request with few fields keeps their positions inline.
-    let mut headers = Headers::with_capacity(fields.regular() + 1, fields.bytes() + 4);
+    let mut headers =
+        only_http::transport::request_headers(fields.regular() + 1, fields.bytes() + 4);
     header_list(fs, &mut headers)?;
     if let Some(a) = authority {
         if headers.get("host").is_none() {
@@ -1809,6 +1810,7 @@ impl Sink<'_> {
                 }
                 self.put_trailers(out, trailers.as_ref());
             });
+            only_http::transport::recycle_response_headers(resp.headers);
             self.send_and_finish(out);
             return;
         }
@@ -1816,6 +1818,7 @@ impl Sink<'_> {
         let extra = if small { resp.body.len() + 9 } else { 9 };
         let mut out = Sink::head_buf(&resp, extra);
         let body = self.head(&mut out, &resp, false);
+        only_http::transport::recycle_response_headers(std::mem::take(&mut resp.headers));
         if body {
             if let Some(fb) = resp.file.take() {
                 // The head now; the file in pieces as the stream takes them, read on the pool.

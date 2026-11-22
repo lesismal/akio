@@ -369,6 +369,87 @@ fn pipelined_targets_reuse_the_buffer_and_stay_exact() {
     stop(&e);
 }
 
+/// Echoes the request's `x-` fields in order and answers with `:n` extra fields `r-0`, `r-1`...
+/// (from another thread when the path starts with `/hd/`).
+fn echo_fields(ctx: &mut Context) {
+    let n: usize = ctx.param("n").unwrap().parse().unwrap();
+    let body: String = ctx
+        .req()
+        .headers
+        .iter()
+        .filter(|(k, _)| k.starts_with("x-"))
+        .map(|(k, v)| format!("{k}={v};"))
+        .collect();
+    let mut r = Response::text(200, body);
+    for i in 0..n {
+        r = r.header(&format!("r-{i}"), format!("v{i}"));
+    }
+    if ctx.path().starts_with("/hd/") {
+        let d = ctx.detach().unwrap();
+        thread::spawn(move || d.respond(r));
+    } else {
+        ctx.respond(r);
+    }
+}
+
+/// Request and response heads of every size, one after another on a connection, as the
+/// per-thread spare header storage sees them (ADR-081): `(path, request x- fields)`.
+fn field_cases() -> Vec<(String, Vec<(String, String)>)> {
+    let f = |n: &str, v: &str| (n.to_owned(), v.to_owned());
+    vec![
+        (
+            "/h/5".into(),
+            (0..10)
+                .map(|i| f(&format!("x-f{i}"), &"v".repeat(i)))
+                .collect(),
+        ),
+        ("/h/0".into(), vec![f("x-one", "1")]),
+        ("/h/3".into(), vec![f("x-big", &"b".repeat(5000))]),
+        ("/h/0".into(), vec![]),
+        (
+            "/hd/4".into(),
+            vec![f("x-d1", "a"), f("x-d2", "b"), f("x-d3", "c")],
+        ),
+        ("/h/1".into(), vec![f("x-two", "2")]),
+        (
+            "/h/2".into(),
+            vec![f("x-m", "m"), f("x-n", ""), f("x-o", "o")],
+        ),
+    ]
+}
+
+/// Each request sees exactly its own fields and each response carries exactly its own,
+/// whatever the heads before them on the connection held (ADR-081).
+#[test]
+fn pipelined_heads_reuse_header_storage_and_stay_exact() {
+    let app = Router::new()
+        .get("/h/:n", echo_fields)
+        .get("/hd/:n", echo_fields);
+    let e = start(serve(app));
+    let mut s = connect(e.local_addrs()[0]);
+    let cases = field_cases();
+    let raw: String = cases
+        .iter()
+        .map(|(p, fs)| {
+            let fs: String = fs.iter().map(|(n, v)| format!("{n}: {v}\r\n")).collect();
+            format!("GET {p} HTTP/1.1\r\nHost: x\r\n{fs}\r\n")
+        })
+        .collect();
+    s.write_all(raw.as_bytes()).unwrap();
+    for (p, fs) in &cases {
+        let r = read_resp(&mut s);
+        let want: String = fs.iter().map(|(n, v)| format!("{n}={v};")).collect();
+        assert_eq!(r.text(), want, "{p}");
+        let n: usize = p.rsplit('/').next().unwrap().parse().unwrap();
+        for i in 0..8 {
+            let v = format!("v{i}");
+            assert_eq!(r.h(&format!("r-{i}")), (i < n).then_some(v.as_str()), "{p}");
+        }
+        assert_eq!(r.h("content-type"), Some("text/plain; charset=utf-8"));
+    }
+    stop(&e);
+}
+
 #[test]
 fn pipelined_requests_are_answered_in_order_even_when_finished_out_of_order() {
     // Later requests finish first.

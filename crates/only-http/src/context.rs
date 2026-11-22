@@ -13,7 +13,7 @@ use crate::h2::{H2Responder, H2Stream};
 use only_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
 use crate::coding::StreamEncoder;
-use crate::message::{Headers, Method, Request, Response, Version};
+use crate::message::{Headers, Method, Request, Response, Spare, Version};
 use crate::router::RouteInfo;
 use only_log::span::Span;
 
@@ -259,8 +259,10 @@ impl Responder {
     fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
         fin.apply(&mut resp, req);
         let status = resp.status;
-        let mut head = Vec::with_capacity(192 + resp.body.len());
+        // From the I/O thread's buffer pool: the connection gives it back there once written.
+        let mut head = only_buf::get(192 + resp.body.len());
         resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
+        resp.headers.recycle(Spare::Resp);
         let bodyless = status < 200 || status == 204 || status == 304;
         match resp.file {
             Some(f) if !self.head_only && !bodyless => self.slot.fill_parts(
@@ -410,16 +412,18 @@ impl Context {
     }
 
     /// Once the handler is done: if this context still owns the request (the handler neither
-    /// detached nor upgraded it), its target buffer becomes the thread's spare for the next
-    /// request's target (see [`new_target`]), unless it grew past what is worth keeping.
+    /// detached nor upgraded it), its target buffer and its header storage become the thread's
+    /// spares for the next request's (see [`new_target`] and `Headers::spare`), unless they
+    /// grew past what is worth keeping.
     #[inline]
-    pub(crate) fn recycle_target(&mut self) {
+    pub(crate) fn recycle_request(&mut self) {
         if let ReqCell::Own(r) = &mut self.req {
             if r.target.capacity() <= SPARE_TARGET_MAX {
                 let mut t = std::mem::take(&mut r.target);
                 t.clear();
                 SPARE_TARGET.set(t);
             }
+            std::mem::take(&mut r.headers).recycle(Spare::Req);
         }
     }
 

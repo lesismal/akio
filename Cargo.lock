@@ -660,6 +660,7 @@ dependencies = [
  "libc",
  "only",
  "only-brotli",
+ "only-buf",
  "only-core",
  "only-crypto",
  "only-deflate",

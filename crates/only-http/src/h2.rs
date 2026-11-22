@@ -23,7 +23,7 @@ use only_ws::{WsLink, WsSender, WsSession};
 
 use crate::{
     context::{BodyEvent, BodyMode, Context, Service},
-    message::{FileBody, Headers, Method, Request, Response, Version},
+    message::{FileBody, Headers, Method, Request, Response, Spare, Version},
     session::Phase,
 };
 
@@ -264,9 +264,12 @@ struct Cont {
 }
 
 /// What the driver does after releasing the lock.
+// The request is inline on purpose: the service runs in a `Context` built on the stack, so a
+// request costs no boxed context (the vector of actions is reused, see `SPARE_ACTIONS`).
+#[allow(clippy::large_enum_variant)]
 enum Action {
     /// A complete request: run the service.
-    Dispatch(Box<Context>),
+    Dispatch(Request, H2Responder),
     /// A streamed request began: run the service, then park its context on the stream.
     Start(u32, Box<Context>),
     /// Body bytes for a streamed request: a range of the buffer being parsed.
@@ -427,7 +430,13 @@ impl std::ops::DerefMut for Locked<'_> {
     }
 }
 
+/// Capacity of the pooled output buffer a batch of responses is written into (an only-buf size
+/// class: a buffer that outgrows it is reallocated and freed, not pooled, after the write).
+const OUT_POOLED: usize = 4 << 10;
+
 thread_local! {
+    /// The actions vector of the last read on this thread, emptied, for the next one.
+    static SPARE_ACTIONS: std::cell::Cell<Vec<Action>> = const { std::cell::Cell::new(Vec::new()) };
     /// An empty buffer with capacity, swapped with `Core::dropped` on unlock so that dropping
     /// finished streams outside the lock allocates nothing in the steady state (a fresh `Vec`
     /// per finished stream cost ~9% of h2c throughput).
@@ -491,6 +500,19 @@ impl Core {
         if !self.out.is_empty() {
             let out = std::mem::take(&mut self.out);
             let _ = self.conn.send_owned(out);
+        } else if self.out.capacity() != 0 {
+            // A pooled buffer nothing was written to goes back (an idle connection keeps none).
+            only_buf::put(std::mem::take(&mut self.out));
+        }
+    }
+
+    /// Before a response's frames: an empty output buffer is taken from the thread's buffer
+    /// pool, which gets it back once the connection has written it, instead of growing one
+    /// from nothing (several reallocations per batch of responses).
+    #[inline]
+    fn out_pooled(&mut self) {
+        if self.out.capacity() == 0 {
+            self.out = only_buf::get(OUT_POOLED);
         }
     }
 
@@ -699,6 +721,7 @@ impl Core {
             f.spans.push((a, b, f.buf.len()));
         }
         // Encode behind a placeholder frame header, which is filled in once the size is known.
+        self.out_pooled();
         let start = self.out.len();
         self.out.extend_from_slice(&[0; 9]);
         self.enc.encode_into(f.iter(), &mut self.out);
@@ -747,6 +770,7 @@ impl Core {
             content_length,
             end_with_head,
         );
+        std::mem::take(&mut resp.headers).recycle(Spare::Resp);
         let max_frame = self.remote.max_frame as usize;
         let conn_send = self.conn_send;
         let st = self.streams.get_mut(&sid).expect("stream still present");
@@ -1502,7 +1526,7 @@ impl Core {
             }
             // A request without a body: dispatched right away, nothing parked on the stream.
             let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
-            actions.push(Action::Dispatch(Box::new(Context::new_h2(req, resp))));
+            actions.push(Action::Dispatch(req, resp));
             return Ok(());
         }
         // Does the service want the body as a stream?
@@ -1590,7 +1614,7 @@ impl Core {
         let mut req = st.head.take()?;
         req.body = std::mem::take(&mut st.body);
         let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
-        Some(Action::Dispatch(Box::new(Context::new_h2(req, resp))))
+        Some(Action::Dispatch(req, resp))
     }
 
     fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
@@ -1603,7 +1627,7 @@ impl Core {
             .iter()
             .filter(|&&(a, b, _)| a == b || fields.buf[a] != b':')
             .count();
-        let mut headers = Headers::with_capacity(n, fields.buf.len());
+        let mut headers = Headers::spare(Spare::Req, n, fields.buf.len());
         let mut regular = false;
         let mut cookies: Option<String> = None;
         for (n, v) in fields.iter() {
@@ -2183,7 +2207,7 @@ impl<S: Service> H2Session<S> {
         let batch = Batch(&self.core);
         let buf = held.as_deref().unwrap_or(data);
         let mut pos = 0;
-        let mut actions = Vec::new();
+        let mut actions = SPARE_ACTIONS.take();
         loop {
             let more = {
                 let mut c = lock(&self.core);
@@ -2229,16 +2253,18 @@ impl<S: Service> H2Session<S> {
         c.finished = false;
         drop(c);
         drop(batch);
+        SPARE_ACTIONS.set(actions);
     }
 
     fn run(&self, a: Action, buf: &[u8]) {
         match a {
-            Action::Dispatch(mut ctx) => {
+            Action::Dispatch(req, resp) => {
+                let mut ctx = Context::new_h2(req, resp);
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);
                 finalize(&mut ctx);
-                ctx.recycle_target();
+                ctx.recycle_request();
             }
             Action::Start(sid, mut ctx) => {
                 let g = crate::trace::begin(&mut ctx);

@@ -2,7 +2,7 @@
 
 use only_ws::http1::{self, Header, Resume};
 
-use crate::message::{Headers, Method, Version};
+use crate::message::{Headers, Method, Spare, Version};
 
 /// A parsed request head.
 #[derive(Debug)]
@@ -68,7 +68,7 @@ fn head(req: http1::Request<'_, '_>) -> Result<Option<(Head, usize)>, ParseError
         .iter()
         .map(|h| h.name.len() + h.value.len())
         .sum();
-    let mut headers = Headers::with_capacity(req.headers.len(), bytes);
+    let mut headers = Headers::spare(Spare::Req, req.headers.len(), bytes);
     for h in req.headers {
         // Header values must be text we can hand out as `&str`.
         let v = std::str::from_utf8(h.value).map_err(|_| ParseError::Bad)?;
