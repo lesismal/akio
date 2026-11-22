@@ -150,10 +150,10 @@ fn browser(tls: &str, exe: &str) {
         && report.contains("proto=chat")
         && report.contains("permessage-deflate");
     if !ok {
-        eprintln!("browser -> only (h2): FAILED");
+        eprintln!("browser -> akio (h2): FAILED");
         std::process::exit(1);
     }
-    eprintln!("browser -> only (h2): ok");
+    eprintln!("browser -> akio (h2): ok");
 }
 
 fn server(h2c: &str, tls: &str) {
@@ -178,7 +178,7 @@ fn server(h2c: &str, tls: &str) {
         .build()
         .unwrap();
     e.start().unwrap();
-    eprintln!("only h2 websocket server on {h2c} (h2c) and {tls} (tls)");
+    eprintln!("akio h2 websocket server on {h2c} (h2c) and {tls} (tls)");
     e.wait();
 }
 

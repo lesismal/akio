@@ -87,7 +87,7 @@ thread), and the loop `while let Some(job) = rx.recv().await { tokio::spawn(..) 
 `WsSender::send_text` and the other handles never block, so calling them from async tasks is
 fine.
 
-**From async code to only.** akio-http's `ResponseFuture` (HTTP/1 and HTTP/2 clients) and
+**From async code to akio.** akio-http's `ResponseFuture` (HTTP/1 and HTTP/2 clients) and
 akio-arpc's `CallFuture` implement `Future`: `.await` them in any executor. The connection
 itself runs on `akio`'s I/O threads; the future is completed from there and wakes your task.
 

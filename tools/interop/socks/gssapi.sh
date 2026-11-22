@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # akio-socks GSS-API (RFC 1961, ADR-071) against MIT Kerberos, in one Debian container: a KDC
-# for realm ONLY.TEST on 127.0.0.1, the proxy's service principal rcmd/proxy.akio.test in a
+# for realm AKIO.TEST on 127.0.0.1, the proxy's service principal rcmd/proxy.akio.test in a
 # keytab, a user alice with a ticket.
-#   only <-> only    akio-socks' client and server (socks-gss-interop), the GSS-API
+#   akio <-> akio    akio-socks' client and server (socks-gss-interop), the GSS-API
 #                    mechanism being MIT krb5 through the test-only shim gss_shim.py
 #                    (python3-gssapi): protection none, integrity and confidentiality, a 1 MiB
 #                    echo; a server requiring integrity upgrading a client that asks for none.
 #   gss_client.py    an independent RFC 1961 client (python3-gssapi), checked against Dante,
 #                    then against akio-socks' server, each level.
-#   only -> Dante    our client against Dante with `socksmethod: gssapi` (the reference
+#   akio -> Dante    our client against Dante with `socksmethod: gssapi` (the reference
 #                    server; Debian's source package rebuilt --with-gssapi, as the packaged
 #                    one has no GSS-API), each protection level.
 #   UDP ASSOCIATE    datagrams wrapped per RFC 1961 section 5 at each level: gss_client.py on
@@ -79,21 +79,21 @@ check() { # name, command...
 cat "$W/hosts" >/etc/hosts
 cat >/etc/krb5.conf <<CONF
 [libdefaults]
-  default_realm = ONLY.TEST
+  default_realm = AKIO.TEST
   dns_lookup_kdc = false
   dns_lookup_realm = false
   rdns = false
   dns_canonicalize_hostname = false
 [realms]
-  ONLY.TEST = {
+  AKIO.TEST = {
     kdc = 127.0.0.1
     admin_server = 127.0.0.1
   }
 [domain_realm]
-  proxy.akio.test = ONLY.TEST
+  proxy.akio.test = AKIO.TEST
 CONF
 rm -rf /var/lib/krb5kdc/principal*
-kdb5_util create -s -r ONLY.TEST -P master-pw >/dev/null 2>&1 || { echo "kdb5_util failed"; exit 1; }
+kdb5_util create -s -r AKIO.TEST -P master-pw >/dev/null 2>&1 || { echo "kdb5_util failed"; exit 1; }
 krb5kdc || { echo "krb5kdc failed"; exit 1; }
 kadmin.local -q "addprinc -randkey rcmd/proxy.akio.test" >/dev/null 2>&1
 kadmin.local -q "ktadd -k $W/proxy.keytab rcmd/proxy.akio.test" >/dev/null 2>&1
@@ -130,7 +130,7 @@ CONF
 sleep 1
 
 SVC=rcmd@proxy.akio.test
-# ---- only <-> only, only -> Dante ----------------------------------------------------------
+# ---- akio <-> akio, akio -> Dante ----------------------------------------------------------
 for p in none integrity confidentiality; do
   check "akio client -> akio server, protection $p" "$EX" client 127.0.0.1:1090 $SVC $p
   check "akio client -> Dante, protection $p" "$EX" client 127.0.0.1:1092 $SVC $p
@@ -153,7 +153,7 @@ for p in none integrity confidentiality; do
   check "akio client UDP -> Dante, protection $p" "$EX" udp 127.0.0.1:1092 $SVC $p
   check "akio client UDP -> akio server, protection $p" "$EX" udp 127.0.0.1:1090 $SVC $p
 done
-check "the server saw the Kerberos principal" grep -q 'Some("alice@ONLY.TEST")' "$W/akio-none.log"
+check "the server saw the Kerberos principal" grep -q 'Some("alice@AKIO.TEST")' "$W/akio-none.log"
 
 if [ -n "${GSS_DEBUG:-}" ]; then
   grep -v "debug:" "$W/danted.log" | cut -c1-500 | tail -30

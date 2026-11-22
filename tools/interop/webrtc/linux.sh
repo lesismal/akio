@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# run.sh in Linux containers (Docker), plus coturn: the only example is built in rust:1, the
+# run.sh in Linux containers (Docker), plus coturn: the akio example is built in rust:1, the
 # pion side cross-compiled, and coturn runs next to them (same network namespace):
 #   - turnutils_uclient against akio-turn over UDP, TCP (-t) and TLS (-S);
 #   - the akio_turn client against coturn over UDP, TCP and TLS;
-#   - an only Endpoint with relayed candidates from coturn (allocated over UDP, TCP and TLS),
+#   - an akio Endpoint with relayed candidates from coturn (allocated over UDP, TCP and TLS),
 #     to pion.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -24,7 +24,7 @@ docker exec akio-webrtc-it openssl req -x509 -newkey ec -pkeyopt ec_paramgen_cur
 docker exec akio-webrtc-it chmod 644 /tmp/t/coturn.key /tmp/t/coturn.crt # coturn runs as nobody
 docker run -d --name akio-coturn-it --network container:akio-webrtc-it -v akio-webrtc-target:/tmp/t \
   coturn/coturn:4.6 -n --listening-ip=127.0.0.1 --listening-port=3478 --tls-listening-port=5349 \
-  --relay-ip=127.0.0.1 --realm=only --user=alice:wonderland --lt-cred-mech --fingerprint \
+  --relay-ip=127.0.0.1 --realm=akio --user=alice:wonderland --lt-cred-mech --fingerprint \
   --allow-loopback-peers --no-cli --cert=/tmp/t/coturn.crt --pkey=/tmp/t/coturn.key \
   --no-dtls --log-file=stdout >/dev/null
 docker exec -e RS=$RS -e GO=/w/target/interop-linux/webrtc-pion akio-webrtc-it \
@@ -37,7 +37,7 @@ for f in "9603" "9613 -t" "9614 -t -S"; do
   set -- $f
   port=$1; shift
   docker exec akio-coturn-it turnutils_uclient -y -n 20 -m 2 -l 100 -u alice -w wonderland \
-    -r only -p "$port" "$@" 127.0.0.1 >/tmp/uclient.log 2>&1 || { tail -20 /tmp/uclient.log; exit 1; }
+    -r akio -p "$port" "$@" 127.0.0.1 >/tmp/uclient.log 2>&1 || { tail -20 /tmp/uclient.log; exit 1; }
   grep -E "start_mclient: tot_send_msgs=|Total lost" /tmp/uclient.log
   awk -F'tot_send_msgs=|, tot_recv_msgs=' '/start_mclient: tot_send_msgs=/ { s = $2; r = $3 }
     END { exit !(s + 0 > 0 && s + 0 == r + 0) }' /tmp/uclient.log
@@ -48,7 +48,7 @@ for s in "udp 3478" "tcp 3478" "tls 5349"; do
   set -- $s
   docker exec akio-webrtc-it $RS turn-client "$1" "127.0.0.1:$2" alice wonderland
 done
-echo "== only Endpoint with relayed candidates from coturn, to pion"
+echo "== akio Endpoint with relayed candidates from coturn, to pion"
 docker exec -d akio-webrtc-it /w/target/interop-linux/webrtc-pion server 127.0.0.1:9602
 sleep 1
 docker exec akio-webrtc-it $RS client 127.0.0.1:9602 dc-relay 127.0.0.1:3478 alice wonderland

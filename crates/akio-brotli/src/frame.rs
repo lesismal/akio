@@ -708,8 +708,8 @@ fn check_footer(data: &[u8], f: &Chunk, chunks: &[Chunk]) -> Result<(), Error> {
 /// use akio_brotli::{ContainerWriter, Level, read_container};
 ///
 /// let mut w = ContainerWriter::new(Level::new(9));
-/// let common = w.add_dictionary(b"<html><head><title>only</title></head><body>");
-/// w.add_with_dictionary("index.html", b"<html><head><title>only</title></head><body>hi", common);
+/// let common = w.add_dictionary(b"<html><head><title>akio</title></head><body>");
+/// w.add_with_dictionary("index.html", b"<html><head><title>akio</title></head><body>hi", common);
 /// w.add("notes.txt", b"plain text, compressed with brotli");
 /// let packed = w.finish();
 ///

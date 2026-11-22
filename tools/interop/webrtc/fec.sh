@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # akio-webrtc <-> headless Chrome: FEC, RFC 8888, RTCP XR and TMMBR (ADR-039). Chrome offers VP8
-# video to the only fec-server, which echoes it back through a UDP proxy that drops RTP:
+# video to the akio fec-server, which echoes it back through a UDP proxy that drops RTP:
 #   1. one RTP packet in 20 dropped each way and NACK removed from the SDP, so FEC is the only
 #      repair: without FEC Chrome decodes few frames; with ULPFEC (red + ulpfec) and with FlexFEC
 #      (flexfec-03, field trials below) it decodes most of them (losses FEC cannot repair stay:

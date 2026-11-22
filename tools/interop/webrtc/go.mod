@@ -1,4 +1,4 @@
-// The pion side of the only WebRTC/TURN interop checks (run.sh).
+// The pion side of the akio WebRTC/TURN interop checks (run.sh).
 module github.com/lesismal/akio/tools/interop/webrtc
 
 go 1.24.0

@@ -74,7 +74,7 @@ packet, priority, fair capacity, weighted fair queueing by default) chosen with
   one socket are therefore told apart by the remote's addresses, which every peer that does not
   bundle provides (an ICE agent or a port per section).
 - **Sockets per transport.** `Endpoint::bind_transport_socket` binds more sockets; the n-th
-  transport after the first uses the n-th socket's host candidate, so two only endpoints can
+  transport after the first uses the n-th socket's host candidate, so two akio endpoints can
   run without BUNDLE (one side needs them). Component 2 of every transport stays on the RTCP
   socket.
 - **Limits.** Transport-wide congestion control needs one transport: transport-cc and RFC 8888
@@ -180,7 +180,7 @@ field is not a break.
   refuses BUNDLE runs three transports (its statistics), with data and media echoed and
   decoded; the only `Endpoint` offering audio and a channel without BUNDLE gets Chrome's
   microphone over two transports. Chrome 157 has no `RTCDataChannel.priority` (it sends 256),
-  and pion always bundles and sends 256, so priorities are checked between only peers only;
+  and pion always bundles and sends 256, so priorities are checked between akio peers only;
   pion's script (`run.sh`) and Chrome's (`browser.sh`) pass unchanged.
 - Fuzzing: new target `webrtc_sdes` (an `a=crypto` value round-trips and keys a context);
   `webrtc_sdp` also tries SDES without ICE with MKIs and no BUNDLE with RTCP negotiation, and

@@ -112,7 +112,7 @@ pub struct RtmpClientConfig {
     pub buffer_length: Duration,
     /// Push: FLV encoding options (legacy H.265 codec id instead of Enhanced RTMP `hvc1`).
     pub encoder: EncoderConfig,
-    /// The `flashVer` sent in `connect`; `None` sends `FMLE/3.0 (compatible; only)` when
+    /// The `flashVer` sent in `connect`; `None` sends `FMLE/3.0 (compatible; akio)` when
     /// pushing and `LNX 9,0,124,2` when pulling.
     pub flash_ver: Option<String>,
     /// Use the simple handshake rather than the Flash digest one (some old servers only take
@@ -1086,7 +1086,7 @@ impl Session {
         let push = s.push.is_some();
         let flash_ver = s.cfg.flash_ver.clone().unwrap_or_else(|| {
             if push {
-                "FMLE/3.0 (compatible; only)".into()
+                "FMLE/3.0 (compatible; akio)".into()
             } else {
                 "LNX 9,0,124,2".into()
             }

@@ -28,7 +28,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 assert_eq!((a.name, a.value), (b.name, b.value));
             }
         }
-        (Ok(Status::Complete(_)), t) => panic!("only accepted, httparse: {t:?}"),
+        (Ok(Status::Complete(_)), t) => panic!("akio accepted, httparse: {t:?}"),
         (o, Ok(httparse::Status::Complete(_))) => panic!("httparse accepted, akio: {o:?}"),
         _ => {}
     }

@@ -148,7 +148,7 @@ idle connections cost `akio` ~56 MB above the baseline.
 
 ### QUIC and HTTP/3 (`crates/akio-h3/examples/quic-bench.rs`, loopback, CPUs 2–5)
 
-| Case | only |
+| Case | akio |
 |---|---:|
 | bulk, one stream, 2 GiB | 5,754 Mbit/s (5,749–5,785) |
 | HTTP/3 GET, one connection, 64 in flight | 427,612 req/s (425,096–427,634) |
@@ -402,7 +402,7 @@ reconsidering.
 
 What the experimental code covers (tests: `crates/akio-tls/tests/ktls.rs` on a kTLS kernel,
 in-memory unit tests anywhere; `AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh` passed 107/107
-against OpenSSL 3.0.13 and Go 1.27 with only's side offloaded): TLS 1.3 and 1.2 with AES-128-GCM,
+against OpenSSL 3.0.13 and Go 1.27 with akio's side offloaded): TLS 1.3 and 1.2 with AES-128-GCM,
 AES-256-GCM and ChaCha20-Poly1305; the keys and sequence numbers exported after the handshake
 (only when nothing is buffered); alerts, close_notify and post-handshake messages (NewSessionTicket,
 KeyUpdate) through the record-type control message; TLS 1.3 KeyUpdate in both directions by
@@ -2084,7 +2084,7 @@ words and are unchanged.
 A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay
 out of the libraries.
 
-| Operation | only | replaced crate |
+| Operation | akio | replaced crate |
 |---|---:|---:|
 | HTTP/1 request head, 1 header | 59 | httparse 59 |
 | HTTP/1 request head, browser-like, 11 headers | 204 | httparse 170 |
@@ -2104,7 +2104,7 @@ out of the libraries.
 Message filter regexps (`codec-bench logregex`, `akio-regex`, unanchored search on an 86-byte log
 line; 2026-11-19):
 
-| Operation | only | regex |
+| Operation | akio | regex |
 |---|---:|---:|
 | `connection reset` (literal: `str::contains`) | 6.8 | 12.3 |
 | `timeout\|refused\|unreachable`, no match | 92.7 | 16.0 |

@@ -184,7 +184,7 @@ exactly that case.
   - `latch.sh`: RTCP's own handshake and the client role, behind an iptables NAT.
   - New `ecn6679.sh`: rtp / leap / ice between two akio peers over a real Linux NAT, and a
     router rule clearing ECN, then removed (failure, retry, recovery). No browser or SIP stack
-    we can run implements RFC 6679's "ice" or "leap", so these run only between only peers.
+    we can run implements RFC 6679's "ice" or "leap", so these run only between akio peers.
 - **Performance:** a same-run `webrtc-bench` A/B against main da0637aa on gpu51 gives media
   0.999x and data channels 0.997x, with the ranges overlapping (docs/BENCHMARKS.md).
 - **Not done:**

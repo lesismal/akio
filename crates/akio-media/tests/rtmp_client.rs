@@ -1,4 +1,4 @@
-//! RTMP client tests: only's client against only's server both ways (push hub A to the
+//! RTMP client tests: akio's client against akio's server both ways (push hub A to the
 //! server's hub B, pull from hub B into hub C), against ffmpeg (`-listen 1` as the server it
 //! pushes to and pulls from; skipped when ffmpeg/ffprobe are not installed), and against
 //! mediamtx in Docker (ignored by default:
@@ -166,7 +166,7 @@ fn streaming(c: &RtmpClient) -> bool {
     c.state() == ClientState::Streaming
 }
 
-/// Push hub A -> only's RTMP server (hub B) -> pull into hub C, H.264/AAC and H.265/AAC
+/// Push hub A -> akio's RTMP server (hub B) -> pull into hub C, H.264/AAC and H.265/AAC
 /// (Enhanced RTMP `hvc1` both ways).
 #[test]
 fn loopback_push_and_pull_through_only_server() {

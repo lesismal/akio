@@ -185,9 +185,9 @@ included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"). Off by default.
   ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), secp521r1, P-521 and
   RSA-PSS-key certificates (`rsa_pss_pss_sha256`, TLS 1.3 and 1.2; with OpenSSL only, Go has no
   RSA-PSS keys) for servers and clients, the client OCSP request against OpenSSL (which ignores
-  it) and between only's client and server over TCP (good, revoked, missing), zlib, brotli and zstd
+  it) and between akio's client and server over TCP (good, revoked, missing), zlib, brotli and zstd
   certificate compression with OpenSSL 3.2+ built with them (Debian's has zlib and zstd;
-  `tools/interop/tls/certcomp.Dockerfile` builds one with all three), only's client validating
+  `tools/interop/tls/certcomp.Dockerfile` builds one with all three), akio's client validating
   `s_server -status_file` staples (good, revoked, missing; soft and hard fail) and checking
   OpenSSL-made CRLs, record_size_limit and OCSP with
   GnuTLS when installed, plus curl against akio-http (HTTP/1.1 and HTTP/2); needs

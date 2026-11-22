@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Local Service Discovery (BEP 14) between only and libtorrent 2.0, in two containers on a
+# Local Service Discovery (BEP 14) between akio and libtorrent 2.0, in two containers on a
 # Docker bridge network: neither side knows a tracker, a DHT node or the other's address.
-#   1. only seeds (LSD on), libtorrent leeches (LSD on): libtorrent hears only's announcement.
-#   2. libtorrent seeds, only leeches: only hears libtorrent's announcement.
+#   1. akio seeds (LSD on), libtorrent leeches (LSD on): libtorrent hears akio's announcement.
+#   2. libtorrent seeds, akio leeches: akio hears libtorrent's announcement.
 # Run by tools/interop/bittorrent/run.sh (suite `lsd`), or on its own.
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -35,9 +35,9 @@ case1() { # seed-side command, leech-side command, name
 }
 case1 "$BT seed /d/lsd.torrent /d/src 0.0.0.0:7700 --no-dht --lsd" \
   "timeout 120 $LT leech /d/lsd.torrent /tmp/l 7701 --lsd --listen-ip 0.0.0.0 --timeout 110 && cmp /d/src/lsd.bin /tmp/l/lsd.bin" \
-  "libtorrent finds only's seed by LSD (Docker network)"
+  "libtorrent finds akio's seed by LSD (Docker network)"
 case1 "$LT seed /d/lsd.torrent /d/src 7710 --lsd --listen-ip 0.0.0.0" \
   "timeout 120 $BT leech /d/lsd.torrent /tmp/l 0.0.0.0:7711 --no-dht --lsd --timeout 110 && cmp /d/src/lsd.bin /tmp/l/lsd.bin" \
-  "only finds libtorrent's seed by LSD (Docker network)"
+  "akio finds libtorrent's seed by LSD (Docker network)"
 echo "bittorrent lsd interop: $pass passed, $fail failed"
 [ "$fail" = 0 ]

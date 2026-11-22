@@ -76,29 +76,29 @@ fetch() { # curl proxy options...
   [ "$(curl -sS --max-time 20 "$@" http://localhost:8000/blob | sha256sum | cut -d' ' -f1)" = "$WANT" ]
 }
 
-for p in "only 1080" "dante 1081"; do
+for p in "akio 1080" "dante 1081"; do
   set -- $p
   echo "== $1 (127.0.0.1:$2)"
   check "curl --socks5 (CONNECT, IPv4)" fetch --socks5 127.0.0.1:$2
   check "curl --socks5-hostname (CONNECT, name)" fetch --socks5-hostname 127.0.0.1:$2
-  if [ "$1" = only ]; then # SOCKS4 is checked against akio-socks alone
+  if [ "$1" = akio ]; then # SOCKS4 is checked against akio-socks alone
     check "curl --socks4" fetch --socks4 127.0.0.1:$2
     check "curl --socks4a" fetch --socks4a 127.0.0.1:$2
   fi
-  if [ "$1" = only ]; then
+  if [ "$1" = akio ]; then
     check "PySocks UDP + BIND + raw UDP + fragments + SOCKS4 BIND (clients.py)" \
       python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2 --fragments --socks4-bind
   else
     check "PySocks UDP + BIND + raw UDP (clients.py)" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2
   fi
-  if [ "$1" = only ]; then
+  if [ "$1" = akio ]; then
     check "akio-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" "$CLI" 127.0.0.1:$2
   else # Dante 1.4 refuses SOCKS4a host names (curl --socks4a too)
     check "akio-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" \
       "$CLI" 127.0.0.1:$2 --no-socks4a-names
   fi
 done
-echo "== only with username/password (127.0.0.1:1082)"
+echo "== akio with username/password (127.0.0.1:1082)"
 check "curl socks5://user:pass@" fetch -x socks5://alice:s3cret@127.0.0.1:1082
 check "curl socks5h://user:pass@" fetch -x socks5h://alice:s3cret@127.0.0.1:1082
 check "curl wrong password refused" bash -c '! curl -sS --max-time 5 -x socks5://alice:nope@127.0.0.1:1082 http://localhost:8000/blob -o /dev/null'

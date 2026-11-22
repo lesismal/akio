@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # TURN dual allocations (RFC 8656 ADDITIONAL-ADDRESS-FAMILY, ADR-083) and ECN across the relay,
-# in Linux containers (Docker, IPv6 loopback on): the only example is built in rust:1, the pion
+# in Linux containers (Docker, IPv6 loopback on): the akio example is built in rust:1, the pion
 # side cross-compiled, and coturn runs next to them (same network namespace) relaying from
 # 127.0.0.1 and ::1:
 #   - coturn's turnutils_uclient with dual allocations (-Z) and IPv6 relays (-x), clients
@@ -29,7 +29,7 @@ RS=/tmp/t/release/examples/turn-dual-interop
 GO=/w/target/interop-linux/webrtc-pion
 docker run -d --name akio-coturndual-it --network container:akio-turndual-it coturn/coturn:4.6 \
   -n --listening-ip=127.0.0.1 --listening-port=3478 --relay-ip=127.0.0.1 --relay-ip=::1 \
-  --realm=only --user=alice:wonderland --lt-cred-mech --fingerprint --allow-loopback-peers \
+  --realm=akio --user=alice:wonderland --lt-cred-mech --fingerprint --allow-loopback-peers \
   --no-cli --no-tls --no-dtls --log-file=stdout >/dev/null
 docker exec -d akio-turndual-it $RS server 127.0.0.1:9823 alice wonderland
 docker exec -d akio-turndual-it $GO turn-server 127.0.0.1:9903 127.0.0.1:9913 127.0.0.1:9914 \

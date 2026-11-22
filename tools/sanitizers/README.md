@@ -11,7 +11,7 @@ tools/sanitizers/run.sh --docker address            # Linux container (Docker De
 ```
 
 ```bash
-AKIO_TEST_BACKEND=uring tools/sanitizers/run.sh --docker thread akio-uring only akio-ws
+AKIO_TEST_BACKEND=uring tools/sanitizers/run.sh --docker thread akio-uring akio akio-ws
 ```
 
 ```bash
@@ -72,8 +72,8 @@ with unsafe code and the engine backends.
 | ASan, arm64, io_uring | akio-uring, akio, akio-http, akio-prefork, akio-socks, akio-ws | clean |
 | TSan, arm64, epoll | all 36 | clean after the fixes below (one thread leak, item 5) |
 | TSan, arm64, io_uring | as for ASan | clean after the fixes below |
-| ASan + TSan, x86_64, epoll | akio-sys, akio-buf, akio-crypto, akio-core, akio-epoll, akio-pool, akio-timer, only | clean |
-| ASan + TSan, x86_64, io_uring | akio-uring, only | clean |
+| ASan + TSan, x86_64, epoll | akio-sys, akio-buf, akio-crypto, akio-core, akio-epoll, akio-pool, akio-timer, akio | clean |
+| ASan + TSan, x86_64, io_uring | akio-uring, akio | clean |
 
 No memory error, memory leak or data race was reported. What the runs turned up:
 

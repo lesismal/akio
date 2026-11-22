@@ -26,5 +26,5 @@ echo "Go client -> akio server:"; "$OUT/arpc-go" client 127.0.0.1:9101
 echo "akio client -> Go server:"; "$BIN" client 127.0.0.1:9100
 grep -q "note from go" "$OUT/rust-server.log" && echo "notify from Go arrived"
 echo "Go pool, coders -> akio server:"; "$OUT/arpc-go" client-coded 127.0.0.1:9103
-echo "only pool, coders -> Go server:"; "$BIN" client-coded 127.0.0.1:9102
+echo "akio pool, coders -> Go server:"; "$BIN" client-coded 127.0.0.1:9102
 grep -q 'coded notify: 1300 bytes, trace Some("from go")' "$OUT/rust-coded.log" && echo "coded notify from Go arrived"

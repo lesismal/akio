@@ -279,7 +279,7 @@ akio::log::FmtLogger::new()
 
 A record gives `level()`, `target()`, `args()` (the message, formatted lazily),
 `key_values()` (`iter()`, `get("conn_id")`; values implement `Display`) and the source location.
-Without a logger installed, errors and slow-callback warnings go to stderr (`only: ...`) so they
+Without a logger installed, errors and slow-callback warnings go to stderr (`akio: ...`) so they
 are never lost silently; everything else is dropped. The maximum level defaults to `Off` and is
 checked first, with one relaxed atomic load, so disabled statements cost well under a
 nanosecond.
@@ -305,7 +305,7 @@ specific target wins. Unset, `default` applies to everything; unparsable, a line
 why and `default` applies. Nothing reads the variable unless `init_from_env` is called. The same
 syntax builds a filter in code: `"info,akio_http=debug".parse::<akio::log::Filter>()`, then
 `FmtLogger::new().init_filtered(filter)`, or `filter.enabled(metadata)` in your own `Logger`.
-Unlike env_logger, `only=debug` does not match `akio_http` (targets match on `::` boundaries).
+Unlike env_logger, `akio=debug` does not match `akio_http` (targets match on `::` boundaries).
 
 **Message filters.** As with env_logger, a `/regex` after the directives keeps only the records
 whose formatted message (not the target, level or key-values) matches the pattern somewhere:
@@ -334,7 +334,7 @@ Enable them in the application only (features are unified across the dependency 
 `akio-log = { version = "1", features = ["release_max_level_info"] }`.
 
 **Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
-(`only = { version = "1", features = ["log"] }`). While no akio-log logger is installed, every
+(`akio = { version = "1", features = ["log"] }`). While no akio-log logger is installed, every
 record goes to the `log` crate's logger with the same level, target, message and key-values, and
 `log::max_level()` is the effective maximum; `Config::log_level` sets `log`'s level as well. To
 go the other way (records of crates using `log`, such as str0m or rustls, into an akio-log

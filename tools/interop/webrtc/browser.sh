@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# akio-webrtc <-> headless Chrome, both offer directions: Chrome offers to the only ICE-lite
+# akio-webrtc <-> headless Chrome, both offer directions: Chrome offers to the akio ICE-lite
 # RtcServer (data channels, fake camera/microphone media echoed back and decoded by Chrome), and
-# the only full-ICE Endpoint offers to Chrome (data channel echo). Needs Node >= 22 and Chrome
+# the akio full-ICE Endpoint offers to Chrome (data channel echo). Needs Node >= 22 and Chrome
 # (CHROME=/path/to/chrome; the macOS default location is tried). CHROME_ARGS adds Chrome flags:
 # CHROME_ARGS=--force-fieldtrials=WebRTC-DataChannelMessageInterleaving/Enabled/ makes Chrome
 # offer I-DATA (RFC 8260), so the data channels run interleaved (Chrome 157 uses DATA otherwise).
@@ -31,9 +31,9 @@ $RS turn 127.0.0.1:9515 127.0.0.1 alice wonderland 127.0.0.1:9516 127.0.0.1:9517
 $RS sfu 127.0.0.1:9518 127.0.0.1:9519 2>"$W/sfu.log" & PIDS="$PIDS $!"
 sleep 2
 
-echo "== Chrome offers to the only ICE-lite server"
+echo "== Chrome offers to the akio ICE-lite server"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer 127.0.0.1:9511
-echo "== only (full ICE Endpoint) offers to Chrome"
+echo "== akio (full ICE Endpoint) offers to Chrome"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9512 & PIDS="$PIDS $!"
 sleep 1
 $RS client 127.0.0.1:9512 dc
@@ -55,14 +55,14 @@ answer() { # <how> <client args...>
   grep "chrome: pair" "$W/answer.log"
   grep -q "chrome: pair ok" "$W/answer.log"
 }
-echo "== only Endpoint (aggressive nomination) offers to Chrome"
+echo "== akio Endpoint (aggressive nomination) offers to Chrome"
 AKIO_INTEROP_NOMINATION=aggressive $RS client 127.0.0.1:9512 dc
-echo "== only Endpoint (passive ICE-TCP only) offers to Chrome"
+echo "== akio Endpoint (passive ICE-TCP only) offers to Chrome"
 answer tcp dc-tcp
-echo "== only Endpoint (relayed candidates over TCP and TLS only) offers to Chrome"
+echo "== akio Endpoint (relayed candidates over TCP and TLS only) offers to Chrome"
 answer relay dc-relay-url "turn:127.0.0.1:9516?transport=tcp" alice wonderland
 answer relay dc-relay-url "turns:127.0.0.1:9517" alice wonderland
-echo "== only Endpoint (its host address behind an mDNS name) offers to Chrome with mDNS concealment on"
+echo "== akio Endpoint (its host address behind an mDNS name) offers to Chrome with mDNS concealment on"
 # A second Chrome with its default WebRtcHideLocalIpsWithMdns: both sides' host candidates are
 # .local names, each resolves the other's over the LAN's mDNS (needs a LAN address).
 "$CHROME" --headless=new --remote-debugging-port=9521 --user-data-dir="$W/profile-mdns" \
@@ -83,7 +83,7 @@ for _ in 1 2 3; do
   grep -qE "mdns: [0-9a-f-]+\.local is" "$W/client-mdns.log"
   grep -qE "mdns: answering" "$W/client-mdns.log"
 done
-echo "== only Endpoint on its IPv6 address (behind an mDNS name) offers to Chrome with mDNS concealment on"
+echo "== akio Endpoint on its IPv6 address (behind an mDNS name) offers to Chrome with mDNS concealment on"
 # ADR-078: the Endpoint's only host candidate is its primary IPv6 address, concealed; Chrome's
 # IPv6 candidate is a name too. Chrome queries ours over ff02::fb (we answer with AAAA on the
 # link of the query), we resolve Chrome's (over either family), and the pair is IPv6. Needs an
@@ -107,17 +107,17 @@ if route -n get -inet6 2001:db8::1 >/dev/null 2>&1 || ip -6 route get 2001:db8::
 else
   echo "skipped: no IPv6 route"
 fi
-echo "== Chrome simulcast through the only SFU (layers in, simulcast and layer selection out)"
+echo "== Chrome simulcast through the akio SFU (layers in, simulcast and layer selection out)"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 simulcast 127.0.0.1:9519
 
-echo "== DTLS 1.3: Chrome offers to the akio server (the only side is the DTLS client)"
+echo "== DTLS 1.3: Chrome offers to the akio server (the akio side is the DTLS client)"
 AKIO_INTEROP_DTLS13=1 AKIO_LOG=akio_webrtc=debug $RS server 127.0.0.1:9523 127.0.0.1:9524 \
   2>"$W/server-dtls13.log" & PIDS="$PIDS $!"
 sleep 1
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer 127.0.0.1:9524 | tee "$W/dtls13.out"
 grep -q '"tlsVersion":"FEFC"' "$W/dtls13.out"
 grep -q "dtls: connected with DTLS 1.3" "$W/server-dtls13.log"
-echo "== DTLS 1.3: the only Endpoint offers to Chrome (the only side is the DTLS server)"
+echo "== DTLS 1.3: the akio Endpoint offers to Chrome (the akio side is the DTLS server)"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9525 media >"$W/answer.log" 2>&1 &
 NP=$!
 sleep 1

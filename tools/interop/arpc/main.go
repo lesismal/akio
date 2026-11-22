@@ -154,11 +154,11 @@ func clientCoded(addr string) {
 		big := []byte(strings.Repeat("z", 1<<20))
 		err = c.Call("/echo", big, &out, 5*time.Second, trace)
 		check(err == nil && string(out) == "from go|"+string(big), fmt.Sprint("coded big echo ", err, len(out)))
-		// The only side's middleware refuses calls without the value.
+		// The akio side's middleware refuses calls without the value.
 		err = c.Call("/echo", []byte("x"), &out, time.Second)
 		check(err != nil && err.Error() == "no trace", fmt.Sprint("no trace ", err))
 	}
-	// The value the only handler set comes back with the answer.
+	// The value the akio handler set comes back with the answer.
 	done := make(chan string, 1)
 	err = pool.Next().CallAsync("/echo", []byte("a"), func(ctx *arpc.Context, err error) {
 		v, _ := ctx.Get("trace")
@@ -167,7 +167,7 @@ func clientCoded(addr string) {
 	}, time.Second, trace)
 	check(err == nil, "call async")
 	got := <-done
-	check(got == "<nil> answered by only", "answer value "+got)
+	check(got == "<nil> answered by akio", "answer value "+got)
 	c := pool.Next()
 	check(c.Notify("/note", []byte(strings.Repeat("note from go ", 100)), time.Second, trace) == nil, "notify")
 	st := c.NewStream("/upper")
@@ -179,7 +179,7 @@ func clientCoded(addr string) {
 	// Both sides really compressed: the akio server counts the frames it inflated.
 	var n []byte
 	check(c.Call("/gzipped", nil, &n, time.Second, trace) == nil, "gzipped")
-	check(string(n) != "0", "only inflated nothing")
+	check(string(n) != "0", "akio inflated nothing")
 	check(g.decoded.Load() > 0, "go inflated nothing")
-	fmt.Println("OK coded, only inflated", string(n), "go inflated", g.decoded.Load())
+	fmt.Println("OK coded, akio inflated", string(n), "go inflated", g.decoded.Load())
 }

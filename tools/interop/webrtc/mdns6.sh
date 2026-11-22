@@ -5,11 +5,11 @@
 #   1. the akio-webrtc mDNS tests and the engine's multicast tests in that namespace, on epoll
 #      and with AKIO_TEST_BACKEND=uring (no system responder: our sockets answer each other);
 #   2. avahi-daemon (IPv6 only, on v1, check-response-ttl=yes: answers sent with a hop limit
-#      other than 255 are dropped) resolving the name an only Endpoint conceals fd00:6::1
+#      other than 255 are dropped) resolving the name an akio Endpoint conceals fd00:6::1
 #      behind (avahi-resolve -6);
-#   3. an only Endpoint resolving a name only avahi publishes (avahi-publish -a, fd00:6::2)
+#   3. an akio Endpoint resolving a name only avahi publishes (avahi-publish -a, fd00:6::2)
 #      and connecting to it (webrtc-interop mdns-resolve), the answer arriving over IPv6;
-#   4. (ADR-078 update) an only Endpoint defending its claimed name: avahi publishing the same name
+#   4. (ADR-078 update) an akio Endpoint defending its claimed name: avahi publishing the same name
 #      with another address (fd00:6::2) probes it, gets our answer (a unicast one to its QU
 #      probe, hop limit 255) and reports a collision; the Endpoint keeps the name and says
 #      goodbye when it closes.
@@ -85,7 +85,7 @@ for _ in $(seq 50); do x 'avahi-daemon -c' && break; sleep 0.2; done
 sleep 2 # avahi probes and announces its host name first
 RS=/tmp/t/release/examples/webrtc-interop
 
-echo "== avahi resolves the name an only Endpoint conceals fd00:6::1 behind"
+echo "== avahi resolves the name an akio Endpoint conceals fd00:6::1 behind"
 x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 12 >/tmp/conceal.out 2>/tmp/conceal.log &"
 for _ in $(seq 50); do x 'grep -q ^name /tmp/conceal.out' && break; sleep 0.1; done
 NAME=$(x 'sed -n "s/^name //p" /tmp/conceal.out')
@@ -95,7 +95,7 @@ echo "avahi-resolve: $OUT"
 x 'grep -m1 "mdns: answering" /tmp/conceal.log'
 echo "$OUT" | grep -q "fd00:6::1"
 
-echo "== an only Endpoint resolves a name only avahi publishes (fd00:6::2) and connects to it"
+echo "== an akio Endpoint resolves a name only avahi publishes (fd00:6::2) and connects to it"
 PUB=$(x 'cat /proc/sys/kernel/random/uuid').local
 x "avahi-publish -a -R $PUB fd00:6::2 >/tmp/publish.log 2>&1 &"
 for _ in $(seq 50); do x "grep -q Established /tmp/publish.log" && break; sleep 0.1; done
@@ -104,7 +104,7 @@ x "AKIO_LOG=akio_webrtc=debug $RS mdns-resolve '[fd00:6::1]:0' '[fd00:6::2]:0' $
 x "grep -m1 'mdns: $PUB is' /tmp/resolve.log"
 # Resolved from avahi's answer over IPv6 (an IPv6 source on the mDNS port: there is no IPv4).
 x "grep -qE 'mdns: $PUB is \\[fd00:6::2\\] \\(from \\[[0-9a-f:]+(%[0-9]+)?\\]:5353\\)' /tmp/resolve.log"
-echo "== avahi publishing a name an only Endpoint has claimed gets a collision"
+echo "== avahi publishing a name an akio Endpoint has claimed gets a collision"
 x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 8 >/tmp/claim.out 2>/tmp/claim.log &"
 for _ in $(seq 50); do x 'grep -q ^name /tmp/claim.out' && break; sleep 0.1; done
 CLAIMED=$(x 'sed -n "s/^name //p" /tmp/claim.out')

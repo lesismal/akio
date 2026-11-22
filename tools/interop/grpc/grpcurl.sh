@@ -13,7 +13,7 @@ S=$!
 trap 'kill $S 2>/dev/null || true' EXIT
 sleep 1
 # grpcurl v1.9.3 with the newest Go protobuf runtime (the release binaries predate edition 2024).
-G=/tmp/grpcurl-only
+G=/tmp/grpcurl-akio
 if [ ! -x "$G" ]; then
     B=$(mktemp -d)
     (cd "$B" && printf 'module grpcurlbuild\n\ngo 1.24\n' >go.mod &&

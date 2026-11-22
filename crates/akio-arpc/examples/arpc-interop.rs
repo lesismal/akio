@@ -134,7 +134,7 @@ fn serve_coded(addr: std::net::SocketAddr) -> std::io::Result<()> {
             let mut b = ctx.values().get("trace").unwrap_or_default().to_vec();
             b.push(b'|');
             b.extend_from_slice(ctx.body());
-            ctx.values_mut().set("trace", "answered by only");
+            ctx.values_mut().set("trace", "answered by akio");
             ctx.write(&b);
         })
         .handle("/gzipped", move |ctx| {
@@ -163,15 +163,15 @@ fn client_coded(addr: std::net::SocketAddr) -> std::io::Result<()> {
         .size(3)
         .dial(&e, addr, Arc::new(coded(Routes::new(), &inflated)))?;
     let t = Some(Duration::from_secs(5));
-    let v = Values::new().with("trace", "from only");
+    let v = Values::new().with("trace", "from akio");
     let big = vec![b'z'; 1 << 20];
     for _ in 0..6 {
         assert_eq!(
             pool.call_with("/echo", b"x", t, &v).wait().unwrap(),
-            b"from only|x"
+            b"from akio|x"
         );
         let r = pool.call_with("/echo", &big, t, &v).wait().unwrap();
-        assert_eq!((&r[..10], &r[10..]), (&b"from only|"[..], &big[..]));
+        assert_eq!((&r[..10], &r[10..]), (&b"from akio|"[..], &big[..]));
         // The Go side's middleware refuses calls without the value and aborts the chain.
         assert_eq!(
             pool.call("/echo", b"x", t).wait(),
@@ -197,8 +197,8 @@ fn client_coded(addr: std::net::SocketAddr) -> std::io::Result<()> {
             .parse()
             .unwrap();
     let ours = inflated.load(Ordering::Relaxed);
-    assert!(go_inflated > 0 && ours > 0, "go {go_inflated} only {ours}");
-    println!("OK coded, go inflated {go_inflated}, only inflated {ours}");
+    assert!(go_inflated > 0 && ours > 0, "go {go_inflated} akio {ours}");
+    println!("OK coded, go inflated {go_inflated}, akio inflated {ours}");
     pool.close();
     Ok(())
 }

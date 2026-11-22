@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the Autobahn|Testsuite against only's WebSocket implementation.
+# Runs the Autobahn|Testsuite against akio's WebSocket implementation.
 #   tools/autobahn/run.sh [base|pmd]     server: the fuzzing client against the `ws-echo` example
 #                                        (base: all but 12.*/13.*, pmd: the permessage-deflate cases)
 #   tools/autobahn/run.sh client         client: the `ws-autobahn-client` example against the

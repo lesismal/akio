@@ -29,7 +29,7 @@ updated, and a review of what ADR-054 left found three gaps:
 1. **akio-sys: `set_multicast_hops_v6(&UdpSocket, u32)` and `multicast_hops_v6(&UdpSocket)`**
    (`IPV6_MULTICAST_HOPS`, Linux and macOS; values above 255 are refused with `InvalidInput`
    before the system call). Additive public API.
-2. **only: `Engine::bind_udp_multicast_on` with an IPv6 group** sets the hop limit to 255 and
+2. **akio: `Engine::bind_udp_multicast_on` with an IPv6 group** sets the hop limit to 255 and
    multicast loopback on, as the IPv4 path sets TTL 255 (loopback is now set explicitly there
    too). Interface choice stays per datagram: the scope id of the destination
    (`ff02::fb%<index>`) picks the link, which is what `IPV6_MULTICAST_IF` would do per socket.
@@ -85,7 +85,7 @@ shared port, and browsers do not either.
 - **mDNSResponder** (macOS, by hand): `dns-sd -G v6` resolves a concealed link-local address
   (answers on en1 and lo0, AAAA, TTL 120), and `mdns-resolve` resolves a name published with
   `dns-sd -P` from the answer that arrived over IPv6 (`fe80::1%lo0`).
-- `cargo test` of akio-sys, only and akio-webrtc on macOS and on gpu51 (epoll and io_uring), clippy
+- `cargo test` of akio-sys, akio and akio-webrtc on macOS and on gpu51 (epoll and io_uring), clippy
   clean on both (rustc 1.100).
 
 ## Update (2026-11-22): claiming our names, goodbyes, unicast hop limit
@@ -129,7 +129,7 @@ Verification:
   at least 900 ms apart, with no answer to its own probes, and closing the endpoint sends its
   goodbye; an answer with another address gives the name up (the next offer carries a new
   name, and a query for the old one is no longer answered); a simultaneous probe with an `A`
-  record loses to our `AAAA ::1`, one with `AAAA fd00::99` wins. only `tests/shared_ports.rs`:
+  record loses to our `AAAA ::1`, one with `AAAA fd00::99` wins. akio `tests/shared_ports.rs`:
   `set_unicast_hops` on IPv4 and IPv6 bindings. akio-sys: the IPv6 unicast hop limit round trip.
 - `tools/interop/webrtc/mdns6.sh` (gpu51, IPv6-only container): the mDNS tests with epoll and
   io_uring (9/9 each, none skipped), avahi 0.8 still resolves our name and publishes one we

@@ -542,7 +542,7 @@ impl Service for Layered {
 }
 
 /// The local key under which the router tells the fallback which methods a path allows.
-const ALLOW: &str = "only.allow";
+const ALLOW: &str = "akio.allow";
 
 /// Default fallback: 405 with `Allow` when the path exists for other methods, else 404.
 struct DefaultFallback;
@@ -749,7 +749,7 @@ impl Router {
     }
 
     /// Replaces the answer for unknown paths and wrong methods. The 405 `Allow` list is in
-    /// `ctx.local("only.allow")` when the path exists.
+    /// `ctx.local("akio.allow")` when the path exists.
     #[must_use]
     pub fn fallback(mut self, svc: impl Service) -> Router {
         self.fallback = Arc::new(svc);

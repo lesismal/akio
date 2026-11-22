@@ -119,7 +119,7 @@ Constraints: no new third-party dependency (ADR-005); every table and queue has 
   macOS the real keychains.
 - Fuzz targets `cookie_parse` (Set-Cookie and dates, the jar's storage rules and limits) and
   `tls_trust_plist` (the plist parser), with seed corpora replayed by the unit tests.
-- Linux (gpu51, x86_64): only, akio-http, akio-ws, akio-socks and akio-tls pass on epoll and
+- Linux (gpu51, x86_64): akio, akio-http, akio-ws, akio-socks and akio-tls pass on epoll and
   io_uring; the Happy Eyeballs test meets a real IPv6 black hole there (a full accept queue drops
   SYNs). macOS: the same crates pass (`akio-ws`'s `large_and_fragmented_messages_and_limits` is
   slow in debug builds on main as well and needs `AKIO_TEST_TIMEOUT_SCALE` under load). Fuzzing on

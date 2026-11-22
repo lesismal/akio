@@ -11,7 +11,7 @@
 //! `BENCH_C=0` the C library's (for a second run against another version of the crates).
 //! `BENCH_OWN=0` skips decoding each library's own output.
 //! `BENCH_DUMP=DIR` writes the zstd frames there (`FILE.LEVEL.zst` from the C library,
-//! `FILE.LEVEL.only.zst` from akio-zstd), for inspecting what the decoders are timed on.
+//! `FILE.LEVEL.akio.zst` from akio-zstd), for inspecting what the decoders are timed on.
 //! `BENCH_BR_LIMIT=N` decodes brotli with an output limit of `N` bytes instead of the exact
 //! size (a caller that does not know the size; the C one-shot call needs none).
 
@@ -96,9 +96,9 @@ fn header() {
         "lvl",
         "size akio",
         "size C",
-        "enc only",
+        "enc akio",
         "enc C",
-        "dec only",
+        "dec akio",
         "dec C",
         "dec own",
         "(akio)"
@@ -215,7 +215,7 @@ pub fn zstd(files: &[String]) {
             let theirs = cc.compress(&data).unwrap();
             if let Ok(dir) = std::env::var("BENCH_DUMP") {
                 std::fs::write(format!("{dir}/{name}.{level}.zst"), &theirs).unwrap();
-                std::fs::write(format!("{dir}/{name}.{level}.only.zst"), &ours).unwrap();
+                std::fs::write(format!("{dir}/{name}.{level}.akio.zst"), &ours).unwrap();
             }
             assert_eq!(akio_zstd::decompress(&theirs, data.len()).unwrap(), data);
             assert_eq!(dc.decompress(&ours, data.len()).unwrap(), data);

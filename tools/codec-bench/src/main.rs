@@ -30,7 +30,7 @@ fn ns(iters: u32, mut f: impl FnMut()) -> f64 {
 
 fn row(what: &str, ours: f64, theirs: f64, name: &str) {
     println!(
-        "{what:<44} only {ours:>8.1} ns   {name} {theirs:>8.1} ns   ratio {:>5.2}",
+        "{what:<44} akio {ours:>8.1} ns   {name} {theirs:>8.1} ns   ratio {:>5.2}",
         ours / theirs
     );
 }
@@ -49,7 +49,7 @@ Cache-Control: max-age=0\r\n\
 Upgrade-Insecure-Requests: 1\r\n\
 \r\n";
 const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\n\
-Server: only\r\n\
+Server: akio\r\n\
 Date: Sat, 14 Nov 2026 12:00:00 GMT\r\n\
 Content-Type: application/json; charset=utf-8\r\n\
 Content-Length: 1234\r\n\
@@ -209,7 +209,7 @@ fn hpack() {
         black_box(e.encode(black_box(&resp).iter().copied()));
     });
     row(
-        "encode response, fresh table (only: Huffman)",
+        "encode response, fresh table (akio: Huffman)",
         ours,
         theirs,
         "loona-hpack",

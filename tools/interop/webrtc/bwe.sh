@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# akio-webrtc -> headless Chrome: bandwidth probing (ADR-050). Chrome offers VP8 video to the only
+# akio-webrtc -> headless Chrome: bandwidth probing (ADR-050). Chrome offers VP8 video to the akio
 # fec-server with its estimator on (start 1 Mbps), which echoes the video back: Chrome is the
 # receiver of our stream and sends the congestion control feedback. The echo is application-
 # limited by Chrome's own send rate, so without probes our estimate stays within 1.5 x what

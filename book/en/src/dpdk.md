@@ -51,7 +51,7 @@ turns them off by itself; in generic mode turn TSO, GSO and GRO off.
 ```toml
 [dependencies]
 akio = { version = "1", features = ["dpdk"] }       # AF_XDP, TAP, AF_PACKET, memory wire
-# only = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
+# akio = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
 ```
 
 `dpdk-pmd` compiles a small C shim against the installed DPDK (`pkg-config --cflags --libs

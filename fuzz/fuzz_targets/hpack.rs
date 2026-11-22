@@ -2,7 +2,7 @@
 
 // The HPACK decoder's own properties, then a differential check against loona-hpack (a
 // fuzz-only dependency): both decoders see the same blocks and must produce the same fields,
-// except where only is deliberately stricter (a table size update after a field, which RFC 7541
+// except where akio is deliberately stricter (a table size update after a field, which RFC 7541
 // §4.2 forbids) or the decoders bound integers differently; and each side decodes what the
 // other side's encoder produces from the decoded fields.
 
@@ -31,7 +31,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             (Err(DecoderError::SizeUpdateNotAtStart | DecoderError::IntegerOverflow), _) => return,
             (Ok(_), Err(loona_hpack::decoder::DecoderError::SizeUpdateAtEnd)) => return,
             (Ok(_), Err(loona_hpack::decoder::DecoderError::IntegerDecodingError(_))) => return,
-            (Ok(a), Err(e)) => panic!("only decoded {a:?}, loona-hpack: {e:?}"),
+            (Ok(a), Err(e)) => panic!("akio decoded {a:?}, loona-hpack: {e:?}"),
             (Err(e), Ok(b)) => panic!("loona-hpack decoded {b:?}, akio: {e:?}"),
             (Err(_), Err(_)) => return,
         };
@@ -40,14 +40,14 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         assert_eq!(
             their_dec
                 .decode(&wire)
-                .expect("loona-hpack decodes only's encoding"),
+                .expect("loona-hpack decodes akio's encoding"),
             list
         );
         let wire = their_enc.encode(fields());
         assert_eq!(
             our_dec
                 .decode(&wire)
-                .expect("only decodes loona-hpack's encoding"),
+                .expect("akio decodes loona-hpack's encoding"),
             list
         );
     }

@@ -34,7 +34,7 @@ flowchart BT
     ebpf["akio-ebpf<br/>reuseport steering, sockmap relay"]
     dpdk["akio-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
     tls["akio-tls<br/>own TLS 1.3/1.2 Transport"]
-    facade["only<br/>Engine, Listener, Backend, Accel"]
+    facade["akio<br/>Engine, Listener, Backend, Accel"]
     http["akio-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
     ws[akio-ws]
     grpc[akio-grpc]
@@ -111,7 +111,7 @@ flowchart BT
     crypto --> media
 ```
 
-- **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → only →
+- **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → akio →
   protocols`. Protocol crates depend on `akio-core`'s public traits and the ``akio`` facade,
   never on a specific backend.
 - **Cryptography is in-house**: `akio-crypto` (std only; `unsafe` only for the AES-NI / ARMv8

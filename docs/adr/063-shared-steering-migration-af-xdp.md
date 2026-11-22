@@ -89,7 +89,7 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
 
 - **Placement.** AF_XDP is a link type of the existing stack, next to TAP and AF_PACKET:
   `akio_dpdk::Device::AfXdp(AfXdpConfig)`. It is not a new `Backend`. `Backend::Dpdk(DpdkConfig)`
-  already means "only's userspace TCP/IP stack over some link", and every listener, dial, metric
+  already means "akio's userspace TCP/IP stack over some link", and every listener, dial, metric
   and test of that backend works unchanged on the new link. A separate `Backend::AfXdp` would
   duplicate that configuration for no gain, so none was added. The `dpdk` cargo feature of `akio`
   is enough. `dpdk-pmd` and libdpdk are not needed.

@@ -18,7 +18,7 @@ use akio_http::{
     ws::{Message, PreparedMessage, WsHandler, WsSender},
 };
 
-const PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>only chat</title>
+const PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>akio chat</title>
 <pre id=log style="height:60vh;overflow:auto;border:1px solid #888"></pre>
 <form id=f><input id=m autofocus placeholder="say something"><button>send</button></form>
 <script>

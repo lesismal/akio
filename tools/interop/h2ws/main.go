@@ -55,9 +55,9 @@ func main() {
 			tls       bool
 		}{{"h2c", "http://" + os.Args[2], false}, {"tls", "https://" + os.Args[3], true}} {
 			if err := client(tc.url, tc.tls); err != nil {
-				log.Fatalf("go client -> only (%s): %v", tc.name, err)
+				log.Fatalf("go client -> akio (%s): %v", tc.name, err)
 			}
-			log.Printf("go client -> only (%s): ok", tc.name)
+			log.Printf("go client -> akio (%s): ok", tc.name)
 		}
 	default:
 		log.Fatal("server or client")

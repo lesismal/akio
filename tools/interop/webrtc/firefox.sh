@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # akio-webrtc <-> headless Firefox data channels (usrsctp on Firefox's side), both offer
-# directions: Firefox offers to the only ICE-lite RtcServer (echoes on ordered and unordered
+# directions: Firefox offers to the akio ICE-lite RtcServer (echoes on ordered and unordered
 # channels, 70 kB and 200 kB messages, an idle spell with HEARTBEATs both ways, a channel
-# closed by Firefox and a new one), and the only full-ICE Endpoint offers to Firefox (echo).
+# closed by Firefox and a new one), and the akio full-ICE Endpoint offers to Firefox (echo).
 # Driven over WebDriver BiDi by firefox/main.go. Needs Go and Firefox (FIREFOX=/path/to/firefox;
 # `firefox` on PATH or the macOS default location otherwise; a snap Firefox keeps its profile
 # under ~/snap/firefox/common). IDLE_SECONDS: the idle spell (default 75). IP: the address the
-# only side listens on (default 127.0.0.1). Firefox 158 on Linux gathered no loopback
+# akio side listens on (default 127.0.0.1). Firefox 158 on Linux gathered no loopback
 # candidates even with media.peerconnection.ice.loopback, so there pass a LAN address
 # (IP=192.168.1.10).
 set -eu
@@ -44,9 +44,9 @@ PIDS="$PIDS $!"
 sleep 3
 "$FIREFOX" --version 2>/dev/null | grep -i firefox || true
 
-echo "== Firefox offers to the only ICE-lite server"
+echo "== Firefox offers to the akio ICE-lite server"
 "$W/ff" 9620 offer 127.0.0.1:9611
-echo "== only (full ICE Endpoint) offers to Firefox"
+echo "== akio (full ICE Endpoint) offers to Firefox"
 "$W/ff" 9620 answer 127.0.0.1:9612 2>"$W/answer.log" & PIDS="$PIDS $!"
 for _ in $(seq 100); do grep -q "answerer on" "$W/answer.log" && break; sleep 0.1; done
 AKIO_INTEROP_BIND=$IP:0 AKIO_LOG=akio_webrtc=debug $RS client 127.0.0.1:9612 dc 2>"$W/client.log"

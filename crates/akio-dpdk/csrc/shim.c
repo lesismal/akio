@@ -1,5 +1,5 @@
 /*
- * akio-dpdk C shim: a narrow, plain-C ABI over the parts of DPDK only needs.
+ * akio-dpdk C shim: a narrow, plain-C ABI over the parts of DPDK akio needs.
  *
  * Most of DPDK's fast path (rte_eth_rx_burst, rte_pktmbuf_alloc, ...) is `static inline` in the
  * headers, so it cannot be bound from Rust directly; this file wraps it. Every function takes

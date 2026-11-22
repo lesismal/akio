@@ -28,7 +28,7 @@
 //                                                               the TURN server at <turn-url>
 //                                                               (alice/wonderland)
 //   node browser.mjs <cdp-port> simulcast <http-addr>           Chrome publishes three VP8
-//                                                               simulcast layers to the only SFU
+//                                                               simulcast layers to the akio SFU
 //                                                               (sfu mode), then views: the
 //                                                               simulcast line and the selected
 //                                                               layer, switched l -> m -> h

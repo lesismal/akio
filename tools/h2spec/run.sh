@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs h2spec (strict) against only's HTTP/2 server (examples/h2-server).
+# Runs h2spec (strict) against akio's HTTP/2 server (examples/h2-server).
 # Needs docker and a built `h2-server` example. On macOS the container reaches the host through
 # host.docker.internal; on Linux it shares the host network.
 set -eu

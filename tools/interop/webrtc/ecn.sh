@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ECN-capable RTP toward headless Chrome (ADR-077). Chrome offers VP8 video with RFC 8888
-# feedback (field trial) to the only fec-server, which echoes it back with its estimator on and
+# feedback (field trial) to the akio fec-server, which echoes it back with its estimator on and
 # ECN marking (AKIO_INTEROP_ECN, ECT(1) by default; ECN=ect0 for ECT(0)), directly on the
 # loopback socket (no proxy, which would clear the codepoint). Prints the server's ECN state
 # (testing / capable / failed), the RTP packets it sent marked, the CE marks reported back,

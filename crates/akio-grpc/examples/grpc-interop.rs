@@ -25,7 +25,7 @@ fn main() -> std::io::Result<()> {
                 sink.finish(Status::ok());
             })
             .unary("/test.Echo/Fail", |_md, _r, sink| {
-                sink.finish(Status::new(Code::InvalidArgument, "only says no"));
+                sink.finish(Status::new(Code::InvalidArgument, "akio says no"));
             })
             .server_stream("/test.Echo/Count", |_md, req, sink| {
                 let n: usize = String::from_utf8_lossy(&req).parse().unwrap_or(0);
@@ -108,7 +108,7 @@ fn main() -> std::io::Result<()> {
     let (msgs, st) = c.collect("/test.Echo/Chat", vec![b"x".to_vec(), b"y".to_vec()], o());
     assert_eq!(st.code, Code::Ok);
     assert_eq!(msgs, [b"re:x".to_vec(), b"re:y".to_vec()]);
-    // gzip both ways: only compresses the requests, grpc-go answers in kind.
+    // gzip both ways: akio compresses the requests, grpc-go answers in kind.
     let h2z = dial()?;
     let cz = GrpcClient::new(h2z, &format!("{scheme}://{addr}")).compress(true);
     let text = b"gzip me, grpc-go! ".repeat(50_000);

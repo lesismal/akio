@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # TURN TCP allocations (RFC 6062, ADR-076) across implementations, in Linux containers
-# (Docker): the only example is built in rust:1, the pion side cross-compiled, and coturn runs
+# (Docker): the akio example is built in rust:1, the pion side cross-compiled, and coturn runs
 # next to them (same network namespace) with its TCP and TLS listeners (self-signed):
 #   - coturn's turnutils_uclient with TCP relays (-T: pairs of clients, each Connecting to the
 #     other's relayed address, so Connect, ConnectionAttempt and ConnectionBind all run) against
@@ -31,7 +31,7 @@ docker exec akio-turntcp-it openssl req -x509 -newkey ec -pkeyopt ec_paramgen_cu
 docker exec akio-turntcp-it chmod 644 /tmp/t/coturn.key /tmp/t/coturn.crt # coturn runs as nobody
 docker run -d --name akio-coturntcp-it --network container:akio-turntcp-it \
   -v akio-turntcp-target:/tmp/t coturn/coturn:4.6 -n --listening-ip=127.0.0.1 \
-  --listening-port=3478 --tls-listening-port=5349 --relay-ip=127.0.0.1 --realm=only \
+  --listening-port=3478 --tls-listening-port=5349 --relay-ip=127.0.0.1 --realm=akio \
   --user=alice:wonderland --lt-cred-mech --fingerprint --allow-loopback-peers --no-cli \
   --cert=/tmp/t/coturn.crt --pkey=/tmp/t/coturn.key --no-dtls --log-file=stdout >/dev/null
 docker exec -d akio-turntcp-it $RS server 127.0.0.1:9813 127.0.0.1:9814 alice wonderland

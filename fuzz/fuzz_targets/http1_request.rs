@@ -1,8 +1,8 @@
 #![no_main]
 
 // The request head parser's own properties, then a differential check against httparse (a
-// fuzz-only dependency): whatever only accepts, httparse accepts identically; whatever httparse
-// accepts, only accepts too, except where only is deliberately stricter (non-ASCII bytes in the
+// fuzz-only dependency): whatever akio accepts, httparse accepts identically; whatever httparse
+// accepts, akio accepts too, except where akio is deliberately stricter (non-ASCII bytes in the
 // request target).
 
 use akio_ws::http1::{Header, Resume, Status, parse_request};
@@ -28,7 +28,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 assert_eq!((a.name, a.value), (b.name, b.value));
             }
         }
-        (Ok(Status::Complete(_)), t) => panic!("only accepted, httparse: {t:?}"),
+        (Ok(Status::Complete(_)), t) => panic!("akio accepted, httparse: {t:?}"),
         (o, Ok(httparse::Status::Complete(_))) => {
             let target = req.path.unwrap_or_default();
             assert!(

@@ -8,7 +8,7 @@
 //!
 //! HTTP/2 is served on the same port (prior knowledge / h2c upgrade, or ALPN `h2` with `tls`).
 //! `AKIO_KTLS=off|hardware|software|software-tx` sets the kernel TLS mode of `tls` (`Ktls`;
-//! takes effect with only's `ktls` feature on Linux).
+//! takes effect with akio's `ktls` feature on Linux).
 
 use akio::{
     Backend, Engine, Listener,

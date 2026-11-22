@@ -56,7 +56,7 @@ impl CertificateParams {
             .collect();
         let cn = match sans.first() {
             Some(GeneralName::Dns(d)) => d.clone(),
-            _ => "only self-signed".to_string(),
+            _ => "akio self-signed".to_string(),
         };
         let now = crate::time::now();
         CertificateParams {

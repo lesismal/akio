@@ -92,7 +92,7 @@ authenticates and applies what it is given.
   CRLs and responses for holds lifted by deltas, onlyCA scopes, partial reason coverage, a
   revoked intermediate and expired responder certificates; in-memory TLS 1.3 and 1.2
   handshakes for each policy and response kind and for CRLs on both sides
-  (`akio-tls/src/proto/revocation_tests.rs`); interop: only's client against `openssl
+  (`akio-tls/src/proto/revocation_tests.rs`); interop: akio's client against `openssl
   s_server -status_file` (good, revoked, missing staple under soft and hard fail) and against
   OpenSSL-made CRLs (`tools/interop/tls/run.sh`).
 - With every policy off (the default) the handshake does the same work as before: the

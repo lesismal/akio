@@ -7,7 +7,7 @@ use akio_http::{Context, Response, Router, middleware, serve};
 
 fn main() -> std::io::Result<()> {
     let app = Router::new()
-        .get("/", |ctx: &mut Context| ctx.text(200, "hello from only\n"))
+        .get("/", |ctx: &mut Context| ctx.text(200, "hello from akio\n"))
         .get("/users/:id", |ctx: &mut Context| {
             let id = ctx.param("id").unwrap_or("?").to_owned();
             ctx.text(200, format!("user {id}\n"));

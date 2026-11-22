@@ -2,7 +2,7 @@
 // remote protocol; it has no DevTools Protocol any more). Firefox's data channels run on
 // usrsctp, so this checks akio-sctp against usrsctp. Used by ../firefox.sh.
 //
-//	go run . <bidi-port> offer <http-signalling-addr>   Firefox offers to the only ICE-lite
+//	go run . <bidi-port> offer <http-signalling-addr>   Firefox offers to the akio ICE-lite
 //	                                                     server: messages echoed on an ordered
 //	                                                     and an unordered/unreliable channel,
 //	                                                     large binary ones, an idle spell long

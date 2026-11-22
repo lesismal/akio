@@ -246,12 +246,12 @@ func clientMedia(addr string) {
 			fail("media echo: %d audio, %d video RTP packets back", audioN, videoN)
 		}
 	}
-	// A PLI for the echoed video reaches the only side as a keyframe request.
+	// A PLI for the echoed video reaches the akio side as a keyframe request.
 	check(pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: videoSSRC}}))
 	select {
 	case <-pli:
 	case <-time.After(10 * time.Second):
-		fail("PLI not reported by the only peer")
+		fail("PLI not reported by the akio peer")
 	}
 	close(stop)
 	fmt.Printf("ok: pion media: %d Opus and %d VP8 RTP packets echoed, PLI delivered as a keyframe request\n", audioN, videoN)
@@ -529,7 +529,7 @@ func main() {
 		clientMedia(os.Args[2])
 	case "client-turn":
 		ice := []webrtc.ICEServer{{URLs: []string{"turn:" + os.Args[3] + "?transport=udp"}, Username: os.Args[4], Credential: os.Args[5]}}
-		dcEcho(newPC(ice, true), os.Args[2], "over a only TURN relay")
+		dcEcho(newPC(ice, true), os.Args[2], "over an akio TURN relay")
 	case "turn-raw":
 		turnRaw(os.Args[2], os.Args[3], os.Args[4], "udp")
 	case "turn-raw-tcp":
@@ -641,7 +641,7 @@ func selfSigned() tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-// turnServer runs pion/turn on UDP, TCP and TLS for the only TURN client.
+// turnServer runs pion/turn on UDP, TCP and TLS for the akio TURN client.
 func turnServer(udpAddr, tcpAddr, tlsAddr, user, pass string) {
 	key := turn.GenerateAuthKey(user, "akio", pass)
 	gen := func() turn.RelayAddressGenerator {

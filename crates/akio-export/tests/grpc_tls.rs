@@ -238,7 +238,7 @@ fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 
 #[test]
 fn grpc_and_https_with_mutual_tls() {
-    let pki = make_pki("only test CA");
+    let pki = make_pki("akio test CA");
     let got = Arc::new(Got::default());
     let grpc = tls_engine(&pki, "h2", serve(grpc_collector(got.clone())));
     let endpoint = format!("https://localhost:{}", grpc.local_addrs()[0].port());

@@ -605,7 +605,7 @@ fn client(http: &str, what: &str, args: &[String]) {
     }
     if what.starts_with("dc") {
         for i in 0..100 {
-            let msg = format!("only message {i}");
+            let msg = format!("akio message {i}");
             // `Ok(false)`: the SCTP send buffer is full; wait for it to drain and retry.
             while !peer.send(ch, msg.as_bytes(), i % 2 == 0).expect("send") {
                 std::thread::sleep(Duration::from_millis(5));
@@ -614,7 +614,7 @@ fn client(http: &str, what: &str, args: &[String]) {
         let mut n = 0;
         while n < 100 {
             if let Got::Data(d) = next() {
-                assert_eq!(d, format!("only message {n}").into_bytes(), "ordered echo");
+                assert_eq!(d, format!("akio message {n}").into_bytes(), "ordered echo");
                 n += 1;
             }
         }

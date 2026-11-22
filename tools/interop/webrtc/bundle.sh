@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Sessions without BUNDLE and data channel priorities against headless Chrome (ADR-072):
 # Chrome offers with bundlePolicy "max-compat" (audio, video, data channels, one of them with
-# priority "high") to the only ICE-lite RtcServer configured to refuse BUNDLE: a transport per
+# priority "high") to the akio ICE-lite RtcServer configured to refuse BUNDLE: a transport per
 # section on both sides (checked in Chrome's statistics), data and media echoed, and the
-# server logs the channel's DCEP priority; then the only Endpoint offers audio and a "high"
+# server logs the channel's DCEP priority; then the akio Endpoint offers audio and a "high"
 # channel without BUNDLE to Chrome, which answers with a transport per section and sends its
 # microphone. Chrome 157 has no RTCDataChannel.priority (it sends 256 and reports undefined),
 # so the priority lines are informative only. The server runs its bandwidth estimator (ADR-077):
@@ -37,7 +37,7 @@ top=$(grep -o 'EgressBitrateEstimate([0-9]*)' "$W/server.log" | tr -dc '0-9\n' |
 echo "server: estimate up to ${top:-0} bps on the feedback of every transport"
 [ "${top:-0}" -gt 1000000 ]
 
-echo "== the only Endpoint offers audio and a high-priority channel without BUNDLE to Chrome"
+echo "== the akio Endpoint offers audio and a high-priority channel without BUNDLE to Chrome"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9540 answer 127.0.0.1:9543 nobundle >"$W/answer.log" 2>&1 &
 NP=$!
 sleep 1

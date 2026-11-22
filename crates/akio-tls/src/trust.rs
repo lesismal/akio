@@ -329,7 +329,7 @@ mod tests {
 				</dict>
 				<dict>
 					<key>kSecTrustSettingsPolicyString</key>
-					<string>only.example &amp; co</string>
+					<string>akio.example &amp; co</string>
 				</dict>
 				<dict>
 					<key>kSecTrustSettingsResult</key>

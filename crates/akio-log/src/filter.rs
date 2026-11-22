@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn defaults_overrides_and_errors() {
-        let f: Filter = "only=debug".parse().unwrap();
+        let f: Filter = "akio=debug".parse().unwrap();
         assert_eq!(f.default_level_filter(), LevelFilter::Off);
         assert!(!on(&f, Level::Error, "app"));
         assert_eq!(f.max_level(), LevelFilter::Debug);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# akio-webrtc -> headless Chrome: the pacer (ADR-073). Chrome offers VP8 video to the only
+# akio-webrtc -> headless Chrome: the pacer (ADR-073). Chrome offers VP8 video to the akio
 # fec-server with its estimator on and capped at 300 kbps (so it paces at 750 kbps with a 3.75 kB
 # burst allowance: about 3 packets), which echoes the video back through the example's UDP proxy
 # and asks Chrome for a keyframe every 500 ms (keyframes are what exceed the allowance); the

@@ -68,7 +68,7 @@ Behaviour:
 - Methods: `get`, `post`, `put`, `delete`, `patch`, `options`, or `route(Method, path, svc)`.
 - A path that exists with another method answers **405** with an `Allow` header; an unknown path
   answers **404**. `fallback(svc)` replaces both (the `Allow` list is in
-  `ctx.local("only.allow")`).
+  `ctx.local("akio.allow")`).
 - `HEAD` is answered by the `GET` route, without a body.
 - Duplicate or conflicting routes, a wildcard that is not last, unbalanced braces and invalid
   regexps **panic at registration**: you find out at startup, not in production.

@@ -120,7 +120,7 @@ waiting to be retried. The stats collector adds `akio_export_pushes_total{signal
 
 ### Dependencies
 
-akio-export now depends on only, akio-http, akio-grpc and akio-tls (all in-house; akio-tls was
+akio-export now depends on akio, akio-http, akio-grpc and akio-tls (all in-house; akio-tls was
 already in every program that uses `akio`). They are not optional features: a program that
 exports is a program built on `akio`, which links them already, and features would multiply the
 API snapshot and the test matrix for no saving.

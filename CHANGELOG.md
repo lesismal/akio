@@ -2675,7 +2675,7 @@ the probe runs, on a short-lived thread of their own, which the kernel detaches 
 each I/O thread still attaches itself when it enables its ring. This was the occasional failure
 of akio-socks' `udp_blocking_and_on_the_engine` on io_uring (about 3 runs in 100 under load):
 its blocking `recv_from` returned `EINTR` although every hop of the relay had delivered the
-datagram. The new test `uring_engine_teardown_does_not_interrupt_the_building_thread` (only's
+datagram. The new test `uring_engine_teardown_does_not_interrupt_the_building_thread` (akio's
 `engine` tests) failed every run before. No public API change; the I/O path is unchanged.
 
 ### Fixed: a QUIC client's 0-RTT no longer goes out ahead of its Initial

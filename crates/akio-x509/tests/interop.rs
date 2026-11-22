@@ -57,7 +57,7 @@ fn our_certificates_verify_with_webpki() {
             .self_signed(&ca_key)
             .unwrap();
         let leaf_key = PrivateKey::P256(akio_crypto::p256::SecretKey::generate().unwrap());
-        let mut p = CertificateParams::new(["only.test", "*.only.test", "10.0.0.1"]);
+        let mut p = CertificateParams::new(["akio.test", "*.akio.test", "10.0.0.1"]);
         p.extended_key_usage = vec![ext::SERVER_AUTH.to_vec(), ext::CLIENT_AUTH.to_vec()];
         p.key_usage = Some(KeyUsage::DIGITAL_SIGNATURE);
         let leaf = p.signed_by(&leaf_key.public_key(), &ca, &ca_key).unwrap();
@@ -77,12 +77,12 @@ fn our_certificates_verify_with_webpki() {
             None,
         )
         .unwrap();
-        for name in ["only.test", "a.only.test", "10.0.0.1"] {
+        for name in ["akio.test", "a.akio.test", "10.0.0.1"] {
             ee.verify_is_valid_for_subject_name(&PkiServerName::try_from(name).unwrap())
                 .unwrap();
         }
         assert!(
-            ee.verify_is_valid_for_subject_name(&PkiServerName::try_from("x.y.only.test").unwrap())
+            ee.verify_is_valid_for_subject_name(&PkiServerName::try_from("x.y.akio.test").unwrap())
                 .is_err()
         );
 

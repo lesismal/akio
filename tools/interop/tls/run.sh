@@ -3,10 +3,10 @@
 # TLS 1.3 and 1.2, every implemented cipher suite and group (X448 and Ed448 with OpenSSL only:
 # Go has neither), RSA / RSA-PSS-key (rsa_pss_pss_*, OpenSSL only: Go cannot parse the keys) /
 # ECDSA P-256 / P-384 / P-521 / Ed25519 / Ed448 certificates, client authentication (also with
-# P-521 and RSA-PSS-key client certificates, and the client's OCSP response of ADR-049: only
+# P-521 and RSA-PSS-key client certificates, and the client's OCSP response of ADR-049: akio
 # both ways, and OpenSSL, which neither asks for nor sends one, around it), resumption (tickets and session IDs),
 # HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
-# OCSP stapling (OpenSSL, Go, GnuTLS; only's client validating it, and CRLs, against OpenSSL),
+# OCSP stapling (OpenSSL, Go, GnuTLS; akio's client validating it, and CRLs, against OpenSSL),
 # certificate compression (RFC 8879 zlib, brotli and zstd: OpenSSL 3.2+ built with them, e.g.
 # Debian's for zlib and zstd; skipped otherwise) and record_size_limit (RFC 8449: GnuTLS when
 # gnutls-cli is installed; OpenSSL and Go have none, so their cases check it is not applied, and
@@ -14,7 +14,7 @@
 #
 #   tools/interop/tls/run.sh              # needs openssl (3.x+) and go on PATH
 #   OUT=/tmp/x tools/interop/tls/run.sh   # where PKI, logs and binaries go
-#   AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh   # only's side on kernel TLS after the
+#   AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh   # akio's side on kernel TLS after the
 #       handshake (Linux with the `tls` module, 6.14+; ktls feature, docs/BENCHMARKS.md)
 #
 # Linux Docker (Debian's OpenSSL 3 and the Go toolchain from the image are fetched on demand):
@@ -30,7 +30,7 @@ KTLS_FEATURE=()
 [ -n "${AKIO_INTEROP_KTLS:-}" ] && KTLS_FEATURE=(--features ktls)
 (cd "$ROOT" && cargo build -q --release -p akio-tls --example tls-interop ${KTLS_FEATURE[@]+"${KTLS_FEATURE[@]}"} &&
     cargo build -q --release -p akio-http --example http-bench) || exit 1
-ONLY=$TARGET/release/examples/tls-interop
+AKIO=$TARGET/release/examples/tls-interop
 HTTP=$TARGET/release/examples/http-bench
 (cd "$ROOT/tools/interop/tls/go" && go build -o "$OUT/tlsgo" .) || exit 1
 GO=$OUT/tlsgo
@@ -122,7 +122,7 @@ s_server_case() { # name "s_server args" "akio client args" [expect-resume]
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
-    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
+    if "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
         ok "akio client -> openssl: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
         ko "akio client -> openssl: $name" "$OUT/cli.log"
@@ -140,7 +140,7 @@ s_server_fail_case() { # name "s_server args" "akio client args" pattern
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
-    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
+    if "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
         ko "akio client -> openssl: $name (handshake succeeded)" "$OUT/cli.log"
     elif grep -q "$pat" "$OUT/cli.log"; then
         ok "akio client -> openssl: $name (refused: $pat)"
@@ -153,10 +153,10 @@ s_server_fail_case() { # name "s_server args" "akio client args" pattern
 
 # ---- openssl s_client -> akio server ----
 s_client_case() { # name "akio server args" "s_client args" grep-pattern [stdin]
-    local name=$1 sargs=$2 cargs=$3 pat=$4 input=${5:-"hello only"}
+    local name=$1 sargs=$2 cargs=$3 pat=$4 input=${5:-"hello akio"}
     next_port
     # shellcheck disable=SC2086
-    "$ONLY" server "127.0.0.1:$PORT" --count 4 $sargs > "$OUT/srv.log" 2>&1 &
+    "$AKIO" server "127.0.0.1:$PORT" --count 4 $sargs > "$OUT/srv.log" 2>&1 &
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
@@ -184,7 +184,7 @@ go_server_case() { # name "go server args" "akio client args"
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
-    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" $cargs > "$OUT/cli.log" 2>&1; then
+    if "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" $cargs > "$OUT/cli.log" 2>&1; then
         ok "akio client -> go: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
         ko "akio client -> go: $name" "$OUT/cli.log"
@@ -197,7 +197,7 @@ go_client_case() { # name "akio server args" "go client args"
     local name=$1 sargs=$2 cargs=$3
     next_port
     # shellcheck disable=SC2086
-    "$ONLY" server "127.0.0.1:$PORT" --count 4 $sargs > "$OUT/srv.log" 2>&1 &
+    "$AKIO" server "127.0.0.1:$PORT" --count 4 $sargs > "$OUT/srv.log" 2>&1 &
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
@@ -217,58 +217,58 @@ echo "== OpenSSL $(openssl version | cut -d' ' -f2), $(go version | cut -d' ' -f
 # TLS 1.3 suites and groups.
 for cs in TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256; do
     s_server_case "1.3 $cs" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -ciphersuites $cs" ""
-    s_client_case "1.3 $cs" "$S" "-tls1_3 -ciphersuites $cs" "hello only"
+    s_client_case "1.3 $cs" "$S" "-tls1_3 -ciphersuites $cs" "hello akio"
 done
 for g in X25519 P-256 P-384 X448 P-521; do
     s_server_case "1.3 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -groups $g" ""
-    s_client_case "1.3 group $g" "$S" "-tls1_3 -groups $g" "hello only"
+    s_client_case "1.3 group $g" "$S" "-tls1_3 -groups $g" "hello akio"
 done
 # Certificate types, both versions.
 for k in rsa p256 p384 p521 pss ed25519 ed448; do
     s_server_case "1.3 $k cert" "-cert $P/$k.pem -key $P/$k.key -tls1_3" ""
-    s_client_case "1.3 $k cert" "--cert $P/$k.pem --key $P/$k.key" "-tls1_3" "hello only"
+    s_client_case "1.3 $k cert" "--cert $P/$k.pem --key $P/$k.key" "-tls1_3" "hello akio"
 done
 # TLS 1.2 suites (ECDSA suites with P-256 / Ed25519, RSA suites with RSA).
 for cs in ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-ECDSA-CHACHA20-POLY1305; do
     s_server_case "1.2 $cs" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -cipher $cs" ""
-    s_client_case "1.2 $cs" "$S" "-tls1_2 -cipher $cs" "hello only"
+    s_client_case "1.2 $cs" "$S" "-tls1_2 -cipher $cs" "hello akio"
 done
 for cs in ECDHE-RSA-AES128-GCM-SHA256 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-RSA-CHACHA20-POLY1305; do
     s_server_case "1.2 $cs" "-cert $P/rsa.pem -key $P/rsa.key -tls1_2 -cipher $cs" ""
-    s_client_case "1.2 $cs" "--cert $P/rsa.pem --key $P/rsa.key" "-tls1_2 -cipher $cs" "hello only"
+    s_client_case "1.2 $cs" "--cert $P/rsa.pem --key $P/rsa.key" "-tls1_2 -cipher $cs" "hello akio"
 done
 s_server_case "1.2 ed25519 cert" "-cert $P/ed25519.pem -key $P/ed25519.key -tls1_2" ""
-s_client_case "1.2 ed25519 cert" "--cert $P/ed25519.pem --key $P/ed25519.key" "-tls1_2" "hello only"
+s_client_case "1.2 ed25519 cert" "--cert $P/ed25519.pem --key $P/ed25519.key" "-tls1_2" "hello akio"
 s_server_case "1.2 ed448 cert" "-cert $P/ed448.pem -key $P/ed448.key -tls1_2" ""
-s_client_case "1.2 ed448 cert" "--cert $P/ed448.pem --key $P/ed448.key" "-tls1_2" "hello only"
+s_client_case "1.2 ed448 cert" "--cert $P/ed448.pem --key $P/ed448.key" "-tls1_2" "hello akio"
 s_server_case "1.2 p384 cert" "-cert $P/p384.pem -key $P/p384.key -tls1_2" ""
 s_server_case "1.2 p521 cert" "-cert $P/p521.pem -key $P/p521.key -tls1_2" ""
-s_client_case "1.2 p521 cert" "--cert $P/p521.pem --key $P/p521.key" "-tls1_2" "hello only"
+s_client_case "1.2 p521 cert" "--cert $P/p521.pem --key $P/p521.key" "-tls1_2" "hello akio"
 s_server_case "1.2 pss cert (rsa_pss_pss_sha256)" "-cert $P/pss.pem -key $P/pss.key -tls1_2" ""
 s_client_case "1.2 pss cert (rsa_pss_pss_sha256)" "--cert $P/pss.pem --key $P/pss.key" "-tls1_2" \
-    "hello only"
+    "hello akio"
 for g in X25519 P-256 P-384 X448 P-521; do
     s_server_case "1.2 group $g" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -groups $g" ""
 done
 # HelloRetryRequest: the server wants P-384, the client sends X25519 first.
 s_server_case "1.3 HelloRetryRequest" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -groups P-384" ""
-s_client_case "1.3 HelloRetryRequest (forced)" "$S --hrr" "-tls1_3" "hello only"
+s_client_case "1.3 HelloRetryRequest (forced)" "$S --hrr" "-tls1_3" "hello akio"
 # Client authentication.
 s_server_case "1.3 client auth" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -Verify 1" \
     "--cert $P/client.pem --key $P/client.key"
 s_server_case "1.2 client auth" "-cert $P/rsa.pem -key $P/rsa.key -tls1_2 -Verify 1" \
     "--cert $P/client.pem --key $P/client.key --tls12"
 s_client_case "1.3 client auth" "$S --ca $P/ca.pem --require" \
-    "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
+    "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello akio"
 s_client_case "1.2 client auth" "$S --ca $P/ca.pem --require" \
-    "-tls1_2 -cert $P/client.pem -key $P/client.key" "hello only"
+    "-tls1_2 -cert $P/client.pem -key $P/client.key" "hello akio"
 for k in client_p521 client_pss; do
     for v in 1.3 1.2; do
         sv="-tls${v/./_}"
         s_server_case "$v client auth ($k)" "-cert $P/p256.pem -key $P/p256.key $sv -Verify 1" \
             "--cert $P/$k.pem --key $P/$k.key"
         s_client_case "$v client auth ($k)" "$S --ca $P/ca.pem --require" \
-            "$sv -cert $P/$k.pem -key $P/$k.key" "hello only"
+            "$sv -cert $P/$k.pem -key $P/$k.key" "hello akio"
     done
 done
 # The client's OCSP response in client authentication (ADR-049). OpenSSL neither asks for one
@@ -276,12 +276,12 @@ done
 # passes, hard fail refuses it), and our client staples nothing when not asked.
 s_client_case "1.3 client auth, client OCSP soft-fail (none sent)" \
     "$S --ca $P/ca.pem --require --client-ocsp-policy soft" \
-    "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
+    "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello akio"
 s_server_case "1.3 client auth, client OCSP not asked" \
     "-cert $P/p256.pem -key $P/p256.key -tls1_3 -Verify 1" \
     "--cert $P/client.pem --key $P/client.key --client-ocsp-file $P/ocsp-client.der"
 next_port
-"$ONLY" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require --client-ocsp-policy hard \
+"$AKIO" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require --client-ocsp-policy hard \
     > "$OUT/srv.log" 2>&1 &
 sp=$!
 wait_port "$PORT"
@@ -295,17 +295,17 @@ else
 fi
 kill $sp 2>/dev/null
 wait $sp 2>/dev/null
-# only both ways over TCP: good, revoked, missing (hard fail).
+# akio both ways over TCP: good, revoked, missing (hard fail).
 akio_client_ocsp_case() { # name server-policy "client args" expect(ok|pattern)
     local name=$1 pol=$2 cargs=$3 want=$4
     next_port
     # shellcheck disable=SC2086
-    "$ONLY" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require \
+    "$AKIO" server "127.0.0.1:$PORT" --count 2 $S --ca "$P/ca.pem" --require \
         --client-ocsp-policy "$pol" > "$OUT/srv.log" 2>&1 &
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
-    "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --cert "$P/client.pem" \
+    "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --cert "$P/client.pem" \
         --key "$P/client.key" $cargs > "$OUT/cli.log" 2>&1
     local rc=$?
     sleep 0.3
@@ -333,7 +333,7 @@ for v in tls1_3 tls1_2; do
     for t in "--tickets" ""; do
         next_port
         # shellcheck disable=SC2086
-        "$ONLY" server "127.0.0.1:$PORT" --count 4 $S $t > "$OUT/srv.log" 2>&1 &
+        "$AKIO" server "127.0.0.1:$PORT" --count 4 $S $t > "$OUT/srv.log" 2>&1 &
         sp=$!
         wait_port "$PORT"
         rm -f "$OUT/sess"
@@ -350,7 +350,7 @@ for v in tls1_3 tls1_2; do
         wait $sp 2>/dev/null
     done
 done
-# Early data (0-RTT): only's client sends its line before the handshake when it resumes.
+# Early data (0-RTT): akio's client sends its line before the handshake when it resumes.
 # s_server runs without -www: OpenSSL 3.0 refuses -early_data with -www/-WWW/-HTTP/-rev
 # (later releases allow it), so the client sends, closes and reads to s_server's close, and
 # s_server's log shows what it did with the early data of the second and third connections.
@@ -364,7 +364,7 @@ s_server_early_case() { # name "s_server args" "akio client args" s_server-log-l
     local sp=$!
     wait_port "$PORT"
     # shellcheck disable=SC2086
-    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --count 3 --early-data \
+    if "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --count 3 --early-data \
         --no-reply $cargs > "$OUT/cli.log" 2>&1 && [ "$(grep -c "^$want" "$OUT/srv.log")" = 2 ] &&
         grep -q "hello from akio-tls 1" "$OUT/srv.log" && grep -q "hello from akio-tls 2" "$OUT/srv.log"; then
         ok "akio client -> openssl: $name ($(grep -m1 'client\[1\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
@@ -385,7 +385,7 @@ s_server_early_case "1.3 early data rejected (HRR)" "-cert $P/p256.pem -key $P/p
 for t in "" "--hrr"; do
     next_port
     # shellcheck disable=SC2086
-    "$ONLY" server "127.0.0.1:$PORT" --count 4 $S --tickets --early-data $t > "$OUT/srv.log" 2>&1 &
+    "$AKIO" server "127.0.0.1:$PORT" --count 4 $S --tickets --early-data $t > "$OUT/srv.log" 2>&1 &
     sp=$!
     wait_port "$PORT"
     rm -f "$OUT/sess"
@@ -413,12 +413,12 @@ s_client_case "1.3 ALPN" "$S --alpn h2,http/1.1" "-alpn http/1.1" "ALPN protocol
 s_client_case "1.2 ALPN" "$S --alpn h2,http/1.1" "-tls1_2 -alpn h2" "ALPN protocol: h2"
 # KeyUpdate: openssl asks for one back ("K"); our client updates its keys before every record.
 s_client_case "1.3 KeyUpdate requested by openssl" "$S" "-tls1_3" "after update" "K\nafter update"
-s_server_case "1.3 KeyUpdate sent by only" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--key-update"
+s_server_case "1.3 KeyUpdate sent by akio" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--key-update"
 # Bulk.
 s_server_case "1.3 64 KiB request" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--bytes 65536"
 
 # OCSP stapling: s_client checks the response (-ocsp_check_leaf verifies it where OpenSSL has it;
-# OpenSSL fails that check in TLS 1.2 against its own s_server too), only's client checks it is
+# OpenSSL fails that check in TLS 1.2 against its own s_server too), akio's client checks it is
 # the configured one.
 OCSP_CHECK=""
 openssl s_client -help 2>&1 | grep -q -- -ocsp_check_leaf && OCSP_CHECK="-ocsp_check_leaf"
@@ -426,7 +426,7 @@ s_server_case "1.3 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -s
     "--expect-ocsp $P/ocsp.der"
 s_server_case "1.2 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -status_file $P/ocsp.der" \
     "--expect-ocsp $P/ocsp.der"
-# Revocation checks of only's client: stapled OCSP under each policy, CRLs.
+# Revocation checks of akio's client: stapled OCSP under each policy, CRLs.
 for v in 1.3 1.2; do
     sv="-tls${v/./_}"
     s_server_case "$v OCSP hard-fail, good response" \
@@ -447,9 +447,9 @@ s_client_case "1.3 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_3 -status 
     "Cert Status: good"
 s_client_case "1.2 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_2 -status" "Cert Status: good"
 # Certificate compression, both ways, server and client certificates, one algorithm at a time
-# (only's side takes only that one): zlib, brotli and zstd where OpenSSL (3.2+) was built with
+# (akio's side takes only that one): zlib, brotli and zstd where OpenSSL (3.2+) was built with
 # them (Debian's has zlib and zstd; brotli needs `enable-brotli`, e.g. the image of
-# tools/interop/tls/certcomp.Dockerfile). Then OpenSSL's client offering all it has, only's
+# tools/interop/tls/certcomp.Dockerfile). Then OpenSSL's client offering all it has, akio's
 # server picking the smallest.
 for alg in zlib brotli zstd; do
     flag=$(printf '%s' "$alg" | tr '[:lower:]' '[:upper:]')
@@ -461,7 +461,7 @@ for alg in zlib brotli zstd; do
         "Compression type=$alg"
     s_client_case "1.3 compressed client certificate ($alg)" \
         "$S --ca $P/ca.pem --require --cert-comp $alg" \
-        "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
+        "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello akio"
     if grep -q "cert_comp_alg=$alg" "$OUT/srv.log"; then :; else
         ko "openssl -> akio server: client certificate was not compressed with $alg" "$OUT/srv.log"
     fi
@@ -484,11 +484,11 @@ s_server_case "1.3 record_size_limit not negotiated" "-cert $P/p256.pem -key $P/
 s_server_case "1.2 small records (-max_send_frag 512)" \
     "-cert $P/p256.pem -key $P/p256.key -tls1_2 -max_send_frag 512" "--record-limit 512 --bytes 65536"
 s_client_case "1.3 max_fragment_length offered (ignored)" "$S --record-limit 512" \
-    "-tls1_3 -maxfraglen 512" "hello only"
-s_client_case "1.2 max_fragment_length offered (ignored)" "$S" "-tls1_2 -maxfraglen 1024" "hello only"
+    "-tls1_3 -maxfraglen 512" "hello akio"
+s_client_case "1.2 max_fragment_length offered (ignored)" "$S" "-tls1_2 -maxfraglen 1024" "hello akio"
 
 # GnuTLS: record_size_limit both ways (it counts the TLS 1.3 content type: --recordsize=512 is
-# 513 on the wire), OCSP stapling both ways. only's client sends 5000 bytes, cut to GnuTLS's
+# 513 on the wire), OCSP stapling both ways. akio's client sends 5000 bytes, cut to GnuTLS's
 # limit; gnutls-cli sends one record per line read and drops the rest of a longer line (it does
 # not retry a partial gnutls_record_send), so it sends lines of 500 bytes.
 if command -v gnutls-cli >/dev/null; then
@@ -498,7 +498,7 @@ if command -v gnutls-cli >/dev/null; then
         prio="NORMAL:-VERS-ALL:+VERS-TLS$v"
         next_port
         # --count 2: wait_port's probe is the first connection.
-        "$ONLY" server "127.0.0.1:$PORT" --count 2 $S --record-limit 1000 --ocsp-file "$P/ocsp.der" \
+        "$AKIO" server "127.0.0.1:$PORT" --count 2 $S --record-limit 1000 --ocsp-file "$P/ocsp.der" \
             > "$OUT/srv.log" 2>&1 &
         sp=$!
         wait_port "$PORT"
@@ -521,7 +521,7 @@ if command -v gnutls-cli >/dev/null; then
             --recordsize=512 --ocsp-response="$P/ocsp.der" --priority "$prio" > "$OUT/srv.log" 2>&1 &
         sp=$!
         wait_port "$PORT"
-        if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --record-limit 1000 \
+        if "$AKIO" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --record-limit 1000 \
             --expect-record-limit "$want" --expect-ocsp "$P/ocsp.der" --bytes 5000 > "$OUT/cli.log" 2>&1; then
             ok "akio client -> gnutls: $v record_size_limit + OCSP ($(grep -m1 -o 'rsl=[0-9/]*' "$OUT/cli.log"))"
         else
@@ -567,7 +567,7 @@ go_server_case "1.3 ALPN" "-cert $P/p256.pem -key $P/p256.key -alpn h2" "--alpn 
 go_client_case "1.3 ALPN" "$S --alpn h2" "-alpn h2"
 go_server_case "1.3 HelloRetryRequest" "-cert $P/p256.pem -key $P/p256.key -curve 24" ""
 go_client_case "1.3 HelloRetryRequest (forced)" "$S --hrr" ""
-go_server_case "1.3 KeyUpdate sent by only" "-cert $P/p256.pem -key $P/p256.key" "--key-update --bytes 300000"
+go_server_case "1.3 KeyUpdate sent by akio" "-cert $P/p256.pem -key $P/p256.key" "--key-update --bytes 300000"
 go_client_case "1.3 many records" "$S" "-key-update"
 # OCSP stapling both ways (Go's client always asks); Go has no record_size_limit, so ours is not
 # applied, and no certificate compression.

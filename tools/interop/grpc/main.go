@@ -224,9 +224,9 @@ func main() {
 		}
 	}
 	_ = bs.CloseSend()
-	// gzip both ways: grpc-go compresses the request, only must answer compressed too (the gzip
+	// gzip both ways: grpc-go compresses the request, akio must answer compressed too (the gzip
 	// compressor is registered, so every call above already accepted gzip responses).
-	zbig := bytes.Repeat([]byte("gzip me, only! "), 50000)
+	zbig := bytes.Repeat([]byte("gzip me, akio! "), 50000)
 	if err := conn.Invoke(ctx, "/test.Echo/Unary", &zbig, &out, grpc.UseCompressor(gzip.Name)); err != nil || !bytes.Equal(out, zbig) {
 		fail("gzip unary", err)
 	}

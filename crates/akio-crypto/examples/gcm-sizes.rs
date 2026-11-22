@@ -54,7 +54,7 @@ fn main() {
         let narrow = AesGcm::with_cipher_narrow(Aes::new(&key).expect("key"));
         let ring = LessSafeKey::new(UnboundKey::new(alg, &key).expect("key"));
         println!(
-            "AES-{}-GCM (kernels: only {}, avx2 {}, narrow {})",
+            "AES-{}-GCM (kernels: akio {}, avx2 {}, narrow {})",
             klen * 8,
             wide.kernel(),
             avx2.kernel(),
@@ -83,7 +83,7 @@ fn main() {
                 black_box(tag.as_ref());
             });
             println!(
-                "  seal {len:>6} B  only {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  akio/ring {:.2}  avx2/narrow {:.2}",
+                "  seal {len:>6} B  akio {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  akio/ring {:.2}  avx2/narrow {:.2}",
                 w / r,
                 a / n
             );
@@ -130,7 +130,7 @@ fn main() {
                 );
             });
             println!(
-                "  open {len:>6} B  only {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  akio/ring {:.2}  avx2/narrow {:.2}",
+                "  open {len:>6} B  akio {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  akio/ring {:.2}  avx2/narrow {:.2}",
                 w / r,
                 a / n
             );
