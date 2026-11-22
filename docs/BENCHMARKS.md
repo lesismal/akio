@@ -2009,6 +2009,29 @@ direction carries full-size frames. Connection churn gains least: most of its co
 kernel clients' own connect and close. This measures copy mode; zero-copy on a NIC that supports
 it is not measured (the host's NICs are not used).
 
+### HTTP allocations per request (ADR-081, same-run A/B, 2026-11-22)
+
+Measured on gpu51. `base` is `main` at `7e4db2d9`, `new` the branch; `http-bench` (epoll), both
+built in one session and run interleaved under `quiet.sh`, 7 rounds of 10-second `h2load` runs
+with a fresh server per run (server on CPUs 0–3 with 4 threads, `h2load` with 8 threads on
+CPUs 4–11; `perf stat -e cycles:u,instructions:u` on the server over the `h2load` run). HTTP/3
+is `quic-bench h3 10 64` on CPUs 2–5. Medians.
+
+Allocator calls per request (bpftrace uprobes on malloc, calloc, realloc, posix_memalign and
+aligned_alloc in the server; epoll and io_uring give the same counts): HTTP/1.1 5.0 → 1.0,
+pipelined 5.0 → 1.0, h2c 5.5 → 1.0, `quic-bench h3` both ends 9.0 → 6.0. The one left on the
+server is the handler's body (`ctx.text(200, "Hello, World!")` makes a `String`).
+
+| Case | req/s base → new | × | server user cycles / request | × | instructions / request | × |
+|---|---:|---:|---:|---:|---:|---:|
+| HTTP/1.1, 256 connections | 580,082 → 579,612 | 0.999 | 4,948 → 4,883 | 0.987 | 6,904 → 6,471 | 0.937 |
+| HTTP/1.1 pipelined 16 × 256 | 3,700,614 → 3,815,779 | 1.031 | 2,484 → 2,329 | 0.938 | 6,055 → 5,436 | 0.898 |
+| h2c 64 conns × 16 streams | 3,152,801 → 3,285,438 | 1.042 | 4,355 → 4,092 | 0.940 | 9,013 → 8,376 | 0.929 |
+| HTTP/3 GET, one connection, 64 in flight | 870,751 → 884,259 | 1.016 | | | | |
+
+Plain HTTP/1.1 is held by the client and the kernel, so its req/s does not move; its cycles per
+request ranged 0.96–1.01× by round. HTTP/3 was faster in 6 of 7 rounds.
+
 ### WebSocket over HTTP/2 (ADR-060, h2c A/B)
 
 Measured 2026-11-21 on gpu51. Question: does accepting extended CONNECT change the h2c request

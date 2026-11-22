@@ -1770,7 +1770,11 @@ impl ConnInner {
         let mut w = self.lock();
         self.check_sendable(&w, data.len())?;
         let data = match self.seal(&mut w, &data) {
-            Ok(Some(sealed)) => sealed,
+            Ok(Some(sealed)) => {
+                // The plaintext is done with: a pooled buffer goes back to the pool.
+                only_buf::put(data);
+                sealed
+            }
             Ok(None) => data,
             Err(e) => {
                 drop(w);
@@ -1790,6 +1794,8 @@ impl ConnInner {
                         w.wrote(n);
                         off += n;
                         if off == data.len() {
+                            drop(w);
+                            only_buf::put(data); // pooled buffers go back, as when queued
                             return Ok(());
                         }
                     }

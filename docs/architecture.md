@@ -371,7 +371,8 @@ flowchart TB
   a `Service`: it parses a request and calls `dispatch_conn(service, request, sink, tag)`, where
   the sink is the connection's `ConnSink` (`send`, `start_stream` returning a `BodySink`, each
   given the request's tag), shared through a thin `SharedSink`; targets are built with
-  `request_target`, which reuses a finished request's buffer kept per thread (ADR-025). only-h3 implements those on QUIC streams, so routers, middleware, `detach`
+  `request_target` and headers with `request_headers`, which reuse a finished request's
+  storage kept per thread (ADR-025, ADR-081). only-h3 implements those on QUIC streams, so routers, middleware, `detach`
   and `stream_response` behave the same on HTTP/3. The older per-request `ResponseSink`
   (`dispatch`, `start`) is deprecated.
 - **Upgrades.** `Context::upgrade_websocket` answers 101 and replaces the HTTP state machine with

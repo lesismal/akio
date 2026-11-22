@@ -289,9 +289,11 @@ only-http exposes a transport hook, `only_http::transport`: a transport parses a
 calls `dispatch_conn(service, request, sink, tag)` with its connection's `ConnSink`, which writes
 the response its own way (`send` for a complete response, `start_stream` returning a `BodySink`
 for a streamed one) to the request the tag names. The sink is shared by the connection's
-requests (through a thin `SharedSink`), and request targets are built with `request_target` in
-a finished request's buffer kept per thread, so neither costs an allocation per request (ADR-025; the older boxed `ResponseSink` with `dispatch` is
-deprecated). only-h3 implements the sink on QUIC streams, which is why routers, middleware and
+requests (through a thin `SharedSink`), and request targets and headers are built with
+`request_target` and `request_headers` in the storage of a finished request kept per thread;
+after encoding a response's head the sink hands its header storage back with
+`recycle_response_headers`. So none of these costs an allocation per request (ADR-025, ADR-081;
+the older boxed `ResponseSink` with `dispatch` is deprecated). only-h3 implements the sink on QUIC streams, which is why routers, middleware and
 handlers work unchanged. See [Architecture](../architecture.md).
 
 What a request costs: frames are read in place from the received stream data, the field section

@@ -72,6 +72,12 @@ HTTP/2 按连接选择：客户端前言（prior knowledge，以及 ALPN 为 `h2
 只有第一个响应有效。`Response::header` 设置头部；缺少 `Content-Length`、`Date` 和
 `Connection` 时会自动添加。
 
+一个请求的开销：在 HTTP/1.1、HTTP/2 和 HTTP/3 上，稳态下服务端自身不为每个请求分配内存。请求的 target
+和头部存储、响应的头部存储，都复用本线程上一个请求和响应的；响应头写进池化的缓冲区，HTTP/2 请求在栈上
+的 `Context` 中运行。handler 交出的东西归它自己：`ctx.text(200, "...")` 把 `&str` 转成 `String`，这是
+hello-world 基准中每请求剩下的那一次分配（ADR-025、ADR-081）。handler 保留下来的请求（`detach`、
+WebSocket 升级）使用自己的存储。
+
 ## detach：永远不要阻塞 handler
 
 `ctx.detach()` 把答复的权利交给一个 `Detached` 值，你可以把它移到任何线程。流水线 HTTP/1.1
