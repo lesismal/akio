@@ -161,8 +161,8 @@ ADR-082 留下了以下 WebRTC 事项：
   - 新的 `ecn6679.sh`：两个 only 端之间、经过真实 Linux NAT 的 rtp / leap / ice，以及一条先清除
     ECN、再被删除的路由器规则（失败、重试、恢复）。我们能运行的浏览器或 SIP 栈都没有实现 RFC 6679
     的 "ice" 或 "leap"，所以这些只在 only 端之间运行。
-- **性能：** 与 main 的同轮 `webrtc-bench` A/B，见 docs/BENCHMARKS.md。默认路径没有增加工作：
-  ECN 是关闭的。
+- **性能：** gpu51 上与 main da0637aa 的同轮 `webrtc-bench` A/B：媒体 0.999 倍，数据通道 0.997 倍，
+  区间重叠（docs/BENCHMARKS.zh-CN.md）。
 - **未做：**
   - DTLS 换密钥（第 6 节）。
   - 在 only-turn 的中继里复制码点：另一个会话在做。

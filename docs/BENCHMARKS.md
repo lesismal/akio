@@ -2137,6 +2137,28 @@ branch (`http-bench`, epoll); both built in one session and run interleaved unde
 **Answer: no measurable change.** h2c rounds on this host spread far wider than the difference: both directions appear in each row (h2c 64 × 16
 per-round ratios 0.54–1.26, 16 × 128 0.82–1.14), and the per-round ratio medians are within 1%.
 
+### WebRTC endpoints (ADR-086, same-run A/B)
+
+Measured 2026-11-22 on gpu51. Question: do ADR-086's changes slow the default send and receive
+paths? With the default configuration (no ECN, no latching), what is left on those paths is:
+
+- an extra codepoint branch where ICE datagrams are polled;
+- a check of the configured marking per received STUN datagram;
+- a keepalive timer check, which is off here.
+
+`base` is `main` at `da0637aa` (mDNS changes only since the branch's base), `new` the branch.
+The workload, builds and runs are as in the ADR-082 section below: `webrtc-bench`, separate
+target directories, `quiet.sh` on CPUs 2–9, 7 interleaved rounds of 5 s each, base first in
+each pair.
+
+| Mode | base median (MB/s) | new median (MB/s) | new / base (medians) | per-round ratio median |
+|---|---:|---:|---:|---:|
+| media | 178.0 (±0.1%) | 177.9 (±0.8%) | 0.999 | 0.998 |
+| dc | 156.2 (±0.1%) | 155.7 (±0.8%) | 0.997 | 0.997 |
+
+**Answer: no measurable change.** The ranges overlap in both modes (per-round ratios: media
+0.986–1.002, dc 0.992–1.010), as in ADR-082's run.
+
 ### WebRTC endpoints (ADR-082, same-run A/B)
 
 Measured 2026-11-22 on gpu51. Question: do ADR-082's changes slow the default send and receive

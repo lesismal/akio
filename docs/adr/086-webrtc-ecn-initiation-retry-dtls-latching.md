@@ -185,8 +185,8 @@ exactly that case.
   - New `ecn6679.sh`: rtp / leap / ice between two only peers over a real Linux NAT, and a
     router rule clearing ECN, then removed (failure, retry, recovery). No browser or SIP stack
     we can run implements RFC 6679's "ice" or "leap", so these run only between only peers.
-- **Performance:** a same-run `webrtc-bench` A/B against main, in docs/BENCHMARKS.md. The
-  default path gained no work: ECN is off.
+- **Performance:** a same-run `webrtc-bench` A/B against main da0637aa on gpu51 gives media
+  0.999x and data channels 0.997x, with the ranges overlapping (docs/BENCHMARKS.md).
 - **Not done:**
   - DTLS re-keying (section 6).
   - Copying the codepoint in only-turn's relay: another session does that.
