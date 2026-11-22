@@ -24,6 +24,8 @@ only-dtls = { workspace = true }
 only-x509 = { workspace = true }
 # TCP relays (RFC 6062): the relayed addresses' listeners and the poller accepting on them.
 only-sys = { workspace = true }
+# The engine-driven TCP allocation client layers its ConnectionBind as a connection transport.
+only-core = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }

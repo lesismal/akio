@@ -9,17 +9,24 @@
 //!     ConnectionBind on a new connection, then a permission and a local peer connecting to
 //!     the relayed address (ConnectionAttempt, ConnectionBind); 20 messages and 1 MiB echoed
 //!     on each
+//! turn-tcp-interop engine-client <tcp|tls> <server> <user> <pass>
+//!     the same with the engine-driven client (`TcpAllocation`): data connections are engine
+//!     connections served by a handler, nothing blocks
 //! ```
 #![allow(missing_docs)]
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use only::tls::{self, Tls};
-use only::{Engine, Listener};
-use only_turn::client::{Client, ClientConfig, ClientEvent, ClientState, DataState};
+use only::{Acceptor, Conn, Engine, Handler, Listener};
+use only_turn::client::{
+    AllocationEvent, Client, ClientConfig, ClientEvent, ClientState, DataState, ServerTransport,
+    TcpAllocation,
+};
 use only_turn::framing::FrameReader;
 use only_turn::{TurnConfig, TurnServer, static_auth};
 
@@ -212,6 +219,155 @@ fn client(transport: &str, server: &str, user: &str, pass: &str) {
     );
 }
 
+/// A TCP echo peer; returns its address.
+fn echo_peer() -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").expect("peer");
+    let pa = l.local_addr().expect("peer addr");
+    std::thread::spawn(move || {
+        while let Ok((mut s, _)) = l.accept() {
+            std::thread::spawn(move || {
+                let mut r = s.try_clone().expect("clone");
+                let _ = std::io::copy(&mut r, &mut s);
+            });
+        }
+    });
+    pa
+}
+
+/// A data connection's handler: what it reads goes to a channel (`None`: closed).
+struct Sink(Sender<Option<Vec<u8>>>);
+
+impl Handler for Sink {
+    fn on_data(&mut self, _c: &Conn<Self>, data: &[u8]) {
+        let _ = self.0.send(Some(data.to_vec()));
+    }
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<only::Error>) {
+        let _ = self.0.send(None);
+    }
+}
+
+type Opened = (Conn<Sink>, Receiver<Option<Vec<u8>>>);
+
+struct SinkAcceptor(Mutex<Sender<Opened>>);
+
+impl Acceptor for SinkAcceptor {
+    type Handler = Sink;
+    fn on_open(&self, c: &Conn<Sink>) -> Sink {
+        let (tx, rx) = mpsc::channel();
+        let _ = self.0.lock().expect("lock").send((c.clone(), rx));
+        Sink(tx)
+    }
+}
+
+fn sink() -> (SinkAcceptor, Receiver<Opened>) {
+    let (tx, rx) = mpsc::channel();
+    (SinkAcceptor(Mutex::new(tx)), rx)
+}
+
+fn take(rx: &Receiver<Option<Vec<u8>>>, have: &mut Vec<u8>, n: usize, what: &str) {
+    while have.len() < n {
+        match rx.recv_timeout(Duration::from_secs(20)) {
+            Ok(Some(b)) => have.extend_from_slice(&b),
+            Ok(None) => panic!("{what}: closed after {} of {n}", have.len()),
+            Err(_) => panic!("{what}: read {} of {n}", have.len()),
+        }
+    }
+}
+
+/// 20 messages, then 1 MiB, echoed by the peer, over an engine connection.
+fn echo_engine((c, rx): Opened, what: &str) {
+    for i in 0..20 {
+        let msg = format!("through the tcp relay {i}");
+        c.send(msg.as_bytes()).expect("send");
+        let mut got = Vec::new();
+        take(&rx, &mut got, msg.len(), what);
+        assert_eq!(got, msg.as_bytes(), "{what} echo {i}");
+    }
+    let big: Vec<u8> = (0..1u32 << 20).map(|i| (i * 7) as u8).collect();
+    let mut got = Vec::new();
+    for (i, chunk) in big.chunks(64 * 1024).enumerate() {
+        c.send(chunk).expect("send");
+        let behind = ((i + 1) * 64 * 1024).saturating_sub(256 * 1024);
+        take(&rx, &mut got, behind, what);
+    }
+    take(&rx, &mut got, big.len(), what);
+    assert!(got == big, "{what}: 1 MiB differs");
+    c.close();
+}
+
+fn engine_client(transport: &str, server: &str, user: &str, pass: &str) {
+    let addr: SocketAddr = server.parse().expect("server");
+    let engine = Arc::new(Engine::builder().client_threads(2).build().expect("engine"));
+    engine.start().expect("start");
+    let t = if transport == "tls" {
+        let cfg = tls::ClientConfig::builder()
+            .insecure_skip_verify()
+            .build()
+            .expect("tls config");
+        ServerTransport::Tls(cfg, "localhost".into())
+    } else {
+        ServerTransport::Tcp
+    };
+    let (etx, events) = mpsc::channel();
+    let etx = Mutex::new(etx);
+    let alloc = TcpAllocation::open(
+        &engine,
+        ClientConfig::new(addr, user, pass),
+        t,
+        move |_, e| {
+            let _ = etx.lock().expect("lock").send(e);
+        },
+    );
+    let event = || {
+        events
+            .recv_timeout(Duration::from_secs(20))
+            .expect("no event")
+    };
+    let relayed = match event() {
+        AllocationEvent::Allocated { relayed, .. } => relayed,
+        e => panic!("{e:?}"),
+    };
+    eprintln!("turn-tcp: engine TCP allocation {relayed} over {transport}");
+    let pa = echo_peer();
+    // Connect: bound and served by the handler without a blocking call.
+    let (acc, opened) = sink();
+    assert!(alloc.connect(pa, acc, |e| panic!("connect: {e}")));
+    let o = opened
+        .recv_timeout(Duration::from_secs(20))
+        .expect("no data connection");
+    echo_engine(o, "engine connect");
+    // A peer connecting with a permission, taken with accept.
+    assert!(alloc.create_permission(pa));
+    let probe = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let mut p = TcpStream::connect(relayed).expect("connect to the relayed address");
+        let mut r = p.try_clone().expect("clone");
+        let _ = std::io::copy(&mut r, &mut p);
+    });
+    let id = match event() {
+        AllocationEvent::ConnectionAttempt { peer, id } => {
+            assert_eq!(peer.ip(), pa.ip());
+            id
+        }
+        e => panic!("{e:?}"),
+    };
+    let (acc, opened) = sink();
+    alloc.accept(id, acc, |e| panic!("accept: {e}"));
+    let o = opened
+        .recv_timeout(Duration::from_secs(20))
+        .expect("no data connection");
+    echo_engine(o, "engine connection attempt");
+    let _ = probe.join();
+    alloc.close();
+    match event() {
+        AllocationEvent::Closed => {}
+        e => panic!("{e:?}"),
+    }
+    println!(
+        "ok: engine TcpAllocation {relayed} over {transport}: Connect and ConnectionAttempt, ConnectionBind as a transport, 20 messages and 1 MiB echoed on each"
+    );
+}
+
 fn server(tcp: &str, tls_addr: &str, user: &str, pass: &str) {
     let auth = static_auth("only", [(user, pass)]);
     let cfg =
@@ -245,9 +401,10 @@ fn main() {
     match a.get(1).map(String::as_str) {
         Some("server") if a.len() == 6 => server(&a[2], &a[3], &a[4], &a[5]),
         Some("client") if a.len() == 6 => client(&a[2], &a[3], &a[4], &a[5]),
+        Some("engine-client") if a.len() == 6 => engine_client(&a[2], &a[3], &a[4], &a[5]),
         _ => {
             eprintln!(
-                "usage: turn-tcp-interop server <tcp> <tls> <user> <pass> | client <tcp|tls> <server> <user> <pass>"
+                "usage: turn-tcp-interop server <tcp> <tls> <user> <pass> | [engine-]client <tcp|tls> <server> <user> <pass>"
             );
             std::process::exit(2);
         }
