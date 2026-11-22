@@ -10,6 +10,24 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
+
+ADR-088 (docs/adr/088-numa-placement.md), additive:
+
+- `EngineBuilder::numa(NumaConfig)`: `NumaPlacement::{Off, Spread, Nodes, Interface}` put each
+  group's I/O threads on NUMA nodes (thread `i` on node `i % n`, the given nodes, or the network
+  interface's node), confined to the node's CPUs or, with `per_cpu`, to one CPU each;
+  `incoming_cpu` sets `SO_INCOMING_CPU` on each thread's listening socket; `pool` (default) confines
+  the logical pool; `strict` fails the build when placement cannot be done. `AKIO_NUMA`
+  (`spread`, `nodes:0,1`, `iface:eth0`, `+cpu`, `+incoming`, `+nopool`, `+strict`) configures an
+  engine whose builder was not told. `Engine::numa_status()` reports `Off`, `Placed(NumaReport)`
+  or `Degraded(reason)`. Linux only; groups pinned by eBPF CPU steering and DPDK groups are left
+  alone.
+- `akio_sys::numa`: `nodes`, `interface_node`, `parse_cpulist`, `set_incoming_cpu`,
+  `incoming_cpu` (sysfs, `SO_INCOMING_CPU`).
+- `tools/bench/numa.sh`: placement A/B through `AKIO_NUMA`. On one-node gpu51 every mode is within
+  noise of placement off (HTTP 0.995–1.005x).
+
 ### Renamed: the project is now `akio`
 
 The crates.io name `ak` is taken, so the project is renamed from **only** to **akio** (free on

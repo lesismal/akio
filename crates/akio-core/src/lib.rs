@@ -31,6 +31,8 @@ pub mod telemetry;
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]
 pub use akio_pool::Pool;
+#[doc(hidden)]
+pub use akio_pool::ThreadHook;
 pub use akio_pool::{PoolConfig, PoolStats};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]

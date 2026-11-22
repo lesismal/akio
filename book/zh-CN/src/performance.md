@@ -24,6 +24,10 @@
 - 逻辑线程池应匹配阻塞任务所等待的资源（数据库连接数、磁盘队列深度），而不是核数。
 - 负载按连接均衡。少数非常繁忙的连接（几个复用一切的 HTTP/2 客户端）能用到的线程数不会超过
   连接数。
+- 在有多个 NUMA 节点的机器上，`EngineBuilder::numa`（或 `AKIO_NUMA=spread`，ADR-088）让每个 I/O 线程留在一个节点
+  上，或网卡所在的节点上（`NumaConfig::interface("eth0")`），使用该节点的 CPU（`per_cpu`：每线程一个 CPU），逻辑池也
+  限制在这些 CPU 上；`incoming_cpu` 为中断分布在这些 CPU 上的网卡加上 `SO_INCOMING_CPU`。默认关闭；
+  `Engine::numa_status()` 显示放置结果。在单节点上它既无帮助也无损害。
 
 ## 3. 后端选择
 

@@ -118,7 +118,12 @@ fn socket_of(addr: &SocketAddr, ty: ffi::c_int) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 
-fn setsockopt_int(fd: RawFd, level: ffi::c_int, name: ffi::c_int, v: ffi::c_int) -> io::Result<()> {
+pub(crate) fn setsockopt_int(
+    fd: RawFd,
+    level: ffi::c_int,
+    name: ffi::c_int,
+    v: ffi::c_int,
+) -> io::Result<()> {
     // SAFETY: `v` outlives the call and the length matches its type.
     cvt(unsafe {
         ffi::setsockopt(

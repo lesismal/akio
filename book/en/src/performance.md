@@ -26,6 +26,12 @@ See [Blocking work](concepts/blocking.md).
   queue depth), not the core count.
 - Load is balanced per connection. Few, very busy connections (a handful of HTTP/2 clients
   multiplexing everything) cannot use more threads than they have connections.
+- On a machine with several NUMA nodes, `EngineBuilder::numa` (or `AKIO_NUMA=spread`, ADR-088)
+  keeps each I/O thread on one node, or on the network interface's node
+  (`NumaConfig::interface("eth0")`), with its CPUs (`per_cpu`: one CPU each) and the logical
+  pool confined to them; `incoming_cpu` adds `SO_INCOMING_CPU` for interfaces whose interrupts
+  are spread over those CPUs. It is off by default; `Engine::numa_status()` shows the placement.
+  On one node it neither helps nor hurts.
 
 ## 3. Backend choice
 

@@ -246,6 +246,7 @@ fn linux_layouts() {
 #[test]
 fn linux_constants() {
     same_value!(
+        SO_INCOMING_CPU,
         EBUSY,
         ETIME,
         ENOBUFS,

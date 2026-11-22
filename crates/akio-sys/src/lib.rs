@@ -21,6 +21,7 @@ mod fswatch;
 #[doc(hidden)]
 pub mod ktls;
 mod net;
+pub mod numa;
 mod poller;
 pub mod process;
 mod random;

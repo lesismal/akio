@@ -68,6 +68,7 @@ pub const SO_REUSEADDR: c_int = 2;
 pub const SO_RCVBUF: c_int = 8;
 pub const SO_REUSEPORT: c_int = 15;
 pub const SO_RCVBUFFORCE: c_int = 33;
+pub const SO_INCOMING_CPU: c_int = 49;
 pub const SO_ATTACH_REUSEPORT_CBPF: c_int = 51;
 pub const SO_ATTACH_REUSEPORT_EBPF: c_int = 52;
 pub const SO_COOKIE: c_int = 57;

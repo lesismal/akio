@@ -1,4 +1,26 @@
 pub mod akio_sys
+pub mod akio_sys::numa
+pub struct akio_sys::numa::NumaNode
+pub akio_sys::numa::NumaNode::cpus: alloc::vec::Vec<usize>
+pub akio_sys::numa::NumaNode::id: usize
+impl core::clone::Clone for akio_sys::numa::NumaNode
+pub fn akio_sys::numa::NumaNode::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::numa::NumaNode
+impl core::cmp::PartialEq for akio_sys::numa::NumaNode
+pub fn akio_sys::numa::NumaNode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::numa::NumaNode
+pub fn akio_sys::numa::NumaNode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sys::numa::NumaNode
+impl core::marker::Send for akio_sys::numa::NumaNode
+impl core::marker::Sync for akio_sys::numa::NumaNode
+impl core::marker::Unpin for akio_sys::numa::NumaNode
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::numa::NumaNode
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::numa::NumaNode
+pub fn akio_sys::numa::incoming_cpu(std::os::fd::raw::RawFd) -> core::io::error::Result<i32>
+pub fn akio_sys::numa::interface_node(&str) -> core::io::error::Result<core::option::Option<usize>>
+pub fn akio_sys::numa::nodes() -> core::io::error::Result<alloc::vec::Vec<akio_sys::numa::NumaNode>>
+pub fn akio_sys::numa::parse_cpulist(&str) -> core::option::Option<alloc::vec::Vec<usize>>
+pub fn akio_sys::numa::set_incoming_cpu(std::os::fd::raw::RawFd, usize) -> core::io::error::Result<()>
 pub mod akio_sys::process
 pub struct akio_sys::process::ChildSetup
 pub akio_sys::process::ChildSetup::cpus: alloc::vec::Vec<usize>
