@@ -186,3 +186,53 @@ three prefix codes per meta-block being inherent to the format (a cheaper code a
 rates would be a static or reused code chosen by cost, as Google's encoder does at quality
 0..2); at quality 9 a flushed event costs 8 us, mostly the chain search, and at 10..11
 83 us (optimal parsing), so they stay unsuited to event streams.
+
+## Update (2026-11-22, second): brotli's cost per flushed write, chosen codes
+
+The first item of "Still not done" above. Profiled again (perf, gpu51, quality 4, an 87-byte
+event per flushed write, 2.0 us): 36% building and storing the three prefix codes, 18% in
+malloc, free and memset (32 allocations per event), 23% the match search. Building the codes
+was still mostly in passes over whole alphabets: finding the used symbols in 1,024 histogram
+entries, canonical codes over all lengths up to the last used symbol, the run-length smoothing
+of zopfli and the code length runs over hundreds of zero lengths.
+
+Decision, in only-brotli's encoder (no API change):
+
+1. **Writing a meta-block allocates nothing.** Commands, symbols, histograms, code tables,
+   code lengths, run-length tokens and the single-type layout live in buffers an encoder (and a
+   stream's state) keeps; histograms are left zero by the code that empties them.
+2. **Codes in time proportional to the symbols used.** A meta-block of up to 2 KiB lists its
+   symbols in bit sets as it is written; canonical codes are assigned to the used symbols only;
+   the smoothing for run-length coding skips runs of five or more zeros (every position in them
+   ends a stride: only the first and last need looking at), where at most a quarter of the
+   alphabet is used; runs of code lengths are counted eight bytes at a time. The choices are
+   the same: one-shot output is bit-for-bit unchanged at every level (hashes as before), and a
+   test compares the sparse smoothing and run counting with the dense ones on 20,000 random
+   histograms.
+3. **A cheaper code chosen by cost: the stream's kept code.** Brotli has no implicit or
+   persistent codes: each meta-block describes its own. What a stream can do is describe the
+   same code again: per category (literals, insert-and-copy symbols, distances, when the
+   meta-block has one code for it) the stream keeps the last code it wrote, as written. A new
+   meta-block sends it again when it codes all of the meta-block's symbols in no more bits
+   (description included) than a code of its own with exact lengths (an estimate from above:
+   the smoothed lengths are used only where cheaper); when the kept code is exactly the one the
+   symbols would get, the comparison is skipped too. On an event stream that is most
+   insert-and-copy and distance codes (quality 4: 65% and 50% of meta-blocks) and few literal
+   codes (5%; at quality 1, 68%). A static or precomputed code was not tried: it would have to
+   be described in every meta-block as well, so it could save no more time than the kept code
+   where that fits, and an event's literals vary.
+
+Measured (same-run A/B against main `b789624f` on gpu51 under `quiet.sh`; docs/BENCHMARKS.md
+"Brotli streaming encoder: cost per flushed write, second pass"). `stream-cost`, CPU 2: a
+flushed 87-byte event at quality 4 / window 18 2.0 → 1.07 us (32 → 0.2 allocations), quality 1
+2.25 → 1.06, 5 1.83 → 1.18, 9 8.4 → 7.8; a 16-event response 56.5 → 35.0 us and 438 → 405
+bytes (kept codes cheaper than an event's own); HTML in flushed 16 KiB writes +2.7%. A stream
+holds 15 KiB more (the buffers: 6 → 21 KiB after 3 events) and its setup costs 0.4 us more.
+One-shot: the same bytes; compression 1.007x (geometric mean over Silesia's first 20 MB and the
+HTTP payloads at levels 1-9), decompression 0.994x (header parsing only changed). Over HTTP
+(`stream-compress.sh`, br): 16-event server-sent-events responses 61,549 → 86,572 per second
+(1.41x), server CPU per response 65.2 → 46.3 us; 16 x 16 KiB HTML +2.6%.
+
+Still not done: brotli's write costs about 4 times zstd's (1.07 us against 0.27 us), the
+remaining time mostly the match search and the three code descriptions; quality 9 streams
+8 us per event (the chain search) and 10..11 about 81 us (optimal parsing).

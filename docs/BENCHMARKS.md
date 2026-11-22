@@ -1915,6 +1915,81 @@ reference path is out of the loop and the loop itself did not change, so this is
 run-to-run spread (the control moves 0.992..1.015). Decoding with a raw dictionary takes the
 same code.
 
+### Brotli streaming encoder: cost per flushed write, second pass (ADR-074 update, same-run A/B, 2026-11-22)
+
+Main at `b789624f` ("base") against this change ("new"), built in separate target directories
+on gpu51 and run alternately under `quiet.sh` pinned to CPU 2: only-brotli's `stream-cost`
+example, 3 rounds of 1 s per measurement (medians; columns as in "fixed costs" above),
+`tools/codec-bench brotli` (2 rounds, best of each) and `tools/bench/stream-compress.sh` with
+`VARIANTS="base-br br"` (3 rotating rounds of 5 s, medians).
+
+| Quality, window bits | event | allocations / event | setup | 16 events (bytes) | 16 x 16 KiB | HTML MB/s | after 3 events | after 30,000 |
+|---|---|---|---|---|---|---|---|---|
+| 1, 18 | 2.25 → 1.06 us | 37.2 → 0.8 | 5.34 → 5.74 us | 53.6 → 31.5 us (456 → 438) | 950 → 915 us | 279 → 290 | 4 → 19 KiB | 1,041 → 1,056 KiB |
+| 4, 18 (default) | 1.98 → 1.07 us | 32.4 → 0.2 | 5.33 → 5.75 us | 56.5 → 35.0 us (438 → 405) | 1,621 → 1,501 us | 173 → 177 | 6 → 21 KiB | 1,297 → 1,312 KiB |
+| 4, 16 | 2.45 → 1.20 us | 35.6 → 0.4 | 5.41 → 5.71 us | 57.6 → 34.9 us (427 → 424) | 1,572 → 1,541 us | 164 → 168 | 6 → 21 KiB | 805 → 820 KiB |
+| 5, 18 | 1.83 → 1.18 us | 30.0 → 0.0 | 5.67 → 6.00 us | 58.8 → 36.2 us (436 → 438) | 2,225 → 2,201 us | 114 → 116 | 18 → 33 KiB | 2,833 → 2,848 KiB |
+| 9, 18 | 8.36 → 7.76 us | 30.0 → 0.0 | 5.27 → 5.66 us | 58.4 → 35.5 us (428 → 424) | 10,366 → 9,492 us | 18.4 → 19.0 | 9 → 24 KiB | 2,193 → 2,208 KiB |
+| 9, 16 | 6.18 → 5.05 us | 33.6 → 0.3 | 5.22 → 5.73 us | 57.6 → 35.4 us (448 → 445) | 8,442 → 7,766 us | 29.4 → 30.9 | 9 → 24 KiB | 933 → 948 KiB |
+| 11, 18 | 83.5 → 80.8 us | 68.8 → 36.2 | 27.2 → 25.9 us | 472 → 443 us (396 → 397) | 368.9 → 366.3 ms | 0.7 both | 9 → 24 KiB | 2,193 → 2,208 KiB |
+
+Bytes per event (19.1 at quality 4) and per HTML byte are the same; a 16-event response is up to
+7.5% smaller where a kept code is cheaper than the next event's own. Every stream holds 15 KiB
+more (the reused buffers) and its setup costs 0.3-0.4 us more (allocating them). Quality 11's
+row is from a second run with the final code: in the first, the custom word search inlined into
+the optimal parse's loop had made it 2-3% slower on x86-64 (3% more instructions); out of the
+loop it is 0.7% faster than main.
+
+**One-shot** (`codec-bench`, the first 20 MB of the Silesia tar and the HTTP payloads at
+levels 1, 4, 5, 6, 9; the HTTP payloads at 10 and 11): every output has the same size (and, by
+the hashes of every level's output over the test vectors and generated corpora, the same bytes).
+Compression MB/s new / base: geometric mean 1.007 (0.987..1.040, HTML +3.3..4.0% at levels 4-6);
+decompression 0.994 (0.978..1.008; the JSON and JavaScript payloads -1.1..2.2%, Silesia
+-0.3..0.9%), only the header's distance code reading having changed (large windows).
+
+**HTTP** (server CPUs 0-3, `h2load --h1` 64 connections; server CPU per response):
+
+| Response | base-br | br |
+|---|---:|---:|
+| 16 SSE events, responses/s | 61,549 | 86,572 (1.41x) |
+| CPU per response | 65.2 us | 46.3 us |
+| body bytes | 347 | 347 |
+| 16 x 16 KiB HTML, responses/s | 2,569 | 2,636 (1.03x) |
+| CPU per response | 1,561.9 us | 1,523.0 us |
+| body bytes | 14,170 | 14,171 |
+
+**Answers.** A flushed brotli write of a small event costs about half what it did (1.07 us at
+the default quality 4, from 1.98; zstd 0.27 us): the prefix codes are built from the used
+symbols alone (bit sets of the symbols, canonical codes, run-length smoothing and code length
+runs all in time proportional to them) and a stream reuses its buffers, so a meta-block
+allocates nothing. Sending the stream's kept code again where it costs no more bits saves its
+construction for most insert-and-copy and distance codes of an event stream (and bytes on short
+ones); a precomputed or static code would save the same time, but brotli has no implicit
+codes, so it would still be described in every meta-block (not tried). Over HTTP a 16-event server-sent-events response costs 19 us less server CPU (1.41x
+responses per second).
+
+### Brotli: custom word lists in the encoder (ADR-079, 2026-11-22)
+
+`compress_with_shared_dictionary` at levels 10 and 11 now searches a serialized dictionary's
+custom words under their transforms (before: its LZ77 prefix only). The dictionaries of the
+libbrotli cross-check (`tools/interop/brotli-shared/run.sh`, built from alice29.txt: `words`,
+128 words per length 4..16 with brotli's transforms; `transforms`, the same words with 13 custom
+transforms and a 1 KiB prefix; `context`, two word lists and brotli's own chosen by literal
+context; `prefix`, a 4 KiB prefix only). Bytes; libbrotli 1.2.1 built with
+`BROTLI_EXPERIMENTAL` at quality 11 for reference; every stream of ours decodes with libbrotli.
+
+| Dictionary | First 20,000 bytes, level 11: before → now | libbrotli q11 | All of alice29.txt (152,089 bytes), level 11: now | libbrotli q11 |
+|---|---|---:|---:|---:|
+| words | 7,692 → 6,890 (-10.4%) | 6,885 | 46,332 | 46,188 |
+| transforms | 7,609 → 7,054 (-7.3%) | 7,059 | 46,591 | 46,396 |
+| context | 7,692 → 6,867 (-10.7%) | 6,866 | 45,896 | 45,933 |
+| prefix | 6,939 (unchanged) | 6,929 | 45,125 | 45,007 |
+
+Level 10 on the first 20,000 bytes: words 7,802 → 7,044, transforms 7,729 → 7,209, context
+7,802 → 7,018. A dictionary's index is built on first use: 0.5 ms for 1,600 words under 13
+transforms, 4-5 ms under brotli's 121 (Apple M-series laptop). Levels 0..9 do not search static
+words and are unchanged.
+
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 
 A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay

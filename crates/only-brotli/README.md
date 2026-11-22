@@ -84,7 +84,9 @@ compression middleware in `only-http` and the brotli algorithm of TLS certificat
   the stream (entered again from the buffer) up to the level's size for an input of one window,
   so a stream costs a few microseconds to set up and one that stays short stays small; prefix
   codes are built and stored in time mostly proportional to the symbols a meta-block uses, so a
-  flushed write of a small event costs about 2 us (ADR-074's update of 2026-11-22). The
+  flushed write of a small event costs about 1 us at level 4 (ADR-074's updates of 2026-11-22: a
+  meta-block allocates nothing, and a stream sends its last code of a category again where that
+  costs no more bits than a new one). The
   decompressor takes the stream in pieces of any size and
   decodes it with the one-shot decoder's code, resumed where the input ran out at the last
   complete unit: a command, or a part of a meta-block header (a block type description, a

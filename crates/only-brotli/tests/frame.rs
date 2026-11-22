@@ -194,10 +194,7 @@ fn single_resource_containers() {
         Err(Error::BadContainer)
     );
     let f = footer(5 + one.len(), 0);
-    assert_eq!(
-        read(&container(false, &[one, f])),
-        Err(Error::BadContainer)
-    );
+    assert_eq!(read(&container(false, &[one, f])), Err(Error::BadContainer));
     // Padding must be zeros.
     assert_eq!(
         read(&container(false, &[chunk(0, &[0, 1], &[])])),

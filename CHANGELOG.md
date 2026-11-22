@@ -10,6 +10,16 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: brotli's cost per flushed write halved (only-brotli)
+
+ADR-074's second update of 2026-11-22, no API change. Writing a meta-block allocates nothing
+(buffers kept by the encoder and the stream), prefix codes are built in time proportional to the
+symbols used, and a stream sends the last code it wrote for a category again where that costs no
+more bits than a new one. Quality 4 on gpu51: 1.98 → 1.07 us per flushed 87-byte event, a
+16-event response 56.5 → 35.0 us and up to 7.5% smaller; `Compress::stream` br over HTTP 65.2 →
+46.3 us server CPU per 16-event response (1.41x responses/s). One-shot output is bit-for-bit the
+same at every level. A stream holds 15 KiB more.
+
 ### Added: large-window brotli, the shared brotli framing format, custom word lists in the encoder (only-brotli)
 
 ADR-079, the rest of RFC 9841; additive API:

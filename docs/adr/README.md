@@ -75,7 +75,7 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-071: SOCKS5 GSS-API authentication with the mechanism supplied by the application](071-socks-gssapi-pluggable-mechanism.md) (accepted 2026-11-21)
 - [ADR-072: Transports without BUNDLE or ICE, SDES variants, data channel priorities and TURN DTLS connection IDs](072-webrtc-transports-sdes-priorities-turn-cids.md) (accepted 2026-11-21)
 - [ADR-073: A pacer, libwebrtc's FEC masks and protection policy, ECN in RFC 8888, and more probing](073-webrtc-pacer-fec-policy-ecn.md) (accepted 2026-11-21)
-- [ADR-074: Compressed streamed responses in only-http](074-compressed-streamed-responses.md) (accepted 2026-11-21, updated 2026-11-22)
+- [ADR-074: Compressed streamed responses in only-http](074-compressed-streamed-responses.md) (accepted 2026-11-21, updated twice 2026-11-22)
 - [ADR-075: AES-128 I-frame playlists, RTCP sync for RTSP RECORD sessions, query strings on rendition reports](075-media-aes-iframes-record-sync-report-queries.md) (accepted 2026-11-22)
 - [ADR-076: TURN TCP allocations (RFC 6062)](076-turn-tcp-allocations.md) (accepted 2026-11-22; updated 2026-11-22: engine-driven client, Connect timeout, `Endpoint` decision)
 - [ADR-077: ECN-capable RTP, latching media without ICE, and congestion control across transports without BUNDLE](077-webrtc-ecn-latching-unbundled-cc.md) (accepted 2026-11-22)

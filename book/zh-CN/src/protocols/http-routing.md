@@ -107,7 +107,7 @@
 压缩，每次写入后刷新编码器，使每个 server-sent event 仍能立即到达客户端；每个流的默认值很小
 （`StreamCompress`：gzip 1，zstd 1 配 128 KiB 窗口，brotli 4 配 256 KiB 窗口；每个打开的流约 0.3、0.5 和
 1.3 MiB，指输出了一个窗口之后；brotli 的匹配表随流增长，只发了几个事件的流只占几 KiB）。brotli 每次小写入的
-CPU 开销仍然最大（每次刷新的事件约 2 us，zstd 0.3 us），高频事件流宜提供 zstd，或交给 gzip。
+CPU 开销仍然最大（每次刷新的事件约 1 us，zstd 0.3 us），高频事件流宜提供 zstd，或交给 gzip。
 
 中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `only-brotli` 解码：原始（LZ77
 前缀）字典，即 `brotli -D` 与 RFC 9842 的 `dcb` 所用的那种（`decompress_with_dictionary`），以及带自定义
