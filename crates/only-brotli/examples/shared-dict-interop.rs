@@ -10,7 +10,8 @@
 //!   (`DIR/<name>.dict`) and the input (`DIR/input`).
 //! - `check-dir DIR`: decodes every `DIR/<name>.q<level>.br` (libbrotli's output) with
 //!   `<name>.dict` and compares it with `DIR/input`; compresses `input` with each dictionary
-//!   (prefix only) into `DIR/<name>.ours.br` for libbrotli to decode.
+//!   at levels 9 (the prefix) and 11 (also the custom words) into `DIR/<name>.ours<level>.br`
+//!   for libbrotli to decode.
 //!
 //! Needs the `fuzzing` feature (the generator is not public API).
 
@@ -249,8 +250,22 @@ fn main() {
                         if good { "decodes" } else { "FAILS" }
                     );
                 }
-                let ours = compress_with_shared_dictionary(Level::new(9), &input, &dict);
-                std::fs::write(dir.join(format!("{name}.ours.br")), ours).unwrap();
+                // Level 9 uses the prefix; level 11 also searches the custom words.
+                for q in [9, 11] {
+                    let ours = compress_with_shared_dictionary(Level::new(q), &input, &dict);
+                    let raw =
+                        only_brotli::decompress_with_dictionary(&ours, input.len(), dict.prefix());
+                    println!(
+                        "{name} q{q}: ours {} bytes, {}",
+                        ours.len(),
+                        if raw.as_deref() != Ok(&input[..]) {
+                            "custom words used"
+                        } else {
+                            "no custom words"
+                        }
+                    );
+                    std::fs::write(dir.join(format!("{name}.ours{q}.br")), ours).unwrap();
+                }
             }
             if failed {
                 std::process::exit(1);

@@ -21,6 +21,7 @@
 
 use crate::bits::BitWriter;
 use crate::huffman;
+use crate::shared::Search;
 use crate::tables::{
     BLOCK_LEN, CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA,
     split_command,
@@ -49,10 +50,14 @@ pub fn compress_with_dictionary(level: Level, data: &[u8], dict: &[u8]) -> Vec<u
 }
 
 /// [`compress`] with a shared dictionary (RFC 9841): matches may copy from its LZ77 prefix as
-/// [`compress_with_dictionary`] does from a raw dictionary. Custom word lists are not
-/// searched: if the dictionary has custom static dictionaries
-/// ([`SharedDictionary::is_raw`] is false), no static dictionary words are used at all (the
-/// built-in ones would mean something else). Decode with the same dictionary
+/// [`compress_with_dictionary`] does from a raw dictionary, and at levels 10 and 11 (where
+/// brotli's built-in words are searched) its custom static dictionaries are searched instead
+/// of the built-in one: every word of the dictionary that a static dictionary reference at a
+/// position uses first (by the literal context there, if the dictionary says so) under every
+/// transform of its list (indexed once per dictionary, up to 2²¹ transformed words), as
+/// Google's encoder does at its highest qualities. With a context-dependent dictionary the
+/// literal context mode is UTF8 throughout (the mode selects the dictionary). Decode with
+/// the same dictionary
 /// ([`decompress_with_shared_dictionary`](crate::decompress_with_shared_dictionary)).
 pub fn compress_with_shared_dictionary(
     level: Level,
@@ -60,8 +65,18 @@ pub fn compress_with_shared_dictionary(
     dict: &SharedDictionary,
 ) -> Vec<u8> {
     let mut p = params(level.get());
-    p.static_words = dict.is_raw();
-    compress_with(p, data, dict.prefix(), 22)
+    let mut custom = None;
+    if !dict.is_raw() {
+        p.static_words = false;
+        if let Some(s) = dict.custom() {
+            if s.context_based() {
+                p.modes = &[2];
+                p.fixed_mode = Some(2);
+            }
+        }
+        custom = Some(dict.clone());
+    }
+    compress_shared(p, data, dict.prefix(), 22, custom)
 }
 
 /// [`compress`] into a large-window brotli stream (RFC 9841 section 6, Google's
@@ -107,6 +122,17 @@ pub(crate) fn compress_impl(
 }
 
 fn compress_with(p: Params, data: &[u8], dict: &[u8], max_wbits: u32) -> Vec<u8> {
+    compress_shared(p, data, dict, max_wbits, None)
+}
+
+/// [`compress_with`] with a shared dictionary's custom static dictionaries.
+fn compress_shared(
+    p: Params,
+    data: &[u8],
+    dict: &[u8],
+    max_wbits: u32,
+    custom: Option<SharedDictionary>,
+) -> Vec<u8> {
     let wbits = window_bits(data.len(), max_wbits);
     let mut w = BitWriter::with_capacity(data.len() / 2 + 16);
     write_window_bits(&mut w, wbits, p.large);
@@ -124,6 +150,7 @@ fn compress_with(p: Params, data: &[u8], dict: &[u8], max_wbits: u32) -> Vec<u8>
         &buf[..]
     };
     let mut e = Encoder::new(p, wbits, all, dict.len());
+    e.custom = custom;
     e.insert_until(dict.len());
     let mut pos = dict.len();
     while pos < all.len() {
@@ -177,6 +204,9 @@ struct Params {
     /// A large-window stream (RFC 9841 section 6): windows up to 2^30, a larger distance
     /// alphabet.
     large: bool,
+    /// The literal context mode of every literal block type (a context-dependent shared
+    /// dictionary: the mode selects the dictionary of a static dictionary reference).
+    fixed_mode: Option<u8>,
 }
 
 impl Params {
@@ -190,6 +220,15 @@ impl Params {
     /// of the large window's 140.
     fn dist_bits(&self) -> u32 {
         if self.large { 8 } else { 6 }
+    }
+
+    /// The largest distance the distance symbols can code: 2^26 - 4, or 2^31 - 4.
+    fn max_distance(&self) -> usize {
+        if self.large {
+            0x7fff_fffc
+        } else {
+            (1 << 26) - 4
+        }
     }
 }
 
@@ -210,6 +249,7 @@ fn params(level: u8) -> Params {
         greedy: level >= 4,
         static_words: true,
         large: false,
+        fixed_mode: None,
     };
     match level {
         0 => p(1, 16, false, 14, NONE, false),
@@ -291,6 +331,8 @@ pub(crate) struct Encoder<'a> {
     /// How far back the tables need to reach: the window, and the dictionary if any.
     reach: usize,
     scratch: Box<Scratch>,
+    /// A shared dictionary's custom static dictionaries (one-shot only).
+    custom: Option<SharedDictionary>,
 }
 
 impl State {
@@ -451,6 +493,7 @@ impl<'a> Encoder<'a> {
             level_bits: p.hash_bits,
             reach,
             scratch: Box::default(),
+            custom: None,
         };
         let (hash_bits, wsize) = e.table_sizes(data.len());
         e.alloc_tables(hash_bits, wsize);
@@ -584,6 +627,7 @@ impl<'a> Encoder<'a> {
             level_bits: s.level_bits,
             reach: s.reach,
             scratch: s.scratch,
+            custom: None,
         }
     }
 
@@ -918,6 +962,15 @@ impl<'a> Encoder<'a> {
         pos
     }
 
+    /// One literal code, with the fixed context mode if any.
+    fn single_model(&self) -> LiteralModel {
+        let mut m = LiteralModel::single();
+        if let Some(mode) = self.p.fixed_mode {
+            m.mode = mode;
+        }
+        m
+    }
+
     /// Writes the meta-block of `start..end` parsed into `cmds`, compressed or stored.
     fn write_meta_block(
         &mut self,
@@ -937,12 +990,15 @@ impl<'a> Encoder<'a> {
         for c in cmds {
             coded.push(code_command(c, &mut self.last));
         }
-        let mut model = LiteralModel::single();
+        let mut model = self.single_model();
         if !self.p.modes.is_empty() {
             // Clustering costs about as much as compressing a few kilobytes: below the optimal
             // parsing levels it is worth it only for more literals.
             let min_literals = if self.p.optimal > 0 { 2048 } else { 4096 };
             model = literal_model(&self.data[z..], start - z, cmds, self.p.modes, min_literals);
+            if model.ntrees == 1 {
+                model = self.single_model();
+            }
         }
         let mb = MetaBlock {
             data: &self.data[z..],
@@ -954,6 +1010,7 @@ impl<'a> Encoder<'a> {
             dist_size: self.p.dist_size(),
             dist_bits: self.p.dist_bits(),
         };
+        let single = self.single_model();
         let s = &mut self.scratch;
         if self.p.optimal == 0 {
             // The clustering's estimate says whether the context map pays for itself, and the
@@ -974,7 +1031,7 @@ impl<'a> Encoder<'a> {
             }
         } else {
             // The smallest of: one literal code, the context map, block types.
-            let mut layouts = vec![Layout::single(&LiteralModel::single())];
+            let mut layouts = vec![Layout::single(&single)];
             if model.ntrees > 1 {
                 layouts.push(Layout::single(&model));
             }
@@ -1513,7 +1570,53 @@ impl Encoder<'_> {
         let mut found = Vec::new();
         for i in start..end {
             dstart.push(dlist.len() as u32);
-            if self.p.static_words {
+            if let Some(sd) = self.custom.as_ref().and_then(SharedDictionary::custom) {
+                // The dictionary of the literal context here (the stream's last two bytes).
+                let at = i - self.back;
+                let p1 = if at >= 1 { data[i - 1] } else { 0 };
+                let p2 = if at >= 2 { data[i - 2] } else { 0 };
+                let lut = 512 * usize::from(self.p.fixed_mode.unwrap_or(0));
+                let ctx = usize::from(
+                    CONTEXT_LUT[lut + usize::from(p1)] | CONTEXT_LUT[lut + 256 + usize::from(p2)],
+                );
+                // The lowest address for each length produced.
+                let from = dlist.len();
+                // (Addresses whose distance the distance alphabet cannot code are left out.)
+                let max = self
+                    .p
+                    .max_distance()
+                    .saturating_sub(self.reach(i) + 1 + self.back);
+                sd.search(ctx, |search, base| match search {
+                    Search::Builtin => {
+                        sdict::matches(&data[i..end], &mut found);
+                        for m in &found {
+                            let addr = base(usize::from(m.len)) + m.addr;
+                            if addr as usize <= max {
+                                dlist.push(sdict::DictMatch { addr, ..*m });
+                            }
+                        }
+                    }
+                    Search::Index(ix) => ix.matches(&data[i..end], |out, len, addr| {
+                        let addr = base(len) + addr;
+                        if addr as usize <= max {
+                            dlist.push(sdict::DictMatch {
+                                out: out as u16,
+                                len: len as u8,
+                                addr,
+                            });
+                        }
+                    }),
+                });
+                dlist[from..].sort_unstable_by_key(|m| (m.out, m.addr));
+                let mut k = from;
+                for j in from..dlist.len() {
+                    if k == from || dlist[k - 1].out != dlist[j].out {
+                        dlist[k] = dlist[j];
+                        k += 1;
+                    }
+                }
+                dlist.truncate(k);
+            } else if self.p.static_words {
                 sdict::matches(&data[i..end], &mut found);
                 dlist.extend_from_slice(&found);
             }

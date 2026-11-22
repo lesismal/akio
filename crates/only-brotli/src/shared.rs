@@ -9,7 +9,7 @@
 //! bytes after the last field are refused.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::Error;
 use crate::dictionary::{
@@ -106,6 +106,7 @@ impl SharedDictionary {
                 bytes: prefix.into(),
                 prefix: 0..prefix.len(),
                 custom: None,
+                index: OnceLock::new(),
             }),
         }
     }
@@ -119,6 +120,11 @@ impl SharedDictionary {
     /// lists): then the dictionary is the same as the raw dictionary [`prefix`](Self::prefix).
     pub fn is_raw(&self) -> bool {
         self.inner.custom.is_none()
+    }
+
+    /// The custom static dictionaries, for the encoder (`None`: brotli's built-in one).
+    pub(crate) fn custom(&self) -> Option<&Shared> {
+        self.inner.custom.as_ref().map(|_| &*self.inner)
     }
 
     /// What the decoder uses.
@@ -153,6 +159,8 @@ pub(crate) struct Shared {
     prefix: Range<usize>,
     /// `None`: brotli's built-in static dictionary.
     custom: Option<Custom>,
+    /// The encoder's index of each dictionary's transformed words, built when first needed.
+    index: OnceLock<Vec<Option<WordIndex>>>,
 }
 
 struct Custom {
@@ -297,6 +305,7 @@ fn parse(b: &[u8]) -> Option<Shared> {
         bytes: Box::default(),
         prefix,
         custom,
+        index: OnceLock::new(),
     })
 }
 
@@ -570,6 +579,180 @@ fn shift(w: &mut [u8], param: u16) -> usize {
     }
 }
 
+// ---- The encoder's search ----------------------------------------------------------------------
+
+/// A dictionary for the encoder to search.
+pub(crate) enum Search<'a> {
+    /// Brotli's built-in words and transforms (addresses as in RFC 7932).
+    Builtin,
+    /// An index of the dictionary's transformed words.
+    Index(&'a WordIndex),
+}
+
+/// Every word of one dictionary (a word list and a transform list) under every transform,
+/// as far as the result has at least four bytes, by its first four (Google's encoder builds
+/// such a trie at its highest qualities): `matches` finds those that the input starts with.
+pub(crate) struct WordIndex {
+    /// Per bucket, where its entries start (and the next bucket's start).
+    starts: Vec<u32>,
+    entries: Vec<Entry>,
+    /// The transformed words, back to back.
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct Entry {
+    at: u32,
+    out: u16,
+    len: u8,
+    addr: u32,
+}
+
+const INDEX_BITS: u32 = 16;
+/// At most this many transformed words are indexed per dictionary (in transform order: the
+/// first transforms of a list are usually the most useful), and this many bytes of them.
+const MAX_ENTRIES: usize = 1 << 21;
+const MAX_BYTES: usize = 32 << 20;
+
+fn index_bucket(b: &[u8]) -> usize {
+    let k = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    (k.wrapping_mul(0x1E35_A7BD) >> (32 - INDEX_BITS)) as usize
+}
+
+impl WordIndex {
+    /// Calls `f(output length, word length, address)` for each indexed word whose
+    /// transformation `s` starts with.
+    pub(crate) fn matches(&self, s: &[u8], mut f: impl FnMut(usize, usize, u32)) {
+        if s.len() < 4 {
+            return;
+        }
+        let b = index_bucket(s);
+        let (from, to) = (self.starts[b] as usize, self.starts[b + 1] as usize);
+        for e in &self.entries[from..to] {
+            let (at, out) = (e.at as usize, usize::from(e.out));
+            if out <= s.len() && s[..out] == self.bytes[at..at + out] {
+                f(out, usize::from(e.len), e.addr);
+            }
+        }
+    }
+}
+
+impl Shared {
+    /// Whether the dictionary used first depends on the literal context.
+    pub(crate) fn context_based(&self) -> bool {
+        self.custom
+            .as_ref()
+            .is_some_and(|c| c.context_map.is_some())
+    }
+
+    /// The dictionaries a static dictionary reference at literal context `ctx` addresses, in
+    /// order: the context's own first (its addresses from 0), then the others in the order of
+    /// the list, each after all words of the ones before (as the decoder resolves an address;
+    /// Google's encoder searches the first two). Calls `f(search, base)` for each with
+    /// `base(len)`: the address of its first word of length `len`.
+    pub(crate) fn search(&self, ctx: usize, mut f: impl FnMut(Search<'_>, &dyn Fn(usize) -> u32)) {
+        let Some(c) = &self.custom else {
+            f(Search::Builtin, &|_| 0);
+            return;
+        };
+        let first = usize::from(c.context_map.map_or(0, |m| m[ctx & 63]));
+        let index = self.index.get_or_init(|| {
+            c.dicts
+                .iter()
+                .map(|&(w, t)| ((w, t) != (BUILTIN, BUILTIN)).then(|| self.build_index(c, w, t)))
+                .collect()
+        });
+        // The addresses of all words of length `len` of dictionary `d`.
+        let size = |d: usize, len: usize| -> u32 {
+            let (w, t) = c.dicts[d];
+            let shift = self.size_bits(c, w, len);
+            if shift == 0 {
+                0
+            } else {
+                (Self::num_transforms(c, t) as u32) << shift
+            }
+        };
+        let search = |d: usize| match &index[d] {
+            Some(ix) => Search::Index(ix),
+            None => Search::Builtin,
+        };
+        f(search(first), &|_| 0);
+        for d in (0..c.dicts.len()).filter(|&d| d != first) {
+            let base = |len: usize| {
+                size(first, len)
+                    + (0..d)
+                        .filter(|&e| e != first)
+                        .map(|e| size(e, len))
+                        .sum::<u32>()
+            };
+            f(search(d), &base);
+        }
+    }
+
+    /// The index of the dictionary of word list `w` and transform list `t`.
+    fn build_index(&self, c: &Custom, w: u8, t: u8) -> WordIndex {
+        let ntrans = Self::num_transforms(c, t);
+        let mut keyed: Vec<(u32, Entry)> = Vec::new();
+        let mut bytes = Vec::new();
+        let mut out = [0u8; MAX_TRANSFORMED];
+        'all: for ti in 0..ntrans {
+            for len in 4..=MAX_WORD {
+                let shift = self.size_bits(c, w, len);
+                if shift == 0 {
+                    continue;
+                }
+                for idx in 0..1usize << shift {
+                    let word = if w == BUILTIN {
+                        let at = OFFSETS_BY_LENGTH[len] as usize + idx * len;
+                        &DICTIONARY[at..at + len]
+                    } else {
+                        let l = &c.words[usize::from(w)];
+                        let at = l.data.start + l.offsets[len] as usize + idx * len;
+                        &self.bytes[at..at + len]
+                    };
+                    let n = if t == BUILTIN {
+                        let mut tmp = [0u8; 64];
+                        let n = transform_word(&mut tmp, word, ti);
+                        out[..n].copy_from_slice(&tmp[..n]);
+                        n
+                    } else {
+                        self.transform(&c.transforms[usize::from(t)], ti, word, &mut out)
+                    };
+                    if n < 4 {
+                        continue;
+                    }
+                    if keyed.len() >= MAX_ENTRIES || bytes.len() + n > MAX_BYTES {
+                        break 'all;
+                    }
+                    keyed.push((
+                        index_bucket(&out[..n]) as u32,
+                        Entry {
+                            at: bytes.len() as u32,
+                            out: n as u16,
+                            len: len as u8,
+                            addr: ((ti as u32) << shift) | idx as u32,
+                        },
+                    ));
+                    bytes.extend_from_slice(&out[..n]);
+                }
+            }
+        }
+        keyed.sort_by_key(|&(b, e)| (b, e.addr));
+        let mut starts = vec![0u32; (1 << INDEX_BITS) + 1];
+        for &(b, _) in &keyed {
+            starts[b as usize + 1] += 1;
+        }
+        for i in 0..1 << INDEX_BITS {
+            starts[i + 1] += starts[i];
+        }
+        WordIndex {
+            starts,
+            entries: keyed.into_iter().map(|(_, e)| e).collect(),
+            bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SharedDictionary;
@@ -577,7 +760,10 @@ mod tests {
         DictSpec, Reference, Source, TransformSpec, random_references, random_spec,
         references_stream,
     };
-    use crate::{Decompressor, Error, decompress_with_shared_dictionary};
+    use crate::{
+        Decompressor, Error, Level, compress_with_shared_dictionary,
+        decompress_with_shared_dictionary,
+    };
 
     /// Word list with `n` words of length 4 (`bits` = log2 n) and nothing else.
     fn words4(bits: u8, words: &[u8]) -> ([u8; 28], Vec<u8>) {
@@ -876,7 +1062,7 @@ mod tests {
     /// streamed (the fuzz target's checks, over fixed seeds).
     #[test]
     fn random_dictionaries() {
-        let mut valid = 0;
+        let (mut valid, mut words) = (0, 0);
         for seed in 1..3000u64 {
             let mut s = Source::seeded(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
             let spec = random_spec(&mut s);
@@ -887,10 +1073,20 @@ mod tests {
                 Some(w) => {
                     assert_eq!(got.as_ref(), Ok(&w), "seed {seed}");
                     valid += 1;
+                    // The encoder finds the words (its own references), and its stream
+                    // decodes.
+                    if seed % 3 == 0 {
+                        let q = 10 + (seed / 3 % 2) as u32;
+                        let packed = compress_with_shared_dictionary(Level::new(q), &w, &dict);
+                        let back = decompress_with_shared_dictionary(&packed, w.len(), &dict);
+                        assert_eq!(back.as_ref(), Ok(&w), "seed {seed} level {q}");
+                        words += usize::from(packed.len() < w.len() / 2);
+                    }
                 }
                 None => assert!(got.is_err(), "seed {seed}"),
             }
         }
         assert!(valid > 1000, "{valid}");
+        assert!(words > 100, "{words}");
     }
 }
