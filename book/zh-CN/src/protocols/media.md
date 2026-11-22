@@ -98,7 +98,7 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
   即 **WS-FLV**：第一个二进制消息是 FLV 头，之后每个 tag 一条消息，符合 flv.js 与 mpegts.js 的预期。
 - **`Hls`**：`GET /app/name/index.m3u8` 在首次请求时启动一个 muxer（它订阅 hub，在 `idle_timeout`
   内无请求后停止），在超过 `target_duration` 后的关键帧处于内存中切出 MPEG-TS 分段，保留
-  `playlist_size` 个分段的滑动窗口以及供迟到读者使用的 `keep_segments` 个，总量受 `max_bytes` 约束（达到该值仍没有关键帧可切的分段在此处切开），
+  `playlist_size` 个分段的滑动窗口以及供迟到读者使用的 `keep_segments` 个，总量受 `max_bytes` 约束（达到该值仍没有关键帧可切的分段在此处切开；超过 `target_duration` 的分段会向推流端请求关键帧，每个目标时长至多一次，因为 WebRTC 编码器只按请求发送关键帧），
   并以 `EXT-X-DISCONTINUITY` 标记重新推流。设置 `part_duration` 后加入低延迟 HLS 标签：
   `EXT-X-PART`、`EXT-X-PRELOAD-HINT`、`EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`，以及阻塞式播放列表
   刷新（`?_HLS_msn=&_HLS_part=`）。需要等待的请求被挂起（不占线程），在分段或分片切出时由推流者线程应答。

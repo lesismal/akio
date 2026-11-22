@@ -767,7 +767,9 @@ fn push_reconnects() {
 #[test]
 fn mediamtx_redirect() {
     let Ok(mtx) = std::env::var("ONLY_MEDIAMTX_REDIRECT") else {
-        eprintln!("ONLY_MEDIAMTX_REDIRECT not set: skipped (see tools/interop/media/rtsp-redirect.sh)");
+        eprintln!(
+            "ONLY_MEDIAMTX_REDIRECT not set: skipped (see tools/interop/media/rtsp-redirect.sh)"
+        );
         return;
     };
     let engine = client_engine();
@@ -841,7 +843,8 @@ fn server_moves_to_another_address() {
     });
     let before = hub.stream_info("back").map_or(0, |i| i.packets_in);
     wait("media from the new server", 30, || {
-        hub.stream_info("back").is_some_and(|i| i.packets_in > before + 100)
+        hub.stream_info("back")
+            .is_some_and(|i| i.packets_in > before + 100)
     });
     println!(
         "MOVED ({name}): push {} and pull {} reconnects, last errors {:?} / {:?}",

@@ -36,8 +36,9 @@
 //!
 //! [`pull`] and [`push`] block their caller until the session plays or records (or fails):
 //! call them from a thread of your own, never from an I/O thread callback. A host name in the
-//! URL is resolved there with the system resolver (`ToSocketAddrs`); an IP literal, or
-//! [`RtspClientConfig::addr`], needs no lookup.
+//! URL is resolved there with the system resolver (`ToSocketAddrs`), and again for every later
+//! session (a reconnect, a redirect), so a server that moved to another address under the same
+//! name is found; an IP literal, or [`RtspClientConfig::addr`], needs no lookup.
 //!
 //! **A/V sync**: a pull lines its tracks up by the RTCP sender reports of the server
 //! ([`RtspClientConfig::rtcp_sync`], on by default): each track's times start at its first
@@ -55,7 +56,19 @@
 //! codecs is announced anew) and continues from the cached GOP. The first session must come
 //! up: [`pull`] and [`push`] return its error.
 //!
-//! Left out: RTSPS and HTTP tunnelling, multicast and redirects.
+//! **Receiver reports**: a pull sends the server RTCP receiver reports (RFC 3550 6.4.2) on each
+//! track's RTCP channel or port ([`RtspClientConfig::receiver_report_interval`]).
+//!
+//! **Redirects**: a redirect (300 to 303, 307, 308) with a `Location` answering any request
+//! before PLAY or RECORD ends the connection and starts the handshake again at the location
+//! (an `rtsp://` URL, or an absolute path on the same server), up to five in a row, then the
+//! client fails with the last one's [`ClientError::Status`]. The URL's credentials go along to
+//! the same host and port only, unless the location has its own;
+//! [`RtspClientConfig::addr`] applies to the client's own URL only. A `301` is remembered for
+//! later sessions; other redirects are followed again from the client's URL.
+//!
+//! Left out: RTSPS and HTTP tunnelling, multicast, the `REDIRECT` request of a server during a
+//! session (answered 501).
 
 use std::{
     fmt,
@@ -111,7 +124,7 @@ pub struct RtspClientConfig {
     /// How RTP travels (default [`RtspTransport::Tcp`]).
     pub transport: RtspTransport,
     /// Connect here rather than to the URL's host (which then only names the server in the
-    /// requests); skips the name lookup.
+    /// requests); skips the name lookup. Not used for a redirect to another host or port.
     pub addr: Option<SocketAddr>,
     /// Time allowed for the TCP connect. Default 10 s; `Duration::ZERO` leaves it to the
     /// engine's `Config::connect_timeout`.
@@ -479,8 +492,8 @@ pub(crate) enum Event {
     NeedPorts(usize),
     /// PLAY or RECORD succeeded.
     Live,
-    /// A 3xx response with a `Location` before the session went live: the session ends and
-    /// the client starts again there.
+    /// A redirect (300 to 303, 307, 308) with a `Location` before the session went live: the
+    /// session ends and the client starts again there.
     Redirect {
         method: &'static str,
         status: u16,
@@ -834,7 +847,8 @@ impl Machine {
             return;
         }
         self.auth_tries = 0;
-        if (300..400).contains(&r.status) && self.step != Step::Live {
+        // 304 (Not Modified) and 305 (Use Proxy: the location is a proxy) are not redirects.
+        if matches!(r.status, 300..=303 | 307 | 308) && self.step != Step::Live {
             if let Some(loc) = r.header("location").filter(|l| clean(l.trim())) {
                 out.push(Event::Redirect {
                     method: p.method,

@@ -1097,11 +1097,30 @@ fn gstreamer_record_gets_receiver_reports() {
         let (hub, engine, addr) = start(cfg);
         let path = format!("live/gst_{proto}");
         let out = Command::new("docker")
-            .args(["run", "--rm", "--network", "host", "-e", "GST_DEBUG=rtpsession:5"])
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                "-e",
+                "GST_DEBUG=rtpsession:5",
+            ])
             .arg(&image)
             .args(["timeout", "-s", "INT", "8", "gst-launch-1.0", "-e"])
-            .args(["videotestsrc", "is-live=true", "!", "video/x-raw,width=320,height=240"])
-            .args(["!", "x264enc", "tune=zerolatency", "key-int-max=25", "!", "h264parse"])
+            .args([
+                "videotestsrc",
+                "is-live=true",
+                "!",
+                "video/x-raw,width=320,height=240",
+            ])
+            .args([
+                "!",
+                "x264enc",
+                "tune=zerolatency",
+                "key-int-max=25",
+                "!",
+                "h264parse",
+            ])
             .args(["!", "rtspclientsink"])
             .arg(format!("location=rtsp://{addr}/{path}"))
             .arg(format!("protocols={proto}"))
@@ -1109,8 +1128,14 @@ fn gstreamer_record_gets_receiver_reports() {
             .expect("docker");
         let log = String::from_utf8_lossy(&out.stderr);
         engine.shutdown();
-        let rrs: Vec<&str> = log.lines().filter(|l| l.contains("got RR packet")).collect();
-        let blocks: Vec<&str> = log.lines().filter(|l| l.contains("got RB packet")).collect();
+        let rrs: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("got RR packet"))
+            .collect();
+        let blocks: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("got RB packet"))
+            .collect();
         let tail: Vec<&str> = log.lines().rev().take(30).collect();
         assert!(
             rrs.len() >= 3 && !blocks.is_empty(),

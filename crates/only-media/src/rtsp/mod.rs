@@ -11,7 +11,9 @@
 //! `sprop-*`, or in band; for VP8, VP9 and AV1, from the first keyframe). A recording's
 //! tracks are lined up by the publisher's RTCP sender reports ([`RtspConfig::rtcp_sync`], on
 //! by default), so audio and video keep the offset they were captured with rather than the
-//! one their first packets arrived with.
+//! one their first packets arrived with. The publisher gets RTCP receiver reports
+//! ([`RtspConfig::receiver_report_interval`]): losses, jitter and the delay since its last
+//! sender report, per track.
 //!
 //! A player starts with the hub's cached GOP and gets RTCP sender reports; over TCP it is cut
 //! back to keyframes ([`Dropper`]) when it falls behind and closed when it falls further.
