@@ -687,3 +687,128 @@ fn ecn_ce_marks_count_as_congestion() {
     println!("estimate after 5 s: {clean} clean, {marked} with 20 % CE");
     assert!(marked < clean / 2, "{marked} vs {clean}");
 }
+
+/// A sender pacing at the estimate through a bottleneck of `cap` bps whose queue marks
+/// ECN-capable packets CE once their queueing delay exceeds `step` (an L4S queue, RFC 9332's
+/// step marking): (delivered bps, mean queueing delay, CE fraction) over the second half.
+fn l4s_bottleneck(
+    response: crate::EcnResponse,
+    cap: f64,
+    step: Duration,
+    ect: u8,
+) -> (f64, Duration, f64, BandwidthEstimator) {
+    use crate::PacketResult;
+    let t0 = Instant::now();
+    let mut bwe = BandwidthEstimator::new((0.8 * cap) as u64).with_probing(false);
+    bwe.set_ecn_response(response);
+    bwe.set_rtt(ms(40));
+    let mut free = t0;
+    let mut next = t0;
+    let mut seq = 0u64;
+    let mut inflight: Vec<PacketResult> = Vec::new();
+    let (mut bytes, mut qsum, mut n, mut ce, mut ectn) = (0usize, 0f64, 0u64, 0u64, 0u64);
+    let service = Duration::from_secs_f64(1200.0 * 8.0 / cap);
+    let end = 30_000u64;
+    let mut fb = t0;
+    while next < t0 + ms(end) {
+        // A paced sender: one packet every 1200 bytes at the estimate.
+        let now = next;
+        next += Duration::from_secs_f64(1200.0 * 8.0 / bwe.estimate() as f64);
+        seq += 1;
+        let start = free.max(now);
+        let q = start.saturating_duration_since(now);
+        let lost = q > ms(300);
+        let mark = if q > step { 3 } else { ect };
+        if !lost {
+            free = start + service;
+        }
+        let arrival = start + service + ms(20);
+        if now >= t0 + ms(end / 2) && !lost {
+            bytes += 1200;
+            qsum += q.as_secs_f64();
+            n += 1;
+            ectn += 1;
+            ce += u64::from(mark == 3);
+        }
+        inflight.push(PacketResult {
+            seq,
+            sent: now,
+            size: 1200,
+            received: (!lost).then_some(arrival),
+            probe: None,
+            ecn: (!lost && ect != 0).then_some(mark),
+        });
+        while fb + ms(50) <= now {
+            // Feedback every 50 ms about what arrived (20 ms back).
+            fb += ms(50);
+            let (done, rest): (Vec<_>, Vec<_>) = inflight
+                .drain(..)
+                .partition(|r| r.received.map_or_else(|| r.sent + ms(100), |a| a + ms(20)) <= fb);
+            inflight = rest;
+            if !done.is_empty() {
+                bwe.on_packet_results(fb, &done);
+            }
+        }
+    }
+    let secs = (end / 2) as f64 / 1000.0;
+    (
+        bytes as f64 * 8.0 / secs,
+        Duration::from_secs_f64(qsum / n.max(1) as f64),
+        ce as f64 / ectn.max(1) as f64,
+        bwe,
+    )
+}
+
+#[test]
+fn scalable_ecn_response_holds_the_rate_with_a_short_queue() {
+    use crate::EcnResponse;
+    let cap = 2_000_000.0;
+    let (rate, q, frac, bwe) = l4s_bottleneck(EcnResponse::Scalable, cap, ms(1), 1);
+    let (crate_, cq, cfrac, _) = l4s_bottleneck(EcnResponse::Classic, cap, ms(1), 1);
+    let (plain, pq, _, _) = l4s_bottleneck(EcnResponse::Scalable, cap, ms(1), 0);
+    println!(
+        "2 Mbps L4S queue: scalable {rate:.0} bps q {q:?} CE {frac:.3} alpha {:?}; classic {crate_:.0} bps q {cq:?} CE {cfrac:.3}; no ECN {plain:.0} bps q {pq:?}",
+        bwe.ce_fraction()
+    );
+    assert!(rate > 0.85 * cap, "{rate}");
+    assert!(q < ms(1) && q < pq, "{q:?} {pq:?}");
+    assert!(rate > crate_ * 1.05, "{rate} vs {crate_}");
+    assert!(bwe.ce_fraction().is_some_and(|a| a > 0.0 && a < 0.6));
+    // At 10x the rate the marks per round trip stay about the same: their fraction falls.
+    let (rate10, q10, frac10, _) = l4s_bottleneck(EcnResponse::Scalable, 5.0 * cap, ms(1), 1);
+    println!("10 Mbps: scalable {rate10:.0} bps q {q10:?} CE {frac10:.3}");
+    assert!(rate10 > 0.85 * 5.0 * cap, "{rate10}");
+    assert!(frac10 < frac, "{frac10} vs {frac}");
+}
+
+#[test]
+fn scalable_response_from_ecn_counts() {
+    use crate::EcnResponse;
+    let t0 = Instant::now();
+    let mut bwe = BandwidthEstimator::new(1_000_000).with_probing(false);
+    bwe.set_ecn_response(EcnResponse::Scalable);
+    assert_eq!(bwe.ecn_response(), EcnResponse::Scalable);
+    bwe.on_ecn_counts(t0, 100, 0);
+    assert_eq!(bwe.estimate(), 1_000_000);
+    assert!(bwe.ce_fraction().is_none());
+    // The round (100 ms without an RTT) ends with 10 % CE: alpha 0.1, the rate cut by 5 %.
+    bwe.on_ecn_counts(t0 + ms(100), 100, 20);
+    let a = bwe.ce_fraction().unwrap();
+    assert!((a - 0.1).abs() < 1e-9, "{a}");
+    assert_eq!(bwe.estimate(), 950_000);
+    // The next round's marks may describe packets sent before the cut: alpha moves, the
+    // rate holds.
+    bwe.on_ecn_counts(t0 + ms(200), 100, 20);
+    let a = bwe.ce_fraction().unwrap();
+    assert!((a - (0.1 * 15.0 / 16.0 + 0.2 / 16.0)).abs() < 1e-9, "{a}");
+    assert_eq!(bwe.estimate(), 950_000);
+    // A clean round grows it.
+    bwe.on_ecn_counts(t0 + ms(300), 100, 0);
+    assert!(bwe.estimate() > 950_000);
+    assert_eq!(bwe.ecn_counts(), (400, 40));
+    // The classic response counts CE as loss instead.
+    let mut c = BandwidthEstimator::new(1_000_000).with_probing(false);
+    c.on_ecn_counts(t0, 100, 50);
+    assert!(c.ce_fraction().is_none());
+    assert_eq!(c.ecn_counts(), (100, 50));
+}

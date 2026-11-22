@@ -855,6 +855,8 @@ pub(crate) struct ConfigInner {
     pub(crate) rtcp_mux: RtcpMuxPolicy,
     /// SDES: the MKI length of our offered keys (0: none).
     pub(crate) sdes_mki: u8,
+    /// DTLS-SRTP: the MKI length offered in `use_srtp` (0: none; ADR-082).
+    pub(crate) dtls_mki: u8,
     /// ICE runs (else plain `c=` / port transports).
     pub(crate) ice: bool,
     /// BUNDLE in our offers and answers.
@@ -913,6 +915,7 @@ impl Default for ConfigInner {
             sdes: false,
             rtcp_mux: RtcpMuxPolicy::Require,
             sdes_mki: 0,
+            dtls_mki: 0,
             ice: true,
             bundle: BundlePolicy::Balanced,
             xr_blocks: XrBlocks::NONE,
@@ -949,6 +952,7 @@ impl fmt::Debug for RtcConfig {
             .field("encrypted_header_extensions", &self.0.encrypt_ext)
             .field("opus_red", &self.0.opus_red)
             .field("sdes_srtp", &self.0.sdes)
+            .field("dtls_srtp_mki", &self.0.dtls_mki)
             .field("rtcp_mux", &self.0.rtcp_mux)
             .field("rtcp_xr_blocks", &self.0.xr_blocks)
             .field("ulpfec_level0", &self.0.ulpfec_level0)
@@ -1263,6 +1267,19 @@ impl RtcConfig {
         self
     }
 
+    /// SRTP Master Key Identifiers with DTLS-SRTP (RFC 5764 §4.1.3, ADR-082): 0 (the
+    /// default) for none, else 1..=128 bytes (larger values are clamped). As the DTLS client
+    /// this side offers an MKI of that length in `use_srtp` (its value counts the handshakes
+    /// of the session, so the keys of a later one are told apart); as the server it agrees to
+    /// the client's MKI, whatever its length. When both agree, every SRTP and SRTCP packet
+    /// carries the MKI, both ways; a remote that does not answers with an empty one and SRTP
+    /// runs without (browsers do).
+    #[must_use]
+    pub fn set_dtls_srtp_mki_length(mut self, len: u8) -> Self {
+        self.0.dtls_mki = len.min(128);
+        self
+    }
+
     /// Whether ICE runs (default `true`). Without ICE, for SIP endpoints and other RTP stacks
     /// that do not do it: our descriptions carry no `a=ice-ufrag`, `a=ice-pwd` or candidates
     /// but the address and port of the first host candidate (and `a=rtcp` with component 2's
@@ -1288,18 +1305,21 @@ impl RtcConfig {
         self
     }
 
-    /// ECN-capable RTP (RFC 6679 with RFC 8888 feedback, ADR-077): sent RTP packets carry
-    /// ECT(0) ([`EcnMarking::Ect0`], classic ECN) or ECT(1) ([`EcnMarking::Ect1`], L4S, RFC
-    /// 9331) once a path has shown that marks get through. It needs RFC 8888 feedback
-    /// ([`enable_ccfb`](Self::enable_ccfb), negotiated by both sides: it reports the codepoint
-    /// each packet arrived with) and the bandwidth estimator ([`enable_bwe`](Self::enable_bwe):
-    /// packets reported CE count as lost for it); without them nothing is marked. A path
-    /// starts with one RTP packet in four marked, marks every one once ten marked packets
-    /// are reported with their mark, and stops marking for good (until the path changes)
-    /// when a mark is reported cleared or changed, or marked packets are lost where
-    /// unmarked ones are not. RTCP, STUN, DTLS and SCTP are never marked. Linux and macOS
-    /// UDP sockets carry the codepoint (unless `ONLY_UDP_ECN=0`); TURN relays and ICE-TCP do
-    /// not. Default [`EcnMarking::Off`].
+    /// ECN-capable RTP (RFC 6679, ADR-077 / ADR-082): sent RTP packets carry ECT(0)
+    /// ([`EcnMarking::Ect0`], classic ECN) or ECT(1) ([`EcnMarking::Ect1`], L4S, RFC 9331) once
+    /// a path has shown that marks get through. It needs feedback that reports the codepoints:
+    /// RFC 8888 ([`enable_ccfb`](Self::enable_ccfb), negotiated by both sides), or RFC 6679's
+    /// own (`a=ecn-capable-rtp`, the RTCP ECN feedback message and the XR ECN summary, offered
+    /// and answered whenever this is on, used by remotes that answer them); and the bandwidth
+    /// estimator ([`enable_bwe`](Self::enable_bwe)). Without them nothing is marked. A path
+    /// starts with one RTP packet in four marked, marks every one once ten marked packets are
+    /// reported with their mark, and stops marking for good (until the path changes) when a
+    /// mark is reported cleared or changed, or marked packets are lost where unmarked ones are
+    /// not. CE marks on ECT(0) count as loss; on ECT(1) the estimator responds scalably (to the
+    /// smoothed fraction of marks) and the pacer sends smoothly. RTCP, STUN, DTLS and SCTP are
+    /// never marked. Linux and macOS UDP sockets carry the codepoint (unless `ONLY_UDP_ECN=0`),
+    /// as do datagrams to a TURN server over UDP (which copies it); paths over ICE-TCP or TURN
+    /// over TCP / TLS do not mark. Default [`EcnMarking::Off`].
     #[must_use]
     pub fn set_ecn_marking(mut self, marking: EcnMarking) -> Self {
         self.0.ecn = marking;
@@ -1311,8 +1331,11 @@ impl RtcConfig {
     /// "comedia", RFC 7362), for remotes behind NATs whose SDP names an address they cannot
     /// be reached at: an RTP or RTCP packet that authenticates under the transport's SRTP
     /// keys moves the transport's pair (per component) to its source, as [`Latching`] allows.
-    /// Datagrams from unknown sources are only tried for authentication. Before the SRTP keys
-    /// exist nothing latches (with DTLS-SRTP the handshake needs the SDP address). Default
+    /// Datagrams from unknown sources are only tried for authentication. With DTLS-SRTP the
+    /// handshake latches first (ADR-082): this side answers `actpass` with `passive`, a
+    /// ClientHello from an unknown source gets a stateless cookie exchange, and one with a
+    /// valid cookie moves RTP's pair there until the handshake completes with the SDP
+    /// fingerprint (or fails, closes or takes over 4 s, which moves it back). Default
     /// [`Latching::Off`]: media goes to and comes from the description's addresses only.
     #[must_use]
     pub fn set_latching(mut self, latching: Latching) -> Self {

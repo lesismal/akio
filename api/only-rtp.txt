@@ -608,6 +608,25 @@ impl core::marker::Sync for only_rtp::BandwidthUsage
 impl core::marker::Unpin for only_rtp::BandwidthUsage
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BandwidthUsage
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::BandwidthUsage
+#[non_exhaustive] pub enum only_rtp::EcnResponse
+pub only_rtp::EcnResponse::Classic
+pub only_rtp::EcnResponse::Scalable
+impl core::clone::Clone for only_rtp::EcnResponse
+pub fn only_rtp::EcnResponse::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::EcnResponse
+impl core::cmp::PartialEq for only_rtp::EcnResponse
+pub fn only_rtp::EcnResponse::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EcnResponse
+pub fn only_rtp::EcnResponse::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnResponse
+pub fn only_rtp::EcnResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EcnResponse
+impl core::marker::StructuralPartialEq for only_rtp::EcnResponse
+impl core::marker::Send for only_rtp::EcnResponse
+impl core::marker::Sync for only_rtp::EcnResponse
+impl core::marker::Unpin for only_rtp::EcnResponse
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnResponse
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnResponse
 #[non_exhaustive] pub enum only_rtp::Error
 pub only_rtp::Error::BadPadding
 pub only_rtp::Error::BadVersion
@@ -819,18 +838,23 @@ pub fn only_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option
 pub fn only_rtp::BandwidthEstimator::application_limited(&self) -> bool
 pub fn only_rtp::BandwidthEstimator::bounds(&self) -> (u64, u64)
 pub fn only_rtp::BandwidthEstimator::cancel_probes(&mut self)
+pub fn only_rtp::BandwidthEstimator::ce_fraction(&self) -> core::option::Option<f64>
 pub fn only_rtp::BandwidthEstimator::ecn_counts(&self) -> (u64, u64)
+pub fn only_rtp::BandwidthEstimator::ecn_response(&self) -> only_rtp::EcnResponse
 pub fn only_rtp::BandwidthEstimator::estimate(&self) -> u64
 pub fn only_rtp::BandwidthEstimator::link_capacity(&self) -> core::option::Option<(u64, u64)>
 pub fn only_rtp::BandwidthEstimator::new(u64) -> only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::on_ecn_counts(&mut self, std::time::Instant, u64, u64)
 pub fn only_rtp::BandwidthEstimator::on_network_change(&mut self, std::time::Instant)
 pub fn only_rtp::BandwidthEstimator::on_packet_results(&mut self, std::time::Instant, &[only_rtp::PacketResult])
 pub fn only_rtp::BandwidthEstimator::on_probe_sent(&mut self, std::time::Instant, u32, usize)
 pub fn only_rtp::BandwidthEstimator::poll_probe(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ProbePacket>
 pub fn only_rtp::BandwidthEstimator::probe_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_rtp::BandwidthEstimator::set_bounds(&mut self, std::time::Instant, u64, u64)
+pub fn only_rtp::BandwidthEstimator::set_ecn_response(&mut self, only_rtp::EcnResponse)
 pub fn only_rtp::BandwidthEstimator::set_network_state_estimate(&mut self, core::option::Option<u64>)
 pub fn only_rtp::BandwidthEstimator::set_remote_estimate(&mut self, u64)
+pub fn only_rtp::BandwidthEstimator::set_rtt(&mut self, core::time::Duration)
 pub fn only_rtp::BandwidthEstimator::usage(&self) -> only_rtp::BandwidthUsage
 pub fn only_rtp::BandwidthEstimator::with_bounds(self, u64, u64) -> only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::with_probing(self, bool) -> only_rtp::BandwidthEstimator
@@ -1015,6 +1039,117 @@ impl core::marker::Sync for only_rtp::EModelScore
 impl core::marker::Unpin for only_rtp::EModelScore
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EModelScore
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::EModelScore
+pub struct only_rtp::EcnCounters
+pub only_rtp::EcnCounters::ce: u16
+pub only_rtp::EcnCounters::duplicates: u16
+pub only_rtp::EcnCounters::ect0: u32
+pub only_rtp::EcnCounters::ect1: u32
+pub only_rtp::EcnCounters::lost: u16
+pub only_rtp::EcnCounters::not_ect: u16
+impl only_rtp::EcnCounters
+pub fn only_rtp::EcnCounters::since(&self, &only_rtp::EcnCounters) -> only_rtp::EcnDelta
+impl core::clone::Clone for only_rtp::EcnCounters
+pub fn only_rtp::EcnCounters::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::EcnCounters
+impl core::cmp::PartialEq for only_rtp::EcnCounters
+pub fn only_rtp::EcnCounters::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EcnCounters
+pub fn only_rtp::EcnCounters::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnCounters
+pub fn only_rtp::EcnCounters::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EcnCounters
+impl core::marker::StructuralPartialEq for only_rtp::EcnCounters
+impl core::marker::Send for only_rtp::EcnCounters
+impl core::marker::Sync for only_rtp::EcnCounters
+impl core::marker::Unpin for only_rtp::EcnCounters
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnCounters
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnCounters
+pub struct only_rtp::EcnDelta
+pub only_rtp::EcnDelta::ce: u64
+pub only_rtp::EcnDelta::duplicates: u64
+pub only_rtp::EcnDelta::ect0: u64
+pub only_rtp::EcnDelta::ect1: u64
+pub only_rtp::EcnDelta::lost: u64
+pub only_rtp::EcnDelta::not_ect: u64
+impl core::clone::Clone for only_rtp::EcnDelta
+pub fn only_rtp::EcnDelta::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::EcnDelta
+impl core::cmp::PartialEq for only_rtp::EcnDelta
+pub fn only_rtp::EcnDelta::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EcnDelta
+pub fn only_rtp::EcnDelta::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnDelta
+pub fn only_rtp::EcnDelta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EcnDelta
+impl core::marker::StructuralPartialEq for only_rtp::EcnDelta
+impl core::marker::Send for only_rtp::EcnDelta
+impl core::marker::Sync for only_rtp::EcnDelta
+impl core::marker::Unpin for only_rtp::EcnDelta
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnDelta
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnDelta
+pub struct only_rtp::EcnFeedback
+pub only_rtp::EcnFeedback::counters: only_rtp::EcnCounters
+pub only_rtp::EcnFeedback::extended_highest_seq: u32
+pub only_rtp::EcnFeedback::media_ssrc: u32
+pub only_rtp::EcnFeedback::sender_ssrc: u32
+impl only_rtp::EcnFeedback
+pub fn only_rtp::EcnFeedback::from_rtcp(&only_rtp::Rtcp) -> core::option::Option<only_rtp::EcnFeedback>
+pub fn only_rtp::EcnFeedback::to_rtcp(&self) -> only_rtp::Rtcp
+impl core::clone::Clone for only_rtp::EcnFeedback
+pub fn only_rtp::EcnFeedback::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::EcnFeedback
+impl core::cmp::PartialEq for only_rtp::EcnFeedback
+pub fn only_rtp::EcnFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EcnFeedback
+pub fn only_rtp::EcnFeedback::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnFeedback
+pub fn only_rtp::EcnFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EcnFeedback
+impl core::marker::StructuralPartialEq for only_rtp::EcnFeedback
+impl core::marker::Send for only_rtp::EcnFeedback
+impl core::marker::Sync for only_rtp::EcnFeedback
+impl core::marker::Unpin for only_rtp::EcnFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnFeedback
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnFeedback
+pub struct only_rtp::EcnReceiver
+impl only_rtp::EcnReceiver
+pub fn only_rtp::EcnReceiver::feedback(&mut self, u32, bool) -> alloc::vec::Vec<only_rtp::EcnFeedback>
+pub fn only_rtp::EcnReceiver::new() -> only_rtp::EcnReceiver
+pub fn only_rtp::EcnReceiver::on_received(&mut self, u32, u16, u8)
+pub fn only_rtp::EcnReceiver::remove(&mut self, u32)
+pub fn only_rtp::EcnReceiver::summary(&self, u32) -> core::option::Option<only_rtp::EcnSummary>
+pub fn only_rtp::EcnReceiver::urgent(&self) -> bool
+impl core::default::Default for only_rtp::EcnReceiver
+pub fn only_rtp::EcnReceiver::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnReceiver
+pub fn only_rtp::EcnReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::EcnReceiver
+impl core::marker::Sync for only_rtp::EcnReceiver
+impl core::marker::Unpin for only_rtp::EcnReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnReceiver
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnReceiver
+pub struct only_rtp::EcnSummary
+pub only_rtp::EcnSummary::counters: only_rtp::EcnCounters
+pub only_rtp::EcnSummary::ssrc: u32
+impl only_rtp::EcnSummary
+pub fn only_rtp::EcnSummary::from_xr(&only_rtp::XrBlock) -> core::option::Option<alloc::vec::Vec<only_rtp::EcnSummary>>
+pub fn only_rtp::EcnSummary::to_xr(&[only_rtp::EcnSummary]) -> only_rtp::XrBlock
+impl core::clone::Clone for only_rtp::EcnSummary
+pub fn only_rtp::EcnSummary::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::EcnSummary
+impl core::cmp::PartialEq for only_rtp::EcnSummary
+pub fn only_rtp::EcnSummary::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::EcnSummary
+pub fn only_rtp::EcnSummary::default() -> Self
+impl core::fmt::Debug for only_rtp::EcnSummary
+pub fn only_rtp::EcnSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::EcnSummary
+impl core::marker::StructuralPartialEq for only_rtp::EcnSummary
+impl core::marker::Send for only_rtp::EcnSummary
+impl core::marker::Sync for only_rtp::EcnSummary
+impl core::marker::Unpin for only_rtp::EcnSummary
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::EcnSummary
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::EcnSummary
 pub struct only_rtp::ExtensionMap
 impl only_rtp::ExtensionMap
 pub fn only_rtp::ExtensionMap::default_audio() -> only_rtp::ExtensionMap
@@ -1543,6 +1678,8 @@ pub const only_rtp::CCFB_FEEDBACK_INTERVAL: core::time::Duration
 pub const only_rtp::CCFB_MAX_REPORTS: usize
 pub const only_rtp::DEFAULT_MAX_BITRATE: u64
 pub const only_rtp::DEFAULT_MIN_BITRATE: u64
+pub const only_rtp::ECN_FEEDBACK_FMT: u8
+pub const only_rtp::ECN_SUMMARY_BT: u8
 pub const only_rtp::MAX_TWCC_STATUSES: usize
 pub const only_rtp::MAX_XR_SPAN: usize
 pub const only_rtp::SEND_HISTORY_AGE: core::time::Duration

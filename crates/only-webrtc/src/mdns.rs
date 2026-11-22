@@ -354,7 +354,13 @@ impl Mdns {
             return Some(n);
         }
         let now = Instant::now();
-        st.claims.insert(n.clone(), Claim { sends: 0, next: now });
+        st.claims.insert(
+            n.clone(),
+            Claim {
+                sends: 0,
+                next: now,
+            },
+        );
         drop(st);
         self.tick(now);
         Some(n)
@@ -538,7 +544,11 @@ impl Mdns {
                     .map(|r| r.name.clone())
                     .collect();
                 for n in lost {
-                    Self::give_up(&mut st, &n, &format!("{src} answers it with another address"));
+                    Self::give_up(
+                        &mut st,
+                        &n,
+                        &format!("{src} answers it with another address"),
+                    );
                 }
             }
         }
@@ -624,7 +634,11 @@ impl Mdns {
                             .max_by(|a, b| a.tiebreak(b))
                             .map(|r| mine.tiebreak(r));
                         if theirs == Some(std::cmp::Ordering::Less) {
-                            Self::give_up(&mut st, &q.name, &format!("{src} probes it and wins the tiebreak"));
+                            Self::give_up(
+                                &mut st,
+                                &q.name,
+                                &format!("{src} probes it and wins the tiebreak"),
+                            );
                         }
                         continue;
                     }

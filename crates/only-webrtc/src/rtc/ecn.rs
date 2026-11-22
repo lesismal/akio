@@ -18,8 +18,11 @@
 //!   initiation, which compares marked and unmarked losses again. A failed path stays
 //!   unmarked; a new path (ICE pair, latched address) starts over.
 //! - **Bookkeeping.** Sent RTP packets are remembered by SSRC and sequence number (the last
-//!   [`HISTORY`]) with their codepoint, and RFC 8888 report blocks are matched against them
-//!   before the estimator sees the results; CE marks reach the estimator as loss (ADR-073).
+//!   [`HISTORY`]) with their codepoint, and RFC 8888 report blocks (or the counter differences
+//!   of RFC 6679 reports, [`super::ecn_fb`]) are matched against them before the estimator sees
+//!   the results; CE marks reach the estimator, as loss for ECT(0) and to its scalable
+//!   response for ECT(1) (ADR-082).
+//! - **TCP paths** (ICE-TCP, TURN over TCP / TLS) carry no codepoint: ECN stays off there.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -88,6 +91,9 @@ pub(super) struct EcnPath {
     pub(super) ce: u64,
     /// Paths given up on (statistics).
     pub(super) failures: u64,
+    /// RFC 6679 (ADR-082): each source's last report (extended highest sequence number and
+    /// counters).
+    prev: HashMap<u32, (u32, only_rtp::EcnCounters)>,
 }
 
 impl EcnPath {
@@ -202,6 +208,64 @@ impl EcnPath {
         }
     }
 
+    /// An RFC 6679 report about `ssrc` (ADR-082): its extended highest sequence number
+    /// `highest` and cumulative counters. Matched with the packets sent since the previous
+    /// report; returns the ECN-capable and CE packets that arrived in between, for the
+    /// estimator (`None` before a previous report, or when not marking).
+    pub(super) fn on_counters(
+        &mut self,
+        ssrc: u32,
+        highest: u32,
+        c: &only_rtp::EcnCounters,
+    ) -> Option<(u64, u64)> {
+        if !self.wants() {
+            return None;
+        }
+        let (ph, pc) = self.prev.insert(ssrc, (highest, *c))?;
+        let n = highest.wrapping_sub(ph);
+        if n == 0 || n > HISTORY as u32 {
+            return None;
+        }
+        let d = c.since(&pc);
+        let (mut marked, mut unmarked) = (0u64, 0u64);
+        for i in 1..=n {
+            let seq = ph.wrapping_add(i) as u16;
+            if let Some(s) = self.sent.remove(&(ssrc, seq)) {
+                if s.ecn != 0 {
+                    marked += 1;
+                } else {
+                    unmarked += 1;
+                }
+            }
+        }
+        let (mine, other) = if self.mark == 1 {
+            (d.ect1, d.ect0)
+        } else {
+            (d.ect0, d.ect1)
+        };
+        if other > 0 || (marked > 0 && mine + d.ce == 0 && d.not_ect >= unmarked + marked) {
+            // Re-marked, or every marked packet arrived not-ECT.
+            self.fail();
+            return None;
+        }
+        self.ce += d.ce;
+        let ok = (mine + d.ce).min(marked);
+        let arrived_unmarked = d.not_ect.saturating_sub(d.duplicates).min(unmarked);
+        for _ in 0..ok {
+            self.count(true, false);
+        }
+        for _ in ok..marked {
+            self.count(true, true);
+        }
+        for _ in 0..arrived_unmarked {
+            self.count(false, false);
+        }
+        for _ in arrived_unmarked..unmarked {
+            self.count(false, true);
+        }
+        Some((mine + other + d.ce, d.ce))
+    }
+
     fn count(&mut self, marked: bool, lost: bool) {
         match self.phase {
             Phase::Testing => {
@@ -287,9 +351,26 @@ impl EcnPath {
 }
 
 impl Rtc {
-    /// Whether ECN marking may run: asked for, RFC 8888 feedback in use, the estimator on.
+    /// Whether ECN marking may run: asked for, RFC 8888 feedback in use or RFC 6679 toward
+    /// a remote that reads and reports ECN (ADR-082), the estimator on.
     pub(super) fn ecn_enabled(&self) -> bool {
-        self.cfg.ecn != EcnMarking::Off && self.ccfb && self.bwe.is_some()
+        self.cfg.ecn != EcnMarking::Off && (self.ccfb || self.ecn6679.tx) && self.bwe.is_some()
+    }
+
+    /// Paths from local address `addr` carry no ECN codepoint (a TURN allocation over TCP or
+    /// TLS; ICE-TCP candidates are recognised on their own): ECN stays off there.
+    pub(crate) fn set_no_ecn(&mut self, addr: SocketAddr) {
+        if !self.no_ecn.contains(&addr) {
+            self.no_ecn.push(addr);
+        }
+    }
+
+    /// Whether the current path marks ECT(1), whose CE marks the estimator answers scalably
+    /// (L4S): the pacer then sends smoothly.
+    pub(super) fn ecn_scalable(&self) -> bool {
+        self.cfg.ecn == EcnMarking::Ect1
+            && matches!(self.ecn.phase, Phase::Testing | Phase::Capable)
+            && self.ecn_enabled()
     }
 
     /// The codepoint for RTP packet `raw` about to leave on the current transport's path
@@ -298,7 +379,9 @@ impl Rtc {
         if raw.len() < 12 {
             return 0;
         }
-        if !self.ecn_enabled() {
+        if !self.ecn_enabled() || self.no_ecn.contains(&path.0) {
+            // Off, or a path over TCP: ECN is TCP's own business there (RFC 6544), and a
+            // TURN server reached over TCP or TLS has no codepoint to copy (RFC 8656 §12).
             if self.ecn.phase != Phase::Off {
                 self.ecn.start(0, None);
             }

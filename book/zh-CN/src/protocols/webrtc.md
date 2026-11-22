@@ -286,6 +286,25 @@ let cfg = only_webrtc::rtc_config()
   停止该路径上的标记（新的 ICE 地址对或锁定的地址重新开始）。RTCP、STUN、DTLS 与 SCTP 从不标记。
   Chrome 157 接收 ECT(1)（其 `packetsReceivedWithEct1`）并使路径通过验证；Chrome 不标记它发出的包
   （`tools/interop/webrtc/ecn.sh`，其中也展示了清除码点的代理使标记停止）。
+- **如何响应 CE**（ADR-082）：ECT(0) 得到经典响应，CE 算丢包。ECT(1) 是 L4S（RFC 9331），它的 CE 标记得到
+  可伸缩响应：
+  - 每个往返轮次内 CE 标记的比例以 1/16 的增益平滑。
+  - 有新标记的一轮把速率削减该比例的一半，每个窗口至多一次。
+  - 没有标记的一轮让速率缓慢增加。
+  - 标记 ECT(1) 期间，pacing 以估计值的 1.5 倍、1 ms 突发运行，因为一帧作为一个突发发出时，L4S 队列无论速率
+    高低都会标记它。
+
+  经过模拟的 6 Mbps L4S 队列时，ECT(1) 达到 4.9 Mbps、排队 1.3 ms，ECT(0) 只有 1.36 Mbps。其他用途用
+  `only_rtp::BandwidthEstimator::set_ecn_response` 选择响应方式。
+- **没有 RFC 8888 的 ECN**（RFC 6679 自身的信令，ADR-082）：开启标记时，各段还提议
+  `a=ecn-capable-rtp:rtp mode=setread; ect=N`、`nack ecn` 与 `a=rtcp-xr:ecn-sum`。
+  - 应答了这些属性的远端在 RTCP ECN 反馈消息与 XR ECN 摘要中报告每个源的计数器。它们驱动验证与 CE 响应，估计器
+    仍由传输级反馈驱动。
+  - 双方都开启时，接收方向同样工作。
+  - 浏览器会忽略这些属性。
+- **TURN 与 TCP 路径**（ADR-082）：经 UDP 分配时，发往 TURN 服务器的数据报携带码点。RFC 8656 §12 要求服务器
+  复制它，服务器是否这样做由验证得知。清除码点的中继与其他中间设备一样使路径失败。经 ICE-TCP 或经 TCP / TLS
+  到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。only-turn 自己的中继还不复制码点。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
   列出某格式时才发送，每个接收流每秒一次，内容是上次报告以来的序号（抽稀到一个数据报内）；VoIP 指标只在
@@ -339,8 +358,10 @@ let cfg = only_webrtc::rtc_config()
 `--enable-experimental-web-platform-features`）时 Chrome 157 会提供它，"require" 时拒绝不支持它的对端。
 **RFC 6904** 则只加密选定扩展的值：offer 额外给出 `a=extmap:<id> urn:ietf:params:rtp-hdrext:encrypt <uri>`
 变体（音频电平、MID、RID、修复 RID、视频方向、播放延迟，使用空闲的单字节 ID），answer 对以两种形式
-提供的扩展选择加密变体。没有浏览器提供 RFC 6904，它适用于与本栈类似的对端。不协商 MKI：DTLS-SRTP
-没有对应的 SDP。
+提供的扩展选择加密变体。没有浏览器提供 RFC 6904，它适用于与本栈类似的对端。DTLS-SRTP 的 MKI 在握手中
+传递（RFC 5764 §4.1.3，ADR-082）。设置 `set_dtls_srtp_mki_length(4)` 后，本端作为 DTLS 客户端时在
+`use_srtp` 中提议 4 字节的 MKI，作为服务端时同意客户端的 MKI。之后每个 SRTP 与 SRTCP 包都带上它。浏览器以空
+MKI 应答，SRTP 便不带 MKI 运行。
 
 ### 面向 SIP 网关的 SDES-SRTP
 
@@ -382,9 +403,16 @@ let ep = ep.config(|| {
 ```
 
 来自端点不认识的地址的数据报会用仍可锁定的 peer 的 SRTP 密钥去验证；通过认证（且不是重放）的包会被接收，
-并把传输（RTP，以及独立端口上的 RTCP，各自分开）移到它的来源。伪造或重放的包不会移动任何东西。使用
-DTLS-SRTP 时，握手之前不会锁定，而握手需要 SDP 中的地址。`tools/interop/webrtc/latch.sh` 在网络命名空间
-中运行位于 iptables NAT 之后的 SIP 风格话机，包括 NAT 重新绑定。
+并把传输（RTP，以及独立端口上的 RTCP，各自分开）移到它的来源。伪造或重放的包不会移动任何东西。
+
+使用 DTLS-SRTP 时，先由握手完成锁定（ADR-082）。锁定时本端把 `actpass` 提议应答为 `passive`，由话机发起握手：
+
+- 它从 NAT 映射地址发来的 ClientHello 先经过一次无状态的 cookie 交换，证明该地址能收到数据。
+- 之后路径对暂时移到那里。只有握手以 SDP 指纹所指的证书完成，路径对才会留下。
+- 失败、被关闭或停滞（4 s）的握手会把路径对移回，peer 继续存活。
+
+`tools/interop/webrtc/latch.sh` 在网络命名空间中运行位于 iptables NAT 之后的 SIP 风格话机，分别使用 SDES 与
+DTLS-SRTP，包括 NAT 重新绑定。
 
 ### RTCP 走独立端口（不复用 RTCP）
 
@@ -466,7 +494,8 @@ let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelSchedu
 媒体的 RTX 副本），使安静期间估计值仍有测量；`enable_pacing(false)` 关闭 pacing。队列最多 8192 个包
 （8 MB），最老的包将等待 2 s 时加速排空：应用应跟随 `EgressBitrateEstimate` 事件，否则会在上限处丢帧。
 `tools/interop/webrtc/pacing.sh` 用 Chrome 展示：估计值上限 300 kbps 时，发往 Chrome 的 RTP 最大突发
-pacing 时为 4 个包，不 pacing 时为 7 个。
+pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，队列改为以估计值的 1.5 倍、1 ms 突发排空
+（ADR-082）。
 
 ## TURN
 
@@ -662,6 +691,11 @@ DTLS 1.2。
 
 ## 尚未完成
 
-DTLS-SRTP 下的 SRTP MKI；对 CE 标记的可伸缩（L4S）响应；DTLS-SRTP 密钥就绪前的锁定。
-新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、
-ADR-073、ADR-076 与 ADR-077。
+- RFC 6679 的 "ice" 与 "leap" ECN 启动方法。
+- 在 only-turn 自己的中继中复制 ECN 码点。
+- 对已失败的路径重试 ECN。
+- 锁定 RTCP 自己的 DTLS 关联（不复用 RTCP 时），以及本端必须作为 DTLS 客户端时的锁定。
+- 会话内的 DTLS 换钥。
+
+新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073、
+ADR-076、ADR-077 与 ADR-082。

@@ -191,18 +191,23 @@ fn ecn_marks_survive_loopback() {
 /// on (as a phone behind a NAT names its private address). The phone sends first; returns
 /// the media echoed back to it and the gateway's events.
 fn sip(latching: Latching) -> (usize, Vec<String>) {
+    sip_keyed(latching, true)
+}
+
+/// [`sip`] with SDES-SRTP keys (`sdes`) or DTLS-SRTP, whose handshake latches (ADR-082).
+fn sip_keyed(latching: Latching, sdes: bool) -> (usize, Vec<String>) {
     let e = engine();
     let gw = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
         .config(move || {
             stats(rtc_config())
-                .enable_sdes_srtp(true)
+                .enable_sdes_srtp(sdes)
                 .enable_ice(false)
                 .set_latching(latching)
         });
     let phone = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
-        .config(|| rtc_config().enable_sdes_srtp(true).enable_ice(false));
+        .config(move || rtc_config().enable_sdes_srtp(sdes).enable_ice(false));
     let nowhere = UdpSocket::bind("127.0.0.1:0").unwrap();
     let (hg, rxg) = probe(true);
     let (hp, rxp) = probe(false);
@@ -233,6 +238,13 @@ fn sip(latching: Latching) -> (usize, Vec<String>) {
 #[test]
 fn latching_finds_the_phone() {
     let (back, ev) = sip(Latching::Once);
+    assert!(back > 60, "{back}");
+    assert_eq!(num(&ev, "latched"), 1);
+}
+
+#[test]
+fn dtls_handshake_latches_onto_the_phone() {
+    let (back, ev) = sip_keyed(Latching::Once, false);
     assert!(back > 60, "{back}");
     assert_eq!(num(&ev, "latched"), 1);
 }

@@ -89,6 +89,11 @@ impl Default for Tp {
 }
 
 impl Tp {
+    /// What DTLS latching looks at (ADR-082): SDES on, handshake done, the remote's address.
+    pub(super) fn dtls_view(&self) -> (bool, bool, Option<SocketAddr>) {
+        (self.sdes.active, self.dtls_up, self.remote_addr)
+    }
+
     pub(super) fn agent(&self) -> &IceAgent {
         self.ice.as_ref().expect("a transport has an agent")
     }
@@ -525,16 +530,23 @@ impl Rtc {
     /// The ICE and DTLS timers of the current transport.
     pub(super) fn tp_handle_timeout(&mut self, now: Instant) {
         self.ice.handle_timeout(now);
-        for d in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
+        self.latch_expire(now);
+        let mut failed = [false; 2];
+        for (i, d) in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
             .into_iter()
-            .flatten()
+            .enumerate()
         {
+            let Some(d) = d else { continue };
             if d.poll_timeout().is_some_and(|t| t <= now) {
                 if let Err(e) = d.handle_timeout(now) {
                     only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                    self.alive = false;
+                    failed[i] = true;
                 }
             }
+        }
+        // A handshake latched onto tentatively fails without harm (ADR-082).
+        if failed[1] || (failed[0] && !self.latch_dtls_failed()) {
+            self.alive = false;
         }
         self.pump(now);
     }

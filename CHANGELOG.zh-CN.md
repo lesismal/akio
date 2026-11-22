@@ -82,6 +82,42 @@ ADR-025 之后每请求剩下的分配都已去掉，只剩处理函数自己的
   - 每请求指令：0.937 倍、0.898 倍、0.929 倍。
   - req/s：pipeline 1.031 倍，h2c 1.042 倍，HTTP/3 1.016 倍；普通 HTTP/1.1 不变（受限于客户端）。
 
+### 新增：可扩展（L4S）的 CE 响应、RFC 6679 信令、经 TURN 的 ECN、DTLS 锁定、DTLS-SRTP MKI（only-rtp、only-webrtc）
+
+ADR-082（docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md），纯增量；默认行为不变：
+
+- **对 CE 的可扩展响应。** only-rtp 新增 `EcnResponse::{Classic, Scalable}`，用
+  `BandwidthEstimator::set_ecn_response` 设置。使用可扩展响应时，CE 不再算丢包：
+  - CE 比例按往返轮次以 1/16 的增益平滑（`ce_fraction`；轮次来自 `set_rtt`）。
+  - 它以 `alpha / 2` 削减第三个速率，每个窗口至多一次。
+  - 没有 CE 的一轮让该速率线性增长。
+  - 时延过载期间到达的 CE 仍算丢包（经典回退）。
+  - `on_ecn_counts` 接收基于计数器的 ECN 反馈。
+
+  only-webrtc 在标记 ECT(1) 时使用可扩展响应。标记期间，pacing 为估计值的 1.5 倍、突发 1 ms（原为 2.5
+  倍与 40 ms）。在模拟的 6 Mbps L4S 队列中，ECT(1) 得到 4.9 Mbps、队列 1.3 ms；ECT(0) 为 1.36 Mbps，
+  不用 ECN 时队列为 7.3 ms。
+- **RFC 6679 信令。** 开启 ECN 标记时，各段提议并应答：
+  - `a=ecn-capable-rtp:rtp mode=setread; ect=N`，
+  - `a=rtcp-fb:<pt> nack ecn`，
+  - `a=rtcp-xr:ecn-sum`。
+
+  only-rtp 新增 `EcnFeedback`（RTPFB FMT 8）、`EcnSummary`（XR 块类型 13）、`EcnReceiver`、
+  `EcnCounters` 与 `EcnDelta`。
+
+  没有 RFC 8888 时，接收端报告每个源的计数器：收到第一个 ECT 包或 CE 标记时尽早发送，每次报告时发送，并在报告
+  块旁附上摘要。发送端根据报告之间的差值验证路径，并把 CE 交给估计器。
+- **经 TURN 的 ECN，TCP 路径上关闭。** 经 UDP 分配中继的 RTP 带着码点发往 TURN 服务器，RFC 8656 §12 要求服务器
+  复制该码点。来自 UDP 分配的数据报保留其码点。ICE-TCP 候选以及经 TCP / TLS 的分配从不启动 ECN：它们保持关闭，
+  而不是失败。
+- **在 DTLS-SRTP 密钥存在之前锁定。** 无 ICE 且开启锁定时，来自未知源的 ClientHello 会得到一次无状态的 cookie
+  交换。带 cookie 的 ClientHello 把路径对暂时移到该源。握手以 SDP 指纹完成后即锁定；握手失败、被关闭或 4 s
+  超时时，路径对移回，peer 继续存活。锁定时把 `actpass` 提议应答为 `passive`。
+- **DTLS-SRTP 的 SRTP MKI。** `RtcConfig::set_dtls_srtp_mki_length`：DTLS 客户端在 `use_srtp` 中提议 MKI，
+  服务端同意客户端的 MKI，之后 SRTP / SRTCP 携带它。
+- **互通与模糊测试。** `webrtc-interop` 新增 `ONLY_INTEROP_SIP=dtls` 与 `ONLY_INTEROP_DTLS_MKI`。
+  `tools/interop/webrtc/latch.sh` 新增 DTLS-SRTP 话机用例。`rtp_rtcp` 模糊测试目标对 RFC 6679 格式做往返。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

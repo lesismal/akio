@@ -1062,8 +1062,20 @@ impl Hub {
         let c = self.concealed(c);
         let peers: Vec<Peer> = lock(&self.peers).values().cloned().collect();
         for p in peers {
-            let _ = p.with_rtc_inner(|rtc| rtc.add_local_candidate(c.clone()));
+            let _ = p.with_rtc_inner(|rtc| self.add_candidate_to(rtc, c.clone()));
         }
+    }
+
+    /// Gives `rtc` local candidate `c`; one relayed over TCP or TLS carries no ECN.
+    fn add_candidate_to(&self, rtc: &mut Rtc, c: only_ice::Candidate) {
+        if c.kind() == only_ice::CandidateKind::Relayed
+            && self
+                .relay_at(c.addr())
+                .is_some_and(|(r, _)| r.wire.is_stream())
+        {
+            rtc.set_no_ecn(c.addr());
+        }
+        rtc.add_local_candidate(c);
     }
 
     /// Changes the relay list, keeping `relay_count` in step.
@@ -1088,7 +1100,7 @@ impl Hub {
         let cs = lock(&self.candidates).clone();
         for c in cs {
             if self.uses(&c) {
-                rtc.add_local_candidate(self.concealed(c));
+                self.add_candidate_to(&mut rtc, self.concealed(c));
             }
         }
         if self.tp_count.load(Ordering::Acquire) != 0 {
@@ -1222,7 +1234,9 @@ impl Hub {
         lock(&self.by_addr).entry(dest).or_insert(id);
         if let Some((r, current)) = self.relay_at(src) {
             if current {
-                r.send(dest, data);
+                // Over UDP the outer datagram carries the codepoint: a TURN server copies it
+                // onto what it relays (RFC 8656 §12, the preferred behaviour).
+                r.send(dest, data, ecn);
             }
             return;
         }
@@ -1308,8 +1322,15 @@ impl Hub {
             }
         }
         if let Some(r) = self.relay_of_server(source, local) {
+            // A UDP allocation: the server copied the peer's codepoint onto this datagram
+            // (RFC 8656 §12); over DTLS the record's is the association's own.
+            let ecn = if matches!(r.wire, relay::Wire::Udp) {
+                ecn
+            } else {
+                0
+            };
             for (peer, relayed, data) in r.input(data) {
-                self.route(peer, relayed, &data, 0);
+                self.route(peer, relayed, &data, ecn);
             }
             return;
         }
@@ -1346,9 +1367,10 @@ impl Hub {
             }
         }
         let Some(id) = id else {
+            // RTP / RTCP, or DTLS before the keys exist (ADR-082).
             if !is_stun
                 && self.latch_count.load(Ordering::Relaxed) != 0
-                && matches!(data.first(), Some(128..=191))
+                && matches!(data.first(), Some(128..=191 | 20..=63))
             {
                 self.latch(source, destination, data, ecn);
             }

@@ -21,6 +21,11 @@ const MAX_PROBES_PER_CALL: usize = 64;
 const PACING_FACTOR: f64 = 2.5;
 /// Bytes may leave at once up to this long at the pacing rate (`kDefaultBurstInterval`).
 const BURST: Duration = Duration::from_millis(40);
+/// While marking ECT(1) (L4S, ADR-082): the pacing multiple and burst allowance. An L4S
+/// queue marks packets queued for about a millisecond, so a frame leaving in one burst is
+/// marked whatever the rate; paced close to the estimate it is not.
+const L4S_PACING_FACTOR: f64 = 1.5;
+const L4S_BURST: Duration = Duration::from_millis(1);
 /// The debt never exceeds this long at the pacing rate (`kMaxDebtInTime`).
 const MAX_DEBT: Duration = Duration::from_millis(500);
 /// Queued packets drain within this time at least (`kMaxExpectedQueueLength`).
@@ -75,6 +80,8 @@ pub(super) struct Pacer {
     debt: f64,
     padding_debt: f64,
     last: Option<Instant>,
+    /// The burst allowance ([`BURST`], or [`L4S_BURST`] while marking ECT(1)).
+    burst: Duration,
     /// Media packets dropped because the queue was full.
     pub(super) dropped: u64,
 }
@@ -84,9 +91,17 @@ impl Pacer {
         self.bytes == 0 && self.queues.iter().all(VecDeque::is_empty)
     }
 
-    /// Pacing at 2.5 times `estimate` (bits per second), padding up to `padding` of it.
-    pub(super) fn set_rates(&mut self, estimate: u64, padding: u64) {
-        self.rate = estimate as f64 * PACING_FACTOR / 8.0;
+    /// Pacing at 2.5 times `estimate` (bits per second; 1.5 times with a 1 ms burst
+    /// allowance when `smooth`, while marking ECT(1)), padding up to `padding` of it.
+    pub(super) fn set_rates(&mut self, estimate: u64, padding: u64, smooth: bool) {
+        let factor = if smooth {
+            self.burst = L4S_BURST;
+            L4S_PACING_FACTOR
+        } else {
+            self.burst = BURST;
+            PACING_FACTOR
+        };
+        self.rate = estimate as f64 * factor / 8.0;
         self.padding_rate = padding.min(estimate) as f64 / 8.0;
     }
 
@@ -126,7 +141,7 @@ impl Pacer {
     /// Whether a queued packet may leave now (the debt is within the burst allowance, with a
     /// byte of slack so that [`next_send`](Self::next_send) and this agree despite rounding).
     pub(super) fn can_send(&self, now: Instant) -> bool {
-        self.debt <= self.drain_rate(now) * BURST.as_secs_f64() + SLACK
+        self.debt <= self.drain_rate(now) * self.burst.as_secs_f64() + SLACK
     }
 
     pub(super) fn push(&mut self, class: Class, q: Queued) {
@@ -187,7 +202,7 @@ impl Pacer {
             if rate <= 0.0 {
                 return None;
             }
-            let over = self.debt - rate * BURST.as_secs_f64() - SLACK;
+            let over = self.debt - rate * self.burst.as_secs_f64() - SLACK;
             return Some(if over <= 0.0 {
                 now
             } else {
@@ -195,7 +210,7 @@ impl Pacer {
             });
         }
         if self.padding_rate > 0.0 && self.rate > 0.0 {
-            let media = (self.debt - self.rate * BURST.as_secs_f64()).max(0.0) / self.rate;
+            let media = (self.debt - self.rate * self.burst.as_secs_f64()).max(0.0) / self.rate;
             let pad = self.padding_debt / self.padding_rate;
             return Some(last + Duration::from_secs_f64(media.max(pad).max(0.001)));
         }
@@ -348,7 +363,9 @@ impl Rtc {
             return;
         }
         let estimate = self.bwe.as_ref().map_or(0, BandwidthEstimator::estimate);
-        self.pacer.set_rates(estimate, self.cfg.padding_rate);
+        let smooth = self.ecn_scalable();
+        self.pacer
+            .set_rates(estimate, self.cfg.padding_rate, smooth);
         self.pacer.advance(now);
         while self.pacer.can_send(now) {
             let Some(q) = self.pacer.pop() else {

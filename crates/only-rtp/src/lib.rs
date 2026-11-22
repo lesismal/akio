@@ -25,7 +25,10 @@
 //!   generation (libwebrtc's packing) and matching; [`CcfbSender`] / [`CcfbReceiver`]: the
 //!   same for RFC 8888; [`BandwidthEstimator`]: a GCC-like delay-gradient + loss-based
 //!   estimator fed by either, with libwebrtc-like probing ([`BandwidthEstimator::poll_probe`],
-//!   [`SendStream::padding`], ADR-050).
+//!   [`SendStream::padding`], ADR-050), with a classic or a scalable (L4S) response to CE
+//!   ([`EcnResponse`]).
+//! - [`EcnFeedback`] / [`EcnSummary`] / [`EcnReceiver`]: RFC 6679's RTCP ECN feedback
+//!   message and XR ECN summary report, and the per-source counters behind them.
 //! - [`RrtrResponder`], [`RecvStream::handle_dlrr`], [`RecvStream::statistics_summary`],
 //!   [`BurstLossModel`]: the XR receiver RTT exchange, statistics summaries and VoIP burst
 //!   metrics. [`TmmbrHandler`] / [`bounding_set`]: TMMBR handling for a media sender.
@@ -74,6 +77,7 @@
 mod bwe;
 mod ccfb;
 pub mod codec;
+mod ecn;
 mod emodel;
 pub mod fec;
 mod packet;
@@ -102,8 +106,13 @@ mod tests_probe;
 #[cfg(test)]
 mod tests_voip;
 
-pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
+pub use bwe::{
+    BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE, EcnResponse,
+};
 pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
+pub use ecn::{
+    ECN_FEEDBACK_FMT, ECN_SUMMARY_BT, EcnCounters, EcnDelta, EcnFeedback, EcnReceiver, EcnSummary,
+};
 pub use emodel::{EModel, EModelScore, mos_from_r};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
 pub use probe::ProbePacket;

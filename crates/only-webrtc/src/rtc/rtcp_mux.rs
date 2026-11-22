@@ -208,9 +208,10 @@ impl Rtc {
                         if let Some(p) = Profile::from_id(keys.profile.id()) {
                             let (lk, ls) = keys.local(role);
                             let (rk, rs) = keys.remote(role);
-                            self.rtcp.srtcp_tx = Srtp::new(p, lk, ls).ok();
+                            let mki = info.srtp_mki.as_deref();
+                            self.rtcp.srtcp_tx = dtls_srtp(p, mki, lk, ls);
                             self.rtcp.srtcp_rx =
-                                Srtp::new(p, rk, rs).ok().map(|c| c.with_replay_window(512));
+                                dtls_srtp(p, mki, rk, rs).map(|c| c.with_replay_window(512));
                         }
                     }
                     only_log::debug!(target: "only_webrtc", "dtls (rtcp): connected with {}", info.version);

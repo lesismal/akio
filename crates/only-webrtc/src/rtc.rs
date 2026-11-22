@@ -147,6 +147,8 @@ pub(crate) const FB_CCFB: &str = "ack ccfb";
 pub(crate) const FB_TMMBR: &str = "ccm tmmbr";
 /// libwebrtc's flag for RTCP XR receiver reference times.
 pub(crate) const FB_RRTR: &str = "rrtr";
+/// RFC 6679 §6.2: the RTCP ECN feedback message.
+pub(crate) const FB_ECN: &str = "nack ecn";
 
 /// The RTCP feedback this configuration offers and accepts for `kind`.
 fn our_fb(cfg: &ConfigInner, kind: MediaKind) -> Vec<&'static str> {
@@ -157,6 +159,9 @@ fn our_fb(cfg: &ConfigInner, kind: MediaKind) -> Vec<&'static str> {
     };
     if cfg.ccfb {
         fb.push(FB_CCFB);
+    }
+    if cfg.ecn != crate::types::EcnMarking::Off {
+        fb.push(FB_ECN);
     }
     if kind == MediaKind::Video {
         if cfg.tmmbr {
@@ -552,6 +557,15 @@ fn has_cryptex(sdp: &Sdp) -> bool {
     sdp.has("cryptex") || sdp.media.iter().any(|m| m.port != 0 && m.has("cryptex"))
 }
 
+/// An SRTP context keyed by DTLS-SRTP, with the negotiated MKI if there is one (RFC 5764
+/// §4.1.3).
+pub(super) fn dtls_srtp(p: Profile, mki: Option<&[u8]>, key: &[u8], salt: &[u8]) -> Option<Srtp> {
+    match mki.filter(|m| !m.is_empty()) {
+        Some(m) => Srtp::new_with_mki(p, m, key, salt).ok(),
+        None => Srtp::new(p, key, salt).ok(),
+    }
+}
+
 fn local_extmap(kind: MediaKind) -> ExtensionMap {
     match kind {
         MediaKind::Audio => ExtensionMap::default_audio(),
@@ -685,6 +699,8 @@ struct MediaLine {
     voip: only_rtp::VoipQuality,
     /// The E-model codec values the application chose (`None`: by the received codec).
     voip_model: Option<only_rtp::EModel>,
+    /// RFC 6679 (`a=ecn-capable-rtp`) as negotiated for this section (ADR-082).
+    ecn6679: Option<ecn_fb::LineEcn>,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
     tmmbr_req: Option<u64>,
     /// The Opus RED payload type (offered, then negotiated) of an audio line.
@@ -754,6 +770,7 @@ impl MediaLine {
             xr_blocks: XrBlocks::NONE,
             voip: only_rtp::VoipQuality::default(),
             voip_model: None,
+            ecn6679: None,
             tmmbr_req: None,
             red: None,
             red_hist: VecDeque::new(),
@@ -947,6 +964,13 @@ pub(crate) struct Rtc {
     xt: transports::Extra,
     /// ECN marking of the current transport's path (ADR-077).
     ecn: ecn::EcnPath,
+    /// RFC 6679 signalling (ADR-082): its receiving side, and what was negotiated.
+    ecn6679: ecn_fb::Session,
+    /// DTLS handshakes made with an MKI offered (its value; ADR-082).
+    dtls_mki_gen: u32,
+    /// Local candidate addresses whose paths carry no ECN codepoint (ICE-TCP, TURN over
+    /// TCP / TLS): no marking there (ADR-082).
+    no_ecn: Vec<SocketAddr>,
     /// Latching the current transport's remote without ICE (ADR-077), the source and local
     /// address of the datagram being received while latching, and whether a packet
     /// authenticated during [`Rtc::latch_receive`].
@@ -1013,9 +1037,14 @@ impl Rtc {
         ice_cfg.renomination = cfg.ice_renomination;
         let ice = IceAgent::new(ice_cfg, now);
         let (min, max) = cfg.bwe_bounds;
-        let bwe = cfg
-            .bwe
-            .map(|b| BandwidthEstimator::new(b).with_bounds(min, max));
+        let bwe = cfg.bwe.map(|b| {
+            let mut e = BandwidthEstimator::new(b).with_bounds(min, max);
+            if cfg.ecn == crate::types::EcnMarking::Ect1 {
+                // RFC 9331 §4.3: ECT(1) traffic responds to CE scalably (L4S).
+                e.set_ecn_response(only_rtp::EcnResponse::Scalable);
+            }
+            e
+        });
         Ok(Rtc {
             lite,
             ice,
@@ -1085,6 +1114,9 @@ impl Rtc {
             rx_ecn: 0,
             xt: transports::Extra::default(),
             ecn: ecn::EcnPath::default(),
+            ecn6679: ecn_fb::Session::default(),
+            dtls_mki_gen: 0,
+            no_ecn: Vec::new(),
             latch: latch::Latch::default(),
             latch_rx: None,
             latch_took: false,
@@ -1106,6 +1138,9 @@ impl Rtc {
     }
 
     pub(crate) fn add_local_candidate(&mut self, c: IceCandidate) {
+        if c.tcp_type().is_some() {
+            self.set_no_ecn(c.addr());
+        }
         if self.tp_entry() {
             self.tp_each(|s| s.add_local_candidate(c.clone()));
         }
@@ -1423,6 +1458,7 @@ impl Rtc {
             line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, line.kind);
+            line.ecn6679 = ecn_fb::remote_line(&cfg, m);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             line.negotiated = true;
             read_ssrcs(line, m);
@@ -1520,7 +1556,10 @@ impl Rtc {
             .find_map(|m| m.get("setup"))
             .or_else(|| sdp.get("setup"));
         if self.dtls_role.is_none() && (!self.sdes.active || setup.is_some()) {
-            self.dtls_role = Some(if setup == Some("active") {
+            // Latching without ICE answers `actpass` with `passive`: the remote (perhaps
+            // behind a NAT) starts the handshake, which latches (ADR-082).
+            let latch = self.latching() && setup == Some("actpass");
+            self.dtls_role = Some(if setup == Some("active") || latch {
                 Role::Server
             } else {
                 Role::Client
@@ -1602,6 +1641,7 @@ impl Rtc {
             line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, kind);
+            line.ecn6679 = ecn_fb::remote_line(&cfg, m);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             if cfg.ccfb
                 && line
@@ -1753,6 +1793,7 @@ impl Rtc {
                 .media
                 .iter()
                 .any(|l| !l.stopped && l.codecs.iter().any(|c| c.fb.iter().any(|f| f == FB_CCFB)));
+        self.ecn6679_apply();
         for l in &mut self.media {
             if l.fec_send_scheme().is_none() {
                 l.fec.enc = None;
@@ -2219,6 +2260,14 @@ impl Rtc {
                 l.xr_blocks
             };
             xr.extend(blocks.sdp_formats());
+            // RFC 6679 (ADR-082): ECN-capable RTP and the XR ECN summary.
+            let ecn = ecn_fb::local_line(&self.cfg, offer, l.ecn6679);
+            if let Some((v, sum)) = &ecn {
+                attrs.push(Attr::kv("ecn-capable-rtp", v.clone()));
+                if *sum {
+                    xr.push(ecn_fb::XR_ECN_SUM);
+                }
+            }
             if !xr.is_empty() {
                 attrs.push(Attr::kv("rtcp-xr", xr.join(" ")));
             }
@@ -2747,6 +2796,11 @@ impl Rtc {
                     self.rtcp_dtls_input(now, source, destination, data);
                 }
             }
+            20..=63 if self.dtls_latching(now, source, destination) => {
+                // From an address the endpoint routes here (a cookie exchange went there)
+                // but the pair is not on yet: the handshake latches first (ADR-082).
+                self.latch_dtls(now, source, destination, data);
+            }
             20..=63 => {
                 if self.remote_addr.is_none() {
                     self.remote_addr = Some(source);
@@ -2779,16 +2833,23 @@ impl Rtc {
             self.tp_each(|s| s.tp_handle_timeout(now));
         }
         self.ice.handle_timeout(now);
-        for d in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
+        self.latch_expire(now);
+        let mut failed = [false; 2];
+        for (i, d) in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
             .into_iter()
-            .flatten()
+            .enumerate()
         {
+            let Some(d) = d else { continue };
             if d.poll_timeout().is_some_and(|t| t <= now) {
                 if let Err(e) = d.handle_timeout(now) {
                     only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                    self.alive = false;
+                    failed[i] = true;
                 }
             }
+        }
+        // A handshake latched onto tentatively fails without harm (ADR-082).
+        if failed[1] || (failed[0] && !self.latch_dtls_failed()) {
+            self.alive = false;
         }
         if let Some(s) = self.sctp.as_mut() {
             if s.poll_timeout().is_some_and(|t| t <= now) {
@@ -2835,7 +2896,10 @@ impl Rtc {
         if let Some(data) = data {
             if let Err(e) = d.handle_datagram(now, data) {
                 only_log::debug!(target: "only_webrtc", "dtls: {e}");
-                self.die();
+                // A handshake latched onto tentatively fails without harm (ADR-082).
+                if !self.latch_dtls_failed() {
+                    self.die();
+                }
             }
         }
     }
@@ -2860,6 +2924,17 @@ impl Rtc {
         if self.cfg.dtls13 {
             // A DTLS 1.3 ClientHello DTLS 1.2 servers answer; a server takes either.
             cfg = cfg.with_versions(vec![DtlsVersion::Dtls13, DtlsVersion::Dtls12]);
+        }
+        if self.cfg.dtls_mki > 0 {
+            // RFC 5764 §4.1.3 (ADR-082): the MKI's value counts the session's handshakes.
+            self.dtls_mki_gen = self.dtls_mki_gen.wrapping_add(1);
+            let n = usize::from(self.cfg.dtls_mki);
+            let count = self.dtls_mki_gen.to_be_bytes();
+            let mut mki = vec![0u8; n];
+            for (d, g) in mki.iter_mut().rev().zip(count.iter().rev()) {
+                *d = *g;
+            }
+            cfg = cfg.with_srtp_mki(mki).with_srtp_accept_mki(true);
         }
         let cfg = Arc::new(cfg);
         let r = match role {
@@ -2922,6 +2997,11 @@ impl Rtc {
             if ecn == 3 {
                 self.stats.ecn_ce_received += 1;
             }
+        }
+        if self.ecn6679.rx {
+            self.ecn6679
+                .receiver
+                .on_received(h.ssrc, h.sequence_number, ecn);
         }
         if self.ccfb {
             // RFC 8888 reports the ECN codepoint each packet arrived with.
@@ -3375,6 +3455,9 @@ impl Rtc {
             return;
         };
         let ntp = self.ntp(now);
+        if self.ecn6679.tx {
+            self.ecn6679_input(now, &pkts);
+        }
         for p in pkts {
             match p {
                 Rtcp::SenderReport {
@@ -3483,6 +3566,9 @@ impl Rtc {
                     for r in self.recv.values_mut() {
                         r.stream.set_rtt(rtt);
                     }
+                    if let Some(b) = self.bwe.as_mut() {
+                        b.set_rtt(rtt);
+                    }
                 }
             }
         }
@@ -3585,6 +3671,10 @@ impl Rtc {
         }
         // Congestion control feedback: RFC 8888 when negotiated, else transport-wide.
         self.send_cc_feedback(now);
+        // RFC 6679 ECN feedback, early on news (ADR-082).
+        if self.ecn6679.rx && !self.ccfb && self.ecn6679.receiver.urgent() {
+            self.send_ecn6679(now, false);
+        }
         // Reports.
         if self.next_rtcp.is_none_or(|t| t <= now) {
             self.next_rtcp = Some(now + RTCP_INTERVAL);
@@ -3698,6 +3788,9 @@ impl Rtc {
                     pkts.push(t);
                 }
             }
+            if let Some(xr) = self.ecn6679_summary(i, ssrc) {
+                pkts.push(xr);
+            }
             compounds.push(pkts);
         }
         if let Some(dlrr) = self.rrtr.dlrr(now) {
@@ -3720,6 +3813,9 @@ impl Rtc {
         compounds.extend(self.receipt_reports());
         for c in compounds {
             self.send_rtcp(&c);
+        }
+        if self.ecn6679.rx && !self.ccfb {
+            self.send_ecn6679(now, true);
         }
         self.refresh_tmmbr(now);
     }
@@ -3822,14 +3918,16 @@ impl Rtc {
                         if let Some(p) = Profile::from_id(keys.profile.id()) {
                             let (lk, ls) = keys.local(role);
                             let (rk, rs) = keys.remote(role);
-                            self.srtp_tx = Srtp::new(p, lk, ls).ok();
+                            let mki = info.srtp_mki.as_deref();
+                            self.srtp_tx = dtls_srtp(p, mki, lk, ls);
                             self.srtp_rx =
-                                Srtp::new(p, rk, rs).ok().map(|c| c.with_replay_window(512));
+                                dtls_srtp(p, mki, rk, rs).map(|c| c.with_replay_window(512));
                             self.srtp_enc_ids.clear();
                             self.apply_srtp_options();
                         }
                     }
                     self.dtls_version = Some(info.version);
+                    self.latch_dtls_done(now);
                     only_log::debug!(target: "only_webrtc", "dtls: connected with {}", info.version);
                     self.dtls_up = true;
                     self.check_connected(now);
@@ -3845,7 +3943,12 @@ impl Rtc {
                         }
                     }
                 }
-                DtlsEvent::Closed => self.die(),
+                DtlsEvent::Closed => {
+                    if !self.latch_dtls_failed() {
+                        self.die();
+                    }
+                    break;
+                }
                 _ => {}
             }
         }
@@ -4142,6 +4245,7 @@ fn abs_send_time_now() -> u32 {
 mod cc;
 mod channels;
 mod ecn;
+mod ecn_fb;
 mod feedback;
 mod latch;
 mod pacing;

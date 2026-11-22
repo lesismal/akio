@@ -39,6 +39,51 @@ const LINK_ALPHA_OVERUSE: f64 = 0.05;
 const LINK_ALPHA_PROBE: f64 = 0.5;
 const LINK_DEV_MIN: f64 = 0.4;
 const LINK_DEV_MAX: f64 = 2.5;
+/// Scalable (L4S) response to CE: gain of the smoothed CE fraction per round (DCTCP's and
+/// TCP Prague's 1/16), the default and bounds of a round (the round-trip time; the lower
+/// bound is also the virtual round-trip time floor of the additive increase, TCP Prague's
+/// RTT independence) and the packet size of the increase.
+const L4S_GAIN: f64 = 1.0 / 16.0;
+const L4S_DEFAULT_RTT: Duration = Duration::from_millis(100);
+const L4S_MIN_ROUND: Duration = Duration::from_millis(25);
+const L4S_MAX_ROUND: Duration = Duration::from_millis(500);
+const L4S_PACKET_BITS: f64 = 1200.0 * 8.0;
+/// Packets per round trip the scalable rate grows by each round trip without CE (Reno's is
+/// one; a paced rate reacts a feedback interval late, so it grows more gently).
+const L4S_INCREASE: f64 = 0.125;
+/// How long after a cut CE counters (without send times) still describe packets sent before
+/// it, beyond the round-trip time.
+const L4S_FEEDBACK_DELAY: Duration = Duration::from_millis(100);
+
+/// How the estimator responds to packets that arrive marked CE (congestion experienced).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum EcnResponse {
+    /// RFC 3168 §5: a CE mark counts as a loss for the loss-based control (for packets sent
+    /// ECT(0)).
+    #[default]
+    Classic,
+    /// RFC 9330 / RFC 9331 §4.3: a scalable response for packets sent ECT(1) (L4S). The
+    /// estimator follows the smoothed fraction of CE marks per round trip instead of
+    /// treating them as loss (see [`BandwidthEstimator`]).
+    Scalable,
+}
+
+/// The scalable (L4S) response's state: the CE fraction smoothed over rounds and the rate
+/// it limits the estimate to (none until the first CE).
+#[derive(Debug, Clone, Copy, Default)]
+struct Scalable {
+    /// ECN-capable results and CE marks of the current round, and when it started.
+    ect: u64,
+    ce: u64,
+    start: Option<Instant>,
+    /// CE marks of the round on packets sent after the last cut (only those cut again).
+    fresh: u64,
+    /// Smoothed CE fraction (DCTCP's alpha).
+    alpha: Option<f64>,
+    rate: Option<f64>,
+    last_cut: Option<Instant>,
+}
 
 /// libwebrtc's `LinkCapacityEstimator`: an exponentially smoothed estimate of the link
 /// capacity from the acknowledged rate at over-use and from probe results, with a deviation.
@@ -108,8 +153,24 @@ struct Group {
 /// - The estimate is the minimum of both and of the last REMB
 ///   ([`set_remote_estimate`](Self::set_remote_estimate)), clamped to
 ///   [`with_bounds`](Self::with_bounds) (default 30 kbps .. 20 Mbps).
-/// - ECN (RFC 8888 feedback, [`PacketResult::ecn`]): a packet that arrived marked CE counts as
-///   lost for the loss-based control, the classic ECN response (RFC 3168 §5).
+/// - ECN (RFC 8888 feedback, [`PacketResult::ecn`], or RFC 6679 counters,
+///   [`on_ecn_counts`](Self::on_ecn_counts)): with the classic response (the default) a
+///   packet that arrived marked CE counts as lost for the loss-based control (RFC 3168 §5).
+///   With the scalable one ([`set_ecn_response`](Self::set_ecn_response), for ECT(1), RFC
+///   9331 §4.3) CE is no loss: per round (the round-trip time,
+///   [`set_rtt`](Self::set_rtt), 25..500 ms, 100 ms until known) the fraction of
+///   ECN-capable packets marked CE is smoothed with a gain of 1/16 (`alpha`, as DCTCP and
+///   TCP Prague do); a round with CE marks cuts a third rate to `(1 - alpha / 2)` times the
+///   estimate (or the acknowledged rate, when lower) — only for marks on packets sent after
+///   the previous cut, as DCTCP cuts once per window — and a round without grows it by an
+///   eighth of a 1200-byte packet per round trip (the virtual round trip at least 25 ms), up
+///   to 1.5 x the acknowledged rate + 10 kbps. The estimate is the lowest of the three rates,
+///   so marks from an L4S queue (RFC 9332, about 1 ms deep) hold the rate near the link's
+///   capacity with a short queue and about as many marks per round trip whatever the rate
+///   (their fraction falls as the rate grows), where the classic response backs off as for
+///   loss. CE marks
+///   that arrive while the delay detector reports over-use count as loss too: a classic ECN
+///   queue marks only once its delay grew (RFC 9331 §4.3's fallback to a classic response).
 /// - Probing (ADR-050, on unless [`with_probing(false)`](Self::with_probing)): short
 ///   clusters of probe packets paced at a target rate ([`poll_probe`](Self::poll_probe)) whose
 ///   feedback measures what the path delivers. It starts with probes at 3 and 6 times the start
@@ -167,6 +228,9 @@ pub struct BandwidthEstimator {
     // ECN
     ect_received: u64,
     ce_received: u64,
+    ecn_response: EcnResponse,
+    scalable: Scalable,
+    rtt: Option<Duration>,
 }
 
 impl BandwidthEstimator {
@@ -206,6 +270,107 @@ impl BandwidthEstimator {
             network_estimate: None,
             ect_received: 0,
             ce_received: 0,
+            ecn_response: EcnResponse::Classic,
+            scalable: Scalable::default(),
+            rtt: None,
+        }
+    }
+
+    /// Chooses the response to CE marks: [`EcnResponse::Classic`] (the default) for packets
+    /// sent ECT(0), [`EcnResponse::Scalable`] for ECT(1) (L4S).
+    pub fn set_ecn_response(&mut self, response: EcnResponse) {
+        if response != self.ecn_response {
+            self.ecn_response = response;
+            self.scalable = Scalable::default();
+        }
+    }
+
+    /// The response to CE marks.
+    #[must_use]
+    pub fn ecn_response(&self) -> EcnResponse {
+        self.ecn_response
+    }
+
+    /// The round-trip time (from RTCP), the round of the scalable ECN response.
+    pub fn set_rtt(&mut self, rtt: Duration) {
+        self.rtt = Some(rtt);
+    }
+
+    /// The scalable response's smoothed CE fraction (0..=1), once a round with ECN-capable
+    /// packets ended.
+    #[must_use]
+    pub fn ce_fraction(&self) -> Option<f64> {
+        self.scalable.alpha
+    }
+
+    /// ECN counts from feedback without per-packet results (RFC 6679's ECN feedback or XR
+    /// ECN summary, the differences of their counters): `ect` packets arrived ECN-capable
+    /// (ECT(0), ECT(1) or CE), `ce` of them CE. Their arrivals and losses reach the
+    /// estimator through transport-wide feedback; these only add the marks.
+    pub fn on_ecn_counts(&mut self, now: Instant, ect: u64, ce: u64) {
+        let ce = ce.min(ect);
+        self.ect_received += ect;
+        self.ce_received += ce;
+        match self.ecn_response {
+            EcnResponse::Classic => self.loss_lost += ce as usize,
+            EcnResponse::Scalable => {
+                if self.usage == BandwidthUsage::Overusing {
+                    self.loss_lost += ce as usize;
+                }
+                self.scalable.ect += ect;
+                self.scalable.ce += ce;
+                // Counters carry no send times: marks a round trip and a feedback interval
+                // after the last cut are fresh.
+                let rtt = self.rtt.unwrap_or(L4S_DEFAULT_RTT);
+                if self
+                    .scalable
+                    .last_cut
+                    .is_none_or(|c| now.saturating_duration_since(c) >= rtt + L4S_FEEDBACK_DELAY)
+                {
+                    self.scalable.fresh += ce;
+                }
+                self.update_scalable(now);
+                self.clamp_rates();
+            }
+        }
+    }
+
+    /// Ends the scalable response's round once it lasted a round trip.
+    fn update_scalable(&mut self, now: Instant) {
+        let rtt = self.rtt.unwrap_or(L4S_DEFAULT_RTT);
+        let round = rtt.clamp(L4S_MIN_ROUND, L4S_MAX_ROUND);
+        let start = *self.scalable.start.get_or_insert(now);
+        if now.saturating_duration_since(start) < round {
+            return;
+        }
+        let sc = &mut self.scalable;
+        sc.start = Some(now);
+        let (ect, ce) = (std::mem::take(&mut sc.ect), std::mem::take(&mut sc.ce));
+        let fresh = std::mem::take(&mut sc.fresh);
+        if ect == 0 {
+            return;
+        }
+        let frac = ce as f64 / ect as f64;
+        let alpha = sc
+            .alpha
+            .map_or(frac, |a| (1.0 - L4S_GAIN) * a + L4S_GAIN * frac);
+        sc.alpha = Some(alpha);
+        let acked = self.acknowledged_bitrate().map(|a| a as f64);
+        if fresh > 0 {
+            self.scalable.last_cut = Some(now);
+            let mut base = self.estimate() as f64;
+            if let Some(a) = acked {
+                base = base.min(a);
+            }
+            let cut = base * (1.0 - alpha / 2.0);
+            self.scalable.rate = Some(self.scalable.rate.map_or(cut, |r| r.min(cut)));
+        } else if let Some(r) = self.scalable.rate.filter(|_| ce == 0) {
+            let v = rtt.max(L4S_MIN_ROUND).as_secs_f64();
+            let mut up = r + L4S_INCREASE * L4S_PACKET_BITS * round.as_secs_f64() / (v * v);
+            if let Some(a) = acked {
+                up = up.min((1.5 * a + 10_000.0).max(r));
+            }
+            self.scalable.rate = Some(up.min(self.max as f64));
         }
     }
 
@@ -308,9 +473,12 @@ impl BandwidthEstimator {
         let fresh = BandwidthEstimator::new(self.initial).with_bounds(self.min, self.max);
         let remote = self.remote;
         let nse = self.network_estimate;
+        let (response, rtt) = (self.ecn_response, self.rtt);
         let probe = std::mem::replace(&mut self.probe, ProbeController::new(false));
         *self = BandwidthEstimator { probe, ..fresh };
         self.remote = remote;
+        self.ecn_response = response;
+        self.rtt = rtt;
         self.probe.reset();
         self.set_network_state_estimate(nse);
         let e = self.estimate() as f64;
@@ -344,6 +512,9 @@ impl BandwidthEstimator {
     #[must_use]
     pub fn estimate(&self) -> u64 {
         let mut e = self.delay_rate.min(self.loss_rate);
+        if let Some(s) = self.scalable.rate {
+            e = e.min(s);
+        }
         if let Some(r) = self.remote {
             e = e.min(r as f64);
         }
@@ -389,9 +560,22 @@ impl BandwidthEstimator {
                 Some(at) => {
                     if let Some(e @ 1..=3) = r.ecn {
                         self.ect_received += 1;
+                        let classic = self.ecn_response == EcnResponse::Classic
+                            || self.usage == BandwidthUsage::Overusing;
+                        if self.ecn_response == EcnResponse::Scalable {
+                            self.scalable.ect += 1;
+                        }
                         if e == 3 {
                             self.ce_received += 1;
-                            self.loss_lost += 1;
+                            if classic {
+                                self.loss_lost += 1;
+                            }
+                            if self.ecn_response == EcnResponse::Scalable {
+                                self.scalable.ce += 1;
+                                if self.scalable.last_cut.is_none_or(|c| r.sent > c) {
+                                    self.scalable.fresh += 1;
+                                }
+                            }
                         }
                     }
                     self.acked.push_back((at, r.size));
@@ -407,6 +591,9 @@ impl BandwidthEstimator {
             }
         }
         self.update_rate(now);
+        if self.ecn_response == EcnResponse::Scalable {
+            self.update_scalable(now);
+        }
         // A probe result lifts the estimate unless the link is over-used.
         if let Some(p) = probed.filter(|_| self.usage != BandwidthUsage::Overusing) {
             self.link.update(p, LINK_ALPHA_PROBE);
@@ -416,6 +603,9 @@ impl BandwidthEstimator {
                 self.decrease_rate = None;
             }
             self.loss_rate = self.loss_rate.max(p);
+            if let Some(s) = self.scalable.rate {
+                self.scalable.rate = Some(s.max(p));
+            }
         }
         self.update_loss(now);
         self.clamp_rates();
@@ -443,6 +633,9 @@ impl BandwidthEstimator {
         let (min, max) = (self.min as f64, self.max as f64);
         self.delay_rate = self.delay_rate.clamp(min, max);
         self.loss_rate = self.loss_rate.clamp(min, max);
+        if let Some(s) = self.scalable.rate.as_mut() {
+            *s = s.clamp(min, max);
+        }
     }
 
     fn on_arrival(&mut self, sent: Instant, recv: Instant) {

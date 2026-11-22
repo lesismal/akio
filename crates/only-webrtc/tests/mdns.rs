@@ -453,7 +453,10 @@ fn offered_name(ep: &Endpoint) -> String {
         })
         .unwrap();
     p.close();
-    let line = host_lines(&offer).into_iter().next().expect("a host candidate");
+    let line = host_lines(&offer)
+        .into_iter()
+        .next()
+        .expect("a host candidate");
     line.split_whitespace().nth(4).unwrap().to_owned()
 }
 
@@ -522,10 +525,22 @@ fn names_are_probed_announced_and_withdrawn() {
     );
     let gap = |i: usize| events[i + 1].1.duration_since(events[i].1);
     for i in 0..2 {
-        assert!(gap(i) >= Duration::from_millis(200), "probe gap {:?}", gap(i));
+        assert!(
+            gap(i) >= Duration::from_millis(200),
+            "probe gap {:?}",
+            gap(i)
+        );
     }
-    assert!(gap(2) >= Duration::from_millis(200), "claimed too early: {:?}", gap(2));
-    assert!(gap(3) >= Duration::from_millis(900), "announcement gap {:?}", gap(3));
+    assert!(
+        gap(2) >= Duration::from_millis(200),
+        "claimed too early: {:?}",
+        gap(2)
+    );
+    assert!(
+        gap(3) >= Duration::from_millis(900),
+        "announcement gap {:?}",
+        gap(3)
+    );
     ep.close();
     let bye = recv_v6_within(&raw, Duration::from_secs(3), |_src, m| {
         (seen(&name, &m) == Some(Seen::Goodbye)).then_some(())
@@ -558,7 +573,11 @@ fn a_conflicting_answer_gives_the_name_up() {
     assert!(again.is_some(), "{name} kept after a conflict");
     // Past any announcement already under way, a query for it gets no answer from us.
     std::thread::sleep(Duration::from_millis(2200));
-    multicast_v6(&raw, &ifs, &Message::query(&name, TYPE_AAAA, false).unwrap());
+    multicast_v6(
+        &raw,
+        &ifs,
+        &Message::query(&name, TYPE_AAAA, false).unwrap(),
+    );
     let answered = recv_v6_within(&raw, Duration::from_millis(1500), |_src, m| {
         (m.response
             && m.records

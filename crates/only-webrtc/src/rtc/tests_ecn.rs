@@ -21,6 +21,9 @@ enum Path {
     Remark,
     /// One ECN-capable packet in `n` arrives CE.
     Ce(u64),
+    /// ECN-capable packets that queue at the bottleneck for longer than this (and than two
+    /// full-sized packets take) arrive CE (an L4S queue's step marking, RFC 9332).
+    Step(Duration),
 }
 
 /// A datagram in flight: arrival, from, to, payload, codepoint.
@@ -42,6 +45,8 @@ struct Net {
     /// again; datagrams queued for more than 300 ms are dropped.
     cap: Option<f64>,
     free: Option<Instant>,
+    /// Queueing delay of every datagram through the bottleneck.
+    queued: Vec<Duration>,
 }
 
 impl Net {
@@ -55,6 +60,7 @@ impl Net {
             captured: Vec::new(),
             cap: None,
             free: None,
+            queued: Vec::new(),
         }
     }
 
@@ -81,8 +87,8 @@ impl Net {
         let first = d.first().copied().unwrap_or(0);
         let rtcp = (128..=191).contains(&first) && only_rtp::is_rtcp(&d);
         self.log.push((from, to, first, ecn, rtcp));
-        let ecn = match (self.path, ecn) {
-            (_, 0) | (Path::Keep, _) => ecn,
+        let mut ecn = match (self.path, ecn) {
+            (_, 0) | (Path::Keep | Path::Step(_), _) => ecn,
             (Path::Bleach, _) => 0,
             (Path::Remark, 1) => 2,
             (Path::Remark, e) => e,
@@ -102,6 +108,15 @@ impl Net {
             }
             let done = start + Duration::from_secs_f64((d.len() + 28) as f64 / cap);
             self.free = Some(done);
+            let q = start.saturating_duration_since(now);
+            self.queued.push(q);
+            if let Path::Step(t) = self.path {
+                // At least two full-sized packets queued, as DualPI2 asks at low rates.
+                let two = Duration::from_secs_f64(2.0 * 1228.0 / cap);
+                if ecn != 0 && q > t.max(two) {
+                    ecn = 3;
+                }
+            }
             at = done + Duration::from_millis(10);
         }
         self.queue.push((at, from, to, d, ecn));
@@ -281,9 +296,35 @@ fn ecn_cfg(marking: EcnMarking, ccfb: bool) -> ConfigInner {
 /// `a` (marking `marking`) sends audio and video to `b` over `path` for 4 s; returns the
 /// sides and the network.
 fn ecn_run(marking: EcnMarking, ccfb: bool, path: Path) -> (Side, Side, Net) {
+    ecn_run_with(marking, EcnMarking::Off, ccfb, path).0
+}
+
+/// [`ecn_run`] with `b` configured to mark `b_marking` (RFC 6679 needs both sides to opt
+/// in); also returns the offer and the answer.
+fn ecn_run_with(
+    marking: EcnMarking,
+    b_marking: EcnMarking,
+    ccfb: bool,
+    path: Path,
+) -> ((Side, Side, Net), String, String) {
+    ecn_run_on(marking, b_marking, ccfb, path, false)
+}
+
+/// [`ecn_run_with`]; `tcp`: `a`'s candidate is one whose paths carry no codepoint (as the
+/// endpoint says of TURN allocations over TCP or TLS).
+fn ecn_run_on(
+    marking: EcnMarking,
+    b_marking: EcnMarking,
+    ccfb: bool,
+    path: Path,
+    tcp: bool,
+) -> ((Side, Side, Net), String, String) {
     let now = Instant::now();
     let mut a = peer(ecn_cfg(marking, ccfb), &["10.0.0.1:1000"], &[], now);
-    let mut b = peer(ecn_cfg(EcnMarking::Off, ccfb), &["10.0.0.2:2000"], &[], now);
+    if tcp {
+        a.rtc.set_no_ecn(addr("10.0.0.1:1000"));
+    }
+    let mut b = peer(ecn_cfg(b_marking, ccfb), &["10.0.0.2:2000"], &[], now);
     let mut ch = a.rtc.changes();
     let (audio, video) = {
         let mut api = SdpChanges(&mut ch);
@@ -307,7 +348,7 @@ fn ecn_run(marking: EcnMarking, ccfb: bool, path: Path) -> (Side, Side, Net) {
         false,
     );
     assert!(media_count(&b, video) > 150, "{}", media_count(&b, video));
-    (a, b, net)
+    ((a, b, net), offer, answer)
 }
 
 /// Codepoints of RTP (not RTCP) packets `a` sent, in order.
@@ -726,5 +767,408 @@ fn one_estimate_across_transports_follows_a_bottleneck() {
     for e in [shared, split] {
         let r = e as f64 / bundled as f64;
         assert!((0.6..=1.4).contains(&r), "{bundled} {shared} {split}");
+    }
+}
+
+// ---- scalable (L4S) response ----
+
+const L4S_CAP: f64 = 6_000_000.0;
+
+/// `a` sends audio and video (an encoder following the estimate) through a 6 Mbps
+/// bottleneck that CE-marks ECN-capable packets queued for over 1 ms, marking `marking`:
+/// the rate received and the mean queueing delay over the second half.
+fn l4s_run(marking: EcnMarking) -> (Side, u64, Duration) {
+    let now = Instant::now();
+    let mut ca = ecn_cfg(marking, true);
+    ca.bwe = Some(3_000_000);
+    let mut a = peer(ca, &["10.0.0.1:1000"], &[], now);
+    let mut b = peer(ecn_cfg(EcnMarking::Off, true), &["10.0.0.2:2000"], &[], now);
+    let mut ch = a.rtc.changes();
+    let (audio, video) = {
+        let mut api = SdpChanges(&mut ch);
+        (
+            api.add_media(MediaKind::Audio, Direction::SendRecv, None, None),
+            api.add_media(MediaKind::Video, Direction::SendRecv, None, None),
+        )
+    };
+    let offer = a.rtc.apply(now, ch).unwrap().unwrap();
+    let answer = b.rtc.accept_offer(now, &offer).unwrap();
+    a.rtc.accept_answer(now, &answer).unwrap();
+    let mut net = Net::new(Path::Step(Duration::from_millis(1)));
+    let mut now = connect(&mut a, &mut b, &mut net, now);
+    net.cap = Some(L4S_CAP / 8.0);
+    let mut size = 2500;
+    let (mut half, mut rx0, mut t0) = (0, 0, now);
+    for i in 0..60 {
+        if i == 30 {
+            half = net.queued.len();
+            rx0 = b.rtc.stats.bytes_received;
+            t0 = now;
+        }
+        now = media_sized(
+            &mut a,
+            &mut b,
+            &mut net,
+            now,
+            (Some(audio), Some(video)),
+            10,
+            false,
+            size,
+        );
+        let est = a.rtc.bwe.as_ref().unwrap().estimate();
+        size = ((est as f64 * 0.9 / 8.0 / 50.0) as usize).clamp(200, 20_000);
+    }
+    let q = &net.queued[half..];
+    let mean = q.iter().sum::<Duration>() / q.len().max(1) as u32;
+    let rate = (b.rtc.stats.bytes_received - rx0) as f64 * 8.0 / (now - t0).as_secs_f64();
+    (a, rate as u64, mean)
+}
+
+#[test]
+fn ect1_responds_to_ce_scalably() {
+    let (a, l4s, lq) = l4s_run(EcnMarking::Ect1);
+    let (c, classic, cq) = l4s_run(EcnMarking::Ect0);
+    let (_, plain, pq) = l4s_run(EcnMarking::Off);
+    println!(
+        "6 Mbps step-marking queue: ECT(1) {l4s} bps, queue {lq:?}; ECT(0) {classic} bps, queue {cq:?}; off {plain} bps, queue {pq:?}"
+    );
+    let bwe = a.rtc.bwe.as_ref().unwrap();
+    assert_eq!(bwe.ecn_response(), only_rtp::EcnResponse::Scalable);
+    assert_eq!(
+        c.rtc.bwe.as_ref().unwrap().ecn_response(),
+        only_rtp::EcnResponse::Classic
+    );
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    assert!(a.rtc.ecn.ce > 0 && bwe.ce_fraction().is_some());
+    // Near the capacity (as without ECN), with a short queue; the classic response backs
+    // off as for loss.
+    assert!(l4s as f64 > 0.7 * L4S_CAP, "{l4s}");
+    assert!(l4s as f64 > 0.85 * plain as f64, "{l4s} {plain}");
+    assert!(
+        lq < Duration::from_millis(3) && lq * 2 < pq,
+        "{lq:?} {pq:?}"
+    );
+    assert!(l4s > 2 * classic, "{l4s} {classic}");
+    let _ = cq;
+}
+
+// ---- RFC 6679 signalling (ADR-082) ----
+
+#[test]
+fn rfc6679_negotiates_and_validates_without_rfc8888() {
+    let ((a, b, net), offer, answer) =
+        ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect0, false, Path::Keep);
+    for (sdp, ect) in [(&offer, 1), (&answer, 0)] {
+        assert!(
+            sdp.contains(&format!("a=ecn-capable-rtp:rtp mode=setread; ect={ect}")),
+            "{sdp}"
+        );
+        assert!(
+            sdp.contains(" nack ecn\r\n") && sdp.contains("ecn-sum"),
+            "{sdp}"
+        );
+        assert!(!sdp.contains("ack ccfb"));
+    }
+    assert!(a.rtc.ecn6679.tx && b.rtc.ecn6679.rx && !a.rtc.ccfb);
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+    let tail = &marks[marks.len() - 200..];
+    assert!(tail.iter().all(|m| *m == 1), "{tail:?}");
+    // RTCP stays unmarked; b's feedback reaches a.
+    assert!(net.log.iter().filter(|l| l.4).all(|l| l.3 == 0));
+    assert!(b.rtc.stats.ecn_ect_received > 300);
+    let (ect, ce) = a.rtc.bwe.as_ref().unwrap().ecn_counts();
+    assert!(ect > 200 && ce == 0, "{ect} {ce}");
+}
+
+#[test]
+fn rfc6679_detects_cleared_and_remarked_codepoints() {
+    for path in [Path::Bleach, Path::Remark] {
+        let ((a, _, net), _, _) = ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect1, false, path);
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Failed);
+        let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+        assert!(marks[marks.len() / 2..].iter().all(|m| *m == 0));
+    }
+}
+
+#[test]
+fn rfc6679_ce_reaches_the_estimator() {
+    let ((a, _, _), _, _) = ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect1, false, Path::Ce(10));
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    let bwe = a.rtc.bwe.as_ref().unwrap();
+    let (ect, ce) = bwe.ecn_counts();
+    assert!(ce > 10 && ect > 5 * ce, "{ect} {ce}");
+    assert!(bwe.ce_fraction().is_some());
+}
+
+#[test]
+fn rfc6679_needs_the_remote() {
+    // The answerer does not mark: no attribute in its answer, nothing marked.
+    let ((a, _, net), offer, answer) =
+        ecn_run_with(EcnMarking::Ect1, EcnMarking::Off, false, Path::Keep);
+    assert!(offer.contains("a=ecn-capable-rtp:"));
+    assert!(!answer.contains("ecn-capable-rtp") && !answer.contains("nack ecn"));
+    assert!(!a.rtc.ecn6679.rx);
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
+    assert!(net.log.iter().all(|l| l.3 == 0));
+}
+
+// ---- paths without a codepoint (ADR-082) ----
+
+#[test]
+fn no_ecn_on_paths_over_tcp() {
+    for ccfb in [true, false] {
+        let ((a, _, net), _, _) =
+            ecn_run_on(EcnMarking::Ect1, EcnMarking::Ect1, ccfb, Path::Keep, true);
+        // Off, not failed: nothing marked, nothing given up on.
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
+        assert_eq!(a.rtc.ecn.failures, 0);
+        assert!(
+            rtp_marks(&net, addr("10.0.0.1:1000"))
+                .iter()
+                .all(|m| *m == 0)
+        );
+    }
+    // ICE-TCP candidates are recognised by the peer itself.
+    let now = Instant::now();
+    let mut r = Rtc::new(ecn_cfg(EcnMarking::Ect1, true), false, now).unwrap();
+    r.add_local_candidate(IceCandidate::host_tcp(
+        addr("10.0.0.1:9"),
+        only_ice::TcpType::Active,
+    ));
+    assert_eq!(r.no_ecn, [addr("10.0.0.1:9")]);
+}
+
+// ---- latching before DTLS-SRTP keys (ADR-082) ----
+
+fn dtls_plain(latching: Latching) -> ConfigInner {
+    let mut c = ConfigInner::default();
+    c.ice = false;
+    c.latching = latching;
+    c
+}
+
+const ATTACKER: &str = "198.51.100.66:6000";
+
+/// A gateway `a` (latching as `latching`) and a phone `b` behind a NAT with DTLS-SRTP and no
+/// ICE: `gateway_offers` or the phone offers. Returns the sides, the network, the audio mid,
+/// the offer and the answer.
+fn dtls_call(latching: Latching, gateway_offers: bool) -> (Side, Side, Net, Mid, String, String) {
+    let now = Instant::now();
+    let mut a = peer(dtls_plain(latching), &[GW], &[], now);
+    let mut b = peer(dtls_plain(Latching::Off), &[PHONE], &[], now);
+    a.hub = true;
+    let (offer, answer, audio);
+    if gateway_offers {
+        let mut ch = a.rtc.changes();
+        audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        offer = a.rtc.apply(now, ch).unwrap().unwrap();
+        answer = b.rtc.accept_offer(now, &offer).unwrap();
+        a.rtc.accept_answer(now, &answer).unwrap();
+    } else {
+        let mut ch = b.rtc.changes();
+        audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        offer = b.rtc.apply(now, ch).unwrap().unwrap();
+        answer = a.rtc.accept_offer(now, &offer).unwrap();
+        b.rtc.accept_answer(now, &answer).unwrap();
+    }
+    let mut net = Net::new(Path::Keep);
+    net.nat.push((addr(PHONE), addr(NAT)));
+    drain(&mut a, now, &mut net);
+    drain(&mut b, now, &mut net);
+    (a, b, net, audio, offer, answer)
+}
+
+/// Runs `a` and `b` until both are connected (or `limit` passes); the time then.
+fn run_until_connected(a: &mut Side, b: &mut Side, net: &mut Net, limit: Duration) -> bool {
+    let start = Instant::now();
+    let mut now = start;
+    while now - start < limit {
+        now += Duration::from_millis(5);
+        step(a, b, now, net);
+        if a.rtc.is_connected() && b.rtc.is_connected() {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn dtls_handshake_latches_onto_a_natted_phone() {
+    for gateway_offers in [true, false] {
+        let (mut a, mut b, mut net, audio, offer, answer) =
+            dtls_call(Latching::Once, gateway_offers);
+        let ours = if gateway_offers { &offer } else { &answer };
+        // The gateway is the DTLS server: the phone's ClientHello comes from the NAT.
+        assert!(
+            ours.contains(if gateway_offers {
+                "a=setup:actpass"
+            } else {
+                "a=setup:passive"
+            }),
+            "{ours}"
+        );
+        assert!(
+            run_until_connected(&mut a, &mut b, &mut net, Duration::from_secs(10)),
+            "offers {gateway_offers}"
+        );
+        assert_eq!(a.rtc.latch_moves(), 1);
+        assert_eq!(a.rtc.ice.send_pair().unwrap().1, addr(NAT));
+        // A cookie exchange first: the gateway's first DTLS datagram to the NAT is a
+        // HelloVerifyRequest (or a DTLS 1.3 HelloRetryRequest), state-free.
+        let first = net
+            .log
+            .iter()
+            .find(|l| l.0 == addr(GW) && (20..=63).contains(&l.2))
+            .unwrap();
+        assert_eq!(first.1, addr(PHONE));
+        let now = Instant::now() + Duration::from_secs(11);
+        media(&mut a, &mut b, &mut net, now, (Some(audio), None), 50, true);
+        assert!(media_count(&a, audio) >= 45 && media_count(&b, audio) >= 45);
+    }
+}
+
+#[test]
+fn no_dtls_latching_without_the_option() {
+    let (mut a, mut b, mut net, _, _, _) = dtls_call(Latching::Off, true);
+    assert!(!run_until_connected(
+        &mut a,
+        &mut b,
+        &mut net,
+        Duration::from_secs(5)
+    ));
+    assert_eq!(a.rtc.latch_moves(), 0);
+    assert!(
+        net.log
+            .iter()
+            .all(|l| l.0 != addr(GW) || l.1 != addr(PHONE))
+    );
+}
+
+#[test]
+fn a_foreign_handshake_does_not_latch() {
+    // An attacker that read the offer starts a handshake with a certificate of its own from
+    // its own address: the gateway tries it tentatively, the fingerprint does not match, the
+    // pair goes back and the phone latches after.
+    let (mut a, mut b, mut net, _, offer, _) = dtls_call(Latching::Once, true);
+    let start = Instant::now();
+    let mut x = peer(dtls_plain(Latching::Off), &[ATTACKER], &[], start);
+    let _ = x.rtc.accept_offer(start, &offer).unwrap();
+    let mut now = start;
+    let mut tentative_seen = false;
+    let mut connected = false;
+    // The attacker gets going first: the phone's datagrams wait 300 ms.
+    while now - start < Duration::from_secs(15) {
+        now += Duration::from_millis(5);
+        let (due, keep): (Vec<_>, Vec<_>) = net.queue.drain(..).partition(|q| q.0 <= now);
+        net.queue = keep;
+        for (_, from, to, d, ecn) in due {
+            if to == addr(ATTACKER) {
+                deliver(&mut x, now, from, to, &d, ecn);
+            } else if a.addrs.contains(&to) {
+                if from == addr(NAT) && now - start < Duration::from_millis(300) {
+                    continue;
+                }
+                deliver(&mut a, now, from, to, &d, ecn);
+            } else if b.addrs.contains(&to) {
+                deliver(&mut b, now, from, to, &d, ecn);
+            }
+        }
+        for s in [&mut a, &mut b, &mut x] {
+            if s.wake <= now {
+                s.rtc.handle_timeout(now);
+            }
+            drain(s, now, &mut net);
+        }
+        tentative_seen |= a
+            .rtc
+            .latch
+            .tentative
+            .is_some_and(|t| t.source == addr(ATTACKER));
+        assert!(a.rtc.alive, "the gateway peer died");
+        if a.rtc.is_connected() && b.rtc.is_connected() {
+            connected = true;
+            break;
+        }
+    }
+    assert!(tentative_seen, "the attacker's handshake was never tried");
+    assert!(connected, "the phone never latched");
+    assert_eq!(a.rtc.ice.send_pair().unwrap().1, addr(NAT));
+    assert_eq!(a.rtc.latch_moves(), 1);
+    // (A DTLS 1.3 client counts itself connected once it sent its Finished: the attacker
+    // may, though the gateway refused its certificate.)
+    let _ = x;
+}
+
+// ---- SRTP MKIs with DTLS-SRTP (ADR-082) ----
+
+/// A DTLS-SRTP call (with ICE) between `a` (MKI length `ma`) and `b` (`mb`): the MKI
+/// lengths of `a`'s send and receive contexts and of `b`'s, once audio flowed both ways.
+fn mki_call(ma: u8, mb: u8, mux: bool) -> ((usize, usize), (usize, usize), usize, usize) {
+    let now = Instant::now();
+    let cfg = |m: u8| {
+        let mut c = ConfigInner::default();
+        c.dtls_mki = m;
+        if !mux {
+            c.rtcp_mux = RtcpMuxPolicy::Off;
+        }
+        c
+    };
+    let (c2a, c2b): (&[&str], &[&str]) = if mux {
+        (&[], &[])
+    } else {
+        (&["10.0.0.1:1001"], &["10.0.0.2:2001"])
+    };
+    let mut a = peer(cfg(ma), &["10.0.0.1:1000"], c2a, now);
+    let mut b = peer(cfg(mb), &["10.0.0.2:2000"], c2b, now);
+    let mut ch = a.rtc.changes();
+    let audio = SdpChanges(&mut ch).add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+    let offer = a.rtc.apply(now, ch).unwrap().unwrap();
+    let answer = b.rtc.accept_offer(now, &offer).unwrap();
+    a.rtc.accept_answer(now, &answer).unwrap();
+    let mut net = Net::new(Path::Keep);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    media(
+        &mut a,
+        &mut b,
+        &mut net,
+        now,
+        (Some(audio), None),
+        100,
+        true,
+    );
+    let l = |s: &Side| {
+        (
+            s.rtc.srtp_tx.as_ref().map_or(99, Srtp::mki_len),
+            s.rtc.srtp_rx.as_ref().map_or(99, Srtp::mki_len),
+        )
+    };
+    let (la, lb) = (l(&a), l(&b));
+    if !mux {
+        // RTCP's own association agreed the same way.
+        let r = a.rtc.rtcp.srtcp_tx.as_ref().map_or(99, Srtp::mki_len);
+        assert_eq!(r, la.0);
+    }
+    (la, lb, media_count(&a, audio), media_count(&b, audio))
+}
+
+#[test]
+fn dtls_srtp_mki_when_both_agree() {
+    // a offers actpass, b answers active: b is the DTLS client and offers the MKI.
+    for mux in [true, false] {
+        let (la, lb, na, nb) = mki_call(4, 4, mux);
+        assert_eq!((la, lb), ((4, 4), (4, 4)), "mux {mux}");
+        assert!(na >= 95 && nb >= 95, "{na} {nb}");
+    }
+    // The server agrees to whatever the client offers.
+    let (la, lb, na, nb) = mki_call(1, 7, true);
+    assert_eq!((la, lb), ((7, 7), (7, 7)));
+    assert!(na >= 95 && nb >= 95);
+    // Off on either side: none (a client offering to a server that does not agree, or a
+    // server that would agree to a client that offers none).
+    for (ma, mb) in [(4, 0), (0, 4)] {
+        let (la, lb, na, nb) = mki_call(ma, mb, true);
+        assert_eq!((la, lb), ((0, 0), (0, 0)), "{ma} {mb}");
+        assert!(na >= 95 && nb >= 95);
     }
 }

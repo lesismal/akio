@@ -102,6 +102,51 @@ The allocations per request left after ADR-025 are gone, except the handler's ow
   - Instructions per request: 0.937×, 0.898×, 0.929×.
   - req/s: pipelined 1.031×, h2c 1.042×, HTTP/3 1.016×; plain HTTP/1.1 unchanged (client-bound).
 
+### Added: scalable (L4S) CE response, RFC 6679 signalling, ECN over TURN, DTLS latching, DTLS-SRTP MKIs (only-rtp, only-webrtc)
+
+ADR-082 (docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.md), additive; nothing changes by
+default:
+
+- **Scalable response to CE.** only-rtp gains `EcnResponse::{Classic, Scalable}`, set with
+  `BandwidthEstimator::set_ecn_response`. With the scalable response CE no longer counts as
+  loss:
+  - The CE fraction is smoothed per round trip with gain 1/16 (`ce_fraction`; the round comes
+    from `set_rtt`).
+  - It cuts a third rate by `alpha / 2`, at most once per window.
+  - A clean round grows that rate additively.
+  - CE that arrives during delay over-use still counts as loss (classic fallback).
+  - `on_ecn_counts` takes counter-based ECN feedback.
+
+  only-webrtc uses the scalable response when it marks ECT(1). While marking, it paces at 1.5x
+  the estimate with 1 ms bursts (instead of 2.5x and 40 ms). In a simulated 6 Mbps L4S queue,
+  ECT(1) gets 4.9 Mbps with 1.3 ms of queue, against 1.36 Mbps for ECT(0) and 7.3 ms of queue
+  without ECN.
+- **RFC 6679 signalling.** With ECN marking on, sections offer and answer:
+  - `a=ecn-capable-rtp:rtp mode=setread; ect=N`,
+  - `a=rtcp-fb:<pt> nack ecn`,
+  - `a=rtcp-xr:ecn-sum`.
+
+  only-rtp gains `EcnFeedback` (RTPFB FMT 8), `EcnSummary` (XR block type 13), `EcnReceiver`,
+  `EcnCounters` and `EcnDelta`.
+
+  Without RFC 8888, receivers report per-source counters: early on a first ECT packet or a CE
+  mark, with every report, and as summaries next to the report blocks. Senders validate the path
+  and feed CE to the estimator from the differences between reports.
+- **ECN over TURN, off on TCP paths.** Relayed RTP over a UDP allocation goes to the TURN server
+  with its codepoint, which RFC 8656 §12 asks the server to copy. Datagrams from a UDP allocation
+  keep their codepoint. ICE-TCP candidates and allocations over TCP or TLS never start ECN: they
+  stay off instead of failing.
+- **Latching before DTLS-SRTP keys.** Without ICE and with latching on, a ClientHello from an
+  unknown source gets a stateless cookie exchange. A cookie'd ClientHello moves the pair to that
+  source tentatively. The handshake latches once it completes with the SDP fingerprint; on
+  failure, close or a 4 s timeout the pair moves back and the peer stays alive. An `actpass`
+  offer is answered `passive` when latching.
+- **SRTP MKIs with DTLS-SRTP.** `RtcConfig::set_dtls_srtp_mki_length`: a DTLS client offers an
+  MKI in `use_srtp`, a server agrees to the client's, and SRTP / SRTCP then carry it.
+- **Interop and fuzzing.** `webrtc-interop` gains `ONLY_INTEROP_SIP=dtls` and
+  `ONLY_INTEROP_DTLS_MKI`. `tools/interop/webrtc/latch.sh` gains DTLS-SRTP phone cases. The
+  `rtp_rtcp` fuzz target round-trips the RFC 6679 formats.
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

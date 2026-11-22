@@ -87,7 +87,9 @@
 //! ONLY_INTEROP_FEC=ulpfec|flexfec with ONLY_INTEROP_FEC_MIN=<n>, ONLY_INTEROP_STATS=1
 //! (statistics events every second, printed), ONLY_INTEROP_ECN=ect0|ect1 (ECN-capable RTP,
 //! ADR-077), ONLY_INTEROP_LATCH=once|rebind (latching media without ICE; rebind: after 1 s
-//! of silence), ONLY_INTEROP_SIP=1 (SDES-SRTP without ICE), ONLY_INTEROP_BWE=<bps> (the
+//! of silence), ONLY_INTEROP_SIP=1 (SDES-SRTP without ICE; `dtls`: DTLS-SRTP without ICE,
+//! for the phone and the gateway, ADR-082), ONLY_INTEROP_DTLS_MKI=<n> (an SRTP MKI of n
+//! bytes with DTLS-SRTP, ADR-082), ONLY_INTEROP_BWE=<bps> (the
 //! bandwidth estimator, starting there). fec-server's `direct` option
 //! serves <proxy-addr> itself, without the proxy (which would clear ECN marks). With ONLY_LOG=only_webrtc=debug the DTLS
 //! version of each connection is logged.
@@ -151,8 +153,14 @@ fn extras(mut c: only_webrtc::RtcConfig) -> only_webrtc::RtcConfig {
     if let Some(b) = env("ONLY_INTEROP_BWE").and_then(|v| v.parse::<u64>().ok()) {
         c = c.enable_bwe(Some(b));
     }
-    if env("ONLY_INTEROP_SIP").is_some() {
-        c = c.enable_sdes_srtp(true).enable_ice(false);
+    match env("ONLY_INTEROP_SIP").as_deref() {
+        // DTLS-SRTP without ICE: the gateway's handshake latches (ADR-082).
+        Some("dtls") => c = c.enable_ice(false),
+        Some(_) => c = c.enable_sdes_srtp(true).enable_ice(false),
+        None => {}
+    }
+    if let Some(n) = env("ONLY_INTEROP_DTLS_MKI").and_then(|v| v.parse::<u8>().ok()) {
+        c = c.set_dtls_srtp_mki_length(n);
     }
     c
 }
@@ -269,9 +277,10 @@ fn sip_gateway(udp: SocketAddr, http: SocketAddr) {
         .build()
         .expect("engine");
     engine.start().expect("start");
-    let ep = Endpoint::bind(&engine, udp).expect("bind").config(|| {
+    let sdes = std::env::var("ONLY_INTEROP_SIP").as_deref() != Ok("dtls");
+    let ep = Endpoint::bind(&engine, udp).expect("bind").config(move || {
         extras(only_webrtc::rtc_config())
-            .enable_sdes_srtp(true)
+            .enable_sdes_srtp(sdes)
             .enable_ice(false)
             .set_stats_interval(Some(Duration::from_secs(1)))
     });

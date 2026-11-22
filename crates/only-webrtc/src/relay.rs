@@ -165,6 +165,8 @@ struct State {
     relayed: Option<SocketAddr>,
     retired: VecDeque<SocketAddr>,
     deferred: Vec<Deferred>,
+    /// The ECN codepoint for the relayed data being flushed ([`Relay::send`]).
+    ecn: u8,
 }
 
 pub(crate) struct Relay {
@@ -216,6 +218,7 @@ impl Relay {
                 relayed: None,
                 retired: VecDeque::new(),
                 deferred: Vec::new(),
+                ecn: 0,
             }),
             cfg,
             hub: Arc::downgrade(hub),
@@ -399,11 +402,18 @@ impl Relay {
         }
     }
 
-    /// Sends `data` to `peer` through the relay.
-    pub(crate) fn send(&self, peer: SocketAddr, data: &[u8]) {
-        self.with(|_, st| {
+    /// Sends `data` to `peer` through the relay; over UDP (not DTLS) the datagram to the
+    /// server carries the ECN codepoint `ecn`, which the server copies onto the relayed one
+    /// (RFC 8656 §12).
+    pub(crate) fn send(&self, peer: SocketAddr, data: &[u8], ecn: u8) {
+        self.with(|me, st| {
             if !st.down {
                 let _ = st.client.send_to(Instant::now(), peer, data);
+                if ecn != 0 && matches!(me.wire, Wire::Udp) {
+                    st.ecn = ecn;
+                    me.flush(st);
+                    st.ecn = 0;
+                }
             }
         });
     }
@@ -474,7 +484,15 @@ impl Relay {
         match &mut st.link {
             Link::None if !self.wire.is_stream() => {
                 if let Some(b) = self.socket() {
-                    let _ = b.send_to(&m, self.server);
+                    // Relayed data (ChannelData or a Send indication) carries the codepoint
+                    // of what it carries; STUN requests none.
+                    let data = m.first().is_some_and(|b| (0x40..=0x7f).contains(b))
+                        || is_send_indication(&m);
+                    let _ = if st.ecn != 0 && data {
+                        b.send_to_ecn(&m, self.server, st.ecn)
+                    } else {
+                        b.send_to(&m, self.server)
+                    };
                 }
             }
             Link::None => {}

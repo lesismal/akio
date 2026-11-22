@@ -277,7 +277,7 @@ fn pacer_queue_rules() {
         tp: 0,
     };
     let mut p = Pacer::default();
-    p.set_rates(800_000, 0); // 250 kB/s, 10 kB of burst
+    p.set_rates(800_000, 0, false); // 250 kB/s, 10 kB of burst
     p.advance(t0);
     p.push(Class::Media, q(1, t0));
     p.push(Class::Media, q(2, t0));
@@ -308,7 +308,7 @@ fn pacer_queue_rules() {
     assert!(p.can_send(next));
     // An old queue drains faster: 1 MB queued 1.9 s ago must leave within 0.1 s.
     let mut p = Pacer::default();
-    p.set_rates(800_000, 0);
+    p.set_rates(800_000, 0, false);
     p.advance(t0);
     for _ in 0..1000 {
         p.push(Class::Media, q(5, t0));
@@ -332,7 +332,7 @@ fn pacer_queue_rules() {
     assert_eq!(p.pop().unwrap().raw[0], (9000u32 - 8192) as u8);
     // Padding: due while the queue is empty and the budgets allow.
     let mut p = Pacer::default();
-    p.set_rates(1_000_000, 200_000);
+    p.set_rates(1_000_000, 200_000, false);
     p.advance(t0);
     assert!(p.next_send(t0).is_some());
     p.on_padding(1000);
