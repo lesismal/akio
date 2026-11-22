@@ -47,7 +47,7 @@ phone() { # <n>
 stat() { grep -o "$1: [^,}]*" /tmp/gw-$PORT.log | tail -1; }
 report() {
   echo "gateway: $(stat ecn_state), $(stat ecn_marked_sent), $(stat ecn_failures); $(stat ecn_ect_received) from the phone"
-  grep -o "ECN check [^:]*: the remote saw [A-Za-z(0-9)]*" /tmp/gw-$PORT.log | head -3 || true
+  grep -o "ECN check .* saw [A-Za-z(0-9)]*" /tmp/gw-$PORT.log | head -3 || true
 }
 want() { [ "$(stat ecn_state)" = "ecn_state: \"$1\"" ] || { echo "FAIL: expected $1"; exit 1; }; }
 finish() { kill $GW 2>/dev/null || true; wait $GW 2>/dev/null || true; PORT=$((PORT + 10)); }
