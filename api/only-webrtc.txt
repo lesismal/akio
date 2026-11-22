@@ -122,6 +122,27 @@ impl core::marker::Sync for only_webrtc::Direction
 impl core::marker::Unpin for only_webrtc::Direction
 impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Direction
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Direction
+#[non_exhaustive] pub enum only_webrtc::EcnInitiation
+pub only_webrtc::EcnInitiation::LeapOfFaith
+pub only_webrtc::EcnInitiation::Probe
+impl core::clone::Clone for only_webrtc::EcnInitiation
+pub fn only_webrtc::EcnInitiation::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::EcnInitiation
+impl core::cmp::PartialEq for only_webrtc::EcnInitiation
+pub fn only_webrtc::EcnInitiation::eq(&self, &Self) -> bool
+impl core::default::Default for only_webrtc::EcnInitiation
+pub fn only_webrtc::EcnInitiation::default() -> Self
+impl core::fmt::Debug for only_webrtc::EcnInitiation
+pub fn only_webrtc::EcnInitiation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::EcnInitiation
+pub fn only_webrtc::EcnInitiation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::EcnInitiation
+impl core::marker::StructuralPartialEq for only_webrtc::EcnInitiation
+impl core::marker::Send for only_webrtc::EcnInitiation
+impl core::marker::Sync for only_webrtc::EcnInitiation
+impl core::marker::Unpin for only_webrtc::EcnInitiation
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::EcnInitiation
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::EcnInitiation
 #[non_exhaustive] pub enum only_webrtc::EcnMarking
 pub only_webrtc::EcnMarking::Ect0
 pub only_webrtc::EcnMarking::Ect1
@@ -691,11 +712,13 @@ pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::set_bundle_policy(self, only_webrtc::BundlePolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_bwe_bounds(self, u64, u64) -> Self
 pub fn only_webrtc::RtcConfig::set_dtls_srtp_mki_length(self, u8) -> Self
+pub fn only_webrtc::RtcConfig::set_ecn_initiation(self, only_webrtc::EcnInitiation) -> Self
 pub fn only_webrtc::RtcConfig::set_ecn_marking(self, only_webrtc::EcnMarking) -> Self
 pub fn only_webrtc::RtcConfig::set_fec_mask(self, only_webrtc::FecMask) -> Self
 pub fn only_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
 pub fn only_webrtc::RtcConfig::set_latching(self, only_webrtc::Latching) -> Self
 pub fn only_webrtc::RtcConfig::set_padding_rate(self, u64) -> Self
+pub fn only_webrtc::RtcConfig::set_plain_keepalive(self, core::time::Duration) -> Self
 pub fn only_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
 pub fn only_webrtc::RtcConfig::set_rtcp_mux_policy(self, only_webrtc::RtcpMuxPolicy) -> Self
 pub fn only_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self
