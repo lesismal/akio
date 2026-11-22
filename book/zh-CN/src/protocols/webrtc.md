@@ -302,6 +302,19 @@ let cfg = only_webrtc::rtc_config()
     仍由传输级反馈驱动。
   - 双方都开启时，接收方向同样工作。
   - 浏览器会忽略这些属性。
+- **路径如何开始标记**（ADR-086）。RFC 6679 有三种启动方式，按以下顺序提议，应答时取 offer 列出的第一个：
+  - `ice`，只在使用 ICE 且是完整代理时（此时 `a=ice-options` 带上 `rtp+ecn`）：ICE 选定路径对后，发出一次带
+    ECN 标记的 STUN 检查。对端的回答说明到达时是哪个码点（ECN-CHECK 属性）。在此之前不标记任何包：之后
+    全部标记，若标记没有到达则都不标记。
+  - `rtp`：上面所说的试探。
+  - `leap`：一开始就标记每个包，用于已知能传递 ECN 的路径。只有设置
+    `set_ecn_initiation(EcnInitiation::LeapOfFaith)` 时才提议（放在最前），它在没有 RFC 6679 时也生效。
+
+  每种方式在路径清除、改写或丢弃标记时仍会停止标记。对端的 `ect=` 决定码点（因而决定 CE 响应）：想要
+  ECT(0) 的 RFC 6679 对端，即使本端配置为 `Ect1` 也会收到 ECT(0)。
+- **重试**（ADR-086）：失败的路径在 10 s 后再试，之后 20、40……最多 5 分钟。同一路径上从全部标记回退三次
+  后不再标记。`tools/interop/webrtc/ecn6679.sh` 在两个 only 端之间、经 Linux NAT 运行这三种方式，以及一个
+  先清除 ECN、后来停止清除的路由器。
 - **TURN 与 TCP 路径**（ADR-082）：经 UDP 分配时，发往 TURN 服务器的数据报携带码点。RFC 8656 §12 要求服务器
   复制它，服务器是否这样做由验证得知。清除码点的中继与其他中间设备一样使路径失败。经 ICE-TCP 或经 TCP / TLS
   到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。only-turn 自己的中继还不复制码点。
@@ -411,8 +424,15 @@ let ep = ep.config(|| {
 - 之后路径对暂时移到那里。只有握手以 SDP 指纹所指的证书完成，路径对才会留下。
 - 失败、被关闭或停滞（4 s）的握手会把路径对移回，peer 继续存活。
 
-`tools/interop/webrtc/latch.sh` 在网络命名空间中运行位于 iptables NAT 之后的 SIP 风格话机，分别使用 SDES 与
-DTLS-SRTP，包括 NAT 重新绑定。
+不复用 RTCP 时，RTCP 自己的握手在它自己的端口上以同样方式锁定（ADR-086）。
+
+本端必须作为 DTLS 客户端时（话机写了 `passive`），它的 ClientHello 会发往私网地址。改为：传输端口上来自未知
+来源的数据报（例如话机的保活或 STUN 请求）让握手暂时转向该来源，仍由同样的指纹检查决定（ADR-086）。基于本栈
+的话机用 `set_plain_keepalive(Duration::from_secs(15))`（RFC 6263）发送这种保活：每条路径上一个 STUN Binding
+Indication。它们也让 NAT 映射在静默期间保持打开。
+
+`tools/interop/webrtc/latch.sh` 在网络命名空间中运行位于 iptables NAT 之后的 SIP 风格话机：分别使用 SDES 与
+DTLS-SRTP，包括 NAT 重新绑定、RTCP 走独立端口，以及网关作为 DTLS 客户端。
 
 ### RTCP 走独立端口（不复用 RTCP）
 
@@ -691,11 +711,9 @@ DTLS 1.2。
 
 ## 尚未完成
 
-- RFC 6679 的 "ice" 与 "leap" ECN 启动方法。
 - 在 only-turn 自己的中继中复制 ECN 码点。
-- 对已失败的路径重试 ECN。
-- 锁定 RTCP 自己的 DTLS 关联（不复用 RTCP 时），以及本端必须作为 DTLS 客户端时的锁定。
-- 会话内的 DTLS 换钥。
+- 会话内的 DTLS 换钥。这需要一次新的握手：DTLS 1.2 的重协商（Chrome 与 pion 拒绝），或用新的 `a=tls-id`
+  建立新关联（同时会重启数据通道）。DTLS 1.3 的 KeyUpdate 不改变 SRTP 的密钥（ADR-086 第 6 节）。
 
 新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073、
-ADR-076、ADR-077 与 ADR-082。
+ADR-076、ADR-077、ADR-082 与 ADR-086。

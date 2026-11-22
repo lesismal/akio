@@ -10,6 +10,41 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: RFC 6679 "ice" / "leap" ECN initiation, the remote's `ect=`, ECN retries, DTLS latching for RTCP and the DTLS client (only-webrtc, only-ice)
+
+ADR-086, additive API:
+
+- only-ice: RFC 6679's STUN ECN-CHECK attribute. `IceAgent::check_ecn` sends an ECN-marked check
+  on the selected pair. `handle_receive_ecn` echoes the codepoint a check arrived with.
+  `poll_transmit_ecn` returns datagrams with their codepoint. `IceEvent::EcnChecked` reports
+  the result. `ECN_CHECK_SENDS` / `ECN_CHECK_INTERVAL` / `ECN_CHECK_GIVE_UP` give the timing.
+- only-webrtc, with ECN marking on:
+  - Sections offer `a=ecn-capable-rtp:ice,rtp ...` with ICE (`a=ice-options` adds `rtp+ecn`),
+    and answer with the first method of ours the offer lists.
+  - "ice" verifies the path with a marked STUN check before marking RTP.
+  - `RtcConfig::set_ecn_initiation(EcnInitiation::LeapOfFaith)` marks every packet from the
+    start, and offers `leap` first.
+  - The remote's `ect=` preference picks the codepoint and the CE response.
+  - A failed path retries after 10 s, doubling up to 300 s, and stops after three fallbacks
+    from full marking.
+  - The `ecn_state` statistic can read "verifying".
+- only-webrtc, latching without ICE:
+  - RTCP's own DTLS handshake (no rtcp-mux) latches like RTP's.
+  - When this side is the DTLS client, a datagram from an unknown source (a keepalive) starts a
+    tentative handshake toward it, held to the SDP fingerprint.
+  - `RtcConfig::set_plain_keepalive(every)` sends RFC 6263 STUN Binding Indications on every
+    plain path.
+  - The endpoint offers STUN from unknown sources to latching peers.
+- Fixed: DTLS-SRTP without ICE and without BUNDLE never read the remote fingerprint, so no
+  handshake started.
+- Fixed: the `webrtc_sdp` fuzz harness took `a=crypto:` inside an echoed `m=` field for a key
+  line.
+- Not done: DTLS re-keying. No peer re-keys: Chrome and pion refuse DTLS 1.2 renegotiation, and
+  DTLS 1.3's KeyUpdate leaves the SRTP keys (ADR-086 §6).
+- Interop: `latch.sh` adds RTCP's own handshake and the gateway as the DTLS client. The new
+  `ecn6679.sh` runs rtp / leap / ice and a clearing router between two only peers over a
+  Linux NAT.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

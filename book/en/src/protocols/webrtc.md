@@ -368,6 +368,24 @@ let cfg = only_webrtc::rtc_config()
     feedback driving the estimator.
   - Receiving works the same way when both sides opt in.
   - Browsers ignore the attributes.
+- **How a path starts marking** (ADR-086). RFC 6679 has three initiation methods, offered in
+  this order and answered with the first the offer lists:
+  - `ice`, only with ICE and a full agent (`a=ice-options` then carries `rtp+ecn`): once ICE
+    selects the pair, one ECN-marked STUN check goes out. The remote's answer says which
+    codepoint arrived (the ECN-CHECK attribute). Nothing is marked before that: then every
+    packet, or none if the mark did not arrive.
+  - `rtp`: the probing above.
+  - `leap`: every packet marked from the start, for paths known to carry ECN. It is offered
+    (first) only with `set_ecn_initiation(EcnInitiation::LeapOfFaith)`, which also applies
+    without RFC 6679.
+
+  Each method still ends marking on a path that clears, re-marks or drops the marks. The
+  remote's `ect=` picks the codepoint (and so the CE response): an RFC 6679 peer that wants
+  ECT(0) gets ECT(0) even from an `Ect1` configuration.
+- **Retrying** (ADR-086): a failed path tries again after 10 s, then 20, 40, ... up to 5
+  minutes. After three fallbacks from full marking on the same path it stays unmarked.
+  `tools/interop/webrtc/ecn6679.sh` runs the three methods, and a router that clears ECN and
+  then stops, between two only peers over a Linux NAT.
 - **TURN and TCP paths** (ADR-082): over a UDP allocation the datagram to the TURN server
   carries the codepoint. RFC 8656 §12 asks the server to copy it, and validation finds out
   whether it does. A relay that clears it fails the path like any other middlebox. Paths over
@@ -499,8 +517,18 @@ With DTLS-SRTP the handshake latches first (ADR-082). When latching, this side a
   certificate the SDP's fingerprint names.
 - A failed, closed or stalled (4 s) handshake moves the pair back, and the peer lives on.
 
+RTCP's own handshake, without rtcp-mux, latches the same way on its own port (ADR-086).
+
+When this side must be the DTLS client (the phone said `passive`), its ClientHello would go to
+the private address. Instead, a datagram from an unknown source on the transport's port, such
+as the phone's keepalive or a STUN request, starts the handshake toward that source
+tentatively. The same fingerprint check decides (ADR-086). Phones built on this stack send such
+keepalives with `set_plain_keepalive(Duration::from_secs(15))` (RFC 6263): a STUN Binding
+Indication on every path. They also keep NAT bindings open through silence.
+
 `tools/interop/webrtc/latch.sh` runs a SIP-style phone behind an iptables NAT in a network
-namespace, with SDES and with DTLS-SRTP, including a NAT rebinding.
+namespace: with SDES and with DTLS-SRTP, including a NAT rebinding, RTCP on its own port, and
+the gateway as the DTLS client.
 
 ### RTCP on its own port (no rtcp-mux)
 
@@ -829,12 +857,10 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-- RFC 6679's "ice" and "leap" ECN initiation methods.
 - Copying the ECN codepoint in only-turn's own relay.
-- Retrying ECN on a path that failed.
-- Latching RTCP's own DTLS association (no rtcp-mux), or latching when this side must be the
-  DTLS client.
-- DTLS re-keying within a session.
+- DTLS re-keying within a session. A new handshake would be needed: DTLS 1.2 renegotiation,
+  which Chrome and pion refuse, or a new association with a new `a=tls-id`, which also restarts
+  the data channels. DTLS 1.3's KeyUpdate does not change SRTP's keys (ADR-086 §6).
 
 ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072, ADR-073,
-ADR-076, ADR-077 and ADR-082 have the details of what was added.
+ADR-076, ADR-077, ADR-082 and ADR-086 have the details of what was added.

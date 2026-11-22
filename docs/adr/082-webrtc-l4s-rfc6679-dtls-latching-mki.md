@@ -223,10 +223,13 @@ Additive.
     at once.
   - With DTLS latching: an HMAC per ClientHello from an unknown source.
 - **Not done:**
-  - RFC 6679's "ice" and "leap" initiation, and following the remote's `ect=` preference.
+  - RFC 6679's "ice" and "leap" initiation, and following the remote's `ect=` preference
+    (done, ADR-086).
   - ECN feedback for RTP over ICE-TCP (there is none to give).
   - Copying the codepoint in only-turn's own relay.
-  - Retrying ECN on a path that failed.
-  - Latching component 2's DTLS.
-  - Latching when this side must be the DTLS client.
-  - DTLS re-keying, so the MKI value changes only between sessions' handshakes.
+  - Retrying ECN on a path that failed (done, ADR-086).
+  - Latching component 2's DTLS (done, ADR-086).
+  - Latching when this side must be the DTLS client (done, ADR-086, onto the remote's RFC 6263
+    keepalives).
+  - DTLS re-keying, so the MKI value changes only between sessions' handshakes (not done:
+    ADR-086 §6 says why).

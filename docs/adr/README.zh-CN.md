@@ -84,3 +84,4 @@
 - [ADR-082：可扩展（L4S）的 CE 响应、RFC 6679 信令、经中继的 ECN、锁定 DTLS 握手，以及 DTLS-SRTP 的 MKI](082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md)（2026-11-22 采纳）
 - [ADR-084：RTSP 接收者报告、客户端重定向、重连时重新解析；HLS 请求关键帧](084-rtsp-receiver-reports-redirects-lookups.zh-CN.md)（2026-11-22 采纳）
 - [ADR-085：RTCP XR VoIP 指标中与编解码器相关的字段：按编解码器的 G.107 / G.107.1，应用提供的值](085-rtcp-xr-voip-quality-fields.zh-CN.md)（2026-11-22 采纳）
+- [ADR-086：RFC 6679 的 "ice" 与 "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、锁定 RTCP 的 DTLS 以及 DTLS 客户端](086-webrtc-ecn-initiation-retry-dtls-latching.zh-CN.md)（2026-11-22 采纳）

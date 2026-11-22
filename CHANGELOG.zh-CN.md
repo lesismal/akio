@@ -10,6 +10,36 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：RFC 6679 的 "ice" / "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、RTCP 与 DTLS 客户端的 DTLS 锁定（only-webrtc、only-ice）
+
+ADR-086，只有新增的 API：
+
+- only-ice：RFC 6679 的 STUN ECN-CHECK 属性。`IceAgent::check_ecn` 在选定的路径对上发送带 ECN
+  标记的检查。`handle_receive_ecn` 回显检查到达时的码点。`poll_transmit_ecn` 返回数据报及其码点。
+  `IceEvent::EcnChecked` 报告结果。`ECN_CHECK_SENDS` / `ECN_CHECK_INTERVAL` / `ECN_CHECK_GIVE_UP`
+  给出时间参数。
+- only-webrtc，开启 ECN 标记时：
+  - 使用 ICE 时各节提议 `a=ecn-capable-rtp:ice,rtp ...`（`a=ice-options` 加上 `rtp+ecn`），应答时
+    取 offer 列出的我们的第一个方式。
+  - "ice" 在标记 RTP 之前用一次带标记的 STUN 检查验证路径。
+  - `RtcConfig::set_ecn_initiation(EcnInitiation::LeapOfFaith)` 一开始就标记每个包，并把 `leap`
+    放在提议的最前面。
+  - 对端的 `ect=` 偏好决定码点和 CE 响应。
+  - 失败的路径 10 s 后重试，逐次加倍直到 300 s；从全部标记回退三次后不再重试。
+  - 统计项 `ecn_state` 可能为 "verifying"。
+- only-webrtc，无 ICE 的锁定：
+  - RTCP 自己的 DTLS 握手（不复用 rtcp-mux 时）与 RTP 的一样锁定。
+  - 本端是 DTLS 客户端时，来自未知来源的数据报（保活）让握手暂时转向该来源，并以 SDP 指纹为准。
+  - `RtcConfig::set_plain_keepalive(every)` 在每条无 ICE 的路径上发送 RFC 6263 的 STUN Binding
+    Indication。
+  - endpoint 把未知来源的 STUN 交给正在锁定的 peer。
+- 修复：没有 ICE 且没有 BUNDLE 时，DTLS-SRTP 从不读取对端指纹，握手不会开始。
+- 修复：`webrtc_sdp` 模糊测试的检查把回显的 `m=` 字段中的 `a=crypto:` 当成了密钥行。
+- 未做：DTLS 换钥。没有对端会换钥：Chrome 与 pion 拒绝 DTLS 1.2 重协商，DTLS 1.3 的 KeyUpdate 不改变
+  SRTP 密钥（ADR-086 第 6 节）。
+- 互通：`latch.sh` 增加 RTCP 自己的握手和网关作为 DTLS 客户端的情形。新的 `ecn6679.sh` 在两个 only 端之间、
+  经 Linux NAT 运行 rtp / leap / ice 以及清除 ECN 的路由器。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：

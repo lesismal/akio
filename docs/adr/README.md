@@ -84,3 +84,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-082: Scalable (L4S) CE response, RFC 6679 signalling, ECN over relays, latching the DTLS handshake, and DTLS-SRTP MKIs](082-webrtc-l4s-rfc6679-dtls-latching-mki.md) (accepted 2026-11-22)
 - [ADR-084: RTSP receiver reports, client redirects, lookups on reconnect; HLS keyframe requests](084-rtsp-receiver-reports-redirects-lookups.md) (accepted 2026-11-22)
 - [ADR-085: The codec-side fields of RTCP XR VoIP metrics: G.107 / G.107.1 per codec, the application's values](085-rtcp-xr-voip-quality-fields.md) (accepted 2026-11-22)
+- [ADR-086: RFC 6679 "ice" and "leap" ECN initiation, the remote's `ect=`, retrying ECN, latching RTCP's DTLS and the DTLS client](086-webrtc-ecn-initiation-retry-dtls-latching.md) (accepted 2026-11-22)
