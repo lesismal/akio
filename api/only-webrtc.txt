@@ -603,6 +603,7 @@ pub fn only_webrtc::Peer::request_max_bitrate(&self, only_webrtc::Mid, core::opt
 pub fn only_webrtc::Peer::send(&self, only_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, only_webrtc::Error>
 pub fn only_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
 pub fn only_webrtc::Peer::set_channel_priority(&self, only_webrtc::ChannelId, only_webrtc::ChannelPriority) -> core::result::Result<(), only_webrtc::Error>
+pub fn only_webrtc::Peer::set_voip_quality(&self, only_webrtc::Mid, only_rtp::xr::VoipQuality, core::option::Option<only_rtp::emodel::EModel>) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_media(&self, only_webrtc::Mid, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_simulcast(&self, only_webrtc::Mid, &str, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 impl core::clone::Clone for only_webrtc::Peer

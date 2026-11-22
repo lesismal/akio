@@ -356,10 +356,32 @@ let cfg = only_webrtc::rtc_config()
   voip-metrics`): a block goes out when both sides list its format, once a second per received
   stream, about the sequence numbers since the last report (thinned to fit a datagram); VoIP
   metrics on audio lines only, with the loss, burst and gap fields measured, the round-trip
-  time, and the R factor, MOS-LQ and MOS-CQ of the E-model (ITU-T G.107, with G.711 values for
-  every codec) from the loss, its burstiness, the round trip and the jitter; the levels and the
-  jitter buffer fields unavailable. Received ones arrive as `XrReceipts` and
-  `VoipMetrics` events, with totals in the statistics.
+  time, and the R factor, MOS-LQ and MOS-CQ of the E-model (ITU-T G.107, wideband codecs with
+  G.107.1; ADR-085) from the loss, its burstiness, the round trip and the end system delay, with
+  the received codec's G.113 planning values (`EModel::for_codec`: PCMU, PCMA, G.722, G.729,
+  G.723.1, and an assumed entry for Opus, which has none) and its concealment in the receiver
+  configuration. What only the application knows, since it decodes and plays the audio, it
+  gives with `set_voip_quality`; the rest is sent unavailable (127). Received ones arrive as
+  `XrReceipts` and `VoipMetrics` events (`metrics.quality()` decodes the latter), with totals in
+  the statistics.
+
+  ```rust,ignore
+  use only_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+
+  // After decoding: speech level over talkspurts, the jitter buffer as it stands.
+  peer.set_voip_quality(mid, VoipQuality {
+      signal_level: pcm_level_dbm0(&talkspurt),
+      noise_level: pcm_level_dbm0(&silence),
+      jitter_buffer: Some(JitterBufferConfig {
+          adaptive: true,
+          rate: 4,
+          nominal: Duration::from_millis(60),
+          maximum: Duration::from_millis(120),
+          abs_max: Duration::from_millis(500),
+      }),
+      ..VoipQuality::default()
+  }, None)?; // None: the received codec's E-model values
+  ```
 - **ULPFEC levels** (RFC 5109 §5): with `set_ulpfec_level0(Some(l0))` the FEC packets of a frame
   protect the first `l0` bytes of each packet and one more level covers the rest once: a single
   loss is repaired whole for far fewer repair bytes. libwebrtc reads level 0 only (Chrome would

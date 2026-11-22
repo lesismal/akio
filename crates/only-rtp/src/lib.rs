@@ -99,6 +99,8 @@ mod tests_fec_policy;
 mod tests_levels;
 #[cfg(test)]
 mod tests_probe;
+#[cfg(test)]
+mod tests_voip;
 
 pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
 pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};

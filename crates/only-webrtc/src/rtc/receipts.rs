@@ -10,13 +10,18 @@
 //!   go out, thinned (§4.1 T) so the compound fits a datagram, after an empty receiver
 //!   report from the line's sender SSRC (RFC 3550 §6.1). VoIP metrics come from a
 //!   [`BurstLossModel`] fed with the interval's loss trace, with the round-trip time and the
-//!   R factor, MOS-LQ and MOS-CQ of the E-model ([`EModel`], ITU-T G.107) from the loss so far,
-//!   its burst ratio, the round-trip time and the interarrival jitter (a jitter buffer of
-//!   twice the jitter assumed), with G.711-with-concealment codec values for every codec.
+//!   R factor, MOS-LQ and MOS-CQ of the E-model ([`EModel`], ITU-T G.107 / G.107.1) from the
+//!   loss so far, its burst ratio, the round-trip time and the end system delay (the
+//!   application's, else its jitter buffer's nominal delay, else twice the interarrival
+//!   jitter), with the received codec's planning values ([`EModel::for_codec`]). The
+//!   receiver configuration's concealment is the codec's own ([`Plc::of_codec`]). What the
+//!   application knows ([`Peer::set_voip_quality`](crate::Peer::set_voip_quality): levels,
+//!   RERL, its jitter buffer, an external R factor, its own scores) goes in as given; the
+//!   rest is sent unavailable (127).
 //! - Receiving: the blocks about a stream this side sends become events.
 
 use super::*;
-use only_rtp::{BurstLossModel, EModel, SdesItem, VoipQuality, XrBlock};
+use only_rtp::{BurstLossModel, EModel, Plc, SdesItem, VoipQuality, XrBlock};
 
 /// Sequence numbers a receipt log keeps per interval.
 pub(super) const RECEIPT_LOG_CAPACITY: usize = 4096;
@@ -62,7 +67,54 @@ fn block_size(b: &XrBlock) -> usize {
     }
 }
 
+/// The VoIP quality fields of a report about a stream received on a line: what the
+/// application gave (`app`) wins; the round-trip time is measured; the concealment is the
+/// received codec's own when the application did not say; R, MOS-LQ and MOS-CQ come from the
+/// E-model with the codec's planning values (`model` when the application chose them, G.711
+/// with concealment for a codec without any) and the loss so far of `m`.
+fn voip_quality(
+    app: VoipQuality,
+    model: Option<EModel>,
+    codec: Option<&CodecParams>,
+    rtt: Option<Duration>,
+    jitter: Duration,
+    m: &BurstLossModel,
+) -> VoipQuality {
+    let name = codec.map_or("", |c| c.codec.name());
+    let mut q = VoipQuality {
+        round_trip: app.round_trip.or(rtt),
+        plc: if app.plc == Plc::Unspecified {
+            Plc::of_codec(name)
+        } else {
+            app.plc
+        },
+        ..app
+    };
+    let model = model
+        .or_else(|| EModel::for_codec(name, q.plc))
+        .unwrap_or_default();
+    let packet = Duration::from_millis(u64::from(VOIP_PACKET_MS));
+    model.estimate_report(m, &q, jitter, packet).fill(&mut q);
+    q
+}
+
 impl Rtc {
+    /// Sets what the application knows of the VoIP quality of the streams received on `mid`
+    /// and, with `model`, the E-model codec values. `false`: no such line.
+    pub(crate) fn set_voip_quality(
+        &mut self,
+        mid: Mid,
+        quality: VoipQuality,
+        model: Option<EModel>,
+    ) -> bool {
+        let Some(l) = self.media.iter_mut().find(|l| l.mid == mid) else {
+            return false;
+        };
+        l.voip = quality;
+        l.voip_model = model;
+        true
+    }
+
     /// The XR compounds about every received stream with blocks negotiated; ends their
     /// receipt logs' intervals.
     pub(super) fn receipt_reports(&mut self) -> Vec<Vec<Rtcp>> {
@@ -82,11 +134,8 @@ impl Rtc {
                 continue;
             }
             let rtt = r.stream.rtt();
-            let clock = r
-                .assembler
-                .as_ref()
-                .and_then(|(pt, _)| l.codec(*pt))
-                .map_or(48_000, |c| c.clock);
+            let codec = r.assembler.as_ref().and_then(|(pt, _)| l.codec(*pt));
+            let clock = codec.map_or(48_000, |c| c.clock);
             let jitter = Duration::from_secs_f64(f64::from(r.stream.jitter()) / f64::from(clock));
             let Some(log) = r.stream.receipt_log().filter(|l| !l.is_empty()) else {
                 continue;
@@ -99,21 +148,7 @@ impl Rtc {
                     for (_, received) in trace.decode() {
                         m.on_packet(!received, false);
                     }
-                    let mut q = VoipQuality {
-                        round_trip: rtt,
-                        ..VoipQuality::default()
-                    };
-                    let packet = Duration::from_millis(u64::from(VOIP_PACKET_MS));
-                    EModel::default()
-                        .estimate(
-                            m.loss_fraction(),
-                            m.burst_ratio(),
-                            rtt,
-                            jitter,
-                            packet,
-                            None,
-                        )
-                        .apply(&mut q);
+                    let q = voip_quality(l.voip, l.voip_model, codec, rtt, jitter, m);
                     xr.push(XrBlock::VoipMetrics(m.report(
                         log.ssrc(),
                         VOIP_PACKET_MS,

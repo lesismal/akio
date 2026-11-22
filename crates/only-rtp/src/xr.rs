@@ -969,9 +969,11 @@ pub struct JitterBufferConfig {
     pub abs_max: Duration,
 }
 
-/// The VoIP metrics fields beyond the loss and burst model (RFC 3611 §4.7.3 to §4.7.7),
-/// which only the media application knows; [`BurstLossModel::report`] puts them into a
-/// [`VoipMetrics`]. Anything `None` is sent as unavailable (127 for levels and quality
+/// The VoIP metrics fields beyond the loss and burst model (RFC 3611 §4.7.3 to §4.7.7):
+/// levels, echo and the jitter buffer only the media application knows, the scores it or
+/// the E-model ([`EModel::estimate_report`](crate::EModel::estimate_report)) gives;
+/// [`BurstLossModel::report`] puts them into a [`VoipMetrics`] and
+/// [`VoipMetrics::quality`] reads them back. Anything `None` is sent as unavailable (127 for levels and quality
 /// scores, 0 for delays, unknown for the receiver configuration).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoipQuality {
@@ -1044,6 +1046,47 @@ impl BurstLossModel {
             jb_maximum: ms16(jb.maximum),
             jb_abs_max: ms16(jb.abs_max),
             ..self.metrics(ssrc, packet_ms)
+        }
+    }
+}
+
+impl VoipMetrics {
+    /// The delay, level, quality and receiver configuration fields as [`VoipQuality`] (the
+    /// inverse of [`BurstLossModel::report`]): 127 (unavailable) and out-of-range scores
+    /// become `None`, as do zero delays and an unknown or reserved jitter buffer kind.
+    #[must_use]
+    pub fn quality(&self) -> VoipQuality {
+        let ms = |v: u16| (v != 0).then(|| Duration::from_millis(u64::from(v)));
+        let level = |v: u8| (v != VOIP_UNAVAILABLE).then_some(v as i8);
+        let score = |v: u8, lo: u8, hi: u8| (lo..=hi).contains(&v).then_some(v);
+        let plc = match self.rx_config >> 6 {
+            1 => Plc::Disabled,
+            2 => Plc::Enhanced,
+            3 => Plc::Standard,
+            _ => Plc::Unspecified,
+        };
+        let jitter_buffer = match (self.rx_config >> 4) & 3 {
+            k @ (2 | 3) => Some(JitterBufferConfig {
+                adaptive: k == 3,
+                rate: self.rx_config & 0x0f,
+                nominal: Duration::from_millis(u64::from(self.jb_nominal)),
+                maximum: Duration::from_millis(u64::from(self.jb_maximum)),
+                abs_max: Duration::from_millis(u64::from(self.jb_abs_max)),
+            }),
+            _ => None,
+        };
+        VoipQuality {
+            round_trip: ms(self.round_trip_delay),
+            end_system_delay: ms(self.end_system_delay),
+            signal_level: level(self.signal_level),
+            noise_level: level(self.noise_level),
+            rerl: score(self.rerl, 0, 126),
+            r_factor: score(self.r_factor, 0, 100),
+            ext_r_factor: score(self.ext_r_factor, 0, 100),
+            mos_lq: score(self.mos_lq, 10, 50),
+            mos_cq: score(self.mos_cq, 10, 50),
+            plc,
+            jitter_buffer,
         }
     }
 }

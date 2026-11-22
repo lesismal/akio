@@ -52,6 +52,28 @@ ADR-076's update of 2026-11-22, additive API:
 - `tools/interop/webrtc/turn-tcp.sh` runs the engine client against coturn, pion/turn and
   only-turn over TCP and TLS.
 
+### Added: codec-side fields of RTCP XR VoIP metrics (only-rtp, only-webrtc)
+
+ADR-085 (docs/adr/085-rtcp-xr-voip-quality-fields.md), additive:
+
+- `EModel` computes ITU-T G.107 with its Table 3 defaults from the formulas (`Ro` 94.77, `Is`
+  1.41) and the full delay impairment `Idte + Idle + Idd` in place of Cole and Rosenbluth's fit;
+  `EModel::wideband` rates wideband codecs on G.107.1's scale (divided by 1.29 for the R field
+  and the MOS); `EModel::is_wideband`.
+- `EModel::for_codec(name, plc)`: G.113 planning values for PCMU / PCMA (with and without
+  concealment), G729, G723 and G722 (`Ie,wb` 13), and a documented assumption for Opus, which
+  has no ITU-T value. `Plc::of_codec`: the concealment a codec's decoder always does.
+- `EModel::estimate_report` (the end system delay from the application, its jitter buffer or
+  the jitter), `EModelScore::fill` (keeps the application's scores), `VoipMetrics::quality`
+  (decodes a received block into `VoipQuality`).
+- only-webrtc: VoIP metrics rate each received audio stream by its codec and carry the codec's
+  concealment in RX config. `Peer::set_voip_quality(mid, VoipQuality, Option<EModel>)` takes what
+  only the application knows: signal and noise levels, RERL, the jitter buffer, the end system
+  delay, an external R factor, its own R / MOS. Fields it leaves out are still sent as 127.
+- Changed values without an API change: `EModel::delay_impairment` and `EModel::score` (an
+  unimpaired R of 93.21 where the constant was 93.2); Opus and G.722 streams now rate on the
+  wideband scale.
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

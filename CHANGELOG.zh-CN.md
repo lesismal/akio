@@ -41,6 +41,24 @@ ADR-076 的 2026-11-22 更新，API 只增不改：
   详见 ADR-076。
 - `tools/interop/webrtc/turn-tcp.sh` 让引擎客户端经 TCP 与 TLS 对 coturn、pion/turn 与 only-turn 运行。
 
+### 新增：RTCP XR VoIP 指标中与编解码器相关的字段（only-rtp、only-webrtc）
+
+ADR-085（docs/adr/085-rtcp-xr-voip-quality-fields.zh-CN.md），仅新增：
+
+- `EModel` 按 ITU-T G.107 计算，表 3 默认值按公式算出（`Ro` 94.77、`Is` 1.41），并以完整的时延损伤
+  `Idte + Idle + Idd` 取代 Cole 与 Rosenbluth 的拟合；`EModel::wideband` 按 G.107.1 的刻度为宽带编解码器
+  评分（R 字段与 MOS 用除以 1.29 后的值）；`EModel::is_wideband`。
+- `EModel::for_codec(name, plc)`：G.113 中 PCMU / PCMA（有无丢包隐藏）、G729、G723 与 G722（`Ie,wb` 13）
+  的规划值，以及 Opus 的一条写入文档的假定值（ITU-T 没有该值）。`Plc::of_codec`：编解码器的解码器总会做的
+  丢包隐藏。
+- `EModel::estimate_report`（端系统时延取自应用、其抖动缓冲或抖动）、`EModelScore::fill`（保留应用的评分）、
+  `VoipMetrics::quality`（把收到的块解码为 `VoipQuality`）。
+- only-webrtc：VoIP 指标按所收编解码器为每个接收音频流评分，并在 RX config 中携带该编解码器的丢包隐藏。
+  `Peer::set_voip_quality(mid, VoipQuality, Option<EModel>)` 接收只有应用知道的值：信号与噪声电平、RERL、
+  抖动缓冲、端系统时延、外部 R 因子、应用自己的 R / MOS。应用未给出的字段仍以 127 发送。
+- API 不变而数值改变的：`EModel::delay_impairment` 与 `EModel::score`（无损伤时 R 为 93.21，原常数为
+  93.2）；Opus 与 G.722 流现在按宽带刻度评分。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

@@ -804,7 +804,8 @@ pub(crate) enum Other {
         receipt_times: u64,
     },
     /// A remote receiver's RTCP XR VoIP metrics (RFC 3611 §4.7) about a stream this side
-    /// sends.
+    /// sends; [`VoipMetrics::quality`](only_rtp::VoipMetrics::quality) decodes the delay,
+    /// level, score and jitter buffer fields.
     VoipMetrics {
         mid: Mid,
         reporter: u32,
@@ -1339,9 +1340,12 @@ impl RtcConfig {
     /// `a=rtcp-xr` formats of `blocks` (`pkt-loss-rle`, `pkt-dup-rle`, `pkt-rcpt-times`,
     /// `voip-metrics`). A block is sent when both sides list it: once a second, per received
     /// stream, about the sequence numbers since the previous report (thinned to fit a
-    /// datagram), VoIP metrics on audio lines only, with the loss and burst fields measured
-    /// and the round-trip time known; the other quality fields are sent as unavailable.
-    /// Received blocks of these kinds are reported as events. Independent of
+    /// datagram), VoIP metrics on audio lines only, with the loss and burst fields measured,
+    /// the round-trip time known, R / MOS-LQ / MOS-CQ estimated with the E-model for the
+    /// received codec and its concealment in the receiver configuration; what only the
+    /// application knows (levels, echo, its jitter buffer) comes from
+    /// [`Peer::set_voip_quality`](crate::Peer::set_voip_quality), else it is sent as
+    /// unavailable. Received blocks of these kinds are reported as events. Independent of
     /// [`enable_rtcp_xr`](Self::enable_rtcp_xr) (receiver reference times). Default none.
     #[must_use]
     pub fn enable_rtcp_xr_blocks(mut self, blocks: XrBlocks) -> Self {
