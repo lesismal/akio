@@ -10,6 +10,9 @@
 #   3. a NAT rebinding mid-call (the phone's conntrack entry deleted, so its next packet gets a
 #      new random port): with once the echo stops; with rebind (after 1 s of silence from the
 #      old mapping) the gateway follows and 300 packets come back.
+#   4. DTLS-SRTP instead of SDES (ADR-082): the gateway answers the phone's actpass offer with
+#      passive, the phone's ClientHello arrives from the NAT; latching off, no handshake and no
+#      echo; once, a cookie exchange, the handshake latches and 100 packets come back.
 # The gateway's statistics say how often it latched.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -31,7 +34,7 @@ iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -p udp -j MASQUERADE --to-p
 iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -j MASQUERADE
 PORT=5100
 gateway() { # <latch> -> starts the gateway on $PORT, its log in /tmp/gw-$PORT.log
-  ip netns exec gw env ONLY_INTEROP_LATCH=$1 $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
+  ip netns exec gw env ONLY_INTEROP_LATCH=$1 ONLY_INTEROP_SIP=${SIP:-1} $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
     >/tmp/gw-$PORT.log 2>&1 &
   GW=$!
   sleep 0.5
@@ -40,7 +43,7 @@ phone() { # <n> [rebind-after-seconds]
   if [ -n "${2:-}" ]; then
     (sleep "$2"; conntrack -D -p udp -s 10.99.0.2 >/dev/null 2>&1 || true) &
   fi
-  ip netns exec phone env ONLY_INTEROP_SIP=1 ONLY_INTEROP_BIND=10.99.0.2:5004 \
+  ip netns exec phone env ONLY_INTEROP_SIP=${SIP:-1} ONLY_INTEROP_BIND=10.99.0.2:5004 \
     $RS client 10.99.1.2:$((PORT + 1)) sip "$1" 2>/tmp/phone.log
 }
 latched() { grep -o "latched: [0-9]*" /tmp/gw-$PORT.log | tail -1; }
@@ -64,6 +67,17 @@ finish
 echo "== NAT rebinding, latching rebind (1 s)"
 gateway rebind
 phone 300 2
+echo "gateway $(latched)"
+finish
+echo "== DTLS-SRTP, latching off"
+SIP=dtls
+gateway off
+if phone 100; then echo "FAIL: echo without latching"; exit 1; fi
+echo "no echo; gateway $(latched)"
+finish
+echo "== DTLS-SRTP, latching once"
+gateway once
+phone 100
 echo "gateway $(latched)"
 finish
 echo "ok: latch.sh"
