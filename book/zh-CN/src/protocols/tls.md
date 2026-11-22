@@ -59,8 +59,8 @@ AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并
 
 一致性：RFC 8448 跟踪作为单元测试，tlsfuzzer（`tools/interop/tls/tlsfuzzer.sh`），以及与 OpenSSL、Go `crypto/tls`、curl 和 rustls 的互通矩阵
 （`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。与 rustls 0.23 +
-ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握手持平，AES-128-GCM 记录在 1 KiB 与 16 KiB
-时均约为 1.6 倍。
+ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256r1（ECDSA P-256 证书）完整握手均约为 1.1 倍，AES-128-GCM 记录在 1 KiB 与 16 KiB
+时均约为 1.6 倍，ChaCha20-Poly1305 记录在 1 KiB 时约 1.2 倍、16 KiB 时约 1.5 倍。ChaCha20-Poly1305 AEAD 本身在 64 字节消息上与 ring 相当（加密 1.11 倍，解密 0.98 倍；见 docs/BENCHMARKS.zh-CN.md）。
 
 ## 配置
 

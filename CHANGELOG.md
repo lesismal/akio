@@ -145,6 +145,25 @@ ADR-080 (docs/adr/080-rtsp-server-redirect-rtmp-lookups.md), additive:
   `tools/interop/media/rtsp-server-redirect.sh`: ffmpeg 6.1.1 (gpu51, playing and recording over TCP and UDP; 9.0.2 on macOS too, but for a UDP recording, not tried) answers our server's `REDIRECT` `501` and carries on; GStreamer 1.24.2 `rtspsrc` and `rtspclientsink` (TCP, UDP) answer `200` and carry on; mediamtx 1.15.3 pulling from our server (a path's `source`, TCP and UDP) does not answer, tears the session down at once and pulls the same URL again. None moves to the location; our server ended each of those sessions at its TEARDOWN or 4 s (the test's grace) after the request. Our client moved by our server to mediamtx: the pull keeps carrying media from it (310 to 335 packets in the check) and the push, moved at a `Range` time, is read back from mediamtx, over TCP and UDP. RTMP: on a Docker network the name `rtmpsrv` moves from mediamtx A (172.31.248.10, removed) to mediamtx B (.20) and our reconnecting push and pull, run in a container there, dial .20 (the pull reconnected 11 times while B's path waited for the push to come back). live555 (openRTSP) was not tried: Ubuntu 24.04 and Debian 12 no longer package it.
 - Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, 9 alternating rounds, medians, head / base): RTMP pull 0.997, RTSP pull 1.000, RTSP RECORD ingest 1.002 (`tests/client_bench.rs`); hub fan-out 0.987 / 0.994 / 1.000 (1 / 16 / 256 subscribers), FLV decode 1.010 (H.264) and 1.006 (H.265) (`tests/media_bench.rs`), all within the noise: nothing on the media path changed (the session list is touched at SETUP / ANNOUNCE and TEARDOWN, the lookups at connect time).
 
+### Performance: opening short ChaCha20-Poly1305 messages; P-256 reduction without `mulx` (only-crypto)
+
+No API change.
+
+- **ChaCha20-Poly1305 64-byte open 0.84× → 0.98× ring, seal 0.99× → 1.11×** (Zen 4, quiet host,
+  same-run A/B). Opening was slow because of stores Zen 4 cannot forward, not because the tag must be
+  checked first: the Poly1305 key was read back right after the AVX-512 row kernel stored the
+  keystream head with zmm stores, and the AAD's partial block was assembled on the stack and
+  read back across narrower stores. The row kernel now also returns the key in general
+  registers, writes the head store-only into caller-owned uninitialised storage (no zero fill,
+  no 256-byte copy), and the partial block is assembled in registers. 1 KiB open +4%, TLS 1.3
+  ChaCha20 records at 1 KiB 1.16× → 1.21× rustls + ring. New `tools/ct-dudect` target
+  `chacha20poly1305-open-tag-64` for the short-message path.
+- **P-256 on x86_64**: the whole-point routines' Montgomery reduction computes `m·p₃` from shifts
+  (`p₃ = 2⁶⁴ - 2³² + 1`) instead of one `mulx` per step, which frees the single multiplier port:
+  verify +5.2% (1.09× → 1.15× ring), ECDH +1.7% (1.17×), key generation +1.2%, secp256r1 TLS 1.3
+  handshakes 1.07× → 1.10× rustls + ring. The same change in the standalone field
+  multiplication (latency-bound inversion chains) gained nothing and was left out.
+
 ### Added: mDNS name claiming, goodbyes, unicast hop limit 255 (only-webrtc, only, only-sys, only-ice)
 
 ADR-078's update of 2026-11-22, additive:

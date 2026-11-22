@@ -128,6 +128,13 @@ ADR-080（docs/adr/080-rtsp-server-redirect-rtmp-lookups.zh-CN.md），只有新
   `tools/interop/media/rtsp-server-redirect.sh`：ffmpeg 6.1.1（gpu51，经 TCP 与 UDP 播放和录制；macOS 上的 9.0.2 亦然，只是未试经 UDP 录制），对我们服务器的 `REDIRECT` 回答 `501` 并照常继续；GStreamer 1.24.2 的 `rtspsrc` 与 `rtspclientsink`（TCP、UDP）回答 `200` 并照常继续；从我们服务器拉流的 mediamtx 1.15.3（路径的 `source`，TCP 与 UDP）不回答，立即拆除会话并重新拉同一 URL。它们都不迁到新位置；我们的服务器在其 TEARDOWN 时或请求后 4 s（测试的宽限期）结束了每一个这样的会话。我们的客户端被我们的服务器迁到 mediamtx：拉流继续从那里带来媒体（检查中 310 至 335 个包），在 `Range` 时间迁移的推流可从 mediamtx 读回，TCP 与 UDP 均如此。RTMP：在 Docker 网络中名字 `rtmpsrv` 从 mediamtx A（172.31.248.10，已移除）迁到 mediamtx B（.20），在该网络的容器中运行、自动重连的推流与拉流都拨到了 .20（B 的路径等待推流回来期间，拉流重连了 11 次）。未试 live555（openRTSP）：Ubuntu 24.04 与 Debian 12 都不再打包它。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，9 轮交替，取中位数，head / base）：RTMP 拉流 0.997、RTSP 拉流 1.000、RTSP RECORD 入流 1.002（`tests/client_bench.rs`）；hub 分发 0.987 / 0.994 / 1.000（1 / 16 / 256 个订阅者），FLV 解码 1.010（H.264）与 1.006（H.265）（`tests/media_bench.rs`），都在噪声之内：媒体路径没有改动（会话列表只在 SETUP / ANNOUNCE 与 TEARDOWN 时访问，解析只在连接时进行）。
 
+### 性能：短 ChaCha20-Poly1305 消息的解密；不用 `mulx` 的 P-256 约简（only-crypto）
+
+无 API 变化。
+
+- **ChaCha20-Poly1305 解密 64 字节为 ring 的 0.84 倍 → 0.98 倍，加密 0.99 倍 → 1.11 倍**（Zen 4，安静主机，同次运行 A/B）。解密慢的原因是 Zen 4 无法转发的存储，而不是必须先校验标签：AVX-512 行内核用 zmm 存储写出密钥流头后立即读回 Poly1305 密钥，AAD 的不完整分组在栈上拼接后跨越较窄的存储读回。现在行内核还在通用寄存器中返回密钥，只存储地把密钥流头写进调用方拥有的未初始化存储（不清零，不拷贝 256 字节），不完整分组在寄存器中拼接。1 KiB 解密 +4%，1 KiB 的 TLS 1.3 ChaCha20 记录相对 rustls + ring 1.16 倍 → 1.21 倍。`tools/ct-dudect` 新增针对短消息路径的目标 `chacha20poly1305-open-tag-64`。
+- **x86_64 上的 P-256**：整点运算的 Montgomery 约简用移位计算 `m·p₃`（`p₃ = 2⁶⁴ - 2³² + 1`），不再每步一条 `mulx`，从而腾出唯一的乘法端口：验签 +5.2%（ring 的 1.09 倍 → 1.15 倍），ECDH +1.7%（1.17 倍），生成密钥 +1.2%，secp256r1 TLS 1.3 握手相对 rustls + ring 1.07 倍 → 1.10 倍。在独立的域乘法（受延迟限制的求逆链）中做同样的改动没有收益，未采用。
+
 ### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：

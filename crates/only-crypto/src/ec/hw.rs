@@ -863,9 +863,11 @@ macro_rules! f_sqr {
 
 /// One step of [`f_redc`] on the low half `L = ($m, $z1, $z2, $z3)`: `L ← (L + m·p)/2⁶⁴` with
 /// `m` the low limb, the result in `($z1, $z2, $z3, $m)`. As in [`reduce_p`], `m·p` adds `m·2⁹⁶`
-/// (two shifted words: `shlx`/`shrx` by `rbx = 32`) and `m·p₃·2¹⁹²` (one `mulx`, `rdx = p₃`
-/// for the whole reduction, so no move into `rdx` per step); the top limb of the result is
-/// `hi(m·p₃)` plus a carry, which cannot overflow (`hi(m·p₃) ≤ 2⁶⁴ - 2³²`), and
+/// (two shifted words: `shlx`/`shrx` by `rbx = 32`) and `m·p₃·2¹⁹²` (from the same two shifts:
+/// `m - (m << 32)` and `m - (m >> 32) - borrow`; on Zen 4 this measured 2–4% faster point
+/// routines than one `mulx` per step, which shares the one multiplier port with the products);
+/// the top limb of the result is `hi(m·p₃)` plus a carry, which cannot overflow
+/// (`hi(m·p₃) ≤ 2⁶⁴ - 2³²`), and
 /// `(L + m·p)/2⁶⁴ < 2¹⁹² + p < 2²⁵⁶`.
 macro_rules! f_redc_step {
     ($m:literal, $z1:literal, $z2:literal, $z3:literal) => {
@@ -876,11 +878,15 @@ macro_rules! f_redc_step {
             "shrx rcx, ",
             $m,
             ", rbx\n",
-            "mulx ",
-            $m,
-            ", rsi, ",
+            // m·p₃ = m·2⁶⁴ - m·2³² + m without the multiplier: low word m - (m << 32), high
+            // word m - (m >> 32) - borrow.
+            "mov rsi, ",
             $m,
             "\n",
+            "sub rsi, rax\n",
+            "sbb ",
+            $m,
+            ", rcx\n",
             "add ",
             $z1,
             ", rax\n",
@@ -898,13 +904,12 @@ macro_rules! f_redc_step {
 }
 
 /// The Montgomery reduction `t·2⁻²⁵⁶ mod p` of `t = H·2²⁵⁶ + L` in `r8..r15` (`t < p·2²⁵⁶`) into
-/// `R`, `p₃` read from `[rdi]` into `rdx`: four steps reduce the low half alone to
+/// `R`: four steps reduce the low half alone to
 /// `L' = (L + M·p)/2²⁵⁶ ≤ p` (in `r8..r11` again after the rotation), then `R = H + L' < 2p`
 /// with the carry in `rsi`, and one conditional subtraction.
 macro_rules! f_redc {
     () => {
         concat!(
-            "mov rdx, [rdi]\n",
             f_redc_step!("r8", "r9", "r10", "r11"),
             f_redc_step!("r9", "r10", "r11", "r8"),
             f_redc_step!("r10", "r11", "r8", "r9"),

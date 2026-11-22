@@ -253,6 +253,14 @@ pub(crate) fn all() -> Vec<Spec> {
             make: chacha_tag,
         },
         Spec {
+            name: "chacha20poly1305-open-tag-64",
+            kind: Kind::Secret,
+            hw: true,
+            batch: 5000,
+            about: "ChaCha20-Poly1305 open, 64 B (short-message head): tag wrong in the last byte vs random tag",
+            make: chacha_tag_64,
+        },
+        Spec {
             name: "chacha20poly1305-open-valid",
             kind: Kind::Public,
             hw: true,
@@ -623,9 +631,9 @@ fn gcm_valid() -> Box<dyn Target> {
     gcm(false)
 }
 
-fn chacha(near: bool) -> Box<dyn Target> {
+fn chacha(near: bool, len: usize) -> Box<dyn Target> {
     let cipher = ChaCha20Poly1305::new(&[0x11; 32]);
-    let mut ct = vec![0x33u8; 256];
+    let mut ct = vec![0x33u8; len];
     let tag = cipher.encrypt_in_place_detached(&NONCE, AAD, &mut ct);
     boxed(
         Aead { cipher, ct, tag },
@@ -641,11 +649,17 @@ fn chacha(near: bool) -> Box<dyn Target> {
 }
 
 fn chacha_tag() -> Box<dyn Target> {
-    chacha(true)
+    chacha(true, 256)
+}
+
+/// The short-message path: the head is one row-kernel call that also hands the Poly1305 key over
+/// in registers (up to 192 bytes on AVX-512).
+fn chacha_tag_64() -> Box<dyn Target> {
+    chacha(true, 64)
 }
 
 fn chacha_valid() -> Box<dyn Target> {
-    chacha(false)
+    chacha(false, 256)
 }
 
 fn hmac(near: bool) -> Box<dyn Target> {

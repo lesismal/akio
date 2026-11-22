@@ -102,6 +102,34 @@ pub(super) fn xor_wide(state: &[u32; 16], dst: &mut [u8]) -> bool {
     }
 }
 
+/// Writes the keystream of the four blocks from block `state[12]` into `buf` (one row-kernel
+/// call, stores only: no zero-filled buffer to XOR into, no byte masks) and returns it with its
+/// first 32 bytes as little-endian words straight from the vector register (see
+/// [`avx512::keystream_row`]), or `None` (`buf` untouched) without AVX-512. For the head of a
+/// short AEAD message; `buf` belongs to the caller, so the 256 bytes are never moved.
+#[inline(always)]
+pub(super) fn keystream_row<'a>(
+    state: &[u32; 16],
+    buf: &'a mut core::mem::MaybeUninit<[u8; 256]>,
+) -> Option<(&'a [u8; 256], [u64; 4])> {
+    if !cpu::cpu_has(Feature::Avx512) {
+        return None;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `buf` is 256
+        // writable bytes.
+        let key = unsafe { avx512::keystream_row(state, buf.as_mut_ptr().cast()) };
+        // SAFETY: the kernel stored all 256 bytes.
+        Some((unsafe { buf.assume_init_ref() }, key))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (state, buf);
+        None
+    }
+}
+
 /// Writes the keystream starting at block `state[12]` XOR `src` to the next `src.len()` bytes
 /// of `out` (which may be uninitialised: they are only written), as [`xor_wide`] does in place.
 /// The counter must not wrap within the `src.len().div_ceil(64)` blocks. `false` (nothing done)
