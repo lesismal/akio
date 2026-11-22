@@ -1501,7 +1501,13 @@ impl Handler for UdpRecv {
             if self.rtcp || rtp::is_rtcp(data) {
                 lock(&r).rtcp(self.media, data);
             } else {
-                lock(&r).push(self.media, data, Instant::now());
+                let mut r = lock(&r);
+                let at = if r.reports_on() {
+                    Instant::now()
+                } else {
+                    r.start
+                };
+                r.push(self.media, data, at);
             }
         }
     }
