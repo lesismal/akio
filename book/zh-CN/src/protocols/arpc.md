@@ -1,6 +1,6 @@
 # arpc
 
-`only-arpc` 使用 [lesismal/arpc](https://github.com/lesismal/arpc) 和 fib 的 `arpc` package 的
+`akio-arpc` 使用 [lesismal/arpc](https://github.com/lesismal/arpc) 和 fib 的 `arpc` package 的
 线路格式，因此可以与这两者的 Go 端互通（由 `tools/interop/arpc/run.sh` 做双向检查）。
 
 每个连接在**两端**都是一个 `Peer`：任意一端都可以调用、通知或打开 stream，并用自己拿到的
@@ -9,7 +9,7 @@
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:server}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:server}}
 ```
 
 `Routes`：
@@ -37,10 +37,10 @@ handler 在 I/O 线程上执行，不能阻塞。
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:client}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`only_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
+`akio_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
 **自动重连**，直到调用 `Peer::close()`。
 
 `Peer`（可克隆，可在任何线程使用）：
@@ -62,7 +62,7 @@ handler 在 I/O 线程上执行，不能阻塞。
 ## 中间件与 coder
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:middleware}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:middleware}}
 ```
 
 **中间件**包裹每个请求和通知的 handler：先按添加顺序执行全局中间件（`Routes::middleware`），
@@ -73,7 +73,7 @@ handler 答复之后；不调用 `next.run` 直接返回即中止调用链（先
 后续中间件和 handler 可见。客户端的路由处理服务端发来的调用，所以中间件在两端用法相同。stream
 没有中间件（与 Go 相同）。没有中间件的路由直接调用 handler，没有额外开销。
 
-**Coder**（`only_arpc::coder`）改写整个帧，对应 Go 的 `MessageCoder`：发送的帧按添加顺序经过
+**Coder**（`akio_arpc::coder`）改写整个帧，对应 Go 的 `MessageCoder`：发送的帧按添加顺序经过
 各 coder，接收的帧按相反顺序，所以两端需要相同的 coder 链。每个 coder 在保留头字节中用一位标记
 自己的处理，位与 Go 的 `arpcex/extension/middleware/coder` 相同：
 
@@ -90,7 +90,7 @@ decode 出错会关闭连接。ping 和 pong 不经过 coder。
 ## 连接池
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:pool}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:pool}}
 ```
 
 `Pool::builder()` 建立 `size` 个连接（4 个），共享同一个 `Routes`，全部连上后返回

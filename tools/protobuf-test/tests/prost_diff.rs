@@ -5,7 +5,7 @@
 #[path = "../prost_mirror.rs"]
 mod mirror;
 
-use only_protobuf::{Message, well_known};
+use akio_protobuf::{Message, well_known};
 use protobuf_test::test::{
     all::{AllTypes, Color, all_types},
     common::Shared,
@@ -297,7 +297,7 @@ fn edge_inputs_agree_with_prost() {
         for _ in 0..depth {
             // field 70 (recursive), length-delimited, wrapping what follows
             let mut outer = vec![0xb2, 0x04];
-            only_protobuf::encoding::put_varint(&mut outer, b.len() as u64);
+            akio_protobuf::encoding::put_varint(&mut outer, b.len() as u64);
             outer.extend_from_slice(&b);
             b = outer;
         }

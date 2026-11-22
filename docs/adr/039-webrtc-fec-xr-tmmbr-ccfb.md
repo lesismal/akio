@@ -1,4 +1,4 @@
-# ADR-039: FEC, RTCP XR, TMMBR and RFC 8888 feedback in only-webrtc peers
+# ADR-039: FEC, RTCP XR, TMMBR and RFC 8888 feedback in akio-webrtc peers
 
 [中文](039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md)
 
@@ -6,8 +6,8 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-ADR-036 gave `only-rtp` RTCP extended reports (RFC 3611), TMMBR / TMMBN (RFC 5104), RTP
-congestion control feedback (RFC 8888) and FEC (ULPFEC, FlexFEC, RED), but `only-webrtc`'s peers
+ADR-036 gave `akio-rtp` RTCP extended reports (RFC 3611), TMMBR / TMMBN (RFC 5104), RTP
+congestion control feedback (RFC 8888) and FEC (ULPFEC, FlexFEC, RED), but `akio-webrtc`'s peers
 neither negotiated nor used any of it. Wiring it in means SDP (payload types, an FEC SSRC group,
 feedback attributes), a FEC rate policy, a receive path that repairs packets before the frame
 assembler and NACK, and RTCP scheduling. Browsers matter most: anything that changes what a
@@ -61,10 +61,10 @@ What Chrome 157 does, found against it (`tools/interop/webrtc/fec.sh`):
 5. **Receiving FEC** happens before the frame assembler and NACK: a FlexFEC packet (by payload
    type; the protected SSRC from its header) or a ULPFEC block in RED goes to the decoder of the
    protected stream (at most 4 decoders per peer, about 1.5 MB each); media packets (RED removed) are recorded in it; rebuilt packets enter the
-   receive stream through `RecvStream::receive_recovered` (new in only-rtp: no longer missing, so
+   receive stream through `RecvStream::receive_recovered` (new in akio-rtp: no longer missing, so
    not NACKed, but not counted as received, so reports keep the loss before repair as Chrome's
    do) and then the assembler. A ULPFEC packet's sequence number, and that of a padding-only
-   packet, is marked with `FrameAssembler::skip` (new in only-rtp) so it is not a gap the
+   packet, is marked with `FrameAssembler::skip` (new in akio-rtp) so it is not a gap the
    assembler has to wait out. Retransmitted packets are not fed to the decoder (their extensions
    differ from the protected originals).
 6. **RFC 8888.** When negotiated on any line, received RTP (all SSRCs) goes to a `CcfbReceiver`
@@ -85,7 +85,7 @@ What Chrome 157 does, found against it (`tools/interop/webrtc/fec.sh`):
 ## Consequences
 
 - Additive public API: `FecMechanism`, five `RtcConfig` methods, `Peer::request_max_bitrate`;
-  only-rtp gains `RecvStream::receive_recovered` and `FrameAssembler::skip` (Internal tier).
+  akio-rtp gains `RecvStream::receive_recovered` and `FrameAssembler::skip` (Internal tier).
   Default configurations produce the same SDP as before; `tools/interop/webrtc/browser.sh` and
   `run.sh` pass unchanged.
 - Chrome 157 (with the field trials above): FlexFEC and ULPFEC both ways (with one RTP packet in

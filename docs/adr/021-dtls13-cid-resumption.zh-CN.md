@@ -1,4 +1,4 @@
-# ADR-021：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
+# ADR-021：akio-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
 
 [English](021-dtls13-cid-resumption.md) | 简体中文
 
@@ -6,10 +6,10 @@
 
 ## 背景
 
-only-dtls（wave C）只实现了 DTLS 1.2：带证书的完整 ECDHE 握手，没有连接 ID、会话恢复和预共享密钥。
+akio-dtls（wave C）只实现了 DTLS 1.2：带证书的完整 ECDHE 握手，没有连接 ID、会话恢复和预共享密钥。
 DEV-PLAN wave D 列为未完成的有：DTLS 1.3（RFC 9147）及其 ACK、连接 ID（DTLS 1.2 的 RFC 9146 与
-DTLS 1.3 的 CID）、会话恢复（DTLS 1.2 会话 ID 与票据、DTLS 1.3 PSK 票据）以及 PSK。only-dtls 属于
-Internal 层（docs/api-stability.md），API 可经 ADR 变更；工作区内唯一的使用者是 only-webrtc。
+DTLS 1.3 的 CID）、会话恢复（DTLS 1.2 会话 ID 与票据、DTLS 1.3 PSK 票据）以及 PSK。akio-dtls 属于
+Internal 层（docs/api-stability.md），API 可经 ADR 变更；工作区内唯一的使用者是 akio-webrtc。
 
 ## 决定
 
@@ -23,9 +23,9 @@ Internal 层（docs/api-stability.md），API 可经 ADR 变更；工作区内�
 2. **默认仍是 DTLS 1.2，WebRTC 也是。** `Config::new` 与 `Config::webrtc` 只启用 DTLS 1.2。pion/dtls
    （v3）不支持 DTLS 1.3，WebRTC 栈目前协商 DTLS 1.2；向它们提供 1.3 只会让 ClientHello 变大（密钥共享）
    而无收益。需要时用 `with_versions(vec![Version::Dtls13, Version::Dtls12])` 开启。
-3. **DTLS 1.3 密钥计划由 only-dtls 自己实现**，基于 only-crypto 的 HKDF，不复用 only-tls：only-tls 依赖
-   only-core / only-log / only-deflate（引擎），sans-io 的 WebRTC 栈不能引入它们，而且其标签前缀是
-   `"tls13 "`，DTLS 1.3 用 `"dtls13"`。结构与 only-tls 相同，并用 TLS 前缀对照 RFC 8448 校验；DTLS 1.3
+3. **DTLS 1.3 密钥计划由 akio-dtls 自己实现**，基于 akio-crypto 的 HKDF，不复用 akio-tls：akio-tls 依赖
+   akio-core / akio-log / akio-deflate（引擎），sans-io 的 WebRTC 栈不能引入它们，而且其标签前缀是
+   `"tls13 "`，DTLS 1.3 用 `"dtls13"`。结构与 akio-tls 相同，并用 TLS 前缀对照 RFC 8448 校验；DTLS 1.3
    没有公开的握手轨迹向量，DTLS 标签由互通测试验证。
 4. **DTLS 1.3 记录层与可靠性。** epoch 0 用 DTLSPlaintext，此后用统一头：16 位序号、显式长度、协商后的
    CID、记录号加密（AES-ECB / ChaCha20 掩码）；epoch 2 为握手，3 及以上为应用数据（每次 KeyUpdate 加一），
@@ -55,7 +55,7 @@ Internal 层（docs/api-stability.md），API 可经 ADR 变更；工作区内�
    无需证书。DTLS 1.2 增加 AEAD 的 PSK 与 ECDHE-PSK 套件（`CipherSuite::PSK`，仅在配置了 PSK 时提供）；
    DTLS 1.3 以 SHA-256 在 `psk_dhe_ke` 中使用外部 PSK。
 
-新增公共 API（only-dtls）：`Version`、`Psk`、`Session`、`TicketKey`、`connection_id`；
+新增公共 API（akio-dtls）：`Version`、`Psk`、`Session`、`TicketKey`、`connection_id`；
 `Config::{with_versions, with_psks, with_session_resumption, with_ticket_key, with_ticket_lifetime,
 with_connection_id}`；`Connection::{client_resume, version, local_connection_id, update_keys}`；
 `Event::NewSession`；`HandshakeInfo::{version, resumed, psk_identity, local_connection_id,

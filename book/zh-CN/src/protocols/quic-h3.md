@@ -1,32 +1,32 @@
 # QUIC 与 HTTP/3
 
-`only-quic` 是在本 crate 内基于 `only-tls` 和 `only-crypto` 以 sans-io 状态机实现的 QUIC v1
-（RFC 9000、9001、9002）、v2（RFC 9369）及数据报（RFC 9221），运行在 only 的 UDP 引擎上；`only-h3` 在其上实现
-HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 quic-go 做过双向互通测试（流与
+`akio-quic` 是在本 crate 内基于 `akio-tls` 和 `akio-crypto` 以 sans-io 状态机实现的 QUIC v1
+（RFC 9000、9001、9002）、v2（RFC 9369）及数据报（RFC 9221），运行在 akio 的 UDP 引擎上；`akio-h3` 在其上实现
+HTTP/3（RFC 9114）和 QPACK，可以提供任意 akio-http `Service`。与 quic-go 做过双向互通测试（流与
 数据报的原生 QUIC 回显，含 Retry、密钥更新、150 MB 传输、版本 2 与客户端迁移：
 `tools/interop/quic/run.sh`），HTTP/3
 则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）；ngtcp2 与 OpenSSL 3.5
 的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`），兼容版本协商则
 与 ngtcp2 自己的客户端和服务端双向验证（`tools/interop/quic/ngtcp2-cvn.sh`）。quiche（0.30.1）在 Docker
 中双向验证：quiche-client 对我方 HTTP/3 服务端（版本协商、单连接多请求、上传、0-RTT、迁移），并以 HTTP/0.9
-（`hq-interop`）在原生 QUIC 流上对 `only-quic`；`H3Client` 与 `only-quic` 客户端对 quiche-server，有无 Retry
+（`hq-interop`）在原生 QUIC 流上对 `akio-quic`；`H3Client` 与 `akio-quic` 客户端对 quiche-server，有无 Retry
 各一遍（`tools/interop/quic/quiche.sh`）。
 
 ## QUIC
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:server}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:server}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:client}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:engine}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:engine}}
 ```
 
-它如何嵌入 only：
+它如何嵌入 akio：
 
 - `QuicServer` 是一个 **UDP listener** 的 acceptor。该 listener 的每个数据报都经过同一个
   endpoint，由它按连接 ID 路由，所以迁移到新地址的客户端（经路径验证后）仍保持原连接。endpoint
@@ -34,7 +34,7 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   地址。
 - 每个 QUIC 连接从工厂得到一个 `QuicHandler`。它的回调一次一个、按顺序执行，在读到该数据报的
   I/O 线程上或在一个共享的定时器线程上；回调不能阻塞。
-- `only_quic::dial(&engine, addr, server_name, client_cfg, handler)` 在一个独立的 UDP socket 上
+- `akio_quic::dial(&engine, addr, server_name, client_cfg, handler)` 在一个独立的 UDP socket 上
   发起客户端连接；engine 需要 `udp_client_threads(n)`。
 - 满尺寸的数据报每批最多 10 个，用 `Conn::send_segments` 发出（Linux 上为 UDP GSO /
   `sendmmsg`）。处理器在自身回调里发起的写入会先攒起来，回调返回后与 ACK 一起发出，因此请求
@@ -49,7 +49,7 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 `Connection`（可克隆，可在任何线程使用）：`open_bi`、`open_uni`、`send(id, data)`、`finish`、
 `reset`、`stop`、`queued_bytes(id)`、`send_capacity(id)`、`send_datagram`、
 `spawn_blocking(work)`、`close(code, reason)`、`remote_addr`、`alpn`、`server_name`、`rtt`、
-`stats`、`is_closed`。负载类型是 `only_quic::Bytes`（引用计数、可切片；收到的数据是解密后数据包
+`stats`、`is_closed`。负载类型是 `akio_quic::Bytes`（引用计数、可切片；收到的数据是解密后数据包
 的切片，不再复制）。写永不阻塞：`send` 把数据排队，按流量控制与拥塞控制允许的速度发出。
 
 发送缓冲区有上限。一个流持有已写入但尚未确认的数据，最多 `TransportConfig::stream_send_buffer`
@@ -61,10 +61,10 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 `spawn_blocking(work)` 在 engine 的逻辑池上执行 `work`（磁盘读取等阻塞工作），`work` 里可以调用
 该连接。
 
-配置（TLS 1.3）：`server_config(certs, key, alpn)`（使用 `only::tls::Certificate` /
-`PrivateKey`）、`server_config_from(&only::tls::ServerConfig)`、`client_config(roots, alpn)`
-（使用 `only::tls::RootCerts`）、`client_config_from(&only::tls::ClientConfig)`，以及仅用于测试
-的 `client_config_insecure(alpn)`。它们返回 only 自己的 `ServerConfig` / `ClientConfig`；
+配置（TLS 1.3）：`server_config(certs, key, alpn)`（使用 `akio::tls::Certificate` /
+`PrivateKey`）、`server_config_from(&akio::tls::ServerConfig)`、`client_config(roots, alpn)`
+（使用 `akio::tls::RootCerts`）、`client_config_from(&akio::tls::ClientConfig)`，以及仅用于测试
+的 `client_config_insecure(alpn)`。它们返回 akio 自己的 `ServerConfig` / `ClientConfig`；
 `.transport(&TransportConfig)` 设置流数量上限、窗口、空闲超时、keep-alive、MTU 探测与拥塞控制
 算法，`ServerConfig::migration(bool)` 控制客户端迁移。`server_config` 开启会话票据，复用同一个
 `ClientConfig` 的客户端会恢复会话；`ClientConfig` 的各个克隆还共享服务器下发的 NEW_TOKEN 令牌，
@@ -94,26 +94,26 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   客户端的版本应答；客户端以 `ClientConfig::version`（默认 v1）开始，服务端回以不含该版本的版本协商
   包时，在双方都支持的版本上重新开始一次，并以 version_information 传输参数（RFC 9368）防止伪造的
   降级。`Connection::version()` 返回所用版本。
-- **兼容版本协商**（RFC 9368 第 4 节，[ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)）：
+- **兼容版本协商**（RFC 9368 第 4 节，[ADR-013](https://github.com/lesismal/akio/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)）：
   `ServerConfig::prefer_version(Version::V2)` 让以 v1 开始、并在 version_information 中列出 v2 的客户端
   在握手内切换到 v2，不多花往返（`V1` 则反向）。默认关闭（服务端用客户端的版本应答）。服务端在应答前读完
   整个首个 ClientHello，因此 ClientHello 跨多个包、Retry 之后以及 0-RTT 时都可用（客户端的 0-RTT 包保持
-  首个版本，RFC 9369 第 4.1 节）。only-quic 客户端总会跟随切换。不带 version_information 的客户端
+  首个版本，RFC 9369 第 4.1 节）。akio-quic 客户端总会跟随切换。不带 version_information 的客户端
   （quic-go）不会被切换；ngtcp2 双向都能切换。
 
   ```rust,ignore
-  let cfg = only_quic::server_config(certs, key, &[b"h3"])?
-      .prefer_version(only_quic::Version::V2);
+  let cfg = akio_quic::server_config(certs, key, &[b"h3"])?
+      .prefer_version(akio_quic::Version::V2);
   ```
-- **票据与令牌按版本区分**（RFC 9369 第 5 节，[ADR-014](https://github.com/lesismal/only/blob/main/docs/adr/014-quic-version-bound-resumption.zh-CN.md)）：
+- **票据与令牌按版本区分**（RFC 9369 第 5 节，[ADR-014](https://github.com/lesismal/akio/blob/main/docs/adr/014-quic-version-bound-resumption.zh-CN.md)）：
   会话票据或 NEW_TOKEN 令牌属于签发它的连接所用的版本，兼容切换后即协商出的版本。服务端只用客户端起始
   版本的票据恢复会话（其他版本的票据走完整握手，没有 0-RTT），也只用该版本的令牌验证地址（Retry 令牌
   同样如此）。客户端绝不在 v2 中出示 v1 的票据或令牌，反之亦然：只要自己支持，它就以该服务端最新票据
   （没有票据时看令牌）的版本开始连接，而不是 `ClientConfig::version`。因此配置为 v1、被偏好 v2 的服务端
   切到 v2 的客户端，下次直接以 v2 开始，带 0-RTT 恢复会话，无需切换。
-- **ECN**（`TransportConfig::ecn`，默认开启）：Linux、macOS 与 only-dpdk 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
+- **ECN**（`TransportConfig::ecn`，默认开启）：Linux、macOS 与 akio-dpdk 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
   ACK_ECN 帧中报告，验证路径（RFC 9000 第 13.4 节），CE 标记视为拥塞；清除或丢弃标记的路径回退为不带
-  标记发送。其他平台不打标记（Linux 与 macOS 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
+  标记发送。其他平台不打标记（Linux 与 macOS 上也可用 `AKIO_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
   `ecn_ce_events`。
 - **拥塞控制**：`TransportConfig::congestion` 可选 CUBIC（默认）、NewReno 或实验性的
   `Congestion::Bbr`：基于投递速率采样的 BBRv1 模型（Startup、Drain、ProbeBW、ProbeRTT），加上 BBRv2/v3
@@ -130,10 +130,10 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 默认关闭：`ServerConfig::zero_rtt(true)` 与 `ClientConfig::zero_rtt(true)`。客户端用允许 0-RTT 的票据
 恢复会话时，`dial` 之后即可打开流（使用服务端在上一次连接中给出的限额），流数据随第一批包以 0-RTT 包
 发出；服务端以 0.5-RTT 应答，比完整握手早一个往返。服务端只在传输限额与签发票据时相同的情况下接受
-0-RTT，并使用 only-tls 的防重放（10 秒新鲜度窗口加上每个服务端一份有上限的近期 ClientHello 记录）；
+0-RTT，并使用 akio-tls 的防重放（10 秒新鲜度窗口加上每个服务端一份有上限的近期 ClientHello 记录）；
 否则，或 0-RTT 包丢失时，数据以 1-RTT 包重发（Retry 之后以 0-RTT 发往新的连接 ID）。客户端用
 `Connection::early_data()` 得知结果；服务端用 `Connection::is_early(stream)` 判断哪些流来自 0-RTT，
-only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可对不能安全重复的请求回
+akio-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可对不能安全重复的请求回
 `425 Too Early`。配置开启时 `H3Client` 会以 0-RTT 发送请求。0-RTT 数据可被重放（在窗口内由能诱使
 客户端重试的攻击者发起；或发往共享票据的其他服务端，除非这些服务端共享防重放记录：用
 `session_ticket_key` 与 `anti_replay_store` 构建其 TLS 配置，见 TLS 章节），且没有前向保密。
@@ -141,11 +141,11 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 ## HTTP/3
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:server}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:server}}
 ```
 
-`only_h3::serve(quic_cfg, service)`（或 `serve_with(.., H3Config)`）返回一个通过 HTTP/3 提供
-该 service 的 `QuicServer`。`only_h3::server_config(certs, key)` 就是 ALPN 为 `h3` 的
+`akio_h3::serve(quic_cfg, service)`（或 `serve_with(.., H3Config)`）返回一个通过 HTTP/3 提供
+该 service 的 `QuicServer`。`akio_h3::server_config(certs, key)` 就是 ALPN 为 `h3` 的
 `server_config`。handler 拿到的 `Context` 与 HTTP/1.1 和 HTTP/2 上相同，包括 `detach`、
 `stream_response`、trailer、流式请求 body 和 WebSocket 升级（见下文）；`ctx.req().version` 为
 `Version::Http3`。`H3Config`：`max_body_bytes`（8 MiB，更大的缓冲 body 返回 413）、
@@ -162,10 +162,10 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 提供同一个应用：两个 listener 使用同一个端口号。`Router` 会被移入它的 acceptor 且不是
 `Clone`，所以要么用一个函数为每个 listener 各构建一次，要么共享一个：
 `let app = Arc::new(router);`，然后在两个 listener 上都提供
-`move |ctx: &mut Context| app.call(ctx)`（需要引入 `only_http::Service`）。
+`move |ctx: &mut Context| app.call(ctx)`（需要引入 `akio_http::Service`）。
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:client}}
 ```
 
 `H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`），或用
@@ -191,7 +191,7 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 线程调用 `write(&[u8])`，然后 `finish()`，用 `queued_bytes()` 控制写入节奏；响应交给 callback。
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:upload}}
 ```
 
 ### 客户端流式响应
@@ -202,18 +202,18 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 `Trailers`，然后是 `End` 或 `Error(H3Error)`。上传与下载可以同时进行。在句柄上调用
 `hold_reads(true)` 暂停读取：流的接收窗口（`TransportConfig::stream_receive_window`）用完后，QUIC
 流量控制让服务器停下，所以慢消费者让一次下载占用的内存有界；`hold_reads(false)` 恢复。两者都可从任意
-线程调用，包括事件回调内（`only_quic::Connection::hold_reads` 对任意流做同样的事）。`cancel()` 重置
+线程调用，包括事件回调内（`akio_quic::Connection::hold_reads` 对任意流做同样的事）。`cancel()` 重置
 该流，此后不再报告任何事件。`request_timeout` 只作用到响应头到达为止。
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:download}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:download}}
 ```
 
 ### HTTP/3 上的 WebSocket
 
 服务端宣告 extended CONNECT（RFC 9220），`ctx.upgrade_websocket(handler, &WsOptions)` 接受它：
 子协议、origin 检查和 `permessage-deflate` 与 HTTP/1.1 上相同，应答为 `200`，此后请求流承载
-WebSocket，由 only-ws 分帧，`WsHandler` 回调和 `WsSender` 不变。`Router` 把 `websocket` 的
+WebSocket，由 akio-ws 分帧，`WsHandler` 回调和 `WsSender` 不变。`Router` 把 `websocket` 的
 extended CONNECT 路由到该路径的 GET 路由，所以一个 `.get("/ws", ...)` 同时服务 HTTP/1.1 升级和
 HTTP/3。这种请求的 `ctx.req().protocol` 为 `Some("websocket")`。HTTP/2 上的 WebSocket（RFC 8441）
 用法相同，见 [WebSocket](websocket.md#http2-上的-websocket)。
@@ -223,7 +223,7 @@ HTTP/3。这种请求的 `ctx.req().protocol` 为 `Some("websocket")`。HTTP/2 �
 `WsSender`（否则为 `H3Error::Status`）。
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:websocket}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:websocket}}
 ```
 
 ### QPACK 动态表
@@ -242,25 +242,25 @@ QPACK（RFC 9204）用一张由各自编码器通过 encoder stream 填充的表
   `SETTINGS_QPACK_BLOCKED_STREAMS` 允许的数量（0 则从不）。在携带大量相同自定义字段的连接上它能省
   字节，代价是每个消息一次加锁以及对端的确认；quic-go、fib 和 curl 不宣告动态表，与它们通信时它不起
   作用。默认值的理由见
-  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)
-  与 [ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)。
+  [ADR-011](https://github.com/lesismal/akio/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)
+  与 [ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)。
 
-## HTTP/3 如何复用 only-http
+## HTTP/3 如何复用 akio-http
 
-only-http 提供了一个 transport 钩子 `only_http::transport`：transport 解析出请求后用连接的
+akio-http 提供了一个 transport 钩子 `akio_http::transport`：transport 解析出请求后用连接的
 `ConnSink` 调用 `dispatch_conn(service, request, sink, tag)`，sink 用它自己的方式把响应写给 tag
 指明的请求（完整响应用 `send`，流式响应用 `start_stream` 返回一个 `BodySink`）。sink 由连接的
 所有请求共享（经瘦句柄 `SharedSink`），请求的 target 和头部用 `request_target` 和 `request_headers`
 写进按线程保留的已完成请求的存储；sink 编码完响应头后用 `recycle_response_headers` 交回其头部存储。
-所以这些都不再每请求分配一次（ADR-025、ADR-081；旧的装箱 `ResponseSink` 与 `dispatch` 已弃用）。only-h3 在 QUIC stream 上实现了这个
+所以这些都不再每请求分配一次（ADR-025、ADR-081；旧的装箱 `ResponseSink` 与 `dispatch` 已弃用）。akio-h3 在 QUIC stream 上实现了这个
 sink，所以 router、中间件和 handler 都无需改动。见[架构](../architecture.md)。
 
 一个请求的开销：帧直接在收到的流数据上原地读取，字段段解码进连接复用的缓冲区，再复制一次进请求的
 `Headers`；响应的 HEADERS 帧直接用 QPACK 编码进交给 QUIC 的缓冲区，不超过 16 KiB 的响应体和 trailer
 也放在一起（每个响应只写一次；更大的响应体随后发送，不复制）。在 Ryzen 7 7800X3D 上，单连接 64 个请求
-在途约 84 万请求/秒（[性能测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)）。
+在途约 84 万请求/秒（[性能测试](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md)）。
 
 ## 尚未完成
 
 服务器推送是有意不做的：浏览器已放弃它，其用途已被 103 Early Hints 取代
-（[ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)）。
+（[ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)）。

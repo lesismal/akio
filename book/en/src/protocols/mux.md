@@ -1,10 +1,10 @@
 # Protocol multiplexing
 
-`only-mux` serves several protocols on one listening port, telling them apart by the first
+`akio-mux` serves several protocols on one listening port, telling them apart by the first
 bytes each client sends.
 
 ```rust,ignore
-{{#include ../../../../crates/only-mux/examples/guide-mux.rs:mux}}
+{{#include ../../../../crates/akio-mux/examples/guide-mux.rs:mux}}
 ```
 
 Rules, tried in the order the routes were added:
@@ -14,14 +14,14 @@ Rules, tried in the order the routes were added:
 | `Tls` | a TLS ClientHello (`0x16 0x03 ..`) |
 | `Http1` | an HTTP/1.x request line starting with a known method |
 | `Http2` | the HTTP/2 connection preface (cleartext prior knowledge) |
-| `Http` | either of the two above: what only-http serves |
+| `Http` | either of the two above: what akio-http serves |
 | `Socks5`, `Socks4` | SOCKS version 5 / 4 and 4a |
 | `Prefix(bytes)` | data starting with these bytes |
 | `Custom(Arc<dyn Fn(&[u8]) -> Decision>)` | your test: `Yes`, `No` or `NeedMore` |
 
 `fallback(acceptor)` takes connections that match nothing, or that decide nothing within
 `max_sniff_bytes(n)` bytes (default 64); without a fallback they are closed. Serve the mux with
-`Listener::serve_any(mux)` (a `Mux` converts into a type-erased `only::AnyAcceptor`). Configure it completely before serving it.
+`Listener::serve_any(mux)` (a `Mux` converts into a type-erased `akio::AnyAcceptor`). Configure it completely before serving it.
 
 `sniff_timeout(Some(d))` (default 5 s) bounds how long a client may take to send enough bytes
 for a decision: a silent client, or one trickling a prefix several rules share, is closed at the

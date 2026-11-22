@@ -2,31 +2,31 @@
 
 两个 crate：
 
-- `only-webrtc` 在 only UDP socket 上运行 WebRTC peer，基于自研、sans-io、无第三方依赖的协议栈
-  （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `only-crypto` 之上：
-  `only-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
-  重启、consent freshness）、`only-dtls`（DTLS 1.3，可回退到 1.2，带证书指纹校验及 DTLS-SRTP 密钥，见下文）、
-  `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放；该 crate
+- `akio-webrtc` 在 akio UDP socket 上运行 WebRTC peer，基于自研、sans-io、无第三方依赖的协议栈
+  （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `akio-crypto` 之上：
+  `akio-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
+  重启、consent freshness）、`akio-dtls`（DTLS 1.3，可回退到 1.2，带证书指纹校验及 DTLS-SRTP 密钥，见下文）、
+  `akio-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放；该 crate
   还支持 AES-192/256-CM、NULL、MKI 与换钥、cryptex 以及 RFC 6904 头部扩展加密，peer 尚未在 SDP 中
   协商它们）、
-  `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
+  `akio-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序；对端提供时使用 I-DATA 消息交错，大消息不再阻塞其他通道上的小消息，各通道按优先级以加权公平
-  排队共享关联，ADR-037；空闲关联发送 HEARTBEAT、对端重启与 RFC 9653 零校验和，ADR-042）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
+  排队共享关联，ADR-037；空闲关联发送 HEARTBEAT、对端重启与 RFC 9653 零校验和，ADR-042）以及 `akio-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
   NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告、RTCP XR、TMMBR / TMMBN、
   RFC 8888 反馈与 ULPFEC / FlexFEC / RED，配置后由 peer 协商使用，见下文“FEC 与更多 RTCP”）。
-  `only-webrtc` 本身负责 SDP
-  offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
+  `akio-webrtc` 本身负责 SDP
+  offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 akio 的 I/O 线程和一个
   共享定时器线程驱动各个 peer。
-- `only-turn` 提供 STUN 编解码、STUN 服务器、TURN 服务器（UDP、TCP 与 TLS 上的 RFC 8656）以及
+- `akio-turn` 提供 STUN 编解码、STUN 服务器、TURN 服务器（UDP、TCP 与 TLS 上的 RFC 8656）以及
   sans-io 的 TURN 客户端。
 
-互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继，`Endpoint`
-只提供中继候选（来自 only、pion/turn 与 coturn 的 TURN 服务器，经 UDP、TCP 与 TLS 分配）、只提供被动或
+互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 akio TURN 中继，`Endpoint`
+只提供中继候选（来自 akio、pion/turn 与 coturn 的 TURN 服务器，经 UDP、TCP 与 TLS 分配）、只提供被动或
 只提供主动 ICE-TCP 候选，pion 经 ICE-TCP 连到 `RtcServer`，以及向 pion 发送 simulcast；还有 fib 的 Go 版 WebRTC（数据通道，双向）；TURN 服务器经 UDP、TCP 与 TLS 与 pion/turn
-客户端和 coturn 的 `turnutils_uclient` 互通；TURN 客户端经 UDP、TCP 与 TLS 与 pion/turn、coturn 和 only
+客户端和 coturn 的 `turnutils_uclient` 互通；TURN 客户端经 UDP、TCP 与 TLS 与 pion/turn、coturn 和 akio
 互通（`tools/interop/webrtc/run.sh`，`COTURN=1` 时包括 coturn，`linux.sh` 在 Linux 容器中全部运行）。无头 Chrome 在两个 offer 方向上均经过测试：数据通道，以及 Chrome
 的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码；只用 ICE-TCP（Chrome 连到 `RtcServer`，
-`Endpoint` 连到 Chrome）；只用中继（Chrome 以 `iceTransportPolicy: "relay"` 经 `only-turn` 的 UDP、TCP 与
+`Endpoint` 连到 Chrome）；只用中继（Chrome 以 `iceTransportPolicy: "relay"` 经 `akio-turn` 的 UDP、TCP 与
 TLS，`Endpoint` 只带经 TCP 或 TLS 分配的中继候选）；以及 simulcast：Chrome 向 SFU 发送三层 VP8，SFU 以
 simulcast 及所选的一层发回，在 Chrome 解码时切换层；启用激进提名的 `Endpoint`；以及把主机地址隐藏在
 mDNS 名字之后的 `Endpoint` 向同样这样做（默认如此）的 Chrome 发起 offer，双方互相解析对方名字，主机
@@ -40,7 +40,7 @@ mDNS 名字之后的 `Endpoint` 向同样这样做（默认如此）的 Chrome �
 ## 一个引擎上的服务器、TURN 服务器与客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:engine}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:engine}}
 ```
 
 - `RtcServer::new(addrs)` 是一个 **UDP listener** 的 acceptor；它的所有 peer 共用这个端口。`addrs`
@@ -57,7 +57,7 @@ mDNS 名字之后的 `Endpoint` 向同样这样做（默认如此）的 Chrome �
 
 ## 类型
 
-API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
+API 使用 akio 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
 `Direction`、`MediaTime` / `Frequency`、`MediaData`、`MediaAdded`、`RtpPacket`、
 `KeyframeRequest`、`Candidate`、`IceConnectionState`、`RtcConfig`、`SdpChanges`、`Event`。底层
 的协议 crate 属于内部层级（其 API 可能在任何发布中变化），不会出现在 API 中。`unstable` cargo
@@ -66,7 +66,7 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 ## Peer 与 handler
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:handler}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:handler}}
 ```
 
 `PeerHandler` 的每个回调都有默认实现：`on_ice_state`、`on_connected`、`on_channel_open` /
@@ -93,11 +93,11 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 ## 完整 ICE 客户端：`Endpoint`
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:client}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:endpoint}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:endpoint}}
 ```
 
 `Endpoint::bind(&engine, addr)` 用 `Engine::bind_udp` 绑定一个 UDP socket（引擎需要
@@ -238,7 +238,7 @@ wallclock, rtp_time, data)` 写某一编码的样本：由应用以各自的分�
 编码有自己的 SSRC 与 RTX 流，包带 MID 与 RID 头扩展，关键帧请求带上其 RID（`KeyframeRequest::rid`）。
 作为应答方，本栈也接受远端（如浏览器）发来的 simulcast（用 `MediaData::rid` 区分各层）。向观众转发其中
 一层的 SFU 按 `MediaData::rid` 选层，在新层的关键帧处切换，并用 `Peer::request_layer_keyframe(mid, rid,
-kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/webrtc-interop.rs` 的 `sfu` 模式即如此，
+kind)` 只向发布者请求该层的关键帧（`crates/akio-webrtc/examples/webrtc-interop.rs` 的 `sfu` 模式即如此，
 切换时改写 RTP 时间戳）。Chrome 不接收 simulcast：它的 answer 去掉了 `a=simulcast`，因此只向它发送第一个
 编码。
 
@@ -247,7 +247,7 @@ kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/we
 默认全部关闭（默认 peer 的 offer 与 answer 与以前完全相同），在 `RtcConfig` 中逐项打开（ADR-039、ADR-048）：
 
 ```rust,ignore
-let cfg = only_webrtc::rtc_config()
+let cfg = akio_webrtc::rtc_config()
     .enable_fec(Some(FecMechanism::FlexFec)) // 或 Ulpfec（red + ulpfec）、Red（只有 red，无 FEC）
     .set_fec_protection(0, 128)              // 每 256 个媒体包的 FEC 包数：上下界
     .set_fec_mask(FecMask::Random)           // libwebrtc 的掩码表：Random 或 Bursty
@@ -299,7 +299,7 @@ let cfg = only_webrtc::rtc_config()
     高低都会标记它。
 
   经过模拟的 6 Mbps L4S 队列时，ECT(1) 达到 4.9 Mbps、排队 1.3 ms，ECT(0) 只有 1.36 Mbps。其他用途用
-  `only_rtp::BandwidthEstimator::set_ecn_response` 选择响应方式。
+  `akio_rtp::BandwidthEstimator::set_ecn_response` 选择响应方式。
 - **没有 RFC 8888 的 ECN**（RFC 6679 自身的信令，ADR-082）：开启标记时，各段还提议
   `a=ecn-capable-rtp:rtp mode=setread; ect=N`、`nack ecn` 与 `a=rtcp-xr:ecn-sum`。
   - 应答了这些属性的远端在 RTCP ECN 反馈消息与 XR ECN 摘要中报告每个源的计数器。它们驱动验证与 CE 响应，估计器
@@ -317,11 +317,11 @@ let cfg = only_webrtc::rtc_config()
   每种方式在路径清除、改写或丢弃标记时仍会停止标记。对端的 `ect=` 决定码点（因而决定 CE 响应）：想要
   ECT(0) 的 RFC 6679 对端，即使本端配置为 `Ect1` 也会收到 ECT(0)。
 - **重试**（ADR-086）：失败的路径在 10 s 后再试，之后 20、40……最多 5 分钟。同一路径上从全部标记回退三次
-  后不再标记。`tools/interop/webrtc/ecn6679.sh` 在两个 only 端之间、经 Linux NAT 运行这三种方式，以及一个
+  后不再标记。`tools/interop/webrtc/ecn6679.sh` 在两个 akio 端之间、经 Linux NAT 运行这三种方式，以及一个
   先清除 ECN、后来停止清除的路由器。
 - **TURN 与 TCP 路径**（ADR-082）：经 UDP 分配时，发往 TURN 服务器的数据报携带码点。RFC 8656 §12 要求服务器
   复制它，服务器是否这样做由验证得知。清除码点的中继与其他中间设备一样使路径失败。经 ICE-TCP 或经 TCP / TLS
-  到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。only-turn 自己的中继经 UDP 与
+  到达 TURN 的路径没有可携带的码点，因此这些路径上 ECN 保持关闭，而不是失败。akio-turn 自己的中继经 UDP 与
   DTLS 双向复制码点（ADR-083），因此验证可以穿过它。
 - **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
 - **关于接收流的 XR 块**（ADR-058，`pkt-loss-rle pkt-dup-rle pkt-rcpt-times voip-metrics`）：双方都
@@ -335,7 +335,7 @@ let cfg = only_webrtc::rtc_config()
   事件报告（后者可用 `metrics.quality()` 解码），并累计到统计中。
 
   ```rust,ignore
-  use only_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+  use akio_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
 
   // 解码之后：讲话段的语音电平，抖动缓冲的当前状态。
   peer.set_voip_quality(mid, VoipQuality {
@@ -361,10 +361,10 @@ let cfg = only_webrtc::rtc_config()
   - 除非 `set_voip_quality` 给出应用自己的值，缓冲的时延与丢弃填入 VoIP 指标的抖动缓冲字段和丢弃
     字段。
   - `Peer::jitter_buffer_stats(mid)` 给出它的计数。
-  - 视频与 RTP 模式不受影响。不经 peer 时，可直接用同一个缓冲 `only_rtp::JitterBuffer`。
+  - 视频与 RTP 模式不受影响。不经 peer 时，可直接用同一个缓冲 `akio_rtp::JitterBuffer`。
 
   ```rust,ignore
-  use only_rtp::PlayoutDelay;
+  use akio_rtp::PlayoutDelay;
 
   let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
       Duration::from_millis(20), Duration::from_millis(300))));
@@ -385,7 +385,7 @@ Chrome 解码了全部帧，没有 FEC 时几乎一帧都解不出。
 ### 头部保护：cryptex 与加密扩展
 
 ```rust,ignore
-let cfg = only_webrtc::rtc_config()
+let cfg = akio_webrtc::rtc_config()
     .enable_cryptex(true)                     // a=cryptex（RFC 9335）
     .enable_encrypted_header_extensions(true); // RFC 6904 extmap
 ```
@@ -404,7 +404,7 @@ MKI 应答，SRTP 便不带 MKI 运行。
 ### 面向 SIP 网关的 SDES-SRTP
 
 ```rust,ignore
-let ep = ep.config(|| only_webrtc::rtc_config().enable_sdes_srtp(true));
+let ep = ep.config(|| akio_webrtc::rtc_config().enable_sdes_srtp(true));
 ```
 
 SIP 网关常用 SDP 安全描述（RFC 4568）而不是 DTLS-SRTP 提供 SRTP 密钥。`enable_sdes_srtp(true)` 时
@@ -425,7 +425,7 @@ offer 也成为普通形式：
 
 ```rust,ignore
 let ep = ep.config(|| {
-    only_webrtc::rtc_config()
+    akio_webrtc::rtc_config()
         .enable_sdes_srtp(true)
         .enable_ice(false)
         .set_rtcp_mux_policy(RtcpMuxPolicy::Off) // RTCP 走 RTCP 套接字的端口
@@ -464,7 +464,7 @@ DTLS-SRTP，包括 NAT 重新绑定、RTCP 走独立端口，以及网关作为 
 ```rust,ignore
 let ep = Endpoint::bind(&engine, "0.0.0.0:5004".parse()?)?;
 ep.bind_rtcp(&engine, "0.0.0.0:5005".parse()?)?; // ICE 组件 2
-let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
 ```
 
 浏览器与 pion 总是复用 RTP 与 RTCP（rtcp-mux、BUNDLE），默认对端也一样。SIP 终端与较老的 RTP 栈未必
@@ -487,7 +487,7 @@ Engine::builder()
 ### 无 BUNDLE：每段一个传输
 
 ```rust,ignore
-let ep = ep.config(|| only_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
 ep.bind_transport_socket(&engine, "0.0.0.0:0".parse()?)?; // 可选：每个额外的段一个
 ```
 
@@ -507,7 +507,7 @@ trickle 候选用 `Peer::add_remote_candidate_in(mid, candidate)` 指明其段�
 
 ```rust,ignore
 let ch = api.add_channel_with_config(&ChannelConfig::new("video-meta").with_priority(ChannelPriority::High));
-let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
 ```
 
 通道的优先级随 DCEP 打开消息发给对端（128、256、512 或 1024；远端通道的优先级见
@@ -527,7 +527,7 @@ let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelSchedu
 一直停在起始值）。
 
 估计值的上下限为 `set_bwe_bounds(min, max)`（默认 30 kbps 与 20 Mbps）；`Peer::set_bitrate_bounds`
-在运行中的 peer 上修改，调高的上限会立即被探测（ADR-073）。only-rtp 的
+在运行中的 peer 上修改，调高的上限会立即被探测（ADR-073）。akio-rtp 的
 `BandwidthEstimator::set_network_state_estimate` 还接受外部的链路容量估计：向它探测，且从不超过它。
 
 ### 发送节拍（pacing）
@@ -600,7 +600,7 @@ socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 
 ### TCP 与 TLS 上的 TURN
 
-`turn.stream()` 是 TCP listener 的 acceptor，用 `only::tls::Tls` 包装后用于 TLS listener（`turns:`，通常
+`turn.stream()` 是 TCP listener 的 acceptor，用 `akio::tls::Tls` 包装后用于 TLS listener（`turns:`，通常
 为 5349 或 443 端口）：与 UDP listener 共享分配、配额与凭据。中继走 UDP；客户端请求 TCP 分配时走 TCP
 （见下一节）。
 
@@ -621,7 +621,7 @@ turn.set_engine(&engine);
 | `max_stream_queue` | 256 KiB | 排队超过该值的连接，发给它的中继数据被丢弃（保持数据报语义；响应总会发送） |
 
 经连接建立的分配随连接结束。STUN 与 ChannelData 在流上按各自的长度分帧
-（`only_turn::framing::FrameReader`），ChannelData 填充到 4 字节。
+（`akio_turn::framing::FrameReader`），ChannelData 填充到 4 字节。
 
 ### TCP 分配（RFC 6062）
 
@@ -679,7 +679,7 @@ Engine::builder()
 
 ### TURN 客户端
 
-`only_turn::client::Client` 是单个分配的 sans-io 客户端，跑在 UDP 或 TCP/TLS 流上
+`akio_turn::client::Client` 是单个分配的 sans-io 客户端，跑在 UDP 或 TCP/TLS 流上
 （`ClientConfig::stream(true)`）：用长期凭据应答 401 质询、更新过期 nonce、刷新分配、在首次 `send_to` 时为
 每个对端绑定 channel（失败时退回到权限与 Send 指示）、在对端使用期间刷新这些绑定，并在 UDP 上重传。由调用者
 搬运字节：`poll_transmit` 发往服务器，把收到的内容交给 `handle_input`（中继数据以 `(peer, payload)` 返回），
@@ -717,7 +717,7 @@ if *bind.state() == DataState::Bound {
 }
 ```
 
-`TcpAllocation` 在 `only` 引擎上做同样的事，没有阻塞调用：它拨出控制连接（TCP，或用 `ServerTransport::Tls`
+`TcpAllocation` 在 `akio` 引擎上做同样的事，没有阻塞调用：它拨出控制连接（TCP，或用 `ServerTransport::Tls`
 走 TLS），在一个共享线程上运行客户端的定时器，并把 `AllocationEvent` 报告给回调。`connect(peer, acceptor,
 on_error)` 发送 Connect，服务器连上对端后拨出一条由*你的* acceptor 服务的数据连接：它的 ConnectionBind 是位于
 你的 handler 之下（TLS 之上）的传输层，就像 TLS 握手一样，所以 TCP 连接一建立 `on_open` 就运行，handler 发送的
@@ -741,10 +741,10 @@ alloc.connect(peer, MyAcceptor, |e| eprintln!("connect: {e}"));
 
 ## DTLS 层：DTLS 1.3，可回退到 DTLS 1.2
 
-`only-dtls` 是 sans-io 连接（`Connection`：喂入数据报和定时器到期，发送 `poll_transmit` 返回的
+`akio-dtls` 是 sans-io 连接（`Connection`：喂入数据报和定时器到期，发送 `poll_transmit` 返回的
 内容），支持 DTLS 1.2（RFC 6347）与 DTLS 1.3（RFC 9147）。`Config::with_versions(vec![Version::Dtls13,
 Version::Dtls12])` 同时提供两个版本，遇到只支持 1.2 的对端时回退到 DTLS 1.2（带 RFC 8446 降级检查）。
-`Config::webrtc` 本身只启用 DTLS 1.2（ADR-021）；`only-webrtc` 的 peer 加上 DTLS 1.3（ADR-048，
+`Config::webrtc` 本身只启用 DTLS 1.2（ADR-021）；`akio-webrtc` 的 peer 加上 DTLS 1.3（ADR-048，
 `RtcConfig::enable_dtls13`，默认开启），Chrome 157 在两种 DTLS 角色下都会协商 DTLS 1.3，pion 仍用
 DTLS 1.2。
 
@@ -752,7 +752,7 @@ DTLS 1.2。
   密钥接近使用上限前也会自动更新），用 ACK 只重传一轮中丢失的分片，无状态的 HelloRetryRequest
   cookie（也可由连接前面的 `HelloVerifier::check` 发出）。
 - **连接 ID**（`Config::with_connection_id`）：DTLS 1.2 用 RFC 9146 的 `tls12_cid` 记录，DTLS 1.3
-  把 CID 放在统一头里。监听方用 `only_dtls::connection_id(datagram, len)` 而不是地址分发数据报，
+  把 CID 放在统一头里。监听方用 `akio_dtls::connection_id(datagram, len)` 而不是地址分发数据报，
   NAT 映射变化的对端仍能保住连接。
 - **会话恢复**（`Config::with_session_resumption`）：DTLS 1.2 会话 ID（有上限的缓存）与 RFC 5077
   票据，DTLS 1.3 NewSessionTicket（`psk_dhe_ke`，始终前向安全）。客户端收到

@@ -1,10 +1,10 @@
 #![no_main]
-//! only-brotli's streaming compressor (pieces, flushes, windows and raw dictionaries chosen by
+//! akio-brotli's streaming compressor (pieces, flushes, windows and raw dictionaries chosen by
 //! the first three bytes): both of its decoders give the input back, and so does
 //! `brotli-decompressor` for streams without a dictionary.
 
 use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
-use only_brotli::fuzzing;
+use akio_brotli::fuzzing;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Some((packed, body, dict)) = fuzzing::stream_roundtrip_stream(data) else {

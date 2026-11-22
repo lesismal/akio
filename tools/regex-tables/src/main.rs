@@ -1,7 +1,7 @@
-//! Writes `crates/only-regex/src/tables.rs` to stdout:
+//! Writes `crates/akio-regex/src/tables.rs` to stdout:
 //!
 //! ```text
-//! cargo run --release --manifest-path tools/regex-tables/Cargo.toml > crates/only-regex/src/tables.rs
+//! cargo run --release --manifest-path tools/regex-tables/Cargo.toml > crates/akio-regex/src/tables.rs
 //! ```
 //!
 //! The tables are the Unicode `\w`, `\d` and `\s` classes and simple case folding exactly as

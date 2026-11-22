@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-sctp (examples/udp_peer.rs) <-> pion/sctp v1.12.0 + pion/datachannel over plain UDP:
+# akio-sctp (examples/udp_peer.rs) <-> pion/sctp v1.12.0 + pion/datachannel over plain UDP:
 # both roles, with pion's RFC 8260 interleaving on (I-DATA / I-FORWARD-TSN negotiated) and off
 # (DATA / FORWARD TSN), without loss and with every 10th packet dropped each way (at every 4th,
 # 25 %, pion often needs longer than the Rust side's 60 s limit, with DATA as with I-DATA); then
@@ -8,12 +8,12 @@
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 if [ -z "${RS:-}" ]; then
-  (cd "$ROOT" && cargo build -q --release -p only-sctp --example udp_peer)
+  (cd "$ROOT" && cargo build -q --release -p akio-sctp --example udp_peer)
   RS=$ROOT/target/release/examples/udp_peer
 fi
 if [ -z "${GO:-}" ]; then
-  (cd "$ROOT/tools/interop/sctp" && GOFLAGS=-mod=mod go build -o /tmp/only-sctp-pion .)
-  GO=/tmp/only-sctp-pion
+  (cd "$ROOT/tools/interop/sctp" && GOFLAGS=-mod=mod go build -o /tmp/akio-sctp-pion .)
+  GO=/tmp/akio-sctp-pion
 fi
 PIDS=""
 trap 'kill $PIDS 2>/dev/null || true' EXIT
@@ -27,23 +27,23 @@ for interleave in 1 0; do
       echo "== rust $rust, pion $pion, pion interleaving $interleave, drop every ${loss}th packet"
       # The passive side starts first: a connected UDP socket fails on ICMP unreachable.
       if [ "$rust" = connect ]; then
-        $GO "$pion" "$P" "$R" "$loss" "$interleave" >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+        $GO "$pion" "$P" "$R" "$loss" "$interleave" >/tmp/akio-sctp-pion.log 2>&1 & GP=$!
         PIDS="$PIDS $GP"
         sleep 0.3
         $RS "$rust" "$R" "$P" "$loss" | tail -4
       else
-        ($RS "$rust" "$R" "$P" "$loss" >/tmp/only-sctp-rust.log 2>&1; echo $? >>/tmp/only-sctp-rust.log) & RP=$!
+        ($RS "$rust" "$R" "$P" "$loss" >/tmp/akio-sctp-rust.log 2>&1; echo $? >>/tmp/akio-sctp-rust.log) & RP=$!
         sleep 0.3
-        $GO "$pion" "$P" "$R" "$loss" "$interleave" >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+        $GO "$pion" "$P" "$R" "$loss" "$interleave" >/tmp/akio-sctp-pion.log 2>&1 & GP=$!
         PIDS="$PIDS $GP"
         wait $RP
-        tail -5 /tmp/only-sctp-rust.log
-        [ "$(tail -1 /tmp/only-sctp-rust.log)" = 0 ]
+        tail -5 /tmp/akio-sctp-rust.log
+        [ "$(tail -1 /tmp/akio-sctp-rust.log)" = 0 ]
       fi
-      grep "pion: established" /tmp/only-sctp-pion.log
+      grep "pion: established" /tmp/akio-sctp-pion.log
       want=true
       [ "$interleave" = 0 ] && want=false
-      grep -q "interleaving=$want" /tmp/only-sctp-pion.log
+      grep -q "interleaving=$want" /tmp/akio-sctp-pion.log
       kill $GP 2>/dev/null || true
       wait $GP 2>/dev/null || true
     done
@@ -58,20 +58,20 @@ for loss in 0 10; do
     [ "$rust" = accept ] && pion=connect
     echo "== zero checksum: rust $rust, pion $pion, drop every ${loss}th packet"
     if [ "$rust" = connect ]; then
-      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/akio-sctp-pion.log 2>&1 & GP=$!
       PIDS="$PIDS $GP"
       sleep 0.3
-      $RS "$rust" "$R" "$P" "$loss" >/tmp/only-sctp-rust.log 2>&1
+      $RS "$rust" "$R" "$P" "$loss" >/tmp/akio-sctp-rust.log 2>&1
     else
-      ($RS "$rust" "$R" "$P" "$loss" >/tmp/only-sctp-rust.log 2>&1; echo $? >>/tmp/only-sctp-rust.log) & RP=$!
+      ($RS "$rust" "$R" "$P" "$loss" >/tmp/akio-sctp-rust.log 2>&1; echo $? >>/tmp/akio-sctp-rust.log) & RP=$!
       sleep 0.3
-      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/akio-sctp-pion.log 2>&1 & GP=$!
       PIDS="$PIDS $GP"
       wait $RP
-      [ "$(tail -1 /tmp/only-sctp-rust.log)" = 0 ]
+      [ "$(tail -1 /tmp/akio-sctp-rust.log)" = 0 ]
     fi
-    tail -3 /tmp/only-sctp-rust.log
-    grep -q "zero checksum: true" /tmp/only-sctp-rust.log
+    tail -3 /tmp/akio-sctp-rust.log
+    grep -q "zero checksum: true" /tmp/akio-sctp-rust.log
     kill $GP 2>/dev/null || true
     wait $GP 2>/dev/null || true
   done

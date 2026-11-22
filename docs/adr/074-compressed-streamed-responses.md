@@ -1,4 +1,4 @@
-# ADR-074: Compressed streamed responses in only-http
+# ADR-074: Compressed streamed responses in akio-http
 
 English | [简体中文](074-compressed-streamed-responses.zh-CN.md)
 
@@ -7,7 +7,7 @@ Status: accepted (2026-11-21), updated 2026-11-22
 ## Context
 
 The `compress` middleware compresses buffered responses whole, with the one-shot encoders of
-only-deflate, only-brotli and only-zstd: best ratio, `Content-Length` known. Streamed responses
+akio-deflate, akio-brotli and akio-zstd: best ratio, `Content-Length` known. Streamed responses
 (`Context::stream_response`: server-sent events, large generated downloads) went out as written
 with every coding (ADR-069 section 4). Their heads did pass through the response filters, but
 the compress filter skipped them because their body was empty. ADR-069 gave both crates
@@ -87,7 +87,7 @@ and levels buy nothing, zstd 3 and brotli 5 cost two to four times the memory of
 brotli 4, gzip 1 costs a quarter of gzip 6's CPU for 0.016 of ratio, and brotli quality 0-5 all
 spend about the same time on a 16-event stream. Hence the defaults.
 
-### 5. only-brotli slides at two windows
+### 5. akio-brotli slides at two windows
 
 The brotli encoder slid its buffer once it held a window plus a meta-block (1 MiB) behind the
 current position, so a 256 KiB window still kept up to 1.3 MiB of input: brotli 4 took
@@ -138,7 +138,7 @@ the code lengths run-length coded three times for the choice between exact and s
 lengths, and about 50 allocations. Setting up a stream (one event and the end) took 13 us, 40%
 of it clearing 640 KiB of bucket tables, sized by level whatever the window and the data.
 
-Decision, in only-brotli's encoder (the decoder and the API are unchanged):
+Decision, in akio-brotli's encoder (the decoder and the API are unchanged):
 
 1. **Prefix codes in time mostly proportional to the symbols used.** Histograms are scanned
    16 entries at a time (an OR the compiler vectorizes) for the used symbols; Huffman depths
@@ -196,7 +196,7 @@ was still mostly in passes over whole alphabets: finding the used symbols in 1,0
 entries, canonical codes over all lengths up to the last used symbol, the run-length smoothing
 of zopfli and the code length runs over hundreds of zero lengths.
 
-Decision, in only-brotli's encoder (no API change):
+Decision, in akio-brotli's encoder (no API change):
 
 1. **Writing a meta-block allocates nothing.** Commands, symbols, histograms, code tables,
    code lengths, run-length tokens and the single-type layout live in buffers an encoder (and a

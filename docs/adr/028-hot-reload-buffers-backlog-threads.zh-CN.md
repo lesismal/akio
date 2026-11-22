@@ -8,7 +8,7 @@
 
 `Engine::reload` / `Live`（M6）可以在不重启的情况下修改空闲超时、慢回调设置、队列上限、高水位、
 连接数上限、关闭超时和日志级别。读缓冲区、listen backlog、UDP 空闲超时和 I/O 线程数在构建时固定，
-并在 `ReloadReport::ignored` 中报告。修改它们需要重启，或者在 only-prefork 下做一次代际替换；而在
+并在 `ReloadReport::ignored` 中报告。修改它们需要重启，或者在 akio-prefork 下做一次代际替换；而在
 Linux `SO_REUSEPORT` 上，除非设置了 `net.ipv4.tcp_migrate_req`，代际替换会重置旧 worker 套接字上
 排队的连接。
 
@@ -27,7 +27,7 @@ ADR-002（锁只保护发送队列，从不在用户代码期间持有）、docs
   （组号在 0/1 之间交替，完成事件的操作码说明缓冲区来自哪个组），取消挂在旧组上的 multishot 接收，
   在每个取消完成时把接收重新挂到新组上，没有接收再使用旧组后注销并释放它；再次修改要等到那时。
 - **`backlog`** 可热更新：每个 I/O 线程对它持有的监听套接字重新调用 `listen(2)`
-  （`only_sys::set_backlog`）；Linux 和 macOS 会就地更新活套接字的队列上限。在线程之间转交的
+  （`akio_sys::set_backlog`）；Linux 和 macOS 会就地更新活套接字的队列上限。在线程之间转交的
   套接字（见下）和新套接字采用当前值。
 - **`udp_idle_timeout`** 可热更新；UDP 线程按 `min(udp_idle_timeout, idle_timeout)`（两者现在都是
   实时值；以前由初始的 `idle_timeout` 作为上限）重新设置每个对端的定时器。
@@ -65,9 +65,9 @@ ADR-002（锁只保护发送队列，从不在用户代码期间持有）、docs
 - 不支持（`Unsupported`）：UDP listener（在 UDP `SO_REUSEPORT` 组里增删套接字会把对端重新哈希到
   别的线程，拆散它们的状态）、DPDK 组，以及启用 BPF 分流（`Accel::Ebpf`）的 listener（分流映射需要
   重建）。
-- `LoopStats`/`LoopMetrics` 新增 `retiring`，渲染为 `only_loop_retiring` 并出现在 JSON 中。
+- `LoopStats`/`LoopMetrics` 新增 `retiring`，渲染为 `akio_loop_retiring` 并出现在 JSON 中。
 
-### only-prefork
+### akio-prefork
 
 - `Controller::reload_in_place()` / `Supervisor::reload_in_place()` 以及向 supervisor 发送 SIGUSR1，
   会向每个运行中的 worker 发送一个新的控制字节，worker 在其控制线程上执行 `Worker::on_reload(Fn())`
@@ -98,8 +98,8 @@ ADR-002（锁只保护发送队列，从不在用户代码期间持有）、docs
 
 - 只新增公共 API：`Config::retire_timeout`、`Live::{read_buffer, set_read_buffer, backlog,
   set_backlog, udp_idle_timeout, set_udp_idle_timeout, retire_timeout, set_retire_timeout}`、
-  `LoopMetrics::retiring`、`Engine::{threads, set_threads}`、`only_sys::set_backlog`，以及
-  only-prefork 的 `Controller::reload_in_place`、`Supervisor::reload_in_place`、
+  `LoopMetrics::retiring`、`Engine::{threads, set_threads}`、`akio_sys::set_backlog`，以及
+  akio-prefork 的 `Controller::reload_in_place`、`Supervisor::reload_in_place`、
   `Worker::{on_reload, reloads}`、`Status::in_place_reloads`。行为变化：`Engine::reload` 现在会应用
   `read_buffer`、`backlog` 和 `udp_idle_timeout`，而不是报告为被忽略。
 - 热路径：除了 poll token 的匹配改为测试一个 listener 位（原来是与一个常量比较）、io_uring 从完成

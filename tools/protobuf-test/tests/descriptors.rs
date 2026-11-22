@@ -1,33 +1,33 @@
-//! Descriptors: the `FileDescriptorSet` only-protobuf-build writes must equal protoc's
+//! Descriptors: the `FileDescriptorSet` akio-protobuf-build writes must equal protoc's
 //! (`protoc --include_imports --descriptor_set_out`, `golden/descriptors/*.pb`, made by
 //! `golden/regen.sh`) for the test and conformance files, file by file.
 
 use std::path::{Path, PathBuf};
 
-use only_protobuf::{Message, well_known::FileDescriptorSet};
+use akio_protobuf::{Message, well_known::FileDescriptorSet};
 
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
-/// Compiles `protos` with only-protobuf-build and returns its descriptor set.
+/// Compiles `protos` with akio-protobuf-build and returns its descriptor set.
 fn ours(protos: &[&str]) -> FileDescriptorSet {
     let tmp = std::env::temp_dir().join(format!(
-        "only-pb-desc-{}-{}",
+        "akio-pb-desc-{}-{}",
         std::process::id(),
         protos[0].replace('/', "_")
     ));
     std::fs::create_dir_all(&tmp).unwrap();
     let set = tmp.join("set.pb");
     let paths: Vec<PathBuf> = protos.iter().map(|p| dir().join(p)).collect();
-    only_protobuf_build::Config::new()
+    akio_protobuf_build::Config::new()
         .include(dir().join("proto"))
         .include(dir().join("conformance/proto"))
         .file_descriptor_set_path(&set)
         .compile(&paths, &tmp)
         .unwrap();
     let b = std::fs::read(&set).unwrap();
-    if let Some(d) = std::env::var_os("ONLY_PB_DESC_DUMP") {
+    if let Some(d) = std::env::var_os("AKIO_PB_DESC_DUMP") {
         std::fs::write(Path::new(&d).join(protos[0].replace('/', "_") + ".pb"), &b).unwrap();
     }
     std::fs::remove_dir_all(&tmp).ok();
@@ -72,12 +72,12 @@ fn test_files() {
     compare("utf8.pb", &["proto/utf8.proto"]);
     compare("utf8_file.pb", &["proto/utf8_file.proto"]);
     // Not `utf8_proto2.proto`: its string default is not UTF-8, which protoc writes as is and
-    // only-protobuf's `FieldDescriptorProto` (a `String`) cannot hold; it is written lossily.
+    // akio-protobuf's `FieldDescriptorProto` (a `String`) cannot hold; it is written lossily.
 }
 
 #[test]
 fn conformance_files() {
-    if std::env::var_os("ONLY_PB_DESC_DUMP").is_some() {
+    if std::env::var_os("AKIO_PB_DESC_DUMP").is_some() {
         for p in [
             "conformance/proto/conformance/conformance.proto",
             "conformance/proto/google/protobuf/test_messages_proto2.proto",

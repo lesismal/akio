@@ -1,9 +1,9 @@
 #![no_main]
-//! only-crypto's hashes, HMAC and CRC-32 against the crates they replaced (CRC-32C against its
+//! akio-crypto's hashes, HMAC and CRC-32 against the crates they replaced (CRC-32C against its
 //! bitwise definition), with the input split at an arbitrary point for the streaming interface.
 
-use only_crypto::hash::{Md5, Sha1, Sha224, Sha256, Sha384, Sha512};
-use only_crypto::mac::Hmac;
+use akio_crypto::hash::{Md5, Sha1, Sha224, Sha256, Sha384, Sha512};
+use akio_crypto::mac::Hmac;
 use sha2::Digest as _;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
@@ -25,7 +25,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     check!(Sha512, sha2::Sha512);
     check!(Md5, md5::Md5);
 
-    let mut c = only_crypto::crc::Crc32::new();
+    let mut c = akio_crypto::crc::Crc32::new();
     c.update(a);
     c.update(b);
     assert_eq!(c.finalize(), crc32fast::hash(data));
@@ -37,7 +37,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             r = if r & 1 != 0 { (r >> 1) ^ 0x82f6_3b78 } else { r >> 1 };
         }
     }
-    let mut c = only_crypto::crc::Crc32c::new();
+    let mut c = akio_crypto::crc::Crc32c::new();
     c.update(a);
     c.update(b);
     assert_eq!(c.finalize(), !r);

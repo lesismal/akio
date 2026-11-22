@@ -6,10 +6,10 @@
 
 ## 背景
 
-`only-media` 列出的两项缺口让它进不了常见的部署。HLS 只能明文提供：付费或私有的流至少需要
+`akio-media` 列出的两项缺口让它进不了常见的部署。HLS 只能明文提供：付费或私有的流至少需要
 `EXT-X-KEY:METHOD=AES-128`，这是所有 HLS 播放器（Safari、hls.js、ExoPlayer、ffmpeg）在没有 DRM
 时都支持的唯一加密方式，由应用把密钥发给它选定的观众，并定期轮换。另外，Hub 中的流无法写到
-磁盘，而这是每个流媒体服务器都会被要求的功能（归档、合规、直播转点播）。`only-crypto` 有 AES
+磁盘，而这是每个流媒体服务器都会被要求的功能（归档、合规、直播转点播）。`akio-crypto` 有 AES
 的 CTR 和 GCM 模式，但没有 CBC。
 
 两者都涉及数据面：HLS 分片在推流方的 I/O 线程上切割，录制则是磁盘 I/O，而 docs/rules.md 第 1
@@ -19,7 +19,7 @@
 
 所有改动都是新增。
 
-1. **`only-crypto` 的 AES-CBC。** `Aes::encrypt_cbc` / `decrypt_cbc`（原地处理整数个分组，链值
+1. **`akio-crypto` 的 AES-CBC。** `Aes::encrypt_cbc` / `decrypt_cbc`（原地处理整数个分组，链值
    传入并传出，因此一条消息可以分段处理；解密一次处理四个分组）以及
    `Aes::encrypt_cbc_padded` / `decrypt_cbc_padded`（PKCS #7；填充以常数时间检查，文档提醒了
    填充预言攻击）。用 SP 800-38A 向量（AES-128 与 AES-256，硬件与可移植路径，整段与分段）测试，
@@ -46,7 +46,7 @@
    - **推流方线程上的开销**：正在写的分片的密文随分片增长按 64 KiB 一段生成，因此分片结束时的
      开销不超过一个 part；part 在切出时加密。正在写的分片的密文计入 `max_bytes`。未加密的流每个
      包只多一次 `None` 检查。
-3. **录制**（`only_media::record`）。`Recorder::new(hub, RecordConfig)` /
+3. **录制**（`akio_media::record`）。`Recorder::new(hub, RecordConfig)` /
    `with_hooks(.., impl RecordHooks)`、`start(path)`、`stop(path)`、`stop_all`、`active`、
    `dropped`、`queued_bytes`。`RecordConfig`：`dir`、`format`（默认 `RecordFormat::Fmp4`，或
    `Flv`）、`segment_duration`、`segment_bytes`、`max_files`（每次录制的轮换）、

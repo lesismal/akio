@@ -6,9 +6,9 @@
 
 ## 背景
 
-ADR-016 之后 `only-media` 还有两个缺口。hub 只承载 H.264 与 H.265 视频：提供 VP8、VP9 或 AV1 的
+ADR-016 之后 `akio-media` 还有两个缺口。hub 只承载 H.264 与 H.265 视频：提供 VP8、VP9 或 AV1 的
 WHIP 媒体行被回答为 inactive，Enhanced RTMP 的 `vp09` / `av01` FourCC 以及 RTSP 的 `VP8` / `VP9` /
-`AV1` rtpmap 都被丢弃，尽管 `only-rtp` 已有这些负载格式、`only-webrtc` 也能协商它们；浏览器默认用 VP8
+`AV1` rtpmap 都被丢弃，尽管 `akio-rtp` 已有这些负载格式、`akio-webrtc` 也能协商它们；浏览器默认用 VP8
 和 VP9 推流，AV1 是低码率下的首选编码。另外 HLS 只提供媒体播放列表，每路流一个：播放器无法在同一来源的
 多个 rendition 之间选择（自适应码率），也无法选择备选音频 rendition。
 
@@ -44,10 +44,10 @@ WHIP 媒体行被回答为 inactive，Enhanced RTMP 的 `vp09` / `av01` FourCC �
   VP9 流，直到第一个关键帧给出画面尺寸。AV1 的 temporal delimiter 被丢弃。RTMP 客户端的
   `fourCcList` 列出这些 FourCC。
 - **RTSP / RTP**：`rtp::supported` 包含 VP8、VP9 与 AV1；`rtp::Packetizer` 与 `rtp::Depacketizer`
-  使用 `only-rtp` 的负载格式（RFC 7741、RFC 9628、AOM 的 AV1 RTP 规范）；缺包的帧被丢弃。对这些编码，
+  使用 `akio-rtp` 的负载格式（RFC 7741、RFC 9628、AOM 的 AV1 RTP 规范）；缺包的帧被丢弃。对这些编码，
   `Depacketizer::take_config` 返回最近一个关键帧的配置，新增的 `Depacketizer::picture_size` 返回其尺寸；
   RTSP 录制端（服务端与客户端 pull）在第一个关键帧到达后上线。SDP 双向映射 `VP8/90000`、`VP9/90000`、
-  `AV1/90000` rtpmap。`only-media` 现在依赖 `only-rtp`（自研 crate，ADR-005 仍然成立）。
+  `AV1/90000` rtpmap。`akio-media` 现在依赖 `akio-rtp`（自研 crate，ADR-005 仍然成立）。
 - **fMP4 / CMAF**：`vp08` / `vp09` 样本描述带 `vpcC`（version 1），`av01` 带 `av1C`；解复用器能读回。
   MPEG-TS 不承载它们（没有 HLS 播放器认识的映射）；当某路流的视频无法被分段格式承载时，HLS 按纯音频流处理
   （按时间切片，而不是一直等待永远不会出现的关键帧）。
@@ -84,7 +84,7 @@ WHIP 媒体行被回答为 inactive，Enhanced RTMP 的 `vp09` / `av01` FourCC �
 
 ## 影响
 
-- only-media 新增公开 API：三个 `Codec` 变体、`Track::video_from_keyframe`、`Track::codec_string`、
+- akio-media 新增公开 API：三个 `Codec` 变体、`Track::video_from_keyframe`、`Track::codec_string`、
   `codec::vp8` / `codec::vp9` / `codec::av1` 模块、`rtp::Depacketizer::picture_size`、
   `hls::{Multivariant, Variant, AudioRendition}`、`Hls::add_multivariant` / `remove_multivariant`。
   crate 外对 `Codec` 的穷尽匹配本就需要通配分支（`#[non_exhaustive]`）。

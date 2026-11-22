@@ -1,14 +1,14 @@
 # 内核旁路（DPDK）
 
-> **实验性。** `Backend::Dpdk` 与 `only::dpdk` 模块不在 semver 承诺范围内
-> （[docs/api-stability.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)），
+> **实验性。** `Backend::Dpdk` 与 `akio::dpdk` 模块不在 semver 承诺范围内
+> （[docs/api-stability.zh-CN.md](https://github.com/lesismal/akio/blob/main/docs/api-stability.zh-CN.md)），
 > 可能在任何发布中变化。
 
-`Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：only 的 I/O
-线程直接轮询网络设备，运行 only 自研的 TCP/IP 协议栈（以太网、ARP、IPv4、ICMP、带 NDP 与 ICMPv6 的
+`Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：akio 的 I/O
+线程直接轮询网络设备，运行 akio 自研的 TCP/IP 协议栈（以太网、ARP、IPv4、ICMP、带 NDP 与 ICMPv6 的
 IPv6、UDP、TCP；安全
 Rust，`#![forbid(unsafe_code)]`，无依赖），再把数据交给与其他后端相同的 `Handler`。UDP listener 依然每次 `on_data` 收到一个数据报，TCP listener 收到
-字节流；`Conn::send`、背压、`dial`、`dial_udp`、空闲超时、遥测与优雅关闭照常工作，因此 `only-kcp`
+字节流；`Conn::send`、背压、`dial`、`dial_udp`、空闲超时、遥测与优雅关闭照常工作，因此 `akio-kcp`
 等协议 crate 无需修改即可运行。
 
 协议栈之下的设备可以是：
@@ -36,25 +36,25 @@ Rust，`#![forbid(unsafe_code)]`，无依赖），再把数据交给与其他后
 `DpdkConfig::mtu` 可达 9000 以使用巨帧；此时重定向程序支持 frags，veth 在这样的 MTU 下也能运行 native XDP）。
 `shared_umem`（Linux 5.10+）让所有队列共用一个 UMEM，`frames` 为各队列平分的总数。未开启 `multi_buffer`
 时对端不能发送 GSO 聚合包：veth 上的 native XDP 会自动关掉它们，generic
-模式下要关闭 TSO、GSO 与 GRO。`only::dpdk::af_xdp_info(iface)`（隐藏）报告实际选用的模式。
+模式下要关闭 TSO、GSO 与 GRO。`akio::dpdk::af_xdp_info(iface)`（隐藏）报告实际选用的模式。
 
 ## 启用
 
 ```toml
 [dependencies]
-only = { version = "1", features = ["dpdk"] }       # AF_XDP、TAP、AF_PACKET、内存链路
-# only = { version = "1", features = ["dpdk-pmd"] } # 外加 DPDK 端口（链接 libdpdk）
+akio = { version = "1", features = ["dpdk"] }       # AF_XDP、TAP、AF_PACKET、内存链路
+# akio = { version = "1", features = ["dpdk-pmd"] } # 外加 DPDK 端口（链接 libdpdk）
 ```
 
 `dpdk-pmd` 会针对已安装的 DPDK（`pkg-config --cflags --libs libdpdk`，DPDK 21.11 或更新）编译一个
 很小的 C shim。没有 libdpdk 时 crate 仍能构建，`Device::Dpdk` 会在 `build` 时以 `Unsupported`
-失败；设置 `ONLY_DPDK_REQUIRE=1` 可把缺少 libdpdk 变成构建错误。Debian/Ubuntu 上：
+失败；设置 `AKIO_DPDK_REQUIRE=1` 可把缺少 libdpdk 变成构建错误。Debian/Ubuntu 上：
 `apt-get install dpdk-dev libdpdk-dev pkg-config`。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:server}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:server}}
 ```
 
 - `DpdkConfig::new(device, address)` 为协议栈指定 IPv4 地址；`prefix_len`（默认 24）和 `gateway`
@@ -66,7 +66,7 @@ only = { version = "1", features = ["dpdk"] }       # AF_XDP、TAP、AF_PACKET�
 把内存链路换成 DPDK 端口：
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:dpdk}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:dpdk}}
 ```
 
 EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。在真实网卡上：预留大页
@@ -78,7 +78,7 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:client}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:client}}
 ```
 
 `Engine::dial` 运行在 engine 的最后一个 listener 上，`dial_udp` 运行在最后一个 UDP listener 上，
@@ -133,14 +133,14 @@ IPv4 地址、`::`、`address6` 或链路本地地址）。`dial` 与 `dial_udp`
 开启 `ipv6_slaac` 后，协议栈根据路由器通告自行配置（ADR-068）：启动时发送路由器请求，为每个通告的 /64
 前缀生成全局地址（前缀加上 MAC 的修改型 EUI-64 标识），并取得默认路由器、链路上前缀、链路 MTU 与跳数
 限制，各按通告的生存期保留；此时 `address6` 可以不设。开启 `ipv6_dad` 后，每个地址（链路本地、静态、
-SLAAC）使用前先探测约一秒，若其他节点已占用则放弃。`only::dpdk::ipv6_addresses(&device)` 返回正在使用的地址：
+SLAAC）使用前先探测约一秒，若其他节点已占用则放弃。`akio::dpdk::ipv6_addresses(&device)` 返回正在使用的地址：
 
 ```rust,ignore
 let mut cfg = DpdkConfig::new(Device::AfPacket("eth1".into()), "10.0.0.2".parse()?);
 cfg.ipv6_slaac = true;
 cfg.ipv6_dad = true;
 // ……引擎运行后：
-let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
+let addrs = akio::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
 ```
 
 无论哪种方式，协议栈都会回应其他节点针对本栈地址的重复地址检测。
@@ -164,7 +164,7 @@ let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db
   不产生开销。
 - **多队列**：端口按 IP/UDP/TCP 四元组配置 RSS，同一条流始终落在同一个队列和线程上。ARP 与 NDP 帧
   会复制到所有队列，让每个协议栈都知道邻居；落到其他队列上的拨出连接的帧会被转交。
-- **连接**是没有内核 socket 的 only 连接：`Conn::send`（可在任意线程调用）只入队并唤醒所属线程，
+- **连接**是没有内核 socket 的 akio 连接：`Conn::send`（可在任意线程调用）只入队并唤醒所属线程，
   由它在每次回调之后把字节搬进协议栈。handler 在 cork 状态下运行，一次回调发送的内容只进入协议栈
   一次。
 - **线程**会注册到 EAL（`rte_thread_register`），以便使用内存池的 per-lcore 缓存。`busy_poll = false`
@@ -172,7 +172,7 @@ let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db
 
 ## TCP/IP 协议栈
 
-`crates/only-dpdk/src/net/`（取代 smoltcp，见 DEV-PLAN“长期：去除第三方依赖”）：
+`crates/akio-dpdk/src/net/`（取代 smoltcp，见 DEV-PLAN“长期：去除第三方依赖”）：
 
 - **以太网 II、ARP**（RFC 826）：邻居缓存，60 s 可达超时并单播刷新；等待解析的报文会排队，发往新
   邻居的第一个 SYN 或数据报在应答到达后立即发出（smoltcp 版本会丢弃它，导致每条新连接都要等 1 s 的
@@ -201,7 +201,7 @@ let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db
 - 校验和由软件计算（无卸载）；收到的校验和都会校验，AF_PACKET 与 AF_XDP 除外（来自本机内核的帧携带的是部分
   校验和）。
 
-为什么自研：每个队列一个实例、没有全局状态，契合 only 的每核一线程模型，无需加锁；整个协议栈都是
+为什么自研：每个队列一个实例、没有全局状态，契合 akio 的每核一线程模型，无需加锁；整个协议栈都是
 安全 Rust；数据路径需要的东西（按批合并 ACK、事件驱动的连接、定时器堆）无需给依赖打补丁就能做到。
 F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更完整，但会带来自带线程模型的 C/C++
 运行时，并在数据路径上引入大量 `unsafe` FFI。

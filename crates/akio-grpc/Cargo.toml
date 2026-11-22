@@ -1,0 +1,39 @@
+[package]
+name = "akio-grpc"
+description = "akio gRPC: unary and streaming calls over the HTTP/2 of akio-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-grpc"
+keywords = ["grpc", "rpc", "http2", "network"]
+categories = ["network-programming", "web-programming"]
+
+[dependencies]
+akio = { workspace = true }
+akio-http = { workspace = true }
+akio-deflate = { workspace = true }
+# Server reflection: the descriptor pool and the reflection messages.
+akio-protobuf = { workspace = true }
+prost = { version = "0.13", optional = true }
+akio-core = { workspace = true, optional = true }
+
+[features]
+# Deprecated (use akio-protobuf / akio-protobuf-build): `codec::Message` for prost-generated
+# messages. Outside the semver promise (names prost types, docs/api-stability.md).
+prost = ["dep:prost"]
+# Fuzz entry points for `fuzz/` (`akio_grpc::fuzzing`); not a public API.
+fuzzing = ["dep:akio-core", "akio-core/fuzzing", "akio-http/fuzzing"]
+
+[dev-dependencies]
+# Regenerates src/reflection/*.rs in a test (tests/reflection.rs).
+akio-protobuf-build = { workspace = true }
+akio-core = { workspace = true, features = ["fuzzing"] }
+akio-http = { workspace = true, features = ["fuzzing"] }
+akio-x509 = { workspace = true }
+
+[lints]
+workspace = true

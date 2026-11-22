@@ -14,7 +14,7 @@ pub trait Handler: Send + Sized + 'static {
 都可以（`Rc` 不行，因为它不是 `Send`）（ADR-003）。
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:handler}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:handler}}
 ```
 
 - `on_data` 在数据到达时被调用。TCP 是字节流：一次调用可能只有一条消息的一部分，也可能有好
@@ -42,7 +42,7 @@ acceptor 由一个 listener 的所有 I/O 线程共享（所以要 `Sync`）。�
 变换（TLS）；见 [TLS](../protocols/tls.md)。
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:acceptor}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:acceptor}}
 ```
 
 acceptor 不需要任何状态的常见情况下，用 `fn_acceptor` 包装一个闭包：
@@ -74,7 +74,7 @@ Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Echo>| Echo))
 | `spawn_blocking(work, done)` | `work` 在逻辑线程池执行，`done` 回到 I/O 线程执行。 |
 | `reserve_response()` | 预留一个有序响应位置。 |
 | `id()`、`is_open()`、`peer_addr()`、`local_addr()` | 标识与状态。 |
-| `with_transport(f)` | 查看 transport 层（见 `only::tls::tls_info`）。 |
+| `with_transport(f)` | 查看 transport 层（见 `akio::tls::tls_info`）。 |
 
 连接关闭后再使用句柄会返回 `Error::Closed`：既不会 panic，也不会碰到被复用的文件描述符。
 连接关闭*并且*所有句柄都被 drop 之后，描述符才会释放。
@@ -82,7 +82,7 @@ Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Echo>| Echo))
 ### 从其他线程发送
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:cross_thread}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:cross_thread}}
 ```
 
 在所属线程上，队列为空时 `send` 直接写 socket。在其他线程上，它先拿连接的写锁，同样尝试
@@ -94,7 +94,7 @@ Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Echo>| Echo))
 
 ### 错误
 
-`Conn` 的操作返回 `only::Result<T>`，错误类型为 `only::Error`：
+`Conn` 的操作返回 `akio::Result<T>`，错误类型为 `akio::Error`：
 
 | 变体 | 含义 |
 |---|---|

@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! A dudect-style statistical timing test for only-crypto's secret-dependent paths
+//! A dudect-style statistical timing test for akio-crypto's secret-dependent paths
 //! (docs/constant-time.md).
 //!
 //! For each target, measurements of two input classes (a fixed secret and a fresh random one)
@@ -11,14 +11,14 @@
 //! ```text
 //! ct-dudect [--seconds S] [--max-measurements N] [--threshold T] [--min-n N] [--seed X]
 //!           [--fixed-random X] [--json FILE] [--list] [FILTER...]
-//! ONLY_CRYPTO_PORTABLE=1 ct-dudect ...   # the portable implementations
+//! AKIO_CRYPTO_PORTABLE=1 ct-dudect ...   # the portable implementations
 //! ```
 //!
 //! The exit status is 1 if a secret target leaks or a sanity target is not detected.
 
-// The same source file as only-crypto's private `ct` module, so the primitives are measured as
-// written (inlined into the harness, as they are inlined into their callers in only-crypto).
-#[path = "../../../crates/only-crypto/src/ct.rs"]
+// The same source file as akio-crypto's private `ct` module, so the primitives are measured as
+// written (inlined into the harness, as they are inlined into their callers in akio-crypto).
+#[path = "../../../crates/akio-crypto/src/ct.rs"]
 mod ct;
 mod rng;
 mod stats;
@@ -144,7 +144,7 @@ const USAGE: &str = "usage: ct-dudect [--seconds S] [--max-measurements N] [--th
   --json FILE           write the results as JSON
   --list                list the targets
   FILTER                run the targets whose name contains one of these
-ONLY_CRYPTO_PORTABLE=1 measures the portable implementations instead of the hardware paths.";
+AKIO_CRYPTO_PORTABLE=1 measures the portable implementations instead of the hardware paths.";
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
@@ -231,7 +231,7 @@ fn to_json(path: &str, seed: u64, args: &Args, results: &[Outcome]) -> String {
     let _ = writeln!(
         o,
         "  \"features\": {},",
-        json_str(&only_crypto::hardware_features())
+        json_str(&akio_crypto::hardware_features())
     );
     let _ = writeln!(o, "  \"arch\": {},", json_str(std::env::consts::ARCH));
     let _ = writeln!(o, "  \"os\": {},", json_str(std::env::consts::OS));
@@ -280,7 +280,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let portable = only_crypto::is_portable();
+    let portable = akio_crypto::is_portable();
     let specs: Vec<Spec> = targets::all()
         .into_iter()
         .filter(|s| args.filters.is_empty() || args.filters.iter().any(|f| s.name.contains(f)))
@@ -299,14 +299,14 @@ fn main() {
     }
     let seed = args.seed.unwrap_or_else(|| {
         let mut b = [0u8; 8];
-        only_crypto::rand::fill_random(&mut b).expect("OS randomness");
+        akio_crypto::rand::fill_random(&mut b).expect("OS randomness");
         u64::from_le_bytes(b)
     });
     let mut rng = Rng::new(seed);
     let path = if portable { "portable" } else { "hw" };
     println!(
         "ct-dudect: path {path} [{}], timer {}, {} s per target, |t| > {} is a leak, seed {seed}",
-        only_crypto::hardware_features(),
+        akio_crypto::hardware_features(),
         timer::NAME,
         args.budget.time.as_secs_f64(),
         args.threshold,

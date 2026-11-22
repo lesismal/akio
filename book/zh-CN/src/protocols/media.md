@@ -1,8 +1,8 @@
 # 流媒体：hub、RTMP、HTTP-FLV、HLS
 
-`only-media` 是直播服务端工具集：一个流 **hub**，周围是全部推流与播放协议。通过 RTMP、RTSP 或
+`akio-media` 是直播服务端工具集：一个流 **hub**，周围是全部推流与播放协议。通过 RTMP、RTSP 或
 SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS 播放，协议之间没有任何胶水代码：
-每个协议都把收到的内容转换成 `only_media::av` 的规范包，再从规范包封装输出。
+每个协议都把收到的内容转换成 `akio_media::av` 的规范包，再从规范包封装输出。
 
 | 协议 | 推流 | 播放 | 章节 |
 |---|---|---|---|
@@ -14,7 +14,7 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 | WHIP / WHEP（媒体需 `webrtc` feature） | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 
 编码：H.264、H.265、AAC 和 Opus，凡容器能承载之处都支持；VP8、VP9 与 AV1 支持 Enhanced RTMP / FLV、RTSP、
-WHIP / WHEP 与 fMP4 HLS（不支持 MPEG-TS）；容器允许时还有 G.711 与 MP3。下面的代码片段来自 `crates/only-media/examples/guide-media.rs`。
+WHIP / WHEP 与 fMP4 HLS（不支持 MPEG-TS）；容器允许时还有 G.711 与 MP3。下面的代码片段来自 `crates/akio-media/examples/guide-media.rs`。
 
 ## 规范形式
 
@@ -25,7 +25,7 @@ WHIP / WHEP 与 fMP4 HLS（不支持 MPEG-TS）；容器允许时还有 G.711 �
 NAL 长度，不含访问单元分隔符）、VP8 / VP9 帧、AV1 temporal unit（带长度、不含 temporal delimiter 的
 OBU）、不带 ADTS 的 AAC 原始帧、Opus 包；解码时间与显示时间以纳秒计。包的 `keyframe` 由码流判定（IDR /
 IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分段与慢播放器丢包都从这些包开始。
-`only_media::codec` 提供 AVCC 与 Annex B 互转、解析配置记录、SPS、VP9 关键帧头与 AV1 sequence header
+`akio_media::codec` 提供 AVCC 与 Annex B 互转、解析配置记录、SPS、VP9 关键帧头与 AV1 sequence header
 （画面尺寸）以及 ADTS 分帧的工具；`Track::video_from_keyframe` 由关键帧构造 VP8 / VP9 / AV1 轨道，
 `Track::codec_string` 给出 RFC 6381 字符串（`avc1.64001F`、`vp09.00.31.08`、`av01.0.04M.08`、
 `mp4a.40.2`……）。
@@ -33,7 +33,7 @@ IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分
 ## Hub
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:hub}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:hub}}
 ```
 
 - **按路径区分的流。** RTMP 的 `rtmp://host/app/name` 推送 `app/name`；RTSP、SRT、HTTP 与 WHIP 使用
@@ -58,11 +58,11 @@ IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分
 自定义 sink（录制、转推、分析）实现 `Sink` 即可：
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:sink}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:sink}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:subscribe}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:subscribe}}
 ```
 
 丢弃 `Subscription`（或 `Publisher`）即结束。`SubscribeOptions::wait` 让订阅可以先于推流者存在，并在
@@ -71,7 +71,7 @@ IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分
 ## RTMP
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:rtmp}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:rtmp}}
 ```
 
 `RtmpServer` 是一个 `Acceptor`。它支持简单握手和 Flash digest（"complex"）握手、完整的 chunk 流（四种
@@ -80,7 +80,7 @@ IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分
 `closeStream`。推流者的 FLV tag 经 `flv::Decoder` 解析（传统 codec id，包括以 12 表示的 H.265，以及
 Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）；播放者先收到 onMetaData 和序列头，然后是 GOP 缓存，
 由 `flv::Encoder` 写出（H.265 写作 `hvc1`，或在 `EncoderConfig::legacy_hevc` 时写作 codec id 12）。
-`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 only-tls 之后的 RTMP。客户端须在
+`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 akio-tls 之后的 RTMP。客户端须在
 `handshake_timeout`（10 s）内完成握手；连接 `idle_timeout`（60 s）内什么都没发送则被关闭（播放者除外：
 不再读取的播放者由引擎的写超时约束）。单条消息上限 16 MiB，一个连接所有 chunk 流中未完成的消息合计上限
 32 MiB。
@@ -88,10 +88,10 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
 ## HTTP-FLV、WS-FLV 与 HLS
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:http}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:http}}
 ```
 
-`MediaHttp` 按扩展名分发给两个 only-http 服务，它们也可以单独挂载：
+`MediaHttp` 按扩展名分发给两个 akio-http 服务，它们也可以单独挂载：
 
 - **`HttpFlv`**：`GET /app/name.flv` 输出一个永不结束的 FLV 文件（HTTP/1.1 上为 chunked，HTTP/2 上为
   流）。响应在订阅被接受后才开始，所以不存在的流返回 404，被拒绝的返回 403。同一 URL 升级为 WebSocket
@@ -105,12 +105,12 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
 - **fMP4 / CMAF 分段**：`HlsConfig::format = SegmentFormat::Fmp4` 切出分片 MP4 而非 MPEG-TS（H.264、
   H.265、VP8、VP9、AV1、AAC 与 Opus；MPEG-TS 不承载 VP8 / VP9 / AV1，视频无法承载的流按纯音频流切片）。播放列表用 `#EXT-X-MAP:URI="init-<n>.mp4"` 指向初始化分段（仅当编码配置变化时换新），
   分段为 `seg-<n>.m4s`，LL-HLS 分片为 `part-<n>.<m>.m4s`，每个分片由一个或多个完整的 `moof`+`mdat`
-  组成。`only_media::fmp4`（`Muxer`、`Demuxer`）也可单独使用。
+  组成。`akio_media::fmp4`（`Muxer`、`Demuxer`）也可单独使用。
 - **多码率播放列表**：同一来源的各个 rendition 作为单独的流发布（编码器阶梯、多个 WHIP 推流者），由
   `Hls::add_multivariant` 组合在一起：
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:multivariant}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:multivariant}}
 ```
 
   `GET /live/show.m3u8` 为每个 `Variant` 列出一条 `EXT-X-STREAM-INF`：`BANDWIDTH`（配置值，或其分段与其
@@ -133,8 +133,8 @@ Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）�
   分段和 LL-HLS 分片，MPEG-TS 与 fMP4 相同：
 
 ```rust,ignore
-use only_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
-use only_http::Context;
+use akio_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
+use akio_http::Context;
 
 struct Keys; // 应用自己的密钥与权限检查
 impl KeyProvider for Keys {
@@ -181,11 +181,11 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // 每 10 个�
 
 ## 转发：RTMP 客户端
 
-`only_media::rtmp::client` 把 hub 中的流推到另一台 RTMP 服务器，或从它拉流进 hub，使 `only-media`
+`akio_media::rtmp::client` 把 hub 中的流推到另一台 RTMP 服务器，或从它拉流进 hub，使 `akio-media`
 的 hub 可以喂给 CDN 或转发上游编码器：
 
 ```rust,ignore
-use only_media::rtmp::client::{self, RtmpClientConfig};
+use akio_media::rtmp::client::{self, RtmpClientConfig};
 
 // hub 路径 live/cam -> rtmp://cdn.example/live/cam
 let push = client::push(&engine, "rtmp://203.0.113.9/live/cam", &hub, "live/cam",
@@ -207,7 +207,7 @@ Enhanced RTMP 发送。
 
 ```rust,ignore
 use std::{sync::Arc, time::Duration};
-use only_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
+use akio_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
 
 let engine = Arc::new(engine); // 客户端在它上面重新拨号（弱引用持有）
 let mut cfg = RtmpClientConfig::default();
@@ -224,11 +224,11 @@ discontinuity）。推流重新订阅，并从缓存的 GOP 开始。每次尝�
 
 ## 录制
 
-`only_media::record::Recorder` 把 hub 中的流写成分片 MP4、FLV 或 MPEG-TS 文件：
+`akio_media::record::Recorder` 把 hub 中的流写成分片 MP4、FLV 或 MPEG-TS 文件：
 
 ```rust,ignore
 use std::time::Duration;
-use only_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
+use akio_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
 
 struct Hooks;
 impl RecordHooks for Hooks {
@@ -238,7 +238,7 @@ impl RecordHooks for Hooks {
     }
 }
 
-let mut cfg = RecordConfig::new("/var/lib/only/rec");
+let mut cfg = RecordConfig::new("/var/lib/akio/rec");
 cfg.format = RecordFormat::Fmp4; // 或 Flv、MpegTs
 cfg.segment_duration = Some(Duration::from_secs(600));
 cfg.max_files = 144; // 保留最近一天的十分钟文件
@@ -267,11 +267,11 @@ ffmpeg 目前还不能解封装 MPEG-TS 中的 AV1（其支持仍在评审中）
 ## 运行
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:engine}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:engine}}
 ```
 
 ```console
-$ cargo run -p only-media --example guide-media
+$ cargo run -p akio-media --example guide-media
 $ ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine \
     -c:v libx264 -g 50 -c:a aac -f flv rtmp://127.0.0.1:1935/live/cam
 $ ffprobe rtmp://127.0.0.1:1935/live/cam
@@ -281,7 +281,7 @@ $ ffplay http://127.0.0.1:8080/live/cam/index.m3u8
 
 ## 互通
 
-集成测试（`crates/only-media/tests/*_interop.rs`，未安装 ffmpeg 时跳过）以 ffmpeg 9 作为推流端，
+集成测试（`crates/akio-media/tests/*_interop.rs`，未安装 ffmpeg 时跳过）以 ffmpeg 9 作为推流端，
 ffprobe / ffmpeg 作为播放端：
 
 | 推流端 | 播放端 | 编码 |

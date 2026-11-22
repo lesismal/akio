@@ -1,6 +1,6 @@
 # The protobuf conformance test runner (C++, built from the protobuf release sources) next to a
-# Rust toolchain, to run the only-protobuf testee (`tools/protobuf-test/conformance/run.sh`).
-#   docker build -t only-protobuf-conformance tools/protobuf-test/conformance
+# Rust toolchain, to run the akio-protobuf testee (`tools/protobuf-test/conformance/run.sh`).
+#   docker build -t akio-protobuf-conformance tools/protobuf-test/conformance
 FROM debian:bookworm AS runner
 ARG PROTOBUF_VERSION=v35.1
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \

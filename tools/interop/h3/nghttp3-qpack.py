@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""only-h3's QPACK encoder checked by libnghttp3's QPACK decoder (RFC 9204).
+"""akio-h3's QPACK encoder checked by libnghttp3's QPACK decoder (RFC 9204).
 
     nghttp3-qpack.py LIBNGHTTP3 QPACK_PIPE [ROUNDS]
 
-QPACK_PIPE is `target/.../examples/qpack-pipe` (only-h3 with feature `fuzzing`); LIBNGHTTP3 is
+QPACK_PIPE is `target/.../examples/qpack-pipe` (akio-h3 with feature `fuzzing`); LIBNGHTTP3 is
 `libnghttp3.so.9` (Debian's, which curl's HTTP/3 uses). Plain ctypes: no build, no download.
 
 Over-the-wire HTTP/3 peers (curl, quic-go) advertise a decoder table of 0, so our encoder's
@@ -115,7 +115,7 @@ def tohex(b):
 
 NAMES = [b"x-a", b"x-b", b"server", b"content-type", b"x-a-much-longer-header-name", b"date",
          b":authority", b"accept-language", b"x-trace-id-for-this-request", b"user-agent"]
-VALUES = [b"1", b"2", b"only", b"text/html", b"application/x-a-rather-long-media-type-value",
+VALUES = [b"1", b"2", b"akio", b"text/html", b"application/x-a-rather-long-media-type-value",
           b"Mon, 16 Nov 2026 00:00:00 GMT", b"example.com", b"", b"en-US,en;q=0.9",
           b"curl/8 (x86_64) libcurl nghttp3 ngtcp2"]
 
@@ -254,7 +254,7 @@ def main():
     for n, v in zip(names, total):
         if v == 0:
             fail("no " + n + " exercised")
-    print("nghttp3 QPACK decoder vs only-h3 encoder: all passed")
+    print("nghttp3 QPACK decoder vs akio-h3 encoder: all passed")
 
 
 if __name__ == "__main__":

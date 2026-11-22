@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
+# akio-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
 # TLS 1.3 and 1.2, every implemented cipher suite and group (X448 and Ed448 with OpenSSL only:
 # Go has neither), RSA / RSA-PSS-key (rsa_pss_pss_*, OpenSSL only: Go cannot parse the keys) /
 # ECDSA P-256 / P-384 / P-521 / Ed25519 / Ed448 certificates, client authentication (also with
@@ -14,7 +14,7 @@
 #
 #   tools/interop/tls/run.sh              # needs openssl (3.x+) and go on PATH
 #   OUT=/tmp/x tools/interop/tls/run.sh   # where PKI, logs and binaries go
-#   ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh   # only's side on kernel TLS after the
+#   AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh   # only's side on kernel TLS after the
 #       handshake (Linux with the `tls` module, 6.14+; ktls feature, docs/BENCHMARKS.md)
 #
 # Linux Docker (Debian's OpenSSL 3 and the Go toolchain from the image are fetched on demand):
@@ -27,9 +27,9 @@ OUT=${OUT:-$(mktemp -d)}
 mkdir -p "$OUT/pki"
 TARGET=${CARGO_TARGET_DIR:-$ROOT/target}
 KTLS_FEATURE=()
-[ -n "${ONLY_INTEROP_KTLS:-}" ] && KTLS_FEATURE=(--features ktls)
-(cd "$ROOT" && cargo build -q --release -p only-tls --example tls-interop ${KTLS_FEATURE[@]+"${KTLS_FEATURE[@]}"} &&
-    cargo build -q --release -p only-http --example http-bench) || exit 1
+[ -n "${AKIO_INTEROP_KTLS:-}" ] && KTLS_FEATURE=(--features ktls)
+(cd "$ROOT" && cargo build -q --release -p akio-tls --example tls-interop ${KTLS_FEATURE[@]+"${KTLS_FEATURE[@]}"} &&
+    cargo build -q --release -p akio-http --example http-bench) || exit 1
 ONLY=$TARGET/release/examples/tls-interop
 HTTP=$TARGET/release/examples/http-bench
 (cd "$ROOT/tools/interop/tls/go" && go build -o "$OUT/tlsgo" .) || exit 1
@@ -40,7 +40,7 @@ PORT=${PORT:-19443}
 # ---- PKI: a CA, server leaves of every key type, a client leaf ----
 cd "$P" || exit 1
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.pem \
-    -days 30 -subj "/CN=only interop CA" >/dev/null 2>&1
+    -days 30 -subj "/CN=akio interop CA" >/dev/null 2>&1
 leaf() { # name keygen-args san
     local n=$1
     shift
@@ -113,8 +113,8 @@ wait_port() {
 }
 next_port() { PORT=$((PORT + 1)); }
 
-# ---- only client -> openssl s_server ----
-s_server_case() { # name "s_server args" "only client args" [expect-resume]
+# ---- akio client -> openssl s_server ----
+s_server_case() { # name "s_server args" "akio client args" [expect-resume]
     local name=$1 sargs=$2 cargs=$3
     next_port
     # shellcheck disable=SC2086
@@ -123,16 +123,16 @@ s_server_case() { # name "s_server args" "only client args" [expect-resume]
     wait_port "$PORT"
     # shellcheck disable=SC2086
     if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
-        ok "only client -> openssl: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
+        ok "akio client -> openssl: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
-        ko "only client -> openssl: $name" "$OUT/cli.log"
+        ko "akio client -> openssl: $name" "$OUT/cli.log"
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
 }
 
-# The only client must fail, saying `pattern`.
-s_server_fail_case() { # name "s_server args" "only client args" pattern
+# The akio client must fail, saying `pattern`.
+s_server_fail_case() { # name "s_server args" "akio client args" pattern
     local name=$1 sargs=$2 cargs=$3 pat=$4
     next_port
     # shellcheck disable=SC2086
@@ -141,18 +141,18 @@ s_server_fail_case() { # name "s_server args" "only client args" pattern
     wait_port "$PORT"
     # shellcheck disable=SC2086
     if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
-        ko "only client -> openssl: $name (handshake succeeded)" "$OUT/cli.log"
+        ko "akio client -> openssl: $name (handshake succeeded)" "$OUT/cli.log"
     elif grep -q "$pat" "$OUT/cli.log"; then
-        ok "only client -> openssl: $name (refused: $pat)"
+        ok "akio client -> openssl: $name (refused: $pat)"
     else
-        ko "only client -> openssl: $name (no \"$pat\")" "$OUT/cli.log"
+        ko "akio client -> openssl: $name (no \"$pat\")" "$OUT/cli.log"
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
 }
 
-# ---- openssl s_client -> only server ----
-s_client_case() { # name "only server args" "s_client args" grep-pattern [stdin]
+# ---- openssl s_client -> akio server ----
+s_client_case() { # name "akio server args" "s_client args" grep-pattern [stdin]
     local name=$1 sargs=$2 cargs=$3 pat=$4 input=${5:-"hello only"}
     next_port
     # shellcheck disable=SC2086
@@ -167,16 +167,16 @@ s_client_case() { # name "only server args" "s_client args" grep-pattern [stdin]
     done; sleep 1) | timeout 10 openssl s_client -connect "127.0.0.1:$PORT" \
         -servername localhost -CAfile "$P/ca.pem" -verify_return_error $cargs > "$OUT/cli.log" 2>&1
     if grep -q "$pat" "$OUT/cli.log" && grep -q "Verify return code: 0" "$OUT/cli.log"; then
-        ok "openssl -> only server: $name ($(grep -m1 '^server:' "$OUT/srv.log" | cut -d' ' -f2-3))"
+        ok "openssl -> akio server: $name ($(grep -m1 '^server:' "$OUT/srv.log" | cut -d' ' -f2-3))"
     else
-        ko "openssl -> only server: $name" "$OUT/cli.log"
+        ko "openssl -> akio server: $name" "$OUT/cli.log"
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
 }
 
 # ---- Go both ways ----
-go_server_case() { # name "go server args" "only client args"
+go_server_case() { # name "go server args" "akio client args"
     local name=$1 sargs=$2 cargs=$3
     next_port
     # shellcheck disable=SC2086
@@ -185,15 +185,15 @@ go_server_case() { # name "go server args" "only client args"
     wait_port "$PORT"
     # shellcheck disable=SC2086
     if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" $cargs > "$OUT/cli.log" 2>&1; then
-        ok "only client -> go: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
+        ok "akio client -> go: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
-        ko "only client -> go: $name" "$OUT/cli.log"
+        ko "akio client -> go: $name" "$OUT/cli.log"
         sed 's/^/    srv: /' "$OUT/srv.log" | tail -5
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
 }
-go_client_case() { # name "only server args" "go client args"
+go_client_case() { # name "akio server args" "go client args"
     local name=$1 sargs=$2 cargs=$3
     next_port
     # shellcheck disable=SC2086
@@ -202,9 +202,9 @@ go_client_case() { # name "only server args" "go client args"
     wait_port "$PORT"
     # shellcheck disable=SC2086
     if "$GO" client -addr "127.0.0.1:$PORT" -name localhost -ca "$P/ca.pem" $cargs > "$OUT/cli.log" 2>&1; then
-        ok "go -> only server: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
+        ok "go -> akio server: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
-        ko "go -> only server: $name" "$OUT/cli.log"
+        ko "go -> akio server: $name" "$OUT/cli.log"
         sed 's/^/    srv: /' "$OUT/srv.log" | tail -5
     fi
     kill $sp 2>/dev/null
@@ -289,14 +289,14 @@ wait_port "$PORT"
     -CAfile "$P/ca.pem" -tls1_3 -cert "$P/client.pem" -key "$P/client.key" > "$OUT/cli.log" 2>&1
 sleep 0.3
 if grep -q "no stapled OCSP response" "$OUT/srv.log"; then
-    ok "openssl -> only server: 1.3 client OCSP hard-fail refuses a client without one"
+    ok "openssl -> akio server: 1.3 client OCSP hard-fail refuses a client without one"
 else
-    ko "openssl -> only server: 1.3 client OCSP hard-fail" "$OUT/srv.log"
+    ko "openssl -> akio server: 1.3 client OCSP hard-fail" "$OUT/srv.log"
 fi
 kill $sp 2>/dev/null
 wait $sp 2>/dev/null
 # only both ways over TCP: good, revoked, missing (hard fail).
-only_client_ocsp_case() { # name server-policy "client args" expect(ok|pattern)
+akio_client_ocsp_case() { # name server-policy "client args" expect(ok|pattern)
     local name=$1 pol=$2 cargs=$3 want=$4
     next_port
     # shellcheck disable=SC2086
@@ -310,19 +310,19 @@ only_client_ocsp_case() { # name server-policy "client args" expect(ok|pattern)
     local rc=$?
     sleep 0.3
     if [ "$want" = ok ] && [ $rc = 0 ] && grep -q "^server: .*ocsp=[1-9]" "$OUT/srv.log"; then
-        ok "only client -> only server: $name ($(grep -m1 -o 'ocsp=[0-9]*' "$OUT/srv.log"))"
+        ok "akio client -> akio server: $name ($(grep -m1 -o 'ocsp=[0-9]*' "$OUT/srv.log"))"
     elif [ "$want" != ok ] && [ $rc != 0 ] && grep -q "$want" "$OUT/srv.log"; then
-        ok "only client -> only server: $name (refused: $want)"
+        ok "akio client -> akio server: $name (refused: $want)"
     else
-        ko "only client -> only server: $name" "$OUT/srv.log"
+        ko "akio client -> akio server: $name" "$OUT/srv.log"
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
 }
-only_client_ocsp_case "1.3 client OCSP hard-fail, good" hard "--client-ocsp-file $P/ocsp-client.der" ok
-only_client_ocsp_case "1.3 client OCSP soft-fail, revoked" soft \
+akio_client_ocsp_case "1.3 client OCSP hard-fail, good" hard "--client-ocsp-file $P/ocsp-client.der" ok
+akio_client_ocsp_case "1.3 client OCSP soft-fail, revoked" soft \
     "--client-ocsp-file $P/ocsp-client-revoked.der" "revoked"
-only_client_ocsp_case "1.3 client OCSP hard-fail, none" hard "" "no stapled OCSP response"
+akio_client_ocsp_case "1.3 client OCSP hard-fail, none" hard "" "no stapled OCSP response"
 # Resumption: tickets in 1.3, tickets and session IDs in 1.2.
 s_server_case "1.3 resumption" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--count 3 --expect-resume"
 s_server_case "1.2 resumption (ticket)" "-cert $P/p256.pem -key $P/p256.key -tls1_2" \
@@ -342,9 +342,9 @@ for v in tls1_3 tls1_2; do
         (echo b; sleep 0.5) | timeout 10 openssl s_client -connect "127.0.0.1:$PORT" -servername localhost \
             -CAfile "$P/ca.pem" -"$v" -sess_in "$OUT/sess" > "$OUT/cli2.log" 2>&1
         if grep -q "^Reused" "$OUT/cli2.log"; then
-            ok "openssl -> only server: $v resumption ${t:-(cache)}"
+            ok "openssl -> akio server: $v resumption ${t:-(cache)}"
         else
-            ko "openssl -> only server: $v resumption ${t:-(cache)}" "$OUT/cli2.log"
+            ko "openssl -> akio server: $v resumption ${t:-(cache)}" "$OUT/cli2.log"
         fi
         kill $sp 2>/dev/null
         wait $sp 2>/dev/null
@@ -354,7 +354,7 @@ done
 # s_server runs without -www: OpenSSL 3.0 refuses -early_data with -www/-WWW/-HTTP/-rev
 # (later releases allow it), so the client sends, closes and reads to s_server's close, and
 # s_server's log shows what it did with the early data of the second and third connections.
-s_server_early_case() { # name "s_server args" "only client args" s_server-log-line
+s_server_early_case() { # name "s_server args" "akio client args" s_server-log-line
     local name=$1 sargs=$2 cargs=$3 want=$4
     next_port
     # s_server stops at EOF on stdin: keep it open for the length of the case.
@@ -366,10 +366,10 @@ s_server_early_case() { # name "s_server args" "only client args" s_server-log-l
     # shellcheck disable=SC2086
     if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --count 3 --early-data \
         --no-reply $cargs > "$OUT/cli.log" 2>&1 && [ "$(grep -c "^$want" "$OUT/srv.log")" = 2 ] &&
-        grep -q "hello from only-tls 1" "$OUT/srv.log" && grep -q "hello from only-tls 2" "$OUT/srv.log"; then
-        ok "only client -> openssl: $name ($(grep -m1 'client\[1\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
+        grep -q "hello from akio-tls 1" "$OUT/srv.log" && grep -q "hello from akio-tls 2" "$OUT/srv.log"; then
+        ok "akio client -> openssl: $name ($(grep -m1 'client\[1\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
-        ko "only client -> openssl: $name" "$OUT/cli.log"
+        ko "akio client -> openssl: $name" "$OUT/cli.log"
         grep -v '^[A-Za-z0-9+/=]*$' "$OUT/srv.log" | sed 's/^/    srv: /' | tail -8
     fi
     kill $sp 2>/dev/null
@@ -396,12 +396,12 @@ for t in "" "--hrr"; do
         -CAfile "$P/ca.pem" -tls1_3 -sess_in "$OUT/sess" -early_data "$OUT/early.txt" > "$OUT/cli2.log" 2>&1
     if [ -z "$t" ] && grep -q "^Early data was accepted" "$OUT/cli2.log" &&
         grep -q "^early hello" "$OUT/cli2.log" && grep -q "early=Accepted/12" "$OUT/srv.log"; then
-        ok "openssl -> only server: 1.3 early data accepted"
+        ok "openssl -> akio server: 1.3 early data accepted"
     elif [ -n "$t" ] && grep -q "^Early data was rejected" "$OUT/cli2.log" &&
         grep -q "early=Rejected/0" "$OUT/srv.log"; then
-        ok "openssl -> only server: 1.3 early data rejected (HRR)"
+        ok "openssl -> akio server: 1.3 early data rejected (HRR)"
     else
-        ko "openssl -> only server: 1.3 early data ${t:-accepted}" "$OUT/cli2.log"
+        ko "openssl -> akio server: 1.3 early data ${t:-accepted}" "$OUT/cli2.log"
         sed 's/^/    srv: /' "$OUT/srv.log" | tail -5
     fi
     kill $sp 2>/dev/null
@@ -463,13 +463,13 @@ for alg in zlib brotli zstd; do
         "$S --ca $P/ca.pem --require --cert-comp $alg" \
         "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
     if grep -q "cert_comp_alg=$alg" "$OUT/srv.log"; then :; else
-        ko "openssl -> only server: client certificate was not compressed with $alg" "$OUT/srv.log"
+        ko "openssl -> akio server: client certificate was not compressed with $alg" "$OUT/srv.log"
     fi
     s_server_case "1.3 compressed certificate ($alg)" \
         "-cert $P/p256.pem -key $P/p256.key -tls1_3 -cert_comp -Verify 1" \
         "--cert $P/client.pem --key $P/client.key --cert-comp $alg"
     if grep -q "cert_comp_alg=$alg" "$OUT/cli.log"; then :; else
-        ko "only client -> openssl: certificate was not compressed with $alg" "$OUT/cli.log"
+        ko "akio client -> openssl: certificate was not compressed with $alg" "$OUT/cli.log"
     fi
 done
 if openssl version -a | grep -q -- '-DZLIB'; then
@@ -509,9 +509,9 @@ if command -v gnutls-cli >/dev/null; then
         if grep -q "rsl=1000/$want" "$OUT/srv.log" &&
             [ "$(grep -c -E '^hello gnutls [1-5] 0{484}$' "$OUT/cli.log")" = 5 ] &&
             cmp -s "$OUT/got-ocsp.der" "$P/ocsp.der"; then
-            ok "gnutls -> only server: $v record_size_limit + OCSP ($(grep -o 'rsl=[0-9/]*' "$OUT/srv.log"))"
+            ok "gnutls -> akio server: $v record_size_limit + OCSP ($(grep -o 'rsl=[0-9/]*' "$OUT/srv.log"))"
         else
-            ko "gnutls -> only server: $v record_size_limit + OCSP" "$OUT/cli.log"
+            ko "gnutls -> akio server: $v record_size_limit + OCSP" "$OUT/cli.log"
             sed 's/^/    srv: /' "$OUT/srv.log" | tail -3
         fi
         kill $sp 2>/dev/null
@@ -523,9 +523,9 @@ if command -v gnutls-cli >/dev/null; then
         wait_port "$PORT"
         if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --record-limit 1000 \
             --expect-record-limit "$want" --expect-ocsp "$P/ocsp.der" --bytes 5000 > "$OUT/cli.log" 2>&1; then
-            ok "only client -> gnutls: $v record_size_limit + OCSP ($(grep -m1 -o 'rsl=[0-9/]*' "$OUT/cli.log"))"
+            ok "akio client -> gnutls: $v record_size_limit + OCSP ($(grep -m1 -o 'rsl=[0-9/]*' "$OUT/cli.log"))"
         else
-            ko "only client -> gnutls: $v record_size_limit + OCSP" "$OUT/cli.log"
+            ko "akio client -> gnutls: $v record_size_limit + OCSP" "$OUT/cli.log"
         fi
         kill $sp 2>/dev/null
         wait $sp 2>/dev/null
@@ -581,7 +581,7 @@ go_server_case "1.3 record_size_limit not negotiated" "-cert $P/p256.pem -key $P
     "--record-limit 512 --expect-record-limit 0 --bytes 40000"
 go_client_case "1.2 record_size_limit not negotiated" "$S --record-limit 512" "-tls12 -key-update"
 
-# curl against only-http over TLS (HTTP/1.1 and HTTP/2 by ALPN).
+# curl against akio-http over TLS (HTTP/1.1 and HTTP/2 by ALPN).
 if command -v curl >/dev/null; then
     next_port
     "$HTTP" "127.0.0.1:$PORT" 2 epoll tls > "$OUT/http.log" 2>&1 &
@@ -592,9 +592,9 @@ if command -v curl >/dev/null; then
             r=$(curl -sSk "$v" "--tlsv$t" --tls-max "$t" -w ' %{http_version} %{http_code}' \
                 "https://127.0.0.1:$PORT/plaintext" 2>&1)
             case "$r" in
-            "Hello, World! "*" 200") ok "curl $v TLS $t -> only-http ($r)" ;;
+            "Hello, World! "*" 200") ok "curl $v TLS $t -> akio-http ($r)" ;;
             *"not found built-in"* | *"option"*) echo "SKIP curl $v TLS $t (not in this curl build)" ;;
-            *) ko "curl $v TLS $t -> only-http" && echo "    $r" ;;
+            *) ko "curl $v TLS $t -> akio-http" && echo "    $r" ;;
             esac
         done
     done

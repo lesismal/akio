@@ -1,0 +1,34 @@
+[package]
+name = "akio-turn"
+description = "akio STUN and TURN (RFC 8489, RFC 8656): servers over only UDP, TCP, TLS and DTLS, and a sans-io client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-turn"
+keywords = ["turn", "stun", "webrtc", "nat", "relay"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_turn::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+akio = { workspace = true }
+akio-crypto = { workspace = true }
+# TURN over DTLS (RFC 7350): `TurnServer::dtls`.
+akio-dtls = { workspace = true }
+akio-x509 = { workspace = true }
+# TCP relays (RFC 6062): the relayed addresses' listeners and the poller accepting on them.
+akio-sys = { workspace = true }
+# The engine-driven TCP allocation client layers its ConnectionBind as a connection transport.
+akio-core = { workspace = true }
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

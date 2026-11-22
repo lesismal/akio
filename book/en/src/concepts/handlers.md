@@ -14,7 +14,7 @@ ever touched there, so it must be `Send` (it is created once and stays) but not 
 `Cell`/`RefCell`, buffers and parsers are all fine (`Rc` is not, since it is not `Send`) (ADR-003).
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:handler}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:handler}}
 ```
 
 - `on_data` receives bytes as they arrive. TCP is a byte stream: one call may hold part of a
@@ -45,7 +45,7 @@ already `send`. `on_shutdown` is called for each open connection during a gracef
 [TLS](../protocols/tls.md).
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:acceptor}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:acceptor}}
 ```
 
 For the common case where the acceptor holds nothing, wrap a closure with `fn_acceptor`:
@@ -77,7 +77,7 @@ the wrapper.)
 | `spawn_blocking(work, done)` | Run `work` on the logical pool, `done` back on the I/O thread. |
 | `reserve_response()` | Reserve an ordered response position. |
 | `id()`, `is_open()`, `peer_addr()`, `local_addr()` | Identity and state. |
-| `with_transport(f)` | Inspect the transport layer (see `only::tls::tls_info`). |
+| `with_transport(f)` | Inspect the transport layer (see `akio::tls::tls_info`). |
 
 Using a handle after the connection closed returns `Error::Closed`: it never panics and never
 touches a recycled file descriptor. The descriptor is released when the connection is closed
@@ -86,7 +86,7 @@ touches a recycled file descriptor. The descriptor is released when the connecti
 ### Sending from other threads
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:cross_thread}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:cross_thread}}
 ```
 
 On the owning thread `send` writes directly when nothing is queued. From another thread it takes
@@ -99,7 +99,7 @@ corked: it leaves in one `writev` when the callback returns.
 
 ### Errors
 
-`Conn` operations return `only::Result<T>` with `only::Error`:
+`Conn` operations return `akio::Result<T>` with `akio::Error`:
 
 | Variant | Meaning |
 |---|---|

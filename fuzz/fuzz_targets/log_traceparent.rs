@@ -2,7 +2,7 @@
 //! W3C `traceparent` parsing: never panics; what parses has non-zero ids and prints back to an
 //! equal version-00 header.
 
-use only_log::span::SpanContext;
+use akio_log::span::SpanContext;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Ok(s) = std::str::from_utf8(data) else { return };

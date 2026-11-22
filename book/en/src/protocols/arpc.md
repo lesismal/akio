@@ -1,6 +1,6 @@
 # arpc
 
-`only-arpc` speaks the wire format of [lesismal/arpc](https://github.com/lesismal/arpc) and
+`akio-arpc` speaks the wire format of [lesismal/arpc](https://github.com/lesismal/arpc) and
 fib's `arpc` package, so it talks to Go peers of either (checked in both directions by
 `tools/interop/arpc/run.sh`).
 
@@ -10,7 +10,7 @@ each serves the other's calls with the `Routes` it was given.
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:server}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:server}}
 ```
 
 `Routes`:
@@ -38,10 +38,10 @@ one shared encoded frame; `peers()` lists them.
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:client}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`only_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
+`akio_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
 and then **keeps reconnecting** every second until `Peer::close()`.
 
 `Peer` (cloneable, any thread):
@@ -64,7 +64,7 @@ JSON-encoded by default; encode and decode on the Rust side accordingly.
 ## Middleware and coders
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:middleware}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:middleware}}
 ```
 
 **Middleware** wraps the handler of every request and notify: global middleware
@@ -78,7 +78,7 @@ later middleware and the handler. A client's routes serve the calls its server m
 middleware works the same on both sides. Streams have no middleware (as in Go). Routes with no
 middleware call the handler directly, with no cost.
 
-**Coders** (`only_arpc::coder`) rewrite whole frames, as Go's `MessageCoder`: frames sent go
+**Coders** (`akio_arpc::coder`) rewrite whole frames, as Go's `MessageCoder`: frames sent go
 through the coders in the order added, frames received in the opposite order, so both ends need
 the same chain. Each coder marks its work in a bit of the reserved header byte, the same bits as
 Go's `arpcex/extension/middleware/coder`:
@@ -97,7 +97,7 @@ coded.
 ## Pools
 
 ```rust,ignore
-{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:pool}}
+{{#include ../../../../crates/akio-arpc/examples/guide-arpc.rs:pool}}
 ```
 
 `Pool::builder()` dials `size` connections (4) sharing one `Routes` and returns once all are up

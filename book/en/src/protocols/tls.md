@@ -1,20 +1,20 @@
 # TLS
 
-`only::tls` (the `only-tls` crate) is a **transport layer** under the connection, with its own
-TLS 1.3 and 1.2 implementation: written from the RFCs on `only-crypto` and `only-x509`, sans-io,
+`akio::tls` (the `akio-tls` crate) is a **transport layer** under the connection, with its own
+TLS 1.3 and 1.2 implementation: written from the RFCs on `akio-crypto` and `akio-x509`, sans-io,
 `#![forbid(unsafe_code)]`, no third-party dependencies. Wrap any acceptor and its handlers see plaintext:
 `on_data` receives decrypted bytes, `Conn::send*` encrypts.
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-tls.rs:server}}
+{{#include ../../../../crates/akio/examples/guide-tls.rs:server}}
 ```
 
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-tls.rs:client}}
+{{#include ../../../../crates/akio/examples/guide-tls.rs:client}}
 ```
 
 `Tls::client(config, server_name, acceptor)` verifies the server as `server_name` and sends it as
@@ -30,8 +30,8 @@ Run both with `cargo run -p only --example guide-tls`.
   flushed as soon as it does.
 - `close_after_send()` sends `close_notify` after the queued data.
 - A failed handshake or a bad record closes the connection after flushing the alert; failures
-  are counted separately for the handshake (`only_tls_handshake_failures_total`) and afterwards
-  (`only_transport_errors_total`).
+  are counted separately for the handshake (`akio_tls_handshake_failures_total`) and afterwards
+  (`akio_transport_errors_total`).
 - Records are sealed in pieces of at most one TLS record, so large sends are fine.
 - The connection table shows `transport: "tls"`.
 
@@ -57,7 +57,7 @@ connection.
 Both: SNI, ALPN, close_notify, 16 KiB records (smaller under a peer's record_size_limit), OCSP
 stapling, TLS 1.3 inner content types and padding, the
 downgrade sentinel, strict state machines (unexpected messages, empty or interleaved records,
-handshake data across key changes are fatal). Certificates are verified with `only-x509`:
+handshake data across key changes are fatal). Certificates are verified with `akio-x509`:
 chain to the roots, validity, extended key usage, DNS names (RFC 6125 wildcards) and IP
 addresses. The client prefers AES-128-GCM, then AES-256-GCM, then ChaCha20-Poly1305; the server
 picks by its own preference and prefers the client's key share (no HelloRetryRequest when one
@@ -65,12 +65,12 @@ fits).
 
 Conformance: RFC 8448 traces as unit tests, tlsfuzzer (`tools/interop/tls/tlsfuzzer.sh`), and an interop matrix against OpenSSL, Go
 `crypto/tls`, curl and rustls (`tools/interop/tls/run.sh`, `tools/interop/grpc/run.sh`, the
-`only` crate's TLS tests). Speed against rustls 0.23 with ring (`tls-bench`, x86_64 with VAES):
+`akio` crate's TLS tests). Speed against rustls 0.23 with ring (`tls-bench`, x86_64 with VAES):
 full handshakes about 1.1x with X25519 and with secp256r1 (an ECDSA P-256 certificate), AES-128-GCM records about 1.6x at 1 KiB and at 16 KiB, ChaCha20-Poly1305 records about 1.2x at 1 KiB and 1.5x at 16 KiB. The ChaCha20-Poly1305 AEAD itself matches ring on 64-byte messages (seal 1.11x, open 0.98x; docs/BENCHMARKS.md).
 
 ## Configuration
 
-Configuration uses `only`'s own types; the protocol internals are not part of the API. `Certificate::from_pem` / `from_der`, `PrivateKey::from_pem` / `from_der` /
+Configuration uses `akio`'s own types; the protocol internals are not part of the API. `Certificate::from_pem` / `from_der`, `PrivateKey::from_pem` / `from_der` /
 `from_pkcs8_der` and `RootCerts` load the material. `RootCerts::system()` is the operating
 system's trust store, read once per process: `SSL_CERT_FILE` / `SSL_CERT_DIR` when set, the
 keychains on macOS (exported with `/usr/bin/security`, with the user, admin and system trust
@@ -89,7 +89,7 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | SNI | | `.sni(false)` to stop sending it |
 | early data (0-RTT) | `.early_data(max_bytes)` | `.early_data(true)` |
 | record size limit (RFC 8449) | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
-| handshake timeout (default 10 s: a connection still negotiating after it is closed with `TimedOut` and counted in `only_tls_handshake_failures_total`) | `.handshake_timeout(Some(d))`, `None` for no limit | `.handshake_timeout(Some(d))` |
+| handshake timeout (default 10 s: a connection still negotiating after it is closed with `TimedOut` and counted in `akio_tls_handshake_failures_total`) | `.handshake_timeout(Some(d))`, `None` for no limit | `.handshake_timeout(Some(d))` |
 | certificate compression | on by default; `.certificate_compression(false)` to disable | `.certificate_compression(true)` to offer it |
 | OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`; `.ocsp_policy(RevocationPolicy::HardFail)` to validate it |
 | CRLs ([revocation](#revocation-checking)) | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
@@ -97,19 +97,19 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf
-certificate) and returns the config or a `only::tls::Error`; configs are cheap to clone. The
+certificate) and returns the config or a `akio::tls::Error`; configs are cheap to clone. The
 `unstable` cargo feature, which used to expose the wrapped rustls, is empty now (kept so that
 builds naming it keep working).
 
 ## With other crates
 
-- only-http: `Tls::server(cfg, serve(app))`. With `alpn_protocols = [h2, http/1.1]` the same
+- akio-http: `Tls::server(cfg, serve(app))`. With `alpn_protocols = [h2, http/1.1]` the same
   listener serves HTTP/2 to clients that negotiate `h2`.
-- only-ws client: `DialOptions::tls` for `wss://`.
-- only-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
-- QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `only_quic::server_config` and
-  `server_config_from(&tls_config)`. `only-quic`'s own QUIC (DEV-PLAN wave D) drives the
-  record-free TLS 1.3 core inside `only-tls` (internal API) with the same `only::tls`
+- akio-ws client: `DialOptions::tls` for `wss://`.
+- akio-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
+- QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `akio_quic::server_config` and
+  `server_config_from(&tls_config)`. `akio-quic`'s own QUIC (DEV-PLAN wave D) drives the
+  record-free TLS 1.3 core inside `akio-tls` (internal API) with the same `akio::tls`
   configurations.
 
 ## Early data (0-RTT)
@@ -127,7 +127,7 @@ completes, so `on_data` can see a request one round trip earlier.
   the application sees the same stream either way.
 - `TlsInfo::early_data` tells `NotAttempted`, `Pending` (client, before the answer), `Accepted`
   or `Rejected`; `TlsInfo::early_data_len` is how many bytes at the start of the stream went
-  early. only-http marks HTTP/1.1 requests in that range with `Early-Data: 1` (RFC 8470; on
+  early. akio-http marks HTTP/1.1 requests in that range with `Early-Data: 1` (RFC 8470; on
   HTTP/2, every request of a connection that started with early data).
 
 **Replay protection** is always on with early data: the server accepts it only when the
@@ -136,14 +136,14 @@ records the PSK binder of each accepted ClientHello for 30 seconds (section 8.2:
 seen before gets its early data rejected and continues as an ordinary resumption. The record
 holds 100,000 ClientHellos per `ServerConfig`; when full, early data is rejected.
 
-**Servers sharing tickets** ([ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md),
-[ADR-062](https://github.com/lesismal/only/blob/main/docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.md)).
+**Servers sharing tickets** ([ADR-013](https://github.com/lesismal/akio/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md),
+[ADR-062](https://github.com/lesismal/akio/blob/main/docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.md)).
 Several processes or machines accept each other's tickets when built with the same
 `.session_ticket_key(key)` (48 secret random bytes: a 16-byte key name and a 32-byte key), or,
 to rotate keys without refusing the tickets already out, the same `.session_ticket_keys(keys)`:
 
 ```rust,ignore
-use only_tls::TicketKeys;
+use akio_tls::TicketKeys;
 // Every server derives the same key per period from a shared secret: they rotate in step.
 let keys = TicketKeys::derived(&shared_secret, Duration::from_secs(6 * 3600));
 // Or rotate by hand (the same new key pushed to every server), the old keys still opening:
@@ -163,13 +163,13 @@ Redis, one atomic `SET key 1 NX PX ttl` per call, on a non-blocking client:
 
 ```rust,ignore
 use std::{io, sync::Arc, time::Duration};
-use only_tls::{AsyncAntiReplayStore, ReplayCheck, ServerConfig, TicketKeys};
+use akio_tls::{AsyncAntiReplayStore, ReplayCheck, ServerConfig, TicketKeys};
 
 struct RedisReplay { client: MyAsyncRedis } // replies on the client's own thread
 
 impl AsyncAntiReplayStore for RedisReplay {
     fn check_and_insert(&self, binder: &[u8], ttl: Duration, done: ReplayCheck) {
-        let key = format!("only:0rtt:{}", hex(binder));
+        let key = format!("akio:0rtt:{}", hex(binder));
         // Sends and returns; the reply callback answers: "OK" if the key was set (first
         // time), nil if it existed (a replay), an error rejects the early data.
         self.client.set_nx_px(&key, "1", ttl.as_millis() as u64, move |reply| {
@@ -191,7 +191,7 @@ in `.anti_replay_store(store)` (called on the I/O thread, so it must not wait); 
 
 The store must be atomic (a read then a write lets a concurrent replay through); across regions
 with replication lag, give each region its own store and ticket key. QUIC servers get both
-through `only_quic::server_config_from(&cfg)`.
+through `akio_quic::server_config_from(&cfg)`.
 
 **Security trade-offs.** Early data is not forward secret and can be replayed: the record stops
 replays to the same server (or the servers sharing its store) within the window, not a request
@@ -209,7 +209,7 @@ repeat (reads without side effects), and answer the others `425 Too Early`:
 
 ## Record size limit, certificate compression, OCSP stapling
 
-Decided in [ADR-008](https://github.com/lesismal/only/blob/main/docs/adr/008-tls-extensions.md).
+Decided in [ADR-008](https://github.com/lesismal/akio/blob/main/docs/adr/008-tls-extensions.md).
 
 **record_size_limit** (RFC 8449, TLS 1.3 and 1.2). `.record_size_limit(n)` on either side sets
 the largest record it accepts: 64 to 16385 bytes counted as the RFC does (in TLS 1.3 the value
@@ -233,8 +233,8 @@ certificates. Off by default on the client: decompressing a received chain costs
 microseconds, a percent or two of an in-memory full handshake, for tens to hundreds of bytes
 saved; turn it on with `.certificate_compression(true)` when bytes on the wire matter more (it
 offers brotli, zstd and zlib; `.certificate_compression_algorithms(&[CertCompression::Brotli])`
-picks some). All three are in-house: `only-deflate`, `only-brotli` and `only-zstd`
-([ADR-041](https://github.com/lesismal/only/blob/main/docs/adr/041-brotli-zstd.md)). Received certificates are decompressed
+picks some). All three are in-house: `akio-deflate`, `akio-brotli` and `akio-zstd`
+([ADR-041](https://github.com/lesismal/akio/blob/main/docs/adr/041-brotli-zstd.md)). Received certificates are decompressed
 into at most 128 KiB and must have exactly the announced length.
 
 ### OCSP stapling
@@ -259,7 +259,7 @@ Off by default, and free when off. The library never fetches anything (no blocki
 I/O threads): stapled responses come from the server, CRLs from your application.
 
 ```rust,ignore
-use only::tls::{ClientConfig, Crls, RevocationPolicy};
+use akio::tls::{ClientConfig, Crls, RevocationPolicy};
 
 let mut crls = Crls::new();
 crls.add_pem(&std::fs::read("ca.crl.pem")?)?; // downloaded and refreshed by you
@@ -290,7 +290,7 @@ let cfg = ClientConfig::builder()
   `certificate_revoked`; under `HardFail` one with no current CRL fails with
   `certificate_unknown`. To refresh, build a new configuration.
 
-Where to fetch, and querying a responder yourself: the internal `only-x509` crate (no semver
+Where to fetch, and querying a responder yourself: the internal `akio-x509` crate (no semver
 promise) has `Certificate::crl_distribution_points()` and `ocsp_urls()`, `OcspRequest` and
 `OcspResponse::verify` (ADR-038).
 
@@ -299,12 +299,12 @@ promise) has `Certificate::crl_distribution_points()` and `ocsp_urls()`, `OcspRe
 After the handshake, a connection of `Tls` can hand its record layer to Linux (kernel TLS, the
 `ktls` cargo feature, ADR-067), so that the kernel, or a NIC that does TLS itself, encrypts what
 is sent and decrypts what arrives, and `send_file` / static files go out with `sendfile` again.
-It is off by default because the kernel's *software* record layer is slower than only-tls's own:
+It is off by default because the kernel's *software* record layer is slower than akio-tls's own:
 0.83x at 1 KiB responses down to 0.40x at 256 KiB, and 0.48x for `sendfile` of a 10 MB file
-against `pread` plus sealing ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
+against `pread` plus sealing ([measurements](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
 
 ```rust,ignore
-use only::tls::{Ktls, ServerConfig};
+use akio::tls::{Ktls, ServerConfig};
 
 let cfg = ServerConfig::builder(chain, key)
     // Only what a NIC with TLS offload does itself; nothing anywhere else.
@@ -323,7 +323,7 @@ let cfg = ServerConfig::builder(chain, key)
 - `ktls_zerocopy_sendfile(true)`: with the NIC encrypting, it reads `sendfile` pages straight
   from the page cache (`TLS_TX_ZEROCOPY_RO`); only if served files never change while being sent.
 - `TlsInfo::ktls_tx` / `ktls_rx` tell where each direction went (`KtlsPath::Software` /
-  `Hardware`), `TlsStats` counts it (`only_tls_ktls_total{side, dir, path}`).
+  `Hardware`), `TlsStats` counts it (`akio_tls_ktls_total{side, dir, path}`).
 - Linux with the `tls` module; TLS 1.3 needs 6.14 (key updates of offloaded directions). Works on
   epoll and io_uring, server and client; not on DPDK, QUIC or DTLS. The receive direction needs
   `read_buffer` of 16 KiB or more. Whenever the kernel refuses, the connection stays in user
@@ -336,7 +336,7 @@ obsolete, ADR-049); the Windows certificate store (Windows is not a target).
 
 ## Writing your own transport
 
-`only_core::Transport` is the trait TLS implements: `recv(cipher, plain, out)`, `seal(plain,
+`akio_core::Transport` is the trait TLS implements: `recv(cipher, plain, out)`, `seal(plain,
 out)`, `shutdown(out)`, plus `name` and `handshaking`. Return one from `Acceptor::transport` to
 layer any byte-stream transformation under a connection. All calls happen under the connection's
 write lock, in wire order, and must not block.

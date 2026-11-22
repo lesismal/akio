@@ -6,11 +6,11 @@
 
 ## 背景
 
-ADR-072 与 ADR-073 在 only-webrtc 的"尚未完成"列表中留下三项：
+ADR-072 与 ADR-073 在 akio-webrtc 的"尚未完成"列表中留下三项：
 
 - **发送 ECN 可用的包。** RFC 8888 报告携带每个包到达时的 ECN 码点，估计器把 CE 按丢包计（ADR-073），
   但本端从不标记：`Rtc` 的输出不带码点，`Endpoint` 通过不带控制消息的 `UdpBinding::send_to` 发送。
-  only-quic 已经能标记并验证 ECN（ADR-013 / ADR-035，`Conn::send_segments_ecn`，`IP_TOS` /
+  akio-quic 已经能标记并验证 ECN（ADR-013 / ADR-035，`Conn::send_segments_ecn`，`IP_TOS` /
   `IPV6_TCLASS`），也就是说套接字层只为连接提供了这一能力，绑定的套接字没有。
 - **普通媒体的锁定。** 无 ICE 的传输（ADR-072，`enable_ice(false)`，SIP 风格）发往远端描述的 `c=` 地址与
   `m=` 端口，端点也只把来自那里的数据报交给 peer。位于 NAT 之后的话机写出的是私有地址，无法到达；它的包
@@ -47,9 +47,9 @@ ADR-072 与 ADR-073 在 only-webrtc 的"尚未完成"列表中留下三项：
 - **CE**：像 ADR-073 那样按丢包交给估计器（`PacketResult::ecn`）；基于丢包的控制的阈值（2 % 到 10 % 之间
   保持，以上下降）作用于 CE 的比例。这是经典响应；未实现可伸缩（L4S）响应。
 - **套接字**：`Output::Transmit` 携带码点；hub 用新增的 `UdpBinding::send_to_ecn`（一次带 `IP_TOS` /
-  `IPV6_TCLASS` 控制消息的 `sendmsg`；Linux 上是新增的 `only_sys::send_to_ecn`，macOS 原本就有）发送已标记
+  `IPV6_TCLASS` 控制消息的 `sendmsg`；Linux 上是新增的 `akio_sys::send_to_ecn`，macOS 原本就有）发送已标记
   的数据报，在 `RtcServer` 的连接上用 `Conn::send_segments_ecn`。未标记的数据报走原来的调用。
-  `ONLY_UDP_ECN=0` 像对 QUIC 那样关闭码点；TURN 中继与 ICE-TCP 不带码点（于是报告显示 Not-ECT，路径转为
+  `AKIO_UDP_ECN=0` 像对 QUIC 那样关闭码点；TURN 中继与 ICE-TCP 不带码点（于是报告显示 Not-ECT，路径转为
   不标记）。
 - **统计**：`PeerStats` 新增 `ecn_marked_sent`、`ecn_failures` 与 `ecn_state`。
 
@@ -97,9 +97,9 @@ ADR-072 与 ADR-073 在 only-webrtc 的"尚未完成"列表中留下三项：
 
 ### API
 
-只有新增。only-webrtc：`EcnMarking`、`Latching`、`RtcConfig::{set_ecn_marking, set_latching}`。
-only-core：`UdpBinding::send_to_ecn`（`#[doc(hidden)]`，与 `Conn::send_segments_ecn` 一样不在稳定性承诺内）。
-only-sys：Linux 上的 `send_to_ecn`（macOS 原本就有）。
+只有新增。akio-webrtc：`EcnMarking`、`Latching`、`RtcConfig::{set_ecn_marking, set_latching}`。
+akio-core：`UdpBinding::send_to_ecn`（`#[doc(hidden)]`，与 `Conn::send_segments_ecn` 一样不在稳定性承诺内）。
+akio-sys：Linux 上的 `send_to_ecn`（macOS 原本就有）。
 
 ## 后果
 
@@ -112,7 +112,7 @@ only-sys：Linux 上的 `send_to_ecn`（macOS 原本就有）。
   或不被跟随；共享与按传输编号的无 BUNDLE 会话（双向识别）以及按传输验证 ECN 的 RFC 8888；编码器跟随估计
   的情况下经 800 kbps 瓶颈的单一估计：BUNDLE、无 BUNDLE 共享编号、无 BUNDLE 按传输编号三者相互在
   0.6-1.4 倍之内（一次运行中 656 / 657 / 697 kbps）。ECN 状态机、锁定策略、编号识别与合并的单元测试；Linux 上
-  `only_sys::send_to_ecn` 的测试（IPv4 与 IPv6，每个码点）。回环上的 Endpoint（`tests/ecn_latch.rs`）：标记
+  `akio_sys::send_to_ecn` 的测试（IPv4 与 IPv6，每个码点）。回环上的 Endpoint（`tests/ecn_latch.rs`）：标记
   经内核套接字到达且路径通过验证，应答写着无人监听端口的话机通过锁定被找到（不锁定则找不到），无 BUNDLE
   时估计值随两个传输的反馈上升。
 - 互通：headless Chrome 157（`tools/interop/webrtc/ecn.sh`，RFC 8888 字段试验）：Chrome 把收到的视频包计为

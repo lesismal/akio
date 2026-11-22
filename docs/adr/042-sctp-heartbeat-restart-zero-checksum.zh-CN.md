@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only-sctp` 是自研 WebRTC 协议栈的数据通道层。它应答 HEARTBEAT，却从不主动发送，因此空闲关联既测不到
+`akio-sctp` 是自研 WebRTC 协议栈的数据通道层。它应答 HEARTBEAT，却从不主动发送，因此空闲关联既测不到
 RTT，也发现不了已经消失的对端：没有在途数据时没有任何计时器运行，关联一直“在线”，直到 DTLS 或 ICE
 放弃。已建立的关联收到 INIT 时直接忽略，重启了 SCTP 协议栈的对端（RFC 9260 §5.2.2）再也无法恢复。
 每个包都带 CRC-32C，尽管 DTLS 已经认证了它；RFC 9653 允许两端约定改发零校验和，dcSCTP（Chrome）和
@@ -57,10 +57,10 @@ WebRTC 在一条 DTLS 连接上只跑一个关联，不使用多宿主、AUTH（
 
 ## 影响
 
-- 公共 API（only-sctp，Internal 层级）：`Config::{heartbeat_interval, zero_checksum}` 及其 builder，
+- 公共 API（akio-sctp，Internal 层级）：`Config::{heartbeat_interval, zero_checksum}` 及其 builder，
   `Association::{rtt, zero_checksum}`，`Event::Restarted`；`Event` 现为 `#[non_exhaustive]`（match
-  需要通配分支；only-webrtc 本来就有）。only-webrtc 不变并获得新的默认值；其 `webrtc-interop` 示例新增
-  `ONLY_INTEROP_BIND` 用于指定客户端本地地址。
+  需要通配分支；akio-webrtc 本来就有）。akio-webrtc 不变并获得新的默认值；其 `webrtc-interop` 示例新增
+  `AKIO_INTEROP_BIND` 用于指定客户端本地地址。
 - cookie 从 37 字节变为 49 字节；此前生成的 cookie 不再能通过校验（cookie 只存活一次握手）。
 - 测试：空闲链路上 HEARTBEAT 测得 RTT，对端消失后空闲关联失败（60-150 s），关闭 HEARTBEAT 时不会失败，
   双向各丢 15 % 的链路上持续 30 分钟的 HEARTBEAT；有损链路上四种组合的零校验和协商（双方都提供时才用零，
@@ -73,13 +73,13 @@ WebRTC 在一条 DTLS 连接上只跑一个关联，不使用多宿主、AUTH（
   gpu51 上运行 11 分钟，151 万次，无崩溃。
 - 互通：经 UDP 对 pion/sctp v1.12.0，双方都提供零校验和，两种角色，有无丢包
   （`tools/interop/sctp/run.sh`）；Firefox 158（usrsctp）两个 offer 方向：有序与无序/不可靠回显，70 kB 与
-  200 kB 消息，空消息，空闲 150 s（only-sctp 的 HEARTBEAT 得到 usrsctp 应答：否则此前关联就已失败），
+  200 kB 消息，空消息，空闲 150 s（akio-sctp 的 HEARTBEAT 得到 usrsctp 应答：否则此前关联就已失败），
   Firefox 关闭通道（双向流重置）后在复用的 ID 上新开通道。Firefox 158 与 Chrome 157 都不提供零校验和
   （Chrome 的 dcSCTP 已实现，但处于默认关闭的实验中），因此在浏览器中仍使用 CRC-32C；无头 Chrome 157
   原样通过 `browser.sh`。在 Linux 上即使设置 `media.peerconnection.ice.loopback`，Firefox 也不收集
   回环候选，因此脚本可通过 `IP=` 指定局域网地址。
 - 性能：使用零校验和后，数据路径两端都不再计算 CRC-32C。在 gpu51 上与 46f25f81 同轮 A/B（`quiet.sh`，
-  CPU 2-9，7 轮交替，取中位数），内存中的 SCTP（`examples/sctp_bench.rs`，两端都是 only-sctp）：1 KiB 消息
+  CPU 2-9，7 轮交替，取中位数），内存中的 SCTP（`examples/sctp_bench.rs`，两端都是 akio-sctp）：1 KiB 消息
   1.21x（DATA 1.21x），64 KiB 1.31x（1.24x），16 KiB 无序 1.27x（1.24x），四个通道 1.25x（1.20x）；两个
   回环 `Endpoint` 之间含 DTLS 的数据通道吞吐 1.003x（189.6 对 189.1 MB/s，DTLS 占主导）：无退化。空闲时
   HEARTBEAT 的开销是每 30 s 每个方向一个包。

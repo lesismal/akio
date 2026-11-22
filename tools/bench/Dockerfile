@@ -1,5 +1,5 @@
 # Benchmark image for tools/bench (see docs/BENCHMARKS.md):
-#   docker build -t only-bench tools/bench
+#   docker build -t akio-bench tools/bench
 # Rust toolchain from rust:1, load generators (wrk, h2load), perf, and the Go toolchain fib needs.
 FROM rust:1
 ARG GO_VERSION=1.27.3

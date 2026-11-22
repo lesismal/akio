@@ -1,4 +1,4 @@
-# ADR-036：only-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC
+# ADR-036：akio-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC
 
 [English](036-rtp-xr-tmmbr-ccfb-fec.md) | 简体中文
 
@@ -6,9 +6,9 @@
 
 ## 背景
 
-`only-rtp`（自研 WebRTC 协议栈的媒体层）此前列为未实现的有：RTCP 扩展报告（RFC 3611）、
+`akio-rtp`（自研 WebRTC 协议栈的媒体层）此前列为未实现的有：RTCP 扩展报告（RFC 3611）、
 TMMBR / TMMBN（RFC 5104）、RTP 拥塞控制反馈（RFC 8888）以及前向纠错（ULPFEC、FlexFEC）。它们都是
-一种线格式加一份状态，都不需要 I/O，因此都符合本 crate 的 sans-io 形态。`only-rtp` 属于 Internal
+一种线格式加一份状态，都不需要 I/O，因此都符合本 crate 的 sans-io 形态。`akio-rtp` 属于 Internal
 层级（docs/api-stability.md）：API 可以变化，但变化需要记录。
 
 需要先确定两处格式问题：
@@ -70,7 +70,7 @@ TMMBR / TMMBN（RFC 5104）、RTP 拥塞控制反馈（RFC 8888）以及前向�
    `rtp_rtcp` fuzz 目标把新包送入新处理器；新目标 `rtp_fec` 解析并重写 FEC 头与 RED，向解码器输入
    任意媒体 / FEC，并做一次编码器 → 有损解码器的往返，断言恢复逐字节一致。
 
-未完成：接入 `only-webrtc`。这需要 SDP 方面的工作（`a=rtcp-fb:* ack ccfb` 并切换估计器的反馈来源；
+未完成：接入 `akio-webrtc`。这需要 SDP 方面的工作（`a=rtcp-fb:* ack ccfb` 并切换估计器的反馈来源；
 带 `a=ssrc-group:FEC-FR` FEC SSRC 的 `flexfec-03`，或 `red` + `ulpfec` 载荷类型；`a=rtcp-xr`）、
 与估计器联动的 FEC 保护率策略，以及 RTCP 调度中的 TMMBR / XR，因此并不小；没有它就无法与 Chrome
 核对 FlexFEC 或 RFC 8888（Chrome 只在协商后才发送二者）。同样未完成：FlexFEC 重传（R）与固定 L/D（F）

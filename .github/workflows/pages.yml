@@ -1,11 +1,11 @@
 name: Pages
 
-# The documentation site at https://lesismal.github.io/only/: the English and Chinese books
+# The documentation site at https://lesismal.github.io/akio/: the English and Chinese books
 # (book/en, book/zh-CN) with a language switch, and the rustdoc of every published crate under
 # /api/. Built by book/site.sh and link-checked by book/check-site.py, exactly as you can run
 # them locally:
 #
-#   book/site.sh && python3 book/check-site.py target/site --base /only/
+#   book/site.sh && python3 book/check-site.py target/site --base /akio/
 #
 # When it runs (same rule as ci.yml, decided by the user 2026-11-16): never on pushes or pull
 # requests. Only when a release (or pre-release) is published, or by hand (Actions -> Pages ->

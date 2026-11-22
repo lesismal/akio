@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only-media` 列为不支持的有：HLS SAMPLE-AES / CBCS、SRT rendezvous、MPEG-TS 中的 VP8 / VP9 / AV1、录制为
+`akio-media` 列为不支持的有：HLS SAMPLE-AES / CBCS、SRT rendezvous、MPEG-TS 中的 VP8 / VP9 / AV1、录制为
 MPEG-TS、转码。
 
 - **SRT rendezvous** 是两个位于 NAT 之后的 SRT 端点会合的方式：双方都不监听，都从已知端口向对方发送握手。
@@ -73,8 +73,8 @@ MPEG-TS、转码。
 ## 影响
 
 - 位于 NAT 之后的 SRT 端点可以会合；已与 libsrt 1.5.4 测试（Docker 中 Debian `srt-tools` 的
-  `srt-live-transmit`，`tests/srt_rendezvous.rs`）：only 拉取 srt-live-transmit 从 ffmpeg 转发的流，并推送一路
-  流由它写成文件，ffprobe / ffmpeg 解码，明文与加密都覆盖，两个 only engine 也能互相会合；单元测试覆盖两种
+  `srt-live-transmit`，`tests/srt_rendezvous.rs`）：akio 拉取 srt-live-transmit 从 ffmpeg 转发的流，并推送一路
+  流由它写成文件，ffprobe / ffmpeg 解码，明文与加密都覆盖，两个 akio engine 也能互相会合；单元测试覆盖两种
   cookie 顺序、丢失的 AGREEMENT、丢失的挥手、不一致的密码与超时。ffmpeg 的 `mode=rendezvous` 绑定到 URL 中的
   地址并连接同一地址，无法与其它主机或端口上的对端会合，因此未使用。
 - AV1 可经 SRT、HLS MPEG-TS 与 MPEG-TS 录制发出，也可经 SRT 接收。按 AOM 规范核对，并通过封装器与解封装器的

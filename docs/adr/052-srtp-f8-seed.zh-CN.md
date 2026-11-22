@@ -1,4 +1,4 @@
-# ADR-052：SRTP 的 AES-f8 与 SEED，only-crypto 的 SEED
+# ADR-052：SRTP 的 AES-f8 与 SEED，akio-crypto 的 SEED
 
 [English](052-srtp-f8-seed.md) | 简体中文
 
@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-040 之后，`only-srtp` 的 README 仍把两种变换列为未实现：
+ADR-040 之后，`akio-srtp` 的 README 仍把两种变换列为未实现：
 
 - **AES-f8**（RFC 3711 §4.1.2）：RFC 3711 中可选的加密变换，源自 3GPP（UMTS f8），是一种 OFB 变体，
   其 IV 先在第二个密钥下掩蔽。SDP 安全描述中称为 `F8_128_HMAC_SHA1_80`（RFC 4568 §6.2.3；RFC 4568
@@ -15,12 +15,12 @@ ADR-040 之后，`only-srtp` 的 README 仍把两种变换列为未实现：
   实现）、`SEED_128_CCM_80` 与 `SEED_128_GCM_96`，密钥用 SEED-CTR PRF 派生。
 
 两者都没有 DTLS-SRTP 保护配置编号，WebRTC 从不协商它们；它们对用 SDES 协商密钥的 SIP/VoIP 对端有用
-（SEED 用于韩国的部署）。`only-crypto` 原先没有 SEED，也没有 CCM。我们常用的交叉验证参考 libsrtp
+（SEED 用于韩国的部署）。`akio-crypto` 原先没有 SEED，也没有 CCM。我们常用的交叉验证参考 libsrtp
 两者都没有实现。
 
 ## 决定
 
-1. **`only-crypto` 中的 SEED**（`only_crypto::seed`）：`Seed`（RFC 4269；`new`、`from_slice`、
+1. **`akio-crypto` 中的 SEED**（`akio_crypto::seed`）：`Seed`（RFC 4269；`new`、`from_slice`、
    `encrypt_block`/`decrypt_block`、`encrypt_blocks`/`decrypt_blocks`、128 位计数器的
    `apply_ctr`），`SeedGcm`（SP 800-38D：96 位 nonce，16 字节标签或截短为 15-12、8、4 字节；使用
    `gcm` 中可移植的常数时间 GHASH；先校验标签再解密）与 `SeedCcm`（RFC 3610：7 到 13 字节 nonce，
@@ -71,7 +71,7 @@ ADR-040 之后，`only-srtp` 的 README 仍把两种变换列为未实现：
    SEED-CTR 或 f8 上单向向前的小型流。没有新的解析代码，所以没有新的模糊测试目标：`srtp_unprotect` 与
    `srtp_features` 遍历 `Profile::ALL`，覆盖了五种新配置。
 
-6. **未接入协商。** `only-webrtc` 通过 DTLS-SRTP 获取 SRTP 密钥，而 DTLS-SRTP 没有这些套件的编号；
+6. **未接入协商。** `akio-webrtc` 通过 DTLS-SRTP 获取 SRTP 密钥，而 DTLS-SRTP 没有这些套件的编号；
    它也没有实现 SDP 安全描述（`a=crypto`）。如果将来加入 SDES，`Profile::from_sdes_name` 已经能映射
    这些名称；那是后续工作，不在本次变更内。
 
@@ -98,7 +98,7 @@ ADR-040 之后，`only-srtp` 的 README 仍把两种变换列为未实现：
 - **速度**（gpu51，`quiet.sh`，CPU 2）：每个包，载荷 160 / 1200 字节，protect：AES-f8
   354 ns / 2.26 µs（同一轮中 AES-128-CM 为 251 ns / 1.18 µs：f8 的分组只能串行），SEED-CTR
   3.6 / 18.3 µs（1200 字节时 66 MB/s），SEED-GCM 3.9 / 20.4 µs，SEED-CCM 16.1 / 98 µs（12 MB/s）；
-  unprotect 与 protect 相差不到 10%。`only-crypto` 本身：SEED 单个分组 15.3 MB/s（约 1 µs）、SEED-CTR
+  unprotect 与 protect 相差不到 10%。`akio-crypto` 本身：SEED 单个分组 15.3 MB/s（约 1 µs）、SEED-CTR
   68.8 MB/s、SEED-GCM 61.3 MB/s、SEED-CCM 12.2 MB/s。原有配置对比 main aca9e988（三轮交替，取中位数）：
   AES-CM 与 160 字节 AES-GCM 在 ±1.6% 以内；1200 字节 AES-GCM 单独测量时持平（protect 0.999，
   unprotect 1.012），在完整用例序列中 protect +1.5-2.2%（那里它的耗时是单独测量的三倍，受内存分配
@@ -113,5 +113,5 @@ ADR-040 之后，`only-srtp` 的 README 仍把两种变换列为未实现：
   不变。
 - SEED 只有软件实现，比有指令的 AES 慢一个数量级；SEED-CCM 尤其如此，它的 CBC-MAC 一次只能处理一个
   分组。对 SIP/VoIP 的速率足够，不适合大流量。
-- `only-crypto` 有了第二个分组密码和第一个 CCM；CCM 代码是泛型的，将来某个协议需要 AES-CCM 时可以
+- `akio-crypto` 有了第二个分组密码和第一个 CCM；CCM 代码是泛型的，将来某个协议需要 AES-CCM 时可以
   复用。

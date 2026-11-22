@@ -1,0 +1,385 @@
+pub mod akio_ice
+pub mod akio_ice::mdns
+pub struct akio_ice::mdns::Error(_)
+impl core::clone::Clone for akio_ice::mdns::Error
+pub fn akio_ice::mdns::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::mdns::Error
+impl core::cmp::PartialEq for akio_ice::mdns::Error
+pub fn akio_ice::mdns::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_ice::mdns::Error
+impl core::fmt::Debug for akio_ice::mdns::Error
+pub fn akio_ice::mdns::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ice::mdns::Error
+pub fn akio_ice::mdns::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ice::mdns::Error
+impl core::marker::StructuralPartialEq for akio_ice::mdns::Error
+impl core::marker::Send for akio_ice::mdns::Error
+impl core::marker::Sync for akio_ice::mdns::Error
+impl core::marker::Unpin for akio_ice::mdns::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::mdns::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::mdns::Error
+pub struct akio_ice::mdns::Message
+pub akio_ice::mdns::Message::authority: alloc::vec::Vec<akio_ice::mdns::Record>
+pub akio_ice::mdns::Message::id: u16
+pub akio_ice::mdns::Message::questions: alloc::vec::Vec<akio_ice::mdns::Question>
+pub akio_ice::mdns::Message::records: alloc::vec::Vec<akio_ice::mdns::Record>
+pub akio_ice::mdns::Message::response: bool
+impl akio_ice::mdns::Message
+pub fn akio_ice::mdns::Message::parse(&[u8]) -> core::result::Result<akio_ice::mdns::Message, akio_ice::mdns::Error>
+pub fn akio_ice::mdns::Message::probe(&str, &[akio_ice::mdns::Record]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_ice::mdns::Message::query(&str, u16, bool) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_ice::mdns::Message::response(u16, &[akio_ice::mdns::Question], &[akio_ice::mdns::Record]) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_ice::mdns::Message
+pub fn akio_ice::mdns::Message::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::mdns::Message
+impl core::cmp::PartialEq for akio_ice::mdns::Message
+pub fn akio_ice::mdns::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::mdns::Message
+pub fn akio_ice::mdns::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ice::mdns::Message
+impl core::marker::Send for akio_ice::mdns::Message
+impl core::marker::Sync for akio_ice::mdns::Message
+impl core::marker::Unpin for akio_ice::mdns::Message
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::mdns::Message
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::mdns::Message
+pub struct akio_ice::mdns::Question
+pub akio_ice::mdns::Question::name: alloc::string::String
+pub akio_ice::mdns::Question::qtype: u16
+pub akio_ice::mdns::Question::unicast_response: bool
+impl core::clone::Clone for akio_ice::mdns::Question
+pub fn akio_ice::mdns::Question::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::mdns::Question
+impl core::cmp::PartialEq for akio_ice::mdns::Question
+pub fn akio_ice::mdns::Question::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::mdns::Question
+pub fn akio_ice::mdns::Question::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ice::mdns::Question
+impl core::marker::Send for akio_ice::mdns::Question
+impl core::marker::Sync for akio_ice::mdns::Question
+impl core::marker::Unpin for akio_ice::mdns::Question
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::mdns::Question
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::mdns::Question
+pub struct akio_ice::mdns::Record
+pub akio_ice::mdns::Record::addr: core::net::ip_addr::IpAddr
+pub akio_ice::mdns::Record::cache_flush: bool
+pub akio_ice::mdns::Record::name: alloc::string::String
+pub akio_ice::mdns::Record::ttl: u32
+impl akio_ice::mdns::Record
+pub fn akio_ice::mdns::Record::tiebreak(&self, &akio_ice::mdns::Record) -> core::cmp::Ordering
+impl core::clone::Clone for akio_ice::mdns::Record
+pub fn akio_ice::mdns::Record::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::mdns::Record
+impl core::cmp::PartialEq for akio_ice::mdns::Record
+pub fn akio_ice::mdns::Record::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::mdns::Record
+pub fn akio_ice::mdns::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ice::mdns::Record
+impl core::marker::Send for akio_ice::mdns::Record
+impl core::marker::Sync for akio_ice::mdns::Record
+impl core::marker::Unpin for akio_ice::mdns::Record
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::mdns::Record
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::mdns::Record
+pub const akio_ice::mdns::GROUP_V4: core::net::ip_addr::Ipv4Addr
+pub const akio_ice::mdns::GROUP_V6: core::net::ip_addr::Ipv6Addr
+pub const akio_ice::mdns::MAX_POINTERS: usize
+pub const akio_ice::mdns::MAX_QUESTIONS: usize
+pub const akio_ice::mdns::MAX_RECORDS: usize
+pub const akio_ice::mdns::MULTICAST_V4: core::net::socket_addr::SocketAddr
+pub const akio_ice::mdns::MULTICAST_V6: core::net::socket_addr::SocketAddr
+pub const akio_ice::mdns::PORT: u16
+pub const akio_ice::mdns::TYPE_A: u16
+pub const akio_ice::mdns::TYPE_AAAA: u16
+pub const akio_ice::mdns::TYPE_ANY: u16
+pub fn akio_ice::mdns::is_mdns_name(&str) -> bool
+pub const fn akio_ice::mdns::multicast_v6_on(u32) -> core::net::socket_addr::SocketAddr
+pub fn akio_ice::mdns::random_name() -> alloc::string::String
+pub fn akio_ice::mdns::valid_name(&str) -> bool
+pub mod akio_ice::tcp
+pub struct akio_ice::tcp::FrameReader
+impl akio_ice::tcp::FrameReader
+pub fn akio_ice::tcp::FrameReader::buffered(&self) -> usize
+pub fn akio_ice::tcp::FrameReader::new() -> akio_ice::tcp::FrameReader
+pub fn akio_ice::tcp::FrameReader::push(&mut self, &[u8], impl core::ops::function::FnMut(&[u8]) -> bool)
+impl core::default::Default for akio_ice::tcp::FrameReader
+pub fn akio_ice::tcp::FrameReader::default() -> Self
+impl core::fmt::Debug for akio_ice::tcp::FrameReader
+pub fn akio_ice::tcp::FrameReader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ice::tcp::FrameReader
+impl core::marker::Sync for akio_ice::tcp::FrameReader
+impl core::marker::Unpin for akio_ice::tcp::FrameReader
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::tcp::FrameReader
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::tcp::FrameReader
+pub const akio_ice::tcp::MAX_FRAME: usize
+pub fn akio_ice::tcp::frame(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub enum akio_ice::CandidateKind
+pub akio_ice::CandidateKind::Host
+pub akio_ice::CandidateKind::PeerReflexive
+pub akio_ice::CandidateKind::Relayed
+pub akio_ice::CandidateKind::ServerReflexive
+impl akio_ice::CandidateKind
+pub fn akio_ice::CandidateKind::as_str(self) -> &'static str
+pub fn akio_ice::CandidateKind::type_preference(self) -> u32
+impl core::clone::Clone for akio_ice::CandidateKind
+pub fn akio_ice::CandidateKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::CandidateKind
+impl core::cmp::PartialEq for akio_ice::CandidateKind
+pub fn akio_ice::CandidateKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::CandidateKind
+pub fn akio_ice::CandidateKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ice::CandidateKind
+pub fn akio_ice::CandidateKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_ice::CandidateKind
+impl core::marker::StructuralPartialEq for akio_ice::CandidateKind
+impl core::marker::Send for akio_ice::CandidateKind
+impl core::marker::Sync for akio_ice::CandidateKind
+impl core::marker::Unpin for akio_ice::CandidateKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::CandidateKind
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::CandidateKind
+#[non_exhaustive] pub enum akio_ice::IceEvent
+pub akio_ice::IceEvent::ComponentSelectedPair
+pub akio_ice::IceEvent::ComponentSelectedPair::component: u16
+pub akio_ice::IceEvent::ComponentSelectedPair::local: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::ComponentSelectedPair::remote: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::EcnChecked
+pub akio_ice::IceEvent::EcnChecked::ecn: core::option::Option<u8>
+pub akio_ice::IceEvent::EcnChecked::local: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::EcnChecked::remote: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::SelectedPair
+pub akio_ice::IceEvent::SelectedPair::local: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::SelectedPair::remote: core::net::socket_addr::SocketAddr
+pub akio_ice::IceEvent::StateChanged(akio_ice::IceState)
+impl core::clone::Clone for akio_ice::IceEvent
+pub fn akio_ice::IceEvent::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::IceEvent
+impl core::cmp::PartialEq for akio_ice::IceEvent
+pub fn akio_ice::IceEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::IceEvent
+pub fn akio_ice::IceEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ice::IceEvent
+impl core::marker::Send for akio_ice::IceEvent
+impl core::marker::Sync for akio_ice::IceEvent
+impl core::marker::Unpin for akio_ice::IceEvent
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::IceEvent
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::IceEvent
+pub enum akio_ice::IceState
+pub akio_ice::IceState::Checking
+pub akio_ice::IceState::Completed
+pub akio_ice::IceState::Connected
+pub akio_ice::IceState::Disconnected
+pub akio_ice::IceState::Failed
+pub akio_ice::IceState::New
+impl core::clone::Clone for akio_ice::IceState
+pub fn akio_ice::IceState::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::IceState
+impl core::cmp::PartialEq for akio_ice::IceState
+pub fn akio_ice::IceState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::IceState
+pub fn akio_ice::IceState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ice::IceState
+pub fn akio_ice::IceState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_ice::IceState
+impl core::marker::StructuralPartialEq for akio_ice::IceState
+impl core::marker::Send for akio_ice::IceState
+impl core::marker::Sync for akio_ice::IceState
+impl core::marker::Unpin for akio_ice::IceState
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::IceState
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::IceState
+#[non_exhaustive] pub enum akio_ice::ParseError
+pub akio_ice::ParseError::Fqdn
+pub akio_ice::ParseError::Mdns
+pub akio_ice::ParseError::Syntax(&'static str)
+impl akio_ice::ParseError
+pub fn akio_ice::ParseError::is_unsupported(&self) -> bool
+impl core::clone::Clone for akio_ice::ParseError
+pub fn akio_ice::ParseError::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::ParseError
+impl core::cmp::PartialEq for akio_ice::ParseError
+pub fn akio_ice::ParseError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_ice::ParseError
+impl core::fmt::Debug for akio_ice::ParseError
+pub fn akio_ice::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ice::ParseError
+pub fn akio_ice::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ice::ParseError
+impl core::marker::StructuralPartialEq for akio_ice::ParseError
+impl core::marker::Send for akio_ice::ParseError
+impl core::marker::Sync for akio_ice::ParseError
+impl core::marker::Unpin for akio_ice::ParseError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::ParseError
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::ParseError
+pub enum akio_ice::TcpType
+pub akio_ice::TcpType::Active
+pub akio_ice::TcpType::Passive
+pub akio_ice::TcpType::So
+impl akio_ice::TcpType
+pub fn akio_ice::TcpType::as_str(self) -> &'static str
+pub fn akio_ice::TcpType::pairs_with(self, akio_ice::TcpType) -> bool
+impl core::clone::Clone for akio_ice::TcpType
+pub fn akio_ice::TcpType::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::TcpType
+impl core::cmp::PartialEq for akio_ice::TcpType
+pub fn akio_ice::TcpType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::TcpType
+pub fn akio_ice::TcpType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ice::TcpType
+pub fn akio_ice::TcpType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_ice::TcpType
+impl core::marker::StructuralPartialEq for akio_ice::TcpType
+impl core::marker::Send for akio_ice::TcpType
+impl core::marker::Sync for akio_ice::TcpType
+impl core::marker::Unpin for akio_ice::TcpType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::TcpType
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::TcpType
+pub struct akio_ice::Candidate
+impl akio_ice::Candidate
+pub fn akio_ice::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_ice::Candidate::base(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_ice::Candidate::component(&self) -> u16
+pub fn akio_ice::Candidate::foundation(&self) -> &str
+pub fn akio_ice::Candidate::generation(&self) -> core::option::Option<u32>
+pub fn akio_ice::Candidate::host(core::net::socket_addr::SocketAddr) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::host_tcp(core::net::socket_addr::SocketAddr, akio_ice::TcpType) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::hostname(&self) -> core::option::Option<&str>
+pub fn akio_ice::Candidate::kind(&self) -> akio_ice::CandidateKind
+pub fn akio_ice::Candidate::parse(&str) -> core::result::Result<akio_ice::Candidate, akio_ice::ParseError>
+pub fn akio_ice::Candidate::parse_resolved(&str, impl core::ops::function::FnOnce(&str) -> core::option::Option<core::net::ip_addr::IpAddr>) -> core::result::Result<akio_ice::Candidate, akio_ice::ParseError>
+pub fn akio_ice::Candidate::peer_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, u32) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::priority(&self) -> u32
+pub fn akio_ice::Candidate::related(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_ice::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::relayed_over_stream(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, bool) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::tcp_type(&self) -> core::option::Option<akio_ice::TcpType>
+pub fn akio_ice::Candidate::to_sdp(&self) -> alloc::string::String
+pub fn akio_ice::Candidate::ufrag(&self) -> core::option::Option<&str>
+pub fn akio_ice::Candidate::with_component(self, u16) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::with_hostname(self, impl core::convert::Into<alloc::string::String>) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::with_related(self, core::option::Option<core::net::socket_addr::SocketAddr>) -> akio_ice::Candidate
+pub fn akio_ice::Candidate::with_scope_id(self, u32) -> akio_ice::Candidate
+impl core::clone::Clone for akio_ice::Candidate
+pub fn akio_ice::Candidate::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::Candidate
+impl core::cmp::PartialEq for akio_ice::Candidate
+pub fn akio_ice::Candidate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::Candidate
+pub fn akio_ice::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ice::Candidate
+pub fn akio_ice::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ice::Candidate
+pub fn akio_ice::Candidate::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_ice::Candidate
+impl core::marker::Send for akio_ice::Candidate
+impl core::marker::Sync for akio_ice::Candidate
+impl core::marker::Unpin for akio_ice::Candidate
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::Candidate
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::Candidate
+pub struct akio_ice::Credentials
+pub akio_ice::Credentials::pwd: alloc::string::String
+pub akio_ice::Credentials::ufrag: alloc::string::String
+impl akio_ice::Credentials
+pub fn akio_ice::Credentials::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> akio_ice::Credentials
+pub fn akio_ice::Credentials::random() -> akio_ice::Credentials
+impl core::clone::Clone for akio_ice::Credentials
+pub fn akio_ice::Credentials::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::Credentials
+impl core::cmp::PartialEq for akio_ice::Credentials
+pub fn akio_ice::Credentials::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::Credentials
+pub fn akio_ice::Credentials::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ice::Credentials
+pub fn akio_ice::Credentials::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_ice::Credentials
+impl core::marker::Send for akio_ice::Credentials
+impl core::marker::Sync for akio_ice::Credentials
+impl core::marker::Unpin for akio_ice::Credentials
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::Credentials
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::Credentials
+pub struct akio_ice::IceAgent
+impl akio_ice::IceAgent
+pub fn akio_ice::IceAgent::add_local_candidate(&mut self, akio_ice::Candidate) -> bool
+pub fn akio_ice::IceAgent::add_remote_candidate(&mut self, akio_ice::Candidate)
+pub fn akio_ice::IceAgent::close(&mut self)
+pub fn akio_ice::IceAgent::components(&self) -> u16
+pub fn akio_ice::IceAgent::controlling(&self) -> bool
+pub fn akio_ice::IceAgent::end_of_remote_candidates(&mut self)
+pub fn akio_ice::IceAgent::handle_receive(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8]) -> bool
+pub fn akio_ice::IceAgent::handle_timeout(&mut self, std::time::Instant)
+pub fn akio_ice::IceAgent::is_fixed(&self) -> bool
+pub fn akio_ice::IceAgent::is_lite(&self) -> bool
+pub fn akio_ice::IceAgent::local_candidates(&self) -> &[akio_ice::Candidate]
+pub fn akio_ice::IceAgent::local_credentials(&self) -> &akio_ice::Credentials
+pub fn akio_ice::IceAgent::new(akio_ice::IceConfig, std::time::Instant) -> akio_ice::IceAgent
+pub fn akio_ice::IceAgent::poll_event(&mut self) -> core::option::Option<akio_ice::IceEvent>
+pub fn akio_ice::IceAgent::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_ice::IceAgent::poll_transmit(&mut self) -> core::option::Option<akio_ice::Transmit>
+pub fn akio_ice::IceAgent::remote_candidates(&self) -> &[akio_ice::Candidate]
+pub fn akio_ice::IceAgent::remote_credentials(&self) -> core::option::Option<&akio_ice::Credentials>
+pub fn akio_ice::IceAgent::restart(&mut self, akio_ice::Credentials, bool)
+pub fn akio_ice::IceAgent::selected_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn akio_ice::IceAgent::selected_pair_of(&self, u16) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn akio_ice::IceAgent::send_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn akio_ice::IceAgent::send_pair_of(&self, u16) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn akio_ice::IceAgent::set_controlling(&mut self, bool)
+pub fn akio_ice::IceAgent::set_fixed_pair(&mut self, u16, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> bool
+pub fn akio_ice::IceAgent::set_remote_credentials(&mut self, akio_ice::Credentials)
+pub fn akio_ice::IceAgent::set_remote_lite(&mut self, bool)
+pub fn akio_ice::IceAgent::set_remote_renomination(&mut self, bool)
+pub fn akio_ice::IceAgent::state(&self) -> akio_ice::IceState
+impl akio_ice::IceAgent
+pub fn akio_ice::IceAgent::check_ecn(&mut self, std::time::Instant, u8) -> bool
+pub fn akio_ice::IceAgent::ecn_checking(&self) -> bool
+pub fn akio_ice::IceAgent::handle_receive_ecn(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8) -> bool
+pub fn akio_ice::IceAgent::poll_transmit_ecn(&mut self) -> core::option::Option<(akio_ice::Transmit, u8)>
+impl core::fmt::Debug for akio_ice::IceAgent
+pub fn akio_ice::IceAgent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ice::IceAgent
+impl core::marker::Sync for akio_ice::IceAgent
+impl core::marker::Unpin for akio_ice::IceAgent
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::IceAgent
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::IceAgent
+pub struct akio_ice::IceConfig
+pub akio_ice::IceConfig::aggressive_nomination: bool
+pub akio_ice::IceConfig::check_max_sends: u32
+pub akio_ice::IceConfig::check_rto: core::time::Duration
+pub akio_ice::IceConfig::check_rto_max: core::time::Duration
+pub akio_ice::IceConfig::components: u16
+pub akio_ice::IceConfig::consent_interval: core::time::Duration
+pub akio_ice::IceConfig::consent_timeout: core::time::Duration
+pub akio_ice::IceConfig::controlling: bool
+pub akio_ice::IceConfig::failed_timeout: core::time::Duration
+pub akio_ice::IceConfig::lite: bool
+pub akio_ice::IceConfig::local: akio_ice::Credentials
+pub akio_ice::IceConfig::nomination_delay: core::time::Duration
+pub akio_ice::IceConfig::renomination: bool
+pub akio_ice::IceConfig::ta: core::time::Duration
+impl akio_ice::IceConfig
+pub fn akio_ice::IceConfig::new(bool, bool) -> akio_ice::IceConfig
+impl core::clone::Clone for akio_ice::IceConfig
+pub fn akio_ice::IceConfig::clone(&self) -> Self
+impl core::fmt::Debug for akio_ice::IceConfig
+pub fn akio_ice::IceConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ice::IceConfig
+impl core::marker::Sync for akio_ice::IceConfig
+impl core::marker::Unpin for akio_ice::IceConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::IceConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::IceConfig
+pub struct akio_ice::Transmit
+pub akio_ice::Transmit::contents: alloc::vec::Vec<u8>
+pub akio_ice::Transmit::destination: core::net::socket_addr::SocketAddr
+pub akio_ice::Transmit::source: core::net::socket_addr::SocketAddr
+impl core::clone::Clone for akio_ice::Transmit
+pub fn akio_ice::Transmit::clone(&self) -> Self
+impl core::cmp::Eq for akio_ice::Transmit
+impl core::cmp::PartialEq for akio_ice::Transmit
+pub fn akio_ice::Transmit::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ice::Transmit
+pub fn akio_ice::Transmit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ice::Transmit
+impl core::marker::Send for akio_ice::Transmit
+impl core::marker::Sync for akio_ice::Transmit
+impl core::marker::Unpin for akio_ice::Transmit
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ice::Transmit
+impl core::panic::unwind_safe::UnwindSafe for akio_ice::Transmit
+pub const akio_ice::ECN_CHECK_GIVE_UP: core::time::Duration
+pub const akio_ice::ECN_CHECK_INTERVAL: core::time::Duration
+pub const akio_ice::ECN_CHECK_SENDS: u32

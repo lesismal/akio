@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Closed-loop echo load generator, so the same tool drives `only`, fib, tokio...
+//! Closed-loop echo load generator, so the same tool drives `akio`, fib, tokio...
 //!
 //! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`
 //!

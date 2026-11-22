@@ -6,10 +6,10 @@ Status: accepted (2026-11-17)
 
 ## Context
 
-`only-media` (M7) left four gaps listed in DEV-PLAN: HLS only produced MPEG-TS segments, so
+`akio-media` (M7) left four gaps listed in DEV-PLAN: HLS only produced MPEG-TS segments, so
 players and CDNs that want CMAF (and Opus or HEVC in fragmented MP4) could not use it; the hub
 could serve RTMP and RTSP but not relay to or from another server, because there was no RTMP or
-RTSP client; and WHIP/WHEP was signalling only (`NoMedia` answered 501), although `only-webrtc`
+RTSP client; and WHIP/WHEP was signalling only (`NoMedia` answered 501), although `akio-webrtc`
 carries H.264, H.265 and Opus. WebRTC viewers also need a way to ask the publisher for a
 keyframe (PLI), which the hub had no path for.
 
@@ -29,7 +29,7 @@ All additions are additive; existing behaviour and defaults are unchanged.
 - A video subscriber that joins without a cached keyframe (`no_gop_cache`, or no GOP yet) asks at
   once instead of waiting a GOP.
 
-### fMP4 / CMAF (`only_media::fmp4`, `hls::SegmentFormat`)
+### fMP4 / CMAF (`akio_media::fmp4`, `hls::SegmentFormat`)
 
 - `fmp4::Muxer` (`new(&[Track])`, `init_segment`, `write_packet`, `flush(end, out)`,
   `carries`, `has_tracks`, `pending_bytes`, `has_pending`) writes an init segment (`ftyp` with CMAF
@@ -48,7 +48,7 @@ All additions are additive; existing behaviour and defaults are unchanged.
   `part-<n>.<m>.m4s` are whole fragments. `max_bytes`, the forced cut, blocking reloads and the
   idle timeout apply as for TS. `MediaHttp` routes `.m4s` and `.mp4` to `Hls`.
 
-### RTMP client (`only_media::rtmp::client`)
+### RTMP client (`akio_media::rtmp::client`)
 
 - `push(engine, url, hub, path, RtmpClientConfig) -> Result<RtmpClient, ClientError>` publishes a
   hub stream to an RTMP server; `pull(...)` reserves `path` at once and publishes what it plays
@@ -61,7 +61,7 @@ All additions are additive; existing behaviour and defaults are unchanged.
   idle 30 s, message size 16 MiB, push `write_queue_limit` 2 MiB (`Dropper`) and
   `max_write_queue` 16 MiB (disconnect), `source_wait` 10 s.
 
-### RTSP client (`only_media::rtsp::client`)
+### RTSP client (`akio_media::rtsp::client`)
 
 - `pull(engine, url, hub, path, RtspClientConfig) -> Result<RtspClient, ClientError>` plays from
   an RTSP server into the hub (the path is reserved at once; the stream goes live when the video
@@ -82,9 +82,9 @@ All additions are additive; existing behaviour and defaults are unchanged.
   as the server's parser, TCP push `write_queue_limit` 2 MiB / `max_write_queue` 16 MiB,
   `push_wait` 10 s.
 
-### WebRTC media (`only_media::webrtc`, cargo feature `webrtc`)
+### WebRTC media (`akio_media::webrtc`, cargo feature `webrtc`)
 
-- The optional, non-default feature `webrtc` adds a dependency on `only-webrtc` (in-house, so
+- The optional, non-default feature `webrtc` adds a dependency on `akio-webrtc` (in-house, so
   ADR-005 holds). `RtcMedia::new(RtcServer, RtcMediaConfig)` implements `whip::WebRtcEngine`;
   `RtcMedia::rtc_server(addrs)` and `webrtc::rtc_config()` give an `RtcServer` with H.264, H.265,
   Opus, PCMU and PCMA.
@@ -113,13 +113,13 @@ All additions are additive; existing behaviour and defaults are unchanged.
 
 ## Consequences
 
-- Additive public API in only-media (new modules `fmp4`, `rtmp::client`, `rtsp::client`,
+- Additive public API in akio-media (new modules `fmp4`, `rtmp::client`, `rtsp::client`,
   `webrtc` behind a feature; new fields in `HubConfig` and `HlsConfig`, both `#[non_exhaustive]`;
   a defaulted trait method on `WebRtcSession`). The API snapshot covers the `webrtc` feature.
 - New fuzz targets: `fmp4_demux`, `rtmp_client`, `rtsp_client`.
 - The hub, HLS and the clients keep every buffer bounded with a default and every exchange under a
   timeout (rules 7 to 10).
-- `only-webrtc` fix found on the way: `Endpoint::config`, `close_on_disconnect` and
+- `akio-webrtc` fix found on the way: `Endpoint::config`, `close_on_disconnect` and
   `connect_timeout` always panicked after `bind`; they now apply to peers created afterwards
   (same signatures).
 - One behaviour change in TS mode: while the segment being written starts with a discontinuity and

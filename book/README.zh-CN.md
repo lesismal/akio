@@ -1,4 +1,4 @@
-# only 指南：源文件
+# akio 指南：源文件
 
 [English](README.md) | 简体中文
 
@@ -43,22 +43,22 @@ $ python3 -m http.server -d target/book 8000   # 然后打开 http://127.0.0.1:8
 ## 发布的站点
 
 ```console
-$ book/site.sh                                  # 两本书 + rustdoc 构建到 target/site，基础路径 /only/
+$ book/site.sh                                  # 两本书 + rustdoc 构建到 target/site，基础路径 /akio/
 $ python3 book/check-site.py target/site        # 通过 HTTP 检查链接，有问题时退出码为 1
-$ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/only/
+$ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/akio/
 ```
 
 `.github/workflows/pages.yml` 运行的正是这两条命令，并把 `target/site` 部署到 GitHub Pages：
 在发布 release 时或手动触发（Actions -> Pages -> Run workflow），从不在 push 时运行。布局：
-`/only/` 语言选择页，`/only/en/`、`/only/zh-CN/`、`/only/api/`（已发布 crate 的 rustdoc）、
-`/only/404.html`。启用 Pages（Settings -> Pages -> Source: GitHub Actions）是维护者的一次性操作。
+`/akio/` 语言选择页，`/akio/en/`、`/akio/zh-CN/`、`/akio/api/`（已发布 crate 的 rustdoc）、
+`/akio/404.html`。启用 Pages（Settings -> Pages -> Source: GitHub Actions）是维护者的一次性操作。
 
 ## 运行示例
 
 ```console
 $ book/check-guides.sh             # 每个 guide-* 示例，以及 echo、udp-echo、hello、prefork-http
 $ book/check-guides.sh guide-h3    # 只运行其中一个
-$ ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # 在 io_uring 上运行（Linux，ADR-029）
+$ AKIO_DEFAULT_BACKEND=uring book/check-guides.sh   # 在 io_uring 上运行（Linux，ADR-029）
 ```
 
 自检型示例必须以 0 退出；服务型示例从外部探测后停止。部分示例使用固定端口（8080、1935、8554、
@@ -74,6 +74,6 @@ Mermaid 图由 `mermaid-init.js` 在浏览器中渲染（从 jsDelivr 加载）�
 - 在同一个提交中同时修改**两种语言**的章节；两边的文件树必须保持一致。
 - 新代码放进示例程序，用锚点标记，并在两本书中引用。
 - 内容要与 `docs/DEV-PLAN.zh-CN.md`（已完成的内容）和代码保持一致；未完成的要说明。
-- 由 `.github/workflows/pages.yml` 发布在 `https://lesismal.github.io/only/`（`/en/`、
+- 由 `.github/workflows/pages.yml` 发布在 `https://lesismal.github.io/akio/`（`/en/`、
   `/zh-CN/`、`/api/`）；crate 级 rustdoc 的链接指向这里，`check-site.py` 会对照构建出的站点检查
   这些链接。

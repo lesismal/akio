@@ -1,4 +1,4 @@
-# ADR-039：only-webrtc 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈
+# ADR-039：akio-webrtc 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈
 
 [English](039-webrtc-fec-xr-tmmbr-ccfb.md) | 简体中文
 
@@ -6,8 +6,8 @@
 
 ## 背景
 
-ADR-036 为 `only-rtp` 加入了 RTCP 扩展报告（RFC 3611）、TMMBR / TMMBN（RFC 5104）、RTP 拥塞控制反馈
-（RFC 8888）与 FEC（ULPFEC、FlexFEC、RED），但 `only-webrtc` 的对端既不协商也不使用它们。接入需要：
+ADR-036 为 `akio-rtp` 加入了 RTCP 扩展报告（RFC 3611）、TMMBR / TMMBN（RFC 5104）、RTP 拥塞控制反馈
+（RFC 8888）与 FEC（ULPFEC、FlexFEC、RED），但 `akio-webrtc` 的对端既不协商也不使用它们。接入需要：
 SDP（载荷类型、FEC SSRC 组、反馈属性）、FEC 保护率策略、在帧组装器和 NACK 之前修复包的接收路径，以及
 RTCP 调度。浏览器最重要：任何改变默认对端 offer / answer 内容的做法都可能改变 Chrome 的发送行为。
 
@@ -47,9 +47,9 @@ RTCP 调度。浏览器最重要：任何改变默认对端 offer / answer 内�
    表格及其 NACK / FEC 混合策略（RTT 低于约 20 ms 时不发 FEC）；可用 `min` 保持保护因子。
 5. **接收 FEC** 发生在帧组装器和 NACK 之前：FlexFEC 包（按载荷类型识别，被保护的 SSRC 取自其头）或
    RED 中的 ULPFEC 块交给被保护流的解码器（每个对端最多 4 个解码器，每个约 1.5 MB）；媒体包（去掉 RED 后）也记入解码器；重建出的包经
-   `RecvStream::receive_recovered`（only-rtp 新增：不再算缺失，因此不会被 NACK，但也不计为已收到，所以
+   `RecvStream::receive_recovered`（akio-rtp 新增：不再算缺失，因此不会被 NACK，但也不计为已收到，所以
    报告仍给出修复前的丢包，与 Chrome 一致）进入接收流，然后进入组装器。ULPFEC 包和纯填充包所占的序号用
-   `FrameAssembler::skip`（only-rtp 新增）标记，组装器不必把它当作缺口去等待。重传包不送入解码器
+   `FrameAssembler::skip`（akio-rtp 新增）标记，组装器不必把它当作缺口去等待。重传包不送入解码器
    （它们的头扩展与被保护的原包不同）。
 6. **RFC 8888。** 任一行协商成功后，收到的 RTP（所有 SSRC）交给每 50 ms 轮询一次的 `CcfbReceiver`，
    替代传输层反馈；每个发出的 RTP 包都记入 `CcfbSender`；由 RFC 8888 反馈驱动带宽估计器（此时忽略
@@ -64,7 +64,7 @@ RTCP 调度。浏览器最重要：任何改变默认对端 offer / answer 内�
 
 ## 影响
 
-- 公共 API 只有新增：`FecMechanism`、五个 `RtcConfig` 方法、`Peer::request_max_bitrate`；only-rtp 新增
+- 公共 API 只有新增：`FecMechanism`、五个 `RtcConfig` 方法、`Peer::request_max_bitrate`；akio-rtp 新增
   `RecvStream::receive_recovered` 与 `FrameAssembler::skip`（Internal 层级）。默认配置生成的 SDP 与之前
   相同；`tools/interop/webrtc/browser.sh` 与 `run.sh` 不加修改即通过。
 - Chrome 157（带上述 field trial）：FlexFEC 与 ULPFEC 双向（每个方向每 20 个 RTP 包丢 1 个且去掉 NACK

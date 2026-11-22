@@ -1,0 +1,112 @@
+pub mod akio_srtp
+#[non_exhaustive] pub enum akio_srtp::Error
+pub akio_srtp::Error::Authentication
+pub akio_srtp::Error::Config
+pub akio_srtp::Error::IndexExhausted
+pub akio_srtp::Error::KeyLength
+pub akio_srtp::Error::Malformed
+pub akio_srtp::Error::Replay
+pub akio_srtp::Error::UnknownMki
+pub akio_srtp::Error::Unsupported
+impl core::clone::Clone for akio_srtp::Error
+pub fn akio_srtp::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_srtp::Error
+impl core::cmp::PartialEq for akio_srtp::Error
+pub fn akio_srtp::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_srtp::Error
+impl core::fmt::Debug for akio_srtp::Error
+pub fn akio_srtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_srtp::Error
+pub fn akio_srtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_srtp::Error
+impl core::marker::StructuralPartialEq for akio_srtp::Error
+impl core::marker::Send for akio_srtp::Error
+impl core::marker::Sync for akio_srtp::Error
+impl core::marker::Unpin for akio_srtp::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_srtp::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_srtp::Error
+#[non_exhaustive] pub enum akio_srtp::Profile
+pub akio_srtp::Profile::AeadAes128Gcm
+pub akio_srtp::Profile::AeadAes256Gcm
+pub akio_srtp::Profile::Aes128CmHmacSha1_32
+pub akio_srtp::Profile::Aes128CmHmacSha1_80
+pub akio_srtp::Profile::Aes192CmHmacSha1_32
+pub akio_srtp::Profile::Aes192CmHmacSha1_80
+pub akio_srtp::Profile::Aes256CmHmacSha1_32
+pub akio_srtp::Profile::Aes256CmHmacSha1_80
+pub akio_srtp::Profile::AesF8HmacSha1_32
+pub akio_srtp::Profile::AesF8HmacSha1_80
+pub akio_srtp::Profile::NullHmacSha1_32
+pub akio_srtp::Profile::NullHmacSha1_80
+pub akio_srtp::Profile::SeedCcm80
+pub akio_srtp::Profile::SeedCtrHmacSha1_80
+pub akio_srtp::Profile::SeedGcm96
+impl akio_srtp::Profile
+pub const akio_srtp::Profile::ALL: [akio_srtp::Profile; 15]
+pub fn akio_srtp::Profile::encrypts(self) -> bool
+pub fn akio_srtp::Profile::from_id(u16) -> core::option::Option<akio_srtp::Profile>
+pub fn akio_srtp::Profile::from_sdes_name(&str) -> core::option::Option<akio_srtp::Profile>
+pub fn akio_srtp::Profile::id(self) -> core::option::Option<u16>
+pub fn akio_srtp::Profile::is_aead(self) -> bool
+pub fn akio_srtp::Profile::key_len(self) -> usize
+pub fn akio_srtp::Profile::keying_material_len(self) -> usize
+pub fn akio_srtp::Profile::name(self) -> &'static str
+pub fn akio_srtp::Profile::rtcp_tag_len(self) -> usize
+pub fn akio_srtp::Profile::rtp_tag_len(self) -> usize
+pub fn akio_srtp::Profile::salt_len(self) -> usize
+pub fn akio_srtp::Profile::sdes_name(self) -> core::option::Option<&'static str>
+pub fn akio_srtp::Profile::session_salt_len(self) -> usize
+impl core::clone::Clone for akio_srtp::Profile
+pub fn akio_srtp::Profile::clone(&self) -> Self
+impl core::cmp::Eq for akio_srtp::Profile
+impl core::cmp::PartialEq for akio_srtp::Profile
+pub fn akio_srtp::Profile::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_srtp::Profile
+pub fn akio_srtp::Profile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_srtp::Profile
+pub fn akio_srtp::Profile::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_srtp::Profile
+impl core::marker::StructuralPartialEq for akio_srtp::Profile
+impl core::marker::Send for akio_srtp::Profile
+impl core::marker::Sync for akio_srtp::Profile
+impl core::marker::Unpin for akio_srtp::Profile
+impl core::panic::unwind_safe::RefUnwindSafe for akio_srtp::Profile
+impl core::panic::unwind_safe::UnwindSafe for akio_srtp::Profile
+pub struct akio_srtp::Context
+impl akio_srtp::Context
+pub fn akio_srtp::Context::add_master_key(&mut self, &[u8], &[u8], &[u8]) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::mki_len(&self) -> usize
+pub fn akio_srtp::Context::new(akio_srtp::Profile, &[u8], &[u8]) -> core::result::Result<akio_srtp::Context, akio_srtp::Error>
+pub fn akio_srtp::Context::new_with_mki(akio_srtp::Profile, &[u8], &[u8], &[u8]) -> core::result::Result<akio_srtp::Context, akio_srtp::Error>
+pub fn akio_srtp::Context::profile(&self) -> akio_srtp::Profile
+pub fn akio_srtp::Context::protect_rtcp(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_srtp::Error>
+pub fn akio_srtp::Context::protect_rtcp_into(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::protect_rtp(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_srtp::Error>
+pub fn akio_srtp::Context::protect_rtp_into(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::recv_roc(&self, u32) -> core::option::Option<u32>
+pub fn akio_srtp::Context::remove_master_key(&mut self, &[u8]) -> bool
+pub fn akio_srtp::Context::send_mki(&self) -> core::option::Option<&[u8]>
+pub fn akio_srtp::Context::send_roc(&self, u32) -> core::option::Option<u32>
+pub fn akio_srtp::Context::set_send_mki(&mut self, &[u8]) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::unprotect_rtcp(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_srtp::Error>
+pub fn akio_srtp::Context::unprotect_rtcp_into(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::unprotect_rtp(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_srtp::Error>
+pub fn akio_srtp::Context::unprotect_rtp_into(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_srtp::Error>
+pub fn akio_srtp::Context::with_cryptex(self, bool) -> akio_srtp::Context
+pub fn akio_srtp::Context::with_encrypted_header_extensions(self, &[u8]) -> akio_srtp::Context
+pub fn akio_srtp::Context::with_key_derivation_rate(self, u32) -> core::result::Result<akio_srtp::Context, akio_srtp::Error>
+pub fn akio_srtp::Context::with_max_ssrcs(self, usize) -> akio_srtp::Context
+pub fn akio_srtp::Context::with_replay_window(self, usize) -> akio_srtp::Context
+impl core::fmt::Debug for akio_srtp::Context
+pub fn akio_srtp::Context::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_srtp::Context
+impl core::marker::Sync for akio_srtp::Context
+impl core::marker::Unpin for akio_srtp::Context
+impl core::panic::unwind_safe::RefUnwindSafe for akio_srtp::Context
+impl core::panic::unwind_safe::UnwindSafe for akio_srtp::Context
+pub const akio_srtp::DEFAULT_MAX_SSRCS: usize
+pub const akio_srtp::DEFAULT_REPLAY_WINDOW: usize
+pub const akio_srtp::MAX_KEY_DERIVATION_RATE: u32
+pub const akio_srtp::MAX_MASTER_KEYS: usize
+pub const akio_srtp::MAX_MKI_LEN: usize
+pub const akio_srtp::MAX_REPLAY_WINDOW: usize

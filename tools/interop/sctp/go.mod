@@ -1,4 +1,4 @@
-module only-interop-sctp
+module akio-interop-sctp
 
 go 1.24.0
 

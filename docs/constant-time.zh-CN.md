@@ -2,14 +2,14 @@
 
 [English](constant-time.md) | 简体中文
 
-`only-crypto` 的常数时间性此前由代码与反汇编论证：没有依赖秘密的分支或内存下标，依赖秘密标量的路径的
-release 构建经过反汇编，所有条件分支都已列出（`crates/only-crypto/src/ct.rs` 记录了做法与最近一次结果）。
+`akio-crypto` 的常数时间性此前由代码与反汇编论证：没有依赖秘密的分支或内存下标，依赖秘密标量的路径的
+release 构建经过反汇编，所有条件分支都已列出（`crates/akio-crypto/src/ct.rs` 记录了做法与最近一次结果）。
 `tools/ct-dudect` 增加一项独立的黑盒检查：直接测量真实的二进制，看运行时间是否随秘密变化。
 
 ## 方法
 
 `ct-dudect` 按 dudect（Reparaz、Balasch、Verbauwhede，“Dude, is my code constant time?”，DATE 2017）
-的方法在工具内从头实现（除 `only-crypto` 外没有依赖）：
+的方法在工具内从头实现（除 `akio-crypto` 外没有依赖）：
 
 - **两类输入**：每个目标中，第 0 类为固定秘密（特意选特殊值：标量 1、全零的 X25519 标量或 Ed25519 种子、
   全零的 RSA 摘要、只有最后一字节错误的标签、全零的 limb），第 1 类每次测量都用新的随机秘密。其余输入
@@ -28,7 +28,7 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/only-cr
 - **自检**：A/A 测试（`sanity-null`，两类完全相同）必须低于 4.5（误报检查）；两个故意泄漏的函数必须被
   检出：提前退出的 256 字节比较（`sanity-leaky-memcmp`）与按指数位分支的平方-乘（`sanity-leaky-modexp`）。
   单元测试（`cargo test -p ct-dudect`）也检查能检出提前退出的比较，并用合成分布检查 t 检验。
-- **路径**：每个目标先在硬件路径上运行，再以 `ONLY_CRYPTO_PORTABLE=1` 在可移植代码上运行。没有硬件路径
+- **路径**：每个目标先在硬件路径上运行，再以 `AKIO_CRYPTO_PORTABLE=1` 在可移植代码上运行。没有硬件路径
   的目标（`ct.rs` 原语、`ct_eq`、自检）只在第一遍运行。
 - **`--fixed-random X`**：第 0 类改用由种子 X 生成的固定“随机样”秘密而非特殊值，用来区分只与特殊值
   有关的差异和普遍的差异。
@@ -59,19 +59,19 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/only-cr
 | `aes128-gcm-open-valid`、`chacha20poly1305-open-valid` | 有效标签对随机标签；**公开**：调用方本来就知道标签是否通过，两种情况的工作量按设计不同（ChaCha20-Poly1305 只在标签有效后解密；融合的 AES-GCM 在失败时撤销解密）。只报告，不算泄漏 |
 | `seed-key` | SEED 密钥扩展加 256 字节 CTR（一趟 16 个分组）：全零密钥对随机密钥（只有可移植代码：没有硬件路径，仅第一轮；ADR-052） |
 | `seed-block` | SEED 单个分组（CCM 的 CBC-MAC 所用的单字 G 路径），固定密钥：全零分组对随机分组 |
-| `ct-eq` | `only_crypto::ct_eq`，32 字节：仅最后一字节不同对随机 |
+| `ct-eq` | `akio_crypto::ct_eq`，32 字节：仅最后一字节不同对随机 |
 | `ct-word` | `ct.rs` 的 `mask`、`is_zero`、`eq`、`select`，64 个字：全零对随机 |
 | `ct-limbs` | `ct.rs` 的 `add_limbs`、`sub_limbs`、`lt_limbs`、`is_zero_limbs`、`assign`、`swap`，2048 位 limb 数组：全零对随机 |
 
-`ct.rs` 是 `only-crypto` 的私有模块；工具通过 `#[path]` 编译同一个源文件，因此测量的是原样的原语，
-它们内联进测试工具，正如在 `only-crypto` 中内联进调用方。
+`ct.rs` 是 `akio-crypto` 的私有模块；工具通过 `#[path]` 编译同一个源文件，因此测量的是原样的原语，
+它们内联进测试工具，正如在 `akio-crypto` 中内联进调用方。
 
 ## 运行
 
 ```sh
 cargo build --release -p ct-dudect
 taskset -c 2 target/release/ct-dudect --seconds 60 --json hw.json
-ONLY_CRYPTO_PORTABLE=1 taskset -c 2 target/release/ct-dudect --seconds 60 --json portable.json
+AKIO_CRYPTO_PORTABLE=1 taskset -c 2 target/release/ct-dudect --seconds 60 --json portable.json
 target/release/ct-dudect --list                    # 列出目标
 target/release/ct-dudect --seconds 5 p256 x25519   # 只跑一部分（子串匹配）
 ```
@@ -90,7 +90,7 @@ CI 中它是信息性任务 `ct-dudect`（`.github/workflows/ci.yml`，只在发
 路径 60 秒或 10⁸ 次测量。运行期间负载均值 1.2–1.6（另一个核上有外部单线程任务）。表中为 102 个检验中最大的
 `|t|`，括号内为测量次数：
 
-| 目标 | 类型 | 硬件路径 | 可移植（`ONLY_CRYPTO_PORTABLE=1`） |
+| 目标 | 类型 | 硬件路径 | 可移植（`AKIO_CRYPTO_PORTABLE=1`） |
 |---|---|---:|---:|
 | `p256-ecdh` | 秘密 | 2.56（2.0M） | 1.63（965k） |
 | `p256-keygen` | 秘密 | 1.56（9.9M） | 3.53（4.2M） |
@@ -157,7 +157,7 @@ SEED（2026-11-20，ADR-052），同一台主机经 `quiet.sh` 静默，核心 2
 硬件路径，只跑一轮：`seed-key` 1.50（1550 万次测量；密钥扩展加一趟 16 分组的 CTR，两类都约 15,700 个
 周期），`seed-block` 1.52（5060 万；单字路径，两类都约 4,480 个周期）。未见差异。
 
-only-crypto 短消息解密与 P-256 约简（2026-11-22）：安静主机（`quiet.sh`），核心 2，`rdtsc`。硬件路径，每个目标 60 秒：
+akio-crypto 短消息解密与 P-256 约简（2026-11-22）：安静主机（`quiet.sh`），核心 2，`rdtsc`。硬件路径，每个目标 60 秒：
 `p256-ecdh` 2.74（210 万次测量）、`p256-keygen` 2.07（1140 万）、`p256-sign` 1.98（680 万）、
 `chacha20poly1305-open-tag` 1.98（10⁸），新增的 `chacha20poly1305-open-tag-64` 0.67（10⁸；行内核密钥流头且密钥经寄存器交出，
 每次解密约 600 个周期）。可移植路径，30 秒：`chacha20poly1305-open-tag` 1.29，`chacha20poly1305-open-tag-64` 0.99。

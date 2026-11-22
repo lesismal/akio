@@ -1,10 +1,10 @@
-// gRPC interop peer (grpc-go) for only-grpc. The `test.Echo` methods carry raw bytes (a
+// gRPC interop peer (grpc-go) for akio-grpc. The `test.Echo` methods carry raw bytes (a
 // pass-through codec, no generated code); route_guide and helloworld use grpc-go's own
-// generated code (google.golang.org/grpc/examples) against only-protobuf messages (pb.go):
+// generated code (google.golang.org/grpc/examples) against akio-protobuf messages (pb.go):
 //
 //	go run . server 127.0.0.1:9200     # test.Echo + routeguide.RouteGuide + helloworld.Greeter
-//	go run . client 127.0.0.1:9201     # raw-bytes calls against only-grpc
-//	go run . pbclient 127.0.0.1:9203   # generated-stub calls against only-protobuf messages
+//	go run . client 127.0.0.1:9201     # raw-bytes calls against akio-grpc
+//	go run . pbclient 127.0.0.1:9203   # generated-stub calls against akio-protobuf messages
 //	go run . server|client ADDR tls    # the test.Echo methods over TLS (self-signed, h2)
 package main
 

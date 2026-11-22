@@ -11,7 +11,7 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
 - **Cross-process steering.** `attach_reuseport` gives each process its own `SK_REUSEPORT`
   program and socket array. In a `SO_REUSEPORT` group shared by prefork workers, every worker
   that attaches replaces the group's program with one that only knows its own sockets, so all new
-  connections go to the last worker to attach. only-prefork could only warn about it.
+  connections go to the last worker to attach. akio-prefork could only warn about it.
 - **Reloads with `ListenMode::ReusePort`.** When an old worker's listening sockets close, the
   kernel resets the connections in their accept queues and the handshakes still pending on them.
   `net.ipv4.tcp_migrate_req=1` (Linux 5.14+) moves them to a random live listener instead, but it
@@ -21,7 +21,7 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
 
 ## Decision
 
-### 1. Shared steering pinned in bpffs (`only_ebpf::SharedSteering`)
+### 1. Shared steering pinned in bpffs (`akio_ebpf::SharedSteering`)
 
 - `SharedSteering::create(dir, sockets, steering)` loads one `SK_REUSEPORT` program for a group of
   `sockets` slots. It also creates a `REUSEPORT_SOCKARRAY`, the Maglev slot table (`ARRAY`, used
@@ -45,11 +45,11 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
   failure (`AccelStatus::Degraded`), or fails `build` with `strict`. `SteerInfo` gains `shared`
   and `migrate`. With `pin_threads`, thread `t` at slot `first + t` is pinned to the CPUs of
   that slot (`c % sockets == first + t`).
-- **only-prefork**: `Prefork::bpf_steering(BpfSteering { steering, threads, dir, strict })`
+- **akio-prefork**: `Prefork::bpf_steering(BpfSteering { steering, threads, dir, strict })`
   works with `ListenMode::ReusePort` on Linux. The supervisor creates one group per listening
-  address under `dir` (default `/sys/fs/bpf/only-prefork`), named `<ip>_<port>` with `.`
+  address under `dir` (default `/sys/fs/bpf/akio-prefork`), named `<ip>_<port>` with `.`
   replaced by `-` because bpffs rejects dots in names. The group has `workers * threads` slots.
-  The pin directories reach the workers in `ONLY_PREFORK_BPF`. Worker `i`'s `listener(n)`
+  The pin directories reach the workers in `AKIO_PREFORK_BPF`. Worker `i`'s `listener(n)`
   returns a listener with `threads` I/O threads and an `Accel::Ebpf` that joins slots
   `i * threads..(i + 1) * threads`. The supervisor removes the pins when it stops (`wait` or
   drop). A supervisor killed with SIGKILL leaves them, and the next supervisor on the same
@@ -88,18 +88,18 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
 ### 3. AF_XDP as a link of the userspace stack
 
 - **Placement.** AF_XDP is a link type of the existing stack, next to TAP and AF_PACKET:
-  `only_dpdk::Device::AfXdp(AfXdpConfig)`. It is not a new `Backend`. `Backend::Dpdk(DpdkConfig)`
+  `akio_dpdk::Device::AfXdp(AfXdpConfig)`. It is not a new `Backend`. `Backend::Dpdk(DpdkConfig)`
   already means "only's userspace TCP/IP stack over some link", and every listener, dial, metric
   and test of that backend works unchanged on the new link. A separate `Backend::AfXdp` would
-  duplicate that configuration for no gain, so none was added. The `dpdk` cargo feature of `only`
+  duplicate that configuration for no gain, so none was added. The `dpdk` cargo feature of `akio`
   is enough. `dpdk-pmd` and libdpdk are not needed.
 - **Configuration.** `AfXdpConfig { interface, queues, mode: XdpMode, zero_copy: ZeroCopy,
   frames }` (`#[non_exhaustive]`, `AfXdpConfig::new(interface)`).
-  - Defaults: one queue; `XdpMode::Auto` (re-exported from `only_ebpf::xdp`); `ZeroCopy::Auto`
+  - Defaults: one queue; `XdpMode::Auto` (re-exported from `akio_ebpf::xdp`); `ZeroCopy::Auto`
     (`Required`, `Off`); 4096 chunks of 4 KiB per queue.
   - The stack's default MAC is the interface's own, read from sysfs, so a NIC needs no
     promiscuous mode. `DpdkConfig::mac` overrides it.
-- **Data path** (`only_ebpf::xsk`, `#[doc(hidden)]`, unstable; the unsafe code lives here):
+- **Data path** (`akio_ebpf::xsk`, `#[doc(hidden)]`, unstable; the unsafe code lives here):
   - One socket per queue `0..queues`, each with its own UMEM: an anonymous mapping, unmapped
     only after the socket closes.
   - Fill, completion, RX and TX rings of `min(2048, frames / 2)` entries. Half of the chunks
@@ -132,8 +132,8 @@ ADR-006 and ADR-027 left four gaps in the eBPF and prefork work:
     has no effect.
   - With several queues, the NIC's RSS spreads flows. Dialed connections use the existing rule
     that a port names its queue.
-- `only_ebpf::Probe` gains `reuseport_migrate` and `af_xdp`. The hidden
-  `only_dpdk::af_xdp_info(interface)` reports native or generic mode, zero-copy and the number
+- `akio_ebpf::Probe` gains `reuseport_migrate` and `af_xdp`. The hidden
+  `akio_dpdk::af_xdp_info(interface)` reports native or generic mode, zero-copy and the number
   of queues, for tests and benchmarks.
 
 ### 4. Local VM tests
@@ -152,7 +152,7 @@ the same tests without capabilities.
   supervisor and the workers, and pins in bpffs while the supervisor runs.
 - `Engine::set_threads` stays `Unsupported` for listeners with steering, shared steering
   included: each worker's slot range is fixed by `BpfSteering::threads`.
-- New `unsafe` code is confined to `only-ebpf`: `sys` (`OBJ_PIN`, `OBJ_GET`,
+- New `unsafe` code is confined to `akio-ebpf`: `sys` (`OBJ_PIN`, `OBJ_GET`,
   `OBJ_GET_INFO_BY_FD`, a lookup of `[u32; N]` values) and the new `xsk` module. Every block has
   a `SAFETY:` comment, and docs/unsafe-review lists them.
 - API: only additions (`SharedSteering`, `MAX_SHARED_SOCKETS`, `SteerInfo::{shared, migrate}`,
@@ -163,9 +163,9 @@ the same tests without capabilities.
 
 ## Verification
 
-Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `ONLY_TEST_EXPECT_EBPF=1`:
+Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `AKIO_TEST_EXPECT_EBPF=1`:
 
-- `only-ebpf/tests/shared.rs`:
+- `akio-ebpf/tests/shared.rs`:
   - Slots of two "processes" follow their owner, also after one is replaced.
   - The pins disappear with the owner while the attached program keeps steering.
   - A closing listener's accept queue (32 connections) migrates to the slot's new socket, and
@@ -173,7 +173,7 @@ Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `ONLY_TEST_EXPE
   - Requests held by `TCP_DEFER_ACCEPT` migrate when their data arrives, so the migration
     branch runs on a real packet.
   - Without the program and with the sysctl off, the same accept queue is reset (control).
-- `only-prefork/tests/bpf.rs`, three workers with two threads each:
+- `akio-prefork/tests/bpf.rs`, three workers with two threads each:
   - The answering worker is the one `expected_index` names, also after a worker was killed and
     restarted.
   - Three reloads under 8 client threads of connection churn, for CPU and hash steering: no
@@ -187,15 +187,15 @@ Results from `gpu51` (Linux 7.0, Ryzen 7 7800X3D), as root, with `ONLY_TEST_EXPE
     when it stopped.
   - The results are the same on epoll and io_uring.
   - A non-bpffs directory falls back to the kernel's hashing, and `strict` fails the spawn.
-- `only-dpdk/tests/kernel_peer.rs`, `af_xdp_*` on veth pairs:
+- `akio-dpdk/tests/kernel_peer.rs`, `af_xdp_*` on veth pairs:
   - Native/auto, generic/copy and IPv6: UDP echo, ECN, fragments, a 2 MiB TCP echo, dials and
     ICMP to the kernel.
   - Two queues with 200 concurrent connections.
   - `ZeroCopy::Required` fails cleanly on a veth.
 - Fallback without privileges: the same test binaries run under
-  `setpriv --inh-caps=-all --bounding-set=-all` (root without capabilities). The only-ebpf and
-  only-dpdk tests skip, the prefork test checks that the workers serve with the kernel's
-  hashing, and all of them fail when `ONLY_TEST_EXPECT_EBPF=1` is set.
+  `setpriv --inh-caps=-all --bounding-set=-all` (root without capabilities). The akio-ebpf and
+  akio-dpdk tests skip, the prefork test checks that the workers serve with the kernel's
+  hashing, and all of them fail when `AKIO_TEST_EXPECT_EBPF=1` is set.
 
 Benchmark (same-run A/B under `quiet.sh`, `tools/bench/afxdp.sh`, one veth pair, AF_XDP in native
 copy mode): compared with AF_PACKET, AF_XDP gives 1.68× the UDP request/response rate, 1.58× the

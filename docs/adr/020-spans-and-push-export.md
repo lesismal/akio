@@ -7,7 +7,7 @@ Status: accepted (2026-11-17)
 ## Context
 
 ADR-015 gave the engine pluggable collectors served by a Prometheus scrape, and left four gaps
-listed in DEV-PLAN (M6 "production", the only-log entry): there were no spans (only-log has
+listed in DEV-PLAN (M6 "production", the akio-log entry): there were no spans (akio-log has
 records only; "`tracing` feature" was an open item), no push export (StatsD, OTLP), HTTP metrics
 had no per-route labels (a cardinality policy was needed), and HTTP/2 had no connection or
 stream gauges beyond per-version request counts. The libraries take no third-party dependency
@@ -16,9 +16,9 @@ the hot path takes no global lock and no shared refcount per request (rule 12).
 
 ## Decision
 
-### Spans in only-log, no `tracing` bridge
+### Spans in akio-log, no `tracing` bridge
 
-A `span` module in only-log (`only::log::span`), dependency-free:
+A `span` module in akio-log (`akio::log::span`), dependency-free:
 
 - `SpanContext` (128-bit trace id, 64-bit span id, sampled flag, remote flag) with W3C
   `traceparent` parsing and printing; `Span` (a nullable box: a disabled span is one pointer and
@@ -36,7 +36,7 @@ A `span` module in only-log (`only::log::span`), dependency-free:
 - `FmtLogger` adds `trace_id` / `span_id` to records written inside an entered span.
 
 No `tracing` bridge (not even an optional feature): `tracing` subscribers need `&'static`
-callsite metadata built by `tracing`'s macros, so forwarding only-log spans would need either
+callsite metadata built by `tracing`'s macros, so forwarding akio-log spans would need either
 leaked metadata per distinct span name or a fixed callsite with the name hidden in a field, both
 poor for its ecosystem; and the bridge would track a fast-moving crate outside semver. The usual
 destination, an OpenTelemetry collector, is covered by push export below, and a `Tracer` is a
@@ -44,14 +44,14 @@ three-method trait any application can implement for anything else.
 
 ### HTTP instrumentation
 
-only-http starts a request span (target `only_http::request`, level `info`, kind server) at the
-three dispatch points (HTTP/1.x, HTTP/2 streams and pushes, the transport seam only-h3 uses),
+akio-http starts a request span (target `akio_http::request`, level `info`, kind server) at the
+three dispatch points (HTTP/1.x, HTTP/2 streams and pushes, the transport seam akio-h3 uses),
 child of an incoming `traceparent`; enters it for the service call; renames it
 `"<method> <route>"` when the router matches; ends it in the response path (`Finish::apply`,
 which also runs for detached and streamed responses) with the status code and an error status
-for 5xx. The check is `only_log::span::enabled(Level::Info)`, inline, with the work in a cold
-function. Connection spans (`only_http::connection`, `debug`) cover HTTP/1.x/HTTP/2 sessions and
-HTTP/3 connections (`only_http::trace::connection_span`, used by only-h3). New public items:
+for 5xx. The check is `akio_log::span::enabled(Level::Info)`, inline, with the work in a cold
+function. Connection spans (`akio_http::connection`, `debug`) cover HTTP/1.x/HTTP/2 sessions and
+HTTP/3 connections (`akio_http::trace::connection_span`, used by akio-h3). New public items:
 `Context::route`, `Context::span_context`, `RouteInfo`, `trace::{REQUEST_TARGET,
 CONNECTION_TARGET, connection_span}`.
 
@@ -64,7 +64,7 @@ fixed open-addressing table filled lock-free with compare-and-swap; slot counter
 classes, latency histogram) are sharded like the existing totals. Labels are the pattern, never
 the path; routes past `n` share `route="other"`, unmatched requests are `route="unmatched"`.
 `HttpMetrics::new()` is unchanged: no table, one predictable branch. `route_snapshot()` and two
-new families (`only_http_route_requests_total`, `only_http_route_request_duration_seconds`).
+new families (`akio_http_route_requests_total`, `akio_http_route_request_duration_seconds`).
 
 ### HTTP/2 gauges
 
@@ -73,13 +73,13 @@ new families (`only_http_route_requests_total`, `only_http_route_request_duratio
 `RST_STREAM` and `GOAWAY` frames each way. A connection's still-open streams are counted closed
 when it closes, once (on close or when the core drops).
 
-### Push export: a new crate, `only-export`
+### Push export: a new crate, `akio-export`
 
-Dependencies: only-core, only-log, only-protobuf (all in-house). One thread (`only-export`):
+Dependencies: akio-core, akio-log, akio-protobuf (all in-house). One thread (`akio-export`):
 
 - metrics every interval: `Telemetry::collect_all()` (new, with `Metrics::collect_into`: the
   engine's series as `Families`, identical to the Prometheus rendering) plus extra collectors;
-- OTLP/HTTP, protobuf (hand-encoded with only-protobuf's wire primitives) or JSON, from one
+- OTLP/HTTP, protobuf (hand-encoded with akio-protobuf's wire primitives) or JSON, from one
   message tree; counters as cumulative monotonic sums, gauges, explicit-bucket histograms; spans
   grouped by target into scopes;
 - StatsD and DogStatsD over UDP: counter deltas against a bounded table of last values, gauges,
@@ -88,14 +88,14 @@ Dependencies: only-core, only-log, only-protobuf (all in-house). One thread (`on
   by a total (default 4096); past it spans are dropped and counted. Batches go out every
   `span_interval` or when one is full (a `try_send` wake-up, never a wait).
 
-A separate crate keeps only-protobuf and the client code out of programs that do not export, and
-out of only-core. OTLP over gRPC is not offered: HTTP/protobuf is accepted by every collector and
+A separate crate keeps akio-protobuf and the client code out of programs that do not export, and
+out of akio-core. OTLP over gRPC is not offered: HTTP/protobuf is accepted by every collector and
 needs no HTTP/2 client on a background thread. TLS to the collector is not offered: the client is
 plain HTTP/1.1 over `std::net`, meant for a local collector or agent.
 
 ## Alternatives considered
 
-- **An optional `tracing` feature in only-log** (outside semver, as the `log` bridge is):
+- **An optional `tracing` feature in akio-log** (outside semver, as the `log` bridge is):
   rejected for the callsite reasons above; can be revisited if users ask, as its own crate.
 - **Spans sharing the log level**: rejected; an application raising logs to `info` would start
   paying for request spans.
@@ -103,12 +103,12 @@ plain HTTP/1.1 over `std::net`, meant for a local collector or agent.
   request; the router already knows the pattern.
 - **A mutex-protected route map**: a global lock per request (rule 12).
 - **Exporting from the I/O threads, or retrying failed pushes**: blocking and unbounded memory.
-- **Putting the exporter in only-core or only-http**: every server would link the protobuf
+- **Putting the exporter in akio-core or akio-http**: every server would link the protobuf
   runtime and the client.
 
 ## Consequences
 
-- Additive public API in only-log, only-core, only-http (`H2Config` gains a field; it is
+- Additive public API in akio-log, akio-core, akio-http (`H2Config` gains a field; it is
   `#[non_exhaustive]`, so only struct literals inside the crate change) and a new crate.
 - With everything off, the request path adds one atomic load (spans), one pointer store
   (route) and two well-predicted branches: no measurable change (docs/BENCHMARKS.md,

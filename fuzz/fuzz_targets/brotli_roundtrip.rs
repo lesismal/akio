@@ -1,9 +1,9 @@
 #![no_main]
-//! only-brotli compress -> decompress round trips at every level, and `brotli-decompressor`
+//! akio-brotli compress -> decompress round trips at every level, and `brotli-decompressor`
 //! (a port of Google's decoder) decodes the same output.
 
 use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
-use only_brotli::{Level, compress, fuzzing};
+use akio_brotli::{Level, compress, fuzzing};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     fuzzing::roundtrip(data);

@@ -1,0 +1,167 @@
+pub mod akio_zstd
+#[non_exhaustive] pub enum akio_zstd::Error
+pub akio_zstd::Error::BadBlock
+pub akio_zstd::Error::BadDictionary
+pub akio_zstd::Error::BadFrameHeader
+pub akio_zstd::Error::BadFseTable
+pub akio_zstd::Error::BadHuffmanStream
+pub akio_zstd::Error::BadHuffmanTable
+pub akio_zstd::Error::BadLiterals
+pub akio_zstd::Error::BadMagic
+pub akio_zstd::Error::BadOffset
+pub akio_zstd::Error::BadSequences
+pub akio_zstd::Error::ChecksumMismatch
+pub akio_zstd::Error::ContentSizeMismatch
+pub akio_zstd::Error::DictionaryRequired
+pub akio_zstd::Error::TooLarge
+pub akio_zstd::Error::Truncated
+pub akio_zstd::Error::WindowTooLarge
+pub akio_zstd::Error::WrongDictionary
+impl core::clone::Clone for akio_zstd::Error
+pub fn akio_zstd::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_zstd::Error
+impl core::cmp::PartialEq for akio_zstd::Error
+pub fn akio_zstd::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_zstd::Error
+impl core::fmt::Debug for akio_zstd::Error
+pub fn akio_zstd::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_zstd::Error
+pub fn akio_zstd::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_zstd::Error
+pub fn akio_zstd::Error::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_zstd::Error
+impl core::marker::StructuralPartialEq for akio_zstd::Error
+impl core::marker::Send for akio_zstd::Error
+impl core::marker::Sync for akio_zstd::Error
+impl core::marker::Unpin for akio_zstd::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Error
+#[non_exhaustive] pub enum akio_zstd::Flush
+pub akio_zstd::Flush::Finish
+pub akio_zstd::Flush::Flush
+pub akio_zstd::Flush::None
+impl core::clone::Clone for akio_zstd::Flush
+pub fn akio_zstd::Flush::clone(&self) -> Self
+impl core::cmp::Eq for akio_zstd::Flush
+impl core::cmp::PartialEq for akio_zstd::Flush
+pub fn akio_zstd::Flush::eq(&self, &Self) -> bool
+impl core::default::Default for akio_zstd::Flush
+pub fn akio_zstd::Flush::default() -> Self
+impl core::fmt::Debug for akio_zstd::Flush
+pub fn akio_zstd::Flush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_zstd::Flush
+pub fn akio_zstd::Flush::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_zstd::Flush
+impl core::marker::StructuralPartialEq for akio_zstd::Flush
+impl core::marker::Send for akio_zstd::Flush
+impl core::marker::Sync for akio_zstd::Flush
+impl core::marker::Unpin for akio_zstd::Flush
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Flush
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Flush
+pub struct akio_zstd::Compressor
+impl akio_zstd::Compressor
+pub fn akio_zstd::Compressor::compress(&mut self, &[u8], &mut alloc::vec::Vec<u8>, akio_zstd::Flush)
+pub fn akio_zstd::Compressor::is_finished(&self) -> bool
+pub fn akio_zstd::Compressor::new(akio_zstd::Level) -> akio_zstd::Compressor
+pub fn akio_zstd::Compressor::reset(&mut self)
+pub fn akio_zstd::Compressor::total_in(&self) -> u64
+pub fn akio_zstd::Compressor::window_log(self, u32) -> akio_zstd::Compressor
+pub fn akio_zstd::Compressor::with_dictionary(akio_zstd::Level, &akio_zstd::Dictionary) -> akio_zstd::Compressor
+impl core::fmt::Debug for akio_zstd::Compressor
+pub fn akio_zstd::Compressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_zstd::Compressor
+impl core::marker::Sync for akio_zstd::Compressor
+impl core::marker::Unpin for akio_zstd::Compressor
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Compressor
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Compressor
+pub struct akio_zstd::Decompressor
+impl akio_zstd::Decompressor
+pub fn akio_zstd::Decompressor::decompress(&mut self, &[u8], &mut [u8]) -> core::result::Result<akio_zstd::Progress, akio_zstd::Error>
+pub fn akio_zstd::Decompressor::decompress_vec(&mut self, &[u8], &mut alloc::vec::Vec<u8>, usize) -> core::result::Result<akio_zstd::Progress, akio_zstd::Error>
+pub fn akio_zstd::Decompressor::is_done(&self) -> bool
+pub fn akio_zstd::Decompressor::max_window(self, usize) -> akio_zstd::Decompressor
+pub fn akio_zstd::Decompressor::new() -> akio_zstd::Decompressor
+pub fn akio_zstd::Decompressor::reset(&mut self)
+pub fn akio_zstd::Decompressor::total_in(&self) -> u64
+pub fn akio_zstd::Decompressor::total_out(&self) -> u64
+pub fn akio_zstd::Decompressor::with_dictionary(&akio_zstd::Dictionary) -> akio_zstd::Decompressor
+impl core::default::Default for akio_zstd::Decompressor
+pub fn akio_zstd::Decompressor::default() -> Self
+impl core::fmt::Debug for akio_zstd::Decompressor
+pub fn akio_zstd::Decompressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_zstd::Decompressor
+impl core::marker::Sync for akio_zstd::Decompressor
+impl core::marker::Unpin for akio_zstd::Decompressor
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Decompressor
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Decompressor
+pub struct akio_zstd::Dictionary(_)
+impl akio_zstd::Dictionary
+pub fn akio_zstd::Dictionary::content(&self) -> &[u8]
+pub fn akio_zstd::Dictionary::id(&self) -> u32
+pub fn akio_zstd::Dictionary::is_trained(&self) -> bool
+pub fn akio_zstd::Dictionary::new(&[u8]) -> core::result::Result<akio_zstd::Dictionary, akio_zstd::Error>
+pub fn akio_zstd::Dictionary::raw(&[u8]) -> akio_zstd::Dictionary
+impl core::clone::Clone for akio_zstd::Dictionary
+pub fn akio_zstd::Dictionary::clone(&self) -> Self
+impl core::fmt::Debug for akio_zstd::Dictionary
+pub fn akio_zstd::Dictionary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_zstd::Dictionary
+impl core::marker::Sync for akio_zstd::Dictionary
+impl core::marker::Unpin for akio_zstd::Dictionary
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Dictionary
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Dictionary
+pub struct akio_zstd::Level(_)
+impl akio_zstd::Level
+pub const akio_zstd::Level::BEST: akio_zstd::Level
+pub const akio_zstd::Level::DEFAULT: akio_zstd::Level
+pub const akio_zstd::Level::FASTEST: akio_zstd::Level
+pub const fn akio_zstd::Level::get(self) -> u8
+pub const fn akio_zstd::Level::new(u32) -> akio_zstd::Level
+impl core::clone::Clone for akio_zstd::Level
+pub fn akio_zstd::Level::clone(&self) -> Self
+impl core::cmp::Eq for akio_zstd::Level
+impl core::cmp::Ord for akio_zstd::Level
+pub fn akio_zstd::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_zstd::Level
+pub fn akio_zstd::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_zstd::Level
+pub fn akio_zstd::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for akio_zstd::Level
+pub fn akio_zstd::Level::default() -> Self
+impl core::fmt::Debug for akio_zstd::Level
+pub fn akio_zstd::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_zstd::Level
+pub fn akio_zstd::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_zstd::Level
+impl core::marker::StructuralPartialEq for akio_zstd::Level
+impl core::marker::Send for akio_zstd::Level
+impl core::marker::Sync for akio_zstd::Level
+impl core::marker::Unpin for akio_zstd::Level
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Level
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Level
+#[non_exhaustive] pub struct akio_zstd::Progress
+pub akio_zstd::Progress::consumed: usize
+pub akio_zstd::Progress::done: bool
+pub akio_zstd::Progress::produced: usize
+impl core::clone::Clone for akio_zstd::Progress
+pub fn akio_zstd::Progress::clone(&self) -> Self
+impl core::cmp::Eq for akio_zstd::Progress
+impl core::cmp::PartialEq for akio_zstd::Progress
+pub fn akio_zstd::Progress::eq(&self, &Self) -> bool
+impl core::default::Default for akio_zstd::Progress
+pub fn akio_zstd::Progress::default() -> Self
+impl core::fmt::Debug for akio_zstd::Progress
+pub fn akio_zstd::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_zstd::Progress
+impl core::marker::StructuralPartialEq for akio_zstd::Progress
+impl core::marker::Send for akio_zstd::Progress
+impl core::marker::Sync for akio_zstd::Progress
+impl core::marker::Unpin for akio_zstd::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for akio_zstd::Progress
+impl core::panic::unwind_safe::UnwindSafe for akio_zstd::Progress
+pub const akio_zstd::DEFAULT_MAX_WINDOW: usize
+pub fn akio_zstd::compress(akio_zstd::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_zstd::compress_with_dictionary(akio_zstd::Level, &[u8], &akio_zstd::Dictionary) -> alloc::vec::Vec<u8>
+pub fn akio_zstd::decompress(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, akio_zstd::Error>
+pub fn akio_zstd::decompress_with_dictionary(&[u8], usize, &akio_zstd::Dictionary) -> core::result::Result<alloc::vec::Vec<u8>, akio_zstd::Error>
+pub fn akio_zstd::xxh64(&[u8], u64) -> u64

@@ -1,5 +1,5 @@
 #![no_main]
-//! only-brotli's decoder on arbitrary bytes: never panics, is deterministic with an exact
+//! akio-brotli's decoder on arbitrary bytes: never panics, is deterministic with an exact
 //! limit, and accepts exactly what `brotli-decompressor` (a port of Google's decoder) accepts
 //! as one complete stream with nothing after it, with the same output.
 //!
@@ -8,11 +8,11 @@
 //!
 //! One known difference has no verdict: a meta-block whose commands produce more bytes than its header
 //! declares is an error in Google's C decoder (`BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_2`) and
-//! in only-brotli (`BadBlockLength`), but brotli-decompressor 5 only notices it in the last
+//! in akio-brotli (`BadBlockLength`), but brotli-decompressor 5 only notices it in the last
 //! meta-block and accepts the overlong output otherwise; that case has no verdict.
 
 use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
-use only_brotli::{Error, decompress, fuzzing};
+use akio_brotli::{Error, decompress, fuzzing};
 
 /// `Some(output)` for a complete stream that uses all of `data`, `None` for a rejected one;
 /// `Err(())` when the output passes the limit (no verdict).
@@ -54,10 +54,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     };
     match (&ours, &theirs) {
         (Ok(a), Some(b)) => assert!(a == b, "outputs differ"),
-        (Ok(_), None) => panic!("only-brotli accepts what brotli-decompressor rejects"),
+        (Ok(_), None) => panic!("akio-brotli accepts what brotli-decompressor rejects"),
         (Err(Error::TooLarge), _) => {}
         (Err(Error::BadBlockLength), Some(_)) => {}
-        (Err(e), Some(_)) => panic!("brotli-decompressor accepts what only-brotli rejects ({e})"),
+        (Err(e), Some(_)) => panic!("brotli-decompressor accepts what akio-brotli rejects ({e})"),
         (Err(_), None) => {}
     }
 });

@@ -1,0 +1,24 @@
+[package]
+name = "akio-dtls"
+description = "akio internals: sans-io DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147) client and server with DTLS-SRTP (RFC 5764), connection IDs, PSKs, session resumption and fingerprint verification, on akio-crypto and akio-x509"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-dtls"
+keywords = ["dtls", "webrtc", "srtp", "sans-io", "tls"]
+categories = ["cryptography", "network-programming"]
+
+[dependencies]
+akio-crypto = { workspace = true }
+akio-x509 = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_dtls::fuzzing`); not a public API.
+fuzzing = []
+
+[lints]
+workspace = true

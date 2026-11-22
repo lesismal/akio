@@ -1,4 +1,4 @@
-# ADR-052: AES-f8 and SEED in SRTP, SEED in only-crypto
+# ADR-052: AES-f8 and SEED in SRTP, SEED in akio-crypto
 
 English | [简体中文](052-srtp-f8-seed.zh-CN.md)
 
@@ -6,7 +6,7 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-After ADR-040, the `only-srtp` README still listed two transforms as not implemented:
+After ADR-040, the `akio-srtp` README still listed two transforms as not implemented:
 
 - **AES-f8** (RFC 3711 §4.1.2), the optional RFC 3711 cipher from 3GPP (UMTS f8): an OFB variant
   whose IV is masked under a second key. SDP security descriptions name it
@@ -17,12 +17,12 @@ After ADR-040, the `only-srtp` README still listed two transforms as not impleme
   with keys derived by a SEED-CTR PRF.
 
 Neither has a DTLS-SRTP protection profile id, so WebRTC never negotiates them; they matter to
-SDES-keyed SIP/VoIP peers (SEED in Korean deployments). `only-crypto` had no SEED and no CCM.
+SDES-keyed SIP/VoIP peers (SEED in Korean deployments). `akio-crypto` had no SEED and no CCM.
 libsrtp, our usual cross-check reference, implements neither.
 
 ## Decision
 
-1. **SEED in `only-crypto`** (`only_crypto::seed`): `Seed` (RFC 4269; `new`, `from_slice`,
+1. **SEED in `akio-crypto`** (`akio_crypto::seed`): `Seed` (RFC 4269; `new`, `from_slice`,
    `encrypt_block`/`decrypt_block`, `encrypt_blocks`/`decrypt_blocks`, `apply_ctr` with a
    128-bit counter), `SeedGcm` (SP 800-38D: 96-bit nonces, 16-byte tags or truncated to 15-12, 8
    or 4 bytes; the portable constant-time GHASH of `gcm`; the tag is checked before anything is
@@ -88,7 +88,7 @@ libsrtp, our usual cross-check reference, implements neither.
    stream over AES-CM, SEED-CTR or f8. No new parsing, so no new fuzz target: `srtp_unprotect`
    and `srtp_features` iterate `Profile::ALL` and cover the five new profiles.
 
-6. **Not wired into negotiation.** `only-webrtc` keys SRTP through DTLS-SRTP, which has no ids for
+6. **Not wired into negotiation.** `akio-webrtc` keys SRTP through DTLS-SRTP, which has no ids for
    these suites, and does not implement SDP security descriptions (`a=crypto`). If SDES is ever
    added, `Profile::from_sdes_name` already maps the names; that is a follow-up, not part of this
    change.
@@ -120,7 +120,7 @@ libsrtp, our usual cross-check reference, implements neither.
 - **Speed** (gpu51, `quiet.sh`, CPU 2): per packet with 160 / 1200-byte payloads, protect:
   AES-f8 354 ns / 2.26 µs (AES-128-CM in the same run 251 ns / 1.18 µs: f8's blocks are
   serial), SEED-CTR 3.6 / 18.3 µs (66 MB/s at 1200 bytes), SEED-GCM 3.9 / 20.4 µs, SEED-CCM
-  16.1 / 98 µs (12 MB/s); unprotect within 10 % of protect. `only-crypto` alone: SEED one block
+  16.1 / 98 µs (12 MB/s); unprotect within 10 % of protect. `akio-crypto` alone: SEED one block
   15.3 MB/s (about 1 µs), SEED-CTR 68.8 MB/s, SEED-GCM 61.3 MB/s, SEED-CCM 12.2 MB/s. Existing
   profiles against main aca9e988 (three alternating rounds, medians): AES-CM and 160-byte AES-GCM
   within ±1.6 %; 1200-byte AES-GCM at parity measured alone (protect 0.999, unprotect 1.012),
@@ -138,5 +138,5 @@ libsrtp, our usual cross-check reference, implements neither.
   them (their own tag length, not 16). Existing profiles behave exactly as before.
 - SEED is software-only and an order of magnitude slower than AES with instructions; SEED-CCM
   in particular, whose CBC-MAC runs one block at a time. Fine for SIP/VoIP rates, not for bulk.
-- `only-crypto` gains a second block cipher and its first CCM; the CCM code is generic and could
+- `akio-crypto` gains a second block cipher and its first CCM; the CCM code is generic and could
   serve AES-CCM if a protocol needs it.

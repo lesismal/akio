@@ -2,7 +2,7 @@
 
 [English](api-stability.md)
 
-本文说明 only 从 1.0.0 起的承诺：哪些 crate 和条目受[语义化版本](https://semver.org/lang/zh-CN/)
+本文说明 akio 从 1.0.0 起的承诺：哪些 crate 和条目受[语义化版本](https://semver.org/lang/zh-CN/)
 约束、什么算破坏性变更、最低支持的 Rust 版本（MSRV）如何调整，以及各平台的支持级别。弃用流程见
 [deprecation.zh-CN.md](deprecation.zh-CN.md)；变更历史见 [CHANGELOG.zh-CN.md](../CHANGELOG.zh-CN.md)。
 
@@ -24,9 +24,9 @@
 
 | 级别 | Crate | 承诺 |
 |---|---|---|
-| 公开 | `only`、`only-core`、`only-log`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-ebpf`、`only-prefork`、`only-turn`、`only-webrtc`、`only-media` | 其公开 API（见下）完整遵循 semver。 |
-| 内部 | `only-sys`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-uring`、`only-crypto`、`only-x509`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-deflate`、`only-brotli`、`only-zstd`、`only-regex` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `only` / `only-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `only-core` 和 `only` 中的再导出受到保护。 |
-| 实验性 | `only-dpdk`，以及 `only` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`only::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/only-dpdk.txt` 只用于让变化可见。 |
+| 公开 | `akio`、`akio-core`、`akio-log`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-ebpf`、`akio-prefork`、`akio-turn`、`akio-webrtc`、`akio-media` | 其公开 API（见下）完整遵循 semver。 |
+| 内部 | `akio-sys`、`akio-buf`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-uring`、`akio-crypto`、`akio-x509`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-deflate`、`akio-brotli`、`akio-zstd`、`akio-regex` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `akio` / `akio-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `akio-core` 和 `akio` 中的再导出受到保护。 |
+| 实验性 | `akio-dpdk`，以及 `akio` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`akio::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/akio-dpdk.txt` 只用于让变化可见。 |
 
 `tools/` 与 `fuzz/` 不发布。
 
@@ -39,22 +39,22 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
 
 - 标记为 `#[doc(hidden)]` 的条目以及只能经由它们访问的一切。这些是 workspace 内各 crate 共享的、
   面向后端的管道代码（`ConnInner`、`LoopLink`、`Group`、`DynAcceptor`、`DynHandler`、`LoopStats`、
-  `Pool`、`only_http::transport`、`only_ws::WsSession`、`only_ebpf::cbpf`、`Conn::inner`、
+  `Pool`、`akio_http::transport`、`akio_ws::WsSession`、`akio_ebpf::cbpf`、`Conn::inner`、
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
-- `unstable` cargo feature（`only`、`only-tls`、`only-quic`、`only-webrtc`）及其启用的一切：
-  only-tls 改用自研 TLS（DEV-PLAN 第 C 波）、only-quic 改用自研 QUIC 且 only-webrtc 改用自研 WebRTC
+- `unstable` cargo feature（`akio`、`akio-tls`、`akio-quic`、`akio-webrtc`）及其启用的一切：
+  akio-tls 改用自研 TLS（DEV-PLAN 第 C 波）、akio-quic 改用自研 QUIC 且 akio-webrtc 改用自研 WebRTC
   协议栈（第 D 波）之后，它们的 `unstable` feature 不再启用任何东西：保留为空的预留 feature，以便
-  `only/unstable` 照常编译；`only::tls::rustls`、`from_rustls`、`as_rustls`、`only_quic::proto`、
-  `from_quinn`、`as_quinn_mut`、`only_webrtc::str0m`、`crypto_provider_str0m`、`Peer::with_rtc`、
+  `akio/unstable` 照常编译；`akio::tls::rustls`、`from_rustls`、`as_rustls`、`akio_quic::proto`、
+  `from_quinn`、`as_quinn_mut`、`akio_webrtc::str0m`、`crypto_provider_str0m`、`Peer::with_rtc`、
   `RtcConfig::with_str0m` 与 `OtherEvent::as_str0m` 已移除。被封装的 crate 升级时它们的签名就会变化，
   这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
   绝不悄悄进入受保护的 API。
-- `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`；已弃用，推荐改用
-  `only-protobuf`，其生成的消息直接实现该 trait）：它用到 prost 的类型，
+- `akio-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`；已弃用，推荐改用
+  `akio-protobuf`，其生成的消息直接实现该 trait）：它用到 prost 的类型，
   因此 prost 升级可能出现在次版本中。
-- `log` cargo feature（`only`、`only-core`、`only-log`）：到 `log` crate 的桥接
-  （`only_log::bridge`、级别类型之间的 `From` 转换、把记录转发给 `log` 的 logger）。它用到
+- `log` cargo feature（`akio`、`akio-core`、`akio-log`）：到 `log` crate 的桥接
+  （`akio_log::bridge`、级别类型之间的 `From` 转换、把记录转发给 `log` 的 logger）。它用到
   `log` 的类型并跟随 `log` 0.4；次版本可能升级 `log`。桥接的行为见手册的可观测性一章。
 - `Display` 输出、日志消息和 panic 消息的具体文本。
 - 文档中注明未指定的行为，以及性能特征。
@@ -66,20 +66,20 @@ WebSocket、arpc、gRPC、KCP、SOCKS 保持互通），Prometheus 指标的名�
 ### 公开依赖
 
 受保护的 API 不使用任何其他 crate 的类型。QUIC API 以前用 `bytes` crate 的 `Bytes` 承载流与数据报
-负载，only-quic 改用自研 QUIC（DEV-PLAN 第 D 波）时换成了形状相同的 `only_quic::Bytes`（引用计数，
+负载，akio-quic 改用自研 QUIC（DEV-PLAN 第 D 波）时换成了形状相同的 `akio_quic::Bytes`（引用计数，
 `slice`、`split_to`、`from_static`、`From<Vec<u8>>` 等；见 CHANGELOG 的迁移说明）。日志使用工作区
-自己的门面 `only-log`（`only::log`，`Config::log_level: Option<only::log::LevelFilter>`）；只有
+自己的门面 `akio-log`（`akio::log`，`Config::log_level: Option<akio::log::LevelFilter>`）；只有
 开启 `log` cargo feature 时才依赖 `log`，该 feature 不在承诺之内（见上）。可观测性一章列出的日志
-target（`only`、`only_http::access`、`only_webrtc`）和键名与指标名同等对待：次版本可新增，只在
+target（`akio`、`akio_http::access`、`akio_webrtc`）和键名与指标名同等对待：次版本可新增，只在
 主版本中改名或删除。
 
-TLS 由 `only-tls` 自己实现（基于 `only-crypto` 与 `only-x509`），不依赖任何第三方 crate；QUIC 也由
-`only-quic` 自己实现（基于 `only-tls` 与 `only-crypto`），WebRTC 也是如此（第 D 波）：`only-webrtc`
-运行在内部的 `only-ice`、`only-dtls`、`only-srtp`、`only-rtp` 与 `only-sctp` 之上，它们的类型都不出现在
+TLS 由 `akio-tls` 自己实现（基于 `akio-crypto` 与 `akio-x509`），不依赖任何第三方 crate；QUIC 也由
+`akio-quic` 自己实现（基于 `akio-tls` 与 `akio-crypto`），WebRTC 也是如此（第 D 波）：`akio-webrtc`
+运行在内部的 `akio-ice`、`akio-dtls`、`akio-srtp`、`akio-rtp` 与 `akio-sctp` 之上，它们的类型都不出现在
 其 API 中。仍承担协议工作的 1.0 之前的依赖（prost）都已**被封装**：受保护的 API
-改用 only 自己的类型（`only::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
-RootCerts, Error}`、`only_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
-Side, ConnectionError, ConnectionStats}`、`only_grpc::codec::Message`）。升级它们，或用自研实现替换
+改用 akio 自己的类型（`akio::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
+RootCerts, Error}`、`akio_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
+Side, ConnectionError, ConnectionStats}`、`akio_grpc::codec::Message`）。升级它们，或用自研实现替换
 它们，都不是破坏性变更。只有通过上面的 `unstable` feature 与 `prost` feature 才能访问它们，而这些
 feature 不在承诺之内。
 
@@ -117,7 +117,7 @@ feature 不在承诺之内。
   `Default::default()`（或 `KcpConfig::fast()` 这样的预设）开始，再给字段赋值：
 
   ```rust
-  let mut cfg = only::Config::default();
+  let mut cfg = akio::Config::default();
   cfg.idle_timeout = Some(std::time::Duration::from_secs(30));
   ```
 
@@ -125,7 +125,7 @@ feature 不在承诺之内。
   字段而不是构建器方法：设置一个值只有一种方式，`Debug` 输出可读，API 不会翻倍，字段文档就在
   字段旁边。`*Config` 表示服务器、engine 或协议实例的设置；`*Options` 表示单次操作（一次 dial、
   一次调用、一次升级）的参数。
-- 由 only 填写、用户读取的**报告结构体**（`Metrics`、`LoopCounters`、`ConnInfo`、`SlowRecord`、
+- 由 akio 填写、用户读取的**报告结构体**（`Metrics`、`LoopCounters`、`ConnInfo`、`SlowRecord`、
   `PoolStats`、`UdpStats`、`TlsInfo`、`ClientResponse`、`Stats` 等）以及消息类型 `Request` /
   `Response` 都是 `#[non_exhaustive]`；用构造函数创建消息（`Request::new`、`Response::new`、
   `ClientRequest::new`、`FileBody::new`）。
@@ -138,7 +138,7 @@ feature 不在承诺之内。
   方法都带 `#[must_use]`（clippy `return_self_not_must_use`）。
 - **Trait**：用户实现的 trait（`Handler`、`Acceptor`、`Transport`、`Service`、`Middleware`、
   `WsHandler`、`RawHandler`、`QuicHandler`、`KcpHandler`）只会增加带默认实现的方法。用户只应调用
-  而不应实现的 trait 会被密封（私有 supertrait），从而可以随意增加方法；only 1.0 中没有这样的
+  而不应实现的 trait 会被密封（私有 supertrait），从而可以随意增加方法；akio 1.0 中没有这样的
   trait，面向后端的 trait 改为 `#[doc(hidden)]`。
 - **命名**：`dial` 以非阻塞方式发起客户端连接（回调，或稍后就绪的句柄）；`dial_blocking` 等到
   连接建立；`serve` / `serve_with(cfg, service)` 构造服务端 acceptor；字节数上限以 `_bytes` 结尾；
@@ -157,7 +157,7 @@ feature 不在承诺之内。
 |---|---|---|
 | 1 | Linux x86_64 与 aarch64（glibc）：任何受支持内核上的 epoll 后端；5.19+ 上的 io_uring 后端；UDP GSO/GRO、`sendmmsg`/`recvmmsg`；BPF 分流（经典 BPF 无需特权，eBPF 需要 `CAP_BPF`）；6.15+ 上的 sockmap relay（或 `Relay::new_any_kernel`） | 每次提交都构建并完整测试（两种后端）；有基准测试；缺陷会阻塞发布。运行内核缺少的特性会被探测并回退（io_uring 回退到 epoll，eBPF 回退到经典 BPF 或不加速），除非设置了 `strict`。 |
 | 2 | macOS（aarch64、x86_64）：kqueue 后端 | 在 CI 中构建并测试；用于开发。未针对性能调优；仅 Linux 支持的特性（io_uring、BPF、UDP GSO/GRO）按文档返回 `Unsupported` 或回退。 |
-| 2 | 使用 musl 的 Linux x86_64 与 aarch64（`*-unknown-linux-musl`，如 Alpine）：与 glibc 相同的后端 | 已在 Alpine 容器中测试：`only_sys::ffi` 的布局与常量与 `libc` crate 的 musl 定义对比；两种架构上运行 only-sys 的测试；aarch64 上另外运行 only-core、only-epoll、only-uring、only-ebpf 与 `only` 的测试（epoll 与 io_uring）。musl 的 `struct cmsghdr` 按 4 字节对齐，内核（以及我们）的按 8 字节对齐；大小与偏移一致。没有基准测试；并非每个 crate 的测试都运行。 |
+| 2 | 使用 musl 的 Linux x86_64 与 aarch64（`*-unknown-linux-musl`，如 Alpine）：与 glibc 相同的后端 | 已在 Alpine 容器中测试：`akio_sys::ffi` 的布局与常量与 `libc` crate 的 musl 定义对比；两种架构上运行 akio-sys 的测试；aarch64 上另外运行 akio-core、akio-epoll、akio-uring、akio-ebpf 与 `akio` 的测试（epoll 与 io_uring）。musl 的 `struct cmsghdr` 按 4 字节对齐，内核（以及我们）的按 8 字节对齐；大小与偏移一致。没有基准测试；并非每个 crate 的测试都运行。 |
 | 3 | 其他 Unix 系统 | 可能可以编译；不测试。没有可用后端时 `Engine::build` 返回 `Unsupported`。 |
 | — | Windows | 2.0 之前不支持（没有 IOCP 后端）。 |
 

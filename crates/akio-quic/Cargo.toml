@@ -1,0 +1,35 @@
+[package]
+name = "akio-quic"
+description = "akio QUIC: QUIC v1 (RFC 9000/9001/9002) and datagrams (RFC 9221) in Rust over only UDP sockets, without third-party dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-quic"
+keywords = ["quic", "udp", "network", "http3"]
+categories = ["network-programming"]
+
+[dependencies]
+akio = { workspace = true }
+akio-buf = { workspace = true }
+akio-core = { workspace = true }
+akio-tls = { workspace = true }
+akio-crypto = { workspace = true }
+akio-x509 = { workspace = true, optional = true }
+
+[features]
+# Reserved (docs/api-stability.md): it used to expose the wrapped quinn-proto; the QUIC
+# implementation is now this crate's own and nothing sits behind it. Kept so `akio/unstable`
+# still builds.
+unstable = []
+# Fuzz entry points for `fuzz/` (`akio_quic::fuzzing`); not a public API.
+fuzzing = ["dep:akio-x509"]
+
+[dev-dependencies]
+akio-x509 = { workspace = true }
+
+[lints]
+workspace = true

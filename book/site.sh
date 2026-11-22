@@ -5,17 +5,17 @@
 #   <out>/404.html        site-wide "not found" page (the English book's 404; Chinese paths
 #                         are sent on to zh-CN/404.html)
 #   <out>/en/  <out>/zh-CN/   the two books, each with a language switch and an API link
-#   <out>/api/            rustdoc of every published crate (api/only/index.html, ...)
+#   <out>/api/            rustdoc of every published crate (api/akio/index.html, ...)
 #
-#   book/site.sh                     # base /only/ (lesismal.github.io/only), out target/site
+#   book/site.sh                     # base /akio/ (lesismal.github.io/akio), out target/site
 #   book/site.sh --base / --out DIR  # served at the root of a host instead
 #   book/site.sh --no-check          # skip check-includes and building the examples
 #   book/site.sh --no-api            # skip rustdoc (faster when working on the books)
 #
 # Then check every link, served over HTTP under the same base, in both languages:
 #
-#   python3 book/check-site.py target/site --base /only/
-#   python3 book/check-site.py target/site --base /only/ --serve 8000   # browse it
+#   python3 book/check-site.py target/site --base /akio/
+#   python3 book/check-site.py target/site --base /akio/ --serve 8000   # browse it
 #
 # Needs mdBook 0.4.x (`cargo install mdbook --locked --version 0.4.52`) and python3. Used by
 # .github/workflows/pages.yml, so what you check locally is what gets deployed.
@@ -23,7 +23,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-base=/only/
+base=/akio/
 out="$root/target/site"
 check=1
 api=1
@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     --out) out="$2"; shift 2 ;;
     --no-check) check=0; shift ;;
     --no-api) api=0; shift ;;
-    *) echo "usage: book/site.sh [--base /only/] [--out DIR] [--no-check] [--no-api]" >&2; exit 2 ;;
+    *) echo "usage: book/site.sh [--base /akio/] [--out DIR] [--no-check] [--no-api]" >&2; exit 2 ;;
   esac
 done
 [[ "$base" == /* && "$base" == */ ]] || { echo "--base must start and end with /" >&2; exit 2; }
@@ -69,9 +69,9 @@ for p in json.load(sys.stdin)["packages"]:
   cat >"$out/api/index.html" <<'EOF'
 <!doctype html>
 <meta charset="utf-8">
-<title>only API documentation</title>
-<meta http-equiv="refresh" content="0; url=only/index.html">
-<p><a href="only/index.html">only API documentation</a></p>
+<title>akio API documentation</title>
+<meta http-equiv="refresh" content="0; url=akio/index.html">
+<p><a href="akio/index.html">akio API documentation</a></p>
 EOF
 fi
 touch "$out/.nojekyll"

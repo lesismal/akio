@@ -1,0 +1,1141 @@
+pub mod akio_crypto
+pub mod akio_crypto::aes
+pub struct akio_crypto::aes::Aes(_)
+impl akio_crypto::aes::Aes
+pub fn akio_crypto::aes::Aes::apply_ctr(&self, &[u8; 16], &mut [u8])
+pub fn akio_crypto::aes::Aes::decrypt_block(&self, &mut [u8; 16])
+pub fn akio_crypto::aes::Aes::decrypt_blocks(&self, &mut [[u8; 16]])
+pub fn akio_crypto::aes::Aes::decrypt_cbc(&self, &mut [u8; 16], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::aes::Aes::decrypt_cbc_padded(&self, &[u8; 16], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::aes::Aes::encrypt_block(&self, &mut [u8; 16])
+pub fn akio_crypto::aes::Aes::encrypt_blocks(&self, &mut [[u8; 16]])
+pub fn akio_crypto::aes::Aes::encrypt_cbc(&self, &mut [u8; 16], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::aes::Aes::encrypt_cbc_padded(&self, &[u8; 16], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn akio_crypto::aes::Aes::key_len(&self) -> usize
+pub fn akio_crypto::aes::Aes::new(&[u8]) -> core::result::Result<akio_crypto::aes::Aes, akio_crypto::Error>
+pub fn akio_crypto::aes::Aes::new128(&[u8; 16]) -> akio_crypto::aes::Aes
+pub fn akio_crypto::aes::Aes::new192(&[u8; 24]) -> akio_crypto::aes::Aes
+pub fn akio_crypto::aes::Aes::new256(&[u8; 32]) -> akio_crypto::aes::Aes
+impl core::clone::Clone for akio_crypto::aes::Aes
+pub fn akio_crypto::aes::Aes::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::aes::Aes
+pub fn akio_crypto::aes::Aes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::aes::Aes
+impl core::marker::Sync for akio_crypto::aes::Aes
+impl core::marker::Unpin for akio_crypto::aes::Aes
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::aes::Aes
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::aes::Aes
+pub mod akio_crypto::base64
+#[non_exhaustive] pub enum akio_crypto::base64::DecodeError
+pub akio_crypto::base64::DecodeError::InvalidByte(usize, u8)
+pub akio_crypto::base64::DecodeError::InvalidLastSymbol(usize, u8)
+pub akio_crypto::base64::DecodeError::InvalidLength(usize)
+pub akio_crypto::base64::DecodeError::InvalidPadding
+impl core::clone::Clone for akio_crypto::base64::DecodeError
+pub fn akio_crypto::base64::DecodeError::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::base64::DecodeError
+impl core::cmp::PartialEq for akio_crypto::base64::DecodeError
+pub fn akio_crypto::base64::DecodeError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_crypto::base64::DecodeError
+impl core::fmt::Debug for akio_crypto::base64::DecodeError
+pub fn akio_crypto::base64::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_crypto::base64::DecodeError
+pub fn akio_crypto::base64::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_crypto::base64::DecodeError
+impl core::marker::StructuralPartialEq for akio_crypto::base64::DecodeError
+impl core::marker::Send for akio_crypto::base64::DecodeError
+impl core::marker::Sync for akio_crypto::base64::DecodeError
+impl core::marker::Unpin for akio_crypto::base64::DecodeError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::base64::DecodeError
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::base64::DecodeError
+pub struct akio_crypto::base64::Engine
+impl akio_crypto::base64::Engine
+pub fn akio_crypto::base64::Engine::decode(&self, impl core::convert::AsRef<[u8]>) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::base64::DecodeError>
+pub fn akio_crypto::base64::Engine::decode_to(&self, impl core::convert::AsRef<[u8]>, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_crypto::base64::DecodeError>
+pub fn akio_crypto::base64::Engine::encode(&self, impl core::convert::AsRef<[u8]>) -> alloc::string::String
+pub fn akio_crypto::base64::Engine::encode_to(&self, impl core::convert::AsRef<[u8]>, &mut alloc::string::String)
+pub const fn akio_crypto::base64::Engine::encoded_len(&self, usize) -> usize
+impl core::clone::Clone for akio_crypto::base64::Engine
+pub fn akio_crypto::base64::Engine::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::base64::Engine
+pub fn akio_crypto::base64::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_crypto::base64::Engine
+impl core::marker::Send for akio_crypto::base64::Engine
+impl core::marker::Sync for akio_crypto::base64::Engine
+impl core::marker::Unpin for akio_crypto::base64::Engine
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::base64::Engine
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::base64::Engine
+pub const akio_crypto::base64::STANDARD: akio_crypto::base64::Engine
+pub const akio_crypto::base64::STANDARD_NO_PAD: akio_crypto::base64::Engine
+pub const akio_crypto::base64::URL_SAFE: akio_crypto::base64::Engine
+pub const akio_crypto::base64::URL_SAFE_NO_PAD: akio_crypto::base64::Engine
+pub mod akio_crypto::chacha
+pub struct akio_crypto::chacha::ChaCha20
+impl akio_crypto::chacha::ChaCha20
+pub fn akio_crypto::chacha::ChaCha20::apply_keystream(&mut self, &mut [u8])
+pub fn akio_crypto::chacha::ChaCha20::new(&[u8; 32], &[u8; 12], u32) -> Self
+impl core::clone::Clone for akio_crypto::chacha::ChaCha20
+pub fn akio_crypto::chacha::ChaCha20::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::chacha::ChaCha20
+pub fn akio_crypto::chacha::ChaCha20::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::chacha::ChaCha20
+impl core::marker::Sync for akio_crypto::chacha::ChaCha20
+impl core::marker::Unpin for akio_crypto::chacha::ChaCha20
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::chacha::ChaCha20
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::chacha::ChaCha20
+pub struct akio_crypto::chacha::ChaCha20Poly1305
+impl akio_crypto::chacha::ChaCha20Poly1305
+pub fn akio_crypto::chacha::ChaCha20Poly1305::decrypt(&self, &[u8; 12], &[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::chacha::ChaCha20Poly1305::decrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::chacha::ChaCha20Poly1305::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::chacha::ChaCha20Poly1305::encrypt(&self, &[u8; 12], &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::chacha::ChaCha20Poly1305::encrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn akio_crypto::chacha::ChaCha20Poly1305::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn akio_crypto::chacha::ChaCha20Poly1305::new(&[u8; 32]) -> Self
+impl core::clone::Clone for akio_crypto::chacha::ChaCha20Poly1305
+pub fn akio_crypto::chacha::ChaCha20Poly1305::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::chacha::ChaCha20Poly1305
+pub fn akio_crypto::chacha::ChaCha20Poly1305::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::chacha::ChaCha20Poly1305
+impl core::marker::Sync for akio_crypto::chacha::ChaCha20Poly1305
+impl core::marker::Unpin for akio_crypto::chacha::ChaCha20Poly1305
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::chacha::ChaCha20Poly1305
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::chacha::ChaCha20Poly1305
+pub struct akio_crypto::chacha::Poly1305
+impl akio_crypto::chacha::Poly1305
+pub fn akio_crypto::chacha::Poly1305::finalize(self) -> [u8; 16]
+pub fn akio_crypto::chacha::Poly1305::mac(&[u8; 32], &[u8]) -> [u8; 16]
+pub fn akio_crypto::chacha::Poly1305::new(&[u8; 32]) -> Self
+pub fn akio_crypto::chacha::Poly1305::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::chacha::Poly1305
+pub fn akio_crypto::chacha::Poly1305::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::chacha::Poly1305
+pub fn akio_crypto::chacha::Poly1305::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::chacha::Poly1305
+impl core::marker::Sync for akio_crypto::chacha::Poly1305
+impl core::marker::Unpin for akio_crypto::chacha::Poly1305
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::chacha::Poly1305
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::chacha::Poly1305
+pub const akio_crypto::chacha::KEY_LEN: usize
+pub const akio_crypto::chacha::NONCE_LEN: usize
+pub const akio_crypto::chacha::TAG_LEN: usize
+pub mod akio_crypto::crc
+pub struct akio_crypto::crc::Crc32
+impl akio_crypto::crc::Crc32
+pub fn akio_crypto::crc::Crc32::finalize(&self) -> u32
+pub const fn akio_crypto::crc::Crc32::new() -> Self
+pub fn akio_crypto::crc::Crc32::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::crc::Crc32
+pub fn akio_crypto::crc::Crc32::clone(&self) -> Self
+impl core::default::Default for akio_crypto::crc::Crc32
+pub fn akio_crypto::crc::Crc32::default() -> Self
+impl core::fmt::Debug for akio_crypto::crc::Crc32
+pub fn akio_crypto::crc::Crc32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::crc::Crc32
+impl core::marker::Sync for akio_crypto::crc::Crc32
+impl core::marker::Unpin for akio_crypto::crc::Crc32
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::crc::Crc32
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::crc::Crc32
+pub struct akio_crypto::crc::Crc32c
+impl akio_crypto::crc::Crc32c
+pub fn akio_crypto::crc::Crc32c::finalize(&self) -> u32
+pub const fn akio_crypto::crc::Crc32c::new() -> Self
+pub fn akio_crypto::crc::Crc32c::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::crc::Crc32c
+pub fn akio_crypto::crc::Crc32c::clone(&self) -> Self
+impl core::default::Default for akio_crypto::crc::Crc32c
+pub fn akio_crypto::crc::Crc32c::default() -> Self
+impl core::fmt::Debug for akio_crypto::crc::Crc32c
+pub fn akio_crypto::crc::Crc32c::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::crc::Crc32c
+impl core::marker::Sync for akio_crypto::crc::Crc32c
+impl core::marker::Unpin for akio_crypto::crc::Crc32c
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::crc::Crc32c
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::crc::Crc32c
+pub fn akio_crypto::crc::crc32(&[u8]) -> u32
+pub fn akio_crypto::crc::crc32c(&[u8]) -> u32
+pub mod akio_crypto::der
+pub mod akio_crypto::der::oid
+pub const akio_crypto::der::oid::DSA: &[u8]
+pub const akio_crypto::der::oid::DSA_WITH_SHA1: &[u8]
+pub const akio_crypto::der::oid::DSA_WITH_SHA224: &[u8]
+pub const akio_crypto::der::oid::DSA_WITH_SHA256: &[u8]
+pub const akio_crypto::der::oid::ECDSA_WITH_SHA256: &[u8]
+pub const akio_crypto::der::oid::ECDSA_WITH_SHA384: &[u8]
+pub const akio_crypto::der::oid::ECDSA_WITH_SHA512: &[u8]
+pub const akio_crypto::der::oid::EC_PUBLIC_KEY: &[u8]
+pub const akio_crypto::der::oid::ED25519: &[u8]
+pub const akio_crypto::der::oid::ED448: &[u8]
+pub const akio_crypto::der::oid::MGF1: &[u8]
+pub const akio_crypto::der::oid::RSASSA_PSS: &[u8]
+pub const akio_crypto::der::oid::RSA_ENCRYPTION: &[u8]
+pub const akio_crypto::der::oid::SECP256R1: &[u8]
+pub const akio_crypto::der::oid::SECP384R1: &[u8]
+pub const akio_crypto::der::oid::SECP521R1: &[u8]
+pub const akio_crypto::der::oid::SHA1: &[u8]
+pub const akio_crypto::der::oid::SHA1_WITH_RSA: &[u8]
+pub const akio_crypto::der::oid::SHA256: &[u8]
+pub const akio_crypto::der::oid::SHA256_WITH_RSA: &[u8]
+pub const akio_crypto::der::oid::SHA384: &[u8]
+pub const akio_crypto::der::oid::SHA384_WITH_RSA: &[u8]
+pub const akio_crypto::der::oid::SHA512: &[u8]
+pub const akio_crypto::der::oid::SHA512_WITH_RSA: &[u8]
+pub const akio_crypto::der::oid::X25519: &[u8]
+pub const akio_crypto::der::oid::X448: &[u8]
+pub fn akio_crypto::der::oid::to_string(&[u8]) -> core::option::Option<alloc::string::String>
+pub mod akio_crypto::der::tag
+pub const akio_crypto::der::tag::BIT_STRING: u8
+pub const akio_crypto::der::tag::BMP_STRING: u8
+pub const akio_crypto::der::tag::BOOLEAN: u8
+pub const akio_crypto::der::tag::GENERALIZED_TIME: u8
+pub const akio_crypto::der::tag::IA5_STRING: u8
+pub const akio_crypto::der::tag::INTEGER: u8
+pub const akio_crypto::der::tag::NULL: u8
+pub const akio_crypto::der::tag::OCTET_STRING: u8
+pub const akio_crypto::der::tag::OID: u8
+pub const akio_crypto::der::tag::PRINTABLE_STRING: u8
+pub const akio_crypto::der::tag::SEQUENCE: u8
+pub const akio_crypto::der::tag::SET: u8
+pub const akio_crypto::der::tag::TELETEX_STRING: u8
+pub const akio_crypto::der::tag::UNIVERSAL_STRING: u8
+pub const akio_crypto::der::tag::UTC_TIME: u8
+pub const akio_crypto::der::tag::UTF8_STRING: u8
+pub const fn akio_crypto::der::tag::explicit(u8) -> u8
+pub const fn akio_crypto::der::tag::implicit(u8) -> u8
+pub struct akio_crypto::der::Reader<'a>
+impl<'a> akio_crypto::der::Reader<'a>
+pub fn akio_crypto::der::Reader<'a>::constructed(&mut self, u8) -> core::result::Result<akio_crypto::der::Reader<'a>, akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::finish(self) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::is_empty(&self) -> bool
+pub fn akio_crypto::der::Reader<'a>::new(&'a [u8]) -> akio_crypto::der::Reader<'a>
+pub fn akio_crypto::der::Reader<'a>::peek_tag(&self) -> core::option::Option<u8>
+pub fn akio_crypto::der::Reader<'a>::read(&mut self, u8) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_bit_string(&mut self) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_bit_string_bits(&mut self) -> core::result::Result<(u8, &'a [u8]), akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_bool(&mut self) -> core::result::Result<bool, akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_element(&mut self, u8) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_integer(&mut self) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_null(&mut self) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_octet_string(&mut self) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_oid(&mut self) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_optional(&mut self, u8) -> core::result::Result<core::option::Option<&'a [u8]>, akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_small_uint(&mut self) -> core::result::Result<u64, akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_tlv(&mut self) -> core::result::Result<(u8, &'a [u8], &'a [u8]), akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::read_uint(&mut self) -> core::result::Result<&'a [u8], akio_crypto::Error>
+pub fn akio_crypto::der::Reader<'a>::remaining(&self) -> &'a [u8]
+pub fn akio_crypto::der::Reader<'a>::sequence(&mut self) -> core::result::Result<akio_crypto::der::Reader<'a>, akio_crypto::Error>
+impl<'a> core::clone::Clone for akio_crypto::der::Reader<'a>
+pub fn akio_crypto::der::Reader<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_crypto::der::Reader<'a>
+pub fn akio_crypto::der::Reader<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_crypto::der::Reader<'a>
+impl<'a> core::marker::Sync for akio_crypto::der::Reader<'a>
+impl<'a> core::marker::Unpin for akio_crypto::der::Reader<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_crypto::der::Reader<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_crypto::der::Reader<'a>
+pub struct akio_crypto::der::Writer
+impl akio_crypto::der::Writer
+pub fn akio_crypto::der::Writer::as_bytes(&self) -> &[u8]
+pub fn akio_crypto::der::Writer::bit_string(&mut self, &[u8])
+pub fn akio_crypto::der::Writer::bit_string_bits(&mut self, &[u8], usize)
+pub fn akio_crypto::der::Writer::bool(&mut self, bool)
+pub fn akio_crypto::der::Writer::into_vec(self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::der::Writer::nested(&mut self, u8, impl core::ops::function::FnOnce(&mut akio_crypto::der::Writer))
+pub fn akio_crypto::der::Writer::new() -> akio_crypto::der::Writer
+pub fn akio_crypto::der::Writer::null(&mut self)
+pub fn akio_crypto::der::Writer::octet_string(&mut self, &[u8])
+pub fn akio_crypto::der::Writer::oid(&mut self, &[u8])
+pub fn akio_crypto::der::Writer::raw(&mut self, &[u8])
+pub fn akio_crypto::der::Writer::sequence(&mut self, impl core::ops::function::FnOnce(&mut akio_crypto::der::Writer))
+pub fn akio_crypto::der::Writer::small_uint(&mut self, u64)
+pub fn akio_crypto::der::Writer::tlv(&mut self, u8, &[u8])
+pub fn akio_crypto::der::Writer::uint(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::der::Writer
+pub fn akio_crypto::der::Writer::clone(&self) -> Self
+impl core::default::Default for akio_crypto::der::Writer
+pub fn akio_crypto::der::Writer::default() -> Self
+impl core::fmt::Debug for akio_crypto::der::Writer
+pub fn akio_crypto::der::Writer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::der::Writer
+impl core::marker::Sync for akio_crypto::der::Writer
+impl core::marker::Unpin for akio_crypto::der::Writer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::der::Writer
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::der::Writer
+pub mod akio_crypto::dsa
+pub struct akio_crypto::dsa::PublicKey
+impl akio_crypto::dsa::PublicKey
+pub fn akio_crypto::dsa::PublicKey::from_components(&[u8], &[u8], &[u8], &[u8]) -> core::result::Result<akio_crypto::dsa::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::dsa::PublicKey::from_der(&[u8], &[u8]) -> core::result::Result<akio_crypto::dsa::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::dsa::PublicKey::key_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::dsa::PublicKey::p_bits(&self) -> usize
+pub fn akio_crypto::dsa::PublicKey::params_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::dsa::PublicKey::q_bits(&self) -> usize
+pub fn akio_crypto::dsa::PublicKey::verify(&self, akio_crypto::rsa::HashAlg, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::dsa::PublicKey::verify_prehash(&self, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::dsa::PublicKey
+pub fn akio_crypto::dsa::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::dsa::PublicKey
+impl core::cmp::PartialEq for akio_crypto::dsa::PublicKey
+pub fn akio_crypto::dsa::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::dsa::PublicKey
+pub fn akio_crypto::dsa::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::dsa::PublicKey
+impl core::marker::Sync for akio_crypto::dsa::PublicKey
+impl core::marker::Unpin for akio_crypto::dsa::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::dsa::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::dsa::PublicKey
+pub mod akio_crypto::ed25519
+pub struct akio_crypto::ed25519::SigningKey
+impl akio_crypto::ed25519::SigningKey
+pub fn akio_crypto::ed25519::SigningKey::from_seed(&[u8; 32]) -> akio_crypto::ed25519::SigningKey
+pub fn akio_crypto::ed25519::SigningKey::generate() -> core::result::Result<akio_crypto::ed25519::SigningKey, akio_crypto::Error>
+pub fn akio_crypto::ed25519::SigningKey::seed(&self) -> &[u8; 32]
+pub fn akio_crypto::ed25519::SigningKey::sign(&self, &[u8]) -> [u8; 64]
+pub fn akio_crypto::ed25519::SigningKey::verifying_key(&self) -> akio_crypto::ed25519::VerifyingKey
+impl core::clone::Clone for akio_crypto::ed25519::SigningKey
+pub fn akio_crypto::ed25519::SigningKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::ed25519::SigningKey
+pub fn akio_crypto::ed25519::SigningKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::ed25519::SigningKey
+impl core::marker::Sync for akio_crypto::ed25519::SigningKey
+impl core::marker::Unpin for akio_crypto::ed25519::SigningKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::ed25519::SigningKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::ed25519::SigningKey
+pub struct akio_crypto::ed25519::VerifyingKey
+impl akio_crypto::ed25519::VerifyingKey
+pub fn akio_crypto::ed25519::VerifyingKey::as_bytes(&self) -> &[u8; 32]
+pub fn akio_crypto::ed25519::VerifyingKey::from_bytes(&[u8]) -> core::result::Result<akio_crypto::ed25519::VerifyingKey, akio_crypto::Error>
+pub fn akio_crypto::ed25519::VerifyingKey::is_weak(&self) -> bool
+pub fn akio_crypto::ed25519::VerifyingKey::verify(&self, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::ed25519::VerifyingKey
+pub fn akio_crypto::ed25519::VerifyingKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::ed25519::VerifyingKey
+impl core::cmp::PartialEq for akio_crypto::ed25519::VerifyingKey
+pub fn akio_crypto::ed25519::VerifyingKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::ed25519::VerifyingKey
+pub fn akio_crypto::ed25519::VerifyingKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::ed25519::VerifyingKey
+impl core::marker::Sync for akio_crypto::ed25519::VerifyingKey
+impl core::marker::Unpin for akio_crypto::ed25519::VerifyingKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::ed25519::VerifyingKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::ed25519::VerifyingKey
+pub const akio_crypto::ed25519::SIGNATURE_LEN: usize
+pub mod akio_crypto::ed448
+pub struct akio_crypto::ed448::SigningKey
+impl akio_crypto::ed448::SigningKey
+pub fn akio_crypto::ed448::SigningKey::from_seed(&[u8; 57]) -> akio_crypto::ed448::SigningKey
+pub fn akio_crypto::ed448::SigningKey::generate() -> core::result::Result<akio_crypto::ed448::SigningKey, akio_crypto::Error>
+pub fn akio_crypto::ed448::SigningKey::seed(&self) -> &[u8; 57]
+pub fn akio_crypto::ed448::SigningKey::sign(&self, &[u8]) -> [u8; 114]
+pub fn akio_crypto::ed448::SigningKey::verifying_key(&self) -> akio_crypto::ed448::VerifyingKey
+impl core::clone::Clone for akio_crypto::ed448::SigningKey
+pub fn akio_crypto::ed448::SigningKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::ed448::SigningKey
+pub fn akio_crypto::ed448::SigningKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::ed448::SigningKey
+impl core::marker::Sync for akio_crypto::ed448::SigningKey
+impl core::marker::Unpin for akio_crypto::ed448::SigningKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::ed448::SigningKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::ed448::SigningKey
+pub struct akio_crypto::ed448::VerifyingKey
+impl akio_crypto::ed448::VerifyingKey
+pub fn akio_crypto::ed448::VerifyingKey::as_bytes(&self) -> &[u8; 57]
+pub fn akio_crypto::ed448::VerifyingKey::from_bytes(&[u8]) -> core::result::Result<akio_crypto::ed448::VerifyingKey, akio_crypto::Error>
+pub fn akio_crypto::ed448::VerifyingKey::is_weak(&self) -> bool
+pub fn akio_crypto::ed448::VerifyingKey::verify(&self, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::ed448::VerifyingKey
+pub fn akio_crypto::ed448::VerifyingKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::ed448::VerifyingKey
+impl core::cmp::PartialEq for akio_crypto::ed448::VerifyingKey
+pub fn akio_crypto::ed448::VerifyingKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::ed448::VerifyingKey
+pub fn akio_crypto::ed448::VerifyingKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::ed448::VerifyingKey
+impl core::marker::Sync for akio_crypto::ed448::VerifyingKey
+impl core::marker::Unpin for akio_crypto::ed448::VerifyingKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::ed448::VerifyingKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::ed448::VerifyingKey
+pub const akio_crypto::ed448::KEY_LEN: usize
+pub const akio_crypto::ed448::SIGNATURE_LEN: usize
+pub mod akio_crypto::gcm
+pub struct akio_crypto::gcm::AesGcm
+impl akio_crypto::gcm::AesGcm
+pub fn akio_crypto::gcm::AesGcm::decrypt(&self, &[u8; 12], &[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::gcm::AesGcm::decrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::gcm::AesGcm::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::gcm::AesGcm::encrypt(&self, &[u8; 12], &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::gcm::AesGcm::encrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn akio_crypto::gcm::AesGcm::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn akio_crypto::gcm::AesGcm::new(&[u8]) -> core::result::Result<akio_crypto::gcm::AesGcm, akio_crypto::Error>
+pub fn akio_crypto::gcm::AesGcm::with_cipher(akio_crypto::aes::Aes) -> akio_crypto::gcm::AesGcm
+impl core::clone::Clone for akio_crypto::gcm::AesGcm
+pub fn akio_crypto::gcm::AesGcm::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::gcm::AesGcm
+pub fn akio_crypto::gcm::AesGcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::gcm::AesGcm
+impl core::marker::Sync for akio_crypto::gcm::AesGcm
+impl core::marker::Unpin for akio_crypto::gcm::AesGcm
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::gcm::AesGcm
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::gcm::AesGcm
+pub const akio_crypto::gcm::NONCE_LEN: usize
+pub const akio_crypto::gcm::TAG_LEN: usize
+pub mod akio_crypto::hash
+pub struct akio_crypto::hash::Md5
+impl akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+impl akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub const fn akio_crypto::hash::Md5::new() -> Self
+pub fn akio_crypto::hash::Md5::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Md5
+pub fn akio_crypto::hash::Md5::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Md5
+pub type akio_crypto::hash::Md5::Output = [u8; 16]
+pub const akio_crypto::hash::Md5::BLOCK_LEN: usize
+pub const akio_crypto::hash::Md5::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+pub fn akio_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub fn akio_crypto::hash::Md5::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Md5
+impl core::marker::Sync for akio_crypto::hash::Md5
+impl core::marker::Unpin for akio_crypto::hash::Md5
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Md5
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Md5
+pub struct akio_crypto::hash::Sha1
+impl akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+impl akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub const fn akio_crypto::hash::Sha1::new() -> Self
+pub fn akio_crypto::hash::Sha1::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha1
+pub fn akio_crypto::hash::Sha1::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha1
+pub type akio_crypto::hash::Sha1::Output = [u8; 20]
+pub const akio_crypto::hash::Sha1::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha1::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+pub fn akio_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub fn akio_crypto::hash::Sha1::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Sha1
+impl core::marker::Sync for akio_crypto::hash::Sha1
+impl core::marker::Unpin for akio_crypto::hash::Sha1
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Sha1
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Sha1
+pub struct akio_crypto::hash::Sha224(_)
+impl akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+impl akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub const fn akio_crypto::hash::Sha224::new() -> Self
+pub fn akio_crypto::hash::Sha224::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha224
+pub fn akio_crypto::hash::Sha224::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha224
+pub type akio_crypto::hash::Sha224::Output = [u8; 28]
+pub const akio_crypto::hash::Sha224::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha224::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+pub fn akio_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub fn akio_crypto::hash::Sha224::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Sha224
+impl core::marker::Sync for akio_crypto::hash::Sha224
+impl core::marker::Unpin for akio_crypto::hash::Sha224
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Sha224
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Sha224
+pub struct akio_crypto::hash::Sha256(_)
+impl akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+impl akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub const fn akio_crypto::hash::Sha256::new() -> Self
+pub fn akio_crypto::hash::Sha256::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha256
+pub fn akio_crypto::hash::Sha256::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha256
+pub type akio_crypto::hash::Sha256::Output = [u8; 32]
+pub const akio_crypto::hash::Sha256::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha256::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+pub fn akio_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub fn akio_crypto::hash::Sha256::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Sha256
+impl core::marker::Sync for akio_crypto::hash::Sha256
+impl core::marker::Unpin for akio_crypto::hash::Sha256
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Sha256
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Sha256
+pub struct akio_crypto::hash::Sha384(_)
+impl akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+impl akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub const fn akio_crypto::hash::Sha384::new() -> Self
+pub fn akio_crypto::hash::Sha384::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha384
+pub fn akio_crypto::hash::Sha384::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha384
+pub type akio_crypto::hash::Sha384::Output = [u8; 48]
+pub const akio_crypto::hash::Sha384::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha384::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+pub fn akio_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub fn akio_crypto::hash::Sha384::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Sha384
+impl core::marker::Sync for akio_crypto::hash::Sha384
+impl core::marker::Unpin for akio_crypto::hash::Sha384
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Sha384
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Sha384
+pub struct akio_crypto::hash::Sha512(_)
+impl akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+impl akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub const fn akio_crypto::hash::Sha512::new() -> Self
+pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Sha512
+pub fn akio_crypto::hash::Sha512::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha512
+pub type akio_crypto::hash::Sha512::Output = [u8; 64]
+pub const akio_crypto::hash::Sha512::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha512::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
+impl core::marker::Send for akio_crypto::hash::Sha512
+impl core::marker::Sync for akio_crypto::hash::Sha512
+impl core::marker::Unpin for akio_crypto::hash::Sha512
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Sha512
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Sha512
+pub struct akio_crypto::hash::Shake128(_)
+impl akio_crypto::hash::Shake128
+pub fn akio_crypto::hash::Shake128::digest<const N: usize>(&[u8]) -> [u8; N]
+pub const fn akio_crypto::hash::Shake128::new() -> Self
+pub fn akio_crypto::hash::Shake128::squeeze(&mut self, &mut [u8])
+pub fn akio_crypto::hash::Shake128::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Shake128
+pub fn akio_crypto::hash::Shake128::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Shake128
+pub fn akio_crypto::hash::Shake128::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Shake128
+pub fn akio_crypto::hash::Shake128::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::hash::Shake128
+impl core::marker::Sync for akio_crypto::hash::Shake128
+impl core::marker::Unpin for akio_crypto::hash::Shake128
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Shake128
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Shake128
+pub struct akio_crypto::hash::Shake256(_)
+impl akio_crypto::hash::Shake256
+pub fn akio_crypto::hash::Shake256::digest<const N: usize>(&[u8]) -> [u8; N]
+pub const fn akio_crypto::hash::Shake256::new() -> Self
+pub fn akio_crypto::hash::Shake256::squeeze(&mut self, &mut [u8])
+pub fn akio_crypto::hash::Shake256::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Shake256
+pub fn akio_crypto::hash::Shake256::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Shake256
+pub fn akio_crypto::hash::Shake256::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Shake256
+pub fn akio_crypto::hash::Shake256::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::hash::Shake256
+impl core::marker::Sync for akio_crypto::hash::Shake256
+impl core::marker::Unpin for akio_crypto::hash::Shake256
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Shake256
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Shake256
+pub trait akio_crypto::hash::Hash: core::clone::Clone + core::default::Default + core::fmt::Debug
+pub type akio_crypto::hash::Hash::Output: core::convert::AsRef<[u8]> + core::convert::AsMut<[u8]> + core::marker::Copy + core::cmp::Eq + core::fmt::Debug + core::marker::Send + core::marker::Sync + 'static
+pub const akio_crypto::hash::Hash::BLOCK_LEN: usize
+pub const akio_crypto::hash::Hash::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Hash::digest(&[u8]) -> Self::Output
+pub fn akio_crypto::hash::Hash::finalize(self) -> Self::Output
+pub fn akio_crypto::hash::Hash::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Md5
+pub type akio_crypto::hash::Md5::Output = [u8; 16]
+pub const akio_crypto::hash::Md5::BLOCK_LEN: usize
+pub const akio_crypto::hash::Md5::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+pub fn akio_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub fn akio_crypto::hash::Md5::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha1
+pub type akio_crypto::hash::Sha1::Output = [u8; 20]
+pub const akio_crypto::hash::Sha1::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha1::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+pub fn akio_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub fn akio_crypto::hash::Sha1::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha224
+pub type akio_crypto::hash::Sha224::Output = [u8; 28]
+pub const akio_crypto::hash::Sha224::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha224::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+pub fn akio_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub fn akio_crypto::hash::Sha224::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha256
+pub type akio_crypto::hash::Sha256::Output = [u8; 32]
+pub const akio_crypto::hash::Sha256::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha256::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+pub fn akio_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub fn akio_crypto::hash::Sha256::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha384
+pub type akio_crypto::hash::Sha384::Output = [u8; 48]
+pub const akio_crypto::hash::Sha384::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha384::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+pub fn akio_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub fn akio_crypto::hash::Sha384::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Sha512
+pub type akio_crypto::hash::Sha512::Output = [u8; 64]
+pub const akio_crypto::hash::Sha512::BLOCK_LEN: usize
+pub const akio_crypto::hash::Sha512::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
+pub mod akio_crypto::kdf
+pub fn akio_crypto::kdf::hkdf<H: akio_crypto::hash::Hash>(&[u8], &[u8], &[u8], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::kdf::hkdf_expand<H: akio_crypto::hash::Hash>(&[u8], &[u8], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::kdf::hkdf_extract<H: akio_crypto::hash::Hash>(&[u8], &[u8]) -> <H as akio_crypto::hash::Hash>::Output
+pub fn akio_crypto::kdf::pbkdf2_hmac<H: akio_crypto::hash::Hash>(&[u8], &[u8], u32, &mut [u8])
+pub mod akio_crypto::mac
+pub struct akio_crypto::mac::Hmac<H: akio_crypto::hash::Hash>
+impl<H: akio_crypto::hash::Hash> akio_crypto::mac::Hmac<H>
+pub fn akio_crypto::mac::Hmac<H>::chain(self, &[u8]) -> Self
+pub fn akio_crypto::mac::Hmac<H>::finalize(self) -> <H as akio_crypto::hash::Hash>::Output
+pub fn akio_crypto::mac::Hmac<H>::mac(&[u8], &[u8]) -> <H as akio_crypto::hash::Hash>::Output
+pub fn akio_crypto::mac::Hmac<H>::new(&[u8]) -> Self
+pub fn akio_crypto::mac::Hmac<H>::update(&mut self, &[u8])
+pub fn akio_crypto::mac::Hmac<H>::verify(self, &[u8]) -> bool
+impl<H: core::clone::Clone + akio_crypto::hash::Hash> core::clone::Clone for akio_crypto::mac::Hmac<H>
+pub fn akio_crypto::mac::Hmac<H>::clone(&self) -> Self
+impl<H: akio_crypto::hash::Hash> core::fmt::Debug for akio_crypto::mac::Hmac<H>
+pub fn akio_crypto::mac::Hmac<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H> core::marker::Send for akio_crypto::mac::Hmac<H> where H: core::marker::Send + core::marker::Send
+impl<H> core::marker::Sync for akio_crypto::mac::Hmac<H> where H: core::marker::Sync + core::marker::Sync
+impl<H> core::marker::Unpin for akio_crypto::mac::Hmac<H> where H: core::marker::Unpin + core::marker::Unpin
+impl<H> core::panic::unwind_safe::RefUnwindSafe for akio_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::RefUnwindSafe + core::panic::unwind_safe::RefUnwindSafe
+impl<H> core::panic::unwind_safe::UnwindSafe for akio_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::UnwindSafe + core::panic::unwind_safe::UnwindSafe
+pub mod akio_crypto::p256
+pub struct akio_crypto::p256::PublicKey
+impl akio_crypto::p256::PublicKey
+pub fn akio_crypto::p256::PublicKey::from_sec1(&[u8]) -> core::result::Result<akio_crypto::p256::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::p256::PublicKey::to_compressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p256::PublicKey::to_uncompressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p256::PublicKey::verify(&self, &[u8], &akio_crypto::p256::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p256::PublicKey::verify_prehash(&self, &[u8], &akio_crypto::p256::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p256::PublicKey::verify_with<H: akio_crypto::hash::Hash>(&self, &[u8], &akio_crypto::p256::Signature) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::p256::PublicKey
+pub fn akio_crypto::p256::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p256::PublicKey
+impl core::cmp::PartialEq for akio_crypto::p256::PublicKey
+pub fn akio_crypto::p256::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p256::PublicKey
+pub fn akio_crypto::p256::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p256::PublicKey
+impl core::marker::Sync for akio_crypto::p256::PublicKey
+impl core::marker::Unpin for akio_crypto::p256::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p256::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p256::PublicKey
+pub struct akio_crypto::p256::SecretKey
+impl akio_crypto::p256::SecretKey
+pub fn akio_crypto::p256::SecretKey::diffie_hellman(&self, &akio_crypto::p256::PublicKey) -> [u8; 32]
+pub fn akio_crypto::p256::SecretKey::from_bytes(&[u8]) -> core::result::Result<akio_crypto::p256::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p256::SecretKey::generate() -> core::result::Result<akio_crypto::p256::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p256::SecretKey::public_key(&self) -> akio_crypto::p256::PublicKey
+pub fn akio_crypto::p256::SecretKey::sign(&self, &[u8]) -> akio_crypto::p256::Signature
+pub fn akio_crypto::p256::SecretKey::sign_prehash<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p256::Signature
+pub fn akio_crypto::p256::SecretKey::sign_with<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p256::Signature
+pub fn akio_crypto::p256::SecretKey::to_bytes(&self) -> [u8; 32]
+impl core::clone::Clone for akio_crypto::p256::SecretKey
+pub fn akio_crypto::p256::SecretKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::p256::SecretKey
+pub fn akio_crypto::p256::SecretKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p256::SecretKey
+impl core::marker::Sync for akio_crypto::p256::SecretKey
+impl core::marker::Unpin for akio_crypto::p256::SecretKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p256::SecretKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p256::SecretKey
+pub struct akio_crypto::p256::Signature(_)
+impl akio_crypto::p256::Signature
+pub fn akio_crypto::p256::Signature::from_der(&[u8]) -> core::result::Result<akio_crypto::p256::Signature, akio_crypto::Error>
+pub fn akio_crypto::p256::Signature::from_fixed(&[u8]) -> core::result::Result<akio_crypto::p256::Signature, akio_crypto::Error>
+pub fn akio_crypto::p256::Signature::to_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p256::Signature::to_fixed(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::p256::Signature
+pub fn akio_crypto::p256::Signature::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p256::Signature
+impl core::cmp::PartialEq for akio_crypto::p256::Signature
+pub fn akio_crypto::p256::Signature::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p256::Signature
+pub fn akio_crypto::p256::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p256::Signature
+impl core::marker::Sync for akio_crypto::p256::Signature
+impl core::marker::Unpin for akio_crypto::p256::Signature
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p256::Signature
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p256::Signature
+pub const akio_crypto::p256::SCALAR_LEN: usize
+pub mod akio_crypto::p384
+pub struct akio_crypto::p384::PublicKey
+impl akio_crypto::p384::PublicKey
+pub fn akio_crypto::p384::PublicKey::from_sec1(&[u8]) -> core::result::Result<akio_crypto::p384::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::p384::PublicKey::to_compressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p384::PublicKey::to_uncompressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p384::PublicKey::verify(&self, &[u8], &akio_crypto::p384::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p384::PublicKey::verify_prehash(&self, &[u8], &akio_crypto::p384::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p384::PublicKey::verify_with<H: akio_crypto::hash::Hash>(&self, &[u8], &akio_crypto::p384::Signature) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::p384::PublicKey
+pub fn akio_crypto::p384::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p384::PublicKey
+impl core::cmp::PartialEq for akio_crypto::p384::PublicKey
+pub fn akio_crypto::p384::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p384::PublicKey
+pub fn akio_crypto::p384::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p384::PublicKey
+impl core::marker::Sync for akio_crypto::p384::PublicKey
+impl core::marker::Unpin for akio_crypto::p384::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p384::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p384::PublicKey
+pub struct akio_crypto::p384::SecretKey
+impl akio_crypto::p384::SecretKey
+pub fn akio_crypto::p384::SecretKey::diffie_hellman(&self, &akio_crypto::p384::PublicKey) -> [u8; 48]
+pub fn akio_crypto::p384::SecretKey::from_bytes(&[u8]) -> core::result::Result<akio_crypto::p384::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p384::SecretKey::generate() -> core::result::Result<akio_crypto::p384::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p384::SecretKey::public_key(&self) -> akio_crypto::p384::PublicKey
+pub fn akio_crypto::p384::SecretKey::sign(&self, &[u8]) -> akio_crypto::p384::Signature
+pub fn akio_crypto::p384::SecretKey::sign_prehash<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p384::Signature
+pub fn akio_crypto::p384::SecretKey::sign_with<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p384::Signature
+pub fn akio_crypto::p384::SecretKey::to_bytes(&self) -> [u8; 48]
+impl core::clone::Clone for akio_crypto::p384::SecretKey
+pub fn akio_crypto::p384::SecretKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::p384::SecretKey
+pub fn akio_crypto::p384::SecretKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p384::SecretKey
+impl core::marker::Sync for akio_crypto::p384::SecretKey
+impl core::marker::Unpin for akio_crypto::p384::SecretKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p384::SecretKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p384::SecretKey
+pub struct akio_crypto::p384::Signature(_)
+impl akio_crypto::p384::Signature
+pub fn akio_crypto::p384::Signature::from_der(&[u8]) -> core::result::Result<akio_crypto::p384::Signature, akio_crypto::Error>
+pub fn akio_crypto::p384::Signature::from_fixed(&[u8]) -> core::result::Result<akio_crypto::p384::Signature, akio_crypto::Error>
+pub fn akio_crypto::p384::Signature::to_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p384::Signature::to_fixed(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::p384::Signature
+pub fn akio_crypto::p384::Signature::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p384::Signature
+impl core::cmp::PartialEq for akio_crypto::p384::Signature
+pub fn akio_crypto::p384::Signature::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p384::Signature
+pub fn akio_crypto::p384::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p384::Signature
+impl core::marker::Sync for akio_crypto::p384::Signature
+impl core::marker::Unpin for akio_crypto::p384::Signature
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p384::Signature
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p384::Signature
+pub const akio_crypto::p384::SCALAR_LEN: usize
+pub mod akio_crypto::p521
+pub struct akio_crypto::p521::PublicKey
+impl akio_crypto::p521::PublicKey
+pub fn akio_crypto::p521::PublicKey::from_sec1(&[u8]) -> core::result::Result<akio_crypto::p521::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::p521::PublicKey::to_compressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p521::PublicKey::to_uncompressed(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p521::PublicKey::verify(&self, &[u8], &akio_crypto::p521::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p521::PublicKey::verify_prehash(&self, &[u8], &akio_crypto::p521::Signature) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::p521::PublicKey::verify_with<H: akio_crypto::hash::Hash>(&self, &[u8], &akio_crypto::p521::Signature) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::p521::PublicKey
+pub fn akio_crypto::p521::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p521::PublicKey
+impl core::cmp::PartialEq for akio_crypto::p521::PublicKey
+pub fn akio_crypto::p521::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p521::PublicKey
+pub fn akio_crypto::p521::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p521::PublicKey
+impl core::marker::Sync for akio_crypto::p521::PublicKey
+impl core::marker::Unpin for akio_crypto::p521::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p521::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p521::PublicKey
+pub struct akio_crypto::p521::SecretKey
+impl akio_crypto::p521::SecretKey
+pub fn akio_crypto::p521::SecretKey::diffie_hellman(&self, &akio_crypto::p521::PublicKey) -> [u8; 66]
+pub fn akio_crypto::p521::SecretKey::from_bytes(&[u8]) -> core::result::Result<akio_crypto::p521::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p521::SecretKey::generate() -> core::result::Result<akio_crypto::p521::SecretKey, akio_crypto::Error>
+pub fn akio_crypto::p521::SecretKey::public_key(&self) -> akio_crypto::p521::PublicKey
+pub fn akio_crypto::p521::SecretKey::sign(&self, &[u8]) -> akio_crypto::p521::Signature
+pub fn akio_crypto::p521::SecretKey::sign_prehash<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p521::Signature
+pub fn akio_crypto::p521::SecretKey::sign_with<H: akio_crypto::hash::Hash>(&self, &[u8]) -> akio_crypto::p521::Signature
+pub fn akio_crypto::p521::SecretKey::to_bytes(&self) -> [u8; 66]
+impl core::clone::Clone for akio_crypto::p521::SecretKey
+pub fn akio_crypto::p521::SecretKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::p521::SecretKey
+pub fn akio_crypto::p521::SecretKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p521::SecretKey
+impl core::marker::Sync for akio_crypto::p521::SecretKey
+impl core::marker::Unpin for akio_crypto::p521::SecretKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p521::SecretKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p521::SecretKey
+pub struct akio_crypto::p521::Signature(_)
+impl akio_crypto::p521::Signature
+pub fn akio_crypto::p521::Signature::from_der(&[u8]) -> core::result::Result<akio_crypto::p521::Signature, akio_crypto::Error>
+pub fn akio_crypto::p521::Signature::from_fixed(&[u8]) -> core::result::Result<akio_crypto::p521::Signature, akio_crypto::Error>
+pub fn akio_crypto::p521::Signature::to_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::p521::Signature::to_fixed(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::p521::Signature
+pub fn akio_crypto::p521::Signature::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::p521::Signature
+impl core::cmp::PartialEq for akio_crypto::p521::Signature
+pub fn akio_crypto::p521::Signature::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::p521::Signature
+pub fn akio_crypto::p521::Signature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::p521::Signature
+impl core::marker::Sync for akio_crypto::p521::Signature
+impl core::marker::Unpin for akio_crypto::p521::Signature
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::p521::Signature
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::p521::Signature
+pub const akio_crypto::p521::SCALAR_LEN: usize
+pub mod akio_crypto::pem
+pub fn akio_crypto::pem::decode(&[u8]) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>, akio_crypto::Error>
+pub fn akio_crypto::pem::decode_label(&[u8], &str) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, akio_crypto::Error>
+pub fn akio_crypto::pem::encode(&str, &[u8]) -> alloc::string::String
+pub mod akio_crypto::pkey
+#[non_exhaustive] pub enum akio_crypto::pkey::PrivateKey
+pub akio_crypto::pkey::PrivateKey::Ed25519(akio_crypto::ed25519::SigningKey)
+pub akio_crypto::pkey::PrivateKey::Ed448(akio_crypto::ed448::SigningKey)
+pub akio_crypto::pkey::PrivateKey::P256(akio_crypto::p256::SecretKey)
+pub akio_crypto::pkey::PrivateKey::P384(akio_crypto::p384::SecretKey)
+pub akio_crypto::pkey::PrivateKey::P521(akio_crypto::p521::SecretKey)
+pub akio_crypto::pkey::PrivateKey::Rsa(alloc::boxed::Box<akio_crypto::rsa::PrivateKey>)
+pub akio_crypto::pkey::PrivateKey::RsaPss(alloc::boxed::Box<akio_crypto::rsa::PrivateKey>, core::option::Option<akio_crypto::pkey::PssParams>)
+impl akio_crypto::pkey::PrivateKey
+pub fn akio_crypto::pkey::PrivateKey::default_signature_algorithm(&self) -> akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::PrivateKey::from_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::from_pem(&[u8]) -> core::result::Result<akio_crypto::pkey::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::from_pkcs1_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::from_pkcs8_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::from_sec1_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::public_key(&self) -> akio_crypto::pkey::PublicKey
+pub fn akio_crypto::pkey::PrivateKey::sign(&self, akio_crypto::pkey::SignatureAlgorithm, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::pkey::PrivateKey::to_pkcs8_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::pkey::PrivateKey::to_pkcs8_pem(&self) -> alloc::string::String
+pub fn akio_crypto::pkey::PrivateKey::to_sec1_der(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+impl core::clone::Clone for akio_crypto::pkey::PrivateKey
+pub fn akio_crypto::pkey::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::pkey::PrivateKey
+pub fn akio_crypto::pkey::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::pkey::PrivateKey
+impl core::marker::Sync for akio_crypto::pkey::PrivateKey
+impl core::marker::Unpin for akio_crypto::pkey::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::pkey::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::pkey::PrivateKey
+#[non_exhaustive] pub enum akio_crypto::pkey::PublicKey
+pub akio_crypto::pkey::PublicKey::Dsa(akio_crypto::dsa::PublicKey)
+pub akio_crypto::pkey::PublicKey::Ed25519(akio_crypto::ed25519::VerifyingKey)
+pub akio_crypto::pkey::PublicKey::Ed448(akio_crypto::ed448::VerifyingKey)
+pub akio_crypto::pkey::PublicKey::P256(akio_crypto::p256::PublicKey)
+pub akio_crypto::pkey::PublicKey::P384(akio_crypto::p384::PublicKey)
+pub akio_crypto::pkey::PublicKey::P521(akio_crypto::p521::PublicKey)
+pub akio_crypto::pkey::PublicKey::Rsa(akio_crypto::rsa::PublicKey)
+pub akio_crypto::pkey::PublicKey::RsaPss(akio_crypto::rsa::PublicKey, core::option::Option<akio_crypto::pkey::PssParams>)
+impl akio_crypto::pkey::PublicKey
+pub fn akio_crypto::pkey::PublicKey::from_algorithm_and_key(&[u8], &[u8], &[u8]) -> core::result::Result<akio_crypto::pkey::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PublicKey::from_spki_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::pkey::PublicKey::raw_key(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::pkey::PublicKey::to_spki_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::pkey::PublicKey::verify(&self, akio_crypto::pkey::SignatureAlgorithm, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::pkey::PublicKey
+pub fn akio_crypto::pkey::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::pkey::PublicKey
+impl core::cmp::PartialEq for akio_crypto::pkey::PublicKey
+pub fn akio_crypto::pkey::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::pkey::PublicKey
+pub fn akio_crypto::pkey::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_crypto::pkey::PublicKey
+impl core::marker::Send for akio_crypto::pkey::PublicKey
+impl core::marker::Sync for akio_crypto::pkey::PublicKey
+impl core::marker::Unpin for akio_crypto::pkey::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::pkey::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::pkey::PublicKey
+#[non_exhaustive] pub enum akio_crypto::pkey::SignatureAlgorithm
+pub akio_crypto::pkey::SignatureAlgorithm::DsaSha1
+pub akio_crypto::pkey::SignatureAlgorithm::DsaSha224
+pub akio_crypto::pkey::SignatureAlgorithm::DsaSha256
+pub akio_crypto::pkey::SignatureAlgorithm::EcdsaSha256
+pub akio_crypto::pkey::SignatureAlgorithm::EcdsaSha384
+pub akio_crypto::pkey::SignatureAlgorithm::EcdsaSha512
+pub akio_crypto::pkey::SignatureAlgorithm::Ed25519
+pub akio_crypto::pkey::SignatureAlgorithm::Ed448
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPkcs1Sha1
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPkcs1Sha256
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPkcs1Sha384
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPkcs1Sha512
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPssSha256
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPssSha384
+pub akio_crypto::pkey::SignatureAlgorithm::RsaPssSha512
+impl akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::SignatureAlgorithm::from_algorithm_identifier(&[u8]) -> core::result::Result<akio_crypto::pkey::SignatureAlgorithm, akio_crypto::Error>
+pub fn akio_crypto::pkey::SignatureAlgorithm::to_algorithm_identifier(self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::SignatureAlgorithm::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::pkey::SignatureAlgorithm
+impl core::cmp::PartialEq for akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::SignatureAlgorithm::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::SignatureAlgorithm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_crypto::pkey::SignatureAlgorithm
+pub fn akio_crypto::pkey::SignatureAlgorithm::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_crypto::pkey::SignatureAlgorithm
+impl core::marker::StructuralPartialEq for akio_crypto::pkey::SignatureAlgorithm
+impl core::marker::Send for akio_crypto::pkey::SignatureAlgorithm
+impl core::marker::Sync for akio_crypto::pkey::SignatureAlgorithm
+impl core::marker::Unpin for akio_crypto::pkey::SignatureAlgorithm
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::pkey::SignatureAlgorithm
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::pkey::SignatureAlgorithm
+#[non_exhaustive] pub struct akio_crypto::pkey::PssParams
+pub akio_crypto::pkey::PssParams::hash: akio_crypto::rsa::HashAlg
+pub akio_crypto::pkey::PssParams::salt_len: usize
+impl akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::allows(&self, akio_crypto::pkey::SignatureAlgorithm) -> bool
+pub fn akio_crypto::pkey::PssParams::from_der(&[u8]) -> core::result::Result<akio_crypto::pkey::PssParams, akio_crypto::Error>
+pub fn akio_crypto::pkey::PssParams::new(akio_crypto::rsa::HashAlg, usize) -> akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::to_der(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::pkey::PssParams
+impl core::cmp::PartialEq for akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_crypto::pkey::PssParams
+pub fn akio_crypto::pkey::PssParams::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_crypto::pkey::PssParams
+impl core::marker::StructuralPartialEq for akio_crypto::pkey::PssParams
+impl core::marker::Send for akio_crypto::pkey::PssParams
+impl core::marker::Sync for akio_crypto::pkey::PssParams
+impl core::marker::Unpin for akio_crypto::pkey::PssParams
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::pkey::PssParams
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::pkey::PssParams
+pub mod akio_crypto::rand
+pub struct akio_crypto::rand::ChaChaRng
+impl akio_crypto::rand::ChaChaRng
+pub fn akio_crypto::rand::ChaChaRng::fill(&mut self, &mut [u8])
+pub fn akio_crypto::rand::ChaChaRng::from_os() -> core::io::error::Result<Self>
+pub fn akio_crypto::rand::ChaChaRng::from_seed([u8; 32]) -> Self
+pub fn akio_crypto::rand::ChaChaRng::next_u32(&mut self) -> u32
+pub fn akio_crypto::rand::ChaChaRng::next_u64(&mut self) -> u64
+impl core::clone::Clone for akio_crypto::rand::ChaChaRng
+pub fn akio_crypto::rand::ChaChaRng::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::rand::ChaChaRng
+pub fn akio_crypto::rand::ChaChaRng::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::rand::ChaChaRng
+impl core::marker::Sync for akio_crypto::rand::ChaChaRng
+impl core::marker::Unpin for akio_crypto::rand::ChaChaRng
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::rand::ChaChaRng
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::rand::ChaChaRng
+pub fn akio_crypto::rand::fill_random(&mut [u8]) -> core::io::error::Result<()>
+pub mod akio_crypto::rsa
+#[non_exhaustive] pub enum akio_crypto::rsa::HashAlg
+pub akio_crypto::rsa::HashAlg::Sha1
+pub akio_crypto::rsa::HashAlg::Sha224
+pub akio_crypto::rsa::HashAlg::Sha256
+pub akio_crypto::rsa::HashAlg::Sha384
+pub akio_crypto::rsa::HashAlg::Sha512
+impl akio_crypto::rsa::HashAlg
+pub fn akio_crypto::rsa::HashAlg::digest(self, &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::rsa::HashAlg::output_len(self) -> usize
+impl core::clone::Clone for akio_crypto::rsa::HashAlg
+pub fn akio_crypto::rsa::HashAlg::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::rsa::HashAlg
+impl core::cmp::PartialEq for akio_crypto::rsa::HashAlg
+pub fn akio_crypto::rsa::HashAlg::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::rsa::HashAlg
+pub fn akio_crypto::rsa::HashAlg::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_crypto::rsa::HashAlg
+pub fn akio_crypto::rsa::HashAlg::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_crypto::rsa::HashAlg
+impl core::marker::StructuralPartialEq for akio_crypto::rsa::HashAlg
+impl core::marker::Send for akio_crypto::rsa::HashAlg
+impl core::marker::Sync for akio_crypto::rsa::HashAlg
+impl core::marker::Unpin for akio_crypto::rsa::HashAlg
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::rsa::HashAlg
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::rsa::HashAlg
+pub struct akio_crypto::rsa::PrivateKey
+impl akio_crypto::rsa::PrivateKey
+pub fn akio_crypto::rsa::PrivateKey::from_components(&[u8], &[u8], &[u8], &[u8], &[u8], &[u8], &[u8], &[u8]) -> core::result::Result<akio_crypto::rsa::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::from_pkcs1_der(&[u8]) -> core::result::Result<akio_crypto::rsa::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::public_key(&self) -> &akio_crypto::rsa::PublicKey
+pub fn akio_crypto::rsa::PrivateKey::sign_pkcs1v15(&self, akio_crypto::rsa::HashAlg, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::sign_pkcs1v15_prehash(&self, akio_crypto::rsa::HashAlg, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::sign_pss(&self, akio_crypto::rsa::HashAlg, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::sign_pss_prehash(&self, akio_crypto::rsa::HashAlg, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::rsa::PrivateKey::to_pkcs1_der(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_crypto::rsa::PrivateKey
+pub fn akio_crypto::rsa::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::rsa::PrivateKey
+pub fn akio_crypto::rsa::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::rsa::PrivateKey
+impl core::marker::Sync for akio_crypto::rsa::PrivateKey
+impl core::marker::Unpin for akio_crypto::rsa::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::rsa::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::rsa::PrivateKey
+pub struct akio_crypto::rsa::PublicKey
+impl akio_crypto::rsa::PublicKey
+pub fn akio_crypto::rsa::PublicKey::bits(&self) -> usize
+pub fn akio_crypto::rsa::PublicKey::exponent(&self) -> u64
+pub fn akio_crypto::rsa::PublicKey::from_components(&[u8], &[u8]) -> core::result::Result<akio_crypto::rsa::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::rsa::PublicKey::from_pkcs1_der(&[u8]) -> core::result::Result<akio_crypto::rsa::PublicKey, akio_crypto::Error>
+pub fn akio_crypto::rsa::PublicKey::modulus(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::rsa::PublicKey::signature_len(&self) -> usize
+pub fn akio_crypto::rsa::PublicKey::to_pkcs1_der(&self) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::rsa::PublicKey::verify_pkcs1v15(&self, akio_crypto::rsa::HashAlg, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::rsa::PublicKey::verify_pkcs1v15_prehash(&self, akio_crypto::rsa::HashAlg, &[u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::rsa::PublicKey::verify_pss(&self, akio_crypto::rsa::HashAlg, &[u8], &[u8], usize) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::rsa::PublicKey::verify_pss_prehash(&self, akio_crypto::rsa::HashAlg, &[u8], &[u8], usize) -> core::result::Result<(), akio_crypto::Error>
+impl core::clone::Clone for akio_crypto::rsa::PublicKey
+pub fn akio_crypto::rsa::PublicKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::rsa::PublicKey
+impl core::cmp::PartialEq for akio_crypto::rsa::PublicKey
+pub fn akio_crypto::rsa::PublicKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_crypto::rsa::PublicKey
+pub fn akio_crypto::rsa::PublicKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::rsa::PublicKey
+impl core::marker::Sync for akio_crypto::rsa::PublicKey
+impl core::marker::Unpin for akio_crypto::rsa::PublicKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::rsa::PublicKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::rsa::PublicKey
+pub const akio_crypto::rsa::MAX_BITS: usize
+pub const akio_crypto::rsa::MIN_BITS: usize
+pub mod akio_crypto::seed
+pub struct akio_crypto::seed::Seed
+impl akio_crypto::seed::Seed
+pub fn akio_crypto::seed::Seed::apply_ctr(&self, &[u8; 16], &mut [u8])
+pub fn akio_crypto::seed::Seed::decrypt_block(&self, &mut [u8; 16])
+pub fn akio_crypto::seed::Seed::decrypt_blocks(&self, &mut [[u8; 16]])
+pub fn akio_crypto::seed::Seed::encrypt_block(&self, &mut [u8; 16])
+pub fn akio_crypto::seed::Seed::encrypt_blocks(&self, &mut [[u8; 16]])
+pub fn akio_crypto::seed::Seed::from_slice(&[u8]) -> core::result::Result<akio_crypto::seed::Seed, akio_crypto::Error>
+pub fn akio_crypto::seed::Seed::new(&[u8; 16]) -> akio_crypto::seed::Seed
+impl core::clone::Clone for akio_crypto::seed::Seed
+pub fn akio_crypto::seed::Seed::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::seed::Seed
+pub fn akio_crypto::seed::Seed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::seed::Seed
+impl core::marker::Sync for akio_crypto::seed::Seed
+impl core::marker::Unpin for akio_crypto::seed::Seed
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::seed::Seed
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::seed::Seed
+pub struct akio_crypto::seed::SeedCcm
+impl akio_crypto::seed::SeedCcm
+pub fn akio_crypto::seed::SeedCcm::decrypt_in_place_detached(&self, &[u8], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::seed::SeedCcm::encrypt_in_place_detached(&self, &[u8], &[u8], &mut [u8], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::seed::SeedCcm::new(&[u8; 16]) -> akio_crypto::seed::SeedCcm
+impl core::clone::Clone for akio_crypto::seed::SeedCcm
+pub fn akio_crypto::seed::SeedCcm::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::seed::SeedCcm
+pub fn akio_crypto::seed::SeedCcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::seed::SeedCcm
+impl core::marker::Sync for akio_crypto::seed::SeedCcm
+impl core::marker::Unpin for akio_crypto::seed::SeedCcm
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::seed::SeedCcm
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::seed::SeedCcm
+pub struct akio_crypto::seed::SeedGcm
+impl akio_crypto::seed::SeedGcm
+pub fn akio_crypto::seed::SeedGcm::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::seed::SeedGcm::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn akio_crypto::seed::SeedGcm::new(&[u8; 16]) -> akio_crypto::seed::SeedGcm
+impl core::clone::Clone for akio_crypto::seed::SeedGcm
+pub fn akio_crypto::seed::SeedGcm::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::seed::SeedGcm
+pub fn akio_crypto::seed::SeedGcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::seed::SeedGcm
+impl core::marker::Sync for akio_crypto::seed::SeedGcm
+impl core::marker::Unpin for akio_crypto::seed::SeedGcm
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::seed::SeedGcm
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::seed::SeedGcm
+pub const akio_crypto::seed::BLOCK_LEN: usize
+pub const akio_crypto::seed::GCM_NONCE_LEN: usize
+pub const akio_crypto::seed::KEY_LEN: usize
+pub mod akio_crypto::x25519
+pub struct akio_crypto::x25519::PrivateKey(_)
+impl akio_crypto::x25519::PrivateKey
+pub fn akio_crypto::x25519::PrivateKey::diffie_hellman(&self, &[u8; 32]) -> core::result::Result<[u8; 32], akio_crypto::Error>
+pub fn akio_crypto::x25519::PrivateKey::from_bytes([u8; 32]) -> akio_crypto::x25519::PrivateKey
+pub fn akio_crypto::x25519::PrivateKey::generate() -> core::result::Result<akio_crypto::x25519::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::x25519::PrivateKey::public_key(&self) -> [u8; 32]
+pub fn akio_crypto::x25519::PrivateKey::to_bytes(&self) -> [u8; 32]
+impl core::clone::Clone for akio_crypto::x25519::PrivateKey
+pub fn akio_crypto::x25519::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::x25519::PrivateKey
+pub fn akio_crypto::x25519::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::x25519::PrivateKey
+impl core::marker::Sync for akio_crypto::x25519::PrivateKey
+impl core::marker::Unpin for akio_crypto::x25519::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::x25519::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::x25519::PrivateKey
+pub const akio_crypto::x25519::BASEPOINT: [u8; 32]
+pub fn akio_crypto::x25519::x25519(&[u8; 32], &[u8; 32]) -> [u8; 32]
+pub mod akio_crypto::x448
+pub struct akio_crypto::x448::PrivateKey(_)
+impl akio_crypto::x448::PrivateKey
+pub fn akio_crypto::x448::PrivateKey::diffie_hellman(&self, &[u8; 56]) -> core::result::Result<[u8; 56], akio_crypto::Error>
+pub fn akio_crypto::x448::PrivateKey::from_bytes([u8; 56]) -> akio_crypto::x448::PrivateKey
+pub fn akio_crypto::x448::PrivateKey::generate() -> core::result::Result<akio_crypto::x448::PrivateKey, akio_crypto::Error>
+pub fn akio_crypto::x448::PrivateKey::public_key(&self) -> [u8; 56]
+pub fn akio_crypto::x448::PrivateKey::to_bytes(&self) -> [u8; 56]
+impl core::clone::Clone for akio_crypto::x448::PrivateKey
+pub fn akio_crypto::x448::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::x448::PrivateKey
+pub fn akio_crypto::x448::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::x448::PrivateKey
+impl core::marker::Sync for akio_crypto::x448::PrivateKey
+impl core::marker::Unpin for akio_crypto::x448::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::x448::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::x448::PrivateKey
+pub const akio_crypto::x448::BASEPOINT: [u8; 56]
+pub const akio_crypto::x448::KEY_LEN: usize
+pub fn akio_crypto::x448::x448(&[u8; 56], &[u8; 56]) -> [u8; 56]
+#[non_exhaustive] pub enum akio_crypto::Error
+pub akio_crypto::Error::Encoding
+pub akio_crypto::Error::InvalidKey
+pub akio_crypto::Error::InvalidLength
+pub akio_crypto::Error::Random
+pub akio_crypto::Error::Unsupported
+pub akio_crypto::Error::Verification
+pub akio_crypto::Error::ZeroSharedSecret
+impl core::clone::Clone for akio_crypto::Error
+pub fn akio_crypto::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_crypto::Error
+impl core::cmp::PartialEq for akio_crypto::Error
+pub fn akio_crypto::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_crypto::Error
+impl core::fmt::Debug for akio_crypto::Error
+pub fn akio_crypto::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_crypto::Error
+pub fn akio_crypto::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_crypto::Error
+impl core::marker::StructuralPartialEq for akio_crypto::Error
+impl core::marker::Send for akio_crypto::Error
+impl core::marker::Sync for akio_crypto::Error
+impl core::marker::Unpin for akio_crypto::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::Error
+pub fn akio_crypto::ct_eq(&[u8], &[u8]) -> bool

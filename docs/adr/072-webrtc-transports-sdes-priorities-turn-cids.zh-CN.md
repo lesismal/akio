@@ -6,10 +6,10 @@
 
 ## 背景
 
-此前的工作在 only-webrtc、only-turn 与 only-ice 中留下了 DEV-PLAN 标为未完成的缺口：
+此前的工作在 akio-webrtc、akio-turn 与 akio-ice 中留下了 DEV-PLAN 标为未完成的缺口：
 
-- **数据通道优先级与 SCTP 流调度器**（ADR-037）：only-sctp 已实现 RFC 8260 调度器与 RFC 8832
-  通道优先级，但 only-webrtc 两者都未暴露：每个通道的 DCEP 优先级都是 256，关联固定使用加权公平
+- **数据通道优先级与 SCTP 流调度器**（ADR-037）：akio-sctp 已实现 RFC 8260 调度器与 RFC 8832
+  通道优先级，但 akio-webrtc 两者都未暴露：每个通道的 DCEP 优先级都是 256，关联固定使用加权公平
   排队，无法给通道分配权重。
 - **每个会话只有一个传输**（ADR-058）：本栈只运行一个 ICE 代理、一个 DTLS 关联和一对 SRTP 上下文。
   不做 BUNDLE 的对端（带音频和视频的 SIP 终端，以及 `bundlePolicy: "max-compat"` 的浏览器遇到拒绝
@@ -18,10 +18,10 @@
   ICE-lite）没有组件 2。
 - **SDES-SRTP**（ADR-054）必须有 ICE，不接受带 MKI 的行，也不允许数据通道。
 - **基于 DTLS 的 TURN**（ADR-054）以五元组标识客户端：NAT 重新绑定就会丢掉关联及其分配。
-- **only-ice** 没有导出 IPv6 mDNS 组，也无法给解析出的链路本地候选指定接口。
+- **akio-ice** 没有导出 IPv6 mDNS 组，也无法给解析出的链路本地候选指定接口。
 
-约束：默认情况下浏览器与 pion 看到的内容与之前一致；另一个会话同时在修改 only-rtp 以及
-only-webrtc 的 pacing / FEC / RED / 反馈代码，因此对 `rtc.rs` 的修改是挂钩而非重写；public 层级的
+约束：默认情况下浏览器与 pion 看到的内容与之前一致；另一个会话同时在修改 akio-rtp 以及
+akio-webrtc 的 pacing / FEC / RED / 反馈代码，因此对 `rtc.rs` 的修改是挂钩而非重写；public 层级的
 API 不得暴露 internal 层级的类型。
 
 ## 决定
@@ -33,7 +33,7 @@ API 不得暴露 internal 层级的类型。
 消息发送；对端打开的通道的优先级取自其消息（取最接近的级别；0 视为 low）。`Peer::channel_priority`
 与 `Peer::set_channel_priority`（只影响本端调度器：DCEP 没有更新消息）。`ChannelScheduler`（先来先服务、
 轮询、按包轮询、优先级、公平容量、默认的加权公平排队）由 `RtcConfig::set_sctp_scheduler` 选择。两者都在
-crate 内映射到 only-sctp 的类型。
+crate 内映射到 akio-sctp 的类型。
 
 ### 2. 无 BUNDLE 时的多个传输
 
@@ -57,7 +57,7 @@ crate 内映射到 only-sctp 的类型。
   数据报的来源与之相同的传输。因此同一套接字上的多个传输靠远端地址区分，所有不做 BUNDLE 的对端都满足
   这一点（每个段一个 ICE 代理或端口）。
 - **每个传输一个套接字。** `Endpoint::bind_transport_socket` 绑定更多套接字；第一个之后的第 n 个传输
-  使用第 n 个套接字的主机候选，这样两个 only 端点也能不做 BUNDLE（一方有即可）。每个传输的组件 2
+  使用第 n 个套接字的主机候选，这样两个 akio 端点也能不做 BUNDLE（一方有即可）。每个传输的组件 2
   仍在 RTCP 套接字上。
 - **限制。** 传输级拥塞控制需要单一传输：不做 BUNDLE 的会话不协商 transport-cc 与 RFC 8888 反馈
   （事后协商到的也会移除），因此那里既不做带宽探测也不运行估计器。trickle 候选用
@@ -100,21 +100,21 @@ crate 内映射到 only-sctp 的类型。
 关联；一旦其中某条记录通过认证（解出了应用数据记录），客户端的路径就移到这个五元组（RFC 9146 §6）：
 响应和中继数据发往那里，而分配仍以关联最初的地址作为身份，因此不会在分片之间迁移。伪造或重放的记录
 不会移动任何东西。持有路径的连接记录在会话中，因此除非路径移动，数据报不需要额外获取分片锁。
-only-webrtc 的 DTLS 中继客户端在服务器要求时发送服务器的 CID。
+akio-webrtc 的 DTLS 中继客户端在服务器要求时发送服务器的 CID。
 
-### 6. only-ice
+### 6. akio-ice
 
 在 `MULTICAST_V4` 旁新增 `mdns::MULTICAST_V6`（`[ff02::fb]:5353`）与 `mdns::multicast_v6_on(scope)`；
 `Candidate::with_scope_id(scope)` 为 IPv6 链路本地候选（地址，以及与地址相同时的 base）指定接口；SDP
-中从不出现。only-webrtc 保持其设计（ICE 之前去掉 scope id，由 hub 记住），并使用 `multicast_v6_on`。
+中从不出现。akio-webrtc 保持其设计（ICE 之前去掉 scope id，由 hub 记住），并使用 `multicast_v6_on`。
 
 ### API
 
-均为新增。only-webrtc：`ChannelPriority`、`ChannelScheduler`、`ChannelConfig::{priority,
+均为新增。akio-webrtc：`ChannelPriority`、`ChannelScheduler`、`ChannelConfig::{priority,
 with_priority}`、`RtcConfig::{set_sctp_scheduler, set_bundle_policy, enable_ice,
 set_sdes_mki_length}`、`BundlePolicy`、`Peer::{channel_priority, set_channel_priority,
 add_remote_candidate_in}`、`Endpoint::bind_transport_socket`、`RtcServer::{rtcp_candidates, rtcp}`、
-`RtcRtcp`。only-turn：`TurnServer::dtls_with_connection_ids`。only-ice：
+`RtcRtcp`。akio-turn：`TurnServer::dtls_with_connection_ids`。akio-ice：
 `mdns::{MULTICAST_V6, multicast_v6_on}`、`Candidate::with_scope_id`、
 `IceAgent::{set_fixed_pair, is_fixed}`。`ChannelConfig` 带 `#[non_exhaustive]`，新增字段不构成破坏。
 
@@ -130,15 +130,15 @@ add_remote_candidate_in}`、`Endpoint::bind_transport_socket`、`RtcServer::{rtc
   RTCP 独立端口的 SDES（没有 STUN 或 DTLS，RTP 与 RTCP 在各自端口对上）；手写的带 rtcp-mux 与 2 字节
   MKI 的 SIP offer；双向带 MKI 的 SDES；与数据通道并存的 SDES 媒体。回环上的 Endpoint：双向无 BUNDLE
   （数据通道、音视频回显；`tests/bundle.rs`），带 MKI 与 RTCP 套接字的无 ICE SDES，带数据通道的 SDES
-  （`tests/sdes.rs`），经 only-turn 中继候选的 RTCP（四个分配），组件 2 服务器反射候选，带 RTCP 监听器
-  的 ICE-lite `RtcServer`（`tests/rtcp_mux.rs`）。only-turn（`tests/dtls.rs`）：关联中途换到新套接字的
+  （`tests/sdes.rs`），经 akio-turn 中继候选的 RTCP（四个分配），组件 2 服务器反射候选，带 RTCP 监听器
+  的 ICE-lite `RtcServer`（`tests/rtcp_mux.rs`）。akio-turn（`tests/dtls.rs`）：关联中途换到新套接字的
   客户端在 DTLS 1.2 与 1.3 下都保留其分配，带 CID 的伪造记录不移动路径，新地址发出的 close_notify 释放
-  分配，关闭 CID 时不协商。only-ice：固定候选对（事件、状态、无任何运行、移动候选对）、scope id、IPv6 组。
+  分配，关闭 CID 时不协商。akio-ice：固定候选对（事件、状态、无任何运行、移动候选对）、scope id、IPv6 组。
   `a=crypto` MKI 解析、`c=` 行、普通地址与状态聚合的单元测试。
 - 互通：无头 Chrome 157（`tools/interop/webrtc/bundle.sh`）：`bundlePolicy: "max-compat"` 的 Chrome 向
   拒绝 BUNDLE 的 `RtcServer` 提供音频、视频与数据通道时运行三个传输（见其统计），数据与媒体回显并解码；
-  only `Endpoint` 不带 BUNDLE 提供音频和一个通道时，经两个传输收到 Chrome 的麦克风。Chrome 157 没有
-  `RTCDataChannel.priority`（发送 256），pion 总是 BUNDLE 且发送 256，因此优先级只在 only 对端之间验证；
+  akio `Endpoint` 不带 BUNDLE 提供音频和一个通道时，经两个传输收到 Chrome 的麦克风。Chrome 157 没有
+  `RTCDataChannel.priority`（发送 256），pion 总是 BUNDLE 且发送 256，因此优先级只在 akio 对端之间验证；
   pion 脚本（`run.sh`）与 Chrome 脚本（`browser.sh`）未经修改全部通过。
 - 模糊测试：新目标 `webrtc_sdes`（`a=crypto` 值往返一致并能建立上下文）；`webrtc_sdp` 还尝试带 MKI 的
   无 ICE SDES 与协商 RTCP 的无 BUNDLE 配置，并检查密钥从不与指纹同段、对无 ICE offer 的应答不带 ICE、

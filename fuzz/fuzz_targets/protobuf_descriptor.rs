@@ -3,7 +3,7 @@
 //! an arbitrary `FileDescriptorSet` must fail cleanly or give a pool whose messages decode and
 //! re-encode arbitrary input without panicking, and whose dynamic re-encodings decode back.
 
-use only_protobuf::reflect::{DescriptorPool, DynamicMessage};
+use akio_protobuf::reflect::{DescriptorPool, DynamicMessage};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     // First byte: where the descriptor set ends and the message bytes start.

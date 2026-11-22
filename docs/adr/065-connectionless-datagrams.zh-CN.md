@@ -52,14 +52,14 @@ DNS、syslog、StatsD、NTP 式或遥测采集器对每个数据报单独应答�
 6. **完全没有每对端状态**：没有表、没有 `Conn`、没有空闲定时器、没有 `on_open` / `on_close`；
    `udp_max_peers`、`udp_idle_timeout`、`spawn_blocking` 和连接表都不适用（慢的工作交给应用自己
    的线程，用 `DatagramSender` 应答）。内存是接收槽、回复缓冲区和 handler，与对端数量无关。
-7. **一个驱动，三个后端。** `only_core::DatagramPort`（面向后端）持有 socket、接收批次、
+7. **一个驱动，三个后端。** `akio_core::DatagramPort`（面向后端）持有 socket、接收批次、
    handler 和回复队列，提供 `on_readable` / `on_writable` / `wants_read` / `wants_write` /
    `shutdown` / `on_reload`。epoll/kqueue 的 UDP 循环（`UdpGroup::bind_datagrams`）在其 socket
    token 下轮询它；io_uring 循环（`UringGroup::bind_datagrams`）为每个 socket 提交一个一次性的
    `IORING_OP_POLL_ADD`（`POLLIN`，有回复等待时为 `POLLOUT`），完成时运行同一个驱动，关闭时取消。
    就绪来自 ring、I/O 走 `recvmmsg` / `sendmmsg`，正是 M2 评估的结论（带 provided buffer 的
    multishot `recvmsg` 会把批量化重新实现一遍，却没有可测的收益），现在用于一个真正运行在
-   io_uring 线程上的 listener，因此 `ONLY_DEFAULT_BACKEND=uring`（ADR-029）对数据报 listener
+   io_uring 线程上的 listener，因此 `AKIO_DEFAULT_BACKEND=uring`（ADR-029）对数据报 listener
    生效（每对端 UDP listener 仍总是运行在 epoll 的 UDP 循环上）。严格的 `UringConfig` 在
    io_uring 不可用时让 `build` 失败，与 TCP 相同。
 8. **不支持**：DPDK（它的用户态 UDP 是每对端的；`build` 返回 `Unsupported`，要支持需要基于该
@@ -75,15 +75,15 @@ DNS、syslog、StatsD、NTP 式或遥测采集器对每个数据报单独应答�
   常驻内存没有增长。
 - 每对端路径不变（UDP 循环只是在 socket token 上为服务数据报端口的循环多了一个分支）；下面的
   A/B 显示没有退步。
-- 公共 API 只有新增：`only::{DatagramsHandler, Datagrams, DatagramsIter, Replies,
+- 公共 API 只有新增：`akio::{DatagramsHandler, Datagrams, DatagramsIter, Replies,
   DatagramSender}`、`Listener::serve_datagrams`、`Engine::datagram_sender`，以及后端构造函数
   `UdpGroup::bind_datagrams` / `UringGroup::bind_datagrams`。
-- 测试：`crates/only/tests/datagrams.rs`（跨对端的批次与边界；每批回复一次 `sendmmsg`，由
+- 测试：`crates/akio/tests/datagrams.rs`（跨对端的批次与边界；每批回复一次 `sendmmsg`，由
   `writes` 指标计数；向同一对端的突发；来自其他线程的发送，包括工厂函数的和 engine 的；11,000 个
   不同对端下没有对端、没有连接、RSS 有界；每对端 listener 与数据报 listener 并存；关闭时的数据报；
-  panic；大小限制；误用），在 kqueue、epoll 和 io_uring（`ONLY_TEST_BACKEND=uring`）上运行；以及
+  panic；大小限制；误用），在 kqueue、epoll 和 io_uring（`AKIO_TEST_BACKEND=uring`）上运行；以及
   回复队列的单元测试（上限之下 / 恰好 / 之上、GSO 段边界、顺序）。
-- 示例：`crates/only/examples/udp-dns.rs`（DNS 风格应答器）；基准用 `bench-server udp-dgram`。
+- 示例：`crates/akio/examples/udp-dns.rs`（DNS 风格应答器）；基准用 `bench-server udp-dgram`。
 
 ## 测量
 

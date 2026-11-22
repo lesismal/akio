@@ -1,0 +1,41 @@
+[package]
+name = "akio-webrtc"
+description = "akio WebRTC: ICE, DTLS-SRTP, SCTP data channels and RTP media (in-house sans-io stack) over only UDP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-webrtc"
+keywords = ["webrtc", "ice", "dtls", "srtp", "sctp"]
+categories = ["network-programming", "multimedia"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_webrtc::fuzzing`); not a public API.
+fuzzing = []
+# Reserved for APIs outside the semver promise (docs/api-stability.md); empty since the in-house
+# stack replaced str0m.
+unstable = []
+
+[dependencies]
+akio = { workspace = true }
+# The listener of a simultaneous-open ICE-TCP candidate (`SO_REUSEPORT`).
+akio-sys = { workspace = true }
+akio-turn = { workspace = true }
+akio-crypto = { workspace = true }
+akio-dtls = { workspace = true }
+# TURN over DTLS: the server certificate is verified against the TLS client configuration's roots.
+akio-x509 = { workspace = true }
+akio-ice = { workspace = true }
+akio-rtp = { workspace = true }
+akio-sctp = { workspace = true }
+akio-srtp = { workspace = true }
+akio-log = { workspace = true }
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

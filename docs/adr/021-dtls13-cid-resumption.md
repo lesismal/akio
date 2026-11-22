@@ -1,4 +1,4 @@
-# ADR-021: DTLS 1.3, connection IDs, PSKs and session resumption in only-dtls
+# ADR-021: DTLS 1.3, connection IDs, PSKs and session resumption in akio-dtls
 
 English | [简体中文](021-dtls13-cid-resumption.zh-CN.md)
 
@@ -6,11 +6,11 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-only-dtls (wave C) implemented DTLS 1.2 only: full ECDHE handshakes with certificates, no
+akio-dtls (wave C) implemented DTLS 1.2 only: full ECDHE handshakes with certificates, no
 connection IDs, no resumption, no pre-shared keys. DEV-PLAN wave D listed as not done: DTLS 1.3
 (RFC 9147) with its ACKs, connection IDs (RFC 9146 for DTLS 1.2 and the DTLS 1.3 CID),
-resumption (DTLS 1.2 session IDs and tickets, DTLS 1.3 PSK tickets) and PSKs. only-dtls is an
-Internal-tier crate (docs/api-stability.md), so its API may change with an ADR; only-webrtc is
+resumption (DTLS 1.2 session IDs and tickets, DTLS 1.3 PSK tickets) and PSKs. akio-dtls is an
+Internal-tier crate (docs/api-stability.md), so its API may change with an ADR; akio-webrtc is
 its only user in the workspace.
 
 ## Decision
@@ -30,10 +30,10 @@ its only user in the workspace.
    DTLS 1.2 only. pion/dtls (v3) has no DTLS 1.3 and WebRTC stacks negotiate DTLS 1.2 today;
    offering 1.3 to them costs a larger ClientHello (key share) for nothing. Users opt in with
    `with_versions(vec![Version::Dtls13, Version::Dtls12])`.
-3. **The DTLS 1.3 key schedule is only-dtls's own**, on only-crypto's HKDF, not only-tls's:
-   only-tls depends on only-core / only-log / only-deflate (the engine), which the sans-io
+3. **The DTLS 1.3 key schedule is akio-dtls's own**, on akio-crypto's HKDF, not akio-tls's:
+   akio-tls depends on akio-core / akio-log / akio-deflate (the engine), which the sans-io
    WebRTC stack must not pull in, and its labels use `"tls13 "` where DTLS 1.3 uses `"dtls13"`.
-   The structure is the same as only-tls's and is checked against RFC 8448 with the TLS prefix;
+   The structure is the same as akio-tls's and is checked against RFC 8448 with the TLS prefix;
    there are no published DTLS 1.3 trace vectors, so the DTLS labels are checked by interop.
 4. **DTLS 1.3 records and reliability.** DTLSPlaintext in epoch 0, then the unified header
    with 16-bit sequence numbers, an explicit length, the CID when negotiated and record number
@@ -75,7 +75,7 @@ its only user in the workspace.
    AEAD PSK and ECDHE-PSK suites (`CipherSuite::PSK`, offered only with a PSK); DTLS 1.3 uses
    external PSKs with SHA-256 in `psk_dhe_ke`.
 
-Public API added (only-dtls): `Version`, `Psk`, `Session`, `TicketKey`, `connection_id`;
+Public API added (akio-dtls): `Version`, `Psk`, `Session`, `TicketKey`, `connection_id`;
 `Config::{with_versions, with_psks, with_session_resumption, with_ticket_key,
 with_ticket_lifetime, with_connection_id}`; `Connection::{client_resume, version,
 local_connection_id, update_keys}`; `Event::NewSession`; `HandshakeInfo::{version, resumed,

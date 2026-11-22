@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# AF_XDP vs AF_PACKET under the userspace stack (only-dpdk), same-run A/B on one veth pair
+# AF_XDP vs AF_PACKET under the userspace stack (akio-dpdk), same-run A/B on one veth pair
 # (ADR-063). The stack serves UDP/TCP echo on one end (root namespace); kernel clients in a
 # network namespace on the other end measure UDP and TCP request/response rates (64 B), TCP
 # connections per second and single-connection TCP echo throughput. The links alternate within
 # each round (and swap order every round). Linux, root. Run it on a quiet host:
 #
-#   /root/only-bench/quiet.sh run tools/bench/afxdp.sh
+#   /root/akio-bench/quiet.sh run tools/bench/afxdp.sh
 #
 #   SECS (5) seconds per measurement, RUNS (5) rounds, THREADS (4) client threads,
 #   SRV_CPU (2) the stack's I/O thread, CLI_CPUS (4-7) the clients, LINKS (af_packet af_xdp).
@@ -24,7 +24,7 @@ SRV_CPU=${SRV_CPU:-2}
 CLI_CPUS=${CLI_CPUS:-4-7}
 LINKS=${LINKS:-af_packet af_xdp}
 NS=onlyxab
-cargo build -q --release -p only-dpdk --example link-bench || exit 1
+cargo build -q --release -p akio-dpdk --example link-bench || exit 1
 BIN=$T/release/examples/link-bench
 
 cleanup() { ip netns del "$NS" 2>/dev/null; ip link del flxab0 2>/dev/null; true; }

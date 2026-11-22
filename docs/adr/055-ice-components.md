@@ -1,4 +1,4 @@
-# ADR-055: Several components per ICE stream in only-ice
+# ADR-055: Several components per ICE stream in akio-ice
 
 English | [简体中文](055-ice-components.zh-CN.md)
 
@@ -6,10 +6,10 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-`only_ice::IceAgent` (the ICE layer of the in-house WebRTC stack, ADR-044 for its latest
+`akio_ice::IceAgent` (the ICE layer of the in-house WebRTC stack, ADR-044 for its latest
 additions) handled one component: candidates of any component other than 1 were dropped, and
 the selection, nomination, consent freshness and lite-agent state were single values. WebRTC
-always muxes RTP and RTCP (rtcp-mux, BUNDLE), so that was enough for only-webrtc, but RFC 8445
+always muxes RTP and RTCP (rtcp-mux, BUNDLE), so that was enough for akio-webrtc, but RFC 8445
 streams may have several components, and the classic case, RTP on one port and RTCP on the next
 (SIP endpoints, older RTP stacks, `a=rtcp` without `a=rtcp-mux`), needs two. The crate README
 listed "several components" as not implemented.
@@ -24,7 +24,7 @@ checklist completes once every component has a nominated pair (§8.1.2), consent
 on each selected pair (RFC 7675 §5), and the PRIORITY of a check is computed with the
 component's id (§7.1.1). The role (and its tie-breaker) belongs to the agent, not the component.
 
-The single-component API is used by only-webrtc, which another session is changing at the same
+The single-component API is used by akio-webrtc, which another session is changing at the same
 time; it had to stay source-compatible and behave exactly as before.
 
 ## Decision
@@ -71,11 +71,11 @@ time; it had to stay source-compatible and behave exactly as before.
    `IceAgent::{components, selected_pair_of, send_pair_of}` and
    `IceEvent::ComponentSelectedPair { component, local, remote }` (`IceEvent` is
    `#[non_exhaustive]`). `IceEvent::SelectedPair`, `selected_pair()` and `send_pair()` stay
-   component 1's, so callers that match `SelectedPair { local, remote }` (only-webrtc) compile
+   component 1's, so callers that match `SelectedPair { local, remote }` (akio-webrtc) compile
    and behave unchanged. `Transmit` gets no component field: its `source` is the local socket,
    which is what the caller needs. The ICE state docs now speak of every component. The one
    source-level break: struct literals of `IceConfig` outside the crate must add
-   `components: 1` (only-ice is internal tier; the workspace builds its configs with
+   `components: 1` (akio-ice is internal tier; the workspace builds its configs with
    `IceConfig::new`, which sets it).
 
 ## Consequences
@@ -93,7 +93,7 @@ time; it had to stay source-compatible and behave exactly as before.
   components. The 46 earlier tests (28 simulator, 18 unit) pass unchanged.
 - Interop (`tests/libnice.rs`, `tools/interop/ice/run.sh`): libnice 0.1.21 (Debian 12) with one
   stream of two components over loopback UDP in five setups (libnice controlling with aggressive
-  and with regular nomination, libnice controlled, libnice lite, only-ice lite): both sides
+  and with regular nomination, libnice controlled, libnice lite, akio-ice lite): both sides
   select the same pair for each component, libnice reports both components `ready`, and data
   goes both ways on both. pion/ice has one component only, so `tests/pion.rs` is unchanged.
 - Fuzzing: `ice_stun` also drives agents of two components (full controlling, controlled with
@@ -101,8 +101,8 @@ time; it had to stay source-compatible and behave exactly as before.
   seed with a component-2 candidate line.
 - Costs: each component carries its own consent timer and checks (one every 5 s ±20 % per
   selected pair); the checklist limit of 100 pairs is shared by the components.
-- Not done: wiring streams without rtcp-mux into only-webrtc (offering or accepting `a=rtcp`
-  without `a=rtcp-mux`, a second socket per m-line, RTCP on component 2): only-webrtc keeps
+- Not done: wiring streams without rtcp-mux into akio-webrtc (offering or accepting `a=rtcp`
+  without `a=rtcp-mux`, a second socket per m-line, RTCP on component 2): akio-webrtc keeps
   component 1 and is unchanged. Nominating the pairs of all components on one foundation when
   several work equally well (each component picks its best pair on its own; with the shared
   foundations and the Frozen order they usually end up on the same path).

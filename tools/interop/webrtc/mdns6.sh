@@ -2,8 +2,8 @@
 # mDNS over IPv6 multicast (ADR-054, ADR-078) on an IPv6-only link, in a Linux container
 # (Docker): no IPv4 at all (`--network none`), a veth pair v0 <-> v1 with link-local and ULA
 # addresses (fd00:6::1 on v0, fd00:6::2 on v1), so ff02::fb is the only mDNS group there is.
-#   1. the only-webrtc mDNS tests and the engine's multicast tests in that namespace, on epoll
-#      and with ONLY_TEST_BACKEND=uring (no system responder: our sockets answer each other);
+#   1. the akio-webrtc mDNS tests and the engine's multicast tests in that namespace, on epoll
+#      and with AKIO_TEST_BACKEND=uring (no system responder: our sockets answer each other);
 #   2. avahi-daemon (IPv6 only, on v1, check-response-ttl=yes: answers sent with a hop limit
 #      other than 255 are dropped) resolving the name an only Endpoint conceals fd00:6::1
 #      behind (avahi-resolve -6);
@@ -16,15 +16,15 @@
 # The examples and tests are built in rust:1; the image adds avahi, dbus and iproute2.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-IMG=only-mdns6-avahi
-C=only-mdns6-it
-VOL=only-mdns6-target
+IMG=akio-mdns6-avahi
+C=akio-mdns6-it
+VOL=akio-mdns6-target
 # One rust:1 run builds the example and the test executables, and lists the latter (the paths
 # cargo prints after "Executable") in the target volume.
-docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
+docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
   -v $VOL:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 sh -ec '
-  cargo build -q --release -p only-webrtc --example webrtc-interop
-  for t in "-p only-webrtc --test mdns" "-p only --test shared_ports" "-p only-sys --lib"; do
+  cargo build -q --release -p akio-webrtc --example webrtc-interop
+  for t in "-p akio-webrtc --test mdns" "-p only --test shared_ports" "-p akio-sys --lib"; do
     cargo test --no-run $t 2>&1 | sed -n "s/.*Executable .*(\(.*\))/\1/p" | tail -1
   done >/tmp/t/mdns6-tests.txt
   test "$(grep -c . /tmp/t/mdns6-tests.txt)" = 3'
@@ -56,9 +56,9 @@ T_SYS=$(x 'sed -n 3p /tmp/t/mdns6-tests.txt')
 
 echo "== mDNS and multicast tests on the IPv6-only link (epoll, then io_uring)"
 for b in epoll uring; do
-  x "ONLY_TEST_BACKEND=$b $T_SYS multicast_hops 2>&1 | grep 'test result'"
-  x "ONLY_TEST_BACKEND=$b $T_SHARED --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-shared.out
-  x "ONLY_TEST_BACKEND=$b $T_MDNS --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-tests.out
+  x "AKIO_TEST_BACKEND=$b $T_SYS multicast_hops 2>&1 | grep 'test result'"
+  x "AKIO_TEST_BACKEND=$b $T_SHARED --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-shared.out
+  x "AKIO_TEST_BACKEND=$b $T_MDNS --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-tests.out
   # Nothing skipped: the IPv6 tests and the concealing ones (over ff02::fb only) all ran.
   if grep -q skipped /tmp/mdns6-tests.out; then echo "FAIL: a test was skipped"; exit 1; fi
   grep -q "test result: ok" /tmp/mdns6-tests.out
@@ -86,7 +86,7 @@ sleep 2 # avahi probes and announces its host name first
 RS=/tmp/t/release/examples/webrtc-interop
 
 echo "== avahi resolves the name an only Endpoint conceals fd00:6::1 behind"
-x "ONLY_LOG=only_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 12 >/tmp/conceal.out 2>/tmp/conceal.log &"
+x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 12 >/tmp/conceal.out 2>/tmp/conceal.log &"
 for _ in $(seq 50); do x 'grep -q ^name /tmp/conceal.out' && break; sleep 0.1; done
 NAME=$(x 'sed -n "s/^name //p" /tmp/conceal.out')
 echo "concealed name: $NAME"
@@ -100,12 +100,12 @@ PUB=$(x 'cat /proc/sys/kernel/random/uuid').local
 x "avahi-publish -a -R $PUB fd00:6::2 >/tmp/publish.log 2>&1 &"
 for _ in $(seq 50); do x "grep -q Established /tmp/publish.log" && break; sleep 0.1; done
 x "cat /tmp/publish.log"
-x "ONLY_LOG=only_webrtc=debug $RS mdns-resolve '[fd00:6::1]:0' '[fd00:6::2]:0' $PUB 2>/tmp/resolve.log"
+x "AKIO_LOG=akio_webrtc=debug $RS mdns-resolve '[fd00:6::1]:0' '[fd00:6::2]:0' $PUB 2>/tmp/resolve.log"
 x "grep -m1 'mdns: $PUB is' /tmp/resolve.log"
 # Resolved from avahi's answer over IPv6 (an IPv6 source on the mDNS port: there is no IPv4).
 x "grep -qE 'mdns: $PUB is \\[fd00:6::2\\] \\(from \\[[0-9a-f:]+(%[0-9]+)?\\]:5353\\)' /tmp/resolve.log"
 echo "== avahi publishing a name an only Endpoint has claimed gets a collision"
-x "ONLY_LOG=only_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 8 >/tmp/claim.out 2>/tmp/claim.log &"
+x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '[fd00:6::1]:0' 8 >/tmp/claim.out 2>/tmp/claim.log &"
 for _ in $(seq 50); do x 'grep -q ^name /tmp/claim.out' && break; sleep 0.1; done
 CLAIMED=$(x 'sed -n "s/^name //p" /tmp/claim.out')
 sleep 3 # probed (750 ms) and announced (1.75 s)

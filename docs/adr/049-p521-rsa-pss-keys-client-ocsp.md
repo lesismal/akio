@@ -6,20 +6,20 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-only-tls's README listed, among what it did not implement: RSA-PSS keys, P-521, a client's OCSP
-response in TLS 1.3 client authentication and `status_request_v2`. only-crypto had ECDH and
+akio-tls's README listed, among what it did not implement: RSA-PSS keys, P-521, a client's OCSP
+response in TLS 1.3 client authentication and `status_request_v2`. akio-crypto had ECDH and
 ECDSA on P-256 and P-384 only, and RSA keys only as `rsaEncryption` (RSASSA-PSS signatures with
 such keys, the TLS 1.3 `rsa_pss_rsae_*` schemes, were supported). Certificates whose key is an
 `id-RSASSA-PSS` key (RFC 4055, OpenSSL's `genpkey -algorithm RSA-PSS`) and P-521 certificates
 did not parse, and peers offering only secp521r1 or the `rsa_pss_pss_*` schemes could not
 connect. RFC 8446 section 4.4.2.1 also lets a server ask a TLS 1.3 client to send an OCSP
-response with its certificate; only-tls's server never asked and its client never sent one,
+response with its certificate; akio-tls's server never asked and its client never sent one,
 although the server-side machinery of ADR-038 (the stapled response, validated under a
 `RevocationPolicy`) was there.
 
 ## Decision
 
-1. **only-crypto, P-521** (internal tier): a new `p521` module with the API of `p256` / `p384`
+1. **akio-crypto, P-521** (internal tier): a new `p521` module with the API of `p256` / `p384`
    (`SecretKey`, `PublicKey`, `Signature`, `SCALAR_LEN = 66`; SHA-512 by default, any `Hash`
    for prehashing, RFC 6979 nonces with `bits2int` over the leftmost 521 bits, DER and 132-byte
    fixed-width signatures, compressed and uncompressed SEC1 points, validated). It is its own
@@ -42,7 +42,7 @@ although the server-side machinery of ADR-038 (the stapled response, validated u
      only: P-521 is rare enough that assembly is not worth it. `tools/ct-dudect` gains
      `p521-ecdh`, `p521-keygen` and `p521-sign`.
    - `pkey::PublicKey::P521`, `pkey::PrivateKey::P521` (SPKI, PKCS#8, SEC1), `der::oid::SECP521R1`.
-2. **only-crypto, RSA-PSS keys**: `pkey::PublicKey::RsaPss(rsa::PublicKey, Option<PssParams>)`
+2. **akio-crypto, RSA-PSS keys**: `pkey::PublicKey::RsaPss(rsa::PublicKey, Option<PssParams>)`
    and `pkey::PrivateKey::RsaPss(Box<rsa::PrivateKey>, Option<PssParams>)` for the
    `id-RSASSA-PSS` algorithm in SubjectPublicKeyInfo and PKCS#8, with or without
    `RSASSA-PSS-params`. `PssParams { hash, salt_len }` (`new`, `from_der`, `to_der`, `allows`):
@@ -52,10 +52,10 @@ although the server-side machinery of ADR-038 (the stapled response, validated u
    salt (the hash length, as TLS 1.3 and X.509 use) at least their minimum. Its default
    certificate signature algorithm is RSA-PSS with its hash (SHA-256 without parameters). The
    encodings equal OpenSSL's byte for byte.
-3. **only-x509**: no API change. Certificates with P-521 and `id-RSASSA-PSS` keys parse, verify
+3. **akio-x509**: no API change. Certificates with P-521 and `id-RSASSA-PSS` keys parse, verify
    and are issued (`CertificateParams::signed_by` with such a key); a certificate signature is
    checked against the issuer key's restrictions.
-4. **only-tls**:
+4. **akio-tls**:
    - group secp521r1 (0x0019), offered last in the default list (after x448: a ClientHello
      lists it, its key share goes for X25519); signature scheme `ecdsa_secp521r1_sha512`
      (0x0603) for P-521 keys (TLS 1.2: any ECDSA scheme fits any curve, as before for P-256 and
@@ -76,7 +76,7 @@ although the server-side machinery of ADR-038 (the stapled response, validated u
 5. **Validation**: Wycheproof ECDSA P-521/SHA-512 (DER and P1363) and ECDH P-521 vectors
    (vendored), RFC 6979 A.2.7 (SHA-512 and SHA-256, also what OpenSSL's deterministic ECDSA
    gives), OpenSSL-made RSA-PSS keys (with and without parameters) and signatures, OpenSSL-made
-   P-521 and RSA-PSS-key certificate chains in only-x509; in-memory TLS matrices with P-521 and
+   P-521 and RSA-PSS-key certificate chains in akio-x509; in-memory TLS matrices with P-521 and
    RSA-PSS-key certificates (server and client, both versions), secp521r1, and the client OCSP
    response under every policy; `tools/interop/tls/run.sh` against OpenSSL (secp521r1, P-521
    and RSA-PSS-key certificates both ways in TLS 1.3 and 1.2, such client certificates, and

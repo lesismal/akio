@@ -8,7 +8,7 @@ Status: accepted (2026-11-20)
 
 ADR-011 brought WebSocket to HTTP/3 (RFC 9220) through the existing API: the server accepts an
 extended CONNECT in `Context::upgrade_websocket`, a `Router` answers it with the path's GET
-route, the client opens one with `H3Client::websocket`, and only-ws writes through a hidden
+route, the client opens one with `H3Client::websocket`, and akio-ws writes through a hidden
 `WsLink` seam. HTTP/2 was left out: `upgrade_websocket` answered 400 on an HTTP/2 stream, the
 server did not advertise `SETTINGS_ENABLE_CONNECT_PROTOCOL`, a request with `:protocol` was
 malformed, and `H2Client` had no WebSocket. Browsers open WebSockets on an HTTP/2 connection they
@@ -88,6 +88,6 @@ connection; and our own clients could not share one connection between requests 
   it counts against `max_concurrent_streams`. When that timer resets the stream before the
   handshake finished, the handler's `on_close` (1006) runs on the timer thread rather than the
   connection's I/O thread.
-- Not done: WebSocket over HTTP/2 through the HTTP/1 `only_ws::client::dial` (it stays
+- Not done: WebSocket over HTTP/2 through the HTTP/1 `akio_ws::client::dial` (it stays
   HTTP/1.1; HTTP/2 needs an `H2Client`), and RFC 8441 for other protocols than WebSocket on the
   client.

@@ -1,0 +1,156 @@
+pub mod akio_dpdk
+pub use akio_dpdk::XdpMode
+#[non_exhaustive] pub enum akio_dpdk::Congestion
+pub akio_dpdk::Congestion::Cubic
+pub akio_dpdk::Congestion::NewReno
+impl core::clone::Clone for akio_dpdk::Congestion
+pub fn akio_dpdk::Congestion::clone(&self) -> Self
+impl core::cmp::Eq for akio_dpdk::Congestion
+impl core::cmp::PartialEq for akio_dpdk::Congestion
+pub fn akio_dpdk::Congestion::eq(&self, &Self) -> bool
+impl core::default::Default for akio_dpdk::Congestion
+pub fn akio_dpdk::Congestion::default() -> Self
+impl core::fmt::Debug for akio_dpdk::Congestion
+pub fn akio_dpdk::Congestion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_dpdk::Congestion
+impl core::marker::StructuralPartialEq for akio_dpdk::Congestion
+impl core::marker::Send for akio_dpdk::Congestion
+impl core::marker::Sync for akio_dpdk::Congestion
+impl core::marker::Unpin for akio_dpdk::Congestion
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::Congestion
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::Congestion
+#[non_exhaustive] pub enum akio_dpdk::Device
+pub akio_dpdk::Device::AfPacket(alloc::string::String)
+pub akio_dpdk::Device::AfXdp(akio_dpdk::AfXdpConfig)
+pub akio_dpdk::Device::Dpdk(akio_dpdk::EalConfig)
+pub akio_dpdk::Device::Memory(akio_dpdk::MemoryPort)
+pub akio_dpdk::Device::Tap(alloc::string::String)
+impl core::clone::Clone for akio_dpdk::Device
+pub fn akio_dpdk::Device::clone(&self) -> Self
+impl core::fmt::Debug for akio_dpdk::Device
+pub fn akio_dpdk::Device::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::Device
+impl core::marker::Sync for akio_dpdk::Device
+impl core::marker::Unpin for akio_dpdk::Device
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::Device
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::Device
+#[non_exhaustive] pub enum akio_dpdk::ZeroCopy
+pub akio_dpdk::ZeroCopy::Auto
+pub akio_dpdk::ZeroCopy::Off
+pub akio_dpdk::ZeroCopy::Required
+impl core::clone::Clone for akio_dpdk::ZeroCopy
+pub fn akio_dpdk::ZeroCopy::clone(&self) -> Self
+impl core::cmp::Eq for akio_dpdk::ZeroCopy
+impl core::cmp::PartialEq for akio_dpdk::ZeroCopy
+pub fn akio_dpdk::ZeroCopy::eq(&self, &Self) -> bool
+impl core::default::Default for akio_dpdk::ZeroCopy
+pub fn akio_dpdk::ZeroCopy::default() -> Self
+impl core::fmt::Debug for akio_dpdk::ZeroCopy
+pub fn akio_dpdk::ZeroCopy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_dpdk::ZeroCopy
+impl core::marker::StructuralPartialEq for akio_dpdk::ZeroCopy
+impl core::marker::Send for akio_dpdk::ZeroCopy
+impl core::marker::Sync for akio_dpdk::ZeroCopy
+impl core::marker::Unpin for akio_dpdk::ZeroCopy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::ZeroCopy
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::ZeroCopy
+#[non_exhaustive] pub struct akio_dpdk::AfXdpConfig
+pub akio_dpdk::AfXdpConfig::frames: u32
+pub akio_dpdk::AfXdpConfig::interface: alloc::string::String
+pub akio_dpdk::AfXdpConfig::mode: akio_ebpf::xdp::XdpMode
+pub akio_dpdk::AfXdpConfig::multi_buffer: bool
+pub akio_dpdk::AfXdpConfig::queues: u16
+pub akio_dpdk::AfXdpConfig::shared_umem: bool
+pub akio_dpdk::AfXdpConfig::zero_copy: akio_dpdk::ZeroCopy
+impl akio_dpdk::AfXdpConfig
+pub fn akio_dpdk::AfXdpConfig::new(impl core::convert::Into<alloc::string::String>) -> akio_dpdk::AfXdpConfig
+impl core::clone::Clone for akio_dpdk::AfXdpConfig
+pub fn akio_dpdk::AfXdpConfig::clone(&self) -> Self
+impl core::fmt::Debug for akio_dpdk::AfXdpConfig
+pub fn akio_dpdk::AfXdpConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::AfXdpConfig
+impl core::marker::Sync for akio_dpdk::AfXdpConfig
+impl core::marker::Unpin for akio_dpdk::AfXdpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::AfXdpConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::AfXdpConfig
+#[non_exhaustive] pub struct akio_dpdk::DpdkConfig
+pub akio_dpdk::DpdkConfig::address: core::net::ip_addr::Ipv4Addr
+pub akio_dpdk::DpdkConfig::address6: core::option::Option<core::net::ip_addr::Ipv6Addr>
+pub akio_dpdk::DpdkConfig::busy_poll: bool
+pub akio_dpdk::DpdkConfig::congestion: akio_dpdk::Congestion
+pub akio_dpdk::DpdkConfig::device: akio_dpdk::Device
+pub akio_dpdk::DpdkConfig::gateway: core::option::Option<core::net::ip_addr::Ipv4Addr>
+pub akio_dpdk::DpdkConfig::gateway6: core::option::Option<core::net::ip_addr::Ipv6Addr>
+pub akio_dpdk::DpdkConfig::ipv6_dad: bool
+pub akio_dpdk::DpdkConfig::ipv6_slaac: bool
+pub akio_dpdk::DpdkConfig::mac: core::option::Option<[u8; 6]>
+pub akio_dpdk::DpdkConfig::mtu: usize
+pub akio_dpdk::DpdkConfig::prefix_len: u8
+pub akio_dpdk::DpdkConfig::prefix_len6: u8
+pub akio_dpdk::DpdkConfig::syn_cookies: bool
+pub akio_dpdk::DpdkConfig::tcp_accecn: bool
+pub akio_dpdk::DpdkConfig::tcp_backlog: usize
+pub akio_dpdk::DpdkConfig::tcp_buffer: usize
+pub akio_dpdk::DpdkConfig::tcp_ecn: bool
+pub akio_dpdk::DpdkConfig::tcp_keepalive: core::option::Option<core::time::Duration>
+pub akio_dpdk::DpdkConfig::tcp_pacing: bool
+pub akio_dpdk::DpdkConfig::udp_buffer: usize
+impl akio_dpdk::DpdkConfig
+pub fn akio_dpdk::DpdkConfig::new(akio_dpdk::Device, core::net::ip_addr::Ipv4Addr) -> akio_dpdk::DpdkConfig
+impl core::clone::Clone for akio_dpdk::DpdkConfig
+pub fn akio_dpdk::DpdkConfig::clone(&self) -> Self
+impl core::fmt::Debug for akio_dpdk::DpdkConfig
+pub fn akio_dpdk::DpdkConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::DpdkConfig
+impl core::marker::Sync for akio_dpdk::DpdkConfig
+impl core::marker::Unpin for akio_dpdk::DpdkConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::DpdkConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::DpdkConfig
+pub struct akio_dpdk::DpdkGroup
+impl akio_dpdk::DpdkGroup
+pub fn akio_dpdk::DpdkGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>)>, bool, &akio_dpdk::DpdkConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_dpdk::DpdkGroup>
+impl core::fmt::Debug for akio_dpdk::DpdkGroup
+pub fn akio_dpdk::DpdkGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::DpdkGroup
+impl core::marker::Sync for akio_dpdk::DpdkGroup
+impl core::marker::Unpin for akio_dpdk::DpdkGroup
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::DpdkGroup
+impl !core::panic::unwind_safe::UnwindSafe for akio_dpdk::DpdkGroup
+#[non_exhaustive] pub struct akio_dpdk::EalConfig
+pub akio_dpdk::EalConfig::args: alloc::vec::Vec<alloc::string::String>
+pub akio_dpdk::EalConfig::descriptors: u16
+pub akio_dpdk::EalConfig::mbufs: u32
+pub akio_dpdk::EalConfig::port: alloc::string::String
+pub akio_dpdk::EalConfig::queues: u16
+impl core::clone::Clone for akio_dpdk::EalConfig
+pub fn akio_dpdk::EalConfig::clone(&self) -> Self
+impl core::default::Default for akio_dpdk::EalConfig
+pub fn akio_dpdk::EalConfig::default() -> Self
+impl core::fmt::Debug for akio_dpdk::EalConfig
+pub fn akio_dpdk::EalConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::EalConfig
+impl core::marker::Sync for akio_dpdk::EalConfig
+impl core::marker::Unpin for akio_dpdk::EalConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::EalConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::EalConfig
+pub struct akio_dpdk::MemoryPort
+impl core::clone::Clone for akio_dpdk::MemoryPort
+pub fn akio_dpdk::MemoryPort::clone(&self) -> Self
+impl core::fmt::Debug for akio_dpdk::MemoryPort
+pub fn akio_dpdk::MemoryPort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::MemoryPort
+impl core::marker::Sync for akio_dpdk::MemoryPort
+impl core::marker::Unpin for akio_dpdk::MemoryPort
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::MemoryPort
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::MemoryPort
+#[non_exhaustive] pub struct akio_dpdk::MemoryWire
+impl akio_dpdk::MemoryWire
+pub fn akio_dpdk::MemoryWire::new() -> (akio_dpdk::MemoryPort, akio_dpdk::MemoryPort)
+impl core::fmt::Debug for akio_dpdk::MemoryWire
+pub fn akio_dpdk::MemoryWire::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dpdk::MemoryWire
+impl core::marker::Sync for akio_dpdk::MemoryWire
+impl core::marker::Unpin for akio_dpdk::MemoryWire
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dpdk::MemoryWire
+impl core::panic::unwind_safe::UnwindSafe for akio_dpdk::MemoryWire
+pub fn akio_dpdk::ipv6_addresses(&akio_dpdk::Device) -> core::option::Option<alloc::vec::Vec<core::net::ip_addr::Ipv6Addr>>

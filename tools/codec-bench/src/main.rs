@@ -1,8 +1,8 @@
 //! Micro benchmarks of the in-house HTTP codecs against the crates they replaced:
-//! the HTTP/1 head parser (`only_ws::http1` vs httparse), HPACK (`only_http::hpack` vs
-//! loona-hpack) and `only_regex` (vs regex): route constraints as the router compiles them (whole
-//! segment, ASCII classes; ADR-051) and only-log's message filters (an unanchored search); and
-//! only-brotli and only-zstd against the C libraries (`compress.rs`).
+//! the HTTP/1 head parser (`akio_ws::http1` vs httparse), HPACK (`akio_http::hpack` vs
+//! loona-hpack) and `akio_regex` (vs regex): route constraints as the router compiles them (whole
+//! segment, ASCII classes; ADR-051) and akio-log's message filters (an unanchored search); and
+//! akio-brotli and akio-zstd against the C libraries (`compress.rs`).
 //!
 //! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex|logregex]`
 //! `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli|zstd FILE...`
@@ -59,7 +59,7 @@ X-Request-Id: 0f8fad5b-d9cb-469f-a165-70867728950e\r\n\
 \r\n";
 
 fn http1() {
-    use only_ws::http1::{Header, Resume, Status, parse_request, parse_response};
+    use akio_ws::http1::{Header, Resume, Status, parse_request, parse_response};
     println!("HTTP/1 heads (whole head in one buffer, 100 header slots)");
     for (what, wire) in [
         ("request, 1 header", SMALL),
@@ -138,7 +138,7 @@ fn h2_request() -> Fields {
 fn h2_response() -> Fields {
     vec![
         (b":status", b"200"),
-        (b"server", b"only"),
+        (b"server", b"akio"),
         (b"date", b"Sat, 14 Nov 2026 12:00:00 GMT"),
         (b"content-type", b"application/json; charset=utf-8"),
         (b"content-length", b"1234"),
@@ -146,7 +146,7 @@ fn h2_response() -> Fields {
 }
 
 fn hpack() {
-    use only_http::hpack::{Decoder, Encoder};
+    use akio_http::hpack::{Decoder, Encoder};
     println!("HPACK");
     // First block on a fresh connection (all literals), then the same block again (indexed).
     for (what, fields, huffman) in [
@@ -216,9 +216,9 @@ fn hpack() {
     );
 }
 
-/// A route constraint as `only-http`'s router compiles it.
-fn route(pattern: &str) -> only_regex::Regex {
-    only_regex::RegexBuilder::new(pattern)
+/// A route constraint as `akio-http`'s router compiles it.
+fn route(pattern: &str) -> akio_regex::Regex {
+    akio_regex::RegexBuilder::new(pattern)
         .whole_text(true)
         .ascii_classes(true)
         .build()
@@ -230,7 +230,7 @@ fn regexp() {
     for (pattern, subject) in [
         ("[0-9]+", "1234567"),
         ("\\d{4}-\\d{2}-\\d{2}", "2026-11-14"),
-        ("[a-z0-9_-]{3,16}", "only-http_user"),
+        ("[a-z0-9_-]{3,16}", "akio-http_user"),
         ("(?:v[0-9]+|latest)", "latest"),
         ("[0-9]+", "12345x"),
     ] {
@@ -255,7 +255,7 @@ fn regexp() {
 }
 
 fn logregex() {
-    println!("Message filter regexps (unanchored search, only-regex)");
+    println!("Message filter regexps (unanchored search, akio-regex)");
     let ascii =
         "2026-11-19T08:00:00Z conn 10.0.0.7:51234 closed: connection reset by peer after 15ms";
     let utf8 = "2026-11-19T08:00:00Z conn « 10.0.0.7 » fermée : connexion réinitialisée après 15ms";
@@ -269,7 +269,7 @@ fn logregex() {
         ("timeout|refused|unreachable", utf8, "UTF-8, no match"),
         ("(?i)réinitialisée", utf8, "UTF-8"),
     ] {
-        let ours_re = only_regex::Regex::new(pattern).unwrap();
+        let ours_re = akio_regex::Regex::new(pattern).unwrap();
         let theirs_re = regex::Regex::new(pattern).unwrap();
         assert_eq!(ours_re.is_match(subject), theirs_re.is_match(subject));
         let ours = ns(1_000_000, || {
@@ -286,7 +286,7 @@ fn logregex() {
         r"\b\d+ms\b",
     ] {
         let ours = ns(2_000, || {
-            black_box(only_regex::Regex::new(black_box(pattern)).unwrap());
+            black_box(akio_regex::Regex::new(black_box(pattern)).unwrap());
         });
         let theirs = ns(2_000, || {
             black_box(regex::Regex::new(black_box(pattern)).unwrap());

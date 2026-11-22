@@ -1,0 +1,39 @@
+[package]
+name = "akio-media"
+description = "akio streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS (MPEG-TS, fMP4, multivariant, AES-128, SAMPLE-AES), WHIP/WHEP, RTMP/RTSP clients, recording and a stream hub; H.264, H.265, VP8, VP9, AV1, AAC, Opus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-media"
+keywords = ["rtmp", "rtsp", "srt", "hls", "streaming"]
+categories = ["network-programming", "multimedia"]
+
+[dependencies]
+akio = { workspace = true }
+akio-core = { workspace = true }
+akio-http = { workspace = true }
+akio-crypto = { workspace = true }
+# VP8, VP9 and AV1 RTP payload formats (RTSP).
+akio-rtp = { workspace = true }
+# WebRTC media for WHIP/WHEP (`akio_media::webrtc`), behind the `webrtc` feature.
+akio-webrtc = { workspace = true, optional = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_media::fuzzing`); not a public API.
+fuzzing = ["akio-core/fuzzing"]
+# WHIP ingest and WHEP playback through akio-webrtc (`akio_media::webrtc::RtcMedia`).
+webrtc = ["dep:akio-webrtc"]
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[[example]]
+name = "whip-server"
+required-features = ["webrtc"]
+
+[lints]
+workspace = true

@@ -26,7 +26,7 @@
 //	webrtc-pion server-simulcast <http-addr>         answerer receiving simulcast: reports RTP
 //	                                                 packets per RID on the "stats" data channel
 //	webrtc-pion turn-server <udp> <tcp> <tls> <user> <pass>
-//	                                                 pion/turn server (realm "only") on UDP, TCP
+//	                                                 pion/turn server (realm "akio") on UDP, TCP
 //	                                                 and TLS, relaying from 127.0.0.1
 //
 // Signalling is one HTTP POST: the offer as the body, the answer as the response body.
@@ -81,7 +81,7 @@ func newPC(iceServers []webrtc.ICEServer, relayOnly bool) *webrtc.PeerConnection
 	return pc
 }
 
-// offer runs the offer/answer exchange against the only server at http.
+// offer runs the offer/answer exchange against the akio server at http.
 func offer(pc *webrtc.PeerConnection, addr string) {
 	o, err := pc.CreateOffer(nil)
 	check(err)
@@ -357,7 +357,7 @@ func turnRaw(server, user, pass, transport string) {
 	}
 	c, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: server, TURNServerAddr: server, Conn: conn,
-		Username: user, Password: pass, Realm: "only",
+		Username: user, Password: pass, Realm: "akio",
 	})
 	check(err)
 	check(c.Listen())
@@ -406,7 +406,7 @@ func turnFamilyRaw(server, user, pass, family string) {
 	check(err)
 	c, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: server, TURNServerAddr: server, Conn: conn,
-		Username: user, Password: pass, Realm: "only", RequestedAddressFamily: fam,
+		Username: user, Password: pass, Realm: "akio", RequestedAddressFamily: fam,
 	})
 	check(err)
 	check(c.Listen())
@@ -453,7 +453,7 @@ func turnTCPRaw(server, user, pass string) {
 	check(err)
 	c, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: server, TURNServerAddr: server, Conn: turn.NewSTUNConn(c0),
-		Username: user, Password: pass, Realm: "only",
+		Username: user, Password: pass, Realm: "akio",
 	})
 	check(err)
 	check(c.Listen())
@@ -643,7 +643,7 @@ func selfSigned() tls.Certificate {
 
 // turnServer runs pion/turn on UDP, TCP and TLS for the only TURN client.
 func turnServer(udpAddr, tcpAddr, tlsAddr, user, pass string) {
-	key := turn.GenerateAuthKey(user, "only", pass)
+	key := turn.GenerateAuthKey(user, "akio", pass)
 	gen := func() turn.RelayAddressGenerator {
 		return &turn.RelayAddressGeneratorStatic{RelayAddress: net.ParseIP("127.0.0.1"), Address: "127.0.0.1"}
 	}
@@ -654,7 +654,7 @@ func turnServer(udpAddr, tcpAddr, tlsAddr, user, pass string) {
 	tl, err := tls.Listen("tcp4", tlsAddr, &tls.Config{Certificates: []tls.Certificate{selfSigned()}})
 	check(err)
 	_, err = turn.NewServer(turn.ServerConfig{
-		Realm: "only",
+		Realm: "akio",
 		AuthHandler: func(ra *turn.RequestAttributes) (string, []byte, bool) {
 			if ra.Username == user {
 				return ra.Username, key, true

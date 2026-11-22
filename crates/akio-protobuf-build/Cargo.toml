@@ -1,0 +1,21 @@
+[package]
+name = "akio-protobuf-build"
+description = "akio protobuf code generator: parses .proto files and writes Rust messages and akio-grpc stubs from build.rs, without protoc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-protobuf-build"
+keywords = ["protobuf", "protocol-buffers", "codegen", "grpc", "build"]
+categories = ["encoding", "development-tools::build-utils"]
+
+[dependencies]
+# The descriptor types (well_known) and the wire format, to write descriptor sets.
+akio-protobuf = { workspace = true }
+
+
+[lints]
+workspace = true

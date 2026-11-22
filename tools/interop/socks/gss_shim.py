@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test-only GSS-API shim for tools/interop/socks/gssapi.sh: one security context of MIT
-Kerberos (python3-gssapi), driven over stdin/stdout by only-socks' `socks-gss-interop`
-example, which adapts it to the `only_socks::gssapi::GssContext` trait (ADR-071).
+Kerberos (python3-gssapi), driven over stdin/stdout by akio-socks' `socks-gss-interop`
+example, which adapts it to the `akio_socks::gssapi::GssContext` trait (ADR-071).
 
     gss_shim.py initiate SERVICE@HOST   # the client side (credentials from the ccache)
     gss_shim.py accept                  # the server side (keys from $KRB5_KTNAME)

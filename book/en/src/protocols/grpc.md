@@ -1,13 +1,13 @@
 # gRPC
 
-`only-grpc` provides a gRPC server that is a only-http `Service` (so it shares the port and the
-HTTP/2 stack with ordinary HTTP routes) and a client on only-http's HTTP/2 client. Interop with
+`akio-grpc` provides a gRPC server that is a akio-http `Service` (so it shares the port and the
+HTTP/2 stack with ordinary HTTP routes) and a client on akio-http's HTTP/2 client. Interop with
 grpc-go is tested in both directions (`tools/interop/grpc/run.sh`).
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:server}}
+{{#include ../../../../crates/akio-grpc/examples/guide-grpc.rs:server}}
 ```
 
 Registering methods (`path` is `/package.Service/Method`):
@@ -35,13 +35,13 @@ as the call ends).
 Handlers run on the I/O thread: answer inline when it is quick, or move the `Sink` to another
 thread (the server-streaming example above does) when it is not.
 
-Serving it: `only_http::serve(grpc)` on its own, or as the `fallback` (or a route) of a
+Serving it: `akio_http::serve(grpc)` on its own, or as the `fallback` (or a route) of a
 `Router` as above. gRPC needs HTTP/2: cleartext with prior knowledge, or TLS with ALPN `h2`.
 
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:client}}
+{{#include ../../../../crates/akio-grpc/examples/guide-grpc.rs:client}}
 ```
 
 - `GrpcClient::new(h2_client, base_url)`; `.compress(true)` compresses requests.
@@ -59,19 +59,19 @@ Serving it: `only_http::serve(grpc)` on its own, or as the `fallback` (or a rout
 
 ## Messages
 
-Messages are bytes. `only_grpc::codec::{encode, decode}` convert any type implementing
-`codec::Message` (`encode_to` / `decode_from`), so any serializer plugs in. For protobuf, `only`
+Messages are bytes. `akio_grpc::codec::{encode, decode}` convert any type implementing
+`codec::Message` (`encode_to` / `decode_from`), so any serializer plugs in. For protobuf, `akio`
 has its own runtime and code generator, with no `protoc` and no third-party crates:
 
-- `only-protobuf`: the wire format, the `Message` trait, open enums, unknown fields, the
+- `akio-protobuf`: the wire format, the `Message` trait, open enums, unknown fields, the
   well-known types (`Timestamp`, `Duration`, `Any`, `Struct`, wrappers ...).
-- `only-protobuf-build`: a `.proto` parser and Rust generator for `build.rs`. proto3 and proto2
+- `akio-protobuf-build`: a `.proto` parser and Rust generator for `build.rs`. proto3 and proto2
   messages, enums, `optional`, `repeated`, `map`, `oneof`, nested and recursive types, packages,
-  imports; services become typed server traits and clients on `only-grpc`.
+  imports; services become typed server traits and clients on `akio-grpc`.
 
 ### Defining messages without prost
 
-Dependencies: `only-protobuf` and `only-grpc`, plus `only-protobuf-build` under
+Dependencies: `akio-protobuf` and `akio-grpc`, plus `akio-protobuf-build` under
 `[build-dependencies]`. Then, in `build.rs` (from `tools/protobuf-test`, whose `proto/` holds
 grpc-go's route_guide and helloworld definitions):
 
@@ -85,7 +85,7 @@ package are referred to as `super::other::Type`, so nest the modules like the pa
 
 ```rust,ignore
 pub mod routeguide {
-    only_protobuf::include_proto!("routeguide");
+    akio_protobuf::include_proto!("routeguide");
 }
 ```
 
@@ -95,13 +95,13 @@ What a `.proto` construct becomes:
 |---|---|
 | `message Point { int32 latitude = 1; }` | `pub struct Point { pub latitude: i32, pub unknown_fields: UnknownFields }` (`Clone`, `PartialEq`, `Debug`, `Default`; `Eq` when there are no floats) |
 | `string`, `bytes` | `String`, `Vec<u8>` |
-| `string` with `features.utf8_validation = NONE` (editions); proto2 `string` with `Config::proto2_unchecked_strings(true)` | `only_protobuf::ProtoString`: bytes that are usually UTF-8, not checked when decoding (`to_str()`, `to_string_lossy()`, `as_bytes()`); getters return `&[u8]` |
+| `string` with `features.utf8_validation = NONE` (editions); proto2 `string` with `Config::proto2_unchecked_strings(true)` | `akio_protobuf::ProtoString`: bytes that are usually UTF-8, not checked when decoding (`to_str()`, `to_string_lossy()`, `as_bytes()`); getters return `&[u8]` |
 | message-typed field, proto3 `optional`, proto2 `optional` | `Option<T>` (`Option<Box<T>>` when recursive); proto2 defaults through getters (`p.a()`) |
 | `repeated T` / `map<K, V>` | `Vec<T>` / `HashMap<K, V>` (`BTreeMap` with `Config::btree_maps(true)`) |
 | `oneof kind { .. }` | `pub kind: Option<point::Kind>`, an enum in the message's module |
 | `enum Corpus { CORPUS_WEB = 1; }` | `pub struct Corpus(pub i32)` with `Corpus::WEB`: open, unknown numbers survive |
 | nested `message Inner` in `Outer` | `outer::Inner` |
-| `google.protobuf.Timestamp` ... | `only_protobuf::well_known::Timestamp` ... |
+| `google.protobuf.Timestamp` ... | `akio_protobuf::well_known::Timestamp` ... |
 
 Messages keep unknown fields and write them back (`Config::unknown_fields(false)` removes the
 member, so struct literals need no `..Default::default()`). Encoding matches protoc's C++
@@ -148,11 +148,11 @@ of `google.golang.org/protobuf`, in both directions.
 
 proto2 `group` fields and `extend` blocks are generated; edition 2023 and 2024 files too, with
 their `features.*` (presence, closed enums, packed or expanded, `DELIMITED`). A message with
-extension ranges has `pub extensions: ExtensionSet` and implements `only_protobuf::Extendable`;
+extension ranges has `pub extensions: ExtensionSet` and implements `akio_protobuf::Extendable`;
 each extension is a typed constant:
 
 ```rust,ignore
-use only_protobuf::Extendable;
+use akio_protobuf::Extendable;
 let mut b = ext::Base::default();
 b.set_extension(&ext::LEVEL, &ext::Level::LOW);          // extend Base { optional Level level = 100; }
 b.set_repeated_extension(&ext::TAGS, &[1, 2]);
@@ -165,24 +165,24 @@ Closed enums (proto2, or `enum_type = CLOSED`) keep unknown numbers as unknown f
 
 Each generated package embeds its descriptors (`FILE_DESCRIPTOR_SET`, `descriptor_pool()`;
 `Config::descriptors(false)` turns this off) and its messages implement
-`only_protobuf::reflect::ReflectMessage`. `only_protobuf::reflect` has the descriptor pool and
-`DynamicMessage` (any message type, known at run time); `only_protobuf::json` the canonical
+`akio_protobuf::reflect::ReflectMessage`. `akio_protobuf::reflect` has the descriptor pool and
+`DynamicMessage` (any message type, known at run time); `akio_protobuf::json` the canonical
 proto3 JSON mapping, well-known types included:
 
 ```rust,ignore
-let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
-let back: Feature = only_protobuf::json::from_str(&text)?;
+let text = akio_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
+let back: Feature = akio_protobuf::json::from_str(&text)?;
 ```
 
-`only_protobuf::text` reads and writes the text format (`.textproto`, protoc's `--decode` and
+`akio_protobuf::text` reads and writes the text format (`.textproto`, protoc's `--decode` and
 `DebugString`): groups, extensions as `[pkg.ext]`, `Any` expanded as
 `[type.googleapis.com/pkg.Type] { ... }`, comments and both list forms (ADR-030):
 
 ```rust,ignore
-let text = only_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
-let back: Feature = only_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
-let opts = only_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
-let line = only_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
+let text = akio_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
+let back: Feature = akio_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
+let opts = akio_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
+let line = akio_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
 ```
 
 gRPC server reflection lets grpcurl and grpcui list and call the services without the `.proto`
@@ -199,7 +199,7 @@ runs the protobuf conformance suite (binary, JSON and text format) against the g
 ### prost (deprecated)
 
 With the `prost` feature every prost-generated message implements `codec::Message`. It still
-works but is deprecated in favour of `only-protobuf`; it names prost's types, so the feature is
+works but is deprecated in favour of `akio-protobuf`; it names prost's types, so the feature is
 outside the semver promise (a prost upgrade, or its removal, may come in a minor release).
 
 Not provided: server reflection, the standard health-checking service, client-side load

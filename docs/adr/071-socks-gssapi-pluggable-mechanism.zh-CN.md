@@ -6,7 +6,7 @@
 
 ## 背景
 
-RFC 1928 规定 GSS-API（方法 `0x01`，RFC 1961）是 SOCKS5 实现“必须”支持的认证方法；only-socks 此前没有
+RFC 1928 规定 GSS-API（方法 `0x01`，RFC 1961）是 SOCKS5 实现“必须”支持的认证方法；akio-socks 此前没有
 （DEV-PLAN：“未做：GSSAPI”）。实际上 GSS-API 就是 Kerberos（Dante 或 Windows 代理后面的企业网络）。
 
 RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都完成）、保护级别协商（`MTYP` 2：一个字节，用
@@ -15,7 +15,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 
 约束：
 
-- 所有运行时依赖都是自研的（ADR-005），`unsafe` 只在 only-sys 与后端中。链接 `libgssapi_krb5` /
+- 所有运行时依赖都是自研的（ADR-005），`unsafe` 只在 akio-sys 与后端中。链接 `libgssapi_krb5` /
   Heimdal / SSPI 意味着引入 C 库与 FFI。
 - 完全自研 Kerberos 不现实：协议只是其中一部分（KDC 交互、按磁盘格式存放的票据缓存与 keytab、各种
   enctype、PAC、跨域、DNS 规范化、凭据委派），而部署依赖系统的配置（`krb5.conf`、`KRB5CCNAME`、
@@ -27,7 +27,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 
 ### 1. 机制由应用提供：`GssContext`
 
-`only_socks::gssapi::GssContext`（定义在 `only_ws::gss`，即 sans-io 客户端握手所在处，再重新导出）表示
+`akio_socks::gssapi::GssContext`（定义在 `akio_ws::gss`，即 sans-io 客户端握手所在处，再重新导出）表示
 一个安全上下文：
 
 - `step(&mut self, token) -> io::Result<GssStep>`（`GSS_Init_sec_context` /
@@ -35,7 +35,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 - `wrap(&mut self, confidential, msg)` / `unwrap(&mut self, token)`（`GSS_Wrap` / `GSS_Unwrap`）；
 - `peer_name(&self)`（acceptor 看到的客户端主体名）。
 
-它必须是 `Send`（建立步骤会把它移到工作线程上）。应用在自己选择的 GSS-API 绑定之上实现它；only-socks
+它必须是 `Send`（建立步骤会把它移到工作线程上）。应用在自己选择的 GSS-API 绑定之上实现它；akio-socks
 在它周围执行 RFC 1961。
 
 ### 2. 建立步骤不在 I/O 线程上执行
@@ -43,7 +43,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 - 服务端：每一步在逻辑池中执行（`Conn::spawn_blocking`）；会话缓存期间到达的数据（一个 64 KiB 令牌再多
   一点，而不是 4 KiB），步骤完成后继续。工厂（`Fn() -> io::Result<Box<dyn GssContext>>`）也在那里执行。
 - 客户端：握手是 tunnel transport 内部的 sans-io 实现。`Handshake::feed` 不直接调用上下文，而是排入一个
-  `GssJob`；tunnel 在一个短命的辅助线程（`only-socks-gss`）中执行它，并通过连接的 `TransportWaker`
+  `GssJob`；tunnel 在一个短命的辅助线程（`akio-socks-gss`）中执行它，并通过连接的 `TransportWaker`
   （ADR-062）恢复。带双向认证的 Kerberos 只有两步，所以每个隧道最多两个线程，只发生一次。阻塞辅助函数
   直接内联执行这些步骤（它们本来就阻塞）。工厂会拿到代理的主机名，用来构造服务名（按 RFC 1961 惯例与
   Dante 的默认值是 `rcmd@host`）。
@@ -51,7 +51,7 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 
 ### 3. 以 transport 实现逐消息保护：`GssLayer`
 
-`GssLayer` 实现 `only::Transport`：把 `MTYP` 3 消息（可跨多次读取）解封为明文，把要发送的内容按每条最多
+`GssLayer` 实现 `akio::Transport`：把 `MTYP` 3 消息（可跨多次读取）解封为明文，把要发送的内容按每条最多
 32 KiB 明文封装（这样在任何机制开销下令牌都放得进 16 位长度）。`ConnInner::send` 在连接的锁内 seal，所以
 无论从哪个线程发送，封装（以及机制的序列号）都遵循发送顺序：从上游的 I/O 线程、BIND 线程或逻辑池发出的
 应答依然有序。
@@ -80,19 +80,19 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
 
 ### 5. 在 workspace 不含 GSS-API 库的情况下验证
 
-- 一个玩具机制（`only_ws::gss::toy`，`#[doc(hidden)]`：带密钥的校验和与 XOR，故意不安全）驱动单元测试与
+- 一个玩具机制（`akio_ws::gss::toy`，`#[doc(hidden)]`：带密钥的校验和与 XOR，故意不安全）驱动单元测试与
   引擎测试：所有级别、双向 1 MiB、BIND、受保护隧道内到目标的 TLS、拒绝、访问钩子看到的用户、手工构造的
   线格式。
 - `tools/interop/socks/gssapi.sh`：Docker 中的 KDC（MIT krb5）；机制是仅用于测试的 Python 垫片
   （`gss_shim.py`，基于 `python3-gssapi`），由 `socks-gss-interop` 示例通过管道适配为 `GssContext`。
-  only-socks 的客户端与服务端、用 Debian 源码包 `--with-gssapi` 重新编译的 Dante（打包的版本以及 Alpine 的
+  akio-socks 的客户端与服务端、用 Debian 源码包 `--with-gssapi` 重新编译的 Dante（打包的版本以及 Alpine 的
   都不含 GSS-API），以及一个先在 Dante 上验证过的独立 Python RFC 1961 客户端：所有级别 15/15。Debian 12
   的 curl 7.88 无法参与：它的 SOCKS 状态机在部分读取后恢复时会重置 `allow_gssapi`，因此对任何服务端都失败。
 
 ## 后果
 
 - 有 Kerberos 的应用只需在自己的 GSS-API 绑定之上写一个小适配器，就能与 Dante 及其他 RFC 1961 客户端
-  互通；only-socks 依旧没有 C 依赖与 FFI。
+  互通；akio-socks 依旧没有 C 依赖与 FFI。
 - 不使用 GSS-API 的服务端与客户端没有任何变化：不安装 transport，转发与隧道的数据路径不变（不需要基准
   测试）。
 - 每个建立步骤花费一个逻辑池任务（服务端）或一次线程创建（客户端）：对握手而言没有问题，并且让 KDC 的延迟
@@ -118,5 +118,5 @@ RFC 1961 有三部分：上下文建立（`MTYP` 1 的令牌，直到双方都�
   可以封装。阻塞的 `CONNECT` / `BIND` 辅助函数仍拒绝保护（它们返回 `TcpStream`）。
 - 公开 API 没有变化。没有保护时，转发路径每个数据报多一次 `Option` 判断；没有为此运行基准测试。
 - 互操作（`tools/interop/socks/gssapi.sh`）：独立的 Python RFC 1961 客户端先对 Dante（启用 GSS-API 的
-  `udpassociate`），再对 only-socks 服务端，在级别 0、1、2 建立 UDP 关联；only-socks 的客户端（engine 与
-  阻塞）在每个级别对 Dante 和 only-socks 服务端。连同原有用例共 27/27（其中 12 个是新增的）。
+  `udpassociate`），再对 akio-socks 服务端，在级别 0、1、2 建立 UDP 关联；akio-socks 的客户端（engine 与
+  阻塞）在每个级别对 Dante 和 akio-socks 服务端。连同原有用例共 27/27（其中 12 个是新增的）。

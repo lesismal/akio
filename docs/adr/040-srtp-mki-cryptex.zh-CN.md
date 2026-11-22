@@ -6,10 +6,10 @@
 
 ## 背景
 
-`only-srtp` 覆盖了 WebRTC 目前协商的内容：四种 DTLS-SRTP 保护配置（AES-128-CM-HMAC-SHA1-80/32、
+`akio-srtp` 覆盖了 WebRTC 目前协商的内容：四种 DTLS-SRTP 保护配置（AES-128-CM-HMAC-SHA1-80/32、
 AEAD-AES-128/256-GCM），每个上下文一个主密钥，密钥派生率为 0，头部始终明文。它的 README 列出了缺失
 项：主密钥标识（MKI）与换钥、非零密钥派生率、NULL 加密、AES-192/256-CM 配置（RFC 6188）、头部扩展
-加密（RFC 6904）与 cryptex（RFC 9335）。`only-dtls` 能解析 `use_srtp` 的 `srtp_mki` 字段，但拒绝
+加密（RFC 6904）与 cryptex（RFC 9335）。`akio-dtls` 能解析 `use_srtp` 的 `srtp_mki` 字段，但拒绝
 非空值。
 
 cryptex 最重要：头部扩展（音量、MID、传输层序号）与 CSRC 会泄露谁在说话、发送方是什么应用；用
@@ -59,13 +59,13 @@ cryptex 最重要：头部扩展（音量、MID、传输层序号）与 CSRC 会
    每个包不再有其他分配（非零密钥派生率下每个包块重新派生一次会话密钥除外）：会话密钥经栈上数组派生，RFC 6904 密钥流在 272 字节的栈缓冲区里，cryptex 交换
    原地进行，未加密的 AEAD SRTCP 在输出缓冲区里构造 AAD，不再使用临时 `Vec`。
 7. **新错误**（`Error` 不可穷举）：`Config`、`UnknownMki`、`Unsupported`。
-8. **DTLS-SRTP MKI**（RFC 5764 §4.1.3）。`only-dtls` 的 `Config::with_srtp_mki(mki)`（客户端：提供
+8. **DTLS-SRTP MKI**（RFC 5764 §4.1.3）。`akio-dtls` 的 `Config::with_srtp_mki(mki)`（客户端：提供
    该 MKI；超过 255 字节会 panic）与 `Config::with_srtp_accept_mki(bool)`（服务端：回显客户端的
    MKI；默认关闭，不处理 MKI 的 SRTP 层照常工作）；`HandshakeInfo::srtp_mki` 是双方使用的 MKI（没有
    时为 `None`）。服务端回显了不同的非空 MKI 时，客户端以 illegal_parameter 终止握手；DTLS 1.2 的
    ServerHello 与 DTLS 1.3 的 EncryptedExtensions 都如此。
-9. **尚未接入 only-webrtc**：SDP offer/answer 中的 `a=cryptex`、RFC 6904 extmap 与 DTLS-SRTP MKI
-   留作后续工作（另一个分支正在修改 only-webrtc 的 SDP）。
+9. **尚未接入 akio-webrtc**：SDP offer/answer 中的 `a=cryptex`、RFC 6904 extmap 与 DTLS-SRTP MKI
+   留作后续工作（另一个分支正在修改 akio-webrtc 的 SDP）。
 
 ## 验证
 
@@ -88,6 +88,6 @@ cryptex 最重要：头部扩展（音量、MID、传输层序号）与 CSRC 会
 
 ## 影响
 
-- 对 `only-srtp` 使用者是破坏性变更（内部层级）：`Profile::id` 返回 `Option<u16>`，`Profile` 与
-  `Profile::ALL` 变大。`only-webrtc` 只用 `from_id`，不受影响。
+- 对 `akio-srtp` 使用者是破坏性变更（内部层级）：`Profile::id` 返回 `Option<u16>`，`Profile` 与
+  `Profile::ALL` 变大。`akio-webrtc` 只用 `from_id`，不受影响。
 - 一个 `Context` 现在可以跨越 DTLS 重新握手：以新 MKI 加入新密钥，切换发送，旧密钥的包排空后删除它。

@@ -1,0 +1,227 @@
+pub mod akio_sctp
+pub enum akio_sctp::Error
+pub akio_sctp::Error::AssociationClosed
+pub akio_sctp::Error::ChannelClosed(u16)
+pub akio_sctp::Error::LabelTooLong
+pub akio_sctp::Error::MessageTooLarge
+pub akio_sctp::Error::MessageTooLarge::max: usize
+pub akio_sctp::Error::MessageTooLarge::size: usize
+pub akio_sctp::Error::NoStreamAvailable
+pub akio_sctp::Error::StreamInUse(u16)
+pub akio_sctp::Error::UnknownChannel(u16)
+impl core::clone::Clone for akio_sctp::Error
+pub fn akio_sctp::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::Error
+impl core::cmp::PartialEq for akio_sctp::Error
+pub fn akio_sctp::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_sctp::Error
+impl core::fmt::Debug for akio_sctp::Error
+pub fn akio_sctp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_sctp::Error
+pub fn akio_sctp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sctp::Error
+impl core::marker::Send for akio_sctp::Error
+impl core::marker::Sync for akio_sctp::Error
+impl core::marker::Unpin for akio_sctp::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Error
+#[non_exhaustive] pub enum akio_sctp::Event
+pub akio_sctp::Event::BufferedAmountLow
+pub akio_sctp::Event::BufferedAmountLow::stream: u16
+pub akio_sctp::Event::ChannelClose
+pub akio_sctp::Event::ChannelClose::stream: u16
+pub akio_sctp::Event::ChannelData
+pub akio_sctp::Event::ChannelData::binary: bool
+pub akio_sctp::Event::ChannelData::data: alloc::vec::Vec<u8>
+pub akio_sctp::Event::ChannelData::stream: u16
+pub akio_sctp::Event::ChannelOpen
+pub akio_sctp::Event::ChannelOpen::label: alloc::string::String
+pub akio_sctp::Event::ChannelOpen::protocol: alloc::string::String
+pub akio_sctp::Event::ChannelOpen::stream: u16
+pub akio_sctp::Event::Closed
+pub akio_sctp::Event::Connected
+pub akio_sctp::Event::Restarted
+impl core::clone::Clone for akio_sctp::Event
+pub fn akio_sctp::Event::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::Event
+impl core::cmp::PartialEq for akio_sctp::Event
+pub fn akio_sctp::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sctp::Event
+pub fn akio_sctp::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sctp::Event
+impl core::marker::Send for akio_sctp::Event
+impl core::marker::Sync for akio_sctp::Event
+impl core::marker::Unpin for akio_sctp::Event
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Event
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Event
+pub enum akio_sctp::Reliability
+pub akio_sctp::Reliability::MaxLifetime(u16)
+pub akio_sctp::Reliability::MaxRetransmits(u16)
+pub akio_sctp::Reliability::Reliable
+impl core::clone::Clone for akio_sctp::Reliability
+pub fn akio_sctp::Reliability::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::Reliability
+impl core::cmp::PartialEq for akio_sctp::Reliability
+pub fn akio_sctp::Reliability::eq(&self, &Self) -> bool
+impl core::default::Default for akio_sctp::Reliability
+pub fn akio_sctp::Reliability::default() -> Self
+impl core::fmt::Debug for akio_sctp::Reliability
+pub fn akio_sctp::Reliability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_sctp::Reliability
+pub fn akio_sctp::Reliability::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_sctp::Reliability
+impl core::marker::StructuralPartialEq for akio_sctp::Reliability
+impl core::marker::Send for akio_sctp::Reliability
+impl core::marker::Sync for akio_sctp::Reliability
+impl core::marker::Unpin for akio_sctp::Reliability
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Reliability
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Reliability
+#[non_exhaustive] pub enum akio_sctp::Scheduler
+pub akio_sctp::Scheduler::FairCapacity
+pub akio_sctp::Scheduler::FirstComeFirstServed
+pub akio_sctp::Scheduler::Priority
+pub akio_sctp::Scheduler::RoundRobin
+pub akio_sctp::Scheduler::RoundRobinPerPacket
+pub akio_sctp::Scheduler::WeightedFairQueueing
+impl core::clone::Clone for akio_sctp::Scheduler
+pub fn akio_sctp::Scheduler::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::Scheduler
+impl core::cmp::PartialEq for akio_sctp::Scheduler
+pub fn akio_sctp::Scheduler::eq(&self, &Self) -> bool
+impl core::default::Default for akio_sctp::Scheduler
+pub fn akio_sctp::Scheduler::default() -> Self
+impl core::fmt::Debug for akio_sctp::Scheduler
+pub fn akio_sctp::Scheduler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_sctp::Scheduler
+pub fn akio_sctp::Scheduler::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_sctp::Scheduler
+impl core::marker::StructuralPartialEq for akio_sctp::Scheduler
+impl core::marker::Send for akio_sctp::Scheduler
+impl core::marker::Sync for akio_sctp::Scheduler
+impl core::marker::Unpin for akio_sctp::Scheduler
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Scheduler
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Scheduler
+pub struct akio_sctp::Association
+impl akio_sctp::Association
+pub fn akio_sctp::Association::abort(&mut self)
+pub fn akio_sctp::Association::buffered_amount(&self, u16) -> usize
+pub fn akio_sctp::Association::channel(&self, u16) -> core::option::Option<akio_sctp::ChannelInfo>
+pub fn akio_sctp::Association::close_channel(&mut self, std::time::Instant, u16)
+pub fn akio_sctp::Association::connect(&mut self, std::time::Instant)
+pub fn akio_sctp::Association::handle_packet(&mut self, std::time::Instant, &[u8])
+pub fn akio_sctp::Association::handle_timeout(&mut self, std::time::Instant)
+pub fn akio_sctp::Association::is_closed(&self) -> bool
+pub fn akio_sctp::Association::is_established(&self) -> bool
+pub fn akio_sctp::Association::message_interleaving(&self) -> bool
+pub fn akio_sctp::Association::new(akio_sctp::Config, std::time::Instant) -> akio_sctp::Association
+pub fn akio_sctp::Association::open_channel(&mut self, std::time::Instant, akio_sctp::ChannelOptions) -> core::result::Result<u16, akio_sctp::Error>
+pub fn akio_sctp::Association::poll_event(&mut self) -> core::option::Option<akio_sctp::Event>
+pub fn akio_sctp::Association::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_sctp::Association::poll_transmit(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_sctp::Association::rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_sctp::Association::send(&mut self, std::time::Instant, u16, &[u8], bool) -> core::result::Result<bool, akio_sctp::Error>
+pub fn akio_sctp::Association::set_buffered_amount_low_threshold(&mut self, u16, usize)
+pub fn akio_sctp::Association::set_channel_priority(&mut self, u16, u16) -> core::result::Result<(), akio_sctp::Error>
+pub fn akio_sctp::Association::shutdown(&mut self, std::time::Instant)
+pub fn akio_sctp::Association::zero_checksum(&self) -> bool
+impl core::fmt::Debug for akio_sctp::Association
+pub fn akio_sctp::Association::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_sctp::Association
+impl core::marker::Sync for akio_sctp::Association
+impl core::marker::Unpin for akio_sctp::Association
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Association
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Association
+pub struct akio_sctp::ChannelInfo
+pub akio_sctp::ChannelInfo::label: alloc::string::String
+pub akio_sctp::ChannelInfo::negotiated: bool
+pub akio_sctp::ChannelInfo::ordered: bool
+pub akio_sctp::ChannelInfo::priority: u16
+pub akio_sctp::ChannelInfo::protocol: alloc::string::String
+pub akio_sctp::ChannelInfo::reliability: akio_sctp::Reliability
+impl core::clone::Clone for akio_sctp::ChannelInfo
+pub fn akio_sctp::ChannelInfo::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::ChannelInfo
+impl core::cmp::PartialEq for akio_sctp::ChannelInfo
+pub fn akio_sctp::ChannelInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sctp::ChannelInfo
+pub fn akio_sctp::ChannelInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sctp::ChannelInfo
+impl core::marker::Send for akio_sctp::ChannelInfo
+impl core::marker::Sync for akio_sctp::ChannelInfo
+impl core::marker::Unpin for akio_sctp::ChannelInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::ChannelInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::ChannelInfo
+pub struct akio_sctp::ChannelOptions
+pub akio_sctp::ChannelOptions::label: alloc::string::String
+pub akio_sctp::ChannelOptions::negotiated: core::option::Option<u16>
+pub akio_sctp::ChannelOptions::ordered: bool
+pub akio_sctp::ChannelOptions::priority: u16
+pub akio_sctp::ChannelOptions::protocol: alloc::string::String
+pub akio_sctp::ChannelOptions::reliability: akio_sctp::Reliability
+impl akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::new(&str) -> akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::with_negotiated(self, u16) -> akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::with_ordered(self, bool) -> akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::with_priority(self, u16) -> akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::with_protocol(self, &str) -> akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::with_reliability(self, akio_sctp::Reliability) -> akio_sctp::ChannelOptions
+impl core::clone::Clone for akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::ChannelOptions
+impl core::cmp::PartialEq for akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::eq(&self, &Self) -> bool
+impl core::default::Default for akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::default() -> akio_sctp::ChannelOptions
+impl core::fmt::Debug for akio_sctp::ChannelOptions
+pub fn akio_sctp::ChannelOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sctp::ChannelOptions
+impl core::marker::Send for akio_sctp::ChannelOptions
+impl core::marker::Sync for akio_sctp::ChannelOptions
+impl core::marker::Unpin for akio_sctp::ChannelOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::ChannelOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::ChannelOptions
+pub struct akio_sctp::Config
+pub akio_sctp::Config::dtls_client: bool
+pub akio_sctp::Config::heartbeat_interval: core::option::Option<core::time::Duration>
+pub akio_sctp::Config::local_port: u16
+pub akio_sctp::Config::max_buffered_amount: usize
+pub akio_sctp::Config::max_init_retransmissions: u32
+pub akio_sctp::Config::max_message_size: usize
+pub akio_sctp::Config::max_receive_message_size: usize
+pub akio_sctp::Config::max_retransmissions: u32
+pub akio_sctp::Config::message_interleaving: bool
+pub akio_sctp::Config::mtu: usize
+pub akio_sctp::Config::receive_window: u32
+pub akio_sctp::Config::remote_port: u16
+pub akio_sctp::Config::rto_initial: core::time::Duration
+pub akio_sctp::Config::rto_max: core::time::Duration
+pub akio_sctp::Config::rto_min: core::time::Duration
+pub akio_sctp::Config::scheduler: akio_sctp::Scheduler
+pub akio_sctp::Config::zero_checksum: bool
+impl akio_sctp::Config
+pub fn akio_sctp::Config::new(bool) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_heartbeat_interval(self, core::option::Option<core::time::Duration>) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_max_buffered_amount(self, usize) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_max_message_size(self, usize) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_max_receive_message_size(self, usize) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_message_interleaving(self, bool) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_mtu(self, usize) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_ports(self, u16, u16) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_receive_window(self, u32) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_scheduler(self, akio_sctp::Scheduler) -> akio_sctp::Config
+pub fn akio_sctp::Config::with_zero_checksum(self, bool) -> akio_sctp::Config
+impl core::clone::Clone for akio_sctp::Config
+pub fn akio_sctp::Config::clone(&self) -> Self
+impl core::cmp::Eq for akio_sctp::Config
+impl core::cmp::PartialEq for akio_sctp::Config
+pub fn akio_sctp::Config::eq(&self, &Self) -> bool
+impl core::default::Default for akio_sctp::Config
+pub fn akio_sctp::Config::default() -> akio_sctp::Config
+impl core::fmt::Debug for akio_sctp::Config
+pub fn akio_sctp::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sctp::Config
+impl core::marker::Send for akio_sctp::Config
+impl core::marker::Sync for akio_sctp::Config
+impl core::marker::Unpin for akio_sctp::Config
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sctp::Config
+impl core::panic::unwind_safe::UnwindSafe for akio_sctp::Config

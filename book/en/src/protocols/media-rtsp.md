@@ -1,15 +1,15 @@
 # RTSP and WHIP/WHEP
 
-`only-media` serves RTSP and the WHIP/WHEP signalling endpoints in front of the same stream
+`akio-media` serves RTSP and the WHIP/WHEP signalling endpoints in front of the same stream
 `Hub` as RTMP, HTTP-FLV, HLS and SRT: a camera that records over RTSP plays over every other
 protocol, and an RTMP encoder's stream plays in any RTSP player. Every protocol converts to
-the canonical packets of `only_media::av` (AVCC video, raw AAC), so no protocol knows about
+the canonical packets of `akio_media::av` (AVCC video, raw AAC), so no protocol knows about
 another.
 
 ## One hub, one hook
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:hub}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:hub}}
 ```
 
 `HubConfig::on_publish` and `on_subscribe` authorize every ingest and egress at once; the
@@ -19,7 +19,7 @@ tokens travel).
 ## RTSP server
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:rtsp}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:rtsp}}
 ```
 
 - `rtsp://host:port/live/cam` plays or records the hub stream `live/cam`.
@@ -41,7 +41,7 @@ tokens travel).
   fraction and number of packets lost, the highest sequence number, the interarrival jitter,
   the last sender report's NTP time and the delay since, followed by an SDES with a CNAME.
 - Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), VP8 (RFC 7741), VP9
-  (RFC 9628), AV1 (AOM RTP payload; the three through only-rtp, a frame missing a packet is
+  (RFC 9628), AV1 (AOM RTP payload; the three through akio-rtp, a frame missing a packet is
   dropped), AAC (`mpeg4-generic` `AAC-hbr`), Opus, G.711.
 - Authentication: `RtspConfig::credentials` turns on Digest (MD5) and Basic.
 - Timeouts: the first request, and any request once begun, must arrive within
@@ -54,7 +54,7 @@ tokens travel).
 
   ```rust,ignore
   use std::time::{Duration, SystemTime};
-  use only_media::rtsp::Redirect;
+  use akio_media::rtsp::Redirect;
 
   // Every player and the publisher of live/cam, to the other server in 30 s.
   let moved = srv.redirect_path("live/cam", &Redirect::new("rtsp://198.51.100.8:8554/live/cam")
@@ -69,7 +69,7 @@ tokens travel).
   the server tears the session down and pulls the same URL again
   (`tools/interop/media/rtsp-server-redirect.sh`); this crate's client does (below).
 
-Tested with ffmpeg 9 (`crates/only-media/tests/rtsp_interop.rs`):
+Tested with ffmpeg 9 (`crates/akio-media/tests/rtsp_interop.rs`):
 
 ```text
 ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=25 -f lavfi -i sine -c:v libx264 -c:a aac \
@@ -90,10 +90,10 @@ RTP session logs every report (`tools/interop/media/rtsp-redirect.sh`).
 ## WHIP and WHEP
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:whip}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:whip}}
 ```
 
-`WhipServer::routes` adds to a only-http `Router`:
+`WhipServer::routes` adds to a akio-http `Router`:
 
 | Request | Answer |
 | --- | --- |
@@ -113,11 +113,11 @@ session whose peer ended without a `DELETE` frees its slot.
 
 ### WebRTC media (`webrtc` feature)
 
-With the cargo feature `webrtc`, `only_media::webrtc::RtcMedia` is the engine, on an
-`only-webrtc` `RtcServer` (ICE-lite on one UDP port):
+With the cargo feature `webrtc`, `akio_media::webrtc::RtcMedia` is the engine, on an
+`akio-webrtc` `RtcServer` (ICE-lite on one UDP port):
 
 ```rust,ignore
-use only_media::webrtc::{RtcMedia, RtcMediaConfig};
+use akio_media::webrtc::{RtcMedia, RtcMediaConfig};
 
 // The address browsers reach the UDP listener at goes into every answer.
 let rtc = RtcMedia::rtc_server(vec!["203.0.113.7:8189".parse()?]);
@@ -141,18 +141,18 @@ let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
   publisher turns it into a PLI to its sender. A viewer joining without a cached keyframe asks at
   once.
 
-`crates/only-media/examples/whip-server.rs` runs it; `tools/interop/webrtc/media.sh` checks it
+`crates/akio-media/examples/whip-server.rs` runs it; `tools/interop/webrtc/media.sh` checks it
 against ffmpeg's WHIP muxer and pion (WHIP in, WHEP out, PLI round trip, RTMP in to WHEP out),
 and `tools/interop/media/browser.sh` against headless Chrome (VP8, VP9, AV1 and H.264 published
 over WHIP and decoded over WHEP, then a multivariant fMP4 LL-HLS ladder played).
 
 ## RTSP client
 
-`only_media::rtsp::client` plays from an RTSP server into the hub (`pull`) or records a hub
+`akio_media::rtsp::client` plays from an RTSP server into the hub (`pull`) or records a hub
 stream to one (`push`), over TCP interleaved (default) or UDP:
 
 ```rust,ignore
-use only_media::rtsp::{RtspClientConfig, RtspTransport, client};
+use akio_media::rtsp::{RtspClientConfig, RtspTransport, client};
 
 let cam = client::pull(&engine, "rtsp://admin:secret@192.0.2.20/stream1", &hub, "cams/door",
                        RtspClientConfig::default())?;
@@ -199,7 +199,7 @@ the `reconnect` engine: a pull keeps its path and republishes, a push announces 
 `reconnects()` counts it. Later reconnects start from the client's URL again. Without
 `reconnect` the client ends with `ClientError::Redirected(location)`.
 
-**Reconnecting**: with `RtspClientConfig::reconnect` (an `only_media::Reconnect`, built on an
+**Reconnecting**: with `RtspClientConfig::reconnect` (an `akio_media::Reconnect`, built on an
 `Arc<Engine>`) a session that fails with an error another try may cure is followed by a new
 one after a bounded, doubling backoff; the tries run on a short-lived thread of their own, as
 the handshake blocks. A pull keeps its hub path and subscribers and republishes the new
@@ -221,7 +221,7 @@ to it, over TCP and UDP (`tools/interop/media/rtsp-server-redirect.sh target`).
 ## Statistics
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:stats}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:stats}}
 ```
 
 ## Not supported

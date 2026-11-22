@@ -1,0 +1,43 @@
+[package]
+name = "akio-http"
+description = "akio HTTP: HTTP/1.1 and HTTP/2 server, router, middleware, static files and clients"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-http"
+keywords = ["http", "http2", "server", "router", "client"]
+categories = ["network-programming", "web-programming::http-server", "web-programming::http-client"]
+
+[dependencies]
+akio-core = { workspace = true }
+akio-buf = { workspace = true }
+akio-sys = { workspace = true }
+akio = { workspace = true }
+akio-log = { workspace = true }
+akio-regex = { workspace = true }
+akio-crypto = { workspace = true }
+akio-ws = { workspace = true }
+akio-deflate = { workspace = true }
+akio-brotli = { workspace = true }
+akio-zstd = { workspace = true }
+
+[features]
+default = ["regex"]
+## Kept for compatibility, does nothing: regexp route parameters (`/users/{id:[0-9]+}`) are
+## always available (an in-house engine replaced the `regex` crate in 1.0).
+regex = []
+# Fuzz entry points for `fuzz/` (`akio_http::fuzzing`); not a public API.
+fuzzing = ["akio-core/fuzzing"]
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+akio-x509 = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -6,20 +6,20 @@
 - Linux for production (kernel 5.19+ for io_uring; any kernel with epoll otherwise). macOS works
   with the kqueue backend for development. Windows is not supported.
 
-## Adding `only` to a project
+## Adding `akio` to a project
 
 The crates are not published on crates.io yet; depend on the repository. Pick the crates you
-need: `only` is the engine, the others are protocols.
+need: `akio` is the engine, the others are protocols.
 
 ```toml
 [dependencies]
-only      = { git = "https://github.com/lesismal/only" }
-only-http = { git = "https://github.com/lesismal/only" }   # HTTP/1.1, HTTP/2, Router
-# only-ws, only-grpc, only-arpc, only-socks, only-mux,
-# only-quic, only-h3, only-kcp: same form
+akio      = { git = "https://github.com/lesismal/akio" }
+akio-http = { git = "https://github.com/lesismal/akio" }   # HTTP/1.1, HTTP/2, Router
+# akio-ws, akio-grpc, akio-arpc, akio-socks, akio-mux,
+# akio-quic, akio-h3, akio-kcp: same form
 ```
 
-TLS (`only::tls`) and eBPF steering (`only::ebpf`) are part of the `only` crate.
+TLS (`akio::tls`) and eBPF steering (`akio::ebpf`) are part of the `akio` crate.
 
 ## A TCP echo server
 
@@ -28,7 +28,7 @@ creates one **handler** per connection; the handler's callbacks run on the conne
 thread.
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/echo.rs}}
+{{#include ../../../crates/akio/examples/echo.rs}}
 ```
 
 Run it and talk to it:
@@ -50,16 +50,16 @@ Three things to notice:
 ## An HTTP server
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/hello.rs}}
+{{#include ../../../crates/akio-http/examples/hello.rs}}
 ```
 
 ```console
-$ cargo run --release -p only-http --example hello
+$ cargo run --release -p akio-http --example hello
 $ curl -i localhost:8080/users/7
 $ curl --http2-prior-knowledge localhost:8080/   # HTTP/2 on the same port
 ```
 
-The `/slow` route shows the rule you will meet everywhere in `only`: **handlers run on the I/O
+The `/slow` route shows the rule you will meet everywhere in `akio`: **handlers run on the I/O
 thread and must not block**. When an answer needs slow work, detach the request and finish it
 from another thread; see [Blocking work](concepts/blocking.md).
 
@@ -73,26 +73,26 @@ exercise it with a client and exit:
 | `cargo run -p only --example guide-basics` | handlers, `Conn`, pool, ordering, dial, shutdown |
 | `cargo run -p only --example guide-config` | every config knob, backends, metrics, reload, UDP |
 | `cargo run -p only --example guide-tls` | TLS server and client |
-| `cargo run -p only-http --example guide-http` | router, middleware, files, streaming, clients |
-| `cargo run -p only-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
-| `cargo run -p only-http --example guide-metrics` | your own counters, gauges, histograms, collectors |
-| `cargo run -p only-http --example guide-bridge` | bridging to other runtimes and threads |
-| `cargo run -p only-ws --example guide-ws` | WebSocket server and client |
-| `cargo run -p only-grpc --example guide-grpc` | gRPC server and client |
-| `cargo run -p only-arpc --example guide-arpc` | arpc calls, notifies, broadcast |
-| `cargo run -p only-socks --example guide-socks` | SOCKS5 and HTTP CONNECT |
-| `cargo run -p only-mux --example guide-mux` | several protocols on one port |
-| `cargo run -p only-quic --example guide-quic` | QUIC server and client |
-| `cargo run -p only-h3 --example guide-h3` | HTTP/3 server and client, WebSocket over HTTP/3, uploads |
-| `cargo run -p only-kcp --example guide-kcp` | KCP with FEC and encryption |
-| `cargo run -p only-webrtc --example guide-webrtc` | WebRTC data channel, STUN, TURN |
-| `cargo run -p only-media --example guide-media-srt` | SRT publish, play and relay |
-| `cargo run -p only-bittorrent --example guide-bittorrent` | tracker, seeder and magnet leecher |
-| `cargo run -p only-dpdk --example guide-dpdk` | the userspace TCP/IP stack (in-memory wire) |
+| `cargo run -p akio-http --example guide-http` | router, middleware, files, streaming, clients |
+| `cargo run -p akio-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
+| `cargo run -p akio-http --example guide-metrics` | your own counters, gauges, histograms, collectors |
+| `cargo run -p akio-http --example guide-bridge` | bridging to other runtimes and threads |
+| `cargo run -p akio-ws --example guide-ws` | WebSocket server and client |
+| `cargo run -p akio-grpc --example guide-grpc` | gRPC server and client |
+| `cargo run -p akio-arpc --example guide-arpc` | arpc calls, notifies, broadcast |
+| `cargo run -p akio-socks --example guide-socks` | SOCKS5 and HTTP CONNECT |
+| `cargo run -p akio-mux --example guide-mux` | several protocols on one port |
+| `cargo run -p akio-quic --example guide-quic` | QUIC server and client |
+| `cargo run -p akio-h3 --example guide-h3` | HTTP/3 server and client, WebSocket over HTTP/3, uploads |
+| `cargo run -p akio-kcp --example guide-kcp` | KCP with FEC and encryption |
+| `cargo run -p akio-webrtc --example guide-webrtc` | WebRTC data channel, STUN, TURN |
+| `cargo run -p akio-media --example guide-media-srt` | SRT publish, play and relay |
+| `cargo run -p akio-bittorrent --example guide-bittorrent` | tracker, seeder and magnet leecher |
+| `cargo run -p akio-dpdk --example guide-dpdk` | the userspace TCP/IP stack (in-memory wire) |
 
 Two media examples serve until stopped instead, for ffmpeg to talk to:
-`cargo run -p only-media --example guide-media` (RTMP, HTTP-FLV, HLS; `ONLY_MEDIA_SECS=n` stops
-after n seconds) and `--example guide-media-rtsp` (RTSP, WHIP/WHEP; `ONLY_RTSP_SECS=n`).
+`cargo run -p akio-media --example guide-media` (RTMP, HTTP-FLV, HLS; `AKIO_MEDIA_SECS=n` stops
+after n seconds) and `--example guide-media-rtsp` (RTSP, WHIP/WHEP; `AKIO_RTSP_SECS=n`).
 `book/check-guides.sh` runs all of them, probes the serving ones and reports pass or fail.
 
 Next: [Concepts](concepts/index.md).

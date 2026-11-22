@@ -2,24 +2,44 @@
 
 [English](CHANGELOG.md)
 
-only 的所有重要变更都记录在这里。格式遵循
-[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，only 从 1.0.0 起遵循
+akio 的所有重要变更都记录在这里。格式遵循
+[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，akio 从 1.0.0 起遵循
 [语义化版本](https://semver.org/lang/zh-CN/)，具体定义见
 [docs/api-stability.zh-CN.md](docs/api-stability.zh-CN.md)。弃用遵循
 [docs/deprecation.zh-CN.md](docs/deprecation.zh-CN.md)。workspace 中所有 crate 共用一个版本号。
 
 ## [Unreleased]
 
-### 变更：mDNS 探测前延迟，链路本地名字只在其链路上（only-webrtc）
+### 更名：项目现在叫 `akio`
+
+crates.io 上的 `ak` 名称已被占用，因此项目从 **only** 更名为 **akio**（在 crates.io 上连同所有子 crate 名称都未被占用）。
+所有 crate、路径、标识符和名称随之更改；下面的条目已使用新名称（更下方从 `flash` 到 `only` 的更名条目保留其原有名称）。
+
+| 之前 | 之后 |
+|---|---|
+| crate `only`（`use only::...`） | `akio`（`use akio::...`） |
+| crate `only-*`（代码中为 `only_*`），目录 `crates/only-*` | `akio-*`（`akio_*`）、`crates/akio-*` |
+| 环境变量 `ONLY_*`（`ONLY_TEST_BACKEND`、`ONLY_UDP_GSO`、`ONLY_CRYPTO_PORTABLE`、`ONLY_LOG` 等） | `AKIO_*` |
+| Prometheus 指标 `only_*`（`only_connections_open`、`only_http_requests_total` 等） | `akio_*` |
+| 日志 target `only`、`only_http::access`、`only_webrtc` 等 | `akio`、`akio_http::access`、`akio_webrtc` 等 |
+| 线程名 `only-io-*`、`only-pool`、`only-quic-timer` 等 | `akio-io-*`、`akio-pool`、`akio-quic-timer` 等 |
+| `only_media::srt` 中的别名 `OnlyConn` | `AkioConn` |
+| API 快照 `api/only-*.txt`、工具的 Docker 镜像与卷 `only-*` | `api/akio-*.txt`、`akio-*` |
+| 仓库与站点 `github.com/lesismal/only`、`lesismal.github.io/only` | `github.com/lesismal/akio`、`lesismal.github.io/akio` |
+
+生成的测试夹具（`tests/data`、签名的消息与 CRL）保持原有字节，因此 X.509 测试中这些证书携带的 `*.only.test`
+主机名保持不变。
+
+### 变更：mDNS 探测前延迟，链路本地名字只在其链路上（akio-webrtc）
 
 ADR-078 的 2026-11-22 第二次更新，API 没有变化：被隐藏名字的第一次探测等待随机 0–250 ms（RFC 6762 §8.1），
 链路本地 IPv6 地址只在其链路上探测、宣告、撤回与应答（§6.2）；其他地址照旧在每条链路上发出。
 
-### 新增：TURN 双分配与经中继保留 ECN（only-turn、only-webrtc）
+### 新增：TURN 双分配与经中继保留 ECN（akio-turn、akio-webrtc）
 
 ADR-083，只有新增：
 
-- only-turn 服务器：`TurnConfig::additional_relay_ip` / `additional_public_ip`（另一地址族的中继）。双分配
+- akio-turn 服务器：`TurnConfig::additional_relay_ip` / `additional_public_ip`（另一地址族的中继）。双分配
   遵循 RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`：
   - 成功响应带两个 `XOR-RELAYED-ADDRESS`，IPv4 在前；
   - 每个地址族有自己的生存期，带 `REQUESTED-ADDRESS-FAMILY` 的 Refresh 刷新或删除其中一个（连同它的权限与
@@ -27,14 +47,14 @@ ADR-083，只有新增：
   - 权限与通道交给对端所属地址族的中继地址（缺少时回 443）；
   - 部分成功时带 `ADDRESS-ERROR-CODE` 440 或 508；7.2 节中格式不对的组合回 400，不支持的地址族回 440。
   `TurnServer::relays_of` / `TurnCore::relays_of` 列出分配的中继地址。
-- only-turn 服务器：中继的数据经 UDP 与 DTLS 双向保留 ECN 码点（RFC 8656 14 节）：入口为 `Conn::rx_ecn`，
+- akio-turn 服务器：中继的数据经 UDP 与 DTLS 双向保留 ECN 码点（RFC 8656 14 节）：入口为 `Conn::rx_ecn`，
   出口为 `UdpBinding::send_to_ecn` / `Conn::send_segments_ecn`。供嵌入者使用：
   `TurnCore::handle_client_ecn` / `handle_peer_ecn`，以及 `TurnEnv::send_to_peer_ecn` /
   `send_to_client_ecn`（默认实现丢弃码点）。
-- only-turn 客户端：`ClientConfig::dual_allocation`、`Client::relayed_addrs`、`relayed_addr_for`、
+- akio-turn 客户端：`ClientConfig::dual_allocation`、`Client::relayed_addrs`、`relayed_addr_for`、
   `address_error`。STUN：`attr::ADDRESS_ERROR_CODE`、`Message::address_error_code`、
   `MessageBuilder::address_error`。
-- only-webrtc：`RelayServer::dual_allocation(true)` 让 `Endpoint::gather_relay_via` 为每个地址族加一个中继
+- akio-webrtc：`RelayServer::dual_allocation(true)` 让 `Endpoint::gather_relay_via` 为每个地址族加一个中继
   候选。
 - 兼容 coturn 4.6：接受 turnbis 草案编号 0x8032 的 `ADDITIONAL-ADDRESS-FAMILY`（应答时也在 0x8033 带
   `ADDRESS-ERROR-CODE`），客户端两个码点都发送。
@@ -44,7 +64,7 @@ ADR-083，只有新增：
 - `turn-relay-bench` 支持 `TURN_BENCH_ECN`；新增 `tools/interop/webrtc/turn-dual.sh`（coturn、pion/turn）
   与 pion 工具的 `turn-family-raw` 模式。中继与 main 的 A/B：没有可测出的变化（docs/BENCHMARKS.zh-CN.md）。
 
-### 新增：全频带与按码率的 E-model、音频抖动缓冲（only-rtp、only-webrtc）
+### 新增：全频带与按码率的 E-model、音频抖动缓冲（akio-rtp、akio-webrtc）
 
 ADR-087（docs/adr/087-fullband-emodel-audio-jitter-buffer.zh-CN.md），仅新增：
 
@@ -66,7 +86,7 @@ ADR-087（docs/adr/087-fullband-emodel-audio-jitter-buffer.zh-CN.md），仅新�
   - 处理乱序、重复包、迟到与溢出丢弃，跳过 FEC 序号；
   - 上限为 1024 帧和 256 KiB；
   - 提供它的 RFC 3611 抖动缓冲配置。
-- only-webrtc：
+- akio-webrtc：
   - `RtcConfig::set_audio_jitter_buffer(Option<PlayoutDelay>)`（默认关闭）：收到的音频帧按顺序、
     在各自的播放时刻交出，带 `MediaData::playout_time`；它的丢弃与时延填入 XR VoIP 指标的丢弃
     字段与抖动缓冲字段。
@@ -76,18 +96,18 @@ ADR-087（docs/adr/087-fullband-emodel-audio-jitter-buffer.zh-CN.md），仅新�
   - 宽带 E-model 现在按 G.107.1（06/2019，勘误 1）计算：`Ie,eff,WB` 中用 95，采用它自己的
     讲话者回声项与 `1.29 Idd`。ADR-085 用的是 129 和窄带的回声项。
   - G.722 取 G.113 的双耳 `Ie,wb` 5（原为 13）。
-  - only-webrtc 中的 Opus 流按测得的码率评为全频带。
-- `webrtc-bench audio` / `audio-jb` 与 only-rtp 的 `jitter-bench` 示例。
+  - akio-webrtc 中的 Opus 流按测得的码率评为全频带。
+- `webrtc-bench audio` / `audio-jb` 与 akio-rtp 的 `jitter-bench` 示例。
 
-### 新增：RFC 6679 的 "ice" / "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、RTCP 与 DTLS 客户端的 DTLS 锁定（only-webrtc、only-ice）
+### 新增：RFC 6679 的 "ice" / "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、RTCP 与 DTLS 客户端的 DTLS 锁定（akio-webrtc、akio-ice）
 
 ADR-086，只有新增的 API：
 
-- only-ice：RFC 6679 的 STUN ECN-CHECK 属性。`IceAgent::check_ecn` 在选定的路径对上发送带 ECN
+- akio-ice：RFC 6679 的 STUN ECN-CHECK 属性。`IceAgent::check_ecn` 在选定的路径对上发送带 ECN
   标记的检查。`handle_receive_ecn` 回显检查到达时的码点。`poll_transmit_ecn` 返回数据报及其码点。
   `IceEvent::EcnChecked` 报告结果。`ECN_CHECK_SENDS` / `ECN_CHECK_INTERVAL` / `ECN_CHECK_GIVE_UP`
   给出时间参数。
-- only-webrtc，开启 ECN 标记时：
+- akio-webrtc，开启 ECN 标记时：
   - 使用 ICE 时各节提议 `a=ecn-capable-rtp:ice,rtp ...`（`a=ice-options` 加上 `rtp+ecn`），应答时
     取 offer 列出的我们的第一个方式。
   - "ice" 在标记 RTP 之前用一次带标记的 STUN 检查验证路径。
@@ -96,7 +116,7 @@ ADR-086，只有新增的 API：
   - 对端的 `ect=` 偏好决定码点和 CE 响应。
   - 失败的路径 10 s 后重试，逐次加倍直到 300 s；从全部标记回退三次后不再重试。
   - 统计项 `ecn_state` 可能为 "verifying"。
-- only-webrtc，无 ICE 的锁定：
+- akio-webrtc，无 ICE 的锁定：
   - RTCP 自己的 DTLS 握手（不复用 rtcp-mux 时）与 RTP 的一样锁定。
   - 本端是 DTLS 客户端时，来自未知来源的数据报（保活）让握手暂时转向该来源，并以 SDP 指纹为准。
   - `RtcConfig::set_plain_keepalive(every)` 在每条无 ICE 的路径上发送 RFC 6263 的 STUN Binding
@@ -106,10 +126,10 @@ ADR-086，只有新增的 API：
 - 修复：`webrtc_sdp` 模糊测试的检查把回显的 `m=` 字段中的 `a=crypto:` 当成了密钥行。
 - 未做：DTLS 换钥。没有对端会换钥：Chrome 与 pion 拒绝 DTLS 1.2 重协商，DTLS 1.3 的 KeyUpdate 不改变
   SRTP 密钥（ADR-086 第 6 节）。
-- 互通：`latch.sh` 增加 RTCP 自己的握手和网关作为 DTLS 客户端的情形。新的 `ecn6679.sh` 在两个 only 端之间、
+- 互通：`latch.sh` 增加 RTCP 自己的握手和网关作为 DTLS 客户端的情形。新的 `ecn6679.sh` 在两个 akio 端之间、
   经 Linux NAT 运行 rtp / leap / ice 以及清除 ECN 的路由器。
 
-### 新增：RTSP 服务器的 REDIRECT 与客户端跟随；RTMP 重连时重新解析（only-media）
+### 新增：RTSP 服务器的 REDIRECT 与客户端跟随；RTMP 重连时重新解析（akio-media）
 
 ADR-080（docs/adr/080-rtsp-server-redirect-rtmp-lookups.zh-CN.md），只有新增：
 
@@ -128,21 +148,21 @@ ADR-080（docs/adr/080-rtsp-server-redirect-rtmp-lookups.zh-CN.md），只有新
   `tools/interop/media/rtsp-server-redirect.sh`：ffmpeg 6.1.1（gpu51，经 TCP 与 UDP 播放和录制；macOS 上的 9.0.2 亦然，只是未试经 UDP 录制），对我们服务器的 `REDIRECT` 回答 `501` 并照常继续；GStreamer 1.24.2 的 `rtspsrc` 与 `rtspclientsink`（TCP、UDP）回答 `200` 并照常继续；从我们服务器拉流的 mediamtx 1.15.3（路径的 `source`，TCP 与 UDP）不回答，立即拆除会话并重新拉同一 URL。它们都不迁到新位置；我们的服务器在其 TEARDOWN 时或请求后 4 s（测试的宽限期）结束了每一个这样的会话。我们的客户端被我们的服务器迁到 mediamtx：拉流继续从那里带来媒体（检查中 310 至 335 个包），在 `Range` 时间迁移的推流可从 mediamtx 读回，TCP 与 UDP 均如此。RTMP：在 Docker 网络中名字 `rtmpsrv` 从 mediamtx A（172.31.248.10，已移除）迁到 mediamtx B（.20），在该网络的容器中运行、自动重连的推流与拉流都拨到了 .20（B 的路径等待推流回来期间，拉流重连了 11 次）。未试 live555（openRTSP）：Ubuntu 24.04 与 Debian 12 都不再打包它。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，9 轮交替，取中位数，head / base）：RTMP 拉流 0.997、RTSP 拉流 1.000、RTSP RECORD 入流 1.002（`tests/client_bench.rs`）；hub 分发 0.987 / 0.994 / 1.000（1 / 16 / 256 个订阅者），FLV 解码 1.010（H.264）与 1.006（H.265）（`tests/media_bench.rs`），都在噪声之内：媒体路径没有改动（会话列表只在 SETUP / ANNOUNCE 与 TEARDOWN 时访问，解析只在连接时进行）。
 
-### 性能：短 ChaCha20-Poly1305 消息的解密；不用 `mulx` 的 P-256 约简（only-crypto）
+### 性能：短 ChaCha20-Poly1305 消息的解密；不用 `mulx` 的 P-256 约简（akio-crypto）
 
 无 API 变化。
 
 - **ChaCha20-Poly1305 解密 64 字节为 ring 的 0.84 倍 → 0.98 倍，加密 0.99 倍 → 1.11 倍**（Zen 4，安静主机，同次运行 A/B）。解密慢的原因是 Zen 4 无法转发的存储，而不是必须先校验标签：AVX-512 行内核用 zmm 存储写出密钥流头后立即读回 Poly1305 密钥，AAD 的不完整分组在栈上拼接后跨越较窄的存储读回。现在行内核还在通用寄存器中返回密钥，只存储地把密钥流头写进调用方拥有的未初始化存储（不清零，不拷贝 256 字节），不完整分组在寄存器中拼接。1 KiB 解密 +4%，1 KiB 的 TLS 1.3 ChaCha20 记录相对 rustls + ring 1.16 倍 → 1.21 倍。`tools/ct-dudect` 新增针对短消息路径的目标 `chacha20poly1305-open-tag-64`。
 - **x86_64 上的 P-256**：整点运算的 Montgomery 约简用移位计算 `m·p₃`（`p₃ = 2⁶⁴ - 2³² + 1`），不再每步一条 `mulx`，从而腾出唯一的乘法端口：验签 +5.2%（ring 的 1.09 倍 → 1.15 倍），ECDH +1.7%（1.17 倍），生成密钥 +1.2%，secp256r1 TLS 1.3 握手相对 rustls + ring 1.07 倍 → 1.10 倍。在独立的域乘法（受延迟限制的求逆链）中做同样的改动没有收益，未采用。
 
-### 变更：brotli 每次刷新写入的开销减半（only-brotli）
+### 变更：brotli 每次刷新写入的开销减半（akio-brotli）
 
 ADR-074 在 2026-11-22 的第二次更新，API 不变。写一个元块不再分配内存（缓冲区由编码器和流保留），前缀码的构建
 时间与用到的符号数成正比，流在再次发送某类上一次写出的码不比新码多花比特时就再次发送。gpu51 上质量 4：每次刷新
 的 87 字节事件 1.98 → 1.07 us，16 个事件的响应 56.5 → 35.0 us、最多小 7.5%；HTTP 上 `Compress::stream` 的 br
 每个 16 事件响应的服务器 CPU 65.2 → 46.3 us（每秒响应数 1.41 倍）。各级别的一次性输出逐位不变。每个流多占 15 KiB。
 
-### 新增：大窗口 brotli、共享 brotli 封装格式、编码器搜索自定义词表（only-brotli）
+### 新增：大窗口 brotli、共享 brotli 封装格式、编码器搜索自定义词表（akio-brotli）
 
 ADR-079，RFC 9841 的其余部分；只有新增 API：
 
@@ -164,24 +184,24 @@ ADR-079，RFC 9841 的其余部分；只有新增 API：
   `tools/interop/brotli-shared/run.sh` 增加与 Google 命令行的大窗口核对，并由 libbrotli 解码我们 11 级
   的输出。
 
-### 新增：mDNS 名字声明、告别、单播跳数限制 255（only-webrtc、only、only-sys、only-ice）
+### 新增：mDNS 名字声明、告别、单播跳数限制 255（akio-webrtc、akio、akio-sys、akio-ice）
 
 ADR-078 的 2026-11-22 更新，只有新增：
 
 - `UdpBinding::set_unicast_hops(u32)`：绑定发出的单播数据报的 TTL / 跳数限制（`IP_TTL` /
-  `IPV6_UNICAST_HOPS`）；`only_sys::set_unicast_hops_v6` / `unicast_hops_v6`。`Endpoint::resolve_mdns`
+  `IPV6_UNICAST_HOPS`）；`akio_sys::set_unicast_hops_v6` / `unicast_hops_v6`。`Endpoint::resolve_mdns`
   的 mDNS 套接字按 RFC 6762 §11 以 255 发送单播应答（QU、传统单播），与组播应答相同。
 - 被隐藏的名字（`Endpoint::conceal_host_candidates`）按 RFC 6762 §8 声明，不推迟候选：三次探测，间隔
   250 ms，然后两次宣告，间隔 1 s。另一台主机以另一个地址应答该名字，或在同时探测的平局裁决中胜出，
   endpoint 就放弃该名字（不再应答；新 peer 得到新名字）。`Endpoint::close` 为其名字发送告别（TTL 0）。
-- only-ice（内部）：`Message::probe`、`Message::authority`、`Record::tiebreak`。
+- akio-ice（内部）：`Message::probe`、`Message::authority`、`Record::tiebreak`。
 - `tools/interop/webrtc/mdns6.sh`：avahi 0.8 发布 Endpoint 已声明的名字时报告冲突。
 
-### 新增：由引擎驱动的 TURN TCP 分配与服务器自己的 Connect 超时（only-turn）
+### 新增：由引擎驱动的 TURN TCP 分配与服务器自己的 Connect 超时（akio-turn）
 
 ADR-076 的 2026-11-22 更新，API 只增不改：
 
-- `client::TcpAllocation`（以及 `ServerTransport`、`AllocationEvent`）：由 `only` 引擎驱动的 RFC 6062 TCP
+- `client::TcpAllocation`（以及 `ServerTransport`、`AllocationEvent`）：由 `akio` 引擎驱动的 RFC 6062 TCP
   分配。`open` 拨出控制连接（TCP 或 TLS）并分配；`connect(peer, acceptor, on_error)` 与
   `accept(id, acceptor, on_error)` 拨出由应用自己的 acceptor 服务的数据连接：ConnectionBind 是位于 handler
   之下（TLS 之上）的传输层，因此 handler 拿到的是普通的 `Conn<H>`，只看到对端的字节。在此之前的失败（Connect
@@ -193,9 +213,9 @@ ADR-076 的 2026-11-22 更新，API 只增不改：
 - 修复：TCP 中继的接受循环从不清空事件列表，它随每个事件增长并重放旧事件。
 - `Endpoint` 有意不收集中继 TCP 候选（浏览器从不分配它们，而且没有一个它们从不通告的地址就连不上我方的候选）；
   详见 ADR-076。
-- `tools/interop/webrtc/turn-tcp.sh` 让引擎客户端经 TCP 与 TLS 对 coturn、pion/turn 与 only-turn 运行。
+- `tools/interop/webrtc/turn-tcp.sh` 让引擎客户端经 TCP 与 TLS 对 coturn、pion/turn 与 akio-turn 运行。
 
-### 新增：RTCP XR VoIP 指标中与编解码器相关的字段（only-rtp、only-webrtc）
+### 新增：RTCP XR VoIP 指标中与编解码器相关的字段（akio-rtp、akio-webrtc）
 
 ADR-085（docs/adr/085-rtcp-xr-voip-quality-fields.zh-CN.md），仅新增：
 
@@ -207,13 +227,13 @@ ADR-085（docs/adr/085-rtcp-xr-voip-quality-fields.zh-CN.md），仅新增：
   丢包隐藏。
 - `EModel::estimate_report`（端系统时延取自应用、其抖动缓冲或抖动）、`EModelScore::fill`（保留应用的评分）、
   `VoipMetrics::quality`（把收到的块解码为 `VoipQuality`）。
-- only-webrtc：VoIP 指标按所收编解码器为每个接收音频流评分，并在 RX config 中携带该编解码器的丢包隐藏。
+- akio-webrtc：VoIP 指标按所收编解码器为每个接收音频流评分，并在 RX config 中携带该编解码器的丢包隐藏。
   `Peer::set_voip_quality(mid, VoipQuality, Option<EModel>)` 接收只有应用知道的值：信号与噪声电平、RERL、
   抖动缓冲、端系统时延、外部 R 因子、应用自己的 R / MOS。应用未给出的字段仍以 127 发送。
 - API 不变而数值改变的：`EModel::delay_impairment` 与 `EModel::score`（无损伤时 R 为 93.21，原常数为
   93.2）；Opus 与 G.722 流现在按宽带刻度评分。
 
-### 变更：服务端每个 HTTP 请求只剩一次分配（only-http、only-h3、only-core，ADR-081）
+### 变更：服务端每个 HTTP 请求只剩一次分配（akio-http、akio-h3、akio-core，ADR-081）
 
 ADR-025 之后每请求剩下的分配都已去掉，只剩处理函数自己的响应体
 （docs/adr/081-per-thread-head-storage.zh-CN.md）。公开 API 不变。
@@ -222,12 +242,12 @@ ADR-025 之后每请求剩下的分配都已去掉，只剩处理函数自己的
   4 KiB，字段位置不超过 64 个）。HTTP/1.1、HTTP/2 和 HTTP/3 的请求头取用请求备用；处理函数用完一个
   未 detach、未升级的请求后，存储随 target 一起交回。`Response::with_body`（以及 `text`）取用响应
   备用，响应头编码完成后交回。`with_body` 的两个字段位置内联存放，不再为四个字段预留向量。
-- **HTTP/1.1 响应头使用 only-buf 的池。** 连接写出后把缓冲区交回池中。only-core 还会把 `send_owned`
+- **HTTP/1.1 响应头使用 akio-buf 的池。** 连接写出后把缓冲区交回池中。akio-core 还会把 `send_owned`
   立即完整写出的池化缓冲区，以及 TLS 封装过的明文缓冲区交回池中。
 - **HTTP/2 请求在栈上的 `Context` 中运行**，不再 `Box<Context>`。连接的 action 向量按线程复用，输出
   缓冲区从池中取，不再每次 flush 后从零增长。
-- only-http 的 `#[doc(hidden)]` transport 钩子新增 `request_headers` 和 `recycle_response_headers`，
-  供 only-h3 使用。only-http 现在依赖 only-buf。
+- akio-http 的 `#[doc(hidden)]` transport 钩子新增 `request_headers` 和 `recycle_response_headers`，
+  供 akio-h3 使用。akio-http 现在依赖 akio-buf。
 - 每请求分配器调用（bpftrace，gpu51，epoll 与 io_uring）：HTTP/1.1 5.0 → 1.0，pipeline 5.0 → 1.0，
   h2c 5.5 → 1.0，`quic-bench h3` 两端 9.0 → 6.0。剩下的一次是处理函数的响应体：
   `ctx.text(200, "...")` 把 `&str` 转成 `String`。
@@ -236,11 +256,11 @@ ADR-025 之后每请求剩下的分配都已去掉，只剩处理函数自己的
   - 每请求指令：0.937 倍、0.898 倍、0.929 倍。
   - req/s：pipeline 1.031 倍，h2c 1.042 倍，HTTP/3 1.016 倍；普通 HTTP/1.1 不变（受限于客户端）。
 
-### 新增：可扩展（L4S）的 CE 响应、RFC 6679 信令、经 TURN 的 ECN、DTLS 锁定、DTLS-SRTP MKI（only-rtp、only-webrtc）
+### 新增：可扩展（L4S）的 CE 响应、RFC 6679 信令、经 TURN 的 ECN、DTLS 锁定、DTLS-SRTP MKI（akio-rtp、akio-webrtc）
 
 ADR-082（docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md），纯增量；默认行为不变：
 
-- **对 CE 的可扩展响应。** only-rtp 新增 `EcnResponse::{Classic, Scalable}`，用
+- **对 CE 的可扩展响应。** akio-rtp 新增 `EcnResponse::{Classic, Scalable}`，用
   `BandwidthEstimator::set_ecn_response` 设置。使用可扩展响应时，CE 不再算丢包：
   - CE 比例按往返轮次以 1/16 的增益平滑（`ce_fraction`；轮次来自 `set_rtt`）。
   - 它以 `alpha / 2` 削减第三个速率，每个窗口至多一次。
@@ -248,7 +268,7 @@ ADR-082（docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md），纯增
   - 时延过载期间到达的 CE 仍算丢包（经典回退）。
   - `on_ecn_counts` 接收基于计数器的 ECN 反馈。
 
-  only-webrtc 在标记 ECT(1) 时使用可扩展响应。标记期间，pacing 为估计值的 1.5 倍、突发 1 ms（原为 2.5
+  akio-webrtc 在标记 ECT(1) 时使用可扩展响应。标记期间，pacing 为估计值的 1.5 倍、突发 1 ms（原为 2.5
   倍与 40 ms）。在模拟的 6 Mbps L4S 队列中，ECT(1) 得到 4.9 Mbps、队列 1.3 ms；ECT(0) 为 1.36 Mbps，
   不用 ECN 时队列为 7.3 ms。
 - **RFC 6679 信令。** 开启 ECN 标记时，各段提议并应答：
@@ -256,7 +276,7 @@ ADR-082（docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md），纯增
   - `a=rtcp-fb:<pt> nack ecn`，
   - `a=rtcp-xr:ecn-sum`。
 
-  only-rtp 新增 `EcnFeedback`（RTPFB FMT 8）、`EcnSummary`（XR 块类型 13）、`EcnReceiver`、
+  akio-rtp 新增 `EcnFeedback`（RTPFB FMT 8）、`EcnSummary`（XR 块类型 13）、`EcnReceiver`、
   `EcnCounters` 与 `EcnDelta`。
 
   没有 RFC 8888 时，接收端报告每个源的计数器：收到第一个 ECT 包或 CE 标记时尽早发送，每次报告时发送，并在报告
@@ -269,10 +289,10 @@ ADR-082（docs/adr/082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md），纯增
   超时时，路径对移回，peer 继续存活。锁定时把 `actpass` 提议应答为 `passive`。
 - **DTLS-SRTP 的 SRTP MKI。** `RtcConfig::set_dtls_srtp_mki_length`：DTLS 客户端在 `use_srtp` 中提议 MKI，
   服务端同意客户端的 MKI，之后 SRTP / SRTCP 携带它。
-- **互通与模糊测试。** `webrtc-interop` 新增 `ONLY_INTEROP_SIP=dtls` 与 `ONLY_INTEROP_DTLS_MKI`。
+- **互通与模糊测试。** `webrtc-interop` 新增 `AKIO_INTEROP_SIP=dtls` 与 `AKIO_INTEROP_DTLS_MKI`。
   `tools/interop/webrtc/latch.sh` 新增 DTLS-SRTP 话机用例。`rtp_rtcp` 模糊测试目标对 RFC 6679 格式做往返。
 
-### 新增：RFC 9841 共享字典（only-brotli）
+### 新增：RFC 9841 共享字典（akio-brotli）
 
 ADR-069 的 2026-11-22 补记，新增 API：
 
@@ -287,7 +307,7 @@ ADR-069 的 2026-11-22 补记，新增 API：
   新的模糊测试目标 `brotli_shared`。
 - 无字典解码速度不变（gpu51 同批 A/B：libbrotli 的流为 main 速度的 0.996，我们自己的流 0.999（几何平均），在噪声之内；docs/BENCHMARKS.zh-CN.md，“brotli 共享字典”）。
 
-### 新增：RTSP 接收者报告、客户端重定向与重连时重新解析；HLS 请求关键帧（only-media）
+### 新增：RTSP 接收者报告、客户端重定向与重连时重新解析；HLS 请求关键帧（akio-media）
 
 ADR-084（docs/adr/084-rtsp-receiver-reports-redirects-lookups.zh-CN.md）：
 
@@ -311,7 +331,7 @@ ADR-084（docs/adr/084-rtsp-receiver-reports-redirects-lookups.zh-CN.md）：
   服务器名字在两个 mediamtx 容器之间迁移时我们的推流与拉流完成重连（main 的客户端超时）。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替多轮，取中位数，head / base）：RTSP 拉流 1.024、RTSP RECORD 入流 1.087、RTMP 拉流 0.998（`tests/client_bench.rs`，9 轮）；`bench_segmenting`（7 轮）MPEG-TS 0.981、MPEG-TS LL-HLS 0.995、fMP4 1.015、fMP4 LL-HLS 1.013、AES-128 0.998 至 1.001、SAMPLE-AES MPEG-TS 1.002、`cbcs` 1.004（分段超过目标时长后，关键帧请求是每包一次比较）。RECORD 的开销（每个 RTP 包 +18 ns）来自接收者报告所需的到达时间：每次带来 RTP 包的读取读一次时钟，而该基准每次读 255 字节，约每包一次读取；更大的读取让多个包共用一次时钟读取，`receiver_report_interval` 为零时完全跳过。最初每包读一次时钟并用 u128 除法换算的版本为 1.113（拉流）与 1.104（RECORD）。
 
-### 变更：brotli 流式编码器每次写入与每个流的固定开销（only-brotli）
+### 变更：brotli 流式编码器每次写入与每个流的固定开销（akio-brotli）
 
 ADR-074 的 2026-11-22 更新，API 不变：
 
@@ -321,13 +341,13 @@ ADR-074 的 2026-11-22 更新，API 不变：
   按三个窗口确定大小）。流式输出变化 +0.00..0.11%。
 - 测量（在 gpu51 上与 main 同批 A/B；docs/BENCHMARKS.zh-CN.md“Brotli 流式编码器：固定开销”）：质量 4、
   窗口 18：每次 87 字节事件的刷新写入 4.03 → 1.96 us，每个流 13.5 → 5.3 us，3 个事件后 641 → 6 KiB，以
-  16 KiB 刷新写入的 HTML +8.6%。使用 only-http 的 `StreamCompress` 默认值时，br 每个 16 事件响应的服务器
+  16 KiB 刷新写入的 HTML +8.6%。使用 akio-http 的 `StreamCompress` 默认值时，br 每个 16 事件响应的服务器
   CPU 123.5 → 67.5 us（每秒响应数 1.83 倍），16 x 16 KiB HTML -7%，每个保持打开的流的服务器 RSS 在 3 个
   事件后 424 → 9 KiB。
 - `tools/bench/stream-compress.sh` 支持 `VARIANTS` / `MEM_VARIANTS` 与 `base-<编码>` 变体；新示例
-  `stream-cost`（only-brotli）。
+  `stream-cost`（akio-brotli）。
 
-### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
+### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（akio-socks、akio-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：
 
@@ -335,10 +355,10 @@ ADR-071 的 2026-11-22 更新，API 没有变化：
   封装的 RFC 1961 封装数据消息（§5），服务端的转发、`SocksClient::udp_associate` 与
   `SocksClient::udp_associate_blocking`（现在接受保护）都如此；无法解封装的数据报被丢弃。
 - `GssContext` 文档：`unwrap` 应接受乱序的令牌，因为数据报会丢失和乱序。
-- `tools/interop/socks/gssapi.sh` 增加 UDP 用例：独立的 Python 客户端对 Dante 与 only-socks 服务端，
-  only-socks 的客户端（engine 与阻塞）对两者，级别 0 到 2。共 27/27。
+- `tools/interop/socks/gssapi.sh` 增加 UDP 用例：独立的 Python 客户端对 Dante 与 akio-socks 服务端，
+  akio-socks 的客户端（engine 与阻塞）对两者，级别 0 到 2。共 27/27。
 
-### 新增：压缩流式响应（only-http、only-brotli）
+### 新增：压缩流式响应（akio-http、akio-brotli）
 
 ADR-074（docs/adr/074-compressed-streamed-responses.zh-CN.md），只有新增：
 
@@ -349,7 +369,7 @@ ADR-074（docs/adr/074-compressed-streamed-responses.zh-CN.md），只有新增�
 - 每次 `BodyStream::write` 都编码并刷新（deflate 同步刷新，zstd 与 brotli 的 `Flush::Flush`），所以每个
   server-sent event 到达即可解码；`finish` 结束编码。默认值很小（`StreamCompress`）：gzip / deflate 1，
   zstd 1 配 `zstd_window_log` 17，brotli 4 配 `brotli_window_bits` 18：每个打开的流约 0.3、0.5 和 1.3 MiB。
-- only-brotli 的流式 `Compressor` 在缓冲区积累两个窗口时滑动（原来要等一个窗口加一个 1 MiB 的元块），
+- akio-brotli 的流式 `Compressor` 在缓冲区积累两个窗口时滑动（原来要等一个窗口加一个 1 MiB 的元块），
   小窗口的流因此保持小：质量 4、窗口位数 18 时每个流从 2.0 MiB 降到 1.3 MiB。输出不变。
 - 修复：`etag()` 给流式 200 响应打上空消息体的 ETag。
 - 测量（在 gpu51 上与 main 同批 A/B。未设置 `stream` 时流式响应的速度与 main 相同（每响应 16 个
@@ -358,11 +378,11 @@ ADR-074（docs/adr/074-compressed-streamed-responses.zh-CN.md），只有新增�
   26%，HTML 压到 18% / 6.1% / 5.4%。每个保持打开的流的服务器 RSS（1,000 个流）在 3 个事件后为 148 / 112 /
   424 KiB，6,000 个事件后为 268 / 324 / 1,106 KiB，不压缩时为 1.2-2.6 KiB；docs/BENCHMARKS.zh-CN.md）。
 
-### 新增：以跳数限制 255 发送、可用于纯 IPv6 链路的 IPv6 mDNS（only-sys、only、only-webrtc）
+### 新增：以跳数限制 255 发送、可用于纯 IPv6 链路的 IPv6 mDNS（akio-sys、akio、akio-webrtc）
 
 ADR-078（docs/adr/078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md），只有新增：
 
-- `only_sys::set_multicast_hops_v6` / `multicast_hops_v6`（`IPV6_MULTICAST_HOPS`，std 没有）。带 IPv6
+- `akio_sys::set_multicast_hops_v6` / `multicast_hops_v6`（`IPV6_MULTICAST_HOPS`，std 没有）。带 IPv6
   组的 `Engine::bind_udp_multicast_on` 现在以跳数限制 255 发送并打开组播回环，与 IPv4 路径以 TTL 255
   发送一致（RFC 6762 §11；设置 `check-response-ttl=yes` 的 avahi 会忽略以默认跳数限制 1 发出的 IPv6
   应答）。
@@ -373,7 +393,7 @@ ADR-078（docs/adr/078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md），只有新增�
   Chrome 157 与唯一主机候选为被隐藏 IPv6 地址的端点互通。`webrtc-interop` 新增 `mdns-conceal` 与
   `mdns-resolve` 模式。
 
-### 新增：TURN TCP 分配，RFC 6062（only-turn）
+### 新增：TURN TCP 分配，RFC 6062（akio-turn）
 
 ADR-076（docs/adr/076-turn-tcp-allocations.zh-CN.md）：
 
@@ -390,12 +410,12 @@ ADR-076（docs/adr/076-turn-tcp-allocations.zh-CN.md）：
   （sans-io 的 ConnectionBind，交回对端的首批字节）。
 - STUN：`Method::{CONNECT, CONNECTION_BIND, CONNECTION_ATTEMPT}`、`attr::CONNECTION_ID`。
 - 变更：经 UDP 或 DTLS 的 TCP Allocate 现在回 400（RFC 6062 第 5.1 节）而不是 442；UDP 与 TCP 之外的传输仍回 442。
-- fuzz 目标 `turn_tcp`；`tools/interop/webrtc/turn-tcp.sh`：coturn 的 `turnutils_uclient -T` 对 only-turn，
-  only_turn 客户端对 coturn、pion/turn 与 only-turn，pion/turn 的 TCP 分配客户端对 only-turn 与 coturn，经 TCP
+- fuzz 目标 `turn_tcp`；`tools/interop/webrtc/turn-tcp.sh`：coturn 的 `turnutils_uclient -T` 对 akio-turn，
+  akio_turn 客户端对 coturn、pion/turn 与 akio-turn，pion/turn 的 TCP 分配客户端对 akio-turn 与 coturn，经 TCP
   与 TLS。
 - UDP 中继路径不变：gpu51 上与 main 同轮 A/B，`turn-relay-bench 8 6 4`（8 对，双向 100 字节数据报），quiet.sh 下交替 6 轮：平均总量 30.86 万 vs 26.80 万数据报/秒（1.15 倍；各轮波动约 ±20%，应理解为无回退而非提升）。
 
-### 新增：ECN 可用的 RTP、无 ICE 媒体的锁定、无 BUNDLE 时的拥塞控制（only-webrtc、only-core、only-sys）
+### 新增：ECN 可用的 RTP、无 ICE 媒体的锁定、无 BUNDLE 时的拥塞控制（akio-webrtc、akio-core、akio-sys）
 
 ADR-077（docs/adr/077-webrtc-ecn-latching-unbundled-cc.zh-CN.md），只有新增：
 
@@ -412,13 +432,13 @@ ADR-077（docs/adr/077-webrtc-ecn-latching-unbundled-cc.zh-CN.md），只有新�
   RFC 8888 按传输进行；传输级序号跟随远端的编号方式（一个空间，如 libwebrtc / Chrome；或在远端表现出
   按传输编号后每个传输一个空间），按传输的结果经对齐和排序后交给估计器；排队的包、填充和探测都从各自的
   传输发出。
-- `PeerStats` 新增 `ecn_marked_sent`、`ecn_failures`、`ecn_state`、`latched`、`twcc_spaces`。only-core：
-  `UdpBinding::send_to_ecn`（文档隐藏）；only-sys：Linux 上的 `send_to_ecn`。
+- `PeerStats` 新增 `ecn_marked_sent`、`ecn_failures`、`ecn_state`、`latched`、`twcc_spaces`。akio-core：
+  `UdpBinding::send_to_ecn`（文档隐藏）；akio-sys：Linux 上的 `send_to_ecn`。
 - 行为变化：不做 BUNDLE 的会话的 offer 与 answer 带有 transport-cc / `ack ccfb`（ADR-072 曾去掉它们）。
 - 工具：`webrtc-bench` 示例（两个回环 `Endpoint` 之间的媒体 / 数据通道吞吐）；`webrtc-interop` 新增
-  `sip-gateway`、`client … sip`、fec-server 的 `direct` 以及 `ONLY_INTEROP_{ECN,LATCH,SIP,BWE}`。
+  `sip-gateway`、`client … sip`、fec-server 的 `direct` 以及 `AKIO_INTEROP_{ECN,LATCH,SIP,BWE}`。
 
-### 新增：AES-128 的 I 帧播放列表、RTSP RECORD 会话的 RTCP 同步、rendition report 的查询串（only-media）
+### 新增：AES-128 的 I 帧播放列表、RTSP RECORD 会话的 RTCP 同步、rendition report 的查询串（akio-media）
 
 ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）：
 
@@ -442,7 +462,7 @@ ADR-075（docs/adr/075-media-aes-iframes-record-sync-report-queries.zh-CN.md）�
   trick play）。`tests/client_bench.rs` 新增基准 `rtsp-record`。
 - 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替 7 轮，取中位数，head / base）：hub 扇出 1.005 / 0.994 / 0.996（1 / 16 / 256 个订阅者；最初逐订阅者逐包检查新下限的版本在 256 时为 1.043，现在仅当有订阅者尚未越过下限时循环才检查）；RTSP RECORD 入流（新增 `rtsp-record`）1.007、RTSP 拉流 1.003、RTMP 拉流 0.996；`bench_segmenting` MPEG-TS 1.065、MPEG-TS LL-HLS 0.981、fMP4 0.961、fMP4 LL-HLS 1.020、AES-128 0.995 至 0.998、SAMPLE-AES MPEG-TS 1.015、`cbcs` 1.002。分片的逐包路径没有改动（独立加密的 I 帧、查询串与新路由都是按分片或按请求，且不在此基准中）；普通 MPEG-TS 与 fMP4 反向变化，`cbcs` 在仅 hub.rs 不同的两轮之间从 1.055 变为 1.002：属于代码布局。macOS aarch64 上同样的比较全部在 0.97 至 1.03 之间。
 
-### 变更：brotli 块分割（only-brotli）
+### 变更：brotli 块分割（akio-brotli）
 
 ADR-069 的 2026-11-22 补记，API 不变；从 4 级起输出有变化：
 
@@ -457,29 +477,29 @@ ADR-069 的 2026-11-22 补记，API 不变；从 4 级起输出有变化：
   的负载上慢 1–6%；1 级不变。解码器不变；带块类型的流与 libbrotli 的流一样解码。
 - 测试：4–11 级找到并写出块类型，CLI 互通测试加入交错语料，`brotli_roundtrip` 加入产生多块类型流的种子。
 
-### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（only-socks、only-ws）
+### 新增：机制由应用提供的 SOCKS5 GSS-API 认证（akio-socks、akio-ws）
 
 ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新增：
 
 - 服务端（`Socks::gssapi(factory, levels)`）与客户端（`SocksClient::gssapi(factory, level)`）实现
   RFC 1961（方法 1）：上下文建立、保护级别协商，以及在 `Protection::Integrity` /
   `Protection::Confidentiality` 下对请求、应答与整个隧道的封装（`Protection::None`：只认证）。GSS-API
-  机制由应用通过 `only_socks::gssapi::GssContext`（`step`、`wrap`、`unwrap`、`peer_name`）提供；workspace
+  机制由应用通过 `akio_socks::gssapi::GssContext`（`step`、`wrap`、`unwrap`、`peer_name`）提供；workspace
   不链接任何 GSS-API 库。
 - 建立步骤从不在 I/O 线程上执行：服务端在逻辑池中执行，客户端在辅助线程中执行并通过 `TransportWaker`
   恢复。服务端的访问钩子通过 `Request::user()` 看到 GSS-API 对端。GSS-API 服务端关闭 SOCKS4 与“无认证”。
 - 有保护时拒绝：`UDP ASSOCIATE`（服务端回复 7；客户端拒绝经 GSS-API 的 UDP；此后已取消，见上一条）、
   客户端的阻塞辅助函数（代理
   授予的级别高于请求时也拒绝）、`sockmap` 拼接、放在 `Tls::server` 里的服务端。
-- `tools/interop/socks/gssapi.sh`：Docker 中的 MIT Kerberos KDC、only-socks 客户端与服务端（经仅用于测试
+- `tools/interop/socks/gssapi.sh`：Docker 中的 MIT Kerberos KDC、akio-socks 客户端与服务端（经仅用于测试
   的 `python3-gssapi` 垫片）、重新编译并启用 GSS-API 的 Dante，以及一个独立的 RFC 1961 客户端：所有级别
   15/15。
 
-### 新增：protobuf `utf8_validation = NONE`（only-protobuf、only-protobuf-build）
+### 新增：protobuf `utf8_validation = NONE`（akio-protobuf、akio-protobuf-build）
 
 只有新增：
 
-- 带 `features.utf8_validation = NONE` 的 `string` 字段生成为 `only_protobuf::ProtoString`（字节，解码时
+- 带 `features.utf8_validation = NONE` 的 `string` 字段生成为 `akio_protobuf::ProtoString`（字节，解码时
   不检查 UTF-8：`to_str`、`to_string_lossy`、`as_bytes`；编解码器 `encoding::ProtoStringCodec`），各种形态
   （单个、repeated、map 的键与值、oneof、extension）都是如此；其 getter 返回 `&[u8]`。
   `Config::proto2_unchecked_strings(true)` 对 proto2 字符串（其旧有的 NONE）同样处理；默认情况下 proto2
@@ -490,9 +510,9 @@ ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新�
 - 描述符：map 字段的 features 会复制到其 entry 的 key 与 value 上，与 protoc 一致。
 - 不含 `NONE` 的文件生成的代码逐字节不变；一致性运行器 v35.1 依旧通过 5627 + 909 项 / 失败 0 项。
 
-### 变更：musl 布局测试（only-sys）
+### 变更：musl 布局测试（akio-sys）
 
-- `only_sys::ffi` 的布局与常量现在也在 `aarch64-unknown-linux-musl` 与 `x86_64-unknown-linux-musl`
+- `akio_sys::ffi` 的布局与常量现在也在 `aarch64-unknown-linux-musl` 与 `x86_64-unknown-linux-musl`
   （Alpine）上与 `libc` crate 对比。musl 的 `struct cmsghdr` 按 4 字节对齐，内核与我们的按 8 字节对齐
   （大小与偏移一致）；其余没有差别。docs/api-stability.zh-CN.md 把使用 musl 的 Linux 列为第 2 级。
 
@@ -502,38 +522,38 @@ ADR-071（docs/adr/071-socks-gssapi-pluggable-mechanism.zh-CN.md），只有新�
   `SO_REUSEPORT` listener；TCP echo，HTTP/1.1 `/plaintext` 与 `/json`，支持流水线），由 `tools/bench`
   以 `monoio-uring` 和 `monoio-epoll`（它的 io_uring driver 与 legacy driver）运行；`http.sh` 对没有
   HTTP/2 的服务端跳过 h2c 用例（`has_h2`）。结果与方法见 docs/BENCHMARKS.zh-CN.md。
-- `tools/interop/quic/quiche.sh`：quiche 0.30.1（在 Docker 中按发布标签构建）与 `only-h3` / `only-quic`
+- `tools/interop/quic/quiche.sh`：quiche 0.30.1（在 Docker 中按发布标签构建）与 `akio-h3` / `akio-quic`
   双向互通：quiche-client 对 HTTP/3 服务端（版本协商、单连接 50 个请求、300 KB POST、流式响应、
-  0-RTT、客户端迁移），并以 HTTP/0.9（`hq-interop`）对 `only-quic`；`H3Client` 与 only-quic 客户端对
+  0-RTT、客户端迁移），并以 HTTP/0.9（`hq-interop`）对 `akio-quic`；`H3Client` 与 akio-quic 客户端对
   quiche-server，有无 Retry 各一遍（3 MiB 上传时对方 STOP_SENDING 后回 405、超过其 100 流上限的并发
   请求、暂停后恢复的流式响应）。`quic-interop` 示例新增 `hq` 模式（服务端与客户端），`h3-interop`
   新增 `client-quiche` 模式。双方均未发现缺陷。
 
-### 新增：用户态协议栈的 IPv6 自动配置、Accurate ECN 与 AF_XDP 共享 UMEM / 巨帧（only-dpdk、only-ebpf）
+### 新增：用户态协议栈的 IPv6 自动配置、Accurate ECN 与 AF_XDP 共享 UMEM / 巨帧（akio-dpdk、akio-ebpf）
 
 ADR-068（docs/adr/068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md），仅新增（默认全部关闭）：
 
 - `DpdkConfig::ipv6_slaac`：发送路由器请求，并从路由器通告中为每个 /64 前缀生成全局地址
   （EUI-64），取得默认路由器、链路上前缀、MTU 与跳数限制，按 RFC 4862 生存期维护。即使没有
-  `address6` 也会打开 IPv6。`only_dpdk::ipv6_addresses(&Device)` 报告可用地址。
+  `address6` 也会打开 IPv6。`akio_dpdk::ipv6_addresses(&Device)` 报告可用地址。
 - `DpdkConfig::ipv6_dad`：地址使用前做重复地址检测（RFC 4862 5.4，带 RFC 7527 nonce）；链路本地
   地址重复则关闭 IPv6。
 - `DpdkConfig::tcp_accecn`：用户态 TCP 的 Accurate ECN（RFC 9768），可回退到 RFC 3168 ECN 或不用
   ECN；与 Linux 6.18+（`net.ipv4.tcp_ecn = 3`）互通。
 - `AfXdpConfig::shared_umem`（`XDP_SHARED_UMEM`：所有队列共用一个 UMEM，`frames` 为总数）与
   `AfXdpConfig::multi_buffer`（`XDP_USE_SG`：一帧跨多个 chunk，AF_XDP 上 `DpdkConfig::mtu` 可达
-  9000）；底层为 `only_ebpf::xsk::XskConfig::shared_umem` / `multi_buffer` 与 `XskSocket::send_frags`。
-- 多队列设备上，路由器通告与邻居发现一样复制到每个队列；新增 `#[doc(hidden)] only_dpdk::tcp_ecn_stats`。
+  9000）；底层为 `akio_ebpf::xsk::XskConfig::shared_umem` / `multi_buffer` 与 `XskSocket::send_frags`。
+- 多队列设备上，路由器通告与邻居发现一样复制到每个队列；新增 `#[doc(hidden)] akio_dpdk::tcp_ecn_stats`。
 
 修复：多队列设备上，拨出连接的 ICMP / ICMPv6 差错（目的不可达、包过大）与该连接的其他包一样交给
 拥有它的队列。RSS 只按地址对这类差错做哈希，它可能落到别的队列而丢失（拨向关闭端口的 UDP 连接因此
 超时，而不是以“不可达”失败）。
 
-### 新增：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`（only-media）
+### 新增：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`（akio-media）
 
 ADR-070（docs/adr/070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），均为新增：
 
-- **自动重连**：`only_media::Reconnect`（`initial_delay` 500 ms、`max_delay` 30 s、
+- **自动重连**：`akio_media::Reconnect`（`initial_delay` 500 ms、`max_delay` 30 s、
   `max_attempts` `None`；`Reconnect::new(&Arc<Engine>)` 弱引用持有引擎），用于新增的
   `RtmpClientConfig::reconnect` 与 `RtspClientConfig::reconnect`（默认 `None`）。再试一次可能好转
   的错误会在逐次翻倍、有上限的退避后重连，会话进入直播后重置；URL 错误、hub 错误与凭据被拒仍为
@@ -562,22 +582,22 @@ ADR-070（docs/adr/070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md），�
   H.265 分派）；RTMP 拉流接入 1.013，RTSP 拉流接入 1.015（每条消息 / 每个 RTP 包 246 与 269 ns，
   `tests/client_bench.rs`）。
 
-### 新增：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN、网络状态估计与调高上限时的探测（only-webrtc、only-rtp）
+### 新增：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN、网络状态估计与调高上限时的探测（akio-webrtc、akio-rtp）
 
 ADR-073（docs/adr/073-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
 
-- **Pacer**（only-webrtc）：带宽估计器打开时，视频、FEC 与重传经一个队列发出，排空速率为估计值的
+- **Pacer**（akio-webrtc）：带宽估计器打开时，视频、FEC 与重传经一个队列发出，排空速率为估计值的
   2.5 倍，突发额度 40 ms（重传优先；队列上限 8192 个包 / 8 MB；最老的包将等待 2 s 时加速排空）；音频从不
   延迟；transport-wide 序号与 abs-send-time 在包离开时写入；队列中的媒体填充探测时隙；可选填充
   （`RtcConfig::set_padding_rate`）。`RtcConfig::enable_pacing(false)` 关闭；没有估计器时不排队。
-- **探测**（only-rtp `BandwidthEstimator`）：运行时 `set_bounds` 在调高上限时探测（only-webrtc：
+- **探测**（akio-rtp `BandwidthEstimator`）：运行时 `set_bounds` 在调高上限时探测（akio-webrtc：
   `RtcConfig::set_bwe_bounds`、`Peer::set_bitrate_bounds`）；`set_network_state_estimate` 把探测限制在
   外部链路容量估计以内并向其探测（每 5 s；延迟控制把估计值压在其 70 % 以下时每 3 s）；估计器自己的链路
   容量估计（`link_capacity`）驱动 3 s 探测。
-- **FEC**（only-rtp `fec`）：最多 12 个包的组使用 libwebrtc 的 random / bursty 掩码表（`packet_masks`、
+- **FEC**（akio-rtp `fec`）：最多 12 个包的组使用 libwebrtc 的 random / bursty 掩码表（`packet_masks`、
   `FecMaskType`），跨帧分组规则与关键帧因子（`FecProtection`、`FecEncoder::{set_protection, push_frame}`），
   以及其保护策略（`ProtectionPolicy`、`protection_factors`：按丢包率与每帧比特数查码率表，RTT 感知的
-  NACK/FEC 混合）。only-webrtc 为每个发送流使用它们；`set_fec_protection` 限定因子；
+  NACK/FEC 混合）。akio-webrtc 为每个发送流使用它们；`set_fec_protection` 限定因子；
   `RtcConfig::set_fec_mask(FecMask::{Random, Bursty})`。
 - **RFC 8888 报告中的 ECN**：endpoint 把每个数据报的 ECN 码点（UDP 后端本已读取）交给 peer，RFC 8888
   反馈报告它，估计器把标记 CE 的包按丢失计（`PacketResult::ecn`、`BandwidthEstimator::ecn_counts`）。
@@ -586,12 +606,12 @@ ADR-073（docs/adr/073-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
   （`FecMechanism::Red`；接受只有 `red` 没有 `ulpfec` 的对端）。
 - **部分重建的 ULPFEC 包**交给 depacketizer（`FecDecoder::take_partials`、`FrameAssembler::push_partial`、
   `Frame::partial`；这样的帧不是 `contiguous`）。
-- only-webrtc 的 RTCP XR VoIP 指标携带由 E-model 计算的 **R 因子与 MOS**（ITU-T G.107：`EModel`、
+- akio-webrtc 的 RTCP XR VoIP 指标携带由 E-model 计算的 **R 因子与 MOS**（ITU-T G.107：`EModel`、
   `mos_from_r`、`BurstLossModel::{loss_fraction, burst_ratio}`）。
 - 统计（`PeerStats` 事件）：`fec_partial`、`paced_dropped`、`ecn_ect_received`、`ecn_ce_received`、
   `ecn_ce_reported`。
 - 行为变化：估计器运行时媒体按节拍发送；FEC 保护遵循 libwebrtc 的策略，不再是三倍丢包率（有 NACK 且
-  RTT 低于 20 ms 时 delta 帧不加 FEC）；simulcast 线路提供 FlexFEC；VoIP 指标携带 R 与 MOS。only-rtp
+  RTT 低于 20 ms 时 delta 帧不加 FEC）；simulcast 线路提供 FlexFEC；VoIP 指标携带 R 与 MOS。akio-rtp
   （内部层）：`PacketResult` 新增字段 `ecn`，`Frame` 新增字段 `partial`。
 - 测试：模拟时间（1 Mbps 估计值下关键帧摊开到 156 ms，同时音频立即发出；重传顺序；队列上限；调高上限
   时的探测；经 RFC 8888 的 ECN；10 % 丢包下 PCMU RED 收到 300 帧中的 297-298 帧，无 RED 263-268 帧；部分帧；
@@ -607,7 +627,7 @@ ADR-073（docs/adr/073-webrtc-pacer-fec-policy-ecn.zh-CN.md）：
   libwebrtc 的掩码：其每个 FEC 包覆盖的媒体包比原来的交织掩码多（最初每帧都重新计算策略的版本测得
   0.988x / 0.981x）。
 
-### 新增：无 BUNDLE 或无 ICE 的 WebRTC 传输、SDES 的 MKI 与数据通道、通道优先级、TURN DTLS 连接 ID（only-webrtc、only-turn、only-ice）
+### 新增：无 BUNDLE 或无 ICE 的 WebRTC 传输、SDES 的 MKI 与数据通道、通道优先级、TURN DTLS 连接 ID（akio-webrtc、akio-turn、akio-ice）
 
 ADR-072（docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md），只有新增：
 
@@ -624,22 +644,22 @@ ADR-072（docs/adr/072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md）�
 - 无 ICE 的 SDES-SRTP（`RtcConfig::enable_ice(false)`，或不带 ICE 的远端 SDP：普通 `c=` / `m=` 端口
   媒体与 `a=rtcp`）、带 MKI 与多个主密钥（我方 offer 用 `RtcConfig::set_sdes_mki_length`）、与数据通道
   并存（应用段中运行 DTLS）。
-- only-turn：基于 DTLS 的 TURN 监听器协商 8 字节连接 ID；客户端路径跟随来自新地址且通过认证的记录，
-  分配保持不变（`TurnServer::dtls_with_connection_ids` 设置其他长度或关闭）。only-webrtc 的 DTLS 中继
+- akio-turn：基于 DTLS 的 TURN 监听器协商 8 字节连接 ID；客户端路径跟随来自新地址且通过认证的记录，
+  分配保持不变（`TurnServer::dtls_with_connection_ids` 设置其他长度或关闭）。akio-webrtc 的 DTLS 中继
   客户端发送服务器的 CID。
-- only-ice：`mdns::MULTICAST_V6`、`mdns::multicast_v6_on`、`Candidate::with_scope_id`、
+- akio-ice：`mdns::MULTICAST_V6`、`mdns::multicast_v6_on`、`Candidate::with_scope_id`、
   `IceAgent::set_fixed_pair` / `is_fixed`（无 ICE 的路径）。
 
-### 变更：不带 BUNDLE 的远端 offer（only-webrtc）
+### 变更：不带 BUNDLE 的远端 offer（akio-webrtc）
 
 不带 `a=group:BUNDLE` 的多段远端 offer 现在以每段一个传输应答（此前的应答带一个 offer 未要求的
 BUNDLE 组，无法连通）。
 
-### 新增：only-brotli 与 only-zstd 的流式 API、字典与更好的最高级别压缩率
+### 新增：akio-brotli 与 akio-zstd 的流式 API、字典与更好的最高级别压缩率
 
 ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），增量 API：
 
-- 两个 crate 都有流式 API，形状同 only-deflate：`Compressor::compress(input, &mut out, Flush)`
+- 两个 crate 都有流式 API，形状同 akio-deflate：`Compressor::compress(input, &mut out, Flush)`
   （`Flush::{None, Flush, Finish}`、窗口设置、`reset`）以及 `Decompressor::decompress_vec` /
   `decompress`，返回 `Progress { consumed, produced, done }`；无论输入如何内存都有界：zstd 解码器至多
   收集一个块，持有帧的窗口（`max_window`，默认 8 MiB）；brotli 解码器从最后一条完整命令或头部单元处
@@ -659,13 +679,13 @@ ADR-069（docs/adr/069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md），�
 - 解码速度基本不变（安静主机上与 main 同批 A/B：每格 −2.2..+4.9%；小证书链至多慢 2%，约 0.15 µs；
   docs/BENCHMARKS.zh-CN.md）。
 - 模糊测试目标 `zstd_stream`、`zstd_stream_roundtrip`、`brotli_stream`、`brotli_stream_roundtrip`。
-- only-http 不变：流式响应仍不压缩（ADR-069 第 4 节；此后已压缩，ADR-074）。
+- akio-http 不变：流式响应仍不压缩（ADR-069 第 4 节；此后已压缩，ADR-074）。
 
-### 新增：引擎连接的内核 TLS，硬件优先（only-tls、only-core、only-sys、only）
+### 新增：引擎连接的内核 TLS，硬件优先（akio-tls、akio-core、akio-sys、akio）
 
 ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（默认关闭）：
 
-- `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` 与 `only_tls::Ktls`：握手完成后，epoll 或
+- `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` 与 `akio_tls::Ktls`：握手完成后，epoll 或
   io_uring 上的 `Tls` 连接把记录层交给 Linux。`Ktls::Hardware` 只卸载支持 TLS 卸载的网卡自己完成的部分
   （本地地址所在接口的 `tls-hw-tx-offload` / `tls-hw-rx-offload`；AES-GCM），用内核的 `TlsTxDevice` /
   `TlsRxDevice` 计数器确认，并不再提供驱动拒绝过的组合；在没有这类网卡的主机上什么都不改变。
@@ -675,36 +695,36 @@ ADR-067（docs/adr/067-kernel-tls-engine-offload.zh-CN.md），只有新增（�
   与密钥更新按顺序排队。接收方向在内核中时，`on_data` 直接拿到解密后的数据，控制记录（告警、KeyUpdate、
   close_notify）用 `recvmsg` 读取。io_uring 先让 multishot recv 停在记录边界，再移交接收方向。
 - `TlsInfo::ktls_tx` / `ktls_rx`（`KtlsPath::Software` / `Hardware`）、`TlsCounts::ktls_*` 与指标
-  `only_tls_ktls_total{side, dir, path}`。
-- only-core：`Transport::{wants_offload, offload, kernel_send, take_ops, kernel_record}`（默认方法）、
+  `akio_tls_ktls_total{side, dir, path}`。
+- akio-core：`Transport::{wants_offload, offload, kernel_send, take_ops, kernel_record}`（默认方法）、
   `Offloaded`、`SocketOp`（Linux）。
-- only-sys：`netdev_tls_offload`、`netdev_features`、`interface_addrs`、`tls_stat`、
+- akio-sys：`netdev_tls_offload`、`netdev_features`、`interface_addrs`、`tls_stat`、
   `ktls_tx_zerocopy_ro`、`ktls_rx_expect_no_pad`、`kernel_at_least`（隐藏模块）。
-- Feature：`only-tls/ktls` 与 `only/ktls`；`experimental-ktls` 保留为别名。
-- 基准服务器支持 `ONLY_KTLS=off|hardware|software|software-tx`；`tools/bench/ktls-engine.sh` 运行引擎
+- Feature：`akio-tls/ktls` 与 `akio/ktls`；`experimental-ktls` 保留为别名。
+- 基准服务器支持 `AKIO_KTLS=off|hardware|software|software-tx`；`tools/bench/ktls-engine.sh` 运行引擎
   A/B。
 - 性能（docs/BENCHMARKS.zh-CN.md，“引擎中的内核 TLS”）：默认构建，以及在没有 TLS 卸载网卡的主机上的
   `Ktls::Hardware`，与 main 相比没有变化（epoll 与 io_uring 上每秒握手数与 HTTPS 请求数都在 0.5% 以内）。
   软件 kTLS 在这颗 CPU 上仍然更慢（HTTPS 为 0.77 倍），与之前的评估一致。硬件路径未测量（测试主机没有这类
   网卡）。
-- 测试：`crates/only/tests/ktls.rs`（epoll 与 io_uring）、curl / `openssl s_client` 对启用 kTLS 的
-  `http-bench`（10/10）、`ONLY_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（175/175）。
+- 测试：`crates/akio/tests/ktls.rs`（epoll 与 io_uring）、curl / `openssl s_client` 对启用 kTLS 的
+  `http-bench`（10/10）、`AKIO_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（175/175）。
 
-### 新增：静态文件缓存的变更通知（only-http、only-sys）
+### 新增：静态文件缓存的变更通知（akio-http、akio-sys）
 
 ADR-066（docs/adr/066-static-files-change-notifications.zh-CN.md），只有新增（默认关闭）：
 
 - `Files::watch(true)`：缓存经 inotify（Linux）或 kqueue `EVFILT_VNODE`（macOS）跟随磁盘变化，不再每个
   `check_interval` 重查。路径上的目录（自根目录起）、文件及其压缩同名文件都有监视的缓存项，在变化把它
   丢弃之前不访问磁盘：写入或属性变化，文件、同名文件或路径上目录的重命名或删除，或事件丢失（溢出）。
-  每个 `Files` 一个 `only-files-watch` 线程，`Files` 丢弃后退出。
+  每个 `Files` 一个 `akio-files-watch` 线程，`Files` 丢弃后退出。
 - 通知无法担保的缓存项仍按间隔规则：Linux 上的符号链接与有多个硬链接的文件；在变化正被报告时读入的
   缓存项；超过 `Files::max_watches(n)`（默认 1024：目录监视数，macOS 上另加每个缓存文件一个文件描述符）
   的缓存项；通知无法建立或出错时的全部缓存项。不适用于网络文件系统与 FUSE，其他机器的修改不产生通知。
-- only-sys：`FsWatcher`（`watch_dir`、`watch_file`、`unwatch`、`wait`、`wake`）、`FsEvent`、`WatchId`。
+- akio-sys：`FsWatcher`（`watch_dir`、`watch_file`、`unwatch`、`wait`、`wake`）、`FsEvent`、`WatchId`。
 - I/O 线程上的命中路径多读一个 relaxed 原子量；不打开 `watch` 时其余一切不变。
 
-### 新增：无连接的 UDP listener，`DatagramsHandler`（only、only-core、only-epoll、only-uring）
+### 新增：无连接的 UDP listener，`DatagramsHandler`（akio、akio-core、akio-epoll、akio-uring）
 
 ADR-065（docs/adr/065-connectionless-datagrams.zh-CN.md），只有新增（每对端连接的 UDP listener
 不变）：
@@ -719,22 +739,22 @@ ADR-065（docs/adr/065-connectionless-datagrams.zh-CN.md），只有新增（每
 - 有上限：回复队列计入 `Config::max_queued_bytes`（超出时 `send_to` 返回 `WouldBlock`）；有数据报
   等待 socket 空间时，该线程暂停读取。
 - 支持 epoll、kqueue 和 io_uring（每个 socket 一个 ring poll，走同一条 `recvmmsg` / `sendmmsg`
-  路径；`ONLY_DEFAULT_BACKEND=uring` 生效）；不支持 DPDK（`Unsupported`）。与每对端 UDP listener
+  路径；`AKIO_DEFAULT_BACKEND=uring` 生效）；不支持 DPDK（`Unsupported`）。与每对端 UDP listener
   一样，`Engine::set_threads` 会被拒绝。
 - 示例 `udp-dns`（DNS 风格应答器）；`bench-server udp-dgram`。gpu51 上 64 B echo A/B：
   每对端 UDP 不变（req/s 1.02 倍，每请求 CPU 1.00 倍）；`serve_datagrams` 的 req/s 为 1.08 倍（epoll）/
   1.09 倍（io_uring），每请求服务端 CPU 少 7–8%。
 
-### 新增：客户端的 cookie 容器、Happy Eyeballs、DNS 缓存与 `https://` 代理；SOCKS 分片与 TLS；macOS 信任设置（only、only-http、only-ws、only-socks、only-tls）
+### 新增：客户端的 cookie 容器、Happy Eyeballs、DNS 缓存与 `https://` 代理；SOCKS 分片与 TLS；macOS 信任设置（akio、akio-http、akio-ws、akio-socks、akio-tls）
 
 ADR-059（docs/adr/059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md），只有新增：
 
-- `only_http::cookie::CookieJar` 与 `Client::with_cookies`：RFC 6265 cookie，采用 RFC 6265bis 规则
+- `akio_http::cookie::CookieJar` 与 `Client::with_cookies`：RFC 6265 cookie，采用 RFC 6265bis 规则
   （Domain 与公共后缀：单标签与 IP 总是算，完整列表经 `CookieJar::public_suffixes` 接入；Path；
   Secure、`__Secure-` / `__Host-`；HttpOnly；离开第一个站点的重定向链上的 SameSite；Max-Age /
   Expires，最多 400 天），有上限（`CookieLimits`：4096 字节、每个域 50 个、总共 3000 个，最久未用的
   先淘汰），对重定向链的每一跳生效。不挂容器时不生效。
-- `only::dns`：有上限的应答缓存（`CacheConfig`：`getaddrinfo` 不给 TTL，因此用固定的 30 秒，1024 个
+- `akio::dns`：有上限的应答缓存（`CacheConfig`：`getaddrinfo` 不给 TTL，因此用固定的 30 秒，1024 个
   名字，默认不缓存失败；`set_cache`、`clear_cache`）与共享的进行中查询；Happy Eyeballs v2
   （`HappyEyeballs`，RFC 8305：协议族交替，每 250 毫秒或失败后立即发起一次尝试，落败的连接在发送前
   关闭），在一个有上限的竞速线程上进行，胜者交给 engine。HTTP/1 客户端（`ClientOptions::happy_eyeballs`）、
@@ -742,7 +762,7 @@ ADR-059（docs/adr/059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md），只
   都这样竞速。
 - HTTP 与 WebSocket 客户端及 `Proxy::from_env` 支持 `https://` 代理 URL（到代理的 TLS，按名字校验其
   证书；`https://` / `wss://` 目标为 TLS 套 TLS）。
-- only-socks：`SocksClient::tls`（engine 方法经 TLS 连接代理），分片发送 UDP 数据报
+- akio-socks：`SocksClient::tls`（engine 方法经 TLS 连接代理），分片发送 UDP 数据报
   （`UdpAssociation::send_fragmented`、`BlockingUdp::send_fragmented`，以及服务端需显式开启的
   `Socks::udp_fragment_size`）；客户端的 UDP 关联在代理某个地址不可达时改试下一个地址。
 - macOS 上的 `RootCerts::system()` 应用用户、管理员与系统的信任设置（`security
@@ -750,7 +770,7 @@ ADR-059（docs/adr/059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md），只
   成为根证书，System 钥匙串中未被信任的证书不再算根证书。
 - fuzz 目标 `cookie_parse` 与 `tls_trust_plist`。未做：PAC、Windows 证书库、GSSAPI。
 
-### 新增：完整的 QPACK 编码器与 HTTP/3 客户端流式响应（only-h3、only-quic）
+### 新增：完整的 QPACK 编码器与 HTTP/3 客户端流式响应（akio-h3、akio-quic）
 
 ADR-061（docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md），只有新增（默认值不变：编码器
 仍关闭，`qpack_encoder_capacity: 0`）：
@@ -764,7 +784,7 @@ ADR-061（docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md），只有�
   `H3Event::{Head, Data, Trailers, End, Error}` 报告（不缓冲，不受 `max_body_bytes` 限制），请求体通过
   返回的 `H3Upload` 写入（上传与下载可同时进行）。`H3Upload::hold_reads(bool)` 暂停与恢复读取响应，
   由 QUIC 流量控制让服务器停下；`H3Upload::cancel()` 放弃请求。`request_timeout` 只作用到响应头。
-- `only_quic::Connection::hold_reads(id, bool)`：暂停交付一个流的数据；暂停期间数据留在接收缓冲区，
+- `akio_quic::Connection::hold_reads(id, bool)`：暂停交付一个流的数据；暂停期间数据留在接收缓冲区，
   恢复前不扩大该流的窗口。
 - 服务器推送仍不做（浏览器已放弃，见 ADR-061）。
 - 测试：针对每条编码器规则的单元测试；新 fuzz 目标 `qpack_encoder`（我方编码器对我方解码器，链路延迟并
@@ -773,7 +793,7 @@ ADR-061（docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md），只有�
   为 0）；流式响应的端到端测试。
 - `quic-bench h3`（gpu51，对 main b22519ae 两次同轮 A/B，各 7 轮交替）：默认配置（编码器关闭）持平，两次分别为 0.997 倍和 1.001 倍（14 轮合计 0.999 倍，86.39 万 vs 86.48 万请求/秒；客户端请求路径只多了一次流式响应检查）；两端编码器都开启时为旧编码器同样开启时的 0.991 倍（72.21 万 vs 72.89 万），即默认配置的 0.833 倍（旧编码器为 0.839 倍），因此编码器默认仍关闭。
 
-### 新增：异步 0-RTT 防重放存储、可轮换的会话票据密钥、BoGo（only-tls、only-core、only-quic）
+### 新增：异步 0-RTT 防重放存储、可轮换的会话票据密钥、BoGo（akio-tls、akio-core、akio-quic）
 
 ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），只有新增（默认配置行为不变）：
 
@@ -781,7 +801,7 @@ ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），
   之类）的应答不再阻塞 I/O 线程。需要检查的 0-RTT ClientHello 挂起其握手（其间到达的字节暂存，有上限），
   存储在任意线程调用 `ReplayCheck::complete` 后在其 I/O 线程上继续；`ServerConfigBuilder::anti_replay_timeout`
   （1 秒）超时未应答则拒绝早期数据（失败即关闭，握手以 1-RTT 恢复继续）。TCP 与 QUIC 均支持。
-- only-core：`Transport::set_waker`（带默认实现）与 `TransportWaker`，让等待对端以外事件的传输层可以请其 I/O
+- akio-core：`Transport::set_waker`（带默认实现）与 `TransportWaker`，让等待对端以外事件的传输层可以请其 I/O
   线程再次轮询。
 - `TicketKeys` 与 `ServerConfigBuilder::session_ticket_keys`：可轮换的会话票据密钥，一把负责封装，此前最多三把
   （`MAX_TICKET_KEYS`）仍能解开各自的票据；由应用轮换（`rotate`、`set`），或按周期从服务器共享的密钥派生
@@ -789,21 +809,21 @@ ADR-062（docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md），
   票据声明的有效期限制在一个周期内。
 - `status_request_v2`（RFC 6961）：从不发送，收到时忽略（决定与理由见 ADR）。OCSP 验证此前已完成（ADR-038、
   ADR-049）；已更正 DEV-PLAN。
-- BoGo：shim（`crates/only-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 882 个通过，没有意外失败，1,122 个未实现，6,106 个被禁用。
+- BoGo：shim（`crates/akio-tls/examples/bogo-shim.rs`）与 `tools/interop/tls/bogo.sh` 以固定提交运行 BoringSSL 的测试运行器，配置为 `tools/interop/tls/bogo_config.json`（禁用的领域与已知失败，逐条写明原因）：8,110 个测试中 882 个通过，没有意外失败，1,122 个未实现，6,106 个被禁用。
 
-### 修复（only-media）
+### 修复（akio-media）
 
 - RTMP 拉流：`RtmpClient::is_closed` 为真之后（或 `close`、丢弃句柄返回之后），hub 路径即已释放；此前已连接的拉流要等连接关闭完成才释放，立即再拉同一路径可能得到 `HubError::StreamBusy`。会话现在通过 `Arc` 共享 publisher；gpu51 上同一轮 A/B（`quiet.sh`，固定单核，向拉流会话灌入示例 FLV 的 282,001 条消息）为 47.17 ms，修改前 47.24 ms（0.999 倍）。
 
-### 修复（only-tls）
+### 修复（akio-tls）
 
 - 由 BoGo 发现：不支持 TLS 1.3 的服务端不再拒绝 TLS_FALLBACK_SCSV（RFC 7507）；带 supported_groups 而没有 key_share 的 ClientHello 得到 `missing_extension` 而不是 HelloRetryRequest（RFC 8446 §9.2）；TLS 1.2 服务端确认 server_name（RFC 6066 §3）；超过 2^14 + 1 字节的 TLS 1.3 带填充明文以 `record_overflow` 拒绝（RFC 8446 §5.4）；TLS 1.2 客户端拒绝非空的 server_name 确认，未请求的 TLS 1.3 server_name 确认为 `unsupported_extension`；对端叶证书的 keyUsage 不含 digitalSignature 时为 `bad_certificate`（RFC 8446 §4.4.2.2）；未请求的 CertificateEntry 扩展为 `unsupported_extension`（RFC 8446 §4.4.2）；格式错误的 TLS 1.3 pre_shared_key 不再导致 TLS 1.2 握手失败；不向不支持 psk_dhe_ke 的客户端发送票据（RFC 8446 §4.2.9）；我方下一次发送应用数据之前的多个 update_requested KeyUpdate 只回应一次（RFC 8446 §4.6.3）。
 
-### 新增：跨进程 BPF 分流、prefork 重载时的 listener 迁移与 AF_XDP（only-ebpf、only-prefork、only-dpdk）
+### 新增：跨进程 BPF 分流、prefork 重载时的 listener 迁移与 AF_XDP（akio-ebpf、akio-prefork、akio-dpdk）
 
 ADR-063（docs/adr/063-shared-steering-migration-af-xdp.zh-CN.md），只有新增（不显式开启则一切不变）：
 
-- `only_ebpf::SharedSteering`：一个固定在 bpffs 中、由多个进程的 `SO_REUSEPORT` socket 共用的
+- `akio_ebpf::SharedSteering`：一个固定在 bpffs 中、由多个进程的 `SO_REUSEPORT` socket 共用的
   `SK_REUSEPORT` 程序、socket 数组与 Maglev 表。接口有 `create`（所有者，drop 时删除 pin）、`open`、
   `at(first, count)` 和 `join(fds)`，`join` 填入本进程的槽位。支持按 CPU 或哈希分流，哈希与表都和
   `attach_reuseport` 相同。在 Linux 5.14+ 上程序以 `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE` 加载
@@ -816,7 +836,7 @@ ADR-063（docs/adr/063-shared-steering-migration-af-xdp.zh-CN.md），只有新�
   的那份流量，旧 listener 关闭时仍在排队的连接会迁移过去。没有特权或 bpffs 时 worker 照旧使用内核哈希
   （设置 `strict` 则失败）。无法迁移的 `ReusePort` 重载会记录警告。另有 `Supervisor::bpf_steering`、
   `DEFAULT_BPF_DIR`。
-- `only_dpdk::Device::AfXdp(AfXdpConfig)`：AF_XDP socket 作为用户态协议栈的一种链路，与 TAP、
+- `akio_dpdk::Device::AfXdp(AfXdpConfig)`：AF_XDP socket 作为用户态协议栈的一种链路，与 TAP、
   AF_PACKET 并列，不需要 DPDK。每个队列一个 socket 和一个 I/O 线程，每个 socket 一块 UMEM，四个环由该
   线程轮询，另有一个手工汇编的 XDP 程序把每个队列重定向到对应的 socket。驱动支持时零拷贝，否则拷贝
   模式（`ZeroCopy`）；先 native，否则 generic XDP（`XdpMode`，重新导出）。默认 MAC 取接口自己的。
@@ -825,7 +845,7 @@ ADR-063（docs/adr/063-shared-steering-migration-af-xdp.zh-CN.md），只有新�
   generic、IPv6、两个队列）。降级路径在去掉 capability 后测试。`tools/bench/afxdp.sh` 与示例
   `link-bench` 对比 AF_XDP 与 AF_PACKET（docs/BENCHMARKS.zh-CN.md）。
 
-### 新增：HTTP/2 上的 WebSocket（RFC 8441，only-http）
+### 新增：HTTP/2 上的 WebSocket（RFC 8441，akio-http）
 
 ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
 
@@ -851,28 +871,28 @@ ADR-060（docs/adr/060-h2-websocket.zh-CN.md），仅新增：
   （±10–36%）之内；见 docs/BENCHMARKS.zh-CN.md。gpu51 上 fuzz：`h2_server` 480 万次、
   `h2_websocket` 230 万次（各 10 分钟），无崩溃。
 
-### 新增：gRPC 与 TLS 上的 OTLP、OTLP 日志、span 事件与链接、exemplar、导出重试（only-export、only-log、only-core、only-http）
+### 新增：gRPC 与 TLS 上的 OTLP、OTLP 日志、span 事件与链接、exemplar、导出重试（akio-export、akio-log、akio-core、akio-http）
 
 ADR-064（docs/adr/064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md），API 只有新增：
 
-- only-export：`ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` 用 only-grpc 的客户端经
-  OTLP/gRPC 导出（私有 engine，一个客户端 I/O 线程，首次推送时启动）。gRPC 和 HTTP 的 `https://` 端点经 only-tls
+- akio-export：`ExporterBuilder::otlp_grpc` / `otlp_grpc_with(endpoint, metadata)` 用 akio-grpc 的客户端经
+  OTLP/gRPC 导出（私有 engine，一个客户端 I/O 线程，首次推送时启动）。gRPC 和 HTTP 的 `https://` 端点经 akio-tls
   连接：系统根证书或 `tls_roots(RootCerts)`，`tls_client_cert(chain, key)` 用于双向 TLS，`tls_server_name`。
-- only-export：`logs(level)` 安装一个 only-log logger，记录作为 OTLP `LogRecord` 发出（`/v1/logs` 或
+- akio-export：`logs(level)` 安装一个 akio-log logger，记录作为 OTLP `LogRecord` 发出（`/v1/logs` 或
   `LogsService/Export`）：body、严重级别、键值、`code.file.path` / `code.line.number`，以及记录所在处当前 span 的
   trace id 和 span id。`forward_logs(logger, level)` 继续供给另一个 logger；`log_queue(max, batch)` 限定队列
   （默认 4096 / 512）；导出器自身线程上的记录不导出。
-- only-log：span 事件与链接：`SpanEvent`、`SpanLink`、`Span::add_event` / `push_event` / `add_link`、
+- akio-log：span 事件与链接：`SpanEvent`、`SpanLink`、`Span::add_event` / `push_event` / `add_link`、
   `SpanBuilder::link`，每个 span 各最多 `MAX_EVENTS` / `MAX_LINKS`（128）个，超出计入
   `SpanData::dropped_events` / `dropped_links`；经 OTLP 导出。
-- only-core：exemplar：`Exemplar`、`ExemplarReservoir`、`ExemplarHistogram`、
-  `Registry::histogram_with_exemplars`、`HistogramSnapshot::exemplars` / `with_exemplars`。only-http：
+- akio-core：exemplar：`Exemplar`、`ExemplarReservoir`、`ExemplarHistogram`、
+  `Registry::histogram_with_exemplars`、`HistogramSnapshot::exemplars` / `with_exemplars`。akio-http：
   `HttpMetrics::with_exemplars()` 在延迟直方图上保留请求 span 的 id。经 OTLP 导出（Prometheus 文本格式中没有）。
-- only-export：`ExportStats` 新增 `otlp_logs_ok` / `otlp_logs_failed`、`otlp_retried`、`metric_points_rejected`、
+- akio-export：`ExportStats` 新增 `otlp_logs_ok` / `otlp_logs_failed`、`otlp_retried`、`metric_points_rejected`、
   `spans_rejected`、`logs_exported` / `logs_dropped` / `logs_rejected` / `logs_queued`；统计收集器新增相应的
-  `only_export_*` 序列。
+  `akio_export_*` 序列。
 
-### 变更：only-export 重试失败的推送
+### 变更：akio-export 重试失败的推送
 
 - 可重试的失败（连不上、超时、HTTP 429 / 502 / 503 / 504、gRPC `UNAVAILABLE` 及其他可重试状态码）让 collector 进入
   退避（`retry(initial, max, max_elapsed)`，默认 1 秒到 30 秒并带抖动，或按 `Retry-After`），并保留每种信号失败的那
@@ -881,7 +901,7 @@ ADR-064（docs/adr/064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md），API 只
 - `flush()` 遇到第一个可重试的失败即停止（剩下的留在队列中）；`spans_queued` 包含等待重试的那一批。
 - 接受 `https://` 端点（以前报错）。
 
-### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（only-webrtc）
+### 新增：WebRTC 对端中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别（akio-webrtc）
 
 ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只有新增（默认对端的 SDP
 与行为不变）：
@@ -899,13 +919,13 @@ ADR-058（docs/adr/058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md），只
   `XrReceipts` / `VoipMetrics` 事件并累计到统计中。
 - `RtcConfig::set_ulpfec_level0(Some(l0))`：发送视频时使用带保护级别的 ULPFEC（RFC 5109 §5），只用于能
   读级别的接收方（本栈；Chrome 只读级别 0）。默认关闭。
-- CNAME 改为 RFC 7022 的随机 CNAME（`only_rtp::random_cname`），每个对端连接新生成；收到的 SDES 项以
+- CNAME 改为 RFC 7022 的随机 CNAME（`akio_rtp::random_cname`），每个对端连接新生成；收到的 SDES 项以
   类型化形式报告（`SourceDescription` 事件）；`PeerStats` 指明 RTCP 是否复用。
 - 模糊测试：`webrtc_sdp` 还会以带组件 2 候选、全部 XR 块与 ULPFEC 级别的配置运行；新增两个不复用 RTCP
   的种子。互通：pion 既没有非复用策略也没有 ICE 多组件，因此不复用 RTCP 的检查在 `Endpoint` 之间进行；
   浏览器与 pion 脚本看到的 SDP 不变。
 
-### 新增：每个 ICE 数据流支持多个组件（only-ice）
+### 新增：每个 ICE 数据流支持多个组件（akio-ice）
 
 ADR-055（docs/adr/055-ice-components.zh-CN.md），只有新增（单组件代理的行为不变）：
 
@@ -921,11 +941,11 @@ ADR-055（docs/adr/055-ice-components.zh-CN.md），只有新增（单组件代�
   `IceAgent::{components, selected_pair_of, send_pair_of}`；`SelectedPair`、`selected_pair()` 与
   `send_pair()` 仍是组件 1 的。
 - 互通：`tests/libnice.rs` 与 `tools/interop/ice/run.sh` 用两个组件与 libnice 0.1.21 互通五种组合
-  （libnice 控制方分别用激进提名与常规提名、受控、lite；only-ice lite）。`ice_stun` 模糊测试目标也
-  驱动双组件代理。only-webrtc 仍在组件 1 上复用 RTP 与 RTCP；在那里支持不带 rtcp-mux 的数据流是后续
+  （libnice 控制方分别用激进提名与常规提名、受控、lite；akio-ice lite）。`ice_stun` 模糊测试目标也
+  驱动双组件代理。akio-webrtc 仍在组件 1 上复用 RTP 与 RTCP；在那里支持不带 rtcp-mux 的数据流是后续
   工作。
 
-### 新增：ULPFEC 保护级别、由收包生成 XR 块、类型化 SDES 项（only-rtp）
+### 新增：ULPFEC 保护级别、由收包生成 XR 块、类型化 SDES 项（akio-rtp）
 
 ADR-053（docs/adr/053-ulpfec-levels-xr-receipts-sdes-items.zh-CN.md）：
 
@@ -945,26 +965,26 @@ ADR-053（docs/adr/053-ulpfec-levels-xr-receipts-sdes-items.zh-CN.md）：
   `Rtcp::SourceDescription` 中的二元组；`random_cname`（RFC 7022）。大于 127 的 PRIV 前缀长度现在能在
   解析后保留（以前变成 U+FFFD）；文本与 BYE 原因在字符边界处截断到 255 字节。与 pion/rtcp v1.2.20 逐字节
   一致。
-- API 均为新增，只有 `FecHeader` 的新公有字段 `ulp_levels` 除外（only-rtp 属内部层级）。`rtp_rtcp` 与
+- API 均为新增，只有 `FecHeader` 的新公有字段 `ulp_levels` 除外（akio-rtp 属内部层级）。`rtp_rtcp` 与
   `rtp_fec` 模糊测试目标覆盖以上全部（gpu51 上各 16 分钟：`rtp_rtcp` 290 万次、`rtp_fec` 159 万次，代码中没有发现问题；更早的一次 `rtp_rtcp` 运行发现的是目标自身过严的检查（RLE 块在块的区间结束前就结束），已作为回归输入保留）。
-- 未做：接入 only-webrtc（XR 接收 / VoIP 块、ULPFEC 级别、随机 CNAME）；不交出部分恢复的包；不估算 R 因子
+- 未做：接入 akio-webrtc（XR 接收 / VoIP 块、ULPFEC 级别、随机 CNAME）；不交出部分恢复的包；不估算 R 因子
   / MOS。
 
-### 新增：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP（only-turn、only-webrtc、only）
+### 新增：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP（akio-turn、akio-webrtc、akio）
 
 ADR-054（docs/adr/054-turn-dtls-mdns-ipv6-sdes.zh-CN.md）：
 
 - `TurnServer::dtls(&tls::ServerConfig)`：UDP 监听器上的 DTLS TURN（RFC 7350），使用 TLS 监听器的证书：
   无状态 cookie，DTLS 1.3 可回退到 DTLS 1.2，每条记录一条 STUN / ChannelData 消息，分配随 DTLS 关联存在
   （close_notify、致命告警、空闲超时或同一地址的新握手都会释放它）；`TurnServer::dtls_relay_of`。
-  only-turn 现在依赖 only-dtls。
+  akio-turn 现在依赖 akio-dtls。
 - `RelayServer::dtls` 与 `turns:host[:port]?transport=udp` URL（不再报错）：`Endpoint` 在自己 UDP 套接字
   上的 DTLS 关联中分配，服务器证书按 TLS 客户端配置的根证书校验；得到 UDP relay 候选及 server-reflexive
   候选；关联丢失后重新分配。
 - IPv6 上的 mDNS：`Endpoint::resolve_mdns` 增加一个 `[::]:5353` 套接字，在每个有链路本地地址的接口上加入
   `ff02::fb`，按接口查询，在查询所来的链路上应答；远端链路本地地址保留其接口（SDP 不携带作用域 ID）。
   IPv4 行为不变；没有 IPv6 的主机只跑 IPv4。
-- `only`：`Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在列出的每个接口索引上加入 IPv6
+- `akio`：`Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在列出的每个接口索引上加入 IPv6
   组播组（0 为默认接口；拒绝加入的接口被跳过）。IPv4 组只接受 `&[0]`（否则 `InvalidInput`）。
   `bind_udp_multicast` 即 `bind_udp_multicast_on(group, &[0], ..)`，行为不变。
 - `RtcConfig::enable_sdes_srtp`（默认关闭）：面向 SIP 网关的 SDES-SRTP（RFC 4568）：offer 为 `RTP/SAVPF`，
@@ -972,24 +992,24 @@ ADR-054（docs/adr/054-turn-dtls-mdns-ipv6-sdes.zh-CN.md）：
   并应答 SDES offer；SRTP 密钥取自 SDP，没有 DTLS，没有数据通道；不支持 MKI 与会话参数。DTLS-SRTP offer
   仍以 DTLS-SRTP 应答：浏览器永远看不到 `a=crypto`。
 - 模糊测试：新目标 `turn_dtls`；`webrtc_sdp` 试用 SDES 配置。
-- 互通：`tools/interop/webrtc/turn-dtls.sh`（Docker 中的 coturn 4.6）：`turnutils_uclient -S` 对 only-turn
-  的 DTLS 监听器，only_turn 客户端与两个经中继的 `Endpoint` 对 coturn 的 DTLS 监听器（协商为 DTLS 1.2）。
+- 互通：`tools/interop/webrtc/turn-dtls.sh`（Docker 中的 coturn 4.6）：`turnutils_uclient -S` 对 akio-turn
+  的 DTLS 监听器，akio_turn 客户端与两个经中继的 `Endpoint` 对 coturn 的 DTLS 监听器（协商为 DTLS 1.2）。
 
-### 新增：SRTP 的 AES-f8 与 SEED（only-srtp），only-crypto 的 SEED
+### 新增：SRTP 的 AES-f8 与 SEED（akio-srtp），akio-crypto 的 SEED
 
 ADR-052（docs/adr/052-srtp-f8-seed.zh-CN.md），仅新增：
 
-- **only-crypto**：`seed` 模块，包含 `Seed`（RFC 4269：分组加解密、CTR）、`SeedGcm`（SP 800-38D，
+- **akio-crypto**：`seed` 模块，包含 `Seed`（RFC 4269：分组加解密、CTR）、`SeedGcm`（SP 800-38D，
   完整或截短的标签）与 `SeedCcm`（RFC 3610）。常数时间且不查表：S 盒由固定切片 AES 的 Boyar-Peralta
   求逆电路经域同构再加仿射变换得到（对每个输入都与 RFC 4269 的表比对），G 函数在 16 个字上位切片
   （ECB / CTR / GCM 同时处理 16 个分组），单个分组与 CCM 的 CBC-MAC 走单字路径；没有硬件路径。
   ct-dudect 新增目标 `seed-key` 与 `seed-block`。
-- **only-srtp**：`Profile::{AesF8HmacSha1_80, AesF8HmacSha1_32}`（AES-f8，RFC 3711 §4.1.2；SDES 名称
+- **akio-srtp**：`Profile::{AesF8HmacSha1_80, AesF8HmacSha1_32}`（AES-f8，RFC 3711 §4.1.2；SDES 名称
   `F8_128_HMAC_SHA1_80/32`）与 `Profile::{SeedCtrHmacSha1_80, SeedCcm80, SeedGcm96}`（RFC 5669，
   SEED-CTR PRF；`SEED_CTR_128_HMAC_SHA1_80`、`SEED_128_CCM_80`、`SEED_128_GCM_96`），与其他配置一样
   支持 MKI、密钥派生率、RFC 6904 头部扩展加密与 cryptex。`Profile::ALL` 列出 15 种；`is_aead` 对
   SEED-CCM / SEED-GCM 为真；新增 `Profile::session_salt_len`（AEAD 为 12；SEED AEAD 的主盐仍为 14
-  字节）。它们没有 DTLS-SRTP 编号，因此 `only-webrtc` 不协商它们（那里没有实现 SDES）。
+  字节）。它们没有 DTLS-SRTP 编号，因此 `akio-webrtc` 不协商它们（那里没有实现 SDES）。
 - 验证：RFC 3711 B.1、RFC 4269 附录 B、RFC 5669 A.1-A.3（A.1 的标签是对不含 ROC 的明文计算的 HMAC，
   因此只使用其密钥流）、RFC 3610（用 AES 验证 CCM 构造）、OpenSSL `seed-ecb`，以及一个独立的 Python
   实现（基于 pyca/cryptography 的 `testdata/f8_seed.py`）：libsrtp 交叉验证的 25 组用例 / 115 个包在
@@ -1000,7 +1020,7 @@ ADR-052（docs/adr/052-srtp-f8-seed.zh-CN.md），仅新增：
   1200 字节 AES-GCM 单独测量时持平（在完整用例序列中 protect +1.5-2.2%）；A/B 途中发现的两处 AES-GCM
   回退（+3% 与 +2.4%）已消除（ADR-052）。
 
-### 变更：更快的 brotli 解码（only-brotli）
+### 变更：更快的 brotli 解码（akio-brotli）
 
 公共 API 不变，输出不变（见 docs/BENCHMARKS.zh-CN.md 的 “Brotli 与 Zstandard”）。在
 `tools/codec-bench brotli` 的 HTTP 负载上解码用时为 libbrotli 1.2.1 的 1.08–1.34 倍（之前 1.42–1.73
@@ -1015,7 +1035,7 @@ ADR-052（docs/adr/052-srtp-f8-seed.zh-CN.md），仅新增：
   16 MiB 上限：266 → 370 MB/s）。
 - `tools/codec-bench`：`BENCH_BR_LIMIT=N` 以 `N` 而非精确大小作为输出上限解码。
 
-### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（only-webrtc）
+### 新增：WebRTC peer 默认 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC（akio-webrtc）
 
 ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）：
 
@@ -1038,22 +1058,22 @@ ADR-048（docs/adr/048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md）�
 - 互通：`tools/interop/webrtc/browser.sh`（两种角色的 DTLS 1.3、双向 cryptex、我方带按编码 ULPFEC 的
   simulcast 线路经过 5 % 丢包且无 NACK：Chrome 全部解码，没有 FEC 时几乎解不出）、`fec.sh`（丢包下的
   Opus RED、Chrome 的按层 ULPFEC）、`run.sh`（pion 回退到 DTLS 1.2）、Firefox 158 下的 DTLS 1.3
-  （两种 DTLS 角色）。`webrtc-interop` 示例新增 `ONLY_INTEROP_*` 开关，并可让 SFU 经过有损代理。
+  （两种 DTLS 角色）。`webrtc-interop` 示例新增 `AKIO_INTEROP_*` 开关，并可让 SFU 经过有损代理。
 - 基准（gpu51 与 main 436b47e7 同轮 A/B，`quiet.sh`，CPU 2-9，进程内 peer，双方均为 DTLS 1.2，取六组安静轮次的中位数：每秒建立的 peer 连接 0.990x，4000 字节 VP8 帧媒体 0.995x（752 对 756 MB/s），120 字节帧 0.993x：无回退。新默认的 DTLS 1.3 握手比 DTLS 1.2 多约 5 % CPU；媒体吞吐不变，开启 cryptex 时也一样）。
 
-### 新增：P-521、RSA-PSS 密钥与 TLS 1.3 客户端的 OCSP 响应（only-crypto、only-x509、only-tls）
+### 新增：P-521、RSA-PSS 密钥与 TLS 1.3 客户端的 OCSP 响应（akio-crypto、akio-x509、akio-tls）
 
 ADR-049（docs/adr/049-p521-rsa-pss-keys-client-ocsp.zh-CN.md），只增不改：
 
-- **only-crypto**：`p521`（NIST P-521 上的 ECDH 与 ECDSA，API 同 `p256` / `p384`，标量 66 字节，默认
+- **akio-crypto**：`p521`（NIST P-521 上的 ECDH 与 ECDSA，API 同 `p256` / `p384`，标量 66 字节，默认
   SHA-512，RFC 6979 nonce；基于独立的 `2⁵²¹ - 1` 域与完备公式的可移植常量时间代码；ct-dudect 目标
   `p521-ecdh`、`p521-keygen`、`p521-sign`）；`pkey::PublicKey::{P521, RsaPss}`、
   `pkey::PrivateKey::{P521, RsaPss}` 与 `pkey::PssParams`，用于带或不带参数的 `id-RSASSA-PSS` 密钥
   （RFC 4055），它们只在参数范围内做 RSA-PSS 签名与验签；`der::oid::SECP521R1`。Wycheproof P-521
   ECDSA / ECDH 与 RFC 6979 A.2.7 向量，OpenSSL 生成的 PSS 密钥。
-- **only-x509**：P-521 与 RSA-PSS 密钥的证书可以解析、验证与签发（`tests/data/pss-p521` 中为 OpenSSL
+- **akio-x509**：P-521 与 RSA-PSS 密钥的证书可以解析、验证与签发（`tests/data/pss-p521` 中为 OpenSSL
   生成的证书链）。
-- **only-tls**：组 secp521r1（排在最后）、`ecdsa_secp521r1_sha512` 与 `rsa_pss_pss_sha256/384/512`
+- **akio-tls**：组 secp521r1（排在最后）、`ecdsa_secp521r1_sha512` 与 `rsa_pss_pss_sha256/384/512`
   （服务端与客户端证书，TLS 1.3 与 1.2）；`ServerConfigBuilder::client_ocsp_policy` 要求 TLS 1.3 客户端
   随证书发送 OCSP 响应并校验（ADR-038 的策略；硬失败时拒绝 TLS 1.2 客户端证书），
   `ClientConfigBuilder::client_cert_ocsp_response` 在被要求时发送，服务端的 `TlsInfo::ocsp_response`
@@ -1061,25 +1081,25 @@ ADR-049（docs/adr/049-p521-rsa-pss-keys-client-ocsp.zh-CN.md），只增不改�
   TLS 1.2，已过时）。
 - 默认 ClientHello 列出 secp521r1（多 2 字节）；默认握手的其他部分不变。
 
-### 新增：估计器中的带宽探测（only-rtp、only-webrtc）
+### 新增：估计器中的带宽探测（akio-rtp、akio-webrtc）
 
-ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 像 libwebrtc 一样
+ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`akio_rtp::BandwidthEstimator` 像 libwebrtc 一样
 探测路径，视频的爬升从数十秒缩短到不到一秒：
 
-- **only-rtp**：以起始速率的 3 倍和 6 倍发送探测簇（至少 15 ms / 5 个包，按目标速率控制节奏），
+- **akio-rtp**：以起始速率的 3 倍和 6 倍发送探测簇（至少 15 ms / 5 个包，按目标速率控制节奏），
   结果跟得上时翻倍继续；受应用限制时（`application_limited()`）每 5 s 一次；估计值大幅下降之后；
   `on_network_change(now)` 之后从头开始。`poll_probe(now)` / `probe_timeout()` / `on_probe_sent`
   / `cancel_probes` 驱动发送，`TwccSender::on_sent_probe` 与 `CcfbSender::on_sent_probe` 标记探测包，
   `PacketResult::probe` 带回簇 id，测得的送达速率提升基于时延与丢包的速率。`SendStream::padding`
   构造探测包（最近媒体的 RTX 副本或填充包）。默认开启；`with_probing(false)` 保持以前的行为。
   **破坏性变更**（内部层级）：`PacketResult` 新增公开字段 `probe`。
-- **only-webrtc**：开启 `enable_bwe` 后，探测包作为发送最多的流最近包的 RTX 副本发出，节奏由
+- **akio-webrtc**：开启 `enable_bwe` 后，探测包作为发送最多的流最近包的 RTX 副本发出，节奏由
   `poll_output` 的超时控制；ICE 选中新的候选对时重新开始估计。公开 API 不变。
 - 模拟链路、起始 300 kbps：0.5 / 2 / 10 Mbps 的 90 % 在 0.15 / 0.25 / 0.35 s 达到（以前 5.4 / 23 /
   44 s），峰值至多为容量的 1.12 倍。以 Chrome 157 为接收方（新增 `tools/interop/webrtc/bwe.sh`）：
   连接后 0.2 s 达到 10 Mbps（以前估计值停在起始的 1 Mbps）。
 
-### 变更：更快的 Zstandard 解码，第二轮（only-zstd）
+### 变更：更快的 Zstandard 解码，第二轮（akio-zstd）
 
 公共 API 不变（docs/BENCHMARKS.zh-CN.md，“zstd 解码第二轮”“zstd 字面量”与“zstd 双符号 Huffman 表”；
 安静的 gpu51，在
@@ -1100,7 +1120,7 @@ ADR-050（docs/adr/050-bwe-probing.zh-CN.md）。`only_rtp::BandwidthEstimator` 
   libzstd 帧速度的一半），大 4–17 字节；JSON、HTML 与 JavaScript 逐字节相同，Silesia 大 0.004%。
 - `tools/codec-bench`：`BENCH_OWN=0` 跳过各库解码自身输出，`BENCH_DUMP=DIR` 写出被计时的 zstd 帧。
 
-### 变更：更快的 brotli 与 Zstandard 解码和编码（only-brotli、only-zstd）
+### 变更：更快的 brotli 与 Zstandard 解码和编码（akio-brotli、akio-zstd）
 
 公共 API 不变（见 docs/BENCHMARKS.zh-CN.md 的 “Brotli 与 Zstandard”；在 `tools/codec-bench` 中与
 libbrotli 1.2.1、libzstd 1.5.7 对比，该工具新增 `brotli` / `zstd` 模式与语料脚本）。
@@ -1117,14 +1137,14 @@ libbrotli 1.2.1、libzstd 1.5.7 对比，该工具新增 `brotli` / `zstd` 模�
 - **brotli 编码器**（输出改变）：0–6 级用每个哈希值一个桶代替哈希链（5–6 级用 5 字节哈希），2–4 级
   采用 Google 的候选数（4 级：4 个而非 16 个），像 Google 一样跳过不可压缩数据，10 级以下的上下文
   聚类更便宜：Silesia 上 q4 快 3.4 倍、q5 快 2.4 倍、q6 快 2.6 倍；q5–q6 大小变化 −1.2…+0.8%
-  （证书链上大 2–3%，only-tls 对证书链使用 11 级），q4 大 1–9%，但不再以四倍于 libbrotli 的搜索量
+  （证书链上大 2–3%，akio-tls 对证书链使用 11 级），q4 大 1–9%，但不再以四倍于 libbrotli 的搜索量
   换取比其 q4 更小的输出。brotli 10–11 级与 zstd 5–22 级速度不变，输出除上下文聚类与 Huffman 码构造带来的
   细微差别外也不变。
 
-### 变更：路由约束改用 `only-regex`（only-http、only-regex）
+### 变更：路由约束改用 `akio-regex`（akio-http、akio-regex）
 
-ADR-051（docs/adr/051-router-on-only-regex.zh-CN.md）。路由器的正则参数（`/users/{id:[0-9]+}`，部分段中的
-也一样）现在由 `only-regex` 匹配，即 only-log 消息过滤背后的引擎；路由器自己的引擎（`only_http::re`，
+ADR-051（docs/adr/051-router-on-akio-regex.zh-CN.md）。路由器的正则参数（`/users/{id:[0-9]+}`，部分段中的
+也一样）现在由 `akio-regex` 匹配，即 akio-log 消息过滤背后的引擎；路由器自己的引擎（`akio_http::re`，
 `#[doc(hidden)]`，不是公共 API）已从普通构建中移除。
 
 - **匹配结果不变。** 约束仍然匹配整段，`\d \w \s` 仍只认 ASCII。旧引擎接受的每个模式匹配的段完全相同：
@@ -1136,11 +1156,11 @@ ADR-051（docs/adr/051-router-on-only-regex.zh-CN.md）。路由器的正则参�
 - **更快**：每次约束检查耗时减少约三分之一（7 位数字上的 `[0-9]+` 8.5 → 5.7 ns，`\d{4}-\d{2}-\d{2}`
   11.9 → 7.6 ns）；router-bench 的多样正则表每次查找 46.0 → 42.0 ns，`[0-9]+` 表保持 28.1 ns。编译约束会
   构建 DFA：注册时 7–13 µs，原先 2.1 µs。
-- **only-regex**（内部层级）：`RegexBuilder`，带 `whole_text`（匹配整段文本，相当于 `\A(?:...)\z`）与
+- **akio-regex**（内部层级）：`RegexBuilder`，带 `whole_text`（匹配整段文本，相当于 `\A(?:...)\z`）与
   `ascii_classes`（ASCII 的 `\d \w \s` 与 `\b`）；`Regex` 的相等比较包含选项。`Regex::is_match` 先在紧凑
-  循环中运行预先构建的 DFA，only-log 的消息过滤也因此快了几个百分点。
+  循环中运行预先构建的 DFA，akio-log 的消息过滤也因此快了几个百分点。
 
-### 性能：VAES-AVX2 内核处理整条 AES-GCM 消息；aarch64 上 P-256 的 divsteps（only-crypto）
+### 性能：VAES-AVX2 内核处理整条 AES-GCM 消息；aarch64 上 P-256 的 divsteps（akio-crypto）
 
 无 API 变化。
 
@@ -1154,11 +1174,11 @@ ADR-051（docs/adr/051-router-on-only-regex.zh-CN.md）。路由器的正则参�
   改用 OpenSSL 的公式。签名 +9%（ring 的 1.15 倍 → 1.25 倍），密钥生成 +3.5%，ECDH 为 ring 的 0.98 倍 → 1.00
   倍。首次测量 aarch64 汇编：P-256 验签为 ring 的 1.04 倍，X25519 1.04 倍（docs/BENCHMARKS.zh-CN.md）。
 
-### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（only-ice、only-webrtc、only）
+### 新增：mDNS ICE 候选、激进提名与重新提名、同时打开的 ICE-TCP（akio-ice、akio-webrtc、akio）
 
 ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（不使用就没有任何变化）：
 
-- **only-webrtc**：`Endpoint::resolve_mdns(&engine, timeout)` 解析浏览器发来的 `<uuid>.local`
+- **akio-webrtc**：`Endpoint::resolve_mdns(&engine, timeout)` 解析浏览器发来的 `<uuid>.local`
   主机候选（描述中的与 trickle 的；经共享的 5353 端口和 `224.0.0.251` 发送一次性 mDNS 查询，缓存
   应答，从不阻塞 I/O 线程），使 `Endpoint` 能以主机对主机的方式连到浏览器；
   `Endpoint::conceal_host_candidates()` 把我方主机候选写成 mDNS 名字并应答对它们的查询。已与开启
@@ -1166,16 +1186,16 @@ ADR-044（docs/adr/044-ice-mdns-renomination-tcp-so.zh-CN.md），仅新增（�
   （`a=ice-options:renomination`）与 `RtcConfig::enable_ice_aggressive_nomination`。
   `Endpoint::listen_tcp_so(&engine, addr)`：同时打开的 ICE-TCP 候选（RFC 6544 `tcptype so`）。端点
   解析名字时，`Peer::add_remote_candidate` 接受 mDNS 候选行。
-- **only-ice**：`mdns` 模块（RFC 6762 编解码）、`Candidate::{parse_resolved, with_hostname,
+- **akio-ice**：`mdns` 模块（RFC 6762 编解码）、`Candidate::{parse_resolved, with_hostname,
   hostname, with_related}`、`IceConfig::{aggressive_nomination, renomination}`、
   `IceAgent::set_remote_renomination`（NOMINATION 属性；提名后发现的更好候选对会被采用）。受控代理
   现在选择最大的 NOMINATION 值，没有该属性时选择优先级最高的被提名候选对，而不是最后一次提名。
   模糊测试目标 `ice_mdns`。
-- **only**：`Engine::bind_udp_multicast(group, acceptor)`（与其他成员共享组播组端口）与
-  `Engine::dial_from(local, addr, acceptor, on_error)`（从已绑定的共享本地端口发起连接）；only-sys
+- **akio**：`Engine::bind_udp_multicast(group, acceptor)`（与其他成员共享组播组端口）与
+  `Engine::dial_from(local, addr, acceptor, on_error)`（从已绑定的共享本地端口发起连接）；akio-sys
   的 `connect_nonblocking_from`。
 
-### 新增：DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据（only-dtls）
+### 新增：DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据（akio-dtls）
 
 ADR-045（docs/adr/045-dtls13-cid-updates-pha-early-data.zh-CN.md），均为新增且默认关闭：
 
@@ -1197,11 +1217,11 @@ ADR-045（docs/adr/045-dtls13-cid-updates-pha-early-data.zh-CN.md），均为新
   `DTLS_INTEROP_IMAGE` 指定）；示例 `dtls-hs-bench`（每秒握手数、DTLS 1.3 记录）。非 ECDHE 密钥交换与
   CBC 套件有意不做（README、ADR-045）。
 
-### 新增：证书策略、间接 CRL、Ed448、X448 与 DSA 验签（only-x509、only-crypto、only-tls）
+### 新增：证书策略、间接 CRL、Ed448、X448 与 DSA 验签（akio-x509、akio-crypto、akio-tls）
 
 ADR-046（docs/adr/046-x509-policies-indirect-crls-ed448-dsa.zh-CN.md）：
 
-- **only-x509**：证书策略处理（基于 RFC 9618 策略图的 RFC 5280 §6.1）：
+- **akio-x509**：证书策略处理（基于 RFC 9618 策略图的 RFC 5280 §6.1）：
   `Verifier::policies(PolicyOptions)`（初始策略集、显式策略、禁止策略映射 / anyPolicy）、
   `Verifier::verify_path` → `VerifiedPath { chain, policies: ValidPolicies }`、
   `Error::PolicyViolation`；`Certificate::{certificate_policies, policy_mappings,
@@ -1213,28 +1233,28 @@ ADR-046（docs/adr/046-x509-policies-indirect-crls-ed448-dsa.zh-CN.md）：
   原因判断。rfc822Name 与 URI 名称约束（以及主题中的 emailAddress），自签发中间证书不受名称约束、
   不计入 pathLen，`Verifier::allow_ca_end_entity`，`attr::EMAIL_ADDRESS`；Ed448 与 DSA 证书和
   CRL。NIST PKITS 测试（`tests/pkits.rs`、`tools/pkits/prepare.sh`）：248 次运行中 242 次符合预期。
-- **only-crypto**：`hash::{Shake128, Shake256}`、`ed448`、`x448`、`dsa`（仅验签）、
+- **akio-crypto**：`hash::{Shake128, Shake256}`、`ed448`、`x448`、`dsa`（仅验签）、
   `rsa::HashAlg::Sha224`、`pkey::SignatureAlgorithm::{Ed448, DsaSha1, DsaSha224, DsaSha256}`、
   `pkey::{PublicKey, PrivateKey}::Ed448`、`pkey::PublicKey::Dsa`、`der::oid::{ED448, X448, DSA,
   DSA_WITH_SHA1, DSA_WITH_SHA224, DSA_WITH_SHA256}`；`pk_bench 448`；ct-dudect 目标 `x448`、
   `ed448-keygen`、`ed448-sign`。
-- **only-tls**：组 x448（0x001e，排在最后）与签名方案 ed448（0x0808），TLS 1.3 与 1.2；
+- **akio-tls**：组 x448（0x001e，排在最后）与签名方案 ed448（0x0808），TLS 1.3 与 1.2；
   `tools/interop/tls/run.sh` 中与 OpenSSL 的互通用例。
 - 模糊测试目标 `x509_policy` 与 `crypto_ed448_dsa`；`x509_parse` 与 `x509_crl` 覆盖新的扩展与间接
   CRL 条目。
 
-### 变更：路径验证细节（only-x509）
+### 变更：路径验证细节（akio-x509）
 
 - 配置了 CRL 时，吊销在候选路径到达根证书后自顶向下检查，而不是在建链过程中检查。policyConstraints
   要求显式策略而路径上没有时现在会失败（`Error::PolicyViolation`），策略扩展格式错误的证书不再能
   解析。CRL 序列号按有符号 INTEGER 比较（−1 的 CRL 条目不再匹配序列号 255），`CrlParams` 与 OCSP
   CertID 按原样写出序列号。
 
-### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（only-webrtc、only-rtp）
+### 新增：WebRTC 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（akio-webrtc、akio-rtp）
 
 ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认关闭（默认对端的 SDP 不变）：
 
-- **only-webrtc**：`RtcConfig::enable_fec(Option<FecMechanism>)`（`FecMechanism::FlexFec`：带
+- **akio-webrtc**：`RtcConfig::enable_fec(Option<FecMechanism>)`（`FecMechanism::FlexFec`：带
   `a=ssrc-group:FEC-FR` 流的 `flexfec-03`；`FecMechanism::Ulpfec`：`red` + RTX + `ulpfec`），用于非
   simulcast 的视频行：收到的 FEC 在帧组装器和 NACK 之前修复包，发送的视频按修复前丢包率的三倍保护，
   并限制在 `RtcConfig::set_fec_protection(min, max)` 内（每 256 个媒体包，默认 0..=128）。
@@ -1243,12 +1263,12 @@ ADR-039（docs/adr/039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md），仅新增且默认
   时间与 DLRR 为接收行提供 RTT；收到的 RRTR 总会应答。`RtcConfig::enable_tmmbr`（`ccm tmmbr`）与
   `Peer::request_max_bitrate(mid, Option<u64>)`；收到的 TMMBR 以 TMMBN 应答，并与 REMB 一起限制估计值。
   RTCP 的 NTP 时间改为跟随对端的单调时钟。
-- **only-rtp**：`RecvStream::receive_recovered`（由 FEC 重建的包：不 NACK，也不计为已收到）与
+- **akio-rtp**：`RecvStream::receive_recovered`（由 FEC 重建的包：不 NACK，也不计为已收到）与
   `FrameAssembler::skip`（不承载媒体的序号，如 ULPFEC 或填充包，不算缺口）。
 - 互通：`tools/interop/webrtc/fec.sh` 对照无头 Chrome 157（丢包下双向 FlexFEC 与 ULPFEC、双向 RFC 8888、
   XR DLRR RTT、TMMBR）；`webrtc-interop` 示例的 `fec-server` 模式在服务端前放一个有损 UDP 代理。
 
-### 新增：SRTP 的 MKI 与换钥、密钥派生率、AES-192/256-CM 与 NULL、RFC 6904 头部扩展加密、cryptex（only-srtp）；DTLS-SRTP MKI（only-dtls）
+### 新增：SRTP 的 MKI 与换钥、密钥派生率、AES-192/256-CM 与 NULL、RFC 6904 头部扩展加密、cryptex（akio-srtp）；DTLS-SRTP MKI（akio-dtls）
 
 ADR-040（docs/adr/040-srtp-mki-cryptex.zh-CN.md）：
 
@@ -1265,24 +1285,24 @@ ADR-040（docs/adr/040-srtp-mki-cryptex.zh-CN.md）：
   只有 CSRC 时补空扩展；仍接受未使用 cryptex 的包）。
 - **无分配的变体**：`protect_rtp_into`、`unprotect_rtp_into`、`protect_rtcp_into`、
   `unprotect_rtcp_into`。
-- **only-dtls**：`Config::with_srtp_mki`（客户端提供）、`Config::with_srtp_accept_mki`（服务端回显，
+- **akio-dtls**：`Config::with_srtp_mki`（客户端提供）、`Config::with_srtp_accept_mki`（服务端回显，
   默认关闭）、`HandshakeInfo::srtp_mki`；服务端返回不同的非空 MKI 时握手失败（RFC 5764 §4.1.3），
   DTLS 1.2 与 1.3 均如此。
 - 测试：RFC 6188、RFC 6904 与 RFC 9335 向量；与 libsrtp main 逐字节交叉验证 230 个包
   （`tools/interop/srtp`，每种配置、MKI、RFC 6904、cryptex）；新 fuzz 目标 `srtp_features`。libsrtp
   遇到扩展元素之间的填充不推进密钥流，RFC 6904 在这一点上遵循 RFC。
 - 基准（gpu51，`examples/srtp_bench.rs`，每包纳秒，基线 -> 本变更）：已有配置不变（在噪声内）或更快：unprotect 全部快 0-5 %（AES-128-CM 160 B 255.2 -> 243.0，AES-128-GCM 1200 B 178.3 -> 176.3），AES-CM protect 在 ±1.3 % 内，AEAD protect 1200 B 在 ±0.3 % 内，160 B 慢 1-2 %（AES-128-GCM 86.8 -> 88.6）。每个包对 SSRC 状态的查找由两次减为一次。新功能在 1200 B、带一个 CSRC 与三个扩展元素时的 AES-128-GCM protect / unprotect：普通 542.7 / 175.9，MKI 547.6 / 179.3，cryptex 555.7 / 187.1，RFC 6904 626.4 / 252.7。
-- `only-webrtc` 尚未协商（SDP `a=cryptex`、加密 extmap、DTLS-SRTP MKI）。
+- `akio-webrtc` 尚未协商（SDP `a=cryptex`、加密 extmap、DTLS-SRTP MKI）。
 
-### 变更：`only_srtp::Profile`（破坏性，内部层级）
+### 变更：`akio_srtp::Profile`（破坏性，内部层级）
 
 `Profile` 改为 `#[non_exhaustive]`，`Profile::ALL` 有十项，`Profile::id` 返回 `Option<u16>`
 （RFC 6188 的配置没有 DTLS-SRTP 编号）。新增 `Error::Config`、`Error::UnknownMki`、
 `Error::Unsupported`。
 
-### 新增：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求（only-sctp）
+### 新增：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求（akio-sctp）
 
-ADR-042（docs/adr/042-sctp-heartbeat-restart-zero-checksum.zh-CN.md）；only-sctp 属于 Internal 层级：
+ADR-042（docs/adr/042-sctp-heartbeat-restart-zero-checksum.zh-CN.md）；akio-sctp 属于 Internal 层级：
 
 - **HEARTBEAT**（RFC 9260 §8.3，`Config::heartbeat_interval`，默认 30 s）：空闲关联测量 RTT
   （`Association::rtt`）并能发现已消失的对端：未获应答的 HEARTBEAT 计入 `max_retransmissions`
@@ -1298,13 +1318,13 @@ ADR-042（docs/adr/042-sctp-heartbeat-restart-zero-checksum.zh-CN.md）；only-s
 - **Incoming SSN Reset** 与 **SSN/TSN Reset** 请求（RFC 6525 §5.2.3-4）改为执行而非拒绝：前者以我们的
   Outgoing SSN Reset Request 作答（通道随之关闭），后者在我们没有在途数据时执行（双向新 TSN，SSN 归零）。
 - `Event` 现为 `#[non_exhaustive]`。
-- 互通：经 only-webrtc 与 Firefox 158（usrsctp）两个 offer 方向互通，含 150 s 空闲（新增
-  `tools/interop/webrtc/firefox.sh`，WebDriver BiDi；`webrtc-interop` 示例支持 `ONLY_INTEROP_BIND`）；
+- 互通：经 akio-webrtc 与 Firefox 158（usrsctp）两个 offer 方向互通，含 150 s 空闲（新增
+  `tools/interop/webrtc/firefox.sh`，WebDriver BiDi；`webrtc-interop` 示例支持 `AKIO_INTEROP_BIND`）；
   与 pion/sctp 使用零校验和互通（`tools/interop/sctp/run.sh`）；Chrome 157 照常通过。模糊测试
   `sctp_packet` 新增种子，gpu51 上 11 分钟，无崩溃。
 - 未实现（WebRTC 均不使用）：多宿主、AUTH、ASCONF、ECN。
 
-### 新增：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES（only-media）
+### 新增：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES（akio-media）
 
 ADR-043（docs/adr/043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md），均为新增：
 
@@ -1324,29 +1344,29 @@ ADR-043（docs/adr/043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md），均�
   ffmpeg 能逐帧正确解码两者。
 - 模糊测试目标 `srt_rendezvous` 与 `h264_sample_encryption`；`mpegts_demux` 增加 AV1 种子。
 
-### 新增：自研 brotli 与 Zstandard（only-brotli、only-zstd），用于证书压缩（only-tls）和 HTTP（only-http）
+### 新增：自研 brotli 与 Zstandard（akio-brotli、akio-zstd），用于证书压缩（akio-tls）和 HTTP（akio-http）
 
 ADR-041（docs/adr/041-brotli-zstd.zh-CN.md），新增 API：
 
-- **`only-brotli`**（新的内部 crate，RFC 7932）与 **`only-zstd`**（新的内部 crate，RFC 8878）：纯安全
+- **`akio-brotli`**（新的内部 crate，RFC 7932）与 **`akio-zstd`**（新的内部 crate，RFC 8878）：纯安全
   Rust、无依赖，一次性的 `decompress(data, limit)` 和 `compress(Level, data)`。解码器覆盖完整格式（brotli：
   所有窗口大小、元数据与未压缩 meta-block、块切换、上下文模式与映射、静态字典及其 121 种变换；zstd：拼接帧与
   可跳过帧、Huffman 与 treeless 字面量、predefined / RLE / FSE / repeat 表、重复偏移、内容大小与 XXH64 校验和），
   接受与拒绝的输入与参考解码器一致；输出和内存止于 `limit`（`Error::TooLarge`），解压炸弹的代价不超过它。
-  编码器（基于哈希链的 LZ77、Huffman / FSE 编码）对证书链的压缩率不差于 zlib 9 级。`only_zstd::xxh64` 公开。
+  编码器（基于哈希链的 LZ77、Huffman / FSE 编码）对证书链的压缩率不差于 zlib 9 级。`akio_zstd::xxh64` 公开。
   测试：官方测试向量（brotli `testdata` 的全部 44 个流；zstd 的 golden 解压、错误与压缩文件，1000 个
   `decodecorpus` 帧）、`brotli` 与 `zstd` 命令行双向互通，以及对照 Google brotli 解码器（`brotli-decompressor`）
   和 libzstd 的差分模糊测试目标（`brotli_decompress`、`brotli_roundtrip`、`zstd_decompress`、`zstd_roundtrip`）。
-- **only-tls**：证书压缩（RFC 8879）在 zlib 之外支持 brotli 和 zstd。客户端提供 brotli、zstd、zlib；服务器在
+- **akio-tls**：证书压缩（RFC 8879）在 zlib 之外支持 brotli 和 zstd。客户端提供 brotli、zstd、zlib；服务器在
   客户端提供的算法中发送最小的结果（每张证书每种算法只压缩一次并缓存），客户端证书同理。新增
   `CertCompression { Zlib, Brotli, Zstd }` 与两个 builder 上的 `certificate_compression_algorithms(&[CertCompression])`；
   `certificate_compression(true)` 现在表示三种全开（默认值不变：服务器开、客户端关）。与以 brotli、zstd、zlib
   构建的 OpenSSL 3.5 双向互通（`tools/interop/tls/certcomp.Dockerfile`、`tools/interop/tls/run.sh`；
   `tls-interop --cert-comp`）。
-- **only-http**：`Compress::brotli` 与 `Compress::zstd`（级别，默认 `None`）让 `middleware::compress` 对接受它们的
+- **akio-http**：`Compress::brotli` 与 `Compress::zstd`（级别，默认 `None`）让 `middleware::compress` 对接受它们的
   客户端回应 `br` / `zstd`（优先顺序 br、zstd、gzip、deflate）；`Files` 也服务 `.zst` 副本（`Content-Encoding: zstd`）。
 
-### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
+### 新增：HLS 加密与录制（akio-media），AES-CBC（akio-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：
 
@@ -1358,30 +1378,30 @@ ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增
   `HlsKey::with_uri` 指向外部密钥服务器；`RandomKeys` 发放随机密钥。密钥每 `rotate_every` 个分片
   轮换，只在仍有保留的分片使用它时提供。`MediaHttp` 把 `.key` 交给 `Hls`。用 ffmpeg 播放加密的
   直播播放列表测试。
-- **录制**：`only_media::record::{Recorder, RecordConfig, RecordFormat, RecordHooks,
+- **录制**：`akio_media::record::{Recorder, RecordConfig, RecordFormat, RecordHooks,
   RecordFile, NoHooks}` 把 Hub 中的流录制为 fMP4 或 FLV 文件，按 `segment_duration` /
   `segment_bytes` 在关键帧处切换文件，重新推流时也切换，用 `max_files` 轮换，提供 `file_name`、
   `on_start`、`on_stop`（在 `sync_all` 之后）与 `on_remove` 钩子。文件由录制器自己的写线程写入，
   从不在 I/O 线程上；队列受 `max_queued_bytes`（32 MiB）约束，超过时关闭当前文件并丢包直到下一个
   关键帧（`Recorder::dropped`）。录制的文件用 ffprobe / ffmpeg 检查。
-- **only-crypto**：`Aes::{encrypt_cbc, decrypt_cbc, encrypt_cbc_padded, decrypt_cbc_padded}`
+- **akio-crypto**：`Aes::{encrypt_cbc, decrypt_cbc, encrypt_cbc_padded, decrypt_cbc_padded}`
   （SP 800-38A 向量，PKCS #7 与 OpenSSL 对照）。
 
-### 新增：macOS 上与 only-dpdk UDP 上的 ECN（only-sys、only-quic、only-dpdk）
+### 新增：macOS 上与 akio-dpdk UDP 上的 ECN（akio-sys、akio-quic、akio-dpdk）
 
 ADR-035（docs/adr/035-ecn-macos-and-userspace-udp.zh-CN.md）。QUIC 连接现在在 macOS 上和用户态
-协议栈上也会标记 ECT(0)、读取收到的码点并校验 ECN，不再只限于 Linux。only-sys 仅在 macOS 上新增
+协议栈上也会标记 ECT(0)、读取收到的码点并校验 ECN，不再只限于 Linux。akio-sys 仅在 macOS 上新增
 `enable_ecn`、`ecn_available`、`recv_from_ecn` 与 `send_to_ecn`（每个数据报一次 `sendmsg` /
-`recvmsg`，带 `IP_TOS` / `IPV6_TCLASS` 控制消息；`ONLY_UDP_ECN=0` 可关闭），供 kqueue UDP 循环与
-only-core 在 macOS 上写数据报使用。only-dpdk 的 UDP 把码点写入 IP 头，并报告收到的码点
-（`Conn::rx_ecn`）；only-core 对虚拟数据报套接字也保留码点（隐藏的 `ConnInner::drain_output_ecn`）。
+`recvmsg`，带 `IP_TOS` / `IPV6_TCLASS` 控制消息；`AKIO_UDP_ECN=0` 可关闭），供 kqueue UDP 循环与
+akio-core 在 macOS 上写数据报使用。akio-dpdk 的 UDP 把码点写入 IP 头，并报告收到的码点
+（`Conn::rx_ecn`）；akio-core 对虚拟数据报套接字也保留码点（隐藏的 `ConnInner::drain_output_ecn`）。
 `quic_conn` 模糊测试目标现在会选择路径如何对待 ECN（保留、清除、CE、ECT(1)）；此前它的数据报从不
-带标记。与 quic-go 的互通脚本在 macOS 上也检查 ECN 校验。only-quic 的 README 不再把兼容版本协商列为缺失（已在 ADR-013 与 ADR-014 中完成）。Linux 的
-API 快照无变化；unsafe 清单：only-sys 91 → 97 个块。
+带标记。与 quic-go 的互通脚本在 macOS 上也检查 ECN 校验。akio-quic 的 README 不再把兼容版本协商列为缺失（已在 ADR-013 与 ADR-014 中完成）。Linux 的
+API 快照无变化；unsafe 清单：akio-sys 91 → 97 个块。
 
-### 新增：RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC（only-rtp）
+### 新增：RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC（akio-rtp）
 
-ADR-036（docs/adr/036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md）。`only-rtp` 属于 Internal 层级；`Rtcp` 新增四个
+ADR-036（docs/adr/036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md）。`akio-rtp` 属于 Internal 层级；`Rtcp` 新增四个
 变体（PT 207 与 RTPFB 3 / 4 / 11 不再解析为 `Rtcp::Unknown`），其余均为新增：
 
 - **RTCP XR**（RFC 3611）：`Rtcp::ExtendedReport`，`XrBlock` 覆盖全部报告块（丢包 / 重复 RLE、接收
@@ -1393,15 +1413,15 @@ ADR-036（docs/adr/036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md）。`only-rtp` 属于 Int
 - **RFC 8888**：`Rtcp::CongestionControl(CcfbFeedback)`（`CcfbStream`、`CcfbMetric`、ATO 常量）；
   `CcfbReceiver` 按媒体 SSRC 生成带 ECN 的反馈（50 ms / 100 个包）；`CcfbSender` 把它映射为供
   `BandwidthEstimator` 使用的 `PacketResult`。
-- **FEC**（`only_rtp::fec`）：用于 ULPFEC（RFC 5109）、libwebrtc `flexfec-03` 与 RFC 8627 两种 FlexFEC
+- **FEC**（`akio_rtp::fec`）：用于 ULPFEC（RFC 5109）、libwebrtc `flexfec-03` 与 RFC 8627 两种 FlexFEC
   的 `FecEncoder` / `FecDecoder` / `FecHeader`；按帧交织掩码，迭代且逐字节一致的恢复；`fec::red`
   （RFC 2198 解析 / 写出 / 封装 / 解封装）。
 - 测试对照 libwebrtc 单元测试向量、RFC 3611 示例与模拟丢包；新增 fuzz 目标 `rtp_fec`，扩充
-  `rtp_rtcp`。尚未接入 `only-webrtc`。
+  `rtp_rtcp`。尚未接入 `akio-webrtc`。
 
-### 新增：SCTP 消息交错（I-DATA）与流调度器（only-sctp）
+### 新增：SCTP 消息交错（I-DATA）与流调度器（akio-sctp）
 
-ADR-037（docs/adr/037-sctp-idata-schedulers.zh-CN.md），仅新增（only-sctp 属于 Internal 层级）：
+ADR-037（docs/adr/037-sctp-idata-schedulers.zh-CN.md），仅新增（akio-sctp 属于 Internal 层级）：
 
 - **I-DATA / I-FORWARD-TSN（RFC 8260 §2）**，默认提供（`Config::message_interleaving`），对端也提供时
   使用（`Association::message_interleaving`）：不同通道上消息的分片交错发送，大消息不再阻塞其他通道上的
@@ -1418,19 +1438,19 @@ ADR-037（docs/adr/037-sctp-idata-schedulers.zh-CN.md），仅新增（only-sctp
 - 互通：经 UDP 与 pion/sctp v1.12.0（新增 `tools/interop/sctp/run.sh`：两种角色，pion 的交错开与关，
   有无丢包）；pion WebRTC 协商 I-DATA；无头 Chrome 157 双向，默认走 DATA，也走 I-DATA（`browser.sh`
   新增的 `CHROME_ARGS` 打开其 `WebRTC-DataChannelMessageInterleaving` field trial）。fuzz 目标
-  `sctp_packet` 驱动一对 I-DATA 关联和一对 DATA 关联。only-webrtc 不改 API，沿用新的默认值。
+  `sctp_packet` 驱动一对 I-DATA 关联和一对 DATA 关联。akio-webrtc 不改 API，沿用新的默认值。
 
-### 新增：证书吊销：CRL、OCSP、装订响应校验（only-x509、only-tls）
+### 新增：证书吊销：CRL、OCSP、装订响应校验（akio-x509、akio-tls）
 
 ADR-038（docs/adr/038-x509-revocation.zh-CN.md），均为新增。库内不访问网络：CRL 与 OCSP 响应由应用获取。
 
-- **only-tls**：`RevocationPolicy::{Off, SoftFail, HardFail}`（默认关闭，关闭时无开销）；
+- **akio-tls**：`RevocationPolicy::{Off, SoftFail, HardFail}`（默认关闭，关闭时无开销）；
   `ClientConfigBuilder::ocsp_policy` 在 TLS 1.3 与 1.2 中校验服务器为叶证书装订的 OCSP 响应（由签发者或带
   id-kp-OCSPSigning 的委托响应者签名、针对该叶证书、在 5 分钟偏差内有效）并自动请求装订：软失败只拒绝有效的
   “revoked”（`certificate_revoked`），硬失败要求有效的“good”（否则 `bad_certificate_status_response`）。
   `Crls` 配合 `ClientConfigBuilder::crls` 与 `ServerConfigBuilder::client_crls` 检查对端证书链中根以下的每张
   证书。
-- **only-x509**（内部 crate）：`Crl`、`CrlSet`（完整与 delta CRL、原因码、issuingDistributionPoint 范围、
+- **akio-x509**（内部 crate）：`Crl`、`CrlSet`（完整与 delta CRL、原因码、issuingDistributionPoint 范围、
   removeFromCRL）、`Verifier::{crls, revocation_mode, clock_skew}`、`RevocationMode`、`OcspResponse` /
   `OcspValidation` / `OcspRequest`（RFC 6960、nonce、SHA-1/256/384/512 的 CertID）、
   `Certificate::{crl_distribution_points, ocsp_urls, ca_issuer_urls}`、生成器 `CrlParams` 与
@@ -1438,9 +1458,9 @@ ADR-038（docs/adr/038-x509-revocation.zh-CN.md），均为新增。库内不访
 - 测试使用 OpenSSL 生成的 CRL 与 OCSP 响应（`tests/data/revocation/gen.sh`），内存中的 TLS 覆盖每种策略，与
   `openssl s_server -status_file` 及 OpenSSL CRL 互通；新的模糊测试目标 `x509_crl` 与 `x509_ocsp`。
 
-### 新增：protobuf 文本格式（only-protobuf）
+### 新增：protobuf 文本格式（akio-protobuf）
 
-ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息
+ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`akio_protobuf::text` 为生成消息
 （`to_string`、`to_string_with`、`from_str`、`from_str_with`）和 `DynamicMessage`（`parse_dynamic`、
 `to_text`、`from_text`）解析和输出文本格式，带 `PrintOptions`（`single_line`、
 `print_unknown_fields`、`type_pool`）、`ParseOptions`（`allow_unknown_fields`、`type_pool`）和
@@ -1452,7 +1472,7 @@ ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_p
 
 ### 新增：BitTorrent 快速续传
 
-`only-bittorrent`（ADR-033，docs/adr/033-bittorrent-fast-resume.zh-CN.md），增量：
+`akio-bittorrent`（ADR-033，docs/adr/033-bittorrent-fast-resume.zh-CN.md），增量：
 
 - **`ClientConfig::resume_dir`**（默认无）与 **`resume_interval`**（30 秒）：每个种子的状态保存为
   `<info hash 十六进制>.resume`，有改动时定时保存、暂停后不久保存、`Client::close` 时（最后一次写入
@@ -1493,17 +1513,17 @@ ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_p
 - **`Peer::request_layer_keyframe(mid, rid, kind)`**：只向接收到的某一 simulcast 层发 PLI 或 FIR（SFU
   切换观众所看的层）。已用无头 Chrome 双向验证 simulcast：Chrome 发出三层 VP8，Chrome 解码所选的层，我方的
   simulcast 回退为第一层（Chrome 不接收 simulcast）。
-- `only-ice`（内部层级）：`Candidate::relayed_over_stream`。新 fuzz 目标 `webrtc_turn_url`。互通：pion（在
-  only-turn 与 pion/turn 上经 TCP/TLS 的中继，双向 ICE-TCP），coturn（经 TCP/TLS 的中继），Chrome（只用
+- `akio-ice`（内部层级）：`Candidate::relayed_over_stream`。新 fuzz 目标 `webrtc_turn_url`。互通：pion（在
+  akio-turn 与 pion/turn 上经 TCP/TLS 的中继，双向 ICE-TCP），coturn（经 TCP/TLS 的中继），Chrome（只用
   ICE-TCP，只用经 UDP/TCP/TLS 的中继，simulcast 与层选择）。
 
-### 新增：only-media 的 VP8、VP9 与 AV1，多码率 HLS 播放列表
+### 新增：akio-media 的 VP8、VP9 与 AV1，多码率 HLS 播放列表
 
 新增（ADR-031，docs/adr/031-media-vp8-vp9-av1-multivariant-hls.zh-CN.md）：
 
 - **hub 中的 VP8、VP9 与 AV1**：`Codec::{Vp8, Vp9, Av1}`，有规范形式（`vpcC` / `av1C` 配置记录、帧、由带长度
   OBU 组成的 AV1 temporal unit），关键帧由码流判定，因此 GOP 缓存、HLS 切片与慢播放器丢包对它们同样有效。
-  承载于 Enhanced RTMP / FLV（`vp09`、`av01`、`vp08`）、RTSP（经 only-rtp 的 RFC 7741 / RFC 9628 / AV1 RTP，
+  承载于 Enhanced RTMP / FLV（`vp09`、`av01`、`vp08`）、RTSP（经 akio-rtp 的 RFC 7741 / RFC 9628 / AV1 RTP，
   录制与播放）、fMP4 HLS（`vp08` / `vp09` + `vpcC`，`av01` + `av1C`）以及 WHIP / WHEP（`webrtc::rtc_config`
   启用它们）。MPEG-TS 不承载。新模块 `codec::vp8`、`codec::vp9`、`codec::av1`；`Track::video_from_keyframe`、
   `Track::codec_string`（RFC 6381）；`rtp::Depacketizer::picture_size`。
@@ -1524,22 +1544,22 @@ ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_p
   TCP 与 UDP）、两种格式的多码率播放列表；headless Chrome 通过 WHIP 推 VP8、VP9、AV1 与 H.264，通过 WHEP 解码，
   并播放多码率 fMP4 LL-HLS 播放列表（`tools/interop/media/browser.sh`）。
 
-### 新增：only-log 的 `/regex` 消息过滤，基于新的内部 crate only-regex
+### 新增：akio-log 的 `/regex` 消息过滤，基于新的内部 crate akio-regex
 
 增量（ADR-047，docs/adr/047-log-regex-filters.zh-CN.md）：
 
-- **only-log**：`ONLY_LOG=info,only_http=debug/connection (reset|refused)` 只保留格式化后的消息与模式匹配的记录，与 env_logger 相同（第一个 `/` 之后的全部内容都是模式；空模式不过滤）。新增 `Filter::message_regex`、`Filter::message_pattern` 与 `Filter::matches(&Record)`（级别加消息；消息逐段送入匹配器，不拼接字符串）；`Filter` 的 `Display` 会写回模式。`FmtLogger` 直接匹配它已经为这一行格式化好的消息。没有模式的过滤器不增加任何开销。`"info/x".parse::<Filter>()` 以前报错，现在成功；无效模式产生指明 `/pattern` 及出错字节位置的 `ParseFilterError`。
-- **only-regex**（新的内部 crate，无依赖，`#![forbid(unsafe_code)]`）：`Regex::new`、`is_match(&str)`、`is_match_fmt(fmt::Arguments)`（不分配内存）。语法为去掉捕获、环视与 Unicode 类的 `regex` crate 语法：支持 Unicode 的 `\d \w \s`、字符类、贪婪与惰性重复、分支、分组、`^ $ \A \z \b \B`、标志 `i` `m` `s` `U`。Thompson NFA，编译时在字符类（ASCII 查表，其余用区间）上构建 DFA，并以 Pike VM 回退：任何模式都是线性时间，约每字符 1 ns。Unicode 表由 `tools/regex-tables` 从 regex-syntax 生成；差分模糊测试目标 `regex_search` 与 `regex` crate 对比；`tools/codec-bench logregex` 比较两者性能。
+- **akio-log**：`AKIO_LOG=info,akio_http=debug/connection (reset|refused)` 只保留格式化后的消息与模式匹配的记录，与 env_logger 相同（第一个 `/` 之后的全部内容都是模式；空模式不过滤）。新增 `Filter::message_regex`、`Filter::message_pattern` 与 `Filter::matches(&Record)`（级别加消息；消息逐段送入匹配器，不拼接字符串）；`Filter` 的 `Display` 会写回模式。`FmtLogger` 直接匹配它已经为这一行格式化好的消息。没有模式的过滤器不增加任何开销。`"info/x".parse::<Filter>()` 以前报错，现在成功；无效模式产生指明 `/pattern` 及出错字节位置的 `ParseFilterError`。
+- **akio-regex**（新的内部 crate，无依赖，`#![forbid(unsafe_code)]`）：`Regex::new`、`is_match(&str)`、`is_match_fmt(fmt::Arguments)`（不分配内存）。语法为去掉捕获、环视与 Unicode 类的 `regex` crate 语法：支持 Unicode 的 `\d \w \s`、字符类、贪婪与惰性重复、分支、分组、`^ $ \A \z \b \B`、标志 `i` `m` `s` `U`。Thompson NFA，编译时在字符类（ASCII 查表，其余用区间）上构建 DFA，并以 Pike VM 回退：任何模式都是线性时间，约每字符 1 ns。Unicode 表由 `tools/regex-tables` 从 regex-syntax 生成；差分模糊测试目标 `regex_search` 与 `regex` crate 对比；`tools/codec-bench logregex` 比较两者性能。
 
 ### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
 
-only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。
+akio-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。
 
 ### 新增：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组、SOCKS4 BIND
 
 增量（ADR-019，docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md）：
 
-- **`only_socks::SocksClient`**：SOCKS5 `CONNECT`、`BIND` 与 `UDP ASSOCIATE`（无认证或用户名/
+- **`akio_socks::SocksClient`**：SOCKS5 `CONNECT`、`BIND` 与 `UDP ASSOCIATE`（无认证或用户名/
   密码），SOCKS4 与 SOCKS4a `CONNECT` 与 `BIND`。在 engine 上：`dial`（一个 acceptor；若是 `Tls`
   acceptor 则在隧道内运行 TLS）、`bind`（`on_bound` 得到代理的监听地址）、`udp_associate`（一个
   `UdpAssociation`：`send_to`、`close`；数据报交给 `on_datagram`）；隧道打开前的所有失败（代理不可达、
@@ -1547,7 +1567,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
   （`BlockingBind::accept`）、`udp_associate_blocking`（`BlockingUdp`）。
   `from_url("socks5h://user:pass@host")`、`handshake_timeout`（10 秒）、`bind_timeout`（60 秒）、
   `Version`、`impl From<SocketAddr> for Dest`，并重新导出 `ProxyRefused`。
-- **`only_http::client::Client` 与 `only_ws::client::dial` 支持 SOCKS 代理**：`Proxy` 接受
+- **`akio_http::client::Client` 与 `akio_ws::client::dial` 支持 SOCKS 代理**：`Proxy` 接受
   `socks5://`、`socks5h://`、`socks4://` 与 `socks4a://` URL（默认端口 1080，URL 凭据作为 RFC 1929
   凭据或 SOCKS4 user id）；所有请求（包括 `http://`）都走隧道；`socks5`/`socks4` 先解析目标（优先
   IPv4），`socks5h`/`socks4a` 由代理解析。拒绝是 `ProxyRefused`，带最接近的 HTTP 状态码以及新增的
@@ -1557,11 +1577,11 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
 - 服务端支持 **SOCKS4 `BIND`**，与 SOCKS5 共用 `Socks::bind(true)` 开关和 `allow` 钩子。
 - 行为变化：`Proxy::from_env` 也读取 `all_proxy` / `ALL_PROXY`；原来丢弃分片数据报的中继现在会重组；
   设置 `bind(true)` 时会处理 SOCKS4 `BIND` 请求。
-- 互通（`tools/interop/socks/run.sh`，15/15）：我们的客户端对 Dante 和 only-socks，curl/PySocks/
+- 互通（`tools/interop/socks/run.sh`，15/15）：我们的客户端对 Dante 和 akio-socks，curl/PySocks/
   手写客户端对服务端（分片、SOCKS4 BIND）。新增模糊测试目标 `socks_client`（客户端握手、隧道
   transport、重组）。
 
-### 新增：arpc 中间件、coder 与客户端连接池（only-arpc）
+### 新增：arpc 中间件、coder 与客户端连接池（akio-arpc）
 
 均为新增（ADR-023，docs/adr/023-arpc-middleware-coders-pools.zh-CN.md）：
 
@@ -1569,7 +1589,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
   接受 `Fn(&mut Context, Next)`；`next.run(ctx)` 执行调用链的其余部分（其后的代码在 handler 之后
   执行），不调用它直接返回即中止。顺序固定（全局、方法、handler），与注册先后无关。新增
   `Context::values` / `values_mut` / `responded`。没有中间件的路由直接调用 handler。
-- **Coder**（`only_arpc::coder`）：作用于整帧的 `Coder` trait，`Routes::coder`，按添加顺序编码、
+- **Coder**（`akio_arpc::coder`）：作用于整帧的 `Coder` trait，`Routes::coder`，按添加顺序编码、
   逆序解码，与 Go 的 `MessageCoder` 相同。`Gzip::new(threshold)`（保留位第 7 位，解压量受
   `max_body_bytes` 限制）与 `Appender::new(name, bit)`（tracing 用第 0 位）与
   `arpcex/extension/middleware/coder` 线路兼容。`Values` 通过 `Peer::call_with` /
@@ -1586,7 +1606,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
 
 ### 新增：BitTorrent v2 与混合种子、web seed、LSD、IPv6 DHT、速率与做种限制
 
-`only-bittorrent`（ADR-018，docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md）：
+`akio-bittorrent`（ADR-018，docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md）：
 
 - **BEP 52 v2 与混合种子。** 新模块 `merkle`（SHA-256 默克尔树、分片层、按 libtorrent 方式生成的
   哈希请求证明）。`metainfo`：`InfoHashV2`、`TorrentVersion`、`FileEntry::pieces_root`、
@@ -1596,7 +1616,7 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
   对等方使用的哈希（纯 v2 种子为截断的 SHA-256）。磁力链接 `urn:btmh:`。peer wire：v2 握手位，
   hash request / hashes / hash reject（`Handshake::with_v2`；客户端只为 v2 与混合种子设置该位）。客户端以两个哈希公告并接受混合种子，为磁力链接用哈希请求
   获取缺失的分片层，并应答对方的哈希请求。解析时拒绝与根不符的分片层，以及两部分不一致的混合种子。
-- **Web seed（BEP 19）**，经 only-http 客户端：`ClientConfig::web_seeds`（默认开启）、
+- **Web seed（BEP 19）**，经 akio-http 客户端：`ClientConfig::web_seeds`（默认开启）、
   `AddOptions::web_seeds`、`Torrent::add_web_seed`、`TorrentEvent::WebSeedError`；每个范围请求
   最多 4 MiB，每个 web seed 同时一个分片，退避最长 10 分钟。
 - **本地服务发现（BEP 14）**：模块 `lsd`，`ClientConfig::lsd`（默认开启；私有种子从不使用），在
@@ -1616,18 +1636,18 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
 
 ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
 
-- **only-protobuf-build**：proto2 `group` 字段、`extend` 块（带类型的 `Extension` /
+- **akio-protobuf-build**：proto2 `group` 字段、`extend` 块（带类型的 `Extension` /
   `RepeatedExtension` 常量）、扩展范围、MessageSet；edition 2023 与 2024 及特性解析（字段存在性、
   封闭枚举、packed / expanded、`DELIMITED`、命名风格、`export` / `local`）；自定义 option 与文本格式
   聚合值；与 protoc 一致的描述符，按包内嵌（`FILE_DESCRIPTOR_SET`、`descriptor_pool()`），
   `Config::descriptors`、`Config::file_descriptor_set_path`；内置 `descriptor.proto`、`type.proto`、
   `api.proto`、`source_context.proto`。
-- **only-protobuf**：`ExtensionSet`、`Extendable`、`Extension`、`RepeatedExtension`；
+- **akio-protobuf**：`ExtensionSet`、`Extendable`、`Extension`、`RepeatedExtension`；
   `encoding::GroupCodec`、封闭枚举解码函数；`Enumeration::is_known`；`reflect`（`DescriptorPool`、
   各描述符、`DynamicMessage`、`Value`、`ReflectMessage`）；`json`（标准 proto3 JSON、well-known
   类型、`ignore_unknown_fields`）；`well_known` 中的描述符类型。
-- **only-grpc**：`reflection::register`（gRPC 服务端反射 v1 与 v1alpha，供 grpcurl / grpcui
-  使用），反射消息位于 `reflection::v1` / `v1alpha`；现在依赖 only-protobuf。
+- **akio-grpc**：`reflection::register`（gRPC 服务端反射 v1 与 v1alpha，供 grpcurl / grpcui
+  使用），反射消息位于 `reflection::v1` / `v1alpha`；现在依赖 akio-protobuf。
 - 验证：protobuf 一致性运行器 v35.1，二进制 + JSON 通过 5627 项、失败 0 项
   （`tools/protobuf-test/conformance/run.sh`）；描述符集与 protoc 一致；grpcurl
   （`tools/interop/grpc/grpcurl.sh`）；fuzz 目标 `protobuf_json`、`protobuf_descriptor`。
@@ -1637,9 +1657,9 @@ ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
 （交替 5 轮取中位数，prost 作对照）：Point 12/18 ns → 12/18 ns，Feature 19/47 ns → 18/45 ns，
 AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 1448 ns（−11%，prost 1788 → 1749）。
 
-### 新增：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
+### 新增：akio-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复
 
-除注明外均为新增（ADR-021，docs/adr/021-dtls13-cid-resumption.zh-CN.md；only-dtls 属 Internal 层）：
+除注明外均为新增（ADR-021，docs/adr/021-dtls13-cid-resumption.zh-CN.md；akio-dtls 属 Internal 层）：
 
 - **DTLS 1.3**（RFC 9147），沿用同一个 sans-io `Connection`：带记录号加密的统一记录头，随 KeyUpdate
   递增的 epoch（`Connection::update_keys`，密钥接近使用上限前自动更新），ACK 且只重传未确认的分片，
@@ -1651,7 +1671,7 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
 - **连接 ID**：DTLS 1.2 的 RFC 9146 `tls12_cid` 记录与 DTLS 1.3 CID，配合
   `Config::with_connection_id`、`Connection::local_connection_id`、
   `HandshakeInfo::{local_connection_id, peer_connection_id}` 以及按 CID 分发数据报的
-  `only_dtls::connection_id`。
+  `akio_dtls::connection_id`。
 - **会话恢复**：DTLS 1.2 会话 ID（上限 1024 条的缓存）与 RFC 5077 票据，DTLS 1.3 NewSessionTicket
   （`psk_dhe_ke`），配合 `Config::with_session_resumption`、`with_ticket_key`（`TicketKey`）、
   `with_ticket_lifetime`（默认 2 小时，最长 7 天）、`Event::NewSession(Box<Session>)`、
@@ -1673,14 +1693,14 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
 
 新增（ADR-017，docs/adr/017-webrtc-turn-gaps.zh-CN.md）：
 
-- **TCP 与 TLS 上的 TURN**（`only-turn`）：`TurnServer::stream()` 返回用于 TCP 监听器的 `TurnStream`
-  acceptor，用 `only::tls::Tls` 包装后用于 TLS 监听器（`turns:`），与 UDP 监听器共享分配、配额与凭据。经
+- **TCP 与 TLS 上的 TURN**（`akio-turn`）：`TurnServer::stream()` 返回用于 TCP 监听器的 `TurnStream`
+  acceptor，用 `akio::tls::Tls` 包装后用于 TLS 监听器（`turns:`），与 UDP 监听器共享分配、配额与凭据。经
   连接建立的分配随连接结束（`TurnCore::remove_client`）；新增 `TurnConfig::stream_allocate_timeout`（30 秒：
   未分配的连接被关闭）与 `max_stream_queue`（256 KiB：排队超过该值的连接，发给它的中继数据被丢弃）。
-  `TurnServer::stream_relay_of`。STUN 与 ChannelData 分帧在 `only_turn::framing`（`FrameReader`、
+  `TurnServer::stream_relay_of`。STUN 与 ChannelData 分帧在 `akio_turn::framing`（`FrameReader`、
   `frame_len`、`MAX_FRAME`）；`TurnEnv` 新增带默认实现的方法 `pads_channel_data`。不实现 RFC 6062 TCP
   中继（`442`）。
-- **TURN 客户端** `only_turn::client::{Client, ClientConfig, ClientEvent, ClientState, ClientError}`：
+- **TURN 客户端** `akio_turn::client::{Client, ClientConfig, ClientEvent, ClientState, ClientError}`：
   sans-io，在 UDP 或流上维护一个分配；长期凭据、过期 nonce、刷新、channel 及权限回退、对端使用期间的绑定
   刷新、UDP 重传；默认最多 64 个对端、等待绑定的数据 64 KiB。
 - **`Endpoint` 的 relay 候选**：`Endpoint::gather_relay(server, username, password, timeout)` 通过
@@ -1689,19 +1709,19 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   新增 `Error::Turn`。
 - **ICE-TCP**（RFC 6544）：`Endpoint::listen_tcp(&engine, addr)` 在独立端口上加入被动 TCP host 候选；连接
   由专用线程接受（最多 256 条），须在 10 秒内发来指向该 endpoint 某个 peer 的检查，并承载 RFC 4571 帧。
-  TCP 候选优先级低于 UDP。`only-ice`（内部层级）新增 `TcpType`、`Candidate::host_tcp`、
-  `Candidate::tcp_type` 与 `only_ice::tcp`；`ParseError::Tcp` 删除。
+  TCP 候选优先级低于 UDP。`akio-ice`（内部层级）新增 `TcpType`、`Candidate::host_tcp`、
+  `Candidate::tcp_type` 与 `akio_ice::tcp`；`ParseError::Tcp` 删除。
 - **simulcast 发送**（RFC 8853）：`SdpChanges::add_simulcast_media(kind, dir, rids, ..)` 与
   `Peer::write_simulcast(mid, rid, ..)`：每个 RID 一条 RTP 流与 RTX 流，SDP 中的 `a=rid` / `a=simulcast`，
   MID 与 RID 头扩展（重传带 repaired RID），按编码的发送者报告、NACK 与 PLI/FIR（`KeyframeRequest::rid`）；
   由 answer 的 `a=simulcast:recv` 选择发送的编码。作为应答方，本栈接受 simulcast offer（answer 中带
   `a=simulcast:recv`，RTX 按 repaired RID 映射）。
 - 互通（`tools/interop/webrtc/run.sh`，新增在 Linux 容器中运行全部检查的 `linux.sh`）：pion/turn 与 coturn
-  客户端经 UDP、TCP、TLS 对 `only-turn`；`only_turn` 客户端经 UDP、TCP、TLS 对 pion/turn、coturn 与
-  `only-turn`；只带 relay 候选（来自 `only-turn`、pion/turn、coturn）以及只带被动 TCP 候选的 `Endpoint`
+  客户端经 UDP、TCP、TLS 对 `akio-turn`；`akio_turn` 客户端经 UDP、TCP、TLS 对 pion/turn、coturn 与
+  `akio-turn`；只带 relay 候选（来自 `akio-turn`、pion/turn、coturn）以及只带被动 TCP 候选的 `Endpoint`
   对 pion；pion 收到 h/m/l 三层 simulcast。新增 fuzz 目标 `turn_stream` 与 `ice_tcp`。
 
-### 新增：only-media 的 fMP4 HLS、RTMP 与 RTSP 客户端、WebRTC 媒体
+### 新增：akio-media 的 fMP4 HLS、RTMP 与 RTSP 客户端、WebRTC 媒体
 
 新增（ADR-016，docs/adr/016-media-fmp4-clients-webrtc.zh-CN.md）：
 
@@ -1712,37 +1732,37 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   H.265/Opus），连接、握手、每条命令与空闲均有超时，消息与发送队列有上限。
 - **RTSP 客户端** `rtsp::client::{pull, push}`（播放与录制，TCP 交织或 UDP，Digest 与 Basic 认证，保活，
   RTCP 报告）；`rtsp::message::Reply` 与 `Parser::client`。
-- **WHIP/WHEP 媒体**：开启新的 cargo feature `webrtc` 后，`webrtc::RtcMedia` 经 only-webrtc 承载 H.264、
+- **WHIP/WHEP 媒体**：开启新的 cargo feature `webrtc` 后，`webrtc::RtcMedia` 经 akio-webrtc 承载 H.264、
   H.265、Opus 与 G.711：WHIP 推入 hub，WHEP 从 hub 播出。`WhipServer` 会丢弃对端未经 `DELETE` 就结束的会话。
 - **关键帧请求**：`Publisher::on_keyframe_request`、`Subscription::request_keyframe`、`Hub::request_keyframe`，
   按 `HubConfig::keyframe_request_interval`（500 ms）节流；WebRTC 观众的 PLI/FIR 以 PLI 形式到达 WHIP 推流者。
 - 互通：ffmpeg/ffprobe（fMP4 HLS 普通与 LL-HLS、RTMP 与 RTSP 监听模式）、mediamtx（RTMP，RTSP 走 TCP 与
   UDP）、ffmpeg 的 WHIP 封装器与 pion（WHIP、WHEP、PLI 往返）。新 fuzz 目标 `fmp4_demux`、`rtmp_client`、
   `rtsp_client`。
-- 修复：only-webrtc 的 `Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后会 panic。
+- 修复：akio-webrtc 的 `Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后会 panic。
 
 ### 新增：XDP 限速、I/O 线程绑核、eBPF 哈希分流、内核拼接的 SOCKS 隧道
 
 均为新增（ADR-027，docs/adr/027-ebpf-xdp-pinning-socks-splice.zh-CN.md）：
 
-- **`only::ebpf::xdp::RateLimiter`**：XDP 中按源地址的令牌桶。可只计 TCP SYN（防连接洪泛）或计
+- **`akio::ebpf::xdp::RateLimiter`**：XDP 中按源地址的令牌桶。可只计 TCP SYN（防连接洪泛）或计
   所有包，源保存在有上限的按 CPU LRU map 中；以 native 或 generic 模式、通过 BPF link 或 netlink
   挂载。永不替换他人的程序，drop 时卸载，提供 `stats()` 与 `forget()`。
 - **`EbpfConfig::pin_threads`**：把 n 个 I/O 线程中的线程 `i` 绑到 `c % n == i` 的 CPU 上，使
   `Steering::Cpu` 选中的线程运行在收包 CPU 上。同时新增 `ebpf::cpu_pinning`、
-  `SteerInfo::pinned_threads` 与 `only_sys::process::{allowed_cpus, pin_current_thread}`。
+  `SteerInfo::pinned_threads` 与 `akio_sys::process::{allowed_cpus, pin_current_thread}`。
 - **`Steering::Hash` 的 eBPF 层**（需特权）：与经典层的哈希和所选线程相同，socket 写在
   `REUSEPORT_SOCKARRAY` 中，与加入组的顺序无关。
 - **sockmap relay**：拼接前已排队的字节会被转发，不再等待后续数据。新增 `Relay::splice_inner`、
   `Relay::splice_inner_with`（在转发任何字节前写出最后一条握手消息）与 `ebpf::byte_counts`。
-- **only-socks**：`ProxyConfig::sockmap` / `Socks::sockmap` 把 SOCKS 与 HTTP `CONNECT` 隧道拼接到
+- **akio-socks**：`ProxyConfig::sockmap` / `Socks::sockmap` 把 SOCKS 与 HTTP `CONNECT` 隧道拼接到
   内核中转发（需显式开启），无法拼接时回退到用户态转发。
-- `bench-server` 的 `ONLY_ACCEL` 开关、`ebpf-bench` 示例、`tools/bench/ebpf.sh`；fuzz 目标
+- `bench-server` 的 `AKIO_ACCEL` 开关、`ebpf-bench` 示例、`tools/bench/ebpf.sh`；fuzz 目标
   `xdp_rate_limit`。
 
-### 新增：only-dpdk 用户态协议栈的 IPv6、ECN 与 pacing
+### 新增：akio-dpdk 用户态协议栈的 IPv6、ECN 与 pacing
 
-新增 API（ADR-026，docs/adr/026-userspace-ipv6-ecn-pacing.zh-CN.md；only-dpdk 属实验性）：
+新增 API（ADR-026，docs/adr/026-userspace-ipv6-ecn-pacing.zh-CN.md；akio-dpdk 属实验性）：
 
 - `Backend::Dpdk` 支持 **IPv6**：设置 `DpdkConfig::address6` 即启用（外加由 MAC 派生的链路本地
   地址），另有 `prefix_len6`（64）与 `gateway6`。listener 为双栈（端口同时服务两种地址族；listener
@@ -1762,12 +1782,12 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   （TAP、AF_PACKET、双队列 DPDK `net_tap`：`ping -6`、含分片的 UDP、双向 TCP、开启 ECN 与 pacing 的
   `netem` 丢包）；模糊测试目标 `dpdk_ipv6`、`dpdk_icmpv6`、`dpdk_ndp`。
 
-### 变更：UDP 数据报以拥有所有权的接收缓冲区交付（only-sys、only-epoll、only-quic；ADR-024）
+### 变更：UDP 数据报以拥有所有权的接收缓冲区交付（akio-sys、akio-epoll、akio-quic；ADR-024）
 
 UDP 循环（epoll、io_uring 与 macOS；服务端与拨号 socket）接收进池化的接收 slab，并可把每个数据报作为拥有所有权的
-缓冲区交给 handler（隐藏的 `Handler::OWNED_DATA` / `on_data_owned`），GRO 批次切分不复制。only-quic 使用它并原地
-解密，从内核到解密后的负载之间不再有复制。UDP 对端表用带密钥的乘法折叠哈希（作为隐藏的 `only_core::hash` 与
-only-quic 共用）代替 SipHash。`only-buf` 现在只在一个模块（`slab`，经 Miri 与 loom 检查；docs/unsafe-review.zh-CN.md）
+缓冲区交给 handler（隐藏的 `Handler::OWNED_DATA` / `on_data_owned`），GRO 批次切分不复制。akio-quic 使用它并原地
+解密，从内核到解密后的负载之间不再有复制。UDP 对端表用带密钥的乘法折叠哈希（作为隐藏的 `akio_core::hash` 与
+akio-quic 共用）代替 SipHash。`akio-buf` 现在只在一个模块（`slab`，经 Miri 与 loom 检查；docs/unsafe-review.zh-CN.md）
 中允许 unsafe 代码。回环上的同轮 A/B：QUIC 批量、HTTP/3、握手与 UDP echo 都在 1% 以内（HTTP/3 1.01，其余 1.00；
 docs/BENCHMARKS.zh-CN.md）。不选择启用的 handler（包括加密的 handler）没有变化。公开 API 无变化。
 
@@ -1780,13 +1800,13 @@ HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
   （不超过 1 KiB）成为本线程的备用缓冲。该线程上解析的下一个请求把 target 写进去，HTTP/1.1、HTTP/2
   和 HTTP/3 都如此。之所以按线程而非按连接：按连接的缓冲在轮到该连接时已不在缓存中，第一版因此让
   h2c 每请求多约 100 个周期。`Request::target` 仍是 `String`，handler、router 和中间件不变。
-- **每个连接一个响应 sink。** only-http 的 transport 钩子（`only_http::transport`，
+- **每个连接一个响应 sink。** akio-http 的 transport 钩子（`akio_http::transport`，
   `#[doc(hidden)]`，不在 semver 承诺内）新增：
   - `ConnSink`：`send` / `start_stream`，都带每请求的 `u64` tag；
   - `SharedSink`：指向它的瘦句柄；
   - `dispatch_conn` / `start_conn`，以及供构造请求的 transport 使用的 `request_target`。
 
-  only-h3 对一个连接的所有请求都通过同一个 sink 应答（tag：流序号与 HEAD 标志），不再每请求装箱
+  akio-h3 对一个连接的所有请求都通过同一个 sink 应答（tag：流序号与 HEAD 标志），不再每请求装箱
   一个 sink 并克隆三个 `Arc`。由于句柄是瘦指针，`Context` 的 responder 保持 16 字节。胖指针
   `Arc<dyn ConnSink>` 加 tag 会让 `Context` 增大 8 字节；HTTP/2 每个请求装箱一个 `Context`，h2c
   因此多花约 1% 的周期。
@@ -1809,25 +1829,25 @@ HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
 
 只有新增（ADR-020，docs/adr/020-spans-and-push-export.zh-CN.md）：
 
-- **only-log 中的 span**（`only::log::span`）：`Span`、`SpanBuilder`、`span!` / `info_span!` ……、支持解析和
+- **akio-log 中的 span**（`akio::log::span`）：`Span`、`SpanBuilder`、`span!` / `info_span!` ……、支持解析和
   输出 W3C `traceparent` 的 `SpanContext`、`Tracer`（`set_tracer`）、独立的最大 span 级别
   （`set_max_span_level`，默认关闭：禁用的 span 只花一次 relaxed 读）、`enter` / `in_scope` / `enter_context` /
   `current`。`FmtLogger` 在 span 内加上 `trace_id` / `span_id`。没有 `tracing` 桥接（原因见 ADR-020）。
-- **HTTP 请求与连接 span**：每个 HTTP/1.x、HTTP/2、HTTP/3 请求一个 `only_http::request`（`info`，种类
+- **HTTP 请求与连接 span**：每个 HTTP/1.x、HTTP/2、HTTP/3 请求一个 `akio_http::request`（`info`，种类
   server），路由后命名为 `"GET /users/:id"`，带方法、路径、路由、协议版本、客户端地址和状态码，带
-  `traceparent` 时作为其子 span；每条连接一个 `only_http::connection`（`debug`）。`Context::span_context()`、
-  `Context::route()`（`RouteInfo`）、`only_http::trace`。
+  `traceparent` 时作为其子 span；每条连接一个 `akio_http::connection`（`debug`）。`Context::span_context()`、
+  `Context::route()`（`RouteInfo`）、`akio_http::trace`。
 - **HTTP 按路由的指标**：`HttpMetrics::with_routes(n)` 用路由的方法和模式（绝不是原始路径）标注请求与延迟，
   最多 `n` 个路由（≤ 4096），之后是 `route="other"`；未匹配的请求是 `route="unmatched"`。
-  `HttpMetrics::route_snapshot()`，族 `only_http_route_requests_total` 和 `only_http_route_request_duration_seconds`。
+  `HttpMetrics::route_snapshot()`，族 `akio_http_route_requests_total` 和 `akio_http_route_request_duration_seconds`。
 - **HTTP/2 gauge**：通过新的 `H2Config::stats` 设置 `observe::H2Stats`：打开中和累计的连接与流、两个方向的
-  `RST_STREAM` 和 `GOAWAY` 帧（`only_http2_*`）。
-- **新 crate `only-export`**：在一个后台线程上把指标（新增的 `Telemetry::collect_all()` 和额外收集器）和 span
+  `RST_STREAM` 和 `GOAWAY` 帧（`akio_http2_*`）。
+- **新 crate `akio-export`**：在一个后台线程上把指标（新增的 `Telemetry::collect_all()` 和额外收集器）和 span
   经 OTLP/HTTP（protobuf 或 JSON）推送到 OpenTelemetry collector，并经 UDP 推送到 StatsD / DogStatsD（计数器
   增量）。span 队列有界（满时丢弃并计数），推送失败计数且不重试，OTLP 每一步都有超时，支持采样比例。在 Docker
   里对 OpenTelemetry Collector 做端到端测试（`tools/otel/e2e.sh`）；fuzz 目标 `log_traceparent`、
   `export_http_response`、`export_otlp`。
-- only-core：`Metrics::collect_into` 与 `Telemetry::collect_all`（引擎序列以 `Families` 表示，与 Prometheus
+- akio-core：`Metrics::collect_into` 与 `Telemetry::collect_all`（引擎序列以 `Families` 表示，与 Prometheus
   渲染一致）。
 
 ### 新增：读缓冲区、backlog 和 UDP 空闲超时的热更新；I/O 线程数调整
@@ -1836,7 +1856,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
 
 - `Engine::reload` 现在会应用 **`read_buffer`**（每个 I/O 线程在两批事件之间替换缓冲区，已打开的
   连接从下一次读开始使用新大小；io_uring 在连接的接收重新挂起时把它们转到新的 provided-buffer 组）、
-  **`backlog`**（对活的监听套接字重新 `listen`；新增 `only_sys::set_backlog`）和
+  **`backlog`**（对活的监听套接字重新 `listen`；新增 `akio_sys::set_backlog`）和
   **`udp_idle_timeout`**（重新设置已打开对端的定时器）。`ReloadReport::ignored` 现在列出
   `max_pending_responses`、`write_timeout`、`connect_timeout`、`udp_max_peers`、`udp_gro`。
   `Live` 为这三项新增 getter/setter。
@@ -1845,16 +1865,16 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
   （Linux）或共享套接字的克隆；缩容让编号最大的线程退役，它们把监听套接字交给其他线程（排队的连接
   不会被重置），并继续服务自己的连接直到关闭：连接从不在线程之间迁移。新增
   `Config::retire_timeout`（默认 `None`，可热更新），到期后优雅关闭退役线程仍在服务的连接。
-  `LoopMetrics::retiring`，Prometheus `only_loop_retiring`。UDP listener、DPDK 和启用 BPF 分流的
+  `LoopMetrics::retiring`，Prometheus `akio_loop_retiring`。UDP listener、DPDK 和启用 BPF 分流的
   listener 返回 `Unsupported`。
-- only-prefork：**原地重载**：`Controller::reload_in_place` / `Supervisor::reload_in_place` 和
+- akio-prefork：**原地重载**：`Controller::reload_in_place` / `Supervisor::reload_in_place` 和
   SIGUSR1 让每个 worker 执行 `Worker::on_reload` 钩子（不替换进程即应用新配置和线程数）；
   `Worker::reloads`、`Status::in_place_reloads`。
 - 热路径不变（同轮 A/B 见 docs/BENCHMARKS.zh-CN.md 的“热更新”）。
 
 ### 新增：GitHub Pages 文档站点、书中示例的运行脚本
 
-- `book/site.sh` 构建发布在 `lesismal.github.io/only` 的站点：两本书、每页的语言切换与 API 链接、
+- `book/site.sh` 构建发布在 `lesismal.github.io/akio` 的站点：两本书、每页的语言切换与 API 链接、
   本地化的 404 页与全站 `404.html`，以及 `/api/` 下每个已发布 crate 的 rustdoc。
   `book/check-site.py` 在相同的基础路径下服务该站点，检查每个内部链接、资源与片段（包括各 crate
   rustdoc 指回手册的链接）、两本书页面一致，以及 404 处理。`.github/workflows/pages.yml` 运行这两者，
@@ -1863,17 +1883,17 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
 - `book/check-guides.sh` 运行书中引用代码的每个程序：21 个 `guide-*` 示例（各自以 0 退出或失败）、
   只提供服务的示例（`guide-media`、`guide-media-rtsp`、`echo`、`udp-echo`、`hello`、`prefork-http`，
   从外部探测）以及 gRPC 一章生成的桩代码；在 Linux 上于私有网络命名空间中运行。在 macOS、Linux arm64
-  与 Linux x86_64 上通过，epoll 与 io_uring（`ONLY_DEFAULT_BACKEND=uring`）均通过。
-- `ONLY_DEFAULT_BACKEND=uring`（ADR-029，Linux）：未调用 `Listener::backend` 的 TCP listener 由 io_uring
+  与 Linux x86_64 上通过，epoll 与 io_uring（`AKIO_DEFAULT_BACKEND=uring`）均通过。
+- `AKIO_DEFAULT_BACKEND=uring`（ADR-029，Linux）：未调用 `Listener::backend` 的 TCP listener 由 io_uring
   服务（非 strict：不可用时回退到 epoll 并给出警告）。显式选择的后端总是优先；UDP listener 与客户端线程
   不受影响；每次 `Engine::build` 读取一次。这是测试与诊断开关，使不改代码的程序（指南示例）也能在 io_uring
   上运行。没有公共 API 变化。
 - `book/check-includes.py` 还会检查 `book/en` 与 `book/zh-CN` 章节相同，且各章的标题、引用、代码块、
   表格行与列表项一致。
 - 文档与代码对齐：HTTP/3 上的 WebSocket 不再列为未完成；配置参考中的 `H3Config` / `H3ClientOptions`
-  字段名与 QPACK 默认值、`DialOptions::proxy` / `max_redirects`、`ONLY_UDP_ECN` 与 `ONLY_LOG`；
-  only-quic 支持 v1 与 v2；示例表列出全部示例；中文 RTSP 一章补上认证一条。修复三处失效的 rustdoc
-  链接（only-log、only-h3、only-bittorrent）。
+  字段名与 QPACK 默认值、`DialOptions::proxy` / `max_redirects`、`AKIO_UDP_ECN` 与 `AKIO_LOG`；
+  akio-quic 支持 v1 与 v2；示例表列出全部示例；中文 RTSP 一章补上认证一条。修复三处失效的 rustdoc
+  链接（akio-log、akio-h3、akio-bittorrent）。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
@@ -1910,7 +1930,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
 带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。代码已按这些规则审查；下列每个上限都有安全
 默认值，0 / `None` 仍是显式的关闭方式。
 
-**引擎（only-core、事件循环、only-tls）**
+**引擎（akio-core、事件循环、akio-tls）**
 - `Config::write_timeout` 60 s（原为 `None`）；`Config::udp_max_peers` 65536（原为 `None`）；新增
   `Config::connect_timeout`（10 s），用于 epoll、kqueue 和 io_uring 上的 `Engine::dial`。
 - 新增 `Config::max_pending_responses`（32）：排在未完成响应之后的流水线响应会暂停读取（并计入写水位线 /
@@ -1920,7 +1940,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
 - 热路径：cork 状态改为原子量，无人等待时跳过 drain 锁，命令队列保留容量；每个流水线请求的无竞争加锁操作
   约从 7 次降到 4 次。
 
-**HTTP 服务端（only-http）**
+**HTTP 服务端（akio-http）**
 - `HttpConfig::head_timeout` 10 s（slowloris；408）、`keep_alive_timeout` 75 s、`body_timeout` 60 s；
   HTTP/2 的 preface/SETTINGS 截止时间和空闲 GOAWAY。
 - HTTP/2 Rapid Reset 与洪泛预算：`H2Config::max_resets`（每 30 s 100 次，含 MadeYouReset）、
@@ -1932,7 +1952,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
   `in_flight` 按分片，响应过滤器内联存放，CORS / compress / limiter / csrf / request_id 不再每请求格式化或
   使用全局锁。流水线 HTTP/1.1 和 h2c 约 +3–4%（同一轮 A/B），普通 HTTP/1.1 在 1% 以内。
 
-**HTTP 客户端（only-http、only-h3）**：HTTP/1 响应头 64 KiB、消息体 64 MiB、请求超时 30 s、空闲连接池每主机
+**HTTP 客户端（akio-http、akio-h3）**：HTTP/1 响应头 64 KiB、消息体 64 MiB、请求超时 30 s、空闲连接池每主机
 32 个 / 总计 256 个、空闲 90 s 过期；HTTP/2 在缓冲前检查帧大小，头块上限 2 × `max_header_list`，消息体 64 MiB，
 每个请求最多 32 个 push；HTTP/3 消息体 8 MiB、字段段 64 KiB、请求超时 30 s。新增 `ClientError::Timeout` /
 `TooLarge`、`H3Error::TooLarge`。
@@ -1956,10 +1976,10 @@ HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅
 - SOCKS / HTTP CONNECT：**目标地址默认只允许公网**（解析后拒绝回环、私网、链路本地、CGNAT、组播和保留地址，
   包括映射形式；BIND 和 UDP ASSOCIATE 同样适用）；握手 10 s、空闲 5 min、早期数据上限 256 KiB、CONNECT 的
   DNS 在有界线程池上解析。
-- only-mux 嗅探超时 5 s。TURN 分配按客户端分片（中继吞吐约 140k → 513k 数据报/秒）。BitTorrent tracker 的 DNS
-  移出 I/O 线程，tracker 服务端 10 万个 swarm / 每 swarm 1000 个对端并带淘汰，uTP 入站表 1024。only-dtls 在
+- akio-mux 嗅探超时 5 s。TURN 分配按客户端分片（中继吞吐约 140k → 513k 数据报/秒）。BitTorrent tracker 的 DNS
+  移出 I/O 线程，tracker 服务端 10 万个 swarm / 每 swarm 1000 个对端并带淘汰，uTP 入站表 1024。akio-dtls 在
   cookie 交换前限制重组缓冲。
-- only-log：可选的 `FmtLogger::non_blocking`（有界队列，满时丢弃并计数）；默认仍为同步。
+- akio-log：可选的 `FmtLogger::non_blocking`（有界队列，满时丢弃并计数）；默认仍为同步。
 
 ### 新增：HTTP 与 WebSocket 客户端的重定向、超时、代理、系统根证书（ADR-010）
 
@@ -1970,12 +1990,12 @@ HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅
   WebSocket 握手通过 `DialOptions::max_redirects`（默认 0；`WsClientError::TooManyRedirects`）跟随重定向。
 - 单请求超时：`ClientRequest::timeout` / `.timeout(d)` 与 `Client::with_timeout`，覆盖解析、连接、TLS、
   响应与重定向（`ClientError::Timeout`，连接被关闭）。`H2Client` 通过重置流来遵守它。
-- 在调用线程之外解析域名：新增 `only::dns::resolve`（无依赖的解析线程池，最多 4 个线程；IP 字面量直接应答），
+- 在调用线程之外解析域名：新增 `akio::dns::resolve`（无依赖的解析线程池，最多 4 个线程；IP 字面量直接应答），
   HTTP/1 与 WebSocket 客户端使用它。
-- 系统根证书：`only::tls::RootCerts::system()`（`SSL_CERT_FILE` / `SSL_CERT_DIR`、通过 `/usr/bin/security`
+- 系统根证书：`akio::tls::RootCerts::system()`（`SSL_CERT_FILE` / `SSL_CERT_DIR`、通过 `/usr/bin/security`
   读取 macOS 钥匙串、Linux/BSD 的 CA 证书包与目录）。**行为变化：**没有 `with_tls` 的 `Client` 和
   `DialOptions::tls = None` 现在对 `https://` / `wss://` 使用它，而不是报错。
-- HTTP 代理：`only_ws::proxy::Proxy`（在 `only_http::client::Proxy` 重新导出；`all`、`http`、`https`、
+- HTTP 代理：`akio_ws::proxy::Proxy`（在 `akio_http::client::Proxy` 重新导出；`all`、`http`、`https`、
   `no_proxy`，以及需显式调用的 `from_env`，读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`）、
   `Client::with_proxy`、`DialOptions::proxy`。`http://` 用绝对形式，`https://`、`ws://` 和 `wss://` 经
   `CONNECT`；代理 URL 中的凭据变成 `Proxy-Authorization: Basic`；被拒绝时是携带 `ProxyRefused` 的
@@ -1984,7 +2004,7 @@ HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅
 
 ### 新增：SOCKS5 BIND 与 UDP ASSOCIATE、SOCKS 访问控制钩子、`Engine::adopt_tcp`
 
-- `only-socks` 支持 SOCKS5 `BIND` 与 `UDP ASSOCIATE`（RFC 1928），默认均关闭
+- `akio-socks` 支持 SOCKS5 `BIND` 与 `UDP ASSOCIATE`（RFC 1928），默认均关闭
   （`Socks::bind(true)`、`Socks::udp_associate(true)`；`bind_timeout`、`udp_idle_timeout`）。
   UDP：每个关联一个转发 socket（engine 需要 `udp_client_threads`），按 IP 和端口识别客户端，丢弃
   分片，只转发来自客户端发送过的目的地的应答，随控制连接或空闲超时结束。BIND：在代理地址上监听，
@@ -1995,43 +2015,43 @@ HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅
 - `Engine::adopt_tcp(stream, acceptor, on_error)` 把在 engine 之外 accept 的 TCP 流当作拨号连接来
   服务（epoll 与 io_uring）。
 - 互操作：`tools/interop/socks/run.sh`（curl、PySocks、BIND 与 UDP 边界情况；以 Dante 作为参考
-  服务器）。ADR-012。新增 API（`api/only-socks.txt`、`api/only.txt`）。
+  服务器）。ADR-012。新增 API（`api/akio-socks.txt`、`api/akio.txt`）。
 
-### 新增：`ONLY_LOG` 过滤指令与编译期日志级别上限
+### 新增：`AKIO_LOG` 过滤指令与编译期日志级别上限
 
-- `only::log::Filter`：从 env_logger 风格的指令（`info,only_http=debug,only_quic::conn=trace,only_http::access=off`）
-  得到按 target 的级别，只解析一次。`only::log::init_from_env(default)` 安装按 `ONLY_LOG` 过滤的格式化
+- `akio::log::Filter`：从 env_logger 风格的指令（`info,akio_http=debug,akio_quic::conn=trace,akio_http::access=off`）
+  得到按 target 的级别，只解析一次。`akio::log::init_from_env(default)` 安装按 `AKIO_LOG` 过滤的格式化
   logger；需显式调用，否则没有代码读取环境变量。`FmtLogger::filter` / `init_filtered` 接受在代码中
   构造的过滤器。
-- only-log 的 cargo feature `max_level_*` / `release_max_level_*` 与 `STATIC_MAX_LEVEL`，与 `log`
+- akio-log 的 cargo feature `max_level_*` / `release_max_level_*` 与 `STATIC_MAX_LEVEL`，与 `log`
   crate 相同：超出上限的语句被编译掉。不开启时生成的代码不变（禁用的 `trace!`：x86_64 上
-  0.400 → 0.401 ns，macOS 上二进制相同）。ADR-012。新增 API（`api/only-log.txt`）。
+  0.400 → 0.401 ns，macOS 上二进制相同）。ADR-012。新增 API（`api/akio-log.txt`）。
 
-### 新增：共享的 0-RTT 防重放存储（only-tls）与兼容版本协商（only-quic）
+### 新增：共享的 0-RTT 防重放存储（akio-tls）与兼容版本协商（akio-quic）
 
 新增 API（ADR-013，docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md）：
 
-- **`AntiReplayStore`**（only-tls）：服务端记录已接受早期数据的 ClientHello 的地方。只有一个方法
+- **`AntiReplayStore`**（akio-tls）：服务端记录已接受早期数据的 ClientHello 的地方。只有一个方法
   `check_and_insert(binder, ttl) -> io::Result<bool>`，须为原子操作，只针对本会接受早期数据的 ClientHello 在
   握手路径上调用。出错时**失败即关闭**（拒绝早期数据，客户端在握手后重发）。默认实现 `MemoryAntiReplay`（即原有
   的每配置一份、有界的记录，10 万条）现已公开。`ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
   接入共享存储（Redis `SET key 1 NX PX ttl`，示意见本书 TLS 章节）；`ServerConfigBuilder::session_ticket_key([u8; 48])`
   让多个进程或多台机器上的服务端能接受彼此的票据。QUIC 服务端经由其 TLS 配置获得这两项。已接受的 ClientHello 现保留 30 秒（原为 20 秒）：10 秒新鲜度窗口的两倍，再加一个窗口
   容许共享存储的服务端之间时钟有偏差。
-- **兼容版本协商**（only-quic，RFC 9368 第 4 节）：`ServerConfig::prefer_version(Version)` 让以另一版本开始、
+- **兼容版本协商**（akio-quic，RFC 9368 第 4 节）：`ServerConfig::prefer_version(Version)` 让以另一版本开始、
   并在 version_information 中列出偏好版本的客户端在握手内切换过去，不多花往返；ClientHello 跨多个包、Retry
   之后以及 0-RTT 时同样可用（0-RTT 包保持客户端的首个版本，RFC 9369 第 4.1 节）。默认关闭：服务端用客户端的
-  版本应答。only-quic 客户端总会跟随这种切换（无法解密的、伪造的另一版本 Initial 不会让它切换）。
+  版本应答。akio-quic 客户端总会跟随这种切换（无法解密的、伪造的另一版本 Initial 不会让它切换）。
 - 测试：共享票据密钥与“远程”存储的两台 TLS 服务端拒绝从一台重放到另一台的 ClientHello（各自记录时则被接受），
   存储失败时拒绝早期数据，在模拟链路上对 QUIC 做同样的检查；模拟链路上的兼容协商（无额外往返、Retry 加 15%
   丢包、跨两个包的 ClientHello、跨切换的 0-RTT、v2 切到 v1、无偏好或客户端列表无 v2 时不切换、伪造的 Initial）。
   Fuzz：`quic_conn` 的连接对现在会切换到 v2，`tls_server` 也会运行 ClientHello 预读。互通：新增
-  `tools/interop/quic/ngtcp2-cvn.sh`，在 Docker 中与实现了 RFC 9368 的 ngtcp2 1.11 双向验证（其客户端被 only-h3
-  切到 v2，含 0-RTT；only-quic 被其服务端切到 v2 与 v1）；quic-go 未实现 RFC 9368，因此
+  `tools/interop/quic/ngtcp2-cvn.sh`，在 Docker 中与实现了 RFC 9368 的 ngtcp2 1.11 双向验证（其客户端被 akio-h3
+  切到 v2，含 0-RTT；akio-quic 被其服务端切到 v2 与 v1）；quic-go 未实现 RFC 9368，因此
   `tools/interop/quic/run.sh` 检查其客户端在偏好另一版本的服务端上保持原版本。
 - 代价：未测出（BENCHMARKS.zh-CN.md，握手 A/B）。
 
-### 变更：QUIC 会话票据与令牌绑定到 QUIC 版本（only-tls、only-quic）
+### 变更：QUIC 会话票据与令牌绑定到 QUIC 版本（akio-tls、akio-quic）
 
 RFC 9369 第 5 节（ADR-014，docs/adr/014-quic-version-bound-resumption.zh-CN.md）：
 
@@ -2042,17 +2062,17 @@ RFC 9369 第 5 节（ADR-014，docs/adr/014-quic-version-bound-resumption.zh-CN.
   令牌）的版本开始，而不是 `ClientConfig::version`。配置为 v1、被偏好 v2 的服务端切到 v2 的客户端，下次
   直接以 v2 开始并带 0-RTT 恢复，无需切换。
 - 升级：此前签发的票据与令牌未绑定版本，QUIC 服务端不再接受（每个客户端多一次完整、地址未验证的握手）。
-  TCP 上的 TLS 不受影响（格式 2 的会话仍可解码）。公开 API 无变化（隐藏的 `only_tls::quic` 接口新增
+  TCP 上的 TLS 不受影响（格式 2 的会话仍可解码）。公开 API 无变化（隐藏的 `akio_tls::quic` 接口新增
   带版本的构造函数）。
-- 测试：only-tls 按版本区分票据（出示、拒绝、由 `set_ticket_version` 改版本、未绑定的握手互不使用）；
-  only-quic 按版本校验令牌；模拟链路上被切到 v2 的客户端以 v2 带票据、令牌与 0-RTT 恢复，v1 的票据不在
+- 测试：akio-tls 按版本区分票据（出示、拒绝、由 `set_ticket_version` 改版本、未绑定的握手互不使用）；
+  akio-quic 按版本校验令牌；模拟链路上被切到 v2 的客户端以 v2 带票据、令牌与 0-RTT 恢复，v1 的票据不在
   v2 中使用。互通：`tools/interop/quic/ngtcp2-cvn.sh` 另外检查 ngtcp2 1.11 的客户端（它对被切到 v2 的
   连接得到的票据仍以 v1 重新开始）得到完整握手，以 v2 开始时带 0-RTT 恢复（跨切换的 0-RTT 仍有检查，
   使用共享票据密钥的孪生端口签发的 v1 票据）。
 
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
-在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而
+在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，akio-crypto 的 Poly1305（因而
 ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶ 为基数每步吸收四个分组，原先是标量循环。在 Zen 4 上
 通过 AVX2 路径测量：ChaCha20-Poly1305 加密 16–64 KiB +20%，1 KiB +7%（docs/BENCHMARKS.zh-CN.md）。有 IFMA 的 CPU
 与 512 字节以下的消息不变。公开 API 无变化。
@@ -2069,9 +2089,9 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
   `/{owner}/{repo}.git`（ADR-007）。匹配为线性、段内不回溯；优先级为 静态 > 部分段 > 正则 > 参数 > 通配。
   查找仍不分配内存。含 `{…}` 组的静态段现在是模式，花括号不配对时注册即 panic。
 
-无公共 API 变化（`api/only-http.txt` 不变）。
+无公共 API 变化（`api/akio-http.txt` 不变）。
 
-### 新增：TLS record_size_limit、证书压缩与 OCSP stapling（only-tls）
+### 新增：TLS record_size_limit、证书压缩与 OCSP stapling（akio-tls）
 
 增量配置（ADR-008，docs/adr/008-tls-extensions.zh-CN.md）：
 
@@ -2079,15 +2099,15 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
   `ClientConfigBuilder::record_size_limit`（64 到 16385，默认 16385）。客户端总是发送自己的值，服务端在客户端
   发送时回以自己的值；之后双方写出的受保护记录按对方的限制切分，收到超过自己限制的记录报 `record_overflow`。
   早期数据遵循签发票据的那条连接上的限制。QUIC 中不使用。对端限制小于 16 KiB 时拒绝（实验性的）内核 TLS 卸载。
-- **证书压缩**（RFC 8879，TLS 1.3，zlib 由 only-deflate 提供；没有自研 brotli/zstd，因此只提供 zlib）：两个构建器
+- **证书压缩**（RFC 8879，TLS 1.3，zlib 由 akio-deflate 提供；没有自研 brotli/zstd，因此只提供 zlib）：两个构建器
   上的 `certificate_compression(bool)`，**服务端默认开启**（证书链只压缩一次并复用，每次握手无额外开销），
   **客户端默认关闭**（解压收到的证书链约需 1–2 µs，约为内存中握手的 1%）。服务端的 CertificateRequest 提供压缩时
   客户端证书也会压缩。收到的消息最多解压到 128 KiB，长度必须与声明的一致。
 - **OCSP stapling**：`ServerConfigBuilder::ocsp_response(der)` / `sni_ocsp_response(name, der)` 为请求它的客户端
   装订 DER 响应（TLS 1.3 放在 CertificateEntry 中，TLS 1.2 用 CertificateStatus；会话恢复时不发送）；
   `ClientConfigBuilder::ocsp_stapling(true)` 请求响应，新增的 `TlsInfo::ocsp_response` 保存收到的响应。**不做验证**
-  （only-x509 尚无 OCSP）；服务端只检查配置的值在结构上是成功的 `OCSPResponse`。
-- ClientHello 现在带有 record_size_limit（6 字节）。`only-tls` 依赖 `only-deflate`。
+  （akio-x509 尚无 OCSP）；服务端只检查配置的值在结构上是成功的 `OCSPResponse`。
+- ClientHello 现在带有 record_size_limit（6 字节）。`akio-tls` 依赖 `akio-deflate`。
 - 修复：长度不对的 TLS 1.3 KeyUpdate 报 `decode_error`（原为 `illegal_parameter`；tlsfuzzer 的
   “large KeyUpdate message” 探测会随机失败）。
 - 测试：带扩展的内存矩阵（两个版本、各密钥类型、双向低至 64 字节的限制、任一方关闭压缩、带 SNI 与会话恢复的
@@ -2098,17 +2118,17 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
 
 ### 新增：可插拔的指标收集器（ADR-015）
 
-应用与协议指标出现在 engine 的 `/metrics` 端点上，不依赖第三方 crate。新模块 `only::metrics`
-（`only_core::metrics`）：`Collector` trait、`Families` 快照（Prometheus 文本 0.0.4 或 JSON，或通过
+应用与协议指标出现在 engine 的 `/metrics` 端点上，不依赖第三方 crate。新模块 `akio::metrics`
+（`akio_core::metrics`）：`Collector` trait、`Families` 快照（Prometheus 文本 0.0.4 或 JSON，或通过
 `iter` / `get` 读取）、度量工具 `Counter`、`Gauge`、`Histogram` 与具名工具的 `Registry`、`fn_collector`、
 `DEFAULT_BUCKETS`。`Telemetry::register_collector(collector, labels)` / `unregister_collector`、
 `Telemetry::collect` 与 `Telemetry::render_prometheus`（先 engine 序列，再收集器），`observe::metrics_handler`
-现在输出后者。现成的收集器：only-http `HttpMetrics`（新增族 `only_http_requests_by_version_total{version}`、
-字段 `HttpSnapshot::by_version`、`observe::VERSION_LABELS`）、only-quic `QuicServer`（`only_quic_*`：连接、
-两个方向的数据报与字节、发送与丢失的包、拥塞事件；总数包含已关闭的连接）以及 only-tls `Tls::stats()` →
-`TlsStats` / `TlsCounts`（`only_tls_handshakes_total{side, version}`、`only_tls_resumed_total`、
-`only_tls_early_data_total{outcome}`）。只有新增 API；engine 自身的序列不变。示例：
-`cargo run -p only-http --example guide-metrics`。
+现在输出后者。现成的收集器：akio-http `HttpMetrics`（新增族 `akio_http_requests_by_version_total{version}`、
+字段 `HttpSnapshot::by_version`、`observe::VERSION_LABELS`）、akio-quic `QuicServer`（`akio_quic_*`：连接、
+两个方向的数据报与字节、发送与丢失的包、拥塞事件；总数包含已关闭的连接）以及 akio-tls `Tls::stats()` →
+`TlsStats` / `TlsCounts`（`akio_tls_handshakes_total{side, version}`、`akio_tls_resumed_total`、
+`akio_tls_early_data_total{outcome}`）。只有新增 API；engine 自身的序列不变。示例：
+`cargo run -p akio-http --example guide-metrics`。
 
 在安静主机上测量了 engine 遥测的开销（同一轮 A/B，docs/BENCHMARKS.zh-CN.md“遥测开销”）：HTTP/1.1
 上没有可测的开销（关闭回调计时或把计数器编译掉为 0.998–1.006×）；echo 各行在噪声之内。带新版本计数的
@@ -2116,7 +2136,7 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
 
 ### 变更：AVX-512 上短消息的 ChaCha20-Poly1305 更快
 
-在具备 AVX-512 的 x86_64 上，only-crypto 的 ChaCha20 处理四个分组时每个寄存器存放每个分组的一行（用于消息开头与
+在具备 AVX-512 的 x86_64 上，akio-crypto 的 ChaCha20 处理四个分组时每个寄存器存放每个分组的一行（用于消息开头与
 短尾部），不完整的最后一组在字节掩码下直接经内核处理而不经缓冲区，并按实测内核耗时为开头选四个或八个分组；
 AEAD 的 Poly1305 不再经过流式缓冲区。Zen 4，同批 A/B：加密 64 B 408 → 481 MB/s（ring 的 0.83 倍 → 0.98 倍），
 1 KiB 1.00 倍 → 1.08 倍，1400 B 0.99 倍 → 1.21 倍；解密 64 B 0.76 倍 → 0.85 倍；1 KiB 的 TLS 1.3
@@ -2131,14 +2151,14 @@ ChaCha20-Poly1305 记录相对 rustls + ring 1.09 倍 → 1.15 倍（docs/BENCHM
 A/B 对比：RSA-2048 / 3072 / 4096 PKCS#1 验签快 2.51 / 3.00 / 3.39 倍（ring 的 1.22 / 1.10 / 1.09 倍 → 3.07 /
 3.30 / 3.70 倍），含密钥解析的验签快 2.31 / 2.76 / 3.04 倍（1.02 / 0.95 / 0.95 倍 → 2.35 / 2.64 / 2.90 倍），
 签名快 2–4%；使用 RSA-2048 证书的 TLS 1.3 握手为 rustls + ring 的 1.67 倍 → 1.82 倍（docs/BENCHMARKS.zh-CN.md）。
-没有 IFMA 时（以及 `ONLY_CRYPTO_PORTABLE=1`）更少的乘积与更快的除法同样有效：2048 位可移植验签为 ring 的
+没有 IFMA 时（以及 `AKIO_CRYPTO_PORTABLE=1`）更少的乘积与更快的除法同样有效：2048 位可移植验签为 ring 的
 0.59 倍 → 0.70 倍。私钥模幂及其常数时间性质不变。没有公共 API 变化。
 
 ### 变更：每个 HTTP/3 请求的内存分配更少
 
-`quic-bench h3` 两端合计，一个 HTTP/3 请求及其响应的分配次数从 21.6 降到 8.6：only-quic 把流数据交给应用时
-不再经过临时向量；only-h3 把较小的响应头与请求头写进 only-quic 的每线程池化缓冲区（隐藏的 `Bytes::pooled`，
-不是公共 API），并原地加宽 HEADERS 帧的长度字段；only-http 的 `Context` 自己持有请求，直到 `Detached` 或
+`quic-bench h3` 两端合计，一个 HTTP/3 请求及其响应的分配次数从 21.6 降到 8.6：akio-quic 把流数据交给应用时
+不再经过临时向量；akio-h3 把较小的响应头与请求头写进 akio-quic 的每线程池化缓冲区（隐藏的 `Bytes::pooled`，
+不是公共 API），并原地加宽 HEADERS 帧的长度字段；akio-http 的 `Context` 自己持有请求，直到 `Detached` 或
 WebSocket 升级需要共享它，`Headers` 内联保存前两个字段的位置（仍是 48 字节）。QPACK 写 `:status`、
 `content-length` 与 date 行（每秒编码一次）时不再查静态表，请求头只做一次 UTF-8 检查。Zen 4，空闲机器上同一次
 运行的 A/B 对比：HTTP/3 GET，单连接，64 个并发 820,741 → 883,127 请求/秒（1.08 倍）；HTTP/1.1 与 h2c 在噪声
@@ -2151,33 +2171,33 @@ WebSocket 升级需要共享它，`Headers` 内联保存前两个字段的位置
 `EngineBuilder::build`（或 `Engine::set_threads`）的线程上创建，于是探测用的 ring 或之后引擎的 ring
 销毁时，该线程可能被打断：内核不会重启的阻塞调用（例如带超时的 socket 读）随即以 `EINTR` 失败，
 而这发生在构建之后很久、与 io_uring 毫无关系的代码里。现在 ring 的创建与探测都在一个短命的专用线程上进行，
-该线程退出时内核即解除挂接；每个 I/O 线程仍在启用自己的 ring 时挂上。这正是 only-socks 的
+该线程退出时内核即解除挂接；每个 I/O 线程仍在启用自己的 ring 时挂上。这正是 akio-socks 的
 `udp_blocking_and_on_the_engine` 在 io_uring 下偶发失败的原因（负载下约每 100 次 3 次）：
 中继各跳都已送达数据报，阻塞的 `recv_from` 却返回了 `EINTR`。新测试
-`uring_engine_teardown_does_not_interrupt_the_building_thread`（only 的 `engine` 测试）在修复前每次都失败。
+`uring_engine_teardown_does_not_interrupt_the_building_thread`（akio 的 `engine` 测试）在修复前每次都失败。
 公共 API 不变；I/O 路径不变。
 
 ### 修复：QUIC 客户端的 0-RTT 不再先于 Initial 发出
 
-`only_quic::dial` 在引擎线程上打开客户端的 UDP 套接字，在此之前发送的数据报暂存于积压队列。
+`akio_quic::dial` 在引擎线程上打开客户端的 UDP 套接字，在此之前发送的数据报暂存于积压队列。
 原先套接字先登记、积压后发送，其间别的线程发送的数据（例如以 0-RTT 恢复的 `H3Client::dial`
 之后立即发出的请求）会让 0-RTT 包先于 Initial 上线。服务端此时尚无 0-RTT 密钥，丢弃这些包，
 请求在握手完成后以 1-RTT 重发、不带早期数据标记，尽管服务端已接受 0-RTT。恰在清空积压时入队的
 数据报也可能滞留不发。现在在积压队列的锁内先清空积压、再登记套接字（迁移探测的套接字同样处理）。
-这正是 only-h3 `zero_rtt` 测试偶发失败的原因（负载下约百分之二），该测试现在用中继扣住服务端的
+这正是 akio-h3 `zero_rtt` 测试偶发失败的原因（负载下约百分之二），该测试现在用中继扣住服务端的
 握手报文直到请求发出，并等待会话票据而不是休眠。公共 API 无变化。
 
-### 修复：`only_bittorrent::Client::close` 等待其线程退出
+### 修复：`akio_bittorrent::Client::close` 等待其线程退出
 
 TSan 的首次运行（见下）报告了一处线程泄漏：`close` 关闭引擎与磁盘线程池后立即返回，因此之后 I/O 线程回调与 `Storage` 调用仍可能执行，而丢弃 client 会使这些线程脱离（detach）。现在 `close` 在引擎的 I/O 线程、磁盘线程池与维护线程都退出后才返回，因此不能在 client 自己的线程中调用（例如在 `Storage` 方法内）。
 
 ### 修复：HTTP 客户端不再拖住引擎的优雅关闭
 
-`only_http::client::Client` 在引擎优雅关闭期间仍把空闲的 keep-alive 连接留在连接池中，因此只要客户端发过请求，`Engine::wait` 就要等满整个 `Config::shutdown_timeout`（默认 10 秒）。现在空闲连接在关闭开始时立即关闭；有请求在途的连接先交付响应，然后关闭而不再放回连接池。
+`akio_http::client::Client` 在引擎优雅关闭期间仍把空闲的 keep-alive 连接留在连接池中，因此只要客户端发过请求，`Engine::wait` 就要等满整个 `Config::shutdown_timeout`（默认 10 秒）。现在空闲连接在关闭开始时立即关闭；有请求在途的连接先交付响应，然后关闭而不再放回连接池。
 
 ### 新增：AddressSanitizer 与 ThreadSanitizer 运行（`tools/sanitizers/`）
 
-2026-11-16 首次用 ASan（含 LeakSanitizer）与 TSan 运行工作区测试：所有 crate 在 Linux arm64 Docker 中覆盖 epoll 与 io_uring，含 unsafe 代码的 crate 与引擎后端在 x86_64 上运行（包括 AVX-512/IFMA/VAES/BMI2 汇编路径）。没有内存错误、内存泄漏或数据竞争；上述线程泄漏是唯一的报告。`tools/sanitizers/run.sh` 按 crate 运行，可在 Docker 中或原生运行；重型 CI 任务 `sanitizers` 现在用它覆盖整个工作区，而不是原先的八个 crate。其中的 `rustc-wrapper.sh` 让 `compiler_builtins` 不插桩构建，否则在 aarch64 上使用 `-Zbuild-std` 时所有插桩二进制都会在启动时崩溃。为 TSan 调整了两个测试：`only-sys` 的 `signal_to_pipe` 改为在等待的线程上触发信号（信号若落在阻塞于裸 futex 等待的线程上，TSan 永远不会执行其处理函数），only-ws 的客户端测试按 `ONLY_TEST_TIMEOUT_SCALE` 缩放其 10 秒期限。
+2026-11-16 首次用 ASan（含 LeakSanitizer）与 TSan 运行工作区测试：所有 crate 在 Linux arm64 Docker 中覆盖 epoll 与 io_uring，含 unsafe 代码的 crate 与引擎后端在 x86_64 上运行（包括 AVX-512/IFMA/VAES/BMI2 汇编路径）。没有内存错误、内存泄漏或数据竞争；上述线程泄漏是唯一的报告。`tools/sanitizers/run.sh` 按 crate 运行，可在 Docker 中或原生运行；重型 CI 任务 `sanitizers` 现在用它覆盖整个工作区，而不是原先的八个 crate。其中的 `rustc-wrapper.sh` 让 `compiler_builtins` 不插桩构建，否则在 aarch64 上使用 `-Zbuild-std` 时所有插桩二进制都会在启动时崩溃。为 TSan 调整了两个测试：`akio-sys` 的 `signal_to_pipe` 改为在等待的线程上触发信号（信号若落在阻塞于裸 futex 等待的线程上，TSan 永远不会执行其处理函数），akio-ws 的客户端测试按 `AKIO_TEST_TIMEOUT_SCALE` 缩放其 10 秒期限。
 
 ### 变更：RSA 签名在同一个 AVX-512 IFMA 循环中计算 CRT 两半
 
@@ -2190,18 +2210,18 @@ RSA-4096 753 → 870（2.55 倍）；使用 RSA-2048 证书的 TLS 1.3 握手为
 
 ### 变更：TLS 记录加密和解密前不再预先清零输出
 
-TLS 记录层在 AEAD 写入记录的密文或明文之前不再清零那段空间：only-crypto 的 AES-GCM 与
+TLS 记录层在 AEAD 写入记录的密文或明文之前不再清零那段空间：akio-crypto 的 AES-GCM 与
 ChaCha20-Poly1305 新增隐藏的 `encrypt_append` / `decrypt_append`，直接写入 `Vec<u8>` 的空闲容量（经由一个
-很小的 `unsafe` 模块 `only_crypto::fill`，只有每个字节都写入后才扩展向量；打开失败时不追加任何内容，并把已写
-的字节清零）。only-tls 仍是 `#![forbid(unsafe_code)]`。Zen 4 上的 TLS 1.3 记录（加密 + 解密，同一次运行
+很小的 `unsafe` 模块 `akio_crypto::fill`，只有每个字节都写入后才扩展向量；打开失败时不追加任何内容，并把已写
+的字节清零）。akio-tls 仍是 `#![forbid(unsafe_code)]`。Zen 4 上的 TLS 1.3 记录（加密 + 解密，同一次运行
 A/B）：AES-128-GCM +6.9–8.3%，AES-256-GCM +7.4–8.7%，ChaCha20-Poly1305 +3.3–6.4%（docs/BENCHMARKS.zh-CN.md）。
 公开 API 不变。
 
 ### 新增：供应用自建转发使用的 `Conn::set_relayed`
 
 基于 `hold_reads` / `on_drain` 自建的转发现在可以用 `Conn::set_relayed(true)` 跳过引擎按写水位暂停
-读取的行为（`CONNECT` / 协议升级后的转发用 `only_http::raw::RawConn::set_relayed`）。否则，转发到
-只有能写时才读的对端会死锁：与 only-socks 内部已修复的问题相同，现在应用代码也能避免。立即生效；
+读取的行为（`CONNECT` / 协议升级后的转发用 `akio_http::raw::RawConn::set_relayed`）。否则，转发到
+只有能写时才读的对端会死锁：与 akio-socks 内部已修复的问题相同，现在应用代码也能避免。立即生效；
 `Config::max_queued_bytes` 仍然适用。公开 API 为增量（快照已更新）。
 
 ### 更名：项目现在叫 `only`
@@ -2231,14 +2251,14 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
   −1.3% 到 +0.2%；注册 ring fd 为 −3.6% 到 +0.5%；注册文件在引擎中没有可节省的东西（稳态下每个请求
   不提交任何条目）。基于 ring 的发送（`IORING_OP_SEND`）在裸 ring 上 +1–4%、每请求 CPU 少 2–6%，但需要
   重新设计共用的写路径（写来自任意线程），留作后续工作。
-- 新的测量工具：only-uring 中被忽略的 `eval_server` 测试（`src/eval.rs`，直接在 ring 上运行的最小
+- 新的测量工具：akio-uring 中被忽略的 `eval_server` 测试（`src/eval.rs`，直接在 ring 上运行的最小
   HTTP/1.1 应答程序：`write` / `SEND` / `SEND_ZC`，可选 direct accept 与注册文件）以及
   `tools/bench/uring-eval.sh`。它用到的额外 io_uring 绑定（`SEND`、`SEND_ZC`、direct accept、固定文件
   close、稀疏 `REGISTER_FILES`、`MSG_RING` 与 `REGISTER_SEND_MSG_RING`）只在测试中编译。公共 API 不变。
 
 ### 新增：TLS 1.3 早期数据与 QUIC 0-RTT（需显式开启，带防重放）
 
-- **`only-tls`**：早期数据（RFC 8446 第 4.2.10 节），双方默认关闭。
+- **`akio-tls`**：早期数据（RFC 8446 第 4.2.10 节），双方默认关闭。
   `ServerConfigBuilder::early_data(max_bytes)` 签发带 `max_early_data_size` 的票据，并在票据的第一个
   PSK、密码套件、ALPN 协议与 SNI 名都一致时接受早期数据（HelloRetryRequest 之后绝不接受；超量为
   `unexpected_message`）；它在握手完成前被读取，以 EndOfEarlyData 结束。`ClientConfigBuilder::early_data(true)`
@@ -2249,13 +2269,13 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
   `ServerConfig` 一份被接受 ClientHello 的 PSK binder 记录，保留 20 秒、上限 100,000 条（第 8.2 节）：
   重放的 ClientHello 其早期数据被拒绝，记录满时拒绝早期数据直到条目过期。不覆盖共享票据的多个进程或
   机器（已在文档中说明）。
-- **`only-quic`**：0-RTT（RFC 9001 第 4.6 节），`ServerConfig::zero_rtt` / `ClientConfig::zero_rtt`
+- **`akio-quic`**：0-RTT（RFC 9001 第 4.6 节），`ServerConfig::zero_rtt` / `ClientConfig::zero_rtt`
   （默认关闭）。恢复会话的客户端从记住的传输参数起步（RFC 9000 第 7.4.1 节），`dial` 后立即打开流并以
   0-RTT 包发送（v1 与 v2），合并在 Initial 之后。服务端只在限额与签发票据时相同的情况下接受 0-RTT，
   以 0.5-RTT 应答；客户端重发被拒或丢失的 0-RTT 数据（Retry 之后以 0-RTT，否则以 1-RTT）。新增
   `Connection::early_data` 与 `Connection::is_early(stream)`。
-- **HTTP**：only-h3 给以 0-RTT 到达的请求加上 `Early-Data: 1`（RFC 8470），配置开启时 `H3Client` 以 0-RTT
-  发送请求；TLS 上的 only-http 标记作为早期数据到达的 HTTP/1.1 请求（以及以早期数据开始的连接上的每个
+- **HTTP**：akio-h3 给以 0-RTT 到达的请求加上 `Early-Data: 1`（RFC 8470），配置开启时 `H3Client` 以 0-RTT
+  发送请求；TLS 上的 akio-http 标记作为早期数据到达的 HTTP/1.1 请求（以及以早期数据开始的连接上的每个
   HTTP/2 请求）。处理函数对不能安全重复的请求回 `425 Too Early`。
 - 测试：TLS 状态机（接受、拒绝、HelloRetryRequest、重放、过期的票据年龄、ALPN/SNI 绑定、
   `max_early_data` 上限），模拟网络上的 QUIC（接受、拒绝、0-RTT 包丢失、Retry、重放的首批包、v2），
@@ -2267,15 +2287,15 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 - 安全：早期数据与 0-RTT 没有前向保密，并且可能被单个服务端的记录之外的方式重放；README 与指南说明了
   何时（不）应开启。
 
-### 新增：`only-quic` 的 ECN、BBR、客户端迁移、preferred_address 与 QUIC v2
+### 新增：`akio-quic` 的 ECN、BBR、客户端迁移、preferred_address 与 QUIC v2
 
 - **ECN**（RFC 9000 第 13.4 节、RFC 9002 第 7.1 节），`TransportConfig::ecn`（默认开启）：Linux 上
   以 ECT(0) 发送，在 ACK_ECN 帧中报告收到的码点；用十个包的测试期和对端计数验证路径，CE 标记视为
   拥塞事件，清除、改写或丢弃带标记包的路径回退为不带标记发送。新增
   `ConnectionStats::ecn_capable` / `ecn_ce_events`。UDP 层逐个数据报传递码点：接收时用
   `IP_RECVTOS` / `IPV6_RECVTCLASS`，发送时每条 `sendmmsg` 消息带一个 `IP_TOS` / `IPV6_TCLASS`
-  控制消息（`only_sys::enable_ecn`、`ecn_available`、`RecvBatch::ecn`、`Batch::push_ecn`；
-  `ONLY_UDP_ECN=0` 关闭）。
+  控制消息（`akio_sys::enable_ecn`、`ecn_available`、`RecvBatch::ecn`、`Batch::push_ecn`；
+  `AKIO_UDP_ECN=0` 关闭）。
 - **BBR**：`Congestion::Bbr` 不再运行 CUBIC，而是基于投递速率采样的 BBRv1 模型与状态机，加上
   BBRv2/v3 对丢包或 CE 标记超过 2% 的轮次的上限。在测试机上用网络命名空间加 netem（100 Mbit/s、
   40 ms RTT、双向各回显 40 MB）：1% 丢包时 73 对 CUBIC 的 5 Mbit/s，60 个包的缓冲时 75 对 36 Mbit/s，
@@ -2296,28 +2316,28 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 - 未完成：0-RTT。
 
 环回基准上的开销（`quic-bench`，测试机，CPU 2–5，与合并基点交替五轮取中位数）：bulk 18,704 →
-18,288 Mbit/s（−2.2%；`ONLY_UDP_ECN=0` 时 −1.5%），HTTP/3 839,148 → 824,949 req/s（−1.7%；
+18,288 Mbit/s（−2.2%；`AKIO_UDP_ECN=0` 时 −1.5%），HTTP/3 839,148 → 824,949 req/s（−1.7%；
 −1.0%），完整握手 9,725 → 9,615/s（−1.1%；−0.8%）。ECN 的部分来自每个数据报的控制消息与 ACK_ECN
 计数。
 
 ### 评估：内核 TLS 卸载（未采用，实验性 feature）
 
-- 在 Linux 7.0 / Ryzen 7 7800X3D 上用 TLS 上的 HTTP/1.1 测量了握手后把 only-tls 的记录密钥交给 Linux
-  内核（kTLS）的方案（`tools/bench/ktls.sh`）：内核的软件 TLS 在 1 KiB 响应时为 only-tls 自己记录层的
-  0.83 倍，16 KiB 时 0.65 倍，256 KiB 时 0.40 倍，用 `sendfile` 发送 10 MB 文件对比 only-tls 的 `pread`
+- 在 Linux 7.0 / Ryzen 7 7800X3D 上用 TLS 上的 HTTP/1.1 测量了握手后把 akio-tls 的记录密钥交给 Linux
+  内核（kTLS）的方案（`tools/bench/ktls.sh`）：内核的软件 TLS 在 1 KiB 响应时为 akio-tls 自己记录层的
+  0.83 倍，16 KiB 时 0.65 倍，256 KiB 时 0.40 倍，用 `sendfile` 发送 10 MB 文件对比 akio-tls 的 `pread`
   加加密为 0.48 倍，每字节服务器 CPU 为 1.3 到 2.5 倍（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）
   评估”）。它没有接入 `Tls` 或引擎。
-- 卸载代码保留下来以便重新测量，放在 `only-tls` 新增的**实验性** feature `experimental-ktls` 之后（默认
-  关闭，不在 semver 承诺之内，无公共 API）：阻塞测试流（`only_tls::stream`，隐藏）可在握手后卸载
+- 卸载代码保留下来以便重新测量，放在 `akio-tls` 新增的**实验性** feature `experimental-ktls` 之后（默认
+  关闭，不在 semver 承诺之内，无公共 API）：阻塞测试流（`akio_tls::stream`，隐藏）可在握手后卸载
   （TLS 1.3 与 1.2，AES-128/256-GCM 与 ChaCha20-Poly1305，告警、close_notify、NewSessionTicket，以及
   Linux 6.14+ 上的双向 KeyUpdate，回退到用户态），并配有 `ktls-bench` 示例、`tls-interop --ktls` /
-  `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh`（对 OpenSSL 与 Go 107/107 通过）以及
-  `crates/only-tls/tests/ktls.rs`（没有 `tls` 内核模块时跳过）。`only-sys` 新增隐藏的 `ktls` 模块
+  `AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh`（对 OpenSSL 与 Go 107/107 通过）以及
+  `crates/akio-tls/tests/ktls.rs`（没有 `tls` 内核模块时跳过）。`akio-sys` 新增隐藏的 `ktls` 模块
   （`TCP_ULP`、`SOL_TLS`、记录类型 cmsg），`linux/tls.h` 的结构体在布局测试中与 `libc` 对照。
 - 文档：README、book 的 crate 列表与 fib 迁移指南中过时的“底层为 rustls”说法，以及 ROADMAP 的 TLS 行，
   已改为实际情况（自研 TLS 1.3 / 1.2）。
 
-### 性能：`only-crypto` 中基于 VAES-AVX2 的 AES-GCM，AVX-512 内核内的掩码尾部
+### 性能：`akio-crypto` 中基于 VAES-AVX2 的 AES-GCM，AVX-512 内核内的掩码尾部
 
 公开 API 不变（新增仅供测试与基准测试使用的 `#[doc(hidden)]` `AesGcm::with_cipher_avx2` 与 `AesGcm::kernel`）。
 
@@ -2330,19 +2350,19 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
   每次迭代用 8 个 256 位寄存器处理 16 个分组，每组一次 GHASH 归约，处理完整的 256 字节组（其余部分走 128 位
   路径）。在关闭 AVX-512 内核的 Zen 4 上测得（没有 Zen 3 可用）：为这些 CPU 之前所用 128 位内核的 1.55–2.35 倍
   （AES-128 加密 16 KiB 6,310 → 12,671 MB/s）。
-- `only-tls` 的 TLS 1.3 记录随之提升：AES-128-GCM 1 KiB 为 rustls + ring 的 1.51 倍 → 1.58 倍，16 KiB 1.56 倍 →
+- `akio-tls` 的 TLS 1.3 记录随之提升：AES-128-GCM 1 KiB 为 rustls + ring 的 1.51 倍 → 1.58 倍，16 KiB 1.56 倍 →
   1.60 倍。记录层在 AEAD 写入之前仍先把输出清零：把明文复制进来再原地加密在 16 KiB 上慢 6%，复用缓冲区只是把
   memset 换成复制，而跳过清零（16 KiB 快 10%）需要在 `#![forbid(unsafe_code)]` 的 crate 中使用 `unsafe`，因此
   没有这样做（docs/BENCHMARKS.zh-CN.md）。
 - 测试：每个内核（AVX-512、AVX2、128 位、可移植）在 0..=600 的每个长度、若干大长度、0..=300 及 512 以上的每种
   AAD 长度上互相比较，覆盖未对齐、原地与非原地，并跑 CAVP 与 Wycheproof 向量；`crypto_aead` 模糊测试目标也比较
-  AVX2 内核。在 Zen 4 上原生运行，也设置 `ONLY_CRYPTO_PORTABLE=1` 运行。
+  AVX2 内核。在 Zen 4 上原生运行，也设置 `AKIO_CRYPTO_PORTABLE=1` 运行。
 - `unsafe`：`gcm::hw` / `gcm::hw::vaes` 增加 5 个块与 1 个 `unsafe fn`（AVX2 内核的两个 `asm!` 块、整条消息的
   调用），见 docs/unsafe-review.zh-CN.md。Miri 永远不会执行到 `asm!`。
 
 ### 修复：io_uring 在读取暂停后仍调用 `on_data`
 
-- `only-uring`：连接的输出队列达到 `Config::write_high_watermark`，或处理器调用了
+- `akio-uring`：连接的输出队列达到 `Config::write_high_watermark`，或处理器调用了
   `hold_reads(true)` 后，后端会取消多次接收（multishot recv），但在取消生效前已到达的完成事件（机器
   快、对端持续灌数据时可达十几个 16 KiB 的读取）仍会交给 `on_data`。echo 类处理器于是越过水位线一直
   排队到 `max_queued_bytes`，得到 `Error::Overloaded`；`hold_reads` 也没有真正暂停读取。这使得在
@@ -2352,7 +2372,7 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 ### 修复：SOCKS 与 HTTP CONNECT 隧道在背压下可能卡死
 
-- `only-socks`：隧道（SOCKS5/4/4a 或 HTTP `CONNECT`）在转发大量数据时可能永久停住。引擎的写背压
+- `akio-socks`：隧道（SOCKS5/4/4a 或 HTTP `CONNECT`）在转发大量数据时可能永久停住。引擎的写背压
   （`Config::write_high_watermark`）在上游连接有排队的客户端数据时会暂停读取该上游，但这些读取的数据
   是发往客户端的，并不进入这个队列。上游如果在自己的写被阻塞时不读（echo 服务器、大多数请求/响应式
   服务器），就会等代理，而代理也在等它。表现为负载较高时 `socks5_ipv4_domain_and_backpressure` 偶尔
@@ -2360,28 +2380,28 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
   转发自身的暂停/恢复来调节。各后端（epoll、kqueue、io_uring、DPDK）都遵循新增的隐藏方法
   `ConnInner::set_relayed`。公共 API 不变。
 
-### 性能：`only-h3` 的 HTTP/3 请求处理，`only-quic` 中带密钥的快速哈希
+### 性能：`akio-h3` 的 HTTP/3 请求处理，`akio-quic` 中带密钥的快速哈希
 
 单连接 64 个请求在途的 HTTP/3 GET 从 429,038 升到 838,721 请求/秒（1.95 倍，交替运行七轮取中位数；
 AMD Ryzen 7 7800X3D，回环，CPU 2–5）；QUIC 批量传输 +5%，握手持平。profile 中内存分配器从 31.8% 降到
 11.2% 的采样，SipHash 从 7.3% 降到 0.1%。API 不变；与 quic-go 和 fib 双向互通测试通过。
 
-- only-h3：请求与响应的帧直接在收到的流数据上原地读取（只缓冲末尾不完整的帧）；字段段解码到一个复用的
+- akio-h3：请求与响应的帧直接在收到的流数据上原地读取（只缓冲末尾不完整的帧）；字段段解码到一个复用的
   扁平缓冲区，一次性做 UTF-8 校验，再复制一次进请求或响应的 `Headers`；以前每个字段要两个 `Vec`，
   每个名字和值各一个 `String`，外加第二份头部列表。
-- only-h3：HEADERS 帧直接用 QPACK 编码进输出缓冲区，`:status`、`date`（每线程每秒格式化一次）和
+- akio-h3：HEADERS 帧直接用 QPACK 编码进输出缓冲区，`:status`、`date`（每线程每秒格式化一次）和
   `content-length` 直接写在那里，不再先加进响应头；静态表引用按名字长度查找，不再用两个 SipHash
   映射；响应的 HEADERS、不超过 16 KiB 的响应体和 trailer 一次写给 QUIC（更大的响应体随后发送，不复制）。
-- only-h3：一次收全的请求不进入流表就读完；流表改用乘法折叠哈希（大小受我们授予的流数量上限约束）。
-- only-quic：endpoint 的连接 ID 表、连接表与客户端 socket 表（按对端地址）改用每张表各取新随机密钥的
+- akio-h3：一次收全的请求不进入流表就读完；流表改用乘法折叠哈希（大小受我们授予的流数量上限约束）。
+- akio-quic：endpoint 的连接 ID 表、连接表与客户端 socket 表（按对端地址）改用每张表各取新随机密钥的
   哈希（64×64→128 位乘法折叠），不再用 SipHash；客户端可以选择第一个 Initial 的连接 ID，密钥使得
   无法预先算出相互碰撞的 ID。连接 ID 只对实际使用的字节做哈希。单看这一项，批量传输 +3%（每个数据报
   查一次表）；HTTP/3 一个数据报承载许多请求，几乎看不出差别。
-- only-quic：按序到达的流确认直接前移发送缓冲区的头部，不再经过已确认区间树（每次确认分配并释放一个
+- akio-quic：按序到达的流确认直接前移发送缓冲区的头部，不再经过已确认区间树（每次确认分配并释放一个
   节点）；流发送缓冲区的第一块数据内联保存，只写一次的流不需要分配队列。
-- only-http：`Response::text` 与 `Response::with_body` 一次分配好头部存储，不再逐个字段扩容。
+- akio-http：`Response::text` 与 `Response::with_body` 一次分配好头部存储，不再逐个字段扩容。
 
-### 性能：`only-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
+### 性能：`akio-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
 
 在 x86_64 上，ChaCha20-Poly1305 加密 16 KiB 为 4,597 MB/s（之前 1,752，ring 的 1.30 倍），1400 B 为
 2,541（1,070，ring 的 0.96 倍），64 B 为 412（283，0.83 倍）；使用 TLS_CHACHA20_POLY1305_SHA256 的
@@ -2395,14 +2415,14 @@ TLS 1.3 记录在 16 KiB 时从 rustls + ring 的 0.55 倍提升到 1.42 倍，1
   limb 上使用 `vpmadd52luq` / `vpmadd52huq`），经 `Feature::Ifma` 检测；其余情况，以及其他 CPU 与 aarch64
   上，用 2⁶⁴ 进制的标量循环替换 44 位两分组循环（AVX2 路径上 16 KiB 快 1.3 倍）。
 - `ChaCha20Poly1305::encrypt_detached_from` / `decrypt_detached_from`（`#[doc(hidden)]`，与 AES-GCM 的相同）：
-  only-tls 非原地加解密 ChaCha20-Poly1305 记录，不再先复制。`new_avx2` / `new_portable`（`#[doc(hidden)]`）
+  akio-tls 非原地加解密 ChaCha20-Poly1305 记录，不再先复制。`new_avx2` / `new_portable`（`#[doc(hidden)]`）
   把密钥固定在较窄的路径上，供测试、`crypto_aead` 模糊测试目标与 `examples/chacha-sizes.rs`（按长度与 ring
   对比）使用。
 - 正确性：0..=600 的每个长度与若干大长度经过 AVX-512 / IFMA、AVX2 与可移植三条路径，覆盖未对齐、原地与
   非原地、伪造标签、接近回绕的计数器，Poly1305 覆盖全 1 分组与极端的 `r` / `s`，在 Zen 4 上分别在设置与不设置
-  `ONLY_CRYPTO_PORTABLE=1` 时原生运行。`unsafe`：+6 个块，+2 个 `unsafe fn`（docs/unsafe-review.zh-CN.md）。
+  `AKIO_CRYPTO_PORTABLE=1` 时原生运行。`unsafe`：+6 个块，+2 个 `unsafe fn`（docs/unsafe-review.zh-CN.md）。
 
-### 新增：`only-crypto` 中 P-256 与 X25519 的 aarch64 汇编（尚未做性能测试）
+### 新增：`akio-crypto` 中 P-256 与 X25519 的 aarch64 汇编（尚未做性能测试）
 
 aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内联汇编（`ec::hw_aarch64`、
 `curve25519::hw_aarch64`），与 x86_64 的 BMI2 + ADX 代码对应；API 不变。
@@ -2415,14 +2435,14 @@ aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内
 - X25519：阶梯的域运算使用四个 64 位 limb（每次乘积 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个
   128 位乘积），用 `CSEL` 按 `2²⁵⁶ ≡ 38` 折叠，交换用掩码。
 - 所有 ARMv8.0 CPU 都有这些指令：aarch64 上 `hardware_features()` 报告 `umulh`；
-  `ONLY_CRYPTO_PORTABLE=1` / `set_portable(true)` 切回可移植实现，Miri 永不执行这些汇编。
+  `AKIO_CRYPTO_PORTABLE=1` / `set_portable(true)` 切回可移植实现，Miri 永不执行这些汇编。
 - 正确性：在随机值、边界值以及 20,000–50,000 次相互依赖的运算链上与可移植域运算做差分测试，孪生曲线与
   可移植曲线比较（密钥生成、ECDH、签名、验签），RFC 7748 向量（包括 1,000,000 次迭代，`--ignored`）与
   Wycheproof，均在 macOS（Apple 芯片）与 arm64 Linux 上运行。已反汇编秘密路径的 release 代码：汇编中没有
   条件分支，周围代码只有循环计数、公开边界、CPU 特性检查与最后的无穷远点判断。
 - **尚未做性能测试**：设计依据指令数；在实测之前不声称 aarch64 上有任何加速。
 
-### 性能：`only-http` 中 HTTP/2 与流水线 HTTP/1 的热路径
+### 性能：`akio-http` 中 HTTP/2 与流水线 HTTP/1 的热路径
 
 在自研替换完成后重新剖析（DEV-PLAN“性能优化”）；API 不变。
 
@@ -2441,9 +2461,9 @@ aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内
   压测脚本（`tools/bench`，新增 README）在没有 wrk 时用 `h2load --h1` 驱动 HTTP/1.1，并新增了 TLS 上的
   HTTP/2 与多流用例。
 
-### 性能：`only-crypto` 的 CPU 指令加速
+### 性能：`akio-crypto` 的 CPU 指令加速
 
-`only-crypto` 现在在 CPU 支持时使用 CPU 指令（运行时检测），每条路径都以常数时间的可移植实现作为回退
+`akio-crypto` 现在在 CPU 支持时使用 CPU 指令（运行时检测），每条路径都以常数时间的可移植实现作为回退
 （DEV-PLAN“性能优化”）；API 不变。
 
 - x86_64：SHA-1 / SHA-256 使用 SHA-NI，AES-NI CTR 一次 8 个分组，AES-GCM 的 PCLMULQDQ GHASH（每次归约
@@ -2455,14 +2475,14 @@ aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内
   有符号仿射点梳形表以及无需求逆的 Jacobian wNAF 验签；Ed25519 交错 wNAF 验签；Curve25519、NIST 域与 RSA
   的专用平方；定长 RSA Montgomery 乘法；其余求逆使用窗口幂运算。
 - `unsafe` 仍只出现在指令模块（`aes::hw`、`gcm::hw`、`hash::hw`、`crc::hw`、`chacha::hw`）中，每次调用前
-  都经过检测（docs/unsafe-review.zh-CN.md）。`ONLY_CRYPTO_PORTABLE=1` 强制使用可移植实现（测试、基准）；
+  都经过检测（docs/unsafe-review.zh-CN.md）。`AKIO_CRYPTO_PORTABLE=1` 强制使用可移植实现（测试、基准）；
   Miri 运行的也是它。
 - Ryzen 7 7800X3D 单核：SHA-1 3.6 倍、SHA-256 6.5 倍（与 RustCrypto crate 持平），AES-128-GCM
   364 → 6 484 MB/s，CRC-32 2.7 → 20 GB/s，ChaCha20-Poly1305 3 倍，P-256 验签 1.67 倍 / 签名 1.46 倍，Ed25519
   验签 1.49 倍，RSA-2048 签名 1.38 倍；TLS 1.3 握手 1.5 倍，16 KiB AES-GCM 记录 15 倍（分别为 rustls + ring
   的 0.60 倍与 0.64 倍）。表格见 docs/BENCHMARKS.zh-CN.md。
 
-### 性能：更快的 TLS 1.3 握手（`only-crypto` 中的 P-256 与 X25519）
+### 性能：更快的 TLS 1.3 握手（`akio-crypto` 中的 P-256 与 X25519）
 
 握手的性能剖析中曲线运算占 98% 以上；API 不变（`tools/api/public-api.sh` 无变化）。在基准主机上单核、
 内存中与 rustls 0.23 + ring 对比：X25519 完整握手 3,055 → 5,027 次/秒（rustls 的 0.61 倍 → 1.00 倍），
@@ -2490,11 +2510,11 @@ secp256r1 2,306 → 4,552 次/秒（0.45 倍 → 0.89 倍）。
 - 常数时间证据：秘密标量路径的反汇编（x86_64 含汇编，aarch64 为可移植代码）中，条件分支只出现在循环
   计数、公开下标、求逆加法链的公开指数位、CPU 特性检查以及“结果为无穷远点”的判断上（见 `ct.rs`）。
   每个汇编例程都在随机值与边界值上与可移植代码比较，所有已知答案测试都在设置与不设置
-  `ONLY_CRYPTO_PORTABLE=1` 时各跑一遍。
-- `unsafe`：`only-crypto` 新增 13 个 `asm!` 块（`ec::hw` 8 个，`curve25519::hw` 5 个；见
+  `AKIO_CRYPTO_PORTABLE=1` 时各跑一遍。
+- `unsafe`：`akio-crypto` 新增 13 个 `asm!` 块（`ec::hw` 8 个，`curve25519::hw` 5 个；见
   docs/unsafe-review.zh-CN.md）。
 
-### 性能：`only-crypto` 的宽 AES-GCM 与 CRC，TLS 记录非原地加解密
+### 性能：`akio-crypto` 的宽 AES-GCM 与 CRC，TLS 记录非原地加解密
 
 公开 API 不变（只新增 `#[doc(hidden)]` 辅助函数）。
 
@@ -2505,7 +2525,7 @@ secp256r1 2,306 → 4,552 次/秒（0.45 倍 → 0.89 倍）。
   AES-NI + PCLMULQDQ 内核。CRC-32 / CRC-32C 从 512 字节起在 512 位寄存器上每步折叠 256 字节。
 - 所有具备 AES 与无进位乘法指令的 CPU：消息的最后几个字节与 `J0` 一次通过 AES，短 AAD、尾部密文与长度块
   一次通过 GHASH（64 字节消息快 1.8–2.1 倍）。
-- `only-tls` 非原地加解密记录：AEAD 直接读取调用方的明文或收到的记录，只写一次输出，不再先复制再原地处理
+- `akio-tls` 非原地加解密记录：AEAD 直接读取调用方的明文或收到的记录，只写一次输出，不再先复制再原地处理
   （复制占 16 KiB 记录的 30%）。
 - Ryzen 7 7800X3D 单核：AES-128-GCM 加密 16 KiB 6,455 → 15,048 MB/s（ring 的 0.51 倍 → 1.19 倍），
   1400 B 4,249 → 8,163，64 B 611 → 1,185；TLS 1.3 记录加密 + 解密 16 KiB 2,739 → 6,603 MB/s（rustls + ring
@@ -2514,7 +2534,7 @@ secp256r1 2,306 → 4,552 次/秒（0.45 倍 → 0.89 倍）。
 - `unsafe`：新的 `gcm::hw::vaes` 内核、`asm!` CRC 折叠以及 CPUID / XGETBV（`cpu::hw`），均记录在
   docs/unsafe-review.zh-CN.md 中。Miri 永远不会执行到 `asm!`（检测不到任何特性）。
 
-### 性能：`only-crypto` 中 P-256 的整点汇编、宽梳形表与 safegcd
+### 性能：`akio-crypto` 中 P-256 的整点汇编、宽梳形表与 safegcd
 
 无 API 变化（`tools/api/public-api.sh` 不变）。在基准机的单个核心上与 ring 0.17 / rustls 0.23 在同一次运行中
 对比（交替运行五轮取中位数；机器同时被另一个基准测试占用，绝对速率偏低 20–30%，见 docs/BENCHMARKS.zh-CN.md）：
@@ -2541,7 +2561,7 @@ P-256 签名为 ring 的 0.77 倍 → 1.25 倍，生成密钥 0.94 倍 → 1.33 
 - `unsafe`：`ec::hw` 新增 6 个块与 2 个 `unsafe fn`（点运算共用一个块、divsteps 一个块、两个 AVX2 查表及其
   两处调用；见 docs/unsafe-review.zh-CN.md）。
 
-### 性能：`only-crypto` 中 x86_64 上开销更低的 P-256 点运算公式
+### 性能：`akio-crypto` 中 x86_64 上开销更低的 P-256 点运算公式
 
 无 API 变化（`tools/api/public-api.sh` 不变）。在空闲的基准机上测量（Zen 4，CPU 2，交替运行五轮取中位数，
 同一次运行中对比 ring 0.17）：P-256 ECDH 为 ring 的 1.08 倍 → 1.12 倍（32,351 → 33,904 次/秒），签名 1.36 倍
@@ -2567,14 +2587,14 @@ P-256 签名为 ring 的 0.77 倍 → 1.25 倍，生成密钥 0.94 倍 → 1.33 
   点运算例程中没有。
 - `unsafe`：没有新增块；点运算块保存并恢复 `rbx`（docs/unsafe-review.zh-CN.md）。
 
-### 性能：`only-crypto` 中基于 BMI2 + ADX 与 AVX-512 IFMA 的 RSA
+### 性能：`akio-crypto` 中基于 BMI2 + ADX 与 AVX-512 IFMA 的 RSA
 
 无 API 变化（`tools/api/public-api.sh` 不变）。在空闲的基准机上测量（Zen 4，CPU 2，新旧二进制交替运行三轮，
 同一次运行中对比 ring 0.17，单位次/秒）：RSA-2048 PKCS#1 v1.5 签名 1,192 → 3,910（ring 的 0.49 倍 → 1.61 倍），
 RSA-3072 371 → 1,455（0.47 倍 → 1.85 倍），RSA-4096 156 → 755（0.45 倍 → 2.19 倍）；验签 39,250 → 79,970
 （0.60 倍 → 1.22 倍）、18,300 → 33,440（1.10 倍）、10,110 → 19,090（1.09 倍）；含公钥解析的验签（即验证一个证书
 签名；ring 每次调用都会解析）5,850 → 67,090（0.09 倍 → 1.02 倍），3072 与 4096 位为 0.95 倍与 0.95 倍。
-only-tls 使用 RSA-2048 证书的完整握手（`tls-bench` 新增一行）：775 → 2,586 次/秒，rustls + ring 的 0.43 倍
+akio-tls 使用 RSA-2048 证书的完整握手（`tls-bench` 新增一行）：775 → 2,586 次/秒，rustls + ring 的 0.43 倍
 → 1.44 倍。
 
 - 在支持 AVX-512 IFMA 的 x86_64 上（新增 `cpu` 特性 `ifma`：CPUID leaf 7 加 AVX-512 状态），2048、3072 与
@@ -2601,10 +2621,10 @@ only-tls 使用 RSA-2048 证书的完整握手（`tls-bench` 新增一行）：7
 - 常数时间：Zen 4 上的 release 反汇编中，`Mont::mul_into` / `sqr_into`、`ifma::amm`、`ifma::pow`、`Mont::pow`、
   查表、`Mont::new`、`crt_combine` 与 `private_op` 的条件分支只有循环计数、按公开 limb 数与数字个数的分派、
   CPU 特性、切片与内存分配检查、公开的窗口位置、盲化缓存与最后的故障检查（数量见 `src/ct.rs`）。
-- `unsafe`：`only-crypto` 新增 7 个块与 1 个 `unsafe fn`（`bignum::hw`：两个 Montgomery 汇编块与 AVX2 查表；
+- `unsafe`：`akio-crypto` 新增 7 个块与 1 个 `unsafe fn`（`bignum::hw`：两个 Montgomery 汇编块与 AVX2 查表；
   `bignum::ifma`：IFMA 汇编块）；见 docs/unsafe-review.zh-CN.md。
 
-### 新增：`only-crypto` 的统计计时测试（`tools/ct-dudect`）
+### 新增：`akio-crypto` 的统计计时测试（`tools/ct-dudect`）
 
 dudect 式测试（对固定与随机秘密做 Welch t 检验，随机交错，`rdtsc` / `cntvct_el0` 计时，分位数裁剪与二阶
 检验，`|t| > 4.5` 视为泄漏），在硬件与可移植代码上测量依赖秘密的路径：P-256 ECDH、生成密钥与签名，X25519
@@ -2614,7 +2634,7 @@ CI 中作为信息性任务 `ct-dudect` 运行（不属于 `ci-ok`，t 值保存
 细小且时有时无的差异有待进一步测量（退化的全零 X25519 标量；P-256 可移植签名处于阈值边缘）；方法与结果见
 [docs/constant-time.zh-CN.md](docs/constant-time.zh-CN.md)。
 
-### 性能：`only-deflate` 的存储块只复制一次
+### 性能：`akio-deflate` 的存储块只复制一次
 
 无 API 变化；压缩输出逐字节不变。在基准主机上测量（Zen 4，CPU 2，新旧 `bench` 二进制交替五轮，zlib-rs 在同一次
 运行中）：解压级别 6 的随机数据（存储块）15,456 → 34,278 MB/s（zlib-rs 的 0.43 倍 → 0.94 倍），级别 9 为
@@ -2637,19 +2657,19 @@ HTTP/3 427,901 → 443,299 请求/秒（1.04×），完整握手 9,294 → 9,542
 版本在同一次运行中为 4,613 Mbit/s 与 56,934 请求/秒，本版本为 15,999 Mbit/s 与 430,098 请求/秒
 （3.5× 与 7.6×）。
 
-- `only-core`：`Handler::on_batch_end`（`#[doc(hidden)]`，默认什么也不做，不在稳定性承诺之内）告诉 UDP
-  处理器：调用过它 `on_data` 的那个接收批次结束了。only-epoll 的 UDP 循环（io_uring 后端与 macOS 上的 UDP
+- `akio-core`：`Handler::on_batch_end`（`#[doc(hidden)]`，默认什么也不做，不在稳定性承诺之内）告诉 UDP
+  处理器：调用过它 `on_data` 的那个接收批次结束了。akio-epoll 的 UDP 循环（io_uring 后端与 macOS 上的 UDP
   也由它服务）在批次的回复发出之前，对每个连接每批调用一次（一次 `recvmmsg`；macOS 上最多 32 次
-  `recv_from`/`recv`）；填满整批的拨号连接现在每批之后就发出，而不是最多八批之后。其他后端（only-dpdk）
+  `recv_from`/`recv`）；填满整批的拨号连接现在每批之后就发出，而不是最多八批之后。其他后端（akio-dpdk）
   不调用它。
-- `Config::udp_gro` 默认为 `true`（Linux，内核支持 `UDP_GRO` 时；只探测一次，`ONLY_UDP_GRO=0` 仍可关闭，
+- `Config::udp_gro` 默认为 `true`（Linux，内核支持 `UDP_GRO` 时；只探测一次，`AKIO_UDP_GRO=0` 仍可关闭，
   `read_buffer` 仍需至少 64 KiB）。服务端、绑定与拨号 socket 上合并的接收照旧按 `UDP_GRO` 分段大小拆开，
-  `on_data` 仍然每次一个数据报（only-kcp、only-turn、only-webrtc 与 DNS 的测试不变地通过）。仅此一项，
+  `on_data` 仍然每次一个数据报（akio-kcp、akio-turn、akio-webrtc 与 DNS 的测试不变地通过）。仅此一项，
   QUIC 批量传输 6.4 → 9.8 Gbit/s：发送方的一批 GSO 数据完整到达接收 socket，而不是被拆段。64 字节 UDP
   echo 开关 GRO 各交替 15 轮：差别不超出该场景的噪声。
 - UDP 循环每次接收调用读一次时钟，并把每个计时回调的结束时间当作下一个回调的开始（与 TCP 循环相同）：
   每个数据报读三次时钟变为一次。
-- only-quic 每个接收批次只确认一次：每个数据报之后处理器照常运行，已就绪的数据立即发出，但只含 ACK 的包
+- akio-quic 每个接收批次只确认一次：每个数据报之后处理器照常运行，已就绪的数据立即发出，但只含 ACK 的包
   等到 `on_batch_end`（每批一个，而不是每两个包一个）；QUIC 定时器也每批只设置一次。把处理器事件与数据
   也推迟到批次结束的变体在批量传输上测得 1.45×，但 HTTP/3 下降 28%（64 个在途请求变成每个往返一个
   步调一致的批次），因此没有采用。在 socket 第一次收到 `on_batch_end` 之前（以及在没有该钩子的后端上），
@@ -2659,90 +2679,90 @@ HTTP/3 427,901 → 443,299 请求/秒（1.04×），完整握手 9,294 → 9,542
   一次复制：处理器以引用方式拿到 `recvmmsg` 的槽位，而就地解密需要本方独占的缓冲区。
 - 已发送的包记录在按包号索引的环形缓冲中（`proto/conn/sent.rs`），不再用 `BTreeMap`；已确认或已丢失
   的包的帧列表被新包复用。
-- 剖析中发现但未处理的：对端地址与连接 ID 表上的 SipHash（约占接收方 2%），以及 only-h3/only-http 中的
+- 剖析中发现但未处理的：对端地址与连接 ID 表上的 SipHash（约占接收方 2%），以及 akio-h3/akio-http 中的
   分配与头部哈希（`encode_fields`、`Headers`），它们是 HTTP/3 剖析的主要部分。
 
 ### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
 
 rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保护的 API 中，因此 1.0.0 之后
-升级它们（或用自研代码替换）不是破坏性变更。直接访问移到新的 `unstable` cargo feature 之后（`only`、
-`only-tls`、`only-quic`、`only-webrtc`），与 `only-grpc` 的 `prost` feature 一样不在 semver 承诺之内
+升级它们（或用自研代码替换）不是破坏性变更。直接访问移到新的 `unstable` cargo feature 之后（`akio`、
+`akio-tls`、`akio-quic`、`akio-webrtc`），与 `akio-grpc` 的 `prost` feature 一样不在 semver 承诺之内
 （docs/api-stability.zh-CN.md，“公开依赖”）。
 
 | 之前 | 之后 |
 |---|---|
-| `only::tls::rustls`（再导出） | 仅 `unstable` feature |
-| `rustls::ServerConfig::builder()...with_single_cert(chain, key)` + `alpn_protocols` | `only::tls::ServerConfig::builder(chain, key).alpn([..]).build()?`（另有 `sni_cert`、`client_auth_required` / `_optional`、`session_cache`、`session_tickets`、`tls13_only`） |
-| `rustls::ClientConfig::builder().with_root_certificates(roots)...` | `only::tls::ClientConfig::builder().roots(roots).alpn([..]).build()?`（另有 `client_cert`、`sni`、`resumption`、`tls13_only`、`insecure_skip_verify`） |
-| `CertificateDer`、`PrivateKeyDer`、`RootCertStore` | `only::tls::{Certificate, PrivateKey, RootCerts}`（`from_pem`、`from_der`、`from_pkcs8_der`） |
+| `akio::tls::rustls`（再导出） | 仅 `unstable` feature |
+| `rustls::ServerConfig::builder()...with_single_cert(chain, key)` + `alpn_protocols` | `akio::tls::ServerConfig::builder(chain, key).alpn([..]).build()?`（另有 `sni_cert`、`client_auth_required` / `_optional`、`session_cache`、`session_tickets`、`tls13_only`） |
+| `rustls::ClientConfig::builder().with_root_certificates(roots)...` | `akio::tls::ClientConfig::builder().roots(roots).alpn([..]).build()?`（另有 `client_cert`、`sni`、`resumption`、`tls13_only`、`insecure_skip_verify`） |
+| `CertificateDer`、`PrivateKeyDer`、`RootCertStore` | `akio::tls::{Certificate, PrivateKey, RootCerts}`（`from_pem`、`from_der`、`from_pkcs8_der`） |
 | `Tls::server(Arc<rustls::ServerConfig>, a)`、`Tls::client(Arc<rustls::ClientConfig>, ..)` | `Tls::server(ServerConfig, a)`、`Tls::client(ClientConfig, ..)` |
-| `Client::with_tls(Arc<rustls::ClientConfig>)`、`H2Client::dial(.., Some((Arc<..>, name)), ..)`、`DialOptions::tls: Option<Arc<..>>` | 同上，改用 `only::tls::ClientConfig` |
-| `only_quic::{proto, rustls}` 再导出、`VarInt` | 仅 `unstable` feature（`proto`）；删除 `VarInt` |
-| `only_quic::{StreamId, Dir, ConnectionError, TransportConfig}`（quinn 的类型） | only 自己的类型（另有 `Side`、`Congestion`、`UdpStats`）；`ConnectionError` 的变体改为结构体形式（`ApplicationClosed { code, reason }`、`TransportError { code, reason }`） |
+| `Client::with_tls(Arc<rustls::ClientConfig>)`、`H2Client::dial(.., Some((Arc<..>, name)), ..)`、`DialOptions::tls: Option<Arc<..>>` | 同上，改用 `akio::tls::ClientConfig` |
+| `akio_quic::{proto, rustls}` 再导出、`VarInt` | 仅 `unstable` feature（`proto`）；删除 `VarInt` |
+| `akio_quic::{StreamId, Dir, ConnectionError, TransportConfig}`（quinn 的类型） | akio 自己的类型（另有 `Side`、`Congestion`、`UdpStats`）；`ConnectionError` 的变体改为结构体形式（`ApplicationClosed { code, reason }`、`TransportError { code, reason }`） |
 | `Connection::stats() -> quinn_proto::ConnectionStats` | `ConnectionStats`（`udp_tx`、`udp_rx`、`rtt`、`cwnd`、`lost_packets` 等） |
-| `server_config(Vec<CertificateDer>, PrivateKeyDer, alpn) -> quinn_proto::ServerConfig` | `server_config(Vec<Certificate>, PrivateKey, alpn) -> only_quic::ServerConfig`（`.transport(&TransportConfig)`、`.migration(bool)`） |
-| `server_config_from(rustls::ServerConfig)`、`client_config(RootCertStore, ..)`、`client_config_from(rustls::ClientConfig)` | `server_config_from(&only::tls::ServerConfig)`、`client_config(RootCerts, ..)`、`client_config_from(&only::tls::ClientConfig)` |
+| `server_config(Vec<CertificateDer>, PrivateKeyDer, alpn) -> quinn_proto::ServerConfig` | `server_config(Vec<Certificate>, PrivateKey, alpn) -> akio_quic::ServerConfig`（`.transport(&TransportConfig)`、`.migration(bool)`） |
+| `server_config_from(rustls::ServerConfig)`、`client_config(RootCertStore, ..)`、`client_config_from(rustls::ClientConfig)` | `server_config_from(&akio::tls::ServerConfig)`、`client_config(RootCerts, ..)`、`client_config_from(&akio::tls::ClientConfig)` |
 | `Error::Connect(quinn_proto::ConnectError)` | `Error::Connect(String)` |
-| `only_h3::server_config(Vec<CertificateDer>, PrivateKeyDer)`、`serve(quinn_proto::ServerConfig, ..)`、`H3Client::dial(.., quinn_proto::ClientConfig)` | `Certificate` / `PrivateKey`、`only_quic::ServerConfig`、`only_quic::ClientConfig` |
-| `only_grpc::codec::{encode, decode}` 约束为 `prost::Message` | 约束为 `only_grpc::codec::Message`（`encode_to`、`decode_from`）；`prost` feature 为 prost 消息实现它 |
-| `only_webrtc::str0m` 再导出、`Peer::with_rtc`、`crypto_provider`、`generate_certificate` | 仅 `unstable` feature（`str0m`、`with_rtc`、`crypto_provider_str0m`）；`generate_certificate` 改为内部函数 |
-| str0m 的 `ChannelId`、`ChannelConfig`、`Reliability`、`Mid`、`Pt`、`MediaKind`、`Direction`、`Frequency`、`MediaTime`、`MediaData`、`MediaAdded`、`KeyframeRequest(Kind)`、`RtpPacket`、`Candidate`、`IceConnectionState`、`RtcConfig`、`Event` | 同名的 only 自有类型（`ChannelConfig` 为 `#[non_exhaustive]`：先 `ChannelConfig::new(label)` 再设置字段；`MediaData::data` / `RtpPacket::payload` 为 `Arc<[u8]>`） |
+| `akio_h3::server_config(Vec<CertificateDer>, PrivateKeyDer)`、`serve(quinn_proto::ServerConfig, ..)`、`H3Client::dial(.., quinn_proto::ClientConfig)` | `Certificate` / `PrivateKey`、`akio_quic::ServerConfig`、`akio_quic::ClientConfig` |
+| `akio_grpc::codec::{encode, decode}` 约束为 `prost::Message` | 约束为 `akio_grpc::codec::Message`（`encode_to`、`decode_from`）；`prost` feature 为 prost 消息实现它 |
+| `akio_webrtc::str0m` 再导出、`Peer::with_rtc`、`crypto_provider`、`generate_certificate` | 仅 `unstable` feature（`str0m`、`with_rtc`、`crypto_provider_str0m`）；`generate_certificate` 改为内部函数 |
+| str0m 的 `ChannelId`、`ChannelConfig`、`Reliability`、`Mid`、`Pt`、`MediaKind`、`Direction`、`Frequency`、`MediaTime`、`MediaData`、`MediaAdded`、`KeyframeRequest(Kind)`、`RtpPacket`、`Candidate`、`IceConnectionState`、`RtcConfig`、`Event` | 同名的 akio 自有类型（`ChannelConfig` 为 `#[non_exhaustive]`：先 `ChannelConfig::new(label)` 再设置字段；`MediaData::data` / `RtpPacket::payload` 为 `Arc<[u8]>`） |
 | `create_offer(h, \|api: &mut SdpApi\| ..)`、`renegotiate(..)`；`api.add_channel(label.into())`、`api.add_media(kind, dir, None, None, None)` | `SdpChanges`：`add_channel(label)`、`add_channel_with_config(&cfg)`、`add_media(kind, dir, None, None)`、`set_direction`、`stop_media`、`ice_restart` |
-| `Peer::open_channel(ChannelConfig)`、`payload_type(mid, str0m::format::Codec)` | `open_channel(&ChannelConfig)`、`payload_type(mid, only_webrtc::Codec)` |
+| `Peer::open_channel(ChannelConfig)`、`payload_type(mid, str0m::format::Codec)` | `open_channel(&ChannelConfig)`、`payload_type(mid, akio_webrtc::Codec)` |
 | `PeerHandler::on_event(&str0m::Event)` | `on_event(&Event)`：`Event::ChannelBufferedAmountLow(id)` 或 `Event::Other(OtherEvent)` |
-| `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
+| `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(akio_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
-### 变更（破坏性，1.0.0 之前）：自研日志门面 `only-log` 取代 `log`
+### 变更（破坏性，1.0.0 之前）：自研日志门面 `akio-log` 取代 `log`
 
-DEV-PLAN 第 B 波。`only` 不再依赖 `log` crate，而是通过新的公开 crate `only-log`（无依赖，以
-`only::log` 重新导出）记日志：级别、target、沿用 `log` 宏语法的结构化键值对、存放在原子变量中的全局
+DEV-PLAN 第 B 波。`akio` 不再依赖 `log` crate，而是通过新的公开 crate `akio-log`（无依赖，以
+`akio::log` 重新导出）记日志：级别、target、沿用 `log` 宏语法的结构化键值对、存放在原子变量中的全局
 最大级别（被禁用的语句只需一次 relaxed 读：0.25-0.29 ns，`log` 为 0.36 ns）、带 `set_logger` /
-`set_boxed_logger` 的 `Logger` trait，以及内置 logger（`only::log::init(level)` 向 stderr 输出格式化
+`set_boxed_logger` 的 `Logger` trait，以及内置 logger（`akio::log::init(level)` 向 stderr 输出格式化
 行，`StderrLogger`）。target、消息和键名保持不变；未安装 logger 时，错误与慢回调警告仍打印到 stderr。
-新增的 `log` cargo feature（`only`、`only-core`、`only-log`；不在 semver 承诺之内）桥接到 `log`
-crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::log_level` 也会像以前一样设置
-`log::max_level`），`only::log::bridge::route_log_to_only()` 则把 `log` 的记录（str0m、rustls ……）
-送入 only-log 的 logger。
+新增的 `log` cargo feature（`akio`、`akio-core`、`akio-log`；不在 semver 承诺之内）桥接到 `log`
+crate：未安装 akio-log logger 时记录交给 `log` 的 logger（`Config::log_level` 也会像以前一样设置
+`log::max_level`），`akio::log::bridge::route_log_to_only()` 则把 `log` 的记录（str0m、rustls ……）
+送入 akio-log 的 logger。
 
 迁移：
 
 | 之前 | 之后 |
 |---|---|
-| `env_logger::init()`（或任意 `log` logger） | 不变，在 `only` 上开启 `features = ["log"]`；或改用 `only::log::init(only::log::LevelFilter::Info)` |
-| `cfg.log_level = Some(log::LevelFilter::Info)` | `Some(only::log::LevelFilter::Info)`（开启 `log` feature 时也可写 `Some(log::LevelFilter::Info.into())`） |
-| `Telemetry::set_log_level(log::LevelFilter)` | `set_log_level(only::log::LevelFilter)` |
-| `impl log::Log for MyLogger` | `impl only::log::Logger for MyLogger`（`enabled` 与 `flush` 有默认实现）；用 `only::log::set_logger` 安装 |
+| `env_logger::init()`（或任意 `log` logger） | 不变，在 `akio` 上开启 `features = ["log"]`；或改用 `akio::log::init(akio::log::LevelFilter::Info)` |
+| `cfg.log_level = Some(log::LevelFilter::Info)` | `Some(akio::log::LevelFilter::Info)`（开启 `log` feature 时也可写 `Some(log::LevelFilter::Info.into())`） |
+| `Telemetry::set_log_level(log::LevelFilter)` | `set_log_level(akio::log::LevelFilter)` |
+| `impl log::Log for MyLogger` | `impl akio::log::Logger for MyLogger`（`enabled` 与 `flush` 有默认实现）；用 `akio::log::set_logger` 安装 |
 | `record.key_values().visit(&mut visitor)` | `record.key_values().iter()` / `.get("conn_id")`；值实现了 `Display` |
-| `log::max_level()` | `only::log::max_level()` |
+| `log::max_level()` | `akio::log::max_level()` |
 
-### 变更：自研密码学（`only-crypto`，DEV-PLAN 第 A 波）
+### 变更：自研密码学（`akio-crypto`，DEV-PLAN 第 A 波）
 
-- 新的内部 crate `only-crypto`（只依赖 std，除 AES-NI / ARMv8 AES 模块外 `#![deny(unsafe_code)]`）：SHA-1、
+- 新的内部 crate `akio-crypto`（只依赖 std，除 AES-NI / ARMv8 AES 模块外 `#![deny(unsafe_code)]`）：SHA-1、
   SHA-224/256、SHA-384/512、MD5、HMAC、HKDF、PBKDF2、CRC-32 / CRC-32C、AES-128/192/256（检测到 CPU
   指令时使用指令，否则使用常数时间 fixsliced 软件实现）及 CTR、带常数时间 GHASH 的 AES-GCM、ChaCha20-Poly1305、base64（严格解码）、操作系统随机数与
   ChaCha20 生成器。用 NIST CAVP、RFC 与 Wycheproof 向量测试，并（在测试与模糊测试目标中）与被替代的
   crate 交叉比对。
-- `only-kcp`、`only-turn`、`only-ws`、`only-http`、`only-media`、`only-bittorrent` 和
-  `only-webrtc` 改用它，不再依赖 sha1、sha2、md-5、hmac、pbkdf2、aes、aes-gcm、ctr、crc32fast、
+- `akio-kcp`、`akio-turn`、`akio-ws`、`akio-http`、`akio-media`、`akio-bittorrent` 和
+  `akio-webrtc` 改用它，不再依赖 sha1、sha2、md-5、hmac、pbkdf2、aes、aes-gcm、ctr、crc32fast、
   base64 与 getrandom（它们只作为 dev / fuzz 的参照实现保留，在第 D 波之前仍经由 str0m/dimpl 间接存在）。
   公开 API 与线上格式不变（KCP 加密，包括旧实现封装的“黄金”数据报；TURN MESSAGE-INTEGRITY/FINGERPRINT；
   WebSocket accept key；BitTorrent info hash 与 MSE；SRT 密钥包装与 AES-CTR；RTMP digest 握手；SRTP）。
-- `only-sys`（内部，`#[doc(hidden)]`）：基于 `getrandom(2)` / `getentropy(2)` 的 `fill_random`，
+- `akio-sys`（内部，`#[doc(hidden)]`）：基于 `getrandom(2)` / `getentropy(2)` 的 `fill_random`，
   回退到 `/dev/urandom`。
-### 新增：公钥密码学与 X.509（`only-crypto`、新的 `only-x509`，DEV-PLAN 第 B 波）
+### 新增：公钥密码学与 X.509（`akio-crypto`、新的 `akio-x509`，DEV-PLAN 第 B 波）
 
 为自研 TLS 1.2/1.3、DTLS、QUIC 与 WebRTC 协议栈（第 C、D 波）打基础；协议 crate 目前还没有使用它们，
 行为没有变化。
 
-- `only-crypto`（内部层级；API 只增不减）：X25519（RFC 7748）、Ed25519（RFC 8032，严格验证：`S` 必须规范、
+- `akio-crypto`（内部层级；API 只增不减）：X25519（RFC 7748）、Ed25519（RFC 8032，严格验证：`S` 必须规范、
   比较 `R` 的编码）、P-256 与 P-384 上的 ECDH 和 ECDSA（RFC 6979 确定性 nonce，DER 与定长签名，带校验的
   SEC1 点）、RSA PKCS#1 v1.5 与 PSS 签名/验证（SHA-256/384/512，SHA-1 仅验证），模数 2048–8192 位（CRT、
   盲化、结果校验），严格 DER 读写器、PEM，以及密钥编码（PKCS#8 v1/v2、SEC1、PKCS#1、
   SubjectPublicKeyInfo），统一在 `pkey::{PrivateKey, PublicKey, SignatureAlgorithm}` 之后。`Error` 新增
   `InvalidKey`、`Encoding`、`Unsupported`、`Random`、`ZeroSharedSecret`。常数时间的域运算（P-256/P-384 与
   标量用 Montgomery，Curve25519 用 2⁵¹ 进制）、完备加法公式、读取全部表项的查表。
-- 新的内部 crate `only-x509`（`#![forbid(unsafe_code)]`）：证书解析（严格 DER；subjectAltName、
+- 新的内部 crate `akio-x509`（`#![forbid(unsafe_code)]`）：证书解析（严格 DER；subjectAltName、
   basicConstraints、keyUsage、extKeyUsage、nameConstraints、密钥标识符），基于 `RootStore` 的证书链构建与
   校验（有效期、CA/pathLen、密钥用途、EKU、DNS/IP/directoryName 名称约束、未知关键扩展、签名校验次数上限），
   RFC 6125 服务器名匹配（仅最左标签通配符、IP SAN），以及自签名和 CA 签发证书的生成
@@ -2753,11 +2773,11 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   密钥（RSA-PSS、P-384、Ed25519）、与 rcgen 和 rustls-webpki 互通、构造的反例证书链；模糊测试目标
   `x509_parse` 与 `crypto_sig_verify`（与 ring 差分），并有语料回放测试。
 
-### 新增：自研 DTLS 1.2（新的 `only-dtls`，DEV-PLAN 第 C 波）
+### 新增：自研 DTLS 1.2（新的 `akio-dtls`，DEV-PLAN 第 C 波）
 
 自研 WebRTC 协议栈的 DTLS 层（第 D 波将用它替代 str0m 的 `dimpl`）；目前还没有代码使用它，因此行为不变。
 
-- 新的内部 crate `only-dtls`（`#![forbid(unsafe_code)]`，只依赖 `only-crypto` 与 `only-x509`）：
+- 新的内部 crate `akio-dtls`（`#![forbid(unsafe_code)]`，只依赖 `akio-crypto` 与 `akio-x509`）：
   sans-io 的 DTLS 1.2（RFC 6347）`Connection`，可作任一角色，由 `handle_datagram`、`poll_transmit`、
   `poll_event`、`poll_timeout` / `handle_timeout` 与 `send_application_data` 驱动。记录层支持 epoch、
   48 位序列号与 64 条记录的防重放窗口；握手消息按配置的 MTU 分片并支持乱序重组；按指数退避重传
@@ -2777,12 +2797,12 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   的密钥一致）和 pion/dtls v3 双向互通（`tools/interop/dtls/run.sh`），并在内存中与 `dimpl` 互通
   （`tests/dimpl.rs`）；fuzz 目标 `dtls_record` 与 `dtls_handshake` 及语料回放测试。未实现：DTLS 1.3
   （RFC 9147）、连接 ID、会话恢复、PSK。
-### 变更：`only-tls` 自研 TLS 1.3 与 1.2（DEV-PLAN 第 C 波；不再依赖 rustls、ring）
+### 变更：`akio-tls` 自研 TLS 1.3 与 1.2（DEV-PLAN 第 C 波；不再依赖 rustls、ring）
 
-`only-tls` 现在依据 RFC 自己实现 TLS，基于 `only-crypto` 与 `only-x509`（`#![forbid(unsafe_code)]`，
-无第三方依赖）。受保护的 API 不变（`api/only-tls.txt` 完全相同）：`ServerConfig` / `ClientConfig`
-构建器、`Certificate`、`PrivateKey`、`RootCerts`、`Error`、`Tls`、`TlsInfo`、`tls_info`；only-http
-（HTTP/1.1，经 ALPN 的 HTTP/2）、only-ws（`wss://`）、only-socks、only-grpc 与 only-mux 无需改动即
+`akio-tls` 现在依据 RFC 自己实现 TLS，基于 `akio-crypto` 与 `akio-x509`（`#![forbid(unsafe_code)]`，
+无第三方依赖）。受保护的 API 不变（`api/akio-tls.txt` 完全相同）：`ServerConfig` / `ClientConfig`
+构建器、`Certificate`、`PrivateKey`、`RootCerts`、`Error`、`Tls`、`TlsInfo`、`tls_info`；akio-http
+（HTTP/1.1，经 ALPN 的 HTTP/2）、akio-ws（`wss://`）、akio-socks、akio-grpc 与 akio-mux 无需改动即
 运行其上。
 
 - TLS 1.3（RFC 8446）：双方完整握手、HelloRetryRequest（回显 cookie）、密钥调度、KeyUpdate（应答，
@@ -2799,39 +2819,39 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   early_data、cookie、extended_master_secret、renegotiation_info、session_ticket、ec_point_formats；
   未知扩展被忽略。
 - 记录层：16 KiB 分片、TLS 1.3 内层内容类型与填充、严格的状态机、握手消息跨记录重组（跨密钥切换则拒绝）、
-  close_notify、告警、警告告警数量有上限；证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）；
+  close_notify、告警、警告告警数量有上限；证书由 `akio-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）；
   `insecure_skip_verify` 不变。
-- 面向 QUIC 的内核（`only_tls::quic`，`#[doc(hidden)]`，内部）：同一套 TLS 1.3 状态机，不经记录层，
+- 面向 QUIC 的内核（`akio_tls::quic`，`#[doc(hidden)]`，内部）：同一套 TLS 1.3 状态机，不经记录层，
   按加密级别驱动（握手字节进出、各级别的流量密钥、quic_transport_parameters、强制 ALPN、无兼容模式、
-  RFC 9001 密钥派生辅助函数及其附录 A 向量），供第 D 波的自研 QUIC 使用。在那之前 only-quic 仍用
-  quinn-proto，其 rustls 配置现由 only-quic 根据 only-tls 的配置自行构建（rustls 只留作 only-quic 的依赖）。
+  RFC 9001 密钥派生辅助函数及其附录 A 向量），供第 D 波的自研 QUIC 使用。在那之前 akio-quic 仍用
+  quinn-proto，其 rustls 配置现由 akio-quic 根据 akio-tls 的配置自行构建（rustls 只留作 akio-quic 的依赖）。
 - 测试：RFC 8448 跟踪（简单 1-RTT、恢复绑定值、HelloRetryRequest：密钥调度、transcript、Finished、记录
   逐字节一致），覆盖所有套件、组、密钥类型与版本的内存握手，会话恢复、客户端认证、低至单字节的分片、
   KeyUpdate、降级检测与反例；互通矩阵（`tools/interop/tls/run.sh`，107 个用例：OpenSSL
   `s_server`/`s_client`、Go `crypto/tls` 双向、curl 的 HTTP/1.1 与 HTTP/2），`tools/interop/grpc/run.sh`
-  新增 TLS 一环，`only` 的 TLS 测试保留 rustls 客户端；以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`：
+  新增 TLS 一环，`akio` 的 TLS 测试保留 rustls 客户端；以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`：
   33 个适用的 TLS 1.3 / 1.2 脚本，985 个探测，5 个已知且有记录的失败）；fuzz 目标 `tls_server`、`tls_client`、
   `tls_record` 及语料回放。
-- 性能（Apple M4 Pro，服务端 2 线程，rustls 客户端）：完整握手约为 rustls+ring 的 0.7 倍（`only-crypto`
-  的 P-256 ECDSA 与 X25519 慢于 ring 的汇编），小记录持平，大块吞吐约 0.45 倍（`only-crypto` 的 GHASH
+- 性能（Apple M4 Pro，服务端 2 线程，rustls 客户端）：完整握手约为 rustls+ring 的 0.7 倍（`akio-crypto`
+  的 P-256 ECDSA 与 X25519 慢于 ring 的汇编），小记录持平，大块吞吐约 0.45 倍（`akio-crypto` 的 GHASH
   为可移植实现；PMULL / PCLMULQDQ 是第 A 波的后续工作）。
 
-迁移：only-tls 的 `unstable` feature（以及 `only/unstable` 中与 TLS 相关的部分）不再暴露任何内容：
-`only::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls` 与 `ClientConfig::from_rustls` /
+迁移：akio-tls 的 `unstable` feature（以及 `akio/unstable` 中与 TLS 相关的部分）不再暴露任何内容：
+`akio::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls` 与 `ClientConfig::from_rustls` /
 `as_rustls` 已移除（它们本就不在 semver 承诺之内）。`ServerConfigBuilder::build` 在私钥与证书不匹配时
-也会报错。rcgen 与 rustls 已从 only-tls、only-http、only-ws、only-mux、only-h3、only-quic、only-grpc
-的 dev-dependencies 中移除（测试证书改由 `only-x509` 生成）；`only` 的 TLS 测试保留 rustls 客户端作为
+也会报错。rcgen 与 rustls 已从 akio-tls、akio-http、akio-ws、akio-mux、akio-h3、akio-quic、akio-grpc
+的 dev-dependencies 中移除（测试证书改由 `akio-x509` 生成）；`akio` 的 TLS 测试保留 rustls 客户端作为
 互通对端。
 
-### 变更：`only-quic` 自研 QUIC v1（DEV-PLAN 第 D 波；不再依赖 quinn-proto、rustls、bytes）
+### 变更：`akio-quic` 自研 QUIC v1（DEV-PLAN 第 D 波；不再依赖 quinn-proto、rustls、bytes）
 
-`only-quic` 现在依据 RFC 9000、9001、9002 以及 RFC 9221 数据报自行实现 QUIC，是基于 `only-tls`
-（其不经记录层的 TLS 1.3，`only_tls::quic`）与 `only-crypto` 的 sans-io 核心
+`akio-quic` 现在依据 RFC 9000、9001、9002 以及 RFC 9221 数据报自行实现 QUIC，是基于 `akio-tls`
+（其不经记录层的 TLS 1.3，`akio_tls::quic`）与 `akio-crypto` 的 sans-io 核心
 （`#![forbid(unsafe_code)]`，无第三方依赖）。quinn-proto、其内部的 rustls（及 ring）以及 `bytes` crate
-已从 only-quic 和 only-h3 中移除；工作区里已没有库依赖 rustls。除负载类型外 API 不变（迁移见下）：
+已从 akio-quic 和 akio-h3 中移除；工作区里已没有库依赖 rustls。除负载类型外 API 不变（迁移见下）：
 `QuicServer`、`dial`、`Connection`、`QuicHandler`、`ServerConfig` / `ClientConfig` /
-`TransportConfig`、`StreamId`、`ConnectionError`、`ConnectionStats`；only-h3 的 API 不变
-（`api/only-h3.txt` 完全相同）。
+`TransportConfig`、`StreamId`、`ConnectionError`、`ConnectionStats`；akio-h3 的 API 不变
+（`api/akio-h3.txt` 完全相同）。
 
 - 数据包：长/短包头、三个包号空间、包号编码、包头保护（AES、ChaCha20）、AES-128/256-GCM 与
   ChaCha20-Poly1305 包保护、合并数据包、Initial 与路径验证的填充、版本协商、带完整性标签的 Retry、无状态
@@ -2854,41 +2874,41 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   和 OpenSSL 3.5 的 QUIC（curl、libcurl、`openssl s_client -quic`）作为我方服务端的客户端（新增
   `tools/interop/quic/docker.sh`）；fuzz 目标 `quic_packet`、`quic_frame`、
   `quic_conn`，并回放语料。
-- 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/only-h3/examples/quic-bench.rs`）：在 AMD Ryzen 7 7800X3D（Linux，回环，交替运行 3 轮）上，完整握手 6705-6785 次/秒，对比 6536-6674 次/秒（约 1.0 倍）；单流大块吞吐 3.1-3.6 Gbit/s，对比 4.6-4.7 Gbit/s（约 0.72 倍；包保护使用 `only-crypto` 的硬件 AES-GCM）；单连接 64 个并发的 HTTP/3 请求 17.1 万次/秒，对比 5.8 万次/秒（约 2.9 倍，因为响应、FIN 与 ACK 共用数据包）。
+- 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/akio-h3/examples/quic-bench.rs`）：在 AMD Ryzen 7 7800X3D（Linux，回环，交替运行 3 轮）上，完整握手 6705-6785 次/秒，对比 6536-6674 次/秒（约 1.0 倍）；单流大块吞吐 3.1-3.6 Gbit/s，对比 4.6-4.7 Gbit/s（约 0.72 倍；包保护使用 `akio-crypto` 的硬件 AES-GCM）；单连接 64 个并发的 HTTP/3 请求 17.1 万次/秒，对比 5.8 万次/秒（约 2.9 倍，因为响应、FIN 与 ACK 共用数据包）。
 
-迁移：流与数据报负载改为 `only_quic::Bytes`（原为 `bytes::Bytes`），这是唯一的签名变化
-（`QuicHandler::on_stream_data`、`QuicHandler::on_datagram`，以及接受 `impl Into<only_quic::Bytes>` 的
+迁移：流与数据报负载改为 `akio_quic::Bytes`（原为 `bytes::Bytes`），这是唯一的签名变化
+（`QuicHandler::on_stream_data`、`QuicHandler::on_datagram`，以及接受 `impl Into<akio_quic::Bytes>` 的
 `Connection::send` 与 `Connection::send_datagram`）。它的形状相同（引用计数；`new`、`from_static`、
 `copy_from_slice`、`slice`、`split_to`、`split_off`、`truncate`、`advance`、`Deref<Target = [u8]>`、
 `From<Vec<u8>>`、`From<&'static [u8]>`、`From<&'static str>`、`From<String>`、`Vec<u8>: From<Bytes>`），
-通常只需改导入：`use bytes::Bytes;` 改为 `use only_quic::Bytes;`。only-quic 的 `unstable` feature 保留且为空：
-`only_quic::proto`、`ServerConfig::from_quinn` / `as_quinn_mut` 与 `ClientConfig::from_quinn` /
+通常只需改导入：`use bytes::Bytes;` 改为 `use akio_quic::Bytes;`。akio-quic 的 `unstable` feature 保留且为空：
+`akio_quic::proto`、`ServerConfig::from_quinn` / `as_quinn_mut` 与 `ClientConfig::from_quinn` /
 `as_quinn_mut` 已移除（它们本就不在 semver 承诺之内）。`Congestion::Bbr`（实验性）实际运行 CUBIC。
 `Connection::queued_bytes` 统计尚未发出的字节数。`dial` 发起的连接结束后其 UDP socket 会被关闭（以前一直保持到引擎停止）；`open_bi` / `open_uni` 从不运行处理器回调，因此可以在持有处理器也会获取的锁时调用。未实现：0-RTT、发送 ECN 标记、客户端主动迁移、
 preferred_address、QUIC v2。
 
-### 变更：`only-webrtc` 使用自研 WebRTC 协议栈（DEV-PLAN 第 D 波；不再依赖 str0m、dimpl、p256）
+### 变更：`akio-webrtc` 使用自研 WebRTC 协议栈（DEV-PLAN 第 D 波；不再依赖 str0m、dimpl、p256）
 
-`only-webrtc` 在 API 不变的前提下（`RtcServer`、`Endpoint`、`Peer`、`PeerHandler` 及其顺序保证、
+`akio-webrtc` 在 API 不变的前提下（`RtcServer`、`Endpoint`、`Peer`、`PeerHandler` 及其顺序保证、
 `ChannelConfig`、`Codec`、`SdpChanges`、`Event`、`RtcError` 等）改为运行在自研、sans-io、无第三方
-依赖的 WebRTC 协议栈上。新增四个内部 crate，均为 `#![forbid(unsafe_code)]`，构建于 `only-crypto`
+依赖的 WebRTC 协议栈上。新增四个内部 crate，均为 `#![forbid(unsafe_code)]`，构建于 `akio-crypto`
 之上：
 
-- `only-ice`：ICE（RFC 8445）完整 agent 与 ICE-lite：候选优先级与 foundation、带节奏控制与重传的
+- `akio-ice`：ICE（RFC 8445）完整 agent 与 ICE-lite：候选优先级与 foundation、带节奏控制与重传的
   检查列表、peer-reflexive 候选、常规提名、角色冲突（487）、在获得远端凭据之前到达的检查、consent
-  freshness（RFC 7675）、trickle（RFC 8838）与重启；STUN 使用 `only-turn` 的编解码。RFC 5769 向量；
+  freshness（RFC 7675）、trickle（RFC 8838）与重启；STUN 使用 `akio-turn` 的编解码。RFC 5769 向量；
   与 pion/ice 互通。
-- `only-srtp`：SRTP/SRTCP（RFC 3711、RFC 7714），支持 AES-CM-HMAC-SHA1-80/32 与
+- `akio-srtp`：SRTP/SRTCP（RFC 3711、RFC 7714），支持 AES-CM-HMAC-SHA1-80/32 与
   AEAD-AES-128/256-GCM、ROC 估计、防重放窗口；RFC 3711 与 RFC 7714 向量，并与 pion/srtp 逐字节比对。
-- `only-rtp`：RTP 头扩展（单字节与双字节形式）、RTCP（SR、RR、SDES、BYE、通用 NACK、PLI、FIR、REMB、
+- `akio-rtp`：RTP 头扩展（单字节与双字节形式）、RTCP（SR、RR、SDES、BYE、通用 NACK、PLI、FIR、REMB、
   传输层拥塞控制反馈）、带 NACK + RTX（RFC 4588）、报告与 RTT 的收发流、TWCC 与基于时延和丢包的
   带宽估计；Opus、G.711、G.722、VP8、VP9、H.264（RFC 6184）、H.265（RFC 7798）与 AV1 的载荷格式，
   以及无抖动缓冲延迟的组帧器。与 pion/rtp、pion/rtcp、pion/interceptor 逐字节比对。
-- `only-sctp`：基于 DTLS 的 SCTP（RFC 8261；RFC 9260 的核心部分），拥塞控制、快速重传、PR-SCTP
+- `akio-sctp`：基于 DTLS 的 SCTP（RFC 8261；RFC 9260 的核心部分），拥塞控制、快速重传、PR-SCTP
   FORWARD-TSN（RFC 3758）、流重置（RFC 6525）、DCEP 数据通道（RFC 8831/8832）；经 UDP 与
   pion/sctp 1.8 和 1.12 互通。
 
-`only-webrtc` 本身新增了 SDP offer/answer（BUNDLE、rtcp-mux、编解码器 / RTX / rtcp-fb / extmap 协商、
+`akio-webrtc` 本身新增了 SDP offer/answer（BUNDLE、rtcp-mux、编解码器 / RTX / rtcp-fb / extmap 协商、
 ssrc 与 FID 组、setup 角色与指纹、ICE-lite、候选、sctp-port / max-message-size、重新协商与 ICE 重启）
 以及把各层粘合起来的 sans-io peer。测试覆盖模拟丢包链路（ICE + DTLS + SCTP + 媒体），并与 pion（数据
 通道、Opus/VP8 回显、PLI、TURN 中继，两个 offer 方向）、fib 的 Go WebRTC（双向）以及无头 Chrome
@@ -2898,7 +2918,7 @@ ssrc 与 FID 组、setup 角色与指纹、ICE-lite、候选、sctp-port / max-m
 
 迁移说明：
 
-- `only-webrtc` 的 `unstable` feature 现在是预留的空 feature：`only_webrtc::str0m`、
+- `akio-webrtc` 的 `unstable` feature 现在是预留的空 feature：`akio_webrtc::str0m`、
   `crypto_provider_str0m`、`Peer::with_rtc`、`RtcConfig::with_str0m` 与 `OtherEvent::as_str0m`
   已移除（它们本就不在 semver 承诺内）。
 - 受保护的 API 不变，只是 `Event`、`OtherEvent`、`RtcConfig`、`RtcError` 与 `SdpChanges` 现在实现了
@@ -2907,29 +2927,29 @@ ssrc 与 FID 组、setup 角色与指纹、ICE-lite、候选、sctp-port / max-m
   协商的都是 1.2）；应答方取 DTLS 客户端角色（`a=setup:active`）；`OtherEvent` 的 `Debug` 输出变了
   （它从来不是稳定的）；`Endpoint` 仍没有 TURN 客户端（与以前一样，relay 候选需在别处获得）。
 - 依赖：str0m、dimpl、p256 / ecdsa / elliptic-curve、它们引入的 RustCrypto crate 以及 rand 0.9 已退出
-  库的依赖图；only-dtls 与 dimpl 的内存互通测试已删除。p256/p384 0.13 仍是 only-crypto 交叉检查的
+  库的依赖图；akio-dtls 与 dimpl 的内存互通测试已删除。p256/p384 0.13 仍是 akio-crypto 交叉检查的
   dev-dependency，因此 `deny.toml` 中对 RUSTSEC-2026-0387（crypto-bigint）的忽略现在只涉及它们。
 
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。
 
-- HTTP/1 头部解析（only-http 的请求、chunked trailer 与客户端响应，only-ws 客户端握手响应）改用自研解析器
-  `only_ws::http1`（`#[doc(hidden)]`）：零拷贝；增量（分多次读到的头部只扫描一遍，不再每次读都从头重新解析；
+- HTTP/1 头部解析（akio-http 的请求、chunked trailer 与客户端响应，akio-ws 客户端握手响应）改用自研解析器
+  `akio_ws::http1`（`#[doc(hidden)]`）：零拷贝；增量（分多次读到的头部只扫描一遍，不再每次读都从头重新解析；
   会话也不再每次读都复制已缓存的字节）；按 RFC 9110/9112 严格校验：方法与字段名必须是 token，请求目标必须是
   可见 ASCII（httparse 放行的非 ASCII 字节现在返回 400），请求行各元素之间恰好一个 SP，拒绝孤立 CR、冒号前
   或首个字段前的空白以及过时的折行（响应中同样拒绝），行尾接受 CRLF 或单独 LF。头部值不再做 `str::trim`
   （按 RFC 9110 只去掉两侧的 SP/HTAB）。速度与 httparse（SIMD）相当，用的是安全代码中的按字扫描
   （`tools/codec-bench`）。
-- HPACK 改为自研（`only_http::hpack`，`#[doc(hidden)]`）：编码器带动态表，Huffman 编码不更长时使用，
+- HPACK 改为自研（`akio_http::hpack`，`#[doc(hidden)]`）：编码器带动态表，Huffman 编码不更长时使用，
   `authorization` / `proxy-authorization` / 较短的 `cookie` 用 never-indexed 字面量，对端修改
   `SETTINGS_HEADER_TABLE_SIZE` 后按 RFC 7541 §4.2 发送动态表大小更新（loona-hpack 从不发送）；解码器带动态表，
   大小更新只允许出现在头部块开头且不超过我方设置，整数不超过 32 位，解码过程中即应用头部列表大小限制（整个块
   仍会处理完，使动态表保持同步）；Huffman 解码每次处理 4 位。RFC 7541 附录 C 的向量双向通过；h2spec 147/147。
-- 路由约束（`{id:[0-9]+}`）改用自研线性时间引擎（`only_http::re`）：字面量、`.`、带范围/取反/转义的字符类、
+- 路由约束（`{id:[0-9]+}`）改用自研线性时间引擎（`akio_http::re`）：字面量、`.`、带范围/取反/转义的字符类、
   ASCII 的 `\d \w \s`（及其取反）、分组（含命名分组，不做捕获）、`|`、`* + ? {m} {m,} {m,n}` 及其惰性形式、
   `^`/`$`；不支持的语法（标志、`\b`、`\p{..}`、反向引用、POSIX 字符类、字符类集合运算、超过 1000 的计数）
-  在注册时 panic 并指出问题。正则参数始终可用；only-http 的 `regex` cargo feature 保留为空操作以保持兼容。
+  在注册时 panic 并指出问题。正则参数始终可用；akio-http 的 `regex` cargo feature 保留为空操作以保持兼容。
 - 模糊测试：`http1_request` / `http1_client` 将头部解析器与 httparse 对比，`hpack` 与 loona-hpack 对比（编解码
   双向互通），新增的 `regex_match` 与 `regex` crate 对比；这些 crate 只作为 `fuzz/` 与 `tools/codec-bench`
   微基准（都在库的 workspace 之外）的依赖保留。
@@ -2937,15 +2957,15 @@ DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。
 
 DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno 与 `EINTR` 处理不变。
 
-- `only-sys` 在 `only_sys::ffi`（`#[doc(hidden)]`，内部）中声明自有的操作系统绑定：C 类型、常量、`#[repr(C)]` 结构体（`sockaddr_in`/`in6`/`storage`/`ll`、`msghdr`、`mmsghdr`、带 `CMSG_*` 辅助函数的 `cmsghdr`、`iovec`、`epoll_event`（x86_64 上为 packed）、`kevent`、`timespec`、`pollfd`、`cpu_set_t`、`sigaction`、`utsname`），以及 C 库（Linux，glibc 或 musl）与 libSystem（macOS）函数的 `extern "C"` 声明。没有 C 封装的系统调用（`bpf`、`io_uring_*`）经 `syscall(2)` 调用，系统调用号按架构区分。支持 Linux x86_64 与 aarch64（riscv64 / loongarch64 共用通用布局）以及 macOS aarch64 / x86_64；其他 Linux 架构会以明确的错误信息编译失败，而不是悄悄使用错误的布局。
+- `akio-sys` 在 `akio_sys::ffi`（`#[doc(hidden)]`，内部）中声明自有的操作系统绑定：C 类型、常量、`#[repr(C)]` 结构体（`sockaddr_in`/`in6`/`storage`/`ll`、`msghdr`、`mmsghdr`、带 `CMSG_*` 辅助函数的 `cmsghdr`、`iovec`、`epoll_event`（x86_64 上为 packed）、`kevent`、`timespec`、`pollfd`、`cpu_set_t`、`sigaction`、`utsname`），以及 C 库（Linux，glibc 或 musl）与 libSystem（macOS）函数的 `extern "C"` 声明。没有 C 封装的系统调用（`bpf`、`io_uring_*`）经 `syscall(2)` 调用，系统调用号按架构区分。支持 Linux x86_64 与 aarch64（riscv64 / loongarch64 共用通用布局）以及 macOS aarch64 / x86_64；其他 Linux 架构会以明确的错误信息编译失败，而不是悄悄使用错误的布局。
 - 每个布局与常量都在仅测试用的模块中与 `libc` crate 对比（`libc` 现在只是 dev-dependency），已在 macOS aarch64、Linux aarch64 和 Linux x86_64 上验证。
-- `only-uring` 拥有自研 io_uring 绑定（`ring`）：`io_uring_setup` / `io_uring_enter` / `io_uring_register`，按内核内存序访问的 mmap SQ/CQ ring 与 SQE 数组，反应器用到的提交项（multishot accept、带缓冲区选择的 multishot recv、poll add、async cancel 与 cancel-any、read），CQE 标志，opcode 探测与 `IORING_FEAT_*` 检查（探测现在也要求 `IORING_FEAT_EXT_ARG`），SQPOLL 以及 cooperative / single-issuer / deferred task-run 设置。buffer ring、`KernelBuf`、在途取消与 graveyard 逻辑不变。
-- `only-ebpf` 与 `only-dpdk`（TAP、AF_PACKET）改用 `only_sys::ffi`。
+- `akio-uring` 拥有自研 io_uring 绑定（`ring`）：`io_uring_setup` / `io_uring_enter` / `io_uring_register`，按内核内存序访问的 mmap SQ/CQ ring 与 SQE 数组，反应器用到的提交项（multishot accept、带缓冲区选择的 multishot recv、poll add、async cancel 与 cancel-any、read），CQE 标志，opcode 探测与 `IORING_FEAT_*` 检查（探测现在也要求 `IORING_FEAT_EXT_ARG`），SQPOLL 以及 cooperative / single-issuer / deferred task-run 设置。buffer ring、`KernelBuf`、在途取消与 graveyard 逻辑不变。
+- `akio-ebpf` 与 `akio-dpdk`（TAP、AF_PACKET）改用 `akio_sys::ffi`。
 
-### 变更（实验性层级）：only-dpdk 使用自研 TCP/IP 协议栈
+### 变更（实验性层级）：akio-dpdk 使用自研 TCP/IP 协议栈
 
-`only-dpdk` 不再依赖 smoltcp（DEV-PLAN“去除第三方依赖”第 A 波）：用户态协议栈改为 only 自研，位于
-`crates/only-dpdk/src/net`（安全 Rust，`#![forbid(unsafe_code)]`，无依赖），`Device` 种类、
+`akio-dpdk` 不再依赖 smoltcp（DEV-PLAN“去除第三方依赖”第 A 波）：用户态协议栈改为 akio 自研，位于
+`crates/akio-dpdk/src/net`（安全 Rust，`#![forbid(unsafe_code)]`，无依赖），`Device` 种类、
 `DpdkConfig` 与 `Backend::Dpdk` 的集成方式不变。
 
 - 以太网 II；ARP 缓存 60 s，并为等待解析的报文排队（发往新邻居的第一个 SYN 不再被丢弃，smoltcp 版本
@@ -2959,7 +2979,7 @@ DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno �
   ACK 按接收批次合并；内存链路的一端发送后会唤醒对端线程。
 - 多队列 DPDK 端口上可以拨号（原先返回 `Unsupported`）：本地端口对应其队列，RSS 放到其他队列的回包
   会被转交。
-- `DpdkConfig` 新字段：`syn_cookies`（默认 `true`）、`congestion`（新类型 `only::dpdk::Congestion`，
+- `DpdkConfig` 新字段：`syn_cookies`（默认 `true`）、`congestion`（新类型 `akio::dpdk::Congestion`，
   默认 `Cubic`）、`tcp_keepalive`（默认 `None`）。`udp_buffer` 现在限制每个 UDP 端口排队的数据报。
 - TAP 与 AF_PACKET 设备直接使用 `libc`（`src/sys.rs`）；AF_PACKET socket 使用 8 MiB 接收缓冲区，并
   跳过本机发出的帧。
@@ -2973,18 +2993,18 @@ DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno �
 
 API 无变化。Ryzen 7 7800X3D，回环，交替运行三轮（见 docs/BENCHMARKS.zh-CN.md）：
 
-- `only-quic`：单流大块吞吐 3.4-3.7 → 5.7-5.8 Gbit/s（quinn-proto 版本的 1.25 倍，之前为 0.72 倍），单连接 64 个并发的
+- `akio-quic`：单流大块吞吐 3.4-3.7 → 5.7-5.8 Gbit/s（quinn-proto 版本的 1.25 倍，之前为 0.72 倍），单连接 64 个并发的
   HTTP/3 请求 17.1 万 → 41.5-42.6 万次/秒，握手 +2%。pacer 原先把 RTT 下限设为 1 ms，令牌桶一空就通过定时器线程为每个包
   唤醒一次发送方；现在使用测得的 RTT，并等整批令牌补满再发（与 quinn-proto 相同），被 pacing 的数据以 GSO 批次从 I/O 线程
   发出（每 GiB：futex 调用 42.3 万 → 5600 次，上下文切换 18.2 万 → 9500 次）。另外每个包的簿记更省（流映射不再用 SipHash，
   按序插入区间只需一次查找，批次缓冲区与包号空间选择不再逐个数据报分配内存）。
-- `only-tls`：收到的记录只复制一次，直接进入调用方的明文缓冲区并在那里解密（以前经过接收缓冲区再复制出来）；大块写入一次性
+- `akio-tls`：收到的记录只复制一次，直接进入调用方的明文缓冲区并在那里解密（以前经过接收缓冲区再复制出来）；大块写入一次性
   为所有记录预留空间。16-64 KiB 记录的加密 + 解密提升 5-7%。握手经过剖析：98% 以上是曲线运算与哈希，因此未改动。新增
-  `crates/only-tls/examples/tls-bench.rs`，与 rustls 0.23 + ring 对比（仅为开发依赖）。
+  `crates/akio-tls/examples/tls-bench.rs`，与 rustls 0.23 + ring 对比（仅为开发依赖）。
 
-### 变更（性能）：only-deflate 达到 zlib-rs 的速度（DEV-PLAN 性能优化）
+### 变更（性能）：akio-deflate 达到 zlib-rs 的速度（DEV-PLAN 性能优化）
 
-`only-deflate`（仍为 `#![forbid(unsafe_code)]`，无依赖，不用 SIMD）的压缩速度现在为使用 zlib-rs
+`akio-deflate`（仍为 `#![forbid(unsafe_code)]`，无依赖，不用 SIMD）的压缩速度现在为使用 zlib-rs
 后端的 flate2 的 0.94-1.48 倍（之前为 0.25-0.9 倍），输出最多大 0.5%（45 组级别 × 语料中 36 组完全
 相同）；解压为 0.82-1.23 倍（之前为 0.7-0.85 倍）。在 x86-64 上测量，表格见 docs/BENCHMARKS.zh-CN.md。
 对每种窗口大小（8 按 9 布局）输出的流与之前一样有效；API 不变。
@@ -3007,93 +3027,93 @@ API 无变化。Ryzen 7 7800X3D，回环，交替运行三轮（见 docs/BENCHMA
 
 ### 新增
 
-- `only-protobuf` 与 `only-protobuf-build`（DEV-PLAN“不依赖第三方”第 A 批）：自研的 protobuf
+- `akio-protobuf` 与 `akio-protobuf-build`（DEV-PLAN“不依赖第三方”第 A 批）：自研的 protobuf
   运行时与代码生成器，取代 prost，没有任何依赖。
-  - `only-protobuf`：线格式、`Message`（编码、解码、合并、长度前缀分帧）、开放枚举
+  - `akio-protobuf`：线格式、`Message`（编码、解码、合并、长度前缀分帧）、开放枚举
     （`Enumeration`）、保留未知字段（`UnknownFields`）、`Name`、有界解码（最多 100 层嵌套、检查
     长度、检查 UTF-8；线类型不符的字段作为未知字段保留，与 C++、Go 一致），以及 `well_known`
     （`Empty`、`Timestamp`、`Duration`、`Any`、包装类型、`FieldMask`、`Struct` / `Value` /
     `ListValue`，含与 `std` 类型的转换和 `Any::pack` / `unpack`）。编码结果与 protoc 的 C++
     运行时逐字节一致。
-  - `only-protobuf-build`：`.proto` 解析器（proto3 与 proto2：消息、嵌套类型、枚举、`optional`、
+  - `akio-protobuf-build`：`.proto` 解析器（proto3 与 proto2：消息、嵌套类型、枚举、`optional`、
     `required`、`repeated`、`map`、`oneof`、默认值、package、import、内置 well-known 类型）与供
     `build.rs` 使用的 Rust 代码生成器（`compile(&["x.proto"], out_dir)`、`Config`），不需要
-    `protoc`。service 生成 `only-grpc` 桩代码：`<service>_server` 中的 trait 与 `register`，以及
-    类型化的 `<service>_client`；此时消息也实现 `only_grpc::codec::Message`。
+    `protoc`。service 生成 `akio-grpc` 桩代码：`<service>_server` 中的 trait 与 `register`，以及
+    类型化的 `<service>_client`；此时消息也实现 `akio_grpc::codec::Message`。
   - 用 protoc 生成的黄金编码、与 prost 的差分（测试与 fuzz 目标 `protobuf_diff`），以及与 grpc-go
     自带的 route_guide / helloworld 生成代码双向互通（`tools/interop/grpc/run.sh`，新增
     `tools/protobuf-test`）做了验证。
-- `only-grpc`：`Sink::send_message` 与 `ClientSink::send_message`（编码一个 `codec::Message` 后
-  发送），以及重导出 `only_grpc::Headers`。
+- `akio-grpc`：`Sink::send_message` 与 `ClientSink::send_message`（编码一个 `codec::Message` 后
+  发送），以及重导出 `akio_grpc::Headers`。
 
-- `only-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行
+- `akio-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行
   当前二进制（不在多线程之后 fork），每个 worker 运行自己的 `Engine`；监听套接字通过 `SO_REUSEPORT`
   共享（Linux 默认），或从 supervisor 继承（`ListenMode::Inherit`，macOS 默认；重启与重载期间不拒绝任何
   连接）；崩溃的 worker 按指数退避重启；SIGTERM/SIGINT 让 worker 排空后退出，SIGHUP（或
   `Supervisor::reload`）启动新一代 worker，并在替代者就绪后停止对应的旧 worker；可选 CPU 绑核（Linux）；
   `Worker` 提供序号、worker 数与代数。示例 `prefork-http`，手册章节“多进程服务（prefork）”。
-- `only::Listener::tcp_from_std`：服务一个已绑定并在监听的套接字（从 supervisor 继承、systemd socket
+- `akio::Listener::tcp_from_std`：服务一个已绑定并在监听的套接字（从 supervisor 继承、systemd socket
   activation）；内部的 `EpollGroup::bind_listener` / `UringGroup::bind_listener`。
-- `only-sys`（内部）：`process` 模块（在 `pre_exec` 中让子进程继承 fd、设置 CPU 亲和性与父进程退出信号，
+- `akio-sys`（内部）：`process` 模块（在 `pre_exec` 中让子进程继承 fd、设置 CPU 亲和性与父进程退出信号，
   `take_inherited_fd`、`reserve_reuseport`、self-pipe 方式的 `signal_pipe`、`kill`）。
-- `only-deflate`（内部，DEV-PLAN“不依赖第三方”第 A 波）：纯安全 Rust、无依赖的 DEFLATE、zlib 与 gzip，
-  替代 `only-ws`（permessage-deflate）、`only-http`（压缩中间件）与 `only-grpc`（gzip 消息）中的
+- `akio-deflate`（内部，DEV-PLAN“不依赖第三方”第 A 波）：纯安全 Rust、无依赖的 DEFLATE、zlib 与 gzip，
+  替代 `akio-ws`（permessage-deflate）、`akio-http`（压缩中间件）与 `akio-grpc`（gzip 消息）中的
   `flate2`/`zlib-rs`。流式 `Inflater`（任意拆分输入、有界输出、窗口 2^8..2^15、与 zlib 相同的编码检查）
   与 `Deflater`（哈希链、惰性匹配、zlib 级别 0..=9、限长动态 Huffman、固定或存储块、同步/完全刷新、
   窗口 2^8..2^15），以及 Adler-32 与 CRC-32。与 zlib-rs 和 `gzip(1)` 双向互通；模糊测试目标
   `deflate_inflate`（与 zlib-rs 差分）和 `deflate_roundtrip`；Miri 运行其测试，Miri 任务重新运行
-  only-grpc 的 gzip 测试（docs/unsafe-review.zh-CN.md 中 zlib-rs 的别名问题不再适用）。其他 crate 的公开
+  akio-grpc 的 gzip 测试（docs/unsafe-review.zh-CN.md 中 zlib-rs 的别名问题不再适用）。其他 crate 的公开
   API 不变。
-- `only-ws`：permessage-deflate 支持 8 位窗口。服务端接受 `server_max_window_bits=8`（以前会拒绝该提议），
+- `akio-ws`：permessage-deflate 支持 8 位窗口。服务端接受 `server_max_window_bits=8`（以前会拒绝该提议），
   被告知 `client_max_window_bits=8` 的客户端会压缩（以前发送未压缩消息）；此时压缩器把距离限制在
   250 字节以内。`deflate::Deflater`、`deflate::Inflater` 与 `protocol::Decoder` 现在实现 `UnwindSafe`
   （不再持有 zlib-rs 状态）。
 
 ### 弃用
 
-- `only-grpc` 的 `prost` feature（不在 semver 承诺之内）：仍可使用，请改用 `only-protobuf` /
-  `only-protobuf-build`。它可能在某个 minor 版本中移除。
+- `akio-grpc` 的 `prost` feature（不在 semver 承诺之内）：仍可使用，请改用 `akio-protobuf` /
+  `akio-protobuf-build`。它可能在某个 minor 版本中移除。
 
 ### 修复
 
-- `only-ws`：每个 WebSocket 连接都带着约 2 KB 内联的 permessage-deflate 状态（`Option` 中的
-  only-deflate inflater 与 deflater），即使没有协商压缩；现在状态改为装箱。升级 + 一次 echo 之后的
+- `akio-ws`：每个 WebSocket 连接都带着约 2 KB 内联的 permessage-deflate 状态（`Option` 中的
+  akio-deflate inflater 与 deflater），即使没有协商压缩；现在状态改为装箱。升级 + 一次 echo 之后的
   空闲连接：3,486 → 1,426 字节。
 - io_uring：优雅关闭期间，multishot accept 在取消生效前已完成接受的连接会被重置；现在它们会被服务
   （收到第一份数据后调用 `on_shutdown`），并且排空要等 accept 真正结束才完成，监听套接字因此确实被关闭。
-- `only-dpdk`（实验性，M6）：内核旁路后端。用户态 TCP/IP 协议栈（smoltcp，IPv4）运行在 only 的
+- `akio-dpdk`（实验性，M6）：内核旁路后端。用户态 TCP/IP 协议栈（smoltcp，IPv4）运行在 akio 的
   I/O 线程上，底层可以是 DPDK 端口（按 `EalConfig` 初始化 EAL，每个 rx/tx 队列对一个线程，mbuf
   批量收发，多队列时用 RSS 并在队列间扇出 ARP）、Linux TAP 接口、AF_PACKET socket 或进程内的
   `MemoryWire`。UDP listener 每次 `on_data` 交付一个数据报，TCP listener 交付字节流，支持
-  `dial` / `dial_udp`、背压、空闲超时、遥测与优雅关闭，因此协议 crate（only-kcp 等）无需修改即可
+  `dial` / `dial_udp`、背压、空闲超时、遥测与优雅关闭，因此协议 crate（akio-kcp 等）无需修改即可
   运行。同一设备上的多个 listener 共享该设备的协议栈与线程。
-- `only`：cargo feature `dpdk`（`Backend::Dpdk(DpdkConfig)`，再导出 `only::dpdk`）与 `dpdk-pmd`
+- `akio`：cargo feature `dpdk`（`Backend::Dpdk(DpdkConfig)`，再导出 `akio::dpdk`）与 `dpdk-pmd`
   （同时支持 DPDK 端口；通过 pkg-config 查找并链接 libdpdk）。实验性：不在 semver 承诺范围内
   （docs/api-stability.zh-CN.md）。
-- `only-core`（面向后端，`#[doc(hidden)]`）：`ConnInner::new_virtual` 与
+- `akio-core`（面向后端，`#[doc(hidden)]`）：`ConnInner::new_virtual` 与
   `ConnInner::drain_output`，供由用户态协议栈搬运字节的连接使用。
 - `tools/dpdk/`（Dockerfile + `test.sh`）与重型 CI 任务 `dpdk`：基于发行版的 DPDK 构建，并通过
   DPDK 的 `net_tap` PMD（单队列与双队列）smoltcp 的 TAP 设备以及 veth 对上的 AF_PACKET，与内核协议栈互测 UDP/TCP echo。
-- `Engine::bind_udp` 与 `UdpBinding`（only、only-core）：在引擎运行中绑定的非连接 UDP socket，
+- `Engine::bind_udp` 与 `UdpBinding`（akio、akio-core）：在引擎运行中绑定的非连接 UDP socket，
   像 UDP 监听器一样服务（每个对端地址一个连接），并可用 `UdpBinding::send_to` 向任意地址发送。
   ICE agent 与 TURN 中继需要它。
-- `only-turn`（新 crate）：STUN 编解码（RFC 8489，含 TURN 与 ICE 属性、`MESSAGE-INTEGRITY`、
+- `akio-turn`（新 crate）：STUN 编解码（RFC 8489，含 TURN 与 ICE 属性、`MESSAGE-INTEGRITY`、
   `FINGERPRINT`）、`StunServer`，以及 UDP 上的 TURN 中继 `TurnServer`（RFC 8656）：长期凭据的分配
   （`static_auth`，以及用于 TURN REST API 的 `ephemeral_auth`）、权限、通道、Send/Data 指示、刷新、
   `EVEN-PORT` 与 `RESERVATION-TOKEN`、无状态 nonce、配额，以及默认拒绝私有与回环对端的对端策略；
   `TurnCore` 是同一服务器的 sans-io 状态机。互通：pion/turn 客户端与 coturn 的
   `turnutils_uclient`。
-- `only-webrtc`（新 crate）：基于 sans-io 的 `str0m` 0.24、跑在 only UDP 上的 WebRTC。
+- `akio-webrtc`（新 crate）：基于 sans-io 的 `str0m` 0.24、跑在 akio UDP 上的 WebRTC。
   `RtcServer` 服务一个 UDP 监听器（默认 ICE-lite，按 ICE 用户名与源地址分流各 peer）；`Endpoint`
   在 `bind_udp` socket 上运行完整 ICE agent，可从 STUN 服务器获取 server-reflexive 候选。`Peer`
   （任意线程）可在数据通道上发送、写媒体、请求关键帧、重新协商；`PeerHandler` 回调对每个 peer
   逐个执行。DTLS 1.2/1.3 与指纹校验、SRTP（AES-CM、AES-GCM）、SCTP 数据通道（可靠或不可靠、
   有序或无序）、带 NACK、PLI/FIR、TWCC 的 RTP/RTCP。纯 Rust 加密实现（RustCrypto 与 `dimpl`，
-  无需 C 工具链）。与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 only TURN 中继），并与 fib
+  无需 C 工具链）。与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 akio TURN 中继），并与 fib
   的 Go 版 WebRTC 互通（数据通道）；
   `tools/interop/webrtc/run.sh`。
 - 模糊测试目标 `stun_message`、`turn_server` 与 `webrtc_sdp`。
-- `only-media`（M7 流媒体），新 crate：一个流 hub，周围是 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV、HLS
+- `akio-media`（M7 流媒体），新 crate：一个流 hub，周围是 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV、HLS
   以及 WHIP/WHEP 信令。
   - `hub`：按路径区分的流，一个推流者多个订阅者，用于秒开的 GOP 缓存，`Dropper`（慢播放者丢帧至下一个
     关键帧），推流 / 播放鉴权钩子，轨道未知前先预留路径，等待（重新）推流者，`Timeline` 时间戳规整，
@@ -3110,12 +3130,12 @@ API 无变化。Ryzen 7 7800X3D，回环，交替运行三轮（见 docs/BENCHMA
   - 已与作为推流端和播放端的 ffmpeg / ffprobe 互通测试（SRT 在 Docker 中使用 libsrt）；模糊测试目标
     `rtmp_server`、`flv_demux`、`amf_decode`、`rtsp_server`、`sdp_parse`、`rtp_depacketize`、
     `mpegts_demux`、`srt_listener`、`srt_conn`。
-- `only_ws::WsSender::queued_bytes`，供向慢速对端推流的生产者控制节奏。
-- `only-bittorrent`（M7）：bencode；v1 .torrent 文件（路径安全检查、`Builder`）与磁力链接；HTTP
-  与 UDP tracker 的编解码、`TrackerClient`（only-http、`dial_udp`）和 `TrackerServer`（共用一个
-  存储的 only-http service 与 UDP acceptor）；带 Fast 扩展、扩展协议、ut_metadata 和 ut_pex 的
+- `akio_ws::WsSender::queued_bytes`，供向慢速对端推流的生产者控制节奏。
+- `akio-bittorrent`（M7）：bencode；v1 .torrent 文件（路径安全检查、`Builder`）与磁力链接；HTTP
+  与 UDP tracker 的编解码、`TrackerClient`（akio-http、`dial_udp`）和 `TrackerServer`（共用一个
+  存储的 akio-http service 与 UDP acceptor）；带 Fast 扩展、扩展协议、ut_metadata 和 ut_pex 的
   peer wire 协议；MSE/PE（DH-768、RC4）；带 LEDBAT 的 uTP；主线 DHT；`port::UdpPort`，让 uTP 与
-  DHT 共用一个 only UDP listener；以及 `client::Client`（磁力链接、带残局模式的最稀有优先选片、
+  DHT 共用一个 akio UDP listener；以及 `client::Client`（磁力链接、带残局模式的最稀有优先选片、
   请求流水线、带乐观 unchoke 的 choke 算法、在逻辑池上进行的存储与 SHA-1 校验、PEX、DHT、
   tracker、事件）。与 libtorrent 2.0 和 aria2 1.37 互通（`tools/interop/bittorrent/run.sh`）；
   模糊测试目标 `bt_bencode`、`bt_peer_wire`、`bt_krpc`、`bt_utp`、`bt_tracker`、`bt_mse`。
@@ -3140,45 +3160,45 @@ CI 中检查。
 - `Handler` / `Acceptor` / `fn_acceptor`，以及 `Conn`：可克隆的 `Send + Sync` 句柄，提供 `send`、
   `send_owned`、`send_shared`（`SharedBuf`）、`send_segments`、`cork`/`flush`、
   `close`/`close_after_send`、`hold_reads`、`on_drain`；连接关闭后使用句柄返回 `Error::Closed`。
-- 后端：`only-epoll` 中的 epoll（Linux）与 kqueue（macOS）；`SO_REUSEPORT` 分发 accept；异步
+- 后端：`akio-epoll` 中的 epoll（Linux）与 kqueue（macOS）；`SO_REUSEPORT` 分发 accept；异步
   `Engine::dial`。
 - 背压（写高水位、`max_queued_bytes`）、空闲与写超时、连接数上限、带超时的优雅停机。
 - 连接发送路径的 `loom` 模型；5,000 个同时连接与 100,000 个空闲连接的压力测试。
 
 **逻辑线程池、io_uring、UDP、TLS（M2）**
-- `only-pool` 自适应有界线程池；`Conn::spawn_blocking`，完成回调回到连接所属 I/O 线程；有序响应
+- `akio-pool` 自适应有界线程池；`Conn::spawn_blocking`，完成回调回到连接所属 I/O 线程；有序响应
   槽（`Conn::reserve_response`、`ResponseSlot`、`ResponseStream`）。
 - 慢回调检测（`Config::slow_callback_threshold`、`slow_hook`）。
-- `only-uring`：io_uring 后端（multishot accept/recv、provided-buffer ring、内核探测并回退到
+- `akio-uring`：io_uring 后端（multishot accept/recv、provided-buffer ring、内核探测并回退到
   epoll）；按 listener 选择后端（`Listener::backend`）。
 - UDP：`Listener::udp`（每个对端一个 `Conn`）、`Engine::dial_udp`、`recvmmsg`/`sendmmsg`、UDP
   GSO/GRO、`udp_max_peers`。
-- `only-tls`：rustls 作为 `Conn` 之下的 sans-io 传输层（`Tls::server`、`Tls::client`、`tls_info`）。
+- `akio-tls`：rustls 作为 `Conn` 之下的 sans-io 传输层（`Tls::server`、`Tls::client`、`tls_info`）。
 
 **HTTP 与 WebSocket（M3）**
-- `only-http`：支持 pipelining、chunked 消息体与 trailer、流式请求与响应体的 HTTP/1.1 服务器，
+- `akio-http`：支持 pipelining、chunked 消息体与 trailer、流式请求与响应体的 HTTP/1.1 服务器，
   `Router`（静态 > `:param` > `*wildcard`、正则参数、嵌套、layer），中间件（recover、request id、
   CORS、logger、response time、compress、etag、csrf、limiter），静态文件（`files::Files`：range、
   预压缩文件、缓存、`sendfile`），HTTP/1 客户端（`client::Client`、`ResponseFuture`）。
-- `only-ws`：RFC 6455 及 permessage-deflate、`PreparedMessage` 广播、子协议、origin 检查；服务端
-  升级（`Context::upgrade_websocket`）与客户端（`only_ws::client`）；Autobahn 测试全部通过。
+- `akio-ws`：RFC 6455 及 permessage-deflate、`PreparedMessage` 广播、子协议、origin 检查；服务端
+  升级（`Context::upgrade_websocket`）与客户端（`akio_ws::client`）；Autobahn 测试全部通过。
 
 **HTTP/2 与更多协议（M4）**
 - 基于同一 `Service` 的 HTTP/2 服务器（h2c prior knowledge 与 upgrade、ALPN `h2`、流量控制、HPACK、
   push）以及 `h2client::H2Client`；h2spec 全部通过。
-- `only-mux`（一个端口上的多种协议）、`only-arpc`（lesismal/arpc 线上格式）、`only-grpc`（基于
-  only-http 的 unary 与流式 gRPC、gzip、deadline、拦截器、可选 prost 辅助）、`only-socks`
+- `akio-mux`（一个端口上的多种协议）、`akio-arpc`（lesismal/arpc 线上格式）、`akio-grpc`（基于
+  akio-http 的 unary 与流式 gRPC、gzip、deadline、拦截器、可选 prost 辅助）、`akio-socks`
   （SOCKS5/4/4a 与 HTTP CONNECT）。
 
 **QUIC、HTTP/3、KCP、eBPF（M5）**
-- `only-quic`（在 only UDP 上驱动 quinn-proto）与 `only-h3`（带 QPACK 的 HTTP/3，客户端与服务端）。
-- `only-kcp`：与 skywind3000/kcp 和 kcp-go 兼容的 KCP（加密、Reed–Solomon FEC）。
-- `only-ebpf`：通过 `Accel::Ebpf` 按 CPU 或一致性哈希的 `SO_REUSEPORT` 分流（经典 BPF 无需特权，
+- `akio-quic`（在 akio UDP 上驱动 quinn-proto）与 `akio-h3`（带 QPACK 的 HTTP/3，客户端与服务端）。
+- `akio-kcp`：与 skywind3000/kcp 和 kcp-go 兼容的 KCP（加密、Reed–Solomon FEC）。
+- `akio-ebpf`：通过 `Accel::Ebpf` 按 CPU 或一致性哈希的 `SO_REUSEPORT` 分流（经典 BPF 无需特权，
   有特权时用 eBPF），以及内核内的 sockmap `Relay`。
 
 **生产就绪（M6）**
 - 遥测：每线程计数器、`Engine::metrics`（Prometheus 与 JSON）、连接表、慢回调环形记录、设置热更新
-  （`Engine::reload`）、`only_http::observe` 端点与 HTTP 指标。
+  （`Engine::reload`）、`akio_http::observe` 端点与 HTTP 指标。
 - 带种子的混沌测试（engine、fd 耗尽、TLS、HTTP/WebSocket）。
 
 **1.0 稳定化**
@@ -3188,16 +3208,16 @@ CI 中检查。
 - API 冻结：`docs/api-stability.zh-CN.md`（semver、MSRV 与平台策略）、`docs/deprecation.zh-CN.md`、
   本变更日志、由 CI job `public-api` 检查的公开 API 快照（`api/*.txt`、`tools/api/public-api.sh`），
   以及在 1.0.0 发布后生效的 `semver-checks` job。
-- 评审新增的 API：`AnyAcceptor` 与 `Listener::serve_any`（类型擦除的 acceptor，`only-mux` 使用）；
-  `Request::new`、`ClientRequest::new`/`body`、`FileBody::new`；`only` 再导出 `Part`、
-  `ResponseStream`、`Transport` 和 `SharedBuf`（`only-core` 也再导出 `SharedBuf`）；
-  `only_h3::H3Error`；`InflateError`、`ProtocolError`（ws）、`FrameError`（arpc）和 `QpackError`
-  实现 `Display`/`Error`；`only_core::Error::source` 返回底层 I/O 错误。
+- 评审新增的 API：`AnyAcceptor` 与 `Listener::serve_any`（类型擦除的 acceptor，`akio-mux` 使用）；
+  `Request::new`、`ClientRequest::new`/`body`、`FileBody::new`；`akio` 再导出 `Part`、
+  `ResponseStream`、`Transport` 和 `SharedBuf`（`akio-core` 也再导出 `SharedBuf`）；
+  `akio_h3::H3Error`；`InflateError`、`ProtocolError`（ws）、`FrameError`（arpc）和 `QpackError`
+  实现 `Display`/`Error`；`akio_core::Error::source` 返回底层 I/O 错误。
 - 每个公开类型都实现 `Debug`；构建器方法带 `#[must_use]`。
 
 ### 变更（破坏性，附迁移方式）
 
-配置与报告结构体以及将会增长的枚举现在是 `#[non_exhaustive]`：在 only 之外不能再使用结构体
+配置与报告结构体以及将会增长的枚举现在是 `#[non_exhaustive]`：在 akio 之外不能再使用结构体
 字面量。从 `Default`（或预设）开始，再给字段赋值：
 
 ```rust
@@ -3208,55 +3228,55 @@ let mut cfg = Config::default();
 cfg.idle_timeout = Some(d);
 ```
 
-受影响的结构体：`only`：`Config`、`UringConfig`、`EbpfConfig`、`PoolConfig`、`PoolStats`、
+受影响的结构体：`akio`：`Config`、`UringConfig`、`EbpfConfig`、`PoolConfig`、`PoolStats`、
 `SlowCallback`、`UdpStats`、`ConnInfo`、`LoopMeta`、`LoopCounters`、`LoopMetrics`、`Metrics`、
-`ReloadReport`、`SlowRecord`；`only-tls`：`TlsInfo`；`only-http`：`HttpConfig`、`H2Config`、
+`ReloadReport`、`SlowRecord`；`akio-tls`：`TlsInfo`；`akio-http`：`HttpConfig`、`H2Config`、
 `H2Options`、`WsOptions`、`Request`、`Response`、`FileBody`、`ClientRequest`、`ClientResponse`、
-`Cors`、`Compress`、`LogRecord`、`HttpSnapshot`；`only-ws`：`WsConfig`、`DialOptions`、`PmdOffer`、
-`PmdParams`、`ProtocolError`；`only-grpc`：`CallOptions`、`Status`、`Metadata`；`only-kcp`：
-`KcpConfig`、`Stats`；`only-h3`：`H3Config`；`only-ebpf`：`AttachOptions`、`SteerInfo`、`Probe`；
-`only-arpc`：`proto::Message`。枚举（`match` 需加通配分支）：`only::Error`、`Part`、`Backend`、
-`Accel`、`AccelStatus`、`only_http::Method`、`Version`、`BodyMode`、`ClientError`、
-`only_ws::client::WsClientError`、`deflate::InflateError`、`only_mux::Rule`、
-`only_arpc::CallError`、`proto::Cmd`、`only_quic::Error`、`only_h3::qpack::QpackError`、
-`only_kcp::KcpError`、`CloseReason`、`only_ebpf::Steering`、`HashKey`、`Tier`。
+`Cors`、`Compress`、`LogRecord`、`HttpSnapshot`；`akio-ws`：`WsConfig`、`DialOptions`、`PmdOffer`、
+`PmdParams`、`ProtocolError`；`akio-grpc`：`CallOptions`、`Status`、`Metadata`；`akio-kcp`：
+`KcpConfig`、`Stats`；`akio-h3`：`H3Config`；`akio-ebpf`：`AttachOptions`、`SteerInfo`、`Probe`；
+`akio-arpc`：`proto::Message`。枚举（`match` 需加通配分支）：`akio::Error`、`Part`、`Backend`、
+`Accel`、`AccelStatus`、`akio_http::Method`、`Version`、`BodyMode`、`ClientError`、
+`akio_ws::client::WsClientError`、`deflate::InflateError`、`akio_mux::Rule`、
+`akio_arpc::CallError`、`proto::Cmd`、`akio_quic::Error`、`akio_h3::qpack::QpackError`、
+`akio_kcp::KcpError`、`CloseReason`、`akio_ebpf::Steering`、`HashKey`、`Tier`。
 
 重命名与签名变更：
 
 | Crate | 之前 | 之后 |
 |---|---|---|
-| only | `Listener::serve_dyn(Arc<dyn DynAcceptor>)`（隐藏） | `Listener::serve_any(impl Into<AnyAcceptor>)` |
-| only-mux | `Mux::into_dyn() -> Arc<dyn DynAcceptor>` | `Mux::into_any() -> AnyAcceptor`（另有 `From<Mux> for AnyAcceptor`；可直接把 `Mux` 传给 `serve_any`） |
-| only-mux | `Mux::route_dyn(rule, Arc<dyn DynAcceptor>)` | `Mux::route_any(rule, impl Into<AnyAcceptor>)` |
-| only-mux | `Mux::max_sniff(n)` | `Mux::max_sniff_bytes(n)` |
-| only-http | `H2Client::connect(..)` | `H2Client::dial(..)` |
-| only-http | `H2Client::connect_blocking(..)` | `H2Client::dial_blocking(..)` |
-| only-ws | `client::connect(..)`（阻塞） | `client::dial_blocking(..)` |
-| only-ws | `INTERNAL_ERROR` | `protocol::close::INTERNAL` |
-| only-arpc | `dial(..)`（阻塞） | `dial_blocking(..)` |
-| only-arpc | `Routes::max_body(n)` | `Routes::max_body_bytes(n)` |
-| only-grpc | `GrpcClient::gzip(bool)` | `GrpcClient::compress(bool)`（与 `GrpcServer::compress` 同名） |
-| only-grpc | `GrpcServer::max_message(n)` | `GrpcServer::max_message_bytes(n)` |
-| only-h3 | `H3Client::connect(..)` | `H3Client::dial(..)` |
-| only-h3 | `server(quic, service)` | `serve(quic, service)` |
-| only-h3 | `server_with(quic, service, cfg)` | `serve_with(quic, cfg, service)`（配置在 service 之前，与 `only_http::serve_with` 一致） |
-| only-h3 | `H3Config::max_body`、`max_field_section` | `max_body_bytes`、`max_field_section_bytes` |
-| only-h3 | `request`、`request_blocking`、`get` 返回 `Result<Response, String>` | `Result<Response, H3Error>`（`Closed`、`Reset(code)`、`Protocol`、`Timeout`） |
-| only-kcp | `Config` | `KcpConfig` |
-| only-kcp | `KcpServer::new`、`dial`、`dial_conv`、`Crypt::new` 返回 `Result<_, String>` | `std::io::Result<_>`（设置有误时为 `InvalidInput`） |
-| only-kcp | `Kcp::stats: [u64; 4]`（公开字段） | 改为私有；请用 `Session::stats()` |
-| only-ebpf | `Relay::new_unchecked(pairs)` | `Relay::new_any_kernel(pairs)` |
-| only-ebpf | `Relay::splice_conns(&Arc<ConnInner>, &Arc<ConnInner>)` | `Relay::splice_conns(&Conn<A>, &Conn<B>)` |
+| akio | `Listener::serve_dyn(Arc<dyn DynAcceptor>)`（隐藏） | `Listener::serve_any(impl Into<AnyAcceptor>)` |
+| akio-mux | `Mux::into_dyn() -> Arc<dyn DynAcceptor>` | `Mux::into_any() -> AnyAcceptor`（另有 `From<Mux> for AnyAcceptor`；可直接把 `Mux` 传给 `serve_any`） |
+| akio-mux | `Mux::route_dyn(rule, Arc<dyn DynAcceptor>)` | `Mux::route_any(rule, impl Into<AnyAcceptor>)` |
+| akio-mux | `Mux::max_sniff(n)` | `Mux::max_sniff_bytes(n)` |
+| akio-http | `H2Client::connect(..)` | `H2Client::dial(..)` |
+| akio-http | `H2Client::connect_blocking(..)` | `H2Client::dial_blocking(..)` |
+| akio-ws | `client::connect(..)`（阻塞） | `client::dial_blocking(..)` |
+| akio-ws | `INTERNAL_ERROR` | `protocol::close::INTERNAL` |
+| akio-arpc | `dial(..)`（阻塞） | `dial_blocking(..)` |
+| akio-arpc | `Routes::max_body(n)` | `Routes::max_body_bytes(n)` |
+| akio-grpc | `GrpcClient::gzip(bool)` | `GrpcClient::compress(bool)`（与 `GrpcServer::compress` 同名） |
+| akio-grpc | `GrpcServer::max_message(n)` | `GrpcServer::max_message_bytes(n)` |
+| akio-h3 | `H3Client::connect(..)` | `H3Client::dial(..)` |
+| akio-h3 | `server(quic, service)` | `serve(quic, service)` |
+| akio-h3 | `server_with(quic, service, cfg)` | `serve_with(quic, cfg, service)`（配置在 service 之前，与 `akio_http::serve_with` 一致） |
+| akio-h3 | `H3Config::max_body`、`max_field_section` | `max_body_bytes`、`max_field_section_bytes` |
+| akio-h3 | `request`、`request_blocking`、`get` 返回 `Result<Response, String>` | `Result<Response, H3Error>`（`Closed`、`Reset(code)`、`Protocol`、`Timeout`） |
+| akio-kcp | `Config` | `KcpConfig` |
+| akio-kcp | `KcpServer::new`、`dial`、`dial_conv`、`Crypt::new` 返回 `Result<_, String>` | `std::io::Result<_>`（设置有误时为 `InvalidInput`） |
+| akio-kcp | `Kcp::stats: [u64; 4]`（公开字段） | 改为私有；请用 `Session::stats()` |
+| akio-ebpf | `Relay::new_unchecked(pairs)` | `Relay::new_any_kernel(pairs)` |
+| akio-ebpf | `Relay::splice_conns(&Arc<ConnInner>, &Arc<ConnInner>)` | `Relay::splice_conns(&Conn<A>, &Conn<B>)` |
 
 移出受保护 API（现为 `#[doc(hidden)]`；面向后端或测试的辅助，可能在任何发布中变化）：
-`only_core::{LoopLink, Task, Pool, LoopStats, telemetry::Counter, telemetry::json_str,
-telemetry::prometheus_header}` 以及仅供后端使用的 `Telemetry` 方法、`only::{DynAcceptor,
-DynHandler}` 再导出、`only_http::transport`、`only_ws::WsSession`、
-`only_ebpf::{cbpf, SLOTS, slot_table, expected_index}`。
+`akio_core::{LoopLink, Task, Pool, LoopStats, telemetry::Counter, telemetry::json_str,
+telemetry::prometheus_header}` 以及仅供后端使用的 `Telemetry` 方法、`akio::{DynAcceptor,
+DynHandler}` 再导出、`akio_http::transport`、`akio_ws::WsSession`、
+`akio_ebpf::{cbpf, SLOTS, slot_table, expected_index}`。
 
-版本：所有 crate 均为 `1.0.0-rc.1`，相互之间以精确（`=`）版本依赖；`only-sys`、`only-buf`、
-`only-timer`、`only-pool`、`only-epoll` 和 `only-uring` 是内部 crate，自身不作 semver 承诺
+版本：所有 crate 均为 `1.0.0-rc.1`，相互之间以精确（`=`）版本依赖；`akio-sys`、`akio-buf`、
+`akio-timer`、`akio-pool`、`akio-epoll` 和 `akio-uring` 是内部 crate，自身不作 semver 承诺
 （见 docs/api-stability.zh-CN.md）。
 
-[Unreleased]: https://github.com/lesismal/only/compare/v1.0.0-rc.1...HEAD
-[1.0.0-rc.1]: https://github.com/lesismal/only/releases/tag/v1.0.0-rc.1
+[Unreleased]: https://github.com/lesismal/akio/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/lesismal/akio/releases/tag/v1.0.0-rc.1

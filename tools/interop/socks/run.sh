@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# only-socks <-> SOCKS clients, in one Linux container (Debian, everything on 127.0.0.1):
+# akio-socks <-> SOCKS clients, in one Linux container (Debian, everything on 127.0.0.1):
 #   curl          --socks5, --socks5-hostname, --socks4, --socks4a and socks5://user:pass@
 #                 (CONNECT regressions), a 4 MiB download checked by hash;
 #   PySocks       (python3-socks) UDP ASSOCIATE: echo through the relay, a name destination;
 #   clients.py    hand-written BIND and UDP ASSOCIATE edge cases (declared port, fragments),
-#                 and against only-socks: UDP fragment reassembly and SOCKS4 BIND;
-#   only-socks' own client (socks-client-interop): SOCKS5 CONNECT / BIND / UDP ASSOCIATE,
+#                 and against akio-socks: UDP fragment reassembly and SOCKS4 BIND;
+#   akio-socks' own client (socks-client-interop): SOCKS5 CONNECT / BIND / UDP ASSOCIATE,
 #                 SOCKS4 and 4a CONNECT / BIND, blocking and on the engine, with and without
 #                 username/password.
 # Every client also runs against Dante (danted), the reference server, so a failure points
-# at only-socks rather than at the test (and our client is checked against a server that is
+# at akio-socks rather than at the test (and our client is checked against a server that is
 # not ours). Needs Docker; runs `rust:1-bookworm` (Debian 12: 13
 # has neither Dante nor PySocks) and installs
 # curl, python3-socks and dante-server in it.
@@ -18,8 +18,8 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 if [ ! -f /.dockerenv ] && [ "${SOCKS_INTEROP_INSIDE:-}" != 1 ]; then
-  exec docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-    -v only-socks-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e SOCKS_INTEROP_INSIDE=1 \
+  exec docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
+    -v akio-socks-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e SOCKS_INTEROP_INSIDE=1 \
     rust:1-bookworm bash tools/interop/socks/run.sh "$@"
 fi
 
@@ -27,7 +27,7 @@ if ! command -v curl >/dev/null || ! command -v danted >/dev/null || ! python3 -
   export DEBIAN_FRONTEND=noninteractive
   { apt-get update -qq && apt-get install -y -qq curl python3-socks dante-server; } >/dev/null 2>&1 || { echo "apt-get failed"; exit 1; }
 fi
-cargo build -q --release -p only-socks --example socks-interop --example socks-client-interop || exit 1
+cargo build -q --release -p akio-socks --example socks-interop --example socks-client-interop || exit 1
 SRV=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/socks-interop
 CLI=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/socks-client-interop
 W=$(mktemp -d)
@@ -81,7 +81,7 @@ for p in "only 1080" "dante 1081"; do
   echo "== $1 (127.0.0.1:$2)"
   check "curl --socks5 (CONNECT, IPv4)" fetch --socks5 127.0.0.1:$2
   check "curl --socks5-hostname (CONNECT, name)" fetch --socks5-hostname 127.0.0.1:$2
-  if [ "$1" = only ]; then # SOCKS4 is checked against only-socks alone
+  if [ "$1" = only ]; then # SOCKS4 is checked against akio-socks alone
     check "curl --socks4" fetch --socks4 127.0.0.1:$2
     check "curl --socks4a" fetch --socks4a 127.0.0.1:$2
   fi
@@ -92,9 +92,9 @@ for p in "only 1080" "dante 1081"; do
     check "PySocks UDP + BIND + raw UDP (clients.py)" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2
   fi
   if [ "$1" = only ]; then
-    check "only-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" "$CLI" 127.0.0.1:$2
+    check "akio-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" "$CLI" 127.0.0.1:$2
   else # Dante 1.4 refuses SOCKS4a host names (curl --socks4a too)
-    check "only-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" \
+    check "akio-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" \
       "$CLI" 127.0.0.1:$2 --no-socks4a-names
   fi
 done
@@ -103,7 +103,7 @@ check "curl socks5://user:pass@" fetch -x socks5://alice:s3cret@127.0.0.1:1082
 check "curl socks5h://user:pass@" fetch -x socks5h://alice:s3cret@127.0.0.1:1082
 check "curl wrong password refused" bash -c '! curl -sS --max-time 5 -x socks5://alice:nope@127.0.0.1:1082 http://localhost:8000/blob -o /dev/null'
 check "clients.py with authentication" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 1082 alice s3cret --fragments
-check "only-socks client with authentication" "$CLI" 127.0.0.1:1082 alice:s3cret --no-socks4
+check "akio-socks client with authentication" "$CLI" 127.0.0.1:1082 alice:s3cret --no-socks4
 
 echo "socks interop: $pass passed, $fail failed"
 [ "$fail" = 0 ]

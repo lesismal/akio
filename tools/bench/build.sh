@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds everything the benchmark scripts run, in release mode, into $CARGO_TARGET_DIR (default
-# /tmp/t). Meant to run inside the only-bench image (tools/bench/Dockerfile), see docker.sh.
+# /tmp/t). Meant to run inside the akio-bench image (tools/bench/Dockerfile), see docker.sh.
 #
 #   FIB_SRC  checkout of fib (default /fib); fib-ref is skipped when it is missing.
 set -eu
@@ -10,7 +10,7 @@ export CARGO_TARGET_DIR=$T
 cd "$ROOT"
 cargo build -q --release -p echo-bench --features tls
 cargo build -q --release -p only --example bench-server
-cargo build -q --release -p only-http --example http-bench
+cargo build -q --release -p akio-http --example http-bench
 # Reference servers: separate workspaces, built into $T/ref so no target/ lands under tools/.
 for r in tokio-ref hyper-ref monoio-ref; do
   (cd tools/bench-ref/$r && CARGO_TARGET_DIR=$T/ref cargo build -q --release)

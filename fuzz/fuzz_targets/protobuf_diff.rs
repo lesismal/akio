@@ -1,5 +1,5 @@
 #![no_main]
-//! only-protobuf against prost on the same input (tools/protobuf-test/prost_mirror.rs): both
+//! akio-protobuf against prost on the same input (tools/protobuf-test/prost_mirror.rs): both
 //! decoders must accept or reject it alike, with the same value, and re-encodings must round-trip.
 //! Also proto2 groups and closed enums (`test.ext.Base`) against prost, and dynamic messages
 //! (runtime reflection) against the generated code.

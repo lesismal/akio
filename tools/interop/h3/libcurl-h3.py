@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP/3 client checks through libcurl, against an only-h3 server (h3-interop example).
+"""HTTP/3 client checks through libcurl, against an akio-h3 server (h3-interop example).
 
     libcurl-h3.py LIB https://127.0.0.1:9401
 
@@ -51,7 +51,7 @@ def main():
     print(lib.curl_version().decode())
     h = lib.curl_easy_init()
     hdrs = None
-    for line in (b"x-application-id: only-h3-interop", b"x-tenant: a-tenant-with-a-long-name",
+    for line in (b"x-application-id: akio-h3-interop", b"x-tenant: a-tenant-with-a-long-name",
                  b"accept-language: en-US,en;q=0.9"):
         hdrs = lib.curl_slist_append(hdrs, line)
     lib.curl_easy_setopt(h, CURLOPT_HTTPHEADER, ctypes.c_void_p(hdrs))

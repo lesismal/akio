@@ -60,7 +60,7 @@ async function page() {
   };
   const blank = http.createServer((_q, r) => {
     r.writeHead(200, { "content-type": "text/html" });
-    r.end("<!doctype html><title>only-media</title>");
+    r.end("<!doctype html><title>akio-media</title>");
   });
   await new Promise((r) => blank.listen(0, "127.0.0.1", r));
   await call("Page.enable", {});

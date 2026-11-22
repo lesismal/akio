@@ -8,7 +8,7 @@
 
 ADR-011 通过现有 API 把 WebSocket 带到了 HTTP/3（RFC 9220）：服务端在 `Context::upgrade_websocket`
 中接受 extended CONNECT，`Router` 用该路径的 GET 路由应答它，客户端用 `H3Client::websocket` 打开，
-only-ws 通过隐藏的 `WsLink` 接缝写出。HTTP/2 当时没有做：`upgrade_websocket` 在 HTTP/2 流上应答 400，
+akio-ws 通过隐藏的 `WsLink` 接缝写出。HTTP/2 当时没有做：`upgrade_websocket` 在 HTTP/2 流上应答 400，
 服务端不宣告 `SETTINGS_ENABLE_CONNECT_PROTOCOL`，带 `:protocol` 的请求是畸形请求，`H2Client` 也没有
 WebSocket。浏览器在服务端允许时会在已持有的 HTTP/2 连接上打开 WebSocket，所以 h2 源站会迫使它们另开一条
 HTTP/1.1 连接；我们自己的客户端也无法让请求和 WebSocket 共用一条连接。
@@ -69,5 +69,5 @@ HTTP/1.1 连接；我们自己的客户端也无法让请求和 WebSocket 共用
 - 对端在我方 END_STREAM 之后一直不结束它那一半时，流最多保留 5 秒，在此之前计入
   `max_concurrent_streams`。若该定时器在握手完成前重置流，handler 的 `on_close`（1006）在定时器线程上
   而非连接的 I/O 线程上运行。
-- 未完成：经 HTTP/1 的 `only_ws::client::dial` 走 HTTP/2 上的 WebSocket（它仍是 HTTP/1.1；HTTP/2 需要
+- 未完成：经 HTTP/1 的 `akio_ws::client::dial` 走 HTTP/2 上的 WebSocket（它仍是 HTTP/1.1；HTTP/2 需要
   `H2Client`），以及客户端对 WebSocket 以外协议的 RFC 8441。

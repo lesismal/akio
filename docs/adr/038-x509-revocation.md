@@ -6,21 +6,21 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-`only-x509` built and validated chains but had no revocation at all, and `only-tls` stapled OCSP
+`akio-x509` built and validated chains but had no revocation at all, and `akio-tls` stapled OCSP
 responses on servers and handed the client the raw bytes with "not verified" in the docs. A
 client could not tell a revoked certificate from a good one without bringing its own ASN.1 and
 signature code, and a server could not refuse revoked client certificates.
 
 Revocation information has to be fetched (CRLs from distribution points, OCSP from responders),
 but the library runs handshakes on I/O threads that must never block, and has no HTTP client of
-its own below `only-http`. Fetching therefore stays with the application; the library parses,
+its own below `akio-http`. Fetching therefore stays with the application; the library parses,
 authenticates and applies what it is given.
 
 ## Decision
 
-1. **`only-x509` CRLs** (RFC 5280 section 5): `Crl` parses v1/v2 CRLs strictly (signature
+1. **`akio-x509` CRLs** (RFC 5280 section 5): `Crl` parses v1/v2 CRLs strictly (signature
    algorithm match, `critical` DEFAULT FALSE omitted, no duplicate extensions, at most one
-   "only" flag in an issuingDistributionPoint), with cRLNumber, deltaCRLIndicator,
+   "akio" flag in an issuingDistributionPoint), with cRLNumber, deltaCRLIndicator,
    issuingDistributionPoint (fullName, onlyUser/onlyCA/onlySomeReasons/indirect/attribute),
    authorityKeyIdentifier, and per entry reasonCode, invalidityDate and holdInstructionCode.
    Entries are sorted by serial for a binary search. An unknown critical CRL or entry extension
@@ -43,7 +43,7 @@ authenticates and applies what it is given.
    path may still succeed. `RevocationMode::{SoftFail (default), HardFail}` decides about
    certificates no CRL covers (`Error::RevocationUnknown`); revoked ones fail with
    `Error::Revoked(reason)`. `Verifier::clock_skew` (default `DEFAULT_CLOCK_SKEW`, 300 s).
-4. **`only-x509` OCSP** (RFC 6960): `OcspResponse` (status, `BasicOcspResponse` with responder
+4. **`akio-x509` OCSP** (RFC 6960): `OcspResponse` (status, `BasicOcspResponse` with responder
    ID by name or key, producedAt, single responses with CertID, good / revoked (time, reason) /
    unknown, thisUpdate, nextUpdate, nonce, included certificates). `verify(cert, issuer,
    &OcspValidation)` requires: a successful response; a signer that is the issuer itself or an
@@ -62,7 +62,7 @@ authenticates and applies what it is given.
    where to fetch; these two extensions are parsed leniently (a malformed one only loses the
    pointer, the certificate still parses). `CrlParams` and `OcspResponseParams` build signed
    CRLs and responses for tests, development CAs and servers that sign their own staples.
-6. **`only-tls`** (additive public API): `RevocationPolicy::{Off (default), SoftFail,
+6. **`akio-tls`** (additive public API): `RevocationPolicy::{Off (default), SoftFail,
    HardFail}`; `ClientConfigBuilder::ocsp_policy(policy)` validates the stapled response for the
    leaf (TLS 1.3: the status_request of the leaf's CertificateEntry, checked when the
    Certificate arrives; TLS 1.2: CertificateStatus, checked when ServerKeyExchange arrives) and
@@ -88,11 +88,11 @@ authenticates and applies what it is given.
   byKey, SHA-256 CertID, no nextUpdate, nonce, revoked, certificateHold, unknown, two single
   responses, no OCSPSigning EKU, a responder certified by another CA, signer not included),
   with expiry and skew on both edges, corrupted signatures and every truncation
-  (`only-x509/tests/revocation.rs`, fixtures from `tests/data/revocation/gen.sh`); generated
+  (`akio-x509/tests/revocation.rs`, fixtures from `tests/data/revocation/gen.sh`); generated
   CRLs and responses for holds lifted by deltas, onlyCA scopes, partial reason coverage, a
   revoked intermediate and expired responder certificates; in-memory TLS 1.3 and 1.2
   handshakes for each policy and response kind and for CRLs on both sides
-  (`only-tls/src/proto/revocation_tests.rs`); interop: only's client against `openssl
+  (`akio-tls/src/proto/revocation_tests.rs`); interop: only's client against `openssl
   s_server -status_file` (good, revoked, missing staple under soft and hard fail) and against
   OpenSSL-made CRLs (`tools/interop/tls/run.sh`).
 - With every policy off (the default) the handshake does the same work as before: the

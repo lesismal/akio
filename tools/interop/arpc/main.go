@@ -1,10 +1,10 @@
-// arpc interop peer (fib's Go arpc) for only-arpc:
+// arpc interop peer (fib's Go arpc) for akio-arpc:
 //
 //	go run . server 127.0.0.1:9100        serves /echo, /fail and the /upper stream
-//	go run . client 127.0.0.1:9101        calls a only server and checks the answers
+//	go run . client 127.0.0.1:9101        calls a akio server and checks the answers
 //	go run . server-coded 127.0.0.1:9102  the same with the gzip and trace-value coders and a
 //	                                      middleware that refuses calls without a trace value
-//	go run . client-coded 127.0.0.1:9103  checks a coded only server, from a ClientPool too
+//	go run . client-coded 127.0.0.1:9103  checks a coded akio server, from a ClientPool too
 package main
 
 import (
@@ -176,7 +176,7 @@ func clientCoded(addr string) {
 	var b []byte
 	check(st.Recv(&b) == nil && string(b) == strings.ToUpper(w), "stream recv")
 	st.CloseSend()
-	// Both sides really compressed: the only server counts the frames it inflated.
+	// Both sides really compressed: the akio server counts the frames it inflated.
 	var n []byte
 	check(c.Call("/gzipped", nil, &n, time.Second, trace) == nil, "gzipped")
 	check(string(n) != "0", "only inflated nothing")

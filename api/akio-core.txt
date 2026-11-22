@@ -1,0 +1,1042 @@
+pub mod akio_core
+pub use akio_core::PoolConfig
+pub use akio_core::PoolStats
+pub use akio_core::SharedBuf
+pub mod akio_core::metrics
+#[non_exhaustive] pub enum akio_core::metrics::Kind
+pub akio_core::metrics::Kind::Counter
+pub akio_core::metrics::Kind::Gauge
+pub akio_core::metrics::Kind::Histogram
+impl akio_core::metrics::Kind
+pub fn akio_core::metrics::Kind::as_str(self) -> &'static str
+impl core::clone::Clone for akio_core::metrics::Kind
+pub fn akio_core::metrics::Kind::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::metrics::Kind
+impl core::cmp::PartialEq for akio_core::metrics::Kind
+pub fn akio_core::metrics::Kind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::Kind
+pub fn akio_core::metrics::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_core::metrics::Kind
+pub fn akio_core::metrics::Kind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_core::metrics::Kind
+impl core::marker::StructuralPartialEq for akio_core::metrics::Kind
+impl core::marker::Send for akio_core::metrics::Kind
+impl core::marker::Sync for akio_core::metrics::Kind
+impl core::marker::Unpin for akio_core::metrics::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Kind
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Kind
+#[non_exhaustive] pub enum akio_core::metrics::Value
+pub akio_core::metrics::Value::Counter(f64)
+pub akio_core::metrics::Value::Gauge(f64)
+pub akio_core::metrics::Value::Histogram(akio_core::metrics::HistogramSnapshot)
+impl core::clone::Clone for akio_core::metrics::Value
+pub fn akio_core::metrics::Value::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_core::metrics::Value
+pub fn akio_core::metrics::Value::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::Value
+pub fn akio_core::metrics::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::metrics::Value
+impl core::marker::Send for akio_core::metrics::Value
+impl core::marker::Sync for akio_core::metrics::Value
+impl core::marker::Unpin for akio_core::metrics::Value
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Value
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Value
+pub struct akio_core::metrics::CollectorId(_)
+impl core::clone::Clone for akio_core::metrics::CollectorId
+pub fn akio_core::metrics::CollectorId::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::metrics::CollectorId
+impl core::cmp::PartialEq for akio_core::metrics::CollectorId
+pub fn akio_core::metrics::CollectorId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::CollectorId
+pub fn akio_core::metrics::CollectorId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_core::metrics::CollectorId
+pub fn akio_core::metrics::CollectorId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_core::metrics::CollectorId
+impl core::marker::StructuralPartialEq for akio_core::metrics::CollectorId
+impl core::marker::Send for akio_core::metrics::CollectorId
+impl core::marker::Sync for akio_core::metrics::CollectorId
+impl core::marker::Unpin for akio_core::metrics::CollectorId
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::CollectorId
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::CollectorId
+pub struct akio_core::metrics::Counter(_)
+impl akio_core::metrics::Counter
+pub fn akio_core::metrics::Counter::add(&self, u64)
+pub fn akio_core::metrics::Counter::get(&self) -> u64
+pub fn akio_core::metrics::Counter::inc(&self)
+pub fn akio_core::metrics::Counter::new() -> akio_core::metrics::Counter
+impl core::clone::Clone for akio_core::metrics::Counter
+pub fn akio_core::metrics::Counter::clone(&self) -> Self
+impl core::default::Default for akio_core::metrics::Counter
+pub fn akio_core::metrics::Counter::default() -> Self
+impl core::fmt::Debug for akio_core::metrics::Counter
+pub fn akio_core::metrics::Counter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::Counter
+impl core::marker::Sync for akio_core::metrics::Counter
+impl core::marker::Unpin for akio_core::metrics::Counter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Counter
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Counter
+#[non_exhaustive] pub struct akio_core::metrics::Exemplar
+pub akio_core::metrics::Exemplar::span_id: u64
+pub akio_core::metrics::Exemplar::time: std::time::SystemTime
+pub akio_core::metrics::Exemplar::trace_id: u128
+pub akio_core::metrics::Exemplar::value: f64
+impl akio_core::metrics::Exemplar
+pub fn akio_core::metrics::Exemplar::new(f64, std::time::SystemTime, u128, u64) -> akio_core::metrics::Exemplar
+impl core::clone::Clone for akio_core::metrics::Exemplar
+pub fn akio_core::metrics::Exemplar::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_core::metrics::Exemplar
+pub fn akio_core::metrics::Exemplar::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::Exemplar
+pub fn akio_core::metrics::Exemplar::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::metrics::Exemplar
+impl core::marker::StructuralPartialEq for akio_core::metrics::Exemplar
+impl core::marker::Send for akio_core::metrics::Exemplar
+impl core::marker::Sync for akio_core::metrics::Exemplar
+impl core::marker::Unpin for akio_core::metrics::Exemplar
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Exemplar
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Exemplar
+pub struct akio_core::metrics::ExemplarHistogram
+impl akio_core::metrics::ExemplarHistogram
+pub fn akio_core::metrics::ExemplarHistogram::histogram(&self) -> &akio_core::metrics::Histogram
+pub fn akio_core::metrics::ExemplarHistogram::new(&[f64]) -> akio_core::metrics::ExemplarHistogram
+pub fn akio_core::metrics::ExemplarHistogram::observe(&self, f64)
+pub fn akio_core::metrics::ExemplarHistogram::observe_duration(&self, core::time::Duration)
+pub fn akio_core::metrics::ExemplarHistogram::snapshot(&self) -> akio_core::metrics::HistogramSnapshot
+impl core::clone::Clone for akio_core::metrics::ExemplarHistogram
+pub fn akio_core::metrics::ExemplarHistogram::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::metrics::ExemplarHistogram
+pub fn akio_core::metrics::ExemplarHistogram::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::ExemplarHistogram
+impl core::marker::Sync for akio_core::metrics::ExemplarHistogram
+impl core::marker::Unpin for akio_core::metrics::ExemplarHistogram
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::ExemplarHistogram
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::ExemplarHistogram
+pub struct akio_core::metrics::ExemplarReservoir
+impl akio_core::metrics::ExemplarReservoir
+pub fn akio_core::metrics::ExemplarReservoir::new(usize) -> akio_core::metrics::ExemplarReservoir
+pub fn akio_core::metrics::ExemplarReservoir::offer(&self, usize, f64, u128, u64)
+pub fn akio_core::metrics::ExemplarReservoir::offer_current(&self, usize, f64)
+pub fn akio_core::metrics::ExemplarReservoir::snapshot(&self) -> alloc::vec::Vec<akio_core::metrics::Exemplar>
+impl core::fmt::Debug for akio_core::metrics::ExemplarReservoir
+pub fn akio_core::metrics::ExemplarReservoir::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::ExemplarReservoir
+impl core::marker::Sync for akio_core::metrics::ExemplarReservoir
+impl core::marker::Unpin for akio_core::metrics::ExemplarReservoir
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::ExemplarReservoir
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::ExemplarReservoir
+pub struct akio_core::metrics::Families
+impl akio_core::metrics::Families
+pub fn akio_core::metrics::Families::collect_from<K: core::convert::AsRef<str>, V: core::convert::AsRef<str>>(&mut self, &dyn akio_core::metrics::Collector, &[(K, V)])
+pub fn akio_core::metrics::Families::counter(&mut self, &str, &str, &[(&str, &str)], f64)
+pub fn akio_core::metrics::Families::dropped(&self) -> usize
+pub fn akio_core::metrics::Families::gauge(&mut self, &str, &str, &[(&str, &str)], f64)
+pub fn akio_core::metrics::Families::get(&self, &str) -> core::option::Option<&akio_core::metrics::Family>
+pub fn akio_core::metrics::Families::histogram(&mut self, &str, &str, &[(&str, &str)], &akio_core::metrics::HistogramSnapshot)
+pub fn akio_core::metrics::Families::is_empty(&self) -> bool
+pub fn akio_core::metrics::Families::iter(&self) -> core::slice::iter::Iter<'_, akio_core::metrics::Family>
+pub fn akio_core::metrics::Families::len(&self) -> usize
+pub fn akio_core::metrics::Families::new() -> akio_core::metrics::Families
+pub fn akio_core::metrics::Families::to_json(&self) -> alloc::string::String
+pub fn akio_core::metrics::Families::to_prometheus(&self) -> alloc::string::String
+pub fn akio_core::metrics::Families::write_prometheus(&self, &mut alloc::string::String)
+impl core::clone::Clone for akio_core::metrics::Families
+pub fn akio_core::metrics::Families::clone(&self) -> Self
+impl core::default::Default for akio_core::metrics::Families
+pub fn akio_core::metrics::Families::default() -> Self
+impl core::fmt::Debug for akio_core::metrics::Families
+pub fn akio_core::metrics::Families::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::Families
+impl core::marker::Sync for akio_core::metrics::Families
+impl core::marker::Unpin for akio_core::metrics::Families
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Families
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Families
+#[non_exhaustive] pub struct akio_core::metrics::Family
+pub akio_core::metrics::Family::help: alloc::string::String
+pub akio_core::metrics::Family::kind: akio_core::metrics::Kind
+pub akio_core::metrics::Family::name: alloc::string::String
+pub akio_core::metrics::Family::samples: alloc::vec::Vec<akio_core::metrics::Sample>
+impl core::clone::Clone for akio_core::metrics::Family
+pub fn akio_core::metrics::Family::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_core::metrics::Family
+pub fn akio_core::metrics::Family::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::Family
+pub fn akio_core::metrics::Family::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::metrics::Family
+impl core::marker::Send for akio_core::metrics::Family
+impl core::marker::Sync for akio_core::metrics::Family
+impl core::marker::Unpin for akio_core::metrics::Family
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Family
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Family
+pub struct akio_core::metrics::FnCollector<F>(_)
+impl<F: core::ops::function::Fn(&mut akio_core::metrics::Families) + core::marker::Send + core::marker::Sync> akio_core::metrics::Collector for akio_core::metrics::FnCollector<F>
+pub fn akio_core::metrics::FnCollector<F>::collect(&self, &mut akio_core::metrics::Families)
+impl<F> core::fmt::Debug for akio_core::metrics::FnCollector<F>
+pub fn akio_core::metrics::FnCollector<F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<F> core::marker::Send for akio_core::metrics::FnCollector<F> where F: core::marker::Send
+impl<F> core::marker::Sync for akio_core::metrics::FnCollector<F> where F: core::marker::Sync
+impl<F> core::marker::Unpin for akio_core::metrics::FnCollector<F> where F: core::marker::Unpin
+impl<F> core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::FnCollector<F> where F: core::panic::unwind_safe::RefUnwindSafe
+impl<F> core::panic::unwind_safe::UnwindSafe for akio_core::metrics::FnCollector<F> where F: core::panic::unwind_safe::UnwindSafe
+pub struct akio_core::metrics::Gauge(_)
+impl akio_core::metrics::Gauge
+pub fn akio_core::metrics::Gauge::add(&self, f64)
+pub fn akio_core::metrics::Gauge::dec(&self)
+pub fn akio_core::metrics::Gauge::get(&self) -> f64
+pub fn akio_core::metrics::Gauge::inc(&self)
+pub fn akio_core::metrics::Gauge::new() -> akio_core::metrics::Gauge
+pub fn akio_core::metrics::Gauge::set(&self, f64)
+impl core::clone::Clone for akio_core::metrics::Gauge
+pub fn akio_core::metrics::Gauge::clone(&self) -> Self
+impl core::default::Default for akio_core::metrics::Gauge
+pub fn akio_core::metrics::Gauge::default() -> Self
+impl core::fmt::Debug for akio_core::metrics::Gauge
+pub fn akio_core::metrics::Gauge::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::Gauge
+impl core::marker::Sync for akio_core::metrics::Gauge
+impl core::marker::Unpin for akio_core::metrics::Gauge
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Gauge
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Gauge
+pub struct akio_core::metrics::Histogram(_)
+impl akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::exponential(f64, f64, usize) -> akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::new(&[f64]) -> akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::observe(&self, f64)
+pub fn akio_core::metrics::Histogram::observe_duration(&self, core::time::Duration)
+pub fn akio_core::metrics::Histogram::snapshot(&self) -> akio_core::metrics::HistogramSnapshot
+impl core::clone::Clone for akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::clone(&self) -> Self
+impl core::default::Default for akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::default() -> akio_core::metrics::Histogram
+impl core::fmt::Debug for akio_core::metrics::Histogram
+pub fn akio_core::metrics::Histogram::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::metrics::Histogram
+impl core::marker::Sync for akio_core::metrics::Histogram
+impl core::marker::Unpin for akio_core::metrics::Histogram
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Histogram
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Histogram
+#[non_exhaustive] pub struct akio_core::metrics::HistogramSnapshot
+pub akio_core::metrics::HistogramSnapshot::bounds: alloc::vec::Vec<f64>
+pub akio_core::metrics::HistogramSnapshot::counts: alloc::vec::Vec<u64>
+pub akio_core::metrics::HistogramSnapshot::exemplars: alloc::vec::Vec<akio_core::metrics::Exemplar>
+pub akio_core::metrics::HistogramSnapshot::sum: f64
+impl akio_core::metrics::HistogramSnapshot
+pub fn akio_core::metrics::HistogramSnapshot::count(&self) -> u64
+pub fn akio_core::metrics::HistogramSnapshot::new(alloc::vec::Vec<f64>, alloc::vec::Vec<u64>, f64) -> core::option::Option<akio_core::metrics::HistogramSnapshot>
+pub fn akio_core::metrics::HistogramSnapshot::with_exemplars(self, alloc::vec::Vec<akio_core::metrics::Exemplar>) -> akio_core::metrics::HistogramSnapshot
+impl core::clone::Clone for akio_core::metrics::HistogramSnapshot
+pub fn akio_core::metrics::HistogramSnapshot::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_core::metrics::HistogramSnapshot
+pub fn akio_core::metrics::HistogramSnapshot::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::HistogramSnapshot
+pub fn akio_core::metrics::HistogramSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::metrics::HistogramSnapshot
+impl core::marker::Send for akio_core::metrics::HistogramSnapshot
+impl core::marker::Sync for akio_core::metrics::HistogramSnapshot
+impl core::marker::Unpin for akio_core::metrics::HistogramSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::HistogramSnapshot
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::HistogramSnapshot
+pub struct akio_core::metrics::Registry(_)
+impl akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::counter(&self, &str, &str, &[(&str, &str)]) -> akio_core::metrics::Counter
+pub fn akio_core::metrics::Registry::gauge(&self, &str, &str, &[(&str, &str)]) -> akio_core::metrics::Gauge
+pub fn akio_core::metrics::Registry::histogram(&self, &str, &str, &[(&str, &str)], &[f64]) -> akio_core::metrics::Histogram
+pub fn akio_core::metrics::Registry::histogram_with_exemplars(&self, &str, &str, &[(&str, &str)], &[f64]) -> akio_core::metrics::ExemplarHistogram
+pub fn akio_core::metrics::Registry::new() -> akio_core::metrics::Registry
+impl core::clone::Clone for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::clone(&self) -> Self
+impl core::default::Default for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::default() -> Self
+impl core::fmt::Debug for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::metrics::Collector for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::collect(&self, &mut akio_core::metrics::Families)
+impl core::marker::Send for akio_core::metrics::Registry
+impl core::marker::Sync for akio_core::metrics::Registry
+impl core::marker::Unpin for akio_core::metrics::Registry
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Registry
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Registry
+#[non_exhaustive] pub struct akio_core::metrics::Sample
+pub akio_core::metrics::Sample::labels: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub akio_core::metrics::Sample::value: akio_core::metrics::Value
+impl akio_core::metrics::Sample
+pub fn akio_core::metrics::Sample::label(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for akio_core::metrics::Sample
+pub fn akio_core::metrics::Sample::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_core::metrics::Sample
+pub fn akio_core::metrics::Sample::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::metrics::Sample
+pub fn akio_core::metrics::Sample::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::metrics::Sample
+impl core::marker::Send for akio_core::metrics::Sample
+impl core::marker::Sync for akio_core::metrics::Sample
+impl core::marker::Unpin for akio_core::metrics::Sample
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::metrics::Sample
+impl core::panic::unwind_safe::UnwindSafe for akio_core::metrics::Sample
+pub const akio_core::metrics::DEFAULT_BUCKETS: [f64; 11]
+pub trait akio_core::metrics::Collector: core::marker::Send + core::marker::Sync
+pub fn akio_core::metrics::Collector::collect(&self, &mut akio_core::metrics::Families)
+impl akio_core::metrics::Collector for akio_core::metrics::Registry
+pub fn akio_core::metrics::Registry::collect(&self, &mut akio_core::metrics::Families)
+impl<C: akio_core::metrics::Collector + ?core::marker::Sized> akio_core::metrics::Collector for alloc::boxed::Box<C>
+pub fn alloc::boxed::Box<C>::collect(&self, &mut akio_core::metrics::Families)
+impl<C: akio_core::metrics::Collector + ?core::marker::Sized> akio_core::metrics::Collector for alloc::rcs::arc::Arc<C>
+pub fn alloc::rcs::arc::Arc<C>::collect(&self, &mut akio_core::metrics::Families)
+impl<F: core::ops::function::Fn(&mut akio_core::metrics::Families) + core::marker::Send + core::marker::Sync> akio_core::metrics::Collector for akio_core::metrics::FnCollector<F>
+pub fn akio_core::metrics::FnCollector<F>::collect(&self, &mut akio_core::metrics::Families)
+pub fn akio_core::metrics::fn_collector<F: core::ops::function::Fn(&mut akio_core::metrics::Families) + core::marker::Send + core::marker::Sync>(F) -> akio_core::metrics::FnCollector<F>
+pub mod akio_core::telemetry
+#[non_exhaustive] pub struct akio_core::telemetry::ConnInfo
+pub akio_core::telemetry::ConnInfo::age: core::time::Duration
+pub akio_core::telemetry::ConnInfo::backpressure: bool
+pub akio_core::telemetry::ConnInfo::bytes_in: u64
+pub akio_core::telemetry::ConnInfo::bytes_out: u64
+pub akio_core::telemetry::ConnInfo::id: u64
+pub akio_core::telemetry::ConnInfo::idle: core::time::Duration
+pub akio_core::telemetry::ConnInfo::local: core::net::socket_addr::SocketAddr
+pub akio_core::telemetry::ConnInfo::owner: akio_core::telemetry::LoopMeta
+pub akio_core::telemetry::ConnInfo::peer: core::net::socket_addr::SocketAddr
+pub akio_core::telemetry::ConnInfo::queued_bytes: usize
+pub akio_core::telemetry::ConnInfo::read_held: bool
+pub akio_core::telemetry::ConnInfo::transport: core::option::Option<&'static str>
+pub akio_core::telemetry::ConnInfo::udp: bool
+impl core::clone::Clone for akio_core::telemetry::ConnInfo
+pub fn akio_core::telemetry::ConnInfo::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::ConnInfo
+pub fn akio_core::telemetry::ConnInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::ConnInfo
+impl core::marker::Sync for akio_core::telemetry::ConnInfo
+impl core::marker::Unpin for akio_core::telemetry::ConnInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::ConnInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::ConnInfo
+pub struct akio_core::telemetry::Live
+impl akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::backlog(&self) -> i32
+pub fn akio_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::max_connections(&self) -> usize
+pub fn akio_core::telemetry::Live::max_queued_bytes(&self) -> usize
+pub fn akio_core::telemetry::Live::read_buffer(&self) -> usize
+pub fn akio_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::set_backlog(&self, i32)
+pub fn akio_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_max_connections(&self, usize)
+pub fn akio_core::telemetry::Live::set_max_queued_bytes(&self, usize)
+pub fn akio_core::telemetry::Live::set_read_buffer(&self, usize)
+pub fn akio_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_shutdown_timeout(&self, core::time::Duration)
+pub fn akio_core::telemetry::Live::set_slow_callback_threshold(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_slow_hook(&self, core::option::Option<akio_core::SlowHook>)
+pub fn akio_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
+pub fn akio_core::telemetry::Live::set_write_high_watermark(&self, usize)
+pub fn akio_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
+pub fn akio_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::slow_hook(&self) -> core::option::Option<akio_core::SlowHook>
+pub fn akio_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
+pub fn akio_core::telemetry::Live::write_high_watermark(&self) -> usize
+impl core::default::Default for akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::default() -> akio_core::telemetry::Live
+impl core::fmt::Debug for akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Live
+impl core::marker::Sync for akio_core::telemetry::Live
+impl core::marker::Unpin for akio_core::telemetry::Live
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Live
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Live
+#[non_exhaustive] pub struct akio_core::telemetry::LoopCounters
+pub akio_core::telemetry::LoopCounters::accept_errors: u64
+pub akio_core::telemetry::LoopCounters::accepted: u64
+pub akio_core::telemetry::LoopCounters::backpressure: u64
+pub akio_core::telemetry::LoopCounters::bytes_in: u64
+pub akio_core::telemetry::LoopCounters::bytes_out: u64
+pub akio_core::telemetry::LoopCounters::callback_ns: u64
+pub akio_core::telemetry::LoopCounters::callbacks: u64
+pub akio_core::telemetry::LoopCounters::closed: u64
+pub akio_core::telemetry::LoopCounters::datagrams_in: u64
+pub akio_core::telemetry::LoopCounters::datagrams_out: u64
+pub akio_core::telemetry::LoopCounters::dialed: u64
+pub akio_core::telemetry::LoopCounters::events: u64
+pub akio_core::telemetry::LoopCounters::handshake_failures: u64
+pub akio_core::telemetry::LoopCounters::idle_timeouts: u64
+pub akio_core::telemetry::LoopCounters::iterations: u64
+pub akio_core::telemetry::LoopCounters::overloaded: u64
+pub akio_core::telemetry::LoopCounters::queued_bytes: u64
+pub akio_core::telemetry::LoopCounters::reads: u64
+pub akio_core::telemetry::LoopCounters::rejected: u64
+pub akio_core::telemetry::LoopCounters::slow_callbacks: u64
+pub akio_core::telemetry::LoopCounters::transport_errors: u64
+pub akio_core::telemetry::LoopCounters::write_timeouts: u64
+pub akio_core::telemetry::LoopCounters::writes: u64
+impl akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::add(&mut self, &akio_core::telemetry::LoopCounters)
+impl core::clone::Clone for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::LoopCounters
+impl core::cmp::PartialEq for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::telemetry::LoopCounters
+impl core::marker::StructuralPartialEq for akio_core::telemetry::LoopCounters
+impl core::marker::Send for akio_core::telemetry::LoopCounters
+impl core::marker::Sync for akio_core::telemetry::LoopCounters
+impl core::marker::Unpin for akio_core::telemetry::LoopCounters
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopCounters
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopCounters
+#[non_exhaustive] pub struct akio_core::telemetry::LoopMeta
+pub akio_core::telemetry::LoopMeta::backend: &'static str
+pub akio_core::telemetry::LoopMeta::listener: core::option::Option<core::net::socket_addr::SocketAddr>
+pub akio_core::telemetry::LoopMeta::thread: usize
+impl core::clone::Clone for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::LoopMeta
+impl core::cmp::PartialEq for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::telemetry::LoopMeta
+impl core::marker::Send for akio_core::telemetry::LoopMeta
+impl core::marker::Sync for akio_core::telemetry::LoopMeta
+impl core::marker::Unpin for akio_core::telemetry::LoopMeta
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMeta
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMeta
+#[non_exhaustive] pub struct akio_core::telemetry::LoopMetrics
+pub akio_core::telemetry::LoopMetrics::counters: akio_core::telemetry::LoopCounters
+pub akio_core::telemetry::LoopMetrics::owner: akio_core::telemetry::LoopMeta
+pub akio_core::telemetry::LoopMetrics::retiring: bool
+pub akio_core::telemetry::LoopMetrics::running: bool
+impl akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::open(&self) -> u64
+impl core::clone::Clone for akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::LoopMetrics
+impl core::marker::Sync for akio_core::telemetry::LoopMetrics
+impl core::marker::Unpin for akio_core::telemetry::LoopMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetrics
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
+#[non_exhaustive] pub struct akio_core::telemetry::Metrics
+pub akio_core::telemetry::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::telemetry::Metrics::open_connections: usize
+pub akio_core::telemetry::Metrics::pool: core::option::Option<akio_pool::PoolStats>
+pub akio_core::telemetry::Metrics::total: akio_core::telemetry::LoopCounters
+pub akio_core::telemetry::Metrics::uptime: core::time::Duration
+impl akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::collect_into(&self, &mut akio_core::metrics::Families)
+pub fn akio_core::telemetry::Metrics::to_json(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Metrics::to_prometheus(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Metrics::write_prometheus(&self, &mut alloc::string::String)
+impl core::clone::Clone for akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Metrics
+impl core::marker::Sync for akio_core::telemetry::Metrics
+impl core::marker::Unpin for akio_core::telemetry::Metrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Metrics
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Metrics
+#[non_exhaustive] pub struct akio_core::telemetry::ReloadReport
+pub akio_core::telemetry::ReloadReport::applied: alloc::vec::Vec<&'static str>
+pub akio_core::telemetry::ReloadReport::ignored: alloc::vec::Vec<&'static str>
+impl core::clone::Clone for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::ReloadReport
+impl core::cmp::PartialEq for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::telemetry::ReloadReport
+impl core::marker::Send for akio_core::telemetry::ReloadReport
+impl core::marker::Sync for akio_core::telemetry::ReloadReport
+impl core::marker::Unpin for akio_core::telemetry::ReloadReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::ReloadReport
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::ReloadReport
+#[non_exhaustive] pub struct akio_core::telemetry::SlowRecord
+pub akio_core::telemetry::SlowRecord::at: std::time::SystemTime
+pub akio_core::telemetry::SlowRecord::conn_id: u64
+pub akio_core::telemetry::SlowRecord::elapsed: core::time::Duration
+pub akio_core::telemetry::SlowRecord::kind: &'static str
+pub akio_core::telemetry::SlowRecord::owner: akio_core::telemetry::LoopMeta
+pub akio_core::telemetry::SlowRecord::threshold: core::time::Duration
+impl core::clone::Clone for akio_core::telemetry::SlowRecord
+pub fn akio_core::telemetry::SlowRecord::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::SlowRecord
+pub fn akio_core::telemetry::SlowRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::SlowRecord
+impl core::marker::Sync for akio_core::telemetry::SlowRecord
+impl core::marker::Unpin for akio_core::telemetry::SlowRecord
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::SlowRecord
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::SlowRecord
+pub struct akio_core::telemetry::Telemetry
+impl akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::collect(&self) -> akio_core::metrics::Families
+pub fn akio_core::telemetry::Telemetry::collect_all(&self) -> akio_core::metrics::Families
+pub fn akio_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<akio_core::telemetry::ConnInfo>
+pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Live
+pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
+pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
+pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Telemetry::set_log_level(&self, akio_log::LevelFilter)
+pub fn akio_core::telemetry::Telemetry::slow_callbacks(&self) -> alloc::vec::Vec<akio_core::telemetry::SlowRecord>
+pub fn akio_core::telemetry::Telemetry::unregister_collector(&self, akio_core::metrics::CollectorId) -> bool
+impl core::default::Default for akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Telemetry
+impl core::marker::Sync for akio_core::telemetry::Telemetry
+impl core::marker::Unpin for akio_core::telemetry::Telemetry
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Telemetry
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Telemetry
+pub const akio_core::telemetry::SLOW_RING: usize
+pub fn akio_core::telemetry::connections_json(&[akio_core::telemetry::ConnInfo]) -> alloc::string::String
+pub fn akio_core::telemetry::slow_callbacks_json(&[akio_core::telemetry::SlowRecord]) -> alloc::string::String
+#[non_exhaustive] pub enum akio_core::Error
+pub akio_core::Error::Closed
+pub akio_core::Error::Io(core::io::error::Error)
+pub akio_core::Error::Overloaded
+impl core::convert::From<core::io::error::Error> for akio_core::Error
+pub fn akio_core::Error::from(core::io::error::Error) -> Self
+impl core::error::Error for akio_core::Error
+pub fn akio_core::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for akio_core::Error
+pub fn akio_core::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_core::Error
+pub fn akio_core::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::Error
+impl core::marker::Sync for akio_core::Error
+impl core::marker::Unpin for akio_core::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::Error
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::Error
+#[non_exhaustive] pub enum akio_core::Part
+pub akio_core::Part::Bytes(alloc::vec::Vec<u8>)
+pub akio_core::Part::File
+pub akio_core::Part::File::file: alloc::rcs::arc::Arc<std::fs::File>
+pub akio_core::Part::File::len: u64
+pub akio_core::Part::File::offset: u64
+impl core::fmt::Debug for akio_core::Part
+pub fn akio_core::Part::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::Part
+impl core::marker::Sync for akio_core::Part
+impl core::marker::Unpin for akio_core::Part
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::Part
+impl core::panic::unwind_safe::UnwindSafe for akio_core::Part
+pub struct akio_core::AnyAcceptor(_)
+impl akio_core::AnyAcceptor
+pub fn akio_core::AnyAcceptor::new<A: akio_core::Acceptor>(A) -> akio_core::AnyAcceptor
+impl core::clone::Clone for akio_core::AnyAcceptor
+pub fn akio_core::AnyAcceptor::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::AnyAcceptor
+pub fn akio_core::AnyAcceptor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::AnyAcceptor
+impl core::marker::Sync for akio_core::AnyAcceptor
+impl core::marker::Unpin for akio_core::AnyAcceptor
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::AnyAcceptor
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::AnyAcceptor
+#[non_exhaustive] pub struct akio_core::Config
+pub akio_core::Config::backlog: i32
+pub akio_core::Config::connect_timeout: core::option::Option<core::time::Duration>
+pub akio_core::Config::idle_timeout: core::option::Option<core::time::Duration>
+pub akio_core::Config::log_level: core::option::Option<akio_log::LevelFilter>
+pub akio_core::Config::max_connections: usize
+pub akio_core::Config::max_pending_responses: core::option::Option<usize>
+pub akio_core::Config::max_queued_bytes: usize
+pub akio_core::Config::read_buffer: usize
+pub akio_core::Config::retire_timeout: core::option::Option<core::time::Duration>
+pub akio_core::Config::shutdown_timeout: core::time::Duration
+pub akio_core::Config::slow_callback_threshold: core::option::Option<core::time::Duration>
+pub akio_core::Config::slow_hook: core::option::Option<akio_core::SlowHook>
+pub akio_core::Config::telemetry: alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
+pub akio_core::Config::udp_gro: bool
+pub akio_core::Config::udp_idle_timeout: core::time::Duration
+pub akio_core::Config::udp_max_peers: core::option::Option<usize>
+pub akio_core::Config::write_high_watermark: usize
+pub akio_core::Config::write_timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for akio_core::Config
+pub fn akio_core::Config::clone(&self) -> Self
+impl core::default::Default for akio_core::Config
+pub fn akio_core::Config::default() -> Self
+impl core::fmt::Debug for akio_core::Config
+pub fn akio_core::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::Config
+impl core::marker::Sync for akio_core::Config
+impl core::marker::Unpin for akio_core::Config
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::Config
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::Config
+pub struct akio_core::Conn<H>
+impl<H: akio_core::Handler> akio_core::Conn<H>
+pub fn akio_core::Conn<H>::reserve_response(&self) -> akio_core::Result<akio_core::ResponseSlot>
+pub fn akio_core::Conn<H>::spawn_blocking<R, W, D>(&self, W, D) -> akio_core::Result<()> where R: core::marker::Send + 'static, W: core::ops::function::FnOnce() -> R + core::marker::Send + 'static, D: core::ops::function::FnOnce(&mut H, &akio_core::Conn<H>, R) + core::marker::Send + 'static
+impl<H> akio_core::Conn<H>
+pub fn akio_core::Conn<H>::close(&self)
+pub fn akio_core::Conn<H>::close_after_send(&self)
+pub fn akio_core::Conn<H>::cork(&self)
+pub fn akio_core::Conn<H>::flush(&self) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::hold_reads(&self, bool)
+pub fn akio_core::Conn<H>::id(&self) -> u64
+pub fn akio_core::Conn<H>::is_open(&self) -> bool
+pub fn akio_core::Conn<H>::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::Conn<H>::on_drain(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
+pub fn akio_core::Conn<H>::peer_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::Conn<H>::queued_bytes(&self) -> usize
+pub fn akio_core::Conn<H>::send(&self, &[u8]) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::send_shared(&self, akio_buf::SharedBuf) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::set_relayed(&self, bool)
+pub fn akio_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn akio_core::Transport) -> R) -> core::option::Option<R>
+impl<H> core::clone::Clone for akio_core::Conn<H>
+pub fn akio_core::Conn<H>::clone(&self) -> Self
+impl<H> core::fmt::Debug for akio_core::Conn<H>
+pub fn akio_core::Conn<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H> core::marker::Send for akio_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Send
+impl<H> core::marker::Sync for akio_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Sync
+impl<H> core::marker::Unpin for akio_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Unpin
+impl<H> !core::panic::unwind_safe::RefUnwindSafe for akio_core::Conn<H>
+impl<H> !core::panic::unwind_safe::UnwindSafe for akio_core::Conn<H>
+#[non_exhaustive] pub struct akio_core::ConnInfo
+pub akio_core::ConnInfo::age: core::time::Duration
+pub akio_core::ConnInfo::backpressure: bool
+pub akio_core::ConnInfo::bytes_in: u64
+pub akio_core::ConnInfo::bytes_out: u64
+pub akio_core::ConnInfo::id: u64
+pub akio_core::ConnInfo::idle: core::time::Duration
+pub akio_core::ConnInfo::local: core::net::socket_addr::SocketAddr
+pub akio_core::ConnInfo::owner: akio_core::telemetry::LoopMeta
+pub akio_core::ConnInfo::peer: core::net::socket_addr::SocketAddr
+pub akio_core::ConnInfo::queued_bytes: usize
+pub akio_core::ConnInfo::read_held: bool
+pub akio_core::ConnInfo::transport: core::option::Option<&'static str>
+pub akio_core::ConnInfo::udp: bool
+impl core::clone::Clone for akio_core::telemetry::ConnInfo
+pub fn akio_core::telemetry::ConnInfo::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::ConnInfo
+pub fn akio_core::telemetry::ConnInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::ConnInfo
+impl core::marker::Sync for akio_core::telemetry::ConnInfo
+impl core::marker::Unpin for akio_core::telemetry::ConnInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::ConnInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::ConnInfo
+pub struct akio_core::DatagramSender
+impl akio_core::DatagramSender
+pub fn akio_core::DatagramSender::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::DatagramSender::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+impl core::clone::Clone for akio_core::DatagramSender
+pub fn akio_core::DatagramSender::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::DatagramSender
+pub fn akio_core::DatagramSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::DatagramSender
+impl core::marker::Sync for akio_core::DatagramSender
+impl core::marker::Unpin for akio_core::DatagramSender
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::DatagramSender
+impl core::panic::unwind_safe::UnwindSafe for akio_core::DatagramSender
+pub struct akio_core::Datagrams<'a>
+impl<'a> akio_core::Datagrams<'a>
+pub fn akio_core::Datagrams<'a>::get(&self, usize) -> core::option::Option<(core::net::socket_addr::SocketAddr, &'a [u8])>
+pub fn akio_core::Datagrams<'a>::is_empty(&self) -> bool
+pub fn akio_core::Datagrams<'a>::iter(&self) -> akio_core::DatagramsIter<'a>
+pub fn akio_core::Datagrams<'a>::len(&self) -> usize
+impl core::fmt::Debug for akio_core::Datagrams<'_>
+pub fn akio_core::Datagrams<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for akio_core::Datagrams<'a>
+pub fn akio_core::Datagrams<'a>::clone(&self) -> Self
+impl<'a> core::iter::traits::collect::IntoIterator for &akio_core::Datagrams<'a>
+pub type &akio_core::Datagrams<'a>::IntoIter = akio_core::DatagramsIter<'a>
+pub type &akio_core::Datagrams<'a>::Item = (core::net::socket_addr::SocketAddr, &'a [u8])
+pub fn &akio_core::Datagrams<'a>::into_iter(self) -> akio_core::DatagramsIter<'a>
+impl<'a> core::marker::Copy for akio_core::Datagrams<'a>
+impl<'a> !core::marker::Send for akio_core::Datagrams<'a>
+impl<'a> !core::marker::Sync for akio_core::Datagrams<'a>
+impl<'a> core::marker::Unpin for akio_core::Datagrams<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_core::Datagrams<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_core::Datagrams<'a>
+pub struct akio_core::DatagramsIter<'a>
+impl core::iter::traits::exact_size::ExactSizeIterator for akio_core::DatagramsIter<'_>
+impl<'a> core::clone::Clone for akio_core::DatagramsIter<'a>
+pub fn akio_core::DatagramsIter<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_core::DatagramsIter<'a>
+pub fn akio_core::DatagramsIter<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::iter::traits::iterator::Iterator for akio_core::DatagramsIter<'a>
+pub type akio_core::DatagramsIter<'a>::Item = (core::net::socket_addr::SocketAddr, &'a [u8])
+pub fn akio_core::DatagramsIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn akio_core::DatagramsIter<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> !core::marker::Send for akio_core::DatagramsIter<'a>
+impl<'a> !core::marker::Sync for akio_core::DatagramsIter<'a>
+impl<'a> core::marker::Unpin for akio_core::DatagramsIter<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_core::DatagramsIter<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_core::DatagramsIter<'a>
+pub struct akio_core::FnAcceptor<H, F>
+impl<H, F> core::fmt::Debug for akio_core::FnAcceptor<H, F>
+pub fn akio_core::FnAcceptor<H, F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H, F> akio_core::Acceptor for akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
+pub type akio_core::FnAcceptor<H, F>::Handler = H
+pub fn akio_core::FnAcceptor<H, F>::on_open(&self, &akio_core::Conn<H>) -> H
+pub fn akio_core::FnAcceptor<H, F>::on_shutdown(&self, &akio_core::Conn<Self::Handler>)
+pub fn akio_core::FnAcceptor<H, F>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::Transport>>
+impl<H, F> core::marker::Send for akio_core::FnAcceptor<H, F> where F: core::marker::Send, core::marker::PhantomData<fn() -> H>: core::marker::Send
+impl<H, F> core::marker::Sync for akio_core::FnAcceptor<H, F> where F: core::marker::Sync, core::marker::PhantomData<fn() -> H>: core::marker::Sync
+impl<H, F> core::marker::Unpin for akio_core::FnAcceptor<H, F> where F: core::marker::Unpin, core::marker::PhantomData<fn() -> H>: core::marker::Unpin
+impl<H, F> core::panic::unwind_safe::RefUnwindSafe for akio_core::FnAcceptor<H, F> where F: core::panic::unwind_safe::RefUnwindSafe, core::marker::PhantomData<fn() -> H>: core::panic::unwind_safe::RefUnwindSafe
+impl<H, F> core::panic::unwind_safe::UnwindSafe for akio_core::FnAcceptor<H, F> where F: core::panic::unwind_safe::UnwindSafe, core::marker::PhantomData<fn() -> H>: core::panic::unwind_safe::UnwindSafe
+pub struct akio_core::Live
+impl akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::backlog(&self) -> i32
+pub fn akio_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::max_connections(&self) -> usize
+pub fn akio_core::telemetry::Live::max_queued_bytes(&self) -> usize
+pub fn akio_core::telemetry::Live::read_buffer(&self) -> usize
+pub fn akio_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::set_backlog(&self, i32)
+pub fn akio_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_max_connections(&self, usize)
+pub fn akio_core::telemetry::Live::set_max_queued_bytes(&self, usize)
+pub fn akio_core::telemetry::Live::set_read_buffer(&self, usize)
+pub fn akio_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_shutdown_timeout(&self, core::time::Duration)
+pub fn akio_core::telemetry::Live::set_slow_callback_threshold(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_slow_hook(&self, core::option::Option<akio_core::SlowHook>)
+pub fn akio_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
+pub fn akio_core::telemetry::Live::set_write_high_watermark(&self, usize)
+pub fn akio_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
+pub fn akio_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::slow_hook(&self) -> core::option::Option<akio_core::SlowHook>
+pub fn akio_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
+pub fn akio_core::telemetry::Live::write_high_watermark(&self) -> usize
+impl core::default::Default for akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::default() -> akio_core::telemetry::Live
+impl core::fmt::Debug for akio_core::telemetry::Live
+pub fn akio_core::telemetry::Live::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Live
+impl core::marker::Sync for akio_core::telemetry::Live
+impl core::marker::Unpin for akio_core::telemetry::Live
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Live
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Live
+#[non_exhaustive] pub struct akio_core::LoopCounters
+pub akio_core::LoopCounters::accept_errors: u64
+pub akio_core::LoopCounters::accepted: u64
+pub akio_core::LoopCounters::backpressure: u64
+pub akio_core::LoopCounters::bytes_in: u64
+pub akio_core::LoopCounters::bytes_out: u64
+pub akio_core::LoopCounters::callback_ns: u64
+pub akio_core::LoopCounters::callbacks: u64
+pub akio_core::LoopCounters::closed: u64
+pub akio_core::LoopCounters::datagrams_in: u64
+pub akio_core::LoopCounters::datagrams_out: u64
+pub akio_core::LoopCounters::dialed: u64
+pub akio_core::LoopCounters::events: u64
+pub akio_core::LoopCounters::handshake_failures: u64
+pub akio_core::LoopCounters::idle_timeouts: u64
+pub akio_core::LoopCounters::iterations: u64
+pub akio_core::LoopCounters::overloaded: u64
+pub akio_core::LoopCounters::queued_bytes: u64
+pub akio_core::LoopCounters::reads: u64
+pub akio_core::LoopCounters::rejected: u64
+pub akio_core::LoopCounters::slow_callbacks: u64
+pub akio_core::LoopCounters::transport_errors: u64
+pub akio_core::LoopCounters::write_timeouts: u64
+pub akio_core::LoopCounters::writes: u64
+impl akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::add(&mut self, &akio_core::telemetry::LoopCounters)
+impl core::clone::Clone for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::LoopCounters
+impl core::cmp::PartialEq for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::LoopCounters
+pub fn akio_core::telemetry::LoopCounters::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::telemetry::LoopCounters
+impl core::marker::StructuralPartialEq for akio_core::telemetry::LoopCounters
+impl core::marker::Send for akio_core::telemetry::LoopCounters
+impl core::marker::Sync for akio_core::telemetry::LoopCounters
+impl core::marker::Unpin for akio_core::telemetry::LoopCounters
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopCounters
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopCounters
+#[non_exhaustive] pub struct akio_core::LoopMeta
+pub akio_core::LoopMeta::backend: &'static str
+pub akio_core::LoopMeta::listener: core::option::Option<core::net::socket_addr::SocketAddr>
+pub akio_core::LoopMeta::thread: usize
+impl core::clone::Clone for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::LoopMeta
+impl core::cmp::PartialEq for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::telemetry::LoopMeta
+pub fn akio_core::telemetry::LoopMeta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::telemetry::LoopMeta
+impl core::marker::Send for akio_core::telemetry::LoopMeta
+impl core::marker::Sync for akio_core::telemetry::LoopMeta
+impl core::marker::Unpin for akio_core::telemetry::LoopMeta
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMeta
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMeta
+#[non_exhaustive] pub struct akio_core::LoopMetrics
+pub akio_core::LoopMetrics::counters: akio_core::telemetry::LoopCounters
+pub akio_core::LoopMetrics::owner: akio_core::telemetry::LoopMeta
+pub akio_core::LoopMetrics::retiring: bool
+pub akio_core::LoopMetrics::running: bool
+impl akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::open(&self) -> u64
+impl core::clone::Clone for akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::LoopMetrics
+pub fn akio_core::telemetry::LoopMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::LoopMetrics
+impl core::marker::Sync for akio_core::telemetry::LoopMetrics
+impl core::marker::Unpin for akio_core::telemetry::LoopMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetrics
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
+#[non_exhaustive] pub struct akio_core::Metrics
+pub akio_core::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::Metrics::open_connections: usize
+pub akio_core::Metrics::pool: core::option::Option<akio_pool::PoolStats>
+pub akio_core::Metrics::total: akio_core::telemetry::LoopCounters
+pub akio_core::Metrics::uptime: core::time::Duration
+impl akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::collect_into(&self, &mut akio_core::metrics::Families)
+pub fn akio_core::telemetry::Metrics::to_json(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Metrics::to_prometheus(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Metrics::write_prometheus(&self, &mut alloc::string::String)
+impl core::clone::Clone for akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Metrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Metrics
+impl core::marker::Sync for akio_core::telemetry::Metrics
+impl core::marker::Unpin for akio_core::telemetry::Metrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Metrics
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Metrics
+#[non_exhaustive] pub struct akio_core::Offloaded
+pub akio_core::Offloaded::rx: bool
+pub akio_core::Offloaded::tx: bool
+impl akio_core::Offloaded
+pub fn akio_core::Offloaded::new(bool, bool) -> akio_core::Offloaded
+impl core::clone::Clone for akio_core::Offloaded
+pub fn akio_core::Offloaded::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::Offloaded
+impl core::cmp::PartialEq for akio_core::Offloaded
+pub fn akio_core::Offloaded::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::Offloaded
+pub fn akio_core::Offloaded::default() -> Self
+impl core::fmt::Debug for akio_core::Offloaded
+pub fn akio_core::Offloaded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::Offloaded
+impl core::marker::StructuralPartialEq for akio_core::Offloaded
+impl core::marker::Send for akio_core::Offloaded
+impl core::marker::Sync for akio_core::Offloaded
+impl core::marker::Unpin for akio_core::Offloaded
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::Offloaded
+impl core::panic::unwind_safe::UnwindSafe for akio_core::Offloaded
+#[non_exhaustive] pub struct akio_core::ReloadReport
+pub akio_core::ReloadReport::applied: alloc::vec::Vec<&'static str>
+pub akio_core::ReloadReport::ignored: alloc::vec::Vec<&'static str>
+impl core::clone::Clone for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::telemetry::ReloadReport
+impl core::cmp::PartialEq for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::ReloadReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_core::telemetry::ReloadReport
+impl core::marker::Send for akio_core::telemetry::ReloadReport
+impl core::marker::Sync for akio_core::telemetry::ReloadReport
+impl core::marker::Unpin for akio_core::telemetry::ReloadReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::ReloadReport
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::ReloadReport
+pub struct akio_core::Replies
+impl akio_core::Replies
+pub fn akio_core::Replies::is_empty(&self) -> bool
+pub fn akio_core::Replies::len(&self) -> usize
+pub fn akio_core::Replies::send_to(&mut self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+pub fn akio_core::Replies::sender(&self) -> &akio_core::DatagramSender
+impl core::fmt::Debug for akio_core::Replies
+pub fn akio_core::Replies::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::Replies
+impl !core::marker::Sync for akio_core::Replies
+impl core::marker::Unpin for akio_core::Replies
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::Replies
+impl core::panic::unwind_safe::UnwindSafe for akio_core::Replies
+pub struct akio_core::ResponseSlot
+impl akio_core::ResponseSlot
+pub fn akio_core::ResponseSlot::fill(self, alloc::vec::Vec<u8>)
+pub fn akio_core::ResponseSlot::fill_close(self, alloc::vec::Vec<u8>)
+pub fn akio_core::ResponseSlot::fill_parts(self, alloc::vec::Vec<akio_core::Part>, bool)
+pub fn akio_core::ResponseSlot::stream(self, alloc::vec::Vec<u8>) -> akio_core::ResponseStream
+impl core::fmt::Debug for akio_core::ResponseSlot
+pub fn akio_core::ResponseSlot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_core::ResponseSlot
+pub fn akio_core::ResponseSlot::drop(&mut self)
+impl core::marker::Send for akio_core::ResponseSlot
+impl core::marker::Sync for akio_core::ResponseSlot
+impl core::marker::Unpin for akio_core::ResponseSlot
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::ResponseSlot
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::ResponseSlot
+pub struct akio_core::ResponseStream
+impl akio_core::ResponseStream
+pub fn akio_core::ResponseStream::finish(self, bool)
+pub fn akio_core::ResponseStream::queued_bytes(&self) -> usize
+pub fn akio_core::ResponseStream::write(&self, alloc::vec::Vec<u8>) -> akio_core::Result<()>
+impl core::fmt::Debug for akio_core::ResponseStream
+pub fn akio_core::ResponseStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_core::ResponseStream
+pub fn akio_core::ResponseStream::drop(&mut self)
+impl core::marker::Send for akio_core::ResponseStream
+impl core::marker::Sync for akio_core::ResponseStream
+impl core::marker::Unpin for akio_core::ResponseStream
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::ResponseStream
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::ResponseStream
+#[non_exhaustive] pub struct akio_core::SlowCallback
+pub akio_core::SlowCallback::conn_id: u64
+pub akio_core::SlowCallback::elapsed: core::time::Duration
+pub akio_core::SlowCallback::kind: &'static str
+impl core::clone::Clone for akio_core::SlowCallback
+pub fn akio_core::SlowCallback::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::SlowCallback
+pub fn akio_core::SlowCallback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::SlowCallback
+impl core::marker::Send for akio_core::SlowCallback
+impl core::marker::Sync for akio_core::SlowCallback
+impl core::marker::Unpin for akio_core::SlowCallback
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::SlowCallback
+impl core::panic::unwind_safe::UnwindSafe for akio_core::SlowCallback
+pub struct akio_core::SlowHook(pub alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_core::SlowCallback) + core::marker::Send + core::marker::Sync)>)
+impl core::clone::Clone for akio_core::SlowHook
+pub fn akio_core::SlowHook::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::SlowHook
+pub fn akio_core::SlowHook::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::SlowHook
+impl core::marker::Sync for akio_core::SlowHook
+impl core::marker::Unpin for akio_core::SlowHook
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::SlowHook
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::SlowHook
+#[non_exhaustive] pub struct akio_core::SlowRecord
+pub akio_core::SlowRecord::at: std::time::SystemTime
+pub akio_core::SlowRecord::conn_id: u64
+pub akio_core::SlowRecord::elapsed: core::time::Duration
+pub akio_core::SlowRecord::kind: &'static str
+pub akio_core::SlowRecord::owner: akio_core::telemetry::LoopMeta
+pub akio_core::SlowRecord::threshold: core::time::Duration
+impl core::clone::Clone for akio_core::telemetry::SlowRecord
+pub fn akio_core::telemetry::SlowRecord::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::telemetry::SlowRecord
+pub fn akio_core::telemetry::SlowRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::SlowRecord
+impl core::marker::Sync for akio_core::telemetry::SlowRecord
+impl core::marker::Unpin for akio_core::telemetry::SlowRecord
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::SlowRecord
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::SlowRecord
+pub struct akio_core::Telemetry
+impl akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::collect(&self) -> akio_core::metrics::Families
+pub fn akio_core::telemetry::Telemetry::collect_all(&self) -> akio_core::metrics::Families
+pub fn akio_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<akio_core::telemetry::ConnInfo>
+pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Live
+pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
+pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
+pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
+pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
+pub fn akio_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
+pub fn akio_core::telemetry::Telemetry::set_log_level(&self, akio_log::LevelFilter)
+pub fn akio_core::telemetry::Telemetry::slow_callbacks(&self) -> alloc::vec::Vec<akio_core::telemetry::SlowRecord>
+pub fn akio_core::telemetry::Telemetry::unregister_collector(&self, akio_core::metrics::CollectorId) -> bool
+impl core::default::Default for akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::default() -> Self
+impl core::fmt::Debug for akio_core::telemetry::Telemetry
+pub fn akio_core::telemetry::Telemetry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::telemetry::Telemetry
+impl core::marker::Sync for akio_core::telemetry::Telemetry
+impl core::marker::Unpin for akio_core::telemetry::Telemetry
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::Telemetry
+impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Telemetry
+pub struct akio_core::TransportWaker
+impl akio_core::TransportWaker
+pub fn akio_core::TransportWaker::noop() -> akio_core::TransportWaker
+pub fn akio_core::TransportWaker::wake(&self)
+impl core::clone::Clone for akio_core::TransportWaker
+pub fn akio_core::TransportWaker::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::TransportWaker
+pub fn akio_core::TransportWaker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::TransportWaker
+impl core::marker::Sync for akio_core::TransportWaker
+impl core::marker::Unpin for akio_core::TransportWaker
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::TransportWaker
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::TransportWaker
+pub struct akio_core::UdpBinding
+impl akio_core::UdpBinding
+pub fn akio_core::UdpBinding::close(&self)
+pub fn akio_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::set_unicast_hops(&self, u32) -> core::io::error::Result<()>
+impl core::clone::Clone for akio_core::UdpBinding
+pub fn akio_core::UdpBinding::clone(&self) -> Self
+impl core::fmt::Debug for akio_core::UdpBinding
+pub fn akio_core::UdpBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_core::UdpBinding
+impl core::marker::Sync for akio_core::UdpBinding
+impl core::marker::Unpin for akio_core::UdpBinding
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::UdpBinding
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::UdpBinding
+#[non_exhaustive] pub struct akio_core::UdpStats
+pub akio_core::UdpStats::peers: usize
+pub akio_core::UdpStats::rejected: u64
+impl core::clone::Clone for akio_core::UdpStats
+pub fn akio_core::UdpStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::UdpStats
+impl core::cmp::PartialEq for akio_core::UdpStats
+pub fn akio_core::UdpStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::UdpStats
+pub fn akio_core::UdpStats::default() -> Self
+impl core::fmt::Debug for akio_core::UdpStats
+pub fn akio_core::UdpStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::UdpStats
+impl core::marker::StructuralPartialEq for akio_core::UdpStats
+impl core::marker::Send for akio_core::UdpStats
+impl core::marker::Sync for akio_core::UdpStats
+impl core::marker::Unpin for akio_core::UdpStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::UdpStats
+impl core::panic::unwind_safe::UnwindSafe for akio_core::UdpStats
+pub trait akio_core::Acceptor: core::marker::Send + core::marker::Sync + 'static
+pub type akio_core::Acceptor::Handler: akio_core::Handler
+pub fn akio_core::Acceptor::on_open(&self, &akio_core::Conn<Self::Handler>) -> Self::Handler
+pub fn akio_core::Acceptor::on_shutdown(&self, &akio_core::Conn<Self::Handler>)
+pub fn akio_core::Acceptor::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::Transport>>
+impl<H, F> akio_core::Acceptor for akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
+pub type akio_core::FnAcceptor<H, F>::Handler = H
+pub fn akio_core::FnAcceptor<H, F>::on_open(&self, &akio_core::Conn<H>) -> H
+pub fn akio_core::FnAcceptor<H, F>::on_shutdown(&self, &akio_core::Conn<Self::Handler>)
+pub fn akio_core::FnAcceptor<H, F>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::Transport>>
+pub trait akio_core::DatagramsHandler: core::marker::Send + 'static
+pub fn akio_core::DatagramsHandler::on_datagrams(&mut self, &akio_core::Datagrams<'_>, &mut akio_core::Replies)
+pub fn akio_core::DatagramsHandler::on_shutdown(&mut self, &mut akio_core::Replies)
+pub trait akio_core::Handler: core::marker::Send + core::marker::Sized + 'static
+pub fn akio_core::Handler::on_close(&mut self, &akio_core::Conn<Self>, core::option::Option<akio_core::Error>)
+pub fn akio_core::Handler::on_data(&mut self, &akio_core::Conn<Self>, &[u8])
+pub trait akio_core::SocketOp: core::marker::Send + 'static
+pub fn akio_core::SocketOp::run(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<bool>
+pub trait akio_core::Transport: core::marker::Send + 'static
+pub fn akio_core::Transport::as_any(&mut self) -> &mut dyn core::any::Any
+pub fn akio_core::Transport::handshake_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::Transport::handshaking(&self) -> bool
+pub fn akio_core::Transport::kernel_record(&mut self, u8, &[u8]) -> core::io::error::Result<bool>
+pub fn akio_core::Transport::kernel_send(&mut self, usize, &mut alloc::vec::Vec<alloc::boxed::Box<dyn akio_core::SocketOp>>) -> core::io::error::Result<()>
+pub fn akio_core::Transport::name(&self) -> &'static str
+pub fn akio_core::Transport::offload(&mut self, std::os::fd::raw::RawFd, core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<akio_core::Offloaded>
+pub fn akio_core::Transport::recv(&mut self, &[u8], &mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
+pub fn akio_core::Transport::seal(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
+pub fn akio_core::Transport::set_waker(&mut self, akio_core::TransportWaker)
+pub fn akio_core::Transport::shutdown(&mut self, &mut alloc::vec::Vec<u8>)
+pub fn akio_core::Transport::take_ops(&mut self, &mut alloc::vec::Vec<alloc::boxed::Box<dyn akio_core::SocketOp>>)
+pub fn akio_core::Transport::wants_offload(&self) -> bool
+pub fn akio_core::fn_acceptor<H, F>(F) -> akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
+pub type akio_core::Result<T> = core::result::Result<T, akio_core::Error>

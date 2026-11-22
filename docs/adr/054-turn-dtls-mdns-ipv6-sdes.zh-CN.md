@@ -6,21 +6,21 @@
 
 ## 背景
 
-`crates/only-webrtc/README.md` 列出的三个缺口在非浏览器部署中反复出现：
+`crates/akio-webrtc/README.md` 列出的三个缺口在非浏览器部署中反复出现：
 
-- **DTLS 上的 TURN**（RFC 7350，`turns:host?transport=udp`）。`only-turn` 提供 UDP、TCP 与 TLS 上的
+- **DTLS 上的 TURN**（RFC 7350，`turns:host?transport=udp`）。`akio-turn` 提供 UDP、TCP 与 TLS 上的
   TURN，`Endpoint::gather_relay_via` 也只能经这三种方式分配。只放行 UDP 出站又要求控制通道加密的
   网络，以及公开了 DTLS 监听的 coturn 部署，都用不上。
 - **IPv6 组播上的 mDNS。** `Endpoint::resolve_mdns` 与 `conceal_host_candidates`（ADR-044）只用一个
   `224.0.0.251:5353` 上的 IPv4 套接字。名字可以解析出 IPv6 地址，但只能经由 IPv4 应答器；纯 IPv6
   链路、只在 `ff02::fb` 上应答的浏览器都够不着，链路本地 IPv6 候选也没有出站接口。
 - **SDES-SRTP**（RFC 4568 `a=crypto`）。SIP 网关（Asterisk、FreeSWITCH 及其后的 PBX）用 SDP 中的
-  安全描述而不是 DTLS-SRTP 给 SRTP 提供密钥。`only-srtp` 已实现它们用到的全部套件（ADR-040），
+  安全描述而不是 DTLS-SRTP 给 SRTP 提供密钥。`akio-srtp` 已实现它们用到的全部套件（ADR-040），
   `Profile::sdes_name` / `from_sdes_name` 也已存在，只是没有协商。
 
-约束：`only-srtp`、`only-rtp` 与 `only-ice` 正由其他会话修改，这里不动；浏览器看到的内容必须与今天
-完全一样；`only-turn` 与 `only-webrtc`（公开层）的公开 API 不得暴露内部层类型（`only-dtls`、
-`only-srtp`）。
+约束：`akio-srtp`、`akio-rtp` 与 `akio-ice` 正由其他会话修改，这里不动；浏览器看到的内容必须与今天
+完全一样；`akio-turn` 与 `akio-webrtc`（公开层）的公开 API 不得暴露内部层类型（`akio-dtls`、
+`akio-srtp`）。
 
 ## 决定
 
@@ -30,7 +30,7 @@
 监听器的 acceptor。它接受与 `turns:` TCP 监听器相同的 `tls::ServerConfig`（默认证书链与私钥；仅当
 配置要求时才要客户端证书），一张证书两处共用。每个客户端五元组：
 
-- ClientHello 由每个 acceptor 一个的 `only_dtls::HelloVerifier` 无状态应答（DTLS 1.2 用
+- ClientHello 由每个 acceptor 一个的 `akio_dtls::HelloVerifier` 无状态应答（DTLS 1.2 用
   HelloVerifyRequest，1.3 用 HelloRetryRequest cookie）；只有带有效 cookie 的 ClientHello 才创建
   DTLS `Connection::server`（关闭 cookie）。提供 DTLS 1.3，可回退到 1.2（TLS 配置只用 TLS 1.3 时
   只用 1.3）。
@@ -45,10 +45,10 @@
 
 **客户端。** `RelayServer::dtls(addr, server_name, tls::ClientConfig, user, pass)`，以及
 `turns:host[:port]?transport=udp` URL（默认端口 5349；与 TLS 一样由 `tls_config` 补全）。分配跑在
-**endpoint 自己的 UDP 套接字**上的 `only_dtls::Connection::client` 里，与普通 UDP 分配一样：来自
+**endpoint 自己的 UDP 套接字**上的 `akio_dtls::Connection::client` 里，与普通 UDP 分配一样：来自
 服务器地址的数据报在对端路由之前从套接字取出、解密，交给 sans-io TURN 客户端；握手完成前它的消息
 排队等待（有上限，已排队事务的重传不重复排队）。DTLS 定时器并入中继在共享 WebRTC 定时器线程上的
-定时器。服务器证书用 `only_x509::Verifier` 按 TLS 客户端配置的根证书对 `server_name` 校验（有客户端
+定时器。服务器证书用 `akio_x509::Verifier` 按 TLS 客户端配置的根证书对 `server_name` 校验（有客户端
 证书就发送；`insecure_skip_verify` 不校验）。握手失败时 `gather_relay_via` 立即失败；之后丢失的
 关联会丢失分配，并以新的握手重新分配（ADR-032 的退避）。候选是 UDP 中继候选（与普通 UDP 分配
 相同），服务器给出的映射地址成为服务器反射候选。每个服务器地址只有一个数据报中继（UDP 或 DTLS）：
@@ -65,13 +65,13 @@
 - **按接口加入。** `ff02::fb` 是链路范围的：套接字只在加入过它的链路上收得到，macOS 不指定接口时
   拒绝发往它（"no route to host"）。接口取有 IPv6 链路本地地址的那些：Linux 上读
   `/proc/net/if_inet6`，其他系统对前 64 个索引向内核询问到 `ff02::fb%<i>` 的路由（UDP connect，
-  不发送任何东西）。引擎服务的套接字通过新增的 `only` API
+  不发送任何东西）。引擎服务的套接字通过新增的 `akio` API
   `Engine::bind_udp_multicast_on(group, interfaces, acceptor)` 在每个接口上加入该组（`UdpBinding`
-  不暴露其套接字，所以在 only-webrtc 内无法做到；经协调会话批准新增）。`bind_udp_multicast(group, a)`
+  不暴露其套接字，所以在 akio-webrtc 内无法做到；经协调会话批准新增）。`bind_udp_multicast(group, a)`
   现在就是 `bind_udp_multicast_on(group, &[0], a)`，行为不变；0 表示默认接口。拒绝加入的接口被跳过，
   只有全部拒绝时才失败。**只有 IPv6 组接受接口列表**：IPv4 组在默认接口上加入，因此只接受 `&[0]`，
   其他值以 `InvalidInput` 拒绝（IPv4 加入组时按地址而非索引指定接口，IPv4 上的 mDNS 也不需要更多）；
-  空列表同样被拒绝。测试在 `crates/only/tests/shared_ports.rs`（参数检查；在每个链路本地接口上加入的
+  空列表同样被拒绝。测试在 `crates/akio/tests/shared_ports.rs`（参数检查；在每个链路本地接口上加入的
   IPv6 组，从每条链路收到发往它的数据报，源地址带该链路的作用域 ID）。
 - **作用域 ID。** 查询发往每个已加入接口上的 `ff02::fb`（以及 endpoint 自身链路本地主机候选的
   作用域 ID）；应答发回查询所来接口上的组（或在查询方要求时单播给它）。SDP 不携带作用域 ID，所以
@@ -94,7 +94,7 @@
   协议沿用 offer 的。带 MKI、多个密钥、会话参数（`KDR=`、`UNENCRYPTED_SRTP` 等）、未知套件或密钥
   长度不对的行都不采用（RFC 4568 §6.1）；接受 lifetime 但不强制。SDES 关闭时，这样的 offer 以明确
   的错误拒绝。
-- **密钥。** 各方用自己的密钥加密、用对方的密钥解密：offer/answer 完成时由 SDP 创建两个 `only-srtp`
+- **密钥。** 各方用自己的密钥加密、用对方的密钥解密：offer/answer 完成时由 SDP 创建两个 `akio-srtp`
   上下文，重新协商时只替换密钥变了的那个（翻转计数器与重放窗口保留）。ICE 有了候选对即算连通；
   不跑 DTLS 握手。
 - **BUNDLE**：每个方向一个 SRTP 上下文服务整个传输，因此各段密钥不同的远端描述会被拒绝。
@@ -105,8 +105,8 @@
 
 ## 影响
 
-- `only-turn` 依赖 `only-dtls` 与 `only-x509`（经 `only` / `only-tls` 已在依赖图中）；`only-webrtc`
-  把 `only-x509` 从开发依赖移为正常依赖。
+- `akio-turn` 依赖 `akio-dtls` 与 `akio-x509`（经 `akio` / `akio-tls` 已在依赖图中）；`akio-webrtc`
+  把 `akio-x509` 从开发依赖移为正常依赖。
 - 新公开 API：`TurnServer::dtls`、`TurnServer::dtls_relay_of`、`TurnDtls`（以及隐藏的
   `TurnDtlsClient` 处理器）、`RelayServer::dtls`、`RelayServer::transport() == "dtls"`、
   `RtcConfig::enable_sdes_srtp`、`Engine::bind_udp_multicast_on`。`turns:...?transport=udp` 不再
@@ -115,8 +115,8 @@
 - IPv6 mDNS 让每个解析中的 endpoint 多一个套接字，在非 Linux 主机上 `resolve_mdns` 时最多做 64 次
   UDP connect 探测。
 
-测试：only-turn `tests/dtls.rs`（DTLS 1.3 与 1.2 客户端、双向中继数据、close_notify 与删除释放分配、
-错误证书被拒、重启的客户端替换其关联、忽略非 DTLS 数据报）；only-webrtc `tests/relay_dtls.rs`（两个
+测试：akio-turn `tests/dtls.rs`（DTLS 1.3 与 1.2 客户端、双向中继数据、close_notify 与删除释放分配、
+错误证书被拒、重启的客户端替换其关联、忽略非 DTLS 数据报）；akio-webrtc `tests/relay_dtls.rs`（两个
 `Endpoint` 经 DTLS 分配中继，数据通道回显；凭据、证书、名字错误；`turns:?transport=udp` URL）、
 `tests/sdes.rs`（五个套件各自的媒体回显、保持密钥的重新协商与反方向的 offer、拒绝场景、以
 DTLS-SRTP 应答 DTLS-SRTP offer）、`tests/mdns.rs`（经 `ff02::fb` 应答 AAAA 查询、只有 IPv6 应答器
@@ -126,14 +126,14 @@ cookie 交换）；`webrtc_sdp` 试用 SDES 配置，并检查密钥不会在未
 同时出现；`webrtc_turn_url` 覆盖 `turns:?transport=udp`。
 
 互通（`tools/interop/webrtc/turn-dtls.sh`，gpu51 上的 Docker，coturn 4.6）：coturn 的
-`turnutils_uclient -S` 经 DTLS 对 only-turn 的 DTLS 监听器；only-dtls 连接中的 only_turn 客户端对
+`turnutils_uclient -S` 经 DTLS 对 akio-turn 的 DTLS 监听器；akio-dtls 连接中的 akio_turn 客户端对
 coturn 的 DTLS 监听器（提供 DTLS 1.3，协商为 1.2）；两个 `Endpoint` 经 DTLS
-（`turns:127.0.0.1:5349?transport=udp`）由 coturn 中继并回显数据通道；对 only-turn 同样如此。
+（`turns:127.0.0.1:5349?transport=udp`）由 coturn 中继并回显数据通道；对 akio-turn 同样如此。
 
 未做：带 MKI 或会话参数的 SDES、无 ICE 的 SDES（普通 `c=` / 端口媒体）、与 SDES 并存的数据通道；
 带连接 ID 的 DTLS 上的 TURN；除 mDNS 或入站流量之外其他途径学到的链路本地地址上的 ICE。留给
-`only-ice` 的后续工作：在 `MULTICAST_V4` 旁导出 `MULTICAST_V6`，并让解析出的候选携带作用域 ID。
+`akio-ice` 的后续工作：在 `MULTICAST_V4` 旁导出 `MULTICAST_V6`，并让解析出的候选携带作用域 ID。
 
-此后已完成（2026-11-22，ADR-078）：IPv6 mDNS 以跳数限制 255 发送（only-sys 新增
+此后已完成（2026-11-22，ADR-078）：IPv6 mDNS 以跳数限制 255 发送（akio-sys 新增
 `set_multicast_hops_v6`），纯 IPv6 链路上也能隐藏名字（IPv4 套接字没有共享端口时由 IPv6 套接字应答），
 并与 Chrome 157、avahi 0.8（仅 IPv6，`check-response-ttl=yes`）和 mDNSResponder 互通验证。

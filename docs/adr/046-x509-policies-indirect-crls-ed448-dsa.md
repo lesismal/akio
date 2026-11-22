@@ -6,7 +6,7 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-only-x509's README listed what RFC 5280 path validation it did not do: certificate policies,
+akio-x509's README listed what RFC 5280 path validation it did not do: certificate policies,
 indirect CRLs and CRLs signed by another key of the CA, signed OCSP requests, fetching anything
 over the network, Ed448 and DSA. Policies matter to government and enterprise PKIs (and to
 anyone validating against NIST PKITS); indirect CRLs and separate CRL-signing keys are how such
@@ -20,7 +20,7 @@ policyConstraints failed as unknown.
 
 ## Decision
 
-1. **only-crypto** (internal tier; enums are `#[non_exhaustive]`):
+1. **akio-crypto** (internal tier; enums are `#[non_exhaustive]`):
    - `hash::{Shake128, Shake256}` (FIPS 202): a Keccak-f[1600] sponge with `update` and
      `squeeze` (extendable output, not the `Hash` trait).
    - `ed448` (RFC 8032 §5.2, pure Ed448, empty context): `SigningKey::{from_seed, generate,
@@ -45,7 +45,7 @@ policyConstraints failed as unknown.
      `pkey::PublicKey::{Ed448, Dsa}`, `pkey::PrivateKey::Ed448` (PKCS#8), and the OIDs in
      `der::oid` (`ED448`, `X448`, `DSA`, `DSA_WITH_SHA*`). DSA parameters inherited from the
      issuer (absent in the SubjectPublicKeyInfo, RFC 3279 §2.3.2) are not supported.
-2. **only-x509, certificate policies** (RFC 5280 §6.1): certificatePolicies, policyMappings,
+2. **akio-x509, certificate policies** (RFC 5280 §6.1): certificatePolicies, policyMappings,
    policyConstraints and inhibitAnyPolicy are parsed strictly (a repeated policy OID, an empty
    policyConstraints or mappings list is an encoding error) and exposed
    (`Certificate::{certificate_policies, policy_mappings, policy_constraints,
@@ -60,14 +60,14 @@ policyConstraints failed as unknown.
    returning the chain. A failure is `Error::PolicyViolation`. With the default options a path
    fails only when a certificate's policyConstraints require an explicit policy and none is
    valid, which RFC 5280 requires of any validator.
-3. **only-x509, the rest of §6.1 the tests exposed**: self-issued intermediates do not count
+3. **akio-x509, the rest of §6.1 the tests exposed**: self-issued intermediates do not count
    against pathLenConstraint (§6.1.4 (l)) and are exempt from name constraints (§6.1.3 (b));
    rfc822Name and URI name constraints are evaluated (mailbox, host and `.domain` forms; a URI
    without an authority, or with an IP literal, fails closed) and the legacy `emailAddress`
    attribute of the leaf's subject is checked against rfc822Name constraints (before, an
    address there escaped them); `Verifier::allow_ca_end_entity(bool)` validates a CA
    certificate as the end entity (PKITS does, the Web PKI default stays "no").
-4. **only-x509, revocation (§6.3.3)**: the verifier now checks revocation once a candidate path
+4. **akio-x509, revocation (§6.3.3)**: the verifier now checks revocation once a candidate path
    reaches a root, from the top down, so it knows the trust anchor. A CRL is used when its
    scope fits the certificate: for each distribution point, the CRL issuer must be the
    certificate's issuer or, for an **indirect CRL** (`indirectCRL` in the IDP), the point's
@@ -86,16 +86,16 @@ policyConstraints failed as unknown.
    gains the distribution point matching. Delta CRLs must have the same issuer and IDP as the
    complete CRL they extend. Serial numbers are compared as signed INTEGER contents (a CRL
    entry for −1 no longer matches certificate 255).
-5. **only-tls**: group `x448` (0x001e, last in the default list, so ClientHellos list it but
+5. **akio-tls**: group `x448` (0x001e, last in the default list, so ClientHellos list it but
    send their key share for X25519) and signature scheme `ed448` (0x0808) in TLS 1.3 and 1.2
    (ECDSA suites), certificates included (`Group::X448` in the hidden `__proto` module).
-6. **Validation**: NIST PKITS through `crates/only-x509/tests/pkits.rs` (`tools/pkits/prepare.sh`
+6. **Validation**: NIST PKITS through `crates/akio-x509/tests/pkits.rs` (`tools/pkits/prepare.sh`
    downloads the suite; not vendored). Every test of section 4 runs with the settings the PKITS
    document lists, revocation in hard-fail mode: 242 of 248 runs as expected; the 6 others are
    listed with reasons (DSA parameter inheritance; name chaining by DER bytes rather than with
    RFC 4518 folding, a deliberate choice since the first version). FIPS 186-4 SigVer vectors
    for DSA, RFC 8032 and 7748 vectors for Ed448 and X448, OpenSSL-made Ed448 and DSA
-   certificates and CRL, and only-tls against `openssl s_server` / `s_client` with X448 and
+   certificates and CRL, and akio-tls against `openssl s_server` / `s_client` with X448 and
    Ed448.
 
 Not done, on purpose:
@@ -104,8 +104,8 @@ Not done, on purpose:
   require them (the RFC 5019 profile that CAs follow sends unsigned requests, and most
   responders ignore a signature), and only a client certificate and key the application holds
   could sign them. `OcspRequest` stays unsigned.
-- **Fetching CRLs, OCSP responses or issuer certificates over the network**: only-x509 and
-  only-tls are sans-io; fetching needs an HTTP client above them in the dependency graph, would
+- **Fetching CRLs, OCSP responses or issuer certificates over the network**: akio-x509 and
+  akio-tls are sans-io; fetching needs an HTTP client above them in the dependency graph, would
   block or stall a handshake on a third party (rules.md, rule 1), leaks to the CA which sites a
   client visits, and follows URLs from attacker-supplied certificates (SSRF). The application
   fetches; `crl_distribution_points`, `ocsp_urls` and `ca_issuer_urls` say where.

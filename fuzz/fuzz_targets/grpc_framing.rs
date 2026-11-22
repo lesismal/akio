@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| only_grpc::fuzzing::grpc_framing(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| akio_grpc::fuzzing::grpc_framing(data));

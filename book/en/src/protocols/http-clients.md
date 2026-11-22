@@ -1,17 +1,17 @@
 # HTTP clients
 
-Both clients run their connections on a `only` `Engine` (give it `client_threads(n)` and
+Both clients run their connections on a `akio` `Engine` (give it `client_threads(n)` and
 `start()` it). Results arrive in a callback on an I/O thread (which must not block), or through a
 `ResponseFuture` you can `wait()`, `wait_timeout(d)` or `.await`.
 
 ## HTTP/1.1: `client::Client`
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:client}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:client}}
 ```
 
 - `Client::new(Arc<Engine>)`, cheap to clone. `https://` uses the system's CAs
-  (`only::tls::RootCerts::system()`); `with_tls(only::tls::ClientConfig)` replaces them (your own
+  (`akio::tls::RootCerts::system()`); `with_tls(akio::tls::ClientConfig)` replaces them (your own
   roots, client certificates, ALPN).
 - `ClientRequest::get(url)`, `ClientRequest::post(url, body)`, `.header(name, value)`,
   `.timeout(d)`; or fill `method`, `url`, `headers`, `body`, `timeout` yourself. `Host`,
@@ -21,7 +21,7 @@ Both clients run their connections on a `only` `Engine` (give it `client_threads
   (the URL that answered, after redirects).
 - Keep-alive connections are reused per host (and per proxy); a request on a reused connection
   that turns out to be dead is retried once on a new one.
-- Names are resolved off the calling thread, on `only::dns`'s resolver threads (at most four,
+- Names are resolved off the calling thread, on `akio::dns`'s resolver threads (at most four,
   started on demand); IP literals need no lookup. Every resolved address is tried in turn
   (`localhost` is often `::1` first).
 - `ClientError`: `InvalidUrl`, `Io`, `Protocol`, `Closed`, `Timeout`, `TooManyRedirects`,
@@ -59,7 +59,7 @@ instance) fails with `ClientError::TooManyRedirects`.
 ### Cookies
 
 Off unless a jar is attached: `Client::new(engine).with_cookies(CookieJar::new())`
-(`only_http::cookie`, ADR-059). Every response's `Set-Cookie` fields are stored, each hop of a
+(`akio_http::cookie`, ADR-059). Every response's `Set-Cookie` fields are stored, each hop of a
 redirect chain included, and every request carries the matching cookies in one `Cookie` field
 (after the request's own, if it has one). The rules are RFC 6265 with RFC 6265bis: host-only
 cookies without `Domain`; a `Domain` that is a public suffix is refused unless it is the host
@@ -73,7 +73,7 @@ hand.
 
 ### Connecting
 
-Names are resolved off the calling thread and cached for 30 s (`only::dns::CacheConfig`; the
+Names are resolved off the calling thread and cached for 30 s (`akio::dns::CacheConfig`; the
 system resolver gives no TTL). A name with several addresses is raced (Happy Eyeballs v2, RFC
 8305): IPv6 and IPv4 alternate, a new attempt starts every 250 ms or as soon as one fails, the
 first connection up is used (`ClientOptions::happy_eyeballs`). `H2Client::connect(engine, host,
@@ -89,7 +89,7 @@ or retried). `ResponseFuture::wait_timeout` only stops waiting; the request goes
 ### Proxies
 
 ```rust,ignore
-use only_http::client::{Client, Proxy};
+use akio_http::client::{Client, Proxy};
 let client = Client::new(engine)
     .with_proxy(Proxy::all("http://user:pass@proxy.internal:3128")?.no_proxy("localhost,.corp"));
 // or, opting in to the environment (http_proxy, https_proxy, all_proxy, no_proxy, upper case
@@ -102,7 +102,7 @@ let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@prox
 `http://` requests go to the proxy in absolute form (`GET http://host/path HTTP/1.1`);
 `https://` goes through a `CONNECT host:port` tunnel with TLS to the target inside it.
 Credentials in the proxy URL become `Proxy-Authorization: Basic`. A proxy that refuses the
-tunnel fails the request with `ClientError::Io` whose error is an `only_http::client::ProxyRefused`
+tunnel fails the request with `ClientError::Io` whose error is an `akio_http::client::ProxyRefused`
 (`status()`, `reason()`). `NO_PROXY` entries: `*`, host names (and their subdomains), IP
 addresses, CIDR blocks, each optionally with `:port`. An `https://` proxy URL (port 443) reaches
 the proxy over TLS, its certificate checked for its name with the client's TLS configuration;
@@ -119,14 +119,14 @@ the closest HTTP status (407 for authentication, 403 for "not allowed", 502 for 
 target) and `socks_reply()` giving the SOCKS code. For SOCKS beyond these clients (BIND, UDP,
 blocking sockets) see the [SOCKS client](socks.md#socks-client).
 
-See [ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.md) and
-[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md)
+See [ADR-010](https://github.com/lesismal/akio/blob/main/docs/adr/010-http-client-gaps.md) and
+[ADR-019](https://github.com/lesismal/akio/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md)
 for the reasoning behind these rules.
 
 ## HTTP/2: `h2client::H2Client`
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:h2client}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:h2client}}
 ```
 
 - `H2Client::dial(engine, addr, tls, opts, ready)` or `dial_blocking(engine, addr, tls,
@@ -143,7 +143,7 @@ for the reasoning behind these rules.
   requests (`open`) are handed their body as it arrives and are not limited in size.
 - Streaming both ways: `open(req, on_event)` returns an `H2Upload` (`write`, `finish`) for the
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
-  arrives. only-grpc's client is built on it.
+  arrives. akio-grpc's client is built on it.
 - WebSockets on the same connection (RFC 8441): `websocket(url, &H2WsOptions, handler, done)`
   or `websocket_blocking`; see [WebSocket over HTTP/2](websocket.md#websocket-over-http2).
 - `is_open()`, `close()`.
@@ -153,10 +153,10 @@ for the reasoning behind these rules.
 
 ## HTTP/3
 
-`only_h3::H3Client` is covered in [QUIC and HTTP/3](quic-h3.md).
+`akio_h3::H3Client` is covered in [QUIC and HTTP/3](quic-h3.md).
 
 ## Awaiting from async code
 
 `ResponseFuture` implements `Future`, so async code (tokio included) can `.await` it; the
-connection still runs on `only`'s I/O threads. See
+connection still runs on `akio`'s I/O threads. See
 [Migrating from tokio](../migration/from-tokio.md).

@@ -6,7 +6,7 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-The only-rtp README listed three gaps left by ADR-036:
+The akio-rtp README listed three gaps left by ADR-036:
 
 - **ULPFEC level 1.** `fec` wrote and read ULPFEC with one protection level whose length is the
   longest protected packet. RFC 5109 §5 / §7.4 lets a FEC packet carry several levels: level 0
@@ -22,9 +22,9 @@ The only-rtp README listed three gaps left by ADR-036:
   length above 127 is not UTF-8 and was replaced by U+FFFD on parsing. Writing cut texts at
   255 bytes, possibly inside a character.
 
-Constraints: only-webrtc constructs `Rtcp::SourceDescription(Vec<(u32, Vec<(u8, String)>)>)`
+Constraints: akio-webrtc constructs `Rtcp::SourceDescription(Vec<(u32, Vec<(u8, String)>)>)`
 and parses FEC headers, and another session is editing it, so the variant's type stays and
-only-webrtc is not touched. libwebrtc, Chrome and pion use neither ULPFEC levels nor RLE /
+akio-webrtc is not touched. libwebrtc, Chrome and pion use neither ULPFEC levels nor RLE /
 receipt-time blocks, so the byte-level references are the RFC examples and pion/rtcp's block
 writer.
 
@@ -50,7 +50,7 @@ writer.
      repair bytes drop from `m * longest` to about `m * l0 + longest - l0`. Default `None`:
      whole-packet protection exactly as before. Only for receivers that implement levels:
      libwebrtc's ULPFEC reader takes level 0 alone, so toward Chrome a lost packet longer than
-     `l0` would be rebuilt wrong; only-webrtc keeps whole-packet ULPFEC.
+     `l0` would be rebuilt wrong; akio-webrtc keeps whole-packet ULPFEC.
    - The decoder rebuilds packets piecewise: each received or rebuilt packet has a known
      header (or not) and known byte ranges; a level whose packets are all known over its range
      but one rebuilds that range (level 0 also the header and length), in any order — a level-1
@@ -88,7 +88,7 @@ writer.
 
 ## Consequences
 
-- Tests (`crates/only-rtp/src/tests_levels.rs`): the RFC 5109 §10.2 example byte for byte
+- Tests (`crates/akio-rtp/src/tests_levels.rs`): the RFC 5109 §10.2 example byte for byte
   (with erratum 3461), recovery of each single loss (B and C whole, A and D up to L0 + L1),
   level 1 arriving before level 0, two losses (starts only, the rest after a late arrival);
   the level rules; long masks and malformed levels; the level-0 mode on a lossy link (400
@@ -110,7 +110,7 @@ writer.
   encodes explicit two-level packets whose single loss must come back exactly. 16 minutes per
   target on gpu51: `rtp_rtcp` 2.90 M runs, `rtp_fec` 1.59 M runs, no finding in the code
   (an earlier run caught a too-strict check in the target, kept as a regression input).
-- API, additive except `FecHeader`'s new field (only-rtp is internal tier; struct literals add
+- API, additive except `FecHeader`'s new field (akio-rtp is internal tier; struct literals add
   `ulp_levels: Vec::new()`): `fec::{UlpLevel, UlpLevelSpec}`, `FecHeader::write_level`,
   `FecEncoder::{set_ulp_level0, encode_ulp}`, `FecDecoder::partially_recovered`,
   `ReceiptLog`, `MAX_XR_SPAN`, `RleReport::{encode, decode, reported_seqs}`,
@@ -118,7 +118,7 @@ writer.
   `JitterBufferConfig`, `BurstLossModel::report`, `pcm_level_dbm0`, `SdesItem`,
   `random_cname`. Changed behaviour: parsed PRIV items with a prefix length above 127 keep it
   (as U+0080..U+00FF) instead of U+FFFD; written texts are cut at a character boundary.
-- Not done: wiring into only-webrtc (sending `ReceiptLog` blocks or VoIP metrics in its XR,
+- Not done: wiring into akio-webrtc (sending `ReceiptLog` blocks or VoIP metrics in its XR,
   using `set_ulp_level0` on audio / video lines, a random CNAME from `random_cname`) — left for
-  a follow-up because another session owns only-webrtc. Partial packets are not handed out (a
+  a follow-up because another session owns akio-webrtc. Partial packets are not handed out (a
   depacketizer would need to accept a truncated payload). No R factor / MOS estimation.

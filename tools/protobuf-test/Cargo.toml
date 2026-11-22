@@ -1,23 +1,23 @@
 [package]
 name = "protobuf-test"
-description = "Conformance, round-trip, gRPC, interop and prost-comparison tests of only-protobuf"
+description = "Conformance, round-trip, gRPC, interop and prost-comparison tests of akio-protobuf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
-only = { workspace = true }
-only-grpc = { workspace = true }
-only-http = { workspace = true }
-only-protobuf = { workspace = true }
+akio = { workspace = true }
+akio-grpc = { workspace = true }
+akio-http = { workspace = true }
+akio-protobuf = { workspace = true }
 
 [build-dependencies]
-only-protobuf-build = { workspace = true }
+akio-protobuf-build = { workspace = true }
 
 [dev-dependencies]
 # Descriptor sets compared with protoc's.
-only-protobuf-build = { workspace = true }
+akio-protobuf-build = { workspace = true }
 # Differential tests and the benchmark compare against prost (test-only).
 prost = "0.13"
 

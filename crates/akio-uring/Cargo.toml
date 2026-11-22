@@ -1,0 +1,22 @@
+[package]
+name = "akio-uring"
+description = "akio internals: the io_uring backend (use `akio`)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-uring"
+keywords = ["network", "io-uring", "linux", "event-loop"]
+categories = ["network-programming", "os::linux-apis"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+akio-core = { workspace = true }
+akio-sys = { workspace = true }
+akio-timer = { workspace = true }
+akio-log = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-// Headless Chrome against only-media's whip-server (WHIP/WHEP with WebRTC media, fMP4 LL-HLS,
+// Headless Chrome against akio-media's whip-server (WHIP/WHEP with WebRTC media, fMP4 LL-HLS,
 // a multivariant playlist), driven over the Chrome DevTools Protocol like
 // tools/interop/webrtc/browser.mjs (no npm packages: Node >= 22 has fetch and WebSocket). Used by
 // browser.sh.
@@ -60,7 +60,7 @@ async function page() {
   // A secure context (http://127.0.0.1) for getUserMedia: a blank page served here.
   const blank = http.createServer((_q, r) => {
     r.writeHead(200, { "content-type": "text/html" });
-    r.end("<!doctype html><title>only-media</title>");
+    r.end("<!doctype html><title>akio-media</title>");
   });
   await new Promise((r) => blank.listen(0, "127.0.0.1", r));
   await call("Page.enable", {});

@@ -6,7 +6,7 @@ Status: accepted (2026-11-22)
 
 ## Context
 
-ADR-070 left three gaps in `only-media`:
+ADR-070 left three gaps in `akio-media`:
 
 - **I-frame playlists with AES-128**. `HlsConfig::iframe_playlist` was ignored with AES-128:
   an I-frame playlist names byte ranges of segments, and an AES-128 segment is one CBC
@@ -76,7 +76,7 @@ ADR-070 left three gaps in `only-media`:
 
 ## Consequences
 
-- Tests (`cargo test -p only-media`): AES-128 I-frame playlists in both formats with and
+- Tests (`cargo test -p akio-media`): AES-128 I-frame playlists in both formats with and
   without parts and with key rotation, every `iframe-<n>` decrypting with its segment's key
   and the IV of its number to exactly the range the unencrypted stream's playlist names,
   segments unchanged, the stream's byte count including the sealed I-frames; clear I-frame

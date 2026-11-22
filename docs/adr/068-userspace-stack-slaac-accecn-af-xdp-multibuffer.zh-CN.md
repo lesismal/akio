@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-026（IPv6）与 ADR-063（AF_XDP）之后，only-dpdk 自研的 TCP/IP 栈（`only-dpdk/src/net`）
+ADR-026（IPv6）与 ADR-063（AF_XDP）之后，akio-dpdk 自研的 TCP/IP 栈（`akio-dpdk/src/net`）
 还留着三组缺口：
 
 - **IPv6 地址只能静态配置。** 必须给出 `DpdkConfig::address6` 与 `gateway6`；路由器通告被忽略；
@@ -40,7 +40,7 @@ ADR-026（IPv6）与 ADR-063（AF_XDP）之后，only-dpdk 自研的 TCP/IP 栈�
   当作冲突。重复地址永不使用；链路本地地址重复则关闭该设备的 IPv6（RFC 4862 5.4.5）。
 - 多队列设备：各队列的栈走同一时间线，都能看到路由器通告（像邻居请求与通告一样复制到每个
   队列），但只有队列 0 发送请求、探测与 MLD 报告。
-- `only_dpdk::ipv6_addresses(&Device)` 报告当前可用的地址（由队列 0 维护）。
+- `akio_dpdk::ipv6_addresses(&Device)` 报告当前可用的地址（由队列 0 维护）。
 - 不开 `ipv6_slaac` 时通告照旧被忽略；不开 `ipv6_dad` 时地址照旧立即可用。两者默认关闭，
   因为默认值不能改变已有配置的行为（DAD 还会让地址的首次使用推迟约一秒）。
 - 接口标识用 EUI-64，而不是 RFC 7217 的稳定隐私标识（RFC 8064）。后者需要配置一个各队列共享
@@ -71,7 +71,7 @@ ADR-026（IPv6）与 ADR-063（AF_XDP）之后，only-dpdk 自研的 TCP/IP 栈�
   CWR（该位是 ACE 的一部分）。响应不随标记数缩放：那需要可伸缩的拥塞控制（DCTCP / Prague，
   L4S），本栈没有；AccECN 的计数使其成为可能。
 - 数据与 RFC 3168 一样以 ECT(0) 发送；控制包与重传保持 Not-ECT。
-- `only_dpdk::tcp_ecn_stats()`（`#[doc(hidden)]`）统计 AccECN 与 RFC 3168 连接数、收到的 CE
+- `akio_dpdk::tcp_ecn_stats()`（`#[doc(hidden)]`）统计 AccECN 与 RFC 3168 连接数、收到的 CE
   标记与拥塞响应次数，供测试与基准使用。
 
 ### 3. AF_XDP 共享 UMEM 与多缓冲帧（按需开启）

@@ -8,8 +8,8 @@ Status: accepted (2026-11-19)
 
 Browsers hide their host addresses: Chrome (and Firefox, Safari) write each host candidate as
 a random `<uuid>.local` name (draft-ietf-mmusic-mdns-ice-candidates) and answer multicast DNS
-queries (RFC 6762) for it on the local network. `only-ice` parsed such lines into
-`ParseError::Mdns` and `only-webrtc` skipped them, so an `Endpoint` could reach a browser on the
+queries (RFC 6762) for it on the local network. `akio-ice` parsed such lines into
+`ParseError::Mdns` and `akio-webrtc` skipped them, so an `Endpoint` could reach a browser on the
 same LAN only through the peer-reflexive candidates the browser's own checks created: never when
 the browser could not reach us first, and never when both sides conceal. Nor could an `Endpoint`
 conceal its own host addresses.
@@ -27,7 +27,7 @@ uses rtcp-mux and BUNDLE, and so do the stack's own SDP offers and answers.
 
 ## Decision
 
-1. **mDNS codec** (`only_ice::mdns`, sans-io): `Message::parse` (questions and `A` / `AAAA`
+1. **mDNS codec** (`akio_ice::mdns`, sans-io): `Message::parse` (questions and `A` / `AAAA`
    records of the answer and additional sections, compression pointers followed backwards
    only and at most 16 per name, names lowercased, at most 32 questions and 64 records, other
    record types skipped, opcodes and rcodes other than 0 refused), `Message::query(name, qtype,
@@ -71,17 +71,17 @@ uses rtcp-mux and BUNDLE, and so do the stack's own SDP offers and answers.
    nomination unless its NOMINATION value is not higher). Regular nomination is unchanged and
    stays the default. `RtcConfig::enable_ice_renomination` (offers `a=ice-options:trickle
    renomination`, reads the remote's `ice-options`) and
-   `RtcConfig::enable_ice_aggressive_nomination` expose them in `only-webrtc`.
+   `RtcConfig::enable_ice_aggressive_nomination` expose them in `akio-webrtc`.
 6. **Simultaneous-open ICE-TCP** (`Endpoint::listen_tcp_so(&engine, addr)`): a `tcptype so`
    host candidate on a port that listens (`SO_REUSEPORT`) and from which the checks to a remote
    `so` candidate are dialed (`Engine::dial_from`): whichever SYN arrives first, the result is
    one connection (crossing connects are TCP simultaneous open; otherwise the listener accepts
    the other side's, our own connect then fails with `EADDRNOTAVAIL` and what it had queued is
    sent over the accepted connection once it is handed over, within 2 s). Accepted connections
-   are identified by their first check as for passive candidates. In only-ice, local active and
+   are identified by their first check as for passive candidates. In akio-ice, local active and
    `so` candidates were already able to send checks; the README claimed otherwise and is fixed.
-7. **Engine primitives** (`only`): `Engine::bind_udp_multicast(group, acceptor)` and
-   `Engine::dial_from(local, addr, acceptor, on_error)`, on `only_sys::connect_nonblocking_from`
+7. **Engine primitives** (`akio`): `Engine::bind_udp_multicast(group, acceptor)` and
+   `Engine::dial_from(local, addr, acceptor, on_error)`, on `akio_sys::connect_nonblocking_from`
    (bind with `SO_REUSEADDR` / `SO_REUSEPORT`, non-blocking connect: two `unsafe` blocks, the
    `bind` and `connect` calls, documented like the existing ones) and a new backend hook
    `Group::dial_stream` (epoll and io_uring: a stream whose connect is in progress goes through
@@ -89,17 +89,17 @@ uses rtcp-mux and BUNDLE, and so do the stack's own SDP offers and answers.
 
 ## Consequences
 
-- Public API: only-ice (Internal tier) `mdns` module, `Candidate::{parse_resolved,
+- Public API: akio-ice (Internal tier) `mdns` module, `Candidate::{parse_resolved,
   with_hostname, hostname, with_related}`, `IceConfig::{aggressive_nomination, renomination}`,
-  `IceAgent::set_remote_renomination`; only-webrtc `Endpoint::{resolve_mdns,
+  `IceAgent::set_remote_renomination`; akio-webrtc `Endpoint::{resolve_mdns,
   conceal_host_candidates, listen_tcp_so}`, `RtcConfig::{enable_ice_renomination,
-  enable_ice_aggressive_nomination}`; `only` `Engine::{bind_udp_multicast, dial_from}`;
-  only-sys `connect_nonblocking_from`; only-core (hidden) `Group::dial_stream`. All additive;
+  enable_ice_aggressive_nomination}`; `akio` `Engine::{bind_udp_multicast, dial_from}`;
+  akio-sys `connect_nonblocking_from`; akio-core (hidden) `Group::dial_stream`. All additive;
   with none of it called, SDP and behaviour are unchanged, except that the controlled side
   ignores a later USE-CANDIDATE on a lower-priority pair (RFC 5245 aggressive semantics; with
   regular nomination there is only one per generation). `Peer::add_remote_candidate` with an
   mDNS line returns `Ok` when the endpoint resolves names, the same error as before otherwise.
-  only-webrtc depends on only-sys (the `so` listener), `only` on only-sys as a normal
+  akio-webrtc depends on akio-sys (the `so` listener), `akio` on akio-sys as a normal
   dependency.
 - Tests: the codec (round trips, compression, pointer loops, truncation, counts, opcodes);
   candidates with names; in the simulated network, a better pair trickled after nomination

@@ -1,7 +1,7 @@
 [book]
-title = "only — a network library for Rust"
-description = "only: an event-driven, thread-per-core network library for Rust"
-authors = ["only contributors"]
+title = "akio — a network library for Rust"
+description = "akio: an event-driven, thread-per-core network library for Rust"
+authors = ["akio contributors"]
 language = "en"
 src = "src"
 
@@ -11,9 +11,9 @@ build-dir = "../../target/book/en"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/lesismal/only"
-edit-url-template = "https://github.com/lesismal/only/edit/main/book/en/{path}"
-site-url = "/only/en/"
+git-repository-url = "https://github.com/lesismal/akio"
+edit-url-template = "https://github.com/lesismal/akio/edit/main/book/en/{path}"
+site-url = "/akio/en/"
 additional-js = ["mermaid-init.js", "lang-switch.js"]
 # Shown for missing pages; the site-wide 404.html is the English one (book/site.sh).
 input-404 = "404.md"

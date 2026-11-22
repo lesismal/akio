@@ -1,0 +1,501 @@
+pub mod akio_dtls
+#[non_exhaustive] pub enum akio_dtls::AlertDescription
+pub akio_dtls::AlertDescription::AccessDenied
+pub akio_dtls::AlertDescription::BadCertificate
+pub akio_dtls::AlertDescription::BadRecordMac
+pub akio_dtls::AlertDescription::CertificateExpired
+pub akio_dtls::AlertDescription::CertificateRevoked
+pub akio_dtls::AlertDescription::CertificateUnknown
+pub akio_dtls::AlertDescription::CloseNotify
+pub akio_dtls::AlertDescription::DecodeError
+pub akio_dtls::AlertDescription::DecryptError
+pub akio_dtls::AlertDescription::HandshakeFailure
+pub akio_dtls::AlertDescription::IllegalParameter
+pub akio_dtls::AlertDescription::InsufficientSecurity
+pub akio_dtls::AlertDescription::InternalError
+pub akio_dtls::AlertDescription::MissingExtension
+pub akio_dtls::AlertDescription::NoRenegotiation
+pub akio_dtls::AlertDescription::Other(u8)
+pub akio_dtls::AlertDescription::ProtocolVersion
+pub akio_dtls::AlertDescription::RecordOverflow
+pub akio_dtls::AlertDescription::TooManyCidsRequested
+pub akio_dtls::AlertDescription::UnexpectedMessage
+pub akio_dtls::AlertDescription::UnknownCa
+pub akio_dtls::AlertDescription::UnknownPskIdentity
+pub akio_dtls::AlertDescription::UnsupportedCertificate
+pub akio_dtls::AlertDescription::UnsupportedExtension
+pub akio_dtls::AlertDescription::UserCanceled
+impl akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::from_u8(u8) -> akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::to_u8(self) -> u8
+impl core::clone::Clone for akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::AlertDescription
+impl core::cmp::PartialEq for akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::AlertDescription
+pub fn akio_dtls::AlertDescription::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::AlertDescription
+impl core::marker::StructuralPartialEq for akio_dtls::AlertDescription
+impl core::marker::Send for akio_dtls::AlertDescription
+impl core::marker::Sync for akio_dtls::AlertDescription
+impl core::marker::Unpin for akio_dtls::AlertDescription
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::AlertDescription
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::AlertDescription
+#[non_exhaustive] pub enum akio_dtls::CipherSuite
+pub akio_dtls::CipherSuite::EcdheEcdsaAes128GcmSha256
+pub akio_dtls::CipherSuite::EcdheEcdsaAes256GcmSha384
+pub akio_dtls::CipherSuite::EcdheEcdsaChacha20Poly1305Sha256
+pub akio_dtls::CipherSuite::EcdhePskAes128GcmSha256
+pub akio_dtls::CipherSuite::EcdhePskAes256GcmSha384
+pub akio_dtls::CipherSuite::EcdhePskChacha20Poly1305Sha256
+pub akio_dtls::CipherSuite::EcdheRsaAes128GcmSha256
+pub akio_dtls::CipherSuite::EcdheRsaAes256GcmSha384
+pub akio_dtls::CipherSuite::EcdheRsaChacha20Poly1305Sha256
+pub akio_dtls::CipherSuite::PskAes128GcmSha256
+pub akio_dtls::CipherSuite::PskAes256GcmSha384
+pub akio_dtls::CipherSuite::PskChacha20Poly1305Sha256
+pub akio_dtls::CipherSuite::Tls13Aes128GcmSha256
+pub akio_dtls::CipherSuite::Tls13Aes256GcmSha384
+pub akio_dtls::CipherSuite::Tls13Chacha20Poly1305Sha256
+impl akio_dtls::CipherSuite
+pub const akio_dtls::CipherSuite::ALL: [akio_dtls::CipherSuite; 6]
+pub const akio_dtls::CipherSuite::PSK: [akio_dtls::CipherSuite; 6]
+pub const akio_dtls::CipherSuite::TLS13: [akio_dtls::CipherSuite; 3]
+pub fn akio_dtls::CipherSuite::from_id(u16) -> core::option::Option<akio_dtls::CipherSuite>
+pub fn akio_dtls::CipherSuite::id(self) -> u16
+pub fn akio_dtls::CipherSuite::is_ecdsa(self) -> bool
+pub fn akio_dtls::CipherSuite::is_psk(self) -> bool
+pub fn akio_dtls::CipherSuite::is_tls13(self) -> bool
+impl core::clone::Clone for akio_dtls::CipherSuite
+pub fn akio_dtls::CipherSuite::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::CipherSuite
+impl core::cmp::PartialEq for akio_dtls::CipherSuite
+pub fn akio_dtls::CipherSuite::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::CipherSuite
+pub fn akio_dtls::CipherSuite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_dtls::CipherSuite
+pub fn akio_dtls::CipherSuite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::CipherSuite
+pub fn akio_dtls::CipherSuite::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::CipherSuite
+impl core::marker::StructuralPartialEq for akio_dtls::CipherSuite
+impl core::marker::Send for akio_dtls::CipherSuite
+impl core::marker::Sync for akio_dtls::CipherSuite
+impl core::marker::Unpin for akio_dtls::CipherSuite
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::CipherSuite
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::CipherSuite
+#[non_exhaustive] pub enum akio_dtls::Error
+pub akio_dtls::Error::Certificate(alloc::string::String)
+pub akio_dtls::Error::Closed
+pub akio_dtls::Error::Config(&'static str)
+pub akio_dtls::Error::Crypto(akio_crypto::error::Error)
+pub akio_dtls::Error::Exporter(&'static str)
+pub akio_dtls::Error::NotAvailable(&'static str)
+pub akio_dtls::Error::NotConnected
+pub akio_dtls::Error::PeerAlert(akio_dtls::AlertDescription)
+pub akio_dtls::Error::Protocol
+pub akio_dtls::Error::Protocol::alert: akio_dtls::AlertDescription
+pub akio_dtls::Error::Protocol::reason: &'static str
+pub akio_dtls::Error::Timeout
+pub akio_dtls::Error::TooLarge
+impl core::clone::Clone for akio_dtls::Error
+pub fn akio_dtls::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::Error
+impl core::cmp::PartialEq for akio_dtls::Error
+pub fn akio_dtls::Error::eq(&self, &Self) -> bool
+impl core::convert::From<akio_crypto::error::Error> for akio_dtls::Error
+pub fn akio_dtls::Error::from(akio_crypto::error::Error) -> akio_dtls::Error
+impl core::error::Error for akio_dtls::Error
+impl core::fmt::Debug for akio_dtls::Error
+pub fn akio_dtls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_dtls::Error
+pub fn akio_dtls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_dtls::Error
+impl core::marker::Send for akio_dtls::Error
+impl core::marker::Sync for akio_dtls::Error
+impl core::marker::Unpin for akio_dtls::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Error
+#[non_exhaustive] pub enum akio_dtls::Event
+pub akio_dtls::Event::ApplicationData(alloc::vec::Vec<u8>)
+pub akio_dtls::Event::ClientCertificate(alloc::vec::Vec<alloc::vec::Vec<u8>>)
+pub akio_dtls::Event::Closed
+pub akio_dtls::Event::Connected(alloc::boxed::Box<akio_dtls::HandshakeInfo>)
+pub akio_dtls::Event::EarlyData(alloc::vec::Vec<u8>)
+pub akio_dtls::Event::LocalConnectionIds(alloc::vec::Vec<alloc::vec::Vec<u8>>)
+pub akio_dtls::Event::NewSession(alloc::boxed::Box<akio_dtls::Session>)
+impl core::clone::Clone for akio_dtls::Event
+pub fn akio_dtls::Event::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::Event
+pub fn akio_dtls::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::Event
+impl core::marker::Sync for akio_dtls::Event
+impl core::marker::Unpin for akio_dtls::Event
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Event
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Event
+#[non_exhaustive] pub enum akio_dtls::FingerprintAlgorithm
+pub akio_dtls::FingerprintAlgorithm::Sha1
+pub akio_dtls::FingerprintAlgorithm::Sha256
+pub akio_dtls::FingerprintAlgorithm::Sha384
+pub akio_dtls::FingerprintAlgorithm::Sha512
+impl akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::FingerprintAlgorithm::name(self) -> &'static str
+impl core::clone::Clone for akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::FingerprintAlgorithm::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::FingerprintAlgorithm
+impl core::cmp::PartialEq for akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::FingerprintAlgorithm::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::FingerprintAlgorithm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::FingerprintAlgorithm::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::FingerprintAlgorithm
+impl core::marker::StructuralPartialEq for akio_dtls::FingerprintAlgorithm
+impl core::marker::Send for akio_dtls::FingerprintAlgorithm
+impl core::marker::Sync for akio_dtls::FingerprintAlgorithm
+impl core::marker::Unpin for akio_dtls::FingerprintAlgorithm
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::FingerprintAlgorithm
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::FingerprintAlgorithm
+#[non_exhaustive] pub enum akio_dtls::HelloCheck
+pub akio_dtls::HelloCheck::Accept
+pub akio_dtls::HelloCheck::Drop
+pub akio_dtls::HelloCheck::Respond(alloc::vec::Vec<u8>)
+impl core::clone::Clone for akio_dtls::HelloCheck
+pub fn akio_dtls::HelloCheck::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::HelloCheck
+impl core::cmp::PartialEq for akio_dtls::HelloCheck
+pub fn akio_dtls::HelloCheck::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::HelloCheck
+pub fn akio_dtls::HelloCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_dtls::HelloCheck
+impl core::marker::Send for akio_dtls::HelloCheck
+impl core::marker::Sync for akio_dtls::HelloCheck
+impl core::marker::Unpin for akio_dtls::HelloCheck
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::HelloCheck
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::HelloCheck
+#[non_exhaustive] pub enum akio_dtls::PeerVerifier
+pub akio_dtls::PeerVerifier::AcceptAny
+pub akio_dtls::PeerVerifier::Custom(alloc::rcs::arc::Arc<akio_dtls::VerifyFn>)
+pub akio_dtls::PeerVerifier::Fingerprints(alloc::vec::Vec<akio_dtls::Fingerprint>)
+impl core::clone::Clone for akio_dtls::PeerVerifier
+pub fn akio_dtls::PeerVerifier::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::PeerVerifier
+pub fn akio_dtls::PeerVerifier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::PeerVerifier
+impl core::marker::Sync for akio_dtls::PeerVerifier
+impl core::marker::Unpin for akio_dtls::PeerVerifier
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_dtls::PeerVerifier
+impl !core::panic::unwind_safe::UnwindSafe for akio_dtls::PeerVerifier
+pub enum akio_dtls::Role
+pub akio_dtls::Role::Client
+pub akio_dtls::Role::Server
+impl core::clone::Clone for akio_dtls::Role
+pub fn akio_dtls::Role::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::Role
+impl core::cmp::PartialEq for akio_dtls::Role
+pub fn akio_dtls::Role::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::Role
+pub fn akio_dtls::Role::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::Role
+pub fn akio_dtls::Role::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::Role
+impl core::marker::StructuralPartialEq for akio_dtls::Role
+impl core::marker::Send for akio_dtls::Role
+impl core::marker::Sync for akio_dtls::Role
+impl core::marker::Unpin for akio_dtls::Role
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Role
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Role
+#[non_exhaustive] pub enum akio_dtls::SrtpProfile
+pub akio_dtls::SrtpProfile::AeadAes128Gcm
+pub akio_dtls::SrtpProfile::AeadAes256Gcm
+pub akio_dtls::SrtpProfile::Aes128CmHmacSha1_32
+pub akio_dtls::SrtpProfile::Aes128CmHmacSha1_80
+impl akio_dtls::SrtpProfile
+pub const akio_dtls::SrtpProfile::ALL: [akio_dtls::SrtpProfile; 4]
+pub fn akio_dtls::SrtpProfile::from_id(u16) -> core::option::Option<akio_dtls::SrtpProfile>
+pub fn akio_dtls::SrtpProfile::id(self) -> u16
+pub fn akio_dtls::SrtpProfile::master_key_len(self) -> usize
+pub fn akio_dtls::SrtpProfile::master_salt_len(self) -> usize
+impl core::clone::Clone for akio_dtls::SrtpProfile
+pub fn akio_dtls::SrtpProfile::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::SrtpProfile
+impl core::cmp::PartialEq for akio_dtls::SrtpProfile
+pub fn akio_dtls::SrtpProfile::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::SrtpProfile
+pub fn akio_dtls::SrtpProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::SrtpProfile
+pub fn akio_dtls::SrtpProfile::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::SrtpProfile
+impl core::marker::StructuralPartialEq for akio_dtls::SrtpProfile
+impl core::marker::Send for akio_dtls::SrtpProfile
+impl core::marker::Sync for akio_dtls::SrtpProfile
+impl core::marker::Unpin for akio_dtls::SrtpProfile
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::SrtpProfile
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::SrtpProfile
+#[non_exhaustive] pub enum akio_dtls::Version
+pub akio_dtls::Version::Dtls12
+pub akio_dtls::Version::Dtls13
+impl core::clone::Clone for akio_dtls::Version
+pub fn akio_dtls::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::Version
+impl core::cmp::Ord for akio_dtls::Version
+pub fn akio_dtls::Version::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_dtls::Version
+pub fn akio_dtls::Version::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_dtls::Version
+pub fn akio_dtls::Version::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for akio_dtls::Version
+pub fn akio_dtls::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_dtls::Version
+pub fn akio_dtls::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::Version
+pub fn akio_dtls::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_dtls::Version
+impl core::marker::StructuralPartialEq for akio_dtls::Version
+impl core::marker::Send for akio_dtls::Version
+impl core::marker::Sync for akio_dtls::Version
+impl core::marker::Unpin for akio_dtls::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Version
+pub struct akio_dtls::Config
+impl akio_dtls::Config
+pub fn akio_dtls::Config::handshake_timeout(&self) -> core::time::Duration
+pub fn akio_dtls::Config::identity(&self) -> core::option::Option<&akio_dtls::Identity>
+pub fn akio_dtls::Config::new(akio_dtls::Identity) -> akio_dtls::Config
+pub fn akio_dtls::Config::webrtc(akio_dtls::Identity, akio_dtls::PeerVerifier) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_anti_replay(self, alloc::rcs::arc::Arc<dyn akio_dtls::AntiReplayStore>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_cipher_suites(self, alloc::vec::Vec<akio_dtls::CipherSuite>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_connection_id(self, core::option::Option<u8>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_early_data(self, u32) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_handshake_timeout(self, core::time::Duration) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_hello_verify(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_mtu(self, usize) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_post_handshake_auth(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_psks(self, alloc::vec::Vec<akio_dtls::Psk>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_require_client_certificate(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_require_extended_master_secret(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_retransmit(self, core::time::Duration, core::time::Duration) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_session_resumption(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_srtp_accept_mki(self, bool) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_srtp_mki(self, alloc::vec::Vec<u8>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_srtp_profiles(self, alloc::vec::Vec<akio_dtls::SrtpProfile>) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_ticket_key(self, akio_dtls::TicketKey) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_ticket_lifetime(self, core::time::Duration) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_verifier(self, akio_dtls::PeerVerifier) -> akio_dtls::Config
+pub fn akio_dtls::Config::with_versions(self, alloc::vec::Vec<akio_dtls::Version>) -> akio_dtls::Config
+pub fn akio_dtls::Config::without_identity() -> akio_dtls::Config
+impl core::clone::Clone for akio_dtls::Config
+pub fn akio_dtls::Config::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::Config
+pub fn akio_dtls::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::Config
+impl core::marker::Sync for akio_dtls::Config
+impl core::marker::Unpin for akio_dtls::Config
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Config
+impl !core::panic::unwind_safe::UnwindSafe for akio_dtls::Config
+pub struct akio_dtls::Connection
+impl akio_dtls::Connection
+pub fn akio_dtls::Connection::client(alloc::rcs::arc::Arc<akio_dtls::Config>, std::time::Instant) -> core::result::Result<akio_dtls::Connection, akio_dtls::Error>
+pub fn akio_dtls::Connection::client_resume(alloc::rcs::arc::Arc<akio_dtls::Config>, std::time::Instant, &akio_dtls::Session) -> core::result::Result<akio_dtls::Connection, akio_dtls::Error>
+pub fn akio_dtls::Connection::close(&mut self)
+pub fn akio_dtls::Connection::export_keying_material(&self, &str, core::option::Option<&[u8]>, usize) -> core::result::Result<alloc::vec::Vec<u8>, akio_dtls::Error>
+pub fn akio_dtls::Connection::handle_datagram(&mut self, std::time::Instant, &[u8]) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::handle_timeout(&mut self, std::time::Instant) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::handshake_info(&self) -> core::option::Option<&akio_dtls::HandshakeInfo>
+pub fn akio_dtls::Connection::is_closed(&self) -> bool
+pub fn akio_dtls::Connection::is_connected(&self) -> bool
+pub fn akio_dtls::Connection::local_connection_id(&self) -> core::option::Option<&[u8]>
+pub fn akio_dtls::Connection::local_connection_ids(&self) -> &[alloc::vec::Vec<u8>]
+pub fn akio_dtls::Connection::new(alloc::rcs::arc::Arc<akio_dtls::Config>, akio_dtls::Role, std::time::Instant, &[u8]) -> core::result::Result<akio_dtls::Connection, akio_dtls::Error>
+pub fn akio_dtls::Connection::new_connection_ids(&mut self, usize, bool) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::peer_connection_id(&self) -> core::option::Option<&[u8]>
+pub fn akio_dtls::Connection::poll_event(&mut self) -> core::option::Option<akio_dtls::Event>
+pub fn akio_dtls::Connection::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_dtls::Connection::poll_transmit(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_dtls::Connection::request_client_certificate(&mut self) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::request_connection_ids(&mut self, u8) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::role(&self) -> akio_dtls::Role
+pub fn akio_dtls::Connection::rotate_connection_id(&mut self) -> core::result::Result<bool, akio_dtls::Error>
+pub fn akio_dtls::Connection::send_application_data(&mut self, &[u8]) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::send_early_data(&mut self, &[u8]) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::server(alloc::rcs::arc::Arc<akio_dtls::Config>, std::time::Instant, &[u8]) -> core::result::Result<akio_dtls::Connection, akio_dtls::Error>
+pub fn akio_dtls::Connection::spare_connection_ids(&self) -> usize
+pub fn akio_dtls::Connection::update_keys(&mut self, bool) -> core::result::Result<(), akio_dtls::Error>
+pub fn akio_dtls::Connection::version(&self) -> akio_dtls::Version
+impl core::fmt::Debug for akio_dtls::Connection
+pub fn akio_dtls::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::Connection
+impl core::marker::Sync for akio_dtls::Connection
+impl core::marker::Unpin for akio_dtls::Connection
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Connection
+impl !core::panic::unwind_safe::UnwindSafe for akio_dtls::Connection
+pub struct akio_dtls::Fingerprint
+impl akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::algorithm(&self) -> akio_dtls::FingerprintAlgorithm
+pub fn akio_dtls::Fingerprint::matches(&self, &[u8]) -> bool
+pub fn akio_dtls::Fingerprint::of(akio_dtls::FingerprintAlgorithm, &[u8]) -> akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::parse(&str) -> core::result::Result<akio_dtls::Fingerprint, akio_dtls::Error>
+pub fn akio_dtls::Fingerprint::value(&self) -> &[u8]
+impl core::clone::Clone for akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::Fingerprint
+impl core::cmp::PartialEq for akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_dtls::Fingerprint
+pub fn akio_dtls::Fingerprint::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_dtls::Fingerprint
+impl core::marker::Send for akio_dtls::Fingerprint
+impl core::marker::Sync for akio_dtls::Fingerprint
+impl core::marker::Unpin for akio_dtls::Fingerprint
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Fingerprint
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Fingerprint
+#[non_exhaustive] pub struct akio_dtls::HandshakeInfo
+pub akio_dtls::HandshakeInfo::cipher_suite: akio_dtls::CipherSuite
+pub akio_dtls::HandshakeInfo::early_data: bool
+pub akio_dtls::HandshakeInfo::extended_master_secret: bool
+pub akio_dtls::HandshakeInfo::local_connection_id: core::option::Option<alloc::vec::Vec<u8>>
+pub akio_dtls::HandshakeInfo::peer_certificates: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub akio_dtls::HandshakeInfo::peer_connection_id: core::option::Option<alloc::vec::Vec<u8>>
+pub akio_dtls::HandshakeInfo::peer_fingerprint: core::option::Option<akio_dtls::Fingerprint>
+pub akio_dtls::HandshakeInfo::psk_identity: core::option::Option<alloc::vec::Vec<u8>>
+pub akio_dtls::HandshakeInfo::resumed: bool
+pub akio_dtls::HandshakeInfo::srtp_keys: core::option::Option<akio_dtls::SrtpKeys>
+pub akio_dtls::HandshakeInfo::srtp_mki: core::option::Option<alloc::vec::Vec<u8>>
+pub akio_dtls::HandshakeInfo::srtp_profile: core::option::Option<akio_dtls::SrtpProfile>
+pub akio_dtls::HandshakeInfo::version: akio_dtls::Version
+impl core::clone::Clone for akio_dtls::HandshakeInfo
+pub fn akio_dtls::HandshakeInfo::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::HandshakeInfo
+pub fn akio_dtls::HandshakeInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::HandshakeInfo
+impl core::marker::Sync for akio_dtls::HandshakeInfo
+impl core::marker::Unpin for akio_dtls::HandshakeInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::HandshakeInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::HandshakeInfo
+pub struct akio_dtls::HelloVerifier
+impl akio_dtls::HelloVerifier
+pub fn akio_dtls::HelloVerifier::check(&self, std::time::Instant, &[u8], &[u8]) -> akio_dtls::HelloCheck
+pub fn akio_dtls::HelloVerifier::new(std::time::Instant) -> core::result::Result<akio_dtls::HelloVerifier, akio_dtls::Error>
+impl core::clone::Clone for akio_dtls::HelloVerifier
+pub fn akio_dtls::HelloVerifier::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::HelloVerifier
+pub fn akio_dtls::HelloVerifier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::HelloVerifier
+impl core::marker::Sync for akio_dtls::HelloVerifier
+impl core::marker::Unpin for akio_dtls::HelloVerifier
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::HelloVerifier
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::HelloVerifier
+pub struct akio_dtls::Identity
+impl akio_dtls::Identity
+pub fn akio_dtls::Identity::certificate(&self) -> &[u8]
+pub fn akio_dtls::Identity::chain(&self) -> &[alloc::vec::Vec<u8>]
+pub fn akio_dtls::Identity::fingerprint(&self) -> akio_dtls::Fingerprint
+pub fn akio_dtls::Identity::from_pem(&[u8], &[u8]) -> core::result::Result<akio_dtls::Identity, akio_dtls::Error>
+pub fn akio_dtls::Identity::generate_self_signed() -> core::result::Result<akio_dtls::Identity, akio_dtls::Error>
+pub fn akio_dtls::Identity::new(alloc::vec::Vec<alloc::vec::Vec<u8>>, akio_crypto::pkey::PrivateKey) -> core::result::Result<akio_dtls::Identity, akio_dtls::Error>
+pub fn akio_dtls::Identity::private_key(&self) -> &akio_crypto::pkey::PrivateKey
+impl core::clone::Clone for akio_dtls::Identity
+pub fn akio_dtls::Identity::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::Identity
+pub fn akio_dtls::Identity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::Identity
+impl core::marker::Sync for akio_dtls::Identity
+impl core::marker::Unpin for akio_dtls::Identity
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Identity
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Identity
+pub struct akio_dtls::MemoryAntiReplay
+impl akio_dtls::MemoryAntiReplay
+pub fn akio_dtls::MemoryAntiReplay::new(usize) -> akio_dtls::MemoryAntiReplay
+impl core::fmt::Debug for akio_dtls::MemoryAntiReplay
+pub fn akio_dtls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_dtls::AntiReplayStore for akio_dtls::MemoryAntiReplay
+pub fn akio_dtls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl core::marker::Send for akio_dtls::MemoryAntiReplay
+impl core::marker::Sync for akio_dtls::MemoryAntiReplay
+impl core::marker::Unpin for akio_dtls::MemoryAntiReplay
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::MemoryAntiReplay
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::MemoryAntiReplay
+pub struct akio_dtls::Psk
+impl akio_dtls::Psk
+pub fn akio_dtls::Psk::identity(&self) -> &[u8]
+pub fn akio_dtls::Psk::new(impl core::convert::Into<alloc::vec::Vec<u8>>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<akio_dtls::Psk, akio_dtls::Error>
+impl core::clone::Clone for akio_dtls::Psk
+pub fn akio_dtls::Psk::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::Psk
+impl core::cmp::PartialEq for akio_dtls::Psk
+pub fn akio_dtls::Psk::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::Psk
+pub fn akio_dtls::Psk::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_dtls::Psk
+impl core::marker::Send for akio_dtls::Psk
+impl core::marker::Sync for akio_dtls::Psk
+impl core::marker::Unpin for akio_dtls::Psk
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Psk
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Psk
+pub struct akio_dtls::Session
+impl akio_dtls::Session
+pub fn akio_dtls::Session::cipher_suite(&self) -> akio_dtls::CipherSuite
+pub fn akio_dtls::Session::expires(&self) -> std::time::Instant
+pub fn akio_dtls::Session::has_ticket(&self) -> bool
+pub fn akio_dtls::Session::max_early_data(&self) -> u32
+pub fn akio_dtls::Session::version(&self) -> akio_dtls::Version
+impl core::clone::Clone for akio_dtls::Session
+pub fn akio_dtls::Session::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::Session
+pub fn akio_dtls::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::Session
+impl core::marker::Sync for akio_dtls::Session
+impl core::marker::Unpin for akio_dtls::Session
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::Session
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::Session
+pub struct akio_dtls::SrtpKeys
+pub akio_dtls::SrtpKeys::client_master_key: alloc::vec::Vec<u8>
+pub akio_dtls::SrtpKeys::client_master_salt: alloc::vec::Vec<u8>
+pub akio_dtls::SrtpKeys::profile: akio_dtls::SrtpProfile
+pub akio_dtls::SrtpKeys::server_master_key: alloc::vec::Vec<u8>
+pub akio_dtls::SrtpKeys::server_master_salt: alloc::vec::Vec<u8>
+impl akio_dtls::SrtpKeys
+pub fn akio_dtls::SrtpKeys::local(&self, akio_dtls::Role) -> (&[u8], &[u8])
+pub fn akio_dtls::SrtpKeys::remote(&self, akio_dtls::Role) -> (&[u8], &[u8])
+impl core::clone::Clone for akio_dtls::SrtpKeys
+pub fn akio_dtls::SrtpKeys::clone(&self) -> Self
+impl core::cmp::Eq for akio_dtls::SrtpKeys
+impl core::cmp::PartialEq for akio_dtls::SrtpKeys
+pub fn akio_dtls::SrtpKeys::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_dtls::SrtpKeys
+pub fn akio_dtls::SrtpKeys::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_dtls::SrtpKeys
+impl core::marker::Send for akio_dtls::SrtpKeys
+impl core::marker::Sync for akio_dtls::SrtpKeys
+impl core::marker::Unpin for akio_dtls::SrtpKeys
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::SrtpKeys
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::SrtpKeys
+pub struct akio_dtls::TicketKey
+impl akio_dtls::TicketKey
+pub fn akio_dtls::TicketKey::from_secret(&[u8; 32]) -> core::result::Result<akio_dtls::TicketKey, akio_dtls::Error>
+pub fn akio_dtls::TicketKey::generate() -> core::result::Result<akio_dtls::TicketKey, akio_dtls::Error>
+impl core::clone::Clone for akio_dtls::TicketKey
+pub fn akio_dtls::TicketKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_dtls::TicketKey
+pub fn akio_dtls::TicketKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_dtls::TicketKey
+impl core::marker::Sync for akio_dtls::TicketKey
+impl core::marker::Unpin for akio_dtls::TicketKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_dtls::TicketKey
+impl core::panic::unwind_safe::UnwindSafe for akio_dtls::TicketKey
+pub const akio_dtls::SRTP_EXPORTER_LABEL: &str
+pub trait akio_dtls::AntiReplayStore: core::marker::Send + core::marker::Sync
+pub fn akio_dtls::AntiReplayStore::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl akio_dtls::AntiReplayStore for akio_dtls::MemoryAntiReplay
+pub fn akio_dtls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+pub fn akio_dtls::connection_id(&[u8], usize) -> core::option::Option<&[u8]>
+pub type akio_dtls::VerifyFn = (dyn core::ops::function::Fn(&[alloc::vec::Vec<u8>]) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)

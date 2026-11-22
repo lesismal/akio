@@ -1,5 +1,5 @@
 [package]
-name = "only-fuzz"
+name = "akio-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -13,28 +13,28 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-only-http = { path = "../crates/only-http", features = ["fuzzing"] }
-only-ws = { path = "../crates/only-ws", features = ["fuzzing"] }
-only-arpc = { path = "../crates/only-arpc", features = ["fuzzing"] }
-only-grpc = { path = "../crates/only-grpc", features = ["fuzzing"] }
-only-socks = { path = "../crates/only-socks", features = ["fuzzing"] }
-only-mux = { path = "../crates/only-mux", features = ["fuzzing"] }
-only-kcp = { path = "../crates/only-kcp", features = ["fuzzing"] }
-only-h3 = { path = "../crates/only-h3", features = ["fuzzing"] }
-only-quic = { path = "../crates/only-quic", features = ["fuzzing"] }
-only-ebpf = { path = "../crates/only-ebpf", features = ["fuzzing"] }
-only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
-only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
-only-media = { path = "../crates/only-media", features = ["fuzzing"] }
-only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
-only-crypto = { path = "../crates/only-crypto" }
-only-log = { path = "../crates/only-log" }
-only-regex = { path = "../crates/only-regex", features = ["fuzzing"] }
-only-export = { path = "../crates/only-export", features = ["fuzzing"] }
+akio-http = { path = "../crates/akio-http", features = ["fuzzing"] }
+akio-ws = { path = "../crates/akio-ws", features = ["fuzzing"] }
+akio-arpc = { path = "../crates/akio-arpc", features = ["fuzzing"] }
+akio-grpc = { path = "../crates/akio-grpc", features = ["fuzzing"] }
+akio-socks = { path = "../crates/akio-socks", features = ["fuzzing"] }
+akio-mux = { path = "../crates/akio-mux", features = ["fuzzing"] }
+akio-kcp = { path = "../crates/akio-kcp", features = ["fuzzing"] }
+akio-h3 = { path = "../crates/akio-h3", features = ["fuzzing"] }
+akio-quic = { path = "../crates/akio-quic", features = ["fuzzing"] }
+akio-ebpf = { path = "../crates/akio-ebpf", features = ["fuzzing"] }
+akio-turn = { path = "../crates/akio-turn", features = ["fuzzing"] }
+akio-webrtc = { path = "../crates/akio-webrtc", features = ["fuzzing"] }
+akio-media = { path = "../crates/akio-media", features = ["fuzzing"] }
+akio-bittorrent = { path = "../crates/akio-bittorrent", features = ["fuzzing"] }
+akio-crypto = { path = "../crates/akio-crypto" }
+akio-log = { path = "../crates/akio-log" }
+akio-regex = { path = "../crates/akio-regex", features = ["fuzzing"] }
+akio-export = { path = "../crates/akio-export", features = ["fuzzing"] }
 # Reference JSON parser for the OTLP/JSON target (export_otlp).
 serde_json = "1"
-# Reference implementations for the only-crypto differential targets (crypto_*): the crates
-# only-crypto replaced in the libraries stay here as fuzz-only dependencies.
+# Reference implementations for the akio-crypto differential targets (crypto_*): the crates
+# akio-crypto replaced in the libraries stay here as fuzz-only dependencies.
 sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
@@ -47,14 +47,14 @@ base64 = "0.22"
 chacha20poly1305 = "0.10"
 # Reference for the public-key differential target `crypto_sig_verify`.
 ring = "0.17"
-only-x509 = { path = "../crates/only-x509", features = ["fuzzing"] }
-only-dtls = { path = "../crates/only-dtls", features = ["fuzzing"] }
-only-ice = { path = "../crates/only-ice", features = ["fuzzing"] }
-only-sctp = { path = "../crates/only-sctp", features = ["fuzzing"] }
-only-srtp = { path = "../crates/only-srtp", features = ["fuzzing"] }
-only-rtp = { path = "../crates/only-rtp", features = ["fuzzing"] }
-only-tls = { path = "../crates/only-tls", features = ["fuzzing"] }
-only-protobuf = { path = "../crates/only-protobuf" }
+akio-x509 = { path = "../crates/akio-x509", features = ["fuzzing"] }
+akio-dtls = { path = "../crates/akio-dtls", features = ["fuzzing"] }
+akio-ice = { path = "../crates/akio-ice", features = ["fuzzing"] }
+akio-sctp = { path = "../crates/akio-sctp", features = ["fuzzing"] }
+akio-srtp = { path = "../crates/akio-srtp", features = ["fuzzing"] }
+akio-rtp = { path = "../crates/akio-rtp", features = ["fuzzing"] }
+akio-tls = { path = "../crates/akio-tls", features = ["fuzzing"] }
+akio-protobuf = { path = "../crates/akio-protobuf" }
 # Generated test messages and the prost mirror for the differential target `protobuf_diff`.
 protobuf-test = { path = "../tools/protobuf-test" }
 prost = "0.13"
@@ -62,12 +62,12 @@ prost = "0.13"
 httparse = "1"
 loona-hpack = "0.4"
 regex = "1"
-only-dpdk = { path = "../crates/only-dpdk", features = ["fuzzing"] }
-only-deflate = { path = "../crates/only-deflate", features = ["fuzzing"] }
+akio-dpdk = { path = "../crates/akio-dpdk", features = ["fuzzing"] }
+akio-deflate = { path = "../crates/akio-deflate", features = ["fuzzing"] }
 # Differential oracle for the deflate targets only (zlib-rs).
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-only-brotli = { path = "../crates/only-brotli", features = ["fuzzing"] }
-only-zstd = { path = "../crates/only-zstd", features = ["fuzzing"] }
+akio-brotli = { path = "../crates/akio-brotli", features = ["fuzzing"] }
+akio-zstd = { path = "../crates/akio-zstd", features = ["fuzzing"] }
 # Differential oracles for the brotli and zstd targets only (Google's brotli in Rust, libzstd).
 brotli-decompressor = "5"
 zstd = { version = "0.13", default-features = false }

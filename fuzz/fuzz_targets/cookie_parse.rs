@@ -4,5 +4,5 @@
 // rules, from an optional `url\n` line and `Set-Cookie` values one per line.
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_http::fuzzing::cookie_parse(data);
+    akio_http::fuzzing::cookie_parse(data);
 });

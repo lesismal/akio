@@ -14,10 +14,10 @@ name: CI
 #                  never starts is not a code failure)
 #   Heavy:         interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn; libtorrent and aria2
 #                  for BitTorrent), fuzz (all targets, 5 min each), sanitizers (ASan + TSan on
-#                  the workspace tests, epoll and io_uring), dpdk (only-dpdk with libdpdk:
+#                  the workspace tests, epoll and io_uring), dpdk (akio-dpdk with libdpdk:
 #                  net_tap / TAP)
 #   Informational (`continue-on-error`, not in ci-ok):
-#                  ct-dudect (statistical timing test of only-crypto's secret-dependent paths,
+#                  ct-dudect (statistical timing test of akio-crypto's secret-dependent paths,
 #                  t-values kept as an artifact; docs/constant-time.md)
 #   Deploy:        not here: .github/workflows/pages.yml builds and deploys the site (books +
 #                  rustdoc) to GitHub Pages on a release or by hand
@@ -120,12 +120,12 @@ jobs:
         # One test at a time, so a hang shows which test it is; the step timeout keeps the log.
         timeout-minutes: 15
         run: cargo test --workspace -- --test-threads=1
-      - name: Tests (io_uring), crates that honour ONLY_TEST_BACKEND
+      - name: Tests (io_uring), crates that honour AKIO_TEST_BACKEND
         if: matrix.backend == 'uring'
         timeout-minutes: 15
         env:
-          ONLY_TEST_BACKEND: uring
-        run: cargo test -p only -p only-http -p only-ws -- --test-threads=1
+          AKIO_TEST_BACKEND: uring
+        run: cargo test -p only -p akio-http -p akio-ws -- --test-threads=1
 
   test-macos:
     runs-on: macos-latest
@@ -180,25 +180,25 @@ jobs:
         with:
           shared-key: features
           save-if: true
-      # only-log's 12 compile-time level features would multiply the powerset by 4096: they
+      # akio-log's 12 compile-time level features would multiply the powerset by 4096: they
       # are left out of it and covered by the static_level test below.
       - run: >-
           cargo hack check --workspace --feature-powerset --no-dev-deps
           --exclude-features max_level_off,max_level_error,max_level_warn,max_level_info,max_level_debug,max_level_trace,release_max_level_off,release_max_level_error,release_max_level_warn,release_max_level_info,release_max_level_debug,release_max_level_trace
-      - name: only-log compile-time level caps
+      - name: akio-log compile-time level caps
         run: |
-          cargo test -p only-log --features max_level_info --test static_level
-          cargo test -p only-log --release --features max_level_info,release_max_level_warn --test static_level
-      - name: only-http without default features
+          cargo test -p akio-log --features max_level_info --test static_level
+          cargo test -p akio-log --release --features max_level_info,release_max_level_warn --test static_level
+      - name: akio-http without default features
         timeout-minutes: 10
-        run: cargo test -p only-http --no-default-features -- --test-threads=1
+        run: cargo test -p akio-http --no-default-features -- --test-threads=1
 
   miri:
-    # Pure-Rust code only (Miri cannot run syscalls): the core crates, only-deflate,
-    # only-brotli, only-zstd, the
+    # Pure-Rust code only (Miri cannot run syscalls): the core crates, akio-deflate,
+    # akio-brotli, akio-zstd, the
     # protocol crates' unit tests and the syscall-free io_uring buffer-ring tests. Skipped: tests
-    # too slow under Miri (only-ws's large deflate round trips, exhaustive split loops,
-    # only-ebpf's interpreter sweeps).
+    # too slow under Miri (akio-ws's large deflate round trips, exhaustive split loops,
+    # akio-ebpf's interpreter sweeps).
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -210,29 +210,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
-      - run: cargo miri test -p only-timer -p only-buf -p only-core -p only-protobuf -p only-log -p only-regex
+      - run: cargo miri test -p akio-timer -p akio-buf -p akio-core -p akio-protobuf -p akio-log -p akio-regex
       # `fuzzing::` tests replay the fuzz corpora: minutes per crate under Miri, and the fuzz
       # job already runs those inputs natively.
       - run: >-
-          cargo miri test --lib -p only-pool -p only-http -p only-mux
-          -p only-arpc -p only-h3 -p only-kcp -- --skip fuzzing::
-      - name: only-socks (its test connection leaves a helper thread running at exit)
+          cargo miri test --lib -p akio-pool -p akio-http -p akio-mux
+          -p akio-arpc -p akio-h3 -p akio-kcp -- --skip fuzzing::
+      - name: akio-socks (its test connection leaves a helper thread running at exit)
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
-        run: "cargo miri test -p only-socks --lib -- --skip fuzzing::"
-      - run: "cargo miri test -p only-deflate --lib -- --skip fuzzing::"
-      - run: "cargo miri test -p only-brotli -p only-zstd --lib -- --skip fuzzing::"
-      - run: "cargo miri test -p only-grpc --lib -- --skip fuzzing::"
+        run: "cargo miri test -p akio-socks --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p akio-deflate --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p akio-brotli -p akio-zstd --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p akio-grpc --lib -- --skip fuzzing::"
       - run: >-
-          cargo miri test -p only-ws --lib --
+          cargo miri test -p akio-ws --lib --
           protocol:: session:: client:: deflate::tests::negotiation deflate::tests::client_offer
           deflate::tests::roundtrip_with_and_without_context_takeover
           --skip messages_survive_any_split --skip fuzzing::
       - name: io_uring buffer ring (kernel-shared memory, no syscalls)
-        run: cargo miri test -p only-uring --lib -- buf_ring kernel_buf
+        run: cargo miri test -p akio-uring --lib -- buf_ring kernel_buf
 
   loom:
-    # Model-checks the cork/send/close protocols of only-core::conn and the reuse of only-buf's
+    # Model-checks the cork/send/close protocols of akio-core::conn and the reuse of akio-buf's
     # receive slabs (see loom_tests).
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -243,7 +243,7 @@ jobs:
         with:
           shared-key: loom
           save-if: true
-      - run: cargo test -p only-core -p only-buf --lib --release -- loom
+      - run: cargo test -p akio-core -p akio-buf --lib --release -- loom
         env:
           RUSTFLAGS: --cfg loom
 
@@ -300,8 +300,8 @@ jobs:
           shared-key: conformance
           save-if: true
       - run: >-
-          cargo build --release -p only-http --example ws-echo
-          -p only-ws --example ws-autobahn-client
+          cargo build --release -p akio-http --example ws-echo
+          -p akio-ws --example ws-autobahn-client
       - name: Autobahn server (core protocol)
         run: tools/autobahn/run.sh base
       - name: Autobahn server (permessage-deflate)
@@ -326,7 +326,7 @@ jobs:
         with:
           shared-key: conformance
           save-if: false
-      - run: cargo build --release -p only-http --example h2-server
+      - run: cargo build --release -p akio-http --example h2-server
       - run: tools/h2spec/run.sh
 
   interop:
@@ -350,8 +350,8 @@ jobs:
           path: fib
       - uses: actions/setup-go@v5
         with:
-          go-version-file: only/tools/interop/${{ matrix.suite }}/go.mod
-          cache-dependency-path: only/tools/interop/${{ matrix.suite }}/go.*
+          go-version-file: akio/tools/interop/${{ matrix.suite }}/go.mod
+          cache-dependency-path: akio/tools/interop/${{ matrix.suite }}/go.*
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -361,10 +361,10 @@ jobs:
       - name: Interop (${{ matrix.suite }})
         env:
           COTURN: ${{ matrix.suite == 'webrtc' && '1' || '0' }}
-        run: only/tools/interop/${{ matrix.suite }}/run.sh
+        run: akio/tools/interop/${{ matrix.suite }}/run.sh
 
   dpdk:
-    # only-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
+    # akio-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
     # linked, the memory-wire tests, and the userspace stack against the kernel stack over DPDK's
     # net_tap PMD (1 and 2 queues), TAP and AF_PACKET (with tc netem loss). Needs NET_ADMIN and
     # /dev/net/tun, so it runs
@@ -377,7 +377,7 @@ jobs:
         run: tools/dpdk/test.sh
 
   interop-bittorrent:
-    # only-bittorrent against libtorrent 2.0 and aria2 1.37, in a Debian container (the script
+    # akio-bittorrent against libtorrent 2.0 and aria2 1.37, in a Debian container (the script
     # starts it and installs both there).
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -427,7 +427,7 @@ jobs:
           if-no-files-found: ignore
 
   ct-dudect:
-    # dudect-style timing test of only-crypto's secret-dependent paths (docs/constant-time.md),
+    # dudect-style timing test of akio-crypto's secret-dependent paths (docs/constant-time.md),
     # hardware and portable paths, 15 s per target. Informational, never a gate: a shared runner
     # is noisy (other tenants, frequency scaling), so |t| > 4.5 here is a lead to re-run on a
     # quiet machine, not a verdict. `continue-on-error` keeps a red result from failing the
@@ -453,7 +453,7 @@ jobs:
         timeout-minutes: 8
         shell: bash
         env:
-          ONLY_CRYPTO_PORTABLE: "1"
+          AKIO_CRYPTO_PORTABLE: "1"
         run: target/release/ct-dudect --seconds 15 --json ct-dudect-portable.json | tee ct-dudect-portable.txt
       - name: Summary
         if: always()
@@ -524,10 +524,10 @@ jobs:
       - name: Published baseline?
         id: baseline
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'only-ci (github.com/lesismal/only)' \
-            https://crates.io/api/v1/crates/only-core/1.0.0)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'akio-ci (github.com/lesismal/akio)' \
+            https://crates.io/api/v1/crates/akio-core/1.0.0)
           echo "published=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "only-core 1.0.0 on crates.io: HTTP $code"
+          echo "akio-core 1.0.0 on crates.io: HTTP $code"
       - if: steps.baseline.outputs.published == 'true'
         uses: dtolnay/rust-toolchain@stable
       - if: steps.baseline.outputs.published == 'true'
@@ -537,10 +537,10 @@ jobs:
       - if: steps.baseline.outputs.published == 'true'
         run: >-
           cargo semver-checks check-release
-          -p only -p only-core -p only-tls -p only-http -p only-ws -p only-mux
-          -p only-socks -p only-arpc -p only-grpc -p only-protobuf -p only-protobuf-build
-          -p only-kcp -p only-quic -p only-h3
-          -p only-ebpf -p only-prefork -p only-bittorrent
+          -p only -p akio-core -p akio-tls -p akio-http -p akio-ws -p akio-mux
+          -p akio-socks -p akio-arpc -p akio-grpc -p akio-protobuf -p akio-protobuf-build
+          -p akio-kcp -p akio-quic -p akio-h3
+          -p akio-ebpf -p akio-prefork -p akio-bittorrent
 
   sanitizers:
     # AddressSanitizer (with LeakSanitizer) and ThreadSanitizer over every workspace crate's
@@ -579,11 +579,11 @@ jobs:
       - name: io_uring backend
         timeout-minutes: 45
         env:
-          ONLY_TEST_BACKEND: uring
+          AKIO_TEST_BACKEND: uring
           SAN_LOG_DIR: sanitizer-logs/uring
         run: >-
           tools/sanitizers/run.sh ${{ matrix.san }}
-          only-uring only only-http only-prefork only-socks only-ws
+          akio-uring only akio-http akio-prefork akio-socks akio-ws
       - name: Keep logs
         if: always()
         uses: actions/upload-artifact@v4

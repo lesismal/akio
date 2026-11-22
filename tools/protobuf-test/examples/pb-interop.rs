@@ -1,13 +1,13 @@
-//! The `only` side of the protobuf half of the grpc-go interop check
-//! (tools/interop/grpc/run.sh): route_guide and helloworld through the stubs only-protobuf-build
+//! The `akio` side of the protobuf half of the grpc-go interop check
+//! (tools/interop/grpc/run.sh): route_guide and helloworld through the stubs akio-protobuf-build
 //! generates, and well-known types, against grpc-go's own generated code.
 //!
 //! `pb-interop server <addr>` / `pb-interop client <addr>`.
 
 use std::sync::Arc;
 
-use only::{Engine, Listener};
-use only_http::h2client::{H2Client, H2Options};
+use akio::{Engine, Listener};
+use akio_http::h2client::{H2Client, H2Options};
 use protobuf_test::service;
 
 fn main() -> std::io::Result<()> {
@@ -15,7 +15,7 @@ fn main() -> std::io::Result<()> {
     let addr = a[1].parse().expect("address");
     if a[0] == "server" {
         let e = Engine::builder()
-            .listen(Listener::tcp(addr).serve(only_http::serve(service::server("only"))))
+            .listen(Listener::tcp(addr).serve(akio_http::serve(service::server("akio"))))
             .build()?;
         println!("ready");
         return e.run();
@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
     let e = Arc::new(Engine::builder().client_threads(1).build()?);
     e.start()?;
     let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default())?;
-    let grpc = only_grpc::GrpcClient::new(h2, &format!("http://{addr}"));
+    let grpc = akio_grpc::GrpcClient::new(h2, &format!("http://{addr}"));
     if let Err(m) = service::check_server(&grpc, "go") {
         println!("FAIL {m}");
         std::process::exit(1);

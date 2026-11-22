@@ -1,7 +1,7 @@
 // HTTP/3 interop peer on fib's own QUIC and HTTP/3 (github.com/lesismal/fib/http3):
 //
 //	go run . server 127.0.0.1:9402    serves / and /echo
-//	go run . client 127.0.0.1:9401    checks a only-h3 server
+//	go run . client 127.0.0.1:9401    checks a akio-h3 server
 package main
 
 import (
@@ -110,5 +110,5 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
-	fmt.Println("ok: fib client -> only-h3 server")
+	fmt.Println("ok: fib client -> akio-h3 server")
 }

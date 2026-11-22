@@ -6,11 +6,11 @@ Status: accepted (2026-11-21)
 
 ## Context
 
-Earlier work left gaps in only-webrtc, only-turn and only-ice that the DEV-PLAN listed as not
+Earlier work left gaps in akio-webrtc, akio-turn and akio-ice that the DEV-PLAN listed as not
 done:
 
-- **Data channel priorities and the SCTP stream scheduler** (ADR-037): only-sctp implements
-  RFC 8260 schedulers and RFC 8832 channel priorities, but only-webrtc exposed neither, so
+- **Data channel priorities and the SCTP stream scheduler** (ADR-037): akio-sctp implements
+  RFC 8260 schedulers and RFC 8832 channel priorities, but akio-webrtc exposed neither, so
   every channel had DCEP priority 256 and the association used weighted fair queueing with no
   way to weigh channels.
 - **One transport per session** (ADR-058): this stack ran one ICE agent, one DTLS association
@@ -23,11 +23,11 @@ done:
 - **SDES-SRTP** (ADR-054) needed ICE, refused lines with MKIs and refused data channels.
 - **TURN over DTLS** (ADR-054) identified a client by its 5-tuple: a NAT rebinding lost the
   association and its allocation.
-- **only-ice** had no exported IPv6 mDNS group and no way to give a resolved link-local
+- **akio-ice** had no exported IPv6 mDNS group and no way to give a resolved link-local
   candidate its interface.
 
 Constraints: browsers and pion must see what they saw before by default; another session was
-changing only-rtp and only-webrtc's pacing / FEC / RED / feedback code at the same time, so the
+changing akio-rtp and akio-webrtc's pacing / FEC / RED / feedback code at the same time, so the
 changes to `rtc.rs` are hooks rather than rewrites; public-tier APIs must not expose
 internal-tier types.
 
@@ -41,7 +41,7 @@ DCEP open message; the priority of a channel the peer opened comes from its mess
 level; 0 counts as low). `Peer::channel_priority` and `Peer::set_channel_priority` (this side's
 scheduler only: DCEP has no update). `ChannelScheduler` (FCFS, round robin, round robin per
 packet, priority, fair capacity, weighted fair queueing by default) chosen with
-`RtcConfig::set_sctp_scheduler`. Both map onto only-sctp's types inside the crate.
+`RtcConfig::set_sctp_scheduler`. Both map onto akio-sctp's types inside the crate.
 
 ### 2. Several transports without BUNDLE
 
@@ -130,23 +130,23 @@ application-data record came out), the client's path moves to that 5-tuple (RFC 
 responses and relayed data go there, while the allocation keeps the address the association
 started from as its identity, so nothing moves between shards. A forged or replayed record
 moves nothing. Which connection holds the path is tracked in the session, so a datagram costs
-no extra shard lock unless the path moves. only-webrtc's DTLS relay client sends the server's
+no extra shard lock unless the path moves. akio-webrtc's DTLS relay client sends the server's
 CID when asked.
 
-### 6. only-ice
+### 6. akio-ice
 
 `mdns::MULTICAST_V6` (`[ff02::fb]:5353`) and `mdns::multicast_v6_on(scope)` next to
 `MULTICAST_V4`; `Candidate::with_scope_id(scope)` gives an IPv6 link-local candidate (address,
-and base when it is the address) its interface; SDP never shows it. only-webrtc keeps its
+and base when it is the address) its interface; SDP never shows it. akio-webrtc keeps its
 design (scope ids stripped before ICE, kept by the hub) and uses `multicast_v6_on`.
 
 ### API
 
-Additive. only-webrtc: `ChannelPriority`, `ChannelScheduler`, `ChannelConfig::{priority,
+Additive. akio-webrtc: `ChannelPriority`, `ChannelScheduler`, `ChannelConfig::{priority,
 with_priority}`, `RtcConfig::{set_sctp_scheduler, set_bundle_policy, enable_ice,
 set_sdes_mki_length}`, `BundlePolicy`, `Peer::{channel_priority, set_channel_priority,
 add_remote_candidate_in}`, `Endpoint::bind_transport_socket`, `RtcServer::{rtcp_candidates,
-rtcp}`, `RtcRtcp`. only-turn: `TurnServer::dtls_with_connection_ids`. only-ice:
+rtcp}`, `RtcRtcp`. akio-turn: `TurnServer::dtls_with_connection_ids`. akio-ice:
 `mdns::{MULTICAST_V6, multicast_v6_on}`, `Candidate::with_scope_id`,
 `IceAgent::{set_fixed_pair, is_fixed}`. `ChannelConfig` is `#[non_exhaustive]`, so its new
 field is not a break.
@@ -168,12 +168,12 @@ field is not a break.
   hand-written SIP offer with rtcp-mux and a 2-byte MKI; SDES with MKIs both ways; SDES media
   next to a data channel. Endpoints over loopback: without BUNDLE both ways (data channel,
   audio and video echo; `tests/bundle.rs`), SDES without ICE with MKIs and RTCP sockets, SDES
-  with data channels (`tests/sdes.rs`), RTCP through relayed candidates on only-turn (four
+  with data channels (`tests/sdes.rs`), RTCP through relayed candidates on akio-turn (four
   allocations), component-2 server-reflexive candidates, an ICE-lite `RtcServer` with an RTCP
-  listener (`tests/rtcp_mux.rs`). only-turn (`tests/dtls.rs`): a client moving to a new socket
+  listener (`tests/rtcp_mux.rs`). akio-turn (`tests/dtls.rs`): a client moving to a new socket
   mid-association keeps its allocation over DTLS 1.2 and 1.3, a forged record with the CID
   moves nothing, close_notify from the new address frees the allocation, no CID without them.
-  only-ice: fixed pairs (events, state, nothing running, moving a pair), scope ids, the IPv6
+  akio-ice: fixed pairs (events, state, nothing running, moving a pair), scope ids, the IPv6
   group. Unit tests of `a=crypto` MKI parsing, `c=` lines, plain addresses, state aggregation.
 - Interop: headless Chrome 157 (`tools/interop/webrtc/bundle.sh`): Chrome with
   `bundlePolicy: "max-compat"` offering audio, video and data channels to an `RtcServer` that

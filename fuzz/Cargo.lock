@@ -47,6 +47,405 @@ dependencies = [
 ]
 
 [[package]]
+name = "akio"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-core",
+ "akio-ebpf",
+ "akio-epoll",
+ "akio-log",
+ "akio-sys",
+ "akio-tls",
+ "akio-uring",
+]
+
+[[package]]
+name = "akio-arpc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-buf",
+ "akio-core",
+ "akio-deflate",
+]
+
+[[package]]
+name = "akio-bittorrent"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-crypto",
+ "akio-http",
+ "akio-pool",
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-brotli"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-buf"
+version = "1.0.0-rc.1"
+dependencies = [
+ "loom",
+]
+
+[[package]]
+name = "akio-core"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-log",
+ "akio-pool",
+ "akio-sys",
+ "loom",
+]
+
+[[package]]
+name = "akio-crypto"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-deflate"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-dpdk"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+ "akio-ebpf",
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-dtls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+ "akio-x509",
+]
+
+[[package]]
+name = "akio-ebpf"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-epoll"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-core",
+ "akio-log",
+ "akio-sys",
+ "akio-timer",
+]
+
+[[package]]
+name = "akio-export"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-grpc",
+ "akio-http",
+ "akio-log",
+ "akio-protobuf",
+ "akio-tls",
+]
+
+[[package]]
+name = "akio-fuzz"
+version = "0.0.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "akio-arpc",
+ "akio-bittorrent",
+ "akio-brotli",
+ "akio-crypto",
+ "akio-deflate",
+ "akio-dpdk",
+ "akio-dtls",
+ "akio-ebpf",
+ "akio-export",
+ "akio-grpc",
+ "akio-h3",
+ "akio-http",
+ "akio-ice",
+ "akio-kcp",
+ "akio-log",
+ "akio-media",
+ "akio-mux",
+ "akio-protobuf",
+ "akio-quic",
+ "akio-regex",
+ "akio-rtp",
+ "akio-sctp",
+ "akio-socks",
+ "akio-srtp",
+ "akio-tls",
+ "akio-turn",
+ "akio-webrtc",
+ "akio-ws",
+ "akio-x509",
+ "akio-zstd",
+ "base64",
+ "brotli-decompressor",
+ "chacha20poly1305",
+ "crc32fast",
+ "ctr",
+ "flate2",
+ "hmac",
+ "httparse",
+ "libfuzzer-sys",
+ "loona-hpack",
+ "md-5",
+ "prost",
+ "protobuf-test",
+ "regex",
+ "ring",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "zstd",
+]
+
+[[package]]
+name = "akio-grpc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-deflate",
+ "akio-http",
+ "akio-protobuf",
+]
+
+[[package]]
+name = "akio-h3"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-http",
+ "akio-quic",
+]
+
+[[package]]
+name = "akio-http"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-brotli",
+ "akio-buf",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+ "akio-log",
+ "akio-regex",
+ "akio-sys",
+ "akio-ws",
+ "akio-zstd",
+]
+
+[[package]]
+name = "akio-ice"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+ "akio-turn",
+]
+
+[[package]]
+name = "akio-kcp"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-crypto",
+]
+
+[[package]]
+name = "akio-log"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-regex",
+]
+
+[[package]]
+name = "akio-media"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-crypto",
+ "akio-http",
+ "akio-rtp",
+]
+
+[[package]]
+name = "akio-mux"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+]
+
+[[package]]
+name = "akio-pool"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-protobuf"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-protobuf-build"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-protobuf",
+]
+
+[[package]]
+name = "akio-quic"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-buf",
+ "akio-core",
+ "akio-crypto",
+ "akio-tls",
+ "akio-x509",
+]
+
+[[package]]
+name = "akio-regex"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-rtp"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-sctp"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+]
+
+[[package]]
+name = "akio-socks"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-http",
+ "akio-ws",
+]
+
+[[package]]
+name = "akio-srtp"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+]
+
+[[package]]
+name = "akio-sys"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+]
+
+[[package]]
+name = "akio-timer"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-tls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-brotli",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+ "akio-log",
+ "akio-x509",
+ "akio-zstd",
+]
+
+[[package]]
+name = "akio-turn"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-crypto",
+ "akio-dtls",
+ "akio-sys",
+ "akio-x509",
+]
+
+[[package]]
+name = "akio-uring"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+ "akio-log",
+ "akio-sys",
+ "akio-timer",
+]
+
+[[package]]
+name = "akio-webrtc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-crypto",
+ "akio-dtls",
+ "akio-ice",
+ "akio-log",
+ "akio-rtp",
+ "akio-sctp",
+ "akio-srtp",
+ "akio-sys",
+ "akio-turn",
+ "akio-x509",
+]
+
+[[package]]
+name = "akio-ws"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-buf",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+]
+
+[[package]]
+name = "akio-x509"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+]
+
+[[package]]
+name = "akio-zstd"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,404 +823,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "only"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
- "only-core",
- "only-ebpf",
- "only-epoll",
- "only-log",
- "only-sys",
- "only-tls",
- "only-uring",
-]
-
-[[package]]
-name = "only-arpc"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-buf",
- "only-core",
- "only-deflate",
-]
-
-[[package]]
-name = "only-bittorrent"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-crypto",
- "only-http",
- "only-pool",
- "only-sys",
-]
-
-[[package]]
-name = "only-brotli"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-buf"
-version = "1.0.0-rc.1"
-dependencies = [
- "loom",
-]
-
-[[package]]
-name = "only-core"
-version = "1.0.0-rc.1"
-dependencies = [
- "loom",
- "only-buf",
- "only-log",
- "only-pool",
- "only-sys",
-]
-
-[[package]]
-name = "only-crypto"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-sys",
-]
-
-[[package]]
-name = "only-deflate"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-dpdk"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
- "only-ebpf",
- "only-sys",
-]
-
-[[package]]
-name = "only-dtls"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
- "only-x509",
-]
-
-[[package]]
-name = "only-ebpf"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
- "only-sys",
-]
-
-[[package]]
-name = "only-epoll"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
- "only-core",
- "only-log",
- "only-sys",
- "only-timer",
-]
-
-[[package]]
-name = "only-export"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-grpc",
- "only-http",
- "only-log",
- "only-protobuf",
- "only-tls",
-]
-
-[[package]]
-name = "only-fuzz"
-version = "0.0.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "base64",
- "brotli-decompressor",
- "chacha20poly1305",
- "crc32fast",
- "ctr",
- "flate2",
- "hmac",
- "httparse",
- "libfuzzer-sys",
- "loona-hpack",
- "md-5",
- "only-arpc",
- "only-bittorrent",
- "only-brotli",
- "only-crypto",
- "only-deflate",
- "only-dpdk",
- "only-dtls",
- "only-ebpf",
- "only-export",
- "only-grpc",
- "only-h3",
- "only-http",
- "only-ice",
- "only-kcp",
- "only-log",
- "only-media",
- "only-mux",
- "only-protobuf",
- "only-quic",
- "only-regex",
- "only-rtp",
- "only-sctp",
- "only-socks",
- "only-srtp",
- "only-tls",
- "only-turn",
- "only-webrtc",
- "only-ws",
- "only-x509",
- "only-zstd",
- "prost",
- "protobuf-test",
- "regex",
- "ring",
- "serde_json",
- "sha1",
- "sha2",
- "zstd",
-]
-
-[[package]]
-name = "only-grpc"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-deflate",
- "only-http",
- "only-protobuf",
-]
-
-[[package]]
-name = "only-h3"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-http",
- "only-quic",
-]
-
-[[package]]
-name = "only-http"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-brotli",
- "only-core",
- "only-crypto",
- "only-deflate",
- "only-log",
- "only-regex",
- "only-sys",
- "only-ws",
- "only-zstd",
-]
-
-[[package]]
-name = "only-ice"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
- "only-turn",
-]
-
-[[package]]
-name = "only-kcp"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-crypto",
-]
-
-[[package]]
-name = "only-log"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-regex",
-]
-
-[[package]]
-name = "only-media"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-crypto",
- "only-http",
- "only-rtp",
-]
-
-[[package]]
-name = "only-mux"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
-]
-
-[[package]]
-name = "only-pool"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-protobuf"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-protobuf-build"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-protobuf",
-]
-
-[[package]]
-name = "only-quic"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-buf",
- "only-core",
- "only-crypto",
- "only-tls",
- "only-x509",
-]
-
-[[package]]
-name = "only-regex"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-rtp"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-sctp"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
-]
-
-[[package]]
-name = "only-socks"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-http",
- "only-ws",
-]
-
-[[package]]
-name = "only-srtp"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
-]
-
-[[package]]
-name = "only-sys"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
-]
-
-[[package]]
-name = "only-timer"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-tls"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-brotli",
- "only-core",
- "only-crypto",
- "only-deflate",
- "only-log",
- "only-x509",
- "only-zstd",
-]
-
-[[package]]
-name = "only-turn"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-core",
- "only-crypto",
- "only-dtls",
- "only-sys",
- "only-x509",
-]
-
-[[package]]
-name = "only-uring"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
- "only-log",
- "only-sys",
- "only-timer",
-]
-
-[[package]]
-name = "only-webrtc"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-crypto",
- "only-dtls",
- "only-ice",
- "only-log",
- "only-rtp",
- "only-sctp",
- "only-srtp",
- "only-sys",
- "only-turn",
- "only-x509",
-]
-
-[[package]]
-name = "only-ws"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-buf",
- "only-core",
- "only-crypto",
- "only-deflate",
-]
-
-[[package]]
-name = "only-x509"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
-]
-
-[[package]]
-name = "only-zstd"
-version = "1.0.0-rc.1"
-
-[[package]]
 name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -898,11 +899,11 @@ dependencies = [
 name = "protobuf-test"
 version = "1.0.0-rc.1"
 dependencies = [
- "only",
- "only-grpc",
- "only-http",
- "only-protobuf",
- "only-protobuf-build",
+ "akio",
+ "akio-grpc",
+ "akio-http",
+ "akio-protobuf",
+ "akio-protobuf-build",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@
 ## Router
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:router}}
 ```
 
 Path segments:
@@ -21,7 +21,7 @@ if a static branch fails further down, the next kind is tried. Lookups are alloc
 30 ns for a 52-route GitHub-style table in `examples/router-bench.rs`, with or without regexp or
 partial segments). `Router::lookup(method, path)` gives the match without dispatching.
 
-Partial segments ([ADR-007](https://github.com/lesismal/only/blob/main/docs/adr/007-partial-segment-routes.md))
+Partial segments ([ADR-007](https://github.com/lesismal/akio/blob/main/docs/adr/007-partial-segment-routes.md))
 mix literal text with `{name}` or `{name:regexp}` groups. A literal at the start or the end of the
 segment is matched there; in between, each parameter is non-empty and ends at the **first**
 occurrence of the text that follows it; a regexp parameter must also match its whole value. No
@@ -38,7 +38,7 @@ Among partial segments, more literal text is tried first (`{name}.tar.gz` before
 then registration order. Two parameters need literal text between them, and a wildcard cannot
 share a segment; both panic at registration.
 
-Regexp parameters use `only-regex`, the workspace's linear-time engine (ADR-051): the expression
+Regexp parameters use `akio-regex`, the workspace's linear-time engine (ADR-051): the expression
 must match the whole segment, and matching takes time linear in the segment length (no
 backtracking, so no pathological patterns; a DFA built at registration, about one nanosecond per
 character). Supported syntax, with the meaning it has in the `regex` crate:
@@ -83,7 +83,7 @@ implementing `Middleware::handle`). Call `next.call(ctx)` to continue, or answer
 it:
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:middleware}}
 ```
 
 In the router above it guards only the nested `/admin` router:
@@ -98,7 +98,7 @@ instead of inspecting it after `next.call` returns: `ctx.add_response_filter(|re
 runs just before the response is sent, on whichever thread sends it. `ctx.add_response_header`
 adds a header unless the response sets it.
 
-Built-in middleware (`only_http::middleware` and `only_http::observe`):
+Built-in middleware (`akio_http::middleware` and `akio_http::observe`):
 
 | Middleware | What it does |
 |---|---|
@@ -112,9 +112,9 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 | `csrf()` | double-submit cookie: `csrf_token` cookie, checked against the `X-CSRF-Token` header on unsafe methods |
 | `limiter(rate, burst)` | per-client-IP token bucket, 429 with `Retry-After` |
 | `observe::HttpMetrics::middleware()` | request counters and latency histogram ([Observability](../observability.md)) |
-| `observe::access_log()` | structured access log through `only::log` |
+| `observe::access_log()` | structured access log through `akio::log` |
 
-`br` and `zstd` (the in-house `only-brotli` and `only-zstd`, ADR-041) are off by default: set
+`br` and `zstd` (the in-house `akio-brotli` and `akio-zstd`, ADR-041) are off by default: set
 `Compress::brotli` / `Compress::zstd` to a level to answer clients that accept them, preferred in
 the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files are served by
 `Files`. The middleware compresses whole buffered bodies. Streamed responses
@@ -128,7 +128,7 @@ still costs the most CPU per small write (about 1 us per flushed event, zstd 0.3
 high-rate event streams offer zstd or let gzip serve them.
 
 The middleware uses no dictionaries. Applications that exchange brotli data compressed with a
-shared dictionary can decode it with `only-brotli` directly: raw (LZ77 prefix) dictionaries,
+shared dictionary can decode it with `akio-brotli` directly: raw (LZ77 prefix) dictionaries,
 as `brotli -D` and RFC 9842's `dcb` use them (`decompress_with_dictionary`), and RFC 9841
 serialized shared dictionaries with custom word lists and transforms
 (`SharedDictionary::new`, `decompress_with_shared_dictionary`; ADR-069); the encoder uses the
@@ -139,7 +139,7 @@ the framing format, a container of resources that may use one another as diction
 (`read_container`, `ContainerWriter`).
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:compression}}
 ```
 
 ## Static files

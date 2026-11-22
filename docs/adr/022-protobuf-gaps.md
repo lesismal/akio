@@ -6,14 +6,14 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-`only-protobuf` / `only-protobuf-build` (ADR-005: no third-party dependencies, no `protoc`)
+`akio-protobuf` / `akio-protobuf-build` (ADR-005: no third-party dependencies, no `protoc`)
 covered proto2 and proto3 messages, enums, maps, oneofs and the common well-known types. Not
 done (DEV-PLAN): proto2 groups and extensions, editions, the canonical JSON mapping, and runtime
 reflection, without which gRPC server reflection (grpcurl, grpcui) cannot work.
 
 ## Decision
 
-All additive; generated code still names only `::only_protobuf` (and `::only_grpc` for stubs).
+All additive; generated code still names only `::akio_protobuf` (and `::akio_grpc` for stubs).
 
 **Groups and extensions.**
 - `encoding::GroupCodec<M, const N: u32>` encodes a message as a group of field `N`; generated
@@ -47,21 +47,21 @@ with `type.proto`, `api.proto` and `source_context.proto`. Each generated packag
 `FILE_DESCRIPTOR_SET` (its files and their imports) and `descriptor_pool()`.
 `Config::descriptors(bool)` (default on) and `Config::file_descriptor_set_path`.
 
-**Reflection** (`only_protobuf::reflect`): `DescriptorPool` (from encoded sets, validated,
+**Reflection** (`akio_protobuf::reflect`): `DescriptorPool` (from encoded sets, validated,
 names resolved, features resolved), `FileDescriptor`, `MessageDescriptor`, `FieldDescriptor`,
 `EnumDescriptor`, `ServiceDescriptor`, `MethodDescriptor`; `DynamicMessage` / `Value` /
 `MapKey` (decode, encode, get, set, oneofs, extensions, unknown fields); `ReflectMessage`
 (generated: `descriptor()`, `to_dynamic`, `from_dynamic`).
 
-**JSON** (`only_protobuf::json`): the proto3 JSON mapping on top of reflection: `to_string`,
+**JSON** (`akio_protobuf::json`): the proto3 JSON mapping on top of reflection: `to_string`,
 `to_string_with(&PrintOptions)`, `from_str`, `from_str_with(&ParseOptions)` (with
 `ignore_unknown_fields`), `parse_dynamic`, `DynamicMessage::to_json` / `from_json`; well-known
 types, `json_name`, extensions as `[full.name]`, own strict JSON parser.
 
-**gRPC server reflection** (`only_grpc::reflection`): `register(server, &pool)` adds
+**gRPC server reflection** (`akio_grpc::reflection`): `register(server, &pool)` adds
 `grpc.reflection.v1.ServerReflection` and `v1alpha` (list services, files by name / symbol /
 extension, extension numbers); the reflection messages are public (`reflection::v1`, `v1alpha`).
-only-grpc now depends on only-protobuf.
+akio-grpc now depends on akio-protobuf.
 
 ## Verification
 

@@ -1,7 +1,7 @@
 # Reference DTLS 1.3 peers for tools/interop/dtls/run.sh: OpenSSL 4.1 (built here: Debian ships
 # 3.5, which has no DTLS 1.3) and wolfSSL 5.8.4 (DTLS 1.3, connection IDs, 0-RTT, post-handshake
-# authentication), on rust:1 so the same image also builds the only-dtls example.
-#   docker build -t only-dtls-interop tools/interop/dtls
+# authentication), on rust:1 so the same image also builds the akio-dtls example.
+#   docker build -t akio-dtls-interop tools/interop/dtls
 FROM rust:1
 RUN apt-get update && apt-get install -y --no-install-recommends autoconf automake libtool \
       perl make gcc git ca-certificates && rm -rf /var/lib/apt/lists/*

@@ -1,4 +1,4 @@
-# ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 only-log 过滤器
+# ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 akio-log 过滤器
 
 [English](012-socks-commands-and-log-filters.md) | 简体中文
 
@@ -8,10 +8,10 @@
 
 `docs/DEV-PLAN.zh-CN.md` 中有两项未完成：
 
-- `only-socks` 只支持 SOCKS5 `CONNECT`。`BIND`（主动模式 FTP 等需要对端回连的协议）和
+- `akio-socks` 只支持 SOCKS5 `CONNECT`。`BIND`（主动模式 FTP 等需要对端回连的协议）和
   `UDP ASSOCIATE`（经代理的 DNS、QUIC、游戏）都回复“不支持的命令”。除用户名/密码外，也无法限制
   客户端能访问什么。
-- `only-log` 有运行时最大级别和在代码里设置的按 target 上限，但不能从环境变量按 target 设置级别
+- `akio-log` 有运行时最大级别和在代码里设置的按 target 上限，但不能从环境变量按 target 设置级别
   （env_logger 的 `RUST_LOG`），也不能把啰嗦的语句从 release 构建中编译掉（`log` crate 的
   `max_level_*` feature）。
 
@@ -20,7 +20,7 @@
 
 ## 决定
 
-1. **`Engine::adopt_tcp(stream, acceptor, on_error)`**（位于 `only`）：把一个已连接的
+1. **`Engine::adopt_tcp(stream, acceptor, on_error)`**（位于 `akio`）：把一个已连接的
    `std::net::TcpStream` 当作刚刚连上的拨号连接来服务，使用与 `dial` 相同的 I/O 线程。后端实现一个
    新的隐藏方法 `Group::adopt`（默认返回 `Unsupported`）；epoll 和 io_uring 的 group 让流走已有的
    拨号路径，已连接的流会立即打开（立刻可写、没有待处理错误）。不新增 reactor 代码。
@@ -46,12 +46,12 @@
    用户名或 SOCKS4 user id）、`Command` 和 `Dest`（地址，或尚未解析的主机名）。拒绝时 SOCKS5 回复 2
    （“规则集不允许”），SOCKS4 回复 0x5b，UDP 数据报被丢弃。`Command` 是 `#[non_exhaustive]`；
    `Request` 字段私有、通过访问器读取，二者都可以扩展。
-4. **only-log 的 `Filter` 与 `init_from_env`。** `Filter` 保存一个默认级别和按 target 的级别，
-   解析 env_logger 风格的指令（`info,only_http=debug,only_quic::conn=trace`）：`level`、
+4. **akio-log 的 `Filter` 与 `init_from_env`。** `Filter` 保存一个默认级别和按 target 的级别，
+   解析 env_logger 风格的指令（`info,akio_http=debug,akio_quic::conn=trace`）：`level`、
    `target=level`、`target`（即 trace）。与 env_logger 有两处不同，都继承自
    `FmtLogger::target_level`：target 只匹配自身和 `target::...`（而不是任意字符串前缀），以及与顺序
    无关、最长匹配者胜出。`/regex` 消息过滤会被拒绝。`init_from_env(default)` 只读取一次
-   `ONLY_LOG`，安装带该过滤器的 `FmtLogger`，并把全局最大级别设为过滤器中最详细的级别；未设置时用
+   `AKIO_LOG`，安装带该过滤器的 `FmtLogger`，并把全局最大级别设为过滤器中最详细的级别；未设置时用
    `default`，无法解析时把原因打印到 stderr 并使用 `default`。**需显式调用**：不调用它就没有任何
    代码读取环境变量，`init` 和默认行为不变。`FmtLogger::filter` 和 `init_filtered` 接受在代码中
    构造的 `Filter`；自定义 logger 可以调用 `Filter::enabled`。

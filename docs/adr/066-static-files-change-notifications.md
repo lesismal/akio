@@ -6,7 +6,7 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-`only_http::files::Files` caches small files in memory and keeps an open handle for large
+`akio_http::files::Files` caches small files in memory and keeps an open handle for large
 ones. An entry is trusted for `check_interval` (default 5 s); after that the disk pool runs `stat`
 again on the file and its `.br` / `.zst` / `.gz` twins. That has two costs. A change can take up
 to one interval to show. Every hot file is `stat`ed again every interval, and because only a
@@ -19,9 +19,9 @@ interval rule and never serves stale content.
 
 ## Decision
 
-### 1. only-sys: `FsWatcher`
+### 1. akio-sys: `FsWatcher`
 
-New `only_sys::{FsWatcher, FsEvent, WatchId}`:
+New `akio_sys::{FsWatcher, FsEvent, WatchId}`:
 
 - Linux: inotify (`IN_NONBLOCK | IN_CLOEXEC`). The directory mask is writes, attributes,
   `CLOSE_WRITE`, moves in and out, creation, deletion, and deletion or move of the directory itself
@@ -37,10 +37,10 @@ New `only_sys::{FsWatcher, FsEvent, WatchId}`:
   `FsWatcher::DIR_EVENTS_NAME_ENTRIES`).
 - The new constants and declarations are added to the `ffi::layout` comparison with `libc`.
 
-### 2. only-http: `Files::watch(true)`
+### 2. akio-http: `Files::watch(true)`
 
 Off by default. When it is on, the first request that reaches the disk creates the watcher and
-one thread named `only-files-watch` per `Files`. The thread holds only a `Weak<Inner>`; when the
+one thread named `akio-files-watch` per `Files`. The thread holds only a `Weak<Inner>`; when the
 `Files` is dropped, `Drop` wakes it and it exits.
 
 - **What is watched.** Before the `stat`, every directory from the root down to the one holding
@@ -102,11 +102,11 @@ one thread named `only-files-watch` per `Files`. The thread holds only a `Weak<I
   this branch and 98.7–99.1 ns on main `b22519ae`. The runs alternated 5 times each in one
   `quiet.sh` session on gpu51 (Ryzen 7 7800X3D, core 2), so there is no regression.
 - The public API only grows: `Files::watch`, `Files::max_watches`; `FsWatcher`, `FsEvent` and
-  `WatchId` in only-sys.
+  `WatchId` in akio-sys.
 - Tests:
-  - only-sys: writes, creation, atomic replacement, directory removal, wake-up and error paths;
+  - akio-sys: writes, creation, atomic replacement, directory removal, wake-up and error paths;
     on Linux, parsing of inotify records.
-  - only-http: a write; a new or changed twin; renaming a directory on the path and re-creating
+  - akio-http: a write; a new or changed twin; renaming a directory on the path and re-creating
     it; a directory index; `max_watches`; `Overflow`; a notification applied mid-request; thread
     exit once the `Files` is dropped; on Linux, the fallback for hard links and symlinks.
 

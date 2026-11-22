@@ -11,12 +11,12 @@ TCP 服务端就是一个服务某个 acceptor 的 `Listener::tcp(addr)`；见[�
 - `Config::backlog` 是 `listen(2)` 的 backlog（默认 1024），`Config::max_connections` 在打开的
   连接数达到上限后拒绝 accept（全 engine 计数，包括 dial 出的连接和 UDP peer）。
 - 文件 body：协议代码可以通过有序响应的分段（`Part::File`）用 `sendfile(2)` 发送文件区间；
-  only-http 在明文 TCP 上用它发送静态文件。
+  akio-http 在明文 TCP 上用它发送静态文件。
 
 ## TCP 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:dial}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:dial}}
 ```
 
 `Engine::dial` 用与服务端连接相同的 `Acceptor`/`Handler` 模型运行客户端连接。给 engine 设置
@@ -33,7 +33,7 @@ TCP 服务端就是一个服务某个 acceptor 的 `Listener::tcp(addr)`；见[�
   就关闭，并执行它的 `on_close`。
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/udp-echo.rs}}
+{{#include ../../../../crates/akio/examples/udp-echo.rs}}
 ```
 
 Linux 上 listener 的每个线程各绑定一个 `SO_REUSEPORT` socket，同一个对端总是落在同一个线程；
@@ -42,17 +42,17 @@ Linux 上 listener 的每个线程各绑定一个 `SO_REUSEPORT` socket，同一
 
 Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmmsg` 跨对端一起发出，发给同一对端、
 长度相同的连续数据报会合并成一次 UDP GSO 发送（运行时探测，遇到 `EIO`/`EINVAL` 永久关闭；
-`ONLY_UDP_GSO=0` 可关闭）。`Conn::send_segments(buf, size)` 一次调用就把缓冲区按 `size`
-字节切成连续的数据报发出；only-quic 用它发送多数据报的 transmit。
+`AKIO_UDP_GSO=0` 可关闭）。`Conn::send_segments(buf, size)` 一次调用就把缓冲区按 `size`
+字节切成连续的数据报发出；akio-quic 用它发送多数据报的 transmit。
 
 保护公开的 UDP 端口：
 
 - `Config::udp_max_peers`：每个 listener 最多这么多对端；超出后来自新对端的数据报被丢弃，
   不创建连接，并计数（`Engine::udp_stats().rejected`）。
-- `Config::udp_gro`（Linux，在内核支持时默认开启）：让内核合并同一流的数据报；only 按内核报告
+- `Config::udp_gro`（Linux，在内核支持时默认开启）：让内核合并同一流的数据报；akio 按内核报告
   的分段大小再拆开，所以 `on_data` 仍然每次一个数据报。它对来自 GSO 发送方的大流量（QUIC
   传输）有帮助，请求/响应式流量没有可测的变慢。需要 `read_buffer` 至少 64 KiB；
-  `ONLY_UDP_GRO=0` 可关闭。
+  `AKIO_UDP_GRO=0` 可关闭。
 
 ## 无连接的 UDP 服务端
 
@@ -61,9 +61,9 @@ Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmm
 把表填满）。用 `serve_datagrams` 代替 `serve` 来服务 UDP listener，它就完全没有连接（ADR-065）：
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/udp-dns.rs:handler}}
+{{#include ../../../../crates/akio/examples/udp-dns.rs:handler}}
 
-{{#include ../../../../crates/only/examples/udp-dns.rs:listener}}
+{{#include ../../../../crates/akio/examples/udp-dns.rs:listener}}
 ```
 
 - 工厂函数**每个 I/O 线程执行一次**（Linux 上每个线程有自己的 `SO_REUSEPORT` socket，内核
@@ -87,14 +87,14 @@ Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmm
   路径）。不支持 DPDK（`build` 返回 `Unsupported`）。线程数固定（`Engine::set_threads` 会拒绝），
   与每对端连接的 UDP listener 相同。
 
-片段来自 `crates/only/examples/udp-dns.rs`，一个小型 DNS 风格应答器。在同一台主机上，
+片段来自 `crates/akio/examples/udp-dns.rs`，一个小型 DNS 风格应答器。在同一台主机上，
 这样服务的 64 字节 echo 与每对端连接的 listener 处理的请求数相当，每个请求的服务端 CPU 更少
 （见 `docs/BENCHMARKS.zh-CN.md`“无连接 UDP”）。
 
 ## UDP 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-config.rs:udp_dial}}
+{{#include ../../../../crates/akio/examples/guide-config.rs:udp_dial}}
 ```
 
 `Engine::dial_udp(addr, acceptor, on_error)` 创建一个独立的 socket（因此有自己的本地端口），

@@ -1,6 +1,6 @@
-// Headless Firefox <-> only-webrtc data channels, driven over WebDriver BiDi (Firefox's
+// Headless Firefox <-> akio-webrtc data channels, driven over WebDriver BiDi (Firefox's
 // remote protocol; it has no DevTools Protocol any more). Firefox's data channels run on
-// usrsctp, so this checks only-sctp against usrsctp. Used by ../firefox.sh.
+// usrsctp, so this checks akio-sctp against usrsctp. Used by ../firefox.sh.
 //
 //	go run . <bidi-port> offer <http-signalling-addr>   Firefox offers to the only ICE-lite
 //	                                                     server: messages echoed on an ordered
@@ -131,7 +131,7 @@ func page(port string) *bidi {
 	}
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "text/html")
-		io.WriteString(w, "<!doctype html><title>only-webrtc</title>")
+		io.WriteString(w, "<!doctype html><title>akio-webrtc</title>")
 	}))
 	b.call("browsingContext.navigate", map[string]any{
 		"context": b.ctx, "url": "http://" + ln.Addr().String() + "/", "wait": "complete",
@@ -203,7 +203,7 @@ func offerMode(port, addr string) {
     return "ok: Firefox offers: 100 ordered messages, 70000- and 200000-byte binary ones and an empty one echoed, an unordered/unreliable one too (max-message-size " + pc.sctp.maxMessageSize + ")";
   })()`)
 	fmt.Println(r)
-	// Idle: both sides send HEARTBEATs (usrsctp every 30 s, only-sctp after 30 s + RTO);
+	// Idle: both sides send HEARTBEATs (usrsctp every 30 s, akio-sctp after 30 s + RTO);
 	// the association must survive them.
 	r = p.eval(`(async () => {
     await new Promise((r) => setTimeout(r, ` + strconv.Itoa(idle*1000) + `));

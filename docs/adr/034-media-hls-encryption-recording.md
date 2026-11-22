@@ -6,12 +6,12 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-`only-media` listed two gaps that keep it out of common deployments. HLS was served in the
+`akio-media` listed two gaps that keep it out of common deployments. HLS was served in the
 clear: a paid or private stream needs at least `EXT-X-KEY:METHOD=AES-128`, the one encryption
 every HLS player (Safari, hls.js, ExoPlayer, ffmpeg) supports without DRM, with keys an
 application hands out to the viewers it chooses and rotates. And a hub stream could not be
 written to disk, which every streaming server is asked for (archives, compliance, VOD from
-live). `only-crypto` had AES with CTR and GCM, but no CBC.
+live). `akio-crypto` had AES with CTR and GCM, but no CBC.
 
 Both touch the data plane: HLS segments are cut on the publisher's I/O thread, and recording is
 disk I/O, which docs/rules.md 1 keeps off I/O threads.
@@ -20,7 +20,7 @@ disk I/O, which docs/rules.md 1 keeps off I/O threads.
 
 All additions are additive.
 
-1. **AES-CBC in `only-crypto`.** `Aes::encrypt_cbc` / `decrypt_cbc` (in place, whole blocks,
+1. **AES-CBC in `akio-crypto`.** `Aes::encrypt_cbc` / `decrypt_cbc` (in place, whole blocks,
    the chaining value carried in and out so a message can be processed in pieces; decryption
    four blocks at a time) and `Aes::encrypt_cbc_padded` / `decrypt_cbc_padded` (PKCS #7; the
    padding is checked in constant time, and the documentation warns about padding oracles).
@@ -53,7 +53,7 @@ All additions are additive.
      at a time, so its end costs no more than one part; parts are encrypted when cut. The
      ciphertext of the segment being written counts toward `max_bytes`. Unencrypted streams pay
      one `None` check per packet.
-3. **Recording** (`only_media::record`). `Recorder::new(hub, RecordConfig)` /
+3. **Recording** (`akio_media::record`). `Recorder::new(hub, RecordConfig)` /
    `with_hooks(.., impl RecordHooks)`, `start(path)`, `stop(path)`, `stop_all`, `active`,
    `dropped`, `queued_bytes`. `RecordConfig`: `dir`, `format` (`RecordFormat::Fmp4` default, or
    `Flv`), `segment_duration`, `segment_bytes`, `max_files` (rotation per recording),

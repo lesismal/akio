@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only_http::Router` 过去只匹配整段：静态段、`{id:re}`、`:id`/`{id}`、`*rest`。`/{name}.txt`、
+`akio_http::Router` 过去只匹配整段：静态段、`{id:re}`、`:id`/`{id}`、`*rest`。`/{name}.txt`、
 `/v{version}/x`、`/{owner}/{repo}.git` 这类路由只能先用参数接住、再在 handler 里检查。支持它们会改变
 模式语法和匹配顺序，两者都是 `Router` 对外行为的一部分。
 

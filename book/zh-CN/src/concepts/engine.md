@@ -6,7 +6,7 @@
 共享的逻辑线程池和一个遥测中心（telemetry hub）。用 `Engine::builder()` 构建：
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:engine}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:engine}}
 ```
 
 - `build()` 校验配置、绑定所有 listener（端口冲突在这里就会报错）并准备线程，此时什么都还
@@ -59,7 +59,7 @@ io_uring 与 epoll 相差几个百分点之内，服务端是瓶颈时 io_uring 
 原因；`strict: true` 会把这种情况变成构建错误。
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-config.rs:listeners}}
+{{#include ../../../../crates/akio/examples/guide-config.rs:listeners}}
 ```
 
 `Engine::accel_status()` 按 listener 报告 `Off`、`Steering(info)` 或 `Degraded(reason)`。
@@ -73,12 +73,12 @@ io_uring 与 epoll 相差几个百分点之内，服务端是瓶颈时 io_uring 
 
 ## 加速层：XDP 限速
 
-`only::ebpf::xdp::RateLimiter` 在网卡上挂一个 XDP 程序：每个源地址一个令牌桶（每秒 `rate`
+`akio::ebpf::xdp::RateLimiter` 在网卡上挂一个 XDP 程序：每个源地址一个令牌桶（每秒 `rate`
 个包，突发 `burst` 个），超出的包在内核为它分配任何东西之前就被丢弃。默认只计 TCP SYN（防连接
 洪泛）；`Count::AllPackets` 计所有 IPv4/IPv6 包。
 
 ```rust,ignore
-use only::ebpf::xdp::{RateLimiter, XdpLimit};
+use akio::ebpf::xdp::{RateLimiter, XdpLimit};
 let mut cfg = XdpLimit::default(); // 每源 100 SYN/s，突发 200，16384 个源
 cfg.rate = 50;
 let limiter = RateLimiter::attach("eth0", &cfg)?; // drop 时卸载
@@ -102,7 +102,7 @@ println!("{:?} {:?}", limiter.mode(), limiter.stats()?);
 
 - 每连接状态不需要锁，也不需要 `Sync`。
 - 同一个连接的事件按顺序逐个处理。
-- 一个慢回调会拖慢同一线程上的所有其他连接。所以回调不能阻塞，only 也会测量回调耗时并
+- 一个慢回调会拖慢同一线程上的所有其他连接。所以回调不能阻塞，akio 也会测量回调耗时并
   报告慢回调（见[可观测性](../observability.md)）。
 - 负载按连接均衡，而不是按请求：一个热点连接无法迁移到空闲线程。上面的分流控制的是初始
   放置。

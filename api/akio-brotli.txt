@@ -1,0 +1,206 @@
+pub mod akio_brotli
+#[non_exhaustive] pub enum akio_brotli::Error
+pub akio_brotli::Error::BadBlockLength
+pub akio_brotli::Error::BadContainer
+pub akio_brotli::Error::BadContextMap
+pub akio_brotli::Error::BadDictionary
+pub akio_brotli::Error::BadDictionaryReference
+pub akio_brotli::Error::BadDistance
+pub akio_brotli::Error::BadHeader
+pub akio_brotli::Error::BadPadding
+pub akio_brotli::Error::BadPrefixCode
+pub akio_brotli::Error::BadWindow
+pub akio_brotli::Error::MissingDictionary
+pub akio_brotli::Error::TooLarge
+pub akio_brotli::Error::TrailingData
+pub akio_brotli::Error::Truncated
+pub akio_brotli::Error::WindowTooLarge
+impl core::clone::Clone for akio_brotli::Error
+pub fn akio_brotli::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Error
+impl core::cmp::PartialEq for akio_brotli::Error
+pub fn akio_brotli::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_brotli::Error
+impl core::fmt::Debug for akio_brotli::Error
+pub fn akio_brotli::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_brotli::Error
+pub fn akio_brotli::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_brotli::Error
+pub fn akio_brotli::Error::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_brotli::Error
+impl core::marker::StructuralPartialEq for akio_brotli::Error
+impl core::marker::Send for akio_brotli::Error
+impl core::marker::Sync for akio_brotli::Error
+impl core::marker::Unpin for akio_brotli::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Error
+#[non_exhaustive] pub enum akio_brotli::Flush
+pub akio_brotli::Flush::Finish
+pub akio_brotli::Flush::Flush
+pub akio_brotli::Flush::None
+impl core::clone::Clone for akio_brotli::Flush
+pub fn akio_brotli::Flush::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Flush
+impl core::cmp::PartialEq for akio_brotli::Flush
+pub fn akio_brotli::Flush::eq(&self, &Self) -> bool
+impl core::default::Default for akio_brotli::Flush
+pub fn akio_brotli::Flush::default() -> Self
+impl core::fmt::Debug for akio_brotli::Flush
+pub fn akio_brotli::Flush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_brotli::Flush
+pub fn akio_brotli::Flush::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_brotli::Flush
+impl core::marker::StructuralPartialEq for akio_brotli::Flush
+impl core::marker::Send for akio_brotli::Flush
+impl core::marker::Sync for akio_brotli::Flush
+impl core::marker::Unpin for akio_brotli::Flush
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Flush
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Flush
+pub struct akio_brotli::Compressor
+impl akio_brotli::Compressor
+pub fn akio_brotli::Compressor::compress(&mut self, &[u8], &mut alloc::vec::Vec<u8>, akio_brotli::Flush)
+pub fn akio_brotli::Compressor::is_finished(&self) -> bool
+pub fn akio_brotli::Compressor::large_window(self, bool) -> akio_brotli::Compressor
+pub fn akio_brotli::Compressor::new(akio_brotli::Level) -> akio_brotli::Compressor
+pub fn akio_brotli::Compressor::reset(&mut self)
+pub fn akio_brotli::Compressor::total_in(&self) -> u64
+pub fn akio_brotli::Compressor::window_bits(self, u32) -> akio_brotli::Compressor
+pub fn akio_brotli::Compressor::with_dictionary(akio_brotli::Level, &[u8]) -> akio_brotli::Compressor
+impl core::fmt::Debug for akio_brotli::Compressor
+pub fn akio_brotli::Compressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_brotli::Compressor
+impl core::marker::Sync for akio_brotli::Compressor
+impl core::marker::Unpin for akio_brotli::Compressor
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Compressor
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Compressor
+pub struct akio_brotli::ContainerWriter
+impl akio_brotli::ContainerWriter
+pub fn akio_brotli::ContainerWriter::add(&mut self, &str, &[u8]) -> usize
+pub fn akio_brotli::ContainerWriter::add_dictionary(&mut self, &[u8]) -> usize
+pub fn akio_brotli::ContainerWriter::add_with_dictionary(&mut self, &str, &[u8], usize) -> usize
+pub fn akio_brotli::ContainerWriter::add_with_shared_dictionary(&mut self, &str, &[u8], &akio_brotli::SharedDictionary, &[u8; 32]) -> usize
+pub fn akio_brotli::ContainerWriter::finish(self) -> alloc::vec::Vec<u8>
+pub fn akio_brotli::ContainerWriter::new(akio_brotli::Level) -> akio_brotli::ContainerWriter
+impl core::fmt::Debug for akio_brotli::ContainerWriter
+pub fn akio_brotli::ContainerWriter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_brotli::ContainerWriter
+impl core::marker::Sync for akio_brotli::ContainerWriter
+impl core::marker::Unpin for akio_brotli::ContainerWriter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::ContainerWriter
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::ContainerWriter
+pub struct akio_brotli::Decompressor
+impl akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::decompress(&mut self, &[u8], &mut [u8]) -> core::result::Result<akio_brotli::Progress, akio_brotli::Error>
+pub fn akio_brotli::Decompressor::decompress_vec(&mut self, &[u8], &mut alloc::vec::Vec<u8>, usize) -> core::result::Result<akio_brotli::Progress, akio_brotli::Error>
+pub fn akio_brotli::Decompressor::is_done(&self) -> bool
+pub fn akio_brotli::Decompressor::large_window(self, bool) -> akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::max_window_bits(self, u32) -> akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::new() -> akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::reset(&mut self)
+pub fn akio_brotli::Decompressor::total_in(&self) -> u64
+pub fn akio_brotli::Decompressor::total_out(&self) -> u64
+pub fn akio_brotli::Decompressor::with_dictionary(&[u8]) -> akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::with_shared_dictionary(&akio_brotli::SharedDictionary) -> akio_brotli::Decompressor
+impl core::default::Default for akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::default() -> Self
+impl core::fmt::Debug for akio_brotli::Decompressor
+pub fn akio_brotli::Decompressor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_brotli::Decompressor
+impl core::marker::Sync for akio_brotli::Decompressor
+impl core::marker::Unpin for akio_brotli::Decompressor
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Decompressor
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Decompressor
+pub struct akio_brotli::Level(_)
+impl akio_brotli::Level
+pub const akio_brotli::Level::BEST: akio_brotli::Level
+pub const akio_brotli::Level::DEFAULT: akio_brotli::Level
+pub const akio_brotli::Level::FASTEST: akio_brotli::Level
+pub const fn akio_brotli::Level::get(self) -> u8
+pub const fn akio_brotli::Level::new(u32) -> akio_brotli::Level
+impl core::clone::Clone for akio_brotli::Level
+pub fn akio_brotli::Level::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Level
+impl core::cmp::Ord for akio_brotli::Level
+pub fn akio_brotli::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_brotli::Level
+pub fn akio_brotli::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_brotli::Level
+pub fn akio_brotli::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for akio_brotli::Level
+pub fn akio_brotli::Level::default() -> Self
+impl core::fmt::Debug for akio_brotli::Level
+pub fn akio_brotli::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_brotli::Level
+pub fn akio_brotli::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_brotli::Level
+impl core::marker::StructuralPartialEq for akio_brotli::Level
+impl core::marker::Send for akio_brotli::Level
+impl core::marker::Sync for akio_brotli::Level
+impl core::marker::Unpin for akio_brotli::Level
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Level
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Level
+#[non_exhaustive] pub struct akio_brotli::Progress
+pub akio_brotli::Progress::consumed: usize
+pub akio_brotli::Progress::done: bool
+pub akio_brotli::Progress::produced: usize
+impl core::clone::Clone for akio_brotli::Progress
+pub fn akio_brotli::Progress::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Progress
+impl core::cmp::PartialEq for akio_brotli::Progress
+pub fn akio_brotli::Progress::eq(&self, &Self) -> bool
+impl core::default::Default for akio_brotli::Progress
+pub fn akio_brotli::Progress::default() -> Self
+impl core::fmt::Debug for akio_brotli::Progress
+pub fn akio_brotli::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_brotli::Progress
+impl core::marker::StructuralPartialEq for akio_brotli::Progress
+impl core::marker::Send for akio_brotli::Progress
+impl core::marker::Sync for akio_brotli::Progress
+impl core::marker::Unpin for akio_brotli::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Progress
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Progress
+#[non_exhaustive] pub struct akio_brotli::Resource
+pub akio_brotli::Resource::data: alloc::vec::Vec<u8>
+pub akio_brotli::Resource::hash: core::option::Option<[u8; 32]>
+pub akio_brotli::Resource::hidden: bool
+pub akio_brotli::Resource::modified: core::option::Option<i64>
+pub akio_brotli::Resource::name: core::option::Option<alloc::vec::Vec<u8>>
+impl core::clone::Clone for akio_brotli::Resource
+pub fn akio_brotli::Resource::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Resource
+impl core::cmp::PartialEq for akio_brotli::Resource
+pub fn akio_brotli::Resource::eq(&self, &Self) -> bool
+impl core::default::Default for akio_brotli::Resource
+pub fn akio_brotli::Resource::default() -> Self
+impl core::fmt::Debug for akio_brotli::Resource
+pub fn akio_brotli::Resource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_brotli::Resource
+impl core::marker::Send for akio_brotli::Resource
+impl core::marker::Sync for akio_brotli::Resource
+impl core::marker::Unpin for akio_brotli::Resource
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Resource
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Resource
+pub struct akio_brotli::SharedDictionary
+impl akio_brotli::SharedDictionary
+pub fn akio_brotli::SharedDictionary::is_raw(&self) -> bool
+pub fn akio_brotli::SharedDictionary::new(&[u8]) -> core::result::Result<akio_brotli::SharedDictionary, akio_brotli::Error>
+pub fn akio_brotli::SharedDictionary::prefix(&self) -> &[u8]
+pub fn akio_brotli::SharedDictionary::raw(&[u8]) -> akio_brotli::SharedDictionary
+impl core::clone::Clone for akio_brotli::SharedDictionary
+pub fn akio_brotli::SharedDictionary::clone(&self) -> Self
+impl core::fmt::Debug for akio_brotli::SharedDictionary
+pub fn akio_brotli::SharedDictionary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_brotli::SharedDictionary
+impl core::marker::Sync for akio_brotli::SharedDictionary
+impl core::marker::Unpin for akio_brotli::SharedDictionary
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::SharedDictionary
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::SharedDictionary
+pub fn akio_brotli::compress(akio_brotli::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_brotli::compress_large_window(akio_brotli::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_brotli::compress_with_dictionary(akio_brotli::Level, &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_brotli::compress_with_shared_dictionary(akio_brotli::Level, &[u8], &akio_brotli::SharedDictionary) -> alloc::vec::Vec<u8>
+pub fn akio_brotli::decompress(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, akio_brotli::Error>
+pub fn akio_brotli::decompress_large_window(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, akio_brotli::Error>
+pub fn akio_brotli::decompress_with_dictionary(&[u8], usize, &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_brotli::Error>
+pub fn akio_brotli::decompress_with_shared_dictionary(&[u8], usize, &akio_brotli::SharedDictionary) -> core::result::Result<alloc::vec::Vec<u8>, akio_brotli::Error>
+pub fn akio_brotli::read_container(&[u8], usize, &mut dyn core::ops::function::FnMut(&[u8; 32]) -> core::option::Option<alloc::vec::Vec<u8>>) -> core::result::Result<alloc::vec::Vec<akio_brotli::Resource>, akio_brotli::Error>

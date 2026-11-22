@@ -1,7 +1,7 @@
-// HTTP/3 interop peer (github.com/quic-go/quic-go) for only-h3:
+// HTTP/3 interop peer (github.com/quic-go/quic-go) for akio-h3:
 //
 //	go run . server 127.0.0.1:9400    serves /, /echo, /trailers, /big, /ws (WebSocket, RFC 9220)
-//	go run . client 127.0.0.1:9401    checks a only-h3 server (crates/only-h3/examples/h3-interop.rs)
+//	go run . client 127.0.0.1:9401    checks a akio-h3 server (crates/akio-h3/examples/h3-interop.rs)
 package main
 
 import (
@@ -131,7 +131,7 @@ func wsEcho(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// wsCheck opens a WebSocket over HTTP/3 on a only-h3 server's /ws and checks the echo.
+// wsCheck opens a WebSocket over HTTP/3 on a akio-h3 server's /ws and checks the echo.
 func wsCheck(addr string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -342,5 +342,5 @@ func main() {
 		fail("streamed POST: %q", got)
 	}
 	wsCheck(addr)
-	fmt.Println("ok: quic-go client -> only-h3 server (incl. WebSocket over HTTP/3, streamed upload)")
+	fmt.Println("ok: quic-go client -> akio-h3 server (incl. WebSocket over HTTP/3, streamed upload)")
 }

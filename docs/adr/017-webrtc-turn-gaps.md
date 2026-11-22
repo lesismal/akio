@@ -7,22 +7,22 @@ Status: accepted (2026-11-17)
 ## Context
 
 `docs/DEV-PLAN.md` left four WebRTC items open (M7 and wave D): TURN over TCP/TLS, a TURN client
-so that `only-webrtc`'s `Endpoint` gathers relayed candidates, ICE over TCP, and simulcast
-sending. Each of them is a reason a deployment cannot use `only` alone: networks that block UDP
+so that `akio-webrtc`'s `Endpoint` gathers relayed candidates, ICE over TCP, and simulcast
+sending. Each of them is a reason a deployment cannot use `akio` alone: networks that block UDP
 reach a TURN server only over TCP or TLS on 443; a client behind a symmetric NAT needs a relay;
 a server behind a UDP-hostile firewall needs ICE-TCP; an SFU feeding viewers of different
 bandwidths needs simulcast from its publishers.
 
 ## Decision
 
-### 1. TURN over TCP and TLS (`only-turn`)
+### 1. TURN over TCP and TLS (`akio-turn`)
 
 - **`TurnServer::stream() -> TurnStream`**: the acceptor for TCP listeners, and for TLS ones
-  through `only::tls::Tls` (`turns:`). It shares the server's state (allocations, quotas,
+  through `akio::tls::Tls` (`turns:`). It shares the server's state (allocations, quotas,
   nonce key, relays) with the UDP listener. Stream clients live in their own half of the
   shards, so the same address on UDP and on TCP names two clients and one cannot reach the
   other's allocation.
-- **Framing (`only_turn::framing`)**: STUN messages and ChannelData back to back, each delimited
+- **Framing (`akio_turn::framing`)**: STUN messages and ChannelData back to back, each delimited
   by its own length; ChannelData padded to a multiple of four (RFC 8656 §12.5). `FrameReader`
   hands out messages that arrive whole without copying and holds at most one partial message
   (64 KiB); a first byte that is neither STUN nor ChannelData closes the connection.
@@ -42,7 +42,7 @@ bandwidths needs simulcast from its publishers.
   would add per-peer connection state, a second listener path and a connection-attempt
   lifecycle for no WebRTC use. `REQUESTED-TRANSPORT` TCP keeps getting `442`.
 
-### 2. A TURN client (`only_turn::client`) and relayed candidates (`only-webrtc`)
+### 2. A TURN client (`akio_turn::client`) and relayed candidates (`akio-webrtc`)
 
 - **`client::Client`** is a sans-io client of one allocation over UDP or a stream
   (`ClientConfig::stream`): the first Allocate unauthenticated, then long-term credentials from
@@ -65,17 +65,17 @@ bandwidths needs simulcast from its publishers.
   thread. `Endpoint::close` deletes the allocations. Internally peer transmits now carry their
   source address (`Rtc` output), which is how a relayed or TCP pair is told from a UDP one.
 - TURN over TCP/TLS **from `Endpoint`** is not wired in: the sans-io client supports it and is
-  tested over both against `only`, pion/turn and coturn, but an `Endpoint` allocates over UDP.
+  tested over both against `akio`, pion/turn and coturn, but an `Endpoint` allocates over UDP.
 
-### 3. ICE-TCP, passive candidates (`only-ice`, `only-webrtc`)
+### 3. ICE-TCP, passive candidates (`akio-ice`, `akio-webrtc`)
 
-- `only-ice` candidates carry a transport: `TcpType::{Active, Passive, So}`, the `tcp ...
+- `akio-ice` candidates carry a transport: `TcpType::{Active, Passive, So}`, the `tcp ...
   tcptype` SDP syntax (an active candidate's port is 9), RFC 6544 local preferences (direction
   preference times 2^13 plus an IPv6-first other preference) and TCP type preferences below UDP's
   (host 90, as Chrome), and pairs only within a transport and between compatible types. A
   passive local candidate never starts checks: a check arriving over an accepted connection makes
   a peer-reflexive active remote candidate whose pair gets the triggered checks, nomination and
-  consent. RFC 4571 framing in `only_ice::tcp`. `ParseError::Tcp` is gone (TCP lines parse);
+  consent. RFC 4571 framing in `akio_ice::tcp`. `ParseError::Tcp` is gone (TCP lines parse);
   the crate is internal-tier.
 - **`Endpoint::listen_tcp(&Arc<Engine>, addr)`** listens on a TCP port that differs from the UDP
   one and adds a passive host candidate. A dedicated thread accepts (blocking `accept`, never an
@@ -88,7 +88,7 @@ bandwidths needs simulcast from its publishers.
 - **Active and simultaneous-open local candidates are not implemented**: an `Endpoint` reached
   only over TCP is a server; clients behind UDP-blocking networks use TURN over TCP/TLS.
 
-### 4. Simulcast sending (`only-webrtc`)
+### 4. Simulcast sending (`akio-webrtc`)
 
 - **`SdpChanges::add_simulcast_media(kind, dir, rids, stream_id, track_id) -> Result<Mid,
   Error>`** (1 to 8 RIDs of letters, digits, `-` and `_`, at most 16 characters; a sending
@@ -109,7 +109,7 @@ bandwidths needs simulcast from its publishers.
 
 ## Consequences
 
-- Public API (additive): `only_turn::{framing, client}` modules, `TurnServer::stream`,
+- Public API (additive): `akio_turn::{framing, client}` modules, `TurnServer::stream`,
   `TurnServer::stream_relay_of`, `TurnStream`, `TurnConfig::{stream_allocate_timeout,
   max_stream_queue}`, `TurnCore::remove_client`, `TurnEnv::pads_channel_data` (provided);
   `Endpoint::{gather_relay, listen_tcp}`, `Error::Turn` (the enum is `#[non_exhaustive]`),
@@ -123,9 +123,9 @@ bandwidths needs simulcast from its publishers.
   client) and `ice_tcp` (RFC 4571 framing into an agent with a passive candidate); `webrtc_sdp`
   covers simulcast offers and answers and TCP candidates.
 - Interop (`tools/interop/webrtc/run.sh`, `linux.sh`): pion/turn's client over UDP, TCP and TLS
-  against `only-turn`; coturn's `turnutils_uclient` over UDP, TCP and TLS against `only-turn`;
-  the `only_turn` client over UDP, TCP and TLS against pion/turn, coturn and `only-turn`; an
-  `Endpoint` offering only relayed candidates (from `only-turn`, pion/turn and coturn) to pion;
+  against `akio-turn`; coturn's `turnutils_uclient` over UDP, TCP and TLS against `akio-turn`;
+  the `akio_turn` client over UDP, TCP and TLS against pion/turn, coturn and `akio-turn`; an
+  `Endpoint` offering only relayed candidates (from `akio-turn`, pion/turn and coturn) to pion;
   an `Endpoint` offering only its passive TCP candidate to pion with active TCP candidates only;
   simulcast h/m/l to pion, which receives three RID streams.
 - Not done: RFC 6062, TURN over TCP/TLS from `Endpoint`, local active ICE-TCP candidates, ICE-TCP

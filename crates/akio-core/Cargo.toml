@@ -1,0 +1,34 @@
+[package]
+name = "akio-core"
+description = "akio core: Conn, Handler, Acceptor, Config, telemetry and the backend-facing traits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-core"
+keywords = ["network", "event-loop", "tcp", "udp", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+akio-buf = { workspace = true }
+akio-pool = { workspace = true }
+akio-log = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+akio-sys = { workspace = true }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[features]
+# Detached connections for the fuzz targets (`fuzz/`); not a public API.
+fuzzing = []
+# Bridge to the `log` crate (akio-log's `log` feature): records go to `log`'s logger while no
+# akio-log logger is installed. Outside the semver promise (docs/api-stability.md).
+log = ["akio-log/log"]
+
+[lints]
+workspace = true

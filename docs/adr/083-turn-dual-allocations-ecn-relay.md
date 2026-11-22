@@ -6,7 +6,7 @@ Status: accepted (2026-11-22)
 
 ## Context
 
-Two leftovers of `only-turn`, both listed as not done elsewhere:
+Two leftovers of `akio-turn`, both listed as not done elsewhere:
 
 - **Dual allocations.** ADR-076 listed "`ADDITIONAL-ADDRESS-FAMILY` dual allocations (not
   supported for UDP either)". RFC 8656 lets one Allocate ask for an IPv4 and an IPv6 relayed
@@ -14,10 +14,10 @@ Two leftovers of `only-turn`, both listed as not done elsewhere:
   `REQUESTED-ADDRESS-FAMILY` of the other family got 440, and the attribute was ignored.
 - **ECN across the relay.** ADR-077 added the ECN plumbing: the codepoint of each received
   UDP datagram (`Conn::rx_ecn`, from `IP_RECVTOS` / `IPV6_RECVTCLASS` on Linux and macOS), and
-  marked sends (`UdpBinding::send_to_ecn`, `Conn::send_segments_ecn`). ADR-082 made only-webrtc
+  marked sends (`UdpBinding::send_to_ecn`, `Conn::send_segments_ecn`). ADR-082 made akio-webrtc
   mark what it sends through a TURN server over UDP, relying on the server to copy the
-  codepoint. It listed "copying the codepoint in only-turn's own relay" as not done: a path
-  through `only-turn` failed ECN validation after a few probes.
+  codepoint. It listed "copying the codepoint in akio-turn's own relay" as not done: a path
+  through `akio-turn` failed ECN validation after a few probes.
 
 RFC 8656 in short:
 
@@ -88,7 +88,7 @@ its permissions and channels.
 `ADDRESS-ERROR-CODE` 0x8033, as draft-ietf-tram-turnbis did. RFC 8656 assigned 0x8000 and
 0x8001; 0x8032 and 0x8033 are unassigned at IANA. Seen in the interop run:
 
-- coturn's `turnutils_uclient -Z` against only-turn got one relayed address, then 443 for its
+- coturn's `turnutils_uclient -Z` against akio-turn got one relayed address, then 443 for its
   IPv6 permissions.
 - Our client against coturn got one relayed address and no error code.
 
@@ -141,7 +141,7 @@ released.
 - STUN codec: `attr::ADDRESS_ERROR_CODE`, `Message::address_error_code`,
   `MessageBuilder::address_error`.
 
-### only-webrtc: relay gathering only
+### akio-webrtc: relay gathering only
 
 - `RelayServer::dual_allocation(true)` asks for a dual allocation.
 - `Endpoint::gather_relay_via` then adds one relayed candidate per family, and returns the
@@ -152,7 +152,7 @@ released.
   - a dual allocation costs the server a second port;
   - an IPv6 relayed candidate is only useful against peers with IPv6 candidates;
   - pion/turn ignores the attribute and returns one address anyway.
-- Nothing else in only-webrtc changed. Another session works on WebRTC ECN, and only-webrtc
+- Nothing else in akio-webrtc changed. Another session works on WebRTC ECN, and akio-webrtc
   already keeps the codepoint of relayed input (ADR-082).
 
 ### Not done
@@ -171,8 +171,8 @@ released.
   `additional_relay_ip`, an Allocate without the attribute now gets IPv4 (RFC 8656). Without
   `additional_relay_ip`, nothing changes except that a dual request is answered with
   `ADDRESS-ERROR-CODE` (before, the attribute was ignored).
-- ECN validation (ADR-077 / ADR-082) now succeeds through `only-turn` over UDP and DTLS.
-- Public API: additions only (`api/only-turn.txt`, `api/only-webrtc.txt`).
+- ECN validation (ADR-077 / ADR-082) now succeeds through `akio-turn` over UDP and DTLS.
+- Public API: additions only (`api/akio-turn.txt`, `api/akio-webrtc.txt`).
 - Performance: UDP relay A/B against main on gpu51 (`turn-relay-bench 8 6 4`, alternating under
   `quiet.sh`):
   - 6 rounds: medians 297.5k vs 297.3k datagrams/s;
@@ -198,21 +198,21 @@ Tests:
 - `tests/dual_ecn.rs` on real sockets: 127.0.0.1 and ::1 relays, ECT(1), ECT(0) and CE copied
   both ways per family, unmarked stays unmarked. A sabotaged server that drops the codepoint
   fails it.
-- only-webrtc `tests/relay.rs`: an IPv4 endpoint reaches an IPv6-only endpoint through the
+- akio-webrtc `tests/relay.rs`: an IPv4 endpoint reaches an IPv6-only endpoint through the
   IPv6 relayed candidate of a dual allocation.
 - Platforms: macOS, and gpu51 epoll and io_uring. Clippy clean.
 - Interop (`tools/interop/webrtc/turn-dual.sh`, Docker on gpu51, coturn 4.6 relaying from
   127.0.0.1 and ::1, pion/turn v5.1.3):
   - coturn's `turnutils_uclient` with dual allocations (`-Z`) and with IPv6 relays (`-x`),
-    clients sending to each other's relayed addresses, against only-turn and against coturn:
+    clients sending to each other's relayed addresses, against akio-turn and against coturn:
     40 and 80 messages, none lost.
-  - The only_turn client asking for a dual allocation:
+  - The akio_turn client asking for a dual allocation:
     - against coturn: two relayed addresses, 20 datagrams echoed per family;
     - against pion/turn: one, since it ignores the attribute and sends no error code;
-    - against only-turn: two.
-  - ECN: only-turn copies ECT(0) client to peer and ECT(1) peer to client on both families.
+    - against akio-turn: two.
+  - ECN: akio-turn copies ECT(0) client to peer and ECT(1) peer to client on both families.
     So does coturn. pion/turn clears both.
-  - pion/turn's client with `REQUESTED-ADDRESS-FAMILY` IPv4 and IPv6 against only-turn and
+  - pion/turn's client with `REQUESTED-ADDRESS-FAMILY` IPv4 and IPv6 against akio-turn and
     coturn: the relay of that family, 20 datagrams echoed.
 - Fuzzing: `turn_server` now uses a dual-capable server, picks IPv6 peers and ECN codepoints
   from the selector byte, and asserts that relayed data keeps its codepoint and leaves from an

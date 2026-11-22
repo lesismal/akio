@@ -6,7 +6,7 @@
 
 ## 背景
 
-在 ADR-016、031、034 与 043 之后，`only-media` 仍列为未完成的有：自动重连的 RTMP 与 RTSP
+在 ADR-016、031、034 与 043 之后，`akio-media` 仍列为未完成的有：自动重连的 RTMP 与 RTSP
 客户端、RTSP 客户端基于 RTCP 的音视频同步（ADR-016），HLS I 帧播放列表与 rendition report
 （ADR-031），`EXT-X-SESSION-KEY`（ADR-034），以及 H.265 的 SAMPLE-AES（ADR-043）。
 
@@ -31,7 +31,7 @@
 全部为新增（新配置字段的默认值保持原有行为，唯一例外是默认开启的
 `RtspClientConfig::rtcp_sync`）。
 
-1. **重连策略**：`only_media::Reconnect`（也从 `rtmp::client` 与 `rtsp::client` 重新导出）：
+1. **重连策略**：`akio_media::Reconnect`（也从 `rtmp::client` 与 `rtsp::client` 重新导出）：
    `initial_delay`（500 ms）、`max_delay`（30 s）、`max_attempts`（`None`：直到关闭），由
    `Reconnect::new(&Arc<Engine>)` 构建，弱引用持有引擎（客户端在其上重新拨号；复用启动时解析
    出的地址，因此域名解析从不在调用者线程之外进行）。每次尝试失败后等待时间翻倍，直到上限，
@@ -49,7 +49,7 @@
      `error()` 返回上一会话的错误。
    - **RTSP**：握手会阻塞调用者，因此客户端拆成每连接一个的会话（原有状态机）与拥有 hub 侧
      的 `Client`，后者在会话结束时决定是否重连：退避在媒体定时器上进行，每次尝试在自己的
-     短命线程上运行（`only-rtsp-reconnect`；规则禁止阻塞定时器或 I/O 线程，且线程池任务不得
+     短命线程上运行（`akio-rtsp-reconnect`；规则禁止阻塞定时器或 I/O 线程，且线程池任务不得
      等待事件循环）。第一个会话必须成功：`pull` / `push` 与以前一样返回它的错误。推流在每次
      尝试前重新读取 hub 流的当前轨道，因此换了编码的源会被重新 ANNOUNCE。新增
      `RtspClient::{reconnects, is_live}`。
@@ -99,7 +99,7 @@
 
 ## 后果
 
-- 测试（`cargo test -p only-media`）：RTMP 对脚本化服务端（拉流重连三次，保留路径与订阅者
+- 测试（`cargo test -p akio-media`）：RTMP 对脚本化服务端（拉流重连三次，保留路径与订阅者
   并重新发布；拒绝及尝试次数上限使其结束且路径已释放；推流从关键帧重新发送）；RTSP 对本
   crate 的服务端（经可随时断开的 TCP 转发器），拉流经 TCP 与 UDP 在同一端口换成 H.265 后恢复，
   推流经 TCP；recorder 按把音频置于视频之后 500 ms 的发送端报告对齐两轨，报告早到与晚到均

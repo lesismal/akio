@@ -1,16 +1,16 @@
 # SRT
 
-`only_media::srt` speaks SRT (Secure Reliable Transport, draft-sharabayko-srt-01) in live
+`akio_media::srt` speaks SRT (Secure Reliable Transport, draft-sharabayko-srt-01) in live
 mode: MPEG-TS over UDP, losses repaired by retransmission within a fixed latency, as ffmpeg,
 OBS and hardware encoders send it. An `SrtServer` in front of the media [hub](media.md) takes
 publishers in and plays streams out; `dial`, `push` and `pull` are the caller side.
 
-Interop with ffmpeg's libsrt is tested (`crates/only-media/tests/srt_ffmpeg.rs`, run in Linux
+Interop with ffmpeg's libsrt is tested (`crates/akio-media/tests/srt_ffmpeg.rs`, run in Linux
 Docker with Debian's ffmpeg; the test skips when ffmpeg has no SRT, as Homebrew's): ffmpeg
-publishing in and ffprobe / ffmpeg playing out, with and without a passphrase, and `only`
+publishing in and ffprobe / ffmpeg playing out, with and without a passphrase, and `akio`
 pushing to and pulling from ffmpeg in `mode=listener`. Rendezvous is tested against libsrt
 1.5.4's `srt-live-transmit` (`tests/srt_rendezvous.rs`, Debian's `srt-tools` in Docker:
-`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`): `only`
+`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`): `akio`
 pulls what it relays from ffmpeg and pushes a hub stream it writes out for ffprobe, in the
 clear and encrypted, in both cookie-contest roles. (ffmpeg's own `mode=rendezvous` binds to the
 URL's address and connects to the same one, so it cannot meet a peer elsewhere.)
@@ -18,7 +18,7 @@ URL's address and connects to the same one, so it cannot meet a peer elsewhere.)
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:server}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:server}}
 ```
 
 - The server is the acceptor of a **UDP listener**: each peer address gets its own handler,
@@ -34,7 +34,7 @@ URL's address and connects to the same one, so it cannot meet a peer elsewhere.)
   rejected with `OVERLOAD` (1402).
 - A **publisher** reserves its path during the handshake (`Hub::reserve`), so a second
   publisher of a busy path is rejected there (`CONFLICT`, 1409). Its MPEG-TS is demuxed
-  (`only_media::mpegts::demux`) and the stream goes live once the program's tracks are known
+  (`akio_media::mpegts::demux`) and the stream goes live once the program's tracks are known
   (H.264, H.265, AAC, Opus, MP3).
 - A **player** subscribes to the hub and receives the stream muxed into MPEG-TS, seven
   transport packets per SRT packet, with PAT/PMT before every keyframe and timestamps that keep
@@ -49,19 +49,19 @@ URL's address and connects to the same one, so it cannot meet a peer elsewhere.)
 ## Callers
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:publish}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:publish}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:player}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:player}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:play}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:play}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:relay}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:relay}}
 ```
 
 - `srt::dial(&engine, addr, Config, handler)` opens a raw caller session (the engine needs

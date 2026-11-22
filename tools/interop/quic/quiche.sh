@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# only-quic / only-h3 against quiche (Cloudflare), both directions, in Docker (Debian's rust:1
+# akio-quic / akio-h3 against quiche (Cloudflare), both directions, in Docker (Debian's rust:1
 # image). quiche's example apps (`quiche-client`, `quiche-server`) are built from the pinned
 # release tag, once, into the volume `quiche-apps-$QUICHE` (BoringSSL from quiche's submodule;
 # needs cmake and libclang, installed in the container):
-#   - quiche-client -> only-h3 server: GET (quiche-client starts with a reserved version, so
+#   - quiche-client -> akio-h3 server: GET (quiche-client starts with a reserved version, so
 #     every connection goes through Version Negotiation first), 50 requests on one connection,
 #     a 300 KB POST echoed, a streamed response with trailers, 0-RTT with a resumed session (in
 #     v1; the server logs the early request), QUIC v1 without negotiation, and client migration
 #     to a new source port;
-#   - quiche-client (HTTP/0.9 over QUIC, ALPN hq-interop: raw streams) -> only-quic server, with
+#   - quiche-client (HTTP/0.9 over QUIC, ALPN hq-interop: raw streams) -> akio-quic server, with
 #     and without Retry: a small GET and 5 MiB;
-#   - only-h3 client (`H3Client`) -> quiche-server, with Retry (its default) and without: GET,
+#   - akio-h3 client (`H3Client`) -> quiche-server, with Retry (its default) and without: GET,
 #     4 MiB, 404, POSTs that quiche answers with 405 after STOP_SENDING (100 B and 3 MiB, the
 #     latter far past its stream window), 200 concurrent requests over its 100-stream limit, a
 #     streamed response paused and resumed;
-#   - only-quic client (hq-interop) -> quiche-server, with and without Retry: 20 concurrent
+#   - akio-quic client (hq-interop) -> quiche-server, with and without Retry: 20 concurrent
 #     GETs and 5 MiB.
 #
 #   tools/interop/quic/quiche.sh
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-VOL=${ONLY_INTEROP_TARGET:-only-interop-target}
+VOL=${AKIO_INTEROP_TARGET:-akio-interop-target}
 QUICHE=${QUICHE:-0.30.1}
 docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
     -v "$VOL":/tmp/t -e CARGO_TARGET_DIR=/tmp/t -v "quiche-apps-$QUICHE":/opt/quiche \
@@ -38,7 +38,7 @@ if [ ! -x $QD/quiche-client ] || [ ! -x $QD/quiche-server ]; then
 fi
 QC=$QD/quiche-client
 QS=$QD/quiche-server
-cargo build -q --release -p only-h3 --example h3-interop -p only-quic --example quic-interop
+cargo build -q --release -p akio-h3 --example h3-interop -p akio-quic --example quic-interop
 H3=/tmp/t/release/examples/h3-interop
 RQ=/tmp/t/release/examples/quic-interop
 cd /tmp
@@ -58,7 +58,7 @@ expect() { # WHAT GOT WANT
     [ "$2" = "$3" ] || { echo "FAIL: $1: got \"$2\", want \"$3\""; exit 1; }
     echo "ok: $1"
 }
-echo "== quiche-client -> only-h3 server"
+echo "== quiche-client -> akio-h3 server"
 expect "GET / (after Version Negotiation)" "$(qc https://127.0.0.1:9401/)" "hello h3"
 expect "GET / in QUIC v1" "$(qc --wire-version 00000001 https://127.0.0.1:9401/)" "hello h3"
 expect "50 requests on one connection" \
@@ -78,23 +78,23 @@ qc --session-file sess https://127.0.0.1:9401/ > /dev/null
 # send the early data again in v1 (the connection resumes without 0-RTT).
 expect "GET / in 0-RTT" \
     "$(qc --wire-version 00000001 --session-file sess --early-data https://127.0.0.1:9401/)" "hello h3"
-expect "early request on only-h3" "$(grep -c "early request" h3.log || true)" 1
+expect "early request on akio-h3" "$(grep -c "early request" h3.log || true)" 1
 expect "GET / migrating to a new source port" \
     "$(qc --enable-active-migration --perform-migration https://127.0.0.1:9401/)" "hello h3"
-echo "== quiche-client (HTTP/0.9, hq-interop) -> only-quic server"
+echo "== quiche-client (HTTP/0.9, hq-interop) -> akio-quic server"
 for p in 9501 9503; do
     expect "GET /index.html ($p)" "$(qc --http-version HTTP/0.9 https://127.0.0.1:$p/index.html)" "hello hq"
     rm -f out/*
     qc --http-version HTTP/0.9 --dump-responses out https://127.0.0.1:$p/5242880
     cmp root/5242880 out/5242880 && echo "ok: GET /5242880 ($p)"
 done
-echo "== only-h3 client -> quiche-server (Retry)"
+echo "== akio-h3 client -> quiche-server (Retry)"
 $H3 client-quiche 127.0.0.1:9411
-echo "== only-h3 client -> quiche-server (no Retry)"
+echo "== akio-h3 client -> quiche-server (no Retry)"
 $H3 client-quiche 127.0.0.1:9412
-echo "== only-quic client (hq-interop) -> quiche-server (Retry)"
+echo "== akio-quic client (hq-interop) -> quiche-server (Retry)"
 $RQ client 127.0.0.1:9411 hq 5242880
-echo "== only-quic client (hq-interop) -> quiche-server (no Retry)"
+echo "== akio-quic client (hq-interop) -> quiche-server (no Retry)"
 $RQ client 127.0.0.1:9412 hq 5242880
 echo "quiche interop: all passed"
 '

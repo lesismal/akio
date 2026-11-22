@@ -9,7 +9,7 @@ Status: accepted (2026-11-17)
 `Engine::reload` / `Live` (M6) changes the idle timeout, slow-callback settings, queue limit, high
 watermark, connection limit, shutdown timeout and log level without a restart. The read buffer,
 the listen backlog, the UDP idle timeout and the I/O thread counts were fixed at build time and
-reported in `ReloadReport::ignored`. Changing them meant a restart, or, under only-prefork, a
+reported in `ReloadReport::ignored`. Changing them meant a restart, or, under akio-prefork, a
 generation swap, which on Linux `SO_REUSEPORT` resets the connections queued on the old workers'
 sockets unless `net.ipv4.tcp_migrate_req` is set.
 
@@ -33,7 +33,7 @@ hot path must not change.
   each on the new group when its cancellation completes, and unregisters and frees the old group
   once no receive uses it; a further change waits for that.
 - **`backlog`** is reloadable: every I/O thread calls `listen(2)` again on the listening sockets
-  it holds (`only_sys::set_backlog`); Linux and macOS update the queue limit of a live socket in
+  it holds (`akio_sys::set_backlog`); Linux and macOS update the queue limit of a live socket in
   place. Sockets handed between threads (below) and new ones take the current value.
 - **`udp_idle_timeout`** is reloadable; UDP threads re-arm every peer's timer against
   `min(udp_idle_timeout, idle_timeout)` (both live now; before, the initial `idle_timeout` capped
@@ -79,9 +79,9 @@ must not touch them afterwards.
 - Not offered (`Unsupported`): UDP listeners (a socket added to or removed from a UDP
   `SO_REUSEPORT` group re-hashes peers to other threads, splitting their state), DPDK groups, and
   listeners with BPF steering (`Accel::Ebpf`: the steering map would have to be rebuilt).
-- `LoopStats`/`LoopMetrics` gain `retiring`, rendered as `only_loop_retiring` and in JSON.
+- `LoopStats`/`LoopMetrics` gain `retiring`, rendered as `akio_loop_retiring` and in JSON.
 
-### only-prefork
+### akio-prefork
 
 - `Controller::reload_in_place()` / `Supervisor::reload_in_place()` and SIGUSR1 to the supervisor
   send a new control byte to every running worker, which runs the hook set with
@@ -118,8 +118,8 @@ must not touch them afterwards.
 
 - Additive public API: `Config::retire_timeout`, `Live::{read_buffer, set_read_buffer, backlog,
   set_backlog, udp_idle_timeout, set_udp_idle_timeout, retire_timeout, set_retire_timeout}`,
-  `LoopMetrics::retiring`, `Engine::{threads, set_threads}`, `only_sys::set_backlog`,
-  only-prefork `Controller::reload_in_place`, `Supervisor::reload_in_place`, `Worker::{on_reload,
+  `LoopMetrics::retiring`, `Engine::{threads, set_threads}`, `akio_sys::set_backlog`,
+  akio-prefork `Controller::reload_in_place`, `Supervisor::reload_in_place`, `Worker::{on_reload,
   reloads}`, `Status::in_place_reloads`. Behaviour change: `Engine::reload` now applies
   `read_buffer`, `backlog` and `udp_idle_timeout` instead of reporting them ignored.
 - Hot path: unchanged except that the poll-token match tests a listener bit instead of comparing

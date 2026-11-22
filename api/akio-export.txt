@@ -1,0 +1,144 @@
+pub mod akio_export
+#[non_exhaustive] pub enum akio_export::Encoding
+pub akio_export::Encoding::Json
+pub akio_export::Encoding::Protobuf
+impl core::clone::Clone for akio_export::Encoding
+pub fn akio_export::Encoding::clone(&self) -> Self
+impl core::cmp::Eq for akio_export::Encoding
+impl core::cmp::PartialEq for akio_export::Encoding
+pub fn akio_export::Encoding::eq(&self, &Self) -> bool
+impl core::default::Default for akio_export::Encoding
+pub fn akio_export::Encoding::default() -> Self
+impl core::fmt::Debug for akio_export::Encoding
+pub fn akio_export::Encoding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_export::Encoding
+pub fn akio_export::Encoding::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_export::Encoding
+impl core::marker::StructuralPartialEq for akio_export::Encoding
+impl core::marker::Send for akio_export::Encoding
+impl core::marker::Sync for akio_export::Encoding
+impl core::marker::Unpin for akio_export::Encoding
+impl core::panic::unwind_safe::RefUnwindSafe for akio_export::Encoding
+impl core::panic::unwind_safe::UnwindSafe for akio_export::Encoding
+#[non_exhaustive] pub enum akio_export::Flavor
+pub akio_export::Flavor::DogStatsd
+pub akio_export::Flavor::Statsd
+impl core::clone::Clone for akio_export::Flavor
+pub fn akio_export::Flavor::clone(&self) -> Self
+impl core::cmp::Eq for akio_export::Flavor
+impl core::cmp::PartialEq for akio_export::Flavor
+pub fn akio_export::Flavor::eq(&self, &Self) -> bool
+impl core::default::Default for akio_export::Flavor
+pub fn akio_export::Flavor::default() -> Self
+impl core::fmt::Debug for akio_export::Flavor
+pub fn akio_export::Flavor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_export::Flavor
+pub fn akio_export::Flavor::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_export::Flavor
+impl core::marker::StructuralPartialEq for akio_export::Flavor
+impl core::marker::Send for akio_export::Flavor
+impl core::marker::Sync for akio_export::Flavor
+impl core::marker::Unpin for akio_export::Flavor
+impl core::panic::unwind_safe::RefUnwindSafe for akio_export::Flavor
+impl core::panic::unwind_safe::UnwindSafe for akio_export::Flavor
+#[non_exhaustive] pub struct akio_export::ExportStats
+pub akio_export::ExportStats::logs_dropped: u64
+pub akio_export::ExportStats::logs_exported: u64
+pub akio_export::ExportStats::logs_queued: u64
+pub akio_export::ExportStats::logs_rejected: u64
+pub akio_export::ExportStats::metric_points_rejected: u64
+pub akio_export::ExportStats::otlp_logs_failed: u64
+pub akio_export::ExportStats::otlp_logs_ok: u64
+pub akio_export::ExportStats::otlp_metrics_failed: u64
+pub akio_export::ExportStats::otlp_metrics_ok: u64
+pub akio_export::ExportStats::otlp_retried: u64
+pub akio_export::ExportStats::otlp_traces_failed: u64
+pub akio_export::ExportStats::otlp_traces_ok: u64
+pub akio_export::ExportStats::spans_dropped: u64
+pub akio_export::ExportStats::spans_exported: u64
+pub akio_export::ExportStats::spans_queued: u64
+pub akio_export::ExportStats::spans_rejected: u64
+pub akio_export::ExportStats::statsd_dropped_series: u64
+pub akio_export::ExportStats::statsd_failed: u64
+pub akio_export::ExportStats::statsd_ok: u64
+impl core::clone::Clone for akio_export::ExportStats
+pub fn akio_export::ExportStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_export::ExportStats
+impl core::cmp::PartialEq for akio_export::ExportStats
+pub fn akio_export::ExportStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_export::ExportStats
+pub fn akio_export::ExportStats::default() -> Self
+impl core::fmt::Debug for akio_export::ExportStats
+pub fn akio_export::ExportStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_export::ExportStats
+impl core::marker::StructuralPartialEq for akio_export::ExportStats
+impl core::marker::Send for akio_export::ExportStats
+impl core::marker::Sync for akio_export::ExportStats
+impl core::marker::Unpin for akio_export::ExportStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_export::ExportStats
+impl core::panic::unwind_safe::UnwindSafe for akio_export::ExportStats
+pub struct akio_export::Exporter
+impl akio_export::Exporter
+pub fn akio_export::Exporter::builder() -> akio_export::ExporterBuilder
+pub fn akio_export::Exporter::collector(&self) -> alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>
+pub fn akio_export::Exporter::flush(&self)
+pub fn akio_export::Exporter::shutdown(&self)
+pub fn akio_export::Exporter::stats(&self) -> akio_export::ExportStats
+impl core::fmt::Debug for akio_export::Exporter
+pub fn akio_export::Exporter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_export::Exporter
+pub fn akio_export::Exporter::drop(&mut self)
+impl core::marker::Send for akio_export::Exporter
+impl core::marker::Sync for akio_export::Exporter
+impl core::marker::Unpin for akio_export::Exporter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_export::Exporter
+impl core::panic::unwind_safe::UnwindSafe for akio_export::Exporter
+pub struct akio_export::ExporterBuilder
+impl akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::collector(self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::forward_logs(self, impl akio_log::Logger + 'static, akio_log::LevelFilter) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::interval(self, core::time::Duration) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::log_queue(self, usize, usize) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::logs(self, akio_log::LevelFilter) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::otlp_grpc(self, &str) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::otlp_grpc_with(self, &str, &[(&str, &str)]) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::otlp_http(self, &str) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::otlp_http_with(self, &str, akio_export::Encoding, &[(&str, &str)]) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::otlp_traces_only(self) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::resource_attr(self, &str, &str) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::retry(self, core::time::Duration, core::time::Duration, core::time::Duration) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::sample_ratio(self, f64) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::service_name(self, &str) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::span_interval(self, core::time::Duration) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::span_queue(self, usize, usize) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::start(self) -> core::io::error::Result<akio_export::Exporter>
+pub fn akio_export::ExporterBuilder::statsd(self, &str, akio_export::Flavor) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::statsd_options(self, &str, usize, usize) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::telemetry(self, alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::timeout(self, core::time::Duration) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::tls_client_cert(self, alloc::vec::Vec<akio_tls::config::Certificate>, akio_tls::config::PrivateKey) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::tls_roots(self, akio_tls::config::RootCerts) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::tls_server_name(self, &str) -> akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::traces(self, akio_log::LevelFilter) -> akio_export::ExporterBuilder
+impl core::clone::Clone for akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::clone(&self) -> Self
+impl core::default::Default for akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::default() -> Self
+impl core::fmt::Debug for akio_export::ExporterBuilder
+pub fn akio_export::ExporterBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_export::ExporterBuilder
+impl core::marker::Sync for akio_export::ExporterBuilder
+impl core::marker::Unpin for akio_export::ExporterBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_export::ExporterBuilder
+impl !core::panic::unwind_safe::UnwindSafe for akio_export::ExporterBuilder
+pub const akio_export::DEFAULT_INTERVAL: core::time::Duration
+pub const akio_export::DEFAULT_MAX_BATCH: usize
+pub const akio_export::DEFAULT_MAX_PACKET: usize
+pub const akio_export::DEFAULT_MAX_QUEUED_LOGS: usize
+pub const akio_export::DEFAULT_MAX_QUEUED_SPANS: usize
+pub const akio_export::DEFAULT_MAX_SERIES: usize
+pub const akio_export::DEFAULT_RETRY_INITIAL: core::time::Duration
+pub const akio_export::DEFAULT_RETRY_MAX: core::time::Duration
+pub const akio_export::DEFAULT_RETRY_MAX_ELAPSED: core::time::Duration
+pub const akio_export::DEFAULT_SPAN_INTERVAL: core::time::Duration
+pub const akio_export::DEFAULT_TIMEOUT: core::time::Duration

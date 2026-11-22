@@ -6,7 +6,7 @@
 
 ## 背景
 
-only-rtp 的 README 列出了 ADR-036 留下的三处空缺：
+akio-rtp 的 README 列出了 ADR-036 留下的三处空缺：
 
 - **ULPFEC 第 1 级。** `fec` 只读写单一保护级别的 ULPFEC，保护长度为被保护包中最长者。RFC 5109
   §5 / §7.4 允许一个 FEC 包携带多个级别：第 0 级保护其各包固定头之后的前 L0 字节（及其头部字段），
@@ -19,8 +19,8 @@ only-rtp 的 README 列出了 ADR-036 留下的三处空缺：
   （RFC 3550 §6.5.8）由前缀长度字节、前缀和值组成；前缀长度大于 127 时不是 UTF-8，解析时被替换为
   U+FFFD。写出时在 255 字节处截断，可能截在字符中间。
 
-约束：only-webrtc 构造 `Rtcp::SourceDescription(Vec<(u32, Vec<(u8, String)>)>)` 并解析 FEC 头，且另一个
-会话正在修改它，所以该变体的类型保持不变，也不改动 only-webrtc。libwebrtc、Chrome 与 pion 都不使用
+约束：akio-webrtc 构造 `Rtcp::SourceDescription(Vec<(u32, Vec<(u8, String)>)>)` 并解析 FEC 头，且另一个
+会话正在修改它，所以该变体的类型保持不变，也不改动 akio-webrtc。libwebrtc、Chrome 与 pion 都不使用
 ULPFEC 多级保护，也不使用 RLE / 接收时间块，因此逐字节的参照是 RFC 示例和 pion/rtcp 的块写出器。
 
 ## 决定
@@ -38,7 +38,7 @@ ULPFEC 多级保护，也不使用 RLE / 接收时间块，因此逐字节的参
      （及头部），最后一个 FEC 包另带覆盖全组其余部分的第 1 级。每组丢一个包时可完整恢复，丢多个时恢复
      各包的开头（CSRC、扩展头、载荷描述符）；修复字节从 `m * longest` 降到约 `m * l0 + longest - l0`。
      默认 `None`：与以前完全相同的整包保护。仅适用于实现了多级保护的接收方：libwebrtc 的 ULPFEC
-     读取器只读第 0 级，因此发往 Chrome 时，长于 `l0` 的丢失包会被错误重建；only-webrtc 仍使用整包
+     读取器只读第 0 级，因此发往 Chrome 时，长于 `l0` 的丢失包会被错误重建；akio-webrtc 仍使用整包
      ULPFEC。
    - 解码器分段重建包：每个收到或重建的包记录头部是否已知以及已知的字节区间；某一级在其区间上除一个包
      以外都已知时，即可重建那个包的该区间（第 0 级还重建头部与长度），顺序不限——第 1 级的区间可以在
@@ -67,7 +67,7 @@ ULPFEC 多级保护，也不使用 RLE / 接收时间块，因此逐字节的参
 
 ## 影响
 
-- 测试（`crates/only-rtp/src/tests_levels.rs`）：逐字节核对 RFC 5109 §10.2 示例（含勘误 3461）；逐个
+- 测试（`crates/akio-rtp/src/tests_levels.rs`）：逐字节核对 RFC 5109 §10.2 示例（含勘误 3461）；逐个
   单包丢失的恢复（B、C 完整恢复，A、D 恢复到 L0 + L1）；第 1 级先于第 0 级到达；丢两个包（只恢复开头，
   迟到的包到达后再补全其余部分）；级别规则；长掩码与畸形级别；有损链路上的第 0 级模式（400 帧，每帧
   2..12 个包，10 % 丢包：每个单包丢失都被恢复，返回的每个包都与原包相同，L0 = 0、40、100 时修复字节都
@@ -83,7 +83,7 @@ ULPFEC 多级保护，也不使用 RLE / 接收时间块，因此逐字节的参
   报告为收到）；`rtp_fec` 重写解析出的 ULPFEC 级别，以第 0 级模式运行编码器，并编码显式的两级 FEC 包，
   其单包丢失必须精确恢复。每个目标在 gpu51 上运行 16 分钟：`rtp_rtcp` 290 万次、`rtp_fec` 159 万次，
   代码中没有发现问题（更早的一次运行发现的是目标自身过严的检查，已作为回归输入保留）。
-- API 均为新增，只有 `FecHeader` 的新字段除外（only-rtp 属内部层级；结构体字面量需加上
+- API 均为新增，只有 `FecHeader` 的新字段除外（akio-rtp 属内部层级；结构体字面量需加上
   `ulp_levels: Vec::new()`）：`fec::{UlpLevel, UlpLevelSpec}`、`FecHeader::write_level`、
   `FecEncoder::{set_ulp_level0, encode_ulp}`、`FecDecoder::partially_recovered`、`ReceiptLog`、
   `MAX_XR_SPAN`、`RleReport::{encode, decode, reported_seqs}`、
@@ -91,6 +91,6 @@ ULPFEC 多级保护，也不使用 RLE / 接收时间块，因此逐字节的参
   `JitterBufferConfig`、`BurstLossModel::report`、`pcm_level_dbm0`、`SdesItem`、`random_cname`。行为变化：
   解析出的前缀长度大于 127 的 PRIV 项保留该长度（为 U+0080..U+00FF），不再变成 U+FFFD；写出的文本在
   字符边界处截断。
-- 未做：接入 only-webrtc（在其 XR 中发送 `ReceiptLog` 的块或 VoIP 指标、在音视频线路上使用
-  `set_ulp_level0`、用 `random_cname` 生成随机 CNAME）——因另一个会话负责 only-webrtc，留作后续工作。
+- 未做：接入 akio-webrtc（在其 XR 中发送 `ReceiptLog` 的块或 VoIP 指标、在音视频线路上使用
+  `set_ulp_level0`、用 `random_cname` 生成随机 CNAME）——因另一个会话负责 akio-webrtc，留作后续工作。
   不交出部分恢复的包（解包器需要能接受截断的载荷）。不估算 R 因子 / MOS。

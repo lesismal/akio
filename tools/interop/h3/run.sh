@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# only-h3 <-> quic-go's http3 and fib's own QUIC/HTTP/3, both directions. Needs Go and the
+# akio-h3 <-> quic-go's http3 and fib's own QUIC/HTTP/3, both directions. Needs Go and the
 # fib checkout next to this repository.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-cd "$ROOT" && cargo build -q --release -p only-h3 --example h3-interop
+cd "$ROOT" && cargo build -q --release -p akio-h3 --example h3-interop
 RS=$ROOT/target/release/examples/h3-interop
 cd "$ROOT/tools/interop/h3" && GOFLAGS=-mod=mod go build -o /tmp/h3-go .
 cd "$ROOT/tools/interop/h3/fib" && GOFLAGS=-mod=mod go build -o /tmp/h3-fib .

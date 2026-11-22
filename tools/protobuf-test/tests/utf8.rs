@@ -2,7 +2,7 @@
 //! `Config::proto2_unchecked_strings`) accepts any bytes and writes them back unchanged; one with
 //! `VERIFY` rejects what is not UTF-8. Generated code, dynamic messages, JSON and the text format.
 
-use only_protobuf::{
+use akio_protobuf::{
     DecodeErrorKind, Extendable, Message, ProtoString, encoding,
     reflect::{DynamicMessage, ReflectMessage, Value},
 };
@@ -181,12 +181,12 @@ fn json_and_text() {
         ..Default::default()
     };
     // JSON text is Unicode: written lossily.
-    let j = only_protobuf::json::to_string(&m).unwrap();
+    let j = akio_protobuf::json::to_string(&m).unwrap();
     assert_eq!(j, "{\"checked\":\"c\",\"raw\":\"a\u{fffd}\u{fffd}b\"}");
     // The text format escapes the bytes and reads them back.
-    let t = only_protobuf::text::to_string(&m).unwrap();
+    let t = akio_protobuf::text::to_string(&m).unwrap();
     assert!(t.contains(r#"raw: "a\377\376b""#), "{t}");
-    let back: Strings = only_protobuf::text::from_str(&t).unwrap();
+    let back: Strings = akio_protobuf::text::from_str(&t).unwrap();
     assert_eq!(back, m);
-    assert!(only_protobuf::text::from_str::<Strings>(r#"checked: "\377""#).is_err());
+    assert!(akio_protobuf::text::from_str::<Strings>(r#"checked: "\377""#).is_err());
 }

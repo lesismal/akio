@@ -1,0 +1,62 @@
+pub mod akio_mux
+pub enum akio_mux::Decision
+pub akio_mux::Decision::NeedMore
+pub akio_mux::Decision::No
+pub akio_mux::Decision::Yes
+impl core::clone::Clone for akio_mux::Decision
+pub fn akio_mux::Decision::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::Decision
+impl core::cmp::PartialEq for akio_mux::Decision
+pub fn akio_mux::Decision::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::Decision
+pub fn akio_mux::Decision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_mux::Decision
+impl core::marker::StructuralPartialEq for akio_mux::Decision
+impl core::marker::Send for akio_mux::Decision
+impl core::marker::Sync for akio_mux::Decision
+impl core::marker::Unpin for akio_mux::Decision
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::Decision
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::Decision
+#[non_exhaustive] pub enum akio_mux::Rule
+pub akio_mux::Rule::Custom(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&[u8]) -> akio_mux::Decision + core::marker::Send + core::marker::Sync)>)
+pub akio_mux::Rule::Http
+pub akio_mux::Rule::Http1
+pub akio_mux::Rule::Http2
+pub akio_mux::Rule::Prefix(alloc::vec::Vec<u8>)
+pub akio_mux::Rule::Socks4
+pub akio_mux::Rule::Socks5
+pub akio_mux::Rule::Tls
+impl akio_mux::Rule
+pub fn akio_mux::Rule::decide(&self, &[u8]) -> akio_mux::Decision
+impl core::clone::Clone for akio_mux::Rule
+pub fn akio_mux::Rule::clone(&self) -> Self
+impl core::fmt::Debug for akio_mux::Rule
+pub fn akio_mux::Rule::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_mux::Rule
+impl core::marker::Sync for akio_mux::Rule
+impl core::marker::Unpin for akio_mux::Rule
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_mux::Rule
+impl !core::panic::unwind_safe::UnwindSafe for akio_mux::Rule
+pub struct akio_mux::Mux(_)
+impl akio_mux::Mux
+pub fn akio_mux::Mux::fallback<A: akio_core::handler::Acceptor>(self, A) -> akio_mux::Mux
+pub fn akio_mux::Mux::into_any(self) -> akio_core::handler::AnyAcceptor
+pub fn akio_mux::Mux::max_sniff_bytes(self, usize) -> akio_mux::Mux
+pub fn akio_mux::Mux::new() -> akio_mux::Mux
+pub fn akio_mux::Mux::route<A: akio_core::handler::Acceptor>(self, akio_mux::Rule, A) -> akio_mux::Mux
+pub fn akio_mux::Mux::route_any(self, akio_mux::Rule, impl core::convert::Into<akio_core::handler::AnyAcceptor>) -> akio_mux::Mux
+pub fn akio_mux::Mux::sniff_timeout(self, core::option::Option<core::time::Duration>) -> akio_mux::Mux
+impl core::clone::Clone for akio_mux::Mux
+pub fn akio_mux::Mux::clone(&self) -> Self
+impl core::convert::From<akio_mux::Mux> for akio_core::handler::AnyAcceptor
+pub fn akio_core::handler::AnyAcceptor::from(akio_mux::Mux) -> akio_core::handler::AnyAcceptor
+impl core::default::Default for akio_mux::Mux
+pub fn akio_mux::Mux::default() -> Self
+impl core::fmt::Debug for akio_mux::Mux
+pub fn akio_mux::Mux::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_mux::Mux
+impl core::marker::Sync for akio_mux::Mux
+impl core::marker::Unpin for akio_mux::Mux
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_mux::Mux
+impl !core::panic::unwind_safe::UnwindSafe for akio_mux::Mux
+pub const akio_mux::DEFAULT_SNIFF_TIMEOUT: core::time::Duration

@@ -1,4 +1,4 @@
-# ADR-045: DTLS 1.3 connection ID updates, post-handshake client authentication and early data in only-dtls
+# ADR-045: DTLS 1.3 connection ID updates, post-handshake client authentication and early data in akio-dtls
 
 English | [简体中文](045-dtls13-cid-updates-pha-early-data.zh-CN.md)
 
@@ -7,10 +7,10 @@ Status: accepted (2026-11-19)
 ## Context
 
 ADR-021 brought DTLS 1.3 (RFC 9147), connection IDs (RFC 9146 for DTLS 1.2, the CID in the
-DTLS 1.3 unified header), PSKs and resumption to only-dtls, and listed as not done: DTLS 1.3
+DTLS 1.3 unified header), PSKs and resumption to akio-dtls, and listed as not done: DTLS 1.3
 0-RTT, NewConnectionId / RequestConnectionId, post-handshake client authentication,
-non-ECDHE certificate key exchanges and CBC suites. only-dtls is an Internal-tier crate
-(docs/api-stability.md); only-webrtc is its only user in the workspace and keeps DTLS 1.2
+non-ECDHE certificate key exchanges and CBC suites. akio-dtls is an Internal-tier crate
+(docs/api-stability.md); akio-webrtc is its only user in the workspace and keeps DTLS 1.2
 (ADR-021 §2), so none of this changes WebRTC.
 
 ## Decision
@@ -57,8 +57,8 @@ non-ECDHE certificate key exchanges and CBC suites. only-dtls is an Internal-tie
      ticket age (client and server ages within 10 s, plus 1 s for the ticket's whole-second
      issue time) and the first use of the ClientHello: the binder is recorded in an
      `AntiReplayStore` for three windows (RFC 8446 §8.2 "ClientHello recording", the design
-     of only-tls's store from ADR-013, kept separate because only-dtls must not depend on
-     only-tls; `MemoryAntiReplay` of 100,000 entries per configuration by default,
+     of akio-tls's store from ADR-013, kept separate because akio-dtls must not depend on
+     akio-tls; `MemoryAntiReplay` of 100,000 entries per configuration by default,
      `Config::with_anti_replay` to share one; store errors reject the early data). Accepted
      records (epoch 1, `client_early_traffic_secret`) are delivered as `Event::EarlyData`
      before `Event::Connected`, more than max_early_data_size is `unexpected_message`, and
@@ -90,7 +90,7 @@ non-ECDHE certificate key exchanges and CBC suites. only-dtls is an Internal-tie
    with (OpenSSL, wolfSSL, pion, browsers) negotiates ECDHE AEAD suites. Adding them would add
    attack surface without a peer that needs it.
 
-Public API added (only-dtls): `AntiReplayStore`, `MemoryAntiReplay`;
+Public API added (akio-dtls): `AntiReplayStore`, `MemoryAntiReplay`;
 `Config::{with_early_data, with_anti_replay, with_post_handshake_auth}`;
 `Connection::{new_connection_ids, request_connection_ids, rotate_connection_id,
 spare_connection_ids, local_connection_ids, peer_connection_id, request_client_certificate,

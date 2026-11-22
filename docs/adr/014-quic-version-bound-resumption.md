@@ -17,16 +17,16 @@ of the connection that provided them:
 - after compatible version negotiation, tickets and tokens belong to the **negotiated**
   version, not the one the client started in.
 
-only-tls tickets carried no version and only-quic tokens neither, so any ticket or token was
+akio-tls tickets carried no version and akio-quic tokens neither, so any ticket or token was
 accepted in either version. ADR-013 (compatible version negotiation) made the crossing routine:
 a client configured for v1 that a server preferring v2 moves to v2 gets v2 tickets, and kept
 resuming them in v1.
 
 ## Decision
 
-1. **Tickets carry the QUIC version** (only-tls). The session encoding gets a `quic_version`
+1. **Tickets carry the QUIC version** (akio-tls). The session encoding gets a `quic_version`
    field (format 3; format 2 sessions decode as version 0, "unbound"). TLS over TCP uses 0.
-   The hidden QUIC interface between only-tls and only-quic (`only_tls::quic`, `doc(hidden)`,
+   The hidden QUIC interface between akio-tls and akio-quic (`akio_tls::quic`, `doc(hidden)`,
    not in the public API snapshots) gains:
    - `QuicTls::client_versioned(.., version)`: offers only a ticket of `version` (other
      versions' tickets stay in the cache) and keeps new tickets under it;
@@ -36,13 +36,13 @@ resuming them in v1.
    - `QuicTls::set_ticket_version(v)`: after a compatible switch, tickets issued (server) or
      received (client) from then on carry `v`; the ticket offered or accepted stays bound to
      the first version, as the client started in it;
-   - `only_tls::quic::ticket_version(&ClientConfig, name)`: the version of the newest usable
+   - `akio_tls::quic::ticket_version(&ClientConfig, name)`: the version of the newest usable
      QUIC ticket the client holds for `name`.
 
    The unversioned constructors (`client`, `client_early`, `server`, `server_early`) are version
    0: they neither take nor accept a bound ticket, and their tickets are not taken by bound
    handshakes. Strict equality also keeps QUIC tickets out of TLS over TCP and the reverse.
-2. **Tokens carry the QUIC version** (only-quic). NEW_TOKEN and Retry tokens seal the version
+2. **Tokens carry the QUIC version** (akio-quic). NEW_TOKEN and Retry tokens seal the version
    (the negotiated one for NEW_TOKEN) next to their timestamp. The server checks it against the
    version of the client's Initial: another version's NEW_TOKEN token counts as no token
    (unvalidated address, possibly a Retry); another version's Retry token is invalid. Tokens
@@ -74,5 +74,5 @@ resuming them in v1.
   version (internal `ConnConfig::versions`) does not move and just does not use them.
 - Tickets issued before the upgrade are unbound (version 0) and no longer resume QUIC
   connections: one full handshake per client after the upgrade. TLS over TCP is unaffected.
-- No public API change: only the hidden QUIC interface of only-tls and crate-private only-quic
+- No public API change: only the hidden QUIC interface of akio-tls and crate-private akio-quic
   types change. No measurable cost (four bytes per ticket and token, one comparison).

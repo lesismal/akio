@@ -1,52 +1,52 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/only-sys",
-    "crates/only-regex",
-    "crates/only-log",
-    "crates/only-export",
-    "crates/only-crypto",
-    "crates/only-x509",
-    "crates/only-dtls",
-    "crates/only-srtp",
-    "crates/only-rtp",
-    "crates/only-sctp",
-    "crates/only-ice",
-    "crates/only-buf",
-    "crates/only-deflate",
-    "crates/only-brotli",
-    "crates/only-zstd",
-    "crates/only-timer",
-    "crates/only-pool",
-    "crates/only-core",
-    "crates/only-epoll",
-    "crates/only-uring",
-    "crates/only-tls",
-    "crates/only-http",
-    "crates/only-ws",
-    "crates/only-mux",
-    "crates/only-socks",
-    "crates/only-arpc",
-    "crates/only-grpc",
-    "crates/only-protobuf",
-    "crates/only-protobuf-build",
-    "crates/only-kcp",
-    "crates/only-quic",
-    "crates/only-h3",
-    "crates/only-ebpf",
-    "crates/only-prefork",
-    "crates/only-dpdk",
-    "crates/only-turn",
-    "crates/only-webrtc",
-    "crates/only-media",
-    "crates/only-bittorrent",
-    "crates/only",
+    "crates/akio-sys",
+    "crates/akio-regex",
+    "crates/akio-log",
+    "crates/akio-export",
+    "crates/akio-crypto",
+    "crates/akio-x509",
+    "crates/akio-dtls",
+    "crates/akio-srtp",
+    "crates/akio-rtp",
+    "crates/akio-sctp",
+    "crates/akio-ice",
+    "crates/akio-buf",
+    "crates/akio-deflate",
+    "crates/akio-brotli",
+    "crates/akio-zstd",
+    "crates/akio-timer",
+    "crates/akio-pool",
+    "crates/akio-core",
+    "crates/akio-epoll",
+    "crates/akio-uring",
+    "crates/akio-tls",
+    "crates/akio-http",
+    "crates/akio-ws",
+    "crates/akio-mux",
+    "crates/akio-socks",
+    "crates/akio-arpc",
+    "crates/akio-grpc",
+    "crates/akio-protobuf",
+    "crates/akio-protobuf-build",
+    "crates/akio-kcp",
+    "crates/akio-quic",
+    "crates/akio-h3",
+    "crates/akio-ebpf",
+    "crates/akio-prefork",
+    "crates/akio-dpdk",
+    "crates/akio-turn",
+    "crates/akio-webrtc",
+    "crates/akio-media",
+    "crates/akio-bittorrent",
+    "crates/akio",
     "tools/ct-dudect",
     "tools/echo-bench",
     "tools/protobuf-test",
 ]
 # The cargo-fuzz project (nightly-only), the codec micro benchmarks (which measure against
-# the third-party crates the libraries replaced) and only-regex's table generator (which reads
+# the third-party crates the libraries replaced) and akio-regex's table generator (which reads
 # regex-syntax) are their own workspaces.
 exclude = ["fuzz", "tools/codec-bench", "tools/regex-tables"]
 
@@ -54,48 +54,48 @@ exclude = ["fuzz", "tools/codec-bench", "tools/regex-tables"]
 version = "1.0.0-rc.1"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/lesismal/only"
+repository = "https://github.com/lesismal/akio"
 rust-version = "1.85"
 readme = "README.md"
-homepage = "https://lesismal.github.io/only/"
+homepage = "https://lesismal.github.io/akio/"
 
 [workspace.dependencies]
 # Workspace crates: a path for local builds plus the version crates.io resolves once published
 # (a path-only dependency is a wildcard to cargo-deny and cannot be published). The versions are
-# exact (`=`): all crates are released in lockstep, and the internal crates (only-sys, -buf,
+# exact (`=`): all crates are released in lockstep, and the internal crates (akio-sys, -buf,
 # -timer, -pool, -epoll, -uring) may change their APIs in any release (docs/api-stability.md).
-only-sys = { path = "crates/only-sys", version = "=1.0.0-rc.1" }
-only-regex = { path = "crates/only-regex", version = "=1.0.0-rc.1" }
-only-log = { path = "crates/only-log", version = "=1.0.0-rc.1" }
-only-crypto = { path = "crates/only-crypto", version = "=1.0.0-rc.1" }
-only-x509 = { path = "crates/only-x509", version = "=1.0.0-rc.1" }
-only-dtls = { path = "crates/only-dtls", version = "=1.0.0-rc.1" }
-only-srtp = { path = "crates/only-srtp", version = "=1.0.0-rc.1" }
-only-rtp = { path = "crates/only-rtp", version = "=1.0.0-rc.1" }
-only-sctp = { path = "crates/only-sctp", version = "=1.0.0-rc.1" }
-only-ice = { path = "crates/only-ice", version = "=1.0.0-rc.1" }
-only-buf = { path = "crates/only-buf", version = "=1.0.0-rc.1" }
-only-deflate = { path = "crates/only-deflate", version = "=1.0.0-rc.1" }
-only-brotli = { path = "crates/only-brotli", version = "=1.0.0-rc.1" }
-only-zstd = { path = "crates/only-zstd", version = "=1.0.0-rc.1" }
-only-timer = { path = "crates/only-timer", version = "=1.0.0-rc.1" }
-only-pool = { path = "crates/only-pool", version = "=1.0.0-rc.1" }
-only-core = { path = "crates/only-core", version = "=1.0.0-rc.1" }
-only-epoll = { path = "crates/only-epoll", version = "=1.0.0-rc.1" }
-only-uring = { path = "crates/only-uring", version = "=1.0.0-rc.1" }
-only-tls = { path = "crates/only-tls", version = "=1.0.0-rc.1" }
-only-http = { path = "crates/only-http", version = "=1.0.0-rc.1" }
-only-ws = { path = "crates/only-ws", version = "=1.0.0-rc.1" }
-only-quic = { path = "crates/only-quic", version = "=1.0.0-rc.1" }
-only-kcp = { path = "crates/only-kcp", version = "=1.0.0-rc.1" }
-only-grpc = { path = "crates/only-grpc", version = "=1.0.0-rc.1" }
-only-protobuf = { path = "crates/only-protobuf", version = "=1.0.0-rc.1" }
-only-protobuf-build = { path = "crates/only-protobuf-build", version = "=1.0.0-rc.1" }
-only-ebpf = { path = "crates/only-ebpf", version = "=1.0.0-rc.1" }
-only-dpdk = { path = "crates/only-dpdk", version = "=1.0.0-rc.1" }
-only-turn = { path = "crates/only-turn", version = "=1.0.0-rc.1" }
-only-webrtc = { path = "crates/only-webrtc", version = "=1.0.0-rc.1" }
-only = { path = "crates/only", version = "=1.0.0-rc.1" }
+akio-sys = { path = "crates/akio-sys", version = "=1.0.0-rc.1" }
+akio-regex = { path = "crates/akio-regex", version = "=1.0.0-rc.1" }
+akio-log = { path = "crates/akio-log", version = "=1.0.0-rc.1" }
+akio-crypto = { path = "crates/akio-crypto", version = "=1.0.0-rc.1" }
+akio-x509 = { path = "crates/akio-x509", version = "=1.0.0-rc.1" }
+akio-dtls = { path = "crates/akio-dtls", version = "=1.0.0-rc.1" }
+akio-srtp = { path = "crates/akio-srtp", version = "=1.0.0-rc.1" }
+akio-rtp = { path = "crates/akio-rtp", version = "=1.0.0-rc.1" }
+akio-sctp = { path = "crates/akio-sctp", version = "=1.0.0-rc.1" }
+akio-ice = { path = "crates/akio-ice", version = "=1.0.0-rc.1" }
+akio-buf = { path = "crates/akio-buf", version = "=1.0.0-rc.1" }
+akio-deflate = { path = "crates/akio-deflate", version = "=1.0.0-rc.1" }
+akio-brotli = { path = "crates/akio-brotli", version = "=1.0.0-rc.1" }
+akio-zstd = { path = "crates/akio-zstd", version = "=1.0.0-rc.1" }
+akio-timer = { path = "crates/akio-timer", version = "=1.0.0-rc.1" }
+akio-pool = { path = "crates/akio-pool", version = "=1.0.0-rc.1" }
+akio-core = { path = "crates/akio-core", version = "=1.0.0-rc.1" }
+akio-epoll = { path = "crates/akio-epoll", version = "=1.0.0-rc.1" }
+akio-uring = { path = "crates/akio-uring", version = "=1.0.0-rc.1" }
+akio-tls = { path = "crates/akio-tls", version = "=1.0.0-rc.1" }
+akio-http = { path = "crates/akio-http", version = "=1.0.0-rc.1" }
+akio-ws = { path = "crates/akio-ws", version = "=1.0.0-rc.1" }
+akio-quic = { path = "crates/akio-quic", version = "=1.0.0-rc.1" }
+akio-kcp = { path = "crates/akio-kcp", version = "=1.0.0-rc.1" }
+akio-grpc = { path = "crates/akio-grpc", version = "=1.0.0-rc.1" }
+akio-protobuf = { path = "crates/akio-protobuf", version = "=1.0.0-rc.1" }
+akio-protobuf-build = { path = "crates/akio-protobuf-build", version = "=1.0.0-rc.1" }
+akio-ebpf = { path = "crates/akio-ebpf", version = "=1.0.0-rc.1" }
+akio-dpdk = { path = "crates/akio-dpdk", version = "=1.0.0-rc.1" }
+akio-turn = { path = "crates/akio-turn", version = "=1.0.0-rc.1" }
+akio-webrtc = { path = "crates/akio-webrtc", version = "=1.0.0-rc.1" }
+akio = { path = "crates/akio", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

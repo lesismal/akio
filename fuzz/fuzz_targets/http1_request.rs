@@ -5,12 +5,12 @@
 // accepts, only accepts too, except where only is deliberately stricter (non-ASCII bytes in the
 // request target).
 
-use only_ws::http1::{Header, Resume, Status, parse_request};
+use akio_ws::http1::{Header, Resume, Status, parse_request};
 
 const MAX: usize = 100;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_http::fuzzing::http1_request(data);
+    akio_http::fuzzing::http1_request(data);
 
     let mut ours_h = [Header::EMPTY; MAX];
     let ours = parse_request(data, &mut ours_h, &mut Resume::default());
@@ -33,7 +33,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             let target = req.path.unwrap_or_default();
             assert!(
                 !target.is_ascii(),
-                "httparse accepted, only: {o:?} (target {target:?})"
+                "httparse accepted, akio: {o:?} (target {target:?})"
             );
         }
         _ => {}

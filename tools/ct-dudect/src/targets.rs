@@ -5,14 +5,14 @@
 
 use std::hint::black_box;
 
-use only_crypto::chacha::ChaCha20Poly1305;
-use only_crypto::ed25519::SigningKey;
-use only_crypto::gcm::AesGcm;
-use only_crypto::hash::Sha256;
-use only_crypto::mac::Hmac;
-use only_crypto::rsa::HashAlg;
-use only_crypto::seed::Seed;
-use only_crypto::{ed448, p256, p521, rsa, x448, x25519};
+use akio_crypto::chacha::ChaCha20Poly1305;
+use akio_crypto::ed25519::SigningKey;
+use akio_crypto::gcm::AesGcm;
+use akio_crypto::hash::Sha256;
+use akio_crypto::mac::Hmac;
+use akio_crypto::rsa::HashAlg;
+use akio_crypto::seed::Seed;
+use akio_crypto::{ed448, p256, p521, rsa, x448, x25519};
 
 use crate::ct;
 use crate::rng::Rng;
@@ -58,7 +58,7 @@ pub(crate) struct Spec {
     pub(crate) name: &'static str,
     /// What a difference means.
     pub(crate) kind: Kind,
-    /// Whether the operation has a hardware path (`ONLY_CRYPTO_PORTABLE` changes it); the others
+    /// Whether the operation has a hardware path (`AKIO_CRYPTO_PORTABLE` changes it); the others
     /// run in the hardware pass only.
     pub(crate) hw: bool,
     /// Measurements per batch (one batch takes tens of milliseconds).
@@ -305,7 +305,7 @@ pub(crate) fn all() -> Vec<Spec> {
             kind: Kind::Secret,
             hw: false,
             batch: 10_000,
-            about: "only_crypto::ct_eq, 32 B: equal but the last byte vs random",
+            about: "akio_crypto::ct_eq, 32 B: equal but the last byte vs random",
             make: ct_eq_bytes,
         },
         Spec {
@@ -528,13 +528,13 @@ fn ed448_sign() -> Box<dyn Target> {
     )
 }
 
-/// The two RSA-2048 test keys: only-crypto's (tests/data) and one generated for this tool
+/// The two RSA-2048 test keys: akio-crypto's (tests/data) and one generated for this tool
 /// (`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048`; a test key, never used
 /// for anything else).
 fn rsa_keys() -> (rsa::PrivateKey, rsa::PrivateKey) {
     let load = |pem: &str| {
-        let only_crypto::pkey::PrivateKey::Rsa(k) =
-            only_crypto::pkey::PrivateKey::from_pem(pem.as_bytes()).expect("rsa test key")
+        let akio_crypto::pkey::PrivateKey::Rsa(k) =
+            akio_crypto::pkey::PrivateKey::from_pem(pem.as_bytes()).expect("rsa test key")
         else {
             panic!("not an RSA key");
         };
@@ -542,7 +542,7 @@ fn rsa_keys() -> (rsa::PrivateKey, rsa::PrivateKey) {
     };
     (
         load(include_str!(
-            "../../../crates/only-crypto/tests/data/rsa2048_test_key.pem"
+            "../../../crates/akio-crypto/tests/data/rsa2048_test_key.pem"
         )),
         load(include_str!("../data/rsa2048_second_test_key.pem")),
     )
@@ -716,7 +716,7 @@ fn ct_eq_bytes() -> Box<dyn Target> {
         [0x66u8; 32],
         |r, c, rng| tag_for(r, c, true, rng),
         |r, x| {
-            black_box(only_crypto::ct_eq(black_box(r), black_box(&*x)));
+            black_box(akio_crypto::ct_eq(black_box(r), black_box(&*x)));
         },
     )
 }

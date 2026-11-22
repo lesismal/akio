@@ -1,5 +1,5 @@
 // The pion side of the only WebRTC/TURN interop checks (run.sh).
-module github.com/lesismal/only/tools/interop/webrtc
+module github.com/lesismal/akio/tools/interop/webrtc
 
 go 1.24.0
 

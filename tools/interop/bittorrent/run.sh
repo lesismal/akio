@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-bittorrent <-> mainstream clients, in one Linux container (Debian, all on 127.0.0.1):
+# akio-bittorrent <-> mainstream clients, in one Linux container (Debian, all on 127.0.0.1):
 #   aria2 1.37        leeching from only (plain, MSE required, magnet) and seeding to only
 #                     (UDP tracker; plain and MSE);
 #   libtorrent 2.0    (python3-libtorrent) leeching from only over uTP+RC4 and TCP, and by
@@ -21,15 +21,15 @@
 #   tools/interop/bittorrent/run.sh aria2 lt   # some suites (aria2, lt, dht, v2, webseed, lsd)
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-IMAGE=only-bt-interop:latest
+IMAGE=akio-bt-interop:latest
 if [ ! -f /.dockerenv ] && [ "${BT_INTEROP_INSIDE:-}" != 1 ]; then
   docker image inspect $IMAGE >/dev/null 2>&1 || docker build -q -t $IMAGE "$ROOT/tools/interop/bittorrent" >/dev/null || exit 1
   ALL=${*:-aria2 lt dht v2 webseed lsd}
   INSIDE=$(echo " $ALL " | sed 's/ lsd / /')
   rc=0
   if [ -n "$(echo $INSIDE)" ]; then
-    docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-      -v only-bt-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e BT_INTEROP_INSIDE=1 $IMAGE \
+    docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
+      -v akio-bt-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e BT_INTEROP_INSIDE=1 $IMAGE \
       bash tools/interop/bittorrent/run.sh $INSIDE || rc=1
   fi
   case " $ALL " in *" lsd "*) bash "$ROOT/tools/interop/bittorrent/lsd.sh" || rc=1 ;; esac
@@ -41,7 +41,7 @@ if ! command -v aria2c >/dev/null || ! python3 -c 'import libtorrent' 2>/dev/nul
   export DEBIAN_FRONTEND=noninteractive
   { apt-get update -qq && apt-get install -y -qq aria2 python3-libtorrent nginx; } >/dev/null 2>&1 || exit 1
 fi
-cargo build -q --release -p only-bittorrent --example bt-interop || exit 1
+cargo build -q --release -p akio-bittorrent --example bt-interop || exit 1
 BT=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/bt-interop
 LT="python3 $ROOT/tools/interop/bittorrent/lt.py"
 W=$(mktemp -d)
@@ -122,8 +122,8 @@ case " $SUITES " in *" aria2 "*)
   # aria2 speaks UDP trackers only with its DHT on (it shares the DHT socket); nothing to bootstrap.
   bg ASEED aria2c --seed-ratio=0.0 -V --enable-dht=true --dht-listen-port=7205 --bt-enable-lpd=false --listen-port=7204 --dir="$W/src" "$W/udp.torrent"
   sleep 3
-  run "only leeches from aria2 (TCP, UDP tracker)" "$W/f1" $BT leech "$W/udp.torrent" "$W/f1" 127.0.0.1:7101 --no-dht --no-utp --mse off --expect-tcp
-  run "only leeches from aria2 (MSE required)" "$W/f2" $BT leech "$W/udp.torrent" "$W/f2" 127.0.0.1:7102 --no-dht --no-utp --mse require --expect-encrypted
+  run "akio leeches from aria2 (TCP, UDP tracker)" "$W/f1" $BT leech "$W/udp.torrent" "$W/f1" 127.0.0.1:7101 --no-dht --no-utp --mse off --expect-tcp
+  run "akio leeches from aria2 (MSE required)" "$W/f2" $BT leech "$W/udp.torrent" "$W/f2" 127.0.0.1:7102 --no-dht --no-utp --mse require --expect-encrypted
   stop $ASEED
   ;;
 esac
@@ -141,9 +141,9 @@ case " $SUITES " in *" lt "*)
   bg LSEED $LT seed "$W/bare.torrent" "$W/src" 7310 --enc forced
   bg LSEED2 $LT seed "$W/bare.torrent" "$W/src" 7311 --enc disabled --tcp-only
   sleep 2
-  run "only leeches from libtorrent (uTP, MSE required)" "$W/f3" $BT leech "$W/bare.torrent" "$W/f3" 127.0.0.1:7111 --peer 127.0.0.1:7310 --no-dht --mse require --expect-utp --expect-encrypted
-  run "only leeches from libtorrent (TCP, plaintext)" "$W/f4" $BT leech "$W/bare.torrent" "$W/f4" 127.0.0.1:7112 --peer 127.0.0.1:7311 --no-dht --no-utp --mse off --expect-tcp
-  run "only leeches from libtorrent by magnet (metadata from libtorrent)" "$W/f5" $BT leech "magnet:?xt=urn:btih:$IH" "$W/f5" 127.0.0.1:7113 --peer 127.0.0.1:7310 --no-dht
+  run "akio leeches from libtorrent (uTP, MSE required)" "$W/f3" $BT leech "$W/bare.torrent" "$W/f3" 127.0.0.1:7111 --peer 127.0.0.1:7310 --no-dht --mse require --expect-utp --expect-encrypted
+  run "akio leeches from libtorrent (TCP, plaintext)" "$W/f4" $BT leech "$W/bare.torrent" "$W/f4" 127.0.0.1:7112 --peer 127.0.0.1:7311 --no-dht --no-utp --mse off --expect-tcp
+  run "akio leeches from libtorrent by magnet (metadata from libtorrent)" "$W/f5" $BT leech "magnet:?xt=urn:btih:$IH" "$W/f5" 127.0.0.1:7113 --peer 127.0.0.1:7310 --no-dht
   stop $LSEED $LSEED2
   ;;
 esac
@@ -189,10 +189,10 @@ case " $SUITES " in *" v2 "*)
   bg L2 $LT seed "$W/l-v2.torrent" "$W/src" 7520
   bg LH $LT seed "$W/l-hybrid.torrent" "$W/src" 7521
   sleep 2
-  rund "only leeches a v2 torrent made by libtorrent from libtorrent" "$W/v6" $BT leech "$W/l-v2.torrent" "$W/v6" 127.0.0.1:7530 --peer 127.0.0.1:7520 --no-dht
-  rund "only leeches a hybrid torrent made by libtorrent from libtorrent" "$W/v7" $BT leech "$W/l-hybrid.torrent" "$W/v7" 127.0.0.1:7531 --peer 127.0.0.1:7521 --no-dht
-  rund "only leeches by v2 magnet from libtorrent (piece layers by hash requests)" "$W/v8" $BT leech "$($LT magnet "$W/l-v2.torrent")" "$W/v8" 127.0.0.1:7532 --peer 127.0.0.1:7520 --no-dht
-  rund "only leeches by hybrid magnet from libtorrent" "$W/v9" $BT leech "$($LT magnet "$W/l-hybrid.torrent")" "$W/v9" 127.0.0.1:7533 --peer 127.0.0.1:7521 --no-dht
+  rund "akio leeches a v2 torrent made by libtorrent from libtorrent" "$W/v6" $BT leech "$W/l-v2.torrent" "$W/v6" 127.0.0.1:7530 --peer 127.0.0.1:7520 --no-dht
+  rund "akio leeches a hybrid torrent made by libtorrent from libtorrent" "$W/v7" $BT leech "$W/l-hybrid.torrent" "$W/v7" 127.0.0.1:7531 --peer 127.0.0.1:7521 --no-dht
+  rund "akio leeches by v2 magnet from libtorrent (piece layers by hash requests)" "$W/v8" $BT leech "$($LT magnet "$W/l-v2.torrent")" "$W/v8" 127.0.0.1:7532 --peer 127.0.0.1:7520 --no-dht
+  rund "akio leeches by hybrid magnet from libtorrent" "$W/v9" $BT leech "$($LT magnet "$W/l-hybrid.torrent")" "$W/v9" 127.0.0.1:7533 --peer 127.0.0.1:7521 --no-dht
   stop $L2 $LH
   # aria2 knows nothing of BEP 47: it seeds padding files as files, so they must exist.
   cp -r "$W/src" "$W/asrc"
@@ -207,7 +207,7 @@ for f in info[b"files"]:
 PY
   bg AS aria2c --seed-ratio=0.0 -V --enable-dht=false --bt-enable-lpd=false --listen-port=7540 --dir="$W/asrc" "$W/l-hybrid.torrent"
   sleep 3
-  rund "only leeches a hybrid torrent (made by libtorrent) from aria2" "$W/v10" $BT leech "$W/l-hybrid.torrent" "$W/v10" 127.0.0.1:7541 --peer 127.0.0.1:7540 --no-dht
+  rund "akio leeches a hybrid torrent (made by libtorrent) from aria2" "$W/v10" $BT leech "$W/l-hybrid.torrent" "$W/v10" 127.0.0.1:7541 --peer 127.0.0.1:7540 --no-dht
   stop $AS
   ;;
 esac

@@ -6,7 +6,7 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-`only-media` listed as unsupported: HLS SAMPLE-AES / CBCS, SRT rendezvous, VP8 / VP9 / AV1 in
+`akio-media` listed as unsupported: HLS SAMPLE-AES / CBCS, SRT rendezvous, VP8 / VP9 / AV1 in
 MPEG-TS, recording to MPEG-TS and transcoding.
 
 - **SRT rendezvous** is how two SRT endpoints behind NATs meet: neither listens, both send
@@ -100,9 +100,9 @@ All additions are additive.
 ## Consequences
 
 - SRT peers behind NATs can meet; tested against libsrt 1.5.4 (`srt-live-transmit` from
-  Debian's `srt-tools` in Docker, `tests/srt_rendezvous.rs`): `only` pulls what
+  Debian's `srt-tools` in Docker, `tests/srt_rendezvous.rs`): `akio` pulls what
   srt-live-transmit relays from ffmpeg and pushes a stream it writes to a file that ffprobe /
-  ffmpeg decode, clear and encrypted, and two `only` engines meet each other; unit tests run
+  ffmpeg decode, clear and encrypted, and two `akio` engines meet each other; unit tests run
   both cookie orders, a lost AGREEMENT, lost waves, mismatched passphrases and the timeout.
   ffmpeg's `mode=rendezvous` binds to the URL's address and connects to the same address, so
   it cannot meet a peer on another host or port and is not used.

@@ -1,0 +1,29 @@
+[package]
+name = "akio-mux"
+description = "akio: several protocols on one port, told apart by their first bytes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-mux"
+keywords = ["multiplexing", "sniffing", "network", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+akio-core = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_mux::fuzzing`); not a public API.
+fuzzing = ["akio-core/fuzzing"]
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+akio = { workspace = true }
+akio-http = { workspace = true }
+akio-x509 = { workspace = true }
+
+[lints]
+workspace = true

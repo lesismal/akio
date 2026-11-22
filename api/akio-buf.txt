@@ -1,0 +1,25 @@
+pub mod akio_buf
+pub struct akio_buf::SharedBuf(_)
+impl akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::copy_from(&[u8]) -> Self
+impl core::clone::Clone for akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::clone(&self) -> Self
+impl core::convert::AsRef<[u8]> for akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::as_ref(&self) -> &[u8]
+impl core::convert::From<alloc::vec::Vec<u8>> for akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::from(alloc::vec::Vec<u8>) -> Self
+impl core::default::Default for akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::default() -> Self
+impl core::fmt::Debug for akio_buf::SharedBuf
+pub fn akio_buf::SharedBuf::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for akio_buf::SharedBuf
+pub type akio_buf::SharedBuf::Target = [u8]
+pub fn akio_buf::SharedBuf::deref(&self) -> &[u8]
+impl core::marker::Send for akio_buf::SharedBuf
+impl core::marker::Sync for akio_buf::SharedBuf
+impl core::marker::Unpin for akio_buf::SharedBuf
+impl core::panic::unwind_safe::RefUnwindSafe for akio_buf::SharedBuf
+impl core::panic::unwind_safe::UnwindSafe for akio_buf::SharedBuf
+pub const akio_buf::CLASSES: [usize; 5]
+pub fn akio_buf::get(usize) -> alloc::vec::Vec<u8>
+pub fn akio_buf::put(alloc::vec::Vec<u8>)

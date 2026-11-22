@@ -1,20 +1,20 @@
 # 配置参考
 
-所有配置都是普通的 Rust 值：带公开字段和 `Default` 的结构体，以及带方法的构建器。only 没有
+所有配置都是普通的 Rust 值：带公开字段和 `Default` 的结构体，以及带方法的构建器。akio 没有
 配置文件格式；用你自己的方式加载（TOML、环境变量、命令行参数），再映射到这些类型上。
 
 所有配置结构体都是 `#[non_exhaustive]`，这样新设置可以在次版本中加入而不破坏你的代码：从
-`Default`（或 `KcpConfig::fast()` 这样的预设）开始，再给需要的字段赋值，如下例。在 only 之外
+`Default`（或 `KcpConfig::fast()` 这样的预设）开始，再给需要的字段赋值，如下例。在 akio 之外
 不能用结构体字面量（`Config { .. }`）构造它们
-（[API 稳定性](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)）。
+（[API 稳定性](https://github.com/lesismal/akio/blob/main/docs/api-stability.zh-CN.md)）。
 **可热更新**表示 `Engine::reload(&Config)` 会把它应用到运行中的 engine，包括已打开的连接
 （[可观测性与热更新](observability.md)）。
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/guide-config.rs:config}}
+{{#include ../../../crates/akio/examples/guide-config.rs:config}}
 ```
 
-## `only::Config`
+## `akio::Config`
 
 通过 `EngineBuilder::config(cfg)` 传入；engine 的所有 listener 共享。
 
@@ -36,7 +36,7 @@
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
 | `retire_timeout` | `None` | 是 | 被 `Engine::set_threads` 退役的 I/O 线程继续服务其连接这么久，然后优雅关闭剩下的（`on_shutdown`，`shutdown_timeout` 后强制关闭）；`None`：直到它们自己关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |
-| `log_level` | `None` | 是 | `only::log::LevelFilter`；用它调用 `only::log::set_max_level` |
+| `log_level` | `None` | 是 | `akio::log::LevelFilter`；用它调用 `akio::log::set_max_level` |
 | `telemetry` | 新的 hub | – | engine 的 `Arc<Telemetry>`；在 `build` 前克隆它来接入端点 |
 
 ## `EngineBuilder`
@@ -83,52 +83,52 @@ false）、`pin_threads`（把 n 个 I/O 线程中的线程 `i` 绑到 `cpu % n 
 
 | 类型 | 字段：默认值 |
 |---|---|
-| `only_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())`，`head_timeout`：10 s，`keep_alive_timeout`：75 s，`body_timeout`：60 s |
-| `only_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB，`max_conn_pending_bytes`：32 MiB，`max_resets`：100，`max_control_frames`：1000，`reset_window`：30 s |
-| `only_http::files::Files` | `index`：`index.html`，`max_cached_bytes`：256 KiB，`max_open_files`：64，`check_interval`：5 s，`watch`：关闭，`max_watches`：1024，`cache_control`：无 |
-| `only_http::middleware::Cors` | `allow_origin`：`*`，`allow_methods`：GET, POST, PUT, PATCH, DELETE, OPTIONS，`allow_headers`：Content-Type, Authorization，`max_age`：600 s |
-| `only_http::middleware::Compress` | `min_bytes`：1024，`level`：6，`stream`：`None`（流式响应不压缩） |
-| `only_http::middleware::StreamCompress` | `level`：1，`brotli`：4，`brotli_window_bits`：18，`zstd`：1，`zstd_window_log`：17 |
-| `only_http::client::ClientOptions` | `max_head_bytes`：64 KiB，`max_body_bytes`：64 MiB，`idle_timeout`：90 s，`max_idle_per_host`：32，`max_idle`：256 |
-| `only_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false，`max_header_list`：64 KiB，`max_body_bytes`：64 MiB（缓冲式响应） |
-| `only_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
-| `only_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
-| `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s，`proxy`：无，`max_redirects`：0 |
-| `only_media::HubConfig` | `gop_cache_bytes`：16 MiB，`max_streams`：1024，`max_subscribers`：每路径 1000（0：不限） |
-| `only_media::rtmp::RtmpConfig` | `chunk_size`：4096，`write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`handshake_timeout`：10 s，`idle_timeout`：60 s（播放者除外）；消息 16 MiB，每连接未完成消息合计 32 MiB |
-| `only_media::rtsp::RtspConfig` | `write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`request_timeout`：10 s，`session_timeout`：60 s（通告并强制执行） |
-| `only_media::srt::SrtConfig` | `max_send_backlog`：2 MiB，`max_conns`：1024（0：不限） |
-| `only_media::whip::WhipConfig` | `max_sessions`：256（0：不限） |
-| `only_media::hls::HlsConfig` | `target_duration`：2 s，`playlist_size`：6，`keep_segments`：3，`max_bytes`：64 MiB（也约束正在写的分段），`idle_timeout`：30 s |
-| `only_webrtc::RtcServer` / `Endpoint` | `max_peers`：1024（0：不限），`connect_timeout`：30 s |
-| `only_h3::H3Config` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
-| `only_h3::H3ClientOptions` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`request_timeout`：30 s，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
-| `only_grpc::GrpcServer` | `max_message`：4 MiB，`max_collect_bytes`：64 MiB，`max_deadline`：24 小时，`compress`：false |
-| `only_grpc::GrpcClient` | `max_message_bytes`：4 MiB，`max_collect_bytes`：64 MiB，`default_timeout`：30 秒（`unary` / `collect`） |
-| `only_arpc::Routes` | `max_body`：64 MiB，`max_streams_per_conn`：1024，`call_timeout`：30 秒 |
-| `only_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
+| `akio_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())`，`head_timeout`：10 s，`keep_alive_timeout`：75 s，`body_timeout`：60 s |
+| `akio_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB，`max_conn_pending_bytes`：32 MiB，`max_resets`：100，`max_control_frames`：1000，`reset_window`：30 s |
+| `akio_http::files::Files` | `index`：`index.html`，`max_cached_bytes`：256 KiB，`max_open_files`：64，`check_interval`：5 s，`watch`：关闭，`max_watches`：1024，`cache_control`：无 |
+| `akio_http::middleware::Cors` | `allow_origin`：`*`，`allow_methods`：GET, POST, PUT, PATCH, DELETE, OPTIONS，`allow_headers`：Content-Type, Authorization，`max_age`：600 s |
+| `akio_http::middleware::Compress` | `min_bytes`：1024，`level`：6，`stream`：`None`（流式响应不压缩） |
+| `akio_http::middleware::StreamCompress` | `level`：1，`brotli`：4，`brotli_window_bits`：18，`zstd`：1，`zstd_window_log`：17 |
+| `akio_http::client::ClientOptions` | `max_head_bytes`：64 KiB，`max_body_bytes`：64 MiB，`idle_timeout`：90 s，`max_idle_per_host`：32，`max_idle`：256 |
+| `akio_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false，`max_header_list`：64 KiB，`max_body_bytes`：64 MiB（缓冲式响应） |
+| `akio_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
+| `akio_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
+| `akio_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s，`proxy`：无，`max_redirects`：0 |
+| `akio_media::HubConfig` | `gop_cache_bytes`：16 MiB，`max_streams`：1024，`max_subscribers`：每路径 1000（0：不限） |
+| `akio_media::rtmp::RtmpConfig` | `chunk_size`：4096，`write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`handshake_timeout`：10 s，`idle_timeout`：60 s（播放者除外）；消息 16 MiB，每连接未完成消息合计 32 MiB |
+| `akio_media::rtsp::RtspConfig` | `write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`request_timeout`：10 s，`session_timeout`：60 s（通告并强制执行） |
+| `akio_media::srt::SrtConfig` | `max_send_backlog`：2 MiB，`max_conns`：1024（0：不限） |
+| `akio_media::whip::WhipConfig` | `max_sessions`：256（0：不限） |
+| `akio_media::hls::HlsConfig` | `target_duration`：2 s，`playlist_size`：6，`keep_segments`：3，`max_bytes`：64 MiB（也约束正在写的分段），`idle_timeout`：30 s |
+| `akio_webrtc::RtcServer` / `Endpoint` | `max_peers`：1024（0：不限），`connect_timeout`：30 s |
+| `akio_h3::H3Config` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
+| `akio_h3::H3ClientOptions` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`request_timeout`：30 s，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
+| `akio_grpc::GrpcServer` | `max_message`：4 MiB，`max_collect_bytes`：64 MiB，`max_deadline`：24 小时，`compress`：false |
+| `akio_grpc::GrpcClient` | `max_message_bytes`：4 MiB，`max_collect_bytes`：64 MiB，`default_timeout`：30 秒（`unary` / `collect`） |
+| `akio_arpc::Routes` | `max_body`：64 MiB，`max_streams_per_conn`：1024，`call_timeout`：30 秒 |
+| `akio_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
 
 ## 环境变量
 
 | 变量 | 作用 |
 |---|---|
-| `ONLY_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
-| `ONLY_UDP_GRO=0` | 无论 `Config::udp_gro` 如何都不启用 UDP GRO（Linux 5.0+） |
-| `ONLY_UDP_ECN=0` | 发出的 UDP 数据报一律不带 ECN 码点（否则 QUIC 在 Linux 与 macOS 上标记 ECT(0)） |
-| `ONLY_LOG=...` | 日志过滤指令（`info,only_http=debug`），仅当应用调用 `only::log::init_from_env` 时读取 |
+| `AKIO_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
+| `AKIO_UDP_GRO=0` | 无论 `Config::udp_gro` 如何都不启用 UDP GRO（Linux 5.0+） |
+| `AKIO_UDP_ECN=0` | 发出的 UDP 数据报一律不带 ECN 码点（否则 QUIC 在 Linux 与 macOS 上标记 ECT(0)） |
+| `AKIO_LOG=...` | 日志过滤指令（`info,akio_http=debug`），仅当应用调用 `akio::log::init_from_env` 时读取 |
 
-测试与诊断开关（ADR-029），不是调优设置：`ONLY_DEFAULT_BACKEND=uring`（Linux）让每个未调用
+测试与诊断开关（ADR-029），不是调优设置：`AKIO_DEFAULT_BACKEND=uring`（Linux）让每个未调用
 `Listener::backend` 的 TCP listener 由 io_uring 服务（非 strict：io_uring 不可用时回退到 epoll 并给出
 警告），这样不改代码的程序也能在 io_uring 上运行；`book/check-guides.sh` 用的就是它。显式的
 `Listener::backend` 总是优先；UDP listener 和客户端线程不受影响；每次 `Engine::build` 读取一次。
 
-测试套件还会读取 `ONLY_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
-`ONLY_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
+测试套件还会读取 `AKIO_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
+`AKIO_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
 
 ## Cargo feature
 
 | crate | feature | 默认 | 作用 |
 |---|---|---|---|
-| only-http | `regex` | 开启 | 无作用（为兼容保留）：正则路由参数（`{id:[0-9]+}`）始终可用 |
-| only-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
-| only、only-tls、only-quic、only-webrtc | `unstable` | 关闭 | 预留的空 feature：only-tls、only-quic 与 only-webrtc 运行自研的 TLS、QUIC 与 WebRTC，已没有被封装的依赖 |
+| akio-http | `regex` | 开启 | 无作用（为兼容保留）：正则路由参数（`{id:[0-9]+}`）始终可用 |
+| akio-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
+| akio、akio-tls、akio-quic、akio-webrtc | `unstable` | 关闭 | 预留的空 feature：akio-tls、akio-quic 与 akio-webrtc 运行自研的 TLS、QUIC 与 WebRTC，已没有被封装的依赖 |

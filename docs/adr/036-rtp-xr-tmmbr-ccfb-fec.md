@@ -1,4 +1,4 @@
-# ADR-036: RTCP XR, TMMBR / TMMBN, RFC 8888 feedback and FEC in only-rtp
+# ADR-036: RTCP XR, TMMBR / TMMBN, RFC 8888 feedback and FEC in akio-rtp
 
 English | [简体中文](036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md)
 
@@ -6,10 +6,10 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-`only-rtp` (the media layer of the in-house WebRTC stack) listed as not implemented: RTCP
+`akio-rtp` (the media layer of the in-house WebRTC stack) listed as not implemented: RTCP
 extended reports (RFC 3611), TMMBR / TMMBN (RFC 5104), RTP congestion control feedback
 (RFC 8888) and forward error correction (ULPFEC, FlexFEC). Each of them is a wire format plus a
-piece of state; none needs I/O, so all of them fit the crate's sans-io shape. `only-rtp` is an
+piece of state; none needs I/O, so all of them fit the crate's sans-io shape. `akio-rtp` is an
 Internal-tier crate (docs/api-stability.md): its API may change, but changes are recorded.
 
 Two format questions had to be settled first:
@@ -87,7 +87,7 @@ Two format questions had to be settled first:
    and rewrites FEC headers and RED, feeds a decoder arbitrary media / FEC, and runs an encoder
    → lossy decoder round trip asserting byte-identical recovery.
 
-Not done: wiring into `only-webrtc`. It needs SDP work (`a=rtcp-fb:* ack ccfb` and switching
+Not done: wiring into `akio-webrtc`. It needs SDP work (`a=rtcp-fb:* ack ccfb` and switching
 the estimator's feedback source; `flexfec-03` with an `a=ssrc-group:FEC-FR` FEC SSRC, or `red` +
 `ulpfec` payload types; `a=rtcp-xr`), a FEC protection-rate policy tied to the estimator, and
 TMMBR / XR in the RTCP scheduler, so it was not small; without it Chrome cannot be checked

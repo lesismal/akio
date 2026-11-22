@@ -1,6 +1,6 @@
 [package]
 name = "ct-dudect"
-description = "dudect-style statistical timing test (Welch's t-test, fixed vs random secrets) for only-crypto's secret-dependent paths"
+description = "dudect-style statistical timing test (Welch's t-test, fixed vs random secrets) for akio-crypto's secret-dependent paths"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-only-crypto = { workspace = true }
+akio-crypto = { workspace = true }
 
 [lints]
 workspace = true

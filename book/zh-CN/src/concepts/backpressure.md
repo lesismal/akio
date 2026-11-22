@@ -1,19 +1,19 @@
 # 背压
 
 `send` 永不阻塞。这保证了 I/O 线程的安全，但也意味着快生产者遇到慢消费者时，数据会堆积在
-内存里，除非有东西把压力推回去。only 在三个层面推回压力。
+内存里，除非有东西把压力推回去。akio 在三个层面推回压力。
 
 ## 1. 连接自身队列过高时暂停读
 
-当一个连接排队的数据达到 `Config::write_high_watermark`（默认 256 KiB）时，only 停止从它
+当一个连接排队的数据达到 `Config::write_high_watermark`（默认 256 KiB）时，akio 停止从它
 读取，队列降到该值的四分之一时恢复。因此，一个只管发流水线请求而不读响应的客户端会让自己
-变慢，而不会让服务端内存增长。每次暂停都会计数（`only_backpressure_events_total`），并在
+变慢，而不会让服务端内存增长。每次暂停都会计数（`akio_backpressure_events_total`），并在
 连接表中按连接显示。
 
 ## 2. 超过硬上限时 `send` 失败
 
 每个连接排队超过 `Config::max_queued_bytes`（默认 64 MiB）时，`send*` 返回
-`Error::Overloaded` 并且不排队任何数据（计入 `only_overloaded_total`）。把它理解为"这个
+`Error::Overloaded` 并且不排队任何数据（计入 `akio_overloaded_total`）。把它理解为"这个
 对端跟不上了"：关闭它、丢弃这条消息，或者停止生产。
 
 在回调之外运行的生产者（流式发送文件的线程、广播者）应当用 `queued_bytes()` 控制节奏；在
@@ -25,7 +25,7 @@ HTTP 中用 `ResponseStream::queued_bytes` / `BodyStream::queued_bytes`，不要
 后恢复读 A：
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:backpressure}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:backpressure}}
 ```
 
 - `hold_reads(true)` 停止读取对端数据（随后内核接收缓冲区被填满，TCP 流控让发送方变慢）。
@@ -40,7 +40,7 @@ HTTP 中用 `ResponseStream::queued_bytes` / `BodyStream::queued_bytes`，不要
   （`Config::max_queued_bytes` 仍然生效）。HTTP `CONNECT` 或协议升级后的转发使用
   `RawConn::set_relayed`。
 
-only-socks 正是这样在两个方向上转发的。
+akio-socks 正是这样在两个方向上转发的。
 
 ## 线程池与协议
 

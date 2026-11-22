@@ -6,7 +6,7 @@ Status: accepted (2026-11-22)
 
 ## Context
 
-ADR-084 left two things in only-media's RTSP and RTMP clients undone:
+ADR-084 left two things in akio-media's RTSP and RTMP clients undone:
 
 - **The server's `REDIRECT`.** RFC 2326 10.15 lets a server tell a client in a session to go
   elsewhere: a `REDIRECT` request with a `Location` and, optionally, a `Range` saying when.
@@ -81,7 +81,7 @@ ADR-084 left two things in only-media's RTSP and RTMP clients undone:
 
 ## Consequences
 
-- Public API (additive, `api/only-media.txt`): `rtsp::Redirect`, `rtsp::RtspSessionInfo`,
+- Public API (additive, `api/akio-media.txt`): `rtsp::Redirect`, `rtsp::RtspSessionInfo`,
   `RtspServer::{sessions, redirect_session, redirect_path}`, `ClientError::Redirected` (RTSP;
   `ClientError` is `#[non_exhaustive]`).
 - Behaviour changes: the RTSP client follows a server's `REDIRECT` (or ends with `Redirected`)

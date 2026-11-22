@@ -1,4 +1,4 @@
-// Go crypto/tls peer for only-tls interop runs (tools/interop/tls/run.sh).
+// Go crypto/tls peer for akio-tls interop runs (tools/interop/tls/run.sh).
 //
 //	tlsgo server -addr A -cert C -key K [-ca CA -require] [-tls12|-tls13] [-alpn h2,..] [-count N]
 //	             [-ocsp resp.der]

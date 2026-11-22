@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only_http::files::Files` 把小文件缓存在内存里，大文件则缓存一个打开的句柄。缓存项在
+`akio_http::files::Files` 把小文件缓存在内存里，大文件则缓存一个打开的句柄。缓存项在
 `check_interval`（默认 5 秒）内被信任，过期后在磁盘线程池上重新 `stat`（文件及其 `.br` / `.zst` /
 `.gz` 同名文件）。这有两个代价：一是改动最多要等一个间隔才可见；二是每个热点文件每个间隔都要重新
 `stat` 一次，而且由于只有新鲜的命中才在 I/O 线程上应答，每个间隔都有一个请求要绕到磁盘线程池。
@@ -17,9 +17,9 @@ DEV-PLAN 把“基于 inotify 的变更跟踪”列为未完成项。
 
 ## 决定
 
-### 1. only-sys：`FsWatcher`
+### 1. akio-sys：`FsWatcher`
 
-新增 `only_sys::{FsWatcher, FsEvent, WatchId}`：
+新增 `akio_sys::{FsWatcher, FsEvent, WatchId}`：
 
 - Linux：inotify（`IN_NONBLOCK | IN_CLOEXEC`），目录掩码为写入、属性、`CLOSE_WRITE`、移入/移出、
   创建、删除、自身删除/移动（`IN_ONLYDIR`）；文件掩码为其中针对自身的部分。`wait` 用 `ppoll` 同时等待
@@ -32,9 +32,9 @@ DEV-PLAN 把“基于 inotify 的变更跟踪”列为未完成项。
   撤销或卸载）、`Overflow`。
 - 新增的常量与函数声明加入 `ffi::layout` 与 `libc` 的对照测试。
 
-### 2. only-http：`Files::watch(true)`
+### 2. akio-http：`Files::watch(true)`
 
-默认关闭。打开后，第一个走到磁盘的请求创建监视器和一个名为 `only-files-watch` 的线程（每个 `Files`
+默认关闭。打开后，第一个走到磁盘的请求创建监视器和一个名为 `akio-files-watch` 的线程（每个 `Files`
 一个；线程只持有 `Weak<Inner>`，`Files` 被丢弃时由 `Drop` 唤醒并退出）。
 
 - **监视什么。** 在 `stat` 之前，为从根目录到文件所在目录的每一级目录建立监视（目录请求还包括该目录
@@ -75,9 +75,9 @@ DEV-PLAN 把“基于 inotify 的变更跟踪”列为未完成项。
 - 不打开 `watch` 时的代价：缓存命中（`fresh`，5000 万次查找，取 5 次中最好的一次）在本分支为
   96.1–96.9 ns，在 main `b22519ae` 上为 98.7–99.1 ns。两者在 gpu51（Ryzen 7 7800X3D，核心 2）上同一次
   `quiet.sh` 中交替运行各 5 次，没有退步。
-- 公共 API 只有新增：`Files::watch`、`Files::max_watches`；only-sys 的 `FsWatcher`、`FsEvent`、
+- 公共 API 只有新增：`Files::watch`、`Files::max_watches`；akio-sys 的 `FsWatcher`、`FsEvent`、
   `WatchId`。
-- 测试：only-sys 的写入/创建/原子替换/目录删除/唤醒/错误路径，Linux 的 inotify 记录解析；only-http 的
+- 测试：akio-sys 的写入/创建/原子替换/目录删除/唤醒/错误路径，Linux 的 inotify 记录解析；akio-http 的
   写入、新增与修改同名压缩文件、重命名路径上的目录及重建、目录索引、`max_watches`、`Overflow`、处理中的
   通知、`Files` 丢弃后线程退出，以及 Linux 上的硬链接与符号链接回退。在 macOS 与 x86_64 Linux（gpu51）
   上通过。

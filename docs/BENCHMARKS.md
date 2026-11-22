@@ -29,14 +29,14 @@ The earlier per-area before/after figures are summarised under [History](#histor
   The echo, WebSocket and memory rows come from a second pass an hour later with the same
   binaries: in the first pass several servers could not bind their port (see Reproducing), and the
   harness was fixed before re-running them.
-- **Backends**: `only-epoll` and `only-uring` are the same server with `Backend::Epoll` and
+- **Backends**: `akio-epoll` and `akio-uring` are the same server with `Backend::Epoll` and
   `Backend::IoUring`. QUIC/HTTP/3 has its own UDP threads (no backend choice), and UDP echo runs
-  on the epoll UDP loop for both backends, so those rows have one `only` column.
-- **Servers** (the same handlers everywhere): `crates/only/examples/bench-server.rs` (TCP/TLS/UDP
-  echo) and `crates/only-http/examples/http-bench.rs` (HTTP/1.1 + h2c + h2 over TLS, `/plaintext`,
+  on the epoll UDP loop for both backends, so those rows have one `akio` column.
+- **Servers** (the same handlers everywhere): `crates/akio/examples/bench-server.rs` (TCP/TLS/UDP
+  echo) and `crates/akio-http/examples/http-bench.rs` (HTTP/1.1 + h2c + h2 over TLS, `/plaintext`,
   `/json`, WebSocket echo on `/ws`); the references in `tools/bench-ref/` (`tokio-ref`,
   `hyper-ref`, `fib-ref`; `monoio-ref` for the separate [monoio](#monoio-2026-11-21-same-run-toolsbench-refmonoio-ref) run). TLS is TLS 1.3 with an ECDSA P-256 self-signed certificate everywhere
-  (only-tls for `only`, tokio-rustls for tokio, `fib/tls` for fib). JSON: `only` uses a small
+  (akio-tls for `akio`, tokio-rustls for tokio, `fib/tls` for fib). JSON: `akio` uses a small
   hand-written serializer in the example, hyper serde_json, fib `encoding/json`.
 - **Load generators**: `h2load --h1` for HTTP/1.1 (wrk is not installed on the host; pipelining
   is `-m 16`), `h2load` for HTTP/2 (prior knowledge for h2c, ALPN `h2` over TLS), the in-repo
@@ -47,12 +47,12 @@ The earlier per-area before/after figures are summarised under [History](#histor
 
 - **Loopback only**: client and server share one machine, its memory bandwidth and the kernel's
   loopback path; there is no NIC, no real latency, no packet loss. **DPDK is not measured**: the
-  host has no NIC that DPDK could drive, so `only-dpdk` appears only through its userspace TCP/IP
+  host has no NIC that DPDK could drive, so `akio-dpdk` appears only through its userspace TCP/IP
   stack over the in-process memory wire.
 - **h2load ceiling**: with 8 threads h2load tops out around 4–5 M requests/s for HTTP/2 (HTTP/1.1
   pipelined goes higher: 7.9 M against monoio-ref, see [monoio](#monoio-2026-11-21-same-run-toolsbench-refmonoio-ref)). The h2c and h2-over-
-  TLS rows of `only` sit at that level (the server kept its 4 CPUs busy, but the client was close
-  to saturated too), so they are lower bounds for `only`.
+  TLS rows of `akio` sit at that level (the server kept its 4 CPUs busy, but the client was close
+  to saturated too), so they are lower bounds for `akio`.
 - **Client-bound cells**: the TLS handshake rate is limited by the client (8 threads doing the
   client half of every handshake with rustls); keep-alive HTTP/1.1 is kernel-bound (one read and
   one write per request).
@@ -64,7 +64,7 @@ The earlier per-area before/after figures are summarised under [History](#histor
 
 HTTP/1.1: 256 connections. h2c and h2 over TLS: connections × concurrent streams.
 
-| Case | only-epoll | only-uring | hyper | fib |
+| Case | akio-epoll | akio-uring | hyper | fib |
 |---|---:|---:|---:|---:|
 | HTTP/1.1 `GET /plaintext` | 729,229 | 774,202 | 650,511 | 620,200 |
 | HTTP/1.1 `GET /plaintext`, pipelined ×16 | 4,289,270 | 4,400,739 | 855,912 | 3,750,364 |
@@ -75,25 +75,25 @@ HTTP/1.1: 256 connections. h2c and h2 over TLS: connections × concurrent stream
 
 ¹ hyper-ref has no TLS listener.
 
-`only` is 1.1–1.25× hyper and fib for keep-alive HTTP/1.1, 5× hyper and 1.14–1.17× fib pipelined,
+`akio` is 1.1–1.25× hyper and fib for keep-alive HTTP/1.1, 5× hyper and 1.14–1.17× fib pipelined,
 3.6–4× hyper and 1.22–1.34× fib for h2c, and 1.3× fib for HTTP/2 over TLS (within the h2load ceiling,
 see Limits).
 
 ### WebSocket echo (messages/s, 256 connections, 5 rounds)
 
-| Message | only-epoll | only-uring | tokio-tungstenite | fib |
+| Message | akio-epoll | akio-uring | tokio-tungstenite | fib |
 |---|---:|---:|---:|---:|
 | 64 B | 665,276 (±8%) | 777,098 (±8%) | 576,076 | 577,582 |
 | 1 KiB | 703,772 (±6%) | 709,751 (±7%) | 564,847 (±4%) | 565,032 |
 
-`only` is 1.15–1.35× tokio-tungstenite and fib. Five rounds here because the `only` columns move
+`akio` is 1.15–1.35× tokio-tungstenite and fib. Five rounds here because the `akio` columns move
 by up to ±8% between rounds (the first pass of the campaign, 3 rounds, gave 633–776 k for 64 B).
 
 ### TCP, UDP and TLS echo
 
 TCP echo (requests/s; message size × connections):
 
-| Load | only-epoll | only-uring | tokio | fib |
+| Load | akio-epoll | akio-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | 64 B × 64 | 754,603 | 713,819 (±9%) | 729,335 | 481,178 |
 | 64 B × 256 | 668,463 (±6%) | 799,869 (±5%) | 751,788 | 572,302 |
@@ -105,7 +105,7 @@ TCP echo (requests/s; message size × connections):
 | 16 KiB × 256 | 399,796 (±5%) | 395,342 (±8%) | 441,920 | 241,439 |
 | 16 KiB × 1024 | 436,176 | 421,909 | 364,162 (±11%) | 274,924 (±5%) |
 
-| Case | only-epoll | only-uring | tokio | fib |
+| Case | akio-epoll | akio-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | UDP echo, 64 B × 64 sockets (req/s) | 993,328 (±11%) | – ¹ | 251,740 | 338,269 |
 | TLS 1.3 echo, 1 KiB × 64 (req/s) | 580,041 (±11%) | 584,406 (±10%) | 597,582 | 435,730 |
@@ -114,11 +114,11 @@ TCP echo (requests/s; message size × connections):
 ¹ UDP runs on the epoll UDP loop for both backends. The tokio UDP reference is one task looping on
 `recv_from`/`send_to`, the simplest tokio server, not its best case.
 
-The TCP rows of `only` and tokio plateau at 0.65–0.8 M req/s from 64 to 1024 connections, which
+The TCP rows of `akio` and tokio plateau at 0.65–0.8 M req/s from 64 to 1024 connections, which
 points at the closed-loop client (8 threads) as much as at the servers: read them as "same class",
 with fib behind at small and 16 KiB messages. The handshake rate is client-bound (see Limits): it
-shows that only-tls on the server side keeps up with tokio-rustls, not a server maximum (in memory,
-only-tls does 0.89–1.00× rustls' handshakes, see below).
+shows that akio-tls on the server side keeps up with tokio-rustls, not a server maximum (in memory,
+akio-tls does 0.89–1.00× rustls' handshakes, see below).
 
 ### Memory per connection
 
@@ -128,7 +128,7 @@ more than 64 k), takes each through one exchange, then keeps them all idle while
 `VmRSS` is read. Bytes per connection, 10,000 connections unless noted. tokio's per-connection
 read buffer is set to 4 KiB here (`TOKIO_REF_BUF`).
 
-| Connection state | only-epoll | only-uring | tokio | hyper | fib |
+| Connection state | akio-epoll | akio-uring | tokio | hyper | fib |
 |---|---:|---:|---:|---:|---:|
 | idle TCP (connected only) | 603 | 603 | 5,008 | – | 280 |
 | idle TCP, **100,000 connections** | 564 | 564 | 5,008 | – | 288 |
@@ -142,11 +142,11 @@ read buffer is set to 4 KiB here (`TOKIO_REF_BUF`).
 ³ Re-measured after a fix (median of 3 rounds, same host, same harness): this campaign's build
 had 3,486 (epoll) / 3,485 (uring); see the end of History.
 
-only-uring allocates its provided-buffer ring (1024 × 16 KiB per I/O thread) up front: its
+akio-uring allocates its provided-buffer ring (1024 × 16 KiB per I/O thread) up front: its
 baseline RSS is ~69 MB against ~3.5 MB for epoll, and that is not counted per connection. 100,000
-idle connections cost `only` ~56 MB above the baseline.
+idle connections cost `akio` ~56 MB above the baseline.
 
-### QUIC and HTTP/3 (`crates/only-h3/examples/quic-bench.rs`, loopback, CPUs 2–5)
+### QUIC and HTTP/3 (`crates/akio-h3/examples/quic-bench.rs`, loopback, CPUs 2–5)
 
 | Case | only |
 |---|---:|
@@ -171,7 +171,7 @@ The quinn-proto build (the wave D tree with this harness) in another same-run co
 4,613 against 15,999 Mbit/s (3.5×), HTTP/3 56,934 against 430,098 req/s (7.6×); its handshake
 figure (202/s) is an artifact of the old stack under this harness and is left out. The
 handshake row moved from 6,640 to ~9,300 before this pass through the P-256 and X25519 work in
-only-crypto.
+akio-crypto.
 
 **After the HTTP/3 pass** (2026-11-16, same host and pinning, `dbc7563f` → after, median of seven
 alternating rounds; the HTTP/3 row is a later run on a quiet host, bulk and handshakes come from
@@ -184,7 +184,7 @@ a run with outside load in some rounds):
 | full handshakes, 8 in flight | 8,452/s (8,417–8,479) | 8,513/s (8,319–8,542) | 1.01 |
 
 Profile of the HTTP/3 case (`perf`, both ends in one process): the allocator 31.8% → 11.2% of
-the samples, SipHash 7.3% → 0.1%; only-quic and the kernel now take the larger shares (21.6% and
+the samples, SipHash 7.3% → 0.1%; akio-quic and the kernel now take the larger shares (21.6% and
 27.8%). The keyed hasher alone (SipHash build of the same tree against it, seven rounds): bulk
 16,836 → 17,366 Mbit/s (+3%), HTTP/3 flat.
 
@@ -197,7 +197,7 @@ after, median of seven alternating rounds):
 
 Allocations per request (both ends of the benchmark, counted with a counting allocator) went from
 21.6 to 8.6: stream data reaches the event queue without two temporary vectors per delivery (4 per
-request); small response and request heads are written into only-quic's pooled buffers instead of
+request); small response and request heads are written into akio-quic's pooled buffers instead of
 a `Vec` plus the `Arc` of its `Bytes` (4); `Context` owns its request until something needs to
 share it (1); a HEADERS frame of 64 bytes or more widens its length in place instead of splicing
 (1); `Headers` keeps its first two field positions inline (3). The allocator went from 10.8% to
@@ -206,7 +206,7 @@ second) without a static table search; it was ~2% of the profile each way before
 about the same share of a shorter request. The rest is what a request needs (its target, its
 `Headers` buffer, the response body, the boxed response sink).
 
-The only-http changes are shared with HTTP/1.1 and HTTP/2, checked in the same quiet window
+The akio-http changes are shared with HTTP/1.1 and HTTP/2, checked in the same quiet window
 (`http-bench`, server on CPUs 0–3, h2load as in the table above, three alternating rounds; server
 CPU time per request over 12 M requests is the steadier figure, since these rows sit at the
 client's or the kernel's limit):
@@ -235,7 +235,7 @@ and UDP echo from a separate eleven-round run with 10-second echo runs; UDP echo
 | UDP echo, 64 B | 800,397 req/s (721,007–877,768) | 799,617 req/s (751,826–858,771) | 1.00 |
 | UDP echo, server CPU per request (11 rounds) | 4,445 ns | 4,443 ns | 1.00 |
 
-Datagrams now reach only-quic in the receive slab the kernel wrote them into and are decrypted
+Datagrams now reach akio-quic in the receive slab the kernel wrote them into and are decrypted
 there, so the one copy left out of the `recvmmsg` slot is gone; the UDP loop's peer table uses the
 keyed multiply hasher instead of SipHash. On loopback neither shows up beyond noise: bulk was
 0.98–1.005 over four runs and HTTP/3 1.001–1.011 over three. The first version cost the UDP echo
@@ -245,13 +245,13 @@ call could have written are reset. The handshake rate is lower than in the table
 of the host state in this window (192 failed handshakes on both sides, every run); the ratio is
 the figure to read.
 
-### TLS 1.3 in memory (`crates/only-tls/examples/tls-bench.rs`, CPU 2)
+### TLS 1.3 in memory (`crates/akio-tls/examples/tls-bench.rs`, CPU 2)
 
 Both ends in one thread, the same self-signed ECDSA P-256 certificate verified by the client, no
 tickets; records sealed by the client and opened by the server. rustls 0.23 + ring is a
 dev-dependency.
 
-| Case | only-tls | rustls + ring | only / rustls |
+| Case | akio-tls | rustls + ring | akio / rustls |
 |---|---:|---:|---:|
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
@@ -303,7 +303,7 @@ sends record_size_limit; certificate compression is on for the server and off fo
 
 A first run with compression on in the client too measured 0.99× in all three cases (5,426 →
 5,376, 5,439 → 5,402, 3,296 → 3,262): inflating the 329-byte compressed certificate costs about
-1.3 µs (2.2 µs for the RSA one), mostly only-deflate's fixed cost per stream, which is why clients
+1.3 µs (2.2 µs for the RSA one), mostly akio-deflate's fixed cost per stream, which is why clients
 offer compression only when asked to.
 
 #### Shared anti-replay store and compatible version negotiation: handshake A/B
@@ -347,29 +347,29 @@ handshakes/s on average), so the TLS differences are within the host's noise. A 
 handshake set of three rounds, always base first, read 0.97; seven rounds with the order
 reversed read 1.00 (rounds 3,676–3,942/s for both).
 
-### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
+### Kernel TLS (kTLS) evaluation (`crates/akio-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
 
-Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel
+Question: after akio-tls finishes a handshake, should the record keys go to the Linux kernel
 (`setsockopt(TCP_ULP, "tls")`, `SOL_TLS` `TLS_TX` / `TLS_RX`), so that the kernel encrypts and
 decrypts records, plaintext flows on the socket and `sendfile(2)` works under TLS? **Answer: no.
-On this host the kernel's software kTLS is slower than only-tls's own record layer in every case
+On this host the kernel's software kTLS is slower than akio-tls's own record layer in every case
 measured, and slowest exactly where it was supposed to win (large responses and `sendfile`).**
-The offload is kept behind only-tls's `experimental-ktls` feature for re-measuring, and is not
+The offload is kept behind akio-tls's `experimental-ktls` feature for re-measuring, and is not
 wired into `Tls` or the engine.
 
 Method: one thread-per-connection HTTP/1.1-over-TLS server (`ktls-bench`) whose record layer is
-either only-tls in user space (`user`: responses sealed by only-tls and written; the file read in
-64 KiB chunks with `pread` and sealed) or the kernel (`ktls`: the same handshake by only-tls, then
+either akio-tls in user space (`user`: responses sealed by akio-tls and written; the file read in
+64 KiB chunks with `pread` and sealed) or the kernel (`ktls`: the same handshake by akio-tls, then
 the keys handed over; responses written as plaintext; the file sent with `sendfile`). Same
 binary, same handshake (TLS 1.3, X25519, ECDSA P-256, no tickets), AES-128-GCM unless noted.
 Server on CPUs 0–3, `h2load --h1` with 8 threads on CPUs 4–7 and 12–15, 8 s per run after a 2 s
 warm-up, 3 interleaved rounds (median shown; the rounds agreed within 1–2%), all under
 `quiet.sh`. Linux 7.0, Ryzen 7 7800X3D; the kernel's AES-GCM is `generic-gcm-vaes-avx512`
-(the same VAES + AVX-512 class of code as only-crypto's), ChaCha20-Poly1305 is
+(the same VAES + AVX-512 class of code as akio-crypto's), ChaCha20-Poly1305 is
 `rfc7539(chacha20-lib,poly1305-generic)`. The server was CPU-bound in every case (4.0 CPU-seconds
 per second), so CPU per byte is server CPU time (user + system, from `/proc`) over bytes served.
 
-| Case (connections) | only-tls req/s | kTLS req/s | kTLS / only | only-tls CPU ns/B | kTLS CPU ns/B | kTLS / only CPU per byte |
+| Case (connections) | akio-tls req/s | kTLS req/s | kTLS / akio | akio-tls CPU ns/B | kTLS CPU ns/B | kTLS / akio CPU per byte |
 |---|---:|---:|---:|---:|---:|---:|
 | 1 KiB responses (64) | 531,393 | 439,368 | 0.83 | 6.77 | 8.55 | 1.26 |
 | 16 KiB (64) | 358,494 | 233,814 | 0.65 | 0.679 | 1.042 | 1.53 |
@@ -389,7 +389,7 @@ but the AES-GCM itself is only ~12%. The kernel pushes every 16 KiB record to TC
 (`tls_push_record` → `tcp_push`: ~55% of the samples in the TCP/IP transmit path, including the
 loopback receive softirq, against ~29% for user space, which hands TCP 64 KiB of records per
 `write`), and it allocates and zeroes fresh pages for each record (`kernel_init_pages` ~5%). In
-user space the same work is only-crypto's GCM (22%) plus the `pread` and `write` copies (~14%
+user space the same work is akio-crypto's GCM (22%) plus the `pread` and `write` copies (~14%
 each); saving those copies does not make up for the per-record cost in the kernel. Small
 responses lose less (0.83×) because the per-request work there is dominated by the syscalls and
 TCP, which both modes share.
@@ -397,11 +397,11 @@ TCP, which both modes share.
 When kTLS could still pay off: a NIC with TLS offload (`tls-hw-tx-offload`, e.g. ConnectX-6 Dx;
 none on this host), where the kernel hands records to the NIC unencrypted and `sendfile` really
 is zero-copy; or a host whose user-space AES-GCM is much slower than the kernel's (no VAES).
-Neither applies to only-tls on x86_64 with VAES; re-measure with `tools/bench/ktls.sh` before
+Neither applies to akio-tls on x86_64 with VAES; re-measure with `tools/bench/ktls.sh` before
 reconsidering.
 
-What the experimental code covers (tests: `crates/only-tls/tests/ktls.rs` on a kTLS kernel,
-in-memory unit tests anywhere; `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` passed 107/107
+What the experimental code covers (tests: `crates/akio-tls/tests/ktls.rs` on a kTLS kernel,
+in-memory unit tests anywhere; `AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh` passed 107/107
 against OpenSSL 3.0.13 and Go 1.27 with only's side offloaded): TLS 1.3 and 1.2 with AES-128-GCM,
 AES-256-GCM and ChaCha20-Poly1305; the keys and sequence numbers exported after the handshake
 (only when nothing is buffered); alerts, close_notify and post-handshake messages (NewSessionTicket,
@@ -418,8 +418,8 @@ What ADR-067 had to show: `Tls` connections are no slower by default (no `ktls` 
 igc and atlantic, `tls-hw-*: off [fixed]`; the hardware path itself is not measured here).
 Same-run A/B on the quiet host (Linux 7.0, Ryzen 7 7800X3D, `quiet.sh`; before every run the
 script waits until the host is under 15% busy): main at the branch point (`base`) against the
-branch built without the `ktls` feature (`new`) and with it, `ONLY_KTLS=hardware` (`hw`) and
-`ONLY_KTLS=software` (`sw`). Server on CPUs 0–3 (4 I/O threads), clients on 4–11; TLS 1.3,
+branch built without the `ktls` feature (`new`) and with it, `AKIO_KTLS=hardware` (`hw`) and
+`AKIO_KTLS=software` (`sw`). Server on CPUs 0–3 (4 I/O threads), clients on 4–11; TLS 1.3,
 X25519, ECDSA P-256, AES-128-GCM. Cases: echo-bench `tls` (64 connections, 1 KiB and 16 KiB
 messages), full handshakes per second (echo-bench `tlshs`, 32 workers, no resumption), HTTPS
 `/plaintext` (`http-bench tls`, h2load `--h1`, 64 connections). Median of 8 rounds, 5 s each,
@@ -454,9 +454,9 @@ Checked along: the `ktls` engine tests (both backends, 20 runs each), the kernel
 (`TlsTxSw` / `TlsRxSw` per connection, `TlsRxRekeyOk` / `TlsTxRekeyOk` for key updates both ways,
 no `TlsDecryptError`), curl and `openssl s_client` 3.0.13 against `http-bench` with software kTLS
 (TLS 1.3 and 1.2, AES-GCM and ChaCha20-Poly1305, a client KeyUpdate with update_requested
-mid-connection; epoll and io_uring: 10/10) and `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh`
+mid-connection; epoll and io_uring: 10/10) and `AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh`
 (175/175 against OpenSSL 3.0.13 and Go). Rerun with `tools/bench/ktls-engine.sh` (binaries of
-both revisions in `BASE_DIR` / `NEW_DIR`, this one with `--features only/ktls` in `NEWK_DIR`).
+both revisions in `BASE_DIR` / `NEW_DIR`, this one with `--features akio/ktls` in `NEWK_DIR`).
 
 ### io_uring features evaluation (`tools/bench/uring-eval.sh`, engine A/B)
 
@@ -471,8 +471,8 @@ threads on CPUs 4–7 and 12–15; the backend already uses multishot accept and
 provided-buffer ring, and `COOP_TASKRUN` + `SINGLE_ISSUER` + `DEFER_TASKRUN` rings.
 
 **Send mechanisms on a bare ring.** The engine cannot switch to ring sends without that
-redesign, so they were measured on a minimal HTTP/1.1 responder driven straight on only-uring's
-ring (the ignored `eval_server` test, `crates/only-uring/src/eval.rs`): the same multishot accept
+redesign, so they were measured on a minimal HTTP/1.1 responder driven straight on akio-uring's
+ring (the ignored `eval_server` test, `crates/akio-uring/src/eval.rs`): the same multishot accept
 and recv as the backend, one fixed response per request from a static buffer (so `SEND_ZC` never
 waits for a buffer to come back: its best case), sent with `write(2)` from the completion handler
 (what the engine does), with `IORING_OP_SEND` entries submitted with the next wait, or with
@@ -597,7 +597,7 @@ class, latency sum and first latency bucket on one cache line. The middleware it
 
 Measured 2026-11-18 on gpu51 under `quiet.sh` (5 s runs, medians, a fresh server per run; server on
 CPUs 0–3 with 4 threads, `h2load` with 8 threads on CPUs 4–7 and 12–15). **Off**: main (ab65d376)
-against this branch's `http-bench`, 7 rounds. **On**: `crates/only-export/examples/obs-bench.rs`
+against this branch's `http-bench`, 7 rounds. **On**: `crates/akio-export/examples/obs-bench.rs`
 (the same routes) with one feature switched on, 5 rounds, against the branch's `http-bench`
 (spans: against main, from a later run with the deferred-fields fix). `±` is half the min–max spread.
 
@@ -626,10 +626,10 @@ threads, 256 connections, 5 s) on CPUs 4–7 and 12–15. Medians; ratios are ne
 
 | Benchmark | rounds | base | new / base |
 |---|---:|---:|---:|
-| only-log `trace!` disabled, 2 key-values | 5 × 2 | 0.272 ns | 1.009 |
-| only-log `info_span!` with spans off, 2 fields | 5 × 2 | 0.615 ns | 0.998 |
-| only-log `span::enabled` (spans off) | 5 × 2 | 0.407 ns | 0.994 |
-| only-log `log_enabled!` disabled | 5 × 2 | 0.406 ns | 0.998 |
+| akio-log `trace!` disabled, 2 key-values | 5 × 2 | 0.272 ns | 1.009 |
+| akio-log `info_span!` with spans off, 2 fields | 5 × 2 | 0.615 ns | 0.998 |
+| akio-log `span::enabled` (spans off) | 5 × 2 | 0.407 ns | 0.994 |
+| akio-log `log_enabled!` disabled | 5 × 2 | 0.406 ns | 0.998 |
 | `Histogram::observe` (no exemplars) | 7 | 4.643 ns | 1.005 |
 | `HttpMetrics` middleware (exemplars off), HTTP/1.1 plaintext | 7 | 731,820 req/s | 0.999 |
 | `HttpMetrics` middleware (exemplars off), pipelined ×16 | 7 | 4,284,243 req/s | 1.001 |
@@ -638,7 +638,7 @@ threads, 256 connections, 5 s) on CPUs 4–7 and 12–15. Medians; ratios are ne
 an exemplar flag inside `Histogram` and measured 1.15 (inlined offer), then 1.04 (out of line, a
 branch per observation); exemplars now live in their own `ExemplarHistogram`, and a plain
 histogram is back at 1.005. The `HttpMetrics` middleware with exemplars off is unchanged. The
-`only_export` code itself runs on its own thread.
+`akio_export` code itself runs on its own thread.
 
 ### Hot reload (engine A/B, `tools/bench`)
 
@@ -668,14 +668,14 @@ medians 0.998 for both); this row moves by about 1% between runs of the same bui
 host. The echo rows move both ways inside their round-to-round noise (the closed-loop echo
 client is the bottleneck, see "TCP, UDP and TLS echo").
 
-### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
+### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
 VPCLMULQDQ + AVX-512 (AES-GCM at every length, CRC folding from 512 bytes), BMI2 + ADX. The comparison
-columns are the RustCrypto crates `only-crypto` replaced (also with run-time CPU detection;
+columns are the RustCrypto crates `akio-crypto` replaced (also with run-time CPU detection;
 crc32fast for CRC-32) and ring 0.17 for public-key operations.
 
-| Operation (MB/s) | Size | only-crypto | RustCrypto | ratio |
+| Operation (MB/s) | Size | akio-crypto | RustCrypto | ratio |
 |---|---:|---:|---:|---:|
 | SHA-1 | 16 KiB | 2,546 | 2,545 | 1.00 |
 | SHA-1, BitTorrent piece | 256 KiB | 2,558 | 2,558 | 1.00 |
@@ -699,7 +699,7 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 | base64 encode | 1400 B | 2,059 | 2,739 | 0.75 |
 | PBKDF2-HMAC-SHA1, 4096 rounds (kcptun key) | – | 0.83 ms | 0.57 ms | – |
 
-| Operation (op/s) | only-crypto | ring | ratio |
+| Operation (op/s) | akio-crypto | ring | ratio |
 |---|---:|---:|---:|
 | Ed25519 sign | 89,784 | 58,979 | 1.53 |
 | Ed25519 verify | 27,714 | 31,874 | 0.87 |
@@ -721,7 +721,7 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 | RSA-4096 PKCS#1 verify | 64,911 | 17,534 | 3.70 |
 
 The P-256 rows and X25519 run on BMI2 + ADX (`ec::hw`, `curve25519::hw`; `adx` in the detected
-paths). With every hardware path off (`ONLY_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
+paths). With every hardware path off (`AKIO_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
 the RFC 6979 HMACs) P-256 does 0.42× (sign), 0.58× (verify), 0.52× (ECDH) and 0.60× (key
 generation) of ring, X25519 0.84×, and the handshakes 0.62× (X25519) and 0.49× (secp256r1) of
 rustls. The P-256 rows above are from the previous pass; the next table has this pass.
@@ -731,7 +731,7 @@ rustls. The P-256 rows above are from the previous pass; the next table has this
 Median of five alternating rounds of the previous code (`7cefa48b`) and this pass. The host was
 busy with another benchmark during the whole window (load average 9–10, the sibling of CPU 2
 loaded), so every absolute rate is 20–30% below the quiet figures in the tables above; the
-ratios are measured in the same run, `only` and ring/rustls back to back.
+ratios are measured in the same run, `akio` and ring/rustls back to back.
 
 | op/s (loaded host) | before | after | ring / rustls | before / ring | after / ring |
 |---|---:|---:|---:|---:|---:|
@@ -747,7 +747,7 @@ five in one frame), an addition 881 → 778, a mixed addition 618 → 564; the f
 multiplication 40.5k → 31k (43 windows of 6 bits instead of 65 of 4: 6-bit and 7-bit combs tie,
 5 and 8 bits are slower); the variable-base multiplication ~190k → 159k; the scalar inversion
 20.9k → 7.0k and the field inversion 12.7k → ~7–9k (safegcd with assembly divsteps instead of
-Fermat chains). With `ONLY_CRYPTO_PORTABLE=1` the portable safegcd lifts sign from 0.41× to about
+Fermat chains). With `AKIO_CRYPTO_PORTABLE=1` the portable safegcd lifts sign from 0.41× to about
 0.45× ring and ECDH from 0.52× to 0.57×.
 
 #### P-256 point formulas (`--example pk_bench`, `tls-bench handshakes 2`, CPU 2)
@@ -823,7 +823,7 @@ this code. `tools/ct-dudect p256` (60 s per target, hardware path): no leak (max
 (14 cores), ring 0.17 in the same runs (its `ecp_nistz256-armv8` P-256 and fiat X25519). The
 machine was shared with other builds (load average 7–10, at times far higher), so these are
 medians of five alternating rounds of `main` (`436b47e7`) and this pass; the portable column is
-`main` with `ONLY_CRYPTO_PORTABLE=1` (median of three rounds).
+`main` with `AKIO_CRYPTO_PORTABLE=1` (median of three rounds).
 
 | op/s (M4 Pro, shared) | portable | assembly before | after | ring | before / ring | after / ring |
 |---|---:|---:|---:|---:|---:|---:|
@@ -859,7 +859,7 @@ condition). This pass:
 
 #### P-256 reduction without `mulx` in the whole-point assembly (`--example pk_bench p256`, `tls-bench handshakes 2`, CPU 4)
 
-2026-11-22, three alternating rounds of `main` (`b789624f`'s `only-crypto`) and this change,
+2026-11-22, three alternating rounds of `main` (`b789624f`'s `akio-crypto`) and this change,
 against ring 0.17 / rustls 0.23 in the same runs, on the quiet host (`quiet.sh`); medians.
 
 | op/s (quiet host) | before | after | ring / rustls | before / ring | after / ring |
@@ -919,7 +919,7 @@ squaring 681 (portable 1,486), 2,048-bit 3,045 and 2,700 cycles. Measured on tha
 (before the IFMA code), RSA-2048 signing was 0.99× ring and verification 1.20×. The MULX row
 pattern (`mulx`, `adcx`, `adox` per product) runs at about 1.5 cycles per product on Zen 4 in a
 probe, so the multiplication is near what this instruction mix allows. With
-`ONLY_CRYPTO_PORTABLE=1` signing is 0.50× ring and verification 0.59× (the key parse no longer
+`AKIO_CRYPTO_PORTABLE=1` signing is 0.50× ring and verification 0.59× (the key parse no longer
 dominates: 0.53×). Tried and dropped by measurement: computing the next reduction factor from a
 register instead of memory (no change), `zmm` accumulators for 32 digits (slower than `ymm` with
 the operands in registers), a second accumulator for the `m` products and splitting each step
@@ -1002,7 +1002,7 @@ this change on a quiet host, ring / rustls in the same runs; the rounds agreed w
 | TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 3,002 | 3,270 | 1,802 | 1.67 | 1.82 |
 
 Verification is 2.51× / 3.00× / 3.39× the previous code, 2.31× / 2.76× / 3.04× with the key
-parse; signing gains 2–4% from the cheaper check. With `ONLY_CRYPTO_PORTABLE=1` (two alternating
+parse; signing gains 2–4% from the cheaper check. With `AKIO_CRYPTO_PORTABLE=1` (two alternating
 rounds): verify 0.59× → 0.70× ring at 2,048 bits (0.60× → 0.70×, 0.57× → 0.69× at 3,072 and
 4,096), with the key parse 0.53× → 0.66× (0.53× → 0.67×, 0.52× → 0.65×). The key parse is now
 about a quarter of "verify + key parse" at 2,048 bits (1.8 µs: the division for `R²`, the copies,
@@ -1015,7 +1015,7 @@ exponentiation to interleave.
 the benchmark lock during the runs; two consistent runs of three, the third 10–25% lower).
 ring has none of these, so the ratio column is against our own Ed25519 / X25519:
 
-| Operation (op/s) | only-crypto | vs |
+| Operation (op/s) | akio-crypto | vs |
 |---|---:|---|
 | Ed448 sign | 3,520 | 0.04× Ed25519 sign |
 | Ed448 verify | 2,630 | 0.11× Ed25519 verify |
@@ -1032,9 +1032,9 @@ x448 last).
 lock during the run: the handshake rounds below vary by up to 30%). ring has no P-521, so the
 comparison is OpenSSL 3.0.13 (`openssl speed ecdsap521 ecdhp521`, Ubuntu's build, which has
 OpenSSL's 64-bit P-521 code) on the same core; P-521 has no hardware path here, so the default
-and `ONLY_CRYPTO_PORTABLE=1` runs are the same code (best of the two):
+and `AKIO_CRYPTO_PORTABLE=1` runs are the same code (best of the two):
 
-| Operation (op/s) | only-crypto | OpenSSL 3.0.13 | only / OpenSSL |
+| Operation (op/s) | akio-crypto | OpenSSL 3.0.13 | akio / OpenSSL |
 |---|---:|---:|---:|
 | P-521 ECDSA sign (SHA-512) | 5,651 | 5,190 | 1.09 |
 | P-521 ECDSA verify | 2,562 | 2,441 | 1.05 |
@@ -1168,14 +1168,14 @@ What changed:
   do not cover the latency of two AES pipes). It handles whole 256-byte groups; the rest of a
   message goes through the 128-bit path. Against ring's own VAES-AVX2 code on this host it is at
   0.86× (seal 1 KiB) to 1.11× (seal 64 B), 0.94× at 16 KiB.
-- **TLS record zero-fill: kept at the time, removed since** (an `unsafe` step in only-crypto,
+- **TLS record zero-fill: kept at the time, removed since** (an `unsafe` step in akio-crypto,
   see "TLS record zero-fill removed" below). Measured in one run (three alternating rounds, AES-128-GCM,
   seal + open MB/s): the current code (zero-fill, then the AEAD out of place) 16 KiB 6,620 / 6,675,
   copying the plaintext into the record and sealing in place 6,256 / 6,259 (−6%; 64 KiB −8%,
   1 KiB −2%), and as a reference only, not committed, no zero-fill through `unsafe` `set_len`
   7,297 / 7,313 (+10%; 64 KiB +8%, 1 KiB +4%). A record-layer buffer reused across records
   would trade the memset for a memcpy, the cost of the copy variant. With the caller's `Vec<u8>`
-  as output and `#![forbid(unsafe_code)]` in only-tls, every safe variant writes the output
+  as output and `#![forbid(unsafe_code)]` in akio-tls, every safe variant writes the output
   twice, so the zero-fill (the cheaper second write) stays; removing it needs the `unsafe` step.
   ChaCha20-Poly1305 1 KiB records were 7% faster with the copy and in-place seal (the ChaCha
   out-of-place path costs more on short messages), 16–64 KiB the same or slower; not changed.
@@ -1287,13 +1287,13 @@ ring: one four-block xmm call (latency-bound) and the scalar Poly1305 of six blo
 
 The record layer zero-filled the space for a record's ciphertext (seal) or plaintext (open) in
 the output `Vec<u8>` before the AEAD wrote it out of place (above: kept, because every safe
-alternative wrote the output twice). only-crypto now has hidden `encrypt_append` /
+alternative wrote the output twice). akio-crypto now has hidden `encrypt_append` /
 `decrypt_append` for AES-GCM and ChaCha20-Poly1305 that write straight into the vector's spare
 capacity: the vector kernels through raw pointers they already took, the rest (the bytes after
 the kernels' whole groups, the portable paths, the ChaCha20 head blocks) with
-`MaybeUninit::write`, and the vector grows only once every byte holds a value (`only_crypto::fill`,
+`MaybeUninit::write`, and the vector grows only once every byte holds a value (`akio_crypto::fill`,
 docs/unsafe-review.md; Miri-checked on the portable paths). A failed open appends nothing and
-zeroes what it wrote. only-tls keeps `#![forbid(unsafe_code)]`.
+zeroes what it wrote. akio-tls keeps `#![forbid(unsafe_code)]`.
 
 Same-run A/B on this host, median of five alternating rounds of the previous code (`main` at
 `f34c79e3`) and this change (both with `taskset -c 2`, `quiet.sh`), rustls 0.23 + ring in the
@@ -1433,7 +1433,7 @@ AAD call and the frame for the IFMA powers are gone). Lengths whose head is eigh
 the kernel costs: 193–448 bytes, then 705–960 and so on every 512 bytes, 1400 among them) keep
 the zeroed buffer and read the key back from it.
 
-Three alternating rounds of `main` (`b789624f`'s `only-crypto`) and this change on the quiet
+Three alternating rounds of `main` (`b789624f`'s `akio-crypto`) and this change on the quiet
 host, ring in the same runs, medians, MB/s (AVX-512 + IFMA path):
 
 | MB/s | before | after | after / before | ring | before / ring | after / ring |
@@ -1459,15 +1459,15 @@ Poly1305 chain cannot start before the kernel ends, where sealing overlaps the X
 eight-block heads (above) still go through the zeroed buffer.
 `tools/ct-dudect` (new target `chacha20poly1305-open-tag-64`): see docs/constant-time.md.
 
-### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
+### Deflate (`akio-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
-Against flate2 1.1 with the `zlib-rs` backend (AVX2/BMI2 paths chosen at run time; only-deflate
+Against flate2 1.1 with the `zlib-rs` backend (AVX2/BMI2 paths chosen at run time; akio-deflate
 is `#![forbid(unsafe_code)]` without SIMD); each program run takes the best of several rounds of
 ≥200 ms per cell, the table the median of 3 runs. Corpora: generated English-like text (4 MB),
 JSON lines (4 MB), random bytes (1 MB), the repository's Rust sources concatenated (6.0 MB) and
 the host's `libc.so.6` (2.1 MB). Inflate decodes zlib-rs's output of the same level.
 
-| Corpus | Level | Ratio only / zlib-rs | Deflate MB/s only / zlib-rs | Inflate MB/s only / zlib-rs |
+| Corpus | Level | Ratio akio / zlib-rs | Deflate MB/s akio / zlib-rs | Inflate MB/s akio / zlib-rs |
 |---|---:|---|---|---|
 | text | 1 | 2.200 / 2.201 | 549 / 367 | 856 / 995 |
 | text | 3 | 3.601 / 3.601 | 202 / 193 | 1,096 / 1,076 |
@@ -1497,23 +1497,23 @@ median of five alternating rounds of the old and new binaries, old 15,456 / 36,2
 permessage-deflate echo (client deflate → server inflate → server deflate → client inflate,
 level 6, context takeover, JSON-like messages):
 
-| Message | only-deflate (echoes/s) | zlib-rs | ratio | wire bytes (both) |
+| Message | akio-deflate (echoes/s) | zlib-rs | ratio | wire bytes (both) |
 |---|---:|---:|---:|---:|
 | 64 B | 628,894 | 348,873 | 1.80 | 5 |
 | 512 B | 80,625 | 79,044 | 1.02 | 80 |
 | 4 KiB | 17,166 | 17,147 | 1.00 | 481 |
 | 64 KiB | 1,375 | 1,404 | 0.98 | 6,897 |
 
-### Brotli and Zstandard (`only-brotli`, `only-zstd`, `tools/codec-bench`, CPU 2, 2026-11-19)
+### Brotli and Zstandard (`akio-brotli`, `akio-zstd`, `tools/codec-bench`, CPU 2, 2026-11-19)
 
 Against the C reference libraries in the same process: libzstd 1.5.7 (the `zstd` crate, one-shot
 calls on reused contexts, content checksum on as in ours) and Google's libbrotli 1.2.1
 (`brotlic-sys`, one-shot calls, lgwin 22, decoding into a reused buffer), both built from their
 bundled sources (libzstd picks its BMI2 paths at run time and uses its x86-64 assembly Huffman
-decoder); only-brotli and only-zstd are `#![forbid(unsafe_code)]`, built for baseline x86-64.
+decoder); akio-brotli and akio-zstd are `#![forbid(unsafe_code)]`, built for baseline x86-64.
 Corpora (`tools/codec-bench/corpus.sh`): the Silesia corpus as one tar (the slowest levels on its
 first 20 MB) and typical HTTP payloads: the workspace's `cargo metadata` JSON, the largest rustdoc
-page and the search script of only-http's documentation, and two DER certificate chains. Best of
+page and the search script of akio-http's documentation, and two DER certificate chains. Best of
 three rounds of ≥300 ms (one call per round on Silesia; level 11 and level 19 compression timed
 once). "Decompress" decodes the C library's stream with both decoders. "Before" is the same tool
 built against the crates as they were before this pass (`436b47e7`), run right after on the same
@@ -1522,7 +1522,7 @@ load), so single cells move by about ±10%.
 
 zstd:
 
-| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (before) / C | C / only |
+| Corpus | Level | Size akio / C | Compress MB/s akio (before) / C | Decompress MB/s akio (before) / C | C / akio |
 |---|---:|---|---|---|---:|
 | Silesia (212 MB) | 1 | 70,907,335 / 73,216,948 | 300 (127) / 571 | 921 (852) / 1,120 | 1.22 |
 | Silesia (212 MB) | 3 | 66,565,671 / 66,131,721 | 231 (86) / 360 | 839 (782) / 1,040 | 1.24 |
@@ -1544,12 +1544,12 @@ zstd:
 | cert chain (4.1 KB) | 19 | 2,563 / 2,531 | 50 (42) / 12 | 1,838 (1,487) / 2,323 | 1.26 |
 
 The zstd decompression cells are from the second decoder pass (2026-11-20, quiet host, see below):
-only (main at `aca9e988`, the first pass) / C, measured in the same run. Our sizes on Silesia and
+akio (main at `aca9e988`, the first pass) / C, measured in the same run. Our sizes on Silesia and
 the certificate chains are after the literals change below ("zstd literals").
 
 brotli:
 
-| Corpus | Level | Size only / C | Compress MB/s only (before) / C | Decompress MB/s only (aca9e988) / C | C / only |
+| Corpus | Level | Size akio / C | Compress MB/s akio (before) / C | Decompress MB/s akio (aca9e988) / C | C / akio |
 |---|---:|---|---|---|---:|
 | Silesia (212 MB) | 1 | 68,088,477 / 73,455,775 | 117 (111) / 359 | 469 (397) / 585 | 1.25 |
 | Silesia (212 MB) | 4 | 63,972,366 / 64,132,974 | 78 (23) / 133 | 565 (489) / 720 | 1.27 |
@@ -1666,7 +1666,7 @@ as libzstd does (`ZSTD_minGain`, `LITERAL_NOENTROPY`). Raw literals decode sever
 on the certificate chains our own frames (the ones TLS certificate compression sends) decoded at
 870–965 MB/s, under half the speed of libzstd's frames, because the Huffman tables saved 4–17
 bytes. Same quiet host, CPU 2, both builds alternated twice, decoding each encoder's own output
-with only-zstd: the 2.7 KB chain 2,426–2,862 MB/s (was 873–915) and 8–17 bytes larger, the 4.1 KB
+with akio-zstd: the 2.7 KB chain 2,426–2,862 MB/s (was 873–915) and 8–17 bytes larger, the 4.1 KB
 chain 2,133–2,257 MB/s at levels 1 and 3 (was 924–965) and 4–12 bytes larger (level 19 already
 raw); JSON, HTML and JavaScript byte-identical, Silesia 0.004% larger (2,672 and 2,834 bytes at
 levels 1 and 3).
@@ -1846,11 +1846,11 @@ encoder's window and tables: 0.15–0.42 MiB right after the first events (zeroe
 not resident until used) and 0.26–1.1 MiB once a window of output has gone through, against
 about 2.5 KiB for an uncompressed stream. A counting allocator gives the allocated sizes
 (ADR-074 section 4: 320, 476 and 1,336 KiB in steady state); the RSS is lower because parts of
-the tables are never touched. only-brotli's new slide threshold took brotli 4 with window bits
+the tables are never touched. akio-brotli's new slide threshold took brotli 4 with window bits
 18 from 2,032 to 1,336 KiB allocated per stream.
 ### Brotli streaming encoder: fixed costs (ADR-074 update, same-run A/B, 2026-11-22)
 
-Main at `7e4db2d9` ("base") against this change ("new"), both with only-brotli's
+Main at `7e4db2d9` ("base") against this change ("new"), both with akio-brotli's
 `stream-cost` example (the base copy added to main's tree), built in separate target
 directories on gpu51 and run alternately under `quiet.sh` pinned to CPU 2, 3 rounds of 1 s per
 measurement; medians (the rounds were within 2% of each other). *event*: a flushed write of an
@@ -2007,7 +2007,7 @@ same code.
 ### Brotli streaming encoder: cost per flushed write, second pass (ADR-074 update, same-run A/B, 2026-11-22)
 
 Main at `b789624f` ("base") against this change ("new"), built in separate target directories
-on gpu51 and run alternately under `quiet.sh` pinned to CPU 2: only-brotli's `stream-cost`
+on gpu51 and run alternately under `quiet.sh` pinned to CPU 2: akio-brotli's `stream-cost`
 example, 3 rounds of 1 s per measurement (medians; columns as in "fixed costs" above),
 `tools/codec-bench brotli` (2 rounds, best of each) and `tools/bench/stream-compress.sh` with
 `VARIANTS="base-br br"` (3 rotating rounds of 5 s, medians).
@@ -2096,12 +2096,12 @@ out of the libraries.
 | HPACK decode, request block, all indexed | 255 | loona-hpack 306 |
 | HPACK encode response, warm table | 72 | loona-hpack 284 |
 | HPACK encode response, fresh table (only Huffman-codes) | 268 | loona-hpack 285 |
-| route regexp `[0-9]+` on `1234567` (only-regex since ADR-051; was 8.5) | 5.7 | regex 15.7 |
+| route regexp `[0-9]+` on `1234567` (akio-regex since ADR-051; was 8.5) | 5.7 | regex 15.7 |
 | route regexp `\d{4}-\d{2}-\d{2}` (was 11.9) | 7.6 | regex 17.0 |
 | route regexp `[a-z0-9_-]{3,16}` on 14 chars (was 17.6) | 10.6 | regex 20.0 |
 | compile `\d{4}-\d{2}-\d{2}` (builds the DFA; was 2,124) | 7,262 | regex 112,501 |
 
-Message filter regexps (`codec-bench logregex`, `only-regex`, unanchored search on an 86-byte log
+Message filter regexps (`codec-bench logregex`, `akio-regex`, unanchored search on an 86-byte log
 line; 2026-11-19):
 
 | Operation | only | regex |
@@ -2118,18 +2118,18 @@ line; 2026-11-19):
 | compile `\b\d+ms\b` | 99,455 | 39,273 |
 
 The DFA runs at about 1 ns per character, ASCII or not; `regex` is faster where its SIMD literal
-search applies. only-log's `overhead` bench: `Filter::matches` costs 7.1 ns without a pattern and
+search applies. akio-log's `overhead` bench: `Filter::matches` costs 7.1 ns without a pattern and
 107 ns with `/connection (reset|refused)` on a 72-byte message, formatting included.
 
 The head parser scans 8 bytes at a time in safe code (httparse uses SSE4.2/AVX2 on x86-64): within
 1.0–1.2× of httparse on whole heads, 2.2× faster on heads that arrive in pieces.
 
-### Userspace TCP/IP stack (`only-dpdk --example stack-bench`, in-process memory wire, CPUs 2–3)
+### Userspace TCP/IP stack (`akio-dpdk --example stack-bench`, in-process memory wire, CPUs 2–3)
 
-Two engines of `only-dpdk`'s own stack joined by the in-process memory wire, no NIC and no DPDK
+Two engines of `akio-dpdk`'s own stack joined by the in-process memory wire, no NIC and no DPDK
 driver. This measures the protocol code and its I/O loop only.
 
-| Case | only-dpdk stack |
+| Case | akio-dpdk stack |
 |---|---:|
 | TCP echo, one connection, 64 KiB buffers | 1,431 MB/s each way (±10%) |
 | TCP echo, one connection, 1 MiB buffers | 1,562 MB/s each way |
@@ -2167,12 +2167,12 @@ Run on 2026-11-18 on the same host (Linux 7.0, root, under `quiet.sh`), from bra
 `claude/ebpf-gaps-6b8982`. Each table is a same-run A/B: the cases alternate within each of 3
 rounds of 5 s, and the figure is the median.
 
-**Steering** (`bench-server` echo, 4 epoll I/O threads on CPUs 0–3, `ONLY_ACCEL`; `echo-bench`
+**Steering** (`bench-server` echo, 4 epoll I/O threads on CPUs 0–3, `AKIO_ACCEL`; `echo-bench`
 with 256 connections × 64 B from 8 threads on CPUs 4–7 and 12–15). Over loopback the SYN and the
 data are processed on the client's CPU, so this measures the cost of the programs and of
 pinning, not the RSS locality steering is meant for (the host's NICs are down).
 
-| `ONLY_ACCEL` | req/s | vs none |
+| `AKIO_ACCEL` | req/s | vs none |
 |---|---:|---:|
 | none (kernel reuseport hash) | 669,683 (±3%) | 1.00 |
 | `cpu` (eBPF tier, `Steering::Cpu`) | 743,669 | 1.11 |
@@ -2241,7 +2241,7 @@ Run on 2026-11-21 on the same host (Linux 7.0, root, under `quiet.sh`), from bra
 `claude/ebpf-xdp-2df444` (ADR-063). It is a same-run A/B: the two links alternate within each of 5
 rounds of 5 s (the order swaps every round), and the figure is the median.
 
-The setup: the only-dpdk stack serves UDP and TCP echo on one end of a veth pair, in the root
+The setup: the akio-dpdk stack serves UDP and TCP echo on one end of a veth pair, in the root
 namespace, with its I/O thread pinned to CPU 2. Kernel clients run in a network namespace on
 the other end (4 threads on CPUs 4–7, `link-bench` example). TSO, GSO and GRO are off on both
 ends, so both links move one MTU-sized frame per segment. AF_XDP ran in native XDP and copy mode
@@ -2417,7 +2417,7 @@ Both builds were made in one session into separate target directories, and run i
 | audio, CPU per frame (µs) | 8.48 (±1.9%) | 8.47 (±0.8%) | 0.999 | 0.994 |
 | audio-jb, CPU per frame (µs) | | 9.80 (±0.7%) | 1.157 against new `audio` | |
 
-`only-rtp --example jitter-bench` (CPU 2) times the buffer alone: push and pop of 20 ms frames
+`akio-rtp --example jitter-bench` (CPU 2) times the buffer alone: push and pop of 20 ms frames
 under 0..60 ms of jitter with 2 % loss. It takes 46.7 ns per frame (best of 5, three runs
 46.6–46.8).
 
@@ -2434,21 +2434,21 @@ under 0..60 ms of jitter with 2 % loss. It takes 46.7 ns per frame (best of 5, t
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and
 rounds (median of 3 rounds of 5 s, `±` as above), from commit `e1129f98`, with monoio 0.2.4 added
-next to `only`, tokio and hyper. Every column in a table comes from the same run, so compare within
-a table rather than with the campaign tables above (`only`'s memory rows moved since then).
+next to `akio`, tokio and hyper. Every column in a table comes from the same run, so compare within
+a table rather than with the campaign tables above (`akio`'s memory rows moved since then).
 The HTTP rows come from the first pass. The echo and memory rows come from a second pass two hours
 later with the same binaries: the first pass ran with the shell's 1024-descriptor limit, which
 broke the 1024-connection echo cases and the memory runs. The host was quiet during both passes
 (only the bench processes on the CPUs), but the load average had not decayed from earlier jobs
 when they started (6.3 and 12.7).
 
-**monoio-ref** is thread-per-core like `only`: 4 threads, each with its own monoio runtime and its
+**monoio-ref** is thread-per-core like `akio`: 4 threads, each with its own monoio runtime and its
 own `SO_REUSEPORT` listener; `monoio-uring` uses the io_uring driver (1024 entries) and
 `monoio-epoll` the legacy (epoll) driver. TCP echo is a read/`write_all` loop, the same handler as
 `bench-server` and `tokio-ref`. HTTP/1.1 is a **minimal hand-written responder**: httparse on the
 read buffer, a `match` on the path, the response written into one output buffer per read batch
 (pipelined requests answered in one write), a `Date` header cached per thread, the JSON body
-serialised per request with serde_json. Its response is the same 130 bytes `only`'s `http-bench`
+serialised per request with serde_json. Its response is the same 130 bytes `akio`'s `http-bench`
 sends for `/plaintext` (status line, `Content-Type`, `Content-Length`, `Date`, body), but it has no
 router, request or response object, header map, or connection state machine. monoio has no HTTP
 server of its own beyond such a loop (monoio-http is a separate crate, not measured), and no HTTP/2 or
@@ -2456,7 +2456,7 @@ TLS listener is measured.
 
 HTTP/1.1 (requests/s, 256 connections, `h2load --h1`, pipelining `-m 16`):
 
-| Case | only-epoll | only-uring | hyper | monoio-uring | monoio-epoll |
+| Case | akio-epoll | akio-uring | hyper | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|
 | `GET /plaintext` | 696,854 (±17%) | 700,768 (±8%) | 643,562 | 881,367 (±11%) | 741,333 (±11%) |
 | `GET /plaintext`, pipelined ×16 | 4,322,201 (±5%) | 4,321,865 (±8%) | 754,404 (±9%) | 7,921,846 | 6,919,708 (±8%) |
@@ -2464,7 +2464,7 @@ HTTP/1.1 (requests/s, 256 connections, `h2load --h1`, pipelining `-m 16`):
 
 TCP echo (requests/s; message size × connections):
 
-| Load | only-epoll | only-uring | tokio | monoio-uring | monoio-epoll |
+| Load | akio-epoll | akio-uring | tokio | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|
 | 64 B × 64 | 706,547 (±6%) | 733,788 (±11%) | 724,719 | 786,760 | 624,480 |
 | 64 B × 256 | 698,432 | 764,664 | 744,965 | 797,432 (±15%) | 678,869 (±19%) |
@@ -2480,26 +2480,26 @@ Memory per connection (bytes, 10,000 connections idle after one exchange, `tools
 rounds, all within ±1%; tokio-ref and monoio-ref read with a 4 KiB buffer here, `TOKIO_REF_BUF`,
 `MONOIO_REF_BUF`):
 
-| Connection state | only-epoll | only-uring | tokio | hyper | monoio-uring | monoio-epoll |
+| Connection state | akio-epoll | akio-uring | tokio | hyper | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|---:|
 | TCP after one 64 B echo | 675 | 724 | 5,008 | – | 4,692 | 4,712 |
 | HTTP/1.1 keep-alive after one request | 1,087 | 1,139 | – | 17,446 | 8,987 | 9,006 |
 
 What this shows:
 
-- **TCP echo**: monoio-uring is 0.99–1.17× only-uring and the fastest column in most rows;
-  monoio-epoll is 0.88–1.02× only-epoll. The rows sit at the same 0.6–0.85 M plateau as in the
+- **TCP echo**: monoio-uring is 0.99–1.17× akio-uring and the fastest column in most rows;
+  monoio-epoll is 0.88–1.02× akio-epoll. The rows sit at the same 0.6–0.85 M plateau as in the
   campaign, which points at the closed-loop client as much as at the servers (see above), so read
   them as "same class, monoio's io_uring driver a little ahead".
-- **Keep-alive HTTP/1.1**: monoio-uring is 1.26× only-uring for `/plaintext` and 1.22× for
-  `/json`; monoio-epoll is 1.06–1.11× only-epoll, inside the spread. **Pipelined**: monoio-uring
-  is 1.83× and monoio-epoll 1.60× `only`. With one read and one write per batch of 16 requests on
-  both sides, the difference is the work per request: `only` runs every request through
-  only-http (parser, router, request and response objects, header handling), monoio-ref through
-  httparse and a fixed response. So these rows measure `only`'s HTTP/1 framework overhead
-  against a near-empty handler more than monoio against `only`'s runtime; they are also an upper
-  bound worth chasing in `only`'s HTTP/1 pipelined path.
-- **Memory**: `only` keeps no read buffer per idle connection (epoll reads into a per-thread
+- **Keep-alive HTTP/1.1**: monoio-uring is 1.26× akio-uring for `/plaintext` and 1.22× for
+  `/json`; monoio-epoll is 1.06–1.11× akio-epoll, inside the spread. **Pipelined**: monoio-uring
+  is 1.83× and monoio-epoll 1.60× `akio`. With one read and one write per batch of 16 requests on
+  both sides, the difference is the work per request: `akio` runs every request through
+  akio-http (parser, router, request and response objects, header handling), monoio-ref through
+  httparse and a fixed response. So these rows measure `akio`'s HTTP/1 framework overhead
+  against a near-empty handler more than monoio against `akio`'s runtime; they are also an upper
+  bound worth chasing in `akio`'s HTTP/1 pipelined path.
+- **Memory**: `akio` keeps no read buffer per idle connection (epoll reads into a per-thread
   buffer; io_uring uses its provided-buffer ring), 0.7–1.1 KB per connection. monoio's I/O takes
   ownership of the buffer for the whole read, so an idle connection waiting in `read` holds its
   buffer: 4.7 KB with a 4 KiB buffer for echo and 9 KB for HTTP/1.1 (read buffer plus the output
@@ -2510,7 +2510,7 @@ What this shows:
 
 ## Not measured
 
-- **DPDK** with a real NIC (none on the host); `only-dpdk` only through its stack benchmark above.
+- **DPDK** with a real NIC (none on the host); `akio-dpdk` only through its stack benchmark above.
 - QUIC and HTTP/3 against quic-go or another implementation (no reference server in the harness).
 - hyper over TLS (hyper-ref has no TLS listener); hyper for raw TCP/UDP/WebSocket (not its job).
 - Latency percentiles, memory under sustained load (only idle after one exchange), real networks.
@@ -2531,7 +2531,7 @@ Short summaries of the per-area passes; the full tables are in the git history o
   headers in one reused buffer, HPACK encoded straight into the output, one write per read, flow
   control credited per quarter window, HTTP/1 heads parsed with 32 slots first. h2c 64 × 16
   2.28 M → 4.05 M (epoll), 16 × 128 2.37 M → 4.71 M, HTTP/2 over TLS 1.58 M → 4.03 M (2.5×),
-  pipelined HTTP/1.1 +7–8%, keep-alive HTTP/1.1 +1% (kernel-bound). Before the pass `only` was
+  pipelined HTTP/1.1 +7–8%, keep-alive HTTP/1.1 +1% (kernel-bound). Before the pass `akio` was
   0.52–0.70× fib on HTTP/2; this campaign has it at 1.22–1.34×.
 - **Crypto CPU acceleration** (this host, `354f3bc5` → after): AES-128-GCM 16 KiB 364 → 6,484 MB/s
   (17.8×), SHA-256 6.5×, SHA-1 3.6×, CRC-32 7.3×, ChaCha20-Poly1305 3×; P-256 sign 1.46×, verify
@@ -2564,7 +2564,7 @@ Short summaries of the per-area passes; the full tables are in the git history o
   without SipHash maps (445 k → 730 k req/s); in-order stream ACKs without the range tree
   (+3.5%), whole requests kept out of the stream table (+2.5%), QPACK integers inline (+2%), the
   first send chunk of a stream inline (+3%), response headers sized once (+1%). 429 k → 839 k
-  req/s in all (1.95×). A keyed folded-multiply hasher replaced SipHash on only-quic's
+  req/s in all (1.95×). A keyed folded-multiply hasher replaced SipHash on akio-quic's
   connection-ID, connection and peer-address tables: bulk +3%.
 - **P-256 point formulas** (this host, CPU 2, median of five alternating rounds on a quiet host,
   `1376b324` → after): OpenSSL's `ecp_nistz256` addition, mixed addition and doubling order in the
@@ -2598,8 +2598,8 @@ Short summaries of the per-area passes; the full tables are in the git history o
   AVX-512, 1.55–2.35× the 128-bit kernel on Zen 4; TLS 1.3 records 1 KiB 1.51× → 1.58× rustls +
   ring. The record zero-fill stays (every safe alternative measured slower).
 - **TLS record zero-fill removed** (this host, `f34c79e3` → after): the record layer seals and
-  opens straight into the output vector's spare capacity (only-crypto `encrypt_append` /
-  `decrypt_append`, a small `unsafe` module; only-tls stays `forbid(unsafe_code)`): TLS 1.3
+  opens straight into the output vector's spare capacity (akio-crypto `encrypt_append` /
+  `decrypt_append`, a small `unsafe` module; akio-tls stays `forbid(unsafe_code)`): TLS 1.3
   records AES-128-GCM +6.9–8.3% (16 KiB 1.58× → 1.72× rustls + ring), AES-256-GCM +7.4–8.7%,
   ChaCha20-Poly1305 +3.3–6.4%; the AEAD alone out of place +10–11% at 1–64 KiB on VAES-AVX-512.
 - **QUIC and TLS hot paths** (this host): the pacer floored the RTT at 1 ms and woke the sender
@@ -2617,8 +2617,8 @@ within 1–2% (no regressions there). One memory figure moved: a WebSocket conne
 here against 1,660 in the 2026-11-14 table (the other rows are within 5% of it: idle TCP 600 →
 603, HTTP keep-alive 912 → 937, TLS 8,526 → 8,192). It was a real regression, not the change of
 host: the 2026-11-14 build measured on this host with the same `mem.sh` gives 1,683, and a
-bisection put the jump (1,679 → 3,437) on the commit that replaced flate2 with only-deflate. The
-permessage-deflate wrappers of only-ws held the new codec state inline (528 B inflater, 1,552 B
+bisection put the jump (1,679 → 3,437) on the commit that replaced flate2 with akio-deflate. The
+permessage-deflate wrappers of akio-ws held the new codec state inline (528 B inflater, 1,552 B
 deflater; flate2 kept its state behind a pointer), and every connection carries an
 `Option<Inflater>` in its decoder and an `Option<Deflater>` in its sender, so ~2 KB was paid even
 when compression was not negotiated, as in this benchmark. The state is now boxed: 3,486 → 1,426
@@ -2637,16 +2637,16 @@ SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/echo.sh
 ulimit -n 1048576; MEM_RUNS=3 tools/bench/mem.sh
 taskset -c 2-5 $CARGO_TARGET_DIR/release/examples/quic-bench bulk 2048   # also: h3 5 64, handshakes 5 8
-cargo run --release -p only-tls --example tls-bench all 1
-cargo run --release -p only-crypto --example bench; cargo run --release -p only-crypto --example pk_bench
-cargo run --release -p only-crypto --example gcm-sizes   # AES-GCM by message size against ring
-BENCH_LEVELS=1,3,6,9 cargo run --release -p only-deflate --example bench SOURCES libc.so.6
-cargo run --release -p only-deflate --example pmd_echo
+cargo run --release -p akio-tls --example tls-bench all 1
+cargo run --release -p akio-crypto --example bench; cargo run --release -p akio-crypto --example pk_bench
+cargo run --release -p akio-crypto --example gcm-sizes   # AES-GCM by message size against ring
+BENCH_LEVELS=1,3,6,9 cargo run --release -p akio-deflate --example bench SOURCES libc.so.6
+cargo run --release -p akio-deflate --example pmd_echo
 cargo run --release --manifest-path tools/codec-bench/Cargo.toml
 tools/codec-bench/corpus.sh DIR   # SILESIA=1 also downloads the Silesia corpus
 BENCH_LEVELS=1,3,19 cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd DIR/*
 BENCH_LEVELS=1,4,5,6,11 cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli DIR/*
-cargo run --release -p only-dpdk --example stack-bench
+cargo run --release -p akio-dpdk --example stack-bench
 ```
 
 `summarize.py` turns the TSV rows of the network scripts into tables. `start_server` skips ports

@@ -10,7 +10,7 @@ import statistics
 import sys
 from collections import OrderedDict
 
-ORDER = ["only-epoll", "only-uring", "tokio", "hyper", "monoio-uring", "monoio-epoll", "fib"]
+ORDER = ["akio-epoll", "akio-uring", "tokio", "hyper", "monoio-uring", "monoio-epoll", "fib"]
 
 
 def main():

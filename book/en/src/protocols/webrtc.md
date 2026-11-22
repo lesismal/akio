@@ -2,41 +2,41 @@
 
 Two crates:
 
-- `only-webrtc` runs WebRTC peers on `only` UDP sockets, on an in-house sans-io stack with no
+- `akio-webrtc` runs WebRTC peers on `akio` UDP sockets, on an in-house sans-io stack with no
   third-party dependencies (DEV-PLAN wave D), one crate per layer, all `#![forbid(unsafe_code)]`
-  on `only-crypto`: `only-ice` (ICE full agent and ICE-lite, checklists, nomination, role
-  conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `only-dtls`
+  on `akio-crypto`: `akio-ice` (ICE full agent and ICE-lite, checklists, nomination, role
+  conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `akio-dtls`
   (DTLS 1.3 falling back to 1.2, with certificate fingerprint verification and DTLS-SRTP keys; see below),
-  `only-srtp`
+  `akio-srtp`
   (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection; the
   crate also has AES-192/256-CM, NULL, MKIs and re-keying, cryptex and RFC 6904 header
   extension encryption, which the peers do not negotiate in SDP yet),
-  `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
+  `akio-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
   channels: reliable or not, ordered or not; I-DATA message interleaving when the peer offers
   it, so a large message does not hold up small ones on other channels, and channels sharing the
   association by weighted fair queueing on their priority, ADR-037; HEARTBEATs on idle
-  associations, peer restarts and RFC 9653 zero checksums, ADR-042) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
+  associations, peer restarts and RFC 9653 zero checksums, ADR-042) and `akio-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
   VP9, H.264, H.265 and AV1 packetization, a frame assembler, NACK and RTX, PLI/FIR, REMB, TWCC
   and bandwidth estimation, sender/receiver reports, RTCP XR, TMMBR / TMMBN, RFC 8888
   feedback and ULPFEC / FlexFEC / RED, which the peers negotiate when configured to; see "FEC and
-  more RTCP" below). `only-webrtc` itself does SDP
+  more RTCP" below). `akio-webrtc` itself does SDP
   offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
-  drives the peers with `only`'s I/O threads and one shared timer thread.
-- `only-turn` has the STUN codec, a STUN server, a TURN server (RFC 8656 over UDP, TCP and TLS)
+  drives the peers with `akio`'s I/O threads and one shared timer thread.
+- `akio-turn` has the STUN codec, a STUN server, a TURN server (RFC 8656 over UDP, TCP and TLS)
   and a sans-io TURN client.
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
-directly and through a `only` TURN relay, with an `Endpoint` offering only relayed candidates
-(on `only`, pion/turn and coturn TURN servers, allocated over UDP, TCP and TLS), only its passive
+directly and through a `akio` TURN relay, with an `Endpoint` offering only relayed candidates
+(on `akio`, pion/turn and coturn TURN servers, allocated over UDP, TCP and TLS), only its passive
 or only its active ICE-TCP candidate, pion reaching an `RtcServer` over ICE-TCP, and with
 simulcast sent to pion; against fib's Go WebRTC (data channels, both directions); the TURN
 server against the pion/turn client and coturn's `turnutils_uclient` over UDP, TCP and TLS; the
-TURN client against pion/turn, coturn and `only` over UDP, TCP and TLS
+TURN client against pion/turn, coturn and `akio` over UDP, TCP and TLS
 (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn, `linux.sh` for all of it in Linux
 containers). Headless
 Chrome is tested in both offer directions: data channels, and its fake camera and microphone
 echoed back by an `RtcServer` and decoded by Chrome; ICE-TCP only (Chrome to an `RtcServer`, an
-`Endpoint` to Chrome); relay only (Chrome with `iceTransportPolicy: "relay"` through `only-turn`
+`Endpoint` to Chrome); relay only (Chrome with `iceTransportPolicy: "relay"` through `akio-turn`
 over UDP, TCP and TLS, an `Endpoint` whose only candidates were allocated over TCP or TLS); and
 simulcast: three VP8 layers from Chrome into an SFU, sent back as simulcast and as one selected
 layer switched while Chrome decodes it; an `Endpoint` with aggressive nomination; and an
@@ -54,7 +54,7 @@ SCTP HEARTBEATs keep the association up, and a channel closed by Firefox and ope
 ## A server, a TURN server and a client on one engine
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:engine}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:engine}}
 ```
 
 - `RtcServer::new(addrs)` is the acceptor of a **UDP listener**; all its peers share the port.
@@ -74,7 +74,7 @@ SCTP HEARTBEATs keep the association up, and a channel closed by Firefox and ope
 
 ## Types
 
-The API uses `only`'s own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
+The API uses `akio`'s own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
 `MediaKind`, `Direction`, `MediaTime` / `Frequency`, `MediaData`, `MediaAdded`, `RtpPacket`,
 `KeyframeRequest`, `Candidate`, `IceConnectionState`, `RtcConfig`, `SdpChanges`, `Event`. The
 protocol crates underneath are internal (their APIs may change in any release) and do not
@@ -84,7 +84,7 @@ nothing today (it used to expose str0m).
 ## Peers and handlers
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:handler}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:handler}}
 ```
 
 `PeerHandler` has a default for every callback: `on_ice_state`, `on_connected`,
@@ -113,11 +113,11 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 ## A full ICE client: `Endpoint`
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:client}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:endpoint}}
+{{#include ../../../../crates/akio-webrtc/examples/guide-webrtc.rs:endpoint}}
 ```
 
 `Endpoint::bind(&engine, addr)` binds a UDP socket with `Engine::bind_udp` (the engine needs
@@ -294,7 +294,7 @@ answerer the stack also accepts simulcast from the remote (`MediaData::rid` tell
 apart), as browsers publish it. An SFU forwarding one layer to a viewer picks it from
 `MediaData::rid`, switches at a keyframe of the new layer, and asks the publisher for exactly
 that one with `Peer::request_layer_keyframe(mid, rid, kind)` (the `sfu` mode of
-`crates/only-webrtc/examples/webrtc-interop.rs` does this, rewriting RTP timestamps at a
+`crates/akio-webrtc/examples/webrtc-interop.rs` does this, rewriting RTP timestamps at a
 switch). Chrome does not receive simulcast: its answer drops `a=simulcast`, and only the first
 encoding is sent to it.
 
@@ -304,7 +304,7 @@ Off by default (a default peer offers and answers exactly what it did before), e
 the `RtcConfig` (ADR-039, ADR-048):
 
 ```rust,ignore
-let cfg = only_webrtc::rtc_config()
+let cfg = akio_webrtc::rtc_config()
     .enable_fec(Some(FecMechanism::FlexFec)) // or Ulpfec (red + ulpfec), Red (red, no FEC)
     .set_fec_protection(0, 128)              // FEC per 256 media packets: bounds
     .set_fec_mask(FecMask::Random)           // libwebrtc's mask tables: Random or Bursty
@@ -366,7 +366,7 @@ let cfg = only_webrtc::rtc_config()
     L4S queue marks a frame sent in one burst at any rate.
 
   Through a simulated 6 Mbps L4S queue, ECT(1) reaches 4.9 Mbps with 1.3 ms of queueing, and
-  ECT(0) only 1.36 Mbps. `only_rtp::BandwidthEstimator::set_ecn_response` selects the response
+  ECT(0) only 1.36 Mbps. `akio_rtp::BandwidthEstimator::set_ecn_response` selects the response
   for other uses.
 - **ECN without RFC 8888** (RFC 6679's own signalling, ADR-082): with marking on, the sections
   also offer `a=ecn-capable-rtp:rtp mode=setread; ect=N`, `nack ecn` and `a=rtcp-xr:ecn-sum`.
@@ -397,7 +397,7 @@ let cfg = only_webrtc::rtc_config()
   carries the codepoint. RFC 8656 §12 asks the server to copy it, and validation finds out
   whether it does. A relay that clears it fails the path like any other middlebox. Paths over
   ICE-TCP or over TURN reached by TCP / TLS have no codepoint to carry, so ECN stays off there
-  rather than failing. only-turn's own relay copies the codepoint both ways over UDP and DTLS
+  rather than failing. akio-turn's own relay copies the codepoint both ways over UDP and DTLS
   (ADR-083), so validation passes through it.
 - **RTCP XR** (`a=rtcp-xr:rcvr-rtt=all`): a line that only receives still learns its RTT (from
   the sender's DLRR), which paces its NACKs.
@@ -416,7 +416,7 @@ let cfg = only_webrtc::rtc_config()
   the statistics.
 
   ```rust,ignore
-  use only_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+  use akio_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
 
   // After decoding: speech level over talkspurts, the jitter buffer as it stands.
   peer.set_voip_quality(mid, VoipQuality {
@@ -443,11 +443,11 @@ let cfg = only_webrtc::rtc_config()
   - The buffer's delay and discards fill the jitter buffer and discard fields of the VoIP
     metrics, unless `set_voip_quality` gives the application's own.
   - `Peer::jitter_buffer_stats(mid)` gives its counters.
-  - Video and RTP mode are not affected. `only_rtp::JitterBuffer` is the same buffer for use
+  - Video and RTP mode are not affected. `akio_rtp::JitterBuffer` is the same buffer for use
     without a peer.
 
   ```rust,ignore
-  use only_rtp::PlayoutDelay;
+  use akio_rtp::PlayoutDelay;
 
   let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
       Duration::from_millis(20), Duration::from_millis(300))));
@@ -471,7 +471,7 @@ NACK: Chrome decodes every frame of it, and next to none without FEC.
 ### Header protection: cryptex and encrypted extensions
 
 ```rust,ignore
-let cfg = only_webrtc::rtc_config()
+let cfg = akio_webrtc::rtc_config()
     .enable_cryptex(true)                     // a=cryptex (RFC 9335)
     .enable_encrypted_header_extensions(true); // RFC 6904 extmaps
 ```
@@ -493,7 +493,7 @@ packet then carries it. Browsers answer with an empty MKI, and SRTP runs without
 ### SDES-SRTP for SIP gateways
 
 ```rust,ignore
-let ep = ep.config(|| only_webrtc::rtc_config().enable_sdes_srtp(true));
+let ep = ep.config(|| akio_webrtc::rtc_config().enable_sdes_srtp(true));
 ```
 
 SIP gateways often key SRTP with SDP security descriptions (RFC 4568) instead of DTLS-SRTP. With
@@ -517,7 +517,7 @@ carries our host address and port the same way. `enable_ice(false)` makes our of
 
 ```rust,ignore
 let ep = ep.config(|| {
-    only_webrtc::rtc_config()
+    akio_webrtc::rtc_config()
         .enable_sdes_srtp(true)
         .enable_ice(false)
         .set_rtcp_mux_policy(RtcpMuxPolicy::Off) // RTCP on the RTCP socket's port
@@ -565,7 +565,7 @@ the gateway as the DTLS client.
 ```rust,ignore
 let ep = Endpoint::bind(&engine, "0.0.0.0:5004".parse()?)?;
 ep.bind_rtcp(&engine, "0.0.0.0:5005".parse()?)?; // ICE component 2
-let ep = ep.config(|| only_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_rtcp_mux_policy(RtcpMuxPolicy::Negotiate));
 ```
 
 Browsers and pion always multiplex RTP and RTCP (rtcp-mux, BUNDLE), and so does a default peer.
@@ -592,7 +592,7 @@ Engine::builder()
 ### Without BUNDLE: a transport per section
 
 ```rust,ignore
-let ep = ep.config(|| only_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_bundle_policy(BundlePolicy::Disabled));
 ep.bind_transport_socket(&engine, "0.0.0.0:0".parse()?)?; // optional: one per extra section
 ```
 
@@ -617,7 +617,7 @@ candidates name their section with
 
 ```rust,ignore
 let ch = api.add_channel_with_config(&ChannelConfig::new("video-meta").with_priority(ChannelPriority::High));
-let ep = ep.config(|| only_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
+let ep = ep.config(|| akio_webrtc::rtc_config().set_sctp_scheduler(ChannelScheduler::Priority));
 ```
 
 A channel's priority goes to the peer in the DCEP open message (128, 256, 512 or 1024; a
@@ -642,7 +642,7 @@ down. On a simulated 10 Mbps link a sender starting at 300 kbps reaches 90 % in 
 
 The estimate's bounds are `set_bwe_bounds(min, max)` (30 kbps and 20 Mbps by default);
 `Peer::set_bitrate_bounds` changes them on a running peer, and a raised maximum is probed at
-once (ADR-073). only-rtp's `BandwidthEstimator::set_network_state_estimate` also takes an
+once (ADR-073). akio-rtp's `BandwidthEstimator::set_network_state_estimate` also takes an
 external link-capacity estimate, toward which it probes and above which it never does.
 
 ### Pacing
@@ -724,7 +724,7 @@ is bound before any lock is taken. The quotas stay server-wide.
 
 ### TURN over TCP and TLS
 
-`turn.stream()` is the acceptor for TCP listeners, and wrapped in `only::tls::Tls` for TLS ones
+`turn.stream()` is the acceptor for TCP listeners, and wrapped in `akio::tls::Tls` for TLS ones
 (`turns:`, usually port 5349 or 443): the same allocations, quotas and credentials as the UDP
 listener. Relays are UDP, or TCP when the client asks for a TCP allocation (next section).
 
@@ -745,7 +745,7 @@ turn.set_engine(&engine);
 | `max_stream_queue` | 256 KiB | relayed data for a connection with more queued is dropped (it keeps datagram semantics; responses always go) |
 
 An allocation made over a connection ends with it. STUN and ChannelData are framed on the stream
-by their own lengths (`only_turn::framing::FrameReader`), ChannelData padded to four bytes.
+by their own lengths (`akio_turn::framing::FrameReader`), ChannelData padded to four bytes.
 
 ### TCP allocations (RFC 6062)
 
@@ -818,7 +818,7 @@ Engine::builder()
 
 ### The TURN client
 
-`only_turn::client::Client` is a sans-io client of one allocation, over UDP or a TCP/TLS stream
+`akio_turn::client::Client` is a sans-io client of one allocation, over UDP or a TCP/TLS stream
 (`ClientConfig::stream(true)`): it answers the 401 challenge with long-term credentials, renews
 stale nonces, refreshes the allocation, binds a channel to each peer on first `send_to` (falling
 back to permissions and Send indications), refreshes those bindings while a peer is in use, and
@@ -860,7 +860,7 @@ if *bind.state() == DataState::Bound {
 }
 ```
 
-`TcpAllocation` does the same on an `only` engine, without a blocking call: it dials the control
+`TcpAllocation` does the same on an `akio` engine, without a blocking call: it dials the control
 connection (TCP, or TLS with `ServerTransport::Tls`), runs the client's timers on one shared thread
 and reports `AllocationEvent`s to a callback. `connect(peer, acceptor, on_error)` sends the Connect
 and, once the server has connected, dials a data connection served by *your* acceptor: its
@@ -887,11 +887,11 @@ its server) and pion/turn (its TCP allocation client and server), over TCP and T
 
 ## The DTLS layer: DTLS 1.3 with a DTLS 1.2 fallback
 
-`only-dtls` is a sans-io connection (`Connection`: feed datagrams and timer expiries, send what
+`akio-dtls` is a sans-io connection (`Connection`: feed datagrams and timer expiries, send what
 `poll_transmit` returns) that speaks DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147).
 `Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` offers both and falls back to
 DTLS 1.2 for a 1.2-only peer (with the RFC 8446 downgrade check). `Config::webrtc` itself enables
-only DTLS 1.2 (ADR-021); `only-webrtc`'s peers add DTLS 1.3 (ADR-048, `RtcConfig::enable_dtls13`,
+only DTLS 1.2 (ADR-021); `akio-webrtc`'s peers add DTLS 1.3 (ADR-048, `RtcConfig::enable_dtls13`,
 default on), which Chrome 157 negotiates in either DTLS role while pion stays on DTLS 1.2.
 
 - **DTLS 1.3**: unified record headers with encrypted record numbers, epochs with KeyUpdate
@@ -900,7 +900,7 @@ default on), which Chrome 157 negotiates in either DTLS role while pion stays on
   `HelloVerifier::check` in front of the connections).
 - **Connection IDs** (`Config::with_connection_id`): RFC 9146 `tls12_cid` records in DTLS 1.2,
   the CID in the unified header in DTLS 1.3. A listener routes datagrams with
-  `only_dtls::connection_id(datagram, len)` instead of the address, so a peer whose NAT
+  `akio_dtls::connection_id(datagram, len)` instead of the address, so a peer whose NAT
   binding changes keeps its connection.
 - **Resumption** (`Config::with_session_resumption`): DTLS 1.2 session IDs (bounded cache) and
   RFC 5077 tickets, DTLS 1.3 NewSessionTicket (`psk_dhe_ke`, always forward secret). The client

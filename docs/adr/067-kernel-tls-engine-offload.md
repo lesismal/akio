@@ -7,7 +7,7 @@ Status: accepted (2026-11-21)
 ## Context
 
 The kTLS evaluation of 2026-11-16 (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation") found
-Linux 7.0's software kTLS slower than only-tls's own record layer in every case measured (0.40x
+Linux 7.0's software kTLS slower than akio-tls's own record layer in every case measured (0.40x
 to 0.83x), so the offload stayed behind the experimental `experimental-ktls` feature: a
 blocking test stream, a benchmark and an interop mode, not wired into `Tls` or the engine.
 
@@ -22,7 +22,7 @@ kTLS; no vendor-specific code (the kernel's device-offload interface only); the 
 
 ## Decision
 
-### 1. Policy: `only_tls::Ktls`
+### 1. Policy: `akio_tls::Ktls`
 
 `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` take:
 
@@ -48,7 +48,7 @@ TLS 1.3 needs Linux 6.14 (key updates of offloaded directions); otherwise TLS 1.
 stay in user space. The `ktls` cargo feature compiles the offload in (`experimental-ktls` is
 kept as its alias); without it, or off Linux, every mode behaves as `Off`.
 
-### 2. Engine hooks (only-core)
+### 2. Engine hooks (akio-core)
 
 `Transport` gains default methods, all Linux-only:
 
@@ -77,7 +77,7 @@ The receive direction may only move when no read can hold bytes the transport ha
 - The read buffer must take a whole record (`read_buffer` of 16 KiB or more); otherwise only the
   send direction moves.
 
-### 3. only-tls
+### 3. akio-tls
 
 - The protocol core can move the send direction alone (`commit_tx_offload`): from then on what it
   sends (handshake messages, alerts, its key updates) comes out as events instead of sealed bytes,
@@ -85,7 +85,7 @@ The receive direction may only move when no read can hold bytes the transport ha
   (`commit_rx_offload`) when nothing partial is buffered.
 - `TlsTransport` keeps a per-connection `KtlsState` (only when the mode is not `Off`): attach the
   `tls` ULP, install and verify the send keys, then the receive keys (TLS 1.3:
-  `TLS_RX_EXPECT_NO_PAD`), count each install in `TlsStats` (`only_tls_ktls_total{side, dir,
+  `TLS_RX_EXPECT_NO_PAD`), count each install in `TlsStats` (`akio_tls_ktls_total{side, dir,
   path}`) and report it in `TlsInfo::ktls_tx` / `ktls_rx` (`KtlsPath::Software` /
   `Hardware`). If the kernel refuses (no module, unsupported suite), nothing changed and the
   connection carries on in user space.
@@ -110,15 +110,15 @@ The receive direction may only move when no read can hold bytes the transport ha
 
 ## Tests
 
-- `crates/only/tests/ktls.rs` (epoll and io_uring, `--features ktls`): software kTLS both ways
+- `crates/akio/tests/ktls.rs` (epoll and io_uring, `--features ktls`): software kTLS both ways
   and send-only, TLS 1.3 and 1.2 with AES-GCM and ChaCha20-Poly1305, 6 MiB echoes, peer key
   update requests (20 in a row), server-initiated key updates every 16 records, `sendfile`
-  through the kernel, close_notify both ways, an `only` client with kTLS, and `Hardware` / `Off`
+  through the kernel, close_notify both ways, an `akio` client with kTLS, and `Hardware` / `Off`
   staying in user space on loopback. The kernel's counters confirm the installs and rekeys
   (`TlsTxSw`, `TlsRxSw`, `TlsRxRekeyOk`, `TlsTxRekeyOk`; no `TlsDecryptError`).
-- only-sys: the ethtool feature lookup against `ethtool -k lo`, `/proc/net/tls_stat` parsing;
-  only-tls: the interface table lookup (IPv4, IPv6, IPv4-mapped, refused combinations).
-- The existing stream tests and `tools/interop/tls/run.sh` with `ONLY_INTEROP_KTLS=require`
+- akio-sys: the ethtool feature lookup against `ethtool -k lo`, `/proc/net/tls_stat` parsing;
+  akio-tls: the interface table lookup (IPv4, IPv6, IPv4-mapped, refused combinations).
+- The existing stream tests and `tools/interop/tls/run.sh` with `AKIO_INTEROP_KTLS=require`
   (175/175 against OpenSSL 3.0.13 and Go); curl and `openssl s_client` against `http-bench` with
   software kTLS on epoll and io_uring (TLS 1.3 / 1.2, AES-GCM / ChaCha20-Poly1305, a client
   KeyUpdate with update_requested: 10/10).

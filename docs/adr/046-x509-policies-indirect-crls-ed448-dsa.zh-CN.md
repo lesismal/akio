@@ -6,7 +6,7 @@
 
 ## 背景
 
-only-x509 的 README 列出了它尚未实现的 RFC 5280 路径验证内容：证书策略、间接 CRL 以及由 CA
+akio-x509 的 README 列出了它尚未实现的 RFC 5280 路径验证内容：证书策略、间接 CRL 以及由 CA
 另一把密钥签发的 CRL、签名的 OCSP 请求、任何网络获取、Ed448 和 DSA。政府和企业 PKI（以及任何用
 NIST PKITS 做验证的人）依赖证书策略；这类 PKI 用间接 CRL 和独立的 CRL 签名密钥发布吊销信息；
 Ed448 是 RFC 8032 / RFC 8410 和 TLS 1.3（签名方案 `ed448`、组 `x448`）中的另一条 EdDSA 曲线；DSA
@@ -18,7 +18,7 @@ policyConstraints 却会因“未知关键扩展”而失败。
 
 ## 决定
 
-1. **only-crypto**（内部层级；枚举均为 `#[non_exhaustive]`）：
+1. **akio-crypto**（内部层级；枚举均为 `#[non_exhaustive]`）：
    - `hash::{Shake128, Shake256}`（FIPS 202）：Keccak-f[1600] 海绵结构，提供 `update` 与
      `squeeze`（可扩展输出，不实现 `Hash` trait）。
    - `ed448`（RFC 8032 §5.2，纯 Ed448，空上下文）：`SigningKey::{from_seed, generate, seed,
@@ -39,7 +39,7 @@ policyConstraints 却会因“未知关键扩展”而失败。
      `pkey::PublicKey::{Ed448, Dsa}`、`pkey::PrivateKey::Ed448`（PKCS#8），以及 `der::oid` 中的
      OID（`ED448`、`X448`、`DSA`、`DSA_WITH_SHA*`）。不支持从签发者继承 DSA 参数
      （SubjectPublicKeyInfo 中缺省参数，RFC 3279 §2.3.2）。
-2. **only-x509，证书策略**（RFC 5280 §6.1）：严格解析 certificatePolicies、policyMappings、
+2. **akio-x509，证书策略**（RFC 5280 §6.1）：严格解析 certificatePolicies、policyMappings、
    policyConstraints 与 inhibitAnyPolicy（重复的策略 OID、空的 policyConstraints 或映射列表都是
    编码错误），并提供访问器（`Certificate::{certificate_policies, policy_mappings,
    policy_constraints, inhibit_any_policy, is_self_issued}`、`PolicyConstraints`、
@@ -51,13 +51,13 @@ policyConstraints 却会因“未知关键扩展”而失败。
    `policies` 是用户约束策略集（`ValidPolicies::{Any, Set}`）；`verify` 仍只返回证书链。失败为
    `Error::PolicyViolation`。默认选项下，只有当某张证书的 policyConstraints 要求显式策略而路径上
    没有有效策略时才会失败，这是 RFC 5280 对所有验证器的要求。
-3. **only-x509，测试暴露出的其余 §6.1 内容**：自签发（self-issued）的中间证书不计入
+3. **akio-x509，测试暴露出的其余 §6.1 内容**：自签发（self-issued）的中间证书不计入
    pathLenConstraint（§6.1.4 (l)），也不受名称约束（§6.1.3 (b)）；实现 rfc822Name 与 URI 名称约束
    （邮箱、主机和 `.domain` 三种形式；没有 authority 或使用 IP 字面量的 URI 按失败处理），叶子证书
    主题中的旧式 `emailAddress` 属性也按 rfc822Name 约束检查（此前这里的地址可以绕过约束）；
    `Verifier::allow_ca_end_entity(bool)` 允许把 CA 证书当作终端实体来验证（PKITS 需要，Web PKI
    默认仍为“不允许”）。
-4. **only-x509，吊销（§6.3.3）**：验证器改为在候选路径到达根证书之后、自顶向下检查吊销，因此知道
+4. **akio-x509，吊销（§6.3.3）**：验证器改为在候选路径到达根证书之后、自顶向下检查吊销，因此知道
    信任锚是谁。CRL 的适用范围按证书判断：对每个分发点，CRL 签发者必须是证书的签发者，或者对于
    **间接 CRL**（IDP 中的 `indirectCRL`）是该分发点的 cRLIssuer；IDP 名称必须与分发点名称（包括
    `nameRelativeToCRLIssuer`：`DistributionPoint::relative_name`、
@@ -71,22 +71,22 @@ policyConstraints 却会因“未知关键扩展”而失败。
    `MAX_SIGNATURE_CHECKS`）。`CrlSet::status` 保持原有约定（只信任签发者自己的密钥），并增加分发点
    匹配。增量 CRL 必须与其所扩展的完整 CRL 有相同的签发者和 IDP。序列号按有符号 INTEGER 内容比较
    （−1 的 CRL 条目不再匹配序列号为 255 的证书）。
-5. **only-tls**：组 `x448`（0x001e，在默认列表的最后，因此 ClientHello 会列出它，但首个密钥共享
+5. **akio-tls**：组 `x448`（0x001e，在默认列表的最后，因此 ClientHello 会列出它，但首个密钥共享
    仍为 X25519）和签名方案 `ed448`（0x0808），用于 TLS 1.3 和 1.2（ECDSA 套件），包括证书
    （`Group::X448` 位于隐藏的 `__proto` 模块）。
-6. **验证**：NIST PKITS 由 `crates/only-x509/tests/pkits.rs` 运行（`tools/pkits/prepare.sh` 下载
+6. **验证**：NIST PKITS 由 `crates/akio-x509/tests/pkits.rs` 运行（`tools/pkits/prepare.sh` 下载
    测试套件，不纳入仓库）。第 4 节的每个测试都按 PKITS 文档列出的设置运行，吊销为 hard-fail 模式：
    248 次运行中 242 次符合预期；其余 6 次已列出原因（DSA 参数继承；名称按 DER 字节链接而不做
    RFC 4518 的大小写和空白折叠，这是从第一版起的有意选择）。DSA 使用 FIPS 186-4 SigVer 向量，
    Ed448 与 X448 使用 RFC 8032 与 RFC 7748 的向量，另有 OpenSSL 生成的 Ed448、DSA 证书与 CRL，以及
-   only-tls 与 `openssl s_server` / `s_client` 之间使用 X448 和 Ed448 的互通测试。
+   akio-tls 与 `openssl s_server` / `s_client` 之间使用 X448 和 Ed448 的互通测试。
 
 有意不做：
 
 - **签名的 OCSP 请求**（RFC 6960 §4.1.2 的可选签名）：公共应答器并不要求（CA 遵循的 RFC 5019
   轻量级规范发送未签名请求，多数应答器忽略签名），而且只有应用持有的客户端证书和私钥才能签名。
   `OcspRequest` 保持不签名。
-- **通过网络获取 CRL、OCSP 响应或签发者证书**：only-x509 与 only-tls 是 sans-io 的；获取需要依赖
+- **通过网络获取 CRL、OCSP 响应或签发者证书**：akio-x509 与 akio-tls 是 sans-io 的；获取需要依赖
   图中位于它们之上的 HTTP 客户端，会让握手阻塞或停顿在第三方上（rules.md 第 1 条），会向 CA 泄露
   客户端访问了哪些站点，还会去访问攻击者提供的证书中的 URL（SSRF）。由应用负责获取；
   `crl_distribution_points`、`ocsp_urls` 与 `ca_issuer_urls` 给出地址。

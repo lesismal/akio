@@ -1,0 +1,1822 @@
+pub mod akio_rtp
+pub mod akio_rtp::codec
+#[non_exhaustive] pub enum akio_rtp::codec::CodecError
+pub akio_rtp::codec::CodecError::FragmentWithoutStart
+pub akio_rtp::codec::CodecError::FrameTooLarge
+pub akio_rtp::codec::CodecError::Malformed(&'static str)
+pub akio_rtp::codec::CodecError::Truncated
+pub akio_rtp::codec::CodecError::UnsupportedType(u8)
+impl core::clone::Clone for akio_rtp::codec::CodecError
+pub fn akio_rtp::codec::CodecError::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::codec::CodecError
+impl core::cmp::PartialEq for akio_rtp::codec::CodecError
+pub fn akio_rtp::codec::CodecError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_rtp::codec::CodecError
+impl core::fmt::Debug for akio_rtp::codec::CodecError
+pub fn akio_rtp::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_rtp::codec::CodecError
+pub fn akio_rtp::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::codec::CodecError
+impl core::marker::StructuralPartialEq for akio_rtp::codec::CodecError
+impl core::marker::Send for akio_rtp::codec::CodecError
+impl core::marker::Sync for akio_rtp::codec::CodecError
+impl core::marker::Unpin for akio_rtp::codec::CodecError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::CodecError
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::CodecError
+pub enum akio_rtp::codec::CodecKind
+pub akio_rtp::codec::CodecKind::Av1
+pub akio_rtp::codec::CodecKind::G722
+pub akio_rtp::codec::CodecKind::H264
+pub akio_rtp::codec::CodecKind::H265
+pub akio_rtp::codec::CodecKind::Opus
+pub akio_rtp::codec::CodecKind::Other
+pub akio_rtp::codec::CodecKind::Pcma
+pub akio_rtp::codec::CodecKind::Pcmu
+pub akio_rtp::codec::CodecKind::Vp8
+pub akio_rtp::codec::CodecKind::Vp9
+impl akio_rtp::codec::CodecKind
+pub const akio_rtp::codec::CodecKind::ALL: [akio_rtp::codec::CodecKind; 10]
+pub fn akio_rtp::codec::CodecKind::is_audio(self) -> bool
+pub fn akio_rtp::codec::CodecKind::is_single_packet(self) -> bool
+impl core::clone::Clone for akio_rtp::codec::CodecKind
+pub fn akio_rtp::codec::CodecKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::codec::CodecKind
+impl core::cmp::PartialEq for akio_rtp::codec::CodecKind
+pub fn akio_rtp::codec::CodecKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::codec::CodecKind
+pub fn akio_rtp::codec::CodecKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::codec::CodecKind
+pub fn akio_rtp::codec::CodecKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::codec::CodecKind
+impl core::marker::StructuralPartialEq for akio_rtp::codec::CodecKind
+impl core::marker::Send for akio_rtp::codec::CodecKind
+impl core::marker::Sync for akio_rtp::codec::CodecKind
+impl core::marker::Unpin for akio_rtp::codec::CodecKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::CodecKind
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::CodecKind
+pub struct akio_rtp::codec::Av1Depacketizer
+impl akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Av1Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::Av1Depacketizer
+impl core::marker::Sync for akio_rtp::codec::Av1Depacketizer
+impl core::marker::Unpin for akio_rtp::codec::Av1Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Av1Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Av1Depacketizer
+pub struct akio_rtp::codec::Av1Packetizer
+impl akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::Av1Packetizer
+impl core::marker::Sync for akio_rtp::codec::Av1Packetizer
+impl core::marker::Unpin for akio_rtp::codec::Av1Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Av1Packetizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Av1Packetizer
+pub struct akio_rtp::codec::Frame
+pub akio_rtp::codec::Frame::contiguous: bool
+pub akio_rtp::codec::Frame::data: alloc::vec::Vec<u8>
+pub akio_rtp::codec::Frame::first_arrival: std::time::Instant
+pub akio_rtp::codec::Frame::first_seq: u64
+pub akio_rtp::codec::Frame::keyframe: bool
+pub akio_rtp::codec::Frame::last_seq: u64
+pub akio_rtp::codec::Frame::partial: bool
+pub akio_rtp::codec::Frame::timestamp: u64
+impl core::clone::Clone for akio_rtp::codec::Frame
+pub fn akio_rtp::codec::Frame::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::codec::Frame
+impl core::cmp::PartialEq for akio_rtp::codec::Frame
+pub fn akio_rtp::codec::Frame::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::codec::Frame
+pub fn akio_rtp::codec::Frame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::codec::Frame
+impl core::marker::Send for akio_rtp::codec::Frame
+impl core::marker::Sync for akio_rtp::codec::Frame
+impl core::marker::Unpin for akio_rtp::codec::Frame
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Frame
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Frame
+pub struct akio_rtp::codec::FrameAssembler
+impl akio_rtp::codec::FrameAssembler
+pub fn akio_rtp::codec::FrameAssembler::buffered(&self) -> usize
+pub fn akio_rtp::codec::FrameAssembler::kind(&self) -> akio_rtp::codec::CodecKind
+pub fn akio_rtp::codec::FrameAssembler::new(akio_rtp::codec::CodecKind, usize) -> akio_rtp::codec::FrameAssembler
+pub fn akio_rtp::codec::FrameAssembler::pop(&mut self) -> core::option::Option<akio_rtp::codec::Frame>
+pub fn akio_rtp::codec::FrameAssembler::push(&mut self, u64, u32, bool, &[u8], std::time::Instant)
+pub fn akio_rtp::codec::FrameAssembler::push_partial(&mut self, u64, u32, bool, &[u8], std::time::Instant)
+pub fn akio_rtp::codec::FrameAssembler::skip(&mut self, u64)
+impl core::fmt::Debug for akio_rtp::codec::FrameAssembler
+pub fn akio_rtp::codec::FrameAssembler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::codec::FrameAssembler
+impl !core::marker::Sync for akio_rtp::codec::FrameAssembler
+impl core::marker::Unpin for akio_rtp::codec::FrameAssembler
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::FrameAssembler
+impl !core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::FrameAssembler
+pub struct akio_rtp::codec::H264Depacketizer
+impl akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::H264Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::H264Depacketizer
+impl core::marker::Sync for akio_rtp::codec::H264Depacketizer
+impl core::marker::Unpin for akio_rtp::codec::H264Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::H264Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H264Depacketizer
+pub struct akio_rtp::codec::H264Packetizer
+impl akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::H264Packetizer
+impl core::marker::Sync for akio_rtp::codec::H264Packetizer
+impl core::marker::Unpin for akio_rtp::codec::H264Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::H264Packetizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H264Packetizer
+pub struct akio_rtp::codec::H265Depacketizer
+impl akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::H265Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::H265Depacketizer
+impl core::marker::Sync for akio_rtp::codec::H265Depacketizer
+impl core::marker::Unpin for akio_rtp::codec::H265Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::H265Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H265Depacketizer
+pub struct akio_rtp::codec::H265Packetizer
+impl akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::H265Packetizer
+impl core::marker::Sync for akio_rtp::codec::H265Packetizer
+impl core::marker::Unpin for akio_rtp::codec::H265Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::H265Packetizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::H265Packetizer
+pub struct akio_rtp::codec::PassthroughDepacketizer
+impl akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::PassthroughDepacketizer
+impl core::marker::Sync for akio_rtp::codec::PassthroughDepacketizer
+impl core::marker::Unpin for akio_rtp::codec::PassthroughDepacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::PassthroughDepacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::PassthroughDepacketizer
+pub struct akio_rtp::codec::PassthroughPacketizer
+impl akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::PassthroughPacketizer
+impl core::marker::Sync for akio_rtp::codec::PassthroughPacketizer
+impl core::marker::Unpin for akio_rtp::codec::PassthroughPacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::PassthroughPacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::PassthroughPacketizer
+pub struct akio_rtp::codec::Vp8Depacketizer
+impl akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::Vp8Depacketizer
+impl core::marker::Sync for akio_rtp::codec::Vp8Depacketizer
+impl core::marker::Unpin for akio_rtp::codec::Vp8Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Vp8Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Vp8Depacketizer
+pub struct akio_rtp::codec::Vp8Packetizer
+impl akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::new(u16) -> Self
+pub fn akio_rtp::codec::Vp8Packetizer::picture_id(&self) -> u16
+impl core::clone::Clone for akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::clone(&self) -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::Vp8Packetizer
+impl core::marker::Sync for akio_rtp::codec::Vp8Packetizer
+impl core::marker::Unpin for akio_rtp::codec::Vp8Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Vp8Packetizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Vp8Packetizer
+pub struct akio_rtp::codec::Vp9Depacketizer
+impl akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::new() -> Self
+impl core::clone::Clone for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::clone(&self) -> Self
+impl core::default::Default for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::default() -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::reset(&mut self)
+impl core::marker::Send for akio_rtp::codec::Vp9Depacketizer
+impl core::marker::Sync for akio_rtp::codec::Vp9Depacketizer
+impl core::marker::Unpin for akio_rtp::codec::Vp9Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Vp9Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Vp9Depacketizer
+pub struct akio_rtp::codec::Vp9Packetizer
+impl akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::new(u16) -> Self
+pub fn akio_rtp::codec::Vp9Packetizer::picture_id(&self) -> u16
+impl core::clone::Clone for akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::clone(&self) -> Self
+impl core::fmt::Debug for akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for akio_rtp::codec::Vp9Packetizer
+impl core::marker::Sync for akio_rtp::codec::Vp9Packetizer
+impl core::marker::Unpin for akio_rtp::codec::Vp9Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Vp9Packetizer
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Vp9Packetizer
+pub const akio_rtp::codec::MAX_FRAME_SIZE: usize
+pub trait akio_rtp::codec::Depacketizer: core::marker::Send + core::fmt::Debug
+pub fn akio_rtp::codec::Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Depacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Av1Depacketizer
+pub fn akio_rtp::codec::Av1Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Av1Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Av1Depacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H264Depacketizer
+pub fn akio_rtp::codec::H264Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::H264Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H264Depacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::H265Depacketizer
+pub fn akio_rtp::codec::H265Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::H265Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::H265Depacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::PassthroughDepacketizer
+pub fn akio_rtp::codec::PassthroughDepacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::PassthroughDepacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp8Depacketizer
+pub fn akio_rtp::codec::Vp8Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp8Depacketizer::reset(&mut self)
+impl akio_rtp::codec::Depacketizer for akio_rtp::codec::Vp9Depacketizer
+pub fn akio_rtp::codec::Vp9Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_rtp::codec::CodecError>
+pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn akio_rtp::codec::Vp9Depacketizer::reset(&mut self)
+pub trait akio_rtp::codec::Packetizer: core::marker::Send + core::fmt::Debug
+pub fn akio_rtp::codec::Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Av1Packetizer
+pub fn akio_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H264Packetizer
+pub fn akio_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::H265Packetizer
+pub fn akio_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::PassthroughPacketizer
+pub fn akio_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp8Packetizer
+pub fn akio_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl akio_rtp::codec::Packetizer for akio_rtp::codec::Vp9Packetizer
+pub fn akio_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+pub fn akio_rtp::codec::depacketizer(akio_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn akio_rtp::codec::Depacketizer>
+pub fn akio_rtp::codec::packetizer(akio_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn akio_rtp::codec::Packetizer>
+pub mod akio_rtp::fec
+pub mod akio_rtp::fec::red
+pub struct akio_rtp::fec::red::RedBlock<'a>
+pub akio_rtp::fec::red::RedBlock::data: &'a [u8]
+pub akio_rtp::fec::red::RedBlock::pt: u8
+pub akio_rtp::fec::red::RedBlock::timestamp_offset: u16
+impl<'a> core::clone::Clone for akio_rtp::fec::red::RedBlock<'a>
+pub fn akio_rtp::fec::red::RedBlock<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::cmp::PartialEq for akio_rtp::fec::red::RedBlock<'a>
+pub fn akio_rtp::fec::red::RedBlock<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for akio_rtp::fec::red::RedBlock<'a>
+pub fn akio_rtp::fec::red::RedBlock<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::StructuralPartialEq for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Send for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Sync for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Unpin for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::red::RedBlock<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::red::RedBlock<'a>
+pub fn akio_rtp::fec::red::parse(&[u8]) -> core::option::Option<alloc::vec::Vec<akio_rtp::fec::red::RedBlock<'_>>>
+pub fn akio_rtp::fec::red::unwrap_primary(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::red::wrap(&[u8], u8) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::red::write(&[akio_rtp::fec::red::RedBlock<'_>]) -> alloc::vec::Vec<u8>
+pub enum akio_rtp::fec::FecMaskType
+pub akio_rtp::fec::FecMaskType::Bursty
+pub akio_rtp::fec::FecMaskType::Random
+impl core::clone::Clone for akio_rtp::fec::FecMaskType
+pub fn akio_rtp::fec::FecMaskType::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::FecMaskType
+impl core::cmp::PartialEq for akio_rtp::fec::FecMaskType
+pub fn akio_rtp::fec::FecMaskType::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::fec::FecMaskType
+pub fn akio_rtp::fec::FecMaskType::default() -> Self
+impl core::fmt::Debug for akio_rtp::fec::FecMaskType
+pub fn akio_rtp::fec::FecMaskType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::fec::FecMaskType
+pub fn akio_rtp::fec::FecMaskType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::fec::FecMaskType
+impl core::marker::StructuralPartialEq for akio_rtp::fec::FecMaskType
+impl core::marker::Send for akio_rtp::fec::FecMaskType
+impl core::marker::Sync for akio_rtp::fec::FecMaskType
+impl core::marker::Unpin for akio_rtp::fec::FecMaskType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecMaskType
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecMaskType
+pub enum akio_rtp::fec::FecScheme
+pub akio_rtp::fec::FecScheme::Flexfec
+pub akio_rtp::fec::FecScheme::Flexfec03
+pub akio_rtp::fec::FecScheme::Ulpfec
+impl core::clone::Clone for akio_rtp::fec::FecScheme
+pub fn akio_rtp::fec::FecScheme::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::FecScheme
+impl core::cmp::PartialEq for akio_rtp::fec::FecScheme
+pub fn akio_rtp::fec::FecScheme::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::fec::FecScheme
+pub fn akio_rtp::fec::FecScheme::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::fec::FecScheme
+pub fn akio_rtp::fec::FecScheme::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::fec::FecScheme
+impl core::marker::StructuralPartialEq for akio_rtp::fec::FecScheme
+impl core::marker::Send for akio_rtp::fec::FecScheme
+impl core::marker::Sync for akio_rtp::fec::FecScheme
+impl core::marker::Unpin for akio_rtp::fec::FecScheme
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecScheme
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecScheme
+pub struct akio_rtp::fec::FecDecoder
+impl akio_rtp::fec::FecDecoder
+pub fn akio_rtp::fec::FecDecoder::new(akio_rtp::fec::FecScheme, u32) -> akio_rtp::fec::FecDecoder
+pub fn akio_rtp::fec::FecDecoder::on_fec(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::FecDecoder::on_media(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::FecDecoder::partially_recovered(&self) -> usize
+pub fn akio_rtp::fec::FecDecoder::recovered(&self) -> u64
+pub fn akio_rtp::fec::FecDecoder::take_partials(&mut self, u32) -> alloc::vec::Vec<akio_rtp::fec::PartialPacket>
+impl core::fmt::Debug for akio_rtp::fec::FecDecoder
+pub fn akio_rtp::fec::FecDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::fec::FecDecoder
+impl core::marker::Sync for akio_rtp::fec::FecDecoder
+impl core::marker::Unpin for akio_rtp::fec::FecDecoder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecDecoder
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecDecoder
+pub struct akio_rtp::fec::FecEncoder
+impl akio_rtp::fec::FecEncoder
+pub fn akio_rtp::fec::FecEncoder::encode(&self, &[&[u8]], &[alloc::vec::Vec<usize>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn akio_rtp::fec::FecEncoder::encode_ulp(&self, &[&[u8]], &[alloc::vec::Vec<akio_rtp::fec::UlpLevelSpec>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn akio_rtp::fec::FecEncoder::flush(&mut self) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::FecEncoder::new(akio_rtp::fec::FecScheme, u32, u8) -> akio_rtp::fec::FecEncoder
+pub fn akio_rtp::fec::FecEncoder::protection(&self) -> akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecEncoder::push(&mut self, &[u8], bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::FecEncoder::push_frame(&mut self, &[u8], bool, bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::fec::FecEncoder::rate(&self) -> u8
+pub fn akio_rtp::fec::FecEncoder::set_protection(&mut self, akio_rtp::fec::FecProtection)
+pub fn akio_rtp::fec::FecEncoder::set_rate(&mut self, u8)
+pub fn akio_rtp::fec::FecEncoder::set_ulp_level0(&mut self, core::option::Option<usize>)
+impl core::fmt::Debug for akio_rtp::fec::FecEncoder
+pub fn akio_rtp::fec::FecEncoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::fec::FecEncoder
+impl core::marker::Sync for akio_rtp::fec::FecEncoder
+impl core::marker::Unpin for akio_rtp::fec::FecEncoder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecEncoder
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecEncoder
+pub struct akio_rtp::fec::FecHeader
+pub akio_rtp::fec::FecHeader::base_seq: u16
+pub akio_rtp::fec::FecHeader::header_len: usize
+pub akio_rtp::fec::FecHeader::length_recovery: u16
+pub akio_rtp::fec::FecHeader::mpt_recovery: u8
+pub akio_rtp::fec::FecHeader::offsets: alloc::vec::Vec<u16>
+pub akio_rtp::fec::FecHeader::protection_len: usize
+pub akio_rtp::fec::FecHeader::pxcc_recovery: u8
+pub akio_rtp::fec::FecHeader::ssrc: core::option::Option<u32>
+pub akio_rtp::fec::FecHeader::ts_recovery: u32
+pub akio_rtp::fec::FecHeader::ulp_levels: alloc::vec::Vec<akio_rtp::fec::UlpLevel>
+impl akio_rtp::fec::FecHeader
+pub fn akio_rtp::fec::FecHeader::parse(akio_rtp::fec::FecScheme, &[u8]) -> core::option::Option<akio_rtp::fec::FecHeader>
+pub fn akio_rtp::fec::FecHeader::write(&self, akio_rtp::fec::FecScheme) -> alloc::vec::Vec<u8>
+pub fn akio_rtp::fec::FecHeader::write_level(&self, usize) -> core::option::Option<alloc::vec::Vec<u8>>
+impl core::clone::Clone for akio_rtp::fec::FecHeader
+pub fn akio_rtp::fec::FecHeader::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::FecHeader
+impl core::cmp::PartialEq for akio_rtp::fec::FecHeader
+pub fn akio_rtp::fec::FecHeader::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::fec::FecHeader
+pub fn akio_rtp::fec::FecHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::fec::FecHeader
+impl core::marker::Send for akio_rtp::fec::FecHeader
+impl core::marker::Sync for akio_rtp::fec::FecHeader
+impl core::marker::Unpin for akio_rtp::fec::FecHeader
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecHeader
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecHeader
+pub struct akio_rtp::fec::FecProtection
+pub akio_rtp::fec::FecProtection::delta_rate: u8
+pub akio_rtp::fec::FecProtection::key_rate: u8
+pub akio_rtp::fec::FecProtection::mask: akio_rtp::fec::FecMaskType
+pub akio_rtp::fec::FecProtection::max_frames: u8
+impl akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecProtection::rate(u8) -> akio_rtp::fec::FecProtection
+impl core::clone::Clone for akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecProtection::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::FecProtection
+impl core::cmp::PartialEq for akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecProtection::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecProtection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::FecProtection::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::fec::FecProtection
+impl core::marker::StructuralPartialEq for akio_rtp::fec::FecProtection
+impl core::marker::Send for akio_rtp::fec::FecProtection
+impl core::marker::Sync for akio_rtp::fec::FecProtection
+impl core::marker::Unpin for akio_rtp::fec::FecProtection
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::FecProtection
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::FecProtection
+pub struct akio_rtp::fec::PartialPacket
+pub akio_rtp::fec::PartialPacket::length: usize
+pub akio_rtp::fec::PartialPacket::packet: alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_rtp::fec::PartialPacket
+pub fn akio_rtp::fec::PartialPacket::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::PartialPacket
+impl core::cmp::PartialEq for akio_rtp::fec::PartialPacket
+pub fn akio_rtp::fec::PartialPacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::fec::PartialPacket
+pub fn akio_rtp::fec::PartialPacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::fec::PartialPacket
+impl core::marker::Send for akio_rtp::fec::PartialPacket
+impl core::marker::Sync for akio_rtp::fec::PartialPacket
+impl core::marker::Unpin for akio_rtp::fec::PartialPacket
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::PartialPacket
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::PartialPacket
+pub struct akio_rtp::fec::ProtectionPolicy
+impl akio_rtp::fec::ProtectionPolicy
+pub fn akio_rtp::fec::ProtectionPolicy::new(bool) -> akio_rtp::fec::ProtectionPolicy
+pub fn akio_rtp::fec::ProtectionPolicy::on_frame(&mut self, std::time::Instant, usize, usize, bool)
+pub fn akio_rtp::fec::ProtectionPolicy::on_loss(&mut self, std::time::Instant, f64)
+pub fn akio_rtp::fec::ProtectionPolicy::protection(&self, std::time::Instant) -> akio_rtp::fec::FecProtection
+pub fn akio_rtp::fec::ProtectionPolicy::set_mask(&mut self, akio_rtp::fec::FecMaskType)
+pub fn akio_rtp::fec::ProtectionPolicy::set_nack(&mut self, bool)
+pub fn akio_rtp::fec::ProtectionPolicy::set_pixels(&mut self, core::option::Option<u32>)
+pub fn akio_rtp::fec::ProtectionPolicy::set_rtt(&mut self, core::time::Duration)
+impl core::fmt::Debug for akio_rtp::fec::ProtectionPolicy
+pub fn akio_rtp::fec::ProtectionPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::fec::ProtectionPolicy
+impl core::marker::Sync for akio_rtp::fec::ProtectionPolicy
+impl core::marker::Unpin for akio_rtp::fec::ProtectionPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::ProtectionPolicy
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::ProtectionPolicy
+pub struct akio_rtp::fec::UlpLevel
+pub akio_rtp::fec::UlpLevel::offsets: alloc::vec::Vec<u16>
+pub akio_rtp::fec::UlpLevel::payload_offset: usize
+pub akio_rtp::fec::UlpLevel::protection_len: usize
+impl core::clone::Clone for akio_rtp::fec::UlpLevel
+pub fn akio_rtp::fec::UlpLevel::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::UlpLevel
+impl core::cmp::PartialEq for akio_rtp::fec::UlpLevel
+pub fn akio_rtp::fec::UlpLevel::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::fec::UlpLevel
+pub fn akio_rtp::fec::UlpLevel::default() -> Self
+impl core::fmt::Debug for akio_rtp::fec::UlpLevel
+pub fn akio_rtp::fec::UlpLevel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::fec::UlpLevel
+impl core::marker::Send for akio_rtp::fec::UlpLevel
+impl core::marker::Sync for akio_rtp::fec::UlpLevel
+impl core::marker::Unpin for akio_rtp::fec::UlpLevel
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::UlpLevel
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::UlpLevel
+pub struct akio_rtp::fec::UlpLevelSpec
+pub akio_rtp::fec::UlpLevelSpec::mask: alloc::vec::Vec<usize>
+pub akio_rtp::fec::UlpLevelSpec::protection_len: usize
+impl core::clone::Clone for akio_rtp::fec::UlpLevelSpec
+pub fn akio_rtp::fec::UlpLevelSpec::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::fec::UlpLevelSpec
+impl core::cmp::PartialEq for akio_rtp::fec::UlpLevelSpec
+pub fn akio_rtp::fec::UlpLevelSpec::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::fec::UlpLevelSpec
+pub fn akio_rtp::fec::UlpLevelSpec::default() -> Self
+impl core::fmt::Debug for akio_rtp::fec::UlpLevelSpec
+pub fn akio_rtp::fec::UlpLevelSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::fec::UlpLevelSpec
+impl core::marker::Send for akio_rtp::fec::UlpLevelSpec
+impl core::marker::Sync for akio_rtp::fec::UlpLevelSpec
+impl core::marker::Unpin for akio_rtp::fec::UlpLevelSpec
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::fec::UlpLevelSpec
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::fec::UlpLevelSpec
+pub const akio_rtp::fec::MAX_FEC_GROUP: usize
+pub fn akio_rtp::fec::interleaved_masks(usize, usize) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
+pub fn akio_rtp::fec::packet_masks(usize, usize, akio_rtp::fec::FecMaskType) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
+pub fn akio_rtp::fec::protection_factors(f64, u64, f64, f64, f64, core::option::Option<u32>, bool, core::time::Duration) -> akio_rtp::fec::FecProtection
+pub enum akio_rtp::BandwidthUsage
+pub akio_rtp::BandwidthUsage::Normal
+pub akio_rtp::BandwidthUsage::Overusing
+pub akio_rtp::BandwidthUsage::Underusing
+impl core::clone::Clone for akio_rtp::BandwidthUsage
+pub fn akio_rtp::BandwidthUsage::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::BandwidthUsage
+impl core::cmp::PartialEq for akio_rtp::BandwidthUsage
+pub fn akio_rtp::BandwidthUsage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::BandwidthUsage
+pub fn akio_rtp::BandwidthUsage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::BandwidthUsage
+impl core::marker::StructuralPartialEq for akio_rtp::BandwidthUsage
+impl core::marker::Send for akio_rtp::BandwidthUsage
+impl core::marker::Sync for akio_rtp::BandwidthUsage
+impl core::marker::Unpin for akio_rtp::BandwidthUsage
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::BandwidthUsage
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::BandwidthUsage
+#[non_exhaustive] pub enum akio_rtp::EcnResponse
+pub akio_rtp::EcnResponse::Classic
+pub akio_rtp::EcnResponse::Scalable
+impl core::clone::Clone for akio_rtp::EcnResponse
+pub fn akio_rtp::EcnResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::EcnResponse
+impl core::cmp::PartialEq for akio_rtp::EcnResponse
+pub fn akio_rtp::EcnResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EcnResponse
+pub fn akio_rtp::EcnResponse::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnResponse
+pub fn akio_rtp::EcnResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EcnResponse
+impl core::marker::StructuralPartialEq for akio_rtp::EcnResponse
+impl core::marker::Send for akio_rtp::EcnResponse
+impl core::marker::Sync for akio_rtp::EcnResponse
+impl core::marker::Unpin for akio_rtp::EcnResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnResponse
+#[non_exhaustive] pub enum akio_rtp::Error
+pub akio_rtp::Error::BadPadding
+pub akio_rtp::Error::BadVersion
+pub akio_rtp::Error::Malformed(&'static str)
+pub akio_rtp::Error::TooShort
+impl core::clone::Clone for akio_rtp::Error
+pub fn akio_rtp::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::Error
+impl core::cmp::PartialEq for akio_rtp::Error
+pub fn akio_rtp::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_rtp::Error
+impl core::fmt::Debug for akio_rtp::Error
+pub fn akio_rtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_rtp::Error
+pub fn akio_rtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::Error
+impl core::marker::StructuralPartialEq for akio_rtp::Error
+impl core::marker::Send for akio_rtp::Error
+impl core::marker::Sync for akio_rtp::Error
+impl core::marker::Unpin for akio_rtp::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::Error
+pub enum akio_rtp::Extension
+pub akio_rtp::Extension::AbsSendTime
+pub akio_rtp::Extension::AudioLevel
+pub akio_rtp::Extension::Mid
+pub akio_rtp::Extension::PlayoutDelay
+pub akio_rtp::Extension::RepairedRtpStreamId
+pub akio_rtp::Extension::RtpStreamId
+pub akio_rtp::Extension::TransmissionOffset
+pub akio_rtp::Extension::TransportCc
+pub akio_rtp::Extension::VideoOrientation
+impl akio_rtp::Extension
+pub const akio_rtp::Extension::ALL: [akio_rtp::Extension; 9]
+pub fn akio_rtp::Extension::from_uri(&str) -> core::option::Option<akio_rtp::Extension>
+pub fn akio_rtp::Extension::uri(self) -> &'static str
+impl core::clone::Clone for akio_rtp::Extension
+pub fn akio_rtp::Extension::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::Extension
+impl core::cmp::PartialEq for akio_rtp::Extension
+pub fn akio_rtp::Extension::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::Extension
+pub fn akio_rtp::Extension::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::Extension
+pub fn akio_rtp::Extension::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::Extension
+impl core::marker::StructuralPartialEq for akio_rtp::Extension
+impl core::marker::Send for akio_rtp::Extension
+impl core::marker::Sync for akio_rtp::Extension
+impl core::marker::Unpin for akio_rtp::Extension
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::Extension
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::Extension
+#[non_exhaustive] pub enum akio_rtp::JitterPush
+pub akio_rtp::JitterPush::Buffered
+pub akio_rtp::JitterPush::Duplicate
+pub akio_rtp::JitterPush::Late
+pub akio_rtp::JitterPush::Overflow
+impl core::clone::Clone for akio_rtp::JitterPush
+pub fn akio_rtp::JitterPush::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::JitterPush
+impl core::cmp::PartialEq for akio_rtp::JitterPush
+pub fn akio_rtp::JitterPush::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::JitterPush
+pub fn akio_rtp::JitterPush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::JitterPush
+impl core::marker::StructuralPartialEq for akio_rtp::JitterPush
+impl core::marker::Send for akio_rtp::JitterPush
+impl core::marker::Sync for akio_rtp::JitterPush
+impl core::marker::Unpin for akio_rtp::JitterPush
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterPush
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterPush
+pub enum akio_rtp::Plc
+pub akio_rtp::Plc::Disabled
+pub akio_rtp::Plc::Enhanced
+pub akio_rtp::Plc::Standard
+pub akio_rtp::Plc::Unspecified
+impl akio_rtp::Plc
+pub fn akio_rtp::Plc::of_codec(&str) -> akio_rtp::Plc
+impl core::clone::Clone for akio_rtp::Plc
+pub fn akio_rtp::Plc::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::Plc
+impl core::cmp::PartialEq for akio_rtp::Plc
+pub fn akio_rtp::Plc::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::Plc
+pub fn akio_rtp::Plc::default() -> Self
+impl core::fmt::Debug for akio_rtp::Plc
+pub fn akio_rtp::Plc::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::Plc
+impl core::marker::StructuralPartialEq for akio_rtp::Plc
+impl core::marker::Send for akio_rtp::Plc
+impl core::marker::Sync for akio_rtp::Plc
+impl core::marker::Unpin for akio_rtp::Plc
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::Plc
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::Plc
+pub enum akio_rtp::Rtcp
+pub akio_rtp::Rtcp::CongestionControl(akio_rtp::CcfbFeedback)
+pub akio_rtp::Rtcp::ExtendedReport
+pub akio_rtp::Rtcp::ExtendedReport::blocks: alloc::vec::Vec<akio_rtp::XrBlock>
+pub akio_rtp::Rtcp::ExtendedReport::ssrc: u32
+pub akio_rtp::Rtcp::Fir
+pub akio_rtp::Rtcp::Fir::entries: alloc::vec::Vec<(u32, u8)>
+pub akio_rtp::Rtcp::Fir::sender_ssrc: u32
+pub akio_rtp::Rtcp::Goodbye
+pub akio_rtp::Rtcp::Goodbye::reason: core::option::Option<alloc::string::String>
+pub akio_rtp::Rtcp::Goodbye::ssrcs: alloc::vec::Vec<u32>
+pub akio_rtp::Rtcp::Nack
+pub akio_rtp::Rtcp::Nack::lost: alloc::vec::Vec<u16>
+pub akio_rtp::Rtcp::Nack::media_ssrc: u32
+pub akio_rtp::Rtcp::Nack::sender_ssrc: u32
+pub akio_rtp::Rtcp::Pli
+pub akio_rtp::Rtcp::Pli::media_ssrc: u32
+pub akio_rtp::Rtcp::Pli::sender_ssrc: u32
+pub akio_rtp::Rtcp::ReceiverReport
+pub akio_rtp::Rtcp::ReceiverReport::reports: alloc::vec::Vec<akio_rtp::ReportBlock>
+pub akio_rtp::Rtcp::ReceiverReport::ssrc: u32
+pub akio_rtp::Rtcp::Remb
+pub akio_rtp::Rtcp::Remb::bitrate: u64
+pub akio_rtp::Rtcp::Remb::sender_ssrc: u32
+pub akio_rtp::Rtcp::Remb::ssrcs: alloc::vec::Vec<u32>
+pub akio_rtp::Rtcp::SenderReport
+pub akio_rtp::Rtcp::SenderReport::info: akio_rtp::SenderInfo
+pub akio_rtp::Rtcp::SenderReport::reports: alloc::vec::Vec<akio_rtp::ReportBlock>
+pub akio_rtp::Rtcp::SenderReport::ssrc: u32
+pub akio_rtp::Rtcp::SourceDescription(alloc::vec::Vec<(u32, alloc::vec::Vec<(u8, alloc::string::String)>)>)
+pub akio_rtp::Rtcp::Tmmbn
+pub akio_rtp::Rtcp::Tmmbn::entries: alloc::vec::Vec<akio_rtp::TmmbItem>
+pub akio_rtp::Rtcp::Tmmbn::sender_ssrc: u32
+pub akio_rtp::Rtcp::Tmmbr
+pub akio_rtp::Rtcp::Tmmbr::entries: alloc::vec::Vec<akio_rtp::TmmbItem>
+pub akio_rtp::Rtcp::Tmmbr::sender_ssrc: u32
+pub akio_rtp::Rtcp::TransportCc(akio_rtp::TwccFeedback)
+pub akio_rtp::Rtcp::Unknown
+pub akio_rtp::Rtcp::Unknown::data: alloc::vec::Vec<u8>
+pub akio_rtp::Rtcp::Unknown::fmt: u8
+pub akio_rtp::Rtcp::Unknown::packet_type: u8
+impl core::clone::Clone for akio_rtp::Rtcp
+pub fn akio_rtp::Rtcp::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::Rtcp
+impl core::cmp::PartialEq for akio_rtp::Rtcp
+pub fn akio_rtp::Rtcp::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::Rtcp
+pub fn akio_rtp::Rtcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::Rtcp
+impl core::marker::Send for akio_rtp::Rtcp
+impl core::marker::Sync for akio_rtp::Rtcp
+impl core::marker::Unpin for akio_rtp::Rtcp
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::Rtcp
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::Rtcp
+pub enum akio_rtp::SdesItem
+pub akio_rtp::SdesItem::Priv
+pub akio_rtp::SdesItem::Priv::prefix: alloc::string::String
+pub akio_rtp::SdesItem::Priv::value: alloc::string::String
+pub akio_rtp::SdesItem::Text
+pub akio_rtp::SdesItem::Text::item_type: u8
+pub akio_rtp::SdesItem::Text::text: alloc::string::String
+impl akio_rtp::SdesItem
+pub const akio_rtp::SdesItem::APSI: u8
+pub const akio_rtp::SdesItem::CCID: u8
+pub const akio_rtp::SdesItem::CNAME: u8
+pub const akio_rtp::SdesItem::EMAIL: u8
+pub const akio_rtp::SdesItem::END: u8
+pub const akio_rtp::SdesItem::H323_CADDR: u8
+pub const akio_rtp::SdesItem::LOC: u8
+pub const akio_rtp::SdesItem::MID: u8
+pub const akio_rtp::SdesItem::NAME: u8
+pub const akio_rtp::SdesItem::NOTE: u8
+pub const akio_rtp::SdesItem::PHONE: u8
+pub const akio_rtp::SdesItem::PRIV: u8
+pub const akio_rtp::SdesItem::REPAIRED_RTP_STREAM_ID: u8
+pub const akio_rtp::SdesItem::RGRP: u8
+pub const akio_rtp::SdesItem::RTP_STREAM_ID: u8
+pub const akio_rtp::SdesItem::TOOL: u8
+pub fn akio_rtp::SdesItem::cname(impl core::convert::Into<alloc::string::String>) -> akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::from_pair(u8, &str) -> akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::item_type(&self) -> u8
+pub fn akio_rtp::SdesItem::private(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::text(u8, impl core::convert::Into<alloc::string::String>) -> akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::to_pair(&self) -> (u8, alloc::string::String)
+impl core::clone::Clone for akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::SdesItem
+impl core::cmp::PartialEq for akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::SdesItem
+pub fn akio_rtp::SdesItem::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_rtp::SdesItem
+impl core::marker::Send for akio_rtp::SdesItem
+impl core::marker::Sync for akio_rtp::SdesItem
+impl core::marker::Unpin for akio_rtp::SdesItem
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::SdesItem
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::SdesItem
+pub enum akio_rtp::XrBlock
+pub akio_rtp::XrBlock::Dlrr(alloc::vec::Vec<akio_rtp::DlrrItem>)
+pub akio_rtp::XrBlock::DuplicateRle(akio_rtp::RleReport)
+pub akio_rtp::XrBlock::LossRle(akio_rtp::RleReport)
+pub akio_rtp::XrBlock::PacketReceiptTimes
+pub akio_rtp::XrBlock::PacketReceiptTimes::begin_seq: u16
+pub akio_rtp::XrBlock::PacketReceiptTimes::end_seq: u16
+pub akio_rtp::XrBlock::PacketReceiptTimes::ssrc: u32
+pub akio_rtp::XrBlock::PacketReceiptTimes::thinning: u8
+pub akio_rtp::XrBlock::PacketReceiptTimes::times: alloc::vec::Vec<u32>
+pub akio_rtp::XrBlock::ReceiverReferenceTime
+pub akio_rtp::XrBlock::ReceiverReferenceTime::ntp: u64
+pub akio_rtp::XrBlock::StatisticsSummary(akio_rtp::StatisticsSummary)
+pub akio_rtp::XrBlock::Unknown
+pub akio_rtp::XrBlock::Unknown::block_type: u8
+pub akio_rtp::XrBlock::Unknown::data: alloc::vec::Vec<u8>
+pub akio_rtp::XrBlock::Unknown::type_specific: u8
+pub akio_rtp::XrBlock::VoipMetrics(akio_rtp::VoipMetrics)
+impl core::clone::Clone for akio_rtp::XrBlock
+pub fn akio_rtp::XrBlock::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::XrBlock
+impl core::cmp::PartialEq for akio_rtp::XrBlock
+pub fn akio_rtp::XrBlock::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::XrBlock
+pub fn akio_rtp::XrBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::XrBlock
+impl core::marker::Send for akio_rtp::XrBlock
+impl core::marker::Sync for akio_rtp::XrBlock
+impl core::marker::Unpin for akio_rtp::XrBlock
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::XrBlock
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::XrBlock
+pub struct akio_rtp::BandwidthEstimator
+impl akio_rtp::BandwidthEstimator
+pub fn akio_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option::Option<u64>
+pub fn akio_rtp::BandwidthEstimator::application_limited(&self) -> bool
+pub fn akio_rtp::BandwidthEstimator::bounds(&self) -> (u64, u64)
+pub fn akio_rtp::BandwidthEstimator::cancel_probes(&mut self)
+pub fn akio_rtp::BandwidthEstimator::ce_fraction(&self) -> core::option::Option<f64>
+pub fn akio_rtp::BandwidthEstimator::ecn_counts(&self) -> (u64, u64)
+pub fn akio_rtp::BandwidthEstimator::ecn_response(&self) -> akio_rtp::EcnResponse
+pub fn akio_rtp::BandwidthEstimator::estimate(&self) -> u64
+pub fn akio_rtp::BandwidthEstimator::link_capacity(&self) -> core::option::Option<(u64, u64)>
+pub fn akio_rtp::BandwidthEstimator::new(u64) -> akio_rtp::BandwidthEstimator
+pub fn akio_rtp::BandwidthEstimator::on_ecn_counts(&mut self, std::time::Instant, u64, u64)
+pub fn akio_rtp::BandwidthEstimator::on_network_change(&mut self, std::time::Instant)
+pub fn akio_rtp::BandwidthEstimator::on_packet_results(&mut self, std::time::Instant, &[akio_rtp::PacketResult])
+pub fn akio_rtp::BandwidthEstimator::on_probe_sent(&mut self, std::time::Instant, u32, usize)
+pub fn akio_rtp::BandwidthEstimator::poll_probe(&mut self, std::time::Instant) -> core::option::Option<akio_rtp::ProbePacket>
+pub fn akio_rtp::BandwidthEstimator::probe_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_rtp::BandwidthEstimator::set_bounds(&mut self, std::time::Instant, u64, u64)
+pub fn akio_rtp::BandwidthEstimator::set_ecn_response(&mut self, akio_rtp::EcnResponse)
+pub fn akio_rtp::BandwidthEstimator::set_network_state_estimate(&mut self, core::option::Option<u64>)
+pub fn akio_rtp::BandwidthEstimator::set_remote_estimate(&mut self, u64)
+pub fn akio_rtp::BandwidthEstimator::set_rtt(&mut self, core::time::Duration)
+pub fn akio_rtp::BandwidthEstimator::usage(&self) -> akio_rtp::BandwidthUsage
+pub fn akio_rtp::BandwidthEstimator::with_bounds(self, u64, u64) -> akio_rtp::BandwidthEstimator
+pub fn akio_rtp::BandwidthEstimator::with_probing(self, bool) -> akio_rtp::BandwidthEstimator
+impl core::fmt::Debug for akio_rtp::BandwidthEstimator
+pub fn akio_rtp::BandwidthEstimator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::BandwidthEstimator
+impl core::marker::Sync for akio_rtp::BandwidthEstimator
+impl core::marker::Unpin for akio_rtp::BandwidthEstimator
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::BandwidthEstimator
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::BandwidthEstimator
+pub struct akio_rtp::BurstLossModel
+impl akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::burst_ratio(&self) -> f64
+pub fn akio_rtp::BurstLossModel::loss_fraction(&self) -> f64
+pub fn akio_rtp::BurstLossModel::metrics(&self, u32, u16) -> akio_rtp::VoipMetrics
+pub fn akio_rtp::BurstLossModel::new(u8) -> akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
+impl akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::report(&self, u32, u16, &akio_rtp::VoipQuality) -> akio_rtp::VoipMetrics
+impl core::clone::Clone for akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::clone(&self) -> Self
+impl core::default::Default for akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::default() -> akio_rtp::BurstLossModel
+impl core::fmt::Debug for akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::BurstLossModel
+impl core::marker::Sync for akio_rtp::BurstLossModel
+impl core::marker::Unpin for akio_rtp::BurstLossModel
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::BurstLossModel
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::BurstLossModel
+pub struct akio_rtp::CcfbFeedback
+pub akio_rtp::CcfbFeedback::report_timestamp: u32
+pub akio_rtp::CcfbFeedback::sender_ssrc: u32
+pub akio_rtp::CcfbFeedback::streams: alloc::vec::Vec<akio_rtp::CcfbStream>
+impl core::clone::Clone for akio_rtp::CcfbFeedback
+pub fn akio_rtp::CcfbFeedback::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::CcfbFeedback
+impl core::cmp::PartialEq for akio_rtp::CcfbFeedback
+pub fn akio_rtp::CcfbFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::CcfbFeedback
+pub fn akio_rtp::CcfbFeedback::default() -> Self
+impl core::fmt::Debug for akio_rtp::CcfbFeedback
+pub fn akio_rtp::CcfbFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::CcfbFeedback
+impl core::marker::Send for akio_rtp::CcfbFeedback
+impl core::marker::Sync for akio_rtp::CcfbFeedback
+impl core::marker::Unpin for akio_rtp::CcfbFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::CcfbFeedback
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::CcfbFeedback
+pub struct akio_rtp::CcfbMetric
+pub akio_rtp::CcfbMetric::arrival_offset: u16
+pub akio_rtp::CcfbMetric::ecn: u8
+impl core::clone::Clone for akio_rtp::CcfbMetric
+pub fn akio_rtp::CcfbMetric::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::CcfbMetric
+impl core::cmp::PartialEq for akio_rtp::CcfbMetric
+pub fn akio_rtp::CcfbMetric::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::CcfbMetric
+pub fn akio_rtp::CcfbMetric::default() -> Self
+impl core::fmt::Debug for akio_rtp::CcfbMetric
+pub fn akio_rtp::CcfbMetric::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::CcfbMetric
+impl core::marker::StructuralPartialEq for akio_rtp::CcfbMetric
+impl core::marker::Send for akio_rtp::CcfbMetric
+impl core::marker::Sync for akio_rtp::CcfbMetric
+impl core::marker::Unpin for akio_rtp::CcfbMetric
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::CcfbMetric
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::CcfbMetric
+pub struct akio_rtp::CcfbReceiver
+impl akio_rtp::CcfbReceiver
+pub fn akio_rtp::CcfbReceiver::new() -> akio_rtp::CcfbReceiver
+pub fn akio_rtp::CcfbReceiver::on_received(&mut self, u32, u16, std::time::Instant, u8)
+pub fn akio_rtp::CcfbReceiver::poll_feedback(&mut self, std::time::Instant, u64, u32) -> core::option::Option<akio_rtp::Rtcp>
+pub fn akio_rtp::CcfbReceiver::set_interval(&mut self, core::time::Duration)
+impl core::default::Default for akio_rtp::CcfbReceiver
+pub fn akio_rtp::CcfbReceiver::default() -> akio_rtp::CcfbReceiver
+impl core::fmt::Debug for akio_rtp::CcfbReceiver
+pub fn akio_rtp::CcfbReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::CcfbReceiver
+impl core::marker::Sync for akio_rtp::CcfbReceiver
+impl core::marker::Unpin for akio_rtp::CcfbReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::CcfbReceiver
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::CcfbReceiver
+pub struct akio_rtp::CcfbSender
+impl akio_rtp::CcfbSender
+pub fn akio_rtp::CcfbSender::new() -> akio_rtp::CcfbSender
+pub fn akio_rtp::CcfbSender::on_feedback(&mut self, std::time::Instant, &akio_rtp::CcfbFeedback) -> alloc::vec::Vec<akio_rtp::PacketResult>
+pub fn akio_rtp::CcfbSender::on_sent(&mut self, u32, u16, std::time::Instant, usize)
+pub fn akio_rtp::CcfbSender::on_sent_probe(&mut self, u32, u16, std::time::Instant, usize, u32)
+impl core::default::Default for akio_rtp::CcfbSender
+pub fn akio_rtp::CcfbSender::default() -> Self
+impl core::fmt::Debug for akio_rtp::CcfbSender
+pub fn akio_rtp::CcfbSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::CcfbSender
+impl core::marker::Sync for akio_rtp::CcfbSender
+impl core::marker::Unpin for akio_rtp::CcfbSender
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::CcfbSender
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::CcfbSender
+pub struct akio_rtp::CcfbStream
+pub akio_rtp::CcfbStream::begin_seq: u16
+pub akio_rtp::CcfbStream::reports: alloc::vec::Vec<core::option::Option<akio_rtp::CcfbMetric>>
+pub akio_rtp::CcfbStream::ssrc: u32
+impl core::clone::Clone for akio_rtp::CcfbStream
+pub fn akio_rtp::CcfbStream::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::CcfbStream
+impl core::cmp::PartialEq for akio_rtp::CcfbStream
+pub fn akio_rtp::CcfbStream::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::CcfbStream
+pub fn akio_rtp::CcfbStream::default() -> Self
+impl core::fmt::Debug for akio_rtp::CcfbStream
+pub fn akio_rtp::CcfbStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::CcfbStream
+impl core::marker::Send for akio_rtp::CcfbStream
+impl core::marker::Sync for akio_rtp::CcfbStream
+impl core::marker::Unpin for akio_rtp::CcfbStream
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::CcfbStream
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::CcfbStream
+pub struct akio_rtp::DlrrItem
+pub akio_rtp::DlrrItem::delay_since_last_rr: u32
+pub akio_rtp::DlrrItem::last_rr: u32
+pub akio_rtp::DlrrItem::ssrc: u32
+impl core::clone::Clone for akio_rtp::DlrrItem
+pub fn akio_rtp::DlrrItem::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::DlrrItem
+impl core::cmp::PartialEq for akio_rtp::DlrrItem
+pub fn akio_rtp::DlrrItem::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::DlrrItem
+pub fn akio_rtp::DlrrItem::default() -> Self
+impl core::fmt::Debug for akio_rtp::DlrrItem
+pub fn akio_rtp::DlrrItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::DlrrItem
+impl core::marker::StructuralPartialEq for akio_rtp::DlrrItem
+impl core::marker::Send for akio_rtp::DlrrItem
+impl core::marker::Sync for akio_rtp::DlrrItem
+impl core::marker::Unpin for akio_rtp::DlrrItem
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::DlrrItem
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::DlrrItem
+pub struct akio_rtp::EModel
+impl akio_rtp::EModel
+pub fn akio_rtp::EModel::codec(f64, f64) -> akio_rtp::EModel
+pub fn akio_rtp::EModel::delay_impairment(core::time::Duration) -> f64
+pub fn akio_rtp::EModel::equipment_impairment(&self, f64, f64) -> f64
+pub fn akio_rtp::EModel::estimate(&self, f64, f64, core::option::Option<core::time::Duration>, core::time::Duration, core::time::Duration, core::option::Option<core::time::Duration>) -> akio_rtp::EModelScore
+pub fn akio_rtp::EModel::estimate_report(&self, &akio_rtp::BurstLossModel, &akio_rtp::VoipQuality, core::time::Duration, core::time::Duration) -> akio_rtp::EModelScore
+pub fn akio_rtp::EModel::for_codec(&str, akio_rtp::Plc) -> core::option::Option<akio_rtp::EModel>
+pub fn akio_rtp::EModel::for_codec_rate(&str, akio_rtp::Plc, core::option::Option<u32>) -> core::option::Option<akio_rtp::EModel>
+pub fn akio_rtp::EModel::fullband(f64, f64) -> akio_rtp::EModel
+pub fn akio_rtp::EModel::is_fullband(&self) -> bool
+pub fn akio_rtp::EModel::is_wideband(&self) -> bool
+pub fn akio_rtp::EModel::scaled_delay_impairment(&self, core::time::Duration) -> f64
+pub fn akio_rtp::EModel::score(&self, f64, f64, core::time::Duration) -> akio_rtp::EModelScore
+pub fn akio_rtp::EModel::wideband(f64, f64) -> akio_rtp::EModel
+pub fn akio_rtp::EModel::with_burst_robustness(self, f64) -> akio_rtp::EModel
+impl core::clone::Clone for akio_rtp::EModel
+pub fn akio_rtp::EModel::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_rtp::EModel
+pub fn akio_rtp::EModel::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EModel
+pub fn akio_rtp::EModel::default() -> akio_rtp::EModel
+impl core::fmt::Debug for akio_rtp::EModel
+pub fn akio_rtp::EModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EModel
+impl core::marker::StructuralPartialEq for akio_rtp::EModel
+impl core::marker::Send for akio_rtp::EModel
+impl core::marker::Sync for akio_rtp::EModel
+impl core::marker::Unpin for akio_rtp::EModel
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EModel
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EModel
+pub struct akio_rtp::EModelScore
+pub akio_rtp::EModelScore::mos_cq: f64
+pub akio_rtp::EModelScore::mos_lq: f64
+pub akio_rtp::EModelScore::r_factor: f64
+pub akio_rtp::EModelScore::r_lq: f64
+impl akio_rtp::EModelScore
+pub fn akio_rtp::EModelScore::apply(&self, &mut akio_rtp::VoipQuality)
+pub fn akio_rtp::EModelScore::fill(&self, &mut akio_rtp::VoipQuality)
+impl core::clone::Clone for akio_rtp::EModelScore
+pub fn akio_rtp::EModelScore::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_rtp::EModelScore
+pub fn akio_rtp::EModelScore::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::EModelScore
+pub fn akio_rtp::EModelScore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EModelScore
+impl core::marker::StructuralPartialEq for akio_rtp::EModelScore
+impl core::marker::Send for akio_rtp::EModelScore
+impl core::marker::Sync for akio_rtp::EModelScore
+impl core::marker::Unpin for akio_rtp::EModelScore
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EModelScore
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EModelScore
+pub struct akio_rtp::EcnCounters
+pub akio_rtp::EcnCounters::ce: u16
+pub akio_rtp::EcnCounters::duplicates: u16
+pub akio_rtp::EcnCounters::ect0: u32
+pub akio_rtp::EcnCounters::ect1: u32
+pub akio_rtp::EcnCounters::lost: u16
+pub akio_rtp::EcnCounters::not_ect: u16
+impl akio_rtp::EcnCounters
+pub fn akio_rtp::EcnCounters::since(&self, &akio_rtp::EcnCounters) -> akio_rtp::EcnDelta
+impl core::clone::Clone for akio_rtp::EcnCounters
+pub fn akio_rtp::EcnCounters::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::EcnCounters
+impl core::cmp::PartialEq for akio_rtp::EcnCounters
+pub fn akio_rtp::EcnCounters::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EcnCounters
+pub fn akio_rtp::EcnCounters::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnCounters
+pub fn akio_rtp::EcnCounters::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EcnCounters
+impl core::marker::StructuralPartialEq for akio_rtp::EcnCounters
+impl core::marker::Send for akio_rtp::EcnCounters
+impl core::marker::Sync for akio_rtp::EcnCounters
+impl core::marker::Unpin for akio_rtp::EcnCounters
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnCounters
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnCounters
+pub struct akio_rtp::EcnDelta
+pub akio_rtp::EcnDelta::ce: u64
+pub akio_rtp::EcnDelta::duplicates: u64
+pub akio_rtp::EcnDelta::ect0: u64
+pub akio_rtp::EcnDelta::ect1: u64
+pub akio_rtp::EcnDelta::lost: u64
+pub akio_rtp::EcnDelta::not_ect: u64
+impl core::clone::Clone for akio_rtp::EcnDelta
+pub fn akio_rtp::EcnDelta::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::EcnDelta
+impl core::cmp::PartialEq for akio_rtp::EcnDelta
+pub fn akio_rtp::EcnDelta::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EcnDelta
+pub fn akio_rtp::EcnDelta::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnDelta
+pub fn akio_rtp::EcnDelta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EcnDelta
+impl core::marker::StructuralPartialEq for akio_rtp::EcnDelta
+impl core::marker::Send for akio_rtp::EcnDelta
+impl core::marker::Sync for akio_rtp::EcnDelta
+impl core::marker::Unpin for akio_rtp::EcnDelta
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnDelta
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnDelta
+pub struct akio_rtp::EcnFeedback
+pub akio_rtp::EcnFeedback::counters: akio_rtp::EcnCounters
+pub akio_rtp::EcnFeedback::extended_highest_seq: u32
+pub akio_rtp::EcnFeedback::media_ssrc: u32
+pub akio_rtp::EcnFeedback::sender_ssrc: u32
+impl akio_rtp::EcnFeedback
+pub fn akio_rtp::EcnFeedback::from_rtcp(&akio_rtp::Rtcp) -> core::option::Option<akio_rtp::EcnFeedback>
+pub fn akio_rtp::EcnFeedback::to_rtcp(&self) -> akio_rtp::Rtcp
+impl core::clone::Clone for akio_rtp::EcnFeedback
+pub fn akio_rtp::EcnFeedback::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::EcnFeedback
+impl core::cmp::PartialEq for akio_rtp::EcnFeedback
+pub fn akio_rtp::EcnFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EcnFeedback
+pub fn akio_rtp::EcnFeedback::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnFeedback
+pub fn akio_rtp::EcnFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EcnFeedback
+impl core::marker::StructuralPartialEq for akio_rtp::EcnFeedback
+impl core::marker::Send for akio_rtp::EcnFeedback
+impl core::marker::Sync for akio_rtp::EcnFeedback
+impl core::marker::Unpin for akio_rtp::EcnFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnFeedback
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnFeedback
+pub struct akio_rtp::EcnReceiver
+impl akio_rtp::EcnReceiver
+pub fn akio_rtp::EcnReceiver::feedback(&mut self, u32, bool) -> alloc::vec::Vec<akio_rtp::EcnFeedback>
+pub fn akio_rtp::EcnReceiver::new() -> akio_rtp::EcnReceiver
+pub fn akio_rtp::EcnReceiver::on_received(&mut self, u32, u16, u8)
+pub fn akio_rtp::EcnReceiver::remove(&mut self, u32)
+pub fn akio_rtp::EcnReceiver::summary(&self, u32) -> core::option::Option<akio_rtp::EcnSummary>
+pub fn akio_rtp::EcnReceiver::urgent(&self) -> bool
+impl core::default::Default for akio_rtp::EcnReceiver
+pub fn akio_rtp::EcnReceiver::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnReceiver
+pub fn akio_rtp::EcnReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::EcnReceiver
+impl core::marker::Sync for akio_rtp::EcnReceiver
+impl core::marker::Unpin for akio_rtp::EcnReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnReceiver
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnReceiver
+pub struct akio_rtp::EcnSummary
+pub akio_rtp::EcnSummary::counters: akio_rtp::EcnCounters
+pub akio_rtp::EcnSummary::ssrc: u32
+impl akio_rtp::EcnSummary
+pub fn akio_rtp::EcnSummary::from_xr(&akio_rtp::XrBlock) -> core::option::Option<alloc::vec::Vec<akio_rtp::EcnSummary>>
+pub fn akio_rtp::EcnSummary::to_xr(&[akio_rtp::EcnSummary]) -> akio_rtp::XrBlock
+impl core::clone::Clone for akio_rtp::EcnSummary
+pub fn akio_rtp::EcnSummary::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::EcnSummary
+impl core::cmp::PartialEq for akio_rtp::EcnSummary
+pub fn akio_rtp::EcnSummary::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::EcnSummary
+pub fn akio_rtp::EcnSummary::default() -> Self
+impl core::fmt::Debug for akio_rtp::EcnSummary
+pub fn akio_rtp::EcnSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::EcnSummary
+impl core::marker::StructuralPartialEq for akio_rtp::EcnSummary
+impl core::marker::Send for akio_rtp::EcnSummary
+impl core::marker::Sync for akio_rtp::EcnSummary
+impl core::marker::Unpin for akio_rtp::EcnSummary
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::EcnSummary
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::EcnSummary
+pub struct akio_rtp::ExtensionMap
+impl akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::default_audio() -> akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::default_video() -> akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::get(&self, u8) -> core::option::Option<akio_rtp::Extension>
+pub fn akio_rtp::ExtensionMap::id_of(&self, akio_rtp::Extension) -> core::option::Option<u8>
+pub fn akio_rtp::ExtensionMap::insert(&mut self, u8, akio_rtp::Extension)
+pub fn akio_rtp::ExtensionMap::is_empty(&self) -> bool
+pub fn akio_rtp::ExtensionMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (u8, akio_rtp::Extension)> + '_
+pub fn akio_rtp::ExtensionMap::new() -> akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::remove(&mut self, akio_rtp::Extension)
+impl core::clone::Clone for akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::ExtensionMap
+impl core::cmp::PartialEq for akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::default() -> Self
+impl core::fmt::Debug for akio_rtp::ExtensionMap
+pub fn akio_rtp::ExtensionMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::ExtensionMap
+impl core::marker::Send for akio_rtp::ExtensionMap
+impl core::marker::Sync for akio_rtp::ExtensionMap
+impl core::marker::Unpin for akio_rtp::ExtensionMap
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::ExtensionMap
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::ExtensionMap
+pub struct akio_rtp::ExtensionValues
+pub akio_rtp::ExtensionValues::abs_send_time: core::option::Option<u32>
+pub akio_rtp::ExtensionValues::audio_level: core::option::Option<(bool, u8)>
+pub akio_rtp::ExtensionValues::mid: core::option::Option<alloc::string::String>
+pub akio_rtp::ExtensionValues::playout_delay: core::option::Option<(u16, u16)>
+pub akio_rtp::ExtensionValues::rid: core::option::Option<alloc::string::String>
+pub akio_rtp::ExtensionValues::rrid: core::option::Option<alloc::string::String>
+pub akio_rtp::ExtensionValues::transmission_offset: core::option::Option<i32>
+pub akio_rtp::ExtensionValues::transport_cc: core::option::Option<u16>
+pub akio_rtp::ExtensionValues::video_orientation: core::option::Option<u8>
+impl core::clone::Clone for akio_rtp::ExtensionValues
+pub fn akio_rtp::ExtensionValues::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::ExtensionValues
+impl core::cmp::PartialEq for akio_rtp::ExtensionValues
+pub fn akio_rtp::ExtensionValues::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::ExtensionValues
+pub fn akio_rtp::ExtensionValues::default() -> Self
+impl core::fmt::Debug for akio_rtp::ExtensionValues
+pub fn akio_rtp::ExtensionValues::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::ExtensionValues
+impl core::marker::Send for akio_rtp::ExtensionValues
+impl core::marker::Sync for akio_rtp::ExtensionValues
+impl core::marker::Unpin for akio_rtp::ExtensionValues
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::ExtensionValues
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::ExtensionValues
+pub struct akio_rtp::JitterBuffer<T>
+impl<T> akio_rtp::JitterBuffer<T>
+pub fn akio_rtp::JitterBuffer<T>::bounds(&self) -> akio_rtp::PlayoutDelay
+pub fn akio_rtp::JitterBuffer<T>::clock(&self) -> u32
+pub fn akio_rtp::JitterBuffer<T>::delay(&self) -> core::time::Duration
+pub fn akio_rtp::JitterBuffer<T>::drain(&mut self) -> alloc::vec::Vec<akio_rtp::JitterFrame<T>>
+pub fn akio_rtp::JitterBuffer<T>::drain_discarded(&mut self) -> alloc::vec::drain::Drain<'_, u64>
+pub fn akio_rtp::JitterBuffer<T>::frame_duration(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_rtp::JitterBuffer<T>::is_empty(&self) -> bool
+pub fn akio_rtp::JitterBuffer<T>::len(&self) -> usize
+pub fn akio_rtp::JitterBuffer<T>::new(u32, akio_rtp::PlayoutDelay) -> akio_rtp::JitterBuffer<T>
+pub fn akio_rtp::JitterBuffer<T>::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_rtp::JitterBuffer<T>::pop(&mut self, std::time::Instant) -> core::option::Option<akio_rtp::JitterFrame<T>>
+pub fn akio_rtp::JitterBuffer<T>::push(&mut self, u64, u32, bool, std::time::Instant, T, usize) -> akio_rtp::JitterPush
+pub fn akio_rtp::JitterBuffer<T>::skip(&mut self, u64)
+pub fn akio_rtp::JitterBuffer<T>::stats(&self) -> akio_rtp::JitterBufferStats
+pub fn akio_rtp::JitterBuffer<T>::xr_config(&self) -> akio_rtp::JitterBufferConfig
+impl<T: core::fmt::Debug> core::fmt::Debug for akio_rtp::JitterBuffer<T>
+pub fn akio_rtp::JitterBuffer<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for akio_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Send
+impl<T> core::marker::Sync for akio_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Sync
+impl<T> core::marker::Unpin for akio_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterBuffer<T> where alloc::collections::vec_deque::VecDeque<Slot<T>>: core::panic::unwind_safe::UnwindSafe
+pub struct akio_rtp::JitterBufferConfig
+pub akio_rtp::JitterBufferConfig::abs_max: core::time::Duration
+pub akio_rtp::JitterBufferConfig::adaptive: bool
+pub akio_rtp::JitterBufferConfig::maximum: core::time::Duration
+pub akio_rtp::JitterBufferConfig::nominal: core::time::Duration
+pub akio_rtp::JitterBufferConfig::rate: u8
+impl core::clone::Clone for akio_rtp::JitterBufferConfig
+pub fn akio_rtp::JitterBufferConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::JitterBufferConfig
+impl core::cmp::PartialEq for akio_rtp::JitterBufferConfig
+pub fn akio_rtp::JitterBufferConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::JitterBufferConfig
+pub fn akio_rtp::JitterBufferConfig::default() -> Self
+impl core::fmt::Debug for akio_rtp::JitterBufferConfig
+pub fn akio_rtp::JitterBufferConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::JitterBufferConfig
+impl core::marker::StructuralPartialEq for akio_rtp::JitterBufferConfig
+impl core::marker::Send for akio_rtp::JitterBufferConfig
+impl core::marker::Sync for akio_rtp::JitterBufferConfig
+impl core::marker::Unpin for akio_rtp::JitterBufferConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterBufferConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterBufferConfig
+#[non_exhaustive] pub struct akio_rtp::JitterBufferStats
+pub akio_rtp::JitterBufferStats::delay: core::time::Duration
+pub akio_rtp::JitterBufferStats::duplicates: u64
+pub akio_rtp::JitterBufferStats::late: u64
+pub akio_rtp::JitterBufferStats::lost: u64
+pub akio_rtp::JitterBufferStats::overflow: u64
+pub akio_rtp::JitterBufferStats::played: u64
+pub akio_rtp::JitterBufferStats::received: u64
+pub akio_rtp::JitterBufferStats::reordered: u64
+pub akio_rtp::JitterBufferStats::target: core::time::Duration
+impl core::clone::Clone for akio_rtp::JitterBufferStats
+pub fn akio_rtp::JitterBufferStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::JitterBufferStats
+impl core::cmp::PartialEq for akio_rtp::JitterBufferStats
+pub fn akio_rtp::JitterBufferStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::JitterBufferStats
+pub fn akio_rtp::JitterBufferStats::default() -> Self
+impl core::fmt::Debug for akio_rtp::JitterBufferStats
+pub fn akio_rtp::JitterBufferStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::JitterBufferStats
+impl core::marker::StructuralPartialEq for akio_rtp::JitterBufferStats
+impl core::marker::Send for akio_rtp::JitterBufferStats
+impl core::marker::Sync for akio_rtp::JitterBufferStats
+impl core::marker::Unpin for akio_rtp::JitterBufferStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterBufferStats
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterBufferStats
+#[non_exhaustive] pub struct akio_rtp::JitterFrame<T>
+pub akio_rtp::JitterFrame::arrival: std::time::Instant
+pub akio_rtp::JitterFrame::contiguous: bool
+pub akio_rtp::JitterFrame::data: T
+pub akio_rtp::JitterFrame::marker: bool
+pub akio_rtp::JitterFrame::playout: std::time::Instant
+pub akio_rtp::JitterFrame::seq: u64
+pub akio_rtp::JitterFrame::timestamp: u64
+impl<T: core::clone::Clone> core::clone::Clone for akio_rtp::JitterFrame<T>
+pub fn akio_rtp::JitterFrame<T>::clone(&self) -> Self
+impl<T: core::cmp::Eq> core::cmp::Eq for akio_rtp::JitterFrame<T>
+impl<T: core::cmp::PartialEq> core::cmp::PartialEq for akio_rtp::JitterFrame<T>
+pub fn akio_rtp::JitterFrame<T>::eq(&self, &Self) -> bool
+impl<T: core::cmp::PartialEq> core::marker::StructuralPartialEq for akio_rtp::JitterFrame<T>
+impl<T: core::fmt::Debug> core::fmt::Debug for akio_rtp::JitterFrame<T>
+pub fn akio_rtp::JitterFrame<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for akio_rtp::JitterFrame<T> where T: core::marker::Send
+impl<T> core::marker::Sync for akio_rtp::JitterFrame<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for akio_rtp::JitterFrame<T> where T: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterFrame<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterFrame<T> where T: core::panic::unwind_safe::UnwindSafe
+pub struct akio_rtp::JitterStats
+pub akio_rtp::JitterStats::dev: u32
+pub akio_rtp::JitterStats::max: u32
+pub akio_rtp::JitterStats::mean: u32
+pub akio_rtp::JitterStats::min: u32
+impl core::clone::Clone for akio_rtp::JitterStats
+pub fn akio_rtp::JitterStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::JitterStats
+impl core::cmp::PartialEq for akio_rtp::JitterStats
+pub fn akio_rtp::JitterStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::JitterStats
+pub fn akio_rtp::JitterStats::default() -> Self
+impl core::fmt::Debug for akio_rtp::JitterStats
+pub fn akio_rtp::JitterStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::JitterStats
+impl core::marker::StructuralPartialEq for akio_rtp::JitterStats
+impl core::marker::Send for akio_rtp::JitterStats
+impl core::marker::Sync for akio_rtp::JitterStats
+impl core::marker::Unpin for akio_rtp::JitterStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterStats
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterStats
+pub struct akio_rtp::PacketResult
+pub akio_rtp::PacketResult::ecn: core::option::Option<u8>
+pub akio_rtp::PacketResult::probe: core::option::Option<u32>
+pub akio_rtp::PacketResult::received: core::option::Option<std::time::Instant>
+pub akio_rtp::PacketResult::sent: std::time::Instant
+pub akio_rtp::PacketResult::seq: u64
+pub akio_rtp::PacketResult::size: usize
+impl core::clone::Clone for akio_rtp::PacketResult
+pub fn akio_rtp::PacketResult::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::PacketResult
+impl core::cmp::PartialEq for akio_rtp::PacketResult
+pub fn akio_rtp::PacketResult::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::PacketResult
+pub fn akio_rtp::PacketResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::PacketResult
+impl core::marker::StructuralPartialEq for akio_rtp::PacketResult
+impl core::marker::Send for akio_rtp::PacketResult
+impl core::marker::Sync for akio_rtp::PacketResult
+impl core::marker::Unpin for akio_rtp::PacketResult
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::PacketResult
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::PacketResult
+pub struct akio_rtp::PlayoutDelay
+impl akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::adaptive(core::time::Duration, core::time::Duration) -> akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::fixed(core::time::Duration) -> akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::is_fixed(&self) -> bool
+pub fn akio_rtp::PlayoutDelay::max(&self) -> core::time::Duration
+pub fn akio_rtp::PlayoutDelay::min(&self) -> core::time::Duration
+impl core::clone::Clone for akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::PlayoutDelay
+impl core::cmp::PartialEq for akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::default() -> akio_rtp::PlayoutDelay
+impl core::fmt::Debug for akio_rtp::PlayoutDelay
+pub fn akio_rtp::PlayoutDelay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::PlayoutDelay
+impl core::marker::StructuralPartialEq for akio_rtp::PlayoutDelay
+impl core::marker::Send for akio_rtp::PlayoutDelay
+impl core::marker::Sync for akio_rtp::PlayoutDelay
+impl core::marker::Unpin for akio_rtp::PlayoutDelay
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::PlayoutDelay
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::PlayoutDelay
+pub struct akio_rtp::ProbePacket
+pub akio_rtp::ProbePacket::cluster: u32
+pub akio_rtp::ProbePacket::size: usize
+impl core::clone::Clone for akio_rtp::ProbePacket
+pub fn akio_rtp::ProbePacket::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::ProbePacket
+impl core::cmp::PartialEq for akio_rtp::ProbePacket
+pub fn akio_rtp::ProbePacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_rtp::ProbePacket
+pub fn akio_rtp::ProbePacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::ProbePacket
+impl core::marker::StructuralPartialEq for akio_rtp::ProbePacket
+impl core::marker::Send for akio_rtp::ProbePacket
+impl core::marker::Sync for akio_rtp::ProbePacket
+impl core::marker::Unpin for akio_rtp::ProbePacket
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::ProbePacket
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::ProbePacket
+pub struct akio_rtp::ReceiptLog
+impl akio_rtp::ReceiptLog
+pub fn akio_rtp::ReceiptLog::duplicate_rle(&self, u8) -> core::option::Option<akio_rtp::XrBlock>
+pub fn akio_rtp::ReceiptLog::is_empty(&self) -> bool
+pub fn akio_rtp::ReceiptLog::len(&self) -> usize
+pub fn akio_rtp::ReceiptLog::loss_rle(&self, u8) -> core::option::Option<akio_rtp::XrBlock>
+pub fn akio_rtp::ReceiptLog::new(u32, u32, usize) -> akio_rtp::ReceiptLog
+pub fn akio_rtp::ReceiptLog::next_interval(&mut self)
+pub fn akio_rtp::ReceiptLog::on_packet(&mut self, std::time::Instant, u16, u32)
+pub fn akio_rtp::ReceiptLog::receipt_times(&self, u8) -> alloc::vec::Vec<akio_rtp::XrBlock>
+pub fn akio_rtp::ReceiptLog::ssrc(&self) -> u32
+impl core::clone::Clone for akio_rtp::ReceiptLog
+pub fn akio_rtp::ReceiptLog::clone(&self) -> Self
+impl core::fmt::Debug for akio_rtp::ReceiptLog
+pub fn akio_rtp::ReceiptLog::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::ReceiptLog
+impl core::marker::Sync for akio_rtp::ReceiptLog
+impl core::marker::Unpin for akio_rtp::ReceiptLog
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::ReceiptLog
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::ReceiptLog
+pub struct akio_rtp::RecvStream
+impl akio_rtp::RecvStream
+pub fn akio_rtp::RecvStream::duplicates(&self) -> u64
+pub fn akio_rtp::RecvStream::enable_receipt_log(&mut self, usize)
+pub fn akio_rtp::RecvStream::extended_highest_seq(&self) -> core::option::Option<u64>
+pub fn akio_rtp::RecvStream::handle_dlrr(&mut self, u64, &akio_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
+pub fn akio_rtp::RecvStream::handle_sender_report(&mut self, std::time::Instant, &akio_rtp::SenderInfo)
+pub fn akio_rtp::RecvStream::jitter(&self) -> u32
+pub fn akio_rtp::RecvStream::last_sender_report(&self) -> core::option::Option<(akio_rtp::SenderInfo, std::time::Instant)>
+pub fn akio_rtp::RecvStream::missing_count(&self) -> usize
+pub fn akio_rtp::RecvStream::new(u32, u32, bool) -> akio_rtp::RecvStream
+pub fn akio_rtp::RecvStream::packets_received(&self) -> u64
+pub fn akio_rtp::RecvStream::poll_nack(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u16>>
+pub fn akio_rtp::RecvStream::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_rtp::RecvStream::receipt_blocks(&mut self, u8, bool, bool, bool) -> alloc::vec::Vec<akio_rtp::XrBlock>
+pub fn akio_rtp::RecvStream::receipt_log(&self) -> core::option::Option<&akio_rtp::ReceiptLog>
+pub fn akio_rtp::RecvStream::receive(&mut self, std::time::Instant, u16, u32) -> core::option::Option<u64>
+pub fn akio_rtp::RecvStream::receive_recovered(&mut self, std::time::Instant, u16) -> core::option::Option<u64>
+pub fn akio_rtp::RecvStream::report_block(&mut self, std::time::Instant) -> core::option::Option<akio_rtp::ReportBlock>
+pub fn akio_rtp::RecvStream::rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_rtp::RecvStream::set_rtt(&mut self, core::time::Duration)
+pub fn akio_rtp::RecvStream::ssrc(&self) -> u32
+pub fn akio_rtp::RecvStream::statistics_summary(&mut self) -> core::option::Option<akio_rtp::StatisticsSummary>
+impl core::fmt::Debug for akio_rtp::RecvStream
+pub fn akio_rtp::RecvStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::RecvStream
+impl core::marker::Sync for akio_rtp::RecvStream
+impl core::marker::Unpin for akio_rtp::RecvStream
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::RecvStream
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::RecvStream
+pub struct akio_rtp::ReportBlock
+pub akio_rtp::ReportBlock::cumulative_lost: i32
+pub akio_rtp::ReportBlock::delay_since_last_sr: u32
+pub akio_rtp::ReportBlock::extended_highest_seq: u32
+pub akio_rtp::ReportBlock::fraction_lost: u8
+pub akio_rtp::ReportBlock::jitter: u32
+pub akio_rtp::ReportBlock::last_sr: u32
+pub akio_rtp::ReportBlock::ssrc: u32
+impl core::clone::Clone for akio_rtp::ReportBlock
+pub fn akio_rtp::ReportBlock::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::ReportBlock
+impl core::cmp::PartialEq for akio_rtp::ReportBlock
+pub fn akio_rtp::ReportBlock::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::ReportBlock
+pub fn akio_rtp::ReportBlock::default() -> Self
+impl core::fmt::Debug for akio_rtp::ReportBlock
+pub fn akio_rtp::ReportBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::ReportBlock
+impl core::marker::StructuralPartialEq for akio_rtp::ReportBlock
+impl core::marker::Send for akio_rtp::ReportBlock
+impl core::marker::Sync for akio_rtp::ReportBlock
+impl core::marker::Unpin for akio_rtp::ReportBlock
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::ReportBlock
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::ReportBlock
+pub struct akio_rtp::RleReport
+pub akio_rtp::RleReport::begin_seq: u16
+pub akio_rtp::RleReport::chunks: alloc::vec::Vec<u16>
+pub akio_rtp::RleReport::end_seq: u16
+pub akio_rtp::RleReport::ssrc: u32
+pub akio_rtp::RleReport::thinning: u8
+impl akio_rtp::RleReport
+pub fn akio_rtp::RleReport::decode(&self) -> alloc::vec::Vec<(u16, bool)>
+pub fn akio_rtp::RleReport::encode(&[bool]) -> alloc::vec::Vec<u16>
+pub fn akio_rtp::RleReport::reported_seqs(&self) -> impl core::iter::traits::iterator::Iterator<Item = u16>
+impl core::clone::Clone for akio_rtp::RleReport
+pub fn akio_rtp::RleReport::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::RleReport
+impl core::cmp::PartialEq for akio_rtp::RleReport
+pub fn akio_rtp::RleReport::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::RleReport
+pub fn akio_rtp::RleReport::default() -> Self
+impl core::fmt::Debug for akio_rtp::RleReport
+pub fn akio_rtp::RleReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::RleReport
+impl core::marker::Send for akio_rtp::RleReport
+impl core::marker::Sync for akio_rtp::RleReport
+impl core::marker::Unpin for akio_rtp::RleReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::RleReport
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::RleReport
+pub struct akio_rtp::RrtrResponder
+impl akio_rtp::RrtrResponder
+pub fn akio_rtp::RrtrResponder::dlrr(&mut self, std::time::Instant) -> core::option::Option<akio_rtp::XrBlock>
+pub fn akio_rtp::RrtrResponder::new() -> akio_rtp::RrtrResponder
+pub fn akio_rtp::RrtrResponder::on_rrtr(&mut self, std::time::Instant, u32, u64)
+impl core::default::Default for akio_rtp::RrtrResponder
+pub fn akio_rtp::RrtrResponder::default() -> Self
+impl core::fmt::Debug for akio_rtp::RrtrResponder
+pub fn akio_rtp::RrtrResponder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::RrtrResponder
+impl core::marker::Sync for akio_rtp::RrtrResponder
+impl core::marker::Unpin for akio_rtp::RrtrResponder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::RrtrResponder
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::RrtrResponder
+pub struct akio_rtp::RtpHeader
+pub akio_rtp::RtpHeader::csrc: alloc::vec::Vec<u32>
+pub akio_rtp::RtpHeader::ext: akio_rtp::ExtensionValues
+pub akio_rtp::RtpHeader::header_len: usize
+pub akio_rtp::RtpHeader::marker: bool
+pub akio_rtp::RtpHeader::padding_len: usize
+pub akio_rtp::RtpHeader::payload_type: u8
+pub akio_rtp::RtpHeader::sequence_number: u16
+pub akio_rtp::RtpHeader::ssrc: u32
+pub akio_rtp::RtpHeader::timestamp: u32
+impl akio_rtp::RtpHeader
+pub fn akio_rtp::RtpHeader::parse(&[u8], &akio_rtp::ExtensionMap) -> core::option::Option<akio_rtp::RtpHeader>
+pub fn akio_rtp::RtpHeader::payload<'a>(&self, &'a [u8]) -> &'a [u8]
+pub fn akio_rtp::RtpHeader::write(&self, &akio_rtp::ExtensionMap, &[u8]) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_rtp::RtpHeader
+pub fn akio_rtp::RtpHeader::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::RtpHeader
+impl core::cmp::PartialEq for akio_rtp::RtpHeader
+pub fn akio_rtp::RtpHeader::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::RtpHeader
+pub fn akio_rtp::RtpHeader::default() -> Self
+impl core::fmt::Debug for akio_rtp::RtpHeader
+pub fn akio_rtp::RtpHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::RtpHeader
+impl core::marker::Send for akio_rtp::RtpHeader
+impl core::marker::Sync for akio_rtp::RtpHeader
+impl core::marker::Unpin for akio_rtp::RtpHeader
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::RtpHeader
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::RtpHeader
+pub struct akio_rtp::SendStream
+impl akio_rtp::SendStream
+pub fn akio_rtp::SendStream::handle_report_block(&mut self, std::time::Instant, u64, &akio_rtp::ReportBlock)
+pub fn akio_rtp::SendStream::new(u32, u32, core::option::Option<u32>, u16) -> akio_rtp::SendStream
+pub fn akio_rtp::SendStream::next_seq(&self) -> u16
+pub fn akio_rtp::SendStream::octets_resent(&self) -> u64
+pub fn akio_rtp::SendStream::octets_sent(&self) -> u64
+pub fn akio_rtp::SendStream::packets_resent(&self) -> u64
+pub fn akio_rtp::SendStream::packets_sent(&self) -> u64
+pub fn akio_rtp::SendStream::padding(&mut self, std::time::Instant, usize, core::option::Option<u8>, &akio_rtp::ExtensionMap, impl core::ops::function::FnMut(&mut akio_rtp::ExtensionValues)) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_rtp::SendStream::remote_report(&self) -> core::option::Option<&akio_rtp::ReportBlock>
+pub fn akio_rtp::SendStream::resend(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &akio_rtp::ExtensionMap) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::SendStream::resend_with(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &akio_rtp::ExtensionMap, impl core::ops::function::FnMut(&mut akio_rtp::ExtensionValues)) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn akio_rtp::SendStream::rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_rtp::SendStream::rtx_ssrc(&self) -> core::option::Option<u32>
+pub fn akio_rtp::SendStream::sender_report(&self, std::time::Instant, u64) -> core::option::Option<akio_rtp::SenderInfo>
+pub fn akio_rtp::SendStream::ssrc(&self) -> u32
+pub fn akio_rtp::SendStream::write(&mut self, std::time::Instant, u8, bool, u32, &[u8], &akio_rtp::ExtensionValues, &akio_rtp::ExtensionMap) -> alloc::vec::Vec<u8>
+impl core::fmt::Debug for akio_rtp::SendStream
+pub fn akio_rtp::SendStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::SendStream
+impl core::marker::Sync for akio_rtp::SendStream
+impl core::marker::Unpin for akio_rtp::SendStream
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::SendStream
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::SendStream
+pub struct akio_rtp::SenderInfo
+pub akio_rtp::SenderInfo::ntp_time: u64
+pub akio_rtp::SenderInfo::octet_count: u32
+pub akio_rtp::SenderInfo::packet_count: u32
+pub akio_rtp::SenderInfo::rtp_time: u32
+impl core::clone::Clone for akio_rtp::SenderInfo
+pub fn akio_rtp::SenderInfo::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::SenderInfo
+impl core::cmp::PartialEq for akio_rtp::SenderInfo
+pub fn akio_rtp::SenderInfo::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::SenderInfo
+pub fn akio_rtp::SenderInfo::default() -> Self
+impl core::fmt::Debug for akio_rtp::SenderInfo
+pub fn akio_rtp::SenderInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::SenderInfo
+impl core::marker::StructuralPartialEq for akio_rtp::SenderInfo
+impl core::marker::Send for akio_rtp::SenderInfo
+impl core::marker::Sync for akio_rtp::SenderInfo
+impl core::marker::Unpin for akio_rtp::SenderInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::SenderInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::SenderInfo
+pub struct akio_rtp::StatisticsSummary
+pub akio_rtp::StatisticsSummary::begin_seq: u16
+pub akio_rtp::StatisticsSummary::dup_packets: core::option::Option<u32>
+pub akio_rtp::StatisticsSummary::end_seq: u16
+pub akio_rtp::StatisticsSummary::jitter: core::option::Option<akio_rtp::JitterStats>
+pub akio_rtp::StatisticsSummary::lost_packets: core::option::Option<u32>
+pub akio_rtp::StatisticsSummary::ssrc: u32
+pub akio_rtp::StatisticsSummary::ttl: core::option::Option<akio_rtp::TtlStats>
+impl core::clone::Clone for akio_rtp::StatisticsSummary
+pub fn akio_rtp::StatisticsSummary::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::StatisticsSummary
+impl core::cmp::PartialEq for akio_rtp::StatisticsSummary
+pub fn akio_rtp::StatisticsSummary::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::StatisticsSummary
+pub fn akio_rtp::StatisticsSummary::default() -> Self
+impl core::fmt::Debug for akio_rtp::StatisticsSummary
+pub fn akio_rtp::StatisticsSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::StatisticsSummary
+impl core::marker::StructuralPartialEq for akio_rtp::StatisticsSummary
+impl core::marker::Send for akio_rtp::StatisticsSummary
+impl core::marker::Sync for akio_rtp::StatisticsSummary
+impl core::marker::Unpin for akio_rtp::StatisticsSummary
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::StatisticsSummary
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::StatisticsSummary
+pub struct akio_rtp::TmmbItem
+pub akio_rtp::TmmbItem::bitrate: u64
+pub akio_rtp::TmmbItem::overhead: u16
+pub akio_rtp::TmmbItem::ssrc: u32
+impl core::clone::Clone for akio_rtp::TmmbItem
+pub fn akio_rtp::TmmbItem::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::TmmbItem
+impl core::cmp::PartialEq for akio_rtp::TmmbItem
+pub fn akio_rtp::TmmbItem::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::TmmbItem
+pub fn akio_rtp::TmmbItem::default() -> Self
+impl core::fmt::Debug for akio_rtp::TmmbItem
+pub fn akio_rtp::TmmbItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::TmmbItem
+pub fn akio_rtp::TmmbItem::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::TmmbItem
+impl core::marker::StructuralPartialEq for akio_rtp::TmmbItem
+impl core::marker::Send for akio_rtp::TmmbItem
+impl core::marker::Sync for akio_rtp::TmmbItem
+impl core::marker::Unpin for akio_rtp::TmmbItem
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TmmbItem
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TmmbItem
+pub struct akio_rtp::TmmbrHandler
+impl akio_rtp::TmmbrHandler
+pub fn akio_rtp::TmmbrHandler::bounding_set(&mut self, std::time::Instant) -> alloc::vec::Vec<akio_rtp::TmmbItem>
+pub fn akio_rtp::TmmbrHandler::max_bitrate(&mut self, std::time::Instant, f64) -> core::option::Option<u64>
+pub fn akio_rtp::TmmbrHandler::new(u32) -> akio_rtp::TmmbrHandler
+pub fn akio_rtp::TmmbrHandler::on_tmmbr(&mut self, std::time::Instant, u32, &[akio_rtp::TmmbItem]) -> bool
+pub fn akio_rtp::TmmbrHandler::tmmbn(&mut self, std::time::Instant) -> akio_rtp::Rtcp
+impl core::fmt::Debug for akio_rtp::TmmbrHandler
+pub fn akio_rtp::TmmbrHandler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::TmmbrHandler
+impl core::marker::Sync for akio_rtp::TmmbrHandler
+impl core::marker::Unpin for akio_rtp::TmmbrHandler
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TmmbrHandler
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TmmbrHandler
+pub struct akio_rtp::TtlStats
+pub akio_rtp::TtlStats::dev: u8
+pub akio_rtp::TtlStats::hop_limit: bool
+pub akio_rtp::TtlStats::max: u8
+pub akio_rtp::TtlStats::mean: u8
+pub akio_rtp::TtlStats::min: u8
+impl core::clone::Clone for akio_rtp::TtlStats
+pub fn akio_rtp::TtlStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::TtlStats
+impl core::cmp::PartialEq for akio_rtp::TtlStats
+pub fn akio_rtp::TtlStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::TtlStats
+pub fn akio_rtp::TtlStats::default() -> Self
+impl core::fmt::Debug for akio_rtp::TtlStats
+pub fn akio_rtp::TtlStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::TtlStats
+impl core::marker::StructuralPartialEq for akio_rtp::TtlStats
+impl core::marker::Send for akio_rtp::TtlStats
+impl core::marker::Sync for akio_rtp::TtlStats
+impl core::marker::Unpin for akio_rtp::TtlStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TtlStats
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TtlStats
+pub struct akio_rtp::TwccFeedback
+pub akio_rtp::TwccFeedback::base_seq: u16
+pub akio_rtp::TwccFeedback::fb_count: u8
+pub akio_rtp::TwccFeedback::media_ssrc: u32
+pub akio_rtp::TwccFeedback::packets: alloc::vec::Vec<(u16, core::option::Option<i64>)>
+pub akio_rtp::TwccFeedback::reference_time: u32
+pub akio_rtp::TwccFeedback::sender_ssrc: u32
+impl core::clone::Clone for akio_rtp::TwccFeedback
+pub fn akio_rtp::TwccFeedback::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::TwccFeedback
+impl core::cmp::PartialEq for akio_rtp::TwccFeedback
+pub fn akio_rtp::TwccFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::TwccFeedback
+pub fn akio_rtp::TwccFeedback::default() -> Self
+impl core::fmt::Debug for akio_rtp::TwccFeedback
+pub fn akio_rtp::TwccFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_rtp::TwccFeedback
+impl core::marker::Send for akio_rtp::TwccFeedback
+impl core::marker::Sync for akio_rtp::TwccFeedback
+impl core::marker::Unpin for akio_rtp::TwccFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TwccFeedback
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TwccFeedback
+pub struct akio_rtp::TwccReceiver
+impl akio_rtp::TwccReceiver
+pub fn akio_rtp::TwccReceiver::new() -> akio_rtp::TwccReceiver
+pub fn akio_rtp::TwccReceiver::on_received(&mut self, u16, std::time::Instant)
+pub fn akio_rtp::TwccReceiver::poll_feedback(&mut self, std::time::Instant, u32, u32) -> core::option::Option<akio_rtp::Rtcp>
+impl core::default::Default for akio_rtp::TwccReceiver
+pub fn akio_rtp::TwccReceiver::default() -> akio_rtp::TwccReceiver
+impl core::fmt::Debug for akio_rtp::TwccReceiver
+pub fn akio_rtp::TwccReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::TwccReceiver
+impl core::marker::Sync for akio_rtp::TwccReceiver
+impl core::marker::Unpin for akio_rtp::TwccReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TwccReceiver
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TwccReceiver
+pub struct akio_rtp::TwccSender
+impl akio_rtp::TwccSender
+pub fn akio_rtp::TwccSender::new() -> akio_rtp::TwccSender
+pub fn akio_rtp::TwccSender::next_seq(&mut self) -> u16
+pub fn akio_rtp::TwccSender::on_feedback(&mut self, std::time::Instant, &akio_rtp::TwccFeedback) -> alloc::vec::Vec<akio_rtp::PacketResult>
+pub fn akio_rtp::TwccSender::on_sent(&mut self, u16, std::time::Instant, usize)
+pub fn akio_rtp::TwccSender::on_sent_probe(&mut self, u16, std::time::Instant, usize, u32)
+impl core::default::Default for akio_rtp::TwccSender
+pub fn akio_rtp::TwccSender::default() -> akio_rtp::TwccSender
+impl core::fmt::Debug for akio_rtp::TwccSender
+pub fn akio_rtp::TwccSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_rtp::TwccSender
+impl core::marker::Sync for akio_rtp::TwccSender
+impl core::marker::Unpin for akio_rtp::TwccSender
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TwccSender
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TwccSender
+pub struct akio_rtp::VoipMetrics
+pub akio_rtp::VoipMetrics::burst_density: u8
+pub akio_rtp::VoipMetrics::burst_duration: u16
+pub akio_rtp::VoipMetrics::discard_rate: u8
+pub akio_rtp::VoipMetrics::end_system_delay: u16
+pub akio_rtp::VoipMetrics::ext_r_factor: u8
+pub akio_rtp::VoipMetrics::gap_density: u8
+pub akio_rtp::VoipMetrics::gap_duration: u16
+pub akio_rtp::VoipMetrics::gmin: u8
+pub akio_rtp::VoipMetrics::jb_abs_max: u16
+pub akio_rtp::VoipMetrics::jb_maximum: u16
+pub akio_rtp::VoipMetrics::jb_nominal: u16
+pub akio_rtp::VoipMetrics::loss_rate: u8
+pub akio_rtp::VoipMetrics::mos_cq: u8
+pub akio_rtp::VoipMetrics::mos_lq: u8
+pub akio_rtp::VoipMetrics::noise_level: u8
+pub akio_rtp::VoipMetrics::r_factor: u8
+pub akio_rtp::VoipMetrics::rerl: u8
+pub akio_rtp::VoipMetrics::round_trip_delay: u16
+pub akio_rtp::VoipMetrics::rx_config: u8
+pub akio_rtp::VoipMetrics::signal_level: u8
+pub akio_rtp::VoipMetrics::ssrc: u32
+impl akio_rtp::VoipMetrics
+pub fn akio_rtp::VoipMetrics::quality(&self) -> akio_rtp::VoipQuality
+impl core::clone::Clone for akio_rtp::VoipMetrics
+pub fn akio_rtp::VoipMetrics::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::VoipMetrics
+impl core::cmp::PartialEq for akio_rtp::VoipMetrics
+pub fn akio_rtp::VoipMetrics::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::VoipMetrics
+pub fn akio_rtp::VoipMetrics::default() -> Self
+impl core::fmt::Debug for akio_rtp::VoipMetrics
+pub fn akio_rtp::VoipMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::VoipMetrics
+impl core::marker::StructuralPartialEq for akio_rtp::VoipMetrics
+impl core::marker::Send for akio_rtp::VoipMetrics
+impl core::marker::Sync for akio_rtp::VoipMetrics
+impl core::marker::Unpin for akio_rtp::VoipMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VoipMetrics
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::VoipMetrics
+pub struct akio_rtp::VoipQuality
+pub akio_rtp::VoipQuality::end_system_delay: core::option::Option<core::time::Duration>
+pub akio_rtp::VoipQuality::ext_r_factor: core::option::Option<u8>
+pub akio_rtp::VoipQuality::jitter_buffer: core::option::Option<akio_rtp::JitterBufferConfig>
+pub akio_rtp::VoipQuality::mos_cq: core::option::Option<u8>
+pub akio_rtp::VoipQuality::mos_lq: core::option::Option<u8>
+pub akio_rtp::VoipQuality::noise_level: core::option::Option<i8>
+pub akio_rtp::VoipQuality::plc: akio_rtp::Plc
+pub akio_rtp::VoipQuality::r_factor: core::option::Option<u8>
+pub akio_rtp::VoipQuality::rerl: core::option::Option<u8>
+pub akio_rtp::VoipQuality::round_trip: core::option::Option<core::time::Duration>
+pub akio_rtp::VoipQuality::signal_level: core::option::Option<i8>
+impl core::clone::Clone for akio_rtp::VoipQuality
+pub fn akio_rtp::VoipQuality::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::VoipQuality
+impl core::cmp::PartialEq for akio_rtp::VoipQuality
+pub fn akio_rtp::VoipQuality::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::VoipQuality
+pub fn akio_rtp::VoipQuality::default() -> Self
+impl core::fmt::Debug for akio_rtp::VoipQuality
+pub fn akio_rtp::VoipQuality::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::VoipQuality
+impl core::marker::StructuralPartialEq for akio_rtp::VoipQuality
+impl core::marker::Send for akio_rtp::VoipQuality
+impl core::marker::Sync for akio_rtp::VoipQuality
+impl core::marker::Unpin for akio_rtp::VoipQuality
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VoipQuality
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::VoipQuality
+pub const akio_rtp::CCFB_ATO_OVERRANGE: u16
+pub const akio_rtp::CCFB_ATO_UNAVAILABLE: u16
+pub const akio_rtp::CCFB_FEEDBACK_INTERVAL: core::time::Duration
+pub const akio_rtp::CCFB_MAX_REPORTS: usize
+pub const akio_rtp::DEFAULT_MAX_BITRATE: u64
+pub const akio_rtp::DEFAULT_MIN_BITRATE: u64
+pub const akio_rtp::ECN_FEEDBACK_FMT: u8
+pub const akio_rtp::ECN_SUMMARY_BT: u8
+pub const akio_rtp::JITTER_BUFFER_MAX_BYTES: usize
+pub const akio_rtp::JITTER_BUFFER_MAX_FRAMES: usize
+pub const akio_rtp::MAX_PLAYOUT_DELAY: core::time::Duration
+pub const akio_rtp::MAX_TWCC_STATUSES: usize
+pub const akio_rtp::MAX_XR_SPAN: usize
+pub const akio_rtp::SEND_HISTORY_AGE: core::time::Duration
+pub const akio_rtp::SEND_HISTORY_PACKETS: usize
+pub const akio_rtp::TMMBR_TIMEOUT: core::time::Duration
+pub const akio_rtp::TWCC_FEEDBACK_INTERVAL: core::time::Duration
+pub const akio_rtp::VOIP_UNAVAILABLE: u8
+pub fn akio_rtp::abs_send_time(core::time::Duration) -> u32
+pub fn akio_rtp::bounded_bitrate(&[akio_rtp::TmmbItem], f64) -> core::option::Option<u64>
+pub fn akio_rtp::bounding_set(&[akio_rtp::TmmbItem]) -> alloc::vec::Vec<akio_rtp::TmmbItem>
+pub fn akio_rtp::compact_ntp(u64) -> u32
+pub fn akio_rtp::is_rtcp(&[u8]) -> bool
+pub fn akio_rtp::mos_from_r(f64) -> f64
+pub fn akio_rtp::ntp_time(std::time::SystemTime) -> u64
+pub fn akio_rtp::parse_compound(&[u8]) -> core::result::Result<alloc::vec::Vec<akio_rtp::Rtcp>, akio_rtp::Error>
+pub fn akio_rtp::pcm_level_dbm0(&[i16]) -> core::option::Option<i8>
+pub fn akio_rtp::random_cname(&[u8; 12]) -> alloc::string::String
+pub fn akio_rtp::rtt_from_dlrr(u64, &akio_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
+pub fn akio_rtp::write_compound(&[akio_rtp::Rtcp]) -> alloc::vec::Vec<u8>

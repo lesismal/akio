@@ -2,8 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
-The scripts behind [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md): `only` against tokio, hyper,
-monoio and fib (the Go library `only` is the counterpart of) with the same handlers, pinned to separate
+The scripts behind [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md): `akio` against tokio, hyper,
+monoio and fib (the Go library `akio` is the counterpart of) with the same handlers, pinned to separate
 CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf).
 
 | Script | What it runs |
@@ -11,19 +11,19 @@ CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf
 | `build.sh` | builds every server and the load generator in release mode into `$CARGO_TARGET_DIR` (default `/tmp/t`); fib-ref needs Go and a fib checkout (`FIB_SRC`, default `/fib`) |
 | `http.sh [cases]` | HTTP/1.1 and HTTP/2: `plaintext`, `pipelined` (16 requests in flight per connection), `json`, `h2` (h2c, 64 connections x 16 streams), `h2many` (h2c, 16 x 128), `h2tls` (HTTP/2 over TLS 1.3 with ALPN, 64 x 16), `ws` (WebSocket echo), `wsz` (the same with permessage-deflate, not in the default set) |
 | `echo.sh [cases]` | TCP / UDP / TLS echo and TLS handshakes per second |
-| `ktls.sh` | kernel TLS against only-tls's own record layer (HTTP/1.1 over TLS, `ktls-bench` example, `ktls` feature; `VETH=1` puts the client behind a veth pair) |
-| `ktls-engine.sh` | kernel TLS in the engine (ADR-067): interleaved A/B of TLS echo, handshakes and HTTPS between two builds and `ONLY_KTLS` modes, waiting for a quiet host before each run |
-| `uring-eval.sh` | io_uring send mechanisms on a raw ring: `write(2)` vs `IORING_OP_SEND` vs `SEND_ZC`, with and without registered files, by response size (the ignored `eval_server` test of only-uring; server CPU per request from `/proc`) |
+| `ktls.sh` | kernel TLS against akio-tls's own record layer (HTTP/1.1 over TLS, `ktls-bench` example, `ktls` feature; `VETH=1` puts the client behind a veth pair) |
+| `ktls-engine.sh` | kernel TLS in the engine (ADR-067): interleaved A/B of TLS echo, handshakes and HTTPS between two builds and `AKIO_KTLS` modes, waiting for a quiet host before each run |
+| `uring-eval.sh` | io_uring send mechanisms on a raw ring: `write(2)` vs `IORING_OP_SEND` vs `SEND_ZC`, with and without registered files, by response size (the ignored `eval_server` test of akio-uring; server CPU per request from `/proc`) |
 | `udp-dgram.sh` | UDP 64 B echo A/B: per-peer listeners of a base and a new build, connectionless `serve_datagrams` listeners on epoll and io_uring (`bench-server udp-dgram`, ADR-065; server CPU per request from `/proc`) |
 | `stream-compress.sh [tput] [mem]` | compressed streamed responses A/B (ADR-074): a base build and the new one with `Compress::stream` off and on, per coding: throughput of 16 small events and of 16 x 16 KiB writes per response (h2load, server CPU per response, body bytes), and server RSS per held server-sent-events stream after 3 and 6000 events (`stream-bench` example) |
 | `mem.sh [proto:kind:conns ...]` | server memory per idle connection |
 | `profile.sh <case> <kind> [secs]` | perf profile of one server under one load (`h1`, `pipelined`, `h2`, `h2tls`, `ws`, `tcp`), with the CPUs the server kept busy |
 | `all.sh <dir>` | everything above, raw TSV into `<dir>` |
 | `summarize.py` | turns the TSV rows into the tables of BENCHMARKS.md |
-| `docker.sh 'cmd'` | runs a command in the `only-bench` image (`Dockerfile`: rust + wrk + h2load + perf + Go) |
+| `docker.sh 'cmd'` | runs a command in the `akio-bench` image (`Dockerfile`: rust + wrk + h2load + perf + Go) |
 
-The servers are `crates/only-http/examples/http-bench.rs` and `crates/only/examples/bench-server.rs`
-for `only` (`only-epoll`, `only-uring`), and the out-of-tree references in `tools/bench-ref/`
+The servers are `crates/akio-http/examples/http-bench.rs` and `crates/akio/examples/bench-server.rs`
+for `akio` (`akio-epoll`, `akio-uring`), and the out-of-tree references in `tools/bench-ref/`
 (`tokio-ref`, `hyper-ref`, `monoio-ref`, `fib-ref`). `monoio-ref` (monoio 0.2, thread-per-core: one
 runtime and one `SO_REUSEPORT` listener per thread) serves TCP echo and HTTP/1.1 (`/plaintext`,
 `/json`, pipelining; httparse, no HTTP/2); it runs as `monoio-uring` (its io_uring driver) and
@@ -40,7 +40,7 @@ same one.
 
 Environment variables, see `lib.sh`: `SRV_CPUS` / `CLI_CPUS` (CPU lists for `taskset`),
 `THREADS` / `CLI_THREADS`, `SECS` (seconds per run), `RUNS` (rounds; tables show the median),
-`KINDS` (servers, e.g. `"only-epoll fib"`), `OUT` (TSV file), `HCONNS` (HTTP/1.1 connections),
+`KINDS` (servers, e.g. `"akio-epoll fib"`), `OUT` (TSV file), `HCONNS` (HTTP/1.1 connections),
 `MAX_BUSY` / `QUIET_WAIT` (wait for an idle host before each run). Each server gets a fresh port
 above `PORT` (default 7400); ports still held by sockets of an earlier run are skipped, since a
 bare host's ephemeral range (1024–65535) covers them.
@@ -58,12 +58,12 @@ fib-ref.
 
 ```sh
 export CARGO_TARGET_DIR=/path/to/target
-cargo build --release -p only-http --example http-bench
+cargo build --release -p akio-http --example http-bench
 (cd tools/bench-ref/hyper-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 (cd tools/bench-ref/monoio-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 cp -r tools/bench-ref/fib-ref /tmp/fibref && cd /tmp/fibref &&
   go mod edit -replace github.com/lesismal/fib=/path/to/fib && go build -o $CARGO_TARGET_DIR/fib-ref . && cd -
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \
-  KINDS="only-epoll only-uring hyper fib" tools/bench/http.sh plaintext,pipelined,json,h2,h2many,h2tls
-SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/profile.sh h2 only-epoll   # needs perf
+  KINDS="akio-epoll akio-uring hyper fib" tools/bench/http.sh plaintext,pipelined,json,h2,h2many,h2tls
+SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/profile.sh h2 akio-epoll   # needs perf
 ```

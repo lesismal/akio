@@ -1,0 +1,63 @@
+pub mod akio_pool
+pub struct akio_pool::Pool
+impl akio_pool::Pool
+pub fn akio_pool::Pool::join(&self)
+pub fn akio_pool::Pool::new(akio_pool::PoolConfig) -> alloc::rcs::arc::Arc<akio_pool::Pool>
+pub fn akio_pool::Pool::shutdown(&self)
+pub fn akio_pool::Pool::stats(&self) -> akio_pool::PoolStats
+pub fn akio_pool::Pool::try_execute(&self, akio_pool::Job) -> core::result::Result<(), akio_pool::Rejected>
+impl core::fmt::Debug for akio_pool::Pool
+pub fn akio_pool::Pool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_pool::Pool
+impl core::marker::Sync for akio_pool::Pool
+impl core::marker::Unpin for akio_pool::Pool
+impl core::panic::unwind_safe::RefUnwindSafe for akio_pool::Pool
+impl core::panic::unwind_safe::UnwindSafe for akio_pool::Pool
+#[non_exhaustive] pub struct akio_pool::PoolConfig
+pub akio_pool::PoolConfig::keep_alive: core::time::Duration
+pub akio_pool::PoolConfig::max_threads: usize
+pub akio_pool::PoolConfig::min_threads: usize
+pub akio_pool::PoolConfig::queue_capacity: usize
+impl core::clone::Clone for akio_pool::PoolConfig
+pub fn akio_pool::PoolConfig::clone(&self) -> Self
+impl core::default::Default for akio_pool::PoolConfig
+pub fn akio_pool::PoolConfig::default() -> Self
+impl core::fmt::Debug for akio_pool::PoolConfig
+pub fn akio_pool::PoolConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_pool::PoolConfig
+impl core::marker::Sync for akio_pool::PoolConfig
+impl core::marker::Unpin for akio_pool::PoolConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_pool::PoolConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_pool::PoolConfig
+#[non_exhaustive] pub struct akio_pool::PoolStats
+pub akio_pool::PoolStats::completed: u64
+pub akio_pool::PoolStats::idle: usize
+pub akio_pool::PoolStats::panicked: u64
+pub akio_pool::PoolStats::queued: usize
+pub akio_pool::PoolStats::rejected: u64
+pub akio_pool::PoolStats::threads: usize
+impl core::clone::Clone for akio_pool::PoolStats
+pub fn akio_pool::PoolStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_pool::PoolStats
+impl core::cmp::PartialEq for akio_pool::PoolStats
+pub fn akio_pool::PoolStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_pool::PoolStats
+pub fn akio_pool::PoolStats::default() -> Self
+impl core::fmt::Debug for akio_pool::PoolStats
+pub fn akio_pool::PoolStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_pool::PoolStats
+impl core::marker::StructuralPartialEq for akio_pool::PoolStats
+impl core::marker::Send for akio_pool::PoolStats
+impl core::marker::Sync for akio_pool::PoolStats
+impl core::marker::Unpin for akio_pool::PoolStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_pool::PoolStats
+impl core::panic::unwind_safe::UnwindSafe for akio_pool::PoolStats
+pub struct akio_pool::Rejected(pub akio_pool::Job)
+impl core::fmt::Debug for akio_pool::Rejected
+pub fn akio_pool::Rejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_pool::Rejected
+impl !core::marker::Sync for akio_pool::Rejected
+impl core::marker::Unpin for akio_pool::Rejected
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_pool::Rejected
+impl !core::panic::unwind_safe::UnwindSafe for akio_pool::Rejected
+pub type akio_pool::Job = alloc::boxed::Box<(dyn core::ops::function::FnOnce() + core::marker::Send + 'static)>

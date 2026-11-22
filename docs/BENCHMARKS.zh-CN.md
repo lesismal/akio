@@ -23,14 +23,14 @@
   服务端跑每个场景，每次都重新启动服务端。微基准：整个程序跑 3 次取中位数。`±` 是各轮最大最小值之差
   的一半占中位数的百分比，≤3% 时省略。echo、WebSocket 和内存各行来自一小时后用同一批二进制跑的第二遍：第一遍中
   有几个服务端没能绑定端口（见“复现”），修好测试脚本后重跑了这几项。
-- **后端**：`only-epoll` 与 `only-uring` 是同一个服务端，分别用 `Backend::Epoll` 和 `Backend::IoUring`。
+- **后端**：`akio-epoll` 与 `akio-uring` 是同一个服务端，分别用 `Backend::Epoll` 和 `Backend::IoUring`。
   QUIC/HTTP/3 有自己的 UDP 线程（不选后端），UDP echo 在两种后端下都走 epoll UDP 循环，所以这些行只有
-  一列 `only`。
-- **服务端**（处理逻辑一致）：`crates/only/examples/bench-server.rs`（TCP/TLS/UDP echo）和
-  `crates/only-http/examples/http-bench.rs`（HTTP/1.1 + h2c + TLS 上的 h2，`/plaintext`、`/json`，
+  一列 `akio`。
+- **服务端**（处理逻辑一致）：`crates/akio/examples/bench-server.rs`（TCP/TLS/UDP echo）和
+  `crates/akio-http/examples/http-bench.rs`（HTTP/1.1 + h2c + TLS 上的 h2，`/plaintext`、`/json`，
   `/ws` 上的 WebSocket echo）；参照实现在 `tools/bench-ref/`（`tokio-ref`、`hyper-ref`、`fib-ref`；单独的 [monoio](#monoio2026-11-21同一次运行toolsbench-refmonoio-ref) 运行用 `monoio-ref`）。
-  TLS 统一为 TLS 1.3 + ECDSA P-256 自签名证书（`only` 用 only-tls，tokio 用 tokio-rustls，fib 用
-  `fib/tls`）。JSON：`only` 在示例里用一个手写的小序列化器，hyper 用 serde_json，fib 用 `encoding/json`。
+  TLS 统一为 TLS 1.3 + ECDSA P-256 自签名证书（`akio` 用 akio-tls，tokio 用 tokio-rustls，fib 用
+  `fib/tls`）。JSON：`akio` 在示例里用一个手写的小序列化器，hyper 用 serde_json，fib 用 `encoding/json`。
 - **压测工具**：HTTP/1.1 用 `h2load --h1`（主机上没有 wrk；流水线为 `-m 16`），HTTP/2 用 `h2load`
   （h2c 为 prior knowledge，TLS 上用 ALPN `h2`），echo（闭环）、TLS 握手（rustls 客户端）和内存测试
   （连接保持端）用仓库内的 `tools/echo-bench`。
@@ -38,11 +38,11 @@
 ### 局限
 
 - **只走回环**：客户端与服务端在同一台机器上，共享内存带宽和内核回环路径；没有网卡、没有真实延迟、
-  没有丢包。**DPDK 没有测**：主机上没有 DPDK 能驱动的网卡，`only-dpdk` 只通过进程内内存线路上的
+  没有丢包。**DPDK 没有测**：主机上没有 DPDK 能驱动的网卡，`akio-dpdk` 只通过进程内内存线路上的
   用户态 TCP/IP 协议栈出现。
 - **h2load 上限**：8 线程的 h2load 跑 HTTP/2 最多约 400–500 万请求/秒（HTTP/1.1 流水线更高：对 monoio-ref
-  达到 790 万，见 [monoio](#monoio2026-11-21同一次运行toolsbench-refmonoio-ref)）。`only` 的 h2c 与 TLS 上 h2 的数字就在这个
-  水平（服务端 4 个 CPU 跑满，但客户端也接近饱和），所以它们是 `only` 的下限。
+  达到 790 万，见 [monoio](#monoio2026-11-21同一次运行toolsbench-refmonoio-ref)）。`akio` 的 h2c 与 TLS 上 h2 的数字就在这个
+  水平（服务端 4 个 CPU 跑满，但客户端也接近饱和），所以它们是 `akio` 的下限。
 - **受客户端限制的格子**：TLS 握手速率受客户端限制（8 个线程用 rustls 做每次握手的客户端一半）；
   keep-alive 的 HTTP/1.1 受内核限制（每个请求一次读一次写）。
 - 参照服务端没有超出默认配置的调优。没有延迟分位数。
@@ -53,7 +53,7 @@
 
 HTTP/1.1：256 个连接。h2c 与 TLS 上的 h2：连接数 × 并发流数。
 
-| 场景 | only-epoll | only-uring | hyper | fib |
+| 场景 | akio-epoll | akio-uring | hyper | fib |
 |---|---:|---:|---:|---:|
 | HTTP/1.1 `GET /plaintext` | 729,229 | 774,202 | 650,511 | 620,200 |
 | HTTP/1.1 `GET /plaintext`，流水线 ×16 | 4,289,270 | 4,400,739 | 855,912 | 3,750,364 |
@@ -64,25 +64,25 @@ HTTP/1.1：256 个连接。h2c 与 TLS 上的 h2：连接数 × 并发流数。
 
 ¹ hyper-ref 没有 TLS 监听。
 
-keep-alive HTTP/1.1 上 `only` 是 hyper 和 fib 的 1.1–1.25 倍；流水线时是 hyper 的 5 倍、fib 的
+keep-alive HTTP/1.1 上 `akio` 是 hyper 和 fib 的 1.1–1.25 倍；流水线时是 hyper 的 5 倍、fib 的
 1.14–1.17 倍；h2c 是 hyper 的 3.6–4 倍、fib 的 1.22–1.34 倍；TLS 上的 HTTP/2 是 fib 的 1.3 倍
 （受 h2load 上限约束，见“局限”）。
 
 ### WebSocket echo（消息/秒，256 连接，5 轮）
 
-| 消息 | only-epoll | only-uring | tokio-tungstenite | fib |
+| 消息 | akio-epoll | akio-uring | tokio-tungstenite | fib |
 |---|---:|---:|---:|---:|
 | 64 B | 665,276 (±8%) | 777,098 (±8%) | 576,076 | 577,582 |
 | 1 KiB | 703,772 (±6%) | 709,751 (±7%) | 564,847 (±4%) | 565,032 |
 
-`only` 是 tokio-tungstenite 和 fib 的 1.15–1.35 倍。这里跑 5 轮，因为 `only` 两列在各轮之间最多相差
+`akio` 是 tokio-tungstenite 和 fib 的 1.15–1.35 倍。这里跑 5 轮，因为 `akio` 两列在各轮之间最多相差
 ±8%（本次测试第一遍 3 轮时 64 B 为 63.3–77.6 万）。
 
 ### TCP、UDP 与 TLS echo
 
 TCP echo（请求/秒；消息大小 × 连接数）：
 
-| 负载 | only-epoll | only-uring | tokio | fib |
+| 负载 | akio-epoll | akio-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | 64 B × 64 | 754,603 | 713,819 (±9%) | 729,335 | 481,178 |
 | 64 B × 256 | 668,463 (±6%) | 799,869 (±5%) | 751,788 | 572,302 |
@@ -94,7 +94,7 @@ TCP echo（请求/秒；消息大小 × 连接数）：
 | 16 KiB × 256 | 399,796 (±5%) | 395,342 (±8%) | 441,920 | 241,439 |
 | 16 KiB × 1024 | 436,176 | 421,909 | 364,162 (±11%) | 274,924 (±5%) |
 
-| 场景 | only-epoll | only-uring | tokio | fib |
+| 场景 | akio-epoll | akio-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | UDP echo，64 B × 64 个套接字（请求/秒） | 993,328 (±11%) | – ¹ | 251,740 | 338,269 |
 | TLS 1.3 echo，1 KiB × 64（请求/秒） | 580,041 (±11%) | 584,406 (±10%) | 597,582 | 435,730 |
@@ -103,9 +103,9 @@ TCP echo（请求/秒；消息大小 × 连接数）：
 ¹ 两种后端下 UDP 都走 epoll UDP 循环。tokio 的 UDP 参照是一个循环调用 `recv_from`/`send_to` 的 task，
 是最简单的 tokio 服务端，不是它的最好情况。
 
-`only` 和 tokio 的 TCP 各行从 64 到 1024 连接都停在每秒 65–80 万请求附近，这说明闭环客户端（8 线程）
+`akio` 和 tokio 的 TCP 各行从 64 到 1024 连接都停在每秒 65–80 万请求附近，这说明闭环客户端（8 线程）
 和服务端一样是瓶颈：只把它们看作“同一量级”；fib 在小消息和 16 KiB 消息上落后。握手速率受客户端限制
-（见“局限”）：它说明服务端的 only-tls 跟得上 tokio-rustls，而不是服务端上限（内存中 only-tls 的握手
+（见“局限”）：它说明服务端的 akio-tls 跟得上 tokio-rustls，而不是服务端上限（内存中 akio-tls 的握手
 是 rustls 的 0.89–1.00 倍，见下文）。
 
 ### 每连接内存
@@ -115,7 +115,7 @@ TCP echo（请求/秒；消息大小 × 连接数）：
 保持空闲，此时读取服务端的 `VmRSS`。单位为每连接字节，除注明外为 10,000 个连接。这里 tokio 的每连接
 读缓冲设为 4 KiB（`TOKIO_REF_BUF`）。
 
-| 连接状态 | only-epoll | only-uring | tokio | hyper | fib |
+| 连接状态 | akio-epoll | akio-uring | tokio | hyper | fib |
 |---|---:|---:|---:|---:|---:|
 | 空闲 TCP（仅连接） | 603 | 603 | 5,008 | – | 280 |
 | 空闲 TCP，**100,000 个连接** | 564 | 564 | 5,008 | – | 288 |
@@ -129,12 +129,12 @@ TCP echo（请求/秒；消息大小 × 连接数）：
 ³ 修复后重测（3 轮中位数，同一主机、同一套脚本）：本次测试的构建为 3,486（epoll）/ 3,485（uring）；
 见“历史”一节末尾。
 
-only-uring 预先分配其 provided-buffer 环（每个 I/O 线程 1024 × 16 KiB）：它的基线 RSS 约 69 MB，epoll
-约 3.5 MB，这部分不计入每连接。100,000 个空闲连接使 `only` 比基线多用约 56 MB。
+akio-uring 预先分配其 provided-buffer 环（每个 I/O 线程 1024 × 16 KiB）：它的基线 RSS 约 69 MB，epoll
+约 3.5 MB，这部分不计入每连接。100,000 个空闲连接使 `akio` 比基线多用约 56 MB。
 
-### QUIC 与 HTTP/3（`crates/only-h3/examples/quic-bench.rs`，回环，CPU 2–5）
+### QUIC 与 HTTP/3（`crates/akio-h3/examples/quic-bench.rs`，回环，CPU 2–5）
 
-| 场景 | only |
+| 场景 | akio |
 |---|---:|
 | 单流批量传输 2 GiB | 5,754 Mbit/s（5,749–5,785） |
 | HTTP/3 GET，单连接，64 个并发 | 427,612 请求/秒（425,096–427,634） |
@@ -154,7 +154,7 @@ quinn-proto 版本为 4.6 Gbit/s、5.8 万请求/秒、约 6,600 次握手/秒�
 
 另一次同轮对比中的 quinn-proto 版本（wave D 的代码树配本测试程序）：批量传输 4,613 对 15,999 Mbit/s
 （3.5×），HTTP/3 56,934 对 430,098 请求/秒（7.6×）；它的握手数（202/秒）是旧协议栈在本测试程序下的
-异常值，不计入。握手一行在本轮之前已因 only-crypto 的 P-256 与 X25519 工作从 6,640 升到约 9,300。
+异常值，不计入。握手一行在本轮之前已因 akio-crypto 的 P-256 与 X25519 工作从 6,640 升到约 9,300。
 
 **HTTP/3 优化之后**（2026-11-16，同一主机与绑核，`dbc7563f` → 优化后，交替运行七轮取中位数；HTTP/3 一行
 来自之后主机空闲时的一次运行，批量传输与握手来自部分轮次有外部负载的一次运行）：
@@ -166,7 +166,7 @@ quinn-proto 版本为 4.6 Gbit/s、5.8 万请求/秒、约 6,600 次握手/秒�
 | 完整握手，8 个并发 | 8,452/秒（8,417–8,479） | 8,513/秒（8,319–8,542） | 1.01 |
 
 HTTP/3 场景的 profile（`perf`，两端在同一进程）：内存分配器占采样从 31.8% 降到 11.2%，SipHash 从 7.3%
-降到 0.1%；现在占比较大的是 only-quic 与内核（21.6% 与 27.8%）。单看带密钥的哈希（同一代码树改回
+降到 0.1%；现在占比较大的是 akio-quic 与内核（21.6% 与 27.8%）。单看带密钥的哈希（同一代码树改回
 SipHash 的版本与之对比，七轮）：批量传输 16,836 → 17,366 Mbit/s（+3%），HTTP/3 持平。
 
 **HTTP/3 减少分配之后**（2026-11-16，同一主机与绑核，主机空闲，`62ea6318` → 优化后，交替运行七轮取中位数）：
@@ -176,14 +176,14 @@ SipHash 的版本与之对比，七轮）：批量传输 16,836 → 17,366 Mbit/
 | HTTP/3 GET，单连接，64 个并发 | 820,741 请求/秒（807,108–827,664） | 883,127 请求/秒（875,505–888,021） | 1.08 |
 
 每个请求的内存分配次数（基准程序两端合计，用计数分配器统计）从 21.6 降到 8.6：流数据进入事件队列时不再
-每次经过两个临时向量（每个请求 4 次）；较小的响应头与请求头写进 only-quic 的池化缓冲区，不再是一个 `Vec`
+每次经过两个临时向量（每个请求 4 次）；较小的响应头与请求头写进 akio-quic 的池化缓冲区，不再是一个 `Vec`
 加上其 `Bytes` 的 `Arc`（4 次）；`Context` 自己持有请求，直到有需要共享时才放进 `Arc`（1 次）；64 字节及以上的
 HEADERS 帧原地加宽长度字段，不再用 splice（1 次）；`Headers` 内联保存前两个字段的位置（3 次）。分配器在 profile
 中的占比从 10.8% 降到 5.7%。QPACK 写 `:status`、`content-length` 与 date 行（每秒编码一次）时不再查静态表；
 此前编码与解码各约占 profile 的 2%，现在在更短的单次请求里占比大致相同。剩下的分配是请求本身需要的（请求目标、
 `Headers` 的缓冲区、响应体、装箱的响应 sink）。
 
-only-http 的改动与 HTTP/1.1、HTTP/2 共用，在同一个空闲时段里做了检查（`http-bench`，服务端在 CPU 0–3，h2load
+akio-http 的改动与 HTTP/1.1、HTTP/2 共用，在同一个空闲时段里做了检查（`http-bench`，服务端在 CPU 0–3，h2load
 与上文表格相同，交替三轮；这几行受客户端或内核限制，所以 1200 万个请求下服务端每请求 CPU 时间是更稳定的指标）：
 
 | 场景 | 请求/秒 优化前 → 优化后 | 优化后 / 优化前 | 服务端每请求 CPU 优化前 → 优化后 |
@@ -208,18 +208,18 @@ CPU 增加约 3%；改为两个位置压进向量的 niche 后，它仍是 48 �
 | UDP echo，64 B | 800,397 请求/秒（721,007–877,768） | 799,617 请求/秒（751,826–858,771） | 1.00 |
 | UDP echo，服务端每请求 CPU（11 轮） | 4,445 ns | 4,443 ns | 1.00 |
 
-数据报现在留在内核写入的接收 slab 中交给 only-quic 并在原处解密，`recvmmsg` 槽位之外剩下的那一次复制没有了；
+数据报现在留在内核写入的接收 slab 中交给 akio-quic 并在原处解密，`recvmmsg` 槽位之外剩下的那一次复制没有了；
 UDP 循环的对端表用带密钥的乘法哈希代替 SipHash。在回环上两者都没有超出噪声：四次运行中批量在 0.98–1.005，
 三次运行中 HTTP/3 在 1.001–1.011。第一版让 UDP echo 服务端每请求 CPU 多了 3.4%（轮转使用的 slab 在缓存中变冷，
 且每次 `recvmmsg` 后重置全部槽位）；现在槽位在自己的 slab 空闲后重用它，并且只重置上一次调用可能写过的槽位。
 握手速率低于上面各表，是这一时段主机状态所致（两边每次都有 192 个握手失败）；应看比值。
 
-### 内存中的 TLS 1.3（`crates/only-tls/examples/tls-bench.rs`，CPU 2）
+### 内存中的 TLS 1.3（`crates/akio-tls/examples/tls-bench.rs`，CPU 2）
 
 两端在同一线程，客户端验证同一张自签名 ECDSA P-256 证书，不用票据；记录由客户端加密、服务端解密。
 rustls 0.23 + ring 是开发依赖。
 
-| 场景 | only-tls | rustls + ring | only / rustls |
+| 场景 | akio-tls | rustls + ring | akio / rustls |
 |---|---:|---:|---:|
 | 完整握手/秒，X25519 | 5,027 | 5,025 | 1.00 |
 | 完整握手/秒，secp256r1 | 4,552 | 5,126 | 0.89 |
@@ -264,7 +264,7 @@ record_size_limit、证书压缩与 OCSP stapling（ADR-008），在安静的主
 | X25519，RSA-2048 证书 | 3,290 | 3,295 | 1.00 |
 
 客户端也开启压缩的第一轮测试三种场景均为 0.99 倍（5,426 → 5,376、5,439 → 5,402、3,296 → 3,262）：解压 329 字节的
-压缩证书约需 1.3 µs（RSA 证书 2.2 µs），主要是 only-deflate 每个流的固定开销，因此客户端只在明确要求时才提供压缩。
+压缩证书约需 1.3 µs（RSA 证书 2.2 µs），主要是 akio-deflate 每个流的固定开销，因此客户端只在明确要求时才提供压缩。
 
 #### 共享防重放存储与兼容版本协商：握手 A/B
 
@@ -302,25 +302,25 @@ ADR-062（2026-11-21，`b22519ae` → 本分支，在安静主机上经 `quiet.s
 `tls-bench` 中在同一进程里运行的 rustls 一列变化幅度相同（平均 4,961 → 4,954 次握手/秒），因此 TLS 的差异
 在主机噪声之内。QUIC 握手最初三轮（总是先跑 base）为 0.97；调换顺序跑七轮为 1.00（两者各轮都在 3,676–3,942/秒）。
 
-### 内核 TLS（kTLS）评估（`crates/only-tls/examples/ktls-bench.rs`、`tools/bench/ktls.sh`）
+### 内核 TLS（kTLS）评估（`crates/akio-tls/examples/ktls-bench.rs`、`tools/bench/ktls.sh`）
 
-问题：only-tls 完成握手后，是否应把记录密钥交给 Linux 内核（`setsockopt(TCP_ULP, "tls")`，`SOL_TLS`
+问题：akio-tls 完成握手后，是否应把记录密钥交给 Linux 内核（`setsockopt(TCP_ULP, "tls")`，`SOL_TLS`
 的 `TLS_TX` / `TLS_RX`），由内核加解密记录，让套接字上流动明文、让 `sendfile(2)` 在 TLS 下可用？
-**结论：不应该。在这台主机上，内核的软件 kTLS 在所有测试情形下都比 only-tls 自己的记录层慢，而且恰恰在
-它本该占优的地方（大响应与 `sendfile`）最慢。** 卸载代码保留在 only-tls 的 `experimental-ktls` feature
+**结论：不应该。在这台主机上，内核的软件 kTLS 在所有测试情形下都比 akio-tls 自己的记录层慢，而且恰恰在
+它本该占优的地方（大响应与 `sendfile`）最慢。** 卸载代码保留在 akio-tls 的 `experimental-ktls` feature
 之后以便重新测量，没有接入 `Tls` 或引擎。
 
-方法：一个每连接一线程的 TLS 上 HTTP/1.1 服务器（`ktls-bench`），记录层要么是用户态的 only-tls
-（`user`：响应由 only-tls 加密后写出；文件用 `pread` 按 64 KiB 读入后加密），要么是内核（`ktls`：同样
-由 only-tls 握手，然后交出密钥；响应以明文写出；文件用 `sendfile` 发送）。同一个二进制、同样的握手
+方法：一个每连接一线程的 TLS 上 HTTP/1.1 服务器（`ktls-bench`），记录层要么是用户态的 akio-tls
+（`user`：响应由 akio-tls 加密后写出；文件用 `pread` 按 64 KiB 读入后加密），要么是内核（`ktls`：同样
+由 akio-tls 握手，然后交出密钥；响应以明文写出；文件用 `sendfile` 发送）。同一个二进制、同样的握手
 （TLS 1.3、X25519、ECDSA P-256、无票据），除注明外均为 AES-128-GCM。服务器在 CPU 0–3，
 `h2load --h1` 8 线程在 CPU 4–7 与 12–15，每次 2 s 预热后测 8 s，交替进行 3 轮（取中位数；各轮相差
 1–2%），全部在 `quiet.sh` 下运行。Linux 7.0，Ryzen 7 7800X3D；内核的 AES-GCM 是
-`generic-gcm-vaes-avx512`（与 only-crypto 同类的 VAES + AVX-512 代码），ChaCha20-Poly1305 是
+`generic-gcm-vaes-avx512`（与 akio-crypto 同类的 VAES + AVX-512 代码），ChaCha20-Poly1305 是
 `rfc7539(chacha20-lib,poly1305-generic)`。所有情形下服务器都是 CPU 瓶颈（每秒 4.0 CPU 秒），因此每字节
 CPU 为服务器 CPU 时间（用户态 + 内核态，取自 `/proc`）除以发送的字节数。
 
-| 情形（连接数） | only-tls 请求/秒 | kTLS 请求/秒 | kTLS / only | only-tls CPU ns/B | kTLS CPU ns/B | 每字节 CPU kTLS / only |
+| 情形（连接数） | akio-tls 请求/秒 | kTLS 请求/秒 | kTLS / akio | akio-tls CPU ns/B | kTLS CPU ns/B | 每字节 CPU kTLS / akio |
 |---|---:|---:|---:|---:|---:|---:|
 | 1 KiB 响应（64） | 531,393 | 439,368 | 0.83 | 6.77 | 8.55 | 1.26 |
 | 16 KiB（64） | 358,494 | 233,814 | 0.65 | 0.679 | 1.042 | 1.53 |
@@ -337,16 +337,16 @@ CPU 为服务器 CPU 时间（用户态 + 内核态，取自 `/proc`）除以发
 原因（perf，10 MB 文件情形）：使用 kTLS 时，服务器 96% 的采样位于 `tls_sw_sendmsg` 之下，但 AES-GCM
 本身只占约 12%。内核把每条 16 KiB 记录单独推给 TCP（`tls_push_record` → `tcp_push`：约 55% 的采样在
 TCP/IP 发送路径中，包括回环的接收软中断；用户态每次 `write` 交给 TCP 64 KiB 的记录，只占约 29%），并为
-每条记录分配并清零新页（`kernel_init_pages` 约 5%）。在用户态，同样的工作是 only-crypto 的 GCM（22%）
+每条记录分配并清零新页（`kernel_init_pages` 约 5%）。在用户态，同样的工作是 akio-crypto 的 GCM（22%）
 加上 `pread` 与 `write` 的拷贝（各约 14%）；省掉这些拷贝抵不上内核中每条记录的开销。小响应损失较小
 （0.83 倍），因为每个请求的开销主要是两种模式共有的系统调用与 TCP。
 
 kTLS 仍可能划算的情况：带 TLS 卸载的网卡（`tls-hw-tx-offload`，如 ConnectX-6 Dx；本机没有），此时内核
 把未加密的记录交给网卡，`sendfile` 才真正零拷贝；或者用户态 AES-GCM 比内核慢得多的主机（没有 VAES）。
-这两种情况都不适用于 x86_64 上带 VAES 的 only-tls；重新考虑之前请先用 `tools/bench/ktls.sh` 重新测量。
+这两种情况都不适用于 x86_64 上带 VAES 的 akio-tls；重新考虑之前请先用 `tools/bench/ktls.sh` 重新测量。
 
-实验代码覆盖的内容（测试：在支持 kTLS 的内核上运行 `crates/only-tls/tests/ktls.rs`，内存中的单元测试
-随处可跑；`ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` 在 only 一侧卸载的情况下对 OpenSSL
+实验代码覆盖的内容（测试：在支持 kTLS 的内核上运行 `crates/akio-tls/tests/ktls.rs`，内存中的单元测试
+随处可跑；`AKIO_INTEROP_KTLS=require tools/interop/tls/run.sh` 在 akio 一侧卸载的情况下对 OpenSSL
 3.0.13 与 Go 1.27 通过 107/107）：TLS 1.3 与 1.2 的 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305；
 握手后导出密钥与序列号（仅当没有任何缓冲数据时）；通过记录类型控制消息收发告警、close_notify 与握手后
 消息（NewSessionTicket、KeyUpdate）；通过重新安装密钥实现双向 TLS 1.3 KeyUpdate（Linux 6.14+；更旧的
@@ -359,7 +359,7 @@ ADR-067 需要证明：`Tls` 连接默认不变慢（不启用 `ktls` feature，
 在没有 TLS 卸载网卡的主机上没有任何开销（本机为 igc 与 atlantic，`tls-hw-*: off [fixed]`；硬件路径本身不在
 这里测量）。安静主机上的同批 A/B（Linux 7.0，Ryzen 7 7800X3D，`quiet.sh`；每次运行前脚本都等主机忙碌度
 低于 15%）：分支点上的 main（`base`）对比本分支不带 `ktls` feature 的构建（`new`），以及带该 feature 时的
-`ONLY_KTLS=hardware`（`hw`）与 `ONLY_KTLS=software`（`sw`）。服务器在 CPU 0–3（4 个 I/O 线程），客户端在
+`AKIO_KTLS=hardware`（`hw`）与 `AKIO_KTLS=software`（`sw`）。服务器在 CPU 0–3（4 个 I/O 线程），客户端在
 4–11；TLS 1.3、X25519、ECDSA P-256、AES-128-GCM。用例：echo-bench `tls`（64 个连接，1 KiB 与 16 KiB
 消息）、每秒完整握手数（echo-bench `tlshs`，32 个工作线程，不恢复会话）、HTTPS `/plaintext`
 （`http-bench tls`，h2load `--h1`，64 个连接）。8 轮交错运行、每轮 5 秒取中位数；比值相对 `base`。
@@ -388,9 +388,9 @@ ADR-067 需要证明：`Tls` 连接默认不变慢（不启用 `ktls` feature，
 同时检查了：`ktls` 引擎测试（两个后端，各运行 20 次）、内核计数器（每个连接的 `TlsTxSw` / `TlsRxSw`，双向
 密钥更新的 `TlsRxRekeyOk` / `TlsTxRekeyOk`，没有 `TlsDecryptError`）、curl 与 `openssl s_client` 3.0.13
 对软件 kTLS 下的 `http-bench`（TLS 1.3 与 1.2，AES-GCM 与 ChaCha20-Poly1305，连接中途客户端发起带
-update_requested 的 KeyUpdate；epoll 与 io_uring：10/10），以及 `ONLY_INTEROP_KTLS=require
+update_requested 的 KeyUpdate；epoll 与 io_uring：10/10），以及 `AKIO_INTEROP_KTLS=require
 tools/interop/tls/run.sh`（对 OpenSSL 3.0.13 与 Go 175/175）。用 `tools/bench/ktls-engine.sh` 重新测量
-（两个版本的二进制分别放在 `BASE_DIR` / `NEW_DIR`，本版本带 `--features only/ktls` 的放在 `NEWK_DIR`）。
+（两个版本的二进制分别放在 `BASE_DIR` / `NEW_DIR`，本版本带 `--features akio/ktls` 的放在 `NEWK_DIR`）。
 
 ### io_uring 特性评估（`tools/bench/uring-eval.sh`、引擎 A/B）
 
@@ -403,8 +403,8 @@ socket，用它意味着重新设计写路径，而不是打开一个开关。`S
 ring，以及 `COOP_TASKRUN` + `SINGLE_ISSUER` + `DEFER_TASKRUN` 的 ring。
 
 **在裸 ring 上比较发送方式。** 不做上述重新设计，引擎无法改用 ring 发送，所以这部分在一个直接驱动
-only-uring ring 的最小 HTTP/1.1 应答程序上测量（被忽略的 `eval_server` 测试，
-`crates/only-uring/src/eval.rs`）：与后端相同的 multishot accept 和 recv，每个请求从一个静态缓冲区回一个
+akio-uring ring 的最小 HTTP/1.1 应答程序上测量（被忽略的 `eval_server` 测试，
+`crates/akio-uring/src/eval.rs`）：与后端相同的 multishot accept 和 recv，每个请求从一个静态缓冲区回一个
 固定响应（因此 `SEND_ZC` 永远不必等缓冲区归还：这是它的最好情况），发送方式为在完成事件处理中调用
 `write(2)`（引擎的做法）、随下一次等待一起提交的 `IORING_OP_SEND` 条目，或 `IORING_OP_SEND_ZC`；
 “+fixed” 表示 direct accept 进注册文件表，并在每个条目上设 `IOSQE_FIXED_FILE`。256 连接，5 轮交错、
@@ -508,7 +508,7 @@ pipelined 时约占 10%，`main` 与本分支相同。
 
 2026-11-18 在 gpu51 上用 `quiet.sh` 测量（每轮 5 秒，取中位数，每次新起服务器；服务器 4 线程在 CPU 0–3，
 `h2load` 8 线程在 CPU 4–7 与 12–15）。**关闭**：main（ab65d376）对本分支的 `http-bench`，7 轮。**开启**：
-`crates/only-export/examples/obs-bench.rs`（路由相同）每次只开一项，5 轮，对本分支的 `http-bench`（span：
+`crates/akio-export/examples/obs-bench.rs`（路由相同）每次只开一项，5 轮，对本分支的 `http-bench`（span：
 对 main，取自修复“延迟字段”之后的一轮）。`±` 是最小最大值之差的一半。
 
 | 负载（epoll） | 关闭：分支 / main | `HttpMetrics` | + 按路由标签 | `H2Stats` | span 采样 1% | span 100% 并导出 |
@@ -531,17 +531,17 @@ CPU 0–3（4 线程，epoll），`h2load`（8 线程，256 连接，5 秒）在
 
 | 基准 | 轮数 | base | new / base |
 |---|---:|---:|---:|
-| only-log `trace!` 关闭，2 个键值 | 5 × 2 | 0.272 ns | 1.009 |
-| only-log `info_span!`，span 关闭，2 个字段 | 5 × 2 | 0.615 ns | 0.998 |
-| only-log `span::enabled`（span 关闭） | 5 × 2 | 0.407 ns | 0.994 |
-| only-log `log_enabled!` 关闭 | 5 × 2 | 0.406 ns | 0.998 |
+| akio-log `trace!` 关闭，2 个键值 | 5 × 2 | 0.272 ns | 1.009 |
+| akio-log `info_span!`，span 关闭，2 个字段 | 5 × 2 | 0.615 ns | 0.998 |
+| akio-log `span::enabled`（span 关闭） | 5 × 2 | 0.407 ns | 0.994 |
+| akio-log `log_enabled!` 关闭 | 5 × 2 | 0.406 ns | 0.998 |
 | `Histogram::observe`（无 exemplar） | 7 | 4.643 ns | 1.005 |
 | `HttpMetrics` 中间件（exemplar 关闭），HTTP/1.1 plaintext | 7 | 731,820 req/s | 0.999 |
 | `HttpMetrics` 中间件（exemplar 关闭），pipelined ×16 | 7 | 4,284,243 req/s | 1.001 |
 
 **结论。** 关闭的日志与 span 语句不变（±1% 以内）。最初的版本把 exemplar 开关放在 `Histogram` 内部，测得 1.15（内联的提交
 路径），改为外联后为 1.04（每次观测一个分支）；现在 exemplar 放在单独的 `ExemplarHistogram` 中，普通直方图回到 1.005。exemplar
-关闭时 `HttpMetrics` 中间件不变。`only_export` 自身的代码运行在它自己的线程上。
+关闭时 `HttpMetrics` 中间件不变。`akio_export` 自身的代码运行在它自己的线程上。
 
 ### 热更新（引擎 A/B，`tools/bench`）
 
@@ -568,13 +568,13 @@ loop 的几个检查，以及 io_uring 从完成事件的操作码选择缓冲�
 这一行上相差约 1%。echo 各行在轮间噪声之内上下浮动（瓶颈是闭环 echo 客户端，见
 “TCP、UDP 与 TLS echo”）。
 
-### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
+### 密码学（`akio-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +
-AVX-512（AES-GCM 任意长度，CRC 折叠从 512 字节起）、BMI2 + ADX。对比列是被 `only-crypto`
+AVX-512（AES-GCM 任意长度，CRC 折叠从 512 字节起）、BMI2 + ADX。对比列是被 `akio-crypto`
 替换的 RustCrypto crate（同样运行时检测 CPU；CRC-32 用 crc32fast），公钥运算对比 ring 0.17。
 
-| 运算（MB/s） | 大小 | only-crypto | RustCrypto | 比值 |
+| 运算（MB/s） | 大小 | akio-crypto | RustCrypto | 比值 |
 |---|---:|---:|---:|---:|
 | SHA-1 | 16 KiB | 2,546 | 2,545 | 1.00 |
 | SHA-1，BitTorrent 分片 | 256 KiB | 2,558 | 2,558 | 1.00 |
@@ -598,7 +598,7 @@ AVX-512（AES-GCM 任意长度，CRC 折叠从 512 字节起）、BMI2 + ADX。�
 | base64 编码 | 1400 B | 2,059 | 2,739 | 0.75 |
 | PBKDF2-HMAC-SHA1，4096 轮（kcptun 密钥） | – | 0.83 ms | 0.57 ms | – |
 
-| 运算（次/秒） | only-crypto | ring | 比值 |
+| 运算（次/秒） | akio-crypto | ring | 比值 |
 |---|---:|---:|---:|
 | Ed25519 签名 | 89,784 | 58,979 | 1.53 |
 | Ed25519 验签 | 27,714 | 31,874 | 0.87 |
@@ -620,14 +620,14 @@ AVX-512（AES-GCM 任意长度，CRC 折叠从 512 字节起）、BMI2 + ADX。�
 | RSA-4096 PKCS#1 验签 | 64,911 | 17,534 | 3.70 |
 
 P-256 各行与 X25519 运行在 BMI2 + ADX 上（`ec::hw`、`curve25519::hw`；检测到的路径中出现 `adx`）。关闭
-所有硬件路径时（`ONLY_CRYPTO_PORTABLE=1`，RFC 6979 的 HMAC 也不再用 SHA-NI），P-256 为 ring 的 0.42 倍
+所有硬件路径时（`AKIO_CRYPTO_PORTABLE=1`，RFC 6979 的 HMAC 也不再用 SHA-NI），P-256 为 ring 的 0.42 倍
 （签名）、0.58 倍（验签）、0.52 倍（ECDH）与 0.60 倍（生成密钥），X25519 为 0.84 倍，握手为 rustls 的
 0.62 倍（X25519）与 0.49 倍（secp256r1）。上表中的 P-256 各行来自上一轮优化；本轮数据见下表。
 
 #### P-256 整点汇编、宽梳形表与 safegcd（`--example pk_bench`、`tls-bench handshakes 2`，CPU 2）
 
 上一版本（`7cefa48b`）与本轮交替运行五轮取中位数。整个测量期间本机都在跑另一个基准测试（负载 9–10，
-CPU 2 的超线程兄弟核被占用），所以绝对速率都比上面表格中的安静数据低 20–30%；比值是同一次运行中 `only`
+CPU 2 的超线程兄弟核被占用），所以绝对速率都比上面表格中的安静数据低 20–30%；比值是同一次运行中 `akio`
 与 ring/rustls 紧挨着测得的。
 
 | 次/秒（有负载的机器） | 优化前 | 优化后 | ring / rustls | 优化前 / ring | 优化后 / ring |
@@ -642,7 +642,7 @@ CPU 2 的超线程兄弟核被占用），所以绝对速率都比上面表格�
 本 CPU 上的周期数（`perf stat`，安静时段）：倍点 481 → 355（整点汇编，五次在同一个帧内），加法
 881 → 778，混合加法 618 → 564；固定基点乘法 40.5k → 31k（43 个 6 位窗口代替 65 个 4 位窗口；6 位与 7 位
 梳形表持平，5 位与 8 位更慢）；可变基点乘法约 190k → 159k；标量求逆 20.9k → 7.0k，域求逆 12.7k →
-约 7–9k（safegcd 加汇编 divsteps 代替费马加法链）。`ONLY_CRYPTO_PORTABLE=1` 时，可移植的 safegcd 把签名
+约 7–9k（safegcd 加汇编 divsteps 代替费马加法链）。`AKIO_CRYPTO_PORTABLE=1` 时，可移植的 safegcd 把签名
 从 ring 的 0.41 倍提高到约 0.45 倍，ECDH 从 0.52 倍提高到 0.57 倍。
 
 #### P-256 点运算公式（`--example pk_bench`、`tls-bench handshakes 2`，CPU 2）
@@ -693,7 +693,7 @@ CPU 2 的超线程兄弟核被占用），所以绝对速率都比上面表格�
 2026-11-19，首次测量 aarch64 汇编（`ec::hw_aarch64`、`curve25519::hw_aarch64`；自 2026-11-17 起已测试，但从未做
 性能测试），macOS，Apple M4 Pro（14 核），同一次运行中对比 ring 0.17（其 P-256 为 `ecp_nistz256-armv8`，X25519 为
 fiat）。这台机器同时在跑其他构建（负载均值 7–10，有时高得多），因此给出 `main`（`436b47e7`）与本轮交替五轮的
-中位数；“可移植”一列是 `main` 加 `ONLY_CRYPTO_PORTABLE=1`（三轮中位数）。
+中位数；“可移植”一列是 `main` 加 `AKIO_CRYPTO_PORTABLE=1`（三轮中位数）。
 
 | 次/秒（M4 Pro，共享） | 可移植 | 汇编 之前 | 之后 | ring | 之前 / ring | 之后 / ring |
 |---|---:|---:|---:|---:|---:|---:|
@@ -722,7 +722,7 @@ divsteps 经过 `ct::mask`（每个条件一次经内存的 `black_box` 往返�
 
 #### 整点汇编中不用 `mulx` 的 P-256 约简（`--example pk_bench p256`、`tls-bench handshakes 2`，CPU 4）
 
-2026-11-22，`main`（`b789624f` 的 `only-crypto`）与本次改动交替跑三轮，同次运行对比 ring 0.17 / rustls 0.23，安静主机（`quiet.sh`）；取中位数。
+2026-11-22，`main`（`b789624f` 的 `akio-crypto`）与本次改动交替跑三轮，同次运行对比 ring 0.17 / rustls 0.23，安静主机（`quiet.sh`）；取中位数。
 
 | 次/秒（安静主机） | 之前 | 之后 | ring / rustls | 之前 / ring | 之后 / ring |
 |---|---:|---:|---:|---:|---:|
@@ -762,7 +762,7 @@ divsteps 经过 `ct::mask`（每个条件一次经内存的 `black_box` 往返�
 113 µs。验签以及没有 IFMA 的 CPU 使用 BMI2 + ADX 汇编：1,024 位 Montgomery 乘法 805 个周期（可移植实现
 1,245），平方 681（可移植实现 1,486），2,048 位为 3,045 与 2,700 个周期。只走这条路径时（加入 IFMA 代码之前）
 测得 RSA-2048 签名为 ring 的 0.99 倍，验签 1.20 倍。在探测中，MULX 的行模式（每个乘积一条 `mulx`、`adcx`、
-`adox`）在 Zen 4 上约每个乘积 1.5 个周期，因此乘法已接近这种指令组合的上限。设置 `ONLY_CRYPTO_PORTABLE=1`
+`adox`）在 Zen 4 上约每个乘积 1.5 个周期，因此乘法已接近这种指令组合的上限。设置 `AKIO_CRYPTO_PORTABLE=1`
 时签名为 ring 的 0.50 倍，验签 0.59 倍（密钥解析不再占主导：0.53 倍）。测量后放弃的做法：从寄存器而不是内存
 取下一步约简因子（无变化），32 个数字时用 `zmm` 累加器（比操作数放在寄存器中的 `ymm` 慢），32 与 40 个数字时
 为 `m` 的乘积再设一个累加器、或把每一步拆成低半与高半（没有收益：乘法与移位共用的执行管线才是瓶颈），IFMA
@@ -835,7 +835,7 @@ IFMA 上（见下一小节）。
 | TLS 1.3 完整握手/秒，X25519，RSA-2048 证书 | 3,002 | 3,270 | 1,802 | 1.67 | 1.82 |
 
 验签为原代码的 2.51 / 3.00 / 3.39 倍，含密钥解析 2.31 / 2.76 / 3.04 倍；签名因校验变便宜而快 2–4%。
-`ONLY_CRYPTO_PORTABLE=1` 时（交替两轮）：2,048 位验签为 ring 的 0.59 倍 → 0.70 倍（3,072 与 4,096 位为
+`AKIO_CRYPTO_PORTABLE=1` 时（交替两轮）：2,048 位验签为 ring 的 0.59 倍 → 0.70 倍（3,072 与 4,096 位为
 0.60 → 0.70、0.57 → 0.69 倍），含密钥解析 0.53 倍 → 0.66 倍（0.53 → 0.67、0.52 → 0.65 倍）。2,048 位时密钥
 解析现在约占“验签 + 密钥解析”的四分之一（1.8 µs：求 `R²` 的除法、复制与内存分配）；AMM 本身在这里受单条
 依赖链的延迟限制，也没有第二个模幂可以交错。
@@ -845,7 +845,7 @@ IFMA 上（见下一小节）。
 2026-11-19，ADR-046，同一台主机经 `quiet.sh` 运行（运行期间基准锁之外的进程使负载在 4–10 之间；三次中两次
 一致，第三次低 10–25%）。ring 没有这些算法，比值列与我们自己的 Ed25519 / X25519 比较：
 
-| 操作（次/秒） | only-crypto | 对比 |
+| 操作（次/秒） | akio-crypto | 对比 |
 |---|---:|---|
 | Ed448 签名 | 3,520 | Ed25519 签名的 0.04× |
 | Ed448 验签 | 2,630 | Ed25519 验签的 0.11× |
@@ -860,9 +860,9 @@ Ed448 与 X448 是基于通用 7 limb Montgomery 域的可移植常数时间代�
 2026-11-19，ADR-049，同一台主机，经 `quiet.sh`（运行期间有基准锁之外的进程负载：下面各轮握手相差可达
 30%）。ring 没有 P-521，因此对比对象是同一核心上的 OpenSSL 3.0.13（`openssl speed ecdsap521 ecdhp521`，
 Ubuntu 的构建，带 OpenSSL 的 64 位 P-521 代码）；P-521 在这里没有硬件路径，默认与
-`ONLY_CRYPTO_PORTABLE=1` 跑的是同一份代码（取两者较好者）：
+`AKIO_CRYPTO_PORTABLE=1` 跑的是同一份代码（取两者较好者）：
 
-| 操作（op/s） | only-crypto | OpenSSL 3.0.13 | only / OpenSSL |
+| 操作（op/s） | akio-crypto | OpenSSL 3.0.13 | akio / OpenSSL |
 |---|---:|---:|---:|
 | P-521 ECDSA 签名（SHA-512） | 5,651 | 5,190 | 1.09 |
 | P-521 ECDSA 验签 | 2,562 | 2,441 | 1.05 |
@@ -980,12 +980,12 @@ AES-256-GCM 1 KiB 2,519 → 2,737（1.42 倍 → 1.55 倍），16 KiB 5,930 → 
   6,530 对 6,890，解密相差 1% 以内（4 个独立的 AES 状态填不满两条 AES 流水线的延迟）。它只处理完整的 256
   字节组，消息其余部分走 128 位路径。在本机上与 ring 自己的 VAES-AVX2 代码相比为 0.86 倍（加密 1 KiB）到
   1.11 倍（加密 64 B），16 KiB 为 0.94 倍。
-- **TLS 记录的预先清零：当时保留，现已去掉**（only-crypto 中的一步 `unsafe`，见下文“去掉 TLS 记录的预先
+- **TLS 记录的预先清零：当时保留，现已去掉**（akio-crypto 中的一步 `unsafe`，见下文“去掉 TLS 记录的预先
   清零”）。同一次运行中测量（三轮交替，AES-128-GCM，加密 + 解密 MB/s）：现有代码
   （先清零，再由 AEAD 非原地写入）16 KiB 6,620 / 6,675；把明文复制进记录再原地加密 6,256 / 6,259（−6%；
   64 KiB −8%，1 KiB −2%）；仅作参考、未提交的 `unsafe` `set_len` 去掉清零 7,297 / 7,313（+10%；64 KiB
   +8%，1 KiB +4%）。记录层跨记录复用缓冲区只是把 memset 换成 memcpy，开销与复制方案相同。输出是调用方的
-  `Vec<u8>`、only-tls 又是 `#![forbid(unsafe_code)]`，任何安全方案都要把输出写两遍，因此保留清零（较便宜的
+  `Vec<u8>`、akio-tls 又是 `#![forbid(unsafe_code)]`，任何安全方案都要把输出写两遍，因此保留清零（较便宜的
   第二次写入）；去掉它需要那一步 `unsafe`。ChaCha20-Poly1305 的 1 KiB 记录用复制加原地加密快 7%（ChaCha
   的非原地路径在短消息上开销更大），16–64 KiB 持平或更慢；未改动。
 
@@ -1081,11 +1081,11 @@ AES-GCM 一样非原地加解密 ChaCha20-Poly1305 记录（不再先复制）�
 #### 去掉 TLS 记录的预先清零（`gcm-sizes`、`chacha-sizes`、`tls-bench records`，CPU 2）
 
 记录层原先在 AEAD 非原地写入之前，先把输出 `Vec<u8>` 中存放记录密文（加密）或明文（解密）的空间清零
-（上文：当时保留，因为任何安全方案都要把输出写两遍）。only-crypto 现在为 AES-GCM 与 ChaCha20-Poly1305
+（上文：当时保留，因为任何安全方案都要把输出写两遍）。akio-crypto 现在为 AES-GCM 与 ChaCha20-Poly1305
 提供隐藏的 `encrypt_append` / `decrypt_append`，直接写入向量的空闲容量：向量内核通过它们本来就使用的裸指针
 写入，其余部分（内核完整分组组之后的字节、可移植路径、ChaCha20 开头几个分组）用 `MaybeUninit::write`，
-只有每个字节都有值之后向量才增长（`only_crypto::fill`，见 docs/unsafe-review.zh-CN.md；可移植路径经 Miri
-检查）。打开失败时不追加任何内容，并把已写的字节清零。only-tls 仍是 `#![forbid(unsafe_code)]`。
+只有每个字节都有值之后向量才增长（`akio_crypto::fill`，见 docs/unsafe-review.zh-CN.md；可移植路径经 Miri
+检查）。打开失败时不追加任何内容，并把已写的字节清零。akio-tls 仍是 `#![forbid(unsafe_code)]`。
 
 本机同一次运行 A/B：此前代码（`main` 的 `f34c79e3`）与本次改动交替运行五轮取中位数（都用 `taskset -c 2`
 与 `quiet.sh`），rustls 0.23 + ring 在同一次运行中测量。TLS 1.3 记录，加密 + 解密 MB/s：
@@ -1189,7 +1189,7 @@ AVX-512 的机器），与 `main` 交替运行五轮取中位数，MB/s：加密
 
 另外：低于两个向量阈值时 `absorb_padded` 直接走标量循环（空的 AAD 调用与 IFMA 幂次的栈帧都没有了）。密钥流头为八个分组的长度（按内核耗时：193–448 字节，然后 705–960 字节，此后每 512 字节一段，1400 字节在其中）仍用清零的缓冲区并从中读回密钥。
 
-`main`（`b789624f` 的 `only-crypto`）与本次改动在安静主机上交替跑三轮，ring 在同次运行中，取中位数，MB/s（AVX-512 + IFMA 路径）：
+`main`（`b789624f` 的 `akio-crypto`）与本次改动在安静主机上交替跑三轮，ring 在同次运行中，取中位数，MB/s（AVX-512 + IFMA 路径）：
 
 | MB/s | 之前 | 之后 | 之后 / 之前 | ring | 之前 / ring | 之后 / ring |
 |---|---:|---:|---:|---:|---:|---:|
@@ -1204,14 +1204,14 @@ AVX-512 的机器），与 `main` 交替运行五轮取中位数，MB/s：加密
 
 16 KiB 两行在轮间波动之内（解密之前 4,302–4,390，之后 4,267–4,404；它们运行的代码没有变化）。AVX2 与可移植密钥在 64 B 时由 311 / 277 升到 335 / 302 MB/s（加密 / 解密，两种密钥相同）（AAD 分组与密钥流头的移动对它们同样适用）。使用 TLS_CHACHA20_POLY1305_SHA256 的 TLS 1.3 记录，加密 + 解密：1 KiB 1,055 → 1,100 MB/s（rustls + ring 的 1.16 倍 → 1.21 倍），16 KiB 2,237 → 2,252，64 KiB 2,215 → 2,252。在此之前单独测过两个较小的步骤（同一主机，安静）：只做只存储的密钥流头、密钥不走寄存器时解密 64 B 为 428–431 MB/s；只把密钥放进寄存器没有变化（返回的 `Head` 仍让它经过内存）。遗留：64 字节时解密仍比加密慢约 13%（Poly1305 链必须等内核结束才能开始，而加密能与 XOR 重叠），八分组的密钥流头（见上）仍经过清零的缓冲区。`tools/ct-dudect`（新目标 `chacha20poly1305-open-tag-64`）：见 docs/constant-time.zh-CN.md。
 
-### Deflate（`only-deflate`，`--example bench` 与 `--example pmd_echo`，CPU 2）
+### Deflate（`akio-deflate`，`--example bench` 与 `--example pmd_echo`，CPU 2）
 
-对比 flate2 1.1 的 `zlib-rs` 后端（运行时选择 AVX2/BMI2 路径；only-deflate 是 `#![forbid(unsafe_code)]`，
+对比 flate2 1.1 的 `zlib-rs` 后端（运行时选择 AVX2/BMI2 路径；akio-deflate 是 `#![forbid(unsafe_code)]`，
 没有 SIMD）；每次程序运行对每格取若干轮（每轮 ≥200 ms）中最好的一轮，表中是 3 次运行的中位数。语料：
 生成的类英文文本（4 MB）、JSON 行（4 MB）、随机字节（1 MB）、仓库的 Rust 源码拼接（6.0 MB）和主机的
 `libc.so.6`（2.1 MB）。解压的输入是 zlib-rs 在同一级别的输出。
 
-| 语料 | 级别 | 压缩比 only / zlib-rs | 压缩 MB/s only / zlib-rs | 解压 MB/s only / zlib-rs |
+| 语料 | 级别 | 压缩比 akio / zlib-rs | 压缩 MB/s akio / zlib-rs | 解压 MB/s akio / zlib-rs |
 |---|---:|---|---|---|
 | 文本 | 1 | 2.200 / 2.201 | 549 / 367 | 856 / 995 |
 | 文本 | 3 | 3.601 / 3.601 | 202 / 193 | 1,096 / 1,076 |
@@ -1239,21 +1239,21 @@ AVX-512 的机器），与 `main` 交替运行五轮取中位数，MB/s：加密
 permessage-deflate echo（客户端压缩 → 服务端解压 → 服务端压缩 → 客户端解压，级别 6，上下文接管，
 类 JSON 消息）：
 
-| 消息 | only-deflate（次/秒） | zlib-rs | 比值 | 线上字节（两者相同） |
+| 消息 | akio-deflate（次/秒） | zlib-rs | 比值 | 线上字节（两者相同） |
 |---|---:|---:|---:|---:|
 | 64 B | 628,894 | 348,873 | 1.80 | 5 |
 | 512 B | 80,625 | 79,044 | 1.02 | 80 |
 | 4 KiB | 17,166 | 17,147 | 1.00 | 481 |
 | 64 KiB | 1,375 | 1,404 | 0.98 | 6,897 |
 
-### Brotli 与 Zstandard（`only-brotli`、`only-zstd`、`tools/codec-bench`，CPU 2，2026-11-19）
+### Brotli 与 Zstandard（`akio-brotli`、`akio-zstd`、`tools/codec-bench`，CPU 2，2026-11-19）
 
 在同一进程内与 C 参考库对比：libzstd 1.5.7（`zstd` crate，在复用的上下文上一次性调用，与我们一样
 开启内容校验和）与 Google 的 libbrotli 1.2.1（`brotlic-sys`，一次性调用，lgwin 22，解码到复用的
 缓冲区），两者都由其自带源码编译（libzstd 在运行时选择 BMI2 路径，并使用其 x86-64 汇编 Huffman
-解码器）；only-brotli 与 only-zstd 为 `#![forbid(unsafe_code)]`，按基线 x86-64 编译。语料
+解码器）；akio-brotli 与 akio-zstd 为 `#![forbid(unsafe_code)]`，按基线 x86-64 编译。语料
 （`tools/codec-bench/corpus.sh`）：打成一个 tar 的 Silesia 语料（最慢的级别只用其前 20 MB），以及
-典型的 HTTP 负载：workspace 的 `cargo metadata` JSON、only-http 文档中最大的 rustdoc 页面与搜索脚本、
+典型的 HTTP 负载：workspace 的 `cargo metadata` JSON、akio-http 文档中最大的 rustdoc 页面与搜索脚本、
 两条 DER 证书链。每格取三轮（每轮至少 300 ms；Silesia 每轮一次调用；级别 11 与级别 19 的压缩只计时
 一次）中的最好值。“解压” 用两个解码器解码 C 库产生的流。“之前” 是同一工具链接本轮之前的 crate
 （`436b47e7`）编译、紧接着在同一主机上运行的结果。主机并不空闲（运行期间负载从 6 降到 1，“之前”
@@ -1261,7 +1261,7 @@ permessage-deflate echo（客户端压缩 → 服务端解压 → 服务端压�
 
 zstd：
 
-| 语料 | 级别 | 大小 only / C | 压缩 MB/s only（之前）/ C | 解压 MB/s only（之前）/ C | C / only |
+| 语料 | 级别 | 大小 akio / C | 压缩 MB/s akio（之前）/ C | 解压 MB/s akio（之前）/ C | C / akio |
 |---|---:|---|---|---|---:|
 | Silesia（212 MB） | 1 | 70,907,335 / 73,216,948 | 300（127）/ 571 | 921（852）/ 1,120 | 1.22 |
 | Silesia（212 MB） | 3 | 66,565,671 / 66,131,721 | 231（86）/ 360 | 839（782）/ 1,040 | 1.24 |
@@ -1282,12 +1282,12 @@ zstd：
 | 证书链（4.1 KB） | 3 | 2,617 / 2,589 | 165（60）/ 364 | 1,926（1,559）/ 2,447 | 1.27 |
 | 证书链（4.1 KB） | 19 | 2,563 / 2,531 | 50（42）/ 12 | 1,838（1,487）/ 2,323 | 1.26 |
 
-zstd 的解压各格来自第二轮解码器优化（2026-11-20，安静主机，见下文）：only（main 的 `aca9e988`，即第一轮）/ C，
+zstd 的解压各格来自第二轮解码器优化（2026-11-20，安静主机，见下文）：akio（main 的 `aca9e988`，即第一轮）/ C，
 在同一次运行中测得。我们在 Silesia 与证书链上的大小是下文字面量改动（“zstd 字面量”）之后的。
 
 brotli：
 
-| 语料 | 级别 | 大小 only / C | 压缩 MB/s only（之前）/ C | 解压 MB/s only（aca9e988）/ C | C / only |
+| 语料 | 级别 | 大小 akio / C | 压缩 MB/s akio（之前）/ C | 解压 MB/s akio（aca9e988）/ C | C / akio |
 |---|---:|---|---|---|---:|
 | Silesia（212 MB） | 1 | 68,088,477 / 73,455,775 | 117（111）/ 359 | 469（397）/ 585 | 1.25 |
 | Silesia（212 MB） | 4 | 63,972,366 / 64,132,974 | 78（23）/ 133 | 565（489）/ 720 | 1.27 |
@@ -1381,7 +1381,7 @@ libzstd 的双符号 Huffman 表随后完成（见下文“zstd 双符号 Huffma
 使用它，不足 64 个字面量从不做 Huffman 编码，否则保留为 raw，与 libzstd 相同（`ZSTD_minGain`、
 `LITERAL_NOENTROPY`）。raw 字面量的解码快数倍：在证书链上，我们自己的帧（TLS 证书压缩发送的正是它们）
 因 Huffman 表只省 4–17 字节，解码只有 870–965 MB/s，不到 libzstd 帧速度的一半。同一安静主机，CPU 2，
-两个构建交替各跑两次，用 only-zstd 解码各编码器自身的输出：2.7 KB 证书链 2,426–2,862 MB/s（之前
+两个构建交替各跑两次，用 akio-zstd 解码各编码器自身的输出：2.7 KB 证书链 2,426–2,862 MB/s（之前
 873–915），大 8–17 字节；4.1 KB 证书链级别 1 与 3 为 2,133–2,257 MB/s（之前 924–965），大 4–12 字节
 （级别 19 本就是 raw）；JSON、HTML 与 JavaScript 逐字节相同，Silesia 大 0.004%（级别 1 与 3 分别
 2,672 与 2,834 字节）。
@@ -1526,11 +1526,11 @@ gzip 1，zstd 1 窗口 log 17，brotli 4 窗口位数 18）。服务器在 CPU 0
 元块，每个流还有约 70 µs 的初始化（ADR-074 中的后续项）；高频事件流用 zstd 或 gzip 更省。每个空闲流的
 内存是编码器的窗口和表：刚写完头几个事件时 0.15–0.42 MiB（清零的表在使用前不驻留），一个窗口的输出流过
 之后 0.26–1.1 MiB，而不压缩的流约 2.5 KiB。计数分配器给出的是分配的大小（ADR-074 第 4 节：稳定状态
-320、476 和 1,336 KiB）；RSS 更低是因为表的一部分从未被触及。only-brotli 新的滑动阈值让 brotli 4、窗口
+320、476 和 1,336 KiB）；RSS 更低是因为表的一部分从未被触及。akio-brotli 新的滑动阈值让 brotli 4、窗口
 位数 18 每个流的分配从 2,032 KiB 降到 1,336 KiB。
 ### Brotli 流式编码器：固定开销（ADR-074 更新，同批 A/B，2026-11-22）
 
-main 的 `7e4db2d9`（“base”）对本改动（“new”），两者都用 only-brotli 的 `stream-cost` 示例（base 的副本加到
+main 的 `7e4db2d9`（“base”）对本改动（“new”），两者都用 akio-brotli 的 `stream-cost` 示例（base 的副本加到
 main 的源码树中），在 gpu51 上分别在独立的目标目录中构建，在 `quiet.sh` 下绑定 CPU 2 交替运行，每项测量
 3 轮各 1 s；取中位数（各轮相差在 2% 以内）。*event*：一个已过前 256 个事件的流上，一次 87 字节
 server-sent event 的刷新写入；*setup*：新建流、一个刷新的事件和结束；*16 events*：新建流、16 个刷新的事件
@@ -1657,7 +1657,7 @@ libbrotli 的输出，“自身”解码我们编码器的输出；同一批运�
 ### Brotli 流式编码器：每次刷新写入的开销，第二轮（ADR-074 更新，同批 A/B，2026-11-22）
 
 main 的 `b789624f`（"base"）对比本次改动（"new"），在 gpu51 上分别用独立的 target 目录构建，在 `quiet.sh`
-下绑定 CPU 2 交替运行：only-brotli 的 `stream-cost` 示例，每项 3 轮、每轮 1 s（取中位数；各列含义同上面的
+下绑定 CPU 2 交替运行：akio-brotli 的 `stream-cost` 示例，每项 3 轮、每轮 1 s（取中位数；各列含义同上面的
 "固定开销"一节），`tools/codec-bench brotli`（2 轮，各取最好），以及 `tools/bench/stream-compress.sh` 配
 `VARIANTS="base-br br"`（3 轮轮换、每轮 5 s，取中位数）。
 
@@ -1722,7 +1722,7 @@ LZ77 前缀）。所用字典即 libbrotli 交叉验证（`tools/interop/brotli-
 
 独立工作区，使 httparse、loona-hpack、regex 与 C 库（brotlic-sys、zstd）不进入库的依赖。
 
-| 操作 | only | 被替换的 crate |
+| 操作 | akio | 被替换的 crate |
 |---|---:|---:|
 | HTTP/1 请求头，1 个头部 | 59 | httparse 59 |
 | HTTP/1 请求头，类浏览器，11 个头部 | 204 | httparse 170 |
@@ -1733,15 +1733,15 @@ LZ77 前缀）。所用字典即 libbrotli 交叉验证（`tools/interop/brotli-
 | HPACK 解码，首个响应块，Huffman | 423 | loona-hpack 51,162 |
 | HPACK 解码，请求块，全部索引 | 255 | loona-hpack 306 |
 | HPACK 编码响应，表已预热 | 72 | loona-hpack 284 |
-| HPACK 编码响应，新表（only 做 Huffman 编码） | 268 | loona-hpack 285 |
-| 路由正则 `[0-9]+` 匹配 `1234567`（ADR-051 起为 only-regex；原为 8.5） | 5.7 | regex 15.7 |
+| HPACK 编码响应，新表（akio 做 Huffman 编码） | 268 | loona-hpack 285 |
+| 路由正则 `[0-9]+` 匹配 `1234567`（ADR-051 起为 akio-regex；原为 8.5） | 5.7 | regex 15.7 |
 | 路由正则 `\d{4}-\d{2}-\d{2}`（原为 11.9） | 7.6 | regex 17.0 |
 | 路由正则 `[a-z0-9_-]{3,16}`，14 个字符（原为 17.6） | 10.6 | regex 20.0 |
 | 编译 `\d{4}-\d{2}-\d{2}`（构建 DFA；原为 2,124） | 7,262 | regex 112,501 |
 
-消息过滤正则（`codec-bench logregex`，`only-regex`，在 86 字节日志行上做非锚定搜索；2026-11-19）：
+消息过滤正则（`codec-bench logregex`，`akio-regex`，在 86 字节日志行上做非锚定搜索；2026-11-19）：
 
-| 操作 | only | regex |
+| 操作 | akio | regex |
 |---|---:|---:|
 | `connection reset`（字面量：`str::contains`） | 6.8 | 12.3 |
 | `timeout\|refused\|unreachable`，不匹配 | 92.7 | 16.0 |
@@ -1754,19 +1754,19 @@ LZ77 前缀）。所用字典即 libbrotli 交叉验证（`tools/interop/brotli-
 | 编译 `(?i)CONNECTION (reset\|refused)` | 25,529 | 56,690 |
 | 编译 `\b\d+ms\b` | 99,455 | 39,273 |
 
-DFA 无论 ASCII 与否都约为每字符 1 ns；在 `regex` 的 SIMD 字面量查找适用的场景它更快。only-log 的
+DFA 无论 ASCII 与否都约为每字符 1 ns；在 `regex` 的 SIMD 字面量查找适用的场景它更快。akio-log 的
 `overhead` 基准：`Filter::matches` 无模式 7.1 ns，带 `/connection (reset|refused)` 匹配 72 字节消息 107 ns
 （含格式化）。
 
 头部解析器用安全代码每次扫描 8 字节（httparse 在 x86-64 上用 SSE4.2/AVX2）：完整头部为 httparse 的
 1.0–1.2 倍耗时，分段到达的头部快 2.2 倍。
 
-### 用户态 TCP/IP 协议栈（`only-dpdk --example stack-bench`，进程内内存线路，CPU 2–3）
+### 用户态 TCP/IP 协议栈（`akio-dpdk --example stack-bench`，进程内内存线路，CPU 2–3）
 
-`only-dpdk` 自研协议栈的两个引擎通过进程内内存线路相连，没有网卡，也没有 DPDK 驱动。只测协议代码
+`akio-dpdk` 自研协议栈的两个引擎通过进程内内存线路相连，没有网卡，也没有 DPDK 驱动。只测协议代码
 及其 I/O 循环。
 
-| 场景 | only-dpdk 协议栈 |
+| 场景 | akio-dpdk 协议栈 |
 |---|---:|
 | TCP echo，单连接，64 KiB 缓冲 | 每方向 1,431 MB/s（±10%） |
 | TCP echo，单连接，1 MiB 缓冲 | 每方向 1,562 MB/s |
@@ -1800,11 +1800,11 @@ gpu51，Linux 7.0，在 `quiet.sh` 下，`taskset -c 2-5`；分支 `claude/dpdk-
 2026-11-18 在同一主机上运行（Linux 7.0，root，在 `quiet.sh` 下），分支 `claude/ebpf-gaps-6b8982`。
 每张表都是同轮 A/B：各情形在 3 轮（每轮 5 秒）内交替运行，取中位数。
 
-**分流**（`bench-server` echo，4 个 epoll I/O 线程在 CPU 0–3，`ONLY_ACCEL`；`echo-bench`
+**分流**（`bench-server` echo，4 个 epoll I/O 线程在 CPU 0–3，`AKIO_ACCEL`；`echo-bench`
 256 连接 × 64 B，8 线程在 CPU 4–7 与 12–15）。走回环时，SYN 与数据都在客户端所在的 CPU 上处理，
 因此这里测的是程序与绑核本身的开销，而不是分流所针对的 RSS 局部性（主机网卡未连接）。
 
-| `ONLY_ACCEL` | req/s | 相对 none |
+| `AKIO_ACCEL` | req/s | 相对 none |
 |---|---:|---:|
 | none（内核 reuseport 哈希） | 669,683（±3%） | 1.00 |
 | `cpu`（eBPF 层，`Steering::Cpu`） | 743,669 | 1.11 |
@@ -1865,7 +1865,7 @@ cork/flush 记账后，无连接 echo 每请求的服务端 CPU 少 7–8%；回
 2026-11-21 在同一台主机上运行（Linux 7.0，root，在 `quiet.sh` 下），分支 `claude/ebpf-xdp-2df444`
 （ADR-063）。这是同一轮 A/B：两种链路在 5 轮、每轮 5 秒中交替运行（每轮交换先后顺序），数字取中位数。
 
-测试方式：only-dpdk 协议栈在根命名空间中 veth 对的一端提供 UDP 与 TCP 回显，其 I/O 线程绑在 CPU 2 上；内核
+测试方式：akio-dpdk 协议栈在根命名空间中 veth 对的一端提供 UDP 与 TCP 回显，其 I/O 线程绑在 CPU 2 上；内核
 客户端在另一端的网络命名空间中运行（4 个线程，CPU 4–7，示例 `link-bench`）。两端都关闭了 TSO、GSO 与 GRO，
 因此两种链路都是每个分段一个 MTU 大小的帧。AF_XDP 以 native XDP、拷贝模式运行（veth 不支持零拷贝
 AF_XDP）；AF_PACKET 是现有的 `Device::AfPacket`。
@@ -2023,7 +2023,7 @@ base 在前：`media` 7 轮，`audio` 11 轮。`±` 为各轮最大最小值差�
 | audio，每帧 CPU（µs） | 8.48（±1.9%） | 8.47（±0.8%） | 0.999 | 0.994 |
 | audio-jb，每帧 CPU（µs） | | 9.80（±0.7%） | 相对 new 的 `audio` 为 1.157 | |
 
-`only-rtp --example jitter-bench`（CPU 2）单独测缓冲：在 0..60 ms 抖动、2 % 丢包下 push 与 pop 20 ms
+`akio-rtp --example jitter-bench`（CPU 2）单独测缓冲：在 0..60 ms 抖动、2 % 丢包下 push 与 pop 20 ms
 的帧，每帧 46.7 ns（5 次取最好，三次运行为 46.6–46.8）。
 
 **结论：**
@@ -2036,24 +2036,24 @@ base 在前：`media` 7 轮，`audio` 11 轮。`±` 为各轮最大最小值差�
 ### monoio（2026-11-21，同一次运行，`tools/bench-ref/monoio-ref`）
 
 单独的一次运行，不属于 2026-11-15 那一轮：同一台主机、同一套脚本、同样的绑核和轮数（5 秒一轮取 3 轮
-中位数，`±` 含义同上），提交 `e1129f98`，在 `only`、tokio、hyper 旁边加入 monoio 0.2.4。每张表里的各列
-都来自同一次运行，请在表内比较，不要和上面那一轮的表比（`only` 的内存数字之后有变化）。
+中位数，`±` 含义同上），提交 `e1129f98`，在 `akio`、tokio、hyper 旁边加入 monoio 0.2.4。每张表里的各列
+都来自同一次运行，请在表内比较，不要和上面那一轮的表比（`akio` 的内存数字之后有变化）。
 HTTP 行来自第一遍。echo 和内存行来自两小时后用同一批二进制跑的第二遍：第一遍沿用了 shell 的 1024 个
 文件描述符上限，1024 连接的 echo 场景和内存测试因此出错。两遍运行期间主机是安静的（CPU 上只有基准进程），
 但开始时负载均值还没从之前的任务降下来（6.3 和 12.7）。
 
-**monoio-ref** 和 `only` 一样是每核一线程：4 个线程，每个线程有自己的 monoio 运行时和自己的
+**monoio-ref** 和 `akio` 一样是每核一线程：4 个线程，每个线程有自己的 monoio 运行时和自己的
 `SO_REUSEPORT` 监听；`monoio-uring` 用 io_uring 驱动（1024 项），`monoio-epoll` 用 legacy（epoll）驱动。
 TCP echo 是 read/`write_all` 循环，和 `bench-server`、`tokio-ref` 的处理函数一样。HTTP/1.1 是一个
 **最小的手写应答器**：在读缓冲上跑 httparse，对路径做一次 `match`，每批读到的请求把响应写进同一个输出缓冲
 （流水线请求一次写回），`Date` 头按线程缓存，JSON 响应体每个请求用 serde_json 序列化一次。它的响应和
-`only` 的 `http-bench` 对 `/plaintext` 发出的一样是 130 字节（状态行、`Content-Type`、`Content-Length`、
+`akio` 的 `http-bench` 对 `/plaintext` 发出的一样是 130 字节（状态行、`Content-Type`、`Content-Length`、
 `Date`、响应体），但没有路由、请求/响应对象、头部表，也没有连接状态机。monoio 本身除了这样的循环之外没有
 HTTP 服务端（monoio-http 是单独的 crate，没有测），也没有测 HTTP/2 或 TLS 监听。
 
 HTTP/1.1（请求/秒，256 个连接，`h2load --h1`，流水线 `-m 16`）：
 
-| 场景 | only-epoll | only-uring | hyper | monoio-uring | monoio-epoll |
+| 场景 | akio-epoll | akio-uring | hyper | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|
 | `GET /plaintext` | 696,854 (±17%) | 700,768 (±8%) | 643,562 | 881,367 (±11%) | 741,333 (±11%) |
 | `GET /plaintext`，流水线 ×16 | 4,322,201 (±5%) | 4,321,865 (±8%) | 754,404 (±9%) | 7,921,846 | 6,919,708 (±8%) |
@@ -2061,7 +2061,7 @@ HTTP/1.1（请求/秒，256 个连接，`h2load --h1`，流水线 `-m 16`）：
 
 TCP echo（请求/秒；消息大小 × 连接数）：
 
-| 负载 | only-epoll | only-uring | tokio | monoio-uring | monoio-epoll |
+| 负载 | akio-epoll | akio-uring | tokio | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|
 | 64 B × 64 | 706,547 (±6%) | 733,788 (±11%) | 724,719 | 786,760 | 624,480 |
 | 64 B × 256 | 698,432 | 764,664 | 744,965 | 797,432 (±15%) | 678,869 (±19%) |
@@ -2076,23 +2076,23 @@ TCP echo（请求/秒；消息大小 × 连接数）：
 每连接内存（字节，10,000 个连接在一次交换后空闲，`tools/bench/mem.sh`，3 轮，全部在 ±1% 内；这里
 tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_BUF`）：
 
-| 连接状态 | only-epoll | only-uring | tokio | hyper | monoio-uring | monoio-epoll |
+| 连接状态 | akio-epoll | akio-uring | tokio | hyper | monoio-uring | monoio-epoll |
 |---|---:|---:|---:|---:|---:|---:|
 | 一次 64 B echo 之后的 TCP | 675 | 724 | 5,008 | – | 4,692 | 4,712 |
 | 一个请求之后的 HTTP/1.1 keep-alive | 1,087 | 1,139 | – | 17,446 | 8,987 | 9,006 |
 
 结论：
 
-- **TCP echo**：monoio-uring 是 only-uring 的 0.99–1.17 倍，多数行里是最快的一列；monoio-epoll 是
-  only-epoll 的 0.88–1.02 倍。各行和那一轮一样停在 0.6–0.85 M 的平台上，这和服务端一样也指向闭环客户端
+- **TCP echo**：monoio-uring 是 akio-uring 的 0.99–1.17 倍，多数行里是最快的一列；monoio-epoll 是
+  akio-epoll 的 0.88–1.02 倍。各行和那一轮一样停在 0.6–0.85 M 的平台上，这和服务端一样也指向闭环客户端
   （见上文），所以读作"同一档，monoio 的 io_uring 驱动略领先"。
-- **keep-alive HTTP/1.1**：monoio-uring 在 `/plaintext` 上是 only-uring 的 1.26 倍，`/json` 1.22 倍；
-  monoio-epoll 是 only-epoll 的 1.06–1.11 倍，在波动范围内。**流水线**：monoio-uring 是 `only` 的 1.83 倍，
-  monoio-epoll 1.60 倍。两边都是每批 16 个请求一次读一次写，差别在每个请求的工作量：`only` 的每个请求都走
-  only-http（解析器、路由、请求与响应对象、头部处理），monoio-ref 只走 httparse 加一个固定响应。所以这几行
-  测的更多是 `only` 的 HTTP/1 框架开销对一个几乎为空的处理函数，而不是 monoio 对 `only` 的运行时；它们也
-  给出了 `only` 的 HTTP/1 流水线路径值得去追的上限。
-- **内存**：`only` 不为空闲连接保留读缓冲（epoll 读进每线程的缓冲；io_uring 用 provided-buffer 环），
+- **keep-alive HTTP/1.1**：monoio-uring 在 `/plaintext` 上是 akio-uring 的 1.26 倍，`/json` 1.22 倍；
+  monoio-epoll 是 akio-epoll 的 1.06–1.11 倍，在波动范围内。**流水线**：monoio-uring 是 `akio` 的 1.83 倍，
+  monoio-epoll 1.60 倍。两边都是每批 16 个请求一次读一次写，差别在每个请求的工作量：`akio` 的每个请求都走
+  akio-http（解析器、路由、请求与响应对象、头部处理），monoio-ref 只走 httparse 加一个固定响应。所以这几行
+  测的更多是 `akio` 的 HTTP/1 框架开销对一个几乎为空的处理函数，而不是 monoio 对 `akio` 的运行时；它们也
+  给出了 `akio` 的 HTTP/1 流水线路径值得去追的上限。
+- **内存**：`akio` 不为空闲连接保留读缓冲（epoll 读进每线程的缓冲；io_uring 用 provided-buffer 环），
   每连接 0.7–1.1 KB。monoio 的 I/O 在整个读期间拿走缓冲的所有权，所以在 `read` 上等待的空闲连接一直持有
   它的缓冲：echo 用 4 KiB 缓冲是 4.7 KB，HTTP/1.1 是 9 KB（读缓冲加上 monoio-ref 保留的输出缓冲）。这既是
   monoio 的特点，也是 monoio-ref 写法的结果（处理函数可以在请求之间释放缓冲），但这是它最自然的写法。
@@ -2101,7 +2101,7 @@ tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_
 
 ## 未测项
 
-- 真实网卡上的 **DPDK**（主机没有）；`only-dpdk` 只通过上面的协议栈基准出现。
+- 真实网卡上的 **DPDK**（主机没有）；`akio-dpdk` 只通过上面的协议栈基准出现。
 - QUIC 与 HTTP/3 对比 quic-go 或其他实现（测试工具里没有参照服务端）。
 - TLS 上的 hyper（hyper-ref 没有 TLS 监听）；hyper 的 TCP/UDP/WebSocket（不是它的用途）。
 - 延迟分位数、持续负载下的内存（只测一次交换后空闲时）、真实网络。
@@ -2118,7 +2118,7 @@ tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_
 - **HTTP 热路径**（本机，`main` 的 `df90c0b3` → 优化后）：h2 帧原地解析、解码的头部放进一个复用缓冲、
   HPACK 直接编码进输出、每次读只写一次、流控按四分之一窗口归还、HTTP/1 头部先用 32 个槽位解析。
   h2c 64 × 16 228 万 → 405 万（epoll），16 × 128 237 万 → 471 万，TLS 上的 HTTP/2 158 万 → 403 万
-  （2.5 倍），流水线 HTTP/1.1 +7–8%，keep-alive HTTP/1.1 +1%（受内核限制）。优化前 `only` 的 HTTP/2 是
+  （2.5 倍），流水线 HTTP/1.1 +7–8%，keep-alive HTTP/1.1 +1%（受内核限制）。优化前 `akio` 的 HTTP/2 是
   fib 的 0.52–0.70 倍，本次测试为 1.22–1.34 倍。
 - **密码学 CPU 加速**（本机，`354f3bc5` → 优化后）：AES-128-GCM 16 KiB 364 → 6,484 MB/s（17.8 倍），
   SHA-256 6.5 倍，SHA-1 3.6 倍，CRC-32 7.3 倍，ChaCha20-Poly1305 3 倍；P-256 签名 1.46 倍、验签 1.67 倍，
@@ -2144,7 +2144,7 @@ tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_
   再复制一次进 `Headers`，HEADERS 直接用 QPACK 编码进输出、每个响应只写一次 QUIC，静态表查找不再用
   SipHash 映射（44.5 万 → 73 万请求/秒）；按序到达的流 ACK 不经过区间树（+3.5%），一次收全的请求不进流表
   （+2.5%），QPACK 整数内联（+2%），流的第一块发送数据内联（+3%），响应头一次分配好（+1%）。合计 42.9 万 →
-  83.9 万请求/秒（1.95 倍）。only-quic 的连接 ID 表、连接表与对端地址表改用带密钥的乘法折叠哈希代替
+  83.9 万请求/秒（1.95 倍）。akio-quic 的连接 ID 表、连接表与对端地址表改用带密钥的乘法折叠哈希代替
   SipHash：批量传输 +3%。
 - **P-256 点运算公式**（本机，CPU 2，空闲时交替运行五轮取中位数，`1376b324` → 优化后）：整点汇编改用
   OpenSSL `ecp_nistz256` 的加法、混合加法与倍点顺序，约简步骤更短。与同一次运行中的 ring 相比：ECDH
@@ -2173,7 +2173,7 @@ tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_
   VAES-AVX2 内核（8 个 ymm 处理 16 个分组），在 Zen 4 上为 128 位内核的 1.55–2.35 倍；TLS 1.3 记录 1 KiB
   为 rustls + ring 的 1.51 倍 → 1.58 倍。记录的预先清零保留（测过的安全替代方案都更慢）。
 - **去掉 TLS 记录的预先清零**（本机，`f34c79e3` → 改动后）：记录层直接在输出向量的空闲容量中加密和解密
-  （only-crypto 的 `encrypt_append` / `decrypt_append`，一个很小的 `unsafe` 模块；only-tls 仍是
+  （akio-crypto 的 `encrypt_append` / `decrypt_append`，一个很小的 `unsafe` 模块；akio-tls 仍是
   `forbid(unsafe_code)`）：TLS 1.3 记录 AES-128-GCM +6.9–8.3%（16 KiB 为 rustls + ring 的 1.58 倍 → 1.72 倍），
   AES-256-GCM +7.4–8.7%，ChaCha20-Poly1305 +3.3–6.4%；单独的 AEAD 非原地运行在 VAES-AVX-512 上 1–64 KiB
   快 10–11%。
@@ -2188,8 +2188,8 @@ tokio-ref 和 monoio-ref 用 4 KiB 的读缓冲，`TOKIO_REF_BUF`、`MONOIO_REF_
 本次测试在 1–2% 以内复现了 HTTP、QUIC、TLS、密码学和 deflate 各项优化的数字（这些方面没有退化）。
 有一项内存数字变了：升级 + 一次 echo 之后的 WebSocket 连接这里是 3,493 字节，2026-11-14 的表中是 1,660
 （其余各行与之相差不到 5%：空闲 TCP 600 → 603，HTTP keep-alive 912 → 937，TLS 8,526 → 8,192）。这是真实的
-退化，与换主机无关：2026-11-14 的构建在本机用同一个 `mem.sh` 测得 1,683；二分定位到用 only-deflate 替换
-flate2 的提交（1,679 → 3,437）。only-ws 的 permessage-deflate 包装把新的编解码状态内联保存（inflater
+退化，与换主机无关：2026-11-14 的构建在本机用同一个 `mem.sh` 测得 1,683；二分定位到用 akio-deflate 替换
+flate2 的提交（1,679 → 3,437）。akio-ws 的 permessage-deflate 包装把新的编解码状态内联保存（inflater
 528 B，deflater 1,552 B；flate2 的状态在指针后面），而每个连接的解码器里都有一个 `Option<Inflater>`、
 发送端里都有一个 `Option<Deflater>`，所以即使没有协商压缩（本基准就是这样）也要付出约 2 KB。现在状态
 改为装箱：3,486 → 1,426 字节（epoll），3,485 → 1,414（uring），低于 2026-11-14 的数字。
@@ -2207,16 +2207,16 @@ SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/echo.sh
 ulimit -n 1048576; MEM_RUNS=3 tools/bench/mem.sh
 taskset -c 2-5 $CARGO_TARGET_DIR/release/examples/quic-bench bulk 2048   # 以及：h3 5 64、handshakes 5 8
-cargo run --release -p only-tls --example tls-bench all 1
-cargo run --release -p only-crypto --example bench; cargo run --release -p only-crypto --example pk_bench
-cargo run --release -p only-crypto --example gcm-sizes   # 按消息长度的 AES-GCM，对比 ring
-BENCH_LEVELS=1,3,6,9 cargo run --release -p only-deflate --example bench SOURCES libc.so.6
-cargo run --release -p only-deflate --example pmd_echo
+cargo run --release -p akio-tls --example tls-bench all 1
+cargo run --release -p akio-crypto --example bench; cargo run --release -p akio-crypto --example pk_bench
+cargo run --release -p akio-crypto --example gcm-sizes   # 按消息长度的 AES-GCM，对比 ring
+BENCH_LEVELS=1,3,6,9 cargo run --release -p akio-deflate --example bench SOURCES libc.so.6
+cargo run --release -p akio-deflate --example pmd_echo
 cargo run --release --manifest-path tools/codec-bench/Cargo.toml
 tools/codec-bench/corpus.sh DIR   # SILESIA=1 时同时下载 Silesia 语料
 BENCH_LEVELS=1,3,19 cargo run --release --manifest-path tools/codec-bench/Cargo.toml zstd DIR/*
 BENCH_LEVELS=1,4,5,6,11 cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli DIR/*
-cargo run --release -p only-dpdk --example stack-bench
+cargo run --release -p akio-dpdk --example stack-bench
 ```
 
 `summarize.py` 把网络脚本的 TSV 行整理成表格。`start_server` 会跳过之前运行的客户端套接字仍占用的端口

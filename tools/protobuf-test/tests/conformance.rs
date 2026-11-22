@@ -2,7 +2,7 @@
 //! text-format cases in `golden/` (`golden/regen.sh`): the generated messages must decode them
 //! to the expected values and re-encode them byte for byte.
 
-use only_protobuf::{Extendable, Message, well_known};
+use akio_protobuf::{Extendable, Message, well_known};
 use protobuf_test::test::{
     all::{AllTypes, Color, Extended, Small, all_types},
     common::Shared,

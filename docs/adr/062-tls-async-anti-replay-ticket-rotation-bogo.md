@@ -1,4 +1,4 @@
-# ADR-062: Asynchronous anti-replay store, rotating ticket keys, status_request_v2 and BoGo for only-tls
+# ADR-062: Asynchronous anti-replay store, rotating ticket keys, status_request_v2 and BoGo for akio-tls
 
 English | [简体中文](062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)
 
@@ -9,7 +9,7 @@ Status: accepted (2026-11-20)
 The TLS items still open in the development plan:
 
 1. **OCSP response validation** (RFC 6960) for stapled responses and a TLS 1.3 client's own
-   response. Already done by ADR-038 (validation in `only-x509`, `RevocationPolicy` for the
+   response. Already done by ADR-038 (validation in `akio-x509`, `RevocationPolicy` for the
    server's stapled response) and ADR-049 (`client_ocsp_policy`); the plan's earlier lines
    still said "not done".
 2. **`status_request_v2`** (RFC 6961, TLS 1.2's `ocsp_multi`): ADR-049 left it out.
@@ -19,7 +19,7 @@ The TLS items still open in the development plan:
 4. **Ticket key rotation with several live keys.** `session_ticket_key` takes one key;
    rotating meant a new configuration and a full handshake for every client holding a ticket.
 5. **The BoGo test runner** (BoringSSL's `ssl/test/runner`), which rustls used to give
-   only-quic before Wave D.
+   akio-quic before Wave D.
 
 ## Decision
 
@@ -69,17 +69,17 @@ in the ServerHello, no CertificateStatus for it). A test covers both.
    of 64 KiB and `max_early_data`, plus 128 KiB; past that the connection fails with
    `unexpected_message`.
 3. **Waking the connection.** The sans-io core takes a waker. Over TCP it comes from a new
-   hook in only-core: `Transport::set_waker(TransportWaker)` (default: ignore), called once
+   hook in akio-core: `Transport::set_waker(TransportWaker)` (default: ignore), called once
    when the engine installs the transport; `TransportWaker::wake()` (any thread, holds only a
    weak reference) posts a task to the connection's I/O thread, which polls the transport with
    no input and passes on what it decoded and produced, as for bytes read from the socket.
-   Over QUIC, `only_quic` gives the handshake a waker that drives the connection from the
+   Over QUIC, `akio_quic` gives the handshake a waker that drives the connection from the
    answering thread (connections are already usable from any thread), and the connection takes
    the handshake up again in `poll_transmit`, then handles the 0-RTT packets that waited for
    the keys. The blocking test stream waits on the answer.
 4. **Timeout.** `ServerConfigBuilder::anti_replay_timeout` (1 s by default, at least 1 ms): a
    check not answered in time rejects the early data and the handshake goes on as a 1-RTT
-   resumption. Deadlines are kept by one process-wide thread (`only-tls-replay-timer`, started
+   resumption. Deadlines are kept by one process-wide thread (`akio-tls-replay-timer`, started
    by the first check that is not answered in the call) holding weak references; a late answer
    is ignored. The handshake timeout still bounds the whole handshake.
 5. **The default path does not change.** `MemoryAntiReplay` and `anti_replay_store` are
@@ -119,25 +119,25 @@ non-blocking client and completes the check from its reply (`OK` → `Ok(true)`,
 
 ### BoGo (item 5)
 
-A shim, `crates/only-tls/examples/bogo-shim.rs`, drives only-tls (through the blocking test
+A shim, `crates/akio-tls/examples/bogo-shim.rs`, drives akio-tls (through the blocking test
 stream) the way BoringSSL's `bssl_shim` drives BoringSSL: it connects to the runner, writes
 its shim id, handshakes as client or server, checks the `-expect-*` flags against what was
 negotiated and echoes the test messages; flags may carry the `-on-initial-` / `-on-resume-` /
 `-on-retry-` prefixes, and a client keeps its session cache across the `-resume-count`
-connections. A flag it does not know, or one asking for something only-tls does not do or
+connections. A flag it does not know, or one asking for something akio-tls does not do or
 cannot report (the peer's signature algorithm, keying material export, verification
 callbacks), makes it exit with 89, which the runner counts as unimplemented.
 `tools/interop/tls/bogo.sh` builds the shim, fetches the runner at a pinned BoringSSL commit
 (`ddd73296`, 2026-11-19; Go 1.27), and runs it with `-allow-unimplemented -loose-errors` (the
-shim reports only-tls's own error messages, not BoringSSL's codes) and
+shim reports akio-tls's own error messages, not BoringSSL's codes) and
 `tools/interop/tls/bogo_config.json`, whose `DisabledTests` name, each with a reason, the
-areas only-tls does not implement (DTLS and QUIC, which BoGo drives through other shims;
+areas akio-tls does not implement (DTLS and QUIC, which BoGo drives through other shims;
 TLS 1.0/1.1, CBC, RSA key exchange, PSK suites, renegotiation, ECH, delegated credentials,
 Channel ID, ALPS, post-quantum groups and other BoringSSL-only features) and every single
 test still expected to fail: an alert other than BoringSSL's (14), behaviour the RFCs allow
 and BoringSSL does differently (about 40: where the compatibility CCS goes after a
 HelloRetryRequest, rejected early data resent automatically, no resumption of TLS 1.2
-sessions without EMS, ...), and the only-tls bugs found and not fixed yet.
+sessions without EMS, ...), and the akio-tls bugs found and not fixed yet.
 
 Result on the x86 host: of 8,110 tests, **882 pass, 0 fail**, 1,122 are unimplemented and
 6,106 disabled (about 2,700 of them DTLS and QUIC). The run found eleven protocol bugs, all
@@ -160,8 +160,8 @@ data, RFC 8446 section 4.6.3, as BoringSSL does). With the fixes, `tools/interop
 
 ## Consequences
 
-- Public API (additive): only-core `Transport::set_waker` (provided method), `TransportWaker`;
-  only-tls `AsyncAntiReplayStore`, `ReplayCheck`, `ServerConfigBuilder::async_anti_replay_store`,
+- Public API (additive): akio-core `Transport::set_waker` (provided method), `TransportWaker`;
+  akio-tls `AsyncAntiReplayStore`, `ReplayCheck`, `ServerConfigBuilder::async_anti_replay_store`,
   `ServerConfigBuilder::anti_replay_timeout`, `TicketKeys`, `MAX_TICKET_KEYS`,
   `ServerConfigBuilder::session_ticket_keys`. Hidden (outside the promise): `QuicTls::set_waker`,
   `QuicTls::suspended`, `QuicTls::resume`, `Connection::suspended`, `Connection::wait_resumable`.

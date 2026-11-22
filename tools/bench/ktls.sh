@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Kernel TLS evaluation (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"): HTTP/1.1 over TLS
-# with only-tls's own record layer (`user`) against the kernel's (`ktls`, `sendfile` for the
+# with akio-tls's own record layer (`user`) against the kernel's (`ktls`, `sendfile` for the
 # file case), same server, same handshake, interleaved rounds. Needs Linux with the `tls` module
 # (6.14+ for TLS 1.3), h2load, root for VETH=1.
 #
-#   cargo build --release -p only-tls --example ktls-bench --features ktls
+#   cargo build --release -p akio-tls --example ktls-bench --features ktls
 #   tools/bench/ktls.sh                  # loopback
 #   VETH=1 tools/bench/ktls.sh           # client in a network namespace behind a veth pair, MTU 1500
 #
@@ -13,7 +13,7 @@
 # random file is made if missing), CASES (name:path:connections:extra-args, `_` for spaces).
 set -u
 B=${CARGO_TARGET_DIR:-target}/release/examples/ktls-bench
-FILE=${FILE:-/tmp/only-ktls-file.bin}
+FILE=${FILE:-/tmp/akio-ktls-file.bin}
 SECS=${SECS:-8}
 RUNS=${RUNS:-3}
 SRV=${SRV_CPUS:-0-3}

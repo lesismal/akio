@@ -8,18 +8,18 @@
 # sets and reads the codepoint on the sockets; an iptables TOS rule on the router can clear it.
 #   1. "rtp" initiation (no ICE, SDES): a quarter of the packets marked until feedback confirms
 #      them, then all: the gateway's path becomes "capable".
-#   2. "leap" (ONLY_INTEROP_ECN_INIT=leap): every packet marked from the start, "capable".
+#   2. "leap" (AKIO_INTEROP_ECN_INIT=leap): every packet marked from the start, "capable".
 #   3. "ice" initiation (full ICE on both, DTLS-SRTP): an ECN-marked STUN check, the remote
 #      echoes the codepoint it read (ECN-CHECK), "capable".
 #   4. "ice" with the router clearing the ECN field: the check comes back Not-ECT, the path
 #      fails; the rule is removed and after the first retry (10 s) the path is capable again.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-docker run --rm --privileged -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-  -v "${TARGET_VOLUME:-only-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
+docker run --rm --privileged -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
+  -v "${TARGET_VOLUME:-akio-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
 set -eu
 apt-get -qq update >/dev/null && apt-get -qq install -y iproute2 iptables conntrack >/dev/null 2>&1
-cargo build -q --release -p only-webrtc --example webrtc-interop
+cargo build -q --release -p akio-webrtc --example webrtc-interop
 trap "echo --- logs; tail -n 25 /tmp/gw-*.log /tmp/phone*.log" ERR
 RS=/tmp/t/release/examples/webrtc-interop
 ip netns add phone; ip netns add gw
@@ -32,16 +32,16 @@ ip netns exec gw sh -c "ip addr add 10.99.1.2/24 dev g1; ip link set g1 up; ip l
 sysctl -qw net.ipv4.ip_forward=1
 iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -p udp -j MASQUERADE --to-ports 40000-40999 --random
 iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o g0 -j MASQUERADE
-export ONLY_INTEROP_ECN=ect1 ONLY_INTEROP_BWE=1000000 ONLY_INTEROP_LATCH=once ONLY_LOG=only_webrtc=debug
+export AKIO_INTEROP_ECN=ect1 AKIO_INTEROP_BWE=1000000 AKIO_INTEROP_LATCH=once AKIO_LOG=akio_webrtc=debug
 PORT=5300
 gateway() {
-  ip netns exec gw env ONLY_INTEROP_SIP=$SIP $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
+  ip netns exec gw env AKIO_INTEROP_SIP=$SIP $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
     >/tmp/gw-$PORT.log 2>&1 &
   GW=$!
   sleep 0.5
 }
 phone() { # <n>
-  ip netns exec phone env ONLY_INTEROP_SIP=$SIP ONLY_INTEROP_BIND=10.99.0.2:5004 \
+  ip netns exec phone env AKIO_INTEROP_SIP=$SIP AKIO_INTEROP_BIND=10.99.0.2:5004 \
     $RS client 10.99.1.2:$((PORT + 1)) sip "$1" 2>/tmp/phone-$PORT.log
 }
 stat() { grep -o "$1: [^,}]*" /tmp/gw-$PORT.log | tail -1; }
@@ -56,11 +56,11 @@ echo "== rtp initiation (no ICE)"
 SIP=1
 gateway; phone 300; report; want capable; finish
 echo "== leap of faith"
-export ONLY_INTEROP_ECN_INIT=leap
+export AKIO_INTEROP_ECN_INIT=leap
 gateway; phone 300; report; want capable
 [ "$(stat ecn_failures)" = "ecn_failures: 0" ] || { echo "FAIL: leap failed"; exit 1; }
 finish
-unset ONLY_INTEROP_ECN_INIT
+unset AKIO_INTEROP_ECN_INIT
 echo "== ice initiation (an ECN-marked STUN check)"
 SIP=ice
 gateway; phone 300; report; want capable

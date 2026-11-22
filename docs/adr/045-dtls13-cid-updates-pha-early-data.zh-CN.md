@@ -1,4 +1,4 @@
-# ADR-045：only-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据
+# ADR-045：akio-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据
 
 [English](045-dtls13-cid-updates-pha-early-data.md) | 简体中文
 
@@ -6,10 +6,10 @@
 
 ## 背景
 
-ADR-021 为 only-dtls 带来了 DTLS 1.3（RFC 9147）、连接 ID（DTLS 1.2 用 RFC 9146，DTLS 1.3
+ADR-021 为 akio-dtls 带来了 DTLS 1.3（RFC 9147）、连接 ID（DTLS 1.2 用 RFC 9146，DTLS 1.3
 放在统一头中）、PSK 与会话恢复，并列出未完成项：DTLS 1.3 0-RTT、NewConnectionId /
-RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换以及 CBC 套件。only-dtls 属于
-内部层级（docs/api-stability.md）；工作区内唯一的使用者 only-webrtc 仍使用 DTLS 1.2
+RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换以及 CBC 套件。akio-dtls 属于
+内部层级（docs/api-stability.md）；工作区内唯一的使用者 akio-webrtc 仍使用 DTLS 1.2
 （ADR-021 §2），因此本 ADR 不改变 WebRTC 的行为。
 
 ## 决策
@@ -50,7 +50,7 @@ RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换
      套件）、没有 HelloRetryRequest、票据年龄新鲜（客户端与服务端计算的年龄相差不超过 10 秒，
      另加 1 秒以容纳票据按整秒记录的签发时间），并且该 ClientHello 是第一次使用：binder 记录在
      `AntiReplayStore` 中，保留三个窗口（RFC 8446 §8.2 "ClientHello recording"，与 ADR-013 中
-     only-tls 的存储设计相同，单独实现是因为 only-dtls 不得依赖 only-tls；默认每个配置一个
+     akio-tls 的存储设计相同，单独实现是因为 akio-dtls 不得依赖 akio-tls；默认每个配置一个
      100,000 条的 `MemoryAntiReplay`，`Config::with_anti_replay` 可共享存储；存储出错则拒绝早期
      数据）。接受的记录（epoch 1，`client_early_traffic_secret`）在 `Event::Connected` 之前以
      `Event::EarlyData` 交付，超过 max_early_data_size 即 `unexpected_message`，连接建立时丢弃
@@ -77,7 +77,7 @@ RequestConnectionId、握手后客户端认证、非 ECDHE 的证书密钥交换
    wolfSSL、pion、浏览器）都协商 ECDHE AEAD 套件。加入它们只会增加攻击面，而没有需要它们的
    对端。
 
-新增公开 API（only-dtls）：`AntiReplayStore`、`MemoryAntiReplay`；
+新增公开 API（akio-dtls）：`AntiReplayStore`、`MemoryAntiReplay`；
 `Config::{with_early_data, with_anti_replay, with_post_handshake_auth}`；
 `Connection::{new_connection_ids, request_connection_ids, rotate_connection_id,
 spare_connection_ids, local_connection_ids, peer_connection_id, request_client_certificate,

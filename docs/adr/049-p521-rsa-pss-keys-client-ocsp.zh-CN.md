@@ -6,17 +6,17 @@
 
 ## 背景
 
-only-tls 的 README 在未实现项中列出：RSA-PSS 密钥、P-521、TLS 1.3 客户端认证中客户端的 OCSP 响应，
-以及 `status_request_v2`。only-crypto 只有 P-256 与 P-384 上的 ECDH 和 ECDSA，RSA 密钥只有
+akio-tls 的 README 在未实现项中列出：RSA-PSS 密钥、P-521、TLS 1.3 客户端认证中客户端的 OCSP 响应，
+以及 `status_request_v2`。akio-crypto 只有 P-256 与 P-384 上的 ECDH 和 ECDSA，RSA 密钥只有
 `rsaEncryption` 一种（这种密钥做 RSASSA-PSS 签名，即 TLS 1.3 的 `rsa_pss_rsae_*`，已支持）。
 密钥为 `id-RSASSA-PSS`（RFC 4055，OpenSSL 的 `genpkey -algorithm RSA-PSS`）的证书和 P-521
 证书无法解析，只提供 secp521r1 或只提供 `rsa_pss_pss_*` 的对端无法连接。RFC 8446 第 4.4.2.1
-节还允许服务端要求 TLS 1.3 客户端随证书发送 OCSP 响应；only-tls 的服务端从不要求，客户端也从不
+节还允许服务端要求 TLS 1.3 客户端随证书发送 OCSP 响应；akio-tls 的服务端从不要求，客户端也从不
 发送，尽管 ADR-038 在客户端一侧的机制（装订的响应，按 `RevocationPolicy` 校验）已经具备。
 
 ## 决定
 
-1. **only-crypto，P-521**（内部层级）：新增 `p521` 模块，API 与 `p256` / `p384` 相同（`SecretKey`、
+1. **akio-crypto，P-521**（内部层级）：新增 `p521` 模块，API 与 `p256` / `p384` 相同（`SecretKey`、
    `PublicKey`、`Signature`、`SCALAR_LEN = 66`；默认 SHA-512，可用任意 `Hash` 预哈希；RFC 6979
    随机数，`bits2int` 取最左 521 位；DER 与 132 字节定长签名；压缩与非压缩 SEC1 点，均经校验）。
    它是独立实现，不用通用的 `ec` 模块：后者假设标量为 `8·L` 字节，并依赖 `n` 接近 `2^(64L)`
@@ -31,16 +31,16 @@ only-tls 的 README 在未实现项中列出：RSA-PSS 密钥、P-521、TLS 1.3 
    - 标量域用 `field.rs` 的通用 Montgomery 代码（九肢）。只有可移植 Rust：P-521 很少用到，不值得写汇编。
      `tools/ct-dudect` 新增 `p521-ecdh`、`p521-keygen`、`p521-sign`。
    - `pkey::PublicKey::P521`、`pkey::PrivateKey::P521`（SPKI、PKCS#8、SEC1）、`der::oid::SECP521R1`。
-2. **only-crypto，RSA-PSS 密钥**：`pkey::PublicKey::RsaPss(rsa::PublicKey, Option<PssParams>)` 与
+2. **akio-crypto，RSA-PSS 密钥**：`pkey::PublicKey::RsaPss(rsa::PublicKey, Option<PssParams>)` 与
    `pkey::PrivateKey::RsaPss(Box<rsa::PrivateKey>, Option<PssParams>)`，对应 SubjectPublicKeyInfo 和
    PKCS#8 中的 `id-RSASSA-PSS` 算法，可带或不带 `RSASSA-PSS-params`。`PssParams { hash, salt_len }`
    （`new`、`from_der`、`to_der`、`allows`）：只支持 SHA-256/384/512、MGF1 用同一哈希、trailer 为 1
    （缺省字段按 RFC 4055 取 SHA-1，结果为 `Unsupported`）。这种密钥只做 RSASSA-PSS（从不做 PKCS#1
    v1.5），带参数时只用参数中的哈希，且盐长（取哈希长度，TLS 1.3 与 X.509 都如此）不小于其最小值。
    它默认的证书签名算法是用其哈希的 RSA-PSS（无参数时为 SHA-256）。编码与 OpenSSL 逐字节相同。
-3. **only-x509**：API 不变。P-521 与 `id-RSASSA-PSS` 密钥的证书可以解析、验证和签发
+3. **akio-x509**：API 不变。P-521 与 `id-RSASSA-PSS` 密钥的证书可以解析、验证和签发
    （用这种密钥调用 `CertificateParams::signed_by`）；证书签名按签发者密钥的限制检查。
-4. **only-tls**：
+4. **akio-tls**：
    - 组 secp521r1（0x0019），在默认列表最后（在 x448 之后：ClientHello 列出它，密钥共享仍发 X25519）；
      签名方案 `ecdsa_secp521r1_sha512`（0x0603）用于 P-521 密钥（TLS 1.2 中任何 ECDSA 方案适用于任何
      曲线，与此前 P-256、P-384 相同）；`rsa_pss_pss_sha256/384/512`（0x0809–0x080b）用于
@@ -56,7 +56,7 @@ only-tls 的 README 在未实现项中列出：RSA-PSS 密钥、P-521、TLS 1.3 
      响应被忽略，正如客户端忽略服务端未经要求发来的响应。恢复的会话不再检查。
 5. **验证**：Wycheproof ECDSA P-521/SHA-512（DER 与 P1363）和 ECDH P-521 向量（已收录），RFC 6979
    A.2.7（SHA-512 与 SHA-256，也是 OpenSSL 确定性 ECDSA 的结果），OpenSSL 生成的 RSA-PSS 密钥（带与不带
-   参数）及签名，only-x509 中 OpenSSL 生成的 P-521 与 RSA-PSS 密钥证书链；内存中的 TLS 矩阵覆盖 P-521 与
+   参数）及签名，akio-x509 中 OpenSSL 生成的 P-521 与 RSA-PSS 密钥证书链；内存中的 TLS 矩阵覆盖 P-521 与
    RSA-PSS 密钥证书（服务端与客户端、两个版本）、secp521r1，以及各策略下客户端的 OCSP 响应；
    `tools/interop/tls/run.sh` 对 OpenSSL（secp521r1、P-521 与 RSA-PSS 密钥证书在 TLS 1.3 与 1.2 中
    双向互通、这类客户端证书，以及 OpenSSL 客户端与服务端面对客户端 OCSP 请求的行为，OpenSSL 既不发送也不

@@ -1,4 +1,4 @@
-/* A libnice peer for only-ice's interop test (crates/only-ice/tests/libnice.rs): one stream
+/* A libnice peer for akio-ice's interop test (crates/akio-ice/tests/libnice.rs): one stream
  * of two components (RTP and RTCP without rtcp-mux) on 127.0.0.1, driven by lines on stdin
  * and reporting on stdout.
  *

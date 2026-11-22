@@ -1,0 +1,26 @@
+[package]
+name = "akio-srtp"
+description = "akio internals: SRTP and SRTCP (RFC 3711, RFC 7714 AEAD-AES-GCM, RFC 5669 SEED) for the WebRTC stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-srtp"
+keywords = ["srtp", "rtp", "webrtc", "crypto"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_srtp::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+akio-crypto = { workspace = true }
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

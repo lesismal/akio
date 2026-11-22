@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# only-srtp cross-check against libsrtp: builds libsrtp (main at $LIBSRTP_REV, OpenSSL backend
+# akio-srtp cross-check against libsrtp: builds libsrtp (main at $LIBSRTP_REV, OpenSSL backend
 # for AES-GCM) in a scratch directory, compiles vec.c against it and compares its packets with
-# crates/only-srtp/testdata/libsrtp.txt, which `cargo test -p only-srtp libsrtp_cross_check`
+# crates/akio-srtp/testdata/libsrtp.txt, which `cargo test -p akio-srtp libsrtp_cross_check`
 # checks byte for byte both ways. UPDATE=1 rewrites the test data instead.
 #   Needs git, a C compiler, make and OpenSSL 3 headers (OPENSSL_DIR=<prefix> if not system-wide;
 #   a prefix with include/ and lib/, as an extracted libssl-dev package gives).
@@ -9,7 +9,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 LIBSRTP_REV=${LIBSRTP_REV:-052aa2965e2c26f737087492d37a31c3ee09ddba}
 W=${WORK:-$(mktemp -d)}
-DATA="$ROOT/crates/only-srtp/testdata/libsrtp.txt"
+DATA="$ROOT/crates/akio-srtp/testdata/libsrtp.txt"
 if [ ! -d "$W/libsrtp" ]; then
   git clone -q https://github.com/cisco/libsrtp.git "$W/libsrtp"
 fi

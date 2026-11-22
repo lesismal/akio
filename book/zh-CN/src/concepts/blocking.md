@@ -3,9 +3,9 @@
 回调在 I/O 线程上执行，所以一个阻塞 5 ms 的回调会让该线程上的所有连接停顿 5 ms。基准报告
 显示了代价：四个 I/O 线程每个请求阻塞 5 ms，每秒只能处理约 550 个请求；把同样的工作挪到
 逻辑线程池后约为 32,000
-（[BENCHMARKS](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)）。
+（[BENCHMARKS](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md)）。
 
-only 不去猜哪些代码会阻塞。**由你显式地移走阻塞任务**，结果再回到连接自己的线程。
+akio 不去猜哪些代码会阻塞。**由你显式地移走阻塞任务**，结果再回到连接自己的线程。
 
 ## `spawn_blocking`
 
@@ -30,7 +30,7 @@ where
 arpc 式分帧），先预留位置：
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:offload}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:offload}}
 ```
 
 `Conn::reserve_response()`（在 I/O 线程上按请求顺序调用）返回一个 `ResponseSlot`。无论槽位
@@ -49,7 +49,7 @@ arpc 式分帧），先预留位置：
 
 ## 线程池大小
 
-线程池是全 engine 共享的，按需创建、自适应（`only_pool`）：
+线程池是全 engine 共享的，按需创建、自适应（`akio_pool`）：
 
 ```rust,ignore
 let mut pool = PoolConfig::default();       // #[non_exhaustive]：在默认值上修改字段
@@ -73,11 +73,11 @@ panic 和被拒绝的任务数。
 
 | crate | 机制 |
 |---|---|
-| only-http | `Context::detach()` 返回 `Detached`，可在任何线程上 `respond`；流水线响应保持顺序。 |
-| only-ws | `WsSender` 是 `Clone + Send + Sync`，可在任何线程发送。 |
-| only-grpc | 交给方法的 `Sink` 可以在任何线程使用。 |
-| only-arpc | `Context::detach()` 返回 `Responder`。 |
-| only-quic / only-kcp | `Connection` / `Session` 是可克隆的句柄，可在任何线程发送。 |
+| akio-http | `Context::detach()` 返回 `Detached`，可在任何线程上 `respond`；流水线响应保持顺序。 |
+| akio-ws | `WsSender` 是 `Clone + Send + Sync`，可在任何线程发送。 |
+| akio-grpc | 交给方法的 `Sink` 可以在任何线程使用。 |
+| akio-arpc | `Context::detach()` 返回 `Responder`。 |
+| akio-quic / akio-kcp | `Connection` / `Session` 是可克隆的句柄，可在任何线程发送。 |
 
 它们提供的是"稍后答复"这一半；工作本身放在哪里执行由你决定：自己的线程、自己的线程池，
 或者另一个运行时（[从 tokio 迁移](../migration/from-tokio.md)展示了衔接方式）。对于原始的
@@ -87,5 +87,5 @@ panic 和被拒绝的任务数。
 
 设置了 `Config::slow_callback_threshold`（默认 100 ms）时，每个回调都会计时。超时的回调会被
 计数，记入最近记录的环形缓冲（`Engine::slow_callbacks()`、调试端点），并报告给
-`Config::slow_hook`；没有 hook 时写日志（target `only`，级别 `warn`），没有安装日志实现时
+`Config::slow_hook`；没有 hook 时写日志（target `akio`，级别 `warn`），没有安装日志实现时
 打印到 stderr。每一条报告都应当作 bug 对待：I/O 线程上有东西阻塞了。

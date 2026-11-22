@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-webrtc <-> headless Chrome, both offer directions: Chrome offers to the only ICE-lite
+# akio-webrtc <-> headless Chrome, both offer directions: Chrome offers to the only ICE-lite
 # RtcServer (data channels, fake camera/microphone media echoed back and decoded by Chrome), and
 # the only full-ICE Endpoint offers to Chrome (data channel echo). Needs Node >= 22 and Chrome
 # (CHROME=/path/to/chrome; the macOS default location is tried). CHROME_ARGS adds Chrome flags:
@@ -14,7 +14,7 @@
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
-cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop
+cd "$ROOT" && cargo build -q --release -p akio-webrtc --example webrtc-interop
 RS=$ROOT/target/release/examples/webrtc-interop
 W=$(mktemp -d)
 PIDS=""
@@ -37,9 +37,9 @@ echo "== only (full ICE Endpoint) offers to Chrome"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9512 & PIDS="$PIDS $!"
 sleep 1
 $RS client 127.0.0.1:9512 dc
-echo "== Chrome offers to the only server over ICE-TCP only"
+echo "== Chrome offers to the akio server over ICE-TCP only"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer-tcp 127.0.0.1:9511
-echo "== Chrome offers to the only server, relay only (only-turn over UDP, TCP, TLS)"
+echo "== Chrome offers to the akio server, relay only (akio-turn over UDP, TCP, TLS)"
 for u in "turn:127.0.0.1:9515" "turn:127.0.0.1:9516?transport=tcp" "turns:localhost:9517?transport=tcp"; do
   node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer-relay 127.0.0.1:9511 "$u"
 done
@@ -56,7 +56,7 @@ answer() { # <how> <client args...>
   grep -q "chrome: pair ok" "$W/answer.log"
 }
 echo "== only Endpoint (aggressive nomination) offers to Chrome"
-ONLY_INTEROP_NOMINATION=aggressive $RS client 127.0.0.1:9512 dc
+AKIO_INTEROP_NOMINATION=aggressive $RS client 127.0.0.1:9512 dc
 echo "== only Endpoint (passive ICE-TCP only) offers to Chrome"
 answer tcp dc-tcp
 echo "== only Endpoint (relayed candidates over TCP and TLS only) offers to Chrome"
@@ -72,7 +72,7 @@ for _ in 1 2 3; do
   node "$ROOT/tools/interop/webrtc/browser.mjs" 9521 answer 127.0.0.1:9522 mdns >"$W/answer.log" 2>&1 &
   NP=$!
   sleep 1
-  ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9522 dc-mdns 2>"$W/client-mdns.log"
+  AKIO_LOG=akio_webrtc=debug $RS client 127.0.0.1:9522 dc-mdns 2>"$W/client-mdns.log"
   for _ in $(seq 50); do grep -q "chrome: pair" "$W/answer.log" && break; sleep 0.2; done
   kill $NP 2>/dev/null || true
   grep "chrome: pair" "$W/answer.log"
@@ -92,7 +92,7 @@ if route -n get -inet6 2001:db8::1 >/dev/null 2>&1 || ip -6 route get 2001:db8::
   node "$ROOT/tools/interop/webrtc/browser.mjs" 9521 answer 127.0.0.1:9534 mdns >"$W/answer.log" 2>&1 &
   NP=$!
   sleep 1
-  ONLY_INTEROP_BIND="[::]:0" ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9534 dc-mdns \
+  AKIO_INTEROP_BIND="[::]:0" AKIO_LOG=akio_webrtc=debug $RS client 127.0.0.1:9534 dc-mdns \
     2>"$W/client-mdns6.log"
   for _ in $(seq 50); do grep -q "chrome: pair" "$W/answer.log" && break; sleep 0.2; done
   kill $NP 2>/dev/null || true
@@ -110,8 +110,8 @@ fi
 echo "== Chrome simulcast through the only SFU (layers in, simulcast and layer selection out)"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 simulcast 127.0.0.1:9519
 
-echo "== DTLS 1.3: Chrome offers to the only server (the only side is the DTLS client)"
-ONLY_INTEROP_DTLS13=1 ONLY_LOG=only_webrtc=debug $RS server 127.0.0.1:9523 127.0.0.1:9524 \
+echo "== DTLS 1.3: Chrome offers to the akio server (the only side is the DTLS client)"
+AKIO_INTEROP_DTLS13=1 AKIO_LOG=akio_webrtc=debug $RS server 127.0.0.1:9523 127.0.0.1:9524 \
   2>"$W/server-dtls13.log" & PIDS="$PIDS $!"
 sleep 1
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 offer 127.0.0.1:9524 | tee "$W/dtls13.out"
@@ -121,7 +121,7 @@ echo "== DTLS 1.3: the only Endpoint offers to Chrome (the only side is the DTLS
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9520 answer 127.0.0.1:9525 media >"$W/answer.log" 2>&1 &
 NP=$!
 sleep 1
-ONLY_INTEROP_DTLS13=1 ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9525 media-in 2>"$W/client-dtls13.log"
+AKIO_INTEROP_DTLS13=1 AKIO_LOG=akio_webrtc=debug $RS client 127.0.0.1:9525 media-in 2>"$W/client-dtls13.log"
 for _ in $(seq 50); do grep -q "chrome: audio" "$W/answer.log" && break; sleep 0.2; done
 kill $NP 2>/dev/null || true
 grep "chrome: audio" "$W/answer.log"
@@ -134,7 +134,7 @@ echo "== cryptex both ways (Chrome requires it), with DTLS 1.3"
   --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
   --disable-features=WebRtcHideLocalIpsWithMdns --enable-experimental-web-platform-features \
   about:blank >"$W/chrome-cryptex.log" 2>&1 & PIDS="$PIDS $!"
-ONLY_INTEROP_DTLS13=1 ONLY_INTEROP_CRYPTEX=1 ONLY_INTEROP_STATS=1 $RS server 127.0.0.1:9527 \
+AKIO_INTEROP_DTLS13=1 AKIO_INTEROP_CRYPTEX=1 AKIO_INTEROP_STATS=1 $RS server 127.0.0.1:9527 \
   127.0.0.1:9528 2>"$W/server-cryptex.log" & PIDS="$PIDS $!"
 sleep 2
 export PC_CONFIG='{"rtpHeaderEncryptionPolicy":"require"}'
@@ -147,7 +147,7 @@ grep -q '"tlsVersion":"FEFC"' "$W/cryptex.out"
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9526 answer 127.0.0.1:9529 media >"$W/answer.log" 2>&1 &
 NP=$!
 sleep 1
-ONLY_INTEROP_DTLS13=1 ONLY_INTEROP_CRYPTEX=1 ONLY_INTEROP_STATS=1 $RS client 127.0.0.1:9529 media-in \
+AKIO_INTEROP_DTLS13=1 AKIO_INTEROP_CRYPTEX=1 AKIO_INTEROP_STATS=1 $RS client 127.0.0.1:9529 media-in \
   2>"$W/client-cryptex.log"
 for _ in $(seq 50); do grep -q "chrome: audio" "$W/answer.log" && break; sleep 0.2; done
 kill $NP 2>/dev/null || true
@@ -167,7 +167,7 @@ sfu_view() { # <fec mechanism or empty>: the SFU behind a lossy proxy, one viewe
     --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
     --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
     --disable-features=WebRtcHideLocalIpsWithMdns about:blank >"$W/chrome-sfu.log" 2>&1 & CP=$!
-  ONLY_INTEROP_FEC=$1 ONLY_INTEROP_FEC_MIN=80 $RS sfu 127.0.0.1:9530 127.0.0.1:9531 127.0.0.1:9532 \
+  AKIO_INTEROP_FEC=$1 AKIO_INTEROP_FEC_MIN=80 $RS sfu 127.0.0.1:9530 127.0.0.1:9531 127.0.0.1:9532 \
     loss-out=5 periodic 2>"$W/sfu-fec.log" & SP=$!
   sleep 2
   r=0

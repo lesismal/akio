@@ -1,0 +1,18 @@
+[package]
+name = "akio-protobuf"
+description = "akio protobuf runtime: the wire format, messages, enums, unknown fields and well-known types, without dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-protobuf"
+keywords = ["protobuf", "protocol-buffers", "serialization", "grpc"]
+categories = ["encoding", "network-programming"]
+
+[dependencies]
+
+[lints]
+workspace = true

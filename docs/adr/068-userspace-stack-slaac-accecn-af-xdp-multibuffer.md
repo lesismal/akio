@@ -6,7 +6,7 @@ Status: accepted (2026-11-21)
 
 ## Context
 
-only-dpdk's own TCP/IP stack (`only-dpdk/src/net`) left three groups of gaps after ADR-026
+akio-dpdk's own TCP/IP stack (`akio-dpdk/src/net`) left three groups of gaps after ADR-026
 (IPv6) and ADR-063 (AF_XDP):
 
 - **IPv6 addresses were static.** `DpdkConfig::address6` and `gateway6` had to be given; router
@@ -51,7 +51,7 @@ only-dpdk's own TCP/IP stack (`only-dpdk/src/net`) left three groups of gaps aft
 - Multi-queue devices: every queue's stack follows the same timeline and sees router
   advertisements (they are copied to every queue like neighbor solicitations and
   advertisements), but only queue 0 sends solicitations, probes and MLD reports.
-- `only_dpdk::ipv6_addresses(&Device)` reports the usable addresses (kept by queue 0).
+- `akio_dpdk::ipv6_addresses(&Device)` reports the usable addresses (kept by queue 0).
 - Without `ipv6_slaac` advertisements are ignored, as before; without `ipv6_dad` addresses are
   used at once, as before. Both stay off by default because the defaults must not change what
   an existing configuration does (and DAD delays the first use of an address by about a
@@ -91,7 +91,7 @@ only-dpdk's own TCP/IP stack (`only-dpdk/src/net`) left three groups of gaps aft
   The response does not scale with the number of marks: that needs a scalable controller
   (DCTCP / Prague, L4S), which the stack does not have; AccECN's counters make one possible.
 - Data is sent ECT(0) as with RFC 3168; control packets and retransmissions stay Not-ECT.
-- `only_dpdk::tcp_ecn_stats()` (`#[doc(hidden)]`) counts AccECN and RFC 3168 connections, CE
+- `akio_dpdk::tcp_ecn_stats()` (`#[doc(hidden)]`) counts AccECN and RFC 3168 connections, CE
   marks received and congestion responses, for tests and benchmarks.
 
 ### 3. AF_XDP shared UMEM and multi-buffer frames (opt-in)

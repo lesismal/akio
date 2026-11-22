@@ -7,7 +7,7 @@ Status: accepted (2026-11-22); updated 2026-11-22 (engine-driven client, Connect
 
 ## Context
 
-`only-turn` served TURN over UDP, TCP, TLS and DTLS, but every relay was a UDP socket: an
+`akio-turn` served TURN over UDP, TCP, TLS and DTLS, but every relay was a UDP socket: an
 Allocate asking for `REQUESTED-TRANSPORT` TCP got 442, and the sans-io client could only ask for
 UDP. DEV-PLAN recorded "RFC 6062 TCP relays not implemented: WebRTC never uses them", and the
 book's WebRTC chapter listed TCP relays as not done.
@@ -15,7 +15,7 @@ book's WebRTC chapter listed TCP relays as not done.
 Browsers indeed never ask for TCP allocations, but other TURN users do: SIP and XMPP clients
 relaying TCP media or file transfer, and applications that tunnel a TCP protocol through a TURN
 server because it is the one host both sides can reach. coturn and pion/turn implement both
-sides of RFC 6062, so an `only` deployment replacing either needs them too.
+sides of RFC 6062, so an `akio` deployment replacing either needs them too.
 
 RFC 6062 in short. A client opens a *control connection* (TCP or TLS) and allocates with
 `REQUESTED-TRANSPORT` 6; the relayed address is a listening TCP socket. A **Connect** request
@@ -31,7 +31,7 @@ and 447 (Connection Timeout or Failure).
 Constraints: the bytes of a bound connection must not pass through the sharded state machine
 (no shard lock per read); backpressure must be linked both ways (rules 7 and 8); no I/O thread
 may block on `accept` (rule 1); every table and buffer is bounded; another session is editing
-`only-webrtc`, so the change stays inside `only-turn`.
+`akio-webrtc`, so the change stays inside `akio-turn`.
 
 ## Decision
 
@@ -76,23 +76,23 @@ TCP allocations with 442): `open_tcp_relay`, `close_tcp_relay`, `connect_peer`, 
 `connection_bound`, `close_connection`. New `TurnCore` methods: `tcp_connected`,
 `tcp_incoming`, `tcp_closed`. `TurnStats::tcp_connections` counts open connections.
 
-**`TurnServer` over `only` (`tcp.rs`).**
+**`TurnServer` over `akio` (`tcp.rs`).**
 
 - The relayed address is a non-blocking listening socket bound on `relay_ip:0` with
-  `SO_REUSEADDR` and `SO_REUSEPORT` (`only_sys::listen`), so that connections to peers can
+  `SO_REUSEADDR` and `SO_REUSEPORT` (`akio_sys::listen`), so that connections to peers can
   leave from the same address with `Engine::dial_from` (RFC 6062 section 5.2 requires the
   relayed address as the local endpoint). Because a reuseport bind of port 0 may in principle
   return a port another of our relays holds, a bound address already in the server's listener
   table is closed and bound again (16 tries).
 - **One accept thread per server**, started with the first TCP allocation
-  ("only-turn-tcp-accept"), polls every relay listener with `only_sys::Poller`; listeners are
+  ("akio-turn-tcp-accept"), polls every relay listener with `akio_sys::Poller`; listeners are
   added and removed through a command list and a `Waker`. Accepted sockets go to
   `Engine::adopt_tcp`, so the permission check and the ConnectionAttempt run on an I/O thread
   in the acceptor's `on_open`. No thread per allocation, and no I/O thread ever waits in
   `accept`. The thread exits within a second of the server being dropped.
 - Connections are *links* in a server-wide table keyed by `CONNECTION-ID`: the allocation's
   client and shard (a ConnectionBind arrives on another connection, whose client address
-  hashes to another shard) and the pair of `only` connections. Ids are server-wide: a counter
+  hashes to another shard) and the pair of `akio` connections. Ids are server-wide: a counter
   from a random start, never 0.
 - Dials asked for under a shard lock are started after the lock is released (a dial may fail
   synchronously, and its failure handler locks the shard again).
@@ -118,7 +118,7 @@ TCP allocations with 442): `open_tcp_relay`, `close_tcp_relay`, `connect_peer`, 
   serving TURN; the core's own 60 s guard only matters for environments that never report.
   (Superseded by the update below: `TurnConfig::tcp_connect_timeout`, 30 s.)
 
-### Client (`only_turn::client`, sans-io)
+### Client (`akio_turn::client`, sans-io)
 
 - `ClientConfig::tcp_allocation(true)` (which also sets `stream`) asks for transport 6.
 - `Client::connect(now, peer)` sends a Connect; `ClientEvent::Connected { peer, id }` or
@@ -145,7 +145,7 @@ TCP allocations with 442): `open_tcp_relay`, `close_tcp_relay`, `connect_peer`, 
 
 ## Consequences
 
-- `only-turn` depends on `only-sys` (in-house, already in the graph through `only`) for the
+- `akio-turn` depends on `akio-sys` (in-house, already in the graph through `akio`) for the
   listener and the poller. No third-party dependency.
 - Behaviour change: an Allocate for TCP over UDP or DTLS is now 400 instead of 442 (RFC 6062
   section 5.1); over TCP/TLS it now succeeds unless `TurnConfig::tcp_relays` is false.
@@ -189,11 +189,11 @@ and deadlines; and a `DataConnection` fed reads), with seeds reaching every RFC 
 
 Interop (`tools/interop/webrtc/turn-tcp.sh`, Docker; coturn 4.6, pion/turn v5.1.3): coturn's
 `turnutils_uclient -T` (pairs of clients connecting to each other's relayed addresses) against
-only-turn over TCP and TLS; the only_turn client (Connect, then a peer connecting with a
-permission; 20 messages and 1 MiB echoed on each) against coturn, pion/turn and only-turn over
-TCP and TLS; pion/turn's TCP allocation client (Dial and Accept) against only-turn and coturn.
+akio-turn over TCP and TLS; the akio_turn client (Connect, then a peer connecting with a
+permission; 20 messages and 1 MiB echoed on each) against coturn, pion/turn and akio-turn over
+TCP and TLS; pion/turn's TCP allocation client (Dial and Accept) against akio-turn and coturn.
 
-Not done: TCP allocations from `only-webrtc`'s `Endpoint` (no WebRTC stack uses them); an
+Not done: TCP allocations from `akio-webrtc`'s `Endpoint` (no WebRTC stack uses them); an
 engine-driven client wrapper (the sans-io client and the example show the plumbing);
 `ADDITIONAL-ADDRESS-FAMILY` dual allocations (not supported for UDP either); a per-Connect
 connect timeout separate from the engine's.
@@ -213,7 +213,7 @@ the engine's `Config::connect_timeout` and the core's fixed 60 s guard:
 - `TurnServer` no longer dials with `Engine::dial_from` (which applies the engine's
   `connect_timeout`, 10 s by default, and cannot be given another per dial without changing every
   backend). The accept thread that already polls the relay listeners now also opens Connect's
-  connections: `only_sys::connect_nonblocking_from(relay, peer)`, registered for writability;
+  connections: `akio_sys::connect_nonblocking_from(relay, peer)`, registered for writability;
   when writable, `take_error` / `peer_addr` tell success, and a connected socket goes to
   `Engine::adopt_tcp` with the same `PeerAcceptor` as before. Once a second it drops attempts
   whose link is gone (the core gave up, or the allocation went), closing their sockets.
@@ -228,18 +228,18 @@ the engine's `Config::connect_timeout` and the core's fixed 60 s guard:
 ### Engine-driven client: `client::TcpAllocation`
 
 Applications had to drive the sans-io client and each `DataConnection` themselves (the interop
-example used blocking sockets). `TcpAllocation` does it on an `only` engine:
+example used blocking sockets). `TcpAllocation` does it on an `akio` engine:
 
 - `TcpAllocation::open(&engine, cfg, ServerTransport::{Tcp, Tls(cfg, name)}, on_event)` dials
   the control connection, cuts its messages with `FrameReader` and feeds a `Client`. Timers run
-  on one thread for the whole process ("only-turn-timer", a min-heap of weak targets, as in
-  `only-webrtc`), not one per allocation. `on_event` gets `AllocationEvent::{Allocated,
+  on one thread for the whole process ("akio-turn-timer", a min-heap of weak targets, as in
+  `akio-webrtc`), not one per allocation. `on_event` gets `AllocationEvent::{Allocated,
   ConnectionAttempt, PeerFailed, Failed, Closed}` with the allocation itself, so it can accept
   attempts; callbacks run with no lock held.
 - `connect(peer, acceptor, on_error)` sends a Connect and, on `Connected`, dials a data
   connection; `accept(id, acceptor, on_error)` does the latter for a `ConnectionAttempt`.
   `create_permission`, `close`, `state`, `relayed_addr`, `mapped_addr` complete it.
-- **The ConnectionBind is a `Transport` layer** (`only::Transport`, the hook TLS uses), stacked
+- **The ConnectionBind is a `Transport` layer** (`akio::Transport`, the hook TLS uses), stacked
   over TLS's when there is one. The application's acceptor serves the connection directly, so
   its handler is an ordinary `Conn<H>`: no wrapper type in the way. The layer sends the request
   on the first `recv` (the engine calls it with nothing at install to let client transports
@@ -266,7 +266,7 @@ What RFC 6544 offers: a passive relayed TCP candidate (section 5.5: "commonly" t
 agent needs, since "any of the peer's server reflexive ... active candidates should work with"
 it), the remote connecting to it through the TURN server; and active relayed candidates (a
 Connect per check). What it would take here: a TCP allocation per `Endpoint`, a
-`Candidate::relayed_tcp` in `only-ice`, the ICE-TCP code accepting data connections whose remote
+`Candidate::relayed_tcp` in `akio-ice`, the ICE-TCP code accepting data connections whose remote
 is the peer named by the ConnectionAttempt rather than the socket's, and permissions for
 every remote candidate's address, which arrive through several paths of the peer code.
 
@@ -284,7 +284,7 @@ Why its value is too low for that:
   relay will see is unknown and the connection is refused. It works only when that address was
   learnt otherwise, which means UDP works, and then our UDP allocation (over TCP or TLS when our
   side needs it: ADR-032) serves the browser just as well.
-- Between two `only` endpoints, a UDP allocation over TCP/TLS already gives a relayed path through
+- Between two `akio` endpoints, a UDP allocation over TCP/TLS already gives a relayed path through
   any network that lets TCP out, with ICE's own consent and DTLS on top.
 
 So `Endpoint` keeps gathering UDP allocations (over UDP, DTLS, TCP or TLS), and the parts of
@@ -302,10 +302,10 @@ the allocation), failures (401 for wrong credentials, 447 to `on_error`, a bind 
 handle dropped: the server forgets the allocation), and the server's Connect timeout apart from
 the engine's (engine `connect_timeout` 200 ms, `tcp_connect_timeout` 1.5 s, a peer whose accept
 queue is full: 447 after 1.5 s; skipped on macOS, which resets such connects instead of dropping
-the SYN). macOS, and gpu51 (Linux, rustc 1.100) with epoll and `ONLY_TEST_BACKEND=uring`.
+the SYN). macOS, and gpu51 (Linux, rustc 1.100) with epoll and `AKIO_TEST_BACKEND=uring`.
 
 `tools/interop/webrtc/turn-tcp.sh` gains the engine client (`turn-tcp-interop engine-client`)
-against coturn 4.6, pion/turn v5.1.3 and only-turn over TCP and TLS (Connect, then a peer
+against coturn 4.6, pion/turn v5.1.3 and akio-turn over TCP and TLS (Connect, then a peer
 connecting with a permission, 20 messages and 1 MiB echoed on each); the existing cases
 (coturn's `turnutils_uclient -T` and pion/turn's client against the server, now dialing peers
 from its accept thread) pass unchanged. All passed on gpu51 in Docker.

@@ -6,12 +6,12 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-`only-srtp` covered what WebRTC negotiates today: the four DTLS-SRTP profiles
+`akio-srtp` covered what WebRTC negotiates today: the four DTLS-SRTP profiles
 (AES-128-CM-HMAC-SHA1-80/32, AEAD-AES-128/256-GCM), one master key per context, key derivation
 rate 0, and headers always in the clear. Its README listed what was missing: Master Key
 Identifiers (MKIs) and re-keying, non-zero key derivation rates, the NULL cipher, the
 AES-192/256-CM profiles (RFC 6188), encrypted header extensions (RFC 6904) and cryptex
-(RFC 9335). `only-dtls` parsed the `srtp_mki` field of `use_srtp` but refused a non-empty one.
+(RFC 9335). `akio-dtls` parsed the `srtp_mki` field of `use_srtp` but refused a non-empty one.
 
 Cryptex matters most: header extensions (audio levels, MIDs, transport-wide sequence numbers)
 and CSRCs leak who speaks and which application sends; cryptex, negotiated with `a=cryptex`,
@@ -78,14 +78,14 @@ and is what libwebrtc uses).
    cryptex swap is in place, and unencrypted AEAD SRTCP builds its AAD in the output buffer
    instead of a temporary `Vec`.
 7. **New errors** (`Error` is non-exhaustive): `Config`, `UnknownMki`, `Unsupported`.
-8. **DTLS-SRTP MKI** (RFC 5764 §4.1.3). `only-dtls` `Config::with_srtp_mki(mki)` (client: offer
+8. **DTLS-SRTP MKI** (RFC 5764 §4.1.3). `akio-dtls` `Config::with_srtp_mki(mki)` (client: offer
    it; panics beyond 255 bytes) and `Config::with_srtp_accept_mki(bool)` (server: echo the
    client's MKI; default off, so an SRTP layer that ignores MKIs keeps working);
    `HandshakeInfo::srtp_mki` is the MKI both sides use (`None` without). A client whose server
    echoes a different non-empty MKI fails the handshake with illegal_parameter; DTLS 1.2
    ServerHello and DTLS 1.3 EncryptedExtensions alike.
-9. **Not wired into only-webrtc yet**: `a=cryptex`, RFC 6904 extmaps and DTLS-SRTP MKIs in the
-   SDP offer/answer are a follow-up (another branch is changing only-webrtc's SDP).
+9. **Not wired into akio-webrtc yet**: `a=cryptex`, RFC 6904 extmaps and DTLS-SRTP MKIs in the
+   SDP offer/answer are a follow-up (another branch is changing akio-webrtc's SDP).
 
 ## Verification
 
@@ -113,7 +113,7 @@ and is what libwebrtc uses).
 
 ## Consequences
 
-- Breaking for `only-srtp` users (internal tier): `Profile::id` returns `Option<u16>`, `Profile`
-  and `Profile::ALL` grow. `only-webrtc` only uses `from_id` and is unaffected.
+- Breaking for `akio-srtp` users (internal tier): `Profile::id` returns `Option<u16>`, `Profile`
+  and `Profile::ALL` grow. `akio-webrtc` only uses `from_id` and is unaffected.
 - One `Context` can now outlive a DTLS re-handshake: add the new key under its MKI, switch
   sending, remove the old one once its packets have drained.

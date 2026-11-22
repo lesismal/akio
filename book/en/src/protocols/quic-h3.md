@@ -1,8 +1,8 @@
 # QUIC and HTTP/3
 
-`only-quic` is QUIC v1 (RFC 9000, 9001, 9002) and v2 (RFC 9369) with datagrams (RFC 9221), implemented in the
-crate as a sans-io state machine on `only-tls` and `only-crypto`, running on `only`'s UDP engine;
-`only-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any only-http `Service`.
+`akio-quic` is QUIC v1 (RFC 9000, 9001, 9002) and v2 (RFC 9369) with datagrams (RFC 9221), implemented in the
+crate as a sans-io state machine on `akio-tls` and `akio-crypto`, running on `akio`'s UDP engine;
+`akio-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any akio-http `Service`.
 Interop is tested in both directions with quic-go (raw QUIC echo of streams and datagrams,
 with Retry, key updates, a 150 MB transfer, version 2 and client migration:
 `tools/interop/quic/run.sh`) and, for HTTP/3,
@@ -11,25 +11,25 @@ stack are checked as clients of our servers in Docker (`tools/interop/quic/docke
 ngtcp2's own client and server for compatible version negotiation, both ways
 (`tools/interop/quic/ngtcp2-cvn.sh`). quiche (0.30.1) is checked both ways in Docker:
 quiche-client against our HTTP/3 server (Version Negotiation, many requests, uploads, 0-RTT,
-migration) and, over raw QUIC streams with HTTP/0.9 (`hq-interop`), against `only-quic`; `H3Client`
-and `only-quic`'s client against quiche-server, with and without Retry
+migration) and, over raw QUIC streams with HTTP/0.9 (`hq-interop`), against `akio-quic`; `H3Client`
+and `akio-quic`'s client against quiche-server, with and without Retry
 (`tools/interop/quic/quiche.sh`).
 
 ## QUIC
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:server}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:server}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:client}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-quic/examples/guide-quic.rs:engine}}
+{{#include ../../../../crates/akio-quic/examples/guide-quic.rs:engine}}
 ```
 
-How it fits on `only`:
+How it fits on `akio`:
 
 - A `QuicServer` is the acceptor of a **UDP listener**. Every datagram of that listener goes
   through one endpoint, which routes it by connection id, so a client that migrates to a new
@@ -39,7 +39,7 @@ How it fits on `only`:
 - Each QUIC connection gets a `QuicHandler` from the factory. Its callbacks run one at a time, in
   order, on the I/O thread that read the datagram or on a shared timer thread; they must not
   block.
-- `only_quic::dial(&engine, addr, server_name, client_cfg, handler)` starts a client
+- `akio_quic::dial(&engine, addr, server_name, client_cfg, handler)` starts a client
   connection on a UDP socket of its own; the engine needs `udp_client_threads(n)`.
 - Full-size datagrams go out in batches of up to 10 with `Conn::send_segments` (UDP GSO /
   `sendmmsg` on Linux). Writes a handler makes from inside its own callbacks are corked: they
@@ -55,7 +55,7 @@ How it fits on `only`:
 `Connection` (cloneable, usable from any thread): `open_bi`, `open_uni`, `send(id, data)`,
 `finish`, `reset`, `stop`, `queued_bytes(id)`, `send_capacity(id)`, `send_datagram`,
 `spawn_blocking(work)`, `close(code, reason)`, `remote_addr`, `alpn`, `server_name`, `rtt`,
-`stats`, `is_closed`. Payloads are `only_quic::Bytes` (reference counted and sliceable; received
+`stats`, `is_closed`. Payloads are `akio_quic::Bytes` (reference counted and sliceable; received
 data is a slice of the decrypted packet, so it is not copied again). Writes never block: `send`
 queues the bytes, which go out as flow and congestion control allow.
 
@@ -70,10 +70,10 @@ pass it, so a stream holds at most its limit plus one write. `spawn_blocking(wor
 on the engine's logical pool (disk reads and other blocking work), from where it may call the
 connection.
 
-Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `only::tls::Certificate` /
-`PrivateKey`, `server_config_from(&only::tls::ServerConfig)`, `client_config(roots, alpn)` with
-`only::tls::RootCerts`, `client_config_from(&only::tls::ClientConfig)`, and
-`client_config_insecure(alpn)` for tests only. They return `only`'s own `ServerConfig` /
+Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `akio::tls::Certificate` /
+`PrivateKey`, `server_config_from(&akio::tls::ServerConfig)`, `client_config(roots, alpn)` with
+`akio::tls::RootCerts`, `client_config_from(&akio::tls::ClientConfig)`, and
+`client_config_insecure(alpn)` for tests only. They return `akio`'s own `ServerConfig` /
 `ClientConfig`; `.transport(&TransportConfig)` sets stream limits, windows, idle timeout,
 keep-alive, MTU discovery and the congestion controller, `ServerConfig::migration(bool)` client
 migration. `server_config` enables session tickets, so clients reusing a `ClientConfig` resume
@@ -105,20 +105,20 @@ Above 4096 handshakes in progress, new clients must also prove their address wit
   default) and, when a server answers with Version Negotiation without it, starts over once in a
   version both speak, the version_information transport parameter (RFC 9368) guarding against a
   forged downgrade. `Connection::version()` tells which is in use.
-- **Compatible version negotiation** (RFC 9368 section 4, [ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)):
+- **Compatible version negotiation** (RFC 9368 section 4, [ADR-013](https://github.com/lesismal/akio/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)):
   `ServerConfig::prefer_version(Version::V2)` moves clients that start in v1 and list v2 in their
   version_information to v2 within the handshake, without a round trip (and `V1` the other way).
   Off by default (the server answers in the client's version). The server reads the whole first
   ClientHello before answering, so it works when the ClientHello spans several packets, after a
   Retry and with 0-RTT (the client's 0-RTT packets stay in its first version, RFC 9369 section
-  4.1). only-quic clients always follow such a switch. Clients without version_information
+  4.1). akio-quic clients always follow such a switch. Clients without version_information
   (quic-go) are never switched; ngtcp2 switches both ways.
 
   ```rust,ignore
-  let cfg = only_quic::server_config(certs, key, &[b"h3"])?
-      .prefer_version(only_quic::Version::V2);
+  let cfg = akio_quic::server_config(certs, key, &[b"h3"])?
+      .prefer_version(akio_quic::Version::V2);
   ```
-- **Tickets and tokens are per version** (RFC 9369 section 5, [ADR-014](https://github.com/lesismal/only/blob/main/docs/adr/014-quic-version-bound-resumption.md)):
+- **Tickets and tokens are per version** (RFC 9369 section 5, [ADR-014](https://github.com/lesismal/akio/blob/main/docs/adr/014-quic-version-bound-resumption.md)):
   a session ticket or NEW_TOKEN token belongs to the version of the connection that issued it,
   the negotiated one after a compatible switch. A server resumes only a ticket from the version
   the client started in (another one gets a full handshake, without 0-RTT) and validates the
@@ -127,10 +127,10 @@ Above 4096 handshakes in progress, new clients must also prove their address wit
   server (else of its token) when it speaks it, rather than `ClientConfig::version`. So a client
   configured for v1 that a server preferring v2 moved to v2 starts its next connection in v2 and
   resumes, with 0-RTT, without a switch.
-- **ECN** (`TransportConfig::ecn`, on by default): on Linux, macOS and over only-dpdk packets go out ECT(0), received
+- **ECN** (`TransportConfig::ecn`, on by default): on Linux, macOS and over akio-dpdk packets go out ECT(0), received
   codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
   section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back
-  to unmarked packets. Elsewhere packets are not marked (`ONLY_UDP_ECN=0` turns marking off on
+  to unmarked packets. Elsewhere packets are not marked (`AKIO_UDP_ECN=0` turns marking off on
   Linux and macOS too). `stats().ecn_capable` / `ecn_ce_events`.
 - **Congestion control**: `TransportConfig::congestion` picks CUBIC (default), NewReno or
   `Congestion::Bbr`, an experimental BBR: BBRv1's model (Startup, Drain, ProbeBW, ProbeRTT) on
@@ -152,11 +152,11 @@ that resumes with a ticket allowing 0-RTT can open streams right after `dial` (u
 the server gave on the earlier connection) and their data leaves in 0-RTT packets with the
 first flight; the server answers in 0.5-RTT, a round trip earlier than after a full handshake.
 The server accepts 0-RTT only under the same transport limits as when it issued the ticket and
-with only-tls's replay protection (a 10-second freshness window and a bounded record of recent
+with akio-tls's replay protection (a 10-second freshness window and a bounded record of recent
 ClientHellos per server); otherwise, or when 0-RTT packets are lost, the data goes again in
 1-RTT packets (after a Retry, in 0-RTT to the new connection ID). `Connection::early_data()`
 tells the client what happened; `Connection::is_early(stream)` tells the server which streams
-came early, and only-h3 marks such requests `Early-Data: 1` (RFC 8470), so handlers can answer
+came early, and akio-h3 marks such requests `Early-Data: 1` (RFC 8470), so handlers can answer
 `425 Too Early` to what is not safe to repeat. `H3Client` sends its requests in 0-RTT when its
 config enables it. 0-RTT data can be replayed (within the window by an attacker who can make the
 client retry, or to another server sharing tickets unless the servers share the anti-replay
@@ -166,11 +166,11 @@ TLS chapter) and is not forward secret.
 ## HTTP/3
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:server}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:server}}
 ```
 
-`only_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
-serving the service over HTTP/3. `only_h3::server_config(certs, key)` is `server_config` with
+`akio_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
+serving the service over HTTP/3. `akio_h3::server_config(certs, key)` is `server_config` with
 ALPN `h3`. Handlers get the same `Context` as on HTTP/1.1 and HTTP/2, including `detach`,
 `stream_response`, trailers, streamed request bodies and WebSocket upgrades (below);
 `ctx.req().version` is `Version::Http3`. `H3Config`: `max_body_bytes` (8 MiB, a larger buffered
@@ -189,10 +189,10 @@ A common deployment serves the same application on TCP (HTTP/1.1 + HTTP/2 over T
 (HTTP/3) in one engine: two listeners on the same port number. A `Router` is moved into its
 acceptor and is not `Clone`, so either build it with a function called once per listener, or
 share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app.call(ctx)`
-(with `only_http::Service` in scope) on both.
+(with `akio_http::Service` in scope) on both.
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:client}}
 ```
 
 `H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`), or `dial_with(.., H3ClientOptions)`
@@ -222,7 +222,7 @@ On the client, `upload(method, path, &headers, callback)` sends the head at once
 the response goes to the callback.
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:upload}}
 ```
 
 ### Streamed responses on the client
@@ -235,18 +235,18 @@ to `on_event` on the connection's I/O thread as it arrives: `H3Event::Head { sta
 the handle pauses reading: QUIC flow control then stops the server once the stream's receive
 window (`TransportConfig::stream_receive_window`) is used, so a slow consumer bounds the memory a
 download takes; `hold_reads(false)` resumes it. Both work from any thread, the event callback
-included (`only_quic::Connection::hold_reads` does the same for any stream). `cancel()` resets
+included (`akio_quic::Connection::hold_reads` does the same for any stream). `cancel()` resets
 the stream and nothing more is reported. `request_timeout` applies until the head.
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:download}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:download}}
 ```
 
 ### WebSocket over HTTP/3
 
 Servers advertise extended CONNECT (RFC 9220), and `ctx.upgrade_websocket(handler, &WsOptions)`
 accepts one: subprotocols, the origin check and `permessage-deflate` work as on HTTP/1.1, the
-answer is `200`, and the request stream then carries the WebSocket, framed by only-ws, with the
+answer is `200`, and the request stream then carries the WebSocket, framed by akio-ws, with the
 same `WsHandler` callbacks and `WsSender`. `Router` routes an extended CONNECT for `websocket`
 to the path's GET route, so a single `.get("/ws", ...)` serves both HTTP/1.1 upgrades and
 HTTP/3. `ctx.req().protocol` is `Some("websocket")` for such a request. WebSocket over HTTP/2
@@ -257,7 +257,7 @@ the client's connection, next to its requests: it waits for the server's SETTING
 gets the `WsSender` once the server answered `200` (`H3Error::Status` otherwise).
 
 ```rust,ignore
-{{#include ../../../../crates/only-h3/examples/guide-h3.rs:websocket}}
+{{#include ../../../../crates/akio-h3/examples/guide-h3.rs:websocket}}
 ```
 
 ### QPACK dynamic table
@@ -279,13 +279,13 @@ through an encoder stream. In `H3Config` (servers) and `H3ClientOptions` (client
   peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (0: never). It saves bytes on connections that
   carry many messages with the same custom fields, at the cost of a lock per message and the
   peer's acknowledgements; quic-go, fib and curl advertise no table, so it does nothing with
-  them. [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
-  and [ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)
+  them. [ADR-011](https://github.com/lesismal/akio/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
+  and [ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)
   explain the defaults.
 
-## How HTTP/3 reuses `only-http`
+## How HTTP/3 reuses `akio-http`
 
-only-http exposes a transport hook, `only_http::transport`: a transport parses a request and
+akio-http exposes a transport hook, `akio_http::transport`: a transport parses a request and
 calls `dispatch_conn(service, request, sink, tag)` with its connection's `ConnSink`, which writes
 the response its own way (`send` for a complete response, `start_stream` returning a `BodySink`
 for a streamed one) to the request the tag names. The sink is shared by the connection's
@@ -293,7 +293,7 @@ requests (through a thin `SharedSink`), and request targets and headers are buil
 `request_target` and `request_headers` in the storage of a finished request kept per thread;
 after encoding a response's head the sink hands its header storage back with
 `recycle_response_headers`. So none of these costs an allocation per request (ADR-025, ADR-081;
-the older boxed `ResponseSink` with `dispatch` is deprecated). only-h3 implements the sink on QUIC streams, which is why routers, middleware and
+the older boxed `ResponseSink` with `dispatch` is deprecated). akio-h3 implements the sink on QUIC streams, which is why routers, middleware and
 handlers work unchanged. See [Architecture](../architecture.md).
 
 What a request costs: frames are read in place from the received stream data, the field section
@@ -301,9 +301,9 @@ is decoded into a buffer the connection reuses and copied once into the request'
 the response's HEADERS frame is QPACK-encoded straight into the buffer handed to QUIC, together
 with a body of up to 16 KiB and the trailers (one write per response; a larger body follows
 without a copy). One connection with 64 requests in flight serves about 840 k req/s on a
-Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md)).
+Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md)).
 
 ## Not done
 
 Server push is left out on purpose: browsers dropped it, and 103 Early Hints replaced its use
-([ADR-061](https://github.com/lesismal/only/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)).
+([ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)).

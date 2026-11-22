@@ -1,8 +1,8 @@
 #![no_main]
-//! only-deflate compress -> decompress round trips (levels, formats, windows, flushes), and
+//! akio-deflate compress -> decompress round trips (levels, formats, windows, flushes), and
 //! zlib-rs decodes the same output.
 
-use only_deflate::{Format, Level, compress, fuzzing};
+use akio_deflate::{Format, Level, compress, fuzzing};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     fuzzing::roundtrip(data);
@@ -15,7 +15,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let mut out = Vec::with_capacity(body.len() + 1);
     let st = z
         .decompress_vec(&packed, &mut out, flate2::FlushDecompress::Finish)
-        .expect("zlib-rs decodes only-deflate output");
+        .expect("zlib-rs decodes akio-deflate output");
     assert_eq!(st, flate2::Status::StreamEnd);
     assert!(out == body, "zlib-rs output differs");
 });

@@ -8,7 +8,7 @@
 
 [ADR-017](017-webrtc-turn-gaps.zh-CN.md) 留下了这些 WebRTC 缺口：
 
-- `Endpoint` 只能经 UDP 分配中继候选，尽管 sans-io 的 `only_turn::client::Client` 已支持流式
+- `Endpoint` 只能经 UDP 分配中继候选，尽管 sans-io 的 `akio_turn::client::Client` 已支持流式
   TURN；屏蔽 UDP 的网络只能经 TCP 或 443 端口上的 TLS 访问 TURN 服务器（`turn:?transport=tcp`、
   `turns:`）；
 - `Endpoint` 有被动 ICE-TCP 候选却没有主动候选，因此连不上只走 TCP 的服务器（使用 ICE TCP mux
@@ -19,22 +19,22 @@
 
 ## 决定
 
-### 1. 经 TCP 与 TLS 分配的中继候选（`only-webrtc`）
+### 1. 经 TCP 与 TLS 分配的中继候选（`akio-webrtc`）
 
 - **`RelayServer`**：`Endpoint` 在其上分配的 TURN 服务器：`RelayServer::udp(addr, user,
   password)`、`::tcp(..)`、`::tls(addr, server_name, tls::ClientConfig, ..)`，或
   `RelayServer::from_url("turn:host[:port][?transport=udp|tcp]" | "turns:host[:port]
   [?transport=tcp]", user, password)`（RFC 7065，默认端口 3478 与 5349，IPv6 写在方括号中）。
   `from_url` 会解析主机名（阻塞，与 `gather_relay` 本身一样）；`turns:` 服务器在使用前需要
-  `RelayServer::tls_config`，因为 `only-tls` 没有默认根证书（URL 中的主机名就是验证证书时使用的
+  `RelayServer::tls_config`，因为 `akio-tls` 没有默认根证书（URL 中的主机名就是验证证书时使用的
   名字）。`addr()` 与 `transport()` 可读回。
 - **`Endpoint::gather_relay_via(&Arc<Engine>, &RelayServer, timeout)`**：任意传输上的
   `gather_relay`。在流上由 engine 拨号建立连接（`Engine::dial`，TLS 时用 `Tls::client` 包装），
-  客户端以 `ClientConfig::stream(true)` 运行，连接中的字节由 `only_turn::framing::FrameReader`
+  客户端以 `ClientConfig::stream(true)` 运行，连接中的字节由 `akio_turn::framing::FrameReader`
   切分。每个服务器加传输一个分配；每个 endpoint 最多 4 个，与此前相同。
 - **候选**：无论控制连接用什么传输，中继地址都是 UDP，但经 TCP 或 TLS 分配的候选排在经 UDP
   分配的候选之后（本地偏好在 TCP 上减半、在 TLS 上减为四分之一，与浏览器的排序一致），并有自己的
-  foundation（`only_ice::Candidate::relayed_over_stream`，内部层级）。流式分配不产生服务器反射
+  foundation（`akio_ice::Candidate::relayed_over_stream`，内部层级）。流式分配不产生服务器反射
   候选：服务器看到的是 TCP 地址。
 - **背压与上限**：连接建立前最多 64 KiB 的消息排队等待；连接排队超过 256 KiB 时丢弃中继数据
   （ChannelData、Send indication：媒体已过时，DTLS、SCTP 与 RTP 会恢复），请求与响应总会发出。
@@ -72,7 +72,7 @@
   连接随之关闭。连接数最多为 `RtcServer::max_peers` 的两倍（至少 256；不限 peer 时为 4096）。
   监听器绑定在未指定地址上时，由连接的本地地址选择候选（精确地址，否则端口与地址族相同者）。
 - TCP 监听器可以与 UDP 监听器使用同一端口，因此 TCP 与 UDP 候选可能地址相同：peer 记住经连接到达它的远端
-  地址（最多 16 个，在它自己的锁下），发往这些地址的数据走连接，因此 UDP 路径不取共享锁；`only-ice` 的
+  地址（最多 16 个，在它自己的锁下），发往这些地址的数据走连接，因此 UDP 路径不取共享锁；`akio-ice` 的
   agent 能区分同一地址上的 UDP 与 TCP 本地候选（此前会把后加入的当作重复丢弃）。连接只在第一次检查时查找
   一次它的 peer。
 - 在内部，endpoint 与服务器的 ICE-TCP 共用一个 `TcpSide`（被动候选、主动候选，按远端地址以及按
@@ -107,7 +107,7 @@
 - 公开 API（新增）：`RelayServer`（`udp`、`tcp`、`tls`、`from_url`、`tls_config`、`addr`、
   `transport`），`Endpoint::{gather_relay_via, dial_tcp, candidate_filter}`，
   `RtcServer::{tcp_candidates, tcp}`，`RtcTcp`（一个 `Acceptor`）及其隐藏的处理器 `IceTcp`，
-  `Peer::request_layer_keyframe`，`Candidate::{kind, transport}`；`only-ice`（内部层级）：
+  `Peer::request_layer_keyframe`，`Candidate::{kind, transport}`；`akio-ice`（内部层级）：
   `Candidate::relayed_over_stream`。快照已更新。`gather_relay` 现在也会重新分配丢失的分配（此前
   丢失后不再恢复）。
 - 没有 TCP 或中继的 endpoint 与服务器，UDP 数据路径不变：只有存在 TCP 端或中继列表时才会查看它们
@@ -115,12 +115,12 @@
   媒体 1.003 倍（91.9 对 91.6 MB/s，7 轮），数据通道吞吐 1.024 倍（191.9 对 187.3 MB/s，15 轮）：无回退。
 - 新 fuzz 目标 `webrtc_turn_url`（TURN URL 解析器）；`webrtc_sdp` 的种子现在包含主动 TCP 候选与
   经 TLS 分配的中继候选。中继的流式路径复用 `FrameReader`（由 `turn_stream` fuzz），主动 ICE-TCP
-  路径复用 `only_ice::tcp::FrameReader`（由 `ice_tcp` fuzz）。
-- 互通：`tools/interop/webrtc/run.sh`（pion）：在 `only-turn` 与 pion/turn 上经 TCP 与 TLS 分配
+  路径复用 `akio_ice::tcp::FrameReader`（由 `ice_tcp` fuzz）。
+- 互通：`tools/interop/webrtc/run.sh`（pion）：在 `akio-turn` 与 pion/turn 上经 TCP 与 TLS 分配
   中继候选的 `Endpoint`；双向 ICE-TCP（我方被动对 pion 主动，我方主动对 pion 的被动 TCP mux，pion
   主动对 ICE-lite 服务器的被动候选）。`linux.sh`（coturn）：在 coturn 上经 TCP 与 TLS 分配中继候选的
   `Endpoint`。`browser.sh`（Chrome）：Chrome 只经 ICE-TCP 连到服务器；Chrome 只用中继，经
-  `only-turn` 的 UDP、TCP 与 TLS；只带被动 TCP 候选、以及只带经 TCP 与 TLS 分配的中继候选的
+  `akio-turn` 的 UDP、TCP 与 TLS；只带被动 TCP 候选、以及只带经 TCP 与 TLS 分配的中继候选的
   `Endpoint` 连到 Chrome（每一项都检查 Chrome 选中的候选对）；双向 simulcast 与层选择。
 - 已知限制（未变）：同一 `Endpoint` 的 peer 共用它的 socket，因此其中两个 peer 与同一个远端 socket
   通信时共用同一个五元组，越过 ICE 用户名之后无法区分（一个测试因此使用第三个 endpoint）。

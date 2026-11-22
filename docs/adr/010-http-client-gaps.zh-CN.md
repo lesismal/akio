@@ -6,7 +6,7 @@
 
 ## 背景
 
-only-http 的 HTTP/1 客户端（`client::Client`）、HTTP/2 客户端（`h2client::H2Client`）和 only-ws
+akio-http 的 HTTP/1 客户端（`client::Client`）、HTTP/2 客户端（`h2client::H2Client`）和 akio-ws
 的 WebSocket 客户端（`client::dial`）可用，但缺少真实部署都会遇到的能力：不跟随重定向、没有单请求
 超时、`getaddrinfo` 在调用线程上执行（在回调里调用时会阻塞 I/O 线程）、没有默认信任库（调用方要自己
 找 CA 文件）、不支持代理，以及引擎关闭时 WebSocket 客户端不发关闭帧就断开连接。补齐这些要在四个 crate
@@ -14,20 +14,20 @@ only-http 的 HTTP/1 客户端（`client::Client`）、HTTP/2 客户端（`h2cli
 
 ## 决定
 
-1. **在调用线程之外解析域名：`only::dns`。** `only::dns::resolve(host, port, done)` 对 IP 字面量
-   直接在调用线程应答，域名交给进程级的解析线程池（最多 4 个 `only-dns` 线程，按需启动，空闲 10 秒
+1. **在调用线程之外解析域名：`akio::dns`。** `akio::dns::resolve(host, port, done)` 对 IP 字面量
+   直接在调用线程应答，域名交给进程级的解析线程池（最多 4 个 `akio-dns` 线程，按需启动，空闲 10 秒
    后退出）；`done` 在解析线程上运行，按系统顺序给出所有地址（空结果是 `NotFound`）。不用引擎的逻辑
    池：解析可能耗时数秒，不应拖慢应用的阻塞任务，而且客户端在连接（也就是 `Conn`）存在之前就需要它。
    解析无法取消；已超时的请求忽略迟到的结果。HTTP/1 客户端只在该路由没有空闲 keep-alive 连接时才解析；
    WebSocket 客户端每次都解析。`H2Client::dial` 仍然接收 `SocketAddr`。
-2. **系统根证书：`only::tls::RootCerts::system()`。** 每个进程读取一次并缓存。设置了
+2. **系统根证书：`akio::tls::RootCerts::system()`。** 每个进程读取一次并缓存。设置了
    `SSL_CERT_FILE` / `SSL_CERT_DIR` 时以它们为准（OpenSSL 惯例，部署可以让所有客户端指向自己的
    证书库）。macOS：用 `/usr/bin/security find-certificate -a -p` 导出系统钥匙串
    （`SystemRootCertificates.keychain` 和 `/Library/Keychains/System.keychain`），失败时回退到
    `/etc/ssl/cert.pem`；**不**应用钥匙串的信任设置（管理员标记为不信任的 CA），这是不链接
    Security.framework 的代价，已写入文档。其他 Unix：按常见发行版路径取第一个存在的证书包
    （Debian/Ubuntu/Alpine/Arch 的 `ca-certificates.crt`、Fedora/RHEL、openSUSE、FreeBSD……），
-   否则读证书目录。only-x509 无法解析的证书被跳过；一个证书都没有时报错。**客户端默认使用它**：
+   否则读证书目录。akio-x509 无法解析的证书被跳过；一个证书都没有时报错。**客户端默认使用它**：
    没有 `with_tls` 的 `Client` 和 `DialOptions::tls = None` 现在对 `https://` / `wss://` 使用
    系统 CA（以前会报 "needs Client::with_tls" / "needs DialOptions::tls"）。这把一个错误变成了
    预期行为，对传入配置的调用方没有任何变化。
@@ -55,30 +55,30 @@ only-http 的 HTTP/1 客户端（`client::Client`）、HTTP/2 客户端（`h2cli
    失败（在定时器线程上回调），其连接被关闭，不会回到连接池，也不会重试。`H2Client` 同样遵守
    `ClientRequest::timeout`：用 `CANCEL` 重置该流，连接仍可使用。超时发生时仍在连接中的拨号会走完，
    随后被关闭。WebSocket 客户端保留 `handshake_timeout`，现在它覆盖整个重定向链。
-5. **HTTP 代理：`only_ws::proxy::Proxy`，在 `only_http::client::Proxy` 重新导出。** 它放在
-   only-ws 中，因为两个客户端都需要，而 only-http 已经依赖 only-ws。`Proxy::all(url)`、
+5. **HTTP 代理：`akio_ws::proxy::Proxy`，在 `akio_http::client::Proxy` 重新导出。** 它放在
+   akio-ws 中，因为两个客户端都需要，而 akio-http 已经依赖 akio-ws。`Proxy::all(url)`、
    `.http(url)`、`.https(url)`、`.no_proxy(list)`、`Proxy::from_env()`、`is_empty()`、
    `applies(secure, host, port)`。**环境变量需显式启用**：除非调用方传入 `Proxy::from_env()`，否则
    不会读取（`http_proxy`/`HTTP_PROXY`、`https_proxy`/`HTTPS_PROXY`、`no_proxy`/`NO_PROXY`，小写
    优先；设置了 `REQUEST_METHOD` 时忽略 `HTTP_PROXY`，防范 "httpoxy"）；无法使用的值会报错，而不是
    悄悄绕过代理。只支持明文 HTTP 代理（`http://[user:pass@]host[:port]`，默认端口 80；凭据变成
-   `Proxy-Authorization: Basic`）；不支持到代理本身的 TLS 和 SOCKS（only-socks 是独立的）。
+   `Proxy-Authorization: Basic`）；不支持到代理本身的 TLS 和 SOCKS（akio-socks 是独立的）。
    `NO_PROXY` 条目：`*`、匹配自身及其子域的主机名（前导 `.`/`*.` 可选）、IP 地址、CIDR 网段，均可带
    `:port`；回环地址不做特殊处理（需要时请列出）。路由：`http://` 目标以绝对形式请求发给代理（keep-alive
    连接按代理分池）；`https://`、`ws://` 和 `wss://` 经 `CONNECT host:port` 隧道。隧道是一个叠在 TLS
-   传输层之下的 `Transport`（隐藏的 `only_ws::proxy::Connect` acceptor 包装）：它发送 `CONNECT`，
+   传输层之下的 `Transport`（隐藏的 `akio_ws::proxy::Connect` acceptor 包装）：它发送 `CONNECT`，
    在收到 2xx 之前暂存 TLS 首个 flight 和应用字节，之后不再介入（`tls_info` 仍能看到 TLS 传输层）。
-   非 2xx 的应答使连接失败，产生携带 `only_ws::proxy::ProxyRefused`（状态码和原因；401/403/407 的
+   非 2xx 的应答使连接失败，产生携带 `akio_ws::proxy::ProxyRefused`（状态码和原因；401/403/407 的
    kind 为 `PermissionDenied`）的 `io::Error`，以 `ClientError::Io` / `WsClientError::Io` 报告；
    代理的响应体绝不会被当作目标服务器的响应展示。
 6. **引擎关闭时 WebSocket 发送 1001。** 客户端 acceptor 的 `on_shutdown` 对已打开的连接以 1001
    （"going away"）开始关闭握手（服务器应答，TCP 连接在 `close_timeout` 内结束），并丢弃仍在握手的连接。
 7. **API 汇总**（全部为新增；涉及的枚举和结构体都是 `#[non_exhaustive]`）：
-   - `only`：模块 `dns`（`resolve`、`literal`、`MAX_THREADS`、`IDLE`）。
-   - `only-tls`：`RootCerts::system()`。
-   - `only-ws`：模块 `proxy`（`Proxy`、`ProxyRefused`）；`DialOptions::{proxy, max_redirects}`；
+   - `akio`：模块 `dns`（`resolve`、`literal`、`MAX_THREADS`、`IDLE`）。
+   - `akio-tls`：`RootCerts::system()`。
+   - `akio-ws`：模块 `proxy`（`Proxy`、`ProxyRefused`）；`DialOptions::{proxy, max_redirects}`；
      `WsClientError::TooManyRedirects`。
-   - `only-http`：`client::{RedirectPolicy, Proxy, ProxyRefused}`；
+   - `akio-http`：`client::{RedirectPolicy, Proxy, ProxyRefused}`；
      `Client::{with_redirects, with_timeout, with_proxy}`；`ClientRequest::timeout`（字段和构建方法）；
      `ClientResponse::url`；`ClientError::{Timeout, TooManyRedirects}`。
 

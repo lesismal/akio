@@ -1,4 +1,4 @@
-# ADR-048: DTLS 1.3, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in only-webrtc
+# ADR-048: DTLS 1.3, cryptex, encrypted header extensions, Opus RED and FEC on simulcast lines in akio-webrtc
 
 [中文](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md)
 
@@ -6,9 +6,9 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-The libraries had the pieces but `only-webrtc`'s peers did not use them: `only-dtls` speaks DTLS
-1.3 (ADR-021, ADR-045) yet peers ran DTLS 1.2 only; `only-srtp` has cryptex (RFC 9335), RFC 6904
-header extension encryption and MKIs (ADR-040) but nothing negotiated them; `only-rtp` has RED
+The libraries had the pieces but `akio-webrtc`'s peers did not use them: `akio-dtls` speaks DTLS
+1.3 (ADR-021, ADR-045) yet peers ran DTLS 1.2 only; `akio-srtp` has cryptex (RFC 9335), RFC 6904
+header extension encryption and MKIs (ADR-040) but nothing negotiated them; `akio-rtp` has RED
 (RFC 2198) and ULPFEC (ADR-036), wired for video on plain lines only (ADR-039), so audio had no
 redundancy and simulcast lines no FEC.
 
@@ -40,7 +40,7 @@ captured over DevTools):
 ## Decision
 
 1. **DTLS 1.3** (`RtcConfig::enable_dtls13(bool)`): peers offer DTLS 1.3 with DTLS 1.2 as the
-   fallback (`only_dtls::Config::with_versions([Dtls13, Dtls12])` on the WebRTC profile): a
+   fallback (`akio_dtls::Config::with_versions([Dtls13, Dtls12])` on the WebRTC profile): a
    client sends a DTLS 1.3 ClientHello that DTLS 1.2 servers answer with DTLS 1.2, a server
    takes DTLS 1.3 when offered. SRTP keys come from the DTLS 1.3 exporter as before; the RFC 7983
    demultiplexer already took DTLS 1.3's unified headers (first byte 32-63). **Default on**: it
@@ -51,7 +51,7 @@ captured over DevTools):
 2. **Cryptex** (`RtcConfig::enable_cryptex(bool)`, default off): offers a session-level
    `a=cryptex` (as Chrome) and answers one found at session or media level of an offer.
    Negotiated means both sides signaled it; then every sent packet with header extensions or
-   CSRCs is encrypted with cryptex (`only_srtp::Context::with_cryptex`). The receiving context
+   CSRCs is encrypted with cryptex (`akio_srtp::Context::with_cryptex`). The receiving context
    decrypts cryptex whenever this side offers or accepts it, so packets the remote sends right
    after its answer (before ours is applied) are not lost. Cryptex is a property of the BUNDLE
    transport (one SRTP context pair), re-applied after each negotiation.
@@ -64,9 +64,9 @@ captured over DevTools):
    the option encrypted variants are ignored. The negotiated ids (union over the BUNDLE) go to
    both SRTP contexts (`with_encrypted_header_extensions`). With cryptex as well, cryptex wins on
    the wire.
-4. **MKIs are not negotiated** in `only-webrtc`: there is no SDP mechanism for DTLS-SRTP MKIs,
-   no browser uses them, and between two `only` peers DTLS already re-keys by a new handshake.
-   `only-dtls` keeps `with_srtp_mki` for other DTLS-SRTP users.
+4. **MKIs are not negotiated** in `akio-webrtc`: there is no SDP mechanism for DTLS-SRTP MKIs,
+   no browser uses them, and between two `akio` peers DTLS already re-keys by a new handshake.
+   `akio-dtls` keeps `with_srtp_mki` for other DTLS-SRTP users.
 5. **Opus RED** (`RtcConfig::enable_opus_red(Option<u8>)`, default `None`): with `Some(n)` an
    audio line offers or accepts `red/48000/2` (payload type 63, `fmtp 63 <opus>/<opus>`), listed
    *before* Opus so libwebrtc sends RED; a remote RED is accepted only when all its blocks are a

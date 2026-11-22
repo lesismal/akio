@@ -6,7 +6,7 @@ with status 404), then fetches every HTML page of both books and of the API docs
 
   * every internal link and resource (href / src, honouring <base>) answers 200;
   * every #fragment names an element id (or <a name>) on the target page;
-  * links to the published site (https://lesismal.github.io/only/...) resolve the same way
+  * links to the published site (https://lesismal.github.io/akio/...) resolve the same way
     locally: these are the guide links in the crates' rustdoc;
   * both books have the same pages (the language switch maps a page to the same path in the
     other language), the language picker and the API index exist, and a missing page returns
@@ -15,7 +15,7 @@ with status 404), then fetches every HTML page of both books and of the API docs
 External links are only counted (`--external` lists them).
 
 Usage:
-  python3 book/check-site.py target/site [--base /only/] [--external]
+  python3 book/check-site.py target/site [--base /akio/] [--external]
   python3 book/check-site.py target/site --serve 8000     # just serve it for a browser
 Exit status 1 on any problem.
 """
@@ -31,7 +31,7 @@ import sys
 import threading
 import urllib.parse
 
-PUBLISHED = "https://lesismal.github.io/only/"
+PUBLISHED = "https://lesismal.github.io/akio/"
 LANGS = ("en", "zh-CN")
 
 
@@ -94,7 +94,7 @@ class Page(html.parser.HTMLParser):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("site")
-    ap.add_argument("--base", default="/only/")
+    ap.add_argument("--base", default="/akio/")
     ap.add_argument("--external", action="store_true", help="list external links")
     ap.add_argument("--serve", type=int, metavar="PORT", help="only serve the site")
     args = ap.parse_args()
@@ -219,7 +219,7 @@ def main():
         for rel in sorted(trees[a] - trees[b]):
             problems.append(f"{a}/{rel}: no {b} counterpart (language switch would 404)")
     for must in ("index.html", "404.html", "en/index.html", "zh-CN/index.html", "api/index.html",
-                 "api/only/index.html", "en/lang-switch.js", "zh-CN/lang-switch.js"):
+                 "api/akio/index.html", "en/lang-switch.js", "zh-CN/lang-switch.js"):
         if fetch(root + must)[0] != 200:
             problems.append(f"{must}: missing")
     st, pg = fetch(root + "no/such/page.html")

@@ -13,28 +13,28 @@ RFC 9369 第 5 节规定，TLS 会话票据与 NEW_TOKEN 令牌只属于签发�
   被拒的令牌使地址保持未验证；
 - 兼容版本协商之后，票据与令牌属于**协商出的**版本，而不是客户端起始的版本。
 
-only-tls 的票据与 only-quic 的令牌都不带版本，因此任一版本都接受任何票据或令牌。ADR-013（兼容版本
+akio-tls 的票据与 akio-quic 的令牌都不带版本，因此任一版本都接受任何票据或令牌。ADR-013（兼容版本
 协商）让跨版本成为常态：配置为 v1 的客户端被偏好 v2 的服务端切到 v2 后拿到 v2 的票据，之后又在 v1
 中用它们恢复会话。
 
 ## 决定
 
-1. **票据携带 QUIC 版本**（only-tls）。会话编码增加 `quic_version` 字段（格式 3；格式 2 的会话解码为
-   版本 0，即“未绑定”）。TCP 上的 TLS 使用 0。only-tls 与 only-quic 之间的隐藏 QUIC 接口
-   （`only_tls::quic`，`doc(hidden)`，不在公开 API 快照中）新增：
+1. **票据携带 QUIC 版本**（akio-tls）。会话编码增加 `quic_version` 字段（格式 3；格式 2 的会话解码为
+   版本 0，即“未绑定”）。TCP 上的 TLS 使用 0。akio-tls 与 akio-quic 之间的隐藏 QUIC 接口
+   （`akio_tls::quic`，`doc(hidden)`，不在公开 API 快照中）新增：
    - `QuicTls::client_versioned(.., version)`：只出示 `version` 的票据（其他版本的票据留在缓存中），
      新票据记在该版本下；
    - `QuicTls::server_versioned(.., version)`：只用 `version`（客户端的首个版本）的票据恢复会话；其他
      版本的票据像未知票据一样被跳过，于是走完整握手，early data 被拒。签发的票据携带 `version`；
    - `QuicTls::set_ticket_version(v)`：兼容切换之后，此后签发（服务端）或收到（客户端）的票据携带
      `v`；出示或接受的那张票据仍绑定首个版本，因为客户端以该版本开始；
-   - `only_tls::quic::ticket_version(&ClientConfig, name)`：客户端为 `name` 持有的最新可用 QUIC 票据
+   - `akio_tls::quic::ticket_version(&ClientConfig, name)`：客户端为 `name` 持有的最新可用 QUIC 票据
      的版本。
 
    不带版本的构造函数（`client`、`client_early`、`server`、`server_early`）是版本 0：它们既不使用也
    不接受绑定了版本的票据，它们的票据也不会被绑定版本的握手使用。严格相等同时让 QUIC 票据不进入 TCP 上
    的 TLS，反之亦然。
-2. **令牌携带 QUIC 版本**（only-quic）。NEW_TOKEN 与 Retry 令牌在时间戳旁封入版本（NEW_TOKEN 为协商出
+2. **令牌携带 QUIC 版本**（akio-quic）。NEW_TOKEN 与 Retry 令牌在时间戳旁封入版本（NEW_TOKEN 为协商出
    的版本）。服务端将其与客户端 Initial 的版本比较：其他版本的 NEW_TOKEN 令牌视同没有令牌（地址未验证，
    可能触发 Retry）；其他版本的 Retry 令牌无效。本变更之前封装的令牌同样校验失败（一次未验证的连接）。
 3. **客户端从票据可用的版本开始。** 客户端把每个令牌与其版本一起保存。拨号时，只要自己支持，就以该
@@ -56,5 +56,5 @@ only-tls 的票据与 only-quic 的令牌都不带版本，因此任一版本都
   为准。只支持一个版本的客户端（内部的 `ConnConfig::versions`）不会换版本，只是不使用它们。
 - 升级前签发的票据未绑定版本（版本 0），不再用于恢复 QUIC 连接：升级后每个客户端多一次完整握手。TCP 上
   的 TLS 不受影响。
-- 公开 API 无变化：只改动 only-tls 的隐藏 QUIC 接口与 only-quic 的 crate 私有类型。无可测代价（每个
+- 公开 API 无变化：只改动 akio-tls 的隐藏 QUIC 接口与 akio-quic 的 crate 私有类型。无可测代价（每个
   票据与令牌多四字节，一次比较）。

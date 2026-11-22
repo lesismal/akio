@@ -1,6 +1,6 @@
 # BitTorrent
 
-`only-bittorrent` is BitTorrent on `only`: bencoding, v1, v2 and hybrid .torrent files and
+`akio-bittorrent` is BitTorrent on `akio`: bencoding, v1, v2 and hybrid .torrent files and
 magnet links, HTTP and UDP trackers (client and server), the peer wire protocol with its
 extensions and Message Stream Encryption, uTP, the mainline DHT over IPv4 and IPv6, Local
 Service Discovery, web seeds, and a client that downloads and seeds with all of them, with rate
@@ -13,10 +13,10 @@ trackers, hybrid torrents), and web seeds against nginx.
 ## A tracker, a seeder and a leecher
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:tracker}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:tracker}}
 ```
 
-A `TrackerServer` serves both protocols from one in-memory store: `http()` is a only-http
+A `TrackerServer` serves both protocols from one in-memory store: `http()` is a akio-http
 service (paths ending in `announce` and `scrape`, compact and dictionary peer lists, `peers6`),
 `udp()` the acceptor of a UDP listener (BEP 15; connection IDs are an HMAC of a secret, the
 minute and the client address, so nothing is kept per client).
@@ -28,7 +28,7 @@ A swarm is dropped when its last peer leaves or expires (`peer_ttl`, 1 h); expir
 per announce instead of a scan of the swarm, and the store is split into 16 locked shards.
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
 `metainfo::Builder` hashes bytes, in-memory files or a path (streaming) into a v1, v2 or hybrid
@@ -39,22 +39,22 @@ that do not match their file's root, and hybrid torrents whose two parts describ
 files.
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:seeder}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:leecher}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:leecher}}
 ```
 
 ## The client
 
-A `Client` is one `only` engine and **one port number**: a TCP listener for peers, and a UDP
+A `Client` is one `akio` engine and **one port number**: a TCP listener for peers, and a UDP
 listener shared by uTP and the DHT through a `port::UdpPort`. Trackers go through a
-`tracker::TrackerClient` on the same engine (only-http for HTTP(S), `dial_udp` sockets for
-UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`only-pool`), never
+`tracker::TrackerClient` on the same engine (akio-http for HTTP(S), `dial_udp` sockets for
+UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`akio-pool`), never
 on an I/O thread.
-Tracker host names are resolved off the calling thread (`only::dns`, for UDP trackers and,
-through only-http's client, HTTP ones), never on the I/O thread that triggered an announce.
+Tracker host names are resolved off the calling thread (`akio::dns`, for UDP trackers and,
+through akio-http's client, HTTP ones), never on the I/O thread that triggered an announce.
 
 - **Torrents** come from a `MetaInfo` (`add_torrent`) or a magnet link (`add_magnet`, the info
   dictionary fetched from peers with ut_metadata, BEP 9/10). `AddOptions` give a storage of the
@@ -113,7 +113,7 @@ the roots). A hybrid torrent carries both formats for the same files.
 
 - **Web seeds (BEP 19)**: the torrent's `url-list`, `AddOptions::web_seeds` and
   `Torrent::add_web_seed` (at most 16). An idle web seed takes a missing piece (one no connected
-  peer has first) and fetches it with `Range` requests of at most 4 MiB through only-http's
+  peer has first) and fetches it with `Range` requests of at most 4 MiB through akio-http's
   client, skipping padding; the piece is then checked and written like one from a peer. A
   failure or a piece that fails its check backs the web seed off (10 s, doubling, at most 10
   minutes) and reports `TorrentEvent::WebSeedError`. A single-file torrent's URL names the file
@@ -141,7 +141,7 @@ the roots). A hybrid torrent carries both formats for the same files.
 
 Set `ClientConfig::resume_dir` and a torrent added again after a restart, or after a crash,
 starts from what it had instead of hash-checking its data
-([ADR-033](https://github.com/lesismal/only/blob/main/docs/adr/033-bittorrent-fast-resume.md)):
+([ADR-033](https://github.com/lesismal/akio/blob/main/docs/adr/033-bittorrent-fast-resume.md)):
 
 ```rust,ignore
 let mut cfg = ClientConfig::default();
@@ -178,7 +178,7 @@ datagram ─┬─ uTP header (version 1, type ≤ 4) ──► uTP connection �
           └─ anything else ('d…' = DHT)       ──► on_datagram ──► dht::Node
 ```
 
-`UdpPort` is the acceptor of a `only` UDP listener. It sorts datagrams by their first byte, runs
+`UdpPort` is the acceptor of a `akio` UDP listener. It sorts datagrams by their first byte, runs
 uTP connections on a 10 ms timer, and **sends from the listener's own port**: to reach an
 address that has not written first it opens a peer on the listener socket with
 `Engine::dial_udp_from`, so a DHT node is reachable at the port it announces and uTP peers see
@@ -219,16 +219,16 @@ Each protocol is usable alone, without I/O:
   (`tests/swarm.rs`): a seeder and leechers over TCP and uTP, with and without MSE, peers found
   through HTTP and UDP trackers, magnet links, files on disk with resume, the DHT and PEX.
 - `tools/interop/bittorrent/run.sh` runs everything in a Debian container on 127.0.0.1:
-  aria2 leeching from `only` (plaintext, MSE required, magnet) and seeding to it (UDP tracker,
-  plaintext and MSE); libtorrent leeching from `only` over uTP with RC4 and over TCP, and by
-  magnet, seeding to `only` the same three ways, and the DHT both ways (a `only` node bootstraps
+  aria2 leeching from `akio` (plaintext, MSE required, magnet) and seeding to it (UDP tracker,
+  plaintext and MSE); libtorrent leeching from `akio` over uTP with RC4 and over TCP, and by
+  magnet, seeding to `akio` the same three ways, and the DHT both ways (a `akio` node bootstraps
   libtorrent; each finds the other's seed by magnet alone). Suite `v2`: v2-only and hybrid
-  multi-file torrents made by `only` and by libtorrent, each side leeching from the other by
+  multi-file torrents made by `akio` and by libtorrent, each side leeching from the other by
   .torrent and by magnet (a v2 magnet exercises hash requests both ways), and aria2 leeching and
   seeding a hybrid torrent. Suite `webseed`: v1, hybrid and v2 torrents downloaded from nginx
   alone. Suite `lsd`: two containers on a Docker network find each other by LSD, both ways.
 - `tests/extensions.rs`: v2 and hybrid swarms, a v2 magnet fetching piece layers, a hybrid
-  torrent reached by its v2 hash, web seeds from an only-http file server, LSD, a dual-stack
+  torrent reached by its v2 hash, web seeds from an akio-http file server, LSD, a dual-stack
   seeder with IPv4 and IPv6 leechers, the DHT over IPv6 alone, rate limits, seed limits.
 - `tests/resume.rs`: fast resume for v1, v2 and hybrid torrents: a restart after `close` with
   no peer and nothing hashed again, a client `SIGKILL`ed mid-download that finishes after its
@@ -240,4 +240,4 @@ Each protocol is usable alone, without I/O:
 
 BEP 44 (DHT arbitrary data) is left out on purpose: downloading
 and seeding never need it, and it would add signed per-item storage keyed by remote input to the
-DHT ([ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md)).
+DHT ([ADR-018](https://github.com/lesismal/akio/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md)).

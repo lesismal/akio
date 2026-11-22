@@ -1,6 +1,6 @@
 {
     "DisabledTests": {
-        "*DTLS*": "area: DTLS is not part of only-tls (the DTLS crate has its own tests)",
+        "*DTLS*": "area: DTLS is not part of akio-tls (the DTLS crate has its own tests)",
         "*QUIC*": "area: QUIC transport tests drive BoringSSL's QUIC API",
         "*-TLS1": "area: TLS 1.0 is not implemented",
         "*-TLS1-*": "area: TLS 1.0 is not implemented",
@@ -65,7 +65,7 @@
         "EarlyData-CipherMismatch-Client-TLS13": "alert: unsupported_extension when the server accepts early data under another suite (BoringSSL: illegal_parameter)",
         "SkipEarlyData-SecondClientHelloEarlyData-TLS13": "alert: illegal_parameter for early_data in the second ClientHello (BoringSSL: bad_record_mac)",
         "PartialServerHelloWithHelloRetryRequest": "alert/differs: fails on the client's CCS placement first (see HelloRetryRequest-Cookie-TLS13)",
-        "HelloRetryRequest-Cookie*-TLS13": "differs: only-tls's client sends its compatibility CCS before its encrypted flight, not before the second ClientHello (both allowed by RFC 8446 D.4; the runner wants the latter)",
+        "HelloRetryRequest-Cookie*-TLS13": "differs: akio-tls's client sends its compatibility CCS before its encrypted flight, not before the second ClientHello (both allowed by RFC 8446 D.4; the runner wants the latter)",
         "HelloRetryRequest-NonResumableCipher-TLS13": "differs: client CCS placement after a HelloRetryRequest (see HelloRetryRequest-Cookie-TLS13)",
         "SecondHelloRetryRequest-TLS13": "differs: client CCS placement after a HelloRetryRequest (see HelloRetryRequest-Cookie-TLS13)",
         "EmptySessionID-TLS13": "differs: the server sends the compatibility CCS only to a client with a non-empty session ID (RFC 8446 D.4); the runner always wants it",

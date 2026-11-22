@@ -15,14 +15,14 @@ Two items were left open when TLS 1.3 early data and QUIC 0-RTT landed:
    their own, so a first flight recorded on its way to one could be replayed to another and
    its early data accepted there. The servers could not share tickets anyway: each
    configuration sealed tickets with a random key of its own.
-2. **Compatible version negotiation** (RFC 9368 section 4). only-quic speaks QUIC v1 and v2 and
+2. **Compatible version negotiation** (RFC 9368 section 4). akio-quic speaks QUIC v1 and v2 and
    sends and checks the version_information transport parameter, but a server always answered
    in the client's version: moving a client to the other version took a Version Negotiation
    round trip.
 
 ## Decision
 
-### Anti-replay store (only-tls)
+### Anti-replay store (akio-tls)
 
 1. A small public trait, called on the handshake path:
 
@@ -50,7 +50,7 @@ Two items were left open when TLS 1.3 early data and QUIC 0-RTT landed:
    `ServerConfigBuilder::session_ticket_key([u8; 48])` (16 bytes of key name, a 32-byte
    ChaCha20-Poly1305 key; implies session tickets), without which a shared store has nothing
    to protect. Key rotation stays with the caller (a new configuration); an old key's tickets
-   then give full handshakes. QUIC servers get both through their `only_tls::ServerConfig`.
+   then give full handshakes. QUIC servers get both through their `akio_tls::ServerConfig`.
 5. **Synchronous on purpose.** The TLS core is sans-io and runs on the connection's I/O
    thread. An async store would need a suspended handshake state in TLS and QUIC for one
    lookup; instead the trait is synchronous and its documentation says to keep it short and
@@ -69,7 +69,7 @@ with a client that has a short timeout (a few milliseconds on a local network) a
 connection pool. The book's TLS chapter has a sketch; the tests use an in-memory "remote" store
 with a switch that makes it fail.
 
-### Compatible version negotiation (only-quic)
+### Compatible version negotiation (akio-quic)
 
 1. **Opt-in, server side**: `ServerConfig::prefer_version(Version)`. Default none: the server
    answers in the client's version, as before. A server preferring v2 moves v1 clients to v2,
@@ -82,7 +82,7 @@ with a switch that makes it fail.
    version_information are never switched.
 3. **How (server)**: the server holds the Initial CRYPTO stream back from TLS until the whole
    ClientHello is there (up to 16 KiB; a ClientHello may span several Initial packets),
-   reads its transport parameters (`only_tls::quic::client_hello_transport_params`, hidden),
+   reads its transport parameters (`akio_tls::quic::client_hello_transport_params`, hidden),
    and if it switches, installs the new version's Initial keys, keeps the old ones to read the
    client's Initials (and 0-RTT) of the first version until the Initial space is dropped, and
    starts TLS with its own version_information naming the new version. Nothing has been
@@ -94,16 +94,16 @@ with a switch that makes it fail.
    first version (RFC 9369 section 4.1). Both sides check version_information as RFC 9368
    says: the server against the client's first version, the client against the version in use.
 5. **Interop**: ngtcp2 implements RFC 9368; its example client and server (built from Debian's
-   source package in Docker, `tools/interop/quic/ngtcp2-cvn.sh`) switch with only-quic/only-h3
+   source package in Docker, `tools/interop/quic/ngtcp2-cvn.sh`) switch with akio-quic/akio-h3
    both ways, with 0-RTT. quic-go does not implement it (no version_information, packets of
    another version dropped): `tools/interop/quic/run.sh` checks its clients keep their version
    against servers preferring the other one.
 
 ## Consequences
 
-- Public API (additive): only-tls `AntiReplayStore`, `MemoryAntiReplay`,
+- Public API (additive): akio-tls `AntiReplayStore`, `MemoryAntiReplay`,
   `ServerConfigBuilder::anti_replay_store`, `ServerConfigBuilder::session_ticket_key`;
-  only-quic `ServerConfig::prefer_version`. Snapshots in `api/` updated.
+  akio-quic `ServerConfig::prefer_version`. Snapshots in `api/` updated.
 - A shared store makes replay protection as strong as the store's atomicity: a store that
   answers `Ok(true)` twice for one key (a non-atomic read-then-write, replication lag between
   regions) lets a replay through. A store per region with tickets per region avoids the lag.

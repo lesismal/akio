@@ -20,7 +20,7 @@ ADR-077 made RTP ECN-capable and added latching for media without ICE. It left t
   then reported Not-ECT, and the path "failed" after a few probes.
 - **Latching needed SRTP keys.** With DTLS-SRTP and no ICE, the handshake needs the remote's
   address first. A phone behind a NAT can never be reached at the private address in its SDP.
-- **No MKI with DTLS-SRTP.** SDES MKIs came in ADR-072. only-dtls and only-srtp already
+- **No MKI with DTLS-SRTP.** SDES MKIs came in ADR-072. akio-dtls and akio-srtp already
   supported the `use_srtp` MKI (RFC 5764 §4.1.3), but nothing used it.
 
 Constraints: nothing changes by default. Each new behaviour follows from an option that
@@ -28,7 +28,7 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
 
 ## Decision
 
-### 1. Scalable response to CE (`only_rtp::EcnResponse`, `BandwidthEstimator`)
+### 1. Scalable response to CE (`akio_rtp::EcnResponse`, `BandwidthEstimator`)
 
 - `BandwidthEstimator::set_ecn_response(EcnResponse::{Classic (default), Scalable})`.
   `set_rtt` gives the response its round. `on_ecn_counts(now, ect, ce)` takes aggregate
@@ -54,7 +54,7 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
   has marked whole rounds. The delay detector then saw the queue grow and cut the rate the
   slow way. In a simulated 2 Mbps L4S queue: gain 1 gave 89 % utilisation, 1/8 gave 93 % at
   0.4 ms of queue, and the classic response gave 82 %.
-- **only-webrtc**: marking ECT(1) selects the scalable response; ECT(0) keeps the classic
+- **akio-webrtc**: marking ECT(1) selects the scalable response; ECT(0) keeps the classic
   one. The RTT from RTCP reaches the estimator.
 - **Pacing while marking ECT(1)**: 1.5x the estimate with a 1 ms burst allowance, instead
   of 2.5x and 40 ms. A frame sent as one burst queues several packets deep whatever the
@@ -69,9 +69,9 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
   | No ECN | 4.7-5.1 Mbps | 7.3 ms |
   | ECT(0) classic | 1.36 Mbps | |
 
-### 2. RFC 6679 signalling (`rtc/ecn_fb.rs`; only-rtp `EcnFeedback`, `EcnSummary`, `EcnReceiver`)
+### 2. RFC 6679 signalling (`rtc/ecn_fb.rs`; akio-rtp `EcnFeedback`, `EcnSummary`, `EcnReceiver`)
 
-- **Wire formats** (only-rtp `ecn.rs`):
+- **Wire formats** (akio-rtp `ecn.rs`):
   - The RTCP ECN feedback message is RTPFB FMT 8. It carries the extended highest sequence
     number, the ECT(0) / ECT(1) / CE / not-ECT counters, lost and duplicates.
   - The XR ECN summary report is block type 13, with five words per source. Lengths that
@@ -121,7 +121,7 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
 - **What can be checked.** Validation decides whether a relay copies. One that sets
   Not-ECT, as RFC 8656 allows, fails the path like any clearing middlebox, and media goes
   on unmarked.
-- **only-turn's own server does not copy yet.** Its relay path is being worked on
+- **akio-turn's own server does not copy yet.** Its relay path is being worked on
   elsewhere (TCP allocations, ADR-076), so it is left as is. A path through it fails
   validation after a few probes. (Done 2026-11-22, ADR-083: it copies the codepoint both
   ways over UDP and DTLS.)
@@ -139,7 +139,7 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
   An offer we make is `actpass` as before. A remote answering `passive` makes this side the
   client, and then nothing latches: our ClientHello goes to the unreachable SDP address.
 - **Cookie exchange first.**
-  - A DTLS datagram from an unknown source is checked with `only_dtls::HelloVerifier`
+  - A DTLS datagram from an unknown source is checked with `akio_dtls::HelloVerifier`
     (stateless). There is one verifier per process: the endpoint offers a datagram to one
     latching peer after another, so a cookie must verify at the next peer too.
   - A ClientHello without a valid cookie gets a HelloVerifyRequest, or a DTLS 1.3
@@ -184,22 +184,22 @@ already exists or from a new opt-in. A bundled session's hot path gains no work.
 
 Additive.
 
-- only-rtp: `EcnResponse`, `BandwidthEstimator::{set_ecn_response, ecn_response, set_rtt,
+- akio-rtp: `EcnResponse`, `BandwidthEstimator::{set_ecn_response, ecn_response, set_rtt,
   ce_fraction, on_ecn_counts}`, `EcnCounters`, `EcnDelta`, `EcnFeedback`, `EcnSummary`,
   `EcnReceiver`, `ECN_FEEDBACK_FMT`, `ECN_SUMMARY_BT`.
-- only-webrtc: `RtcConfig::set_dtls_srtp_mki_length`.
-- No change to only-turn, only-dtls or only-srtp.
+- akio-webrtc: `RtcConfig::set_dtls_srtp_mki_length`.
+- No change to akio-turn, akio-dtls or akio-srtp.
 
 ## Consequences
 
 - **Defaults** are unchanged. With ECN marking on, offers carry the RFC 6679 attributes.
   Chrome ignores them, and so do remotes that do not know them.
 - **Tests:**
-  - only-rtp: the estimator through a simulated L4S queue (scalable vs classic vs no ECN,
+  - akio-rtp: the estimator through a simulated L4S queue (scalable vs classic vs no ECN,
     2 and 10 Mbps, where the CE fraction falls as the rate grows); the counter path;
     feedback and summary round trips; receiver counting with wrap, loss, duplicates and
     late arrivals.
-  - only-webrtc simulated network: ECT(1) through a 6 Mbps step-marking queue at 82 % of
+  - akio-webrtc simulated network: ECT(1) through a 6 Mbps step-marking queue at 82 % of
     the link with a 1.3 ms queue, against 1.36 Mbps for ECT(0); RFC 6679 negotiation,
     validation, clearing / re-marking detection and CE to the estimator without RFC 8888;
     no RFC 6679 when the answerer does not mark; TCP paths off, not failed; the DTLS
@@ -227,7 +227,7 @@ Additive.
   - RFC 6679's "ice" and "leap" initiation, and following the remote's `ect=` preference
     (done, ADR-086).
   - ECN feedback for RTP over ICE-TCP (there is none to give).
-  - Copying the codepoint in only-turn's own relay (done 2026-11-22, ADR-083).
+  - Copying the codepoint in akio-turn's own relay (done 2026-11-22, ADR-083).
   - Retrying ECN on a path that failed (done, ADR-086).
   - Latching component 2's DTLS (done, ADR-086).
   - Latching when this side must be the DTLS client (done, ADR-086, onto the remote's RFC 6263

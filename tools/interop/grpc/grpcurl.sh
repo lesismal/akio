@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# grpcurl (fullstorydev/grpcurl, built with Go) against only-grpc's server reflection: lists the
+# grpcurl (fullstorydev/grpcurl, built with Go) against akio-grpc's server reflection: lists the
 # services of the pb-interop server, describes them and their messages, and calls methods with
 # JSON requests, all from the descriptors the server sends (no .proto files on grpcurl's side).
 #   tools/interop/grpc/grpcurl.sh
@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT" && cargo build -q --release -p protobuf-test --example pb-interop
 PB=$ROOT/target/release/examples/pb-interop
 PORT=${PORT:-9231}
-"$PB" server 127.0.0.1:$PORT > /tmp/grpcurl-only-server.log 2>&1 &
+"$PB" server 127.0.0.1:$PORT > /tmp/grpcurl-akio-server.log 2>&1 &
 S=$!
 trap 'kill $S 2>/dev/null || true' EXIT
 sleep 1
@@ -42,4 +42,4 @@ g "$HOST:$PORT" describe protobuf_test_messages.proto3.TestAllTypesProto3
 g -d '{"id": 7, "meta": {"note": "n"}, "levels": ["HIGH"], "[test.ext.level]": "LOW", "[test.ext.tags]": [1, 2], "[test.ext.at]": "2024-01-02T03:04:05Z"}' "$HOST:$PORT" test.ext.Ext/Echo
 g -d '{"id": 1, "name": "", "inner": {"v": 2}, "codes": [1, 2], "kind": "KIND_A", "byName": {"k": {"v": 3}}, "nested": {}}' "$HOST:$PORT" test.ed.Items/Get
 set +x
-echo "grpcurl against only-grpc reflection: OK"
+echo "grpcurl against akio-grpc reflection: OK"

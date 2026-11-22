@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ECN-capable RTP toward headless Chrome (ADR-077). Chrome offers VP8 video with RFC 8888
 # feedback (field trial) to the only fec-server, which echoes it back with its estimator on and
-# ECN marking (ONLY_INTEROP_ECN, ECT(1) by default; ECN=ect0 for ECT(0)), directly on the
+# ECN marking (AKIO_INTEROP_ECN, ECT(1) by default; ECN=ect0 for ECT(0)), directly on the
 # loopback socket (no proxy, which would clear the codepoint). Prints the server's ECN state
 # (testing / capable / failed), the RTP packets it sent marked, the CE marks reported back,
 # what Chrome counts as received with ECT(1) / CE (its getStats, when it has the fields) and
@@ -16,7 +16,7 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 TRIALS="WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/${EXTRA_TRIALS:-}"
 if [ -z "${RS:-}" ]; then
-  (cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop)
+  (cd "$ROOT" && cargo build -q --release -p akio-webrtc --example webrtc-interop)
   RS=$ROOT/target/release/examples/webrtc-interop
 fi
 SECS=${SECS:-10}
@@ -33,7 +33,7 @@ run() {
     --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
     --disable-features=WebRtcHideLocalIpsWithMdns "--force-fieldtrials=$TRIALS" \
     about:blank >"$W/chrome-$label.log" 2>&1 & CP=$!
-  ONLY_INTEROP_ECN=${ECN:-ect1} "$RS" fec-server 127.0.0.1:9671 127.0.0.1:9670 127.0.0.1:9672 \
+  AKIO_INTEROP_ECN=${ECN:-ect1} "$RS" fec-server 127.0.0.1:9671 127.0.0.1:9670 127.0.0.1:9672 \
     ccfb bwe "$@" >"$W/$label.log" 2>&1 & SP=$!
   PIDS="$CP $SP"
   sleep 2

@@ -1,8 +1,8 @@
-# `only` development rules
+# `akio` development rules
 
 English | [简体中文](rules.zh-CN.md)
 
-Every change to `only` follows these rules. They complement the engineering rules in
+Every change to `akio` follows these rules. They complement the engineering rules in
 [DEV-PLAN section 4](DEV-PLAN.md#4-engineering-rules) and the ADRs: those say how the code is
 organised and verified; these say what the data plane must never do. They are adapted from
 [fit's rules](https://github.com/lesismal/fit/blob/main/docs/rules.md), which hold the same line
@@ -33,7 +33,7 @@ for a proxy built on an event-loop library.
    always under a limit; past the limit it answers 413 / `ResourceExhausted` / close code 1009,
    or falls back to streaming.
 5. **Data handed to a callback is valid for that call only**; keep it past the call by copying
-   it, preferably into a pooled buffer (`only-buf`).
+   it, preferably into a pooled buffer (`akio-buf`).
 6. **Limits count what the peer controls before any expansion is paid for**: compressed input is
    bounded as well as its decompressed output, partial messages and fragments as well as whole
    ones, the sum over a connection as well as each stream.

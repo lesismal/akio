@@ -1,17 +1,17 @@
 //! monoio reference server: `monoio-ref <tcp|http> <addr> <threads> [uring|legacy]`
 //!
-//! Thread-per-core like `only`: `threads` threads, each with its own monoio runtime (io_uring
+//! Thread-per-core like `akio`: `threads` threads, each with its own monoio runtime (io_uring
 //! driver by default, `legacy` = epoll) and its own `SO_REUSEPORT` listener on `addr`, so the
 //! kernel spreads connections over the threads and a connection stays on the thread that
 //! accepted it.
 //!
-//! - `tcp`: echo, the same handler as `only`'s `bench-server` and `tokio-ref`.
+//! - `tcp`: echo, the same handler as `akio`'s `bench-server` and `tokio-ref`.
 //! - `http`: HTTP/1.1 keep-alive with pipelining, `GET /plaintext` and `GET /json` (the routes of
-//!   `only`'s `http-bench` and `hyper-ref`), parsed with httparse; responses carry `Date`,
+//!   `akio`'s `http-bench` and `hyper-ref`), parsed with httparse; responses carry `Date`,
 //!   `Content-Type` and `Content-Length`, the JSON body is serialised per request with
 //!   serde_json (as hyper-ref does). No HTTP/2: monoio has no HTTP/2 server of its own.
 //!
-//! `MONOIO_REF_BUF` sets the per-connection read buffer (default 65536, the size `only`'s I/O
+//! `MONOIO_REF_BUF` sets the per-connection read buffer (default 65536, the size `akio`'s I/O
 //! threads read with); memory runs use a smaller one, as for `tokio-ref`.
 
 use std::{

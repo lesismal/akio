@@ -1,0 +1,341 @@
+//! The streaming encoder: input taken in pieces, compressed a meta-block at a time over a
+//! window that slides.
+
+use std::sync::Arc;
+
+use crate::bits::BitWriter;
+use crate::encode::{Encoder, State, compress_impl, write_window_bits};
+use crate::{Flush, Level};
+
+/// A streaming brotli compressor: one stream, input taken in pieces of any size.
+///
+/// Input is compressed a meta-block at a time (1 MiB, 256 KiB at levels 10 and 11), so output
+/// lags input until a meta-block fills up or [`Flush::Flush`] / [`Flush::Finish`] asks for
+/// everything: `Flush` ends the meta-block and pads to a byte boundary with an empty metadata
+/// block, as Google's encoder does for `BROTLI_OPERATION_FLUSH`. The window is `2^22` bytes
+/// (Google's default) unless set with [`window_bits`](Compressor::window_bits); when the
+/// whole input arrives before anything is written, the stream is the one
+/// [`compress`](crate::compress) writes. Memory is the window up to about three times over,
+/// a meta-block and the match finder's tables, which start at a few kilobytes and grow with
+/// the stream up to the level's size for an input of one window (so a new stream costs little
+/// to set up, and one that stays short stays small).
+///
+/// ```
+/// use akio_brotli::{Compressor, Flush, Level, decompress};
+///
+/// let mut c = Compressor::new(Level::DEFAULT);
+/// let mut wire = Vec::new();
+/// c.compress(b"event: one\n\n", &mut wire, Flush::Flush);
+/// let first = wire.len(); // a decoder can produce the first event from these bytes
+/// c.compress(b"event: two\n\n", &mut wire, Flush::Finish);
+/// assert!(first > 0);
+/// assert_eq!(decompress(&wire, 1 << 10).unwrap(), b"event: one\n\nevent: two\n\n");
+/// ```
+pub struct Compressor {
+    level: Level,
+    wbits: u32,
+    /// A large-window stream (RFC 9841 section 6).
+    large: bool,
+    dict: Option<Arc<[u8]>>,
+    st: Option<State>,
+    w: BitWriter,
+    /// The dictionary, then the input: `buf[..pos]` is compressed (as far as it is still in
+    /// the window), `buf[pos..]` waits.
+    buf: Vec<u8>,
+    pos: usize,
+    /// Stream bytes compressed into meta-blocks.
+    produced: u64,
+    started: bool,
+    finished: bool,
+    total_in: u64,
+}
+
+impl std::fmt::Debug for Compressor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compressor")
+            .field("level", &self.level)
+            .field("window_bits", &self.wbits())
+            .field("large_window", &self.large)
+            .field("dictionary_len", &self.dict.as_ref().map(|d| d.len()))
+            .field("total_in", &self.total_in)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Compressor {
+    /// A compressor at `level` without a dictionary.
+    pub fn new(level: Level) -> Compressor {
+        Compressor {
+            level,
+            wbits: 22,
+            large: false,
+            dict: None,
+            st: None,
+            w: BitWriter::with_capacity(0),
+            buf: Vec::new(),
+            pos: 0,
+            produced: 0,
+            started: false,
+            finished: false,
+            total_in: 0,
+        }
+    }
+
+    /// A compressor at `level` with the raw dictionary `dict` (see
+    /// [`compress_with_dictionary`](crate::compress_with_dictionary)).
+    pub fn with_dictionary(level: Level, dict: &[u8]) -> Compressor {
+        let mut c = Compressor::new(level);
+        c.dict = Some(Arc::from(dict));
+        c.reset();
+        c
+    }
+
+    /// Sets the window to `2^bits` bytes (`bits` clamped to 10..=24, or 10..=30 for a
+    /// [large-window](Compressor::large_window) stream), for a decoder with less memory or to
+    /// keep less per stream. Before the first input only.
+    #[must_use]
+    pub fn window_bits(mut self, bits: u32) -> Compressor {
+        self.wbits = bits.clamp(10, 30);
+        self
+    }
+
+    /// Writes a large-window brotli stream (RFC 9841 section 6; see
+    /// [`compress_large_window`](crate::compress_large_window)), whose window may be up to
+    /// 2³⁰ bytes ([`window_bits`](Compressor::window_bits) up to 30). Only large-window
+    /// decoders decode it. Memory is the window up to about three times over, as for any
+    /// stream; the match finder's chains reach back at most 32 MiB (2²⁵ positions), its
+    /// buckets (levels 0..=6) the whole window. Before the first input only.
+    #[must_use]
+    pub fn large_window(mut self, on: bool) -> Compressor {
+        self.large = on;
+        self
+    }
+
+    /// The window bits in effect.
+    fn wbits(&self) -> u32 {
+        if self.large {
+            self.wbits
+        } else {
+            self.wbits.min(24)
+        }
+    }
+
+    /// Starts a new stream: the input so far is forgotten.
+    pub fn reset(&mut self) {
+        self.st = None;
+        self.w = BitWriter::with_capacity(0);
+        self.buf.clear();
+        if let Some(d) = &self.dict {
+            self.buf.extend_from_slice(d);
+        }
+        self.pos = self.buf.len();
+        self.produced = 0;
+        self.started = false;
+        self.finished = false;
+        self.total_in = 0;
+    }
+
+    /// Input bytes taken since the last reset.
+    pub fn total_in(&self) -> u64 {
+        self.total_in
+    }
+
+    /// The stream was ended with [`Flush::Finish`]; further input is ignored until
+    /// [`reset`](Compressor::reset).
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn dict_len(&self) -> usize {
+        self.dict.as_ref().map_or(0, |d| d.len())
+    }
+
+    /// Compresses all of `input`, appending output to `out`, then applies `flush`.
+    pub fn compress(&mut self, input: &[u8], out: &mut Vec<u8>, flush: Flush) {
+        if self.finished {
+            return;
+        }
+        self.buf.extend_from_slice(input);
+        self.total_in += input.len() as u64;
+        let block = self.block_size();
+        loop {
+            let pending = self.buf.len() - self.pos;
+            if pending > block || (pending == block && flush != Flush::Finish) {
+                self.meta_block(self.pos + block, false);
+            } else {
+                break;
+            }
+        }
+        match flush {
+            Flush::None => {}
+            Flush::Flush => {
+                if self.buf.len() > self.pos {
+                    self.meta_block(self.buf.len(), false);
+                }
+                if self.started && self.w.bit_len() % 8 != 0 {
+                    // An empty metadata block (ISLAST 0, MNIBBLES 11, reserved 0, MSKIPBYTES
+                    // 00), then the padding to a byte boundary.
+                    self.w.bits(6, 0b00_0110);
+                }
+                // Out of the accumulator too.
+                self.w.align();
+            }
+            Flush::Finish => {
+                if self.started {
+                    if self.buf.len() > self.pos {
+                        self.meta_block(self.buf.len(), true);
+                    } else {
+                        self.w.bits(2, 0b11); // ISLAST, ISLASTEMPTY
+                    }
+                    self.w.align();
+                } else {
+                    // Everything is here: the one-shot stream.
+                    let d = self.dict_len();
+                    let dict = self.dict.clone();
+                    out.extend_from_slice(&compress_impl(
+                        self.level,
+                        &self.buf[d..],
+                        dict.as_deref().unwrap_or(&[]),
+                        self.large,
+                        self.wbits(),
+                    ));
+                }
+                self.finished = true;
+                self.st = None;
+                self.buf = Vec::new();
+                self.pos = 0;
+            }
+        }
+        self.w.drain_into(out);
+    }
+
+    fn block_size(&self) -> usize {
+        match self.level.get() {
+            10 | 11 => 1 << 18,
+            _ => 1 << 20,
+        }
+    }
+
+    /// Compresses `buf[pos..end]` as one meta-block.
+    fn meta_block(&mut self, end: usize, last: bool) {
+        let wbits = self.wbits();
+        let window = 1usize << wbits;
+        let dict_len = self.dict_len();
+        let mut st = match self.st.take() {
+            Some(st) => st,
+            None => {
+                self.started = true;
+                write_window_bits(&mut self.w, wbits, self.large);
+                let mut st = Encoder::state(self.level, wbits, dict_len, self.large);
+                st.keep_codes();
+                if dict_len > 0 {
+                    let mut e = Encoder::resume(&self.buf, st);
+                    e.insert_until(dict_len);
+                    e.suspend()
+                } else {
+                    st
+                }
+            }
+        };
+        debug_assert_eq!(st.block(), self.block_size());
+        // Slide: keep the window behind `pos`, once the dictionary is out of reach. Sliding
+        // once the buffer holds two windows (not a window plus a meta-block) keeps a stream
+        // with a small window small; the copy is still amortized over a window of input.
+        let mut end = end;
+        if self.pos > 2 * window && self.produced >= window as u64 {
+            let align = st.align();
+            let drop = (self.pos - window) / align * align;
+            if drop > 0 {
+                self.buf.copy_within(drop.., 0);
+                self.buf.truncate(self.buf.len() - drop);
+                self.pos -= drop;
+                end -= drop;
+                st.rebase(drop);
+            }
+        }
+        let mut e = Encoder::resume(&self.buf[..end], st);
+        e.fit();
+        e.meta_block(&mut self.w, self.pos, end, last);
+        self.st = Some(e.suspend());
+        self.produced += (end - self.pos) as u64;
+        self.pos = end;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stream of similar small events sends codes of earlier meta-blocks again (most
+    /// insert-and-copy and distance codes here), and decodes.
+    #[test]
+    fn small_meta_blocks_send_kept_codes_again() {
+        for q in [1u32, 4, 5, 9, 11] {
+            let mut c = Compressor::new(Level::new(q)).window_bits(18);
+            let mut out = Vec::new();
+            let mut want = Vec::new();
+            let n = if q == 11 { 200 } else { 1000 };
+            for i in 0..n {
+                let e = format!(
+                    "event: tick\nid: {i}\ndata: {{\"seq\":{i},\"price\":{}.{:02}}}\n\n",
+                    100 + i % 37,
+                    i % 100
+                );
+                c.compress(e.as_bytes(), &mut out, Flush::Flush);
+                want.extend_from_slice(e.as_bytes());
+            }
+            let reused = c.st.as_ref().map_or([0; 3], |s| s.scratch().reused());
+            assert!(
+                reused[1] > n / 4 && reused[2] > n / 4,
+                "level {q}: {reused:?}"
+            );
+            c.compress(&[], &mut out, Flush::Finish);
+            assert_eq!(crate::decompress(&out, 1 << 22).unwrap(), want, "level {q}");
+        }
+    }
+
+    /// The match tables grow with the stream, up to the level's size within the window.
+    #[test]
+    fn tables_grow_with_the_stream() {
+        let event = b"event: tick\ndata: {\"seq\":1,\"price\":101.25}\n\n";
+        // (level, window bits, bytes after one event, bytes after many)
+        for (q, wbits, small, full) in [
+            // 2^8 hashes, 4 entries each; then 2^15 (the level's bound).
+            (
+                4,
+                18,
+                4 * ((1 << 8) + (1 << 10)),
+                4 * ((1 << 15) + (1 << 17)),
+            ),
+            // 16 entries per hash: 2^8; within a 64 KiB window 2^14 (the level's 2^15
+            // bounded by about two entries per byte of window).
+            (
+                5,
+                16,
+                4 * ((1 << 8) + (1 << 12)),
+                4 * ((1 << 14) + (1 << 18)),
+            ),
+            // Chains: 2^10 hashes and 1 KiB of positions; then 2^17 and the window.
+            (
+                9,
+                18,
+                4 * ((1 << 10) + (1 << 10)),
+                4 * ((1 << 17) + (1 << 18)),
+            ),
+        ] {
+            let mut c = Compressor::new(Level::new(q)).window_bits(wbits);
+            let mut out = Vec::new();
+            c.compress(event, &mut out, Flush::Flush);
+            let bytes = |c: &Compressor| c.st.as_ref().map_or(0, State::table_bytes);
+            assert_eq!(bytes(&c), small, "level {q}");
+            for _ in 0..(3 << wbits) / event.len() {
+                c.compress(event, &mut out, Flush::Flush);
+            }
+            assert_eq!(bytes(&c), full, "level {q}");
+            c.compress(&[], &mut out, Flush::Finish);
+            let want = event.repeat(1 + (3 << wbits) / event.len());
+            assert_eq!(crate::decompress(&out, 1 << 22).unwrap(), want);
+        }
+    }
+}

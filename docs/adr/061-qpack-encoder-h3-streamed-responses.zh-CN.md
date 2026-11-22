@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-011 让 only-h3 两端都有了 QPACK 动态表，但本端编码器仍只是 RFC 9204 的子集：插入只用静态名称
+ADR-011 让 akio-h3 两端都有了 QPACK 动态表，但本端编码器仍只是 RFC 9204 的子集：插入只用静态名称
 引用或字面名称，从不使用 Duplicate 指令，从不引用自己表中的名称，并且只引用对端已确认的条目，因此
 对端给出的阻塞流预算（`SETTINGS_QPACK_BLOCKED_STREAMS`）从未使用，一个字段要等插入它的那条消息
 被确认之后，下一条消息才能压缩它。客户端缓冲每个响应（`H3Client::request`，受 `max_body_bytes`
@@ -15,7 +15,7 @@ ADR-011 让 only-h3 两端都有了 QPACK 动态表，但本端编码器仍只�
 
 ## 决定
 
-### 1. 编码器（only-h3，`qtable::Encoder`）
+### 1. 编码器（akio-h3，`qtable::Encoder`）
 
 - **插入**：使用静态名称引用、动态名称引用（同名的最新条目，且该条目不在即将驱逐之列）或字面名称。
 - **保守插入**：字段第二次出现时才插入（256 槽直接映射的指纹过滤器记住第一次），每条消息都变或敏感的
@@ -52,7 +52,7 @@ ADR-011 让 only-h3 两端都有了 QPACK 动态表，但本端编码器仍只�
   `max_body_bytes` 限制）、`Trailers(&Headers)`，然后是 `End` 或 `Error(H3Error)`。`H3Event` 为
   `#[non_exhaustive]`。上传与下载可同时进行（同一请求上的全双工）。
 - **背压**：`H3Upload::hold_reads(bool)` 暂停与恢复读取响应；暂停期间，流的接收窗口用完后 QUIC 流量控制
-  让服务器停下，所以慢消费者让一个响应占用的内存有界（窗口，加上已收到的字节）。这需要 only-quic 新增
+  让服务器停下，所以慢消费者让一个响应占用的内存有界（窗口，加上已收到的字节）。这需要 akio-quic 新增
   `Connection::hold_reads(id, bool)`：被暂停的流的数据留在其接收缓冲区，在恢复前不提高其
   `MAX_STREAM_DATA`；`stop` 丢弃暂停中保留的数据。可从任意线程调用，包括事件回调内。
 - **取消**：`H3Upload::cancel()` 重置流并发送 `STOP_SENDING`（`H3_REQUEST_CANCELLED`），此后不再报告
@@ -75,7 +75,7 @@ HTTP/3 上提供推送，Firefox 也已关闭，而它唯一的用途（预加�
 ## 影响
 
 - 公共 API 只有新增：`H3Client::open`、`H3Event`、`H3Upload::hold_reads`、`H3Upload::cancel`
-  （only-h3）；`Connection::hold_reads`（only-quic）。`api/only-h3.txt` 与 `api/only-quic.txt` 只多出
+  （akio-h3）；`Connection::hold_reads`（akio-quic）。`api/akio-h3.txt` 与 `api/akio-quic.txt` 只多出
   这些行。
 - 基准（gpu51，`quic-bench h3 5 64`，CPU 2-5，经 `quiet.sh` 对 main b22519ae 做两次同轮 A/B，各 7 轮交替）：默认配置（编码器关闭）持平，两次分别为 0.997 倍和 1.001 倍（14 轮合计 0.999 倍，86.39 万 vs 86.48 万请求/秒；客户端请求路径只多了一次流式响应检查）；两端编码器都开启时为旧编码器同样开启时的 0.991 倍（72.21 万 vs 72.89 万），即默认配置的 0.833 倍（旧编码器为 0.839 倍），因此编码器默认仍关闭。
 - 验证：针对每条编码器指令与规则的单元测试（post-base 引用与阻塞预算、Duplicate 与驱逐、动态名称、
@@ -84,6 +84,6 @@ HTTP/3 上提供推送，Firefox 也已关闭，而它唯一的用途（预加�
   `tools/interop/h3/nghttp3-qpack.py` 通过 `qpack-pipe` 示例，以多种表容量/预算配置用 libnghttp3 的
   QPACK 解码器（curl 使用的那个）解码我方编码器的输出，并把它的解码器流送回（线上的第三方对端都通告
   解码器表为 0，这是让第三方解码器检验编码器的方式）；流式响应的端到端测试（分块、trailers、暂停时的
-  背压、取消、响应头超时、两端编码器都开启时的全双工）；only-quic 中 `hold_reads` 的模拟测试。网络互通
+  背压、取消、响应头超时、两端编码器都开启时的全双工）；akio-quic 中 `hold_reads` 的模拟测试。网络互通
   不变（quic-go、fib、Docker 中的 curl/ngtcp2 与 OpenSSL QUIC，服务器编码器开与关）。
 - 客户端每连接状态多了两个空映射；一个流式请求多一个装箱回调及其 `H3Upload` 状态。

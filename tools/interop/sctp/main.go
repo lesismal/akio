@@ -1,4 +1,4 @@
-// The pion/sctp + pion/datachannel side of crates/only-sctp/examples/udp_peer.rs: SCTP over
+// The pion/sctp + pion/datachannel side of crates/akio-sctp/examples/udp_peer.rs: SCTP over
 // plain UDP (no DTLS). It echoes every message on channels the Rust side opens, opens
 // "from-pion" (50 strings, a 70000-byte binary message, an empty string, "pion-end") and
 // "pion-pr" (unordered, at most 3 retransmissions; 20 messages, then closed from this side),

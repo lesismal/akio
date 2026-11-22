@@ -1,4 +1,4 @@
-# ADR-074：only-http 压缩流式响应
+# ADR-074：akio-http 压缩流式响应
 
 [English](074-compressed-streamed-responses.md) | 简体中文
 
@@ -6,7 +6,7 @@
 
 ## 背景
 
-`compress` 中间件用 only-deflate、only-brotli 和 only-zstd 的一次性编码器整体压缩缓冲的响应：压缩率
+`compress` 中间件用 akio-deflate、akio-brotli 和 akio-zstd 的一次性编码器整体压缩缓冲的响应：压缩率
 最好，`Content-Length` 已知。流式响应（`Context::stream_response`：server-sent events、大的生成式下载）
 对任何编码都按写入原样发送（ADR-069 第 4 节）。它们的响应头其实经过了响应过滤器，但 compress 过滤器因为
 消息体为空而跳过了它们。ADR-069 给两个 crate 加了流式编码器（`Compressor::compress(input, &mut out,
@@ -71,7 +71,7 @@ brotli 质量 4、256 KiB 窗口（`window_bits` 18）。五项都可设置。�
 内存是 zstd 1 和 brotli 4 的两到四倍；gzip 1 的 CPU 是 gzip 6 的四分之一，压缩率只差 0.016；在 16 个事件
 的流上，brotli 质量 0-5 花的时间差不多。默认值由此而来。
 
-### 5. only-brotli 在两个窗口时滑动
+### 5. akio-brotli 在两个窗口时滑动
 
 brotli 编码器原来在当前位置之后积累了一个窗口加一个元块（1 MiB）时才滑动缓冲区，所以 256 KiB 的窗口仍要
 保留至多 1.3 MiB 的输入：brotli 4 在窗口位数 18 时每个流 2,032 KiB，19 或 20 时 3,424 KiB。现在与 zstd
@@ -110,7 +110,7 @@ brotli 编码器原来在当前位置之后积累了一个窗口加一个元块�
 以及约 50 次分配。建立一个流（一个事件加结束）耗时 13 us，其中 40% 用于清零 640 KiB 的桶表，其大小只由
 级别决定，与窗口和数据量无关。
 
-决定，只改 only-brotli 的编码器（解码器与 API 不变）：
+决定，只改 akio-brotli 的编码器（解码器与 API 不变）：
 
 1. **前缀码的时间主要与用到的符号数成正比。** 直方图每次扫描 16 项（编译器会向量化的按位或）找出用到的
    符号；Huffman 深度只由这些符号构建，不超过 64 个符号时放在栈上；规范码只分配给用到的符号，并与长度
@@ -151,7 +151,7 @@ KiB；分配的大小相同）。模糊测试：`brotli_roundtrip` 与 `brotli_s
 大部分仍是对整个字母表的遍历：在 1,024 个直方图项中找出用到的符号，对直到最后一个用到的符号的所有码长分配
 规范码，zopfli 的游程平滑，以及在数百个为零的码长上统计码长游程。
 
-决定，只改 only-brotli 的编码器（API 不变）：
+决定，只改 akio-brotli 的编码器（API 不变）：
 
 1. **写一个元块不再分配内存。** 命令、符号、直方图、码表、码长、游程记号以及单一类型的布局都放在编码器（以及
    流的状态）保留的缓冲区中；直方图由清空它的代码恢复为全零。

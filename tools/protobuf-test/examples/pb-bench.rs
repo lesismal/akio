@@ -1,4 +1,4 @@
-//! Encode / decode time of only-protobuf against prost 0.13 for a few message shapes.
+//! Encode / decode time of akio-protobuf against prost 0.13 for a few message shapes.
 //!
 //! `cargo run --release -p protobuf-test --example pb-bench`
 
@@ -7,7 +7,7 @@ mod mirror;
 
 use std::{hint::black_box, time::Instant};
 
-use only_protobuf::Message;
+use akio_protobuf::Message;
 use protobuf_test::{
     routeguide::{Feature, Point},
     test::all::{AllTypes, Color, all_types},
@@ -81,7 +81,7 @@ fn row<O: Message, P: prost::Message + Default>(name: &str, ours: &O, theirs: &P
 
 fn main() {
     println!(
-        "| message | size | encode ns (only) | encode ns (prost) | decode ns (only) | decode ns (prost) |"
+        "| message | size | encode ns (akio) | encode ns (prost) | decode ns (akio) | decode ns (prost) |"
     );
     println!("|---|---|---|---|---|---|");
     let p = Point {

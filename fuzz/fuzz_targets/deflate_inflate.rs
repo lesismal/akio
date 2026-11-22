@@ -1,9 +1,9 @@
 #![no_main]
-//! only-deflate's decoder on arbitrary bytes: never panics, split input/output agrees with
+//! akio-deflate's decoder on arbitrary bytes: never panics, split input/output agrees with
 //! one-shot decoding, and on raw DEFLATE and zlib streams it accepts exactly what zlib-rs
 //! accepts, with the same output.
 
-use only_deflate::{Error, Format, decompress, fuzzing};
+use akio_deflate::{Error, Format, decompress, fuzzing};
 
 fn zlib_rs(data: &[u8], zlib_header: bool) -> Option<Vec<u8>> {
     let mut z = flate2::Decompress::new(zlib_header);
@@ -21,9 +21,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         let theirs = zlib_rs(data, zlib_header);
         match (&ours, &theirs) {
             (Ok(a), Some(b)) => assert!(a == b, "{format:?}: outputs differ"),
-            (Ok(_), None) => panic!("{format:?}: only-deflate accepts what zlib-rs rejects"),
+            (Ok(_), None) => panic!("{format:?}: akio-deflate accepts what zlib-rs rejects"),
             (Err(Error::TooLarge), _) => {}
-            (Err(e), Some(_)) => panic!("{format:?}: zlib-rs accepts what only-deflate rejects ({e})"),
+            (Err(e), Some(_)) => panic!("{format:?}: zlib-rs accepts what akio-deflate rejects ({e})"),
             (Err(_), None) => {}
         }
     }

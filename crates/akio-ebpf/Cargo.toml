@@ -1,0 +1,30 @@
+[package]
+name = "akio-ebpf"
+description = "akio acceleration: SO_REUSEPORT steering (classic BPF / eBPF) and a sockmap relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-ebpf"
+keywords = ["ebpf", "bpf", "reuseport", "linux", "network"]
+categories = ["network-programming", "os::linux-apis"]
+
+[dependencies]
+akio-core = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+akio-sys = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_ebpf::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+libc = "0.2"
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

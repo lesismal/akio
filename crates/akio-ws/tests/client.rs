@@ -1,0 +1,906 @@
+//! The WebSocket client against `akio`'s own WebSocket server: plain, TLS, compression, large and
+//! fragmented messages, close codes, subprotocols, handshake failures, many clients at once.
+#![allow(missing_docs)]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
+
+use std::{
+    net::TcpListener,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    time::Duration,
+};
+
+use akio::{Backend, Config, Engine, Listener, UringConfig};
+use akio_http::{Context, Router, WsOptions, serve};
+use akio_ws::{
+    Message, WsConfig, WsHandler, WsSender,
+    client::{self, DialOptions, WsClientError},
+    deflate::PmdOffer,
+};
+
+/// Wait for one event: 10 s, times `AKIO_TEST_TIMEOUT_SCALE` (an integer, default 1). The
+/// sanitizer runs set it (tools/sanitizers/run.sh): under ThreadSanitizer the 8 MiB
+/// permessage-deflate round trip in a debug build takes longer than 10 s.
+fn wait() -> Duration {
+    let scale = std::env::var("AKIO_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    Duration::from_secs(10) * scale
+}
+
+fn backend() -> Backend {
+    match std::env::var("AKIO_TEST_BACKEND").as_deref() {
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
+        }),
+        _ => Backend::Epoll,
+    }
+}
+
+/// An engine serving `router` on one listener. Dials without `client_threads` run on the
+/// listener's threads, so the client is exercised on the selected backend too.
+fn start_with(router: Router, tls: Option<akio::tls::ServerConfig>) -> (Arc<Engine>, u16) {
+    let l = Listener::tcp("127.0.0.1:0".parse().unwrap())
+        .backend(backend())
+        .threads(2);
+    let l = match tls {
+        Some(cfg) => l.serve(akio::tls::Tls::server(cfg, serve(router))),
+        None => l.serve(serve(router)),
+    };
+    let e = Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v
+        })
+        .listen(l)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let port = e.local_addrs()[0].port();
+    (Arc::new(e), port)
+}
+
+fn start(router: Router) -> (Arc<Engine>, u16) {
+    start_with(router, None)
+}
+
+fn stop(e: &Engine) {
+    e.shutdown();
+    e.wait();
+}
+
+/// Server side: echoes every message; "close:<code>:<reason>" makes it close instead,
+/// "frag:<n>:<text>" echoes <text> in frames of n bytes, "ping" makes it ping the client.
+struct Echo {
+    events: Option<Sender<Ev>>,
+}
+
+impl WsHandler for Echo {
+    fn on_message(&mut self, ws: &WsSender, msg: Message) {
+        match msg {
+            Message::Text(t) => {
+                if let Some(rest) = t.strip_prefix("close:") {
+                    let (code, reason) = rest.split_once(':').unwrap();
+                    ws.close(code.parse().unwrap(), reason);
+                } else if let Some(rest) = t.strip_prefix("frag:") {
+                    let (n, text) = rest.split_once(':').unwrap();
+                    ws.send_text_fragmented(text, n.parse().unwrap()).unwrap();
+                } else if t == "ping" {
+                    ws.ping(b"srv").unwrap();
+                } else {
+                    let _ = ws.send_text(&t);
+                }
+            }
+            Message::Binary(b) => {
+                let _ = ws.send_binary(&b);
+            }
+        }
+    }
+    fn on_pong(&mut self, _ws: &WsSender, payload: &[u8]) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(Ev::Pong(payload.to_vec()));
+        }
+    }
+    fn on_close(&mut self, code: Option<u16>, reason: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(Ev::Close(code, reason.to_owned()));
+        }
+    }
+}
+
+fn echo_router(opts: WsOptions, server_events: Option<Sender<Ev>>) -> Router {
+    Router::new().get("/ws", move |ctx: &mut Context| {
+        // Report what the client sent, for the header tests.
+        let seen = [
+            "sec-websocket-extensions",
+            "origin",
+            "authorization",
+            "user-agent",
+        ]
+        .iter()
+        .map(|h| format!("{h}={}", ctx.header(h).unwrap_or("-")))
+        .collect::<Vec<_>>()
+        .join("|");
+        let handler = Hello {
+            seen,
+            inner: Echo {
+                events: server_events.clone(),
+            },
+        };
+        ctx.upgrade_websocket(handler, &opts);
+    })
+}
+
+/// Sends the request headers it saw as the first message, then echoes.
+struct Hello {
+    seen: String,
+    inner: Echo,
+}
+
+impl WsHandler for Hello {
+    fn on_open(&mut self, ws: &WsSender) {
+        ws.send_text(&self.seen).unwrap();
+    }
+    fn on_message(&mut self, ws: &WsSender, msg: Message) {
+        self.inner.on_message(ws, msg);
+    }
+    fn on_pong(&mut self, ws: &WsSender, payload: &[u8]) {
+        self.inner.on_pong(ws, payload);
+    }
+    fn on_close(&mut self, code: Option<u16>, reason: &str) {
+        self.inner.on_close(code, reason);
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Ev {
+    Open(Option<String>),
+    Msg(Message),
+    Pong(Vec<u8>),
+    Close(Option<u16>, String),
+}
+
+/// Client side: reports everything.
+struct Rec(Sender<Ev>);
+
+impl WsHandler for Rec {
+    fn on_open(&mut self, ws: &WsSender) {
+        let _ = self.0.send(Ev::Open(ws.subprotocol()));
+    }
+    fn on_message(&mut self, _ws: &WsSender, msg: Message) {
+        let _ = self.0.send(Ev::Msg(msg));
+    }
+    fn on_pong(&mut self, _ws: &WsSender, payload: &[u8]) {
+        let _ = self.0.send(Ev::Pong(payload.to_vec()));
+    }
+    fn on_close(&mut self, code: Option<u16>, reason: &str) {
+        let _ = self.0.send(Ev::Close(code, reason.to_owned()));
+    }
+}
+
+/// Connects and consumes the open event and the server's greeting (the headers it saw).
+fn open(
+    e: &Arc<Engine>,
+    url: &str,
+    opts: &DialOptions,
+) -> (WsSender, Receiver<Ev>, Option<String>, String) {
+    let (tx, rx) = mpsc::channel();
+    let ws =
+        client::dial_blocking(e, url, opts, Rec(tx)).unwrap_or_else(|err| panic!("{url}: {err}"));
+    let proto = match rx.recv_timeout(wait()).unwrap() {
+        Ev::Open(p) => p,
+        other => panic!("{other:?}"),
+    };
+    let seen = match rx.recv_timeout(wait()).unwrap() {
+        Ev::Msg(Message::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    (ws, rx, proto, seen)
+}
+
+fn next_msg(rx: &Receiver<Ev>) -> Message {
+    match rx.recv_timeout(wait()).unwrap() {
+        Ev::Msg(m) => m,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn pattern(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(2_654_435_761) | 1;
+    (0..len)
+        .map(|i| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            // Half compressible, half noise.
+            if i % 2 == 0 { (i % 64) as u8 } else { x as u8 }
+        })
+        .collect()
+}
+
+fn roundtrips(ws: &WsSender, rx: &Receiver<Ev>) {
+    ws.send_text("hello").unwrap();
+    assert_eq!(next_msg(rx), Message::Text("hello".into()));
+    ws.send_text("").unwrap();
+    assert_eq!(next_msg(rx), Message::Text(String::new()));
+    ws.send_text(&"héllo wörld ".repeat(500)).unwrap();
+    assert_eq!(next_msg(rx), Message::Text("héllo wörld ".repeat(500)));
+    for len in [0usize, 1, 125, 126, 65_535, 65_536, 300_000] {
+        let data = pattern(len, len as u32);
+        ws.send_binary(&data).unwrap();
+        assert_eq!(next_msg(rx), Message::Binary(data), "len {len}");
+    }
+    ws.ping(b"cli").unwrap();
+    assert_eq!(rx.recv_timeout(wait()).unwrap(), Ev::Pong(b"cli".to_vec()));
+}
+
+#[test]
+fn plain_echo_ping_and_close_handshake() {
+    let (stx, srx) = mpsc::channel();
+    let (e, port) = start(echo_router(WsOptions::default(), Some(stx)));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let (ws, rx, proto, seen) = open(&e, &url, &DialOptions::default());
+    assert_eq!(proto, None);
+    assert!(
+        seen.contains("sec-websocket-extensions=permessage-deflate; client_max_window_bits"),
+        "{seen}"
+    );
+    assert!(seen.contains("user-agent=akio-ws"), "{seen}");
+    roundtrips(&ws, &rx);
+    // The server pings: the client answers by itself.
+    ws.send_text("ping").unwrap();
+    assert_eq!(srx.recv_timeout(wait()).unwrap(), Ev::Pong(b"srv".to_vec()));
+    // Client-initiated close: the server sees our code, we see its echo.
+    ws.close(3001, "done here");
+    assert!(!ws.is_open());
+    assert!(ws.send_text("late").is_err());
+    assert_eq!(
+        srx.recv_timeout(wait()).unwrap(),
+        Ev::Close(Some(3001), "done here".into())
+    );
+    assert_eq!(
+        rx.recv_timeout(wait()).unwrap(),
+        Ev::Close(Some(3001), String::new())
+    );
+    stop(&e);
+}
+
+#[test]
+fn server_initiated_close_codes() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    for (code, reason) in [(1000u16, ""), (1001, "going"), (4001, "custom reason")] {
+        let (ws, rx, _, _) = open(&e, &url, &DialOptions::default());
+        ws.send_text(&format!("close:{code}:{reason}")).unwrap();
+        assert_eq!(
+            rx.recv_timeout(wait()).unwrap(),
+            Ev::Close(Some(code), reason.into())
+        );
+        assert!(ws.send_text("x").is_err());
+    }
+    stop(&e);
+}
+
+#[test]
+fn compression_negotiation_variants() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let offers = [
+        PmdOffer::default(),
+        {
+            let mut v = PmdOffer::default();
+            v.client_no_context_takeover = true;
+            v
+        },
+        {
+            let mut v = PmdOffer::default();
+            v.server_no_context_takeover = true;
+            v.server_max_window_bits = Some(9);
+            v
+        },
+        {
+            let mut v = PmdOffer::default();
+            v.client_no_context_takeover = true;
+            v.server_no_context_takeover = true;
+            v.server_max_window_bits = Some(12);
+            v
+        },
+    ];
+    for pmd in offers {
+        let mut opts = DialOptions::default();
+        opts.pmd = pmd;
+        let (ws, rx, _, seen) = open(&e, &url, &opts);
+        assert!(seen.contains(&pmd.header()), "{seen}");
+        roundtrips(&ws, &rx);
+        // Context takeover across many similar messages.
+        for i in 0..50 {
+            let m = format!("message number {i} with a repeated tail tail tail tail");
+            ws.send_text(&m).unwrap();
+            assert_eq!(next_msg(&rx), Message::Text(m));
+        }
+        ws.close(1000, "");
+        assert_eq!(
+            rx.recv_timeout(wait()).unwrap(),
+            Ev::Close(Some(1000), String::new())
+        );
+    }
+    // Compression off on either side: plain frames.
+    let mut opts = DialOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.permessage_deflate = false;
+        v
+    };
+    let (ws, rx, _, seen) = open(&e, &url, &opts);
+    assert!(seen.contains("sec-websocket-extensions=-"), "{seen}");
+    roundtrips(&ws, &rx);
+    stop(&e);
+    let (e, port) = start(echo_router(
+        {
+            let mut v = WsOptions::default();
+            v.config = {
+                let mut v = WsConfig::default();
+                v.permessage_deflate = false;
+                v
+            };
+            v
+        },
+        None,
+    ));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let (ws, rx, _, _) = open(&e, &url, &DialOptions::default());
+    roundtrips(&ws, &rx);
+    stop(&e);
+}
+
+#[test]
+fn large_and_fragmented_messages_and_limits() {
+    let (e, port) = start(echo_router(
+        {
+            let mut v = WsOptions::default();
+            v.config = {
+                let mut v = WsConfig::default();
+                v.max_message_bytes = 64 << 20;
+                v
+            };
+            v
+        },
+        None,
+    ));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    for deflate in [false, true] {
+        let mut opts = DialOptions::default();
+        opts.config = {
+            let mut v = WsConfig::default();
+            v.max_message_bytes = 64 << 20;
+            v.permessage_deflate = deflate;
+            v
+        };
+        let (ws, rx, _, _) = open(&e, &url, &opts);
+        let big = pattern(8 << 20, 7);
+        ws.send_binary(&big).unwrap();
+        assert!(
+            next_msg(&rx) == Message::Binary(big.clone()),
+            "8 MiB, deflate {deflate}"
+        );
+        // Client → server in small frames (UTF-8 split across frames included).
+        let text = "fragmented € text ".repeat(1000);
+        ws.send_text_fragmented(&text, 7).unwrap();
+        assert_eq!(next_msg(&rx), Message::Text(text.clone()));
+        ws.send_binary_fragmented(&big[..100_000], 4096).unwrap();
+        assert_eq!(next_msg(&rx), Message::Binary(big[..100_000].to_vec()));
+        // Server → client in small frames.
+        ws.send_text(&format!("frag:5:{text}")).unwrap();
+        assert_eq!(next_msg(&rx), Message::Text(text));
+    }
+    // A message over the client's limit fails the connection with 1009.
+    let mut opts = DialOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.max_message_bytes = 1000;
+        v
+    };
+    let (ws, rx, _, _) = open(&e, &url, &opts);
+    ws.send_binary(&[1; 999]).unwrap();
+    assert_eq!(next_msg(&rx), Message::Binary(vec![1; 999]));
+    ws.send_binary(&pattern(5000, 1)).unwrap();
+    match rx.recv_timeout(wait()).unwrap() {
+        Ev::Close(Some(1009), _) => {}
+        other => panic!("{other:?}"),
+    }
+    stop(&e);
+}
+
+#[test]
+fn subprotocols_origin_and_headers() {
+    let mut opts_srv = WsOptions::default();
+    opts_srv.protocols = vec!["v2.json".into(), "chat".into()];
+    opts_srv.origin_allowed = Some(|o| o == "https://good.example");
+    let (e, port) = start(echo_router(opts_srv, None));
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let mut opts = DialOptions::default();
+    opts.protocols = vec!["mqtt".into(), "chat".into()];
+    opts.origin = Some("https://good.example".into());
+    opts.headers = vec![
+        ("Authorization".into(), "Bearer t0k3n".into()),
+        ("User-Agent".into(), "tester/1".into()),
+    ];
+    let (ws, rx, proto, seen) = open(&e, &url, &opts);
+    assert_eq!(proto.as_deref(), Some("chat"));
+    assert_eq!(ws.subprotocol().as_deref(), Some("chat"));
+    assert!(seen.contains("origin=https://good.example"), "{seen}");
+    assert!(seen.contains("authorization=Bearer t0k3n"), "{seen}");
+    assert!(seen.contains("user-agent=tester/1"), "{seen}");
+    roundtrips(&ws, &rx);
+    // No common subprotocol: the server picks none.
+    let (_, _, proto, _) = open(&e, &url, &{
+        let mut v = DialOptions::default();
+        v.protocols = vec!["mqtt".into()];
+        v
+    });
+    assert_eq!(proto, None);
+    // The origin policy refuses: a status error.
+    let err = client::dial_blocking(
+        &e,
+        &url,
+        &{
+            let mut v = DialOptions::default();
+            v.origin = Some("https://evil.example".into());
+            v
+        },
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(err, WsClientError::Status(403, _)), "{err}");
+    stop(&e);
+}
+
+#[test]
+fn handshake_failures() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let fail = |url: &str, opts: &DialOptions| {
+        client::dial_blocking(&e, url, opts, Rec(mpsc::channel().0))
+            .err()
+            .unwrap_or_else(|| panic!("{url} connected"))
+    };
+    let d = DialOptions::default();
+    let err = fail(&format!("ws://127.0.0.1:{port}/nope"), &d);
+    assert!(matches!(err, WsClientError::Status(404, _)), "{err}");
+    assert!(matches!(
+        fail("http://x/", &d),
+        WsClientError::InvalidUrl(_)
+    ));
+    // No `tls`: the system's CAs; TLS to a plaintext server fails.
+    let err = fail(&format!("wss://127.0.0.1:{port}/ws"), &d);
+    assert!(
+        matches!(err, WsClientError::Io(_) | WsClientError::Closed),
+        "{err}"
+    );
+    // Nothing listens there.
+    let free = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = free.local_addr().unwrap().port();
+    drop(free);
+    let err = fail(&format!("ws://127.0.0.1:{dead}/"), &d);
+    assert!(matches!(err, WsClientError::Io(_)), "{err}");
+    // A server that accepts and never answers.
+    let mute = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mport = mute.local_addr().unwrap().port();
+    let mut opts = DialOptions::default();
+    opts.handshake_timeout = Duration::from_millis(300);
+    let t0 = std::time::Instant::now();
+    let err = fail(&format!("ws://127.0.0.1:{mport}/"), &opts);
+    assert!(matches!(err, WsClientError::Timeout), "{err}");
+    assert!(t0.elapsed() < Duration::from_secs(5));
+    drop(mute);
+    // A plain HTTP server that is not WebSocket: 101 is never sent.
+    let (e2, port2) = start(Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hi")));
+    let err = fail(&format!("ws://localhost:{port2}/"), &d);
+    assert!(matches!(err, WsClientError::Status(200, _)), "{err}");
+    stop(&e2);
+    stop(&e);
+}
+
+#[test]
+fn wss_with_sni_and_custom_roots() {
+    let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(cert.clone())],
+        akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let (e, port) = start_with(echo_router(WsOptions::default(), None), Some(scfg));
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&akio::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = akio::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
+    let mut opts = DialOptions::default();
+    opts.tls = Some(ccfg.clone());
+    // `localhost` may resolve to ::1 first: the client falls back to 127.0.0.1.
+    let url = format!("wss://localhost:{port}/ws");
+    let (ws, rx, _, _) = open(&e, &url, &opts);
+    roundtrips(&ws, &rx);
+    let big = pattern(4 << 20, 3);
+    ws.send_binary(&big).unwrap();
+    assert!(next_msg(&rx) == Message::Binary(big));
+    ws.close(1000, "tls bye");
+    assert_eq!(
+        rx.recv_timeout(wait()).unwrap(),
+        Ev::Close(Some(1000), String::new())
+    );
+    // By IP with an explicit server name for verification and SNI.
+    let mut opts_ip = DialOptions::default();
+    opts_ip.tls = Some(ccfg.clone());
+    opts_ip.server_name = Some("localhost".into());
+    let (ws, rx, _, _) = open(&e, &format!("wss://127.0.0.1:{port}/ws"), &opts_ip);
+    roundtrips(&ws, &rx);
+    // A name the certificate does not cover fails verification.
+    let mut bad = DialOptions::default();
+    bad.tls = Some(ccfg);
+    bad.server_name = Some("other.example".into());
+    let err = client::dial_blocking(
+        &e,
+        &format!("wss://127.0.0.1:{port}/ws"),
+        &bad,
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(err, WsClientError::Io(_) | WsClientError::Closed),
+        "{err}"
+    );
+    stop(&e);
+}
+
+#[test]
+fn many_concurrent_clients_on_client_threads() {
+    let (srv, port) = start(echo_router(WsOptions::default(), None));
+    let cli = Arc::new(Engine::builder().client_threads(2).build().unwrap());
+    cli.start().unwrap();
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let (cli, url) = (cli.clone(), url.clone());
+            std::thread::spawn(move || {
+                let conns: Vec<_> = (0..8)
+                    .map(|_| open(&cli, &url, &DialOptions::default()))
+                    .collect();
+                for round in 0..20 {
+                    for (i, (ws, _, _, _)) in conns.iter().enumerate() {
+                        ws.send_text(&format!("{t}-{i}-{round}")).unwrap();
+                    }
+                    for (i, (_, rx, _, _)) in conns.iter().enumerate() {
+                        assert_eq!(next_msg(rx), Message::Text(format!("{t}-{i}-{round}")));
+                    }
+                }
+                for (ws, rx, _, _) in conns {
+                    ws.close(1000, "");
+                    assert_eq!(
+                        rx.recv_timeout(wait()).unwrap(),
+                        Ev::Close(Some(1000), String::new())
+                    );
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    // Sending from many threads on one connection: frames never interleave.
+    let (ws, rx, _, _) = open(&cli, &url, &DialOptions::default());
+    let senders: Vec<_> = (0..4)
+        .map(|t| {
+            let ws = ws.clone();
+            std::thread::spawn(move || {
+                for i in 0..200 {
+                    ws.send_binary(&pattern(1000 + i, t * 1000 + i as u32))
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    for s in senders {
+        s.join().unwrap();
+    }
+    for _ in 0..800 {
+        match next_msg(&rx) {
+            Message::Binary(b) => assert!((1000..1200).contains(&b.len())),
+            other => panic!("{other:?}"),
+        }
+    }
+    stop(&cli);
+    stop(&srv);
+}
+
+/// Interop against an external echo server (e.g. a Go one), when `AKIO_WS_INTEROP_URL` is set:
+/// `AKIO_WS_INTEROP_URL=ws://127.0.0.1:9100/ws cargo test -p akio-ws --test client interop`.
+#[test]
+fn interop_with_external_echo_server() {
+    let Ok(url) = std::env::var("AKIO_WS_INTEROP_URL") else {
+        return;
+    };
+    let cli = Arc::new(Engine::builder().client_threads(1).build().unwrap());
+    cli.start().unwrap();
+    for pmd in [false, true] {
+        let mut opts = DialOptions::default();
+        opts.config = {
+            let mut v = WsConfig::default();
+            v.permessage_deflate = pmd;
+            v.max_message_bytes = 64 << 20;
+            v
+        };
+        let (tx, rx) = mpsc::channel();
+        let ws = client::dial_blocking(&cli, &url, &opts, Rec(tx)).unwrap();
+        assert_eq!(rx.recv_timeout(wait()).unwrap(), Ev::Open(None));
+        roundtrips(&ws, &rx);
+        let big = pattern(8 << 20, 11);
+        ws.send_binary(&big).unwrap();
+        assert!(next_msg(&rx) == Message::Binary(big));
+        let text = "interop € ".repeat(10_000);
+        ws.send_text_fragmented(&text, 1000).unwrap();
+        assert_eq!(next_msg(&rx), Message::Text(text));
+        ws.close(1000, "bye");
+        match rx.recv_timeout(wait()).unwrap() {
+            Ev::Close(Some(1000), _) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    stop(&cli);
+}
+
+#[path = "../../akio-http/tests/support/proxy.rs"]
+mod proxy;
+#[path = "../../akio-http/tests/support/tls_front.rs"]
+mod tls_front;
+
+fn redirecting(base_other: Option<String>) -> Router {
+    echo_router(WsOptions::default(), None)
+        .get("/old", |ctx: &mut Context| {
+            ctx.respond(akio_http::Response::new(301).header("Location", "/ws"));
+        })
+        .get("/http-old", |ctx: &mut Context| {
+            // An http:// location for a ws:// handshake becomes ws://.
+            let host = ctx.header("host").unwrap_or("").to_owned();
+            ctx.respond(
+                akio_http::Response::new(307).header("Location", format!("http://{host}/ws")),
+            );
+        })
+        .get("/loop", |ctx: &mut Context| {
+            ctx.respond(akio_http::Response::new(302).header("Location", "/loop"));
+        })
+        .get("/away", move |ctx: &mut Context| {
+            let to = base_other.clone().unwrap_or_default();
+            ctx.respond(akio_http::Response::new(302).header("Location", format!("{to}/ws")));
+        })
+}
+
+#[test]
+fn handshake_redirects() {
+    let (other, oport) = start(redirecting(None));
+    let (e, port) = start(redirecting(Some(format!("ws://127.0.0.1:{oport}"))));
+    let base = format!("ws://127.0.0.1:{port}");
+    // Off by default.
+    let err = client::dial_blocking(
+        &e,
+        &format!("{base}/old"),
+        &DialOptions::default(),
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(err, WsClientError::Status(301, _)), "{err}");
+    let mut opts = DialOptions::default();
+    opts.max_redirects = 3;
+    opts.headers = vec![("Authorization".into(), "Bearer t".into())];
+    // Same origin: followed, credentials kept.
+    let (ws, rx, _, seen) = open(&e, &format!("{base}/old"), &opts);
+    assert!(seen.contains("authorization=Bearer t"), "{seen}");
+    roundtrips(&ws, &rx);
+    let (_, _, _, seen) = open(&e, &format!("{base}/http-old"), &opts);
+    assert!(seen.contains("authorization=Bearer t"), "{seen}");
+    // Another origin: credentials dropped.
+    let (_, _, _, seen) = open(&e, &format!("{base}/away"), &opts);
+    assert!(seen.contains("authorization=-"), "{seen}");
+    // A loop ends at the limit.
+    let err = client::dial_blocking(&e, &format!("{base}/loop"), &opts, Rec(mpsc::channel().0))
+        .err()
+        .unwrap();
+    assert!(matches!(err, WsClientError::TooManyRedirects), "{err}");
+    stop(&e);
+    stop(&other);
+}
+
+#[test]
+fn through_a_proxy_with_connect() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let p = proxy::start(Some("Basic dTpw")); // u:p
+    let mut opts = DialOptions::default();
+    opts.proxy = akio_ws::proxy::Proxy::all(&format!("http://u:p@{}", p.addr)).unwrap();
+    let (ws, rx, _, _) = open(&e, &format!("ws://127.0.0.1:{port}/ws"), &opts);
+    roundtrips(&ws, &rx);
+    let seen = p.seen();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].starts_with(&format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n")),
+        "{seen:?}"
+    );
+    // Refused: the error carries the proxy's status.
+    opts.proxy = akio_ws::proxy::Proxy::all(&format!("http://{}", p.addr)).unwrap();
+    let err = client::dial_blocking(
+        &e,
+        &format!("ws://127.0.0.1:{port}/ws"),
+        &opts,
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    let WsClientError::Io(io) = &err else {
+        panic!("{err}")
+    };
+    let r = io
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<akio_ws::proxy::ProxyRefused>())
+        .unwrap();
+    assert_eq!(r.status(), 407);
+    stop(&e);
+}
+
+#[test]
+fn through_an_https_proxy() {
+    let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(cert.clone())],
+        akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let (es, sport) = start_with(echo_router(WsOptions::default(), None), Some(scfg.clone()));
+    let p = proxy::start(Some("Basic dTpw")); // u:p
+    let (fe, front, opened) = tls_front::start(scfg, p.addr);
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&akio::tls::Certificate::from_der(cert)).unwrap();
+    let mut opts = DialOptions::default();
+    opts.tls = Some(
+        akio::tls::ClientConfig::builder()
+            .roots(roots)
+            .build()
+            .unwrap(),
+    );
+    opts.proxy =
+        akio_ws::proxy::Proxy::all(&format!("https://u:p@localhost:{}", front.port())).unwrap();
+    // ws:// and wss:// (TLS inside the TLS to the proxy).
+    let (ws, rx, _, _) = open(&e, &format!("ws://127.0.0.1:{port}/ws"), &opts);
+    roundtrips(&ws, &rx);
+    let (ws2, rx2, _, _) = open(&e, &format!("wss://localhost:{sport}/ws"), &opts);
+    roundtrips(&ws2, &rx2);
+    let big = pattern(1 << 20, 9);
+    ws2.send_binary(&big).unwrap();
+    assert!(next_msg(&rx2) == Message::Binary(big));
+    let seen = p.seen();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(seen[0].starts_with(&format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n")));
+    assert!(seen[1].starts_with(&format!("CONNECT localhost:{sport} HTTP/1.1\r\n")));
+    assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 2);
+    stop(&fe);
+    stop(&es);
+    stop(&e);
+}
+
+/// A minimal SOCKS5 proxy (no authentication, CONNECT) relaying with threads; records each
+/// request's address type and host.
+/// What the test SOCKS5 proxy saw: address type and host of each request.
+type Seen = Arc<Mutex<Vec<(u8, String)>>>;
+
+fn socks5_proxy() -> (std::net::SocketAddr, Seen) {
+    use std::io::{Read, Write};
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for c in l.incoming().flatten() {
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut c = c;
+                let mut b = [0u8; 512];
+                c.read_exact(&mut b[..3]).unwrap();
+                c.write_all(&[5, 0]).unwrap();
+                c.read_exact(&mut b[..4]).unwrap();
+                let atyp = b[3];
+                let host = match atyp {
+                    1 => {
+                        c.read_exact(&mut b[..4]).unwrap();
+                        std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string()
+                    }
+                    3 => {
+                        c.read_exact(&mut b[..1]).unwrap();
+                        let n = usize::from(b[0]);
+                        c.read_exact(&mut b[..n]).unwrap();
+                        String::from_utf8_lossy(&b[..n]).into_owned()
+                    }
+                    _ => return,
+                };
+                c.read_exact(&mut b[..2]).unwrap();
+                let port = u16::from_be_bytes([b[0], b[1]]);
+                seen.lock().unwrap().push((atyp, host.clone()));
+                let h = if host == "localhost" {
+                    "127.0.0.1".into()
+                } else {
+                    host
+                };
+                let up = std::net::TcpStream::connect((h.as_str(), port)).unwrap();
+                c.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
+                let (mut c2, mut up2) = (c.try_clone().unwrap(), up.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut up2, &mut c2);
+                    let _ = c2.shutdown(std::net::Shutdown::Write);
+                });
+                let mut up = up;
+                let _ = std::io::copy(&mut c, &mut up);
+                let _ = up.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    (addr, seen)
+}
+
+#[test]
+fn through_a_socks5_proxy() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let (proxy, seen) = socks5_proxy();
+    let mut opts = DialOptions::default();
+    // socks5h: the name goes to the proxy; socks5: resolved here (IPv4 first).
+    for (url, want) in [
+        (format!("socks5h://{proxy}"), (3, "localhost")),
+        (format!("socks5://{proxy}"), (1, "127.0.0.1")),
+    ] {
+        opts.proxy = akio_ws::proxy::Proxy::all(&url).unwrap();
+        let (ws, rx, _, _) = open(&e, &format!("ws://localhost:{port}/ws"), &opts);
+        roundtrips(&ws, &rx);
+        let last = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((last.0, last.1.as_str()), want, "{url}");
+    }
+    stop(&e);
+}
+
+#[test]
+fn engine_shutdown_closes_with_going_away() {
+    let (stx, srx) = mpsc::channel();
+    let (server, port) = start(echo_router(WsOptions::default(), Some(stx)));
+    // The client lives on its own engine, which is the one shutting down.
+    let ce = Arc::new(Engine::builder().client_threads(1).build().unwrap());
+    ce.start().unwrap();
+    let (_ws, rx, _, _) = open(
+        &ce,
+        &format!("ws://127.0.0.1:{port}/ws"),
+        &DialOptions::default(),
+    );
+    let t0 = std::time::Instant::now();
+    ce.shutdown();
+    // The server sees 1001, the client the echoed close.
+    assert_eq!(
+        srx.recv_timeout(wait()).unwrap(),
+        Ev::Close(Some(1001), "going away".into())
+    );
+    match rx.recv_timeout(wait()).unwrap() {
+        Ev::Close(Some(1001), _) => {}
+        other => panic!("{other:?}"),
+    }
+    ce.wait();
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    stop(&server);
+}

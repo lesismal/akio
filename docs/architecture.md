@@ -1,52 +1,52 @@
-# `only` architecture
+# `akio` architecture
 
 English | [简体中文](architecture.zh-CN.md)
 
-This document describes how `only` is built: the crates and their dependencies, the threading and
+This document describes how `akio` is built: the crates and their dependencies, the threading and
 locking model, what happens on a read and a write on each backend, how memory is managed, how
 protocols are layered, and how connections and engines end. The decisions behind it are recorded
-in the [ADRs](https://github.com/lesismal/only/tree/main/docs/adr); the user-facing
-explanation is in the [book](https://lesismal.github.io/only/en/).
+in the [ADRs](https://github.com/lesismal/akio/tree/main/docs/adr); the user-facing
+explanation is in the [book](https://lesismal.github.io/akio/en/).
 
 ## 1. Crates
 
 ```mermaid
 flowchart BT
-    sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
-    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, X448, Ed448, P-256/P-384/P-521, RSA, DSA verify, DER/PEM"]
-    x509["only-x509<br/>certificates, chain validation, generation"]
-    dtls["only-dtls<br/>sans-io DTLS 1.2, DTLS-SRTP"]
-    srtp["only-srtp<br/>SRTP/SRTCP"]
-    rtp["only-rtp<br/>RTP/RTCP, packetizers,<br/>NACK/RTX, TWCC, BWE"]
-    sctp["only-sctp<br/>SCTP, data channels"]
-    ice["only-ice<br/>ICE agent (full, lite)"]
-    buf["only-buf<br/>size-class pool, SharedBuf"]
-    timer["only-timer<br/>timer wheel"]
-    deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
-    brotli["only-brotli<br/>brotli"]
-    zstd["only-zstd<br/>Zstandard"]
-    logc["only-log<br/>logging facade"]
-    regexc["only-regex<br/>linear-time regex"]
-    pool["only-pool<br/>logical pool"]
-    core["only-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
-    epoll["only-epoll<br/>epoll / kqueue groups, UDP groups"]
-    uring["only-uring<br/>io_uring groups"]
-    ebpf["only-ebpf<br/>reuseport steering, sockmap relay"]
-    dpdk["only-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
-    tls["only-tls<br/>own TLS 1.3/1.2 Transport"]
+    sys["akio-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
+    crypto["akio-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, X448, Ed448, P-256/P-384/P-521, RSA, DSA verify, DER/PEM"]
+    x509["akio-x509<br/>certificates, chain validation, generation"]
+    dtls["akio-dtls<br/>sans-io DTLS 1.2, DTLS-SRTP"]
+    srtp["akio-srtp<br/>SRTP/SRTCP"]
+    rtp["akio-rtp<br/>RTP/RTCP, packetizers,<br/>NACK/RTX, TWCC, BWE"]
+    sctp["akio-sctp<br/>SCTP, data channels"]
+    ice["akio-ice<br/>ICE agent (full, lite)"]
+    buf["akio-buf<br/>size-class pool, SharedBuf"]
+    timer["akio-timer<br/>timer wheel"]
+    deflate["akio-deflate<br/>DEFLATE, zlib, gzip"]
+    brotli["akio-brotli<br/>brotli"]
+    zstd["akio-zstd<br/>Zstandard"]
+    logc["akio-log<br/>logging facade"]
+    regexc["akio-regex<br/>linear-time regex"]
+    pool["akio-pool<br/>logical pool"]
+    core["akio-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
+    epoll["akio-epoll<br/>epoll / kqueue groups, UDP groups"]
+    uring["akio-uring<br/>io_uring groups"]
+    ebpf["akio-ebpf<br/>reuseport steering, sockmap relay"]
+    dpdk["akio-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
+    tls["akio-tls<br/>own TLS 1.3/1.2 Transport"]
     facade["only<br/>Engine, Listener, Backend, Accel"]
-    http["only-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
-    ws[only-ws]
-    grpc[only-grpc]
-    arpc[only-arpc]
-    socks[only-socks]
-    mux[only-mux]
-    quic["only-quic<br/>QUIC v1, sans-io"]
-    h3[only-h3]
-    kcp[only-kcp]
-    turn["only-turn<br/>STUN, TURN"]
-    webrtc["only-webrtc<br/>SDP, peers, RtcServer, Endpoint"]
-    media["only-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
+    http["akio-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
+    ws[akio-ws]
+    grpc[akio-grpc]
+    arpc[akio-arpc]
+    socks[akio-socks]
+    mux[akio-mux]
+    quic["akio-quic<br/>QUIC v1, sans-io"]
+    h3[akio-h3]
+    kcp[akio-kcp]
+    turn["akio-turn<br/>STUN, TURN"]
+    webrtc["akio-webrtc<br/>SDP, peers, RtcServer, Endpoint"]
+    media["akio-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -112,37 +112,37 @@ flowchart BT
 ```
 
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → only →
-  protocols`. Protocol crates depend on `only-core`'s public traits and the ``only`` facade,
+  protocols`. Protocol crates depend on `akio-core`'s public traits and the ``akio`` facade,
   never on a specific backend.
-- **Cryptography is in-house**: `only-crypto` (std only; `unsafe` only for the AES-NI / ARMv8
-  AES instructions, with a constant-time portable fallback; the random syscall is in `only-sys`) provides the hashes, MACs, KDFs, CRC-32, constant-time AES-CTR/GCM,
+- **Cryptography is in-house**: `akio-crypto` (std only; `unsafe` only for the AES-NI / ARMv8
+  AES instructions, with a constant-time portable fallback; the random syscall is in `akio-sys`) provides the hashes, MACs, KDFs, CRC-32, constant-time AES-CTR/GCM,
   ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
   formats (X25519, Ed25519, X448, Ed448, ECDH/ECDSA P-256/P-384/P-521, RSA PKCS#1/PSS, DSA
   verification, DER/PEM, PKCS#8) that
-  `only-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
-  these two crates in `only-tls` (wave C), DTLS in `only-dtls`, and QUIC in `only-quic` on
-  `only-tls`'s record-free TLS 1.3 core (`only_tls::quic`) and `only-crypto` (wave D).
-- **WebRTC is in-house** (wave D): `only-dtls` (`#![forbid(unsafe_code)]`, on
-  `only-crypto` and `only-x509` only) is a sans-io DTLS 1.2 client/server with DTLS-SRTP
+  `akio-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
+  these two crates in `akio-tls` (wave C), DTLS in `akio-dtls`, and QUIC in `akio-quic` on
+  `akio-tls`'s record-free TLS 1.3 core (`akio_tls::quic`) and `akio-crypto` (wave D).
+- **WebRTC is in-house** (wave D): `akio-dtls` (`#![forbid(unsafe_code)]`, on
+  `akio-crypto` and `akio-x509` only) is a sans-io DTLS 1.2 client/server with DTLS-SRTP
   (`use_srtp`, RFC 5705 exporter) and fingerprint-pinned self-signed certificates, driven like
-  `only-quic` drives its state machine (`handle_datagram` / `poll_transmit` / `poll_event` /
+  `akio-quic` drives its state machine (`handle_datagram` / `poll_transmit` / `poll_event` /
   `poll_timeout` / `handle_timeout`, no threads or clocks), and the other layers are sans-io
-  crates of the same shape: `only-ice` (ICE agent, on `only-turn`'s STUN codec), `only-srtp`,
-  `only-rtp` (RTP/RTCP, payload formats, NACK/RTX, TWCC and bandwidth estimation) and
-  `only-sctp` (SCTP and DCEP data channels), all `#![forbid(unsafe_code)]`. `only-webrtc` adds
+  crates of the same shape: `akio-ice` (ICE agent, on `akio-turn`'s STUN codec), `akio-srtp`,
+  `akio-rtp` (RTP/RTCP, payload formats, NACK/RTX, TWCC and bandwidth estimation) and
+  `akio-sctp` (SCTP and DCEP data channels), all `#![forbid(unsafe_code)]`. `akio-webrtc` adds
   SDP offer/answer and drives a sans-io `Rtc` per peer from the I/O threads and one timer
   thread; it has no third-party dependency.
-- **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
+- **`unsafe` is confined** to `akio-sys` (which also holds the workspace's own OS bindings, `akio_sys::ffi`, in place of the `libc` crate), `akio-uring` (its own io_uring binding, ring and buffer-ring memory), `akio-ebpf` (raw `bpf(2)`), `akio-dpdk` (the DPDK FFI) and `akio-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked
-  decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate (DEFLATE from the own `only-deflate`), KCP, QPACK
-  and HTTP/3 framing are state machines fed bytes by `only`; so is TLS (own record layer and
-  TLS 1.3 / 1.2 handshake machines in `only-tls`), QUIC (`only-quic`'s own packets, frames,
+  decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate (DEFLATE from the own `akio-deflate`), KCP, QPACK
+  and HTTP/3 framing are state machines fed bytes by `akio`; so is TLS (own record layer and
+  TLS 1.3 / 1.2 handshake machines in `akio-tls`), QUIC (`akio-quic`'s own packets, frames,
   streams, recovery and connection-ID routing endpoint: datagrams in, datagrams out, timers
-  passed in) and the WebRTC stack (ADR-005), all behind `only`'s own types (docs/api-stability.md).
-- The facade `only` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
+  passed in) and the WebRTC stack (ADR-005), all behind `akio`'s own types (docs/api-stability.md).
+- The facade `akio` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.
 
 ## 2. Threading model
@@ -173,14 +173,14 @@ flowchart LR
 
 - An `Engine` holds one **group** per listener (plus optional client groups for `dial` and
   `dial_udp`). A group is a set of I/O threads; each thread runs one event loop that owns its
-  connections, its timer wheel (`only-timer`, millisecond ticks) and its read buffer(s)
-  (ADR-001, ADR-004). Groups implement the internal `only_core::Group` trait.
+  connections, its timer wheel (`akio-timer`, millisecond ticks) and its read buffer(s)
+  (ADR-001, ADR-004). Groups implement the internal `akio_core::Group` trait.
 - **Accept distribution**: on Linux every thread binds its own `SO_REUSEPORT` socket and the
-  kernel (or a steering program from `only-ebpf`) picks the thread; on macOS the threads share
+  kernel (or a steering program from `akio-ebpf`) picks the thread; on macOS the threads share
   one listening socket and race to accept.
 - **A connection never migrates.** Its handler is created on its thread and only touched there,
   which is why `Handler: Send` but not `Sync` (ADR-003).
-- **The logical pool** (`only-pool`) is engine-wide, adaptive (threads start on demand up to a
+- **The logical pool** (`akio-pool`) is engine-wide, adaptive (threads start on demand up to a
   maximum and retire when idle) and bounded (a full queue rejects with `Overloaded`).
   `Conn::spawn_blocking` runs work there and posts the completion back to the owning loop as a
   type-erased task (`LoopLink::post_task`); the loop runs it with `&mut` access to the handler,
@@ -208,7 +208,7 @@ Conn<H>  (Clone + Send + Sync, PhantomData<fn() -> H>)
 - **The write lock guards only the send state** and is never held while user code runs; user
   callbacks run on the loop without it. This rules out lock-ordering deadlocks between
   connections and handlers. The send / close / cork protocols are model-checked with `loom`
-  (`RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom`).
+  (`RUSTFLAGS="--cfg loom" cargo test -p akio-core --lib --release -- loom`).
 - **The fd is released** when the connection is closed *and* the last `Arc<ConnInner>` is
   dropped, so a stale handle can never write to a recycled descriptor; operations on a closed
   connection return `Error::Closed`.
@@ -283,7 +283,7 @@ flowchart TD
   `poll(POLLOUT)`).
 - Inside callbacks the connection is corked, so everything sent leaves in one `writev` when the
   callback returns.
-- Chunks are owned bytes (from `only-buf` size classes, appended to when there is room),
+- Chunks are owned bytes (from `akio-buf` size classes, appended to when there is room),
   `SharedBuf` broadcasts, file ranges (`sendfile(2)`, never copied, not counted against
   `max_queued_bytes`), or segmented UDP buffers.
 - Limits: reads pause at `write_high_watermark` and resume at a quarter of it;
@@ -299,16 +299,16 @@ flowchart TD
   (`udp_max_peers`).
 - Receives use `recvmmsg` (with GRO by default where the kernel supports it, split back into
   datagrams by the `UDP_GRO` segment size). Each connection a receive batch reached gets one
-  internal `on_batch_end` after its last datagram (only-quic acknowledges and sends there). Replies
+  internal `on_batch_end` after its last datagram (akio-quic acknowledges and sends there). Replies
   produced while handling a receive batch are collected per socket and sent with `sendmmsg` across
   peers;
   equal-size runs to one peer become one GSO message (`UDP_SEGMENT`, probed once, disabled for
   good on `EIO`/`EINVAL`).
-- Receive slots are pooled slabs (`only_buf::slab`, ADR-024): a handler that asks for owned
-  datagrams (the hidden `Handler::OWNED_DATA`, only-quic) gets each one as a writable range cut off
-  the slab it arrived in (`on_data_owned`) and may keep it; only-quic decrypts it there, so a
+- Receive slots are pooled slabs (`akio_buf::slab`, ADR-024): a handler that asks for owned
+  datagrams (the hidden `Handler::OWNED_DATA`, akio-quic) gets each one as a writable range cut off
+  the slab it arrived in (`on_data_owned`) and may keep it; akio-quic decrypts it there, so a
   1-RTT datagram is not copied between the kernel and the application. Other handlers read in
-  place. Peer tables hash addresses with the keyed folded multiply of `only_core::hash`.
+  place. Peer tables hash addresses with the keyed folded multiply of `akio_core::hash`.
 - `dial_udp` creates a `connect`ed socket per dialed connection, so ICMP errors are reported to
   it (`ConnectionRefused` closes it).
 - QUIC and KCP sit on top of this: their acceptors receive datagrams through `on_data`, run their
@@ -321,14 +321,14 @@ flowchart TD
 |---|---|---|
 | epoll/kqueue read scratch | one per I/O thread | `read_buffer` (64 KiB) |
 | io_uring provided buffers | one ring per I/O thread | 1024 × `min(read_buffer, 16 KiB)` |
-| send queue chunks | per connection, only while something is queued | `only-buf` size classes: 512 B, 4, 16, 64, 256 KiB |
+| send queue chunks | per connection, only while something is queued | `akio-buf` size classes: 512 B, 4, 16, 64, 256 KiB |
 | broadcast frames | shared (`SharedBuf` = `Arc<[u8]>`) | encoded once |
 | protocol buffers (HTTP head, WebSocket frames, HTTP/2 frames) | per connection state machine | grow with the message, bounded by protocol limits |
 
-- `only-buf` keeps a small **thread-local** cache of `Vec<u8>` per size class, so taking and
+- `akio-buf` keeps a small **thread-local** cache of `Vec<u8>` per size class, so taking and
   returning a queue buffer takes no lock. Buffers freed on another thread join that thread's
   (bounded) cache.
-- Received data is borrowed, never copied by `only` before your callback. Keeping it requires an
+- Received data is borrowed, never copied by `akio` before your callback. Keeping it requires an
   explicit copy, which keeps every backend zero-copy on the read side (ADR-004).
 - Memory per connection is bounded by `max_queued_bytes` for queues and by protocol limits
   (`max_header_bytes`, `max_body_bytes`, `max_message_bytes`, HTTP/2 windows) for parsers.
@@ -338,9 +338,9 @@ flowchart TD
 ```mermaid
 flowchart TB
     subgraph TCP["TCP connection on an I/O thread"]
-      sock[socket] --> tr["Transport (optional): TLS (only-tls)"]
+      sock[socket] --> tr["Transport (optional): TLS (akio-tls)"]
       tr --> hb["HandlerBox: decode, then on_data"]
-      hb --> sess["only-http Session (a Handler)"]
+      hb --> sess["akio-http Session (a Handler)"]
       sess -- "preface, h2c upgrade, ALPN h2" --> h2["H2Session: streams"]
       sess -- "Upgrade: websocket" --> ws["WsSession, then WsHandler"]
       sess -- "upgrade_raw" --> raw["RawHandler: CONNECT tunnel"]
@@ -348,38 +348,38 @@ flowchart TB
       h2 --> svc
     end
     subgraph UDP["UDP listener"]
-      udp["UDP peers"] --> quic["only-quic Endpoint, then QuicHandler"]
-      quic --> h3["only-h3 ServerConn"]
+      udp["UDP peers"] --> quic["akio-quic Endpoint, then QuicHandler"]
+      quic --> h3["akio-h3 ServerConn"]
       h3 -- "transport::dispatch_conn + ConnSink" --> svc2["the same Service: Context"]
-      udp --> kcp["only-kcp sessions, then KcpHandler"]
+      udp --> kcp["akio-kcp sessions, then KcpHandler"]
     end
 ```
 
-- **`Transport` (TLS).** `Acceptor::transport()` returns an optional `only_core::Transport`
+- **`Transport` (TLS).** `Acceptor::transport()` returns an optional `akio_core::Transport`
   installed under the connection before `on_open`. Bytes read are passed through
   `Transport::recv` (producing plaintext and possibly handshake bytes to send) before the
   handler sees them; everything sent goes through `Transport::seal` under the write lock, in
   wire order. Application bytes sent during the handshake are held back by the transport and
   emitted when it completes. `close_after_send` appends `Transport::shutdown` output
-  (`close_notify`). `only-tls`'s `Tls<A>` is an acceptor wrapper that supplies its own TLS
+  (`close_notify`). `akio-tls`'s `Tls<A>` is an acceptor wrapper that supplies its own TLS
   transport (record layer plus TLS 1.3 / 1.2 state machines, sans-io), so any acceptor (HTTP, arpc, raw handlers) gains TLS without knowing about it.
-- **HTTP versions share `Context`.** The `only-http` `Session` handler parses HTTP/1 and switches
+- **HTTP versions share `Context`.** The `akio-http` `Session` handler parses HTTP/1 and switches
   to an `H2Session` on the client preface, an `h2c` upgrade or ALPN `h2`. Both build a `Context`
   whose responder is either an ordered `ResponseSlot` (HTTP/1, so pipelined responses stay in
   order even when detached) or an HTTP/2 stream.
-- **Transport hook for HTTP/3.** `only_http::transport` lets a transport outside the crate serve
+- **Transport hook for HTTP/3.** `akio_http::transport` lets a transport outside the crate serve
   a `Service`: it parses a request and calls `dispatch_conn(service, request, sink, tag)`, where
   the sink is the connection's `ConnSink` (`send`, `start_stream` returning a `BodySink`, each
   given the request's tag), shared through a thin `SharedSink`; targets are built with
   `request_target` and headers with `request_headers`, which reuse a finished request's
-  storage kept per thread (ADR-025, ADR-081). only-h3 implements those on QUIC streams, so routers, middleware, `detach`
+  storage kept per thread (ADR-025, ADR-081). akio-h3 implements those on QUIC streams, so routers, middleware, `detach`
   and `stream_response` behave the same on HTTP/3. The older per-request `ResponseSink`
   (`dispatch`, `start`) is deprecated.
 - **Upgrades.** `Context::upgrade_websocket` answers 101 and replaces the HTTP state machine with
   a `WsSession` on the same connection; `Context::upgrade_raw` hands the raw byte stream to a
   `RawHandler` (the HTTP CONNECT proxy). The WebSocket session keeps the type-erased
   `ConnInner`, so `WsSender` outlives the HTTP handler type.
-- **Multiplexing.** `only-mux` is a type-erased acceptor (`DynAcceptor`) that buffers the first
+- **Multiplexing.** `akio-mux` is a type-erased acceptor (`DynAcceptor`) that buffers the first
   bytes, picks a route, then creates the chosen acceptor's handler and replays the bytes to it;
   `spawn_blocking` completions and `on_shutdown` are forwarded to the chosen acceptor.
 
@@ -415,7 +415,7 @@ sequenceDiagram
 
 ## 8. Error handling
 
-- **Connection operations** return `only_core::Result<T>` with `Error::Closed` (the operation had
+- **Connection operations** return `akio_core::Result<T>` with `Error::Closed` (the operation had
   no effect), `Error::Overloaded` (a bound was hit; the caller decides) or `Error::Io` (an OS
   error; the connection is being closed). A failing write from a non-loop thread schedules the
   close on the owning loop and returns `Closed`.
@@ -439,13 +439,13 @@ engine's `Telemetry` hub together with a way to post it commands. Metrics snapsh
 counters on demand; the connection table is gathered by asking each loop for a snapshot (with a
 timeout); slow callbacks are timed around every callback while a threshold is set and kept in a
 ring of 256 records. Live settings (`Live`) are atomics read on each use, which is what makes
-`Engine::reload` free on the hot path. only-http's `observe` module renders all of this as
+`Engine::reload` free on the hot path. akio-http's `observe` module renders all of this as
 Prometheus text and JSON debug views.
 
 ## 10. How the architecture is tested
 
 - `loom` models of the send / close / cork protocols (5 models, run in CI).
-- The engine, offload and stress suites run on epoll and on io_uring (`ONLY_TEST_BACKEND=uring`).
+- The engine, offload and stress suites run on epoll and on io_uring (`AKIO_TEST_BACKEND=uring`).
 - 5,000 simultaneous connections and connect/close cycles with fd-leak checks.
 - Interop: h2spec, Autobahn (server and client), grpc-go, quic-go, kcp-go, fib.
 - eBPF programs tested privileged (eBPF tier, relay) and unprivileged (classic BPF, fallback).

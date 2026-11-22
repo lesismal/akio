@@ -1,4 +1,4 @@
-// KCP interop peer (github.com/xtaci/kcp-go, as kcptun uses it) for only-kcp:
+// KCP interop peer (github.com/xtaci/kcp-go, as kcptun uses it) for akio-kcp:
 //
 //	go run . server 127.0.0.1:9200 aes 10 3          echoes every session's bytes
 //	go run . client 127.0.0.1:9201 aes 10 3          sends 2 MiB, checks the echo
@@ -26,7 +26,7 @@ func block(name string) kcp.BlockCrypt {
 	case "none":
 		b, err = kcp.NewNoneBlockCrypt(nil)
 	case "xor":
-		b, err = kcp.NewSimpleXORBlockCrypt([]byte("only-xor-key"))
+		b, err = kcp.NewSimpleXORBlockCrypt([]byte("akio-xor-key"))
 	case "aes":
 		b, err = kcp.NewAESBlockCrypt(bytes.Repeat([]byte{0x42}, 32))
 	case "aes-128":

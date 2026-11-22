@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An independent RFC 1961 SOCKS5 GSS-API client (python3-gssapi, MIT Kerberos), for
 tools/interop/socks/gssapi.sh: run against Dante first (so the client is right), then against
-only-socks' server. CONNECTs to an echo server through the proxy at the given protection level
+akio-socks' server. CONNECTs to an echo server through the proxy at the given protection level
 and checks a 300 KiB echo; with `udp`, makes a UDP ASSOCIATE instead and checks datagrams
 through the relay, each one an RFC 1961 encapsulated message (VER 1, MTYP 3, LEN, TOKEN) at
 levels 1 and 2.

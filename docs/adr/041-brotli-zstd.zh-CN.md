@@ -6,24 +6,24 @@
 
 ## 背景
 
-`only-tls` 的证书压缩（RFC 8879）只有 zlib（经由 `only-deflate`），因为没有自研的 brotli 或
+`akio-tls` 的证书压缩（RFC 8879）只有 zlib（经由 `akio-deflate`），因为没有自研的 brotli 或
 zstd，而工作区不引入第三方库依赖。浏览器和 CDN 更偏好另外两种：Chrome 只提供 brotli，Firefox
 提供 zlib、brotli 和 zstd，Cloudflare 一类的服务器发送 brotli。只提供 zlib 的客户端从只支持
 brotli 的服务器那里收到的是未压缩的证书链；只支持 zlib 的服务器发给 Chrome 的证书链也不压缩。
-HTTP 也一样：`only-http` 的压缩中间件只回应 `gzip` / `deflate`，静态文件服务 `.br` 和 `.gz`
+HTTP 也一样：`akio-http` 的压缩中间件只回应 `gzip` / `deflate`，静态文件服务 `.br` 和 `.gz`
 副本，但没有 `.zst`。
 
 ## 决定
 
-1. **两个新的内部 crate**，组织方式同 `only-deflate`（纯安全 Rust、无依赖、
+1. **两个新的内部 crate**，组织方式同 `akio-deflate`（纯安全 Rust、无依赖、
    `#![forbid(unsafe_code)]`、供 `fuzz/` 使用的 `fuzzing` feature、`examples/bench.rs`、在缺少
    命令行工具时跳过的 CLI 互通测试），属于 docs/api-stability.md 的“内部”一级：
-   - **`only-brotli`**（RFC 7932）：`decompress(data, limit)`（完整格式：窗口 2^10..2^24、未压缩
+   - **`akio-brotli`**（RFC 7932）：`decompress(data, limit)`（完整格式：窗口 2^10..2^24、未压缩
      与元数据 meta-block、简单和复杂前缀码、块切换、四种上下文模式与上下文映射、
      NPOSTFIX/NDIRECT 距离、静态字典及其 121 种变换）和 `compress(Level, data)`（基于哈希链的
      LZ77、每个 meta-block 一套 Huffman 码，更小时用未压缩 meta-block）；`Level` 采用 brotli 的
      质量刻度 0..=11。
-   - **`only-zstd`**（RFC 8878）：`decompress(data, limit)`（拼接帧与可跳过帧、raw / RLE /
+   - **`akio-zstd`**（RFC 8878）：`decompress(data, limit)`（拼接帧与可跳过帧、raw / RLE /
      压缩块、raw / RLE / Huffman / treeless 字面量（1 或 4 路流）、predefined / RLE / FSE /
      repeat 序列表、重复偏移、校验 XXH64 内容校验和与内容大小）和 `compress(Level, data)`（单帧，
      带内容大小与校验和；基于哈希链的 LZ77、Huffman 字面量、FSE 或预定义序列表，更小时用
@@ -31,7 +31,7 @@ HTTP 也一样：`only-http` 的压缩中间件只回应 `gzip` / `deflate`，�
    - 只有一次性 API：输出本身就是窗口，因此内存受 `limit` 约束（不会按输入声明的、超过 limit
      的大小分配），工作量与输入加输出成线性；解压炸弹在 `limit` 处以 `Error::TooLarge` 停止。
      字典（zstd 的 `Dictionary_ID`、brotli 的共享字典）和流式接口未实现：工作区目前没有地方需要。
-2. **`only-tls`** 提供并接受 brotli、zstd 和 zlib（在 `compress_certificate` 扩展中按此顺序）。
+2. **`akio-tls`** 提供并接受 brotli、zstd 和 zlib（在 `compress_certificate` 扩展中按此顺序）。
    服务器用客户端提供且自己开启的每种算法压缩证书链，每个证书每种算法只压缩一次（缓存，同以前的
    zlib），发送最小的那个；都不更小时发送普通 Certificate。客户端对自己的证书按
    CertificateRequest 中的算法做同样的事。新增公共 API：`CertCompression { Zlib, Brotli, Zstd }`
@@ -39,7 +39,7 @@ HTTP 也一样：`only-http` 的压缩中间件只回应 `gzip` / `deflate`，�
    `certificate_compression_algorithms(&[CertCompression])`（`certificate_compression(true)` 即三种
    全开；默认值不变：服务器开、客户端关）。收到的证书链仍最多解压到 128 KiB，且必须正好是声明的
    长度；未提供的算法是 `illegal_parameter`。
-3. **`only-http`**，新增：`Compress::brotli` 和 `Compress::zstd`（`Option` 级别，默认 `None`）
+3. **`akio-http`**，新增：`Compress::brotli` 和 `Compress::zstd`（`Option` 级别，默认 `None`）
    让压缩中间件对接受它们的客户端回应 `br` 或 `zstd`，顺序为 br、zstd、gzip、deflate；两者都为
    `None` 时行为与以前相同。`Files` 也服务 `file.zst` 副本（`Content-Encoding: zstd`），优先级在
    `.br` 与 `.gz` 之间。
@@ -53,8 +53,8 @@ HTTP 也一样：`only-http` 的压缩中间件只回应 `gzip` / `deflate`，�
   golden-decompression-errors（3 个，均被拒绝）和 golden-compression 文件，以及 1000 个 `decodecorpus` 帧；
   `brotli` 与 `zstd` 命令行双向互通（各级别、窗口大小、小块、无校验和或内容大小、拼接帧与可跳过帧）；
   往返、每种截断与位翻转、上限与解压炸弹（817 字节、可展开到 1 GiB 的 brotli 流在上限处停止，分配不超过
-  上限）。only-tls 中：每种算法单独与同时开启、选出最小者、没有共同算法、每个字节与长度上的畸形消息；
-  only-http 中：对 Chrome 与 Firefox 的 `Accept-Encoding` 选择的编码、`q=0`、`.zst` 副本。
+  上限）。akio-tls 中：每种算法单独与同时开启、选出最小者、没有共同算法、每个字节与长度上的畸形消息；
+  akio-http 中：对 Chrome 与 Firefox 的 `Accept-Encoding` 选择的编码、`q=0`、`.zst` 副本。
 - 互通（在 `tools/interop/tls/certcomp.Dockerfile` 中运行 `tools/interop/tls/run.sh`，OpenSSL 3.5.4 以
   brotli、zstd、zlib 构建）：服务器与客户端证书分别以每种算法双向压缩，以及 OpenSSL 客户端同时提供三种：
   gpu51（x86-64）上 151 个用例全部通过。

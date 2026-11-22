@@ -1,6 +1,6 @@
 # BitTorrent
 
-`only-bittorrent` 是运行在 only 上的 BitTorrent：bencode 编码、v1、v2 与混合 .torrent 文件及磁力
+`akio-bittorrent` 是运行在 akio 上的 BitTorrent：bencode 编码、v1、v2 与混合 .torrent 文件及磁力
 链接、HTTP 和 UDP tracker（客户端与服务端）、带扩展和消息流加密（MSE）的 peer wire 协议、uTP、
 支持 IPv4 与 IPv6 的主线 DHT、本地服务发现、web seed，以及一个用上述全部能力下载和做种、支持速率
 与做种限制的客户端。它移植自 fib 的 `bittorrent` 包，与主流客户端线路兼容：
@@ -11,10 +11,10 @@
 ## 一个 tracker、一个做种者和一个下载者
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:tracker}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:tracker}}
 ```
 
-`TrackerServer` 用一个内存存储同时服务两种协议：`http()` 是一个 only-http service（处理以
+`TrackerServer` 用一个内存存储同时服务两种协议：`http()` 是一个 akio-http service（处理以
 `announce` 和 `scrape` 结尾的路径，支持紧凑与字典形式的 peer 列表以及 `peers6`），`udp()` 是
 UDP listener 的 acceptor（BEP 15；连接 ID 是密钥、当前分钟和客户端地址的 HMAC，因此不为每个
 客户端保存状态）。
@@ -25,7 +25,7 @@ announce 得到失败原因 `tracker full`；`max_peers_per_swarm`（1000）限�
 时该 swarm 被删除；过期处理每次 announce 只需 O(1)，不再扫描整个 swarm，存储分为 16 个各自加锁的分片。
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
 `metainfo::Builder` 把字节、内存中的文件或一个路径（流式读取）哈希成 v1、v2 或混合种子
@@ -34,20 +34,20 @@ announce 得到失败原因 `tracker full`；`max_peers_per_swarm`（1000）限�
 的分片哈希、与文件根不符的 v2 分片层，以及两部分描述不同文件的混合种子。
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:seeder}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:leecher}}
+{{#include ../../../../crates/akio-bittorrent/examples/guide-bittorrent.rs:leecher}}
 ```
 
 ## 客户端
 
-一个 `Client` 是一个 only engine 加 **一个端口号**：TCP listener 接受 peer 连接，UDP listener
+一个 `Client` 是一个 akio engine 加 **一个端口号**：TCP listener 接受 peer 连接，UDP listener
 通过 `port::UdpPort` 由 uTP 和 DHT 共享。tracker 请求经由同一 engine 上的
-`tracker::TrackerClient`（HTTP(S) 用 only-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
-SHA-1 校验都在逻辑池（`only-pool`）上运行，从不占用 I/O 线程。
-tracker 主机名在调用线程之外解析（UDP tracker 用 `only::dns`，HTTP tracker 经由 only-http 的客户端），
+`tracker::TrackerClient`（HTTP(S) 用 akio-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
+SHA-1 校验都在逻辑池（`akio-pool`）上运行，从不占用 I/O 线程。
+tracker 主机名在调用线程之外解析（UDP tracker 用 `akio::dns`，HTTP tracker 经由 akio-http 的客户端），
 从不在触发 announce 的 I/O 线程上解析。
 
 - **种子**来自 `MetaInfo`（`add_torrent`）或磁力链接（`add_magnet`，info 字典通过 ut_metadata
@@ -97,7 +97,7 @@ v2 种子把每个文件单独哈希成以 16 KiB 块为叶子的 SHA-256 默克
 ## Web seed、LSD、IPv6 与限制
 
 - **Web seed（BEP 19）**：种子的 `url-list`、`AddOptions::web_seeds` 与 `Torrent::add_web_seed`
-  （最多 16 个）。空闲的 web seed 取一个缺失分片（优先没有已连接对等方拥有的分片），经 only-http
+  （最多 16 个）。空闲的 web seed 取一个缺失分片（优先没有已连接对等方拥有的分片），经 akio-http
   客户端用不超过 4 MiB 的 `Range` 请求获取，跳过填充；之后像来自对等方的分片一样校验并写入。失败或
   校验失败会让该 web seed 退避（10 秒起翻倍，最多 10 分钟）并上报 `TorrentEvent::WebSeedError`。
   单文件种子的 URL 指向文件本身（以 `/` 结尾时为目录）；多文件种子的 URL 是包含 `<name>/<path>`
@@ -120,7 +120,7 @@ v2 种子把每个文件单独哈希成以 16 KiB 块为叶子的 SHA-256 默克
 ## 快速续传
 
 设置 `ClientConfig::resume_dir` 后，重启或崩溃后再次添加的种子会从已有的进度开始，而不是对数据做
-哈希检查（[ADR-033](https://github.com/lesismal/only/blob/main/docs/adr/033-bittorrent-fast-resume.zh-CN.md)）：
+哈希检查（[ADR-033](https://github.com/lesismal/akio/blob/main/docs/adr/033-bittorrent-fast-resume.zh-CN.md)）：
 
 ```rust,ignore
 let mut cfg = ClientConfig::default();
@@ -152,7 +152,7 @@ client.close(); // 在最后一次写入完成后保存每个种子
         └─ 其他（'d…' = DHT）        ──► on_datagram ──► dht::Node
 ```
 
-`UdpPort` 是一个 only UDP listener 的 acceptor。它按首字节分拣数据报，用 10 ms 定时器驱动 uTP
+`UdpPort` 是一个 akio UDP listener 的 acceptor。它按首字节分拣数据报，用 10 ms 定时器驱动 uTP
 连接，并且 **从 listener 自己的端口发送**：要联系尚未先发来数据的地址时，它用
 `Engine::dial_udp_from` 在 listener 套接字上打开一个 peer，这样 DHT 节点在它宣告的端口上可达，
 uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发起 uTP 连接；`on_accept` 接收
@@ -191,14 +191,14 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
   下载者，经 TCP 和 uTP、有无 MSE，通过 HTTP 和 UDP tracker 发现 peer，磁力链接，磁盘文件与续传，
   DHT 和 PEX。
 - `tools/interop/bittorrent/run.sh` 在一个 Debian 容器中以 127.0.0.1 运行全部场景：aria2 从
-  only 下载（明文、强制 MSE、磁力链接）以及向 only 做种（UDP tracker，明文与 MSE）；libtorrent
-  经 RC4 加密的 uTP 和经 TCP 从 only 下载，以及通过磁力链接下载；libtorrent 以同样三种方式向
-  only 做种；以及双向 DHT（only 节点为 libtorrent 引导；双方都只凭磁力链接通过 DHT 找到对方的
-  做种者）。套件 `v2`：only 与 libtorrent 各自生成的纯 v2 与混合多文件种子，双方通过 .torrent 和
+  akio 下载（明文、强制 MSE、磁力链接）以及向 akio 做种（UDP tracker，明文与 MSE）；libtorrent
+  经 RC4 加密的 uTP 和经 TCP 从 akio 下载，以及通过磁力链接下载；libtorrent 以同样三种方式向
+  akio 做种；以及双向 DHT（akio 节点为 libtorrent 引导；双方都只凭磁力链接通过 DHT 找到对方的
+  做种者）。套件 `v2`：akio 与 libtorrent 各自生成的纯 v2 与混合多文件种子，双方通过 .torrent 和
   磁力链接互相下载（v2 磁力链接双向检验哈希请求），以及 aria2 下载并做种混合种子。套件 `webseed`：
   只从 nginx 下载 v1、混合与 v2 种子。套件 `lsd`：Docker 网络上的两个容器通过 LSD 双向发现彼此。
 - `tests/extensions.rs`：v2 与混合 swarm、v2 磁力链接获取分片层、通过 v2 哈希访问混合种子、从
-  only-http 文件服务器获取 web seed、LSD、双栈做种者与 IPv4/IPv6 下载者、仅 IPv6 的 DHT、速率
+  akio-http 文件服务器获取 web seed、LSD、双栈做种者与 IPv4/IPv6 下载者、仅 IPv6 的 DHT、速率
   限制、做种限制。
 - `tests/resume.rs`：v1、v2 与混合种子的快速续传：`close` 后在没有对等方的情况下重启且没有任何
   分片被重新哈希；下载中途被 `SIGKILL` 的客户端重启后完成下载，且不哈希它已有的分片；改动的文件
@@ -208,4 +208,4 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
   `bt_resume`，其种子语料由 `cargo test` 回放。
 
 有意不实现 BEP 44（DHT 任意数据）：下载与做种从不需要它，而它会给 DHT 增加
-按远端输入索引、需签名校验的条目存储（[ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)）。
+按远端输入索引、需签名校验的条目存储（[ADR-018](https://github.com/lesismal/akio/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)）。

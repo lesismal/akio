@@ -9,7 +9,7 @@ Status: accepted (2026-11-18)
 [ADR-017](017-webrtc-turn-gaps.md) left these WebRTC gaps open:
 
 - an `Endpoint` allocated relayed candidates over UDP only, although the sans-io
-  `only_turn::client::Client` already spoke TURN over streams; networks that block UDP reach a
+  `akio_turn::client::Client` already spoke TURN over streams; networks that block UDP reach a
   TURN server only over TCP, or TLS on 443 (`turn:?transport=tcp`, `turns:`);
 - an `Endpoint` had a passive ICE-TCP candidate but no active one, so it could not reach a
   TCP-only server (pion with an ICE TCP mux, a media server behind a UDP-hostile firewall);
@@ -20,25 +20,25 @@ Status: accepted (2026-11-18)
 
 ## Decision
 
-### 1. Relayed candidates over TCP and TLS (`only-webrtc`)
+### 1. Relayed candidates over TCP and TLS (`akio-webrtc`)
 
 - **`RelayServer`**: a TURN server an `Endpoint` allocates on: `RelayServer::udp(addr, user,
   password)`, `::tcp(..)`, `::tls(addr, server_name, tls::ClientConfig, ..)`, or
   `RelayServer::from_url("turn:host[:port][?transport=udp|tcp]" | "turns:host[:port]
   [?transport=tcp]", user, password)` (RFC 7065, ports 3478 and 5349 by default, IPv6 in
   brackets). `from_url` resolves the host (blocking, like `gather_relay` itself); a `turns:`
-  server needs `RelayServer::tls_config` before use, since `only-tls` has no default roots (the
+  server needs `RelayServer::tls_config` before use, since `akio-tls` has no default roots (the
   URL's host is the name the certificate is verified for). `addr()` and `transport()` read it
   back.
 - **`Endpoint::gather_relay_via(&Arc<Engine>, &RelayServer, timeout)`**: `gather_relay` over any
   transport. Over a stream the engine dials the connection (`Engine::dial`, wrapped in
   `Tls::client` for TLS), the client runs with `ClientConfig::stream(true)`, and the connection's
-  bytes are cut by `only_turn::framing::FrameReader`. One allocation per server and transport;
+  bytes are cut by `akio_turn::framing::FrameReader`. One allocation per server and transport;
   at most 4 per endpoint, as before.
 - **Candidates**: the relayed address is UDP whatever the control transport, but a TCP- or
   TLS-allocated candidate ranks below a UDP-allocated one (local preference halved over TCP,
   quartered over TLS, as browsers rank them) and has a foundation of its own
-  (`only_ice::Candidate::relayed_over_stream`, internal tier). No server-reflexive candidate comes
+  (`akio_ice::Candidate::relayed_over_stream`, internal tier). No server-reflexive candidate comes
   from a stream allocation: the server saw a TCP address.
 - **Backpressure and bounds**: up to 64 KiB of messages wait for the connection to open;
   relayed data (ChannelData, Send indications) is dropped while the connection has more than
@@ -89,7 +89,7 @@ passive candidate only accepts connections, so the server needs no connection lo
 - The TCP listener may share the UDP listener's port, so a TCP and a UDP candidate may have one
   address: a peer remembers the remote addresses that reached it over a connection (at most 16,
   under its own lock) and sends to those over it, so the UDP path takes no shared lock; the
-  `only-ice` agent keeps a UDP and a TCP local candidate of one address apart (it used to drop
+  `akio-ice` agent keeps a UDP and a TCP local candidate of one address apart (it used to drop
   the second as a duplicate). A connection looks its peer up once, at its first check.
 - Internally the endpoint's and the server's ICE-TCP share one `TcpSide` (passive candidates,
   the active candidate, connections by remote address and by peer and remote).
@@ -128,7 +128,7 @@ Verified with headless Chrome (`tools/interop/webrtc/browser.sh`, `sfu` mode of 
 - Public API (additive): `RelayServer` (`udp`, `tcp`, `tls`, `from_url`, `tls_config`, `addr`,
   `transport`), `Endpoint::{gather_relay_via, dial_tcp, candidate_filter}`,
   `RtcServer::{tcp_candidates, tcp}`, `RtcTcp` (an `Acceptor`) and its hidden handler `IceTcp`,
-  `Peer::request_layer_keyframe`, `Candidate::{kind, transport}`; `only-ice` (internal tier):
+  `Peer::request_layer_keyframe`, `Candidate::{kind, transport}`; `akio-ice` (internal tier):
   `Candidate::relayed_over_stream`. Snapshots refreshed. `gather_relay` now also re-allocates a
   lost allocation (it used to stay dead).
 - The UDP datapath is unchanged for endpoints and servers without TCP or relays: the TCP side
@@ -138,13 +138,13 @@ Verified with headless Chrome (`tools/interop/webrtc/browser.sh`, `sfu` mode of 
   channel throughput 1.024x (191.9 vs 187.3 MB/s, 15 rounds): no regression.
 - New fuzz target `webrtc_turn_url` (the TURN URL parser); `webrtc_sdp` seeds now carry active
   TCP and TLS-relayed candidates. The relay stream path reuses `FrameReader` (fuzzed by
-  `turn_stream`), the active ICE-TCP path `only_ice::tcp::FrameReader` (fuzzed by `ice_tcp`).
+  `turn_stream`), the active ICE-TCP path `akio_ice::tcp::FrameReader` (fuzzed by `ice_tcp`).
 - Interop: `tools/interop/webrtc/run.sh` (pion): `Endpoint` relayed candidates allocated over
-  TCP and TLS on `only-turn` and pion/turn; ICE-TCP both ways (our passive with pion active, our
+  TCP and TLS on `akio-turn` and pion/turn; ICE-TCP both ways (our passive with pion active, our
   active with pion's passive TCP mux, pion active to the ICE-lite server's passive candidate).
   `linux.sh` (coturn): `Endpoint` relayed candidates allocated over TCP and TLS on coturn.
   `browser.sh` (Chrome): Chrome to the server over ICE-TCP only; Chrome relay-only through
-  `only-turn` over UDP, TCP and TLS; an `Endpoint` with only its passive TCP candidate, and with
+  `akio-turn` over UDP, TCP and TLS; an `Endpoint` with only its passive TCP candidate, and with
   only relayed candidates allocated over TCP and TLS, to Chrome (Chrome's selected pair checked
   in each); simulcast both ways with layer selection.
 - Known limit, unchanged: peers of one `Endpoint` share its sockets, so two of its peers talking

@@ -6,9 +6,9 @@
 
 ## 背景
 
-`only-media`（M7）在 DEV-PLAN 中留有四个缺口：HLS 只产出 MPEG-TS 分段，需要 CMAF（以及分片 MP4 中的
+`akio-media`（M7）在 DEV-PLAN 中留有四个缺口：HLS 只产出 MPEG-TS 分段，需要 CMAF（以及分片 MP4 中的
 Opus 或 HEVC）的播放器和 CDN 无法使用；hub 能提供 RTMP 与 RTSP 服务，却无法向其他服务器转推或从其拉流，
-因为没有 RTMP 与 RTSP 客户端；WHIP/WHEP 只有信令（`NoMedia` 返回 501），尽管 `only-webrtc` 已能承载
+因为没有 RTMP 与 RTSP 客户端；WHIP/WHEP 只有信令（`NoMedia` 返回 501），尽管 `akio-webrtc` 已能承载
 H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI），而 hub 没有这条通路。
 
 ## 决定
@@ -25,7 +25,7 @@ H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI
   节流，众多观众只让推流者付出一个关键帧。
 - 视频订阅者加入时若没有缓存的关键帧（`no_gop_cache`，或尚无 GOP），立即请求，而不是等一个 GOP。
 
-### fMP4 / CMAF（`only_media::fmp4`、`hls::SegmentFormat`）
+### fMP4 / CMAF（`akio_media::fmp4`、`hls::SegmentFormat`）
 
 - `fmp4::Muxer`（`new(&[Track])`、`init_segment`、`write_packet`、`flush(end, out)`、`carries`、
   `has_tracks`、`pending_bytes`、`has_pending`）写出初始化分段（带 CMAF brand 的 `ftyp`，含 `mvex`/`trex`
@@ -41,7 +41,7 @@ H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI
   `seg-<n>.m4s`（`styp` + 完整分片），LL-HLS 分片 `part-<n>.<m>.m4s` 为完整分片。`max_bytes`、强制切分、
   阻塞式刷新与空闲超时与 TS 相同。`MediaHttp` 把 `.m4s` 与 `.mp4` 交给 `Hls`。
 
-### RTMP 客户端（`only_media::rtmp::client`）
+### RTMP 客户端（`akio_media::rtmp::client`）
 
 - `push(engine, url, hub, path, RtmpClientConfig) -> Result<RtmpClient, ClientError>` 把 hub 中的流推到
   RTMP 服务器；`pull(...)` 立即预占 `path`，把从服务器播放到的内容发布进 hub。另有 `RtmpUrl`（`parse`、
@@ -52,7 +52,7 @@ H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI
 - 上限与超时（默认）：连接 10 s，握手 10 s，每条命令的应答 10 s，拉流空闲 30 s，消息大小 16 MiB，推流
   `write_queue_limit` 2 MiB（`Dropper`）与 `max_write_queue` 16 MiB（断开），`source_wait` 10 s。
 
-### RTSP 客户端（`only_media::rtsp::client`）
+### RTSP 客户端（`akio_media::rtsp::client`）
 
 - `pull(engine, url, hub, path, RtspClientConfig) -> Result<RtspClient, ClientError>` 从 RTSP 服务器播放进
   hub（路径立即预占；视频参数集已知时上线，来自 SDP 或带内）；`push(...)` 把 hub 中的流录制到服务器
@@ -69,9 +69,9 @@ H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI
 - 上限与超时（默认）：连接 10 s，每次应答 10 s，拉流空闲 10 s，头部与 body 同服务端解析器，TCP 推流
   `write_queue_limit` 2 MiB / `max_write_queue` 16 MiB，`push_wait` 10 s。
 
-### WebRTC 媒体（`only_media::webrtc`，cargo feature `webrtc`）
+### WebRTC 媒体（`akio_media::webrtc`，cargo feature `webrtc`）
 
-- 可选、非默认的 feature `webrtc` 引入对 `only-webrtc` 的依赖（自研，ADR-005 依然成立）。
+- 可选、非默认的 feature `webrtc` 引入对 `akio-webrtc` 的依赖（自研，ADR-005 依然成立）。
   `RtcMedia::new(RtcServer, RtcMediaConfig)` 实现 `whip::WebRtcEngine`；`RtcMedia::rtc_server(addrs)` 与
   `webrtc::rtc_config()` 给出启用 H.264、H.265、Opus、PCMU 与 PCMA 的 `RtcServer`。
 - WHIP：H.264/H.265 帧（Annex B）转为 AVCC，配置记录由带内参数集构建；Opus 与 G.711 透传。hub 无法承载的
@@ -94,12 +94,12 @@ H.264、H.265 与 Opus。WebRTC 观众还需要向推流者请求关键帧（PLI
 
 ## 后果
 
-- only-media 新增公共 API（新模块 `fmp4`、`rtmp::client`、`rtsp::client`，feature 下的 `webrtc`；
+- akio-media 新增公共 API（新模块 `fmp4`、`rtmp::client`、`rtsp::client`，feature 下的 `webrtc`；
   `HubConfig` 与 `HlsConfig` 新增字段，二者均为 `#[non_exhaustive]`；`WebRtcSession` 新增带默认实现的方法）。
   API 快照覆盖 `webrtc` feature。
 - 新模糊测试目标：`fmp4_demux`、`rtmp_client`、`rtsp_client`。
 - hub、HLS 与各客户端的每个缓冲都有带默认值的上限，每次对外交互都在超时之下（规则 7 至 10）。
-- 顺带修复 `only-webrtc`：`Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后总是
+- 顺带修复 `akio-webrtc`：`Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后总是
   panic；现在它们作用于此后创建的 peer（签名不变）。
 - TS 模式下的一处行为变化：正在写入的分段以不连续开头且尚无分片时，播放列表不再输出 `EXT-X-PRELOAD-HINT`
   （被提示的分片无法携带该标签）。

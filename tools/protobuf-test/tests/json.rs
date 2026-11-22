@@ -2,7 +2,7 @@
 //! `conformance/run.sh`), and a mutation smoke test with the `protobuf_json` fuzz target's
 //! property.
 
-use only_protobuf::{
+use akio_protobuf::{
     Extendable,
     json::{self, ParseOptions, PrintOptions},
     reflect::ReflectMessage,

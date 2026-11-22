@@ -3,14 +3,14 @@
 #
 #   tools/api/public-api.sh          # check: diff every crate's API against api/<crate>.txt
 #   tools/api/public-api.sh --bless  # regenerate api/<crate>.txt after a deliberate change
-#   tools/api/public-api.sh only-core only   # only these crates
+#   tools/api/public-api.sh akio-core only   # only these crates
 #
 # Needs a nightly toolchain (rustdoc JSON) and cargo-public-api. CI pins both (ci.yml, job
-# `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): only-uring and
-# parts of only-ebpf / only-sys only exist on Linux.
+# `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): akio-uring and
+# parts of akio-ebpf / akio-sys only exist on Linux.
 #
 # Items under `#[doc(hidden)]`, the `fuzzing` and `unstable` features and the `prost` feature of
-# only-grpc are not in the snapshots: they are outside the stability promise.
+# akio-grpc are not in the snapshots: they are outside the stability promise.
 # Blanket impls are omitted to keep the files readable; auto-trait impls (Send / Sync / Unpin / UnwindSafe ...) stay, because losing one is a breaking change.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -22,10 +22,10 @@ if [ "${1:-}" = "--bless" ]; then
 fi
 
 # Publishable library crates (tools/ and fuzz/ are not published).
-all=(only-sys only-regex only-log only-crypto only-x509 only-dtls only-srtp only-rtp only-sctp only-ice only-buf only-deflate only-brotli only-zstd only-timer only-pool only-core only-epoll only-uring only-tls
-    only-http only-ws only-mux only-socks only-arpc only-grpc only-protobuf only-protobuf-build
-    only-kcp only-quic only-h3
-    only-ebpf only-prefork only-dpdk only-turn only-webrtc only-media only-bittorrent only-export only)
+all=(akio-sys akio-regex akio-log akio-crypto akio-x509 akio-dtls akio-srtp akio-rtp akio-sctp akio-ice akio-buf akio-deflate akio-brotli akio-zstd akio-timer akio-pool akio-core akio-epoll akio-uring akio-tls
+    akio-http akio-ws akio-mux akio-socks akio-arpc akio-grpc akio-protobuf akio-protobuf-build
+    akio-kcp akio-quic akio-h3
+    akio-ebpf akio-prefork akio-dpdk akio-turn akio-webrtc akio-media akio-bittorrent akio-export only)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else
@@ -36,7 +36,7 @@ fi
 # is outside the promise, docs/api-stability.md).
 features_for() {
     case "$1" in
-    only-media) echo "--features webrtc" ;;
+    akio-media) echo "--features webrtc" ;;
     *) echo "" ;;
     esac
 }

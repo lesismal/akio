@@ -1,6 +1,6 @@
 // The protobuf half of the interop check: grpc-go's generated route_guide and helloworld code
-// and the well-known types of google.golang.org/protobuf, against only-protobuf messages and
-// the stubs only-protobuf-build generates (tools/protobuf-test, `pb-interop`). The semantics
+// and the well-known types of google.golang.org/protobuf, against akio-protobuf messages and
+// the stubs akio-protobuf-build generates (tools/protobuf-test, `pb-interop`). The semantics
 // mirror tools/protobuf-test/src/service.rs.
 package main
 
@@ -152,7 +152,7 @@ func sampleStruct() *structpb.Struct {
 	return s
 }
 
-// pbClient runs the checks of service.rs `check_server` against an only-protobuf server.
+// pbClient runs the checks of service.rs `check_server` against an akio-protobuf server.
 func pbClient(addr string) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -246,7 +246,7 @@ func pbClient(addr string) {
 		fail("Struct", err)
 	}
 	want := proto.Clone(in).(*structpb.Struct)
-	want.Fields["server"] = structpb.NewStringValue("only")
+	want.Fields["server"] = structpb.NewStringValue("akio")
 	if !proto.Equal(out, want) {
 		fail("Struct reply", out)
 	}

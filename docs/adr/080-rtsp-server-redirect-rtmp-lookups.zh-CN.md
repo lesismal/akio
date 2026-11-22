@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-084 在 only-media 的 RTSP 与 RTMP 客户端里留下两件未做的事：
+ADR-084 在 akio-media 的 RTSP 与 RTMP 客户端里留下两件未做的事：
 
 - **服务器的 `REDIRECT`。** RFC 2326 10.15 允许服务器让会话中的客户端改去别处：一个带 `Location`、可选带
   `Range`（何时生效）的 `REDIRECT` 请求。运维人员为维护而摘下一台服务器，或把负载分流到另一台时，在 RTSP 1.0
@@ -57,7 +57,7 @@ ADR-084 在 only-media 的 RTSP 与 RTMP 客户端里留下两件未做的事：
 
 ## 后果
 
-- 公共 API（只有新增，`api/only-media.txt`）：`rtsp::Redirect`、`rtsp::RtspSessionInfo`、
+- 公共 API（只有新增，`api/akio-media.txt`）：`rtsp::Redirect`、`rtsp::RtspSessionInfo`、
   `RtspServer::{sessions, redirect_session, redirect_path}`、`ClientError::Redirected`（RTSP；
   `ClientError` 是 `#[non_exhaustive]`）。
 - 行为变化：RTSP 客户端跟随服务器的 `REDIRECT`（或以 `Redirected` 结束），不再回答 501；两个客户端在第一个

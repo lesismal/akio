@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use only_protobuf::{Message as _, well_known};
+use akio_protobuf::{Message as _, well_known};
 use protobuf_test::test::{all, common};
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -363,7 +363,7 @@ fn denan(a: &mut AllTypes) {
 
 // ---- wire-type mismatch detection ------------------------------------------------------------
 
-use only_protobuf::encoding::{Reader, WireType};
+use akio_protobuf::encoding::{Reader, WireType};
 
 #[derive(Clone, Copy)]
 enum S {
@@ -453,7 +453,7 @@ fn s_value(f: u32) -> Option<S> {
 }
 
 /// Whether `data` has a known field with an unexpected wire type anywhere (decoders differ
-/// there: C++, Go and only-protobuf keep it as an unknown field, prost fails or misreads it).
+/// there: C++, Go and akio-protobuf keep it as an unknown field, prost fails or misreads it).
 /// A tag written in more than 5 bytes: C++ (and we) reject it, prost accepts it.
 fn overlong_tag(b: &[u8]) -> bool {
     b.iter().take(5).all(|&x| x & 0x80 != 0) && b.len() > 5
@@ -520,10 +520,10 @@ pub fn differential(data: &[u8]) {
         ),
         (Err(_), Err(_)) => {}
         (Ok(o), Err(e)) => {
-            panic!("only-protobuf accepted what prost rejects ({e}): {o:?}\ninput: {data:02x?}");
+            panic!("akio-protobuf accepted what prost rejects ({e}): {o:?}\ninput: {data:02x?}");
         }
         (Err(e), Ok(t)) => {
-            panic!("only-protobuf rejected what prost accepts ({e}): {t:?}\ninput: {data:02x?}");
+            panic!("akio-protobuf rejected what prost accepts ({e}): {t:?}\ninput: {data:02x?}");
         }
     }
 }
@@ -626,10 +626,10 @@ pub fn differential_groups(data: &[u8]) {
         }
         (Err(_), Err(_)) => {}
         (Ok(o), Err(e)) => {
-            panic!("only-protobuf accepted what prost rejects ({e}): {o:?}\ninput: {data:02x?}");
+            panic!("akio-protobuf accepted what prost rejects ({e}): {o:?}\ninput: {data:02x?}");
         }
         (Err(e), Ok(t)) => {
-            panic!("only-protobuf rejected what prost accepts ({e}): {t:?}\ninput: {data:02x?}");
+            panic!("akio-protobuf rejected what prost accepts ({e}): {t:?}\ninput: {data:02x?}");
         }
     }
 }
@@ -637,7 +637,7 @@ pub fn differential_groups(data: &[u8]) {
 /// Reflection against generated code: a `DynamicMessage` of `AllTypes` and of `test.ext.Base`
 /// accepts exactly what the generated decoder accepts, and both re-encode to the same bytes.
 pub fn differential_dynamic(data: &[u8]) {
-    use only_protobuf::reflect::{DynamicMessage, ReflectMessage};
+    use akio_protobuf::reflect::{DynamicMessage, ReflectMessage};
     fn one<M: ReflectMessage + PartialEq + std::fmt::Debug>(data: &[u8], lazy: fn(&M) -> bool) {
         let typed = M::decode(data);
         let dynamic = DynamicMessage::decode(M::descriptor(), data);
@@ -676,7 +676,7 @@ pub fn differential_dynamic(data: &[u8]) {
             // A proto2 string that is not UTF-8: the descriptor does not ask for UTF-8 (proto2's
             // legacy `utf8_validation = NONE`), so the dynamic message keeps the bytes; generated
             // code checks proto2 strings unless `Config::proto2_unchecked_strings` is on.
-            (Err(e), Ok(_)) if e.kind() == only_protobuf::DecodeErrorKind::InvalidUtf8 => {}
+            (Err(e), Ok(_)) if e.kind() == akio_protobuf::DecodeErrorKind::InvalidUtf8 => {}
             (t, d) => panic!("typed {t:?} vs dynamic {d:?}\ninput: {data:02x?}"),
         }
     }

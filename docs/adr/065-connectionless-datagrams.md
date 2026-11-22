@@ -62,7 +62,7 @@ io_uring supported; the existing per-peer path must not get slower.
    not apply (slow work goes to the application's own threads, which answer with a
    `DatagramSender`). Memory is the receive slots, the reply buffer and the handler, independent
    of the number of peers.
-7. **One driver, three backends.** `only_core::DatagramPort` (backend-facing) owns the socket,
+7. **One driver, three backends.** `akio_core::DatagramPort` (backend-facing) owns the socket,
    receive batch, handler and reply queue and exposes `on_readable` / `on_writable` /
    `wants_read` / `wants_write` / `shutdown` / `on_reload`. The epoll/kqueue UDP loop
    (`UdpGroup::bind_datagrams`) polls it under its socket token; the io_uring loop
@@ -71,7 +71,7 @@ io_uring supported; the existing per-peer path must not get slower.
    shutdown. Readiness from the ring and I/O by `recvmmsg` / `sendmmsg` is the conclusion of the
    M2 evaluation (a multishot `recvmsg` with provided buffers would re-implement the batching
    for no measurable gain), now for a listener that does run on io_uring threads, so
-   `ONLY_DEFAULT_BACKEND=uring` (ADR-029) applies to datagram listeners (per-peer UDP listeners
+   `AKIO_DEFAULT_BACKEND=uring` (ADR-029) applies to datagram listeners (per-peer UDP listeners
    still always run on the epoll UDP loop). A strict `UringConfig` fails `build` where io_uring
    is unavailable, as for TCP.
 8. **Not supported**: DPDK (its userspace UDP is per-peer; `build` fails with `Unsupported`,
@@ -88,16 +88,16 @@ io_uring supported; the existing per-peer path must not get slower.
   spoofed sources; a 10,000-peer test shows no growth of the resident set.
 - The per-peer path is unchanged (the UDP loop gained a branch on its socket token for loops
   that serve a datagram port); the A/B below shows no regression.
-- Public API, additive only: `only::{DatagramsHandler, Datagrams, DatagramsIter, Replies,
+- Public API, additive only: `akio::{DatagramsHandler, Datagrams, DatagramsIter, Replies,
   DatagramSender}`, `Listener::serve_datagrams`, `Engine::datagram_sender`, and the backend
   constructors `UdpGroup::bind_datagrams` / `UringGroup::bind_datagrams`.
-- Tests: `crates/only/tests/datagrams.rs` (batches and boundaries across peers; every batch's
+- Tests: `crates/akio/tests/datagrams.rs` (batches and boundaries across peers; every batch's
   replies in one `sendmmsg`, counted by the `writes` metric; a burst to one peer; senders from
   other threads, the factory's and the engine's; 11,000 distinct peers with no peers, no
   connections and bounded RSS; a per-peer listener next to a datagram one; shutdown datagrams;
-  panics; size limits; misuse), on kqueue, epoll and io_uring (`ONLY_TEST_BACKEND=uring`), and
+  panics; size limits; misuse), on kqueue, epoll and io_uring (`AKIO_TEST_BACKEND=uring`), and
   unit tests of the reply queue (limit below / at / above, GSO run boundaries, order).
-- Example: `crates/only/examples/udp-dns.rs` (a DNS-style responder); `bench-server udp-dgram`
+- Example: `crates/akio/examples/udp-dns.rs` (a DNS-style responder); `bench-server udp-dgram`
   for benchmarks.
 
 ## Measurements

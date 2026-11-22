@@ -1,13 +1,13 @@
 # gRPC
 
-`only-grpc` 提供一个 gRPC 服务端，它本身是一个 only-http `Service`（因此与普通 HTTP 路由
-共享端口和 HTTP/2 协议栈），以及一个建立在 only-http HTTP/2 客户端之上的客户端。与 grpc-go
+`akio-grpc` 提供一个 gRPC 服务端，它本身是一个 akio-http `Service`（因此与普通 HTTP 路由
+共享端口和 HTTP/2 协议栈），以及一个建立在 akio-http HTTP/2 客户端之上的客户端。与 grpc-go
 做过双向互通测试（`tools/interop/grpc/run.sh`）。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:server}}
+{{#include ../../../../crates/akio-grpc/examples/guide-grpc.rs:server}}
 ```
 
 注册方法（`path` 为 `/package.Service/Method`）：
@@ -33,13 +33,13 @@ trailers-only 响应发送；`grpc-timeout` 截止时间会被执行（调用结
 handler 在 I/O 线程上执行：处理很快时直接答复，否则把 `Sink` 移到其他线程（上例的
 server-streaming 方法就是这样做的）。
 
-提供服务：单独使用 `only_http::serve(grpc)`，或者像上面那样作为 `Router` 的 `fallback`
+提供服务：单独使用 `akio_http::serve(grpc)`，或者像上面那样作为 `Router` 的 `fallback`
 （或某个路由）。gRPC 需要 HTTP/2：明文用 prior knowledge，或 ALPN 为 `h2` 的 TLS。
 
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:client}}
+{{#include ../../../../crates/akio-grpc/examples/guide-grpc.rs:client}}
 ```
 
 - `GrpcClient::new(h2_client, base_url)`；`.compress(true)` 压缩请求。
@@ -56,19 +56,19 @@ server-streaming 方法就是这样做的）。
 
 ## 消息
 
-消息是字节。`only_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
-（`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。对 protobuf，`only` 有自己的
+消息是字节。`akio_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
+（`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。对 protobuf，`akio` 有自己的
 运行时和代码生成器，不需要 `protoc`，也没有第三方 crate：
 
-- `only-protobuf`：线格式、`Message` trait、开放枚举、未知字段、well-known 类型（`Timestamp`、
+- `akio-protobuf`：线格式、`Message` trait、开放枚举、未知字段、well-known 类型（`Timestamp`、
   `Duration`、`Any`、`Struct`、包装类型 ...）。
-- `only-protobuf-build`：供 `build.rs` 使用的 `.proto` 解析器与 Rust 代码生成器。支持 proto3 与
+- `akio-protobuf-build`：供 `build.rs` 使用的 `.proto` 解析器与 Rust 代码生成器。支持 proto3 与
   proto2 的消息、枚举、`optional`、`repeated`、`map`、`oneof`、嵌套与递归类型、package、import；
-  service 生成基于 `only-grpc` 的类型化服务端 trait 与客户端。
+  service 生成基于 `akio-grpc` 的类型化服务端 trait 与客户端。
 
 ### 不用 prost 定义消息
 
-依赖：`only-protobuf` 与 `only-grpc`，并在 `[build-dependencies]` 中加入 `only-protobuf-build`。
+依赖：`akio-protobuf` 与 `akio-grpc`，并在 `[build-dependencies]` 中加入 `akio-protobuf-build`。
 然后在 `build.rs` 中（取自 `tools/protobuf-test`，其 `proto/` 目录包含 grpc-go 的 route_guide 与
 helloworld 定义）：
 
@@ -81,7 +81,7 @@ helloworld 定义）：
 
 ```rust,ignore
 pub mod routeguide {
-    only_protobuf::include_proto!("routeguide");
+    akio_protobuf::include_proto!("routeguide");
 }
 ```
 
@@ -91,13 +91,13 @@ pub mod routeguide {
 |---|---|
 | `message Point { int32 latitude = 1; }` | `pub struct Point { pub latitude: i32, pub unknown_fields: UnknownFields }`（`Clone`、`PartialEq`、`Debug`、`Default`；不含浮点数时还有 `Eq`） |
 | `string`、`bytes` | `String`、`Vec<u8>` |
-| 设置了 `features.utf8_validation = NONE` 的 `string`（editions）；`Config::proto2_unchecked_strings(true)` 时的 proto2 `string` | `only_protobuf::ProtoString`：通常是 UTF-8 的字节，解码时不检查（`to_str()`、`to_string_lossy()`、`as_bytes()`）；getter 返回 `&[u8]` |
+| 设置了 `features.utf8_validation = NONE` 的 `string`（editions）；`Config::proto2_unchecked_strings(true)` 时的 proto2 `string` | `akio_protobuf::ProtoString`：通常是 UTF-8 的字节，解码时不检查（`to_str()`、`to_string_lossy()`、`as_bytes()`）；getter 返回 `&[u8]` |
 | 消息类型字段、proto3 `optional`、proto2 `optional` | `Option<T>`（递归时为 `Option<Box<T>>`）；proto2 默认值通过 getter 获取（`p.a()`） |
 | `repeated T` / `map<K, V>` | `Vec<T>` / `HashMap<K, V>`（`Config::btree_maps(true)` 时为 `BTreeMap`） |
 | `oneof kind { .. }` | `pub kind: Option<point::Kind>`，枚举位于消息对应的模块中 |
 | `enum Corpus { CORPUS_WEB = 1; }` | `pub struct Corpus(pub i32)`，常量 `Corpus::WEB`：开放枚举，未知数值得以保留 |
 | `Outer` 中嵌套的 `message Inner` | `outer::Inner` |
-| `google.protobuf.Timestamp` ... | `only_protobuf::well_known::Timestamp` ... |
+| `google.protobuf.Timestamp` ... | `akio_protobuf::well_known::Timestamp` ... |
 
 消息会保留未知字段并在编码时写回（`Config::unknown_fields(false)` 去掉该成员，结构体字面量就不再
 需要 `..Default::default()`）。编码结果与 protoc 的 C++ 运行时逐字节一致；解码有界（最多 100 层
@@ -141,10 +141,10 @@ sink.close_send();
 
 proto2 的 `group` 字段和 `extend` 块会生成代码；edition 2023 与 2024 文件也一样，并遵循其
 `features.*`（字段存在性、封闭枚举、packed 或 expanded、`DELIMITED`）。有扩展范围的消息带
-`pub extensions: ExtensionSet` 并实现 `only_protobuf::Extendable`；每个扩展是一个带类型的常量：
+`pub extensions: ExtensionSet` 并实现 `akio_protobuf::Extendable`；每个扩展是一个带类型的常量：
 
 ```rust,ignore
-use only_protobuf::Extendable;
+use akio_protobuf::Extendable;
 let mut b = ext::Base::default();
 b.set_extension(&ext::LEVEL, &ext::Level::LOW);          // extend Base { optional Level level = 100; }
 b.set_repeated_extension(&ext::TAGS, &[1, 2]);
@@ -156,24 +156,24 @@ assert_eq!(b.extension(&ext::LEVEL)?, Some(ext::Level::LOW));
 ### 反射、JSON 与文本格式
 
 每个生成的包内嵌自己的描述符（`FILE_DESCRIPTOR_SET`、`descriptor_pool()`；
-`Config::descriptors(false)` 可关闭），其消息实现 `only_protobuf::reflect::ReflectMessage`。
-`only_protobuf::reflect` 提供描述符池与 `DynamicMessage`（运行时才知道类型的消息）；
-`only_protobuf::json` 提供标准 proto3 JSON 映射，含 well-known 类型：
+`Config::descriptors(false)` 可关闭），其消息实现 `akio_protobuf::reflect::ReflectMessage`。
+`akio_protobuf::reflect` 提供描述符池与 `DynamicMessage`（运行时才知道类型的消息）；
+`akio_protobuf::json` 提供标准 proto3 JSON 映射，含 well-known 类型：
 
 ```rust,ignore
-let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
-let back: Feature = only_protobuf::json::from_str(&text)?;
+let text = akio_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
+let back: Feature = akio_protobuf::json::from_str(&text)?;
 ```
 
-`only_protobuf::text` 读写文本格式（`.textproto`、protoc 的 `--decode` 与 `DebugString`）：支持 group、
+`akio_protobuf::text` 读写文本格式（`.textproto`、protoc 的 `--decode` 与 `DebugString`）：支持 group、
 写成 `[pkg.ext]` 的扩展、展开为 `[type.googleapis.com/pkg.Type] { ... }` 的 `Any`、注释以及两种列表
 写法（ADR-030）：
 
 ```rust,ignore
-let text = only_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
-let back: Feature = only_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
-let opts = only_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
-let line = only_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
+let text = akio_protobuf::text::to_string(&feature)?;    // name: "..."\nlocation {\n  latitude: 1\n ...
+let back: Feature = akio_protobuf::text::from_str("name: 'x' location < latitude: 0x10 > # c")?;
+let opts = akio_protobuf::text::PrintOptions { single_line: true, ..Default::default() };
+let line = akio_protobuf::text::to_string_with(&feature, &opts)?; // name: "..." location { ... }
 ```
 
 gRPC 服务端反射让 grpcurl、grpcui 不需要 `.proto` 文件就能列出并调用服务：
@@ -189,7 +189,7 @@ gRPC 服务端反射让 grpcurl、grpcui 不需要 `.proto` 文件就能列出�
 ### prost（已弃用）
 
 启用 `prost` feature 后，所有 prost 生成的消息都实现 `codec::Message`。它仍然可用，但已弃用，
-推荐改用 `only-protobuf`；它用到 prost 的类型，所以这个 feature 不在 semver 承诺之内（prost 升级
+推荐改用 `akio-protobuf`；它用到 prost 的类型，所以这个 feature 不在 semver 承诺之内（prost 升级
 或移除该 feature 可能出现在 minor 版本中）。
 
 未提供：服务端反射（reflection）、标准健康检查服务、客户端负载均衡。互通测试只针对 grpc-go

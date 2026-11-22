@@ -1,12 +1,12 @@
 # 从 hyper 与 axum 迁移
 
-only-http 覆盖了 hyper（HTTP/1.1 与 HTTP/2 服务端和客户端）以及 axum 的路由和中间件所涉及的
-范围，底层是 only 的模型：handler 是在连接所属 I/O 线程上执行的同步函数，慢操作用 detach
+akio-http 覆盖了 hyper（HTTP/1.1 与 HTTP/2 服务端和客户端）以及 axum 的路由和中间件所涉及的
+范围，底层是 akio 的模型：handler 是在连接所属 I/O 线程上执行的同步函数，慢操作用 detach
 而不是 await。
 
 ## 对照
 
-| axum / hyper / tower | only-http |
+| axum / hyper / tower | akio-http |
 |---|---|
 | `axum::serve(listener, app)` / `hyper::server::conn` | `Engine::builder().listen(Listener::tcp(addr).serve(serve(app)))` |
 | `Router::new().route("/users/:id", get(h))` | `Router::new().get("/users/:id", h)` |
@@ -33,9 +33,9 @@ only-http 覆盖了 hyper（HTTP/1.1 与 HTTP/2 服务端和客户端）以及 a
 | `CompressionLayer`、`CorsLayer`、`TraceLayer`、`RequestIdLayer`、`CatchPanicLayer` | `middleware::compress`、`cors`、`logger` / `observe::access_log`、`request_id`、`recover` |
 | `TimeoutLayer` | 无：需要时 detach，并用你自己的定时器回复 503/504 |
 | `tower::limit::RateLimitLayer` | `middleware::limiter(rate, burst)`（按客户端 IP） |
-| `axum-server` / `tokio-rustls` 的 TLS | `only::tls::Tls::server(cfg, serve(app))` |
+| `axum-server` / `tokio-rustls` 的 TLS | `akio::tls::Tls::server(cfg, serve(app))` |
 | `hyper::client` / `reqwest` | `client::Client`、`h2client::H2Client` |
-| `tonic` | `only-grpc` |
+| `tonic` | `akio-grpc` |
 
 ## handler
 
@@ -49,33 +49,33 @@ async fn user(Path(id): Path<u32>, State(db): State<Arc<Db>>) -> Result<Json<Use
 }
 ```
 
-在 only-http 中，handler 里快的部分直接执行，慢的部分 detach：
+在 akio-http 中，handler 里快的部分直接执行，慢的部分 detach：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:handlers}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:handlers}}
 ```
 
 共享状态通过捕获而不是提取获得：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:state}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:state}}
 ```
 
 ## router 与中间件
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:router}}
 ```
 
 编写中间件只需一个普通函数，而不是 tower 的 `Layer` + `Service` 组合：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:middleware}}
 ```
 
 需要注意的差异：
 
-- **顺序：** 与 axum 一样，最后一个 `.layer(..)` 在最外层。但 only 的 layer 只包装在它*之前*
+- **顺序：** 与 axum 一样，最后一个 `.layer(..)` 在最外层。但 akio 的 layer 只包装在它*之前*
   注册的路由（以及 fallback）；axum 的 `.layer` 包装 router 的所有路由。
 - **响应之后：** handler 可能 detach，所以"`next.call(ctx)` 之后的代码"执行时响应可能还不存在。
   用 `ctx.add_response_filter(|resp, req| ..)` 修改或观察最终响应，`ctx.status()` 只对同步
@@ -86,17 +86,17 @@ async fn user(Path(id): Path<u32>, State(db): State<Arc<Db>>) -> Result<Json<Use
 ## 启动服务
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:serve}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:serve}}
 ```
 
 同一端口上默认启用 HTTP/2（prior knowledge、h2c 升级，或 TLS 下的 ALPN `h2`）；hyper 需要
-`auto::Builder` 才能做到。HTTP/3 用 only-h3 提供同一个 router
+`auto::Builder` 才能做到。HTTP/3 用 akio-h3 提供同一个 router
 （[QUIC 与 HTTP/3](../protocols/quic-h3.md)）。
 
 ## 客户端
 
 `reqwest`/`hyper` 的客户端调用对应 `client::Client::send(..).await` 或 `.wait()`；HTTP/2 复用
-对应 `H2Client`。only 的客户端不处理重定向、cookie 和代理。见
+对应 `H2Client`。akio 的客户端不处理重定向、cookie 和代理。见
 [HTTP 客户端](../protocols/http-clients.md)。
 
 ## 放弃了什么，得到了什么

@@ -6,7 +6,7 @@ Status: accepted (2026-11-21)
 
 ## Context
 
-After ADR-016, 031, 034 and 043, `only-media` still listed as not done: reconnecting RTMP and
+After ADR-016, 031, 034 and 043, `akio-media` still listed as not done: reconnecting RTMP and
 RTSP clients and RTCP-based A/V sync in the RTSP client (ADR-016), HLS I-frame playlists and
 rendition reports (ADR-031), `EXT-X-SESSION-KEY` (ADR-034) and SAMPLE-AES for H.265
 (ADR-043).
@@ -36,7 +36,7 @@ rendition reports (ADR-031), `EXT-X-SESSION-KEY` (ADR-034) and SAMPLE-AES for H.
 All additions are additive (new config fields default to the old behaviour, but
 `RtspClientConfig::rtcp_sync`, which defaults to on).
 
-1. **Reconnect policy**: `only_media::Reconnect` (also re-exported from `rtmp::client` and
+1. **Reconnect policy**: `akio_media::Reconnect` (also re-exported from `rtmp::client` and
    `rtsp::client`): `initial_delay` (500 ms), `max_delay` (30 s), `max_attempts` (`None`: until
    closed), built from `Reconnect::new(&Arc<Engine>)`, which holds the engine weakly (the
    client dials again on it; the address resolved at start is reused, so no name lookup ever
@@ -59,7 +59,7 @@ All additions are additive (new config fields default to the old behaviour, but
    - **RTSP**: the handshake blocks the caller, so the client is split into a per-connection
      session (the existing state machine) and a `Client` that owns the hub side and decides,
      when a session ends, whether to reconnect: the backoff runs on the media timer, the try on
-     a short-lived thread of its own (`only-rtsp-reconnect`; the rules forbid blocking a timer
+     a short-lived thread of its own (`akio-rtsp-reconnect`; the rules forbid blocking a timer
      or an I/O thread, and a pool task must not wait on a loop). The first session must come
      up: `pull` / `push` return its error, as before. A push reads the hub stream's current
      tracks again before each try, so a source that changed codecs is announced anew.
@@ -125,7 +125,7 @@ All additions are additive (new config fields default to the old behaviour, but
 
 ## Consequences
 
-- Tests (`cargo test -p only-media`): RTMP against a scripted server (a pull reconnected three
+- Tests (`cargo test -p akio-media`): RTMP against a scripted server (a pull reconnected three
   times with its path and subscriber kept and republished, a refusal and a bound on the tries
   ending it with the path freed, a push resending from a keyframe); RTSP against this crate's
   server stopped and restarted on the same port (pull over TCP and UDP coming back with

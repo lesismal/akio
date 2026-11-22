@@ -1,4 +1,4 @@
-# The `only` book: sources
+# The `akio` book: sources
 
 English | [简体中文](README.zh-CN.md)
 
@@ -44,15 +44,15 @@ $ python3 -m http.server -d target/book 8000   # then open http://127.0.0.1:8000
 ## The published site
 
 ```console
-$ book/site.sh                                  # books + rustdoc into target/site, base /only/
+$ book/site.sh                                  # books + rustdoc into target/site, base /akio/
 $ python3 book/check-site.py target/site        # link check over HTTP, exit 1 on any problem
-$ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/only/
+$ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/akio/
 ```
 
 `.github/workflows/pages.yml` runs exactly these two commands and deploys `target/site` to
 GitHub Pages: on a published release or by hand (Actions -> Pages -> Run workflow), never on a
-push. Layout: `/only/` language picker, `/only/en/`, `/only/zh-CN/`, `/only/api/` (rustdoc of the
-published crates), `/only/404.html`. Enabling Pages (Settings -> Pages -> Source: GitHub Actions)
+push. Layout: `/akio/` language picker, `/akio/en/`, `/akio/zh-CN/`, `/akio/api/` (rustdoc of the
+published crates), `/akio/404.html`. Enabling Pages (Settings -> Pages -> Source: GitHub Actions)
 is a one-time step for a maintainer.
 
 ## Running the examples
@@ -60,7 +60,7 @@ is a one-time step for a maintainer.
 ```console
 $ book/check-guides.sh             # every guide-* example plus echo, udp-echo, hello, prefork-http
 $ book/check-guides.sh guide-h3    # one of them
-$ ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux, ADR-029)
+$ AKIO_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux, ADR-029)
 ```
 
 Self-checking examples must exit 0; the serving ones are probed from outside and stopped. On
@@ -77,6 +77,6 @@ renders the same blocks natively.
 - Put new code in an example, mark it with anchors, and include it in both books.
 - Keep statements in line with `docs/DEV-PLAN.md` (what is done) and the code; say what is not
   done.
-- Published at `https://lesismal.github.io/only/` (`/en/`, `/zh-CN/`, `/api/`) by
+- Published at `https://lesismal.github.io/akio/` (`/en/`, `/zh-CN/`, `/api/`) by
   `.github/workflows/pages.yml`; crate-level rustdoc links point there, and `check-site.py`
   checks those links against the built site.

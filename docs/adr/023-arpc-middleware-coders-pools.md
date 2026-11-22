@@ -6,7 +6,7 @@ Status: accepted (2026-11-17)
 
 ## Context
 
-`only-arpc` spoke Go arpc's wire format (calls, notifies, streams, broadcast, reconnect) but
+`akio-arpc` spoke Go arpc's wire format (calls, notifies, streams, broadcast, reconnect) but
 lacked three things Go arpc applications rely on (DEV-PLAN M4, "not done"):
 
 - **middleware** (`Handler.Use`): authentication, logging, timing, recovery around handlers;
@@ -24,7 +24,7 @@ a safe default for every table (rule 10), which the table of pending calls did n
 
 ## Decision
 
-Additive API in `only-arpc` (one new `CallError` variant; the enum is `#[non_exhaustive]`):
+Additive API in `akio-arpc` (one new `CallError` variant; the enum is `#[non_exhaustive]`):
 
 - **Middleware**: `Routes::middleware(Fn(&mut Context, Next))` (every request and notify,
   unknown methods included) and `Routes::method_middleware(method, ...)`. Order is fixed and
@@ -42,7 +42,7 @@ Additive API in `only-arpc` (one new `CallError` variant; the enum is `#[non_exh
   is fixed after each coder, a decoded body over `max_body_bytes` or a decode error closes the
   connection, pings and pongs are never coded. Built in: `Gzip::new(threshold)` (bit 7,
   compresses bytes 5.. as Go does; inflation bounded by `max_body_bytes` via
-  `only_deflate::decompress`'s limit, so a bomb costs at most the limit) and
+  `akio_deflate::decompress`'s limit, so a bomb costs at most the limit) and
   `Appender::new(name, bit)` (Go's appender layout: name, value, 2-byte big-endian length; strict
   length checks where Go would panic). `Values` is a small string → bytes map (`Vec`-backed, free
   when empty). Calls carry values with `Peer::call_with` / `call_async_with` / `notify_with`;
@@ -65,7 +65,7 @@ Additive API in `only-arpc` (one new `CallError` variant; the enum is `#[non_exh
 
 Interop: `tools/interop/arpc/run.sh` runs, besides the plain checks, a fib Go arpc server and
 client with the arpcex gzip and appender coders (ported to fib's `MessageCoder`, same bits) and a
-Go middleware that refuses calls without the trace value, against an only-arpc server and pool
+Go middleware that refuses calls without the trace value, against an akio-arpc server and pool
 with the same chain and a Rust middleware doing the same, in both directions; both sides count
 the compressed frames they inflated. Fuzzing: new target `arpc_coders` (frames → coder chain →
 parser, split-invariance, decoded size bound, encode/decode identity).
@@ -93,4 +93,4 @@ parser, split-invariance, decoded size bound, encode/decode identity).
   `perf stat` per call: user instructions 4963 → 5034 (+1.5%, the pending bound and the coder and
   heartbeat checks) and +40 per middleware; cycles per call unchanged (7008 / 6939 / 6865);
   syscalls per call identical.
-- `only-arpc` now depends on `only-deflate` (in-workspace, ADR-005 unaffected).
+- `akio-arpc` now depends on `akio-deflate` (in-workspace, ADR-005 unaffected).

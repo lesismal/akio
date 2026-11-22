@@ -1,4 +1,4 @@
-# ADR-050：only-rtp 估计器中的带宽探测
+# ADR-050：akio-rtp 估计器中的带宽探测
 
 [English](050-bwe-probing.md) | 简体中文
 
@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only_rtp::BandwidthEstimator`（ADR-036，由 transport-wide 或 RFC 8888 反馈驱动的、类似 GCC
+`akio_rtp::BandwidthEstimator`（ADR-036，由 transport-wide 或 RFC 8888 反馈驱动的、类似 GCC
 的发送端估计器）此前只按 AIMD 规则增长：每秒 8 %，在上次下降的速率附近改为加性增长，且永远不超过
 已确认码率的 1.5 倍 + 10 kbps。因此从 300 kbps 起步的 WebRTC 发送方要 23 s 才能达到 2 Mbps
 链路的 90 %，10 Mbps 要 44 s；受应用限制的发送方（编码器已在最高层、SFU 只转发一层）永远不知道
@@ -17,12 +17,12 @@ libwebrtc 用探测解决这个问题：`ProbeController` 决定何时探测、�
 以目标速率发送一个包*簇*（至少 15 ms、5 个包），`ProbeBitrateEstimator` 把簇的反馈换算成测得的
 速率并设为基于时延的估计值。探测包是填充包或最近媒体的 RTX 副本，在 pacer 中打上簇 id。
 
-only-webrtc 没有 pacer：`write_media` 把一帧分包后立即全部交给传输层。另一个会话正在同时修改
-only-webrtc（DTLS 1.3、cryptex、Opus RED），因此 only-webrtc 的改动必须很小，且只在发送路径内。
+akio-webrtc 没有 pacer：`write_media` 把一帧分包后立即全部交给传输层。另一个会话正在同时修改
+akio-webrtc（DTLS 1.3、cryptex、Opus RED），因此 akio-webrtc 的改动必须很小，且只在发送路径内。
 
 ## 决定
 
-1. **探测放在 only-rtp 中，sans-io，位于 `BandwidthEstimator` 之后**（私有模块 `probe`），
+1. **探测放在 akio-rtp 中，sans-io，位于 `BandwidthEstimator` 之后**（私有模块 `probe`），
    默认开启；`with_probing(false)` 完全恢复之前的估计器（从不请求探测，其余不变）。
    - *何时*（libwebrtc `ProbeController` 的默认值）：开始时以起始速率的 3 倍和 6 倍各探测一簇；
      等待结果期间，结果超过上次探测的 70 % 就以估计值的两倍再探测一次（1 s 内没有这样的结果、
@@ -58,7 +58,7 @@ only-webrtc（DTLS 1.3、cryptex、Opus RED），因此 only-webrtc 的改动必
    （否则取最新包）的 RTX 副本，接收方把它当作重复包；历史为空或没有 RTX 时，构造只含填充的包
    （至多 255 字节填充），有 RTX 流时放在 RTX 流上，否则以下一个序号放在媒体流上。探测包不进入
    历史，也不计入已发送 / 已重传计数。流尚未发送任何东西时返回 `None`。
-3. **only-webrtc：最小的 pacer 钩子**（新文件 `rtc/pacing.rs`，`rtc.rs` 中 11 行）。启用
+3. **akio-webrtc：最小的 pacer 钩子**（新文件 `rtc/pacing.rs`，`rtc.rs` 中 11 行）。启用
    估计器（`RtcConfig::enable_bwe`）后，每次 `write_media` 之后以及 `handle_timeout` 中运行
    `send_probes`，`poll_output` 的超时包含探测超时；探测包走在有拥塞控制反馈（transport-wide 或
    RFC 8888）的各行中发送媒体最多的流上，带新的 transport-wide 序号与 abs-send-time，在 RTX 上把
@@ -68,7 +68,7 @@ only-webrtc（DTLS 1.3、cryptex、Opus RED），因此 only-webrtc 的改动必
 
 ## 影响
 
-- 模拟链路（`crates/only-rtp/src/tests_probe.rs`：编码器跟随估计值、帧大小 ±20 %，单向 20 ms，
+- 模拟链路（`crates/akio-rtp/src/tests_probe.rs`：编码器跟随估计值、帧大小 ±20 %，单向 20 ms，
   300 ms 尾部丢弃 FIFO，每 100 ms 一次反馈；起始 300 kbps），探测开 / 关：0.5 Mbps 的 90 % 用时
   0.15 s / 5.4 s，2 Mbps 为 0.25 s / 23.4 s，10 Mbps 为 0.35 s / 44.3 s；估计值峰值为容量的
   1.12x / 1.03x / 1.01x（关：1.08x / 1.01x / 0.30x）；最大排队时延 81 / 32 / 22 ms。阶跃
@@ -85,10 +85,10 @@ only-webrtc（DTLS 1.3、cryptex、Opus RED），因此 only-webrtc 的改动必
   爬升时滞后）可能随后到来；下降后的探测会把它拉回。10 Mbps 上 5-30 s 的平均估计值为容量的
   0.86（关：0.13）。
 - 探测消耗带宽：每次探测约 15 ms、至多估计值的两倍（10 Mbps 上前 30 s 共 78 kB）。
-- API 全部是新增，只有 `PacketResult` 多了一个公开字段（only-rtp 属于内部层级：crate 外的
+- API 全部是新增，只有 `PacketResult` 多了一个公开字段（akio-rtp 属于内部层级：crate 外的
   `PacketResult` 结构体字面量需要加上 `probe: None`）：`ProbePacket`、
   `BandwidthEstimator::{with_probing, poll_probe, probe_timeout, on_probe_sent,
   cancel_probes, on_network_change, application_limited}`、`TwccSender::on_sent_probe`、
-  `CcfbSender::on_sent_probe`、`SendStream::padding`。only-webrtc 的公开 API 不变。
+  `CcfbSender::on_sent_probe`、`SendStream::padding`。akio-webrtc 的公开 API 不变。
 - 未完成：提高配置的最大值时探测、libwebrtc 基于网络状态估计的探测以及探测不确定度 / 快速恢复
-  变体；only-webrtc 中真正的 pacer（媒体仍按帧突发发出）；only-webrtc 中关闭探测的配置开关。
+  变体；akio-webrtc 中真正的 pacer（媒体仍按帧突发发出）；akio-webrtc 中关闭探测的配置开关。

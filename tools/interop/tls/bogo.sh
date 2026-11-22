@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# BoGo, BoringSSL's TLS test suite (ssl/test/runner), against only-tls through the shim in
-# crates/only-tls/examples/bogo-shim.rs. Needs git, Go (1.27 or later for the pinned BoringSSL)
+# BoGo, BoringSSL's TLS test suite (ssl/test/runner), against akio-tls through the shim in
+# crates/akio-tls/examples/bogo-shim.rs. Needs git, Go (1.27 or later for the pinned BoringSSL)
 # and python3:
 #
 #   tools/interop/tls/bogo.sh [runner flags, e.g. -test 'Basic-*;Resume-*' -num-workers 8]
@@ -8,10 +8,10 @@
 # It builds the shim, clones BoringSSL at a pinned commit into $OUT/boringssl unless
 # BORINGSSL_DIR points at a checkout already, builds the runner, runs every test not disabled in
 # tools/interop/tls/bogo_config.json and prints a summary: passed, failed, unimplemented (the
-# shim exits 89 for a flag asking for something only-tls does not do or cannot report, which
+# shim exits 89 for a flag asking for something akio-tls does not do or cannot report, which
 # the runner counts as a skip) and disabled (the config's DisabledTests, each with its reason:
-# whole areas only-tls does not implement, then single tests that fail for a known reason). The
-# run passes when nothing failed. -loose-errors is on: the shim reports only-tls's own error
+# whole areas akio-tls does not implement, then single tests that fail for a known reason). The
+# run passes when nothing failed. -loose-errors is on: the shim reports akio-tls's own error
 # messages, not BoringSSL's error codes, so an expected failure counts whatever the reason.
 # The JSON results and the log are in $OUT (default /tmp/bogo-run).
 set -u
@@ -23,7 +23,7 @@ TARGET=${CARGO_TARGET_DIR:-$ROOT/target}
 CONFIG=$ROOT/tools/interop/tls/bogo_config.json
 mkdir -p "$OUT"
 
-(cd "$ROOT" && cargo build -q --release -p only-tls --example bogo-shim) || exit 1
+(cd "$ROOT" && cargo build -q --release -p akio-tls --example bogo-shim) || exit 1
 SHIM=$TARGET/release/examples/bogo-shim
 
 if [ ! -d "$BSSL/ssl/test/runner" ]; then

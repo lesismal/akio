@@ -1,13 +1,13 @@
 //! The protobuf conformance testee: reads length-prefixed (little-endian u32) `ConformanceRequest`s
 //! from stdin and answers each with a `ConformanceResponse` on stdout, until EOF. Binary payloads
-//! go through the generated message types, JSON through `only_protobuf::json` and text through
-//! `only_protobuf::text` on the same types.
+//! go through the generated message types, JSON through `akio_protobuf::json` and text through
+//! `akio_protobuf::text` on the same types.
 //!
 //! Run by the conformance runner: `tools/protobuf-test/conformance/run.sh`.
 
 use std::io::{self, Read, Write};
 
-use only_protobuf::{
+use akio_protobuf::{
     Message,
     json::{self, ParseOptions, PrintOptions},
     reflect::ReflectMessage,
@@ -95,10 +95,10 @@ fn handle(req: &ConformanceRequest) -> R {
     }
 }
 
-/// With `ONLY_CONFORMANCE_STATS=<file>`, counts of requests and skips per test category are
+/// With `AKIO_CONFORMANCE_STATS=<file>`, counts of requests and skips per test category are
 /// kept in that file (the runner may stop the testee without closing its input).
 fn main() -> io::Result<()> {
-    let stats = std::env::var_os("ONLY_CONFORMANCE_STATS");
+    let stats = std::env::var_os("AKIO_CONFORMANCE_STATS");
     let mut counts: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();

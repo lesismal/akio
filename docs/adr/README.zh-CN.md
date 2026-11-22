@@ -15,7 +15,7 @@
 - [ADR-009：引擎上限与超时的安全默认值](009-safe-defaults.zh-CN.md)
 - [ADR-010：HTTP 与 WebSocket 客户端：重定向、超时、解析、系统根证书、代理](010-http-client-gaps.zh-CN.md)
 - [ADR-011：HTTP/3 上的 WebSocket（RFC 9220）、QPACK 动态表与流式请求 body](011-h3-websocket-qpack-streaming.zh-CN.md)
-- [ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 only-log 过滤器](012-socks-commands-and-log-filters.zh-CN.md)
+- [ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 akio-log 过滤器](012-socks-commands-and-log-filters.zh-CN.md)
 - [ADR-013：共享的 0-RTT 防重放存储与 QUIC 兼容版本协商](013-shared-anti-replay-and-compatible-vn.zh-CN.md)
 - [ADR-014：QUIC 会话票据与令牌绑定到 QUIC 版本](014-quic-version-bound-resumption.zh-CN.md)
 - [ADR-015：可插拔的指标收集器](015-metrics-collectors.zh-CN.md)（2026-11-16 采纳）
@@ -24,7 +24,7 @@
 - [ADR-018：BitTorrent v2 与混合种子、Web 种子、LSD、IPv6 DHT、速率与做种限制](018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)（2026-11-17 采纳）
 - [ADR-019：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组与 SOCKS4 BIND](019-socks-client-fragments-socks4-bind.zh-CN.md)（2026-11-17 采纳）
 - [ADR-020：Span、推送导出（OTLP、StatsD）、HTTP 按路由标签与 HTTP/2 gauge](020-spans-and-push-export.zh-CN.md)（2026-11-17 采纳）
-- [ADR-021：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复](021-dtls13-cid-resumption.zh-CN.md)
+- [ADR-021：akio-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复](021-dtls13-cid-resumption.zh-CN.md)
 - [ADR-022：protobuf 的 group、extension、edition、JSON 与反射](022-protobuf-gaps.zh-CN.md)（2026-11-18 采纳）
 - [ADR-023：arpc 中间件、coder 与客户端连接池](023-arpc-middleware-coders-pools.zh-CN.md)（2026-11-17 采纳）
 - [ADR-024：UDP 接收缓冲区的所有权交付与带密钥的对端表](024-udp-owned-receive-buffers.zh-CN.md)（2026-11-17 采纳）
@@ -32,50 +32,50 @@
 - [ADR-026：用户态 TCP/IP 协议栈的 IPv6、ECN 与 pacing](026-userspace-ipv6-ecn-pacing.zh-CN.md)（2026-11-17 采纳）
 - [ADR-027：XDP 限速、线程绑核、eBPF 哈希层与内核拼接的 SOCKS 隧道](027-ebpf-xdp-pinning-socks-splice.zh-CN.md)（2026-11-18 采纳）
 - [ADR-028：读缓冲区、backlog、UDP 空闲超时与 I/O 线程数的热更新](028-hot-reload-buffers-backlog-threads.zh-CN.md)（2026-11-17 采纳）
-- [ADR-029：`ONLY_DEFAULT_BACKEND` 为未选择后端的 listener 选用 io_uring](029-default-backend-env.zh-CN.md)（2026-11-17 采纳）
+- [ADR-029：`AKIO_DEFAULT_BACKEND` 为未选择后端的 listener 选用 io_uring](029-default-backend-env.zh-CN.md)（2026-11-17 采纳）
 - [ADR-030：protobuf 文本格式](030-protobuf-text-format.zh-CN.md)（2026-11-18 采纳）
 - [ADR-031：媒体 hub 中的 VP8、VP9 与 AV1，多码率（multivariant）HLS 播放列表](031-media-vp8-vp9-av1-multivariant-hls.zh-CN.md)（2026-11-18 采纳）
 - [ADR-032：`Endpoint` 经 TCP 与 TLS 使用 TURN、主动及服务器端 ICE-TCP、与 Chrome 的 simulcast](032-webrtc-turn-streams-ice-tcp-simulcast.zh-CN.md)（2026-11-18 采纳）
 - [ADR-033：BitTorrent 快速续传](033-bittorrent-fast-resume.zh-CN.md)（2026-11-18 采纳）
 - [ADR-034：流媒体 Hub 的 HLS 加密与录制](034-media-hls-encryption-recording.zh-CN.md)（2026-11-18 采纳）
 - [ADR-035：macOS 上与用户态协议栈 UDP 上的 ECN](035-ecn-macos-and-userspace-udp.zh-CN.md)（2026-11-18 采纳）
-- [ADR-036：only-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC](036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md)（2026-11-18 采纳）
+- [ADR-036：akio-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC](036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md)（2026-11-18 采纳）
 - [ADR-037：SCTP 消息交错（I-DATA）与流调度器](037-sctp-idata-schedulers.zh-CN.md)（2026-11-18 采纳）
 - [ADR-038：证书吊销：CRL、OCSP 与装订响应的校验](038-x509-revocation.zh-CN.md)（2026-11-18 采纳）
-- [ADR-039：only-webrtc 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈](039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md)（2026-11-19 采纳）
+- [ADR-039：akio-webrtc 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈](039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md)（2026-11-19 采纳）
 - [ADR-040：SRTP 的 MKI、密钥派生率、更多保护配置、头部扩展加密与 cryptex](040-srtp-mki-cryptex.zh-CN.md)（2026-11-19 采纳）
 - [ADR-041：自研 brotli 与 Zstandard，用于证书压缩和 HTTP](041-brotli-zstd.zh-CN.md)（2026-11-19 采纳）
 - [ADR-042：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求](042-sctp-heartbeat-restart-zero-checksum.zh-CN.md)（2026-11-19 采纳）
 - [ADR-043：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md)（2026-11-19 采纳）
 - [ADR-044：mDNS ICE 候选、重新提名与激进提名、同时打开的 ICE-TCP](044-ice-mdns-renomination-tcp-so.zh-CN.md)（2026-11-19 采纳）
-- [ADR-045：only-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据](045-dtls13-cid-updates-pha-early-data.zh-CN.md)（2026-11-19 采纳）
+- [ADR-045：akio-dtls 的 DTLS 1.3 连接 ID 更新、握手后客户端认证与早期数据](045-dtls13-cid-updates-pha-early-data.zh-CN.md)（2026-11-19 采纳）
 - [ADR-046：证书策略、间接 CRL、Ed448、X448 与 DSA 验签](046-x509-policies-indirect-crls-ed448-dsa.zh-CN.md)（2026-11-19 采纳）
-- [ADR-047：only-log 的 `/regex` 消息过滤，基于新的内部 crate `only-regex`](047-log-regex-filters.zh-CN.md)（2026-11-19 采纳）
-- [ADR-048：only-webrtc 的 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md)（2026-11-19 采纳）
+- [ADR-047：akio-log 的 `/regex` 消息过滤，基于新的内部 crate `akio-regex`](047-log-regex-filters.zh-CN.md)（2026-11-19 采纳）
+- [ADR-048：akio-webrtc 的 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.zh-CN.md)（2026-11-19 采纳）
 - [ADR-049：P-521、RSA-PSS 密钥与 TLS 1.3 客户端的 OCSP 响应](049-p521-rsa-pss-keys-client-ocsp.zh-CN.md)（2026-11-19 采纳）
-- [ADR-050：only-rtp 估计器中的带宽探测](050-bwe-probing.zh-CN.md)（2026-11-19 采纳）
-- [ADR-051：路由约束改用 `only-regex`](051-router-on-only-regex.zh-CN.md)（2026-11-19 采纳）
-- [ADR-052：SRTP 的 AES-f8 与 SEED，only-crypto 的 SEED](052-srtp-f8-seed.zh-CN.md)（2026-11-20 采纳）
+- [ADR-050：akio-rtp 估计器中的带宽探测](050-bwe-probing.zh-CN.md)（2026-11-19 采纳）
+- [ADR-051：路由约束改用 `akio-regex`](051-router-on-akio-regex.zh-CN.md)（2026-11-19 采纳）
+- [ADR-052：SRTP 的 AES-f8 与 SEED，akio-crypto 的 SEED](052-srtp-f8-seed.zh-CN.md)（2026-11-20 采纳）
 - [ADR-053：ULPFEC 保护级别、由收包生成 XR 块、类型化 SDES 项](053-ulpfec-levels-xr-receipts-sdes-items.zh-CN.md)（2026-11-20 采纳）
 - [ADR-054：DTLS 上的 TURN、IPv6 上的 mDNS 与 SDES-SRTP](054-turn-dtls-mdns-ipv6-sdes.zh-CN.md)（2026-11-20 采纳）
-- [ADR-055：only-ice 中每个 ICE 数据流支持多个组件](055-ice-components.zh-CN.md)（2026-11-20 采纳）
-- [ADR-058：only-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别](058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md)（2026-11-20 采纳）
+- [ADR-055：akio-ice 中每个 ICE 数据流支持多个组件](055-ice-components.zh-CN.md)（2026-11-20 采纳）
+- [ADR-058：akio-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别](058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md)（2026-11-20 采纳）
 - [ADR-059：客户端的 cookie、Happy Eyeballs、DNS 缓存与到代理的 TLS；SOCKS 分片与 TLS](059-client-cookies-happy-eyeballs-proxy-tls.zh-CN.md)（2026-11-20 采纳）
 - [ADR-060：HTTP/2 上的 WebSocket（RFC 8441）](060-h2-websocket.zh-CN.md)（2026-11-20 采纳）
 - [ADR-061：完整的 QPACK 编码器与 HTTP/3 客户端流式响应](061-qpack-encoder-h3-streamed-responses.zh-CN.md)（2026-11-20 采纳）
-- [ADR-062：only-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo](062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)（2026-11-20 采纳）
+- [ADR-062：akio-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo](062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)（2026-11-20 采纳）
 - [ADR-063：经 bpffs 的跨进程分流、重载时的 listener 迁移与 AF_XDP](063-shared-steering-migration-af-xdp.zh-CN.md)（2026-11-21 采纳）
 - [ADR-064：gRPC 与 TLS 上的 OTLP、OTLP 日志、span 事件与链接、exemplar、导出重试](064-otlp-grpc-tls-logs-events-exemplars.zh-CN.md)（2026-11-20 采纳）
 - [ADR-065：无连接的 UDP listener（`DatagramsHandler`）](065-connectionless-datagrams.zh-CN.md)（2026-11-21 采纳）
 - [ADR-066：静态文件缓存的变更通知（inotify / kqueue）](066-static-files-change-notifications.zh-CN.md)（2026-11-20 采纳）
 - [ADR-067：引擎连接的内核 TLS，硬件优先](067-kernel-tls-engine-offload.zh-CN.md)（2026-11-21 采纳）
 - [ADR-068：用户态协议栈的 IPv6 自动配置、Accurate ECN，以及 AF_XDP 共享 UMEM / 多缓冲帧](068-userspace-stack-slaac-accecn-af-xdp-multibuffer.zh-CN.md)（2026-11-21 采纳）
-- [ADR-069：only-brotli 与 only-zstd 的流式 API、字典与最高级别压缩率](069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md)（2026-11-21 采纳）
+- [ADR-069：akio-brotli 与 akio-zstd 的流式 API、字典与最高级别压缩率](069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md)（2026-11-21 采纳）
 - [ADR-070：自动重连的 RTMP / RTSP 客户端、RTCP 音视频同步、HLS I 帧播放列表、rendition report、会话密钥、H.265 `cbcs`](070-media-reconnect-av-sync-iframes-hevc-cbcs.zh-CN.md)（2026-11-21 采纳）
 - [ADR-071：机制由应用提供的 SOCKS5 GSS-API 认证](071-socks-gssapi-pluggable-mechanism.zh-CN.md)（2026-11-21 采纳）
 - [ADR-072：无 BUNDLE 或无 ICE 的传输、SDES 变体、数据通道优先级与 TURN DTLS 连接 ID](072-webrtc-transports-sdes-priorities-turn-cids.zh-CN.md)（2026-11-21 采纳）
 - [ADR-073：发送节拍器（pacer）、libwebrtc 的 FEC 掩码与保护策略、RFC 8888 中的 ECN，以及更多探测](073-webrtc-pacer-fec-policy-ecn.zh-CN.md)（2026-11-21 采纳）
-- [ADR-074：only-http 压缩流式响应](074-compressed-streamed-responses.zh-CN.md)（2026-11-21 采纳，2026-11-22 两次更新）
+- [ADR-074：akio-http 压缩流式响应](074-compressed-streamed-responses.zh-CN.md)（2026-11-21 采纳，2026-11-22 两次更新）
 - [ADR-075：AES-128 的 I 帧播放列表、RTSP RECORD 会话的 RTCP 同步、rendition report 的查询串](075-media-aes-iframes-record-sync-report-queries.zh-CN.md)（2026-11-22 采纳）
 - [ADR-076：TURN TCP 分配（RFC 6062）](076-turn-tcp-allocations.zh-CN.md)（2026-11-22 采纳；2026-11-22 更新：由引擎驱动的客户端、Connect 超时、`Endpoint` 的决定）
 - [ADR-077：ECN 可用的 RTP、无 ICE 媒体的锁定，以及无 BUNDLE 时跨传输的拥塞控制](077-webrtc-ecn-latching-unbundled-cc.zh-CN.md)（2026-11-22 采纳）
@@ -88,4 +88,4 @@
 - [ADR-084：RTSP 接收者报告、客户端重定向、重连时重新解析；HLS 请求关键帧](084-rtsp-receiver-reports-redirects-lookups.zh-CN.md)（2026-11-22 采纳）
 - [ADR-085：RTCP XR VoIP 指标中与编解码器相关的字段：按编解码器的 G.107 / G.107.1，应用提供的值](085-rtcp-xr-voip-quality-fields.zh-CN.md)（2026-11-22 采纳；宽带模型由 ADR-087 更正）
 - [ADR-086：RFC 6679 的 "ice" 与 "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、锁定 RTCP 的 DTLS 以及 DTLS 客户端](086-webrtc-ecn-initiation-retry-dtls-latching.zh-CN.md)（2026-11-22 采纳）
-- [ADR-087：全频带与按码率的 E-model，以及 only-webrtc 中的音频抖动缓冲](087-fullband-emodel-audio-jitter-buffer.zh-CN.md)（2026-11-22 采纳）
+- [ADR-087：全频带与按码率的 E-model，以及 akio-webrtc 中的音频抖动缓冲](087-fullband-emodel-audio-jitter-buffer.zh-CN.md)（2026-11-22 采纳）

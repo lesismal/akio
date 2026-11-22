@@ -1,4 +1,4 @@
-# ADR-050: Bandwidth probing in the only-rtp estimator
+# ADR-050: Bandwidth probing in the akio-rtp estimator
 
 English | [简体中文](050-bwe-probing.zh-CN.md)
 
@@ -6,7 +6,7 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-`only_rtp::BandwidthEstimator` (ADR-036, the GCC-like send-side estimator fed by transport-wide or
+`akio_rtp::BandwidthEstimator` (ADR-036, the GCC-like send-side estimator fed by transport-wide or
 RFC 8888 feedback) only grew by its AIMD rules: 8 % per second, additively near the rate of the
 last decrease, and never above 1.5 times the acknowledged bitrate + 10 kbps. A WebRTC sender
 starting at 300 kbps therefore needed 23 s to reach 90 % of a 2 Mbps link and 44 s for 10 Mbps,
@@ -21,13 +21,13 @@ and `ProbeBitrateEstimator` turns the cluster's feedback into a measured rate th
 delay-based estimate. The packets are padding or RTX copies of recent media, tagged with the
 cluster id in the pacer.
 
-only-webrtc has no pacer: `write_media` packetizes a frame and queues its packets for the
-transport at once. Another session is editing only-webrtc at the same time (DTLS 1.3, cryptex,
-Opus RED), so the only-webrtc change must stay small and inside the send path.
+akio-webrtc has no pacer: `write_media` packetizes a frame and queues its packets for the
+transport at once. Another session is editing akio-webrtc at the same time (DTLS 1.3, cryptex,
+Opus RED), so the akio-webrtc change must stay small and inside the send path.
 
 ## Decision
 
-1. **Probing lives in only-rtp, sans-io, behind `BandwidthEstimator`** (a private `probe`
+1. **Probing lives in akio-rtp, sans-io, behind `BandwidthEstimator`** (a private `probe`
    module), on by default; `with_probing(false)` restores the previous estimator exactly (no
    probe is ever requested and nothing else changes).
    - *When* (libwebrtc's `ProbeController` defaults): on start, clusters at 3 and 6 times the
@@ -76,7 +76,7 @@ Opus RED), so the only-webrtc change must stay small and inside the send path.
    255 bytes of padding) on the RTX stream if there is one, else on the media stream with the
    next sequence number. Probe packets do not enter the history or the sent / resent counters.
    `None` before the stream sent anything.
-3. **only-webrtc: the minimal pacer hook** (new file `rtc/pacing.rs`, 11 lines in `rtc.rs`).
+3. **akio-webrtc: the minimal pacer hook** (new file `rtc/pacing.rs`, 11 lines in `rtc.rs`).
    With the estimator enabled (`RtcConfig::enable_bwe`), `send_probes` runs after each
    `write_media` and in `handle_timeout`, and `poll_output`'s timeout includes the probe timeout;
    probe packets go on the stream that sent the most media among the lines with congestion
@@ -88,7 +88,7 @@ Opus RED), so the only-webrtc change must stay small and inside the send path.
 
 ## Consequences
 
-- Simulated links (`crates/only-rtp/src/tests_probe.rs`: an encoder following the estimate with
+- Simulated links (`crates/akio-rtp/src/tests_probe.rs`: an encoder following the estimate with
   ±20 % frame sizes, 20 ms each way, a 300 ms drop-tail FIFO, feedback every 100 ms; start
   300 kbps), probing on / off: 90 % of 0.5 Mbps after 0.15 s / 5.4 s, of 2 Mbps after 0.25 s /
   23.4 s, of 10 Mbps after 0.35 s / 44.3 s; peak estimate 1.12x / 1.03x / 1.01x the capacity
@@ -109,12 +109,12 @@ Opus RED), so the only-webrtc change must stay small and inside the send path.
   probing brings it back. Mean estimate over 5-30 s on 10 Mbps: 0.86 of the capacity (off: 0.13).
 - Probes cost bandwidth: about 15 ms at up to twice the estimate per probe (78 kB in the first
   30 s on 10 Mbps).
-- API, all additive except `PacketResult`'s new public field (only-rtp is internal tier: struct
+- API, all additive except `PacketResult`'s new public field (akio-rtp is internal tier: struct
   literals of `PacketResult` outside the crate must add `probe: None`): `ProbePacket`,
   `BandwidthEstimator::{with_probing, poll_probe, probe_timeout, on_probe_sent,
   cancel_probes, on_network_change, application_limited}`, `TwccSender::on_sent_probe`,
-  `CcfbSender::on_sent_probe`, `SendStream::padding`. only-webrtc's public API is unchanged.
+  `CcfbSender::on_sent_probe`, `SendStream::padding`. akio-webrtc's public API is unchanged.
 - Not done: probing when the configured maximum is raised, the network-state-estimate driven
   probing and the probe-uncertainty / rapid-recovery variants of libwebrtc; a real pacer in
-  only-webrtc (media still leaves in frame bursts); a configuration switch to turn probing off in
-  only-webrtc.
+  akio-webrtc (media still leaves in frame bursts); a configuration switch to turn probing off in
+  akio-webrtc.

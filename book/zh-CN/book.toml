@@ -1,7 +1,7 @@
 [book]
-title = "only 指南"
-description = "only：Rust 的事件驱动、每核一线程网络库"
-authors = ["only contributors"]
+title = "akio 指南"
+description = "akio：Rust 的事件驱动、每核一线程网络库"
+authors = ["akio contributors"]
 language = "zh-CN"
 src = "src"
 
@@ -11,9 +11,9 @@ build-dir = "../../target/book/zh-CN"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/lesismal/only"
-edit-url-template = "https://github.com/lesismal/only/edit/main/book/zh-CN/{path}"
-site-url = "/only/zh-CN/"
+git-repository-url = "https://github.com/lesismal/akio"
+edit-url-template = "https://github.com/lesismal/akio/edit/main/book/zh-CN/{path}"
+site-url = "/akio/zh-CN/"
 additional-js = ["mermaid-init.js", "lang-switch.js"]
 # Shown for missing pages; the site-wide 404.html is the English one (book/site.sh).
 input-404 = "404.md"

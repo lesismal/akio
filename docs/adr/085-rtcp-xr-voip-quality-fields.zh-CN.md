@@ -13,12 +13,12 @@ MOS-LQ 与 MOS-CQ。其“未完成”一行仍留着“与编解码器相关的
   G.722 通话的得分与 G.711 相同，接收方配置字节也不说明丢包隐藏。
 - **时延损伤用的是近似。** Cole 与 Rosenbluth 的拟合（`Id = 0.024 d + 0.11 (d - 177.3) H`）在约
   300 ms 以内与 G.107 的默认曲线吻合，之后偏离（400 ms 时 34.1 对 31.1，500 ms 时 47.5 对 38.6）。
-- **应用无从提供数值。** only-webrtc 把未解码的音频交给应用：它没有抖动缓冲，也看不到采样，因此信号
+- **应用无从提供数值。** akio-webrtc 把未解码的音频交给应用：它没有抖动缓冲，也看不到采样，因此信号
   与噪声电平、残余回声回损、抖动缓冲字段与端系统时延只能来自应用，而此前没有提供它们的 API。
 
 ## 决定
 
-### 1. E-model（only-rtp）
+### 1. E-model（akio-rtp）
 
 - `EModel` 按 G.107 §7 计算，接收方无法测量的参数都取表 3 默认值：`No`、`Ro`（94.77）与
   `Is = Iolr + Ist + Iq`（1.41）按公式算出，完整的时延损伤 `Id = Idte + Idle + Idd` 取 `Ta = T`、
@@ -50,7 +50,7 @@ MOS-LQ 与 MOS-CQ。其“未完成”一行仍留着“与编解码器相关的
 - `VoipMetrics::quality()`：时延、电平、评分与接收方配置字段上 `BurstLossModel::report` 的逆运算（127、
   超出范围的评分、为零的时延以及未知或保留的抖动缓冲类型都成为 `None`），使收到的块读作有类型的值。
 
-### 2. only-webrtc
+### 2. akio-webrtc
 
 - 每个接收音频流的报告使用所收编解码器的表项与丢包隐藏（表中没有的编解码器按带丢包隐藏的 G.711）；
   除非应用另有说明，RX config 携带 `Plc::of_codec`；Gmin 仍为 16。
@@ -63,32 +63,32 @@ MOS-LQ 与 MOS-CQ。其“未完成”一行仍留着“与编解码器相关的
 
 ### API
 
-仅新增。only-rtp：`EModel::{wideband, is_wideband, for_codec, estimate_report}`、
-`EModelScore::fill`、`Plc::of_codec`、`VoipMetrics::quality`。only-webrtc：`Peer::set_voip_quality`。
+仅新增。akio-rtp：`EModel::{wideband, is_wideband, for_codec, estimate_report}`、
+`EModelScore::fill`、`Plc::of_codec`、`VoipMetrics::quality`。akio-webrtc：`Peer::set_voip_quality`。
 签名不变而行为改变的：`EModel::delay_impairment` 与 `EModel::score` 使用 G.107 完整的 `Id` 与计算出的
-`Ro - Is`（原来的常数 93.2 现为 93.21），only-webrtc 的报告按编解码器评分。
+`Ro - Is`（原来的常数 93.2 现为 93.21），akio-webrtc 的报告按编解码器评分。
 
 ## 影响
 
-- 测试（only-rtp `tests_voip.rs`、`emodel.rs`）：G.107 默认值（`No` -61.18、`Ro` 94.77、`Is` 1.41、
+- 测试（akio-rtp `tests_voip.rs`、`emodel.rs`）：G.107 默认值（`No` -61.18、`Ro` 94.77、`Is` 1.41、
   R 93.2、MOS 4.41）；ITU-T SG12 G.107.1 计算器的默认结果（R 128.8、MOS 4.50）；G.109 表 1 的 R / MOS
   对；按 §7.4 手算的 `Id`：150 ms 为 3.82、300 ms 为 20.69，300 ms 以内与 Cole 和 Rosenbluth 的拟合相差
   不到 1 分，单调；G.113 的 `Ie,eff` 例子（G.729A 在 2 % 随机与突发丢包下，G.711 有无丢包隐藏，宽带刻度
   上的 G.722）；丢包下各编解码器的排序；`estimate_report` 对端系统时延的选择与 `fill`；VoIP 块经线路
   往返后还原为同一个 `VoipQuality`（固定与自适应缓冲、保留类型、超出范围的评分）。`rtp_rtcp` 模糊测试
-  目标检查解码在再次报告后保持不变，且每种编解码器的估算都在范围内。only-webrtc（`tests_mux.rs`，模拟
+  目标检查解码在再次报告后保持不变，且每种编解码器的估算都在范围内。akio-webrtc（`tests_mux.rs`，模拟
   网络）：10 % 丢包下的 Opus 按宽带评分、带增强丢包隐藏、电平不可用；应用给出的电平、RERL、外部 R、丢包
   隐藏与抖动缓冲按原样到达发送方，它选择的编解码器模型使 R 低于对端默认的 Opus，它自己的评分替代估算值。
 - 开销：协商了 VoIP 指标时，每个接收音频流每秒一次估算（几十次 `pow` / `log`）；否则没有。没有改动热
   路径，因此未做 A/B。
 - 未完成：Opus 全带码率下的 G.107.2 全带模型；随协商码率变化的编解码器值（Opus、48 / 56 kbit/s 的
-  G.722、不带 VAD 的 G.729）；带附录丢包隐藏的 G.722 的 `Bpl,wb`；在 only-webrtc 内测量抖动缓冲（它没有
+  G.722、不带 VAD 的 G.729）；带附录丢包隐藏的 G.722 的 `Bpl,wb`；在 akio-webrtc 内测量抖动缓冲（它没有
   抖动缓冲）。
 
 ## 更新（2026-11-22）：ADR-087
 
 ADR-087 完成了本 ADR 的"未完成"各项：G.107.2 全频带、按码率的编解码器取值
-（`EModel::for_codec_rate`）、带附录 III / IV 丢包隐藏的 G.722 的 `Bpl,wb`，以及 only-webrtc
+（`EModel::for_codec_rate`）、带附录 III / IV 丢包隐藏的 G.722 的 `Bpl,wb`，以及 akio-webrtc
 中的抖动缓冲（`RtcConfig::set_audio_jitter_buffer`），由它填写抖动缓冲与丢弃字段。
 
 它还按 G.107.1（06/2019）及其勘误 1 更正了上文的宽带模型：

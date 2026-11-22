@@ -6,7 +6,7 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-ADR-018 left one item of the `only-bittorrent` client undone: fast-resume files. A torrent added
+ADR-018 left one item of the `akio-bittorrent` client undone: fast-resume files. A torrent added
 again, after a restart or a crash, hash-checked all of its data before it did anything else: for
 a large torrent minutes of disk reads and SHA-1/SHA-256 work, and for a v2 torrent from a magnet
 link a fresh round of hash requests, because the piece layers fetched from peers were only held
@@ -20,7 +20,7 @@ the last save for reasons that are harmless.
 
 ## Decision
 
-1. **Format**: a bencoded dictionary, `file` = `only-bittorrent resume`, `version` = 1, closed by
+1. **Format**: a bencoded dictionary, `file` = `akio-bittorrent resume`, `version` = 1, closed by
    `checksum`, the SHA-256 of the canonical encoding of the dictionary without that key. It holds
    the key info hash (and the v2 hash), the name, the info dictionary as raw bytes (so a magnet
    link restarts without metadata exchange), the have-bitfield, the v2 piece layers (root to

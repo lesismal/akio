@@ -1,9 +1,9 @@
-//! Generates the test messages with only-protobuf-build.
+//! Generates the test messages with akio-protobuf-build.
 
 fn main() {
     // ANCHOR: build
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
-    only_protobuf_build::compile(
+    akio_protobuf_build::compile(
         &[
             "proto/all_types.proto",
             "proto/proto2.proto",
@@ -17,7 +17,7 @@ fn main() {
     .expect("generate");
     // ANCHOR_END: build
     // `utf8_validation = NONE`; proto2 strings as `ProtoString` too (their legacy NONE).
-    only_protobuf_build::Config::new()
+    akio_protobuf_build::Config::new()
         .proto2_unchecked_strings(true)
         .compile(
             &[
@@ -29,7 +29,7 @@ fn main() {
         )
         .expect("generate utf8");
     // The conformance suite's messages (`conformance/proto`, from the protobuf repository).
-    only_protobuf_build::Config::new()
+    akio_protobuf_build::Config::new()
         .include("conformance/proto")
         .compile(
             &[
@@ -43,7 +43,7 @@ fn main() {
             &out,
         )
         .expect("generate conformance");
-    only_protobuf_build::Config::new()
+    akio_protobuf_build::Config::new()
         .btree_maps(true)
         .unknown_fields(false)
         .compile(&["proto/btree.proto"], &out)

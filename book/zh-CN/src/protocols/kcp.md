@@ -1,6 +1,6 @@
 # KCP
 
-`only-kcp` 在 UDP 上提供可靠、有序的消息，线路格式兼容
+`akio-kcp` 在 UDP 上提供可靠、有序的消息，线路格式兼容
 [skywind3000/kcp](https://github.com/skywind3000/kcp)，并兼容
 [kcp-go](https://github.com/xtaci/kcp-go) 的 FEC 和加密（因此也兼容 kcptun 和 fib 的 kcp）。
 与 kcp-go v5 针对六种加密/FEC 组合做过双向互通测试，其中包括经过一个每 7 个数据报丢 1 个的
@@ -9,22 +9,22 @@
 ## 服务端与客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:server}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:server}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:config}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:config}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:client}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:client}}
 ```
 
 - `KcpServer` 是一个 **UDP listener** 的 acceptor。每个开始会话的对端地址从工厂得到一个
   `Session` 和一个 `KcpHandler`；同一地址的新会话 ID 会替换旧会话。`max_sessions(n)` 限制会话
   数（默认 4096；0 取消限制）：超出后开始会话的对端得不到会话，其数据报被丢弃。`sessions()`
   返回当前数量。
-- `only_kcp::dial(&engine, addr, cfg, handler)` 以随机会话 ID 发起客户端会话（用 `dial_conv`
+- `akio_kcp::dial(&engine, addr, cfg, handler)` 以随机会话 ID 发起客户端会话（用 `dial_conv`
   指定 ID）。engine 需要 `udp_client_threads(n)`。可以立即发送消息。
 - `KcpHandler::on_message(&mut self, &Session, Vec<u8>)` 在 I/O 线程上按顺序收到完整的消息
   （流模式下是到达的任意字节）；`on_close(&Session, CloseReason)` 执行一次，原因为 `Closed`、

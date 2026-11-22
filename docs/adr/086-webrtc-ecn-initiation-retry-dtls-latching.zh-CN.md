@@ -22,7 +22,7 @@ ADR-082 留下了以下 WebRTC 事项：
 
 ## 决定
 
-### 1. 启动方式（only-ice `ecn.rs`；only-webrtc `rtc/ecn.rs`、`rtc/ecn_fb.rs`）
+### 1. 启动方式（akio-ice `ecn.rs`；akio-webrtc `rtc/ecn.rs`、`rtc/ecn_fb.rs`）
 
 - **SDP。**
   - 打开 ECN 标记、使用 ICE 且是完整代理时，各节提供
@@ -50,7 +50,7 @@ ADR-082 留下了以下 WebRTC 事项：
   - V = 0 的回答要求立即发下一次。
   - `IceEvent::EcnChecked { local, remote, ecn }` 报告对端看到的码点。没有回答、或回答不带该属性
     时为 `None`。
-  - `IceAgent::poll_transmit_ecn` 返回数据报及其码点，只有这些检查带码点。only-webrtc 通过它
+  - `IceAgent::poll_transmit_ecn` 返回数据报及其码点，只有这些检查带码点。akio-webrtc 通过它
     发送 ICE 的数据报。
   - 结果到来之前路径（`Phase::Verifying`）不标记任何包：
     - 结果是我们的码点或 CE：可用，每个包都标记；
@@ -110,7 +110,7 @@ ADR-082 留下了以下 WebRTC 事项：
 ### 6. DTLS 重新协商密钥：未做，以及原因
 
 - **DTLS 1.2。** 给 DTLS-SRTP 换密钥需要一次新的握手，在 DTLS 1.2 里就是重协商。Chrome
-  （BoringSSL）和 pion 都拒绝重协商，only-dtls 也没有实现（它有过攻击的历史，RFC 5746）。
+  （BoringSSL）和 pion 都拒绝重协商，akio-dtls 也没有实现（它有过攻击的历史，RFC 5746）。
   没有可以互通的对端。
 - **DTLS 1.3。** KeyUpdate 改变记录层密钥，但不改变从握手导出的 SRTP 密钥。
 - **新的关联。** 标准的替代办法是用改变后的 `a=tls-id` 发出信号建立新关联（RFC 8842）。这同时
@@ -122,9 +122,9 @@ ADR-082 留下了以下 WebRTC 事项：
 
 只有新增。
 
-- only-ice：`IceAgent::{check_ecn, ecn_checking, handle_receive_ecn, poll_transmit_ecn}`、
+- akio-ice：`IceAgent::{check_ecn, ecn_checking, handle_receive_ecn, poll_transmit_ecn}`、
   `IceEvent::EcnChecked`、`ECN_CHECK_SENDS`、`ECN_CHECK_INTERVAL`、`ECN_CHECK_GIVE_UP`。
-- only-webrtc：`EcnInitiation`、`RtcConfig::{set_ecn_initiation, set_plain_keepalive}`。
+- akio-webrtc：`EcnInitiation`、`RtcConfig::{set_ecn_initiation, set_plain_keepalive}`。
 - 统计项 `ecn_state` 还可能是 "verifying"。
 
 ### 顺带修复
@@ -158,11 +158,11 @@ ADR-082 留下了以下 WebRTC 事项：
   配置。
 - **互通：** 见 CHANGELOG / DEV-PLAN 条目。
   - `latch.sh`：iptables NAT 后面，RTCP 自己的握手与客户端角色。
-  - 新的 `ecn6679.sh`：两个 only 端之间、经过真实 Linux NAT 的 rtp / leap / ice，以及一条先清除
+  - 新的 `ecn6679.sh`：两个 akio 端之间、经过真实 Linux NAT 的 rtp / leap / ice，以及一条先清除
     ECN、再被删除的路由器规则（失败、重试、恢复）。我们能运行的浏览器或 SIP 栈都没有实现 RFC 6679
-    的 "ice" 或 "leap"，所以这些只在 only 端之间运行。
+    的 "ice" 或 "leap"，所以这些只在 akio 端之间运行。
 - **性能：** gpu51 上与 main da0637aa 的同轮 `webrtc-bench` A/B：媒体 0.999 倍，数据通道 0.997 倍，
   区间重叠（docs/BENCHMARKS.zh-CN.md）。
 - **未做：**
   - DTLS 换密钥（第 6 节）。
-  - 在 only-turn 的中继里复制码点：另一个会话在做。
+  - 在 akio-turn 的中继里复制码点：另一个会话在做。

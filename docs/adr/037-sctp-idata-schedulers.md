@@ -6,7 +6,7 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-`only-sctp`, the data channel layer of the in-house WebRTC stack, sent messages first come,
+`akio-sctp`, the data channel layer of the in-house WebRTC stack, sent messages first come,
 first served in DATA chunks. A DATA message's fragments need consecutive TSNs, so once a large
 message started, every other channel waited for its last fragment: a 256 KiB file transfer on one
 channel held up a chat message on another for as long as the transfer took to leave the
@@ -73,9 +73,9 @@ field trial `WebRTC-DataChannelMessageInterleaving`, so Chrome runs on DATA toda
 
 ## Consequences
 
-- Public API (only-sctp, Internal tier, additive): `Config::{message_interleaving, scheduler}`
+- Public API (akio-sctp, Internal tier, additive): `Config::{message_interleaving, scheduler}`
   with builders, `Scheduler` (`#[non_exhaustive]`), `ChannelOptions::with_priority`,
-  `Association::{set_channel_priority, message_interleaving}`. only-webrtc is unchanged and gets
+  `Association::{set_channel_priority, message_interleaving}`. akio-webrtc is unchanged and gets
   the new defaults.
 - Head-of-line blocking: a 200 kB message queued before a 4-byte one on another channel, on a
   20 ms simulated link: with I-DATA and any interleaving scheduler the small one arrives in
@@ -92,9 +92,9 @@ field trial `WebRTC-DataChannelMessageInterleaving`, so Chrome runs on DATA toda
   on alternate seeds. The fuzz target `sctp_packet` drives an I-DATA pair and a DATA pair, with
   I-DATA, I-FORWARD-TSN and mismatched chunks in its seeds.
 - Interop: pion/sctp v1.12.0 over UDP (`tools/interop/sctp/run.sh`, new: both roles, pion's
-  interleaving on and off, with and without loss); only-webrtc with pion WebRTC (I-DATA
+  interleaving on and off, with and without loss); akio-webrtc with pion WebRTC (I-DATA
   negotiated on every association) and headless Chrome 157 both offer directions (DATA by
   default; I-DATA with the field trial forced on also passes).
 - Not done: usrsctp (Firefox) interop, not checked; per-stream scheduler parameters beyond the
-  priority; exposing priorities or the scheduler in only-webrtc's API (channels use the default
+  priority; exposing priorities or the scheduler in akio-webrtc's API (channels use the default
   priority there).

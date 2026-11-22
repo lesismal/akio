@@ -15,7 +15,7 @@ frame pointers and line tables, `ustack()` per call, and `addr2line -i` on the f
 
 | Where | HTTP/1.1 | h2c | HTTP/3 server |
 |---|---:|---:|---:|
-| Request header storage (`parse_head`, HTTP/2 `build_request`, only-h3 `request_head`) | 1 | 1 | 1 |
+| Request header storage (`parse_head`, HTTP/2 `build_request`, akio-h3 `request_head`) | 1 | 1 | 1 |
 | `Response::with_body`: its header buffer, and a vector of field positions (it reserved room for 4 fields; 2 are kept inline) | 2 | 2 | 2 |
 | The response body: `ctx.text(200, "Hello, World!")` turns the `&str` into a `String` | 1 | 1 | 1 |
 | The HTTP/1.1 response head (`Vec::with_capacity(192 + body)`) | 1 | | |
@@ -30,30 +30,30 @@ body, and the benchmark's request. QUIC itself adds about 1.
 1. **Per-thread spare header storage.** Each thread keeps one spare `Headers` storage for
    request heads and one for response heads. A spare is a buffer for names and values plus the
    field-position vector, emptied. Request heads take the request spare: HTTP/1.1 `parse_head`,
-   HTTP/2 `build_request`, and only-h3 through `transport::request_headers(fields, bytes)`. It
+   HTTP/2 `build_request`, and akio-h3 through `transport::request_headers(fields, bytes)`. It
    goes back with the target buffer (ADR-025) when the handler is done with a request it still
    owns (`Context::recycle_request`, which replaces `recycle_target`).
    `Response::with_body` takes the response spare, and so do `text` and everything built on
    them. It goes back once the head is encoded: the HTTP/1.1 responder, HTTP/2 `send_response`,
-   and only-h3's sink through `transport::recycle_response_headers`. Storage over 4 KiB or over
+   and akio-h3's sink through `transport::recycle_response_headers`. Storage over 4 KiB or over
    64 field positions is not kept. There are two spares, not one, because a request's head is
    still alive while its response is built. They are per thread for ADR-025's reason: the next
    head parsed on the thread finds the storage still in cache.
 2. **`with_body` keeps its positions inline.** It reserves 2 field positions, which are kept
    inline, instead of 4, which needed a vector. A third field moves them into a vector, as any
    third field did before.
-3. **HTTP/1.1 response heads use only-buf's pool.** The head is encoded into
-   `only_buf::get(192 + body)`, a 512-byte or larger size class. The connection gives such a
+3. **HTTP/1.1 response heads use akio-buf's pool.** The head is encoded into
+   `akio_buf::get(192 + body)`, a 512-byte or larger size class. The connection gives such a
    buffer back to the pool of the thread that writes it (`consume`). Inside `on_data` that is
    the I/O thread at the end of the callback, so the buffer is back before the next request.
-   only-core now also gives back a buffer that `send_owned` wrote in full right away (sends
+   akio-core now also gives back a buffer that `send_owned` wrote in full right away (sends
    from other threads when nothing is queued), and the plaintext buffer TLS has just sealed.
 4. **HTTP/2 dispatches a request without boxing its context.** `Action::Dispatch` carries the
    `Request` and the stream's responder. `run` builds the `Context` on its stack, as HTTP/1.1
    does. Streamed requests and extended CONNECT keep the boxed context, which is parked on the
    stream. The vector of actions is a per-thread spare.
 5. **The HTTP/2 output buffer comes from the pool.** When a response head is written into an
-   empty output buffer, the buffer is taken from only-buf's pool (4 KiB class), instead of
+   empty output buffer, the buffer is taken from akio-buf's pool (4 KiB class), instead of
    growing from nothing. The flush hands it to the connection, which gives it back to the
    pool once it is written. One that nothing was written to goes back at the flush, so an
    idle connection holds none.
@@ -61,12 +61,12 @@ body, and the benchmark's request. QUIC itself adds about 1.
 ### Alternatives considered
 
 - **Reusing the response body.** `Context::text` and `Response::text` take
-  `impl Into<String>`, so a `&str` becomes a new `String` in std before only-http sees it.
+  `impl Into<String>`, so a `&str` becomes a new `String` in std before akio-http sees it.
   Changing the bound to `AsRef<str>` would break callers whose type is only `Into<String>`.
   This allocation stays, one per request, in the handler.
 - **Copying the head into the connection's queue.** The head would be encoded into a
   per-thread scratch buffer, then a new `ResponseSlot` method would copy it into the queue's
-  tail buffer, coalescing pipelined responses. That needs only-core API and an extra copy.
+  tail buffer, coalescing pipelined responses. That needs akio-core API and an extra copy.
   The pooled buffer reaches the same count without either.
 - **A per-thread spare `Box<Context>` for HTTP/2.** The box keeps the finished context, and
   whatever its request held, until the next request. Building the context on the stack is
@@ -104,9 +104,9 @@ body, and the benchmark's request. QUIC itself adds about 1.
 - A response sent from another thread (a detached request) is encoded in that thread's pool,
   or in a new buffer when the pool is empty. It goes back to the pool of the thread that
   writes it.
-- API: no public change. Additions under `#[doc(hidden)]` `only_http::transport`, outside the
-  snapshots: `request_headers` and `recycle_response_headers`. only-http now depends on
-  only-buf.
+- API: no public change. Additions under `#[doc(hidden)]` `akio_http::transport`, outside the
+  snapshots: `request_headers` and `recycle_response_headers`. akio-http now depends on
+  akio-buf.
 - Not done:
   - The response body (above).
   - The HTTP/3 client's response headers and body. They belong to the caller, so they are not

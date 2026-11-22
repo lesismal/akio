@@ -1,0 +1,26 @@
+[package]
+name = "akio-rtp"
+description = "akio internals: RTP/RTCP (RFC 3550/4585/5104/3611/8888), packetizers (Opus, VP8, VP9, H.264, H.265, AV1), NACK/RTX, TWCC and bandwidth estimation, FEC (ULPFEC, FlexFEC, RED) for the WebRTC stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-rtp"
+keywords = ["rtp", "rtcp", "webrtc", "media"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_rtp::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

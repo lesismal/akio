@@ -6,14 +6,14 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-ADR-022 gave `only-protobuf` runtime reflection (`DescriptorPool`, `DynamicMessage`) and the
+ADR-022 gave `akio-protobuf` runtime reflection (`DescriptorPool`, `DynamicMessage`) and the
 canonical JSON mapping, and left the text format out: the protobuf conformance runner skipped its
 909 text-format cases. The text format is what protoc's `--decode`, `DebugString`, test fixtures,
 configuration files (`.textproto`, `.pbtxt`) and many tools read and write.
 
 ## Decision
 
-A new module, `only_protobuf::text`, on top of reflection, mirroring `only_protobuf::json`. All
+A new module, `akio_protobuf::text`, on top of reflection, mirroring `akio_protobuf::json`. All
 additive; generated code is unchanged.
 
 - `to_string`, `to_string_with(&PrintOptions)`, `from_str`, `from_str_with(&ParseOptions)` for

@@ -1,17 +1,17 @@
 # HTTP 客户端
 
-两个客户端的连接都运行在 only 的 `Engine` 上（给它设置 `client_threads(n)` 并 `start()`）。
+两个客户端的连接都运行在 akio 的 `Engine` 上（给它设置 `client_threads(n)` 并 `start()`）。
 结果通过 I/O 线程上的回调到达（回调不能阻塞），或者通过 `ResponseFuture` 获取：可以
 `wait()`、`wait_timeout(d)` 或 `.await`。
 
 ## HTTP/1.1：`client::Client`
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:client}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:client}}
 ```
 
 - `Client::new(Arc<Engine>)`，克隆开销很小。`https://` 使用系统 CA
-  （`only::tls::RootCerts::system()`）；`with_tls(only::tls::ClientConfig)` 替换它（自己的根证书、
+  （`akio::tls::RootCerts::system()`）；`with_tls(akio::tls::ClientConfig)` 替换它（自己的根证书、
   客户端证书、ALPN）。
 - `ClientRequest::get(url)`、`ClientRequest::post(url, body)`、`.header(name, value)`、
   `.timeout(d)`；也可以自己填 `method`、`url`、`headers`、`body`、`timeout`。`Host`、
@@ -21,7 +21,7 @@
   和 `url`（最终应答的 URL，即重定向之后的）。
 - keep-alive 连接按主机（以及按代理）复用；在复用连接上发出的请求如果发现连接已失效，会在新连接上
   重试一次。
-- 域名在调用线程之外解析，由 `only::dns` 的解析线程完成（最多 4 个，按需启动）；IP 字面量不需要解析。
+- 域名在调用线程之外解析，由 `akio::dns` 的解析线程完成（最多 4 个，按需启动）；IP 字面量不需要解析。
   依次尝试解析出的每个地址（`localhost` 往往先解析出 `::1`）。
 - `ClientError`：`InvalidUrl`、`Io`、`Protocol`、`Closed`、`Timeout`、`TooManyRedirects`、
   `TooLarge`。
@@ -55,7 +55,7 @@
 
 ### Cookie
 
-不挂容器时不生效：`Client::new(engine).with_cookies(CookieJar::new())`（`only_http::cookie`，
+不挂容器时不生效：`Client::new(engine).with_cookies(CookieJar::new())`（`akio_http::cookie`，
 ADR-059）。每个响应（包括重定向链的每一跳）的 `Set-Cookie` 都会保存，每个请求在一个 `Cookie` 字段中
 携带匹配的 cookie（请求自带的在前）。规则是 RFC 6265 加 RFC 6265bis：没有 `Domain` 时只发回该主机；
 是公共后缀的 `Domain` 被拒绝，除非它就是该主机（单标签与 IP 地址总是公共后缀；用
@@ -67,7 +67,7 @@ ADR-059）。每个响应（包括重定向链的每一跳）的 `Set-Cookie` �
 
 ### 建立连接
 
-域名在调用线程之外解析并缓存 30 秒（`only::dns::CacheConfig`；系统解析器不给 TTL）。有多个地址的
+域名在调用线程之外解析并缓存 30 秒（`akio::dns::CacheConfig`；系统解析器不给 TTL）。有多个地址的
 名字会竞速（Happy Eyeballs v2，RFC 8305）：IPv6 与 IPv4 交替，每 250 毫秒或在一次尝试失败后立即发起
 新的尝试，使用最先建立的连接（`ClientOptions::happy_eyeballs`）。`H2Client::connect(engine, host,
 port, ...)` 对 HTTP/2 做同样的事。
@@ -81,7 +81,7 @@ port, ...)` 对 HTTP/2 做同样的事。
 ### 代理
 
 ```rust,ignore
-use only_http::client::{Client, Proxy};
+use akio_http::client::{Client, Proxy};
 let client = Client::new(engine)
     .with_proxy(Proxy::all("http://user:pass@proxy.internal:3128")?.no_proxy("localhost,.corp"));
 // 或者显式启用环境变量（http_proxy、https_proxy、all_proxy、no_proxy，也认大写）：
@@ -93,7 +93,7 @@ let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@prox
 `http://` 请求以绝对形式发给代理（`GET http://host/path HTTP/1.1`）；`https://` 经
 `CONNECT host:port` 隧道，在隧道内与目标建立 TLS。代理 URL 中的凭据变成
 `Proxy-Authorization: Basic`。代理拒绝建立隧道时，请求以 `ClientError::Io` 失败，其内部错误是
-`only_http::client::ProxyRefused`（`status()`、`reason()`）。`NO_PROXY` 条目：`*`、主机名（及其
+`akio_http::client::ProxyRefused`（`status()`、`reason()`）。`NO_PROXY` 条目：`*`、主机名（及其
 子域）、IP 地址、CIDR 网段，均可带 `:port`。`https://` 代理 URL（端口 443）经 TLS 连接代理，用客户端的
 TLS 配置按名字校验其证书；`https://` 目标于是在这层 TLS 之内再跑一层 TLS。除非调用
 `Proxy::from_env()`，否则不会读取环境变量；`all_proxy` / `ALL_PROXY` 用于专门变量没有设置的协议。
@@ -106,13 +106,13 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
 阻塞 socket）见 [SOCKS 客户端](socks.md#socks-客户端)。
 
 这些规则背后的考虑见
-[ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.zh-CN.md) 与
-[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
+[ADR-010](https://github.com/lesismal/akio/blob/main/docs/adr/010-http-client-gaps.zh-CN.md) 与
+[ADR-019](https://github.com/lesismal/akio/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
 
 ## HTTP/2：`h2client::H2Client`
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:h2client}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:h2client}}
 ```
 
 - `H2Client::dial(engine, addr, tls, opts, ready)` 或 `dial_blocking(engine, addr, tls,
@@ -127,7 +127,7 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
   对端）的头部列表，或超过 `max_body_bytes`（64 MiB）的缓冲 body，会重置该 stream（`CANCEL`）
   并以 `TooLarge` 使请求失败。流式请求（`open`）的 body 随到随交，不限制大小。
 - 双向流式：`open(req, on_event)` 返回用于写请求 body 的 `H2Upload`（`write`、`finish`），并在
-  响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。only-grpc 的客户端
+  响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。akio-grpc 的客户端
   就建立在它之上。
 - 同一连接上的 WebSocket（RFC 8441）：`websocket(url, &H2WsOptions, handler, done)` 或
   `websocket_blocking`；见 [HTTP/2 上的 WebSocket](websocket.md#http2-上的-websocket)。
@@ -137,9 +137,9 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
 
 ## HTTP/3
 
-`only_h3::H3Client` 见 [QUIC 与 HTTP/3](quic-h3.md)。
+`akio_h3::H3Client` 见 [QUIC 与 HTTP/3](quic-h3.md)。
 
 ## 在异步代码中 await
 
 `ResponseFuture` 实现了 `Future`，所以异步代码（包括 tokio）可以 `.await` 它；连接本身仍
-运行在 only 的 I/O 线程上。见[从 tokio 迁移](../migration/from-tokio.md)。
+运行在 akio 的 I/O 线程上。见[从 tokio 迁移](../migration/from-tokio.md)。

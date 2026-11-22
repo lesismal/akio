@@ -6,14 +6,14 @@
 
 ## 背景
 
-`only-protobuf` / `only-protobuf-build`（ADR-005：无第三方依赖、不需要 `protoc`）已支持 proto2 与
+`akio-protobuf` / `akio-protobuf-build`（ADR-005：无第三方依赖、不需要 `protoc`）已支持 proto2 与
 proto3 的消息、枚举、map、oneof 和常用 well-known 类型。尚未完成（DEV-PLAN）：proto2 的 group 与
 extension、edition、标准 JSON 映射，以及运行时反射；没有反射，gRPC 服务端反射（grpcurl、grpcui）
 无法工作。
 
 ## 决定
 
-全部为新增；生成代码仍只引用 `::only_protobuf`（服务桩另引用 `::only_grpc`）。
+全部为新增；生成代码仍只引用 `::akio_protobuf`（服务桩另引用 `::akio_grpc`）。
 
 **group 与 extension。**
 - `encoding::GroupCodec<M, const N: u32>` 把消息编码为字段 `N` 的 group；生成代码用于 proto2 的
@@ -41,19 +41,19 @@ UTF-8（Rust 字符串必须是 UTF-8，与 prost 相同）；该特性会记录
 `FILE_DESCRIPTOR_SET`（本包文件及其导入）和 `descriptor_pool()`。新增 `Config::descriptors(bool)`
 （默认开启）与 `Config::file_descriptor_set_path`。
 
-**反射**（`only_protobuf::reflect`）：`DescriptorPool`（由编码后的描述符集构建，经过校验、名称解析与
+**反射**（`akio_protobuf::reflect`）：`DescriptorPool`（由编码后的描述符集构建，经过校验、名称解析与
 特性解析）、`FileDescriptor`、`MessageDescriptor`、`FieldDescriptor`、`EnumDescriptor`、
 `ServiceDescriptor`、`MethodDescriptor`；`DynamicMessage` / `Value` / `MapKey`（解码、编码、读写字段、
 oneof、扩展、未知字段）；`ReflectMessage`（生成代码实现：`descriptor()`、`to_dynamic`、`from_dynamic`）。
 
-**JSON**（`only_protobuf::json`）：基于反射的 proto3 JSON 映射：`to_string`、
+**JSON**（`akio_protobuf::json`）：基于反射的 proto3 JSON 映射：`to_string`、
 `to_string_with(&PrintOptions)`、`from_str`、`from_str_with(&ParseOptions)`（含
 `ignore_unknown_fields`）、`parse_dynamic`、`DynamicMessage::to_json` / `from_json`；支持 well-known
 类型、`json_name`、以 `[full.name]` 表示的扩展；自研严格 JSON 解析器。
 
-**gRPC 服务端反射**（`only_grpc::reflection`）：`register(server, &pool)` 注册
+**gRPC 服务端反射**（`akio_grpc::reflection`）：`register(server, &pool)` 注册
 `grpc.reflection.v1.ServerReflection` 与 `v1alpha`（列出服务；按文件名、符号、扩展取文件；扩展号）；
-反射消息公开（`reflection::v1`、`v1alpha`）。only-grpc 现在依赖 only-protobuf。
+反射消息公开（`reflection::v1`、`v1alpha`）。akio-grpc 现在依赖 akio-protobuf。
 
 ## 验证
 

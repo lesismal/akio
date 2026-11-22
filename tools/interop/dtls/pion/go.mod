@@ -1,5 +1,5 @@
-// The pion/dtls side of the only-dtls interop checks (../run.sh).
-module github.com/lesismal/only/tools/interop/dtls/pion
+// The pion/dtls side of the akio-dtls interop checks (../run.sh).
+module github.com/lesismal/akio/tools/interop/dtls/pion
 
 go 1.24.0
 

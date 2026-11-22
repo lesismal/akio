@@ -1,0 +1,736 @@
+pub mod akio_log
+pub mod akio_log::span
+#[non_exhaustive] pub enum akio_log::span::FieldValue
+pub akio_log::span::FieldValue::Bool(bool)
+pub akio_log::span::FieldValue::F64(f64)
+pub akio_log::span::FieldValue::I64(i64)
+pub akio_log::span::FieldValue::Str(alloc::borrow::Cow<'static, str>)
+pub akio_log::span::FieldValue::U64(u64)
+impl akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from_value(akio_log::Value<'_>) -> akio_log::span::FieldValue
+impl core::clone::Clone for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::eq(&self, &Self) -> bool
+impl core::convert::From<&'static str> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(&'static str) -> akio_log::span::FieldValue
+impl core::convert::From<alloc::borrow::Cow<'static, str>> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(alloc::borrow::Cow<'static, str>) -> akio_log::span::FieldValue
+impl core::convert::From<alloc::string::String> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(alloc::string::String) -> akio_log::span::FieldValue
+impl core::convert::From<bool> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(bool) -> akio_log::span::FieldValue
+impl core::convert::From<f64> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(f64) -> akio_log::span::FieldValue
+impl core::convert::From<i16> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(i16) -> akio_log::span::FieldValue
+impl core::convert::From<i32> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(i32) -> akio_log::span::FieldValue
+impl core::convert::From<i64> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(i64) -> akio_log::span::FieldValue
+impl core::convert::From<i8> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(i8) -> akio_log::span::FieldValue
+impl core::convert::From<isize> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(isize) -> akio_log::span::FieldValue
+impl core::convert::From<u16> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(u16) -> akio_log::span::FieldValue
+impl core::convert::From<u32> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(u32) -> akio_log::span::FieldValue
+impl core::convert::From<u64> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(u64) -> akio_log::span::FieldValue
+impl core::convert::From<u8> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(u8) -> akio_log::span::FieldValue
+impl core::convert::From<usize> for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::from(usize) -> akio_log::span::FieldValue
+impl core::fmt::Debug for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::span::FieldValue
+pub fn akio_log::span::FieldValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::span::FieldValue
+impl core::marker::Send for akio_log::span::FieldValue
+impl core::marker::Sync for akio_log::span::FieldValue
+impl core::marker::Unpin for akio_log::span::FieldValue
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::FieldValue
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::FieldValue
+pub enum akio_log::span::Parent
+pub akio_log::span::Parent::Current
+pub akio_log::span::Parent::Explicit(core::option::Option<akio_log::span::SpanContext>)
+pub akio_log::span::Parent::Root
+impl core::clone::Clone for akio_log::span::Parent
+pub fn akio_log::span::Parent::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::Parent
+impl core::cmp::PartialEq for akio_log::span::Parent
+pub fn akio_log::span::Parent::eq(&self, &Self) -> bool
+impl core::default::Default for akio_log::span::Parent
+pub fn akio_log::span::Parent::default() -> Self
+impl core::fmt::Debug for akio_log::span::Parent
+pub fn akio_log::span::Parent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_log::span::Parent
+impl core::marker::StructuralPartialEq for akio_log::span::Parent
+impl core::marker::Send for akio_log::span::Parent
+impl core::marker::Sync for akio_log::span::Parent
+impl core::marker::Unpin for akio_log::span::Parent
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::Parent
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::Parent
+#[non_exhaustive] pub enum akio_log::span::SpanKind
+pub akio_log::span::SpanKind::Client
+pub akio_log::span::SpanKind::Consumer
+pub akio_log::span::SpanKind::Internal
+pub akio_log::span::SpanKind::Producer
+pub akio_log::span::SpanKind::Server
+impl core::clone::Clone for akio_log::span::SpanKind
+pub fn akio_log::span::SpanKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::SpanKind
+impl core::cmp::PartialEq for akio_log::span::SpanKind
+pub fn akio_log::span::SpanKind::eq(&self, &Self) -> bool
+impl core::default::Default for akio_log::span::SpanKind
+pub fn akio_log::span::SpanKind::default() -> Self
+impl core::fmt::Debug for akio_log::span::SpanKind
+pub fn akio_log::span::SpanKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_log::span::SpanKind
+pub fn akio_log::span::SpanKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_log::span::SpanKind
+impl core::marker::StructuralPartialEq for akio_log::span::SpanKind
+impl core::marker::Send for akio_log::span::SpanKind
+impl core::marker::Sync for akio_log::span::SpanKind
+impl core::marker::Unpin for akio_log::span::SpanKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanKind
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanKind
+#[non_exhaustive] pub enum akio_log::span::SpanStatus
+pub akio_log::span::SpanStatus::Error(alloc::borrow::Cow<'static, str>)
+pub akio_log::span::SpanStatus::Ok
+pub akio_log::span::SpanStatus::Unset
+impl core::clone::Clone for akio_log::span::SpanStatus
+pub fn akio_log::span::SpanStatus::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::SpanStatus
+impl core::cmp::PartialEq for akio_log::span::SpanStatus
+pub fn akio_log::span::SpanStatus::eq(&self, &Self) -> bool
+impl core::default::Default for akio_log::span::SpanStatus
+pub fn akio_log::span::SpanStatus::default() -> Self
+impl core::fmt::Debug for akio_log::span::SpanStatus
+pub fn akio_log::span::SpanStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::span::SpanStatus
+impl core::marker::Send for akio_log::span::SpanStatus
+impl core::marker::Sync for akio_log::span::SpanStatus
+impl core::marker::Unpin for akio_log::span::SpanStatus
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanStatus
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanStatus
+pub struct akio_log::span::Entered<'a>
+impl core::fmt::Debug for akio_log::span::Entered<'_>
+pub fn akio_log::span::Entered<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_log::span::Entered<'_>
+pub fn akio_log::span::Entered<'_>::drop(&mut self)
+impl<'a> core::marker::Send for akio_log::span::Entered<'a>
+impl<'a> core::marker::Sync for akio_log::span::Entered<'a>
+impl<'a> core::marker::Unpin for akio_log::span::Entered<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_log::span::Entered<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_log::span::Entered<'a>
+pub struct akio_log::span::SetTracerError(_)
+impl core::clone::Clone for akio_log::span::SetTracerError
+pub fn akio_log::span::SetTracerError::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::SetTracerError
+impl core::cmp::PartialEq for akio_log::span::SetTracerError
+pub fn akio_log::span::SetTracerError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_log::span::SetTracerError
+impl core::fmt::Debug for akio_log::span::SetTracerError
+pub fn akio_log::span::SetTracerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::span::SetTracerError
+pub fn akio_log::span::SetTracerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::span::SetTracerError
+impl core::marker::Send for akio_log::span::SetTracerError
+impl core::marker::Sync for akio_log::span::SetTracerError
+impl core::marker::Unpin for akio_log::span::SetTracerError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SetTracerError
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SetTracerError
+pub struct akio_log::span::Span(_)
+impl akio_log::span::Span
+pub fn akio_log::span::Span::add_event(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, &[(&'static str, akio_log::span::FieldValue)])
+pub fn akio_log::span::Span::add_link(&mut self, akio_log::span::SpanContext, &[(&'static str, akio_log::span::FieldValue)])
+pub fn akio_log::span::Span::context(&self) -> core::option::Option<akio_log::span::SpanContext>
+pub fn akio_log::span::Span::end(self)
+pub fn akio_log::span::Span::enter(&self) -> akio_log::span::Entered<'_>
+pub fn akio_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce() -> R) -> R
+pub fn akio_log::span::Span::is_none(&self) -> bool
+pub fn akio_log::span::Span::is_recording(&self) -> bool
+pub const fn akio_log::span::Span::none() -> akio_log::span::Span
+pub fn akio_log::span::Span::push_event(&mut self, akio_log::span::SpanEvent)
+pub fn akio_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<akio_log::span::FieldValue>)
+pub fn akio_log::span::Span::set_kind(&mut self, akio_log::span::SpanKind)
+pub fn akio_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)
+pub fn akio_log::span::Span::set_status(&mut self, akio_log::span::SpanStatus)
+pub fn akio_log::span::Span::start(akio_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> akio_log::span::Span
+impl core::default::Default for akio_log::span::Span
+pub fn akio_log::span::Span::default() -> Self
+impl core::fmt::Debug for akio_log::span::Span
+pub fn akio_log::span::Span::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_log::span::Span
+pub fn akio_log::span::Span::drop(&mut self)
+impl core::marker::Send for akio_log::span::Span
+impl core::marker::Sync for akio_log::span::Span
+impl core::marker::Unpin for akio_log::span::Span
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::Span
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::Span
+pub struct akio_log::span::SpanBuilder
+impl akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<akio_log::span::FieldValue>) -> akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::kind(self, akio_log::span::SpanKind) -> akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::link(self, akio_log::span::SpanLink) -> akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::new(akio_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::parent(self, akio_log::span::Parent) -> akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::start(self) -> akio_log::span::Span
+impl core::fmt::Debug for akio_log::span::SpanBuilder
+pub fn akio_log::span::SpanBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_log::span::SpanBuilder
+impl core::marker::Sync for akio_log::span::SpanBuilder
+impl core::marker::Unpin for akio_log::span::SpanBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanBuilder
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanBuilder
+pub struct akio_log::span::SpanContext
+impl akio_log::span::SpanContext
+pub const fn akio_log::span::SpanContext::flags(&self) -> u8
+pub fn akio_log::span::SpanContext::from_traceparent(&str) -> core::option::Option<akio_log::span::SpanContext>
+pub const fn akio_log::span::SpanContext::is_remote(&self) -> bool
+pub const fn akio_log::span::SpanContext::is_sampled(&self) -> bool
+pub fn akio_log::span::SpanContext::new(u128, u64, bool, bool) -> core::option::Option<akio_log::span::SpanContext>
+pub const fn akio_log::span::SpanContext::span_id(&self) -> u64
+pub fn akio_log::span::SpanContext::to_traceparent(&self) -> alloc::string::String
+pub const fn akio_log::span::SpanContext::trace_id(&self) -> u128
+impl core::clone::Clone for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::SpanContext
+impl core::cmp::PartialEq for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_log::span::SpanContext
+impl core::marker::StructuralPartialEq for akio_log::span::SpanContext
+impl core::marker::Send for akio_log::span::SpanContext
+impl core::marker::Sync for akio_log::span::SpanContext
+impl core::marker::Unpin for akio_log::span::SpanContext
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanContext
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanContext
+#[non_exhaustive] pub struct akio_log::span::SpanData
+pub akio_log::span::SpanData::context: akio_log::span::SpanContext
+pub akio_log::span::SpanData::dropped_events: u32
+pub akio_log::span::SpanData::dropped_links: u32
+pub akio_log::span::SpanData::end: std::time::SystemTime
+pub akio_log::span::SpanData::events: alloc::vec::Vec<akio_log::span::SpanEvent>
+pub akio_log::span::SpanData::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, akio_log::span::FieldValue)>
+pub akio_log::span::SpanData::kind: akio_log::span::SpanKind
+pub akio_log::span::SpanData::level: akio_log::Level
+pub akio_log::span::SpanData::links: alloc::vec::Vec<akio_log::span::SpanLink>
+pub akio_log::span::SpanData::name: alloc::borrow::Cow<'static, str>
+pub akio_log::span::SpanData::parent: core::option::Option<akio_log::span::SpanContext>
+pub akio_log::span::SpanData::start: std::time::SystemTime
+pub akio_log::span::SpanData::status: akio_log::span::SpanStatus
+pub akio_log::span::SpanData::target: &'static str
+impl akio_log::span::SpanData
+pub fn akio_log::span::SpanData::duration(&self) -> core::time::Duration
+pub fn akio_log::span::SpanData::field(&self, &str) -> core::option::Option<&akio_log::span::FieldValue>
+impl core::clone::Clone for akio_log::span::SpanData
+pub fn akio_log::span::SpanData::clone(&self) -> Self
+impl core::fmt::Debug for akio_log::span::SpanData
+pub fn akio_log::span::SpanData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_log::span::SpanData
+impl core::marker::Sync for akio_log::span::SpanData
+impl core::marker::Unpin for akio_log::span::SpanData
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanData
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanData
+#[non_exhaustive] pub struct akio_log::span::SpanEvent
+pub akio_log::span::SpanEvent::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, akio_log::span::FieldValue)>
+pub akio_log::span::SpanEvent::name: alloc::borrow::Cow<'static, str>
+pub akio_log::span::SpanEvent::time: std::time::SystemTime
+impl akio_log::span::SpanEvent
+pub fn akio_log::span::SpanEvent::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<akio_log::span::FieldValue>) -> akio_log::span::SpanEvent
+pub fn akio_log::span::SpanEvent::new(impl core::convert::Into<alloc::borrow::Cow<'static, str>>, std::time::SystemTime) -> akio_log::span::SpanEvent
+impl core::clone::Clone for akio_log::span::SpanEvent
+pub fn akio_log::span::SpanEvent::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_log::span::SpanEvent
+pub fn akio_log::span::SpanEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_log::span::SpanEvent
+pub fn akio_log::span::SpanEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::span::SpanEvent
+impl core::marker::Send for akio_log::span::SpanEvent
+impl core::marker::Sync for akio_log::span::SpanEvent
+impl core::marker::Unpin for akio_log::span::SpanEvent
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanEvent
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanEvent
+#[non_exhaustive] pub struct akio_log::span::SpanLink
+pub akio_log::span::SpanLink::context: akio_log::span::SpanContext
+pub akio_log::span::SpanLink::fields: alloc::vec::Vec<(alloc::borrow::Cow<'static, str>, akio_log::span::FieldValue)>
+impl akio_log::span::SpanLink
+pub fn akio_log::span::SpanLink::field(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<akio_log::span::FieldValue>) -> akio_log::span::SpanLink
+pub fn akio_log::span::SpanLink::new(akio_log::span::SpanContext) -> akio_log::span::SpanLink
+impl core::clone::Clone for akio_log::span::SpanLink
+pub fn akio_log::span::SpanLink::clone(&self) -> Self
+impl core::cmp::PartialEq for akio_log::span::SpanLink
+pub fn akio_log::span::SpanLink::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_log::span::SpanLink
+pub fn akio_log::span::SpanLink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::span::SpanLink
+impl core::marker::Send for akio_log::span::SpanLink
+impl core::marker::Sync for akio_log::span::SpanLink
+impl core::marker::Unpin for akio_log::span::SpanLink
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanLink
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanLink
+pub const akio_log::span::MAX_EVENTS: usize
+pub const akio_log::span::MAX_LINKS: usize
+pub trait akio_log::span::Tracer: core::marker::Send + core::marker::Sync
+pub fn akio_log::span::Tracer::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::span::Tracer::on_end(&self, akio_log::span::SpanData)
+pub fn akio_log::span::Tracer::sample(&self, u128, core::option::Option<&akio_log::span::SpanContext>) -> bool
+pub fn akio_log::span::current() -> core::option::Option<akio_log::span::SpanContext>
+pub fn akio_log::span::enabled(akio_log::Level) -> bool
+pub fn akio_log::span::enter_context(akio_log::span::SpanContext) -> akio_log::span::Entered<'static>
+pub fn akio_log::span::max_span_level() -> akio_log::LevelFilter
+pub fn akio_log::span::set_boxed_tracer(alloc::boxed::Box<dyn akio_log::span::Tracer>) -> core::result::Result<(), akio_log::span::SetTracerError>
+pub fn akio_log::span::set_max_span_level(akio_log::LevelFilter)
+pub fn akio_log::span::set_tracer(&'static dyn akio_log::span::Tracer) -> core::result::Result<(), akio_log::span::SetTracerError>
+pub fn akio_log::span::tracer() -> core::option::Option<&'static dyn akio_log::span::Tracer>
+pub macro akio_log::debug!
+pub macro akio_log::debug_span!
+pub macro akio_log::error!
+pub macro akio_log::error_span!
+pub macro akio_log::info!
+pub macro akio_log::info_span!
+pub macro akio_log::log!
+pub macro akio_log::log_enabled!
+pub macro akio_log::span!
+pub macro akio_log::trace!
+pub macro akio_log::trace_span!
+pub macro akio_log::warn!
+pub macro akio_log::warn_span!
+#[repr(usize)] pub enum akio_log::Level
+pub akio_log::Level::Debug = 4
+pub akio_log::Level::Error = 1
+pub akio_log::Level::Info = 3
+pub akio_log::Level::Trace = 5
+pub akio_log::Level::Warn = 2
+impl akio_log::Level
+pub const akio_log::Level::ALL: [akio_log::Level; 5]
+pub const fn akio_log::Level::as_str(self) -> &'static str
+pub const fn akio_log::Level::to_level_filter(self) -> akio_log::LevelFilter
+impl core::clone::Clone for akio_log::Level
+pub fn akio_log::Level::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::Level
+impl core::cmp::Ord for akio_log::Level
+pub fn akio_log::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_log::Level
+pub fn akio_log::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::eq(&self, &akio_log::Level) -> bool
+impl core::cmp::PartialEq<akio_log::LevelFilter> for akio_log::Level
+pub fn akio_log::Level::eq(&self, &akio_log::LevelFilter) -> bool
+impl core::cmp::PartialOrd for akio_log::Level
+pub fn akio_log::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::partial_cmp(&self, &akio_log::Level) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<akio_log::LevelFilter> for akio_log::Level
+pub fn akio_log::Level::partial_cmp(&self, &akio_log::LevelFilter) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::from(akio_log::Level) -> akio_log::LevelFilter
+impl core::fmt::Debug for akio_log::Level
+pub fn akio_log::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::Level
+pub fn akio_log::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_log::Level
+pub fn akio_log::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_log::Level
+impl core::marker::StructuralPartialEq for akio_log::Level
+impl core::str::traits::FromStr for akio_log::Level
+pub type akio_log::Level::Err = akio_log::ParseLevelError
+pub fn akio_log::Level::from_str(&str) -> core::result::Result<akio_log::Level, akio_log::ParseLevelError>
+impl core::marker::Send for akio_log::Level
+impl core::marker::Sync for akio_log::Level
+impl core::marker::Unpin for akio_log::Level
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::Level
+impl core::panic::unwind_safe::UnwindSafe for akio_log::Level
+#[repr(usize)] pub enum akio_log::LevelFilter
+pub akio_log::LevelFilter::Debug = 4
+pub akio_log::LevelFilter::Error = 1
+pub akio_log::LevelFilter::Info = 3
+pub akio_log::LevelFilter::Off = 0
+pub akio_log::LevelFilter::Trace = 5
+pub akio_log::LevelFilter::Warn = 2
+impl akio_log::LevelFilter
+pub const fn akio_log::LevelFilter::as_str(self) -> &'static str
+pub const fn akio_log::LevelFilter::to_level(self) -> core::option::Option<akio_log::Level>
+impl core::clone::Clone for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::LevelFilter
+impl core::cmp::Ord for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::eq(&self, &akio_log::Level) -> bool
+impl core::cmp::PartialEq<akio_log::LevelFilter> for akio_log::Level
+pub fn akio_log::Level::eq(&self, &akio_log::LevelFilter) -> bool
+impl core::cmp::PartialOrd for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::partial_cmp(&self, &akio_log::Level) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<akio_log::LevelFilter> for akio_log::Level
+pub fn akio_log::Level::partial_cmp(&self, &akio_log::LevelFilter) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<akio_log::Level> for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::from(akio_log::Level) -> akio_log::LevelFilter
+impl core::default::Default for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::default() -> Self
+impl core::fmt::Debug for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_log::LevelFilter
+pub fn akio_log::LevelFilter::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_log::LevelFilter
+impl core::marker::StructuralPartialEq for akio_log::LevelFilter
+impl core::str::traits::FromStr for akio_log::LevelFilter
+pub type akio_log::LevelFilter::Err = akio_log::ParseLevelError
+pub fn akio_log::LevelFilter::from_str(&str) -> core::result::Result<akio_log::LevelFilter, akio_log::ParseLevelError>
+impl core::marker::Send for akio_log::LevelFilter
+impl core::marker::Sync for akio_log::LevelFilter
+impl core::marker::Unpin for akio_log::LevelFilter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::LevelFilter
+impl core::panic::unwind_safe::UnwindSafe for akio_log::LevelFilter
+pub struct akio_log::Filter
+impl akio_log::Filter
+pub fn akio_log::Filter::default_level(self, akio_log::LevelFilter) -> akio_log::Filter
+pub fn akio_log::Filter::default_level_filter(&self) -> akio_log::LevelFilter
+pub fn akio_log::Filter::directive(self, impl core::convert::Into<alloc::string::String>, akio_log::LevelFilter) -> akio_log::Filter
+pub fn akio_log::Filter::directives(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&str, akio_log::LevelFilter)>
+pub fn akio_log::Filter::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::Filter::from_env(&str) -> core::option::Option<core::result::Result<akio_log::Filter, akio_log::ParseFilterError>>
+pub fn akio_log::Filter::level_for(&self, &str) -> akio_log::LevelFilter
+pub fn akio_log::Filter::matches(&self, &akio_log::Record<'_>) -> bool
+pub fn akio_log::Filter::max_level(&self) -> akio_log::LevelFilter
+pub fn akio_log::Filter::message_pattern(&self) -> core::option::Option<&str>
+pub fn akio_log::Filter::message_regex(self, &str) -> core::result::Result<akio_log::Filter, akio_log::ParseFilterError>
+pub fn akio_log::Filter::new(akio_log::LevelFilter) -> akio_log::Filter
+impl core::clone::Clone for akio_log::Filter
+pub fn akio_log::Filter::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::Filter
+impl core::cmp::PartialEq for akio_log::Filter
+pub fn akio_log::Filter::eq(&self, &Self) -> bool
+impl core::default::Default for akio_log::Filter
+pub fn akio_log::Filter::default() -> akio_log::Filter
+impl core::fmt::Debug for akio_log::Filter
+pub fn akio_log::Filter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::Filter
+pub fn akio_log::Filter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::Filter
+impl core::str::traits::FromStr for akio_log::Filter
+pub type akio_log::Filter::Err = akio_log::ParseFilterError
+pub fn akio_log::Filter::from_str(&str) -> core::result::Result<akio_log::Filter, akio_log::ParseFilterError>
+impl core::marker::Send for akio_log::Filter
+impl core::marker::Sync for akio_log::Filter
+impl core::marker::Unpin for akio_log::Filter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::Filter
+impl core::panic::unwind_safe::UnwindSafe for akio_log::Filter
+pub struct akio_log::FmtLogger
+impl akio_log::FmtLogger
+pub fn akio_log::FmtLogger::dropped(&self) -> u64
+pub fn akio_log::FmtLogger::filter(self, akio_log::Filter) -> akio_log::FmtLogger
+pub fn akio_log::FmtLogger::format(&self, &akio_log::Record<'_>) -> alloc::string::String
+pub fn akio_log::FmtLogger::init(self, akio_log::LevelFilter) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::FmtLogger::init_filtered(self, akio_log::Filter) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::FmtLogger::new() -> akio_log::FmtLogger
+pub fn akio_log::FmtLogger::non_blocking(self, usize) -> akio_log::FmtLogger
+pub fn akio_log::FmtLogger::stdout(self) -> akio_log::FmtLogger
+pub fn akio_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, akio_log::LevelFilter) -> akio_log::FmtLogger
+pub fn akio_log::FmtLogger::without_timestamps(self) -> akio_log::FmtLogger
+impl core::clone::Clone for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::clone(&self) -> Self
+impl core::default::Default for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::default() -> Self
+impl core::fmt::Debug for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_log::Logger for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::FmtLogger::flush(&self)
+pub fn akio_log::FmtLogger::log(&self, &akio_log::Record<'_>)
+impl core::marker::Send for akio_log::FmtLogger
+impl core::marker::Sync for akio_log::FmtLogger
+impl core::marker::Unpin for akio_log::FmtLogger
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::FmtLogger
+impl core::panic::unwind_safe::UnwindSafe for akio_log::FmtLogger
+pub struct akio_log::KeyValues<'a>(_)
+impl<'a> akio_log::KeyValues<'a>
+pub fn akio_log::KeyValues<'a>::get(&self, &str) -> core::option::Option<akio_log::Value<'a>>
+pub const fn akio_log::KeyValues<'a>::is_empty(&self) -> bool
+pub fn akio_log::KeyValues<'a>::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'a str, akio_log::Value<'a>)> + 'a
+pub const fn akio_log::KeyValues<'a>::len(&self) -> usize
+pub const fn akio_log::KeyValues<'a>::new(&'a [(&'a str, akio_log::Value<'a>)]) -> akio_log::KeyValues<'a>
+impl core::fmt::Debug for akio_log::KeyValues<'_>
+pub fn akio_log::KeyValues<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for akio_log::KeyValues<'a>
+pub fn akio_log::KeyValues<'a>::clone(&self) -> Self
+impl<'a> core::default::Default for akio_log::KeyValues<'a>
+pub fn akio_log::KeyValues<'a>::default() -> Self
+impl<'a> core::marker::Copy for akio_log::KeyValues<'a>
+impl<'a> !core::marker::Send for akio_log::KeyValues<'a>
+impl<'a> !core::marker::Sync for akio_log::KeyValues<'a>
+impl<'a> core::marker::Unpin for akio_log::KeyValues<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for akio_log::KeyValues<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for akio_log::KeyValues<'a>
+pub struct akio_log::Metadata<'a>
+impl<'a> akio_log::Metadata<'a>
+pub const fn akio_log::Metadata<'a>::level(&self) -> akio_log::Level
+pub const fn akio_log::Metadata<'a>::new(akio_log::Level, &'a str) -> akio_log::Metadata<'a>
+pub const fn akio_log::Metadata<'a>::target(&self) -> &'a str
+impl<'a> core::clone::Clone for akio_log::Metadata<'a>
+pub fn akio_log::Metadata<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for akio_log::Metadata<'a>
+impl<'a> core::cmp::PartialEq for akio_log::Metadata<'a>
+pub fn akio_log::Metadata<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for akio_log::Metadata<'a>
+pub fn akio_log::Metadata<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for akio_log::Metadata<'a>
+pub fn akio_log::Metadata<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for akio_log::Metadata<'a>
+impl<'a> core::marker::StructuralPartialEq for akio_log::Metadata<'a>
+impl<'a> core::marker::Send for akio_log::Metadata<'a>
+impl<'a> core::marker::Sync for akio_log::Metadata<'a>
+impl<'a> core::marker::Unpin for akio_log::Metadata<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_log::Metadata<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_log::Metadata<'a>
+pub struct akio_log::ParseFilterError
+impl akio_log::ParseFilterError
+pub fn akio_log::ParseFilterError::directive(&self) -> &str
+impl core::clone::Clone for akio_log::ParseFilterError
+pub fn akio_log::ParseFilterError::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::ParseFilterError
+impl core::cmp::PartialEq for akio_log::ParseFilterError
+pub fn akio_log::ParseFilterError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_log::ParseFilterError
+impl core::fmt::Debug for akio_log::ParseFilterError
+pub fn akio_log::ParseFilterError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::ParseFilterError
+pub fn akio_log::ParseFilterError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::ParseFilterError
+impl core::marker::Send for akio_log::ParseFilterError
+impl core::marker::Sync for akio_log::ParseFilterError
+impl core::marker::Unpin for akio_log::ParseFilterError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::ParseFilterError
+impl core::panic::unwind_safe::UnwindSafe for akio_log::ParseFilterError
+pub struct akio_log::ParseLevelError(_)
+impl core::clone::Clone for akio_log::ParseLevelError
+pub fn akio_log::ParseLevelError::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::ParseLevelError
+impl core::cmp::PartialEq for akio_log::ParseLevelError
+pub fn akio_log::ParseLevelError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_log::ParseLevelError
+impl core::fmt::Debug for akio_log::ParseLevelError
+pub fn akio_log::ParseLevelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::ParseLevelError
+pub fn akio_log::ParseLevelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::ParseLevelError
+impl core::marker::Send for akio_log::ParseLevelError
+impl core::marker::Sync for akio_log::ParseLevelError
+impl core::marker::Unpin for akio_log::ParseLevelError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::ParseLevelError
+impl core::panic::unwind_safe::UnwindSafe for akio_log::ParseLevelError
+pub struct akio_log::Record<'a>
+impl<'a> akio_log::Record<'a>
+pub const fn akio_log::Record<'a>::args(&self) -> &core::fmt::Arguments<'a>
+pub const fn akio_log::Record<'a>::file(&self) -> core::option::Option<&'a str>
+pub const fn akio_log::Record<'a>::key_values(&self) -> akio_log::KeyValues<'a>
+pub const fn akio_log::Record<'a>::level(&self) -> akio_log::Level
+pub const fn akio_log::Record<'a>::line(&self) -> core::option::Option<u32>
+pub const fn akio_log::Record<'a>::metadata(&self) -> &akio_log::Metadata<'a>
+pub const fn akio_log::Record<'a>::module_path(&self) -> core::option::Option<&'a str>
+pub const fn akio_log::Record<'a>::new(akio_log::Level, &'a str, core::fmt::Arguments<'a>) -> akio_log::Record<'a>
+pub const fn akio_log::Record<'a>::target(&self) -> &'a str
+pub const fn akio_log::Record<'a>::with_key_values(self, &'a [(&'a str, akio_log::Value<'a>)]) -> akio_log::Record<'a>
+pub const fn akio_log::Record<'a>::with_location(self, core::option::Option<&'a str>, core::option::Option<&'a str>, core::option::Option<u32>) -> akio_log::Record<'a>
+impl<'a> core::clone::Clone for akio_log::Record<'a>
+pub fn akio_log::Record<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_log::Record<'a>
+pub fn akio_log::Record<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_log::Record<'a>
+impl<'a> !core::marker::Send for akio_log::Record<'a>
+impl<'a> !core::marker::Sync for akio_log::Record<'a>
+impl<'a> core::marker::Unpin for akio_log::Record<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for akio_log::Record<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for akio_log::Record<'a>
+pub struct akio_log::SetLoggerError(_)
+impl core::clone::Clone for akio_log::SetLoggerError
+pub fn akio_log::SetLoggerError::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::SetLoggerError
+impl core::cmp::PartialEq for akio_log::SetLoggerError
+pub fn akio_log::SetLoggerError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_log::SetLoggerError
+impl core::fmt::Debug for akio_log::SetLoggerError
+pub fn akio_log::SetLoggerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::SetLoggerError
+pub fn akio_log::SetLoggerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_log::SetLoggerError
+impl core::marker::Send for akio_log::SetLoggerError
+impl core::marker::Sync for akio_log::SetLoggerError
+impl core::marker::Unpin for akio_log::SetLoggerError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::SetLoggerError
+impl core::panic::unwind_safe::UnwindSafe for akio_log::SetLoggerError
+pub struct akio_log::Span(_)
+impl akio_log::span::Span
+pub fn akio_log::span::Span::add_event(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, &[(&'static str, akio_log::span::FieldValue)])
+pub fn akio_log::span::Span::add_link(&mut self, akio_log::span::SpanContext, &[(&'static str, akio_log::span::FieldValue)])
+pub fn akio_log::span::Span::context(&self) -> core::option::Option<akio_log::span::SpanContext>
+pub fn akio_log::span::Span::end(self)
+pub fn akio_log::span::Span::enter(&self) -> akio_log::span::Entered<'_>
+pub fn akio_log::span::Span::in_scope<R>(&self, impl core::ops::function::FnOnce() -> R) -> R
+pub fn akio_log::span::Span::is_none(&self) -> bool
+pub fn akio_log::span::Span::is_recording(&self) -> bool
+pub const fn akio_log::span::Span::none() -> akio_log::span::Span
+pub fn akio_log::span::Span::push_event(&mut self, akio_log::span::SpanEvent)
+pub fn akio_log::span::Span::record(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::convert::Into<akio_log::span::FieldValue>)
+pub fn akio_log::span::Span::set_kind(&mut self, akio_log::span::SpanKind)
+pub fn akio_log::span::Span::set_name(&mut self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>)
+pub fn akio_log::span::Span::set_status(&mut self, akio_log::span::SpanStatus)
+pub fn akio_log::span::Span::start(akio_log::Level, &'static str, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> akio_log::span::Span
+impl core::default::Default for akio_log::span::Span
+pub fn akio_log::span::Span::default() -> Self
+impl core::fmt::Debug for akio_log::span::Span
+pub fn akio_log::span::Span::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_log::span::Span
+pub fn akio_log::span::Span::drop(&mut self)
+impl core::marker::Send for akio_log::span::Span
+impl core::marker::Sync for akio_log::span::Span
+impl core::marker::Unpin for akio_log::span::Span
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::Span
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::Span
+pub struct akio_log::SpanContext
+impl akio_log::span::SpanContext
+pub const fn akio_log::span::SpanContext::flags(&self) -> u8
+pub fn akio_log::span::SpanContext::from_traceparent(&str) -> core::option::Option<akio_log::span::SpanContext>
+pub const fn akio_log::span::SpanContext::is_remote(&self) -> bool
+pub const fn akio_log::span::SpanContext::is_sampled(&self) -> bool
+pub fn akio_log::span::SpanContext::new(u128, u64, bool, bool) -> core::option::Option<akio_log::span::SpanContext>
+pub const fn akio_log::span::SpanContext::span_id(&self) -> u64
+pub fn akio_log::span::SpanContext::to_traceparent(&self) -> alloc::string::String
+pub const fn akio_log::span::SpanContext::trace_id(&self) -> u128
+impl core::clone::Clone for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::clone(&self) -> Self
+impl core::cmp::Eq for akio_log::span::SpanContext
+impl core::cmp::PartialEq for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_log::span::SpanContext
+pub fn akio_log::span::SpanContext::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_log::span::SpanContext
+impl core::marker::StructuralPartialEq for akio_log::span::SpanContext
+impl core::marker::Send for akio_log::span::SpanContext
+impl core::marker::Sync for akio_log::span::SpanContext
+impl core::marker::Unpin for akio_log::span::SpanContext
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::span::SpanContext
+impl core::panic::unwind_safe::UnwindSafe for akio_log::span::SpanContext
+pub struct akio_log::StderrLogger
+impl core::clone::Clone for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::clone(&self) -> Self
+impl core::default::Default for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::default() -> Self
+impl core::fmt::Debug for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_log::StderrLogger
+impl akio_log::Logger for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::StderrLogger::flush(&self)
+pub fn akio_log::StderrLogger::log(&self, &akio_log::Record<'_>)
+impl core::marker::Send for akio_log::StderrLogger
+impl core::marker::Sync for akio_log::StderrLogger
+impl core::marker::Unpin for akio_log::StderrLogger
+impl core::panic::unwind_safe::RefUnwindSafe for akio_log::StderrLogger
+impl core::panic::unwind_safe::UnwindSafe for akio_log::StderrLogger
+pub struct akio_log::Value<'a>(_)
+impl<'a> akio_log::Value<'a>
+pub fn akio_log::Value<'a>::from_debug<T: core::fmt::Debug>(&'a T) -> akio_log::Value<'a>
+pub fn akio_log::Value<'a>::from_display<T: core::fmt::Display>(&'a T) -> akio_log::Value<'a>
+pub fn akio_log::Value<'a>::from_dyn_display(&'a dyn core::fmt::Display) -> akio_log::Value<'a>
+pub fn akio_log::Value<'a>::to_bool(&self) -> core::option::Option<bool>
+pub fn akio_log::Value<'a>::to_char(&self) -> core::option::Option<char>
+pub fn akio_log::Value<'a>::to_f64(&self) -> core::option::Option<f64>
+pub fn akio_log::Value<'a>::to_i64(&self) -> core::option::Option<i64>
+pub fn akio_log::Value<'a>::to_str(&self) -> core::option::Option<&'a str>
+pub fn akio_log::Value<'a>::to_u64(&self) -> core::option::Option<u64>
+impl core::fmt::Debug for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_log::ToValue for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
+impl<'a> core::clone::Clone for akio_log::Value<'a>
+pub fn akio_log::Value<'a>::clone(&self) -> Self
+impl<'a> core::marker::Copy for akio_log::Value<'a>
+impl<'a> !core::marker::Send for akio_log::Value<'a>
+impl<'a> !core::marker::Sync for akio_log::Value<'a>
+impl<'a> core::marker::Unpin for akio_log::Value<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for akio_log::Value<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for akio_log::Value<'a>
+pub const akio_log::DEFAULT_QUEUE_LINES: usize
+pub const akio_log::ENV_VAR: &str
+pub const akio_log::STATIC_MAX_LEVEL: akio_log::LevelFilter
+pub trait akio_log::Logger: core::marker::Send + core::marker::Sync
+pub fn akio_log::Logger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::Logger::flush(&self)
+pub fn akio_log::Logger::log(&self, &akio_log::Record<'_>)
+impl akio_log::Logger for akio_log::FmtLogger
+pub fn akio_log::FmtLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::FmtLogger::flush(&self)
+pub fn akio_log::FmtLogger::log(&self, &akio_log::Record<'_>)
+impl akio_log::Logger for akio_log::StderrLogger
+pub fn akio_log::StderrLogger::enabled(&self, &akio_log::Metadata<'_>) -> bool
+pub fn akio_log::StderrLogger::flush(&self)
+pub fn akio_log::StderrLogger::log(&self, &akio_log::Record<'_>)
+pub trait akio_log::ToValue
+pub fn akio_log::ToValue::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for alloc::string::String
+pub fn alloc::string::String::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for bool
+pub fn bool::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for char
+pub fn char::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for f32
+pub fn f32::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for f64
+pub fn f64::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for i128
+pub fn i128::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for i16
+pub fn i16::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for i32
+pub fn i32::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for i64
+pub fn i64::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for i8
+pub fn i8::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for isize
+pub fn isize::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for akio_log::Value<'_>
+pub fn akio_log::Value<'_>::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for str
+pub fn str::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for u128
+pub fn u128::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for u16
+pub fn u16::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for u32
+pub fn u32::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for u64
+pub fn u64::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for u8
+pub fn u8::to_value(&self) -> akio_log::Value<'_>
+impl akio_log::ToValue for usize
+pub fn usize::to_value(&self) -> akio_log::Value<'_>
+impl<T: akio_log::ToValue + ?core::marker::Sized> akio_log::ToValue for &T
+pub fn &T::to_value(&self) -> akio_log::Value<'_>
+pub fn akio_log::enabled(akio_log::Level, &str) -> bool
+pub fn akio_log::flush()
+pub fn akio_log::init(akio_log::LevelFilter) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::init_from_env(akio_log::LevelFilter) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::log_or_stderr(akio_log::Level, &str, core::fmt::Arguments<'_>)
+pub fn akio_log::logger() -> core::option::Option<&'static dyn akio_log::Logger>
+pub fn akio_log::max_level() -> akio_log::LevelFilter
+pub fn akio_log::set_boxed_logger(alloc::boxed::Box<dyn akio_log::Logger>) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::set_logger(&'static dyn akio_log::Logger) -> core::result::Result<(), akio_log::SetLoggerError>
+pub fn akio_log::set_max_level(akio_log::LevelFilter)

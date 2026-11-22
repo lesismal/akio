@@ -6,13 +6,13 @@
 
 ## 背景
 
-`only-turn` 在 UDP、TCP、TLS 与 DTLS 上提供 TURN，但所有中继都是 UDP socket：请求
+`akio-turn` 在 UDP、TCP、TLS 与 DTLS 上提供 TURN，但所有中继都是 UDP socket：请求
 `REQUESTED-TRANSPORT` TCP 的 Allocate 得到 442，sans-io 客户端也只能请求 UDP。DEV-PLAN 记着
 "不实现 RFC 6062 TCP 中继：WebRTC 用不到"，指南的 WebRTC 一章也把 TCP 中继列为未完成。
 
 浏览器确实从不请求 TCP 分配，但其他 TURN 用户会：中继 TCP 媒体或文件传输的 SIP、XMPP 客户端，以及因为
 TURN 服务器是双方唯一都能到达的主机而经它隧道传输 TCP 协议的应用。coturn 与 pion/turn 都实现了 RFC 6062
-的两端，用 `only` 替换它们的部署也需要。
+的两端，用 `akio` 替换它们的部署也需要。
 
 RFC 6062 概要。客户端打开一条*控制连接*（TCP 或 TLS），以 `REQUESTED-TRANSPORT` 6 分配；中继地址是一个
 监听中的 TCP socket。**Connect** 请求（`XOR-PEER-ADDRESS`）让服务器从中继地址向对端打开 TCP 连接，并以
@@ -23,8 +23,8 @@ RFC 6062 概要。客户端打开一条*控制连接*（TCP 或 TLS），以 `RE
 Exists）与 447（Connection Timeout or Failure）。
 
 约束：已绑定连接的字节不得经过分片状态机（不能每次读取都拿分片锁）；背压必须双向联动（规则 7、8）；
-I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有上限；另一个会话正在修改 `only-webrtc`，所以
-改动只在 `only-turn` 内。
+I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有上限；另一个会话正在修改 `akio-webrtc`，所以
+改动只在 `akio-turn` 内。
 
 ## 决定
 
@@ -57,18 +57,18 @@ I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有�
 `close_tcp_relay`、`connect_peer`、`accept_peer`、`connection_bound`、`close_connection`。`TurnCore` 新方法：
 `tcp_connected`、`tcp_incoming`、`tcp_closed`。`TurnStats::tcp_connections` 统计打开的连接。
 
-**基于 `only` 的 `TurnServer`（`tcp.rs`）。**
+**基于 `akio` 的 `TurnServer`（`tcp.rs`）。**
 
 - 中继地址是绑定在 `relay_ip:0`、带 `SO_REUSEADDR` 与 `SO_REUSEPORT` 的非阻塞监听 socket
-  （`only_sys::listen`），因此到对端的连接可以用 `Engine::dial_from` 从同一地址发出（RFC 6062 第 5.2 节要求
+  （`akio_sys::listen`），因此到对端的连接可以用 `Engine::dial_from` 从同一地址发出（RFC 6062 第 5.2 节要求
   以中继地址为本端）。reuseport 绑定端口 0 理论上可能返回我们另一个中继占着的端口，所以绑定到的地址若已在
   服务器的监听表中，就关闭后重绑（最多 16 次）。
-- **每个服务器一个接受线程**（"only-turn-tcp-accept"，随第一个 TCP 分配启动），用 `only_sys::Poller`
+- **每个服务器一个接受线程**（"akio-turn-tcp-accept"，随第一个 TCP 分配启动），用 `akio_sys::Poller`
   轮询所有中继监听 socket；监听 socket 经命令列表与 `Waker` 加入和移除。接受的 socket 交给
   `Engine::adopt_tcp`，于是权限检查与 ConnectionAttempt 在 I/O 线程上、acceptor 的 `on_open` 里运行。
   没有每分配一个线程，也没有 I/O 线程在 `accept` 中等待。服务器被丢弃后一秒内线程退出。
 - 连接是以 `CONNECTION-ID` 为键的服务器级表中的*链接*：分配的客户端与分片（ConnectionBind 从另一条连接到达，
-  其客户端地址散列到另一个分片）以及两条 `only` 连接。ID 在服务器范围内唯一：从随机起点开始的计数器，
+  其客户端地址散列到另一个分片）以及两条 `akio` 连接。ID 在服务器范围内唯一：从随机起点开始的计数器，
   从不为 0。
 - 在分片锁内请求的拨号在释放锁之后才发起（拨号可能同步失败，而其失败处理会再次锁该分片）。
 - 消息为 ConnectionBind 的流客户端由拥有该 ID 的分片应答；成功时先发送响应，再发送对端在此期间发来的内容，
@@ -85,7 +85,7 @@ I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有�
   在服务 TURN 的引擎上调大该设置；核心自己的 60 秒保护只对从不报告的环境有意义。
   （已被下文的更新取代：`TurnConfig::tcp_connect_timeout`，30 秒。）
 
-### 客户端（`only_turn::client`，sans-io）
+### 客户端（`akio_turn::client`，sans-io）
 
 - `ClientConfig::tcp_allocation(true)`（同时设置 `stream`）请求传输 6。
 - `Client::connect(now, peer)` 发送 Connect；随后是 `ClientEvent::Connected { peer, id }` 或
@@ -108,7 +108,7 @@ I/O 线程不得阻塞在 `accept` 上（规则 1）；所有表与缓冲都有�
 
 ## 后果
 
-- `only-turn` 依赖 `only-sys`（内部 crate，已经通过 `only` 在依赖图中）提供监听 socket 与 poller。没有
+- `akio-turn` 依赖 `akio-sys`（内部 crate，已经通过 `akio` 在依赖图中）提供监听 socket 与 poller。没有
   第三方依赖。
 - 行为变化：经 UDP 或 DTLS 的 TCP Allocate 现在回 400 而不是 442（RFC 6062 第 5.1 节）；经 TCP/TLS 则会成功，
   除非 `TurnConfig::tcp_relays` 为 false。
@@ -140,11 +140,11 @@ Allocate 规则：只限流、不得带 UDP 专用属性、440、不支持或关
 `DataConnection`），种子覆盖每一种 RFC 6062 消息。
 
 互通（`tools/interop/webrtc/turn-tcp.sh`，Docker；coturn 4.6、pion/turn v5.1.3）：coturn 的
-`turnutils_uclient -T`（成对的客户端互相连接对方的中继地址）经 TCP 与 TLS 对 only-turn；only_turn 客户端
+`turnutils_uclient -T`（成对的客户端互相连接对方的中继地址）经 TCP 与 TLS 对 akio-turn；akio_turn 客户端
 （Connect，然后一个有权限的对端连入；每条连接回显 20 条消息与 1 MiB）经 TCP 与 TLS 对 coturn、pion/turn 与
-only-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 only-turn 与 coturn。
+akio-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 akio-turn 与 coturn。
 
-未完成：`only-webrtc` 的 `Endpoint` 使用 TCP 分配（没有 WebRTC 栈用它）；由引擎驱动的客户端封装（sans-io
+未完成：`akio-webrtc` 的 `Endpoint` 使用 TCP 分配（没有 WebRTC 栈用它）；由引擎驱动的客户端封装（sans-io
 客户端与示例展示了衔接方式）；`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持）；独立于引擎的每个 Connect
 的连接超时。
 
@@ -161,7 +161,7 @@ only-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 only-turn 
   `TurnEnv::close_connection`，与环境做什么无关。环境此时可以停止尝试。
 - `TurnServer` 不再用 `Engine::dial_from` 拨号（它使用引擎的 `connect_timeout`，默认 10 秒，且不改动每个
   后端就无法为单次拨号另设超时）。原本就在轮询中继监听 socket 的接受线程现在也负责打开 Connect 的连接：
-  `only_sys::connect_nonblocking_from(relay, peer)`，注册可写事件；可写时由 `take_error` / `peer_addr`
+  `akio_sys::connect_nonblocking_from(relay, peer)`，注册可写事件；可写时由 `take_error` / `peer_addr`
   判断成功，已连接的 socket 交给 `Engine::adopt_tcp`，使用与以前相同的 `PeerAcceptor`。它每秒丢弃链接已不
   存在的尝试（核心已放弃，或分配已结束）并关闭其 socket。于是引擎自身的设置与 Connect 无关，两个方向都是：
   更短不会截断它，更长也不会拉长它。
@@ -172,17 +172,17 @@ only-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 only-turn 
 ### 由引擎驱动的客户端：`client::TcpAllocation`
 
 以前应用必须自己驱动 sans-io 客户端和每个 `DataConnection`（互通示例用的是阻塞 socket）。`TcpAllocation`
-在 `only` 引擎上完成这些：
+在 `akio` 引擎上完成这些：
 
 - `TcpAllocation::open(&engine, cfg, ServerTransport::{Tcp, Tls(cfg, name)}, on_event)` 拨出控制连接，
-  用 `FrameReader` 切分其消息并交给 `Client`。定时器在整个进程共用的一个线程上运行（"only-turn-timer"，
-  与 `only-webrtc` 一样是弱引用目标的最小堆），而不是每个分配一个。`on_event` 收到
+  用 `FrameReader` 切分其消息并交给 `Client`。定时器在整个进程共用的一个线程上运行（"akio-turn-timer"，
+  与 `akio-webrtc` 一样是弱引用目标的最小堆），而不是每个分配一个。`on_event` 收到
   `AllocationEvent::{Allocated, ConnectionAttempt, PeerFailed, Failed, Closed}` 以及分配本身，因此可以接受
   连入尝试；回调运行时不持有任何锁。
 - `connect(peer, acceptor, on_error)` 发送 Connect，收到 `Connected` 后拨出一条数据连接；
   `accept(id, acceptor, on_error)` 对 `ConnectionAttempt` 做后一步。另有 `create_permission`、`close`、
   `state`、`relayed_addr`、`mapped_addr`。
-- **ConnectionBind 是一个 `Transport` 层**（`only::Transport`，TLS 用的同一个钩子），有 TLS 时叠在 TLS 层之上。
+- **ConnectionBind 是一个 `Transport` 层**（`akio::Transport`，TLS 用的同一个钩子），有 TLS 时叠在 TLS 层之上。
   应用的 acceptor 直接服务这条连接，所以它的 handler 拿到的是普通的 `Conn<H>`，中间没有包装类型。该层在第一次
   `recv` 时发送请求（引擎在安装时以空输入调用它，让客户端传输层先说话；在 TLS 之下，请求在 TLS 自己的缓冲中等
   握手完成），在成功响应之前保留应用 `seal` 的内容，把响应之后的字节交给 `on_data`，此后一律透传。绑定完成前
@@ -200,7 +200,7 @@ only-turn；pion/turn 的 TCP 分配客户端（Dial 与 Accept）对 only-turn 
 
 RFC 6544 提供的是：被动中继 TCP 候选（第 5.5 节：通常 agent 只需要这一个，因为对端的服务器反射主动候选
 都应能与之配合），由远端经 TURN 服务器连入；以及主动中继候选（每次检查一个 Connect）。在这里实现它需要：
-每个 `Endpoint` 一个 TCP 分配，`only-ice` 中的 `Candidate::relayed_tcp`，ICE-TCP 代码接受远端为
+每个 `Endpoint` 一个 TCP 分配，`akio-ice` 中的 `Candidate::relayed_tcp`，ICE-TCP 代码接受远端为
 ConnectionAttempt 所指对端（而非 socket 对端）的数据连接，以及为每个远端候选的地址建立权限，而远端候选
 经 peer 代码的多条路径到达。
 
@@ -214,7 +214,7 @@ ConnectionAttempt 所指对端（而非 socket 对端）的数据连接，以及
   在 TCP 真正有用的场景（浏览器一侧封锁 UDP），浏览器也没有服务器反射 UDP 候选，因此中继将看到的公网地址无从
   得知，连接会被拒绝。只有当该地址经其他途径得知时才行得通，而这意味着 UDP 可用，此时我方的 UDP 分配（我方
   需要时经 TCP 或 TLS 建立：ADR-032）同样能服务该浏览器。
-- 两个 `only` endpoint 之间，经 TCP/TLS 的 UDP 分配已经能穿过任何允许 TCP 出站的网络提供中继路径，其上还有
+- 两个 `akio` endpoint 之间，经 TCP/TLS 的 UDP 分配已经能穿过任何允许 TCP 出站的网络提供中继路径，其上还有
   ICE 自己的 consent 与 DTLS。
 
 因此 `Endpoint` 继续收集 UDP 分配（经 UDP、DTLS、TCP 或 TLS），RFC 6062 在 WebRTC 之外有用的部分由
@@ -229,10 +229,10 @@ ConnectionAttempt 所指对端（而非 socket 对端）的数据连接，以及
 不可达：`Failed(Io)`；丢弃最后一个句柄：服务器忘掉该分配），以及独立于引擎的服务器 Connect 超时（引擎
 `connect_timeout` 200 毫秒，`tcp_connect_timeout` 1.5 秒，一个接受队列已满的对端：1.5 秒后回 447；macOS 上
 跳过，因为它对这类连接回复重置而不是丢弃 SYN）。在 macOS，以及 gpu51（Linux，rustc 1.100）的 epoll 与
-`ONLY_TEST_BACKEND=uring` 下运行。
+`AKIO_TEST_BACKEND=uring` 下运行。
 
 `tools/interop/webrtc/turn-tcp.sh` 增加了引擎客户端（`turn-tcp-interop engine-client`）对 coturn 4.6、
-pion/turn v5.1.3 与 only-turn，经 TCP 与 TLS（Connect，然后一个有权限的对端连入，各回显 20 条消息与 1 MiB）；
+pion/turn v5.1.3 与 akio-turn，经 TCP 与 TLS（Connect，然后一个有权限的对端连入，各回显 20 条消息与 1 MiB）；
 原有用例（coturn 的 `turnutils_uclient -T` 与 pion/turn 的客户端对服务器，服务器现在从接受线程拨出对端连接）
 照常通过。在 gpu51 的 Docker 中全部通过。
 

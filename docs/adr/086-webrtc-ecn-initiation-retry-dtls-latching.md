@@ -25,7 +25,7 @@ gain no work.
 
 ## Decision
 
-### 1. Initiation methods (only-ice `ecn.rs`; only-webrtc `rtc/ecn.rs`, `rtc/ecn_fb.rs`)
+### 1. Initiation methods (akio-ice `ecn.rs`; akio-webrtc `rtc/ecn.rs`, `rtc/ecn_fb.rs`)
 
 - **SDP.**
   - With ECN marking on and ICE with a full agent, sections offer
@@ -57,7 +57,7 @@ gain no work.
   - `IceEvent::EcnChecked { local, remote, ecn }` reports the codepoint seen. It is `None` when
     no answer came, or the answer had no attribute.
   - `IceAgent::poll_transmit_ecn` returns datagrams with their codepoint. Only these checks
-    carry one. only-webrtc sends ICE's datagrams through it.
+    carry one. akio-webrtc sends ICE's datagrams through it.
   - The path (`Phase::Verifying`) marks nothing until the result comes:
     - our codepoint or CE: capable, every packet marked;
     - anything else: failed.
@@ -124,7 +124,7 @@ gain no work.
 ### 6. DTLS re-keying: not done, and why
 
 - **DTLS 1.2.** Re-keying DTLS-SRTP takes a new handshake, and in DTLS 1.2 that is
-  renegotiation. Chrome (BoringSSL) and pion refuse renegotiation, and only-dtls does not
+  renegotiation. Chrome (BoringSSL) and pion refuse renegotiation, and akio-dtls does not
   implement it (it has a history of attacks, RFC 5746). No peer exists to interop with.
 - **DTLS 1.3.** KeyUpdate changes the record keys, but not the SRTP keys exported from the
   handshake.
@@ -140,9 +140,9 @@ gain no work.
 
 Additive.
 
-- only-ice: `IceAgent::{check_ecn, ecn_checking, handle_receive_ecn, poll_transmit_ecn}`,
+- akio-ice: `IceAgent::{check_ecn, ecn_checking, handle_receive_ecn, poll_transmit_ecn}`,
   `IceEvent::EcnChecked`, `ECN_CHECK_SENDS`, `ECN_CHECK_INTERVAL`, `ECN_CHECK_GIVE_UP`.
-- only-webrtc: `EcnInitiation`, `RtcConfig::{set_ecn_initiation, set_plain_keepalive}`.
+- akio-webrtc: `EcnInitiation`, `RtcConfig::{set_ecn_initiation, set_plain_keepalive}`.
 - The `ecn_state` statistic can also read "verifying".
 
 ### Fix on the way
@@ -189,4 +189,4 @@ exactly that case.
   0.999x and data channels 0.997x, with the ranges overlapping (docs/BENCHMARKS.md).
 - **Not done:**
   - DTLS re-keying (section 6).
-  - Copying the codepoint in only-turn's relay: another session does that.
+  - Copying the codepoint in akio-turn's relay: another session does that.

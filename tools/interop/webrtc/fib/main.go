@@ -1,7 +1,7 @@
 // Command webrtc-fib is the fib (Go, lesismal/fib/webrtc) side of tools/interop/webrtc/run.sh.
 //
 //	webrtc-fib server <http-addr>      fib answerer (full ICE, a port per peer): data channel echo
-//	webrtc-fib client-dc <http-addr>   fib offers a data channel to a only server, checks 100 echoes
+//	webrtc-fib client-dc <http-addr>   fib offers a data channel to a akio server, checks 100 echoes
 //
 // Signalling is one HTTP POST: the offer as the body, the answer as the response body.
 package main

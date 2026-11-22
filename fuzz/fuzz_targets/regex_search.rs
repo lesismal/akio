@@ -1,8 +1,8 @@
 #![no_main]
 
-// only-regex (the engine behind only-log's `/regex` message filters) against the `regex` crate
+// akio-regex (the engine behind akio-log's `/regex` message filters) against the `regex` crate
 // (a fuzz-only dependency): an unanchored search, Unicode classes, case folding, assertions and
-// flags. Whatever only-regex compiles, `regex` compiles and matches the same way; only-regex may
+// flags. Whatever akio-regex compiles, `regex` compiles and matches the same way; akio-regex may
 // refuse syntax it does not support. Each subject is also matched by the NFA alone and fed in
 // pieces through `is_match_fmt`; all the outcomes must agree.
 //
@@ -39,15 +39,15 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         .take(16)
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect();
-    let Ok(ours) = only_regex::Regex::new(&pattern) else {
+    let Ok(ours) = akio_regex::Regex::new(&pattern) else {
         return;
     };
     let theirs = match regex::Regex::new(&pattern) {
         Ok(re) => re,
-        // Programs past `regex`'s size or nesting limits (only-regex counts differently).
+        // Programs past `regex`'s size or nesting limits (akio-regex counts differently).
         Err(regex::Error::CompiledTooBig(_)) => return,
         Err(regex::Error::Syntax(e)) if e.contains("nest limit") => return,
-        Err(e) => panic!("only-regex compiled {pattern:?}, regex refused it: {e}"),
+        Err(e) => panic!("akio-regex compiled {pattern:?}, regex refused it: {e}"),
     };
     for s in std::iter::once("").chain(subjects.iter().map(String::as_str)) {
         let want = theirs.is_match(s);

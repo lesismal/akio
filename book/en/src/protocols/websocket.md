@@ -1,7 +1,7 @@
 # WebSocket
 
-`only-ws` implements RFC 6455 with `permessage-deflate` (RFC 7692). The server side is reached
-through a only-http upgrade (HTTP/1.1, or an extended CONNECT on HTTP/3); the client dials `ws://` and `wss://` URLs. Both use the same
+`akio-ws` implements RFC 6455 with `permessage-deflate` (RFC 7692). The server side is reached
+through a akio-http upgrade (HTTP/1.1, or an extended CONNECT on HTTP/3); the client dials `ws://` and `wss://` URLs. Both use the same
 handler trait. Conformance: Autobahn|Testsuite server 298 OK + 3 informational (core) and 216/216
 (permessage-deflate); client 514 OK + 3 informational of 517; run in CI by
 `tools/autobahn/run.sh`.
@@ -31,13 +31,13 @@ different threads never interleave):
 | `send_text_fragmented`, `send_binary_fragmented` | split into frames of a given size |
 | `send_prepared(&PreparedMessage)` | a message encoded once for many connections (sent uncompressed) |
 | `ping`, `pong` | control frames |
-| `close(code, reason)` | start the close handshake (`only_ws::protocol::close::NORMAL`, ...) |
+| `close(code, reason)` | start the close handshake (`akio_ws::protocol::close::NORMAL`, ...) |
 | `subprotocol()`, `is_open()` | negotiated subprotocol, state |
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:server}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:server}}
 ```
 
 `ctx.upgrade_websocket(handler, &WsOptions)` validates the handshake (GET, HTTP/1.1,
@@ -65,11 +65,11 @@ authentication, rate limiting, logging) applies to the handshake request.
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:client}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:dial}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:dial}}
 ```
 
 - `client::dial_blocking(&engine, url, &opts, handler)` blocks until the handshake completes and
@@ -81,11 +81,11 @@ authentication, rate limiting, logging) applies to the handshake request.
   (what the offer asks for), `protocols`, `origin`, `headers` (e.g. `Authorization`, cookies),
   `tls` (`None`: the system's CAs; do not offer `h2` in its ALPN), `server_name`,
   `handshake_timeout` (10 s, redirects included), `close_timeout` (3 s), `proxy` (none;
-  `only_ws::proxy::Proxy::from_env()` opts in to the environment) and `max_redirects` (0).
+  `akio_ws::proxy::Proxy::from_env()` opts in to the environment) and `max_redirects` (0).
 - Proxies: every connection a proxy applies to (`ws://` and `wss://`) goes through a
   `CONNECT host:port` tunnel, or a SOCKS tunnel for `socks5://` / `socks5h://` / `socks4://` /
   `socks4a://` proxies; a refusal is `WsClientError::Io` carrying a
-  `only_ws::proxy::ProxyRefused`. Same `Proxy` type and rules as the
+  `akio_ws::proxy::ProxyRefused`. Same `Proxy` type and rules as the
   [HTTP client](http-clients.md#proxies).
 - Redirects (`max_redirects > 0`): 301, 302, 303, 307 and 308 with a `Location`; `http`/`https`
   locations become `ws`/`wss`; `wss://` never goes to `ws://`; another origin drops
@@ -94,10 +94,10 @@ authentication, rate limiting, logging) applies to the handshake request.
 - When the client's engine shuts down gracefully, open connections are closed with 1001 (going
   away) and the close handshake.
 - Frames are masked with unpredictable keys; every resolved address is tried in turn; names are
-  resolved off the calling thread (`only::dns`).
+  resolved off the calling thread (`akio::dns`).
 
-Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, and see
-`crates/only-http/examples/ws-chat.rs` for a browser chat.
+Run `cargo run -p akio-ws --example guide-ws` for a chat room with two clients, and see
+`crates/akio-http/examples/ws-chat.rs` for a browser chat.
 
 ## WebSocket over HTTP/2
 
@@ -121,7 +121,7 @@ connection reach `on_close` as 1006, and graceful shutdown closes with 1001.
 
 ## Not done
 
-Client: cookies across redirects (set a `Cookie` header from `only_http::cookie::CookieJar::header`
+Client: cookies across redirects (set a `Cookie` header from `akio_http::cookie::CookieJar::header`
 yourself; `https://` proxies and Happy Eyeballs are done, ADR-059); `client::dial` stays HTTP/1.1
 (WebSocket over HTTP/2 needs an `H2Client`). WebSocket over HTTP/2 (RFC 8441, above) and over
 HTTP/3 (RFC 9220, see [QUIC and HTTP/3](quic-h3.md#websocket-over-http3)) are done.

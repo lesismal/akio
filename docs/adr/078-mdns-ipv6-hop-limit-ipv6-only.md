@@ -17,7 +17,7 @@ updated, and a review of what ADR-054 left found three gaps:
   queriers that check it on reception (implementations of the 2004 draft; avahi with
   `check-response-ttl=yes`).
   The engine set the IPv4 multicast TTL to 255, but IPv6 multicast went out with the kernel's
-  default hop limit of 1: std has no `set_multicast_hops_v6`, and `only` forbids unsafe code.
+  default hop limit of 1: std has no `set_multicast_hops_v6`, and `akio` forbids unsafe code.
 - **IPv6-only links.** `conceal_host_candidates` required the IPv4 socket to be on the shared
   port. On a link without IPv4 (no route to `224.0.0.251`) that socket falls back to an
   ephemeral port, so concealing failed although the IPv6 socket held port 5353 and could answer.
@@ -26,7 +26,7 @@ updated, and a review of what ADR-054 left found three gaps:
 
 ## Decision
 
-1. **only-sys: `set_multicast_hops_v6(&UdpSocket, u32)` and `multicast_hops_v6(&UdpSocket)`**
+1. **akio-sys: `set_multicast_hops_v6(&UdpSocket, u32)` and `multicast_hops_v6(&UdpSocket)`**
    (`IPV6_MULTICAST_HOPS`, Linux and macOS; values above 255 are refused with `InvalidInput`
    before the system call). Additive public API.
 2. **only: `Engine::bind_udp_multicast_on` with an IPv6 group** sets the hop limit to 255 and
@@ -34,8 +34,8 @@ updated, and a review of what ADR-054 left found three gaps:
    too). Interface choice stays per datagram: the scope id of the destination
    (`ff02::fb%<index>`) picks the link, which is what `IPV6_MULTICAST_IF` would do per socket.
    UDP client threads are epoll / kqueue on every backend, so this path is the same with
-   `ONLY_TEST_BACKEND=uring`.
-3. **only-webrtc: names are answered over whichever family holds the shared port.**
+   `AKIO_TEST_BACKEND=uring`.
+3. **akio-webrtc: names are answered over whichever family holds the shared port.**
    `conceal_host_candidates` succeeds when the IPv4 *or* the IPv6 socket is on 5353; on an
    IPv6-only link concealed IPv4 and IPv6 addresses are answered over `ff02::fb` (A and AAAA
    records). The debug line of a resolved name now names the answer's source
@@ -52,7 +52,7 @@ shared port, and browsers do not either.
 
 ## Consequences
 
-- New public API in only-sys (two functions); `only` and `only-webrtc` signatures unchanged.
+- New public API in akio-sys (two functions); `akio` and `akio-webrtc` signatures unchanged.
 - An mDNS responder on an IPv6-only network can conceal; before, `conceal_host_candidates`
   returned an error there.
 - `bind_udp_multicast_on` with an IPv6 group sends with hop limit 255 for any protocol, as the
@@ -60,12 +60,12 @@ shared port, and browsers do not either.
 
 ## Verification
 
-- Unit: only-sys `multicast_hops_v6_round_trip` (default 1, 255 and 0 set and read back, 256
-  refused and the value unchanged). The engine's multicast tests (`crates/only/tests/
+- Unit: akio-sys `multicast_hops_v6_round_trip` (default 1, 255 and 0 set and read back, 256
+  refused and the value unchanged). The engine's multicast tests (`crates/akio/tests/
   shared_ports.rs`) skip their IPv4 part where the host has no IPv4 multicast instead of failing.
 - **IPv6-only link** (`tools/interop/webrtc/mdns6.sh`, Docker on gpu51): a container with no
   IPv4 network (`--network none`; `224.0.0.251` has no route) and a veth pair with link-local and
-  ULA addresses. The only-webrtc mDNS tests run there, epoll and `ONLY_TEST_BACKEND=uring`, 6/6
+  ULA addresses. The akio-webrtc mDNS tests run there, epoll and `AKIO_TEST_BACKEND=uring`, 6/6
   with none skipped (two concealing IPv4 endpoints resolve each other through A records answered
   over `ff02::fb`, which failed before item 3); the engine's multicast tests 4/4 (IPv4 parts
   skipped).
@@ -85,7 +85,7 @@ shared port, and browsers do not either.
 - **mDNSResponder** (macOS, by hand): `dns-sd -G v6` resolves a concealed link-local address
   (answers on en1 and lo0, AAAA, TTL 120), and `mdns-resolve` resolves a name published with
   `dns-sd -P` from the answer that arrived over IPv6 (`fe80::1%lo0`).
-- `cargo test` of only-sys, only and only-webrtc on macOS and on gpu51 (epoll and io_uring), clippy
+- `cargo test` of akio-sys, only and akio-webrtc on macOS and on gpu51 (epoll and io_uring), clippy
   clean on both (rustc 1.100).
 
 ## Update (2026-11-22): claiming our names, goodbyes, unicast hop limit
@@ -95,13 +95,13 @@ The two gaps this ADR and the DEV-PLAN left open are closed:
 - **Unicast answers with hop limit 255.** RFC 6762 §11 asks for TTL / hop limit 255 on every
   response, unicast ones included (answers to a QU question, legacy unicast replies). The
   shared mDNS sockets now set it for unicast too: new `UdpBinding::set_unicast_hops(u32)`
-  (`IP_TTL` / `IPV6_UNICAST_HOPS`, 0..=255, additive in `only-core` and `only`) and
-  `only_sys::{set_unicast_hops_v6, unicast_hops_v6}` (std has `set_ttl` for IPv4 only).
+  (`IP_TTL` / `IPV6_UNICAST_HOPS`, 0..=255, additive in `akio-core` and `akio`) and
+  `akio_sys::{set_unicast_hops_v6, unicast_hops_v6}` (std has `set_ttl` for IPv4 only).
   `Engine::bind_udp_multicast_on` itself is unchanged: the unicast limit is the protocol's
-  choice, so only-webrtc sets it on its mDNS bindings.
+  choice, so akio-webrtc sets it on its mDNS bindings.
 - **Probing and announcing (RFC 6762 §8), conflicts (§9), goodbyes (§10.1).** A concealed name
   is claimed as unique records must be: three probes 250 ms apart (`ANY` with the QU bit, the
-  proposed `A` / `AAAA` record in the authority section; new `Message::probe` in only-ice), the
+  proposed `A` / `AAAA` record in the authority section; new `Message::probe` in akio-ice), the
   claim won 250 ms after the last, then two announcements 1 s apart (unsolicited responses with
   the cache-flush bit). Claiming does not hold the candidate up: the name is a random UUID that
   the description carries at once, and it is answered from the start. Conflicts give the name up: another host
@@ -112,7 +112,7 @@ The two gaps this ADR and the DEV-PLAN left open are closed:
   of our own that come back by multicast loopback, or identical claims, are recognised by the
   proposed record and not answered; a probe after our claim is answered, which defends the
   name. `Endpoint::close` sends goodbyes (TTL 0) for every name before closing the sockets.
-- only-ice's `Message` gains `authority` (the authority section's address records; only-ice is
+- akio-ice's `Message` gains `authority` (the authority section's address records; akio-ice is
   an internal crate, its API may change in any release).
 
 Not done then: the random 0–250 ms delay before the first probe, announcements per interface
@@ -121,16 +121,16 @@ below).
 
 Verification:
 
-- only-ice: probe round trip (QU `ANY` question, authority records without cache flush, answers
+- akio-ice: probe round trip (QU `ANY` question, authority records without cache flush, answers
   kept apart), tiebreak order; the `ice_mdns` fuzz target also rebuilds the authority records
   of what it parses as a probe (new seed).
-- only-webrtc `tests/mdns.rs`, against a raw socket on `ff02::fb`: a new name is probed three
+- akio-webrtc `tests/mdns.rs`, against a raw socket on `ff02::fb`: a new name is probed three
   times at least 200 ms apart, claimed at least 200 ms after the last probe and announced twice
   at least 900 ms apart, with no answer to its own probes, and closing the endpoint sends its
   goodbye; an answer with another address gives the name up (the next offer carries a new
   name, and a query for the old one is no longer answered); a simultaneous probe with an `A`
   record loses to our `AAAA ::1`, one with `AAAA fd00::99` wins. only `tests/shared_ports.rs`:
-  `set_unicast_hops` on IPv4 and IPv6 bindings. only-sys: the IPv6 unicast hop limit round trip.
+  `set_unicast_hops` on IPv4 and IPv6 bindings. akio-sys: the IPv6 unicast hop limit round trip.
 - `tools/interop/webrtc/mdns6.sh` (gpu51, IPv6-only container): the mDNS tests with epoll and
   io_uring (9/9 each, none skipped), avahi 0.8 still resolves our name and publishes one we
   resolve, and a new step: avahi publishing the name an Endpoint has claimed (with fd00:6::2,
@@ -141,7 +141,7 @@ Verification:
 ## Update 2 (2026-11-22): probe delay, link-local addresses on their own link
 
 - **Random delay before the first probe** (RFC 6762 §8.1): a name's first probe leaves after a
-  random 0–250 ms (`only_sys::fill_random`), so endpoints or hosts that start together do not
+  random 0–250 ms (`akio_sys::fill_random`), so endpoints or hosts that start together do not
   probe in lock step. The name is still in the description and answered at once.
 - **Link-local IPv6 addresses stay on their link** (§6.2: an address record should only go
   out on an interface where the address is usable). The name of a link-local address keeps
@@ -155,7 +155,7 @@ Verification:
 Not done: interface-aware IPv4 and non-link-local IPv6 records (no interface address list);
 IPv4 multicast on interfaces other than the default one.
 
-Verification: only-webrtc `tests/mdns.rs` `link_local_names_stay_on_their_link` (an endpoint
+Verification: akio-webrtc `tests/mdns.rs` `link_local_names_stay_on_their_link` (an endpoint
 on a link-local address: every copy of its probes and announcements carries that address as
 source, which a send on another link would not; a query from another link gets no answer and
 one from its link does; skipped with fewer than two links), the claiming tests unchanged with

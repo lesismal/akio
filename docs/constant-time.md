@@ -2,16 +2,16 @@
 
 English | [简体中文](constant-time.zh-CN.md)
 
-`only-crypto` argues constant time from the code and the disassembly: no branch or memory
+`akio-crypto` argues constant time from the code and the disassembly: no branch or memory
 index depends on a secret, and the release builds of the secret-scalar paths were disassembled
-and every conditional branch listed (`crates/only-crypto/src/ct.rs` has the recipe and the
+and every conditional branch listed (`crates/akio-crypto/src/ct.rs` has the recipe and the
 last result). `tools/ct-dudect` adds an independent, black-box check: it measures the real
 binaries and asks whether their running time depends on the secret.
 
 ## Method
 
 `ct-dudect` follows dudect (Reparaz, Balasch, Verbauwhede, "Dude, is my code constant time?",
-DATE 2017), written from scratch in the tool (no dependency besides `only-crypto`):
+DATE 2017), written from scratch in the tool (no dependency besides `akio-crypto`):
 
 - **Two classes of input** per target: class 0 a fixed secret (chosen to be special: scalar 1,
   an all-zero X25519 scalar or Ed25519 seed, an all-zero RSA digest, a tag wrong only in its
@@ -38,7 +38,7 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
   256-byte compare (`sanity-leaky-memcmp`) and a square-and-multiply that branches on each
   exponent bit (`sanity-leaky-modexp`). A unit test (`cargo test -p ct-dudect`) also checks the
   early-exit compare is detected, and the t-test against synthetic distributions.
-- **Paths**: each target runs on the hardware paths, then with `ONLY_CRYPTO_PORTABLE=1` on the
+- **Paths**: each target runs on the hardware paths, then with `AKIO_CRYPTO_PORTABLE=1` on the
   portable code. Targets without a hardware path (the `ct.rs` primitives, `ct_eq`, the sanity
   checks) run in the first pass only.
 - **`--fixed-random X`**: class 0 becomes a fixed random-looking secret drawn from seed X
@@ -71,11 +71,11 @@ DATE 2017), written from scratch in the tool (no dependency besides `only-crypto
 | `aes128-gcm-open-valid`, `chacha20poly1305-open-valid` | valid tag vs random tag; **public**: the caller learns anyway whether the tag verified, and the work differs by design (ChaCha20-Poly1305 decrypts only after a valid tag; the fused AES-GCM pass undoes the decryption on failure). Reported, never a leak |
 | `seed-key` | SEED key schedule and CTR over 256 bytes (one sixteen-block batch): all-zero key vs random key (portable only: no hardware path, first pass; ADR-052) |
 | `seed-block` | SEED one block (the one-word G path of CCM's CBC-MAC), fixed key: all-zero block vs random block |
-| `ct-eq` | `only_crypto::ct_eq`, 32 bytes: equal but the last byte vs random |
+| `ct-eq` | `akio_crypto::ct_eq`, 32 bytes: equal but the last byte vs random |
 | `ct-word` | `ct.rs` `mask`, `is_zero`, `eq`, `select` over 64 words: zeros vs random |
 | `ct-limbs` | `ct.rs` `add_limbs`, `sub_limbs`, `lt_limbs`, `is_zero_limbs`, `assign`, `swap` on 2048-bit limb arrays: zeros vs random |
 
-`ct.rs` is private to `only-crypto`; the tool compiles the same source file (`#[path]`), so
+`ct.rs` is private to `akio-crypto`; the tool compiles the same source file (`#[path]`), so
 the primitives are measured as written, inlined into the harness as they are inlined into
 their callers.
 
@@ -84,7 +84,7 @@ their callers.
 ```sh
 cargo build --release -p ct-dudect
 taskset -c 2 target/release/ct-dudect --seconds 60 --json hw.json
-ONLY_CRYPTO_PORTABLE=1 taskset -c 2 target/release/ct-dudect --seconds 60 --json portable.json
+AKIO_CRYPTO_PORTABLE=1 taskset -c 2 target/release/ct-dudect --seconds 60 --json portable.json
 target/release/ct-dudect --list                # the targets
 target/release/ct-dudect --seconds 5 p256 x25519   # a subset (substring match)
 ```
@@ -107,7 +107,7 @@ host quieted (desktop, remote desktop and a local Kubernetes cluster stopped, po
 average 1.2–1.6 during the run (an outside single-threaded workload on another core). Max `|t|`
 over the 102 tests, measurements in parentheses:
 
-| Target | Kind | Hardware path | Portable (`ONLY_CRYPTO_PORTABLE=1`) |
+| Target | Kind | Hardware path | Portable (`AKIO_CRYPTO_PORTABLE=1`) |
 |---|---|---:|---:|
 | `p256-ecdh` | secret | 2.56 (2.0M) | 1.63 (965k) |
 | `p256-keygen` | secret | 1.56 (9.9M) | 3.53 (4.2M) |
@@ -192,7 +192,7 @@ target; SEED has no hardware path, so one pass: `seed-key` 1.50 (15.5M measureme
 schedule and a sixteen-block CTR pass, about 15,700 cycles either way) and `seed-block` 1.52
 (50.6M; the one-word path, about 4,480 cycles either way). No difference seen.
 
-only-crypto short-message open and P-256 reduction (2026-11-22): the quiet host (`quiet.sh`),
+akio-crypto short-message open and P-256 reduction (2026-11-22): the quiet host (`quiet.sh`),
 core 2, `rdtsc`. Hardware path, 60 s per target: `p256-ecdh` 2.74 (2.1M measurements),
 `p256-keygen` 2.07 (11.4M), `p256-sign` 1.98 (6.8M), `chacha20poly1305-open-tag` 1.98 (10⁸),
 the new `chacha20poly1305-open-tag-64` 0.67 (10⁸; the row-kernel head with the key in

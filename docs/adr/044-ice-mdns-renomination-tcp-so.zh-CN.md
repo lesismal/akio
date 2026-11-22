@@ -8,7 +8,7 @@
 
 浏览器会隐藏自己的主机地址：Chrome（以及 Firefox、Safari）把每个主机候选写成随机的
 `<uuid>.local` 名字（draft-ietf-mmusic-mdns-ice-candidates），并在本地网络上应答针对它的
-组播 DNS 查询（RFC 6762）。`only-ice` 把这类候选行解析为 `ParseError::Mdns`，`only-webrtc`
+组播 DNS 查询（RFC 6762）。`akio-ice` 把这类候选行解析为 `ParseError::Mdns`，`akio-webrtc`
 直接跳过，于是 `Endpoint` 只能借助浏览器自己的连通性检查产生的对端反射候选来连到同一局域网上的
 浏览器：浏览器无法先连到我们时不行，双方都隐藏地址时更不行。`Endpoint` 也无法隐藏自己的主机地址。
 
@@ -23,7 +23,7 @@
 
 ## 决定
 
-1. **mDNS 编解码**（`only_ice::mdns`，sans-io）：`Message::parse`（问题，以及回答段和附加段中的
+1. **mDNS 编解码**（`akio_ice::mdns`，sans-io）：`Message::parse`（问题，以及回答段和附加段中的
    `A` / `AAAA` 记录；压缩指针只允许向前跳回、每个名字最多 16 次，名字转为小写，最多 32 个问题、
    64 条记录，其他记录类型跳过，opcode 或 rcode 非 0 的消息拒绝）、`Message::query(name, qtype,
    unicast)`（每条消息一个问题：Chromium 的应答器会忽略含多个问题的消息，我们最初的双问题查询
@@ -53,7 +53,7 @@
    重新提名：控制方在提名后继续检查更好的候选对，更好的有效候选对会以更大的 NOMINATION 值（属性
    0xC001）再次提名：没有更好的候选对待检时立即进行，否则在它生效后等 `nomination_delay`）。受控方
    现在会在多个提名中选择：带 NOMINATION 时取最大值，不带时只有优先级更高的提名候选对才替换已选中的
-   （lite 代理：取最后一次提名，除非其 NOMINATION 值不更大）。常规提名不变，仍为默认。`only-webrtc`
+   （lite 代理：取最后一次提名，除非其 NOMINATION 值不更大）。常规提名不变，仍为默认。`akio-webrtc`
    以 `RtcConfig::enable_ice_renomination`（offer 中写 `a=ice-options:trickle renomination`，读取
    远端的 `ice-options`）和 `RtcConfig::enable_ice_aggressive_nomination` 提供它们。
 6. **同时打开的 ICE-TCP**（`Endpoint::listen_tcp_so(&engine, addr)`）：一个 `tcptype so` 主机
@@ -61,25 +61,25 @@
    （`Engine::dial_from`）：无论哪边的 SYN 先到，结果都是一条连接（双方 connect 交叉即 TCP 同时
    打开；否则监听端接受对方的连接，我方的 connect 随后以 `EADDRNOTAVAIL` 失败，其排队的数据在被接受
    的连接交给引擎后经它发出，2 秒内有效）。被接受的连接与被动候选一样，由第一个检查识别归属。在
-   only-ice 中，本地主动候选和 `so` 候选本来就能发送检查；README 中相反的说法已更正。
-7. **引擎原语**（`only`）：`Engine::bind_udp_multicast(group, acceptor)` 与
-   `Engine::dial_from(local, addr, acceptor, on_error)`，基于 `only_sys::connect_nonblocking_from`
+   akio-ice 中，本地主动候选和 `so` 候选本来就能发送检查；README 中相反的说法已更正。
+7. **引擎原语**（`akio`）：`Engine::bind_udp_multicast(group, acceptor)` 与
+   `Engine::dial_from(local, addr, acceptor, on_error)`，基于 `akio_sys::connect_nonblocking_from`
    （以 `SO_REUSEADDR` / `SO_REUSEPORT` 绑定后非阻塞 connect：两个 `unsafe` 块，即 `bind` 与
    `connect` 调用，与已有的写法和注释一致）以及新的后端钩子 `Group::dial_stream`（epoll 与
    io_uring：connect 进行中的流走拨号路径）。
 
 ## 影响
 
-- 公共 API：only-ice（内部层级）的 `mdns` 模块、`Candidate::{parse_resolved, with_hostname,
+- 公共 API：akio-ice（内部层级）的 `mdns` 模块、`Candidate::{parse_resolved, with_hostname,
   hostname, with_related}`、`IceConfig::{aggressive_nomination, renomination}`、
-  `IceAgent::set_remote_renomination`；only-webrtc 的 `Endpoint::{resolve_mdns,
+  `IceAgent::set_remote_renomination`；akio-webrtc 的 `Endpoint::{resolve_mdns,
   conceal_host_candidates, listen_tcp_so}`、`RtcConfig::{enable_ice_renomination,
-  enable_ice_aggressive_nomination}`；`only` 的 `Engine::{bind_udp_multicast, dial_from}`；
-  only-sys 的 `connect_nonblocking_from`；only-core（隐藏）的 `Group::dial_stream`。全部为新增；
+  enable_ice_aggressive_nomination}`；`akio` 的 `Engine::{bind_udp_multicast, dial_from}`；
+  akio-sys 的 `connect_nonblocking_from`；akio-core（隐藏）的 `Group::dial_stream`。全部为新增；
   不调用它们时 SDP 与行为不变，唯一例外是受控方会忽略后来在更低优先级候选对上的 USE-CANDIDATE
   （RFC 5245 激进提名语义；常规提名下每代只有一次提名）。端点解析名字时，以 mDNS 行调用
-  `Peer::add_remote_candidate` 返回 `Ok`，否则仍返回原来的错误。only-webrtc 依赖 only-sys（`so`
-  监听），`only` 改为以普通依赖使用 only-sys。
+  `Peer::add_remote_candidate` 返回 `Ok`，否则仍返回原来的错误。akio-webrtc 依赖 akio-sys（`so`
+  监听），`akio` 改为以普通依赖使用 akio-sys。
 - 测试：编解码（往返、压缩、指针环、截断、计数、opcode）；带名字的候选；模拟网络中提名后 trickle
   出更好候选对时，常规提名（保持不变）、激进提名与重新提名（双方都迁移，含 10% 丢包，仅重新提名时
   带 NOMINATION），激进提名最终落在最佳候选对，受控方遵循最大 NOMINATION 值而忽略旧值；两个都隐藏

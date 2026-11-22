@@ -1,12 +1,12 @@
 # HTTP/1.1 与 HTTP/2 服务端
 
-`only-http` 用同一套编程模型提供 HTTP/1.0、HTTP/1.1 和 HTTP/2：`Service` 为每个请求拿到一个
+`akio-http` 用同一套编程模型提供 HTTP/1.0、HTTP/1.1 和 HTTP/2：`Service` 为每个请求拿到一个
 `&mut Context`，在连接所属的 I/O 线程上执行。
 
 ## 启动服务
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:serve}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:serve}}
 ```
 
 `serve(service)` / `serve_with(HttpConfig, service)` 返回一个 `HttpAcceptor`：直接交给
@@ -45,7 +45,7 @@ HTTP/2 按连接选择：客户端前言（prior knowledge，以及 ALPN 为 `h2
 **响应**或者 **detach**；两者都不做时客户端会收到 500。
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:handlers}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:handlers}}
 ```
 
 读取请求：
@@ -81,7 +81,7 @@ WebSocket 升级）使用自己的存储。
 ## detach：永远不要阻塞 handler
 
 `ctx.detach()` 把答复的权利交给一个 `Detached` 值，你可以把它移到任何线程。流水线 HTTP/1.1
-请求的响应仍按请求顺序发出（only-http 为每个请求预留一个有序响应槽位），HTTP/2 的各个
+请求的响应仍按请求顺序发出（akio-http 为每个请求预留一个有序响应槽位），HTTP/2 的各个
 stream 互不影响。handler 一返回，I/O 线程就空闲了。
 
 慢的部分放在哪里执行：自己的线程、自己的线程池，或另一个运行时；见
@@ -112,5 +112,5 @@ stream 互不影响。handler 一返回，I/O 线程就空闲了。
 ## 对比
 
 HTTP/1.1、流水线 HTTP/1.1、h2c 与 TLS 上的 HTTP/2 在 epoll 与 io_uring 下与 hyper 和 fib 的对比见
-[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)
+[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md)
 （本节曾把这份对比报告列为尚未完成）。

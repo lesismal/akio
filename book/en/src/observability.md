@@ -1,6 +1,6 @@
 # Observability and hot reload
 
-Every engine owns a **telemetry hub** (`only::Telemetry`): per-thread counters, the connection
+Every engine owns a **telemetry hub** (`akio::Telemetry`): per-thread counters, the connection
 table, slow-callback records and the live (reloadable) settings. It is reachable as
 `Config::telemetry` before the engine is built and as `Engine::telemetry()` afterwards. The I/O
 threads update plain per-thread counters with relaxed atomics (cache-line aligned, nothing
@@ -9,7 +9,7 @@ locked or allocated per event); snapshots are assembled on demand.
 ## From code
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/guide-config.rs:observe}}
+{{#include ../../../crates/akio/examples/guide-config.rs:observe}}
 ```
 
 | Call | Returns |
@@ -28,22 +28,22 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 
 | Series | Type |
 |---|---|
-| `only_connections_accepted_total`, `only_connections_dialed_total`, `only_connections_closed_total` | counter |
-| `only_connections_rejected_total` (max_connections), `only_accept_errors_total`, `only_idle_timeouts_total` | counter |
-| `only_read_bytes_total`, `only_reads_total`, `only_written_bytes_total`, `only_writes_total` | counter |
-| `only_udp_datagrams_received_total`, `only_udp_datagrams_sent_total` | counter |
-| `only_send_queue_bytes` | gauge |
-| `only_backpressure_events_total`, `only_overloaded_total` | counter |
-| `only_tls_handshake_failures_total`, `only_transport_errors_total` | counter |
-| `only_loop_iterations_total`, `only_loop_events_total`, `only_loop_callbacks_total`, `only_loop_callback_seconds_total`, `only_slow_callbacks_total` | counter |
-| `only_connections_open`, `only_loop_running` | gauge |
-| `only_pool_threads`, `only_pool_active`, `only_pool_queued` | gauge |
-| `only_pool_completed_total`, `only_pool_panicked_total`, `only_pool_rejected_total` | counter |
-| `only_uptime_seconds` | gauge |
+| `akio_connections_accepted_total`, `akio_connections_dialed_total`, `akio_connections_closed_total` | counter |
+| `akio_connections_rejected_total` (max_connections), `akio_accept_errors_total`, `akio_idle_timeouts_total` | counter |
+| `akio_read_bytes_total`, `akio_reads_total`, `akio_written_bytes_total`, `akio_writes_total` | counter |
+| `akio_udp_datagrams_received_total`, `akio_udp_datagrams_sent_total` | counter |
+| `akio_send_queue_bytes` | gauge |
+| `akio_backpressure_events_total`, `akio_overloaded_total` | counter |
+| `akio_tls_handshake_failures_total`, `akio_transport_errors_total` | counter |
+| `akio_loop_iterations_total`, `akio_loop_events_total`, `akio_loop_callbacks_total`, `akio_loop_callback_seconds_total`, `akio_slow_callbacks_total` | counter |
+| `akio_connections_open`, `akio_loop_running` | gauge |
+| `akio_pool_threads`, `akio_pool_active`, `akio_pool_queued` | gauge |
+| `akio_pool_completed_total`, `akio_pool_panicked_total`, `akio_pool_rejected_total` | counter |
+| `akio_uptime_seconds` | gauge |
 
-HTTP series from `observe::HttpMetrics`: `only_http_requests_total{class="2xx"...}`,
-`only_http_request_duration_seconds` (histogram, buckets from 0.5 ms to 10 s),
-`only_http_requests_in_flight`, `only_http_requests_by_version_total{version="1.0|1.1|2|3"}`
+HTTP series from `observe::HttpMetrics`: `akio_http_requests_total{class="2xx"...}`,
+`akio_http_request_duration_seconds` (histogram, buckets from 0.5 ms to 10 s),
+`akio_http_requests_in_flight`, `akio_http_requests_by_version_total{version="1.0|1.1|2|3"}`
 (responses by the request's protocol version; on h2 and h3 that is the number of answered request streams).
 QUIC and TLS series come from their collectors, see [Your own metrics](#your-own-metrics).
 
@@ -53,19 +53,19 @@ no measurable cost: HTTP/1.1 plaintext and pipelined at 0.998–1.006× with tim
 counters compiled out, TCP and UDP echo within their ±5–10% noise (docs/BENCHMARKS.md, "Telemetry
 overhead").
 
-`only_loop_callback_seconds_total / only_loop_iterations_total` and the slow-callback counter
+`akio_loop_callback_seconds_total / akio_loop_iterations_total` and the slow-callback counter
 are the first things to watch: they tell you whether handlers are keeping the I/O threads busy.
 
 ## HTTP endpoints
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-observe.rs:endpoints}}
+{{#include ../../../crates/akio-http/examples/guide-observe.rs:endpoints}}
 ```
 
 - `observe::metrics_handler(telemetry, Some(http_metrics))` answers the Prometheus text format
   (0.0.4): the engine's series, every registered collector (see
   [Your own metrics](#your-own-metrics)) and `http_metrics` if given.
-- `observe::debug_handler(telemetry, token)` is an opt-in runtime debug endpoint (`only`'s
+- `observe::debug_handler(telemetry, token)` is an opt-in runtime debug endpoint (`akio`'s
   counterpart of Go's pprof pages), answering JSON. Mount it under a wildcard route; the last
   path segment picks the view: `conns` (connection table), `loops` (per-thread counters, totals,
   pool), `slow` (recent slow callbacks), `live` (current live settings). With a token, requests
@@ -74,16 +74,16 @@ are the first things to watch: they tell you whether handlers are keeping the I/
   expose it publicly without a token.
 - `HttpMetrics::middleware()` counts requests by status class, observes latency, tracks
   in-flight requests.
-- `observe::access_log()` writes one structured record per response through `only::log`.
+- `observe::access_log()` writes one structured record per response through `akio::log`.
 
 ## Your own metrics
 
-Anything that implements `only::metrics::Collector` can be registered with the telemetry hub and
+Anything that implements `akio::metrics::Collector` can be registered with the telemetry hub and
 then appears on the same `/metrics` endpoint, after the engine's series (ADR-015). No third-party
 crate is involved.
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-metrics.rs:collectors}}
+{{#include ../../../crates/akio-http/examples/guide-metrics.rs:collectors}}
 ```
 
 - `Registry` owns named `Counter`, `Gauge` and `Histogram` instruments (shared atomics, no lock per
@@ -107,18 +107,18 @@ crate is involved.
 The same data without HTTP, as a snapshot:
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-metrics.rs:snapshot}}
+{{#include ../../../crates/akio-http/examples/guide-metrics.rs:snapshot}}
 ```
 
 Ready-made collectors:
 
 | Collector | Series |
 |---|---|
-| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`, `only_http_request_duration_seconds`, `only_http_requests_in_flight`, `only_http_requests_by_version_total{version}`; with `with_routes(n)` also `only_http_route_requests_total{method, route, class}` and `only_http_route_request_duration_seconds{method, route}` |
-| `only_http::observe::H2Stats` (set in `H2Config::stats`) | `only_http2_connections_open`, `only_http2_connections_total`, `only_http2_streams_open`, `only_http2_streams_total`, `only_http2_resets_total{direction}`, `only_http2_goaways_total{direction}` |
-| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}` (signal `metrics`, `traces`, `logs`), `only_export_otlp_retries_total`, `only_export_metric_points_rejected_total`, `only_export_{spans,logs}_exported_total`, `_dropped_total`, `_rejected_total`, `_queued`, `only_export_statsd_dropped_series_total` |
-| `only_quic::QuicServer` (also what `only_h3::serve` returns) | `only_quic_connections_open` (gauge), `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`, `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`, `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`, `only_quic_congestion_events_total`, `only_quic_ecn_ce_events_total` |
-| `only::tls::TlsStats` from `Tls::stats()` | `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}`, `only_tls_early_data_total{side, outcome}` |
+| `akio_http::observe::HttpMetrics` | `akio_http_requests_total{class}`, `akio_http_request_duration_seconds`, `akio_http_requests_in_flight`, `akio_http_requests_by_version_total{version}`; with `with_routes(n)` also `akio_http_route_requests_total{method, route, class}` and `akio_http_route_request_duration_seconds{method, route}` |
+| `akio_http::observe::H2Stats` (set in `H2Config::stats`) | `akio_http2_connections_open`, `akio_http2_connections_total`, `akio_http2_streams_open`, `akio_http2_streams_total`, `akio_http2_resets_total{direction}`, `akio_http2_goaways_total{direction}` |
+| `akio_export::Exporter::collector()` | `akio_export_pushes_total{sink, signal, result}` (signal `metrics`, `traces`, `logs`), `akio_export_otlp_retries_total`, `akio_export_metric_points_rejected_total`, `akio_export_{spans,logs}_exported_total`, `_dropped_total`, `_rejected_total`, `_queued`, `akio_export_statsd_dropped_series_total` |
+| `akio_quic::QuicServer` (also what `akio_h3::serve` returns) | `akio_quic_connections_open` (gauge), `akio_quic_connections_accepted_total`, `akio_quic_connections_closed_total`, `akio_quic_datagrams_total{dir}`, `akio_quic_bytes_total{dir}`, `akio_quic_packets_sent_total`, `akio_quic_packets_lost_total`, `akio_quic_lost_bytes_total`, `akio_quic_congestion_events_total`, `akio_quic_ecn_ce_events_total` |
+| `akio::tls::TlsStats` from `Tls::stats()` | `akio_tls_handshakes_total{side, version}`, `akio_tls_resumed_total{side}`, `akio_tls_early_data_total{side, outcome}` |
 
 QUIC totals include connections that already closed, so they never go down. Collectors run on
 the thread serving the scrape (or the exporter's thread, see [Push export](#push-export-otlp-and-statsd)),
@@ -127,7 +127,7 @@ never on an I/O thread's hot path: keep them cheap.
 ## Per-route metrics and HTTP/2
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:routes}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:routes}}
 ```
 
 - `HttpMetrics::with_routes(n)` adds a row per route: the method and the **pattern** the router
@@ -145,13 +145,13 @@ never on an I/O thread's hot path: keep them cheap.
 
 ## Spans
 
-`only::log` has spans as well as records: timed units of work with fields, a parent, a kind and a
+`akio::log` has spans as well as records: timed units of work with fields, a parent, a kind and a
 status, identified by a W3C trace id and span id. They go to a `Tracer` (an exporter, see below)
 when they end, and have their own maximum level, `Off` by default: until it is raised a span
 statement costs one relaxed atomic load and creates nothing.
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:spans}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:spans}}
 ```
 
 - `span!(target: .., Level::Info, "name", key = value, ...)` and `info_span!` ... start a span
@@ -160,8 +160,8 @@ statement costs one relaxed atomic load and creates nothing.
   thread's current span until the guard drops: spans started meanwhile are its children, and
   `FmtLogger` adds `trace_id=.. span_id=..` to the records written meanwhile. On an event loop,
   enter a span only around code that runs for it, never across callbacks;
-  `only::log::span::enter_context(ctx)` carries a context to another thread.
-- only-http starts a **request span** (target `only_http::request`, level `info`, kind server)
+  `akio::log::span::enter_context(ctx)` carries a context to another thread.
+- akio-http starts a **request span** (target `akio_http::request`, level `info`, kind server)
   for every HTTP/1.1, HTTP/2 and HTTP/3 request while request spans are enabled: named
   `GET /users/:id` once the router matched (the method alone for unmatched requests), with
   `http.request.method`, `url.path`, `http.route`, `network.protocol.version`,
@@ -170,7 +170,7 @@ statement costs one relaxed atomic load and creates nothing.
   it when it is sent from wherever it is). An incoming `traceparent` header makes it the child of
   the caller's span; `ctx.span_context()` gives the context to propagate downstream
   (`to_traceparent()`).
-- **Connection spans** (target `only_http::connection`, level `debug`) cover one connection from
+- **Connection spans** (target `akio_http::connection`, level `debug`) cover one connection from
   accept to close, with the client address and protocol version.
 - **Events and links.** `span.add_event("retry", &[("attempt", 2u64.into())])` records
   something that happened at one moment of the span (`push_event` takes a ready `SpanEvent` with
@@ -182,22 +182,22 @@ statement costs one relaxed atomic load and creates nothing.
 - Sampling is decided once per trace by the tracer (`sample_ratio` of the exporter); a caller's
   `traceparent` flag is followed. An unsampled span still carries its ids (its children and
   outgoing headers stay unsampled) but records nothing.
-- Your own tracer: implement `only::log::span::Tracer` (`enabled`, `sample`, `on_end`) and
+- Your own tracer: implement `akio::log::span::Tracer` (`enabled`, `sample`, `on_end`) and
   install it with `set_tracer` plus `set_max_span_level`. `on_end` runs on the thread that ended
   the span, often an I/O thread: queue the span, never block.
 
 There is no `tracing` bridge: `tracing`'s subscribers need `'static` callsite metadata created
-by its own macros, so forwarding only-log spans would mean leaking metadata per span name or
+by its own macros, so forwarding akio-log spans would mean leaking metadata per span name or
 hiding names in fields; OTLP export covers the usual destination, and a `Tracer` can feed
 anything else (ADR-020).
 
 ## Push export (OTLP and StatsD)
 
-The `only-export` crate pushes metrics, spans and log records from one background thread, with
+The `akio-export` crate pushes metrics, spans and log records from one background thread, with
 the workspace's own HTTP, gRPC, TLS and protobuf code and no third-party dependency:
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:export}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:export}}
 ```
 
 - **What is sent.** Every `interval` (default 10 s), the same snapshot a scrape renders: the
@@ -207,18 +207,18 @@ the workspace's own HTTP, gRPC, TLS and protobuf code and no third-party depende
 - **OTLP/HTTP** (`otlp_http`, or `otlp_http_with(endpoint, Encoding::Json, headers)`):
   `POST /v1/metrics`, `/v1/traces` and `/v1/logs`, protobuf (`application/x-protobuf`) or
   OTLP/JSON. **OTLP/gRPC** (`otlp_grpc("http://collector:4317")`, `otlp_grpc_with(endpoint,
-  metadata)`): the unary `Export` methods of the three collector services, with only-grpc's
+  metadata)`): the unary `Export` methods of the three collector services, with akio-grpc's
   client on a private engine with one client I/O thread, started at the first push. Counters
   become cumulative monotonic sums, gauges gauges, histograms explicit-bucket histograms with
   their exemplars; labels become attributes, `service.name` and `resource_attr(..)` the resource.
   Spans (with their events and links) and records are grouped into one instrumentation scope per
   target. `otlp_traces_only()` keeps metrics out of OTLP when they are scraped or go to StatsD.
-- **TLS.** An `https://` endpoint (either protocol) is reached over only-tls, ALPN `h2` for gRPC
+- **TLS.** An `https://` endpoint (either protocol) is reached over akio-tls, ALPN `h2` for gRPC
   and `http/1.1` for HTTP. The collector's certificate is checked against the system's roots,
   or against `tls_roots(RootCerts)` (a private CA); `tls_client_cert(chain, key)` answers a
   collector that requires client certificates; `tls_server_name(..)` overrides the name checked
   (the endpoint's host by default). TLS options with an `http://` endpoint fail at `start`.
-- **Logs.** `logs(level)` installs a logger (the process-wide only-log logger) that turns records
+- **Logs.** `logs(level)` installs a logger (the process-wide akio-log logger) that turns records
   up to `level` into OTLP `LogRecord`s: the message as body, severity, key-values as attributes,
   `code.file.path` and `code.line.number`, and the trace and span ids of the span current where
   the record was logged, so a collector can show a request's logs next to its trace.
@@ -259,22 +259,22 @@ exporters' output is checked.
 
 ## Logs
 
-`only` logs through its own facade, `only-log` (re-exported as `only::log`), with key-value
+`akio` logs through its own facade, `akio-log` (re-exported as `akio::log`), with key-value
 records. Install a logger once per process to see them:
 
 ```rust,ignore
-// Formatted lines on stderr: `2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[...]`
-only::log::init(only::log::LevelFilter::Info).unwrap();
+// Formatted lines on stderr: `2026-11-14T08:00:00.000123Z INFO  akio: engine started listeners=[...]`
+akio::log::init(akio::log::LevelFilter::Info).unwrap();
 
 // Or: per-target ceilings, stdout, no timestamps ...
-only::log::FmtLogger::new()
-    .target_level("only_http::access", only::log::LevelFilter::Off)
+akio::log::FmtLogger::new()
+    .target_level("akio_http::access", akio::log::LevelFilter::Off)
     .stdout()
-    .init(only::log::LevelFilter::Debug)
+    .init(akio::log::LevelFilter::Debug)
     .unwrap();
 
-// Or your own sink: implement `only::log::Logger` (`enabled`, `log`, `flush`) and call
-// `only::log::set_logger(&MY_LOGGER)` plus `only::log::set_max_level(..)`.
+// Or your own sink: implement `akio::log::Logger` (`enabled`, `log`, `flush`) and call
+// `akio::log::set_logger(&MY_LOGGER)` plus `akio::log::set_max_level(..)`.
 ```
 
 A record gives `level()`, `target()`, `args()` (the message, formatted lazily),
@@ -286,32 +286,32 @@ nanosecond.
 
 `FmtLogger` writes each line on the thread that logs, under the stream's lock: if stderr is a
 pipe nobody drains, that thread (possibly an I/O thread) blocks. For a server whose log output
-may back up, `.non_blocking(only::log::DEFAULT_QUEUE_LINES)` queues formatted lines to a writer
+may back up, `.non_blocking(akio::log::DEFAULT_QUEUE_LINES)` queues formatted lines to a writer
 thread (16 384 lines); when the queue is full lines are dropped, counted (`dropped()` on a
 clone kept before `init`) and reported in a line of their own once the writer catches up. Call
-`only::log::flush()` before exiting. The default stays synchronous, so no line is lost when a
+`akio::log::flush()` before exiting. The default stays synchronous, so no line is lost when a
 process exits without flushing.
 
-**Per-target levels from the environment.** `only::log::init_from_env(default)` reads `ONLY_LOG`
+**Per-target levels from the environment.** `akio::log::init_from_env(default)` reads `AKIO_LOG`
 once, with env_logger-style directives, and installs the formatted logger with them:
 
 ```text
-ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./server
+AKIO_LOG=info,akio_http=debug,akio_quic::conn=trace,akio_http::access=off ./server
 ```
 
 `level` sets the level of targets no directive names (without one they are off), `target=level`
 the level of a target and its submodules (`target::...`), a bare `target` means `trace`; the most
 specific target wins. Unset, `default` applies to everything; unparsable, a line on stderr says
 why and `default` applies. Nothing reads the variable unless `init_from_env` is called. The same
-syntax builds a filter in code: `"info,only_http=debug".parse::<only::log::Filter>()`, then
+syntax builds a filter in code: `"info,akio_http=debug".parse::<akio::log::Filter>()`, then
 `FmtLogger::new().init_filtered(filter)`, or `filter.enabled(metadata)` in your own `Logger`.
-Unlike env_logger, `only=debug` does not match `only_http` (targets match on `::` boundaries).
+Unlike env_logger, `only=debug` does not match `akio_http` (targets match on `::` boundaries).
 
 **Message filters.** As with env_logger, a `/regex` after the directives keeps only the records
 whose formatted message (not the target, level or key-values) matches the pattern somewhere:
 
 ```text
-ONLY_LOG='info,only_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
+AKIO_LOG='info,akio_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
 ```
 
 Everything after the first `/` is the pattern, spaces and commas included (so it may contain
@@ -319,7 +319,7 @@ Everything after the first `/` is the pattern, spaces and commas included (so it
 on stderr like any other directive error. The syntax is the `regex` crate's without captures,
 look-around and Unicode classes: classes and ranges, Unicode-aware `\d \w \s`, `* + ? {m,n}`
 (greedy or lazy), alternation, groups, `^ $ \A \z`, word boundaries `\b \B`, and the flags
-`(?i)` (Unicode case folding), `(?m)`, `(?s)`. The engine is `only-regex`, part of the workspace:
+`(?i)` (Unicode case folding), `(?m)`, `(?s)`. The engine is `akio-regex`, part of the workspace:
 a Thompson NFA with a DFA built when the filter is parsed, so matching never backtracks (no
 pattern can make a log call slow) and costs about a nanosecond per character of the message.
 `FmtLogger` matches the message it formatted for the line anyway; in your own `Logger`,
@@ -327,30 +327,30 @@ pattern can make a log call slow) and costs about a nanosecond per character of 
 matcher without building a string. A filter without a pattern does not pay for any of this.
 In code: `Filter::new(LevelFilter::Info).message_regex("timed out")?`.
 
-**Compile-time caps.** The only-log features `max_level_off` ... `max_level_trace` and
+**Compile-time caps.** The akio-log features `max_level_off` ... `max_level_trace` and
 `release_max_level_*` (the latter for builds without debug assertions) remove statements above
-the cap at compile time, as in the `log` crate; `only::log::STATIC_MAX_LEVEL` is the result.
+the cap at compile time, as in the `log` crate; `akio::log::STATIC_MAX_LEVEL` is the result.
 Enable them in the application only (features are unified across the dependency graph):
-`only-log = { version = "1", features = ["release_max_level_info"] }`.
+`akio-log = { version = "1", features = ["release_max_level_info"] }`.
 
 **Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
-(`only = { version = "1", features = ["log"] }`). While no only-log logger is installed, every
+(`only = { version = "1", features = ["log"] }`). While no akio-log logger is installed, every
 record goes to the `log` crate's logger with the same level, target, message and key-values, and
 `log::max_level()` is the effective maximum; `Config::log_level` sets `log`'s level as well. To
-go the other way (records of crates using `log`, such as str0m or rustls, into an only-log
-logger) call `only::log::bridge::route_log_to_only()`. The feature is outside the semver promise:
+go the other way (records of crates using `log`, such as str0m or rustls, into an akio-log
+logger) call `akio::log::bridge::route_log_to_only()`. The feature is outside the semver promise:
 it follows `log` 0.4.
 
 | Target | Level | Records |
 |---|---|---|
-| `only` | info | `engine started` (listeners), `engine shutting down` (open connections), `configuration reloaded` (applied, ignored) |
-| `only` | warn | slow callbacks (`kind`, `conn_id`, `elapsed_us`, `limit_us`, `thread`, `listener`); io_uring / BPF fallbacks |
-| `only` | error | poller failures |
-| `only` | debug | connections refused by `max_connections` |
-| `only` | trace | `connection opened` / `connection closed` (`conn_id`, `peer`, `local`, `dialed`, `error`) |
-| `only_http::access` | info | access log: `method`, `target`, `status`, `peer`, `elapsed_us`, `request_id` |
+| `akio` | info | `engine started` (listeners), `engine shutting down` (open connections), `configuration reloaded` (applied, ignored) |
+| `akio` | warn | slow callbacks (`kind`, `conn_id`, `elapsed_us`, `limit_us`, `thread`, `listener`); io_uring / BPF fallbacks |
+| `akio` | error | poller failures |
+| `akio` | debug | connections refused by `max_connections` |
+| `akio` | trace | `connection opened` / `connection closed` (`conn_id`, `peer`, `local`, `dialed`, `error`) |
+| `akio_http::access` | info | access log: `method`, `target`, `status`, `peer`, `elapsed_us`, `request_id` |
 
-`Config::log_level` (reloadable) calls `only::log::set_max_level`, so verbosity can change at
+`Config::log_level` (reloadable) calls `akio::log::set_max_level`, so verbosity can change at
 runtime.
 
 ## Slow callbacks
@@ -363,7 +363,7 @@ See [Blocking work](concepts/blocking.md#slow-callback-detection). Reports go to
 ## Hot reload
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/guide-config.rs:reload}}
+{{#include ../../../crates/akio/examples/guide-config.rs:reload}}
 ```
 
 `Engine::reload(&Config)` (or `Telemetry::reload`) applies the runtime-changeable settings
@@ -411,14 +411,14 @@ take effect (growing into the index of a retired thread that is just exiting joi
   the response in flight and closes, WebSocket sends 1001), and are closed `shutdown_timeout`
   later if still open; clients reconnect to the active threads.
 - Retiring threads show up in `Metrics::loops` (`retiring: true`), in the Prometheus gauge
-  `only_loop_retiring` and in the JSON (`"retiring"`); a thread that exited reports
+  `akio_loop_retiring` and in the JSON (`"retiring"`); a thread that exited reports
   `running: false`, and a thread started again at the same index continues its counters.
 - Not available for UDP listeners (adding or removing a socket of a UDP `SO_REUSEPORT` group would
   move peers between threads), DPDK, and listeners with `Accel::Ebpf` steering: `Unsupported`.
 
-Under only-prefork, `Controller::reload_in_place()` (or SIGUSR1 to the supervisor) runs each
+Under akio-prefork, `Controller::reload_in_place()` (or SIGUSR1 to the supervisor) runs each
 worker's `Worker::on_reload` hook, where the worker re-reads its configuration and calls
 `Engine::reload` and `Engine::set_threads`: see [prefork](prefork.md#reload-in-place).
 
-`only` does not watch configuration files itself: trigger `reload` from whatever you use (a
+`akio` does not watch configuration files itself: trigger `reload` from whatever you use (a
 `SIGHUP` handler, a file watcher, an admin route as in the example above).

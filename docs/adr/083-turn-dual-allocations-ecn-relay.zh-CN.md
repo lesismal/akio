@@ -6,15 +6,15 @@
 
 ## 背景
 
-`only-turn` 的两项遗留工作，其他文档都把它们列为未完成：
+`akio-turn` 的两项遗留工作，其他文档都把它们列为未完成：
 
 - **双分配。** ADR-076 列出"`ADDITIONAL-ADDRESS-FAMILY` 双分配（UDP 也不支持）"。RFC 8656
   允许一次 Allocate 同时请求一个 IPv4 与一个 IPv6 中继地址。服务器只从一个 `relay_ip` 中继，因此只有一个
   地址族：请求另一地址族的 `REQUESTED-ADDRESS-FAMILY` 得到 440，该属性被忽略。
 - **经中继保留 ECN。** ADR-077 加入了 ECN 管道：每个收到的 UDP 数据报的码点（`Conn::rx_ecn`，在 Linux
   与 macOS 上来自 `IP_RECVTOS` / `IPV6_RECVTCLASS`），以及带标记的发送（`UdpBinding::send_to_ecn`、
-  `Conn::send_segments_ecn`）。ADR-082 让 only-webrtc 给经 UDP 发往 TURN 服务器的数据打标记，依赖服务器
-  复制码点。它把"在 only-turn 自己的中继里复制码点"列为未完成：经过 `only-turn` 的路径在几次探测后 ECN
+  `Conn::send_segments_ecn`）。ADR-082 让 akio-webrtc 给经 UDP 发往 TURN 服务器的数据打标记，依赖服务器
+  复制码点。它把"在 akio-turn 自己的中继里复制码点"列为未完成：经过 `akio-turn` 的路径在几次探测后 ECN
   验证失败。
 
 RFC 8656 概要：
@@ -77,7 +77,7 @@ RFC 8656 概要：
 0x8032，`ADDRESS-ERROR-CODE` 编为 0x8033。RFC 8656 分配的是 0x8000 与 0x8001；0x8032 与 0x8033 在 IANA
 未分配。互通测试中看到：
 
-- coturn 的 `turnutils_uclient -Z` 对 only-turn 只得到一个中继地址，随后它的 IPv6 权限得到 443。
+- coturn 的 `turnutils_uclient -Z` 对 akio-turn 只得到一个中继地址，随后它的 IPv6 权限得到 443。
 - 我方客户端对 coturn 只得到一个中继地址，也没有错误码。
 
 因此服务器把 0x8032 当作别名，规则相同。对使用它的请求，应答在两个码点上都带 `ADDRESS-ERROR-CODE`。两个
@@ -121,7 +121,7 @@ RFC 8656 概要：
 - STUN 编解码：`attr::ADDRESS_ERROR_CODE`、`Message::address_error_code`、
   `MessageBuilder::address_error`。
 
-### only-webrtc：只改中继收集
+### akio-webrtc：只改中继收集
 
 - `RelayServer::dual_allocation(true)` 请求双分配。
 - `Endpoint::gather_relay_via` 于是每个地址族加一个中继候选，并返回 IPv4 的那个。丢失的分配会连同两者重新
@@ -131,7 +131,7 @@ RFC 8656 概要：
   - 双分配要占用服务器的第二个端口；
   - IPv6 中继候选只对有 IPv6 候选的对端有用；
   - pion/turn 忽略该属性，无论如何只返回一个地址。
-- only-webrtc 的其他部分不变。另一个会话在做 WebRTC ECN，而 only-webrtc 已经保留中继输入的码点
+- akio-webrtc 的其他部分不变。另一个会话在做 WebRTC ECN，而 akio-webrtc 已经保留中继输入的码点
   （ADR-082）。
 
 ### 未完成
@@ -148,8 +148,8 @@ RFC 8656 概要：
   而不是 440。`relay_ip` 为 IPv6、`additional_relay_ip` 为 IPv4 时，不带该属性的 Allocate 现在得到 IPv4
   （RFC 8656）。没有 `additional_relay_ip` 时，除了双分配请求会得到 `ADDRESS-ERROR-CODE` 应答（以前该属性
   被忽略）之外，一切不变。
-- ECN 验证（ADR-077 / ADR-082）现在经 UDP 与 DTLS 穿过 `only-turn` 时可以成功。
-- 公开 API：只有新增（`api/only-turn.txt`、`api/only-webrtc.txt`）。
+- ECN 验证（ADR-077 / ADR-082）现在经 UDP 与 DTLS 穿过 `akio-turn` 时可以成功。
+- 公开 API：只有新增（`api/akio-turn.txt`、`api/akio-webrtc.txt`）。
 - 性能：gpu51 上 UDP 中继与 main 的 A/B（`turn-relay-bench 8 6 4`，`quiet.sh` 下交替）：
   - 6 轮：中位数 29.75 万 vs 29.73 万数据报/秒；
   - 再 10 轮：平均 30.57 万 vs 30.46 万；
@@ -172,19 +172,19 @@ RFC 8656 概要：
 - 客户端单元测试：双分配经 30 分钟的刷新、两个地址族的对端，关闭；带 440 的部分成功，IPv6 对端被拒绝。
 - 真实 socket 上的 `tests/dual_ecn.rs`：127.0.0.1 与 ::1 中继，每个地址族两个方向都复制 ECT(1)、ECT(0)
   与 CE，不带标记的仍不带。一个故意丢弃码点的服务器会使它失败。
-- only-webrtc `tests/relay.rs`：IPv4 端点经双分配的 IPv6 中继候选到达纯 IPv6 端点。
+- akio-webrtc `tests/relay.rs`：IPv4 端点经双分配的 IPv6 中继候选到达纯 IPv6 端点。
 - 平台：macOS，gpu51 epoll 与 io_uring。clippy 无警告。
 - 互通（`tools/interop/webrtc/turn-dual.sh`，gpu51 上的 Docker，coturn 4.6 从 127.0.0.1 与 ::1 中继，
   pion/turn v5.1.3）：
   - coturn 的 `turnutils_uclient` 用双分配（`-Z`）与 IPv6 中继（`-x`），客户端互相发往对方的中继地址，
-    对 only-turn 与对 coturn：40 与 80 条消息，无丢失。
-  - 请求双分配的 only_turn 客户端：
+    对 akio-turn 与对 coturn：40 与 80 条消息，无丢失。
+  - 请求双分配的 akio_turn 客户端：
     - 对 coturn：两个中继地址，每个地址族回显 20 个数据报；
     - 对 pion/turn：一个，因为它忽略该属性，也不发送错误码；
-    - 对 only-turn：两个。
-  - ECN：only-turn 在两个地址族上都复制客户端到对端的 ECT(0) 与对端到客户端的 ECT(1)。coturn 也复制。
+    - 对 akio-turn：两个。
+  - ECN：akio-turn 在两个地址族上都复制客户端到对端的 ECT(0) 与对端到客户端的 ECT(1)。coturn 也复制。
     pion/turn 把两者都清除。
-  - pion/turn 客户端用 `REQUESTED-ADDRESS-FAMILY` IPv4 与 IPv6 对 only-turn 与 coturn：得到该地址族的中继，
+  - pion/turn 客户端用 `REQUESTED-ADDRESS-FAMILY` IPv4 与 IPv6 对 akio-turn 与 coturn：得到该地址族的中继，
     回显 20 个数据报。
 - Fuzz：`turn_server` 现在用支持双分配的服务器，由选择字节决定 IPv6 对端与 ECN 码点，并断言中继的数据保留
   码点、从对端所属地址族的已打开中继发出，以及最后全部关闭。新种子：一次双分配会话。`turn_stream` 的

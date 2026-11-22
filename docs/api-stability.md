@@ -2,7 +2,7 @@
 
 [中文](api-stability.zh-CN.md)
 
-This document says what `only` promises from 1.0.0 on: which crates and items are covered by
+This document says what `akio` promises from 1.0.0 on: which crates and items are covered by
 [Semantic Versioning](https://semver.org/), what counts as a breaking change, how the minimum
 supported Rust version (MSRV) moves, and which platforms are supported at which level. The
 deprecation process is in [deprecation.md](deprecation.md); the history of changes in
@@ -27,9 +27,9 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `only`, `only-core`, `only-log`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
-| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto`, `only-x509`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`, `only-ice`, `only-deflate`, `only-brotli`, `only-zstd`, `only-regex` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
-| Experimental | `only-dpdk`, and the `dpdk` / `dpdk-pmd` features of `only` (`Backend::Dpdk`, `only::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/only-dpdk.txt` only makes changes visible. |
+| Public | `akio`, `akio-core`, `akio-log`, `akio-tls`, `akio-http`, `akio-ws`, `akio-mux`, `akio-socks`, `akio-arpc`, `akio-grpc`, `akio-protobuf`, `akio-protobuf-build`, `akio-kcp`, `akio-quic`, `akio-h3`, `akio-ebpf`, `akio-prefork`, `akio-turn`, `akio-webrtc`, `akio-media` | Full semver for their public API (below). |
+| Internal | `akio-sys`, `akio-buf`, `akio-timer`, `akio-pool`, `akio-epoll`, `akio-uring`, `akio-crypto`, `akio-x509`, `akio-dtls`, `akio-srtp`, `akio-rtp`, `akio-sctp`, `akio-ice`, `akio-deflate`, `akio-brotli`, `akio-zstd`, `akio-regex` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `akio` / `akio-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `akio-core` and `akio`. |
+| Experimental | `akio-dpdk`, and the `dpdk` / `dpdk-pmd` features of `akio` (`Backend::Dpdk`, `akio::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/akio-dpdk.txt` only makes changes visible. |
 
 `tools/` and `fuzz/` are not published.
 
@@ -42,23 +42,23 @@ Not covered:
 
 - items marked `#[doc(hidden)]` and everything reachable only through them. These are
   backend-facing plumbing shared between workspace crates (`ConnInner`, `LoopLink`, `Group`,
-  `DynAcceptor`, `DynHandler`, `LoopStats`, `Pool`, `only_http::transport`, `only_ws::WsSession`,
-  `only_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
+  `DynAcceptor`, `DynHandler`, `LoopStats`, `Pool`, `akio_http::transport`, `akio_ws::WsSession`,
+  `akio_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
-- the `unstable` cargo features (`only`, `only-tls`, `only-quic`, `only-webrtc`) and
-  everything they enable. Since only-tls runs its own TLS (DEV-PLAN wave C) and only-quic its
-  own QUIC and only-webrtc its own WebRTC stack (wave D), their `unstable` features enable
-  nothing: they are kept, reserved and empty, so that `only/unstable` keeps building;
-  `only::tls::rustls`, `from_rustls`, `as_rustls`, `only_quic::proto`, `from_quinn`,
-  `as_quinn_mut`, `only_webrtc::str0m`, `crypto_provider_str0m`, `Peer::with_rtc`,
+- the `unstable` cargo features (`akio`, `akio-tls`, `akio-quic`, `akio-webrtc`) and
+  everything they enable. Since akio-tls runs its own TLS (DEV-PLAN wave C) and akio-quic its
+  own QUIC and akio-webrtc its own WebRTC stack (wave D), their `unstable` features enable
+  nothing: they are kept, reserved and empty, so that `akio/unstable` keeps building;
+  `akio::tls::rustls`, `from_rustls`, `as_rustls`, `akio_quic::proto`, `from_quinn`,
+  `as_quinn_mut`, `akio_webrtc::str0m`, `crypto_provider_str0m`, `Peer::with_rtc`,
   `RtcConfig::with_str0m` and `OtherEvent::as_str0m` are gone. Their signatures change whenever the wrapped crate is upgraded,
   which may happen in a minor release. Anything public that cannot be promised yet goes under
   `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
-- the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages;
-  deprecated in favour of `only-protobuf`, which generated messages implement directly):
+- the `prost` feature of `akio-grpc` (the `codec::Message` implementation for prost messages;
+  deprecated in favour of `akio-protobuf`, which generated messages implement directly):
   it names prost's types, so a prost upgrade may come in a minor release.
-- the `log` cargo features (`only`, `only-core`, `only-log`): the bridge to the `log` crate
-  (`only_log::bridge`, the `From` conversions between the level types, forwarding records to
+- the `log` cargo features (`akio`, `akio-core`, `akio-log`): the bridge to the `log` crate
+  (`akio_log::bridge`, the `From` conversions between the level types, forwarding records to
   `log`'s logger). It names `log`'s types and follows `log` 0.4; a newer `log` may come in a
   minor release. The bridge's behaviour is documented in the observability chapter of the
   book.
@@ -73,23 +73,23 @@ minor releases; removed or renamed only in a major one).
 ### Public dependencies
 
 The covered API uses types of no other crate. The `bytes` crate's `Bytes`, which the QUIC API
-used to carry stream and datagram payloads, was replaced by `only_quic::Bytes` (same shape:
-reference counted, `slice`, `split_to`, `from_static`, `From<Vec<u8>>` ...) when only-quic got
-its own QUIC (DEV-PLAN wave D; see the CHANGELOG migration notes). Logging uses the workspace's own facade `only-log`
-(`only::log`, `Config::log_level: Option<only::log::LevelFilter>`); `log` is a dependency
+used to carry stream and datagram payloads, was replaced by `akio_quic::Bytes` (same shape:
+reference counted, `slice`, `split_to`, `from_static`, `From<Vec<u8>>` ...) when akio-quic got
+its own QUIC (DEV-PLAN wave D; see the CHANGELOG migration notes). Logging uses the workspace's own facade `akio-log`
+(`akio::log`, `Config::log_level: Option<akio::log::LevelFilter>`); `log` is a dependency
 only with the `log` cargo feature, which is outside the promise (above). The log targets
-(`only`, `only_http::access`, `only_webrtc`) and key names in the observability chapter are
+(`akio`, `akio_http::access`, `akio_webrtc`) and key names in the observability chapter are
 kept like metric names: added in minor releases, renamed or removed only in a major one.
 
-TLS is implemented in `only-tls` itself (on `only-crypto` and `only-x509`), with no
-third-party dependency, and so are QUIC in `only-quic` (on `only-tls` and `only-crypto`) and
-WebRTC (wave D): `only-webrtc` runs on the internal `only-ice`, `only-dtls`, `only-srtp`,
-`only-rtp` and `only-sctp`, none of whose types appear in its API. The pre-1.0 dependency that
+TLS is implemented in `akio-tls` itself (on `akio-crypto` and `akio-x509`), with no
+third-party dependency, and so are QUIC in `akio-quic` (on `akio-tls` and `akio-crypto`) and
+WebRTC (wave D): `akio-webrtc` runs on the internal `akio-ice`, `akio-dtls`, `akio-srtp`,
+`akio-rtp` and `akio-sctp`, none of whose types appear in its API. The pre-1.0 dependency that
 still does protocol work (prost) is
-**wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,
-ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `only_quic::{ServerConfig,
+**wrapped**: the covered API uses `akio`'s own types instead (`akio::tls::{ServerConfig,
+ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `akio_quic::{ServerConfig,
 ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,
-`only_grpc::codec::Message`). Upgrading them, or replacing them with in-house implementations,
+`akio_grpc::codec::Message`). Upgrading them, or replacing them with in-house implementations,
 is not a breaking change. They are reachable only through the `unstable` features and the
 `prost` feature above, which are excluded from the promise.
 
@@ -132,7 +132,7 @@ These are checked by lints or review, so new API follows them too:
   from `Default::default()` (or a preset like `KcpConfig::fast()`) and assign fields:
 
   ```rust
-  let mut cfg = only::Config::default();
+  let mut cfg = akio::Config::default();
   cfg.idle_timeout = Some(std::time::Duration::from_secs(30));
   ```
 
@@ -141,7 +141,7 @@ These are checked by lints or review, so new API follows them too:
   readable `Debug` output, no doubling of the API, and the fields are documented where they are.
   `*Config` names the settings of a server, engine or protocol instance; `*Options` the arguments
   of one operation (a dial, a call, an upgrade).
-- **Report structs** that `only` fills and users read (`Metrics`, `LoopCounters`, `ConnInfo`,
+- **Report structs** that `akio` fills and users read (`Metrics`, `LoopCounters`, `ConnInfo`,
   `SlowRecord`, `PoolStats`, `UdpStats`, `TlsInfo`, `ClientResponse`, `Stats`, ...) and the
   message types `Request` / `Response` are `#[non_exhaustive]`; build messages with their
   constructors (`Request::new`, `Response::new`, `ClientRequest::new`, `FileBody::new`).
@@ -156,7 +156,7 @@ These are checked by lints or review, so new API follows them too:
 - **Traits**: the traits users implement (`Handler`, `Acceptor`, `Transport`, `Service`,
   `Middleware`, `WsHandler`, `RawHandler`, `QuicHandler`, `KcpHandler`) only gain methods with a
   default. A trait that users should call but not implement is sealed (a private supertrait), so
-  methods can be added to it freely; `only` 1.0 has none, and backend-facing traits are
+  methods can be added to it freely; `akio` 1.0 has none, and backend-facing traits are
   `#[doc(hidden)]` instead.
 - **Naming**: `dial` starts a client connection without blocking (a callback, or a handle that
   becomes ready later); `dial_blocking` waits until it is established; `serve` / `serve_with(cfg,
@@ -177,7 +177,7 @@ These are checked by lints or review, so new API follows them too:
 |---|---|---|
 | 1 | Linux x86_64 and aarch64 (glibc): epoll backend on any supported kernel; io_uring backend on 5.19+; UDP GSO/GRO, `sendmmsg`/`recvmmsg`; BPF steering (classic BPF unprivileged, eBPF with `CAP_BPF`); sockmap relay on 6.15+ (or `Relay::new_any_kernel`) | Built and fully tested on every commit (both backends); benchmarked; bugs block releases. Features missing from the running kernel are probed and fall back (io_uring to epoll, eBPF to classic BPF or none) unless `strict` is set. |
 | 2 | macOS (aarch64, x86_64): kqueue backend | Built and tested in CI; meant for development. Not tuned for performance; Linux-only features (io_uring, BPF, UDP GSO/GRO) report `Unsupported` or fall back as documented. |
-| 2 | Linux x86_64 and aarch64 with musl (`*-unknown-linux-musl`, e.g. Alpine): the same backends as glibc | Tested in Alpine containers: `only_sys::ffi`'s layouts and constants against the `libc` crate's musl definitions, and the only-sys suite on both architectures; on aarch64 also the only-core, only-epoll, only-uring, only-ebpf and `only` suites (epoll and io_uring). musl's `struct cmsghdr` is 4-aligned where the kernel's (and ours) is 8-aligned; sizes and offsets agree. Not benchmarked; not every crate's suite is run. |
+| 2 | Linux x86_64 and aarch64 with musl (`*-unknown-linux-musl`, e.g. Alpine): the same backends as glibc | Tested in Alpine containers: `akio_sys::ffi`'s layouts and constants against the `libc` crate's musl definitions, and the akio-sys suite on both architectures; on aarch64 also the akio-core, akio-epoll, akio-uring, akio-ebpf and `akio` suites (epoll and io_uring). musl's `struct cmsghdr` is 4-aligned where the kernel's (and ours) is 8-aligned; sizes and offsets agree. Not benchmarked; not every crate's suite is run. |
 | 3 | Other Unix systems | May compile; not tested. `Engine::build` returns `Unsupported` where no backend exists. |
 | — | Windows | Not supported before 2.0 (no IOCP backend). |
 

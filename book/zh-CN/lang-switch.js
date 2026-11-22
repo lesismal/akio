@@ -1,6 +1,6 @@
 // Adds "English / 简体中文" and "API" links to the menu bar. Both books have the same file tree,
 // so the other language's page is the same path under ../<lang>/. Works under any base path
-// (`/only/` on GitHub Pages, `/` when served locally). Kept identical in book/en and book/zh-CN.
+// (`/akio/` on GitHub Pages, `/` when served locally). Kept identical in book/en and book/zh-CN.
 (function () {
   var langs = [
     ["en", "English"],
@@ -23,7 +23,7 @@
   var bar = document.querySelector(".right-buttons");
   if (!bar) return;
   var box = document.createElement("span");
-  box.className = "only-lang-switch";
+  box.className = "akio-lang-switch";
   box.style.cssText = "margin: 0 0.5em; font-size: 0.9em; white-space: nowrap;";
   langs.forEach(function (l, i) {
     if (i > 0) box.appendChild(document.createTextNode(" | "));
@@ -42,7 +42,7 @@
   });
   box.appendChild(document.createTextNode(" | "));
   var api = document.createElement("a");
-  api.href = new URL("api/only/index.html", site).href;
+  api.href = new URL("api/akio/index.html", site).href;
   api.textContent = "API";
   api.title = here === "zh-CN" ? "API 文档 (rustdoc)" : "API documentation (rustdoc)";
   box.appendChild(api);

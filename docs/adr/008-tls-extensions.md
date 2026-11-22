@@ -6,7 +6,7 @@ Status: accepted (2026-11-16)
 
 ## Context
 
-`only-tls` runs its own TLS 1.2/1.3. Three extensions common in browsers and servers were
+`akio-tls` runs its own TLS 1.2/1.3. Three extensions common in browsers and servers were
 missing: record_size_limit (RFC 8449, constrained peers bound the records they receive),
 certificate compression (RFC 8879, smaller TLS 1.3 handshakes) and OCSP stapling (RFC 6066
 `status_request`; RFC 8446 section 4.4.2.1 in TLS 1.3). Each needs a configuration knob, and the
@@ -33,7 +33,7 @@ stapled response has to reach the application, so the public API grows.
    server does not hold early data to its new limit. Never sent or answered over QUIC. Answering
    by default is what makes the client's limit binding, which is the point of the extension;
    sending 16385 by default costs 6 bytes and changes nothing for a peer without a limit.
-3. **Certificate compression: zlib only.** `only-deflate` (in-house, already a workspace crate)
+3. **Certificate compression: zlib only.** `akio-deflate` (in-house, already a workspace crate)
    provides zlib; there is no in-house brotli or zstd, so only zlib (algorithm 1) is offered and
    accepted. TLS 1.3 only, server and client certificates (offered in the ClientHello and the
    CertificateRequest). The server compresses each certificate chain once and reuses it; a
@@ -42,7 +42,7 @@ stapled response has to reach the application, so the public API grows.
    (`bad_certificate`); an algorithm not offered is `illegal_parameter`. **On by default on the
    server**: compressing is paid once per chain, so a handshake costs nothing more, and clients
    that do not offer it see no change. **Off by default on the client**: each compressed chain
-   received costs an inflate of about 1–2 µs (only-deflate has a fixed cost of about 1 µs per
+   received costs an inflate of about 1–2 µs (akio-deflate has a fixed cost of about 1 µs per
    stream), which the same-run handshake A/B measured as about 1% of an in-memory full
    handshake, for a saving of tens of bytes on a single self-signed certificate and a few
    hundred on a CA chain. Clients that care about bytes on the wire turn it on.
@@ -51,10 +51,10 @@ stapled response has to reach the application, so the public API grows.
    the ServerHello and a `CertificateStatus` message), never on resumption. The configured value
    is checked only for the outer shape of a successful `OCSPResponse`; refreshing it is the
    caller's job (build a new configuration). The client exposes the response and does **not**
-   verify it: `only-x509` has no OCSP (signature, responder, validity, certificate ID) yet, and a
+   verify it: `akio-x509` has no OCSP (signature, responder, validity, certificate ID) yet, and a
    half check would suggest more protection than it gives. Off by default on the client, like
    OpenSSL, because nothing in the stack consumes it.
-5. **`only-tls` depends on `only-deflate`.** Both are in-house and dependency-free, so the
+5. **`akio-tls` depends on `akio-deflate`.** Both are in-house and dependency-free, so the
    dependency policy (ADR-005, as amended by the in-house wave) is unchanged.
 
 ## Consequences

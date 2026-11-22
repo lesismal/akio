@@ -1,0 +1,399 @@
+pub mod akio_ws
+pub mod akio_ws::client
+#[non_exhaustive] pub enum akio_ws::client::WsClientError
+pub akio_ws::client::WsClientError::Closed
+pub akio_ws::client::WsClientError::Handshake(&'static str)
+pub akio_ws::client::WsClientError::InvalidUrl(alloc::string::String)
+pub akio_ws::client::WsClientError::Io(core::io::error::Error)
+pub akio_ws::client::WsClientError::Status(u16, alloc::string::String)
+pub akio_ws::client::WsClientError::Timeout
+pub akio_ws::client::WsClientError::TooManyRedirects
+impl core::error::Error for akio_ws::client::WsClientError
+impl core::fmt::Debug for akio_ws::client::WsClientError
+pub fn akio_ws::client::WsClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ws::client::WsClientError
+pub fn akio_ws::client::WsClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::client::WsClientError
+impl core::marker::Sync for akio_ws::client::WsClientError
+impl core::marker::Unpin for akio_ws::client::WsClientError
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ws::client::WsClientError
+impl !core::panic::unwind_safe::UnwindSafe for akio_ws::client::WsClientError
+#[non_exhaustive] pub struct akio_ws::client::DialOptions
+pub akio_ws::client::DialOptions::close_timeout: core::time::Duration
+pub akio_ws::client::DialOptions::config: akio_ws::WsConfig
+pub akio_ws::client::DialOptions::handshake_timeout: core::time::Duration
+pub akio_ws::client::DialOptions::happy_eyeballs: akio::dns::HappyEyeballs
+pub akio_ws::client::DialOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub akio_ws::client::DialOptions::max_redirects: u32
+pub akio_ws::client::DialOptions::origin: core::option::Option<alloc::string::String>
+pub akio_ws::client::DialOptions::pmd: akio_ws::deflate::PmdOffer
+pub akio_ws::client::DialOptions::protocols: alloc::vec::Vec<alloc::string::String>
+pub akio_ws::client::DialOptions::proxy: akio_ws::proxy::Proxy
+pub akio_ws::client::DialOptions::server_name: core::option::Option<alloc::string::String>
+pub akio_ws::client::DialOptions::tls: core::option::Option<akio_tls::config::ClientConfig>
+impl core::clone::Clone for akio_ws::client::DialOptions
+pub fn akio_ws::client::DialOptions::clone(&self) -> Self
+impl core::default::Default for akio_ws::client::DialOptions
+pub fn akio_ws::client::DialOptions::default() -> Self
+impl core::fmt::Debug for akio_ws::client::DialOptions
+pub fn akio_ws::client::DialOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::client::DialOptions
+impl core::marker::Sync for akio_ws::client::DialOptions
+impl core::marker::Unpin for akio_ws::client::DialOptions
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ws::client::DialOptions
+impl !core::panic::unwind_safe::UnwindSafe for akio_ws::client::DialOptions
+pub fn akio_ws::client::dial(&alloc::rcs::arc::Arc<akio::Engine>, &str, &akio_ws::client::DialOptions, impl akio_ws::WsHandler, impl core::ops::function::FnOnce(akio_ws::client::WsClientError) + core::marker::Send + 'static)
+pub fn akio_ws::client::dial_blocking(&alloc::rcs::arc::Arc<akio::Engine>, &str, &akio_ws::client::DialOptions, impl akio_ws::WsHandler) -> core::result::Result<akio_ws::WsSender, akio_ws::client::WsClientError>
+pub mod akio_ws::deflate
+#[non_exhaustive] pub enum akio_ws::deflate::InflateError
+pub akio_ws::deflate::InflateError::Corrupt
+pub akio_ws::deflate::InflateError::TooBig
+impl core::cmp::Eq for akio_ws::deflate::InflateError
+impl core::cmp::PartialEq for akio_ws::deflate::InflateError
+pub fn akio_ws::deflate::InflateError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_ws::deflate::InflateError
+impl core::fmt::Debug for akio_ws::deflate::InflateError
+pub fn akio_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ws::deflate::InflateError
+pub fn akio_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::deflate::InflateError
+impl core::marker::Send for akio_ws::deflate::InflateError
+impl core::marker::Sync for akio_ws::deflate::InflateError
+impl core::marker::Unpin for akio_ws::deflate::InflateError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::deflate::InflateError
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::deflate::InflateError
+pub struct akio_ws::deflate::Deflater
+impl akio_ws::deflate::Deflater
+pub fn akio_ws::deflate::Deflater::deflate(&mut self, &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_ws::deflate::Deflater::new(bool, u8) -> akio_ws::deflate::Deflater
+impl core::fmt::Debug for akio_ws::deflate::Deflater
+pub fn akio_ws::deflate::Deflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::deflate::Deflater
+impl core::marker::Sync for akio_ws::deflate::Deflater
+impl core::marker::Unpin for akio_ws::deflate::Deflater
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::deflate::Deflater
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::deflate::Deflater
+pub struct akio_ws::deflate::Inflater
+impl akio_ws::deflate::Inflater
+pub fn akio_ws::deflate::Inflater::inflate(&mut self, &[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, akio_ws::deflate::InflateError>
+pub fn akio_ws::deflate::Inflater::new(bool) -> akio_ws::deflate::Inflater
+impl core::fmt::Debug for akio_ws::deflate::Inflater
+pub fn akio_ws::deflate::Inflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::deflate::Inflater
+impl core::marker::Sync for akio_ws::deflate::Inflater
+impl core::marker::Unpin for akio_ws::deflate::Inflater
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::deflate::Inflater
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::deflate::Inflater
+#[non_exhaustive] pub struct akio_ws::deflate::PmdOffer
+pub akio_ws::deflate::PmdOffer::client_no_context_takeover: bool
+pub akio_ws::deflate::PmdOffer::server_max_window_bits: core::option::Option<u8>
+pub akio_ws::deflate::PmdOffer::server_no_context_takeover: bool
+impl akio_ws::deflate::PmdOffer
+pub fn akio_ws::deflate::PmdOffer::accept_response<'a>(&self, impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::result::Result<core::option::Option<akio_ws::deflate::PmdParams>, &'static str>
+pub fn akio_ws::deflate::PmdOffer::header(&self) -> alloc::string::String
+impl core::clone::Clone for akio_ws::deflate::PmdOffer
+pub fn akio_ws::deflate::PmdOffer::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::deflate::PmdOffer
+impl core::cmp::PartialEq for akio_ws::deflate::PmdOffer
+pub fn akio_ws::deflate::PmdOffer::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ws::deflate::PmdOffer
+pub fn akio_ws::deflate::PmdOffer::default() -> Self
+impl core::fmt::Debug for akio_ws::deflate::PmdOffer
+pub fn akio_ws::deflate::PmdOffer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ws::deflate::PmdOffer
+impl core::marker::StructuralPartialEq for akio_ws::deflate::PmdOffer
+impl core::marker::Send for akio_ws::deflate::PmdOffer
+impl core::marker::Sync for akio_ws::deflate::PmdOffer
+impl core::marker::Unpin for akio_ws::deflate::PmdOffer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::deflate::PmdOffer
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::deflate::PmdOffer
+#[non_exhaustive] pub struct akio_ws::deflate::PmdParams
+pub akio_ws::deflate::PmdParams::client_max_window_bits: u8
+pub akio_ws::deflate::PmdParams::client_no_context_takeover: bool
+pub akio_ws::deflate::PmdParams::server_max_window_bits: u8
+pub akio_ws::deflate::PmdParams::server_no_context_takeover: bool
+impl core::clone::Clone for akio_ws::deflate::PmdParams
+pub fn akio_ws::deflate::PmdParams::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::deflate::PmdParams
+impl core::cmp::PartialEq for akio_ws::deflate::PmdParams
+pub fn akio_ws::deflate::PmdParams::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ws::deflate::PmdParams
+pub fn akio_ws::deflate::PmdParams::default() -> Self
+impl core::fmt::Debug for akio_ws::deflate::PmdParams
+pub fn akio_ws::deflate::PmdParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ws::deflate::PmdParams
+impl core::marker::StructuralPartialEq for akio_ws::deflate::PmdParams
+impl core::marker::Send for akio_ws::deflate::PmdParams
+impl core::marker::Sync for akio_ws::deflate::PmdParams
+impl core::marker::Unpin for akio_ws::deflate::PmdParams
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::deflate::PmdParams
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::deflate::PmdParams
+pub fn akio_ws::deflate::negotiate<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::option::Option<(akio_ws::deflate::PmdParams, alloc::string::String)>
+pub mod akio_ws::gss
+pub enum akio_ws::gss::GssStep
+pub akio_ws::gss::GssStep::Complete(alloc::vec::Vec<u8>)
+pub akio_ws::gss::GssStep::Continue(alloc::vec::Vec<u8>)
+impl core::clone::Clone for akio_ws::gss::GssStep
+pub fn akio_ws::gss::GssStep::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::gss::GssStep
+impl core::cmp::PartialEq for akio_ws::gss::GssStep
+pub fn akio_ws::gss::GssStep::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ws::gss::GssStep
+pub fn akio_ws::gss::GssStep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::gss::GssStep
+impl core::marker::Send for akio_ws::gss::GssStep
+impl core::marker::Sync for akio_ws::gss::GssStep
+impl core::marker::Unpin for akio_ws::gss::GssStep
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::gss::GssStep
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::gss::GssStep
+pub enum akio_ws::gss::Protection
+pub akio_ws::gss::Protection::Confidentiality
+pub akio_ws::gss::Protection::Integrity
+pub akio_ws::gss::Protection::None
+impl akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::from_level(u8) -> core::option::Option<akio_ws::gss::Protection>
+pub fn akio_ws::gss::Protection::level(self) -> u8
+impl core::clone::Clone for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::gss::Protection
+impl core::cmp::Ord for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ws::gss::Protection
+pub fn akio_ws::gss::Protection::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_ws::gss::Protection
+impl core::marker::StructuralPartialEq for akio_ws::gss::Protection
+impl core::marker::Send for akio_ws::gss::Protection
+impl core::marker::Sync for akio_ws::gss::Protection
+impl core::marker::Unpin for akio_ws::gss::Protection
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::gss::Protection
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::gss::Protection
+pub trait akio_ws::gss::GssContext: core::marker::Send
+pub fn akio_ws::gss::GssContext::peer_name(&self) -> core::option::Option<alloc::string::String>
+pub fn akio_ws::gss::GssContext::step(&mut self, &[u8]) -> core::io::error::Result<akio_ws::gss::GssStep>
+pub fn akio_ws::gss::GssContext::unwrap(&mut self, &[u8]) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn akio_ws::gss::GssContext::wrap(&mut self, bool, &[u8]) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub mod akio_ws::protocol
+pub mod akio_ws::protocol::close
+pub const akio_ws::protocol::close::GOING_AWAY: u16
+pub const akio_ws::protocol::close::INTERNAL: u16
+pub const akio_ws::protocol::close::INVALID_DATA: u16
+pub const akio_ws::protocol::close::NORMAL: u16
+pub const akio_ws::protocol::close::POLICY: u16
+pub const akio_ws::protocol::close::PROTOCOL: u16
+pub const akio_ws::protocol::close::TOO_BIG: u16
+pub const akio_ws::protocol::close::UNSUPPORTED: u16
+pub enum akio_ws::protocol::Event
+pub akio_ws::protocol::Event::Binary(alloc::vec::Vec<u8>)
+pub akio_ws::protocol::Event::Close
+pub akio_ws::protocol::Event::Close::code: core::option::Option<u16>
+pub akio_ws::protocol::Event::Close::reason: alloc::string::String
+pub akio_ws::protocol::Event::Ping(alloc::vec::Vec<u8>)
+pub akio_ws::protocol::Event::Pong(alloc::vec::Vec<u8>)
+pub akio_ws::protocol::Event::Text(alloc::string::String)
+impl core::cmp::Eq for akio_ws::protocol::Event
+impl core::cmp::PartialEq for akio_ws::protocol::Event
+pub fn akio_ws::protocol::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ws::protocol::Event
+pub fn akio_ws::protocol::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::protocol::Event
+impl core::marker::Send for akio_ws::protocol::Event
+impl core::marker::Sync for akio_ws::protocol::Event
+impl core::marker::Unpin for akio_ws::protocol::Event
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::Event
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Event
+pub enum akio_ws::protocol::Opcode
+pub akio_ws::protocol::Opcode::Binary = 2
+pub akio_ws::protocol::Opcode::Close = 8
+pub akio_ws::protocol::Opcode::Continue = 0
+pub akio_ws::protocol::Opcode::Ping = 9
+pub akio_ws::protocol::Opcode::Pong = 10
+pub akio_ws::protocol::Opcode::Text = 1
+impl core::clone::Clone for akio_ws::protocol::Opcode
+pub fn akio_ws::protocol::Opcode::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::protocol::Opcode
+impl core::cmp::PartialEq for akio_ws::protocol::Opcode
+pub fn akio_ws::protocol::Opcode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ws::protocol::Opcode
+pub fn akio_ws::protocol::Opcode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ws::protocol::Opcode
+impl core::marker::StructuralPartialEq for akio_ws::protocol::Opcode
+impl core::marker::Send for akio_ws::protocol::Opcode
+impl core::marker::Sync for akio_ws::protocol::Opcode
+impl core::marker::Unpin for akio_ws::protocol::Opcode
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::Opcode
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Opcode
+pub enum akio_ws::protocol::Role
+pub akio_ws::protocol::Role::Client
+pub akio_ws::protocol::Role::Server
+impl core::clone::Clone for akio_ws::protocol::Role
+pub fn akio_ws::protocol::Role::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::protocol::Role
+impl core::cmp::PartialEq for akio_ws::protocol::Role
+pub fn akio_ws::protocol::Role::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ws::protocol::Role
+pub fn akio_ws::protocol::Role::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ws::protocol::Role
+impl core::marker::StructuralPartialEq for akio_ws::protocol::Role
+impl core::marker::Send for akio_ws::protocol::Role
+impl core::marker::Sync for akio_ws::protocol::Role
+impl core::marker::Unpin for akio_ws::protocol::Role
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::Role
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Role
+pub struct akio_ws::protocol::Decoder
+impl akio_ws::protocol::Decoder
+pub fn akio_ws::protocol::Decoder::decode(&mut self, &[u8], &mut alloc::vec::Vec<akio_ws::protocol::Event>) -> core::result::Result<(), akio_ws::protocol::ProtocolError>
+pub fn akio_ws::protocol::Decoder::new(akio_ws::protocol::Role, usize, core::option::Option<akio_ws::deflate::Inflater>) -> akio_ws::protocol::Decoder
+impl core::fmt::Debug for akio_ws::protocol::Decoder
+pub fn akio_ws::protocol::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::protocol::Decoder
+impl core::marker::Sync for akio_ws::protocol::Decoder
+impl core::marker::Unpin for akio_ws::protocol::Decoder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::Decoder
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Decoder
+#[non_exhaustive] pub struct akio_ws::protocol::ProtocolError
+pub akio_ws::protocol::ProtocolError::code: u16
+pub akio_ws::protocol::ProtocolError::reason: &'static str
+impl core::cmp::Eq for akio_ws::protocol::ProtocolError
+impl core::cmp::PartialEq for akio_ws::protocol::ProtocolError
+pub fn akio_ws::protocol::ProtocolError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_ws::protocol::ProtocolError
+impl core::fmt::Debug for akio_ws::protocol::ProtocolError
+pub fn akio_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ws::protocol::ProtocolError
+pub fn akio_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::protocol::ProtocolError
+impl core::marker::Send for akio_ws::protocol::ProtocolError
+impl core::marker::Sync for akio_ws::protocol::ProtocolError
+impl core::marker::Unpin for akio_ws::protocol::ProtocolError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::ProtocolError
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::ProtocolError
+pub fn akio_ws::protocol::close_payload(u16, &str) -> alloc::vec::Vec<u8>
+pub fn akio_ws::protocol::encode_frame(akio_ws::protocol::Opcode, bool, bool, &[u8], &mut alloc::vec::Vec<u8>)
+pub fn akio_ws::protocol::encode_frame_masked(akio_ws::protocol::Opcode, bool, bool, &[u8], [u8; 4], &mut alloc::vec::Vec<u8>)
+pub mod akio_ws::proxy
+pub struct akio_ws::proxy::Proxy
+impl akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::all(&str) -> core::io::error::Result<akio_ws::proxy::Proxy>
+pub fn akio_ws::proxy::Proxy::applies(&self, bool, &str, u16) -> bool
+pub fn akio_ws::proxy::Proxy::from_env() -> core::io::error::Result<akio_ws::proxy::Proxy>
+pub fn akio_ws::proxy::Proxy::http(self, &str) -> core::io::error::Result<akio_ws::proxy::Proxy>
+pub fn akio_ws::proxy::Proxy::https(self, &str) -> core::io::error::Result<akio_ws::proxy::Proxy>
+pub fn akio_ws::proxy::Proxy::is_empty(&self) -> bool
+pub fn akio_ws::proxy::Proxy::no_proxy(self, &str) -> akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::none() -> akio_ws::proxy::Proxy
+impl core::clone::Clone for akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::proxy::Proxy
+impl core::cmp::PartialEq for akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::default() -> Self
+impl core::fmt::Debug for akio_ws::proxy::Proxy
+pub fn akio_ws::proxy::Proxy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::proxy::Proxy
+impl core::marker::Send for akio_ws::proxy::Proxy
+impl core::marker::Sync for akio_ws::proxy::Proxy
+impl core::marker::Unpin for akio_ws::proxy::Proxy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::proxy::Proxy
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::proxy::Proxy
+pub struct akio_ws::proxy::ProxyRefused
+impl akio_ws::proxy::ProxyRefused
+pub fn akio_ws::proxy::ProxyRefused::reason(&self) -> &str
+pub fn akio_ws::proxy::ProxyRefused::socks_reply(&self) -> core::option::Option<u8>
+pub fn akio_ws::proxy::ProxyRefused::status(&self) -> u16
+impl core::clone::Clone for akio_ws::proxy::ProxyRefused
+pub fn akio_ws::proxy::ProxyRefused::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::proxy::ProxyRefused
+impl core::cmp::PartialEq for akio_ws::proxy::ProxyRefused
+pub fn akio_ws::proxy::ProxyRefused::eq(&self, &Self) -> bool
+impl core::error::Error for akio_ws::proxy::ProxyRefused
+impl core::fmt::Debug for akio_ws::proxy::ProxyRefused
+pub fn akio_ws::proxy::ProxyRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ws::proxy::ProxyRefused
+pub fn akio_ws::proxy::ProxyRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::proxy::ProxyRefused
+impl core::marker::Send for akio_ws::proxy::ProxyRefused
+impl core::marker::Sync for akio_ws::proxy::ProxyRefused
+impl core::marker::Unpin for akio_ws::proxy::ProxyRefused
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::proxy::ProxyRefused
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::proxy::ProxyRefused
+pub enum akio_ws::Message
+pub akio_ws::Message::Binary(alloc::vec::Vec<u8>)
+pub akio_ws::Message::Text(alloc::string::String)
+impl core::clone::Clone for akio_ws::Message
+pub fn akio_ws::Message::clone(&self) -> Self
+impl core::cmp::Eq for akio_ws::Message
+impl core::cmp::PartialEq for akio_ws::Message
+pub fn akio_ws::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ws::Message
+pub fn akio_ws::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ws::Message
+impl core::marker::Send for akio_ws::Message
+impl core::marker::Sync for akio_ws::Message
+impl core::marker::Unpin for akio_ws::Message
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::Message
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::Message
+pub struct akio_ws::PreparedMessage
+impl akio_ws::PreparedMessage
+pub fn akio_ws::PreparedMessage::binary(&[u8]) -> akio_ws::PreparedMessage
+pub fn akio_ws::PreparedMessage::text(&str) -> akio_ws::PreparedMessage
+impl core::clone::Clone for akio_ws::PreparedMessage
+pub fn akio_ws::PreparedMessage::clone(&self) -> Self
+impl core::fmt::Debug for akio_ws::PreparedMessage
+pub fn akio_ws::PreparedMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::PreparedMessage
+impl core::marker::Sync for akio_ws::PreparedMessage
+impl core::marker::Unpin for akio_ws::PreparedMessage
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::PreparedMessage
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::PreparedMessage
+#[non_exhaustive] pub struct akio_ws::WsConfig
+pub akio_ws::WsConfig::compress_min_bytes: usize
+pub akio_ws::WsConfig::max_message_bytes: usize
+pub akio_ws::WsConfig::permessage_deflate: bool
+impl core::clone::Clone for akio_ws::WsConfig
+pub fn akio_ws::WsConfig::clone(&self) -> Self
+impl core::default::Default for akio_ws::WsConfig
+pub fn akio_ws::WsConfig::default() -> Self
+impl core::fmt::Debug for akio_ws::WsConfig
+pub fn akio_ws::WsConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::WsConfig
+impl core::marker::Sync for akio_ws::WsConfig
+impl core::marker::Unpin for akio_ws::WsConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::WsConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_ws::WsConfig
+pub struct akio_ws::WsSender
+impl akio_ws::WsSender
+pub fn akio_ws::WsSender::close(&self, u16, &str)
+pub fn akio_ws::WsSender::is_open(&self) -> bool
+pub fn akio_ws::WsSender::ping(&self, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::pong(&self, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::queued_bytes(&self) -> usize
+pub fn akio_ws::WsSender::send_binary(&self, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::send_binary_fragmented(&self, &[u8], usize) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::send_prepared(&self, &akio_ws::PreparedMessage) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::send_text(&self, &str) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::send_text_fragmented(&self, &str, usize) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::subprotocol(&self) -> core::option::Option<alloc::string::String>
+impl core::clone::Clone for akio_ws::WsSender
+pub fn akio_ws::WsSender::clone(&self) -> Self
+impl core::fmt::Debug for akio_ws::WsSender
+pub fn akio_ws::WsSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ws::WsSender
+impl core::marker::Sync for akio_ws::WsSender
+impl core::marker::Unpin for akio_ws::WsSender
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ws::WsSender
+impl !core::panic::unwind_safe::UnwindSafe for akio_ws::WsSender
+pub trait akio_ws::WsHandler: core::marker::Send + 'static
+pub fn akio_ws::WsHandler::on_close(&mut self, core::option::Option<u16>, &str)
+pub fn akio_ws::WsHandler::on_message(&mut self, &akio_ws::WsSender, akio_ws::Message)
+pub fn akio_ws::WsHandler::on_open(&mut self, &akio_ws::WsSender)
+pub fn akio_ws::WsHandler::on_pong(&mut self, &akio_ws::WsSender, &[u8])
+pub fn akio_ws::accept_key(&str) -> alloc::string::String
+pub fn akio_ws::select_subprotocol<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a str>, &[alloc::string::String]) -> core::option::Option<alloc::string::String>
+pub fn akio_ws::valid_key(&str) -> bool

@@ -1,5 +1,5 @@
 #![no_main]
-//! only-crypto's AES (block, CTR), AES-GCM and ChaCha20-Poly1305 against the RustCrypto crates
+//! akio-crypto's AES (block, CTR), AES-GCM and ChaCha20-Poly1305 against the RustCrypto crates
 //! they replaced: same ciphertexts, and the same verdict when opening arbitrary bytes.
 
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeyIvInit, StreamCipher};
@@ -18,11 +18,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let nonce: [u8; 12] = iv[..12].try_into().unwrap();
 
     // Block cipher.
-    let ours = only_crypto::aes::Aes::new(key).unwrap();
+    let ours = akio_crypto::aes::Aes::new(key).unwrap();
     let mut a = iv;
     ours.encrypt_block(&mut a);
     // The CPU's AES instructions (when present) against the portable fixsliced code.
-    let soft = only_crypto::aes::Aes::new_portable(key).unwrap();
+    let soft = akio_crypto::aes::Aes::new_portable(key).unwrap();
     let mut s = iv;
     soft.encrypt_block(&mut s);
     assert_eq!(s, a);
@@ -63,21 +63,21 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
 
     // AES-GCM (the aes-gcm crate exposes 128 and 256).
     if klen != 24 {
-        let gcm = only_crypto::gcm::AesGcm::new(key).unwrap();
+        let gcm = akio_crypto::gcm::AesGcm::new(key).unwrap();
         let sealed = gcm.encrypt(&nonce, aad, msg);
         // Hardware AES / GHASH (fused when both are present) against the portable code.
-        let soft_gcm = only_crypto::gcm::AesGcm::with_cipher_portable(soft.clone());
+        let soft_gcm = akio_crypto::gcm::AesGcm::with_cipher_portable(soft.clone());
         assert_eq!(soft_gcm.encrypt(&nonce, aad, msg), sealed);
         assert_eq!(
             soft_gcm.decrypt(&nonce, aad, msg).ok(),
             gcm.decrypt(&nonce, aad, msg).ok()
         );
-        let mixed = only_crypto::gcm::AesGcm::with_cipher(soft.clone());
+        let mixed = akio_crypto::gcm::AesGcm::with_cipher(soft.clone());
         assert_eq!(mixed.encrypt(&nonce, aad, msg), sealed);
         // The VAES-AVX2 kernel and the 128-bit AES-NI / PCLMULQDQ one against the default
         // (VAES + VPCLMULQDQ + AVX-512 when the CPU has them), in place and out of place.
-        let avx2 = only_crypto::gcm::AesGcm::with_cipher_avx2(ours.clone());
-        let narrow = only_crypto::gcm::AesGcm::with_cipher_narrow(ours.clone());
+        let avx2 = akio_crypto::gcm::AesGcm::with_cipher_avx2(ours.clone());
+        let narrow = akio_crypto::gcm::AesGcm::with_cipher_narrow(ours.clone());
         let split = usize::from(data[1]).min(msg.len());
         for k in [&gcm, &avx2, &narrow, &soft_gcm] {
             assert_eq!(k.encrypt(&nonce, aad, msg), sealed);
@@ -137,14 +137,14 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     if klen == 32 {
         use chacha20poly1305::aead::{Aead as _, KeyInit as _};
         let k: [u8; 32] = key.try_into().unwrap();
-        let ours = only_crypto::chacha::ChaCha20Poly1305::new(&k);
+        let ours = akio_crypto::chacha::ChaCha20Poly1305::new(&k);
         let theirs = chacha20poly1305::ChaCha20Poly1305::new((&k).into());
         let sealed = ours.encrypt(&nonce, aad, msg);
         // The AVX-512 / IFMA path (the default where the CPU has it) against the AVX2 path and
         // the portable code, in place, out of place and opening forgeries.
         for other in [
-            only_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
-            only_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
+            akio_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
+            akio_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
         ] {
             assert_eq!(other.encrypt(&nonce, aad, msg), sealed);
             assert_eq!(
@@ -167,8 +167,8 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         let forged_ok = ours.decrypt(&nonce, aad, msg).is_ok();
         for c in [
             ours.clone(),
-            only_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
-            only_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
+            akio_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
+            akio_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
         ] {
             let mut out = data[..usize::from(data[2] % 8)].to_vec();
             let head = out.len();

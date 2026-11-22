@@ -1,4 +1,4 @@
-# ADR-058: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in only-webrtc
+# ADR-058: RTCP on its own ICE component, XR receipt blocks and ULPFEC levels in akio-webrtc
 
 English | [简体中文](058-webrtc-rtcp-components-xr-ulpfec-levels.zh-CN.md)
 
@@ -8,12 +8,12 @@ Status: accepted (2026-11-20)
 
 Two sets of lower-layer features landed without being usable from a peer connection:
 
-- **ICE components** (ADR-055): `only_ice::IceAgent` handles streams of several components,
-  but only-webrtc always multiplexed RTP and RTCP on component 1 (rtcp-mux, BUNDLE). Peers that
+- **ICE components** (ADR-055): `akio_ice::IceAgent` handles streams of several components,
+  but akio-webrtc always multiplexed RTP and RTCP on component 1 (rtcp-mux, BUNDLE). Peers that
   do not offer `a=rtcp-mux` (SIP endpoints, older RTP stacks: RFC 5761 lets them send RTCP on
   a port of its own, named with RFC 3605 `a=rtcp`) were answered with `a=rtcp-mux` anyway, and
   their RTCP never arrived.
-- **only-rtp** (ADR-053): XR loss RLE, duplicate RLE and packet receipt times blocks from a
+- **akio-rtp** (ADR-053): XR loss RLE, duplicate RLE and packet receipt times blocks from a
   `ReceiptLog`, complete VoIP metrics from `BurstLossModel::report`, ULPFEC protection levels
   (`FecEncoder::set_ulp_level0`), typed SDES items (`SdesItem`) and RFC 7022 CNAMEs
   (`random_cname`). The peers sent only XR receiver reference times / DLRR, ignored received
@@ -21,7 +21,7 @@ Two sets of lower-layer features landed without being usable from a peer connect
 
 Constraints: browsers and pion must see exactly what they saw before (rtcp-mux, BUNDLE, no new
 attributes by default); the public API (public tier) may not expose internal-tier types; only
-only-webrtc changes (only-ice and only-rtp needed nothing).
+akio-webrtc changes (akio-ice and akio-rtp needed nothing).
 
 ## Decision
 
@@ -102,7 +102,7 @@ packets of a frame protect the first `l0` bytes of each packet, the last one add
 over the rest. Default `None`: whole-packet ULPFEC as before. Nothing in SDP says a receiver
 reads levels, and libwebrtc reads level 0 alone (a lost packet longer than `l0` would be
 rebuilt wrong in Chrome), so it is for peers that are this stack; the docs say so. The receive
-side needed no change: the only-rtp decoder rebuilds packets from any number of levels.
+side needed no change: the akio-rtp decoder rebuilds packets from any number of levels.
 
 ### 4. CNAME and SDES items
 
@@ -119,11 +119,11 @@ not promised, as for the existing statistics events).
 
 Additive: `Endpoint::{bind_rtcp, rtcp_addr}`, `RtcConfig::{set_rtcp_mux_policy,
 enable_rtcp_xr_blocks, set_ulpfec_level0}`, `RtcpMuxPolicy` (`#[non_exhaustive]`),
-`XrBlocks`. No only-ice or only-rtp change.
+`XrBlocks`. No akio-ice or akio-rtp change.
 
 ## Consequences
 
-- Tests (`crates/only-webrtc/src/rtc/tests_mux.rs`, simulated network and time): two peers
+- Tests (`crates/akio-webrtc/src/rtc/tests_mux.rs`, simulated network and time): two peers
   without rtcp-mux, DTLS-SRTP: no `a=rtcp-mux`, `a=rtcp`, no BUNDLE, a component-2 candidate
   of the same foundation and one less priority; two handshakes; audio both ways; RTP only
   between the component-1 ports, RTCP only between the component-2 ports, DTLS on both;
@@ -138,11 +138,11 @@ enable_rtcp_xr_blocks, set_ulpfec_level0}`, `RtcpMuxPolicy` (`#[non_exhaustive]`
   statistics); nothing without negotiation. RFC 7022 CNAMEs and the typed SDES event. ULPFEC
   with `l0 = 120` under 8 % loss and no NACK: at least 180 of 200 three-packet frames whole
   (whole-packet ULPFEC within 10 frames of it) for less than 85 % of the bytes.
-- Integration (`crates/only-webrtc/tests/rtcp_mux.rs`, two `Endpoint`s over loopback with
+- Integration (`crates/akio-webrtc/tests/rtcp_mux.rs`, two `Endpoint`s over loopback with
   RTCP sockets): Opus echoed over two components with DTLS-SRTP and with SDES-SRTP (sender
   reports, `rtcp_mux: false`, an RTT in the statistics); `Negotiate` and the default policy
   keep rtcp-mux; XR blocks negotiated end to end (receipt, VoIP metrics and SDES events); the
-  component-2 checks leave from the RTCP socket. The existing only-webrtc tests pass unchanged.
+  component-2 checks leave from the RTCP socket. The existing akio-webrtc tests pass unchanged.
 - Interop: browsers and pion always mux; pion/webrtc only implements the `require` policy and
   pion/ice has one component (ADR-055), so there is no pion check without rtcp-mux. The
   two-component ICE layer is checked against libnice (ADR-055); the browser and pion scripts

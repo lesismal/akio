@@ -7,7 +7,7 @@
 ## 背景
 
 2026-11-16 的 kTLS 评估（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）发现，Linux 7.0
-的软件 kTLS 在所有测量情形下都比 only-tls 自己的记录层慢（0.40 到 0.83 倍），因此卸载代码一直放在
+的软件 kTLS 在所有测量情形下都比 akio-tls 自己的记录层慢（0.40 到 0.83 倍），因此卸载代码一直放在
 实验性的 `experimental-ktls` feature 之后：只有阻塞测试流、一个基准和一个互通模式，没有接入 `Tls`
 或引擎。
 
@@ -21,7 +21,7 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
 
 ## 决定
 
-### 1. 策略：`only_tls::Ktls`
+### 1. 策略：`akio_tls::Ktls`
 
 `ServerConfigBuilder::ktls` / `ClientConfigBuilder::ktls` 接受：
 
@@ -42,7 +42,7 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
 否则 TLS 1.3 连接留在用户态。`ktls` cargo feature 把卸载编译进来（`experimental-ktls` 保留为它的
 别名）；没有该 feature 或不在 Linux 上时，所有模式都等同于 `Off`。
 
-### 2. 引擎钩子（only-core）
+### 2. 引擎钩子（akio-core）
 
 `Transport` 新增几个默认方法，均只在 Linux 上存在：
 
@@ -66,14 +66,14 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
   数据流，其接收方向留在用户态）。`-EIO` 完成事件的处理与 epoll 相同。
 - 读缓冲区必须能放下一整条记录（`read_buffer` 不小于 16 KiB）；否则只卸载发送方向。
 
-### 3. only-tls
+### 3. akio-tls
 
 - 协议核心可以单独移走发送方向（`commit_tx_offload`）：此后它要发送的内容（握手消息、告警、自己的
   密钥更新）以事件形式给出，而不是加密后的字节，记录仍在用户态解开；没有残缺数据缓存时，接收方向
   随后跟上（`commit_rx_offload`）。
 - `TlsTransport` 为每个连接保存一个 `KtlsState`（仅当模式不是 `Off` 时）：挂上 `tls` ULP，安装并
   验证发送密钥，再安装接收密钥（TLS 1.3 另设 `TLS_RX_EXPECT_NO_PAD`），在 `TlsStats` 中计数
-  （`only_tls_ktls_total{side, dir, path}`），并通过 `TlsInfo::ktls_tx` / `ktls_rx`
+  （`akio_tls_ktls_total{side, dir, path}`），并通过 `TlsInfo::ktls_tx` / `ktls_rx`
   （`KtlsPath::Software` / `Hardware`）报告。内核拒绝时（没有模块、套件不支持），什么都没有改变，
   连接继续在用户态运行。
 
@@ -94,14 +94,14 @@ device offload 接口）；kTLS 关闭或未生效时，`send`、`on_data` 与�
 
 ## 测试
 
-- `crates/only/tests/ktls.rs`（epoll 与 io_uring，`--features ktls`）：双向与只发送方向的软件 kTLS，
+- `crates/akio/tests/ktls.rs`（epoll 与 io_uring，`--features ktls`）：双向与只发送方向的软件 kTLS，
   TLS 1.3 与 1.2 下的 AES-GCM 与 ChaCha20-Poly1305，6 MiB 回显，对端连续 20 次请求密钥更新，服务端
-  每 16 条记录主动更新密钥，经内核的 `sendfile`，双向 close_notify，启用 kTLS 的 `only` 客户端，以及
+  每 16 条记录主动更新密钥，经内核的 `sendfile`，双向 close_notify，启用 kTLS 的 `akio` 客户端，以及
   `Hardware` / `Off` 在环回接口上保持用户态。内核计数器确认了安装与换钥（`TlsTxSw`、`TlsRxSw`、
   `TlsRxRekeyOk`、`TlsTxRekeyOk`；没有 `TlsDecryptError`）。
-- only-sys：ethtool 特性查询与 `ethtool -k lo` 对照、`/proc/net/tls_stat` 解析；only-tls：接口表
+- akio-sys：ethtool 特性查询与 `ethtool -k lo` 对照、`/proc/net/tls_stat` 解析；akio-tls：接口表
   查找（IPv4、IPv6、IPv4 映射地址、已拒绝的组合）。
-- 已有的测试流测试，以及 `ONLY_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（对 OpenSSL
+- 已有的测试流测试，以及 `AKIO_INTEROP_KTLS=require` 下的 `tools/interop/tls/run.sh`（对 OpenSSL
   3.0.13 与 Go 175/175）；curl 与 `openssl s_client` 对 epoll 与 io_uring 上启用软件 kTLS 的
   `http-bench`（TLS 1.3 / 1.2、AES-GCM / ChaCha20-Poly1305、客户端发起带 update_requested 的
   KeyUpdate：10/10）。

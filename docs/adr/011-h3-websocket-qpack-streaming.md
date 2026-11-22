@@ -6,13 +6,13 @@ Status: accepted (2026-11-16)
 
 ## Context
 
-`only-h3` served only-http services over HTTP/3 with three gaps against HTTP/1.1 and HTTP/2
+`akio-h3` served akio-http services over HTTP/3 with three gaps against HTTP/1.1 and HTTP/2
 in the same stack and against other HTTP/3 implementations: no WebSocket (RFC 9220 extended
 CONNECT), QPACK without a dynamic table (capacity 0 advertised, so peers such as nghttp3
 could not compress repeated fields), and request bodies always buffered (a service in
 `BodyMode::Stream` worked on HTTP/1 and HTTP/2 but not on HTTP/3, and uploads were bounded by
 `max_body_bytes`). The client had no way to stream an upload or open a WebSocket. Closing them
-touches the public API of only-h3, only-http and only-ws.
+touches the public API of akio-h3, akio-http and akio-ws.
 
 ## Decision
 
@@ -21,7 +21,7 @@ touches the public API of only-h3, only-http and only-ws.
    `:protocol websocket` on HTTP/3: version 13 and the origin policy are checked as on
    HTTP/1.1, subprotocol and `permessage-deflate` are negotiated the same way, the answer is
    `200` (head only) and the request stream carries the WebSocket from then on, framed by
-   only-ws, with the same `WsHandler` / `WsSender` model. The server always advertises
+   akio-ws, with the same `WsHandler` / `WsSender` model. The server always advertises
    `SETTINGS_ENABLE_CONNECT_PROTOCOL`: a request for an unknown protocol is just a request the
    service answers. `Router` answers an extended CONNECT for `websocket` with the path's **GET
    route** (as it answers HEAD with it), so one `.get("/ws", ...)` serves WebSocket over
@@ -32,9 +32,9 @@ touches the public API of only-h3, only-http and only-ws.
    done)` and `websocket_blocking(..)`. They wait for the server's SETTINGS (RFC 8441 §3),
    fail with `H3Error::Protocol` when extended CONNECT is not allowed and with the new
    `H3Error::Status(u16)` when the server refuses. `H3WsOptions` mirrors
-   `only_ws::client::DialOptions` (config, deflate offer, subprotocols, origin, headers, close
+   `akio_ws::client::DialOptions` (config, deflate offer, subprotocols, origin, headers, close
    timeout).
-3. **only-ws gets a transport seam:** `WsSender` writes through either a TCP connection (as
+3. **akio-ws gets a transport seam:** `WsSender` writes through either a TCP connection (as
    before) or a `WsLink` trait object (`#[doc(hidden)]`, outside the semver promise like
    `WsSession`), with `WsSession::with_link` / `client_with_link`. The TCP path is an enum
    match, not a virtual call.
@@ -71,12 +71,12 @@ touches the public API of only-h3, only-http and only-ws.
    bytes (so requests without a body never ask) and gets them through `Context::on_body`;
    `max_body_bytes` does not apply to it; `content-length` is still checked (a mismatch resets
    the stream with `H3_MESSAGE_ERROR`). Buffered services keep the previous behaviour. The
-   hook is `only_http::transport::start` / `Started` (the transport module is
+   hook is `akio_http::transport::start` / `Started` (the transport module is
    `#[doc(hidden)]`), which also hands the transport the accepted WebSocket.
 6. **Streamed uploads, client side:** `H3Client::upload(method, path, headers, cb) ->
    H3Upload` with `write`, `finish` and `queued_bytes` (for pacing), like `H2Client::open`'s
    `H2Upload`; the response is reported to `cb` as for `request`.
-7. **New HTTP/3 error codes** in `only_h3::code`: `QPACK_ENCODER_STREAM_ERROR`,
+7. **New HTTP/3 error codes** in `akio_h3::code`: `QPACK_ENCODER_STREAM_ERROR`,
    `QPACK_DECODER_STREAM_ERROR`.
 
 ## Consequences

@@ -40,24 +40,24 @@ stateDiagram-v2
 `on_error(io::Error)`。engine 必须已经 start。
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:dial}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:dial}}
 ```
 
-用 `only::tls::Tls::client(..)` 包装 acceptor 即可发起 TLS 连接。更高层的客户端（HTTP、
+用 `akio::tls::Tls::client(..)` 包装 acceptor 即可发起 TLS 连接。更高层的客户端（HTTP、
 HTTP/2、WebSocket、gRPC、arpc）都建立在 `dial` 之上。`EngineRef` 是一个延迟绑定的弱句柄，
 供那些在 engine 之前构造、又需要在 handler 里 dial 的服务使用（代理）。
 
 ## 优雅停机
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:shutdown}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:shutdown}}
 ```
 
 `Engine::shutdown()` 立即返回，可以在任何线程调用（信号处理线程、管理端点）。之后：
 
 1. 所有 listener 停止接收新连接。
 2. 对每个仍打开的连接，在其 I/O 线程上调用所属 acceptor 的 `on_shutdown`。默认什么都不做；
-   协议 crate 用它礼貌地收尾：only-http 在 HTTP/1 连接的在途响应写完后关闭连接，HTTP/2
+   协议 crate 用它礼貌地收尾：akio-http 在 HTTP/1 连接的在途响应写完后关闭连接，HTTP/2
    发送 `GOAWAY` 并让已打开的 stream 完成。仍在连接中的 dial 收到
    `on_error(ConnectionAborted)`。
 3. engine 等待连接关闭，最多 `Config::shutdown_timeout`（默认 10 s，可热更新）。

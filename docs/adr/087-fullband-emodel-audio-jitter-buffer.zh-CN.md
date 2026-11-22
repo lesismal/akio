@@ -1,4 +1,4 @@
-# ADR-087：全频带与按码率的 E-model，以及 only-webrtc 中的音频抖动缓冲
+# ADR-087：全频带与按码率的 E-model，以及 akio-webrtc 中的音频抖动缓冲
 
 [English](087-fullband-emodel-audio-jitter-buffer.md) | 简体中文
 
@@ -7,8 +7,8 @@
 ## 背景
 
 ADR-085 为 RTCP XR VoIP 指标用 E-model 评估收到的音频。它留下了四件事没做：G.107.2（全频带）、
-随码率变化的编解码器取值、G.722 带附录丢包隐藏时的 `Bpl,wb`，以及 only-webrtc 里的抖动缓冲。
-only-webrtc 目前在音频帧一到达就交给应用。
+随码率变化的编解码器取值、G.722 带附录丢包隐藏时的 `Bpl,wb`，以及 akio-webrtc 里的抖动缓冲。
+akio-webrtc 目前在音频帧一到达就交给应用。
 
 重新阅读现行文本后发现，ADR-085 的宽带模型并不是 G.107.1（06/2019，含 01/2020 的勘误 1）：
 
@@ -23,7 +23,7 @@ only-webrtc 目前在音频帧一到达就交给应用。
 
 ## 决定
 
-### 1. E-model（only-rtp）
+### 1. E-model（akio-rtp）
 
 - **宽带模型按 G.107.1 及其勘误 1 改正**：`R = 129 - Id,WB - Ie,eff,WB`，采用它的讲话者回声
   项、`1.29 Idd`，式 7-15 中用 95。G.107.1 没有突发比，这里保留 G.107 的 `Ppl / BurstR`；
@@ -61,11 +61,11 @@ only-webrtc 目前在音频帧一到达就交给应用。
     Opus 1.3 推导的 `Ie,FB`（DAGA 2021，表 2）；没有公布 Opus 的 `Bpl`，因此假设它的
     `Bpl,fb` 与同码率的 EVS 相同。
   - `Plc::of_codec` 新增 EVS（`Enhanced`）与 AMR / AMR-WB（`Standard`）。
-- **only-webrtc 的码率**：每包载荷比特数除以包长。包长取抖动缓冲测得的帧长，没有则取
+- **akio-webrtc 的码率**：每包载荷比特数除以包长。包长取抖动缓冲测得的帧长，没有则取
   20 ms。2 字节及以下的包（Opus DTX）不计入。统计按每个报告间隔进行，所以 Opus 按实际码率
   评为全频带。
 
-### 2. 抖动缓冲（only-rtp）
+### 2. 抖动缓冲（akio-rtp）
 
 `JitterBuffer<T>` 不做 I/O，管理一条单包成帧的流。帧用
 `push(ext_seq, ts, marker, arrival, data, bytes)` 放入，用 `pop(now)` 按序号顺序、在各自的
@@ -97,7 +97,7 @@ only-webrtc 目前在音频帧一到达就交给应用。
 - **上界**（docs/rules.md）：槽位、最多 1002 个直方图桶、4096 个丢弃序号。每包 O(1)，另外
   每 8 个包扫描直方图到该百分位为止。
 
-### 3. only-webrtc
+### 3. akio-webrtc
 
 - `RtcConfig::set_audio_jitter_buffer(Option<PlayoutDelay>)`，默认关闭。
   - 打开后，在帧模式下，每条收到的音频流经 `JitterBuffer`，取代帧组装器及其重排等待。
@@ -117,11 +117,11 @@ only-webrtc 目前在音频帧一到达就交给应用。
 
 改动只有新增。
 
-- only-rtp：
+- akio-rtp：
   - `EModel::{fullband, with_burst_robustness, is_fullband, for_codec_rate, scaled_delay_impairment}`。
   - `JitterBuffer`、`JitterBufferStats`、`JitterFrame`、`JitterPush`、`PlayoutDelay`。
   - `MAX_PLAYOUT_DELAY`、`JITTER_BUFFER_MAX_FRAMES`、`JITTER_BUFFER_MAX_BYTES`。
-- only-webrtc：`RtcConfig::set_audio_jitter_buffer`、`Peer::jitter_buffer_stats`，以及
+- akio-webrtc：`RtcConfig::set_audio_jitter_buffer`、`Peer::jitter_buffer_stats`，以及
   `MediaData::playout_time`（`#[non_exhaustive]` 结构体的新字段）。
 
 有些数值变了，但 API 不变：
@@ -129,11 +129,11 @@ only-webrtc 目前在音频帧一到达就交给应用。
 - 宽带评分按 G.107.1 计算。有丢包时比 ADR-085 高（用 95 而不是 129）；有时延时，按宽带的
   回声项计算。
 - G.722 取双耳 `Ie,wb` 5。应用声明了丢包隐藏时，同时取表 IV.4 的 `Bpl,wb`。
-- only-webrtc 测量 Opus 的码率，所以 Opus 按码率评为全频带。
+- akio-webrtc 测量 Opus 的码率，所以 Opus 按码率评为全频带。
 
 ## 影响
 
-- **测试，only-rtp `tests_voip.rs`**：
+- **测试，akio-rtp `tests_voip.rs`**：
   - G.107.1 默认值：`Idle,WB` 0.1537、R 128.846、MOS 4.4992。
   - 带附录 III PLC 的 G.722 在 2 % 丢包下：`Ie,eff,WB` 24.78、R 104.07、MOS 4.0491；带
     附录 IV PLC 时为 30.35。
@@ -144,14 +144,14 @@ only-webrtc 目前在音频帧一到达就交给应用。
     时为 36.431。EVS 48 在 1 % 下为 21.691。
   - 按码率的查表，以及 Opus 随码率单调。
   - 公布的文件除默认值外没有算例。这些数值都是独立于代码、由公式算出的。
-- **测试，only-rtp `tests_jitter.rs`**，20 ms 帧：
+- **测试，akio-rtp `tests_jitter.rs`**，20 ms 帧：
   - 3000 帧在 0..60 ms 均匀抖动、3 % 丢包下：时延 58 ms，708 个乱序，每个包恰好计入一次。
   - 重复包与迟到包。
   - 跳过 FEC 序号。
   - 经历 1.2 s 的 +600 ms 时延后，新讲话段从目标时延（< 15 ms）重新开始。不停顿的流每次最多
     缩短一帧（19 s 内 5 到 20 次）。
   - 上界：字节数、槽位数、序号跳跃、时延范围、时间戳回绕。
-- **测试，only-webrtc `tests_mux.rs`**（模拟网络）：
+- **测试，akio-webrtc `tests_mux.rs`**（模拟网络）：
   - 单向 10..70 ms、3 % 丢包：489 帧按序交出，全部在播放时刻后 5 ms 以内；时延 60 ms。发送端
     收到的指标为 nominal 60 / abs max 500，RX config 为自适应，32 kbit/s 的 Opus R 为 79。
   - 同样的抖动下用固定 0 ms 的缓冲：迟到帧计入丢弃率，而不是丢包率。

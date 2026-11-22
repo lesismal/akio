@@ -7,7 +7,7 @@ Status: accepted (2026-11-21)
 ## Context
 
 RFC 1928 makes GSS-API (method `0x01`, RFC 1961) the one authentication method a SOCKS5
-implementation "MUST" support; only-socks had none (DEV-PLAN: "Not done: GSSAPI"). In practice
+implementation "MUST" support; akio-socks had none (DEV-PLAN: "Not done: GSSAPI"). In practice
 GSS-API means Kerberos (corporate networks behind Dante or a Windows proxy).
 
 RFC 1961 has three parts: context establishment (`MTYP` 1 tokens until both sides are
@@ -18,7 +18,7 @@ messages carrying `GSS_Wrap` tokens: the SOCKS request, the replies and the rela
 
 Constraints:
 
-- Every runtime dependency is in-house (ADR-005), and `unsafe` stays in only-sys and the
+- Every runtime dependency is in-house (ADR-005), and `unsafe` stays in akio-sys and the
   backends. Linking `libgssapi_krb5` / Heimdal / SSPI would take a C library and FFI.
 - A pure in-house Kerberos is not realistic: the protocol is only part of it (KDC exchanges,
   ticket caches and keytabs in their on-disk formats, the enctypes, PAC, cross-realm, DNS
@@ -33,7 +33,7 @@ Constraints:
 
 ### 1. The mechanism is the application's: `GssContext`
 
-`only_socks::gssapi::GssContext` (defined in `only_ws::gss`, where the sans-io client handshake
+`akio_socks::gssapi::GssContext` (defined in `akio_ws::gss`, where the sans-io client handshake
 lives, and re-exported) is one security context:
 
 - `step(&mut self, token) -> io::Result<GssStep>` (`GSS_Init_sec_context` /
@@ -42,7 +42,7 @@ lives, and re-exported) is one security context:
 - `peer_name(&self)` (the acceptor's view of the client principal).
 
 It must be `Send` (it moves to a worker for the establishment steps). The application
-implements it over its GSS-API binding of choice; only-socks runs RFC 1961 around it.
+implements it over its GSS-API binding of choice; akio-socks runs RFC 1961 around it.
 
 ### 2. Establishment off the I/O threads
 
@@ -51,7 +51,7 @@ implements it over its GSS-API binding of choice; only-socks runs RFC 1961 aroun
   the step completes. The factory (`Fn() -> io::Result<Box<dyn GssContext>>`) runs there too.
 - Client: the handshake is sans-io inside the tunnel transport. `Handshake::feed` queues a
   `GssJob` instead of calling the context; the tunnel runs it on a short-lived helper thread
-  (`only-socks-gss`) and resumes through the connection's `TransportWaker` (ADR-062). Two steps
+  (`akio-socks-gss`) and resumes through the connection's `TransportWaker` (ADR-062). Two steps
   for Kerberos with mutual authentication, so at most two threads per tunnel, once. The
   blocking helpers run the steps inline (they block anyway). The factory gets the proxy's host
   name, to build the service name (`rcmd@host` by RFC 1961 convention and Dante's default).
@@ -60,7 +60,7 @@ implements it over its GSS-API binding of choice; only-socks runs RFC 1961 aroun
 
 ### 3. Per-message protection as a transport: `GssLayer`
 
-`GssLayer` implements `only::Transport`: it unwraps `MTYP` 3 messages into plaintext (across
+`GssLayer` implements `akio::Transport`: it unwraps `MTYP` 3 messages into plaintext (across
 reads) and wraps what is sent in messages of at most 32 KiB of plaintext (so tokens fit the
 16-bit length with any mechanism overhead). `ConnInner::send` seals under the connection's
 lock, so wrapping (and the mechanism's sequence numbers) follows the order of sends from any
@@ -97,12 +97,12 @@ thread: replies sent from the upstream's I/O thread, the BIND thread or the pool
 
 ### 5. Verification without a GSS-API library in the workspace
 
-- A toy mechanism (`only_ws::gss::toy`, `#[doc(hidden)]`: keyed checksum and XOR, insecure on
+- A toy mechanism (`akio_ws::gss::toy`, `#[doc(hidden)]`: keyed checksum and XOR, insecure on
   purpose) drives the unit and engine tests: every level, 1 MiB both ways, BIND, TLS to the
   target inside a protected tunnel, refusals, the access hook's user, the wire format by hand.
 - `tools/interop/socks/gssapi.sh`: a KDC (MIT krb5) in Docker; the mechanism is a test-only
   Python shim over `python3-gssapi` (`gss_shim.py`) that the `socks-gss-interop` example adapts
-  to `GssContext` over a pipe. only-socks' client and server, Dante rebuilt from Debian's source
+  to `GssContext` over a pipe. akio-socks' client and server, Dante rebuilt from Debian's source
   package `--with-gssapi` (the packaged one, and Alpine's, have no GSS-API), and an independent
   Python RFC 1961 client checked against Dante first: 15/15 at every level. Debian 12's
   curl 7.88 cannot take part: its SOCKS state machine resets `allow_gssapi` when it resumes
@@ -111,7 +111,7 @@ thread: replies sent from the upstream's I/O thread, the BIND thread or the pool
 ## Consequences
 
 - Applications with Kerberos get RFC 1961 interop with Dante and RFC 1961 clients by writing a
-  small adapter over their GSS-API binding; only-socks stays free of C dependencies and FFI.
+  small adapter over their GSS-API binding; akio-socks stays free of C dependencies and FFI.
 - Nothing changes for servers and clients without GSS-API: no transport is installed, the
   relay and the tunnel's data path are untouched (no benchmark needed).
 - The establishment steps cost a pool task (server) or a thread spawn (client) each: fine for
@@ -145,5 +145,5 @@ thread: replies sent from the upstream's I/O thread, the BIND thread or the pool
   datagram; no benchmark was run for that.
 - Interop (`tools/interop/socks/gssapi.sh`): the independent Python RFC 1961 client makes a UDP
   association at levels 0, 1 and 2 against Dante first (Dante's `udpassociate` with GSS-API),
-  then against only-socks' server; only-socks' client (engine and blocking) against Dante and
-  only-socks' server at each level. 27/27 together with the earlier cases (12 of them new).
+  then against akio-socks' server; akio-socks' client (engine and blocking) against Dante and
+  akio-socks' server at each level. 27/27 together with the earlier cases (12 of them new).

@@ -1,12 +1,12 @@
 # HTTP/1.1 and HTTP/2 servers
 
-`only-http` serves HTTP/1.0, HTTP/1.1 and HTTP/2 with one programming model: a `Service` gets a
+`akio-http` serves HTTP/1.0, HTTP/1.1 and HTTP/2 with one programming model: a `Service` gets a
 `&mut Context` for each request, on the connection's I/O thread.
 
 ## Serving
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:serve}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:serve}}
 ```
 
 `serve(service)` / `serve_with(HttpConfig, service)` return an `HttpAcceptor`: serve it on a
@@ -45,7 +45,7 @@ Any `Fn(&mut Context) + Send + Sync + 'static` is a `Service`, as is a `Router`.
 **respond** or **detach**; if it does neither the client gets a 500.
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:handlers}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:handlers}}
 ```
 
 Reading the request:
@@ -83,7 +83,7 @@ handler keeps (`detach`, a WebSocket upgrade) keeps its own storage.
 ## Detaching: never block a handler
 
 `ctx.detach()` hands the right to respond to a `Detached` value you can move to any thread.
-Responses to pipelined HTTP/1.1 requests still leave in request order (only-http reserves an
+Responses to pipelined HTTP/1.1 requests still leave in request order (akio-http reserves an
 ordered response slot per request), and HTTP/2 streams are independent. The I/O thread is free
 the moment your handler returns.
 
@@ -119,5 +119,5 @@ with any trailers. No size limit applies to streamed bodies: the sink decides.
 ## Comparison
 
 HTTP/1.1, pipelined HTTP/1.1, h2c and HTTP/2 over TLS against hyper and fib, on epoll and
-io_uring, are in [docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md)
+io_uring, are in [docs/BENCHMARKS.md](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md)
 (the comparison report this section once listed as not done).

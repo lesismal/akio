@@ -1,6 +1,6 @@
 # 可观测性与热更新
 
-每个 engine 都有一个**遥测中心**（`only::Telemetry`）：每线程计数器、连接表、慢回调记录以及
+每个 engine 都有一个**遥测中心**（`akio::Telemetry`）：每线程计数器、连接表、慢回调记录以及
 实时（可热更新的）设置。engine 构建之前通过 `Config::telemetry` 访问，构建之后通过
 `Engine::telemetry()` 访问。I/O 线程用 relaxed 原子操作更新各自的普通计数器（按缓存行对齐，
 每个事件既不加锁也不分配内存）；快照按需汇总。
@@ -8,7 +8,7 @@
 ## 在代码中
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/guide-config.rs:observe}}
+{{#include ../../../crates/akio/examples/guide-config.rs:observe}}
 ```
 
 | 调用 | 返回 |
@@ -27,22 +27,22 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 | 序列 | 类型 |
 |---|---|
-| `only_connections_accepted_total`、`only_connections_dialed_total`、`only_connections_closed_total` | counter |
-| `only_connections_rejected_total`（max_connections）、`only_accept_errors_total`、`only_idle_timeouts_total` | counter |
-| `only_read_bytes_total`、`only_reads_total`、`only_written_bytes_total`、`only_writes_total` | counter |
-| `only_udp_datagrams_received_total`、`only_udp_datagrams_sent_total` | counter |
-| `only_send_queue_bytes` | gauge |
-| `only_backpressure_events_total`、`only_overloaded_total` | counter |
-| `only_tls_handshake_failures_total`、`only_transport_errors_total` | counter |
-| `only_loop_iterations_total`、`only_loop_events_total`、`only_loop_callbacks_total`、`only_loop_callback_seconds_total`、`only_slow_callbacks_total` | counter |
-| `only_connections_open`、`only_loop_running` | gauge |
-| `only_pool_threads`、`only_pool_active`、`only_pool_queued` | gauge |
-| `only_pool_completed_total`、`only_pool_panicked_total`、`only_pool_rejected_total` | counter |
-| `only_uptime_seconds` | gauge |
+| `akio_connections_accepted_total`、`akio_connections_dialed_total`、`akio_connections_closed_total` | counter |
+| `akio_connections_rejected_total`（max_connections）、`akio_accept_errors_total`、`akio_idle_timeouts_total` | counter |
+| `akio_read_bytes_total`、`akio_reads_total`、`akio_written_bytes_total`、`akio_writes_total` | counter |
+| `akio_udp_datagrams_received_total`、`akio_udp_datagrams_sent_total` | counter |
+| `akio_send_queue_bytes` | gauge |
+| `akio_backpressure_events_total`、`akio_overloaded_total` | counter |
+| `akio_tls_handshake_failures_total`、`akio_transport_errors_total` | counter |
+| `akio_loop_iterations_total`、`akio_loop_events_total`、`akio_loop_callbacks_total`、`akio_loop_callback_seconds_total`、`akio_slow_callbacks_total` | counter |
+| `akio_connections_open`、`akio_loop_running` | gauge |
+| `akio_pool_threads`、`akio_pool_active`、`akio_pool_queued` | gauge |
+| `akio_pool_completed_total`、`akio_pool_panicked_total`、`akio_pool_rejected_total` | counter |
+| `akio_uptime_seconds` | gauge |
 
-`observe::HttpMetrics` 提供的 HTTP 指标：`only_http_requests_total{class="2xx"...}`、
-`only_http_request_duration_seconds`（直方图，桶从 0.5 ms 到 10 s）、
-`only_http_requests_in_flight`、`only_http_requests_by_version_total{version="1.0|1.1|2|3"}`
+`observe::HttpMetrics` 提供的 HTTP 指标：`akio_http_requests_total{class="2xx"...}`、
+`akio_http_request_duration_seconds`（直方图，桶从 0.5 ms 到 10 s）、
+`akio_http_requests_in_flight`、`akio_http_requests_by_version_total{version="1.0|1.1|2|3"}`
 （按请求的协议版本统计的响应数；在 h2 和 h3 上即已应答的请求流数量）。QUIC 与 TLS 指标来自各自的收集器，
 见[自定义指标](#自定义指标)。
 
@@ -51,13 +51,13 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 与 pipelined 为 0.998–1.006×，TCP 与 UDP echo 在各自 ±5–10% 的噪声之内（docs/BENCHMARKS.zh-CN.md
 “遥测开销”）。
 
-`only_loop_callback_seconds_total / only_loop_iterations_total` 和慢回调计数是最先要看的：
+`akio_loop_callback_seconds_total / akio_loop_iterations_total` 和慢回调计数是最先要看的：
 它们告诉你 handler 是否让 I/O 线程一直忙碌。
 
 ## HTTP 端点
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-observe.rs:endpoints}}
+{{#include ../../../crates/akio-http/examples/guide-observe.rs:endpoints}}
 ```
 
 - `observe::metrics_handler(telemetry, Some(http_metrics))` 以 Prometheus 文本格式（0.0.4）应答：
@@ -72,11 +72,11 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 ## 自定义指标
 
-任何实现了 `only::metrics::Collector` 的东西都可以注册到遥测中心，随后出现在同一个 `/metrics`
+任何实现了 `akio::metrics::Collector` 的东西都可以注册到遥测中心，随后出现在同一个 `/metrics`
 端点上，位于 engine 自身序列之后（ADR-015）。不涉及任何第三方 crate。
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-metrics.rs:collectors}}
+{{#include ../../../crates/akio-http/examples/guide-metrics.rs:collectors}}
 ```
 
 - `Registry` 持有具名的 `Counter`、`Gauge`、`Histogram`（共享原子量，更新不加锁）；以相同名称和
@@ -97,18 +97,18 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 不经 HTTP，以快照形式取得同样的数据：
 
 ```rust,ignore
-{{#include ../../../crates/only-http/examples/guide-metrics.rs:snapshot}}
+{{#include ../../../crates/akio-http/examples/guide-metrics.rs:snapshot}}
 ```
 
 现成的收集器：
 
 | 收集器 | 序列 |
 |---|---|
-| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`、`only_http_request_duration_seconds`、`only_http_requests_in_flight`、`only_http_requests_by_version_total{version}`；用 `with_routes(n)` 时还有 `only_http_route_requests_total{method, route, class}` 和 `only_http_route_request_duration_seconds{method, route}` |
-| `only_http::observe::H2Stats`（设在 `H2Config::stats`） | `only_http2_connections_open`、`only_http2_connections_total`、`only_http2_streams_open`、`only_http2_streams_total`、`only_http2_resets_total{direction}`、`only_http2_goaways_total{direction}` |
-| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`（signal 为 `metrics`、`traces`、`logs`）、`only_export_otlp_retries_total`、`only_export_metric_points_rejected_total`、`only_export_{spans,logs}_exported_total`、`_dropped_total`、`_rejected_total`、`_queued`、`only_export_statsd_dropped_series_total` |
-| `only_quic::QuicServer`（`only_h3::serve` 返回的也是它） | `only_quic_connections_open`（gauge）、`only_quic_connections_accepted_total`、`only_quic_connections_closed_total`、`only_quic_datagrams_total{dir}`、`only_quic_bytes_total{dir}`、`only_quic_packets_sent_total`、`only_quic_packets_lost_total`、`only_quic_lost_bytes_total`、`only_quic_congestion_events_total`、`only_quic_ecn_ce_events_total` |
-| `only::tls::TlsStats`，来自 `Tls::stats()` | `only_tls_handshakes_total{side, version}`、`only_tls_resumed_total{side}`、`only_tls_early_data_total{side, outcome}` |
+| `akio_http::observe::HttpMetrics` | `akio_http_requests_total{class}`、`akio_http_request_duration_seconds`、`akio_http_requests_in_flight`、`akio_http_requests_by_version_total{version}`；用 `with_routes(n)` 时还有 `akio_http_route_requests_total{method, route, class}` 和 `akio_http_route_request_duration_seconds{method, route}` |
+| `akio_http::observe::H2Stats`（设在 `H2Config::stats`） | `akio_http2_connections_open`、`akio_http2_connections_total`、`akio_http2_streams_open`、`akio_http2_streams_total`、`akio_http2_resets_total{direction}`、`akio_http2_goaways_total{direction}` |
+| `akio_export::Exporter::collector()` | `akio_export_pushes_total{sink, signal, result}`（signal 为 `metrics`、`traces`、`logs`）、`akio_export_otlp_retries_total`、`akio_export_metric_points_rejected_total`、`akio_export_{spans,logs}_exported_total`、`_dropped_total`、`_rejected_total`、`_queued`、`akio_export_statsd_dropped_series_total` |
+| `akio_quic::QuicServer`（`akio_h3::serve` 返回的也是它） | `akio_quic_connections_open`（gauge）、`akio_quic_connections_accepted_total`、`akio_quic_connections_closed_total`、`akio_quic_datagrams_total{dir}`、`akio_quic_bytes_total{dir}`、`akio_quic_packets_sent_total`、`akio_quic_packets_lost_total`、`akio_quic_lost_bytes_total`、`akio_quic_congestion_events_total`、`akio_quic_ecn_ce_events_total` |
+| `akio::tls::TlsStats`，来自 `Tls::stats()` | `akio_tls_handshakes_total{side, version}`、`akio_tls_resumed_total{side}`、`akio_tls_early_data_total{side, outcome}` |
 
 QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在处理抓取的线程上（或导出器的线程上，见
 [推送导出](#推送导出otlp-与-statsd)），从不在 I/O 线程的热路径上：请让它们保持轻量。
@@ -116,7 +116,7 @@ QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在
 ## 按路由的指标与 HTTP/2
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:routes}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:routes}}
 ```
 
 - `HttpMetrics::with_routes(n)` 为每个路由增加一行：方法和路由器匹配到的**模式**
@@ -131,26 +131,26 @@ QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在
 
 ## Span
 
-`only::log` 除了记录还有 span：带字段、父级、种类和状态的计时工作单元，用 W3C trace id 和 span id 标识。
+`akio::log` 除了记录还有 span：带字段、父级、种类和状态的计时工作单元，用 W3C trace id 和 span id 标识。
 span 结束时交给一个 `Tracer`（导出器，见下文）；它们有自己的最大级别，默认 `Off`：在调高之前，一条 span
 语句只花一次 relaxed 原子读，什么也不创建。
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:spans}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:spans}}
 ```
 
 - `span!(target: .., Level::Info, "name", key = value, ...)` 和 `info_span!` …… 启动一个 span（字段沿用
   记录的语法，没有 `;` 和消息）。`record`、`set_name`、`set_status`、`set_kind` 修改它；drop 即结束。
   `span.enter()` 让它成为线程当前的 span，直到守卫被 drop：期间启动的 span 是它的子 span，期间写出的记录由
   `FmtLogger` 加上 `trace_id=.. span_id=..`。在事件循环上，只在为它运行的代码周围进入 span，不要跨回调；
-  `only::log::span::enter_context(ctx)` 把上下文带到别的线程。
-- 请求 span 启用时，only-http 为每个 HTTP/1.1、HTTP/2 和 HTTP/3 请求启动一个**请求 span**（target
-  `only_http::request`，级别 `info`，种类 server）：路由器匹配后命名为 `GET /users/:id`（未匹配的请求只用方法名），
+  `akio::log::span::enter_context(ctx)` 把上下文带到别的线程。
+- 请求 span 启用时，akio-http 为每个 HTTP/1.1、HTTP/2 和 HTTP/3 请求启动一个**请求 span**（target
+  `akio_http::request`，级别 `info`，种类 server）：路由器匹配后命名为 `GET /users/:id`（未匹配的请求只用方法名），
   带 `http.request.method`、`url.path`、`http.route`、`network.protocol.version`、`client.address` 和
   `http.response.status_code`；5xx 设置错误状态。处理函数运行期间它是当前 span，响应头发出时结束（detach
   的响应在任何地方发出时结束）。请求带 `traceparent` 头时，它成为调用方 span 的子 span；`ctx.span_context()`
   给出要向下游传播的上下文（`to_traceparent()`）。
-- **连接 span**（target `only_http::connection`，级别 `debug`）覆盖一条连接从 accept 到关闭，带客户端地址和协议版本。
+- **连接 span**（target `akio_http::connection`，级别 `debug`）覆盖一条连接从 accept 到关闭，带客户端地址和协议版本。
 - **事件与链接。** `span.add_event("retry", &[("attempt", 2u64.into())])` 记录 span 中某一时刻发生的事
   （`push_event` 接受自带时间的 `SpanEvent`）；`span.add_link(ctx, &[..])`，或在 span 开始时用
   `SpanBuilder::link(SpanLink::new(ctx))`，指向另一个 span（同一 trace 或其他 trace，比如一个批处理链接它服务的
@@ -158,20 +158,20 @@ span 结束时交给一个 `Tracer`（导出器，见下文）；它们有自己
   `dropped_links` 并照此导出。对不记录的 span 它们什么也不做。
 - 采样由 tracer 按 trace 决定一次（导出器的 `sample_ratio`）；调用方 `traceparent` 的标志会被遵从。未采样的 span
   仍带有 id（它的子 span 和发出的头保持未采样），但不记录任何东西。
-- 自定义 tracer：实现 `only::log::span::Tracer`（`enabled`、`sample`、`on_end`），用 `set_tracer` 加
+- 自定义 tracer：实现 `akio::log::span::Tracer`（`enabled`、`sample`、`on_end`），用 `set_tracer` 加
   `set_max_span_level` 安装。`on_end` 运行在结束 span 的线程上，常常是 I/O 线程：把 span 入队，绝不阻塞。
 
-没有 `tracing` 桥接：`tracing` 的 subscriber 需要由它自己的宏创建的 `'static` callsite 元数据，转发 only-log 的
+没有 `tracing` 桥接：`tracing` 的 subscriber 需要由它自己的宏创建的 `'static` callsite 元数据，转发 akio-log 的
 span 意味着按 span 名泄漏元数据，或者把名字藏进字段；OTLP 导出覆盖了常见的去处，其他去处可以用 `Tracer` 对接
 （ADR-020）。
 
 ## 推送导出（OTLP 与 StatsD）
 
-`only-export` crate 在一个后台线程上推送指标、span 和日志记录，用的是工作区自研的 HTTP、gRPC、TLS 和
+`akio-export` crate 在一个后台线程上推送指标、span 和日志记录，用的是工作区自研的 HTTP、gRPC、TLS 和
 protobuf 代码，没有第三方依赖：
 
 ```rust,ignore
-{{#include ../../../crates/only-export/examples/guide-export.rs:export}}
+{{#include ../../../crates/akio-export/examples/guide-export.rs:export}}
 ```
 
 - **发送什么。** 每个 `interval`（默认 10 秒）发送一次与抓取相同的快照：engine 的序列和所有已注册的收集器
@@ -180,15 +180,15 @@ protobuf 代码，没有第三方依赖：
 - **OTLP/HTTP**（`otlp_http`，或 `otlp_http_with(endpoint, Encoding::Json, headers)`）：`POST /v1/metrics`、
   `/v1/traces` 和 `/v1/logs`，protobuf（`application/x-protobuf`）或 OTLP/JSON。**OTLP/gRPC**
   （`otlp_grpc("http://collector:4317")`、`otlp_grpc_with(endpoint, metadata)`）：三个 collector 服务的一元
-  `Export` 方法，使用 only-grpc 的客户端，运行在一个只有一个客户端 I/O 线程的私有 engine 上，首次推送时启动。
+  `Export` 方法，使用 akio-grpc 的客户端，运行在一个只有一个客户端 I/O 线程的私有 engine 上，首次推送时启动。
   计数器成为累积的单调 sum，gauge 仍是 gauge，直方图成为带 exemplar 的显式分桶直方图；标签成为属性，
   `service.name` 和 `resource_attr(..)` 成为 resource。span（连同事件和链接）和日志记录按 target 分成不同的
   instrumentation scope。指标已被抓取或发往 StatsD 时，`otlp_traces_only()` 让 OTLP 不发指标。
-- **TLS。** `https://` 端点（两种协议均可）经 only-tls 连接，gRPC 用 ALPN `h2`，HTTP 用 `http/1.1`。collector
+- **TLS。** `https://` 端点（两种协议均可）经 akio-tls 连接，gRPC 用 ALPN `h2`，HTTP 用 `http/1.1`。collector
   的证书按系统根证书校验，或按 `tls_roots(RootCerts)`（私有 CA）校验；`tls_client_cert(chain, key)` 应答要求客户端
   证书的 collector；`tls_server_name(..)` 覆盖校验的名字（默认是端点的主机名）。TLS 选项配 `http://` 端点在 `start`
   时报错。
-- **日志。** `logs(level)` 安装一个 logger（进程级的 only-log logger），把不超过 `level` 的记录转成 OTLP
+- **日志。** `logs(level)` 安装一个 logger（进程级的 akio-log logger），把不超过 `level` 的记录转成 OTLP
   `LogRecord`：消息作为 body，带严重级别、键值作为属性、`code.file.path` 与 `code.line.number`，以及记录所在处当前
   span 的 trace id 和 span id，collector 因而能把一次请求的日志和它的 trace 放在一起。
   `forward_logs(FmtLogger::new(), LevelFilter::Warn)` 同时把记录交给另一个 logger。最大日志级别取两者中更详细的一个。
@@ -216,87 +216,87 @@ exemplar 的指标，以及进入 statsd receiver 的 DogStatsD；检查 collect
 
 ## 日志
 
-only 通过自己的日志门面 `only-log`（以 `only::log` 重新导出）输出带键值对的记录。每个进程安装一次
+akio 通过自己的日志门面 `akio-log`（以 `akio::log` 重新导出）输出带键值对的记录。每个进程安装一次
 logger 即可看到：
 
 ```rust,ignore
-// 向 stderr 输出格式化行：`2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[...]`
-only::log::init(only::log::LevelFilter::Info).unwrap();
+// 向 stderr 输出格式化行：`2026-11-14T08:00:00.000123Z INFO  akio: engine started listeners=[...]`
+akio::log::init(akio::log::LevelFilter::Info).unwrap();
 
 // 或者：按 target 设上限、输出到 stdout、不带时间戳 ……
-only::log::FmtLogger::new()
-    .target_level("only_http::access", only::log::LevelFilter::Off)
+akio::log::FmtLogger::new()
+    .target_level("akio_http::access", akio::log::LevelFilter::Off)
     .stdout()
-    .init(only::log::LevelFilter::Debug)
+    .init(akio::log::LevelFilter::Debug)
     .unwrap();
 
-// 或者自己的输出：实现 `only::log::Logger`（`enabled`、`log`、`flush`），调用
-// `only::log::set_logger(&MY_LOGGER)` 和 `only::log::set_max_level(..)`。
+// 或者自己的输出：实现 `akio::log::Logger`（`enabled`、`log`、`flush`），调用
+// `akio::log::set_logger(&MY_LOGGER)` 和 `akio::log::set_max_level(..)`。
 ```
 
 记录提供 `level()`、`target()`、`args()`（消息，延迟格式化）、`key_values()`（`iter()`、
 `get("conn_id")`；值实现了 `Display`）以及源码位置。没有安装 logger 时，错误和慢回调警告会打印到
-stderr（`only: ...`），不会悄无声息地丢失；其余记录被丢弃。最大级别默认为 `Off`，并且最先检查，只需
+stderr（`akio: ...`），不会悄无声息地丢失；其余记录被丢弃。最大级别默认为 `Off`，并且最先检查，只需
 一次 relaxed 原子读，因此被禁用的语句开销远低于一纳秒。
 
 `FmtLogger` 在记录日志的线程上、持有流的锁写出每一行：如果 stderr 是一个无人读取的管道，该线程
-（可能是 I/O 线程）就会阻塞。对于日志输出可能积压的服务器，`.non_blocking(only::log::DEFAULT_QUEUE_LINES)`
+（可能是 I/O 线程）就会阻塞。对于日志输出可能积压的服务器，`.non_blocking(akio::log::DEFAULT_QUEUE_LINES)`
 把格式化好的行放入队列交给写线程（16 384 行）；队列满时行被丢弃并计数（在 `init` 之前保留一个克隆，
-调用 `dropped()`），写线程赶上后用单独一行报告丢弃数。退出前调用 `only::log::flush()`。默认仍是同步
+调用 `dropped()`），写线程赶上后用单独一行报告丢弃数。退出前调用 `akio::log::flush()`。默认仍是同步
 写出，因此进程未 flush 就退出时不会丢行。
 
-**从环境变量按 target 设置级别。** `only::log::init_from_env(default)` 只读取一次 `ONLY_LOG`，
+**从环境变量按 target 设置级别。** `akio::log::init_from_env(default)` 只读取一次 `AKIO_LOG`，
 其中是 env_logger 风格的指令，并据此安装格式化 logger：
 
 ```text
-ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./server
+AKIO_LOG=info,akio_http=debug,akio_quic::conn=trace,akio_http::access=off ./server
 ```
 
 `level` 设置没有指令点名的 target 的级别（没有时它们关闭），`target=level` 设置某个 target 及其子模块
 （`target::...`）的级别，单独的 `target` 表示 `trace`；最具体的 target 胜出。未设置时 `default` 作用于
 所有 target；无法解析时 stderr 上会有一行说明原因，并使用 `default`。不调用 `init_from_env` 就没有代码
-读取该变量。同样的语法可以在代码中构造过滤器：`"info,only_http=debug".parse::<only::log::Filter>()`，再
+读取该变量。同样的语法可以在代码中构造过滤器：`"info,akio_http=debug".parse::<akio::log::Filter>()`，再
 `FmtLogger::new().init_filtered(filter)`，或在自己的 `Logger` 中调用 `filter.enabled(metadata)`。与
-env_logger 不同，`only=debug` 不匹配 `only_http`（target 按 `::` 边界匹配）。
+env_logger 不同，`akio=debug` 不匹配 `akio_http`（target 按 `::` 边界匹配）。
 
 **消息过滤。** 与 env_logger 相同，指令后面的 `/regex` 只保留格式化后的消息（不含 target、级别和键值对）
 中某处与模式匹配的记录：
 
 ```text
-ONLY_LOG='info,only_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
+AKIO_LOG='info,akio_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
 ```
 
 第一个 `/` 之后的全部内容都是模式，包括空格和逗号（因此模式里可以有 `/`，env_logger 则会拒绝）；空模式
 不过滤任何记录，无效的模式与其他指令错误一样在 stderr 上报告。语法是去掉捕获、环视和 Unicode 类之后的
 `regex` crate 语法：字符类与范围、支持 Unicode 的 `\d \w \s`、`* + ? {m,n}`（贪婪或惰性）、分支、分组、
 `^ $ \A \z`、单词边界 `\b \B`，以及标志 `(?i)`（Unicode 大小写折叠）、`(?m)`、`(?s)`。引擎是工作区内的
-`only-regex`：Thompson NFA，并在解析过滤器时构建 DFA，因此匹配从不回溯（任何模式都不会让一次日志调用
+`akio-regex`：Thompson NFA，并在解析过滤器时构建 DFA，因此匹配从不回溯（任何模式都不会让一次日志调用
 变慢），代价约为消息每字符一纳秒。`FmtLogger` 直接匹配它本来就要为这一行格式化的消息；在自己的
 `Logger` 中，`filter.matches(record)` 同时检查级别和消息，把消息逐段送入匹配器而不拼接字符串。没有模式的
 过滤器完全不付出这些开销。代码中的写法：`Filter::new(LevelFilter::Info).message_regex("timed out")?`。
 
-**编译期上限。** only-log 的 feature `max_level_off` …… `max_level_trace` 以及 `release_max_level_*`
+**编译期上限。** akio-log 的 feature `max_level_off` …… `max_level_trace` 以及 `release_max_level_*`
 （后者用于没有 debug assertions 的构建）在编译期移除超出上限的语句，与 `log` crate 相同；结果是
-`only::log::STATIC_MAX_LEVEL`。只应在应用中开启（feature 在整个依赖图中合并）：
-`only-log = { version = "1", features = ["release_max_level_info"] }`。
+`akio::log::STATIC_MAX_LEVEL`。只应在应用中开启（feature 在整个依赖图中合并）：
+`akio-log = { version = "1", features = ["release_max_level_info"] }`。
 
 **已有的 `log` 配置（env_logger、`tracing-log`、fern ……）。** 开启 `log` feature
-（`only = { version = "1", features = ["log"] }`）。未安装 only-log logger 时，每条记录都以相同的
+（`akio = { version = "1", features = ["log"] }`）。未安装 akio-log logger 时，每条记录都以相同的
 级别、target、消息和键值对交给 `log` crate 的 logger，有效最大级别为 `log::max_level()`；
 `Config::log_level` 也会设置 `log` 的级别。反方向（把使用 `log` 的 crate，例如 str0m 或 rustls 的记录
-送入 only-log logger）调用 `only::log::bridge::route_log_to_only()`。该 feature 不在 semver 承诺之内：
+送入 akio-log logger）调用 `akio::log::bridge::route_log_to_only()`。该 feature 不在 semver 承诺之内：
 它跟随 `log` 0.4。
 
 | target | 级别 | 记录 |
 |---|---|---|
-| `only` | info | `engine started`（listener）、`engine shutting down`（打开的连接数）、`configuration reloaded`（applied、ignored） |
-| `only` | warn | 慢回调（`kind`、`conn_id`、`elapsed_us`、`limit_us`、`thread`、`listener`）；io_uring / BPF 回退 |
-| `only` | error | poller 失败 |
-| `only` | debug | 被 `max_connections` 拒绝的连接 |
-| `only` | trace | `connection opened` / `connection closed`（`conn_id`、`peer`、`local`、`dialed`、`error`） |
-| `only_http::access` | info | 访问日志：`method`、`target`、`status`、`peer`、`elapsed_us`、`request_id` |
+| `akio` | info | `engine started`（listener）、`engine shutting down`（打开的连接数）、`configuration reloaded`（applied、ignored） |
+| `akio` | warn | 慢回调（`kind`、`conn_id`、`elapsed_us`、`limit_us`、`thread`、`listener`）；io_uring / BPF 回退 |
+| `akio` | error | poller 失败 |
+| `akio` | debug | 被 `max_connections` 拒绝的连接 |
+| `akio` | trace | `connection opened` / `connection closed`（`conn_id`、`peer`、`local`、`dialed`、`error`） |
+| `akio_http::access` | info | 访问日志：`method`、`target`、`status`、`peer`、`elapsed_us`、`request_id` |
 
-`Config::log_level`（可热更新）会调用 `only::log::set_max_level`，因此日志详细程度可以在运行时调整。
+`Config::log_level`（可热更新）会调用 `akio::log::set_max_level`，因此日志详细程度可以在运行时调整。
 
 ## 慢回调
 
@@ -308,7 +308,7 @@ ONLY_LOG='info,only_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./se
 ## 热更新
 
 ```rust,ignore
-{{#include ../../../crates/only/examples/guide-config.rs:reload}}
+{{#include ../../../crates/akio/examples/guide-config.rs:reload}}
 ```
 
 `Engine::reload(&Config)`（或 `Telemetry::reload`）无需重启即可应用可在运行时修改的设置，并返回
@@ -348,15 +348,15 @@ I/O 线程后即返回，不等待它生效（扩容到一个正在退出的退�
   退役线程继续服务它拥有的连接，最后一个关闭后退出。设置了 `Config::retire_timeout` 时，
   到期仍打开的连接会收到 `on_shutdown`（HTTP 写完进行中的响应后关闭，WebSocket 发送 1001），
   再过 `shutdown_timeout` 仍未关闭的被关闭；客户端会重连到活跃线程。
-- 退役中的线程显示在 `Metrics::loops`（`retiring: true`）、Prometheus 指标 `only_loop_retiring`
+- 退役中的线程显示在 `Metrics::loops`（`retiring: true`）、Prometheus 指标 `akio_loop_retiring`
   和 JSON（`"retiring"`）中；已退出的线程报告 `running: false`，在同一编号上重新启动的线程延续
   它的计数器。
 - UDP listener（在 UDP `SO_REUSEPORT` 组里增删套接字会把对端挪到别的线程）、DPDK 以及设置了
   `Accel::Ebpf` 分流的 listener 不支持，返回 `Unsupported`。
 
-在 only-prefork 下，`Controller::reload_in_place()`（或向 supervisor 发送 SIGUSR1）会运行每个
+在 akio-prefork 下，`Controller::reload_in_place()`（或向 supervisor 发送 SIGUSR1）会运行每个
 worker 的 `Worker::on_reload` 钩子，worker 在其中重新读取配置并调用 `Engine::reload` 和
 `Engine::set_threads`：见 [prefork](prefork.md#原地重载)。
 
-only 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
+akio 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
 上例那样的管理路由）。

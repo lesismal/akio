@@ -6,28 +6,28 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-`only-tls` compressed certificates (RFC 8879) with zlib only, through `only-deflate`, because
+`akio-tls` compressed certificates (RFC 8879) with zlib only, through `akio-deflate`, because
 there was no in-house brotli or zstd and the workspace takes no third-party library
 dependencies. Browsers and CDNs prefer the other two: Chrome offers only brotli, Firefox offers
 zlib, brotli and zstd, and Cloudflare-style servers send brotli. A client that offers zlib alone
 gets uncompressed chains from servers that only do brotli, and a server that only does zlib
-sends Chrome its chain uncompressed. The same holds for HTTP: `only-http`'s compression
+sends Chrome its chain uncompressed. The same holds for HTTP: `akio-http`'s compression
 middleware answered `gzip` / `deflate` only, and its static files served `.br` and `.gz` twins
 but no `.zst`.
 
 ## Decision
 
-1. **Two new internal crates**, organised like `only-deflate` (pure safe Rust, no
+1. **Two new internal crates**, organised like `akio-deflate` (pure safe Rust, no
    dependencies, `#![forbid(unsafe_code)]`, a `fuzzing` feature for `fuzz/`, an
    `examples/bench.rs`, CLI interop tests that skip when the tool is missing), in the
    "Internal" tier of docs/api-stability.md:
-   - **`only-brotli`** (RFC 7932): `decompress(data, limit)` (the complete format: window
+   - **`akio-brotli`** (RFC 7932): `decompress(data, limit)` (the complete format: window
      sizes 2^10..2^24, uncompressed and metadata meta-blocks, simple and complex prefix codes,
      block switching, the four context modes and context maps, NPOSTFIX/NDIRECT distances, the
      static dictionary with its 121 transforms) and `compress(Level, data)` (LZ77 over hash
      chains, Huffman codes per meta-block, uncompressed meta-blocks when smaller); `Level` on
      brotli's quality scale 0..=11.
-   - **`only-zstd`** (RFC 8878): `decompress(data, limit)` (concatenated and skippable frames,
+   - **`akio-zstd`** (RFC 8878): `decompress(data, limit)` (concatenated and skippable frames,
      raw / RLE / compressed blocks, raw / RLE / Huffman / treeless literals with 1 or 4
      streams, predefined / RLE / FSE / repeat sequence tables, repeat offsets, the XXH64
      content checksum and content size checked) and `compress(Level, data)` (one frame with
@@ -38,7 +38,7 @@ but no `.zst`.
      output; a decompression bomb stops at `limit` with `Error::TooLarge`. Dictionaries (zstd
      `Dictionary_ID`, brotli's shared dictionaries) and streaming are not implemented: nothing
      in the workspace needs them yet.
-2. **`only-tls`** offers and accepts brotli, zstd and zlib (in that order in the
+2. **`akio-tls`** offers and accepts brotli, zstd and zlib (in that order in the
    `compress_certificate` extension). A server compresses its chain with every algorithm the
    client offers that it has on, once per certificate and algorithm (cached, as zlib was), and
    sends the smallest, or the plain Certificate when none is smaller; the client does the same
@@ -48,7 +48,7 @@ but no `.zst`.
    (`certificate_compression(true)` means all three; defaults unchanged: on for servers, off
    for clients). Received chains are still decompressed into at most 128 KiB and must have
    exactly the announced length; an algorithm not offered is `illegal_parameter`.
-3. **`only-http`**, additive: `Compress::brotli` and `Compress::zstd` (`Option` levels,
+3. **`akio-http`**, additive: `Compress::brotli` and `Compress::zstd` (`Option` levels,
    default `None`) make the compression middleware answer `br` or `zstd` to clients that
    accept them, in the order br, zstd, gzip, deflate; with both `None` it behaves as before.
    `Files` also serves `file.zst` twins (`Content-Encoding: zstd`), between `.br` and `.gz` in
@@ -64,9 +64,9 @@ but no `.zst`.
   files, and 1000 `decodecorpus` frames; the `brotli` and `zstd` CLIs both ways (every level,
   window sizes, small blocks, no checksum or content size, concatenated and skippable frames);
   round trips, every truncation and bit flip, limits and bombs (an 817-byte brotli stream
-  expanding to 1 GiB stops at the limit with allocations bounded by it). In only-tls: every
+  expanding to 1 GiB stops at the limit with allocations bounded by it). In akio-tls: every
   algorithm alone and all together, the smallest picked, no common algorithm, malformed
-  messages at every byte and length; in only-http: the encoding chosen for Chrome's and
+  messages at every byte and length; in akio-http: the encoding chosen for Chrome's and
   Firefox's `Accept-Encoding`, `q=0`, `.zst` twins.
 - Interop (`tools/interop/tls/run.sh` in `tools/interop/tls/certcomp.Dockerfile`, OpenSSL 3.5.4
   built with brotli, zstd and zlib): server and client certificates compressed with each

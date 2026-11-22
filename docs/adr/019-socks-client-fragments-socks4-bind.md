@@ -6,19 +6,19 @@ Status: accepted (2026-11-17)
 
 ## Context
 
-`docs/DEV-PLAN.md` (M4, only-socks) left open: a SOCKS client, UDP fragment reassembly (the
+`docs/DEV-PLAN.md` (M4, akio-socks) left open: a SOCKS client, UDP fragment reassembly (the
 server dropped every datagram with a non-zero `FRAG`, which RFC 1928 allows), SOCKS4 `BIND`,
 GSSAPI and a Linux `splice` relay. ADR-010 gave the HTTP and WebSocket clients HTTP proxies
-(`only_ws::proxy::Proxy`, a `CONNECT` tunnel as a `Transport` layered under TLS) and named SOCKS
+(`akio_ws::proxy::Proxy`, a `CONNECT` tunnel as a `Transport` layered under TLS) and named SOCKS
 as "not supported, additive later".
 
-The dependency direction is `only-ws → only-http → only-socks` (the server's HTTP `CONNECT`
-proxy is an only-http service), so a client written inside only-socks cannot be used by the
+The dependency direction is `akio-ws → akio-http → akio-socks` (the server's HTTP `CONNECT`
+proxy is an akio-http service), so a client written inside akio-socks cannot be used by the
 HTTP or WebSocket clients without a cycle.
 
 ## Decision
 
-1. **One sans-io client handshake, in only-ws** (`only_ws::socks`, `#[doc(hidden)]`, next to
+1. **One sans-io client handshake, in akio-ws** (`akio_ws::socks`, `#[doc(hidden)]`, next to
    the HTTP proxy tunnel of ADR-010). `Handshake::new(version, cmd, target, auth)` refuses what
    the protocol cannot carry (a name or IPv6 over SOCKS4, IPv6 over SOCKS4a, `UDP ASSOCIATE`
    over SOCKS4, names and credentials over 255 bytes, empty SOCKS5 credentials); `start` writes
@@ -27,9 +27,9 @@ HTTP or WebSocket clients without a cycle.
    be answered (RFC 1929 credentials, the request), returns how many bytes it used and each
    successful reply (`BIND` has two). Anything after the last reply is tunnel data. Refusals are
    errors carrying `ProxyRefused`; bytes that are not SOCKS are `InvalidData`. It is the only
-   SOCKS client parser: the proxy tunnel, only-socks' client and the fuzz target all run it.
+   SOCKS client parser: the proxy tunnel, akio-socks' client and the fuzz target all run it.
 
-   *Why only-ws*: it is the lowest crate both clients share, it already owns the proxy tunnel
+   *Why akio-ws*: it is the lowest crate both clients share, it already owns the proxy tunnel
    (`Connect`), and the handshake is the same shape as `CONNECT` (a prefix exchange before the
    stream), so it plugs into the same `Transport` with no change to the clients' structure.
 
@@ -41,7 +41,7 @@ HTTP or WebSocket clients without a cycle.
    `Connect::new` runs the SOCKS handshake instead of `CONNECT` for a SOCKS proxy, and every
    request goes through a tunnel to the target, `http://` ones included (no absolute form).
    `socks5h` and `socks4a` send host names to the proxy; `socks5` and `socks4` resolve the target
-   first with `only::dns` (curl's semantics) and ask for the first IPv4 address (else the first;
+   first with `akio::dns` (curl's semantics) and ask for the first IPv4 address (else the first;
    SOCKS4 IPv4 only), because a tunnel names one address and `localhost` / dual-stack names often
    list an IPv6 address first that the target does not listen on.
 
@@ -52,7 +52,7 @@ HTTP or WebSocket clients without a cycle.
    of the code, and the new `socks_reply()` the SOCKS5 `REP` / SOCKS4 `CD` (0xff for method and
    authentication failures). Code that checks `status() == 407` works for both kinds of proxy.
 
-4. **only-socks client: `SocksClient`.** `new(version, addr)`, `with_host(version, host,
+4. **akio-socks client: `SocksClient`.** `new(version, addr)`, `with_host(version, host,
    port)`, `from_url(url)`, `auth(user, password)`, `handshake_timeout` (10 s), `bind_timeout`
    (60 s), and `Version` (`Socks5`, `Socks4`, `Socks4a`). Targets are the server's `Dest`
    (address or name; `From<SocketAddr>` added). On the engine, without blocking:
@@ -72,7 +72,7 @@ HTTP or WebSocket clients without a cycle.
    address in turn), a refusal, a reply that is not SOCKS, and the handshake timeout. The engine
    does not pass a transport's error to `on_close` (a TLS failure there is `None` too), so the
    tunnel transport gets hidden `on_fail` / `on_open` hooks, and the deadline is the existing
-   only-socks watchdog with an `on_fire` callback (disarmed when the tunnel opens; TLS inside it
+   akio-socks watchdog with an `on_fire` callback (disarmed when the tunnel opens; TLS inside it
    keeps its own handshake timeout). The connection then closes and the handler's `on_close`
    runs with no error.
 
@@ -82,7 +82,7 @@ HTTP or WebSocket clients without a cycle.
    (`send_to`, `recv_from` with reassembly, `set_read_timeout`, `relay_addr`, `local_addr`,
    `is_open`; dropping it ends the association). Replies are read a byte at a time so that no
    tunnel byte is consumed by the handshake. A SOCKS4 target name is resolved by the client
-   (`only::dns` on the engine, the calling thread when blocking), IPv4 only.
+   (`akio::dns` on the engine, the calling thread when blocking), IPv4 only.
 
 5. **UDP fragment reassembly (RFC 1928 section 7)**, in the server's relay (client to
    destination) and in both client associations (relay to client), one shared implementation:
@@ -107,19 +107,19 @@ HTTP or WebSocket clients without a cycle.
 
 7. **No Linux `splice` relay.** The task allowed it only with a measured gain. The relay is
    callback-to-callback on the engine's buffers with two-way backpressure; a `splice` path needs
-   pipes per tunnel, bypasses the engine's queues and metrics, and only-ebpf already has the
+   pipes per tunnel, bypasses the engine's queues and metrics, and akio-ebpf already has the
    in-kernel relay (`Relay::splice`, sockmap). It was not attempted.
 
-Public API (only-socks): `SocksClient`, `Version`, `UdpAssociation`, `BlockingBind`,
+Public API (akio-socks): `SocksClient`, `Version`, `UdpAssociation`, `BlockingBind`,
 `BlockingUdp`, `DEFAULT_CLIENT_HANDSHAKE_TIMEOUT`, `DEFAULT_BIND_TIMEOUT`, `ProxyRefused`
-(re-export), `impl From<SocketAddr> for Dest`. only-ws: `ProxyRefused::socks_reply`. Hidden
-(outside semver): `only_ws::socks`, `ProxyServer::{kind, credentials, parse, is_http,
+(re-export), `impl From<SocketAddr> for Dest`. akio-ws: `ProxyRefused::socks_reply`. Hidden
+(outside semver): `akio_ws::socks`, `ProxyServer::{kind, credentials, parse, is_http,
 resolves_locally, is_socks4}`, `ProxyKind`, `proxy::pick_target`, `Connect::{socks, on_bound,
 on_fail, on_open, handshake_timeout}`, `ProxyRefused::socks`.
 
 ## Consequences
 
-- `socks5://` / `socks5h://` work for `only_http::client::Client` and `only_ws::client::dial`
+- `socks5://` / `socks5h://` work for `akio_http::client::Client` and `akio_ws::client::dial`
   with no new client API; `ProxyServer::parse` no longer rejects SOCKS schemes, and an unknown
   scheme's message lists the supported ones.
 - Behaviour changes: `Proxy::from_env` now honours `ALL_PROXY`; a SOCKS5 relay that used to drop
@@ -129,18 +129,18 @@ on_fail, on_open, handshake_timeout}`, `ProxyRefused::socks`.
   TCP relay is untouched.
 - Verified by unit tests (codec, transport, reassembly), integration tests (`tests/client.rs`:
   every version blocking and on the engine, refusals, timeouts, garbage, BIND, UDP, fragment
-  reassembly both ways, the HTTP client through `socks5h://` / `socks5://`; only-ws: the
+  reassembly both ways, the HTTP client through `socks5h://` / `socks5://`; akio-ws: the
   WebSocket client through a SOCKS5 proxy), the fuzz target `socks_client`, and
-  `tools/interop/socks/run.sh` (our client against Dante and against only-socks; PySocks, curl
+  `tools/interop/socks/run.sh` (our client against Dante and against akio-socks; PySocks, curl
   and the hand-written clients against the server, including fragments and SOCKS4 BIND).
 
 ## Alternatives considered
 
-- *The client codec in only-socks, no HTTP/WebSocket integration*: simplest, but leaves
+- *The client codec in akio-socks, no HTTP/WebSocket integration*: simplest, but leaves
   `ALL_PROXY=socks5h://…` unusable for the clients and would need a second parser later.
-- *A new `only-socks-client` crate below only-ws*: one more crate for ~400 lines whose only
-  users are only-ws and only-socks.
-- *Passing transport errors to `on_close` in only-core*: the general fix, but a behaviour change
+- *A new `akio-socks-client` crate below akio-ws*: one more crate for ~400 lines whose only
+  users are akio-ws and akio-socks.
+- *Passing transport errors to `on_close` in akio-core*: the general fix, but a behaviour change
   for every TLS connection's handlers; the hooks keep the change local.
 - *Reassembling out of order by position*: impossible to do safely without sequence numbers (a
   lost fragment would splice two datagrams).

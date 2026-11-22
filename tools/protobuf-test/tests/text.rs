@@ -2,7 +2,7 @@
 //! `conformance/run.sh`), and a mutation smoke test with the `protobuf_text` fuzz target's
 //! property.
 
-use only_protobuf::{
+use akio_protobuf::{
     Extendable, Message,
     reflect::ReflectMessage,
     text::{self, ParseOptions, PrintOptions},

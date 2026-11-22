@@ -6,18 +6,18 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-ADR-020 added push export (`only-export`: OTLP/HTTP and StatsD from one background thread) and
+ADR-020 added push export (`akio-export`: OTLP/HTTP and StatsD from one background thread) and
 left five gaps in DEV-PLAN (the ADR-020 entry of M6): OTLP over gRPC, TLS to the collector, OTLP
 logs, span events and links, and exemplars. It also chose to drop failed pushes rather than
-retry them. Since then the workspace gained its own gRPC client (only-grpc on only-http's HTTP/2
-client), TLS stack (only-tls) and protobuf runtime (only-protobuf), so none of these needs a
+retry them. Since then the workspace gained its own gRPC client (akio-grpc on akio-http's HTTP/2
+client), TLS stack (akio-tls) and protobuf runtime (akio-protobuf), so none of these needs a
 third-party crate (ADR-005). The constraints are unchanged: nothing is exported from an I/O
 thread (docs/rules.md rule 1), every queue is bounded with a safe default (rules 7 and 10), and
 a statement whose signal is off costs what it cost before.
 
 ## Decision
 
-### Span events and links (only-log)
+### Span events and links (akio-log)
 
 `SpanEvent` (name, time, fields) and `SpanLink` (a `SpanContext`, fields), both
 `#[non_exhaustive]` with constructors and a `field` builder. `Span::add_event(name, &[(key,
@@ -29,26 +29,26 @@ in `SpanData::dropped_events` / `dropped_links` and exported as OTLP's dropped c
 `SpanData` (`#[non_exhaustive]`) gains the four fields. On a disabled or unsampled span the
 methods do nothing; the disabled path (a null `Span`) is untouched.
 
-### Exemplars (only-core, only-http)
+### Exemplars (akio-core, akio-http)
 
 `Exemplar` (value, time, trace id, span id) and `ExemplarReservoir`: one slot per bucket keeping
 the latest observation made inside a sampled span (OpenTelemetry's aligned-histogram reservoir).
-`offer_current` reads the thread's current span (only-log's thread-local) and, when it is
+`offer_current` reads the thread's current span (akio-log's thread-local) and, when it is
 sampled, the clock, then `try_lock`s the slot: never a wait; when two threads offer to one bucket
 at once one exemplar is kept. `ExemplarHistogram` (a `Histogram` plus a reservoir, `ExemplarHistogram::new(bounds)` or
 `Registry::histogram_with_exemplars`) is a type of its own, so a plain `Histogram::observe` is
 the same code as before (a flag inside `Histogram` cost one branch, measured at 4% of a 4.7 ns
 observation on gpu51);
 `HistogramSnapshot::exemplars` carries them (`with_exemplars` sets them on a snapshot). In
-only-http, `HttpMetrics::with_exemplars()` keeps exemplars of the request-latency histogram:
+akio-http, `HttpMetrics::with_exemplars()` keeps exemplars of the request-latency histogram:
 the middleware captures the request span's context at dispatch (only when exemplars are on and
 the span is sampled) and offers the latency when the response goes out, so a detached response
 still points at its request span. Exemplars are exported over OTLP (`HistogramDataPoint.exemplars`,
 hex ids in OTLP/JSON); the Prometheus 0.0.4 text format has no place for them and is unchanged.
 
-### OTLP logs (only-export)
+### OTLP logs (akio-export)
 
-`ExporterBuilder::logs(level)` installs a logger (`only_log::set_boxed_logger`) that copies each
+`ExporterBuilder::logs(level)` installs a logger (`akio_log::set_boxed_logger`) that copies each
 record up to `level` into a bounded, sharded queue (the span queue's code, now generic):
 time, level, target, the formatted message, key-values as `FieldValue`s, file and line, and
 `span::current()` (the span current on the logging thread). The exporter sends them as
@@ -64,7 +64,7 @@ either (neither can be uninstalled). The default queue holds 4096 records, batch
 ### OTLP over gRPC
 
 `otlp_grpc(endpoint)` / `otlp_grpc_with(endpoint, metadata)` call the unary `Export` methods of
-`MetricsService`, `TraceService` and `LogsService` with only-grpc's `GrpcClient`, over
+`MetricsService`, `TraceService` and `LogsService` with akio-grpc's `GrpcClient`, over
 `H2Client` on a private `Engine` with one client I/O thread, built and started on the exporter
 thread at the first push (`shutdown_timeout` 200 ms so closing is immediate). The exporter
 thread blocks in `unary` (bounded by the timeout); the I/O thread only runs the connection's
@@ -78,9 +78,9 @@ one extra thread is cheaper than that coupling.
 
 `https://` endpoints are accepted for both protocols. Configuration: `tls_roots(RootCerts)` (a
 private CA; default `RootCerts::system()`), `tls_client_cert(chain, key)` (mutual TLS),
-`tls_server_name(name)` (default: the endpoint's host). The exporter builds the only-tls
+`tls_server_name(name)` (default: the endpoint's host). The exporter builds the akio-tls
 `ClientConfig` itself so the ALPN is right (`h2` for gRPC, `http/1.1` for HTTP). OTLP/HTTP runs
-the blocking `only_tls::stream::Stream` over the `TcpStream` (read and write timeouts bound the
+the blocking `akio_tls::stream::Stream` over the `TcpStream` (read and write timeouts bound the
 handshake too); gRPC passes the config to `H2Client::dial`. TLS options with an `http://`
 endpoint, or without OTLP, fail at `start` rather than being silently ignored.
 
@@ -110,25 +110,25 @@ of at the next `span_interval`.
 ### Partial success, statistics
 
 Responses are read (HTTP bodies up to 1 MiB, as before; gRPC messages) and their
-`partial_success` decoded with only-protobuf's reader: rejected items are counted
+`partial_success` decoded with akio-protobuf's reader: rejected items are counted
 (`metric_points_rejected`, `spans_rejected`, `logs_rejected`) and not retried. `ExportStats`
 (`#[non_exhaustive]`) gains `otlp_logs_ok/failed`, `otlp_retried`, the rejected counts and the
 log queue's exported / dropped / queued; `spans_queued` and `logs_queued` include the batch
-waiting to be retried. The stats collector adds `only_export_pushes_total{signal="logs"}`,
-`only_export_otlp_retries_total`, `only_export_metric_points_rejected_total`,
-`only_export_logs_*` and `only_export_spans_rejected_total`.
+waiting to be retried. The stats collector adds `akio_export_pushes_total{signal="logs"}`,
+`akio_export_otlp_retries_total`, `akio_export_metric_points_rejected_total`,
+`akio_export_logs_*` and `akio_export_spans_rejected_total`.
 
 ### Dependencies
 
-only-export now depends on only, only-http, only-grpc and only-tls (all in-house; only-tls was
-already in every program that uses `only`). They are not optional features: a program that
-exports is a program built on `only`, which links them already, and features would multiply the
+akio-export now depends on only, akio-http, akio-grpc and akio-tls (all in-house; akio-tls was
+already in every program that uses `akio`). They are not optional features: a program that
+exports is a program built on `akio`, which links them already, and features would multiply the
 API snapshot and the test matrix for no saving.
 
 ## Alternatives considered
 
 - **gRPC over a hand-written HTTP/2 client on `std::net`**: a second HTTP/2 implementation to
-  keep correct; only-grpc's client already interoperates with the collector's grpc-go.
+  keep correct; akio-grpc's client already interoperates with the collector's grpc-go.
 - **Retrying metrics snapshots too**: cumulative sums make an old snapshot redundant once a new
   one is sent; keeping them would grow memory with the outage.
 - **Unbounded retry (never give up)**: a collector that never comes back would hold a batch per
@@ -142,13 +142,13 @@ API snapshot and the test matrix for no saving.
 - **Log records as span events**: OpenTelemetry treats them as separate signals correlated by
   ids; collectors and backends index them that way.
 - **A log appender trait instead of installing the logger**: one logger per process is how
-  only-log works; `forward_logs` covers keeping stderr output.
+  akio-log works; `forward_logs` covers keeping stderr output.
 
 ## Consequences
 
-- Additive public API in only-log, only-core, only-http and only-export (fields of
+- Additive public API in akio-log, akio-core, akio-http and akio-export (fields of
   `#[non_exhaustive]` structs, new types, methods and constants); the API snapshots only grow.
-- Behaviour change in only-export: failed pushes are retried with backoff (previously dropped),
+- Behaviour change in akio-export: failed pushes are retried with backoff (previously dropped),
   `https://` endpoints are accepted (previously an error). `ExporterBuilder::retry(.., ..,
   Duration::ZERO)` restores dropping failed batches (the collector is still backed off).
 - With everything off, nothing changed on the hot paths: a disabled span or log statement is

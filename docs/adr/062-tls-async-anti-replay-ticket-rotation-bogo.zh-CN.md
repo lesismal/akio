@@ -1,4 +1,4 @@
-# ADR-062：only-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo
+# ADR-062：akio-tls 的异步防重放存储、票据密钥轮换、status_request_v2 与 BoGo
 
 [English](062-tls-async-anti-replay-ticket-rotation-bogo.md) | 简体中文
 
@@ -8,7 +8,7 @@
 
 开发计划里 TLS 还剩下的几项：
 
-1. **OCSP 响应验证**（RFC 6960），包括服务端装订的响应和 TLS 1.3 客户端自己带的响应。ADR-038（`only-x509`
+1. **OCSP 响应验证**（RFC 6960），包括服务端装订的响应和 TLS 1.3 客户端自己带的响应。ADR-038（`akio-x509`
    中的验证，服务端装订响应用 `RevocationPolicy`）与 ADR-049（`client_ocsp_policy`）已经完成；计划中较早的
    几行仍写着“未完成”。
 2. **`status_request_v2`**（RFC 6961，TLS 1.2 的 `ocsp_multi`）：ADR-049 没有做。
@@ -16,7 +16,7 @@
    往返。规则 1 要求 I/O 线程绝不阻塞。
 4. **多把有效密钥并存的票据密钥轮换。** `session_ticket_key` 只接受一把密钥；轮换就要新建配置，所有持有票据的
    客户端都要做一次完整握手。
-5. **BoGo 测试运行器**（BoringSSL 的 `ssl/test/runner`），第 D 波之前由 rustls 为 only-quic 提供。
+5. **BoGo 测试运行器**（BoringSSL 的 `ssl/test/runner`），第 D 波之前由 rustls 为 akio-quic 提供。
 
 ## 决定
 
@@ -54,18 +54,18 @@ JSSE 实现过），CA/浏览器论坛也已让公共 CA 的 OCSP 变为可选�
    查找任何东西（会话缓存中的 TLS 1.3 票据只交出一次），也不需要回滚任何握手状态。其间到达的字节（早期数据
    记录，其密钥尚未决定）留在接收缓冲区中，上限为 64 KiB 与 `max_early_data` 中较大者的两倍再加 128 KiB；
    超出则以 `unexpected_message` 断开连接。
-3. **唤醒连接。** sans-io 内核接受一个唤醒器。TCP 上它来自 only-core 新增的钩子：`Transport::set_waker(TransportWaker)`
+3. **唤醒连接。** sans-io 内核接受一个唤醒器。TCP 上它来自 akio-core 新增的钩子：`Transport::set_waker(TransportWaker)`
    （默认忽略），由引擎在安装传输层时调用一次；`TransportWaker::wake()`（任意线程，只持有弱引用）向连接的
    I/O 线程投递一个任务，该线程以空输入轮询传输层，并像处理从套接字读到的字节一样交出解码结果和产生的输出。
-   QUIC 上，`only_quic` 给握手一个唤醒器，从应答所在线程驱动连接（连接本来就可以在任意线程上使用），连接在
+   QUIC 上，`akio_quic` 给握手一个唤醒器，从应答所在线程驱动连接（连接本来就可以在任意线程上使用），连接在
    `poll_transmit` 中继续握手，然后处理等待密钥期间暂存的 0-RTT 包。阻塞式测试流直接等待应答。
 4. **超时。** `ServerConfigBuilder::anti_replay_timeout`（默认 1 秒，至少 1 ms）：超时未应答的检查拒绝早期
-   数据，握手以 1-RTT 恢复继续。截止时间由一个进程级线程（`only-tls-replay-timer`，在第一个未能在调用内应答
+   数据，握手以 1-RTT 恢复继续。截止时间由一个进程级线程（`akio-tls-replay-timer`，在第一个未能在调用内应答
    的检查时启动）以弱引用保存；迟到的应答被忽略。握手超时仍然限制整个握手。
 5. **默认路径不变。** `MemoryAntiReplay` 与 `anti_replay_store` 仍在调用内应答；挂起机制让每条握手消息和每个
    握手阶段的记录多一次 `Option` 判断，QUIC 每次 `poll_transmit` 多一次（A/B 见下文）。
 
-使用 Redis 时，`check_and_insert` 用非阻塞客户端发出 `SET only:0rtt:<hex binder> 1 NX PX <ttl ms>`，并根据
+使用 Redis 时，`check_and_insert` 用非阻塞客户端发出 `SET akio:0rtt:<hex binder> 1 NX PX <ttl ms>`，并根据
 回复完成检查（`OK` → `Ok(true)`，nil → `Ok(false)`，错误 → `Err`）。书中 TLS 一章有示意代码。
 
 ### 票据密钥轮换（第 4 项）
@@ -89,18 +89,18 @@ JSSE 实现过），CA/浏览器论坛也已让公共 CA 的 OCSP 变为可选�
 
 ### BoGo（第 5 项）
 
-shim `crates/only-tls/examples/bogo-shim.rs` 像 BoringSSL 的 `bssl_shim` 驱动 BoringSSL 那样驱动 only-tls
+shim `crates/akio-tls/examples/bogo-shim.rs` 像 BoringSSL 的 `bssl_shim` 驱动 BoringSSL 那样驱动 akio-tls
 （经阻塞式测试流）：连接运行器、写入 shim id、以客户端或服务端握手、用 `-expect-*` 参数核对协商结果并回显测试
 消息；参数可带 `-on-initial-` / `-on-resume-` / `-on-retry-` 前缀，客户端在 `-resume-count` 个连接之间保留会话
-缓存。不认识的参数，或要求 only-tls 不支持、无法报告的内容（对端的签名算法、密钥材料导出、验证回调）时以
+缓存。不认识的参数，或要求 akio-tls 不支持、无法报告的内容（对端的签名算法、密钥材料导出、验证回调）时以
 89 退出，运行器把该测试记为未实现。`tools/interop/tls/bogo.sh` 构建 shim，按固定的 BoringSSL 提交
-（`ddd73296`，2026-11-19；Go 1.27）获取运行器，以 `-allow-unimplemented -loose-errors`（shim 报告的是 only-tls
+（`ddd73296`，2026-11-19；Go 1.27）获取运行器，以 `-allow-unimplemented -loose-errors`（shim 报告的是 akio-tls
 自己的错误信息，而不是 BoringSSL 的错误码）和 `tools/interop/tls/bogo_config.json` 运行；该文件的
-`DisabledTests` 逐条写明原因，列出 only-tls 未实现的领域（DTLS 与 QUIC，BoGo 经其他 shim 测试它们；TLS 1.0/1.1、
+`DisabledTests` 逐条写明原因，列出 akio-tls 未实现的领域（DTLS 与 QUIC，BoGo 经其他 shim 测试它们；TLS 1.0/1.1、
 CBC、RSA 密钥交换、PSK 套件、重协商、ECH、委托凭据、Channel ID、ALPS、后量子群组及其他 BoringSSL 独有功能），
 以及每个仍预期失败的测试：告警与 BoringSSL 不同（14 个）、RFC 允许而 BoringSSL 做法不同的行为（约 40 个：
 HelloRetryRequest 之后兼容 CCS 的位置、被拒的早期数据自动重发、不恢复没有 EMS 的 TLS 1.2 会话等），以及发现
-但尚未修复的 only-tls 缺陷。
+但尚未修复的 akio-tls 缺陷。
 
 x86 主机上的结果：8,110 个测试中 **882 个通过、0 个失败**，1,122 个未实现，6,106 个被禁用（其中约 2,700 个是
 DTLS 与 QUIC）。这次运行发现了 11 个协议缺陷，均在本次修复（另有一处跳过早期数据的上限比 RFC 宽松，列为差异）：
@@ -118,7 +118,7 @@ server_name，TLS 1.2 客户端接受非空的确认（RFC 6066 第 3 节）；�
 
 ## 影响
 
-- 公开 API（均为新增）：only-core 的 `Transport::set_waker`（带默认实现的方法）、`TransportWaker`；only-tls 的
+- 公开 API（均为新增）：akio-core 的 `Transport::set_waker`（带默认实现的方法）、`TransportWaker`；akio-tls 的
   `AsyncAntiReplayStore`、`ReplayCheck`、`ServerConfigBuilder::async_anti_replay_store`、
   `ServerConfigBuilder::anti_replay_timeout`、`TicketKeys`、`MAX_TICKET_KEYS`、
   `ServerConfigBuilder::session_ticket_keys`。隐藏项（不在承诺范围内）：`QuicTls::set_waker`、

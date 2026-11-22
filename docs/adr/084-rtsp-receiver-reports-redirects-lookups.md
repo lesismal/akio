@@ -37,7 +37,7 @@ ready`.
    interarrival jitter (A.8, integer form, arrival times on the track's RTP clock), and the
    middle 32 bits of the last sender report's NTP time with its arrival (LSR / DLSR). A new
    SSRC restarts the counts. Each media's report goes in a compound packet, the RR (one
-   report block) followed by an SDES with a CNAME (`only-media-<16 hex digits>`, random per
+   report block) followed by an SDES with a CNAME (`akio-media-<16 hex digits>`, random per
    session), as RFC 3550 6.1 asks of every compound packet.
    - **Server**: `RtspConfig::receiver_report_interval` (new public field, default 5 s,
      RFC 3550's minimum interval; `Duration::ZERO` sends none). Reports are due per media,
@@ -82,7 +82,7 @@ ready`.
    back); the first session's failure still goes to the caller. IP literals and
    `RtspClientConfig::addr` skip the lookup. The RTMP client keeps dialing its first address
    (the `Reconnect` documentation now says which does what).
-4. **HLS asks for keyframes.** The browser failure was in only-media: Chrome's WebRTC AV1
+4. **HLS asks for keyframes.** The browser failure was in akio-media: Chrome's WebRTC AV1
    encoder sends keyframes on request only (a PLI), so after the first one a WHIP stream had
    no keyframe to cut an HLS segment at, no rendition had a finished segment and the
    multivariant playlist never got its bandwidths. The HLS muxer now asks the publisher for
@@ -93,7 +93,7 @@ ready`.
 
 ## Consequences
 
-- Public API (additive, `api/only-media.txt`): `RtspConfig::receiver_report_interval`,
+- Public API (additive, `api/akio-media.txt`): `RtspConfig::receiver_report_interval`,
   `RtspClientConfig::receiver_report_interval` (and the re-export of the latter).
 - Behaviour changes: RECORD sessions and pulls send receiver reports by default (5 s); a
   `3xx` with a `Location` is followed instead of failing the client; a reconnecting RTSP
@@ -109,7 +109,7 @@ ready`.
   loop ended after five, a `301` remembered across a reconnect; a name (a test resolver hook)
   that stops resolving, then moves to another forwarder: pull and push reconnect there; an
   HLS segment past the target asking a keyframe hook. Passing on macOS and on gpu51 with epoll
-  and `ONLY_TEST_BACKEND=uring`; clippy clean.
+  and `AKIO_TEST_BACKEND=uring`; clippy clean.
 - Interop (`tools/interop/media/rtsp-redirect.sh`, gpu51, Docker):
   mediamtx 1.15.3 on the host network: a pull of the path `moved`
   (`source: redirect`) follows its `302` to `rsrc` over TCP and UDP and carries both tracks;

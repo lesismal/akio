@@ -1,0 +1,27 @@
+pub mod akio_protobuf_build
+pub struct akio_protobuf_build::Config
+impl akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::btree_maps(self, bool) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::compile(&self, &[impl core::convert::AsRef<std::path::Path>], impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<()>
+pub fn akio_protobuf_build::Config::compile_well_known_types(self, bool) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::descriptors(self, bool) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::extern_path(self, &str, &str) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::file_descriptor_set_path(self, impl core::convert::Into<std::path::PathBuf>) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::generate(&self, &[impl core::convert::AsRef<std::path::Path>]) -> core::io::error::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>>
+pub fn akio_protobuf_build::Config::grpc(self, bool) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::include(self, impl core::convert::Into<std::path::PathBuf>) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::new() -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::proto2_unchecked_strings(self, bool) -> akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::unknown_fields(self, bool) -> akio_protobuf_build::Config
+impl core::clone::Clone for akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::clone(&self) -> Self
+impl core::default::Default for akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::default() -> akio_protobuf_build::Config
+impl core::fmt::Debug for akio_protobuf_build::Config
+pub fn akio_protobuf_build::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_protobuf_build::Config
+impl core::marker::Sync for akio_protobuf_build::Config
+impl core::marker::Unpin for akio_protobuf_build::Config
+impl core::panic::unwind_safe::RefUnwindSafe for akio_protobuf_build::Config
+impl core::panic::unwind_safe::UnwindSafe for akio_protobuf_build::Config
+pub fn akio_protobuf_build::compile(&[impl core::convert::AsRef<std::path::Path>], impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<()>

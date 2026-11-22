@@ -1,4 +1,4 @@
-// WebSocket over HTTP/2 (RFC 8441) interop peer for only-http, on Go's own HTTP/2: net/http's
+// WebSocket over HTTP/2 (RFC 8441) interop peer for akio-http, on Go's own HTTP/2: net/http's
 // server, and golang.org/x/net/http2's transport for the client (net/http's own transport
 // refuses the `:protocol` field; build with -tags http2legacy on Go 1.27, where x/net otherwise
 // wraps net/http). Extended CONNECT needs GODEBUG=http2xconnect=1 on both. The WebSocket

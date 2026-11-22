@@ -1,9 +1,9 @@
 #![no_main]
-//! only-protobuf's JSON mapping on arbitrary input, into the conformance suite's proto3 and proto2
+//! akio-protobuf's JSON mapping on arbitrary input, into the conformance suite's proto3 and proto2
 //! test messages: parsing must never panic, and a message that parses must print, parse back to
 //! the same message, and print the same text again.
 
-use only_protobuf::{json, reflect::ReflectMessage};
+use akio_protobuf::{json, reflect::ReflectMessage};
 use protobuf_test::protobuf_test_messages::{
     proto2::TestAllTypesProto2, proto3::TestAllTypesProto3,
 };

@@ -6,12 +6,12 @@ Status: accepted (2026-11-22)
 
 ## Context
 
-ADR-072 and ADR-073 left three items of only-webrtc's "not done" list open:
+ADR-072 and ADR-073 left three items of akio-webrtc's "not done" list open:
 
 - **Sending ECN-capable packets.** RFC 8888 reports carry the ECN codepoint each packet arrived
   with and the estimator counts CE as loss (ADR-073), but this side never marked anything:
   `Rtc`'s output carried no codepoint, and an `Endpoint` sends through `UdpBinding::send_to`,
-  which has no control messages. only-quic marks and validates ECN already (ADR-013 / ADR-035,
+  which has no control messages. akio-quic marks and validates ECN already (ADR-013 / ADR-035,
   `Conn::send_segments_ecn`, `IP_TOS` / `IPV6_TCLASS`), so the socket layer exists for
   connections, not for bound sockets.
 - **Latching plain media.** A transport without ICE (ADR-072, `enable_ice(false)`, SIP style)
@@ -62,8 +62,8 @@ bundled session's hot path gains no work.
   fraction. That is a classic response; a scalable (L4S) one is not implemented.
 - **Sockets**: `Output::Transmit` carries the codepoint; the hub sends marked datagrams with the
   new `UdpBinding::send_to_ecn` (one `sendmsg` with an `IP_TOS` / `IPV6_TCLASS` control message;
-  on Linux a new `only_sys::send_to_ecn`, macOS had one) and, on an `RtcServer`'s connections,
-  with `Conn::send_segments_ecn`. Unmarked datagrams take the old calls. `ONLY_UDP_ECN=0`
+  on Linux a new `akio_sys::send_to_ecn`, macOS had one) and, on an `RtcServer`'s connections,
+  with `Conn::send_segments_ecn`. Unmarked datagrams take the old calls. `AKIO_UDP_ECN=0`
   turns the codepoint off as for QUIC; TURN relays and ICE-TCP send none (their reports then
   show Not-ECT and the path fails over to unmarked).
 - **Statistics**: `PeerStats` gains `ecn_marked_sent`, `ecn_failures` and `ecn_state`.
@@ -131,9 +131,9 @@ bundled session's hot path gains no work.
 
 ### API
 
-Additive. only-webrtc: `EcnMarking`, `Latching`, `RtcConfig::{set_ecn_marking, set_latching}`.
-only-core: `UdpBinding::send_to_ecn` (`#[doc(hidden)]`, outside the stability promise like
-`Conn::send_segments_ecn`). only-sys: `send_to_ecn` on Linux (macOS had it).
+Additive. akio-webrtc: `EcnMarking`, `Latching`, `RtcConfig::{set_ecn_marking, set_latching}`.
+akio-core: `UdpBinding::send_to_ecn` (`#[doc(hidden)]`, outside the stability promise like
+`Conn::send_segments_ecn`). akio-sys: `send_to_ecn` on Linux (macOS had it).
 
 ## Consequences
 
@@ -150,7 +150,7 @@ only-core: `UdpBinding::send_to_ecn` (`#[doc(hidden)]`, outside the stability pr
   one estimate through an 800 kbps bottleneck with an encoder following it: bundled, unbundled
   shared and unbundled per-transport end within 0.6-1.4x of each other (656 / 657 / 697 kbps in
   one run). Unit tests of the ECN state machine, latching policies, the numbering detector and
-  the merge; a Linux test of `only_sys::send_to_ecn` (IPv4 and IPv6, every codepoint). Endpoints
+  the merge; a Linux test of `akio_sys::send_to_ecn` (IPv4 and IPv6, every codepoint). Endpoints
   over loopback (`tests/ecn_latch.rs`): marks through the kernel's sockets and the path
   validated, a phone whose answer names a dead port found by latching (and not without it), the
   estimate rising on the feedback of two transports without BUNDLE.

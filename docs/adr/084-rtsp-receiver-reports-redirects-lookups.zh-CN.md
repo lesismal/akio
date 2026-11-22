@@ -27,7 +27,7 @@ ADR-075 之后，书中 RTSP 一章的“不支持”里仍列着：
    除非下一个包紧随其后，此时重新计数，相当于 A.1 的试用期；迟到与重复的包计入接收）；上次报告时期望与收到的包数
    （用于丢包比例）；到达间隔抖动（A.8 的整数形式，到达时间折算到轨道的 RTP 时钟）；最近一次发送者报告 NTP 时间的
    中间 32 位及其到达时刻（LSR / DLSR）。新的 SSRC 重新计数。每个媒体的报告是一个复合包：RR（一个报告块）后随
-   带 CNAME（`only-media-<16 个十六进制数字>`，每会话随机）的 SDES，符合 RFC 3550 6.1 对复合包的要求。
+   带 CNAME（`akio-media-<16 个十六进制数字>`，每会话随机）的 SDES，符合 RFC 3550 6.1 对复合包的要求。
    - **服务端**：`RtspConfig::receiver_report_interval`（新公共字段，默认 5 s，即 RFC 3550 的最小间隔；
      `Duration::ZERO` 不发送）。报告按媒体到期：首份在其首包之后半个间隔，之后每个间隔一份；报告在包路径上产生
      （每会话不设定时器），在使其到期的包之后立即发出：走轨道的交织 RTCP 通道，或由服务端的 RTCP 套接字发往推流端
@@ -55,7 +55,7 @@ ADR-075 之后，书中 RTSP 一章的“不支持”里仍列着：
    因此不会解析两次。重连时解析失败与连接被拒一样可以重试（名字可能会回来）；第一个会话的失败仍交给调用者。
    IP 字面量与 `RtspClientConfig::addr` 跳过解析。RTMP 客户端仍拨它最初的地址（`Reconnect` 的文档现在写明两者
    的区别）。
-4. **HLS 请求关键帧。** 浏览器测试的失败出在 only-media：Chrome 的 WebRTC AV1 编码器只按请求（PLI）发送关键帧，
+4. **HLS 请求关键帧。** 浏览器测试的失败出在 akio-media：Chrome 的 WebRTC AV1 编码器只按请求（PLI）发送关键帧，
    因此在第一个关键帧之后，WHIP 流再没有可以切 HLS 分段的关键帧，没有任何 rendition 完成一个分段，多码率播放列表
    也就永远拿不到带宽。现在 HLS muxer 在正在写的分段超过 `target_duration` 仍无关键帧时向推流端请求关键帧
    （`Subscription::request_keyframe`，WebRTC 入流将其转为 PLI；hub 按流节流），每个目标时长的媒体时间至多一次。
@@ -63,7 +63,7 @@ ADR-075 之后，书中 RTSP 一章的“不支持”里仍列着：
 
 ## 影响
 
-- 公共 API（新增，`api/only-media.txt`）：`RtspConfig::receiver_report_interval`、
+- 公共 API（新增，`api/akio-media.txt`）：`RtspConfig::receiver_report_interval`、
   `RtspClientConfig::receiver_report_interval`（以及后者的再导出）。
 - 行为变化：RECORD 会话与拉流默认发送接收者报告（5 s）；带 `Location` 的 `3xx` 被跟随而不再让客户端失败；
   自动重连的 RTSP 客户端能找到换了地址的服务器，名字解析失败也不再结束自动重连的客户端；分段过长时 HLS 向
@@ -74,7 +74,7 @@ ADR-075 之后，书中 RTSP 一章的“不支持”里仍列着：
   重定向事件（`305` 与不带位置的 `3xx` 被拒绝）；重定向 URL 与凭据；拉流与推流被两次重定向到本 crate 的服务器，
   循环在五次后结束，`301` 在重连之间被记住；一个名字（测试用解析钩子）先解析失败、再移到另一个转发器：拉流与推流
   在那里重连成功；超过目标时长的 HLS 分段向关键帧钩子请求关键帧。在 macOS 以及 gpu51 的 epoll 与
-  `ONLY_TEST_BACKEND=uring` 上通过；clippy 无告警。
+  `AKIO_TEST_BACKEND=uring` 上通过；clippy 无告警。
 - 互通（`tools/interop/media/rtsp-redirect.sh`，gpu51，Docker）：
   主机网络上的 mediamtx 1.15.3：拉取路径 `moved`（`source: redirect`）时，
   经 TCP 与 UDP 跟随其 `302` 到 `rsrc` 并带有两条轨道；经 UDP 的推流与拉流保持 75 s，超过 mediamtx 60 s 的会话

@@ -2,7 +2,7 @@ package main
 
 // The coders of github.com/lesismal/arpcex/extension/middleware/coder (gzip and the value
 // appender), ported as they are from lesismal/arpc's Message to fib's arpc.Message: the wire
-// layout and flag bits are the same, so a only-arpc peer with Gzip and Appender reads them.
+// layout and flag bits are the same, so a akio-arpc peer with Gzip and Appender reads them.
 
 import (
 	"bytes"

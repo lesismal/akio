@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # io_uring send mechanisms on a raw ring (docs/BENCHMARKS.md, "io_uring features evaluation"):
-# the test-only responder in crates/only-uring/src/eval.rs, answering `h2load --h1` with one
+# the test-only responder in crates/akio-uring/src/eval.rs, answering `h2load --h1` with one
 # fixed response per request, sent with write(2), IORING_OP_SEND or IORING_OP_SEND_ZC, with or
 # without registered files (direct accept). Every round runs every size x mode on a fresh server.
 # Prints and appends to $OUT: case, mode, round, requests/s, server CPU-ms per 1000 requests.
@@ -15,9 +15,9 @@ OUT=${OUT:-/tmp/bench-uring-eval.tsv}
 SIZES=${SIZES:-"13:16 1024:1 16384:1 65536:1 262144:1"}
 MODES=${MODES:-"write:0 send:0 send:1 zc:0 zc:1"}
 HCONNS=${HCONNS:-256}
-E=$(cd "$(dirname "$0")/../.." && cargo test --release -p only-uring --lib --no-run 2>&1 |
+E=$(cd "$(dirname "$0")/../.." && cargo test --release -p akio-uring --lib --no-run 2>&1 |
   sed -n 's/.*Executable .*(\(.*\))$/\1/p' | head -1)
-[ -x "$E" ] || { echo "could not build the only-uring test binary" >&2; exit 1; }
+[ -x "$E" ] || { echo "could not build the akio-uring test binary" >&2; exit 1; }
 HZ=$(getconf CLK_TCK)
 cpu() { awk '{print $14+$15}' "/proc/$1/stat"; }
 echo "# $(uname -sr), server on $SRV_CPUS ($THREADS threads), client on $CLI_CPUS ($CLI_THREADS threads); ${SECS}s x $RUNS rounds" >&2

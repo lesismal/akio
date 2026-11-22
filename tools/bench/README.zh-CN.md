@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-[docs/BENCHMARKS.zh-CN.md](../../docs/BENCHMARKS.zh-CN.md) 背后的脚本：`only` 与 tokio、hyper、monoio、fib（`only`
+[docs/BENCHMARKS.zh-CN.md](../../docs/BENCHMARKS.zh-CN.md) 背后的脚本：`akio` 与 tokio、hyper、monoio、fib（`akio`
 所对应的 Go 库）使用相同的处理逻辑，绑定到不同的 CPU，跑多轮，每次运行都启动新的服务端。仅限 Linux
 （taskset、`/proc`、perf）。
 
@@ -11,19 +11,19 @@
 | `build.sh` | 以 release 模式把所有服务端和压测客户端编译到 `$CARGO_TARGET_DIR`（默认 `/tmp/t`）；fib-ref 需要 Go 和 fib 源码（`FIB_SRC`，默认 `/fib`） |
 | `http.sh [cases]` | HTTP/1.1 与 HTTP/2：`plaintext`、`pipelined`（每连接 16 个请求在途）、`json`、`h2`（h2c，64 连接 × 16 流）、`h2many`（h2c，16 × 128）、`h2tls`（TLS 1.3 + ALPN 上的 HTTP/2，64 × 16）、`ws`（WebSocket echo）、`wsz`（同上但启用 permessage-deflate，不在默认集合中） |
 | `echo.sh [cases]` | TCP / UDP / TLS echo，以及每秒 TLS 握手数 |
-| `ktls.sh` | 内核 TLS 对比 only-tls 自己的记录层（TLS 上的 HTTP/1.1，`ktls-bench` 示例，`ktls` feature；`VETH=1` 让客户端位于 veth 对的另一端） |
-| `ktls-engine.sh` | 引擎中的内核 TLS（ADR-067）：两个构建与不同 `ONLY_KTLS` 模式之间交错进行的 TLS 回显、握手与 HTTPS A/B，每次运行前等待主机空闲 |
-| `uring-eval.sh` | 在裸 ring 上比较 io_uring 的发送方式：`write(2)`、`IORING_OP_SEND` 与 `SEND_ZC`，有无注册文件，按响应大小（only-uring 中被忽略的 `eval_server` 测试；每请求服务器 CPU 取自 `/proc`） |
+| `ktls.sh` | 内核 TLS 对比 akio-tls 自己的记录层（TLS 上的 HTTP/1.1，`ktls-bench` 示例，`ktls` feature；`VETH=1` 让客户端位于 veth 对的另一端） |
+| `ktls-engine.sh` | 引擎中的内核 TLS（ADR-067）：两个构建与不同 `AKIO_KTLS` 模式之间交错进行的 TLS 回显、握手与 HTTPS A/B，每次运行前等待主机空闲 |
+| `uring-eval.sh` | 在裸 ring 上比较 io_uring 的发送方式：`write(2)`、`IORING_OP_SEND` 与 `SEND_ZC`，有无注册文件，按响应大小（akio-uring 中被忽略的 `eval_server` 测试；每请求服务器 CPU 取自 `/proc`） |
 | `udp-dgram.sh` | UDP 64 B echo A/B：基准构建与新构建的每对端 listener，以及 epoll 和 io_uring 上的无连接 `serve_datagrams` listener（`bench-server udp-dgram`，ADR-065；每请求服务器 CPU 取自 `/proc`） |
 | `stream-compress.sh [tput] [mem]` | 压缩流式响应 A/B（ADR-074）：基准构建，以及关闭和开启 `Compress::stream` 的新构建，按编码分别测：每个响应 16 个小事件和 16 次 16 KiB 写入的吞吐量（h2load，每响应服务器 CPU，消息体字节数），以及 3 个和 6000 个事件后每个保持打开的 server-sent events 流的服务器 RSS（`stream-bench` 示例） |
 | `mem.sh [proto:kind:conns ...]` | 服务端每个空闲连接的内存 |
 | `profile.sh <case> <kind> [secs]` | 某个服务端在某种负载下的 perf 剖析（`h1`、`pipelined`、`h2`、`h2tls`、`ws`、`tcp`），并给出服务端占满了几个 CPU |
 | `all.sh <dir>` | 以上全部，原始 TSV 写到 `<dir>` |
 | `summarize.py` | 把 TSV 行整理成 BENCHMARKS 里的表格 |
-| `docker.sh 'cmd'` | 在 `only-bench` 镜像（`Dockerfile`：rust + wrk + h2load + perf + Go）中运行命令 |
+| `docker.sh 'cmd'` | 在 `akio-bench` 镜像（`Dockerfile`：rust + wrk + h2load + perf + Go）中运行命令 |
 
-`only` 的服务端是 `crates/only-http/examples/http-bench.rs` 和 `crates/only/examples/bench-server.rs`
-（`only-epoll`、`only-uring`），参照实现放在仓库外的工作区 `tools/bench-ref/` 中（`tokio-ref`、
+`akio` 的服务端是 `crates/akio-http/examples/http-bench.rs` 和 `crates/akio/examples/bench-server.rs`
+（`akio-epoll`、`akio-uring`），参照实现放在仓库外的工作区 `tools/bench-ref/` 中（`tokio-ref`、
 `hyper-ref`、`monoio-ref`、`fib-ref`）。`monoio-ref`（monoio 0.2，每核一线程：每个线程一个运行时和一个
 `SO_REUSEPORT` listener）提供 TCP echo 和 HTTP/1.1（`/plaintext`、`/json`、流水线；用 httparse 解析，
 没有 HTTP/2），分两种运行：`monoio-uring`（它的 io_uring driver）和 `monoio-epoll`（它的 legacy epoll driver）。
@@ -37,7 +37,7 @@ HTTP/1.1 在装有 `wrk` 时用 `wrk`（通过 Lua 脚本做流水线），否�
 ## 参数
 
 环境变量，见 `lib.sh`：`SRV_CPUS` / `CLI_CPUS`（传给 `taskset` 的 CPU 列表）、`THREADS` / `CLI_THREADS`、
-`SECS`（每次运行的秒数）、`RUNS`（轮数，表格取中位数）、`KINDS`（服务端，如 `"only-epoll fib"`）、
+`SECS`（每次运行的秒数）、`RUNS`（轮数，表格取中位数）、`KINDS`（服务端，如 `"akio-epoll fib"`）、
 `OUT`（TSV 文件）、`HCONNS`（HTTP/1.1 连接数）、`MAX_BUSY` / `QUIET_WAIT`（每次运行前等待主机空闲）。
 每个服务端使用 `PORT`（默认 7400）之上的新端口；之前运行的套接字仍占用的端口会被跳过，因为裸机的
 临时端口范围（1024–65535）覆盖了它们。
@@ -53,12 +53,12 @@ A/B 对比：把旧版本的二进制（`http-bench`、`bench-server`）复制�
 
 ```sh
 export CARGO_TARGET_DIR=/path/to/target
-cargo build --release -p only-http --example http-bench
+cargo build --release -p akio-http --example http-bench
 (cd tools/bench-ref/hyper-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 (cd tools/bench-ref/monoio-ref && CARGO_TARGET_DIR=$CARGO_TARGET_DIR/ref cargo build --release)
 cp -r tools/bench-ref/fib-ref /tmp/fibref && cd /tmp/fibref &&
   go mod edit -replace github.com/lesismal/fib=/path/to/fib && go build -o $CARGO_TARGET_DIR/fib-ref . && cd -
 SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 THREADS=4 CLI_THREADS=8 SECS=5 RUNS=3 \
-  KINDS="only-epoll only-uring hyper fib" tools/bench/http.sh plaintext,pipelined,json,h2,h2many,h2tls
-SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/profile.sh h2 only-epoll   # 需要 perf
+  KINDS="akio-epoll akio-uring hyper fib" tools/bench/http.sh plaintext,pipelined,json,h2,h2many,h2tls
+SRV_CPUS=0-3 CLI_CPUS=4-7,12-15 tools/bench/profile.sh h2 akio-epoll   # 需要 perf
 ```

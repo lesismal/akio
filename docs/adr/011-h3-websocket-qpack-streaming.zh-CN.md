@@ -6,18 +6,18 @@
 
 ## 背景
 
-`only-h3` 通过 HTTP/3 提供 only-http 的 service，但与同一技术栈里的 HTTP/1.1、HTTP/2 以及其他
+`akio-h3` 通过 HTTP/3 提供 akio-http 的 service，但与同一技术栈里的 HTTP/1.1、HTTP/2 以及其他
 HTTP/3 实现相比有三处缺口：没有 WebSocket（RFC 9220 extended CONNECT）；QPACK 没有动态表（宣告
 容量 0，nghttp3 等对端无法压缩重复字段）；请求 body 总是缓冲（`BodyMode::Stream` 的 service 在
 HTTP/1 和 HTTP/2 上可用而在 HTTP/3 上不行，上传受 `max_body_bytes` 限制）。客户端既不能流式上传，
-也不能打开 WebSocket。补上这些会涉及 only-h3、only-http 和 only-ws 的公共 API。
+也不能打开 WebSocket。补上这些会涉及 akio-h3、akio-http 和 akio-ws 的公共 API。
 
 ## 决策
 
 1. **服务端 HTTP/3 WebSocket，沿用现有 API。** `Context::upgrade_websocket(handler, &WsOptions)`
    在 HTTP/3 上接受 `:protocol websocket` 的 extended CONNECT：与 HTTP/1.1 一样检查版本 13 和
    origin 策略，以同样方式协商子协议和 `permessage-deflate`，应答 `200`（只有头部），此后请求流
-   承载 WebSocket，由 only-ws 分帧，`WsHandler` / `WsSender` 模型不变。服务端总是宣告
+   承载 WebSocket，由 akio-ws 分帧，`WsHandler` / `WsSender` 模型不变。服务端总是宣告
    `SETTINGS_ENABLE_CONNECT_PROTOCOL`：未知协议的请求只是一个由 service 回答的普通请求。`Router`
    用路径的 **GET 路由**回答 `websocket` 的 extended CONNECT（就像用它回答 HEAD），因此一个
    `.get("/ws", ...)` 同时服务 HTTP/1.1 和 HTTP/3 上的 WebSocket。HTTP/2（RFC 8441）仍不支持
@@ -27,9 +27,9 @@ HTTP/1 和 HTTP/2 上可用而在 HTTP/3 上不行，上传受 `max_body_bytes` 
 2. **客户端 HTTP/3 WebSocket：** `H3Client::websocket(path, &H3WsOptions, handler, done)` 和
    `websocket_blocking(..)`。它们先等待服务端的 SETTINGS（RFC 8441 §3），服务端不允许 extended
    CONNECT 时以 `H3Error::Protocol` 失败，被拒绝时以新增的 `H3Error::Status(u16)` 失败。
-   `H3WsOptions` 对应 `only_ws::client::DialOptions`（配置、deflate 提议、子协议、origin、头部、
+   `H3WsOptions` 对应 `akio_ws::client::DialOptions`（配置、deflate 提议、子协议、origin、头部、
    关闭超时）。
-3. **only-ws 增加传输接缝：** `WsSender` 通过 TCP 连接（与以前一样）或一个 `WsLink` trait 对象
+3. **akio-ws 增加传输接缝：** `WsSender` 通过 TCP 连接（与以前一样）或一个 `WsLink` trait 对象
    （`#[doc(hidden)]`，与 `WsSession` 一样不在 semver 承诺内）写出，配套
    `WsSession::with_link` / `client_with_link`。TCP 路径是一次枚举匹配，而不是虚调用。
 4. **QPACK 动态表（RFC 9204），双向，服务端设置放在 `H3Config`**，客户端放在 `H3ClientOptions`
@@ -57,12 +57,12 @@ HTTP/1 和 HTTP/2 上可用而在 HTTP/3 上不行，上传受 `max_body_bytes` 
    不完整的帧头或 HEADERS 帧）。`body_mode` 为 `Stream` 的 service 在请求的第一批 body 字节到达时
    派发（因此没有 body 的请求从不询问），通过 `Context::on_body` 收到它们；`max_body_bytes` 对它
    不适用；仍然检查 `content-length`（不一致时以 `H3_MESSAGE_ERROR` 重置流）。缓冲模式的 service
-   行为不变。钩子是 `only_http::transport::start` / `Started`（transport 模块是
+   行为不变。钩子是 `akio_http::transport::start` / `Started`（transport 模块是
    `#[doc(hidden)]`），它也把已接受的 WebSocket 交给传输层。
 6. **客户端流式上传：** `H3Client::upload(method, path, headers, cb) -> H3Upload`，带 `write`、
    `finish` 和 `queued_bytes`（用于控制节奏），与 `H2Client::open` 的 `H2Upload` 类似；响应和
    `request` 一样交给 `cb`。
-7. **新的 HTTP/3 错误码**，在 `only_h3::code` 中：`QPACK_ENCODER_STREAM_ERROR`、
+7. **新的 HTTP/3 错误码**，在 `akio_h3::code` 中：`QPACK_ENCODER_STREAM_ERROR`、
    `QPACK_DECODER_STREAM_ERROR`。
 
 ## 后果

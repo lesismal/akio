@@ -1,11 +1,11 @@
 # 从 tokio 迁移
 
-tokio 是通用的异步运行时；only 是没有运行时的网络库。两者解决的问题有重叠，形态却不同，而且
+tokio 是通用的异步运行时；akio 是没有运行时的网络库。两者解决的问题有重叠，形态却不同，而且
 可以共存于同一个进程。
 
 ## 思维模型
 
-| tokio | only |
+| tokio | akio |
 |---|---|
 | 每连接一个任务，带 `.await` 点的 `async fn` | 每连接一个 `Handler`，回调（`on_data`、`on_close`） |
 | 工作窃取调度：任务可能在任意 worker 上恢复 | 每核一线程：连接永远不离开它的 I/O 线程 |
@@ -18,7 +18,7 @@ tokio 是通用的异步运行时；only 是没有运行时的网络库。两者
 | 用 `tokio::sync::mpsc` 与连接任务通信 | 克隆 `Conn`，在任何地方调用 `send`/`close` |
 | `CancellationToken` / drop 掉任务 | `Conn::close()`、`Engine::shutdown()` |
 | `tokio::net::TcpListener::bind` + accept 循环 | `Listener::tcp(addr).serve(acceptor)` |
-| 上层的 hyper / axum | 上层的 only-http（[指南](from-hyper-axum.md)） |
+| 上层的 hyper / axum | 上层的 akio-http（[指南](from-hyper-axum.md)） |
 
 作为对比，tokio 中的 echo 服务（不作为本书的一部分编译）：
 
@@ -37,7 +37,7 @@ loop {
 }
 ```
 
-only 版本见 [echo 示例](../getting-started.md#一个-tcp-echo-服务)：没有 accept 循环，没有任务，
+akio 版本见 [echo 示例](../getting-started.md#一个-tcp-echo-服务)：没有 accept 循环，没有任务，
 不需要管理缓冲区；engine 读入每线程的缓冲区后调用你的代码。
 
 ## 代码中需要改变的地方
@@ -60,19 +60,19 @@ only 版本见 [echo 示例](../getting-started.md#一个-tcp-echo-服务)：没
 
 开发时调低 `slow_callback_threshold`，找出遗漏的地方。
 
-## 衔接 only 与 tokio
+## 衔接 akio 与 tokio
 
-only 的句柄是 `Send + Sync`，客户端结果是 `Future`，所以两个世界可以互相调用。
+akio 的句柄是 `Send + Sync`，客户端结果是 `Future`，所以两个世界可以互相调用。
 
-**从 only 到异步代码。** detach 请求（或保留 `Conn`），通过 channel 把任务交给另一个运行时，
+**从 akio 到异步代码。** detach 请求（或保留 `Conn`），通过 channel 把任务交给另一个运行时，
 在那里答复：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-bridge.rs:worker}}
+{{#include ../../../../crates/akio-http/examples/guide-bridge.rs:worker}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-bridge.rs:handoff}}
+{{#include ../../../../crates/akio-http/examples/guide-bridge.rs:handoff}}
 ```
 
 换成 tokio 时，`start_worker` 会是一个运行时（`tokio::runtime::Runtime::new()`），channel 用
@@ -81,21 +81,21 @@ only 的句柄是 `Send + Sync`，客户端结果是 `Future`，所以两个世�
 `job.reply.respond(..)`。`Detached::respond`、`Conn::send`、`WsSender::send_text` 等句柄从不
 阻塞，所以在异步任务里调用它们没有问题。
 
-**从异步代码到 only。** only-http 的 `ResponseFuture`（HTTP/1 与 HTTP/2 客户端）和
-only-arpc 的 `CallFuture` 实现了 `Future`：可以在任何执行器里 `.await`。连接本身运行在 only
+**从异步代码到 akio。** akio-http 的 `ResponseFuture`（HTTP/1 与 HTTP/2 客户端）和
+akio-arpc 的 `CallFuture` 实现了 `Future`：可以在任何执行器里 `.await`。连接本身运行在 akio
 的 I/O 线程上；future 在那里完成并唤醒你的任务。
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-bridge.rs:await}}
+{{#include ../../../../crates/akio-http/examples/guide-bridge.rs:await}}
 ```
 
 为了不给仓库引入 tokio 依赖，示例用一个十行的 `block_on` 代替 tokio：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-bridge.rs:block_on}}
+{{#include ../../../../crates/akio-http/examples/guide-bridge.rs:block_on}}
 ```
 
-**在同一进程中同时运行两者。** 构建 only engine，`start()`，保存在 `Arc` 中，然后照常运行
+**在同一进程中同时运行两者。** 构建 akio engine，`start()`，保存在 `Arc` 中，然后照常运行
 tokio 运行时。在 tokio 的停机流程里调用 `engine.shutdown()`，并在阻塞上下文
 （`spawn_blocking`）中调用 `engine.wait()`，因为 `wait` 会阻塞。
 
@@ -103,11 +103,11 @@ tokio 运行时。在 tokio 的停机流程里调用 `engine.shutdown()`，并�
 
 - 在 tokio 任务内部调用阻塞等待（`ResponseFuture::wait`、`client::dial_blocking`、
   `GrpcClient::unary`）：能 `.await` 就 `.await`，否则用 `spawn_blocking`；
-- 在 only 的 I/O 线程上调用这些阻塞辅助函数：它们可能因为等待被自己阻塞的那个线程而死锁；
-- 在 only 回调里 `block_on`。
+- 在 akio 的 I/O 线程上调用这些阻塞辅助函数：它们可能因为等待被自己阻塞的那个线程而死锁；
+- 在 akio 回调里 `block_on`。
 
 ## 异步适配
 
-1.0 之前不计划提供基于 `Future` 的 only 连接适配器（`Conn::spawn(async ..)`）（见 ROADMAP
+1.0 之前不计划提供基于 `Future` 的 akio 连接适配器（`Conn::spawn(async ..)`）（见 ROADMAP
 的非目标）。如果要完全异步的技术栈，tokio 加 hyper/axum 仍是自然的选择；当你需要每核一线程的
-回调、显式背压和按 listener 选择后端（io_uring、eBPF 分流）时，only 更合适。
+回调、显式背压和按 listener 选择后端（io_uring、eBPF 分流）时，akio 更合适。

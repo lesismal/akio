@@ -1,13 +1,13 @@
 # SOCKS and HTTP CONNECT proxies
 
-`only-socks` provides a SOCKS5 / SOCKS4 / SOCKS4a server (`Socks`), an HTTP `CONNECT` proxy
+`akio-socks` provides a SOCKS5 / SOCKS4 / SOCKS4a server (`Socks`), an HTTP `CONNECT` proxy
 (`connect_proxy`) and a SOCKS client (`SocksClient`, [below](#socks-client)). The server and
 the proxy relay callback to callback with **backpressure in both directions**:
 when one side cannot keep up, reading from the other side pauses until it drains
 (`hold_reads` + `on_drain`, see [Backpressure](../concepts/backpressure.md)).
 
 ```rust,ignore
-{{#include ../../../../crates/only-socks/examples/guide-socks.rs:server}}
+{{#include ../../../../crates/akio-socks/examples/guide-socks.rs:server}}
 ```
 
 - A proxy has to dial upstream connections through the engine it is served on, which does not
@@ -19,12 +19,12 @@ when one side cannot keep up, reading from the other side pauses until it drains
   (it has no authentication).
 - Targets: IPv4, IPv6 and domain names. Domain names are resolved on the logical pool, never on
   the I/O thread; every resolved address is tried in turn.
-- `connect_proxy(engine_ref)` is a only-http `Service` that tunnels `CONNECT host:port` (other
+- `connect_proxy(engine_ref)` is a akio-http `Service` that tunnels `CONNECT host:port` (other
   methods get 405). Serve it alone or as a router fallback; it takes over the connection with
   `Context::upgrade_raw`.
 - Upstream connections run on `client_threads` when the engine has them.
 
-Run `cargo run -p only-socks --example guide-socks`: it performs a SOCKS5 handshake with
+Run `cargo run -p akio-socks --example guide-socks`: it performs a SOCKS5 handshake with
 username/password by hand and relays through to a local echo server.
 
 ## Limits and destination policy
@@ -109,7 +109,7 @@ let engine = Engine::builder()
 resolved:
 
 ```rust,ignore
-use only_socks::{Command, Dest};
+use akio_socks::{Command, Dest};
 let socks = Socks::new(er.clone())
     .auth(|u, p| check_password(u, p))
     .udp_associate(true)
@@ -131,7 +131,7 @@ allowed by ruleset"), 0x5b for SOCKS4, or drops the datagram.
 `tools/interop/socks/run.sh` checks all of this against curl (`--socks5`, `--socks5-hostname`,
 `--socks4`, `--socks4a`, with and without a password), PySocks's UDP ASSOCIATE and a hand-written
 client for BIND, SOCKS4 BIND, fragments and the UDP edge cases, running the same clients against
-Dante as a reference; it also runs `SocksClient` (below) against Dante and against only-socks.
+Dante as a reference; it also runs `SocksClient` (below) against Dante and against akio-socks.
 
 ## SOCKS client
 
@@ -140,7 +140,7 @@ username/password), SOCKS4 and SOCKS4a (`CONNECT`, `BIND`), either on the engine
 the I/O threads, nothing blocks) or blocking over `std::net`:
 
 ```rust,ignore
-use only_socks::{Dest, SocksClient, Version};
+use akio_socks::{Dest, SocksClient, Version};
 let client = SocksClient::from_url("socks5h://alice:secret@proxy.internal:1080")?;
 // or SocksClient::new(Version::Socks5, addr).auth("alice", "secret")
 
@@ -165,7 +165,7 @@ client.udp_associate(
   TLS dial): what the handler sends waits for the tunnel, and `on_data` sees the target's bytes
   only. **Every failure before the tunnel opens goes to `on_error`**: resolving or reaching the
   proxy (each of its addresses in turn), a refusal (an `io::Error` carrying
-  `only_socks::ProxyRefused`: `status()` is the closest HTTP status, `socks_reply()` the SOCKS
+  `akio_socks::ProxyRefused`: `status()` is the closest HTTP status, `socks_reply()` the SOCKS
   code), a reply that is not SOCKS, the handshake timeout. The connection then closes.
 - `bind`'s `on_bound` gets the proxy's first reply (an unspecified address is replaced by the
   proxy's) on the I/O thread, mid-handshake: hand it to the peer, do not use the BIND
@@ -184,11 +184,11 @@ client.udp_associate(
 
 The HTTP and WebSocket clients use the same handshake for their `socks5://` / `socks4a://`
 proxies ([HTTP clients](http-clients.md#proxies)). See
-[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md).
+[ADR-019](https://github.com/lesismal/akio/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md).
 
 ## In-kernel relaying
 
-For pure TCP relays on Linux, `only::ebpf::Relay` can splice two TCP connections in the kernel
+For pure TCP relays on Linux, `akio::ebpf::Relay` can splice two TCP connections in the kernel
 with a sockmap (`SOCKHASH` + `sk_skb` verdict), so payload bytes never reach user space. It needs
 privileges and, by default, Linux 6.15+ (6.12 was found to lose data when the destination's send
 buffer fills).
@@ -199,7 +199,7 @@ success reply is written. The reply goes out before any relayed byte, and bytes 
 already waiting (a server that greets first) follow it in order.
 
 ```rust,ignore
-let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
+let socks = Socks::new(engine_ref.clone()).sockmap(akio::ebpf::Relay::new(0)?);
 ```
 
 Some tunnels are relayed in userspace instead:
@@ -210,23 +210,23 @@ Some tunnels are relayed in userspace instead:
 
 Spliced bytes bypass the engine's write watermarks. Timeouts and closing still work:
 
-- The idle timeout reads the sockets' TCP counters (`only::ebpf::byte_counts`).
+- The idle timeout reads the sockets' TCP counters (`akio::ebpf::byte_counts`).
 - When one side closes, the other is closed only after everything relayed has reached its send
   queue, since closing a socket drops the kernel's relay backlog.
 
 With io_uring, if a read that completed before the splice delivers payload while both ends are
-open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh).
+open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh).
 
 ## GSS-API authentication (RFC 1961)
 
-`only_socks::gssapi` (ADR-071) runs RFC 1961 on both sides, method 1: the context-establishment
+`akio_socks::gssapi` (ADR-071) runs RFC 1961 on both sides, method 1: the context-establishment
 tokens, the protection-level negotiation, and at levels above none the wrapping of the SOCKS
 request, its replies and every byte of the tunnel. The GSS-API mechanism itself is the
 application's: implement `GssContext` over the system's GSS-API library (MIT or Heimdal Kerberos
 through a binding of your choice), SSPI, or anything else.
 
 ```rust,ignore
-use only_socks::gssapi::{GssContext, Protection};
+use akio_socks::gssapi::{GssContext, Protection};
 
 // Server: an acceptor context per connection (made on the logical pool), levels granted.
 let socks = Socks::new(engine_ref.clone())
@@ -258,13 +258,13 @@ let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
 
 Interop (`tools/interop/socks/gssapi.sh`, MIT Kerberos with a KDC in Docker; the workspace links
 no GSS-API library, a test-only `python3-gssapi` shim stands in for the application's
-mechanism): only-socks' client and server, Dante rebuilt with GSS-API and an independent Python
+mechanism): akio-socks' client and server, Dante rebuilt with GSS-API and an independent Python
 RFC 1961 client, at every level, 15/15.
 
 ## Not supported
 
 A Linux `splice(2)` relay path (not attempted: the engine's relay with two-way backpressure
-stays, and `only::ebpf::Relay` covers in-kernel relaying).
+stays, and `akio::ebpf::Relay` covers in-kernel relaying).
 
 Since ADR-059: datagrams can be sent in fragments (RFC 1928 `FRAG`) both ways
 (`UdpAssociation::send_fragmented`, `BlockingUdp::send_fragmented`, and on the server

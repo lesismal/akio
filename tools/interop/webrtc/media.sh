@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WebRTC media through the only-media hub (only_media::webrtc::RtcMedia, cargo feature
+# WebRTC media through the akio-media hub (akio_media::webrtc::RtcMedia, cargo feature
 # `webrtc`) against ffmpeg and pion (webrtc v4). Runs the `whip-server` example (WHIP/WHEP,
 # RTMP and HTTP-FLV on one hub) and checks:
 #
@@ -18,12 +18,12 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 FFMPEG=${FFMPEG:-ffmpeg}
 FFPROBE=${FFPROBE:-ffprobe}
-SRC=$ROOT/crates/only-media/testdata/h264_aac.flv
+SRC=$ROOT/crates/akio-media/testdata/h264_aac.flv
 W=$(mktemp -d)
 PIDS=""
 trap 'kill $PIDS 2>/dev/null || true; rm -rf "$W"' EXIT
 
-cd "$ROOT" && cargo build -q --release -p only-media --features webrtc --example whip-server
+cd "$ROOT" && cargo build -q --release -p akio-media --features webrtc --example whip-server
 RS=$ROOT/target/release/examples/whip-server
 cd "$ROOT/tools/interop/webrtc" && GOFLAGS=-mod=mod go build -o "$W/whip-pion" ./whip
 GO=$W/whip-pion

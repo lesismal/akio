@@ -1,4 +1,4 @@
-# ADR-069: Streaming, dictionaries and top-level ratios in only-brotli and only-zstd
+# ADR-069: Streaming, dictionaries and top-level ratios in akio-brotli and akio-zstd
 
 English | [简体中文](069-brotli-zstd-streaming-dictionaries-ratios.zh-CN.md)
 
@@ -6,7 +6,7 @@ Status: accepted (2026-11-21)
 
 ## Context
 
-ADR-041 added `only-brotli` and `only-zstd` with one-shot APIs only: the output vector is the
+ADR-041 added `akio-brotli` and `akio-zstd` with one-shot APIs only: the output vector is the
 window, so memory is bounded by the caller's limit, which is what certificate compression and
 buffered HTTP bodies need. It left out streaming and dictionaries ("nothing in the workspace
 needs them yet") and did not aim at the reference encoders' ratios: brotli 11 came out 3.5-11%
@@ -18,7 +18,7 @@ every new entry point bounded in memory whatever the input says.
 
 ## Decision
 
-### 1. Streaming APIs, shaped like only-deflate's
+### 1. Streaming APIs, shaped like akio-deflate's
 
 Both crates get `Compressor` (`compress(input, &mut out, Flush)`, `Flush::{None, Flush, Finish}`,
 `reset`, `total_in`, `is_finished`, a window setting) and `Decompressor` (`decompress_vec(input,
@@ -163,7 +163,7 @@ are. Errors are sticky until `reset`. The one-shot functions are unchanged.
 
 ### 4. HTTP
 
-`only-http` was checked for buffering: buffered responses are compressed whole by the
+`akio-http` was checked for buffering: buffered responses are compressed whole by the
 `compress` middleware (one-shot, best ratio, `Content-Length` known), and streamed responses
 (`Context::stream_response`) are sent uncompressed with every coding, gzip included: response
 filters do not apply to them. Nothing buffers a streamed body, so nothing changes there now.

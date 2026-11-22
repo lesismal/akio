@@ -9,8 +9,8 @@ Status: accepted (2026-11-18)
 After the HTTP/3 allocation pass (CHANGELOG "fewer allocations per HTTP/3 request") two
 allocations per request were left that looked like they needed a public API change:
 
-- **The boxed response sink.** `only_http::transport::dispatch(service, req, sink)` takes a
-  `Box<dyn ResponseSink>` whose `send(self: Box<Self>, ..)` consumes it. only-h3 boxed a `Sink`
+- **The boxed response sink.** `akio_http::transport::dispatch(service, req, sink)` takes a
+  `Box<dyn ResponseSink>` whose `send(self: Box<Self>, ..)` consumes it. akio-h3 boxed a `Sink`
   (the connection, the queue of responses waiting for room, the QPACK encoder, the stream id)
   for every request, cloning three `Arc`s into it.
 - **The request target.** `Request::target` is a `String`, allocated for every request on
@@ -21,7 +21,7 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
 
 ## Decision
 
-1. **A sink per connection, a tag per request.** `only_http::transport` gains
+1. **A sink per connection, a tag per request.** `akio_http::transport` gains
    `trait ConnSink: Send + Sync + 'static { fn send(&self, tag: u64, resp: Response);
    fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>>; }`, the handle
    `SharedSink` (`SharedSink::new(sink)`, `Clone`, `get()`), and
@@ -29,8 +29,8 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
    `start_conn(service, req, &SharedSink, tag) -> Started`. The transport keeps one sink per
    connection and tells requests apart by a tag of its choosing. A request's way back is then one
    uncontended reference count increment on a per-connection object, where it used to be a box and
-   three clones. only-h3's tag is the request stream's index shifted left by one, with the HEAD
-   flag in bit 0. When only-h3's QPACK encoder starts (after the peer's SETTINGS), the connection
+   three clones. akio-h3's tag is the request stream's index shifted left by one, with the HEAD
+   flag in bit 0. When akio-h3's QPACK encoder starts (after the peer's SETTINGS), the connection
    gets a new sink that carries it. Requests already dispatched keep the old sink and encode with
    the static table, which is always valid.
 2. **`SharedSink` is a thin pointer** (`Arc<Box<dyn ConnSink>>`). The responder `Context` stores
@@ -42,7 +42,7 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
    is done with a request it did not keep (no `detach`, no WebSocket upgrade), its target buffer
    is emptied and becomes the thread's spare (`thread_local`). The next request parsed on that
    thread writes its target into the spare: HTTP/1.1 (`parse_head`), HTTP/2 (`build_request`)
-   and HTTP/3 (only-h3 through `transport::request_target(&str) -> String`). A buffer larger
+   and HTTP/3 (akio-h3 through `transport::request_target(&str) -> String`). A buffer larger
    than 1 KiB is not kept.
 4. **The boxed API stays, deprecated.** `ResponseSink`, `dispatch` and `start` keep working; the
    boxed sink is adapted into a `SharedSink`, one more allocation on that path only. They are
@@ -51,7 +51,7 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
 ### Alternatives considered
 
 - **Keeping the spare target per connection** (a field in the HTTP/1 `Session`, the HTTP/2
-  connection core and only-h3's `ServerConn`). This was the first version. On h2c it removed
+  connection core and akio-h3's `ServerConn`). This was the first version. On h2c it removed
   127 instructions per request but added about 100 cycles and 3.4 L1d misses. The cause is the
   interleaving: with 16 connections on a thread, a connection's buffer is cold by the time its
   next request comes. Kept per thread, the buffer is reused as the allocator's LIFO free list
@@ -60,11 +60,11 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
 - **An inline or shared `Target` type** for `Request::target` (a 23-byte small string, or a
   span in a shared head buffer, with `&str` accessors). Rejected because it changes the field's
   type. `req.target.clone()` into a `String`, `push_str` and matching on `String` would stop
-  compiling; only-socks and the logger middleware do this in the workspace. A small string also
+  compiling; akio-socks and the logger middleware do this in the workspace. A small string also
   needs `unsafe` (`from_utf8_unchecked`) or a UTF-8 check per access, in a crate that forbids
   `unsafe`, and it covers only short targets, while the reused buffer covers every length. A
   span in `Headers`' buffer breaks when a handler replaces `req.headers`.
-- **Pooling the boxed `Sink` inside only-h3** (the box goes back to a per-connection free list
+- **Pooling the boxed `Sink` inside akio-h3** (the box goes back to a per-connection free list
   in `send`). No API change, but detached responses are sent from other threads, so the list
   needs a lock, and the three `Arc` clones per request stay.
 - **Recycling the whole `Request`** (headers buffer, body) the same way. Possible later; out
@@ -84,10 +84,10 @@ request; the HTTP/1.1 server 6.0, h2c 6.5.
   (the request is shared), the first request on a thread, and a target longer than the spare.
   A detached request's buffer is freed wherever the request is dropped.
 - Each thread keeps at most 1 KiB of spare target buffer.
-- API (only-http, additive): `transport::ConnSink`, `transport::SharedSink`,
+- API (akio-http, additive): `transport::ConnSink`, `transport::SharedSink`,
   `transport::dispatch_conn`, `transport::start_conn` and `transport::request_target`.
   `transport::ResponseSink`, `transport::dispatch` and `transport::start` are deprecated.
-  `only_http::transport` is `#[doc(hidden)]` and outside the semver promise
+  `akio_http::transport` is `#[doc(hidden)]` and outside the semver promise
   (docs/api-stability.md), so the API snapshots do not change; the old items are kept anyway for
   transports written against them. Nothing changes in `Request`, `Context` or anything else
   handlers use.

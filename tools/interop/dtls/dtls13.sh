@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-dtls <-> OpenSSL 4.1 and wolfSSL 5.8: DTLS 1.3 (RFC 9147) both directions, version
+# akio-dtls <-> OpenSSL 4.1 and wolfSSL 5.8: DTLS 1.3 (RFC 9147) both directions, version
 # negotiation and downgrade, HelloRetryRequest (cookie and group), small MTUs (fragments and
 # ACKs), KeyUpdate, connection IDs (RFC 9146 in DTLS 1.2, DTLS 1.3 CIDs), external PSKs,
 # session resumption (DTLS 1.3 and DTLS 1.2 tickets), DTLS-SRTP keys compared byte for byte;
@@ -27,8 +27,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ec.
   -out ec.pem -days 30 -subj /CN=openssl-ec 2>/dev/null
 openssl req -x509 -newkey rsa:2048 -nodes -keyout rsa.key -out rsa.pem -days 30 \
   -subj /CN=openssl-rsa 2>/dev/null
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout only.key \
-  -out only.pem -days 30 -subj /CN=only 2>/dev/null
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout akio.key \
+  -out akio.pem -days 30 -subj /CN=akio 2>/dev/null
 fp() { echo "sha-256 $(openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2)"; }
 openssl_material() { grep -aA3 'Keying material exporter' "$1" | sed -n 's/.*Keying material: *//p' | head -1; }
 ours() { sed -n 's/^SRTP_MATERIAL //p' "$1" | head -1; }
@@ -48,9 +48,9 @@ next() { port=$((port + 1)); }
 # job in a function would read /dev/null, and s_server quits at EOF).
 start() { "$@" & PIDS="$PIDS $!"; sleep 0.5; }
 started() { PIDS="$PIDS $!"; sleep 0.5; }
-OFP=$(fp only.pem)
+OFP=$(fp akio.pem)
 
-echo "== OpenSSL $(openssl version | cut -d' ' -f2) s_server <- only-dtls client"
+echo "== OpenSSL $(openssl version | cut -d' ' -f2) s_server <- akio-dtls client"
 # DTLS 1.3, ECDSA, SRTP keys, mutual authentication; the server's HelloRetryRequest for P-256
 # (we send an X25519 share).
 for c in "srtp-ecdsa:ec:SRTP_AEAD_AES_128_GCM:56:" "hrr-group-p256:ec:SRTP_AES128_CM_SHA1_80:60:-groups P-256" \
@@ -60,15 +60,15 @@ for c in "srtp-ecdsa:ec:SRTP_AEAD_AES_128_GCM:56:" "hrr-group-p256:ec:SRTP_AES12
   # shellcheck disable=SC2086
   openssl s_server -dtls1_3 -accept "127.0.0.1:$port" -naccept 1 -cert "$kind.pem" \
     -key "$kind.key" -use_srtp "$srtp" -keymatexport EXTRACTOR-dtls_srtp -keymatexportlen "$len" \
-    -Verify 1 -CAfile only.pem -verify_return_error $extra >"s-$name.log" 2>&1 < <(sleep 8) &
+    -Verify 1 -CAfile akio.pem -verify_return_error $extra >"s-$name.log" 2>&1 < <(sleep 8) &
   started
-  "$BIN" client "127.0.0.1:$port" --versions 1.3 --cert only.pem --key only.key --srtp "$srtp" \
+  "$BIN" client "127.0.0.1:$port" --versions 1.3 --cert akio.pem --key akio.key --srtp "$srtp" \
     --fingerprint "$(fp "$kind.pem")" --mtu 300 --oneway >"c-$name.log" 2>&1 || fail "$name: client"
   sleep 0.5
   same_material "$(ours "c-$name.log")" "$(openssl_material "s-$name.log")" "$name"
-  want "s-$name.log" "^hello from only-dtls" "$name"
+  want "s-$name.log" "^hello from akio-dtls" "$name"
   want "c-$name.log" "version=1.3" "$name"
-  echo "ok   s_server -dtls1_3 <- only-dtls: $name ($(suite "c-$name.log"))"
+  echo "ok   s_server -dtls1_3 <- akio-dtls: $name ($(suite "c-$name.log"))"
 done
 
 # KeyUpdate (asking for the server's) between two messages.
@@ -81,8 +81,8 @@ started
 sleep 0.3
 want c-keyupdate.log "^SENT_AFTER_UPDATE" keyupdate
 # The message before the update and the one on the new keys.
-[ "$(grep -c "hello from only-dtls" s-keyupdate.log)" -ge 2 ] || fail "keyupdate: data lost"
-echo "ok   s_server -dtls1_3 <- only-dtls: KeyUpdate"
+[ "$(grep -c "hello from akio-dtls" s-keyupdate.log)" -ge 2 ] || fail "keyupdate: data lost"
+echo "ok   s_server -dtls1_3 <- akio-dtls: KeyUpdate"
 
 # Version negotiation: s_server any version (1.3), 1.2 only, 1.2 with HelloVerifyRequest.
 for c in "any:-dtls:1.3" "dtls12:-dtls1_2:1.2" "dtls12-hvr:-dtls1_2 -listen:1.2"; do
@@ -96,8 +96,8 @@ for c in "any:-dtls:1.3" "dtls12:-dtls1_2:1.2" "dtls12-hvr:-dtls1_2 -listen:1.2"
     fail "version $name: client"
   sleep 0.3
   want "c-v-$name.log" "version=$v" "version $name"
-  want "s-v-$name.log" "^hello from only-dtls" "version $name"
-  echo "ok   s_server $sargs <- only-dtls offering 1.3,1.2: DTLS $v"
+  want "s-v-$name.log" "^hello from akio-dtls" "version $name"
+  echo "ok   s_server $sargs <- akio-dtls offering 1.3,1.2: DTLS $v"
 done
 
 # Resumption: DTLS 1.3 NewSessionTicket, DTLS 1.2 RFC 5077 ticket.
@@ -112,7 +112,7 @@ for v in 1.3 1.2; do
   want "c-resume-$v.log" "NEW_SESSION ticket=true" "resume $v"
   [ "$(grep "^INFO" "c-resume-$v.log" | sed -n 2p)" != "" ] || fail "resume $v: no second connection"
   grep "^INFO" "c-resume-$v.log" | sed -n 2p | grep -q "resumed=true" || fail "resume $v: not resumed"
-  echo "ok   s_server -dtls1_${v#1.} <- only-dtls: resumed DTLS $v session"
+  echo "ok   s_server -dtls1_${v#1.} <- akio-dtls: resumed DTLS $v session"
 done
 
 # External PSKs, no certificates.
@@ -122,17 +122,17 @@ for c in "1.3:-dtls1_3:TLS_AES_128_GCM_SHA256" "1.2:-dtls1_2 -cipher PSK-AES128-
   next
   # shellcheck disable=SC2086
   openssl s_server $sargs -accept "127.0.0.1:$port" -naccept 1 -nocert -psk "$PSK" \
-    -psk_identity only-psk >"s-psk-$want_suite.log" 2>&1 < <(sleep 8) &
+    -psk_identity akio-psk >"s-psk-$want_suite.log" 2>&1 < <(sleep 8) &
   started
-  "$BIN" client "127.0.0.1:$port" --versions "$v" --psk "only-psk:$PSK" --oneway \
+  "$BIN" client "127.0.0.1:$port" --versions "$v" --psk "akio-psk:$PSK" --oneway \
     >"c-psk-$want_suite.log" 2>&1 || fail "psk $want_suite: client"
   sleep 0.3
   [ "$(suite "c-psk-$want_suite.log")" = "$want_suite" ] || fail "psk: suite $(suite "c-psk-$want_suite.log")"
-  want "s-psk-$want_suite.log" "^hello from only-dtls" "psk $want_suite"
-  echo "ok   s_server $sargs -psk <- only-dtls: $want_suite"
+  want "s-psk-$want_suite.log" "^hello from akio-dtls" "psk $want_suite"
+  echo "ok   s_server $sargs -psk <- akio-dtls: $want_suite"
 done
 
-echo "== OpenSSL s_client -> only-dtls server"
+echo "== OpenSSL s_client -> akio-dtls server"
 for c in "default:ec:SRTP_AES128_CM_SHA1_80:60:" "mtu300-rsa:rsa:SRTP_AEAD_AES_128_GCM:56:-mtu 300" \
   "aes256:ec:SRTP_AEAD_AES_256_GCM:88:-ciphersuites TLS_AES_256_GCM_SHA384" \
   "no-cookie:ec:SRTP_AES128_CM_SHA1_80:60:"; do
@@ -152,7 +152,7 @@ for c in "default:ec:SRTP_AES128_CM_SHA1_80:60:" "mtu300-rsa:rsa:SRTP_AEAD_AES_1
   want "S-$name.log" "^RECV hello from openssl" "$name"
   want "C-$name.log" "^hello from openssl" "$name"
   want "S-$name.log" "version=1.3" "$name"
-  echo "ok   s_client -dtls1_3 -> only-dtls: $name ($(suite "S-$name.log"))"
+  echo "ok   s_client -dtls1_3 -> akio-dtls: $name ($(suite "S-$name.log"))"
 done
 
 # KeyUpdate from s_client ('K': update and request ours), then data.
@@ -163,7 +163,7 @@ start "$BIN" server "127.0.0.1:$port" --versions 1.3 --no-client-cert >S-keyupda
 want S-keyupdate.log "^RECV after update" keyupdate
 want C-keyupdate.log "KEYUPDATE" keyupdate
 want C-keyupdate.log "^after update" keyupdate
-echo "ok   s_client -dtls1_3 -> only-dtls: KeyUpdate both ways"
+echo "ok   s_client -dtls1_3 -> akio-dtls: KeyUpdate both ways"
 
 # Version negotiation from the client side.
 for c in "dtls12:-dtls1_2:1.2" "any:-dtls:1.3"; do
@@ -175,7 +175,7 @@ for c in "dtls12:-dtls1_2:1.2" "any:-dtls:1.3"; do
     >"C-v-$name.log" 2>&1 || true
   want "S-v-$name.log" "version=$v" "client version $name"
   want "C-v-$name.log" "^hello from openssl" "client version $name"
-  echo "ok   s_client $cargs -> only-dtls (1.3,1.2): DTLS $v"
+  echo "ok   s_client $cargs -> akio-dtls (1.3,1.2): DTLS $v"
 done
 
 # Resumption: s_client saves the session, then resumes it.
@@ -189,20 +189,20 @@ for v in 1.3 1.2; do
     -sess_in "sess-$v.pem" >"C-resume2-$v.log" 2>&1 || true
   want "C-resume2-$v.log" "^Reused" "client resume $v"
   grep "^INFO" "S-resume-$v.log" | sed -n 2p | grep -q "resumed=true" || fail "client resume $v: not resumed"
-  echo "ok   s_client -dtls1_${v#1.} -sess_in -> only-dtls: resumed DTLS $v session"
+  echo "ok   s_client -dtls1_${v#1.} -sess_in -> akio-dtls: resumed DTLS $v session"
 done
 
 # PSK from s_client.
 for c in "1.3:-dtls1_3" "1.2:-dtls1_2 -cipher ECDHE-PSK-AES128-CBC-SHA256:PSK-AES128-GCM-SHA256"; do
   IFS=: read -r v cargs <<<"$c"
   next
-  start "$BIN" server "127.0.0.1:$port" --versions "$v" --psk "only-psk:$PSK" >"S-psk-$v.log" 2>&1
+  start "$BIN" server "127.0.0.1:$port" --versions "$v" --psk "akio-psk:$PSK" >"S-psk-$v.log" 2>&1
   # shellcheck disable=SC2086
   (echo "hello from openssl"; sleep 2) | openssl s_client $cargs -connect "127.0.0.1:$port" \
-    -psk "$PSK" -psk_identity only-psk >"C-psk-$v.log" 2>&1 || true
-  want "S-psk-$v.log" "psk=only-psk" "client psk $v"
+    -psk "$PSK" -psk_identity akio-psk >"C-psk-$v.log" 2>&1 || true
+  want "S-psk-$v.log" "psk=akio-psk" "client psk $v"
   want "C-psk-$v.log" "^hello from openssl" "client psk $v"
-  echo "ok   s_client $cargs -psk -> only-dtls: $(suite "S-psk-$v.log")"
+  echo "ok   s_client $cargs -psk -> akio-dtls: $(suite "S-psk-$v.log")"
 done
 
 echo "== wolfSSL $(strings "$(command -v wolfssl-client)" | grep -m1 -o '5\.[0-9]*\.[0-9]*' || true)"
@@ -219,7 +219,7 @@ for v in 1.3 1.2; do
   want "oc-cid-$v.log" "^RECV I hear you" "wolf cid $v"
   local_cid=$(wolfhex "$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "oc-cid-$v.log")")
   want "ws-cid-$v.log" "Sending CID is $local_cid" "wolf cid $v"
-  echo "ok   wolfssl-server -v $wv --cid <- only-dtls --cid: DTLS $v, CIDs both ways"
+  echo "ok   wolfssl-server -v $wv --cid <- akio-dtls --cid: DTLS $v, CIDs both ways"
   sleep 0.5
   next
   start "$BIN" server "127.0.0.1:$port" --versions "$v" --cid 6 --no-client-cert >"os-cid-$v.log" 2>&1
@@ -228,7 +228,7 @@ for v in 1.3 1.2; do
   want "os-cid-$v.log" "^RECV hello wolfssl" "wolf client cid $v"
   local_cid=$(wolfhex "$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "os-cid-$v.log")")
   want "wc-cid-$v.log" "Sending CID is $local_cid" "wolf client cid $v"
-  echo "ok   wolfssl-client -v $wv --cid -> only-dtls --cid: DTLS $v, CIDs both ways"
+  echo "ok   wolfssl-client -v $wv --cid -> akio-dtls --cid: DTLS $v, CIDs both ways"
 done
 
 # wolfSSL client: HelloRetryRequest for the group (-J), KeyUpdate before data (-I),
@@ -246,7 +246,7 @@ for c in "hrr:-J" "keyupdate:-I" "resume:-r"; do
   case $name in
   resume) grep "^INFO" "os-$name.log" | sed -n 2p | grep -q "resumed=true" || fail "wolf resume: not resumed" ;;
   esac
-  echo "ok   wolfssl-client -v 4 $wargs -> only-dtls: $name ($(suite "os-$name.log"))"
+  echo "ok   wolfssl-client -v 4 $wargs -> akio-dtls: $name ($(suite "os-$name.log"))"
 done
 # wolfSSL server: resumption and KeyUpdate from our side.
 next
@@ -254,13 +254,13 @@ start sh -c "cd $WOLF && exec wolfssl-server -u -v 4 -p $port -d -C 2" >ws-resum
 "$BIN" client "127.0.0.1:$port" --versions 1.3 --resume --message hi >oc-resume.log 2>&1 ||
   fail "wolf server resume: client"
 grep "^INFO" oc-resume.log | sed -n 2p | grep -q "resumed=true" || fail "wolf server resume: not resumed"
-echo "ok   wolfssl-server -v 4 <- only-dtls: resumed DTLS 1.3 session"
+echo "ok   wolfssl-server -v 4 <- akio-dtls: resumed DTLS 1.3 session"
 next
 start sh -c "cd $WOLF && exec wolfssl-server -u -v 4 -p $port -d" >ws-ku.log 2>&1
 "$BIN" client "127.0.0.1:$port" --versions 1.3 --key-update --message hi >oc-ku.log 2>&1 ||
   fail "wolf server keyupdate: client"
 want oc-ku.log "^KEY_UPDATE" "wolf server keyupdate"
-echo "ok   wolfssl-server -v 4 <- only-dtls: KeyUpdate"
+echo "ok   wolfssl-server -v 4 <- akio-dtls: KeyUpdate"
 
 # Early data (0-RTT) with resumption, both ways. wolfSSL's client sends "A drop of info" as
 # early data on its resumed connection (-r -0); its server reads early data with -0 and needs
@@ -276,7 +276,7 @@ for cookie in on off; do
     fail "wolf client early data, cookies $cookie: not accepted"
   grep "^INFO" "os-early-$cookie.log" | sed -n 2p | grep -q "resumed=true" ||
     fail "wolf client early data, cookies $cookie: not resumed"
-  echo "ok   wolfssl-client -v 4 -r -0 -> only-dtls --early-data: accepted (cookies $cookie)"
+  echo "ok   wolfssl-client -v 4 -r -0 -> akio-dtls --early-data: accepted (cookies $cookie)"
 done
 next
 # stdbuf: the example prints the early data with printf; line-buffer it for the log.
@@ -287,7 +287,7 @@ want oc-early.log "^EARLY_SENT" "wolf server early data"
 grep "^EARLY accepted" oc-early.log | sed -n 2p | grep -q "accepted=true" || fail "wolf server early data: not accepted"
 sleep 1
 want ws-early.log "Early Data Client message: early: hi" "wolf server early data"
-echo "ok   wolfssl-server -v 4 -r -0 <- only-dtls --resume --early-data: accepted, read by wolfSSL"
+echo "ok   wolfssl-server -v 4 -r -0 <- akio-dtls --resume --early-data: accepted, read by wolfSSL"
 # The same against wolfSSL's default HelloRetryRequest cookie: rejected, resent as 1-RTT data.
 next
 start sh -c "cd $WOLF && exec timeout 15 wolfssl-server -u -v 4 -p $port -d -C 2 -r -0" >ws-early-hrr.log 2>&1
@@ -296,7 +296,7 @@ start sh -c "cd $WOLF && exec timeout 15 wolfssl-server -u -v 4 -p $port -d -C 2
 grep "^EARLY accepted" oc-early-hrr.log | sed -n 2p | grep -q "accepted=false" ||
   fail "wolf server early data after HRR: accepted"
 grep "^INFO" oc-early-hrr.log | sed -n 2p | grep -q "resumed=true" || fail "wolf server early data after HRR: not resumed"
-echo "ok   wolfssl-server -v 4 -r -0 (HRR cookie) <- only-dtls --early-data: rejected, resumed"
+echo "ok   wolfssl-server -v 4 -r -0 (HRR cookie) <- akio-dtls --early-data: rejected, resumed"
 
 # Post-handshake client authentication (RFC 8446 §4.6.2), both ways.
 next
@@ -312,14 +312,14 @@ sed -n '/Successfully requested post-hs/,$p' ws-pha.log | grep -q "processing fi
 if sed -n '/Successfully requested post-hs/,$p' ws-pha.log | grep -a "SendAlert:" | grep -qv close_notify; then
   fail "wolf server pha: alert"
 fi
-echo "ok   wolfssl-server -v 4 -Q <- only-dtls --pha: certificate, CertificateVerify, Finished verified"
+echo "ok   wolfssl-server -v 4 -Q <- akio-dtls --pha: certificate, CertificateVerify, Finished verified"
 next
 start "$BIN" server "127.0.0.1:$port" --versions 1.3 --no-client-cert --request-cert >os-pha.log 2>&1
 (cd "$WOLF" && timeout 10 wolfssl-client -u -v 4 -p "$port" -d -Q) >wc-pha.log 2>&1 || true
 want os-pha.log "^CLIENT_CERT $(fp "$WOLF/certs/client-cert.pem")" "wolf client pha"
-echo "ok   wolfssl-client -v 4 -Q -> only-dtls --request-cert: client certificate after the handshake"
+echo "ok   wolfssl-client -v 4 -Q -> akio-dtls --request-cert: client certificate after the handshake"
 # NewConnectionId / RequestConnectionId (RFC 9147 §9): neither OpenSSL 4.1 nor wolfSSL 5.8
-# implements them; only-dtls against itself over UDP, with CIDs both ways.
+# implements them; akio-dtls against itself over UDP, with CIDs both ways.
 next
 start "$BIN" server "127.0.0.1:$port" --versions 1.3 --cid 4 --no-client-cert >os-rotate.log 2>&1
 "$BIN" client "127.0.0.1:$port" --versions 1.3 --cid 5 --rotate-cid --message hi >oc-rotate.log 2>&1 ||
@@ -328,5 +328,5 @@ want oc-rotate.log "^ROTATED true" "rotate"
 [ "$(grep -c '^RECV hi' oc-rotate.log)" = 2 ] || fail "rotate: no echo on the new CID"
 new_cid=$(sed -n 's/^ROTATED true peer_cid=//p' oc-rotate.log)
 want os-rotate.log "^LOCAL_CIDS $new_cid" "rotate: old CID retired"
-echo "ok   only-dtls --rotate-cid -> only-dtls: RequestConnectionId, NewConnectionId, rotation"
+echo "ok   akio-dtls --rotate-cid -> akio-dtls: RequestConnectionId, NewConnectionId, rotation"
 echo "dtls13 interop: all passed"

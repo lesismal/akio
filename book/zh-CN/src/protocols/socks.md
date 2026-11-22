@@ -1,11 +1,11 @@
 # SOCKS 与 HTTP CONNECT 代理
 
-`only-socks` 提供 SOCKS5 / SOCKS4 / SOCKS4a 服务端（`Socks`）、HTTP `CONNECT` 代理
+`akio-socks` 提供 SOCKS5 / SOCKS4 / SOCKS4a 服务端（`Socks`）、HTTP `CONNECT` 代理
 （`connect_proxy`）以及 SOCKS 客户端（`SocksClient`，[见下文](#socks-客户端)）。服务端和代理都在回调之间转发，并且**两个方向都有背压**：一侧跟不上时，暂停读取
 另一侧，直到它排空（`hold_reads` + `on_drain`，见[背压](../concepts/backpressure.md)）。
 
 ```rust,ignore
-{{#include ../../../../crates/only-socks/examples/guide-socks.rs:server}}
+{{#include ../../../../crates/akio-socks/examples/guide-socks.rs:server}}
 ```
 
 - 代理需要通过它所在的 engine 拨号上游连接，但构建 acceptor 时 engine 还不存在。`EngineRef`
@@ -15,12 +15,12 @@
   要求 SOCKS5 用户名/密码认证（RFC 1929），并关闭 SOCKS4（它没有认证）。
 - 目标：IPv4、IPv6 和域名。域名在逻辑线程池上解析，从不在 I/O 线程上；依次尝试解析出的每个
   地址。
-- `connect_proxy(engine_ref)` 是一个 only-http `Service`，为 `CONNECT host:port` 建立隧道
+- `connect_proxy(engine_ref)` 是一个 akio-http `Service`，为 `CONNECT host:port` 建立隧道
   （其他方法返回 405）。可以单独提供，也可以作为 router 的 fallback；它用
   `Context::upgrade_raw` 接管连接。
 - engine 有 `client_threads` 时，上游连接运行在这些线程上。
 
-运行 `cargo run -p only-socks --example guide-socks`：它手工完成一次带用户名/密码的 SOCKS5
+运行 `cargo run -p akio-socks --example guide-socks`：它手工完成一次带用户名/密码的 SOCKS5
 握手，并经代理转发到本地的 echo 服务。
 
 ## 限制与目标策略
@@ -91,7 +91,7 @@ let engine = Engine::builder()
 `Socks::allow` 在认证之后、任何拨号、绑定或解析之前判定每个请求：
 
 ```rust,ignore
-use only_socks::{Command, Dest};
+use akio_socks::{Command, Dest};
 let socks = Socks::new(er.clone())
     .auth(|u, p| check_password(u, p))
     .udp_associate(true)
@@ -111,7 +111,7 @@ SOCKS4 回复 0x5b，或丢弃数据报。
 
 `tools/interop/socks/run.sh` 用 curl（`--socks5`、`--socks5-hostname`、`--socks4`、`--socks4a`，有无
 密码）、PySocks 的 UDP ASSOCIATE 以及手写的 BIND、SOCKS4 BIND、分片与 UDP 边界用例客户端检查上述全部
-行为，并用同样的客户端测试作为参考的 Dante；它还让 `SocksClient`（见下文）分别对 Dante 和 only-socks
+行为，并用同样的客户端测试作为参考的 Dante；它还让 `SocksClient`（见下文）分别对 Dante 和 akio-socks
 运行。
 
 ## SOCKS 客户端
@@ -121,7 +121,7 @@ SOCKS4a（`CONNECT`、`BIND`），可以运行在 engine 上（回调在 I/O 线
 `std::net` 阻塞使用：
 
 ```rust,ignore
-use only_socks::{Dest, SocksClient, Version};
+use akio_socks::{Dest, SocksClient, Version};
 let client = SocksClient::from_url("socks5h://alice:secret@proxy.internal:1080")?;
 // 或者 SocksClient::new(Version::Socks5, addr).auth("alice", "secret")
 
@@ -144,7 +144,7 @@ client.udp_associate(
 
 - 在 engine 上，到代理的 TCP 连接建立后就会调用 `acceptor.on_open`（与 TLS 拨号相同）：handler 发送
   的数据会等待隧道建立，`on_data` 只看到目标的字节。**隧道打开前的所有失败都交给 `on_error`**：
-  解析或连接代理（依次尝试它的每个地址）、拒绝（携带 `only_socks::ProxyRefused` 的 `io::Error`：
+  解析或连接代理（依次尝试它的每个地址）、拒绝（携带 `akio_socks::ProxyRefused` 的 `io::Error`：
   `status()` 是最接近的 HTTP 状态码，`socks_reply()` 是 SOCKS 应答码）、不是 SOCKS 的应答、握手
   超时。随后连接关闭。
 - `bind` 的 `on_bound` 在 I/O 线程上、握手进行中收到代理的第一个应答（未指定地址会被替换为代理的
@@ -160,11 +160,11 @@ client.udp_associate(
 
 HTTP 与 WebSocket 客户端的 `socks5://` / `socks4a://` 代理使用同一个握手实现
 （[HTTP 客户端](http-clients.md#代理)）。见
-[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
+[ADR-019](https://github.com/lesismal/akio/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
 
 ## 内核内转发
 
-在 Linux 上做纯 TCP 转发时，`only::ebpf::Relay` 可以用 sockmap（`SOCKHASH` + `sk_skb`
+在 Linux 上做纯 TCP 转发时，`akio::ebpf::Relay` 可以用 sockmap（`SOCKHASH` + `sk_skb`
 verdict）在内核中拼接两个 TCP 连接，载荷字节完全不进入用户态。它需要特权，并且默认要求
 Linux 6.15+（发现 6.12 在目标发送缓冲区满时会丢数据）。
 
@@ -173,7 +173,7 @@ Linux 6.15+（发现 6.12 在目标发送缓冲区满时会丢数据）。
 发出；已经在等待的字节（先发问候语的服务器）随后按序到达。
 
 ```rust,ignore
-let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
+let socks = Socks::new(engine_ref.clone()).sockmap(akio::ebpf::Relay::new(0)?);
 ```
 
 以下隧道改在用户态转发：
@@ -184,21 +184,21 @@ let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
 
 拼接后的字节绕过引擎的写水位。超时与关闭仍然生效：
 
-- 空闲超时读取 socket 的 TCP 计数器（`only::ebpf::byte_counts`）。
+- 空闲超时读取 socket 的 TCP 计数器（`akio::ebpf::byte_counts`）。
 - 一端关闭时，要等所有已转发的数据都进入另一端的发送队列后才关闭另一端，因为关闭 socket 会
   丢掉内核中的转发积压。
 
 使用 io_uring 时，若两端都开着而一个在拼接前已完成的读交来了负载，隧道会被关闭，避免乱序。
-吞吐量见[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
+吞吐量见[基准测试](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
 
 ## GSS-API 认证（RFC 1961）
 
-`only_socks::gssapi`（ADR-071）在两端实现 RFC 1961，方法 1：上下文建立的令牌、保护级别协商，以及级别
+`akio_socks::gssapi`（ADR-071）在两端实现 RFC 1961，方法 1：上下文建立的令牌、保护级别协商，以及级别
 高于 none 时对 SOCKS 请求、应答和隧道中每个字节的封装。GSS-API 机制本身由应用提供：在系统的 GSS-API 库
 （通过自选绑定使用 MIT 或 Heimdal Kerberos）、SSPI 或其他实现之上实现 `GssContext`。
 
 ```rust,ignore
-use only_socks::gssapi::{GssContext, Protection};
+use akio_socks::gssapi::{GssContext, Protection};
 
 // 服务端：每个连接一个 acceptor 上下文（在逻辑池中创建），以及授予的级别范围。
 let socks = Socks::new(engine_ref.clone())
@@ -223,13 +223,13 @@ let client = SocksClient::with_host(Version::Socks5, "proxy.example.com", 1080)
   以及放在 `Tls::server` 里的服务端（需要它自己的 transport）。
 
 互操作（`tools/interop/socks/gssapi.sh`，Docker 中带 KDC 的 MIT Kerberos；workspace 不链接任何 GSS-API
-库，由仅用于测试的 `python3-gssapi` 垫片代替应用的机制）：only-socks 的客户端与服务端、重新编译并启用
+库，由仅用于测试的 `python3-gssapi` 垫片代替应用的机制）：akio-socks 的客户端与服务端、重新编译并启用
 GSS-API 的 Dante，以及一个独立的 Python RFC 1961 客户端，所有级别，15/15。
 
 ## 不支持
 
 Linux `splice(2)` 转发路径（没有尝试：保留 engine 上带双向背压的转发，内核内转发由
-`only::ebpf::Relay` 提供）。
+`akio::ebpf::Relay` 提供）。
 
 ADR-059 起：数据报可以双向分片发送（RFC 1928 `FRAG`；`UdpAssociation::send_fragmented`、
 `BlockingUdp::send_fragmented`，服务端 `Socks::udp_fragment_size(Some(n))`，默认关闭），

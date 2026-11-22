@@ -30,11 +30,11 @@ ignore = [
     { id = "RUSTSEC-2026-0009", reason = "dev-only via rcgen; fix needs Rust 1.88 > MSRV" },
     # crypto-bigint 0.5.5: some operations meant to be constant time may branch on secrets,
     # depending on compiler and CPU. Reached only through p256/p384 0.13 (elliptic-curve 0.13),
-    # the dev-dependencies only-crypto's public-key cross-checks and benchmarks compare against;
+    # the dev-dependencies akio-crypto's public-key cross-checks and benchmarks compare against;
     # no library links it since the in-house WebRTC stack replaced str0m / dimpl. The fix is
     # crypto-bigint 0.7.6, i.e. elliptic-curve 0.14: drop this when the cross-checks move to
     # p256/p384 0.14.
-    { id = "RUSTSEC-2026-0387", reason = "dev-only via p256/p384 0.13 cross-checks in only-crypto" },
+    { id = "RUSTSEC-2026-0387", reason = "dev-only via p256/p384 0.13 cross-checks in akio-crypto" },
 ]
 
 [licenses]

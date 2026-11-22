@@ -16,14 +16,14 @@ quality fields", and what was there had three weak points:
 - **An approximation of the delay impairment.** Cole and Rosenbluth's fit
   (`Id = 0.024 d + 0.11 (d - 177.3) H`) matches G.107's default curve to about 300 ms and
   drifts beyond it (34.1 against 31.1 at 400 ms, 47.5 against 38.6 at 500 ms).
-- **No way in for the application.** only-webrtc hands audio to the application undecoded: it
+- **No way in for the application.** akio-webrtc hands audio to the application undecoded: it
   has no jitter buffer and never sees samples, so the signal and noise levels, the residual
   echo return loss, the jitter buffer fields and the end system delay can only come from the
   application, and there was no API to give them.
 
 ## Decision
 
-### 1. The E-model (only-rtp)
+### 1. The E-model (akio-rtp)
 
 - `EModel` computes G.107 §7 with every parameter the receiver cannot measure at its Table 3
   default: `No`, `Ro` (94.77) and `Is = Iolr + Ist + Iq` (1.41) from their formulas, and the
@@ -62,7 +62,7 @@ quality fields", and what was there had three weak points:
   unknown or reserved jitter buffer kind become `None`), so received blocks read as typed
   values.
 
-### 2. only-webrtc
+### 2. akio-webrtc
 
 - Each received audio stream's report uses the received codec's table entry and concealment
   (G.711 with concealment for a codec without one); RX config carries `Plc::of_codec` unless
@@ -79,15 +79,15 @@ quality fields", and what was there had three weak points:
 
 ### API
 
-Additive. only-rtp: `EModel::{wideband, is_wideband, for_codec, estimate_report}`,
-`EModelScore::fill`, `Plc::of_codec`, `VoipMetrics::quality`. only-webrtc:
+Additive. akio-rtp: `EModel::{wideband, is_wideband, for_codec, estimate_report}`,
+`EModelScore::fill`, `Plc::of_codec`, `VoipMetrics::quality`. akio-webrtc:
 `Peer::set_voip_quality`. Changed behaviour without a signature change:
 `EModel::delay_impairment` and `EModel::score` use G.107's full `Id` and computed `Ro - Is`
-(93.21 where the constant 93.2 was), and only-webrtc's reports rate by codec.
+(93.21 where the constant 93.2 was), and akio-webrtc's reports rate by codec.
 
 ## Consequences
 
-- Tests (only-rtp `tests_voip.rs`, `emodel.rs`): G.107's defaults (`No` -61.18, `Ro` 94.77,
+- Tests (akio-rtp `tests_voip.rs`, `emodel.rs`): G.107's defaults (`No` -61.18, `Ro` 94.77,
   `Is` 1.41, R 93.2, MOS 4.41); the ITU-T SG12 G.107.1 calculator's defaults (R 128.8,
   MOS 4.50); G.109 Table 1's R / MOS pairs; `Id` by hand from §7.4 at 150 ms (3.82) and 300 ms
   (20.69), within a point of Cole and Rosenbluth's fit up to 300 ms, monotone; G.113's
@@ -96,7 +96,7 @@ Additive. only-rtp: `EModel::{wideband, is_wideband, for_codec, estimate_report}
   delay choices and `fill`; the VoIP block through the wire and back to the same
   `VoipQuality` (fixed and adaptive buffers, reserved kind, out-of-range scores). The
   `rtp_rtcp` fuzz target checks that decoding is stable through another report and that
-  every codec's estimate stays in range. only-webrtc (`tests_mux.rs`, simulated network):
+  every codec's estimate stays in range. akio-webrtc (`tests_mux.rs`, simulated network):
   Opus at 10 % loss rates as wideband with enhanced concealment and unavailable levels; the
   application's levels, RERL, external R, concealment and jitter buffer arrive at the sender
   as given, its codec model lowers R against the peer's Opus default, and its own scores
@@ -105,13 +105,13 @@ Additive. only-rtp: `EModel::{wideband, is_wideband, for_codec, estimate_report}
   VoIP metrics are negotiated; nothing otherwise. No hot path changed, so no A/B was run.
 - Not done: G.107.2 fullband for Opus at fullband bitrates; codec values that follow the
   negotiated bitrate (Opus, G.722 at 48 / 56 kbit/s, G.729 without VAD); `Bpl,wb` for G.722
-  with its appendix concealment; measuring the jitter buffer inside only-webrtc (it has none).
+  with its appendix concealment; measuring the jitter buffer inside akio-webrtc (it has none).
 
 ## Update (2026-11-22): ADR-087
 
 ADR-087 does this ADR's "not done" items: G.107.2 fullband, codec values by bitrate
 (`EModel::for_codec_rate`), G.722's `Bpl,wb` with its Appendix III / IV concealment, and a
-jitter buffer in only-webrtc (`RtcConfig::set_audio_jitter_buffer`) that feeds the jitter
+jitter buffer in akio-webrtc (`RtcConfig::set_audio_jitter_buffer`) that feeds the jitter
 buffer and discard fields.
 
 It also corrects the wideband model above to G.107.1 (06/2019) with Corrigendum 1:

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # CPU profile of one server under load, with perf (needs a privileged container: PRIV=1
-# tools/bench/docker.sh 'tools/bench/profile.sh h1 only-epoll').
+# tools/bench/docker.sh 'tools/bench/profile.sh h1 akio-epoll').
 #
 #   tools/bench/profile.sh <h1|pipelined|h2|h2tls|ws|tcp> <kind> [seconds=5]
 #
 # HTTP/1.1 load comes from wrk, or from `h2load --h1` when wrk is not installed (H1GEN).
-# Builds the only servers with frame pointers and line tables into $CARGO_TARGET_DIR/prof, runs
+# Builds the akio servers with frame pointers and line tables into $CARGO_TARGET_DIR/prof, runs
 # the load from http.sh / echo.sh against it and prints the top symbols (self time) and the
 # report to /tmp/perf-<case>-<kind>.txt.
 set -u
@@ -16,7 +16,7 @@ cd "$(dirname "$0")/../.."
 P=$T/prof
 RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR=$P cargo build -q --release \
   --config 'profile.release.debug="line-tables-only"' \
-  -p only-http --example http-bench -p only --example bench-server
+  -p akio-http --example http-bench -p only --example bench-server
 BENCH_SERVER=$P/release/examples/bench-server
 HTTP_BENCH=$P/release/examples/http-bench
 case $CASE in h1 | pipelined | h2) proto=http ;; h2tls) proto=https ;; ws) proto=ws ;; *) proto=tcp ;; esac

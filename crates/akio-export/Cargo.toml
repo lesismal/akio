@@ -1,0 +1,37 @@
+[package]
+name = "akio-export"
+description = "akio push export: metrics, spans and logs to an OpenTelemetry collector (OTLP over HTTP or gRPC, plain or TLS) and metrics to StatsD/DogStatsD, from a background thread, without third-party dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-export"
+keywords = ["opentelemetry", "otlp", "statsd", "metrics", "tracing"]
+categories = ["development-tools::debugging", "network-programming"]
+
+[dependencies]
+akio-core = { workspace = true }
+akio-log = { workspace = true }
+akio-protobuf = { workspace = true }
+# OTLP/gRPC (ADR-064): akio-grpc's client over akio-http's HTTP/2 client, on a private engine.
+akio = { workspace = true }
+akio-http = { workspace = true }
+akio-grpc = { workspace = true }
+# TLS to the collector (ADR-064): the blocking stream for OTLP/HTTP, configs for both.
+akio-tls = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_export::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+# Round trips: OTLP bodies decoded with descriptors compiled from tests/otlp.proto.
+akio-protobuf-build = { workspace = true }
+akio-x509 = { workspace = true }
+akio-crypto = { workspace = true }
+
+[lints]
+workspace = true

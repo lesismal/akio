@@ -1,7 +1,7 @@
 //! Runtime reflection: dynamic messages decode and re-encode the golden encodings exactly as
 //! the generated code does, and agree with it field by field.
 
-use only_protobuf::{
+use akio_protobuf::{
     Message,
     reflect::{DynamicMessage, ReflectMessage, Value},
 };

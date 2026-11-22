@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The RTSP redirects, receiver reports and lookups on reconnect of only-media against mediamtx
+# The RTSP redirects, receiver reports and lookups on reconnect of akio-media against mediamtx
 # (bluenviron/mediamtx, Docker) and GStreamer (rtspclientsink, in an image built here from
 # ubuntu:24.04). Linux with Docker Engine (host networking for UDP):
 #   1. redirect: mediamtx's path `moved` is `source: redirect` to `rsrc`; our client records to
@@ -24,12 +24,12 @@ STEP=${1:-all}
 MTX_IMAGE=${MTX_IMAGE:-bluenviron/mediamtx:latest}
 PORT=${RTSP_PORT:-18654}
 SUBNET=${MOVE_SUBNET:-172.31.249.0/24}
-NET=only-media-move
-GST_IMAGE=only-media-gst
+NET=akio-media-move
+GST_IMAGE=akio-media-gst
 TARGET=${CARGO_TARGET_DIR:-$ROOT/target}
 W=$(mktemp -d)
 cleanup() {
-    docker rm -f only-media-redir only-media-move-a only-media-move-b only-media-move-client \
+    docker rm -f akio-media-redir akio-media-move-a akio-media-move-b akio-media-move-client \
         >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$W"
@@ -37,8 +37,8 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$ROOT"
-cargo test -q -p only-media --test rtsp_client --test rtsp_interop --no-run 2>/dev/null
-BIN=$(cargo test -q -p only-media --test rtsp_client --no-run --message-format=json 2>/dev/null \
+cargo test -q -p akio-media --test rtsp_client --test rtsp_interop --no-run 2>/dev/null
+BIN=$(cargo test -q -p akio-media --test rtsp_client --no-run --message-format=json 2>/dev/null \
     | sed -n 's/.*"executable":"\([^"]*rtsp_client[^"]*\)".*/\1/p' | tail -1)
 
 if [ "$STEP" = all ] || [ "$STEP" = redirect ]; then
@@ -57,15 +57,15 @@ paths:
     sourceRedirect: rtsp://127.0.0.1:$PORT/rsrc
   all_others:
 EOF
-    docker run -d --rm --name only-media-redir --network host \
+    docker run -d --rm --name akio-media-redir --network host \
         -v "$W/mtx.yml:/mediamtx.yml:ro" "$MTX_IMAGE" >/dev/null
     sleep 2
-    ONLY_MEDIAMTX_REDIRECT=127.0.0.1:$PORT ONLY_MEDIAMTX_TRANSPORTS=tcp,udp ONLY_MEDIAMTX_HOLD=10 \
-        cargo test -q -p only-media --test rtsp_client mediamtx_redirect -- --nocapture
-    ONLY_MEDIAMTX=127.0.0.1:$PORT ONLY_MEDIAMTX_TRANSPORTS=udp ONLY_MEDIAMTX_HOLD=75 \
-        cargo test -q -p only-media --test rtsp_client mediamtx_record_and_play -- --nocapture
-    docker logs only-media-redir 2>&1 | grep -E "redirect|closed|timed out" | tail -8 || true
-    docker rm -f only-media-redir >/dev/null
+    AKIO_MEDIAMTX_REDIRECT=127.0.0.1:$PORT AKIO_MEDIAMTX_TRANSPORTS=tcp,udp AKIO_MEDIAMTX_HOLD=10 \
+        cargo test -q -p akio-media --test rtsp_client mediamtx_redirect -- --nocapture
+    AKIO_MEDIAMTX=127.0.0.1:$PORT AKIO_MEDIAMTX_TRANSPORTS=udp AKIO_MEDIAMTX_HOLD=75 \
+        cargo test -q -p akio-media --test rtsp_client mediamtx_record_and_play -- --nocapture
+    docker logs akio-media-redir 2>&1 | grep -E "redirect|closed|timed out" | tail -8 || true
+    docker rm -f akio-media-redir >/dev/null
 fi
 
 if [ "$STEP" = all ] || [ "$STEP" = reports ]; then
@@ -78,7 +78,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly && rm -rf /var/lib/apt/lists/*
 EOF
     fi
-    ONLY_GST_IMAGE=$GST_IMAGE cargo test -q -p only-media --test rtsp_interop gstreamer -- --nocapture
+    AKIO_GST_IMAGE=$GST_IMAGE cargo test -q -p akio-media --test rtsp_interop gstreamer -- --nocapture
 fi
 
 if [ "$STEP" = all ] || [ "$STEP" = move ]; then
@@ -86,28 +86,28 @@ if [ "$STEP" = all ] || [ "$STEP" = move ]; then
     docker network create --subnet "$SUBNET" "$NET" >/dev/null
     PREFIX=${SUBNET%.*}
     for t in tcp udp; do
-        docker run -d --rm --name only-media-move-a --network "$NET" --ip "$PREFIX.10" \
+        docker run -d --rm --name akio-media-move-a --network "$NET" --ip "$PREFIX.10" \
             --network-alias rtspsrv "$MTX_IMAGE" >/dev/null
         sleep 2
-        docker run -d --name only-media-move-client --network "$NET" \
+        docker run -d --name akio-media-move-client --network "$NET" \
             -v "$ROOT:$ROOT:ro" -v "$BIN:/t/rtsp_client:ro" \
-            -e ONLY_MOVING_SERVER=rtspsrv:8554 -e ONLY_MEDIAMTX_TRANSPORTS=$t \
+            -e AKIO_MOVING_SERVER=rtspsrv:8554 -e AKIO_MEDIAMTX_TRANSPORTS=$t \
             ubuntu:24.04 /t/rtsp_client server_moves_to_another_address --nocapture >/dev/null
         for _ in $(seq 60); do
-            docker logs only-media-move-client 2>&1 | grep -q READY && break
+            docker logs akio-media-move-client 2>&1 | grep -q READY && break
             sleep 1
         done
-        docker logs only-media-move-client 2>&1 | grep READY
-        docker rm -f only-media-move-a >/dev/null
+        docker logs akio-media-move-client 2>&1 | grep READY
+        docker rm -f akio-media-move-a >/dev/null
         sleep 1
-        docker run -d --rm --name only-media-move-b --network "$NET" --ip "$PREFIX.20" \
+        docker run -d --rm --name akio-media-move-b --network "$NET" --ip "$PREFIX.20" \
             --network-alias rtspsrv "$MTX_IMAGE" >/dev/null
-        code=$(docker wait only-media-move-client)
-        docker logs only-media-move-client 2>&1 | grep -E "MOVED|panicked|test result" || true
+        code=$(docker wait akio-media-move-client)
+        docker logs akio-media-move-client 2>&1 | grep -E "MOVED|panicked|test result" || true
         echo "rtspsrv moved $PREFIX.10 -> $PREFIX.20 over $t: exit $code"
-        docker logs only-media-move-b 2>&1 | grep -E "is publishing|is reading" | head -2 || true
-        docker rm -f only-media-move-client only-media-move-b >/dev/null
+        docker logs akio-media-move-b 2>&1 | grep -E "is publishing|is reading" | head -2 || true
+        docker rm -f akio-media-move-client akio-media-move-b >/dev/null
         [ "$code" = 0 ]
     done
 fi
-echo "only-media RTSP redirect / receiver report / move interop: all passed"
+echo "akio-media RTSP redirect / receiver report / move interop: all passed"

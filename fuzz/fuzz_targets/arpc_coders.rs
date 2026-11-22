@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| only_arpc::fuzzing::arpc_coders(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| akio_arpc::fuzzing::arpc_coders(data));

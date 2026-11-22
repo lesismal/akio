@@ -6,7 +6,7 @@
 # at 10.99.1.2 in namespace "gw", which has no route back to the private network. The phone
 # speaks first; the gateway echoes.
 #   1. latching off: the gateway sends to the private address, nothing comes back to the phone;
-#   2. ONLY_INTEROP_LATCH=once: the gateway latches onto the NAT's mapping, 100 packets echoed;
+#   2. AKIO_INTEROP_LATCH=once: the gateway latches onto the NAT's mapping, 100 packets echoed;
 #   3. a NAT rebinding mid-call (the phone's conntrack entry deleted, so its next packet gets a
 #      new random port): with once the echo stops; with rebind (after 1 s of silence from the
 #      old mapping) the gateway follows and 300 packets come back.
@@ -22,11 +22,11 @@
 # The gateway's statistics say how often it latched.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-docker run --rm --privileged -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-  -v "${TARGET_VOLUME:-only-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
+docker run --rm --privileged -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
+  -v "${TARGET_VOLUME:-akio-ecnlatch-target}":/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c '
 set -eu
 apt-get -qq update >/dev/null && apt-get -qq install -y iproute2 iptables conntrack >/dev/null 2>&1
-cargo build -q --release -p only-webrtc --example webrtc-interop
+cargo build -q --release -p akio-webrtc --example webrtc-interop
 trap "echo --- logs; tail -n 25 /tmp/gw-*.log /tmp/phone*.log" ERR
 RS=/tmp/t/release/examples/webrtc-interop
 ip netns add phone; ip netns add gw
@@ -43,7 +43,7 @@ PORT=5100
 gateway() { # <latch> -> starts the gateway on $PORT, its log in /tmp/gw-$PORT.log
   GW_RTCP=""
   if [ -n "${RTCP:-}" ]; then GW_RTCP=10.99.1.2:$((PORT + 2)); fi
-  ip netns exec gw env ONLY_INTEROP_LATCH=$1 ONLY_INTEROP_SIP=${SIP:-1} ONLY_INTEROP_RTCP=$GW_RTCP \
+  ip netns exec gw env AKIO_INTEROP_LATCH=$1 AKIO_INTEROP_SIP=${SIP:-1} AKIO_INTEROP_RTCP=$GW_RTCP \
     $RS sip-gateway 10.99.1.2:$PORT 10.99.1.2:$((PORT + 1)) \
     >/tmp/gw-$PORT.log 2>&1 &
   GW=$!
@@ -55,8 +55,8 @@ phone() { # <n> [rebind-after-seconds]
   fi
   PH_RTCP=""
   if [ -n "${RTCP:-}" ]; then PH_RTCP=10.99.0.2:5005; fi
-  ip netns exec phone env ONLY_INTEROP_SIP=${SIP:-1} ONLY_INTEROP_BIND=10.99.0.2:5004 \
-    ONLY_INTEROP_RTCP=$PH_RTCP ONLY_INTEROP_SETUP=${SETUP:-} ONLY_INTEROP_KEEPALIVE=${KEEPALIVE:-} \
+  ip netns exec phone env AKIO_INTEROP_SIP=${SIP:-1} AKIO_INTEROP_BIND=10.99.0.2:5004 \
+    AKIO_INTEROP_RTCP=$PH_RTCP AKIO_INTEROP_SETUP=${SETUP:-} AKIO_INTEROP_KEEPALIVE=${KEEPALIVE:-} \
     $RS client 10.99.1.2:$((PORT + 1)) sip "$1" 2>/tmp/phone.log
 }
 latched() { grep -o "latched: [0-9]*" /tmp/gw-$PORT.log | tail -1; }

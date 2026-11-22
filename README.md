@@ -2,15 +2,15 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`only` is an event-driven, thread-per-core network library for Rust, the Rust counterpart of the
+`akio` is an event-driven, thread-per-core network library for Rust, the Rust counterpart of the
 Go library [fib](https://github.com/lesismal/fib). Callbacks run inline on the connection's I/O
 thread, a cloneable `Conn` handle can be used from any thread, blocking work goes to an explicit
 logical pool, and each listener picks its own backend (epoll/kqueue or io_uring) with optional
-eBPF steering. There is no async runtime. (Formerly named *flash*; renamed before 1.0.0, see
+eBPF steering. There is no async runtime. (Formerly named *flash*, then *only*; renamed before 1.0.0, see
 [CHANGELOG.md](CHANGELOG.md).)
 
-**Documentation:** [the `only` book](https://lesismal.github.io/only/en/) ·
-[architecture](docs/architecture.md) · [migration from fib, tokio, hyper/axum](https://lesismal.github.io/only/en/migration/from-fib.html) ·
+**Documentation:** [the `akio` book](https://lesismal.github.io/akio/en/) ·
+[architecture](docs/architecture.md) · [migration from fib, tokio, hyper/axum](https://lesismal.github.io/akio/en/migration/from-fib.html) ·
 API reference: `cargo doc --workspace --no-deps --open`
 
 ## Features
@@ -21,17 +21,17 @@ API reference: `cargo doc --workspace --no-deps --open`
 | Connections | `Conn` is `Clone + Send + Sync`; non-blocking `send` from any thread with direct writes, corking, `writev`, `sendfile`; backpressure (watermarks, `hold_reads`, `on_drain`, `max_queued_bytes`); idle timeouts; async dial; graceful shutdown |
 | Blocking work | adaptive bounded logical pool, `Conn::spawn_blocking` with completions back on the I/O thread, ordered response slots, slow-callback detection |
 | UDP | one `Conn` per peer, or connectionless batches to a `DatagramsHandler` (no peer table), `recvmmsg`/`sendmmsg`, UDP GSO/GRO, peer caps, UDP dial, multicast groups on a shared port (IPv6 groups joined per interface: `Engine::bind_udp_multicast_on`) |
-| TLS | in-house TLS 1.3 / 1.2 (`only-tls`, no third-party code) as a connection transport: server and client, ALPN, SNI, client certificates, resumption |
+| TLS | in-house TLS 1.3 / 1.2 (`akio-tls`, no third-party code) as a connection transport: server and client, ALPN, SNI, client certificates, resumption |
 | HTTP | HTTP/1.1 and HTTP/2 (h2spec 147/147) on one port, pipelining, streaming both ways, Router (static/regexp/param/wildcard), 9 middlewares, static files with `sendfile`, HTTP/1 and HTTP/2 clients |
 | WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |
 | HTTP/3 and QUIC | own QUIC v1 (RFC 9000/9001/9002, datagrams, migration, Retry, key updates, GSO), HTTP/3 serving the same `Router` (QPACK dynamic table, WebSocket over HTTP/3, streamed request bodies), H3 client with streamed uploads and responses; interop with quic-go, fib, curl (ngtcp2, OpenSSL) |
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
-| Proxies | SOCKS5/4/4a (username/password or GSS-API authentication), HTTP CONNECT, port sharing by first-byte sniffing (only-mux) |
+| Proxies | SOCKS5/4/4a (username/password or GSS-API authentication), HTTP CONNECT, port sharing by first-byte sniffing (akio-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
 | BitTorrent | trackers (HTTP/UDP, client and server), peer wire with MSE, Fast extension, metadata exchange and PEX, uTP (LEDBAT), mainline DHT, a client; interop with libtorrent and aria2 |
-| Streaming media | only-media: one stream hub (GOP cache, slow-player dropping, auth hooks, stats) behind RTMP (digest handshake, Enhanced RTMP H.265/Opus), RTSP server (TCP and UDP, record and play), SRT live (ARQ, TSBPD, AES encryption, caller push/pull), HTTP-FLV, WS-FLV, HLS (MPEG-TS or fMP4, LL-HLS parts, blocking reload) and WHIP/WHEP with WebRTC media, plus RTMP and RTSP clients for relaying; interop-tested with ffmpeg, mediamtx and pion |
+| Streaming media | akio-media: one stream hub (GOP cache, slow-player dropping, auth hooks, stats) behind RTMP (digest handshake, Enhanced RTMP H.265/Opus), RTSP server (TCP and UDP, record and play), SRT live (ARQ, TSBPD, AES encryption, caller push/pull), HTTP-FLV, WS-FLV, HLS (MPEG-TS or fMP4, LL-HLS parts, blocking reload) and WHIP/WHEP with WebRTC media, plus RTMP and RTSP clients for relaying; interop-tested with ffmpeg, mediamtx and pion |
 | WebRTC, STUN, TURN | In-house sans-io WebRTC with no third-party dependencies (ICE-lite server and full ICE agent, DTLS-SRTP, SCTP data channels, RTP/RTCP media with NACK/RTX, TWCC and bandwidth estimation); STUN and TURN servers; interop with pion, fib, Chrome and coturn |
-| Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings; multi-process prefork serving with worker restarts and zero-downtime reload ([only-prefork](crates/only-prefork/README.md)) |
+| Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings; multi-process prefork serving with worker restarts and zero-downtime reload ([akio-prefork](crates/akio-prefork/README.md)) |
 
 Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -39,11 +39,11 @@ Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/B
 
 ```toml
 [dependencies]
-only = { git = "https://github.com/lesismal/only" }
+akio = { git = "https://github.com/lesismal/akio" }
 ```
 
 ```rust
-use only::{Conn, Engine, Handler, Listener, fn_acceptor};
+use akio::{Conn, Engine, Handler, Listener, fn_acceptor};
 
 struct Echo;
 
@@ -62,9 +62,9 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-More: `cargo run -p only --example guide-basics`, `cargo run -p only-http --example hello`,
+More: `cargo run -p only --example guide-basics`, `cargo run -p akio-http --example hello`,
 and the other `guide-*` examples listed in the book's
-[Getting started](https://lesismal.github.io/only/en/getting-started.html).
+[Getting started](https://lesismal.github.io/akio/en/getting-started.html).
 
 ## Status
 
@@ -73,7 +73,7 @@ the M7 protocols (media, WebRTC, BitTorrent) are not. Linux is the first-class p
 for development; Windows is not supported. Plan and progress: [docs/ROADMAP.md](docs/ROADMAP.md),
 [docs/DEV-PLAN.md](docs/DEV-PLAN.md), design decisions in [docs/adr](docs/adr/README.md).
 
-The current version is `1.0.0-rc.1`: the API is frozen for review. From 1.0.0 on `only` follows
+The current version is `1.0.0-rc.1`: the API is frozen for review. From 1.0.0 on `akio` follows
 semver as described in [docs/api-stability.md](docs/api-stability.md) (covered crates, MSRV 1.85,
 platform tiers) and [docs/deprecation.md](docs/deprecation.md); changes are listed in
 [CHANGELOG.md](CHANGELOG.md).

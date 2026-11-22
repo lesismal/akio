@@ -6,7 +6,7 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-ADR-011 gave only-h3 a QPACK dynamic table on both sides, but this side's encoder stayed a
+ADR-011 gave akio-h3 a QPACK dynamic table on both sides, but this side's encoder stayed a
 subset of RFC 9204: it inserted with static name references or literal names only, never used
 the Duplicate instruction, never referenced a name in its own table, and referenced only entries
 the peer had acknowledged, so the blocked-streams budget the peer grants
@@ -18,7 +18,7 @@ them (`H2Client::open`, `H2Event`). Server push was the last ADR-011 gap and is 
 
 ## Decision
 
-### 1. The encoder (only-h3, `qtable::Encoder`)
+### 1. The encoder (akio-h3, `qtable::Encoder`)
 
 - **Inserts** are written with a static name reference, a dynamic name reference (the newest
   entry with that name, if it is not about to be evicted) or a literal name.
@@ -71,7 +71,7 @@ them (`H2Client::open`, `H2Event`). Server push was the last ADR-011 gap and is 
 - **Backpressure**: `H3Upload::hold_reads(bool)` pauses and resumes reading the response; while
   held, QUIC flow control stops the server once the stream's receive window is used, so a slow
   consumer bounds what a response takes (the window, plus bytes already received). This needs a
-  new only-quic call, `Connection::hold_reads(id, bool)`: a held stream's data stays in its
+  new akio-quic call, `Connection::hold_reads(id, bool)`: a held stream's data stays in its
   receive buffer and its `MAX_STREAM_DATA` is not raised until it is resumed; `stop` drops what
   is held. Callable from any thread, the event callback included.
 - **Cancellation**: `H3Upload::cancel()` resets the stream and sends `STOP_SENDING`
@@ -98,8 +98,8 @@ error. `Context::push` stays HTTP/2 only. Nothing in the API anticipates push.
 ## Consequences
 
 - Public API, additions only: `H3Client::open`, `H3Event`, `H3Upload::hold_reads`,
-  `H3Upload::cancel` (only-h3); `Connection::hold_reads` (only-quic). `api/only-h3.txt` and
-  `api/only-quic.txt` gain only these lines.
+  `H3Upload::cancel` (akio-h3); `Connection::hold_reads` (akio-quic). `api/akio-h3.txt` and
+  `api/akio-quic.txt` gain only these lines.
 - Benchmarks (gpu51, `quic-bench h3 5 64`, CPUs 2-5, two same-run A/Bs of 7 alternating rounds
   against main b22519ae, through `quiet.sh`): default configuration (encoder off) at parity, 0.997x and 1.001x in two runs (0.999x over all 14 rounds, 863.9k vs 864.8k req/s; the client's request path only gained a check for streamed responses); with both encoders on, 0.991x of the previous encoder with both on (722.1k vs 728.9k), which is 0.833x of the default (the previous encoder: 0.839x), hence the encoder stays off by default.
 - Verification: unit tests for each encoder instruction and rule (post-base references and the
@@ -113,7 +113,7 @@ error. `Context::push` stays HTTP/2 only. Nothing in the API anticipates push.
   peers on the wire advertise no decoder table, so this is how a third-party decoder checks the
   encoder); end-to-end tests for streamed responses (pieces, trailers, backpressure with a held
   stream, cancellation, the head timeout, duplex with both encoders on); a sim test for
-  `hold_reads` in only-quic. Network interop is unchanged (quic-go, fib, curl/ngtcp2 and OpenSSL
+  `hold_reads` in akio-quic. Network interop is unchanged (quic-go, fib, curl/ngtcp2 and OpenSSL
   QUIC in Docker, with the server's encoder on and off).
 - The client's per-connection state grows by two empty maps; a streamed request costs a boxed
   callback and its `H3Upload` state.

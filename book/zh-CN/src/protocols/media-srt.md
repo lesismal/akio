@@ -1,21 +1,21 @@
 # SRT
 
-`only_media::srt` 实现 live 模式的 SRT（Secure Reliable Transport，draft-sharabayko-srt-01）：
+`akio_media::srt` 实现 live 模式的 SRT（Secure Reliable Transport，draft-sharabayko-srt-01）：
 在 UDP 上传 MPEG-TS，丢包在固定延迟内靠重传修复，ffmpeg、OBS 和硬件编码器都这样推流。
 `SrtServer` 位于媒体 [hub](media.md) 之前，接收推流、播放流；`dial`、`push`、`pull` 是主叫（caller）一侧。
 
-与 ffmpeg 的 libsrt 互通已测试（`crates/only-media/tests/srt_ffmpeg.rs`，在 Linux Docker 里用 Debian
+与 ffmpeg 的 libsrt 互通已测试（`crates/akio-media/tests/srt_ffmpeg.rs`，在 Linux Docker 里用 Debian
 的 ffmpeg 运行；ffmpeg 不带 SRT 时（如 Homebrew 版）测试自动跳过）：ffmpeg 推流进来、ffprobe / ffmpeg
-播放出去，带或不带密码；以及 only 向 `mode=listener` 的 ffmpeg 推流和从它拉流。rendezvous 与 libsrt 1.5.4
+播放出去，带或不带密码；以及 akio 向 `mode=listener` 的 ffmpeg 推流和从它拉流。rendezvous 与 libsrt 1.5.4
 的 `srt-live-transmit` 做了测试（`tests/srt_rendezvous.rs`，Docker 中 Debian 的 `srt-tools`：
-`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`）：only 拉取它从 ffmpeg
+`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`）：akio 拉取它从 ffmpeg
 转发的流，并推送一路 hub 流由它写出给 ffprobe 检查，明文与加密、cookie 竞争的两种角色都覆盖。（ffmpeg 自身的
 `mode=rendezvous` 绑定到 URL 中的地址并连接同一地址，无法与别处的对端会合。）
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:server}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:server}}
 ```
 
 - 服务端是一个 **UDP 监听器** 的 acceptor：每个对端地址有自己的 handler；同一地址的 caller 重启
@@ -27,7 +27,7 @@
   可以用任意 `RejectReason` 拒绝（`FORBIDDEN` = 1403 等），caller 在握手中收到拒绝码。
 - `SrtConfig::max_conns`（1024；0 表示不限）限制连接数：超出后 caller 以 `OVERLOAD`（1402）被拒绝。
 - **推流者** 在握手期间预留路径（`Hub::reserve`），所以同一路径的第二个推流者在握手时就被拒绝
-  （`CONFLICT`，1409）。它的 MPEG-TS 经解复用（`only_media::mpegts::demux`），节目的轨道
+  （`CONFLICT`，1409）。它的 MPEG-TS 经解复用（`akio_media::mpegts::demux`），节目的轨道
   （H.264、H.265、AAC、Opus、MP3）都已知后流才上线。
 - **播放者** 订阅 hub，收到复用成 MPEG-TS 的流，每个 SRT 包 7 个 TS 包，每个关键帧前重发 PAT/PMT，
   重新推流时时间戳继续递增；默认从 GOP 缓存开始（`play_gop_cache`）。对端确认太少
@@ -39,19 +39,19 @@
 ## 主叫（caller）
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:publish}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:publish}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:player}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:player}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:play}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:play}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:relay}}
+{{#include ../../../../crates/akio-media/examples/guide-media-srt.rs:relay}}
 ```
 
 - `srt::dial(&engine, addr, Config, handler)` 打开一个原始 caller 会话（engine 需要 `udp_client_threads`）；

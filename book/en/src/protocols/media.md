@@ -1,9 +1,9 @@
 # Streaming media: hub, RTMP, HTTP-FLV, HLS
 
-`only-media` is a live streaming server toolkit: one stream **hub** with every ingest and
+`akio-media` is a live streaming server toolkit: one stream **hub** with every ingest and
 egress protocol around it. A stream published over RTMP, RTSP or SRT plays over RTMP, RTSP,
 SRT, HTTP-FLV, WS-FLV and HLS, with no protocol-to-protocol glue: every protocol converts what
-it receives into the canonical packets of `only_media::av` and muxes from them.
+it receives into the canonical packets of `akio_media::av` and muxes from them.
 
 | Protocol | In (publish) | Out (play) | Chapter |
 |---|---|---|---|
@@ -16,7 +16,7 @@ it receives into the canonical packets of `only_media::av` and muxes from them.
 
 Codecs: H.264, H.265, AAC and Opus everywhere they can be carried; VP8, VP9 and AV1 over
 Enhanced RTMP / FLV, RTSP, WHIP / WHEP and fMP4 HLS (not MPEG-TS); G.711 and MP3 where the
-container allows. Snippets below are from `crates/only-media/examples/guide-media.rs`.
+container allows. Snippets below are from `crates/akio-media/examples/guide-media.rs`.
 
 ## The canonical form
 
@@ -28,7 +28,7 @@ rate. `av::Packet` is one access unit: AVCC video (4-byte NAL lengths, no access
 delimiters), VP8 / VP9 frames, AV1 temporal units (OBUs with sizes, no temporal delimiter), raw
 AAC frames without ADTS, Opus packets; decode and presentation times in nanoseconds. A packet's
 `keyframe` comes from the bitstream (IDR / IRAP, VP8 / VP9 keyframe, AV1 shown `KEY_FRAME`):
-the GOP cache, HLS segments and the dropping of slow players start at those. `only_media::codec`
+the GOP cache, HLS segments and the dropping of slow players start at those. `akio_media::codec`
 has the helpers to go between AVCC and Annex B, parse the configuration records, SPS, VP9
 keyframe headers and AV1 sequence headers (picture size), and frame ADTS;
 `Track::video_from_keyframe` builds a VP8 / VP9 / AV1 track from a keyframe and
@@ -38,7 +38,7 @@ keyframe headers and AV1 sequence headers (picture size), and frame ADTS;
 ## The hub
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:hub}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:hub}}
 ```
 
 - **Streams by path.** RTMP `rtmp://host/app/name` publishes `app/name`; RTSP, SRT, HTTP and
@@ -71,11 +71,11 @@ keyframe headers and AV1 sequence headers (picture size), and frame ADTS;
 A sink of your own (recorder, relay, analytics) is a `Sink`:
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:sink}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:sink}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:subscribe}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:subscribe}}
 ```
 
 Dropping the `Subscription` (or the `Publisher`) ends it. `SubscribeOptions::wait` lets a
@@ -85,7 +85,7 @@ next keyframe instead of the cache.
 ## RTMP
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:rtmp}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:rtmp}}
 ```
 
 `RtmpServer` is an `Acceptor`. It does the simple and the Flash digest ("complex") handshake,
@@ -97,7 +97,7 @@ including H.265 as id 12, and Enhanced RTMP FourCCs `hvc1`, `vp09`, `av01`, `vp0
 `mp4a`); players get
 onMetaData and the sequence headers first, then the GOP cache, written by `flv::Encoder`
 (H.265 as `hvc1`, or codec id 12 with `EncoderConfig::legacy_hevc`). `RtmpConfig::on_connect`
-can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls. A client must finish
+can reject connections by app and tcUrl. RTMPS is RTMP behind akio-tls. A client must finish
 the handshake within `handshake_timeout` (10 s), and a connection that sends nothing for
 `idle_timeout` (60 s) is closed (players are exempt: a player that stops reading is bounded by
 the engine's write timeout). Messages are limited to 16 MiB and unfinished messages over all
@@ -106,10 +106,10 @@ chunk streams of a connection to 32 MiB.
 ## HTTP-FLV, WS-FLV and HLS
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:http}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:http}}
 ```
 
-`MediaHttp` dispatches by extension to two only-http services you can also mount on their own:
+`MediaHttp` dispatches by extension to two akio-http services you can also mount on their own:
 
 - **`HttpFlv`**: `GET /app/name.flv` streams an FLV file that never ends (chunked on
   HTTP/1.1, a stream on HTTP/2). The response starts once the subscription is accepted, so a
@@ -132,12 +132,12 @@ chunk streams of a connection to 32 MiB.
   AV1, and a stream whose video it cannot carry is cut like an audio-only one). The playlist names an init segment with
   `#EXT-X-MAP:URI="init-<n>.mp4"` (a new one only when the codec configuration changes),
   segments are `seg-<n>.m4s` and LL-HLS parts `part-<n>.<m>.m4s`, each part one or more whole
-  `moof`+`mdat` fragments. `only_media::fmp4` (`Muxer`, `Demuxer`) is usable on its own.
+  `moof`+`mdat` fragments. `akio_media::fmp4` (`Muxer`, `Demuxer`) is usable on its own.
 - **Multivariant playlists**: renditions of one source are published as separate streams (an
   encoder ladder, several WHIP publishers) and tied together by `Hls::add_multivariant`:
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:multivariant}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:multivariant}}
 ```
 
   `GET /live/show.m3u8` lists an `EXT-X-STREAM-INF` per `Variant` with `BANDWIDTH` (configured,
@@ -168,8 +168,8 @@ chunk streams of a connection to 32 MiB.
   AES-128 (`#EXT-X-KEY:METHOD=AES-128`, CBC with PKCS #7), MPEG-TS and fMP4 alike:
 
 ```rust,ignore
-use only_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
-use only_http::Context;
+use akio_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
+use akio_http::Context;
 
 struct Keys; // the application's keys and entitlement check
 impl KeyProvider for Keys {
@@ -225,11 +225,11 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // a new key e
 
 ## Relaying: the RTMP client
 
-`only_media::rtmp::client` pushes a hub stream to another RTMP server, or pulls one from it into
-the hub, so an `only-media` hub can feed a CDN or relay an upstream encoder:
+`akio_media::rtmp::client` pushes a hub stream to another RTMP server, or pulls one from it into
+the hub, so an `akio-media` hub can feed a CDN or relay an upstream encoder:
 
 ```rust,ignore
-use only_media::rtmp::client::{self, RtmpClientConfig};
+use akio_media::rtmp::client::{self, RtmpClientConfig};
 
 // hub path live/cam -> rtmp://cdn.example/live/cam
 let push = client::push(&engine, "rtmp://203.0.113.9/live/cam", &hub, "live/cam",
@@ -254,7 +254,7 @@ dials again after a backoff that doubles up to a bound and resets once a session
 
 ```rust,ignore
 use std::{sync::Arc, time::Duration};
-use only_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
+use akio_media::{Reconnect, rtmp::client::{self, RtmpClientConfig}};
 
 let engine = Arc::new(engine); // the client dials again on it (held weakly)
 let mut cfg = RtmpClientConfig::default();
@@ -275,11 +275,11 @@ pull's path before `is_closed()` says so.
 
 ## Recording
 
-`only_media::record::Recorder` writes hub streams to fragmented MP4, FLV or MPEG-TS files:
+`akio_media::record::Recorder` writes hub streams to fragmented MP4, FLV or MPEG-TS files:
 
 ```rust,ignore
 use std::time::Duration;
-use only_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
+use akio_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
 
 struct Hooks;
 impl RecordHooks for Hooks {
@@ -289,7 +289,7 @@ impl RecordHooks for Hooks {
     }
 }
 
-let mut cfg = RecordConfig::new("/var/lib/only/rec");
+let mut cfg = RecordConfig::new("/var/lib/akio/rec");
 cfg.format = RecordFormat::Fmp4; // or Flv, or MpegTs
 cfg.segment_duration = Some(Duration::from_secs(600));
 cfg.max_files = 144; // keep the last day of ten-minute files
@@ -327,11 +327,11 @@ WebRTC only.
 ## Running it
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media.rs:engine}}
+{{#include ../../../../crates/akio-media/examples/guide-media.rs:engine}}
 ```
 
 ```console
-$ cargo run -p only-media --example guide-media
+$ cargo run -p akio-media --example guide-media
 $ ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine \
     -c:v libx264 -g 50 -c:a aac -f flv rtmp://127.0.0.1:1935/live/cam
 $ ffprobe rtmp://127.0.0.1:1935/live/cam
@@ -341,7 +341,7 @@ $ ffplay http://127.0.0.1:8080/live/cam/index.m3u8
 
 ## Interoperability
 
-The integration tests (`crates/only-media/tests/*_interop.rs`, skipped when ffmpeg is not
+The integration tests (`crates/akio-media/tests/*_interop.rs`, skipped when ffmpeg is not
 installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 
 | Publisher | Player | Codecs |

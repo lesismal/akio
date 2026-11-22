@@ -6,10 +6,10 @@
 // §4.2 forbids) or the decoders bound integers differently; and each side decodes what the
 // other side's encoder produces from the decoded fields.
 
-use only_http::hpack::{Decoder, DecoderError, Encoder};
+use akio_http::hpack::{Decoder, DecoderError, Encoder};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_http::fuzzing::hpack(data);
+    akio_http::fuzzing::hpack(data);
 
     let Some((&cut, rest)) = data.split_first() else {
         return;
@@ -32,7 +32,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             (Ok(_), Err(loona_hpack::decoder::DecoderError::SizeUpdateAtEnd)) => return,
             (Ok(_), Err(loona_hpack::decoder::DecoderError::IntegerDecodingError(_))) => return,
             (Ok(a), Err(e)) => panic!("only decoded {a:?}, loona-hpack: {e:?}"),
-            (Err(e), Ok(b)) => panic!("loona-hpack decoded {b:?}, only: {e:?}"),
+            (Err(e), Ok(b)) => panic!("loona-hpack decoded {b:?}, akio: {e:?}"),
             (Err(_), Err(_)) => return,
         };
         let fields = || list.iter().map(|(n, v)| (&n[..], &v[..]));

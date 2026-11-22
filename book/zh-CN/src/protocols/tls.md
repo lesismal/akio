@@ -1,26 +1,26 @@
 # TLS
 
-`only::tls`（即 `only-tls` crate）是连接之下的一个 **transport 层**，带有自研的 TLS 1.3 与 1.2
-实现：依据 RFC、基于 `only-crypto` 与 `only-x509` 编写，sans-io，`#![forbid(unsafe_code)]`，
+`akio::tls`（即 `akio-tls` crate）是连接之下的一个 **transport 层**，带有自研的 TLS 1.3 与 1.2
+实现：依据 RFC、基于 `akio-crypto` 与 `akio-x509` 编写，sans-io，`#![forbid(unsafe_code)]`，
 无第三方依赖。包装任意 acceptor 之后，它的 handler 看到的都是明文：
 `on_data` 收到解密后的字节，`Conn::send*` 自动加密。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-tls.rs:server}}
+{{#include ../../../../crates/akio/examples/guide-tls.rs:server}}
 ```
 
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-tls.rs:client}}
+{{#include ../../../../crates/akio/examples/guide-tls.rs:client}}
 ```
 
 `Tls::client(config, server_name, acceptor)` 以 `server_name` 校验服务端证书并把它作为 SNI
 发送。名字不是合法的 DNS 名或 IP 地址时返回错误。
 
-两者都可以用 `cargo run -p only --example guide-tls` 运行。
+两者都可以用 `cargo run -p akio --example guide-tls` 运行。
 
 ## 工作方式
 
@@ -28,7 +28,7 @@
 - 握手完成前发送的数据（例如在 `on_open` 里发送的）会被暂存，握手一完成就刷出。
 - `close_after_send()` 在排队的数据之后发送 `close_notify`。
 - 握手失败或收到坏记录时，先刷出 alert 再关闭连接；握手阶段的失败
-  （`only_tls_handshake_failures_total`）和之后的失败（`only_transport_errors_total`）分别计数。
+  （`akio_tls_handshake_failures_total`）和之后的失败（`akio_transport_errors_total`）分别计数。
 - 记录按不超过一个 TLS 记录的大小分段封装，所以大块发送没有问题。
 - 连接表中显示 `transport: "tls"`。
 
@@ -52,19 +52,19 @@
 
 两者共有：SNI、ALPN、close_notify、16 KiB 记录（对端设有 record_size_limit 时更小）、OCSP stapling、
 TLS 1.3 内层内容类型与填充、降级哨兵、严格的状态机
-（意外消息、空记录或交错记录、跨密钥切换的握手数据都是致命错误）。证书由 `only-x509` 验证：链接到
+（意外消息、空记录或交错记录、跨密钥切换的握手数据都是致命错误）。证书由 `akio-x509` 验证：链接到
 根证书、有效期、扩展密钥用途、DNS 名（RFC 6125 通配符）与 IP 地址。客户端优先 AES-128-GCM，其次
 AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并优先使用客户端已发送的 key share
 （合适时不发 HelloRetryRequest）。
 
 一致性：RFC 8448 跟踪作为单元测试，tlsfuzzer（`tools/interop/tls/tlsfuzzer.sh`），以及与 OpenSSL、Go `crypto/tls`、curl 和 rustls 的互通矩阵
-（`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。与 rustls 0.23 +
+（`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`akio` crate 的 TLS 测试）。与 rustls 0.23 +
 ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256r1（ECDSA P-256 证书）完整握手均约为 1.1 倍，AES-128-GCM 记录在 1 KiB 与 16 KiB
 时均约为 1.6 倍，ChaCha20-Poly1305 记录在 1 KiB 时约 1.2 倍、16 KiB 时约 1.5 倍。ChaCha20-Poly1305 AEAD 本身在 64 字节消息上与 ring 相当（加密 1.11 倍，解密 0.98 倍；见 docs/BENCHMARKS.zh-CN.md）。
 
 ## 配置
 
-配置使用 only 自己的类型；协议内部细节不属于 API。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
+配置使用 akio 自己的类型；协议内部细节不属于 API。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
 `from_der` / `from_pkcs8_der` 与 `RootCerts` 负责加载证书材料。`RootCerts::system()` 是操作系统的
 信任库，每个进程读取一次：设置了 `SSL_CERT_FILE` / `SSL_CERT_DIR` 时用它们，macOS 上用钥匙串（通过
 `/usr/bin/security` 导出，并应用用户、管理员与系统的信任设置：去掉被标记为不信任的 CA，加入在 System
@@ -81,26 +81,26 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256
 | SNI | | `.sni(false)` 不再发送 |
 | 早期数据（0-RTT） | `.early_data(max_bytes)` | `.early_data(true)` |
 | 记录大小限制（RFC 8449） | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
-| 握手超时（默认 10 s：超时仍在握手的连接以 `TimedOut` 关闭，并计入 `only_tls_handshake_failures_total`） | `.handshake_timeout(Some(d))`，`None` 为不限 | `.handshake_timeout(Some(d))` |
+| 握手超时（默认 10 s：超时仍在握手的连接以 `TimedOut` 关闭，并计入 `akio_tls_handshake_failures_total`） | `.handshake_timeout(Some(d))`，`None` 为不限 | `.handshake_timeout(Some(d))` |
 | 证书压缩 | 默认开启；`.certificate_compression(false)` 关闭 | `.certificate_compression(true)` 开启 |
 | OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`；`.ocsp_policy(RevocationPolicy::HardFail)` 校验它 |
 | CRL（[吊销检查](#吊销检查)） | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
 | 客户端的 OCSP 响应（TLS 1.3） | `.client_ocsp_policy(policy)` 请求并校验 | `.client_cert_ocsp_response(der)` 在被请求时发送 |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
-`.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
+`.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `akio::tls::Error`；配置克隆开销
 很小。过去用来暴露被封装的 rustls 的 `unstable` cargo feature 现在为空（保留它，以便引用它的构建
 继续可用）。
 
 ## 与其他 crate 配合
 
-- only-http：`Tls::server(cfg, serve(app))`。设置 `alpn_protocols = [h2, http/1.1]` 后，同一个
+- akio-http：`Tls::server(cfg, serve(app))`。设置 `alpn_protocols = [h2, http/1.1]` 后，同一个
   listener 会为协商了 `h2` 的客户端提供 HTTP/2。
-- only-ws 客户端：`wss://` 使用 `DialOptions::tls`。
-- only-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
-- QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `only_quic::server_config` 与
-  `server_config_from(&tls_config)`。`only-quic` 的自研 QUIC（DEV-PLAN 第 D 波）用同一份
-  `only::tls` 配置驱动 `only-tls` 内不经记录层的 TLS 1.3 内核（内部 API）。
+- akio-ws 客户端：`wss://` 使用 `DialOptions::tls`。
+- akio-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
+- QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `akio_quic::server_config` 与
+  `server_config_from(&tls_config)`。`akio-quic` 的自研 QUIC（DEV-PLAN 第 D 波）用同一份
+  `akio::tls` 配置驱动 `akio-tls` 内不经记录层的 TLS 1.3 内核（内部 API）。
 
 ## 早期数据（0-RTT）
 
@@ -113,7 +113,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256
 - 服务端拒绝时（配置不同、HelloRetryRequest、疑似重放），跳过早期记录；客户端在握手后重发同样的
   字节，应用两种情况下看到的字节流相同。
 - `TlsInfo::early_data` 给出 `NotAttempted`、`Pending`（客户端，收到答复前）、`Accepted` 或
-  `Rejected`；`TlsInfo::early_data_len` 是流开头作为早期数据发送的字节数。only-http 给落在这个范围
+  `Rejected`；`TlsInfo::early_data_len` 是流开头作为早期数据发送的字节数。akio-http 给落在这个范围
   内的 HTTP/1.1 请求加上 `Early-Data: 1`（RFC 8470；HTTP/2 则是以早期数据开始的连接上的每个请求）。
 
 开启早期数据时**防重放**始终生效：仅当客户端看到的票据年龄与服务端的相差不超过 10 秒时才接受
@@ -121,13 +121,13 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256
 ClientHello 其早期数据被拒绝，按普通会话恢复继续。每个 `ServerConfig` 最多记录 100,000 个 ClientHello，
 满了就拒绝早期数据。
 
-**共享票据的多台服务端**（[ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)、
-[ADR-062](https://github.com/lesismal/only/blob/main/docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)）。
+**共享票据的多台服务端**（[ADR-013](https://github.com/lesismal/akio/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)、
+[ADR-062](https://github.com/lesismal/akio/blob/main/docs/adr/062-tls-async-anti-replay-ticket-rotation-bogo.zh-CN.md)）。
 多个进程或多台机器用同一个 `.session_ticket_key(key)`（48 字节保密随机数：16 字节密钥名加 32 字节密钥）构建时，
 可接受彼此签发的票据；若要轮换密钥而不拒绝已发出的票据，则用同一组 `.session_ticket_keys(keys)`：
 
 ```rust,ignore
-use only_tls::TicketKeys;
+use akio_tls::TicketKeys;
 // 每台服务端按周期从共享密钥派生同一把密钥：同步轮换。
 let keys = TicketKeys::derived(&shared_secret, Duration::from_secs(6 * 3600));
 // 或手动轮换（把同一把新密钥推送到每台服务端），旧密钥仍能解开：
@@ -144,13 +144,13 @@ keys.rotate(next_key); // 最多 4 把：一把封装，三把仍能解开
 
 ```rust,ignore
 use std::{io, sync::Arc, time::Duration};
-use only_tls::{AsyncAntiReplayStore, ReplayCheck, ServerConfig, TicketKeys};
+use akio_tls::{AsyncAntiReplayStore, ReplayCheck, ServerConfig, TicketKeys};
 
 struct RedisReplay { client: MyAsyncRedis } // 在客户端自己的线程上回复
 
 impl AsyncAntiReplayStore for RedisReplay {
     fn check_and_insert(&self, binder: &[u8], ttl: Duration, done: ReplayCheck) {
-        let key = format!("only:0rtt:{}", hex(binder));
+        let key = format!("akio:0rtt:{}", hex(binder));
         // 发出后立即返回；回复回调给出应答：设置成功（首次出现）为 "OK"，键已存在（重放）
         // 为 nil，出错则拒绝早期数据。
         self.client.set_nx_px(&key, "1", ttl.as_millis() as u64, move |reply| {
@@ -170,7 +170,7 @@ let cfg = ServerConfig::builder(chain, key)
 因此不得等待）；默认实现是 `MemoryAntiReplay`（即上文每个配置一份的记录）。
 
 存储必须是原子的（先读后写会放过并发的重放）；跨区域且有复制延迟时，每个区域使用自己的存储与票据密钥。
-QUIC 服务端通过 `only_quic::server_config_from(&cfg)` 获得这两项。
+QUIC 服务端通过 `akio_quic::server_config_from(&cfg)` 获得这两项。
 
 **安全权衡。** 早期数据没有前向保密，且可被重放：上述记录能挡住窗口内对同一服务端（或共享其存储的服务端）
 的重放，挡不住客户端被诱使再次发送的请求。只为可安全重复的请求（无副作用的读取）
@@ -187,7 +187,7 @@ QUIC 服务端通过 `only_quic::server_config_from(&cfg)` 获得这两项。
 
 ## 记录大小限制、证书压缩、OCSP stapling
 
-决定记录在 [ADR-008](https://github.com/lesismal/only/blob/main/docs/adr/008-tls-extensions.zh-CN.md)。
+决定记录在 [ADR-008](https://github.com/lesismal/akio/blob/main/docs/adr/008-tls-extensions.zh-CN.md)。
 
 **record_size_limit**（RFC 8449，TLS 1.3 与 1.2）。任一方的 `.record_size_limit(n)` 设定自己接受的最大
 记录：按 RFC 的口径为 64 到 16385 字节（TLS 1.3 中该值包含 1 字节内容类型；TLS 1.2 上限为 16384），默认
@@ -205,7 +205,7 @@ let cfg = ClientConfig::builder().roots(roots).record_size_limit(1024).build()?;
 CertificateRequest 也为客户端证书提供这三种。客户端默认关闭：解压收到的证书链需要几微秒，约为内存中完整握手的
 百分之一到二，换来几十到几百字节的节省；更在意线路字节数时用 `.certificate_compression(true)` 开启（提供
 brotli、zstd 和 zlib；`.certificate_compression_algorithms(&[CertCompression::Brotli])` 只选其中几种）。三者都是
-自研的：`only-deflate`、`only-brotli` 与 `only-zstd`（[ADR-041](https://github.com/lesismal/only/blob/main/docs/adr/041-brotli-zstd.zh-CN.md)）。
+自研的：`akio-deflate`、`akio-brotli` 与 `akio-zstd`（[ADR-041](https://github.com/lesismal/akio/blob/main/docs/adr/041-brotli-zstd.zh-CN.md)）。
 收到的证书最多解压到 128 KiB，长度必须与声明的完全一致。
 
 ### OCSP stapling
@@ -230,7 +230,7 @@ OCSP 策略时才会校验（见下一节）。
 应用。
 
 ```rust,ignore
-use only::tls::{ClientConfig, Crls, RevocationPolicy};
+use akio::tls::{ClientConfig, Crls, RevocationPolicy};
 
 let mut crls = Crls::new();
 crls.add_pem(&std::fs::read("ca.crl.pem")?)?; // 由你下载并刷新
@@ -254,18 +254,18 @@ let cfg = ClientConfig::builder()
   密钥签发的 CRL，前提是签名证书位于对端发送的证书链或根证书中，且自身能验证到同一个根（ADR-046）。被列出的证书以 `certificate_revoked`
   失败；`HardFail` 下没有当前 CRL 的证书以 `certificate_unknown` 失败。刷新时构建新的配置。
 
-去哪里获取，以及自己查询响应者：内部 crate `only-x509`（无 semver 承诺）提供
+去哪里获取，以及自己查询响应者：内部 crate `akio-x509`（无 semver 承诺）提供
 `Certificate::crl_distribution_points()` 与 `ocsp_urls()`、`OcspRequest` 与 `OcspResponse::verify`（ADR-038）。
 
 ## 内核 TLS
 
 握手完成后，`Tls` 的连接可以把记录层交给 Linux（内核 TLS，`ktls` cargo feature，ADR-067），由内核或
 自己做 TLS 的网卡加密发送的数据、解密收到的数据，`send_file` 与静态文件也重新走 `sendfile`。默认关闭，
-因为内核的**软件**记录层比 only-tls 自己的慢：从 1 KiB 响应的 0.83 倍到 256 KiB 的 0.40 倍，10 MB 文件用
-`sendfile` 对比 `pread` 加加密为 0.48 倍（[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
+因为内核的**软件**记录层比 akio-tls 自己的慢：从 1 KiB 响应的 0.83 倍到 256 KiB 的 0.40 倍，10 MB 文件用
+`sendfile` 对比 `pread` 加加密为 0.48 倍（[测量结果](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
 
 ```rust,ignore
-use only::tls::{Ktls, ServerConfig};
+use akio::tls::{Ktls, ServerConfig};
 
 let cfg = ServerConfig::builder(chain, key)
     // 只卸载支持 TLS 卸载的网卡自己完成的部分；其他地方什么都不做。
@@ -282,7 +282,7 @@ let cfg = ServerConfig::builder(chain, key)
 - `ktls_zerocopy_sendfile(true)`：由网卡加密时，让它直接从页缓存读取 `sendfile` 的页面
   （`TLS_TX_ZEROCOPY_RO`）；仅在发送过程中文件绝不会被修改时使用。
 - `TlsInfo::ktls_tx` / `ktls_rx` 说明每个方向去了哪里（`KtlsPath::Software` / `Hardware`），
-  `TlsStats` 对此计数（`only_tls_ktls_total{side, dir, path}`）。
+  `TlsStats` 对此计数（`akio_tls_ktls_total{side, dir, path}`）。
 - 需要带 `tls` 模块的 Linux；TLS 1.3 需要 6.14（已卸载方向的密钥更新）。支持 epoll 与 io_uring、服务端
   与客户端；不支持 DPDK、QUIC 与 DTLS。接收方向需要 `read_buffer` 不小于 16 KiB。只要内核拒绝，连接
   就留在用户态。
@@ -294,7 +294,7 @@ Windows 证书库（Windows 不是目标平台）。
 
 ## 编写自己的 transport
 
-`only_core::Transport` 就是 TLS 实现的 trait：`recv(cipher, plain, out)`、
+`akio_core::Transport` 就是 TLS 实现的 trait：`recv(cipher, plain, out)`、
 `seal(plain, out)`、`shutdown(out)`，外加 `name` 和 `handshaking`。从 `Acceptor::transport`
 返回一个实现，就能在连接之下叠加任意字节流变换。所有调用都在连接的写锁下按线路顺序进行，
 不能阻塞。

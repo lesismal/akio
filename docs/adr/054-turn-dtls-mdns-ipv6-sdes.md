@@ -6,10 +6,10 @@ Status: accepted (2026-11-20)
 
 ## Context
 
-`crates/only-webrtc/README.md` listed three gaps that keep coming up with non-browser
+`crates/akio-webrtc/README.md` listed three gaps that keep coming up with non-browser
 deployments:
 
-- **TURN over DTLS** (RFC 7350, `turns:host?transport=udp`). `only-turn` served TURN over
+- **TURN over DTLS** (RFC 7350, `turns:host?transport=udp`). `akio-turn` served TURN over
   UDP, TCP and TLS, and `Endpoint::gather_relay_via` allocated over the same three. Networks
   that let only UDP out but want the control channel encrypted, and coturn deployments that
   publish their DTLS listener, could not be used.
@@ -18,14 +18,14 @@ deployments:
   only through an IPv4 responder; an IPv6-only link, or a browser answering on `ff02::fb` only,
   was out of reach, and link-local IPv6 candidates had no interface to go out on.
 - **SDES-SRTP** (RFC 4568 `a=crypto`). SIP gateways (Asterisk, FreeSWITCH and PBXs behind them)
-  key SRTP with security descriptions in the SDP instead of DTLS-SRTP. `only-srtp` already
+  key SRTP with security descriptions in the SDP instead of DTLS-SRTP. `akio-srtp` already
   implements every suite they use (ADR-040), and `Profile::sdes_name` / `from_sdes_name` exist,
   but nothing negotiated them.
 
-Constraints: `only-srtp`, `only-rtp` and `only-ice` are being edited by other sessions and are
+Constraints: `akio-srtp`, `akio-rtp` and `akio-ice` are being edited by other sessions and are
 not touched here; browsers must keep seeing exactly what they see today; and the public API of
-`only-turn` and `only-webrtc` (public tier) must not expose internal-tier types (`only-dtls`,
-`only-srtp`).
+`akio-turn` and `akio-webrtc` (public tier) must not expose internal-tier types (`akio-dtls`,
+`akio-srtp`).
 
 ## Decision
 
@@ -36,7 +36,7 @@ a UDP listener whose clients talk DTLS. It takes the same `tls::ServerConfig` as
 TCP listener (its default chain and key; client certificates only when the config asks for
 them), so one certificate serves both. Per client 5-tuple:
 
-- ClientHellos are answered statelessly by one `only_dtls::HelloVerifier` per acceptor
+- ClientHellos are answered statelessly by one `akio_dtls::HelloVerifier` per acceptor
   (HelloVerifyRequest for DTLS 1.2, HelloRetryRequest cookies for 1.3); a DTLS
   `Connection::server` (cookies off) is made only for a ClientHello with a valid cookie. DTLS
   1.3 is offered with fallback to 1.2 (1.3 only when the TLS config is TLS 1.3 only).
@@ -56,13 +56,13 @@ them), so one certificate serves both. Per client 5-tuple:
 
 **Client.** `RelayServer::dtls(addr, server_name, tls::ClientConfig, user, pass)`, and
 `turns:host[:port]?transport=udp` URLs (port 5349 by default; `tls_config` completes them as it
-completes TLS ones). The allocation runs inside an `only_dtls::Connection::client` over the
+completes TLS ones). The allocation runs inside an `akio_dtls::Connection::client` over the
 **endpoint's own UDP socket**, like a plain UDP allocation: datagrams from the server's address
 are read off the socket before peer routing, decrypted, and fed to the sans-io TURN client;
 its messages wait (bounded, retransmissions of a queued transaction not queued twice) until the
 handshake completes. The DTLS timer joins the relay's timer on the shared WebRTC timer thread.
 The server's certificate is verified against the TLS client configuration's roots for
-`server_name` with `only_x509::Verifier` (its client certificate is sent if it has one;
+`server_name` with `akio_x509::Verifier` (its client certificate is sent if it has one;
 `insecure_skip_verify` verifies nothing). A failed handshake fails `gather_relay_via` at once;
 an association lost later loses the allocation, which is made again with a new handshake
 (ADR-032's backoff). The candidate is a UDP relayed one (as from a plain UDP allocation), and
@@ -83,15 +83,15 @@ doc-hidden `__parts()` (QUIC's bridge), so no internal-tier type reaches the pub
   interfaces are those with an IPv6 link-local address: on Linux from `/proc/net/if_inet6`,
   elsewhere by asking the kernel for a route to `ff02::fb%<i>` for the first 64 indexes (a UDP
   connect, nothing sent). The engine-served socket joins the group on each through a new
-  additive `only` API, `Engine::bind_udp_multicast_on(group, interfaces, acceptor)`
-  (`UdpBinding` does not expose its socket, so this cannot be done from only-webrtc; added
+  additive `akio` API, `Engine::bind_udp_multicast_on(group, interfaces, acceptor)`
+  (`UdpBinding` does not expose its socket, so this cannot be done from akio-webrtc; added
   with the coordinator's approval). `bind_udp_multicast(group, a)` is now
   `bind_udp_multicast_on(group, &[0], a)`, unchanged in behaviour; 0 is the default interface.
   Interfaces that refuse the join are skipped, and it fails only when none accepts it. **IPv6
   groups only take a list**: an IPv4 group is joined on the default interface, so it takes
   `&[0]` and anything else is refused with `InvalidInput` (IPv4 joins name an interface by
   address, not by index, and mDNS over IPv4 needs no more); an empty list is refused too.
-  Tests in `crates/only/tests/shared_ports.rs` (argument checks; an IPv6 group joined on every
+  Tests in `crates/akio/tests/shared_ports.rs` (argument checks; an IPv6 group joined on every
   link-local interface receives a datagram sent to it on each link, from a source with that
   link's scope id).
 - **Scope ids.** Queries go to `ff02::fb` on every joined interface (and on the scope ids of the
@@ -122,7 +122,7 @@ doc-hidden `__parts()` (QUIC's bridge), so no internal-tier type reaches the pub
   4568 §6.1); a lifetime is accepted and not enforced. With SDES off, such an offer is refused
   with a clear error.
 - **Keying.** Each side encrypts with its own key and decrypts with the other's: the two
-  `only-srtp` contexts are made from the SDP when the offer/answer completes, and only the one
+  `akio-srtp` contexts are made from the SDP when the offer/answer completes, and only the one
   whose key changed is replaced on renegotiation (rollover counters and replay windows stay).
   The peer is connected once ICE has a pair; no DTLS handshake runs.
 - **BUNDLE**: one SRTP context per direction serves the transport, so a remote description
@@ -136,8 +136,8 @@ doc-hidden `__parts()` (QUIC's bridge), so no internal-tier type reaches the pub
 
 ## Consequences
 
-- `only-turn` depends on `only-dtls` and `only-x509` (both already in the graph through
-  `only` / `only-tls`); `only-webrtc` moves `only-x509` from dev- to normal dependencies.
+- `akio-turn` depends on `akio-dtls` and `akio-x509` (both already in the graph through
+  `akio` / `akio-tls`); `akio-webrtc` moves `akio-x509` from dev- to normal dependencies.
 - New public API: `TurnServer::dtls`, `TurnServer::dtls_relay_of`, `TurnDtls` (and the hidden
   `TurnDtlsClient` handler), `RelayServer::dtls`, `RelayServer::transport() == "dtls"`,
   `RtcConfig::enable_sdes_srtp`, `Engine::bind_udp_multicast_on`. `turns:...?transport=udp`
@@ -147,9 +147,9 @@ doc-hidden `__parts()` (QUIC's bridge), so no internal-tier type reaches the pub
 - IPv6 mDNS costs one more socket per resolving endpoint and, on non-Linux hosts, up to 64 UDP
   connect probes at `resolve_mdns`.
 
-Tests: only-turn `tests/dtls.rs` (DTLS 1.3 and 1.2 clients, relayed data both ways, close_notify
+Tests: akio-turn `tests/dtls.rs` (DTLS 1.3 and 1.2 clients, relayed data both ways, close_notify
 and deletion freeing the allocation, a wrong certificate refused, a restarted client replacing
-its association, non-DTLS datagrams ignored); only-webrtc `tests/relay_dtls.rs` (two
+its association, non-DTLS datagrams ignored); akio-webrtc `tests/relay_dtls.rs` (two
 `Endpoint`s relayed through DTLS allocations with a data channel echo, credentials /
 certificate / name failures, the `turns:?transport=udp` URL), `tests/sdes.rs` (media echo for
 each of the five suites, renegotiation keeping the keys and an offer the other way, refusals,
@@ -162,17 +162,17 @@ that keys never appear without it or next to a fingerprint; `webrtc_turn_url` co
 `turns:?transport=udp`.
 
 Interop (`tools/interop/webrtc/turn-dtls.sh`, Docker on gpu51, coturn 4.6): coturn's
-`turnutils_uclient -S` over DTLS against only-turn's DTLS listener; the only_turn client inside
-an only-dtls connection against coturn's DTLS listener (DTLS 1.3 offered, 1.2 negotiated); two
+`turnutils_uclient -S` over DTLS against akio-turn's DTLS listener; the akio_turn client inside
+an akio-dtls connection against coturn's DTLS listener (DTLS 1.3 offered, 1.2 negotiated); two
 `Endpoint`s relayed through coturn over DTLS (`turns:127.0.0.1:5349?transport=udp`) with a data
-channel echo; the same through only-turn.
+channel echo; the same through akio-turn.
 
 Not done: SDES with MKIs or session parameters, SDES without ICE (plain `c=` / port media), and
 data channels next to SDES; TURN over DTLS with connection IDs; ICE over link-local addresses
-learnt any other way than mDNS or inbound traffic. A follow-up for `only-ice`: export
+learnt any other way than mDNS or inbound traffic. A follow-up for `akio-ice`: export
 `MULTICAST_V6` next to `MULTICAST_V4`, and let a resolved candidate carry a scope id.
 
-Done since (2026-11-22, ADR-078): IPv6 mDNS goes out with hop limit 255 (new only-sys
+Done since (2026-11-22, ADR-078): IPv6 mDNS goes out with hop limit 255 (new akio-sys
 `set_multicast_hops_v6`), names are concealed on IPv6-only links (the IPv6 socket answers when
 the IPv4 one has no shared port), and it is checked against Chrome 157, avahi 0.8 (IPv6 only,
 `check-response-ttl=yes`) and mDNSResponder.

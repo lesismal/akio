@@ -6,7 +6,7 @@ Status: accepted (2026-11-17)
 
 ## Context
 
-`only-bittorrent` shipped v1 torrents only. `docs/DEV-PLAN.md` (M7) listed what was left: BEP 52
+`akio-bittorrent` shipped v1 torrents only. `docs/DEV-PLAN.md` (M7) listed what was left: BEP 52
 (v2 and hybrid torrents), web seeds (BEP 19), Local Service Discovery (BEP 14), BEP 44, the IPv6
 DHT (BEP 32), and rate and seed limits. v2-only torrents were refused with
 `MetaError::Unsupported`; hybrid torrents were read as their v1 part. The client had one
@@ -61,13 +61,13 @@ modules.
    at most 8 per peer); everything else gets a hash reject. Merkle trees kept to answer are
    capped (64).
 5. **IPv6.** No second socket pair: listening on `[::]:port` makes the engine's sockets dual-stack
-   (as `only-sys` already binds IPv6 sockets with `IPV6_V6ONLY` off), and the `UdpPort` and the
+   (as `akio-sys` already binds IPv6 sockets with `IPV6_V6ONLY` off), and the `UdpPort` and the
    TCP acceptor report IPv4 peers by their plain address (not `::ffff:a.b.c.d`) and map them back
    when sending. The DHT `Node` keeps an IPv6 routing table beside the IPv4 one (BEP 32):
    `compact_nodes6`, `parse_compact_nodes6`, `Node::{set_ipv6, table6_len}`, `nodes6` and
    `want` in answers, values of the asker's family; the client turns it on when it listens
    dual-stack (`Client::dht_nodes6`). PEX and trackers already carried IPv6 peers.
-6. **Web seeds (BEP 19)** through only-http's client (redirects up to 5, 60 s per request, range
+6. **Web seeds (BEP 19)** through akio-http's client (redirects up to 5, 60 s per request, range
    requests of at most 4 MiB, bodies capped at that): one piece in flight per web seed, at most
    16 web seeds per torrent, a piece no connected peer has preferred, padding never fetched,
    `206` required (or `200` for a whole file), backoff from 10 s doubling to 10 min after a

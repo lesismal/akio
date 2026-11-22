@@ -12,6 +12,160 @@ dependencies = [
 ]
 
 [[package]]
+name = "akio"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-core",
+ "akio-ebpf",
+ "akio-epoll",
+ "akio-log",
+ "akio-sys",
+ "akio-tls",
+ "akio-uring",
+]
+
+[[package]]
+name = "akio-brotli"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-buf"
+version = "1.0.0-rc.1"
+dependencies = [
+ "loom",
+]
+
+[[package]]
+name = "akio-core"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-log",
+ "akio-pool",
+ "akio-sys",
+ "loom",
+]
+
+[[package]]
+name = "akio-crypto"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-deflate"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-ebpf"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+ "akio-sys",
+]
+
+[[package]]
+name = "akio-epoll"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+ "akio-core",
+ "akio-log",
+ "akio-sys",
+ "akio-timer",
+]
+
+[[package]]
+name = "akio-http"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-brotli",
+ "akio-buf",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+ "akio-log",
+ "akio-regex",
+ "akio-sys",
+ "akio-ws",
+ "akio-zstd",
+]
+
+[[package]]
+name = "akio-log"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-regex",
+]
+
+[[package]]
+name = "akio-pool"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-regex"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-sys"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-buf",
+]
+
+[[package]]
+name = "akio-timer"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "akio-tls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-brotli",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+ "akio-log",
+ "akio-x509",
+ "akio-zstd",
+]
+
+[[package]]
+name = "akio-uring"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-core",
+ "akio-log",
+ "akio-sys",
+ "akio-timer",
+]
+
+[[package]]
+name = "akio-ws"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-buf",
+ "akio-core",
+ "akio-crypto",
+ "akio-deflate",
+]
+
+[[package]]
+name = "akio-x509"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+]
+
+[[package]]
+name = "akio-zstd"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "brotlic-sys"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -42,14 +196,14 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 name = "codec-bench"
 version = "0.0.0"
 dependencies = [
+ "akio-brotli",
+ "akio-http",
+ "akio-regex",
+ "akio-ws",
+ "akio-zstd",
  "brotlic-sys",
  "httparse",
  "loona-hpack",
- "only-brotli",
- "only-http",
- "only-regex",
- "only-ws",
- "only-zstd",
  "regex",
  "zstd",
 ]
@@ -171,159 +325,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "only"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
- "only-core",
- "only-ebpf",
- "only-epoll",
- "only-log",
- "only-sys",
- "only-tls",
- "only-uring",
-]
-
-[[package]]
-name = "only-brotli"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-buf"
-version = "1.0.0-rc.1"
-dependencies = [
- "loom",
-]
-
-[[package]]
-name = "only-core"
-version = "1.0.0-rc.1"
-dependencies = [
- "loom",
- "only-buf",
- "only-log",
- "only-pool",
- "only-sys",
-]
-
-[[package]]
-name = "only-crypto"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-sys",
-]
-
-[[package]]
-name = "only-deflate"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-ebpf"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
- "only-sys",
-]
-
-[[package]]
-name = "only-epoll"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
- "only-core",
- "only-log",
- "only-sys",
- "only-timer",
-]
-
-[[package]]
-name = "only-http"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-brotli",
- "only-core",
- "only-crypto",
- "only-deflate",
- "only-log",
- "only-regex",
- "only-sys",
- "only-ws",
- "only-zstd",
-]
-
-[[package]]
-name = "only-log"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-regex",
-]
-
-[[package]]
-name = "only-pool"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-regex"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-sys"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-buf",
-]
-
-[[package]]
-name = "only-timer"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "only-tls"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-brotli",
- "only-core",
- "only-crypto",
- "only-deflate",
- "only-log",
- "only-x509",
- "only-zstd",
-]
-
-[[package]]
-name = "only-uring"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-core",
- "only-log",
- "only-sys",
- "only-timer",
-]
-
-[[package]]
-name = "only-ws"
-version = "1.0.0-rc.1"
-dependencies = [
- "only",
- "only-buf",
- "only-core",
- "only-crypto",
- "only-deflate",
-]
-
-[[package]]
-name = "only-x509"
-version = "1.0.0-rc.1"
-dependencies = [
- "only-crypto",
-]
-
-[[package]]
-name = "only-zstd"
-version = "1.0.0-rc.1"
 
 [[package]]
 name = "pin-project-lite"

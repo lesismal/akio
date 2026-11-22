@@ -1,0 +1,414 @@
+pub mod akio_quic
+#[non_exhaustive] pub enum akio_quic::Congestion
+pub akio_quic::Congestion::Bbr
+pub akio_quic::Congestion::Cubic
+pub akio_quic::Congestion::NewReno
+impl core::clone::Clone for akio_quic::Congestion
+pub fn akio_quic::Congestion::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::Congestion
+impl core::cmp::PartialEq for akio_quic::Congestion
+pub fn akio_quic::Congestion::eq(&self, &Self) -> bool
+impl core::default::Default for akio_quic::Congestion
+pub fn akio_quic::Congestion::default() -> Self
+impl core::fmt::Debug for akio_quic::Congestion
+pub fn akio_quic::Congestion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_quic::Congestion
+impl core::marker::StructuralPartialEq for akio_quic::Congestion
+impl core::marker::Send for akio_quic::Congestion
+impl core::marker::Sync for akio_quic::Congestion
+impl core::marker::Unpin for akio_quic::Congestion
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Congestion
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Congestion
+#[non_exhaustive] pub enum akio_quic::ConnectionError
+pub akio_quic::ConnectionError::ApplicationClosed
+pub akio_quic::ConnectionError::ApplicationClosed::code: u64
+pub akio_quic::ConnectionError::ApplicationClosed::reason: alloc::vec::Vec<u8>
+pub akio_quic::ConnectionError::CidsExhausted
+pub akio_quic::ConnectionError::ConnectionClosed
+pub akio_quic::ConnectionError::ConnectionClosed::code: u64
+pub akio_quic::ConnectionError::ConnectionClosed::reason: alloc::vec::Vec<u8>
+pub akio_quic::ConnectionError::LocallyClosed
+pub akio_quic::ConnectionError::Reset
+pub akio_quic::ConnectionError::TimedOut
+pub akio_quic::ConnectionError::TransportError
+pub akio_quic::ConnectionError::TransportError::code: u64
+pub akio_quic::ConnectionError::TransportError::reason: alloc::string::String
+pub akio_quic::ConnectionError::VersionMismatch
+impl core::clone::Clone for akio_quic::ConnectionError
+pub fn akio_quic::ConnectionError::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::ConnectionError
+impl core::cmp::PartialEq for akio_quic::ConnectionError
+pub fn akio_quic::ConnectionError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_quic::ConnectionError
+impl core::fmt::Debug for akio_quic::ConnectionError
+pub fn akio_quic::ConnectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_quic::ConnectionError
+pub fn akio_quic::ConnectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_quic::ConnectionError
+impl core::marker::Send for akio_quic::ConnectionError
+impl core::marker::Sync for akio_quic::ConnectionError
+impl core::marker::Unpin for akio_quic::ConnectionError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::ConnectionError
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::ConnectionError
+pub enum akio_quic::Dir
+pub akio_quic::Dir::Bi
+pub akio_quic::Dir::Uni
+impl core::clone::Clone for akio_quic::Dir
+pub fn akio_quic::Dir::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::Dir
+impl core::cmp::PartialEq for akio_quic::Dir
+pub fn akio_quic::Dir::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_quic::Dir
+pub fn akio_quic::Dir::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_quic::Dir
+pub fn akio_quic::Dir::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_quic::Dir
+impl core::marker::StructuralPartialEq for akio_quic::Dir
+impl core::marker::Send for akio_quic::Dir
+impl core::marker::Sync for akio_quic::Dir
+impl core::marker::Unpin for akio_quic::Dir
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Dir
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Dir
+#[non_exhaustive] pub enum akio_quic::Error
+pub akio_quic::Error::Closed
+pub akio_quic::Error::Config(alloc::string::String)
+pub akio_quic::Error::Connect(alloc::string::String)
+pub akio_quic::Error::Datagram(alloc::string::String)
+pub akio_quic::Error::Migration(alloc::string::String)
+pub akio_quic::Error::Overloaded
+pub akio_quic::Error::Stopped(u64)
+pub akio_quic::Error::UnknownStream
+impl core::error::Error for akio_quic::Error
+impl core::fmt::Debug for akio_quic::Error
+pub fn akio_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_quic::Error
+pub fn akio_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_quic::Error
+impl core::marker::Sync for akio_quic::Error
+impl core::marker::Unpin for akio_quic::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Error
+pub enum akio_quic::Side
+pub akio_quic::Side::Client
+pub akio_quic::Side::Server
+impl core::clone::Clone for akio_quic::Side
+pub fn akio_quic::Side::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::Side
+impl core::cmp::PartialEq for akio_quic::Side
+pub fn akio_quic::Side::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_quic::Side
+pub fn akio_quic::Side::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_quic::Side
+pub fn akio_quic::Side::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_quic::Side
+impl core::marker::StructuralPartialEq for akio_quic::Side
+impl core::marker::Send for akio_quic::Side
+impl core::marker::Sync for akio_quic::Side
+impl core::marker::Unpin for akio_quic::Side
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Side
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Side
+#[non_exhaustive] pub enum akio_quic::Version
+pub akio_quic::Version::V1
+pub akio_quic::Version::V2
+impl akio_quic::Version
+pub fn akio_quic::Version::wire(self) -> u32
+impl core::clone::Clone for akio_quic::Version
+pub fn akio_quic::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::Version
+impl core::cmp::PartialEq for akio_quic::Version
+pub fn akio_quic::Version::eq(&self, &Self) -> bool
+impl core::default::Default for akio_quic::Version
+pub fn akio_quic::Version::default() -> Self
+impl core::fmt::Debug for akio_quic::Version
+pub fn akio_quic::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_quic::Version
+pub fn akio_quic::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_quic::Version
+impl core::marker::StructuralPartialEq for akio_quic::Version
+impl core::marker::Send for akio_quic::Version
+impl core::marker::Sync for akio_quic::Version
+impl core::marker::Unpin for akio_quic::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Version
+pub struct akio_quic::Bytes
+impl akio_quic::Bytes
+pub fn akio_quic::Bytes::advance(&mut self, usize)
+pub fn akio_quic::Bytes::clear(&mut self)
+pub fn akio_quic::Bytes::copy_from_slice(&[u8]) -> akio_quic::Bytes
+pub const fn akio_quic::Bytes::from_static(&'static [u8]) -> akio_quic::Bytes
+pub fn akio_quic::Bytes::is_empty(&self) -> bool
+pub fn akio_quic::Bytes::len(&self) -> usize
+pub const fn akio_quic::Bytes::new() -> akio_quic::Bytes
+pub fn akio_quic::Bytes::slice(&self, impl core::ops::range::RangeBounds<usize>) -> akio_quic::Bytes
+pub fn akio_quic::Bytes::split_off(&mut self, usize) -> akio_quic::Bytes
+pub fn akio_quic::Bytes::split_to(&mut self, usize) -> akio_quic::Bytes
+pub fn akio_quic::Bytes::truncate(&mut self, usize)
+impl core::borrow::Borrow<[u8]> for akio_quic::Bytes
+pub fn akio_quic::Bytes::borrow(&self) -> &[u8]
+impl core::clone::Clone for akio_quic::Bytes
+pub fn akio_quic::Bytes::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::Bytes
+impl core::cmp::Ord for akio_quic::Bytes
+pub fn akio_quic::Bytes::cmp(&self, &akio_quic::Bytes) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &akio_quic::Bytes) -> bool
+impl core::cmp::PartialEq<&[u8]> for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &&[u8]) -> bool
+impl core::cmp::PartialEq<&str> for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &&str) -> bool
+impl core::cmp::PartialEq<[u8]> for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &[u8]) -> bool
+impl core::cmp::PartialEq<alloc::vec::Vec<u8>> for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &alloc::vec::Vec<u8>) -> bool
+impl core::cmp::PartialEq<str> for akio_quic::Bytes
+pub fn akio_quic::Bytes::eq(&self, &str) -> bool
+impl core::cmp::PartialOrd for akio_quic::Bytes
+pub fn akio_quic::Bytes::partial_cmp(&self, &akio_quic::Bytes) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::AsRef<[u8]> for akio_quic::Bytes
+pub fn akio_quic::Bytes::as_ref(&self) -> &[u8]
+impl core::convert::From<&'static [u8]> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from(&'static [u8]) -> akio_quic::Bytes
+impl core::convert::From<&'static str> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from(&'static str) -> akio_quic::Bytes
+impl core::convert::From<alloc::boxed::Box<[u8]>> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from(alloc::boxed::Box<[u8]>) -> akio_quic::Bytes
+impl core::convert::From<alloc::string::String> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from(alloc::string::String) -> akio_quic::Bytes
+impl core::convert::From<alloc::vec::Vec<u8>> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from(alloc::vec::Vec<u8>) -> akio_quic::Bytes
+impl core::convert::From<akio_quic::Bytes> for alloc::vec::Vec<u8>
+pub fn alloc::vec::Vec<u8>::from(akio_quic::Bytes) -> alloc::vec::Vec<u8>
+impl core::default::Default for akio_quic::Bytes
+pub fn akio_quic::Bytes::default() -> akio_quic::Bytes
+impl core::fmt::Debug for akio_quic::Bytes
+pub fn akio_quic::Bytes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_quic::Bytes
+pub fn akio_quic::Bytes::hash<H: core::hash::Hasher>(&self, &mut H)
+impl core::iter::traits::collect::FromIterator<u8> for akio_quic::Bytes
+pub fn akio_quic::Bytes::from_iter<T: core::iter::traits::collect::IntoIterator<Item = u8>>(T) -> akio_quic::Bytes
+impl core::ops::deref::Deref for akio_quic::Bytes
+pub type akio_quic::Bytes::Target = [u8]
+pub fn akio_quic::Bytes::deref(&self) -> &[u8]
+impl<'a> core::iter::traits::collect::IntoIterator for &'a akio_quic::Bytes
+pub type &'a akio_quic::Bytes::IntoIter = core::slice::iter::Iter<'a, u8>
+pub type &'a akio_quic::Bytes::Item = &'a u8
+pub fn &'a akio_quic::Bytes::into_iter(self) -> Self::IntoIter
+impl core::marker::Send for akio_quic::Bytes
+impl core::marker::Sync for akio_quic::Bytes
+impl core::marker::Unpin for akio_quic::Bytes
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::Bytes
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::Bytes
+pub struct akio_quic::ClientConfig(_)
+impl akio_quic::ClientConfig
+pub fn akio_quic::ClientConfig::transport(self, &akio_quic::TransportConfig) -> Self
+pub fn akio_quic::ClientConfig::version(self, akio_quic::Version) -> Self
+pub fn akio_quic::ClientConfig::zero_rtt(self, bool) -> Self
+impl core::clone::Clone for akio_quic::ClientConfig
+pub fn akio_quic::ClientConfig::clone(&self) -> Self
+impl core::fmt::Debug for akio_quic::ClientConfig
+pub fn akio_quic::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_quic::ClientConfig
+impl core::marker::Sync for akio_quic::ClientConfig
+impl core::marker::Unpin for akio_quic::ClientConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_quic::ClientConfig
+impl !core::panic::unwind_safe::UnwindSafe for akio_quic::ClientConfig
+pub struct akio_quic::Connection(_)
+impl akio_quic::Connection
+pub fn akio_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_quic::Connection::close(&self, u32, &[u8])
+pub fn akio_quic::Connection::early_data(&self) -> akio_tls::EarlyData
+pub fn akio_quic::Connection::finish(&self, akio_quic::StreamId) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::hold_reads(&self, akio_quic::StreamId, bool) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::is_closed(&self) -> bool
+pub fn akio_quic::Connection::is_early(&self, akio_quic::StreamId) -> bool
+pub fn akio_quic::Connection::migrate(&self, &akio::Engine) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::open_bi(&self) -> core::option::Option<akio_quic::StreamId>
+pub fn akio_quic::Connection::open_uni(&self) -> core::option::Option<akio_quic::StreamId>
+pub fn akio_quic::Connection::preferred_address(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_quic::Connection::queued_bytes(&self, akio_quic::StreamId) -> usize
+pub fn akio_quic::Connection::remote_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_quic::Connection::reset(&self, akio_quic::StreamId, u32) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::rtt(&self) -> core::time::Duration
+pub fn akio_quic::Connection::send(&self, akio_quic::StreamId, impl core::convert::Into<akio_quic::Bytes>) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::send_capacity(&self, akio_quic::StreamId) -> core::result::Result<usize, akio_quic::Error>
+pub fn akio_quic::Connection::send_datagram(&self, impl core::convert::Into<akio_quic::Bytes>) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::server_name(&self) -> core::option::Option<alloc::string::String>
+pub fn akio_quic::Connection::spawn_blocking(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::stats(&self) -> akio_quic::ConnectionStats
+pub fn akio_quic::Connection::stop(&self, akio_quic::StreamId, u32) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::version(&self) -> akio_quic::Version
+impl core::clone::Clone for akio_quic::Connection
+pub fn akio_quic::Connection::clone(&self) -> Self
+impl core::fmt::Debug for akio_quic::Connection
+pub fn akio_quic::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_quic::Connection
+impl core::marker::Sync for akio_quic::Connection
+impl core::marker::Unpin for akio_quic::Connection
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_quic::Connection
+impl !core::panic::unwind_safe::UnwindSafe for akio_quic::Connection
+#[non_exhaustive] pub struct akio_quic::ConnectionStats
+pub akio_quic::ConnectionStats::congestion_events: u64
+pub akio_quic::ConnectionStats::current_mtu: u16
+pub akio_quic::ConnectionStats::cwnd: u64
+pub akio_quic::ConnectionStats::ecn_capable: bool
+pub akio_quic::ConnectionStats::ecn_ce_events: u64
+pub akio_quic::ConnectionStats::lost_bytes: u64
+pub akio_quic::ConnectionStats::lost_packets: u64
+pub akio_quic::ConnectionStats::min_rtt: core::time::Duration
+pub akio_quic::ConnectionStats::rtt: core::time::Duration
+pub akio_quic::ConnectionStats::sent_packets: u64
+pub akio_quic::ConnectionStats::udp_rx: akio_quic::UdpStats
+pub akio_quic::ConnectionStats::udp_tx: akio_quic::UdpStats
+impl core::clone::Clone for akio_quic::ConnectionStats
+pub fn akio_quic::ConnectionStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::ConnectionStats
+impl core::cmp::PartialEq for akio_quic::ConnectionStats
+pub fn akio_quic::ConnectionStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_quic::ConnectionStats
+pub fn akio_quic::ConnectionStats::default() -> Self
+impl core::fmt::Debug for akio_quic::ConnectionStats
+pub fn akio_quic::ConnectionStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_quic::ConnectionStats
+impl core::marker::StructuralPartialEq for akio_quic::ConnectionStats
+impl core::marker::Send for akio_quic::ConnectionStats
+impl core::marker::Sync for akio_quic::ConnectionStats
+impl core::marker::Unpin for akio_quic::ConnectionStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::ConnectionStats
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::ConnectionStats
+pub struct akio_quic::QuicServer(_)
+impl akio_quic::QuicServer
+pub fn akio_quic::QuicServer::close_all(&self, u32, &[u8])
+pub fn akio_quic::QuicServer::connections(&self) -> usize
+pub fn akio_quic::QuicServer::new<H: akio_quic::QuicHandler, F>(akio_quic::ServerConfig, F) -> akio_quic::QuicServer where F: core::ops::function::Fn(&akio_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
+pub fn akio_quic::QuicServer::refused_connections(&self) -> u64
+impl core::clone::Clone for akio_quic::QuicServer
+pub fn akio_quic::QuicServer::clone(&self) -> akio_quic::QuicServer
+impl core::fmt::Debug for akio_quic::QuicServer
+pub fn akio_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_quic::QuicServer
+pub type akio_quic::QuicServer::Handler = Udp
+pub fn akio_quic::QuicServer::on_open(&self, &akio_core::conn::Conn<Udp>) -> Udp
+impl akio_core::metrics::Collector for akio_quic::QuicServer
+pub fn akio_quic::QuicServer::collect(&self, &mut akio_core::metrics::Families)
+impl core::marker::Send for akio_quic::QuicServer
+impl core::marker::Sync for akio_quic::QuicServer
+impl core::marker::Unpin for akio_quic::QuicServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_quic::QuicServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_quic::QuicServer
+pub struct akio_quic::ServerConfig(_)
+impl akio_quic::ServerConfig
+pub fn akio_quic::ServerConfig::max_connections(self, usize) -> Self
+pub fn akio_quic::ServerConfig::migration(self, bool) -> Self
+pub fn akio_quic::ServerConfig::prefer_version(self, akio_quic::Version) -> Self
+pub fn akio_quic::ServerConfig::preferred_address(self, core::net::socket_addr::SocketAddr) -> Self
+pub fn akio_quic::ServerConfig::transport(self, &akio_quic::TransportConfig) -> Self
+pub fn akio_quic::ServerConfig::versions(self, &[akio_quic::Version]) -> Self
+pub fn akio_quic::ServerConfig::zero_rtt(self, bool) -> Self
+impl core::clone::Clone for akio_quic::ServerConfig
+pub fn akio_quic::ServerConfig::clone(&self) -> Self
+impl core::fmt::Debug for akio_quic::ServerConfig
+pub fn akio_quic::ServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_quic::ServerConfig
+impl core::marker::Sync for akio_quic::ServerConfig
+impl core::marker::Unpin for akio_quic::ServerConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_quic::ServerConfig
+impl !core::panic::unwind_safe::UnwindSafe for akio_quic::ServerConfig
+pub struct akio_quic::StreamId(_)
+impl akio_quic::StreamId
+pub fn akio_quic::StreamId::dir(self) -> akio_quic::Dir
+pub fn akio_quic::StreamId::index(self) -> u64
+pub fn akio_quic::StreamId::initiator(self) -> akio_quic::Side
+pub fn akio_quic::StreamId::new(akio_quic::Side, akio_quic::Dir, u64) -> akio_quic::StreamId
+impl core::clone::Clone for akio_quic::StreamId
+pub fn akio_quic::StreamId::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::StreamId
+impl core::cmp::Ord for akio_quic::StreamId
+pub fn akio_quic::StreamId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_quic::StreamId
+pub fn akio_quic::StreamId::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_quic::StreamId
+pub fn akio_quic::StreamId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<akio_quic::StreamId> for u64
+pub fn u64::from(akio_quic::StreamId) -> u64
+impl core::fmt::Debug for akio_quic::StreamId
+pub fn akio_quic::StreamId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_quic::StreamId
+pub fn akio_quic::StreamId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_quic::StreamId
+pub fn akio_quic::StreamId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_quic::StreamId
+impl core::marker::StructuralPartialEq for akio_quic::StreamId
+impl core::marker::Send for akio_quic::StreamId
+impl core::marker::Sync for akio_quic::StreamId
+impl core::marker::Unpin for akio_quic::StreamId
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::StreamId
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::StreamId
+#[non_exhaustive] pub struct akio_quic::TransportConfig
+pub akio_quic::TransportConfig::congestion: akio_quic::Congestion
+pub akio_quic::TransportConfig::datagram_receive_buffer_size: core::option::Option<usize>
+pub akio_quic::TransportConfig::datagram_send_buffer_size: usize
+pub akio_quic::TransportConfig::ecn: bool
+pub akio_quic::TransportConfig::initial_mtu: u16
+pub akio_quic::TransportConfig::initial_rtt: core::time::Duration
+pub akio_quic::TransportConfig::keep_alive_interval: core::option::Option<core::time::Duration>
+pub akio_quic::TransportConfig::max_concurrent_bidi_streams: u32
+pub akio_quic::TransportConfig::max_concurrent_uni_streams: u32
+pub akio_quic::TransportConfig::max_idle_timeout: core::option::Option<core::time::Duration>
+pub akio_quic::TransportConfig::mtu_discovery: bool
+pub akio_quic::TransportConfig::receive_window: core::option::Option<u64>
+pub akio_quic::TransportConfig::send_buffer: u64
+pub akio_quic::TransportConfig::send_window: u64
+pub akio_quic::TransportConfig::stream_receive_window: u64
+pub akio_quic::TransportConfig::stream_send_buffer: u64
+impl core::clone::Clone for akio_quic::TransportConfig
+pub fn akio_quic::TransportConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::TransportConfig
+impl core::cmp::PartialEq for akio_quic::TransportConfig
+pub fn akio_quic::TransportConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio_quic::TransportConfig
+pub fn akio_quic::TransportConfig::default() -> Self
+impl core::fmt::Debug for akio_quic::TransportConfig
+pub fn akio_quic::TransportConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_quic::TransportConfig
+impl core::marker::Send for akio_quic::TransportConfig
+impl core::marker::Sync for akio_quic::TransportConfig
+impl core::marker::Unpin for akio_quic::TransportConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::TransportConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::TransportConfig
+#[non_exhaustive] pub struct akio_quic::UdpStats
+pub akio_quic::UdpStats::bytes: u64
+pub akio_quic::UdpStats::datagrams: u64
+pub akio_quic::UdpStats::ios: u64
+impl core::clone::Clone for akio_quic::UdpStats
+pub fn akio_quic::UdpStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_quic::UdpStats
+impl core::cmp::PartialEq for akio_quic::UdpStats
+pub fn akio_quic::UdpStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_quic::UdpStats
+pub fn akio_quic::UdpStats::default() -> Self
+impl core::fmt::Debug for akio_quic::UdpStats
+pub fn akio_quic::UdpStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_quic::UdpStats
+impl core::marker::StructuralPartialEq for akio_quic::UdpStats
+impl core::marker::Send for akio_quic::UdpStats
+impl core::marker::Sync for akio_quic::UdpStats
+impl core::marker::Unpin for akio_quic::UdpStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_quic::UdpStats
+impl core::panic::unwind_safe::UnwindSafe for akio_quic::UdpStats
+pub const akio_quic::DEFAULT_MAX_CONNECTIONS: usize
+pub trait akio_quic::QuicHandler: core::marker::Send + 'static
+pub fn akio_quic::QuicHandler::on_close(&mut self, &akio_quic::Connection, akio_quic::ConnectionError)
+pub fn akio_quic::QuicHandler::on_connected(&mut self, &akio_quic::Connection)
+pub fn akio_quic::QuicHandler::on_datagram(&mut self, &akio_quic::Connection, akio_quic::Bytes)
+pub fn akio_quic::QuicHandler::on_stream_data(&mut self, &akio_quic::Connection, akio_quic::StreamId, akio_quic::Bytes, bool)
+pub fn akio_quic::QuicHandler::on_stream_opened(&mut self, &akio_quic::Connection, akio_quic::StreamId)
+pub fn akio_quic::QuicHandler::on_stream_reset(&mut self, &akio_quic::Connection, akio_quic::StreamId, u64)
+pub fn akio_quic::QuicHandler::on_stream_stopped(&mut self, &akio_quic::Connection, akio_quic::StreamId, u64)
+pub fn akio_quic::QuicHandler::on_stream_writable(&mut self, &akio_quic::Connection, akio_quic::StreamId)
+pub fn akio_quic::QuicHandler::on_streams_available(&mut self, &akio_quic::Connection, akio_quic::Dir)
+pub fn akio_quic::client_config(akio_tls::config::RootCerts, &[&[u8]]) -> core::result::Result<akio_quic::ClientConfig, akio_quic::Error>
+pub fn akio_quic::client_config_from(&akio_tls::config::ClientConfig) -> core::result::Result<akio_quic::ClientConfig, akio_quic::Error>
+pub fn akio_quic::client_config_insecure(&[&[u8]]) -> core::result::Result<akio_quic::ClientConfig, akio_quic::Error>
+pub fn akio_quic::dial<H: akio_quic::QuicHandler>(&akio::Engine, core::net::socket_addr::SocketAddr, &str, akio_quic::ClientConfig, H) -> core::result::Result<akio_quic::Connection, akio_quic::Error>
+pub fn akio_quic::server_config(alloc::vec::Vec<akio_tls::config::Certificate>, akio_tls::config::PrivateKey, &[&[u8]]) -> core::result::Result<akio_quic::ServerConfig, akio_quic::Error>
+pub fn akio_quic::server_config_from(&akio_tls::config::ServerConfig) -> core::result::Result<akio_quic::ServerConfig, akio_quic::Error>

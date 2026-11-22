@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tlsfuzzer (https://github.com/tlsfuzzer/tlsfuzzer) against only-tls's server: protocol
+# tlsfuzzer (https://github.com/tlsfuzzer/tlsfuzzer) against akio-tls's server: protocol
 # conformance scripts for TLS 1.3 and 1.2, run in Docker (needs network for the clone and pip):
 #
 #   docker run --rm -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
@@ -9,14 +9,14 @@
 # tlsfuzzer expects) with an RSA-2048 certificate and a stapled OCSP response; a second one on
 # port 4434 asks for a client certificate (the client certificate compression script), a third
 # on 4435 answers 240 bytes (the record_size_limit script checks how they are cut).
-# TLS 1.2 scripts get `-d` ((EC)DHE instead of the RSA key exchange only-tls does not offer)
+# TLS 1.2 scripts get `-d` ((EC)DHE instead of the RSA key exchange akio-tls does not offer)
 # and, where they take it, `-C` with an ECDHE + AES-GCM suite (their default is a CBC one).
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 OUT=${OUT:-/tmp/tlsfuzzer-run}
 mkdir -p "$OUT"
 TARGET=${CARGO_TARGET_DIR:-$ROOT/target}
-(cd "$ROOT" && cargo build -q --release -p only-tls --example tls-interop) || exit 1
+(cd "$ROOT" && cargo build -q --release -p akio-tls --example tls-interop) || exit 1
 BIN=$TARGET/release/examples/tls-interop
 cd "$OUT" || exit 1
 if [ ! -d tlsfuzzer ]; then
@@ -51,7 +51,7 @@ sleep 1
 
 # script | extra arguments | probes known to fail (the run passes when exactly these fail)
 #
-# Left out, because they test what only-tls deliberately does not do: CBC suites (the default of
+# Left out, because they test what akio-tls deliberately does not do: CBC suites (the default of
 # most TLS 1.2 scripts that take no -C), RSA key exchange, FFDHE groups, x448, RSA-PSS keys,
 # external PSKs, psk_ke, SSLv2 hellos, a server that requests certificates, non-TLS 1.3 servers.
 SCRIPTS=(

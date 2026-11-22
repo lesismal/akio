@@ -1,0 +1,59 @@
+pub mod akio_regex
+pub struct akio_regex::Error
+impl akio_regex::Error
+pub fn akio_regex::Error::message(&self) -> &'static str
+pub fn akio_regex::Error::position(&self) -> usize
+impl core::clone::Clone for akio_regex::Error
+pub fn akio_regex::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_regex::Error
+impl core::cmp::PartialEq for akio_regex::Error
+pub fn akio_regex::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_regex::Error
+impl core::fmt::Debug for akio_regex::Error
+pub fn akio_regex::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_regex::Error
+pub fn akio_regex::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_regex::Error
+impl core::marker::Send for akio_regex::Error
+impl core::marker::Sync for akio_regex::Error
+impl core::marker::Unpin for akio_regex::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_regex::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_regex::Error
+pub struct akio_regex::Regex
+impl akio_regex::Regex
+pub fn akio_regex::Regex::as_str(&self) -> &str
+pub fn akio_regex::Regex::is_match(&self, &str) -> bool
+pub fn akio_regex::Regex::is_match_fmt(&self, core::fmt::Arguments<'_>) -> bool
+pub fn akio_regex::Regex::new(&str) -> core::result::Result<akio_regex::Regex, akio_regex::Error>
+impl core::clone::Clone for akio_regex::Regex
+pub fn akio_regex::Regex::clone(&self) -> Self
+impl core::cmp::Eq for akio_regex::Regex
+impl core::cmp::PartialEq for akio_regex::Regex
+pub fn akio_regex::Regex::eq(&self, &akio_regex::Regex) -> bool
+impl core::fmt::Debug for akio_regex::Regex
+pub fn akio_regex::Regex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_regex::Regex
+pub fn akio_regex::Regex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::str::traits::FromStr for akio_regex::Regex
+pub type akio_regex::Regex::Err = akio_regex::Error
+pub fn akio_regex::Regex::from_str(&str) -> core::result::Result<akio_regex::Regex, akio_regex::Error>
+impl core::marker::Send for akio_regex::Regex
+impl core::marker::Sync for akio_regex::Regex
+impl core::marker::Unpin for akio_regex::Regex
+impl core::panic::unwind_safe::RefUnwindSafe for akio_regex::Regex
+impl core::panic::unwind_safe::UnwindSafe for akio_regex::Regex
+pub struct akio_regex::RegexBuilder
+impl akio_regex::RegexBuilder
+pub fn akio_regex::RegexBuilder::ascii_classes(&mut self, bool) -> &mut akio_regex::RegexBuilder
+pub fn akio_regex::RegexBuilder::build(&self) -> core::result::Result<akio_regex::Regex, akio_regex::Error>
+pub fn akio_regex::RegexBuilder::new(&str) -> akio_regex::RegexBuilder
+pub fn akio_regex::RegexBuilder::whole_text(&mut self, bool) -> &mut akio_regex::RegexBuilder
+impl core::clone::Clone for akio_regex::RegexBuilder
+pub fn akio_regex::RegexBuilder::clone(&self) -> Self
+impl core::fmt::Debug for akio_regex::RegexBuilder
+pub fn akio_regex::RegexBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_regex::RegexBuilder
+impl core::marker::Sync for akio_regex::RegexBuilder
+impl core::marker::Unpin for akio_regex::RegexBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for akio_regex::RegexBuilder
+impl core::panic::unwind_safe::UnwindSafe for akio_regex::RegexBuilder

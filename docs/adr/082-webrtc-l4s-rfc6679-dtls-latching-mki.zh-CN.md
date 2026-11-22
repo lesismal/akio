@@ -18,14 +18,14 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
   为"失败"。
 - **锁定依赖 SRTP 密钥。** 使用 DTLS-SRTP 且没有 ICE 时，握手需要先知道远端地址。NAT 之后的话机，按它 SDP
   里的私有地址永远无法到达。
-- **DTLS-SRTP 没有 MKI。** SDES 的 MKI 在 ADR-072 中加入。only-dtls 与 only-srtp 已经支持 `use_srtp` 的 MKI
+- **DTLS-SRTP 没有 MKI。** SDES 的 MKI 在 ADR-072 中加入。akio-dtls 与 akio-srtp 已经支持 `use_srtp` 的 MKI
   （RFC 5764 §4.1.3），但没有地方使用它。
 
 约束：默认行为不变。每项新行为都来自一个已有选项或新的可选开启项。做 BUNDLE 的会话热路径上不增加工作。
 
 ## 决策
 
-### 1. 对 CE 的可扩展响应（`only_rtp::EcnResponse`，`BandwidthEstimator`）
+### 1. 对 CE 的可扩展响应（`akio_rtp::EcnResponse`，`BandwidthEstimator`）
 
 - `BandwidthEstimator::set_ecn_response(EcnResponse::{Classic（默认）, Scalable})`。`set_rtt` 给出响应
   的轮次。`on_ecn_counts(now, ect, ce)` 接收来自没有逐包结果的反馈的汇总计数（第 2 节）。`ce_fraction()`
@@ -44,7 +44,7 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
 - **增长增益。** Reno 的每 RTT 一个包让速率越过链路。有节奏的发送端要晚一个 RTT 加一个反馈间隔才知道，这时
   阶跃标记的队列已经标记了整轮。随后时延检测器看到队列增长，以缓慢的方式削减速率。在模拟的 2 Mbps L4S 队列
   中：增益 1 得到 89 % 的利用率，1/8 在 0.4 ms 队列下得到 93 %，经典响应得到 82 %。
-- **only-webrtc**：标记 ECT(1) 时选择可扩展响应；ECT(0) 保持经典响应。来自 RTCP 的 RTT 交给估计器。
+- **akio-webrtc**：标记 ECT(1) 时选择可扩展响应；ECT(0) 保持经典响应。来自 RTCP 的 RTT 交给估计器。
 - **标记 ECT(1) 时的 pacing**：估计值的 1.5 倍，突发额度 1 ms，而不是 2.5 倍与 40 ms。一帧作为一个突发发出
   时，无论速率高低都会在队列里排上好几个包，L4S 队列会标记它们。模拟的 6 Mbps 阶跃标记队列，编码器为估计值的
   90 %：
@@ -57,9 +57,9 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
   | 不用 ECN | 4.7-5.1 Mbps | 7.3 ms |
   | ECT(0) 经典 | 1.36 Mbps | |
 
-### 2. RFC 6679 信令（`rtc/ecn_fb.rs`；only-rtp 的 `EcnFeedback`、`EcnSummary`、`EcnReceiver`）
+### 2. RFC 6679 信令（`rtc/ecn_fb.rs`；akio-rtp 的 `EcnFeedback`、`EcnSummary`、`EcnReceiver`）
 
-- **线上格式**（only-rtp `ecn.rs`）：
+- **线上格式**（akio-rtp `ecn.rs`）：
   - RTCP ECN 反馈消息是 RTPFB FMT 8。它携带扩展最高序号、ECT(0) / ECT(1) / CE / not-ECT 计数器、丢失数
     与重复数。
   - XR ECN 摘要报告是块类型 13，每个源五个字。长度不是五的倍数的块被丢弃。
@@ -94,7 +94,7 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
   数据报的码点属于该关联本身，因此不使用。
 - **能验证什么。** 中继是否复制由验证决定。按 RFC 8656 允许的方式设为 Not-ECT 的中继，与任何清除码点的中间
   设备一样使路径失败，媒体照常以不标记的方式继续。
-- **only-turn 自己的服务器还不复制。** 它的中继路径正在别处修改（TCP 分配，ADR-076），因此保持原样。经过它
+- **akio-turn 自己的服务器还不复制。** 它的中继路径正在别处修改（TCP 分配，ADR-076），因此保持原样。经过它
   的路径在几次探测后验证失败。（2026-11-22 已完成，ADR-083：经 UDP 与 DTLS 双向复制码点。）
 - **TCP 路径。** 本地候选是 ICE-TCP（RFC 6544），或者分配经 TCP / TLS 建立时，没有码点可给。这里的 ECN 是
   TCP 自己的事，经流到达的 TURN 服务器也没有东西可复制。这样的路径从不启动 ECN：它保持*关闭*，而不是失败。
@@ -106,7 +106,7 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
   东西。锁定时把 `actpass` 提议应答为 `passive`，由远端发起握手。本端的提议仍是 `actpass`。远端应答
   `passive` 时本端成为客户端，这时什么都不会锁定：我们的 ClientHello 发往不可达的 SDP 地址。
 - **先交换 cookie。**
-  - 来自未知源的 DTLS 数据报用 `only_dtls::HelloVerifier` 检查（无状态）。每个进程一个验证器：端点把数据报
+  - 来自未知源的 DTLS 数据报用 `akio_dtls::HelloVerifier` 检查（无状态）。每个进程一个验证器：端点把数据报
     依次交给各个正在锁定的 peer，所以一个 cookie 在下一个 peer 那里也必须能验证通过。
   - 没有有效 cookie 的 ClientHello 得到一个 HelloVerifyRequest 或 DTLS 1.3 HelloRetryRequest，状态不变。
   - 端点把该源路由到作答的 peer，于是第二个 ClientHello 到达同一个 peer。由于路径对还没有移动，它要经过同样
@@ -138,19 +138,19 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
 
 纯增量。
 
-- only-rtp：`EcnResponse`、`BandwidthEstimator::{set_ecn_response, ecn_response, set_rtt, ce_fraction,
+- akio-rtp：`EcnResponse`、`BandwidthEstimator::{set_ecn_response, ecn_response, set_rtt, ce_fraction,
   on_ecn_counts}`、`EcnCounters`、`EcnDelta`、`EcnFeedback`、`EcnSummary`、`EcnReceiver`、
   `ECN_FEEDBACK_FMT`、`ECN_SUMMARY_BT`。
-- only-webrtc：`RtcConfig::set_dtls_srtp_mki_length`。
-- only-turn、only-dtls、only-srtp 不变。
+- akio-webrtc：`RtcConfig::set_dtls_srtp_mki_length`。
+- akio-turn、akio-dtls、akio-srtp 不变。
 
 ## 后果
 
 - **默认行为**不变。开启 ECN 标记时，提议中带有 RFC 6679 的属性。Chrome 会忽略它们，不认识它们的远端也一样。
 - **测试：**
-  - only-rtp：估计器经过模拟的 L4S 队列（可扩展、经典、不用 ECN 三者对比，2 与 10 Mbps，CE 比例随速率增长
+  - akio-rtp：估计器经过模拟的 L4S 队列（可扩展、经典、不用 ECN 三者对比，2 与 10 Mbps，CE 比例随速率增长
     而下降）；计数器路径；反馈与摘要的往返；接收端计数，包括序号回绕、丢失、重复与迟到。
-  - only-webrtc 模拟网络：ECT(1) 经过 6 Mbps 阶跃标记队列，达到链路的 82 %，队列 1.3 ms，而 ECT(0) 为
+  - akio-webrtc 模拟网络：ECT(1) 经过 6 Mbps 阶跃标记队列，达到链路的 82 %，队列 1.3 ms，而 ECT(0) 为
     1.36 Mbps；没有 RFC 8888 时的 RFC 6679 协商、验证、清除 / 改标检测以及 CE 交给估计器；应答方不标记时不用
     RFC 6679；TCP 路径为关闭而非失败；DTLS 握手锁定 NAT 之后的话机，两种提议方向都覆盖（先交换 cookie），未开
     启选项时不锁定，外来证书被尝试并拒绝之后话机再锁定；DTLS-SRTP MKI 协商成功（复用与不复用 RTCP），任一方
@@ -170,7 +170,7 @@ ADR-077 让 RTP 可以带 ECN，并为无 ICE 的媒体加入了锁定。它留�
 - **尚未完成：**
   - RFC 6679 的 "ice" 与 "leap" 启动方法，以及遵循远端的 `ect=` 偏好（已完成，ADR-086）。
   - ICE-TCP 上 RTP 的 ECN 反馈（没有可给的）。
-  - 在 only-turn 自己的中继里复制码点（2026-11-22 已完成，ADR-083）。
+  - 在 akio-turn 自己的中继里复制码点（2026-11-22 已完成，ADR-083）。
   - 对已失败的路径重试 ECN（已完成，ADR-086）。
   - 锁定分量 2 的 DTLS（已完成，ADR-086）。
   - 本端必须作为 DTLS 客户端时的锁定（已完成，ADR-086，锁定到远端的 RFC 6263 保活上）。

@@ -1,31 +1,31 @@
 # 多进程服务（prefork）
 
-`only-prefork` 用多个 worker 进程服务同一个程序，每个 worker 运行自己的 `Engine`，由一个 supervisor 负责：
+`akio-prefork` 用多个 worker 进程服务同一个程序，每个 worker 运行自己的 `Engine`，由一个 supervisor 负责：
 重启崩溃的 worker、关闭时让它们排空、重载时替换它们。它带来隔离（崩溃或卡住的回调只影响一个 worker）、
-不停机升级，以及各进程独占、不跨核争用的资源。在 worker 内部，一切都是普通的 only。
+不停机升级，以及各进程独占、不跨核争用的资源。在 worker 内部，一切都是普通的 akio。
 
 ## worker 与 supervisor
 
 worker 是一个函数：在 supervisor 准备好的监听器上构建引擎，并交给 `Worker::serve`：
 
 ```rust,ignore
-{{#include ../../../crates/only-prefork/examples/prefork-http.rs:worker}}
+{{#include ../../../crates/akio-prefork/examples/prefork-http.rs:worker}}
 ```
 
 `main` 配置 supervisor，并用这个函数调用 `run`：
 
 ```rust,ignore
-{{#include ../../../crates/only-prefork/examples/prefork-http.rs:supervisor}}
+{{#include ../../../crates/akio-prefork/examples/prefork-http.rs:supervisor}}
 ```
 
-同一个 `main` 在每个进程中运行。在 supervisor 中，`run` 绑定地址，用相同的参数加上 `ONLY_PREFORK_*` 环境
+同一个 `main` 在每个进程中运行。在 supervisor 中，`run` 绑定地址，用相同的参数加上 `AKIO_PREFORK_*` 环境
 变量**重新执行当前二进制**来启动 worker，并监管它们；它从不调用 worker 函数。在 worker 中，`run` 发现这些
 变量，以一个 `Worker` 调用 worker 函数。用重新执行代替 `fork`，避开了对多线程进程 fork 的隐患：每个 worker 都
 从 `main` 开始，地址空间是干净的。只有 worker 需要的启动工作应放在 worker 函数里。
 
 `Worker` 告诉 worker 它是谁：`index()`（从 0 开始，重启或重载产生的替代者保持同一序号）、`workers()`（用于
 按进程分摊整机限制，例如数据库连接数）、`generation()`（起始为 0，每次重载加一）和 `addrs()`。`listener(i)`
-返回地址 `i` 的 `only::Listener`，照常用 `.threads()`、`.backend()`、`.serve()` 配置。
+返回地址 `i` 的 `akio::Listener`，照常用 `.threads()`、`.backend()`、`.serve()` 配置。
 
 ## 共享端口
 
@@ -59,7 +59,7 @@ worker 运行在自己的进程组中，所以终端的 Ctrl-C 只到达 supervi
 要升级二进制，先替换程序文件，再发送 SIGHUP：新一代运行新代码，旧一代排空。
 
 使用 `Inherit` 时，重载不会拒绝或重置任何连接。还剩一个缺口：旧 worker 在开始排空前刚 accept、但请求尚未
-到达的连接，会被 only-http 的优雅关闭关掉（它关闭没有进行中请求的连接；测试中持续负载下重载期间约每 5000 个
+到达的连接，会被 akio-http 的优雅关闭关掉（它关闭没有进行中请求的连接；测试中持续负载下重载期间约每 5000 个
 请求出现一次）。
 
 ## 原地重载
@@ -117,5 +117,5 @@ reuseport 组，`Accel::Ebpf` 报告 `Degraded`。
 
 ## 测试
 
-集成测试（`crates/only-prefork/tests/prefork.rs`）把测试二进制自身作为 worker 运行：请求由多个 PID 应答，
+集成测试（`crates/akio-prefork/tests/prefork.rs`）把测试二进制自身作为 worker 运行：请求由多个 PID 应答，
 崩溃的 worker 被替换，关闭时进行中的请求得以完成，持续负载下的重载替换了所有 worker 且没有被拒绝的连接。

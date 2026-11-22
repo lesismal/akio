@@ -4,12 +4,12 @@
 // against httparse (a fuzz-only dependency) on `data[2..]` (the response bytes): both accept
 // the same heads, with the same results.
 
-use only_ws::http1::{Header, Resume, Status, parse_response};
+use akio_ws::http1::{Header, Resume, Status, parse_response};
 
 const MAX: usize = 100;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_http::fuzzing::http1_client(data);
+    akio_http::fuzzing::http1_client(data);
 
     let wire = data.get(2..).unwrap_or_default();
     let mut ours_h = [Header::EMPTY; MAX];
@@ -29,7 +29,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             }
         }
         (Ok(Status::Complete(_)), t) => panic!("only accepted, httparse: {t:?}"),
-        (o, Ok(httparse::Status::Complete(_))) => panic!("httparse accepted, only: {o:?}"),
+        (o, Ok(httparse::Status::Complete(_))) => panic!("httparse accepted, akio: {o:?}"),
         _ => {}
     }
 });

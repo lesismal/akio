@@ -6,14 +6,14 @@
 
 ## 背景
 
-引擎导出自己的计数器（`Engine::metrics()`，Prometheus 文本或 JSON），only-http 用
+引擎导出自己的计数器（`Engine::metrics()`，Prometheus 文本或 JSON），akio-http 用
 `observe::metrics_handler(telemetry, Option<HttpMetrics>)` 提供它们。此外的东西都无法加入这个端点：
 应用自己的计数器，或协议 crate 已有的统计（QUIC `ConnectionStats`、TLS 握手结果、各 HTTP 版本的请求数）
 只能另开端点或手写 handler。项目不引入第三方依赖（ADR-005），所以 `prometheus` / `metrics` crate 不可用。
 
 ## 决定
 
-新增模块 `only_core::metrics`（再导出为 `only::metrics`），无依赖：
+新增模块 `akio_core::metrics`（再导出为 `akio::metrics`），无依赖：
 
 - **`Collector`** trait（`Send + Sync`）：`fn collect(&self, out: &mut Families)`。按需调用（一次抓取），
   从不在 I/O 热路径上。
@@ -29,12 +29,12 @@
   `unregister_collector(id)`、`collect()`（已注册收集器的 `Families`）和 `render_prometheus()`（先引擎序列，
   再收集器）。`metrics_handler` 输出 `render_prometheus()`，因此每个已注册的收集器都出现在现有端点上，无需新 handler。
 - **协议收集器**，均为新增的 `impl Collector`：
-  - only-http `HttpMetrics`（原有序列不变，另加 `only_http_requests_by_version_total{version}`，
+  - akio-http `HttpMetrics`（原有序列不变，另加 `akio_http_requests_by_version_total{version}`，
     即 HTTP/1.x、h2、h3 各自的请求/流数）；
-  - only-quic `QuicServer`（打开/接受/关闭的连接数，两个方向的数据报与字节，发送与丢失的包，丢失字节，拥塞事件；
+  - akio-quic `QuicServer`（打开/接受/关闭的连接数，两个方向的数据报与字节，发送与丢失的包，丢失字节，拥塞事件；
     总数包含已关闭的连接）；
-  - only-tls `TlsStats`，来自 `Tls::stats()`（按版本与角色统计的完成握手、会话恢复、早期数据接受/拒绝）。
-    失败的握手仍计入引擎的 `only_tls_handshake_failures_total`。
+  - akio-tls `TlsStats`，来自 `Tls::stats()`（按版本与角色统计的完成握手、会话恢复、早期数据接受/拒绝）。
+    失败的握手仍计入引擎的 `akio_tls_handshake_failures_total`。
 
 ## 考虑过的替代方案
 

@@ -1,4 +1,4 @@
-# ADR-055：only-ice 中每个 ICE 数据流支持多个组件
+# ADR-055：akio-ice 中每个 ICE 数据流支持多个组件
 
 [English](055-ice-components.md) | 简体中文
 
@@ -6,9 +6,9 @@
 
 ## 背景
 
-`only_ice::IceAgent`（自研 WebRTC 协议栈的 ICE 层，最近的新增见 ADR-044）只处理一个组件：组件号
+`akio_ice::IceAgent`（自研 WebRTC 协议栈的 ICE 层，最近的新增见 ADR-044）只处理一个组件：组件号
 不是 1 的候选一律丢弃，选定候选对、提名、同意新鲜度和 lite 代理的状态都是单个值。WebRTC 总是复用
-RTP 与 RTCP（rtcp-mux、BUNDLE），这对 only-webrtc 足够；但 RFC 8445 的数据流可以有多个组件，最典型
+RTP 与 RTCP（rtcp-mux、BUNDLE），这对 akio-webrtc 足够；但 RFC 8445 的数据流可以有多个组件，最典型
 的情形是 RTP 用一个端口、RTCP 用下一个端口（SIP 终端、较老的 RTP 协议栈、只有 `a=rtcp` 没有
 `a=rtcp-mux`），需要两个组件。crate README 把“多组件”列为未实现。
 
@@ -20,7 +20,7 @@ foundation；初始状态下，每个 foundation 中组件号最小的候选对�
 （§8.1.2），同意新鲜度在每个选定候选对上运行（RFC 7675 §5），检查的 PRIORITY 用组件号计算
 （§7.1.1）。角色（及其 tie-breaker）属于代理而不是组件。
 
-单组件 API 被 only-webrtc 使用，而另一个会话正在同时修改 only-webrtc；它必须保持源码兼容、行为
+单组件 API 被 akio-webrtc 使用，而另一个会话正在同时修改 akio-webrtc；它必须保持源码兼容、行为
 完全不变。
 
 ## 决定
@@ -56,10 +56,10 @@ foundation；初始状态下，每个 foundation 中组件号最小的候选对�
    `IceAgent::{components, selected_pair_of, send_pair_of}` 以及
    `IceEvent::ComponentSelectedPair { component, local, remote }`（`IceEvent` 是
    `#[non_exhaustive]`）。`IceEvent::SelectedPair`、`selected_pair()` 与 `send_pair()` 仍是组件 1
-   的，所以匹配 `SelectedPair { local, remote }` 的调用方（only-webrtc）照常编译、行为不变。
+   的，所以匹配 `SelectedPair { local, remote }` 的调用方（akio-webrtc）照常编译、行为不变。
    `Transmit` 不增加组件字段：它的 `source` 就是调用方需要的本地套接字。ICE 状态的文档改为针对所有
    组件。唯一的源码级不兼容：crate 外部用结构体字面量构造 `IceConfig` 时必须加上
-   `components: 1`（only-ice 属于内部层级；workspace 中都用 `IceConfig::new` 构造配置，它会设置该
+   `components: 1`（akio-ice 属于内部层级；workspace 中都用 `IceConfig::new` 构造配置，它会设置该
    字段）。
 
 ## 影响
@@ -75,13 +75,13 @@ foundation；初始状态下，每个 foundation 中组件号最小的候选对�
   测试（28 个模拟、18 个单元）不加修改全部通过。
 - 互通（`tests/libnice.rs`、`tools/interop/ice/run.sh`）：通过回环 UDP 与 libnice 0.1.21（Debian 12）
   的一个双组件数据流互通五种组合（libnice 控制方分别用激进提名与常规提名、libnice 受控、libnice
-  lite、only-ice lite）：双方为每个组件选定同一候选对，libnice 报告两个组件都 `ready`，两个组件上
+  lite、akio-ice lite）：双方为每个组件选定同一候选对，libnice 报告两个组件都 `ready`，两个组件上
   都双向传输数据。pion/ice 只有一个组件，因此 `tests/pion.rs` 不变。
 - 模糊测试：`ice_stun` 也驱动双组件代理（完整控制方、启用激进提名与重新提名的受控方、lite），在两个
   组件的地址上输入数据报；新增一个带组件 2 候选行的种子。
 - 代价：每个组件有自己的同意定时器和检查（每个选定候选对每 5 s ±20 % 一次）；100 个候选对的上限由
   所有组件共享。
-- 未做：在 only-webrtc 中接入不带 rtcp-mux 的数据流（提供或接受只有 `a=rtcp`、没有 `a=rtcp-mux` 的
-  媒体、每个 m 行第二个套接字、组件 2 上的 RTCP）：only-webrtc 仍只用组件 1，未作修改。当多条路径
+- 未做：在 akio-webrtc 中接入不带 rtcp-mux 的数据流（提供或接受只有 `a=rtcp`、没有 `a=rtcp-mux` 的
+  媒体、每个 m 行第二个套接字、组件 2 上的 RTCP）：akio-webrtc 仍只用组件 1，未作修改。当多条路径
   同样可用时，把所有组件提名到同一 foundation 上（每个组件独立选择自己的最佳候选对；由于 foundation
   共享且有 Frozen 顺序，它们通常落在同一路径上）。

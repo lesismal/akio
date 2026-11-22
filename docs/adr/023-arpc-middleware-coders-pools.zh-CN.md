@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only-arpc` 已实现 Go arpc 的线路格式（调用、通知、stream、广播、重连），但缺少 Go arpc 应用常用的
+`akio-arpc` 已实现 Go arpc 的线路格式（调用、通知、stream、广播、重连），但缺少 Go arpc 应用常用的
 三样东西（DEV-PLAN M4 中的"未做"）：
 
 - **中间件**（`Handler.Use`）：在 handler 外层做认证、日志、计时、恢复；
@@ -23,7 +23,7 @@ Go 的 `Use` 依赖注册顺序：中间件在其后注册的 handler 之前执�
 
 ## 决定
 
-`only-arpc` 中新增的 API（`CallError` 新增一个变体；该枚举是 `#[non_exhaustive]`）：
+`akio-arpc` 中新增的 API（`CallError` 新增一个变体；该枚举是 `#[non_exhaustive]`）：
 
 - **中间件**：`Routes::middleware(Fn(&mut Context, Next))`（所有请求和通知，包括未知方法）与
   `Routes::method_middleware(method, ...)`。顺序固定，与注册先后无关：先按添加顺序执行全局
@@ -38,7 +38,7 @@ Go 的 `Use` 依赖注册顺序：中间件在其后注册的 handler 之前执�
   发送时按添加顺序编码，接收时逆序解码（与 Go 相同）。每个 coder 之后自动修正 body 长度；解码后
   body 超过 `max_body_bytes` 或解码出错都会关闭连接；ping 和 pong 不经过 coder。内置：
   `Gzip::new(threshold)`（第 7 位，与 Go 一样压缩第 5 字节起的内容；解压量受 `max_body_bytes`
-  限制，借助 `only_deflate::decompress` 的上限，压缩炸弹最多耗费该上限）与
+  限制，借助 `akio_deflate::decompress` 的上限，压缩炸弹最多耗费该上限）与
   `Appender::new(name, bit)`（Go 追加器的布局：名字、值、2 字节大端长度；在 Go 会 panic 的地方
   做严格的长度检查）。`Values` 是一个小的字符串 → 字节映射（基于 `Vec`，为空时零开销）。调用用
   `Peer::call_with` / `call_async_with` / `notify_with` 携带值；应答用请求的值编码，与 Go 相同。
@@ -57,7 +57,7 @@ Go 的 `Use` 依赖注册顺序：中间件在其后注册的 handler 之前执�
 
 互通：`tools/interop/arpc/run.sh` 除原有检查外，还用 fib 的 Go arpc 服务端和客户端（带 arpcex 的
 gzip 与追加器 coder，移植到 fib 的 `MessageCoder`，位相同，以及一个拒绝缺少 trace 值的调用的 Go
-中间件）对接配置了相同 coder 链、并有同样功能的 Rust 中间件的 only-arpc 服务端和连接池，双向检查；
+中间件）对接配置了相同 coder 链、并有同样功能的 Rust 中间件的 akio-arpc 服务端和连接池，双向检查；
 两端都统计自己解压的压缩帧数。模糊测试：新目标 `arpc_coders`（帧 → coder 链 → 解析，切分无关性、
 解码大小上限、编码/解码恒等）。
 
@@ -81,4 +81,4 @@ gzip 与追加器 coder，移植到 fib 的 `MessageCoder`，位相同，以及�
   波动约 4%，均在噪声范围内。`perf stat` 每次调用：用户态指令 4963 → 5034（+1.5%，来自等待上限与
   coder、心跳检查），每个中间件 +40；每次调用的周期数不变（7008 / 6939 / 6865）；每次调用的系统
   调用数相同。
-- `only-arpc` 现在依赖 `only-deflate`（workspace 内部，不涉及 ADR-005）。
+- `akio-arpc` 现在依赖 `akio-deflate`（workspace 内部，不涉及 ADR-005）。

@@ -1,6 +1,6 @@
 //! Round trips, merge semantics, limits and hostile input for the generated messages.
 
-use only_protobuf::{DecodeErrorKind, Enumeration, Message, Name};
+use akio_protobuf::{DecodeErrorKind, Enumeration, Message, Name};
 use protobuf_test::test::{
     all::{AllTypes, Color, Small, all_types},
     btree::{Sorted, sorted},
@@ -63,7 +63,7 @@ fn merging_follows_the_specification() {
             r#type: "kept".into(),
             ..Default::default()
         }),
-        m_string_int32: [("k".to_string(), 1), ("only-a".to_string(), 0)].into(),
+        m_string_int32: [("k".to_string(), 1), ("akio-a".to_string(), 0)].into(),
         choice: Some(all_types::Choice::CNested(nested(5))),
         ..Default::default()
     };

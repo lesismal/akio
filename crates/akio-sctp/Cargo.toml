@@ -1,0 +1,26 @@
+[package]
+name = "akio-sctp"
+description = "akio internals: sans-io SCTP over DTLS (RFC 4960/9260, 3758, 6525, 8260, 8261) with WebRTC data channels (RFC 8831/8832)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-sctp"
+keywords = ["sctp", "webrtc", "datachannel", "sans-io"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_sctp::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+akio-crypto = { workspace = true }
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

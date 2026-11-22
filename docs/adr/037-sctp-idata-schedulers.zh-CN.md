@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only-sctp` 是自研 WebRTC 协议栈的数据通道层，此前按先到先服务的顺序用 DATA chunk 发送消息。
+`akio-sctp` 是自研 WebRTC 协议栈的数据通道层，此前按先到先服务的顺序用 DATA chunk 发送消息。
 DATA 消息的各分片必须占用连续的 TSN，所以一条大消息一旦开始发送，其他通道都要等它的最后一个分片：
 一个通道上 256 KiB 的文件传输，会让另一个通道上的聊天消息一直等到这次传输全部离开拥塞窗口为止。
 DATA_CHANNEL_OPEN 中携带的通道优先级只被记录下来，从未使用。
@@ -55,9 +55,9 @@ DATA。已核实的对端：pion/sctp v1.12.0 实现了 RFC 8260 并默认提供
 
 ## 影响
 
-- 公开 API（only-sctp，Internal 层级，仅新增）：`Config::{message_interleaving, scheduler}` 及其
+- 公开 API（akio-sctp，Internal 层级，仅新增）：`Config::{message_interleaving, scheduler}` 及其
   builder、`Scheduler`（`#[non_exhaustive]`）、`ChannelOptions::with_priority`、
-  `Association::{set_channel_priority, message_interleaving}`。only-webrtc 不变，沿用新的默认值。
+  `Association::{set_channel_priority, message_interleaving}`。akio-webrtc 不变，沿用新的默认值。
 - 队头阻塞：在 20 ms 的模拟链路上，一条 200 kB 的消息先于另一个通道上的 4 字节消息排队：使用 I-DATA
   和任一交错调度器时，小消息在第一个往返内到达，远早于大消息；先到先服务或不使用 I-DATA 时，小消息
   在大消息之后到达（`head_of_line_blocking`）。
@@ -69,7 +69,7 @@ DATA。已核实的对端：pion/sctp v1.12.0 实现了 RFC 8260 并默认提供
   与 DATA。模糊测试目标 `sctp_packet` 驱动一对 I-DATA 关联和一对 DATA 关联，种子中包含 I-DATA、
   I-FORWARD-TSN 和不匹配的 chunk。
 - 互通：基于 UDP 与 pion/sctp v1.12.0（新增 `tools/interop/sctp/run.sh`：两种角色，pion 的交错开与关，
-  有无丢包）；only-webrtc 与 pion WebRTC（每个关联都协商了 I-DATA），以及与无头 Chrome 157 的双向
+  有无丢包）；akio-webrtc 与 pion WebRTC（每个关联都协商了 I-DATA），以及与无头 Chrome 157 的双向
   offer（默认 DATA；强制打开 field trial 后的 I-DATA 也通过）。
-- 未完成：与 usrsctp（Firefox）的互通，未检查；优先级之外的每流调度参数；在 only-webrtc 的 API 中暴露
+- 未完成：与 usrsctp（Firefox）的互通，未检查；优先级之外的每流调度参数；在 akio-webrtc 的 API 中暴露
   优先级或调度器（那里的通道使用默认优先级）。

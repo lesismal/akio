@@ -1,4 +1,4 @@
-# ADR-087: Fullband and per-bitrate E-model, and an audio jitter buffer in only-webrtc
+# ADR-087: Fullband and per-bitrate E-model, and an audio jitter buffer in akio-webrtc
 
 English | [简体中文](087-fullband-emodel-audio-jitter-buffer.zh-CN.md)
 
@@ -8,7 +8,7 @@ Status: accepted (2026-11-22)
 
 ADR-085 rates received audio with the E-model for the RTCP XR VoIP metrics. It left four
 things out: G.107.2 (fullband), codec values that follow the bitrate, G.722's `Bpl,wb` with its
-appendix concealment, and a jitter buffer in only-webrtc, which hands audio frames to the
+appendix concealment, and a jitter buffer in akio-webrtc, which hands audio frames to the
 application as they arrive.
 
 Reading the in-force texts again showed that ADR-085's wideband model was not G.107.1 (06/2019,
@@ -25,7 +25,7 @@ The numbers come from the ITU-T PDFs: G.107 (06/2015), G.107.1 (06/2019 + Cor. 1
 
 ## Decision
 
-### 1. The E-model (only-rtp)
+### 1. The E-model (akio-rtp)
 
 - **Wideband, corrected** to G.107.1 with Corrigendum 1: `R = 129 - Id,WB - Ie,eff,WB`, its
   talker echo, `1.29 Idd`, and 95 in Eq. 7-15. G.107.1 has no burst ratio. G.107's
@@ -66,11 +66,11 @@ The numbers come from the ITU-T PDFs: G.107 (06/2015), G.107.1 (06/2019 + Cor. 1
     Michael, Mittag and Möller derived for Opus 1.3 from P.863 (DAGA 2021, Table 2). Its `Bpl,fb`
     is assumed equal to EVS's at the same rate, since no Opus `Bpl` is published.
   - `Plc::of_codec` adds EVS (`Enhanced`) and AMR / AMR-WB (`Standard`).
-- **The only-webrtc bitrate**: payload bits per packet over the packet length. The length is the
+- **The akio-webrtc bitrate**: payload bits per packet over the packet length. The length is the
   jitter buffer's measured frame length, else 20 ms. Packets of 2 bytes or less (Opus DTX) are
   left out. The count covers each report interval, so Opus is rated fullband at its real rate.
 
-### 2. The jitter buffer (only-rtp)
+### 2. The jitter buffer (akio-rtp)
 
 `JitterBuffer<T>` is sans-IO and holds one stream of single-packet frames. Frames go in with
 `push(ext_seq, ts, marker, arrival, data, bytes)`. They come out with `pop(now)` in sequence
@@ -109,7 +109,7 @@ order at their playout instants, and `poll_timeout()` says when the next one is 
 - **Bounds** (docs/rules.md): the slots, at most 1002 histogram buckets, and 4096 discarded
   numbers. Each packet costs O(1), plus a histogram scan up to the percentile every 8 packets.
 
-### 3. only-webrtc
+### 3. akio-webrtc
 
 - `RtcConfig::set_audio_jitter_buffer(Option<PlayoutDelay>)`, off by default.
   - When on, in frame mode, each received audio stream goes through a `JitterBuffer` in place of
@@ -131,11 +131,11 @@ order at their playout instants, and `poll_timeout()` says when the next one is 
 
 The change is additive.
 
-- only-rtp:
+- akio-rtp:
   - `EModel::{fullband, with_burst_robustness, is_fullband, for_codec_rate, scaled_delay_impairment}`.
   - `JitterBuffer`, `JitterBufferStats`, `JitterFrame`, `JitterPush`, `PlayoutDelay`.
   - `MAX_PLAYOUT_DELAY`, `JITTER_BUFFER_MAX_FRAMES`, `JITTER_BUFFER_MAX_BYTES`.
-- only-webrtc: `RtcConfig::set_audio_jitter_buffer`, `Peer::jitter_buffer_stats`, and
+- akio-webrtc: `RtcConfig::set_audio_jitter_buffer`, `Peer::jitter_buffer_stats`, and
   `MediaData::playout_time` (a new field of a `#[non_exhaustive]` struct).
 
 Some values change without an API change:
@@ -144,11 +144,11 @@ Some values change without an API change:
   129), and with delay the wideband echo terms apply.
 - G.722 takes the diotic `Ie,wb` 5. With an application-declared concealment it also takes
   Table IV.4's `Bpl,wb`.
-- only-webrtc measures the Opus bitrate, so Opus rates fullband by it.
+- akio-webrtc measures the Opus bitrate, so Opus rates fullband by it.
 
 ## Consequences
 
-- **Tests, only-rtp `tests_voip.rs`**:
+- **Tests, akio-rtp `tests_voip.rs`**:
   - G.107.1 defaults: `Idle,WB` 0.1537, R 128.846, MOS 4.4992.
   - G.722 with Appendix III PLC at 2 %: `Ie,eff,WB` 24.78, R 104.07, MOS 4.0491. With
     Appendix IV PLC: 30.35.
@@ -160,7 +160,7 @@ Some values change without an API change:
   - The table lookups by rate, and Opus monotone in its bitrate.
   - The published documents have no worked examples beyond the defaults. These values were
     computed from the equations, independently of the code.
-- **Tests, only-rtp `tests_jitter.rs`**, at 20 ms frames:
+- **Tests, akio-rtp `tests_jitter.rs`**, at 20 ms frames:
   - 3000 frames under 0..60 ms uniform jitter with 3 % loss: delay 58 ms, 708 reordered, every
     packet accounted for once.
   - Duplicates and late packets.
@@ -168,7 +168,7 @@ Some values change without an API change:
   - A talkspurt after 1.2 s of +600 ms delay restarts at the target (< 15 ms). A stream without
     pauses shrinks by at most one frame at a time (5 to 20 shrinks over 19 s).
   - The bounds: bytes, slots, a jump, the delay bounds, timestamp wrap.
-- **Tests, only-webrtc `tests_mux.rs`** (simulated network):
+- **Tests, akio-webrtc `tests_mux.rs`** (simulated network):
   - 10..70 ms one way with 3 % loss: 489 frames out in order, all within 5 ms of their playout
     instant; the delay is 60 ms. The sender's metrics carry nominal 60 / abs max 500, RX config
     adaptive, and R 79 for 32 kbit/s Opus.

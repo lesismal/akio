@@ -1,21 +1,21 @@
 # Backpressure
 
 `send` never blocks. That makes the I/O thread safe, but it means a fast producer and a slow
-consumer will queue data in memory unless something pushes back. `only` pushes back at three
+consumer will queue data in memory unless something pushes back. `akio` pushes back at three
 levels.
 
 ## 1. Reads pause when a connection's own queue is high
 
 When a connection has at least `Config::write_high_watermark` bytes queued (default 256 KiB),
-`only` stops reading from it, and resumes when the queue falls to a quarter of that. A client
+`akio` stops reading from it, and resumes when the queue falls to a quarter of that. A client
 that pipelines requests without reading the responses therefore slows itself down instead of
-growing the server's memory. Each pause is counted (`only_backpressure_events_total`) and
+growing the server's memory. Each pause is counted (`akio_backpressure_events_total`) and
 visible per connection in the connection table.
 
 ## 2. `send` fails beyond a hard limit
 
 Beyond `Config::max_queued_bytes` per connection (default 64 MiB), `send*` returns
-`Error::Overloaded` and queues nothing (counted in `only_overloaded_total`). Treat it as "this
+`Error::Overloaded` and queues nothing (counted in `akio_overloaded_total`). Treat it as "this
 peer is not keeping up": close it, or drop the message, or stop producing.
 
 Producers that run outside callbacks (a thread streaming a file, a broadcaster) should pace
@@ -28,7 +28,7 @@ When data flows from connection A to connection B (proxies, tunnels, fan-in), B'
 grows. Stop reading A while B is behind, and resume A when B has drained:
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:backpressure}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:backpressure}}
 ```
 
 - `hold_reads(true)` stops reading from the peer (the kernel's receive buffer then fills and TCP
@@ -44,7 +44,7 @@ grows. Stop reading A while B is behind, and resume A when B has drained:
   pacing bounds memory instead (`Config::max_queued_bytes` still applies). HTTP `CONNECT` or
   upgrade relays use `RawConn::set_relayed`.
 
-only-socks relays exactly this way in both directions.
+akio-socks relays exactly this way in both directions.
 
 ## Pools and protocols
 

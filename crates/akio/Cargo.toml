@@ -1,0 +1,58 @@
+[package]
+name = "akio"
+description = "akio: an event-driven, thread-per-core network library (epoll, kqueue, io_uring) with TLS, UDP and eBPF steering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio"
+keywords = ["network", "event-loop", "io-uring", "epoll", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+akio-core = { workspace = true }
+akio-buf = { workspace = true }
+akio-epoll = { workspace = true }
+akio-ebpf = { workspace = true }
+akio-tls = { workspace = true }
+akio-dpdk = { workspace = true, optional = true }
+akio-log = { workspace = true }
+# Socket setup the engine does itself (`bind_udp_multicast`, `dial_from`).
+akio-sys = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+akio-uring = { workspace = true }
+
+[features]
+# Experimental (outside the semver promise, docs/api-stability.md): `Backend::Dpdk`, the
+# userspace TCP/IP stack over TAP / AF_PACKET / in-memory devices.
+dpdk = ["dep:akio-dpdk"]
+# Also DPDK ports (`akio::dpdk::Device::Dpdk`): links libdpdk, found with pkg-config (Linux).
+dpdk-pmd = ["dpdk", "akio-dpdk/pmd"]
+# Raw access to wrapped dependencies (`akio::tls::rustls`, `from_rustls` ...): outside the
+# semver promise (docs/api-stability.md).
+unstable = ["akio-tls/unstable"]
+# Linux kernel TLS for TLS connections (`akio::tls::Ktls`, ADR-067); off unless configured.
+ktls = ["akio-tls/ktls"]
+# Bridge to the `log` crate: `akio`'s records go to `log`'s logger (env_logger, tracing-log ...)
+# while no akio-log logger is installed; `akio::log::bridge` routes `log` records the other way.
+# Outside the semver promise (docs/api-stability.md).
+log = ["akio-core/log", "akio-log/log"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Interop: a rustls client drives tests/tls.rs and tests/chaos_tls.rs against the own TLS stack
+# (a dev-dependency only: no library of the workspace uses rustls since DEV-PLAN wave D).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+libc = "0.2"
+akio-core = { workspace = true }
+akio-buf = { workspace = true }
+akio-x509 = { workspace = true }
+# tests/logging_bridge.rs: the `log` bridge, with a `log` crate logger.
+akio-log = { workspace = true, features = ["log"] }
+log = { version = "0.4.21", features = ["kv"] }

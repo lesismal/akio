@@ -6,7 +6,7 @@
 
 ## 背景
 
-`only-bittorrent` 此前只支持 v1 种子。`docs/DEV-PLAN.md`（M7）列出了剩余工作：BEP 52（v2
+`akio-bittorrent` 此前只支持 v1 种子。`docs/DEV-PLAN.md`（M7）列出了剩余工作：BEP 52（v2
 与混合种子）、Web 种子（BEP 19）、本地服务发现 LSD（BEP 14）、BEP 44、IPv6 DHT（BEP 32），以及
 速率与做种限制。纯 v2 种子会以 `MetaError::Unsupported` 拒绝；混合种子只按其 v1 部分读取。客户端
 每个种子只有一个 `InfoHash`，只监听一个地址族，并且传输速度不受限制。
@@ -50,13 +50,13 @@
    对等方不再询问；纯 v2 文件的分片层未知前不选取其分片。客户端为已有的分片层、以及已有分片的块哈希
    （在逻辑池上读取，每个对等方最多 8 个）应答哈希请求，其余一律回复 hash reject。用于应答的默克尔
    树缓存有上限（64）。
-5. **IPv6。** 不另开一对套接字：监听 `[::]:port` 时引擎套接字为双栈（`only-sys` 绑定 IPv6 套接字时
+5. **IPv6。** 不另开一对套接字：监听 `[::]:port` 时引擎套接字为双栈（`akio-sys` 绑定 IPv6 套接字时
    已关闭 `IPV6_V6ONLY`），`UdpPort` 与 TCP 接收端以普通 IPv4 地址（而非 `::ffff:a.b.c.d`）报告
    IPv4 对等方，发送时再映射回去。DHT `Node` 在 IPv4 路由表之外维护一张 IPv6 路由表（BEP 32）：
    `compact_nodes6`、`parse_compact_nodes6`、`Node::{set_ipv6, table6_len}`，应答中的 `nodes6`
    与 `want`，以及按询问方地址族返回的 values；客户端在双栈监听时自动开启（`Client::dht_nodes6`）。
    PEX 与 tracker 本已支持 IPv6 对等方。
-6. **Web 种子（BEP 19）** 经由 only-http 客户端（最多 5 次重定向，每个请求 60 秒，每个范围请求
+6. **Web 种子（BEP 19）** 经由 akio-http 客户端（最多 5 次重定向，每个请求 60 秒，每个范围请求
    不超过 4 MiB，响应体也以此为上限）：每个 Web 种子同时只取一个分片，每个种子最多 16 个 Web 种子，
    优先选择已连接对等方都没有的分片，从不请求填充，要求 `206`（整文件时可为 `200`），失败或哈希
    校验失败后从 10 秒起指数退避到 10 分钟，并上报 `TorrentEvent::WebSeedError`。

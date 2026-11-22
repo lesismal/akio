@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-webrtc <-> headless Firefox data channels (usrsctp on Firefox's side), both offer
+# akio-webrtc <-> headless Firefox data channels (usrsctp on Firefox's side), both offer
 # directions: Firefox offers to the only ICE-lite RtcServer (echoes on ordered and unordered
 # channels, 70 kB and 200 kB messages, an idle spell with HEARTBEATs both ways, a channel
 # closed by Firefox and a new one), and the only full-ICE Endpoint offers to Firefox (echo).
@@ -15,12 +15,12 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 if [ -z "${FIREFOX:-}" ]; then
   FIREFOX=$(command -v firefox || echo "/Applications/Firefox.app/Contents/MacOS/firefox")
 fi
-cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop
+cd "$ROOT" && cargo build -q --release -p akio-webrtc --example webrtc-interop
 RS=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/webrtc-interop
 W=$(mktemp -d)
 (cd "$ROOT/tools/interop/webrtc/firefox" && GOFLAGS=-mod=mod go build -o "$W/ff" .)
 if [ -d "$HOME/snap/firefox/common" ]; then
-  PROFILE=$(mktemp -d "$HOME/snap/firefox/common/only-ff.XXXXXX")
+  PROFILE=$(mktemp -d "$HOME/snap/firefox/common/akio-ff.XXXXXX")
 else
   PROFILE=$W/profile
   mkdir -p "$PROFILE"
@@ -39,7 +39,7 @@ user_pref("media.navigator.permission.disabled", true);
 EOF
 "$FIREFOX" --headless --no-remote --profile "$PROFILE" --remote-debugging-port=9620 about:blank \
   >"$W/firefox.log" 2>&1 & PIDS="$PIDS $!"
-ONLY_LOG=only_webrtc=debug $RS server $IP:9610 127.0.0.1:9611 $IP:9613 2>"$W/server.log" &
+AKIO_LOG=akio_webrtc=debug $RS server $IP:9610 127.0.0.1:9611 $IP:9613 2>"$W/server.log" &
 PIDS="$PIDS $!"
 sleep 3
 "$FIREFOX" --version 2>/dev/null | grep -i firefox || true
@@ -49,7 +49,7 @@ echo "== Firefox offers to the only ICE-lite server"
 echo "== only (full ICE Endpoint) offers to Firefox"
 "$W/ff" 9620 answer 127.0.0.1:9612 2>"$W/answer.log" & PIDS="$PIDS $!"
 for _ in $(seq 100); do grep -q "answerer on" "$W/answer.log" && break; sleep 0.1; done
-ONLY_INTEROP_BIND=$IP:0 ONLY_LOG=only_webrtc=debug $RS client 127.0.0.1:9612 dc 2>"$W/client.log"
+AKIO_INTEROP_BIND=$IP:0 AKIO_LOG=akio_webrtc=debug $RS client 127.0.0.1:9612 dc 2>"$W/client.log"
 # The DTLS version of each side (DTLS 1.3 by default, ADR-048).
 grep -ho "dtls: connected with DTLS 1\.[23]" "$W/server.log" "$W/client.log"
 echo "webrtc firefox interop: all passed"

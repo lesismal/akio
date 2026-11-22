@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-webrtc <-> headless Chrome: FEC, RFC 8888, RTCP XR and TMMBR (ADR-039). Chrome offers VP8
+# akio-webrtc <-> headless Chrome: FEC, RFC 8888, RTCP XR and TMMBR (ADR-039). Chrome offers VP8
 # video to the only fec-server, which echoes it back through a UDP proxy that drops RTP:
 #   1. one RTP packet in 20 dropped each way and NACK removed from the SDP, so FEC is the only
 #      repair: without FEC Chrome decodes few frames; with ULPFEC (red + ulpfec) and with FlexFEC
@@ -20,7 +20,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 TRIALS="WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/"
-cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop
+cd "$ROOT" && cargo build -q --release -p akio-webrtc --example webrtc-interop
 RS=$ROOT/target/release/examples/webrtc-interop
 W=$(mktemp -d)
 CP=""
@@ -92,7 +92,7 @@ red() { # <label> <RED blocks or empty>
     --autoplay-policy=no-user-gesture-required --allow-loopback-in-peer-connection \
     --no-first-run --no-default-browser-check --disable-features=WebRtcHideLocalIpsWithMdns \
     about:blank >"$W/chrome-$1.log" 2>&1 & CP=$!
-  ONLY_INTEROP_RED=$2 ONLY_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 \
+  AKIO_INTEROP_RED=$2 AKIO_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 \
     127.0.0.1:9632 loss-in=10 loss-out=10 2>"$W/$1.log" & SP=$!
   sleep 2
   node "$ROOT/tools/interop/webrtc/browser.mjs" 9620 red 127.0.0.1:9632 15 >"$W/$1.out"
@@ -116,7 +116,7 @@ rm -rf "$W/profile-sim"
   --use-fake-device-for-media-stream --use-fake-ui-for-media-stream \
   --allow-loopback-in-peer-connection --no-first-run --no-default-browser-check \
   --disable-features=WebRtcHideLocalIpsWithMdns about:blank >"$W/chrome-sim.log" 2>&1 & CP=$!
-ONLY_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 127.0.0.1:9632 fec=ulpfec \
+AKIO_INTEROP_STATS=1 "$RS" fec-server 127.0.0.1:9630 127.0.0.1:9631 127.0.0.1:9632 fec=ulpfec \
   loss-in=5 periodic 2>"$W/sim.log" & SP=$!
 sleep 2
 node "$ROOT/tools/interop/webrtc/browser.mjs" 9620 simulcast-fec 127.0.0.1:9632 15 >"$W/sim.out"

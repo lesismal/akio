@@ -1,0 +1,236 @@
+pub mod akio_socks
+pub use akio_socks::ProxyRefused
+pub mod akio_socks::gssapi
+pub use akio_socks::gssapi::GssContext
+pub use akio_socks::gssapi::GssStep
+pub use akio_socks::gssapi::Protection
+#[non_exhaustive] pub enum akio_socks::Command
+pub akio_socks::Command::Bind
+pub akio_socks::Command::Connect
+pub akio_socks::Command::UdpAssociate
+pub akio_socks::Command::UdpDatagram
+impl core::clone::Clone for akio_socks::Command
+pub fn akio_socks::Command::clone(&self) -> Self
+impl core::cmp::Eq for akio_socks::Command
+impl core::cmp::PartialEq for akio_socks::Command
+pub fn akio_socks::Command::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_socks::Command
+pub fn akio_socks::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_socks::Command
+pub fn akio_socks::Command::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_socks::Command
+impl core::marker::StructuralPartialEq for akio_socks::Command
+impl core::marker::Send for akio_socks::Command
+impl core::marker::Sync for akio_socks::Command
+impl core::marker::Unpin for akio_socks::Command
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::Command
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::Command
+pub enum akio_socks::Dest
+pub akio_socks::Dest::Addr(core::net::socket_addr::SocketAddr)
+pub akio_socks::Dest::Name(alloc::string::String, u16)
+impl akio_socks::Dest
+pub fn akio_socks::Dest::port(&self) -> u16
+impl core::clone::Clone for akio_socks::Dest
+pub fn akio_socks::Dest::clone(&self) -> Self
+impl core::cmp::Eq for akio_socks::Dest
+impl core::cmp::PartialEq for akio_socks::Dest
+pub fn akio_socks::Dest::eq(&self, &Self) -> bool
+impl core::convert::From<core::net::socket_addr::SocketAddr> for akio_socks::Dest
+pub fn akio_socks::Dest::from(core::net::socket_addr::SocketAddr) -> akio_socks::Dest
+impl core::fmt::Debug for akio_socks::Dest
+pub fn akio_socks::Dest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_socks::Dest
+pub fn akio_socks::Dest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_socks::Dest
+pub fn akio_socks::Dest::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_socks::Dest
+impl core::marker::Send for akio_socks::Dest
+impl core::marker::Sync for akio_socks::Dest
+impl core::marker::Unpin for akio_socks::Dest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::Dest
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::Dest
+#[non_exhaustive] pub enum akio_socks::Destinations
+pub akio_socks::Destinations::Any
+pub akio_socks::Destinations::Custom(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync)>)
+pub akio_socks::Destinations::PublicOnly
+impl akio_socks::Destinations
+pub fn akio_socks::Destinations::allows(&self, core::net::socket_addr::SocketAddr) -> bool
+impl core::clone::Clone for akio_socks::Destinations
+pub fn akio_socks::Destinations::clone(&self) -> Self
+impl core::default::Default for akio_socks::Destinations
+pub fn akio_socks::Destinations::default() -> Self
+impl core::fmt::Debug for akio_socks::Destinations
+pub fn akio_socks::Destinations::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::Destinations
+impl core::marker::Sync for akio_socks::Destinations
+impl core::marker::Unpin for akio_socks::Destinations
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_socks::Destinations
+impl !core::panic::unwind_safe::UnwindSafe for akio_socks::Destinations
+#[non_exhaustive] pub enum akio_socks::Version
+pub akio_socks::Version::Socks4
+pub akio_socks::Version::Socks4a
+pub akio_socks::Version::Socks5
+impl core::clone::Clone for akio_socks::Version
+pub fn akio_socks::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_socks::Version
+impl core::cmp::PartialEq for akio_socks::Version
+pub fn akio_socks::Version::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_socks::Version
+pub fn akio_socks::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_socks::Version
+pub fn akio_socks::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_socks::Version
+impl core::marker::StructuralPartialEq for akio_socks::Version
+impl core::marker::Send for akio_socks::Version
+impl core::marker::Sync for akio_socks::Version
+impl core::marker::Unpin for akio_socks::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::Version
+pub struct akio_socks::BlockingBind
+impl akio_socks::BlockingBind
+pub fn akio_socks::BlockingBind::accept(self) -> core::io::error::Result<(std::net::tcp::TcpStream, core::net::socket_addr::SocketAddr)>
+pub fn akio_socks::BlockingBind::bound_addr(&self) -> core::net::socket_addr::SocketAddr
+impl core::fmt::Debug for akio_socks::BlockingBind
+pub fn akio_socks::BlockingBind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::BlockingBind
+impl core::marker::Sync for akio_socks::BlockingBind
+impl core::marker::Unpin for akio_socks::BlockingBind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::BlockingBind
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::BlockingBind
+pub struct akio_socks::BlockingUdp
+impl akio_socks::BlockingUdp
+pub fn akio_socks::BlockingUdp::is_open(&self) -> bool
+pub fn akio_socks::BlockingUdp::local_addr(&self) -> core::io::error::Result<core::net::socket_addr::SocketAddr>
+pub fn akio_socks::BlockingUdp::recv_from(&self, &mut [u8]) -> core::io::error::Result<(usize, akio_socks::Dest)>
+pub fn akio_socks::BlockingUdp::relay_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_socks::BlockingUdp::send_fragmented(&self, &[u8], &akio_socks::Dest, usize) -> core::io::error::Result<()>
+pub fn akio_socks::BlockingUdp::send_to(&self, &[u8], &akio_socks::Dest) -> core::io::error::Result<()>
+pub fn akio_socks::BlockingUdp::set_read_timeout(&self, core::option::Option<core::time::Duration>) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_socks::BlockingUdp
+pub fn akio_socks::BlockingUdp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::BlockingUdp
+impl core::marker::Sync for akio_socks::BlockingUdp
+impl core::marker::Unpin for akio_socks::BlockingUdp
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::BlockingUdp
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::BlockingUdp
+#[non_exhaustive] pub struct akio_socks::ProxyConfig
+pub akio_socks::ProxyConfig::destinations: akio_socks::Destinations
+pub akio_socks::ProxyConfig::handshake_timeout: core::option::Option<core::time::Duration>
+pub akio_socks::ProxyConfig::idle_timeout: core::option::Option<core::time::Duration>
+pub akio_socks::ProxyConfig::sockmap: core::option::Option<akio_ebpf::relay::Relay>
+impl core::clone::Clone for akio_socks::ProxyConfig
+pub fn akio_socks::ProxyConfig::clone(&self) -> Self
+impl core::default::Default for akio_socks::ProxyConfig
+pub fn akio_socks::ProxyConfig::default() -> akio_socks::ProxyConfig
+impl core::fmt::Debug for akio_socks::ProxyConfig
+pub fn akio_socks::ProxyConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::ProxyConfig
+impl core::marker::Sync for akio_socks::ProxyConfig
+impl core::marker::Unpin for akio_socks::ProxyConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_socks::ProxyConfig
+impl !core::panic::unwind_safe::UnwindSafe for akio_socks::ProxyConfig
+pub struct akio_socks::Request<'a>
+impl<'a> akio_socks::Request<'a>
+pub fn akio_socks::Request<'a>::client(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_socks::Request<'a>::command(&self) -> akio_socks::Command
+pub fn akio_socks::Request<'a>::dest(&self) -> &'a akio_socks::Dest
+pub fn akio_socks::Request<'a>::user(&self) -> core::option::Option<&'a str>
+pub fn akio_socks::Request<'a>::version(&self) -> u8
+impl<'a> core::clone::Clone for akio_socks::Request<'a>
+pub fn akio_socks::Request<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_socks::Request<'a>
+pub fn akio_socks::Request<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_socks::Request<'a>
+impl<'a> core::marker::Send for akio_socks::Request<'a>
+impl<'a> core::marker::Sync for akio_socks::Request<'a>
+impl<'a> core::marker::Unpin for akio_socks::Request<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_socks::Request<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_socks::Request<'a>
+pub struct akio_socks::Socks
+impl akio_socks::Socks
+pub fn akio_socks::Socks::allow(self, impl core::ops::function::Fn(&akio_socks::Request<'_>) -> bool + core::marker::Send + core::marker::Sync + 'static) -> akio_socks::Socks
+pub fn akio_socks::Socks::auth(self, impl core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> akio_socks::Socks
+pub fn akio_socks::Socks::bind(self, bool) -> akio_socks::Socks
+pub fn akio_socks::Socks::bind_timeout(self, core::time::Duration) -> akio_socks::Socks
+pub fn akio_socks::Socks::config(self, akio_socks::ProxyConfig) -> akio_socks::Socks
+pub fn akio_socks::Socks::destinations(self, akio_socks::Destinations) -> akio_socks::Socks
+pub fn akio_socks::Socks::gssapi(self, impl core::ops::function::Fn() -> core::io::error::Result<alloc::boxed::Box<dyn akio_ws::gss::GssContext>> + core::marker::Send + core::marker::Sync + 'static, core::ops::range::RangeInclusive<akio_ws::gss::Protection>) -> akio_socks::Socks
+pub fn akio_socks::Socks::new(akio::EngineRef) -> akio_socks::Socks
+pub fn akio_socks::Socks::sockmap(self, akio_ebpf::relay::Relay) -> akio_socks::Socks
+pub fn akio_socks::Socks::udp_associate(self, bool) -> akio_socks::Socks
+pub fn akio_socks::Socks::udp_fragment_size(self, core::option::Option<usize>) -> akio_socks::Socks
+pub fn akio_socks::Socks::udp_idle_timeout(self, core::time::Duration) -> akio_socks::Socks
+impl core::fmt::Debug for akio_socks::Socks
+pub fn akio_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_socks::Socks
+pub type akio_socks::Socks::Handler = akio_socks::SocksSession
+pub fn akio_socks::Socks::on_open(&self, &akio_core::conn::Conn<akio_socks::SocksSession>) -> akio_socks::SocksSession
+pub fn akio_socks::Socks::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::conn::Transport>>
+impl core::marker::Send for akio_socks::Socks
+impl core::marker::Sync for akio_socks::Socks
+impl core::marker::Unpin for akio_socks::Socks
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_socks::Socks
+impl !core::panic::unwind_safe::UnwindSafe for akio_socks::Socks
+pub struct akio_socks::SocksClient
+impl akio_socks::SocksClient
+pub fn akio_socks::SocksClient::auth(self, &str, &str) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::bind<A: akio_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<akio::Engine>, akio_socks::Dest, impl core::ops::function::FnOnce(core::net::socket_addr::SocketAddr) + core::marker::Send + 'static, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio_socks::SocksClient::bind_blocking(&self, &akio_socks::Dest) -> core::io::error::Result<akio_socks::BlockingBind>
+pub fn akio_socks::SocksClient::bind_timeout(self, core::option::Option<core::time::Duration>) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::dial<A: akio_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<akio::Engine>, akio_socks::Dest, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio_socks::SocksClient::dial_blocking(&self, &akio_socks::Dest) -> core::io::error::Result<std::net::tcp::TcpStream>
+pub fn akio_socks::SocksClient::from_url(&str) -> core::io::error::Result<akio_socks::SocksClient>
+pub fn akio_socks::SocksClient::gssapi(self, impl core::ops::function::Fn(&str) -> core::io::error::Result<alloc::boxed::Box<dyn akio_ws::gss::GssContext>> + core::marker::Send + core::marker::Sync + 'static, akio_ws::gss::Protection) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::handshake_timeout(self, core::option::Option<core::time::Duration>) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::new(akio_socks::Version, core::net::socket_addr::SocketAddr) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::tls(self, akio_tls::config::ClientConfig, core::option::Option<&str>) -> akio_socks::SocksClient
+pub fn akio_socks::SocksClient::udp_associate(&self, &alloc::rcs::arc::Arc<akio::Engine>, impl core::ops::function::Fn(&akio_socks::UdpAssociation, akio_socks::Dest, &[u8]) + core::marker::Send + core::marker::Sync + 'static, impl core::ops::function::FnOnce(core::io::error::Result<akio_socks::UdpAssociation>) + core::marker::Send + 'static)
+pub fn akio_socks::SocksClient::udp_associate_blocking(&self) -> core::io::error::Result<akio_socks::BlockingUdp>
+pub fn akio_socks::SocksClient::version(&self) -> akio_socks::Version
+pub fn akio_socks::SocksClient::with_host(akio_socks::Version, &str, u16) -> akio_socks::SocksClient
+impl core::clone::Clone for akio_socks::SocksClient
+pub fn akio_socks::SocksClient::clone(&self) -> Self
+impl core::fmt::Debug for akio_socks::SocksClient
+pub fn akio_socks::SocksClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::SocksClient
+impl core::marker::Sync for akio_socks::SocksClient
+impl core::marker::Unpin for akio_socks::SocksClient
+impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::SocksClient
+impl core::panic::unwind_safe::UnwindSafe for akio_socks::SocksClient
+pub struct akio_socks::SocksSession
+impl core::fmt::Debug for akio_socks::SocksSession
+pub fn akio_socks::SocksSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Handler for akio_socks::SocksSession
+pub fn akio_socks::SocksSession::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
+pub fn akio_socks::SocksSession::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for akio_socks::SocksSession
+impl core::marker::Sync for akio_socks::SocksSession
+impl core::marker::Unpin for akio_socks::SocksSession
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_socks::SocksSession
+impl !core::panic::unwind_safe::UnwindSafe for akio_socks::SocksSession
+pub struct akio_socks::UdpAssociation(_)
+impl akio_socks::UdpAssociation
+pub fn akio_socks::UdpAssociation::close(&self)
+pub fn akio_socks::UdpAssociation::is_open(&self) -> bool
+pub fn akio_socks::UdpAssociation::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_socks::UdpAssociation::relay_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_socks::UdpAssociation::send_fragmented(&self, &[u8], &akio_socks::Dest, usize) -> core::io::error::Result<()>
+pub fn akio_socks::UdpAssociation::send_to(&self, &[u8], &akio_socks::Dest) -> core::io::error::Result<()>
+impl core::clone::Clone for akio_socks::UdpAssociation
+pub fn akio_socks::UdpAssociation::clone(&self) -> Self
+impl core::fmt::Debug for akio_socks::UdpAssociation
+pub fn akio_socks::UdpAssociation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_socks::UdpAssociation
+impl core::marker::Sync for akio_socks::UdpAssociation
+impl core::marker::Unpin for akio_socks::UdpAssociation
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_socks::UdpAssociation
+impl !core::panic::unwind_safe::UnwindSafe for akio_socks::UdpAssociation
+pub const akio_socks::DEFAULT_BIND_TIMEOUT: core::time::Duration
+pub const akio_socks::DEFAULT_CLIENT_HANDSHAKE_TIMEOUT: core::time::Duration
+pub const akio_socks::DEFAULT_HANDSHAKE_TIMEOUT: core::time::Duration
+pub const akio_socks::DEFAULT_IDLE_TIMEOUT: core::time::Duration
+pub fn akio_socks::connect_proxy(akio::EngineRef) -> impl akio_http::context::Service
+pub fn akio_socks::connect_proxy_with(akio::EngineRef, akio_socks::ProxyConfig) -> impl akio_http::context::Service
+pub fn akio_socks::is_public(core::net::ip_addr::IpAddr) -> bool
+pub type akio_socks::Allow = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_socks::Request<'_>) -> bool + core::marker::Send + core::marker::Sync)>
+pub type akio_socks::Auth = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync)>

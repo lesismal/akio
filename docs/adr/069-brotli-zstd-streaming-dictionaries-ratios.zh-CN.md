@@ -1,4 +1,4 @@
-# ADR-069：only-brotli 与 only-zstd 的流式 API、字典与最高级别压缩率
+# ADR-069：akio-brotli 与 akio-zstd 的流式 API、字典与最高级别压缩率
 
 [English](069-brotli-zstd-streaming-dictionaries-ratios.md) | 简体中文
 
@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-041 新增的 `only-brotli` 与 `only-zstd` 只有一次性 API：输出向量就是窗口，内存由调用方的上限
+ADR-041 新增的 `akio-brotli` 与 `akio-zstd` 只有一次性 API：输出向量就是窗口，内存由调用方的上限
 约束，这正是证书压缩与缓冲的 HTTP 消息体所需要的。它没有做流式与字典（“工作区里还没有用到”），也不以
 参考编码器的压缩率为目标：在基准语料上 brotli 11 比 libbrotli 大 3.5–11%，zstd 19 比 libzstd 大
 1.3–7.6%（没有块分割、没有静态字典引用，zstd 没有最优解析）。DEV-PLAN 把这三项列为未完成。约束：解码
@@ -15,7 +15,7 @@ ADR-041 新增的 `only-brotli` 与 `only-zstd` 只有一次性 API：输出向�
 
 ## 决定
 
-### 1. 流式 API，形状同 only-deflate
+### 1. 流式 API，形状同 akio-deflate
 
 两个 crate 都新增 `Compressor`（`compress(input, &mut out, Flush)`、`Flush::{None, Flush, Finish}`、
 `reset`、`total_in`、`is_finished`、窗口设置）与 `Decompressor`（`decompress_vec(input, &mut out,
@@ -117,7 +117,7 @@ limit)` 与 `decompress(input, &mut [u8])`，返回 `Progress { consumed, produc
 
 ### 4. HTTP
 
-检查了 `only-http` 是否有缓冲：缓冲的响应由 `compress` 中间件整体压缩（一次性，压缩率最好，
+检查了 `akio-http` 是否有缓冲：缓冲的响应由 `compress` 中间件整体压缩（一次性，压缩率最好，
 `Content-Length` 已知）；流式响应（`Context::stream_response`）对任何编码都不压缩发送，包括 gzip：
 响应过滤器不作用于它们。没有地方缓冲流式消息体，所以那里现在不做改动。压缩流式响应（每个流一个编码器，
 为 server-sent events 每次写入刷新一次，一个 `Compress` 开关，缩小每个流的内存）是一项独立的功能，留待

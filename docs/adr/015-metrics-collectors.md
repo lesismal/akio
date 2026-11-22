@@ -6,7 +6,7 @@ Status: accepted (2026-11-16)
 
 ## Context
 
-The engine exports its own counters (`Engine::metrics()`, Prometheus text or JSON) and only-http
+The engine exports its own counters (`Engine::metrics()`, Prometheus text or JSON) and akio-http
 serves them with `observe::metrics_handler(telemetry, Option<HttpMetrics>)`. Nothing else can be
 added to that endpoint: an application's own counters, or the statistics protocol crates already
 keep (QUIC `ConnectionStats`, TLS handshake outcomes, requests per HTTP version), need a second
@@ -15,7 +15,7 @@ endpoint or a hand-written handler. The project takes no third-party dependencie
 
 ## Decision
 
-A new module `only_core::metrics` (re-exported as `only::metrics`), dependency-free:
+A new module `akio_core::metrics` (re-exported as `akio::metrics`), dependency-free:
 
 - **`Collector`** trait (`Send + Sync`): `fn collect(&self, out: &mut Families)`. Called on demand
   (a scrape), never on the I/O hot path.
@@ -37,13 +37,13 @@ A new module `only_core::metrics` (re-exported as `only::metrics`), dependency-f
   `render_prometheus()`, so every registered collector appears on the existing endpoint without a
   new handler.
 - **Protocol collectors**, each an additive `impl Collector`:
-  - only-http `HttpMetrics` (same series as before, plus `only_http_requests_by_version_total{version}`,
+  - akio-http `HttpMetrics` (same series as before, plus `akio_http_requests_by_version_total{version}`,
     which is the request/stream count per HTTP/1.x, h2 and h3);
-  - only-quic `QuicServer` (connections open/accepted/closed, datagrams and bytes each way, packets
+  - akio-quic `QuicServer` (connections open/accepted/closed, datagrams and bytes each way, packets
     sent and lost, lost bytes, congestion events; totals include connections that already closed);
-  - only-tls `TlsStats`, from `Tls::stats()` (completed handshakes by version and side, resumed
+  - akio-tls `TlsStats`, from `Tls::stats()` (completed handshakes by version and side, resumed
     sessions, early data accepted/rejected). Failed handshakes stay in the engine's
-    `only_tls_handshake_failures_total`.
+    `akio_tls_handshake_failures_total`.
 
 ## Alternatives considered
 

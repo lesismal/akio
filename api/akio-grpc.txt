@@ -1,0 +1,669 @@
+pub mod akio_grpc
+pub use akio_grpc::Headers
+pub mod akio_grpc::codec
+pub trait akio_grpc::codec::Message: core::marker::Sized
+pub fn akio_grpc::codec::Message::decode_from(&[u8]) -> core::result::Result<Self, akio_grpc::Status>
+pub fn akio_grpc::codec::Message::encode_to(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::codec::decode<M: akio_grpc::codec::Message>(&[u8]) -> core::result::Result<M, akio_grpc::Status>
+pub fn akio_grpc::codec::encode<M: akio_grpc::codec::Message>(&M) -> alloc::vec::Vec<u8>
+pub mod akio_grpc::reflection
+pub mod akio_grpc::reflection::v1
+pub mod akio_grpc::reflection::v1::server_reflection_request
+pub enum akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+pub akio_grpc::reflection::v1::server_reflection_request::MessageRequest::AllExtensionNumbersOfType(alloc::string::String)
+pub akio_grpc::reflection::v1::server_reflection_request::MessageRequest::FileByFilename(alloc::string::String)
+pub akio_grpc::reflection::v1::server_reflection_request::MessageRequest::FileContainingExtension(akio_grpc::reflection::v1::ExtensionRequest)
+pub akio_grpc::reflection::v1::server_reflection_request::MessageRequest::FileContainingSymbol(alloc::string::String)
+pub akio_grpc::reflection::v1::server_reflection_request::MessageRequest::ListServices(alloc::string::String)
+impl core::clone::Clone for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1::server_reflection_request::MessageRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1::server_reflection_request::MessageRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1::server_reflection_request::MessageRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::marker::Send for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::marker::Sync for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::server_reflection_request::MessageRequest
+pub mod akio_grpc::reflection::v1::server_reflection_response
+pub enum akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+pub akio_grpc::reflection::v1::server_reflection_response::MessageResponse::AllExtensionNumbersResponse(akio_grpc::reflection::v1::ExtensionNumberResponse)
+pub akio_grpc::reflection::v1::server_reflection_response::MessageResponse::ErrorResponse(akio_grpc::reflection::v1::ErrorResponse)
+pub akio_grpc::reflection::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(akio_grpc::reflection::v1::FileDescriptorResponse)
+pub akio_grpc::reflection::v1::server_reflection_response::MessageResponse::ListServicesResponse(akio_grpc::reflection::v1::ListServiceResponse)
+impl core::clone::Clone for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1::server_reflection_response::MessageResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1::server_reflection_response::MessageResponse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1::server_reflection_response::MessageResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::marker::Send for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::server_reflection_response::MessageResponse
+pub struct akio_grpc::reflection::v1::ErrorResponse
+pub akio_grpc::reflection::v1::ErrorResponse::error_code: i32
+pub akio_grpc::reflection::v1::ErrorResponse::error_message: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ErrorResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ErrorResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ErrorResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ErrorResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ErrorResponse
+pub const akio_grpc::reflection::v1::ErrorResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ErrorResponse
+pub fn akio_grpc::reflection::v1::ErrorResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ErrorResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::ErrorResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::ErrorResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ErrorResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ErrorResponse
+pub struct akio_grpc::reflection::v1::ExtensionNumberResponse
+pub akio_grpc::reflection::v1::ExtensionNumberResponse::base_type_name: alloc::string::String
+pub akio_grpc::reflection::v1::ExtensionNumberResponse::extension_number: alloc::vec::Vec<i32>
+impl core::clone::Clone for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub const akio_grpc::reflection::v1::ExtensionNumberResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1::ExtensionNumberResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ExtensionNumberResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ExtensionNumberResponse
+pub struct akio_grpc::reflection::v1::ExtensionRequest
+pub akio_grpc::reflection::v1::ExtensionRequest::containing_type: alloc::string::String
+pub akio_grpc::reflection::v1::ExtensionRequest::extension_number: i32
+impl core::clone::Clone for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ExtensionRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ExtensionRequest
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ExtensionRequest::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ExtensionRequest::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ExtensionRequest
+pub const akio_grpc::reflection::v1::ExtensionRequest::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ExtensionRequest
+pub fn akio_grpc::reflection::v1::ExtensionRequest::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ExtensionRequest
+impl core::marker::Sync for akio_grpc::reflection::v1::ExtensionRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1::ExtensionRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ExtensionRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ExtensionRequest
+pub struct akio_grpc::reflection::v1::FileDescriptorResponse
+pub akio_grpc::reflection::v1::FileDescriptorResponse::file_descriptor_proto: alloc::vec::Vec<alloc::vec::Vec<u8>>
+impl core::clone::Clone for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::FileDescriptorResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::FileDescriptorResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::FileDescriptorResponse
+pub const akio_grpc::reflection::v1::FileDescriptorResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1::FileDescriptorResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::FileDescriptorResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::FileDescriptorResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::FileDescriptorResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::FileDescriptorResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::FileDescriptorResponse
+pub struct akio_grpc::reflection::v1::ListServiceResponse
+pub akio_grpc::reflection::v1::ListServiceResponse::service: alloc::vec::Vec<akio_grpc::reflection::v1::ServiceResponse>
+impl core::clone::Clone for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ListServiceResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ListServiceResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ListServiceResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ListServiceResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ListServiceResponse
+pub const akio_grpc::reflection::v1::ListServiceResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ListServiceResponse
+pub fn akio_grpc::reflection::v1::ListServiceResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ListServiceResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::ListServiceResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::ListServiceResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ListServiceResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ListServiceResponse
+pub struct akio_grpc::reflection::v1::ServerReflectionRequest
+pub akio_grpc::reflection::v1::ServerReflectionRequest::host: alloc::string::String
+pub akio_grpc::reflection::v1::ServerReflectionRequest::message_request: core::option::Option<akio_grpc::reflection::v1::server_reflection_request::MessageRequest>
+impl core::clone::Clone for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ServerReflectionRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ServerReflectionRequest
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ServerReflectionRequest
+pub const akio_grpc::reflection::v1::ServerReflectionRequest::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1::ServerReflectionRequest::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ServerReflectionRequest
+impl core::marker::Sync for akio_grpc::reflection::v1::ServerReflectionRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1::ServerReflectionRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ServerReflectionRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ServerReflectionRequest
+pub struct akio_grpc::reflection::v1::ServerReflectionResponse
+pub akio_grpc::reflection::v1::ServerReflectionResponse::message_response: core::option::Option<akio_grpc::reflection::v1::server_reflection_response::MessageResponse>
+pub akio_grpc::reflection::v1::ServerReflectionResponse::original_request: core::option::Option<akio_grpc::reflection::v1::ServerReflectionRequest>
+pub akio_grpc::reflection::v1::ServerReflectionResponse::valid_host: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ServerReflectionResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ServerReflectionResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ServerReflectionResponse
+pub const akio_grpc::reflection::v1::ServerReflectionResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1::ServerReflectionResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ServerReflectionResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::ServerReflectionResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::ServerReflectionResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ServerReflectionResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ServerReflectionResponse
+pub struct akio_grpc::reflection::v1::ServiceResponse
+pub akio_grpc::reflection::v1::ServiceResponse::name: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1::ServiceResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1::ServiceResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1::ServiceResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1::ServiceResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1::ServiceResponse
+pub const akio_grpc::reflection::v1::ServiceResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1::ServiceResponse
+pub fn akio_grpc::reflection::v1::ServiceResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1::ServiceResponse
+impl core::marker::Sync for akio_grpc::reflection::v1::ServiceResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1::ServiceResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1::ServiceResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1::ServiceResponse
+pub const akio_grpc::reflection::v1::FILE_DESCRIPTOR_SET: &[u8]
+pub fn akio_grpc::reflection::v1::descriptor_pool() -> &'static akio_protobuf::reflect::DescriptorPool
+pub mod akio_grpc::reflection::v1alpha
+pub mod akio_grpc::reflection::v1alpha::server_reflection_request
+pub enum akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+pub akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::AllExtensionNumbersOfType(alloc::string::String)
+pub akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::FileByFilename(alloc::string::String)
+pub akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::FileContainingExtension(akio_grpc::reflection::v1alpha::ExtensionRequest)
+pub akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::FileContainingSymbol(alloc::string::String)
+pub akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::ListServices(alloc::string::String)
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+pub fn akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::marker::Send for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest
+pub mod akio_grpc::reflection::v1alpha::server_reflection_response
+pub enum akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+pub akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::AllExtensionNumbersResponse(akio_grpc::reflection::v1alpha::ExtensionNumberResponse)
+pub akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::ErrorResponse(akio_grpc::reflection::v1alpha::ErrorResponse)
+pub akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::FileDescriptorResponse(akio_grpc::reflection::v1alpha::FileDescriptorResponse)
+pub akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::ListServicesResponse(akio_grpc::reflection::v1alpha::ListServiceResponse)
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+pub fn akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::marker::Send for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse
+pub struct akio_grpc::reflection::v1alpha::ErrorResponse
+pub akio_grpc::reflection::v1alpha::ErrorResponse::error_code: i32
+pub akio_grpc::reflection::v1alpha::ErrorResponse::error_message: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ErrorResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ErrorResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ErrorResponse
+pub const akio_grpc::reflection::v1alpha::ErrorResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ErrorResponse
+pub fn akio_grpc::reflection::v1alpha::ErrorResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ErrorResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ErrorResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ErrorResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ErrorResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ErrorResponse
+pub struct akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub akio_grpc::reflection::v1alpha::ExtensionNumberResponse::base_type_name: alloc::string::String
+pub akio_grpc::reflection::v1alpha::ExtensionNumberResponse::extension_number: alloc::vec::Vec<i32>
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub const akio_grpc::reflection::v1alpha::ExtensionNumberResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub fn akio_grpc::reflection::v1alpha::ExtensionNumberResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ExtensionNumberResponse
+pub struct akio_grpc::reflection::v1alpha::ExtensionRequest
+pub akio_grpc::reflection::v1alpha::ExtensionRequest::containing_type: alloc::string::String
+pub akio_grpc::reflection::v1alpha::ExtensionRequest::extension_number: i32
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub const akio_grpc::reflection::v1alpha::ExtensionRequest::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub fn akio_grpc::reflection::v1alpha::ExtensionRequest::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ExtensionRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ExtensionRequest
+pub struct akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub akio_grpc::reflection::v1alpha::FileDescriptorResponse::file_descriptor_proto: alloc::vec::Vec<alloc::vec::Vec<u8>>
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub const akio_grpc::reflection::v1alpha::FileDescriptorResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub fn akio_grpc::reflection::v1alpha::FileDescriptorResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::FileDescriptorResponse
+pub struct akio_grpc::reflection::v1alpha::ListServiceResponse
+pub akio_grpc::reflection::v1alpha::ListServiceResponse::service: alloc::vec::Vec<akio_grpc::reflection::v1alpha::ServiceResponse>
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub const akio_grpc::reflection::v1alpha::ListServiceResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ListServiceResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ListServiceResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ListServiceResponse
+pub struct akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub akio_grpc::reflection::v1alpha::ServerReflectionRequest::host: alloc::string::String
+pub akio_grpc::reflection::v1alpha::ServerReflectionRequest::message_request: core::option::Option<akio_grpc::reflection::v1alpha::server_reflection_request::MessageRequest>
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub const akio_grpc::reflection::v1alpha::ServerReflectionRequest::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionRequest::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ServerReflectionRequest
+pub struct akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub akio_grpc::reflection::v1alpha::ServerReflectionResponse::message_response: core::option::Option<akio_grpc::reflection::v1alpha::server_reflection_response::MessageResponse>
+pub akio_grpc::reflection::v1alpha::ServerReflectionResponse::original_request: core::option::Option<akio_grpc::reflection::v1alpha::ServerReflectionRequest>
+pub akio_grpc::reflection::v1alpha::ServerReflectionResponse::valid_host: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub const akio_grpc::reflection::v1alpha::ServerReflectionResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub fn akio_grpc::reflection::v1alpha::ServerReflectionResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ServerReflectionResponse
+pub struct akio_grpc::reflection::v1alpha::ServiceResponse
+pub akio_grpc::reflection::v1alpha::ServiceResponse::name: alloc::string::String
+impl core::clone::Clone for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::reflection::v1alpha::ServiceResponse
+impl core::cmp::PartialEq for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::eq(&self, &Self) -> bool
+impl core::default::Default for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::default() -> Self
+impl core::fmt::Debug for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::reflection::v1alpha::ServiceResponse
+impl akio_protobuf::message::Message for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::encoded_len(&self) -> usize
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::merge_field(&mut self, u32, akio_protobuf::encoding::WireType, &mut akio_protobuf::encoding::Reader<'_>) -> core::result::Result<(), akio_protobuf::error::DecodeError>
+impl akio_protobuf::message::Name for akio_grpc::reflection::v1alpha::ServiceResponse
+pub const akio_grpc::reflection::v1alpha::ServiceResponse::FULL_NAME: &'static str
+impl akio_protobuf::reflect::ReflectMessage for akio_grpc::reflection::v1alpha::ServiceResponse
+pub fn akio_grpc::reflection::v1alpha::ServiceResponse::descriptor() -> akio_protobuf::reflect::MessageDescriptor
+impl core::marker::Send for akio_grpc::reflection::v1alpha::ServiceResponse
+impl core::marker::Sync for akio_grpc::reflection::v1alpha::ServiceResponse
+impl core::marker::Unpin for akio_grpc::reflection::v1alpha::ServiceResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::reflection::v1alpha::ServiceResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::reflection::v1alpha::ServiceResponse
+pub const akio_grpc::reflection::v1alpha::FILE_DESCRIPTOR_SET: &[u8]
+pub fn akio_grpc::reflection::v1alpha::descriptor_pool() -> &'static akio_protobuf::reflect::DescriptorPool
+pub const akio_grpc::reflection::SERVICE_NAMES: [&str; 2]
+pub fn akio_grpc::reflection::register(akio_grpc::GrpcServer, &akio_protobuf::reflect::DescriptorPool) -> akio_grpc::GrpcServer
+pub enum akio_grpc::Code
+pub akio_grpc::Code::Aborted = 10
+pub akio_grpc::Code::AlreadyExists = 6
+pub akio_grpc::Code::Cancelled = 1
+pub akio_grpc::Code::DataLoss = 15
+pub akio_grpc::Code::DeadlineExceeded = 4
+pub akio_grpc::Code::FailedPrecondition = 9
+pub akio_grpc::Code::Internal = 13
+pub akio_grpc::Code::InvalidArgument = 3
+pub akio_grpc::Code::NotFound = 5
+pub akio_grpc::Code::Ok = 0
+pub akio_grpc::Code::OutOfRange = 11
+pub akio_grpc::Code::PermissionDenied = 7
+pub akio_grpc::Code::ResourceExhausted = 8
+pub akio_grpc::Code::Unauthenticated = 16
+pub akio_grpc::Code::Unavailable = 14
+pub akio_grpc::Code::Unimplemented = 12
+pub akio_grpc::Code::Unknown = 2
+impl core::clone::Clone for akio_grpc::Code
+pub fn akio_grpc::Code::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::Code
+impl core::cmp::PartialEq for akio_grpc::Code
+pub fn akio_grpc::Code::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_grpc::Code
+pub fn akio_grpc::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_grpc::Code
+impl core::marker::StructuralPartialEq for akio_grpc::Code
+impl core::marker::Send for akio_grpc::Code
+impl core::marker::Sync for akio_grpc::Code
+impl core::marker::Unpin for akio_grpc::Code
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::Code
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::Code
+#[non_exhaustive] pub struct akio_grpc::CallOptions
+pub akio_grpc::CallOptions::metadata: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub akio_grpc::CallOptions::timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for akio_grpc::CallOptions
+pub fn akio_grpc::CallOptions::clone(&self) -> Self
+impl core::default::Default for akio_grpc::CallOptions
+pub fn akio_grpc::CallOptions::default() -> Self
+impl core::fmt::Debug for akio_grpc::CallOptions
+pub fn akio_grpc::CallOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_grpc::CallOptions
+impl core::marker::Sync for akio_grpc::CallOptions
+impl core::marker::Unpin for akio_grpc::CallOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::CallOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::CallOptions
+pub struct akio_grpc::ClientSink
+impl akio_grpc::ClientSink
+pub fn akio_grpc::ClientSink::close_send(&self) -> bool
+pub fn akio_grpc::ClientSink::send(&self, &[u8]) -> bool
+pub fn akio_grpc::ClientSink::send_message<M: akio_grpc::codec::Message>(&self, &M) -> bool
+impl core::fmt::Debug for akio_grpc::ClientSink
+pub fn akio_grpc::ClientSink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_grpc::ClientSink
+impl core::marker::Sync for akio_grpc::ClientSink
+impl core::marker::Unpin for akio_grpc::ClientSink
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_grpc::ClientSink
+impl !core::panic::unwind_safe::UnwindSafe for akio_grpc::ClientSink
+pub struct akio_grpc::GrpcClient
+impl akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::bidi(&self, &str, akio_grpc::CallOptions, impl core::ops::function::FnMut(alloc::vec::Vec<u8>) + core::marker::Send + 'static, impl core::ops::function::FnOnce(akio_grpc::Status, akio_http::message::Headers) + core::marker::Send + 'static) -> akio_grpc::ClientSink
+pub fn akio_grpc::GrpcClient::collect(&self, &str, alloc::vec::Vec<alloc::vec::Vec<u8>>, akio_grpc::CallOptions) -> (alloc::vec::Vec<alloc::vec::Vec<u8>>, akio_grpc::Status)
+pub fn akio_grpc::GrpcClient::compress(self, bool) -> akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::default_timeout(self, core::option::Option<core::time::Duration>) -> akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::max_collect_bytes(self, usize) -> akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::max_message_bytes(self, usize) -> akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::new(akio_http::h2client::H2Client, &str) -> akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::unary(&self, &str, &[u8], akio_grpc::CallOptions) -> core::result::Result<alloc::vec::Vec<u8>, akio_grpc::Status>
+impl core::clone::Clone for akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::clone(&self) -> Self
+impl core::fmt::Debug for akio_grpc::GrpcClient
+pub fn akio_grpc::GrpcClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_grpc::GrpcClient
+impl core::marker::Sync for akio_grpc::GrpcClient
+impl core::marker::Unpin for akio_grpc::GrpcClient
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_grpc::GrpcClient
+impl !core::panic::unwind_safe::UnwindSafe for akio_grpc::GrpcClient
+pub struct akio_grpc::GrpcServer
+impl akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::bidi(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, akio_grpc::Sink) -> akio_grpc::OnMessage + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::client_stream(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, alloc::vec::Vec<alloc::vec::Vec<u8>>, akio_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::compress(self, bool) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::interceptor(self, impl core::ops::function::Fn(&akio_grpc::Metadata) -> core::result::Result<(), akio_grpc::Status> + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::max_collect_bytes(self, usize) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::max_deadline(self, core::time::Duration) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::max_message_bytes(self, usize) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::new() -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::server_stream(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, alloc::vec::Vec<u8>, akio_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::unary(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, alloc::vec::Vec<u8>, akio_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
+impl core::clone::Clone for akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::clone(&self) -> Self
+impl core::default::Default for akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::default() -> Self
+impl core::fmt::Debug for akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_http::context::Service for akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::body_mode(&self, &akio_http::message::Request) -> akio_http::context::BodyMode
+pub fn akio_grpc::GrpcServer::call(&self, &mut akio_http::context::Context)
+impl core::marker::Send for akio_grpc::GrpcServer
+impl core::marker::Sync for akio_grpc::GrpcServer
+impl core::marker::Unpin for akio_grpc::GrpcServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_grpc::GrpcServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_grpc::GrpcServer
+#[non_exhaustive] pub struct akio_grpc::Metadata
+pub akio_grpc::Metadata::deadline: core::option::Option<std::time::Instant>
+pub akio_grpc::Metadata::headers: akio_http::message::Headers
+pub akio_grpc::Metadata::method: alloc::string::String
+impl akio_grpc::Metadata
+pub fn akio_grpc::Metadata::get(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for akio_grpc::Metadata
+pub fn akio_grpc::Metadata::clone(&self) -> Self
+impl core::fmt::Debug for akio_grpc::Metadata
+pub fn akio_grpc::Metadata::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_grpc::Metadata
+impl core::marker::Sync for akio_grpc::Metadata
+impl core::marker::Unpin for akio_grpc::Metadata
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::Metadata
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::Metadata
+pub struct akio_grpc::Sink(_)
+impl akio_grpc::Sink
+pub fn akio_grpc::Sink::finish(&self, akio_grpc::Status)
+pub fn akio_grpc::Sink::is_finished(&self) -> bool
+pub fn akio_grpc::Sink::send(&self, &[u8]) -> bool
+pub fn akio_grpc::Sink::send_message<M: akio_grpc::codec::Message>(&self, &M) -> bool
+pub fn akio_grpc::Sink::set_header(&self, &str, &str)
+pub fn akio_grpc::Sink::set_trailer(&self, &str, &str)
+impl core::clone::Clone for akio_grpc::Sink
+pub fn akio_grpc::Sink::clone(&self) -> Self
+impl core::fmt::Debug for akio_grpc::Sink
+pub fn akio_grpc::Sink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_grpc::Sink
+impl core::marker::Sync for akio_grpc::Sink
+impl core::marker::Unpin for akio_grpc::Sink
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::Sink
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::Sink
+#[non_exhaustive] pub struct akio_grpc::Status
+pub akio_grpc::Status::code: akio_grpc::Code
+pub akio_grpc::Status::message: alloc::string::String
+impl akio_grpc::Status
+pub fn akio_grpc::Status::new(akio_grpc::Code, impl core::convert::Into<alloc::string::String>) -> akio_grpc::Status
+pub fn akio_grpc::Status::ok() -> akio_grpc::Status
+impl core::clone::Clone for akio_grpc::Status
+pub fn akio_grpc::Status::clone(&self) -> Self
+impl core::cmp::Eq for akio_grpc::Status
+impl core::cmp::PartialEq for akio_grpc::Status
+pub fn akio_grpc::Status::eq(&self, &Self) -> bool
+impl core::error::Error for akio_grpc::Status
+impl core::fmt::Debug for akio_grpc::Status
+pub fn akio_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_grpc::Status
+pub fn akio_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_grpc::Status
+impl core::marker::Send for akio_grpc::Status
+impl core::marker::Sync for akio_grpc::Status
+impl core::marker::Unpin for akio_grpc::Status
+impl core::panic::unwind_safe::RefUnwindSafe for akio_grpc::Status
+impl core::panic::unwind_safe::UnwindSafe for akio_grpc::Status
+pub const akio_grpc::DEFAULT_MAX_COLLECT: usize
+pub const akio_grpc::DEFAULT_MAX_DEADLINE: core::time::Duration
+pub const akio_grpc::DEFAULT_MAX_MESSAGE: usize
+pub const akio_grpc::DEFAULT_TIMEOUT: core::time::Duration
+pub type akio_grpc::OnMessage = alloc::boxed::Box<(dyn core::ops::function::FnMut(core::option::Option<alloc::vec::Vec<u8>>) + core::marker::Send)>

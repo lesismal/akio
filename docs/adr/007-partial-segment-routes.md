@@ -6,7 +6,7 @@ Status: accepted (2026-11-16)
 
 ## Context
 
-`only_http::Router` matched whole segments only: static, `{id:re}`, `:id`/`{id}`, `*rest`.
+`akio_http::Router` matched whole segments only: static, `{id:re}`, `:id`/`{id}`, `*rest`.
 Routes such as `/{name}.txt`, `/v{version}/x` or `/{owner}/{repo}.git` needed a parameter and a
 check in the handler. Adding them touches the pattern syntax and the matching order, both part of
 the public behaviour of `Router`.

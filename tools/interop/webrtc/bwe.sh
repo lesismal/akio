@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# only-webrtc -> headless Chrome: bandwidth probing (ADR-050). Chrome offers VP8 video to the only
+# akio-webrtc -> headless Chrome: bandwidth probing (ADR-050). Chrome offers VP8 video to the only
 # fec-server with its estimator on (start 1 Mbps), which echoes the video back: Chrome is the
 # receiver of our stream and sends the congestion control feedback. The echo is application-
 # limited by Chrome's own send rate, so without probes our estimate stays within 1.5 x what
@@ -15,7 +15,7 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 TRIALS="WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/"
 if [ -z "${RS:-}" ]; then
-  (cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop)
+  (cd "$ROOT" && cargo build -q --release -p akio-webrtc --example webrtc-interop)
   RS=$ROOT/target/release/examples/webrtc-interop
 fi
 SECS=${SECS:-15}

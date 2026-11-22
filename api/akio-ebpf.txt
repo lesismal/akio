@@ -1,0 +1,389 @@
+pub mod akio_ebpf
+pub mod akio_ebpf::relay
+#[non_exhaustive] pub struct akio_ebpf::relay::ByteCounts
+pub akio_ebpf::relay::ByteCounts::received: u64
+pub akio_ebpf::relay::ByteCounts::written: u64
+impl core::clone::Clone for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::relay::ByteCounts
+impl core::cmp::PartialEq for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::default() -> Self
+impl core::fmt::Debug for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::relay::ByteCounts
+impl core::marker::StructuralPartialEq for akio_ebpf::relay::ByteCounts
+impl core::marker::Send for akio_ebpf::relay::ByteCounts
+impl core::marker::Sync for akio_ebpf::relay::ByteCounts
+impl core::marker::Unpin for akio_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::ByteCounts
+pub struct akio_ebpf::relay::Relay
+impl akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::new(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
+pub fn akio_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
+pub fn akio_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_conns<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner_with(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+impl core::clone::Clone for akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::clone(&self) -> Self
+impl core::fmt::Debug for akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::Relay
+impl core::marker::Sync for akio_ebpf::relay::Relay
+impl core::marker::Unpin for akio_ebpf::relay::Relay
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Relay
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Relay
+pub struct akio_ebpf::relay::Splice
+impl akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
+pub fn akio_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::Splice
+impl core::marker::Sync for akio_ebpf::relay::Splice
+impl core::marker::Unpin for akio_ebpf::relay::Splice
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Splice
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Splice
+pub const akio_ebpf::relay::DEFAULT_PAIRS: u32
+pub const akio_ebpf::relay::MIN_KERNEL: (u32, u32)
+pub fn akio_ebpf::relay::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
+pub mod akio_ebpf::xdp
+#[non_exhaustive] pub enum akio_ebpf::xdp::Attachment
+pub akio_ebpf::xdp::Attachment::Link
+pub akio_ebpf::xdp::Attachment::Netlink
+impl core::clone::Clone for akio_ebpf::xdp::Attachment
+pub fn akio_ebpf::xdp::Attachment::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::xdp::Attachment
+impl core::cmp::PartialEq for akio_ebpf::xdp::Attachment
+pub fn akio_ebpf::xdp::Attachment::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ebpf::xdp::Attachment
+pub fn akio_ebpf::xdp::Attachment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::xdp::Attachment
+impl core::marker::StructuralPartialEq for akio_ebpf::xdp::Attachment
+impl core::marker::Send for akio_ebpf::xdp::Attachment
+impl core::marker::Sync for akio_ebpf::xdp::Attachment
+impl core::marker::Unpin for akio_ebpf::xdp::Attachment
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::Attachment
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::Attachment
+#[non_exhaustive] pub enum akio_ebpf::xdp::Count
+pub akio_ebpf::xdp::Count::AllPackets
+pub akio_ebpf::xdp::Count::TcpSyn
+impl core::clone::Clone for akio_ebpf::xdp::Count
+pub fn akio_ebpf::xdp::Count::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::xdp::Count
+impl core::cmp::PartialEq for akio_ebpf::xdp::Count
+pub fn akio_ebpf::xdp::Count::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::xdp::Count
+pub fn akio_ebpf::xdp::Count::default() -> Self
+impl core::fmt::Debug for akio_ebpf::xdp::Count
+pub fn akio_ebpf::xdp::Count::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::xdp::Count
+impl core::marker::StructuralPartialEq for akio_ebpf::xdp::Count
+impl core::marker::Send for akio_ebpf::xdp::Count
+impl core::marker::Sync for akio_ebpf::xdp::Count
+impl core::marker::Unpin for akio_ebpf::xdp::Count
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::Count
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::Count
+#[non_exhaustive] pub enum akio_ebpf::xdp::XdpMode
+pub akio_ebpf::xdp::XdpMode::Auto
+pub akio_ebpf::xdp::XdpMode::Generic
+pub akio_ebpf::xdp::XdpMode::Native
+impl core::clone::Clone for akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::XdpMode::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::xdp::XdpMode
+impl core::cmp::PartialEq for akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::XdpMode::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::XdpMode::default() -> Self
+impl core::fmt::Debug for akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::XdpMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::xdp::XdpMode
+impl core::marker::StructuralPartialEq for akio_ebpf::xdp::XdpMode
+impl core::marker::Send for akio_ebpf::xdp::XdpMode
+impl core::marker::Sync for akio_ebpf::xdp::XdpMode
+impl core::marker::Unpin for akio_ebpf::xdp::XdpMode
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::XdpMode
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::XdpMode
+pub struct akio_ebpf::xdp::RateLimiter
+impl akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::attach(&str, &akio_ebpf::xdp::XdpLimit) -> core::io::error::Result<akio_ebpf::xdp::RateLimiter>
+pub fn akio_ebpf::xdp::RateLimiter::attach_index(u32, &akio_ebpf::xdp::XdpLimit) -> core::io::error::Result<akio_ebpf::xdp::RateLimiter>
+pub fn akio_ebpf::xdp::RateLimiter::attachment(&self) -> akio_ebpf::xdp::Attachment
+pub fn akio_ebpf::xdp::RateLimiter::detach(self) -> core::io::error::Result<()>
+pub fn akio_ebpf::xdp::RateLimiter::forget(&self, core::net::ip_addr::IpAddr) -> core::io::error::Result<bool>
+pub fn akio_ebpf::xdp::RateLimiter::ifindex(&self) -> u32
+pub fn akio_ebpf::xdp::RateLimiter::mode(&self) -> akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::RateLimiter::stats(&self) -> core::io::error::Result<akio_ebpf::xdp::XdpStats>
+impl core::fmt::Debug for akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::drop(&mut self)
+impl core::marker::Send for akio_ebpf::xdp::RateLimiter
+impl core::marker::Sync for akio_ebpf::xdp::RateLimiter
+impl core::marker::Unpin for akio_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::RateLimiter
+#[non_exhaustive] pub struct akio_ebpf::xdp::XdpLimit
+pub akio_ebpf::xdp::XdpLimit::burst: u32
+pub akio_ebpf::xdp::XdpLimit::count: akio_ebpf::xdp::Count
+pub akio_ebpf::xdp::XdpLimit::max_sources: u32
+pub akio_ebpf::xdp::XdpLimit::mode: akio_ebpf::xdp::XdpMode
+pub akio_ebpf::xdp::XdpLimit::rate: u32
+impl core::clone::Clone for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::clone(&self) -> Self
+impl core::default::Default for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::default() -> Self
+impl core::fmt::Debug for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::xdp::XdpLimit
+impl core::marker::Sync for akio_ebpf::xdp::XdpLimit
+impl core::marker::Unpin for akio_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::XdpLimit
+#[non_exhaustive] pub struct akio_ebpf::xdp::XdpStats
+pub akio_ebpf::xdp::XdpStats::dropped: u64
+pub akio_ebpf::xdp::XdpStats::new_sources: u64
+pub akio_ebpf::xdp::XdpStats::passed: u64
+impl core::clone::Clone for akio_ebpf::xdp::XdpStats
+pub fn akio_ebpf::xdp::XdpStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::xdp::XdpStats
+impl core::cmp::PartialEq for akio_ebpf::xdp::XdpStats
+pub fn akio_ebpf::xdp::XdpStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::xdp::XdpStats
+pub fn akio_ebpf::xdp::XdpStats::default() -> Self
+impl core::fmt::Debug for akio_ebpf::xdp::XdpStats
+pub fn akio_ebpf::xdp::XdpStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::xdp::XdpStats
+impl core::marker::StructuralPartialEq for akio_ebpf::xdp::XdpStats
+impl core::marker::Send for akio_ebpf::xdp::XdpStats
+impl core::marker::Sync for akio_ebpf::xdp::XdpStats
+impl core::marker::Unpin for akio_ebpf::xdp::XdpStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::XdpStats
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::XdpStats
+pub const akio_ebpf::xdp::DEFAULT_BURST: u32
+pub const akio_ebpf::xdp::DEFAULT_MAX_SOURCES: u32
+pub const akio_ebpf::xdp::DEFAULT_RATE: u32
+pub const akio_ebpf::xdp::MAX_SOURCES: u32
+#[non_exhaustive] pub enum akio_ebpf::HashKey
+pub akio_ebpf::HashKey::SrcIp
+pub akio_ebpf::HashKey::SrcIpPort
+impl core::clone::Clone for akio_ebpf::HashKey
+pub fn akio_ebpf::HashKey::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::HashKey
+impl core::cmp::PartialEq for akio_ebpf::HashKey
+pub fn akio_ebpf::HashKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ebpf::HashKey
+pub fn akio_ebpf::HashKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::HashKey
+impl core::marker::StructuralPartialEq for akio_ebpf::HashKey
+impl core::marker::Send for akio_ebpf::HashKey
+impl core::marker::Sync for akio_ebpf::HashKey
+impl core::marker::Unpin for akio_ebpf::HashKey
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::HashKey
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::HashKey
+#[non_exhaustive] pub enum akio_ebpf::Steering
+pub akio_ebpf::Steering::Cpu
+pub akio_ebpf::Steering::Hash(akio_ebpf::HashKey)
+impl core::clone::Clone for akio_ebpf::Steering
+pub fn akio_ebpf::Steering::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::Steering
+impl core::cmp::PartialEq for akio_ebpf::Steering
+pub fn akio_ebpf::Steering::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::Steering
+pub fn akio_ebpf::Steering::default() -> Self
+impl core::fmt::Debug for akio_ebpf::Steering
+pub fn akio_ebpf::Steering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::Steering
+impl core::marker::StructuralPartialEq for akio_ebpf::Steering
+impl core::marker::Send for akio_ebpf::Steering
+impl core::marker::Sync for akio_ebpf::Steering
+impl core::marker::Unpin for akio_ebpf::Steering
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::Steering
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::Steering
+#[non_exhaustive] pub enum akio_ebpf::Tier
+pub akio_ebpf::Tier::Cbpf
+pub akio_ebpf::Tier::Ebpf
+impl core::clone::Clone for akio_ebpf::Tier
+pub fn akio_ebpf::Tier::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::Tier
+impl core::cmp::PartialEq for akio_ebpf::Tier
+pub fn akio_ebpf::Tier::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ebpf::Tier
+pub fn akio_ebpf::Tier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::Tier
+impl core::marker::StructuralPartialEq for akio_ebpf::Tier
+impl core::marker::Send for akio_ebpf::Tier
+impl core::marker::Sync for akio_ebpf::Tier
+impl core::marker::Unpin for akio_ebpf::Tier
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::Tier
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::Tier
+#[non_exhaustive] pub struct akio_ebpf::AttachOptions
+pub akio_ebpf::AttachOptions::ebpf: bool
+impl core::clone::Clone for akio_ebpf::AttachOptions
+pub fn akio_ebpf::AttachOptions::clone(&self) -> Self
+impl core::default::Default for akio_ebpf::AttachOptions
+pub fn akio_ebpf::AttachOptions::default() -> Self
+impl core::fmt::Debug for akio_ebpf::AttachOptions
+pub fn akio_ebpf::AttachOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::AttachOptions
+impl core::marker::Send for akio_ebpf::AttachOptions
+impl core::marker::Sync for akio_ebpf::AttachOptions
+impl core::marker::Unpin for akio_ebpf::AttachOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::AttachOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::AttachOptions
+#[non_exhaustive] pub struct akio_ebpf::ByteCounts
+pub akio_ebpf::ByteCounts::received: u64
+pub akio_ebpf::ByteCounts::written: u64
+impl core::clone::Clone for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::relay::ByteCounts
+impl core::cmp::PartialEq for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::default() -> Self
+impl core::fmt::Debug for akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_ebpf::relay::ByteCounts
+impl core::marker::StructuralPartialEq for akio_ebpf::relay::ByteCounts
+impl core::marker::Send for akio_ebpf::relay::ByteCounts
+impl core::marker::Sync for akio_ebpf::relay::ByteCounts
+impl core::marker::Unpin for akio_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::ByteCounts
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::ByteCounts
+#[non_exhaustive] pub struct akio_ebpf::Probe
+pub akio_ebpf::Probe::af_xdp: bool
+pub akio_ebpf::Probe::reuseport_cbpf: bool
+pub akio_ebpf::Probe::reuseport_ebpf: bool
+pub akio_ebpf::Probe::reuseport_migrate: bool
+pub akio_ebpf::Probe::sockmap_relay: bool
+pub akio_ebpf::Probe::xdp: bool
+impl core::clone::Clone for akio_ebpf::Probe
+pub fn akio_ebpf::Probe::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::Probe
+impl core::cmp::PartialEq for akio_ebpf::Probe
+pub fn akio_ebpf::Probe::eq(&self, &Self) -> bool
+impl core::default::Default for akio_ebpf::Probe
+pub fn akio_ebpf::Probe::default() -> Self
+impl core::fmt::Debug for akio_ebpf::Probe
+pub fn akio_ebpf::Probe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ebpf::Probe
+impl core::marker::Send for akio_ebpf::Probe
+impl core::marker::Sync for akio_ebpf::Probe
+impl core::marker::Unpin for akio_ebpf::Probe
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::Probe
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::Probe
+pub struct akio_ebpf::RateLimiter
+impl akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::attach(&str, &akio_ebpf::xdp::XdpLimit) -> core::io::error::Result<akio_ebpf::xdp::RateLimiter>
+pub fn akio_ebpf::xdp::RateLimiter::attach_index(u32, &akio_ebpf::xdp::XdpLimit) -> core::io::error::Result<akio_ebpf::xdp::RateLimiter>
+pub fn akio_ebpf::xdp::RateLimiter::attachment(&self) -> akio_ebpf::xdp::Attachment
+pub fn akio_ebpf::xdp::RateLimiter::detach(self) -> core::io::error::Result<()>
+pub fn akio_ebpf::xdp::RateLimiter::forget(&self, core::net::ip_addr::IpAddr) -> core::io::error::Result<bool>
+pub fn akio_ebpf::xdp::RateLimiter::ifindex(&self) -> u32
+pub fn akio_ebpf::xdp::RateLimiter::mode(&self) -> akio_ebpf::xdp::XdpMode
+pub fn akio_ebpf::xdp::RateLimiter::stats(&self) -> core::io::error::Result<akio_ebpf::xdp::XdpStats>
+impl core::fmt::Debug for akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_ebpf::xdp::RateLimiter
+pub fn akio_ebpf::xdp::RateLimiter::drop(&mut self)
+impl core::marker::Send for akio_ebpf::xdp::RateLimiter
+impl core::marker::Sync for akio_ebpf::xdp::RateLimiter
+impl core::marker::Unpin for akio_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::RateLimiter
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::RateLimiter
+pub struct akio_ebpf::Relay
+impl akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::new(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
+pub fn akio_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
+pub fn akio_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_conns<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner_with(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+impl core::clone::Clone for akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::clone(&self) -> Self
+impl core::fmt::Debug for akio_ebpf::relay::Relay
+pub fn akio_ebpf::relay::Relay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::Relay
+impl core::marker::Sync for akio_ebpf::relay::Relay
+impl core::marker::Unpin for akio_ebpf::relay::Relay
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Relay
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Relay
+pub struct akio_ebpf::SharedSteering
+impl akio_ebpf::SharedSteering
+pub fn akio_ebpf::SharedSteering::at(&self, usize, usize) -> core::io::error::Result<akio_ebpf::SharedSteering>
+pub fn akio_ebpf::SharedSteering::create(impl core::convert::AsRef<std::path::Path>, usize, akio_ebpf::Steering) -> core::io::error::Result<akio_ebpf::SharedSteering>
+pub fn akio_ebpf::SharedSteering::dir(&self) -> &std::path::Path
+pub fn akio_ebpf::SharedSteering::join(&self, &[i32]) -> core::io::error::Result<akio_ebpf::SteerInfo>
+pub fn akio_ebpf::SharedSteering::migrates(&self) -> bool
+pub fn akio_ebpf::SharedSteering::open(impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<akio_ebpf::SharedSteering>
+pub fn akio_ebpf::SharedSteering::slots(&self) -> (usize, usize)
+pub fn akio_ebpf::SharedSteering::sockets(&self) -> usize
+pub fn akio_ebpf::SharedSteering::steering(&self) -> akio_ebpf::Steering
+impl core::clone::Clone for akio_ebpf::SharedSteering
+pub fn akio_ebpf::SharedSteering::clone(&self) -> Self
+impl core::fmt::Debug for akio_ebpf::SharedSteering
+pub fn akio_ebpf::SharedSteering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::SharedSteering
+impl core::marker::Sync for akio_ebpf::SharedSteering
+impl core::marker::Unpin for akio_ebpf::SharedSteering
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::SharedSteering
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::SharedSteering
+pub struct akio_ebpf::Splice
+impl akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
+pub fn akio_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::Splice
+impl core::marker::Sync for akio_ebpf::relay::Splice
+impl core::marker::Unpin for akio_ebpf::relay::Splice
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Splice
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Splice
+#[non_exhaustive] pub struct akio_ebpf::SteerInfo
+pub akio_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
+pub akio_ebpf::SteerInfo::migrate: bool
+pub akio_ebpf::SteerInfo::pinned_threads: usize
+pub akio_ebpf::SteerInfo::shared: bool
+pub akio_ebpf::SteerInfo::sockets: usize
+pub akio_ebpf::SteerInfo::steering: akio_ebpf::Steering
+pub akio_ebpf::SteerInfo::tier: akio_ebpf::Tier
+impl core::clone::Clone for akio_ebpf::SteerInfo
+pub fn akio_ebpf::SteerInfo::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::SteerInfo
+impl core::cmp::PartialEq for akio_ebpf::SteerInfo
+pub fn akio_ebpf::SteerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ebpf::SteerInfo
+pub fn akio_ebpf::SteerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ebpf::SteerInfo
+pub fn akio_ebpf::SteerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_ebpf::SteerInfo
+impl core::marker::Send for akio_ebpf::SteerInfo
+impl core::marker::Sync for akio_ebpf::SteerInfo
+impl core::marker::Unpin for akio_ebpf::SteerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::SteerInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::SteerInfo
+#[non_exhaustive] pub struct akio_ebpf::XdpLimit
+pub akio_ebpf::XdpLimit::burst: u32
+pub akio_ebpf::XdpLimit::count: akio_ebpf::xdp::Count
+pub akio_ebpf::XdpLimit::max_sources: u32
+pub akio_ebpf::XdpLimit::mode: akio_ebpf::xdp::XdpMode
+pub akio_ebpf::XdpLimit::rate: u32
+impl core::clone::Clone for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::clone(&self) -> Self
+impl core::default::Default for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::default() -> Self
+impl core::fmt::Debug for akio_ebpf::xdp::XdpLimit
+pub fn akio_ebpf::xdp::XdpLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::xdp::XdpLimit
+impl core::marker::Sync for akio_ebpf::xdp::XdpLimit
+impl core::marker::Unpin for akio_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::xdp::XdpLimit
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::XdpLimit
+pub const akio_ebpf::MAX_SHARED_SOCKETS: usize
+pub fn akio_ebpf::attach_reuseport(&[i32], akio_ebpf::Steering, akio_ebpf::AttachOptions) -> core::io::error::Result<akio_ebpf::SteerInfo>
+pub fn akio_ebpf::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
+pub fn akio_ebpf::cpu_pinning(usize) -> core::io::error::Result<alloc::vec::Vec<alloc::vec::Vec<usize>>>
+pub fn akio_ebpf::probe() -> akio_ebpf::Probe

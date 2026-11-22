@@ -8,7 +8,7 @@ Status: accepted (2026-11-16)
 
 [docs/rules.md](../rules.md) (rule 10) requires every resource to have a limit with a safe
 default, so that a configuration that sets nothing is still bounded. An audit of the engine
-(`only_core::Config`) against that rule found three defaults that left a remote peer in control:
+(`akio_core::Config`) against that rule found three defaults that left a remote peer in control:
 
 - `write_timeout: None`: a peer that stops reading keeps its connection, and up to
   `max_queued_bytes` (64 MiB) of queued output, forever.
@@ -30,7 +30,7 @@ Changing a default changes behaviour for existing configurations, so it is recor
 3. **New `Config::connect_timeout: Option<Duration>`, default 10 s.** A dial still pending after
    it is abandoned on its I/O thread (epoll, kqueue and io_uring; the pending poll is cancelled
    on io_uring) and `on_error` gets `ErrorKind::TimedOut`. `None` restores the old behaviour.
-   only-dpdk already had its own 10 s.
+   akio-dpdk already had its own 10 s.
 4. **`idle_timeout` stays `None` at the engine level.** What "idle" means is protocol specific:
    long-lived RPC or WebSocket connections may legitimately stay quiet, while an HTTP keep-alive
    connection should not. The protocol crates own their timeouts (head read, keep-alive,
@@ -53,4 +53,4 @@ Changing a default changes behaviour for existing configurations, so it is recor
   change (HTTP, gRPC/arpc, WebSocket, media, QUIC/HTTP/3, KCP, SOCKS, mux, TURN, BitTorrent,
   DTLS) are listed in the CHANGELOG entry "safe defaults everywhere". Two were the user's call:
   SOCKS and HTTP CONNECT refuse non-public destinations by default (open-proxy / SSRF), and
-  only-log keeps writing synchronously by default (`FmtLogger::non_blocking` is opt-in).
+  akio-log keeps writing synchronously by default (`FmtLogger::non_blocking` is opt-in).

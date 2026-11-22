@@ -6,13 +6,13 @@
 
 ## 背景
 
-ADR-022 为 `only-protobuf` 加入了运行时反射（`DescriptorPool`、`DynamicMessage`）与标准 JSON 映射，
+ADR-022 为 `akio-protobuf` 加入了运行时反射（`DescriptorPool`、`DynamicMessage`）与标准 JSON 映射，
 但没有做文本格式：protobuf 一致性运行器跳过了其中 909 项文本格式测试。protoc 的 `--decode`、
 `DebugString`、测试数据、配置文件（`.textproto`、`.pbtxt`）以及许多工具读写的都是文本格式。
 
 ## 决定
 
-新增模块 `only_protobuf::text`，建立在反射之上，与 `only_protobuf::json` 对应。全部为新增；
+新增模块 `akio_protobuf::text`，建立在反射之上，与 `akio_protobuf::json` 对应。全部为新增；
 生成代码不变。
 
 - 生成消息（`ReflectMessage`）用 `to_string`、`to_string_with(&PrintOptions)`、`from_str`、

@@ -1,4 +1,4 @@
-# ADR-012: SOCKS5 BIND / UDP ASSOCIATE, `Engine::adopt_tcp`, and only-log filters
+# ADR-012: SOCKS5 BIND / UDP ASSOCIATE, `Engine::adopt_tcp`, and akio-log filters
 
 English | [简体中文](012-socks-commands-and-log-filters.zh-CN.md)
 
@@ -8,11 +8,11 @@ Status: accepted (2026-11-16)
 
 Two items were left open in `docs/DEV-PLAN.md`:
 
-- `only-socks` served SOCKS5 `CONNECT` only. `BIND` (active FTP and other protocols where the
+- `akio-socks` served SOCKS5 `CONNECT` only. `BIND` (active FTP and other protocols where the
   far side connects back) and `UDP ASSOCIATE` (DNS, QUIC, games through a proxy) answered
   "command not supported". There was no way to restrict what clients may reach beyond
   username/password.
-- `only-log` had a run-time maximum level and per-target ceilings set in code, but no way to set
+- `akio-log` had a run-time maximum level and per-target ceilings set in code, but no way to set
   levels per target from the environment (what `RUST_LOG` does for env_logger) and no way to
   compile verbose statements out of release builds (the `log` crate's `max_level_*` features).
 
@@ -21,7 +21,7 @@ engine like any other; the engine had no way to take over a stream it did not ac
 
 ## Decision
 
-1. **`Engine::adopt_tcp(stream, acceptor, on_error)`** (in `only`): serves an already connected
+1. **`Engine::adopt_tcp(stream, acceptor, on_error)`** (in `akio`): serves an already connected
    `std::net::TcpStream` like a dialed connection that has just connected, on the same I/O threads
    as `dial`. Backends implement a new hidden `Group::adopt` (default: `Unsupported`); the epoll and
    io_uring groups pass the stream through their existing dial path, which opens a connected
@@ -57,12 +57,12 @@ engine like any other; the engine had no way to take over a stream it did not ac
    or host name not resolved yet). A refusal is reply 2 ("not allowed by ruleset"), 0x5b for
    SOCKS4, a dropped datagram for UDP. `Command` is `#[non_exhaustive]`; `Request` has private
    fields and accessors, so both can grow.
-4. **only-log `Filter` and `init_from_env`.** `Filter` holds a default level and per-target levels
-   and parses env_logger-style directives (`info,only_http=debug,only_quic::conn=trace`):
+4. **akio-log `Filter` and `init_from_env`.** `Filter` holds a default level and per-target levels
+   and parses env_logger-style directives (`info,akio_http=debug,akio_quic::conn=trace`):
    `level`, `target=level`, `target` (= trace). It differs from env_logger in two places, both
    inherited from `FmtLogger::target_level`: a target matches itself and `target::...` only (not
    any string prefix), and the longest match wins regardless of order. `/regex` message filters
-   are rejected. `init_from_env(default)` reads `ONLY_LOG` once, installs a `FmtLogger` with the
+   are rejected. `init_from_env(default)` reads `AKIO_LOG` once, installs a `FmtLogger` with the
    filter and sets the global maximum to the filter's most verbose level; unset uses `default`,
    unparsable prints why to stderr and uses `default`. **Opt-in**: nothing reads the environment
    unless it is called, so `init` and the default behaviour are unchanged. `FmtLogger::filter`

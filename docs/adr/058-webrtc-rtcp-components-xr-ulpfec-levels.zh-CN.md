@@ -1,4 +1,4 @@
-# ADR-058：only-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别
+# ADR-058：akio-webrtc 中 RTCP 走独立 ICE 组件、XR 接收块与 ULPFEC 保护级别
 
 [English](058-webrtc-rtcp-components-xr-ulpfec-levels.md) | 简体中文
 
@@ -8,17 +8,17 @@
 
 下层已实现的两组功能此前无法在对端连接中使用：
 
-- **ICE 组件**（ADR-055）：`only_ice::IceAgent` 已能处理多组件数据流，但 only-webrtc 始终在组件 1
+- **ICE 组件**（ADR-055）：`akio_ice::IceAgent` 已能处理多组件数据流，但 akio-webrtc 始终在组件 1
   上复用 RTP 与 RTCP（rtcp-mux、BUNDLE）。不提供 `a=rtcp-mux` 的对端（SIP 终端、较老的 RTP 栈：
   RFC 5761 允许它们在单独端口发送 RTCP，并以 RFC 3605 的 `a=rtcp` 指明）仍会收到带
   `a=rtcp-mux` 的应答，其 RTCP 永远到不了。
-- **only-rtp**（ADR-053）：由 `ReceiptLog` 生成的 XR 丢包 RLE、重复 RLE 与包接收时间块，
+- **akio-rtp**（ADR-053）：由 `ReceiptLog` 生成的 XR 丢包 RLE、重复 RLE 与包接收时间块，
   `BurstLossModel::report` 给出的完整 VoIP 指标，ULPFEC 保护级别（`FecEncoder::set_ulp_level0`），
   类型化 SDES 项（`SdesItem`）与 RFC 7022 CNAME（`random_cname`）。对端此前只发送 XR 接收方参考
   时间 / DLRR，忽略收到的 SDES，CNAME 是自定字母表的 16 字符随机串。
 
 约束：浏览器与 pion 看到的内容必须与之前完全一致（默认仍为 rtcp-mux、BUNDLE，不新增属性）；公共 API
-（public 层级）不得暴露 internal 层级类型；只改 only-webrtc（only-ice 与 only-rtp 无需改动）。
+（public 层级）不得暴露 internal 层级类型；只改 akio-webrtc（akio-ice 与 akio-rtp 无需改动）。
 
 ## 决定
 
@@ -78,7 +78,7 @@
 （协商了 `red` / `ulpfec` 的行，包括 simulcast 各编码）：一帧的 FEC 包保护每个包的前 `l0` 字节，最后
 一个再加一个覆盖其余部分的级别 1。默认 `None`：与以前一样整包 ULPFEC。SDP 中没有任何东西表明接收方能读
 级别，而 libwebrtc 只读级别 0（Chrome 中长于 `l0` 的丢失包会被错误重建），因此它只用于对端也是本栈的
-情况；文档中已注明。接收端无需改动：only-rtp 的解码器能从任意多个级别重建包。
+情况；文档中已注明。接收端无需改动：akio-rtp 的解码器能从任意多个级别重建包。
 
 ### 4. CNAME 与 SDES 项
 
@@ -93,11 +93,11 @@
 
 只有新增：`Endpoint::{bind_rtcp, rtcp_addr}`、`RtcConfig::{set_rtcp_mux_policy,
 enable_rtcp_xr_blocks, set_ulpfec_level0}`、`RtcpMuxPolicy`（`#[non_exhaustive]`）、`XrBlocks`。
-only-ice 与 only-rtp 无改动。
+akio-ice 与 akio-rtp 无改动。
 
 ## 影响
 
-- 测试（`crates/only-webrtc/src/rtc/tests_mux.rs`，模拟网络与时间）：两个不复用 RTCP 的对端，
+- 测试（`crates/akio-webrtc/src/rtc/tests_mux.rs`，模拟网络与时间）：两个不复用 RTCP 的对端，
   DTLS-SRTP：无 `a=rtcp-mux`、有 `a=rtcp`、无 BUNDLE，组件 2 候选与组件 1 同 foundation、优先级少 1；
   两次握手；双向音频；RTP 只在组件 1 端口之间、RTCP 只在组件 2 端口之间、DTLS 两者都有；双方都有发送方
   报告与 RTT；用组件 1 密钥保护的 SRTCP 包在组件 2 上被拒、用组件 2 密钥保护的同一包被接受。`Negotiate`
@@ -107,10 +107,10 @@ only-ice 与 only-rtp 无改动。
   在丢失 10 % 媒体的链路上的接收块与 VoIP 指标（丢包计数在范围内，VoIP 块中的丢包率与往返时间，统计中的
   累计）；未协商时不发送。RFC 7022 CNAME 与类型化 SDES 事件。`l0 = 120` 的 ULPFEC 在 8 % 丢包且无 NACK
   时：200 个三包帧中至少 180 个完整（与整包 ULPFEC 相差不超过 10 帧），字节数不到其 85 %。
-- 集成测试（`crates/only-webrtc/tests/rtcp_mux.rs`，两个带 RTCP 套接字的 `Endpoint` 经回环）：用
+- 集成测试（`crates/akio-webrtc/tests/rtcp_mux.rs`，两个带 RTCP 套接字的 `Endpoint` 经回环）：用
   DTLS-SRTP 和 SDES-SRTP 在两个组件上回送 Opus（发送方报告、`rtcp_mux: false`、统计中有 RTT）；
   `Negotiate` 与默认策略保持 rtcp-mux；端到端协商 XR 块（接收块、VoIP 指标与 SDES 事件）；组件 2 的
-  检查从 RTCP 套接字发出。现有 only-webrtc 测试不变且通过。
+  检查从 RTCP 套接字发出。现有 akio-webrtc 测试不变且通过。
 - 互通：浏览器与 pion 总是复用；pion/webrtc 只实现 `require` 策略，pion/ice 只有一个组件（ADR-055），
   因此没有不复用 RTCP 的 pion 检查。两组件的 ICE 层已与 libnice 验证（ADR-055）；默认对端的 SDP 不变，
   浏览器与 pion 脚本（`tools/interop/webrtc`）不受影响。

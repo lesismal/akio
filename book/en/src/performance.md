@@ -1,9 +1,9 @@
 # Performance tuning
 
 Measure before tuning. The numbers quoted here come from
-[docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md): one
+[docs/BENCHMARKS.md](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md): one
 Docker VM on a laptop-class Mac, loopback, 4 server threads. Treat them as direction, not as a
-ranking. In that report `only`'s TCP echo was in the same class as tokio and ahead of fib (ahead
+ranking. In that report `akio`'s TCP echo was in the same class as tokio and ahead of fib (ahead
 of tokio at 512 connections, about 15% behind at 64 connections and at 16 KiB messages), UDP
 echo was level with fib, and moving 5 ms of blocking work to the logical pool gave about 58× the
 throughput of blocking inline. `tools/bench/run.sh` reproduces the runs; `tools/echo-bench` is the
@@ -11,8 +11,8 @@ load generator.
 
 ## 1. Keep the I/O threads free
 
-Nothing else matters if callbacks block. Watch `only_slow_callbacks_total` and
-`only_loop_callback_seconds_total`; lower `slow_callback_threshold` (to 1–10 ms) in staging to
+Nothing else matters if callbacks block. Watch `akio_slow_callbacks_total` and
+`akio_loop_callback_seconds_total`; lower `slow_callback_threshold` (to 1–10 ms) in staging to
 find offenders; move blocking work to `spawn_blocking`, `Context::detach`, or your own threads.
 See [Blocking work](concepts/blocking.md).
 
@@ -69,11 +69,11 @@ See [Blocking work](concepts/blocking.md).
 - On Linux, receives use `recvmmsg`; the replies produced for a receive batch leave with
   `sendmmsg`, and equal-size runs to one peer as a single GSO send. In the UDP batching work this
   cut server CPU per datagram by 30–46% for bursts and raised 64-byte echo by about 19%.
-- `Conn::send_segments` sends many datagrams in one call (only-quic uses it).
+- `Conn::send_segments` sends many datagrams in one call (akio-quic uses it).
 - `Config::udp_gro` (on by default where the kernel supports it) lets bulk receivers of GSO
   traffic (QUIC downloads) take a whole GSO batch in one receive: QUIC bulk on loopback went from
   6.4 to 9.8 Gbit/s with it, and 64-byte UDP echo did not change measurably. It needs
-  `read_buffer` >= 64 KiB; `ONLY_UDP_GRO=0` turns it off.
+  `read_buffer` >= 64 KiB; `AKIO_UDP_GRO=0` turns it off.
 - `udp_max_peers` caps per-peer state under floods.
 
 ## 6. eBPF steering
@@ -89,7 +89,7 @@ See [Blocking work](concepts/blocking.md).
 Classic BPF works unprivileged; check `Engine::accel_status()` to see what was attached.
 
 For proxies, `ProxyConfig::sockmap` splices tunnels in the kernel. In the
-[benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh)
+[benchmark](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh)
 it doubled a SOCKS upload's throughput, at more CPU per byte over loopback.
 `ebpf::xdp::RateLimiter` drops floods from a few sources before the network stack sees them.
 
@@ -98,8 +98,8 @@ it doubled a SOCKS upload's throughput, at more CPU per byte over loopback.
 TLS throughput was within noise of tokio-rustls in the report (TLS 1.3, 1 KiB records). Enable
 session resumption (`ticketer`) to make reconnects cheap; offer `h2` in ALPN so HTTP clients
 multiplex instead of opening more connections. Kernel TLS in software is off by default: on
-x86_64 with VAES it was slower than only-tls's own record layer, `sendfile` of large files
-included ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
+x86_64 with VAES it was slower than akio-tls's own record layer, `sendfile` of large files
+included ([measurements](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
 On a NIC with TLS offload (ConnectX-6 Dx and later), build with the `ktls` feature and set
 `.ktls(Ktls::Hardware)`: the NIC then does the record crypto and `sendfile` stays zero-copy, and
 hosts without such a NIC are unaffected ([TLS](protocols/tls.md#kernel-tls)).

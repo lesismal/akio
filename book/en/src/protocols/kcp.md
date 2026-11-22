@@ -1,6 +1,6 @@
 # KCP
 
-`only-kcp` provides reliable, ordered messages over UDP, wire-compatible with
+`akio-kcp` provides reliable, ordered messages over UDP, wire-compatible with
 [skywind3000/kcp](https://github.com/skywind3000/kcp) and with
 [kcp-go](https://github.com/xtaci/kcp-go)'s FEC and encryption (so with kcptun and fib's kcp).
 Interop with kcp-go v5 is tested in both directions for six crypt/FEC combinations, including
@@ -9,15 +9,15 @@ through a relay that drops every seventh datagram (`tools/interop/kcp/run.sh`).
 ## Server and client
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:server}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:server}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:config}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:config}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-kcp/examples/guide-kcp.rs:client}}
+{{#include ../../../../crates/akio-kcp/examples/guide-kcp.rs:client}}
 ```
 
 - A `KcpServer` is the acceptor of a **UDP listener**. Each peer address that starts a
@@ -25,7 +25,7 @@ through a relay that drops every seventh datagram (`tools/interop/kcp/run.sh`).
   the same address replaces the old session. `max_sessions(n)` caps them (default 4096; 0
   lifts the limit): a peer starting a conversation beyond it gets no session and its datagrams
   are dropped. `sessions()` counts them.
-- `only_kcp::dial(&engine, addr, cfg, handler)` starts a client session with a random
+- `akio_kcp::dial(&engine, addr, cfg, handler)` starts a client session with a random
   conversation id (`dial_conv` to choose it). The engine needs `udp_client_threads(n)`. Messages
   may be sent right away.
 - `KcpHandler::on_message(&mut self, &Session, Vec<u8>)` gets whole messages (in stream mode,

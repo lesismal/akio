@@ -1,5 +1,5 @@
 // Command whip-pion is the pion side of tools/interop/webrtc/media.sh: WHIP and WHEP clients
-// against only-media's WHIP/WHEP endpoints (only_media::webrtc::RtcMedia).
+// against akio-media's WHIP/WHEP endpoints (akio_media::webrtc::RtcMedia).
 //
 //	whip-pion whip <url> <in.h264> <in.ogg> <seconds> <min-plis>
 //	    publishes the H.264 Annex B file (looped, 25 fps) and the Ogg Opus file over WHIP for

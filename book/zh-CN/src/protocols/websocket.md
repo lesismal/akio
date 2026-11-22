@@ -1,6 +1,6 @@
 # WebSocket
 
-`only-ws` 实现了 RFC 6455 以及 `permessage-deflate`（RFC 7692）。服务端通过 only-http 的
+`akio-ws` 实现了 RFC 6455 以及 `permessage-deflate`（RFC 7692）。服务端通过 akio-http 的
 升级进入（HTTP/1.1，或 HTTP/3 上的 extended CONNECT）；客户端拨号 `ws://` 和 `wss://` URL。两端使用同一个 handler trait。一致性：
 Autobahn|Testsuite 服务端 298 OK + 3 informational（核心）以及 216/216（permessage-deflate）；
 客户端 517 项中 514 OK + 3 informational；CI 中由 `tools/autobahn/run.sh` 运行。
@@ -28,13 +28,13 @@ pub trait WsHandler: Send + 'static {
 | `send_text_fragmented`、`send_binary_fragmented` | 按给定大小拆成多个帧 |
 | `send_prepared(&PreparedMessage)` | 为多个连接只编码一次的消息（不压缩发送） |
 | `ping`、`pong` | 控制帧 |
-| `close(code, reason)` | 发起关闭握手（`only_ws::protocol::close::NORMAL` 等） |
+| `close(code, reason)` | 发起关闭握手（`akio_ws::protocol::close::NORMAL` 等） |
 | `subprotocol()`、`is_open()` | 协商的子协议、状态 |
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:server}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:server}}
 ```
 
 `ctx.upgrade_websocket(handler, &WsOptions)` 校验握手（GET、HTTP/1.1、`Upgrade`/`Connection`
@@ -58,11 +58,11 @@ pub trait WsHandler: Send + 'static {
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:client}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/only-ws/examples/guide-ws.rs:dial}}
+{{#include ../../../../crates/akio-ws/examples/guide-ws.rs:dial}}
 ```
 
 - `client::dial_blocking(&engine, url, &opts, handler)` 阻塞到握手完成，返回 `WsSender`；不要在同一个
@@ -73,20 +73,20 @@ pub trait WsHandler: Send + 'static {
 - `DialOptions`：`config`（各项上限；`permessage_deflate` 决定是否提出压缩）、`pmd`（压缩提议
   的参数）、`protocols`、`origin`、`headers`（如 `Authorization`、cookie）、`tls`（`None`：使用
   系统 CA；ALPN 中不要提供 `h2`）、`server_name`、`handshake_timeout`（10 s，含重定向）、
-  `close_timeout`（3 s）、`proxy`（默认无；`only_ws::proxy::Proxy::from_env()` 显式启用环境变量）
+  `close_timeout`（3 s）、`proxy`（默认无；`akio_ws::proxy::Proxy::from_env()` 显式启用环境变量）
   和 `max_redirects`（0）。
 - 代理：代理适用的每个连接（`ws://` 和 `wss://`）都经 `CONNECT host:port` 隧道，`socks5://` /
   `socks5h://` / `socks4://` / `socks4a://` 代理则经 SOCKS 隧道；被拒绝时是携带
-  `only_ws::proxy::ProxyRefused` 的 `WsClientError::Io`。`Proxy` 类型和规则与
+  `akio_ws::proxy::ProxyRefused` 的 `WsClientError::Io`。`Proxy` 类型和规则与
   [HTTP 客户端](http-clients.md#代理)相同。
 - 重定向（`max_redirects > 0`）：带 `Location` 的 301、302、303、307 和 308；`http`/`https` 的
   location 变为 `ws`/`wss`；`wss://` 从不转到 `ws://`；跨源时从 `headers` 中删除 `Authorization`、
   `Cookie` 和 `Proxy-Authorization`。浏览器不跟随 WebSocket 重定向，因此默认关闭。
 - 客户端所在的 engine 优雅停机时，已打开的连接以 1001（going away）和关闭握手关闭。
-- 帧用不可预测的密钥加掩码；依次尝试解析出的每个地址；域名在调用线程之外解析（`only::dns`）。
+- 帧用不可预测的密钥加掩码；依次尝试解析出的每个地址；域名在调用线程之外解析（`akio::dns`）。
 
-运行 `cargo run -p only-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
-示例见 `crates/only-http/examples/ws-chat.rs`。
+运行 `cargo run -p akio-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
+示例见 `crates/akio-http/examples/ws-chat.rs`。
 
 ## HTTP/2 上的 WebSocket
 
@@ -107,7 +107,7 @@ extended CONNECT，`ctx.req().protocol` 为 `Some("websocket")`。`H2Config::ena
 
 ## 尚未完成
 
-客户端：跨重定向携带 cookie（可以自行用 `only_http::cookie::CookieJar::header` 设置 `Cookie` 头；
+客户端：跨重定向携带 cookie（可以自行用 `akio_http::cookie::CookieJar::header` 设置 `Cookie` 头；
 `https://` 代理与 Happy Eyeballs 已完成，ADR-059）；`client::dial` 仍是 HTTP/1.1（HTTP/2 上的
 WebSocket 需要 `H2Client`）。基于 HTTP/2 的 WebSocket（RFC 8441，见上文）与基于 HTTP/3 的 WebSocket
 （RFC 9220，见 [QUIC 与 HTTP/3](quic-h3.md#http3-上的-websocket)）均已完成。

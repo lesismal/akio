@@ -1,4 +1,4 @@
-// The pion/dtls side of the only-dtls interop checks (../run.sh).
+// The pion/dtls side of the akio-dtls interop checks (../run.sh).
 //
 //	pion server <bind> <cert.pem> <key.pem> <srtp-profile> [cipher-suite]
 //	pion client <addr> <cert.pem> <key.pem> <srtp-profile> [cipher-suite]
@@ -146,7 +146,7 @@ func extra() bool {
 		var n int
 		_, err = fmt.Sscan(os.Args[3], &n)
 		must(err)
-		gen := dtls.OnlySendCIDGenerator()
+		gen := dtls.AkioSendCIDGenerator()
 		if n > 0 {
 			gen = dtls.RandomCIDGenerator(n)
 		}

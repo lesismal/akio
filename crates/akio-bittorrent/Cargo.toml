@@ -1,0 +1,31 @@
+[package]
+name = "akio-bittorrent"
+description = "akio BitTorrent: bencode, v1/v2/hybrid metainfo and magnets, HTTP/UDP trackers, peer wire with MSE, uTP, mainline DHT (IPv4 and IPv6), LSD, web seeds and a client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-bittorrent"
+keywords = ["bittorrent", "dht", "utp", "p2p", "torrent"]
+categories = ["network-programming"]
+
+[dependencies]
+akio = { workspace = true }
+akio-core = { workspace = true }
+akio-pool = { workspace = true }
+akio-http = { workspace = true }
+akio-crypto = { workspace = true }
+akio-sys = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_bittorrent::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

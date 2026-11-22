@@ -1,12 +1,12 @@
 # Migrating from hyper and axum
 
-only-http covers the ground of hyper (HTTP/1.1 and HTTP/2 server and clients) and of axum's
-routing and middleware, with `only`'s model underneath: handlers are synchronous functions on the
+akio-http covers the ground of hyper (HTTP/1.1 and HTTP/2 server and clients) and of axum's
+routing and middleware, with `akio`'s model underneath: handlers are synchronous functions on the
 connection's I/O thread, and slow work is detached instead of awaited.
 
 ## Mapping
 
-| axum / hyper / tower | only-http |
+| axum / hyper / tower | akio-http |
 |---|---|
 | `axum::serve(listener, app)` / `hyper::server::conn` | `Engine::builder().listen(Listener::tcp(addr).serve(serve(app)))` |
 | `Router::new().route("/users/:id", get(h))` | `Router::new().get("/users/:id", h)` |
@@ -33,9 +33,9 @@ connection's I/O thread, and slow work is detached instead of awaited.
 | `CompressionLayer`, `CorsLayer`, `TraceLayer`, `RequestIdLayer`, `CatchPanicLayer` | `middleware::compress`, `cors`, `logger` / `observe::access_log`, `request_id`, `recover` |
 | `TimeoutLayer` | none: detach and answer 503/504 from your own timer if needed |
 | `tower::limit::RateLimitLayer` | `middleware::limiter(rate, burst)` (per client IP) |
-| `axum-server` / `tokio-rustls` TLS | `only::tls::Tls::server(cfg, serve(app))` |
+| `axum-server` / `tokio-rustls` TLS | `akio::tls::Tls::server(cfg, serve(app))` |
 | `hyper::client` / `reqwest` | `client::Client`, `h2client::H2Client` |
-| `tonic` | `only-grpc` |
+| `tonic` | `akio-grpc` |
 
 ## Handlers
 
@@ -49,33 +49,33 @@ async fn user(Path(id): Path<u32>, State(db): State<Arc<Db>>) -> Result<Json<Use
 }
 ```
 
-In only-http, the quick part of a handler runs inline and the slow part is detached:
+In akio-http, the quick part of a handler runs inline and the slow part is detached:
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:handlers}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:handlers}}
 ```
 
 Shared state is captured instead of extracted:
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:state}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:state}}
 ```
 
 ## Routers and middleware
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:router}}
 ```
 
 Writing a middleware is a plain function instead of a tower `Layer` + `Service` pair:
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:middleware}}
 ```
 
 Differences to keep in mind:
 
-- **Ordering:** the last `.layer(..)` is the outermost, as in axum. But a `only` layer wraps only
+- **Ordering:** the last `.layer(..)` is the outermost, as in axum. But a `akio` layer wraps only
   the routes registered *before* it (and the fallback); axum's `.layer` wraps every route of the
   router.
 - **After the response:** a handler may detach, so "code after `next.call(ctx)`" may run before
@@ -88,17 +88,17 @@ Differences to keep in mind:
 ## Serving
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:serve}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:serve}}
 ```
 
 HTTP/2 is on by default on the same port (prior knowledge, h2c upgrade, or ALPN `h2` under TLS);
-hyper needs `auto::Builder` for that. HTTP/3 serves the same router with only-h3
+hyper needs `auto::Builder` for that. HTTP/3 serves the same router with akio-h3
 ([QUIC and HTTP/3](../protocols/quic-h3.md)).
 
 ## Clients
 
 `reqwest`/`hyper` client calls map to `client::Client::send(..).await` or `.wait()`; HTTP/2
-multiplexing to `H2Client`. Redirects, cookies and proxies are not handled by `only`'s clients.
+multiplexing to `H2Client`. Redirects, cookies and proxies are not handled by `akio`'s clients.
 See [HTTP clients](../protocols/http-clients.md).
 
 ## What you give up and what you get

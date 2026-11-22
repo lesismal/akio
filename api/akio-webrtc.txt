@@ -1,0 +1,893 @@
+pub mod akio_webrtc
+#[non_exhaustive] pub enum akio_webrtc::BundlePolicy
+pub akio_webrtc::BundlePolicy::Balanced
+pub akio_webrtc::BundlePolicy::Disabled
+impl core::clone::Clone for akio_webrtc::BundlePolicy
+pub fn akio_webrtc::BundlePolicy::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::BundlePolicy
+impl core::cmp::PartialEq for akio_webrtc::BundlePolicy
+pub fn akio_webrtc::BundlePolicy::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::BundlePolicy
+pub fn akio_webrtc::BundlePolicy::default() -> Self
+impl core::fmt::Debug for akio_webrtc::BundlePolicy
+pub fn akio_webrtc::BundlePolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::BundlePolicy
+pub fn akio_webrtc::BundlePolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::BundlePolicy
+impl core::marker::StructuralPartialEq for akio_webrtc::BundlePolicy
+impl core::marker::Send for akio_webrtc::BundlePolicy
+impl core::marker::Sync for akio_webrtc::BundlePolicy
+impl core::marker::Unpin for akio_webrtc::BundlePolicy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::BundlePolicy
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::BundlePolicy
+#[non_exhaustive] pub enum akio_webrtc::ChannelPriority
+pub akio_webrtc::ChannelPriority::High
+pub akio_webrtc::ChannelPriority::Low
+pub akio_webrtc::ChannelPriority::Medium
+pub akio_webrtc::ChannelPriority::VeryLow
+impl akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::dcep_value(self) -> u16
+pub fn akio_webrtc::ChannelPriority::from_dcep_value(u16) -> akio_webrtc::ChannelPriority
+impl core::clone::Clone for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::ChannelPriority
+impl core::cmp::Ord for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::default() -> Self
+impl core::fmt::Debug for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::ChannelPriority
+pub fn akio_webrtc::ChannelPriority::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::ChannelPriority
+impl core::marker::StructuralPartialEq for akio_webrtc::ChannelPriority
+impl core::marker::Send for akio_webrtc::ChannelPriority
+impl core::marker::Sync for akio_webrtc::ChannelPriority
+impl core::marker::Unpin for akio_webrtc::ChannelPriority
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::ChannelPriority
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::ChannelPriority
+#[non_exhaustive] pub enum akio_webrtc::ChannelScheduler
+pub akio_webrtc::ChannelScheduler::FairCapacity
+pub akio_webrtc::ChannelScheduler::FirstComeFirstServed
+pub akio_webrtc::ChannelScheduler::Priority
+pub akio_webrtc::ChannelScheduler::RoundRobin
+pub akio_webrtc::ChannelScheduler::RoundRobinPerPacket
+pub akio_webrtc::ChannelScheduler::WeightedFairQueueing
+impl core::clone::Clone for akio_webrtc::ChannelScheduler
+pub fn akio_webrtc::ChannelScheduler::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::ChannelScheduler
+impl core::cmp::PartialEq for akio_webrtc::ChannelScheduler
+pub fn akio_webrtc::ChannelScheduler::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::ChannelScheduler
+pub fn akio_webrtc::ChannelScheduler::default() -> Self
+impl core::fmt::Debug for akio_webrtc::ChannelScheduler
+pub fn akio_webrtc::ChannelScheduler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::ChannelScheduler
+pub fn akio_webrtc::ChannelScheduler::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::ChannelScheduler
+impl core::marker::StructuralPartialEq for akio_webrtc::ChannelScheduler
+impl core::marker::Send for akio_webrtc::ChannelScheduler
+impl core::marker::Sync for akio_webrtc::ChannelScheduler
+impl core::marker::Unpin for akio_webrtc::ChannelScheduler
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::ChannelScheduler
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::ChannelScheduler
+#[non_exhaustive] pub enum akio_webrtc::Codec
+pub akio_webrtc::Codec::Av1
+pub akio_webrtc::Codec::G722
+pub akio_webrtc::Codec::H264
+pub akio_webrtc::Codec::H265
+pub akio_webrtc::Codec::Opus
+pub akio_webrtc::Codec::Pcma
+pub akio_webrtc::Codec::Pcmu
+pub akio_webrtc::Codec::Vp8
+pub akio_webrtc::Codec::Vp9
+impl core::clone::Clone for akio_webrtc::Codec
+pub fn akio_webrtc::Codec::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Codec
+impl core::cmp::PartialEq for akio_webrtc::Codec
+pub fn akio_webrtc::Codec::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::Codec
+pub fn akio_webrtc::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Codec
+pub fn akio_webrtc::Codec::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Codec
+impl core::marker::StructuralPartialEq for akio_webrtc::Codec
+impl core::marker::Send for akio_webrtc::Codec
+impl core::marker::Sync for akio_webrtc::Codec
+impl core::marker::Unpin for akio_webrtc::Codec
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Codec
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Codec
+pub enum akio_webrtc::Direction
+pub akio_webrtc::Direction::Inactive
+pub akio_webrtc::Direction::RecvOnly
+pub akio_webrtc::Direction::SendOnly
+pub akio_webrtc::Direction::SendRecv
+impl core::clone::Clone for akio_webrtc::Direction
+pub fn akio_webrtc::Direction::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Direction
+impl core::cmp::PartialEq for akio_webrtc::Direction
+pub fn akio_webrtc::Direction::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::Direction
+pub fn akio_webrtc::Direction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Direction
+pub fn akio_webrtc::Direction::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Direction
+impl core::marker::StructuralPartialEq for akio_webrtc::Direction
+impl core::marker::Send for akio_webrtc::Direction
+impl core::marker::Sync for akio_webrtc::Direction
+impl core::marker::Unpin for akio_webrtc::Direction
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Direction
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Direction
+#[non_exhaustive] pub enum akio_webrtc::EcnInitiation
+pub akio_webrtc::EcnInitiation::LeapOfFaith
+pub akio_webrtc::EcnInitiation::Probe
+impl core::clone::Clone for akio_webrtc::EcnInitiation
+pub fn akio_webrtc::EcnInitiation::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::EcnInitiation
+impl core::cmp::PartialEq for akio_webrtc::EcnInitiation
+pub fn akio_webrtc::EcnInitiation::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::EcnInitiation
+pub fn akio_webrtc::EcnInitiation::default() -> Self
+impl core::fmt::Debug for akio_webrtc::EcnInitiation
+pub fn akio_webrtc::EcnInitiation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::EcnInitiation
+pub fn akio_webrtc::EcnInitiation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::EcnInitiation
+impl core::marker::StructuralPartialEq for akio_webrtc::EcnInitiation
+impl core::marker::Send for akio_webrtc::EcnInitiation
+impl core::marker::Sync for akio_webrtc::EcnInitiation
+impl core::marker::Unpin for akio_webrtc::EcnInitiation
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::EcnInitiation
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::EcnInitiation
+#[non_exhaustive] pub enum akio_webrtc::EcnMarking
+pub akio_webrtc::EcnMarking::Ect0
+pub akio_webrtc::EcnMarking::Ect1
+pub akio_webrtc::EcnMarking::Off
+impl core::clone::Clone for akio_webrtc::EcnMarking
+pub fn akio_webrtc::EcnMarking::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::EcnMarking
+impl core::cmp::PartialEq for akio_webrtc::EcnMarking
+pub fn akio_webrtc::EcnMarking::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::EcnMarking
+pub fn akio_webrtc::EcnMarking::default() -> Self
+impl core::fmt::Debug for akio_webrtc::EcnMarking
+pub fn akio_webrtc::EcnMarking::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::EcnMarking
+pub fn akio_webrtc::EcnMarking::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::EcnMarking
+impl core::marker::StructuralPartialEq for akio_webrtc::EcnMarking
+impl core::marker::Send for akio_webrtc::EcnMarking
+impl core::marker::Sync for akio_webrtc::EcnMarking
+impl core::marker::Unpin for akio_webrtc::EcnMarking
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::EcnMarking
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::EcnMarking
+#[non_exhaustive] pub enum akio_webrtc::Error
+pub akio_webrtc::Error::Closed
+pub akio_webrtc::Error::InvalidCandidate(alloc::string::String)
+pub akio_webrtc::Error::Io(core::io::error::Error)
+pub akio_webrtc::Error::NoPendingOffer
+pub akio_webrtc::Error::Rtc(akio_webrtc::RtcError)
+pub akio_webrtc::Error::Sdp(alloc::string::String)
+pub akio_webrtc::Error::Timeout
+pub akio_webrtc::Error::TooManyPeers
+pub akio_webrtc::Error::Turn(alloc::string::String)
+pub akio_webrtc::Error::UnknownChannel
+pub akio_webrtc::Error::UnknownMedia
+impl core::error::Error for akio_webrtc::Error
+pub fn akio_webrtc::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for akio_webrtc::Error
+pub fn akio_webrtc::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_webrtc::Error
+pub fn akio_webrtc::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::Error
+impl core::marker::Sync for akio_webrtc::Error
+impl core::marker::Unpin for akio_webrtc::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Error
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::Error
+#[non_exhaustive] pub enum akio_webrtc::Event
+pub akio_webrtc::Event::ChannelBufferedAmountLow(akio_webrtc::ChannelId)
+pub akio_webrtc::Event::Other(akio_webrtc::OtherEvent)
+impl core::fmt::Debug for akio_webrtc::Event
+pub fn akio_webrtc::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::Event
+impl core::marker::Sync for akio_webrtc::Event
+impl core::marker::Unpin for akio_webrtc::Event
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Event
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Event
+#[non_exhaustive] pub enum akio_webrtc::FecMask
+pub akio_webrtc::FecMask::Bursty
+pub akio_webrtc::FecMask::Random
+impl core::clone::Clone for akio_webrtc::FecMask
+pub fn akio_webrtc::FecMask::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::FecMask
+impl core::cmp::PartialEq for akio_webrtc::FecMask
+pub fn akio_webrtc::FecMask::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::FecMask
+pub fn akio_webrtc::FecMask::default() -> Self
+impl core::fmt::Debug for akio_webrtc::FecMask
+pub fn akio_webrtc::FecMask::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::FecMask
+pub fn akio_webrtc::FecMask::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::FecMask
+impl core::marker::StructuralPartialEq for akio_webrtc::FecMask
+impl core::marker::Send for akio_webrtc::FecMask
+impl core::marker::Sync for akio_webrtc::FecMask
+impl core::marker::Unpin for akio_webrtc::FecMask
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::FecMask
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::FecMask
+#[non_exhaustive] pub enum akio_webrtc::FecMechanism
+pub akio_webrtc::FecMechanism::FlexFec
+pub akio_webrtc::FecMechanism::Red
+pub akio_webrtc::FecMechanism::Ulpfec
+impl core::clone::Clone for akio_webrtc::FecMechanism
+pub fn akio_webrtc::FecMechanism::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::FecMechanism
+impl core::cmp::PartialEq for akio_webrtc::FecMechanism
+pub fn akio_webrtc::FecMechanism::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::FecMechanism
+pub fn akio_webrtc::FecMechanism::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::FecMechanism
+pub fn akio_webrtc::FecMechanism::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::FecMechanism
+impl core::marker::StructuralPartialEq for akio_webrtc::FecMechanism
+impl core::marker::Send for akio_webrtc::FecMechanism
+impl core::marker::Sync for akio_webrtc::FecMechanism
+impl core::marker::Unpin for akio_webrtc::FecMechanism
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::FecMechanism
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::FecMechanism
+#[non_exhaustive] pub enum akio_webrtc::IceConnectionState
+pub akio_webrtc::IceConnectionState::Checking
+pub akio_webrtc::IceConnectionState::Completed
+pub akio_webrtc::IceConnectionState::Connected
+pub akio_webrtc::IceConnectionState::Disconnected
+pub akio_webrtc::IceConnectionState::New
+impl core::clone::Clone for akio_webrtc::IceConnectionState
+pub fn akio_webrtc::IceConnectionState::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::IceConnectionState
+impl core::cmp::PartialEq for akio_webrtc::IceConnectionState
+pub fn akio_webrtc::IceConnectionState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::IceConnectionState
+pub fn akio_webrtc::IceConnectionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::IceConnectionState
+pub fn akio_webrtc::IceConnectionState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::IceConnectionState
+impl core::marker::StructuralPartialEq for akio_webrtc::IceConnectionState
+impl core::marker::Send for akio_webrtc::IceConnectionState
+impl core::marker::Sync for akio_webrtc::IceConnectionState
+impl core::marker::Unpin for akio_webrtc::IceConnectionState
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::IceConnectionState
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::IceConnectionState
+pub enum akio_webrtc::KeyframeRequestKind
+pub akio_webrtc::KeyframeRequestKind::Fir
+pub akio_webrtc::KeyframeRequestKind::Pli
+impl core::clone::Clone for akio_webrtc::KeyframeRequestKind
+pub fn akio_webrtc::KeyframeRequestKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::KeyframeRequestKind
+impl core::cmp::PartialEq for akio_webrtc::KeyframeRequestKind
+pub fn akio_webrtc::KeyframeRequestKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::KeyframeRequestKind
+pub fn akio_webrtc::KeyframeRequestKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::KeyframeRequestKind
+pub fn akio_webrtc::KeyframeRequestKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::KeyframeRequestKind
+impl core::marker::StructuralPartialEq for akio_webrtc::KeyframeRequestKind
+impl core::marker::Send for akio_webrtc::KeyframeRequestKind
+impl core::marker::Sync for akio_webrtc::KeyframeRequestKind
+impl core::marker::Unpin for akio_webrtc::KeyframeRequestKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::KeyframeRequestKind
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::KeyframeRequestKind
+#[non_exhaustive] pub enum akio_webrtc::Latching
+pub akio_webrtc::Latching::Off
+pub akio_webrtc::Latching::Once
+pub akio_webrtc::Latching::Rebind(core::time::Duration)
+impl core::clone::Clone for akio_webrtc::Latching
+pub fn akio_webrtc::Latching::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Latching
+impl core::cmp::PartialEq for akio_webrtc::Latching
+pub fn akio_webrtc::Latching::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::Latching
+pub fn akio_webrtc::Latching::default() -> Self
+impl core::fmt::Debug for akio_webrtc::Latching
+pub fn akio_webrtc::Latching::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Latching
+pub fn akio_webrtc::Latching::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Latching
+impl core::marker::StructuralPartialEq for akio_webrtc::Latching
+impl core::marker::Send for akio_webrtc::Latching
+impl core::marker::Sync for akio_webrtc::Latching
+impl core::marker::Unpin for akio_webrtc::Latching
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Latching
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Latching
+pub enum akio_webrtc::MediaKind
+pub akio_webrtc::MediaKind::Audio
+pub akio_webrtc::MediaKind::Video
+impl core::clone::Clone for akio_webrtc::MediaKind
+pub fn akio_webrtc::MediaKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::MediaKind
+impl core::cmp::PartialEq for akio_webrtc::MediaKind
+pub fn akio_webrtc::MediaKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::MediaKind
+pub fn akio_webrtc::MediaKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::MediaKind
+pub fn akio_webrtc::MediaKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::MediaKind
+impl core::marker::StructuralPartialEq for akio_webrtc::MediaKind
+impl core::marker::Send for akio_webrtc::MediaKind
+impl core::marker::Sync for akio_webrtc::MediaKind
+impl core::marker::Unpin for akio_webrtc::MediaKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::MediaKind
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::MediaKind
+#[non_exhaustive] pub enum akio_webrtc::Reliability
+pub akio_webrtc::Reliability::MaxPacketLifetime
+pub akio_webrtc::Reliability::MaxPacketLifetime::lifetime: u16
+pub akio_webrtc::Reliability::MaxRetransmits
+pub akio_webrtc::Reliability::MaxRetransmits::retransmits: u16
+pub akio_webrtc::Reliability::Reliable
+impl core::clone::Clone for akio_webrtc::Reliability
+pub fn akio_webrtc::Reliability::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Reliability
+impl core::cmp::PartialEq for akio_webrtc::Reliability
+pub fn akio_webrtc::Reliability::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::Reliability
+pub fn akio_webrtc::Reliability::default() -> Self
+impl core::fmt::Debug for akio_webrtc::Reliability
+pub fn akio_webrtc::Reliability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_webrtc::Reliability
+impl core::marker::StructuralPartialEq for akio_webrtc::Reliability
+impl core::marker::Send for akio_webrtc::Reliability
+impl core::marker::Sync for akio_webrtc::Reliability
+impl core::marker::Unpin for akio_webrtc::Reliability
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Reliability
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Reliability
+#[non_exhaustive] pub enum akio_webrtc::RtcpMuxPolicy
+pub akio_webrtc::RtcpMuxPolicy::Negotiate
+pub akio_webrtc::RtcpMuxPolicy::Off
+pub akio_webrtc::RtcpMuxPolicy::Require
+impl core::clone::Clone for akio_webrtc::RtcpMuxPolicy
+pub fn akio_webrtc::RtcpMuxPolicy::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::RtcpMuxPolicy
+impl core::cmp::PartialEq for akio_webrtc::RtcpMuxPolicy
+pub fn akio_webrtc::RtcpMuxPolicy::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::RtcpMuxPolicy
+pub fn akio_webrtc::RtcpMuxPolicy::default() -> Self
+impl core::fmt::Debug for akio_webrtc::RtcpMuxPolicy
+pub fn akio_webrtc::RtcpMuxPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::RtcpMuxPolicy
+pub fn akio_webrtc::RtcpMuxPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::RtcpMuxPolicy
+impl core::marker::StructuralPartialEq for akio_webrtc::RtcpMuxPolicy
+impl core::marker::Send for akio_webrtc::RtcpMuxPolicy
+impl core::marker::Sync for akio_webrtc::RtcpMuxPolicy
+impl core::marker::Unpin for akio_webrtc::RtcpMuxPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcpMuxPolicy
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcpMuxPolicy
+pub struct akio_webrtc::Candidate(_)
+impl akio_webrtc::Candidate
+pub fn akio_webrtc::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_webrtc::Candidate::host(core::net::socket_addr::SocketAddr) -> core::result::Result<akio_webrtc::Candidate, akio_webrtc::Error>
+pub fn akio_webrtc::Candidate::kind(&self) -> &'static str
+pub fn akio_webrtc::Candidate::parse(&str) -> core::result::Result<akio_webrtc::Candidate, akio_webrtc::Error>
+pub fn akio_webrtc::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<akio_webrtc::Candidate, akio_webrtc::Error>
+pub fn akio_webrtc::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<akio_webrtc::Candidate, akio_webrtc::Error>
+pub fn akio_webrtc::Candidate::to_sdp(&self) -> alloc::string::String
+pub fn akio_webrtc::Candidate::transport(&self) -> &'static str
+impl core::clone::Clone for akio_webrtc::Candidate
+pub fn akio_webrtc::Candidate::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Candidate
+impl core::cmp::PartialEq for akio_webrtc::Candidate
+pub fn akio_webrtc::Candidate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::Candidate
+pub fn akio_webrtc::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::Candidate
+impl core::marker::Send for akio_webrtc::Candidate
+impl core::marker::Sync for akio_webrtc::Candidate
+impl core::marker::Unpin for akio_webrtc::Candidate
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Candidate
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Candidate
+#[non_exhaustive] pub struct akio_webrtc::ChannelConfig
+pub akio_webrtc::ChannelConfig::label: alloc::string::String
+pub akio_webrtc::ChannelConfig::negotiated: core::option::Option<u16>
+pub akio_webrtc::ChannelConfig::ordered: bool
+pub akio_webrtc::ChannelConfig::priority: akio_webrtc::ChannelPriority
+pub akio_webrtc::ChannelConfig::protocol: alloc::string::String
+pub akio_webrtc::ChannelConfig::reliability: akio_webrtc::Reliability
+impl akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::new(impl core::convert::Into<alloc::string::String>) -> akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::with_priority(self, akio_webrtc::ChannelPriority) -> akio_webrtc::ChannelConfig
+impl core::clone::Clone for akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::ChannelConfig
+impl core::cmp::PartialEq for akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::default() -> Self
+impl core::fmt::Debug for akio_webrtc::ChannelConfig
+pub fn akio_webrtc::ChannelConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::ChannelConfig
+impl core::marker::Send for akio_webrtc::ChannelConfig
+impl core::marker::Sync for akio_webrtc::ChannelConfig
+impl core::marker::Unpin for akio_webrtc::ChannelConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::ChannelConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::ChannelConfig
+pub struct akio_webrtc::ChannelId(_)
+impl core::clone::Clone for akio_webrtc::ChannelId
+pub fn akio_webrtc::ChannelId::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::ChannelId
+impl core::cmp::PartialEq for akio_webrtc::ChannelId
+pub fn akio_webrtc::ChannelId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::ChannelId
+pub fn akio_webrtc::ChannelId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::ChannelId
+pub fn akio_webrtc::ChannelId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::ChannelId
+impl core::marker::StructuralPartialEq for akio_webrtc::ChannelId
+impl core::marker::Send for akio_webrtc::ChannelId
+impl core::marker::Sync for akio_webrtc::ChannelId
+impl core::marker::Unpin for akio_webrtc::ChannelId
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::ChannelId
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::ChannelId
+pub struct akio_webrtc::Endpoint(_)
+impl akio_webrtc::Endpoint
+pub fn akio_webrtc::Endpoint::accept_offer<H: akio_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::add_candidate(&self, akio_webrtc::Candidate)
+pub fn akio_webrtc::Endpoint::bind(&akio::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<akio_webrtc::Endpoint, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::bind_rtcp(&self, &akio::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::bind_transport_socket(&self, &akio::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::candidate_filter(self, impl core::ops::function::Fn(&akio_webrtc::Candidate) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn akio_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<akio_webrtc::Candidate>
+pub fn akio_webrtc::Endpoint::close(&self)
+pub fn akio_webrtc::Endpoint::close_on_disconnect(self, bool) -> Self
+pub fn akio_webrtc::Endpoint::conceal_host_candidates(&self) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> akio_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn akio_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn akio_webrtc::Endpoint::create_offer<H: akio_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::dial_tcp(&self, &alloc::rcs::arc::Arc<akio::Engine>) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::gather_relay(&self, core::net::socket_addr::SocketAddr, &str, &str, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::gather_relay_via(&self, &alloc::rcs::arc::Arc<akio::Engine>, &akio_webrtc::RelayServer, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::gather_srflx(&self, core::net::socket_addr::SocketAddr, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::listen_tcp(&self, &alloc::rcs::arc::Arc<akio::Engine>, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::listen_tcp_so(&self, &alloc::rcs::arc::Arc<akio::Engine>, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_webrtc::Endpoint::max_peers(self, usize) -> Self
+pub fn akio_webrtc::Endpoint::peers(&self) -> usize
+pub fn akio_webrtc::Endpoint::resolve_mdns(&self, &akio::Engine, core::time::Duration) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::rtcp_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+impl core::clone::Clone for akio_webrtc::Endpoint
+pub fn akio_webrtc::Endpoint::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::Endpoint
+pub fn akio_webrtc::Endpoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::Endpoint
+impl core::marker::Sync for akio_webrtc::Endpoint
+impl core::marker::Unpin for akio_webrtc::Endpoint
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Endpoint
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::Endpoint
+pub struct akio_webrtc::Frequency(_)
+impl akio_webrtc::Frequency
+pub const akio_webrtc::Frequency::EIGHT_KHZ: akio_webrtc::Frequency
+pub const akio_webrtc::Frequency::FORTY_EIGHT_KHZ: akio_webrtc::Frequency
+pub const akio_webrtc::Frequency::NINETY_KHZ: akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::get(self) -> u32
+pub fn akio_webrtc::Frequency::new(u32) -> core::option::Option<akio_webrtc::Frequency>
+impl core::clone::Clone for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Frequency
+impl core::cmp::Ord for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Frequency
+pub fn akio_webrtc::Frequency::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Frequency
+impl core::marker::StructuralPartialEq for akio_webrtc::Frequency
+impl core::marker::Send for akio_webrtc::Frequency
+impl core::marker::Sync for akio_webrtc::Frequency
+impl core::marker::Unpin for akio_webrtc::Frequency
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Frequency
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Frequency
+#[non_exhaustive] pub struct akio_webrtc::KeyframeRequest
+pub akio_webrtc::KeyframeRequest::kind: akio_webrtc::KeyframeRequestKind
+pub akio_webrtc::KeyframeRequest::mid: akio_webrtc::Mid
+pub akio_webrtc::KeyframeRequest::rid: core::option::Option<alloc::string::String>
+impl core::clone::Clone for akio_webrtc::KeyframeRequest
+pub fn akio_webrtc::KeyframeRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::KeyframeRequest
+impl core::cmp::PartialEq for akio_webrtc::KeyframeRequest
+pub fn akio_webrtc::KeyframeRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::KeyframeRequest
+pub fn akio_webrtc::KeyframeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::KeyframeRequest
+impl core::marker::Send for akio_webrtc::KeyframeRequest
+impl core::marker::Sync for akio_webrtc::KeyframeRequest
+impl core::marker::Unpin for akio_webrtc::KeyframeRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::KeyframeRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::KeyframeRequest
+#[non_exhaustive] pub struct akio_webrtc::MediaAdded
+pub akio_webrtc::MediaAdded::direction: akio_webrtc::Direction
+pub akio_webrtc::MediaAdded::kind: akio_webrtc::MediaKind
+pub akio_webrtc::MediaAdded::mid: akio_webrtc::Mid
+impl core::clone::Clone for akio_webrtc::MediaAdded
+pub fn akio_webrtc::MediaAdded::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::MediaAdded
+impl core::cmp::PartialEq for akio_webrtc::MediaAdded
+pub fn akio_webrtc::MediaAdded::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::MediaAdded
+pub fn akio_webrtc::MediaAdded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::MediaAdded
+impl core::marker::Send for akio_webrtc::MediaAdded
+impl core::marker::Sync for akio_webrtc::MediaAdded
+impl core::marker::Unpin for akio_webrtc::MediaAdded
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::MediaAdded
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::MediaAdded
+#[non_exhaustive] pub struct akio_webrtc::MediaData
+pub akio_webrtc::MediaData::codec: core::option::Option<akio_webrtc::Codec>
+pub akio_webrtc::MediaData::contiguous: bool
+pub akio_webrtc::MediaData::data: alloc::rcs::arc::Arc<[u8]>
+pub akio_webrtc::MediaData::mid: akio_webrtc::Mid
+pub akio_webrtc::MediaData::network_time: std::time::Instant
+pub akio_webrtc::MediaData::playout_time: core::option::Option<std::time::Instant>
+pub akio_webrtc::MediaData::pt: akio_webrtc::Pt
+pub akio_webrtc::MediaData::rid: core::option::Option<alloc::string::String>
+pub akio_webrtc::MediaData::time: akio_webrtc::MediaTime
+impl core::clone::Clone for akio_webrtc::MediaData
+pub fn akio_webrtc::MediaData::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::MediaData
+impl core::cmp::PartialEq for akio_webrtc::MediaData
+pub fn akio_webrtc::MediaData::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::MediaData
+pub fn akio_webrtc::MediaData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::MediaData
+impl core::marker::Send for akio_webrtc::MediaData
+impl core::marker::Sync for akio_webrtc::MediaData
+impl core::marker::Unpin for akio_webrtc::MediaData
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::MediaData
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::MediaData
+pub struct akio_webrtc::MediaTime
+impl akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::as_duration(self) -> core::time::Duration
+pub fn akio_webrtc::MediaTime::new(u64, akio_webrtc::Frequency) -> akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::rate(self) -> akio_webrtc::Frequency
+pub fn akio_webrtc::MediaTime::ticks(self) -> u64
+impl core::clone::Clone for akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::MediaTime
+impl core::cmp::PartialEq for akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::MediaTime
+pub fn akio_webrtc::MediaTime::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::MediaTime
+impl core::marker::StructuralPartialEq for akio_webrtc::MediaTime
+impl core::marker::Send for akio_webrtc::MediaTime
+impl core::marker::Sync for akio_webrtc::MediaTime
+impl core::marker::Unpin for akio_webrtc::MediaTime
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::MediaTime
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::MediaTime
+pub struct akio_webrtc::Mid(_)
+impl akio_webrtc::Mid
+pub fn akio_webrtc::Mid::as_str(&self) -> &str
+impl core::clone::Clone for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Mid
+impl core::cmp::Ord for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Mid
+pub fn akio_webrtc::Mid::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Mid
+impl core::marker::StructuralPartialEq for akio_webrtc::Mid
+impl core::marker::Send for akio_webrtc::Mid
+impl core::marker::Sync for akio_webrtc::Mid
+impl core::marker::Unpin for akio_webrtc::Mid
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Mid
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Mid
+pub struct akio_webrtc::OtherEvent(_)
+impl core::fmt::Debug for akio_webrtc::OtherEvent
+pub fn akio_webrtc::OtherEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::OtherEvent
+impl core::marker::Sync for akio_webrtc::OtherEvent
+impl core::marker::Unpin for akio_webrtc::OtherEvent
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::OtherEvent
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::OtherEvent
+pub struct akio_webrtc::Peer(_)
+impl akio_webrtc::Peer
+pub fn akio_webrtc::Peer::accept_answer(&self, &str) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::accept_offer(&self, &str) -> core::result::Result<alloc::string::String, akio_webrtc::Error>
+pub fn akio_webrtc::Peer::add_remote_candidate(&self, &str) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::add_remote_candidate_in(&self, akio_webrtc::Mid, &str) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::channel_priority(&self, akio_webrtc::ChannelId) -> core::result::Result<akio_webrtc::ChannelPriority, akio_webrtc::Error>
+pub fn akio_webrtc::Peer::close(&self)
+pub fn akio_webrtc::Peer::id(&self) -> u64
+pub fn akio_webrtc::Peer::is_closed(&self) -> bool
+pub fn akio_webrtc::Peer::is_connected(&self) -> bool
+pub fn akio_webrtc::Peer::jitter_buffer_stats(&self, akio_webrtc::Mid) -> core::result::Result<alloc::vec::Vec<(u32, akio_rtp::jitter::JitterBufferStats)>, akio_webrtc::Error>
+pub fn akio_webrtc::Peer::local_ufrag(&self) -> &str
+pub fn akio_webrtc::Peer::open_channel(&self, &akio_webrtc::ChannelConfig) -> core::result::Result<(akio_webrtc::ChannelId, core::option::Option<alloc::string::String>), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::payload_type(&self, akio_webrtc::Mid, akio_webrtc::Codec) -> core::option::Option<akio_webrtc::Pt>
+pub fn akio_webrtc::Peer::renegotiate(&self, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<core::option::Option<alloc::string::String>, akio_webrtc::Error>
+pub fn akio_webrtc::Peer::request_keyframe(&self, akio_webrtc::Mid, akio_webrtc::KeyframeRequestKind) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::request_layer_keyframe(&self, akio_webrtc::Mid, &str, akio_webrtc::KeyframeRequestKind) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::request_max_bitrate(&self, akio_webrtc::Mid, core::option::Option<u64>) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::send(&self, akio_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, akio_webrtc::Error>
+pub fn akio_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
+pub fn akio_webrtc::Peer::set_channel_priority(&self, akio_webrtc::ChannelId, akio_webrtc::ChannelPriority) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::set_voip_quality(&self, akio_webrtc::Mid, akio_rtp::xr::VoipQuality, core::option::Option<akio_rtp::emodel::EModel>) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::write_media(&self, akio_webrtc::Mid, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::write_simulcast(&self, akio_webrtc::Mid, &str, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
+impl core::clone::Clone for akio_webrtc::Peer
+pub fn akio_webrtc::Peer::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::Peer
+pub fn akio_webrtc::Peer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::Peer
+impl core::marker::Sync for akio_webrtc::Peer
+impl core::marker::Unpin for akio_webrtc::Peer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Peer
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::Peer
+pub struct akio_webrtc::Pt(_)
+impl akio_webrtc::Pt
+pub fn akio_webrtc::Pt::get(self) -> u8
+impl core::clone::Clone for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::Pt
+impl core::cmp::Ord for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<akio_webrtc::Pt> for u8
+pub fn u8::from(akio_webrtc::Pt) -> u8
+impl core::convert::From<u8> for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::from(u8) -> akio_webrtc::Pt
+impl core::fmt::Debug for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::Pt
+pub fn akio_webrtc::Pt::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::Pt
+impl core::marker::StructuralPartialEq for akio_webrtc::Pt
+impl core::marker::Send for akio_webrtc::Pt
+impl core::marker::Sync for akio_webrtc::Pt
+impl core::marker::Unpin for akio_webrtc::Pt
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::Pt
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::Pt
+pub struct akio_webrtc::RelayServer
+impl akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_webrtc::RelayServer::dtls(core::net::socket_addr::SocketAddr, &str, akio_tls::config::ClientConfig, &str, &str) -> akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::dual_allocation(self, bool) -> Self
+pub fn akio_webrtc::RelayServer::from_url(&str, &str, &str) -> core::result::Result<akio_webrtc::RelayServer, akio_webrtc::Error>
+pub fn akio_webrtc::RelayServer::tcp(core::net::socket_addr::SocketAddr, &str, &str) -> akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::tls(core::net::socket_addr::SocketAddr, &str, akio_tls::config::ClientConfig, &str, &str) -> akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::tls_config(self, akio_tls::config::ClientConfig) -> Self
+pub fn akio_webrtc::RelayServer::transport(&self) -> &'static str
+pub fn akio_webrtc::RelayServer::udp(core::net::socket_addr::SocketAddr, &str, &str) -> akio_webrtc::RelayServer
+impl core::clone::Clone for akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::RelayServer
+pub fn akio_webrtc::RelayServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::RelayServer
+impl core::marker::Sync for akio_webrtc::RelayServer
+impl core::marker::Unpin for akio_webrtc::RelayServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RelayServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RelayServer
+pub struct akio_webrtc::RtcConfig(_)
+impl akio_webrtc::RtcConfig
+pub fn akio_webrtc::RtcConfig::clear_codecs(self) -> Self
+pub fn akio_webrtc::RtcConfig::enable_audio_red(self, core::option::Option<u8>) -> Self
+pub fn akio_webrtc::RtcConfig::enable_av1(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_bwe(self, core::option::Option<u64>) -> Self
+pub fn akio_webrtc::RtcConfig::enable_ccfb(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_cryptex(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_dtls13(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_encrypted_header_extensions(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_fec(self, core::option::Option<akio_webrtc::FecMechanism>) -> Self
+pub fn akio_webrtc::RtcConfig::enable_h264(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_h265(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_ice(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_ice_aggressive_nomination(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_ice_renomination(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_opus(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_opus_red(self, core::option::Option<u8>) -> Self
+pub fn akio_webrtc::RtcConfig::enable_pacing(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_rtcp_xr(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_rtcp_xr_blocks(self, akio_webrtc::XrBlocks) -> Self
+pub fn akio_webrtc::RtcConfig::enable_sdes_srtp(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::set_audio_jitter_buffer(self, core::option::Option<akio_rtp::jitter::PlayoutDelay>) -> Self
+pub fn akio_webrtc::RtcConfig::set_bundle_policy(self, akio_webrtc::BundlePolicy) -> Self
+pub fn akio_webrtc::RtcConfig::set_bwe_bounds(self, u64, u64) -> Self
+pub fn akio_webrtc::RtcConfig::set_dtls_srtp_mki_length(self, u8) -> Self
+pub fn akio_webrtc::RtcConfig::set_ecn_initiation(self, akio_webrtc::EcnInitiation) -> Self
+pub fn akio_webrtc::RtcConfig::set_ecn_marking(self, akio_webrtc::EcnMarking) -> Self
+pub fn akio_webrtc::RtcConfig::set_fec_mask(self, akio_webrtc::FecMask) -> Self
+pub fn akio_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
+pub fn akio_webrtc::RtcConfig::set_latching(self, akio_webrtc::Latching) -> Self
+pub fn akio_webrtc::RtcConfig::set_padding_rate(self, u64) -> Self
+pub fn akio_webrtc::RtcConfig::set_plain_keepalive(self, core::time::Duration) -> Self
+pub fn akio_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
+pub fn akio_webrtc::RtcConfig::set_rtcp_mux_policy(self, akio_webrtc::RtcpMuxPolicy) -> Self
+pub fn akio_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self
+pub fn akio_webrtc::RtcConfig::set_sctp_max_buffered_amount(self, usize) -> Self
+pub fn akio_webrtc::RtcConfig::set_sctp_scheduler(self, akio_webrtc::ChannelScheduler) -> Self
+pub fn akio_webrtc::RtcConfig::set_sdes_mki_length(self, u8) -> Self
+pub fn akio_webrtc::RtcConfig::set_stats_interval(self, core::option::Option<core::time::Duration>) -> Self
+pub fn akio_webrtc::RtcConfig::set_ulpfec_level0(self, core::option::Option<usize>) -> Self
+impl core::fmt::Debug for akio_webrtc::RtcConfig
+pub fn akio_webrtc::RtcConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::RtcConfig
+impl core::marker::Sync for akio_webrtc::RtcConfig
+impl core::marker::Unpin for akio_webrtc::RtcConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcConfig
+pub struct akio_webrtc::RtcError(_)
+impl core::error::Error for akio_webrtc::RtcError
+impl core::fmt::Debug for akio_webrtc::RtcError
+pub fn akio_webrtc::RtcError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_webrtc::RtcError
+pub fn akio_webrtc::RtcError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_webrtc::RtcError
+impl core::marker::Sync for akio_webrtc::RtcError
+impl core::marker::Unpin for akio_webrtc::RtcError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcError
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcError
+pub struct akio_webrtc::RtcRtcp(_)
+impl core::clone::Clone for akio_webrtc::RtcRtcp
+pub fn akio_webrtc::RtcRtcp::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::RtcRtcp
+pub fn akio_webrtc::RtcRtcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_webrtc::RtcRtcp
+pub type akio_webrtc::RtcRtcp::Handler = RtcUdp
+pub fn akio_webrtc::RtcRtcp::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
+impl core::marker::Send for akio_webrtc::RtcRtcp
+impl core::marker::Sync for akio_webrtc::RtcRtcp
+impl core::marker::Unpin for akio_webrtc::RtcRtcp
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcRtcp
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcRtcp
+pub struct akio_webrtc::RtcServer(_)
+impl akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::accept_offer<H: akio_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::RtcServer::close_all(&self)
+pub fn akio_webrtc::RtcServer::close_on_disconnect(self, bool) -> Self
+pub fn akio_webrtc::RtcServer::config(self, impl core::ops::function::Fn() -> akio_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn akio_webrtc::RtcServer::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
+pub fn akio_webrtc::RtcServer::create_offer<H: akio_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::RtcServer::ice_lite(self, bool) -> Self
+pub fn akio_webrtc::RtcServer::max_peers(self, usize) -> Self
+pub fn akio_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::peers(&self) -> usize
+pub fn akio_webrtc::RtcServer::rtcp(&self) -> akio_webrtc::RtcRtcp
+pub fn akio_webrtc::RtcServer::rtcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
+pub fn akio_webrtc::RtcServer::tcp(&self) -> akio_webrtc::RtcTcp
+pub fn akio_webrtc::RtcServer::tcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
+impl core::clone::Clone for akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::RtcServer
+pub fn akio_webrtc::RtcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_webrtc::RtcServer
+pub type akio_webrtc::RtcServer::Handler = RtcUdp
+pub fn akio_webrtc::RtcServer::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
+pub fn akio_webrtc::RtcServer::on_shutdown(&self, &akio_core::conn::Conn<RtcUdp>)
+impl core::marker::Send for akio_webrtc::RtcServer
+impl core::marker::Sync for akio_webrtc::RtcServer
+impl core::marker::Unpin for akio_webrtc::RtcServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcServer
+pub struct akio_webrtc::RtcTcp(_)
+impl core::clone::Clone for akio_webrtc::RtcTcp
+pub fn akio_webrtc::RtcTcp::clone(&self) -> Self
+impl core::fmt::Debug for akio_webrtc::RtcTcp
+pub fn akio_webrtc::RtcTcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_webrtc::RtcTcp
+pub type akio_webrtc::RtcTcp::Handler = IceTcp
+pub fn akio_webrtc::RtcTcp::on_open(&self, &akio_core::conn::Conn<IceTcp>) -> IceTcp
+impl core::marker::Send for akio_webrtc::RtcTcp
+impl core::marker::Sync for akio_webrtc::RtcTcp
+impl core::marker::Unpin for akio_webrtc::RtcTcp
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcTcp
+impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcTcp
+#[non_exhaustive] pub struct akio_webrtc::RtpPacket
+pub akio_webrtc::RtpPacket::marker: bool
+pub akio_webrtc::RtpPacket::payload: alloc::rcs::arc::Arc<[u8]>
+pub akio_webrtc::RtpPacket::pt: akio_webrtc::Pt
+pub akio_webrtc::RtpPacket::received: std::time::Instant
+pub akio_webrtc::RtpPacket::rtp_time: u32
+pub akio_webrtc::RtpPacket::seq_no: u64
+pub akio_webrtc::RtpPacket::ssrc: u32
+pub akio_webrtc::RtpPacket::time: akio_webrtc::MediaTime
+impl core::clone::Clone for akio_webrtc::RtpPacket
+pub fn akio_webrtc::RtpPacket::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::RtpPacket
+impl core::cmp::PartialEq for akio_webrtc::RtpPacket
+pub fn akio_webrtc::RtpPacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_webrtc::RtpPacket
+pub fn akio_webrtc::RtpPacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_webrtc::RtpPacket
+impl core::marker::Send for akio_webrtc::RtpPacket
+impl core::marker::Sync for akio_webrtc::RtpPacket
+impl core::marker::Unpin for akio_webrtc::RtpPacket
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtpPacket
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtpPacket
+pub struct akio_webrtc::SdpChanges<'a, 'b>(_)
+impl akio_webrtc::SdpChanges<'_, '_>
+pub fn akio_webrtc::SdpChanges<'_, '_>::add_channel(&mut self, impl core::convert::Into<alloc::string::String>) -> akio_webrtc::ChannelId
+pub fn akio_webrtc::SdpChanges<'_, '_>::add_channel_with_config(&mut self, &akio_webrtc::ChannelConfig) -> akio_webrtc::ChannelId
+pub fn akio_webrtc::SdpChanges<'_, '_>::add_media(&mut self, akio_webrtc::MediaKind, akio_webrtc::Direction, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> akio_webrtc::Mid
+pub fn akio_webrtc::SdpChanges<'_, '_>::add_simulcast_media(&mut self, akio_webrtc::MediaKind, akio_webrtc::Direction, &[&str], core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<akio_webrtc::Mid, akio_webrtc::Error>
+pub fn akio_webrtc::SdpChanges<'_, '_>::has_changes(&self) -> bool
+pub fn akio_webrtc::SdpChanges<'_, '_>::ice_restart(&mut self, bool)
+pub fn akio_webrtc::SdpChanges<'_, '_>::set_direction(&mut self, akio_webrtc::Mid, akio_webrtc::Direction)
+pub fn akio_webrtc::SdpChanges<'_, '_>::stop_media(&mut self, akio_webrtc::Mid)
+impl core::fmt::Debug for akio_webrtc::SdpChanges<'_, '_>
+pub fn akio_webrtc::SdpChanges<'_, '_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a, 'b> core::marker::Send for akio_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::marker::Sync for akio_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::marker::Unpin for akio_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> !core::panic::unwind_safe::UnwindSafe for akio_webrtc::SdpChanges<'a, 'b>
+pub struct akio_webrtc::XrBlocks(_)
+impl akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::ALL: akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::DUPLICATE_RLE: akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::LOSS_RLE: akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::NONE: akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::RECEIPT_TIMES: akio_webrtc::XrBlocks
+pub const akio_webrtc::XrBlocks::VOIP_METRICS: akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::contains(self, akio_webrtc::XrBlocks) -> bool
+pub fn akio_webrtc::XrBlocks::is_empty(self) -> bool
+impl core::clone::Clone for akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::clone(&self) -> Self
+impl core::cmp::Eq for akio_webrtc::XrBlocks
+impl core::cmp::PartialEq for akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::eq(&self, &Self) -> bool
+impl core::default::Default for akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::default() -> Self
+impl core::fmt::Debug for akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_webrtc::XrBlocks
+impl core::marker::StructuralPartialEq for akio_webrtc::XrBlocks
+impl core::ops::bit::BitAnd for akio_webrtc::XrBlocks
+pub type akio_webrtc::XrBlocks::Output = akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::bitand(self, akio_webrtc::XrBlocks) -> akio_webrtc::XrBlocks
+impl core::ops::bit::BitOr for akio_webrtc::XrBlocks
+pub type akio_webrtc::XrBlocks::Output = akio_webrtc::XrBlocks
+pub fn akio_webrtc::XrBlocks::bitor(self, akio_webrtc::XrBlocks) -> akio_webrtc::XrBlocks
+impl core::marker::Send for akio_webrtc::XrBlocks
+impl core::marker::Sync for akio_webrtc::XrBlocks
+impl core::marker::Unpin for akio_webrtc::XrBlocks
+impl core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::XrBlocks
+impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::XrBlocks
+pub const akio_webrtc::DEFAULT_MAX_PEERS: usize
+pub trait akio_webrtc::PeerHandler: core::marker::Send + 'static
+pub fn akio_webrtc::PeerHandler::on_channel_close(&mut self, &akio_webrtc::Peer, akio_webrtc::ChannelId)
+pub fn akio_webrtc::PeerHandler::on_channel_data(&mut self, &akio_webrtc::Peer, akio_webrtc::ChannelId, &[u8], bool)
+pub fn akio_webrtc::PeerHandler::on_channel_open(&mut self, &akio_webrtc::Peer, akio_webrtc::ChannelId, &str)
+pub fn akio_webrtc::PeerHandler::on_close(&mut self, &akio_webrtc::Peer)
+pub fn akio_webrtc::PeerHandler::on_connected(&mut self, &akio_webrtc::Peer)
+pub fn akio_webrtc::PeerHandler::on_event(&mut self, &akio_webrtc::Peer, &akio_webrtc::Event)
+pub fn akio_webrtc::PeerHandler::on_ice_state(&mut self, &akio_webrtc::Peer, akio_webrtc::IceConnectionState)
+pub fn akio_webrtc::PeerHandler::on_keyframe_request(&mut self, &akio_webrtc::Peer, &akio_webrtc::KeyframeRequest)
+pub fn akio_webrtc::PeerHandler::on_media_added(&mut self, &akio_webrtc::Peer, &akio_webrtc::MediaAdded)
+pub fn akio_webrtc::PeerHandler::on_media_data(&mut self, &akio_webrtc::Peer, &akio_webrtc::MediaData)
+pub fn akio_webrtc::PeerHandler::on_rtp(&mut self, &akio_webrtc::Peer, &akio_webrtc::RtpPacket)
+pub fn akio_webrtc::rtc_config() -> akio_webrtc::RtcConfig

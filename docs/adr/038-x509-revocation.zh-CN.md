@@ -6,19 +6,19 @@
 
 ## 背景
 
-`only-x509` 能构建并校验证书链，但完全没有吊销检查；`only-tls` 的服务器可以装订（staple）OCSP
+`akio-x509` 能构建并校验证书链，但完全没有吊销检查；`akio-tls` 的服务器可以装订（staple）OCSP
 响应，客户端拿到的却只是原始字节，文档写着“未校验”。客户端若不自带 ASN.1 与签名代码，就分不清
 被吊销的证书和正常证书；服务器也无法拒绝被吊销的客户端证书。
 
 吊销信息需要获取（从分发点下载 CRL，向响应者查询 OCSP），而本库在 I/O 线程上执行握手，绝不能
-阻塞，在 `only-http` 之下也没有自己的 HTTP 客户端。因此获取留给应用；库负责解析、认证并应用应用
+阻塞，在 `akio-http` 之下也没有自己的 HTTP 客户端。因此获取留给应用；库负责解析、认证并应用应用
 提供的信息。
 
 ## 决策
 
-1. **`only-x509` 的 CRL**（RFC 5280 第 5 节）：`Crl` 严格解析 v1/v2 CRL（签名算法一致、
+1. **`akio-x509` 的 CRL**（RFC 5280 第 5 节）：`Crl` 严格解析 v1/v2 CRL（签名算法一致、
    `critical` 为 DEFAULT FALSE 时必须省略、扩展不重复、issuingDistributionPoint 至多一个
-   “only” 标志），支持 cRLNumber、deltaCRLIndicator、issuingDistributionPoint（fullName、
+   “akio” 标志），支持 cRLNumber、deltaCRLIndicator、issuingDistributionPoint（fullName、
    onlyUser/onlyCA/onlySomeReasons/indirect/attribute）、authorityKeyIdentifier，以及每个条目
    的 reasonCode、invalidityDate 与 holdInstructionCode。条目按序列号排序以便二分查找。未知的
    关键（critical）CRL 扩展或条目扩展（包括间接 CRL 的 certificateIssuer）使该 CRL 不能用于查询，
@@ -36,7 +36,7 @@
    中间证书只会让这条路径失败，其他路径仍可能成功。`RevocationMode::{SoftFail（默认）, HardFail}`
    决定如何处理没有 CRL 覆盖的证书（`Error::RevocationUnknown`）；被吊销的证书以
    `Error::Revoked(reason)` 失败。`Verifier::clock_skew`（默认 `DEFAULT_CLOCK_SKEW`，300 秒）。
-4. **`only-x509` 的 OCSP**（RFC 6960）：`OcspResponse`（状态；`BasicOcspResponse` 含按名称或
+4. **`akio-x509` 的 OCSP**（RFC 6960）：`OcspResponse`（状态；`BasicOcspResponse` 含按名称或
    公钥的响应者 ID、producedAt、带 CertID 的单个响应，good / revoked（时间、原因）/ unknown，
    thisUpdate、nextUpdate、nonce、附带的证书）。`verify(cert, issuer, &OcspValidation)` 要求：
    响应成功；签名者是签发者本身，或者是附带的、与响应者 ID 匹配、由签发者签发并签名、带
@@ -53,7 +53,7 @@
    这两个扩展宽松解析（格式错误只丢掉该指针，证书照样能解析）。`CrlParams` 与
    `OcspResponseParams` 生成已签名的 CRL 与响应，供测试、开发用 CA 以及自行签发装订响应的服务器
    使用。
-6. **`only-tls`**（新增的公开 API）：`RevocationPolicy::{Off（默认）, SoftFail, HardFail}`；
+6. **`akio-tls`**（新增的公开 API）：`RevocationPolicy::{Off（默认）, SoftFail, HardFail}`；
    `ClientConfigBuilder::ocsp_policy(policy)` 校验服务器为叶证书装订的响应（TLS 1.3：叶证书
    CertificateEntry 中的 status_request，在收到 Certificate 时检查；TLS 1.2：CertificateStatus，
    在收到 ServerKeyExchange 时检查），策略不为 Off 时自动请求装订。软失败只拒绝可信且当前的
@@ -74,10 +74,10 @@
   CRL（完整、基于 1 号的 delta、带 fullName 的 IDP onlyUser、根 CRL）与 OCSP 响应（委托响应者、
   CA 自签、byKey、SHA-256 CertID、无 nextUpdate、nonce、revoked、certificateHold、unknown、两个
   单个响应、没有 OCSPSigning EKU、由其他 CA 认证的响应者、未附带签名者证书），覆盖过期与时钟
-  偏差的两侧边界、损坏的签名以及每一种截断（`only-x509/tests/revocation.rs`，测试数据由
+  偏差的两侧边界、损坏的签名以及每一种截断（`akio-x509/tests/revocation.rs`，测试数据由
   `tests/data/revocation/gen.sh` 生成）；生成的 CRL 与响应覆盖由 delta 解除的暂停、onlyCA 范围、
   部分原因覆盖、被吊销的中间证书与过期的响应者证书；内存中的 TLS 1.3 与 1.2 握手覆盖每种策略与
-  响应类型，以及两端的 CRL（`only-tls/src/proto/revocation_tests.rs`）；互通：本库客户端对
+  响应类型，以及两端的 CRL（`akio-tls/src/proto/revocation_tests.rs`）；互通：本库客户端对
   `openssl s_server -status_file`（正常、吊销、软/硬失败下缺少装订）以及 OpenSSL 生成的 CRL
   （`tools/interop/tls/run.sh`）。
 - 所有策略关闭（默认）时握手的工作量不变：校验器本来就构建好的路径改为返回而不是丢弃，各项

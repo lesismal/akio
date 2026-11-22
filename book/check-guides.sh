@@ -12,9 +12,9 @@
 #   book/check-guides.sh                 # all of them
 #   book/check-guides.sh guide-h3 echo   # only these
 #   GUIDE_TIMEOUT=120 book/check-guides.sh
-#   ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux; ADR-029)
+#   AKIO_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux; ADR-029)
 #
-# With ONLY_DEFAULT_BACKEND=uring every TCP listener that does not choose a backend runs on
+# With AKIO_DEFAULT_BACKEND=uring every TCP listener that does not choose a backend runs on
 # io_uring, and an example whose engine fell back to epoll fails.
 #
 # The serve-only examples listen on fixed ports (8080, 1935, 8554, 8000-8001, 7002, 5353). On
@@ -27,17 +27,17 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 timeout_s="${GUIDE_TIMEOUT:-90}"
 
-if [[ -z "${ONLY_GUIDES_NETNS:-}" ]]; then
+if [[ -z "${AKIO_GUIDES_NETNS:-}" ]]; then
   # Build first: the private network namespace below has no network for cargo or rustup.
   echo "building examples..."
   cargo build --workspace --examples --quiet
   cargo test --no-run --quiet -p protobuf-test --test grpc
   if [[ "$(uname -s)" == Linux ]] && unshare -rn true 2>/dev/null && command -v ip >/dev/null; then
-    exec env ONLY_GUIDES_NETNS=1 unshare -rn bash -c 'ip link set lo up && exec "$0" "$@"' "$0" "$@"
+    exec env AKIO_GUIDES_NETNS=1 unshare -rn bash -c 'ip link set lo up && exec "$0" "$@"' "$0" "$@"
   fi
 fi
 bin="${CARGO_TARGET_DIR:-$root/target}/debug/examples"
-logs="$(mktemp -d "${TMPDIR:-/tmp}/only-guides.XXXXXX")"
+logs="$(mktemp -d "${TMPDIR:-/tmp}/akio-guides.XXXXXX")"
 
 # Every guide example in the workspace, plus the serve-only programs the books include.
 guides=()
@@ -253,15 +253,15 @@ probe() {
   local log=$1
   case $2 in
     guide-media)
-      # ONLY_MEDIA_SECS stops it by itself; probe RTMP and the HTTP side meanwhile.
-      serve "$log" tcp/1935 tcp/8080 -- env ONLY_MEDIA_SECS=4 "$bin/guide-media"
+      # AKIO_MEDIA_SECS stops it by itself; probe RTMP and the HTTP side meanwhile.
+      serve "$log" tcp/1935 tcp/8080 -- env AKIO_MEDIA_SECS=4 "$bin/guide-media"
       rtmp_handshake 1935
       http_get http://127.0.0.1:8080/streams ''
       wait "$server"
       server=""
       ;;
     guide-media-rtsp)
-      serve "$log" tcp/8554 tcp/8080 udp/8000 udp/8001 -- env ONLY_RTSP_SECS=4 "$bin/guide-media-rtsp"
+      serve "$log" tcp/8554 tcp/8080 udp/8000 udp/8001 -- env AKIO_RTSP_SECS=4 "$bin/guide-media-rtsp"
       tcp_exchange 8554 'OPTIONS rtsp://127.0.0.1:8554/live/cam RTSP/1.0\r\nCSeq: 1\r\n\r\n' 'RTSP/1.0 200'
       # WHEP without a WebRTC engine: the endpoint is there and answers 501 (NoMedia).
       tcp_exchange 8080 'POST /whep/live/cam HTTP/1.1\r\nHost: x\r\nContent-Type: application/sdp\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' 'HTTP/1.1 '
@@ -329,7 +329,7 @@ for name in "${all[@]}"; do
       ;;
   esac
   secs=$(($(date +%s) - start))
-  if [[ $rc == 0 && "${ONLY_DEFAULT_BACKEND:-}" == *uring* ]] && grep -q "io_uring unavailable" "$log"; then
+  if [[ $rc == 0 && "${AKIO_DEFAULT_BACKEND:-}" == *uring* ]] && grep -q "io_uring unavailable" "$log"; then
     echo "asked for io_uring, but the engine fell back to epoll" >>"$log"
     rc=3
   fi
@@ -343,6 +343,6 @@ for name in "${all[@]}"; do
   fi
 done
 
-echo "${#pass[@]} passed, ${#fail[@]} failed ($(uname -sm)${ONLY_GUIDES_NETNS:+, private netns}${ONLY_DEFAULT_BACKEND:+, ONLY_DEFAULT_BACKEND=$ONLY_DEFAULT_BACKEND})"
+echo "${#pass[@]} passed, ${#fail[@]} failed ($(uname -sm)${AKIO_GUIDES_NETNS:+, private netns}${AKIO_DEFAULT_BACKEND:+, AKIO_DEFAULT_BACKEND=$AKIO_DEFAULT_BACKEND})"
 [[ ${#fail[@]} == 0 && -z "${GUIDE_KEEP_LOGS:-}" ]] && rm -rf "$logs"
 [[ ${#fail[@]} == 0 ]]

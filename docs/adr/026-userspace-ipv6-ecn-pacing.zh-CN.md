@@ -6,7 +6,7 @@
 
 ## 背景
 
-only-dpdk 自带的协议栈（`crates/only-dpdk/src/net`）只支持 IPv4：IPv6 地址上的监听会被拒绝，
+akio-dpdk 自带的协议栈（`crates/akio-dpdk/src/net`）只支持 IPv4：IPv6 地址上的监听会被拒绝，
 `dial` IPv6 地址返回 `Unsupported`。DEV-PLAN 把 “IPv6/NDP、offload、pacing/ECN” 列为未完成。
 `DpdkConfig` 是 `#[non_exhaustive]`，且该 crate 属实验性（不在 semver 承诺内），但其 API 有快照，
 因此新增字段在此记录。
@@ -47,7 +47,7 @@ only-dpdk 自带的协议栈（`crates/only-dpdk/src/net`）只支持 IPv4：IPv
 
 ## 影响
 
-- 新增公共 API：`DpdkConfig` 的五个字段（快照 `api/only-dpdk.txt`）。
+- 新增公共 API：`DpdkConfig` 的五个字段（快照 `api/akio-dpdk.txt`）。
 - IPv4 路径保持单态：连接内联保存 IPv4 端点（IPv6 装箱），以引用交给输出路径，IPv4 发送不经过
   地址族分派；伪首部的地址和每个报文只计算一次；pacing 状态与 UDP 对端装箱，未开启 pacing 的 TCP
   连接与 main 一样大；ISN 与 SYN cookie 对 IPv4 仍只哈希四个字。连接表的键对两种地址族都是 20 字节

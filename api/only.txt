@@ -1,261 +1,261 @@
 pub mod only
-pub use only::Acceptor
-pub use only::AnyAcceptor
-pub use only::Config
-pub use only::Conn
-pub use only::ConnInfo
-pub use only::DatagramSender
-pub use only::Datagrams
-pub use only::DatagramsHandler
-pub use only::DatagramsIter
-pub use only::Error
-pub use only::FnAcceptor
-pub use only::Handler
-pub use only::Live
-pub use only::LoopCounters
-pub use only::LoopMeta
-pub use only::LoopMetrics
-pub use only::Metrics
-pub use only::Part
-pub use only::PoolConfig
-pub use only::PoolStats
-pub use only::ReloadReport
-pub use only::Replies
-pub use only::ResponseSlot
-pub use only::ResponseStream
-pub use only::Result
-pub use only::SharedBuf
-pub use only::SlowCallback
-pub use only::SlowHook
-pub use only::SlowRecord
-pub use only::Telemetry
-pub use only::Transport
-pub use only::UdpBinding
-pub use only::UdpStats
-pub use only::ebpf
-pub use only::fn_acceptor
-pub use only::log
-pub use only::metrics
-pub use only::telemetry
-pub use only::tls
-pub mod only::dns
-#[non_exhaustive] pub struct only::dns::CacheConfig
-pub only::dns::CacheConfig::max_entries: usize
-pub only::dns::CacheConfig::negative_ttl: core::time::Duration
-pub only::dns::CacheConfig::ttl: core::time::Duration
-impl only::dns::CacheConfig
-pub fn only::dns::CacheConfig::disabled() -> only::dns::CacheConfig
-impl core::clone::Clone for only::dns::CacheConfig
-pub fn only::dns::CacheConfig::clone(&self) -> Self
-impl core::cmp::Eq for only::dns::CacheConfig
-impl core::cmp::PartialEq for only::dns::CacheConfig
-pub fn only::dns::CacheConfig::eq(&self, &Self) -> bool
-impl core::default::Default for only::dns::CacheConfig
-pub fn only::dns::CacheConfig::default() -> only::dns::CacheConfig
-impl core::fmt::Debug for only::dns::CacheConfig
-pub fn only::dns::CacheConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for only::dns::CacheConfig
-impl core::marker::StructuralPartialEq for only::dns::CacheConfig
-impl core::marker::Send for only::dns::CacheConfig
-impl core::marker::Sync for only::dns::CacheConfig
-impl core::marker::Unpin for only::dns::CacheConfig
-impl core::panic::unwind_safe::RefUnwindSafe for only::dns::CacheConfig
-impl core::panic::unwind_safe::UnwindSafe for only::dns::CacheConfig
-#[non_exhaustive] pub struct only::dns::HappyEyeballs
-pub only::dns::HappyEyeballs::attempt_delay: core::time::Duration
-pub only::dns::HappyEyeballs::connect_timeout: core::time::Duration
-impl only::dns::HappyEyeballs
-pub fn only::dns::HappyEyeballs::connect<A: only_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<only::Engine>, &str, u16, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::dns::HappyEyeballs::dial<A: only_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<only::Engine>, alloc::vec::Vec<core::net::socket_addr::SocketAddr>, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-impl core::clone::Clone for only::dns::HappyEyeballs
-pub fn only::dns::HappyEyeballs::clone(&self) -> Self
-impl core::cmp::Eq for only::dns::HappyEyeballs
-impl core::cmp::PartialEq for only::dns::HappyEyeballs
-pub fn only::dns::HappyEyeballs::eq(&self, &Self) -> bool
-impl core::default::Default for only::dns::HappyEyeballs
-pub fn only::dns::HappyEyeballs::default() -> only::dns::HappyEyeballs
-impl core::fmt::Debug for only::dns::HappyEyeballs
-pub fn only::dns::HappyEyeballs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for only::dns::HappyEyeballs
-impl core::marker::StructuralPartialEq for only::dns::HappyEyeballs
-impl core::marker::Send for only::dns::HappyEyeballs
-impl core::marker::Sync for only::dns::HappyEyeballs
-impl core::marker::Unpin for only::dns::HappyEyeballs
-impl core::panic::unwind_safe::RefUnwindSafe for only::dns::HappyEyeballs
-impl core::panic::unwind_safe::UnwindSafe for only::dns::HappyEyeballs
-pub const only::dns::ATTEMPT_DELAY: core::time::Duration
-pub const only::dns::CONNECT_TIMEOUT: core::time::Duration
-pub const only::dns::DEFAULT_CACHE_ENTRIES: usize
-pub const only::dns::DEFAULT_CACHE_TTL: core::time::Duration
-pub const only::dns::IDLE: core::time::Duration
-pub const only::dns::MAX_RACES: usize
-pub const only::dns::MAX_RACE_ADDRS: usize
-pub const only::dns::MAX_THREADS: usize
-pub fn only::dns::cache_config() -> only::dns::CacheConfig
-pub fn only::dns::clear_cache()
-pub fn only::dns::interleave(&[core::net::socket_addr::SocketAddr]) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
-pub fn only::dns::literal(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
-pub fn only::dns::resolve(&str, u16, impl core::ops::function::FnOnce(core::io::error::Result<alloc::vec::Vec<core::net::socket_addr::SocketAddr>>) + core::marker::Send + 'static)
-pub fn only::dns::set_cache(only::dns::CacheConfig)
-#[non_exhaustive] pub enum only::Accel
-pub only::Accel::Ebpf(only::EbpfConfig)
-pub only::Accel::None
-impl core::clone::Clone for only::Accel
-pub fn only::Accel::clone(&self) -> Self
-impl core::default::Default for only::Accel
-pub fn only::Accel::default() -> Self
-impl core::fmt::Debug for only::Accel
-pub fn only::Accel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::Accel
-impl core::marker::Sync for only::Accel
-impl core::marker::Unpin for only::Accel
-impl core::panic::unwind_safe::RefUnwindSafe for only::Accel
-impl core::panic::unwind_safe::UnwindSafe for only::Accel
-#[non_exhaustive] pub enum only::AccelStatus
-pub only::AccelStatus::Degraded(alloc::string::String)
-pub only::AccelStatus::Off
-pub only::AccelStatus::Steering(only_ebpf::steer::SteerInfo)
-impl core::clone::Clone for only::AccelStatus
-pub fn only::AccelStatus::clone(&self) -> Self
-impl core::cmp::Eq for only::AccelStatus
-impl core::cmp::PartialEq for only::AccelStatus
-pub fn only::AccelStatus::eq(&self, &Self) -> bool
-impl core::fmt::Debug for only::AccelStatus
-pub fn only::AccelStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for only::AccelStatus
-impl core::marker::Send for only::AccelStatus
-impl core::marker::Sync for only::AccelStatus
-impl core::marker::Unpin for only::AccelStatus
-impl core::panic::unwind_safe::RefUnwindSafe for only::AccelStatus
-impl core::panic::unwind_safe::UnwindSafe for only::AccelStatus
-#[non_exhaustive] pub enum only::Backend
-pub only::Backend::Epoll
-pub only::Backend::IoUring(only::UringConfig)
-impl core::clone::Clone for only::Backend
-pub fn only::Backend::clone(&self) -> Self
-impl core::default::Default for only::Backend
-pub fn only::Backend::default() -> Self
-impl core::fmt::Debug for only::Backend
-pub fn only::Backend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::Backend
-impl core::marker::Sync for only::Backend
-impl core::marker::Unpin for only::Backend
-impl core::panic::unwind_safe::RefUnwindSafe for only::Backend
-impl core::panic::unwind_safe::UnwindSafe for only::Backend
-#[non_exhaustive] pub struct only::EbpfConfig
-pub only::EbpfConfig::ebpf_programs: bool
-pub only::EbpfConfig::pin_threads: bool
-pub only::EbpfConfig::shared: core::option::Option<only_ebpf::shared::SharedSteering>
-pub only::EbpfConfig::steering: only_ebpf::steer::Steering
-pub only::EbpfConfig::strict: bool
-impl core::clone::Clone for only::EbpfConfig
-pub fn only::EbpfConfig::clone(&self) -> Self
-impl core::default::Default for only::EbpfConfig
-pub fn only::EbpfConfig::default() -> Self
-impl core::fmt::Debug for only::EbpfConfig
-pub fn only::EbpfConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::EbpfConfig
-impl core::marker::Sync for only::EbpfConfig
-impl core::marker::Unpin for only::EbpfConfig
-impl core::panic::unwind_safe::RefUnwindSafe for only::EbpfConfig
-impl core::panic::unwind_safe::UnwindSafe for only::EbpfConfig
-pub struct only::Engine
-impl only::Engine
-pub fn only::Engine::accel_status(&self) -> &[only::AccelStatus]
-pub fn only::Engine::adopt_tcp<A: only_core::handler::Acceptor>(&self, std::net::tcp::TcpStream, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::Engine::bind_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<only_core::group::UdpBinding>
-pub fn only::Engine::bind_udp_multicast<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<only_core::group::UdpBinding>
-pub fn only::Engine::bind_udp_multicast_on<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, &[u32], A) -> core::io::error::Result<only_core::group::UdpBinding>
-pub fn only::Engine::builder() -> only::EngineBuilder
-pub fn only::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
-pub fn only::Engine::datagram_sender(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<only_core::datagrams::DatagramSender>
-pub fn only::Engine::dial<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::Engine::dial_from<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::Engine::dial_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::Engine::dial_udp_from<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
-pub fn only::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
-pub fn only::Engine::metrics(&self) -> only_core::telemetry::Metrics
-pub fn only::Engine::pool_stats(&self) -> only_pool::PoolStats
-pub fn only::Engine::reload(&self, &only_core::config::Config) -> only_core::telemetry::ReloadReport
-pub fn only::Engine::run(&self) -> core::io::error::Result<()>
-pub fn only::Engine::set_threads(&self, usize, usize) -> core::io::error::Result<()>
-pub fn only::Engine::shutdown(&self)
-pub fn only::Engine::slow_callbacks(&self) -> alloc::vec::Vec<only_core::telemetry::SlowRecord>
-pub fn only::Engine::start(&self) -> core::io::error::Result<()>
-pub fn only::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>
-pub fn only::Engine::threads(&self) -> alloc::vec::Vec<usize>
-pub fn only::Engine::udp_stats(&self) -> only_core::group::UdpStats
-pub fn only::Engine::wait(&self)
-impl core::fmt::Debug for only::Engine
-pub fn only::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::Engine
-impl core::marker::Sync for only::Engine
-impl core::marker::Unpin for only::Engine
-impl !core::panic::unwind_safe::RefUnwindSafe for only::Engine
-impl !core::panic::unwind_safe::UnwindSafe for only::Engine
-pub struct only::EngineBuilder
-impl only::EngineBuilder
-pub fn only::EngineBuilder::build(self) -> core::io::error::Result<only::Engine>
-pub fn only::EngineBuilder::client_threads(self, usize) -> Self
-pub fn only::EngineBuilder::config(self, only_core::config::Config) -> Self
-pub fn only::EngineBuilder::listen(self, only::Listener) -> Self
-pub fn only::EngineBuilder::pool(self, only_pool::PoolConfig) -> Self
-pub fn only::EngineBuilder::udp_client_threads(self, usize) -> Self
-impl core::default::Default for only::EngineBuilder
-pub fn only::EngineBuilder::default() -> Self
-impl core::fmt::Debug for only::EngineBuilder
-pub fn only::EngineBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::EngineBuilder
-impl core::marker::Sync for only::EngineBuilder
-impl core::marker::Unpin for only::EngineBuilder
-impl !core::panic::unwind_safe::RefUnwindSafe for only::EngineBuilder
-impl !core::panic::unwind_safe::UnwindSafe for only::EngineBuilder
-pub struct only::EngineRef(_)
-impl only::EngineRef
-pub fn only::EngineRef::get(&self) -> core::option::Option<alloc::rcs::arc::Arc<only::Engine>>
-pub fn only::EngineRef::new() -> only::EngineRef
-pub fn only::EngineRef::set(&self, &alloc::rcs::arc::Arc<only::Engine>)
-impl core::clone::Clone for only::EngineRef
-pub fn only::EngineRef::clone(&self) -> Self
-impl core::default::Default for only::EngineRef
-pub fn only::EngineRef::default() -> Self
-impl core::fmt::Debug for only::EngineRef
-pub fn only::EngineRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::EngineRef
-impl core::marker::Sync for only::EngineRef
-impl core::marker::Unpin for only::EngineRef
-impl !core::panic::unwind_safe::RefUnwindSafe for only::EngineRef
-impl !core::panic::unwind_safe::UnwindSafe for only::EngineRef
-pub struct only::Listener
-impl only::Listener
-pub fn only::Listener::accel(self, only::Accel) -> Self
-pub fn only::Listener::backend(self, only::Backend) -> Self
-pub fn only::Listener::serve<A: only_core::handler::Acceptor>(self, A) -> Self
-pub fn only::Listener::serve_any(self, impl core::convert::Into<only_core::handler::AnyAcceptor>) -> Self
-pub fn only::Listener::serve_datagrams<H, F>(self, F) -> Self where H: only_core::datagrams::DatagramsHandler, F: core::ops::function::Fn(&only_core::datagrams::DatagramSender) -> H + core::marker::Send + core::marker::Sync + 'static
-pub fn only::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
-pub fn only::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
-pub fn only::Listener::threads(self, usize) -> Self
-pub fn only::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
-impl core::fmt::Debug for only::Listener
-pub fn only::Listener::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::Listener
-impl core::marker::Sync for only::Listener
-impl core::marker::Unpin for only::Listener
-impl !core::panic::unwind_safe::RefUnwindSafe for only::Listener
-impl !core::panic::unwind_safe::UnwindSafe for only::Listener
-#[non_exhaustive] pub struct only::UringConfig
-pub only::UringConfig::entries: u32
-pub only::UringConfig::sqpoll: bool
-pub only::UringConfig::strict: bool
-impl core::clone::Clone for only::UringConfig
-pub fn only::UringConfig::clone(&self) -> Self
-impl core::default::Default for only::UringConfig
-pub fn only::UringConfig::default() -> Self
-impl core::fmt::Debug for only::UringConfig
-pub fn only::UringConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for only::UringConfig
-impl core::marker::Sync for only::UringConfig
-impl core::marker::Unpin for only::UringConfig
-impl core::panic::unwind_safe::RefUnwindSafe for only::UringConfig
-impl core::panic::unwind_safe::UnwindSafe for only::UringConfig
+pub use akio::Acceptor
+pub use akio::AnyAcceptor
+pub use akio::Config
+pub use akio::Conn
+pub use akio::ConnInfo
+pub use akio::DatagramSender
+pub use akio::Datagrams
+pub use akio::DatagramsHandler
+pub use akio::DatagramsIter
+pub use akio::Error
+pub use akio::FnAcceptor
+pub use akio::Handler
+pub use akio::Live
+pub use akio::LoopCounters
+pub use akio::LoopMeta
+pub use akio::LoopMetrics
+pub use akio::Metrics
+pub use akio::Part
+pub use akio::PoolConfig
+pub use akio::PoolStats
+pub use akio::ReloadReport
+pub use akio::Replies
+pub use akio::ResponseSlot
+pub use akio::ResponseStream
+pub use akio::Result
+pub use akio::SharedBuf
+pub use akio::SlowCallback
+pub use akio::SlowHook
+pub use akio::SlowRecord
+pub use akio::Telemetry
+pub use akio::Transport
+pub use akio::UdpBinding
+pub use akio::UdpStats
+pub use akio::ebpf
+pub use akio::fn_acceptor
+pub use akio::log
+pub use akio::metrics
+pub use akio::telemetry
+pub use akio::tls
+pub mod akio::dns
+#[non_exhaustive] pub struct akio::dns::CacheConfig
+pub akio::dns::CacheConfig::max_entries: usize
+pub akio::dns::CacheConfig::negative_ttl: core::time::Duration
+pub akio::dns::CacheConfig::ttl: core::time::Duration
+impl akio::dns::CacheConfig
+pub fn akio::dns::CacheConfig::disabled() -> akio::dns::CacheConfig
+impl core::clone::Clone for akio::dns::CacheConfig
+pub fn akio::dns::CacheConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio::dns::CacheConfig
+impl core::cmp::PartialEq for akio::dns::CacheConfig
+pub fn akio::dns::CacheConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio::dns::CacheConfig
+pub fn akio::dns::CacheConfig::default() -> akio::dns::CacheConfig
+impl core::fmt::Debug for akio::dns::CacheConfig
+pub fn akio::dns::CacheConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio::dns::CacheConfig
+impl core::marker::StructuralPartialEq for akio::dns::CacheConfig
+impl core::marker::Send for akio::dns::CacheConfig
+impl core::marker::Sync for akio::dns::CacheConfig
+impl core::marker::Unpin for akio::dns::CacheConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::dns::CacheConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::dns::CacheConfig
+#[non_exhaustive] pub struct akio::dns::HappyEyeballs
+pub akio::dns::HappyEyeballs::attempt_delay: core::time::Duration
+pub akio::dns::HappyEyeballs::connect_timeout: core::time::Duration
+impl akio::dns::HappyEyeballs
+pub fn akio::dns::HappyEyeballs::connect<A: akio_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<akio::Engine>, &str, u16, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::dns::HappyEyeballs::dial<A: akio_core::handler::Acceptor>(&self, &alloc::rcs::arc::Arc<akio::Engine>, alloc::vec::Vec<core::net::socket_addr::SocketAddr>, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+impl core::clone::Clone for akio::dns::HappyEyeballs
+pub fn akio::dns::HappyEyeballs::clone(&self) -> Self
+impl core::cmp::Eq for akio::dns::HappyEyeballs
+impl core::cmp::PartialEq for akio::dns::HappyEyeballs
+pub fn akio::dns::HappyEyeballs::eq(&self, &Self) -> bool
+impl core::default::Default for akio::dns::HappyEyeballs
+pub fn akio::dns::HappyEyeballs::default() -> akio::dns::HappyEyeballs
+impl core::fmt::Debug for akio::dns::HappyEyeballs
+pub fn akio::dns::HappyEyeballs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio::dns::HappyEyeballs
+impl core::marker::StructuralPartialEq for akio::dns::HappyEyeballs
+impl core::marker::Send for akio::dns::HappyEyeballs
+impl core::marker::Sync for akio::dns::HappyEyeballs
+impl core::marker::Unpin for akio::dns::HappyEyeballs
+impl core::panic::unwind_safe::RefUnwindSafe for akio::dns::HappyEyeballs
+impl core::panic::unwind_safe::UnwindSafe for akio::dns::HappyEyeballs
+pub const akio::dns::ATTEMPT_DELAY: core::time::Duration
+pub const akio::dns::CONNECT_TIMEOUT: core::time::Duration
+pub const akio::dns::DEFAULT_CACHE_ENTRIES: usize
+pub const akio::dns::DEFAULT_CACHE_TTL: core::time::Duration
+pub const akio::dns::IDLE: core::time::Duration
+pub const akio::dns::MAX_RACES: usize
+pub const akio::dns::MAX_RACE_ADDRS: usize
+pub const akio::dns::MAX_THREADS: usize
+pub fn akio::dns::cache_config() -> akio::dns::CacheConfig
+pub fn akio::dns::clear_cache()
+pub fn akio::dns::interleave(&[core::net::socket_addr::SocketAddr]) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn akio::dns::literal(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn akio::dns::resolve(&str, u16, impl core::ops::function::FnOnce(core::io::error::Result<alloc::vec::Vec<core::net::socket_addr::SocketAddr>>) + core::marker::Send + 'static)
+pub fn akio::dns::set_cache(akio::dns::CacheConfig)
+#[non_exhaustive] pub enum akio::Accel
+pub akio::Accel::Ebpf(akio::EbpfConfig)
+pub akio::Accel::None
+impl core::clone::Clone for akio::Accel
+pub fn akio::Accel::clone(&self) -> Self
+impl core::default::Default for akio::Accel
+pub fn akio::Accel::default() -> Self
+impl core::fmt::Debug for akio::Accel
+pub fn akio::Accel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::Accel
+impl core::marker::Sync for akio::Accel
+impl core::marker::Unpin for akio::Accel
+impl core::panic::unwind_safe::RefUnwindSafe for akio::Accel
+impl core::panic::unwind_safe::UnwindSafe for akio::Accel
+#[non_exhaustive] pub enum akio::AccelStatus
+pub akio::AccelStatus::Degraded(alloc::string::String)
+pub akio::AccelStatus::Off
+pub akio::AccelStatus::Steering(akio_ebpf::steer::SteerInfo)
+impl core::clone::Clone for akio::AccelStatus
+pub fn akio::AccelStatus::clone(&self) -> Self
+impl core::cmp::Eq for akio::AccelStatus
+impl core::cmp::PartialEq for akio::AccelStatus
+pub fn akio::AccelStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio::AccelStatus
+pub fn akio::AccelStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio::AccelStatus
+impl core::marker::Send for akio::AccelStatus
+impl core::marker::Sync for akio::AccelStatus
+impl core::marker::Unpin for akio::AccelStatus
+impl core::panic::unwind_safe::RefUnwindSafe for akio::AccelStatus
+impl core::panic::unwind_safe::UnwindSafe for akio::AccelStatus
+#[non_exhaustive] pub enum akio::Backend
+pub akio::Backend::Epoll
+pub akio::Backend::IoUring(akio::UringConfig)
+impl core::clone::Clone for akio::Backend
+pub fn akio::Backend::clone(&self) -> Self
+impl core::default::Default for akio::Backend
+pub fn akio::Backend::default() -> Self
+impl core::fmt::Debug for akio::Backend
+pub fn akio::Backend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::Backend
+impl core::marker::Sync for akio::Backend
+impl core::marker::Unpin for akio::Backend
+impl core::panic::unwind_safe::RefUnwindSafe for akio::Backend
+impl core::panic::unwind_safe::UnwindSafe for akio::Backend
+#[non_exhaustive] pub struct akio::EbpfConfig
+pub akio::EbpfConfig::ebpf_programs: bool
+pub akio::EbpfConfig::pin_threads: bool
+pub akio::EbpfConfig::shared: core::option::Option<akio_ebpf::shared::SharedSteering>
+pub akio::EbpfConfig::steering: akio_ebpf::steer::Steering
+pub akio::EbpfConfig::strict: bool
+impl core::clone::Clone for akio::EbpfConfig
+pub fn akio::EbpfConfig::clone(&self) -> Self
+impl core::default::Default for akio::EbpfConfig
+pub fn akio::EbpfConfig::default() -> Self
+impl core::fmt::Debug for akio::EbpfConfig
+pub fn akio::EbpfConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::EbpfConfig
+impl core::marker::Sync for akio::EbpfConfig
+impl core::marker::Unpin for akio::EbpfConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::EbpfConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::EbpfConfig
+pub struct akio::Engine
+impl akio::Engine
+pub fn akio::Engine::accel_status(&self) -> &[akio::AccelStatus]
+pub fn akio::Engine::adopt_tcp<A: akio_core::handler::Acceptor>(&self, std::net::tcp::TcpStream, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::bind_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
+pub fn akio::Engine::bind_udp_multicast<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
+pub fn akio::Engine::bind_udp_multicast_on<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, &[u32], A) -> core::io::error::Result<akio_core::group::UdpBinding>
+pub fn akio::Engine::builder() -> akio::EngineBuilder
+pub fn akio::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<akio_core::telemetry::ConnInfo>
+pub fn akio::Engine::datagram_sender(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<akio_core::datagrams::DatagramSender>
+pub fn akio::Engine::dial<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::dial_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::dial_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::dial_udp_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn akio::Engine::metrics(&self) -> akio_core::telemetry::Metrics
+pub fn akio::Engine::pool_stats(&self) -> akio_pool::PoolStats
+pub fn akio::Engine::reload(&self, &akio_core::config::Config) -> akio_core::telemetry::ReloadReport
+pub fn akio::Engine::run(&self) -> core::io::error::Result<()>
+pub fn akio::Engine::set_threads(&self, usize, usize) -> core::io::error::Result<()>
+pub fn akio::Engine::shutdown(&self)
+pub fn akio::Engine::slow_callbacks(&self) -> alloc::vec::Vec<akio_core::telemetry::SlowRecord>
+pub fn akio::Engine::start(&self) -> core::io::error::Result<()>
+pub fn akio::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
+pub fn akio::Engine::threads(&self) -> alloc::vec::Vec<usize>
+pub fn akio::Engine::udp_stats(&self) -> akio_core::group::UdpStats
+pub fn akio::Engine::wait(&self)
+impl core::fmt::Debug for akio::Engine
+pub fn akio::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::Engine
+impl core::marker::Sync for akio::Engine
+impl core::marker::Unpin for akio::Engine
+impl !core::panic::unwind_safe::RefUnwindSafe for akio::Engine
+impl !core::panic::unwind_safe::UnwindSafe for akio::Engine
+pub struct akio::EngineBuilder
+impl akio::EngineBuilder
+pub fn akio::EngineBuilder::build(self) -> core::io::error::Result<akio::Engine>
+pub fn akio::EngineBuilder::client_threads(self, usize) -> Self
+pub fn akio::EngineBuilder::config(self, akio_core::config::Config) -> Self
+pub fn akio::EngineBuilder::listen(self, akio::Listener) -> Self
+pub fn akio::EngineBuilder::pool(self, akio_pool::PoolConfig) -> Self
+pub fn akio::EngineBuilder::udp_client_threads(self, usize) -> Self
+impl core::default::Default for akio::EngineBuilder
+pub fn akio::EngineBuilder::default() -> Self
+impl core::fmt::Debug for akio::EngineBuilder
+pub fn akio::EngineBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::EngineBuilder
+impl core::marker::Sync for akio::EngineBuilder
+impl core::marker::Unpin for akio::EngineBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for akio::EngineBuilder
+impl !core::panic::unwind_safe::UnwindSafe for akio::EngineBuilder
+pub struct akio::EngineRef(_)
+impl akio::EngineRef
+pub fn akio::EngineRef::get(&self) -> core::option::Option<alloc::rcs::arc::Arc<akio::Engine>>
+pub fn akio::EngineRef::new() -> akio::EngineRef
+pub fn akio::EngineRef::set(&self, &alloc::rcs::arc::Arc<akio::Engine>)
+impl core::clone::Clone for akio::EngineRef
+pub fn akio::EngineRef::clone(&self) -> Self
+impl core::default::Default for akio::EngineRef
+pub fn akio::EngineRef::default() -> Self
+impl core::fmt::Debug for akio::EngineRef
+pub fn akio::EngineRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::EngineRef
+impl core::marker::Sync for akio::EngineRef
+impl core::marker::Unpin for akio::EngineRef
+impl !core::panic::unwind_safe::RefUnwindSafe for akio::EngineRef
+impl !core::panic::unwind_safe::UnwindSafe for akio::EngineRef
+pub struct akio::Listener
+impl akio::Listener
+pub fn akio::Listener::accel(self, akio::Accel) -> Self
+pub fn akio::Listener::backend(self, akio::Backend) -> Self
+pub fn akio::Listener::serve<A: akio_core::handler::Acceptor>(self, A) -> Self
+pub fn akio::Listener::serve_any(self, impl core::convert::Into<akio_core::handler::AnyAcceptor>) -> Self
+pub fn akio::Listener::serve_datagrams<H, F>(self, F) -> Self where H: akio_core::datagrams::DatagramsHandler, F: core::ops::function::Fn(&akio_core::datagrams::DatagramSender) -> H + core::marker::Send + core::marker::Sync + 'static
+pub fn akio::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
+pub fn akio::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
+pub fn akio::Listener::threads(self, usize) -> Self
+pub fn akio::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
+impl core::fmt::Debug for akio::Listener
+pub fn akio::Listener::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::Listener
+impl core::marker::Sync for akio::Listener
+impl core::marker::Unpin for akio::Listener
+impl !core::panic::unwind_safe::RefUnwindSafe for akio::Listener
+impl !core::panic::unwind_safe::UnwindSafe for akio::Listener
+#[non_exhaustive] pub struct akio::UringConfig
+pub akio::UringConfig::entries: u32
+pub akio::UringConfig::sqpoll: bool
+pub akio::UringConfig::strict: bool
+impl core::clone::Clone for akio::UringConfig
+pub fn akio::UringConfig::clone(&self) -> Self
+impl core::default::Default for akio::UringConfig
+pub fn akio::UringConfig::default() -> Self
+impl core::fmt::Debug for akio::UringConfig
+pub fn akio::UringConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::UringConfig
+impl core::marker::Sync for akio::UringConfig
+impl core::marker::Unpin for akio::UringConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::UringConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::UringConfig

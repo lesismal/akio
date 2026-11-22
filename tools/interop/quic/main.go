@@ -1,10 +1,10 @@
-// Raw QUIC interop peer (github.com/quic-go/quic-go) for only-quic: an echo of streams and
+// Raw QUIC interop peer (github.com/quic-go/quic-go) for akio-quic: an echo of streams and
 // datagrams, ALPN "echo".
 //
 //	go run . server 127.0.0.1:9500 [retry] [v2] [0rtt]          echoes every bidirectional stream and datagram
 //	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate] [small] [0rtt]
-//	                                                            checks an only-quic echo server
-//	                                                            (crates/only-quic/examples/quic-interop.rs)
+//	                                                            checks an akio-quic echo server
+//	                                                            (crates/akio-quic/examples/quic-interop.rs)
 //
 // "retry" makes the server validate every client address with a Retry first. "bulk MB" adds one
 // stream of MB megabytes (150 MB crosses quic-go's key update interval of 100k packets). "v2"

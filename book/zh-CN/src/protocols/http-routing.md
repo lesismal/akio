@@ -3,7 +3,7 @@
 ## Router
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:router}}
 ```
 
 路径段：
@@ -20,7 +20,7 @@
 查找不分配内存（`examples/router-bench.rs` 中 52 条 GitHub 风格路由约 30 ns，无论是否使用正则或部分段）。
 `Router::lookup(method, path)` 只返回匹配结果、不分发。
 
-部分段（[ADR-007](https://github.com/lesismal/only/blob/main/docs/adr/007-partial-segment-routes.zh-CN.md)）
+部分段（[ADR-007](https://github.com/lesismal/akio/blob/main/docs/adr/007-partial-segment-routes.zh-CN.md)）
 在一段内混合字面文本与 `{name}` 或 `{name:regexp}` 组。段首、段尾的字面文本分别在段首、段尾匹配；中间
 每个参数非空，并在其后文本**第一次**出现处结束；正则参数还必须匹配其整个取值。不会尝试其他切分，因此
 匹配保持线性：
@@ -35,7 +35,7 @@
 部分段之间，字面文本多的先试（`{name}.tar.gz` 先于 `{name}.gz`），其次按注册顺序。两个参数之间必须有
 字面文本，通配符不能与其他内容同段，否则注册时 panic。
 
-正则参数使用工作区的线性时间引擎 `only-regex`（ADR-051）：表达式必须匹配整段，匹配耗时与段长度成线性关系
+正则参数使用工作区的线性时间引擎 `akio-regex`（ADR-051）：表达式必须匹配整段，匹配耗时与段长度成线性关系
 （不回溯，因此不存在病态模式；注册时构建 DFA，每字符约 1 纳秒）。支持的语法（含义与 `regex` crate 相同）：
 
 - 字面量（任意 Unicode 字符）、`.`（除换行外的任意字符）、`^` / `$`（以及 `\A` / `\z`）；
@@ -57,7 +57,7 @@
 
 - 方法：`get`、`post`、`put`、`delete`、`patch`、`options`，或 `route(Method, path, svc)`。
 - 路径存在但方法不对时返回 **405** 并带 `Allow` 头；路径不存在时返回 **404**。`fallback(svc)`
-  同时替换两者（`Allow` 列表在 `ctx.local("only.allow")` 中）。
+  同时替换两者（`Allow` 列表在 `ctx.local("akio.allow")` 中）。
 - `HEAD` 由 `GET` 路由应答，不带 body。
 - 重复或冲突的路由、不在最后的通配段、不配对的花括号、非法正则都会**在注册时 panic**：启动时就发现，而不是
   在生产环境。
@@ -70,7 +70,7 @@
 `Middleware::handle` 的类型）。调用 `next.call(ctx)` 继续，或者不调用它直接答复：
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:middleware}}
 ```
 
 在上面的 router 里，它只保护嵌套的 `/admin` router：
@@ -84,7 +84,7 @@
 `ctx.add_response_filter(|resp, req| ..)` 在响应发出前执行，在发送响应的那个线程上运行。
 `ctx.add_response_header` 添加一个头部，除非响应自己设置了它。
 
-内置中间件（`only_http::middleware` 与 `only_http::observe`）：
+内置中间件（`akio_http::middleware` 与 `akio_http::observe`）：
 
 | 中间件 | 作用 |
 |---|---|
@@ -98,9 +98,9 @@
 | `csrf()` | double-submit cookie：`csrf_token` cookie，非安全方法须在 `X-CSRF-Token` 头中带上同样的值 |
 | `limiter(rate, burst)` | 按客户端 IP 的令牌桶，超出返回 429 和 `Retry-After` |
 | `observe::HttpMetrics::middleware()` | 请求计数与延迟直方图（[可观测性](../observability.md)） |
-| `observe::access_log()` | 通过 `only::log` 输出结构化访问日志 |
+| `observe::access_log()` | 通过 `akio::log` 输出结构化访问日志 |
 
-`br` 和 `zstd`（自研的 `only-brotli` 与 `only-zstd`，ADR-041）默认关闭：把 `Compress::brotli` /
+`br` 和 `zstd`（自研的 `akio-brotli` 与 `akio-zstd`，ADR-041）默认关闭：把 `Compress::brotli` /
 `Compress::zstd` 设为某个级别，即对接受它们的客户端使用，优先顺序为 br、zstd、gzip、deflate。预压缩的
 `.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。中间件压缩的是完整缓冲的消息体。流式响应
 （`Context::stream_response`）按写入原样发送，除非设置了 `Compress::stream`（ADR-074）：这时逐次写入
@@ -109,7 +109,7 @@
 1.3 MiB，指输出了一个窗口之后；brotli 的匹配表随流增长，只发了几个事件的流只占几 KiB）。brotli 每次小写入的
 CPU 开销仍然最大（每次刷新的事件约 1 us，zstd 0.3 us），高频事件流宜提供 zstd，或交给 gzip。
 
-中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `only-brotli` 解码：原始（LZ77
+中间件不使用字典。需要交换用共享字典压缩的 brotli 数据的应用可以直接用 `akio-brotli` 解码：原始（LZ77
 前缀）字典，即 `brotli -D` 与 RFC 9842 的 `dcb` 所用的那种（`decompress_with_dictionary`），以及带自定义
 词表与变换的 RFC 9841 序列化共享字典（`SharedDictionary::new`、`decompress_with_shared_dictionary`；
 ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词（ADR-079）。RFC 9841 的其余部分也在中间件之外
@@ -117,7 +117,7 @@ ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词�
 对端），以及封装格式，即资源之间可以互作字典的容器（`read_container`、`ContainerWriter`）。
 
 ```rust,ignore
-{{#include ../../../../crates/only-http/examples/guide-http.rs:compression}}
+{{#include ../../../../crates/akio-http/examples/guide-http.rs:compression}}
 ```
 
 ## 静态文件

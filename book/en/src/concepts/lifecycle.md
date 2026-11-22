@@ -41,17 +41,17 @@ established, `acceptor.on_open` runs on an I/O thread exactly as for an accepted
 it fails, `on_error(io::Error)` is called instead. The engine must be started.
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:dial}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:dial}}
 ```
 
-Wrap the acceptor in `only::tls::Tls::client(..)` to dial TLS. Higher-level clients (HTTP,
+Wrap the acceptor in `akio::tls::Tls::client(..)` to dial TLS. Higher-level clients (HTTP,
 HTTP/2, WebSocket, gRPC, arpc) are built on `dial`. `EngineRef` is a late-bound weak handle for
 services that are constructed before the engine and need to dial from inside handlers (proxies).
 
 ## Graceful shutdown
 
 ```rust,ignore
-{{#include ../../../../crates/only/examples/guide-basics.rs:shutdown}}
+{{#include ../../../../crates/akio/examples/guide-basics.rs:shutdown}}
 ```
 
 `Engine::shutdown()` returns immediately and can be called from any thread (a signal handler
@@ -59,7 +59,7 @@ thread, an admin endpoint). Then:
 
 1. Every listener stops accepting.
 2. Each acceptor's `on_shutdown` runs for each of its open connections (on their I/O threads).
-   The default does nothing; protocol crates use it to finish politely: only-http closes each
+   The default does nothing; protocol crates use it to finish politely: akio-http closes each
    HTTP/1 connection right after its in-flight responses are written, HTTP/2 sends `GOAWAY`
    and lets open streams finish.
    Connections still dialing get `on_error(ConnectionAborted)`.

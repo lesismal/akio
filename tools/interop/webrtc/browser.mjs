@@ -1,4 +1,4 @@
-// Headless Chrome <-> only-webrtc, driven over the Chrome DevTools Protocol (no npm packages:
+// Headless Chrome <-> akio-webrtc, driven over the Chrome DevTools Protocol (no npm packages:
 // Node >= 22 has fetch and WebSocket). Used by browser.sh.
 //
 //   node browser.mjs <cdp-port> offer <http-signalling-addr>   Chrome offers (data channel echo,
@@ -107,7 +107,7 @@ async function page() {
   // A secure context (http://127.0.0.1) for getUserMedia: a blank page served here.
   const blank = http.createServer((_q, r) => {
     r.writeHead(200, { "content-type": "text/html" });
-    r.end("<!doctype html><title>only-webrtc</title>");
+    r.end("<!doctype html><title>akio-webrtc</title>");
   });
   await new Promise((r) => blank.listen(0, "127.0.0.1", r));
   await call("Page.enable", {});

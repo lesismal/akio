@@ -6,7 +6,7 @@ Status: accepted (2026-11-17)
 
 ## Context
 
-only-dpdk's own stack (`crates/only-dpdk/src/net`) was IPv4-only: a listener on an IPv6 address
+akio-dpdk's own stack (`crates/akio-dpdk/src/net`) was IPv4-only: a listener on an IPv6 address
 was refused, `dial` to one failed with `Unsupported`. DEV-PLAN listed "IPv6/NDP, offloads,
 pacing/ECN" as not done. `DpdkConfig` is `#[non_exhaustive]` and the crate is experimental
 (outside the semver promise), but its API is snapshotted, so new fields are recorded here.
@@ -59,7 +59,7 @@ pacing/ECN" as not done. `DpdkConfig` is `#[non_exhaustive]` and the crate is ex
 
 ## Consequences
 
-- Additive public API: five fields of `DpdkConfig` (snapshot `api/only-dpdk.txt`).
+- Additive public API: five fields of `DpdkConfig` (snapshot `api/akio-dpdk.txt`).
 - The IPv4 path stays monomorphic: a connection keeps IPv4 endpoints inline (IPv6 boxed) and
   hands them to the output path by reference, which sends IPv4 without a family dispatch; the
   pseudo-header address sum is computed once per packet; pacing state and UDP peers are boxed

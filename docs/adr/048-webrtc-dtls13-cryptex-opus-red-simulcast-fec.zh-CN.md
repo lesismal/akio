@@ -1,4 +1,4 @@
-# ADR-048：only-webrtc 的 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC
+# ADR-048：akio-webrtc 的 DTLS 1.3、cryptex、加密头部扩展、Opus RED 与 simulcast 线路上的 FEC
 
 [English](048-webrtc-dtls13-cryptex-opus-red-simulcast-fec.md)
 
@@ -6,9 +6,9 @@
 
 ## 背景
 
-各个库已经具备所需部件，但 `only-webrtc` 的 peer 并未使用：`only-dtls` 支持 DTLS 1.3（ADR-021、
-ADR-045），peer 却只跑 DTLS 1.2；`only-srtp` 有 cryptex（RFC 9335）、RFC 6904 头部扩展加密与 MKI
-（ADR-040），但没有任何协商；`only-rtp` 有 RED（RFC 2198）与 ULPFEC（ADR-036），只接到了普通视频
+各个库已经具备所需部件，但 `akio-webrtc` 的 peer 并未使用：`akio-dtls` 支持 DTLS 1.3（ADR-021、
+ADR-045），peer 却只跑 DTLS 1.2；`akio-srtp` 有 cryptex（RFC 9335）、RFC 6904 头部扩展加密与 MKI
+（ADR-040），但没有任何协商；`akio-rtp` 有 RED（RFC 2198）与 ULPFEC（ADR-036），只接到了普通视频
 线路上（ADR-039），因此音频没有冗余，simulcast 线路没有 FEC。
 
 对照 Chrome 157 得到的事实（`tools/interop/webrtc/browser.sh`、`fec.sh`，以及经 DevTools 抓取的
@@ -35,7 +35,7 @@ offer）：
 ## 决定
 
 1. **DTLS 1.3**（`RtcConfig::enable_dtls13(bool)`）：peer 提供 DTLS 1.3，以 DTLS 1.2 作为回退（在
-   WebRTC 配置上 `only_dtls::Config::with_versions([Dtls13, Dtls12])`）：客户端发送 DTLS 1.2 服务器会
+   WebRTC 配置上 `akio_dtls::Config::with_versions([Dtls13, Dtls12])`）：客户端发送 DTLS 1.2 服务器会
    以 DTLS 1.2 应答的 DTLS 1.3 ClientHello，服务器在对方提供时选择 DTLS 1.3。SRTP 密钥照旧来自（DTLS
    1.3 的）exporter；RFC 7983 解复用本已接受 DTLS 1.3 的统一头部（首字节 32-63）。**默认开启**：在核对
    Chrome 157（两种 DTLS 角色，数据通道、音频、视频、AES-GCM SRTP）、Firefox 158 与 pion（DTLS 1.2：
@@ -43,7 +43,7 @@ offer）：
    日志并出现在统计事件中。
 2. **cryptex**（`RtcConfig::enable_cryptex(bool)`，默认关闭）：在会话级提供 `a=cryptex`（与 Chrome 相
    同），并应答 offer 中会话级或媒体级的该属性。双方都声明即为协商成功；此后每个带头部扩展或 CSRC 的
-   发送包都用 cryptex 加密（`only_srtp::Context::with_cryptex`）。只要本端提供或接受 cryptex，接收
+   发送包都用 cryptex 加密（`akio_srtp::Context::with_cryptex`）。只要本端提供或接受 cryptex，接收
    上下文就解密 cryptex 包，这样对方在其 answer 之后、我方应用之前发出的包不会丢失。cryptex 属于
    BUNDLE 传输（一对 SRTP 上下文），每次协商后重新应用。
 3. **RFC 6904**（`RtcConfig::enable_encrypted_header_extensions(bool)`，默认关闭）：offer 额外列出最能
@@ -52,8 +52,8 @@ offer）：
    有 5 个；不用双字节形式，因为并非所有接收方都接受）。answer 对同时以两种形式提供的扩展选择加密变体
    （RFC 6904 §4）；未开启时忽略加密变体。协商出的 ID（BUNDLE 内取并集）交给两个 SRTP 上下文
    （`with_encrypted_header_extensions`）。若同时协商了 cryptex，线上以 cryptex 为准。
-4. **不在 `only-webrtc` 中协商 MKI**：DTLS-SRTP 的 MKI 没有 SDP 机制，没有浏览器使用，两个 `only` peer
-   之间 DTLS 本就通过新握手换钥。`only-dtls` 保留 `with_srtp_mki` 供其他 DTLS-SRTP 用户使用。
+4. **不在 `akio-webrtc` 中协商 MKI**：DTLS-SRTP 的 MKI 没有 SDP 机制，没有浏览器使用，两个 `akio` peer
+   之间 DTLS 本就通过新握手换钥。`akio-dtls` 保留 `with_srtp_mki` 供其他 DTLS-SRTP 用户使用。
 5. **Opus RED**（`RtcConfig::enable_opus_red(Option<u8>)`，默认 `None`）：`Some(n)` 时音频线路提供或接受
    `red/48000/2`（负载类型 63，`fmtp 63 <opus>/<opus>`），排在 Opus *之前*，从而让 libwebrtc 发送 RED；
    远端的 RED 仅当其所有块都是已协商的 Opus 负载类型时才被接受。接收：RED 包的冗余块代替它之前的包

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The whole campaign of docs/BENCHMARKS.md, inside the only-bench image:
+# The whole campaign of docs/BENCHMARKS.md, inside the akio-bench image:
 #
-#   docker build -t only-bench tools/bench
+#   docker build -t akio-bench tools/bench
 #   PRIV=1 tools/bench/docker.sh 'tools/bench/build.sh && tools/bench/all.sh /w/target/bench-results'
 #
 # Writes <dir>/{echo,http,mem,ab}.tsv and <dir>/summary.md. Set BASE_DIR to a directory holding
@@ -12,11 +12,11 @@ mkdir -p "$D"
 B=$(dirname "$0")
 OUT=$D/echo.tsv "$B/echo.sh"
 OUT=$D/http.tsv "$B/http.sh"
-OUT=$D/mem.tsv KINDS="${MEM_KINDS:-only-epoll only-uring tokio hyper monoio-uring monoio-epoll fib}" "$B/mem.sh"
+OUT=$D/mem.tsv KINDS="${MEM_KINDS:-akio-epoll akio-uring tokio hyper monoio-uring monoio-epoll fib}" "$B/mem.sh"
 if [ -n "${BASE_DIR:-}" ]; then
-  OUT=$D/ab.tsv KINDS="base-epoll only-epoll base-uring only-uring" "$B/http.sh" plaintext,pipelined,json,h2
-  OUT=$D/ab.tsv KINDS="base-epoll only-epoll base-uring only-uring" SIZES=64 CONNS="64 1024" "$B/echo.sh" tcp
-  OUT=$D/abmem.tsv KINDS="base-epoll only-epoll base-uring only-uring" "$B/mem.sh" tcp:echo:10000 http:http:10000 ws:ws:10000
+  OUT=$D/ab.tsv KINDS="base-epoll akio-epoll base-uring akio-uring" "$B/http.sh" plaintext,pipelined,json,h2
+  OUT=$D/ab.tsv KINDS="base-epoll akio-epoll base-uring akio-uring" SIZES=64 CONNS="64 1024" "$B/echo.sh" tcp
+  OUT=$D/abmem.tsv KINDS="base-epoll akio-epoll base-uring akio-uring" "$B/mem.sh" tcp:echo:10000 http:http:10000 ws:ws:10000
 fi
 "$B/summarize.py" "$D"/*.tsv >"$D/summary.md"
 cat "$D/summary.md"

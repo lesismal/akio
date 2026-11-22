@@ -1,8 +1,8 @@
 //! The route_guide and helloworld services as the tests and the grpc-go interop peer
 //! (`tools/interop/grpc/main.go`) implement them, plus the client-side checks both run.
 
-use only_grpc::{CallOptions, Code, Metadata, Sink, Status};
-use only_protobuf::well_known;
+use akio_grpc::{CallOptions, Code, Metadata, Sink, Status};
+use akio_protobuf::well_known;
 
 use crate::{
     helloworld::{
@@ -194,9 +194,9 @@ fn fail(what: &str, detail: impl std::fmt::Debug) -> String {
     format!("{what}: {detail:?}")
 }
 
-/// Runs every call against a server implementing the services above (an `only` one or the
+/// Runs every call against a server implementing the services above (an `akio` one or the
 /// grpc-go peer); `server` is the name the server puts in `echo_struct`.
-pub fn check_server(grpc: &only_grpc::GrpcClient, server: &str) -> Result<(), String> {
+pub fn check_server(grpc: &akio_grpc::GrpcClient, server: &str) -> Result<(), String> {
     let rg = RouteGuideClient::new(grpc.clone());
     // Unary, with an unknown field the server must keep in the returned location.
     let mut p = Point {
@@ -205,9 +205,9 @@ pub fn check_server(grpc: &only_grpc::GrpcClient, server: &str) -> Result<(), St
         ..Default::default()
     };
     let mut with_unknown = Vec::new();
-    only_protobuf::Message::encode(&p, &mut with_unknown);
+    akio_protobuf::Message::encode(&p, &mut with_unknown);
     with_unknown.extend_from_slice(&[0x98, 0x06, 0xd2, 0x09]); // field 99 = 1234
-    p = only_protobuf::Message::decode(&with_unknown).map_err(|e| fail("decode", e))?;
+    p = akio_protobuf::Message::decode(&with_unknown).map_err(|e| fail("decode", e))?;
     let f = rg
         .get_feature(&p, opts())
         .map_err(|e| fail("GetFeature", e))?;
@@ -315,12 +315,12 @@ pub fn check_server(grpc: &only_grpc::GrpcClient, server: &str) -> Result<(), St
     let b = grpc
         .unary(
             "/test.Echo/Struct",
-            &only_protobuf::Message::encode_to_vec(&st),
+            &akio_protobuf::Message::encode_to_vec(&st),
             opts(),
         )
         .map_err(|e| fail("Struct", e))?;
     let back: well_known::Struct =
-        only_protobuf::Message::decode(&b).map_err(|e| fail("Struct decode", e))?;
+        akio_protobuf::Message::decode(&b).map_err(|e| fail("Struct decode", e))?;
     if back != echo_struct(st, server) {
         return Err(fail("Struct reply", back));
     }
@@ -331,12 +331,12 @@ pub fn check_server(grpc: &only_grpc::GrpcClient, server: &str) -> Result<(), St
     let b = grpc
         .unary(
             "/test.Echo/Any",
-            &only_protobuf::Message::encode_to_vec(&well_known::Any::pack(&ts)),
+            &akio_protobuf::Message::encode_to_vec(&well_known::Any::pack(&ts)),
             opts(),
         )
         .map_err(|e| fail("Any", e))?;
     let any: well_known::Any =
-        only_protobuf::Message::decode(&b).map_err(|e| fail("Any decode", e))?;
+        akio_protobuf::Message::decode(&b).map_err(|e| fail("Any decode", e))?;
     let d = any
         .unpack::<well_known::Duration>()
         .map_err(|e| fail("Any unpack", e))?;
@@ -350,9 +350,9 @@ pub fn check_server(grpc: &only_grpc::GrpcClient, server: &str) -> Result<(), St
 }
 
 /// A `GrpcServer` with route_guide, helloworld and the well-known-type echo methods.
-pub fn server(name: &'static str) -> only_grpc::GrpcServer {
+pub fn server(name: &'static str) -> akio_grpc::GrpcServer {
     // ANCHOR: register
-    let s = crate::routeguide::route_guide_server::register(only_grpc::GrpcServer::new(), Impl);
+    let s = crate::routeguide::route_guide_server::register(akio_grpc::GrpcServer::new(), Impl);
     let s = crate::helloworld::greeter_server::register(s, Impl);
     // ANCHOR_END: register
     // ANCHOR: reflection
@@ -372,12 +372,12 @@ pub fn server(name: &'static str) -> only_grpc::GrpcServer {
     let s = crate::test::ext::ext_server::register(s, Impl);
     let s = crate::test::ed::items_server::register(s, Impl);
     // ANCHOR: reflection_register
-    let s = only_grpc::reflection::register(s, &pool);
+    let s = akio_grpc::reflection::register(s, &pool);
     // ANCHOR_END: reflection_register
     s.unary("/test.Echo/Struct", move |_md, req, sink| {
-        match <well_known::Struct as only_protobuf::Message>::decode(&req) {
+        match <well_known::Struct as akio_protobuf::Message>::decode(&req) {
             Ok(st) => {
-                sink.send(&only_protobuf::Message::encode_to_vec(&echo_struct(
+                sink.send(&akio_protobuf::Message::encode_to_vec(&echo_struct(
                     st, name,
                 )));
                 sink.finish(Status::ok());
@@ -386,12 +386,12 @@ pub fn server(name: &'static str) -> only_grpc::GrpcServer {
         }
     })
     .unary("/test.Echo/Any", |_md, req, sink| {
-        let r = <well_known::Any as only_protobuf::Message>::decode(&req)
+        let r = <well_known::Any as akio_protobuf::Message>::decode(&req)
             .map_err(|e| Status::new(Code::InvalidArgument, e.to_string()))
             .and_then(|a| echo_any(&a));
         match r {
             Ok(a) => {
-                sink.send(&only_protobuf::Message::encode_to_vec(&a));
+                sink.send(&akio_protobuf::Message::encode_to_vec(&a));
                 sink.finish(Status::ok());
             }
             Err(st) => sink.finish(st),

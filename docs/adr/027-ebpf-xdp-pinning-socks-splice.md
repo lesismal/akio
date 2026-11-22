@@ -8,7 +8,7 @@ Status: accepted (2026-11-18)
 
 ADR-006 planned three eBPF uses. M5 shipped `SO_REUSEPORT` steering and the sockmap relay but
 left five gaps: XDP rate limiting, I/O-thread CPU pinning (without it `Steering::Cpu` picks
-thread `cpu % n`, but nothing keeps that thread on that CPU), wiring the relay into only-socks,
+thread `cpu % n`, but nothing keeps that thread on that CPU), wiring the relay into akio-socks,
 an eBPF tier for hash steering, and a benchmark. Two more problems came up while closing them:
 
 - The classic BPF hash tier returns a socket's *position* in the reuseport group, so it relies
@@ -19,7 +19,7 @@ an eBPF tier for hash steering, and a benchmark. Two more problems came up while
 
 ## Decision
 
-1. **`only_ebpf::xdp`** (new module): `RateLimiter::attach(interface, &XdpLimit)` /
+1. **`akio_ebpf::xdp`** (new module): `RateLimiter::attach(interface, &XdpLimit)` /
    `attach_index`, `mode()`, `attachment()`, `stats() -> XdpStats { passed, dropped,
    new_sources }`, `forget(IpAddr)`, `detach()`; dropping it detaches. `XdpLimit { rate, burst,
    max_sources, count: Count::{TcpSyn, AllPackets}, mode: XdpMode::{Auto, Native, Generic} }`
@@ -35,8 +35,8 @@ an eBPF tier for hash steering, and a benchmark. Two more problems came up while
      (`EBUSY`/`EEXIST`).
 2. **Pinning**: `EbpfConfig::pin_threads` (default off) pins thread `i` of `n` to the allowed
    CPUs `c` with `c % n == i`. Threads with no such CPU stay unpinned.
-   - Public helpers: `only_ebpf::cpu_pinning(threads)`, `SteerInfo::pinned_threads`, and
-     `only_sys::process::{allowed_cpus, pin_current_thread}`.
+   - Public helpers: `akio_ebpf::cpu_pinning(threads)`, `SteerInfo::pinned_threads`, and
+     `akio_sys::process::{allowed_cpus, pin_current_thread}`.
    - Backends get a hidden `Group::pin_threads` hook (`doc(hidden)`, not in the snapshots).
 3. **eBPF hash tier**: with `AttachOptions::ebpf` (the default) and privileges,
    `Steering::Hash` uses an `SK_REUSEPORT` program that computes the classic tier's hash. A slot
@@ -53,7 +53,7 @@ an eBPF tier for hash steering, and a benchmark. Two more problems came up while
      there). If `f` fails, the splice is undone without losing data.
    - New `relay::byte_counts(&TcpStream) -> ByteCounts { received, written }` (`TCP_INFO` plus
      `SIOCOUTQ`) for following spliced tunnels.
-5. **only-socks**:
+5. **akio-socks**:
    - `ProxyConfig::sockmap: Option<Relay>` and `Socks::sockmap(relay)` (opt-in, default `None`)
      splice SOCKS and HTTP `CONNECT` tunnels as their success reply is written.
    - It falls back to userspace for TLS, client data userspace already holds, or any splice
@@ -74,6 +74,6 @@ an eBPF tier for hash steering, and a benchmark. Two more problems came up while
   (SYN cookies remain the answer to those), and VLAN-tagged frames are not counted.
 - Spliced bytes bypass the engine's write watermarks. The relay still requires Linux 6.15+ by
   default (ADR-006 note).
-- New `unsafe` lives only in `only-sys` (`sched_getaffinity`/`sched_setaffinity`) and
-  `only-ebpf` `sys` (`BPF_LINK_CREATE`, map lookup, netlink socket I/O, `TCP_INFO`,
+- New `unsafe` lives only in `akio-sys` (`sched_getaffinity`/`sched_setaffinity`) and
+  `akio-ebpf` `sys` (`BPF_LINK_CREATE`, map lookup, netlink socket I/O, `TCP_INFO`,
   `SIOCOUTQ`, `SO_RCVLOWAT`). Every block has a safety comment.

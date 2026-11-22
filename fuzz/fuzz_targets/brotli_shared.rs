@@ -5,5 +5,5 @@
 //! decode the same both ways with them; the encoder round-trips with them.
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_brotli::fuzzing::shared::shared(data);
+    akio_brotli::fuzzing::shared::shared(data);
 });

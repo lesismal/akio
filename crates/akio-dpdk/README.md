@@ -1,0 +1,46 @@
+# akio-dpdk
+
+[中文](README.zh-CN.md)
+
+The kernel-bypass backend of [`akio`](https://github.com/lesismal/akio) (**experimental**): a
+userspace TCP/IP stack of its own (Ethernet, ARP, IPv4 with fragmentation, ICMP, IPv6 with
+NDP, ICMPv6 and fragmentation (dual-stack listeners), UDP, and TCP with SACK, fast recovery,
+CUBIC / NewReno, window scaling, timestamps, SYN cookies, optional ECN and pacing; UDP
+datagrams carry ECN codepoints both ways; safe Rust,
+`#![forbid(unsafe_code)]`, no dependencies) driven by `akio` I/O threads, over
+
+- a **DPDK** port (feature `pmd`, Linux, links libdpdk via `pkg-config`): EAL initialised from
+  `EalConfig`, one rx/tx queue pair and one I/O thread per queue, mbuf rx/tx bursts, RSS;
+- an existing Linux interface through **AF_XDP** sockets (`Device::AfXdp`, ADR-063): an XDP
+  program redirects each RX queue to a socket the I/O thread polls, zero-copy where the driver
+  supports it (same stack, no DPDK);
+- a Linux **TAP** interface or an **AF_PACKET** socket (same stack, no DPDK);
+- an in-process **memory wire** (any platform; tests and examples).
+
+Use it through `akio` with the `dpdk` feature (`dpdk-pmd` for DPDK ports):
+
+```rust,ignore
+use akio::{Backend, Listener, dpdk::{Device, DpdkConfig}};
+
+let cfg = DpdkConfig::new(Device::Tap("ftap0".into()), "10.0.0.2".parse()?);
+let listener = Listener::udp("10.0.0.2:7000".parse()?).backend(Backend::Dpdk(cfg)).serve(acceptor);
+```
+
+UDP listeners deliver one datagram per `on_data`, TCP listeners a byte stream; `dial`,
+`dial_udp`, backpressure, idle timeouts, telemetry and graceful shutdown work as on the kernel
+backends, so protocol crates (akio-kcp, ...) run unchanged.
+
+- Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/akio/en/dpdk.html)
+- Example: `cargo run -p akio-dpdk --example guide-dpdk`
+- Benchmark: `cargo run --release -p akio-dpdk --example stack-bench`
+- Tests: `cargo test -p akio-dpdk` (per-layer unit tests, a simulated lossy / reordering link,
+  the memory wire; any platform); `tools/dpdk/test.sh` (Docker: DPDK `net_tap`, TAP and
+  AF_PACKET against the Linux kernel stack, with `tc netem` loss); fuzz targets `dpdk_*` in
+  `fuzz/`
+
+`unsafe` is confined to `src/pmd.rs` (the DPDK FFI through `csrc/shim.c`) and `src/sys.rs`
+(TAP / AF_PACKET); the stack (`src/net/`) forbids it. See
+[docs/unsafe-review.md](../../docs/unsafe-review.md). Experimental: outside the semver promise
+([docs/api-stability.md](../../docs/api-stability.md)).
+
+License: MIT.

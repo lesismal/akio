@@ -1,0 +1,191 @@
+pub mod akio_prefork
+#[non_exhaustive] pub enum akio_prefork::CpuPinning
+pub akio_prefork::CpuPinning::None
+pub akio_prefork::CpuPinning::PerWorker
+pub akio_prefork::CpuPinning::Sets(alloc::vec::Vec<alloc::vec::Vec<usize>>)
+impl core::clone::Clone for akio_prefork::CpuPinning
+pub fn akio_prefork::CpuPinning::clone(&self) -> Self
+impl core::cmp::Eq for akio_prefork::CpuPinning
+impl core::cmp::PartialEq for akio_prefork::CpuPinning
+pub fn akio_prefork::CpuPinning::eq(&self, &Self) -> bool
+impl core::default::Default for akio_prefork::CpuPinning
+pub fn akio_prefork::CpuPinning::default() -> Self
+impl core::fmt::Debug for akio_prefork::CpuPinning
+pub fn akio_prefork::CpuPinning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_prefork::CpuPinning
+impl core::marker::Send for akio_prefork::CpuPinning
+impl core::marker::Sync for akio_prefork::CpuPinning
+impl core::marker::Unpin for akio_prefork::CpuPinning
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::CpuPinning
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::CpuPinning
+#[non_exhaustive] pub enum akio_prefork::ListenMode
+pub akio_prefork::ListenMode::Auto
+pub akio_prefork::ListenMode::Inherit
+pub akio_prefork::ListenMode::ReusePort
+impl core::clone::Clone for akio_prefork::ListenMode
+pub fn akio_prefork::ListenMode::clone(&self) -> Self
+impl core::cmp::Eq for akio_prefork::ListenMode
+impl core::cmp::PartialEq for akio_prefork::ListenMode
+pub fn akio_prefork::ListenMode::eq(&self, &Self) -> bool
+impl core::default::Default for akio_prefork::ListenMode
+pub fn akio_prefork::ListenMode::default() -> Self
+impl core::fmt::Debug for akio_prefork::ListenMode
+pub fn akio_prefork::ListenMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_prefork::ListenMode
+impl core::marker::StructuralPartialEq for akio_prefork::ListenMode
+impl core::marker::Send for akio_prefork::ListenMode
+impl core::marker::Sync for akio_prefork::ListenMode
+impl core::marker::Unpin for akio_prefork::ListenMode
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::ListenMode
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::ListenMode
+#[non_exhaustive] pub struct akio_prefork::BpfSteering
+pub akio_prefork::BpfSteering::dir: std::path::PathBuf
+pub akio_prefork::BpfSteering::steering: akio_ebpf::steer::Steering
+pub akio_prefork::BpfSteering::strict: bool
+pub akio_prefork::BpfSteering::threads: usize
+impl akio_prefork::BpfSteering
+pub fn akio_prefork::BpfSteering::new(akio_ebpf::steer::Steering, usize) -> akio_prefork::BpfSteering
+impl core::clone::Clone for akio_prefork::BpfSteering
+pub fn akio_prefork::BpfSteering::clone(&self) -> Self
+impl core::fmt::Debug for akio_prefork::BpfSteering
+pub fn akio_prefork::BpfSteering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_prefork::BpfSteering
+impl core::marker::Sync for akio_prefork::BpfSteering
+impl core::marker::Unpin for akio_prefork::BpfSteering
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::BpfSteering
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::BpfSteering
+pub struct akio_prefork::Controller
+impl akio_prefork::Controller
+pub fn akio_prefork::Controller::reload(&self)
+pub fn akio_prefork::Controller::reload_in_place(&self)
+pub fn akio_prefork::Controller::shutdown(&self)
+impl core::clone::Clone for akio_prefork::Controller
+pub fn akio_prefork::Controller::clone(&self) -> Self
+impl core::fmt::Debug for akio_prefork::Controller
+pub fn akio_prefork::Controller::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_prefork::Controller
+impl core::marker::Sync for akio_prefork::Controller
+impl core::marker::Unpin for akio_prefork::Controller
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::Controller
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::Controller
+pub struct akio_prefork::Prefork
+impl akio_prefork::Prefork
+pub fn akio_prefork::Prefork::args<I, S>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<std::ffi::os_str::OsStr>
+pub fn akio_prefork::Prefork::backlog(self, i32) -> Self
+pub fn akio_prefork::Prefork::bpf_steering(self, akio_prefork::BpfSteering) -> Self
+pub fn akio_prefork::Prefork::env(self, impl core::convert::AsRef<std::ffi::os_str::OsStr>, impl core::convert::AsRef<std::ffi::os_str::OsStr>) -> Self
+pub fn akio_prefork::Prefork::handle_signals(self, bool) -> Self
+pub fn akio_prefork::Prefork::listen(self, core::net::socket_addr::SocketAddr) -> Self
+pub fn akio_prefork::Prefork::mode(self, akio_prefork::ListenMode) -> Self
+pub fn akio_prefork::Prefork::new() -> akio_prefork::Prefork
+pub fn akio_prefork::Prefork::pin_cpus(self, akio_prefork::CpuPinning) -> Self
+pub fn akio_prefork::Prefork::program(self, impl core::convert::AsRef<std::path::Path>) -> Self
+pub fn akio_prefork::Prefork::ready_timeout(self, core::time::Duration) -> Self
+pub fn akio_prefork::Prefork::restart_backoff(self, core::time::Duration, core::time::Duration) -> Self
+pub fn akio_prefork::Prefork::run<F>(self, F) -> core::io::error::Result<()> where F: core::ops::function::FnOnce(akio_prefork::Worker) -> core::io::error::Result<()>
+pub fn akio_prefork::Prefork::shutdown_timeout(self, core::time::Duration) -> Self
+pub fn akio_prefork::Prefork::spawn(self) -> core::io::error::Result<akio_prefork::Supervisor>
+pub fn akio_prefork::Prefork::workers(self, usize) -> Self
+impl core::clone::Clone for akio_prefork::Prefork
+pub fn akio_prefork::Prefork::clone(&self) -> Self
+impl core::default::Default for akio_prefork::Prefork
+pub fn akio_prefork::Prefork::default() -> Self
+impl core::fmt::Debug for akio_prefork::Prefork
+pub fn akio_prefork::Prefork::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_prefork::Prefork
+impl core::marker::Sync for akio_prefork::Prefork
+impl core::marker::Unpin for akio_prefork::Prefork
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::Prefork
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::Prefork
+#[non_exhaustive] pub struct akio_prefork::Status
+pub akio_prefork::Status::generation: u64
+pub akio_prefork::Status::in_place_reloads: u64
+pub akio_prefork::Status::reloads: u64
+pub akio_prefork::Status::restarts: u64
+pub akio_prefork::Status::stopping: bool
+pub akio_prefork::Status::workers: alloc::vec::Vec<akio_prefork::WorkerInfo>
+impl akio_prefork::Status
+pub fn akio_prefork::Status::serving(&self) -> alloc::vec::Vec<&akio_prefork::WorkerInfo>
+impl core::clone::Clone for akio_prefork::Status
+pub fn akio_prefork::Status::clone(&self) -> Self
+impl core::cmp::Eq for akio_prefork::Status
+impl core::cmp::PartialEq for akio_prefork::Status
+pub fn akio_prefork::Status::eq(&self, &Self) -> bool
+impl core::default::Default for akio_prefork::Status
+pub fn akio_prefork::Status::default() -> Self
+impl core::fmt::Debug for akio_prefork::Status
+pub fn akio_prefork::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_prefork::Status
+impl core::marker::Send for akio_prefork::Status
+impl core::marker::Sync for akio_prefork::Status
+impl core::marker::Unpin for akio_prefork::Status
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::Status
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::Status
+pub struct akio_prefork::Supervisor
+impl akio_prefork::Supervisor
+pub fn akio_prefork::Supervisor::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
+pub fn akio_prefork::Supervisor::bpf_steering(&self, usize) -> core::option::Option<&akio_ebpf::shared::SharedSteering>
+pub fn akio_prefork::Supervisor::controller(&self) -> akio_prefork::Controller
+pub fn akio_prefork::Supervisor::reload(&self)
+pub fn akio_prefork::Supervisor::reload_in_place(&self)
+pub fn akio_prefork::Supervisor::shutdown(&self)
+pub fn akio_prefork::Supervisor::status(&self) -> akio_prefork::Status
+pub fn akio_prefork::Supervisor::wait(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_prefork::Supervisor
+pub fn akio_prefork::Supervisor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_prefork::Supervisor
+pub fn akio_prefork::Supervisor::drop(&mut self)
+impl core::marker::Send for akio_prefork::Supervisor
+impl core::marker::Sync for akio_prefork::Supervisor
+impl core::marker::Unpin for akio_prefork::Supervisor
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_prefork::Supervisor
+impl !core::panic::unwind_safe::UnwindSafe for akio_prefork::Supervisor
+pub struct akio_prefork::Worker
+impl akio_prefork::Worker
+pub fn akio_prefork::Worker::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
+pub fn akio_prefork::Worker::from_env() -> core::io::error::Result<core::option::Option<akio_prefork::Worker>>
+pub fn akio_prefork::Worker::generation(&self) -> u64
+pub fn akio_prefork::Worker::index(&self) -> usize
+pub fn akio_prefork::Worker::is_supervised(&self) -> bool
+pub fn akio_prefork::Worker::listener(&self, usize) -> core::io::error::Result<akio::Listener>
+pub fn akio_prefork::Worker::mode(&self) -> akio_prefork::ListenMode
+pub fn akio_prefork::Worker::on_reload(&self, impl core::ops::function::Fn() + core::marker::Send + core::marker::Sync + 'static)
+pub fn akio_prefork::Worker::ready(&self)
+pub fn akio_prefork::Worker::reloads(&self) -> u64
+pub fn akio_prefork::Worker::serve(&self, &akio::Engine) -> core::io::error::Result<()>
+pub fn akio_prefork::Worker::stop_requested(&self) -> bool
+pub fn akio_prefork::Worker::wait_for_stop(&self)
+pub fn akio_prefork::Worker::wait_for_stop_timeout(&self, core::time::Duration) -> bool
+pub fn akio_prefork::Worker::workers(&self) -> usize
+impl core::fmt::Debug for akio_prefork::Worker
+pub fn akio_prefork::Worker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_prefork::Worker
+impl core::marker::Sync for akio_prefork::Worker
+impl core::marker::Unpin for akio_prefork::Worker
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::Worker
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::Worker
+#[non_exhaustive] pub struct akio_prefork::WorkerInfo
+pub akio_prefork::WorkerInfo::draining: bool
+pub akio_prefork::WorkerInfo::generation: u64
+pub akio_prefork::WorkerInfo::index: usize
+pub akio_prefork::WorkerInfo::pid: u32
+pub akio_prefork::WorkerInfo::ready: bool
+impl core::clone::Clone for akio_prefork::WorkerInfo
+pub fn akio_prefork::WorkerInfo::clone(&self) -> Self
+impl core::cmp::Eq for akio_prefork::WorkerInfo
+impl core::cmp::PartialEq for akio_prefork::WorkerInfo
+pub fn akio_prefork::WorkerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_prefork::WorkerInfo
+pub fn akio_prefork::WorkerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_prefork::WorkerInfo
+impl core::marker::Send for akio_prefork::WorkerInfo
+impl core::marker::Sync for akio_prefork::WorkerInfo
+impl core::marker::Unpin for akio_prefork::WorkerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_prefork::WorkerInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_prefork::WorkerInfo
+pub const akio_prefork::DEFAULT_BPF_DIR: &str
+pub const akio_prefork::DEFAULT_READY_TIMEOUT: core::time::Duration
+pub const akio_prefork::DEFAULT_RESTART_MAX: core::time::Duration
+pub const akio_prefork::DEFAULT_RESTART_MIN: core::time::Duration
+pub const akio_prefork::DEFAULT_SHUTDOWN_TIMEOUT: core::time::Duration
+pub fn akio_prefork::is_worker() -> bool

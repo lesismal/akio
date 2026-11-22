@@ -1,13 +1,13 @@
 # RTSP 与 WHIP/WHEP
 
-`only-media` 在同一个流 `Hub` 前提供 RTSP 服务和 WHIP/WHEP 信令端点，与 RTMP、HTTP-FLV、
+`akio-media` 在同一个流 `Hub` 前提供 RTSP 服务和 WHIP/WHEP 信令端点，与 RTMP、HTTP-FLV、
 HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放，RTMP 编码器推的流也能在任意 RTSP
-播放器里播放。每种协议都转换成 `only_media::av` 的规范包（AVCC 视频、裸 AAC），协议之间互不感知。
+播放器里播放。每种协议都转换成 `akio_media::av` 的规范包（AVCC 视频、裸 AAC），协议之间互不感知。
 
 ## 一个 hub，一个钩子
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:hub}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:hub}}
 ```
 
 `HubConfig::on_publish` 和 `on_subscribe` 一次性为所有推流和播放协议做鉴权；它们拿到的
@@ -16,7 +16,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
 ## RTSP 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:rtsp}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:rtsp}}
 ```
 
 - `rtsp://host:port/live/cam` 播放或录制 hub 中的流 `live/cam`。
@@ -33,7 +33,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   RTCP 接收者报告（RFC 3550 6.4.2）：推流端的 SSRC、丢包比例与丢包数、最高序列号、到达间隔抖动、最近一次发送者
   报告的 NTP 时间及其后经过的时间，后随带 CNAME 的 SDES。
 - 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、VP8（RFC 7741）、VP9（RFC 9628）、
-  AV1（AOM 的 RTP 负载格式；这三种经 only-rtp 处理，缺包的帧被丢弃）、AAC（`mpeg4-generic` `AAC-hbr`）、
+  AV1（AOM 的 RTP 负载格式；这三种经 akio-rtp 处理，缺包的帧被丢弃）、AAC（`mpeg4-generic` `AAC-hbr`）、
   Opus、G.711。
 - 认证：`RtspConfig::credentials` 开启 Digest（MD5）与 Basic。
 - 超时：首个请求，以及任何已开始的请求，须在 `request_timeout`（10 s）内收齐。`Session: <id>;timeout=<s>`
@@ -45,7 +45,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
 
   ```rust,ignore
   use std::time::{Duration, SystemTime};
-  use only_media::rtsp::Redirect;
+  use akio_media::rtsp::Redirect;
 
   // live/cam 的所有播放端与推流端，30 s 后迁到另一台服务器。
   let moved = srv.redirect_path("live/cam", &Redirect::new("rtsp://198.51.100.8:8554/live/cam")
@@ -57,7 +57,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   GStreamer 回答 `200`，两者照常继续直到宽限期把它们关闭；从服务器拉流的 mediamtx 拆除会话并重新拉同一 URL
   （`tools/interop/media/rtsp-server-redirect.sh`）；本 crate 的客户端会跟随（见下）。
 
-已用 ffmpeg 9 测试（`crates/only-media/tests/rtsp_interop.rs`）：
+已用 ffmpeg 9 测试（`crates/akio-media/tests/rtsp_interop.rs`）：
 
 ```text
 ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=25 -f lavfi -i sine -c:v libx264 -c:a aac \
@@ -75,10 +75,10 @@ UDP；报告在媒体之前与在中途）：hub 中的时间跟随报告，相�
 ## WHIP 与 WHEP
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:whip}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:whip}}
 ```
 
-`WhipServer::routes` 向 only-http 的 `Router` 添加：
+`WhipServer::routes` 向 akio-http 的 `Router` 添加：
 
 | 请求 | 应答 |
 | --- | --- |
@@ -96,11 +96,11 @@ RTP）由 `WebRtcEngine` 负责：其 `publish` 拿到预占的 `Publisher`，`p
 
 ### WebRTC 媒体（`webrtc` feature）
 
-开启 cargo feature `webrtc` 后，`only_media::webrtc::RtcMedia` 即为引擎，运行在 `only-webrtc` 的
+开启 cargo feature `webrtc` 后，`akio_media::webrtc::RtcMedia` 即为引擎，运行在 `akio-webrtc` 的
 `RtcServer` 上（单个 UDP 端口上的 ICE-lite）：
 
 ```rust,ignore
-use only_media::webrtc::{RtcMedia, RtcMediaConfig};
+use akio_media::webrtc::{RtcMedia, RtcMediaConfig};
 
 // 浏览器访问 UDP 监听器所用的地址，写入每个 answer。
 let rtc = RtcMedia::rtc_server(vec!["203.0.113.7:8189".parse()?]);
@@ -120,18 +120,18 @@ let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
   `HubConfig::keyframe_request_interval`（500 ms）至多转给推流者一次；WHIP 推流者再把它变成发给其发送端的
   PLI。观众加入时若没有缓存的关键帧，会立即请求。
 
-`crates/only-media/examples/whip-server.rs` 可直接运行；`tools/interop/webrtc/media.sh` 用 ffmpeg 的 WHIP
+`crates/akio-media/examples/whip-server.rs` 可直接运行；`tools/interop/webrtc/media.sh` 用 ffmpeg 的 WHIP
 封装器与 pion 验证它（WHIP 推入、WHEP 播出、PLI 往返、RTMP 推入到 WHEP 播出），
 `tools/interop/media/browser.sh` 用 headless Chrome 验证（通过 WHIP 推 VP8、VP9、AV1 与 H.264 并通过 WHEP
 解码，再播放一个多码率 fMP4 LL-HLS 阶梯）。
 
 ## RTSP 客户端
 
-`only_media::rtsp::client` 从 RTSP 服务器拉流进 hub（`pull`），或把 hub 中的流录制到服务器（`push`），
+`akio_media::rtsp::client` 从 RTSP 服务器拉流进 hub（`pull`），或把 hub 中的流录制到服务器（`push`），
 走 TCP 交织（默认）或 UDP：
 
 ```rust,ignore
-use only_media::rtsp::{RtspClientConfig, RtspTransport, client};
+use akio_media::rtsp::{RtspClientConfig, RtspTransport, client};
 
 let cam = client::pull(&engine, "rtsp://admin:secret@192.0.2.20/stream1", &hub, "cams/door",
                        RtspClientConfig::default())?;
@@ -165,7 +165,7 @@ RECORD 起算；没有则立即）拆除会话，并立即在新位置建立会�
 并重新发布，推流重新 ANNOUNCE，`reconnects()` 计入一次。之后的重连再从客户端的 URL 开始。没有 `reconnect` 时
 客户端以 `ClientError::Redirected(location)` 结束。
 
-**自动重连**：设置 `RtspClientConfig::reconnect`（一个基于 `Arc<Engine>` 构建的 `only_media::Reconnect`）后，
+**自动重连**：设置 `RtspClientConfig::reconnect`（一个基于 `Arc<Engine>` 构建的 `akio_media::Reconnect`）后，
 以再试一次可能好转的错误失败的会话会在有上限、逐次翻倍的退避之后由新会话接替；由于握手会阻塞，每次尝试在
 自己的短命线程上运行。拉流保留其 hub 路径与订阅者，并重新发布新会话的轨道（时间线重启）；推流重新 ANNOUNCE
 hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成功（`pull` / `push` 返回它的错误）；`reconnects()`
@@ -183,7 +183,7 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 ## 统计
 
 ```rust,ignore
-{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:stats}}
+{{#include ../../../../crates/akio-media/examples/guide-media-rtsp.rs:stats}}
 ```
 
 ## 不支持

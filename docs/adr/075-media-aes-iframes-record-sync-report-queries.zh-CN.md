@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-070 在 `only-media` 中留下三处空缺：
+ADR-070 在 `akio-media` 中留下三处空缺：
 
 - **AES-128 下的 I 帧播放列表**。AES-128 时 `HlsConfig::iframe_playlist` 被忽略：I 帧播放列表
   给出分片的字节范围，而 AES-128 分片是一整段 CBC 密文，PKCS #7 填充只在末尾。分片中间的一段
@@ -59,7 +59,7 @@ ADR-070 在 `only-media` 中留下三处空缺：
 
 ## 影响
 
-- 测试（`cargo test -p only-media`）：两种格式、有无分段、密钥轮换下的 AES-128 I 帧播放列表，
+- 测试（`cargo test -p akio-media`）：两种格式、有无分段、密钥轮换下的 AES-128 I 帧播放列表，
   每个 `iframe-<n>` 用其分片的密钥和其编号的 IV 解密后，正好等于未加密流的播放列表所给的范围，
   分片本身不变，流的字节计数包含这些 I 帧；明文 I 帧播放列表不再以多余的
   `EXT-X-KEY:METHOD=NONE` 开头；hub 的下限（GOP 回放、直播开始、新的推流、后来的跳变）；带

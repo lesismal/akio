@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Kernel TLS in the engine (ADR-067, docs/BENCHMARKS.md "Kernel TLS in the engine"): an
-# interleaved A/B of TLS echo, full handshakes and HTTPS between builds and `ONLY_KTLS` modes.
+# interleaved A/B of TLS echo, full handshakes and HTTPS between builds and `AKIO_KTLS` modes.
 # Linux; h2load on PATH.
 #
 # Binaries (each directory holds echo-bench, bench-server and http-bench, release builds):
 #   BASE_DIR  the revision to compare against           (variant `base`)
 #   NEW_DIR   this revision, default features           (variant `new`)
-#   NEWK_DIR  this revision with `--features only/ktls`  (variants `off`, `hw`, `sw`, `swtx`)
+#   NEWK_DIR  this revision with `--features akio/ktls`  (variants `off`, `hw`, `sw`, `swtx`)
 #   e.g. cargo build --release -p echo-bench --features tls
-#        cargo build --release -p only --example bench-server --features only/ktls
-#        cargo build --release -p only-http --example http-bench --features only/ktls
+#        cargo build --release -p only --example bench-server --features akio/ktls
+#        cargo build --release -p akio-http --example http-bench --features akio/ktls
 #
 # Knobs: VARIANTS ("base new hw sw"), RUNS (8), SECS (5), ECHO_SIZES ("1024 16384"; empty skips
 # the echo cases), SRV_CPUS (0-3), CLI_CPUS (4-11), OUT (/tmp/bench-ktls-engine.tsv). Before
@@ -27,10 +27,10 @@ EB=${NEW_DIR:?set NEW_DIR}/echo-bench
 
 srv_env() {
   case $1 in
-    hw) echo "ONLY_KTLS=hardware" ;;
-    sw) echo "ONLY_KTLS=software" ;;
-    swtx) echo "ONLY_KTLS=software-tx" ;;
-    *) echo "ONLY_KTLS=off" ;;
+    hw) echo "AKIO_KTLS=hardware" ;;
+    sw) echo "AKIO_KTLS=software" ;;
+    swtx) echo "AKIO_KTLS=software-tx" ;;
+    *) echo "AKIO_KTLS=off" ;;
   esac
 }
 bindir() {

@@ -7,7 +7,7 @@ Status: accepted (2026-11-22)
 ## Context
 
 ADR-069's note of 2026-11-22 implemented RFC 9841's serialized shared dictionaries in
-only-brotli: both decoders resolve custom word lists, custom transforms and context-dependent
+akio-brotli: both decoders resolve custom word lists, custom transforms and context-dependent
 dictionaries, cross-checked against Google's libbrotli built with `BROTLI_EXPERIMENTAL`. It
 left three parts of RFC 9841 open:
 

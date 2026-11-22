@@ -1,5 +1,5 @@
-// The Firefox (WebDriver BiDi) side of the only-webrtc browser interop checks (../firefox.sh).
-module github.com/lesismal/only/tools/interop/webrtc/firefox
+// The Firefox (WebDriver BiDi) side of the akio-webrtc browser interop checks (../firefox.sh).
+module github.com/lesismal/akio/tools/interop/webrtc/firefox
 
 go 1.24.0
 

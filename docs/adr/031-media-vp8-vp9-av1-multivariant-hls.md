@@ -6,10 +6,10 @@ Status: accepted (2026-11-18)
 
 ## Context
 
-ADR-016 left `only-media` with two gaps. The hub carried only H.264 and H.265 video: WHIP lines
+ADR-016 left `akio-media` with two gaps. The hub carried only H.264 and H.265 video: WHIP lines
 offering VP8, VP9 or AV1 were answered inactive, Enhanced RTMP's `vp09` / `av01` FourCCs and
-RTSP's `VP8` / `VP9` / `AV1` rtpmaps were dropped, although `only-rtp` has the payload formats
-and `only-webrtc` negotiates them; browsers publish VP8 and VP9 by default and AV1 is the codec
+RTSP's `VP8` / `VP9` / `AV1` rtpmaps were dropped, although `akio-rtp` has the payload formats
+and `akio-webrtc` negotiates them; browsers publish VP8 and VP9 by default and AV1 is the codec
 of choice for low bitrates. And HLS served only media playlists, one per stream: a player could
 not choose among renditions of one source (adaptive bitrate) or pick an alternative audio
 rendition.
@@ -49,12 +49,12 @@ All additions are additive; the behaviour changes are listed under Consequences.
   until the first keyframe gives its picture size. AV1 temporal delimiters are dropped. The
   RTMP client's `fourCcList` names them.
 - **RTSP / RTP**: `rtp::supported` includes VP8, VP9 and AV1; `rtp::Packetizer` and
-  `rtp::Depacketizer` use `only-rtp`'s payload formats (RFC 7741, RFC 9628, the AOM AV1 RTP
+  `rtp::Depacketizer` use `akio-rtp`'s payload formats (RFC 7741, RFC 9628, the AOM AV1 RTP
   spec); a frame missing a packet is dropped. `Depacketizer::take_config` returns the
   configuration of the last keyframe for them and the new `Depacketizer::picture_size` its
   size; the RTSP recorder (server and client pull) goes live once the first keyframe is in.
-  SDP maps the `VP8/90000`, `VP9/90000`, `AV1/90000` rtpmaps both ways. `only-media` now
-  depends on `only-rtp` (in-house, ADR-005 holds).
+  SDP maps the `VP8/90000`, `VP9/90000`, `AV1/90000` rtpmaps both ways. `akio-media` now
+  depends on `akio-rtp` (in-house, ADR-005 holds).
 - **fMP4 / CMAF**: `vp08` / `vp09` sample entries with `vpcC` (version 1) and `av01` with
   `av1C`; the demuxer reads them back. MPEG-TS does not carry them (no mapping HLS players
   know); HLS treats a stream whose video the format cannot carry like an audio-only one (it is
@@ -98,7 +98,7 @@ All additions are additive; the behaviour changes are listed under Consequences.
 
 ## Consequences
 
-- Additive public API in only-media: three `Codec` variants, `Track::video_from_keyframe`,
+- Additive public API in akio-media: three `Codec` variants, `Track::video_from_keyframe`,
   `Track::codec_string`, modules `codec::vp8` / `codec::vp9` / `codec::av1`,
   `rtp::Depacketizer::picture_size`, `hls::{Multivariant, Variant, AudioRendition}`,
   `Hls::add_multivariant` / `remove_multivariant`. Code matching `Codec` exhaustively outside

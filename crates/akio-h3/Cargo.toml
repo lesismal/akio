@@ -1,0 +1,35 @@
+[package]
+name = "akio-h3"
+description = "akio HTTP/3 (RFC 9114) with QPACK over akio-quic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/akio-h3"
+keywords = ["http3", "h3", "quic", "qpack", "network"]
+categories = ["network-programming", "web-programming::http-server"]
+
+[dependencies]
+akio = { workspace = true }
+akio-core = { workspace = true }
+akio-http = { workspace = true }
+akio-quic = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`akio_h3::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+akio-core = { workspace = true, features = ["fuzzing"] }
+akio-x509 = { workspace = true }
+
+[lints]
+workspace = true
+
+# Drives this side's QPACK encoder for tools/interop/h3/nghttp3-qpack.py.
+[[example]]
+name = "qpack-pipe"
+required-features = ["fuzzing"]

@@ -6,7 +6,7 @@
 
 ## 背景
 
-ADR-018 给 `only-bittorrent` 客户端留下了一项未做：快速续传（fast resume）文件。重启或崩溃后
+ADR-018 给 `akio-bittorrent` 客户端留下了一项未做：快速续传（fast resume）文件。重启或崩溃后
 再次添加的种子，在做任何事之前都要对全部数据做哈希检查：大种子要花上几分钟的磁盘读取与
 SHA-1/SHA-256 计算；来自 magnet 链接的 v2 种子还要重新发一轮哈希请求，因为从对端取得的分片层
 只保存在内存里。对端、累计数据和限制也都会丢失。
@@ -17,7 +17,7 @@ SHA-1/SHA-256 计算；来自 magnet 链接的 v2 种子还要重新发一轮哈
 
 ## 决定
 
-1. **格式**：一个 bencode 字典，`file` = `only-bittorrent resume`，`version` = 1，以 `checksum`
+1. **格式**：一个 bencode 字典，`file` = `akio-bittorrent resume`，`version` = 1，以 `checksum`
    结尾，即去掉该键后字典规范编码的 SHA-256。内容包括：主 info hash（及 v2 哈希）、名称、原始字节
    形式的 info 字典（magnet 链接重启时无需元数据交换）、已有分片位图、v2 分片层（文件根到拼接
    哈希：值得保存的默克尔状态；树由它们重建；不保存逐块哈希，因为分片是整体校验的）、每个文件一个

@@ -1,0 +1,231 @@
+pub mod akio_kcp
+pub mod akio_kcp::crypt
+pub struct akio_kcp::crypt::Crypt(_)
+impl akio_kcp::crypt::Crypt
+pub fn akio_kcp::crypt::Crypt::header(&self) -> usize
+pub fn akio_kcp::crypt::Crypt::new(&str, &[u8]) -> core::io::error::Result<akio_kcp::crypt::Crypt>
+pub fn akio_kcp::crypt::Crypt::open(&self, alloc::vec::Vec<u8>) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_kcp::crypt::Crypt::seal(&self, alloc::vec::Vec<u8>) -> alloc::vec::Vec<u8>
+pub fn akio_kcp::crypt::Crypt::trailer(&self) -> usize
+impl core::fmt::Debug for akio_kcp::crypt::Crypt
+pub fn akio_kcp::crypt::Crypt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::crypt::Crypt
+impl core::marker::Sync for akio_kcp::crypt::Crypt
+impl core::marker::Unpin for akio_kcp::crypt::Crypt
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::crypt::Crypt
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::crypt::Crypt
+pub mod akio_kcp::kcp
+#[non_exhaustive] pub enum akio_kcp::kcp::KcpError
+pub akio_kcp::kcp::KcpError::Closed
+pub akio_kcp::kcp::KcpError::Conv
+pub akio_kcp::kcp::KcpError::Empty
+pub akio_kcp::kcp::KcpError::Full
+pub akio_kcp::kcp::KcpError::Malformed
+pub akio_kcp::kcp::KcpError::TooBig
+impl core::cmp::Eq for akio_kcp::kcp::KcpError
+impl core::cmp::PartialEq for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_kcp::kcp::KcpError
+impl core::fmt::Debug for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_kcp::kcp::KcpError
+impl core::marker::Send for akio_kcp::kcp::KcpError
+impl core::marker::Sync for akio_kcp::kcp::KcpError
+impl core::marker::Unpin for akio_kcp::kcp::KcpError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::kcp::KcpError
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::kcp::KcpError
+pub struct akio_kcp::kcp::Kcp
+impl akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::conv(&self) -> u32
+pub fn akio_kcp::kcp::Kcp::flush(&mut self, u32, &mut dyn core::ops::function::FnMut(&[u8]))
+pub fn akio_kcp::kcp::Kcp::input(&mut self, &[u8], u32) -> core::result::Result<(), akio_kcp::kcp::KcpError>
+pub fn akio_kcp::kcp::Kcp::is_dead(&self) -> bool
+pub fn akio_kcp::kcp::Kcp::new(u32) -> akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::next_flush(&self, u32) -> core::option::Option<u32>
+pub fn akio_kcp::kcp::Kcp::nodelay(&mut self, i32, i32, i32, bool)
+pub fn akio_kcp::kcp::Kcp::peek_size(&self) -> core::option::Option<usize>
+pub fn akio_kcp::kcp::Kcp::recv(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_kcp::kcp::Kcp::send(&mut self, &[u8]) -> core::result::Result<(), akio_kcp::kcp::KcpError>
+pub fn akio_kcp::kcp::Kcp::set_dead_link(&mut self, u32)
+pub fn akio_kcp::kcp::Kcp::set_mtu(&mut self, usize) -> bool
+pub fn akio_kcp::kcp::Kcp::set_stream(&mut self, bool)
+pub fn akio_kcp::kcp::Kcp::set_window(&mut self, i32, i32)
+pub fn akio_kcp::kcp::Kcp::wait_send(&self) -> usize
+impl core::fmt::Debug for akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::kcp::Kcp
+impl core::marker::Sync for akio_kcp::kcp::Kcp
+impl core::marker::Unpin for akio_kcp::kcp::Kcp
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::kcp::Kcp
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::kcp::Kcp
+pub const akio_kcp::kcp::DEFAULT_MTU: u32
+pub const akio_kcp::kcp::DEFAULT_WINDOW: u32
+pub const akio_kcp::kcp::OVERHEAD: usize
+#[non_exhaustive] pub enum akio_kcp::CloseReason
+pub akio_kcp::CloseReason::Closed
+pub akio_kcp::CloseReason::DeadLink
+pub akio_kcp::CloseReason::Replaced
+pub akio_kcp::CloseReason::Transport
+impl core::clone::Clone for akio_kcp::CloseReason
+pub fn akio_kcp::CloseReason::clone(&self) -> Self
+impl core::cmp::Eq for akio_kcp::CloseReason
+impl core::cmp::PartialEq for akio_kcp::CloseReason
+pub fn akio_kcp::CloseReason::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_kcp::CloseReason
+pub fn akio_kcp::CloseReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_kcp::CloseReason
+impl core::marker::Send for akio_kcp::CloseReason
+impl core::marker::Sync for akio_kcp::CloseReason
+impl core::marker::Unpin for akio_kcp::CloseReason
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::CloseReason
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::CloseReason
+#[non_exhaustive] pub enum akio_kcp::KcpError
+pub akio_kcp::KcpError::Closed
+pub akio_kcp::KcpError::Conv
+pub akio_kcp::KcpError::Empty
+pub akio_kcp::KcpError::Full
+pub akio_kcp::KcpError::Malformed
+pub akio_kcp::KcpError::TooBig
+impl core::cmp::Eq for akio_kcp::kcp::KcpError
+impl core::cmp::PartialEq for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_kcp::kcp::KcpError
+impl core::fmt::Debug for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_kcp::kcp::KcpError
+pub fn akio_kcp::kcp::KcpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_kcp::kcp::KcpError
+impl core::marker::Send for akio_kcp::kcp::KcpError
+impl core::marker::Sync for akio_kcp::kcp::KcpError
+impl core::marker::Unpin for akio_kcp::kcp::KcpError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::kcp::KcpError
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::kcp::KcpError
+pub struct akio_kcp::Crypt(_)
+impl akio_kcp::crypt::Crypt
+pub fn akio_kcp::crypt::Crypt::header(&self) -> usize
+pub fn akio_kcp::crypt::Crypt::new(&str, &[u8]) -> core::io::error::Result<akio_kcp::crypt::Crypt>
+pub fn akio_kcp::crypt::Crypt::open(&self, alloc::vec::Vec<u8>) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_kcp::crypt::Crypt::seal(&self, alloc::vec::Vec<u8>) -> alloc::vec::Vec<u8>
+pub fn akio_kcp::crypt::Crypt::trailer(&self) -> usize
+impl core::fmt::Debug for akio_kcp::crypt::Crypt
+pub fn akio_kcp::crypt::Crypt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::crypt::Crypt
+impl core::marker::Sync for akio_kcp::crypt::Crypt
+impl core::marker::Unpin for akio_kcp::crypt::Crypt
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::crypt::Crypt
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::crypt::Crypt
+pub struct akio_kcp::Kcp
+impl akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::conv(&self) -> u32
+pub fn akio_kcp::kcp::Kcp::flush(&mut self, u32, &mut dyn core::ops::function::FnMut(&[u8]))
+pub fn akio_kcp::kcp::Kcp::input(&mut self, &[u8], u32) -> core::result::Result<(), akio_kcp::kcp::KcpError>
+pub fn akio_kcp::kcp::Kcp::is_dead(&self) -> bool
+pub fn akio_kcp::kcp::Kcp::new(u32) -> akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::next_flush(&self, u32) -> core::option::Option<u32>
+pub fn akio_kcp::kcp::Kcp::nodelay(&mut self, i32, i32, i32, bool)
+pub fn akio_kcp::kcp::Kcp::peek_size(&self) -> core::option::Option<usize>
+pub fn akio_kcp::kcp::Kcp::recv(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_kcp::kcp::Kcp::send(&mut self, &[u8]) -> core::result::Result<(), akio_kcp::kcp::KcpError>
+pub fn akio_kcp::kcp::Kcp::set_dead_link(&mut self, u32)
+pub fn akio_kcp::kcp::Kcp::set_mtu(&mut self, usize) -> bool
+pub fn akio_kcp::kcp::Kcp::set_stream(&mut self, bool)
+pub fn akio_kcp::kcp::Kcp::set_window(&mut self, i32, i32)
+pub fn akio_kcp::kcp::Kcp::wait_send(&self) -> usize
+impl core::fmt::Debug for akio_kcp::kcp::Kcp
+pub fn akio_kcp::kcp::Kcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::kcp::Kcp
+impl core::marker::Sync for akio_kcp::kcp::Kcp
+impl core::marker::Unpin for akio_kcp::kcp::Kcp
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::kcp::Kcp
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::kcp::Kcp
+#[non_exhaustive] pub struct akio_kcp::KcpConfig
+pub akio_kcp::KcpConfig::crypt: core::option::Option<alloc::rcs::arc::Arc<akio_kcp::crypt::Crypt>>
+pub akio_kcp::KcpConfig::data_shards: usize
+pub akio_kcp::KcpConfig::dead_link: u32
+pub akio_kcp::KcpConfig::interval: i32
+pub akio_kcp::KcpConfig::mtu: usize
+pub akio_kcp::KcpConfig::no_congestion: bool
+pub akio_kcp::KcpConfig::nodelay: i32
+pub akio_kcp::KcpConfig::parity_shards: usize
+pub akio_kcp::KcpConfig::recv_window: i32
+pub akio_kcp::KcpConfig::resend: i32
+pub akio_kcp::KcpConfig::send_window: i32
+pub akio_kcp::KcpConfig::stream: bool
+pub akio_kcp::KcpConfig::write_queue: usize
+impl akio_kcp::KcpConfig
+pub fn akio_kcp::KcpConfig::fast() -> akio_kcp::KcpConfig
+impl core::clone::Clone for akio_kcp::KcpConfig
+pub fn akio_kcp::KcpConfig::clone(&self) -> Self
+impl core::default::Default for akio_kcp::KcpConfig
+pub fn akio_kcp::KcpConfig::default() -> akio_kcp::KcpConfig
+impl core::fmt::Debug for akio_kcp::KcpConfig
+pub fn akio_kcp::KcpConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::KcpConfig
+impl core::marker::Sync for akio_kcp::KcpConfig
+impl core::marker::Unpin for akio_kcp::KcpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::KcpConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::KcpConfig
+pub struct akio_kcp::KcpServer(_)
+impl akio_kcp::KcpServer
+pub fn akio_kcp::KcpServer::max_sessions(self, usize) -> akio_kcp::KcpServer
+pub fn akio_kcp::KcpServer::new<H: akio_kcp::KcpHandler, F>(akio_kcp::KcpConfig, F) -> core::io::error::Result<akio_kcp::KcpServer> where F: core::ops::function::Fn(&akio_kcp::Session) -> H + core::marker::Send + core::marker::Sync + 'static
+pub fn akio_kcp::KcpServer::sessions(&self) -> usize
+impl core::fmt::Debug for akio_kcp::KcpServer
+pub fn akio_kcp::KcpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Acceptor for akio_kcp::KcpServer
+pub type akio_kcp::KcpServer::Handler = Udp
+pub fn akio_kcp::KcpServer::on_open(&self, &akio_core::conn::Conn<Udp>) -> Udp
+impl core::marker::Send for akio_kcp::KcpServer
+impl core::marker::Sync for akio_kcp::KcpServer
+impl core::marker::Unpin for akio_kcp::KcpServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_kcp::KcpServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_kcp::KcpServer
+pub struct akio_kcp::Session(_)
+impl akio_kcp::Session
+pub fn akio_kcp::Session::close(&self)
+pub fn akio_kcp::Session::conv(&self) -> u32
+pub fn akio_kcp::Session::is_open(&self) -> bool
+pub fn akio_kcp::Session::remote_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_kcp::Session::send(&self, &[u8]) -> core::result::Result<(), akio_kcp::kcp::KcpError>
+pub fn akio_kcp::Session::stats(&self) -> akio_kcp::Stats
+pub fn akio_kcp::Session::wait_send(&self) -> usize
+impl core::clone::Clone for akio_kcp::Session
+pub fn akio_kcp::Session::clone(&self) -> Self
+impl core::fmt::Debug for akio_kcp::Session
+pub fn akio_kcp::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_kcp::Session
+impl core::marker::Sync for akio_kcp::Session
+impl core::marker::Unpin for akio_kcp::Session
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_kcp::Session
+impl !core::panic::unwind_safe::UnwindSafe for akio_kcp::Session
+#[non_exhaustive] pub struct akio_kcp::Stats
+pub akio_kcp::Stats::fast_retransmitted: u64
+pub akio_kcp::Stats::lost: u64
+pub akio_kcp::Stats::recovered: u64
+pub akio_kcp::Stats::retransmitted: u64
+pub akio_kcp::Stats::sent: u64
+impl core::clone::Clone for akio_kcp::Stats
+pub fn akio_kcp::Stats::clone(&self) -> Self
+impl core::cmp::Eq for akio_kcp::Stats
+impl core::cmp::PartialEq for akio_kcp::Stats
+pub fn akio_kcp::Stats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_kcp::Stats
+pub fn akio_kcp::Stats::default() -> Self
+impl core::fmt::Debug for akio_kcp::Stats
+pub fn akio_kcp::Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_kcp::Stats
+impl core::marker::StructuralPartialEq for akio_kcp::Stats
+impl core::marker::Send for akio_kcp::Stats
+impl core::marker::Sync for akio_kcp::Stats
+impl core::marker::Unpin for akio_kcp::Stats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_kcp::Stats
+impl core::panic::unwind_safe::UnwindSafe for akio_kcp::Stats
+pub const akio_kcp::DEFAULT_MAX_SESSIONS: usize
+pub trait akio_kcp::KcpHandler: core::marker::Send + 'static
+pub fn akio_kcp::KcpHandler::on_close(&mut self, &akio_kcp::Session, akio_kcp::CloseReason)
+pub fn akio_kcp::KcpHandler::on_message(&mut self, &akio_kcp::Session, alloc::vec::Vec<u8>)
+pub fn akio_kcp::KcpHandler::on_writable(&mut self, &akio_kcp::Session)
+pub fn akio_kcp::dial<H: akio_kcp::KcpHandler>(&akio::Engine, core::net::socket_addr::SocketAddr, akio_kcp::KcpConfig, H) -> core::io::error::Result<akio_kcp::Session>
+pub fn akio_kcp::dial_conv<H: akio_kcp::KcpHandler>(&akio::Engine, core::net::socket_addr::SocketAddr, u32, akio_kcp::KcpConfig, H) -> core::io::error::Result<akio_kcp::Session>

@@ -1,0 +1,1119 @@
+pub mod akio_http
+pub use akio_http::ws
+pub mod akio_http::client
+pub use akio_http::client::Proxy
+pub use akio_http::client::ProxyRefused
+#[non_exhaustive] pub enum akio_http::client::ClientError
+pub akio_http::client::ClientError::Closed
+pub akio_http::client::ClientError::InvalidUrl(alloc::string::String)
+pub akio_http::client::ClientError::Io(core::io::error::Error)
+pub akio_http::client::ClientError::Protocol(&'static str)
+pub akio_http::client::ClientError::Status(u16)
+pub akio_http::client::ClientError::Timeout
+pub akio_http::client::ClientError::TooLarge(&'static str)
+pub akio_http::client::ClientError::TooManyRedirects
+impl core::error::Error for akio_http::client::ClientError
+impl core::fmt::Debug for akio_http::client::ClientError
+pub fn akio_http::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_http::client::ClientError
+pub fn akio_http::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::client::ClientError
+impl core::marker::Sync for akio_http::client::ClientError
+impl core::marker::Unpin for akio_http::client::ClientError
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ClientError
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::client::ClientError
+pub struct akio_http::client::Client
+impl akio_http::client::Client
+pub fn akio_http::client::Client::cookies(&self) -> core::option::Option<&akio_http::cookie::CookieJar>
+pub fn akio_http::client::Client::new(alloc::rcs::arc::Arc<akio::Engine>) -> akio_http::client::Client
+pub fn akio_http::client::Client::options(&self) -> &akio_http::client::ClientOptions
+pub fn akio_http::client::Client::request(&self, akio_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<akio_http::client::ClientResponse, akio_http::client::ClientError>) + core::marker::Send + 'static)
+pub fn akio_http::client::Client::send(&self, akio_http::client::ClientRequest) -> akio_http::client::ResponseFuture
+pub fn akio_http::client::Client::with_cookies(self, akio_http::cookie::CookieJar) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_options(self, akio_http::client::ClientOptions) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_proxy(self, akio_ws::proxy::Proxy) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_redirects(self, akio_http::client::RedirectPolicy) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_timeout(self, core::time::Duration) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_tls(self, akio_tls::config::ClientConfig) -> akio_http::client::Client
+impl core::clone::Clone for akio_http::client::Client
+pub fn akio_http::client::Client::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::client::Client
+pub fn akio_http::client::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::client::Client
+impl core::marker::Sync for akio_http::client::Client
+impl core::marker::Unpin for akio_http::client::Client
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::client::Client
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::client::Client
+pub struct akio_http::client::ClientConn
+impl core::fmt::Debug for akio_http::client::ClientConn
+pub fn akio_http::client::ClientConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Handler for akio_http::client::ClientConn
+pub fn akio_http::client::ClientConn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
+pub fn akio_http::client::ClientConn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for akio_http::client::ClientConn
+impl !core::marker::Sync for akio_http::client::ClientConn
+impl core::marker::Unpin for akio_http::client::ClientConn
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ClientConn
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::client::ClientConn
+#[non_exhaustive] pub struct akio_http::client::ClientOptions
+pub akio_http::client::ClientOptions::happy_eyeballs: akio::dns::HappyEyeballs
+pub akio_http::client::ClientOptions::idle_timeout: core::option::Option<core::time::Duration>
+pub akio_http::client::ClientOptions::max_body_bytes: usize
+pub akio_http::client::ClientOptions::max_head_bytes: usize
+pub akio_http::client::ClientOptions::max_idle: usize
+pub akio_http::client::ClientOptions::max_idle_per_host: usize
+impl core::clone::Clone for akio_http::client::ClientOptions
+pub fn akio_http::client::ClientOptions::clone(&self) -> Self
+impl core::default::Default for akio_http::client::ClientOptions
+pub fn akio_http::client::ClientOptions::default() -> akio_http::client::ClientOptions
+impl core::fmt::Debug for akio_http::client::ClientOptions
+pub fn akio_http::client::ClientOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::client::ClientOptions
+impl core::marker::Sync for akio_http::client::ClientOptions
+impl core::marker::Unpin for akio_http::client::ClientOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ClientOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_http::client::ClientOptions
+#[non_exhaustive] pub struct akio_http::client::ClientRequest
+pub akio_http::client::ClientRequest::body: alloc::vec::Vec<u8>
+pub akio_http::client::ClientRequest::headers: akio_http::message::Headers
+pub akio_http::client::ClientRequest::method: akio_http::message::Method
+pub akio_http::client::ClientRequest::timeout: core::option::Option<core::time::Duration>
+pub akio_http::client::ClientRequest::url: alloc::string::String
+impl akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::body(self, alloc::vec::Vec<u8>) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::get(&str) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::header(self, &str, &str) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::new(akio_http::message::Method, &str) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::post(&str, alloc::vec::Vec<u8>) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::timeout(self, core::time::Duration) -> akio_http::client::ClientRequest
+impl core::clone::Clone for akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::client::ClientRequest
+impl core::marker::Sync for akio_http::client::ClientRequest
+impl core::marker::Unpin for akio_http::client::ClientRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ClientRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_http::client::ClientRequest
+#[non_exhaustive] pub struct akio_http::client::ClientResponse
+pub akio_http::client::ClientResponse::body: alloc::vec::Vec<u8>
+pub akio_http::client::ClientResponse::headers: akio_http::message::Headers
+pub akio_http::client::ClientResponse::pushed: alloc::vec::Vec<(alloc::string::String, akio_http::client::ClientResponse)>
+pub akio_http::client::ClientResponse::reason: alloc::string::String
+pub akio_http::client::ClientResponse::status: u16
+pub akio_http::client::ClientResponse::trailers: akio_http::message::Headers
+pub akio_http::client::ClientResponse::url: alloc::string::String
+impl core::clone::Clone for akio_http::client::ClientResponse
+pub fn akio_http::client::ClientResponse::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::client::ClientResponse
+pub fn akio_http::client::ClientResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::client::ClientResponse
+impl core::marker::Sync for akio_http::client::ClientResponse
+impl core::marker::Unpin for akio_http::client::ClientResponse
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ClientResponse
+impl core::panic::unwind_safe::UnwindSafe for akio_http::client::ClientResponse
+pub struct akio_http::client::RedirectPolicy
+impl akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::allow_https_downgrade(self, bool) -> akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::limit(u32) -> akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::max(&self) -> u32
+pub fn akio_http::client::RedirectPolicy::none() -> akio_http::client::RedirectPolicy
+impl core::clone::Clone for akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::client::RedirectPolicy
+impl core::cmp::PartialEq for akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::eq(&self, &Self) -> bool
+impl core::default::Default for akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::default() -> Self
+impl core::fmt::Debug for akio_http::client::RedirectPolicy
+pub fn akio_http::client::RedirectPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::client::RedirectPolicy
+impl core::marker::StructuralPartialEq for akio_http::client::RedirectPolicy
+impl core::marker::Send for akio_http::client::RedirectPolicy
+impl core::marker::Sync for akio_http::client::RedirectPolicy
+impl core::marker::Unpin for akio_http::client::RedirectPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::RedirectPolicy
+impl core::panic::unwind_safe::UnwindSafe for akio_http::client::RedirectPolicy
+pub struct akio_http::client::ResponseFuture
+impl akio_http::client::ResponseFuture
+pub fn akio_http::client::ResponseFuture::wait(self) -> core::result::Result<akio_http::client::ClientResponse, akio_http::client::ClientError>
+pub fn akio_http::client::ResponseFuture::wait_timeout(self, core::time::Duration) -> core::option::Option<core::result::Result<akio_http::client::ClientResponse, akio_http::client::ClientError>>
+impl core::fmt::Debug for akio_http::client::ResponseFuture
+pub fn akio_http::client::ResponseFuture::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::future::future::Future for akio_http::client::ResponseFuture
+pub type akio_http::client::ResponseFuture::Output = core::result::Result<akio_http::client::ClientResponse, akio_http::client::ClientError>
+pub fn akio_http::client::ResponseFuture::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<Self::Output>
+impl core::marker::Send for akio_http::client::ResponseFuture
+impl core::marker::Sync for akio_http::client::ResponseFuture
+impl core::marker::Unpin for akio_http::client::ResponseFuture
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::ResponseFuture
+impl core::panic::unwind_safe::UnwindSafe for akio_http::client::ResponseFuture
+pub mod akio_http::cookie
+#[non_exhaustive] pub enum akio_http::cookie::SameSite
+pub akio_http::cookie::SameSite::Lax
+pub akio_http::cookie::SameSite::None
+pub akio_http::cookie::SameSite::Strict
+impl core::clone::Clone for akio_http::cookie::SameSite
+pub fn akio_http::cookie::SameSite::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::cookie::SameSite
+impl core::cmp::PartialEq for akio_http::cookie::SameSite
+pub fn akio_http::cookie::SameSite::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::cookie::SameSite
+pub fn akio_http::cookie::SameSite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_http::cookie::SameSite
+pub fn akio_http::cookie::SameSite::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_http::cookie::SameSite
+impl core::marker::StructuralPartialEq for akio_http::cookie::SameSite
+impl core::marker::Send for akio_http::cookie::SameSite
+impl core::marker::Sync for akio_http::cookie::SameSite
+impl core::marker::Unpin for akio_http::cookie::SameSite
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::cookie::SameSite
+impl core::panic::unwind_safe::UnwindSafe for akio_http::cookie::SameSite
+#[non_exhaustive] pub struct akio_http::cookie::Cookie
+pub akio_http::cookie::Cookie::domain: alloc::string::String
+pub akio_http::cookie::Cookie::expires: core::option::Option<std::time::SystemTime>
+pub akio_http::cookie::Cookie::host_only: bool
+pub akio_http::cookie::Cookie::http_only: bool
+pub akio_http::cookie::Cookie::name: alloc::string::String
+pub akio_http::cookie::Cookie::path: alloc::string::String
+pub akio_http::cookie::Cookie::same_site: core::option::Option<akio_http::cookie::SameSite>
+pub akio_http::cookie::Cookie::secure: bool
+pub akio_http::cookie::Cookie::value: alloc::string::String
+impl core::clone::Clone for akio_http::cookie::Cookie
+pub fn akio_http::cookie::Cookie::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::cookie::Cookie
+impl core::cmp::PartialEq for akio_http::cookie::Cookie
+pub fn akio_http::cookie::Cookie::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::cookie::Cookie
+pub fn akio_http::cookie::Cookie::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_http::cookie::Cookie
+impl core::marker::Send for akio_http::cookie::Cookie
+impl core::marker::Sync for akio_http::cookie::Cookie
+impl core::marker::Unpin for akio_http::cookie::Cookie
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::cookie::Cookie
+impl core::panic::unwind_safe::UnwindSafe for akio_http::cookie::Cookie
+pub struct akio_http::cookie::CookieJar
+impl akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::clear(&self)
+pub fn akio_http::cookie::CookieJar::cookies(&self) -> alloc::vec::Vec<akio_http::cookie::Cookie>
+pub fn akio_http::cookie::CookieJar::header(&self, &str) -> core::option::Option<alloc::string::String>
+pub fn akio_http::cookie::CookieJar::is_empty(&self) -> bool
+pub fn akio_http::cookie::CookieJar::len(&self) -> usize
+pub fn akio_http::cookie::CookieJar::new() -> akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::public_suffixes(self, impl core::ops::function::Fn(&str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::site(&self, &str) -> alloc::string::String
+pub fn akio_http::cookie::CookieJar::store(&self, &str, &str) -> bool
+pub fn akio_http::cookie::CookieJar::with_limits(self, akio_http::cookie::CookieLimits) -> akio_http::cookie::CookieJar
+impl core::clone::Clone for akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::clone(&self) -> Self
+impl core::default::Default for akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::default() -> akio_http::cookie::CookieJar
+impl core::fmt::Debug for akio_http::cookie::CookieJar
+pub fn akio_http::cookie::CookieJar::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::cookie::CookieJar
+impl core::marker::Sync for akio_http::cookie::CookieJar
+impl core::marker::Unpin for akio_http::cookie::CookieJar
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::cookie::CookieJar
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::cookie::CookieJar
+#[non_exhaustive] pub struct akio_http::cookie::CookieLimits
+pub akio_http::cookie::CookieLimits::max_cookie_bytes: usize
+pub akio_http::cookie::CookieLimits::max_cookies: usize
+pub akio_http::cookie::CookieLimits::max_per_domain: usize
+impl core::clone::Clone for akio_http::cookie::CookieLimits
+pub fn akio_http::cookie::CookieLimits::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::cookie::CookieLimits
+impl core::cmp::PartialEq for akio_http::cookie::CookieLimits
+pub fn akio_http::cookie::CookieLimits::eq(&self, &Self) -> bool
+impl core::default::Default for akio_http::cookie::CookieLimits
+pub fn akio_http::cookie::CookieLimits::default() -> akio_http::cookie::CookieLimits
+impl core::fmt::Debug for akio_http::cookie::CookieLimits
+pub fn akio_http::cookie::CookieLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::cookie::CookieLimits
+impl core::marker::StructuralPartialEq for akio_http::cookie::CookieLimits
+impl core::marker::Send for akio_http::cookie::CookieLimits
+impl core::marker::Sync for akio_http::cookie::CookieLimits
+impl core::marker::Unpin for akio_http::cookie::CookieLimits
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::cookie::CookieLimits
+impl core::panic::unwind_safe::UnwindSafe for akio_http::cookie::CookieLimits
+pub const akio_http::cookie::MAX_AGE_CAP: core::time::Duration
+pub mod akio_http::files
+pub struct akio_http::files::Files
+impl akio_http::files::Files
+pub fn akio_http::files::Files::cache_control(self, &str) -> akio_http::files::Files
+pub fn akio_http::files::Files::check_interval(self, core::time::Duration) -> akio_http::files::Files
+pub fn akio_http::files::Files::index(self, &str) -> akio_http::files::Files
+pub fn akio_http::files::Files::max_cached_bytes(self, u64) -> akio_http::files::Files
+pub fn akio_http::files::Files::max_open_files(self, usize) -> akio_http::files::Files
+pub fn akio_http::files::Files::max_watches(self, usize) -> akio_http::files::Files
+pub fn akio_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> akio_http::files::Files
+pub fn akio_http::files::Files::watch(self, bool) -> akio_http::files::Files
+impl core::fmt::Debug for akio_http::files::Files
+pub fn akio_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_http::Service for akio_http::files::Files
+pub fn akio_http::files::Files::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::files::Files::call(&self, &mut akio_http::Context)
+pub fn akio_http::files::Files::streams_bodies(&self) -> bool
+impl core::marker::Send for akio_http::files::Files
+impl core::marker::Sync for akio_http::files::Files
+impl core::marker::Unpin for akio_http::files::Files
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::files::Files
+impl core::panic::unwind_safe::UnwindSafe for akio_http::files::Files
+pub mod akio_http::h2client
+pub enum akio_http::h2client::H2Event<'a>
+pub akio_http::h2client::H2Event::Data(&'a [u8])
+pub akio_http::h2client::H2Event::End
+pub akio_http::h2client::H2Event::Error(akio_http::client::ClientError)
+pub akio_http::h2client::H2Event::Head
+pub akio_http::h2client::H2Event::Head::headers: &'a akio_http::message::Headers
+pub akio_http::h2client::H2Event::Head::status: u16
+pub akio_http::h2client::H2Event::Trailers(&'a akio_http::message::Headers)
+impl<'a> core::fmt::Debug for akio_http::h2client::H2Event<'a>
+pub fn akio_http::h2client::H2Event<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_http::h2client::H2Event<'a>
+impl<'a> core::marker::Sync for akio_http::h2client::H2Event<'a>
+impl<'a> core::marker::Unpin for akio_http::h2client::H2Event<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Event<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Event<'a>
+pub struct akio_http::h2client::H2Client
+impl akio_http::h2client::H2Client
+pub fn akio_http::h2client::H2Client::close(&self)
+pub fn akio_http::h2client::H2Client::connect(&alloc::rcs::arc::Arc<akio::Engine>, &str, u16, core::option::Option<(akio_tls::config::ClientConfig, &str)>, akio_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<akio_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
+pub fn akio_http::h2client::H2Client::dial(&akio::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(akio_tls::config::ClientConfig, &str)>, akio_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<akio_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
+pub fn akio_http::h2client::H2Client::dial_blocking(&akio::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(akio_tls::config::ClientConfig, &str)>, akio_http::h2client::H2Options) -> core::io::error::Result<akio_http::h2client::H2Client>
+pub fn akio_http::h2client::H2Client::is_open(&self) -> bool
+pub fn akio_http::h2client::H2Client::open(&self, akio_http::client::ClientRequest, impl core::ops::function::FnMut(akio_http::h2client::H2Event<'_>) + core::marker::Send + 'static) -> akio_http::h2client::H2Upload
+pub fn akio_http::h2client::H2Client::request(&self, akio_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<akio_http::client::ClientResponse, akio_http::client::ClientError>) + core::marker::Send + 'static)
+pub fn akio_http::h2client::H2Client::send(&self, akio_http::client::ClientRequest) -> akio_http::client::ResponseFuture
+pub fn akio_http::h2client::H2Client::websocket(&self, &str, &akio_http::h2client::H2WsOptions, impl akio_ws::session::WsHandler, impl core::ops::function::FnOnce(core::result::Result<akio_ws::session::WsSender, akio_http::client::ClientError>) + core::marker::Send + 'static)
+pub fn akio_http::h2client::H2Client::websocket_blocking(&self, &str, &akio_http::h2client::H2WsOptions, impl akio_ws::session::WsHandler) -> core::result::Result<akio_ws::session::WsSender, akio_http::client::ClientError>
+impl core::clone::Clone for akio_http::h2client::H2Client
+pub fn akio_http::h2client::H2Client::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::h2client::H2Client
+pub fn akio_http::h2client::H2Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::h2client::H2Client
+impl core::marker::Sync for akio_http::h2client::H2Client
+impl core::marker::Unpin for akio_http::h2client::H2Client
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Client
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Client
+pub struct akio_http::h2client::H2Conn
+impl core::fmt::Debug for akio_http::h2client::H2Conn
+pub fn akio_http::h2client::H2Conn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::handler::Handler for akio_http::h2client::H2Conn
+pub fn akio_http::h2client::H2Conn::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
+pub fn akio_http::h2client::H2Conn::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for akio_http::h2client::H2Conn
+impl !core::marker::Sync for akio_http::h2client::H2Conn
+impl core::marker::Unpin for akio_http::h2client::H2Conn
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Conn
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Conn
+#[non_exhaustive] pub struct akio_http::h2client::H2Options
+pub akio_http::h2client::H2Options::conn_window: u32
+pub akio_http::h2client::H2Options::enable_push: bool
+pub akio_http::h2client::H2Options::initial_window: u32
+pub akio_http::h2client::H2Options::max_body_bytes: usize
+pub akio_http::h2client::H2Options::max_header_list: u32
+impl core::clone::Clone for akio_http::h2client::H2Options
+pub fn akio_http::h2client::H2Options::clone(&self) -> Self
+impl core::default::Default for akio_http::h2client::H2Options
+pub fn akio_http::h2client::H2Options::default() -> Self
+impl core::fmt::Debug for akio_http::h2client::H2Options
+pub fn akio_http::h2client::H2Options::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::h2client::H2Options
+impl core::marker::Sync for akio_http::h2client::H2Options
+impl core::marker::Unpin for akio_http::h2client::H2Options
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Options
+impl core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Options
+pub struct akio_http::h2client::H2Upload
+impl akio_http::h2client::H2Upload
+pub fn akio_http::h2client::H2Upload::finish(&self) -> bool
+pub fn akio_http::h2client::H2Upload::write(&self, &[u8]) -> bool
+impl core::fmt::Debug for akio_http::h2client::H2Upload
+pub fn akio_http::h2client::H2Upload::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::h2client::H2Upload
+impl core::marker::Sync for akio_http::h2client::H2Upload
+impl core::marker::Unpin for akio_http::h2client::H2Upload
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2Upload
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2Upload
+#[non_exhaustive] pub struct akio_http::h2client::H2WsOptions
+pub akio_http::h2client::H2WsOptions::close_timeout: core::time::Duration
+pub akio_http::h2client::H2WsOptions::config: akio_ws::session::WsConfig
+pub akio_http::h2client::H2WsOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub akio_http::h2client::H2WsOptions::max_queued_bytes: usize
+pub akio_http::h2client::H2WsOptions::origin: core::option::Option<alloc::string::String>
+pub akio_http::h2client::H2WsOptions::pmd: akio_ws::deflate::PmdOffer
+pub akio_http::h2client::H2WsOptions::protocols: alloc::vec::Vec<alloc::string::String>
+pub akio_http::h2client::H2WsOptions::timeout: core::time::Duration
+impl core::clone::Clone for akio_http::h2client::H2WsOptions
+pub fn akio_http::h2client::H2WsOptions::clone(&self) -> Self
+impl core::default::Default for akio_http::h2client::H2WsOptions
+pub fn akio_http::h2client::H2WsOptions::default() -> akio_http::h2client::H2WsOptions
+impl core::fmt::Debug for akio_http::h2client::H2WsOptions
+pub fn akio_http::h2client::H2WsOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::h2client::H2WsOptions
+impl core::marker::Sync for akio_http::h2client::H2WsOptions
+impl core::marker::Unpin for akio_http::h2client::H2WsOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::h2client::H2WsOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_http::h2client::H2WsOptions
+pub mod akio_http::message
+#[non_exhaustive] pub enum akio_http::message::Method
+pub akio_http::message::Method::Connect
+pub akio_http::message::Method::Delete
+pub akio_http::message::Method::Get
+pub akio_http::message::Method::Head
+pub akio_http::message::Method::Options
+pub akio_http::message::Method::Other(alloc::string::String)
+pub akio_http::message::Method::Patch
+pub akio_http::message::Method::Post
+pub akio_http::message::Method::Put
+pub akio_http::message::Method::Trace
+impl akio_http::message::Method
+pub fn akio_http::message::Method::as_str(&self) -> &str
+pub fn akio_http::message::Method::parse(&str) -> akio_http::message::Method
+impl core::clone::Clone for akio_http::message::Method
+pub fn akio_http::message::Method::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Method
+impl core::cmp::PartialEq for akio_http::message::Method
+pub fn akio_http::message::Method::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::message::Method
+pub fn akio_http::message::Method::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_http::message::Method
+pub fn akio_http::message::Method::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_http::message::Method
+impl core::marker::Send for akio_http::message::Method
+impl core::marker::Sync for akio_http::message::Method
+impl core::marker::Unpin for akio_http::message::Method
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Method
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Method
+#[non_exhaustive] pub enum akio_http::message::Version
+pub akio_http::message::Version::Http10
+pub akio_http::message::Version::Http11
+pub akio_http::message::Version::Http2
+pub akio_http::message::Version::Http3
+impl core::clone::Clone for akio_http::message::Version
+pub fn akio_http::message::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Version
+impl core::cmp::PartialEq for akio_http::message::Version
+pub fn akio_http::message::Version::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::message::Version
+pub fn akio_http::message::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::message::Version
+impl core::marker::StructuralPartialEq for akio_http::message::Version
+impl core::marker::Send for akio_http::message::Version
+impl core::marker::Sync for akio_http::message::Version
+impl core::marker::Unpin for akio_http::message::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Version
+#[non_exhaustive] pub struct akio_http::message::FileBody
+pub akio_http::message::FileBody::file: alloc::rcs::arc::Arc<std::fs::File>
+pub akio_http::message::FileBody::len: u64
+pub akio_http::message::FileBody::offset: u64
+impl akio_http::message::FileBody
+pub fn akio_http::message::FileBody::new(alloc::rcs::arc::Arc<std::fs::File>, u64, u64) -> akio_http::message::FileBody
+impl core::clone::Clone for akio_http::message::FileBody
+pub fn akio_http::message::FileBody::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::FileBody
+pub fn akio_http::message::FileBody::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::FileBody
+impl core::marker::Sync for akio_http::message::FileBody
+impl core::marker::Unpin for akio_http::message::FileBody
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::FileBody
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::FileBody
+pub struct akio_http::message::Headers
+impl akio_http::message::Headers
+pub fn akio_http::message::Headers::append(&mut self, impl core::convert::AsRef<str>, impl core::convert::AsRef<str>)
+pub fn akio_http::message::Headers::get(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::message::Headers::get_all<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a str>
+pub fn akio_http::message::Headers::has_token(&self, &str, &str) -> bool
+pub fn akio_http::message::Headers::is_empty(&self) -> bool
+pub fn akio_http::message::Headers::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&str, &str)>
+pub fn akio_http::message::Headers::len(&self) -> usize
+pub fn akio_http::message::Headers::new() -> akio_http::message::Headers
+pub fn akio_http::message::Headers::remove(&mut self, &str)
+pub fn akio_http::message::Headers::set(&mut self, impl core::convert::AsRef<str>, impl core::convert::AsRef<str>)
+pub fn akio_http::message::Headers::with_capacity(usize, usize) -> akio_http::message::Headers
+impl core::clone::Clone for akio_http::message::Headers
+pub fn akio_http::message::Headers::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Headers
+impl core::cmp::PartialEq for akio_http::message::Headers
+pub fn akio_http::message::Headers::eq(&self, &akio_http::message::Headers) -> bool
+impl core::default::Default for akio_http::message::Headers
+pub fn akio_http::message::Headers::default() -> Self
+impl core::fmt::Debug for akio_http::message::Headers
+pub fn akio_http::message::Headers::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Headers
+impl core::marker::Sync for akio_http::message::Headers
+impl core::marker::Unpin for akio_http::message::Headers
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Headers
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Headers
+#[non_exhaustive] pub struct akio_http::message::Request
+pub akio_http::message::Request::body: alloc::vec::Vec<u8>
+pub akio_http::message::Request::headers: akio_http::message::Headers
+pub akio_http::message::Request::method: akio_http::message::Method
+pub akio_http::message::Request::peer: core::net::socket_addr::SocketAddr
+pub akio_http::message::Request::protocol: core::option::Option<alloc::string::String>
+pub akio_http::message::Request::target: alloc::string::String
+pub akio_http::message::Request::trailers: akio_http::message::Headers
+pub akio_http::message::Request::version: akio_http::message::Version
+impl akio_http::message::Request
+pub fn akio_http::message::Request::new(akio_http::message::Method, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Request
+pub fn akio_http::message::Request::path(&self) -> &str
+pub fn akio_http::message::Request::query(&self) -> core::option::Option<&str>
+pub fn akio_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for akio_http::message::Request
+pub fn akio_http::message::Request::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::Request
+pub fn akio_http::message::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Request
+impl core::marker::Sync for akio_http::message::Request
+impl core::marker::Unpin for akio_http::message::Request
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Request
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Request
+#[non_exhaustive] pub struct akio_http::message::Response
+pub akio_http::message::Response::body: alloc::vec::Vec<u8>
+pub akio_http::message::Response::file: core::option::Option<akio_http::message::FileBody>
+pub akio_http::message::Response::headers: akio_http::message::Headers
+pub akio_http::message::Response::status: u16
+pub akio_http::message::Response::trailers: core::option::Option<akio_http::message::Headers>
+impl akio_http::message::Response
+pub fn akio_http::message::Response::body_len(&self) -> u64
+pub fn akio_http::message::Response::from_file(u16, &str, akio_http::message::FileBody) -> akio_http::message::Response
+pub fn akio_http::message::Response::header(self, &str, impl core::convert::AsRef<str>) -> akio_http::message::Response
+pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
+pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
+pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
+impl core::clone::Clone for akio_http::message::Response
+pub fn akio_http::message::Response::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::Response
+pub fn akio_http::message::Response::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Response
+impl core::marker::Sync for akio_http::message::Response
+impl core::marker::Unpin for akio_http::message::Response
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Response
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Response
+pub fn akio_http::message::format_http_date(u64) -> alloc::string::String
+pub fn akio_http::message::http_date_now() -> alloc::string::String
+pub fn akio_http::message::percent_decode(&str) -> core::option::Option<alloc::string::String>
+pub fn akio_http::message::reason(u16) -> &'static str
+pub mod akio_http::middleware
+#[non_exhaustive] pub struct akio_http::middleware::Compress
+pub akio_http::middleware::Compress::brotli: core::option::Option<u32>
+pub akio_http::middleware::Compress::level: u32
+pub akio_http::middleware::Compress::min_bytes: usize
+pub akio_http::middleware::Compress::stream: core::option::Option<akio_http::middleware::StreamCompress>
+pub akio_http::middleware::Compress::zstd: core::option::Option<u32>
+impl core::clone::Clone for akio_http::middleware::Compress
+pub fn akio_http::middleware::Compress::clone(&self) -> Self
+impl core::default::Default for akio_http::middleware::Compress
+pub fn akio_http::middleware::Compress::default() -> Self
+impl core::fmt::Debug for akio_http::middleware::Compress
+pub fn akio_http::middleware::Compress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::middleware::Compress
+impl core::marker::Sync for akio_http::middleware::Compress
+impl core::marker::Unpin for akio_http::middleware::Compress
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::middleware::Compress
+impl core::panic::unwind_safe::UnwindSafe for akio_http::middleware::Compress
+#[non_exhaustive] pub struct akio_http::middleware::Cors
+pub akio_http::middleware::Cors::allow_headers: alloc::string::String
+pub akio_http::middleware::Cors::allow_methods: alloc::string::String
+pub akio_http::middleware::Cors::allow_origin: alloc::string::String
+pub akio_http::middleware::Cors::max_age: core::time::Duration
+impl core::clone::Clone for akio_http::middleware::Cors
+pub fn akio_http::middleware::Cors::clone(&self) -> Self
+impl core::default::Default for akio_http::middleware::Cors
+pub fn akio_http::middleware::Cors::default() -> Self
+impl core::fmt::Debug for akio_http::middleware::Cors
+pub fn akio_http::middleware::Cors::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::middleware::Cors
+impl core::marker::Sync for akio_http::middleware::Cors
+impl core::marker::Unpin for akio_http::middleware::Cors
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::middleware::Cors
+impl core::panic::unwind_safe::UnwindSafe for akio_http::middleware::Cors
+#[non_exhaustive] pub struct akio_http::middleware::LogRecord
+pub akio_http::middleware::LogRecord::elapsed: core::time::Duration
+pub akio_http::middleware::LogRecord::method: alloc::string::String
+pub akio_http::middleware::LogRecord::peer: core::net::socket_addr::SocketAddr
+pub akio_http::middleware::LogRecord::status: core::option::Option<u16>
+pub akio_http::middleware::LogRecord::target: alloc::string::String
+impl core::clone::Clone for akio_http::middleware::LogRecord
+pub fn akio_http::middleware::LogRecord::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::middleware::LogRecord
+pub fn akio_http::middleware::LogRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::middleware::LogRecord
+impl core::marker::Sync for akio_http::middleware::LogRecord
+impl core::marker::Unpin for akio_http::middleware::LogRecord
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::middleware::LogRecord
+impl core::panic::unwind_safe::UnwindSafe for akio_http::middleware::LogRecord
+#[non_exhaustive] pub struct akio_http::middleware::StreamCompress
+pub akio_http::middleware::StreamCompress::brotli: u32
+pub akio_http::middleware::StreamCompress::brotli_window_bits: u32
+pub akio_http::middleware::StreamCompress::level: u32
+pub akio_http::middleware::StreamCompress::zstd: u32
+pub akio_http::middleware::StreamCompress::zstd_window_log: u32
+impl core::clone::Clone for akio_http::middleware::StreamCompress
+pub fn akio_http::middleware::StreamCompress::clone(&self) -> Self
+impl core::default::Default for akio_http::middleware::StreamCompress
+pub fn akio_http::middleware::StreamCompress::default() -> Self
+impl core::fmt::Debug for akio_http::middleware::StreamCompress
+pub fn akio_http::middleware::StreamCompress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::middleware::StreamCompress
+impl core::marker::Sync for akio_http::middleware::StreamCompress
+impl core::marker::Unpin for akio_http::middleware::StreamCompress
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::middleware::StreamCompress
+impl core::panic::unwind_safe::UnwindSafe for akio_http::middleware::StreamCompress
+pub fn akio_http::middleware::compress(akio_http::middleware::Compress) -> impl akio_http::Middleware
+pub fn akio_http::middleware::cors(akio_http::middleware::Cors) -> impl akio_http::Middleware
+pub fn akio_http::middleware::csrf() -> impl akio_http::Middleware
+pub fn akio_http::middleware::etag() -> impl akio_http::Middleware
+pub fn akio_http::middleware::limiter(f64, u32) -> impl akio_http::Middleware
+pub fn akio_http::middleware::logger(impl core::ops::function::Fn(&akio_http::middleware::LogRecord) + core::marker::Send + core::marker::Sync + 'static) -> impl akio_http::Middleware
+pub fn akio_http::middleware::recover() -> impl akio_http::Middleware
+pub fn akio_http::middleware::request_id() -> impl akio_http::Middleware
+pub fn akio_http::middleware::response_time() -> impl akio_http::Middleware
+pub mod akio_http::observe
+#[non_exhaustive] pub struct akio_http::observe::H2Snapshot
+pub akio_http::observe::H2Snapshot::connections_open: u64
+pub akio_http::observe::H2Snapshot::connections_total: u64
+pub akio_http::observe::H2Snapshot::goaways_received: u64
+pub akio_http::observe::H2Snapshot::goaways_sent: u64
+pub akio_http::observe::H2Snapshot::resets_received: u64
+pub akio_http::observe::H2Snapshot::resets_sent: u64
+pub akio_http::observe::H2Snapshot::streams_open: u64
+pub akio_http::observe::H2Snapshot::streams_total: u64
+impl core::clone::Clone for akio_http::observe::H2Snapshot
+pub fn akio_http::observe::H2Snapshot::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::observe::H2Snapshot
+impl core::cmp::PartialEq for akio_http::observe::H2Snapshot
+pub fn akio_http::observe::H2Snapshot::eq(&self, &Self) -> bool
+impl core::default::Default for akio_http::observe::H2Snapshot
+pub fn akio_http::observe::H2Snapshot::default() -> Self
+impl core::fmt::Debug for akio_http::observe::H2Snapshot
+pub fn akio_http::observe::H2Snapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::observe::H2Snapshot
+impl core::marker::StructuralPartialEq for akio_http::observe::H2Snapshot
+impl core::marker::Send for akio_http::observe::H2Snapshot
+impl core::marker::Sync for akio_http::observe::H2Snapshot
+impl core::marker::Unpin for akio_http::observe::H2Snapshot
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::observe::H2Snapshot
+impl core::panic::unwind_safe::UnwindSafe for akio_http::observe::H2Snapshot
+pub struct akio_http::observe::H2Stats(_)
+impl akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::new() -> akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::snapshot(&self) -> akio_http::observe::H2Snapshot
+impl core::clone::Clone for akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::clone(&self) -> Self
+impl core::default::Default for akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::default() -> Self
+impl core::fmt::Debug for akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::metrics::Collector for akio_http::observe::H2Stats
+pub fn akio_http::observe::H2Stats::collect(&self, &mut akio_core::metrics::Families)
+impl core::marker::Send for akio_http::observe::H2Stats
+impl core::marker::Sync for akio_http::observe::H2Stats
+impl core::marker::Unpin for akio_http::observe::H2Stats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::observe::H2Stats
+impl core::panic::unwind_safe::UnwindSafe for akio_http::observe::H2Stats
+pub struct akio_http::observe::HttpMetrics(_)
+impl akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::middleware(&self) -> impl akio_http::Middleware
+pub fn akio_http::observe::HttpMetrics::new() -> akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::observe(&self, u16, core::time::Duration)
+pub fn akio_http::observe::HttpMetrics::route_snapshot(&self) -> alloc::vec::Vec<akio_http::observe::RouteSnapshot>
+pub fn akio_http::observe::HttpMetrics::snapshot(&self) -> akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpMetrics::with_exemplars(self) -> akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::with_routes(usize) -> akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::write_prometheus(&self, &mut alloc::string::String)
+impl core::clone::Clone for akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::clone(&self) -> Self
+impl core::default::Default for akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::default() -> Self
+impl core::fmt::Debug for akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_core::metrics::Collector for akio_http::observe::HttpMetrics
+pub fn akio_http::observe::HttpMetrics::collect(&self, &mut akio_core::metrics::Families)
+impl core::marker::Send for akio_http::observe::HttpMetrics
+impl core::marker::Sync for akio_http::observe::HttpMetrics
+impl core::marker::Unpin for akio_http::observe::HttpMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::observe::HttpMetrics
+impl core::panic::unwind_safe::UnwindSafe for akio_http::observe::HttpMetrics
+#[non_exhaustive] pub struct akio_http::observe::HttpSnapshot
+pub akio_http::observe::HttpSnapshot::buckets: [u64; 15]
+pub akio_http::observe::HttpSnapshot::by_class: [u64; 6]
+pub akio_http::observe::HttpSnapshot::by_version: [u64; 4]
+pub akio_http::observe::HttpSnapshot::in_flight: i64
+pub akio_http::observe::HttpSnapshot::sum: core::time::Duration
+impl akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpSnapshot::count(&self) -> u64
+impl core::clone::Clone for akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpSnapshot::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::observe::HttpSnapshot
+impl core::cmp::PartialEq for akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpSnapshot::eq(&self, &Self) -> bool
+impl core::default::Default for akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpSnapshot::default() -> Self
+impl core::fmt::Debug for akio_http::observe::HttpSnapshot
+pub fn akio_http::observe::HttpSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_http::observe::HttpSnapshot
+impl core::marker::Send for akio_http::observe::HttpSnapshot
+impl core::marker::Sync for akio_http::observe::HttpSnapshot
+impl core::marker::Unpin for akio_http::observe::HttpSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::observe::HttpSnapshot
+impl core::panic::unwind_safe::UnwindSafe for akio_http::observe::HttpSnapshot
+#[non_exhaustive] pub struct akio_http::observe::RouteSnapshot
+pub akio_http::observe::RouteSnapshot::buckets: [u64; 15]
+pub akio_http::observe::RouteSnapshot::by_class: [u64; 6]
+pub akio_http::observe::RouteSnapshot::method: alloc::string::String
+pub akio_http::observe::RouteSnapshot::route: alloc::string::String
+pub akio_http::observe::RouteSnapshot::sum: core::time::Duration
+impl akio_http::observe::RouteSnapshot
+pub fn akio_http::observe::RouteSnapshot::count(&self) -> u64
+impl core::clone::Clone for akio_http::observe::RouteSnapshot
+pub fn akio_http::observe::RouteSnapshot::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::observe::RouteSnapshot
+impl core::cmp::PartialEq for akio_http::observe::RouteSnapshot
+pub fn akio_http::observe::RouteSnapshot::eq(&self, &Self) -> bool
+impl core::default::Default for akio_http::observe::RouteSnapshot
+pub fn akio_http::observe::RouteSnapshot::default() -> Self
+impl core::fmt::Debug for akio_http::observe::RouteSnapshot
+pub fn akio_http::observe::RouteSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_http::observe::RouteSnapshot
+impl core::marker::Send for akio_http::observe::RouteSnapshot
+impl core::marker::Sync for akio_http::observe::RouteSnapshot
+impl core::marker::Unpin for akio_http::observe::RouteSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::observe::RouteSnapshot
+impl core::panic::unwind_safe::UnwindSafe for akio_http::observe::RouteSnapshot
+pub const akio_http::observe::LATENCY_BUCKETS: [f64; 14]
+pub const akio_http::observe::MAX_ROUTE_SLOTS: usize
+pub const akio_http::observe::VERSION_LABELS: [&str; 4]
+pub fn akio_http::observe::access_log() -> impl akio_http::Middleware
+pub fn akio_http::observe::debug_handler(alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>, core::option::Option<alloc::string::String>) -> impl akio_http::Service
+pub fn akio_http::observe::metrics_handler(alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>, core::option::Option<akio_http::observe::HttpMetrics>) -> impl akio_http::Service
+pub mod akio_http::raw
+pub struct akio_http::raw::RawConn(_)
+impl akio_http::raw::RawConn
+pub fn akio_http::raw::RawConn::close(&self)
+pub fn akio_http::raw::RawConn::close_after_send(&self)
+pub fn akio_http::raw::RawConn::hold_reads(&self, bool)
+pub fn akio_http::raw::RawConn::is_open(&self) -> bool
+pub fn akio_http::raw::RawConn::on_drain(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
+pub fn akio_http::raw::RawConn::peer_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_http::raw::RawConn::queued_bytes(&self) -> usize
+pub fn akio_http::raw::RawConn::send(&self, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_http::raw::RawConn::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::error::Result<()>
+pub fn akio_http::raw::RawConn::set_relayed(&self, bool)
+impl core::clone::Clone for akio_http::raw::RawConn
+pub fn akio_http::raw::RawConn::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::raw::RawConn
+pub fn akio_http::raw::RawConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::raw::RawConn
+impl core::marker::Sync for akio_http::raw::RawConn
+impl core::marker::Unpin for akio_http::raw::RawConn
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::raw::RawConn
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::raw::RawConn
+pub trait akio_http::raw::RawHandler: core::marker::Send + 'static
+pub fn akio_http::raw::RawHandler::on_close(&mut self)
+pub fn akio_http::raw::RawHandler::on_data(&mut self, &akio_http::raw::RawConn, &[u8])
+pub fn akio_http::raw::RawHandler::on_open(&mut self, &akio_http::raw::RawConn)
+pub mod akio_http::trace
+pub const akio_http::trace::CONNECTION_TARGET: &str
+pub const akio_http::trace::REQUEST_TARGET: &str
+pub fn akio_http::trace::connection_span(core::net::socket_addr::SocketAddr, &'static str) -> akio_log::span::Span
+pub enum akio_http::BodyEvent<'a>
+pub akio_http::BodyEvent::Chunk(&'a [u8])
+pub akio_http::BodyEvent::End(&'a akio_http::message::Headers)
+impl<'a> core::fmt::Debug for akio_http::BodyEvent<'a>
+pub fn akio_http::BodyEvent<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_http::BodyEvent<'a>
+impl<'a> core::marker::Sync for akio_http::BodyEvent<'a>
+impl<'a> core::marker::Unpin for akio_http::BodyEvent<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyEvent<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_http::BodyEvent<'a>
+#[non_exhaustive] pub enum akio_http::BodyMode
+pub akio_http::BodyMode::Buffered
+pub akio_http::BodyMode::Stream
+impl core::clone::Clone for akio_http::BodyMode
+pub fn akio_http::BodyMode::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::BodyMode
+impl core::cmp::PartialEq for akio_http::BodyMode
+pub fn akio_http::BodyMode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::BodyMode
+pub fn akio_http::BodyMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::BodyMode
+impl core::marker::StructuralPartialEq for akio_http::BodyMode
+impl core::marker::Send for akio_http::BodyMode
+impl core::marker::Sync for akio_http::BodyMode
+impl core::marker::Unpin for akio_http::BodyMode
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyMode
+impl core::panic::unwind_safe::UnwindSafe for akio_http::BodyMode
+#[non_exhaustive] pub enum akio_http::Method
+pub akio_http::Method::Connect
+pub akio_http::Method::Delete
+pub akio_http::Method::Get
+pub akio_http::Method::Head
+pub akio_http::Method::Options
+pub akio_http::Method::Other(alloc::string::String)
+pub akio_http::Method::Patch
+pub akio_http::Method::Post
+pub akio_http::Method::Put
+pub akio_http::Method::Trace
+impl akio_http::message::Method
+pub fn akio_http::message::Method::as_str(&self) -> &str
+pub fn akio_http::message::Method::parse(&str) -> akio_http::message::Method
+impl core::clone::Clone for akio_http::message::Method
+pub fn akio_http::message::Method::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Method
+impl core::cmp::PartialEq for akio_http::message::Method
+pub fn akio_http::message::Method::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::message::Method
+pub fn akio_http::message::Method::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_http::message::Method
+pub fn akio_http::message::Method::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_http::message::Method
+impl core::marker::Send for akio_http::message::Method
+impl core::marker::Sync for akio_http::message::Method
+impl core::marker::Unpin for akio_http::message::Method
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Method
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Method
+#[non_exhaustive] pub enum akio_http::Version
+pub akio_http::Version::Http10
+pub akio_http::Version::Http11
+pub akio_http::Version::Http2
+pub akio_http::Version::Http3
+impl core::clone::Clone for akio_http::message::Version
+pub fn akio_http::message::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Version
+impl core::cmp::PartialEq for akio_http::message::Version
+pub fn akio_http::message::Version::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::message::Version
+pub fn akio_http::message::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::message::Version
+impl core::marker::StructuralPartialEq for akio_http::message::Version
+impl core::marker::Send for akio_http::message::Version
+impl core::marker::Sync for akio_http::message::Version
+impl core::marker::Unpin for akio_http::message::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Version
+pub struct akio_http::BodyStream
+impl akio_http::BodyStream
+pub fn akio_http::BodyStream::finish(self)
+pub fn akio_http::BodyStream::finish_with_trailers(self, akio_http::message::Headers)
+pub fn akio_http::BodyStream::queued_bytes(&self) -> usize
+pub fn akio_http::BodyStream::write(&self, &[u8]) -> akio_core::error::Result<()>
+impl core::fmt::Debug for akio_http::BodyStream
+pub fn akio_http::BodyStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::BodyStream
+impl !core::marker::Sync for akio_http::BodyStream
+impl core::marker::Unpin for akio_http::BodyStream
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyStream
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::BodyStream
+pub struct akio_http::Context
+impl akio_http::Context
+pub fn akio_http::Context::add_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
+pub fn akio_http::Context::add_response_header(&mut self, &str, impl core::convert::AsRef<str>)
+pub fn akio_http::Context::body(&self) -> &[u8]
+pub fn akio_http::Context::bytes(&mut self, u16, &str, alloc::vec::Vec<u8>)
+pub fn akio_http::Context::detach(&mut self) -> core::option::Option<akio_http::Detached>
+pub fn akio_http::Context::header(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::local(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::method(&self) -> &akio_http::message::Method
+pub fn akio_http::Context::on_body(&mut self, impl core::ops::function::FnMut(&mut akio_http::Context, akio_http::BodyEvent<'_>) + core::marker::Send + 'static)
+pub fn akio_http::Context::param(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::param_raw(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::path(&self) -> &str
+pub fn akio_http::Context::peer(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_http::Context::push(&mut self, &str) -> bool
+pub fn akio_http::Context::req(&self) -> &akio_http::message::Request
+pub fn akio_http::Context::respond(&mut self, akio_http::message::Response)
+pub fn akio_http::Context::responded(&self) -> bool
+pub fn akio_http::Context::route(&self) -> core::option::Option<&'static akio_http::RouteInfo>
+pub fn akio_http::Context::set_local(&mut self, &str, impl core::convert::Into<alloc::string::String>)
+pub fn akio_http::Context::set_response_time_header(&mut self, &str)
+pub fn akio_http::Context::span_context(&self) -> core::option::Option<akio_log::span::SpanContext>
+pub fn akio_http::Context::status(&self) -> core::option::Option<u16>
+pub fn akio_http::Context::stream_response(&mut self, u16, akio_http::message::Headers) -> core::option::Option<akio_http::BodyStream>
+pub fn akio_http::Context::text(&mut self, u16, impl core::convert::Into<alloc::string::String>)
+pub fn akio_http::Context::upgrade_raw(&mut self, impl akio_http::raw::RawHandler) -> bool
+pub fn akio_http::Context::upgrade_websocket(&mut self, impl akio_ws::session::WsHandler, &akio_http::WsOptions) -> bool
+impl core::fmt::Debug for akio_http::Context
+pub fn akio_http::Context::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::Context
+impl !core::marker::Sync for akio_http::Context
+impl core::marker::Unpin for akio_http::Context
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::Context
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::Context
+pub struct akio_http::Detached
+impl akio_http::Detached
+pub fn akio_http::Detached::param(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Detached::param_raw(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Detached::req(&self) -> &akio_http::message::Request
+pub fn akio_http::Detached::respond(self, akio_http::message::Response)
+pub fn akio_http::Detached::stream_response(self, u16, akio_http::message::Headers) -> core::option::Option<akio_http::BodyStream>
+impl core::fmt::Debug for akio_http::Detached
+pub fn akio_http::Detached::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::Detached
+impl !core::marker::Sync for akio_http::Detached
+impl core::marker::Unpin for akio_http::Detached
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::Detached
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::Detached
+#[non_exhaustive] pub struct akio_http::FileBody
+pub akio_http::FileBody::file: alloc::rcs::arc::Arc<std::fs::File>
+pub akio_http::FileBody::len: u64
+pub akio_http::FileBody::offset: u64
+impl akio_http::message::FileBody
+pub fn akio_http::message::FileBody::new(alloc::rcs::arc::Arc<std::fs::File>, u64, u64) -> akio_http::message::FileBody
+impl core::clone::Clone for akio_http::message::FileBody
+pub fn akio_http::message::FileBody::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::FileBody
+pub fn akio_http::message::FileBody::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::FileBody
+impl core::marker::Sync for akio_http::message::FileBody
+impl core::marker::Unpin for akio_http::message::FileBody
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::FileBody
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::FileBody
+#[non_exhaustive] pub struct akio_http::H2Config
+pub akio_http::H2Config::conn_window: u32
+pub akio_http::H2Config::enable_connect_protocol: bool
+pub akio_http::H2Config::initial_window: u32
+pub akio_http::H2Config::max_body_bytes: usize
+pub akio_http::H2Config::max_concurrent_streams: u32
+pub akio_http::H2Config::max_conn_pending_bytes: usize
+pub akio_http::H2Config::max_control_frames: u32
+pub akio_http::H2Config::max_header_list: u32
+pub akio_http::H2Config::max_pending_bytes: usize
+pub akio_http::H2Config::max_resets: u32
+pub akio_http::H2Config::reset_window: core::time::Duration
+pub akio_http::H2Config::stats: core::option::Option<akio_http::observe::H2Stats>
+impl core::clone::Clone for akio_http::H2Config
+pub fn akio_http::H2Config::clone(&self) -> Self
+impl core::default::Default for akio_http::H2Config
+pub fn akio_http::H2Config::default() -> Self
+impl core::fmt::Debug for akio_http::H2Config
+pub fn akio_http::H2Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::H2Config
+impl core::marker::Sync for akio_http::H2Config
+impl core::marker::Unpin for akio_http::H2Config
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::H2Config
+impl core::panic::unwind_safe::UnwindSafe for akio_http::H2Config
+pub struct akio_http::Headers
+impl akio_http::message::Headers
+pub fn akio_http::message::Headers::append(&mut self, impl core::convert::AsRef<str>, impl core::convert::AsRef<str>)
+pub fn akio_http::message::Headers::get(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::message::Headers::get_all<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a str>
+pub fn akio_http::message::Headers::has_token(&self, &str, &str) -> bool
+pub fn akio_http::message::Headers::is_empty(&self) -> bool
+pub fn akio_http::message::Headers::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&str, &str)>
+pub fn akio_http::message::Headers::len(&self) -> usize
+pub fn akio_http::message::Headers::new() -> akio_http::message::Headers
+pub fn akio_http::message::Headers::remove(&mut self, &str)
+pub fn akio_http::message::Headers::set(&mut self, impl core::convert::AsRef<str>, impl core::convert::AsRef<str>)
+pub fn akio_http::message::Headers::with_capacity(usize, usize) -> akio_http::message::Headers
+impl core::clone::Clone for akio_http::message::Headers
+pub fn akio_http::message::Headers::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::message::Headers
+impl core::cmp::PartialEq for akio_http::message::Headers
+pub fn akio_http::message::Headers::eq(&self, &akio_http::message::Headers) -> bool
+impl core::default::Default for akio_http::message::Headers
+pub fn akio_http::message::Headers::default() -> Self
+impl core::fmt::Debug for akio_http::message::Headers
+pub fn akio_http::message::Headers::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Headers
+impl core::marker::Sync for akio_http::message::Headers
+impl core::marker::Unpin for akio_http::message::Headers
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Headers
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Headers
+pub struct akio_http::HttpAcceptor<S>
+impl<S: akio_http::Service> akio_core::handler::Acceptor for akio_http::HttpAcceptor<S>
+pub type akio_http::HttpAcceptor<S>::Handler = akio_http::Session<S>
+pub fn akio_http::HttpAcceptor<S>::on_open(&self, &akio_core::conn::Conn<akio_http::Session<S>>) -> akio_http::Session<S>
+pub fn akio_http::HttpAcceptor<S>::on_shutdown(&self, &akio_core::conn::Conn<akio_http::Session<S>>)
+impl<S> core::fmt::Debug for akio_http::HttpAcceptor<S>
+pub fn akio_http::HttpAcceptor<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Send
+impl<S> core::marker::Sync for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Sync
+impl<S> core::marker::Unpin for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin
+impl<S> core::panic::unwind_safe::RefUnwindSafe for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::RefUnwindSafe
+impl<S> core::panic::unwind_safe::UnwindSafe for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::UnwindSafe
+#[non_exhaustive] pub struct akio_http::HttpConfig
+pub akio_http::HttpConfig::body_timeout: core::option::Option<core::time::Duration>
+pub akio_http::HttpConfig::h2: core::option::Option<akio_http::H2Config>
+pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Duration>
+pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
+pub akio_http::HttpConfig::max_body_bytes: usize
+pub akio_http::HttpConfig::max_header_bytes: usize
+impl core::clone::Clone for akio_http::HttpConfig
+pub fn akio_http::HttpConfig::clone(&self) -> Self
+impl core::default::Default for akio_http::HttpConfig
+pub fn akio_http::HttpConfig::default() -> Self
+impl core::fmt::Debug for akio_http::HttpConfig
+pub fn akio_http::HttpConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::HttpConfig
+impl core::marker::Sync for akio_http::HttpConfig
+impl core::marker::Unpin for akio_http::HttpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::HttpConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_http::HttpConfig
+#[non_exhaustive] pub struct akio_http::Request
+pub akio_http::Request::body: alloc::vec::Vec<u8>
+pub akio_http::Request::headers: akio_http::message::Headers
+pub akio_http::Request::method: akio_http::message::Method
+pub akio_http::Request::peer: core::net::socket_addr::SocketAddr
+pub akio_http::Request::protocol: core::option::Option<alloc::string::String>
+pub akio_http::Request::target: alloc::string::String
+pub akio_http::Request::trailers: akio_http::message::Headers
+pub akio_http::Request::version: akio_http::message::Version
+impl akio_http::message::Request
+pub fn akio_http::message::Request::new(akio_http::message::Method, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Request
+pub fn akio_http::message::Request::path(&self) -> &str
+pub fn akio_http::message::Request::query(&self) -> core::option::Option<&str>
+pub fn akio_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for akio_http::message::Request
+pub fn akio_http::message::Request::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::Request
+pub fn akio_http::message::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Request
+impl core::marker::Sync for akio_http::message::Request
+impl core::marker::Unpin for akio_http::message::Request
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Request
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Request
+#[non_exhaustive] pub struct akio_http::Response
+pub akio_http::Response::body: alloc::vec::Vec<u8>
+pub akio_http::Response::file: core::option::Option<akio_http::message::FileBody>
+pub akio_http::Response::headers: akio_http::message::Headers
+pub akio_http::Response::status: u16
+pub akio_http::Response::trailers: core::option::Option<akio_http::message::Headers>
+impl akio_http::message::Response
+pub fn akio_http::message::Response::body_len(&self) -> u64
+pub fn akio_http::message::Response::from_file(u16, &str, akio_http::message::FileBody) -> akio_http::message::Response
+pub fn akio_http::message::Response::header(self, &str, impl core::convert::AsRef<str>) -> akio_http::message::Response
+pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
+pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
+pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
+impl core::clone::Clone for akio_http::message::Response
+pub fn akio_http::message::Response::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::message::Response
+pub fn akio_http::message::Response::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::message::Response
+impl core::marker::Sync for akio_http::message::Response
+impl core::marker::Unpin for akio_http::message::Response
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Response
+impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Response
+pub struct akio_http::RouteInfo
+impl akio_http::RouteInfo
+pub fn akio_http::RouteInfo::id(&self) -> u64
+pub fn akio_http::RouteInfo::method(&self) -> &akio_http::message::Method
+pub fn akio_http::RouteInfo::pattern(&self) -> &str
+impl core::cmp::Eq for akio_http::RouteInfo
+impl core::cmp::PartialEq for akio_http::RouteInfo
+pub fn akio_http::RouteInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::RouteInfo
+pub fn akio_http::RouteInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_http::RouteInfo
+pub fn akio_http::RouteInfo::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_http::RouteInfo
+impl core::marker::Send for akio_http::RouteInfo
+impl core::marker::Sync for akio_http::RouteInfo
+impl core::marker::Unpin for akio_http::RouteInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::RouteInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_http::RouteInfo
+pub struct akio_http::RouteMatch<'r, 'p>
+impl<'r, 'p> akio_http::RouteMatch<'r, 'p>
+pub fn akio_http::RouteMatch<'r, 'p>::param(&self, &str) -> core::option::Option<&'p str>
+pub fn akio_http::RouteMatch<'r, 'p>::params(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'r str, &'p str)> + '_
+impl<'r, 'p> core::fmt::Debug for akio_http::RouteMatch<'r, 'p>
+pub fn akio_http::RouteMatch<'r, 'p>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'r, 'p> core::marker::Send for akio_http::RouteMatch<'r, 'p>
+impl<'r, 'p> core::marker::Sync for akio_http::RouteMatch<'r, 'p>
+impl<'r, 'p> core::marker::Unpin for akio_http::RouteMatch<'r, 'p>
+impl<'r, 'p> core::panic::unwind_safe::RefUnwindSafe for akio_http::RouteMatch<'r, 'p>
+impl<'r, 'p> core::panic::unwind_safe::UnwindSafe for akio_http::RouteMatch<'r, 'p>
+pub struct akio_http::Router
+impl akio_http::Router
+pub fn akio_http::Router::delete(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::fallback(self, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::get(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::layer(self, impl akio_http::Middleware) -> akio_http::Router
+pub fn akio_http::Router::lookup<'r, 'p>(&'r self, &akio_http::message::Method, &'p str) -> core::option::Option<akio_http::RouteMatch<'r, 'p>>
+pub fn akio_http::Router::nest(self, &str, akio_http::Router) -> akio_http::Router
+pub fn akio_http::Router::new() -> akio_http::Router
+pub fn akio_http::Router::options(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::patch(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::post(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::put(self, &str, impl akio_http::Service) -> akio_http::Router
+pub fn akio_http::Router::route(self, akio_http::message::Method, &str, impl akio_http::Service) -> akio_http::Router
+impl core::default::Default for akio_http::Router
+pub fn akio_http::Router::default() -> Self
+impl core::fmt::Debug for akio_http::Router
+pub fn akio_http::Router::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl akio_http::Service for akio_http::Router
+pub fn akio_http::Router::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::Router::call(&self, &mut akio_http::Context)
+pub fn akio_http::Router::streams_bodies(&self) -> bool
+impl core::marker::Send for akio_http::Router
+impl core::marker::Sync for akio_http::Router
+impl core::marker::Unpin for akio_http::Router
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::Router
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::Router
+pub struct akio_http::Session<S>
+impl<S: akio_http::Service> akio_core::handler::Handler for akio_http::Session<S>
+pub fn akio_http::Session<S>::on_close(&mut self, &akio_core::conn::Conn<Self>, core::option::Option<akio_core::error::Error>)
+pub fn akio_http::Session<S>::on_data(&mut self, &akio_core::conn::Conn<Self>, &[u8])
+impl<S> core::fmt::Debug for akio_http::Session<S>
+pub fn akio_http::Session<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::ops::drop::Drop for akio_http::Session<S>
+pub fn akio_http::Session<S>::drop(&mut self)
+impl<S> core::marker::Send for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
+impl<S> !core::marker::Sync for akio_http::Session<S>
+impl<S> core::marker::Unpin for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_http::Session<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_http::Session<S>
+pub struct akio_http::Streaming<S>(pub S)
+impl<S: akio_http::Service> akio_http::Service for akio_http::Streaming<S>
+pub fn akio_http::Streaming<S>::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::Streaming<S>::call(&self, &mut akio_http::Context)
+pub fn akio_http::Streaming<S>::streams_bodies(&self) -> bool
+impl<S> core::fmt::Debug for akio_http::Streaming<S>
+pub fn akio_http::Streaming<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_http::Streaming<S> where S: core::marker::Send
+impl<S> core::marker::Sync for akio_http::Streaming<S> where S: core::marker::Sync
+impl<S> core::marker::Unpin for akio_http::Streaming<S> where S: core::marker::Unpin
+impl<S> core::panic::unwind_safe::RefUnwindSafe for akio_http::Streaming<S> where S: core::panic::unwind_safe::RefUnwindSafe
+impl<S> core::panic::unwind_safe::UnwindSafe for akio_http::Streaming<S> where S: core::panic::unwind_safe::UnwindSafe
+#[non_exhaustive] pub struct akio_http::WsOptions
+pub akio_http::WsOptions::config: akio_ws::session::WsConfig
+pub akio_http::WsOptions::origin_allowed: core::option::Option<fn(&str) -> bool>
+pub akio_http::WsOptions::protocols: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for akio_http::WsOptions
+pub fn akio_http::WsOptions::clone(&self) -> Self
+impl core::default::Default for akio_http::WsOptions
+pub fn akio_http::WsOptions::default() -> Self
+impl core::fmt::Debug for akio_http::WsOptions
+pub fn akio_http::WsOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::WsOptions
+impl core::marker::Sync for akio_http::WsOptions
+impl core::marker::Unpin for akio_http::WsOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::WsOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_http::WsOptions
+pub trait akio_http::Middleware: core::marker::Send + core::marker::Sync + 'static
+pub fn akio_http::Middleware::handle(&self, &mut akio_http::Context, &dyn akio_http::Service)
+impl<F> akio_http::Middleware for F where F: core::ops::function::Fn(&mut akio_http::Context, &dyn akio_http::Service) + core::marker::Send + core::marker::Sync + 'static
+pub fn F::handle(&self, &mut akio_http::Context, &dyn akio_http::Service)
+pub trait akio_http::Service: core::marker::Send + core::marker::Sync + 'static
+pub fn akio_http::Service::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::Service::call(&self, &mut akio_http::Context)
+pub fn akio_http::Service::streams_bodies(&self) -> bool
+impl akio_http::Service for akio_http::Router
+pub fn akio_http::Router::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::Router::call(&self, &mut akio_http::Context)
+pub fn akio_http::Router::streams_bodies(&self) -> bool
+impl akio_http::Service for akio_http::files::Files
+pub fn akio_http::files::Files::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::files::Files::call(&self, &mut akio_http::Context)
+pub fn akio_http::files::Files::streams_bodies(&self) -> bool
+impl<F> akio_http::Service for F where F: core::ops::function::Fn(&mut akio_http::Context) + core::marker::Send + core::marker::Sync + 'static
+pub fn F::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn F::call(&self, &mut akio_http::Context)
+pub fn F::streams_bodies(&self) -> bool
+impl<S: akio_http::Service> akio_http::Service for akio_http::Streaming<S>
+pub fn akio_http::Streaming<S>::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
+pub fn akio_http::Streaming<S>::call(&self, &mut akio_http::Context)
+pub fn akio_http::Streaming<S>::streams_bodies(&self) -> bool
+pub fn akio_http::serve<S: akio_http::Service>(S) -> akio_http::HttpAcceptor<S>
+pub fn akio_http::serve_with<S: akio_http::Service>(akio_http::HttpConfig, S) -> akio_http::HttpAcceptor<S>

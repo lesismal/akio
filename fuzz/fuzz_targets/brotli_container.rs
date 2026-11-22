@@ -4,5 +4,5 @@
 //! compressed with them) read back as written.
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    only_brotli::fuzzing::container(data);
+    akio_brotli::fuzzing::container(data);
 });

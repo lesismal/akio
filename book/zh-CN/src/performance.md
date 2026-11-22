@@ -1,17 +1,17 @@
 # 性能调优
 
 先测量，再调优。这里引用的数据来自
-[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)：
+[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md)：
 一台笔记本级 Mac 上的 Docker 虚拟机、回环网络、4 个服务端线程。把它们当作方向参考，而不是
-排名。在那份报告中，only 的 TCP echo 与 tokio 同一量级、领先 fib（512 连接时领先 tokio，
+排名。在那份报告中，akio 的 TCP echo 与 tokio 同一量级、领先 fib（512 连接时领先 tokio，
 64 连接和 16 KiB 消息时落后约 15%），UDP echo 与 fib 持平，把 5 ms 的阻塞工作移到逻辑线程池
 后吞吐量约为在 I/O 线程上阻塞时的 58 倍。`tools/bench/run.sh` 可以复现这些测试；
 `tools/echo-bench` 是压测工具。
 
 ## 1. 保持 I/O 线程空闲
 
-如果回调会阻塞，其他一切都无从谈起。关注 `only_slow_callbacks_total` 和
-`only_loop_callback_seconds_total`；在预发布环境把 `slow_callback_threshold` 调低到
+如果回调会阻塞，其他一切都无从谈起。关注 `akio_slow_callbacks_total` 和
+`akio_loop_callback_seconds_total`；在预发布环境把 `slow_callback_threshold` 调低到
 1–10 ms 来找出问题代码；把阻塞工作移到 `spawn_blocking`、`Context::detach` 或你自己的线程。
 见[阻塞任务](concepts/blocking.md)。
 
@@ -62,10 +62,10 @@
 - Linux 上接收使用 `recvmmsg`；为一批接收产生的回复用 `sendmmsg` 发出，发往同一对端、长度相同
   的连续数据报合并成一次 GSO 发送。在 UDP 批量化的工作中，这让突发流量下每个数据报的服务端
   CPU 降低了 30–46%，64 字节 echo 提升约 19%。
-- `Conn::send_segments` 一次调用发送多个数据报（only-quic 使用它）。
+- `Conn::send_segments` 一次调用发送多个数据报（akio-quic 使用它）。
 - `Config::udp_gro`（在内核支持时默认开启）让接收 GSO 流量的大流量接收方（QUIC 下载）一次接收
   整批 GSO 数据：回环上的 QUIC 大流量因此从 6.4 提升到 9.8 Gbit/s，64 字节 UDP echo 没有可测的
-  变化。它需要 `read_buffer` >= 64 KiB；`ONLY_UDP_GRO=0` 可关闭。
+  变化。它需要 `read_buffer` >= 64 KiB；`AKIO_UDP_GRO=0` 可关闭。
 - `udp_max_peers` 在洪泛下限制每对端状态的数量。
 
 ## 6. eBPF 分流
@@ -80,7 +80,7 @@
 经典 BPF 不需要特权；用 `Engine::accel_status()` 查看实际挂载了什么。
 
 代理可用 `ProxyConfig::sockmap` 在内核中拼接隧道。在
-[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)中，
+[基准测试](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)中，
 它让 SOCKS 上传吞吐量翻倍，但走回环时每字节 CPU 更多。`ebpf::xdp::RateLimiter` 在协议栈看到包之前
 丢弃来自少数源的洪泛。
 
@@ -88,8 +88,8 @@
 
 在报告中，TLS 吞吐量与 tokio-rustls 的差距在噪声范围内（TLS 1.3，1 KiB 记录）。启用会话恢复
 （`ticketer`）让重连更便宜；在 ALPN 中提供 `h2`，让 HTTP 客户端复用连接而不是开更多连接。
-软件内核 TLS 默认关闭：在带 VAES 的 x86_64 上它比 only-tls 自己的记录层慢，大文件的 `sendfile` 也不例外
-（[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
+软件内核 TLS 默认关闭：在带 VAES 的 x86_64 上它比 akio-tls 自己的记录层慢，大文件的 `sendfile` 也不例外
+（[测量结果](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。
 在支持 TLS 卸载的网卡（ConnectX-6 Dx 及更新型号）上，启用 `ktls` feature 并设置
 `.ktls(Ktls::Hardware)`：记录加解密由网卡完成，`sendfile` 保持零拷贝，没有这类网卡的主机不受影响
 （[TLS](protocols/tls.md#内核-tls)）。

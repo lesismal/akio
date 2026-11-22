@@ -3,7 +3,7 @@
 # relayed in userspace vs spliced with the sockmap relay, and the XDP rate limiter's drop rate.
 # Every case alternates within each round (same-run A/B). Run it on a quiet host, e.g.
 #
-#   /root/only-bench/quiet.sh run tools/bench/ebpf.sh
+#   /root/akio-bench/quiet.sh run tools/bench/ebpf.sh
 #
 #   SECS (5) seconds per measurement, RUNS (3) rounds, SRV_CPUS (0-3) / CLI_CPUS (4-7,12-15),
 #   ONLY (steer,socks,xdp) the sections to run.
@@ -19,7 +19,7 @@ CLI_CPUS=${CLI_CPUS:-4-7,12-15}
 ONLY=${ONLY:-steer,socks,xdp}
 want() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }
 cargo build -q --release -p echo-bench || exit 1
-cargo build -q --release -p only --example bench-server -p only-socks --example ebpf-bench || exit 1
+cargo build -q --release -p only --example bench-server -p akio-socks --example ebpf-bench || exit 1
 E=$T/release/examples
 echo "# $(uname -sr), $(nproc) CPUs; ${SECS}s x $RUNS rounds"
 
@@ -27,7 +27,7 @@ echo "# $(uname -sr), $(nproc) CPUs; ${SECS}s x $RUNS rounds"
 PORT=19401
 want steer && for r in $(seq "$RUNS"); do
   for mode in none cpu cpu-pin hash; do
-    ONLY_ACCEL=$mode taskset -c "$SRV_CPUS" "$E/bench-server" tcp "127.0.0.1:$PORT" 4 epoll >/dev/null 2>&1 &
+    AKIO_ACCEL=$mode taskset -c "$SRV_CPUS" "$E/bench-server" tcp "127.0.0.1:$PORT" 4 epoll >/dev/null 2>&1 &
     pid=$!
     sleep 1
     taskset -c "$CLI_CPUS" "$T/release/echo-bench" "127.0.0.1:$PORT" 256 64 1 8 tcp >/dev/null 2>&1

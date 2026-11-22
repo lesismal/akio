@@ -1,4 +1,4 @@
-# only Roadmap
+# akio Roadmap
 
 [English](ROADMAP.md) | 简体中文
 
@@ -6,7 +6,7 @@
 >
 > 原说明：标注 `⚠ 待确认` 的条目是我对原始设计做了调整或存在歧义、需要你拍板的地方，汇总在文末「待确认清单」。
 
-only 是 [fib](../../fib)（Go）的 Rust 版：功能面对齐 fib，实现方式遵循 Rust 习惯（所有权、`Send/Sync` 边界、零成本抽象、feature 开关、sans-io 协议层）。
+akio 是 [fib](../../fib)（Go）的 Rust 版：功能面对齐 fib，实现方式遵循 Rust 习惯（所有权、`Send/Sync` 边界、零成本抽象、feature 开关、sans-io 协议层）。
 
 ## 1. 目标与非目标
 
@@ -26,7 +26,7 @@ only 是 [fib](../../fib)（Go）的 Rust 版：功能面对齐 fib，实现方�
 
 ### 2.1 线程模型：thread-per-core，连接归属某个 IO 线程
 - 每个 IO 线程一个 reactor，拥有自己的连接表、缓冲池、定时器轮；`SO_REUSEPORT`（可选 eBPF 选择）把新连接分到各线程。
-- 与 fib 的区别：fib 每一轮读事件可以落到任意空闲 worker（无亲和）；only 因为回调**直接在 IO 线程执行**，连接必然归属某个 IO 线程，这样 `Handler` 的每连接状态无需 `Sync`、无锁访问。
+- 与 fib 的区别：fib 每一轮读事件可以落到任意空闲 worker（无亲和）；akio 因为回调**直接在 IO 线程执行**，连接必然归属某个 IO 线程，这样 `Handler` 的每连接状态无需 `Sync`、无锁访问。
 - 代价：单连接的重回调会拖慢同线程其它连接——这正是逻辑线程池存在的理由（见 2.3）。文档里必须明确“回调不得阻塞”的契约，并提供慢回调检测（可配置阈值，超时打日志/指标）。
 
 ### 2.2 Connection：句柄 + 内部锁
@@ -84,22 +84,22 @@ Engine::builder()
 > **关于 eBPF 的歧义**：eBPF 程序本身不做用户态收发，把它和 epoll/io_uring/DPDK 并列为“Engine”需要先定义含义。我的建议是上表的“加速/调度层 + 可选 AF_XDP 数据面”：`Backend::Epoll + Accel::Ebpf(..)`，AF_XDP 作为 DPDK 之外的轻量旁路选项。请确认是否符合你的预期。
 
 ### 2.6 其它设计决策
-- **sans-io 协议层**：HTTP/1、HTTP/2、WebSocket、QUIC、KCP 等解析/状态机写成纯函数式 sans-io 状态机，再由 only 的 Handler 驱动。便于 fuzz、便于脱离 Engine 单测、便于在不同后端复用。
+- **sans-io 协议层**：HTTP/1、HTTP/2、WebSocket、QUIC、KCP 等解析/状态机写成纯函数式 sans-io 状态机，再由 akio 的 Handler 驱动。便于 fuzz、便于脱离 Engine 单测、便于在不同后端复用。
 - **buffer**：size-class 缓冲池，每 IO 线程本地缓存 + 全局回收；`Bytes`-like 的引用计数共享缓冲，用于广播（对标 fib 的 `PreparedMessage`/`SendShared`）。
 - **背压**：每连接写水位暂停读，Engine 级 `max_pending_bytes`，`hold_reads`。
 - **优雅关闭**：`Engine::shutdown()` 通知各 handler，等待连接排空。
 - **依赖策略**：fib 是零依赖，Rust 下改为“**少而精**”：`libc`、`io-uring`（或自研薄封装）、`aya`（eBPF）、`rustls`/`quinn-proto` 等 sans-io 成熟库按 feature 引入，核心 crate 保持近零依赖。`⚠ 待确认`
-- **unsafe 治理**：unsafe 只出现在 `only-sys`/后端/缓冲池内部，带 SAFETY 注释；核心并发结构用 `loom` 验证，协议解析用 `cargo-fuzz`，`miri` 跑纯 Rust 部分。
+- **unsafe 治理**：unsafe 只出现在 `akio-sys`/后端/缓冲池内部，带 SAFETY 注释；核心并发结构用 `loom` 验证，协议解析用 `cargo-fuzz`，`miri` 跑纯 Rust 部分。
 
 ## 3. 与 fib 的功能对齐矩阵
 
 优先级：P0 = 1.0 必须；P1 = 1.0 强烈建议；P2 = 1.0 后。
 
-| 能力 | fib | only 优先级 | 里程碑 | 说明 |
+| 能力 | fib | akio 优先级 | 里程碑 | 说明 |
 | --- | --- | --- | --- | --- |
 | TCP / Unix socket、异步 dial | ✓ | P0 | M1 | sendfile / splice / writev / cork / 半关闭 |
 | UDP（每 peer 一连接、批量收发） | ✓ | P0 | M2 | recvmmsg/sendmmsg、GRO/GSO |
-| TLS 1.2/1.3 | ✓（自研） | P0 | M2 | 自研 sans-io TLS（`only-tls`，已取代 rustls）；软件 kTLS 已评估、默认关闭（更慢，见 docs/BENCHMARKS.zh-CN.md）；引擎连接的内核 TLS，`Ktls::Hardware` 面向 TLS 卸载网卡（ADR-067） |
+| TLS 1.2/1.3 | ✓（自研） | P0 | M2 | 自研 sans-io TLS（`akio-tls`，已取代 rustls）；软件 kTLS 已评估、默认关闭（更慢，见 docs/BENCHMARKS.zh-CN.md）；引擎连接的内核 TLS，`Ktls::Hardware` 面向 TLS 卸载网卡（ADR-067） |
 | HTTP/1.x（含 pipelining、chunked、sendfile） | ✓ | P0 | M3 | 参考 httparse 的 SIMD 思路，自研或复用 |
 | Router / Middleware / 静态文件缓存 | ✓ | P0 | M3 | chi 风格，零分配路由 |
 | WebSocket（RFC 6455 + permessage-deflate） | ✓ | P0 | M3 | Autobahn 测试套件进 CI |
@@ -138,7 +138,7 @@ Engine::builder()
 - **正确性**：Autobahn（WS）、h2spec（H2）、与 curl / nghttp2 / quiche / kcp-go 的互通测试进 CI。
 - **并发**：`loom` 覆盖 Conn 发送队列/关闭状态机；压力测试覆盖“跨线程 send 与 close 竞争”。
 - **模糊测试**：每个 sans-io 解析器至少一个 `cargo-fuzz` target。
-- **性能门禁**：固定基线（only 自身历史 + fib + hyper/tokio + monoio），CI 夜间跑，回退超过阈值报警。场景：echo、HTTP/1 plaintext、pipelined、HTTP/2 multiplexed、WS echo、TLS、10 万空闲连接内存。
+- **性能门禁**：固定基线（akio 自身历史 + fib + hyper/tokio + monoio），CI 夜间跑，回退超过阈值报警。场景：echo、HTTP/1 plaintext、pipelined、HTTP/2 multiplexed、WS echo、TLS、10 万空闲连接内存。
 - **平台矩阵**：Linux x86_64/aarch64（io_uring 需 ≥5.19 的特性分级探测）、macOS arm64（kqueue）。
 
 ## 6. 主要风险

@@ -6,7 +6,7 @@ Status: accepted (2026-11-19)
 
 ## Context
 
-`only-sctp`, the data channel layer of the in-house WebRTC stack, answered HEARTBEATs but never
+`akio-sctp`, the data channel layer of the in-house WebRTC stack, answered HEARTBEATs but never
 sent any, so an idle association neither measured its RTT nor noticed a peer that had gone away:
 without data in flight no timer ran, and the association stayed "up" until DTLS or ICE gave up.
 An INIT arriving on a live association was ignored, so a peer that restarted its SCTP stack
@@ -77,11 +77,11 @@ one association over one DTLS connection, so they stay out of scope.
 
 ## Consequences
 
-- Public API (only-sctp, Internal tier): `Config::{heartbeat_interval, zero_checksum}` with
+- Public API (akio-sctp, Internal tier): `Config::{heartbeat_interval, zero_checksum}` with
   builders, `Association::{rtt, zero_checksum}`, `Event::Restarted`; `Event` is now
-  `#[non_exhaustive]` (a match needs a wildcard arm; only-webrtc already had one). only-webrtc
+  `#[non_exhaustive]` (a match needs a wildcard arm; akio-webrtc already had one). akio-webrtc
   is unchanged and gets the new defaults; its `webrtc-interop` example takes
-  `ONLY_INTEROP_BIND` for the client's local address.
+  `AKIO_INTEROP_BIND` for the client's local address.
 - Cookies are 49 bytes instead of 37; cookies from before this change no longer verify (they
   live for one handshake).
 - Tests: HEARTBEAT RTT on an idle link, failure of an idle association after its peer vanished
@@ -101,7 +101,7 @@ one association over one DTLS connection, so they stay out of scope.
 - Interop: pion/sctp v1.12.0 over UDP with zero checksums offered on both sides, both roles,
   with and without loss (`tools/interop/sctp/run.sh`); Firefox 158 (usrsctp) both offer
   directions: ordered and unordered/unreliable echoes, 70 kB and 200 kB messages, an empty one,
-  150 s idle (only-sctp's HEARTBEATs answered by usrsctp: unanswered ones would have failed the
+  150 s idle (akio-sctp's HEARTBEATs answered by usrsctp: unanswered ones would have failed the
   association by then), a channel closed by Firefox (stream reset both ways) and a new one on
   the reused id. Neither Firefox 158 nor Chrome 157 offers zero checksums (Chrome's dcSCTP
   implements them behind an experiment that is off by default), so in browsers the CRC-32C
@@ -110,7 +110,7 @@ one association over one DTLS connection, so they stay out of scope.
   (`IP=`).
 - Performance: with zero checksums the CRC-32C is gone from both ends of the data path.
   Same-run A/B against 46f25f81 on gpu51 (`quiet.sh`, CPUs 2-9, 7 alternating rounds,
-  medians), in-memory SCTP (`examples/sctp_bench.rs`, both sides only-sctp): 1 KiB messages
+  medians), in-memory SCTP (`examples/sctp_bench.rs`, both sides akio-sctp): 1 KiB messages
   1.21x (DATA 1.21x), 64 KiB 1.31x (1.24x), 16 KiB unordered 1.27x (1.24x), four channels
   1.25x (1.20x); data-channel throughput between two loopback `Endpoint`s, DTLS included,
   1.003x (189.6 vs 189.1 MB/s, DTLS dominates): no regression. Idle HEARTBEATs cost one

@@ -1,17 +1,17 @@
 # Kernel bypass (DPDK)
 
-> **Experimental.** `Backend::Dpdk` and the `only::dpdk` module are outside the semver promise
-> ([docs/api-stability.md](https://github.com/lesismal/only/blob/main/docs/api-stability.md))
+> **Experimental.** `Backend::Dpdk` and the `akio::dpdk` module are outside the semver promise
+> ([docs/api-stability.md](https://github.com/lesismal/akio/blob/main/docs/api-stability.md))
 > and may change in any release.
 
-`Backend::Dpdk` runs a listener on a **userspace TCP/IP stack** instead of the kernel's: `only`
-I/O threads poll a network device directly, run `only`'s own TCP/IP stack (Ethernet, ARP, IPv4,
+`Backend::Dpdk` runs a listener on a **userspace TCP/IP stack** instead of the kernel's: `akio`
+I/O threads poll a network device directly, run `akio`'s own TCP/IP stack (Ethernet, ARP, IPv4,
 ICMP, IPv6 with NDP and ICMPv6, UDP, TCP; safe Rust with `#![forbid(unsafe_code)]` and no
 dependencies) and hand data to the
 same `Handler`s as every other backend. UDP listeners still get
 one datagram per `on_data`, TCP listeners a byte stream; `Conn::send`, backpressure, `dial`,
 `dial_udp`, idle timeouts, telemetry and graceful shutdown work as usual, so protocol crates such
-as `only-kcp` run unchanged.
+as `akio-kcp` run unchanged.
 
 The device under the stack is one of:
 
@@ -44,25 +44,25 @@ program is then frags-aware, which also lets a veth run native XDP at such MTUs)
 `shared_umem` (Linux 5.10+) gives all the queues one UMEM, `frames` being the total split
 between them. Without `multi_buffer` the peer must not send GSO aggregates. Native XDP on a veth
 turns them off by itself; in generic mode turn TSO, GSO and GRO off.
-`only::dpdk::af_xdp_info(iface)` (hidden) says which modes were picked.
+`akio::dpdk::af_xdp_info(iface)` (hidden) says which modes were picked.
 
 ## Enabling it
 
 ```toml
 [dependencies]
-only = { version = "1", features = ["dpdk"] }       # AF_XDP, TAP, AF_PACKET, memory wire
+akio = { version = "1", features = ["dpdk"] }       # AF_XDP, TAP, AF_PACKET, memory wire
 # only = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
 ```
 
 `dpdk-pmd` compiles a small C shim against the installed DPDK (`pkg-config --cflags --libs
 libdpdk`, DPDK 21.11 or newer). Without libdpdk the crate still builds and `Device::Dpdk` fails
-at `build` with `Unsupported`; set `ONLY_DPDK_REQUIRE=1` to make a missing libdpdk a build error.
+at `build` with `Unsupported`; set `AKIO_DPDK_REQUIRE=1` to make a missing libdpdk a build error.
 On Debian/Ubuntu: `apt-get install dpdk-dev libdpdk-dev pkg-config`.
 
 ## A server
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:server}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:server}}
 ```
 
 - `DpdkConfig::new(device, address)` gives the stack its IPv4 address; `prefix_len` (default 24)
@@ -75,7 +75,7 @@ On Debian/Ubuntu: `apt-get install dpdk-dev libdpdk-dev pkg-config`.
 A DPDK port instead of the memory wire:
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:dpdk}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:dpdk}}
 ```
 
 The EAL is initialised once per process, from the `args` of the first DPDK stack. On a real NIC:
@@ -87,7 +87,7 @@ NIC to `vfio-pci` (`dpdk-devbind.py -b vfio-pci 0000:03:00.0`), and pass e.g.
 ## A client
 
 ```rust,ignore
-{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:client}}
+{{#include ../../../crates/akio-dpdk/examples/guide-dpdk.rs:client}}
 ```
 
 `Engine::dial` runs on the engine's last listener and `dial_udp` on its last UDP listener, so a
@@ -147,7 +147,7 @@ router solicitations at start and takes a global address for each advertised /64
 plus the modified EUI-64 identifier of its MAC), the default routers, the on-link prefixes, the
 link MTU and the hop limit, keeping each for its advertised lifetime. `address6` is then
 optional. With `ipv6_dad` every address (link-local, static, SLAAC) is probed for about a second
-before it is used, and given up if another node has it. `only::dpdk::ipv6_addresses(&device)`
+before it is used, and given up if another node has it. `akio::dpdk::ipv6_addresses(&device)`
 returns the addresses in use:
 
 ```rust,ignore
@@ -155,7 +155,7 @@ let mut cfg = DpdkConfig::new(Device::AfPacket("eth1".into()), "10.0.0.2".parse(
 cfg.ipv6_slaac = true;
 cfg.ipv6_dad = true;
 // ... once the engine runs:
-let addrs = only::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
+let addrs = akio::dpdk::ipv6_addresses(&cfg.device); // Some([fe80::..., 2001:db8:1::...])
 ```
 
 Either way, the stack answers other nodes' duplicate address detection for its addresses.
@@ -182,7 +182,7 @@ marks as RFC 3168 does (one window reduction per round trip).
 - **Several queues**: the port is configured for RSS on the IP/UDP/TCP 4-tuple, so one flow stays
   on one queue and thread. ARP and NDP frames are copied to every queue, so each stack knows its
   neighbours; dialed connections' frames that land on another queue are handed over.
-- **Connections** are `only` connections without a kernel socket: `Conn::send` only queues (from
+- **Connections** are `akio` connections without a kernel socket: `Conn::send` only queues (from
   any thread) and wakes the owning thread, which moves the bytes into the stack after each
   callback. Handlers run corked, so what one callback sends enters the stack once.
 - **Threads** are registered with the EAL (`rte_thread_register`) so mempool caches apply. With
@@ -191,7 +191,7 @@ marks as RFC 3168 does (one window reduction per round trip).
 
 ## The TCP/IP stack
 
-`crates/only-dpdk/src/net/` (replacing smoltcp, DEV-PLAN "no third-party dependencies"):
+`crates/akio-dpdk/src/net/` (replacing smoltcp, DEV-PLAN "no third-party dependencies"):
 
 - **Ethernet II, ARP** (RFC 826): a neighbour cache with a 60 s reachability timeout and unicast
   refresh, and a queue of packets waiting for resolution, so the first SYN or datagram to a new
@@ -226,7 +226,7 @@ marks as RFC 3168 does (one window reduction per round trip).
 - Checksums are computed in software (no offloads); received checksums are verified except on
   AF_PACKET and AF_XDP, where frames from the local kernel carry partial ones.
 
-Why its own stack: one instance per queue with no global state fits `only`'s thread-per-core model
+Why its own stack: one instance per queue with no global state fits `akio`'s thread-per-core model
 without locks, the whole stack is safe Rust, and it can do what the data path needs (ACK
 coalescing per burst, event-driven connections, a timer heap) without patching a dependency.
 F-Stack (FreeBSD's stack on DPDK) and Seastar's stack are faster and more complete, but bring a

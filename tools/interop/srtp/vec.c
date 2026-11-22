@@ -1,5 +1,5 @@
-// libsrtp cross-check vector generator for only-srtp (a test tool, not a dependency; run.sh
-// builds it against libsrtp and compares with crates/only-srtp/testdata/libsrtp.txt).
+// libsrtp cross-check vector generator for akio-srtp (a test tool, not a dependency; run.sh
+// builds it against libsrtp and compares with crates/akio-srtp/testdata/libsrtp.txt).
 // Prints: <case> <kind> <hex in> <hex out>
 #include <stdio.h>
 #include <string.h>
