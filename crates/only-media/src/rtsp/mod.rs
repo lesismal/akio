@@ -271,7 +271,7 @@ fn read_udp(sock: &UdpSocket, server: &Weak<Inner>) {
                     if rtp::is_rtcp(&buf[..n]) {
                         r.rtcp(media, &buf[..n]);
                     } else {
-                        r.push(media, &buf[..n]);
+                        r.push(media, &buf[..n], Instant::now());
                     }
                     r.take_reports()
                 };
@@ -586,8 +586,8 @@ impl Recorder {
         self.media[media].synced = true;
     }
 
-    /// Feeds one RTP packet of media `media`.
-    pub(crate) fn push(&mut self, media: usize, data: &[u8]) {
+    /// Feeds one RTP packet of media `media` that arrived at `now`.
+    pub(crate) fn push(&mut self, media: usize, data: &[u8], now: Instant) {
         let start = self.start;
         let Some(m) = self.media.get_mut(media) else {
             return;
@@ -596,7 +596,7 @@ impl Recorder {
             return;
         };
         if let Some(rr) = self.rr.as_deref_mut() {
-            rr.rtp(media, data, Instant::now());
+            rr.rtp(media, data, now);
         }
         let first = m.depack.is_none();
         let depack = m.depack.get_or_insert_with(|| {
@@ -719,6 +719,8 @@ fn hub_status(e: &HubError) -> u16 {
 impl Handler for RtspSession {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         self.watch.touch();
+        // What one read brought arrived at once (the receiver reports' jitter).
+        let now = Instant::now();
         let mut frames = Vec::new();
         if self.parser.feed(data, &mut frames).is_err() {
             let _ = c.send(&Response::new(400).encode(None));
@@ -741,7 +743,9 @@ impl Handler for RtspSession {
                         self.start_play(c);
                     }
                 }
-                Frame::Interleaved { channel, data } => self.interleaved(c, channel, &data),
+                Frame::Interleaved { channel, data } => {
+                    self.interleaved(c, channel, &data, now);
+                }
                 Frame::Response(_) | Frame::Reply(_) => {}
             }
         }
@@ -766,7 +770,7 @@ impl RtspSession {
         self.setups.clear();
     }
 
-    fn interleaved(&self, c: &Conn<Self>, channel: u8, data: &[u8]) {
+    fn interleaved(&self, c: &Conn<Self>, channel: u8, data: &[u8], now: Instant) {
         let Some(rec) = &self.recorder else { return };
         let media = self.setups.iter().find_map(|(&m, p)| match *p {
             Path::Tcp { rtp, rtcp } if rtp == channel => Some((m, false, rtcp)),
@@ -780,7 +784,7 @@ impl RtspSession {
                 if is_rtcp || rtp::is_rtcp(data) {
                     r.rtcp(m, data);
                 } else {
-                    r.push(m, data);
+                    r.push(m, data, now);
                 }
                 r.take_reports()
             };
@@ -1282,7 +1286,7 @@ mod tests {
                 out.clear();
                 packers[pkt.track].packetize(pkt, &mut out);
                 for r in &out {
-                    rec.push(pkt.track, r);
+                    rec.push(pkt.track, r, Instant::now());
                 }
             }
             let g = lock(&got.0);

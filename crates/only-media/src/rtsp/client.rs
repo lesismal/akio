@@ -1202,12 +1202,13 @@ impl Shared {
         let mut events = Vec::new();
         let mut media = Vec::new();
         let mut fail = None;
+        let now = Instant::now();
         let rec = {
             let mut g = lock(&self.inner);
             if g.phase == Phase::Done {
                 return;
             }
-            g.m.feed(data, Instant::now(), &mut events);
+            g.m.feed(data, now, &mut events);
             self.handle(&mut g, events, &mut media, &mut fail);
             g.recorder.clone()
         };
@@ -1219,7 +1220,7 @@ impl Shared {
                     if *rtcp || rtp::is_rtcp(d) {
                         r.rtcp(*m, d);
                     } else {
-                        r.push(*m, d);
+                        r.push(*m, d, now);
                     }
                 }
             }
@@ -1500,7 +1501,7 @@ impl Handler for UdpRecv {
             if self.rtcp || rtp::is_rtcp(data) {
                 lock(&r).rtcp(self.media, data);
             } else {
-                lock(&r).push(self.media, data);
+                lock(&r).push(self.media, data, Instant::now());
             }
         }
     }

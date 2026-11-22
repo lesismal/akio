@@ -296,8 +296,12 @@ impl Reception {
             // Else late or duplicate: counted, the highest number stays.
         }
         self.received += 1;
-        let ticks = now.saturating_duration_since(self.epoch).as_nanos() * u128::from(self.clock)
-            / 1_000_000_000;
+        // The arrival on the RTP clock (u64 arithmetic: subsecond nanoseconds times any clock
+        // rate fit).
+        let d = now.saturating_duration_since(self.epoch);
+        let clock = u64::from(self.clock);
+        let ticks =
+            d.as_secs().wrapping_mul(clock) + u64::from(d.subsec_nanos()) * clock / 1_000_000_000;
         let transit = (ticks as u32).wrapping_sub(ts);
         if let Some(last) = self.transit {
             let d = transit.wrapping_sub(last) as i32;
