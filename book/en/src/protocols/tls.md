@@ -20,7 +20,7 @@ TLS 1.3 and 1.2 implementation: written from the RFCs on `akio-crypto` and `akio
 `Tls::client(config, server_name, acceptor)` verifies the server as `server_name` and sends it as
 SNI. It returns an error for a name that is not a valid DNS name or IP address.
 
-Run both with `cargo run -p only --example guide-tls`.
+Run both with `cargo run -p akio --example guide-tls`.
 
 ## How it works
 

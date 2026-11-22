@@ -10,7 +10,7 @@
 //! returns within the shutdown budget, and every descriptor is released.
 //!
 //! Fast (CI, default `cargo test`): a few fixed seeds, a few hundred connections each.
-//! Reproduce a seed: `AKIO_CHAOS_SEEDS=17 cargo test -p only --test chaos`
+//! Reproduce a seed: `AKIO_CHAOS_SEEDS=17 cargo test -p akio --test chaos`
 //! (also `AKIO_CHAOS_SEEDS=1..200`). Soak: `AKIO_CHAOS=1 AKIO_CHAOS_SECS=300 cargo test -p
 //! `akio` --release --test chaos -- --nocapture` runs consecutive seeds with more connections
 //! until the time is up. `AKIO_TEST_BACKEND=uring` selects io_uring as for the other tests.

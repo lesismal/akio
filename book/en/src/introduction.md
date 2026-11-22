@@ -14,7 +14,7 @@ sans-io protocol state machines, and no async runtime.
  │ akio-http  akio-ws  akio-grpc  akio-arpc  akio-socks  ...  │  protocols (sans-io)
  │ akio-tls (Transport layer)        akio-quic / akio-kcp (UDP) │
  ├─────────────────────────────────────────────────────────────────┤
- │ only (Engine, Listener, Backend, Accel)   akio-core (Conn)    │
+ │ akio (Engine, Listener, Backend, Accel)   akio-core (Conn)    │
  ├─────────────────────────────────────────────────────────────────┤
  │ akio-epoll (epoll / kqueue)   akio-uring (io_uring)           │  one backend per listener
  │ akio-ebpf (SO_REUSEPORT steering, sockmap relay)               │  optional acceleration

@@ -1,7 +1,7 @@
 //! Companion of the book's "Concepts" chapters: handlers and acceptors, `Conn` from other
 //! threads, the logical pool with ordered responses, backpressure, dialing and shutdown.
 //!
-//! `cargo run -p only --example guide-basics` starts a server on a free port, talks to it with
+//! `cargo run -p akio --example guide-basics` starts a server on a free port, talks to it with
 //! a plain `std::net::TcpStream` and a akio-dialed client, then shuts down.
 
 use std::{

@@ -8,7 +8,7 @@
 #   NEW_DIR   this revision, default features           (variant `new`)
 #   NEWK_DIR  this revision with `--features akio/ktls`  (variants `off`, `hw`, `sw`, `swtx`)
 #   e.g. cargo build --release -p echo-bench --features tls
-#        cargo build --release -p only --example bench-server --features akio/ktls
+#        cargo build --release -p akio --example bench-server --features akio/ktls
 #        cargo build --release -p akio-http --example http-bench --features akio/ktls
 #
 # Knobs: VARIANTS ("base new hw sw"), RUNS (8), SECS (5), ECHO_SIZES ("1024 16384"; empty skips

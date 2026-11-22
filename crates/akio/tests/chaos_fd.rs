@@ -3,7 +3,7 @@
 //! accepting (and serve every waiting client) once descriptors are freed.
 //!
 //! Its own test binary because `setrlimit` is process-wide. Run alone with
-//! `cargo test -p only --test chaos_fd` (and `AKIO_TEST_BACKEND=uring`).
+//! `cargo test -p akio --test chaos_fd` (and `AKIO_TEST_BACKEND=uring`).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 

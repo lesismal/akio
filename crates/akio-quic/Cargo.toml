@@ -1,6 +1,6 @@
 [package]
 name = "akio-quic"
-description = "akio QUIC: QUIC v1 (RFC 9000/9001/9002) and datagrams (RFC 9221) in Rust over only UDP sockets, without third-party dependencies"
+description = "akio QUIC: QUIC v1 (RFC 9000/9001/9002) and datagrams (RFC 9221) in Rust over akio UDP sockets, without third-party dependencies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

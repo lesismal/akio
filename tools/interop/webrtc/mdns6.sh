@@ -24,7 +24,7 @@ VOL=akio-mdns6-target
 docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
   -v $VOL:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 sh -ec '
   cargo build -q --release -p akio-webrtc --example webrtc-interop
-  for t in "-p akio-webrtc --test mdns" "-p only --test shared_ports" "-p akio-sys --lib"; do
+  for t in "-p akio-webrtc --test mdns" "-p akio --test shared_ports" "-p akio-sys --lib"; do
     cargo test --no-run $t 2>&1 | sed -n "s/.*Executable .*(\(.*\))/\1/p" | tail -1
   done >/tmp/t/mdns6-tests.txt
   test "$(grep -c . /tmp/t/mdns6-tests.txt)" = 3'

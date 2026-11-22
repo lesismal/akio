@@ -1,6 +1,6 @@
 [package]
 name = "akio-turn"
-description = "akio STUN and TURN (RFC 8489, RFC 8656): servers over only UDP, TCP, TLS and DTLS, and a sans-io client"
+description = "akio STUN and TURN (RFC 8489, RFC 8656): servers over akio UDP, TCP, TLS and DTLS, and a sans-io client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

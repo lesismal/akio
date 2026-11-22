@@ -2,7 +2,7 @@
 //! engine knob, per-listener backends and acceleration, metrics, the connection table, slow
 //! callbacks and hot reload, plus a UDP listener and a UDP dial.
 //!
-//! `cargo run -p only --example guide-config`
+//! `cargo run -p akio --example guide-config`
 
 use std::{
     io::{Read, Write},

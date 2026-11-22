@@ -1,6 +1,6 @@
 //! Sender-side cost of bursts of datagrams to one peer, three ways (Linux is where it matters):
 //!
-//! `cargo run --release -p only --example udp-blast [rounds=5000] [burst=40] [size=1200]`
+//! `cargo run --release -p akio --example udp-blast [rounds=5000] [burst=40] [size=1200]`
 //!
 //! Each round the client asks for a burst and reads it all (closed loop, so the receiver never
 //! overflows and every datagram is paid for in full). The server replies with:

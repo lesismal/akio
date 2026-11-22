@@ -1,4 +1,4 @@
-//! TCP echo server: `cargo run --release -p only --example echo -- 127.0.0.1:7000 [threads] [uring]`
+//! TCP echo server: `cargo run --release -p akio --example echo -- 127.0.0.1:7000 [threads] [uring]`
 
 use akio::{Backend, Conn, Engine, Handler, Listener, fn_acceptor};
 

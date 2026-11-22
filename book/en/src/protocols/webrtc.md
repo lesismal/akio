@@ -392,7 +392,7 @@ let cfg = akio_webrtc::rtc_config()
 - **Retrying** (ADR-086): a failed path tries again after 10 s, then 20, 40, ... up to 5
   minutes. After three fallbacks from full marking on the same path it stays unmarked.
   `tools/interop/webrtc/ecn6679.sh` runs the three methods, and a router that clears ECN and
-  then stops, between two only peers over a Linux NAT.
+  then stops, between two akio peers over a Linux NAT.
 - **TURN and TCP paths** (ADR-082): over a UDP allocation the datagram to the TURN server
   carries the codepoint. RFC 8656 §12 asks the server to copy it, and validation finds out
   whether it does. A relay that clears it fails the path like any other middlebox. Paths over

@@ -62,7 +62,7 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-More: `cargo run -p only --example guide-basics`, `cargo run -p akio-http --example hello`,
+More: `cargo run -p akio --example guide-basics`, `cargo run -p akio-http --example hello`,
 and the other `guide-*` examples listed in the book's
 [Getting started](https://lesismal.github.io/akio/en/getting-started.html).
 

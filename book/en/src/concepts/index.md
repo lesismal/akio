@@ -12,4 +12,4 @@
 
 The snippets in these chapters come from
 [`crates/akio/examples/guide-basics.rs`](https://github.com/lesismal/akio/blob/main/crates/akio/examples/guide-basics.rs)
-(run it with `cargo run -p only --example guide-basics`).
+(run it with `cargo run -p akio --example guide-basics`).

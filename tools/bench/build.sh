@@ -9,7 +9,7 @@ T=${CARGO_TARGET_DIR:-/tmp/t}
 export CARGO_TARGET_DIR=$T
 cd "$ROOT"
 cargo build -q --release -p echo-bench --features tls
-cargo build -q --release -p only --example bench-server
+cargo build -q --release -p akio --example bench-server
 cargo build -q --release -p akio-http --example http-bench
 # Reference servers: separate workspaces, built into $T/ref so no target/ lands under tools/.
 for r in tokio-ref hyper-ref monoio-ref; do

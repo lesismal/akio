@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Line/region coverage of each fuzz target's corpus over the only sources (dependencies and the
+# Line/region coverage of each fuzz target's corpus over the akio sources (dependencies and the
 # fuzzing harnesses excluded). Needs nightly, cargo-fuzz and llvm-tools-preview.
 #
 #   fuzz/coverage.sh [target...]     # prints "<target> lines% regions% functions%"

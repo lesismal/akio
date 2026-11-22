@@ -1,4 +1,4 @@
-//! UDP echo with a per-peer counter: `cargo run --release -p only --example udp-echo`, then
+//! UDP echo with a per-peer counter: `cargo run --release -p akio --example udp-echo`, then
 //! `nc -u 127.0.0.1 7002` and type lines.
 
 use akio::{Conn, Engine, Handler, Listener, fn_acceptor};

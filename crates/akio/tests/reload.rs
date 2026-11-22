@@ -687,7 +687,7 @@ impl Handler for Nop {
 }
 
 /// Long-running soak: resizes and reloads continuously under load for `AKIO_SOAK_SECS`
-/// (default 60) seconds. `cargo test -p only --release --test reload soak -- --ignored`.
+/// (default 60) seconds. `cargo test -p akio --release --test reload soak -- --ignored`.
 #[test]
 #[ignore = "soak test; run explicitly"]
 fn soak_resize_and_reload_under_load() {

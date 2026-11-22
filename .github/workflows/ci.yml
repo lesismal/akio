@@ -125,7 +125,7 @@ jobs:
         timeout-minutes: 15
         env:
           AKIO_TEST_BACKEND: uring
-        run: cargo test -p only -p akio-http -p akio-ws -- --test-threads=1
+        run: cargo test -p akio -p akio-http -p akio-ws -- --test-threads=1
 
   test-macos:
     runs-on: macos-latest
@@ -343,7 +343,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: only
+          path: akio
       - uses: actions/checkout@v4
         with:
           repository: lesismal/fib
@@ -355,7 +355,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: only
+          workspaces: akio
           shared-key: interop-${{ matrix.suite }}
           save-if: true
       - name: Interop (${{ matrix.suite }})
@@ -537,7 +537,7 @@ jobs:
       - if: steps.baseline.outputs.published == 'true'
         run: >-
           cargo semver-checks check-release
-          -p only -p akio-core -p akio-tls -p akio-http -p akio-ws -p akio-mux
+          -p akio -p akio-core -p akio-tls -p akio-http -p akio-ws -p akio-mux
           -p akio-socks -p akio-arpc -p akio-grpc -p akio-protobuf -p akio-protobuf-build
           -p akio-kcp -p akio-quic -p akio-h3
           -p akio-ebpf -p akio-prefork -p akio-bittorrent
@@ -583,7 +583,7 @@ jobs:
           SAN_LOG_DIR: sanitizer-logs/uring
         run: >-
           tools/sanitizers/run.sh ${{ matrix.san }}
-          akio-uring only akio-http akio-prefork akio-socks akio-ws
+          akio-uring akio akio-http akio-prefork akio-socks akio-ws
       - name: Keep logs
         if: always()
         uses: actions/upload-artifact@v4

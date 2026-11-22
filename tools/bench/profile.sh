@@ -16,7 +16,7 @@ cd "$(dirname "$0")/../.."
 P=$T/prof
 RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR=$P cargo build -q --release \
   --config 'profile.release.debug="line-tables-only"' \
-  -p akio-http --example http-bench -p only --example bench-server
+  -p akio-http --example http-bench -p akio --example bench-server
 BENCH_SERVER=$P/release/examples/bench-server
 HTTP_BENCH=$P/release/examples/http-bench
 case $CASE in h1 | pipelined | h2) proto=http ;; h2tls) proto=https ;; ws) proto=ws ;; *) proto=tcp ;; esac

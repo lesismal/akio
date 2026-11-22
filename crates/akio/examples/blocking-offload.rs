@@ -1,4 +1,4 @@
-//! Blocking work off the I/O thread: `cargo run --release -p only --example blocking-offload`.
+//! Blocking work off the I/O thread: `cargo run --release -p akio --example blocking-offload`.
 //!
 //! The server answers each byte-request after a (simulated) 100 ms database call. The call runs
 //! on the logical pool; the reply is written from the completion callback on the I/O thread, and

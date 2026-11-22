@@ -34,7 +34,7 @@ thread.
 Run it and talk to it:
 
 ```console
-$ cargo run --release -p only --example echo -- 127.0.0.1:7000
+$ cargo run --release -p akio --example echo -- 127.0.0.1:7000
 $ nc 127.0.0.1 7000
 hello
 hello
@@ -70,9 +70,9 @@ exercise it with a client and exit:
 
 | Example | Topic |
 |---|---|
-| `cargo run -p only --example guide-basics` | handlers, `Conn`, pool, ordering, dial, shutdown |
-| `cargo run -p only --example guide-config` | every config knob, backends, metrics, reload, UDP |
-| `cargo run -p only --example guide-tls` | TLS server and client |
+| `cargo run -p akio --example guide-basics` | handlers, `Conn`, pool, ordering, dial, shutdown |
+| `cargo run -p akio --example guide-config` | every config knob, backends, metrics, reload, UDP |
+| `cargo run -p akio --example guide-tls` | TLS server and client |
 | `cargo run -p akio-http --example guide-http` | router, middleware, files, streaming, clients |
 | `cargo run -p akio-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
 | `cargo run -p akio-http --example guide-metrics` | your own counters, gauges, histograms, collectors |

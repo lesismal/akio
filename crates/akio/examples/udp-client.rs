@@ -1,5 +1,5 @@
-//! UDP client: `cargo run --release -p only --example udp-echo` in one terminal, then
-//! `cargo run --release -p only --example udp-client` in another.
+//! UDP client: `cargo run --release -p akio --example udp-echo` in one terminal, then
+//! `cargo run --release -p akio --example udp-client` in another.
 
 use std::time::Duration;
 

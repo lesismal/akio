@@ -19,7 +19,7 @@ CLI_CPUS=${CLI_CPUS:-4-7,12-15}
 ONLY=${ONLY:-steer,socks,xdp}
 want() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }
 cargo build -q --release -p echo-bench || exit 1
-cargo build -q --release -p only --example bench-server -p akio-socks --example ebpf-bench || exit 1
+cargo build -q --release -p akio --example bench-server -p akio-socks --example ebpf-bench || exit 1
 E=$T/release/examples
 echo "# $(uname -sr), $(nproc) CPUs; ${SECS}s x $RUNS rounds"
 

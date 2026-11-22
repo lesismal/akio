@@ -138,7 +138,7 @@ ADR-086, additive API:
 - Not done: DTLS re-keying. No peer re-keys: Chrome and pion refuse DTLS 1.2 renegotiation, and
   DTLS 1.3's KeyUpdate leaves the SRTP keys (ADR-086 §6).
 - Interop: `latch.sh` adds RTCP's own handshake and the gateway as the DTLS client. The new
-  `ecn6679.sh` runs rtp / leap / ice and a clearing router between two only peers over a
+  `ecn6679.sh` runs rtp / leap / ice and a clearing router between two akio peers over a
   Linux NAT.
 
 ### Added: the RTSP server's REDIRECT, the client following it; RTMP lookups on reconnect (akio-media)

@@ -4,7 +4,7 @@
 //!
 //! Checked per seed: no stalls, every `on_close` exactly once, the server still completes a
 //! normal TLS exchange, shutdown finishes, descriptors are released.
-//! `AKIO_CHAOS_SEEDS=1..50 cargo test -p only --test chaos_tls` for more seeds;
+//! `AKIO_CHAOS_SEEDS=1..50 cargo test -p akio --test chaos_tls` for more seeds;
 //! `AKIO_TEST_BACKEND=uring` for io_uring.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]

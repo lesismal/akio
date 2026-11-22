@@ -3,7 +3,7 @@
 # SECURITY.md. Every exception below carries the reason it is accepted.
 
 [graph]
-# Check every platform only supports, and every feature (optional deps such as prost and
+# Check every platform akio supports, and every feature (optional deps such as prost and
 # echo-bench's `tls` included).
 targets = [
     "x86_64-unknown-linux-gnu",

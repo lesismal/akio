@@ -1,5 +1,5 @@
 //! TLS echo server with a throw-away self-signed certificate:
-//! `cargo run --release -p only --example tls-echo` then
+//! `cargo run --release -p akio --example tls-echo` then
 //! `openssl s_client -connect 127.0.0.1:7443 -quiet` (add `-alpn h2` to see ALPN in the reply).
 
 use akio::{

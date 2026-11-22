@@ -3,7 +3,7 @@
 #
 #   tools/api/public-api.sh          # check: diff every crate's API against api/<crate>.txt
 #   tools/api/public-api.sh --bless  # regenerate api/<crate>.txt after a deliberate change
-#   tools/api/public-api.sh akio-core only   # only these crates
+#   tools/api/public-api.sh akio-core akio   # only these crates
 #
 # Needs a nightly toolchain (rustdoc JSON) and cargo-public-api. CI pins both (ci.yml, job
 # `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): akio-uring and
@@ -25,7 +25,7 @@ fi
 all=(akio-sys akio-regex akio-log akio-crypto akio-x509 akio-dtls akio-srtp akio-rtp akio-sctp akio-ice akio-buf akio-deflate akio-brotli akio-zstd akio-timer akio-pool akio-core akio-epoll akio-uring akio-tls
     akio-http akio-ws akio-mux akio-socks akio-arpc akio-grpc akio-protobuf akio-protobuf-build
     akio-kcp akio-quic akio-h3
-    akio-ebpf akio-prefork akio-dpdk akio-turn akio-webrtc akio-media akio-bittorrent akio-export only)
+    akio-ebpf akio-prefork akio-dpdk akio-turn akio-webrtc akio-media akio-bittorrent akio-export akio)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else

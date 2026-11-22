@@ -1,5 +1,5 @@
 //! A tiny DNS-style responder on a connectionless UDP listener (`serve_datagrams`, ADR-065):
-//! `cargo run --release -p only --example udp-dns`, then `dig @127.0.0.1 -p 5353 hello.test`.
+//! `cargo run --release -p akio --example udp-dns`, then `dig @127.0.0.1 -p 5353 hello.test`.
 //!
 //! Every query for an `A` record under `.test` (RFC 6761) is answered with `127.0.0.1`; other
 //! names get `REFUSED`, malformed datagrams are ignored. The handler keeps no state per client:

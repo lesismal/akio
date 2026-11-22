@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RFC 6679's own ECN signalling between two only peers over a real Linux NAT (ADR-082,
+# RFC 6679's own ECN signalling between two akio peers over a real Linux NAT (ADR-082,
 # ADR-086), in a Linux container (Docker, privileged for its own network namespaces; nothing
 # changes on the host). No browser does RFC 6679 (Chrome reads ECN through RFC 8888 only, see
 # ecn.sh), so both ends are the webrtc-interop example: a SIP-style phone in namespace "phone"

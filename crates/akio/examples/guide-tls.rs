@@ -1,7 +1,7 @@
 //! Companion of the book's "TLS" chapter: a TLS server and a `akio` TLS client dialing it, with a
 //! throw-away self-signed certificate.
 //!
-//! `cargo run -p only --example guide-tls`
+//! `cargo run -p akio --example guide-tls`
 
 use std::{
     sync::{Arc, mpsc},

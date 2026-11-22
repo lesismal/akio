@@ -1,6 +1,6 @@
 [package]
 name = "akio-webrtc"
-description = "akio WebRTC: ICE, DTLS-SRTP, SCTP data channels and RTP media (in-house sans-io stack) over only UDP"
+description = "akio WebRTC: ICE, DTLS-SRTP, SCTP data channels and RTP media (in-house sans-io stack) over akio UDP"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
