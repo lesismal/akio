@@ -22,6 +22,9 @@
 - `client::Client`：UDP 或流上的 sans-io TURN 客户端（分配、刷新、channel、权限），也支持 TCP 分配
   （`ClientConfig::tcp_allocation`、`Client::connect`、用于 ConnectionBind 的 `client::DataConnection`）；
   `only-webrtc` 的 `Endpoint::gather_relay` 驱动它。
+- `client::TcpAllocation`：由 `only` 引擎驱动的 TCP 分配，没有阻塞调用：控制连接及其定时器，`connect` /
+  `accept` 的数据连接由应用自己的 acceptor 服务（ConnectionBind 是位于其 handler 之下的传输层）。
+- `TurnConfig::tcp_connect_timeout`（30 秒）：Connect 等待对端的时长，与引擎的 `connect_timeout` 无关。
 - `TurnCore`：同一服务器的 sans-io 状态机。
 
 ```rust,no_run

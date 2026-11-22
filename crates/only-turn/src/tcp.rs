@@ -3,10 +3,15 @@
 //! connections, and the relay between the two.
 //!
 //! - A relayed address is a non-blocking TCP listener bound with `SO_REUSEPORT`, so that
-//!   connections to peers can leave from the same address ([`only::Engine::dial_from`]). One thread
-//!   per server ("only-turn-tcp-accept") polls every listener ([`only_sys::Poller`]) and hands
-//!   accepted connections to the engine ([`only::Engine::adopt_tcp`]): no thread per allocation, and
-//!   no I/O thread ever waits on `accept`.
+//!   connections to peers can leave from the same address. One thread per server
+//!   ("only-turn-tcp-accept") polls every listener ([`only_sys::Poller`]) and hands accepted
+//!   connections to the engine ([`only::Engine::adopt_tcp`]): no thread per allocation, and no
+//!   I/O thread ever waits on `accept`.
+//! - The connection of a Connect is opened by that thread too: a non-blocking connect from the
+//!   relayed address ([`only_sys::connect_nonblocking_from`]), polled until it is writable, then
+//!   adopted by the engine. The engine's `Config::connect_timeout` does not apply: the core's
+//!   `TurnConfig::tcp_connect_timeout` decides when it fails, and an attempt whose connection
+//!   the core has given up on is abandoned within a second.
 //! - Each connection of an allocation is a [`Link`] in a server-wide table keyed by its
 //!   `CONNECTION-ID`: the allocation's client and shard (a ConnectionBind arrives on another
 //!   connection, which lives in another shard), and the [`Pair`] of `only` connections.
@@ -19,7 +24,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -132,6 +137,17 @@ impl TcpRelays {
         }
     }
 
+    /// Hands a connect in progress (connection `id` of a Connect) to the accept thread.
+    fn connecting(&self, inner: &Inner, s: TcpStream, id: u32) -> io::Result<()> {
+        let Some(accept) = self.accept_loop(inner) else {
+            return Err(io::Error::other("no accept thread"));
+        };
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
+        lock(&accept.cmds).push(Cmd::Connect(token, s, id));
+        accept.waker.wake();
+        Ok(())
+    }
+
     pub(crate) fn link(&self, id: u32) -> Option<(SocketAddr, usize, Arc<Pair>)> {
         lock(&self.links)
             .get(&id)
@@ -160,6 +176,8 @@ impl TcpRelays {
 enum Cmd {
     Add(u64, TcpListener, SocketAddr),
     Remove(u64),
+    /// A connect in progress for connection id `.2`.
+    Connect(u64, TcpStream, u32),
 }
 
 /// The thread accepting connections on every relay listener of a server.
@@ -185,8 +203,12 @@ impl AcceptLoop {
 
     fn run(&self, poller: &mut Poller, inner: &Weak<Inner>) {
         let mut listeners: HashMap<u64, (TcpListener, SocketAddr)> = HashMap::new();
+        // Connects in progress: the socket and the connection id.
+        let mut connecting: HashMap<u64, (TcpStream, u32)> = HashMap::new();
         let mut events: Vec<Event> = Vec::new();
+        let mut swept = Instant::now();
         loop {
+            events.clear(); // `wait` appends
             let _ = poller.wait(&mut events, Some(Duration::from_secs(1)));
             let Some(inner) = inner.upgrade() else {
                 return; // the server is gone: its listeners close with this thread
@@ -204,11 +226,23 @@ impl AcceptLoop {
                             poller.delete(l.as_raw_fd());
                         }
                     }
+                    Cmd::Connect(token, s, id) => {
+                        if poller.add(s.as_raw_fd(), token, false, true).is_ok() {
+                            connecting.insert(token, (s, id));
+                        } else {
+                            connect_failed(&inner, id);
+                        }
+                    }
                 }
             }
             for ev in &events {
                 if ev.token == 0 {
                     self.waker.drain();
+                    continue;
+                }
+                if let Some((s, id)) = connecting.remove(&ev.token) {
+                    poller.delete(s.as_raw_fd());
+                    connected(&inner, s, id);
                     continue;
                 }
                 let Some((l, relay)) = listeners.get(&ev.token) else {
@@ -227,12 +261,24 @@ impl AcceptLoop {
                     }
                 }
             }
+            // Attempts the core gave up on (`tcp_connect_timeout`) or whose allocation went.
+            if !connecting.is_empty() && swept.elapsed() >= Duration::from_secs(1) {
+                swept = Instant::now();
+                let links = lock(&inner.tcp.links);
+                connecting.retain(|_, (s, id)| {
+                    let wanted = links.contains_key(id);
+                    if !wanted {
+                        poller.delete(s.as_raw_fd());
+                    }
+                    wanted
+                });
+            }
         }
     }
 }
 
 /// A connection accepted on relay `relay`: served by the engine, checked on its I/O thread.
-fn accepted(inner: &Arc<Inner>, s: std::net::TcpStream, relay: SocketAddr) {
+fn accepted(inner: &Arc<Inner>, s: TcpStream, relay: SocketAddr) {
     let Ok(engine) = inner.engine() else {
         return;
     };
@@ -244,24 +290,38 @@ fn accepted(inner: &Arc<Inner>, s: std::net::TcpStream, relay: SocketAddr) {
     engine.adopt_tcp(s, acceptor, |_| {});
 }
 
-/// Starts the connection from `relay` to `peer` of a Connect (link `id` is registered).
+/// Starts the connection from `relay` to `peer` of a Connect (link `id` is registered): a
+/// non-blocking connect the accept thread watches, with no deadline but the core's.
 pub(crate) fn dial(inner: &Arc<Inner>, relay: SocketAddr, peer: SocketAddr, id: u32) {
+    let started = inner.engine().and_then(|_| {
+        let s = only_sys::connect_nonblocking_from(relay, peer)?;
+        inner.tcp.connecting(inner, s, id)
+    });
+    if started.is_err() {
+        connect_failed(inner, id);
+    }
+}
+
+/// The connect of connection `id` finished (the socket turned writable): the engine serves it
+/// when it succeeded.
+fn connected(inner: &Arc<Inner>, s: TcpStream, id: u32) {
+    let ok = matches!(s.take_error(), Ok(None)) && s.peer_addr().is_ok();
+    let engine = inner.engine();
+    let (true, Ok(engine)) = (ok, engine) else {
+        connect_failed(inner, id);
+        return;
+    };
+    let _ = s.set_nodelay(true);
+    let acceptor = PeerAcceptor {
+        inner: inner.me.clone(),
+        how: How::Dialed(id),
+    };
     let weak = inner.me.clone();
-    let failed = move |_e: io::Error| {
+    engine.adopt_tcp(s, acceptor, move |_| {
         if let Some(inner) = weak.upgrade() {
             connect_failed(&inner, id);
         }
-    };
-    match inner.engine() {
-        Ok(engine) => {
-            let acceptor = PeerAcceptor {
-                inner: inner.me.clone(),
-                how: How::Dialed(id),
-            };
-            engine.dial_from(relay, peer, acceptor, failed);
-        }
-        Err(e) => failed(e),
-    }
+    });
 }
 
 fn connect_failed(inner: &Inner, id: u32) {

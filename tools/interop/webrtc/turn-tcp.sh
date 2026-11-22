@@ -8,6 +8,8 @@
 #   - the only_turn client (Connect, then a peer connecting with a permission; ConnectionBind
 #     on new connections; 20 messages and 1 MiB echoed) against coturn, pion/turn and
 #     only-turn over TCP and TLS;
+#   - the engine-driven only_turn client (TcpAllocation: data connections are engine
+#     connections whose ConnectionBind is a transport layer) the same way;
 #   - pion/turn's TCP allocation client (Dial and Accept) against only-turn and coturn.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -51,6 +53,11 @@ echo "== only_turn client with a TCP allocation against coturn, pion/turn and on
 for s in "tcp 3478" "tls 5349" "tcp 9913" "tls 9914" "tcp 9813" "tls 9814"; do
   set -- $s
   docker exec only-turntcp-it $RS client "$1" "127.0.0.1:$2" alice wonderland
+done
+echo "== engine-driven only_turn client (TcpAllocation) against coturn, pion/turn and only-turn"
+for s in "tcp 3478" "tls 5349" "tcp 9913" "tls 9914" "tcp 9813" "tls 9814"; do
+  set -- $s
+  docker exec only-turntcp-it $RS engine-client "$1" "127.0.0.1:$2" alice wonderland
 done
 echo "== pion/turn TCP allocation client against only-turn and coturn"
 docker exec only-turntcp-it $GO turn-tcp-raw 127.0.0.1:9813 alice wonderland

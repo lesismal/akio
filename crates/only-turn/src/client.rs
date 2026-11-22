@@ -30,6 +30,9 @@
 //! connection to the server and binds it to the connection id with a [`DataConnection`]
 //! (a ConnectionBind with the allocation's credentials); once bound, that connection carries
 //! the peer's bytes as they are, both ways, and closing it closes the peer's.
+//!
+//! [`TcpAllocation`] does all of that on an `only` engine: the control connection, the timers,
+//! and data connections served by the application's own acceptor and handler.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -37,10 +40,13 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::framing::{channel_data_padding, frame_len};
+
+mod engine;
 use crate::stun::{
     Class, Message, MessageBuilder, Method, attr, is_channel_data, is_stun, long_term_key,
     transaction_id,
 };
+pub use engine::{AllocationEvent, ServerTransport, TcpAllocation};
 
 /// How often a channel binding or permission in use is refreshed (permissions last 5 minutes).
 const BINDING_REFRESH: Duration = Duration::from_secs(240);
@@ -166,6 +172,9 @@ pub enum ClientError {
     Rejected(u16, String),
     /// A response was malformed (no relayed address in an Allocate success, say).
     Protocol(&'static str),
+    /// A connection to the server failed or closed ([`TcpAllocation`]): the kind of the I/O
+    /// error and what happened.
+    Io(std::io::ErrorKind, String),
 }
 
 impl fmt::Display for ClientError {
@@ -174,6 +183,7 @@ impl fmt::Display for ClientError {
             ClientError::Timeout => f.write_str("turn: no answer from the server"),
             ClientError::Rejected(c, r) => write!(f, "turn: refused: {c} {r}"),
             ClientError::Protocol(w) => write!(f, "turn: bad response: {w}"),
+            ClientError::Io(_, w) => write!(f, "turn: {w}"),
         }
     }
 }
@@ -504,6 +514,12 @@ impl Client {
         } else {
             ClientEvent::Failed(e)
         });
+    }
+
+    /// The connection to the server is gone: the allocation fails with `e` (or, while
+    /// closing, is closed).
+    pub(crate) fn fail_with(&mut self, e: ClientError) {
+        self.fail(e);
     }
 
     /// Deletes the allocation (a Refresh with lifetime 0); [`ClientEvent::Closed`] follows.

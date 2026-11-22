@@ -765,6 +765,7 @@ name = "only-turn"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-core",
  "only-crypto",
  "only-dtls",
  "only-sys",

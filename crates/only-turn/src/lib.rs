@@ -62,6 +62,7 @@ pub mod framing;
 pub mod fuzzing;
 pub mod stun;
 mod tcp;
+mod timer;
 
 use std::collections::HashMap;
 use std::fmt;

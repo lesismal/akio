@@ -523,10 +523,19 @@ coturn 与 pion/turn 也都提供。
 | `tcp_relays` | true | 提供 TCP 分配（false：442） |
 | `max_tcp_connections` | 64 | 一个 TCP 分配的连接数（超出时 Connect 回 508，连入的对端被关闭） |
 | `tcp_relay_buffer` | 64 KiB | 每个方向保留的量：绑定前对端的字节，以及使另一侧暂停的队列水位 |
+| `tcp_connect_timeout` | 30 秒 | Connect 等待对端多久后回 447（RFC 6062：至少 30 秒） |
 
-Connect 受引擎的 `Config::connect_timeout`（默认 10 秒）限制；RFC 6062 要求至少 30 秒，需要时在服务 TURN 的
-引擎上调大它。到某个对端的连接刚关闭时，再次 Connect 同一对端地址可能失败（447），因为旧的四元组仍处于
-TIME_WAIT；RFC 6062 本就要求客户端等 10 秒再重试同一对端。
+Connect 的连接由负责接受连接的同一个线程打开（从中继地址发起非阻塞 connect，再交给引擎），因此引擎的
+`Config::connect_timeout` 不起作用：只由 `tcp_connect_timeout` 决定，期限由核心自己维护。到某个对端的连接刚
+关闭时，再次 Connect 同一对端地址可能失败（447），因为旧的四元组仍处于 TIME_WAIT；RFC 6062 本就要求客户端
+等 10 秒再重试同一对端。
+
+WebRTC 不使用 TCP 分配，`Endpoint` 也不收集中继 TCP 候选（RFC 6544 §5.5）。浏览器的 TURN 客户端即使经
+TCP 或 TLS 也只请求 UDP 分配，所以没有浏览器会提供这种候选。浏览器仍可能用它的主动 TCP 候选连接我方的被动
+中继 TCP 候选，但 TURN 服务器只有在持有连接来源地址的权限时才接受这条连接，而浏览器只通告主机 TCP 候选
+（libwebrtc，即 Chrome、Edge、Safari，只通告端口为 9 的主动主机 TCP 候选），不通告服务器反射 TCP 候选：
+在 NAT 之后，恰恰在需要 TCP 的时候这个地址无从得知。经 TCP 或 TLS
+建立的 UDP 分配（`RelayServer::tcp` / `tls`）已经覆盖这类网络。理由详见 ADR-076。
 
 ### DTLS 上的 TURN
 
@@ -577,8 +586,27 @@ if *bind.state() == DataState::Bound {
 }
 ```
 
+`TcpAllocation` 在 `only` 引擎上做同样的事，没有阻塞调用：它拨出控制连接（TCP，或用 `ServerTransport::Tls`
+走 TLS），在一个共享线程上运行客户端的定时器，并把 `AllocationEvent` 报告给回调。`connect(peer, acceptor,
+on_error)` 发送 Connect，服务器连上对端后拨出一条由*你的* acceptor 服务的数据连接：它的 ConnectionBind 是位于
+你的 handler 之下（TLS 之上）的传输层，就像 TLS 握手一样，所以 TCP 连接一建立 `on_open` 就运行，handler 发送的
+内容等到绑定完成才发出，`on_data` 只收到对端的字节。`create_permission(peer)` 与 `accept(id, acceptor,
+on_error)` 以同样的方式接收对端的 ConnectionAttempt。凡是让数据连接无法承载对端字节的情况（Connect 被拒、
+拨号或绑定失败）都交给 `on_error`，只调用一次。丢弃最后一个句柄会关闭控制连接，从而结束分配。
+
+```rust,ignore
+let alloc = TcpAllocation::open(&engine, ClientConfig::new(server, "alice", "secret"),
+    ServerTransport::Tcp, |alloc, ev| match ev {
+        AllocationEvent::Allocated { relayed, .. } => println!("relayed at {relayed}"),
+        AllocationEvent::ConnectionAttempt { id, .. } => alloc.accept(id, MyAcceptor, |e| eprintln!("{e}")),
+        _ => {}
+    });
+// 分配完成后：MyAcceptor 的 handler 像对待任何连接一样与对端通信
+alloc.connect(peer, MyAcceptor, |e| eprintln!("connect: {e}"));
+```
+
 `tools/interop/webrtc/turn-tcp.sh` 对 coturn（`turnutils_uclient -T` 及其服务器）与 pion/turn（其 TCP 分配
-客户端与服务器）做互通检查，经 TCP 与 TLS。
+客户端与服务器）检查两种客户端，经 TCP 与 TLS。
 
 ## DTLS 层：DTLS 1.3，可回退到 DTLS 1.2
 

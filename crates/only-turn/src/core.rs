@@ -67,7 +67,10 @@ pub trait TurnEnv {
 
     /// A Connect request of `client`: open a TCP connection from `relay` to `peer`, connection
     /// `id`, and report the outcome with [`TurnCore::tcp_connected`] (not from inside this
-    /// call). The data the peer sends before the connection is bound is held (bounded).
+    /// call). The data the peer sends before the connection is bound is held (bounded). The
+    /// core answers 447 and calls [`close_connection`](Self::close_connection) itself when no
+    /// outcome came within [`TurnConfig::tcp_connect_timeout`]: the environment may abandon the
+    /// attempt then.
     fn connect_peer(&mut self, client: SocketAddr, relay: SocketAddr, peer: SocketAddr, id: u32) {
         let _ = (client, relay, peer, id);
     }
@@ -156,6 +159,13 @@ pub struct TurnConfig {
     /// ConnectionBind (reading the peer pauses at this mark, which closes its TCP window), and
     /// the send queue of one side at which reading the other side pauses until it drains.
     pub tcp_relay_buffer: usize,
+    /// How long a Connect waits for the server's connection to the peer before it is answered
+    /// 447 (30 s, the least RFC 6062 section 5.2 allows). The core keeps this deadline itself
+    /// (in [`TurnCore::handle_timeout`]), whatever the environment does; [`TurnServer`]
+    /// connects without the engine's `Config::connect_timeout`, so this setting alone decides.
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub tcp_connect_timeout: Duration,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -195,6 +205,7 @@ impl TurnConfig {
             tcp_relays: true,
             max_tcp_connections: 64,
             tcp_relay_buffer: 64 * 1024,
+            tcp_connect_timeout: Duration::from_secs(30),
         }
     }
 
@@ -223,6 +234,13 @@ impl TurnConfig {
     #[must_use]
     pub fn tcp_relays(mut self, yes: bool) -> Self {
         self.tcp_relays = yes;
+        self
+    }
+
+    /// Sets [`tcp_connect_timeout`](Self::tcp_connect_timeout).
+    #[must_use]
+    pub fn tcp_connect_timeout(mut self, d: Duration) -> Self {
+        self.tcp_connect_timeout = d;
         self
     }
 
@@ -303,7 +321,7 @@ struct TcpConn {
 
 enum TcpState {
     /// A Connect request waiting for its outgoing connection: the request's transaction id,
-    /// whether it carried `FINGERPRINT`, and when the core gives up on the environment.
+    /// whether it carried `FINGERPRINT`, and when it fails (`TurnConfig::tcp_connect_timeout`).
     Connecting([u8; 12], bool, Instant),
     /// Connected or accepted, waiting for a ConnectionBind until then.
     Pending(Instant),
@@ -313,9 +331,6 @@ enum TcpState {
 
 /// How long a peer connection waits for its ConnectionBind (RFC 6062 sections 5.2 and 5.3).
 pub(crate) const TCP_BIND_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a Connect waits for [`TurnCore::tcp_connected`] before the core answers 447 itself
-/// (the environment's own connect timeout normally answers first).
-const TCP_CONNECT_GUARD: Duration = Duration::from_secs(60);
 
 /// Counters a [`TurnCore`] keeps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1327,7 +1342,7 @@ impl TurnCore {
         let state = TcpState::Connecting(
             m.transaction_id(),
             m.has(attr::FINGERPRINT),
-            now + TCP_CONNECT_GUARD,
+            now + self.shared.cfg.tcp_connect_timeout,
         );
         tcp.conns.insert(id, TcpConn { peer, state });
         tcp.by_peer.insert(peer, id);
@@ -1803,10 +1818,14 @@ mod tests {
         assert_ne!(id2, id);
         assert!(!core.tcp_connected(now, CLIENT, id2, false, &mut env));
         assert_eq!(env.last().2, Some(447));
-        // A connect the environment never reports on: 447 from the core's own guard.
+        // A connect the environment never reports on: 447 at `tcp_connect_timeout`, not before.
         core.handle_client(now, CLIENT, &c, &mut env);
         let id3 = env.dials[2].2;
-        core.handle_timeout(now + TCP_CONNECT_GUARD, &mut env);
+        let t = core.config().tcp_connect_timeout;
+        assert_eq!(t, Duration::from_secs(30));
+        core.handle_timeout(now + Duration::from_millis(29_999), &mut env);
+        assert!(!env.closed.contains(&id3));
+        core.handle_timeout(now + t, &mut env);
         assert_eq!(env.last().2, Some(447));
         assert!(env.closed.contains(&id3));
         assert_eq!(core.stats().tcp_connections, 0);

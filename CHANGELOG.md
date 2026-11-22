@@ -27,6 +27,31 @@ ADR-078's update of 2026-11-22, additive:
 - `tools/interop/webrtc/mdns6.sh`: avahi 0.8 publishing a name an Endpoint has claimed reports a
   collision.
 
+### Added: engine-driven TURN TCP allocations and the server's own Connect timeout (only-turn)
+
+ADR-076's update of 2026-11-22, additive API:
+
+- `client::TcpAllocation` (with `ServerTransport`, `AllocationEvent`): an RFC 6062 TCP
+  allocation driven by an `only` engine. `open` dials the control connection (TCP or TLS) and
+  allocates; `connect(peer, acceptor, on_error)` and `accept(id, acceptor, on_error)` dial data
+  connections served by the application's own acceptor: the ConnectionBind is a transport layer
+  under the handler (and over TLS), so the handler is an ordinary `Conn<H>` that only sees the
+  peer's bytes. Failures before that (Connect refused, dial, TLS or bind failing) go to
+  `on_error`, once. Timers share one thread per process; dropping the last handle ends the
+  allocation.
+- `TurnConfig::tcp_connect_timeout` (30 s, the RFC 6062 minimum) and its builder: how long a
+  Connect waits for the peer before 447. The core keeps this deadline; `TurnServer` now opens the
+  peer connection on its accept thread, so the engine's `Config::connect_timeout` no longer
+  applies. Behaviour change: an unanswered Connect fails after 30 s instead of the engine's
+  10 s default.
+- `ClientError::Io(kind, message)`.
+- Fixed: the TCP relay accept loop never cleared its event list, which grew with every event and
+  replayed old ones.
+- `Endpoint` deliberately does not gather relayed TCP candidates (browsers never allocate them,
+  and cannot reach ours without an address they never signal); ADR-076 explains.
+- `tools/interop/webrtc/turn-tcp.sh` runs the engine client against coturn, pion/turn and
+  only-turn over TCP and TLS.
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:

@@ -23,6 +23,24 @@ ADR-078 的 2026-11-22 更新，只有新增：
 - only-ice（内部）：`Message::probe`、`Message::authority`、`Record::tiebreak`。
 - `tools/interop/webrtc/mdns6.sh`：avahi 0.8 发布 Endpoint 已声明的名字时报告冲突。
 
+### 新增：由引擎驱动的 TURN TCP 分配与服务器自己的 Connect 超时（only-turn）
+
+ADR-076 的 2026-11-22 更新，API 只增不改：
+
+- `client::TcpAllocation`（以及 `ServerTransport`、`AllocationEvent`）：由 `only` 引擎驱动的 RFC 6062 TCP
+  分配。`open` 拨出控制连接（TCP 或 TLS）并分配；`connect(peer, acceptor, on_error)` 与
+  `accept(id, acceptor, on_error)` 拨出由应用自己的 acceptor 服务的数据连接：ConnectionBind 是位于 handler
+  之下（TLS 之上）的传输层，因此 handler 拿到的是普通的 `Conn<H>`，只看到对端的字节。在此之前的失败（Connect
+  被拒、拨号、TLS 或绑定失败）交给 `on_error`，只一次。定时器在每个进程共用一个线程；丢弃最后一个句柄即结束分配。
+- `TurnConfig::tcp_connect_timeout`（30 秒，RFC 6062 的最小值）及其 builder：Connect 等待对端多久后回 447。
+  期限由核心维护；`TurnServer` 现在在接受线程上打开对端连接，因此引擎的 `Config::connect_timeout` 不再起作用。
+  行为变化：无应答的 Connect 在 30 秒后失败，而不是引擎默认的 10 秒。
+- `ClientError::Io(kind, message)`。
+- 修复：TCP 中继的接受循环从不清空事件列表，它随每个事件增长并重放旧事件。
+- `Endpoint` 有意不收集中继 TCP 候选（浏览器从不分配它们，而且没有一个它们从不通告的地址就连不上我方的候选）；
+  详见 ADR-076。
+- `tools/interop/webrtc/turn-tcp.sh` 让引擎客户端经 TCP 与 TLS 对 coturn、pion/turn 与 only-turn 运行。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：
