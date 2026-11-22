@@ -351,7 +351,9 @@ impl BandwidthEstimator {
             return;
         }
         let frac = ce as f64 / ect as f64;
-        let alpha = sc.alpha.map_or(frac, |a| (1.0 - L4S_GAIN) * a + L4S_GAIN * frac);
+        let alpha = sc
+            .alpha
+            .map_or(frac, |a| (1.0 - L4S_GAIN) * a + L4S_GAIN * frac);
         sc.alpha = Some(alpha);
         let acked = self.acknowledged_bitrate().map(|a| a as f64);
         if fresh > 0 {

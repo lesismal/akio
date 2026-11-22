@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 use crate::fec::{FecDecoder, FecEncoder, FecHeader, FecScheme, UlpLevelSpec, red};
 use crate::{
-    BurstLossModel, CcfbSender, Extension, ExtensionMap, ReceiptLog, RecvStream, RleReport,
-    RrtrResponder, Rtcp, RtpHeader, SdesItem, TmmbrHandler, TwccSender, VoipQuality, XrBlock,
-    bounded_bitrate, bounding_set, parse_compound, write_compound,
+    BurstLossModel, CcfbSender, EcnFeedback, EcnReceiver, EcnSummary, Extension, ExtensionMap,
+    ReceiptLog, RecvStream, RleReport, RrtrResponder, Rtcp, RtpHeader, SdesItem, TmmbrHandler,
+    TwccSender, VoipQuality, XrBlock, bounded_bitrate, bounding_set, parse_compound,
+    write_compound,
 };
 
 fn full_map() -> ExtensionMap {
@@ -29,7 +30,9 @@ fn full_map() -> ExtensionMap {
 /// received), a `SendStream`, a `TwccSender`, a `CcfbSender`, an `RrtrResponder` and a
 /// `TmmbrHandler` (whose bounding set is a subset of the requests). SDES pairs convert to
 /// typed items and back stably; RLE chunks decode, re-encode and decode to the same trace;
-/// VoIP metrics built from the input stay in range. Never panics.
+/// VoIP metrics built from the input stay in range. RFC 6679 ECN feedback messages and XR
+/// ECN summaries convert and write back to themselves, and the feedback of an `EcnReceiver`
+/// fed the RTP header's numbers does too. Never panics.
 pub fn rtp_rtcp(data: &[u8]) {
     let map = full_map();
     let now = Instant::now();
@@ -61,6 +64,17 @@ pub fn rtp_rtcp(data: &[u8]) {
         let _ = rx.report_block(now + Duration::from_millis(60));
         let _ = rx.statistics_summary();
         receipt_log(&payload, h.ssrc, now);
+        let mut ecn = EcnReceiver::new();
+        for (i, b) in payload.iter().take(64).enumerate() {
+            let seq = h
+                .sequence_number
+                .wrapping_add(u16::from(*b))
+                .wrapping_sub(128);
+            ecn.on_received(h.ssrc ^ (i as u32 & 1), seq, *b >> 6);
+        }
+        for fb in ecn.feedback(1, true) {
+            assert_eq!(EcnFeedback::from_rtcp(&fb.to_rtcp()), Some(fb));
+        }
     }
     if let Ok(pkts) = parse_compound(data) {
         let w = write_compound(&pkts);
@@ -155,7 +169,15 @@ pub fn rtp_rtcp(data: &[u8]) {
                                     let _ = rx.handle_dlrr(0x1234_5678_9abc_def0, i);
                                 }
                             }
-                            _ => {}
+                            _ => {
+                                if let Some(sums) = EcnSummary::from_xr(b) {
+                                    let b2 = EcnSummary::to_xr(&sums);
+                                    assert_eq!(EcnSummary::from_xr(&b2).as_ref(), Some(&sums));
+                                    for w in sums.windows(2) {
+                                        let _ = w[1].counters.since(&w[0].counters);
+                                    }
+                                }
+                            }
                         }
                     }
                     let _ = rrtr.dlrr(now + Duration::from_millis(5));
@@ -167,6 +189,13 @@ pub fn rtp_rtcp(data: &[u8]) {
                     let _ = tmmbr.on_tmmbr(now, *sender_ssrc, entries);
                     let _ = tmmbr.max_bitrate(now, 100.0);
                     let _ = write_compound(&[tmmbr.tmmbn(now)]);
+                }
+                Rtcp::Unknown { .. } => {
+                    if let Some(fb) = EcnFeedback::from_rtcp(p) {
+                        let w = write_compound(&[fb.to_rtcp()]);
+                        let back = parse_compound(&w).expect("ECN feedback parses");
+                        assert_eq!(EcnFeedback::from_rtcp(&back[0]), Some(fb));
+                    }
                 }
                 Rtcp::Tmmbn { entries, .. } => {
                     let set = bounding_set(entries);

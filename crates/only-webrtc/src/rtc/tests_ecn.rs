@@ -296,9 +296,20 @@ fn ecn_cfg(marking: EcnMarking, ccfb: bool) -> ConfigInner {
 /// `a` (marking `marking`) sends audio and video to `b` over `path` for 4 s; returns the
 /// sides and the network.
 fn ecn_run(marking: EcnMarking, ccfb: bool, path: Path) -> (Side, Side, Net) {
+    ecn_run_with(marking, EcnMarking::Off, ccfb, path).0
+}
+
+/// [`ecn_run`] with `b` configured to mark `b_marking` (RFC 6679 needs both sides to opt
+/// in); also returns the offer and the answer.
+fn ecn_run_with(
+    marking: EcnMarking,
+    b_marking: EcnMarking,
+    ccfb: bool,
+    path: Path,
+) -> ((Side, Side, Net), String, String) {
     let now = Instant::now();
     let mut a = peer(ecn_cfg(marking, ccfb), &["10.0.0.1:1000"], &[], now);
-    let mut b = peer(ecn_cfg(EcnMarking::Off, ccfb), &["10.0.0.2:2000"], &[], now);
+    let mut b = peer(ecn_cfg(b_marking, ccfb), &["10.0.0.2:2000"], &[], now);
     let mut ch = a.rtc.changes();
     let (audio, video) = {
         let mut api = SdpChanges(&mut ch);
@@ -322,7 +333,7 @@ fn ecn_run(marking: EcnMarking, ccfb: bool, path: Path) -> (Side, Side, Net) {
         false,
     );
     assert!(media_count(&b, video) > 150, "{}", media_count(&b, video));
-    (a, b, net)
+    ((a, b, net), offer, answer)
 }
 
 /// Codepoints of RTP (not RTCP) packets `a` sent, in order.
@@ -803,7 +814,9 @@ fn ect1_responds_to_ce_scalably() {
     let (a, l4s, lq) = l4s_run(EcnMarking::Ect1);
     let (c, classic, cq) = l4s_run(EcnMarking::Ect0);
     let (_, plain, pq) = l4s_run(EcnMarking::Off);
-    println!("6 Mbps step-marking queue: ECT(1) {l4s} bps, queue {lq:?}; ECT(0) {classic} bps, queue {cq:?}; off {plain} bps, queue {pq:?}");
+    println!(
+        "6 Mbps step-marking queue: ECT(1) {l4s} bps, queue {lq:?}; ECT(0) {classic} bps, queue {cq:?}; off {plain} bps, queue {pq:?}"
+    );
     let bwe = a.rtc.bwe.as_ref().unwrap();
     assert_eq!(bwe.ecn_response(), only_rtp::EcnResponse::Scalable);
     assert_eq!(
@@ -816,7 +829,71 @@ fn ect1_responds_to_ce_scalably() {
     // off as for loss.
     assert!(l4s as f64 > 0.7 * L4S_CAP, "{l4s}");
     assert!(l4s as f64 > 0.85 * plain as f64, "{l4s} {plain}");
-    assert!(lq < Duration::from_millis(3) && lq * 2 < pq, "{lq:?} {pq:?}");
+    assert!(
+        lq < Duration::from_millis(3) && lq * 2 < pq,
+        "{lq:?} {pq:?}"
+    );
     assert!(l4s > 2 * classic, "{l4s} {classic}");
     let _ = cq;
+}
+
+// ---- RFC 6679 signalling (ADR-082) ----
+
+#[test]
+fn rfc6679_negotiates_and_validates_without_rfc8888() {
+    let ((a, b, net), offer, answer) =
+        ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect0, false, Path::Keep);
+    for (sdp, ect) in [(&offer, 1), (&answer, 0)] {
+        assert!(
+            sdp.contains(&format!("a=ecn-capable-rtp:rtp mode=setread; ect={ect}")),
+            "{sdp}"
+        );
+        assert!(
+            sdp.contains(" nack ecn\r\n") && sdp.contains("ecn-sum"),
+            "{sdp}"
+        );
+        assert!(!sdp.contains("ack ccfb"));
+    }
+    assert!(a.rtc.ecn6679.tx && b.rtc.ecn6679.rx && !a.rtc.ccfb);
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+    let tail = &marks[marks.len() - 200..];
+    assert!(tail.iter().all(|m| *m == 1), "{tail:?}");
+    // RTCP stays unmarked; b's feedback reaches a.
+    assert!(net.log.iter().filter(|l| l.4).all(|l| l.3 == 0));
+    assert!(b.rtc.stats.ecn_ect_received > 300);
+    let (ect, ce) = a.rtc.bwe.as_ref().unwrap().ecn_counts();
+    assert!(ect > 200 && ce == 0, "{ect} {ce}");
+}
+
+#[test]
+fn rfc6679_detects_cleared_and_remarked_codepoints() {
+    for path in [Path::Bleach, Path::Remark] {
+        let ((a, _, net), _, _) = ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect1, false, path);
+        assert_eq!(a.rtc.ecn.phase, ecn::Phase::Failed);
+        let marks = rtp_marks(&net, addr("10.0.0.1:1000"));
+        assert!(marks[marks.len() / 2..].iter().all(|m| *m == 0));
+    }
+}
+
+#[test]
+fn rfc6679_ce_reaches_the_estimator() {
+    let ((a, _, _), _, _) = ecn_run_with(EcnMarking::Ect1, EcnMarking::Ect1, false, Path::Ce(10));
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Capable);
+    let bwe = a.rtc.bwe.as_ref().unwrap();
+    let (ect, ce) = bwe.ecn_counts();
+    assert!(ce > 10 && ect > 5 * ce, "{ect} {ce}");
+    assert!(bwe.ce_fraction().is_some());
+}
+
+#[test]
+fn rfc6679_needs_the_remote() {
+    // The answerer does not mark: no attribute in its answer, nothing marked.
+    let ((a, _, net), offer, answer) =
+        ecn_run_with(EcnMarking::Ect1, EcnMarking::Off, false, Path::Keep);
+    assert!(offer.contains("a=ecn-capable-rtp:"));
+    assert!(!answer.contains("ecn-capable-rtp") && !answer.contains("nack ecn"));
+    assert!(!a.rtc.ecn6679.rx);
+    assert_eq!(a.rtc.ecn.phase, ecn::Phase::Off);
+    assert!(net.log.iter().all(|l| l.3 == 0));
 }

@@ -88,6 +88,9 @@ pub(super) struct EcnPath {
     pub(super) ce: u64,
     /// Paths given up on (statistics).
     pub(super) failures: u64,
+    /// RFC 6679 (ADR-082): each source's last report (extended highest sequence number and
+    /// counters).
+    prev: HashMap<u32, (u32, only_rtp::EcnCounters)>,
 }
 
 impl EcnPath {
@@ -202,6 +205,64 @@ impl EcnPath {
         }
     }
 
+    /// An RFC 6679 report about `ssrc` (ADR-082): its extended highest sequence number
+    /// `highest` and cumulative counters. Matched with the packets sent since the previous
+    /// report; returns the ECN-capable and CE packets that arrived in between, for the
+    /// estimator (`None` before a previous report, or when not marking).
+    pub(super) fn on_counters(
+        &mut self,
+        ssrc: u32,
+        highest: u32,
+        c: &only_rtp::EcnCounters,
+    ) -> Option<(u64, u64)> {
+        if !self.wants() {
+            return None;
+        }
+        let (ph, pc) = self.prev.insert(ssrc, (highest, *c))?;
+        let n = highest.wrapping_sub(ph);
+        if n == 0 || n > HISTORY as u32 {
+            return None;
+        }
+        let d = c.since(&pc);
+        let (mut marked, mut unmarked) = (0u64, 0u64);
+        for i in 1..=n {
+            let seq = ph.wrapping_add(i) as u16;
+            if let Some(s) = self.sent.remove(&(ssrc, seq)) {
+                if s.ecn != 0 {
+                    marked += 1;
+                } else {
+                    unmarked += 1;
+                }
+            }
+        }
+        let (mine, other) = if self.mark == 1 {
+            (d.ect1, d.ect0)
+        } else {
+            (d.ect0, d.ect1)
+        };
+        if other > 0 || (marked > 0 && mine + d.ce == 0 && d.not_ect >= unmarked + marked) {
+            // Re-marked, or every marked packet arrived not-ECT.
+            self.fail();
+            return None;
+        }
+        self.ce += d.ce;
+        let ok = (mine + d.ce).min(marked);
+        let arrived_unmarked = d.not_ect.saturating_sub(d.duplicates).min(unmarked);
+        for _ in 0..ok {
+            self.count(true, false);
+        }
+        for _ in ok..marked {
+            self.count(true, true);
+        }
+        for _ in 0..arrived_unmarked {
+            self.count(false, false);
+        }
+        for _ in arrived_unmarked..unmarked {
+            self.count(false, true);
+        }
+        Some((mine + other + d.ce, d.ce))
+    }
+
     fn count(&mut self, marked: bool, lost: bool) {
         match self.phase {
             Phase::Testing => {
@@ -287,9 +348,10 @@ impl EcnPath {
 }
 
 impl Rtc {
-    /// Whether ECN marking may run: asked for, RFC 8888 feedback in use, the estimator on.
+    /// Whether ECN marking may run: asked for, RFC 8888 feedback in use or RFC 6679 toward
+    /// a remote that reads and reports ECN (ADR-082), the estimator on.
     pub(super) fn ecn_enabled(&self) -> bool {
-        self.cfg.ecn != EcnMarking::Off && self.ccfb && self.bwe.is_some()
+        self.cfg.ecn != EcnMarking::Off && (self.ccfb || self.ecn6679.tx) && self.bwe.is_some()
     }
 
     /// Whether the current path marks ECT(1), whose CE marks the estimator answers scalably

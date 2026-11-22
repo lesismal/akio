@@ -364,7 +364,8 @@ impl Rtc {
         }
         let estimate = self.bwe.as_ref().map_or(0, BandwidthEstimator::estimate);
         let smooth = self.ecn_scalable();
-        self.pacer.set_rates(estimate, self.cfg.padding_rate, smooth);
+        self.pacer
+            .set_rates(estimate, self.cfg.padding_rate, smooth);
         self.pacer.advance(now);
         while self.pacer.can_send(now) {
             let Some(q) = self.pacer.pop() else {

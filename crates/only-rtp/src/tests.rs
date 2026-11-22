@@ -85,6 +85,35 @@ pub(crate) fn seeds() -> Vec<Vec<u8>> {
     .collect();
     let all: Vec<Rtcp> = rtcp_samples();
     v.push(write_compound(&all));
+    // RFC 6679: a report with an ECN feedback message and an XR ECN summary.
+    let counters = crate::EcnCounters {
+        ect0: 1,
+        ect1: 900,
+        ce: 12,
+        not_ect: 40,
+        lost: 3,
+        duplicates: 1,
+    };
+    v.push(write_compound(&[
+        Rtcp::ReceiverReport {
+            ssrc: 4,
+            reports: vec![block(2)],
+        },
+        crate::EcnFeedback {
+            sender_ssrc: 4,
+            media_ssrc: 2,
+            extended_highest_seq: 0x0002_0010,
+            counters,
+        }
+        .to_rtcp(),
+        Rtcp::ExtendedReport {
+            ssrc: 4,
+            blocks: vec![crate::EcnSummary::to_xr(&[crate::EcnSummary {
+                ssrc: 2,
+                counters,
+            }])],
+        },
+    ]));
     v
 }
 

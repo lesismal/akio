@@ -147,6 +147,8 @@ pub(crate) const FB_CCFB: &str = "ack ccfb";
 pub(crate) const FB_TMMBR: &str = "ccm tmmbr";
 /// libwebrtc's flag for RTCP XR receiver reference times.
 pub(crate) const FB_RRTR: &str = "rrtr";
+/// RFC 6679 §6.2: the RTCP ECN feedback message.
+pub(crate) const FB_ECN: &str = "nack ecn";
 
 /// The RTCP feedback this configuration offers and accepts for `kind`.
 fn our_fb(cfg: &ConfigInner, kind: MediaKind) -> Vec<&'static str> {
@@ -157,6 +159,9 @@ fn our_fb(cfg: &ConfigInner, kind: MediaKind) -> Vec<&'static str> {
     };
     if cfg.ccfb {
         fb.push(FB_CCFB);
+    }
+    if cfg.ecn != crate::types::EcnMarking::Off {
+        fb.push(FB_ECN);
     }
     if kind == MediaKind::Video {
         if cfg.tmmbr {
@@ -680,6 +685,8 @@ struct MediaLine {
     xr: bool,
     /// The RTCP XR blocks about received streams both sides listed (`a=rtcp-xr`).
     xr_blocks: XrBlocks,
+    /// RFC 6679 (`a=ecn-capable-rtp`) as negotiated for this section (ADR-082).
+    ecn6679: Option<ecn_fb::LineEcn>,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
     tmmbr_req: Option<u64>,
     /// The Opus RED payload type (offered, then negotiated) of an audio line.
@@ -747,6 +754,7 @@ impl MediaLine {
             remote_fec: HashMap::new(),
             xr: false,
             xr_blocks: XrBlocks::NONE,
+            ecn6679: None,
             tmmbr_req: None,
             red: None,
             red_hist: VecDeque::new(),
@@ -940,6 +948,8 @@ pub(crate) struct Rtc {
     xt: transports::Extra,
     /// ECN marking of the current transport's path (ADR-077).
     ecn: ecn::EcnPath,
+    /// RFC 6679 signalling (ADR-082): its receiving side, and what was negotiated.
+    ecn6679: ecn_fb::Session,
     /// Latching the current transport's remote without ICE (ADR-077), the source and local
     /// address of the datagram being received while latching, and whether a packet
     /// authenticated during [`Rtc::latch_receive`].
@@ -1083,6 +1093,7 @@ impl Rtc {
             rx_ecn: 0,
             xt: transports::Extra::default(),
             ecn: ecn::EcnPath::default(),
+            ecn6679: ecn_fb::Session::default(),
             latch: latch::Latch::default(),
             latch_rx: None,
             latch_took: false,
@@ -1421,6 +1432,7 @@ impl Rtc {
             line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, line.kind);
+            line.ecn6679 = ecn_fb::remote_line(&cfg, m);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             line.negotiated = true;
             read_ssrcs(line, m);
@@ -1600,6 +1612,7 @@ impl Rtc {
             line.red_other = remote_red_other(&cfg, m, &line.codecs);
             line.xr = remote_xr(&cfg, m, &line.codecs);
             line.xr_blocks = remote_xr_blocks(&cfg, m, kind);
+            line.ecn6679 = ecn_fb::remote_line(&cfg, m);
             (line.ext, line.enc_ids) = remote_extmap(m, cfg.encrypt_ext);
             if cfg.ccfb
                 && line
@@ -1751,6 +1764,7 @@ impl Rtc {
                 .media
                 .iter()
                 .any(|l| !l.stopped && l.codecs.iter().any(|c| c.fb.iter().any(|f| f == FB_CCFB)));
+        self.ecn6679_apply();
         for l in &mut self.media {
             if l.fec_send_scheme().is_none() {
                 l.fec.enc = None;
@@ -2217,6 +2231,14 @@ impl Rtc {
                 l.xr_blocks
             };
             xr.extend(blocks.sdp_formats());
+            // RFC 6679 (ADR-082): ECN-capable RTP and the XR ECN summary.
+            let ecn = ecn_fb::local_line(&self.cfg, offer, l.ecn6679);
+            if let Some((v, sum)) = &ecn {
+                attrs.push(Attr::kv("ecn-capable-rtp", v.clone()));
+                if *sum {
+                    xr.push(ecn_fb::XR_ECN_SUM);
+                }
+            }
             if !xr.is_empty() {
                 attrs.push(Attr::kv("rtcp-xr", xr.join(" ")));
             }
@@ -2921,6 +2943,11 @@ impl Rtc {
                 self.stats.ecn_ce_received += 1;
             }
         }
+        if self.ecn6679.rx {
+            self.ecn6679
+                .receiver
+                .on_received(h.ssrc, h.sequence_number, ecn);
+        }
         if self.ccfb {
             // RFC 8888 reports the ECN codepoint each packet arrived with.
             self.ccfb_rx
@@ -3373,6 +3400,9 @@ impl Rtc {
             return;
         };
         let ntp = self.ntp(now);
+        if self.ecn6679.tx {
+            self.ecn6679_input(now, &pkts);
+        }
         for p in pkts {
             match p {
                 Rtcp::SenderReport {
@@ -3586,6 +3616,10 @@ impl Rtc {
         }
         // Congestion control feedback: RFC 8888 when negotiated, else transport-wide.
         self.send_cc_feedback(now);
+        // RFC 6679 ECN feedback, early on news (ADR-082).
+        if self.ecn6679.rx && !self.ccfb && self.ecn6679.receiver.urgent() {
+            self.send_ecn6679(now, false);
+        }
         // Reports.
         if self.next_rtcp.is_none_or(|t| t <= now) {
             self.next_rtcp = Some(now + RTCP_INTERVAL);
@@ -3699,6 +3733,9 @@ impl Rtc {
                     pkts.push(t);
                 }
             }
+            if let Some(xr) = self.ecn6679_summary(i, ssrc) {
+                pkts.push(xr);
+            }
             compounds.push(pkts);
         }
         if let Some(dlrr) = self.rrtr.dlrr(now) {
@@ -3721,6 +3758,9 @@ impl Rtc {
         compounds.extend(self.receipt_reports());
         for c in compounds {
             self.send_rtcp(&c);
+        }
+        if self.ecn6679.rx && !self.ccfb {
+            self.send_ecn6679(now, true);
         }
         self.refresh_tmmbr(now);
     }
@@ -4143,6 +4183,7 @@ fn abs_send_time_now() -> u32 {
 mod cc;
 mod channels;
 mod ecn;
+mod ecn_fb;
 mod feedback;
 mod latch;
 mod pacing;

@@ -743,7 +743,7 @@ fn l4s_bottleneck(
             fb += ms(50);
             let (done, rest): (Vec<_>, Vec<_>) = inflight
                 .drain(..)
-                .partition(|r| r.received.map_or(r.sent + ms(100), |a| a + ms(20)) <= fb);
+                .partition(|r| r.received.map_or_else(|| r.sent + ms(100), |a| a + ms(20)) <= fb);
             inflight = rest;
             if !done.is_empty() {
                 bwe.on_packet_results(fb, &done);
