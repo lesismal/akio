@@ -195,6 +195,195 @@ pub fn sender_report(ssrc: u32, ntp: u64, rtp_time: u32, packets: u32, octets: u
     b
 }
 
+/// What a receiver reports of one RTP source (RFC 3550 6.4 and appendix A): the packets lost,
+/// the highest sequence number, the interarrival jitter and the delay since the source's last
+/// sender report. Fed every RTP packet of the source ([`rtp`](Self::rtp)) and its sender
+/// reports ([`sender_report`](Self::sender_report)); [`block`](Self::block) writes a report
+/// block.
+#[derive(Debug, Clone)]
+pub(crate) struct Reception {
+    clock: u32,
+    /// The source, once a packet came.
+    ssrc: Option<u32>,
+    base_seq: u32,
+    max_seq: u16,
+    /// Sequence number cycles, shifted (RFC 3550 A.1).
+    cycles: u32,
+    /// A sequence number after a large jump: the next packet with it restarts the count.
+    bad_seq: u32,
+    received: u64,
+    expected_prior: u64,
+    received_prior: u64,
+    /// The relative transit time of the last packet, on the RTP clock.
+    transit: Option<u32>,
+    /// The interarrival jitter, times 16 (RFC 3550 A.8).
+    jitter: u64,
+    /// The middle 32 bits of the last sender report's NTP time, and when it came.
+    lsr: Option<(u32, std::time::Instant)>,
+    /// Where arrival times count from.
+    epoch: std::time::Instant,
+}
+
+/// Sequence numbers further ahead than this are a jump (RFC 3550 A.1).
+const MAX_DROPOUT: u16 = 3000;
+/// Sequence numbers this far behind are late or duplicate packets.
+const MAX_MISORDER: u16 = 100;
+
+impl Reception {
+    /// The reception of a source on a `clock` Hz RTP clock, arrival times counted from `epoch`.
+    pub(crate) fn new(clock: u32, epoch: std::time::Instant) -> Reception {
+        Reception {
+            clock: clock.max(1),
+            ssrc: None,
+            base_seq: 0,
+            max_seq: 0,
+            cycles: 0,
+            bad_seq: 1 << 17,
+            received: 0,
+            expected_prior: 0,
+            received_prior: 0,
+            transit: None,
+            jitter: 0,
+            lsr: None,
+            epoch,
+        }
+    }
+
+    fn restart(&mut self, ssrc: u32, seq: u16) {
+        let (clock, epoch, lsr) = (self.clock, self.epoch, self.lsr);
+        *self = Reception::new(clock, epoch);
+        self.ssrc = Some(ssrc);
+        self.base_seq = u32::from(seq);
+        self.max_seq = seq;
+        // A report of the same source that came before its first packet still counts.
+        self.lsr = lsr;
+    }
+
+    /// Whether a packet came.
+    pub(crate) fn started(&self) -> bool {
+        self.ssrc.is_some()
+    }
+
+    /// Feeds one RTP packet (its header is checked: anything else is ignored) that arrived at
+    /// `now`.
+    pub(crate) fn rtp(&mut self, pkt: &[u8], now: std::time::Instant) {
+        if pkt.len() < 12 || pkt[0] >> 6 != 2 {
+            return;
+        }
+        let seq = u16::from_be_bytes([pkt[2], pkt[3]]);
+        let ts = u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]);
+        let ssrc = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
+        if self.ssrc != Some(ssrc) {
+            // A new source (or the first): counts start again.
+            self.restart(ssrc, seq);
+        } else {
+            let delta = seq.wrapping_sub(self.max_seq);
+            if delta < MAX_DROPOUT {
+                if seq < self.max_seq {
+                    self.cycles = self.cycles.wrapping_add(1 << 16);
+                }
+                self.max_seq = seq;
+            } else if delta <= u16::MAX - MAX_MISORDER {
+                // A large jump: two packets in a row in the new place restart the count (the
+                // source restarted), one alone is ignored.
+                if u32::from(seq) == self.bad_seq {
+                    self.restart(ssrc, seq);
+                } else {
+                    self.bad_seq = u32::from(seq.wrapping_add(1));
+                    return;
+                }
+            }
+            // Else late or duplicate: counted, the highest number stays.
+        }
+        self.received += 1;
+        // The arrival on the RTP clock (u64 arithmetic: subsecond nanoseconds times any clock
+        // rate fit).
+        let d = now.saturating_duration_since(self.epoch);
+        let clock = u64::from(self.clock);
+        let ticks =
+            d.as_secs().wrapping_mul(clock) + u64::from(d.subsec_nanos()) * clock / 1_000_000_000;
+        let transit = (ticks as u32).wrapping_sub(ts);
+        if let Some(last) = self.transit {
+            let d = transit.wrapping_sub(last) as i32;
+            let d = u64::from(d.unsigned_abs());
+            self.jitter = self.jitter + d - ((self.jitter + 8) >> 4);
+        }
+        self.transit = Some(transit);
+    }
+
+    /// Feeds the NTP time of a sender report of the source that arrived at `now`.
+    pub(crate) fn sender_report(&mut self, ntp: u64, now: std::time::Instant) {
+        self.lsr = Some(((ntp >> 16) as u32, now));
+    }
+
+    /// The report block of the source at `now` (24 bytes), `None` before its first packet.
+    /// The fraction lost covers the packets since the previous block.
+    pub(crate) fn block(&mut self, now: std::time::Instant) -> Option<[u8; 24]> {
+        let ssrc = self.ssrc?;
+        let ext_max = u64::from(self.cycles) + u64::from(self.max_seq);
+        let expected = (ext_max + 1).saturating_sub(u64::from(self.base_seq));
+        let lost = i64::try_from(expected).unwrap_or(i64::MAX)
+            - i64::try_from(self.received).unwrap_or(i64::MAX);
+        // 24-bit signed, clamped.
+        let lost = lost.clamp(-0x80_0000, 0x7f_ffff) as i32;
+        let exp_int = expected.saturating_sub(self.expected_prior);
+        let rec_int = self.received.saturating_sub(self.received_prior);
+        self.expected_prior = expected;
+        self.received_prior = self.received;
+        let fraction = if exp_int == 0 || rec_int >= exp_int {
+            0
+        } else {
+            ((exp_int - rec_int) << 8) / exp_int
+        } as u8;
+        let (lsr, dlsr) = self.lsr.map_or((0, 0), |(lsr, at)| {
+            let d = now.saturating_duration_since(at);
+            let units = d.as_secs() * 65536 + (u64::from(d.subsec_nanos()) << 16) / 1_000_000_000;
+            (lsr, u32::try_from(units).unwrap_or(u32::MAX))
+        });
+        let mut b = [0u8; 24];
+        b[..4].copy_from_slice(&ssrc.to_be_bytes());
+        b[4] = fraction;
+        b[5..8].copy_from_slice(&lost.to_be_bytes()[1..]);
+        b[8..12].copy_from_slice(&(ext_max as u32).to_be_bytes());
+        let jitter = u32::try_from(self.jitter >> 4).unwrap_or(u32::MAX);
+        b[12..16].copy_from_slice(&jitter.to_be_bytes());
+        b[16..20].copy_from_slice(&lsr.to_be_bytes());
+        b[20..24].copy_from_slice(&dlsr.to_be_bytes());
+        Some(b)
+    }
+}
+
+/// An RTCP compound packet of a receiver report (RFC 3550 6.4.2) from `ssrc` with `blocks`
+/// (at most 31) and the source description (6.5) of its `cname`, as RFC 3550 6.1 asks of
+/// every compound packet.
+pub(crate) fn receiver_report(ssrc: u32, blocks: &[[u8; 24]], cname: &str) -> Vec<u8> {
+    let blocks = &blocks[..blocks.len().min(31)];
+    let mut b = Vec::with_capacity(8 + 24 * blocks.len() + 12 + cname.len());
+    let words = 1 + 6 * blocks.len() as u16;
+    b.push(0x80 | blocks.len() as u8);
+    b.push(201);
+    b.extend_from_slice(&words.to_be_bytes());
+    b.extend_from_slice(&ssrc.to_be_bytes());
+    for blk in blocks {
+        b.extend_from_slice(blk);
+    }
+    // SDES: one chunk, the CNAME item, an END item, padded to 32 bits.
+    let name = &cname.as_bytes()[..cname.len().min(255)];
+    let start = b.len();
+    b.extend_from_slice(&[0x81, 202, 0, 0]);
+    b.extend_from_slice(&ssrc.to_be_bytes());
+    b.push(1);
+    b.push(name.len() as u8);
+    b.extend_from_slice(name);
+    b.push(0);
+    while b.len() % 4 != 0 {
+        b.push(0);
+    }
+    let words = ((b.len() - start) / 4 - 1) as u16;
+    b[start + 2..start + 4].copy_from_slice(&words.to_be_bytes());
+    b
+}
+
 /// The NTP timestamp (RFC 5905 64-bit format) of the system clock now.
 pub fn ntp_now() -> u64 {
     let d = std::time::SystemTime::now()
@@ -889,6 +1078,96 @@ fn set_param(slot: &mut Option<Vec<u8>>, nal: &[u8], changed: &mut bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rtp_pkt(seq: u16, ts: u32, ssrc: u32) -> Vec<u8> {
+        let mut p = vec![0x80, 96];
+        p.extend_from_slice(&seq.to_be_bytes());
+        p.extend_from_slice(&ts.to_be_bytes());
+        p.extend_from_slice(&ssrc.to_be_bytes());
+        p.push(0);
+        p
+    }
+
+    fn fields(b: &[u8; 24]) -> (u32, u8, i32, u32, u32, u32, u32) {
+        let be = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
+        (
+            be(0),
+            b[4],
+            (be(4) << 8) as i32 >> 8,
+            be(8),
+            be(12),
+            be(16),
+            be(20),
+        )
+    }
+
+    /// RFC 3550 appendix A: losses, the fraction since the last block, wraps, duplicates,
+    /// a lone jump ignored and two in a row restarting, a new SSRC restarting, jitter of
+    /// packets on time and late, LSR / DLSR.
+    #[test]
+    fn reception_reports() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut r = Reception::new(90_000, t0);
+        assert!(r.block(t0).is_none());
+        // 20 ms apart, on time (1800 ticks): no jitter; 65530.. wraps; 3 lost.
+        for (k, seq) in (65_530u16..=65_535).chain(0..10).enumerate() {
+            if matches!(seq, 65_533 | 2 | 7) {
+                continue;
+            }
+            r.rtp(&rtp_pkt(seq, 1800 * k as u32, 7), ms(20 * k as u64));
+        }
+        r.sender_report(0x1111_2222_3333_4444, ms(100));
+        let (ssrc, fraction, lost, max, jitter, lsr, dlsr) = fields(&r.block(ms(600)).unwrap());
+        assert_eq!((ssrc, lost, max, jitter), (7, 3, (1 << 16) + 9, 0));
+        assert_eq!(fraction, (3 * 256 / 16) as u8);
+        assert_eq!(lsr, 0x2222_3333);
+        assert_eq!(dlsr, 65536 / 2);
+        // Nothing new: fraction 0. A duplicate counts as received (cumulative lost may go
+        // down, as RFC 3550 allows).
+        r.rtp(&rtp_pkt(9, 1800 * 15, 7), ms(300));
+        let (_, fraction, lost, max, ..) = fields(&r.block(ms(600)).unwrap());
+        assert_eq!((fraction, lost, max), (0, 2, (1 << 16) + 9));
+        // A packet 10 ms late: |D| = 900 ticks, jitter 900 / 16.
+        r.rtp(&rtp_pkt(10, 1800 * 16, 7), ms(20 * 16 + 10));
+        let (.., jitter, _, _) = fields(&r.block(ms(600)).unwrap());
+        assert_eq!(jitter, 900 / 16);
+        // A lone jump is ignored; two in a row restart the count.
+        r.rtp(&rtp_pkt(20_000, 0, 7), ms(400));
+        assert_eq!(fields(&r.block(ms(600)).unwrap()).3, (1 << 16) + 10);
+        r.rtp(&rtp_pkt(20_001, 0, 7), ms(420));
+        let (_, _, lost, max, ..) = fields(&r.block(ms(600)).unwrap());
+        assert_eq!((lost, max), (0, 20_001));
+        // A new source starts over; the sender report seen stays.
+        r.rtp(&rtp_pkt(5, 0, 8), ms(500));
+        let (ssrc, _, lost, max, jitter, lsr, _) = fields(&r.block(ms(600)).unwrap());
+        assert_eq!((ssrc, lost, max, jitter, lsr), (8, 0, 5, 0, 0x2222_3333));
+        // Not RTP: ignored.
+        r.rtp(&[0x40, 96, 0, 6, 0, 0, 0, 0, 0, 0, 0, 8], ms(510));
+        r.rtp(&[0x80, 96], ms(510));
+        assert_eq!(fields(&r.block(ms(600)).unwrap()).3, 5);
+    }
+
+    #[test]
+    fn receiver_report_compound() {
+        let blk = [7u8; 24];
+        let b = receiver_report(0xabcd_ef01, &[blk], "only-media-x");
+        // RR: V=2, RC=1, PT=201, 7 words; SDES: SC=1, PT=202.
+        assert_eq!(&b[..4], &[0x81, 201, 0, 7]);
+        assert_eq!(&b[4..8], &0xabcd_ef01u32.to_be_bytes());
+        assert_eq!(&b[8..32], &blk);
+        assert_eq!(&b[32..34], &[0x81, 202]);
+        let words = usize::from(u16::from_be_bytes([b[34], b[35]]));
+        assert_eq!(b.len(), 32 + 4 * (words + 1));
+        assert_eq!(&b[36..40], &0xabcd_ef01u32.to_be_bytes());
+        assert_eq!((b[40], b[41]), (1, 12));
+        assert_eq!(&b[42..54], b"only-media-x");
+        assert!(b[54..].iter().all(|&x| x == 0) && !b[54..].is_empty());
+        assert_eq!(b.len() % 4, 0);
+        // No blocks: RC=0, one word.
+        assert_eq!(&receiver_report(1, &[], "c")[..4], &[0x80, 201, 0, 1]);
+    }
     use crate::av::{MILLISECOND, SECOND};
 
     const SPS: &[u8] = &[

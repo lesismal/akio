@@ -11,7 +11,9 @@
 //! `sprop-*`, or in band; for VP8, VP9 and AV1, from the first keyframe). A recording's
 //! tracks are lined up by the publisher's RTCP sender reports ([`RtspConfig::rtcp_sync`], on
 //! by default), so audio and video keep the offset they were captured with rather than the
-//! one their first packets arrived with.
+//! one their first packets arrived with. The publisher gets RTCP receiver reports
+//! ([`RtspConfig::receiver_report_interval`]): losses, jitter and the delay since its last
+//! sender report, per track.
 //!
 //! A player starts with the hub's cached GOP and gets RTCP sender reports; over TCP it is cut
 //! back to keyframes ([`Dropper`]) when it falls behind and closed when it falls further.
@@ -106,6 +108,13 @@ pub struct RtspConfig {
     /// [`RtspClientConfig::rtcp_sync`]). Corrections over 10 s and reports with no NTP time
     /// are ignored. Default `true`; `false` keeps arrival-based times.
     pub rtcp_sync: bool,
+    /// Interval of the RTCP receiver reports (RFC 3550 6.4.2) a recording session sends its
+    /// publisher, one per track on the track's RTCP channel or port: packets lost, the highest
+    /// sequence number, the interarrival jitter and the delay since the track's last sender
+    /// report, in a compound packet with the server's CNAME. A track's first report goes half
+    /// an interval after its first packet. Default 5 s (RFC 3550's minimum);
+    /// `Duration::ZERO` sends none.
+    pub receiver_report_interval: Duration,
 }
 
 impl Default for RtspConfig {
@@ -120,6 +129,7 @@ impl Default for RtspConfig {
             session_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(10),
             rtcp_sync: true,
+            receiver_report_interval: Duration::from_secs(5),
         }
     }
 }
@@ -133,6 +143,7 @@ impl fmt::Debug for RtspConfig {
             .field("session_timeout", &self.session_timeout)
             .field("request_timeout", &self.request_timeout)
             .field("rtcp_sync", &self.rtcp_sync)
+            .field("receiver_report_interval", &self.receiver_report_interval)
             .finish_non_exhaustive()
     }
 }
@@ -146,6 +157,8 @@ struct Route {
     /// The recording session the datagram feeds (dangling for a player's ports).
     rec: Weak<Mutex<Recorder>>,
     media: usize,
+    /// The client's RTCP port of the media (where receiver reports go).
+    rtcp: SocketAddr,
     /// The session's deadlines: any datagram from its client keeps it alive.
     watch: Weak<crate::watch::Watch>,
 }
@@ -248,15 +261,32 @@ fn read_udp(sock: &UdpSocket, server: &Weak<Inner>) {
             if let Some(w) = r.watch.upgrade() {
                 w.touch();
             }
-            (r.rec.clone(), r.media)
+            (r.rec.clone(), r.media, r.rtcp)
         });
-        if let Some((rec, media)) = route {
+        if let Some((rec, media, to)) = route {
             if let Some(rec) = rec.upgrade() {
                 // From the RTCP port, or muxed on the RTP port: sender reports sync the track.
-                if rtp::is_rtcp(&buf[..n]) {
-                    lock(&rec).rtcp(media, &buf[..n]);
-                } else {
-                    lock(&rec).push(media, &buf[..n]);
+                let reports = {
+                    let mut r = lock(&rec);
+                    if rtp::is_rtcp(&buf[..n]) {
+                        r.rtcp(media, &buf[..n]);
+                    } else {
+                        let at = if r.reports_on() {
+                            Instant::now()
+                        } else {
+                            r.start
+                        };
+                        r.push(media, &buf[..n], at);
+                    }
+                    r.take_reports()
+                };
+                if !reports.is_empty() {
+                    let udp = lock(&inner.udp).clone();
+                    if let Some(udp) = udp {
+                        for (_, pkt) in reports {
+                            let _ = udp.rtcp.send_to(&pkt, to);
+                        }
+                    }
                 }
             }
         }
@@ -299,6 +329,12 @@ impl Acceptor for RtspServer {
     }
 }
 
+fn random_u32() -> u32 {
+    let mut b = [0u8; 4];
+    let _ = only_crypto::rand::fill_random(&mut b);
+    u32::from_be_bytes(b)
+}
+
 fn random_hex(n: usize) -> String {
     let mut b = vec![0u8; n];
     let _ = only_crypto::rand::fill_random(&mut b);
@@ -334,6 +370,42 @@ pub(crate) struct Recorder {
     sync: bool,
     /// The NTP time (ns) that times count from, once a track is synchronized.
     ntp_ref: Option<i128>,
+    /// RTCP receiver reports, when on ([`reports`](Self::reports)).
+    rr: Option<Box<Reports>>,
+}
+
+/// The receiver reports of a session: what each media received, when its next report is due,
+/// and the reports due ([`Recorder::take_reports`]).
+struct Reports {
+    every: Duration,
+    ssrc: u32,
+    cname: String,
+    recv: Vec<rtp::Reception>,
+    next: Vec<Option<Instant>>,
+    out: Vec<(usize, Vec<u8>)>,
+}
+
+impl Reports {
+    fn rtp(&mut self, media: usize, data: &[u8], now: Instant) {
+        let (Some(r), Some(next)) = (self.recv.get_mut(media), self.next.get_mut(media)) else {
+            return;
+        };
+        r.rtp(data, now);
+        if !r.started() {
+            return;
+        }
+        match *next {
+            None => *next = Some(now + self.every / 2),
+            Some(t) if now >= t => {
+                *next = Some(now + self.every);
+                if let Some(b) = r.block(now) {
+                    let pkt = rtp::receiver_report(self.ssrc, &[b], &self.cname);
+                    self.out.push((media, pkt));
+                }
+            }
+            Some(_) => {}
+        }
+    }
 }
 
 struct RecMedia {
@@ -406,7 +478,50 @@ impl Recorder {
             scratch: Vec::new(),
             sync: false,
             ntp_ref: None,
+            rr: None,
         })
+    }
+
+    /// Sends RTCP receiver reports from `ssrc` every `every` per media (none with
+    /// `Duration::ZERO`); they are collected with [`take_reports`](Self::take_reports).
+    pub(crate) fn reports(mut self, every: Duration, ssrc: u32) -> Recorder {
+        if every.is_zero() {
+            self.rr = None;
+            return self;
+        }
+        let mut b = [0u8; 8];
+        let _ = only_crypto::rand::fill_random(&mut b);
+        let cname: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        let epoch = Instant::now();
+        let recv = self
+            .media
+            .iter()
+            .map(|m| {
+                let clock = m.track.as_ref().map_or(90_000, Track::clock_rate);
+                rtp::Reception::new(clock, epoch)
+            })
+            .collect();
+        self.rr = Some(Box::new(Reports {
+            every,
+            ssrc,
+            cname: format!("only-media-{cname}"),
+            recv,
+            next: vec![None; self.media.len()],
+            out: Vec::new(),
+        }));
+        self
+    }
+
+    /// Whether receiver reports are sent (and packets need their arrival time).
+    pub(crate) fn reports_on(&self) -> bool {
+        self.rr.is_some()
+    }
+
+    /// The receiver reports due since the last call: the media and the RTCP compound packet.
+    pub(crate) fn take_reports(&mut self) -> Vec<(usize, Vec<u8>)> {
+        self.rr
+            .as_deref_mut()
+            .map_or_else(Vec::new, |r| std::mem::take(&mut r.out))
     }
 
     /// Lines the tracks up by their RTCP sender reports ([`rtcp`](Self::rtcp)).
@@ -423,13 +538,19 @@ impl Recorder {
     /// Feeds one RTCP packet of media `media`: its sender report, if any, synchronizes the
     /// track ([`sync`](Self::sync)).
     pub(crate) fn rtcp(&mut self, media: usize, data: &[u8]) {
-        if !self.sync {
+        if !self.sync && self.rr.is_none() {
             return;
         }
         let Some(m) = self.media.get_mut(media) else {
             return;
         };
-        if let Some(sr) = sender_report(data) {
+        let Some(sr) = sender_report(data) else {
+            return;
+        };
+        if let Some(r) = self.rr.as_deref_mut().and_then(|r| r.recv.get_mut(media)) {
+            r.sender_report(sr.0, Instant::now());
+        }
+        if self.sync {
             m.sr = Some(sr);
             self.resync(media);
         }
@@ -475,8 +596,8 @@ impl Recorder {
         self.media[media].synced = true;
     }
 
-    /// Feeds one RTP packet of media `media`.
-    pub(crate) fn push(&mut self, media: usize, data: &[u8]) {
+    /// Feeds one RTP packet of media `media` that arrived at `now`.
+    pub(crate) fn push(&mut self, media: usize, data: &[u8], now: Instant) {
         let start = self.start;
         let Some(m) = self.media.get_mut(media) else {
             return;
@@ -484,6 +605,9 @@ impl Recorder {
         let (Some(track), Some(index)) = (m.track.as_ref(), m.hub_index) else {
             return;
         };
+        if let Some(rr) = self.rr.as_deref_mut() {
+            rr.rtp(media, data, now);
+        }
         let first = m.depack.is_none();
         let depack = m.depack.get_or_insert_with(|| {
             let off = i64::try_from(start.elapsed().as_nanos()).unwrap_or(0);
@@ -605,6 +729,9 @@ fn hub_status(e: &HubError) -> u16 {
 impl Handler for RtspSession {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         self.watch.touch();
+        // What one read brought arrived at once (the receiver reports' jitter): the clock is
+        // read once, for the first RTP packet.
+        let mut now = None;
         let mut frames = Vec::new();
         if self.parser.feed(data, &mut frames).is_err() {
             let _ = c.send(&Response::new(400).encode(None));
@@ -627,7 +754,9 @@ impl Handler for RtspSession {
                         self.start_play(c);
                     }
                 }
-                Frame::Interleaved { channel, data } => self.interleaved(channel, &data),
+                Frame::Interleaved { channel, data } => {
+                    self.interleaved(c, channel, &data, &mut now);
+                }
                 Frame::Response(_) | Frame::Reply(_) => {}
             }
         }
@@ -652,19 +781,33 @@ impl RtspSession {
         self.setups.clear();
     }
 
-    fn interleaved(&self, channel: u8, data: &[u8]) {
+    fn interleaved(&self, c: &Conn<Self>, channel: u8, data: &[u8], now: &mut Option<Instant>) {
         let Some(rec) = &self.recorder else { return };
         let media = self.setups.iter().find_map(|(&m, p)| match *p {
-            Path::Tcp { rtp, .. } if rtp == channel => Some((m, false)),
-            Path::Tcp { rtcp, .. } if rtcp == channel => Some((m, true)),
+            Path::Tcp { rtp, rtcp } if rtp == channel => Some((m, false, rtcp)),
+            Path::Tcp { rtcp, .. } if rtcp == channel => Some((m, true, rtcp)),
             _ => None,
         });
-        if let Some((m, rtcp)) = media {
+        if let Some((m, is_rtcp, ch)) = media {
             // The RTCP channel, or RTCP muxed on the RTP one: sender reports sync the track.
-            if rtcp || rtp::is_rtcp(data) {
-                lock(rec).rtcp(m, data);
-            } else {
-                lock(rec).push(m, data);
+            let reports = {
+                let mut r = lock(rec);
+                if is_rtcp || rtp::is_rtcp(data) {
+                    r.rtcp(m, data);
+                } else {
+                    let at = if r.reports_on() {
+                        *now.get_or_insert_with(Instant::now)
+                    } else {
+                        r.start
+                    };
+                    r.push(m, data, at);
+                }
+                r.take_reports()
+            };
+            for (_, pkt) in reports {
+                let mut b = Vec::with_capacity(pkt.len() + 4);
+                message::interleaved(ch, &pkt, &mut b);
+                let _ = c.send_owned(b);
             }
         }
     }
@@ -779,7 +922,9 @@ impl RtspSession {
         let Some(rec) = Recorder::new(Arc::new(publisher), &s.media) else {
             return Response::new(415);
         };
-        let rec = rec.sync(self.srv.cfg.rtcp_sync);
+        let rec = rec
+            .sync(self.srv.cfg.rtcp_sync)
+            .reports(self.srv.cfg.receiver_report_interval, random_u32());
         self.announced = s.media;
         self.path = Some(path);
         self.recorder = Some(Arc::new(Mutex::new(rec)));
@@ -860,6 +1005,7 @@ impl RtspSession {
                     Route {
                         rec: rec.clone(),
                         media: index,
+                        rtcp: rtcp_addr,
                         watch: Arc::downgrade(&self.watch),
                     },
                 );
@@ -1156,7 +1302,7 @@ mod tests {
                 out.clear();
                 packers[pkt.track].packetize(pkt, &mut out);
                 for r in &out {
-                    rec.push(pkt.track, r);
+                    rec.push(pkt.track, r, Instant::now());
                 }
             }
             let g = lock(&got.0);

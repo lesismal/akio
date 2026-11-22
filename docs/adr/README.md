@@ -82,4 +82,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-078: mDNS over IPv6: hop limit 255, IPv6-only links, interop with Chrome, avahi and mDNSResponder](078-mdns-ipv6-hop-limit-ipv6-only.md) (accepted 2026-11-22)
 - [ADR-081: Per-thread header storage, pooled response heads, HTTP/2 requests without a boxed context](081-per-thread-head-storage.md) (accepted 2026-11-22)
 - [ADR-082: Scalable (L4S) CE response, RFC 6679 signalling, ECN over relays, latching the DTLS handshake, and DTLS-SRTP MKIs](082-webrtc-l4s-rfc6679-dtls-latching-mki.md) (accepted 2026-11-22)
+- [ADR-084: RTSP receiver reports, client redirects, lookups on reconnect; HLS keyframe requests](084-rtsp-receiver-reports-redirects-lookups.md) (accepted 2026-11-22)
 - [ADR-085: The codec-side fields of RTCP XR VoIP metrics: G.107 / G.107.1 per codec, the application's values](085-rtcp-xr-voip-quality-fields.md) (accepted 2026-11-22)

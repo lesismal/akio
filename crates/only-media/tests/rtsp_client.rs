@@ -756,3 +756,105 @@ fn push_reconnects() {
     dst_engine.shutdown();
     ce.shutdown();
 }
+
+/// mediamtx redirecting (`ONLY_MEDIAMTX_REDIRECT=host:port`, a mediamtx whose path `moved`
+/// is `source: redirect` to `rtsp://host:port/rsrc`, as `tools/interop/media/rtsp-redirect.sh`
+/// starts it): our client records a sample to `rsrc`, then plays `moved`, which mediamtx
+/// answers with `302` and the `rsrc` URL; the pull must follow it and carry every track.
+/// Transports from `ONLY_MEDIAMTX_TRANSPORTS`; `ONLY_MEDIAMTX_HOLD=<seconds>` keeps the
+/// sessions (the pull sending its RTCP receiver reports) and checks media still flows.
+/// Skipped without `ONLY_MEDIAMTX_REDIRECT`.
+#[test]
+fn mediamtx_redirect() {
+    let Ok(mtx) = std::env::var("ONLY_MEDIAMTX_REDIRECT") else {
+        eprintln!(
+            "ONLY_MEDIAMTX_REDIRECT not set: skipped (see tools/interop/media/rtsp-redirect.sh)"
+        );
+        return;
+    };
+    let engine = client_engine();
+    let hub = Hub::default();
+    let (tracks, stop) = feed(&hub, "src", "h264_aac.flv");
+    wait("src live", 5, || {
+        hub.stream_info("src").is_some_and(|i| i.publishing)
+    });
+    let hold: u64 = std::env::var("ONLY_MEDIAMTX_HOLD")
+        .ok()
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(0);
+    for (t, name) in transports("ONLY_MEDIAMTX_TRANSPORTS") {
+        let push = client::push(&engine, &format!("rtsp://{mtx}/rsrc"), &hub, "src", cfg(t))
+            .unwrap_or_else(|e| panic!("push over {name}: {e}"));
+        std::thread::sleep(Duration::from_millis(1500));
+        let back = format!("moved_{name}");
+        let pull = client::pull(&engine, &format!("rtsp://{mtx}/moved"), &hub, &back, cfg(t))
+            .unwrap_or_else(|e| panic!("pull of the redirect over {name}: {e}"));
+        check_live(&hub, &back, &tracks);
+        if hold > 0 {
+            let before = hub.stream_info(&back).unwrap().packets_in;
+            std::thread::sleep(Duration::from_secs(hold));
+            let after = hub.stream_info(&back).map_or(0, |i| i.packets_in);
+            assert!(after > before + 100, "{name}: {before} -> {after} packets");
+        }
+        assert!(pull.error().is_none(), "{:?}", pull.error());
+        eprintln!("pulled rtsp://{mtx}/moved over {name}: redirected to rsrc, live");
+        drop(pull);
+        drop(push);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    stop.store(true, Ordering::Relaxed);
+    engine.shutdown();
+}
+
+/// A server that moves (`ONLY_MOVING_SERVER=name:port`, a name the Docker network resolves,
+/// as `tools/interop/media/rtsp-redirect.sh` runs it): our client records a sample to
+/// `name/mv` and plays it back, both reconnecting; once both are live it prints `READY`, and
+/// the script replaces the server with another one at another address under the same name.
+/// Both clients must look the name up again, find the new server and carry media within
+/// `ONLY_MOVING_WAIT` seconds (default 120). Transport from `ONLY_MEDIAMTX_TRANSPORTS` (the
+/// first one). Skipped without `ONLY_MOVING_SERVER`.
+#[test]
+fn server_moves_to_another_address() {
+    use std::io::Write as _;
+    let Ok(srv) = std::env::var("ONLY_MOVING_SERVER") else {
+        eprintln!("ONLY_MOVING_SERVER not set: skipped (see tools/interop/media/rtsp-redirect.sh)");
+        return;
+    };
+    let (t, name) = transports("ONLY_MEDIAMTX_TRANSPORTS")[0];
+    let engine = Arc::new(client_engine());
+    let hub = Hub::default();
+    let (tracks, stop) = feed(&hub, "src", "h264_aac.flv");
+    wait("src live", 5, || {
+        hub.stream_info("src").is_some_and(|i| i.publishing)
+    });
+    let url = format!("rtsp://{srv}/mv");
+    let push = client::push(&engine, &url, &hub, "src", reconnecting(t, &engine)).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let pull = client::pull(&engine, &url, &hub, "back", reconnecting(t, &engine)).unwrap();
+    check_live(&hub, "back", &tracks);
+    println!("READY ({name})");
+    std::io::stdout().flush().unwrap();
+    let secs = std::env::var("ONLY_MOVING_WAIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    wait("both reconnected", secs, || {
+        push.reconnects() >= 1 && pull.reconnects() >= 1 && push.is_live() && pull.is_live()
+    });
+    let before = hub.stream_info("back").map_or(0, |i| i.packets_in);
+    wait("media from the new server", 30, || {
+        hub.stream_info("back")
+            .is_some_and(|i| i.packets_in > before + 100)
+    });
+    println!(
+        "MOVED ({name}): push {} and pull {} reconnects, last errors {:?} / {:?}",
+        push.reconnects(),
+        pull.reconnects(),
+        push.error(),
+        pull.error()
+    );
+    drop(pull);
+    drop(push);
+    stop.store(true, Ordering::Relaxed);
+    engine.shutdown();
+}

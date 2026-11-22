@@ -1906,6 +1906,7 @@ pub only_media::rtsp::client::RtspClientConfig::max_body: usize
 pub only_media::rtsp::client::RtspClientConfig::max_head: usize
 pub only_media::rtsp::client::RtspClientConfig::max_write_queue: usize
 pub only_media::rtsp::client::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::receiver_report_interval: core::time::Duration
 pub only_media::rtsp::client::RtspClientConfig::reconnect: core::option::Option<only_media::reconnect::Reconnect>
 pub only_media::rtsp::client::RtspClientConfig::response_timeout: core::time::Duration
 pub only_media::rtsp::client::RtspClientConfig::rtcp_sync: bool
@@ -2281,6 +2282,7 @@ pub only_media::rtsp::RtspClientConfig::max_body: usize
 pub only_media::rtsp::RtspClientConfig::max_head: usize
 pub only_media::rtsp::RtspClientConfig::max_write_queue: usize
 pub only_media::rtsp::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::receiver_report_interval: core::time::Duration
 pub only_media::rtsp::RtspClientConfig::reconnect: core::option::Option<only_media::reconnect::Reconnect>
 pub only_media::rtsp::RtspClientConfig::response_timeout: core::time::Duration
 pub only_media::rtsp::RtspClientConfig::rtcp_sync: bool
@@ -2304,6 +2306,7 @@ pub only_media::rtsp::RtspConfig::credentials: core::option::Option<only_media::
 pub only_media::rtsp::RtspConfig::max_write_queue: usize
 pub only_media::rtsp::RtspConfig::play_wait: core::option::Option<core::time::Duration>
 pub only_media::rtsp::RtspConfig::realm: alloc::string::String
+pub only_media::rtsp::RtspConfig::receiver_report_interval: core::time::Duration
 pub only_media::rtsp::RtspConfig::request_timeout: core::time::Duration
 pub only_media::rtsp::RtspConfig::rtcp_sync: bool
 pub only_media::rtsp::RtspConfig::sender_report_interval: core::time::Duration

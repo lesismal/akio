@@ -120,7 +120,9 @@ chunk streams of a connection to 32 MiB.
   hub and stops after `idle_timeout` without requests) that cuts MPEG-TS segments in memory at
   keyframes after `target_duration`, keeps a sliding window of `playlist_size` segments plus
   `keep_segments` for late readers, bounded by `max_bytes` (a segment that reaches it without a
-  keyframe to cut at is cut there), and marks republishes with
+  keyframe to cut at is cut there; a segment past `target_duration` asks the publisher for a
+  keyframe, at most once per target, since WebRTC encoders send them on request only), and
+  marks republishes with
   `EXT-X-DISCONTINUITY`. With `part_duration` it adds the Low-Latency HLS tags:
   `EXT-X-PART`, `EXT-X-PRELOAD-HINT`, `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`, and blocking
   playlist reloads (`?_HLS_msn=&_HLS_part=`). Requests that must wait are parked (no thread is

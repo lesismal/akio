@@ -35,7 +35,11 @@ tokens travel).
   for B-frame video (a reorder-depth estimate, no frame held back). The tracks are lined up by
   the publisher's RTCP sender reports (`RtspConfig::rtcp_sync`, on by default; interleaved RTCP
   channels, RTCP muxed on the RTP channel, the UDP ports), as in the client's pull below, so
-  audio and video keep the offset they were captured with.
+  audio and video keep the offset they were captured with. The server sends the publisher RTCP
+  receiver reports (RFC 3550 6.4.2) on each track's RTCP channel or port, every
+  `RtspConfig::receiver_report_interval` (5 s; zero for none): the publisher's SSRC, the
+  fraction and number of packets lost, the highest sequence number, the interarrival jitter,
+  the last sender report's NTP time and the delay since, followed by an SDES with a CNAME.
 - Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), VP8 (RFC 7741), VP9
   (RFC 9628), AV1 (AOM RTP payload; the three through only-rtp, a frame missing a packet is
   dropped), AAC (`mpeg4-generic` `AAC-hbr`), Opus, G.711.
@@ -58,7 +62,10 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 The same file records with sender reports that put audio 500 ms after video while the packets
 arrive together (TCP, RTCP muxed on the RTP channels, UDP; reports before the media and
 halfway): the hub's times follow the reports, reports 60 s apart are ignored, and with
-`rtcp_sync` off the times follow the arrival.
+`rtcp_sync` off the times follow the arrival. Another test reads the receiver reports a
+recording sends back over TCP and UDP (losses across a sequence number wrap, the LSR / DLSR of
+a sender report). GStreamer's `rtspclientsink` records to the server over TCP and UDP and its
+RTP session logs every report (`tools/interop/media/rtsp-redirect.sh`).
 
 ## WHIP and WHEP
 
@@ -136,7 +143,8 @@ let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cam
 
 `pull` and `push` return once PLAY or RECORD is answered: they wait for the handshake, so call
 them off the I/O threads (host names are resolved there too; `RtspClientConfig::addr` skips the
-lookup). The session then runs on the engine; `error()` says why it ended and `close()` (or
+lookup). Host names are looked up again for every new session (a reconnect, a redirect), so a
+server that moved to another address under the same name is found. The session then runs on the engine; `error()` says why it ended and `close()` (or
 dropping the handle) sends TEARDOWN. Credentials in the URL answer Digest or Basic challenges.
 Keep-alives (GET_PARAMETER, else OPTIONS) go at half the server's session timeout. UDP binds an
 RTP/RTCP port pair per track with `Engine::bind_udp`, so the engine needs
@@ -149,7 +157,18 @@ behind is cut back to keyframes, then disconnected.
 arrival; once a track has a report, its RTP timestamps are mapped to the server's NTP clock
 relative to the first track synchronized, so audio and video captured together carry the same
 time in the hub. Corrections only move times forward, and servers that send their reports
-early (ffmpeg, mediamtx) have the stream aligned before it goes live.
+early (ffmpeg, mediamtx) have the stream aligned before it goes live. A pull sends the
+server RTCP receiver reports on each track's RTCP channel or port every
+`RtspClientConfig::receiver_report_interval` (5 s; with zero, an empty report goes to each UDP
+RTCP port with the keep-alives, as before, for NAT bindings).
+
+**Redirects**: a 3xx response with a `Location` (`300` to `303`, `307`, `308`; not `305 Use Proxy`) to any
+request before PLAY or RECORD is answered ends that connection and starts the handshake again
+at the location (an `rtsp://` URL, or an absolute path on the same server), up to five in a
+row; then the client fails with the last one's status. The URL's credentials go along only to
+the same host and port, unless the location carries its own; `RtspClientConfig::addr` applies
+to the client's own URL only. A `301` is remembered: reconnects start at its location, other
+redirects are followed again from the original URL.
 
 **Reconnecting**: with `RtspClientConfig::reconnect` (an `only_media::Reconnect`, built on an
 `Arc<Engine>`) a session that fails with an error another try may cure is followed by a new
@@ -162,7 +181,11 @@ error); `reconnects()` and `is_live()` tell how it goes.
 Interop: ffmpeg's listen mode receives our push (TCP and UDP); mediamtx records our push and
 serves our pull, TCP and UDP (`tools/interop/media/rtsp-client.sh`; UDP runs in a container on
 mediamtx's network because Docker Desktop's NAT drops it); mediamtx restarted twice under our
-reconnecting pulls and pushes (`tests/mediamtx_reconnect.rs`, `--ignored`).
+reconnecting pulls and pushes (`tests/mediamtx_reconnect.rs`, `--ignored`). A pull of a mediamtx path
+configured as `source: redirect` follows its `302`, over TCP and UDP, and a UDP pull held for
+75 s past mediamtx's 60 s session timeout is kept alive by its receiver reports; on a Docker
+network, the name our reconnecting push and pull use moves from one mediamtx to another at
+another address, and both find the new one (`tools/interop/media/rtsp-redirect.sh`).
 
 ## Statistics
 
@@ -173,5 +196,5 @@ reconnecting pulls and pushes (`tests/mediamtx_reconnect.rs`, `--ignored`).
 ## Not supported
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
-outlive their connection; RTCP receiver reports to recorders. Client: redirects, re-resolving the host name on
-reconnect. WebRTC: simulcast, transcoding.
+outlive their connection. Client: the `REDIRECT` request a server may send during a session
+(answered 501; 3xx responses are followed). WebRTC: simulcast, transcoding.

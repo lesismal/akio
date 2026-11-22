@@ -82,4 +82,5 @@
 - [ADR-078：IPv6 上的 mDNS：跳数限制 255、纯 IPv6 链路、与 Chrome、avahi 和 mDNSResponder 互通](078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md)（2026-11-22 采纳）
 - [ADR-081：按线程备用的头部存储、池化的响应头、不装箱 Context 的 HTTP/2 请求](081-per-thread-head-storage.zh-CN.md)（2026-11-22 采纳）
 - [ADR-082：可扩展（L4S）的 CE 响应、RFC 6679 信令、经中继的 ECN、锁定 DTLS 握手，以及 DTLS-SRTP 的 MKI](082-webrtc-l4s-rfc6679-dtls-latching-mki.zh-CN.md)（2026-11-22 采纳）
+- [ADR-084：RTSP 接收者报告、客户端重定向、重连时重新解析；HLS 请求关键帧](084-rtsp-receiver-reports-redirects-lookups.zh-CN.md)（2026-11-22 采纳）
 - [ADR-085：RTCP XR VoIP 指标中与编解码器相关的字段：按编解码器的 G.107 / G.107.1，应用提供的值](085-rtcp-xr-voip-quality-fields.zh-CN.md)（2026-11-22 采纳）

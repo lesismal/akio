@@ -133,6 +133,30 @@ ADR-069 的 2026-11-22 补记，新增 API：
   新的模糊测试目标 `brotli_shared`。
 - 无字典解码速度不变（gpu51 同批 A/B：libbrotli 的流为 main 速度的 0.996，我们自己的流 0.999（几何平均），在噪声之内；docs/BENCHMARKS.zh-CN.md，“brotli 共享字典”）。
 
+### 新增：RTSP 接收者报告、客户端重定向与重连时重新解析；HLS 请求关键帧（only-media）
+
+ADR-084（docs/adr/084-rtsp-receiver-reports-redirects-lookups.zh-CN.md）：
+
+- `RtspConfig::receiver_report_interval`（新增，默认 5 s）：RECORD 会话在每条轨道的 RTCP 通道或端口上向推流端
+  发送 RTCP 接收者报告（RFC 3550 6.4.2）：丢包比例与丢包数、扩展最高序列号、到达间隔抖动、最近一次发送者报告的
+  LSR / DLSR，并附 SDES CNAME。`Duration::ZERO` 不发送。
+- `RtspClientConfig::receiver_report_interval`（新增，默认 5 s）：拉流向其服务器发送同样的报告。为零时保留原先
+  随 UDP 保活发送的空报告。
+- RTSP 客户端跟随重定向：PLAY 或 RECORD 得到应答之前收到带 `Location` 的 `300` 至 `303`、`307` 或 `308`，就在
+  该处（绝对 `rtsp://` URL 或绝对路径）重新握手，连续至多五次；凭据只带给同一主机与端口；`301` 保留给之后的会话。
+  行为变化：这类应答以前会让客户端以 `ClientError::Status` 失败。
+- RTSP 客户端为每个会话（每次重连、每次重定向）重新解析主机名，因此能找到以同一名字换了地址的服务器；重连时解析
+  失败会重试，而不再结束客户端。
+- 修复，HLS：超过 `target_duration` 仍无关键帧的分段会向推流端请求关键帧（`Subscription::request_keyframe`，
+  WHIP 入流即 PLI），每个目标时长至多一次。Chrome 的 WebRTC AV1 编码器只按请求发送关键帧，因此 WHIP 流从未
+  结束一个分段，`tools/interop/media/browser.sh` 的多码率播放列表应答 503。
+- 测试：接收统计（丢包、回绕、重复、跳跃、SSRC 变化、抖动、LSR / DLSR），从经 TCP 与 UDP 的 RECORD 会话以及
+  从脚本化服务器拉流读回的接收者报告，重定向（链、循环、凭据、被记住的 `301`），客户端重连期间服务器名字的迁移，
+  HLS 的关键帧请求。新增 `tools/interop/media/rtsp-redirect.sh`：mediamtx 1.15.3 的重定向（`source: redirect`）经 TCP 与 UDP 被跟随，UDP 会话靠接收者
+  报告保持 75 s，GStreamer 1.24.2 `rtspclientsink` 经 UDP 解析我们的报告（经 TCP 时它丢弃交织数据），Docker 网络中
+  服务器名字在两个 mediamtx 容器之间迁移时我们的推流与拉流完成重连（main 的客户端超时）。
+- 与 main 在 gpu51 上同轮 A/B（`quiet.sh`，单个固定核心，交替多轮，取中位数，head / base）：RTSP 拉流 1.024、RTSP RECORD 入流 1.087、RTMP 拉流 0.998（`tests/client_bench.rs`，9 轮）；`bench_segmenting`（7 轮）MPEG-TS 0.981、MPEG-TS LL-HLS 0.995、fMP4 1.015、fMP4 LL-HLS 1.013、AES-128 0.998 至 1.001、SAMPLE-AES MPEG-TS 1.002、`cbcs` 1.004（分段超过目标时长后，关键帧请求是每包一次比较）。RECORD 的开销（每个 RTP 包 +18 ns）来自接收者报告所需的到达时间：每次带来 RTP 包的读取读一次时钟，而该基准每次读 255 字节，约每包一次读取；更大的读取让多个包共用一次时钟读取，`receiver_report_interval` 为零时完全跳过。最初每包读一次时钟并用 u128 除法换算的版本为 1.113（拉流）与 1.104（RECORD）。
+
 ### 新增：带 GSS-API 保护的 SOCKS5 UDP ASSOCIATE（only-socks、only-ws）
 
 ADR-071 的 2026-11-22 更新，API 没有变化：

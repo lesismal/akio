@@ -20,8 +20,10 @@ use only::Engine;
 /// discontinuity). A push subscribes again and starts from the cached GOP.
 ///
 /// The client dials again on the engine given to [`new`](Self::new), which it holds weakly:
-/// once the engine is dropped the client ends. The address resolved when the client started
-/// is dialed again (no name lookup on the reconnecting thread).
+/// once the engine is dropped the client ends. The RTSP client looks the URL's host name up
+/// again for every try (on the reconnecting thread; a name that fails to resolve is tried
+/// again like a refused connect), so a server that moved is found; the RTMP client dials the
+/// address resolved when it started.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct Reconnect {

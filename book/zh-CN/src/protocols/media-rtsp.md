@@ -29,6 +29,9 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   `RECORD`。参数集一旦已知（来自 SDP 或码流内；VP8、VP9、AV1 来自第一个关键帧）流即上线。RTP 只携带显示时间，因此服务端为带
   B 帧的视频推算解码时间（估计重排深度，不缓存帧）。各轨道按推流端的 RTCP 发送者报告对齐（`RtspConfig::rtcp_sync`，
   默认开启；交织 RTCP 通道、复用在 RTP 通道上的 RTCP、UDP 端口），与下文客户端拉流相同，音视频因此保持采集时的偏移。
+  服务端每隔 `RtspConfig::receiver_report_interval`（5 s；为零则不发）在每条轨道的 RTCP 通道或端口上向推流端发送
+  RTCP 接收者报告（RFC 3550 6.4.2）：推流端的 SSRC、丢包比例与丢包数、最高序列号、到达间隔抖动、最近一次发送者
+  报告的 NTP 时间及其后经过的时间，后随带 CNAME 的 SDES。
 - 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、VP8（RFC 7741）、VP9（RFC 9628）、
   AV1（AOM 的 RTP 负载格式；这三种经 only-rtp 处理，缺包的帧被丢弃）、AAC（`mpeg4-generic` `AAC-hbr`）、
   Opus、G.711。
@@ -49,6 +52,8 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 
 同一文件还以发送者报告录制：报告把音频放在视频之后 500 ms，而数据包同时到达（TCP、复用在 RTP 通道上的 RTCP、
 UDP；报告在媒体之前与在中途）：hub 中的时间跟随报告，相差 60 s 的报告被忽略，关闭 `rtcp_sync` 时按到达计时。
+另一个测试读取录制会话经 TCP 与 UDP 发回的接收者报告（跨序列号回绕的丢包、发送者报告的 LSR / DLSR）。GStreamer 的
+`rtspclientsink` 经 TCP 与 UDP 向服务端录制，其 RTP 会话记录下每一份报告（`tools/interop/media/rtsp-redirect.sh`）。
 
 ## WHIP 与 WHEP
 
@@ -119,7 +124,8 @@ let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cam
 ```
 
 `pull` 与 `push` 在 PLAY 或 RECORD 得到应答后才返回：它们等待握手完成，因此请在 I/O 线程之外调用（主机名
-也在此解析；`RtspClientConfig::addr` 可免去解析）。之后会话运行在引擎上；`error()` 说明结束原因，`close()`
+也在此解析；`RtspClientConfig::addr` 可免去解析）。每个新会话（重连、重定向）都会重新解析主机名，因此服务器
+换了地址而名字不变时也能找到。之后会话运行在引擎上；`error()` 说明结束原因，`close()`
 （或丢弃句柄）发送 TEARDOWN。URL 中的凭据用于应答 Digest 或 Basic 质询。保活（GET_PARAMETER，否则
 OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp` 为每条轨道绑定一对 RTP/RTCP 端口，因此
 引擎需要 `udp_client_threads` 或一个 UDP 监听器。上限：连接与每次应答 10 s，拉流 10 s 无媒体即结束，
@@ -128,7 +134,13 @@ OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp
 **音视频同步**：拉流按服务器的 RTCP 发送端报告对齐各轨（`RtspClientConfig::rtcp_sync`，默认开启）。每轨时间
 从其首包到达时开始；一轨一旦收到报告，其 RTP 时间戳就按服务器的 NTP 时钟映射，相对于第一个完成同步的轨，
 因此同时采集的音频与视频在 hub 中带有相同的时间。修正只让时间向前移动；早发报告的服务器（ffmpeg、mediamtx）
-在流进入直播之前就已对齐。
+在流进入直播之前就已对齐。拉流每隔 `RtspClientConfig::receiver_report_interval`（5 s）在每条轨道的 RTCP 通道
+或端口上向服务器发送 RTCP 接收者报告（为零时与以前一样，随保活向每个 UDP RTCP 端口发一个空报告以维持 NAT 映射）。
+
+**重定向**：PLAY 或 RECORD 得到应答之前，任何请求收到带 `Location` 的 3xx 应答（`300` 至 `303`、`307`、`308`；
+`305 Use Proxy` 除外）都会结束当前连接，并在该位置（`rtsp://` URL，或同一服务器上的绝对路径）重新握手，连续最多五次；
+超过则以最后一次的状态失败。URL 中的凭据只带给同一主机与端口，除非该位置自带凭据；`RtspClientConfig::addr`
+只用于客户端自己的 URL。`301` 会被记住：重连从它的位置开始，其他重定向则每次从原 URL 重新跟随。
 
 **自动重连**：设置 `RtspClientConfig::reconnect`（一个基于 `Arc<Engine>` 构建的 `only_media::Reconnect`）后，
 以再试一次可能好转的错误失败的会话会在有上限、逐次翻倍的退避之后由新会话接替；由于握手会阻塞，每次尝试在
@@ -139,6 +151,9 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 互通：ffmpeg 的监听模式接收我们的推流（TCP 与 UDP）；mediamtx 接收我们的推流并供我们拉流，TCP 与 UDP 均测
 （`tools/interop/media/rtsp-client.sh`；由于 Docker Desktop 的 NAT 会丢弃 UDP，UDP 在 mediamtx 所在网络的
 容器中运行）；mediamtx 在我们自动重连的拉流与推流下被重启两次（`tests/mediamtx_reconnect.rs`，`--ignored`）。
+拉取配置为 `source: redirect` 的 mediamtx 路径时跟随其 `302`（TCP 与 UDP），UDP 拉流保持 75 s，超过 mediamtx 60 s
+的会话超时，靠接收者报告维持；在 Docker 网络中，我们自动重连的推流与拉流所用的名字从一个 mediamtx 移到另一个地址
+上的另一个 mediamtx，两者都找到了新的（`tools/interop/media/rtsp-redirect.sh`）。
 
 ## 统计
 
@@ -148,6 +163,5 @@ hub 流当前的轨道，并从缓存的 GOP 继续。第一个会话必须成�
 
 ## 不支持
 
-RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话；不向推流端发送
-RTCP 接收者报告。客户端：重定向、重连时重新解析
-主机名。WebRTC：simulcast、转码。
+RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话。客户端：服务器在会话中
+可能发送的 `REDIRECT` 请求（应答 501；3xx 应答会被跟随）。WebRTC：simulcast、转码。
