@@ -28,6 +28,23 @@
 //! the description's fingerprint: a handshake that completes latches for good (as the policy
 //! says); one that fails, is closed, or has not completed within [`DTLS_TENTATIVE`] moves the
 //! pair back and lets another source try. Others' ClientHellos wait meanwhile.
+//!
+//! ADR-086 extends this to the other cases:
+//!
+//! - **RTCP's own handshake** (component 2, without rtcp-mux, RFC 5764 §4.1) latches the same
+//!   way, from the NAT's mapping of the remote's RTCP port, with its own cookie exchange and
+//!   tentative pair.
+//! - **This side the DTLS client** (the remote answered or offered `passive`): the remote, a
+//!   server, sends nothing a NAT would let through until it hears from us, and our
+//!   ClientHello goes to the private address. A datagram from an unknown source on the
+//!   component's local address (an RFC 6263 keepalive: a STUN Binding Indication or request,
+//!   or RTP before any keys) makes the component's pair move there tentatively, and a fresh
+//!   client handshake starts toward it. The server must prove the description's fingerprint,
+//!   as above; failure, a close or [`DTLS_TENTATIVE`] moves the pair back and the handshake
+//!   starts over toward the description's address. One attempt at a time per component, so
+//!   spoofed triggers make this side send a few ClientHellos per [`DTLS_TENTATIVE`] at most.
+//!   [`RtcConfig::set_plain_keepalive`](crate::RtcConfig::set_plain_keepalive) sends such
+//!   keepalives.
 
 use super::*;
 use crate::types::Latching;
@@ -57,8 +74,8 @@ pub(super) struct Tentative {
 #[derive(Debug, Default)]
 pub(super) struct Latch {
     comps: [LatchComp; 2],
-    /// A handshake with an unknown source (ADR-082).
-    pub(super) tentative: Option<Tentative>,
+    /// A handshake with an unknown source, per component (ADR-082, ADR-086).
+    pub(super) tentative: [Option<Tentative>; 2],
     /// The description's address of each component.
     sdp: [Option<SocketAddr>; 2],
     /// Times the remote moved (statistics).
@@ -156,17 +173,16 @@ impl Rtc {
 
     /// Whether the peer takes datagrams from unknown sources on local address
     /// `destination` at `now` to try them for latching: some transport has its keys, uses
-    /// that local address, and has a component that may move now.
+    /// that local address, and has a component that may move now; or a DTLS handshake of a
+    /// component on it may latch.
     pub(crate) fn latch_open(&self, now: Instant, destination: SocketAddr) -> bool {
         if !self.latching() || !self.alive {
             return false;
         }
-        if self.dtls_latch_open(now, destination)
-            || self
-                .xt
-                .tps
-                .iter()
-                .any(|(_, t)| t.dtls_latch_open(&self.cfg, self.dtls_role, now, destination))
+        if (1..=2).any(|c| self.dtls_latch_open(now, c, destination))
+            || self.xt.tps.iter().any(|(_, t)| {
+                (1..=2).any(|c| t.dtls_latch_open(&self.cfg, self.dtls_role, now, c, destination))
+            })
         {
             return true;
         }
@@ -206,8 +222,9 @@ impl Rtc {
     }
 
     /// A datagram from `source`, an address no transport knows, that arrived on
-    /// `destination`: tried as RTP / RTCP of each transport; `true` if it authenticated
-    /// (it was then received, and the transport latched onto `source` if the policy allows).
+    /// `destination`: tried as RTP / RTCP of each transport, or for DTLS latching; `true` if
+    /// it was taken (it authenticated, and the transport latched onto `source` if the policy
+    /// allows; or a handshake answered it or started toward it).
     pub(crate) fn latch_receive(
         &mut self,
         now: Instant,
@@ -215,8 +232,8 @@ impl Rtc {
         destination: SocketAddr,
         data: &[u8],
     ) -> bool {
-        let dtls = matches!(data.first(), Some(20..=63));
-        if !(dtls || matches!(data.first(), Some(128..=191))) || !self.latch_open(now, destination)
+        if !matches!(data.first(), Some(0..=3 | 20..=63 | 128..=191))
+            || !self.latch_open(now, destination)
         {
             self.rx_ecn = 0;
             return false;
@@ -249,11 +266,24 @@ impl Rtc {
         if !comp1 && !rtcp_comp {
             return;
         }
-        if matches!(data.first(), Some(20..=63)) {
-            if comp1 {
-                self.latch_dtls(now, source, destination, data);
+        let comp = if rtcp_comp { 2 } else { 1 };
+        match data.first() {
+            Some(20..=63) => {
+                if self.dtls_role == Some(Role::Server) {
+                    self.latch_dtls(now, comp, source, destination, data);
+                }
+                return;
             }
-            return;
+            Some(0..=3 | 128..=191)
+                if self.dtls_role == Some(Role::Client)
+                    && self.dtls_latch_open(now, comp, destination) =>
+            {
+                // The DTLS client hears from a source it does not know (ADR-086).
+                self.latch_dtls_client(now, comp, source, destination);
+                return;
+            }
+            Some(0..=3) => return,
+            _ => {}
         }
         self.latch_rx = Some((source, destination));
         if only_rtp::is_rtcp(data) {
@@ -268,49 +298,66 @@ impl Rtc {
         }
     }
 
-    /// Whether the current transport latches a DTLS handshake onto a ClientHello arriving on
+    /// Component `comp`'s DTLS state: handshake done, and the remote address heard from.
+    fn comp_dtls(&self, comp: u16) -> (bool, Option<SocketAddr>) {
+        if comp == 2 {
+            (self.rtcp.dtls_up, self.rtcp.first.map(|f| f.1))
+        } else {
+            (self.dtls_up, self.remote_addr)
+        }
+    }
+
+    /// Whether the current transport's component `comp` latches its DTLS handshake from
     /// `destination` at `now` (see the module docs).
-    fn dtls_latch_open(&self, now: Instant, destination: SocketAddr) -> bool {
+    fn dtls_latch_open(&self, now: Instant, comp: u16, destination: SocketAddr) -> bool {
+        let (up, heard) = self.comp_dtls(comp);
         dtls_open(
             &self.cfg,
             &self.ice,
             &self.latch,
-            (self.sdes.active, self.dtls_role, self.dtls_up),
-            self.remote_addr,
+            comp,
+            (self.sdes.active, self.dtls_role, up),
+            heard,
             now,
             destination,
         )
     }
 
-    /// Whether a DTLS datagram from `source` on `destination` goes to DTLS latching: the
-    /// handshake may latch and `source` is not the pair's remote.
+    /// Whether a DTLS datagram from `source` on `destination` goes to DTLS latching of
+    /// component `comp`: this side is the server, the handshake may latch and `source` is
+    /// not the pair's remote.
     pub(super) fn dtls_latching(
         &self,
         now: Instant,
+        comp: u16,
         source: SocketAddr,
         destination: SocketAddr,
     ) -> bool {
         self.latching()
-            && self.ice.send_pair_of(1).is_some_and(|p| p.1 != source)
-            && self.dtls_latch_open(now, destination)
+            && self.dtls_role == Some(Role::Server)
+            && self.ice.send_pair_of(comp).is_some_and(|p| p.1 != source)
+            && self.dtls_latch_open(now, comp, destination)
     }
 
-    /// A DTLS datagram from the unknown `source` on the current transport (component 1).
+    /// A DTLS datagram from the unknown `source` on the current transport's component
+    /// `comp`, while this side is the DTLS server.
     pub(super) fn latch_dtls(
         &mut self,
         now: Instant,
+        comp: u16,
         source: SocketAddr,
         destination: SocketAddr,
         data: &[u8],
     ) {
-        if !self.dtls_latch_open(now, destination) {
+        if !self.dtls_latch_open(now, comp, destination) {
             return;
         }
         self.latch_expire(now);
-        if self.latch.tentative.is_some() {
+        let i = usize::from(comp.clamp(1, 2)) - 1;
+        if self.latch.tentative[i].is_some() {
             return; // another source's handshake runs
         }
-        let Some((local, sdp)) = self.ice.send_pair_of(1) else {
+        let Some((local, sdp)) = self.ice.send_pair_of(comp) else {
             return;
         };
         let Some(hv) = hello_verifier(now) else {
@@ -324,33 +371,89 @@ impl Rtc {
                 self.transmits.push_back((destination, source, m, 0));
             }
             only_dtls::HelloCheck::Accept => {
-                only_log::debug!(target: "only_webrtc", "latching the DTLS handshake: {sdp} -> {source} (tentative)");
-                self.latch_took = true;
-                self.latch.tentative = Some(Tentative {
-                    source,
-                    since: now,
-                    sdp,
-                });
-                self.ice.set_fixed_pair(1, local, source);
-                self.remote_addr = Some(source);
-                self.remote_local = Some(destination);
-                self.dtls = self.new_dtls(now, Some(source));
-                if !self.xt.new_remotes.contains(&source) && self.xt.new_remotes.len() < 16 {
-                    self.xt.new_remotes.push(source);
+                only_log::debug!(target: "only_webrtc", "latching component {comp}'s DTLS handshake: {sdp} -> {source} (tentative)");
+                self.latch_tentative(now, comp, local, sdp, source, destination);
+                if comp == 2 {
+                    self.rtcp.dtls = self.new_dtls(now, Some(source));
+                    self.rtcp_dtls_input(now, source, destination, data);
+                } else {
+                    self.dtls = self.new_dtls(now, Some(source));
+                    self.handle_dtls(now, Some(data));
                 }
-                self.handle_dtls(now, Some(data));
             }
             _ => {}
         }
     }
 
-    /// The tentative handshake completed (its certificate matched): the latch holds.
-    pub(super) fn latch_dtls_done(&mut self, now: Instant) {
-        let Some(t) = self.latch.tentative.take() else {
+    /// While this side is the DTLS client (ADR-086): a datagram (a STUN keepalive or binding
+    /// request, RTP before keys) from the unknown `source` on component `comp`. A fresh
+    /// handshake starts toward it tentatively; its server must prove the description's
+    /// fingerprint.
+    fn latch_dtls_client(
+        &mut self,
+        now: Instant,
+        comp: u16,
+        source: SocketAddr,
+        destination: SocketAddr,
+    ) {
+        self.latch_expire(now);
+        let i = usize::from(comp.clamp(1, 2)) - 1;
+        if self.latch.tentative[i].is_some() {
+            return; // one at a time
+        }
+        let Some((local, sdp)) = self.ice.send_pair_of(comp) else {
             return;
         };
-        only_log::debug!(target: "only_webrtc", "latched the DTLS handshake onto {}", t.source);
-        let c = &mut self.latch.comps[0];
+        if local != destination || sdp == source {
+            return;
+        }
+        only_log::debug!(target: "only_webrtc", "latching component {comp}'s DTLS handshake as the client: {sdp} -> {source} (tentative)");
+        self.latch_tentative(now, comp, local, sdp, source, destination);
+        if comp == 2 {
+            self.rtcp.dtls = self.new_dtls(now, None);
+        } else {
+            self.dtls = self.new_dtls(now, None);
+        }
+    }
+
+    /// Moves component `comp`'s pair to `source` tentatively.
+    fn latch_tentative(
+        &mut self,
+        now: Instant,
+        comp: u16,
+        local: SocketAddr,
+        sdp: SocketAddr,
+        source: SocketAddr,
+        destination: SocketAddr,
+    ) {
+        let i = usize::from(comp.clamp(1, 2)) - 1;
+        self.latch_took = true;
+        self.latch.tentative[i] = Some(Tentative {
+            source,
+            since: now,
+            sdp,
+        });
+        self.ice.set_fixed_pair(comp, local, source);
+        if comp == 2 {
+            self.rtcp.first = Some((destination, source));
+        } else {
+            self.remote_addr = Some(source);
+            self.remote_local = Some(destination);
+        }
+        if !self.xt.new_remotes.contains(&source) && self.xt.new_remotes.len() < 16 {
+            self.xt.new_remotes.push(source);
+        }
+    }
+
+    /// Component `comp`'s tentative handshake completed (its certificate matched): the latch
+    /// holds.
+    pub(super) fn latch_dtls_done(&mut self, now: Instant, comp: u16) {
+        let i = usize::from(comp.clamp(1, 2)) - 1;
+        let Some(t) = self.latch.tentative[i].take() else {
+            return;
+        };
+        only_log::debug!(target: "only_webrtc", "latched component {comp}'s DTLS handshake onto {}", t.source);
+        let c = &mut self.latch.comps[i];
         c.latched = true;
         c.heard = Some(now);
         self.latch.moves += 1;
@@ -359,19 +462,26 @@ impl Rtc {
         }
     }
 
-    /// The tentative handshake failed or was closed: back to the description's address, the
-    /// association dropped; `true` if there was one (the peer lives on).
-    pub(super) fn latch_dtls_failed(&mut self) -> bool {
-        let Some(t) = self.latch.tentative.take() else {
+    /// Component `comp`'s tentative handshake failed or was closed: back to the description's
+    /// address, the association dropped (a client's starts over toward that address); `true`
+    /// if there was one (the peer lives on).
+    pub(super) fn latch_dtls_failed(&mut self, comp: u16) -> bool {
+        let i = usize::from(comp.clamp(1, 2)) - 1;
+        let Some(t) = self.latch.tentative[i].take() else {
             return false;
         };
-        only_log::debug!(target: "only_webrtc", "DTLS handshake with {} failed: not latched", t.source);
-        if let Some((local, _)) = self.ice.send_pair_of(1) {
-            self.ice.set_fixed_pair(1, local, t.sdp);
+        only_log::debug!(target: "only_webrtc", "component {comp}'s DTLS handshake with {} failed: not latched", t.source);
+        if let Some((local, _)) = self.ice.send_pair_of(comp) {
+            self.ice.set_fixed_pair(comp, local, t.sdp);
         }
-        self.dtls = None;
-        self.remote_addr = None;
-        self.remote_local = None;
+        if comp == 2 {
+            self.rtcp.dtls = None;
+            self.rtcp.first = None;
+        } else {
+            self.dtls = None;
+            self.remote_addr = None;
+            self.remote_local = None;
+        }
         if self.xt.gone_remotes.len() < 16 {
             self.xt.gone_remotes.push(t.source);
         }
@@ -379,15 +489,64 @@ impl Rtc {
         true
     }
 
-    /// Gives up on a tentative handshake that did not complete in time.
+    /// Gives up on tentative handshakes that did not complete in time.
     pub(super) fn latch_expire(&mut self, now: Instant) {
-        if self
-            .latch
-            .tentative
-            .is_some_and(|t| now.saturating_duration_since(t.since) >= DTLS_TENTATIVE)
-        {
-            self.latch_dtls_failed();
+        for comp in 1..=2 {
+            let i = usize::from(comp) - 1;
+            if self.latch.tentative[i]
+                .is_some_and(|t| now.saturating_duration_since(t.since) >= DTLS_TENTATIVE)
+            {
+                self.latch_dtls_failed(comp);
+            }
         }
+    }
+
+    /// RFC 6263 keepalives (ADR-086, [`RtcConfig::set_plain_keepalive`](crate::RtcConfig::set_plain_keepalive)):
+    /// without ICE, a STUN Binding Indication on every component's path of every transport
+    /// once its pair exists, then every configured interval. It keeps NAT bindings open
+    /// through silence, and lets a latching remote that must start the DTLS handshake find
+    /// this side behind a NAT.
+    pub(super) fn keepalive(&mut self, now: Instant) {
+        let every = self.cfg.keepalive;
+        if every.is_zero()
+            || !self.xt.plain
+            || !self.alive
+            || self.keepalive_next.is_some_and(|t| t > now)
+        {
+            return;
+        }
+        let mut tid = [0u8; 12];
+        fill_random(&mut tid);
+        let ka = only_turn::stun::MessageBuilder::new(
+            only_turn::stun::Method::BINDING,
+            only_turn::stun::Class::Indication,
+            tid,
+        )
+        .fingerprint()
+        .build();
+        let mut sent = false;
+        for k in 0..=self.xt.tps.len() {
+            self.with_tp(k, |s| {
+                for c in 1..=s.ice.components() {
+                    if let Some((l, r)) = s.ice.send_pair_of(c) {
+                        s.transmits.push_back((l, r, ka.clone(), 0));
+                        sent = true;
+                    }
+                }
+            });
+        }
+        if sent {
+            self.keepalive_next = Some(now + every);
+        }
+    }
+
+    /// When the next keepalive is due (`None`: none configured, or no path yet).
+    pub(super) fn keepalive_timeout(&self, now: Instant) -> Option<Instant> {
+        (!self.cfg.keepalive.is_zero()
+            && self.xt.plain
+            && self.alive
+            && self.ice.send_pair().is_some())
+        .then(|| self.keepalive_next.unwrap_or(now))
     }
 
     /// Remote addresses the transports latched away from (not the descriptions' own): the
@@ -410,24 +569,29 @@ fn hello_verifier(now: Instant) -> Option<&'static only_dtls::HelloVerifier> {
         .as_ref()
 }
 
-/// Whether DTLS may latch on a transport: latching, DTLS-SRTP with this side the server
-/// before the handshake completed, nothing from the description's address yet (or the
-/// tentative source's), and component 1 on `destination` able to move.
+/// Whether DTLS may latch on component `comp` of a transport: latching, DTLS-SRTP before
+/// the component's handshake completed (`up`; either role, ADR-086), nothing from the
+/// description's address yet (`heard`, or only the tentative source), and the component on
+/// `destination` able to move.
+#[allow(clippy::too_many_arguments)]
 fn dtls_open(
     cfg: &ConfigInner,
     ice: &IceAgent,
     latch: &Latch,
+    comp: u16,
     (sdes, role, up): (bool, Option<Role>, bool),
-    remote: Option<SocketAddr>,
+    heard: Option<SocketAddr>,
     now: Instant,
     destination: SocketAddr,
 ) -> bool {
+    let i = usize::from(comp.clamp(1, 2)) - 1;
     !sdes
-        && role == Some(Role::Server)
+        && role.is_some()
         && !up
-        && (remote.is_none() || remote == latch.tentative.map(|t| t.source))
-        && ice.send_pair_of(1).is_some_and(|p| p.0 == destination)
-        && latch.may_move(1, cfg.latching, now)
+        && comp <= ice.components()
+        && (heard.is_none() || heard == latch.tentative[i].map(|t| t.source))
+        && ice.send_pair_of(comp).is_some_and(|p| p.0 == destination)
+        && latch.may_move(comp, cfg.latching, now)
 }
 
 impl transports::Tp {
@@ -437,15 +601,22 @@ impl transports::Tp {
         cfg: &ConfigInner,
         role: Option<Role>,
         now: Instant,
+        comp: u16,
         destination: SocketAddr,
     ) -> bool {
-        let (sdes, up, remote) = self.dtls_view();
+        let (sdes, up1, remote) = self.dtls_view();
+        let (up, heard) = if comp == 2 {
+            (self.rtcp.dtls_up, self.rtcp.first.map(|f| f.1))
+        } else {
+            (up1, remote)
+        };
         dtls_open(
             cfg,
             self.agent(),
             &self.latch,
+            comp,
             (sdes, role, up),
-            remote,
+            heard,
             now,
             destination,
         )

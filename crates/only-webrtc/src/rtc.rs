@@ -977,6 +977,8 @@ pub(crate) struct Rtc {
     latch: latch::Latch,
     latch_rx: Option<(SocketAddr, SocketAddr)>,
     latch_took: bool,
+    /// The next RFC 6263 keepalive without ICE (ADR-086).
+    keepalive_next: Option<Instant>,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -1119,6 +1121,7 @@ impl Rtc {
             no_ecn: Vec::new(),
             latch: latch::Latch::default(),
             latch_rx: None,
+            keepalive_next: None,
             latch_took: false,
             ntp_anchor: (now, only_rtp::ntp_time(SystemTime::now())),
             cfg,
@@ -2806,14 +2809,18 @@ impl Rtc {
                 }
             }
             20..=63 if rtcp_comp => {
-                if !self.sdes.active {
+                if self.sdes.active {
+                } else if self.dtls_latching(now, 2, source, destination) {
+                    // As below, on component 2's own handshake (ADR-086).
+                    self.latch_dtls(now, 2, source, destination, data);
+                } else {
                     self.rtcp_dtls_input(now, source, destination, data);
                 }
             }
-            20..=63 if self.dtls_latching(now, source, destination) => {
+            20..=63 if self.dtls_latching(now, 1, source, destination) => {
                 // From an address the endpoint routes here (a cookie exchange went there)
                 // but the pair is not on yet: the handshake latches first (ADR-082).
-                self.latch_dtls(now, source, destination, data);
+                self.latch_dtls(now, 1, source, destination, data);
             }
             20..=63 => {
                 if self.remote_addr.is_none() {
@@ -2848,6 +2855,7 @@ impl Rtc {
         }
         self.ice.handle_timeout(now);
         self.latch_expire(now);
+        self.keepalive(now);
         let mut failed = [false; 2];
         for (i, d) in [self.dtls.as_mut(), self.rtcp.dtls.as_mut()]
             .into_iter()
@@ -2862,7 +2870,7 @@ impl Rtc {
             }
         }
         // A handshake latched onto tentatively fails without harm (ADR-082).
-        if failed[1] || (failed[0] && !self.latch_dtls_failed()) {
+        if (failed[0] && !self.latch_dtls_failed(1)) || (failed[1] && !self.latch_dtls_failed(2)) {
             self.alive = false;
         }
         if let Some(s) = self.sctp.as_mut() {
@@ -2911,7 +2919,7 @@ impl Rtc {
             if let Err(e) = d.handle_datagram(now, data) {
                 only_log::debug!(target: "only_webrtc", "dtls: {e}");
                 // A handshake latched onto tentatively fails without harm (ADR-082).
-                if !self.latch_dtls_failed() {
+                if !self.latch_dtls_failed(1) {
                     self.die();
                 }
             }
@@ -3946,7 +3954,7 @@ impl Rtc {
                         }
                     }
                     self.dtls_version = Some(info.version);
-                    self.latch_dtls_done(now);
+                    self.latch_dtls_done(now, 1);
                     only_log::debug!(target: "only_webrtc", "dtls: connected with {}", info.version);
                     self.dtls_up = true;
                     self.check_connected(now);
@@ -3963,7 +3971,7 @@ impl Rtc {
                     }
                 }
                 DtlsEvent::Closed => {
-                    if !self.latch_dtls_failed() {
+                    if !self.latch_dtls_failed(1) {
                         self.die();
                     }
                     break;
@@ -4069,6 +4077,7 @@ impl Rtc {
         min(self.rtcp.dtls.as_ref().and_then(Connection::poll_timeout));
         min(self.sctp.as_ref().and_then(Association::poll_timeout));
         min(self.tp_timeout());
+        min(self.keepalive_timeout(now));
         if self.srtp_tx.is_some() || self.tp_any_srtp() {
             min(self.next_rtcp);
             min(self.next_stats);

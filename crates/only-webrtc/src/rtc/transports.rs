@@ -545,7 +545,7 @@ impl Rtc {
             }
         }
         // A handshake latched onto tentatively fails without harm (ADR-082).
-        if failed[1] || (failed[0] && !self.latch_dtls_failed()) {
+        if (failed[0] && !self.latch_dtls_failed(1)) || (failed[1] && !self.latch_dtls_failed(2)) {
             self.alive = false;
         }
         self.pump(now);
@@ -771,6 +771,11 @@ impl Rtc {
             }
         }
         if self.xt.plain {
+            if !self.sdes.active {
+                // DTLS-SRTP without ICE still needs the fingerprint (ADR-086: it was not read
+                // without BUNDLE, so no handshake started).
+                self.apply_fingerprint(sdp)?;
+            }
             return self.apply_plain(sdp);
         }
         self.apply_remote_transport(sdp, is_offer)

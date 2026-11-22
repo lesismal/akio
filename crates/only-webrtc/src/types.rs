@@ -881,6 +881,8 @@ pub(crate) struct ConfigInner {
     pub(crate) ecn_init: EcnInitiation,
     /// Latching plain media onto the address it comes from (ADR-077).
     pub(crate) latching: Latching,
+    /// RFC 6263 keepalives without ICE (ADR-086); zero: none.
+    pub(crate) keepalive: Duration,
 }
 
 impl Default for ConfigInner {
@@ -930,6 +932,7 @@ impl Default for ConfigInner {
             ecn: EcnMarking::Off,
             ecn_init: EcnInitiation::Probe,
             latching: Latching::Off,
+            keepalive: Duration::ZERO,
         }
     }
 }
@@ -1351,11 +1354,27 @@ impl RtcConfig {
     /// handshake latches first (ADR-082): this side answers `actpass` with `passive`, a
     /// ClientHello from an unknown source gets a stateless cookie exchange, and one with a
     /// valid cookie moves RTP's pair there until the handshake completes with the SDP
-    /// fingerprint (or fails, closes or takes over 4 s, which moves it back). Default
+    /// fingerprint (or fails, closes or takes over 4 s, which moves it back); RTCP's own
+    /// handshake without rtcp-mux latches the same way. When this side must be the DTLS
+    /// client (the remote said `passive`), a datagram from an unknown source (the remote's
+    /// keepalive, see [`set_plain_keepalive`](Self::set_plain_keepalive)) starts a handshake
+    /// toward it tentatively, held to the same fingerprint (ADR-086). Default
     /// [`Latching::Off`]: media goes to and comes from the description's addresses only.
     #[must_use]
     pub fn set_latching(mut self, latching: Latching) -> Self {
         self.0.latching = latching;
+        self
+    }
+
+    /// Keepalives for media without ICE (RFC 6263, ADR-086): a STUN Binding Indication on
+    /// each component's path as soon as it exists, then every `every`. They keep NAT bindings
+    /// open through silence (RFC 6263 asks for one at least every 15 s), and let a remote that
+    /// latches and must start the DTLS handshake (this side answered or offered `passive`)
+    /// learn where this side is behind a NAT. Peers that do not expect them drop them (an ICE
+    /// agent ignores indications). `Duration::ZERO` (the default) sends none.
+    #[must_use]
+    pub fn set_plain_keepalive(mut self, every: Duration) -> Self {
+        self.0.keepalive = every;
         self
     }
 

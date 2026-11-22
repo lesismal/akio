@@ -29,7 +29,7 @@ pub(super) struct RtcpComponent {
     pub(super) dtls_up: bool,
     /// (local, remote) of the first DTLS datagram on component 2: where answers go before
     /// ICE selected a pair.
-    first: Option<(SocketAddr, SocketAddr)>,
+    pub(super) first: Option<(SocketAddr, SocketAddr)>,
     /// SRTCP keys of component 2's handshake.
     pub(super) srtcp_tx: Option<Srtp>,
     pub(super) srtcp_rx: Option<Srtp>,
@@ -178,7 +178,10 @@ impl Rtc {
         if let Some(d) = self.rtcp.dtls.as_mut() {
             if let Err(e) = d.handle_datagram(now, data) {
                 only_log::debug!(target: "only_webrtc", "dtls (rtcp): {e}");
-                self.die();
+                // A handshake latched onto tentatively fails without harm (ADR-086).
+                if !self.latch_dtls_failed(2) {
+                    self.die();
+                }
             }
         }
     }
@@ -215,10 +218,16 @@ impl Rtc {
                         }
                     }
                     only_log::debug!(target: "only_webrtc", "dtls (rtcp): connected with {}", info.version);
+                    self.latch_dtls_done(now, 2);
                     self.rtcp.dtls_up = true;
                     self.check_connected(now);
                 }
-                DtlsEvent::Closed => self.die(),
+                DtlsEvent::Closed => {
+                    if !self.latch_dtls_failed(2) {
+                        self.die();
+                    }
+                    break;
+                }
                 _ => {}
             }
         }
