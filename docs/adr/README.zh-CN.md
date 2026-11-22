@@ -80,3 +80,4 @@
 - [ADR-076：TURN TCP 分配（RFC 6062）](076-turn-tcp-allocations.zh-CN.md)（2026-11-22 采纳）
 - [ADR-077：ECN 可用的 RTP、无 ICE 媒体的锁定，以及无 BUNDLE 时跨传输的拥塞控制](077-webrtc-ecn-latching-unbundled-cc.zh-CN.md)（2026-11-22 采纳）
 - [ADR-078：IPv6 上的 mDNS：跳数限制 255、纯 IPv6 链路、与 Chrome、avahi 和 mDNSResponder 互通](078-mdns-ipv6-hop-limit-ipv6-only.zh-CN.md)（2026-11-22 采纳）
+- [ADR-084：RTSP 接收者报告、客户端重定向、重连时重新解析；HLS 请求关键帧](084-rtsp-receiver-reports-redirects-lookups.zh-CN.md)（2026-11-22 采纳）

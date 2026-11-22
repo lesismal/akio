@@ -10,6 +10,38 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: RTSP receiver reports, client redirects and lookups on reconnect; HLS keyframe requests (only-media)
+
+ADR-084 (docs/adr/084-rtsp-receiver-reports-redirects-lookups.md):
+
+- `RtspConfig::receiver_report_interval` (new, default 5 s): RECORD sessions send the publisher
+  RTCP receiver reports (RFC 3550 6.4.2) on each track's RTCP channel or port: the fraction and
+  number of packets lost, the extended highest sequence number, the interarrival jitter and
+  the LSR / DLSR of its last sender report, with an SDES CNAME. `Duration::ZERO` sends none.
+- `RtspClientConfig::receiver_report_interval` (new, default 5 s): the same reports from a
+  pull to its server. With zero, the empty reports that went with the keep-alives over UDP stay.
+- The RTSP client follows redirects: a `300` to `303`, `307` or `308` with a `Location` before
+  PLAY or RECORD is answered starts the handshake again there (absolute `rtsp://` URL or an
+  absolute path), up to five in a row; credentials go to the same host and port only; a `301`
+  is kept for later sessions. Behaviour change: such responses used to fail the client with
+  `ClientError::Status`.
+- The RTSP client looks its host name up again for every session (each reconnect, each
+  redirect), so a server that moved to another address under the same name is found; a lookup
+  that fails on a reconnect is retried instead of ending the client.
+- Fix, HLS: a segment past `target_duration` without a keyframe asks the publisher for one
+  (`Subscription::request_keyframe`, a PLI for a WHIP ingest), at most once per target.
+  Chrome's WebRTC AV1 encoder sends keyframes on request only, so a WHIP stream never closed a
+  segment and the multivariant playlist of `tools/interop/media/browser.sh` answered 503.
+- Tests: reception statistics (losses, wrap, duplicates, jumps, SSRC change, jitter, LSR /
+  DLSR), receiver reports read back from RECORD sessions over TCP and UDP and from pulls of a
+  scripted server, redirects (chains, loops, credentials, a remembered `301`), a server name
+  that moves while clients reconnect, the HLS keyframe request. New
+  `tools/interop/media/rtsp-redirect.sh`: mediamtx 1.15.3 redirects (`source: redirect`) followed over TCP and UDP, UDP
+  sessions held 75 s on receiver reports, GStreamer 1.24.2 `rtspclientsink` parsing our reports
+  over UDP (over TCP it drops interleaved data), a server name moving between two mediamtx
+  containers on a Docker network while our push and pull reconnect (main's client times out).
+- Same-run A/B against main on gpu51 (`quiet.sh`, one pinned core, alternating rounds, medians, head / base): RTSP pull 1.024, RTSP RECORD ingest 1.087, RTMP pull 0.998 (`tests/client_bench.rs`, 9 rounds); `bench_segmenting` (7 rounds) MPEG-TS 0.981, MPEG-TS LL-HLS 0.995, fMP4 1.015, fMP4 LL-HLS 1.013, AES-128 0.998 to 1.001, SAMPLE-AES MPEG-TS 1.002, `cbcs` 1.004 (the keyframe request is one comparison per packet once a segment passes the target). The RECORD cost (+18 ns per RTP packet) is the receiver reports' arrival time: the clock is read once per read that brings an RTP packet, and the benchmark reads 255 bytes at a time, about one read per packet; larger reads share one clock read across their packets, and `receiver_report_interval` zero skips it. A first version that read the clock per packet and converted with a u128 division cost 1.113 (pull) and 1.104 (RECORD).
+
 ### Added: SOCKS5 UDP ASSOCIATE with GSS-API protection (only-socks, only-ws)
 
 ADR-071's update of 2026-11-22, no API change:
