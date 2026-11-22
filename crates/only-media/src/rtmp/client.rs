@@ -30,7 +30,9 @@
 //! connection closing or failing, a timeout, the server ending the stream or refusing it
 //! other than for credentials) does not end the client: it waits a bounded backoff
 //! ([`Reconnect`], [`ClientState::Reconnecting`]) and dials again, from the first connection
-//! on. A pull keeps its hub path reserved throughout and republishes the new session's tracks
+//! on. Each try looks the URL's host name up again (on a short-lived thread: the lookup
+//! blocks), so a server that moved to another address is found, and dials the addresses the
+//! name has in turn until one connects (the first session too, when it reconnects). A pull keeps its hub path reserved throughout and republishes the new session's tracks
 //! (sinks restart their timelines); a push subscribes again from the cached GOP.
 //!
 //! Not supported: `rtmps://` (TLS), RTMPE/RTMPT, AMF3 command encoding, Enhanced RTMP
@@ -38,7 +40,7 @@
 
 use std::{
     fmt,
-    net::{SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex, MutexGuard, Weak,
         atomic::{AtomicU64, Ordering},
@@ -303,15 +305,19 @@ impl RtmpUrl {
 
     /// The server address: `host` when it is an IP literal, otherwise resolved with the
     /// system resolver, which **blocks** the calling thread (never call it on an I/O thread).
+    /// The first address the resolver gives.
     pub fn resolve(&self) -> Result<SocketAddr, ClientError> {
-        if let Ok(ip) = self.host.parse::<std::net::IpAddr>() {
-            return Ok(SocketAddr::new(ip, self.port));
-        }
-        (self.host.as_str(), self.port)
-            .to_socket_addrs()
-            .map_err(|e| ClientError::Resolve(e.to_string()))?
-            .next()
-            .ok_or_else(|| ClientError::Resolve(format!("no address for {}", self.host)))
+        Ok(self.resolve_all()?[0])
+    }
+
+    /// Every address of the server, in the resolver's order (see [`resolve`](Self::resolve)).
+    fn resolve_all(&self) -> Result<Vec<SocketAddr>, ClientError> {
+        crate::reconnect::lookup(&self.host, self.port).map_err(ClientError::Resolve)
+    }
+
+    /// Whether the host needs a lookup (it is not an IP literal).
+    fn is_name(&self) -> bool {
+        self.host.parse::<IpAddr>().is_err()
     }
 }
 
@@ -345,7 +351,7 @@ impl fmt::Debug for RtmpClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RtmpClient")
             .field("url", &self.shared.setup.url)
-            .field("addr", &self.shared.setup.addr)
+            .field("addr", &self.addr())
             .field("state", &self.state())
             .finish_non_exhaustive()
     }
@@ -357,9 +363,10 @@ impl RtmpClient {
         &self.shared.setup.url
     }
 
-    /// The server address dialed.
+    /// The server address dialed last (a reconnect looks the host up again and may dial
+    /// another).
     pub fn addr(&self) -> SocketAddr {
-        self.shared.setup.addr
+        self.shared.lock().addr
     }
 
     /// The current state.
@@ -452,13 +459,13 @@ pub fn push(
     cfg: RtmpClientConfig,
 ) -> Result<RtmpClient, ClientError> {
     let url = RtmpUrl::parse(url)?;
-    let addr = match cfg.addr {
-        Some(a) => a,
-        None => url.resolve()?,
+    let addrs = match cfg.addr {
+        Some(a) => vec![a],
+        None => url.resolve_all()?,
     };
     let setup = Setup {
         url,
-        addr,
+        addrs,
         cfg,
         push: Some((hub.clone(), path.to_owned())),
     };
@@ -480,16 +487,16 @@ pub fn pull(
     cfg: RtmpClientConfig,
 ) -> Result<RtmpClient, ClientError> {
     let url = RtmpUrl::parse(url)?;
-    let addr = match cfg.addr {
-        Some(a) => a,
-        None => url.resolve()?,
+    let addrs = match cfg.addr {
+        Some(a) => vec![a],
+        None => url.resolve_all()?,
     };
     let publisher = hub
-        .reserve(path, PeerInfo::new("rtmp", Some(addr), url.query()))
+        .reserve(path, PeerInfo::new("rtmp", Some(addrs[0]), url.query()))
         .map_err(ClientError::Hub)?;
     let setup = Setup {
         url,
-        addr,
+        addrs,
         cfg,
         push: None,
     };
@@ -503,16 +510,18 @@ fn start(engine: &Engine, setup: Setup, publisher: Option<Publisher>) -> RtmpCli
     RtmpClient { shared }
 }
 
-/// Dials the connection of generation `epoch` (the client is [`ClientState::Connecting`]).
+/// Dials the connection of generation `epoch` (the client is [`ClientState::Connecting`]) to
+/// the current address.
 fn dial(engine: &Engine, shared: &Arc<Shared>, epoch: u64) {
-    {
+    let addr = {
         let mut g = shared.lock();
         let t = shared.setup.cfg.connect_timeout;
         g.deadline = (!t.is_zero()).then(|| (Instant::now() + t, "connect"));
-    }
+        g.addr
+    };
     let on_err = Arc::downgrade(shared);
     engine.dial(
-        shared.setup.addr,
+        addr,
         Dialer {
             shared: shared.clone(),
             epoch,
@@ -535,8 +544,10 @@ fn dial(engine: &Engine, shared: &Arc<Shared>, epoch: u64) {
 
 /// Whether a session that ended with `err` is worth trying again.
 fn retryable(err: &ClientError) -> bool {
+    // A lookup only fails here on a reconnect (the first one's error goes to the caller): the
+    // name may come back.
     match err {
-        ClientError::BadUrl(_) | ClientError::Resolve(_) | ClientError::Hub(_) => false,
+        ClientError::BadUrl(_) | ClientError::Hub(_) => false,
         ClientError::Rejected { code, .. } => {
             !(code.ends_with("Connect.Rejected") || code.ends_with(".Denied"))
         }
@@ -547,7 +558,9 @@ fn retryable(err: &ClientError) -> bool {
 /// What a client was started with.
 struct Setup {
     url: RtmpUrl,
-    addr: SocketAddr,
+    /// The addresses resolved when the client started ([`RtmpClientConfig::addr`] alone when
+    /// set); never empty.
+    addrs: Vec<SocketAddr>,
     cfg: RtmpClientConfig,
     /// `Some((hub, path))` for a push.
     push: Option<(Hub, String)>,
@@ -561,6 +574,12 @@ impl Setup {
 
 struct Status {
     state: ClientState,
+    /// The address dialed (last).
+    addr: SocketAddr,
+    /// The addresses of this try, and the next one to dial if the current one does not
+    /// connect.
+    addrs: Vec<SocketAddr>,
+    next: usize,
     error: Option<ClientError>,
     conn: Option<Conn<Session>>,
     /// The pending wait and its name.
@@ -595,11 +614,13 @@ struct Shared {
 impl Shared {
     fn new(setup: Setup, publisher: Option<Publisher>) -> Arc<Shared> {
         Arc::new(Shared {
-            setup,
             start: Instant::now(),
             last_rx: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
             st: Mutex::new(Status {
+                addr: setup.addrs[0],
+                addrs: setup.addrs.clone(),
+                next: 1,
                 state: ClientState::Connecting,
                 error: None,
                 conn: None,
@@ -611,6 +632,7 @@ impl Shared {
                 streamed: false,
                 last_error: None,
             }),
+            setup,
         })
     }
 
@@ -682,6 +704,13 @@ impl Shared {
     /// and `err` is worth it, else end the client (unless it already ended). `graceful` lets
     /// queued output leave first.
     fn fail(self: &Arc<Self>, epoch: u64, err: ClientError, graceful: bool) {
+        if matches!(
+            err,
+            ClientError::Connect(_) | ClientError::TimedOut("connect")
+        ) && self.next_address(epoch)
+        {
+            return;
+        }
         let retry = self
             .setup
             .cfg
@@ -736,6 +765,40 @@ impl Shared {
         }
     }
 
+    /// The connection of generation `epoch` did not connect: dials the try's next address
+    /// (a new generation) when there is one and the client has an engine to dial on (its
+    /// [`Reconnect`]'s). Whether it did.
+    fn next_address(self: &Arc<Self>, epoch: u64) -> bool {
+        let Some(engine) = self
+            .setup
+            .cfg
+            .reconnect
+            .as_ref()
+            .and_then(Reconnect::engine)
+        else {
+            return false;
+        };
+        let next = epoch + 1;
+        let conn = {
+            let mut g = self.lock();
+            if g.state != ClientState::Connecting || !self.current(epoch) {
+                return false;
+            }
+            let Some(&a) = g.addrs.get(g.next) else {
+                return false;
+            };
+            g.addr = a;
+            g.next += 1;
+            self.epoch.store(next, Ordering::Release);
+            g.conn.take()
+        };
+        if let Some(c) = conn {
+            c.close();
+        }
+        dial(&engine, self, next);
+        true
+    }
+
     /// One timer check: `false` once the client is over.
     fn check(self: &Arc<Self>) -> bool {
         let fire = {
@@ -770,24 +833,60 @@ impl Shared {
     }
 }
 
-/// Dials again (generation `epoch`) unless the client was closed or moved on meanwhile.
+/// Dials again (generation `epoch`) unless the client was closed or moved on meanwhile: a
+/// host name is looked up again first, on a short-lived thread (the lookup blocks; the
+/// timer's thread must not).
 fn redial(w: &Weak<Shared>, r: &Reconnect, epoch: u64) {
     let Some(s) = w.upgrade() else { return };
+    if s.lock().state != ClientState::Reconnecting || !s.current(epoch) {
+        return;
+    }
+    let Some(engine) = r.engine() else {
+        return s.fail(
+            epoch,
+            ClientError::Disconnected("the engine is gone".into()),
+            false,
+        );
+    };
+    if s.setup.cfg.addr.is_some() || !s.setup.url.is_name() {
+        return try_addrs(&engine, &s, epoch, Ok(s.setup.addrs.clone()));
+    }
+    let w = w.clone();
+    let spawned = std::thread::Builder::new()
+        .name("only-rtmp-reconnect".into())
+        .spawn(move || {
+            let Some(s) = w.upgrade() else { return };
+            let addrs = s.setup.url.resolve_all();
+            try_addrs(&engine, &s, epoch, addrs);
+        });
+    if let Err(e) = spawned {
+        s.fail(epoch, ClientError::Disconnected(e.to_string()), false);
+    }
+}
+
+/// Dials the first of `addrs` for the try of generation `epoch` (the others follow if it does
+/// not connect), or fails the try when the lookup did.
+fn try_addrs(
+    engine: &Engine,
+    s: &Arc<Shared>,
+    epoch: u64,
+    addrs: Result<Vec<SocketAddr>, ClientError>,
+) {
+    let addrs = match addrs {
+        Ok(a) => a,
+        Err(e) => return s.fail(epoch, e, false),
+    };
     {
         let mut g = s.lock();
         if g.state != ClientState::Reconnecting || !s.current(epoch) {
             return;
         }
+        g.addr = addrs[0];
+        g.addrs = addrs;
+        g.next = 1;
         g.state = ClientState::Connecting;
     }
-    match r.engine() {
-        Some(engine) => dial(&engine, &s, epoch),
-        None => s.fail(
-            epoch,
-            ClientError::Disconnected("the engine is gone".into()),
-            false,
-        ),
-    }
+    dial(engine, s, epoch);
 }
 
 /// The timer check period: a quarter of the shortest timeout (they fire up to 25 % late), at
@@ -1494,7 +1593,7 @@ pub(crate) fn detached(push: bool, hub: &Hub) -> (Dialer, RtmpClient) {
         ..RtmpClientConfig::default()
     };
     let url = RtmpUrl::parse("rtmp://127.0.0.1/live/s").unwrap_or_else(|_| unreachable!());
-    let addr = SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT));
+    let addrs = vec![SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))];
     let (push_to, publisher) = if push {
         (Some((hub.clone(), "src".to_owned())), None)
     } else {
@@ -1503,7 +1602,7 @@ pub(crate) fn detached(push: bool, hub: &Hub) -> (Dialer, RtmpClient) {
     let shared = Shared::new(
         Setup {
             url,
-            addr,
+            addrs,
             cfg,
             push: push_to,
         },
@@ -2307,6 +2406,100 @@ mod tests {
             assert!(!client.is_closed());
         }
         client.close();
+        e.shutdown();
+    }
+
+    /// A host name is looked up again on every reconnect and its addresses are dialed in
+    /// turn: the first address refuses, the second serves; then the name moves to a third
+    /// address and the reconnect finds it there; a name that stops resolving is tried again,
+    /// not the end. Push and pull.
+    #[test]
+    fn reconnects_look_the_name_up_again_and_walk_its_addresses() {
+        use crate::reconnect::names;
+        let dead = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let a = TcpListener::bind("127.0.0.1:0").unwrap();
+        let b = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (aa, ba) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+        let hub = Hub::default();
+        let e = Arc::new(engine());
+        // Pull.
+        names::set("rtmp-walk.test", &[dead, aa]);
+        let client = pull(
+            &e,
+            "rtmp://rtmp-walk.test:1/live/s",
+            &hub,
+            "p",
+            reconnecting(&e, None),
+        )
+        .unwrap();
+        let heard = Heard::default();
+        let opts = SubscribeOptions::new(PeerInfo::default()).wait(Duration::from_secs(5));
+        let _sub = hub.subscribe("p", heard.clone(), opts).unwrap();
+        let mut srv = Server::accept(&a);
+        serve_play(&mut srv, 30);
+        wait_for("packets from a", || heard.0.lock().unwrap().1 > 10);
+        assert_eq!(client.addr(), aa, "the refused address was skipped");
+        assert_eq!(client.reconnects(), 0);
+        // The name stops resolving and a goes away: the client keeps trying.
+        names::set("rtmp-walk.test", &[]);
+        drop(srv);
+        wait_for("lookups fail", || {
+            matches!(client.error(), Some(ClientError::Resolve(_)))
+        });
+        assert!(!client.is_closed());
+        // The name comes back elsewhere.
+        names::set("rtmp-walk.test", &[dead, ba]);
+        let mut srv = Server::accept(&b);
+        serve_play(&mut srv, 30);
+        wait_for("packets from b", || {
+            let h = heard.0.lock().unwrap();
+            h.0 == 2 && h.1 > 30
+        });
+        assert_eq!(client.addr(), ba);
+        assert_eq!(client.reconnects(), 1);
+        assert_eq!(client.state(), ClientState::Streaming);
+        client.close();
+        drop(srv);
+        // Push: the same walk, from the hub stream.
+        let (tracks, pkts) = sample();
+        let src = hub.publish("src", tracks, PeerInfo::default()).unwrap();
+        for p in &pkts {
+            src.write(p.clone());
+        }
+        names::set("rtmp-walk2.test", &[dead, aa]);
+        let client = push(
+            &e,
+            "rtmp://rtmp-walk2.test:1/live/s",
+            &hub,
+            "src",
+            reconnecting(&e, None),
+        )
+        .unwrap();
+        for (l, addr) in [(&a, aa), (&b, ba)] {
+            let mut srv = Server::accept(l);
+            srv.connect(0, |_| {});
+            let (_, v) = srv.command();
+            assert_eq!(v[0].as_str(), Some("releaseStream"));
+            let (_, v) = srv.command();
+            assert_eq!(v[0].as_str(), Some("FCPublish"));
+            srv.create_stream();
+            let (_, v) = srv.command();
+            assert_eq!(v[0].as_str(), Some("publish"));
+            srv.status(1, "status", "NetStream.Publish.Start");
+            wait_for("streaming", || client.state() == ClientState::Streaming);
+            assert_eq!(client.addr(), addr);
+            // Media arrives (the cached GOP at least).
+            let m = srv.next().expect("media");
+            assert!(m.payload.len() > 1);
+            names::set("rtmp-walk2.test", &[dead, ba]);
+        }
+        assert_eq!(client.reconnects(), 1);
+        client.close();
+        names::set("rtmp-walk.test", &[]);
+        names::set("rtmp-walk2.test", &[]);
         e.shutdown();
     }
 }
