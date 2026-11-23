@@ -210,8 +210,9 @@ fn traffic_class_across_the_relay(copy_dscp: bool) {
 
 /// Datagrams relayed to a closed port draw ICMP port unreachable on loopback: the client hears
 /// of it (a Data indication with `ICMP`, RFC 8656 section 11.5) on both families, and the relay
-/// goes on relaying. Linux only (`IP_RECVERR`); elsewhere the server cannot see ICMP.
-#[cfg(target_os = "linux")]
+/// goes on relaying. Linux (`IP_RECVERR`) and macOS (an ICMP socket of the engine's thread);
+/// elsewhere the server cannot see ICMP.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn icmp_reaches_the_client() {
     let (turn, engine, server) = start(server_cfg());

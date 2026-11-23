@@ -82,7 +82,9 @@ use akio::{Acceptor, Conn, Engine, Handler, UdpBinding};
 
 pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth};
 use crate::core::Shared;
-pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
+pub use crate::core::{
+    IpFields, PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default,
+};
 #[doc(hidden)]
 pub use crate::tcp::TcpPeer;
 
@@ -180,6 +182,9 @@ struct Shard {
 struct Relay {
     binding: UdpBinding,
     route: Arc<AtomicUsize>,
+    /// The socket sends with the "don't fragment" bit set (it starts clear; a Send indication
+    /// with `DONT-FRAGMENT` sets it for its datagram, the next datagram without clears it).
+    df: bool,
 }
 
 struct Inner {
@@ -238,6 +243,12 @@ impl Inner {
         } else {
             engine.bind_udp(addr, acceptor)?
         };
+        if self.shared.config().copy_ttl {
+            b.enable_rx_ttl();
+        }
+        // RFC 8656 sections 14 and 15: relayed data goes with DF clear unless a Send
+        // indication asks for it (Linux would set it on whatever fits the path MTU).
+        let _ = b.set_dont_fragment(false);
         Ok((b, route))
     }
 
@@ -320,11 +331,16 @@ impl TurnEnv for Env<'_> {
     }
 
     fn send_to_client_tos(&mut self, client: SocketAddr, data: &[u8], tos: u8) {
+        self.send_to_client_ip(client, data, IpFields::new(tos, 0));
+    }
+
+    fn send_to_client_ip(&mut self, client: SocketAddr, data: &[u8], ip: IpFields) {
+        let (tos, ttl) = (ip.tos, ip.ttl);
         match self.clients.get(&client) {
-            // RFC 8656 section 14: the peer's traffic class, on UDP (and DTLS: a UDP datagram
-            // too); a stream has none to carry (section 16).
-            Some(ClientConn::Udp(c)) if tos != 0 => {
-                let _ = c.send_segments_tos(data.to_vec(), 0, tos);
+            // RFC 8656 section 14: the peer's traffic class and TTL, on UDP (and DTLS: a UDP
+            // datagram too); a stream has none to carry (section 16).
+            Some(ClientConn::Udp(c)) if tos != 0 || ttl != 0 => {
+                let _ = c.send_segments_ip(data.to_vec(), 0, tos, ttl);
             }
             Some(ClientConn::Udp(c)) => {
                 let _ = c.send(data);
@@ -342,8 +358,8 @@ impl TurnEnv for Env<'_> {
                 let mut out = Vec::new();
                 lock(s).seal(data, &mut out);
                 for d in out {
-                    let _ = if tos != 0 {
-                        c.send_segments_tos(d, 0, tos)
+                    let _ = if tos != 0 || ttl != 0 {
+                        c.send_segments_ip(d, 0, tos, ttl)
                     } else {
                         c.send_owned(d)
                     };
@@ -366,14 +382,29 @@ impl TurnEnv for Env<'_> {
     }
 
     fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], tos: u8) {
-        if let Some(r) = lock(self.inner.relays_of(relay)).get(&relay) {
-            // RFC 8656 section 14: the client's traffic class (0 from a stream, section 15).
-            let _ = if tos != 0 {
-                r.binding.send_to_tos(data, peer, tos)
-            } else {
-                r.binding.send_to(data, peer)
-            };
+        self.send_to_peer_ip(relay, peer, data, IpFields::new(tos, 0));
+    }
+
+    fn send_to_peer_ip(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ip: IpFields) {
+        let mut relays = lock(self.inner.relays_of(relay));
+        let Some(r) = relays.get_mut(&relay) else {
+            return;
+        };
+        // DF is the socket's: changed only when this datagram wants the other setting, under
+        // the relay table's lock, so the datagram goes with the setting it asked for.
+        if ip.dont_fragment != r.df && r.binding.set_dont_fragment(ip.dont_fragment).is_ok() {
+            r.df = ip.dont_fragment;
         }
+        // RFC 8656 section 14: the client's traffic class and TTL (0 from a stream, section 15).
+        let _ = if ip.tos != 0 || ip.ttl != 0 {
+            r.binding.send_to_ip(data, peer, ip.tos, ip.ttl)
+        } else {
+            r.binding.send_to(data, peer)
+        };
+    }
+
+    fn sets_dont_fragment(&self) -> bool {
+        cfg!(any(target_os = "linux", target_os = "macos"))
     }
 
     fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
@@ -392,7 +423,14 @@ impl TurnEnv for Env<'_> {
         };
         route.store(self.shard, Ordering::Relaxed);
         let bound = binding.local_addr();
-        lock(self.inner.relays_of(bound)).insert(bound, Relay { binding, route });
+        lock(self.inner.relays_of(bound)).insert(
+            bound,
+            Relay {
+                binding,
+                route,
+                df: false,
+            },
+        );
         Ok(bound)
     }
 
@@ -553,6 +591,7 @@ impl TurnServer {
             t.auth_failures += st.auth_failures;
             t.tcp_connections += st.tcp_connections;
             t.icmp += st.icmp;
+            t.ttl_expired += st.ttl_expired;
         }
         t
     }
@@ -672,6 +711,10 @@ impl TurnServer {
 impl Acceptor for TurnServer {
     type Handler = TurnClient;
     fn on_open(&self, c: &Conn<TurnClient>) -> TurnClient {
+        if self.0.shared.config().copy_ttl {
+            // The listener's socket (shared by its clients) reports each datagram's TTL.
+            c.enable_rx_ttl();
+        }
         let shard = self.0.shard_of(c.peer_addr(), Wire::Udp);
         lock(&self.0.shards[shard])
             .clients
@@ -707,9 +750,9 @@ impl Handler for TurnClient {
         let client = c.peer_addr();
         // An authenticated Allocate gets its relay sockets bound before the shard is locked.
         let prebound = inner.prebind(now, client, data, self.shard);
-        let tos = c.rx_tos();
+        let ip = IpFields::new(c.rx_tos(), c.rx_ttl());
         inner.with_shard(self.shard, prebound, |core, env| {
-            core.handle_client_tos(now, client, data, tos, env);
+            core.handle_client_ip(now, client, data, ip, env);
         });
     }
 
@@ -893,6 +936,9 @@ impl fmt::Debug for TurnDtls {
 impl Acceptor for TurnDtls {
     type Handler = TurnDtlsClient;
     fn on_open(&self, c: &Conn<TurnDtlsClient>) -> TurnDtlsClient {
+        if self.0.shared.config().copy_ttl {
+            c.enable_rx_ttl();
+        }
         let shard = self.0.shard_of(c.peer_addr(), Wire::Dtls);
         let session = self.1.session(c.peer_addr());
         lock(&self.0.shards[shard])
@@ -999,13 +1045,13 @@ impl Handler for TurnDtlsClient {
                 core.remove_client(client, env);
             });
         }
-        // The datagram's traffic class goes with what its records carried (RFC 8656 section
-        // 14).
-        let tos = c.rx_tos();
+        // The datagram's traffic class and TTL go with what its records carried (RFC 8656
+        // section 14).
+        let ip = IpFields::new(c.rx_tos(), c.rx_ttl());
         for msg in &out.messages {
             let prebound = inner.prebind(now, client, msg, shard);
             inner.with_shard(shard, prebound, |core, env| {
-                core.handle_client_tos(now, client, msg, tos, env);
+                core.handle_client_ip(now, client, msg, ip, env);
             });
         }
         if out.closed {
@@ -1068,9 +1114,9 @@ impl Handler for RelayPeer {
             return;
         };
         let shard = self.route.load(Ordering::Relaxed);
-        let tos = c.rx_tos();
+        let ip = IpFields::new(c.rx_tos(), c.rx_ttl());
         inner.with_shard(shard, Vec::new(), |core, env| {
-            core.handle_peer_tos(Instant::now(), self.relay, c.peer_addr(), data, tos, env);
+            core.handle_peer_ip(Instant::now(), self.relay, c.peer_addr(), data, ip, env);
         });
     }
 }

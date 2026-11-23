@@ -8,7 +8,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use crate::core::{TurnConfig, TurnCore, TurnEnv};
+use crate::core::{IpFields, TurnConfig, TurnCore, TurnEnv};
 use crate::static_auth;
 use crate::stun::{Message, attr};
 
@@ -70,6 +70,19 @@ struct NullEnv {
     /// The traffic class byte (DSCP and ECN) of the datagram being handled: relayed data must
     /// carry it.
     tos: u8,
+    /// The TTL of the datagram being handled: relayed data goes with one less (0 stays 0, 1
+    /// is never relayed).
+    ttl: u8,
+    /// The environment can set DF (`TurnEnv::sets_dont_fragment`).
+    df: bool,
+}
+
+impl NullEnv {
+    fn check_relayed(&self, ip: IpFields) {
+        assert_eq!(ip.tos, self.tos);
+        assert_ne!(self.ttl, 1, "a datagram with TTL 1 relayed");
+        assert_eq!(ip.ttl, self.ttl.saturating_sub(1));
+    }
 }
 
 impl TurnEnv for NullEnv {
@@ -87,12 +100,26 @@ impl TurnEnv for NullEnv {
         assert_eq!(tos, self.tos);
         stun_message(data);
     }
+    fn send_to_client_ip(&mut self, client: SocketAddr, data: &[u8], ip: IpFields) {
+        self.check_relayed(ip);
+        assert!(!ip.dont_fragment);
+        self.send_to_client_tos(client, data, ip.tos);
+    }
     fn send_to_peer(&mut self, _relay: SocketAddr, _peer: SocketAddr, _data: &[u8]) {}
     fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, _data: &[u8], tos: u8) {
         assert_eq!(tos, self.tos);
         // From an open relay of the peer's family.
         assert_eq!(relay.is_ipv6(), peer.is_ipv6());
         assert!(self.open.contains(&relay));
+    }
+    fn send_to_peer_ip(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ip: IpFields) {
+        self.check_relayed(ip);
+        // DF only when the environment can, IPv4 to IPv4 (the client is IPv4).
+        assert!(!ip.dont_fragment || (self.df && relay.is_ipv4()));
+        self.send_to_peer_tos(relay, peer, data, ip.tos);
+    }
+    fn sets_dont_fragment(&self) -> bool {
+        self.df
     }
     fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
         self.next_port = self.next_port.wrapping_add(1);
@@ -157,6 +184,10 @@ fn peer_of(env: &NullEnv, sel: u8) -> (SocketAddr, SocketAddr) {
 /// - `0xfe`: an ICMP error, the next bytes the peer (as an odd selector), type, code and MTU
 ///   (two bytes);
 /// - `0xfc`: from a peer, the next bytes the peer (as an odd selector) and the traffic class;
+/// - `0xf8`: from a peer, the next bytes the peer (as an odd selector), the traffic class and
+///   the TTL;
+/// - `0xfa`: from the client, the next bytes the traffic class and the TTL;
+/// - `0xf6`: the environment can set DF from now on (`DONT-FRAGMENT` accepted), or no longer;
 /// - other even bytes: from the client, below `0x80` with ECN codepoint bits 1-2, from `0x80`
 ///   up with the next byte as the whole traffic class (DSCP and ECN);
 /// - odd bytes: from a peer ([`peer_of`]), ECN codepoint bits 1-2.
@@ -172,7 +203,26 @@ pub fn turn_server(data: &[u8]) {
             continue;
         };
         env.tos = (sel >> 1) & 3;
+        env.ttl = 0;
         match sel {
+            0xf6 => env.df = !env.df,
+            0xf8 => {
+                let [ps, tos, ttl, ref rest @ ..] = *body else {
+                    continue;
+                };
+                let (peer, relay) = peer_of(&env, ps | 1);
+                (env.tos, env.ttl) = (tos, ttl);
+                let before = core.stats().ttl_expired;
+                core.handle_peer_ip(now, relay, peer, rest, IpFields::new(tos, ttl), &mut env);
+                assert!(core.stats().ttl_expired <= before + 1);
+            }
+            0xfa => {
+                let [tos, ttl, ref rest @ ..] = *body else {
+                    continue;
+                };
+                (env.tos, env.ttl) = (tos, ttl);
+                core.handle_client_ip(now, CLIENT, rest, IpFields::new(tos, ttl), &mut env);
+            }
             0xff => {
                 now += Duration::from_secs(60);
                 core.handle_timeout(now, &mut env);
@@ -645,7 +695,50 @@ pub(crate) mod seeds {
             vec![0xfe, 0x0f, 12, 0, 0, 0],
             vec![0xff],
         ];
-        vec![join(&pkts), join(&dual), join(&icmp_tos)]
+        // TTL both ways and DONT-FRAGMENT: an Allocate with DONT-FRAGMENT refused (420) and
+        // accepted once the environment sets DF, a channel to 10.0.0.1, ChannelData and a
+        // Send indication with DONT-FRAGMENT at TTL 64, the peer at 2 and 1 (dropped), the
+        // client at 1 (dropped) and 0 (unknown).
+        let alloc_df = || {
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::ALLOCATE)
+                        .u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+                        .attr(attr::DONT_FRAGMENT, &[]),
+                ),
+            ]
+            .concat()
+        };
+        let send_df = MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer)
+            .attr(attr::DATA, b"df")
+            .attr(attr::DONT_FRAGMENT, &[])
+            .build();
+        let ttl_df = vec![
+            alloc_df(),
+            vec![0xf6],
+            alloc_df(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::CHANNEL_BIND)
+                        .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+                        .xor_addr(attr::XOR_PEER_ADDRESS, peer),
+                ),
+            ]
+            .concat(),
+            [&[0xfau8, 0xb9, 64][..], &cd].concat(),
+            [&[0xfau8, 0, 64][..], &send_df].concat(),
+            [&[0xf8u8, 0x0f, 0x8a, 2][..], b"two"].concat(),
+            [&[0xf8u8, 0x0f, 0x8a, 1][..], b"one"].concat(),
+            [&[0xfau8, 0, 1][..], &cd].concat(),
+            [&[0xfau8, 0, 0][..], &send_df].concat(),
+            vec![0xf6],
+            [&[0xfau8, 0, 64][..], &send_df].concat(),
+            vec![0xff],
+        ];
+        vec![join(&pkts), join(&dual), join(&icmp_tos), join(&ttl_df)]
     }
 
     /// A TCP allocation's life: challenge, allocate, a Connect that succeeds and is bound from

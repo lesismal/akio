@@ -1140,10 +1140,15 @@ impl Engine {
     /// of them. For a relay that tells its client about unreachable peers (TURN, RFC 8656
     /// section 11.5).
     ///
-    /// Linux only (`IP_RECVERR` / `IPV6_RECVERR`: the kernel queues each error on the socket,
-    /// the I/O thread reads them with `MSG_ERRQUEUE`; the destination's port is reported, no
-    /// privileges needed). Elsewhere it is `bind_udp` and `on_icmp` is never called. ICMP is
-    /// best effort: errors are rate-limited by the hosts that send them and often filtered.
+    /// Linux: `IP_RECVERR` / `IPV6_RECVERR` (the kernel queues each error on the socket, the
+    /// I/O thread reads them with `MSG_ERRQUEUE`). macOS, which has no such option: the I/O
+    /// thread opens an unprivileged ICMP socket per address family (`SOCK_DGRAM`,
+    /// `IPPROTO_ICMP` / `IPPROTO_ICMPV6`), which sees every ICMP error the host gets, and
+    /// hands on the ones whose quoted datagram came from this socket's address and port (a
+    /// socket bound to `[::]` hears of its IPv6 datagrams only). Both report the destination's
+    /// port and need no privileges. Elsewhere it is `bind_udp` and `on_icmp` is never called.
+    /// ICMP is best effort: errors are rate-limited by the hosts that send them and often
+    /// filtered.
     pub fn bind_udp_icmp<A: Acceptor>(
         &self,
         addr: SocketAddr,

@@ -63,6 +63,7 @@ httparse = "1"
 loona-hpack = "0.4"
 regex = "1"
 akio-dpdk = { path = "../crates/akio-dpdk", features = ["fuzzing"] }
+akio-sys = { path = "../crates/akio-sys" }
 akio-deflate = { path = "../crates/akio-deflate", features = ["fuzzing"] }
 # Differential oracle for the deflate targets only (zlib-rs).
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
@@ -911,6 +912,13 @@ bench = false
 [[bin]]
 name = "zstd_stream_roundtrip"
 path = "fuzz_targets/zstd_stream_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sys_icmp_error"
+path = "fuzz_targets/sys_icmp_error.rs"
 test = false
 doc = false
 bench = false

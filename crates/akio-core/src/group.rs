@@ -154,7 +154,8 @@ pub trait Group: Send + Sync {
     }
 }
 
-/// An ICMP error about a datagram a [`UdpBinding`] sent (`akio::Engine::bind_udp_icmp`, Linux):
+/// An ICMP error about a datagram a [`UdpBinding`] sent (`akio::Engine::bind_udp_icmp`, Linux
+/// and macOS):
 /// the network or the destination host refused it (destination or port unreachable, time
 /// exceeded, packet too big, parameter problem). ICMP gives no guarantee: errors are rate
 /// limited and may be filtered on the way.
@@ -329,22 +330,68 @@ impl UdpBinding {
     /// bits, ECN in the low two); 0 sends the datagram unmarked.
     #[doc(hidden)]
     pub fn send_to_tos(&self, data: &[u8], addr: SocketAddr, tos: u8) -> io::Result<()> {
+        self.send_to_ip(data, addr, tos, 0)
+    }
+
+    /// (internal, outside the stability promise) [`send_to_tos`](Self::send_to_tos) with the
+    /// TTL (IPv4) or hop limit (IPv6) `ttl` (0: the socket's), in an `IP_TTL` /
+    /// `IPV6_HOPLIMIT` control message: on Linux, and on macOS for IPv6 (XNU ignores `IP_TTL`
+    /// on send); elsewhere the datagram has the socket's.
+    #[doc(hidden)]
+    pub fn send_to_ip(&self, data: &[u8], addr: SocketAddr, tos: u8, ttl: u8) -> io::Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if tos != 0 && akio_sys::ecn_available() {
-            use std::os::fd::AsRawFd;
-            let fd = self.sock.as_raw_fd();
-            let v6 = self.local.is_ipv6();
-            let mut retried = false;
-            loop {
-                match akio_sys::send_to_tos(fd, data, Some(&addr), tos, v6) {
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(e) if !retried && self.pending_icmp(&e) => retried = true,
-                    r => return r.map(|_| ()),
+        {
+            let tos = if akio_sys::ecn_available() { tos } else { 0 };
+            if tos != 0 || ttl != 0 {
+                use std::os::fd::AsRawFd;
+                let fd = self.sock.as_raw_fd();
+                let v6 = self.local.is_ipv6();
+                let mut retried = false;
+                loop {
+                    match akio_sys::send_to_ip(fd, data, Some(&addr), tos, ttl, v6) {
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) if !retried && self.pending_icmp(&e) => retried = true,
+                        r => return r.map(|_| ()),
+                    }
                 }
             }
         }
-        let _ = tos;
+        let _ = (tos, ttl);
         self.send_to(data, addr)
+    }
+
+    /// (internal, outside the stability promise) asks the kernel for the TTL / hop limit of
+    /// every datagram this socket receives, which its connections then report
+    /// (`Conn::rx_ttl`). Linux and macOS; elsewhere `false`.
+    #[doc(hidden)]
+    pub fn enable_rx_ttl(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            akio_sys::enable_recv_ttl(std::os::fd::AsRawFd::as_raw_fd(&*self.sock))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        false
+    }
+
+    /// Sets or clears the "don't fragment" bit of the IPv4 datagrams this socket sends (on
+    /// Linux `IP_MTU_DISCOVER` with `IP_PMTUDISC_DO` / `IP_PMTUDISC_DONT`, on macOS
+    /// `IP_DONTFRAG`; an IPv6 socket also gets `IPV6_DONTFRAG`, which keeps the kernel from
+    /// fragmenting its datagrams). Set, a datagram larger than the path MTU the kernel knows
+    /// fails with `EMSGSIZE` instead of going out in fragments; cleared, the kernel and the
+    /// routers on the way fragment it. Without a call the system's default applies (Linux:
+    /// path MTU discovery, DF set while the datagram fits). Takes effect for the next send;
+    /// elsewhere than Linux and macOS it fails with [`io::ErrorKind::Unsupported`].
+    pub fn set_dont_fragment(&self, on: bool) -> io::Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&*self.sock);
+            akio_sys::set_dont_fragment(fd, self.local.is_ipv6(), on)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = on;
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
     }
 
     /// Sets the TTL (IPv4) or hop limit (IPv6) of the unicast datagrams this socket sends,

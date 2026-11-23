@@ -63,6 +63,11 @@ use crate::reactor::{Cmd, LoopShared};
 
 const WAKER: u64 = 0;
 const SOCK: u64 = 1;
+/// macOS: the loop's ICMP sockets, reading the ICMP errors of its bound sockets.
+#[cfg(target_os = "macos")]
+const ICMP4: u64 = 2;
+#[cfg(target_os = "macos")]
+const ICMP6: u64 = 3;
 /// Datagrams taken from the socket per `recvmmsg`.
 const BATCH: usize = 32;
 const MAX_BATCHES_PER_EVENT: usize = 8;
@@ -132,8 +137,9 @@ struct Bound {
     sock: Arc<UdpSocket>,
     local: SocketAddr,
     acceptor: Arc<dyn DynAcceptor>,
-    /// Takes the socket's ICMP errors, read from its error queue (`Engine::bind_udp_icmp`).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Takes the socket's ICMP errors (`Engine::bind_udp_icmp`): read from its error queue on
+    /// Linux, from the loop's ICMP sockets on macOS.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     icmp: Option<akio_core::IcmpHandler>,
     peers: KeyedMap<SocketAddr, u64>,
     /// Peers with datagrams waiting for socket space.
@@ -191,6 +197,12 @@ struct UdpLoop {
     /// interest it is registered with.
     dgram: Option<DatagramPort>,
     dgram_interest: (bool, bool),
+    /// macOS: ICMPv4 and ICMPv6 sockets, open while a bound socket of that family wants its
+    /// ICMP errors, and those sockets by family and port.
+    #[cfg(target_os = "macos")]
+    icmp: [Option<akio_sys::IcmpListener>; 2],
+    #[cfg(target_os = "macos")]
+    icmp_binds: std::collections::HashMap<(bool, u16), Vec<u64>>,
 }
 
 /// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
@@ -298,6 +310,10 @@ impl UdpLoop {
             rb,
             dgram: None,
             dgram_interest: (false, false),
+            #[cfg(target_os = "macos")]
+            icmp: [None, None],
+            #[cfg(target_os = "macos")]
+            icmp_binds: std::collections::HashMap::new(),
         })
     }
 
@@ -442,6 +458,8 @@ impl UdpLoop {
                 match ev.token {
                     WAKER => self.shared.waker().drain(),
                     SOCK if self.dgram.is_some() => self.on_port(ev.readable, ev.writable),
+                    #[cfg(target_os = "macos")]
+                    ICMP4 | ICMP6 => self.read_icmp(ev.token == ICMP6),
                     SOCK => {
                         if ev.readable {
                             self.recv_on(None);
@@ -534,7 +552,7 @@ impl UdpLoop {
                 let Some(peer) = batch.addr(i) else {
                     continue;
                 };
-                let tos = batch.tos(i);
+                let ip = batch.tos_ttl(i);
                 let Some(id) = self.admit(src, peer) else {
                     continue;
                 };
@@ -547,20 +565,20 @@ impl UdpLoop {
                         let mut first = Some(id);
                         while !data.is_empty() {
                             let d = data.split_to(seg.min(data.len()));
-                            self.on_datagram(src, peer, first.take(), Rx::Owned(d), tos);
+                            self.on_datagram(src, peer, first.take(), Rx::Owned(d), ip);
                         }
                     } else {
-                        self.on_datagram(src, peer, Some(id), Rx::Owned(data), tos);
+                        self.on_datagram(src, peer, Some(id), Rx::Owned(data), ip);
                     }
                 } else if let Some((data, seg)) = batch.data(i) {
                     if seg > 0 && seg < data.len() {
                         // GRO coalesced several datagrams of this peer: restore the boundaries.
                         let mut first = Some(id);
                         for d in data.chunks(seg) {
-                            self.on_datagram(src, peer, first.take(), Rx::Slice(d), tos);
+                            self.on_datagram(src, peer, first.take(), Rx::Slice(d), ip);
                         }
                     } else {
-                        self.on_datagram(src, peer, Some(id), Rx::Slice(data), tos);
+                        self.on_datagram(src, peer, Some(id), Rx::Slice(data), ip);
                     }
                 }
             }
@@ -626,8 +644,8 @@ impl UdpLoop {
         'event: for _ in 0..MAX_BATCHES_PER_EVENT {
             // A batch is up to BATCH datagrams, as with recvmmsg.
             for _ in 0..BATCH {
-                match akio_sys::recv_from_tos(sock.as_raw_fd(), buf.buf()) {
-                    Ok((n, peer, tos)) => {
+                match akio_sys::recv_from_ip(sock.as_raw_fd(), buf.buf()) {
+                    Ok((n, peer, tos, ttl)) => {
                         self.clock = Instant::now();
                         let Some(id) = self.admit(src, peer) else {
                             continue;
@@ -637,7 +655,7 @@ impl UdpLoop {
                         } else {
                             Rx::Slice(&buf.free[..n])
                         };
-                        self.on_datagram(src, peer, Some(id), rx, tos);
+                        self.on_datagram(src, peer, Some(id), rx, (tos, ttl));
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -669,16 +687,16 @@ impl UdpLoop {
         }
     }
 
-    /// One datagram from `peer` with traffic class byte `tos` (DSCP and ECN; 0 when not
-    /// reported), for connection `id` when the caller has just admitted it, else looked up (or
-    /// opened) again.
+    /// One datagram from `peer` with traffic class byte and TTL `ip` (DSCP and ECN, TTL / hop
+    /// limit; 0 when not reported), for connection `id` when the caller has just admitted it,
+    /// else looked up (or opened) again.
     fn on_datagram(
         &mut self,
         src: Option<u64>,
         peer: SocketAddr,
         id: Option<u64>,
         data: Rx<'_>,
-        tos: u8,
+        ip: (u8, u8),
     ) {
         let Some(id) = id.or_else(|| self.admit(src, peer)) else {
             return;
@@ -701,7 +719,8 @@ impl UdpLoop {
             }
             self.touched.push(id);
         }
-        p.inner.set_rx_tos(tos);
+        p.inner.set_rx_tos(ip.0);
+        p.inner.set_rx_ttl(ip.1);
         let owned = p.owned;
         let h = &mut *p.handler;
         let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));
@@ -889,7 +908,7 @@ impl UdpLoop {
             };
             self.clock = Instant::now();
             for i in 0..n {
-                let tos = batch.tos(i);
+                let ip = batch.tos_ttl(i);
                 if self.conns.get(&id).is_some_and(|p| p.owned) {
                     let Some((mut data, _, seg)) = batch.take(i) else {
                         continue;
@@ -898,7 +917,7 @@ impl UdpLoop {
                     let seg = if seg > 0 { seg } else { data.len().max(1) };
                     while !data.is_empty() {
                         let d = data.split_to(seg.min(data.len()));
-                        if !self.deliver(id, Rx::Owned(d), tos) {
+                        if !self.deliver(id, Rx::Owned(d), ip) {
                             break 'recv;
                         }
                     }
@@ -909,7 +928,7 @@ impl UdpLoop {
                     // GRO coalesced several datagrams: restore the boundaries.
                     let seg = if seg > 0 { seg } else { data.len().max(1) };
                     for d in data.chunks(seg) {
-                        if !self.deliver(id, Rx::Slice(d), tos) {
+                        if !self.deliver(id, Rx::Slice(d), ip) {
                             break 'recv;
                         }
                     }
@@ -949,15 +968,15 @@ impl UdpLoop {
         let owned = self.conns.get(&id).is_some_and(|p| p.owned);
         let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
-            match akio_sys::recv_from_tos(sock.as_raw_fd(), buf.buf()) {
-                Ok((n, _, tos)) => {
+            match akio_sys::recv_from_ip(sock.as_raw_fd(), buf.buf()) {
+                Ok((n, _, tos, ttl)) => {
                     self.clock = Instant::now();
                     let rx = if owned {
                         Rx::Owned(buf.free.split_to(n))
                     } else {
                         Rx::Slice(&buf.free[..n])
                     };
-                    if !self.deliver(id, rx, tos) {
+                    if !self.deliver(id, rx, (tos, ttl)) {
                         self.scratch = Some(buf);
                         return;
                     }
@@ -983,7 +1002,7 @@ impl UdpLoop {
     }
 
     /// One datagram for dialed connection `id`. `false` when the connection is gone.
-    fn deliver(&mut self, id: u64, data: Rx<'_>, tos: u8) -> bool {
+    fn deliver(&mut self, id: u64, data: Rx<'_>, ip: (u8, u8)) -> bool {
         let t0 = self.timed_start();
         let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
@@ -993,7 +1012,8 @@ impl UdpLoop {
         p.last_active = now;
         p.bytes_in += len as u64;
         self.shared.stats.datagram_in(len);
-        p.inner.set_rx_tos(tos);
+        p.inner.set_rx_tos(ip.0);
+        p.inner.set_rx_ttl(ip.1);
         let owned = p.owned;
         let h = &mut *p.handler;
         let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));
@@ -1111,6 +1131,10 @@ impl UdpLoop {
         if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        if icmp.is_some() {
+            self.watch_icmp(id, local);
+        }
         self.binds.insert(
             id,
             Bound {
@@ -1162,7 +1186,106 @@ impl UdpLoop {
         }
     }
 
+    /// macOS: bound socket `id` at `local` wants its ICMP errors: opens the loop's ICMP socket
+    /// of its family if it is not open yet. Without one (refused) the socket gets none.
+    #[cfg(target_os = "macos")]
+    fn watch_icmp(&mut self, id: u64, local: SocketAddr) {
+        let v6 = local.is_ipv6();
+        let slot = usize::from(v6);
+        if self.icmp[slot].is_none() {
+            let token = if v6 { ICMP6 } else { ICMP4 };
+            match akio_sys::IcmpListener::open(v6) {
+                Ok(l) if self.poller.add(l.as_raw_fd(), token, true, false).is_ok() => {
+                    self.icmp[slot] = Some(l);
+                }
+                Ok(_) => return,
+                Err(e) => {
+                    eprintln!("akio: no ICMP socket for {local}'s ICMP errors: {e}");
+                    return;
+                }
+            }
+        }
+        self.icmp_binds
+            .entry((v6, local.port()))
+            .or_default()
+            .push(id);
+    }
+
+    /// macOS: bound socket `id` at `local` is going: forgets it, and closes the ICMP socket of
+    /// its family when no other socket of the loop wants it.
+    #[cfg(target_os = "macos")]
+    fn unwatch_icmp(&mut self, id: u64, local: SocketAddr) {
+        let v6 = local.is_ipv6();
+        let key = (v6, local.port());
+        if let Some(ids) = self.icmp_binds.get_mut(&key) {
+            ids.retain(|&i| i != id);
+            if ids.is_empty() {
+                self.icmp_binds.remove(&key);
+            }
+        }
+        if !self.icmp_binds.keys().any(|k| k.0 == v6) {
+            if let Some(l) = self.icmp[usize::from(v6)].take() {
+                self.poller.delete(l.as_raw_fd());
+            }
+        }
+    }
+
+    /// macOS: the ICMP socket of family `v6` is readable: each error about a datagram one of
+    /// the loop's bound sockets sent goes to that socket's handler; the rest (other sockets',
+    /// other processes') is dropped. Bounded per event, as a receive is.
+    #[cfg(target_os = "macos")]
+    fn read_icmp(&self, v6: bool) {
+        for _ in 0..BATCH * MAX_BATCHES_PER_EVENT {
+            let Some(l) = &self.icmp[usize::from(v6)] else {
+                return;
+            };
+            let (p, from) = match l.recv() {
+                Ok(Some(r)) => r,
+                Ok(None) => return,
+                Err(e) => {
+                    eprintln!("akio: reading ICMP errors: {e}");
+                    return;
+                }
+            };
+            let Some(ids) = self.icmp_binds.get(&(v6, p.source.port())) else {
+                continue;
+            };
+            for id in ids {
+                let Some(b) = self.binds.get(id) else {
+                    continue;
+                };
+                let Some(on_icmp) = &b.icmp else {
+                    continue;
+                };
+                if !akio_sys::icmp_source_matches(b.local, p.source) {
+                    continue;
+                }
+                let e = akio_core::IcmpError::new(
+                    b.local,
+                    p.dest,
+                    Some(from),
+                    p.v6,
+                    p.icmp_type,
+                    p.code,
+                    p.mtu,
+                );
+                if catch_unwind(AssertUnwindSafe(|| on_icmp(&e))).is_err() {
+                    eprintln!("akio: ICMP handler panicked");
+                }
+            }
+        }
+    }
+
     fn unbind(&mut self, id: u64) {
+        #[cfg(target_os = "macos")]
+        if let Some(local) = self
+            .binds
+            .get(&id)
+            .filter(|b| b.icmp.is_some())
+            .map(|b| b.local)
+        {
+            self.unwatch_icmp(id, local);
+        }
         let Some(b) = self.binds.get(&id) else {
             return;
         };
@@ -1666,9 +1789,16 @@ impl Group for UdpGroup {
                 .register_bound(sock, acceptor, Some(on_icmp))
                 .map(akio_core::UdpBinding::with_recverr);
         }
+        // macOS: the loop reads ICMP errors from an ICMP socket of its own (no pending errors
+        // on the bound socket).
+        #[cfg(target_os = "macos")]
+        return self.register_bound(sock, acceptor, Some(on_icmp));
         // No error queue here: a plain binding.
-        let _ = on_icmp;
-        self.register_bound(sock, acceptor, None)
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = on_icmp;
+            self.register_bound(sock, acceptor, None)
+        }
     }
 
     fn dial_udp(

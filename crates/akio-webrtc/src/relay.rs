@@ -143,6 +143,8 @@ pub(crate) enum Deferred {
     Reallocated(akio_ice::Candidate),
     /// The allocation at this address is gone.
     Lost(SocketAddr),
+    /// The server relayed an ICMP error: relayed address, peer, type, code.
+    Icmp(SocketAddr, SocketAddr, u8, u8),
     /// Close this connection (outside the lock: closing may call back).
     Close(Conn<TurnConn>),
 }
@@ -628,6 +630,20 @@ impl Relay {
                     ClientEvent::PeerFailed(p, e) => {
                         akio_log::debug!(target: "akio_webrtc", "turn {}: peer {p}: {e}", self.server);
                     }
+                    ClientEvent::Icmp {
+                        peer,
+                        icmp_type,
+                        code,
+                        ..
+                    } => {
+                        // RFC 8656 section 11.6: the peer (or the way to it) refused what the
+                        // server relayed from the relayed address of the peer's family.
+                        akio_log::debug!(target: "akio_webrtc", "turn {}: ICMP {icmp_type}/{code} for {peer}", self.server);
+                        if let Some(relayed) = st.client.relayed_addr_for(peer) {
+                            st.deferred
+                                .push(Deferred::Icmp(relayed, peer, icmp_type, code));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -681,6 +697,11 @@ impl Relay {
                 Deferred::Lost(old) => {
                     if let Some(h) = self.hub.upgrade() {
                         h.relay_lost(old);
+                    }
+                }
+                Deferred::Icmp(relayed, peer, icmp_type, code) => {
+                    if let Some(h) = self.hub.upgrade() {
+                        h.relay_icmp(relayed, peer, icmp_type, code);
                     }
                 }
                 Deferred::Reallocated(c) => {

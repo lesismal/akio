@@ -591,7 +591,8 @@ pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，
 | `max_permissions`、`max_channels` | 256、256 | 每个分配的上限（508） |
 | `peer_allowed`、`allow_private_peers` | 无、false | 默认拒绝回环、私有、链路本地、组播与保留地址的对端（`denied_by_default`）：中继进服务器自身网络会构成 SSRF 漏洞 |
 | `copy_dscp` | true | 中继的数据报保留到达时的 DSCP（见下文）；false 时发出 DSCP 0 |
-| `relay_icmp` | true | 发往对端的数据报引起的 ICMP 错误转告客户端（Linux） |
+| `copy_ttl` | true | 中继的数据报以到达时的 TTL / 跳数限制减 1 发出（见下文）；false 时用默认值 |
+| `relay_icmp` | true | 发往对端的数据报引起的 ICMP 错误转告客户端（Linux、macOS） |
 
 支持 Allocate、Refresh、CreatePermission、ChannelBind、Send 与 Data 指示、ChannelData、带
 `RESERVATION-TOKEN` 的 `EVEN-PORT` 以及 `REQUESTED-ADDRESS-FAMILY`；请求通过
@@ -632,12 +633,31 @@ let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
   `send_to_client_tos` 得到该字节。它们的默认实现把 ECN 位交给 ADR-083 的 `_ecn` 方法，后者的默认实现
   丢弃码点。
 
+**TTL**（RFC 5766 12 节、RFC 8656 13 节，ADR-091 更新）。中继的数据两个方向都以进入时的 TTL（IPv4）或跳数
+限制（IPv6）减 1 发出，与路由器一样：在中继之间循环的数据报（RFC 8656 21.1.7 节）会在 TTL 耗尽时消亡。
+
+- 以 TTL 1 到达的数据报不被中继（`TurnStats::ttl_expired`）；请求无论 TTL 多少都会应答。从对端发往 TCP 或 TLS
+  客户端的数据照常中继：之后不再有数据报本身的一跳。
+- `TurnServer` 向监听与中继 socket 请求 TTL（`IP_RECVTTL` / `IPV6_RECVHOPLIMIT`），并以 `IP_TTL` /
+  `IPV6_HOPLIMIT` 控制消息发送。macOS 忽略按数据报设置的 IPv4 TTL，因此在那里中继的 IPv4 数据报保持默认值。
+- `copy_ttl(false)` 时一律使用 socket 的默认值（两个 RFC 都允许的替代做法）。嵌入的应用通过 `handle_client_ip` /
+  `handle_peer_ip` 与 `TurnEnv::send_to_peer_ip` / `send_to_client_ip`（`IpFields`）得到这些字段，它们的默认
+  实现调用 `_tos` 方法。
+
+**DONT-FRAGMENT**（RFC 8656 7.2、11.2、14 与 15 节，ADR-091 更新）。带 `DONT-FRAGMENT` 的 Send 指示以“不分片”
+位置位发给对端：来自 UDP 或 DTLS 客户端时要求两侧都是 IPv4（任一侧为 IPv6 时忽略该属性），来自 TCP 或 TLS 客户端
+时总是如此。其余中继的数据报一律 DF 清零：对路径来说过大的数据报会被分片，要求了 DF 的则被丢弃（`EMSGSIZE`）。
+`TurnServer` 把 DF 作为每个中继 socket 的设置（Linux 没有按数据报的 IPv4 DF），只在数据报需要另一取值时才改变。
+嵌入应用的 `TurnEnv` 若不能设置 DF，就让 `sets_dont_fragment` 保持 false：此时带 `DONT-FRAGMENT` 的 Allocate
+得到 420，这样的 Send 指示被丢弃，与 RFC 的要求一致。
+
 **ICMP**（RFC 8656 11.5 节，ADR-091）。中继给对端的数据报引起 ICMP 目的不可达、超时或包过大时，若客户端
 对该地址有许可，它会收到一个 Data 指示：带 `XOR-PEER-ADDRESS` 与 `ICMP` 属性（类型、代码，以及“包过大”时
 下一跳的 MTU），不带 `DATA`。
 
-- `TurnServer` 用 `Engine::bind_udp_icmp` 绑定中继 socket：它设置 `IP_RECVERR` / `IPV6_RECVERR`，并在
-  socket 的 I/O 线程上读取其错误队列。仅限 Linux：其他平台上未连接的 socket 收不到 ICMP。
+- `TurnServer` 用 `Engine::bind_udp_icmp` 绑定中继 socket。在 Linux 上它设置 `IP_RECVERR` / `IPV6_RECVERR`，
+  并在 socket 的 I/O 线程上读取其错误队列；在 macOS 上 I/O 线程读取自己的无特权 ICMP socket，保留被引用数据报
+  来自其某个中继 socket 的错误。其他平台上未连接的 socket 收不到 ICMP。
 - 嵌入时的入口是 `TurnCore::handle_icmp(now, relay, peer, type, code, mtu, env)`；`TurnStats::icmp`
   统计转告的数量。
 - ICMP 只是尽力而为：主机会限速，网络会过滤。
@@ -744,7 +764,9 @@ Engine::builder()
   Refresh）：它连同其对端离开 `relayed_addrs()`，另一个保留并单独刷新。
 
 带 `ICMP` 的 Data 指示变为 `ClientEvent::Icmp { peer, icmp_type, code, mtu }`（发往 `peer` 的数据报在途中
-被拒绝；端口可能为 0），只针对客户端有许可的地址。
+被拒绝；端口可能为 0），只针对客户端有许可的地址。`Endpoint` 把它们交给 ICE：端口或协议不可达让中继候选到该
+地址、连通性检查尚在进行的候选对失败（`IceAgent::handle_icmp_error`，RFC 8445 7.2.5.2.2 节），而不必等检查的
+重传用完；正常工作的候选对交给同意新鲜度处理，因为 ICMP 没有认证。
 
 TCP 分配用 `ClientConfig::tcp_allocation(true)`（经 TCP 或 TLS）。`connect(peer)` 发送 Connect，回应为
 `ClientEvent::Connected { peer, id }` 或 `ConnectFailed`；`create_permission(peer)` 安装一个持续刷新的权限，

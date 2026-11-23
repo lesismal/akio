@@ -14,9 +14,13 @@ use akio_webrtc::{ChannelId, Endpoint, Error, Peer, PeerHandler};
 const T: Duration = Duration::from_secs(10);
 
 fn turn() -> (Arc<Engine>, TurnServer, SocketAddr) {
+    turn_with(|c| c)
+}
+
+fn turn_with(f: impl FnOnce(TurnConfig) -> TurnConfig) -> (Arc<Engine>, TurnServer, SocketAddr) {
     let auth = static_auth("akio", [("alice", "wonderland")]);
     let cfg = TurnConfig::new("akio", auth, "127.0.0.1".parse().unwrap()).allow_private_peers(true);
-    let t = TurnServer::new(cfg);
+    let t = TurnServer::new(f(cfg));
     let e = Arc::new(
         Engine::builder()
             .listen(
@@ -224,4 +228,56 @@ fn dual_allocation_reaches_an_ipv6_peer() {
     b.close();
     e.shutdown();
     te.shutdown();
+}
+
+/// RFC 8656 section 11.6 through to ICE: the only remote candidate is a closed port, the
+/// server relays the ICMP port unreachable that the first check through the relayed candidate
+/// draws, and the agent fails that pair at once (RFC 8445 section 7.2.5.2.2): the relay
+/// carries that one check, where without ICMP the check is sent again and again (seven sends
+/// over about six seconds; three within the first two). The host candidate's pair, which no
+/// ICMP reaches, keeps checking either way. Linux and macOS (where the server reads ICMP).
+#[test]
+fn icmp_through_the_relay_fails_the_check() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return;
+    }
+    for relay_icmp in [true, false] {
+        let (te, turn, server) = turn_with(|c| c.relay_icmp(relay_icmp));
+        let e = engine();
+        let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        a.gather_relay(server, "alice", "wonderland", T).unwrap();
+        let (pa, offer) = a
+            .create_offer(Echo, |api| {
+                api.add_channel("c");
+            })
+            .unwrap();
+        let (_pb, answer) = b.accept_offer(&relay_only(&offer), Echo).unwrap();
+        // B's answer, its candidates replaced by one on a closed port.
+        let closed = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let mut answer: String = answer
+            .lines()
+            .filter(|l| !l.starts_with("a=candidate") && !l.starts_with("a=end-of-candidates"))
+            .map(|l| format!("{l}\r\n"))
+            .collect();
+        answer.push_str(&format!(
+            "a=candidate:1 1 udp 2130706431 127.0.0.1 {} typ host\r\n",
+            closed.port()
+        ));
+        pa.accept_answer(&answer).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+        let st = turn.stats();
+        if relay_icmp {
+            assert_eq!((st.to_peer, st.icmp), (1, 1), "{st:?}");
+        } else {
+            assert!(st.to_peer >= 3 && st.icmp == 0, "{st:?}");
+        }
+        a.close();
+        b.close();
+        e.shutdown();
+        te.shutdown();
+    }
 }

@@ -247,6 +247,75 @@ pub fn set_unicast_hops_v6(socket: &std::net::UdpSocket, hops: u32) -> io::Resul
     set_hops_v6(socket, ffi::IPV6_UNICAST_HOPS, hops)
 }
 
+/// Sets the boolean socket options `v4` and `v6` (level, name) to 1 on `fd`: an IPv4 socket
+/// refuses the IPv6 one; an IPv6 one takes both (the IPv4 one covers IPv4-mapped peers).
+/// Whether either was set.
+pub(crate) fn set_both(
+    fd: RawFd,
+    v4: (ffi::c_int, ffi::c_int),
+    v6: (ffi::c_int, ffi::c_int),
+) -> bool {
+    let a = setsockopt_int(fd, v4.0, v4.1, 1).is_ok();
+    let b = setsockopt_int(fd, v6.0, v6.1, 1).is_ok();
+    a || b
+}
+
+/// Sets the "don't fragment" bit of the IPv4 datagrams `fd` (a UDP socket) sends, or clears it
+/// (`IP_MTU_DISCOVER` with `IP_PMTUDISC_DO` / `IP_PMTUDISC_DONT` on Linux, `IP_DONTFRAG` on
+/// macOS). With it set, a datagram larger than the path MTU the kernel knows is refused with
+/// `EMSGSIZE` instead of being fragmented; cleared, it is fragmented and the routers on the
+/// way may fragment it further. On an IPv6 socket it also sets `IPV6_DONTFRAG` (IPv6 routers
+/// never fragment; the option keeps the sender from doing it). Linux's default (no call) is
+/// path MTU discovery: DF set while the datagram fits the known path MTU.
+pub fn set_dont_fragment(fd: RawFd, v6_socket: bool, on: bool) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let r4 = setsockopt_int(
+        fd,
+        ffi::IPPROTO_IP,
+        ffi::IP_MTU_DISCOVER,
+        if on {
+            ffi::IP_PMTUDISC_DO
+        } else {
+            ffi::IP_PMTUDISC_DONT
+        },
+    );
+    #[cfg(target_os = "macos")]
+    let r4 = setsockopt_int(fd, ffi::IPPROTO_IP, ffi::IP_DONTFRAG, ffi::c_int::from(on));
+    if !v6_socket {
+        return r4;
+    }
+    let r6 = setsockopt_int(
+        fd,
+        ffi::IPPROTO_IPV6,
+        ffi::IPV6_DONTFRAG,
+        ffi::c_int::from(on),
+    );
+    // An IPv6-only socket may refuse the IPv4 option.
+    r6.or(r4)
+}
+
+/// Whether `fd` (an IPv4 UDP socket) sets the "don't fragment" bit on every datagram it sends
+/// ([`set_dont_fragment`]).
+pub fn dont_fragment(fd: RawFd) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    let (name, on) = (ffi::IP_MTU_DISCOVER, ffi::IP_PMTUDISC_DO);
+    #[cfg(target_os = "macos")]
+    let (name, on) = (ffi::IP_DONTFRAG, 1);
+    let mut v: ffi::c_int = 0;
+    let mut len = size_of::<ffi::c_int>() as ffi::socklen_t;
+    // SAFETY: `v` is valid for `len` bytes of writes; the kernel writes at most `len`.
+    cvt(unsafe {
+        ffi::getsockopt(
+            fd,
+            ffi::IPPROTO_IP,
+            name,
+            (&raw mut v).cast::<ffi::c_void>(),
+            &raw mut len,
+        )
+    })?;
+    Ok(v == on)
+}
+
 /// The hop limit of the IPv6 unicast datagrams `socket` sends (see [`set_unicast_hops_v6`]);
 /// 0 where the kernel reports the default as unset (macOS: -1).
 pub fn unicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {

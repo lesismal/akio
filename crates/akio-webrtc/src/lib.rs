@@ -1077,6 +1077,17 @@ impl Hub {
             .retain(|c| c.kind() != akio_ice::CandidateKind::Relayed || c.addr() != relayed);
     }
 
+    /// The TURN server at relayed address `relayed` relayed an ICMP error about a datagram to
+    /// `peer`: every open peer's agent fails the pairs from that relayed candidate to `peer`
+    /// whose check is in flight, when the error is a hard one (port or protocol unreachable).
+    fn relay_icmp(&self, relayed: SocketAddr, peer: SocketAddr, icmp_type: u8, code: u8) {
+        let peers: Vec<Peer> = lock(&self.peers).values().cloned().collect();
+        let now = Instant::now();
+        for p in peers {
+            let _ = p.with_rtc_inner(|rtc| rtc.icmp_error(now, relayed, peer, icmp_type, code));
+        }
+    }
+
     /// A lost allocation was made again: new peers get the new candidate, and so do the open
     /// ones (their agents check it against the remote candidates they know).
     fn relay_reallocated(&self, c: akio_ice::Candidate) {

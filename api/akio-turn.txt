@@ -427,6 +427,28 @@ pub fn akio_turn::stun::is_stun(&[u8]) -> bool
 pub fn akio_turn::stun::long_term_key(&str, &str, &str) -> [u8; 16]
 pub fn akio_turn::stun::parse_binding_response(&[u8], &[u8; 12]) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn akio_turn::stun::transaction_id() -> [u8; 12]
+#[non_exhaustive] pub struct akio_turn::IpFields
+pub akio_turn::IpFields::dont_fragment: bool
+pub akio_turn::IpFields::tos: u8
+pub akio_turn::IpFields::ttl: u8
+impl akio_turn::IpFields
+pub const fn akio_turn::IpFields::new(u8, u8) -> akio_turn::IpFields
+impl core::clone::Clone for akio_turn::IpFields
+pub fn akio_turn::IpFields::clone(&self) -> Self
+impl core::cmp::Eq for akio_turn::IpFields
+impl core::cmp::PartialEq for akio_turn::IpFields
+pub fn akio_turn::IpFields::eq(&self, &Self) -> bool
+impl core::default::Default for akio_turn::IpFields
+pub fn akio_turn::IpFields::default() -> Self
+impl core::fmt::Debug for akio_turn::IpFields
+pub fn akio_turn::IpFields::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_turn::IpFields
+impl core::marker::StructuralPartialEq for akio_turn::IpFields
+impl core::marker::Send for akio_turn::IpFields
+impl core::marker::Sync for akio_turn::IpFields
+impl core::marker::Unpin for akio_turn::IpFields
+impl core::panic::unwind_safe::RefUnwindSafe for akio_turn::IpFields
+impl core::panic::unwind_safe::UnwindSafe for akio_turn::IpFields
 pub struct akio_turn::StunServer
 impl akio_turn::StunServer
 pub fn akio_turn::StunServer::new() -> akio_turn::StunServer
@@ -452,6 +474,7 @@ pub akio_turn::TurnConfig::allow_private_peers: bool
 pub akio_turn::TurnConfig::auth: akio_turn::AuthFn
 pub akio_turn::TurnConfig::channel_lifetime: core::time::Duration
 pub akio_turn::TurnConfig::copy_dscp: bool
+pub akio_turn::TurnConfig::copy_ttl: bool
 pub akio_turn::TurnConfig::default_lifetime: core::time::Duration
 pub akio_turn::TurnConfig::max_allocations: usize
 pub akio_turn::TurnConfig::max_allocations_per_user: usize
@@ -477,6 +500,7 @@ pub fn akio_turn::TurnConfig::additional_public_ip(self, core::net::ip_addr::IpA
 pub fn akio_turn::TurnConfig::additional_relay_ip(self, core::net::ip_addr::IpAddr) -> Self
 pub fn akio_turn::TurnConfig::allow_private_peers(self, bool) -> Self
 pub fn akio_turn::TurnConfig::copy_dscp(self, bool) -> Self
+pub fn akio_turn::TurnConfig::copy_ttl(self, bool) -> Self
 pub fn akio_turn::TurnConfig::lifetimes(self, core::time::Duration, core::time::Duration) -> Self
 pub fn akio_turn::TurnConfig::new(&str, akio_turn::AuthFn, core::net::ip_addr::IpAddr) -> akio_turn::TurnConfig
 pub fn akio_turn::TurnConfig::peer_allowed(self, impl core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
@@ -499,10 +523,12 @@ pub fn akio_turn::TurnCore::close_all(&mut self, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::config(&self) -> &akio_turn::TurnConfig
 pub fn akio_turn::TurnCore::handle_client(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_client_ecn(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn akio_turn::TurnEnv)
+pub fn akio_turn::TurnCore::handle_client_ip(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], akio_turn::IpFields, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_client_tos(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_icmp(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, u8, u8, u32, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_peer(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_peer_ecn(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn akio_turn::TurnEnv)
+pub fn akio_turn::TurnCore::handle_peer_ip(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], akio_turn::IpFields, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_peer_tos(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::handle_timeout(&mut self, std::time::Instant, &mut dyn akio_turn::TurnEnv)
 pub fn akio_turn::TurnCore::new(akio_turn::TurnConfig) -> akio_turn::TurnCore
@@ -567,6 +593,7 @@ pub akio_turn::TurnStats::icmp: u64
 pub akio_turn::TurnStats::tcp_connections: usize
 pub akio_turn::TurnStats::to_client: u64
 pub akio_turn::TurnStats::to_peer: u64
+pub akio_turn::TurnStats::ttl_expired: u64
 impl core::clone::Clone for akio_turn::TurnStats
 pub fn akio_turn::TurnStats::clone(&self) -> Self
 impl core::cmp::Eq for akio_turn::TurnStats
@@ -610,10 +637,13 @@ pub fn akio_turn::TurnEnv::open_tcp_relay(&mut self, core::net::socket_addr::Soc
 pub fn akio_turn::TurnEnv::pads_channel_data(&self, core::net::socket_addr::SocketAddr) -> bool
 pub fn akio_turn::TurnEnv::send_to_client(&mut self, core::net::socket_addr::SocketAddr, &[u8])
 pub fn akio_turn::TurnEnv::send_to_client_ecn(&mut self, core::net::socket_addr::SocketAddr, &[u8], u8)
+pub fn akio_turn::TurnEnv::send_to_client_ip(&mut self, core::net::socket_addr::SocketAddr, &[u8], akio_turn::IpFields)
 pub fn akio_turn::TurnEnv::send_to_client_tos(&mut self, core::net::socket_addr::SocketAddr, &[u8], u8)
 pub fn akio_turn::TurnEnv::send_to_peer(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8])
 pub fn akio_turn::TurnEnv::send_to_peer_ecn(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8)
+pub fn akio_turn::TurnEnv::send_to_peer_ip(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], akio_turn::IpFields)
 pub fn akio_turn::TurnEnv::send_to_peer_tos(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], u8)
+pub fn akio_turn::TurnEnv::sets_dont_fragment(&self) -> bool
 pub fn akio_turn::denied_by_default(core::net::ip_addr::IpAddr) -> bool
 pub fn akio_turn::ephemeral_auth(&[u8]) -> akio_turn::AuthFn
 pub fn akio_turn::ephemeral_credentials(&[u8], &str, core::time::Duration) -> (alloc::string::String, alloc::string::String)

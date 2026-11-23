@@ -2438,6 +2438,34 @@ ADR-083. Both binaries were built into separate target directories and run alter
 did: the same control message, one byte wider in meaning. Marking every datagram costs about
 10 % here (about 6 % in ADR-083's run), within the spread.
 
+### TURN relay, TTL copied (ADR-091 update, same-run A/B)
+
+Measured 2026-11-23 on gpu51. Question: does copying the TTL slow the UDP relay? With
+`copy_ttl` on (the default) the server's listener and relay sockets report every datagram's TTL
+(`IP_RECVTTL`: one more control message per received datagram, read in the same walk as the
+traffic class), and every relayed datagram goes out with an `IP_TTL` control message (the
+bench's senders use the default 64, so every relayed datagram carries 63): what was the
+unmarked fast path now always carries a control message.
+
+`main` is `631d7e27`, `branch` the branch, `b-nottl` the branch with `TURN_BENCH_COPY_TTL=0`
+(no TTL asked for or sent: the old path). The workload is `turn-relay-bench 8 6 4`, as for
+ADR-083 and ADR-091. Both binaries were built into separate target directories and run
+alternately under `quiet.sh`, the order rotated every round.
+
+| Variant | Rounds | Mean (datagrams/s) | Median | Min–max |
+|---|---:|---:|---:|---:|
+| main | 8 | 268.8k | 276.3k | 221k–306k |
+| branch | 8 | 275.1k | 273.3k | 243k–301k |
+| b-nottl | 8 | 293.5k | 288.7k | 249k–354k |
+
+- branch / main per round: 0.80–1.32, median 1.022, mean 1.039.
+- b-nottl / main per round: 0.84–1.49, median 1.039, mean 1.111.
+- branch / b-nottl per round: 0.78–1.14, median 0.943, mean 0.950.
+
+**Answer: no measurable change against main.** Copying the TTL costs about 5 % against the same
+binary not copying it, as marking every datagram with ECN did (ADR-083: about 6 %), well inside
+the rounds' ±20 % spread.
+
 ### NUMA placement (ADR-088, same-run A/B)
 
 Measured 2026-11-23 on gpu51 (`tools/bench/numa.sh`, `quiet.sh`, 5 interleaved rounds, 5 s each):

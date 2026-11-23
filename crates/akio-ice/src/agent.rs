@@ -631,6 +631,56 @@ impl IceAgent {
         self.generation += 1;
     }
 
+    /// An ICMP error about a datagram sent from `local` (a candidate's base, or a relayed
+    /// address) to `remote` (its port, or 0 when the reporter did not give one): ICMP type
+    /// `icmp_type` and code `code`, ICMPv6 when `remote` is IPv6. As a socket's error queue
+    /// reports it, or a TURN server for a relayed address (RFC 8656 section 11.6).
+    ///
+    /// A hard error (ICMPv4 destination unreachable, code 2 or 3: protocol or port
+    /// unreachable; ICMPv6 destination unreachable, code 4: port unreachable) fails the pairs
+    /// from `local` to `remote` whose connectivity check is in flight, at once rather than
+    /// after the check's retransmissions (RFC 8445 section 7.2.5.2.2); a later check from the
+    /// remote side still revives them, as it revives any failed pair. Pairs that succeeded,
+    /// the selected one included, are left alone: an ICMP error is not authenticated, so it
+    /// may not take a working path away (section 19.2), and consent freshness (RFC 7675)
+    /// finds out whether that path still works. Soft errors (host or network unreachable,
+    /// time exceeded, too big) are ignored. Returns whether a pair failed.
+    pub fn handle_icmp_error(
+        &mut self,
+        now: Instant,
+        local: SocketAddr,
+        remote: SocketAddr,
+        icmp_type: u8,
+        code: u8,
+    ) -> bool {
+        if self.closed || self.fixed {
+            return false;
+        }
+        let hard = if remote.is_ipv6() {
+            icmp_type == 1 && code == 4
+        } else {
+            icmp_type == 3 && matches!(code, 2 | 3)
+        };
+        if !hard {
+            return false;
+        }
+        self.now = self.now.max(now);
+        let mut failed = false;
+        for i in 0..self.pairs.len() {
+            let p = &self.pairs[i];
+            let to = p.remote.ip() == remote.ip()
+                && (remote.port() == 0 || p.remote.port() == remote.port());
+            if p.local == local && to && p.state == PairState::InProgress && p.tx.is_some() {
+                self.fail_pair(i);
+                failed = true;
+            }
+        }
+        if failed {
+            self.update_state(now);
+        }
+        failed
+    }
+
     /// Handles a received datagram (`source` the remote address, `destination` the local
     /// address it arrived on: a candidate's base, or the relayed address). Returns `true` if
     /// it was a STUN message for this agent (consumed), `false` for anything else (DTLS,

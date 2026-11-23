@@ -10,6 +10,33 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：经 TURN 中继复制 TTL、按 DONT-FRAGMENT 行事、macOS 上的 ICMP、ICE 处理 ICMP（akio-turn、akio-ice、akio-webrtc、akio、akio-core、akio-epoll、akio-sys）
+
+ADR-091 的更新（2026-11-23），了结它留下的各项：
+
+- akio-turn 服务器：中继的数据报以进入时的 TTL / 跳数限制减 1 发出，双向（RFC 5766 12 节、RFC 8656 13 节）；
+  以 1 到达的数据报被丢弃并计数（`TurnStats::ttl_expired`）。`TurnConfig::copy_ttl`（默认 true；false 时用
+  socket 的默认值）。macOS 不能按数据报设置 IPv4 TTL：那里的 IPv4 数据报保持默认值。
+- akio-turn 服务器：按 `DONT-FRAGMENT` 行事：带该属性的 Send 指示以 DF 置位发给对端（UDP 客户端时为 IPv4 到
+  IPv4，流式客户端时任意地址族）；其余一律 DF 清零。不能设置 DF 的环境对带该属性的 Allocate 回 420，并丢弃这样
+  的 Send 指示（RFC 8656 7.2 与 11.2 节）。
+- 面向嵌入者：`IpFields`、`TurnCore::handle_client_ip` / `handle_peer_ip`、`TurnEnv::send_to_client_ip` /
+  `send_to_peer_ip`（默认调用 `_tos` 方法）以及 `TurnEnv::sets_dont_fragment`（默认 false）。
+- akio：`Engine::bind_udp_icmp` 在 macOS 上也报告 ICMP 错误，由 I/O 线程的无特权 ICMP socket 读取；akio-turn
+  的 ICMP 转告（RFC 8656 11.5 节）因此在那里也可用。
+- akio-ice：`IceAgent::handle_icmp_error`：硬 ICMP 错误（端口或协议不可达）让检查尚在进行的候选对失败（RFC 8445
+  7.2.5.2.2 节）；已成功的候选对交给同意新鲜度处理。akio-webrtc 把 TURN 服务器为中继候选转告的 ICMP 错误交给它。
+- akio：`UdpBinding::set_dont_fragment`。akio-sys：`set_dont_fragment`、`dont_fragment`、`enable_recv_ttl`、
+  `send_to_ip`、`RecvBatch::ttl` / `tos_ttl`、`Batch::push_ip`、`recv_from_ip`（macOS）、`parse_icmp_error` /
+  `IcmpPacket`、`IcmpListener` / `icmp_source_matches`（macOS）。隐藏：`Conn::rx_ttl`、`Conn::enable_rx_ttl`、
+  `Conn::send_segments_ip`、`UdpBinding::send_to_ip`、`UdpBinding::enable_rx_ttl`。
+- 行为变化：akio-turn 中继的数据报带递减后的 TTL（原为 socket 的值，通常 64）；中继 socket 发送时 DF 清零
+  （Linux 原先对能放进路径 MTU 的数据报置 DF）；没有覆盖 `sets_dont_fragment` 的 `TurnEnv` 现在对带
+  `DONT-FRAGMENT` 的 Allocate 回 420，而不是接受。
+- `tools/interop/webrtc/turn-ttl-df.sh`（跨 1500 字节链路，与 coturn 对比 TTL 与 DF），`turn-relay-bench` 支持
+  `TURN_BENCH_COPY_TTL=0`，新 fuzz 目标 `sys_icmp_error`。与 main 的中继 A/B：没有可测出的变化；
+  复制 TTL 比不复制约多 5%，在波动之内（docs/BENCHMARKS.zh-CN.md）。
+
 ### 修复：端口为 0 的 BitTorrent 客户端与其他套接字争用端口（akio-bittorrent）
 
 `listen` 端口为 0 时，`Client::new` 先探测 TCP 与 UDP 都空闲的端口号，再让引擎绑定；两步之间其他套接字可能占用
@@ -115,7 +142,8 @@ ADR-091，只有新增：
   `IcmpReport`（Linux）。
 - 行为变化：akio-turn 中继的数据报带发送方的 DSCP（原为 socket 的，通常为 0），其 UDP 中继 socket 在
   Linux 上开启 `IP_RECVERR`。
-- 未改变：`Endpoint::gather_relay` 仍只请求一个地址族（原因见 ADR-091）；TTL 不复制。
+- 未改变：`Endpoint::gather_relay` 仍只请求一个地址族（原因见 ADR-091）；TTL 不复制（后来已做，见上面 ADR-091
+  的更新）。
 - `turn-relay-bench` 支持 `TURN_BENCH_TOS`；`tools/interop/webrtc/turn-dual.sh` 检查 DSCP、ICMP 与按地址族
   交还。与 main 的中继 A/B：没有可测出的变化；带 DSCP 的数据报与带 ECN 标记的开销相同
   （docs/BENCHMARKS.zh-CN.md）。

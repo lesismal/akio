@@ -25,6 +25,36 @@ use akio_crypto::mac::Hmac;
 use crate::auth::AuthFn;
 use crate::stun::{Class, Message, MessageBuilder, Method, attr, is_channel_data, is_stun};
 
+/// The IP header fields a relayed datagram carries across the server, UDP to UDP (RFC 8656
+/// section 14; RFC 5766 section 12 for the TTL): those it came in with (`handle_*_ip`), and
+/// those the datagram relayed goes out with ([`TurnEnv::send_to_peer_ip`],
+/// [`TurnEnv::send_to_client_ip`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IpFields {
+    /// The traffic class byte (IPv4 TOS / IPv6 traffic class: DSCP in the upper six bits, ECN
+    /// in the low two); 0 when unknown, or unmarked.
+    pub tos: u8,
+    /// The TTL (IPv4) or hop limit (IPv6); 0 when unknown coming in, the socket's default going
+    /// out.
+    pub ttl: u8,
+    /// Going out to a peer only: send the datagram with the "don't fragment" bit set (a Send
+    /// indication with `DONT-FRAGMENT`, RFC 8656 sections 14 and 15); every other datagram goes
+    /// with it clear.
+    pub dont_fragment: bool,
+}
+
+impl IpFields {
+    /// Fields of a datagram that came in with traffic class byte `tos` and TTL `ttl`.
+    pub const fn new(tos: u8, ttl: u8) -> IpFields {
+        IpFields {
+            tos,
+            ttl,
+            dont_fragment: false,
+        }
+    }
+}
+
 /// What a [`TurnCore`] does to the outside world.
 pub trait TurnEnv {
     /// Sends `data` to the client at `client` (from the address it reached the server at).
@@ -60,6 +90,29 @@ pub trait TurnEnv {
     /// `send_to_peer_ecn` with the ECN bits.
     fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], tos: u8) {
         self.send_to_peer_ecn(relay, peer, data, tos & 3);
+    }
+    /// [`send_to_client_tos`](Self::send_to_client_tos) with all the fields relayed: the
+    /// traffic class byte, and the TTL / hop limit the peer's datagram arrived with minus one
+    /// (0: the socket's default; see [`TurnConfig::copy_ttl`]). Default: `send_to_client_tos`
+    /// with `ip.tos`.
+    fn send_to_client_ip(&mut self, client: SocketAddr, data: &[u8], ip: IpFields) {
+        self.send_to_client_tos(client, data, ip.tos);
+    }
+    /// [`send_to_peer_tos`](Self::send_to_peer_tos) with all the fields relayed: the traffic
+    /// class byte, the TTL / hop limit of the client's datagram minus one, and whether to set
+    /// the "don't fragment" bit (only ever when
+    /// [`sets_dont_fragment`](Self::sets_dont_fragment)). Default: `send_to_peer_tos` with
+    /// `ip.tos`.
+    fn send_to_peer_ip(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ip: IpFields) {
+        self.send_to_peer_tos(relay, peer, data, ip.tos);
+    }
+    /// Whether datagrams to peers can be sent with the "don't fragment" bit
+    /// ([`IpFields::dont_fragment`] in [`send_to_peer_ip`](Self::send_to_peer_ip)). When not,
+    /// a `DONT-FRAGMENT` attribute is treated as an unknown comprehension-required one (RFC
+    /// 8656 sections 7.2 and 11.2): an Allocate carrying it is answered 420 and a Send
+    /// indication carrying it is dropped. Default: no.
+    fn sets_dont_fragment(&self) -> bool {
+        false
     }
     /// Opens a relay socket for `client` bound on `addr` (port 0: any free port), returning
     /// its bound address.
@@ -211,6 +264,17 @@ pub struct TurnConfig {
     /// peers pick their traffic class. Platforms that do not report the traffic class (or
     /// streams, sections 15 and 16) give 0 either way.
     pub copy_dscp: bool,
+    /// Relayed datagrams go out with the TTL (IPv4) or hop limit (IPv6) they came in with
+    /// minus one (true), as RFC 5766 section 12 prefers UDP to UDP and RFC 8656 section 13 for
+    /// a relay between IPv6 and either family: a datagram that loops through relays dies once
+    /// its TTL runs out, as it would through routers, and one that arrives with 1 is dropped.
+    /// Off: they go out with the socket's default (the alternative both allow). Needs the
+    /// incoming TTL: [`TurnServer`] asks its sockets for it; Linux sends it on both families,
+    /// macOS on IPv6 only (XNU ignores a per-datagram IPv4 TTL). Stream clients have none
+    /// (sections 15 and 16).
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub copy_ttl: bool,
     /// ICMP errors drawn by datagrams relayed to peers go back to the client as Data
     /// indications with an `ICMP` attribute (true, RFC 8656 section 11.5). [`TurnServer`]
     /// reads them on Linux (`akio::Engine::bind_udp_icmp`); elsewhere there are none.
@@ -261,6 +325,7 @@ impl TurnConfig {
             tcp_relay_buffer: 64 * 1024,
             tcp_connect_timeout: Duration::from_secs(30),
             copy_dscp: true,
+            copy_ttl: true,
             relay_icmp: true,
         }
     }
@@ -337,6 +402,13 @@ impl TurnConfig {
     #[must_use]
     pub fn tcp_connect_timeout(mut self, d: Duration) -> Self {
         self.tcp_connect_timeout = d;
+        self
+    }
+
+    /// Sets [`copy_ttl`](Self::copy_ttl).
+    #[must_use]
+    pub fn copy_ttl(mut self, yes: bool) -> Self {
+        self.copy_ttl = yes;
         self
     }
 
@@ -510,6 +582,9 @@ pub struct TurnStats {
     pub tcp_connections: usize,
     /// ICMP errors relayed to clients (Data indications with an `ICMP` attribute).
     pub icmp: u64,
+    /// Datagrams not relayed because they arrived with a TTL / hop limit of 1, with nothing
+    /// left for the hop through the server ([`TurnConfig::copy_ttl`]).
+    pub ttl_expired: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -863,9 +938,25 @@ impl TurnCore {
         tos: u8,
         env: &mut dyn TurnEnv,
     ) {
-        let ecn = self.tos(tos);
+        self.handle_client_ip(now, client, data, IpFields::new(tos, 0), env);
+    }
+
+    /// [`handle_client`](Self::handle_client) for a datagram that arrived with IP header
+    /// fields `ip` (traffic class byte and TTL / hop limit): relayed data goes to the peer
+    /// with [`TurnEnv::send_to_peer_ip`] and those fields, the DSCP cleared unless
+    /// [`TurnConfig::copy_dscp`], the TTL one less unless [`TurnConfig::copy_ttl`] is off
+    /// (dropped when it came in as 1), and the "don't fragment" bit for a Send indication with
+    /// `DONT-FRAGMENT` (RFC 8656 sections 14 and 15).
+    pub fn handle_client_ip(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        data: &[u8],
+        ip: IpFields,
+        env: &mut dyn TurnEnv,
+    ) {
         if is_channel_data(data) {
-            self.channel_data(now, client, data, ecn, env);
+            self.channel_data(now, client, data, ip, env);
             return;
         }
         if !is_stun(data) {
@@ -877,7 +968,7 @@ impl TurnCore {
         match m.class() {
             Class::Request => self.request(now, client, &m, env),
             Class::Indication if m.method() == Method::SEND => {
-                self.send_indication(now, client, &m, ecn, env);
+                self.send_indication(now, client, &m, ip, env);
             }
             _ => {}
         }
@@ -888,7 +979,7 @@ impl TurnCore {
         now: Instant,
         client: SocketAddr,
         data: &[u8],
-        ecn: u8,
+        ip: IpFields,
         env: &mut dyn TurnEnv,
     ) {
         let ch = u16::from_be_bytes([data[0], data[1]]);
@@ -912,8 +1003,11 @@ impl TurnCore {
             return;
         }
         let relay = r.relay;
+        let Some(out) = self.relayed(ip) else {
+            return;
+        };
         self.stats.to_peer += 1;
-        env.send_to_peer_tos(relay, peer, &data[4..4 + len], ecn);
+        env.send_to_peer_ip(relay, peer, &data[4..4 + len], out);
     }
 
     fn send_indication(
@@ -921,7 +1015,7 @@ impl TurnCore {
         now: Instant,
         client: SocketAddr,
         m: &Message<'_>,
-        ecn: u8,
+        ip: IpFields,
         env: &mut dyn TurnEnv,
     ) {
         let (Some(peer), Some(payload)) =
@@ -929,6 +1023,12 @@ impl TurnCore {
         else {
             return;
         };
+        // Section 11.2: a server that cannot set DF treats the attribute as unknown and
+        // comprehension-required, which drops the indication.
+        let df = m.has(attr::DONT_FRAGMENT);
+        if df && !env.sets_dont_fragment() {
+            return;
+        }
         let Some(a) = self.allocs.get(&client) else {
             return;
         };
@@ -942,8 +1042,16 @@ impl TurnCore {
             return;
         }
         let relay = r.relay;
+        let Some(mut out) = self.relayed(ip) else {
+            return;
+        };
+        // DF applies IPv4 to IPv4 over UDP (section 14; translations to or from IPv6 ignore
+        // the attribute, section 13), and to everything from a stream client (section 15).
+        let v4 = |a: SocketAddr| a.ip().to_canonical().is_ipv4();
+        out.dont_fragment =
+            df && (env.pads_channel_data(client) || (v4(client) && v4(peer) && relay.is_ipv4()));
         self.stats.to_peer += 1;
-        env.send_to_peer_tos(relay, peer, payload, ecn);
+        env.send_to_peer_ip(relay, peer, payload, out);
     }
 
     /// A datagram from `peer` on the relay socket bound at `relay`: relayed to the allocation's
@@ -987,7 +1095,24 @@ impl TurnCore {
         tos: u8,
         env: &mut dyn TurnEnv,
     ) {
-        let ecn = self.tos(tos);
+        self.handle_peer_ip(now, relay, peer, data, IpFields::new(tos, 0), env);
+    }
+
+    /// [`handle_peer`](Self::handle_peer) for a datagram that arrived with IP header fields
+    /// `ip` (traffic class byte and TTL / hop limit): it goes to the client with
+    /// [`TurnEnv::send_to_client_ip`] and those fields, the DSCP cleared unless
+    /// [`TurnConfig::copy_dscp`], the TTL one less unless [`TurnConfig::copy_ttl`] is off
+    /// (dropped when it came in as 1, unless the client is on a stream: no hop of the
+    /// datagram's own follows there, RFC 8656 section 16).
+    pub fn handle_peer_ip(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        data: &[u8],
+        ip: IpFields,
+        env: &mut dyn TurnEnv,
+    ) {
         let Some(&client) = self.by_relay.get(&relay) else {
             return;
         };
@@ -1010,20 +1135,28 @@ impl TurnCore {
             .get(&peer)
             .copied()
             .filter(|c| a.chans.get(c).is_some_and(|&(_, e)| e > now));
+        let out = if env.pads_channel_data(client) {
+            IpFields::default()
+        } else {
+            match self.relayed(ip) {
+                Some(out) => out,
+                None => return,
+            }
+        };
         self.stats.to_client += 1;
         match ch {
             Some(ch) => {
-                let mut out = Vec::with_capacity(4 + data.len() + 3);
-                out.extend_from_slice(&ch.to_be_bytes());
-                out.extend_from_slice(&(data.len() as u16).to_be_bytes());
-                out.extend_from_slice(data);
+                let mut buf = Vec::with_capacity(4 + data.len() + 3);
+                buf.extend_from_slice(&ch.to_be_bytes());
+                buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                buf.extend_from_slice(data);
                 // UDP: padding is optional; it is not sent. Streams need it (RFC 8656 section
                 // 12.5).
                 if env.pads_channel_data(client) {
-                    let pad = crate::framing::channel_data_padding(out.len());
-                    out.resize(out.len() + pad, 0);
+                    let pad = crate::framing::channel_data_padding(buf.len());
+                    buf.resize(buf.len() + pad, 0);
                 }
-                env.send_to_client_tos(client, &out, ecn);
+                env.send_to_client_ip(client, &buf, out);
             }
             None => {
                 let msg = MessageBuilder::new(
@@ -1034,19 +1167,28 @@ impl TurnCore {
                 .xor_addr(attr::XOR_PEER_ADDRESS, peer)
                 .attr(attr::DATA, data)
                 .build();
-                env.send_to_client_tos(client, &msg, ecn);
+                env.send_to_client_ip(client, &msg, out);
             }
         }
     }
 
-    /// The traffic class byte relayed for one that came in as `tos`: the ECN codepoint, and
-    /// the DSCP when [`TurnConfig::copy_dscp`].
-    fn tos(&self, tos: u8) -> u8 {
-        if self.shared.cfg.copy_dscp {
-            tos
-        } else {
-            tos & 3
-        }
+    /// The fields a datagram that came in with `ip` is relayed with: the ECN codepoint, the
+    /// DSCP when [`TurnConfig::copy_dscp`], the TTL one less when [`TurnConfig::copy_ttl`]
+    /// (unknown, 0, stays 0: the socket's). `None` (counted) when it came in with a TTL of 1:
+    /// one more hop would take it to 0, where a router drops it.
+    fn relayed(&mut self, ip: IpFields) -> Option<IpFields> {
+        let cfg = &self.shared.cfg;
+        let tos = if cfg.copy_dscp { ip.tos } else { ip.tos & 3 };
+        let ttl = match ip.ttl {
+            _ if !cfg.copy_ttl => 0,
+            0 => 0,
+            1 => {
+                self.stats.ttl_expired += 1;
+                return None;
+            }
+            t => t - 1,
+        };
+        Some(IpFields::new(tos, ttl))
     }
 
     /// An ICMP error (type `icmp_type`, code `code`) that a datagram sent from the relay
@@ -1343,7 +1485,10 @@ impl TurnCore {
             env.send_to_client(client, &out);
             return;
         };
-        if let Some(unknown) = unknown_required(m) {
+        // Section 7.2: a server that cannot set DF treats an Allocate's DONT-FRAGMENT as
+        // unknown and comprehension-required.
+        let df_known = m.method() != Method::ALLOCATE || env.sets_dont_fragment();
+        if let Some(unknown) = unknown_required(m, df_known) {
             let b = self
                 .base(m, Class::Error)
                 .error(420, "Unknown Attribute")
@@ -2120,7 +2265,7 @@ fn reason(code: u16) -> &'static str {
     }
 }
 
-fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
+fn unknown_required(m: &Message<'_>, df_known: bool) -> Option<Vec<u8>> {
     const KNOWN: &[u16] = &[
         attr::MAPPED_ADDRESS,
         attr::USERNAME,
@@ -2144,7 +2289,10 @@ fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
     ];
     let unknown: Vec<u8> = m
         .attr_types()
-        .filter(|t| *t < 0x8000 && !KNOWN.contains(t))
+        .filter(|t| {
+            let known = KNOWN.contains(t) && (*t != attr::DONT_FRAGMENT || df_known);
+            *t < 0x8000 && !known
+        })
         .flat_map(u16::to_be_bytes)
         .collect();
     (!unknown.is_empty()).then_some(unknown)
@@ -2228,6 +2376,9 @@ mod tests {
         }
         fn close_relay(&mut self, _: SocketAddr) {}
         fn pads_channel_data(&self, _: SocketAddr) -> bool {
+            true
+        }
+        fn sets_dont_fragment(&self) -> bool {
             true
         }
         fn open_tcp_relay(&mut self, _: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {

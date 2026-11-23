@@ -2,7 +2,8 @@
 
 English | [简体中文](091-turn-icmp-dscp-family-release.zh-CN.md)
 
-Status: accepted (2026-11-23)
+Status: accepted (2026-11-23); updated 2026-11-23 (TTL, `DONT-FRAGMENT`, ICMP on macOS, ICMP in
+ICE: see the update at the end)
 
 ## Context
 
@@ -196,3 +197,173 @@ does not send. The same run passes coturn's `turnutils_uclient -Z` / `-x` agains
   - ICMP on macOS: unconnected UDP sockets get no ICMP errors there.
   - akio-webrtc does not act on `ClientEvent::Icmp` (an ICE check failing does the same work,
     later).
+
+## Update (2026-11-23): TTL, DONT-FRAGMENT, ICMP on macOS, ICMP in ICE
+
+The four items left above, each decided and done.
+
+### Context, corrected
+
+RFC 8656 section 14 (UDP to UDP) has no TTL rule, contrary to what "Not done" said above: it
+covers DSCP, ECN, the IPv4 fragmentation fields and IPv4 options. RFC 5766 section 12, which it
+replaces, had one (preferred: the incoming TTL minus 1, dropped at 0; alternative: the default).
+RFC 8656 keeps it where IPv6 is involved: section 13 decrements as a router does (13.2: "acts as
+a regular router with respect to decrementing the Hop Limit"; 13.1 and 13.3 by RFC 7915), with
+the default as the alternative, and section 3.6 lists a reset TTL among the things a relay may
+do. `DONT-FRAGMENT` is sections 7.2 (Allocate), 11.2 (Send) and 14 / 15 (what to set); section 13
+says to ignore it when either side is IPv6.
+
+### Decision
+
+**TTL / hop limit: copied minus one, by default (`TurnConfig::copy_ttl`, true).** What it buys is
+section 21.1.7's loop: two servers made to relay to each other pass a datagram back and forth
+until an allocation expires; authentication and random ports make the loop harder to build, a
+decrementing TTL ends it after at most 255 hops whoever built it. coturn decrements towards the
+peer (measured below). The cost is one more control message each way, measured below.
+
+- akio-sys: `enable_recv_ttl` (`IP_RECVTTL` / `IPV6_RECVHOPLIMIT`, per socket, off by default:
+  only sockets that ask pay for the control message), `RecvBatch::ttl` and `tos_ttl` (one walk
+  over the control messages for both), `Batch::push_ip` and `send_to_ip` (`IP_TTL` /
+  `IPV6_HOPLIMIT` next to `IP_TOS` / `IPV6_TCLASS`; the control buffer grew from 64 to 96 bytes
+  for a third message), `recv_from_ip` on macOS.
+- akio-core (hidden, as the `_tos` forms): `Conn::rx_ttl`, `Conn::enable_rx_ttl`,
+  `Conn::send_segments_ip`, `UdpBinding::send_to_ip`, `UdpBinding::enable_rx_ttl`. The send
+  queue keeps one 16-bit word per chunk (traffic class in the low byte, TTL in the high) where
+  it kept the byte; datagrams with different words do not share a GSO message.
+- akio-turn: `IpFields` (traffic class, TTL, DF) with `TurnCore::handle_client_ip` /
+  `handle_peer_ip` and `TurnEnv::send_to_client_ip` / `send_to_peer_ip`, defaulting to the `_tos`
+  methods as those default to the `_ecn` ones. Relayed data goes out with the incoming TTL minus
+  one; unknown (0) stays unknown (the socket's default); a datagram that came in with 1 is
+  dropped and counted (`TurnStats::ttl_expired`), except data from a peer to a stream client,
+  where no hop of the datagram's own follows (section 16). Requests are answered whatever their
+  TTL. No ICMP time exceeded is sent for a dropped datagram: that takes a raw socket.
+- `TurnServer` asks for the TTL on its relay sockets when it binds them and on a listener's
+  socket when a client opens (a `setsockopt` per new client 5-tuple; the socket is shared, so the
+  first datagram of the first client may arrive before it).
+- macOS: the TTL is read on both families, but XNU ignores an `IP_TTL` control message on send
+  (measured: the datagram leaves with the socket's 64), so IPv4 datagrams keep the default
+  there; IPv6 ones get their hop limit.
+
+**`DONT-FRAGMENT`: acted on.**
+
+- `TurnEnv::sets_dont_fragment` (default false): an environment that cannot set DF gets
+  sections 7.2 and 11.2's answer, the attribute treated as unknown and comprehension-required:
+  an Allocate carrying it is answered 420 with it in `UNKNOWN-ATTRIBUTES`, a Send indication
+  carrying it is dropped. `TurnServer` says true on Linux and macOS.
+- A Send indication with the attribute goes to the peer with DF set when the client is on UDP
+  (or DTLS) and both sides are IPv4 (section 14; section 13 ignores it once IPv6 is involved),
+  or when the client is on a stream (section 15, either family: `IPV6_DONTFRAG` on an IPv6
+  relay). Everything else goes with DF clear: ChannelData, Send without the attribute, data to
+  clients. Section 14 prefers copying the incoming DF bit, which a UDP socket cannot read; the
+  alternative is DF 0.
+- Relay sockets start with DF clear (Linux `IP_PMTUDISC_DONT`; the system default,
+  `IP_PMTUDISC_WANT`, sets DF on whatever fits the known path MTU). Linux has no per-datagram DF
+  for IPv4, so DF is the socket's: `TurnServer` keeps the relay's current setting and changes it
+  (one `setsockopt`) under the relay table's lock, just before a datagram that wants the other
+  one, so each datagram goes with the setting it asked for and a client that always (or never)
+  asks costs nothing per datagram.
+- akio-sys `set_dont_fragment` / `dont_fragment` (`IP_MTU_DISCOVER` on Linux, `IP_DONTFRAG` on
+  macOS, `IPV6_DONTFRAG` on IPv6 sockets); `UdpBinding::set_dont_fragment`, public.
+- A DF datagram larger than the path MTU the kernel knows fails with `EMSGSIZE` and is dropped.
+
+**ICMP on macOS: read from an ICMP socket.** macOS has no `IP_RECVERR`, but an unprivileged ICMP
+socket (`SOCK_DGRAM` with `IPPROTO_ICMP` / `IPPROTO_ICMPV6`, what `ping` uses) receives a copy of
+every ICMP message the host gets, errors about other sockets' datagrams included (measured: port
+unreachable for a loopback datagram arrives on both families, IPv4 with the outer IP header,
+ICMPv6 without). The quoted datagram names its source address and port, which is the bound
+socket.
+
+- akio-sys: `IcmpListener` (macOS) and `parse_icmp_error` (both platforms, safe code over the
+  bytes: ICMPv4 3 / 11 / 12 and ICMPv6 1 to 4 quoting UDP over the same IP version, ports
+  included; anything else is `None`), `icmp_source_matches`.
+- akio-epoll on macOS: a UDP loop opens an ICMP socket of a family when its first bound socket
+  of that family with an ICMP handler registers, and closes it with the last; errors go to the
+  handler of the bound socket whose (family, port) and address the quoted source names, with
+  the ICMP message's sender as `from`. Reads are bounded per event, as receives are.
+- Costs: each loop's socket gets a copy of every ICMP message the host gets and drops what is
+  not its own; a socket bound to `[::]` hears of its IPv6 datagrams only; anyone who can reach
+  the host can forge an error naming a relay's port, as on Linux, where the kernel's matching is
+  no stronger. `Engine::bind_udp_icmp` documents both platforms.
+
+**akio-webrtc: hard ICMP errors fail the check in flight.** RFC 8445 section 7.2.5.2.2: an agent
+may process ICMP errors for connectivity checks, and a hard one should fail the pair.
+
+- akio-ice: `IceAgent::handle_icmp_error(now, local, remote, type, code)`: ICMPv4 destination
+  unreachable codes 2 and 3 (protocol, port) and ICMPv6 destination unreachable code 4 (port)
+  fail the pairs from `local` to `remote` (port 0 matches any) whose check is in flight, at once
+  instead of after seven sends over about six seconds. Pairs that succeeded, the selected one
+  included, are left alone: ICMP is not authenticated (section 19.2 describes the spoofing), and
+  consent freshness (RFC 7675) is what decides whether a working path still works. Soft errors
+  (host or network unreachable, time exceeded, too big) are ignored. A later check from the
+  remote revives a failed pair, as for any failed pair.
+- akio-webrtc: the relay turns `ClientEvent::Icmp` into a call on every peer of the endpoint
+  (every transport's agent) with the relayed address of the peer's family as `local`. Nothing is
+  surfaced to applications: there is nothing for them to do that ICE does not. "Packet too big"
+  is not used either: DTLS, SCTP and RTP size their packets below any path MTU worth having.
+
+### Measured
+
+`tools/interop/webrtc/turn-ttl-df.sh` on gpu51 (Docker): the akio_turn client and the servers in
+one container, the peer in another across the Docker bridge (MTU 1500). The client sends with
+TTL 40, the peer answers with TTL 50; then Send indications: 100 bytes with `DONT-FRAGMENT`, 2000
+bytes without, 2000 with, 100 with again.
+
+| Server | TTL client → peer | TTL peer → client | 100 B, DF | 2000 B | 2000 B, DF | 100 B, DF again |
+|---|---|---|---|---|---|---|
+| akio-turn | 39 | 49 | relayed | relayed (fragmented) | refused | relayed |
+| coturn 4.6 | 39 | 64 (not copied) | relayed | relayed (fragmented) | refused | not relayed |
+
+The run requires akio-turn's row. `turn-dual.sh` (ADR-083, ADR-091) passes unchanged: DSCP and
+ECN copied both ways, ICMP port unreachable relayed (3/3, 1/4), a family released alone.
+
+Performance: UDP relay A/B against main `631d7e27` on gpu51 (`turn-relay-bench 8 6 4`, 8
+rounds under `quiet.sh`, order rotated): branch / main per-round median 1.022, mean 1.039 (rounds
+vary by about ±20 %): no measurable change. The same branch with `copy_ttl` off against on:
+median 0.943, about 5 %, what ECN marks cost in ADR-083. docs/BENCHMARKS.md has the table.
+
+### Tests
+
+- akio-sys: TTL both ways on Linux (`send_to_ip`, and a `sendmmsg` message with GSO, traffic
+  class and TTL together) and macOS (hop limit sent on IPv6, the default 64 on IPv4), none
+  reported until asked for; DF set and cleared; ICMP port unreachable read from the ICMP socket
+  on IPv4 and IPv6 loopback and matched to its sender (macOS); the parser on the captured
+  messages, MTU fields, every truncation, other types and protocols; control-message parsing
+  of `IP_RECVTTL`. Layout checks for the new constants against `libc`.
+- akio (`tests/udp.rs`): `bind_udp_icmp` now reports port unreachable on macOS too.
+- akio-turn core: TTL minus one both ways on ChannelData, Send and Data indications, 0 kept,
+  1 dropped and counted (requests still answered), `copy_ttl(false)`, stream clients;
+  `DONT-FRAGMENT`: 420 naming it and Send dropped without DF support, DF set from an IPv4 UDP
+  client to an IPv4 peer and from a stream client, clear for ChannelData, Send without it, IPv6
+  relays from UDP clients and data to clients.
+- akio-turn on real sockets (`tests/ttl_df.rs`): TTL 40 / 50 arriving as 39 / 49 on both
+  families (macOS IPv4: 64), 64 with `copy_ttl(false)`, TTL 1 dropped; Send indications
+  alternating DF on IPv4 and IPv6 peers all relayed. `tests/dual_ecn.rs`'s ICMP test now runs
+  on macOS.
+- akio-ice (`tests/sim.rs`): a check to a closed port fails on the ICMP error at once (the
+  test allows 100 ms) instead of seconds, soft errors and other addresses ignored, port 0
+  matching; on the simulated network a closed remote candidate gets one check instead of
+  seven, the agents connect over the other, and a spoofed error on the selected pair changes
+  nothing.
+- akio-webrtc (`tests/relay.rs`): through akio-turn, the relayed candidate's check to a closed
+  port is sent once (the server relays the ICMP error, the agent fails the pair); with
+  `relay_icmp(false)` it is sent three times or more in the same 2.5 s.
+- Platforms: macOS, gpu51 epoll and io_uring. Clippy clean.
+- Fuzzing: `turn_server` gains selectors `0xf8` / `0xfa` (peer / client datagrams with a TTL)
+  and `0xf6` (the environment starts or stops setting DF), and asserts that relayed data goes
+  with the TTL minus one, that TTL 1 is never relayed, and that DF is only set by an environment
+  that can, towards IPv4; new seed: TTL both ways and `DONT-FRAGMENT` refused then accepted.
+  New target `sys_icmp_error` (the parser, its promises asserted), seeded with the macOS
+  captures. Run on gpu51 for 5 minutes per target, the five in parallel (libFuzzer with ASan, built as
+  cargo-fuzz does): `sys_icmp_error` 152.1M runs, `turn_server` 2.9M, `turn_stream` 5.2M,
+  `turn_tcp` 2.7M, `turn_dtls` 2.2M, no finding.
+
+### Not done
+
+- No ICMP time exceeded for a datagram dropped at TTL 1, and no "packet too big" for a DF
+  datagram the kernel refuses (section 13.2 prefers telling the sender, with 48 bytes off the
+  MTU): both are dropped silently. The first needs a raw socket; the second would mean relaying
+  the kernel's local `EMSGSIZE` errors.
+- macOS cannot send a per-datagram IPv4 TTL: IPv4 datagrams from relays keep the default there.
+- A `[::]` dual-stack socket on macOS hears of its IPv6 datagrams' ICMP errors only.
+- ICMP for an endpoint's own host candidates (its unconnected socket, `IP_RECVERR` on Linux) is
+  not fed to ICE: only relayed candidates get it, through the TURN server.
