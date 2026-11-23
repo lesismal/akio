@@ -3,6 +3,7 @@
 
 mod conn;
 mod poller;
+mod trace;
 mod workers;
 
 use std::{
@@ -20,7 +21,7 @@ use akio_core::{Config, DynAcceptor, Group, LoopMeta, LoopStats, Pool};
 use akio_sys::Poller;
 
 use poller::{PollerShared, RCmd, RLoop};
-use workers::Workers;
+use workers::{Driver, Workers};
 
 /// Backend name for metrics labels.
 pub(crate) const BACKEND: &str = if cfg!(target_os = "linux") {
@@ -49,6 +50,8 @@ impl RoundsConfig {
     pub fn resolved(&self) -> (usize, usize) {
         let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
         let pollers = match self.pollers {
+            // Driver mode: the workers poll; one epoll instance serves them all (as Tokio).
+            0 if driver_mode() => 1,
             0 if cpus <= 4 => 1,
             0 => (cpus / 4).max(2),
             n => n,
@@ -59,6 +62,12 @@ impl RoundsConfig {
         };
         (pollers, workers)
     }
+}
+
+/// Who waits in `epoll_wait`: the workers themselves (driver mode, the default) or poller
+/// threads of their own (`AKIO_ROUNDS_POLLERS=dedicated`, kept for comparison).
+fn driver_mode() -> bool {
+    std::env::var("AKIO_ROUNDS_POLLERS").as_deref() != Ok("dedicated")
 }
 
 struct Slot {
@@ -177,6 +186,21 @@ impl RoundsGroup {
                 handle: None,
             });
         }
+        if driver_mode() {
+            let drivers = slots
+                .iter_mut()
+                .filter_map(|s| {
+                    s.pending.take().map(|lp| {
+                        Arc::new(Driver {
+                            lp: Mutex::new(lp),
+                            shared: s.shared.clone(),
+                            done: AtomicBool::new(false),
+                        })
+                    })
+                })
+                .collect();
+            workers.set_drivers(drivers);
+        }
         Ok(RoundsGroup {
             addr,
             fds,
@@ -215,9 +239,13 @@ impl Group for RoundsGroup {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
+        let mut slots = lock(&self.slots);
+        for s in slots.iter().filter(|s| s.pending.is_none()) {
+            // Driver mode: polled by the workers.
+            s.shared.stats.set_running(true);
+        }
         self.workers.start(&self.cfg)?;
         let pins = lock(&self.pins).clone();
-        let mut slots = lock(&self.slots);
         for (i, slot) in slots.iter_mut().enumerate() {
             let Some(mut lp) = slot.pending.take() else {
                 continue;
@@ -263,6 +291,12 @@ impl Group for RoundsGroup {
         let any = !handles.is_empty();
         for h in handles {
             let _ = h.join();
+        }
+        if self.started.load(Ordering::Acquire) {
+            // Driver mode: the workers drain the pollers; wait until every one has finished.
+            while !self.workers.drivers_done() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
         }
         if any || self.started.load(Ordering::Acquire) {
             self.workers.stop_and_join();

@@ -102,6 +102,13 @@ impl PollerShared {
         }
     }
 
+    /// Interrupts a blocking poll of this poller (a worker waiting in it in driver mode).
+    pub(crate) fn wake(&self) {
+        if !self.wake_pending.swap(true, Ordering::AcqRel) {
+            self.waker.wake();
+        }
+    }
+
     fn take_into(&self, batch: &mut Vec<RCmd>) {
         self.wake_pending.store(false, Ordering::Release);
         std::mem::swap(
@@ -139,6 +146,10 @@ pub(crate) struct RLoop {
     killed: bool,
     accept_paused_until: Option<Instant>,
     spare: Vec<RCmd>,
+    events: Vec<Event>,
+    finished: bool,
+    /// Tracing: how long the last `wait` took.
+    last_wait: Duration,
 }
 
 impl RLoop {
@@ -168,6 +179,9 @@ impl RLoop {
             killed: false,
             accept_paused_until: None,
             spare: Vec::new(),
+            events: Vec::with_capacity(1024),
+            finished: false,
+            last_wait: Duration::ZERO,
         })
     }
 
@@ -179,61 +193,102 @@ impl RLoop {
         &self.shared.cfg
     }
 
+    /// How long a blocking poll may wait: until the next timer, the end of an accept backoff, or
+    /// a short tick while draining. `None`: until an event.
+    pub(crate) fn next_timeout(&self) -> Option<Duration> {
+        let mut timeout = self.draining.map(|_| Duration::from_millis(20));
+        if let Some(next) = self.wheel.next_deadline() {
+            let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
+            timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+        }
+        if let Some(t) = self.accept_paused_until {
+            let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
+            timeout = Some(timeout.map_or(left, |x| x.min(left)));
+        }
+        timeout
+    }
+
+    /// Dedicated-poller mode: polls until the poller is done.
     pub(crate) fn run(&mut self) {
-        let mut events: Vec<Event> = Vec::with_capacity(1024);
         loop {
-            let mut timeout = self.draining.map(|_| Duration::from_millis(20));
-            if let Some(next) = self.wheel.next_deadline() {
-                let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
-                timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
-            }
-            if let Some(t) = self.accept_paused_until {
-                let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
-                timeout = Some(timeout.map_or(left, |x| x.min(left)));
-            }
-            events.clear();
-            if let Err(e) = self.poller.wait(&mut events, timeout) {
-                log_or_stderr(akio_log::Level::Error, format_args!("poller error: {e}"));
+            let t = self.next_timeout();
+            if self.poll_once(t) {
                 break;
-            }
-            let st = &self.shared.stats;
-            st.iterations.add_local(1);
-            st.events.add_local(events.len() as u64);
-            for ev in &events {
-                match ev.token {
-                    WAKER => self.shared.waker.drain(),
-                    t if t & LISTEN_BIT != 0 => self.accept((t & !LISTEN_BIT) as usize),
-                    id => self.on_event(id, *ev),
-                }
-            }
-            self.drain_cmds();
-            self.fire_timers();
-            self.resume_accept();
-            if let Some(deadline) = self.draining {
-                if self.conns.is_empty() && self.connecting.is_empty() {
-                    break;
-                }
-                let now = Instant::now();
-                if now >= deadline && !self.killed {
-                    self.killed = true;
-                    for (c, _) in self.conns.values() {
-                        c.close_with(None);
-                    }
-                    for (_, d) in self.connecting.drain() {
-                        if let Some(f) = d.on_error {
-                            f(io::Error::new(
-                                io::ErrorKind::ConnectionAborted,
-                                "engine shutting down",
-                            ));
-                        }
-                    }
-                }
-                if now >= deadline + Duration::from_secs(5) {
-                    break; // rounds stuck in handlers: give up waiting for them
-                }
             }
         }
         self.shared.stats.set_running(false);
+    }
+
+    /// One poll: waits up to `timeout` for readiness, hands the events to the connections, runs
+    /// commands and timers. True once the poller has finished (shut down and drained). Called by
+    /// the dedicated poller thread, or by a worker holding the driver (ADR-102, driver mode).
+    pub(crate) fn poll_once(&mut self, timeout: Option<Duration>) -> bool {
+        if self.finished {
+            return true;
+        }
+        let mut events = std::mem::take(&mut self.events);
+        events.clear();
+        let t_wait = super::trace::on().then(Instant::now);
+        if let Err(e) = self.poller.wait(&mut events, timeout) {
+            log_or_stderr(akio_log::Level::Error, format_args!("poller error: {e}"));
+            self.events = events;
+            self.finished = true;
+            return true;
+        }
+        if let Some(t0) = t_wait {
+            self.last_wait = t0.elapsed();
+        }
+        let st = &self.shared.stats;
+        st.iterations.add_local(1);
+        st.events.add_local(events.len() as u64);
+        for ev in &events {
+            match ev.token {
+                WAKER => self.shared.waker.drain(),
+                t if t & LISTEN_BIT != 0 => self.accept((t & !LISTEN_BIT) as usize),
+                id => self.on_event(id, *ev),
+            }
+        }
+        let n_events = events.len();
+        self.events = events;
+        self.drain_cmds();
+        self.fire_timers();
+        self.resume_accept();
+        if let Some(t0) = t_wait {
+            // `busy`: from the end of the wait (approximated by the first event's handling)
+            // to here; `waited`: the whole wait.
+            let total = t0.elapsed();
+            super::trace::polled(
+                total.saturating_sub(self.last_wait),
+                self.last_wait,
+                n_events,
+            );
+        }
+        if let Some(deadline) = self.draining {
+            if self.conns.is_empty() && self.connecting.is_empty() {
+                self.finished = true;
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline && !self.killed {
+                self.killed = true;
+                for (c, _) in self.conns.values() {
+                    c.close_with(None);
+                }
+                for (_, d) in self.connecting.drain() {
+                    if let Some(f) = d.on_error {
+                        f(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "engine shutting down",
+                        ));
+                    }
+                }
+            }
+            if now >= deadline + Duration::from_secs(5) {
+                self.finished = true; // rounds stuck in handlers: give up waiting for them
+                return true;
+            }
+        }
+        false
     }
 
     fn on_event(&mut self, id: u64, ev: Event) {

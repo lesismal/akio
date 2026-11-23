@@ -5,8 +5,12 @@
 //! skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>
 //! ```
 //!
-//! Every request is 16 bytes (`work_us: u32`, padding, `sent_ns: u64`); the server spins
-//! `work_us` microseconds of CPU in `on_data` and echoes the request. The client keeps `depth`
+//! Every request is 16 bytes (`work_us: u32`, `picked_us: u32`, `sent_ns: u64` of the system
+//! clock); the server spins `work_us` microseconds of CPU in `on_data` and echoes the request,
+//! with `picked_us` set to how long the request took from the client's send to the start of its
+//! `on_data` (same host, same clock). So the client splits each latency into the way there
+//! (`to_srv`: network, queueing, scheduling) and the way back (`back`: work, write, the client
+//! thread's own wake-up). The client keeps `depth`
 //! requests in flight on each of `conns` connections; the first `heavy_conns` connections ask
 //! for `heavy_work_us` per request instead of `work_us`. It prints requests/s and latency
 //! percentiles for all requests and for the light connections alone.
@@ -29,6 +33,13 @@ use std::{
 use akio::{Conn, Engine, Handler, Listener, RoundsConfig, Scheduling, fn_acceptor};
 
 const FRAME: usize = 16;
+
+/// Nanoseconds of the system clock (shared by client and server processes on one host).
+fn unix_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
+}
 
 /// Spins for `us` microseconds.
 fn spin(us: u32) {
@@ -57,7 +68,10 @@ impl Handler for Work {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         self.buf.extend_from_slice(data);
         let whole = self.buf.len() / FRAME * FRAME;
-        for f in self.buf[..whole].chunks_exact(FRAME) {
+        for f in self.buf[..whole].chunks_exact_mut(FRAME) {
+            let sent = u64::from_le_bytes(f[8..].try_into().expect("8 bytes"));
+            let picked = (unix_ns().saturating_sub(sent) / 1000).min(u64::from(u32::MAX)) as u32;
+            f[4..8].copy_from_slice(&picked.to_le_bytes());
             let us = u32::from_le_bytes(f[..4].try_into().expect("4 bytes"));
             spin(us);
         }
@@ -75,7 +89,9 @@ fn server(addr: SocketAddr, mode: &str, sizes: Option<&str>) {
         "rounds" => {
             let (p, w) = sizes
                 .and_then(|s| s.split_once(':'))
-                .map_or((0, 0), |(p, w)| (p.parse().unwrap_or(0), w.parse().unwrap_or(0)));
+                .map_or((0, 0), |(p, w)| {
+                    (p.parse().unwrap_or(0), w.parse().unwrap_or(0))
+                });
             l = l.scheduling(Scheduling::Rounds(RoundsConfig::new(p, w)));
         }
         _ => {
@@ -91,6 +107,10 @@ fn server(addr: SocketAddr, mode: &str, sizes: Option<&str>) {
 
 struct Stats {
     lat: Vec<u64>,
+    to_srv: Vec<u64>,
+    back: Vec<u64>,
+    /// How long the client's own `write` of a request took (on loopback it delivers the data).
+    send: Vec<u64>,
     light: Vec<u64>,
     done: u64,
 }
@@ -101,7 +121,7 @@ fn conn_loop(
     depth: usize,
     work: u32,
     heavy: bool,
-    epoch: Instant,
+    _epoch: Instant,
     warm: Instant,
     stop: Arc<AtomicBool>,
 ) -> Stats {
@@ -111,7 +131,8 @@ fn conn_loop(
     let frame = |now: Instant| {
         let mut f = [0u8; FRAME];
         f[..4].copy_from_slice(&work.to_le_bytes());
-        f[8..].copy_from_slice(&(now.duration_since(epoch).as_nanos() as u64).to_le_bytes());
+        let _ = now;
+        f[8..].copy_from_slice(&unix_ns().to_le_bytes());
         f
     };
     let mut out = Vec::with_capacity(depth * FRAME);
@@ -121,6 +142,9 @@ fn conn_loop(
     s.write_all(&out).expect("write");
     let mut st = Stats {
         lat: Vec::new(),
+        to_srv: Vec::new(),
+        back: Vec::new(),
+        send: Vec::new(),
         light: Vec::new(),
         done: 0,
     };
@@ -132,15 +156,22 @@ fn conn_loop(
         let now = Instant::now();
         let sent = u64::from_le_bytes(f[8..].try_into().expect("8 bytes"));
         if now >= warm {
-            let ns = now.duration_since(epoch).as_nanos() as u64 - sent;
+            let ns = unix_ns().saturating_sub(sent);
+            let to = u64::from(u32::from_le_bytes(f[4..8].try_into().expect("4 bytes"))) * 1000;
             st.lat.push(ns);
+            st.to_srv.push(to);
+            st.back.push(ns.saturating_sub(to));
             if !heavy {
                 st.light.push(ns);
             }
             st.done += 1;
         }
+        let t0 = unix_ns();
         if s.write_all(&frame(now)).is_err() {
             break;
+        }
+        if now >= warm {
+            st.send.push(unix_ns().saturating_sub(t0));
         }
     }
     let _ = s.shutdown(std::net::Shutdown::Both);
@@ -181,6 +212,7 @@ fn client(args: &[String]) {
     thread::sleep(Duration::from_secs(1 + secs));
     stop.store(true, Ordering::Relaxed);
     let (mut lat, mut light, mut done) = (Vec::new(), Vec::new(), 0);
+    let (mut to_srv, mut back, mut send) = (Vec::new(), Vec::new(), Vec::new());
     let mut per_conn = Vec::new();
     for h in hs {
         let st = h.join().expect("join");
@@ -188,6 +220,9 @@ fn client(args: &[String]) {
         done += st.done;
         lat.extend(st.lat);
         light.extend(st.light);
+        to_srv.extend(st.to_srv);
+        back.extend(st.back);
+        send.extend(st.send);
     }
     let rps = done as f64 / secs as f64;
     println!(
@@ -199,6 +234,18 @@ fn client(args: &[String]) {
         pct(&mut light, 0.99),
         per_conn.iter().min().copied().unwrap_or(0),
         per_conn.iter().max().copied().unwrap_or(0),
+    );
+    println!(
+        "  split: to_srv p50={:.0}us p99={:.0}us p999={:.0}us | back p50={:.0}us p99={:.0}us p999={:.0}us | client write p50={:.0}us p99={:.0}us p999={:.0}us",
+        pct(&mut to_srv, 0.5),
+        pct(&mut to_srv, 0.99),
+        pct(&mut to_srv, 0.999),
+        pct(&mut back, 0.5),
+        pct(&mut back, 0.99),
+        pct(&mut back, 0.999),
+        pct(&mut send, 0.5),
+        pct(&mut send, 0.99),
+        pct(&mut send, 0.999),
     );
 }
 

@@ -72,6 +72,8 @@ pub(crate) struct RConn {
     pub(crate) inner: Arc<ConnInner>,
     pending: AtomicU32,
     scheduled: AtomicBool,
+    /// When the connection was last queued (tracing, ADR-102 diagnostics).
+    pub(crate) queued_ns: AtomicU64,
     st: Mutex<St>,
     tasks: Mutex<Vec<Task>>,
     close_err: Mutex<Option<io::Error>>,
@@ -149,6 +151,7 @@ impl RConn {
                 inner,
                 pending: AtomicU32::new(OPEN),
                 scheduled: AtomicBool::new(false),
+                queued_ns: AtomicU64::new(0),
                 st: Mutex::new(St {
                     handler: None,
                     acceptor: Some(acceptor),
@@ -209,6 +212,10 @@ impl RConn {
     /// Runs on a worker: serves pending events until none are left (or the connection should
     /// yield), then releases the connection.
     pub(crate) fn run_round(self: Arc<Self>, ctx: &mut WorkerCtx) {
+        let q = self.queued_ns.load(Ordering::Relaxed);
+        if q != 0 {
+            super::trace::queued(super::trace::now_ns().saturating_sub(q));
+        }
         let mut yielded = false;
         {
             let mut st = self.st.lock().unwrap_or_else(|p| p.into_inner());
