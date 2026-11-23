@@ -700,3 +700,123 @@ fn link_local_names_stay_on_their_link() {
     ep.close();
     e.shutdown();
 }
+
+// ---- IPv4 on every interface (ADR-078 update 3) ----
+
+use std::net::Ipv4Addr;
+
+use akio_ice::mdns::{GROUP_V4, MULTICAST_V4, TYPE_A};
+
+/// The interfaces the endpoint joins `224.0.0.251` on: up, multicast-capable, not loopback,
+/// with an IPv4 address (and that address).
+fn ipv4_ifaces() -> Vec<(u32, Ipv4Addr)> {
+    akio_sys::interfaces()
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.flags.is_up() && i.flags.is_multicast() && !i.flags.is_loopback())
+        .filter_map(|i| Some((i.index, i.ipv4()?)))
+        .collect()
+}
+
+/// A raw socket on the shared IPv4 mDNS port, member of `224.0.0.251` on each of `ifs`.
+fn raw_v4(ifs: &[(u32, Ipv4Addr)]) -> Option<UdpSocket> {
+    let s = akio_sys::listen_udp((Ipv4Addr::UNSPECIFIED, PORT).into(), true).ok()?;
+    let mut ok = false;
+    for (_, a) in ifs {
+        ok |= s.join_multicast_v4(&GROUP_V4, a).is_ok();
+    }
+    s.set_nonblocking(false).ok()?;
+    s.set_read_timeout(Some(Duration::from_millis(100))).ok()?;
+    ok.then_some(s)
+}
+
+/// Like [`recv_v6_within`], for the IPv4 messages.
+fn recv_v4_within(s: &UdpSocket, within: Duration, mut f: impl FnMut(SocketAddr, Message)) {
+    let deadline = Instant::now() + within;
+    let mut buf = [0u8; 9000];
+    while Instant::now() < deadline {
+        let Ok((n, src)) = s.recv_from(&mut buf) else {
+            continue;
+        };
+        if let Ok(m) = Message::parse(&buf[..n]) {
+            f(src, m);
+        }
+    }
+}
+
+/// An IPv4 address is claimed and answered on the interface that holds it only (RFC 6762
+/// §6.2), now that IPv4 runs on every interface: its probes and announcements over IPv4 leave
+/// from that interface alone (their source is its address; sent out of another they would
+/// carry that one's), a query from another interface's subnet gets no answer, one from its own
+/// is answered, out of that interface. Needs two IPv4 multicast interfaces.
+#[test]
+fn ipv4_names_stay_on_their_interface() {
+    let ifs = ipv4_ifaces();
+    let [first, second, ..] = ifs[..] else {
+        eprintln!("skipped: fewer than two IPv4 multicast interfaces ({ifs:?})");
+        return;
+    };
+    let Some(raw) = raw_v4(&ifs) else {
+        eprintln!("skipped: no IPv4 multicast");
+        return;
+    };
+    let e = engine();
+    // The address on each of the two interfaces in turn: one of them is not the default
+    // interface, which a single IPv4 group membership would be limited to.
+    for ((link, mine), (other, theirs)) in [(first, second), (second, first)] {
+        let ep = Endpoint::bind(&e, SocketAddr::new(mine.into(), 0)).unwrap();
+        ep.resolve_mdns(&e, Duration::from_secs(5)).unwrap();
+        if let Err(err) = ep.conceal_host_candidates() {
+            eprintln!("skipped: {err}");
+            return;
+        }
+        let name = offered_name(&ep);
+        let about_us = |m: &Message| {
+            m.records
+                .iter()
+                .chain(&m.authority)
+                .any(|r| r.name == name && r.addr == IpAddr::V4(mine))
+        };
+        // Probes and announcements, for 2.5 s: every IPv4 copy left from the address's
+        // interface.
+        let mut seen = 0;
+        recv_v4_within(&raw, Duration::from_millis(2500), |src, m| {
+            if about_us(&m) {
+                assert_eq!(
+                    src.ip(),
+                    IpAddr::V4(mine),
+                    "{name} sent on another interface"
+                );
+                seen += 1;
+            }
+        });
+        assert!(
+            seen >= 5,
+            "{seen} probes and announcements over IPv4 for {mine}"
+        );
+        let q = Message::query(&name, TYPE_A, false).unwrap();
+        // From the other interface (the query's source is in its subnet): no answer.
+        akio_sys::send_to_on(&raw, &q, MULTICAST_V4, other).unwrap();
+        let mut answered = None;
+        recv_v4_within(&raw, Duration::from_millis(1000), |src, m| {
+            if m.response && about_us(&m) {
+                answered = Some(src);
+            }
+        });
+        assert_eq!(answered, None, "{mine}: answered a query from {theirs}");
+        // From its own interface: answered, out of it.
+        akio_sys::send_to_on(&raw, &q, MULTICAST_V4, link).unwrap();
+        recv_v4_within(&raw, Duration::from_secs(2), |src, m| {
+            if m.response && about_us(&m) {
+                answered = Some(src);
+            }
+        });
+        assert_eq!(
+            answered.map(|a| a.ip()),
+            Some(IpAddr::V4(mine)),
+            "{mine}: no answer out of interface {link}"
+        );
+        ep.close();
+    }
+    e.shutdown();
+}

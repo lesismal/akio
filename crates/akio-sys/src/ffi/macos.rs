@@ -2,8 +2,8 @@
 //! macOS has no stable system call interface).
 
 use super::{
-    c_char, c_int, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t, sockaddr, socklen_t,
-    ssize_t, timespec,
+    c_char, c_int, c_uint, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t, sockaddr,
+    socklen_t, ssize_t, timespec,
 };
 
 /// `sa_family_t`.
@@ -46,6 +46,13 @@ pub const IP_TOS: c_int = 3;
 pub const IP_RECVTOS: c_int = 27;
 pub const IPV6_RECVTCLASS: c_int = 35;
 pub const IPV6_TCLASS: c_int = 36;
+pub const IP_PKTINFO: c_int = 26;
+pub const IPV6_PKTINFO: c_int = 46;
+pub const IFF_UP: c_int = 0x1;
+pub const IFF_LOOPBACK: c_int = 0x8;
+pub const IFF_POINTOPOINT: c_int = 0x10;
+pub const IFF_RUNNING: c_int = 0x40;
+pub const IFF_MULTICAST: c_int = 0x8000;
 
 // ---- kqueue --------------------------------------------------------------------------------
 pub const EVFILT_READ: i16 = -1;
@@ -195,6 +202,9 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
     pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
+    pub fn if_nametoindex(name: *const c_char) -> c_uint;
+    pub fn getifaddrs(ifap: *mut *mut super::ifaddrs) -> c_int;
+    pub fn freeifaddrs(ifa: *mut super::ifaddrs);
     pub fn sendfile(
         fd: c_int,
         s: c_int,

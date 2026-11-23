@@ -1150,15 +1150,19 @@ impl Engine {
     /// [`bind_udp_multicast`](Self::bind_udp_multicast) joining the group on each of
     /// `interfaces` (interface indexes, the scope ids of IPv6 link-local addresses; 0 is the
     /// default interface): a link-scoped IPv6 group such as mDNS's `ff02::fb` reaches a socket
-    /// only on the links it was joined on. Interfaces that refuse the join (down, no IPv6) are
+    /// only on the links it was joined on. Interfaces that refuse the join (down, no address of
+    /// the group's family) are
     /// skipped; it fails with the last join error only when none accepts it. Datagrams arrive
     /// with the source's scope id; [`UdpBinding::send_to`] the group with a scope id to send on
     /// that link. `bind_udp_multicast(group, a)` is `bind_udp_multicast_on(group, &[0], a)`.
     ///
-    /// **IPv6 groups only take a list of interfaces**: an IPv4 group is joined on the default
-    /// interface, so it takes `&[0]` and anything else fails with
-    /// [`io::ErrorKind::InvalidInput`] (IPv4 joins name an interface by address, not by index).
-    /// An empty list fails with `InvalidInput` too.
+    /// An IPv4 group is joined the same way, on each interface's first IPv4 address
+    /// (`IP_ADD_MEMBERSHIP` names an interface by address; the indexes are those of
+    /// [`akio_sys::interfaces`]); interfaces without one are skipped. IPv4 has no scope id, so
+    /// [`UdpBinding::send_to_on`] picks the interface a datagram to the group leaves on. Linux
+    /// allows 20 IPv4 memberships per socket by default (`net.ipv4.igmp_max_memberships`): joins
+    /// past it are refused and skipped. An empty list fails with
+    /// [`io::ErrorKind::InvalidInput`].
     pub fn bind_udp_multicast_on<A: Acceptor>(
         &self,
         group: SocketAddr,
@@ -1177,12 +1181,6 @@ impl Engine {
                 "no interface to join the multicast group on",
             ));
         }
-        if group.is_ipv4() && interfaces != [0] {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "an IPv4 multicast group is joined on the default interface only (interfaces: &[0])",
-            ));
-        }
         let Some(g) = self.udp_client.and_then(|i| self.groups.get(i)) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1196,7 +1194,35 @@ impl Engine {
         let sock = akio_sys::listen_udp(SocketAddr::new(any, group.port()), true)?;
         match group.ip() {
             std::net::IpAddr::V4(ip) => {
-                sock.join_multicast_v4(&ip, &std::net::Ipv4Addr::UNSPECIFIED)?;
+                // Interface indexes to the addresses IPv4 joins name them by (0: the default).
+                let list = if interfaces.iter().any(|&i| i != 0) {
+                    akio_sys::interfaces()?
+                } else {
+                    Vec::new()
+                };
+                let mut last = None;
+                let mut joined = false;
+                for &i in interfaces {
+                    let on = if i == 0 {
+                        Some(std::net::Ipv4Addr::UNSPECIFIED)
+                    } else {
+                        list.iter().find(|f| f.index == i).and_then(|f| f.ipv4())
+                    };
+                    let Some(on) = on else {
+                        last = Some(io::Error::new(
+                            io::ErrorKind::AddrNotAvailable,
+                            format!("interface {i} has no IPv4 address"),
+                        ));
+                        continue;
+                    };
+                    match sock.join_multicast_v4(&ip, &on) {
+                        Ok(()) => joined = true,
+                        Err(e) => last = Some(e),
+                    }
+                }
+                if !joined {
+                    return Err(last.unwrap_or_else(|| io::Error::other("no interface")));
+                }
                 sock.set_multicast_ttl_v4(255)?;
                 sock.set_multicast_loop_v4(true)?;
             }

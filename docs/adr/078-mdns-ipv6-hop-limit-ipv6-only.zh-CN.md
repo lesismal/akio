@@ -127,3 +127,69 @@ ADR-054（2026-11-20）补上了它：第二个 `[::]:5353` 套接字在每个�
 来自其链路的查询得到应答；少于两条链路时跳过），声明相关测试在加入延迟后不变。macOS（lo0 与 en*：全部检查）
 以及 gpu51 上的 `tools/interop/webrtc/mdns6.sh`（epoll 与 io_uring，avahi 各步骤；容器的两条链路是同一对
 veth 的两端，即同一根线，测试发现在一端发出的查询会到达另一端，于是在那里跳过"其他链路"的检查）。
+
+## 更新 3（2026-11-23）：记录只在持有地址的接口上，IPv4 在每个接口上
+
+更新 2 留下两个缺口，都因为没有接口地址列表：IPv6 链路本地地址以外的地址（IPv4、全局与 ULA IPv6）在每条
+链路上探测、宣告和应答；IPv4 只在默认接口上加入 `224.0.0.251`，另一条 IPv4 链路上的主机既听不到我方通告，
+也得不到应答，我方的查询也到不了它。
+
+1. **akio-sys：接口列表。** `akio_sys::interfaces()` 读取 `getifaddrs(3)`（Linux 与 macOS，经自己的 `ffi`
+   层：`struct ifaddrs` 现在两个平台共用，macOS 声明了 `getifaddrs` / `freeifaddrs` / `if_nametoindex`），
+   结果是自有的值：`Interface { name, index, flags, addrs }`、`InterfaceFlags`（up、running、回环、点对点、
+   组播）、带 `contains`（子网判断）的 `InterfaceAddr { ip, prefix_len }`。套接字地址逐字节复制，从不就地
+   引用；macOS 上最多复制 `sa_len` 字节（子网掩码会被截短），并清除 BSD 内核嵌入链路本地地址中的作用域 ID。
+   akio-tls 的网卡卸载检测（`ktls::interface_addrs`）改用它，不再有自己的 `getifaddrs` 循环。
+2. **从指定接口发送。** IPv4 组播没有作用域 ID：`IP_MULTICAST_IF` 为整个套接字选定接口，而由多个线程共享的
+   引擎绑定无法逐个数据报切换。`akio_sys::send_to_on(&UdpSocket, data, addr, interface)` 改为逐个数据报
+   指定接口，放在 `IP_PKTINFO` / `IPV6_PKTINFO` 控制消息中（`ipi_ifindex`），Linux 与 macOS 对组播目的地址
+   都遵从它；源地址由系统在该接口上选择。`UdpBinding::send_to_on` 在引擎绑定上提供它（只有新增）。经检验：
+   从每个接口发往组播组的数据报都以该接口的地址回环回来。macOS 拒绝在 `lo0` 上做指定接口的组播发送
+   （"network unreachable"），所以 mDNS 不用回环接口（本机监听者会收到从其他接口回环的副本）。
+3. **akio：按接口加入 IPv4 组。** `Engine::bind_udp_multicast_on` 对 IPv4 组以前只接受 `&[0]`；现在两个
+   地址族都接受接口索引（只有新增：以前被拒绝的现在可用）。IPv4 加入组时以地址指定接口，所以每个索引经
+   `akio_sys::interfaces` 映射为该接口的第一个 IPv4 地址；未知接口与没有 IPv4 的接口被跳过，只有一个都不剩
+   时调用才失败（`AddrNotAvailable`，或最后一次加入的错误）。Linux 默认每个套接字最多 20 个 IPv4 组成员
+   关系（`net.ipv4.igmp_max_memberships`）；mDNS 最多请求 20 个。
+4. **akio-webrtc：每个地址只在自己的接口上。** `resolve_mdns` 读取一次接口列表。IPv4 在每个已启用、支持
+   组播、非回环且有 IPv4 地址的接口上加入 `224.0.0.251`（没有这样的接口，或每个按接口的加入都被拒绝时，用
+   默认接口）；IPv6 照旧加入 `ff02::fb`（列表取代了 `/proc/net/if_inet6` / connect 探测）。查询、探测、宣告
+   与告别从每个 IPv4 接口发出（`send_to_on`），并发往每条 IPv6 链路上的 `ff02::fb`。被隐藏的地址得到持有它
+   的接口（链路本地 IPv6 地址：其作用域 ID；没有接口持有它时重读一次列表），其记录只在该接口上发出，两个
+   地址族皆然。查询的接口取源地址的作用域 ID，否则取持有源地址的接口，再否则取子网包含源地址的接口（最长
+   前缀）；只以在那里可用的记录应答，并从该接口发出：该接口的记录，以及（IPv6 链路本地地址除外，它们的链路
+   就是作用域）地址落在该接口某个子网内的记录。后一半用于两个接口共享同一链路和前缀的情况（同一局域网上的两块
+   网卡、一对 veth 的两端）：来自全局或 ULA 源地址的查询不带作用域 ID，其接口只能由源地址推断，可能推断成另一
+   个。`mdns6.sh` 的第一次运行暴露了这一点：v1 上的 avahi 从 `fd00:6::2` 查询，越过 veth 的副本到达 v0，两份
+   都被读作"来自 v1"，`fd00:6::1`（在 v0 上，落在 v1 的 `fd00:6::/64` 内）未得到应答；avahi 仍从我方越过线路
+   的宣告中解析出了它。有意保持不变：回环地址没有接口（本机查询者可能在任何链路
+   上询问）；来自不在任何已知子网的源（例如只有 169.254 地址的查询者）的查询照旧以全部记录应答。
+
+接收路径不变：引擎不报告数据报到达的接口（接收时没有 `IP_PKTINFO`），所以 IPv4 查询的接口由其源地址推断；
+两个接口子网重叠时最长前缀优先，相同时取第一个。
+
+未完成：`resolve_mdns` 之后才出现的接口不会加入（要隐藏的地址不在任何已知接口上时，会为其记录重读列表，
+但不重新加入组）。
+
+验证：
+
+- akio-sys：接口列表（有一个带 `127.0.0.1/8` 的回环接口、索引唯一且有序、链路本地地址中没有嵌入的作用域）、
+  子网判断、`send_to_on` 指定接口（不存在的接口被拒绝）、`ifaddrs` / `in_pktinfo` / `in6_pktinfo` 布局、
+  `IP_PKTINFO` / `IPV6_PKTINFO` / `IFF_*` 常量以及控制消息的 `CMSG_LEN` / `CMSG_SPACE` 与 `libc` 对照。akio
+  `tests/shared_ports.rs` 的 `ipv4_group_joined_and_sent_per_interface`：按索引在每个接口上加入 IPv4 组，从
+  每个接口发出的数据报都以该接口的地址回环回来（macOS：en1 与 bridge100，lo0 如上所述被拒绝；gpu51：5/5，
+  Wi-Fi 与四个无载波的网桥）。
+- akio-webrtc `tests/mdns.rs` 的 `ipv4_names_stay_on_their_interface`（两个 IPv4 组播接口，地址依次在每个
+  接口上）：名字的每个 IPv4 探测与宣告都来自地址所在的接口，从另一个接口发出的查询得不到应答，从其自身接口
+  发出的得到应答，来自其地址。对照：关闭接口查找与 IPv4 接口列表（更新 2 的行为）时，在非默认接口上失败
+  （"sent on another interface"）。
+- `tools/interop/webrtc/mdns4.sh`（gpu51，Docker，两对 veth，IPv4 在 a0 `10.66.1.1/24` 与 b0
+  `10.66.2.1/24` 上，默认路由在 a0）：mDNS 测试（11/11，无跳过）与引擎组播测试，epoll 与 io_uring；只在 b0
+  上的 avahi 0.8（仅 IPv4，`check-response-ttl=yes`）解析出隐藏 `10.66.2.1` 的名字（b0，非默认接口），解析
+  不出隐藏 `10.66.1.1` 的名字（a0；超时，Endpoint 也没有应答日志），并发布一个名字（`10.66.2.1`），由
+  `10.66.1.1` 上的 Endpoint 解析（应答来自 `10.66.2.1:5353`）并连通，数据通道回显 20 次。
+- 采用上面的"子网内可用"规则后，`tools/interop/webrtc/mdns6.sh` 重新全部通过（avahi 各步骤；那里的 mDNS
+  测试按名字跳过 IPv4 那个，因为链路上没有 IPv4）。
+- macOS 与 gpu51（rustc 1.100）：akio-sys、akio-core、akio 与 akio-webrtc 的 `cargo test`（epoll 与
+  `AKIO_TEST_BACKEND=uring`），带 `ktls` 的 akio-tls（其卸载检测现在读取接口列表），clippy `-D warnings`，
+  `tools/unsafe-inventory.py --check`。

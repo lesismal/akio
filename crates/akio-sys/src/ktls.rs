@@ -385,46 +385,16 @@ pub fn netdev_features(name: &str, want: &[&str]) -> io::Result<Vec<bool>> {
     Ok(index.iter().map(active).collect())
 }
 
-/// The addresses of the host's network interfaces, with the interface names (`getifaddrs(3)`).
+/// The addresses of the host's network interfaces, with the interface names (`getifaddrs(3)`,
+/// through [`crate::interfaces`]).
 pub fn interface_addrs() -> io::Result<Vec<(String, std::net::IpAddr)>> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-    let mut head: *mut ffi::ifaddrs = std::ptr::null_mut();
-    // SAFETY: `head` is valid for writes; on success it holds a list freed below.
-    if unsafe { ffi::getifaddrs(&raw mut head) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut out = Vec::new();
-    let mut p = head;
-    while !p.is_null() {
-        // SAFETY: `p` is an entry of the list `getifaddrs` returned, alive until
-        // `freeifaddrs`; its name is a NUL-terminated string and its address, when not null,
-        // a socket address of the size its family implies (read unaligned).
-        unsafe {
-            let e = &*p;
-            if !e.ifa_addr.is_null() && !e.ifa_name.is_null() {
-                let family = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sa_family_t>());
-                let ip = match i32::from(family) {
-                    ffi::AF_INET => {
-                        let a = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in>());
-                        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr))))
-                    }
-                    ffi::AF_INET6 => {
-                        let a = std::ptr::read_unaligned(e.ifa_addr.cast::<ffi::sockaddr_in6>());
-                        Some(IpAddr::V6(Ipv6Addr::from(a.sin6_addr.s6_addr)))
-                    }
-                    _ => None,
-                };
-                if let Some(ip) = ip {
-                    let name = std::ffi::CStr::from_ptr(e.ifa_name);
-                    out.push((name.to_string_lossy().into_owned(), ip));
-                }
-            }
-            p = e.ifa_next;
-        }
-    }
-    // SAFETY: `head` came from a successful `getifaddrs` and is freed once.
-    unsafe { ffi::freeifaddrs(head) };
-    Ok(out)
+    Ok(crate::interfaces()?
+        .into_iter()
+        .flat_map(|i| {
+            let name = i.name;
+            i.addrs.into_iter().map(move |a| (name.clone(), a.ip))
+        })
+        .collect())
 }
 
 /// Counters of the kernel TLS module (`/proc/net/tls_stat`, per network namespace).

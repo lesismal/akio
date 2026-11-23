@@ -2,7 +2,8 @@
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
 //! non-blocking connect, `sendfile`), file change notification ([`FsWatcher`]: inotify / kqueue
 //! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
-//! `akio-crypto`), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
+//! `akio-crypto`), the host's network interfaces ([`interfaces`], `getifaddrs`) and sending a
+//! datagram out of one of them ([`send_to_on`]), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO, ECN codepoints in control messages; on macOS one datagram per
 //! `sendmsg` / `recvmsg` with its ECN codepoint) and, hidden, kernel TLS offload (`TCP_ULP`
 //! "tls", `SOL_TLS`, NIC TLS offload features through ethtool; akio-tls's `ktls` feature).
@@ -17,6 +18,7 @@
 #[doc(hidden)]
 pub mod ffi;
 mod fswatch;
+mod iface;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod ktls;
@@ -32,6 +34,7 @@ mod udp_mac;
 mod waker;
 
 pub use fswatch::{FsEvent, FsWatcher, WatchId};
+pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use net::listen_backlog;

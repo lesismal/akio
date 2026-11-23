@@ -266,8 +266,20 @@ Concealed names are claimed as RFC 6762 asks (ADR-078's updates): after a random
 then two announcements 1 s apart, all while the name is already in use and answered. If another
 host answers the name with another address, or wins a simultaneous probe, the endpoint gives the
 name up and new peers get a fresh one. Closing the endpoint withdraws its names (goodbyes with
-TTL 0), and unicast answers leave with hop limit 255 like multicast ones. A link-local IPv6
-address is claimed and answered on its own link only.
+TTL 0), and unicast answers leave with hop limit 255 like multicast ones.
+
+Both families run on every interface (ADR-078 update 3, from the interface list that
+`akio_sys::interfaces` reads with `getifaddrs`): IPv4 joins `224.0.0.251` on each
+multicast-capable interface with an IPv4 address (loopback aside) and sends each query, probe
+and announcement out of each of them (`UdpBinding::send_to_on`, an `IP_PKTINFO` control
+message), as IPv6 does on `ff02::fb`. Each concealed address is claimed and answered on the
+interface that holds it only, over both families (RFC 6762 §6.2: a record is of no use on
+another link), and an answer goes back out of the interface its query came from (the source's
+scope id, else the interface whose subnet holds the source); an address in one of that
+interface's subnets counts as usable there too (two interfaces on one link with one prefix). Loopback addresses, and queries from
+a source on no known subnet, still go to and get answers from every link.
+`tools/interop/webrtc/mdns4.sh` checks this in a container with two IPv4 links against avahi on
+the one that is not the default interface.
 
 ### Nomination
 

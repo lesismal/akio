@@ -10,6 +10,27 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：接口列表；按接口发送 mDNS 记录与 IPv4 组播（akio-sys、akio-core、akio、akio-webrtc）
+
+ADR-078 的第三次更新（2026-11-23），只有新增：
+
+- `akio_sys::interfaces()`：由 `getifaddrs(3)` 读取的本机网络接口（Linux 与 macOS）：
+  `Interface { name, index, flags, addrs }`、`InterfaceFlags`（`is_up`、`is_running`、`is_loopback`、
+  `is_point_to_point`、`is_multicast`、`bits`）、带 `contains` 的 `InterfaceAddr { ip, prefix_len }`；
+  IPv6 链路本地地址不带 macOS 嵌入的作用域 ID。`akio_sys::send_to_on(&UdpSocket, data, addr, interface)`
+  从指定接口发出一个数据报（`IP_PKTINFO` / `IPV6_PKTINFO`）。
+- `UdpBinding::send_to_on(data, addr, interface)`：引擎绑定上的同一功能；发往组播组时选定链路，相当于
+  `IP_MULTICAST_IF` 对整个套接字的作用。
+- `Engine::bind_udp_multicast_on` 对 IPv4 组也接受接口索引（各自在接口的第一个 IPv4 地址上加入；此前除
+  `&[0]` 外一律以 `InvalidInput` 拒绝）。未知接口或没有 IPv4 的接口被跳过（全部跳过时返回
+  `AddrNotAvailable`）。
+- akio-webrtc mDNS：IPv4 在每个支持组播且有 IPv4 地址的接口（回环除外）上加入 `224.0.0.251` 并从每个接口
+  发出，与 IPv6 在 `ff02::fb` 上一样；每个被隐藏的地址（现在 IPv4、全局与 ULA IPv6 也是）只在持有它的接口上
+  探测、宣告、撤回与应答（RFC 6762 §6.2），应答从查询所来的接口发出（带该接口的记录，以及地址落在其子网内的
+  记录）。回环地址，以及来自不在任何已知子网的
+  源的查询，仍发往所有链路、在所有链路上得到应答。
+- `tools/interop/webrtc/mdns4.sh`：容器中的两条 IPv4 链路，avahi 位于非默认的那条。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

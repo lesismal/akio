@@ -4,8 +4,8 @@
 //! the generic table only in `struct epoll_event` (packed) and in system call numbers.
 
 use super::{
-    c_char, c_int, c_long, c_short, c_uint, c_ulong, c_ushort, c_void, in_addr, in6_addr, iovec,
-    off_t, pid_t, size_t, sockaddr, socklen_t, ssize_t, timespec,
+    c_char, c_int, c_long, c_short, c_uint, c_ulong, c_ushort, c_void, ifaddrs, in_addr, in6_addr,
+    iovec, off_t, pid_t, size_t, sockaddr, socklen_t, ssize_t, timespec,
 };
 
 #[cfg(not(all(
@@ -81,6 +81,13 @@ pub const IPV6_TCLASS: c_int = 67;
 pub const IPV6_V6ONLY: c_int = 26;
 pub const IPV6_MULTICAST_HOPS: c_int = 18;
 pub const IPV6_UNICAST_HOPS: c_int = 16;
+pub const IP_PKTINFO: c_int = 8;
+pub const IPV6_PKTINFO: c_int = 50;
+pub const IFF_UP: c_int = 0x1;
+pub const IFF_LOOPBACK: c_int = 0x8;
+pub const IFF_POINTOPOINT: c_int = 0x10;
+pub const IFF_RUNNING: c_int = 0x40;
+pub const IFF_MULTICAST: c_int = 0x1000;
 pub const SOL_UDP: c_int = 17;
 pub const UDP_SEGMENT: c_int = 103;
 pub const UDP_GRO: c_int = 104;
@@ -393,19 +400,6 @@ pub struct ifreq_data {
     pub _pad: [u8; 16],
 }
 
-/// `struct ifaddrs` (`getifaddrs(3)`).
-#[repr(C)]
-#[derive(Debug)]
-pub struct ifaddrs {
-    pub ifa_next: *mut ifaddrs,
-    pub ifa_name: *mut c_char,
-    pub ifa_flags: c_uint,
-    pub ifa_addr: *mut sockaddr,
-    pub ifa_netmask: *mut sockaddr,
-    pub ifa_ifu: *mut sockaddr,
-    pub ifa_data: *mut c_void,
-}
-
 /// `struct ethtool_get_features_block`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -417,7 +411,6 @@ pub struct ethtool_get_features_block {
 }
 
 const _: () = assert!(size_of::<ifreq_data>() == 40);
-const _: () = assert!(size_of::<ifaddrs>() == 56);
 const _: () = assert!(size_of::<sockaddr_ll>() == 20);
 const _: () = assert!(size_of::<msghdr>() == 56 && align_of::<msghdr>() == 8);
 const _: () = assert!(size_of::<mmsghdr>() == 64);

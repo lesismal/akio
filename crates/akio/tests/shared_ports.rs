@@ -1,7 +1,7 @@
 //! Sockets that share a port: `Engine::dial_from` (TCP connections from one bound local port,
 //! as TCP simultaneous open needs) and `Engine::bind_udp_multicast` / `bind_udp_multicast_on`
-//! (a multicast group's port shared with other members on the host, joined per interface for
-//! link-scoped IPv6 groups, as mDNS needs).
+//! (a multicast group's port shared with other members on the host, joined per interface, as
+//! mDNS needs) with `UdpBinding::send_to_on` (out of a given interface).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -153,18 +153,17 @@ fn multicast_on_checks_its_arguments() {
     let v6: SocketAddr = format!("[ff02::4242]:{}", free_port()).parse().unwrap();
     let acc = || fn_acceptor(|_c: &Conn<Hello>| Hello);
     let kind = |r: std::io::Result<akio::UdpBinding>| r.map(|b| b.close()).unwrap_err().kind();
-    // IPv4 groups join the default interface only.
-    for bad in [&[1u32][..], &[0, 1], &[]] {
+    // No interface at all, or not a group.
+    for g in [v4, v6] {
         assert_eq!(
-            kind(e.bind_udp_multicast_on(v4, bad, acc())),
-            std::io::ErrorKind::InvalidInput,
-            "{bad:?}"
+            kind(e.bind_udp_multicast_on(g, &[], acc())),
+            std::io::ErrorKind::InvalidInput
         );
     }
-    // No interface at all, or not a group.
+    // An IPv4 group on an interface that does not exist (or has no IPv4 address) only.
     assert_eq!(
-        kind(e.bind_udp_multicast_on(v6, &[], acc())),
-        std::io::ErrorKind::InvalidInput
+        kind(e.bind_udp_multicast_on(v4, &[999_999], acc())),
+        std::io::ErrorKind::AddrNotAvailable
     );
     assert_eq!(
         kind(e.bind_udp_multicast_on("[::1]:5000".parse().unwrap(), &[0], acc())),
@@ -284,6 +283,74 @@ fn ipv6_group_joined_per_interface() {
     if reached == 0 {
         eprintln!("skipped: IPv6 multicast not looped back on this host");
     }
+    b.close();
+    e.shutdown();
+}
+
+/// The interfaces that are up, multicast-capable and have an IPv4 address (not loopback: Linux
+/// does not mark it multicast-capable, macOS does).
+fn ipv4_multicast_interfaces() -> Vec<akio_sys::Interface> {
+    akio_sys::interfaces()
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.flags.is_up() && i.flags.is_multicast() && i.ipv4().is_some())
+        .collect()
+}
+
+/// An IPv4 group joined on every interface (by index, `bind_udp_multicast_on`), and a datagram
+/// sent to it out of each one (`send_to_on`): looped back from that interface's address, which
+/// a datagram sent out of the default interface would not be.
+#[test]
+fn ipv4_group_joined_and_sent_per_interface() {
+    let ifs = ipv4_multicast_interfaces();
+    if ifs.is_empty() {
+        eprintln!("skipped: no multicast interface with an IPv4 address");
+        return;
+    }
+    let e = engine();
+    let port = free_port();
+    let group: SocketAddr = format!("239.255.42.97:{port}").parse().unwrap();
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    let mut list: Vec<u32> = ifs.iter().map(|i| i.index).collect();
+    list.push(999_999);
+    let b = match e.bind_udp_multicast_on(
+        group,
+        &list,
+        fn_acceptor(move |_c: &Conn<Rx>| Rx(Mutex::new(tx.lock().unwrap().clone()))),
+    ) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("skipped: no IPv4 multicast here ({err})");
+            e.shutdown();
+            return;
+        }
+    };
+    assert_eq!(b.local_addr().port(), port);
+    let mut reached = 0;
+    for i in &ifs {
+        let msg = format!("out of {}", i.name).into_bytes();
+        if let Err(err) = b.send_to_on(&msg, group, i.index) {
+            eprintln!("{}: not sent ({err})", i.name);
+            continue;
+        }
+        while let Ok((src, d)) = rx.recv_timeout(Duration::from_secs(2)) {
+            if d == msg {
+                assert!(i.has_addr(src.ip()), "{} sent from {src}: {i:?}", i.name);
+                reached += 1;
+                break;
+            }
+        }
+    }
+    eprintln!("{reached} of {} interfaces looped back", ifs.len());
+    if ifs.len() >= 2 {
+        assert!(
+            reached >= 2,
+            "datagrams out of two interfaces at least: {ifs:?}"
+        );
+    }
+    // Interface 0 is a plain send_to.
+    b.send_to_on(b"default", group, 0).unwrap();
     b.close();
     e.shutdown();
 }
