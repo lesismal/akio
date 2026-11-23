@@ -114,7 +114,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::codec::Frame
 impl core::panic::unwind_safe::UnwindSafe for akio_rtp::codec::Frame
 pub struct akio_rtp::codec::FrameAssembler
 impl akio_rtp::codec::FrameAssembler
+pub fn akio_rtp::codec::FrameAssembler::accepts(&self, u64) -> bool
+pub fn akio_rtp::codec::FrameAssembler::blocked(&self) -> core::option::Option<u64>
 pub fn akio_rtp::codec::FrameAssembler::buffered(&self) -> usize
+pub fn akio_rtp::codec::FrameAssembler::give_up_hole(&mut self) -> bool
 pub fn akio_rtp::codec::FrameAssembler::kind(&self) -> akio_rtp::codec::CodecKind
 pub fn akio_rtp::codec::FrameAssembler::new(akio_rtp::codec::CodecKind, usize) -> akio_rtp::codec::FrameAssembler
 pub fn akio_rtp::codec::FrameAssembler::pop(&mut self) -> core::option::Option<akio_rtp::codec::Frame>
@@ -934,6 +937,7 @@ pub fn akio_rtp::BurstLossModel::burst_ratio(&self) -> f64
 pub fn akio_rtp::BurstLossModel::loss_fraction(&self) -> f64
 pub fn akio_rtp::BurstLossModel::metrics(&self, u32, u16) -> akio_rtp::VoipMetrics
 pub fn akio_rtp::BurstLossModel::new(u8) -> akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::on_late_arrival(&mut self) -> bool
 pub fn akio_rtp::BurstLossModel::on_late_discard(&mut self) -> bool
 pub fn akio_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
 impl akio_rtp::BurstLossModel
@@ -1809,6 +1813,8 @@ pub fn akio_rtp::VideoPlayout<T>::bounds(&self) -> akio_rtp::PlayoutDelay
 pub fn akio_rtp::VideoPlayout<T>::clock(&self) -> u32
 pub fn akio_rtp::VideoPlayout<T>::delay(&self) -> core::time::Duration
 pub fn akio_rtp::VideoPlayout<T>::drain(&mut self) -> alloc::vec::Vec<akio_rtp::VideoPlayoutFrame<T>>
+pub fn akio_rtp::VideoPlayout<T>::hole_deadline(&mut self, u32, std::time::Instant) -> std::time::Instant
+pub fn akio_rtp::VideoPlayout<T>::hole_given_up(&mut self)
 pub fn akio_rtp::VideoPlayout<T>::is_empty(&self) -> bool
 pub fn akio_rtp::VideoPlayout<T>::len(&self) -> usize
 pub fn akio_rtp::VideoPlayout<T>::new(u32, akio_rtp::PlayoutDelay) -> akio_rtp::VideoPlayout<T>
@@ -1848,11 +1854,13 @@ impl<T> core::panic::unwind_safe::UnwindSafe for akio_rtp::VideoPlayoutFrame<T> 
 #[non_exhaustive] pub struct akio_rtp::VideoPlayoutStats
 pub akio_rtp::VideoPlayoutStats::delay: core::time::Duration
 pub akio_rtp::VideoPlayoutStats::dropped: u64
+pub akio_rtp::VideoPlayoutStats::holes_given_up: u64
 pub akio_rtp::VideoPlayoutStats::late: u64
 pub akio_rtp::VideoPlayoutStats::played: u64
 pub akio_rtp::VideoPlayoutStats::received: u64
 pub akio_rtp::VideoPlayoutStats::repaired: u64
 pub akio_rtp::VideoPlayoutStats::resyncs: u64
+pub akio_rtp::VideoPlayoutStats::size_delay: core::time::Duration
 pub akio_rtp::VideoPlayoutStats::target: core::time::Duration
 impl core::clone::Clone for akio_rtp::VideoPlayoutStats
 pub fn akio_rtp::VideoPlayoutStats::clone(&self) -> Self

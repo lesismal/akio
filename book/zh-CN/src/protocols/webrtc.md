@@ -340,7 +340,8 @@ let cfg = akio_webrtc::rtc_config()
   因子、MOS-LQ 与 MOS-CQ，使用所收编解码器在测得码率下的 G.113 规划值（`EModel::for_codec_rate`：
   PCMU、PCMA、G.722、G.729、G.723.1、AMR-WB、EVS，以及没有 ITU-T 取值的 Opus：按码率以由 P.863
   推导的值评为全频带），并在接收方配置中带上它的丢包隐藏。突发与间隙时长和码率按该流测得的包长计算
-  （ADR-092）；被报为丢失、之后到达又被抖动缓冲丢弃的包计为丢弃。时延按 G.107 的默认时延敏感度等级
+  （ADR-092）；被报为丢失、之后到达的包，被播放则计为已播放，否则计为丢弃。接收的 Opus 按远端
+  `sprop-maxcapturerate` 的频带评分（不超过 12000 为窄带，不超过 24000 为宽带，否则全带）。时延按 G.107 的默认时延敏感度等级
   评分，除非 `set_voip_delay_sensitivity(DelaySensitivity::Low)`（或 `VeryLow`）说明已知用户对时延
   不太敏感；G.107 要求随结果注明这种选择。只有解码、播放音频的应用才知道的值，由
   应用经 `set_voip_quality` 提供；其余以不可用（127）发送。收到的块以 `XrReceipts` 与 `VoipMetrics`
@@ -390,13 +391,15 @@ let cfg = akio_webrtc::rtc_config()
 - **视频播放缓冲**（ADR-092）：`set_video_playout_buffer(Some(PlayoutDelay::default()))` 把每条
   收到的视频流的完整帧保留到各自的播放时刻，到达不均匀的帧也能均匀显示。
   - 帧按解码顺序、各在 `d.playout_time` 到达 `on_media_data`。
-  - 时延跟随各帧时延的第 95 百分位，并覆盖最近的关键帧（它们到达更慢）；在带 NACK 的线路上，若最近
+  - 时延跟随各帧时延的第 95 百分位，再加上近期最大帧比平均帧多花的时间（像 libwebrtc 那样由帧
+    大小估计），并覆盖最近的关键帧（它们到达更慢）；在带 NACK 的线路上，若最近
     10 s 有帧需要重传，再加一个往返时间。
   - 迟到的帧立即交出，不丢弃：后面的帧要以它为参考预测。
   - 有上界（256 帧、16 MiB）：满时丢弃到缓冲中的某个关键帧为止，或丢弃最旧的一帧并用 PLI 请求关键帧。
   - `Peer::video_playout_stats(mid)` 给出它的计数。不经 peer 时，可直接用同一个缓冲
     `akio_rtp::VideoPlayout`。
-  - 缺失的包仍按 `set_reordering_size` 的包数放弃，而不是按时间。
+  - 缺失的包在等待于其后的帧到期时放弃，但不早于开始等待后一个往返、时延或 10 ms。其后一帧带
+    `contiguous = false`。
 
   ```rust,ignore
   let cfg = rtc_config().set_video_playout_buffer(Some(PlayoutDelay::adaptive(

@@ -1133,9 +1133,10 @@ impl RtcConfig {
     /// unevenly are shown evenly ([`akio_rtp::VideoPlayout`]).
     ///
     /// - The delay adapts within `delay`'s bounds ([`akio_rtp::PlayoutDelay::adaptive`], or
-    ///   fixed) to the 95th percentile of the frames' delay, to the latest keyframes' (which
-    ///   take longer to arrive), and, while frames needed retransmission in the last 10 s on
-    ///   a line with NACK, to one round trip more.
+    ///   fixed) to the 95th percentile of the frames' delay plus what the largest recent
+    ///   frame takes over an average one (from frame sizes), to the latest keyframes' delay,
+    ///   and, while frames needed retransmission in the last 10 s on a line with NACK, to one
+    ///   round trip more.
     /// - A frame completed after its playout instant goes out at once, not discarded (later
     ///   frames are predicted from it).
     /// - At most [`akio_rtp::VIDEO_PLAYOUT_MAX_FRAMES`] frames and
@@ -1143,8 +1144,12 @@ impl RtcConfig {
     ///   before a buffered keyframe are dropped, or, with none, the oldest, and a PLI asks for
     ///   a keyframe (on a line with `nack pli`).
     ///
-    /// A missing packet is still given up by the frame assembler's count
-    /// ([`set_reordering_size`](Self::set_reordering_size)).
+    /// - A missing packet is given up when the frame waiting behind it is due, but at least a
+    ///   round trip (with NACK), the target delay or 10 ms after the wait began
+    ///   ([`akio_rtp::VideoPlayout::hole_deadline`]); the frame assembler's count
+    ///   ([`set_reordering_size`](Self::set_reordering_size)) is then raised to at least
+    ///   1024 packets and only bounds it.
+    ///
     /// [`Peer::video_playout_stats`](crate::Peer::video_playout_stats) reads its counters.
     /// `None` (the default): off, frames go out as soon as they are complete.
     #[must_use]
@@ -1164,7 +1169,10 @@ impl RtcConfig {
         self
     }
 
-    /// Packets held to reorder audio (default 15) and video (default 30).
+    /// Packets held to reorder audio (default 15) and video (default 30): a missing packet is
+    /// given up once more arrived after it. With the video playout buffer
+    /// ([`set_video_playout_buffer`](Self::set_video_playout_buffer)) video packets are given
+    /// up at a playout deadline instead, and the video count is at least 1024.
     #[must_use]
     pub fn set_reordering_size(mut self, audio: usize, video: usize) -> Self {
         self.0.reorder_audio = audio.max(1);

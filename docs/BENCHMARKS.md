@@ -2607,6 +2607,42 @@ With the buffer off, the receive path gains:
 3. The shared estimator costs the audio buffer 1.5 ns per frame in isolation (+3 %). End to end
    (`audio-jb`) it does not show: 9.75 against 9.75 µs.
 
+### Video playout buffer, second pass (ADR-092 update, same-run A/B)
+
+Measured 2026-11-23 on gpu51. The question: do the hole deadlines, the frame-size estimator,
+the Opus band and the late-arrival bookkeeping slow the receive path, with the buffers off and
+on? Without loss the new per-batch work is one `blocked()` check (two map lookups) and, per
+frame into the buffer, one Kalman update.
+
+`base` is `main` at `631d7e27`; `new` is the branch. Both were built in one session into
+separate target directories and ran interleaved under `quiet.sh` on CPUs 2–9, 5 s per run,
+base first in each pair: 7 rounds of `media`, `audio`, `audio-jb`; 11 of `video` / `video-jb`
+(the modes as in the section above, `video-jb` on both builds now). `±` is half the min–max
+spread of the rounds.
+
+| Mode | base median | new median | new / base (medians) | per-round ratio median (range) |
+|---|---:|---:|---:|---:|
+| media (MB/s) | 177.8 (±1.5%) | 177.6 (±0.3%) | 0.999 | 0.998 (0.976–1.002) |
+| audio, CPU per frame (µs) | 8.44 (±0.4%) | 8.41 (±0.7%) | 0.996 | 0.994 (0.989–1.005) |
+| audio-jb, CPU per frame (µs) | 9.76 (±0.7%) | 9.74 (±1.8%) | 0.998 | 0.998 (0.993–1.035) |
+| video (k frames/s) | 49.1 (±0.2%) | 49.1 (±0.6%) | 1.000 | 1.000 (0.990–1.004) |
+| video, CPU per frame (µs) | 8.87 (±0.7%) | 8.87 (±1.8%) | 1.000 | 1.001 (0.989–1.032) |
+| video-jb (k frames/s) | 49.0 (±0.2%) | 49.1 (±0.4%) | 1.002 | 1.000 (0.992–1.002) |
+| video-jb, CPU per frame (µs) | 10.03 (±0.7%) | 10.01 (±2.0%) | 0.998 | 0.999 (0.993–1.040) |
+
+`akio-rtp --example jitter-bench` (CPU 2, best of 5 runs, three runs each):
+
+- `video`, the playout buffer alone: 60.3 ns per frame (60.3–60.4) against base 43.9
+  (43.5–44.2).
+- The audio buffer alone: 47.9 ns (47.8–48.2) against 48.2 (47.8–48.2): unchanged.
+
+**Answer:** no measurable change end to end, off or on; every per-round range spans 1. The
+playout buffer alone costs 16 ns more per frame (+37 %): the Kalman update (a square root and an
+exponential per frame). For a 30 frames/s stream that is half a microsecond of CPU a second,
+under 0.2 % of the 10 µs per frame the whole receive path takes. The hole deadlines cost
+nothing measurable without loss; with loss, what they change is shown by the tests (ADR-092
+update), not by CPU.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

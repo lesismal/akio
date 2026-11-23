@@ -97,6 +97,8 @@
 //! of silence), AKIO_INTEROP_SIP=1 (SDES-SRTP without ICE; `dtls`: DTLS-SRTP without ICE,
 //! for the phone and the gateway, ADR-082; `ice`: DTLS-SRTP with full ICE on both, ADR-086),
 //! AKIO_INTEROP_DTLS_MKI=<n> (an SRTP MKI of n bytes with DTLS-SRTP, ADR-082),
+//! AKIO_INTEROP_PLAYOUT=1 (received video through the playout buffer and audio through the
+//! jitter buffer, adaptive defaults, ADR-087 / ADR-092),
 //! AKIO_INTEROP_ECN_INIT=leap (ECN's leap of faith, ADR-086), AKIO_INTEROP_KEEPALIVE=<ms>
 //! (RFC 6263 keepalives without ICE, ADR-086), AKIO_INTEROP_RTCP=<udp-addr> (the phone and
 //! the gateway: an RTCP socket there, and the phone offers without rtcp-mux, ADR-086),
@@ -184,6 +186,11 @@ fn extras(mut c: akio_webrtc::RtcConfig) -> akio_webrtc::RtcConfig {
     }
     if let Some(n) = env("AKIO_INTEROP_DTLS_MKI").and_then(|v| v.parse::<u8>().ok()) {
         c = c.set_dtls_srtp_mki_length(n);
+    }
+    if env("AKIO_INTEROP_PLAYOUT").is_some() {
+        c = c
+            .set_video_playout_buffer(Some(akio_rtp::PlayoutDelay::default()))
+            .set_audio_jitter_buffer(Some(akio_rtp::PlayoutDelay::default()));
     }
     c
 }

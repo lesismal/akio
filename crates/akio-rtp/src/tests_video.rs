@@ -8,36 +8,36 @@ use crate::{
     PlayoutDelay, VIDEO_PLAYOUT_MAX_FRAMES, VideoFrameFlags, VideoPlayout, VideoPlayoutFrame,
 };
 
-fn ms(v: u64) -> Duration {
+pub(crate) fn ms(v: u64) -> Duration {
     Duration::from_millis(v)
 }
 
 /// xorshift64*: deterministic noise.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
     /// Uniform in 0..1.
-    fn unit(&mut self) -> f64 {
+    pub(crate) fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
 
 /// A VP8 packet on the simulated network.
 #[derive(Debug, Clone)]
-struct Pkt {
-    seq: u64,
-    ts: u32,
-    marker: bool,
-    payload: Vec<u8>,
-    at: Instant,
+pub(crate) struct Pkt {
+    pub(crate) seq: u64,
+    pub(crate) ts: u32,
+    pub(crate) marker: bool,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) at: Instant,
     /// A retransmission (RTX).
-    rtx: bool,
+    pub(crate) rtx: bool,
 }
 
 /// The network: 30 frames/s of VP8 (3000 ticks at 90 kHz), a keyframe of `key_packets`
@@ -45,16 +45,16 @@ struct Pkt {
 /// from each frame's capture instant, each packet delayed by 20 ms plus `jitter` (uniform),
 /// lost with probability `loss` and then (with `rtt`) retransmitted once, `rtt` after the
 /// receiver could notice (the next packet's arrival).
-struct Net {
-    frames: u64,
-    key_every: u64,
-    key_packets: u64,
-    jitter: u64,
-    loss: f64,
-    rtt: Option<Duration>,
+pub(crate) struct Net {
+    pub(crate) frames: u64,
+    pub(crate) key_every: u64,
+    pub(crate) key_packets: u64,
+    pub(crate) jitter: u64,
+    pub(crate) loss: f64,
+    pub(crate) rtt: Option<Duration>,
 }
 
-fn packets(t0: Instant, n: &Net, rng: &mut Rng) -> Vec<Pkt> {
+pub(crate) fn packets(t0: Instant, n: &Net, rng: &mut Rng) -> Vec<Pkt> {
     let mut v = Vec::new();
     let mut seq = 5000u64;
     for i in 0..n.frames {
@@ -142,7 +142,7 @@ fn lateness(out: &[VideoPlayoutFrame<u64>]) -> Vec<f64> {
 }
 
 /// How many consecutive frames are not shown one frame interval apart (±2 ms).
-fn uneven(out: &[VideoPlayoutFrame<u64>], from: usize) -> usize {
+pub(crate) fn uneven(out: &[VideoPlayoutFrame<u64>], from: usize) -> usize {
     out[from..]
         .windows(2)
         .filter(|w| {

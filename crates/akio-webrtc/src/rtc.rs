@@ -331,6 +331,22 @@ fn local_codecs(cfg: &ConfigInner, kind: MediaKind) -> Vec<CodecParams> {
     out
 }
 
+/// The format parameters this side writes for `c`: the negotiated ones (an answer carries
+/// the offer's back), less Opus's declarations of the remote's own audio band
+/// (`sprop-maxcapturerate`, `maxplaybackrate`, RFC 7587 §6.1), which are not this side's.
+fn local_fmtp(c: &CodecParams) -> std::borrow::Cow<'_, str> {
+    const OWN: [&str; 2] = ["sprop-maxcapturerate", "maxplaybackrate"];
+    let theirs = |kv: &str| {
+        kv.split_once('=')
+            .is_some_and(|(k, _)| OWN.iter().any(|o| k.trim().eq_ignore_ascii_case(o)))
+    };
+    if c.codec != Codec::Opus || !c.fmtp.split(';').any(theirs) {
+        return std::borrow::Cow::Borrowed(&c.fmtp);
+    }
+    let kept: Vec<&str> = c.fmtp.split(';').filter(|kv| !theirs(kv)).collect();
+    std::borrow::Cow::Owned(kept.join(";"))
+}
+
 fn fmtp_param<'a>(fmtp: &'a str, key: &str) -> Option<&'a str> {
     fmtp.split(';').find_map(|kv| {
         let (k, v) = kv.trim().split_once('=')?;
@@ -596,6 +612,9 @@ struct Recv {
     /// Sequence numbers the VoIP metrics reported lost, for a late discard of one of them
     /// in a later interval (ADR-092).
     reported_lost: VecDeque<u16>,
+    /// Sequence numbers reported lost that arrived since, and whether they play (ADR-092
+    /// update): taken back from the loss count, as played or discarded, by the next report.
+    late_arrived: Vec<(u16, bool)>,
 }
 
 /// How an incoming SSRC maps to a media line.
@@ -711,6 +730,9 @@ struct MediaLine {
     voip: akio_rtp::VoipQuality,
     /// The E-model codec values the application chose (`None`: by the received codec).
     voip_model: Option<akio_rtp::EModel>,
+    /// The audio band of the Opus stream received on this line, from the remote's
+    /// `sprop-maxcapturerate` (ADR-092 update).
+    opus_band: akio_rtp::OpusBand,
     /// RFC 6679 (`a=ecn-capable-rtp`) as negotiated for this section (ADR-082).
     ecn6679: Option<ecn_fb::LineEcn>,
     /// A TMMBR this side keeps requesting from the remote sender (bits per second).
@@ -782,6 +804,7 @@ impl MediaLine {
             xr_blocks: XrBlocks::NONE,
             voip: akio_rtp::VoipQuality::default(),
             voip_model: None,
+            opus_band: akio_rtp::OpusBand::Fullband,
             ecn6679: None,
             tmmbr_req: None,
             red: None,
@@ -1491,6 +1514,7 @@ impl Rtc {
                 .unwrap_or(Direction::SendRecv);
             line.dir = line.want.intersect(remote_dir.reverse());
             line.codecs = remote_codecs(&cfg, m, line.kind);
+            line.opus_band = receipts::opus_band(&line.codecs);
             line.fec_pts = FecPts::remote(&cfg, m, line.kind);
             line.red = remote_red(&cfg, m, &line.codecs);
             line.red_other = remote_red_other(&cfg, m, &line.codecs);
@@ -1666,6 +1690,7 @@ impl Rtc {
                 line.stopped = true;
             }
             line.codecs = remote_codecs(&cfg, m, kind);
+            line.opus_band = receipts::opus_band(&line.codecs);
             // A simulcast sender: receive the RIDs it declares (`a=rid:<id> send`).
             line.recv_rids = simulcast_rids(m, "send")
                 .unwrap_or_default()
@@ -2255,8 +2280,9 @@ impl Rtc {
             for fb in &c.fb {
                 attrs.push(Attr::kv("rtcp-fb", format!("{} {fb}", c.pt)));
             }
-            if !c.fmtp.is_empty() {
-                attrs.push(Attr::kv("fmtp", format!("{} {}", c.pt, c.fmtp)));
+            let fmtp = local_fmtp(c);
+            if !fmtp.is_empty() {
+                attrs.push(Attr::kv("fmtp", format!("{} {fmtp}", c.pt)));
             }
             if let Some(r) = c.rtx {
                 fmts.push(r.to_string());
@@ -3442,7 +3468,7 @@ impl Rtc {
             return true;
         }
         if let (true, Some(bounds)) = (audio, self.cfg.jitter) {
-            self.jitter_push(
+            let pushed = self.jitter_push(
                 now,
                 line_idx,
                 ssrc,
@@ -3452,10 +3478,28 @@ impl Rtc {
                 codec.clock,
                 bounds,
             );
+            if let Some(r) = self.recv.get_mut(&ssrc) {
+                // Buffered: it plays (a late or duplicate one is discarded and reported so).
+                receipts::late_arrival(r, ext_seq, pushed == Some(akio_rtp::JitterPush::Buffered));
+            }
             return true;
         }
+        // With the video playout buffer a missing packet is given up at the playout deadline
+        // of the frame behind it (ADR-092 update); the count is then only a bound.
+        let reorder = if !audio && self.cfg.video_playout.is_some() {
+            reorder.max(playout::VIDEO_HOLE_PACKETS)
+        } else {
+            reorder
+        };
         if recv.assembler.as_ref().is_none_or(|(x, _)| *x != pt) {
             recv.assembler = Some((pt, FrameAssembler::new(codec.codec.rtp(), reorder)));
+        }
+        if audio {
+            let played = recv
+                .assembler
+                .as_ref()
+                .is_some_and(|(_, a)| a.accepts(ext_seq));
+            receipts::late_arrival(recv, ext_seq, played);
         }
         let Some((_, asm)) = recv.assembler.as_mut() else {
             return false;
@@ -4170,6 +4214,7 @@ impl Rtc {
                 }
                 if let Some(v) = &r.video {
                     min(v.buf.poll_timeout());
+                    min(v.hole_at);
                 }
             }
             if self.ccfb && !self.recv.is_empty() {
@@ -4280,6 +4325,7 @@ fn recv_entry<'a>(
         audio_rate: (0, 0),
         audio_ptime: receipts::PacketTime::default(),
         reported_lost: VecDeque::new(),
+        late_arrived: Vec::new(),
     }))
 }
 

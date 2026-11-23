@@ -22,8 +22,8 @@
 
 use super::*;
 use akio_rtp::{
-    BurstLossModel, DelaySensitivity, EModel, JitterBufferConfig, Plc, SdesItem, VoipQuality,
-    XrBlock,
+    BurstLossModel, DelaySensitivity, EModel, JitterBufferConfig, OpusBand, Plc, SdesItem,
+    VoipQuality, XrBlock,
 };
 
 /// Sequence numbers a receipt log keeps per interval.
@@ -70,6 +70,44 @@ impl PacketTime {
         (clock > 0).then(|| Duration::from_micros(u64::from(f) * 1_000_000 / u64::from(clock)))
     }
 }
+/// The audio band of the Opus stream this side receives (ADR-092 update), from the remote's
+/// `sprop-maxcapturerate` (the rate it captures at, RFC 7587 §6.1), 48000 when absent. This
+/// side declares no `maxplaybackrate` (and no longer echoes the remote's in an answer), so
+/// nothing else narrows what the remote sends; the remote's own `maxplaybackrate` is about
+/// the stream this side sends. Up to 12000 (narrowband and mediumband, which the E-model has
+/// no scale for) is narrowband, up to 24000 (wideband and super-wideband, rated on the
+/// wideband scale: no Opus SWB values are used) wideband, above it fullband.
+pub(super) fn opus_band(remote: &[CodecParams]) -> OpusBand {
+    let rate = remote
+        .iter()
+        .find(|c| c.codec == Codec::Opus)
+        .and_then(|c| fmtp_param(&c.fmtp, "sprop-maxcapturerate"))
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&r| r > 0)
+        .unwrap_or(48_000);
+    match rate {
+        ..=12_000 => OpusBand::Narrowband,
+        12_001..=24_000 => OpusBand::Wideband,
+        _ => OpusBand::Fullband,
+    }
+}
+
+/// An audio packet `ext_seq` of `r` arrived; `played`: it goes on to play (buffered, not
+/// discarded). One the VoIP metrics reported lost in an earlier interval is remembered for
+/// the next report to take back from the loss count (ADR-092 update).
+pub(super) fn late_arrival(r: &mut Recv, ext_seq: u64, played: bool) {
+    if r.reported_lost.is_empty() || r.stream.extended_highest_seq().is_none_or(|h| ext_seq >= h) {
+        return;
+    }
+    let seq = ext_seq as u16;
+    if let Some(i) = r.reported_lost.iter().position(|&s| s == seq) {
+        r.reported_lost.remove(i);
+        if r.late_arrived.len() < MAX_REPORTED_LOST {
+            r.late_arrived.push((seq, played));
+        }
+    }
+}
+
 /// Remote sources whose SDES items are remembered.
 const MAX_SDES_SOURCES: usize = 64;
 
@@ -112,7 +150,7 @@ fn block_size(b: &XrBlock) -> usize {
 /// `class` is the delay sensitivity of a model from the codec's planning values, and
 /// `packet` the media per packet.
 #[allow(clippy::too_many_arguments)]
-fn voip_quality(
+pub(super) fn voip_quality(
     app: VoipQuality,
     model: Option<EModel>,
     class: DelaySensitivity,
@@ -123,6 +161,7 @@ fn voip_quality(
     packet: Duration,
     jb: Option<JitterBufferConfig>,
     m: &BurstLossModel,
+    band: OpusBand,
 ) -> VoipQuality {
     let name = codec.map_or("", |c| c.codec.name());
     let mut q = VoipQuality {
@@ -136,9 +175,15 @@ fn voip_quality(
         ..app
     };
     let model = model.unwrap_or_else(|| {
-        EModel::for_codec_rate(name, q.plc, bitrate)
-            .unwrap_or_default()
-            .with_delay_sensitivity(class)
+        // Opus in a band the SDP narrowed: that band's values (ADR-092 update).
+        let opus = name.eq_ignore_ascii_case("opus") && band != OpusBand::Fullband;
+        if opus {
+            // No bitrate measured (no packet in the interval): the highest rate's values.
+            EModel::opus(band, bitrate.unwrap_or(u32::MAX))
+        } else {
+            EModel::for_codec_rate(name, q.plc, bitrate).unwrap_or_default()
+        }
+        .with_delay_sensitivity(class)
     });
     model.estimate_report(m, &q, jitter, packet).fill(&mut q);
     q
@@ -210,8 +255,20 @@ impl Rtc {
                     // A discard of a number an earlier interval reported lost (it arrived
                     // after that report, then late for the buffer): that loss was a discard.
                     for &d in discarded.iter().filter(|&&d| !in_trace(d)) {
-                        if let Some(i) = r.reported_lost.iter().position(|&s| s == d) {
+                        if let Some(i) = r.late_arrived.iter().position(|&(s, _)| s == d) {
+                            r.late_arrived.swap_remove(i);
+                            m.on_late_discard();
+                        } else if let Some(i) = r.reported_lost.iter().position(|&s| s == d) {
                             r.reported_lost.remove(i);
+                            m.on_late_discard();
+                        }
+                    }
+                    // The others that arrived since: played, that loss was none (ADR-092
+                    // update); too late for the frame assembler, a discard.
+                    for (_, played) in r.late_arrived.drain(..) {
+                        if played {
+                            m.on_late_arrival();
+                        } else {
                             m.on_late_discard();
                         }
                     }
@@ -252,6 +309,7 @@ impl Rtc {
                         frame,
                         jb,
                         m,
+                        l.opus_band,
                     );
                     // Burst and gap durations in milliseconds of that length (rounded).
                     let packet_ms = ((frame.as_micros() + 500) / 1000).clamp(1, 0xffff) as u16;

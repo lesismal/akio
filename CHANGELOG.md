@@ -92,6 +92,36 @@ ADR-078's third update (2026-11-23), additive:
   answered on every link.
 - `tools/interop/webrtc/mdns4.sh`: two IPv4 links in a container, avahi on the non-default one.
 
+### Added: missing video packets given up at the playout deadline, frame-size-aware delay, Opus's band from SDP, late packets that play (akio-rtp, akio-webrtc)
+
+ADR-092 update (2026-11-23), additive in the API:
+
+- `FrameAssembler::blocked()` (the frame waiting behind a missing packet), `give_up_hole()` and
+  `accepts(seq)`.
+- `VideoPlayout::hole_deadline(ts, now)`: when to give that packet up. It is the waiting
+  frame's playout instant, but no sooner than the round trip, the target delay or 10 ms after
+  the wait began. `VideoPlayout::hole_given_up()` counts it.
+- `VideoPlayout`'s target adds a frame-size term: a Kalman filter of each frame's delay
+  variation against its size change (libwebrtc's jitter estimator) gives the delay per byte,
+  times the largest recent size minus the average. Keyframes have room however long ago the
+  last one was.
+- `VideoPlayoutStats::{size_delay, holes_given_up}`.
+- `BurstLossModel::on_late_arrival()`: a packet recorded lost that arrived and played.
+
+Changed behaviour in akio-webrtc:
+
+- With `set_video_playout_buffer` on, a missing video packet is given up at that deadline on
+  the peer's timer. The video reordering count is then at least 1024 packets (a bound). On a
+  lossy line without repair the picture no longer stands still for about 400 ms at each loss.
+- Received Opus is rated for the VoIP metrics in the band of the remote's
+  `sprop-maxcapturerate` (≤ 12000 narrowband, ≤ 24000 wideband, else fullband).
+- Answers no longer echo the offer's Opus `sprop-maxcapturerate` / `maxplaybackrate`.
+- A packet the VoIP metrics reported lost that arrives later and plays is taken back from the
+  loss count. One that does not play becomes a discard, now also when the frame assembler
+  (no jitter buffer) had moved past it.
+- `webrtc-interop`: `AKIO_INTEROP_PLAYOUT=1` receives through both playout buffers.
+- Same-run A/B on gpu51 (BENCHMARKS, "Video playout buffer, second pass"): no measurable change end to end (VP8 `media` 0.999; `video-jb` CPU per frame 10.01 against 10.03 µs). The buffer alone takes 16 ns more per frame (60.3 against 43.9 ns), the Kalman update.
+
 ### Added: a video playout buffer, E-model delay classes and room noise, VoIP packet length and late discards (akio-rtp, akio-webrtc)
 
 ADR-092 (docs/adr/092-video-playout-emodel-classes.md) closes ADR-087's leftovers, additive:

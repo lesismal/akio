@@ -163,12 +163,21 @@ pub fn rtp_codec(data: &[u8]) {
                 p.payload,
                 t0 + Duration::from_millis(i as u64),
             );
-            while let Some(f) = a.pop() {
-                assert!(f.first_seq <= f.last_seq);
-                assert!(last.is_none_or(|l| f.first_seq > l), "frames out of order");
-                assert!(f.data.len() <= MAX_FRAME_SIZE);
-                last = Some(f.last_seq);
+            loop {
+                while let Some(f) = a.pop() {
+                    assert!(f.first_seq <= f.last_seq);
+                    assert!(last.is_none_or(|l| f.first_seq > l), "frames out of order");
+                    assert!(f.data.len() <= MAX_FRAME_SIZE);
+                    last = Some(f.last_seq);
+                }
+                // Every other packet, give up what a frame waits behind (as a playout
+                // deadline would): a frame waiting means a hole to give up.
+                let Some(_) = a.blocked().filter(|_| (sel >> 6) & 1 == 1 && i % 2 == 0) else {
+                    break;
+                };
+                assert!(a.give_up_hole());
             }
+            let _ = a.accepts(p.seq);
         }
     }
     let mtu = 1 + usize::from(sel) * 6;
