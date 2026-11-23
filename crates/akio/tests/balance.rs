@@ -83,6 +83,9 @@ fn open_per_thread(e: &Engine, n: u64) -> Vec<u64> {
 
 #[test]
 fn connections_are_spread_evenly() {
+    if common::rounds() {
+        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+    }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(4, Balance::LeastConnections, moved.clone());
     let addr = e.local_addrs()[0];
@@ -122,6 +125,9 @@ fn connections_are_spread_evenly() {
 /// Connections close and reopen: the counts follow (closed ones leave the load).
 #[test]
 fn closed_connections_leave_the_count() {
+    if common::rounds() {
+        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+    }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(3, Balance::LeastConnections, moved.clone());
     let addr = e.local_addrs()[0];
@@ -144,6 +150,9 @@ fn closed_connections_leave_the_count() {
 /// `Balance::Kernel` serves as before (each thread keeps what its socket accepts).
 #[test]
 fn kernel_balance_serves() {
+    if common::rounds() {
+        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+    }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(2, Balance::Kernel, moved.clone());
     let addr = e.local_addrs()[0];
@@ -161,6 +170,9 @@ fn kernel_balance_serves() {
 /// served (handed-over ones that reach a retiring thread are passed on, not lost).
 #[test]
 fn balancing_survives_resizing() {
+    if common::rounds() {
+        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+    }
     let moved = Arc::new(Mutex::new(0));
     let e = Arc::new(engine(4, Balance::LeastConnections, moved.clone()));
     let addr = e.local_addrs()[0];
