@@ -18,7 +18,7 @@
 #       handshake (Linux with the `tls` module, 6.14+; ktls feature, docs/BENCHMARKS.md)
 #
 # Linux Docker (Debian's OpenSSL 3 and the Go toolchain from the image are fetched on demand):
-#   docker run --rm -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+#   docker run --rm -v "$PWD":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
 #     -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c 'apt-get update -qq && \
 #     apt-get install -y -qq golang-go openssl gnutls-bin >/dev/null && tools/interop/tls/run.sh'
 set -u

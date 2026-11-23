@@ -18,7 +18,7 @@
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 VOL=${AKIO_INTEROP_TARGET:-akio-interop-target}
-docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
     -v "$VOL":/tmp/t -e CARGO_TARGET_DIR=/tmp/t -v ngtcp2-cvn-build:/opt/ng rust:1 bash -c '
 set -eu
 sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/debian.sources

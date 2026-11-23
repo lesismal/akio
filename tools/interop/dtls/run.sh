@@ -21,7 +21,7 @@ if [ "${LOCAL_OPENSSL:-0}" = 1 ]; then
   cargo build -q --release -p akio-dtls --example dtls-interop --manifest-path "$ROOT/Cargo.toml"
   "$ROOT/tools/interop/dtls/openssl.sh" "$ROOT/target/release/examples/dtls-interop" "$W/openssl"
 else
-  docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+  docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
     -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c \
     'cargo build -q --release -p akio-dtls --example dtls-interop &&
      tools/interop/dtls/openssl.sh /tmp/t/release/examples/dtls-interop /tmp/openssl'
@@ -126,7 +126,7 @@ if [ "${SKIP_DTLS13:-0}" != 1 ]; then
   echo "== DTLS 1.3 / CID / PSK / resumption (OpenSSL 4.1, wolfSSL 5.8)"
   docker image inspect "$IMAGE" >/dev/null 2>&1 ||
     docker build -t "$IMAGE" "$ROOT/tools/interop/dtls"
-  docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+  docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
     -e CARGO_TARGET_DIR=/tmp/t "$IMAGE" bash -c \
     'cargo build -q --release -p akio-dtls --example dtls-interop &&
      tools/interop/dtls/dtls13.sh /tmp/t/release/examples/dtls-interop /tmp/dtls13'

@@ -10,6 +10,12 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：端口为 0 的 BitTorrent 客户端与其他套接字争用端口（akio-bittorrent）
+
+`listen` 端口为 0 时，`Client::new` 先探测 TCP 与 UDP 都空闲的端口号，再让引擎绑定；两步之间其他套接字可能占用
+该端口，`new` 因而以 `AddrInUse` 失败（并行测试下 `tests/resume.rs` 偶发失败）。现在会重新选择端口并重试绑定，
+最多 20 次。显式给定的端口仍然立即失败。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

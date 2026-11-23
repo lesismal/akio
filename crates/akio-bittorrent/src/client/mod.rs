@@ -547,15 +547,18 @@ impl Client {
     /// Starts a client: binds TCP and UDP on [`ClientConfig::listen`], starts the engine, the
     /// disk pool, the DHT node and the maintenance thread.
     pub fn new(cfg: ClientConfig) -> io::Result<Client> {
-        let mut listen = cfg.listen;
-        if listen.port() == 0 {
-            listen.set_port(free_port(listen.ip())?);
-        }
         let cell: Arc<OnceLock<Weak<ClientInner>>> = Arc::new(OnceLock::new());
-        let port = UdpPort::new();
         let threads = cfg.threads.max(1);
-        let engine = Arc::new(
-            Engine::builder()
+        // Port 0: one port number for TCP and UDP. `free_port` only probes it, so another
+        // socket can take it before the engine binds: pick again then.
+        let mut tries = 0;
+        let (engine, port, listen) = loop {
+            let mut listen = cfg.listen;
+            if cfg.listen.port() == 0 {
+                listen.set_port(free_port(listen.ip())?);
+            }
+            let port = UdpPort::new();
+            let built = Engine::builder()
                 .listen(
                     Listener::tcp(listen)
                         .threads(threads)
@@ -569,8 +572,19 @@ impl Client {
                         .serve(port.acceptor()),
                 )
                 .client_threads(threads)
-                .build()?,
-        );
+                .build();
+            match built {
+                Ok(e) => break (Arc::new(e), port, listen),
+                Err(e)
+                    if cfg.listen.port() == 0
+                        && e.kind() == io::ErrorKind::AddrInUse
+                        && tries < 20 =>
+                {
+                    tries += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        };
         engine.start()?;
         let addrs = engine.local_addrs();
         let udp_addr = addrs.get(1).copied().unwrap_or(listen);

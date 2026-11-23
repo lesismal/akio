@@ -2,7 +2,7 @@
 # tlsfuzzer (https://github.com/tlsfuzzer/tlsfuzzer) against akio-tls's server: protocol
 # conformance scripts for TLS 1.3 and 1.2, run in Docker (needs network for the clone and pip):
 #
-#   docker run --rm -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+#   docker run --rm -v "$PWD":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
 #     -e CARGO_TARGET_DIR=/tmp/t rust:1 tools/interop/tls/tlsfuzzer.sh [script.py ...]
 #
 # The server is `tls-interop server --http-server` (one small HTTP response per request head, as
