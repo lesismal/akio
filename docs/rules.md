@@ -19,7 +19,7 @@ for a proxy built on an event-loop library.
    reports what slips through.
 2. **Work that can only block goes to the logical pool** with `Conn::spawn_blocking` (or a
    detached response completed from the pool, `Context::detach_to_pool`, or a protocol's
-   `run_on_pool` switch, ADR-093), and comes back to the loop as a completion. The
+   `run_on_pool` switch, ADR-094), and comes back to the loop as a completion. The
    pool is bounded (`Overloaded` when full); a feature that queues work there handles that error.
    Waits between pools and loops go one way only: a pool task never waits for a loop, so they
    cannot deadlock each other.

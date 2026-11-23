@@ -1,6 +1,6 @@
-# ADR-093：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭
+# ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭
 
-[English](093-handlers-on-the-logical-pool.md) | 简体中文
+[English](094-handlers-on-the-logical-pool.md) | 简体中文
 
 状态：已采纳（2026-11-23）
 

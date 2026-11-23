@@ -12,7 +12,7 @@ All notable changes to `akio` are documented here. The format follows
 
 ### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
 
-ADR-093, additive:
+ADR-094, additive:
 
 - `HttpConfig::run_on_pool` (HTTP/1.1), `H2Config::run_on_pool` (HTTP/2) and
   `H3Config::run_on_pool` (HTTP/3) run each complete request's middleware and handler on the

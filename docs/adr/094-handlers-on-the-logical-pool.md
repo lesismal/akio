@@ -1,6 +1,6 @@
-# ADR-093: Protocol handlers on the logical pool, per protocol, off by default
+# ADR-094: Protocol handlers on the logical pool, per protocol, off by default
 
-English | [简体中文](093-handlers-on-the-logical-pool.zh-CN.md)
+English | [简体中文](094-handlers-on-the-logical-pool.zh-CN.md)
 
 Status: accepted (2026-11-23)
 

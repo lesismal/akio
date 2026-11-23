@@ -12,7 +12,7 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
 
-ADR-093，均为新增：
+ADR-094，均为新增：
 
 - `HttpConfig::run_on_pool`（HTTP/1.1）、`H2Config::run_on_pool`（HTTP/2）和 `H3Config::run_on_pool`
   （HTTP/3）让每个完整请求的中间件和 handler 在 engine 的逻辑线程池上执行。handler 可以阻塞，同一连接上
