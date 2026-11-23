@@ -1,4 +1,8 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    io,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use crate::{DatagramSender, DynAcceptor};
 
@@ -78,6 +82,19 @@ pub trait Group: Send + Sync {
         ))
     }
 
+    /// [`bind_udp`](Self::bind_udp), and the ICMP errors about datagrams `sock` sends go to
+    /// `on_icmp` on its I/O thread (Linux `IP_RECVERR`, set by the group). Default: plain
+    /// `bind_udp`, no reports.
+    fn bind_udp_icmp(
+        &self,
+        sock: std::net::UdpSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_icmp: IcmpHandler,
+    ) -> io::Result<UdpBinding> {
+        let _ = on_icmp;
+        self.bind_udp(sock, acceptor)
+    }
+
     fn dial(
         &self,
         addr: SocketAddr,
@@ -132,6 +149,60 @@ pub trait Group: Send + Sync {
     }
 }
 
+/// An ICMP error about a datagram a [`UdpBinding`] sent (`akio::Engine::bind_udp_icmp`, Linux):
+/// the network or the destination host refused it (destination or port unreachable, time
+/// exceeded, packet too big, parameter problem). ICMP gives no guarantee: errors are rate
+/// limited and may be filtered on the way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IcmpError {
+    /// The bound address of the socket that sent the datagram.
+    pub local: SocketAddr,
+    /// Where the datagram was going (address and port).
+    pub dest: SocketAddr,
+    /// Who sent the ICMP message (a router on the way, or `dest`'s host), when known.
+    pub from: Option<IpAddr>,
+    /// An ICMPv6 message (RFC 4443); else ICMPv4 (RFC 792).
+    pub v6: bool,
+    /// The ICMP type (ICMPv4: 3 destination unreachable, 11 time exceeded, 12 parameter
+    /// problem; ICMPv6: 1 destination unreachable, 2 packet too big, 3 time exceeded, 4
+    /// parameter problem).
+    pub icmp_type: u8,
+    /// The ICMP code.
+    pub code: u8,
+    /// The next-hop MTU of an ICMPv4 "fragmentation needed" (type 3, code 4) or an ICMPv6
+    /// "packet too big", else 0.
+    pub mtu: u32,
+}
+
+impl IcmpError {
+    /// An error with these fields (for tests and userspace stacks).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        local: SocketAddr,
+        dest: SocketAddr,
+        from: Option<IpAddr>,
+        v6: bool,
+        icmp_type: u8,
+        code: u8,
+        mtu: u32,
+    ) -> IcmpError {
+        IcmpError {
+            local,
+            dest,
+            from,
+            v6,
+            icmp_type,
+            code,
+            mtu,
+        }
+    }
+}
+
+/// Takes the [`IcmpError`]s of a bound socket (`akio::Engine::bind_udp_icmp`), on its I/O
+/// thread.
+pub type IcmpHandler = Arc<dyn Fn(&IcmpError) + Send + Sync>;
+
 /// A UDP socket bound at run time (`akio::Engine::bind_udp`): unconnected, so it exchanges
 /// datagrams with any address from one local port. Datagrams it receives are served like a UDP
 /// listener's (each distinct peer address is a [`Conn`](crate::Conn) of the acceptor);
@@ -142,6 +213,9 @@ pub struct UdpBinding {
     sock: Arc<std::net::UdpSocket>,
     local: SocketAddr,
     closer: Arc<dyn Fn() + Send + Sync>,
+    /// The socket has `IP_RECVERR` (`bind_udp_icmp`): a send may fail once with the error an
+    /// ICMP message left pending, having sent nothing.
+    recverr: bool,
 }
 
 impl std::fmt::Debug for UdpBinding {
@@ -164,6 +238,30 @@ impl UdpBinding {
             sock,
             local,
             closer,
+            recverr: false,
+        }
+    }
+
+    /// Backend-facing: the socket has `IP_RECVERR` (see `Group::bind_udp_icmp`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_recverr(mut self) -> UdpBinding {
+        self.recverr = true;
+        self
+    }
+
+    /// Whether `e`, from a send on a socket with `IP_RECVERR`, is an ICMP error left pending
+    /// for the socket rather than about this send: the kernel returns it once (clearing it)
+    /// without sending, so the send is tried again.
+    fn pending_icmp(&self, e: &io::Error) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.recverr && akio_sys::is_icmp_error(e)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = e;
+            false
         }
     }
 
@@ -176,10 +274,12 @@ impl UdpBinding {
     /// non-blocking: when its send buffer is full the datagram is dropped with
     /// `ErrorKind::WouldBlock` (UDP semantics; protocols on top retransmit).
     pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<()> {
+        let mut retried = false;
         loop {
             match self.sock.send_to(data, addr) {
                 Ok(_) => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if !retried && self.pending_icmp(&e) => retried = true,
                 Err(e) => return Err(e),
             }
         }
@@ -191,19 +291,29 @@ impl UdpBinding {
     /// and for `ecn` 0, the datagram goes out unmarked.
     #[doc(hidden)]
     pub fn send_to_ecn(&self, data: &[u8], addr: SocketAddr, ecn: u8) -> io::Result<()> {
+        self.send_to_tos(data, addr, ecn & 3)
+    }
+
+    /// (internal, outside the stability promise) [`send_to_ecn`](Self::send_to_ecn) with the
+    /// whole traffic class byte `tos` (IPv4 TOS / IPv6 traffic class: DSCP in the upper six
+    /// bits, ECN in the low two); 0 sends the datagram unmarked.
+    #[doc(hidden)]
+    pub fn send_to_tos(&self, data: &[u8], addr: SocketAddr, tos: u8) -> io::Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if ecn & 3 != 0 && akio_sys::ecn_available() {
+        if tos != 0 && akio_sys::ecn_available() {
             use std::os::fd::AsRawFd;
             let fd = self.sock.as_raw_fd();
             let v6 = self.local.is_ipv6();
+            let mut retried = false;
             loop {
-                match akio_sys::send_to_ecn(fd, data, Some(&addr), ecn, v6) {
+                match akio_sys::send_to_tos(fd, data, Some(&addr), tos, v6) {
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) if !retried && self.pending_icmp(&e) => retried = true,
                     r => return r.map(|_| ()),
                 }
             }
         }
-        let _ = ecn;
+        let _ = tos;
         self.send_to(data, addr)
     }
 

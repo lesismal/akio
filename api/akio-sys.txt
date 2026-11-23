@@ -78,6 +78,7 @@ pub fn akio_sys::Batch<'_, 'd>::is_gso(&self, usize) -> bool
 pub fn akio_sys::Batch<'_, 'd>::len(&self) -> usize
 pub fn akio_sys::Batch<'_, 'd>::push(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize) -> bool
 pub fn akio_sys::Batch<'_, 'd>::push_ecn(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize, u8, bool) -> bool
+pub fn akio_sys::Batch<'_, 'd>::push_tos(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize, u8, bool) -> bool
 pub fn akio_sys::Batch<'_, 'd>::send(&mut self, std::os::fd::raw::RawFd, usize) -> core::io::error::Result<usize>
 impl<'s, 'd> core::fmt::Debug for akio_sys::Batch<'s, 'd>
 pub fn akio_sys::Batch<'s, 'd>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -130,6 +131,27 @@ impl core::marker::Sync for akio_sys::FsWatcher
 impl core::marker::Unpin for akio_sys::FsWatcher
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::FsWatcher
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::FsWatcher
+#[non_exhaustive] pub struct akio_sys::IcmpReport
+pub akio_sys::IcmpReport::code: u8
+pub akio_sys::IcmpReport::dest: core::net::socket_addr::SocketAddr
+pub akio_sys::IcmpReport::from: core::option::Option<core::net::ip_addr::IpAddr>
+pub akio_sys::IcmpReport::icmp_type: u8
+pub akio_sys::IcmpReport::info: u32
+pub akio_sys::IcmpReport::v6: bool
+impl core::clone::Clone for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::IcmpReport
+impl core::cmp::PartialEq for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_sys::IcmpReport
+impl core::marker::StructuralPartialEq for akio_sys::IcmpReport
+impl core::marker::Send for akio_sys::IcmpReport
+impl core::marker::Sync for akio_sys::IcmpReport
+impl core::marker::Unpin for akio_sys::IcmpReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::IcmpReport
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::IcmpReport
 pub struct akio_sys::Poller
 impl akio_sys::Poller
 pub fn akio_sys::Poller::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
@@ -150,6 +172,7 @@ pub fn akio_sys::RecvBatch::ecn(&self, usize) -> u8
 pub fn akio_sys::RecvBatch::get(&self, usize) -> core::option::Option<(&[u8], core::net::socket_addr::SocketAddr, usize)>
 pub fn akio_sys::RecvBatch::new(usize, usize) -> akio_sys::RecvBatch
 pub fn akio_sys::RecvBatch::recv(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<usize>
+pub fn akio_sys::RecvBatch::tos(&self, usize) -> u8
 pub fn akio_sys::RecvBatch::with_gro(usize, usize, bool) -> akio_sys::RecvBatch
 impl core::fmt::Debug for akio_sys::RecvBatch
 pub fn akio_sys::RecvBatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -192,12 +215,16 @@ pub fn akio_sys::disable_gso()
 pub fn akio_sys::ecn_available() -> bool
 pub fn akio_sys::enable_ecn(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::enable_gro(std::os::fd::raw::RawFd) -> bool
+pub fn akio_sys::enable_recverr(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::gro_available() -> bool
 pub fn akio_sys::gso_enabled() -> bool
+pub fn akio_sys::is_icmp_error(&core::io::error::Error) -> bool
 pub fn akio_sys::listen(core::net::socket_addr::SocketAddr, bool, i32) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn akio_sys::listen_udp(core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<std::net::udp::UdpSocket>
 pub fn akio_sys::multicast_hops_v6(&std::net::udp::UdpSocket) -> core::io::error::Result<u32>
+pub fn akio_sys::recv_icmp(std::os::fd::raw::RawFd) -> core::io::error::Result<core::option::Option<akio_sys::IcmpReport>>
 pub fn akio_sys::send_to_ecn(std::os::fd::raw::RawFd, &[u8], core::option::Option<&core::net::socket_addr::SocketAddr>, u8, bool) -> core::io::error::Result<usize>
+pub fn akio_sys::send_to_tos(std::os::fd::raw::RawFd, &[u8], core::option::Option<&core::net::socket_addr::SocketAddr>, u8, bool) -> core::io::error::Result<usize>
 pub fn akio_sys::sendfile(std::os::fd::raw::RawFd, std::os::fd::raw::RawFd, u64, usize) -> core::io::error::Result<usize>
 pub fn akio_sys::set_backlog(&std::net::tcp::TcpListener, i32) -> core::io::error::Result<()>
 pub fn akio_sys::set_multicast_hops_v6(&std::net::udp::UdpSocket, u32) -> core::io::error::Result<()>

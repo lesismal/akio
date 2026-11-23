@@ -146,6 +146,9 @@ pub mod attr {
     pub(crate) const ADDRESS_ERROR_CODE_DRAFT: u16 = 0x8033;
     /// PASSWORD-ALGORITHMS.
     pub const PASSWORD_ALGORITHMS: u16 = 0x8002;
+    /// ICMP (TURN, RFC 8656 section 18.13): in a Data indication instead of `DATA`, the ICMP
+    /// error a datagram to the peer drew.
+    pub const ICMP: u16 = 0x8004;
     /// SOFTWARE.
     pub const SOFTWARE: u16 = 0x8022;
     /// ALTERNATE-SERVER.
@@ -381,6 +384,17 @@ impl<'a> Message<'a> {
         Some((v[0], code, std::str::from_utf8(&v[4..]).unwrap_or("")))
     }
 
+    /// `ICMP` (RFC 8656 section 18.13): the ICMP type, code and error data (the next-hop MTU of
+    /// an ICMPv4 "fragmentation needed" or an ICMPv6 "packet too big", else 0). Whether it is
+    /// ICMPv4 or ICMPv6 follows from the family of `XOR-PEER-ADDRESS`.
+    pub fn icmp(&self) -> Option<(u8, u8, u32)> {
+        let v = self.get(attr::ICMP)?;
+        if v.len() < 8 {
+            return None;
+        }
+        Some((v[2], v[3], u32::from_be_bytes([v[4], v[5], v[6], v[7]])))
+    }
+
     /// Verifies `MESSAGE-INTEGRITY` with `key` (the short-term password, or the long-term key
     /// from [`long_term_key`]). `false` when it is absent or wrong.
     pub fn check_integrity(&self, key: &[u8]) -> bool {
@@ -583,6 +597,14 @@ impl MessageBuilder {
         let mut v = vec![family, 0, (code / 100) as u8, (code % 100) as u8];
         v.extend_from_slice(reason.as_bytes());
         self.attr(attr::ADDRESS_ERROR_CODE, &v)
+    }
+
+    /// Appends `ICMP` (RFC 8656 section 18.13): ICMP type `icmp_type`, code `code` and error data
+    /// `data`.
+    #[must_use]
+    pub fn icmp(self, icmp_type: u8, code: u8, data: u32) -> Self {
+        let d = data.to_be_bytes();
+        self.attr(attr::ICMP, &[0, 0, icmp_type, code, d[0], d[1], d[2], d[3]])
     }
 
     /// Appends `MESSAGE-INTEGRITY` keyed with `key`. Only `FINGERPRINT` may follow.

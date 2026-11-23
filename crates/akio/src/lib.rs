@@ -50,10 +50,10 @@ pub use akio_dpdk as dpdk;
 
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
-    DatagramsIter, Error, FnAcceptor, Handler, Live, LoopCounters, LoopMeta, LoopMetrics, Metrics,
-    Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot, ResponseStream, Result,
-    SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport, UdpBinding, UdpStats,
-    fn_acceptor, metrics, telemetry,
+    DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,
+    LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot,
+    ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
+    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
 };
 use akio_core::{DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr};
 #[doc(hidden)]
@@ -1121,6 +1121,35 @@ impl Engine {
                 let sock = std::net::UdpSocket::bind(addr)?;
                 sock.set_nonblocking(true)?;
                 g.bind_udp(sock, Arc::new(acceptor))
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
+            )),
+        }
+    }
+
+    /// [`bind_udp`](Self::bind_udp), and the ICMP errors that answer datagrams the socket sends
+    /// (destination or port unreachable, time exceeded, packet too big, parameter problem) go
+    /// to `on_icmp`, on the socket's I/O thread: without it an unconnected socket never hears
+    /// of them. For a relay that tells its client about unreachable peers (TURN, RFC 8656
+    /// section 11.5).
+    ///
+    /// Linux only (`IP_RECVERR` / `IPV6_RECVERR`: the kernel queues each error on the socket,
+    /// the I/O thread reads them with `MSG_ERRQUEUE`; the destination's port is reported, no
+    /// privileges needed). Elsewhere it is `bind_udp` and `on_icmp` is never called. ICMP is
+    /// best effort: errors are rate-limited by the hosts that send them and often filtered.
+    pub fn bind_udp_icmp<A: Acceptor>(
+        &self,
+        addr: SocketAddr,
+        acceptor: A,
+        on_icmp: impl Fn(&IcmpError) + Send + Sync + 'static,
+    ) -> io::Result<UdpBinding> {
+        match self.udp_client.and_then(|i| self.groups.get(i)) {
+            Some(g) => {
+                let sock = std::net::UdpSocket::bind(addr)?;
+                sock.set_nonblocking(true)?;
+                g.bind_udp_icmp(sock, Arc::new(acceptor), Arc::new(on_icmp))
             }
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

@@ -10,6 +10,41 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TURN ICMP relaying, DSCP across the relay, giving back one family (akio-turn, akio, akio-core, akio-sys)
+
+ADR-091, additive:
+
+- akio-turn server: ICMP errors drawn by datagrams relayed to peers go to the client as Data
+  indications with an `ICMP` attribute and no `DATA` (RFC 8656 section 11.5; Linux, through
+  `IP_RECVERR`): ICMPv4 destination unreachable / time exceeded, ICMPv6 destination
+  unreachable / packet too big / time exceeded, for peers with a permission.
+  `TurnConfig::relay_icmp` (true), `TurnStats::icmp`, `TurnCore::handle_icmp`.
+- akio-turn server: relayed datagrams keep their DSCP as well as their ECN codepoint, both ways
+  (section 14's preferred behaviour, as coturn does). `TurnConfig::copy_dscp` (true; false sends
+  DSCP 0). For embedders: `TurnCore::handle_client_tos` / `handle_peer_tos`,
+  `TurnEnv::send_to_client_tos` / `send_to_peer_tos`, whose defaults pass the ECN bits to the
+  `_ecn` methods.
+- akio-turn client: `ClientEvent::Icmp { peer, icmp_type, code, mtu }`;
+  `Client::release_family(now, v6)` deletes one relayed address of a dual allocation (Refresh,
+  lifetime 0, `REQUESTED-ADDRESS-FAMILY`). STUN: `attr::ICMP`, `Message::icmp`,
+  `MessageBuilder::icmp`.
+- akio: `Engine::bind_udp_icmp(addr, acceptor, on_icmp)` and `akio::IcmpError`: a bound UDP
+  socket whose ICMP errors (destination, its port, type, code, MTU, sender) reach a callback on
+  its I/O thread (Linux `IP_RECVERR` / `IPV6_RECVERR`, the error queue drained by the loop;
+  elsewhere a plain `bind_udp`). `UdpBinding::send_to` retries once on the error an ICMP
+  message leaves pending on such a socket.
+- akio / akio-core / akio-sys, hidden or low-level: the whole traffic class byte of a datagram
+  (`Conn::rx_tos`, `Conn::send_segments_tos`, `UdpBinding::send_to_tos`, `RecvBatch::tos`,
+  `SendBatch::push_tos`, `send_to_tos`, `recv_from_tos`); `akio_sys::recv_icmp`,
+  `enable_recverr`, `is_icmp_error`, `IcmpReport` (Linux).
+- Behaviour change: akio-turn's relayed datagrams carry the sender's DSCP (was the socket's,
+  normally 0), and its UDP relay sockets have `IP_RECVERR` on Linux.
+- Not changed: `Endpoint::gather_relay` stays single-family (ADR-091 says why); TTL is not
+  copied.
+- `turn-relay-bench` takes `TURN_BENCH_TOS`; `tools/interop/webrtc/turn-dual.sh` checks DSCP,
+  ICMP and the per-family release. Relay A/B against main:
+  no measurable change; DSCP-marked datagrams cost what ECN-marked ones did (docs/BENCHMARKS.md).
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:

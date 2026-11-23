@@ -62,6 +62,8 @@ pub(crate) enum Cmd {
         id: u64,
         sock: Arc<std::net::UdpSocket>,
         acceptor: Arc<dyn DynAcceptor>,
+        /// Takes the socket's ICMP errors (`Engine::bind_udp_icmp`; Linux `IP_RECVERR`).
+        icmp: Option<akio_core::IcmpHandler>,
     },
     /// UDP only: closes the socket bound under `id` and its connections.
     Unbind(u64),

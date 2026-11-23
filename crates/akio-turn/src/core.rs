@@ -47,6 +47,20 @@ pub trait TurnEnv {
         let _ = ecn;
         self.send_to_peer(relay, peer, data);
     }
+    /// [`send_to_client_ecn`](Self::send_to_client_ecn) with the whole traffic class byte
+    /// `tos` the peer's datagram arrived with (IPv4 TOS / IPv6 traffic class: DSCP in the upper
+    /// six bits, ECN in the low two), to copy onto the datagram to a UDP client (RFC 8656
+    /// section 14). Its DSCP is 0 when [`TurnConfig::copy_dscp`] is off. Default:
+    /// `send_to_client_ecn` with the ECN bits.
+    fn send_to_client_tos(&mut self, client: SocketAddr, data: &[u8], tos: u8) {
+        self.send_to_client_ecn(client, data, tos & 3);
+    }
+    /// [`send_to_peer_ecn`](Self::send_to_peer_ecn) with the whole traffic class byte `tos` of
+    /// the client's datagram (see [`send_to_client_tos`](Self::send_to_client_tos)). Default:
+    /// `send_to_peer_ecn` with the ECN bits.
+    fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], tos: u8) {
+        self.send_to_peer_ecn(relay, peer, data, tos & 3);
+    }
     /// Opens a relay socket for `client` bound on `addr` (port 0: any free port), returning
     /// its bound address.
     fn open_relay(&mut self, client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr>;
@@ -191,6 +205,18 @@ pub struct TurnConfig {
     ///
     /// [`TurnServer`]: crate::TurnServer
     pub tcp_connect_timeout: Duration,
+    /// Relayed datagrams keep the DSCP of the datagram they came in (true), as RFC 8656
+    /// section 14 prefers for UDP to UDP, both ways; the ECN codepoint is always kept. Off:
+    /// they go out with DSCP 0 (best effort), for a server that should not let clients and
+    /// peers pick their traffic class. Platforms that do not report the traffic class (or
+    /// streams, sections 15 and 16) give 0 either way.
+    pub copy_dscp: bool,
+    /// ICMP errors drawn by datagrams relayed to peers go back to the client as Data
+    /// indications with an `ICMP` attribute (true, RFC 8656 section 11.5). [`TurnServer`]
+    /// reads them on Linux (`akio::Engine::bind_udp_icmp`); elsewhere there are none.
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub relay_icmp: bool,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -234,6 +260,8 @@ impl TurnConfig {
             max_tcp_connections: 64,
             tcp_relay_buffer: 64 * 1024,
             tcp_connect_timeout: Duration::from_secs(30),
+            copy_dscp: true,
+            relay_icmp: true,
         }
     }
 
@@ -309,6 +337,20 @@ impl TurnConfig {
     #[must_use]
     pub fn tcp_connect_timeout(mut self, d: Duration) -> Self {
         self.tcp_connect_timeout = d;
+        self
+    }
+
+    /// Sets [`copy_dscp`](Self::copy_dscp).
+    #[must_use]
+    pub fn copy_dscp(mut self, yes: bool) -> Self {
+        self.copy_dscp = yes;
+        self
+    }
+
+    /// Sets [`relay_icmp`](Self::relay_icmp).
+    #[must_use]
+    pub fn relay_icmp(mut self, yes: bool) -> Self {
+        self.relay_icmp = yes;
         self
     }
 
@@ -466,6 +508,8 @@ pub struct TurnStats {
     /// Connections of TCP allocations open now (RFC 6062: connecting, waiting for a
     /// ConnectionBind, or bound).
     pub tcp_connections: usize,
+    /// ICMP errors relayed to clients (Data indications with an `ICMP` attribute).
+    pub icmp: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -804,6 +848,22 @@ impl TurnCore {
         ecn: u8,
         env: &mut dyn TurnEnv,
     ) {
+        self.handle_client_tos(now, client, data, ecn & 3, env);
+    }
+
+    /// [`handle_client`](Self::handle_client) for a datagram that arrived with traffic class
+    /// byte `tos` (IPv4 TOS / IPv6 traffic class: DSCP and ECN): relayed data goes to the peer
+    /// with [`TurnEnv::send_to_peer_tos`] and that byte, its DSCP cleared unless
+    /// [`TurnConfig::copy_dscp`] (RFC 8656 section 14).
+    pub fn handle_client_tos(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        data: &[u8],
+        tos: u8,
+        env: &mut dyn TurnEnv,
+    ) {
+        let ecn = self.tos(tos);
         if is_channel_data(data) {
             self.channel_data(now, client, data, ecn, env);
             return;
@@ -853,7 +913,7 @@ impl TurnCore {
         }
         let relay = r.relay;
         self.stats.to_peer += 1;
-        env.send_to_peer_ecn(relay, peer, &data[4..4 + len], ecn);
+        env.send_to_peer_tos(relay, peer, &data[4..4 + len], ecn);
     }
 
     fn send_indication(
@@ -883,7 +943,7 @@ impl TurnCore {
         }
         let relay = r.relay;
         self.stats.to_peer += 1;
-        env.send_to_peer_ecn(relay, peer, payload, ecn);
+        env.send_to_peer_tos(relay, peer, payload, ecn);
     }
 
     /// A datagram from `peer` on the relay socket bound at `relay`: relayed to the allocation's
@@ -912,6 +972,22 @@ impl TurnCore {
         ecn: u8,
         env: &mut dyn TurnEnv,
     ) {
+        self.handle_peer_tos(now, relay, peer, data, ecn & 3, env);
+    }
+
+    /// [`handle_peer`](Self::handle_peer) for a datagram that arrived with traffic class byte
+    /// `tos` (DSCP and ECN): it goes to the client with [`TurnEnv::send_to_client_tos`] and that
+    /// byte, its DSCP cleared unless [`TurnConfig::copy_dscp`] (RFC 8656 section 14).
+    pub fn handle_peer_tos(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        data: &[u8],
+        tos: u8,
+        env: &mut dyn TurnEnv,
+    ) {
+        let ecn = self.tos(tos);
         let Some(&client) = self.by_relay.get(&relay) else {
             return;
         };
@@ -947,7 +1023,7 @@ impl TurnCore {
                     let pad = crate::framing::channel_data_padding(out.len());
                     out.resize(out.len() + pad, 0);
                 }
-                env.send_to_client_ecn(client, &out, ecn);
+                env.send_to_client_tos(client, &out, ecn);
             }
             None => {
                 let msg = MessageBuilder::new(
@@ -958,9 +1034,85 @@ impl TurnCore {
                 .xor_addr(attr::XOR_PEER_ADDRESS, peer)
                 .attr(attr::DATA, data)
                 .build();
-                env.send_to_client_ecn(client, &msg, ecn);
+                env.send_to_client_tos(client, &msg, ecn);
             }
         }
+    }
+
+    /// The traffic class byte relayed for one that came in as `tos`: the ECN codepoint, and
+    /// the DSCP when [`TurnConfig::copy_dscp`].
+    fn tos(&self, tos: u8) -> u8 {
+        if self.shared.cfg.copy_dscp {
+            tos
+        } else {
+            tos & 3
+        }
+    }
+
+    /// An ICMP error (type `icmp_type`, code `code`) that a datagram sent from the relay
+    /// socket bound at `relay` to `peer` drew (RFC 8656 section 11.5). `peer`'s port is the
+    /// datagram's destination port, or 0 when the platform does not tell it; `mtu` is the
+    /// next-hop MTU an ICMPv4 "fragmentation needed" or ICMPv6 "packet too big" carries (else
+    /// ignored). ICMPv4 or ICMPv6 follows from `relay`'s family.
+    ///
+    /// Only destination unreachable and time exceeded (ICMPv4 types 3 and 11; ICMPv6 1, 2 and
+    /// 3) are relayed, and only to an allocation whose relayed address of that family is alive
+    /// and has a permission for `peer`'s IP address: the client gets a Data indication with
+    /// `XOR-PEER-ADDRESS` and `ICMP`, and no `DATA`. Anything else is dropped, as is everything
+    /// when [`TurnConfig::relay_icmp`] is off.
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_icmp(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        icmp_type: u8,
+        code: u8,
+        mtu: u32,
+        env: &mut dyn TurnEnv,
+    ) {
+        if !self.shared.cfg.relay_icmp || relay.is_ipv6() != peer.is_ipv6() {
+            return;
+        }
+        let v6 = relay.is_ipv6();
+        let relayed = if v6 {
+            matches!(icmp_type, 1..=3)
+        } else {
+            matches!(icmp_type, 3 | 11)
+        };
+        if !relayed {
+            return;
+        }
+        let Some(&client) = self.by_relay.get(&relay) else {
+            return;
+        };
+        let Some(a) = self.allocs.get(&client) else {
+            return;
+        };
+        let live = a.relays.iter().any(|r| r.relay == relay && r.expires > now);
+        if !live || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
+            return;
+        }
+        if !self.peer_ok(peer) {
+            return;
+        }
+        // Section 18.13: the MTU for "packet too big" and "fragmentation needed", else 0.
+        let too_big = if v6 {
+            icmp_type == 2
+        } else {
+            icmp_type == 3 && code == 4
+        };
+        let data = if too_big { mtu } else { 0 };
+        self.stats.icmp += 1;
+        let msg = MessageBuilder::new(
+            Method::DATA,
+            Class::Indication,
+            crate::stun::transaction_id(),
+        )
+        .xor_addr(attr::XOR_PEER_ADDRESS, peer)
+        .icmp(icmp_type, code, data)
+        .build();
+        env.send_to_client(client, &msg);
     }
 
     /// Frees expired allocations (closing their relays), permissions and channels. Call it

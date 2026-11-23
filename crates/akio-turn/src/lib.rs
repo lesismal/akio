@@ -11,8 +11,10 @@
 //!   networks by default. Relay sockets are bound at run time with
 //!   [`akio::Engine::bind_udp`]. It also answers Binding requests, so it is a STUN server too.
 //!   With [`TurnConfig::additional_relay_ip`] it relays both address families, with RFC 8656
-//!   dual allocations (`ADDITIONAL-ADDRESS-FAMILY`); relayed datagrams keep their ECN codepoint
-//!   both ways over UDP and DTLS (RFC 8656 section 14).
+//!   dual allocations (`ADDITIONAL-ADDRESS-FAMILY`); relayed datagrams keep their traffic class
+//!   (DSCP and ECN) both ways over UDP and DTLS (RFC 8656 section 14), and ICMP errors drawn by
+//!   datagrams to peers go back to the client (section 11.5; Linux, through
+//!   [`akio::Engine::bind_udp_icmp`]).
 //! - [`TurnStream`] ([`TurnServer::stream`]): the same server for TCP listeners, and for TLS
 //!   ones through [`akio::tls::Tls`] (`turns:`, RFC 8656 section 3.1): STUN and ChannelData
 //!   framed on the stream ([`framing`]). An allocation lives as long as its connection. Its
@@ -219,9 +221,23 @@ impl Inner {
         route: usize,
     ) -> io::Result<(UdpBinding, Arc<AtomicUsize>)> {
         let route = Arc::new(AtomicUsize::new(route));
-        let b = self
-            .engine()?
-            .bind_udp(addr, RelayAcceptor(self.me.clone(), route.clone()))?;
+        let acceptor = RelayAcceptor(self.me.clone(), route.clone());
+        let engine = self.engine()?;
+        let b = if self.shared.config().relay_icmp {
+            // RFC 8656 section 11.5: ICMP errors of datagrams to peers go to the client.
+            let (me, r) = (self.me.clone(), route.clone());
+            engine.bind_udp_icmp(addr, acceptor, move |e: &akio::IcmpError| {
+                if let Some(inner) = me.upgrade() {
+                    let shard = r.load(Ordering::Relaxed);
+                    inner.with_shard(shard, Vec::new(), |core, env| {
+                        let now = Instant::now();
+                        core.handle_icmp(now, e.local, e.dest, e.icmp_type, e.code, e.mtu, env);
+                    });
+                }
+            })?
+        } else {
+            engine.bind_udp(addr, acceptor)?
+        };
         Ok((b, route))
     }
 
@@ -296,15 +312,19 @@ struct Env<'a> {
 
 impl TurnEnv for Env<'_> {
     fn send_to_client(&mut self, client: SocketAddr, data: &[u8]) {
-        self.send_to_client_ecn(client, data, 0);
+        self.send_to_client_tos(client, data, 0);
     }
 
     fn send_to_client_ecn(&mut self, client: SocketAddr, data: &[u8], ecn: u8) {
+        self.send_to_client_tos(client, data, ecn & 3);
+    }
+
+    fn send_to_client_tos(&mut self, client: SocketAddr, data: &[u8], tos: u8) {
         match self.clients.get(&client) {
-            // RFC 8656 section 14: the peer's codepoint, on UDP (and DTLS: a UDP datagram
+            // RFC 8656 section 14: the peer's traffic class, on UDP (and DTLS: a UDP datagram
             // too); a stream has none to carry (section 16).
-            Some(ClientConn::Udp(c)) if ecn & 3 != 0 => {
-                let _ = c.send_segments_ecn(data.to_vec(), 0, ecn);
+            Some(ClientConn::Udp(c)) if tos != 0 => {
+                let _ = c.send_segments_tos(data.to_vec(), 0, tos);
             }
             Some(ClientConn::Udp(c)) => {
                 let _ = c.send(data);
@@ -322,8 +342,8 @@ impl TurnEnv for Env<'_> {
                 let mut out = Vec::new();
                 lock(s).seal(data, &mut out);
                 for d in out {
-                    let _ = if ecn & 3 != 0 {
-                        c.send_segments_ecn(d, 0, ecn)
+                    let _ = if tos != 0 {
+                        c.send_segments_tos(d, 0, tos)
                     } else {
                         c.send_owned(d)
                     };
@@ -338,14 +358,18 @@ impl TurnEnv for Env<'_> {
     }
 
     fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]) {
-        self.send_to_peer_ecn(relay, peer, data, 0);
+        self.send_to_peer_tos(relay, peer, data, 0);
     }
 
     fn send_to_peer_ecn(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ecn: u8) {
+        self.send_to_peer_tos(relay, peer, data, ecn & 3);
+    }
+
+    fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], tos: u8) {
         if let Some(r) = lock(self.inner.relays_of(relay)).get(&relay) {
-            // RFC 8656 section 14: the client's codepoint (0 from a stream, section 15).
-            let _ = if ecn & 3 != 0 {
-                r.binding.send_to_ecn(data, peer, ecn)
+            // RFC 8656 section 14: the client's traffic class (0 from a stream, section 15).
+            let _ = if tos != 0 {
+                r.binding.send_to_tos(data, peer, tos)
             } else {
                 r.binding.send_to(data, peer)
             };
@@ -528,6 +552,7 @@ impl TurnServer {
             t.to_client += st.to_client;
             t.auth_failures += st.auth_failures;
             t.tcp_connections += st.tcp_connections;
+            t.icmp += st.icmp;
         }
         t
     }
@@ -682,9 +707,9 @@ impl Handler for TurnClient {
         let client = c.peer_addr();
         // An authenticated Allocate gets its relay sockets bound before the shard is locked.
         let prebound = inner.prebind(now, client, data, self.shard);
-        let ecn = c.rx_ecn();
+        let tos = c.rx_tos();
         inner.with_shard(self.shard, prebound, |core, env| {
-            core.handle_client_ecn(now, client, data, ecn, env);
+            core.handle_client_tos(now, client, data, tos, env);
         });
     }
 
@@ -974,12 +999,13 @@ impl Handler for TurnDtlsClient {
                 core.remove_client(client, env);
             });
         }
-        // The datagram's codepoint goes with what its records carried (RFC 8656 section 14).
-        let ecn = c.rx_ecn();
+        // The datagram's traffic class goes with what its records carried (RFC 8656 section
+        // 14).
+        let tos = c.rx_tos();
         for msg in &out.messages {
             let prebound = inner.prebind(now, client, msg, shard);
             inner.with_shard(shard, prebound, |core, env| {
-                core.handle_client_ecn(now, client, msg, ecn, env);
+                core.handle_client_tos(now, client, msg, tos, env);
             });
         }
         if out.closed {
@@ -1042,9 +1068,9 @@ impl Handler for RelayPeer {
             return;
         };
         let shard = self.route.load(Ordering::Relaxed);
-        let ecn = c.rx_ecn();
+        let tos = c.rx_tos();
         inner.with_shard(shard, Vec::new(), |core, env| {
-            core.handle_peer_ecn(Instant::now(), self.relay, c.peer_addr(), data, ecn, env);
+            core.handle_peer_tos(Instant::now(), self.relay, c.peer_addr(), data, tos, env);
         });
     }
 }

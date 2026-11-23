@@ -2,7 +2,7 @@
 
 [English](083-turn-dual-allocations-ecn-relay.md) | 简体中文
 
-状态：已采纳（2026-11-22）
+状态：已采纳（2026-11-22）；“未完成”各项由 ADR-091 了结（2026-11-23）
 
 ## 背景
 
@@ -141,6 +141,9 @@ RFC 8656 概要：
 - 客户端 Refresh 中按地址族的 `REQUESTED-ADDRESS-FAMILY`（刷新或删除一个地址族）。服务器支持；客户端总是
   刷新两者。
 - `Endpoint::gather_relay` 默认双分配（见上）。
+
+更新（2026-11-23，ADR-091）：ICMP 中继、DSCP 复制与 `Client::release_family`（删除一个地址族）已完成；
+`gather_relay` 仍只请求一个地址族，原因见 ADR-091。
 
 ## 影响
 

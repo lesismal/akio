@@ -7,6 +7,8 @@
 //!
 //! `TURN_BENCH_ECN=<1|2|3>` marks every datagram of both senders with that ECN codepoint
 //! (Linux and macOS), which the relay copies (RFC 8656 section 14, ADR-083).
+//! `TURN_BENCH_TOS=<0-255>` marks them with that whole traffic class byte instead (DSCP and
+//! ECN, ADR-091); `TURN_BENCH_ECN` is then ignored.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -60,12 +62,13 @@ impl Client {
     }
 }
 
-/// Sends `d` to `to`, marked with ECN codepoint `ecn` where the platform allows.
+/// Sends `d` to `to`, marked with traffic class byte `ecn` (DSCP and ECN) where the platform
+/// allows.
 fn send(s: &UdpSocket, d: &[u8], to: SocketAddr, ecn: u8) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if ecn != 0 {
         use std::os::fd::AsRawFd;
-        let _ = akio_sys::send_to_ecn(s.as_raw_fd(), d, Some(&to), ecn, to.is_ipv6());
+        let _ = akio_sys::send_to_tos(s.as_raw_fd(), d, Some(&to), ecn, to.is_ipv6());
         return;
     }
     let _ = ecn;
@@ -73,9 +76,15 @@ fn send(s: &UdpSocket, d: &[u8], to: SocketAddr, ecn: u8) {
 }
 
 fn main() {
-    let ecn: u8 = std::env::var("TURN_BENCH_ECN")
+    let ecn: u8 = std::env::var("TURN_BENCH_TOS")
         .ok()
         .and_then(|v| v.parse().ok())
+        .or_else(|| {
+            std::env::var("TURN_BENCH_ECN")
+                .ok()
+                .and_then(|v| v.parse::<u8>().ok())
+                .map(|e| e & 3)
+        })
         .unwrap_or(0);
     let args: Vec<usize> = std::env::args()
         .skip(1)

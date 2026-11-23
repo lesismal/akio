@@ -131,8 +131,8 @@ timeout)` 接受一个 `RelayServer`，可用 `RelayServer::udp`、`tcp` 或 `tl
 这些 peer 继续工作（否则用 ICE 重启把它提供给对端）。
 
 `RelayServer::dual_allocation(true)` 使其成为双分配（ADR-083）：每个地址族一个中继候选，于是经 IPv4 到达
-服务器的端点仍可经服务器的 IPv6 中继被纯 IPv6 的对端访问。默认关闭：它占用服务器的第二个端口，并且只对有
-IPv6 候选的对端有用。
+服务器的端点仍可经服务器的 IPv6 中继被纯 IPv6 的对端访问。默认关闭（ADR-091）：分配为端点的所有对端服务，
+所以第二个端口会在端点存活期间一直占用服务器资源；它也只对有 IPv6 候选、却没有 IPv4 路径的对端有用。
 
 ```rust,ignore
 let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
@@ -557,6 +557,8 @@ pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，
 | `max_allocations`、`max_allocations_per_user` | 16384、1024 | 配额（508、486） |
 | `max_permissions`、`max_channels` | 256、256 | 每个分配的上限（508） |
 | `peer_allowed`、`allow_private_peers` | 无、false | 默认拒绝回环、私有、链路本地、组播与保留地址的对端（`denied_by_default`）：中继进服务器自身网络会构成 SSRF 漏洞 |
+| `copy_dscp` | true | 中继的数据报保留到达时的 DSCP（见下文）；false 时发出 DSCP 0 |
+| `relay_icmp` | true | 发往对端的数据报引起的 ICMP 错误转告客户端（Linux） |
 
 支持 Allocate、Refresh、CreatePermission、ChannelBind、Send 与 Data 指示、ChannelData、带
 `RESERVATION-TOKEN` 的 `EVEN-PORT` 以及 `REQUESTED-ADDRESS-FAMILY`；请求通过
@@ -584,15 +586,28 @@ let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
     .additional_relay_ip("2001:db8::7".parse()?);
 ```
 
-**ECN**（RFC 8656 14 节，ADR-083）。中继的数据两个方向都保留到达时的 ECN 码点：
+**DSCP 与 ECN**（RFC 8656 14 节，ADR-083、ADR-091）。中继的数据两个方向都保留到达时的流量类别字节
+（IPv4 TOS / IPv6 traffic class：DSCP 与 ECN 码点）：
 
-- 来自 UDP 或 DTLS 客户端的 ChannelData 与 Send 指示带着客户端的码点发往对端。
-- 对端的数据报带着对端的码点发往客户端。
-- 在 Linux 与 macOS 上，码点从 `IP_RECVTOS` / `IPV6_RECVTCLASS` 读取，并以 `IP_TOS` / `IPV6_TCLASS`
+- 来自 UDP 或 DTLS 客户端的 ChannelData 与 Send 指示带着客户端的字节发往对端。
+- 对端的数据报带着对端的字节发往客户端。
+- 在 Linux 与 macOS 上，该字节从 `IP_RECVTOS` / `IPV6_RECVTCLASS` 读取，并以 `IP_TOS` / `IPV6_TCLASS`
   控制消息设置。其他平台上数据报不带标记。
-- TCP 或 TLS 上的客户端既不提供也不接收码点。
-- 嵌入 `TurnCore` 的应用通过 `handle_client_ecn` / `handle_peer_ecn` 与 `TurnEnv::send_to_peer_ecn` /
-  `send_to_client_ecn` 得到码点。它们的默认实现丢弃码点。
+- `copy_dscp(false)` 只保留 ECN 码点（DSCP 为 0，尽力而为）：用于不应让客户端和对端自选服务等级的服务器。
+- TCP 或 TLS 上的客户端既不提供也不接收该字节。
+- 嵌入 `TurnCore` 的应用通过 `handle_client_tos` / `handle_peer_tos` 与 `TurnEnv::send_to_peer_tos` /
+  `send_to_client_tos` 得到该字节。它们的默认实现把 ECN 位交给 ADR-083 的 `_ecn` 方法，后者的默认实现
+  丢弃码点。
+
+**ICMP**（RFC 8656 11.5 节，ADR-091）。中继给对端的数据报引起 ICMP 目的不可达、超时或包过大时，若客户端
+对该地址有许可，它会收到一个 Data 指示：带 `XOR-PEER-ADDRESS` 与 `ICMP` 属性（类型、代码，以及“包过大”时
+下一跳的 MTU），不带 `DATA`。
+
+- `TurnServer` 用 `Engine::bind_udp_icmp` 绑定中继 socket：它设置 `IP_RECVERR` / `IPV6_RECVERR`，并在
+  socket 的 I/O 线程上读取其错误队列。仅限 Linux：其他平台上未连接的 socket 收不到 ICMP。
+- 嵌入时的入口是 `TurnCore::handle_icmp(now, relay, peer, type, code, mtu, env)`；`TurnStats::icmp`
+  统计转告的数量。
+- ICMP 只是尽力而为：主机会限速，网络会过滤。
 
 `TurnServer` 按客户端地址把分配分成若干分片（约每个 CPU 四个，至少 8 个），每个分片有自己的锁：
 不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
@@ -692,6 +707,11 @@ Engine::builder()
 - `relayed_addr_for(peer)` 给出与 `peer` 通信的那个。
 - `address_error()` 说明缺少某个地址族的原因。
 - `send_to` 对两个地址族的对端都可用；刷新会保持两者。
+- `release_family(now, v6)` 交还其中一个（一个 lifetime 为 0、带该 `REQUESTED-ADDRESS-FAMILY` 的
+  Refresh）：它连同其对端离开 `relayed_addrs()`，另一个保留并单独刷新。
+
+带 `ICMP` 的 Data 指示变为 `ClientEvent::Icmp { peer, icmp_type, code, mtu }`（发往 `peer` 的数据报在途中
+被拒绝；端口可能为 0），只针对客户端有许可的地址。
 
 TCP 分配用 `ClientConfig::tcp_allocation(true)`（经 TCP 或 TLS）。`connect(peer)` 发送 Connect，回应为
 `ClientEvent::Connected { peer, id }` 或 `ConnectFailed`；`create_permission(peer)` 安装一个持续刷新的权限，
@@ -777,4 +797,4 @@ DTLS 1.2。
   建立新关联（同时会重启数据通道）。DTLS 1.3 的 KeyUpdate 不改变 SRTP 的密钥（ADR-086 第 6 节）。
 
 新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073、
-ADR-076、ADR-077、ADR-082、ADR-083 与 ADR-086。
+ADR-076、ADR-077、ADR-082、ADR-083、ADR-086 与 ADR-091。
