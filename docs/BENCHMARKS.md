@@ -2741,11 +2741,20 @@ spread of the rounds.
 | relay total (datagrams/s) | 273.6k (±24%) | 267.6k (±9%) | 0.978 | 0.967 (0.825–1.652) |
 | data channel (MB/s) | 156.2 (±0.5%) | 156.4 (±1.0%) | 1.001 | 1.001 (0.987–1.008) |
 
-**Answer:** the data channel is unchanged. The relay totals agree within the noise (per-round
-median 0.967, range 0.825–1.652). The to-peer direction alone swings from 38k to 110k datagrams/s
-between rounds of one build, so its lower median does not show a cost. A 12-round relay-only
-rerun to narrow it was queued behind other projects' `quiet.sh` runs and was stopped before it
-started; the code on that path adds only a branch on `Err`.
+The to-peer direction swings from 38k to 110k datagrams/s between rounds of one build, so its
+lower branch median in that run called for a rerun: 12 more rounds of `turn-relay-bench 8 6 4`
+alone, same binaries, same alternation, once the host was free.
+
+| Metric (12-round rerun) | main median | branch median | branch / main (medians) | per-round ratio median (range) |
+|---|---:|---:|---:|---:|
+| relay to peer (datagrams/s) | 85.6k (±27%) | 101.1k (±37%) | 1.181 | 1.128 (0.384–1.711) |
+| relay to client (datagrams/s) | 176.9k (±21%) | 181.9k (±21%) | 1.029 | 1.039 (0.715–1.288) |
+| relay total (datagrams/s) | 272.4k (±14%) | 282.0k (±16%) | 1.035 | 1.048 (0.833–1.262) |
+
+**Answer:** no measurable change. The data channel is unchanged (1.001). The relay's to-peer
+median moved the other way in the rerun (0.829, then 1.128), and the total's per-round
+ratio medians, 0.967 and 1.048, both sit inside ranges spanning 1: the difference is the
+benchmark's round-to-round noise. The code on that path adds only a branch on `Err`.
 
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
