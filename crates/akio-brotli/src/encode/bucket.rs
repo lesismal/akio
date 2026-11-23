@@ -7,9 +7,7 @@
 //! bytes, which the next write extends) are entered later, as before. The tables, counters and
 //! limits live in locals for the whole parse.
 
-use super::{
-    Command, Encoder, Found, LAZY_MARGIN, MIN_SCORE, bump, load4, load8, log2_floor, match_len,
-};
+use super::{Command, Encoder, Found, LAZY_MARGIN, MIN_SCORE, load4, load8, log2_floor, match_len};
 
 /// The tables and limits of one parse: `SIZE` positions per hash, five-byte hashes when `H5`.
 struct Buckets<'t, const SIZE: usize, const H5: bool> {
@@ -45,12 +43,14 @@ impl<const SIZE: usize, const H5: bool> Buckets<'_, SIZE, H5> {
     /// Enters position `i` of hash `h`.
     #[inline(always)]
     fn store(&mut self, i: usize, h: usize) {
-        let k = self.num[h];
-        self.num[h] = bump(k, SIZE);
-        if let Some(b) = self
-            .buckets
-            .get_mut(h * SIZE + (usize::from(k) & (SIZE - 1)))
-        {
+        let slot = if SIZE == 1 {
+            0
+        } else {
+            let k = self.num[h];
+            self.num[h] = k.wrapping_add(1);
+            usize::from(k) & (SIZE - 1)
+        };
+        if let Some(b) = self.buckets.get_mut(h * SIZE + slot) {
             *b = i as u32;
         }
     }
@@ -148,11 +148,17 @@ impl<const SIZE: usize, const H5: bool> Buckets<'_, SIZE, H5> {
         if max_len < 4 {
             return best;
         }
-        let k = usize::from(self.num[h]);
+        let k = if SIZE == 1 {
+            0
+        } else {
+            usize::from(self.num[h])
+        };
         let Some(bucket) = self.buckets.get(h * SIZE..h * SIZE + SIZE) else {
             return best;
         };
-        for j in 1..=k.min(SIZE) {
+        // Newest first; a slot never filled holds `EMPTY`, past `i`, which ends the search
+        // below (the slots before it in this order are the only ones filled).
+        for j in 1..=SIZE {
             let c = bucket[k.wrapping_sub(j) & (SIZE - 1)] as usize;
             let mut max_len = max_len;
             if i.wrapping_sub(c).wrapping_sub(1) >= max_dist {

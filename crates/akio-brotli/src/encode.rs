@@ -297,6 +297,9 @@ impl Command {
 }
 
 const NIL: u32 = u32::MAX;
+/// A bucket entry never filled: a position past any, which ends a search like an entry past
+/// the window does.
+const EMPTY: u32 = u32::MAX;
 const MIN_SCORE: i64 = 1920 + 100;
 const LAZY_MARGIN: i64 = 175;
 
@@ -310,8 +313,8 @@ pub(crate) struct Encoder<'a> {
     wmask: usize,
     /// Instead of chains (levels with up to 32 candidates and no optimal parsing): per hash,
     /// a bucket of the last `1 << block_bits` positions (`buckets`) and how many were entered
-    /// (`num`, kept modulo twice the bucket size: it says which entries are filled and which
-    /// is the oldest); the same candidates in the same order, in one or two cache lines.
+    /// (`num`, modulo 256: the next slot; an entry never filled is [`EMPTY`]); the same
+    /// candidates in the same order, in one or two cache lines.
     block_bits: u32,
     /// Hash the next five bytes instead of four (levels with 16 or more candidates: fewer of
     /// them that cannot match, as in Google's `H6`).
@@ -346,7 +349,9 @@ impl State {
             *v = if *v == NIL || *v < d { NIL } else { *v - d };
         }
         for v in &mut self.buckets {
-            *v = v.saturating_sub(d);
+            if *v != EMPTY {
+                *v = v.saturating_sub(d);
+            }
         }
         self.ins = self.ins.saturating_sub(drop);
         self.fwd += drop;
@@ -448,20 +453,6 @@ fn match_len(d: &[u8], a: usize, b: usize, max: usize) -> usize {
     n
 }
 
-/// The next value of a bucket's counter of entered positions, for buckets of `size` entries
-/// (a power of two up to 32): counted up to `2 * size`, then from `size` again, which keeps
-/// both what is needed from it, how many entries are filled (`k.min(size)`) and the next
-/// slot (`k % size`).
-#[inline(always)]
-fn bump(k: u8, size: usize) -> u8 {
-    let n = k + 1;
-    if usize::from(n) == 2 * size {
-        size as u8
-    } else {
-        n
-    }
-}
-
 fn log2_floor(x: usize) -> i64 {
     i64::from(usize::BITS - 1 - x.max(1).leading_zeros())
 }
@@ -544,7 +535,7 @@ impl<'a> Encoder<'a> {
         self.wmask = wsize - 1;
         if self.p.optimal == 0 && self.p.depth <= 32 {
             self.num = vec![0; 1 << hash_bits];
-            self.buckets = vec![0; 1 << (hash_bits + self.block_bits)];
+            self.buckets = vec![EMPTY; 1 << (hash_bits + self.block_bits)];
         } else {
             self.head = vec![NIL; 1 << hash_bits];
             self.prev = vec![NIL; wsize];
