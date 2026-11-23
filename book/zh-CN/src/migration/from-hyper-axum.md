@@ -31,7 +31,7 @@ akio-http 覆盖了 hyper（HTTP/1.1 与 HTTP/2 服务端和客户端）以及 a
 | `WebSocketUpgrade` | `ctx.upgrade_websocket(handler, &WsOptions)` |
 | `tower_http::services::ServeDir` | `files::Files::new(dir)` |
 | `CompressionLayer`、`CorsLayer`、`TraceLayer`、`RequestIdLayer`、`CatchPanicLayer` | `middleware::compress`、`cors`、`logger` / `observe::access_log`、`request_id`、`recover` |
-| `TimeoutLayer` | 无：需要时 detach，并用你自己的定时器回复 503/504 |
+| `TimeoutLayer` | 无：detach，若任务尚未应答，由循环定时器（`akio::timer::after`，[定时器](../concepts/timers.md)）回复 503/504 |
 | `tower::limit::RateLimitLayer` | `middleware::limiter(rate, burst)`（按客户端 IP） |
 | `axum-server` / `tokio-rustls` 的 TLS | `akio::tls::Tls::server(cfg, serve(app))` |
 | `hyper::client` / `reqwest` | `client::Client`、`h2client::H2Client` |

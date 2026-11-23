@@ -809,6 +809,7 @@ pub struct akio_http::Context
 impl akio_http::Context
 pub fn akio_http::Context::add_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::add_response_header(&mut self, &str, impl core::convert::AsRef<str>)
+pub fn akio_http::Context::after(&mut self, core::time::Duration, impl core::ops::function::FnOnce(akio_http::Detached) + core::marker::Send + 'static) -> bool
 pub fn akio_http::Context::body(&self) -> &[u8]
 pub fn akio_http::Context::bytes(&mut self, u16, &str, alloc::vec::Vec<u8>)
 pub fn akio_http::Context::detach(&mut self) -> core::option::Option<akio_http::Detached>

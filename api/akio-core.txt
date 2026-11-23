@@ -498,6 +498,28 @@ impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Telemetry
 pub const akio_core::telemetry::SLOW_RING: usize
 pub fn akio_core::telemetry::connections_json(&[akio_core::telemetry::ConnInfo]) -> alloc::string::String
 pub fn akio_core::telemetry::slow_callbacks_json(&[akio_core::telemetry::SlowRecord]) -> alloc::string::String
+pub mod akio_core::timer
+pub struct akio_core::timer::Timer
+impl akio_core::timer::Timer
+pub fn akio_core::timer::Timer::cancel(self) -> bool
+impl core::clone::Clone for akio_core::timer::Timer
+pub fn akio_core::timer::Timer::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::timer::Timer
+impl core::cmp::PartialEq for akio_core::timer::Timer
+pub fn akio_core::timer::Timer::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::timer::Timer
+pub fn akio_core::timer::Timer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::timer::Timer
+impl core::marker::StructuralPartialEq for akio_core::timer::Timer
+impl core::marker::Send for akio_core::timer::Timer
+impl core::marker::Sync for akio_core::timer::Timer
+impl core::marker::Unpin for akio_core::timer::Timer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::timer::Timer
+impl core::panic::unwind_safe::UnwindSafe for akio_core::timer::Timer
+pub const akio_core::timer::MAX_DELAY: core::time::Duration
+pub const akio_core::timer::MAX_TIMERS_PER_LOOP: usize
+pub fn akio_core::timer::after(core::time::Duration, impl core::ops::function::FnOnce() + 'static) -> akio_core::Result<akio_core::timer::Timer>
+pub fn akio_core::timer::on_loop() -> bool
 #[non_exhaustive] pub enum akio_core::Error
 pub akio_core::Error::Closed
 pub akio_core::Error::Io(core::io::error::Error)

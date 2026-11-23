@@ -1,4 +1,4 @@
-//! Timers that run on the I/O loop that set them (ADR-093).
+//! Timers that run on the I/O loop that set them (ADR-099).
 //!
 //! [`after`] schedules a closure on the **calling** I/O thread's own timer wheel: no lock, no
 //! other thread, no wakeup. When it is due, the loop runs it on that same thread, between two
@@ -286,9 +286,8 @@ mod tests {
             let h = hits.clone();
             let _ = after(Duration::from_millis(1), move || {
                 h.set(h.get() + 1);
-                let h2 = h.clone();
                 // Set from inside a timer: runs on a later iteration.
-                let _ = after(Duration::from_millis(1), move || h2.set(h2.get() + 1)).unwrap();
+                let _ = after(Duration::from_millis(1), move || h.set(h.get() + 1)).unwrap();
             })
             .unwrap();
             run_until(|| hits.get() == 2, Duration::from_secs(5));

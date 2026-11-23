@@ -26,7 +26,7 @@ from that and from Rust's ownership rules.
 | `c.HoldReads(bool)` | `hold_reads(bool)` | |
 | `c.NotifyOutput(limit, fn)` | `queued_bytes()` + `on_drain(f)` | `on_drain` fires when the queue is empty |
 | `c.SendFile(f, off, n)` | `ResponseSlot::fill_parts` with `Part::File`; `Response::from_file` in HTTP | no direct `Conn::send_file` |
-| `e.Dial(network, addr, timeout, done)` | `engine.dial(addr, acceptor, on_error)` | no timeout argument: use `idle_timeout` or your own timer |
+| `e.Dial(network, addr, timeout, done)` | `engine.dial(addr, acceptor, on_error)` | no timeout argument: use `idle_timeout` or a loop timer (`akio::timer::after`) |
 | UDP peer connections | same: one `Conn` per peer, one `on_data` per datagram | |
 | `DatagramsHandler` | not available | |
 | `Config.ReadBufferSize` (16 KiB) | `Config::read_buffer` (64 KiB) | per I/O thread in `akio` |

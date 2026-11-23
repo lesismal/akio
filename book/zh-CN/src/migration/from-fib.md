@@ -25,7 +25,7 @@ I/O 线程上执行**，所以 akio 的 handler 不能阻塞，阻塞任务需�
 | `c.HoldReads(bool)` | `hold_reads(bool)` | |
 | `c.NotifyOutput(limit, fn)` | `queued_bytes()` + `on_drain(f)` | `on_drain` 在队列清空时触发 |
 | `c.SendFile(f, off, n)` | `ResponseSlot::fill_parts` 配合 `Part::File`；HTTP 中用 `Response::from_file` | 没有直接的 `Conn::send_file` |
-| `e.Dial(network, addr, timeout, done)` | `engine.dial(addr, acceptor, on_error)` | 没有超时参数：用 `idle_timeout` 或自己的定时器 |
+| `e.Dial(network, addr, timeout, done)` | `engine.dial(addr, acceptor, on_error)` | 没有超时参数：用 `idle_timeout` 或循环定时器（`akio::timer::after`） |
 | UDP 对端连接 | 相同：每个对端一个 `Conn`，每个数据报一次 `on_data` | |
 | `DatagramsHandler` | 没有 | |
 | `Config.ReadBufferSize`（16 KiB） | `Config::read_buffer`（64 KiB） | akio 中是每个 I/O 线程一个 |

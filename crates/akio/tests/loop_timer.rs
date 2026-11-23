@@ -1,4 +1,4 @@
-//! Loop timers (`akio::timer`, ADR-093): set from a callback, run later on the same I/O thread.
+//! Loop timers (`akio::timer`, ADR-099): set from a callback, run later on the same I/O thread.
 //! TCP on the native backend (and io_uring with AKIO_TEST_BACKEND=uring), and UDP.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]

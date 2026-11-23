@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: timers on the I/O loop (akio-core, akio, akio-http, akio-epoll, akio-uring, akio-dpdk)
+
+ADR-099, additive:
+
+- `akio::timer` (`akio_core::timer`): `after(delay, f)` runs `f` on the calling I/O thread once
+  `delay` has passed, from that loop's own timer wheel: no lock, no other thread, no wakeup; `f`
+  need not be `Send`. Never early (millisecond wheel); `Timer::cancel`; `on_loop()`;
+  `MAX_TIMERS_PER_LOOP` (2^20, then `Error::Overloaded`), `MAX_DELAY` (clamped). Off an I/O
+  thread `after` returns `Error::Closed`. Pending timers are dropped when the loop exits; a panic
+  in one is caught and logged. Every loop has one: epoll / kqueue TCP and UDP, io_uring, DPDK.
+- `akio_http::Context::after(delay, f)`: detaches the request and calls `f(Detached)` on the
+  connection's own I/O thread after `delay` (HTTP/1.1 pipelining order kept; HTTP/2, HTTP/3);
+  off an I/O thread it falls back to akio-http's timer thread.
+- Book: "Timers on the I/O loop"; the migration guides point at it instead of "your own timer
+  thread".
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

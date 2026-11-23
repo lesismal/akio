@@ -14,7 +14,7 @@ overlapping problems with different shapes, and they can live in the same proces
 | `socket.write_all(&buf).await` waits for buffer space | `c.send(&buf)` never waits: it writes or queues, bounded by watermarks |
 | `tokio::spawn` for concurrency | concurrency is per connection; there is nothing to spawn on the I/O thread |
 | `tokio::task::spawn_blocking(f).await` | `c.spawn_blocking(work, done)`: `done` runs back on the connection's thread |
-| `tokio::time::timeout`, `sleep` | `Config::idle_timeout`; your own timer thread for anything else |
+| `tokio::time::timeout`, `sleep` | `Config::idle_timeout`; `akio::timer::after` on the I/O thread for anything else ([Timers](../concepts/timers.md)) |
 | `tokio::sync::mpsc` to talk to a connection task | clone the `Conn` and call `send`/`close` from anywhere |
 | `CancellationToken` / dropping the task | `Conn::close()`, `Engine::shutdown()` |
 | `tokio::net::TcpListener::bind` + accept loop | `Listener::tcp(addr).serve(acceptor)` |

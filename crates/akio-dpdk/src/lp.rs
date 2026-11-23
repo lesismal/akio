@@ -273,7 +273,7 @@ impl Loop {
                 self.flush_dirty();
                 self.iface.poll(now, &mut self.port);
             }
-            // Loop timers (ADR-093); what they send is flushed on the next iteration.
+            // Loop timers (ADR-099); what they send is flushed on the next iteration.
             if akio_core::timer::fire() > 0 {
                 busy = true;
             }

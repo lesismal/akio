@@ -38,6 +38,7 @@ pub use akio::fn_acceptor
 pub use akio::log
 pub use akio::metrics
 pub use akio::telemetry
+pub use akio::timer
 pub use akio::tls
 pub mod akio::dns
 #[non_exhaustive] pub struct akio::dns::CacheConfig

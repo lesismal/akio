@@ -478,7 +478,7 @@ impl Loop {
                     id => self.on_event(id, *ev),
                 }
             }
-            // Loop timers (ADR-093) before the commands: what they send posts wakes here.
+            // Loop timers (ADR-099) before the commands: what they send posts wakes here.
             akio_core::timer::fire();
             self.drain_cmds();
             self.fire_timers();

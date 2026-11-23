@@ -1,4 +1,4 @@
-//! `Context::after` (ADR-093): delayed answers from the connection's own I/O thread. HTTP/1.1 and
+//! `Context::after` (ADR-099): delayed answers from the connection's own I/O thread. HTTP/1.1 and
 //! h2c over real sockets, on the native backend (and io_uring with AKIO_TEST_BACKEND=uring).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]

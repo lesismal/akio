@@ -9,6 +9,7 @@
   - [Engine, listeners and backends](concepts/engine.md)
   - [Handlers, acceptors and `Conn`](concepts/handlers.md)
   - [Blocking work: the logical pool](concepts/blocking.md)
+  - [Timers on the I/O loop](concepts/timers.md)
   - [Backpressure](concepts/backpressure.md)
   - [Lifecycle and shutdown](concepts/lifecycle.md)
 - [Protocols](protocols/index.md)
