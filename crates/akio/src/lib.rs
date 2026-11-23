@@ -90,6 +90,45 @@ pub struct UringConfig {
     pub strict: bool,
 }
 
+/// How a TCP listener's connections are scheduled onto threads (ADR-102).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Scheduling {
+    /// Thread-per-core (ADR-001, the default): each connection belongs to one I/O thread, which
+    /// reads it, runs its handler inline and writes it, for the connection's whole life.
+    #[default]
+    Loops,
+    /// A few pollers only wait for readiness and accept; each round of a connection (read,
+    /// handler, write) runs on whichever worker of a pool is free, one round of a connection at
+    /// a time. Spreads load by work rather than by connection, at the cost of a hand-off per
+    /// round. epoll/kqueue only (not io_uring or DPDK); TCP only (UDP listeners keep their
+    /// loops); [`Engine::set_threads`] is refused.
+    Rounds(RoundsConfig),
+}
+
+/// Thread counts of [`Scheduling::Rounds`]. `#[non_exhaustive]`: start from
+/// `RoundsConfig::default()` (or [`RoundsConfig::new`]) and set fields; 0 picks the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RoundsConfig {
+    /// Pollers (default: one with 4 CPUs or fewer, otherwise one per 4 CPUs and at least 2).
+    pub pollers: usize,
+    /// Workers that run rounds (default: one per CPU).
+    pub workers: usize,
+}
+
+impl RoundsConfig {
+    /// `pollers` pollers and `workers` workers (0: the default).
+    pub fn new(pollers: usize, workers: usize) -> RoundsConfig {
+        RoundsConfig { pollers, workers }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn epoll(self) -> akio_epoll::RoundsConfig {
+        akio_epoll::RoundsConfig::new(self.pollers, self.workers)
+    }
+}
+
 /// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -167,6 +206,8 @@ pub struct Listener {
     datagrams: Option<DatagramsFactory>,
     /// An already listening socket to serve instead of binding `addr`.
     inherited: Option<std::net::TcpListener>,
+    /// Set by [`Listener::scheduling`]; `AKIO_DEFAULT_SCHEDULING` applies when it is not.
+    scheduling: Option<Scheduling>,
 }
 
 impl std::fmt::Debug for Listener {
@@ -188,6 +229,7 @@ impl Listener {
             acceptor: None,
             datagrams: None,
             inherited: None,
+            scheduling: None,
         }
     }
 
@@ -241,10 +283,20 @@ impl Listener {
         self
     }
 
-    /// Number of I/O threads for this listener (default: one per core).
+    /// Number of I/O threads for this listener (default: one per core). Ignored with
+    /// [`Scheduling::Rounds`], whose [`RoundsConfig`] sizes its threads.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = n.max(1);
+        self
+    }
+
+    /// Chooses how this listener's connections are scheduled onto threads (default:
+    /// [`Scheduling::Loops`], or what `AKIO_DEFAULT_SCHEDULING` says when this is not called:
+    /// `rounds` or `loops`, a test and diagnostic knob like `AKIO_DEFAULT_BACKEND`). ADR-102.
+    #[must_use]
+    pub fn scheduling(mut self, s: Scheduling) -> Self {
+        self.scheduling = Some(s);
         self
     }
 
@@ -382,7 +434,14 @@ impl EngineBuilder {
         #[cfg_attr(not(feature = "dpdk"), allow(unused_mut))]
         let mut unplaced: Vec<usize> = Vec::new();
         let env_backend = env_default_backend(); // read once per build (ADR-029)
+        let env_scheduling = env_default_scheduling(); // likewise (ADR-102)
         for mut l in self.listeners {
+            let explicit_scheduling = l.scheduling.is_some();
+            let scheduling = l
+                .scheduling
+                .take()
+                .or_else(|| env_scheduling.clone())
+                .unwrap_or_default();
             if let Some(b) = &env_backend {
                 // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners
                 // follow the default like TCP.
@@ -423,6 +482,15 @@ impl EngineBuilder {
                 )?));
                 continue;
             }
+            if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
+                log_or_stderr(
+                    akio_log::Level::Warn,
+                    format_args!(
+                        "rounds scheduling is TCP-only; UDP listener {} keeps its loops",
+                        l.addr
+                    ),
+                );
+            }
             if l.udp {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
@@ -443,6 +511,41 @@ impl EngineBuilder {
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 return Err(unsupported("UDP on this platform"));
+            }
+            if let Scheduling::Rounds(rc) = &scheduling {
+                if let Backend::IoUring(_) = &l.backend {
+                    if l.backend_explicit {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "rounds scheduling runs on epoll/kqueue, not io_uring",
+                        ));
+                    }
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    let rc = rc.epoll();
+                    groups.push(Box::new(match l.inherited {
+                        Some(listener) => akio_epoll::RoundsGroup::bind_listener(
+                            listener,
+                            acceptor,
+                            rc,
+                            self.cfg.clone(),
+                            pool.clone(),
+                        )?,
+                        None => akio_epoll::RoundsGroup::bind(
+                            Some((l.addr, acceptor)),
+                            rc,
+                            self.cfg.clone(),
+                            pool.clone(),
+                        )?,
+                    }));
+                    continue;
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    let _ = rc;
+                    return Err(unsupported("rounds scheduling on this platform"));
+                }
             }
             if let Some(listener) = l.inherited {
                 groups.push(bind_inherited(
@@ -881,6 +984,26 @@ fn env_default_backend() -> Option<Backend> {
         return None;
     }
     parse_default_backend(std::env::var("AKIO_DEFAULT_BACKEND").ok().as_deref())
+}
+
+fn env_default_scheduling() -> Option<Scheduling> {
+    parse_default_scheduling(std::env::var("AKIO_DEFAULT_SCHEDULING").ok().as_deref())
+}
+
+fn parse_default_scheduling(v: Option<&str>) -> Option<Scheduling> {
+    match v? {
+        "rounds" => Some(Scheduling::Rounds(RoundsConfig::default())),
+        "" | "loops" => None,
+        other => {
+            log_or_stderr(
+                akio_log::Level::Warn,
+                format_args!(
+                    "AKIO_DEFAULT_SCHEDULING={other:?} is not `rounds` or `loops`; ignored"
+                ),
+            );
+            None
+        }
+    }
 }
 
 fn parse_default_backend(v: Option<&str>) -> Option<Backend> {

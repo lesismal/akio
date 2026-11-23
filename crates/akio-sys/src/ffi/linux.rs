@@ -149,6 +149,7 @@ pub const EPOLLOUT: c_int = 0x4;
 pub const EPOLLERR: c_int = 0x8;
 pub const EPOLLHUP: c_int = 0x10;
 pub const EPOLLRDHUP: c_int = 0x2000;
+pub const EPOLLET: c_int = 0x8000_0000_u32 as c_int;
 pub const EPOLL_CTL_ADD: c_int = 1;
 pub const EPOLL_CTL_DEL: c_int = 2;
 pub const EPOLL_CTL_MOD: c_int = 3;

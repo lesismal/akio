@@ -10,6 +10,20 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：TCP listener 的轮次调度，默认关闭（akio、akio-epoll、akio-sys）
+
+ADR-102，均为新增：
+
+- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`：少量 poller 只等待就绪事件和 accept；连接
+  的每一轮（读、handler、写）在 worker 池中任意空闲的 worker 上执行，同一连接同一时刻只执行一轮。负载
+  按工作量而不是按连接分摊。`RoundsConfig { pollers, workers }`，0 表示默认值（poller：4 个 CPU 及以下
+  1 个，否则每 4 个 CPU 一个、至少 2 个；worker：每个 CPU 一个）。默认仍是 `Scheduling::Loops`
+  （thread-per-core，ADR-001）。
+- `AKIO_DEFAULT_SCHEDULING=rounds|loops` 为没有显式选择的 listener 指定调度方式（测试开关）。
+- 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。
+- `akio_sys::Registry`（可在任意线程做边沿触发注册）与 `Event::hup`。
+- 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式。
+
 ### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
 
 ADR-094，均为新增：

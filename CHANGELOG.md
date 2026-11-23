@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: rounds scheduling for TCP listeners, off by default (akio, akio-epoll, akio-sys)
+
+ADR-102, additive:
+
+- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`: a few pollers only wait for readiness
+  and accept; each round of a connection (read, handler, write) runs on whichever worker of a
+  pool is free, one round of a connection at a time. Load spreads by work rather than by
+  connection. `RoundsConfig { pollers, workers }`, 0 = default (pollers: 1 with 4 CPUs or fewer,
+  else one per 4 CPUs and at least 2; workers: one per CPU). `Scheduling::Loops` (thread-per-core,
+  ADR-001) stays the default.
+- `AKIO_DEFAULT_SCHEDULING=rounds|loops` picks it for listeners that do not choose (a test knob).
+- epoll/kqueue only; TCP only (UDP listeners keep their loops); `Engine::set_threads` is refused.
+- `akio_sys::Registry` (edge-triggered registration from any thread) and `Event::hup`.
+- Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes.
+
 ### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
 
 ADR-094, additive:
