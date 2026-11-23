@@ -81,6 +81,21 @@ ADR-091 的第二次更新（2026-11-23），了结第一次更新留下的各�
   告知对端需要原始 socket（已拒绝，见 ADR-091）。
 - akio-sys：`path_mtu(dest)`，主机所知的到某地址的路径 MTU（Linux `IP_MTU` / `IPV6_MTU`，macOS 为接口的 MTU）。
 - `tools/interop/webrtc/turn-ttl-df.sh` 针对 akio-turn 检查这两种报告。
+### 新增：借用的 WebSocket 消息；更快的 WebSocket 回显（akio-ws、akio-core）
+
+ADR-101，均为新增：
+
+- `WsHandler::on_message_ref(&WsSender, MessageRef<'_>)` 交出借自连接缓冲区的消息（`MessageRef::Text(&str)` |
+  `Binary(&[u8])`），只在本次调用内有效：每条消息没有分配也没有复制。默认实现复制消息后调用 `on_message`，后者
+  现在有空的默认实现（实现其一即可）。`MessageRef::to_message`、`as_bytes`。
+- `protocol::Decoder::decode_ref` 与 `protocol::EventRef`（及 `EventRef::to_event`）：以借用形式交出解码器的
+  事件。`decode` 不变，建立在它之上。
+- 解码器在消息之间保留消息缓冲区（至多 64 KiB）；一次读到的完整、未分片、未压缩的帧只做一次 UTF-8 校验，而不是两次。
+- 服务端、TCP、未压缩的发送端发送不分片的消息时不再获取互斥锁、不再经过临时缓冲区复制（帧头和载荷直接进连接的
+  队列）；它的关闭帧与关闭一起入队，竞争的发送端不能在它之后再发数据帧。
+- 这样的会话还把 handler 在一次读期间发送的内容在读结束时整体一次交给连接（每条消息不加锁）；期间其他线程的发送
+  排在其后，因 handler 发出的消息而引起的发送不会越过它。
+- `ws-echo` 示例（Autobahn 的测试目标）改用 `on_message_ref`。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 

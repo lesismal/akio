@@ -97,6 +97,25 @@ ADR-091's second update (2026-11-23), the items its first update left:
 - akio-sys: `path_mtu(dest)`, the MTU of the path to an address as the host knows it (Linux
   `IP_MTU` / `IPV6_MTU`, macOS the interface's).
 - `tools/interop/webrtc/turn-ttl-df.sh` checks both reports against akio-turn.
+### Added: borrowed WebSocket messages; faster WebSocket echo (akio-ws, akio-core)
+
+ADR-101, additive:
+
+- `WsHandler::on_message_ref(&WsSender, MessageRef<'_>)` hands a message borrowed from the
+  connection's buffers (`MessageRef::Text(&str)` | `Binary(&[u8])`), valid for the call: no
+  allocation or copy per message. Its default copies the message and calls `on_message`, which
+  now has an empty default (implement either). `MessageRef::to_message`, `as_bytes`.
+- `protocol::Decoder::decode_ref` with `protocol::EventRef` (and `EventRef::to_event`): the
+  decoder's events, borrowed. `decode` is unchanged on top of it.
+- The decoder keeps its message buffer between messages (up to 64 KiB) and checks a whole
+  unfragmented, uncompressed frame in one read for UTF-8 once instead of twice.
+- A server sender over TCP without compression sends unfragmented messages without its mutex
+  or a scratch copy (header and payload straight into the connection's queue); its close frame
+  is queued together with the close, so a racing sender cannot follow it with a data frame.
+- Such a session also sends what its handler sends during one read to the connection in one
+  piece at the end of the read (no lock per message); other threads' sends meanwhile follow
+  that piece, so nothing caused by a message the handler sent overtakes it.
+- The `ws-echo` example (the Autobahn target) uses `on_message_ref`.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 

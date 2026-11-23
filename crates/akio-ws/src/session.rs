@@ -1,7 +1,10 @@
 //! The WebSocket connection driver and the application-facing types.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -108,7 +111,7 @@ impl WeakLink {
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
     protocol::{
-        Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
+        Decoder, EventRef, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
         frame_header,
     },
 };
@@ -122,14 +125,52 @@ pub enum Message {
     Binary(Vec<u8>),
 }
 
+/// A complete WebSocket message borrowed from the connection's buffers, valid for the
+/// [`WsHandler::on_message_ref`] call only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageRef<'a> {
+    /// UTF-8 text.
+    Text(&'a str),
+    /// Binary data.
+    Binary(&'a [u8]),
+}
+
+impl MessageRef<'_> {
+    /// An owned copy.
+    pub fn to_message(self) -> Message {
+        match self {
+            MessageRef::Text(t) => Message::Text(t.to_owned()),
+            MessageRef::Binary(b) => Message::Binary(b.to_vec()),
+        }
+    }
+
+    /// The payload bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            MessageRef::Text(t) => t.as_bytes(),
+            MessageRef::Binary(b) => b,
+        }
+    }
+}
+
 /// Application callbacks for one WebSocket connection. They run on the connection's I/O thread
 /// and must not block; keep a clone of the [`WsSender`] to answer from other threads.
 pub trait WsHandler: Send + 'static {
     /// The handshake finished; the connection is ready.
     fn on_open(&mut self, _ws: &WsSender) {}
 
-    /// A complete message arrived.
-    fn on_message(&mut self, ws: &WsSender, msg: Message);
+    /// A complete message arrived, owned. Called by the default
+    /// [`on_message_ref`](Self::on_message_ref), which copies the message out of the
+    /// connection's buffers; a handler that overrides `on_message_ref` need not implement this.
+    fn on_message(&mut self, _ws: &WsSender, _msg: Message) {}
+
+    /// A complete message arrived, borrowed from the connection's buffers for this call (rule
+    /// 5): implement this instead of [`on_message`](Self::on_message) to handle a message
+    /// without allocating, copying out only what is kept. The default calls `on_message` with
+    /// an owned copy.
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        self.on_message(ws, msg.to_message());
+    }
 
     /// A pong arrived (answering a [`WsSender::ping`]).
     fn on_pong(&mut self, _ws: &WsSender, _payload: &[u8]) {}
@@ -165,7 +206,6 @@ impl Default for WsConfig {
 struct Tx {
     deflater: Option<Deflater>,
     compress_min: usize,
-    closed: bool,
     /// Client side: frames are masked with keys from this generator.
     mask: Option<MaskGen>,
     /// Client side: after the close handshake, how long to wait for the server to close the TCP
@@ -315,7 +355,91 @@ impl MaskGen {
 #[derive(Clone)]
 pub struct WsSender {
     conn: Link,
-    tx: Arc<Mutex<Tx>>,
+    tx: Arc<TxShared>,
+}
+
+/// A sender's state, shared by its clones.
+struct TxShared {
+    /// A close frame was sent (or the transport went away): sends fail. Set under `m`; read
+    /// without it by the lock-free path, where the connection's own write lock keeps a data
+    /// frame from following the close frame (`ConnInner::send_then_close`).
+    closed: AtomicBool,
+    /// A server over TCP with no compression: unfragmented messages are sent without taking
+    /// `m` (nothing in `Tx` is needed to encode them, and the connection orders the frames).
+    plain: bool,
+    /// Plain senders: the session's I/O thread is inside `on_data`, collecting what its handler
+    /// sends into the thread's [`BATCH`]. A hint read without a lock; `late.on` decides.
+    batching: AtomicBool,
+    /// What other threads send while the batch is open, sent right after it.
+    late: Mutex<Late>,
+    m: Mutex<Tx>,
+}
+
+/// Output of other threads held back while the session's I/O thread collects a batch, so that
+/// nothing caused by a message the handler sent can overtake it.
+#[derive(Default)]
+struct Late {
+    /// The batch is open: other threads queue here.
+    on: bool,
+    /// Encoded frames.
+    bytes: Vec<u8>,
+    /// A close requested meanwhile: status, reason, and whether to drop the transport.
+    close: Option<(Option<u16>, String, bool)>,
+}
+
+/// Most output a handler's batch collects before it goes to the connection in the middle of a
+/// read (and the most kept allocated per thread).
+const BATCH_MAX: usize = 64 << 10;
+
+/// Most output other threads may queue while a batch is open; past it their sends fail with
+/// `Overloaded`, as a full connection queue does.
+const LATE_MAX: usize = 4 << 20;
+
+/// A plain session's output while its `on_data` runs on this thread: no lock per message, one
+/// send to the connection per read.
+struct Batch {
+    /// The session's `TxShared` address; 0: no batch open.
+    owner: usize,
+    /// Bytes the connection's queue takes (`ConnInner::send_room` when the read began, less what
+    /// the batch sent since).
+    room: usize,
+    buf: Vec<u8>,
+}
+
+thread_local! {
+    static BATCH: std::cell::RefCell<Batch> = const {
+        std::cell::RefCell::new(Batch { owner: 0, room: 0, buf: Vec::new() })
+    };
+}
+
+/// Encodes an uncompressed, unmasked message as frames of at most `frame` payload bytes (0: one).
+fn encode_plain(op: Opcode, payload: &[u8], frame: usize, out: &mut Vec<u8>) {
+    if payload.is_empty() {
+        put_frame(None, op, true, false, payload, out);
+        return;
+    }
+    let frame = if frame == 0 { payload.len() } else { frame };
+    let frames = payload.len().div_ceil(frame);
+    for (i, piece) in payload.chunks(frame).enumerate() {
+        let first = i == 0;
+        put_frame(
+            None,
+            if first { op } else { Opcode::Continue },
+            i + 1 == frames,
+            false,
+            piece,
+            out,
+        );
+    }
+}
+
+/// Ends a batch when `on_data` returns or unwinds.
+struct BatchGuard(WsSender);
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        self.0.end_batch();
+    }
 }
 
 impl std::fmt::Debug for WsSender {
@@ -353,29 +477,244 @@ impl PreparedMessage {
 
 impl WsSender {
     fn new(conn: Link, deflater: Option<Deflater>, compress_min: usize) -> WsSender {
+        WsSender::with_plain(conn, deflater, compress_min, true)
+    }
+
+    /// `plain`: whether the lock-free path may be used at all (not on the client side, which
+    /// masks every frame with keys from `Tx`).
+    fn with_plain(
+        conn: Link,
+        deflater: Option<Deflater>,
+        compress_min: usize,
+        plain: bool,
+    ) -> WsSender {
+        let plain = plain && deflater.is_none() && matches!(conn, Link::Tcp(_));
         WsSender {
             conn,
-            tx: Arc::new(Mutex::new(Tx {
-                deflater,
-                compress_min,
-                closed: false,
-                mask: None,
-                close_timeout: Duration::ZERO,
-                protocol: None,
-            })),
+            tx: Arc::new(TxShared {
+                closed: AtomicBool::new(false),
+                plain,
+                batching: AtomicBool::new(false),
+                late: Mutex::new(Late::default()),
+                m: Mutex::new(Tx {
+                    deflater,
+                    compress_min,
+                    mask: None,
+                    close_timeout: Duration::ZERO,
+                    protocol: None,
+                }),
+            }),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Tx> {
-        self.tx.lock().unwrap_or_else(|p| p.into_inner())
+        self.tx.m.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn closed(&self) -> bool {
+        self.tx.closed.load(Ordering::Acquire)
+    }
+
+    fn id(&self) -> usize {
+        Arc::as_ptr(&self.tx) as usize
+    }
+
+    fn late_lock(&self) -> std::sync::MutexGuard<'_, Late> {
+        self.tx.late.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether this thread is collecting this sender's batch (inside its session's `on_data`).
+    fn is_owner(&self) -> bool {
+        let id = self.id();
+        BATCH.with(|b| b.borrow().owner == id)
+    }
+
+    /// I/O thread, start of `on_data`: opens the batch of a plain session. Returns whether it did.
+    fn begin_batch(&self) -> bool {
+        if !self.tx.plain {
+            return false;
+        }
+        let Link::Tcp(c) = &self.conn else {
+            return false;
+        };
+        {
+            let mut l = self.late_lock();
+            l.on = true;
+            self.tx.batching.store(true, Ordering::Release);
+        }
+        let room = c.send_room();
+        let id = self.id();
+        BATCH.with(|b| {
+            let mut b = b.borrow_mut();
+            b.owner = id;
+            b.room = room;
+            b.buf.clear();
+        });
+        true
+    }
+
+    /// Sends the batch collected so far to the connection (the batch stays open).
+    fn flush_batch(&self, b: &mut Batch) -> Result<()> {
+        if b.buf.is_empty() {
+            return Ok(());
+        }
+        let r = self.conn.send(&b.buf);
+        b.room = b.room.saturating_sub(b.buf.len());
+        b.buf.clear();
+        r
+    }
+
+    /// Before an operation that does not go through the batch (a control frame, a fragmented or
+    /// prepared message, a close): sends what the batch holds, if this thread owns it.
+    fn flush_owned(&self) {
+        let id = self.id();
+        BATCH.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.owner == id {
+                let _ = self.flush_batch(&mut b);
+            }
+        });
+    }
+
+    /// The owner's path for an unfragmented message: appended to the batch. `None` when this
+    /// thread does not own this sender's batch.
+    fn batch_send(&self, op: Opcode, payload: &[u8]) -> Option<Result<()>> {
+        let id = self.id();
+        BATCH.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.owner != id {
+                return None;
+            }
+            if self.closed() {
+                return Some(Err(Error::Closed));
+            }
+            let (h, n) = frame_header(op, true, false, payload.len(), None);
+            let need = n + payload.len();
+            if b.buf.len() + need > BATCH_MAX.min(b.room) {
+                if let Err(e) = self.flush_batch(&mut b) {
+                    return Some(Err(e));
+                }
+                if need > BATCH_MAX.min(b.room) {
+                    // Too large for a batch (or the queue is nearly full): send it as is, and
+                    // learn what room is left.
+                    let Link::Tcp(c) = &self.conn else {
+                        unreachable!("batches are TCP only")
+                    };
+                    let r = c.send_parts(&h[..n], payload);
+                    b.room = c.send_room();
+                    return Some(r);
+                }
+            }
+            b.buf.reserve(need);
+            // Constant lengths, so the header is stored inline rather than through memcpy.
+            match n {
+                2 => b.buf.extend_from_slice(&h[..2]),
+                4 => b.buf.extend_from_slice(&h[..4]),
+                _ => b.buf.extend_from_slice(&h[..n]),
+            }
+            b.buf.extend_from_slice(payload);
+            Some(Ok(()))
+        })
+    }
+
+    /// Another thread's path while the batch is open: `out` encodes the frames into the late
+    /// queue. `None` when no batch is open (or this thread owns it): send as usual.
+    fn late_send(&self, len: usize, out: impl FnOnce(&mut Vec<u8>)) -> Option<Result<()>> {
+        if !self.tx.batching.load(Ordering::Acquire) || self.is_owner() {
+            return None;
+        }
+        let mut l = self.late_lock();
+        if !l.on {
+            return None;
+        }
+        if self.closed() {
+            return Some(Err(Error::Closed));
+        }
+        if l.bytes.len() + len > LATE_MAX {
+            return Some(Err(Error::Overloaded));
+        }
+        out(&mut l.bytes);
+        Some(Ok(()))
+    }
+
+    /// I/O thread, end of `on_data` (or unwinding out of it): sends the batch, then what other
+    /// threads sent meanwhile, then their close if one came, and closes the batch. The hint is
+    /// cleared last, under the lock, so a sender that sees it clear finds everything before it
+    /// already queued.
+    fn end_batch(&self) {
+        BATCH.with(|b| {
+            let mut b = b.borrow_mut();
+            let _ = self.flush_batch(&mut b);
+            b.owner = 0;
+            if b.buf.capacity() > BATCH_MAX {
+                b.buf = Vec::new();
+            }
+        });
+        let mut l = self.late_lock();
+        if !l.bytes.is_empty() {
+            let _ = self.conn.send(&l.bytes);
+            l.bytes.clear();
+            if l.bytes.capacity() > BATCH_MAX {
+                l.bytes = Vec::new();
+            }
+        }
+        if let Some((code, reason, drop_tcp)) = l.close.take() {
+            self.send_close_frame(code, &reason, drop_tcp);
+        }
+        l.on = false;
+        self.tx.batching.store(false, Ordering::Release);
+    }
+
+    /// Plain senders: the close frame and the close in one step (`closed` already set).
+    fn send_close_frame(&self, code: Option<u16>, reason: &str, _drop_tcp: bool) {
+        let Link::Tcp(c) = &self.conn else {
+            return;
+        };
+        let payload = match code {
+            Some(c) => close_payload(c, reason),
+            None => Vec::new(),
+        };
+        let len = payload.len().min(125);
+        let (h, n) = frame_header(Opcode::Close, true, false, len, None);
+        let mut f = [0u8; 2 + 125];
+        f[..n].copy_from_slice(&h[..n]);
+        f[n..n + len].copy_from_slice(&payload[..len]);
+        if c.send_then_close(&f[..n + len]).is_err() {
+            c.close_after_send();
+        }
     }
 
     /// Sends one message, split into frames of at most `frame` payload bytes (0: one frame).
     fn send_data(&self, op: Opcode, payload: &[u8], frame: usize) -> Result<()> {
+        if self.tx.plain {
+            if frame == 0 {
+                if let Some(r) = self.batch_send(op, payload) {
+                    return r;
+                }
+            } else {
+                self.flush_owned();
+            }
+            if let Some(r) = self.late_send(payload.len() + 14, |out| {
+                encode_plain(op, payload, frame, out);
+            }) {
+                return r;
+            }
+            if frame == 0 {
+                if let Link::Tcp(c) = &self.conn {
+                    // No compression or masking: the header is all there is to encode, and the
+                    // connection's write lock alone keeps frames whole and in order.
+                    if self.closed() {
+                        return Err(Error::Closed);
+                    }
+                    let (h, n) = frame_header(op, true, false, payload.len(), None);
+                    return c.send_parts(&h[..n], payload);
+                }
+            }
+        }
         // The lock is held across the send so compressed frames, whose compressor state depends
         // on order, reach the wire in the order they were compressed.
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         let tx = &mut *tx;
@@ -416,8 +755,15 @@ impl WsSender {
 
     /// Sends a message prepared once for many connections.
     pub fn send_prepared(&self, m: &PreparedMessage) -> Result<()> {
+        if self.tx.plain {
+            self.flush_owned();
+            let f = &m.frame[..];
+            if let Some(r) = self.late_send(f.len(), |out| out.extend_from_slice(f)) {
+                return r;
+            }
+        }
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         if tx.mask.is_some() {
@@ -442,8 +788,17 @@ impl WsSender {
     }
 
     fn control(&self, op: Opcode, payload: &[u8]) -> Result<()> {
+        if self.tx.plain {
+            self.flush_owned();
+            let p = &payload[..payload.len().min(125)];
+            if let Some(r) =
+                self.late_send(p.len() + 2, |out| put_frame(None, op, true, false, p, out))
+            {
+                return r;
+            }
+        }
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         tx.send_control(&self.conn, op, payload)
@@ -470,20 +825,42 @@ impl WsSender {
     /// Sends a close frame unless one was sent. `drop_tcp`: close the transport once it is
     /// written even on the client side (failing the connection after a protocol error).
     fn close_with(&self, code: Option<u16>, reason: &str, drop_tcp: bool) {
+        if self.tx.plain {
+            self.flush_owned();
+            if self.tx.batching.load(Ordering::Acquire) && !self.is_owner() {
+                // Another thread while the batch is open: the close goes after it.
+                let mut l = self.late_lock();
+                if l.on {
+                    if !self.closed() {
+                        self.tx.closed.store(true, Ordering::Release);
+                        l.close = Some((code, reason.to_owned(), drop_tcp));
+                    }
+                    return;
+                }
+            }
+        }
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             if drop_tcp {
                 self.conn.close_after_send();
             }
             return;
         }
-        tx.closed = true;
+        self.tx.closed.store(true, Ordering::Release);
         let payload = match code {
             Some(c) => close_payload(c, reason),
             None => Vec::new(),
         };
+        let server = tx.mask.is_none();
+        if self.tx.plain {
+            // Lock-free senders exist: the close frame and the close in one step, so one racing
+            // with this cannot put a data frame behind the close frame.
+            drop(tx);
+            self.send_close_frame(code, reason, drop_tcp);
+            return;
+        }
         let _ = tx.send_control(&self.conn, Opcode::Close, &payload);
-        if tx.mask.is_none() || drop_tcp {
+        if server || drop_tcp {
             self.conn.close_after_send();
         } else {
             let weak = self.conn.downgrade();
@@ -499,7 +876,7 @@ impl WsSender {
 
     /// Whether the connection can still send.
     pub fn is_open(&self) -> bool {
-        !self.lock().closed && self.conn.is_open()
+        !self.closed() && self.conn.is_open()
     }
 
     /// Bytes sent but not yet written to the socket, for pacing a producer (a sender that
@@ -516,7 +893,6 @@ pub struct WsSession {
     decoder: Decoder,
     handler: Box<dyn WsHandler>,
     sender: WsSender,
-    events: Vec<Event>,
     ended: bool,
 }
 
@@ -560,7 +936,6 @@ impl WsSession {
             decoder: Decoder::new(Role::Server, cfg.max_message_bytes, inflater),
             handler,
             sender: WsSender::new(conn, deflater, cfg.compress_min_bytes),
-            events: Vec::new(),
             ended: false,
         }
     }
@@ -601,7 +976,7 @@ impl WsSession {
         let inflater = pmd.map(|p| Inflater::new(p.server_no_context_takeover));
         let deflater =
             pmd.map(|p| Deflater::new(p.client_no_context_takeover, p.client_max_window_bits));
-        let sender = WsSender::new(conn, deflater, cfg.compress_min_bytes);
+        let sender = WsSender::with_plain(conn, deflater, cfg.compress_min_bytes, false);
         {
             let mut tx = sender.lock();
             tx.mask = Some(MaskGen::new());
@@ -612,7 +987,6 @@ impl WsSession {
             decoder: Decoder::new(Role::Client, cfg.max_message_bytes, inflater),
             handler,
             sender,
-            events: Vec::new(),
             ended: false,
         }
     }
@@ -643,33 +1017,36 @@ impl WsSession {
         if self.ended {
             return;
         }
-        let mut events = std::mem::take(&mut self.events);
-        events.clear();
-        let res = self.decoder.decode(data, &mut events);
-        for ev in events.drain(..) {
-            if self.ended {
-                break;
-            }
+        // A plain session collects what its handler sends during this read and sends it to
+        // the connection once at the end (or on unwinding).
+        let _batch = self
+            .sender
+            .begin_batch()
+            .then(|| BatchGuard(self.sender.clone()));
+        let WsSession {
+            decoder,
+            handler,
+            sender,
+            ended,
+        } = self;
+        let res = decoder.decode_ref(data, |ev| {
             match ev {
-                Event::Text(t) => self.handler.on_message(&self.sender, Message::Text(t)),
-                Event::Binary(b) => self.handler.on_message(&self.sender, Message::Binary(b)),
-                Event::Ping(p) => {
-                    let _ = self.sender.pong(&p);
-                    self.decoder.recycle_control(p);
+                EventRef::Text(t) => handler.on_message_ref(sender, MessageRef::Text(t)),
+                EventRef::Binary(b) => handler.on_message_ref(sender, MessageRef::Binary(b)),
+                EventRef::Ping(p) => {
+                    let _ = sender.pong(p);
                 }
-                Event::Pong(p) => {
-                    self.handler.on_pong(&self.sender, &p);
-                    self.decoder.recycle_control(p);
-                }
-                Event::Close { code, reason } => {
+                EventRef::Pong(p) => handler.on_pong(sender, p),
+                EventRef::Close { code, reason } => {
                     // Echo the status (or an empty close), then end. A server closes the
                     // transport; a client waits for the server to do so.
-                    self.sender.close_with(code, "", false);
-                    self.end(code, &reason);
+                    sender.close_with(code, "", false);
+                    *ended = true;
+                    handler.on_close(code, reason);
                 }
             }
-        }
-        self.events = events;
+            !*ended
+        });
         if let Err(e) = res {
             if !self.ended {
                 self.sender.close_with(Some(e.code), e.reason, true);
@@ -686,7 +1063,7 @@ impl WsSession {
             l.close();
         }
         if !self.ended {
-            self.sender.lock().closed = true;
+            self.sender.tx.closed.store(true, Ordering::Release);
             self.end(Some(1006), "connection closed without a close handshake");
         }
     }

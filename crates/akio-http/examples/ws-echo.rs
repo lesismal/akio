@@ -4,16 +4,17 @@
 use akio::{Engine, Listener};
 use akio_http::{
     Context, Router, WsOptions, serve,
-    ws::{Message, WsHandler, WsSender},
+    ws::{MessageRef, WsHandler, WsSender},
 };
 
 struct Echo;
 
 impl WsHandler for Echo {
-    fn on_message(&mut self, ws: &WsSender, msg: Message) {
+    // Borrowed messages: echoing costs no allocation per message.
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
         let _ = match msg {
-            Message::Text(t) => ws.send_text(&t),
-            Message::Binary(b) => ws.send_binary(&b),
+            MessageRef::Text(t) => ws.send_text(t),
+            MessageRef::Binary(b) => ws.send_binary(b),
         };
     }
 }

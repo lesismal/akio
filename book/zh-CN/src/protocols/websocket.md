@@ -10,7 +10,8 @@ Autobahn|Testsuite 服务端 298 OK + 3 informational（核心）以及 216/216�
 ```rust,ignore
 pub trait WsHandler: Send + 'static {
     fn on_open(&mut self, ws: &WsSender) {}
-    fn on_message(&mut self, ws: &WsSender, msg: Message);   // Message::Text(String) | Binary(Vec<u8>)
+    fn on_message(&mut self, ws: &WsSender, msg: Message) {}   // Message::Text(String) | Binary(Vec<u8>)
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) { /* 调用 on_message */ }
     fn on_pong(&mut self, ws: &WsSender, payload: &[u8]) {}
     fn on_close(&mut self, code: Option<u16>, reason: &str) {}
 }
@@ -19,6 +20,10 @@ pub trait WsHandler: Send + 'static {
 回调在连接所属的 I/O 线程上执行，收到的是完整的（已重组、已解压、已做 UTF-8 校验的）消息，
 不能阻塞。`on_close` 恰好执行一次，参数是对端的关闭码、本端因协议错误关闭时使用的关闭码，
 或者在没有关闭握手、底层连接直接断开时为 1006。
+
+实现 `on_message` 得到拥有所有权的消息；实现 `on_message_ref` 则得到借用自连接缓冲区、只在本次调用内有效的消息
+（`MessageRef::Text(&str)` | `Binary(&[u8])`）：每条消息没有分配也没有拷贝，所以回显、把消息原样转发的中继、
+只保留解析结果的解析器都应使用它。默认的 `on_message_ref` 复制消息后调用 `on_message`。
 
 `WsSender` 是 `Clone + Send + Sync`：保留它的克隆即可在其他线程发送（不同线程的帧不会交错）：
 

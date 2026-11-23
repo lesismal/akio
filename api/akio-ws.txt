@@ -207,6 +207,30 @@ impl core::marker::Sync for akio_ws::protocol::Event
 impl core::marker::Unpin for akio_ws::protocol::Event
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::Event
 impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Event
+pub enum akio_ws::protocol::EventRef<'a>
+pub akio_ws::protocol::EventRef::Binary(&'a [u8])
+pub akio_ws::protocol::EventRef::Close
+pub akio_ws::protocol::EventRef::Close::code: core::option::Option<u16>
+pub akio_ws::protocol::EventRef::Close::reason: &'a str
+pub akio_ws::protocol::EventRef::Ping(&'a [u8])
+pub akio_ws::protocol::EventRef::Pong(&'a [u8])
+pub akio_ws::protocol::EventRef::Text(&'a str)
+impl akio_ws::protocol::EventRef<'_>
+pub fn akio_ws::protocol::EventRef<'_>::to_event(self) -> akio_ws::protocol::Event
+impl<'a> core::clone::Clone for akio_ws::protocol::EventRef<'a>
+pub fn akio_ws::protocol::EventRef<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for akio_ws::protocol::EventRef<'a>
+impl<'a> core::cmp::PartialEq for akio_ws::protocol::EventRef<'a>
+pub fn akio_ws::protocol::EventRef<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for akio_ws::protocol::EventRef<'a>
+pub fn akio_ws::protocol::EventRef<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_ws::protocol::EventRef<'a>
+impl<'a> core::marker::StructuralPartialEq for akio_ws::protocol::EventRef<'a>
+impl<'a> core::marker::Send for akio_ws::protocol::EventRef<'a>
+impl<'a> core::marker::Sync for akio_ws::protocol::EventRef<'a>
+impl<'a> core::marker::Unpin for akio_ws::protocol::EventRef<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_ws::protocol::EventRef<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::EventRef<'a>
 pub enum akio_ws::protocol::Opcode
 pub akio_ws::protocol::Opcode::Binary = 2
 pub akio_ws::protocol::Opcode::Close = 8
@@ -248,6 +272,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_ws::protocol::Role
 pub struct akio_ws::protocol::Decoder
 impl akio_ws::protocol::Decoder
 pub fn akio_ws::protocol::Decoder::decode(&mut self, &[u8], &mut alloc::vec::Vec<akio_ws::protocol::Event>) -> core::result::Result<(), akio_ws::protocol::ProtocolError>
+pub fn akio_ws::protocol::Decoder::decode_ref(&mut self, &[u8], impl core::ops::function::FnMut(akio_ws::protocol::EventRef<'_>) -> bool) -> core::result::Result<(), akio_ws::protocol::ProtocolError>
 pub fn akio_ws::protocol::Decoder::new(akio_ws::protocol::Role, usize, core::option::Option<akio_ws::deflate::Inflater>) -> akio_ws::protocol::Decoder
 impl core::fmt::Debug for akio_ws::protocol::Decoder
 pub fn akio_ws::protocol::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -339,6 +364,26 @@ impl core::marker::Sync for akio_ws::Message
 impl core::marker::Unpin for akio_ws::Message
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::Message
 impl core::panic::unwind_safe::UnwindSafe for akio_ws::Message
+pub enum akio_ws::MessageRef<'a>
+pub akio_ws::MessageRef::Binary(&'a [u8])
+pub akio_ws::MessageRef::Text(&'a str)
+impl akio_ws::MessageRef<'_>
+pub fn akio_ws::MessageRef<'_>::as_bytes(&self) -> &[u8]
+pub fn akio_ws::MessageRef<'_>::to_message(self) -> akio_ws::Message
+impl<'a> core::clone::Clone for akio_ws::MessageRef<'a>
+pub fn akio_ws::MessageRef<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for akio_ws::MessageRef<'a>
+impl<'a> core::cmp::PartialEq for akio_ws::MessageRef<'a>
+pub fn akio_ws::MessageRef<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for akio_ws::MessageRef<'a>
+pub fn akio_ws::MessageRef<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_ws::MessageRef<'a>
+impl<'a> core::marker::StructuralPartialEq for akio_ws::MessageRef<'a>
+impl<'a> core::marker::Send for akio_ws::MessageRef<'a>
+impl<'a> core::marker::Sync for akio_ws::MessageRef<'a>
+impl<'a> core::marker::Unpin for akio_ws::MessageRef<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_ws::MessageRef<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_ws::MessageRef<'a>
 pub struct akio_ws::PreparedMessage
 impl akio_ws::PreparedMessage
 pub fn akio_ws::PreparedMessage::binary(&[u8]) -> akio_ws::PreparedMessage
@@ -392,6 +437,7 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_ws::WsSender
 pub trait akio_ws::WsHandler: core::marker::Send + 'static
 pub fn akio_ws::WsHandler::on_close(&mut self, core::option::Option<u16>, &str)
 pub fn akio_ws::WsHandler::on_message(&mut self, &akio_ws::WsSender, akio_ws::Message)
+pub fn akio_ws::WsHandler::on_message_ref(&mut self, &akio_ws::WsSender, akio_ws::MessageRef<'_>)
 pub fn akio_ws::WsHandler::on_open(&mut self, &akio_ws::WsSender)
 pub fn akio_ws::WsHandler::on_pong(&mut self, &akio_ws::WsSender, &[u8])
 pub fn akio_ws::accept_key(&str) -> alloc::string::String

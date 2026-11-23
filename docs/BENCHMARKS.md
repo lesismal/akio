@@ -2807,6 +2807,39 @@ alone, same binaries, same alternation, once the host was free.
 median moved the other way in the rerun (0.829, then 1.128), and the total's per-round
 ratio medians, 0.967 and 1.048, both sit inside ranges spanning 1: the difference is the
 benchmark's round-to-round noise. The code on that path adds only a branch on `Err`.
+### WebSocket echo hot path (ADR-101, same-run A/B, 2026-11-23)
+
+Measured on gpu51 with HttpArena (`lbench.sh`, gcannon `--ws`, 3 rounds rotated through the
+frameworks under `quiet.sh`; each cell is the median of the rounds' best runs, messages/s).
+`base` is `main` at `50a82315`, `new` the branch at `26b811df` (epoll), `new uring` the same
+image with `AKIO_BACKEND=uring`. Proa (hyper/tokio) and aegon (C++, io_uring) are the
+references.
+
+| Profile, connections | base | new | new uring | Proa | aegon |
+|---|---:|---:|---:|---:|---:|
+| echo-ws 512 | 1,238,935 | 1,246,570 | 1,320,428 | 1,326,022 | 1,504,108 |
+| echo-ws 4096 | 1,219,923 | 1,226,534 | 1,290,178 | 1,295,152 | 1,462,389 |
+| echo-ws 16384 | 1,001,201 | 1,011,967 | 1,033,495 | 1,063,916 | 1,107,695 |
+| echo-ws-pipeline 512 | 15,706,281 | 17,818,291 | 18,783,212 | 20,411,337 | 21,666,665 |
+| echo-ws-pipeline 4096 | 15,327,769 | 17,276,070 | 18,174,716 | 19,575,849 | 20,578,489 |
+| echo-ws-pipeline 16384 | 12,881,923 | 14,406,467 | 14,870,788 | 16,009,088 | 15,954,646 |
+| echo-ws-limited 512 | 846,459 | 849,097 | 851,829 | 854,518 | 856,826 |
+| echo-ws-limited 4096 | 834,096 | 834,244 | 829,513 | 835,891 | 827,741 |
+
+echo-ws-pipeline (16 messages per read) gains 12–13%; echo-ws (one message per read) is held
+by the system calls, 1%; echo-ws-limited is unchanged. The same HTTP/1 and HTTP/2 profiles,
+2 rounds (base → new): baseline 4096c 1,086,896 → 1,088,748, pipelined 7,246,521 →
+7,166,166, baseline-h2 256c 6,700,900 → 6,740,683, 1024c 6,445,597 → 6,461,342 (the HTTP path
+did not change; the pipelined rounds overlap).
+
+`perf` during echo-ws-pipeline 4096c: both akio and Proa make one `recv` and one `writev` /
+`sendto` per read. Before the change akio spent 30.6 k instructions per read to Proa's 22.8 k;
+after it, user space is 13% of akio's cycles (`on_data`, `send_data`, UTF-8 checking and
+unmasking lead) against Proa's 6% (Proa does not check UTF-8). aegon does as much per message
+as akio (it checks UTF-8) and makes no send or receive system calls: io_uring with multishot
+receive and its sends submitted through the ring. akio's io_uring backend receives through the
+ring but still writes with `writev`, so `new uring` gets 5–6% over epoll and stays behind
+aegon, most on echo-ws.
 
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 

@@ -1877,6 +1877,82 @@ impl ConnInner {
         Ok(())
     }
 
+    /// Sends `head` followed by `body` as one unit: nothing another thread sends lands between
+    /// them. When the bytes are not written right away (inside a callback, or behind queued
+    /// data) on a connection without a transport, both are appended to the queue with no
+    /// joined copy first; otherwise they are joined and sent as [`send_owned`](Self::send_owned)
+    /// does. akio-ws sends a frame header and its payload with it.
+    pub fn send_parts(&self, head: &[u8], body: &[u8]) -> Result<()> {
+        let total = head.len() + body.len();
+        if total == 0 {
+            return Ok(());
+        }
+        let mut w = self.lock();
+        self.check_sendable(&w, total)?;
+        #[cfg(target_os = "linux")]
+        let kernel_tx = w.kernel_tx;
+        #[cfg(not(target_os = "linux"))]
+        let kernel_tx = false;
+        if w.transport.is_none() && !kernel_tx && (self.corked(&w) || !w.queue.is_empty()) {
+            // The loop writes the queue later (no wake needed, as in `send`): coalesce into it.
+            w.push_copy(head);
+            w.push_copy(body);
+            return Ok(());
+        }
+        drop(w);
+        let mut v = akio_buf::get(total);
+        v.extend_from_slice(head);
+        v.extend_from_slice(body);
+        self.send_owned(v)
+    }
+
+    /// Bytes the send queue takes before sends fail with `Overloaded` (0 once closed or closing).
+    /// A caller that collects output on the loop thread and sends it in one piece checks against
+    /// this first; nothing else adds to the queue while the loop is inside that connection's
+    /// callback, except other threads.
+    pub fn send_room(&self) -> usize {
+        let w = self.lock();
+        if !self.is_open() || w.close_after_send {
+            return 0;
+        }
+        self.cfg
+            .telemetry
+            .live()
+            .max_queued_bytes()
+            .saturating_sub(w.queued)
+    }
+
+    /// Sends `data`, then closes once everything queued is written, as one step: nothing sent
+    /// after it, from any thread, is accepted ([`close_after_send`](Self::close_after_send)
+    /// follows in the same critical section). akio-ws sends its close frame with it, so no data
+    /// frame can follow the close frame. On `Err` nothing was queued and nothing closed.
+    pub fn send_then_close(&self, data: &[u8]) -> Result<()> {
+        let mut w = self.lock();
+        self.check_sendable(&w, data.len())?;
+        let bytes = match self.seal(&mut w, data) {
+            Ok(Some(sealed)) => sealed,
+            Ok(None) => data.to_vec(),
+            Err(e) => {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        };
+        self.queue_raw(&mut w, bytes);
+        w.close_after_send = true;
+        if let Some(t) = w.transport.as_mut() {
+            let mut out = Vec::new();
+            t.shutdown(&mut out);
+            self.queue_raw(&mut w, out);
+            #[cfg(target_os = "linux")]
+            if w.kernel_tx {
+                self.take_transport_ops(&mut w);
+            }
+        }
+        drop(w);
+        self.link.wake_conn(self.id);
+        Ok(())
+    }
+
     pub fn send_owned(&self, data: Vec<u8>) -> Result<()> {
         // A direct write is attempted first; only the unwritten tail is queued (copy-free for the
         // whole buffer when it does not fit and the queue is empty).

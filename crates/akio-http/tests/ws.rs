@@ -14,7 +14,7 @@ use akio::{Backend, Config, Engine, Listener, UringConfig};
 use akio_http::{
     Context, Router, WsOptions, serve,
     ws::{
-        Message, PreparedMessage, WsConfig, WsHandler, WsSender,
+        Message, MessageRef, PreparedMessage, WsConfig, WsHandler, WsSender,
         deflate::{Deflater, Inflater},
     },
 };
@@ -252,7 +252,62 @@ fn wait_for(what: &str, c: impl Fn() -> bool) {
     }
 }
 
+/// Echoes messages borrowed from the connection's buffers (`on_message_ref`), counting them.
+struct RefEcho(Arc<Mutex<usize>>);
+
+impl WsHandler for RefEcho {
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        *self.0.lock().unwrap() += 1;
+        let _ = match msg {
+            MessageRef::Text(t) => ws.send_text(t),
+            MessageRef::Binary(b) => ws.send_binary(b),
+        };
+    }
+}
+
 // ---- tests -----------------------------------------------------------------------------------
+
+#[test]
+fn borrowed_handler_echoes_a_pipelined_batch_in_order() {
+    let n = Arc::new(Mutex::new(0));
+    let n2 = n.clone();
+    let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
+        ctx.upgrade_websocket(RefEcho(n2.clone()), &WsOptions::default());
+    }));
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    // Whole frames, a fragmented message with a ping inside and a large frame, in one write:
+    // the whole-frame path and the general path take turns within one read.
+    let mut batch = Vec::new();
+    let mut want: Vec<(u8, Vec<u8>)> = Vec::new();
+    for i in 0..64u32 {
+        let t = format!("msg {i} \u{e9}");
+        batch.extend(frame_bytes(1, true, false, t.as_bytes()));
+        want.push((1, t.into_bytes()));
+        if i % 16 == 5 {
+            batch.extend(frame_bytes(1, false, false, b"frag"));
+            batch.extend(frame_bytes(9, true, false, b"ping"));
+            batch.extend(frame_bytes(0, true, false, b"mented"));
+            want.push((10, b"ping".to_vec()));
+            want.push((1, b"fragmented".to_vec()));
+        }
+        if i % 16 == 9 {
+            let big: Vec<u8> = (0..70_000).map(|j| (j % 249) as u8).collect();
+            batch.extend(frame_bytes(2, true, false, &big));
+            want.push((2, big));
+        }
+    }
+    s.write_all(&batch).unwrap();
+    for (i, (op, payload)) in want.iter().enumerate() {
+        let f = recv(&mut s);
+        assert_eq!(f.opcode, *op, "frame {i}");
+        assert!(f.payload == *payload, "frame {i}");
+    }
+    assert_eq!(*n.lock().unwrap(), 64 + 4 + 4);
+    // Invalid UTF-8 in a whole frame still fails the connection with 1007.
+    send(&mut s, 1, true, &[0xc3, 0x28]);
+    assert_eq!(close_code(&recv(&mut s)), 1007);
+    stop(&e);
+}
 
 #[test]
 fn echo_text_and_binary_of_every_size_class() {
@@ -550,5 +605,283 @@ fn sends_from_many_threads_never_interleave_frames() {
         t.join().unwrap();
     }
     assert_eq!(per_thread, [200; 4]);
+    stop(&e);
+}
+
+#[test]
+fn nothing_follows_the_close_frame_when_other_threads_keep_sending() {
+    // Senders on other threads race with a close from yet another thread: whatever they
+    // manage to send comes whole and before the close frame, after which the stream ends.
+    for round in 0..20 {
+        let seen = Arc::new(Seen::default());
+        let e = start(echo_app(seen.clone(), WsOptions::default()));
+        let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+        wait_for("open", || !seen.senders.lock().unwrap().is_empty());
+        let sender = seen.senders.lock().unwrap()[0].clone();
+        let threads: Vec<_> = (0..3u8)
+            .map(|t| {
+                let sender = sender.clone();
+                thread::spawn(move || {
+                    let mut sent = 0u32;
+                    while sender.send_binary(&[t; 40]).is_ok() {
+                        sent += 1;
+                    }
+                    sent
+                })
+            })
+            .collect();
+        thread::sleep(Duration::from_millis(1 + round % 3));
+        sender.close(1000, "done");
+        let mut got = 0u32;
+        loop {
+            let f = recv(&mut s);
+            if f.opcode == 8 {
+                assert_eq!(close_code(&f), 1000);
+                break;
+            }
+            assert_eq!(f.opcode, 2);
+            assert!(f.payload.len() == 40 && f.payload.iter().all(|b| *b == f.payload[0]));
+            got += 1;
+        }
+        expect_eof(&mut s);
+        let sent: u32 = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(
+            got, sent,
+            "round {round}: every accepted send arrived before the close"
+        );
+        assert!(sender.send_text("late").is_err());
+        stop(&e);
+    }
+}
+
+#[test]
+fn compressed_messages_of_growing_size_echo_and_close_like_autobahn_12() {
+    // Autobahn 12.x/13.x against the borrowed echo: per size class a fresh connection with
+    // permessage-deflate, many compressible text messages (some pipelined, some one at a time,
+    // some fragmented), then the close handshake.
+    let n = Arc::new(Mutex::new(0));
+    let n2 = n;
+    let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
+        ctx.upgrade_websocket(RefEcho(n2.clone()), &WsOptions::default());
+    }));
+    let addr = e.local_addrs()[0];
+    let words = [
+        "alpha ",
+        "beta ",
+        "gamma ",
+        "delta ",
+        "\u{e9}t\u{e9} ",
+        "\u{20ac} ",
+    ];
+    for (k, size) in [16usize, 64, 256, 1024, 4096, 16_384, 65_536, 131_072]
+        .into_iter()
+        .enumerate()
+    {
+        for takeover in [true, false] {
+            let ext = if takeover {
+                "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
+            } else {
+                "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; \
+                 server_no_context_takeover\r\n"
+            };
+            let (mut s, _) = ws_connect(addr, ext);
+            let mut deflater = Deflater::new(!takeover, 15);
+            let mut inflater = Inflater::new(!takeover);
+            let count = if size >= 65_536 { 20 } else { 100 };
+            let msgs: Vec<String> = (0..count)
+                .map(|i| {
+                    let mut m = String::new();
+                    let mut j = i + k;
+                    while m.len() < size {
+                        m.push_str(words[j % words.len()]);
+                        j = (j * 7 + 3) % 1_000_003;
+                    }
+                    while m.len() > size {
+                        m.pop();
+                    }
+                    m
+                })
+                .collect();
+            // Half pipelined in one write, half one at a time; every fifth one fragmented.
+            let (batch, single) = msgs.split_at(count / 2);
+            let encode = |d: &mut Deflater, i: usize, m: &str| -> Vec<u8> {
+                let z = d.deflate(m.as_bytes());
+                if i % 5 == 3 && z.len() > 3 {
+                    let mut w = frame_bytes(1, false, true, &z[..z.len() / 2]);
+                    w.extend(frame_bytes(0, true, false, &z[z.len() / 2..]));
+                    w
+                } else {
+                    frame_bytes(1, true, true, &z)
+                }
+            };
+            let mut wire = Vec::new();
+            for (i, m) in batch.iter().enumerate() {
+                wire.extend(encode(&mut deflater, i, m));
+            }
+            s.write_all(&wire).unwrap();
+            let mut check = |s: &mut TcpStream, m: &str, what: &str| {
+                let f = recv(s);
+                assert_eq!(f.opcode, 1, "{what}");
+                let body = if f.rsv1 {
+                    inflater.inflate(&f.payload, 1 << 20).unwrap()
+                } else {
+                    f.payload
+                };
+                assert!(body == m.as_bytes(), "{what}");
+            };
+            for (i, m) in batch.iter().enumerate() {
+                check(
+                    &mut s,
+                    m,
+                    &format!("size {size} takeover {takeover} batch {i}"),
+                );
+            }
+            for (i, m) in single.iter().enumerate() {
+                s.write_all(&encode(&mut deflater, i, m)).unwrap();
+                check(
+                    &mut s,
+                    m,
+                    &format!("size {size} takeover {takeover} single {i}"),
+                );
+            }
+            send(&mut s, 8, true, &1000u16.to_be_bytes());
+            assert_eq!(close_code(&recv(&mut s)), 1000);
+            expect_eof(&mut s);
+        }
+    }
+    stop(&e);
+}
+
+#[test]
+fn compressed_messages_in_256_byte_fragments_like_autobahn_12_4_12() {
+    // Autobahn 12.4.x: 1000 compressible text messages per case, compressed with context
+    // takeover and split into 256-byte frames, written back to back while the echoes come back.
+    let n = Arc::new(Mutex::new(0));
+    let n2 = n;
+    let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
+        ctx.upgrade_websocket(RefEcho(n2.clone()), &WsOptions::default());
+    }));
+    let addr = e.local_addrs()[0];
+    let words = [
+        "lorem ",
+        "ipsum ",
+        "dolor ",
+        "sit ",
+        "amet ",
+        "consectetur ",
+        "adipiscing ",
+        "elit ",
+        "sed ",
+        "do ",
+        "eiusmod ",
+        "tempor ",
+        "incididunt ",
+        "ut ",
+        "labore ",
+        "et ",
+    ];
+    for size in [8192usize, 16_384, 32_768, 131_072] {
+        let (mut s, _) = ws_connect(
+            addr,
+            "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n",
+        );
+        let count = 1000;
+        let mut x = 0x2545_f491u32 ^ size as u32;
+        let msgs: Vec<String> = (0..count)
+            .map(|_| {
+                let mut m = String::with_capacity(size + 16);
+                while m.len() < size {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    m.push_str(words[(x % 16) as usize]);
+                }
+                m.truncate(size);
+                m
+            })
+            .collect();
+        let msgs = Arc::new(msgs);
+        let mut w = s.try_clone().unwrap();
+        let wm = msgs.clone();
+        let writer = thread::spawn(move || {
+            let mut deflater = Deflater::new(false, 15);
+            for m in wm.iter() {
+                let z = deflater.deflate(m.as_bytes());
+                let pieces: Vec<&[u8]> = z.chunks(256).collect();
+                let mut wire = Vec::new();
+                for (k, p) in pieces.iter().enumerate() {
+                    let op = u8::from(k == 0);
+                    wire.extend(frame_bytes(op, k + 1 == pieces.len(), k == 0, p));
+                }
+                w.write_all(&wire).unwrap();
+            }
+        });
+        let mut inflater = Inflater::new(false);
+        let t0 = Instant::now();
+        for (i, m) in msgs.iter().enumerate() {
+            let f = recv(&mut s);
+            let body = if f.rsv1 {
+                inflater.inflate(&f.payload, 1 << 20).unwrap()
+            } else {
+                f.payload
+            };
+            assert!(body == m.as_bytes(), "size {size} message {i}");
+        }
+        writer.join().unwrap();
+        eprintln!("size {size}: {:?}", t0.elapsed());
+        send(&mut s, 8, true, &1000u16.to_be_bytes());
+        assert_eq!(close_code(&recv(&mut s)), 1000);
+    }
+    stop(&e);
+}
+
+/// On "go": sends "A", has another thread send "B" (or close, on "close") and waits until that
+/// returned, then sends "C". Everything happens inside one read's batch.
+struct Relay;
+
+impl WsHandler for Relay {
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        let MessageRef::Text(t) = msg else { return };
+        ws.send_text("A").unwrap();
+        let other = ws.clone();
+        let close = t == "close";
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let r = if close {
+                other.close(1000, "from another thread");
+                Ok(())
+            } else {
+                other.send_text("B")
+            };
+            tx.send(r).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let c = ws.send_text("C");
+        assert_eq!(c.is_err(), close, "sends after a close fail");
+    }
+}
+
+#[test]
+fn another_threads_send_caused_by_the_handler_never_overtakes_it() {
+    let e = start(Router::new().get("/ws", |ctx: &mut Context| {
+        ctx.upgrade_websocket(Relay, &WsOptions::default());
+    }));
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    for _ in 0..20 {
+        send(&mut s, 1, true, b"go");
+        let got: Vec<Vec<u8>> = (0..3).map(|_| recv(&mut s).payload).collect();
+        // B was sent after A (the handler sent A before starting the thread): it comes after A.
+        let a = got.iter().position(|p| p == b"A").unwrap();
+        let b = got.iter().position(|p| p == b"B").unwrap();
+        assert!(a < b, "{got:?}");
+        assert!(got.iter().any(|p| p == b"C"));
+    }
+    // A close from another thread while the handler's output is collected: A, then the close
+    // frame, then the end of the stream; C was refused.
+    send(&mut s, 1, true, b"close");
+    assert_eq!(recv(&mut s).payload, b"A");
+    let f = recv(&mut s);
+    assert_eq!(close_code(&f), 1000);
+    expect_eof(&mut s);
     stop(&e);
 }

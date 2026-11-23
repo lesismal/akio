@@ -11,7 +11,8 @@ handler trait. Conformance: Autobahn|Testsuite server 298 OK + 3 informational (
 ```rust,ignore
 pub trait WsHandler: Send + 'static {
     fn on_open(&mut self, ws: &WsSender) {}
-    fn on_message(&mut self, ws: &WsSender, msg: Message);   // Message::Text(String) | Binary(Vec<u8>)
+    fn on_message(&mut self, ws: &WsSender, msg: Message) {}   // Message::Text(String) | Binary(Vec<u8>)
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) { /* calls on_message */ }
     fn on_pong(&mut self, ws: &WsSender, payload: &[u8]) {}
     fn on_close(&mut self, code: Option<u16>, reason: &str) {}
 }
@@ -21,6 +22,12 @@ Callbacks run on the connection's I/O thread, receive complete (reassembled, dec
 UTF-8-validated) messages and must not block. `on_close` runs exactly once with the peer's close
 code, the code this side closed with after a protocol error, or 1006 when the transport dropped
 without a close handshake.
+
+Implement `on_message` to get each message owned, or `on_message_ref` to get it borrowed
+(`MessageRef::Text(&str)` | `Binary(&[u8])`) from the connection's buffers for the call only:
+no allocation or copy per message, so an echo or a relay that sends the message straight on, or
+a parser that keeps only what it extracts, should use it. The default `on_message_ref` copies
+the message and calls `on_message`.
 
 `WsSender` is `Clone + Send + Sync`: keep clones to send from other threads (frames from
 different threads never interleave):
