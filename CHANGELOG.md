@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: an HTTP/1 client request's own `Host` and `User-Agent` (akio-http)
+
+Requested by akit (A11), for a reverse proxy that passes its client's fields on. Additive:
+
+- A `Host` field in `ClientRequest::headers` is sent in place of the one taken from the URL; the
+  URL still says where to connect and which name TLS asks for. It is kept on a redirect to the
+  same origin and dropped on one to another, as credentials are. Before, the field was dropped.
+- An empty `User-Agent` field sends none, and no `User-Agent: akio-http` is added, as Go's client
+  takes it. Before, an empty field was sent as it was.
+
 ### Added: MP4 files read without I/O and cut into HLS segments (akio-media)
 
 ADR-097, additive (akit's request A7):
