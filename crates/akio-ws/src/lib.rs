@@ -38,6 +38,6 @@ mod timer;
 pub mod url;
 
 pub use session::{
-    Message, PreparedMessage, WsConfig, WsHandler, WsLink, WsSender, WsSession, accept_key,
-    select_subprotocol, valid_key,
+    Message, MessageRef, PreparedMessage, WsConfig, WsHandler, WsLink, WsSender, WsSession,
+    accept_key, select_subprotocol, valid_key,
 };

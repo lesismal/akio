@@ -1,7 +1,10 @@
 //! The WebSocket connection driver and the application-facing types.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -108,7 +111,7 @@ impl WeakLink {
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
     protocol::{
-        Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
+        Decoder, EventRef, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
         frame_header,
     },
 };
@@ -122,14 +125,52 @@ pub enum Message {
     Binary(Vec<u8>),
 }
 
+/// A complete WebSocket message borrowed from the connection's buffers, valid for the
+/// [`WsHandler::on_message_ref`] call only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageRef<'a> {
+    /// UTF-8 text.
+    Text(&'a str),
+    /// Binary data.
+    Binary(&'a [u8]),
+}
+
+impl MessageRef<'_> {
+    /// An owned copy.
+    pub fn to_message(self) -> Message {
+        match self {
+            MessageRef::Text(t) => Message::Text(t.to_owned()),
+            MessageRef::Binary(b) => Message::Binary(b.to_vec()),
+        }
+    }
+
+    /// The payload bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            MessageRef::Text(t) => t.as_bytes(),
+            MessageRef::Binary(b) => b,
+        }
+    }
+}
+
 /// Application callbacks for one WebSocket connection. They run on the connection's I/O thread
 /// and must not block; keep a clone of the [`WsSender`] to answer from other threads.
 pub trait WsHandler: Send + 'static {
     /// The handshake finished; the connection is ready.
     fn on_open(&mut self, _ws: &WsSender) {}
 
-    /// A complete message arrived.
-    fn on_message(&mut self, ws: &WsSender, msg: Message);
+    /// A complete message arrived, owned. Called by the default
+    /// [`on_message_ref`](Self::on_message_ref), which copies the message out of the
+    /// connection's buffers; a handler that overrides `on_message_ref` need not implement this.
+    fn on_message(&mut self, _ws: &WsSender, _msg: Message) {}
+
+    /// A complete message arrived, borrowed from the connection's buffers for this call (rule
+    /// 5): implement this instead of [`on_message`](Self::on_message) to handle a message
+    /// without allocating, copying out only what is kept. The default calls `on_message` with
+    /// an owned copy.
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        self.on_message(ws, msg.to_message());
+    }
 
     /// A pong arrived (answering a [`WsSender::ping`]).
     fn on_pong(&mut self, _ws: &WsSender, _payload: &[u8]) {}
@@ -165,7 +206,6 @@ impl Default for WsConfig {
 struct Tx {
     deflater: Option<Deflater>,
     compress_min: usize,
-    closed: bool,
     /// Client side: frames are masked with keys from this generator.
     mask: Option<MaskGen>,
     /// Client side: after the close handshake, how long to wait for the server to close the TCP
@@ -315,7 +355,19 @@ impl MaskGen {
 #[derive(Clone)]
 pub struct WsSender {
     conn: Link,
-    tx: Arc<Mutex<Tx>>,
+    tx: Arc<TxShared>,
+}
+
+/// A sender's state, shared by its clones.
+struct TxShared {
+    /// A close frame was sent (or the transport went away): sends fail. Set under `m`; read
+    /// without it by the lock-free path, where the connection's own write lock keeps a data
+    /// frame from following the close frame (`ConnInner::send_then_close`).
+    closed: AtomicBool,
+    /// A server over TCP with no compression: unfragmented messages are sent without taking
+    /// `m` (nothing in `Tx` is needed to encode them, and the connection orders the frames).
+    plain: bool,
+    m: Mutex<Tx>,
 }
 
 impl std::fmt::Debug for WsSender {
@@ -353,29 +405,59 @@ impl PreparedMessage {
 
 impl WsSender {
     fn new(conn: Link, deflater: Option<Deflater>, compress_min: usize) -> WsSender {
+        WsSender::with_plain(conn, deflater, compress_min, true)
+    }
+
+    /// `plain`: whether the lock-free path may be used at all (not on the client side, which
+    /// masks every frame with keys from `Tx`).
+    fn with_plain(
+        conn: Link,
+        deflater: Option<Deflater>,
+        compress_min: usize,
+        plain: bool,
+    ) -> WsSender {
+        let plain = plain && deflater.is_none() && matches!(conn, Link::Tcp(_));
         WsSender {
             conn,
-            tx: Arc::new(Mutex::new(Tx {
-                deflater,
-                compress_min,
-                closed: false,
-                mask: None,
-                close_timeout: Duration::ZERO,
-                protocol: None,
-            })),
+            tx: Arc::new(TxShared {
+                closed: AtomicBool::new(false),
+                plain,
+                m: Mutex::new(Tx {
+                    deflater,
+                    compress_min,
+                    mask: None,
+                    close_timeout: Duration::ZERO,
+                    protocol: None,
+                }),
+            }),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Tx> {
-        self.tx.lock().unwrap_or_else(|p| p.into_inner())
+        self.tx.m.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn closed(&self) -> bool {
+        self.tx.closed.load(Ordering::Acquire)
     }
 
     /// Sends one message, split into frames of at most `frame` payload bytes (0: one frame).
     fn send_data(&self, op: Opcode, payload: &[u8], frame: usize) -> Result<()> {
+        if self.tx.plain && frame == 0 {
+            if let Link::Tcp(c) = &self.conn {
+                // No compression or masking: the header is all there is to encode, and the
+                // connection's write lock alone keeps frames whole and in order.
+                if self.closed() {
+                    return Err(Error::Closed);
+                }
+                let (h, n) = frame_header(op, true, false, payload.len(), None);
+                return c.send_parts(&h[..n], payload);
+            }
+        }
         // The lock is held across the send so compressed frames, whose compressor state depends
         // on order, reach the wire in the order they were compressed.
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         let tx = &mut *tx;
@@ -417,7 +499,7 @@ impl WsSender {
     /// Sends a message prepared once for many connections.
     pub fn send_prepared(&self, m: &PreparedMessage) -> Result<()> {
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         if tx.mask.is_some() {
@@ -443,7 +525,7 @@ impl WsSender {
 
     fn control(&self, op: Opcode, payload: &[u8]) -> Result<()> {
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             return Err(Error::Closed);
         }
         tx.send_control(&self.conn, op, payload)
@@ -471,19 +553,33 @@ impl WsSender {
     /// written even on the client side (failing the connection after a protocol error).
     fn close_with(&self, code: Option<u16>, reason: &str, drop_tcp: bool) {
         let mut tx = self.lock();
-        if tx.closed {
+        if self.closed() {
             if drop_tcp {
                 self.conn.close_after_send();
             }
             return;
         }
-        tx.closed = true;
+        self.tx.closed.store(true, Ordering::Release);
         let payload = match code {
             Some(c) => close_payload(c, reason),
             None => Vec::new(),
         };
+        let server = tx.mask.is_none();
+        if let (true, Link::Tcp(c)) = (self.tx.plain, &self.conn) {
+            // Lock-free senders exist: the close frame and the close in one step, so one racing
+            // with this cannot put a data frame behind the close frame.
+            let (h, n) = frame_header(Opcode::Close, true, false, payload.len().min(125), None);
+            let mut f = [0u8; 2 + 125];
+            f[..n].copy_from_slice(&h[..n]);
+            let len = payload.len().min(125);
+            f[n..n + len].copy_from_slice(&payload[..len]);
+            if c.send_then_close(&f[..n + len]).is_err() {
+                c.close_after_send();
+            }
+            return;
+        }
         let _ = tx.send_control(&self.conn, Opcode::Close, &payload);
-        if tx.mask.is_none() || drop_tcp {
+        if server || drop_tcp {
             self.conn.close_after_send();
         } else {
             let weak = self.conn.downgrade();
@@ -499,7 +595,7 @@ impl WsSender {
 
     /// Whether the connection can still send.
     pub fn is_open(&self) -> bool {
-        !self.lock().closed && self.conn.is_open()
+        !self.closed() && self.conn.is_open()
     }
 
     /// Bytes sent but not yet written to the socket, for pacing a producer (a sender that
@@ -516,7 +612,6 @@ pub struct WsSession {
     decoder: Decoder,
     handler: Box<dyn WsHandler>,
     sender: WsSender,
-    events: Vec<Event>,
     ended: bool,
 }
 
@@ -560,7 +655,6 @@ impl WsSession {
             decoder: Decoder::new(Role::Server, cfg.max_message_bytes, inflater),
             handler,
             sender: WsSender::new(conn, deflater, cfg.compress_min_bytes),
-            events: Vec::new(),
             ended: false,
         }
     }
@@ -601,7 +695,7 @@ impl WsSession {
         let inflater = pmd.map(|p| Inflater::new(p.server_no_context_takeover));
         let deflater =
             pmd.map(|p| Deflater::new(p.client_no_context_takeover, p.client_max_window_bits));
-        let sender = WsSender::new(conn, deflater, cfg.compress_min_bytes);
+        let sender = WsSender::with_plain(conn, deflater, cfg.compress_min_bytes, false);
         {
             let mut tx = sender.lock();
             tx.mask = Some(MaskGen::new());
@@ -612,7 +706,6 @@ impl WsSession {
             decoder: Decoder::new(Role::Client, cfg.max_message_bytes, inflater),
             handler,
             sender,
-            events: Vec::new(),
             ended: false,
         }
     }
@@ -643,33 +736,30 @@ impl WsSession {
         if self.ended {
             return;
         }
-        let mut events = std::mem::take(&mut self.events);
-        events.clear();
-        let res = self.decoder.decode(data, &mut events);
-        for ev in events.drain(..) {
-            if self.ended {
-                break;
-            }
+        let WsSession {
+            decoder,
+            handler,
+            sender,
+            ended,
+        } = self;
+        let res = decoder.decode_ref(data, |ev| {
             match ev {
-                Event::Text(t) => self.handler.on_message(&self.sender, Message::Text(t)),
-                Event::Binary(b) => self.handler.on_message(&self.sender, Message::Binary(b)),
-                Event::Ping(p) => {
-                    let _ = self.sender.pong(&p);
-                    self.decoder.recycle_control(p);
+                EventRef::Text(t) => handler.on_message_ref(sender, MessageRef::Text(t)),
+                EventRef::Binary(b) => handler.on_message_ref(sender, MessageRef::Binary(b)),
+                EventRef::Ping(p) => {
+                    let _ = sender.pong(p);
                 }
-                Event::Pong(p) => {
-                    self.handler.on_pong(&self.sender, &p);
-                    self.decoder.recycle_control(p);
-                }
-                Event::Close { code, reason } => {
+                EventRef::Pong(p) => handler.on_pong(sender, p),
+                EventRef::Close { code, reason } => {
                     // Echo the status (or an empty close), then end. A server closes the
                     // transport; a client waits for the server to do so.
-                    self.sender.close_with(code, "", false);
-                    self.end(code, &reason);
+                    sender.close_with(code, "", false);
+                    *ended = true;
+                    handler.on_close(code, reason);
                 }
             }
-        }
-        self.events = events;
+            !*ended
+        });
         if let Err(e) = res {
             if !self.ended {
                 self.sender.close_with(Some(e.code), e.reason, true);
@@ -686,7 +776,7 @@ impl WsSession {
             l.close();
         }
         if !self.ended {
-            self.sender.lock().closed = true;
+            self.sender.tx.closed.store(true, Ordering::Release);
             self.end(Some(1006), "connection closed without a close handshake");
         }
     }

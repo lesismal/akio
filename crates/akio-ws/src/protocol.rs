@@ -78,6 +78,43 @@ pub enum Event {
     },
 }
 
+/// What [`Decoder::decode_ref`] hands out: an [`Event`] whose payload borrows the decoder's
+/// buffers (or the input), valid for the call only.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum EventRef<'a> {
+    /// A complete text message.
+    Text(&'a str),
+    /// A complete binary message.
+    Binary(&'a [u8]),
+    /// A ping (a pong is due).
+    Ping(&'a [u8]),
+    /// A pong.
+    Pong(&'a [u8]),
+    /// The peer is closing.
+    Close {
+        /// Status code, if the frame had one.
+        code: Option<u16>,
+        /// Reason text.
+        reason: &'a str,
+    },
+}
+
+impl EventRef<'_> {
+    /// An owned copy.
+    pub fn to_event(self) -> Event {
+        match self {
+            EventRef::Text(t) => Event::Text(t.to_owned()),
+            EventRef::Binary(b) => Event::Binary(b.to_vec()),
+            EventRef::Ping(p) => Event::Ping(p.to_vec()),
+            EventRef::Pong(p) => Event::Pong(p.to_vec()),
+            EventRef::Close { code, reason } => Event::Close {
+                code,
+                reason: reason.to_owned(),
+            },
+        }
+    }
+}
+
 /// A protocol violation; the connection should be closed with `code`.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -145,6 +182,8 @@ pub struct Decoder {
     inflater: Option<Inflater>,
     /// Buffer of the compressed bytes of the last message, reused by the next compressed one.
     zbuf: Vec<u8>,
+    /// Buffer of the last message, reused by the next one: a message costs no allocation.
+    mbuf: Vec<u8>,
 }
 
 /// Largest buffer kept between messages for reuse; larger ones are freed.
@@ -165,6 +204,102 @@ impl std::fmt::Debug for Decoder {
     }
 }
 
+/// A frame header, checked as far as the header alone allows.
+#[derive(Clone, Copy)]
+struct Header {
+    fin: bool,
+    rsv1: bool,
+    opcode: Opcode,
+    mask: Option<[u8; 4]>,
+    len: u64,
+}
+
+/// The size of a header from its second byte: 2, plus 2 or 8 for an extended length, plus 4
+/// for the masking key.
+#[inline]
+fn header_len(b1: u8) -> usize {
+    let ext = match b1 & 0x7f {
+        126 => 2,
+        127 => 8,
+        _ => 0,
+    };
+    2 + ext + if b1 & 0x80 != 0 { 4 } else { 0 }
+}
+
+/// Parses a complete header (`h.len() == header_len(h[1])`) and enforces the rules that need
+/// nothing but the header.
+#[inline]
+fn parse_header(role: Role, h: &[u8]) -> Result<Header, ProtocolError> {
+    let fin = h[0] & 0x80 != 0;
+    let rsv1 = h[0] & 0x40 != 0;
+    if h[0] & 0x30 != 0 {
+        return Err(err(close::PROTOCOL, "reserved bits set"));
+    }
+    let opcode =
+        Opcode::from_u8(h[0] & 0x0f).ok_or_else(|| err(close::PROTOCOL, "unknown opcode"))?;
+    let masked = h[1] & 0x80 != 0;
+    match (role, masked) {
+        (Role::Server, false) => return Err(err(close::PROTOCOL, "client frame not masked")),
+        (Role::Client, true) => return Err(err(close::PROTOCOL, "server frame masked")),
+        _ => {}
+    }
+    let (len, at) = match h[1] & 0x7f {
+        126 => (u64::from(u16::from_be_bytes([h[2], h[3]])), 4),
+        127 => {
+            let l = u64::from_be_bytes(h[2..10].try_into().expect("8 bytes"));
+            if l >> 63 != 0 {
+                return Err(err(close::PROTOCOL, "length high bit set"));
+            }
+            (l, 10)
+        }
+        n => (u64::from(n), 2),
+    };
+    // Lengths must be minimally encoded.
+    if (h[1] & 0x7f == 126 && len < 126) || (h[1] & 0x7f == 127 && len < 65_536) {
+        return Err(err(close::PROTOCOL, "non-minimal length encoding"));
+    }
+    let mask = if masked {
+        Some([h[at], h[at + 1], h[at + 2], h[at + 3]])
+    } else {
+        None
+    };
+    if opcode.is_control() {
+        if !fin {
+            return Err(err(close::PROTOCOL, "fragmented control frame"));
+        }
+        if len > 125 {
+            return Err(err(close::PROTOCOL, "control frame too long"));
+        }
+        if rsv1 {
+            return Err(err(close::PROTOCOL, "compressed control frame"));
+        }
+    }
+    Ok(Header {
+        fin,
+        rsv1,
+        opcode,
+        mask,
+        len,
+    })
+}
+
+/// Hands a complete data message to `f`, checking that text is UTF-8.
+#[inline]
+fn emit_data(
+    text: bool,
+    payload: &[u8],
+    f: &mut impl FnMut(EventRef<'_>) -> bool,
+) -> Result<bool, ProtocolError> {
+    if text {
+        match std::str::from_utf8(payload) {
+            Ok(t) => Ok(f(EventRef::Text(t))),
+            Err(_) => Err(err(close::INVALID_DATA, "invalid UTF-8")),
+        }
+    } else {
+        Ok(f(EventRef::Binary(payload)))
+    }
+}
+
 impl Decoder {
     /// A decoder that accepts messages up to `max_message` bytes (after decompression).
     pub fn new(role: Role, max_message: usize, inflater: Option<Inflater>) -> Decoder {
@@ -178,14 +313,14 @@ impl Decoder {
             control: Vec::new(),
             inflater,
             zbuf: Vec::new(),
+            mbuf: Vec::new(),
         }
     }
 
-    /// Hands back the payload of a ping or pong event so the next control frame reuses it.
-    pub(crate) fn recycle_control(&mut self, mut v: Vec<u8>) {
-        if self.control.capacity() == 0 && v.capacity() <= KEEP_BUF {
-            v.clear();
-            self.control = v;
+    /// Keeps `buf` for the next message unless it grew too large.
+    fn keep(&mut self, buf: Vec<u8>) {
+        if buf.capacity() <= KEEP_BUF {
+            self.mbuf = buf;
         }
     }
 
@@ -199,11 +334,37 @@ impl Decoder {
     }
 
     /// Feeds bytes from the peer; completed messages are appended to `out`. After an `Err` the
-    /// decoder must not be used again.
-    pub fn decode(&mut self, mut input: &[u8], out: &mut Vec<Event>) -> Result<(), ProtocolError> {
+    /// decoder must not be used again. [`decode_ref`](Self::decode_ref) does the same without
+    /// copying each message out.
+    pub fn decode(&mut self, input: &[u8], out: &mut Vec<Event>) -> Result<(), ProtocolError> {
+        self.decode_ref(input, |ev| {
+            out.push(ev.to_event());
+            true
+        })
+    }
+
+    /// Feeds bytes from the peer and calls `f` with each completed message or control frame,
+    /// borrowed from the decoder's reused buffers (or from `input`) for the call only, so a
+    /// message costs no allocation. `f` returns `false` to stop: the rest of `input` is dropped
+    /// and the decoder must not be used again. After an `Err` (reported once the events before
+    /// it were handed out) the decoder must not be used again either.
+    pub fn decode_ref(
+        &mut self,
+        mut input: &[u8],
+        mut f: impl FnMut(EventRef<'_>) -> bool,
+    ) -> Result<(), ProtocolError> {
         while !input.is_empty() {
             match &mut self.state {
                 State::Header => {
+                    if self.hdr_len == 0 && self.partial.is_none() {
+                        if let Some((used, go)) = self.whole_message(input, &mut f)? {
+                            input = &input[used..];
+                            if !go {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                    }
                     // Take header bytes one at a time until the header is complete.
                     let need = self.header_len_needed();
                     let take = (need - self.hdr_len).min(input.len());
@@ -213,7 +374,9 @@ impl Decoder {
                     if self.hdr_len < self.header_len_needed() {
                         continue; // still short (length bytes follow the first two)
                     }
-                    self.start_frame(out)?;
+                    if !self.start_frame(&mut f)? {
+                        return Ok(());
+                    }
                 }
                 State::Payload {
                     fin,
@@ -231,7 +394,9 @@ impl Decoder {
                     if n as u64 == remaining {
                         self.state = State::Header;
                         self.hdr_len = 0;
-                        self.finish_frame(fin, opcode, compressed, out)?;
+                        if !self.finish_frame(fin, opcode, compressed, &mut f)? {
+                            return Ok(());
+                        }
                     } else if let State::Payload {
                         mask_pos,
                         remaining,
@@ -247,66 +412,78 @@ impl Decoder {
         Ok(())
     }
 
+    /// The fast path, between messages: when `input` starts with a whole unfragmented,
+    /// uncompressed data frame within the size limit, unmasks it into the reused message
+    /// buffer (or borrows it from `input` when unmasked), checks it and hands it to `f`.
+    /// Returns the bytes used and `f`'s answer, or `None` to leave the frame to the general
+    /// path (which also reports any protocol error in it).
+    #[inline]
+    fn whole_message(
+        &mut self,
+        input: &[u8],
+        f: &mut impl FnMut(EventRef<'_>) -> bool,
+    ) -> Result<Option<(usize, bool)>, ProtocolError> {
+        if input.len() < 2 {
+            return Ok(None);
+        }
+        let hl = header_len(input[1]);
+        if input.len() < hl {
+            return Ok(None);
+        }
+        let Ok(h) = parse_header(self.role, &input[..hl]) else {
+            return Ok(None);
+        };
+        let text = match h.opcode {
+            Opcode::Text => true,
+            Opcode::Binary => false,
+            _ => return Ok(None),
+        };
+        if !h.fin || h.rsv1 || h.len > self.max_message as u64 {
+            return Ok(None);
+        }
+        let len = h.len as usize;
+        if input.len() - hl < len {
+            return Ok(None);
+        }
+        let payload = &input[hl..hl + len];
+        let go = match h.mask {
+            None => emit_data(text, payload, f)?,
+            Some(m) => {
+                let mut buf = std::mem::take(&mut self.mbuf);
+                buf.clear();
+                buf.extend_from_slice(payload);
+                unmask(&mut buf, m, 0);
+                let r = emit_data(text, &buf, f);
+                self.keep(buf);
+                r?
+            }
+        };
+        Ok(Some((hl + len, go)))
+    }
+
     /// Total header size for the bytes seen so far (2, then 4 or 10 with an extended length,
     /// plus 4 for the mask).
     fn header_len_needed(&self) -> usize {
         if self.hdr_len < 2 {
             return 2;
         }
-        let masked = self.hdr[1] & 0x80 != 0;
-        let ext = match self.hdr[1] & 0x7f {
-            126 => 2,
-            127 => 8,
-            _ => 0,
-        };
-        2 + ext + if masked { 4 } else { 0 }
+        header_len(self.hdr[1])
     }
 
-    fn start_frame(&mut self, out: &mut Vec<Event>) -> Result<(), ProtocolError> {
-        let h = self.hdr;
-        let fin = h[0] & 0x80 != 0;
-        let rsv1 = h[0] & 0x40 != 0;
-        if h[0] & 0x30 != 0 {
-            return Err(err(close::PROTOCOL, "reserved bits set"));
-        }
-        let opcode =
-            Opcode::from_u8(h[0] & 0x0f).ok_or_else(|| err(close::PROTOCOL, "unknown opcode"))?;
-        let masked = h[1] & 0x80 != 0;
-        match (self.role, masked) {
-            (Role::Server, false) => return Err(err(close::PROTOCOL, "client frame not masked")),
-            (Role::Client, true) => return Err(err(close::PROTOCOL, "server frame masked")),
-            _ => {}
-        }
-        let (len, at) = match h[1] & 0x7f {
-            126 => (u64::from(u16::from_be_bytes([h[2], h[3]])), 4),
-            127 => {
-                let l = u64::from_be_bytes(h[2..10].try_into().expect("8 bytes"));
-                if l >> 63 != 0 {
-                    return Err(err(close::PROTOCOL, "length high bit set"));
-                }
-                (l, 10)
-            }
-            n => (u64::from(n), 2),
-        };
-        // Lengths must be minimally encoded.
-        if (h[1] & 0x7f == 126 && len < 126) || (h[1] & 0x7f == 127 && len < 65_536) {
-            return Err(err(close::PROTOCOL, "non-minimal length encoding"));
-        }
-        let mask = if masked {
-            Some([h[at], h[at + 1], h[at + 2], h[at + 3]])
-        } else {
-            None
-        };
+    /// A header is complete: checks it against the message state and starts reading the
+    /// payload. Returns `f`'s answer when an empty frame completed something.
+    fn start_frame(
+        &mut self,
+        f: &mut impl FnMut(EventRef<'_>) -> bool,
+    ) -> Result<bool, ProtocolError> {
+        let Header {
+            fin,
+            rsv1,
+            opcode,
+            mask,
+            len,
+        } = parse_header(self.role, &self.hdr[..self.hdr_len])?;
         if opcode.is_control() {
-            if !fin {
-                return Err(err(close::PROTOCOL, "fragmented control frame"));
-            }
-            if len > 125 {
-                return Err(err(close::PROTOCOL, "control frame too long"));
-            }
-            if rsv1 {
-                return Err(err(close::PROTOCOL, "compressed control frame"));
-            }
             self.control.clear();
         }
         let mut compressed = false;
@@ -324,11 +501,14 @@ impl Decoder {
                 let buf = if compressed {
                     // Reuse the compressed buffer of the previous message.
                     std::mem::take(&mut self.zbuf)
-                } else if fin && len <= self.max_message as u64 {
-                    // The whole message is in this frame: size it once.
-                    Vec::with_capacity(len as usize)
                 } else {
-                    Vec::new()
+                    let mut b = std::mem::take(&mut self.mbuf);
+                    b.clear();
+                    if fin && len <= self.max_message as u64 {
+                        // The whole message is in this frame: size it once.
+                        b.reserve(len as usize);
+                    }
+                    b
                 };
                 self.partial = Some(Partial {
                     text: opcode == Opcode::Text,
@@ -350,8 +530,7 @@ impl Decoder {
         }
         if len == 0 {
             self.hdr_len = 0;
-            self.finish_frame(fin, opcode, compressed, out)?;
-            return Ok(());
+            return self.finish_frame(fin, opcode, compressed, f);
         }
         // Reject early what can never fit, before buffering it. Compressed messages are bounded
         // too (rule 6): their raw bytes by `max_compressed`, their output by the inflater.
@@ -369,7 +548,7 @@ impl Decoder {
             mask_pos: 0,
             remaining: len,
         };
-        Ok(())
+        Ok(true)
     }
 
     /// Unmasks `chunk` into the message (or control payload) buffer and validates text so far.
@@ -409,24 +588,24 @@ impl Decoder {
         Ok(())
     }
 
+    /// A frame's payload is complete: hands out the control frame or, at the end of a message,
+    /// the message. Returns `f`'s answer (`true` when nothing was handed out).
     fn finish_frame(
         &mut self,
         fin: bool,
         opcode: Opcode,
         compressed: bool,
-        out: &mut Vec<Event>,
-    ) -> Result<(), ProtocolError> {
+        f: &mut impl FnMut(EventRef<'_>) -> bool,
+    ) -> Result<bool, ProtocolError> {
         if opcode.is_control() {
-            let payload = std::mem::take(&mut self.control);
-            out.push(match opcode {
-                Opcode::Ping => Event::Ping(payload),
-                Opcode::Pong => Event::Pong(payload),
-                _ => parse_close(&payload)?,
+            return Ok(match opcode {
+                Opcode::Ping => f(EventRef::Ping(&self.control)),
+                Opcode::Pong => f(EventRef::Pong(&self.control)),
+                _ => f(parse_close(&self.control)?),
             });
-            return Ok(());
         }
         if !fin {
-            return Ok(());
+            return Ok(true);
         }
         let mut p = self.partial.take().expect("partial message");
         if compressed {
@@ -443,15 +622,9 @@ impl Decoder {
                 self.zbuf = raw;
             }
         }
-        if p.text {
-            match String::from_utf8(p.buf) {
-                Ok(s) => out.push(Event::Text(s)),
-                Err(_) => return Err(err(close::INVALID_DATA, "invalid UTF-8")),
-            }
-        } else {
-            out.push(Event::Binary(p.buf));
-        }
-        Ok(())
+        let r = emit_data(p.text, &p.buf, f);
+        self.keep(p.buf);
+        r
     }
 }
 
@@ -471,11 +644,11 @@ pub(crate) fn unmask(data: &mut [u8], mask: [u8; 4], pos: usize) {
     }
 }
 
-fn parse_close(payload: &[u8]) -> Result<Event, ProtocolError> {
+fn parse_close(payload: &[u8]) -> Result<EventRef<'_>, ProtocolError> {
     match payload.len() {
-        0 => Ok(Event::Close {
+        0 => Ok(EventRef::Close {
             code: None,
-            reason: String::new(),
+            reason: "",
         }),
         1 => Err(err(close::PROTOCOL, "close payload of one byte")),
         _ => {
@@ -486,9 +659,9 @@ fn parse_close(payload: &[u8]) -> Result<Event, ProtocolError> {
             }
             let reason = std::str::from_utf8(&payload[2..])
                 .map_err(|_| err(close::INVALID_DATA, "close reason is not UTF-8"))?;
-            Ok(Event::Close {
+            Ok(EventRef::Close {
                 code: Some(code),
-                reason: reason.to_owned(),
+                reason,
             })
         }
     }
@@ -871,5 +1044,114 @@ mod tests {
                 .collect();
             assert_eq!(a, b, "pos {pos}");
         }
+    }
+
+    #[test]
+    fn whole_frames_in_one_read_match_the_byte_at_a_time_path() {
+        // Several whole messages (the fast path), a fragmented one with a ping inside, a
+        // close: every split gives the same events as one read.
+        let mut wire = Vec::new();
+        wire.extend(client_frame(0x1, true, b"one"));
+        wire.extend(client_frame(0x2, true, &[0u8; 300]));
+        wire.extend(client_frame(0x1, true, b""));
+        wire.extend(client_frame(0x1, false, "\u{20ac}".as_bytes()));
+        wire.extend(client_frame(0x9, true, b"p"));
+        wire.extend(client_frame(0x0, true, b"!"));
+        wire.extend(client_frame(0x1, true, "\u{e9}t\u{e9}".as_bytes()));
+        wire.extend(client_frame(0x8, true, &[0x03, 0xe8, b'b', b'y', b'e']));
+        let want = vec![
+            Event::Text("one".into()),
+            Event::Binary(vec![0; 300]),
+            Event::Text(String::new()),
+            Event::Ping(b"p".to_vec()),
+            Event::Text("\u{20ac}!".into()),
+            Event::Text("\u{e9}t\u{e9}".into()),
+            Event::Close {
+                code: Some(1000),
+                reason: "bye".into(),
+            },
+        ];
+        for split in [1, 2, 3, 7, 64, wire.len()] {
+            assert_eq!(decode_split(&wire, split).unwrap(), want, "split {split}");
+        }
+    }
+
+    #[test]
+    fn whole_frame_errors_match_the_general_path() {
+        let mut bad = client_frame(0x1, true, b"ok");
+        bad.extend(client_frame(0x1, true, &[0xff, 0xfe]));
+        for split in [1, bad.len()] {
+            let mut d = Decoder::new(Role::Server, 1 << 20, None);
+            let mut out = Vec::new();
+            let mut e = None;
+            for piece in bad.chunks(split) {
+                if let Err(x) = d.decode(piece, &mut out) {
+                    e = Some(x);
+                    break;
+                }
+            }
+            assert_eq!(out, vec![Event::Text("ok".into())], "split {split}");
+            assert_eq!(e.unwrap().code, close::INVALID_DATA, "split {split}");
+        }
+        // Over the limit in one read: rejected, not handed out.
+        let mut d = Decoder::new(Role::Server, 10, None);
+        let mut out = Vec::new();
+        let e = d.decode(&client_frame(0x2, true, &[1; 11]), &mut out);
+        assert_eq!(e.unwrap_err().code, close::TOO_BIG);
+        assert!(out.is_empty());
+        // An unmasked client frame in one read is still a protocol error.
+        let mut wire = Vec::new();
+        encode_frame(Opcode::Text, true, false, b"hi", &mut wire);
+        let mut d = Decoder::new(Role::Server, 1 << 20, None);
+        assert_eq!(d.decode(&wire, &mut out).unwrap_err().code, close::PROTOCOL);
+    }
+
+    #[test]
+    fn decode_ref_borrows_and_stops_when_asked() {
+        let mut wire = Vec::new();
+        for m in [&b"a"[..], b"bb", b"ccc"] {
+            wire.extend(client_frame(0x2, true, m));
+        }
+        let mut d = Decoder::new(Role::Server, 1 << 20, None);
+        let mut seen = Vec::new();
+        d.decode_ref(&wire, |ev| {
+            if let EventRef::Binary(b) = ev {
+                seen.push(b.to_vec());
+            }
+            seen.len() < 2
+        })
+        .unwrap();
+        assert_eq!(seen, vec![b"a".to_vec(), b"bb".to_vec()]);
+        // The client side borrows unmasked payloads straight from the input.
+        let mut wire = Vec::new();
+        encode_frame(Opcode::Binary, true, false, b"xyz", &mut wire);
+        let mut d = Decoder::new(Role::Client, 1 << 20, None);
+        let base = wire.as_ptr() as usize;
+        d.decode_ref(&wire, |ev| {
+            let EventRef::Binary(b) = ev else {
+                panic!("{ev:?}")
+            };
+            assert_eq!(b, b"xyz");
+            assert_eq!(b.as_ptr() as usize, base + 2);
+            true
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_message_buffer_is_reused_and_bounded() {
+        let mut d = Decoder::new(Role::Server, 1 << 20, None);
+        d.decode_ref(&client_frame(0x2, true, &[7; 1000]), |_| true)
+            .unwrap();
+        let cap = d.mbuf.capacity();
+        assert!(cap >= 1000);
+        let ptr = d.mbuf.as_ptr();
+        d.decode_ref(&client_frame(0x2, true, &[8; 900]), |_| true)
+            .unwrap();
+        assert_eq!(d.mbuf.as_ptr(), ptr, "reused, not reallocated");
+        // A message larger than KEEP_BUF is not kept.
+        d.decode_ref(&client_frame(0x2, true, &vec![9; KEEP_BUF + 1]), |_| true)
+            .unwrap();
+        assert!(d.mbuf.capacity() <= KEEP_BUF);
     }
 }
