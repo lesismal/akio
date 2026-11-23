@@ -11,7 +11,10 @@
 //! over that family (names are still answered over the other one: an IPv6-only link, where
 //! `224.0.0.251` has no route, conceals over `ff02::fb`). A host without IPv6 runs IPv4 only.
 //!
-//! Both families run on every interface (`getifaddrs`, read when resolving starts): IPv6
+//! Both families run on every interface (`getifaddrs`, read when resolving starts, and again
+//! at most every 5 seconds when a new name is resolved or a query comes from a source on no
+//! known subnet, at once when an address to conceal is on no known interface; the groups are
+//! joined on the interfaces that appeared since and left on those gone): IPv6
 //! joins `ff02::fb` on each interface with a link-local address, IPv4 joins `224.0.0.251` on
 //! each multicast-capable interface with an IPv4 address (loopback aside; the default
 //! interface when there is none). A query goes to the group on each of them (IPv6 names the
@@ -37,9 +40,11 @@
 //! gives the name up: it is no longer answered and the address gets a fresh name for the
 //! peers made after. Each address is probed, announced and answered on the interface that
 //! holds it only, over both families (§6.2: an address record is of no use on another link; a
-//! link-local IPv6 address's interface is its scope id). Loopback addresses, addresses on no
-//! interface the endpoint knows, and queries from a source on no known subnet keep the old
-//! behaviour: every link. Closing the endpoint sends goodbyes (§10.1, TTL 0) for its names.
+//! link-local IPv6 address's interface is its scope id). Loopback addresses and addresses on
+//! no interface the endpoint knows are answered on every link. A query from a source on no
+//! known subnet (a querier with only a 169.254 address, say) cannot be placed on a link: each
+//! record is answered by multicast on its own link (a legacy unicast querier gets only the
+//! records of every link). Closing the endpoint sends goodbyes (§10.1, TTL 0) for its names.
 //! Every
 //! response leaves with TTL / hop limit 255 (§11), unicast ones included.
 
@@ -74,6 +79,10 @@ const PROBES: u32 = 3;
 const PROBE_GAP: Duration = Duration::from_millis(250);
 const ANNOUNCEMENTS: u32 = 2;
 const ANNOUNCE_GAP: Duration = Duration::from_secs(1);
+/// Least time between two readings of the interface list that a name to resolve or a query
+/// from an unknown source asks for (an address to conceal on no known interface re-reads it
+/// at once).
+const REFRESH_GAP: Duration = Duration::from_secs(5);
 
 /// A concealed name being claimed: probes and announcements sent so far, the next one due.
 struct Claim {
@@ -169,13 +178,14 @@ pub(crate) struct Mdns {
     /// The IPv4 socket, then the IPv6 one when the host has IPv6.
     socks: OnceLock<Vec<Sock>>,
     /// The interfaces the IPv6 socket joined `ff02::fb` on (empty: the default one).
-    ifaces: Vec<u32>,
+    ifaces: Mutex<Vec<u32>>,
     /// The interfaces the IPv4 socket joined `224.0.0.251` on and sends on (empty: the
     /// default one, whose link is not known).
-    ifaces_v4: Vec<u32>,
+    ifaces_v4: Mutex<Vec<u32>>,
     /// The host's interfaces and addresses: which link an address of ours is on, and which a
-    /// query came from (re-read when an address to conceal is on none of them).
-    links: Mutex<Vec<Interface>>,
+    /// query came from (re-read, and the groups joined on interfaces that appeared since, see
+    /// [`refresh`](Mdns::refresh)), with when they were last read.
+    links: Mutex<(Vec<Interface>, Instant)>,
     timeout: Duration,
     state: Mutex<State>,
 }
@@ -232,17 +242,17 @@ impl Mdns {
             me: me.clone(),
             hub: Arc::downgrade(hub),
             socks: OnceLock::new(),
-            ifaces: ipv6_interfaces(&links),
-            ifaces_v4,
-            links: Mutex::new(links),
+            ifaces: Mutex::new(ipv6_interfaces(&links)),
+            ifaces_v4: Mutex::new(ifaces_v4),
+            links: Mutex::new((links, Instant::now())),
             timeout,
             state: Mutex::new(State::default()),
         });
         let bind = |v6: bool| -> std::io::Result<Sock> {
             let acc = || MdnsAcceptor(m.me.clone(), v6);
             // Each family joins its interfaces (else the default one).
-            let list = if v6 { &m.ifaces } else { &m.ifaces_v4 };
-            let ifaces: &[u32] = if list.is_empty() { &[0] } else { list };
+            let list = lock(if v6 { &m.ifaces } else { &m.ifaces_v4 }).clone();
+            let ifaces: &[u32] = if list.is_empty() { &[0] } else { &list };
             let joined = engine
                 .bind_udp_multicast_on(group(v6, 0), ifaces, acc())
                 .or_else(|e| {
@@ -341,18 +351,15 @@ impl Mdns {
             let scopes = link.map_or_else(|| self.scopes(), |l| vec![l]);
             return scopes.into_iter().map(|i| (group(true, i), 0)).collect();
         }
+        let ifaces_v4 = lock(&self.ifaces_v4);
         match link {
             // Joined on the default interface only: its link is not known.
-            _ if self.ifaces_v4.is_empty() => match link {
+            _ if ifaces_v4.is_empty() => match link {
                 None => vec![(mdns::MULTICAST_V4, 0)],
                 Some(_) => Vec::new(),
             },
-            None => self
-                .ifaces_v4
-                .iter()
-                .map(|&i| (mdns::MULTICAST_V4, i))
-                .collect(),
-            Some(l) if self.ifaces_v4.contains(&l) => vec![(mdns::MULTICAST_V4, l)],
+            None => ifaces_v4.iter().map(|&i| (mdns::MULTICAST_V4, i)).collect(),
+            Some(l) if ifaces_v4.contains(&l) => vec![(mdns::MULTICAST_V4, l)],
             Some(_) => Vec::new(),
         }
     }
@@ -376,14 +383,76 @@ impl Mdns {
                 .find(|i| i.index != 0 && !i.flags.is_loopback() && i.has_addr(ip))
                 .map(|i| i.index)
         };
-        let known = find(&lock(&self.links));
+        let known = find(&lock(&self.links).0);
         if known.is_some() {
             return known;
         }
-        let all = akio_sys::interfaces().ok()?;
-        let i = find(&all);
-        *lock(&self.links) = all;
-        i
+        if !self.refresh(Duration::ZERO) {
+            return None;
+        }
+        find(&lock(&self.links).0)
+    }
+
+    /// Reads the interface list again, unless it was read less than `gap` ago, and brings the
+    /// group memberships in line with it: the groups are joined on the interfaces that
+    /// appeared since (an interface brought up, a VPN, a USB or Wi-Fi adapter) and left on
+    /// those gone, so queries, probes and answers go out on them too. Whether the list was
+    /// read. A failed join leaves the interface out (tried again at the next reading).
+    fn refresh(&self, gap: Duration) -> bool {
+        let now = Instant::now();
+        {
+            let mut links = lock(&self.links);
+            if now.duration_since(links.1) < gap {
+                return false;
+            }
+            // Claimed before the (unlocked) read, so concurrent callers do not all read.
+            links.1 = now;
+        }
+        let all = match akio_sys::interfaces() {
+            Ok(all) => all,
+            Err(e) => {
+                akio_log::debug!(target: "akio_webrtc", "mdns: interface list not read again ({e})");
+                return false;
+            }
+        };
+        for v6 in [false, true] {
+            let want = if v6 {
+                ipv6_interfaces(&all)
+            } else {
+                ipv4_interfaces(&all)
+            };
+            let Some(s) = self.socks().iter().find(|s| s.v6 == v6 && s.shared) else {
+                continue;
+            };
+            let g = group(v6, 0).ip();
+            let mut have = lock(if v6 { &self.ifaces } else { &self.ifaces_v4 });
+            if *have == want {
+                continue;
+            }
+            for &i in have.iter().filter(|i| !want.contains(i)) {
+                // An interface gone takes its memberships with it: the leave may fail.
+                let _ = s.binding.leave_multicast(g, i);
+            }
+            let mut next = Vec::with_capacity(want.len());
+            for i in want {
+                if have.contains(&i) {
+                    next.push(i);
+                    continue;
+                }
+                match s.binding.join_multicast(g, i) {
+                    Ok(()) => {
+                        akio_log::debug!(target: "akio_webrtc", "mdns: IPv{} group joined on new interface {i}", if v6 { 6 } else { 4 });
+                        next.push(i);
+                    }
+                    Err(e) => {
+                        akio_log::debug!(target: "akio_webrtc", "mdns: IPv{} group refused on new interface {i} ({e})", if v6 { 6 } else { 4 });
+                    }
+                }
+            }
+            *have = next;
+        }
+        lock(&self.links).0 = all;
+        true
     }
 
     /// Whether our address `ip`, on interface `l`, is of use to a querier on interface `f`
@@ -400,6 +469,7 @@ impl Mdns {
             return false;
         }
         lock(&self.links)
+            .0
             .iter()
             .any(|i| i.index == f && i.contains(ip))
     }
@@ -417,9 +487,11 @@ impl Mdns {
         if ip.is_loopback() {
             return None;
         }
-        let all = lock(&self.links);
+        let links = lock(&self.links);
         let usable = || {
-            all.iter()
+            links
+                .0
+                .iter()
                 .filter(|i| i.index != 0 && !i.flags.is_loopback())
         };
         if let Some(i) = usable().find(|i| i.has_addr(ip)) {
@@ -446,10 +518,13 @@ impl Mdns {
     /// The interfaces IPv6 queries go out on: those the group was joined on (or the default
     /// one, 0) and those of the endpoint's link-local IPv6 host candidates.
     fn scopes(&self) -> Vec<u32> {
-        let mut out = if self.ifaces.is_empty() {
-            vec![0]
-        } else {
-            self.ifaces.clone()
+        let mut out = {
+            let ifaces = lock(&self.ifaces);
+            if ifaces.is_empty() {
+                vec![0]
+            } else {
+                ifaces.clone()
+            }
         };
         if let Some(hub) = self.hub.upgrade() {
             for c in lock(&hub.candidates).iter() {
@@ -512,6 +587,7 @@ impl Mdns {
             ufrag: ufrag.to_owned(),
             line,
         };
+        let mut fresh = false;
         let cached = {
             let mut st = lock(&self.state);
             st.cache.retain(|_, (_, exp)| *exp > now);
@@ -528,6 +604,7 @@ impl Mdns {
                     akio_log::debug!(target: "akio_webrtc", "mdns: too many names being resolved, {name} dropped");
                     return;
                 }
+                fresh = true;
                 st.queries.insert(
                     name.clone(),
                     Query {
@@ -546,7 +623,14 @@ impl Mdns {
                     deliver(&hub, &ips, vec![(name, w)]);
                 }
             }
-            None => self.tick(now),
+            None => {
+                // A new name: its queries go out on the interfaces there are now (one may
+                // have appeared since the list was read).
+                if fresh {
+                    self.refresh(REFRESH_GAP);
+                }
+                self.tick(now);
+            }
         }
     }
 
@@ -735,21 +819,32 @@ impl Mdns {
     }
 
     fn on_query(&self, src: SocketAddr, m: &Message) {
-        let from = self.link_of_src(src);
+        let mut from = self.link_of_src(src);
+        // A source on no known subnet may be on an interface that appeared since the list was
+        // read (at most every `REFRESH_GAP`, on this I/O thread: `getifaddrs` does not block).
+        if from.is_none() && !src.ip().is_loopback() && self.refresh(REFRESH_GAP) {
+            from = self.link_of_src(src);
+        }
+        // Still on none (a querier with only a 169.254 address, say): its link is not known,
+        // so each record goes out on its own link only (below), never to the querier's
+        // address on whatever link the system picks.
+        let unknown = from.is_none() && !src.ip().is_loopback() && !lock(&self.links).0.is_empty();
         akio_log::trace!(target: "akio_webrtc", "mdns: query from {src} (interface {from:?})");
         let (answers, questions) = {
             let mut st = lock(&self.state);
             if st.own_names.is_empty() {
                 return;
             }
-            let mut answers = Vec::new();
+            // Each answer with the link its address is answered on (`None`: every link).
+            let mut answers: Vec<(Record, Option<u32>)> = Vec::new();
             let mut questions = Vec::new();
             for q in &m.questions {
                 let Some(&ip) = st.own_names.get(&q.name) else {
                     continue;
                 };
                 // An address is answered on the link of its interface only (§6.2): a query
-                // from another link is not answered with it (from an unknown one, it is).
+                // from another link is not answered with it (from an unknown one, it is, on
+                // its own link: see the end).
                 // (`usable_on` takes the interface list's lock inside the state lock; nothing
                 // takes them the other way round.)
                 if let (Some(&l), Some(f)) = (st.link.get(&q.name), from) {
@@ -791,13 +886,9 @@ impl Mdns {
                     mdns::TYPE_ANY => true,
                     _ => false,
                 };
-                if fits && !answers.iter().any(|r: &Record| r.name == q.name) {
-                    answers.push(Record {
-                        name: q.name.clone(),
-                        addr: ip,
-                        ttl: OWN_TTL,
-                        cache_flush: true,
-                    });
+                if fits && !answers.iter().any(|(r, _)| r.name == q.name) {
+                    let r = own_record(&q.name, ip, OWN_TTL, true);
+                    answers.push((r, st.link.get(&q.name).copied()));
                     questions.push(q.clone());
                 }
             }
@@ -806,29 +897,49 @@ impl Mdns {
         if answers.is_empty() {
             return;
         }
-        akio_log::debug!(target: "akio_webrtc", "mdns: answering {src} for {}", answers[0].name);
-        let Some(b) = self
-            .socks()
-            .iter()
-            .find(|s| s.v6 == src.is_ipv6())
-            .map(|s| &s.binding)
-        else {
+        akio_log::debug!(target: "akio_webrtc", "mdns: answering {src} for {}", answers[0].0.name);
+        let v6 = src.is_ipv6();
+        let Some(b) = self.socks().iter().find(|s| s.v6 == v6).map(|s| &s.binding) else {
             return;
         };
         if src.port() != mdns::PORT {
             // Legacy unicast (RFC 6762 §6.7): the query's id and questions, no cache flush,
-            // a short TTL, to the querier's port.
+            // a short TTL, to the querier's port. From an unknown link, only the records of
+            // use on every link (the querier cannot take a multicast answer).
             let answers: Vec<Record> = answers
                 .into_iter()
-                .map(|r| Record {
+                .filter(|(_, l)| !unknown || l.is_none())
+                .map(|(r, _)| Record {
                     ttl: LEGACY_TTL,
                     cache_flush: false,
                     ..r
                 })
                 .collect();
-            let _ = b.send_to(&Message::response(m.id, &questions, &answers), src);
+            if !answers.is_empty() {
+                let _ = b.send_to(&Message::response(m.id, &questions, &answers), src);
+            }
             return;
         }
+        if unknown {
+            // Multicast on each record's own link (§5.4 lets a QU question be answered by
+            // multicast too): the records of every link out of every link, each other one
+            // out of its interface only.
+            let mut by_link: Vec<(Option<u32>, Vec<Record>)> = Vec::new();
+            for (r, l) in answers {
+                match by_link.iter_mut().find(|(k, _)| *k == l) {
+                    Some((_, rs)) => rs.push(r),
+                    None => by_link.push((l, vec![r])),
+                }
+            }
+            for (l, rs) in by_link {
+                let reply = Message::response(0, &[], &rs);
+                for (dest, via) in self.dests(v6, l) {
+                    let _ = b.send_to_on(&reply, dest, via);
+                }
+            }
+            return;
+        }
+        let answers: Vec<Record> = answers.into_iter().map(|(r, _)| r).collect();
         let unicast = questions.iter().all(|q: &Question| q.unicast_response);
         let reply = Message::response(0, &[], &answers);
         if unicast {
@@ -839,7 +950,9 @@ impl Mdns {
         // scope id; IPv4: out of that interface, when it is one the group was joined on).
         let (dest, via) = match (src, from) {
             (SocketAddr::V6(_), f) => (group(true, f.unwrap_or(0)), 0),
-            (SocketAddr::V4(_), Some(f)) if self.ifaces_v4.contains(&f) => (mdns::MULTICAST_V4, f),
+            (SocketAddr::V4(_), Some(f)) if lock(&self.ifaces_v4).contains(&f) => {
+                (mdns::MULTICAST_V4, f)
+            }
             (SocketAddr::V4(_), _) => (mdns::MULTICAST_V4, 0),
         };
         let _ = b.send_to_on(&reply, dest, via);

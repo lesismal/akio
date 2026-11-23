@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
+
+ADR-078's fourth update (2026-11-23), additive:
+
+- `UdpBinding::join_multicast(group, interface)` / `leave_multicast(group, interface)`: join or
+  leave a multicast group on a socket already bound (interfaces by index, as
+  `Engine::bind_udp_multicast_on` takes them; joining twice is not an error).
+- akio-webrtc mDNS reads the interface list again (at most every 5 s, when a name is resolved or
+  a query comes from a source on no known subnet) and joins `224.0.0.251` / `ff02::fb` on the
+  interfaces that appeared since `resolve_mdns`, leaving those gone: queries go out on them and
+  answers there are received.
+- A query from a source on no known subnet (a querier with only a 169.254 address) is now
+  answered by multicast with each record on its own link only, instead of with every record on
+  the default interface or by unicast; a legacy unicast querier gets only the records of every
+  link.
+
 ### Fixed: BitTorrent client on port 0 racing other sockets (akio-bittorrent)
 
 `Client::new` with `listen` on port 0 picks one port number for TCP and UDP by probing both,

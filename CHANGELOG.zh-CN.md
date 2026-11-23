@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
+
+ADR-078 的第四次更新（2026-11-23），均为新增：
+
+- `UdpBinding::join_multicast(group, interface)` / `leave_multicast(group, interface)`：在已绑定的套接字上加
+  入或离开组播组（接口按索引指定，与 `Engine::bind_udp_multicast_on` 一致；重复加入不算错误）。
+- akio-webrtc 的 mDNS 会重新读取接口列表（至多每 5 秒一次，在解析名字或收到来自未知子网源地址的查询时），在
+  `resolve_mdns` 之后出现的接口上加入 `224.0.0.251` / `ff02::fb`，并离开已消失的接口：查询会从这些接口发出，
+  其上的应答也能收到。
+- 来自未知子网源地址的查询（只有 169.254 地址的查询方）现在以组播应答，每条记录只在它自己的链路上发出，而不再
+  以全部记录从默认接口发出或以单播发出；传统单播查询方只得到适用于所有链路的记录。
+
 ### 修复：端口为 0 的 BitTorrent 客户端与其他套接字争用端口（akio-bittorrent）
 
 `listen` 端口为 0 时，`Client::new` 先探测 TCP 与 UDP 都空闲的端口号，再让引擎绑定；两步之间其他套接字可能占用

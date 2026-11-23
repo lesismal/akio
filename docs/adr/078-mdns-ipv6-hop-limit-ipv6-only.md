@@ -253,3 +253,77 @@ Verification:
 - macOS and gpu51 (rustc 1.100): `cargo test` of akio-sys, akio-core, akio and akio-webrtc on
   epoll and with `AKIO_TEST_BACKEND=uring`, akio-tls with `ktls` (its offload check now reads
   the interface list), clippy `-D warnings`, `tools/unsafe-inventory.py --check`.
+
+## Update 4 (2026-11-23): interfaces that appear later, queries from no known subnet
+
+Update 3 left two gaps. The interface list was read once, when `resolve_mdns` started, so an
+interface brought up afterwards (a VPN, a USB or Wi-Fi adapter, a link that came up late) was
+never joined: queries did not go out on it and its answers and announcements were not received.
+And a query from a source on no known subnet was answered with every record: by multicast on
+the default interface (so a querier on another link did not get the answer, and a record went
+out on a link it is of no use on), or by unicast to the querier, whatever its link.
+
+Decisions:
+
+1. **akio-core: joining and leaving on a bound socket.** `UdpBinding::join_multicast(group,
+   interface)` and `leave_multicast(group, interface)` (additive), with the interface named by
+   index as in `bind_udp_multicast_on`: an IPv4 join names it by its first IPv4 address
+   (`AddrNotAvailable` without one), IPv6 by its index. Joining a group already joined there is
+   not an error (`EADDRINUSE` is taken as success), so a caller can bring its memberships in line
+   with the interface list without tracking what the kernel kept. Leaving an interface that has
+   gone away fails; the kernel dropped its memberships with it.
+2. **akio-webrtc: the interface list read again.** `Mdns::refresh` reads `getifaddrs` again,
+   joins `224.0.0.251` / `ff02::fb` on the interfaces that appeared since (the same filters as
+   at start: up, multicast-capable, not loopback, with an IPv4 address; up with an IPv6
+   link-local address) and leaves them on those gone; a refused join leaves the interface out
+   until the next reading. It runs at most every 5 seconds (`REFRESH_GAP`), when a name not
+   cached is resolved (before its first query) and when a query comes from a source on no known
+   interface or subnet; at once when an address to conceal is on no known interface (as before,
+   now with the joins). No timer: an endpoint that resolves nothing and gets no stray queries
+   reads nothing. `getifaddrs` is a netlink / sysctl read that does not block, so the query
+   path may run it on its I/O thread; the 5-second gap bounds what a stream of stray queries can
+   cost. Interfaces that only change addresses keep their index and membership (an IPv4
+   membership is bound to the device, not the address).
+3. **akio-webrtc: a query from no known subnet.** A source on no interface or subnet the
+   endpoint knows (after the reading above), not loopback, cannot be placed on a link. Each
+   record is answered by multicast on its own link only: records of an address with an
+   interface out of that interface, records of every link (loopback addresses, addresses on no
+   known interface) out of every link. A QU question is answered this way too (RFC 6762 §5.4
+   allows a multicast answer), and a legacy unicast querier (source port not 5353), which cannot
+   take a multicast answer, gets only the records of every link. A querier with only a
+   169.254 address on a link we hold an address on now gets that address's record (before, it
+   left on the default interface); one on a link we hold nothing on gets nothing of use there.
+
+Not done: telling the interface a datagram arrived on (`IP_PKTINFO` / `IPV6_RECVPKTINFO` on
+receive: a change to the engine's receive path for every UDP socket), which would place such a
+query exactly; a netlink / route-socket watch for interface changes (the lazy reading covers
+what mDNS needs: it acts only when resolving or answering).
+
+Verification:
+
+- akio `tests/shared_ports.rs` `ipv4_group_joined_and_left_on_a_bound_socket`: a group joined at
+  bind time on one interface, then on a second through the binding; a datagram out of the second
+  is received only after `join_multicast` (joining twice is fine) and no longer after
+  `leave_multicast`; an unknown interface is refused (macOS: lo0 then en1; gpu51's container:
+  a0 then b0).
+- `tools/interop/webrtc/mdns4.sh` (gpu51, Docker), two new steps, both green on top of the four
+  earlier ones (epoll and io_uring tests, avahi 0.8):
+  5. A resolver's mDNS starts on a0/b0, then a veth pair c0 (`10.66.3.1/24`) <-> c1 is made, with
+     c1 in a namespace of its own (`169.254.5.5/16`, an on-link default route) and avahi there on c1
+     publishing a name for `10.66.3.1`. The resolver joins the groups on the new interface ("IPv4
+     group joined on new interface 7"), gets the answer from `169.254.5.5:5353` over c0 and
+     connects (20 data channel echoes). avahi runs in the other namespace on purpose: in the same
+     one, Linux's `IP_MULTICAST_ALL` hands its looped-back announcements to every socket on the
+     port, joined or not, which hid the missing join in a first control run.
+  6. Endpoints concealing `10.66.3.1` (c0) and `10.66.1.1` (a0); the querier in the namespace
+     (`169.254.5.5`, no subnet of ours) asks for both and gets the c0 name's record from
+     `10.66.3.1:5353` over c0, and not the a0 one. (Without any route back, even loose
+     reverse-path filtering in the querier's namespace drops answers from `10.66.3.1`: hence the
+     on-link default route.)
+- Controls on gpu51, same script: with the joins on new interfaces refused, step 5 fails (the
+  name never resolves); with the unknown-link path disabled (the update-3 behaviour: the answer
+  leaves on the default interface, a0), step 6 fails ("no answer").
+- macOS: `cargo test` of akio-core, akio and akio-webrtc, clippy `-D warnings`. gpu51 natively
+  (rustc 1.100): `cargo test --release` of akio-sys, akio-core, akio and akio-webrtc on epoll and
+  with `AKIO_TEST_BACKEND=uring`, clippy. One io_uring run, while three container builds ran
+  beside it, had 5 failures (not identified) that three reruns on their own did not show.

@@ -999,6 +999,8 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_core::TransportWaker
 pub struct akio_core::UdpBinding
 impl akio_core::UdpBinding
 pub fn akio_core::UdpBinding::close(&self)
+pub fn akio_core::UdpBinding::join_multicast(&self, core::net::ip_addr::IpAddr, u32) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::leave_multicast(&self, core::net::ip_addr::IpAddr, u32) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::send_to_on(&self, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<()>

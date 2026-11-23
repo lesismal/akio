@@ -51,7 +51,14 @@
 //!                                                      responder publishes; A (on <addr-a>)
 //!                                                      resolves it over mDNS and connects (B gets
 //!                                                      no candidates, so only A's resolution can
-//!                                                      connect them), 20 data channel echoes
+//!                                                      connect them), 20 data channel echoes;
+//!                                                      with MDNS_START_AFTER=<path>, B is bound
+//!                                                      and the name resolved only once <path>
+//!                                                      exists (A's mDNS starts first)
+//! webrtc-interop mdns-query <secs> <name>...           a plain mDNS querier on 0.0.0.0:5353
+//!                                                      (default interface): one multicast A query
+//!                                                      per name, then prints "answer <name>
+//!                                                      <addr> from <src>" for <secs> s
 //! ```
 //! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
 //!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
@@ -1076,11 +1083,54 @@ fn mdns_conceal(bind: SocketAddr, secs: u64) {
     ep.close();
 }
 
+/// A plain mDNS querier: an A question for each of `names` to `224.0.0.251` (QM), then the
+/// address records of the answers heard for `secs` seconds.
+fn mdns_query(secs: u64, names: &[String]) {
+    use akio_ice::mdns::{MULTICAST_V4, Message, TYPE_A};
+    let s = std::net::UdpSocket::bind("0.0.0.0:5353").expect("bind 5353");
+    s.join_multicast_v4(
+        &std::net::Ipv4Addr::new(224, 0, 0, 251),
+        &std::net::Ipv4Addr::UNSPECIFIED,
+    )
+    .expect("join");
+    s.set_multicast_ttl_v4(255).expect("ttl");
+    s.set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("timeout");
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    for n in names {
+        let q = Message::query(n, TYPE_A, false).expect("query");
+        s.send_to(&q, MULTICAST_V4).expect("send");
+    }
+    let mut buf = [0u8; 9000];
+    while Instant::now() < deadline {
+        let Ok((len, src)) = s.recv_from(&mut buf) else {
+            continue;
+        };
+        let Ok(m) = Message::parse(&buf[..len]) else {
+            continue;
+        };
+        if !m.response {
+            continue;
+        }
+        for r in m.records.iter().filter(|r| names.contains(&r.name)) {
+            println!("answer {} {} from {src}", r.name, r.addr);
+        }
+    }
+}
+
 fn mdns_resolve(a_bind: SocketAddr, b_bind: SocketAddr, name: &str) {
     let engine = small_engine();
     let a = Endpoint::bind(&engine, a_bind).expect("bind a");
     a.resolve_mdns(&engine, Duration::from_secs(10))
         .expect("mdns");
+    // A's interface list is read now; B's address may only appear later.
+    if let Ok(path) = std::env::var("MDNS_START_AFTER") {
+        println!("mdns started");
+        let _ = std::io::stdout().flush();
+        while !std::path::Path::new(&path).exists() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     let b = Endpoint::bind(&engine, b_bind).expect("bind b");
     let (tx, rx) = channel();
     let mut ch = None;
@@ -1182,6 +1232,7 @@ fn main() {
         Some("mdns-conceal") => {
             mdns_conceal(a[2].parse().expect("addr"), a[3].parse().expect("secs"));
         }
+        Some("mdns-query") => mdns_query(a[2].parse().expect("secs"), &a[3..]),
         Some("mdns-resolve") => mdns_resolve(
             a[2].parse().expect("addr a"),
             a[3].parse().expect("addr b"),
