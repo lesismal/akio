@@ -104,7 +104,7 @@ impl SentPackets {
         self.live = 0;
     }
 
-    #[cfg(test)]
+    /// Number of packets recorded.
     pub(crate) fn len(&self) -> usize {
         self.live
     }

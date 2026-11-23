@@ -68,6 +68,7 @@ pub fn frames(data: &[u8]) {
         assert!(r.pos() > at);
         match f {
             Frame::Ack { ranges, delay, .. } => {
+                let ranges: Vec<_> = ranges.iter().collect();
                 let mut set = RangeSet::new();
                 for w in ranges.windows(2) {
                     assert!(w[1].end < w[0].start, "ranges descend with gaps");

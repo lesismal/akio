@@ -52,7 +52,8 @@ impl Connection {
         let max = max_datagrams.max(1);
         // One ECN marking for the whole batch (the I/O sends it with one codepoint).
         self.tx_ecn = self.ecn.marking();
-        let mut buf = Vec::with_capacity(usize::from(self.mtu) * max);
+        // From this thread's pool: the UDP layer gives it back once the datagrams are out.
+        let mut buf = akio_buf::get(usize::from(self.mtu) * max);
         let mut seg = 0usize;
         let mut n = 0usize;
         while n < max {
@@ -72,6 +73,7 @@ impl Connection {
             }
         }
         if n == 0 {
+            akio_buf::put(buf);
             return None;
         }
         self.stats.udp_tx.datagrams += n as u64;

@@ -802,6 +802,8 @@ impl Core {
                         st.sent_end = true;
                         self.conn_send -= n as i64;
                         frame(&mut self.out, ty::DATA, flag::END_STREAM, sid, &resp.body);
+                        // Copied out: a pool buffer (`Response::text`) goes back.
+                        akio_buf::put(resp.body);
                         self.finish_if_done(sid);
                         self.flush();
                         return;

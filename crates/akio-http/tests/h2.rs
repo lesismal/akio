@@ -157,6 +157,49 @@ fn targets_reuse_the_buffer_and_stay_exact() {
     stop(&e);
 }
 
+/// A `&'static str` of `len` bytes (a repeating pattern, so a byte out of place shows).
+fn text_of(len: usize) -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    &S.get_or_init(|| {
+        (0..400_000)
+            .map(|i| char::from(b'a' + (i % 23) as u8))
+            .collect()
+    })[..len]
+}
+
+/// Body lengths around the pool's size classes, for `text(200, &str)` bodies (ADR-081).
+const TEXT_LENS: [usize; 9] = [13, 0, 511, 512, 513, 5000, 300_000, 1, 16384];
+
+/// `text(200, &str)` bodies in pool buffers (ADR-081): every size, sent here or from another
+/// thread, arrives exactly, one request after another on a connection.
+#[test]
+fn text_bodies_reuse_pool_buffers_and_stay_exact() {
+    let app = Router::new()
+        .get("/s/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            ctx.text(200, text_of(len));
+        })
+        .get("/sd/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            let d = ctx.detach().unwrap();
+            thread::spawn(move || d.respond(akio_http::Response::text(200, text_of(len))));
+        });
+    let e = start(serve(app));
+    let (c, base) = connect(&e, H2Options::default());
+    for round in 0..3 {
+        for len in TEXT_LENS {
+            let p = format!("/{}/{len}", if round == 1 { "sd" } else { "s" });
+            let r = c
+                .send(ClientRequest::get(&format!("{base}{p}")))
+                .wait()
+                .unwrap();
+            assert_eq!(r.status, 200, "{p}");
+            assert!(r.body == text_of(len).as_bytes(), "{p}: body differs");
+        }
+    }
+    stop(&e);
+}
+
 /// Echoes the request's `x-` fields in order and answers with `:n` extra fields `r-0`, `r-1`...
 /// (from another thread when the path starts with `/hd/`).
 fn echo_fields(ctx: &mut Context) {

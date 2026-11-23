@@ -1168,7 +1168,9 @@ struct ClientConn {
 
 fn fields_to_response(fields: &FieldBuf) -> Option<Response> {
     let mut status = None;
-    let mut headers = Headers::with_capacity(fields.len(), fields.bytes());
+    // The storage of a response dropped on this thread before, when there is one: callers that
+    // do not keep the response give it back that way (ADR-081).
+    let mut headers = akio_http::transport::response_headers(fields.len(), fields.bytes());
     for (n, v) in fields.strs()? {
         if n == ":status" {
             status = v.parse::<u16>().ok();

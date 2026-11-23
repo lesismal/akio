@@ -8,7 +8,7 @@ use super::super::bbr::RateSample;
 use super::super::cid::{ConnectionId, LOCAL_CID_LEN};
 use super::super::coding::Reader;
 use super::super::crypto::{TAG_LEN, initial_keys};
-use super::super::frame::{self, Frame, TransportError, code};
+use super::super::frame::{self, AckRanges, Frame, TransportError, code};
 use super::super::packet::{
     HeaderError, PacketType, decode_pn, parse_header, supported, unprotect_header,
 };
@@ -559,7 +559,7 @@ impl Connection {
     ) -> Result<(), TransportError> {
         match f {
             Frame::Padding | Frame::Ping => {}
-            Frame::Ack { ranges, delay, ecn } => self.on_ack(now, sid, &ranges, delay, ecn)?,
+            Frame::Ack { ranges, delay, ecn } => self.on_ack(now, sid, ranges, delay, ecn)?,
             Frame::Crypto { offset, data } => {
                 let sp = &mut self.spaces[sid as usize];
                 sp.crypto_recv.insert(offset, payload.slice(data), false)?;
@@ -846,25 +846,41 @@ impl Connection {
         &mut self,
         now: Instant,
         sid: SpaceId,
-        ranges: &[std::ops::Range<u64>],
+        ranges: AckRanges<'_>,
         delay: u64,
         ecn: Option<[u64; 3]>,
     ) -> Result<(), TransportError> {
-        let Some(largest) = ranges.first().map(|r| r.end - 1) else {
-            return Ok(());
-        };
+        // The packets this acknowledgment takes out, in a list kept for the next one.
+        let mut newly = std::mem::take(&mut self.acked_scratch);
+        let r = self.on_ack_with(now, sid, ranges, delay, ecn, &mut newly);
+        newly.clear();
+        if newly.capacity() <= ACKED_SCRATCH_MAX {
+            self.acked_scratch = newly;
+        }
+        r
+    }
+
+    fn on_ack_with(
+        &mut self,
+        now: Instant,
+        sid: SpaceId,
+        ranges: AckRanges<'_>,
+        delay: u64,
+        ecn: Option<[u64; 3]>,
+        newly: &mut Vec<(u64, Sent)>,
+    ) -> Result<(), TransportError> {
+        let largest = ranges.largest();
         if largest >= self.spaces[sid as usize].next_pn {
             return Err(TransportError::new(
                 code::PROTOCOL_VIOLATION,
                 "ACK of an unsent packet",
             ));
         }
-        let mut newly: Vec<(u64, Sent)> = Vec::new();
         let raised;
         {
             let sp = &mut self.spaces[sid as usize];
-            for r in ranges {
-                sp.sent.remove_range(r.clone(), &mut newly);
+            for r in ranges.iter() {
+                sp.sent.remove_range(r, newly);
             }
             if newly.is_empty() {
                 return Ok(());
@@ -936,7 +952,7 @@ impl Connection {
         // last delivery before it.
         let mut newest: Option<(Instant, u32, u32)> = None;
         let sampling = self.cc.wants_rate_samples();
-        for (pn, mut p) in newly {
+        for (pn, mut p) in newly.drain(..) {
             if sampling && p.in_flight && !p.mtu_probe {
                 let d = &mut self.dlv;
                 d.delivered += u64::from(p.size);
@@ -995,9 +1011,12 @@ impl Connection {
         Ok(())
     }
 
-    /// Keeps an emptied frame list for a later packet (a few dozen at most).
+    /// Keeps an emptied frame list for a later packet: as many as there are 1-RTT packets in
+    /// flight (one receive batch can acknowledge most of them before anything is sent), at
+    /// least [`SPARE_FRAMES_MIN`].
     fn recycle_frames(&mut self, frames: Vec<SentFrame>) {
-        if self.spare_frames.len() < 64 && frames.capacity() > 0 {
+        let cap = SPARE_FRAMES_MIN.max(self.spaces[SpaceId::Data as usize].sent.len());
+        if self.spare_frames.len() < cap && frames.capacity() > 0 {
             self.spare_frames.push(frames);
         }
     }

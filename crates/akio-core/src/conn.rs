@@ -576,10 +576,20 @@ struct DgramItem<'a, 'g> {
     res: Option<io::Result<bool>>,
 }
 
+/// `send_datagrams`' per-thread state: the `sendmmsg` batch and, per message, (item,
+/// datagrams in it); kept so a flush allocates nothing.
+#[cfg(target_os = "linux")]
+struct SendScratch {
+    batch: akio_sys::SendBatch,
+    map: Vec<(usize, usize)>,
+}
+
 #[cfg(target_os = "linux")]
 thread_local! {
-    static SEND_BATCH: std::cell::RefCell<akio_sys::SendBatch> =
-        std::cell::RefCell::new(akio_sys::SendBatch::new());
+    static SEND_BATCH: std::cell::RefCell<SendScratch> = std::cell::RefCell::new(SendScratch {
+        batch: akio_sys::SendBatch::new(),
+        map: Vec::with_capacity(akio_sys::SEND_BATCH),
+    });
 }
 
 /// Sends the datagrams queued in `items` (which share one socket) with `sendmmsg`, merging runs
@@ -588,7 +598,7 @@ thread_local! {
 /// `res`.
 #[cfg(target_os = "linux")]
 fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
-    use akio_sys::{MAX_GSO_BYTES, MAX_GSO_SEGMENTS, SEND_BATCH as CAP};
+    use akio_sys::{MAX_GSO_BYTES, MAX_GSO_SEGMENTS};
     const EIO: i32 = 5;
     const EINVAL: i32 = 22;
 
@@ -603,12 +613,13 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
         return;
     };
     let fd = first.inner.udp_target().1;
-    SEND_BATCH.with(|sb| {
-        let mut sb = sb.borrow_mut();
-        // Per message: (item, datagrams in it).
-        let mut map: Vec<(usize, usize)> = Vec::with_capacity(CAP);
+    SEND_BATCH.with(|sc| {
+        let mut sc = sc.borrow_mut();
+        let SendScratch { batch: sb, map } = &mut *sc;
         loop {
-            let mut parts: Vec<&[u8]> = Vec::with_capacity(MAX_GSO_SEGMENTS);
+            // The datagrams of the message being filled (on the stack: no allocation per flush).
+            let mut parts: [&[u8]; MAX_GSO_SEGMENTS] = [&[]; MAX_GSO_SEGMENTS];
+            let mut np = 0;
             let gso = akio_sys::gso_enabled();
             map.clear();
             let mut b = sb.batch();
@@ -621,25 +632,26 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                 let (mut seg, mut total, mut ecn) = (0, 0, 0);
                 let mut iter = it.w.datagrams_ecn().peekable();
                 while let Some((d, e)) = iter.next() {
-                    if parts.is_empty() {
+                    if np == 0 {
                         (seg, total, ecn) = (d.len(), 0, e);
                     }
-                    parts.push(d);
+                    parts[np] = d;
+                    np += 1;
                     total += d.len();
                     // Only the last datagram of a GSO message may be shorter than the others.
                     let joins = gso
                         && d.len() == seg
-                        && parts.len() < MAX_GSO_SEGMENTS
+                        && np < MAX_GSO_SEGMENTS
                         && iter.peek().is_some_and(|&(n, e)| {
                             e == ecn && n.len() <= seg && total + n.len() <= MAX_GSO_BYTES
                         });
                     if joins {
                         continue;
                     }
-                    let g = if parts.len() > 1 { seg } else { 0 };
-                    let pushed = b.push_ecn(dest, &parts, g, ecn, v6);
-                    let cnt = parts.len();
-                    parts.clear();
+                    let g = if np > 1 { seg } else { 0 };
+                    let pushed = b.push_ecn(dest, &parts[..np], g, ecn, v6);
+                    let cnt = np;
+                    np = 0;
                     if !pushed {
                         break 'fill;
                     }
@@ -1638,8 +1650,32 @@ impl ConnInner {
     /// Loop side, UDP: uncorks every connection in `conns` and flushes their queued datagrams
     /// together, with as few `sendmmsg` calls as possible (they must share one socket). `out`
     /// receives one result per connection, as [`flush_queue`](Self::flush_queue) would return.
-    pub fn flush_datagram_peers(conns: &[&ConnInner], out: &mut Vec<io::Result<bool>>) {
+    pub fn flush_datagram_peers<C: std::ops::Deref<Target = ConnInner>>(
+        conns: &[C],
+        out: &mut Vec<io::Result<bool>>,
+    ) {
         out.clear();
+        #[cfg(target_os = "linux")]
+        if let [c] = conns {
+            // One connection (a client socket, a quiet server loop): no lists to build.
+            let mut g = c.lock();
+            g.corked = false;
+            c.loop_cork.store(false, Ordering::Relaxed);
+            let mut items = [DgramItem {
+                inner: c,
+                w: &mut g,
+                res: None,
+            }];
+            send_datagrams(&mut items);
+            let r = items[0].res.take().unwrap_or(Ok(true));
+            if matches!(r, Ok(true)) {
+                c.stash_drain(&mut g);
+            }
+            out.push(r);
+            drop(g);
+            c.run_drained();
+            return;
+        }
         #[cfg(target_os = "linux")]
         {
             // Only this (loop) thread ever holds more than one connection's write lock, so taking

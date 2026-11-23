@@ -103,7 +103,7 @@ pub enum Frame<'a> {
     Ping,
     Ack {
         /// Acknowledged packet numbers, highest range first.
-        ranges: Vec<Range<u64>>,
+        ranges: AckRanges<'a>,
         /// Raw ACK Delay field (scaled by the peer's ack_delay_exponent).
         delay: u64,
         /// ECT(0), ECT(1), ECN-CE counts (ACK_ECN).
@@ -212,6 +212,72 @@ impl Frame<'_> {
     }
 }
 
+/// The acknowledged ranges of an ACK frame, highest first: the first one, and the frame's
+/// (gap, length) pairs for the others, already checked by [`parse`].
+#[derive(Clone, Copy)]
+pub struct AckRanges<'a> {
+    largest: u64,
+    first: u64,
+    more: &'a [u8],
+}
+
+impl<'a> AckRanges<'a> {
+    /// The largest acknowledged packet number.
+    pub fn largest(&self) -> u64 {
+        self.largest
+    }
+
+    /// The ranges, highest first.
+    pub fn iter(&self) -> AckIter<'a> {
+        AckIter {
+            next: Some(self.largest - self.first..self.largest + 1),
+            more: Reader::new(self.more),
+        }
+    }
+}
+
+impl PartialEq for AckRanges<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for AckRanges<'_> {}
+
+impl PartialEq<Vec<Range<u64>>> for AckRanges<'_> {
+    fn eq(&self, other: &Vec<Range<u64>>) -> bool {
+        self.iter().eq(other.iter().cloned())
+    }
+}
+
+impl fmt::Debug for AckRanges<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+/// Iterates [`AckRanges`].
+pub struct AckIter<'a> {
+    next: Option<Range<u64>>,
+    more: Reader<'a>,
+}
+
+impl Iterator for AckIter<'_> {
+    type Item = Range<u64>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Range<u64>> {
+        let cur = self.next.take()?;
+        if !self.more.is_empty() {
+            // `parse` checked every pair: none underflows.
+            let (gap, len) = (self.more.varint()?, self.more.varint()?);
+            let hi = cur.start - gap - 2;
+            self.next = Some(hi - len..hi + 1);
+        }
+        Some(cur)
+    }
+}
+
 /// Parses the next frame. `ty` gets the frame type for error reports.
 pub fn parse<'a>(r: &mut Reader<'a>) -> Result<Frame<'a>, TransportError> {
     let t = r.varint().ok_or_else(|| enc_err(0))?;
@@ -233,17 +299,21 @@ pub fn parse<'a>(r: &mut Reader<'a>) -> Result<Frame<'a>, TransportError> {
             if first > largest {
                 return Err(e());
             }
-            let mut ranges = Vec::with_capacity(1 + count.min(32) as usize);
-            ranges.push(largest - first..largest + 1);
+            // The gaps and lengths are checked here and decoded again as they are read
+            // (`AckRanges::iter`), so an ACK frame costs no allocation.
+            let at = r.pos();
             let mut smallest = largest - first;
             for _ in 0..count {
                 let gap = r.varint().ok_or_else(e)?;
                 let len = r.varint().ok_or_else(e)?;
                 let hi = smallest.checked_sub(gap + 2).ok_or_else(e)?;
-                let lo = hi.checked_sub(len).ok_or_else(e)?;
-                ranges.push(lo..hi + 1);
-                smallest = lo;
+                smallest = hi.checked_sub(len).ok_or_else(e)?;
             }
+            let ranges = AckRanges {
+                largest,
+                first,
+                more: r.since(at),
+            };
             let ecn = if t == ty::ACK_ECN {
                 Some([
                     r.varint().ok_or_else(e)?,
@@ -527,14 +597,11 @@ mod tests {
         };
         assert_eq!(ranges, vec![10..20, 5..6]);
         // ACK_ECN with counts; a range below zero is an encoding error.
-        assert_eq!(
-            one(&[0x03, 5, 0, 0, 0, 1, 2, 3]).unwrap(),
-            Frame::Ack {
-                ranges: std::iter::once(5..6).collect(),
-                delay: 0,
-                ecn: Some([1, 2, 3])
-            }
-        );
+        let Frame::Ack { ranges, delay, ecn } = one(&[0x03, 5, 0, 0, 0, 1, 2, 3]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(ranges, vec![5..6]);
+        assert_eq!((delay, ecn), (0, Some([1, 2, 3])));
         assert_eq!(
             one(&[0x02, 5, 0, 0, 6]).unwrap_err().code,
             code::FRAME_ENCODING_ERROR
@@ -550,7 +617,7 @@ mod tests {
         let Frame::Ack { ranges, ecn, .. } = one(&out).unwrap() else {
             panic!()
         };
-        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges.iter().count(), 3);
         assert_eq!(ecn, Some([7, 0, 1 << 40]));
     }
 

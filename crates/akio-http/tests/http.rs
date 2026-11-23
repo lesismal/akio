@@ -450,6 +450,58 @@ fn pipelined_heads_reuse_header_storage_and_stay_exact() {
     stop(&e);
 }
 
+/// A `&'static str` of `len` bytes (a repeating pattern, so a byte out of place shows).
+fn text_of(len: usize) -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    &S.get_or_init(|| {
+        (0..400_000)
+            .map(|i| char::from(b'a' + (i % 23) as u8))
+            .collect()
+    })[..len]
+}
+
+/// Body lengths around the pool's size classes, for `text(200, &str)` bodies (ADR-081).
+const TEXT_LENS: [usize; 9] = [13, 0, 511, 512, 513, 5000, 300_000, 1, 16384];
+
+/// `text(200, &str)` bodies come from the thread's buffer pool and go back once copied out
+/// (ADR-081): pipelined responses of every size, sent here or from another thread, each carry
+/// exactly their own body.
+#[test]
+fn pipelined_text_bodies_reuse_pool_buffers_and_stay_exact() {
+    let app = Router::new()
+        .get("/s/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            ctx.text(200, text_of(len));
+        })
+        .get("/sd/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            let d = ctx.detach().unwrap();
+            thread::spawn(move || d.respond(Response::text(200, text_of(len))));
+        });
+    let e = start(serve(app));
+    let mut s = connect(e.local_addrs()[0]);
+    let paths: Vec<String> = (0..3)
+        .flat_map(|round| {
+            TEXT_LENS
+                .iter()
+                .map(move |l| format!("/{}/{l}", if round == 1 { "sd" } else { "s" }))
+        })
+        .collect();
+    let raw: String = paths
+        .iter()
+        .map(|p| format!("GET {p} HTTP/1.1\r\nHost: x\r\n\r\n"))
+        .collect();
+    s.write_all(raw.as_bytes()).unwrap();
+    for p in &paths {
+        let r = read_resp(&mut s);
+        let len: usize = p.rsplit('/').next().unwrap().parse().unwrap();
+        assert_eq!(r.status, 200, "{p}");
+        assert!(r.body == text_of(len).as_bytes(), "{p}: body differs");
+        assert_eq!(r.h("content-length"), Some(len.to_string().as_str()), "{p}");
+    }
+    stop(&e);
+}
+
 #[test]
 fn pipelined_requests_are_answered_in_order_even_when_finished_out_of_order() {
     // Later requests finish first.

@@ -169,6 +169,8 @@ struct UdpLoop {
     /// Server-socket peers corked while the current receive batch is processed.
     touched: Vec<u64>,
     flush_out: Vec<io::Result<bool>>,
+    /// The connections `flush_touched` flushes, kept so a flush allocates nothing.
+    flush_conns: Vec<Arc<ConnInner>>,
     stats: Arc<Stats>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
@@ -282,6 +284,7 @@ impl UdpLoop {
             scratch: sock_present.then(|| Scratch::new(rb)),
             touched: Vec::new(),
             flush_out: Vec::new(),
+            flush_conns: Vec::new(),
             stats,
             cfg,
             draining: None,
@@ -575,13 +578,12 @@ impl UdpLoop {
             }
             None => false,
         });
-        let inners: Vec<Arc<ConnInner>> =
-            ids.iter().map(|id| self.conns[id].inner.clone()).collect();
-        let refs: Vec<&ConnInner> = inners.iter().map(|i| &**i).collect();
+        let mut inners = std::mem::take(&mut self.flush_conns);
+        inners.extend(ids.iter().map(|id| self.conns[id].inner.clone()));
         let mut out = std::mem::take(&mut self.flush_out);
-        ConnInner::flush_datagram_peers(&refs, &mut out);
-        drop(refs);
-        drop(inners);
+        ConnInner::flush_datagram_peers(&inners, &mut out);
+        inners.clear();
+        self.flush_conns = inners;
         for (&id, r) in ids.iter().zip(out.drain(..)) {
             self.after_flush(id, r);
         }
