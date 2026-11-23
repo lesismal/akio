@@ -10,6 +10,13 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: BitTorrent client on port 0 racing other sockets (akio-bittorrent)
+
+`Client::new` with `listen` on port 0 picks one port number for TCP and UDP by probing both,
+then lets the engine bind it; another socket could take it in between and `new` failed with
+`AddrInUse` (seen as a flaky `tests/resume.rs` under parallel tests). It now picks again and
+retries the binds, up to 20 times. A port given explicitly still fails at once.
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:
