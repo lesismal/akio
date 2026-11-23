@@ -102,7 +102,7 @@ impl Default for H3ClientOptions {
             request_timeout: Some(Duration::from_secs(30)),
             qpack_max_table_capacity: h3.qpack_max_table_capacity,
             qpack_blocked_streams: h3.qpack_blocked_streams,
-            qpack_encoder_capacity: h3.qpack_encoder_capacity,
+            qpack_encoder_capacity: 0,
         }
     }
 }
