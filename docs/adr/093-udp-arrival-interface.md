@@ -143,8 +143,8 @@ Platforms other than Linux and macOS keep the inference.
   prefix, each a veth pair to a network namespace with a querier (`10.66.4.11`, `10.66.4.12`);
   each querier asks for the name concealing its own link's address and gets it, from that
   address. The trace shows each query placed on the interface it arrived on. Steps 1–6 and
-  `mdns6.sh` stay green; both scripts on Linux 6.12 (Docker Desktop, aarch64) with epoll and
-  `AKIO_TEST_BACKEND=uring`.
+  `mdns6.sh` stay green; both scripts on Linux 6.12 (Docker Desktop, aarch64) and again on
+  gpu51 (Docker, Linux 7.0, 2026-11-24), each with epoll and `AKIO_TEST_BACKEND=uring`.
 - Control (same script, the arrival interface ignored in `on_query`): step 7 fails, neither
   querier gets an answer (the tie names one interface for both queries, and d0 / e0 appeared
   after the mDNS sockets started, so the inferred link was not joined either: the answers left
