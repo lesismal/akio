@@ -10,6 +10,39 @@ impl core::marker::Sync for akio_epoll::EpollGroup
 impl core::marker::Unpin for akio_epoll::EpollGroup
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_epoll::EpollGroup
 impl !core::panic::unwind_safe::UnwindSafe for akio_epoll::EpollGroup
+#[non_exhaustive] pub struct akio_epoll::RoundsConfig
+pub akio_epoll::RoundsConfig::pollers: usize
+pub akio_epoll::RoundsConfig::workers: usize
+impl akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::new(usize, usize) -> akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::resolved(&self) -> (usize, usize)
+impl core::clone::Clone for akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio_epoll::RoundsConfig
+impl core::cmp::PartialEq for akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::default() -> Self
+impl core::fmt::Debug for akio_epoll::RoundsConfig
+pub fn akio_epoll::RoundsConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_epoll::RoundsConfig
+impl core::marker::StructuralPartialEq for akio_epoll::RoundsConfig
+impl core::marker::Send for akio_epoll::RoundsConfig
+impl core::marker::Sync for akio_epoll::RoundsConfig
+impl core::marker::Unpin for akio_epoll::RoundsConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_epoll::RoundsConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_epoll::RoundsConfig
+pub struct akio_epoll::RoundsGroup
+impl akio_epoll::RoundsGroup
+pub fn akio_epoll::RoundsGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>)>, akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
+pub fn akio_epoll::RoundsGroup::bind_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>, akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
+impl core::fmt::Debug for akio_epoll::RoundsGroup
+pub fn akio_epoll::RoundsGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_epoll::RoundsGroup
+impl core::marker::Sync for akio_epoll::RoundsGroup
+impl core::marker::Unpin for akio_epoll::RoundsGroup
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_epoll::RoundsGroup
+impl !core::panic::unwind_safe::UnwindSafe for akio_epoll::RoundsGroup
 pub struct akio_epoll::UdpGroup
 impl akio_epoll::UdpGroup
 pub fn akio_epoll::UdpGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>)>, usize, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::UdpGroup>
