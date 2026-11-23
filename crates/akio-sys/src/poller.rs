@@ -216,7 +216,7 @@ impl Poller {
 
 impl Poller {
     /// A handle that registers and deregisters descriptors on this poller from any thread
-    /// (rounds scheduling, ADR-102: workers deregister the connections they close).
+    /// (rounds scheduling, ADR-104: workers deregister the connections they close).
     pub fn registry(&self) -> Registry {
         Registry {
             fd: self.fd.clone(),

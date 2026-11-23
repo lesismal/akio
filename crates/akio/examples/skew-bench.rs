@@ -1,4 +1,4 @@
-//! A CPU-bound request/response benchmark for comparing the two scheduling modes (ADR-102).
+//! A CPU-bound request/response benchmark for comparing the two scheduling modes (ADR-104).
 //!
 //! ```text
 //! skew-bench server <addr> <loops|rounds> [threads|pollers:workers]

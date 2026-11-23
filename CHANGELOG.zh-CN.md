@@ -12,7 +12,7 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ### 新增：TCP listener 的轮次调度，默认关闭（akio、akio-epoll、akio-sys）
 
-ADR-102，均为新增：
+ADR-104，均为新增：
 
 - `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`：连接的每一轮（读、handler、写）在 worker
   池中任意空闲的 worker 上执行，同一连接同一时刻只执行一轮；空闲的 worker 自己在 `epoll_wait` 中等待，

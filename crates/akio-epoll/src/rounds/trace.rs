@@ -1,4 +1,4 @@
-//! Diagnostics of rounds scheduling (ADR-102), on with `AKIO_ROUNDS_TRACE=1`: once a second,
+//! Diagnostics of rounds scheduling (ADR-104), on with `AKIO_ROUNDS_TRACE=1`: once a second,
 //! stderr gets how long connections waited in the worker queues and how long pollers took to
 //! hand out a batch of events. Off, it costs one relaxed load per round.
 

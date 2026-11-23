@@ -122,7 +122,7 @@ fn stop(e: &Engine) {
 #[test]
 fn metrics_count_connections_bytes_and_render_prometheus() {
     if common::rounds() {
-        return; // rounds: workers and pollers each have a metrics row (ADR-102)
+        return; // rounds: workers and pollers each have a metrics row (ADR-104)
     }
     let (e, addr) = echo_engine(quick(), 2);
     let mut clients: Vec<TcpStream> = (0..3).map(|_| connect(addr)).collect();
@@ -464,7 +464,7 @@ fn udp_datagrams_and_peers_are_counted() {
 #[test]
 fn reused_config_gets_a_fresh_hub() {
     if common::rounds() {
-        return; // rounds: workers and pollers each have a metrics row (ADR-102)
+        return; // rounds: workers and pollers each have a metrics row (ADR-104)
     }
     let cfg = quick();
     let hub = cfg.telemetry.clone();

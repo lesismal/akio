@@ -1,4 +1,4 @@
-//! A poller of rounds scheduling (ADR-102): waits for readiness, accepts, and runs the control
+//! A poller of rounds scheduling (ADR-104): waits for readiness, accepts, and runs the control
 //! path (dials, timers, telemetry, shutdown). It never reads, writes or runs handler code: a
 //! readiness event becomes pending bits on the connection, served by a worker.
 
@@ -221,7 +221,7 @@ impl RLoop {
 
     /// One poll: waits up to `timeout` for readiness, hands the events to the connections, runs
     /// commands and timers. True once the poller has finished (shut down and drained). Called by
-    /// the dedicated poller thread, or by a worker holding the driver (ADR-102, driver mode).
+    /// the dedicated poller thread, or by a worker holding the driver (ADR-104, driver mode).
     pub(crate) fn poll_once(&mut self, timeout: Option<Duration>) -> bool {
         if self.finished {
             return true;

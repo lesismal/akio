@@ -16,7 +16,7 @@ pub(crate) fn backend() -> Backend {
     }
 }
 
-/// Listeners default to rounds scheduling (`AKIO_DEFAULT_SCHEDULING=rounds`, ADR-102): tests
+/// Listeners default to rounds scheduling (`AKIO_DEFAULT_SCHEDULING=rounds`, ADR-104): tests
 /// of what only per-thread loops do (thread resizing, one metrics row per I/O thread) skip.
 pub(crate) fn rounds() -> bool {
     std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds")

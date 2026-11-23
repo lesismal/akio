@@ -125,7 +125,7 @@ fn child_report() {
 #[test]
 fn unset_keeps_epoll() {
     if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds") {
-        return; // rounds listeners report their own backend name (ADR-102)
+        return; // rounds listeners report their own backend name (ADR-104)
     }
     assert_eq!(run_child(None), ["epoll", "epoll", "udp"]);
     assert_eq!(run_child(Some("epoll")), ["epoll", "epoll", "udp"]);
@@ -134,7 +134,7 @@ fn unset_keeps_epoll() {
 #[test]
 fn uring_applies_only_to_listeners_without_an_explicit_backend() {
     if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds") {
-        return; // rounds listeners report their own backend name (ADR-102)
+        return; // rounds listeners report their own backend name (ADR-104)
     }
     // Where io_uring is missing the default listener falls back to epoll (with a warning).
     let want = if uring_available() {
@@ -149,7 +149,7 @@ fn uring_applies_only_to_listeners_without_an_explicit_backend() {
 #[test]
 fn unknown_value_is_ignored() {
     if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds") {
-        return; // rounds listeners report their own backend name (ADR-102)
+        return; // rounds listeners report their own backend name (ADR-104)
     }
     assert_eq!(run_child(Some("kqueue")), ["epoll", "epoll", "udp"]);
 }

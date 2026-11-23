@@ -1,6 +1,6 @@
-# ADR-102：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次
+# ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次
 
-[English](102-rounds-scheduling.md) | 简体中文
+[English](104-rounds-scheduling.md) | 简体中文
 
 状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量）
 

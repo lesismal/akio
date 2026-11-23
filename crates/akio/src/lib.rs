@@ -90,7 +90,7 @@ pub struct UringConfig {
     pub strict: bool,
 }
 
-/// How a TCP listener's connections are scheduled onto threads (ADR-102).
+/// How a TCP listener's connections are scheduled onto threads (ADR-104).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Scheduling {
@@ -112,7 +112,7 @@ pub enum Scheduling {
 #[non_exhaustive]
 pub struct RoundsConfig {
     /// epoll/kqueue instances the workers poll (default: 1). Each listener socket and
-    /// connection belongs to one of them; more than one rarely helps (ADR-102).
+    /// connection belongs to one of them; more than one rarely helps (ADR-104).
     pub pollers: usize,
     /// Workers that run rounds (default: one per CPU).
     pub workers: usize,
@@ -294,7 +294,7 @@ impl Listener {
 
     /// Chooses how this listener's connections are scheduled onto threads (default:
     /// [`Scheduling::Loops`], or what `AKIO_DEFAULT_SCHEDULING` says when this is not called:
-    /// `rounds` or `loops`, a test and diagnostic knob like `AKIO_DEFAULT_BACKEND`). ADR-102.
+    /// `rounds` or `loops`, a test and diagnostic knob like `AKIO_DEFAULT_BACKEND`). ADR-104.
     #[must_use]
     pub fn scheduling(mut self, s: Scheduling) -> Self {
         self.scheduling = Some(s);
@@ -435,7 +435,7 @@ impl EngineBuilder {
         #[cfg_attr(not(feature = "dpdk"), allow(unused_mut))]
         let mut unplaced: Vec<usize> = Vec::new();
         let env_backend = env_default_backend(); // read once per build (ADR-029)
-        let env_scheduling = env_default_scheduling(); // likewise (ADR-102)
+        let env_scheduling = env_default_scheduling(); // likewise (ADR-104)
         for mut l in self.listeners {
             let explicit_scheduling = l.scheduling.is_some();
             // The environment's default never overrides what the listener asked for explicitly

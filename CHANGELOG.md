@@ -12,7 +12,7 @@ All notable changes to `akio` are documented here. The format follows
 
 ### Added: rounds scheduling for TCP listeners, off by default (akio, akio-epoll, akio-sys)
 
-ADR-102, additive:
+ADR-104, additive:
 
 - `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`: each round of a connection (read,
   handler, write) runs on whichever worker of a pool is free, one round of a connection at a

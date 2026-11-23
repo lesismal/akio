@@ -1,6 +1,6 @@
-# ADR-102: Two scheduling modes for TCP listeners: per-thread loops and rounds on a worker pool
+# ADR-104: Two scheduling modes for TCP listeners: per-thread loops and rounds on a worker pool
 
-English | [简体中文](102-rounds-scheduling.zh-CN.md)
+English | [简体中文](104-rounds-scheduling.zh-CN.md)
 
 Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements)
 

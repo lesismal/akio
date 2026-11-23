@@ -1,4 +1,4 @@
-//! Rounds scheduling (ADR-102): a few pollers report readiness, and each round of a
+//! Rounds scheduling (ADR-104): a few pollers report readiness, and each round of a
 //! connection (read, handler, write) runs on whichever worker is free.
 
 mod conn;

@@ -1,4 +1,4 @@
-//! A connection under rounds scheduling (ADR-102) and the round that serves it.
+//! A connection under rounds scheduling (ADR-104) and the round that serves it.
 //!
 //! Events reach a connection as bits in `pending` (from its poller, from sends on any thread,
 //! from timers). Whoever sets `scheduled` from false to true queues it on the workers; the
@@ -72,7 +72,7 @@ pub(crate) struct RConn {
     pub(crate) inner: Arc<ConnInner>,
     pending: AtomicU32,
     scheduled: AtomicBool,
-    /// When the connection was last queued (tracing, ADR-102 diagnostics).
+    /// When the connection was last queued (tracing, ADR-104 diagnostics).
     pub(crate) queued_ns: AtomicU64,
     st: Mutex<St>,
     tasks: Mutex<Vec<Task>>,

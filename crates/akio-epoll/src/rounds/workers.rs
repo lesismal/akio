@@ -1,4 +1,4 @@
-//! The worker pool of rounds scheduling (ADR-102): a fixed set of threads, each with its own
+//! The worker pool of rounds scheduling (ADR-104): a fixed set of threads, each with its own
 //! queue of connections whose round is due.
 //!
 //! Who waits for readiness depends on the mode:
