@@ -91,6 +91,8 @@ Every check costs waiting; each change gets the checks its kind needs, no more.
     | The hot path (read/write path, parsers, routing, crypto kernels) | same-run before/after A/B on the quiet host (`quiet.sh`), alternating rounds |
     | A release or a campaign | the full harness (`tools/bench`) and a `docs/BENCHMARKS.md` update |
 
+    In a feature task, this column is left to the separate benchmark tasks (rule 20).
+
 17. **Load tests and benchmarks run on Linux, on the benchmark host.** Numbers from macOS, from
     Docker Desktop or from a loaded host are not used; when the host is loaded, only same-run
     A/B ratios are reported. One session at a time uses the benchmark host.
@@ -110,3 +112,16 @@ Every check costs waiting; each change gets the checks its kind needs, no more.
     are pruned when they grow. The benchmark host's disk is shared by every session: check its free
     space (`df -h /`) before a large build, and never leave it fuller than you found it; a full disk
     stops everyone's builds and runs.
+
+## 9. Feature work and benchmarks
+
+20. **A feature task runs the basic CI tests, not load tests or benchmarks.** A task that develops a
+    feature or fixes a bug runs what CI runs: `cargo test` of the crates it touches (and, before a
+    push, the workspace suite rule 18 describes), fmt and clippy. It runs no load tests, benchmarks,
+    A/B comparisons, perf profiles, full benchmark harness runs, or stress and soak runs (high
+    repeat counts, long runs under load), neither here nor on the benchmark host. The benchmark
+    host's time belongs to the benchmark tasks the maintainer runs separately (HTTPArena and the
+    like); a feature task that loads the host wastes it and skews or delays those runs. Where
+    another rule asks for a measurement, the feature task leaves it to such a benchmark task and
+    says in its report what should be measured. A feature task runs a benchmark only when the user
+    asks for one in that task.
