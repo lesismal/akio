@@ -60,6 +60,7 @@ pub mod message;
 pub mod middleware;
 pub mod observe;
 mod parse;
+mod pool;
 pub mod raw;
 // The route constraint engine before ADR-051 (the router now uses akio-regex), frozen as the
 // reference of the differential tests and the `regex_match` fuzz target.
@@ -80,5 +81,6 @@ pub use context::{
 };
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};
+pub use pool::Executor;
 pub use router::{RouteInfo, RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

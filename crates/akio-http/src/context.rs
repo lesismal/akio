@@ -20,7 +20,9 @@ use akio_log::span::Span;
 /// Application code: handles one request.
 ///
 /// `call` runs on the connection's I/O thread, so it must not block. To do slow work, call
-/// [`Context::detach`] and finish the response later, from the logical pool or any thread.
+/// [`Context::detach_to_pool`] (or [`Context::detach`] and finish the response later from any
+/// thread), or run every request on the logical pool with `run_on_pool`
+/// ([`HttpConfig`](crate::HttpConfig), [`H2Config`](crate::H2Config)).
 pub trait Service: Send + Sync + 'static {
     /// Handles `ctx`. It must either respond, or detach the context and respond later; if it
     /// does neither, the client gets a 500.
@@ -346,6 +348,8 @@ pub struct Context {
     responder: Option<Out>,
     status: Option<u16>,
     detached: bool,
+    /// Running on the logical pool (`run_on_pool`): the connection cannot be taken over.
+    pooled: bool,
     upgrade: Option<PendingUpgrade>,
     raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
@@ -398,6 +402,7 @@ impl Context {
             locals: Vec::new(),
             status: None,
             detached: false,
+            pooled: false,
             upgrade: None,
             raw: None,
             sink: None,
@@ -437,6 +442,7 @@ impl Context {
             locals: Vec::new(),
             status: None,
             detached: false,
+            pooled: false,
             upgrade: None,
             raw: None,
             sink: None,
@@ -454,6 +460,7 @@ impl Context {
             locals: Vec::new(),
             status: None,
             detached: false,
+            pooled: false,
             upgrade: None,
             raw: None,
             sink: None,
@@ -681,7 +688,7 @@ impl Context {
     /// [`H2Config::max_pending_bytes`](crate::H2Config::max_pending_bytes) queued fail with
     /// `Overloaded`; a reset stream is a close without handshake (1006).
     pub fn upgrade_websocket(&mut self, handler: impl WsHandler, opts: &WsOptions) -> bool {
-        if self.responder.is_none() {
+        if self.responder.is_none() || self.pooled {
             return false;
         }
         if matches!(self.responder, Some(Out::Ext(_) | Out::H2(_))) {
@@ -829,6 +836,9 @@ impl Context {
     /// dispatched: nothing is sent for the request (the handler writes whatever the protocol
     /// needs, such as `HTTP/1.1 200 Connection Established`). HTTP/1 only; `false` otherwise.
     pub fn upgrade_raw(&mut self, handler: impl crate::raw::RawHandler) -> bool {
+        if self.pooled {
+            return false;
+        }
         match self.responder.take() {
             Some(Out::H1(r)) => {
                 // Keep the response order: earlier pipelined answers still go out first.
@@ -855,6 +865,21 @@ impl Context {
     /// Whether [`detach`](Self::detach) was called.
     pub(crate) fn is_detached(&self) -> bool {
         self.detached
+    }
+
+    /// Marks the context as run on the logical pool.
+    pub(crate) fn set_pooled(&mut self) {
+        self.pooled = true;
+    }
+
+    /// The pool handle of the connection the response goes to.
+    pub(crate) fn out_executor(&self) -> Option<crate::pool::Executor> {
+        use crate::pool::Executor;
+        match self.responder.as_ref()? {
+            Out::H1(r) => r.slot.conn().cloned().map(Executor::conn),
+            Out::H2(r) => r.conn().map(Executor::conn),
+            Out::Ext(e) => Some(Executor::ext(e.0.clone())),
+        }
     }
 }
 

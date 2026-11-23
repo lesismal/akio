@@ -14,7 +14,8 @@ ADR：那些规定代码如何组织和验证，这里规定数据面绝不能�
    `metadata`），不做 DNS 解析（`to_socket_addrs`），不 `thread::sleep`，不等待 channel、条件变量、
    join handle 或 future，不做阻塞 `connect`，也不持有其他线程可能长时间持有的锁。慢回调检测
    （`Config::slow_callback_threshold`，默认 100 ms）会报告漏网之鱼。
-2. **只能阻塞的工作交给逻辑线程池**：用 `Conn::spawn_blocking`（或由线程池完成的 detach 响应），
+2. **只能阻塞的工作交给逻辑线程池**：用 `Conn::spawn_blocking`（或由线程池完成的 detach 响应、
+   `Context::detach_to_pool`，或各协议的 `run_on_pool` 开关，ADR-093），
    以完成回调的形式回到事件循环。线程池有界（满时返回 `Overloaded`），往里排队工作的功能必须处理这个
    错误。线程池与事件循环之间的等待只有一个方向：线程池任务从不等待事件循环，二者不会互相死锁。
 3. **必须调用阻塞 API 的库代码**（tracker announce 解析主机名、缓存未命中时读取文件）在线程池或它自己

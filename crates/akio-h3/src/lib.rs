@@ -123,6 +123,12 @@ pub struct H3Config {
     /// inserts as the peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (at most 64); it evicts
     /// only entries the peer has acknowledged.
     pub qpack_encoder_capacity: usize,
+    /// Run each request's service (middleware and handler) on the engine's logical pool
+    /// instead of the connection's I/O thread, so handlers may block and the requests of one
+    /// connection are served at the same time. Requests whose body the service takes as a
+    /// stream, and extended CONNECTs, stay on the I/O thread. When the pool's queue is full
+    /// the request is answered `503`. Default `false`.
+    pub run_on_pool: bool,
 }
 
 impl Default for H3Config {
@@ -133,6 +139,7 @@ impl Default for H3Config {
             qpack_max_table_capacity: 4096,
             qpack_blocked_streams: 16,
             qpack_encoder_capacity: 0,
+            run_on_pool: false,
         }
     }
 }
@@ -743,7 +750,13 @@ impl<S: Service> ServerConn<S> {
             // the application can answer 425 Too Early to what is not safe to repeat.
             request.headers.append("early-data", "1");
         }
-        akio_http::transport::dispatch_conn(&*self.svc, request, &self.sink, tag(id, head_only));
+        let tag = tag(id, head_only);
+        if self.cfg.run_on_pool {
+            return akio_http::transport::dispatch_conn_on_pool(
+                &self.svc, request, &self.sink, tag,
+            );
+        }
+        akio_http::transport::dispatch_conn(&*self.svc, request, &self.sink, tag);
     }
 
     /// Streams whose field sections the last inserts made decodable go on.
@@ -1705,6 +1718,10 @@ impl ConnSink for H3Out {
 
     fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
         Sink::of(self, tag).start_stream(resp)
+    }
+
+    fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        self.c.execute(job)
     }
 }
 
