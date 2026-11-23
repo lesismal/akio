@@ -74,5 +74,32 @@ handler, write) runs on whichever worker is idle.
 
 ## Measurements
 
-To be filled in by the A/B runs (gpu51): raw TCP echo, HTTP/1.1 plaintext and pipelined,
-WebSocket echo, and a skewed load (few connections, uneven cost) in both modes.
+gpu51 (Ryzen 7 7800X3D, Linux 7.0), 2026-11-24. Server on CPUs 0-3,8-11 (8 logical CPUs; loops:
+8 threads; rounds: 2 pollers, 8 workers), clients on the other 8. Three rounds of 10 s per case,
+averages; "CPU" is server CPU seconds per round (about 88 is all 8 CPUs).
+
+`skew-bench` (CPU-bound requests; `conns`, in-flight `depth`, `work` per request):
+
+| Case | Loops | Rounds | Requests per connection, min-max | CPU |
+|---|---|---|---|---|
+| 12 conns, depth 4, 50 µs | 107k/s | **141k/s (+31%)** | loops 47k-187k, rounds 113k-119k | 55-65 → 83 |
+| 8 conns, depth 8, 100 µs | 46k/s | **69k/s (+50%)** | loops 25k-98k, rounds 85k-87k | 43-55 → 77 |
+| 64 conns (4 at 500 µs, rest 20 µs), depth 2 | **246k/s** | 212k/s (-14%) | loops 5k-83k, rounds 13k-36k | 87 both |
+| 256 conns, depth 1, 10 µs | **458k/s** | 432k/s (-6%); p99 4.4 ms vs 1.2 ms | even in both | 87 both |
+
+TCP echo (`echo-bench`, 8 client threads):
+
+| Case | Loops | Rounds | CPU per request |
+|---|---|---|---|
+| 64 conns x 64 B | 706k/s | 763k/s (+8%) | 7.0 → 8.5 µs (+21%) |
+| 1024 conns x 64 B | 788k/s | 878k/s (+11%) | 6.6 → 7.7 µs (+16%) |
+| 256 conns x 1 KiB | 734k/s | 859k/s (+17%) | 6.9 → 7.9 µs (+16%) |
+
+- With few connections per thread, the kernel's hash leaves threads idle under loops (CPU 55-65
+  of 88, a 4x spread between connections); rounds use every CPU, and throughput rises 31-50%.
+- When loops already saturate every CPU with CPU-bound work, the hand-off per round costs 6-14%,
+  and with 256 connections the tail grows (p99 4.4 ms against 1.2 ms; not investigated yet).
+- In echo, which does not saturate the server's CPUs under loops (about 50 of 88), rounds answer
+  8-17% more requests by using more of them, at 16-21% more CPU per request.
+
+HttpArena profiles (`akio-rounds` against `akio-loops`, same source) follow in the shared batch.
