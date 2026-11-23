@@ -2545,6 +2545,36 @@ alternately under `quiet.sh`, the order rotated every round.
 binary not copying it, as marking every datagram with ECN did (ADR-083: about 6 %), well inside
 the rounds' ±20 % spread.
 
+### Bound UDP socket receive, arrival interface (ADR-093, same-run A/B)
+
+Measured 2026-11-23 on gpu51 (Ryzen 7 7800X3D, Linux 7.0, `quiet.sh`). Question: does reporting
+the arrival interface slow the receive path of sockets that do not ask for it, and what does it
+cost a socket that does? The receive slots' control buffers grew from 96 to 128 bytes and the
+control-message walk now also matches `IP_PKTINFO` / `IPV6_PKTINFO`, on every UDP socket of the
+engine; a socket with `set_recv_interface(true)` gets one more control message (an
+`in_pktinfo`, 28 bytes with its header) per datagram and the loop stores its index.
+
+`udp-recv-bench` (`crates/akio/examples/udp-recv-bench.rs`): one `bind_udp` socket on
+`127.0.0.1`, 4 sender threads flooding it with 64-byte datagrams from 16 sockets each (open
+loop: the engine's one UDP I/O thread is saturated), 5 s per run, the whole process on CPUs
+2–7. `main` is `50a82315` (the same example without the opt-in), `off` the branch without it,
+`on` the branch with it. 10 rounds, the order rotated every round.
+
+| Variant | Rounds | Mean (datagrams/s) | Median | Min–max | I/O thread CPU per datagram (median) |
+|---|---:|---:|---:|---:|---:|
+| main | 10 | 1,445,308 | 1,446,612 | 1,437,756–1,448,373 | 691 ns |
+| off | 10 | 1,443,672 | 1,444,771 | 1,438,659–1,447,001 | 692 ns |
+| on | 10 | 1,434,652 | 1,434,630 | 1,430,074–1,437,895 | 697 ns |
+
+- off / main per round: 0.993–1.006, median 0.999, mean 0.999.
+- on / off per round: 0.991–0.998, median 0.994, mean 0.994.
+- on: every datagram had its interface (`rx_interface` non-zero for all of them).
+
+**Answer: no measurable change for sockets that do not opt in** (0.1 %, inside the ±0.5 %
+spread of the rounds). Opting in costs about 0.6 % on a saturated receiver, about 5 ns per
+datagram: the extra control message the kernel copies out and its parse. Rerun:
+`taskset -c 2-7 target/release/examples/udp-recv-bench off|on 5 4 16 64`.
+
 ### NUMA placement (ADR-088, same-run A/B)
 
 Measured 2026-11-23 on gpu51 (`tools/bench/numa.sh`, `quiet.sh`, 5 interleaved rounds, 5 s each):

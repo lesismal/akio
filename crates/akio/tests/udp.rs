@@ -699,6 +699,51 @@ fn bound_socket_talks_to_many_peers_from_one_port() {
 }
 
 #[test]
+fn bound_socket_reports_the_arrival_interface_once_asked() {
+    // `Conn::rx_interface`: 0 until `set_recv_interface(true)`, then the loopback interface's
+    // index for every datagram (IPv4, and IPv6 when the host has it), 0 again once turned off.
+    type Got = Arc<Mutex<Vec<(Vec<u8>, u32)>>>;
+    struct Rx(Got);
+    impl Handler for Rx {
+        fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+            self.0.lock().unwrap().push((d.to_vec(), c.rx_interface()));
+        }
+    }
+    let lo = akio_sys::interfaces()
+        .unwrap()
+        .iter()
+        .find(|i| i.flags.is_loopback())
+        .expect("a loopback interface")
+        .index;
+    let e = client_engine(1);
+    for bind in ["127.0.0.1:0", "[::1]:0"] {
+        let got: Got = Arc::default();
+        let g = got.clone();
+        let Ok(b) = e.bind_udp(
+            bind.parse().unwrap(),
+            fn_acceptor(move |_c: &Conn<Rx>| Rx(g.clone())),
+        ) else {
+            continue; // no IPv6 loopback
+        };
+        let p = UdpSocket::bind(bind).unwrap();
+        let last = || got.lock().unwrap().last().cloned();
+        p.send_to(b"a", b.local_addr()).unwrap();
+        wait_for("a", || last().is_some_and(|(d, _)| d == b"a"));
+        assert_eq!(last().unwrap().1, 0, "{bind}: not asked for");
+        b.set_recv_interface(true).unwrap();
+        p.send_to(b"b", b.local_addr()).unwrap();
+        wait_for("b", || last().is_some_and(|(d, _)| d == b"b"));
+        assert_eq!(last().unwrap().1, lo, "{bind}");
+        b.set_recv_interface(false).unwrap();
+        p.send_to(b"c", b.local_addr()).unwrap();
+        wait_for("c", || last().is_some_and(|(d, _)| d == b"c"));
+        assert_eq!(last().unwrap().1, 0, "{bind}: turned off");
+        b.close();
+    }
+    stop(&e);
+}
+
+#[test]
 fn bind_udp_without_udp_threads_is_an_error() {
     let e = Engine::builder().build().unwrap();
     e.start().unwrap();

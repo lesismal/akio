@@ -820,3 +820,76 @@ fn ipv4_names_stay_on_their_interface() {
     }
     e.shutdown();
 }
+
+/// A query is placed on the interface it arrived on, not on the one its source address points
+/// to (ADR-093): what goes wrong when two interfaces share a prefix, reproduced with a query
+/// whose source address is one interface's but which is sent out of the other (looped back
+/// as having arrived there). From `theirs` (the other interface's address) out of the
+/// address's own interface: answered, out of it (the inference placed it on the other one and
+/// did not answer). From `mine` out of the other interface: not answered (the inference
+/// placed it on the address's interface and answered). Needs two IPv4 multicast interfaces.
+#[test]
+fn ipv4_queries_are_placed_on_the_interface_they_arrived_on() {
+    let ifs = ipv4_ifaces();
+    let [(link, mine), (other, theirs), ..] = ifs[..] else {
+        eprintln!("skipped: fewer than two IPv4 multicast interfaces ({ifs:?})");
+        return;
+    };
+    let Some(raw) = raw_v4(&ifs) else {
+        eprintln!("skipped: no IPv4 multicast");
+        return;
+    };
+    let e = engine();
+    let ep = Endpoint::bind(&e, SocketAddr::new(mine.into(), 0)).unwrap();
+    ep.resolve_mdns(&e, Duration::from_secs(5)).unwrap();
+    if let Err(err) = ep.conceal_host_candidates() {
+        eprintln!("skipped: {err}");
+        return;
+    }
+    let name = offered_name(&ep);
+    let about_us = |m: &Message| {
+        m.response
+            && m.records
+                .iter()
+                .any(|r| r.name == name && r.addr == IpAddr::V4(mine))
+    };
+    // Past the probes and announcements (up to 250 ms, three probes 250 ms apart, two
+    // announcements 1 s apart: an announcement looks like an answer).
+    recv_v4_within(&raw, Duration::from_millis(4000), |_, _| {});
+    let q = Message::query(&name, TYPE_A, false).unwrap();
+    // Each query from the mDNS port of a socket bound to `from`, out of interface `out`.
+    // macOS refuses to send from one interface's address out of another (`EADDRNOTAVAIL`);
+    // Linux does (as a host with two interfaces on one prefix may).
+    let ask = |from: Ipv4Addr, out: u32| -> std::io::Result<Option<SocketAddr>> {
+        let s = akio_sys::listen_udp((from, PORT).into(), true)?;
+        akio_sys::send_to_on(&s, &q, MULTICAST_V4, out)?;
+        let mut answered = None;
+        recv_v4_within(&raw, Duration::from_millis(1500), |src, m| {
+            if about_us(&m) {
+                answered = Some(src);
+            }
+        });
+        Ok(answered)
+    };
+    let foreign = match ask(theirs, link) {
+        Ok(a) => a,
+        Err(err) => {
+            eprintln!("skipped: {theirs} cannot send out of interface {link} ({err})");
+            ep.close();
+            e.shutdown();
+            return;
+        }
+    };
+    assert_eq!(
+        foreign.map(|a| a.ip()),
+        Some(IpAddr::V4(mine)),
+        "a query from {theirs} that arrived on interface {link} ({mine}'s): no answer out of it"
+    );
+    assert_eq!(
+        ask(mine, other).unwrap(),
+        None,
+        "a query from {mine} that arrived on interface {other} was answered"
+    );
+    ep.close();
+    e.shutdown();
+}

@@ -297,7 +297,8 @@ Decisions:
 Not done: telling the interface a datagram arrived on (`IP_PKTINFO` / `IPV6_RECVPKTINFO` on
 receive: a change to the engine's receive path for every UDP socket), which would place such a
 query exactly; a netlink / route-socket watch for interface changes (the lazy reading covers
-what mDNS needs: it acts only when resolving or answering).
+what mDNS needs: it acts only when resolving or answering). The arrival interface: done in
+[ADR-093](093-udp-arrival-interface.md) (2026-11-23).
 
 Verification:
 

@@ -10,7 +10,7 @@ use akio_buf::SharedBuf;
 
 use crate::{
     Config, Error, Handler, LoopStats, Pool, Result,
-    sync::{AtomicBool, AtomicU8, Mutex, MutexGuard, Ordering},
+    sync::{AtomicBool, AtomicU8, AtomicU32, Mutex, MutexGuard, Ordering},
 };
 
 const OPEN: u8 = 0;
@@ -830,6 +830,9 @@ pub struct ConnInner {
     rx_tos: AtomicU8,
     /// UDP: the TTL / hop limit of the datagram being delivered (0: not reported).
     rx_ttl: AtomicU8,
+    /// UDP: the index of the interface the datagram being delivered arrived on (0: not
+    /// reported).
+    rx_interface: AtomicU32,
     /// Kernel offload of the transport (Linux, [`Transport::offload`]): `OFFLOAD_NONE`,
     /// `OFFLOAD_PENDING` (ask after reads and flushes) and `OFFLOAD_RX` (bit: the read
     /// direction is in the kernel). Read without the lock by the loop's hot paths.
@@ -871,6 +874,7 @@ impl ConnInner {
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
             rx_ttl: AtomicU8::new(0),
+            rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -909,6 +913,7 @@ impl ConnInner {
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
             rx_ttl: AtomicU8::new(0),
+            rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -952,6 +957,7 @@ impl ConnInner {
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
             rx_ttl: AtomicU8::new(0),
+            rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -1157,6 +1163,18 @@ impl ConnInner {
     /// UDP: the TTL / hop limit of the datagram being delivered (0 when unknown).
     pub fn rx_ttl(&self) -> u8 {
         self.rx_ttl.load(Ordering::Relaxed)
+    }
+
+    /// Loop side, UDP: the index of the interface the datagram about to be delivered arrived
+    /// on (0 when not reported).
+    pub fn set_rx_interface(&self, interface: u32) {
+        self.rx_interface.store(interface, Ordering::Relaxed);
+    }
+
+    /// UDP: the index of the interface the datagram being delivered arrived on (0 when
+    /// unknown).
+    pub fn rx_interface(&self) -> u32 {
+        self.rx_interface.load(Ordering::Relaxed)
     }
 
     /// UDP on a kernel socket: asks for the TTL / hop limit of every datagram the socket
@@ -2665,6 +2683,16 @@ impl<H> Conn<H> {
     #[doc(hidden)]
     pub fn rx_ttl(&self) -> u8 {
         self.inner.rx_ttl()
+    }
+
+    /// UDP: inside `on_data` (or `on_data_owned`), the index of the interface the datagram
+    /// arrived on, as [`akio_sys::interfaces`] lists them (the scope id an IPv6 link-local
+    /// address carries). 0 unless the socket asked for it
+    /// ([`UdpBinding::set_recv_interface`](crate::UdpBinding::set_recv_interface), kernel
+    /// sockets on Linux and macOS), and for TCP. Per datagram: one peer's datagrams may arrive
+    /// on different interfaces.
+    pub fn rx_interface(&self) -> u32 {
+        self.inner.rx_interface()
     }
 
     /// UDP (internal, outside the stability promise): asks the kernel for the TTL / hop limit

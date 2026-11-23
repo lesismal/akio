@@ -373,6 +373,32 @@ impl UdpBinding {
         false
     }
 
+    /// Asks the kernel to report (`on`), or to stop reporting, the interface every datagram
+    /// this socket receives arrived on, which its connections then read in `on_data` with
+    /// [`Conn::rx_interface`](crate::Conn::rx_interface): Linux `IP_PKTINFO`, macOS
+    /// `IP_RECVPKTINFO`, and `IPV6_RECVPKTINFO` (an IPv6 socket sets both, the IPv4 option
+    /// covering the IPv4 datagrams a dual-stack socket receives). For a protocol that must
+    /// tell links apart when the source address does not (mDNS answering on the link of the
+    /// query, RFC 6762 section 6.2). Off by default: each datagram then carries one more
+    /// control message. Datagrams already queued arrive without it. Elsewhere than Linux and
+    /// macOS it fails with [`io::ErrorKind::Unsupported`].
+    pub fn set_recv_interface(&self, on: bool) -> io::Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&*self.sock);
+            if akio_sys::enable_recv_interface(fd, on) {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = on;
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
     /// Sets or clears the "don't fragment" bit of the IPv4 datagrams this socket sends (on
     /// Linux `IP_MTU_DISCOVER` with `IP_PMTUDISC_DO` / `IP_PMTUDISC_DONT`, on macOS
     /// `IP_DONTFRAG`; an IPv6 socket also gets `IPV6_DONTFRAG`, which keeps the kernel from

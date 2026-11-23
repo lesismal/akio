@@ -219,7 +219,7 @@ impl Handler for MdnsUdp {
             return;
         }
         if let Some(m) = self.0.upgrade() {
-            m.on_datagram(src, data);
+            m.on_datagram(src, c.rx_interface(), data);
         }
     }
 }
@@ -262,8 +262,16 @@ impl Mdns {
                     akio_log::debug!(target: "akio_webrtc", "mdns: IPv{} group refused on {ifaces:?} ({e}); default interface", if v6 { 6 } else { 4 });
                     engine.bind_udp_multicast_on(group(v6, 0), &[0], acc())
                 });
+            let ask = |b: &UdpBinding| {
+                // The link a query came from is the interface it arrived on (ADR-093); without
+                // it (another platform) it is inferred from the source.
+                if let Err(e) = b.set_recv_interface(true) {
+                    akio_log::debug!(target: "akio_webrtc", "mdns: no arrival interface over IPv{} ({e}); links inferred from sources", if v6 { 6 } else { 4 });
+                }
+            };
             match joined {
                 Ok(binding) => {
+                    ask(&binding);
                     // Unicast answers (QU, legacy unicast) leave with 255 too, as multicast
                     // ones do (RFC 6762 §11).
                     if let Err(e) = binding.set_unicast_hops(255) {
@@ -282,8 +290,10 @@ impl Mdns {
                     } else {
                         Ipv4Addr::UNSPECIFIED.into()
                     };
+                    let binding = engine.bind_udp(SocketAddr::new(any, 0), acc())?;
+                    ask(&binding);
                     Ok(Sock {
-                        binding: engine.bind_udp(SocketAddr::new(any, 0), acc())?,
+                        binding,
                         v6,
                         shared: false,
                     })
@@ -458,9 +468,9 @@ impl Mdns {
     /// Whether our address `ip`, on interface `l`, is of use to a querier on interface `f`
     /// (RFC 6762 §6.2): the same interface, or, unless `ip` is IPv6 link-local (whose link is
     /// its scope id), an interface with a subnet that holds `ip`: two interfaces on one link
-    /// with the same prefix (two NICs on one LAN, the two ends of a veth pair). Without a
-    /// scope id the interface a query arrived on is inferred from its source, which on such a
-    /// link may name the other one.
+    /// with the same prefix (two NICs on one LAN, the two ends of a veth pair). `f` is the
+    /// interface the query arrived on when the kernel reports it (ADR-093); else it is inferred
+    /// from the source, which on such a link may name the other one.
     fn usable_on(&self, ip: IpAddr, l: u32, f: u32) -> bool {
         if l == f {
             return true;
@@ -472,6 +482,28 @@ impl Mdns {
             .0
             .iter()
             .any(|i| i.index == f && i.contains(ip))
+    }
+
+    /// The link a datagram from `src` that arrived on interface `arrived` (0: not reported)
+    /// came from, as the kernel reported it: `None` when it did not, for a loopback source
+    /// (this host's queriers may ask on any link), and for a datagram that arrived on a loopback
+    /// interface (sent by this host to one of its own addresses; the source tells its link). An
+    /// interface not in the list (new since it was read) has it read again (at most every
+    /// `REFRESH_GAP`).
+    fn arrival_link(&self, src: SocketAddr, arrived: u32) -> Option<u32> {
+        if arrived == 0 || src.ip().is_loopback() {
+            return None;
+        }
+        let loopback = |all: &[Interface]| {
+            all.iter()
+                .find(|i| i.index == arrived)
+                .map(|i| i.flags.is_loopback())
+        };
+        let mut known = loopback(&lock(&self.links).0);
+        if known.is_none() && self.refresh(REFRESH_GAP) {
+            known = loopback(&lock(&self.links).0);
+        }
+        (known != Some(true)).then_some(arrived)
     }
 
     /// The interface a datagram from `src` came from: its scope id, else the interface that
@@ -728,7 +760,8 @@ impl Mdns {
         }
     }
 
-    fn on_datagram(&self, src: SocketAddr, data: &[u8]) {
+    /// A datagram from `src` that arrived on interface `arrived` (0: not reported).
+    fn on_datagram(&self, src: SocketAddr, arrived: u32, data: &[u8]) {
         let Ok(m) = Message::parse(data) else { return };
         if m.response {
             // RFC 6762 §6: answers come from the mDNS port (also to legacy unicast queriers).
@@ -741,7 +774,7 @@ impl Mdns {
                 .iter()
                 .any(|s| s.v6 == src.is_ipv6() && s.shared)
         {
-            self.on_query(src, &m);
+            self.on_query(src, arrived, &m);
         }
     }
 
@@ -818,8 +851,11 @@ impl Mdns {
         }
     }
 
-    fn on_query(&self, src: SocketAddr, m: &Message) {
-        let mut from = self.link_of_src(src);
+    fn on_query(&self, src: SocketAddr, arrived: u32, m: &Message) {
+        // The query's link: the interface it arrived on when the kernel reports it (ADR-093),
+        // else inferred from its source.
+        let arrived = self.arrival_link(src, arrived);
+        let mut from = arrived.or_else(|| self.link_of_src(src));
         // A source on no known subnet may be on an interface that appeared since the list was
         // read (at most every `REFRESH_GAP`, on this I/O thread: `getifaddrs` does not block).
         if from.is_none() && !src.ip().is_loopback() && self.refresh(REFRESH_GAP) {
@@ -829,7 +865,7 @@ impl Mdns {
         // so each record goes out on its own link only (below), never to the querier's
         // address on whatever link the system picks.
         let unknown = from.is_none() && !src.ip().is_loopback() && !lock(&self.links).0.is_empty();
-        akio_log::trace!(target: "akio_webrtc", "mdns: query from {src} (interface {from:?})");
+        akio_log::trace!(target: "akio_webrtc", "mdns: query from {src} (interface {from:?}, arrived on {arrived:?})");
         let (answers, questions) = {
             let mut st = lock(&self.state);
             if st.own_names.is_empty() {
@@ -916,7 +952,8 @@ impl Mdns {
                 })
                 .collect();
             if !answers.is_empty() {
-                let _ = b.send_to(&Message::response(m.id, &questions, &answers), src);
+                let reply = Message::response(m.id, &questions, &answers);
+                let _ = b.send_to_on(&reply, src, arrived.unwrap_or(0));
             }
             return;
         }
@@ -943,7 +980,9 @@ impl Mdns {
         let unicast = questions.iter().all(|q: &Question| q.unicast_response);
         let reply = Message::response(0, &[], &answers);
         if unicast {
-            let _ = b.send_to(&reply, src);
+            // Out of the interface the query came in on: a querier on no subnet of ours (a
+            // 169.254 address) is reached on its link, not by the routing table's choice.
+            let _ = b.send_to_on(&reply, src, arrived.unwrap_or(0));
             return;
         }
         // Multicast answers go to the group on the link the query came from (IPv6: in the

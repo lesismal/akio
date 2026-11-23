@@ -51,9 +51,9 @@ pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on
 #[doc(hidden)]
 pub use net::listen_backlog;
 pub use net::{
-    connect_nonblocking, connect_nonblocking_from, dont_fragment, listen, listen_udp,
-    multicast_hops_v6, sendfile, set_backlog, set_dont_fragment, set_multicast_hops_v6,
-    set_unicast_hops_v6, unicast_hops_v6,
+    RecvInfo, connect_nonblocking, connect_nonblocking_from, dont_fragment, enable_recv_interface,
+    listen, listen_udp, multicast_hops_v6, sendfile, set_backlog, set_dont_fragment,
+    set_multicast_hops_v6, set_unicast_hops_v6, unicast_hops_v6,
 };
 pub use poller::{Event, Poller};
 #[doc(hidden)]
@@ -66,8 +66,8 @@ pub use udp::{
 };
 #[cfg(target_os = "macos")]
 pub use udp_mac::{
-    ecn_available, enable_ecn, enable_recv_ttl, recv_from_ecn, recv_from_ip, recv_from_tos,
-    send_to_ecn, send_to_ip, send_to_tos,
+    ecn_available, enable_ecn, enable_recv_ttl, recv_from_ecn, recv_from_info, recv_from_ip,
+    recv_from_tos, send_to_ecn, send_to_ip, send_to_tos,
 };
 #[cfg(target_os = "linux")]
 pub use waker::EventFd;

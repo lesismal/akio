@@ -103,6 +103,7 @@ pub const IPV6_MULTICAST_HOPS: c_int = 18;
 pub const IPV6_UNICAST_HOPS: c_int = 16;
 pub const IP_PKTINFO: c_int = 8;
 pub const IPV6_PKTINFO: c_int = 50;
+pub const IPV6_RECVPKTINFO: c_int = 49;
 pub const IFF_UP: c_int = 0x1;
 pub const IFF_LOOPBACK: c_int = 0x8;
 pub const IFF_POINTOPOINT: c_int = 0x10;

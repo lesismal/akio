@@ -586,6 +586,7 @@ pub fn akio_core::Conn<H>::local_addr(&self) -> core::net::socket_addr::SocketAd
 pub fn akio_core::Conn<H>::on_drain(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
 pub fn akio_core::Conn<H>::peer_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::Conn<H>::queued_bytes(&self) -> usize
+pub fn akio_core::Conn<H>::rx_interface(&self) -> u32
 pub fn akio_core::Conn<H>::send(&self, &[u8]) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> akio_core::Result<()>
@@ -1005,6 +1006,7 @@ pub fn akio_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::Socke
 pub fn akio_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::send_to_on(&self, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_dont_fragment(&self, bool) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::set_recv_interface(&self, bool) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_unicast_hops(&self, u32) -> core::io::error::Result<()>
 impl core::clone::Clone for akio_core::UdpBinding
 pub fn akio_core::UdpBinding::clone(&self) -> Self

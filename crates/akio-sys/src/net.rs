@@ -260,6 +260,51 @@ pub(crate) fn set_both(
     a || b
 }
 
+/// What the kernel reported about a received datagram besides its data and sender, each 0
+/// when not reported: the traffic class byte (IPv4 TOS / IPv6 traffic class: DSCP and ECN), the
+/// TTL / hop limit (asked for with `enable_recv_ttl`), and the index of the interface it
+/// arrived on (asked for with [`enable_recv_interface`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecvInfo {
+    /// The traffic class byte (DSCP in the upper six bits, ECN in the low two).
+    pub tos: u8,
+    /// The TTL (IPv4) or hop limit (IPv6).
+    pub ttl: u8,
+    /// The index of the interface the datagram arrived on (as [`interfaces`](crate::interfaces)
+    /// lists them).
+    pub interface: u32,
+}
+
+impl RecvInfo {
+    /// The fields of a datagram (for tests and userspace stacks).
+    pub fn new(tos: u8, ttl: u8, interface: u32) -> RecvInfo {
+        RecvInfo {
+            tos,
+            ttl,
+            interface,
+        }
+    }
+}
+
+/// Asks the kernel to report (`on`), or to stop reporting, the interface every datagram `fd`
+/// (a UDP socket) receives arrived on: Linux `IP_PKTINFO`, macOS `IP_RECVPKTINFO`, and
+/// `IPV6_RECVPKTINFO` (an IPv4 socket refuses the IPv6 option; an IPv6 one takes both, the
+/// IPv4 one covering IPv4-mapped peers). The `in_pktinfo` / `in6_pktinfo` control message then
+/// comes with each datagram ([`RecvInfo::interface`]). Whether either option was accepted.
+/// Off by default: only a socket that must tell links apart (an mDNS responder) wants the
+/// extra control message on every datagram.
+pub fn enable_recv_interface(fd: RawFd, on: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    let v4 = ffi::IP_PKTINFO;
+    #[cfg(target_os = "macos")]
+    let v4 = ffi::IP_RECVPKTINFO;
+    let v = ffi::c_int::from(on);
+    let a = setsockopt_int(fd, ffi::IPPROTO_IP, v4, v).is_ok();
+    let b = setsockopt_int(fd, ffi::IPPROTO_IPV6, ffi::IPV6_RECVPKTINFO, v).is_ok();
+    a || b
+}
+
 /// Sets the "don't fragment" bit of the IPv4 datagrams `fd` (a UDP socket) sends, or clears it
 /// (`IP_MTU_DISCOVER` with `IP_PMTUDISC_DO` / `IP_PMTUDISC_DONT` on Linux, `IP_DONTFRAG` on
 /// macOS). With it set, a datagram larger than the path MTU the kernel knows is refused with

@@ -429,3 +429,61 @@ fn ipv4_group_joined_and_left_on_a_bound_socket() {
     b.close();
     e.shutdown();
 }
+
+/// The arrival interface on a group joined on two interfaces (`set_recv_interface`): a
+/// datagram sent to the group out of each interface is looped back as having arrived on that
+/// interface, whatever its source address says (ADR-093; what mDNS needs when two interfaces
+/// share a prefix). macOS: lo0 and en0/en1; gpu51's container: a0 and b0.
+#[test]
+fn ipv4_group_reports_the_interface_each_datagram_arrived_on() {
+    struct At(Mutex<Sender<(Vec<u8>, u32)>>);
+    impl Handler for At {
+        fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+            let _ = self.0.lock().unwrap().send((d.to_vec(), c.rx_interface()));
+        }
+    }
+    let ifs = ipv4_multicast_interfaces();
+    if ifs.len() < 2 {
+        eprintln!("skipped: fewer than two multicast interfaces with an IPv4 address");
+        return;
+    }
+    let e = engine();
+    let port = free_port();
+    let group: SocketAddr = format!("239.255.42.99:{port}").parse().unwrap();
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    let list: Vec<u32> = ifs.iter().map(|i| i.index).collect();
+    let b = match e.bind_udp_multicast_on(
+        group,
+        &list,
+        fn_acceptor(move |_c: &Conn<At>| At(Mutex::new(tx.lock().unwrap().clone()))),
+    ) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("skipped: no IPv4 multicast here ({err})");
+            e.shutdown();
+            return;
+        }
+    };
+    b.set_recv_interface(true).unwrap();
+    let mut reached = 0;
+    for i in &ifs {
+        let msg = format!("out of {}", i.name).into_bytes();
+        if b.send_to_on(&msg, group, i.index).is_err() {
+            continue;
+        }
+        while let Ok((d, at)) = rx.recv_timeout(Duration::from_secs(2)) {
+            if d == msg {
+                assert_eq!(at, i.index, "sent out of {}, arrived on {at}", i.name);
+                reached += 1;
+                break;
+            }
+        }
+    }
+    assert!(
+        reached >= 2,
+        "datagrams out of two interfaces at least: {ifs:?}"
+    );
+    b.close();
+    e.shutdown();
+}

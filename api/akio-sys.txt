@@ -259,6 +259,8 @@ pub struct akio_sys::RecvBatch
 impl akio_sys::RecvBatch
 pub fn akio_sys::RecvBatch::ecn(&self, usize) -> u8
 pub fn akio_sys::RecvBatch::get(&self, usize) -> core::option::Option<(&[u8], core::net::socket_addr::SocketAddr, usize)>
+pub fn akio_sys::RecvBatch::info(&self, usize) -> akio_sys::RecvInfo
+pub fn akio_sys::RecvBatch::interface(&self, usize) -> u32
 pub fn akio_sys::RecvBatch::new(usize, usize) -> akio_sys::RecvBatch
 pub fn akio_sys::RecvBatch::recv(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<usize>
 pub fn akio_sys::RecvBatch::tos(&self, usize) -> u8
@@ -272,6 +274,28 @@ impl !core::marker::Sync for akio_sys::RecvBatch
 impl core::marker::Unpin for akio_sys::RecvBatch
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::RecvBatch
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::RecvBatch
+#[non_exhaustive] pub struct akio_sys::RecvInfo
+pub akio_sys::RecvInfo::interface: u32
+pub akio_sys::RecvInfo::tos: u8
+pub akio_sys::RecvInfo::ttl: u8
+impl akio_sys::RecvInfo
+pub fn akio_sys::RecvInfo::new(u8, u8, u32) -> akio_sys::RecvInfo
+impl core::clone::Clone for akio_sys::RecvInfo
+pub fn akio_sys::RecvInfo::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::RecvInfo
+impl core::cmp::PartialEq for akio_sys::RecvInfo
+pub fn akio_sys::RecvInfo::eq(&self, &Self) -> bool
+impl core::default::Default for akio_sys::RecvInfo
+pub fn akio_sys::RecvInfo::default() -> Self
+impl core::fmt::Debug for akio_sys::RecvInfo
+pub fn akio_sys::RecvInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_sys::RecvInfo
+impl core::marker::StructuralPartialEq for akio_sys::RecvInfo
+impl core::marker::Send for akio_sys::RecvInfo
+impl core::marker::Sync for akio_sys::RecvInfo
+impl core::marker::Unpin for akio_sys::RecvInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::RecvInfo
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::RecvInfo
 pub struct akio_sys::SendBatch
 impl akio_sys::SendBatch
 pub fn akio_sys::SendBatch::batch<'d>(&mut self) -> akio_sys::Batch<'_, 'd>
@@ -307,6 +331,7 @@ pub fn akio_sys::dont_fragment(std::os::fd::raw::RawFd) -> core::io::error::Resu
 pub fn akio_sys::ecn_available() -> bool
 pub fn akio_sys::enable_ecn(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::enable_gro(std::os::fd::raw::RawFd) -> bool
+pub fn akio_sys::enable_recv_interface(std::os::fd::raw::RawFd, bool) -> bool
 pub fn akio_sys::enable_recv_ttl(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::enable_recverr(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::gro_available() -> bool

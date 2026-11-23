@@ -10,6 +10,23 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：UDP 数据报的到达接口；mDNS 据此确定查询所在链路（akio-core、akio-epoll、akio-sys、akio-webrtc）
+
+ADR-093（2026-11-23），均为新增：
+
+- `UdpBinding::set_recv_interface(on)`：请内核报告已绑定套接字收到的每个数据报的到达接口（Linux
+  `IP_PKTINFO`、macOS `IP_RECVPKTINFO`，以及 `IPV6_RECVPKTINFO`；其他平台返回 `ErrorKind::Unsupported`）。
+  默认关闭。
+- `Conn::rx_interface()`：在 `on_data` 中，该数据报到达接口的索引（未请求或平台未报告时为 0）。与流量类别和 TTL
+  一样按数据报给出。epoll、io_uring 与 kqueue 上的已绑定套接字由同一个 UDP 循环服务，三者都会报告。
+- akio-sys：`enable_recv_interface(fd, on)`、`RecvInfo { tos, ttl, interface }`、`RecvBatch::info` /
+  `RecvBatch::interface`（Linux）、`recv_from_info`（macOS）。接收槽的控制消息缓冲增大到 128 字节（Linux 原为
+  96，macOS 原为 64），使 GRO、流量类别、TTL 与包信息能同时放下。
+- akio-webrtc 的 mDNS 在其套接字上开启它，按查询的到达接口确定其链路，只在平台不提供时才从源地址推断。来自与另
+  一接口共享前缀的链路的查询，现在在它自己的链路上得到应答；单播应答（QU、传统单播）从查询进入的接口发出。
+- 未开启的套接字接收方式不变（gpu51，同轮 10 轮：为 main 的 0.999；开启后在饱和的接收方上约多花 0.6%）：A/B 见
+  [BENCHMARKS](docs/BENCHMARKS.zh-CN.md#已绑定-udp-套接字的接收到达接口adr-093同轮-ab)。
+
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
 ADR-078 的第四次更新（2026-11-23），均为新增：
