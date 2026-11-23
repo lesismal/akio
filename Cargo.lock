@@ -109,6 +109,7 @@ dependencies = [
  "akio-log",
  "akio-pool",
  "akio-sys",
+ "akio-timer",
  "loom",
 ]
 

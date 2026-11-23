@@ -461,7 +461,9 @@ impl Loop {
     }
 
     pub(crate) fn run(&mut self) {
+        akio_core::timer::install();
         self.run_inner();
+        akio_core::timer::uninstall();
         self.shared.stats.set_running(false);
         self.shared.stats.set_retiring(false);
         // Pending telemetry requests are dropped, which answers them (as "nothing"). A loop
@@ -503,6 +505,7 @@ impl Loop {
                 let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
                 timeout = Some(timeout.map_or(left, |x| x.min(left)));
             }
+            let timeout = akio_core::timer::poll_timeout(timeout);
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
                 log_or_stderr(akio_log::Level::Error, format_args!("poller error: {e}"));
@@ -518,6 +521,8 @@ impl Loop {
                     id => self.on_event(id, *ev),
                 }
             }
+            // Loop timers (ADR-099) before the commands: what they send posts wakes here.
+            akio_core::timer::fire();
             self.drain_cmds();
             self.fire_timers();
             self.resume_accept();

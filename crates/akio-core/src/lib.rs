@@ -29,6 +29,7 @@ pub mod hash;
 pub mod metrics;
 mod sync;
 pub mod telemetry;
+pub mod timer;
 
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]

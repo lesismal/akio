@@ -31,7 +31,7 @@ connection's I/O thread, and slow work is detached instead of awaited.
 | `WebSocketUpgrade` | `ctx.upgrade_websocket(handler, &WsOptions)` |
 | `tower_http::services::ServeDir` | `files::Files::new(dir)` |
 | `CompressionLayer`, `CorsLayer`, `TraceLayer`, `RequestIdLayer`, `CatchPanicLayer` | `middleware::compress`, `cors`, `logger` / `observe::access_log`, `request_id`, `recover` |
-| `TimeoutLayer` | none: detach and answer 503/504 from your own timer if needed |
+| `TimeoutLayer` | none: detach, and answer 503/504 from a loop timer (`akio::timer::after`, [Timers](../concepts/timers.md)) unless the work answered first |
 | `tower::limit::RateLimitLayer` | `middleware::limiter(rate, burst)` (per client IP) |
 | `axum-server` / `tokio-rustls` TLS | `akio::tls::Tls::server(cfg, serve(app))` |
 | `hyper::client` / `reqwest` | `client::Client`, `h2client::H2Client` |

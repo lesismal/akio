@@ -108,6 +108,19 @@ ADR-100。`SO_REUSEPORT` 的哈希把 1024 个等负载连接分到 8 个线程�
   恢复之前的行为。
 - `LoopStats::load`、`handoff_begin` / `handoff_done` 以及隐藏的 `akio_core::balance` 与 `Group::set_balance`
   把它传给 epoll/kqueue 与 io_uring 后端。
+### 新增：I/O 循环上的定时器（akio-core、akio、akio-http、akio-epoll、akio-uring、akio-dpdk）
+
+ADR-099，仅新增：
+
+- `akio::timer`（`akio_core::timer`）：`after(delay, f)` 在 `delay` 之后于调用它的 I/O 线程上执行 `f`，
+  用该循环自己的时间轮：不加锁，不经过别的线程，不唤醒；`f` 不需要 `Send`。绝不提前（毫秒时间轮）；
+  `Timer::cancel`；`on_loop()`；`MAX_TIMERS_PER_LOOP`（2^20，超过返回 `Error::Overloaded`）、
+  `MAX_DELAY`（超过截断）。在非 I/O 线程上 `after` 返回 `Error::Closed`。循环退出时未到期的定时器被
+  丢弃；单个定时器 panic 会被捕获并记录。每种循环都有：epoll / kqueue 的 TCP 与 UDP、io_uring、DPDK。
+- `akio_http::Context::after(delay, f)`：分离请求，`delay` 之后在连接自己的 I/O 线程上调用
+  `f(Detached)`（保持 HTTP/1.1 流水线顺序；HTTP/2、HTTP/3 同样适用）；在非 I/O 线程上退回到 akio-http
+  的定时器线程。
+- 手册新增“I/O 循环上的定时器”；迁移指南不再建议“自己的定时器线程”。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 

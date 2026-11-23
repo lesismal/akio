@@ -14,7 +14,7 @@ tokio 是通用的异步运行时；akio 是没有运行时的网络库。两者
 | `socket.write_all(&buf).await` 等待缓冲区空间 | `c.send(&buf)` 从不等待：写出或排队，由水位线限制 |
 | 用 `tokio::spawn` 获得并发 | 并发以连接为单位；I/O 线程上没有可 spawn 的东西 |
 | `tokio::task::spawn_blocking(f).await` | `c.spawn_blocking(work, done)`：`done` 回到连接所属线程执行 |
-| `tokio::time::timeout`、`sleep` | `Config::idle_timeout`；其他需求用你自己的定时器线程 |
+| `tokio::time::timeout`、`sleep` | `Config::idle_timeout`；其他需求在 I/O 线程上用 `akio::timer::after`（[定时器](../concepts/timers.md)） |
 | 用 `tokio::sync::mpsc` 与连接任务通信 | 克隆 `Conn`，在任何地方调用 `send`/`close` |
 | `CancellationToken` / drop 掉任务 | `Conn::close()`、`Engine::shutdown()` |
 | `tokio::net::TcpListener::bind` + accept 循环 | `Listener::tcp(addr).serve(acceptor)` |

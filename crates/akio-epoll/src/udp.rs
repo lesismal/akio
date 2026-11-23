@@ -433,7 +433,9 @@ impl UdpLoop {
     }
 
     fn run(&mut self) {
+        akio_core::timer::install();
         self.run_inner();
+        akio_core::timer::uninstall();
         self.shared.stats.set_running(false);
         drop(self.shared.take());
     }
@@ -447,6 +449,7 @@ impl UdpLoop {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
             }
+            let timeout = akio_core::timer::poll_timeout(timeout);
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
                 eprintln!("akio: poller error: {e}");
@@ -486,6 +489,7 @@ impl UdpLoop {
                     }
                 }
             }
+            akio_core::timer::fire();
             self.drain_cmds();
             self.fire_timers();
             if let Some(deadline) = self.draining {

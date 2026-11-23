@@ -9,6 +9,7 @@
   - [Engine、Listener 与后端](concepts/engine.md)
   - [Handler、Acceptor 与 `Conn`](concepts/handlers.md)
   - [阻塞任务：逻辑线程池](concepts/blocking.md)
+  - [I/O 循环上的定时器](concepts/timers.md)
   - [背压](concepts/backpressure.md)
   - [生命周期与停机](concepts/lifecycle.md)
 - [协议](protocols/index.md)
