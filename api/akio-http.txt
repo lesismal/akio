@@ -241,12 +241,18 @@ pub struct akio_http::files::Files
 impl akio_http::files::Files
 pub fn akio_http::files::Files::cache_control(self, &str) -> akio_http::files::Files
 pub fn akio_http::files::Files::check_interval(self, core::time::Duration) -> akio_http::files::Files
+pub fn akio_http::files::Files::hide(self, impl core::ops::function::Fn(&str) -> bool + core::marker::Send + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe + 'static) -> akio_http::files::Files
 pub fn akio_http::files::Files::index(self, &str) -> akio_http::files::Files
+pub fn akio_http::files::Files::list_directories(self, usize) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_cached_bytes(self, u64) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_open_files(self, usize) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_watches(self, usize) -> akio_http::files::Files
 pub fn akio_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> akio_http::files::Files
+pub fn akio_http::files::Files::try_paths(self, &[&str]) -> akio_http::files::Files
+pub fn akio_http::files::Files::twins(self, &[&str]) -> akio_http::files::Files
 pub fn akio_http::files::Files::watch(self, bool) -> akio_http::files::Files
+impl akio_http::files::Files
+pub fn akio_http::files::Files::serve(&self, &mut akio_http::Context, &str)
 impl akio_http::Service for akio_http::files::Files
 pub fn akio_http::files::Files::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::files::Files::call(&self, &mut akio_http::Context)

@@ -10,6 +10,24 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：面向网关的静态文件：调用者给出的路径、按 q 值选择副本、候选路径、目录列表（akio-http）
+
+ADR-100，均为新增：
+
+- `Files::serve(ctx, path)` 提供调用者给出的路径（百分号编码，像路由参数一样检查），供按自己的路径路由的调用者
+  使用。
+- `Files::twins(&[&str])`：提供的压缩副本（`br`、`zstd`、`gzip`），按 q 值相同时的偏好排列；`&[]` 不查找副本，
+  也不发送 `Vary: Accept-Encoding`。
+- `Files::try_paths(&[&str])`：依次尝试的候选路径（nginx 的 `try_files`），`{path}` 代表请求的路径，结尾的 `/`
+  表示目录。路径解析的结果保存（最多 4096 个路径）`check_interval` 那么久。
+- `Files::hide(f)`：`f` 返回 true 的路径答 404，候选被跳过。
+- `Files::list_directories(max_entries)`：为带斜杠请求、没有索引文件的目录生成 HTML 列表（默认关闭）。
+
+### 变更：`Files` 按客户端的 q 值选择压缩副本（akio-http）
+
+ADR-100：提供的副本是 `Accept-Encoding` 按 q 值（RFC 9110 第 12.5.3 节）排得最高的那个，相同时取 `br`、`zstd`、
+`gzip` 中靠前的。`br;q=0` 不再得到 `br` 副本；`*` 得到第一个副本；编码名不区分大小写。
+
 ### 新增：HTTP/1 客户端请求自带的 `Host` 与 `User-Agent`（akio-http）
 
 应 akit 的请求（A11），供反向代理把客户端的字段转发出去。均为新增：

@@ -99,3 +99,4 @@
 - [ADR-097：无 I/O 的 MP4 文件读取器与 HLS 分段规划](097-mp4-file-reader-segment-planner.zh-CN.md)（2026-11-23 采纳）
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
 - [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
+- [ADR-100：面向网关的静态文件：调用者给出的路径、按 q 值选择压缩副本、候选路径、目录列表](100-static-files-gateway-settings.zh-CN.md)（2026-11-24 采纳）

@@ -641,6 +641,351 @@ fn static_files_open_file_cache_survives_churn() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A tree of files under a fresh directory.
+fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let d = tempdir(name);
+    for (p, body) in files {
+        let full = d.join(p);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    d
+}
+
+fn get_with(a: SocketAddr, path: &str, accept: &str) -> Resp {
+    if accept.is_empty() {
+        get(a, path, "")
+    } else {
+        get(a, path, &format!("Accept-Encoding: {accept}\r\n"))
+    }
+}
+
+#[test]
+fn compressed_twins_by_q_value_among_the_configured_encodings() {
+    let dir = tree(
+        "twins-q",
+        &[
+            ("app.js", "identity-js"),
+            ("app.js.br", "br-js"),
+            ("app.js.zst", "zstd-js"),
+            ("app.js.gz", "gzip-js"),
+            ("style.css", "identity-css"),
+            ("style.css.gz", "gzip-css"),
+        ],
+    );
+    let e = start(Files::new(&dir).check_interval(Duration::from_secs(3600)));
+    let a = e.local_addrs()[0];
+    for (path, accept, enc, body) in [
+        // Equal q: the first of br, zstd, gzip.
+        ("/app.js", "gzip, br", "br", "br-js"),
+        ("/app.js", "br;q=0.5, gzip", "gzip", "gzip-js"),
+        ("/app.js", "zstd", "zstd", "zstd-js"),
+        // q=0 refuses a coding.
+        ("/app.js", "br;q=0, identity", "", "identity-js"),
+        ("/app.js", "*", "br", "br-js"),
+        ("/app.js", "*, br;q=0", "zstd", "zstd-js"),
+        ("/app.js", "*;q=0.2, gzip;q=0.3", "gzip", "gzip-js"),
+        ("/app.js", "", "", "identity-js"),
+        // Names in any case, blanks around the parameters.
+        ("/app.js", "GZIP", "gzip", "gzip-js"),
+        ("/app.js", "gzip ; Q=0.8, br ; q = 0.1", "gzip", "gzip-js"),
+        // A q value that does not parse, or above 1, counts as 1.
+        ("/app.js", "gzip;q=2, br;q=0.9", "gzip", "gzip-js"),
+        ("/app.js", "deflate", "", "identity-js"),
+        ("/style.css", "br, gzip", "gzip", "gzip-css"),
+    ] {
+        // Twice: from the disk pool, then from the cache on the I/O thread.
+        for _ in 0..2 {
+            let r = get_with(a, path, accept);
+            assert_eq!(r.status, 200, "{path} {accept:?}");
+            assert_eq!(
+                (
+                    r.header("content-encoding").unwrap_or(""),
+                    r.body.as_slice()
+                ),
+                (enc, body.as_bytes()),
+                "{path} {accept:?}"
+            );
+            assert_eq!(r.header("vary"), Some("Accept-Encoding"));
+        }
+    }
+    // Two Accept-Encoding fields are one list.
+    let r = get(
+        a,
+        "/app.js",
+        "Accept-Encoding: br;q=0.1\r\nAccept-Encoding: zstd\r\n",
+    );
+    assert_eq!(r.header("content-encoding"), Some("zstd"));
+    stop(&e);
+
+    // Only the twins configured, in the order given among equals.
+    let e = start(
+        Files::new(&dir)
+            .twins(&["gzip", "zstd", "deflate", "gzip"])
+            .check_interval(Duration::ZERO),
+    );
+    let a = e.local_addrs()[0];
+    for (accept, enc) in [
+        ("br, zstd, gzip", "gzip"),
+        ("br, zstd", "zstd"),
+        ("br", ""),
+        ("*", "gzip"),
+    ] {
+        let r = get_with(a, "/app.js", accept);
+        assert_eq!(
+            r.header("content-encoding").unwrap_or(""),
+            enc,
+            "{accept:?}"
+        );
+        assert_eq!(r.header("vary"), Some("Accept-Encoding"));
+    }
+    stop(&e);
+
+    // None: no lookups and no Vary; a twin is a file like another.
+    let e = start(Files::new(&dir).twins(&[]));
+    let a = e.local_addrs()[0];
+    let r = get_with(a, "/app.js", "br, gzip");
+    assert_eq!(
+        (
+            r.header("content-encoding"),
+            r.header("vary"),
+            r.body.as_slice()
+        ),
+        (None, None, &b"identity-js"[..])
+    );
+    assert_eq!(get(a, "/app.js.gz", "").body, b"gzip-js");
+    stop(&e);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn serve_takes_the_path_the_caller_names() {
+    let dir = tree(
+        "serve-path",
+        &[
+            ("ok.txt", "ok"),
+            ("d/index.html", "d-index"),
+            ("a b.txt", "ab"),
+        ],
+    );
+    let files = Files::new(&dir).check_interval(Duration::ZERO);
+    // A caller that strips its own prefix and routes by a path of its own.
+    let e = start(move |ctx: &mut Context| {
+        let p = ctx
+            .path()
+            .strip_prefix("/assets")
+            .unwrap_or("/nope")
+            .to_owned();
+        files.serve(ctx, &p);
+    });
+    let a = e.local_addrs()[0];
+    assert_eq!(get(a, "/assets/ok.txt", "").body, b"ok");
+    assert_eq!(get(a, "/assets/d/", "").body, b"d-index");
+    assert_eq!(get(a, "/assets/a%20b.txt", "").body, b"ab");
+    assert_eq!(get(a, "/ok.txt", "").status, 404);
+    // Still checked: what climbs above the root.
+    for p in ["/assets/../ok.txt", "/assets/%2e%2e/ok.txt", "/assets/a%00"] {
+        assert_eq!(get(a, p, "").status, 404, "{p}");
+    }
+    stop(&e);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn try_paths_serve_the_first_candidate_that_exists() {
+    let dir = tree(
+        "try-paths",
+        &[
+            ("index.html", "app"),
+            ("assets/a.js", "js"),
+            ("docs/index.html", "docs"),
+            ("plain/x.txt", "x"),
+            (".app/index.html", "hidden-app"),
+            ("a", "a"),
+        ],
+    );
+    for check in [Duration::from_secs(3600), Duration::ZERO] {
+        let e = start(
+            Files::new(&dir)
+                .try_paths(&["{path}", "{path}/", "/index.html"])
+                .check_interval(check),
+        );
+        let a = e.local_addrs()[0];
+        for (path, status, body) in [
+            ("/assets/a.js", 200, "js"),
+            // A directory, served by its index, not redirected.
+            ("/docs", 200, "docs"),
+            ("/docs/", 200, "docs"),
+            ("/some/client/route", 200, "app"),
+            // No index: falls through.
+            ("/plain/", 200, "app"),
+            ("/", 200, "app"),
+            // A file asked for as a directory is passed over.
+            ("/a/", 200, "app"),
+            ("/../secret", 404, "Not Found"),
+        ] {
+            // Twice: resolved on the disk pool, then (with a check interval) from what was
+            // resolved.
+            for _ in 0..2 {
+                let r = get(a, path, "");
+                assert_eq!(
+                    (r.status, r.body.as_slice()),
+                    (status, body.as_bytes()),
+                    "{path} {check:?}"
+                );
+                assert_eq!(r.header("location"), None);
+            }
+        }
+        stop(&e);
+    }
+
+    // None exists: 404. A candidate outside the root, or hidden, is passed over.
+    let e = start(
+        Files::new(&dir)
+            .try_paths(&["/../a", "{path}", "/.app/index.html", "/missing.html"])
+            .hide(|p| {
+                p.split('/')
+                    .any(|s| s.starts_with('.') && s != "." && s != "..")
+            }),
+    );
+    let a = e.local_addrs()[0];
+    assert_eq!(get(a, "/a", "").body, b"a");
+    assert_eq!(get(a, "/nope", "").status, 404);
+    // The path asked for is hidden too.
+    assert_eq!(get(a, "/.app/index.html", "").status, 404);
+    stop(&e);
+
+    // A resolution that changes on disk is followed with a check interval of 0.
+    let e = start(
+        Files::new(&dir)
+            .try_paths(&["{path}", "/index.html"])
+            .check_interval(Duration::ZERO),
+    );
+    let a = e.local_addrs()[0];
+    assert_eq!(get(a, "/late.txt", "").body, b"app");
+    std::fs::write(dir.join("late.txt"), "late").unwrap();
+    assert_eq!(get(a, "/late.txt", "").body, b"late");
+    std::fs::remove_file(dir.join("late.txt")).unwrap();
+    assert_eq!(get(a, "/late.txt", "").body, b"app");
+    stop(&e);
+
+    // Many distinct paths: what is kept stays bounded, and answers stay right.
+    let e = start(
+        Files::new(&dir)
+            .try_paths(&["{path}", "/index.html"])
+            .check_interval(Duration::from_secs(3600)),
+    );
+    let a = e.local_addrs()[0];
+    let mut s = connect(a);
+    for i in 0..5000 {
+        s.write_all(format!("GET /r/{i} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+            .unwrap();
+        let r = read_resp(&mut s, false);
+        assert_eq!(r.body, b"app", "{i}");
+    }
+    assert_eq!(get(a, "/assets/a.js", "").body, b"js");
+    stop(&e);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn directory_listings() {
+    let dir = tree(
+        "listing",
+        &[
+            ("files/b.txt", "bb"),
+            ("files/a&b<c>.txt", "a"),
+            ("files/q?x.txt", "q"),
+            ("files/.hidden", "h"),
+            ("files/sub/z", "z"),
+            ("withindex/index.html", "idx"),
+            ("withindex/other", "o"),
+        ],
+    );
+    let e = start(Files::new(&dir).list_directories(10_000));
+    let a = e.local_addrs()[0];
+    let r = get(a, "/files/", "");
+    let body = String::from_utf8(r.body.clone()).unwrap();
+    assert_eq!(r.status, 200, "{body}");
+    assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+    for want in [
+        "<title>Index of /files/</title>",
+        "<h1>Index of /files/</h1>",
+        r#"<a href="../">../</a>"#,
+        r#"<a href="./sub/">sub/</a>"#,
+        r#"<a href="./a&amp;b%3Cc%3E.txt">a&amp;b&lt;c&gt;.txt</a>"#,
+        r#"<a href="./q%3Fx.txt">q?x.txt</a>"#,
+        r#"<a href="./b.txt">b.txt</a></td><td>2</td>"#,
+    ] {
+        assert!(body.contains(want), "listing lacks {want}:\n{body}");
+    }
+    assert!(!body.contains("hidden"), "{body}");
+    assert!(
+        body.find("sub/").unwrap() < body.find("a&amp;b").unwrap(),
+        "directories first:\n{body}"
+    );
+    assert!(!body.contains("Only the first"));
+    // The root has no parent link; an index file wins; without its slash a directory is not
+    // listed.
+    let root = String::from_utf8(get(a, "/", "").body).unwrap();
+    assert!(
+        root.contains("<title>Index of /</title>") && !root.contains("../"),
+        "{root}"
+    );
+    assert_eq!(get(a, "/withindex/", "").body, b"idx");
+    assert_eq!(get(a, "/files", "").status, 404);
+    let r = {
+        let mut s = connect(a);
+        s.write_all(b"HEAD /files/ HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        read_resp(&mut s, true)
+    };
+    assert_eq!(r.status, 200);
+    stop(&e);
+
+    // Without listings: 404.
+    let e = start(Files::new(&dir));
+    assert_eq!(get(e.local_addrs()[0], "/files/", "").status, 404);
+    stop(&e);
+
+    // At most max entries read, and the page says so.
+    let many = tempdir("listing-many");
+    std::fs::create_dir_all(many.join("d")).unwrap();
+    for i in 0..20 {
+        std::fs::write(many.join(format!("d/f{i:02}.txt")), "x").unwrap();
+    }
+    let e = start(Files::new(&many).list_directories(5));
+    let body = String::from_utf8(get(e.local_addrs()[0], "/d/", "").body).unwrap();
+    assert_eq!(body.matches("<tr><td><a href=\"./f").count(), 5, "{body}");
+    assert!(
+        body.contains("Only the first 5 entries the directory gave are listed."),
+        "{body}"
+    );
+    stop(&e);
+    let e = start(Files::new(&many).list_directories(20));
+    let body = String::from_utf8(get(e.local_addrs()[0], "/d/", "").body).unwrap();
+    assert_eq!(body.matches("<tr><td><a href=\"./f").count(), 20);
+    assert!(!body.contains("Only the first"));
+    stop(&e);
+
+    // A directory try_paths reaches is listed, as the candidate names it.
+    let e = start(
+        Files::new(&dir)
+            .try_paths(&["{path}/"])
+            .list_directories(100),
+    );
+    let r = get(e.local_addrs()[0], "/files", "");
+    let body = String::from_utf8(r.body).unwrap();
+    assert!(
+        r.status == 200 && body.contains("<title>Index of /files/</title>"),
+        "{body}"
+    );
+    stop(&e);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&many).unwrap();
+}
+
 // ---- middleware ------------------------------------------------------------------------------
 
 #[test]

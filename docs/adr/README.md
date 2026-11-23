@@ -99,3 +99,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-097: A sans-io reader of MP4 files and an HLS segment planner](097-mp4-file-reader-segment-planner.md) (accepted 2026-11-23)
 - [ADR-098: Server certificates chosen per handshake by a resolver that may answer later](098-tls-cert-resolver.md) (accepted 2026-11-23)
 - [ADR-099: TCP listeners added, removed and drained at run time, and a filter on accepted connections](099-runtime-listeners-accept-filter.md) (accepted 2026-11-23)
+- [ADR-100: Static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings](100-static-files-gateway-settings.md) (accepted 2026-11-24)
