@@ -167,6 +167,9 @@ struct Shared {
     /// state lock, sent outside it by one thread at a time (`sending`).
     outq: Mutex<VecDeque<proto::Transmit>>,
     sending: AtomicBool,
+    /// The UDP socket (peer) the last datagram went out on (server): the next one to the same
+    /// address uses it without the endpoint's shared socket table. Used by the sender only.
+    tx_sock: Mutex<Option<Conn<Udp>>>,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -215,6 +218,7 @@ impl Connection {
                 done: AtomicBool::new(false),
                 outq: Mutex::new(VecDeque::new()),
                 sending: AtomicBool::new(false),
+                tx_sock: Mutex::new(None),
             }
         }))
     }
@@ -537,6 +541,14 @@ impl Connection {
                 e.handle_event(self.0.h, ev);
             }
             drop(e);
+            if ep_events.iter().any(|ev| {
+                matches!(
+                    ev,
+                    proto::EndpointEvent::RetireCid(_) | proto::EndpointEvent::Drained
+                )
+            }) {
+                ep.routes_gen.fetch_add(1, Ordering::AcqRel);
+            }
             for ev in ep_events {
                 match ev {
                     proto::EndpointEvent::NewToken(t) => {
@@ -556,6 +568,7 @@ impl Connection {
         if drained {
             let empty = {
                 let mut conns = lock(&ep.conns);
+                ep.routes_gen.fetch_add(1, Ordering::AcqRel);
                 if conns.remove(&self.0.h).is_some() {
                     if let Some(st) = final_stats {
                         ep.closed.fetch_add(1, Ordering::Relaxed);
@@ -582,15 +595,20 @@ impl Connection {
             if self.0.sending.swap(true, Ordering::AcqRel) {
                 return;
             }
-            loop {
-                let t = lock(&self.0.outq).pop_front();
-                let Some(t) = t else { break };
-                if t.probe {
-                    self.0
-                        .ep
-                        .transmit_probe((t.dest, t.segment_size, t.data, t.ecn));
-                } else {
-                    self.0.ep.transmit(t.dest, t.segment_size, t.data, t.ecn);
+            {
+                let mut sock = lock(&self.0.tx_sock);
+                loop {
+                    let t = lock(&self.0.outq).pop_front();
+                    let Some(t) = t else { break };
+                    if t.probe {
+                        self.0
+                            .ep
+                            .transmit_probe((t.dest, t.segment_size, t.data, t.ecn));
+                    } else {
+                        self.0
+                            .ep
+                            .transmit_via(&mut sock, t.dest, t.segment_size, t.data, t.ecn);
+                    }
                 }
             }
             self.0.sending.store(false, Ordering::Release);
@@ -692,6 +710,10 @@ struct Ep {
     accepted: AtomicU64,
     closed: AtomicU64,
     closed_stats: Mutex<ConnectionStats>,
+    /// Bumped whenever the endpoint removes a route (a retired connection ID, a drained
+    /// connection): the routes the UDP handlers remember (`Route`) are valid while it is
+    /// unchanged.
+    routes_gen: AtomicU64,
 }
 
 /// Adds the counters of `b` to `a` (gauges such as RTT and the window are left alone).
@@ -726,6 +748,7 @@ impl Ep {
             accepted: AtomicU64::new(0),
             closed: AtomicU64::new(0),
             closed_stats: Mutex::new(ConnectionStats::default()),
+            routes_gen: AtomicU64::new(0),
         }
     }
 
@@ -750,6 +773,34 @@ impl Ep {
             }
         };
         send_out(&sock, seg, data, ecn);
+    }
+
+    /// [`Ep::transmit`] through `cache`, the connection's last socket (server): reused while it
+    /// is open and has the same peer address, else looked up and remembered.
+    fn transmit_via(
+        &self,
+        cache: &mut Option<Conn<Udp>>,
+        dest: SocketAddr,
+        seg: Option<usize>,
+        data: Vec<u8>,
+        ecn: u8,
+    ) {
+        if self.factory.is_none() {
+            // A client has one socket (or two while migrating): no table worth skipping.
+            return self.transmit(dest, seg, data, ecn);
+        }
+        if let Some(s) = cache.as_ref() {
+            if s.peer_addr() == dest && s.is_open() {
+                send_out(s, seg, data, ecn);
+                return;
+            }
+        }
+        let sock = lock(&self.socks).get(&dest).cloned();
+        *cache = sock;
+        match cache.as_ref() {
+            Some(s) => send_out(s, seg, data, ecn),
+            None => self.transmit(dest, seg, data, ecn),
+        }
     }
 
     /// A datagram of the path a migration probes (client).
@@ -804,33 +855,56 @@ impl Ep {
     /// A datagram from `peer`. With `batch`, the connection it went to runs its handler and sends
     /// data now, but leaves its acknowledgment for the end of the receive batch (it is added to
     /// `batch` once and driven then): one ACK per batch instead of one per two packets.
+    ///
+    /// `route` is the peer's remembered route (its UDP handler's, so one I/O thread's): a
+    /// short-header datagram to the same connection ID goes straight to that connection,
+    /// without the endpoint's and the connection table's locks, which every I/O thread shares.
     fn on_datagram(
         self: &Arc<Ep>,
         peer: SocketAddr,
         ecn: u8,
         data: Rx<'_>,
         batch: Option<&mut Vec<Connection>>,
+        route: &mut Option<Route>,
     ) {
         let now = Instant::now();
-        let ev = lock(&self.endpoint).handle_ecn(now, peer, ecn, &data);
+        if let Some(r) = route.as_ref() {
+            if r.matches(&data) && r.epoch == self.routes_gen.load(Ordering::Acquire) {
+                Ep::to_conn(&r.conn, now, peer, ecn, data, batch);
+                return;
+            }
+        }
+        // Read before the lookup: a route removed after it bumps the generation past this.
+        let epoch = self.routes_gen.load(Ordering::Acquire);
+        let ev = {
+            let mut e = lock(&self.endpoint);
+            match e.route_short(&data) {
+                Some((cid, h)) => Ok((cid, h)),
+                None => Err(e.handle_ecn(now, peer, ecn, &data)),
+            }
+        };
+        let ev = match ev {
+            Ok((cid, h)) => {
+                let c = lock(&self.conns).get(&h).cloned();
+                if let Some(c) = c {
+                    Ep::to_conn(&c, now, peer, ecn, data, batch);
+                    *route = Some(Route {
+                        cid,
+                        conn: c,
+                        epoch,
+                    });
+                }
+                return;
+            }
+            Err(ev) => ev,
+        };
         match ev {
             None => {}
             Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data, t.ecn),
             Some(proto::DatagramEvent::Conn(h)) => {
                 let c = lock(&self.conns).get(&h).cloned();
                 if let Some(c) = c {
-                    lock(&c.0.state)
-                        .conn
-                        .handle_shared_ecn(now, peer, ecn, data.into_pkt());
-                    match batch {
-                        Some(b) => {
-                            c.drive_received(now);
-                            if !b.iter().any(|x| Arc::ptr_eq(&x.0, &c.0)) {
-                                b.push(c);
-                            }
-                        }
-                        None => c.drive_at(Some(now)),
-                    }
+                    Ep::to_conn(&c, now, peer, ecn, data, batch);
                 }
             }
             Some(proto::DatagramEvent::New(h, conn)) => {
@@ -844,6 +918,46 @@ impl Ep {
                 c.drive();
             }
         }
+    }
+
+    /// Hands a datagram to its connection (see [`Ep::on_datagram`]).
+    fn to_conn(
+        c: &Connection,
+        now: Instant,
+        peer: SocketAddr,
+        ecn: u8,
+        data: Rx<'_>,
+        batch: Option<&mut Vec<Connection>>,
+    ) {
+        lock(&c.0.state)
+            .conn
+            .handle_shared_ecn(now, peer, ecn, data.into_pkt());
+        match batch {
+            Some(b) => {
+                c.drive_received(now);
+                if !b.iter().any(|x| Arc::ptr_eq(&x.0, &c.0)) {
+                    b.push(c.clone());
+                }
+            }
+            None => c.drive_at(Some(now)),
+        }
+    }
+}
+
+/// A peer's remembered route (see [`Ep::on_datagram`]): short-header datagrams to `cid` go to
+/// `conn` while the endpoint's route generation is still `epoch`.
+struct Route {
+    cid: proto::ConnectionId,
+    conn: Connection,
+    epoch: u64,
+}
+
+impl Route {
+    /// Whether `data` is a short-header packet to this route's connection ID.
+    fn matches(&self, data: &[u8]) -> bool {
+        let n = self.cid.len();
+        data.first().is_some_and(|b| b & 0x80 == 0)
+            && data.get(1..1 + n).is_some_and(|d| d == &self.cid[..])
     }
 }
 
@@ -1030,6 +1144,8 @@ pub struct Udp {
     batched: bool,
     /// Connections that got datagrams in the current batch.
     pending: Vec<Connection>,
+    /// The connection this peer's datagrams went to last (see `Ep::on_datagram`).
+    route: Option<Route>,
 }
 
 impl Udp {
@@ -1039,6 +1155,7 @@ impl Udp {
             client,
             batched: false,
             pending: Vec::new(),
+            route: None,
         }
     }
 }
@@ -1078,8 +1195,13 @@ impl std::ops::Deref for Rx<'_> {
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep
-            .on_datagram(c.peer_addr(), c.rx_ecn(), Rx::Slice(data), batch);
+        self.ep.on_datagram(
+            c.peer_addr(),
+            c.rx_ecn(),
+            Rx::Slice(data),
+            batch,
+            &mut self.route,
+        );
     }
 
     /// Datagrams arrive as their own range of the receive slab: decrypted in place there, and
@@ -1088,8 +1210,13 @@ impl Handler for Udp {
 
     fn on_data_owned(&mut self, c: &Conn<Self>, data: akio_buf::slab::ChunkMut) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep
-            .on_datagram(c.peer_addr(), c.rx_ecn(), Rx::Owned(data), batch);
+        self.ep.on_datagram(
+            c.peer_addr(),
+            c.rx_ecn(),
+            Rx::Owned(data),
+            batch,
+            &mut self.route,
+        );
     }
 
     fn on_batch_end(&mut self, _c: &Conn<Self>) {

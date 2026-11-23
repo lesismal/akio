@@ -305,3 +305,85 @@ fn server_collector_reports_connections() {
     let text = tel.render_prometheus();
     assert!(text.contains("akio_quic_connections_closed_total{server=\"echo\"} 1\n"));
 }
+
+/// Many connections over a server with several UDP threads (each peer's datagrams reach its
+/// connection through the route its thread remembers, ADR-102), closed by the server and
+/// replaced: every request is answered on the right connection, closed connections leave the
+/// table, and new ones from the same client engine work.
+#[test]
+fn many_connections_over_several_threads_close_and_reconnect() {
+    let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = akio::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
+    let cfg = akio_quic::server_config(vec![cert], key, &[b"echo"]).unwrap();
+    let server = QuicServer::new(cfg, |_c: &Connection| Echo);
+    let e = Engine::builder()
+        .listen(
+            Listener::udp("127.0.0.1:0".parse().unwrap())
+                .threads(4)
+                .serve(server.clone()),
+        )
+        .udp_client_threads(2)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let ccfg = akio_quic::client_config_insecure(&[b"echo"]).unwrap();
+
+    let round = |conns: usize| {
+        let mut all = Vec::new();
+        for _ in 0..conns {
+            let (tx, rx) = mpsc::channel();
+            let client = Client {
+                tx,
+                bufs: HashMap::new(),
+            };
+            let c = akio_quic::dial(&e, addr, "localhost", ccfg.clone(), client).unwrap();
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Got::Connected
+            ));
+            all.push((c, rx));
+        }
+        for (n, (c, rx)) in all.iter().enumerate() {
+            let mut want = HashMap::new();
+            for i in 0..16usize {
+                let id = c.open_bi().expect("stream");
+                let body = format!("conn {n} request {i}").into_bytes();
+                c.send(id, body.clone()).unwrap();
+                c.finish(id).unwrap();
+                want.insert(id, body);
+            }
+            while !want.is_empty() {
+                match rx.recv_timeout(Duration::from_secs(10)).expect("answer") {
+                    Got::Stream(id, b) => assert_eq!(want.remove(&id).expect("known stream"), b),
+                    Got::Closed(r) => panic!("closed: {r}"),
+                    _ => {}
+                }
+            }
+        }
+        all
+    };
+
+    let first = round(12);
+    assert_eq!(server.connections(), 12);
+    server.close_all(0, b"bye");
+    for (_, rx) in &first {
+        loop {
+            if let Got::Closed(_) = rx.recv_timeout(Duration::from_secs(5)).expect("close") {
+                break;
+            }
+        }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while server.connections() > 0 {
+        assert!(std::time::Instant::now() < deadline, "server never drained");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = round(12);
+    assert_eq!(server.connections(), 12);
+    for (c, _) in &second {
+        c.close(0, b"done");
+    }
+    e.shutdown();
+}

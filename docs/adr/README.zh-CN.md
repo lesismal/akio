@@ -97,3 +97,4 @@
 - [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
 - [ADR-100：在监听器的各线程之间于 accept 时均衡连接](100-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
 - [ADR-099：I/O 循环上的定时器](099-loop-timers.zh-CN.md)（2026-11-23 采纳）
+- [ADR-102：按 UDP 对端记住 QUIC 路由，HTTP/3 服务端默认开启 QPACK 动态表](102-quic-peer-routes-qpack-server-default.zh-CN.md)（2026-11-24 采纳）

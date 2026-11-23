@@ -270,18 +270,21 @@ through an encoder stream. In `H3Config` (servers) and `H3ClientOptions` (client
   for them, up to the blocked-streams limit; acknowledgements go back on our decoder stream.
   Peers such as nghttp3 (curl) and OpenSSL's QUIC use the table as soon as it is offered.
   Set the capacity to 0 to allow static references and literals only.
-- `qpack_encoder_capacity` (0, off): this side's encoder table, at most what the peer allows.
-  It inserts a field the second time it sees it (never paths, dates, lengths, validators,
-  credentials or cookies), with a static or dynamic name reference or a literal name; refers to
+- `qpack_encoder_capacity` (4096 for a server, 0 (off) for a client): this side's encoder
+  table, at most what the peer allows. It inserts a field the second time it sees it (never
+  paths, lengths, validators, credentials or cookies; a server's `date` is inserted, since every
+  response of the same second repeats it), with a static or dynamic name reference or a literal name; refers to
   entries inserted by the same message with post-base indices; uses dynamic name references in
   literals; duplicates entries about to be evicted; and evicts only entries the peer has
   acknowledged. It makes at most as many of the peer's streams wait for its inserts as the
-  peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (0: never). It saves bytes on connections that
-  carry many messages with the same custom fields, at the cost of a lock per message and the
-  peer's acknowledgements; quic-go, fib and curl advertise no table, so it does nothing with
-  them. [ADR-011](https://github.com/lesismal/akio/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
+  peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (0: never), and makes inserts only while the
+  encoder stream has room for them. A response head such as `:status`, `content-type`, `date`,
+  `content-length` shrinks from about 60 bytes of literals to about 8, at the cost of a lock per
+  message and the peer's acknowledgements; quic-go, fib and curl advertise no table, so it does
+  nothing with them. [ADR-011](https://github.com/lesismal/akio/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
   and [ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.md)
-  explain the defaults.
+  explain the defaults, and [ADR-102](https://github.com/lesismal/akio/blob/main/docs/adr/102-quic-peer-routes-qpack-server-default.md)
+  why servers turn the encoder on.
 
 ## How HTTP/3 reuses `akio-http`
 

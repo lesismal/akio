@@ -289,14 +289,14 @@ impl DecTable {
     }
 }
 
-/// Fields worth a table entry: ones that repeat across messages. Paths, dates, lengths,
-/// validators and ranges change; credentials are not kept (RFC 9204 §7.1).
+/// Fields worth a table entry: ones that repeat across messages. Paths, lengths, validators
+/// and ranges change; credentials are not kept (RFC 9204 §7.1). A server's `date` is kept: it
+/// changes once a second, and every response of that second repeats it (ADR-102).
 fn cacheable(n: &[u8]) -> bool {
     !matches!(
         n,
         b":path"
             | b"content-length"
-            | b"date"
             | b"etag"
             | b"last-modified"
             | b"if-none-match"
@@ -404,6 +404,10 @@ pub(crate) struct Encoder {
     key: Vec<u8>,
     /// Encoder stream bytes to send.
     pub(crate) out: Vec<u8>,
+    /// Bytes the encoder stream takes now (its send buffer's room): inserts that would not fit
+    /// are not made, since an insert that cannot be sent would leave the peer's streams that
+    /// reference it waiting for good. Set by the caller before each section.
+    pub(crate) room: usize,
     /// Lines of the section being encoded.
     scratch: Vec<u8>,
     #[cfg(any(test, feature = "fuzzing"))]
@@ -445,6 +449,7 @@ impl Encoder {
             seen: Box::new([0; SEEN]),
             key: Vec::new(),
             out,
+            room: usize::MAX,
             scratch: Vec::new(),
             #[cfg(any(test, feature = "fuzzing"))]
             stats: EncStats::default(),
@@ -523,7 +528,8 @@ impl Encoder {
     /// Inserts `n: v` if it fits without evicting a needed entry; its absolute index.
     fn insert(&mut self, n: &[u8], v: &[u8], cur: &Section) -> Option<u64> {
         let size = n.len() as u64 + v.len() as u64 + OVERHEAD;
-        if size > self.capacity / 4 {
+        // The instruction: the field and at most two integers of up to 10 bytes each.
+        if size > self.capacity / 4 || !self.fits(n.len() + v.len() + 20) {
             return None;
         }
         let stat = crate::qpack::static_name(n);
@@ -570,7 +576,7 @@ impl Encoder {
         let (n, v) = (Box::<[u8]>::from(n), Box::<[u8]>::from(v));
         let size = n.len() as u64 + v.len() as u64 + OVERHEAD;
         let floor = self.floor(cur).min(abs);
-        if !self.make_room(size, floor) {
+        if !self.fits(10) || !self.make_room(size, floor) {
             return None;
         }
         put_int(&mut self.out, 0, 5, self.ring.inserted() - 1 - abs);
@@ -579,6 +585,11 @@ impl Encoder {
             self.stats.duplicates += 1;
         }
         Some(self.push(&n, &v))
+    }
+
+    /// Whether an encoder instruction of up to `n` bytes still fits in [`Encoder::room`].
+    fn fits(&self, n: usize) -> bool {
+        self.out.len().saturating_add(n) <= self.room
     }
 
     /// Whether `sec` may reference entries the peer may not have yet: within the peer's
@@ -1141,6 +1152,46 @@ mod tests {
         d.cancel(28);
         acks(&mut e, &mut d);
         assert_eq!(e.blocking_streams(), 1);
+    }
+
+    /// Inserts are made only while the encoder stream has room for them ([`Encoder::room`]):
+    /// with none, fields stay literals (nothing is inserted that could not be sent); with room
+    /// again, they are inserted and referenced. A `date` repeated by every response of a second
+    /// is inserted like other repeated fields (ADR-102).
+    #[test]
+    fn encoder_inserts_within_the_stream_room() {
+        let mut e = Encoder::new(4096, 4096, 16);
+        let mut d = DecTable::new(4096);
+        let f = [
+            (":status", "200"),
+            ("content-type", "text/plain; charset=utf-8"),
+            ("date", "Mon, 23 Nov 2026 14:00:00 GMT"),
+        ];
+        inserts(&mut e, &mut d); // Set Dynamic Table Capacity
+        e.room = 0;
+        let s0 = encode(&mut e, 0, &f);
+        let s4 = encode(&mut e, 4, &f);
+        assert_eq!(e.inserted(), 0);
+        assert!(e.out.is_empty());
+        assert_eq!(&s4[..2], &crate::qpack::PREFIX[..]);
+        decode_ack(&mut d, 0, &s0, &f);
+        decode_ack(&mut d, 4, &s4, &f);
+        // Room for one insert only: content-type goes in, the date stays a literal.
+        e.room = "content-type".len() + "text/plain; charset=utf-8".len() + 20;
+        let s8 = encode(&mut e, 8, &f);
+        assert_eq!(e.inserted(), 1);
+        inserts(&mut e, &mut d);
+        decode_ack(&mut d, 8, &s8, &f);
+        e.room = usize::MAX;
+        let s12 = encode(&mut e, 12, &f);
+        assert_eq!(e.inserted(), 2);
+        inserts(&mut e, &mut d);
+        decode_ack(&mut d, 12, &s12, &f);
+        acks(&mut e, &mut d);
+        // Both are references now: prefix, status, two dynamic references.
+        let s16 = encode(&mut e, 16, &f);
+        assert_eq!(s16.len(), 2 + 1 + 2, "{s16:02x?}");
+        decode_ack(&mut d, 16, &s16, &f);
     }
 
     /// However many blocked streams the peer allows, at most `MAX_BLOCKING` are used.

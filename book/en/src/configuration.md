@@ -104,7 +104,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `akio_media::whip::WhipConfig` | `max_sessions`: 256 (0: no limit) |
 | `akio_media::hls::HlsConfig` | `target_duration`: 2 s, `playlist_size`: 6, `keep_segments`: 3, `max_bytes`: 64 MiB (bounds the segment being written too), `idle_timeout`: 30 s |
 | `akio_webrtc::RtcServer` / `Endpoint` | `max_peers`: 1024 (0: no limit), `connect_timeout`: 30 s |
-| `akio_h3::H3Config` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `qpack_max_table_capacity`: 4096, `qpack_blocked_streams`: 16, `qpack_encoder_capacity`: 0 (off) |
+| `akio_h3::H3Config` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `qpack_max_table_capacity`: 4096, `qpack_blocked_streams`: 16, `qpack_encoder_capacity`: 4096 |
 | `akio_h3::H3ClientOptions` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `request_timeout`: 30 s, `qpack_max_table_capacity`: 4096, `qpack_blocked_streams`: 16, `qpack_encoder_capacity`: 0 (off) |
 | `akio_grpc::GrpcServer` | `max_message`: 4 MiB, `max_collect_bytes`: 64 MiB, `max_deadline`: 24 h, `compress`: false |
 | `akio_grpc::GrpcClient` | `max_message_bytes`: 4 MiB, `max_collect_bytes`: 64 MiB, `default_timeout`: 30 s (`unary` / `collect`) |

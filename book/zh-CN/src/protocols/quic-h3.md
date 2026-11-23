@@ -235,15 +235,18 @@ QPACK（RFC 9204）用一张由各自编码器通过 encoder stream 填充的表
   使用多少。引用了尚未收到的插入的字段段会等待它们，最多到 blocked streams 上限；确认通过我方
   decoder stream 发回。nghttp3（curl）和 OpenSSL QUIC 等对端一旦看到这张表就会使用。容量设为 0
   则只允许静态引用和字面量。
-- `qpack_encoder_capacity`（0，关闭）：我方编码器的表，最多为对端允许的容量。字段第二次出现时才
-  插入（从不插入路径、日期、长度、校验器、凭据和 cookie），使用静态或动态名称引用或字面名称；同一
+- `qpack_encoder_capacity`（服务端 4096，客户端 0 即关闭）：我方编码器的表，最多为对端允许的容量。
+  字段第二次出现时才插入（从不插入路径、长度、校验器、凭据和 cookie；服务端的 `date` 会插入，因为
+  同一秒的每个响应都重复它），使用静态或动态名称引用或字面名称；同一
   消息中插入的条目用 post-base 索引引用；字面行使用动态名称引用；即将被驱逐的条目会被复制
   （Duplicate）；只驱逐对端已确认的条目。让对端等待其插入的流不超过对端
-  `SETTINGS_QPACK_BLOCKED_STREAMS` 允许的数量（0 则从不）。在携带大量相同自定义字段的连接上它能省
-  字节，代价是每个消息一次加锁以及对端的确认；quic-go、fib 和 curl 不宣告动态表，与它们通信时它不起
+  `SETTINGS_QPACK_BLOCKED_STREAMS` 允许的数量（0 则从不），且只在编码器流有余量时插入。
+  `:status`、`content-type`、`date`、`content-length` 这样的响应头从约 60 字节字面量缩到约 8 字节，
+  代价是每个消息一次加锁以及对端的确认；quic-go、fib 和 curl 不宣告动态表，与它们通信时它不起
   作用。默认值的理由见
   [ADR-011](https://github.com/lesismal/akio/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)
-  与 [ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)。
+  与 [ADR-061](https://github.com/lesismal/akio/blob/main/docs/adr/061-qpack-encoder-h3-streamed-responses.zh-CN.md)；
+  服务端为何默认开启见 [ADR-102](https://github.com/lesismal/akio/blob/main/docs/adr/102-quic-peer-routes-qpack-server-default.zh-CN.md)。
 
 ## HTTP/3 如何复用 akio-http
 

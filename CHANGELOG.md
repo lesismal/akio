@@ -152,6 +152,21 @@ about 260 KiB of window and tables. It now keeps one per thread for each format 
 and `reset()` clears only the hash slots the previous body used. The output is byte-identical.
 On an M-series core this saves 2 to 2.4 us per 6 KB JSON body (gzip level 5: 22.3 to 19.6 us;
 level 1: 12.0 to 10.1 us). Numbers from the quiet benchmark host are pending.
+### Changed: HTTP/3 servers use a QPACK dynamic table by default; QUIC routes remembered per UDP peer (akio-h3, akio-quic)
+
+ADR-102 (2026-11-24):
+
+- akio-h3: `H3Config::qpack_encoder_capacity` defaults to 4096 (was 0). `H3ClientOptions` keeps
+  0. A response's `date`, `content-type` and other repeated fields become one-byte references
+  after their second use, for peers that offer a table (nghttp3: curl's libcurl-ngtcp2, h2load);
+  nothing changes with peers that offer none. `date` is now inserted (one value per second).
+  Set the capacity to 0 for the old literals-only encoding.
+- Fixed (akio-h3): with the encoder on, inserts the encoder stream could not take (the
+  connection's send buffer full) were dropped, and the sections referencing them never decoded.
+  Inserts are now made only within the encoder stream's send capacity.
+- akio-quic: a short-header datagram to the connection ID its UDP peer used last goes straight
+  to that connection, without the endpoint's and the connection table's locks; a server
+  connection sends through the socket it used last, without the shared socket table.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 

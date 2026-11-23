@@ -163,6 +163,18 @@ impl Endpoint {
         self.handle_ecn(now, from, 0, data)
     }
 
+    /// The connection a short-header datagram is routed to by its destination connection ID,
+    /// with that ID, if it is one of ours (no other effect). The I/O layer remembers the
+    /// answer per peer and routes the peer's next datagrams with the same ID without the
+    /// endpoint until a route is removed (`RetireCid`, `Drained` in [`Endpoint::handle_event`]).
+    pub fn route_short(&self, data: &[u8]) -> Option<(ConnectionId, ConnHandle)> {
+        if *data.first()? & 0x80 != 0 {
+            return None;
+        }
+        let cid = ConnectionId::new(data.get(1..1 + LOCAL_CID_LEN)?)?;
+        self.routes.get(&cid).map(|&h| (cid, h))
+    }
+
     /// Routes a datagram from `from` that arrived with ECN codepoint `ecn`.
     pub fn handle_ecn(
         &mut self,

@@ -117,11 +117,14 @@ pub struct H3Config {
     /// Default 16.
     pub qpack_blocked_streams: usize,
     /// The QPACK dynamic table this side's encoder uses (at most what the peer allows), in
-    /// bytes; 0 (the default) encodes with static references and literals only. The encoder
-    /// inserts fields the second time it sees them (not paths, dates, lengths, validators,
-    /// ranges or credentials), and makes at most as many of the peer's streams wait for its
-    /// inserts as the peer's `SETTINGS_QPACK_BLOCKED_STREAMS` allows (at most 64); it evicts
-    /// only entries the peer has acknowledged.
+    /// bytes; 0 encodes with static references and literals only. Default 4096 for a server
+    /// (its responses' `date`, `content-type`, `server` ... become one-byte references after
+    /// their second use, ADR-102), 0 for a client ([`H3ClientOptions`]). The encoder inserts
+    /// fields the second time it sees them (not paths, lengths, validators, ranges or
+    /// credentials; `date` is, since every response of the same second repeats it), and makes
+    /// at most as many of the peer's streams wait for its inserts as the peer's
+    /// `SETTINGS_QPACK_BLOCKED_STREAMS` allows (at most 64); it evicts only entries the peer
+    /// has acknowledged.
     pub qpack_encoder_capacity: usize,
     /// Run each request's service (middleware and handler) on the engine's logical pool
     /// instead of the connection's I/O thread, so handlers may block and the requests of one
@@ -140,6 +143,7 @@ impl Default for H3Config {
             qpack_blocked_streams: 16,
             qpack_encoder_capacity: 0,
             run_on_pool: false,
+            qpack_encoder_capacity: 4096,
         }
     }
 }
@@ -304,6 +308,9 @@ impl EncShared {
         f: impl FnOnce(&mut Encoder, &mut Vec<u8>, &mut Section),
     ) {
         let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
+        // Inserts only as long as the encoder stream can take them now (else they are lost and
+        // the sections referencing them never decode).
+        e.room = self.c.send_capacity(self.stream).unwrap_or(0);
         let (mut lines, mut sec) = e.begin(sid(id));
         f(&mut e, &mut lines, &mut sec);
         e.end(out, lines, sec);
@@ -1348,28 +1355,28 @@ pub(crate) fn digits(buf: &mut [u8; 20], mut n: u64) -> &[u8] {
 }
 
 thread_local! {
-    /// The current second and its `date` field line, encoded.
-    static DATE: RefCell<(u64, Vec<u8>)> = const { RefCell::new((0, Vec::new())) };
+    /// The current second, its `date` value and that value's field line, encoded.
+    static DATE: RefCell<(u64, String, Vec<u8>)> =
+        const { RefCell::new((0, String::new(), Vec::new())) };
 }
 
-/// Appends the `date` field line of the current second (encoded once a second per thread).
-fn put_date(out: &mut Vec<u8>) {
+/// Calls `f` with the `date` value of the current second and its literal field line (made
+/// once a second per thread).
+fn with_date<R>(f: impl FnOnce(&[u8], &[u8]) -> R) -> R {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     DATE.with(|c| {
         let mut c = c.borrow_mut();
-        if c.0 != secs || c.1.is_empty() {
-            c.0 = secs;
-            c.1.clear();
-            qpack::encode_line(
-                &mut c.1,
-                b"date",
-                akio_http::message::http_date_now().as_bytes(),
-            );
+        let (at, value, line) = &mut *c;
+        if *at != secs || line.is_empty() {
+            *at = secs;
+            *value = akio_http::message::http_date_now();
+            line.clear();
+            qpack::encode_line(line, b"date", value.as_bytes());
         }
-        out.extend_from_slice(&c.1);
-    });
+        f(value.as_bytes(), line)
+    })
 }
 
 /// Calls `f` with `n` lowercased (borrowed when it already is).
@@ -1413,6 +1420,7 @@ pub(crate) fn put_head(
                 headers,
                 add_date,
                 content_length,
+                false,
                 &mut |o, n, v| qpack::encode_line(o, n, v),
             );
         }
@@ -1424,6 +1432,7 @@ pub(crate) fn put_head(
                 headers,
                 add_date,
                 content_length,
+                true,
                 &mut |o, n, v| e.line(o, sec, n, v),
             );
         }),
@@ -1431,7 +1440,9 @@ pub(crate) fn put_head(
     frame::end_frame(out, at);
 }
 
-/// The field lines of [`put_head`], each through `line` except the ones with a fast path.
+/// The field lines of [`put_head`], each through `line` except the ones with a fast path (the
+/// added `date` too, unless `dynamic`: then it goes through `line`, which may reference it).
+#[allow(clippy::too_many_arguments)]
 fn head_lines<F: FnMut(&mut Vec<u8>, &[u8], &[u8])>(
     out: &mut Vec<u8>,
     status: Option<u16>,
@@ -1439,6 +1450,7 @@ fn head_lines<F: FnMut(&mut Vec<u8>, &[u8], &[u8])>(
     headers: &Headers,
     add_date: bool,
     content_length: Option<u64>,
+    dynamic: bool,
     line: &mut F,
 ) {
     if let Some(s) = status {
@@ -1466,7 +1478,13 @@ fn head_lines<F: FnMut(&mut Vec<u8>, &[u8], &[u8])>(
         });
     }
     if add_date && !has_date {
-        put_date(out);
+        with_date(|value, literal| {
+            if dynamic {
+                line(out, b"date", value);
+            } else {
+                out.extend_from_slice(literal);
+            }
+        });
     }
     if let (Some(len), false) = (content_length, has_len) {
         qpack::encode_content_length(out, len);
