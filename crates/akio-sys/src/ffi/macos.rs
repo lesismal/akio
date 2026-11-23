@@ -253,7 +253,6 @@ unsafe extern "C" {
     pub fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t;
     pub fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t;
     pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
-    pub fn ioctl(fd: c_int, request: core::ffi::c_ulong, ...) -> c_int;
     pub fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
 
     pub fn getentropy(buf: *mut c_void, len: size_t) -> c_int;
