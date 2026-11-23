@@ -79,5 +79,6 @@ QUIC 连接，于是带着应答从头再处理同一个 ClientHello。
 akio-tls 的单元测试（`proto/resolver_tests.rs`）：调用内应答与稍后应答、从其他线程应答、TLS 1.2 与 1.3、
 HelloRetryRequest、会话恢复不调用解析器、有无默认证书时的 `use_default`、告警、被丢弃的 `CertDone`、超时、
 等待上限、等待期间连接被丢弃、QUIC、`CertStore`（通配符、替换）。akio 的引擎测试（`tests/tls.rs`）：在各
-后端上经引擎从其他线程应答的解析器，客户端为标准实现（rustls），以及等待期间连接被关闭；akio-quic（`tests/zero_rtt.rs`）中在 QUIC 上做同样的测试。静态证书握手在安静主机上的 A/B：见提交
-说明与 CHANGELOG。
+后端上经引擎从其他线程应答的解析器，客户端为标准实现（rustls），以及等待期间连接被关闭；akio-quic
+（`tests/zero_rtt.rs`）中在 QUIC 上做同样的测试。静态证书握手在安静主机上的 A/B（10 轮交替，取中位数）：
+X25519 +0.5%，secp256r1 −0.1%，RSA-2048 +0.1%，均在噪声范围内。

@@ -99,5 +99,5 @@ default, alerts, a dropped `CertDone`, the timeout, the pending bound, the conne
 while waiting, QUIC, `CertStore` (wildcards, replacement). Engine tests in akio
 (`tests/tls.rs`): a resolver answering from another thread over the engine on every backend,
 with a stock client (rustls), and the connection closed while waiting; in akio-quic
-(`tests/zero_rtt.rs`), the same over QUIC. Static-certificate handshake A/B
-on the quiet host: in the commit and CHANGELOG.
+(`tests/zero_rtt.rs`), the same over QUIC. Static-certificate handshake A/B on the quiet host
+(10 alternating rounds, medians): X25519 +0.5%, secp256r1 −0.1%, RSA-2048 +0.1%, within noise.

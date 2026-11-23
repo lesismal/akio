@@ -27,7 +27,10 @@ ADR-093，均为新增（akit 的 A2：服务期间续期证书，以及按需 T
 - `CertifiedKey`（只校验一次的证书链与私钥，`from_pem`、`with_ocsp_response`、`chain_der`）以及
   `CertStore`：在调用内按名称（精确名称或一层子域的 `*.`）应答的解析器，名称随时可用
   `insert` / `remove` / `set_default` 替换。
-- 静态证书路径不变（每次完整握手多一次 `Option` 判断）：在安静主机上对 TLS 握手基准做的同轮 A/B 见下。
+- 静态证书路径不变（每次完整握手多一次 `Option` 判断）。在安静的 x86_64 主机上同轮 A/B（`tls-bench
+  handshakes`，内存中的 TLS 1.3 完整握手，单核，10 轮交替、每轮 2 s，取中位数，main 50a82315 → 本分支）：
+  X25519 5526 → 5551/s（+0.5%），secp256r1 5663 → 5655/s（−0.1%），X25519 加 RSA-2048 3280 → 3284/s
+  （+0.1%），均在各轮的波动范围内。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 

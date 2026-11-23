@@ -30,8 +30,11 @@ ADR-093, additive (akit's A2: certificates renewed while serving, and on-demand 
 - `CertifiedKey` (a chain and key checked once, `from_pem`, `with_ocsp_response`, `chain_der`)
   and `CertStore`, a resolver answering inline from names (exact or `*.` one label deep) that are
   replaced at any time with `insert` / `remove` / `set_default`.
-- The static-certificate path is unchanged (one `Option` check per full handshake): same-run A/B
-  of the TLS handshake benchmark on the quiet host below.
+- The static-certificate path is unchanged (one `Option` check per full handshake). Same-run A/B
+  on the quiet x86_64 host (`tls-bench handshakes`, in-memory full TLS 1.3 handshakes on one
+  core, 10 alternating rounds of 2 s, medians, main 50a82315 → branch): X25519 5526 → 5551/s
+  (+0.5%), secp256r1 5663 → 5655/s (−0.1%), X25519 with RSA-2048 3280 → 3284/s (+0.1%), all
+  within the rounds' spread.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
