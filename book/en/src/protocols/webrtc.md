@@ -158,8 +158,9 @@ it).
 
 `RelayServer::dual_allocation(true)` makes it a dual allocation (ADR-083): one relayed
 candidate per family, so an endpoint reaching the server over IPv4 can still be reached from
-IPv6-only peers through the server's IPv6 relay. It is off by default: a second port on the
-server, and useful only against peers with IPv6 candidates.
+IPv6-only peers through the server's IPv6 relay. It is off by default (ADR-091): the allocation
+serves every peer of the endpoint, so the second port stays taken on the server for the
+endpoint's life, and it only helps against peers with IPv6 candidates and no IPv4 path.
 
 ```rust,ignore
 let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
@@ -717,6 +718,8 @@ Chrome is 4 packets paced and 7 unpaced. While the path is marked ECT(1), the qu
 | `max_allocations`, `max_allocations_per_user` | 16384, 1024 | quotas (508, 486) |
 | `max_permissions`, `max_channels` | 256, 256 | per allocation (508) |
 | `peer_allowed`, `allow_private_peers` | none, false | the default refuses loopback, private, link-local, multicast and reserved peers (`denied_by_default`): a relay into the server's own network would be an SSRF hole |
+| `copy_dscp` | true | relayed datagrams keep the DSCP they came with (next paragraphs); false sends DSCP 0 |
+| `relay_icmp` | true | ICMP errors of datagrams to peers go back to the client (Linux) |
 
 Allocate, Refresh, CreatePermission, ChannelBind, Send and Data indications, ChannelData,
 `EVEN-PORT` with `RESERVATION-TOKEN` and `REQUESTED-ADDRESS-FAMILY` are supported; requests are
@@ -746,17 +749,33 @@ let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
     .additional_relay_ip("2001:db8::7".parse()?);
 ```
 
-**ECN** (RFC 8656 section 14, ADR-083). Relayed data keeps the ECN codepoint it arrived with,
-both ways:
+**DSCP and ECN** (RFC 8656 section 14, ADR-083, ADR-091). Relayed data keeps the traffic
+class byte it arrived with (the IPv4 TOS / IPv6 traffic class: DSCP and ECN codepoint), both
+ways:
 
 - ChannelData and Send indications from a UDP or DTLS client go to the peer with the client's
-  codepoint.
-- A peer's datagram goes to the client with the peer's codepoint.
-- The codepoint is read from `IP_RECVTOS` / `IPV6_RECVTCLASS` and set with an `IP_TOS` /
+  byte.
+- A peer's datagram goes to the client with the peer's byte.
+- The byte is read from `IP_RECVTOS` / `IPV6_RECVTCLASS` and set with an `IP_TOS` /
   `IPV6_TCLASS` control message on Linux and macOS. Elsewhere datagrams go unmarked.
-- Clients on TCP or TLS have no codepoint to give or get.
-- An embedding `TurnCore` gets the codepoints with `handle_client_ecn` / `handle_peer_ecn`
-  and `TurnEnv::send_to_peer_ecn` / `send_to_client_ecn`. Their defaults drop the codepoint.
+- `copy_dscp(false)` keeps the ECN codepoint only (DSCP 0, best effort): for a server that
+  should not let clients and peers choose their class of service.
+- Clients on TCP or TLS have no byte to give or get.
+- An embedding `TurnCore` gets the byte with `handle_client_tos` / `handle_peer_tos` and
+  `TurnEnv::send_to_peer_tos` / `send_to_client_tos`. The defaults of those pass the ECN bits
+  on to the `_ecn` methods of ADR-083, whose defaults drop them.
+
+**ICMP** (RFC 8656 section 11.5, ADR-091). When a datagram relayed to a peer draws an ICMP
+destination unreachable, time exceeded or packet too big, the client gets a Data indication
+with `XOR-PEER-ADDRESS` and an `ICMP` attribute (type, code, and the next-hop MTU for "packet
+too big"), and no `DATA`, if it has a permission for that address.
+
+- `TurnServer` binds its relay sockets with `Engine::bind_udp_icmp`, which sets `IP_RECVERR` /
+  `IPV6_RECVERR` and reads the socket's error queue on its I/O thread. Linux only: elsewhere
+  unconnected sockets never hear of ICMP.
+- `TurnCore::handle_icmp(now, relay, peer, type, code, mtu, env)` is the entry point for an
+  embedding; `TurnStats::icmp` counts what was relayed.
+- ICMP is best effort: hosts rate-limit it and networks filter it.
 
 `TurnServer` splits allocations into shards by client address (about four per CPU, at least 8),
 each with its own lock: datagrams of different allocations do not contend across I/O threads,
@@ -874,6 +893,13 @@ one over UDP.
 - `relayed_addr_for(peer)` gives the one that talks to `peer`.
 - `address_error()` says why a family is missing.
 - `send_to` works for peers of either family; refreshes keep both.
+- `release_family(now, v6)` gives one of them back (a Refresh with lifetime 0 and that
+  `REQUESTED-ADDRESS-FAMILY`): it leaves `relayed_addrs()` with its peers, and the other stays
+  and is refreshed alone.
+
+A Data indication with `ICMP` becomes `ClientEvent::Icmp { peer, icmp_type, code, mtu }` (a
+datagram to `peer` was refused on the way; the port may be 0), for addresses the client has a
+permission for.
 
 For a TCP allocation, `ClientConfig::tcp_allocation(true)` (over TCP or TLS). `connect(peer)`
 sends a Connect and is answered by `ClientEvent::Connected { peer, id }` or `ConnectFailed`;
@@ -973,4 +999,4 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
   the data channels. DTLS 1.3's KeyUpdate does not change SRTP's keys (ADR-086 §6).
 
 ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072, ADR-073,
-ADR-076, ADR-077, ADR-082, ADR-083 and ADR-086 have the details of what was added.
+ADR-076, ADR-077, ADR-082, ADR-083, ADR-086 and ADR-091 have the details of what was added.

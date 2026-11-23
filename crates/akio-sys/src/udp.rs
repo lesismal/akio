@@ -357,13 +357,20 @@ impl RecvBatch {
     /// The ECN codepoint (the low two bits of the traffic class) of datagram `i` of the last
     /// `recv`: 0 when not ECN-capable or not reported (see [`enable_ecn`]).
     pub fn ecn(&self, i: usize) -> u8 {
+        self.tos(i) & 3
+    }
+
+    /// The whole traffic class byte (IPv4 TOS / IPv6 traffic class: DSCP in the upper six
+    /// bits, ECN in the low two) of datagram `i` of the last `recv`: 0 when not reported (see
+    /// [`enable_ecn`]).
+    pub fn tos(&self, i: usize) -> u8 {
         if i >= self.got {
             return 0;
         }
         let tos = self.cmsg_int(i, |level, ty| {
             (level == IPPROTO_IP && ty == IP_TOS) || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
         });
-        tos.map_or(0, |v| (v & 3) as u8)
+        tos.map_or(0, |v| v as u8)
     }
 
     /// The payload of the first control message of datagram `i` that `want(level, type)`
@@ -400,9 +407,9 @@ struct Meta {
     iov_len: usize,
     namelen: ffi::socklen_t,
     gso: u16,
-    /// ECN codepoint to send with (0: none), and whether the socket is IPv6 (`IPV6_TCLASS`
-    /// rather than `IP_TOS`).
-    ecn: u8,
+    /// Traffic class byte to send with (DSCP and ECN; 0: none), and whether the socket is
+    /// IPv6 (`IPV6_TCLASS` rather than `IP_TOS`).
+    tos: u8,
     v6: bool,
 }
 
@@ -497,6 +504,19 @@ impl<'d> Batch<'_, 'd> {
         ecn: u8,
         v6_socket: bool,
     ) -> bool {
+        self.push_tos(dest, parts, gso, ecn & 3, v6_socket)
+    }
+
+    /// As [`push_ecn`](Self::push_ecn), with the whole traffic class byte `tos` (DSCP and ECN;
+    /// 0 sends none).
+    pub fn push_tos(
+        &mut self,
+        dest: Option<&SocketAddr>,
+        parts: &[&'d [u8]],
+        gso: usize,
+        tos: u8,
+        v6_socket: bool,
+    ) -> bool {
         let s = &mut *self.s;
         let i = s.meta.len();
         if i == SEND_BATCH || s.iov.len() + parts.len() > MAX_IOV {
@@ -522,7 +542,7 @@ impl<'d> Batch<'_, 'd> {
             iov_len: parts.len(),
             namelen,
             gso: gso.min(u16::MAX as usize) as u16,
-            ecn: ecn & 3,
+            tos,
             v6: v6_socket,
         });
         true
@@ -556,7 +576,7 @@ impl<'d> Batch<'_, 'd> {
             if m.gso > 0 {
                 space += ffi::cmsg_space(size_of::<u16>());
             }
-            if m.ecn > 0 {
+            if m.tos > 0 {
                 space += ffi::cmsg_space(size_of::<ffi::c_int>());
             }
             if space > 0 {
@@ -576,11 +596,11 @@ impl<'d> Batch<'_, 'd> {
                         std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<u16>(), m.gso);
                         c = ffi::cmsg_nxthdr(h, c);
                     }
-                    if m.ecn > 0 && !c.is_null() {
+                    if m.tos > 0 && !c.is_null() {
                         (*c).cmsg_level = if m.v6 { IPPROTO_IPV6 } else { IPPROTO_IP };
                         (*c).cmsg_type = if m.v6 { IPV6_TCLASS } else { IP_TOS };
                         (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
-                        let v = ffi::c_int::from(m.ecn);
+                        let v = ffi::c_int::from(m.tos);
                         std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
                     }
                 }
@@ -616,6 +636,18 @@ pub fn send_to_ecn(
     ecn: u8,
     v6_socket: bool,
 ) -> io::Result<usize> {
+    send_to_tos(fd, data, dest, ecn & 3, v6_socket)
+}
+
+/// [`send_to_ecn`] with the whole traffic class byte `tos` (DSCP in the upper six bits, ECN in
+/// the low two; 0 sends no control message).
+pub fn send_to_tos(
+    fd: RawFd,
+    data: &[u8],
+    dest: Option<&SocketAddr>,
+    tos: u8,
+    v6_socket: bool,
+) -> io::Result<usize> {
     let (mut ss, slen) = match dest {
         Some(d) => {
             let d = match (v6_socket, d) {
@@ -642,7 +674,7 @@ pub fn send_to_ecn(
     }
     h.msg_iov = &raw mut iov;
     h.msg_iovlen = 1;
-    if ecn & 3 != 0 {
+    if tos != 0 {
         h.msg_control = (&raw mut ctrl).cast();
         h.msg_controllen = ffi::cmsg_space(size_of::<ffi::c_int>()) as _;
         // SAFETY: `msg_control` points to `ctrl` (64 bytes, 8-aligned, zeroed), room for the
@@ -653,7 +685,7 @@ pub fn send_to_ecn(
                 (*c).cmsg_level = if v6_socket { IPPROTO_IPV6 } else { IPPROTO_IP };
                 (*c).cmsg_type = if v6_socket { IPV6_TCLASS } else { IP_TOS };
                 (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
-                let v = ffi::c_int::from(ecn & 3);
+                let v = ffi::c_int::from(tos);
                 std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
             }
         }

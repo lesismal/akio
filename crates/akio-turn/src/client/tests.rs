@@ -597,3 +597,100 @@ fn dual_allocation_partial() {
         [ClientEvent::PeerFailed(p, ClientError::Rejected(443, _))] if *p == peer6
     ));
 }
+
+/// Giving back the IPv6 half of a dual allocation: a Refresh with lifetime 0 and that family
+/// deletes it at the server, the IPv4 half stays and keeps being refreshed, and the IPv6 peers
+/// are forgotten.
+#[test]
+fn release_one_family() {
+    let cfg = server_cfg()
+        .additional_relay_ip("2001:db8::1".parse().unwrap())
+        .allow_private_peers(true);
+    let mut n = Net::new(cfg, client_cfg().dual_allocation(true));
+    allocated(&mut n);
+    let all = n.client.relayed_addrs().to_vec();
+    let peer6 = a("[2001:db8:9::9]:7000");
+    assert!(n.client.send_to(n.now, a(PEER), b"four"));
+    assert!(n.client.send_to(n.now, peer6, b"six"));
+    n.pump();
+    n.env.to_peer.clear();
+    assert!(n.client.release_family(n.now, true));
+    assert_eq!(n.client.relayed_addrs(), &all[..1]);
+    assert_eq!(n.client.relayed_addr_for(peer6), None);
+    let m = n.client.poll_transmit().expect("refresh");
+    let msg = Message::parse(&m).unwrap();
+    assert_eq!(msg.method(), Method::REFRESH);
+    assert_eq!(msg.get_u32(attr::LIFETIME), Some(0));
+    assert_eq!(
+        msg.get(attr::REQUESTED_ADDRESS_FAMILY),
+        Some(&[2u8, 0, 0, 0][..])
+    );
+    n.core.handle_client(n.now, a(CLIENT), &m, &mut n.env);
+    n.pump();
+    assert_eq!(n.core.relays_of(a(CLIENT)), &all[..1]);
+    // Nothing left to give back but the last one: that is `close`.
+    assert!(!n.client.release_family(n.now, true));
+    assert!(!n.client.release_family(n.now, false));
+    for _ in 0..30 {
+        n.advance(Duration::from_secs(60));
+        assert!(n.client.send_to(n.now, a(PEER), b"four"));
+        n.pump();
+        let peers: Vec<SocketAddr> = n.env.to_peer.drain(..).map(|x| x.0).collect();
+        assert_eq!(peers, [a(PEER)], "at {:?}", n.now);
+    }
+    assert_eq!(n.core.relays_of(a(CLIENT)), &all[..1]);
+    assert!(n.events().is_empty());
+    n.client.close(n.now);
+    n.pump();
+    assert_eq!(n.events(), vec![ClientEvent::Closed]);
+    // A single-family allocation has nothing to give back.
+    let mut n = Net::new(server_cfg(), client_cfg());
+    allocated(&mut n);
+    assert!(!n.client.release_family(n.now, false));
+    assert!(!n.client.release_family(n.now, true));
+}
+
+/// A Data indication with `ICMP` (RFC 8656 section 11.6) becomes `ClientEvent::Icmp` for a
+/// peer address the client has a permission for, and carries no data.
+#[test]
+fn icmp_from_the_server() {
+    let mut cfg = server_cfg();
+    cfg.allow_private_peers = true;
+    let mut n = Net::new(cfg, client_cfg());
+    let relayed = allocated(&mut n);
+    assert!(n.client.send_to(n.now, a(PEER), b"x"));
+    n.pump();
+    n.core
+        .handle_icmp(n.now, relayed, a(PEER), 3, 3, 0, &mut n.env);
+    // Port 0, same address: still this peer.
+    let p0 = SocketAddr::new(a(PEER).ip(), 0);
+    n.core
+        .handle_icmp(n.now, relayed, p0, 3, 4, 1400, &mut n.env);
+    n.pump();
+    assert!(n.got.is_empty());
+    assert_eq!(
+        n.events(),
+        vec![
+            ClientEvent::Icmp {
+                peer: a(PEER),
+                icmp_type: 3,
+                code: 3,
+                mtu: 0
+            },
+            ClientEvent::Icmp {
+                peer: p0,
+                icmp_type: 3,
+                code: 4,
+                mtu: 1400
+            },
+        ]
+    );
+    // An address the client never talked to is ignored.
+    let other = a("203.0.113.10:7000");
+    let ind = MessageBuilder::new(Method::DATA, Class::Indication, transaction_id())
+        .xor_addr(attr::XOR_PEER_ADDRESS, other)
+        .icmp(3, 3, 0)
+        .build();
+    assert_eq!(n.client.handle_input(n.now, &ind), None);
+    assert!(n.events().is_empty());
+}

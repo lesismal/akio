@@ -2,7 +2,7 @@
 
 English | [简体中文](083-turn-dual-allocations-ecn-relay.zh-CN.md)
 
-Status: accepted (2026-11-22)
+Status: accepted (2026-11-22); its "Not done" items settled by ADR-091 (2026-11-23)
 
 ## Context
 
@@ -163,6 +163,9 @@ released.
 - A per-family `REQUESTED-ADDRESS-FAMILY` in the client's Refresh (refreshing or deleting one
   family). The server supports it; the client always refreshes both.
 - Dual allocations by default in `Endpoint::gather_relay` (see above).
+
+Update (2026-11-23, ADR-091): ICMP relaying, DSCP copying and `Client::release_family` (deleting
+one family) are done; `gather_relay` stays single-family, for the reasons ADR-091 gives.
 
 ## Consequences
 

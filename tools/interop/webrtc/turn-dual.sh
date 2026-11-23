@@ -5,9 +5,11 @@
 # 127.0.0.1 and ::1:
 #   - coturn's turnutils_uclient with dual allocations (-Z) and IPv6 relays (-x), clients
 #     sending to each other's relayed addresses (-y), against akio-turn (and coturn itself);
-#   - the akio_turn client asking for a dual allocation (peers on 127.0.0.1 and ::1, ECN marks
-#     both ways) against coturn (two relayed addresses), pion/turn (one: it ignores the
-#     attribute) and akio-turn (two, and the codepoints must be copied);
+#   - the akio_turn client asking for a dual allocation (peers on 127.0.0.1 and ::1, DSCP and
+#     ECN marks both ways, a datagram to a closed port through each relay, then the IPv6 family
+#     given back alone) against coturn (two relayed addresses), pion/turn (one: it ignores the
+#     attribute) and akio-turn (two; the traffic class must be copied, the ICMP port
+#     unreachable relayed, the IPv6 family deleted alone);
 #   - pion/turn's client asking for IPv4 or IPv6 relays (REQUESTED-ADDRESS-FAMILY) against
 #     akio-turn and coturn.
 set -eu
@@ -50,10 +52,10 @@ for port in 9823 3478; do
   echo "== coturn turnutils_uclient: IPv6 relays (-x) against port $port"
   uclient "$port" -x
 done
-echo "== akio_turn client, dual allocation: coturn (2 relays), pion/turn (1), akio-turn (2, ECN)"
+echo "== akio_turn client, dual allocation: coturn (2 relays), pion/turn (1), akio-turn (2)"
 docker exec akio-turndual-it $RS client 127.0.0.1:3478 alice wonderland 2
 docker exec akio-turndual-it $RS client 127.0.0.1:9903 alice wonderland 1
-docker exec akio-turndual-it $RS client 127.0.0.1:9823 alice wonderland 2 ecn
+docker exec akio-turndual-it $RS client 127.0.0.1:9823 alice wonderland 2 ecn,dscp,icmp,release
 echo "== pion/turn client, REQUESTED-ADDRESS-FAMILY IPv4 and IPv6: akio-turn, coturn"
 for s in 9823 3478; do
   for f in 4 6; do

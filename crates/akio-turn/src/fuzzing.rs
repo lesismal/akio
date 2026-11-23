@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::core::{TurnConfig, TurnCore, TurnEnv};
 use crate::static_auth;
-use crate::stun::Message;
+use crate::stun::{Message, attr};
 
 /// Splits `data` into length-prefixed packets (a truncated last one is taken as it is).
 pub fn packets(mut data: &[u8]) -> Vec<&[u8]> {
@@ -67,21 +67,29 @@ struct NullEnv {
     next_port: u16,
     /// Relays open (when tracked: not for stream clients, whose relays are never driven).
     open: Vec<SocketAddr>,
-    /// The ECN codepoint of the datagram being handled: relayed data must carry it.
-    ecn: u8,
+    /// The traffic class byte (DSCP and ECN) of the datagram being handled: relayed data must
+    /// carry it.
+    tos: u8,
 }
 
 impl TurnEnv for NullEnv {
     fn send_to_client(&mut self, _client: SocketAddr, data: &[u8]) {
         stun_message(data);
+        // An ICMP Data indication carries no data (RFC 8656 section 11.5).
+        if let Ok(m) = Message::parse(data) {
+            if m.has(attr::ICMP) {
+                assert!(!m.has(attr::DATA));
+                assert!(m.get_xor_addr(attr::XOR_PEER_ADDRESS).is_some());
+            }
+        }
     }
-    fn send_to_client_ecn(&mut self, _client: SocketAddr, data: &[u8], ecn: u8) {
-        assert_eq!(ecn, self.ecn);
+    fn send_to_client_tos(&mut self, _client: SocketAddr, data: &[u8], tos: u8) {
+        assert_eq!(tos, self.tos);
         stun_message(data);
     }
     fn send_to_peer(&mut self, _relay: SocketAddr, _peer: SocketAddr, _data: &[u8]) {}
-    fn send_to_peer_ecn(&mut self, relay: SocketAddr, peer: SocketAddr, _data: &[u8], ecn: u8) {
-        assert_eq!(ecn, self.ecn);
+    fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, _data: &[u8], tos: u8) {
+        assert_eq!(tos, self.tos);
         // From an open relay of the peer's family.
         assert_eq!(relay.is_ipv6(), peer.is_ipv6());
         assert!(self.open.contains(&relay));
@@ -120,11 +128,40 @@ pub fn turn_core(start: Instant) -> TurnCore {
     c
 }
 
+/// The peer an odd selector byte `sel` names and the relay it talks to: below `0x80` peer
+/// `10.0.0.(sel/8)` and the first IPv4 relay open, from `0x80` up peer `2001:db8:1::(sel/8)`
+/// and the first IPv6 one.
+fn peer_of(env: &NullEnv, sel: u8) -> (SocketAddr, SocketAddr) {
+    let v6 = sel >= 0x80;
+    let peer = if v6 {
+        SocketAddr::new(
+            IpAddr::V6([0x2001, 0xdb8, 1, 0, 0, 0, 0, u16::from(sel / 8)].into()),
+            7000,
+        )
+    } else {
+        SocketAddr::new(IpAddr::V4([10, 0, 0, sel / 8].into()), 7000)
+    };
+    let relay = env
+        .open
+        .iter()
+        .copied()
+        .find(|r| r.is_ipv6() == v6)
+        .unwrap_or_else(|| SocketAddr::new(peer.ip(), 50001));
+    (peer, relay)
+}
+
 /// `turn_server`: a TURN server fed datagrams. Each packet's first byte picks the source and
-/// the datagram's ECN codepoint (bits 1-2), which relayed data must keep: even from the
-/// client; odd from a peer, below `0x80` peer `10.0.0.(b/8)` to the first IPv4 relay open, from
-/// `0x80` up peer `2001:db8:1::(b/8)` to the first IPv6 one; and `0xff` advances the clock by
-/// a minute (then sweeps). At the end the server closes everything.
+/// the datagram's traffic class, which relayed data must keep:
+///
+/// - `0xff` advances the clock by a minute (then sweeps);
+/// - `0xfe`: an ICMP error, the next bytes the peer (as an odd selector), type, code and MTU
+///   (two bytes);
+/// - `0xfc`: from a peer, the next bytes the peer (as an odd selector) and the traffic class;
+/// - other even bytes: from the client, below `0x80` with ECN codepoint bits 1-2, from `0x80`
+///   up with the next byte as the whole traffic class (DSCP and ECN);
+/// - odd bytes: from a peer ([`peer_of`]), ECN codepoint bits 1-2.
+///
+/// At the end the server closes everything.
 pub fn turn_server(data: &[u8]) {
     let start = Instant::now();
     let mut core = turn_core(start);
@@ -134,29 +171,48 @@ pub fn turn_server(data: &[u8]) {
         let Some((&sel, body)) = p.split_first() else {
             continue;
         };
-        env.ecn = (sel >> 1) & 3;
-        if sel == 0xff {
-            now += Duration::from_secs(60);
-            core.handle_timeout(now, &mut env);
-        } else if sel % 2 == 0 {
-            core.handle_client_ecn(now, CLIENT, body, env.ecn, &mut env);
-        } else {
-            let v6 = sel >= 0x80;
-            let peer = if v6 {
-                SocketAddr::new(
-                    IpAddr::V6([0x2001, 0xdb8, 1, 0, 0, 0, 0, u16::from(sel / 8)].into()),
-                    7000,
-                )
-            } else {
-                SocketAddr::new(IpAddr::V4([10, 0, 0, sel / 8].into()), 7000)
-            };
-            let relay = env
-                .open
-                .iter()
-                .copied()
-                .find(|r| r.is_ipv6() == v6)
-                .unwrap_or_else(|| SocketAddr::new(peer.ip(), 50001));
-            core.handle_peer_ecn(now, relay, peer, body, env.ecn, &mut env);
+        env.tos = (sel >> 1) & 3;
+        match sel {
+            0xff => {
+                now += Duration::from_secs(60);
+                core.handle_timeout(now, &mut env);
+            }
+            0xfe => {
+                let [ps, ty, code, m0, m1, ..] = *body else {
+                    continue;
+                };
+                let (peer, relay) = peer_of(&env, ps | 1);
+                // The port as the kernel reports it, or 0 when unknown.
+                let peer = if code & 0x80 != 0 {
+                    SocketAddr::new(peer.ip(), 0)
+                } else {
+                    peer
+                };
+                let mtu = u32::from(u16::from_be_bytes([m0, m1]));
+                let before = core.stats().icmp;
+                core.handle_icmp(now, relay, peer, ty, code, mtu, &mut env);
+                assert!(core.stats().icmp <= before + 1);
+            }
+            0xfc => {
+                let [ps, tos, ref rest @ ..] = *body else {
+                    continue;
+                };
+                let (peer, relay) = peer_of(&env, ps | 1);
+                env.tos = tos;
+                core.handle_peer_tos(now, relay, peer, rest, tos, &mut env);
+            }
+            _ if sel % 2 == 0 && sel >= 0x80 => {
+                let Some((&tos, rest)) = body.split_first() else {
+                    continue;
+                };
+                env.tos = tos;
+                core.handle_client_tos(now, CLIENT, rest, tos, &mut env);
+            }
+            _ if sel % 2 == 0 => core.handle_client_ecn(now, CLIENT, body, env.tos, &mut env),
+            _ => {
+                let (peer, relay) = peer_of(&env, sel);
+                core.handle_peer_ecn(now, relay, peer, body, env.tos, &mut env);
+            }
         }
         assert!(core.relays_of(CLIENT).len() <= 2);
     }
@@ -542,7 +598,54 @@ pub(crate) mod seeds {
             [&[2u8][..], &cd6].concat(),
             vec![0xff],
         ];
-        vec![join(&pkts), join(&dual)]
+        // DSCP both ways and ICMP errors: a dual allocation with permissions for 10.0.0.1 and
+        // 2001:db8:1::11 (selectors 0x0f and 0x8b), EF + ECT(1) from the client and AF41 +
+        // ECT(0) from both peers, port unreachable, fragmentation needed and packet too big,
+        // one with port 0, and a parameter problem (dropped).
+        let peer6b: SocketAddr = "[2001:db8:1::11]:7000".parse().expect("addr");
+        let icmp_tos = vec![
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::ALLOCATE)
+                        .u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+                        .attr(attr::ADDITIONAL_ADDRESS_FAMILY, &[2, 0, 0, 0]),
+                ),
+            ]
+            .concat(),
+            [
+                &[0u8][..],
+                &auth(
+                    req(Method::CHANNEL_BIND)
+                        .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+                        .xor_addr(attr::XOR_PEER_ADDRESS, peer),
+                ),
+            ]
+            .concat(),
+            [
+                &[0u8][..],
+                &auth(req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer6b)),
+            ]
+            .concat(),
+            [&[0x80u8, 0xb9][..], &cd].concat(),
+            [
+                &[0x80u8, 0xb9][..],
+                &MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
+                    .xor_addr(attr::XOR_PEER_ADDRESS, peer6b)
+                    .attr(attr::DATA, b"ef")
+                    .build(),
+            ]
+            .concat(),
+            [&[0xfcu8, 0x0f, 0x8a][..], b"af41 v4"].concat(),
+            [&[0xfcu8, 0x8b, 0x8a][..], b"af41 v6"].concat(),
+            vec![0xfe, 0x0f, 3, 3, 0, 0],
+            vec![0xfe, 0x0f, 3, 4, 0x05, 0x78],
+            vec![0xfe, 0x8b, 2, 0, 0x05, 0x00],
+            vec![0xfe, 0x8b, 1, 0x84, 0, 0],
+            vec![0xfe, 0x0f, 12, 0, 0, 0],
+            vec![0xff],
+        ];
+        vec![join(&pkts), join(&dual), join(&icmp_tos)]
     }
 
     /// A TCP allocation's life: challenge, allocate, a Connect that succeeds and is bound from

@@ -390,6 +390,8 @@ impl TcpAllocation {
                     self.done(st, None);
                     AllocationEvent::Closed
                 }
+                // ICMP errors come from UDP relays only.
+                ClientEvent::Icmp { .. } => continue,
             };
             st.deferred.push(Deferred::Event(ev));
         }

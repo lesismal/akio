@@ -71,6 +71,12 @@ pub fn enable_ecn(fd: RawFd) -> bool {
 /// the traffic class; 0 when not ECN-capable or not reported, see [`enable_ecn`]). A datagram
 /// longer than `buf` is truncated, as `recv_from` does.
 pub fn recv_from_ecn(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, u8)> {
+    recv_from_tos(fd, buf).map(|(n, a, tos)| (n, a, tos & 3))
+}
+
+/// [`recv_from_ecn`] with the whole traffic class byte (DSCP in the upper six bits, ECN in the
+/// low two; 0 when not reported).
+pub fn recv_from_tos(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, u8)> {
     // SAFETY: sockaddr_storage is plain-old-data; all-zero is a valid value.
     let mut ss: ffi::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut ctrl = Ctrl([0; 64]);
@@ -95,12 +101,18 @@ pub fn recv_from_ecn(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr
     }
     let addr = parse_addr(&ss).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     let clen = (msg.msg_controllen as usize).min(ctrl.0.len());
-    Ok((n as usize, addr, ecn_of(&ctrl.0[..clen])))
+    Ok((n as usize, addr, tos_of(&ctrl.0[..clen])))
 }
 
-/// The ECN codepoint in received control data: an `IP_TOS` / `IP_RECVTOS` message (one byte, or
-/// an int) or an `IPV6_TCLASS` message (an int); 0 when there is none.
+/// The ECN codepoint in received control data (see [`tos_of`]).
+#[cfg(test)]
 pub(crate) fn ecn_of(ctrl: &[u8]) -> u8 {
+    tos_of(ctrl) & 3
+}
+
+/// The traffic class byte in received control data: an `IP_TOS` / `IP_RECVTOS` message (one
+/// byte, or an int) or an `IPV6_TCLASS` message (an int); 0 when there is none.
+pub(crate) fn tos_of(ctrl: &[u8]) -> u8 {
     let mut off = 0;
     while off + CMSG_HDR <= ctrl.len() {
         let word = |i: usize| {
@@ -118,7 +130,7 @@ pub(crate) fn ecn_of(ctrl: &[u8]) -> u8 {
         if tos && !data.is_empty() {
             // A one-byte payload is the TOS byte itself; an int's low byte comes first (both
             // targets are little-endian).
-            return data[0] & 3;
+            return data[0];
         }
         off += (len + 3) & !3;
     }
@@ -133,6 +145,18 @@ pub fn send_to_ecn(
     data: &[u8],
     dest: Option<&SocketAddr>,
     ecn: u8,
+    v6_socket: bool,
+) -> io::Result<usize> {
+    send_to_tos(fd, data, dest, ecn & 3, v6_socket)
+}
+
+/// [`send_to_ecn`] with the whole traffic class byte `tos` (DSCP in the upper six bits, ECN in
+/// the low two; 0 sends no control message).
+pub fn send_to_tos(
+    fd: RawFd,
+    data: &[u8],
+    dest: Option<&SocketAddr>,
+    tos: u8,
     v6_socket: bool,
 ) -> io::Result<usize> {
     let (mut ss, slen) = match dest {
@@ -151,7 +175,7 @@ pub fn send_to_ecn(
         None => (unsafe { std::mem::zeroed() }, 0),
     };
     let mut ctrl = Ctrl([0; 64]);
-    let clen = if ecn & 3 != 0 {
+    let clen = if tos != 0 {
         let (level, ty) = if v6_socket {
             (IPPROTO_IPV6, IPV6_TCLASS)
         } else {
@@ -162,7 +186,7 @@ pub fn send_to_ecn(
         c[0..4].copy_from_slice(&(len as u32).to_ne_bytes());
         c[4..8].copy_from_slice(&level.to_ne_bytes());
         c[8..12].copy_from_slice(&ty.to_ne_bytes());
-        c[CMSG_HDR..len].copy_from_slice(&ffi::c_int::from(ecn & 3).to_ne_bytes());
+        c[CMSG_HDR..len].copy_from_slice(&ffi::c_int::from(tos).to_ne_bytes());
         len
     } else {
         0

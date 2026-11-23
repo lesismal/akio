@@ -49,7 +49,7 @@ pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, 
 pub use error::{Error, Result};
 #[doc(hidden)]
 pub use group::Group;
-pub use group::{UdpBinding, UdpStats};
+pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]
 pub use handler::{DynAcceptor, DynHandler};

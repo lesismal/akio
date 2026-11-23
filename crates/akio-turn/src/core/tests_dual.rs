@@ -1,5 +1,5 @@
-//! Dual allocations (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`) and ECN across the relay, on the
-//! state machine.
+//! Dual allocations (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`), ECN and DSCP across the relay and
+//! ICMP relaying, on the state machine.
 
 use super::*;
 use crate::fuzzing::{CLIENT, REALM, USER};
@@ -649,4 +649,205 @@ fn draft_codepoints() {
         udp().attr(attr::ADDITIONAL_ADDRESS_FAMILY, &family(true)),
     );
     assert!(!env.last().has(attr::ADDRESS_ERROR_CODE_DRAFT));
+}
+
+/// An environment that sees the whole traffic class byte (`send_to_*_tos`).
+#[derive(Default)]
+struct TosEnv(Env);
+
+impl TurnEnv for TosEnv {
+    fn send_to_client(&mut self, c: SocketAddr, data: &[u8]) {
+        self.0.send_to_client(c, data);
+    }
+    fn send_to_client_tos(&mut self, _: SocketAddr, data: &[u8], tos: u8) {
+        self.0.sent.push((data.to_vec(), tos));
+    }
+    fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]) {
+        self.0.send_to_peer(relay, peer, data);
+    }
+    fn send_to_peer_tos(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], tos: u8) {
+        self.0.to_peer.push((relay, peer, data.to_vec(), tos));
+    }
+    fn open_relay(&mut self, c: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        self.0.open_relay(c, addr)
+    }
+    fn close_relay(&mut self, relay: SocketAddr) {
+        self.0.close_relay(relay);
+    }
+}
+
+/// DSCP goes with the ECN codepoint both ways (RFC 8656 section 14), unless `copy_dscp` is
+/// off; an environment that only knows ECN gets the low two bits.
+#[test]
+fn dscp_is_copied_unless_off() {
+    for copy in [true, false] {
+        let now = Instant::now();
+        let mut core = core_with(
+            cfg(V4)
+                .additional_relay_ip(V6.parse().unwrap())
+                .copy_dscp(copy),
+            now,
+        );
+        let mut env = TosEnv::default();
+        let m = authed(
+            &core,
+            now,
+            udp().attr(attr::ADDITIONAL_ADDRESS_FAMILY, &family(true)),
+        );
+        core.handle_client(now, CLIENT, &m, &mut env);
+        let (r4, r6) = (env.0.open[0], env.0.open[1]);
+        let b = req(Method::CHANNEL_BIND)
+            .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer4());
+        let m = authed(&core, now, b);
+        core.handle_client(now, CLIENT, &m, &mut env);
+        let b = req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer6());
+        let m = authed(&core, now, b);
+        core.handle_client(now, CLIENT, &m, &mut env);
+        assert!(env.0.sent.iter().all(|s| s.1 == 0), "responses unmarked");
+        // EF + ECT(1), AF41 + ECT(0), CS1 + CE, CS6 not ECN-capable, unmarked.
+        for tos in [0xb9u8, 0x8a, 0x23, 0xc0, 0] {
+            let want = if copy { tos } else { tos & 3 };
+            core.handle_client_tos(now, CLIENT, &[0x40, 0, 0, 1, b'a'], tos, &mut env);
+            let ind = MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
+                .xor_addr(attr::XOR_PEER_ADDRESS, peer6())
+                .attr(attr::DATA, b"i")
+                .build();
+            core.handle_client_tos(now, CLIENT, &ind, tos, &mut env);
+            let n = env.0.to_peer.len();
+            assert_eq!(env.0.to_peer[n - 2].0, r4);
+            assert_eq!(env.0.to_peer[n - 2].3, want, "ChannelData {tos:#x}");
+            assert_eq!(env.0.to_peer[n - 1].0, r6);
+            assert_eq!(env.0.to_peer[n - 1].3, want, "Send {tos:#x}");
+            core.handle_peer_tos(now, r4, peer4(), b"cd", tos, &mut env);
+            core.handle_peer_tos(now, r6, peer6(), b"di", tos, &mut env);
+            let n = env.0.sent.len();
+            assert!(is_channel_data(&env.0.sent[n - 2].0));
+            assert_eq!(env.0.sent[n - 2].1, want);
+            assert_eq!(env.0.last().method(), Method::DATA);
+            assert_eq!(env.0.sent[n - 1].1, want);
+        }
+        // The ECN-only entry points and environments see no DSCP.
+        let mut plain = Env::default();
+        core.handle_peer_tos(now, r4, peer4(), b"cd", 0xb9, &mut plain);
+        assert_eq!(plain.sent.last().map(|s| s.1), Some(1));
+        core.handle_client_ecn(now, CLIENT, &[0x40, 0, 0, 1, b'a'], 0xb9, &mut env);
+        assert_eq!(env.0.to_peer.last().map(|t| t.3), Some(1));
+    }
+}
+
+/// The ICMP Data indication of `env`'s last message to the client: peer, ICMP fields, and
+/// whether it carried DATA.
+fn icmp_of(env: &Env) -> (SocketAddr, (u8, u8, u32), bool) {
+    let m = env.last();
+    assert_eq!((m.method(), m.class()), (Method::DATA, Class::Indication));
+    (
+        m.get_xor_addr(attr::XOR_PEER_ADDRESS).expect("peer"),
+        m.icmp().expect("ICMP"),
+        m.has(attr::DATA),
+    )
+}
+
+/// ICMP errors go to the client as Data indications with `ICMP` and without `DATA` (RFC 8656
+/// section 11.5): destination unreachable and time exceeded only, the MTU for "fragmentation
+/// needed" and "packet too big", a permission for the peer's address (any port) and a live
+/// relayed address of its family needed.
+#[test]
+fn icmp_is_relayed() {
+    let now = Instant::now();
+    let mut core = dual(now);
+    let mut env = Env::default();
+    send(
+        &mut core,
+        &mut env,
+        now,
+        udp().attr(attr::ADDITIONAL_ADDRESS_FAMILY, &family(true)),
+    );
+    let (r4, r6) = (env.open[0], env.open[1]);
+    send(
+        &mut core,
+        &mut env,
+        now,
+        req(Method::CREATE_PERMISSION)
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer4())
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer6()),
+    );
+    // A channel does not matter: ICMP always comes as a Data indication.
+    send(
+        &mut core,
+        &mut env,
+        now,
+        req(Method::CHANNEL_BIND)
+            .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer4()),
+    );
+    let relayed = [
+        // Port unreachable; fragmentation needed with its MTU; time exceeded.
+        (r4, peer4(), 3, 3, 9, (3, 3, 0)),
+        (r4, peer4(), 3, 4, 1400, (3, 4, 1400)),
+        (r4, peer4(), 11, 0, 0, (11, 0, 0)),
+        // ICMPv6: unreachable (no MTU), packet too big, time exceeded.
+        (r6, peer6(), 1, 4, 1280, (1, 4, 0)),
+        (r6, peer6(), 2, 0, 1280, (2, 0, 1280)),
+        (r6, peer6(), 3, 1, 0, (3, 1, 0)),
+    ];
+    for (i, (relay, peer, ty, code, mtu, want)) in relayed.into_iter().enumerate() {
+        core.handle_icmp(now, relay, peer, ty, code, mtu, &mut env);
+        assert_eq!(icmp_of(&env), (peer, want, false), "case {i}");
+        assert_eq!(core.stats().icmp, i as u64 + 1);
+    }
+    // Port 0: the platform did not tell the destination port.
+    let p0 = SocketAddr::new(peer4().ip(), 0);
+    core.handle_icmp(now, r4, p0, 3, 1, 0, &mut env);
+    assert_eq!(icmp_of(&env), (p0, (3, 1, 0), false));
+    let n = env.sent.len();
+    let other: SocketAddr = "198.51.100.99:7000".parse().unwrap();
+    let dropped = [
+        // ICMPv4 parameter problem, echo reply; ICMPv6 parameter problem, echo reply.
+        (r4, peer4(), 12, 0),
+        (r4, peer4(), 0, 0),
+        (r6, peer6(), 4, 0),
+        (r6, peer6(), 129, 0),
+        // No permission; the other family's relay; no such relay.
+        (r4, other, 3, 3),
+        (r4, peer6(), 1, 4),
+        ("192.0.2.1:1".parse().unwrap(), peer4(), 3, 3),
+    ];
+    for (relay, peer, ty, code) in dropped {
+        core.handle_icmp(now, relay, peer, ty, code, 0, &mut env);
+    }
+    assert_eq!(env.sent.len(), n);
+    // Off: nothing relayed.
+    let mut off = core_with(
+        cfg(V4)
+            .additional_relay_ip(V6.parse().unwrap())
+            .relay_icmp(false),
+        now,
+    );
+    let mut env2 = Env::default();
+    send(&mut off, &mut env2, now, udp());
+    let r = env2.open[0];
+    send(
+        &mut off,
+        &mut env2,
+        now,
+        req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer4()),
+    );
+    let n = env2.sent.len();
+    off.handle_icmp(now, r, peer4(), 3, 3, 0, &mut env2);
+    assert_eq!(env2.sent.len(), n);
+    // A family deleted alone takes its ICMP with it.
+    send(
+        &mut core,
+        &mut env,
+        now,
+        req(Method::REFRESH)
+            .u32(attr::LIFETIME, 0)
+            .attr(attr::REQUESTED_ADDRESS_FAMILY, &family(true)),
+    );
+    let n = env.sent.len();
+    core.handle_icmp(now, r6, peer6(), 1, 4, 0, &mut env);
+    assert_eq!(env.sent.len(), n);
+    core.handle_icmp(now, r4, peer4(), 3, 3, 0, &mut env);
+    assert_eq!(env.sent.len(), n + 1);
 }

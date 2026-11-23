@@ -68,7 +68,7 @@ enum Bytes {
     Owned(Vec<u8>),
     Shared(SharedBuf),
     /// UDP: consecutive datagrams of `.1` bytes each (the last may be shorter), see
-    /// [`Conn::send_segments`], sent with ECN codepoint `.2` (0: none).
+    /// [`Conn::send_segments`], sent with traffic class byte `.2` (DSCP and ECN; 0: none).
     Segmented(Vec<u8>, usize, u8),
     /// `len` bytes of `file` from `start`, sent with `sendfile(2)` (never copied into memory).
     #[cfg(unix)]
@@ -512,15 +512,15 @@ impl WriteState {
         }
     }
 
-    /// UDP: the datagrams queued, in order, with their ECN codepoints.
-    fn datagrams_ecn(&self) -> impl Iterator<Item = (&[u8], u8)> {
+    /// UDP: the datagrams queued, in order, with their traffic class bytes (DSCP and ECN).
+    fn datagrams_tos(&self) -> impl Iterator<Item = (&[u8], u8)> {
         self.queue.iter().flat_map(|c| {
             let rest = c.rest();
-            let (seg, ecn) = match c.bytes {
-                Bytes::Segmented(_, seg, ecn) => (seg, ecn),
+            let (seg, tos) = match c.bytes {
+                Bytes::Segmented(_, seg, tos) => (seg, tos),
                 _ => (rest.len().max(1), 0),
             };
-            rest.chunks(seg).map(move |d| (d, ecn))
+            rest.chunks(seg).map(move |d| (d, tos))
         })
     }
 
@@ -619,7 +619,7 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                 let dest = it.inner.udp_target().0;
                 let v6 = it.inner.local.is_ipv6();
                 let (mut seg, mut total, mut ecn) = (0, 0, 0);
-                let mut iter = it.w.datagrams_ecn().peekable();
+                let mut iter = it.w.datagrams_tos().peekable();
                 while let Some((d, e)) = iter.next() {
                     if parts.is_empty() {
                         (seg, total, ecn) = (d.len(), 0, e);
@@ -637,7 +637,7 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                         continue;
                     }
                     let g = if parts.len() > 1 { seg } else { 0 };
-                    let pushed = b.push_ecn(dest, &parts, g, ecn, v6);
+                    let pushed = b.push_tos(dest, &parts, g, ecn, v6);
                     let cnt = parts.len();
                     parts.clear();
                     if !pushed {
@@ -806,8 +806,9 @@ pub struct ConnInner {
     pending_limit: usize,
     /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
     relayed: AtomicBool,
-    /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
-    rx_ecn: AtomicU8,
+    /// UDP: the traffic class byte (DSCP and ECN) of the datagram being delivered (set by the
+    /// loop).
+    rx_tos: AtomicU8,
     /// Kernel offload of the transport (Linux, [`Transport::offload`]): `OFFLOAD_NONE`,
     /// `OFFLOAD_PENDING` (ask after reads and flushes) and `OFFLOAD_RX` (bit: the read
     /// direction is in the kernel). Read without the lock by the loop's hot paths.
@@ -847,7 +848,7 @@ impl ConnInner {
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
-            rx_ecn: AtomicU8::new(0),
+            rx_tos: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -884,7 +885,7 @@ impl ConnInner {
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
-            rx_ecn: AtomicU8::new(0),
+            rx_tos: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -926,7 +927,7 @@ impl ConnInner {
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
-            rx_ecn: AtomicU8::new(0),
+            rx_tos: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -974,10 +975,11 @@ impl ConnInner {
     ) -> io::Result<bool> {
         if w.datagram {
             loop {
-                let Some((d, ecn)) = w.datagrams_ecn().next() else {
+                let Some((d, tos)) = w.datagrams_tos().next() else {
                     return Ok(true);
                 };
-                if sink(d, ecn) == 0 {
+                // Userspace stacks take the ECN codepoint only.
+                if sink(d, tos & 3) == 0 {
                     return Ok(false);
                 }
                 w.sent_datagrams(1);
@@ -1057,8 +1059,8 @@ impl ConnInner {
         }
     }
 
-    /// A UDP datagram with ECN codepoint `ecn` (one `sendmsg` with an `IP_TOS` / `IPV6_TCLASS`
-    /// control message).
+    /// A UDP datagram with traffic class byte `ecn` (DSCP and ECN: one `sendmsg` with an
+    /// `IP_TOS` / `IPV6_TCLASS` control message).
     #[cfg(target_os = "macos")]
     fn raw_write_ecn(&self, data: &[u8], ecn: u8) -> io::Result<usize> {
         use std::os::fd::AsRawFd;
@@ -1067,7 +1069,7 @@ impl ConnInner {
                 sock,
                 peer,
                 connected,
-            } => akio_sys::send_to_ecn(
+            } => akio_sys::send_to_tos(
                 sock.as_raw_fd(),
                 data,
                 (!connected).then_some(peer),
@@ -1110,14 +1112,25 @@ impl ConnInner {
         }
     }
 
-    /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered.
+    /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered (no DSCP).
     pub fn set_rx_ecn(&self, codepoint: u8) {
-        self.rx_ecn.store(codepoint & 3, Ordering::Relaxed);
+        self.rx_tos.store(codepoint & 3, Ordering::Relaxed);
+    }
+
+    /// Loop side, UDP: the traffic class byte (DSCP and ECN) of the datagram about to be
+    /// delivered.
+    pub fn set_rx_tos(&self, tos: u8) {
+        self.rx_tos.store(tos, Ordering::Relaxed);
     }
 
     /// UDP: the ECN codepoint of the datagram being delivered (0 when unknown).
     pub fn rx_ecn(&self) -> u8 {
-        self.rx_ecn.load(Ordering::Relaxed)
+        self.rx_tos.load(Ordering::Relaxed) & 3
+    }
+
+    /// UDP: the traffic class byte of the datagram being delivered (0 when unknown).
+    pub fn rx_tos(&self) -> u8 {
+        self.rx_tos.load(Ordering::Relaxed)
     }
 
     /// Whether reads pause at `Config::write_high_watermark` of queued output (not for a relay,
@@ -1448,7 +1461,7 @@ impl ConnInner {
             }
             #[cfg(not(target_os = "linux"))]
             loop {
-                let Some((d, ecn)) = w.datagrams_ecn().next() else {
+                let Some((d, ecn)) = w.datagrams_tos().next() else {
                     return Ok(true);
                 };
                 #[cfg(target_os = "macos")]
@@ -1585,18 +1598,24 @@ impl ConnInner {
     /// codepoint is set on kernel UDP sockets on Linux and macOS (unless `AKIO_UDP_ECN=0`) and
     /// on a userspace stack's UDP (akio-dpdk), else dropped.
     pub fn send_segments_ecn(&self, data: Vec<u8>, seg: usize, ecn: u8) -> Result<()> {
+        self.send_segments_tos(data, seg, ecn & 3)
+    }
+
+    /// [`send_segments_ecn`](Self::send_segments_ecn) with the whole traffic class byte `tos`
+    /// (DSCP in the upper six bits, ECN in the low two). Userspace stacks get its ECN bits only.
+    pub fn send_segments_tos(&self, data: Vec<u8>, seg: usize, tos: u8) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut w = self.lock();
-        let (seg, ecn) = if ecn & 3 != 0 && w.datagram && self.is_datagram_sock() {
+        let (seg, ecn) = if tos != 0 && w.datagram && self.is_datagram_sock() {
             // A datagram with a codepoint is queued as one segment of its own length.
             let seg = if seg == 0 {
                 data.len()
             } else {
                 seg.min(data.len())
             };
-            (seg, ecn & 3)
+            (seg, tos)
         } else {
             (seg, 0)
         };
@@ -2518,11 +2537,30 @@ impl<H> Conn<H> {
         self.inner.send_segments_ecn(data, segment_size, ecn)
     }
 
+    /// UDP (internal, outside the stability promise): [`send_segments_ecn`] with the whole
+    /// traffic class byte `tos` (IPv4 TOS / IPv6 traffic class: DSCP in the upper six bits, ECN
+    /// in the low two; 0 = unmarked). Set on Linux and macOS kernel sockets (unless
+    /// `AKIO_UDP_ECN=0`); akio-dpdk's UDP takes the ECN bits only.
+    ///
+    /// [`send_segments_ecn`]: Self::send_segments_ecn
+    #[doc(hidden)]
+    pub fn send_segments_tos(&self, data: Vec<u8>, segment_size: usize, tos: u8) -> Result<()> {
+        self.inner.send_segments_tos(data, segment_size, tos)
+    }
+
     /// UDP (internal, outside the stability promise): inside `on_data`, the ECN codepoint the
     /// datagram arrived with (0 when not ECN-capable or not reported by the platform).
     #[doc(hidden)]
     pub fn rx_ecn(&self) -> u8 {
         self.inner.rx_ecn()
+    }
+
+    /// UDP (internal, outside the stability promise): inside `on_data`, the whole traffic class
+    /// byte the datagram arrived with (DSCP and ECN; 0 when not reported: kernel sockets on
+    /// Linux and macOS report it, akio-dpdk's UDP the ECN bits only).
+    #[doc(hidden)]
+    pub fn rx_tos(&self) -> u8 {
+        self.inner.rx_tos()
     }
 
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the

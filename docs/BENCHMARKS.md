@@ -2381,6 +2381,36 @@ the relay copies the codepoint.
 and rounds vary by about ±20 %, as in ADR-076's run of the same bench. Marking every datagram
 costs about 6 % (b-ecn / branch per-round median 0.941, range 0.84–1.16), within the same
 spread. Unmarked traffic, the common case, takes the old path.
+### TURN relay (ADR-091, same-run A/B)
+
+Measured 2026-11-23 on gpu51. Question: do DSCP copying and ICMP relaying slow the UDP relay?
+Per relayed datagram the server now reads `Conn::rx_tos()` instead of `rx_ecn()` and tests the
+whole byte instead of its two ECN bits; its relay sockets have `IP_RECVERR` (no cost while no
+ICMP error arrives). A datagram with DSCP goes out with an `IP_TOS` / `IPV6_TCLASS` control
+message, as an ECN-marked one did.
+
+`main` is `5cc005c0`, `branch` the branch. The workload is `turn-relay-bench 8 6 4`, as for
+ADR-083. Both binaries were built into separate target directories and run alternately under
+`quiet.sh`, the order reversed every round. `b-ecn` marks every datagram ECT(0)
+(`TURN_BENCH_ECN=2`), `b-tos` DSCP EF + ECT(0) (`TURN_BENCH_TOS=186`): the relay copies the byte.
+
+| Variant | Rounds | Mean (datagrams/s) | Median | Min–max |
+|---|---:|---:|---:|---:|
+| main | 8 | 290.7k | 285.8k | 248k–333k |
+| branch | 8 | 307.9k | 321.9k | 240k–346k |
+| b-ecn | 8 | 268.7k | 268.7k | 207k–310k |
+| b-tos | 8 | 271.9k | 282.7k | 213k–310k |
+
+- branch / main per round: 0.88–1.36, median 1.061, mean 1.064.
+- b-tos / b-ecn per round: 0.88–1.35, median 0.973, mean 1.022.
+- Marked / unmarked (branch): b-ecn median 0.899, b-tos median 0.881, ranges 0.63–1.12 and
+  0.72–1.12.
+
+**Answer: no measurable change.** Unmarked traffic is as fast as on main (rounds vary by about
+±20 %, as in ADR-076's and ADR-083's runs). A datagram carrying DSCP costs what an ECN-marked one
+did: the same control message, one byte wider in meaning. Marking every datagram costs about
+10 % here (about 6 % in ADR-083's run), within the spread.
+
 ### NUMA placement (ADR-088, same-run A/B)
 
 Measured 2026-11-23 on gpu51 (`tools/bench/numa.sh`, `quiet.sh`, 5 interleaved rounds, 5 s each):

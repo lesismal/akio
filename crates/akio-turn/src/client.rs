@@ -249,6 +249,21 @@ pub enum ClientEvent {
         /// Its `CONNECTION-ID`.
         id: u32,
     },
+    /// A datagram relayed to `peer` drew an ICMP error at the server (RFC 8656 section 11.6:
+    /// a Data indication with an `ICMP` attribute): the peer or the way to it refused it.
+    /// ICMPv4 or ICMPv6 follows from `peer`'s family (destination unreachable is type 3 or 1,
+    /// time exceeded 11 or 3, packet too big 3 code 4 or 2). Reported for peers this client
+    /// installed a permission for; best effort, as ICMP is.
+    Icmp {
+        /// The peer the datagram went to (port 0 when the server could not tell it).
+        peer: SocketAddr,
+        /// The ICMP type.
+        icmp_type: u8,
+        /// The ICMP code.
+        code: u8,
+        /// The next-hop MTU of "packet too big" / "fragmentation needed", else 0.
+        mtu: u32,
+    },
 }
 
 /// The state of a [`Client`].
@@ -270,6 +285,8 @@ pub enum ClientState {
 enum Kind {
     Allocate,
     Refresh(u32),
+    /// Deletes the IPv6 (`true`) or IPv4 relayed address of a dual allocation.
+    Release(bool),
     ChannelBind(SocketAddr, u16),
     Permission(SocketAddr),
     Connect(SocketAddr),
@@ -484,7 +501,7 @@ impl Client {
     fn build(&self, kind: &Kind, tid: [u8; 12]) -> Vec<u8> {
         let method = match kind {
             Kind::Allocate => Method::ALLOCATE,
-            Kind::Refresh(_) => Method::REFRESH,
+            Kind::Refresh(_) | Kind::Release(_) => Method::REFRESH,
             Kind::ChannelBind(..) => Method::CHANNEL_BIND,
             Kind::Permission(_) => Method::CREATE_PERMISSION,
             Kind::Connect(_) => Method::CONNECT,
@@ -507,6 +524,13 @@ impl Client {
                 }
             }
             Kind::Refresh(l) => b = b.u32(attr::LIFETIME, *l),
+            Kind::Release(v6) => {
+                // RFC 8656 section 8: a Refresh naming the family deletes just that one.
+                b = b.u32(attr::LIFETIME, 0).attr(
+                    attr::REQUESTED_ADDRESS_FAMILY,
+                    &[if *v6 { 2 } else { 1 }, 0, 0, 0],
+                );
+            }
             Kind::ChannelBind(peer, ch) => {
                 b = b
                     .attr(attr::CHANNEL_NUMBER, &[(ch >> 8) as u8, *ch as u8, 0, 0])
@@ -591,6 +615,41 @@ impl Client {
             }
             _ => {}
         }
+    }
+
+    /// Gives back one relayed address of a dual allocation: the IPv6 one (`v6`) or the IPv4
+    /// one, with the permissions and channels of its peers (a Refresh with lifetime 0 and that
+    /// `REQUESTED-ADDRESS-FAMILY`, RFC 8656 section 8). The other address stays and is
+    /// refreshed as before. For a client that knows it will not talk to peers of that family,
+    /// so the server can reuse the port. The address is gone from
+    /// [`relayed_addrs`](Self::relayed_addrs) at once, and data for peers of that family is
+    /// dropped; whether the server answers does not matter.
+    ///
+    /// `false`: not allocated, or the allocation has no other address to keep (use
+    /// [`close`](Self::close) to delete it).
+    pub fn release_family(&mut self, now: Instant, v6: bool) -> bool {
+        if self.state != ClientState::Allocated
+            || self.relayed.len() < 2
+            || !self.relayed.iter().any(|r| r.is_ipv6() == v6)
+        {
+            return false;
+        }
+        self.relayed.retain(|r| r.is_ipv6() != v6);
+        let gone: Vec<SocketAddr> = self
+            .peers
+            .keys()
+            .filter(|p| p.is_ipv6() == v6)
+            .copied()
+            .collect();
+        for p in gone {
+            self.drop_peer(p);
+        }
+        self.txs.retain(|_, t| match &t.kind {
+            Kind::ChannelBind(p, _) | Kind::Permission(p) | Kind::Connect(p) => p.is_ipv6() != v6,
+            _ => true,
+        });
+        self.start(now, Kind::Release(v6), 0);
+        true
     }
 
     // ---- data ----
@@ -742,6 +801,19 @@ impl Client {
         match m.class() {
             Class::Indication if m.method() == Method::DATA => {
                 let peer = m.get_xor_addr(attr::XOR_PEER_ADDRESS)?;
+                if let Some((icmp_type, code, mtu)) = m.icmp() {
+                    // Section 11.6: only for an address this client has a permission for
+                    // (the port may be 0).
+                    if self.peers.keys().any(|p| p.ip() == peer.ip()) {
+                        self.events.push_back(ClientEvent::Icmp {
+                            peer,
+                            icmp_type,
+                            code,
+                            mtu,
+                        });
+                    }
+                    return None;
+                }
                 let payload = m.get(attr::DATA)?;
                 // Only peers we installed a permission for (the server checks too).
                 self.peers.contains_key(&peer).then_some((peer, payload))
@@ -812,6 +884,8 @@ impl Client {
     fn on_error(&mut self, now: Instant, kind: Kind, e: ClientError) {
         match kind {
             Kind::Allocate | Kind::Refresh(_) => self.fail(e),
+            // The address is given up already; a server that disagrees lets it expire.
+            Kind::Release(_) => {}
             Kind::ChannelBind(peer, ch) => {
                 // Fall back to a permission and Send indications.
                 self.by_channel.remove(&ch);
@@ -880,6 +954,7 @@ impl Client {
                 let life = Duration::from_secs(u64::from(m.get_u32(attr::LIFETIME).unwrap_or(600)));
                 self.schedule_refresh(now, life);
             }
+            Kind::Release(_) => {}
             Kind::ChannelBind(peer, _) | Kind::Permission(peer) => {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.ready = true;

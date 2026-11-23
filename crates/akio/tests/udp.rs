@@ -901,3 +901,59 @@ fn batch_end_on_a_dialed_connection() {
     check_batches(&log.lock().unwrap(), 100);
     stop(&client);
 }
+
+/// `bind_udp_icmp`: ICMP port unreachable for a datagram to a closed port reaches the handler
+/// (Linux `IP_RECVERR`), while the socket goes on sending and receiving; elsewhere it is a
+/// plain bound socket.
+#[test]
+fn bound_socket_hears_icmp_errors() {
+    struct Count(Arc<AtomicUsize>);
+    impl Handler for Count {
+        fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let _ = c.send(d);
+        }
+    }
+    let got = Arc::new(AtomicUsize::new(0));
+    let icmp: Arc<Mutex<Vec<akio::IcmpError>>> = Arc::default();
+    let e = client_engine(1);
+    let (g, i) = (got.clone(), icmp.clone());
+    let b = e
+        .bind_udp_icmp(
+            localhost(),
+            fn_acceptor(move |_c: &Conn<Count>| Count(g.clone())),
+            move |err: &akio::IcmpError| i.lock().unwrap().push(*err),
+        )
+        .unwrap();
+    let closed = UdpSocket::bind(localhost()).unwrap().local_addr().unwrap();
+    let live = client(b.local_addr());
+    for round in 0..3 {
+        // A few, since hosts rate-limit ICMP; every send succeeds (the error that ICMP leaves
+        // pending on the socket is not this send's).
+        for _ in 0..3 {
+            b.send_to(b"anyone?", closed).unwrap();
+        }
+        thread::sleep(Duration::from_millis(20));
+        b.send_to(b"ping", live.local_addr().unwrap()).unwrap();
+        assert_eq!(recv(&live), b"ping", "round {round}");
+        live.send(b"pong").unwrap();
+        assert_eq!(recv(&live), b"pong", "round {round}");
+    }
+    wait_for("echoes", || got.load(Ordering::SeqCst) == 3);
+    if cfg!(target_os = "linux") {
+        wait_for("ICMP", || !icmp.lock().unwrap().is_empty());
+        let errs = icmp.lock().unwrap();
+        for err in errs.iter() {
+            assert_eq!(err.local, b.local_addr());
+            assert_eq!(err.dest, closed);
+            assert_eq!(err.from, Some(closed.ip()));
+            assert!(!err.v6);
+            assert_eq!((err.icmp_type, err.code, err.mtu), (3, 3, 0));
+        }
+    } else {
+        thread::sleep(Duration::from_millis(50));
+        assert!(icmp.lock().unwrap().is_empty());
+    }
+    b.close();
+    stop(&e);
+}

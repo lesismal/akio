@@ -91,6 +91,35 @@ ADR-079 更新（2026-11-23），只有新增 API：
   重复元数据指针必须指向第一个重复块。以前违反这些规则的容器也会被接受。
 - 模糊测试：`brotli_container` 覆盖写入器能写出的每种块，并把能读取的容器重新写出。
 
+### 新增：TURN 转告 ICMP、经中继保留 DSCP、交还一个地址族（akio-turn、akio、akio-core、akio-sys）
+
+ADR-091，只有新增：
+
+- akio-turn 服务器：中继给对端的数据报引起的 ICMP 错误，以带 `ICMP` 属性、不带 `DATA` 的 Data 指示转告
+  客户端（RFC 8656 11.5 节；Linux 上经 `IP_RECVERR`）：ICMPv4 目的不可达 / 超时，ICMPv6 目的不可达 / 包过大 /
+  超时，仅限有许可的对端。`TurnConfig::relay_icmp`（true）、`TurnStats::icmp`、`TurnCore::handle_icmp`。
+- akio-turn 服务器：中继的数据报两个方向都保留 DSCP 与 ECN 码点（14 节的首选行为，coturn 也如此）。
+  `TurnConfig::copy_dscp`（true；false 时发出 DSCP 0）。嵌入用：`TurnCore::handle_client_tos` /
+  `handle_peer_tos`、`TurnEnv::send_to_client_tos` / `send_to_peer_tos`，后两者的默认实现把 ECN 位交给
+  `_ecn` 方法。
+- akio-turn 客户端：`ClientEvent::Icmp { peer, icmp_type, code, mtu }`；`Client::release_family(now, v6)`
+  删除双分配中的一个中继地址（Refresh，lifetime 0，带 `REQUESTED-ADDRESS-FAMILY`）。STUN：`attr::ICMP`、
+  `Message::icmp`、`MessageBuilder::icmp`。
+- akio：`Engine::bind_udp_icmp(addr, acceptor, on_icmp)` 与 `akio::IcmpError`：绑定的 UDP socket，其 ICMP
+  错误（目的地址与端口、类型、代码、MTU、发送者）在其 I/O 线程上交给回调（Linux `IP_RECVERR` /
+  `IPV6_RECVERR`，由事件循环读空错误队列；其他平台等同 `bind_udp`）。在这种 socket 上，ICMP 留下的待处理
+  错误会让 `UdpBinding::send_to` 重试一次。
+- akio / akio-core / akio-sys 的隐藏或底层接口：数据报的整个流量类别字节（`Conn::rx_tos`、
+  `Conn::send_segments_tos`、`UdpBinding::send_to_tos`、`RecvBatch::tos`、`SendBatch::push_tos`、
+  `send_to_tos`、`recv_from_tos`）；`akio_sys::recv_icmp`、`enable_recverr`、`is_icmp_error`、
+  `IcmpReport`（Linux）。
+- 行为变化：akio-turn 中继的数据报带发送方的 DSCP（原为 socket 的，通常为 0），其 UDP 中继 socket 在
+  Linux 上开启 `IP_RECVERR`。
+- 未改变：`Endpoint::gather_relay` 仍只请求一个地址族（原因见 ADR-091）；TTL 不复制。
+- `turn-relay-bench` 支持 `TURN_BENCH_TOS`；`tools/interop/webrtc/turn-dual.sh` 检查 DSCP、ICMP 与按地址族
+  交还。与 main 的中继 A/B：没有可测出的变化；带 DSCP 的数据报与带 ECN 标记的开销相同
+  （docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

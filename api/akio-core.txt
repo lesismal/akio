@@ -685,6 +685,30 @@ impl<H, F> core::marker::Sync for akio_core::FnAcceptor<H, F> where F: core::mar
 impl<H, F> core::marker::Unpin for akio_core::FnAcceptor<H, F> where F: core::marker::Unpin, core::marker::PhantomData<fn() -> H>: core::marker::Unpin
 impl<H, F> core::panic::unwind_safe::RefUnwindSafe for akio_core::FnAcceptor<H, F> where F: core::panic::unwind_safe::RefUnwindSafe, core::marker::PhantomData<fn() -> H>: core::panic::unwind_safe::RefUnwindSafe
 impl<H, F> core::panic::unwind_safe::UnwindSafe for akio_core::FnAcceptor<H, F> where F: core::panic::unwind_safe::UnwindSafe, core::marker::PhantomData<fn() -> H>: core::panic::unwind_safe::UnwindSafe
+#[non_exhaustive] pub struct akio_core::IcmpError
+pub akio_core::IcmpError::code: u8
+pub akio_core::IcmpError::dest: core::net::socket_addr::SocketAddr
+pub akio_core::IcmpError::from: core::option::Option<core::net::ip_addr::IpAddr>
+pub akio_core::IcmpError::icmp_type: u8
+pub akio_core::IcmpError::local: core::net::socket_addr::SocketAddr
+pub akio_core::IcmpError::mtu: u32
+pub akio_core::IcmpError::v6: bool
+impl akio_core::IcmpError
+pub fn akio_core::IcmpError::new(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, core::option::Option<core::net::ip_addr::IpAddr>, bool, u8, u8, u32) -> akio_core::IcmpError
+impl core::clone::Clone for akio_core::IcmpError
+pub fn akio_core::IcmpError::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::IcmpError
+impl core::cmp::PartialEq for akio_core::IcmpError
+pub fn akio_core::IcmpError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::IcmpError
+pub fn akio_core::IcmpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::IcmpError
+impl core::marker::StructuralPartialEq for akio_core::IcmpError
+impl core::marker::Send for akio_core::IcmpError
+impl core::marker::Sync for akio_core::IcmpError
+impl core::marker::Unpin for akio_core::IcmpError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::IcmpError
+impl core::panic::unwind_safe::UnwindSafe for akio_core::IcmpError
 pub struct akio_core::Live
 impl akio_core::telemetry::Live
 pub fn akio_core::telemetry::Live::backlog(&self) -> i32
@@ -1040,4 +1064,5 @@ pub fn akio_core::Transport::shutdown(&mut self, &mut alloc::vec::Vec<u8>)
 pub fn akio_core::Transport::take_ops(&mut self, &mut alloc::vec::Vec<alloc::boxed::Box<dyn akio_core::SocketOp>>)
 pub fn akio_core::Transport::wants_offload(&self) -> bool
 pub fn akio_core::fn_acceptor<H, F>(F) -> akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
+pub type akio_core::IcmpHandler = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_core::IcmpError) + core::marker::Send + core::marker::Sync)>
 pub type akio_core::Result<T> = core::result::Result<T, akio_core::Error>

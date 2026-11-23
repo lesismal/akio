@@ -13,7 +13,8 @@
   无状态 nonce、配额，以及默认拒绝中继到回环与私有网络的对端策略。它也应答 STUN Binding 请求。
   中继 socket 通过 `akio::Engine::bind_udp` 在运行时绑定。配置 `TurnConfig::additional_relay_ip` 后可中继
   两个地址族，并提供 RFC 8656 双分配（`ADDITIONAL-ADDRESS-FAMILY`、按地址族刷新、`ADDRESS-ERROR-CODE`）。
-  中继的数据报经 UDP 与 DTLS 双向保留 ECN 码点（ADR-083）。
+  中继的数据报经 UDP 与 DTLS 双向保留流量类别（DSCP 与 ECN），对端的 ICMP 错误以带 `ICMP` 的 Data 指示
+  转告客户端（Linux；ADR-083、ADR-091）。
 - `TurnServer::stream()`：用于 TCP 监听器与 TLS 监听器（`akio::tls::Tls`）的同一服务器：STUN 与
   ChannelData 在流上分帧（`framing`），中继走 UDP，分配随连接存在；以及 TCP 分配（RFC 6062，ADR-076）：
   TCP 中继地址、Connect、有权限的对端连入时的 ConnectionAttempt、在新客户端连接上的 ConnectionBind，
@@ -23,7 +24,8 @@
   STUN 或 ChannelData 消息，分配随 DTLS 关联存在（ADR-054）。
 - `client::Client`：UDP 或流上的 sans-io TURN 客户端（分配、刷新、channel、权限），也支持 TCP 分配
   （`ClientConfig::tcp_allocation`、`Client::connect`、用于 ConnectionBind 的 `client::DataConnection`）
-  与双分配（`ClientConfig::dual_allocation`）；`akio-webrtc` 的 `Endpoint::gather_relay` 驱动它。
+  与双分配（`ClientConfig::dual_allocation`，用 `Client::release_family` 交还一个地址族）；`akio-webrtc` 的
+  `Endpoint::gather_relay` 驱动它。
 - `client::TcpAllocation`：由 `akio` 引擎驱动的 TCP 分配，没有阻塞调用：控制连接及其定时器，`connect` /
   `accept` 的数据连接由应用自己的 acceptor 服务（ConnectionBind 是位于其 handler 之下的传输层）。
 - `TurnConfig::tcp_connect_timeout`（30 秒）：Connect 等待对端的时长，与引擎的 `connect_timeout` 无关。

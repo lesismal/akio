@@ -4,8 +4,9 @@
 //! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `akio-crypto`), the host's network interfaces ([`interfaces`], `getifaddrs`) and sending a
 //! datagram out of one of them ([`send_to_on`]), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
-//! `sendmmsg` with UDP GRO / GSO, ECN codepoints in control messages; on macOS one datagram per
-//! `sendmsg` / `recvmsg` with its ECN codepoint) and, hidden, kernel TLS offload (`TCP_ULP`
+//! `sendmmsg` with UDP GRO / GSO, traffic class bytes (DSCP and ECN) in control messages, and
+//! the ICMP errors of unconnected sockets through `IP_RECVERR`; on macOS one datagram per
+//! `sendmsg` / `recvmsg` with its traffic class) and, hidden, kernel TLS offload (`TCP_ULP`
 //! "tls", `SOL_TLS`, NIC TLS offload features through ethtool; akio-tls's `ktls` feature).
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
@@ -19,6 +20,8 @@
 pub mod ffi;
 mod fswatch;
 mod iface;
+#[cfg(target_os = "linux")]
+mod icmp;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod ktls;
@@ -36,6 +39,8 @@ mod waker;
 pub use fswatch::{FsEvent, FsWatcher, WatchId};
 pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on};
 #[cfg(target_os = "linux")]
+pub use icmp::{IcmpReport, enable_recverr, is_icmp_error, recv_icmp};
+#[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use net::listen_backlog;
 pub use net::{
@@ -48,10 +53,12 @@ pub use random::fill_random;
 #[cfg(target_os = "linux")]
 pub use udp::{
     Batch, MAX_GSO_BYTES, MAX_GSO_SEGMENTS, RecvBatch, SEND_BATCH, SendBatch, disable_gso,
-    ecn_available, enable_ecn, enable_gro, gro_available, gso_enabled, send_to_ecn,
+    ecn_available, enable_ecn, enable_gro, gro_available, gso_enabled, send_to_ecn, send_to_tos,
 };
 #[cfg(target_os = "macos")]
-pub use udp_mac::{ecn_available, enable_ecn, recv_from_ecn, send_to_ecn};
+pub use udp_mac::{
+    ecn_available, enable_ecn, recv_from_ecn, recv_from_tos, send_to_ecn, send_to_tos,
+};
 #[cfg(target_os = "linux")]
 pub use waker::EventFd;
 pub use waker::Waker;
