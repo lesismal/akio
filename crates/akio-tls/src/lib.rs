@@ -9,9 +9,10 @@
 //! it completes.
 //!
 //! Configure with this crate's own types: [`ServerConfig::builder`] (certificate chain and key
-//! from PEM or DER, SNI-selected chains, ALPN, client authentication, session resumption) and
-//! [`ClientConfig::builder`] (roots, ALPN, client certificate, SNI). The protocol internals stay
-//! out of the public API. [`tls_info`] reads what was negotiated.
+//! from PEM or DER, SNI-selected chains, or a [`CertResolver`] choosing per handshake and
+//! possibly answering later from another thread, ALPN, client authentication, session
+//! resumption) and [`ClientConfig::builder`] (roots, ALPN, client certificate, SNI). The protocol
+//! internals stay out of the public API. [`tls_info`] reads what was negotiated.
 //!
 //! Protocol coverage: TLS 1.3 (RFC 8446: full and PSK-resumed handshakes, HelloRetryRequest,
 //! KeyUpdate, client certificates, early data (0-RTT) when both sides enable it, with replay
@@ -71,6 +72,7 @@ mod proto;
 #[doc(hidden)]
 pub mod quic;
 mod replay;
+mod resolver;
 #[doc(hidden)]
 pub mod stream;
 mod system;
@@ -95,6 +97,7 @@ pub enum KtlsPath {
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
 pub use replay::{AntiReplayStore, AsyncAntiReplayStore, MemoryAntiReplay, ReplayCheck};
+pub use resolver::{CertAlert, CertDone, CertResolver, CertStore, CertifiedKey, ClientHelloInfo};
 pub use tickets::{MAX_TICKET_KEYS, TicketKeys};
 
 /// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.

@@ -1,4 +1,25 @@
 pub mod akio_tls
+#[non_exhaustive] pub enum akio_tls::CertAlert
+pub akio_tls::CertAlert::AccessDenied
+pub akio_tls::CertAlert::HandshakeFailure
+pub akio_tls::CertAlert::InternalError
+pub akio_tls::CertAlert::UnrecognizedName
+impl core::clone::Clone for akio_tls::CertAlert
+pub fn akio_tls::CertAlert::clone(&self) -> Self
+impl core::cmp::Eq for akio_tls::CertAlert
+impl core::cmp::PartialEq for akio_tls::CertAlert
+pub fn akio_tls::CertAlert::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_tls::CertAlert
+pub fn akio_tls::CertAlert::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_tls::CertAlert
+pub fn akio_tls::CertAlert::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_tls::CertAlert
+impl core::marker::StructuralPartialEq for akio_tls::CertAlert
+impl core::marker::Send for akio_tls::CertAlert
+impl core::marker::Sync for akio_tls::CertAlert
+impl core::marker::Unpin for akio_tls::CertAlert
+impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::CertAlert
+impl core::panic::unwind_safe::UnwindSafe for akio_tls::CertAlert
 #[non_exhaustive] pub enum akio_tls::CertCompression
 pub akio_tls::CertCompression::Brotli
 pub akio_tls::CertCompression::Zlib
@@ -106,6 +127,43 @@ impl core::marker::Sync for akio_tls::RevocationPolicy
 impl core::marker::Unpin for akio_tls::RevocationPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::RevocationPolicy
 impl core::panic::unwind_safe::UnwindSafe for akio_tls::RevocationPolicy
+pub struct akio_tls::CertDone
+impl akio_tls::CertDone
+pub fn akio_tls::CertDone::complete(self, akio_tls::CertifiedKey)
+pub fn akio_tls::CertDone::fail(self, akio_tls::CertAlert)
+pub fn akio_tls::CertDone::is_abandoned(&self) -> bool
+pub fn akio_tls::CertDone::use_default(self)
+impl core::fmt::Debug for akio_tls::CertDone
+pub fn akio_tls::CertDone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_tls::CertDone
+pub fn akio_tls::CertDone::drop(&mut self)
+impl core::marker::Send for akio_tls::CertDone
+impl core::marker::Sync for akio_tls::CertDone
+impl core::marker::Unpin for akio_tls::CertDone
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_tls::CertDone
+impl !core::panic::unwind_safe::UnwindSafe for akio_tls::CertDone
+pub struct akio_tls::CertStore(_, _)
+impl akio_tls::CertStore
+pub fn akio_tls::CertStore::get(&self, core::option::Option<&str>) -> core::option::Option<akio_tls::CertifiedKey>
+pub fn akio_tls::CertStore::insert(&self, &str, akio_tls::CertifiedKey) -> core::option::Option<akio_tls::CertifiedKey>
+pub fn akio_tls::CertStore::is_empty(&self) -> bool
+pub fn akio_tls::CertStore::len(&self) -> usize
+pub fn akio_tls::CertStore::new() -> akio_tls::CertStore
+pub fn akio_tls::CertStore::remove(&self, &str) -> core::option::Option<akio_tls::CertifiedKey>
+pub fn akio_tls::CertStore::set_default(&self, core::option::Option<akio_tls::CertifiedKey>)
+impl akio_tls::CertResolver for akio_tls::CertStore
+pub fn akio_tls::CertStore::resolve(&self, &akio_tls::ClientHelloInfo<'_>, akio_tls::CertDone)
+impl core::clone::Clone for akio_tls::CertStore
+pub fn akio_tls::CertStore::clone(&self) -> Self
+impl core::default::Default for akio_tls::CertStore
+pub fn akio_tls::CertStore::default() -> Self
+impl core::fmt::Debug for akio_tls::CertStore
+pub fn akio_tls::CertStore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_tls::CertStore
+impl core::marker::Sync for akio_tls::CertStore
+impl core::marker::Unpin for akio_tls::CertStore
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_tls::CertStore
+impl !core::panic::unwind_safe::UnwindSafe for akio_tls::CertStore
 pub struct akio_tls::Certificate(_)
 impl akio_tls::Certificate
 pub fn akio_tls::Certificate::as_der(&self) -> &[u8]
@@ -124,6 +182,21 @@ impl core::marker::Sync for akio_tls::Certificate
 impl core::marker::Unpin for akio_tls::Certificate
 impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::Certificate
 impl core::panic::unwind_safe::UnwindSafe for akio_tls::Certificate
+pub struct akio_tls::CertifiedKey(_, _)
+impl akio_tls::CertifiedKey
+pub fn akio_tls::CertifiedKey::chain_der(&self) -> impl core::iter::traits::iterator::Iterator<Item = &[u8]>
+pub fn akio_tls::CertifiedKey::from_pem(&[u8], &[u8]) -> core::result::Result<akio_tls::CertifiedKey, akio_tls::Error>
+pub fn akio_tls::CertifiedKey::new(alloc::vec::Vec<akio_tls::Certificate>, akio_tls::PrivateKey) -> core::result::Result<akio_tls::CertifiedKey, akio_tls::Error>
+pub fn akio_tls::CertifiedKey::with_ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<akio_tls::CertifiedKey, akio_tls::Error>
+impl core::clone::Clone for akio_tls::CertifiedKey
+pub fn akio_tls::CertifiedKey::clone(&self) -> Self
+impl core::fmt::Debug for akio_tls::CertifiedKey
+pub fn akio_tls::CertifiedKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_tls::CertifiedKey
+impl core::marker::Sync for akio_tls::CertifiedKey
+impl core::marker::Unpin for akio_tls::CertifiedKey
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_tls::CertifiedKey
+impl !core::panic::unwind_safe::UnwindSafe for akio_tls::CertifiedKey
 pub struct akio_tls::ClientConfig
 impl akio_tls::ClientConfig
 pub fn akio_tls::ClientConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
@@ -165,6 +238,24 @@ impl core::marker::Sync for akio_tls::ClientConfigBuilder
 impl core::marker::Unpin for akio_tls::ClientConfigBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::ClientConfigBuilder
 impl core::panic::unwind_safe::UnwindSafe for akio_tls::ClientConfigBuilder
+pub struct akio_tls::ClientHelloInfo<'a>
+impl<'a> akio_tls::ClientHelloInfo<'a>
+pub fn akio_tls::ClientHelloInfo<'a>::alpn(&self) -> &'a [&'a [u8]]
+pub fn akio_tls::ClientHelloInfo<'a>::cipher_suites(&self) -> &'a [u16]
+pub fn akio_tls::ClientHelloInfo<'a>::is_quic(&self) -> bool
+pub fn akio_tls::ClientHelloInfo<'a>::server_name(&self) -> core::option::Option<&'a str>
+pub fn akio_tls::ClientHelloInfo<'a>::signature_schemes(&self) -> &'a [u16]
+pub fn akio_tls::ClientHelloInfo<'a>::version(&self) -> &'static str
+impl<'a> core::clone::Clone for akio_tls::ClientHelloInfo<'a>
+pub fn akio_tls::ClientHelloInfo<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_tls::ClientHelloInfo<'a>
+pub fn akio_tls::ClientHelloInfo<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_tls::ClientHelloInfo<'a>
+impl<'a> core::marker::Send for akio_tls::ClientHelloInfo<'a>
+impl<'a> core::marker::Sync for akio_tls::ClientHelloInfo<'a>
+impl<'a> core::marker::Unpin for akio_tls::ClientHelloInfo<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_tls::ClientHelloInfo<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_tls::ClientHelloInfo<'a>
 pub struct akio_tls::Crls(_)
 impl akio_tls::Crls
 pub fn akio_tls::Crls::add_der(&mut self, &[u8]) -> core::result::Result<(), akio_tls::Error>
@@ -258,6 +349,7 @@ pub struct akio_tls::ServerConfig
 impl akio_tls::ServerConfig
 pub fn akio_tls::ServerConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
 pub fn akio_tls::ServerConfig::builder(alloc::vec::Vec<akio_tls::Certificate>, akio_tls::PrivateKey) -> akio_tls::ServerConfigBuilder
+pub fn akio_tls::ServerConfig::builder_with_resolver(alloc::rcs::arc::Arc<dyn akio_tls::CertResolver>) -> akio_tls::ServerConfigBuilder
 impl core::clone::Clone for akio_tls::ServerConfig
 pub fn akio_tls::ServerConfig::clone(&self) -> Self
 impl core::fmt::Debug for akio_tls::ServerConfig
@@ -274,6 +366,8 @@ pub fn akio_tls::ServerConfigBuilder::anti_replay_store(self, alloc::rcs::arc::A
 pub fn akio_tls::ServerConfigBuilder::anti_replay_timeout(self, core::time::Duration) -> Self
 pub fn akio_tls::ServerConfigBuilder::async_anti_replay_store(self, alloc::rcs::arc::Arc<dyn akio_tls::AsyncAntiReplayStore>) -> Self
 pub fn akio_tls::ServerConfigBuilder::build(self) -> core::result::Result<akio_tls::ServerConfig, akio_tls::Error>
+pub fn akio_tls::ServerConfigBuilder::cert_resolver(self, alloc::rcs::arc::Arc<dyn akio_tls::CertResolver>) -> Self
+pub fn akio_tls::ServerConfigBuilder::cert_resolver_timeout(self, core::time::Duration) -> Self
 pub fn akio_tls::ServerConfigBuilder::certificate_compression(self, bool) -> Self
 pub fn akio_tls::ServerConfigBuilder::certificate_compression_algorithms(self, &[akio_tls::CertCompression]) -> Self
 pub fn akio_tls::ServerConfigBuilder::client_auth_optional(self, akio_tls::RootCerts) -> Self
@@ -284,6 +378,7 @@ pub fn akio_tls::ServerConfigBuilder::early_data(self, u32) -> Self
 pub fn akio_tls::ServerConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn akio_tls::ServerConfigBuilder::ktls(self, akio_tls::Ktls) -> Self
 pub fn akio_tls::ServerConfigBuilder::ktls_zerocopy_sendfile(self, bool) -> Self
+pub fn akio_tls::ServerConfigBuilder::max_pending_cert_resolutions(self, usize) -> Self
 pub fn akio_tls::ServerConfigBuilder::ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn akio_tls::ServerConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn akio_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
@@ -406,4 +501,8 @@ impl akio_tls::AntiReplayStore for akio_tls::MemoryAntiReplay
 pub fn akio_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
 pub trait akio_tls::AsyncAntiReplayStore: core::marker::Send + core::marker::Sync
 pub fn akio_tls::AsyncAntiReplayStore::check_and_insert(&self, &[u8], core::time::Duration, akio_tls::ReplayCheck)
+pub trait akio_tls::CertResolver: core::marker::Send + core::marker::Sync
+pub fn akio_tls::CertResolver::resolve(&self, &akio_tls::ClientHelloInfo<'_>, akio_tls::CertDone)
+impl akio_tls::CertResolver for akio_tls::CertStore
+pub fn akio_tls::CertStore::resolve(&self, &akio_tls::ClientHelloInfo<'_>, akio_tls::CertDone)
 pub fn akio_tls::tls_info<H>(&akio_core::conn::Conn<H>) -> core::option::Option<akio_tls::TlsInfo>

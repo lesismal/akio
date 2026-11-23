@@ -11,7 +11,8 @@ wave C) behind an unchanged API.
 
 Wrap any acceptor in `Tls::server` (or `Tls::client` for `Engine::dial`) and its handlers see
 plaintext; the handshake runs on the connection's I/O thread and never blocks. Configure with
-`ServerConfig::builder(chain, key)` (SNI certificates, ALPN, client authentication, session cache
+`ServerConfig::builder(chain, key)` (SNI certificates, certificates chosen per handshake by a
+`CertResolver` that may answer later from another thread (ADR-098), ALPN, client authentication, session cache
 and tickets, `tls13_only`, record size limit, certificate compression, stapled OCSP responses)
 and `ClientConfig::builder()` (roots, ALPN, client certificate, SNI, resumption, record size
 limit, certificate compression, OCSP stapling and its validation, CRLs, `insecure_skip_verify`

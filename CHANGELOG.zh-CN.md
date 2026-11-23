@@ -10,6 +10,28 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：由可稍后应答的解析器按握手选择服务端证书（akio-tls）
+
+ADR-098，均为新增（akit 的 A2：服务期间续期证书，以及按需 TLS）：
+
+- `CertResolver::resolve(&ClientHelloInfo, CertDone)`，用 `ServerConfigBuilder::cert_resolver` 或
+  `ServerConfig::builder_with_resolver`（没有默认证书链）设置。`ClientHelloInfo` 给出 SNI 名称、客户端
+  提供的 ALPN 协议、签名算法、密码套件、版本以及是否为 QUIC。`CertDone`（`Send`）可在任意线程上应答一次：
+  `complete(CertifiedKey)`、`use_default()`（配置自身的证书链）、`fail(CertAlert)`；不应答就丢弃则以
+  `internal_error` 失败；`is_abandoned()` 表示已无人等待。
+- 在调用内应答，握手在同一次调用中继续（不挂起、不唤醒）。稍后应答只挂起这一个握手，与 ADR-062 的异步
+  防重放存储相同：I/O 线程继续服务其他连接，应答后握手在该线程上继续。适用于 TCP（引擎与阻塞式 stream）
+  和 QUIC、TLS 1.2 与 1.3；会话恢复的握手不调用解析器，HelloRetryRequest 之后只调用一次。
+- `cert_resolver_timeout`（10 s，超时则 `internal_error`）与 `max_pending_cert_resolutions`（每个配置
+  1024 个等待中的握手；超过后需要等待的握手失败）。
+- `CertifiedKey`（只校验一次的证书链与私钥，`from_pem`、`with_ocsp_response`、`chain_der`）以及
+  `CertStore`：在调用内按名称（精确名称或一层子域的 `*.`）应答的解析器，名称随时可用
+  `insert` / `remove` / `set_default` 替换。
+- 静态证书路径不变（每次完整握手多一次 `Option` 判断）。在安静的 x86_64 主机上同轮 A/B（`tls-bench
+  handshakes`，内存中的 TLS 1.3 完整握手，单核，10 轮交替、每轮 2 s，取中位数，main 50a82315 → 本分支）：
+  X25519 5526 → 5551/s（+0.5%），secp256r1 5663 → 5655/s（−0.1%），X25519 加 RSA-2048 3280 → 3284/s
+  （+0.1%），均在各轮的波动范围内。
+
 ### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
 
 ADR-094，均为新增：

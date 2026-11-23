@@ -10,6 +10,32 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: server certificates chosen per handshake by a resolver that may answer later (akio-tls)
+
+ADR-098, additive (akit's A2: certificates renewed while serving, and on-demand TLS):
+
+- `CertResolver::resolve(&ClientHelloInfo, CertDone)`, set with
+  `ServerConfigBuilder::cert_resolver` or `ServerConfig::builder_with_resolver` (no default
+  chain). `ClientHelloInfo` gives the SNI name, offered ALPN protocols, signature schemes, cipher
+  suites, version and whether it is QUIC. `CertDone` (`Send`) is answered once from any thread:
+  `complete(CertifiedKey)`, `use_default()` (the configuration's own chains), `fail(CertAlert)`;
+  dropped unanswered it fails with `internal_error`; `is_abandoned()` says nobody waits.
+- An answer inside the call goes on in the same call (no suspension, no wake-up). A later one
+  suspends that handshake only, as ADR-062's asynchronous anti-replay store does: the I/O thread
+  serves its other connections, and the handshake resumes on it when answered. TCP (engine and
+  the blocking stream) and QUIC, TLS 1.2 and 1.3; resumed handshakes do not call the resolver,
+  and after a HelloRetryRequest it is called once.
+- `cert_resolver_timeout` (10 s, then `internal_error`) and `max_pending_cert_resolutions` (1024
+  waiting handshakes per configuration; beyond it a handshake that would wait fails).
+- `CertifiedKey` (a chain and key checked once, `from_pem`, `with_ocsp_response`, `chain_der`)
+  and `CertStore`, a resolver answering inline from names (exact or `*.` one label deep) that are
+  replaced at any time with `insert` / `remove` / `set_default`.
+- The static-certificate path is unchanged (one `Option` check per full handshake). Same-run A/B
+  on the quiet x86_64 host (`tls-bench handshakes`, in-memory full TLS 1.3 handshakes on one
+  core, 10 alternating rounds of 2 s, medians, main 50a82315 → branch): X25519 5526 → 5551/s
+  (+0.5%), secp256r1 5663 → 5655/s (−0.1%), X25519 with RSA-2048 3280 → 3284/s (+0.1%), all
+  within the rounds' spread.
+
 ### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
 
 ADR-094, additive:

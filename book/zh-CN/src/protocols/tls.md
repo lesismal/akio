@@ -73,7 +73,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256
 
 | 需求 | 服务端：`ServerConfig::builder(chain, key)` | 客户端：`ClientConfig::builder()` |
 |---|---|---|
-| 证书 | 证书链与私钥；按 SNI 名称用 `.sni_cert(name, chain, key)` | `.client_cert(chain, key)` |
+| 证书 | 证书链与私钥；按 SNI 名称用 `.sni_cert(name, chain, key)`；按握手用 `.cert_resolver(r)`（见下文） | `.client_cert(chain, key)` |
 | 信任 | `.client_auth_required(roots)` / `.client_auth_optional(roots)` | `.roots(roots)` |
 | ALPN（`h2`、`http/1.1`、自定义） | `.alpn(["h2", "http/1.1"])` | `.alpn([..])` |
 | 会话恢复 | `.session_cache(entries)`、`.session_tickets(true)` | `.resumption(false)` 关闭 |
@@ -183,6 +183,52 @@ QUIC 服务端通过 `akio_quic::server_config_from(&cfg)` 获得这两项。
     }
     // ...
 })
+```
+
+## 按握手选择证书
+
+决定记录在 [ADR-098](https://github.com/lesismal/akio/blob/main/docs/adr/098-tls-cert-resolver.zh-CN.md)。
+服务端配置上的 `CertResolver` 为每次完整握手选择证书，用于服务期间替换的证书（ACME 续期）和握手期间签发的
+证书（按需 TLS）。它在 I/O 线程上被调用，参数是 `ClientHelloInfo`（SNI 名称、客户端提供的 ALPN 协议、签名
+算法与密码套件、版本、是否为 QUIC）和一个 `CertDone`，后者可在任意线程上应答一次：
+
+- `done.complete(key)` 使用一个 `CertifiedKey`（证书链及其私钥，只校验一次；请复用该值，它会保留压缩过的
+  证书消息）；
+- `done.use_default()` 使用没有解析器时配置会用的证书（该名称的 `sni_cert` 证书链，否则默认证书链；
+  都没有则 `unrecognized_name`）；
+- `done.fail(CertAlert::AccessDenied)`（或 `HandshakeFailure`、`UnrecognizedName`、`InternalError`）
+  结束握手；不应答就丢弃 `done` 视为 `internal_error`。
+
+在 `resolve` 返回前应答，握手就在同一次调用里继续。否则握手等待而不占用线程（该线程上的其他连接照常进行），
+应答后在自己的 I/O 线程上继续；适用于 TCP 与 QUIC、TLS 1.2 与 1.3。会话恢复的握手不发送证书，不调用解析器；
+HelloRetryRequest 之后只为第二个 ClientHello 调用一次。
+限制：`.cert_resolver_timeout(d)`（10 s；超时则 `internal_error`；握手超时同样是 10 s 且仍然生效，按需签发时
+两者都要调大）和 `.max_pending_cert_resolutions(n)`（每个配置 1024 个等待中的握手；超过后需要等待的握手失败，
+在调用内给出的应答仍然照常使用）。`done.is_abandoned()` 告诉较慢的解析器已经没有人在等了。
+
+`CertStore` 是一个现成的、在调用内应答的解析器：名称（精确名称，或匹配一层子域的 `*.example.com`）到
+`CertifiedKey` 的映射，随时可用 `insert`、`remove` 和 `set_default` 修改。
+
+```rust,ignore
+use akio_tls::{CertDone, CertResolver, CertStore, CertifiedKey, ClientHelloInfo, ServerConfig};
+
+let store = CertStore::new();
+store.insert("a.example.com", CertifiedKey::from_pem(&chain_pem, &key_pem)?);
+let cfg = ServerConfig::builder_with_resolver(Arc::new(store.clone())).build()?;
+// 之后在任意线程上续期：新的握手拿到新的证书链。
+store.insert("a.example.com", CertifiedKey::from_pem(&new_chain, &new_key)?);
+
+// 按需：缓存命中时在调用内应答，未命中时由签发任务应答。
+struct OnDemand { store: CertStore, issuer: Issuer }
+impl CertResolver for OnDemand {
+    fn resolve(&self, hello: &ClientHelloInfo<'_>, done: CertDone) {
+        match (self.store.get(hello.server_name()), hello.server_name()) {
+            (Some(k), _) => done.complete(k),
+            (None, Some(name)) if self.issuer.allowed(name) => self.issuer.issue(name, done),
+            _ => done.use_default(),
+        }
+    }
+}
 ```
 
 ## 记录大小限制、证书压缩、OCSP stapling

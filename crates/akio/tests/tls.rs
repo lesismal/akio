@@ -459,3 +459,172 @@ fn tls_stats_count_completed_handshakes() {
     assert_eq!(e.metrics().total.handshake_failures, 1);
     stop(&e);
 }
+
+/// ADR-098: a certificate resolver answering from another thread. The rustls clients trust
+/// only the resolver's certificate, not the configuration's default one.
+struct LaterResolver {
+    key: ftls::CertifiedKey,
+    delay: Duration,
+    /// Keep the answers instead (the test answers them).
+    hold: bool,
+    held: Mutex<Vec<ftls::CertDone>>,
+}
+
+impl ftls::CertResolver for LaterResolver {
+    fn resolve(&self, hello: &ftls::ClientHelloInfo<'_>, done: ftls::CertDone) {
+        assert_eq!(hello.server_name(), Some("localhost"));
+        if self.hold {
+            self.held.lock().unwrap().push(done);
+            return;
+        }
+        let (key, delay) = (self.key.clone(), self.delay);
+        thread::spawn(move || {
+            thread::sleep(delay);
+            done.complete(key);
+        });
+    }
+}
+
+fn rustls_client(trust: &CertificateDer<'static>, tls12: bool) -> Arc<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    roots.add(trust.clone()).unwrap();
+    let versions: &[&rustls::SupportedProtocolVersion] = if tls12 {
+        &[&rustls::version::TLS12]
+    } else {
+        &[&rustls::version::TLS13]
+    };
+    let c = ClientConfig::builder_with_protocol_versions(versions)
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Arc::new(c)
+}
+
+fn resolver_engine(r: Arc<LaterResolver>, max_pending: usize) -> Engine {
+    let default = pki();
+    let cfg = ftls::ServerConfig::builder(
+        vec![ftls::Certificate::from_der(default.cert.to_vec())],
+        ftls::PrivateKey::from_pkcs8_der(default.key.clone()),
+    )
+    .cert_resolver(r)
+    .max_pending_cert_resolutions(max_pending)
+    .build()
+    .unwrap();
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(2)
+                .serve(Tls::server(cfg, fn_acceptor(|_c: &Conn<Echo>| Echo))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e
+}
+
+#[test]
+fn cert_resolver_answers_from_another_thread() {
+    let p = pki();
+    let key = ftls::CertifiedKey::new(
+        vec![ftls::Certificate::from_der(p.cert.to_vec())],
+        ftls::PrivateKey::from_pkcs8_der(p.key.clone()),
+    )
+    .unwrap();
+    let r = Arc::new(LaterResolver {
+        key,
+        delay: Duration::from_millis(20),
+        hold: false,
+        held: Mutex::new(Vec::new()),
+    });
+    let e = resolver_engine(r, 64);
+    let addr = e.local_addrs()[0];
+    // Several handshakes waiting at once, both versions, on the engine's I/O threads.
+    let clients: Vec<_> = (0..8)
+        .map(|i| {
+            let cfg = rustls_client(&p.cert, i % 2 == 1);
+            thread::spawn(move || {
+                let mut c = tls_client(addr, cfg);
+                c.write_all(b"resolved").unwrap();
+                let mut b = [0u8; 8];
+                c.read_exact(&mut b).unwrap();
+                assert_eq!(&b, b"resolved");
+                c.conn.protocol_version()
+            })
+        })
+        .collect();
+    let mut versions: Vec<_> = clients
+        .into_iter()
+        .map(|t| format!("{:?}", t.join().unwrap()))
+        .collect();
+    versions.sort();
+    versions.dedup();
+    assert_eq!(versions.len(), 2, "{versions:?}");
+    assert_eq!(e.metrics().total.handshake_failures, 0);
+    stop(&e);
+}
+
+#[test]
+fn cert_resolver_connection_closed_while_waiting() {
+    let p = pki();
+    let key = ftls::CertifiedKey::new(
+        vec![ftls::Certificate::from_der(p.cert.to_vec())],
+        ftls::PrivateKey::from_pkcs8_der(p.key.clone()),
+    )
+    .unwrap();
+    let r = Arc::new(LaterResolver {
+        key: key.clone(),
+        delay: Duration::ZERO,
+        hold: true,
+        held: Mutex::new(Vec::new()),
+    });
+    // One handshake may wait at a time.
+    let e = resolver_engine(r.clone(), 1);
+    let addr = e.local_addrs()[0];
+    let wait_held = |n: usize| {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while r.held.lock().unwrap().len() < n {
+            assert!(
+                std::time::Instant::now() < until,
+                "the resolver was not asked"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    };
+    // The client sends its ClientHello and goes away while the resolver has not answered.
+    {
+        let mut c = ClientConnection::new(
+            rustls_client(&p.cert, false),
+            ServerName::try_from("localhost").unwrap(),
+        )
+        .unwrap();
+        let mut hello = Vec::new();
+        c.write_tls(&mut hello).unwrap();
+        let mut tcp = TcpStream::connect(addr).unwrap();
+        tcp.write_all(&hello).unwrap();
+        wait_held(1);
+    }
+    wait_held(1);
+    // The engine drops the connection: its answer is abandoned, and the waiting slot freed.
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !r.held.lock().unwrap()[0].is_abandoned() {
+        assert!(std::time::Instant::now() < until, "not abandoned");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let late = r.held.lock().unwrap().remove(0);
+    late.complete(key.clone());
+    // The next handshake waits in the freed place and completes when answered.
+    let cfg = rustls_client(&p.cert, true);
+    let t = thread::spawn(move || {
+        let mut c = tls_client(addr, cfg);
+        c.write_all(b"after").unwrap();
+        let mut b = [0u8; 5];
+        c.read_exact(&mut b).unwrap();
+        b
+    });
+    wait_held(1);
+    let d = r.held.lock().unwrap().remove(0);
+    thread::spawn(move || d.complete(key)).join().unwrap();
+    assert_eq!(&t.join().unwrap(), b"after");
+    stop(&e);
+}
