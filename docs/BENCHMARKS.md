@@ -2399,6 +2399,25 @@ Spread between rounds is 0.1–0.8 % for the HTTP cases and 2–8 % for TCP echo
 gives each thread the same CPUs `taskset` already did; `+cpu` pins one CPU per thread;
 `+incoming` cannot match on loopback (the client's CPUs process the packets).
 
+#### io_uring rings on the loop's node (ADR-088 update, same-run A/B against main)
+
+Measured 2026-11-23 on gpu51, same setup with `KIND=akio-uring` (4 io_uring threads), modes off
+and `spread+cpu`: the branch (`akio-uring`) against `main` at `5cc005c0` (`base-uring`,
+`BASE_DIR`), 5 rounds, the two builds' order alternating per round. Medians, branch / main:
+
+| Case | off: branch | off: ratio | `spread+cpu`: branch | `spread+cpu`: ratio |
+|---|---:|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns (req/s) | 587,239 | 0.999x | 587,112 | 1.000x |
+| HTTP/1.1 pipelined 16 x 256 | 3,877,056 | 0.997x | 3,885,321 | 0.997x |
+| h2c 64 x 16 | 3,216,761 | 0.992x | 3,234,563 | 0.994x |
+| TCP echo 64 B x 256 | 677,393 | 1.035x | 660,826 | 0.966x |
+
+With placement off the two builds create rings the same way and run the same I/O path, so the
+off column is the noise floor (h2c rounds spread 1.5 %, TCP echo up to 20 % in both builds);
+`spread+cpu` is within it. On one node the ring's memory is on the same node either way: this
+shows the change costs nothing, not what it gains. SQPOLL is not covered (the bench servers have
+no switch for it).
+
 ### Audio jitter buffer (ADR-087, same-run A/B)
 
 Measured 2026-11-22 on gpu51. The questions:

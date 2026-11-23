@@ -30,8 +30,11 @@ See [Blocking work](concepts/blocking.md).
   keeps each I/O thread on one node, or on the network interface's node
   (`NumaConfig::interface("eth0")`), with its CPUs (`per_cpu`: one CPU each) and the logical
   pool confined to them; `incoming_cpu` adds `SO_INCOMING_CPU` for interfaces whose interrupts
-  are spread over those CPUs. It is off by default; `Engine::numa_status()` shows the placement.
-  On one node it neither helps nor hurts.
+  are spread over those CPUs. With io_uring each thread's ring is created on its node, and with
+  `sqpoll` the kernel polling thread is pinned to one of its CPUs (`ThreadPlacement::sq_thread_cpu`;
+  prefer node-wide sets over `per_cpu` there, or the polling thread shares the loop's CPU). It is
+  off by default; `Engine::numa_status()` shows the placement. On one node it neither helps nor
+  hurts.
 
 ## 3. Backend choice
 

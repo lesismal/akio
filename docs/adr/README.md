@@ -89,4 +89,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-085: The codec-side fields of RTCP XR VoIP metrics: G.107 / G.107.1 per codec, the application's values](085-rtcp-xr-voip-quality-fields.md) (accepted 2026-11-22; wideband model corrected by ADR-087)
 - [ADR-086: RFC 6679 "ice" and "leap" ECN initiation, the remote's `ect=`, retrying ECN, latching RTCP's DTLS and the DTLS client](086-webrtc-ecn-initiation-retry-dtls-latching.md) (accepted 2026-11-22)
 - [ADR-087: Fullband and per-bitrate E-model, and an audio jitter buffer in akio-webrtc](087-fullband-emodel-audio-jitter-buffer.md) (accepted 2026-11-22)
-- [ADR-088: NUMA placement of the engine's threads, off by default](088-numa-placement.md) (accepted 2026-11-23)
+- [ADR-088: NUMA placement of the engine's threads, off by default](088-numa-placement.md) (accepted 2026-11-23; updated 2026-11-23: io_uring rings on the loop's node, SQPOLL threads placed)
