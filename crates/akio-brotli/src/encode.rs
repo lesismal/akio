@@ -432,6 +432,21 @@ fn load4(d: &[u8], i: usize) -> u32 {
 /// Length of the common prefix of `d[a..]` and `d[b..]`, at most `max`.
 #[inline(always)]
 fn match_len(d: &[u8], a: usize, b: usize, max: usize) -> usize {
+    if b + max > d.len() {
+        return 0;
+    }
+    // Most matches end within eight bytes: one comparison, no iterators.
+    if let (Some(x), Some(y)) = (d.get(a..a + 8), d.get(b..b + 8)) {
+        let x = u64::from_le_bytes(x.try_into().unwrap_or([0; 8]));
+        let y = u64::from_le_bytes(y.try_into().unwrap_or([0; 8]));
+        let diff = x ^ y;
+        if diff != 0 {
+            return ((diff.trailing_zeros() / 8) as usize).min(max);
+        }
+        if max <= 8 {
+            return max;
+        }
+    }
     let (Some(x), Some(y)) = (d.get(a..), d.get(b..b + max)) else {
         return 0;
     };

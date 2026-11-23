@@ -122,11 +122,23 @@ impl<const SIZE: usize, const H5: bool> Buckets<'_, SIZE, H5> {
         let mut best: Option<Found> = None;
         let mut best_score = MIN_SCORE;
         let mut best_len = 0;
+        // The ring distances whose first two bytes match, found without a branch per
+        // distance (which bytes match is unpredictable), then looked at in order as before.
+        let two = |p: usize| {
+            d.get(p..p + 2)
+                .map_or(u32::MAX, |b| u32::from(b[0]) | u32::from(b[1]) << 8)
+        };
+        let cur = two(i);
+        let mut hits = 0u32;
         for (k, &rd) in ring.iter().enumerate() {
             let dist = rd as usize;
-            if dist == 0 || dist > max_dist {
-                continue;
-            }
+            let ok = dist.wrapping_sub(1) < max_dist && two(i.wrapping_sub(dist)) == cur;
+            hits |= u32::from(ok) << k;
+        }
+        while hits != 0 {
+            let k = hits.trailing_zeros() as usize;
+            hits &= hits - 1;
+            let dist = ring[k] as usize;
             if d.get(i) != d.get(i - dist)
                 || d.get(i + 1) != d.get(i + 1 - dist)
                 || (best_len > 0
