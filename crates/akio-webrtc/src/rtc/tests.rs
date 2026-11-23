@@ -1004,6 +1004,7 @@ fn late_ulpfec_number_releases_the_frames_after_it() {
                 ts: u32::from(i) * 3000,
                 marker,
                 rid: None,
+                rtx: false,
             };
             b.rtc.deliver(now, 0, &pkt, &p, false);
             seq += 1;

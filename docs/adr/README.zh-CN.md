@@ -89,4 +89,7 @@
 - [ADR-085：RTCP XR VoIP 指标中与编解码器相关的字段：按编解码器的 G.107 / G.107.1，应用提供的值](085-rtcp-xr-voip-quality-fields.zh-CN.md)（2026-11-22 采纳；宽带模型由 ADR-087 更正）
 - [ADR-086：RFC 6679 的 "ice" 与 "leap" ECN 启动方式、对端的 `ect=`、ECN 重试、锁定 RTCP 的 DTLS 以及 DTLS 客户端](086-webrtc-ecn-initiation-retry-dtls-latching.zh-CN.md)（2026-11-22 采纳）
 - [ADR-087：全频带与按码率的 E-model，以及 akio-webrtc 中的音频抖动缓冲](087-fullband-emodel-audio-jitter-buffer.zh-CN.md)（2026-11-22 采纳）
+- [ADR-087：全频带与按码率的 E-model，以及 akio-webrtc 中的音频抖动缓冲](087-fullband-emodel-audio-jitter-buffer.zh-CN.md)（2026-11-22 采纳；遗留项由 ADR-092 完成）
 - [ADR-088：引擎线程的 NUMA 放置，默认关闭](088-numa-placement.zh-CN.md)（2026-11-23 采纳；2026-11-23 更新：io_uring ring 建在循环所在节点上，SQPOLL 线程得到放置）
+- [ADR-088：引擎线程的 NUMA 放置，默认关闭](088-numa-placement.zh-CN.md)（2026-11-23 采纳）
+- [ADR-092：视频播放缓冲，E-model 时延敏感度等级与房间噪声，VoIP 包长与迟到丢弃](092-video-playout-emodel-classes.zh-CN.md)（2026-11-23 采纳）

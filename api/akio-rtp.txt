@@ -608,6 +608,28 @@ impl core::marker::Sync for akio_rtp::BandwidthUsage
 impl core::marker::Unpin for akio_rtp::BandwidthUsage
 impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::BandwidthUsage
 impl core::panic::unwind_safe::UnwindSafe for akio_rtp::BandwidthUsage
+pub enum akio_rtp::DelaySensitivity
+pub akio_rtp::DelaySensitivity::Default
+pub akio_rtp::DelaySensitivity::Low
+pub akio_rtp::DelaySensitivity::VeryLow
+impl core::clone::Clone for akio_rtp::DelaySensitivity
+pub fn akio_rtp::DelaySensitivity::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::DelaySensitivity
+impl core::cmp::PartialEq for akio_rtp::DelaySensitivity
+pub fn akio_rtp::DelaySensitivity::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::DelaySensitivity
+pub fn akio_rtp::DelaySensitivity::default() -> Self
+impl core::fmt::Debug for akio_rtp::DelaySensitivity
+pub fn akio_rtp::DelaySensitivity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::DelaySensitivity
+pub fn akio_rtp::DelaySensitivity::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::DelaySensitivity
+impl core::marker::StructuralPartialEq for akio_rtp::DelaySensitivity
+impl core::marker::Send for akio_rtp::DelaySensitivity
+impl core::marker::Sync for akio_rtp::DelaySensitivity
+impl core::marker::Unpin for akio_rtp::DelaySensitivity
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::DelaySensitivity
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::DelaySensitivity
 #[non_exhaustive] pub enum akio_rtp::EcnResponse
 pub akio_rtp::EcnResponse::Classic
 pub akio_rtp::EcnResponse::Scalable
@@ -698,6 +720,28 @@ impl core::marker::Sync for akio_rtp::JitterPush
 impl core::marker::Unpin for akio_rtp::JitterPush
 impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::JitterPush
 impl core::panic::unwind_safe::UnwindSafe for akio_rtp::JitterPush
+pub enum akio_rtp::OpusBand
+pub akio_rtp::OpusBand::Fullband
+pub akio_rtp::OpusBand::Narrowband
+pub akio_rtp::OpusBand::Wideband
+impl core::clone::Clone for akio_rtp::OpusBand
+pub fn akio_rtp::OpusBand::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::OpusBand
+impl core::cmp::PartialEq for akio_rtp::OpusBand
+pub fn akio_rtp::OpusBand::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::OpusBand
+pub fn akio_rtp::OpusBand::default() -> Self
+impl core::fmt::Debug for akio_rtp::OpusBand
+pub fn akio_rtp::OpusBand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::OpusBand
+pub fn akio_rtp::OpusBand::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::OpusBand
+impl core::marker::StructuralPartialEq for akio_rtp::OpusBand
+impl core::marker::Send for akio_rtp::OpusBand
+impl core::marker::Sync for akio_rtp::OpusBand
+impl core::marker::Unpin for akio_rtp::OpusBand
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::OpusBand
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::OpusBand
 pub enum akio_rtp::Plc
 pub akio_rtp::Plc::Disabled
 pub akio_rtp::Plc::Enhanced
@@ -890,6 +934,7 @@ pub fn akio_rtp::BurstLossModel::burst_ratio(&self) -> f64
 pub fn akio_rtp::BurstLossModel::loss_fraction(&self) -> f64
 pub fn akio_rtp::BurstLossModel::metrics(&self, u32, u16) -> akio_rtp::VoipMetrics
 pub fn akio_rtp::BurstLossModel::new(u8) -> akio_rtp::BurstLossModel
+pub fn akio_rtp::BurstLossModel::on_late_discard(&mut self) -> bool
 pub fn akio_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
 impl akio_rtp::BurstLossModel
 pub fn akio_rtp::BurstLossModel::report(&self, u32, u16, &akio_rtp::VoipQuality) -> akio_rtp::VoipMetrics
@@ -1015,18 +1060,24 @@ pub struct akio_rtp::EModel
 impl akio_rtp::EModel
 pub fn akio_rtp::EModel::codec(f64, f64) -> akio_rtp::EModel
 pub fn akio_rtp::EModel::delay_impairment(core::time::Duration) -> f64
+pub fn akio_rtp::EModel::delay_sensitivity(&self) -> akio_rtp::DelaySensitivity
 pub fn akio_rtp::EModel::equipment_impairment(&self, f64, f64) -> f64
 pub fn akio_rtp::EModel::estimate(&self, f64, f64, core::option::Option<core::time::Duration>, core::time::Duration, core::time::Duration, core::option::Option<core::time::Duration>) -> akio_rtp::EModelScore
 pub fn akio_rtp::EModel::estimate_report(&self, &akio_rtp::BurstLossModel, &akio_rtp::VoipQuality, core::time::Duration, core::time::Duration) -> akio_rtp::EModelScore
 pub fn akio_rtp::EModel::for_codec(&str, akio_rtp::Plc) -> core::option::Option<akio_rtp::EModel>
+pub fn akio_rtp::EModel::for_codec_monotic(&str, akio_rtp::Plc, core::option::Option<u32>) -> core::option::Option<akio_rtp::EModel>
 pub fn akio_rtp::EModel::for_codec_rate(&str, akio_rtp::Plc, core::option::Option<u32>) -> core::option::Option<akio_rtp::EModel>
 pub fn akio_rtp::EModel::fullband(f64, f64) -> akio_rtp::EModel
 pub fn akio_rtp::EModel::is_fullband(&self) -> bool
 pub fn akio_rtp::EModel::is_wideband(&self) -> bool
+pub fn akio_rtp::EModel::max_rating(&self) -> f64
+pub fn akio_rtp::EModel::opus(akio_rtp::OpusBand, u32) -> akio_rtp::EModel
 pub fn akio_rtp::EModel::scaled_delay_impairment(&self, core::time::Duration) -> f64
 pub fn akio_rtp::EModel::score(&self, f64, f64, core::time::Duration) -> akio_rtp::EModelScore
 pub fn akio_rtp::EModel::wideband(f64, f64) -> akio_rtp::EModel
 pub fn akio_rtp::EModel::with_burst_robustness(self, f64) -> akio_rtp::EModel
+pub fn akio_rtp::EModel::with_delay_sensitivity(self, akio_rtp::DelaySensitivity) -> akio_rtp::EModel
+pub fn akio_rtp::EModel::with_room_noise(self, f64, f64) -> akio_rtp::EModel
 impl core::clone::Clone for akio_rtp::EModel
 pub fn akio_rtp::EModel::clone(&self) -> Self
 impl core::cmp::PartialEq for akio_rtp::EModel
@@ -1722,6 +1773,103 @@ impl core::marker::Sync for akio_rtp::TwccSender
 impl core::marker::Unpin for akio_rtp::TwccSender
 impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::TwccSender
 impl core::panic::unwind_safe::UnwindSafe for akio_rtp::TwccSender
+pub struct akio_rtp::VideoFrameFlags(_)
+impl akio_rtp::VideoFrameFlags
+pub const akio_rtp::VideoFrameFlags::DISCONTINUOUS: akio_rtp::VideoFrameFlags
+pub const akio_rtp::VideoFrameFlags::KEYFRAME: akio_rtp::VideoFrameFlags
+pub const akio_rtp::VideoFrameFlags::NONE: akio_rtp::VideoFrameFlags
+pub const akio_rtp::VideoFrameFlags::REPAIRED: akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::contains(self, akio_rtp::VideoFrameFlags) -> bool
+impl core::clone::Clone for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::VideoFrameFlags
+impl core::cmp::PartialEq for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::default() -> Self
+impl core::fmt::Debug for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_rtp::VideoFrameFlags
+impl core::marker::StructuralPartialEq for akio_rtp::VideoFrameFlags
+impl core::ops::bit::BitOr for akio_rtp::VideoFrameFlags
+pub type akio_rtp::VideoFrameFlags::Output = akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::bitor(self, akio_rtp::VideoFrameFlags) -> akio_rtp::VideoFrameFlags
+impl core::ops::bit::BitOrAssign for akio_rtp::VideoFrameFlags
+pub fn akio_rtp::VideoFrameFlags::bitor_assign(&mut self, akio_rtp::VideoFrameFlags)
+impl core::marker::Send for akio_rtp::VideoFrameFlags
+impl core::marker::Sync for akio_rtp::VideoFrameFlags
+impl core::marker::Unpin for akio_rtp::VideoFrameFlags
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VideoFrameFlags
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::VideoFrameFlags
+pub struct akio_rtp::VideoPlayout<T>
+impl<T> akio_rtp::VideoPlayout<T>
+pub fn akio_rtp::VideoPlayout<T>::bounds(&self) -> akio_rtp::PlayoutDelay
+pub fn akio_rtp::VideoPlayout<T>::clock(&self) -> u32
+pub fn akio_rtp::VideoPlayout<T>::delay(&self) -> core::time::Duration
+pub fn akio_rtp::VideoPlayout<T>::drain(&mut self) -> alloc::vec::Vec<akio_rtp::VideoPlayoutFrame<T>>
+pub fn akio_rtp::VideoPlayout<T>::is_empty(&self) -> bool
+pub fn akio_rtp::VideoPlayout<T>::len(&self) -> usize
+pub fn akio_rtp::VideoPlayout<T>::new(u32, akio_rtp::PlayoutDelay) -> akio_rtp::VideoPlayout<T>
+pub fn akio_rtp::VideoPlayout<T>::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_rtp::VideoPlayout<T>::pop(&mut self, std::time::Instant) -> core::option::Option<akio_rtp::VideoPlayoutFrame<T>>
+pub fn akio_rtp::VideoPlayout<T>::push(&mut self, u32, std::time::Instant, akio_rtp::VideoFrameFlags, T, usize)
+pub fn akio_rtp::VideoPlayout<T>::set_round_trip(&mut self, core::option::Option<core::time::Duration>)
+pub fn akio_rtp::VideoPlayout<T>::stats(&self) -> akio_rtp::VideoPlayoutStats
+pub fn akio_rtp::VideoPlayout<T>::take_keyframe_request(&mut self) -> bool
+impl<T: core::fmt::Debug> core::fmt::Debug for akio_rtp::VideoPlayout<T>
+pub fn akio_rtp::VideoPlayout<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for akio_rtp::VideoPlayout<T> where alloc::collections::vec_deque::VecDeque<Entry<T>>: core::marker::Send
+impl<T> core::marker::Sync for akio_rtp::VideoPlayout<T> where alloc::collections::vec_deque::VecDeque<Entry<T>>: core::marker::Sync
+impl<T> core::marker::Unpin for akio_rtp::VideoPlayout<T> where alloc::collections::vec_deque::VecDeque<Entry<T>>: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VideoPlayout<T> where alloc::collections::vec_deque::VecDeque<Entry<T>>: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for akio_rtp::VideoPlayout<T> where alloc::collections::vec_deque::VecDeque<Entry<T>>: core::panic::unwind_safe::UnwindSafe
+#[non_exhaustive] pub struct akio_rtp::VideoPlayoutFrame<T>
+pub akio_rtp::VideoPlayoutFrame::completed: std::time::Instant
+pub akio_rtp::VideoPlayoutFrame::contiguous: bool
+pub akio_rtp::VideoPlayoutFrame::data: T
+pub akio_rtp::VideoPlayoutFrame::keyframe: bool
+pub akio_rtp::VideoPlayoutFrame::playout: std::time::Instant
+pub akio_rtp::VideoPlayoutFrame::timestamp: u64
+impl<T: core::clone::Clone> core::clone::Clone for akio_rtp::VideoPlayoutFrame<T>
+pub fn akio_rtp::VideoPlayoutFrame<T>::clone(&self) -> Self
+impl<T: core::cmp::Eq> core::cmp::Eq for akio_rtp::VideoPlayoutFrame<T>
+impl<T: core::cmp::PartialEq> core::cmp::PartialEq for akio_rtp::VideoPlayoutFrame<T>
+pub fn akio_rtp::VideoPlayoutFrame<T>::eq(&self, &Self) -> bool
+impl<T: core::cmp::PartialEq> core::marker::StructuralPartialEq for akio_rtp::VideoPlayoutFrame<T>
+impl<T: core::fmt::Debug> core::fmt::Debug for akio_rtp::VideoPlayoutFrame<T>
+pub fn akio_rtp::VideoPlayoutFrame<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for akio_rtp::VideoPlayoutFrame<T> where T: core::marker::Send
+impl<T> core::marker::Sync for akio_rtp::VideoPlayoutFrame<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for akio_rtp::VideoPlayoutFrame<T> where T: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VideoPlayoutFrame<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for akio_rtp::VideoPlayoutFrame<T> where T: core::panic::unwind_safe::UnwindSafe
+#[non_exhaustive] pub struct akio_rtp::VideoPlayoutStats
+pub akio_rtp::VideoPlayoutStats::delay: core::time::Duration
+pub akio_rtp::VideoPlayoutStats::dropped: u64
+pub akio_rtp::VideoPlayoutStats::late: u64
+pub akio_rtp::VideoPlayoutStats::played: u64
+pub akio_rtp::VideoPlayoutStats::received: u64
+pub akio_rtp::VideoPlayoutStats::repaired: u64
+pub akio_rtp::VideoPlayoutStats::resyncs: u64
+pub akio_rtp::VideoPlayoutStats::target: core::time::Duration
+impl core::clone::Clone for akio_rtp::VideoPlayoutStats
+pub fn akio_rtp::VideoPlayoutStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_rtp::VideoPlayoutStats
+impl core::cmp::PartialEq for akio_rtp::VideoPlayoutStats
+pub fn akio_rtp::VideoPlayoutStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_rtp::VideoPlayoutStats
+pub fn akio_rtp::VideoPlayoutStats::default() -> Self
+impl core::fmt::Debug for akio_rtp::VideoPlayoutStats
+pub fn akio_rtp::VideoPlayoutStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_rtp::VideoPlayoutStats
+impl core::marker::StructuralPartialEq for akio_rtp::VideoPlayoutStats
+impl core::marker::Send for akio_rtp::VideoPlayoutStats
+impl core::marker::Sync for akio_rtp::VideoPlayoutStats
+impl core::marker::Unpin for akio_rtp::VideoPlayoutStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_rtp::VideoPlayoutStats
+impl core::panic::unwind_safe::UnwindSafe for akio_rtp::VideoPlayoutStats
 pub struct akio_rtp::VoipMetrics
 pub akio_rtp::VoipMetrics::burst_density: u8
 pub akio_rtp::VoipMetrics::burst_duration: u16
@@ -1807,6 +1955,8 @@ pub const akio_rtp::SEND_HISTORY_AGE: core::time::Duration
 pub const akio_rtp::SEND_HISTORY_PACKETS: usize
 pub const akio_rtp::TMMBR_TIMEOUT: core::time::Duration
 pub const akio_rtp::TWCC_FEEDBACK_INTERVAL: core::time::Duration
+pub const akio_rtp::VIDEO_PLAYOUT_MAX_BYTES: usize
+pub const akio_rtp::VIDEO_PLAYOUT_MAX_FRAMES: usize
 pub const akio_rtp::VOIP_UNAVAILABLE: u8
 pub fn akio_rtp::abs_send_time(core::time::Duration) -> u32
 pub fn akio_rtp::bounded_bitrate(&[akio_rtp::TmmbItem], f64) -> core::option::Option<u64>

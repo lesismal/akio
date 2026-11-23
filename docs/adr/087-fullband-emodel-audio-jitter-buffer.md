@@ -193,3 +193,18 @@ Some values change without an API change:
   - The VoIP block's burst and gap durations still assume 20 ms packets.
   - A packet discarded in a later report interval than the one that reported it lost is not
     matched.
+
+## Update (2026-11-23): leftovers closed by ADR-092
+
+[ADR-092](092-video-playout-emodel-classes.md) takes up the "Not done" list above:
+
+- a video playout buffer (`VideoPlayout`, `RtcConfig::set_video_playout_buffer`);
+- delay sensitivity classes (`DelaySensitivity`, `RtcConfig::set_voip_delay_sensitivity`);
+- the 03/2023 `Ro,FB` from room noise the application gives (`EModel::with_room_noise`);
+  without it, 148 stays;
+- the monotic tables as a choice (`EModel::for_codec_monotic`);
+- the published narrowband / wideband Opus values (`EModel::opus`);
+- burst and gap durations from the measured packet length;
+- late discards matched across report intervals.
+
+EVS NB / WB modes still have no published values. Time-stretching stays the decoder's job.

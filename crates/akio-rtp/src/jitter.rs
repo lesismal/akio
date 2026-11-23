@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::delay::{DelayEstimator, us};
 use crate::xr::JitterBufferConfig;
 
 /// The largest [`PlayoutDelay::max`] (2 s).
@@ -14,16 +15,6 @@ pub const JITTER_BUFFER_MAX_FRAMES: usize = 1024;
 pub const JITTER_BUFFER_MAX_BYTES: usize = 256 * 1024;
 /// Discarded sequence numbers kept until [`JitterBuffer::drain_discarded`].
 const MAX_DISCARDED: usize = 4096;
-/// Histogram bucket width (µs).
-const BUCKET_US: i64 = 2_000;
-/// The share of packets that should arrive in time.
-const QUANTILE: f64 = 0.95;
-/// The histogram's forgetting factor per packet.
-const FORGET: f64 = 0.997;
-/// Packets between two percentile computations.
-const RECOMPUTE: u32 = 8;
-/// The window of the smallest transit time (µs); the minimum covers the last one or two.
-const MIN_WINDOW_US: i64 = 5_000_000;
 /// At most one frame shorter per this long (µs) within a talkspurt.
 const DECREASE_EVERY_US: i64 = 1_000_000;
 /// The frame length assumed before two consecutive frames tell it (µs).
@@ -215,14 +206,7 @@ pub struct JitterBuffer<T> {
     /// `(ext seq, ext ts)` of the highest sequence number: the timestamp rollover reference.
     ts_ref: Option<(u64, u64)>,
     base_ts: u64,
-    min_cur: i64,
-    min_prev: i64,
-    window_end: i64,
-    hist: Vec<f64>,
-    weight: f64,
-    total: f64,
-    since: u32,
-    quantile_us: i64,
+    est: DelayEstimator,
     target_us: i64,
     offset_us: Option<i64>,
     last_decrease_us: i64,
@@ -235,16 +219,11 @@ pub struct JitterBuffer<T> {
     discarded: Vec<u64>,
 }
 
-fn us(d: Duration) -> i64 {
-    i64::try_from(d.as_micros()).unwrap_or(i64::MAX)
-}
-
 impl<T> JitterBuffer<T> {
     /// A buffer for a stream of RTP clock rate `clock` (Hz; 0 is taken as 8000) and playout
     /// delay `bounds`.
     #[must_use]
     pub fn new(clock: u32, bounds: PlayoutDelay) -> JitterBuffer<T> {
-        let buckets = (us(bounds.max) / BUCKET_US) as usize + 2;
         JitterBuffer {
             clock: if clock == 0 { 8000 } else { clock },
             bounds,
@@ -258,14 +237,7 @@ impl<T> JitterBuffer<T> {
             epoch: None,
             ts_ref: None,
             base_ts: 0,
-            min_cur: i64::MAX,
-            min_prev: i64::MAX,
-            window_end: MIN_WINDOW_US,
-            hist: vec![0.0; buckets],
-            weight: 1.0,
-            total: 0.0,
-            since: 0,
-            quantile_us: 0,
+            est: DelayEstimator::new(bounds.max),
             target_us: us(bounds.min),
             offset_us: None,
             last_decrease_us: 0,
@@ -347,35 +319,7 @@ impl<T> JitterBuffer<T> {
     }
 
     fn min_transit(&self) -> i64 {
-        self.min_cur.min(self.min_prev)
-    }
-
-    fn histogram_add(&mut self, d: i64) {
-        // Bucket b holds delays in ((b - 1) W, b W]: 0 alone in the first.
-        let b = ((d.max(0) + BUCKET_US - 1) / BUCKET_US) as usize;
-        let b = b.min(self.hist.len() - 1);
-        self.hist[b] += self.weight;
-        self.total += self.weight;
-        self.weight /= FORGET;
-        if self.weight > 1e200 {
-            for h in &mut self.hist {
-                *h /= self.weight;
-            }
-            self.total /= self.weight;
-            self.weight = 1.0;
-        }
-    }
-
-    fn quantile(&self) -> i64 {
-        let goal = QUANTILE * self.total;
-        let mut cum = 0.0;
-        for (b, &h) in self.hist.iter().enumerate() {
-            cum += h;
-            if h > 0.0 && cum >= goal {
-                return b as i64 * BUCKET_US;
-            }
-        }
-        (self.hist.len() as i64 - 1) * BUCKET_US
+        self.est.min_transit()
     }
 
     /// Takes the frame of extended sequence number `seq`, RTP timestamp `ts` and marker bit
@@ -476,22 +420,10 @@ impl<T> JitterBuffer<T> {
     /// Transit time statistics and the target delay, from a packet of media time `ts_us`
     /// arriving at `now_us`.
     fn estimate(&mut self, now_us: i64, ts_us: i64) {
-        let transit = now_us - ts_us;
-        if now_us >= self.window_end {
-            self.min_prev = self.min_cur;
-            self.min_cur = transit;
-            self.window_end = now_us + MIN_WINDOW_US;
-        } else {
-            self.min_cur = self.min_cur.min(transit);
-        }
-        let d = transit - self.min_transit();
-        self.histogram_add(d);
-        self.since += 1;
-        if self.since >= RECOMPUTE || d > self.quantile_us {
-            self.since = 0;
-            self.quantile_us = self.quantile();
+        if self.est.sample(now_us, now_us - ts_us).1 {
             self.target_us = self
-                .quantile_us
+                .est
+                .quantile_us()
                 .clamp(us(self.bounds.min), us(self.bounds.max));
         }
     }

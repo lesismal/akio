@@ -37,6 +37,44 @@ ADR-078 的第三次更新（2026-11-23），只有新增：
   源的查询，仍发往所有链路、在所有链路上得到应答。
 - `tools/interop/webrtc/mdns4.sh`：容器中的两条 IPv4 链路，avahi 位于非默认的那条。
 
+### 新增：视频播放缓冲，E-model 时延等级与房间噪声，VoIP 包长与迟到丢弃（akio-rtp、akio-webrtc）
+
+ADR-092（docs/adr/092-video-playout-emodel-classes.zh-CN.md）完成 ADR-087 的遗留项，仅新增：
+
+- `VideoPlayout<T>`（及 `VideoFrameFlags`、`VideoPlayoutFrame`、`VideoPlayoutStats`、
+  `VIDEO_PLAYOUT_MAX_FRAMES`、`VIDEO_PLAYOUT_MAX_BYTES`）：不做 I/O 的完整视频帧播放缓冲。
+  - 帧在 RTP 时间戳加偏移处播放：偏移是最快传输时间加目标时延。
+  - 目标覆盖各帧时延的第 95 百分位和最近关键帧的时延；有帧需要修复时再加一个往返（NACK）。
+  - 修复过的帧不进统计。
+  - 迟到帧立即交出。
+  - 时延在关键帧处立即缩短，否则每秒一帧。
+  - 上界 256 帧、16 MiB：丢到某个关键帧为止，或请求关键帧。
+  - 时钟跳变时重新同步。
+- E-model：
+  - `DelaySensitivity`（G.107 / G.107.2 表 1），配 `EModel::with_delay_sensitivity` 与
+    `delay_sensitivity`。
+  - `EModel::with_room_noise(send, receive)`：G.107 的 `Ps` / `Pr`；G.107.2（03/2023）由噪声算出
+    `Ro,FB`。不给时 `Ro,FB` 仍为 148。
+  - `EModel::max_rating`。
+  - `EModel::for_codec_monotic`：G.113 表 IV.1。
+  - `EModel::opus(OpusBand, bitrate)`：窄带 / 宽带 Opus 用 Alahmadi、Pocta、Melvin 发表的仪器法
+    取值；全频带同前。
+- `BurstLossModel::on_late_discard`。
+- akio-webrtc：
+  - `RtcConfig::set_video_playout_buffer(Option<PlayoutDelay>)`（默认关闭）：收到的视频帧在播放
+    时刻交出（`MediaData::playout_time`）。经 RTX 补齐的标为已修复，NACK 线路使用往返时间，没有
+    关键帧可恢复而丢帧时发送 PLI。
+  - `RtcConfig::set_voip_delay_sensitivity`。
+  - `Peer::video_playout_stats(mid)`。
+- API 未变但取值变化：
+  - XR VoIP 块的突发与间隙时长、E-model 评分所用的码率，按测得的包长计算，不再总是 20 ms。
+  - 被报为丢失、在后续区间迟到丢弃的包计为丢弃。
+- 音频 `JitterBuffer` 与 `VideoPlayout` 共用时延估计器（行为不变）。
+- `webrtc-bench video` / `video-jb` 与 `jitter-bench video`。
+- gpu51 上同轮 A/B（BENCHMARKS，"视频播放缓冲"）：缓冲关闭时没有可测出的变化（视频每帧 CPU
+  8.94 对 8.92 µs，VP8 `media` 1.000）；打开时每帧多 1.14 µs CPU，主要是定时器唤醒；缓冲本身每帧
+  44 ns。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

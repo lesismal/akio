@@ -23,8 +23,55 @@ const NFOR: f64 = -64.0;
 const PS: f64 = 35.0;
 const PR: f64 = 35.0;
 const QDU: f64 = 1.0;
-/// The absolute delay below which there is no delay impairment (`mT`, ms).
-const MT: f64 = 100.0;
+/// G.107.2 (03/2023) Table 2: the circuit noise `Nc` and noise floor `Nfo` of the fullband
+/// path (dBm0p).
+const NC_FB: f64 = -96.0;
+const NFO_FB: f64 = -96.0;
+
+/// The delay sensitivity class of a conversation (ITU-T G.107 (06/2015) §7.4 Table 1;
+/// G.107.2 (03/2023) §7.4 Table 1 has the same values): the parameters `sT` and `mT` of the
+/// absolute delay impairment
+/// `Idd = 25 {(1 + X^(6 sT))^(1/(6 sT)) - 3 (1 + (X/3)^(6 sT))^(1/(6 sT)) + 2}`,
+/// `X = log2(Ta / mT)`, 0 up to `mT`.
+///
+/// Both Recommendations require the default class for carrier-grade and enterprise
+/// telephony and whenever the users or the scenario are not known, and ask that any other
+/// class be stated with the results. G.107.1 (wideband) has no classes: its `Idd` is the
+/// default one, so a wideband model ignores this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DelaySensitivity {
+    /// `sT` 1, `mT` 100 ms: every kind of telephone conversation.
+    #[default]
+    Default,
+    /// `sT` 0.55, `mT` 120 ms: users known to be little sensitive to delay (G.107: "Low",
+    /// non time-sensitive conversation; G.107.2: "Medium", conversations like random number
+    /// verification).
+    Low,
+    /// `sT` 0.4, `mT` 150 ms: users known to be hardly sensitive to delay (G.107: "Very low",
+    /// mainly listening, as to a lecture; G.107.2: "Low", short conversation tests).
+    VeryLow,
+}
+
+impl DelaySensitivity {
+    /// `(sT, mT ms)`.
+    fn params(self) -> (f64, f64) {
+        match self {
+            DelaySensitivity::Default => (1.0, 100.0),
+            DelaySensitivity::Low => (0.55, 120.0),
+            DelaySensitivity::VeryLow => (0.4, 150.0),
+        }
+    }
+}
+
+/// The room noise at the send and receive sides (dB(A)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Room {
+    ps: f64,
+    pr: f64,
+}
+
+/// G.107 Table 3's room noise.
+const ROOM: Room = Room { ps: PS, pr: PR };
 
 /// The highest rating of G.107.1's wideband scale (`Ro,WB`, Eq. 7-2; `Is,WB` is 0).
 const RO_WB: f64 = 129.0;
@@ -39,13 +86,14 @@ const FB_LOSS_TOP: f64 = 132.0;
 /// The top of the loss term of `Ie,eff` and `Ie,eff,WB` (G.107 Eq. 7-29, G.107.1 Eq. 7-15).
 const LOSS_TOP: f64 = 95.0;
 
-/// The circuit noise `No` (dBm0p) of the default parameters (-61.18).
-fn noise_no() -> f64 {
+/// The circuit noise `No` (dBm0p) of the default parameters and room noise `room` (-61.18
+/// with G.107's 35 dB(A)).
+fn noise_no(room: Room) -> f64 {
     let olr = SLR + RLR;
     let nfo = NFOR + RLR;
-    let pre = PR + 10.0 * (1.0 + 10f64.powf((10.0 - LSTR) / 10.0)).log10();
+    let pre = room.pr + 10.0 * (1.0 + 10f64.powf((10.0 - LSTR) / 10.0)).log10();
     let nor = RLR - 121.0 + pre + 0.008 * (pre - 35.0).powi(2);
-    let nos = PS - SLR - DS - 100.0 + 0.004 * (PS - olr - DS - 14.0).powi(2);
+    let nos = room.ps - SLR - DS - 100.0 + 0.004 * (room.ps - olr - DS - 14.0).powi(2);
     10.0 * [NC, nos, nor, nfo]
         .iter()
         .map(|n| 10f64.powf(n / 10.0))
@@ -53,14 +101,30 @@ fn noise_no() -> f64 {
         .log10()
 }
 
-/// The basic signal-to-noise ratio `Ro` (94.77).
-fn ro() -> f64 {
-    15.0 - 1.5 * (SLR + noise_no())
+/// The basic signal-to-noise ratio `Ro` (94.77 with G.107's room noise).
+fn ro(room: Room) -> f64 {
+    15.0 - 1.5 * (SLR + noise_no(room))
+}
+
+/// G.107.2 (03/2023) Eqs. 7-2 to 7-6: the fullband `Ro,FB` from the room noise `room`, with
+/// Table 2's defaults (`Nc` = `Nfo` = -96 dBm0p).
+fn ro_fb(room: Room) -> f64 {
+    let olr = SLR + RLR;
+    let pre = room.pr + 10.0 * (1.0 + 10f64.powf((10.0 - LSTR) / 10.0)).log10();
+    let nor = RLR - 147.0 + 1.12 * pre + 0.009 * (pre - 25.0).powi(2);
+    let nos = room.ps - SLR - DS - 100.0 + 0.004 * (room.ps - olr - DS - 14.0).powi(2);
+    let no = 10.0
+        * [NC_FB, nos, nor, NFO_FB]
+            .iter()
+            .map(|n| 10f64.powf(n / 10.0))
+            .sum::<f64>()
+            .log10();
+    20.0 - 1.5 * (SLR + no)
 }
 
 /// The simultaneous impairment `Is = Iolr + Ist + Iq` with one-way delay `t` ms (1.41).
-fn is(t: f64) -> f64 {
-    let no = noise_no();
+fn is(t: f64, room: Room) -> f64 {
+    let no = noise_no(room);
     let xolr = SLR + RLR + 0.2 * (64.0 + no - RLR);
     let iolr = 20.0 * ((1.0 + (xolr / 8.0).powi(8)).powf(1.0 / 8.0) - xolr / 8.0);
     let stmro =
@@ -72,21 +136,22 @@ fn is(t: f64) -> f64 {
     let q = 37.0 - 15.0 * QDU.log10();
     let g = 1.07 + 0.258 * q + 0.0602 * q * q;
     let z = 46.0 / 30.0 - g / 40.0;
-    let y = (ro() - 100.0) / 15.0 + 46.0 / 8.4 - g / 9.0;
+    let y = (ro(room) - 100.0) / 15.0 + 46.0 / 8.4 - g / 9.0;
     let iq = 15.0 * (1.0 + 10f64.powf(y) + 10f64.powf(z)).log10();
     iolr + ist + iq
 }
 
-/// G.107's absolute-delay impairment `Idd` (Eq. 7-27/7-28, delay class "default": `sT` 1,
-/// `mT` 100 ms) of absolute delay `t` ms; G.107.1 (Eq. 7-13) and G.107.2 (Eq. 7-8b) scale it
-/// by 1.29 and 1.48.
-fn idd(t: f64) -> f64 {
-    if t <= MT {
+/// G.107's absolute-delay impairment `Idd` (Eqs. 7-27, 7-28) of absolute delay `t` ms in
+/// delay sensitivity class `class`; G.107.1 (Eq. 7-13, default class only) and G.107.2
+/// (03/2023 Eq. 7-8b) scale it by 1.29 and 1.48.
+fn idd(t: f64, class: DelaySensitivity) -> f64 {
+    let (st, mt) = class.params();
+    if t <= mt {
         return 0.0;
     }
-    let x = (t / MT).log2();
-    25.0 * ((1.0 + x.powi(6)).powf(1.0 / 6.0) - 3.0 * (1.0 + (x / 3.0).powi(6)).powf(1.0 / 6.0)
-        + 2.0)
+    let x = (t / mt).log2();
+    let e = 6.0 * st;
+    25.0 * ((1.0 + x.powf(e)).powf(1.0 / e) - 3.0 * (1.0 + (x / 3.0).powf(e)).powf(1.0 / e) + 2.0)
 }
 
 /// The listener echo impairment `Idle` (G.107 Eq. 7-23, G.107.1 Eq. 7-11) with round trip
@@ -103,13 +168,14 @@ fn idte(t: f64, roe: f64, re: f64) -> f64 {
 
 /// The delay impairment `Id = Idte + Idle + Idd` of G.107 §7.4 for mean one-way delay `t`
 /// ms, absolute delay `Ta = T` and round trip `Tr = 2T`.
-fn id(t: f64, ro: f64) -> f64 {
+fn id(t: f64, room: Room, class: DelaySensitivity) -> f64 {
+    let ro = ro(room);
     let t = t.max(0.0);
     let terv =
         TELR - 40.0 * ((1.0 + t / 10.0) / (1.0 + t / 150.0)).log10() + 6.0 * (-0.3 * t * t).exp();
     let re = 80.0 + 2.5 * (terv - 14.0);
-    let roe = -1.5 * (noise_no() - RLR);
-    idte(t, roe, re) + idle(t, ro) + idd(t)
+    let roe = -1.5 * (noise_no(room) - RLR);
+    idte(t, roe, re) + idle(t, ro) + idd(t, class)
 }
 
 /// The wideband delay impairment `Id,WB = Idte,WB + Idle,WB + Idd` of G.107.1 §7.4 (with its
@@ -121,12 +187,12 @@ fn id_wb(t: f64) -> f64 {
         + 6.0 * (-0.3 * t * t).exp();
     let re = 80.0 + 3.0 * (terv - 14.0);
     let roe = -1.5 * (-69.0 - RLR);
-    idte(t, roe, re) + idle(t, RO_WB) + WB_SCALE * idd(t)
+    idte(t, roe, re) + idle(t, RO_WB) + WB_SCALE * idd(t, DelaySensitivity::Default)
 }
 
 /// The fullband delay impairment `Id,FB = Idd` of G.107.2 §7.4 (absolute delay only).
-fn id_fb(t: f64) -> f64 {
-    FB_SCALE * idd(t.max(0.0))
+fn id_fb(t: f64, class: DelaySensitivity) -> f64 {
+    FB_SCALE * idd(t.max(0.0), class)
 }
 
 fn millis(d: Duration) -> f64 {
@@ -159,8 +225,10 @@ enum Scale {
 /// rated with G.107.2: `R = 148 - 1.48 Idd - Ie,eff,FB`,
 /// `Ie,eff,FB = Ie,FB + (132 - Ie,FB) (Ppl - (1 - BurstR) / Brf) / (Ppl + Bpl)` (Eq. 7-10,
 /// `Brf` the codec's burstiness robustness, 1 when unknown). `Ro,FB` is the scale's top, 148
-/// (G.107.2 06/2019; the 03/2023 edition derives it from noise levels without defaults for
-/// the room noise, and gives 147.5 without room noise). The VoIP metrics block and the MOS
+/// (G.107.2 06/2019): the 03/2023 edition derives it from noise levels but gives no defaults
+/// for the room noise, which [`with_room_noise`](Self::with_room_noise) supplies. The delay
+/// sensitivity class is the default one unless
+/// [`with_delay_sensitivity`](Self::with_delay_sensitivity) says otherwise. The VoIP metrics block and the MOS
 /// take the rating divided by 1.29 or 1.48 (G.107.1 / G.107.2 Annex A), so a clean wideband
 /// or fullband call rates 100 and a clean G.711 one 93.2.
 ///
@@ -174,6 +242,9 @@ pub struct EModel {
     bpl: f64,
     brf: f64,
     scale: Scale,
+    class: DelaySensitivity,
+    /// The room noise given ([`EModel::with_room_noise`]).
+    room: Option<Room>,
 }
 
 impl Default for EModel {
@@ -244,6 +315,56 @@ const AMR_WB: [(u32, f64, f64); 6] = [
     (23_850, 10.0, 4.9),
 ];
 
+/// G.113 Table IV.1 (monotic, handset listening: provisional `Ie,wb`) for AMR-WB (G.722.2)
+/// by mode (bit/s).
+const AMR_WB_MONOTIC: [(u32, f64); 9] = [
+    (6_600, 41.0),
+    (8_850, 26.0),
+    (12_650, 13.0),
+    (14_250, 10.0),
+    (15_850, 7.0),
+    (18_250, 5.0),
+    (19_850, 3.0),
+    (23_050, 1.0),
+    (23_850, 8.0),
+];
+
+/// G.113 Table IV.1 (monotic) for G.722 at 64, 56, 48 kbit/s.
+const G722_MONOTIC: [(u32, f64); 3] = [(48_000, 31.0), (56_000, 20.0), (64_000, 13.0)];
+
+/// Narrowband Opus 1.2.1 in VBR mode, from POLQA (ITU-T P.834 method): `(rate, Ie, Bpl)`,
+/// `Bpl` under random loss. M. Alahmadi, P. Pocta, H. Melvin, "Derivation of E-model
+/// Equipment Impairment Factors for Narrowband and Wideband Opus Codec Using the
+/// Instrumental Method", ISSC 2020 (doi:10.1109/ISSC49989.2020.9180160), as printed in
+/// M. Alahmadi's thesis (NUI Galway, 2020), Tables 5.13 and 5.14. Not ITU-T values.
+const OPUS_NB: [(u32, f64, f64); 4] = [
+    (6_000, 23.0, 24.6),
+    (7_000, 21.3, 22.5),
+    (8_000, 16.0, 20.2),
+    (9_000, 11.7, 18.9),
+];
+
+/// Wideband Opus 1.2.1 in VBR mode, the same source (thesis Tables 5.8 and 5.9):
+/// `(rate, Ie,wb, Bpl,wb)`.
+const OPUS_WB: [(u32, f64, f64); 3] = [
+    (11_000, 28.4, 23.9),
+    (12_000, 23.3, 22.2),
+    (13_000, 20.0, 19.5),
+];
+
+/// The audio bandwidth an Opus stream is coded in (its decoder's output: SDP
+/// `maxplaybackrate` 8000 is narrowband, 16000 wideband), for [`EModel::opus`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum OpusBand {
+    /// 4 kHz audio (G.107 scale).
+    Narrowband,
+    /// 8 kHz audio (G.107.1 scale).
+    Wideband,
+    /// 20 kHz audio (G.107.2 scale): what WebRTC sends unless told otherwise.
+    #[default]
+    Fullband,
+}
+
 /// G.113 Table V.3 (EVS in SWB mode, diotic): `(rate, Ie,fb, Bpl,fb, Brf)`, `Brf` 1 where
 /// it is for further study.
 const EVS: [(u32, f64, f64, f64); 6] = [
@@ -299,6 +420,8 @@ impl EModel {
             bpl: bpl.max(1.0),
             brf: 1.0,
             scale: Scale::Narrow,
+            class: DelaySensitivity::Default,
+            room: None,
         }
     }
 
@@ -311,6 +434,8 @@ impl EModel {
             bpl: bpl_wb.max(1.0),
             brf: 1.0,
             scale: Scale::Wide,
+            class: DelaySensitivity::Default,
+            room: None,
         }
     }
 
@@ -324,6 +449,8 @@ impl EModel {
             bpl: bpl_fb.max(1.0),
             brf: 1.0,
             scale: Scale::Full,
+            class: DelaySensitivity::Default,
+            room: None,
         }
     }
 
@@ -333,6 +460,67 @@ impl EModel {
     pub fn with_burst_robustness(mut self, brf: f64) -> EModel {
         self.brf = if brf.is_finite() { brf.max(1.0) } else { 1.0 };
         self
+    }
+
+    /// The model in delay sensitivity class `class` (narrowband and fullband models;
+    /// G.107.1 has no classes, so a wideband model keeps the default one).
+    #[must_use]
+    pub fn with_delay_sensitivity(mut self, class: DelaySensitivity) -> EModel {
+        self.class = class;
+        self
+    }
+
+    /// The delay sensitivity class the model rates with.
+    #[must_use]
+    pub fn delay_sensitivity(&self) -> DelaySensitivity {
+        if self.scale == Scale::Wide {
+            DelaySensitivity::Default
+        } else {
+            self.class
+        }
+    }
+
+    /// The model with the room noise at the send side `send` and the receive side `receive`
+    /// (dB(A), each clamped to 0..=85), which the receiver cannot measure.
+    ///
+    /// - Narrowband: G.107's `Ps` / `Pr` (Table 3: default 35, range 35..=85), which move the
+    ///   noise `No`, so `Ro`, `Is` and the talker echo.
+    /// - Fullband: G.107.2 (03/2023) Eqs. 7-2 to 7-6 then give `Ro,FB` in place of 148,
+    ///   with Table 2's other defaults. That edition gives no default room noise: 35 dB(A)
+    ///   at both ends (G.107's) gives `Ro,FB` 121.5, 0 dB(A) 147.3.
+    /// - Wideband: G.107.1 lists `Ps` / `Pr` as under study and does not use them; ignored.
+    #[must_use]
+    pub fn with_room_noise(mut self, send: f64, receive: f64) -> EModel {
+        let level = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 85.0)
+            } else {
+                PS
+            }
+        };
+        self.room = Some(Room {
+            ps: level(send),
+            pr: level(receive),
+        });
+        self
+    }
+
+    /// The highest rating on the model's own scale: `Ro - Is` (93.2 with the defaults)
+    /// narrowband, 129 wideband, `Ro,FB` (148 unless the room noise is given) fullband.
+    #[must_use]
+    pub fn max_rating(&self) -> f64 {
+        match self.scale {
+            Scale::Narrow => {
+                let room = self.room.unwrap_or(ROOM);
+                ro(room) - is(0.0, room)
+            }
+            Scale::Wide => RO_WB,
+            Scale::Full => self.ro_fb(),
+        }
+    }
+
+    fn ro_fb(&self) -> f64 {
+        self.room.map_or(RO_FB, ro_fb)
     }
 
     /// Whether the codec is rated on the wideband scale (G.107.1).
@@ -373,8 +561,8 @@ impl EModel {
     /// | opus, without | wide | 0 | 25.1 | none: assumed |
     ///
     /// The wideband values are G.113's diotic ones (headset or loudspeaker listening, the
-    /// tables that come with `Bpl,wb`); its monotic (handset) Table IV.1 rates G.722 at 13,
-    /// 20, 31 and can be given with [`EModel::wideband`]. G.722 rated with concealment takes
+    /// tables that come with `Bpl,wb`); its monotic (handset) Table IV.1 is
+    /// [`for_codec_monotic`](Self::for_codec_monotic). G.722 rated with concealment takes
     /// Appendix III's (high quality) for [`Plc::Enhanced`] and Appendix IV's (low complexity)
     /// for [`Plc::Standard`]; on RTP G.722 runs at 64 kbit/s (RFC 3551), so the 48 and 56
     /// kbit/s rows only apply when the application knows its mode. G.729 without VAD is
@@ -384,6 +572,9 @@ impl EModel {
     /// 48 kbit/s and above, 37.85 at 13 kbit/s and below) and EVS's `Bpl,fb` at the same
     /// rate (an assumption: no `Bpl` is published); without, it is taken as transparent on
     /// the wideband scale with concealment as robust as G.711 Appendix I's (ADR-085).
+    /// Narrowband and wideband Opus, which the RTP encoding name does not tell, are
+    /// [`EModel::opus`]. EVS is rated in its SWB mode only: G.113 publishes no values for
+    /// its narrowband and wideband modes.
     #[must_use]
     pub fn for_codec_rate(name: &str, plc: Plc, bitrate: Option<u32>) -> Option<EModel> {
         let n = name.to_ascii_lowercase();
@@ -426,14 +617,60 @@ impl EModel {
                 EModel::fullband(ie, bpl).with_burst_robustness(brf)
             }
             "opus" => match bitrate {
-                Some(r) => {
-                    let (_, _, bpl, _) = step(&EVS, r, |r| r.0);
-                    EModel::fullband(opus_ie_fb(r), bpl)
-                }
+                Some(r) => EModel::opus(OpusBand::Fullband, r),
                 None => EModel::wideband(0.0, BPL_G711_PLC),
             },
             _ => return None,
         })
+    }
+
+    /// The model of an Opus stream coded in `band` at `bitrate` (bit/s). ITU-T has published
+    /// no Opus planning values; these are instrumental (POLQA / P.863) estimates for VBR
+    /// Opus, not ITU-T values. A rate between two tabled ones takes the lower one's values
+    /// (fullband: interpolated), one below the lowest the lowest's, one above the highest
+    /// the highest's.
+    ///
+    /// | band | Ie | Bpl | rates | source |
+    /// |---|---|---|---|---|
+    /// | narrow | 23 .. 11.7 | 24.6 .. 18.9 | 6..=9 kbit/s | Alahmadi, Pocta, Melvin, ISSC 2020 (thesis Tables 5.13, 5.14) |
+    /// | wide | 28.4 .. 20 | 23.9 .. 19.5 | 11..=13 kbit/s | the same (Tables 5.8, 5.9) |
+    /// | full | 37.85 .. 0 | EVS's at that rate (assumed) | 13..=48 kbit/s | Michael, Mittag, Möller, DAGA 2021, Table 2 |
+    ///
+    /// The narrowband and wideband values were measured for those low rates only: Opus above
+    /// them in those bands is rated at the highest tabled rate's values, which understates
+    /// it. Their `Bpl` is the random-loss one (the burst ratio covers burstiness), as G.113's.
+    #[must_use]
+    pub fn opus(band: OpusBand, bitrate: u32) -> EModel {
+        match band {
+            OpusBand::Narrowband => {
+                let (_, ie, bpl) = step(&OPUS_NB, bitrate, |r| r.0);
+                EModel::codec(ie, bpl)
+            }
+            OpusBand::Wideband => {
+                let (_, ie, bpl) = step(&OPUS_WB, bitrate, |r| r.0);
+                EModel::wideband(ie, bpl)
+            }
+            OpusBand::Fullband => {
+                let (_, _, bpl, _) = step(&EVS, bitrate, |r| r.0);
+                EModel::fullband(opus_ie_fb(bitrate), bpl)
+            }
+        }
+    }
+
+    /// [`for_codec_rate`](Self::for_codec_rate) for monotic (handset) listening: G.722 and
+    /// AMR-WB take G.113 Table IV.1's provisional `Ie,wb` (G.722 13 / 20 / 31 at 64 / 56 /
+    /// 48 kbit/s; AMR-WB 41 at 6.6 .. 1 at 23.05, 8 at 23.85 kbit/s) with the same `Bpl,wb`
+    /// as diotic listening (G.113 publishes `Bpl,wb` only with the diotic tables). Other
+    /// codecs have no monotic values and are rated as by `for_codec_rate`.
+    #[must_use]
+    pub fn for_codec_monotic(name: &str, plc: Plc, bitrate: Option<u32>) -> Option<EModel> {
+        let mut m = EModel::for_codec_rate(name, plc, bitrate)?;
+        match name.to_ascii_lowercase().as_str() {
+            "g722" => m.ie = step(&G722_MONOTIC, bitrate.unwrap_or(64_000), |r| r.0).1,
+            "amr-wb" => m.ie = step(&AMR_WB_MONOTIC, bitrate.unwrap_or(12_650), |r| r.0).1,
+            _ => {}
+        }
+        Some(m)
     }
 
     /// The narrowband delay impairment `Id` (G.107 §7.4) of one-way mouth-to-ear delay `d`,
@@ -441,7 +678,7 @@ impl EModel {
     /// and absolute delay (0.15 at 0 ms, about 3.8 at 150 ms, 20.7 at 300 ms).
     #[must_use]
     pub fn delay_impairment(d: Duration) -> f64 {
-        id(millis(d), ro())
+        id(millis(d), ROOM, DelaySensitivity::Default)
     }
 
     /// The delay impairment on this model's scale: [`delay_impairment`](Self::delay_impairment)
@@ -451,9 +688,9 @@ impl EModel {
     pub fn scaled_delay_impairment(&self, d: Duration) -> f64 {
         let t = millis(d);
         match self.scale {
-            Scale::Narrow => id(t, ro()),
+            Scale::Narrow => id(t, self.room.unwrap_or(ROOM), self.class),
             Scale::Wide => id_wb(t),
-            Scale::Full => id_fb(t),
+            Scale::Full => id_fb(t, self.class),
         }
     }
 
@@ -486,17 +723,24 @@ impl EModel {
         let ie = self.equipment_impairment(loss, burst_ratio);
         let (r_lq, r) = match self.scale {
             Scale::Narrow => {
-                let ro = ro();
-                (ro - is(0.0) - id(0.0, ro) - ie, ro - is(t) - id(t, ro) - ie)
+                let room = self.room.unwrap_or(ROOM);
+                let ro = ro(room);
+                (
+                    ro - is(0.0, room) - id(0.0, room, self.class) - ie,
+                    ro - is(t, room) - id(t, room, self.class) - ie,
+                )
             }
             Scale::Wide => (
                 (RO_WB - id_wb(0.0) - ie) / WB_SCALE,
                 (RO_WB - id_wb(t) - ie) / WB_SCALE,
             ),
-            Scale::Full => (
-                (RO_FB - id_fb(0.0) - ie) / FB_SCALE,
-                (RO_FB - id_fb(t) - ie) / FB_SCALE,
-            ),
+            Scale::Full => {
+                let ro = self.ro_fb();
+                (
+                    (ro - id_fb(0.0, self.class) - ie) / FB_SCALE,
+                    (ro - id_fb(t, self.class) - ie) / FB_SCALE,
+                )
+            }
         };
         let (r, r_lq) = (r.clamp(0.0, 100.0), r_lq.clamp(0.0, 100.0));
         EModelScore {
@@ -577,12 +821,13 @@ mod tests {
     #[test]
     fn g107_default_intermediates() {
         // G.107 §7 with the Table 3 defaults: No = -61.18 dBm0p, Ro = 94.77, Is = 1.41.
-        assert!((noise_no() + 61.18).abs() < 0.005, "{}", noise_no());
-        assert!((ro() - 94.77).abs() < 0.005, "{}", ro());
-        assert!((is(0.0) - 1.41).abs() < 0.01, "{}", is(0.0));
+        assert!((noise_no(ROOM) + 61.18).abs() < 0.005, "{}", noise_no(ROOM));
+        assert!((ro(ROOM) - 94.77).abs() < 0.005, "{}", ro(ROOM));
+        assert!((is(0.0, ROOM) - 1.41).abs() < 0.01, "{}", is(0.0, ROOM));
         // No absolute-delay impairment up to 100 ms; talker echo none at 0 ms.
-        let idle0 = id(0.0, ro());
-        assert!((id(100.0, ro()) - idle0) > 0.0);
+        let d = DelaySensitivity::Default;
+        let idle0 = id(0.0, ROOM, d);
+        assert!((id(100.0, ROOM, d) - idle0) > 0.0);
         let x: f64 = 1.0;
         let idd200 = 25.0
             * ((1.0 + x.powi(6)).powf(1.0 / 6.0) - 3.0 * (1.0 + (x / 3.0).powi(6)).powf(1.0 / 6.0)

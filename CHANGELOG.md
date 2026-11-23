@@ -41,6 +41,48 @@ ADR-078's third update (2026-11-23), additive:
   answered on every link.
 - `tools/interop/webrtc/mdns4.sh`: two IPv4 links in a container, avahi on the non-default one.
 
+### Added: a video playout buffer, E-model delay classes and room noise, VoIP packet length and late discards (akio-rtp, akio-webrtc)
+
+ADR-092 (docs/adr/092-video-playout-emodel-classes.md) closes ADR-087's leftovers, additive:
+
+- `VideoPlayout<T>` (with `VideoFrameFlags`, `VideoPlayoutFrame`, `VideoPlayoutStats`,
+  `VIDEO_PLAYOUT_MAX_FRAMES`, `VIDEO_PLAYOUT_MAX_BYTES`): a sans-IO playout buffer for complete
+  video frames.
+  - Frames play at RTP timestamp plus an offset: the fastest transit plus a target.
+  - The target covers the 95th percentile of the frames' delay and the latest keyframes'. While
+    frames needed repair, it adds a round trip (NACK).
+  - Repaired frames stay out of the statistics.
+  - Late frames go out at once.
+  - The delay shrinks at once at keyframes, else by a frame a second.
+  - Bounded to 256 frames and 16 MiB, dropping up to a keyframe or asking for one.
+  - Clock jumps resync.
+- E-model:
+  - `DelaySensitivity` (G.107 / G.107.2 Table 1), with `EModel::with_delay_sensitivity` and
+    `delay_sensitivity`.
+  - `EModel::with_room_noise(send, receive)`: G.107's `Ps` / `Pr`; G.107.2 (03/2023) `Ro,FB`
+    from the noise. Without it, `Ro,FB` stays 148.
+  - `EModel::max_rating`.
+  - `EModel::for_codec_monotic`: G.113 Table IV.1.
+  - `EModel::opus(OpusBand, bitrate)`: narrowband / wideband Opus with Alahmadi, Pocta and
+    Melvin's published instrumental values; fullband as before.
+- `BurstLossModel::on_late_discard`.
+- akio-webrtc:
+  - `RtcConfig::set_video_playout_buffer(Option<PlayoutDelay>)` (off by default): received video
+    frames go out at their playout instants (`MediaData::playout_time`). RTX completions are
+    flagged repaired, the round trip is used on NACK lines, and a PLI is sent when frames are
+    dropped with no keyframe.
+  - `RtcConfig::set_voip_delay_sensitivity`.
+  - `Peer::video_playout_stats(mid)`.
+- Changed values without an API change:
+  - The XR VoIP block's burst and gap durations, and the bitrate the E-model rates by, use the
+    measured packet length, no longer 20 ms always.
+  - A packet reported lost and discarded late in a later interval counts as discarded.
+- The audio `JitterBuffer` shares its delay estimator with `VideoPlayout` (same behaviour).
+- `webrtc-bench video` / `video-jb` and `jitter-bench video`.
+- Same-run A/B on gpu51 (BENCHMARKS, "Video playout buffer"): with the buffer off, no
+  measurable change (video CPU per frame 8.94 against 8.92 µs, VP8 `media` 1.000). On, it costs
+  1.14 µs of CPU per frame, mostly the timer wake-up; the buffer alone takes 44 ns per frame.
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:

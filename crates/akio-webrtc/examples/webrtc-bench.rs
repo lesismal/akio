@@ -9,6 +9,10 @@
 //!                             clock, up to one frame per 48 kHz tick): thousand frames per
 //!                             second, and the process's CPU microseconds per frame (Linux)
 //! webrtc-bench audio-jb [secs]  the same into the receiver's audio jitter buffer (ADR-087)
+//! webrtc-bench video [secs]   one-way VP8 RTP (1000-byte single-packet frames, timestamps
+//!                             following the wall clock, up to one frame per 90 kHz tick):
+//!                             thousand frames per second and CPU microseconds per frame
+//! webrtc-bench video-jb [secs]  the same into the receiver's video playout buffer (ADR-092)
 //! ```
 //!
 //! Prints one `BENCH <mode> <MB/s>` line. Default configurations on both sides (no estimator,
@@ -66,6 +70,7 @@ fn main() {
     let e = Arc::new(Engine::builder().udp_client_threads(1).build().unwrap());
     e.start().unwrap();
     let jb = mode == "audio-jb";
+    let vjb = mode == "video-jb";
     let cfg = || rtc_config().set_sctp_max_buffered_amount(8 << 20);
     let ea = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
         .unwrap()
@@ -74,8 +79,13 @@ fn main() {
         .unwrap()
         .config(move || {
             let c = cfg();
-            if jb {
+            let c = if jb {
                 c.set_audio_jitter_buffer(Some(akio_rtp::PlayoutDelay::default())) // JB-ONLY
+            } else {
+                c
+            };
+            if vjb {
+                c.set_video_playout_buffer(Some(akio_rtp::PlayoutDelay::default())) // VJB-ONLY
             } else {
                 c
             }
@@ -83,19 +93,24 @@ fn main() {
     let (txa, rxa) = channel();
     let (txb, rxb) = channel();
     let got = Arc::new(AtomicU64::new(0));
-    let (mut video, mut ch, mut voice) = (None, None, None);
+    let (mut video, mut ch, mut voice, mut pvideo) = (None, None, None, None);
     let audio = mode.starts_with("audio");
-    let media = mode == "media" || audio;
+    let paced_video = mode.starts_with("video");
+    // Frames counted, CPU per frame.
+    let frames = audio || paced_video;
+    let media = mode == "media" || audio || paced_video;
     let (pa, offer) = ea
         .create_offer(
             Sink {
                 bytes: Arc::new(AtomicU64::new(0)),
                 up: Mutex::new(txa),
-                frames: audio,
+                frames,
             },
             |api| {
                 if audio {
                     voice = Some(api.add_media(MediaKind::Audio, Direction::SendOnly, None, None));
+                } else if paced_video {
+                    pvideo = Some(api.add_media(MediaKind::Video, Direction::SendOnly, None, None));
                 } else if media {
                     video = Some(api.add_media(MediaKind::Video, Direction::SendOnly, None, None));
                 } else {
@@ -110,7 +125,7 @@ fn main() {
             Sink {
                 bytes: got.clone(),
                 up: Mutex::new(txb),
-                frames: audio,
+                frames,
             },
         )
         .unwrap();
@@ -171,6 +186,36 @@ fn main() {
             }
         }
         cpu = cpu0.zip(cpu_time()).and_then(|(a, b)| b.checked_sub(a));
+    } else if let Some(v) = pvideo {
+        let pt = pa.payload_type(v, Codec::Vp8).unwrap();
+        // A single-packet keyframe (VP8 P bit clear), then single-packet delta frames.
+        let mut f = vec![0x55u8; 1000];
+        f[0] = 0x10;
+        let mut i = 0u64;
+        let mut last = 0;
+        let mut cpu0 = None;
+        while start.elapsed() < warm + Duration::from_secs(secs) {
+            if base.is_none() && start.elapsed() >= warm {
+                base = Some((Instant::now(), got.load(Ordering::Relaxed)));
+                cpu0 = cpu_time();
+            }
+            // 90 kHz ticks of the wall clock, strictly increasing.
+            let real = start.elapsed().as_micros() as u64 * 90 / 1000;
+            if last + 1 > real + 16 {
+                std::thread::sleep(Duration::from_micros((last + 1 - real) * 1000 / 90));
+            }
+            let ticks = (start.elapsed().as_micros() as u64 * 90 / 1000).max(last + 1);
+            last = ticks;
+            let t = MediaTime::new(ticks, Frequency::NINETY_KHZ);
+            pa.write_media(v, pt, Instant::now(), t, &f).unwrap();
+            f[0] = 0x11;
+            f[1] = i as u8;
+            i += 1;
+            if i % 16 == 0 {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+        cpu = cpu0.zip(cpu_time()).and_then(|(a, b)| b.checked_sub(a));
     } else if let Some(c) = ch {
         let msg = vec![7u8; 64 * 1024];
         while start.elapsed() < warm + Duration::from_secs(secs) {
@@ -184,7 +229,7 @@ fn main() {
     }
     let (t0, b0) = base.expect("warmed up");
     let per_s = (got.load(Ordering::Relaxed) - b0) as f64 / t0.elapsed().as_secs_f64();
-    if audio {
+    if frames {
         // Process CPU time (both peers) per frame received, where /proc tells it.
         let frames = got.load(Ordering::Relaxed) - b0;
         let us = cpu.map_or(0.0, |c| c.as_secs_f64() * 1e6 / frames.max(1) as f64);

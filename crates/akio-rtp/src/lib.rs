@@ -77,6 +77,7 @@
 mod bwe;
 mod ccfb;
 pub mod codec;
+mod delay;
 mod ecn;
 mod emodel;
 pub mod fec;
@@ -88,6 +89,7 @@ mod sdes;
 mod stream;
 mod tmmbr;
 mod twcc;
+mod video;
 mod xr;
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -107,6 +109,8 @@ mod tests_levels;
 #[cfg(test)]
 mod tests_probe;
 #[cfg(test)]
+mod tests_video;
+#[cfg(test)]
 mod tests_voip;
 
 pub use bwe::{
@@ -116,7 +120,7 @@ pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
 pub use ecn::{
     ECN_FEEDBACK_FMT, ECN_SUMMARY_BT, EcnCounters, EcnDelta, EcnFeedback, EcnReceiver, EcnSummary,
 };
-pub use emodel::{EModel, EModelScore, mos_from_r};
+pub use emodel::{DelaySensitivity, EModel, EModelScore, OpusBand, mos_from_r};
 pub use jitter::{
     JITTER_BUFFER_MAX_BYTES, JITTER_BUFFER_MAX_FRAMES, JitterBuffer, JitterBufferStats,
     JitterFrame, JitterPush, MAX_PLAYOUT_DELAY, PlayoutDelay,
@@ -132,6 +136,10 @@ pub use sdes::{SdesItem, random_cname};
 pub use stream::{RecvStream, SEND_HISTORY_AGE, SEND_HISTORY_PACKETS, SendStream};
 pub use tmmbr::{TMMBR_TIMEOUT, TmmbrHandler, bounded_bitrate, bounding_set};
 pub use twcc::{PacketResult, TWCC_FEEDBACK_INTERVAL, TwccReceiver, TwccSender};
+pub use video::{
+    VIDEO_PLAYOUT_MAX_BYTES, VIDEO_PLAYOUT_MAX_FRAMES, VideoFrameFlags, VideoPlayout,
+    VideoPlayoutFrame, VideoPlayoutStats,
+};
 pub use xr::{
     BurstLossModel, DlrrItem, JitterBufferConfig, JitterStats, MAX_XR_SPAN, Plc, ReceiptLog,
     RleReport, RrtrResponder, StatisticsSummary, TtlStats, VOIP_UNAVAILABLE, VoipMetrics,

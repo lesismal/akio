@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::SdpChanges;
-use akio_rtp::SdesItem;
+use akio_rtp::{SdesItem, VoipQuality, XrBlock};
 
 /// A lossy network between sides with several addresses; logs what crossed it.
 struct Net {
@@ -927,7 +927,8 @@ fn audio_jitter_buffer_discards_reach_voip_metrics() {
     assert!(s.late > 40, "{s:?}");
     assert_eq!(s.lost, s.late);
     // The burst model's rates are cumulative: discarded, not lost (nothing was lost on the
-    // network; a reordered packet still missing when an interval ends counts as lost in it).
+    // network; a reordered packet still missing when an interval ends counts as lost in it
+    // until a later interval sees it discarded, ADR-092).
     let m = a.events.iter().rev().find_map(|e| match e {
         RtcEvent::Other(Other::VoipMetrics { metrics, .. }) => Some(*metrics),
         _ => None,
@@ -940,4 +941,239 @@ fn audio_jitter_buffer_discards_reach_voip_metrics() {
     let q = m.expect("VoIP metrics").quality();
     let jb = q.jitter_buffer.expect("jitter buffer");
     assert!(!jb.adaptive && jb.abs_max.is_zero(), "{q:?}");
+}
+
+/// VP8 at 30 frames/s both ways on `mid` (b's own video gives b a round-trip time), a
+/// keyframe every `key_every` frames, for `n` frames; b's frames with when they came out.
+fn video_run(
+    a: &mut Side,
+    b: &mut Side,
+    net: &mut Net,
+    mid: Mid,
+    n: u64,
+    key_every: u64,
+    mut now: Instant,
+) -> (Vec<(Instant, MediaData)>, Instant) {
+    let pt = a.rtc.payload_type(mid, Codec::Vp8).unwrap();
+    let mut frames = Vec::new();
+    let mut seen = b.events.len();
+    for i in 0..n + 60 {
+        if i < n {
+            let t = MediaTime::new(i * 3000, Frequency::NINETY_KHZ);
+            // Three packets a frame, twenty for a keyframe.
+            let key = i % key_every == 0;
+            let mut f = vec![0x55u8; if key { 20_000 } else { 3_000 }];
+            f[0] = if key { 0x10 } else { 0x11 };
+            f[1] = i as u8;
+            a.rtc.write_media(now, mid, None, pt, t, &f).unwrap();
+            b.rtc.write_media(now, mid, None, pt, t, &f[..500]).unwrap();
+        }
+        // 33 ms a frame in 1 ms steps.
+        for k in 0..33 + u64::from(i % 3 == 0) {
+            let _ = k;
+            now += Duration::from_millis(1);
+            step(a, b, now, net);
+            for e in &b.events[seen..] {
+                if let RtcEvent::MediaData(d) = e {
+                    frames.push((now, d.clone()));
+                }
+            }
+            seen = b.events.len();
+        }
+    }
+    (frames, now)
+}
+
+#[test]
+fn video_playout_buffer_under_jitter_and_loss() {
+    use akio_rtp::PlayoutDelay;
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        ConfigInner::default(),
+        ConfigInner {
+            video_playout: Some(PlayoutDelay::default()),
+            ..ConfigInner::default()
+        },
+        &[MediaKind::Video],
+        same,
+        same,
+    );
+    let mut net = Net::new(41);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    // 10..50 ms one way (reordering packets), 2 % loss repaired by NACK / RTX.
+    net.spread = 40;
+    net.loss = 2;
+    let (frames, _) = video_run(&mut a, &mut b, &mut net, mids[0], 600, 90, now);
+    assert!(frames.len() > 570, "{}", frames.len());
+    // In order, each out at its playout instant (within the 1 ms step), never before.
+    for w in frames.windows(2) {
+        assert!(w[1].1.time.ticks() > w[0].1.time.ticks());
+        assert!(w[1].1.playout_time >= w[0].1.playout_time);
+    }
+    let on_time = frames
+        .iter()
+        .filter(|(at, d)| {
+            let p = d.playout_time.expect("playout time");
+            p <= *at && *at - p <= Duration::from_millis(1)
+        })
+        .count();
+    assert_eq!(on_time, frames.len());
+    // Shown one frame interval apart once the delay settled (after 5 s), but for a few.
+    let even = frames[150..]
+        .windows(2)
+        .filter(|w| {
+            let (p0, p1) = (w[0].1.playout_time.unwrap(), w[1].1.playout_time.unwrap());
+            let media = (w[1].1.time.ticks() - w[0].1.time.ticks()) as f64 / 90.0;
+            ((p1 - p0).as_secs_f64() * 1e3 - media).abs() <= 2.0
+        })
+        .count();
+    let completed_even = frames[150..]
+        .windows(2)
+        .filter(|w| {
+            let (p0, p1) = (w[0].1.network_time, w[1].1.network_time);
+            let media = (w[1].1.time.ticks() - w[0].1.time.ticks()) as f64 / 90.0;
+            p1 >= p0 && ((p1 - p0).as_secs_f64() * 1e3 - media).abs() <= 2.0
+        })
+        .count();
+    let total = frames.len() - 151;
+    assert!(even * 100 >= total * 85, "{even} of {total}");
+    assert!(
+        completed_even * 100 < total * 40,
+        "{completed_even} of {total}"
+    );
+    let stats = b.rtc.video_playout_stats(mids[0]).expect("line");
+    let [(ssrc, s)] = stats.as_slice() else {
+        panic!("{stats:?}")
+    };
+    assert_eq!(*ssrc, a.rtc.media[0].send.ssrc());
+    assert_eq!(s.played, frames.len() as u64);
+    assert!(s.repaired > 5, "{s:?}");
+    assert!(s.delay >= Duration::from_millis(30) && s.delay <= Duration::from_millis(300));
+    assert_eq!(s.dropped, 0);
+    assert!(b.rtc.video_playout_stats(Mid::new("nope")).is_none());
+    // a has no buffer: no playout instants, and no statistics.
+    assert!(a.events.iter().all(|e| match e {
+        RtcEvent::MediaData(d) => d.playout_time.is_none(),
+        _ => true,
+    }));
+    assert!(a.rtc.video_playout_stats(mids[0]).unwrap().is_empty());
+}
+
+/// The VoIP metrics of the audio stream `ssrc` in `b`'s next report.
+fn voip_report(b: &mut Side, ssrc: u32) -> akio_rtp::VoipMetrics {
+    b.rtc
+        .receipt_reports()
+        .into_iter()
+        .flatten()
+        .find_map(|p| match p {
+            Rtcp::ExtendedReport { blocks, .. } => blocks.into_iter().find_map(|x| match x {
+                XrBlock::VoipMetrics(m) if m.ssrc == ssrc => Some(m),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("VoIP metrics")
+}
+
+#[test]
+fn voip_metrics_late_discard_in_a_later_interval_and_packet_length() {
+    use akio_rtp::PlayoutDelay;
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        xr_cfg(XrBlocks::VOIP_METRICS),
+        ConfigInner {
+            jitter: Some(PlayoutDelay::fixed(Duration::ZERO)),
+            ..xr_cfg(XrBlocks::VOIP_METRICS)
+        },
+        &[MediaKind::Audio],
+        same,
+        same,
+    );
+    let mut net = Net::new(5);
+    let mut now = connect(&mut a, &mut b, &mut net, now);
+    let pt = u8::from(b.rtc.payload_type(mids[0], Codec::Opus).unwrap());
+    let ssrc = 0x1234_5678;
+    // 40 ms packets (1920 ticks).
+    let send = |b: &mut Side, seq: u16, now: Instant| {
+        let p = Pkt {
+            ssrc,
+            seq,
+            pt,
+            ts: u32::from(seq) * 1920,
+            marker: false,
+            rid: None,
+            rtx: false,
+        };
+        b.rtc.deliver(now, 0, &p, &[0xfc; 40], false);
+        b.rtc.jitter_release(now);
+    };
+    // Interval 1: 1..=60 but 20, and two bursts of losses (30..=33, 50..=51).
+    for seq in 1..=60u16 {
+        if seq != 20 && !(30..=33).contains(&seq) && !(50..=51).contains(&seq) {
+            send(&mut b, seq, now);
+        }
+        now += Duration::from_millis(40);
+    }
+    let m1 = voip_report(&mut b, ssrc);
+    // 7 of 60 lost; durations in 40 ms packets: a multiple of 40 ms (packets x 40).
+    assert_eq!((m1.loss_rate, m1.discard_rate), (29, 0), "{m1:?}");
+    assert!(m1.burst_duration > 0 && m1.gap_duration > 0, "{m1:?}");
+    assert_eq!(m1.burst_duration % 40, 0, "{m1:?}");
+    // Packet 20 arrives now: late for the buffer, discarded; the next report counts it as
+    // discarded, no longer lost (6 lost, 1 discarded, of 80; the rates are over the burst
+    // model's transition counts).
+    send(&mut b, 20, now);
+    for seq in 61..=80u16 {
+        send(&mut b, seq, now);
+        now += Duration::from_millis(40);
+    }
+    let s = b.rtc.jitter_buffer_stats(mids[0]).unwrap()[0].1;
+    assert_eq!(s.late, 1, "{s:?}");
+    let m2 = voip_report(&mut b, ssrc);
+    assert_eq!((m2.loss_rate, m2.discard_rate), (18, 3), "{m2:?}");
+    assert_eq!(m2.burst_duration % 40, 0, "{m2:?}");
+}
+
+#[test]
+fn voip_delay_sensitivity_class_rates_delay_lower() {
+    let run = |class| {
+        let (mut a, mut b, mids, _, _, now) = negotiate(
+            xr_cfg(XrBlocks::VOIP_METRICS),
+            ConfigInner {
+                delay_sensitivity: class,
+                ..xr_cfg(XrBlocks::VOIP_METRICS)
+            },
+            &[MediaKind::Audio],
+            same,
+            same,
+        );
+        let mut net = Net::new(9);
+        let now = connect(&mut a, &mut b, &mut net, now);
+        // 250 ms one way: well into the delay impairment.
+        net.spread = 1;
+        let ssrc = a.rtc.media[0].send.ssrc();
+        b.rtc.set_voip_quality(
+            mids[0],
+            VoipQuality {
+                end_system_delay: Some(Duration::from_millis(250)),
+                ..VoipQuality::default()
+            },
+            None,
+        );
+        talk(&mut a, &mut b, &mut net, mids[0], 100, now);
+        a.events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                RtcEvent::Other(Other::VoipMetrics { metrics, .. }) if metrics.ssrc == ssrc => {
+                    Some(metrics.r_factor)
+                }
+                _ => None,
+            })
+            .expect("VoIP metrics")
+    };
+    let (d, low, very_low) = (
+        run(akio_rtp::DelaySensitivity::Default),
+        run(akio_rtp::DelaySensitivity::Low),
+        run(akio_rtp::DelaySensitivity::VeryLow),
+    );
+    assert!(very_low > low && low > d, "{d} {low} {very_low}");
 }

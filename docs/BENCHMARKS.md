@@ -2467,6 +2467,61 @@ under 0..60 ms of jitter with 2 % loss. It takes 46.7 ns per frame (best of 5, t
    for each frame handed out at its playout instant rather than with the packet that brought
    it. At 50 frames per second, one Opus call, that is 65 µs of CPU per second.
 
+### Video playout buffer (ADR-092, same-run A/B)
+
+Measured 2026-11-23 on gpu51. The questions:
+
+1. Does ADR-092 slow the receive path with the video buffer off (the default)?
+2. What does the buffer cost when it is on?
+3. Did moving the audio jitter buffer's statistics into a shared estimator change it?
+
+With the buffer off, the receive path gains:
+
+- a flag check per assembled-frame batch;
+- for audio, a packet-length update per packet (two compares and a store);
+- an `Option` check per received stream when the next timeout is computed.
+
+`base` is `main` at `5cc005c0` with the branch's `webrtc-bench` example copied in, its
+`set_video_playout_buffer` call removed. `new` is the branch.
+
+- Modes:
+  - `media` (VP8), `audio` and `audio-jb` (Opus) are as in the ADR-087 section.
+  - `video` is VP8 of 1000-byte single-packet frames, with timestamps following the wall clock
+    (at most one frame per 90 kHz tick), so a playout buffer plays them in real time.
+  - `video-jb` is `video` into the receiver's playout buffer (`PlayoutDelay::default()`), on the
+    new build only.
+- CPU per frame is the CPU time of all the process's threads per frame received, both peers
+  included.
+- Both builds were made in one session into separate target directories. They ran interleaved
+  under `quiet.sh` on CPUs 2–9, 5 s per run, base first in each pair: 7 rounds of `media`,
+  `audio`, `audio-jb`; 11 of `video` / `video-jb`.
+- `±` is half the min–max spread of the rounds.
+
+| Mode | base median | new median | new / base (medians) | per-round ratio median (range) |
+|---|---:|---:|---:|---:|
+| media (MB/s) | 177.8 (±0.5%) | 177.8 (±0.3%) | 1.000 | 1.002 (0.996–1.005) |
+| audio, CPU per frame (µs) | 8.49 (±0.7%) | 8.50 (±0.3%) | 1.001 | 1.002 (0.993–1.006) |
+| audio-jb, CPU per frame (µs) | 9.75 (±0.4%) | 9.75 (±0.6%) | 1.000 | 0.998 (0.993–1.005) |
+| video (k frames/s) | 49.1 (±0.5%) | 49.0 (±0.3%) | 0.998 | 1.000 (0.996–1.006) |
+| video, CPU per frame (µs) | 8.92 (±2.1%) | 8.94 (±1.2%) | 1.002 | 1.002 (0.972–1.021) |
+| video-jb, CPU per frame (µs) | | 10.08 (±1.6%) | 1.128 against new `video` | |
+
+`akio-rtp --example jitter-bench` (CPU 2, best of 5 runs, three runs each):
+
+- `video` mode, the playout buffer alone: 30 frames/s completed under 0..40 ms of jitter, a
+  keyframe every 60, 2 % flagged repaired. 44.1 ns per frame (44.1–44.2).
+- The audio buffer alone: 48.5 ns per frame (48.0–48.5) against base 47.0 (46.7–47.1).
+
+**Answer:**
+
+1. Off: no measurable change. The CPU per frame is 8.94 against 8.92 µs for video and 8.50
+   against 8.49 µs for audio, and every per-round range spans 1.
+2. On: 1.14 µs more CPU per frame (+13 %) at 49k frames per second. As for audio, most of it is
+   the timer wake-up and dispatch for each frame handed out at its playout instant; the buffer
+   itself takes 44 ns. One 30 frames/s stream costs about 34 µs of CPU per second.
+3. The shared estimator costs the audio buffer 1.5 ns per frame in isolation (+3 %). End to end
+   (`audio-jb`) it does not show: 9.75 against 9.75 µs.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and
