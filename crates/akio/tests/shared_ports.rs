@@ -328,12 +328,15 @@ fn ipv4_group_joined_and_sent_per_interface() {
     };
     assert_eq!(b.local_addr().port(), port);
     let mut reached = 0;
+    let mut sent = 0;
     for i in &ifs {
         let msg = format!("out of {}", i.name).into_bytes();
         if let Err(err) = b.send_to_on(&msg, group, i.index) {
+            // macOS refuses a scoped multicast send on lo0 ("network unreachable").
             eprintln!("{}: not sent ({err})", i.name);
             continue;
         }
+        sent += 1;
         while let Ok((src, d)) = rx.recv_timeout(Duration::from_secs(2)) {
             if d == msg {
                 assert!(i.has_addr(src.ip()), "{} sent from {src}: {i:?}", i.name);
@@ -343,12 +346,10 @@ fn ipv4_group_joined_and_sent_per_interface() {
         }
     }
     eprintln!("{reached} of {} interfaces looped back", ifs.len());
-    if ifs.len() >= 2 {
-        assert!(
-            reached >= 2,
-            "datagrams out of two interfaces at least: {ifs:?}"
-        );
-    }
+    // Every datagram that left came back from its interface's address (a host with one usable
+    // interface besides lo0 has one to check).
+    assert!(sent >= 1, "sent out of no interface: {ifs:?}");
+    assert_eq!(reached, sent, "datagrams sent but not looped back: {ifs:?}");
     // Interface 0 is a plain send_to.
     b.send_to_on(b"default", group, 0).unwrap();
     b.close();
