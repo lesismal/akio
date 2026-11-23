@@ -145,6 +145,13 @@ ADR-099, additive:
   off an I/O thread it falls back to akio-http's timer thread.
 - Book: "Timers on the I/O loop"; the migration guides point at it instead of "your own timer
   thread".
+### Changed: the compress middleware keeps its gzip/deflate compressors per thread (akio-http)
+
+`compress` used to make a new akio-deflate compressor for every response, allocating and zeroing
+about 260 KiB of window and tables. It now keeps one per thread for each format and level in use,
+and `reset()` clears only the hash slots the previous body used. The output is byte-identical.
+On an M-series core this saves 2 to 2.4 us per 6 KB JSON body (gzip level 5: 22.3 to 19.6 us;
+level 1: 12.0 to 10.1 us). Numbers from the quiet benchmark host are pending.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 

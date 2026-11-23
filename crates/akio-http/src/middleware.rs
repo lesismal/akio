@@ -247,6 +247,51 @@ fn accepted_encoding(accept: &str, encodings: &[&'static str]) -> Option<&'stati
     encodings.iter().copied().find(|n| ok(n))
 }
 
+/// A compressor of [`compress`] with the format and level it was made for.
+type KeptDeflater = (
+    akio_deflate::Format,
+    akio_deflate::Level,
+    akio_deflate::Deflater,
+);
+
+thread_local! {
+    /// The `gzip` and `deflate` compressors of [`compress`], kept per thread and per format
+    /// and level: a fresh one allocates and zeroes about 260 KiB of window and tables, which
+    /// costs as much as compressing a few kilobytes, while [`Deflater::reset`] clears only the
+    /// hash slots a short body used. At most one per format and level in use on the thread.
+    ///
+    /// [`Deflater::reset`]: akio_deflate::Deflater::reset
+    static DEFLATERS: std::cell::RefCell<Vec<KeptDeflater>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `body` compressed whole with this thread's compressor for `format` at `level`; the output
+/// is the same as [`akio_deflate::compress`]'s.
+fn deflate_body(format: akio_deflate::Format, level: akio_deflate::Level, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() / 2 + 64);
+    let reused = DEFLATERS.with(|d| {
+        let Ok(mut d) = d.try_borrow_mut() else {
+            return false;
+        };
+        let i = match d.iter().position(|z| z.0 == format && z.1 == level) {
+            Some(i) => i,
+            None => {
+                d.push((format, level, akio_deflate::Deflater::new(format, level)));
+                d.len() - 1
+            }
+        };
+        let z = &mut d[i].2;
+        z.reset();
+        z.compress(body, &mut out, akio_deflate::Flush::Finish);
+        true
+    });
+    if reused {
+        out
+    } else {
+        akio_deflate::compress(format, level, body)
+    }
+}
+
 /// Compresses text-like response bodies with `br` or `zstd` when configured, else `gzip` or
 /// `deflate`, whichever the client accepts first in that order. Buffered bodies are
 /// compressed whole; streamed ones only with [`Compress::stream`], write by write.
@@ -314,10 +359,8 @@ pub fn compress(cfg: Compress) -> impl Middleware {
                 let body = match (enc, brotli, zstd) {
                     ("br", Some(l), _) => akio_brotli::compress(l, &resp.body),
                     ("zstd", _, Some(l)) => akio_zstd::compress(l, &resp.body),
-                    ("gzip", ..) => {
-                        akio_deflate::compress(akio_deflate::Format::Gzip, level, &resp.body)
-                    }
-                    _ => akio_deflate::compress(akio_deflate::Format::Zlib, level, &resp.body),
+                    ("gzip", ..) => deflate_body(akio_deflate::Format::Gzip, level, &resp.body),
+                    _ => deflate_body(akio_deflate::Format::Zlib, level, &resp.body),
                 };
                 if body.len() < resp.body.len() {
                     resp.body = body;
@@ -494,6 +537,41 @@ pub fn limiter(rate: f64, burst: u32) -> impl Middleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kept_deflaters_match_one_shot() {
+        use akio_deflate::{Format, Level};
+        let json: Vec<u8> = (0..200)
+            .flat_map(|i| {
+                format!("{{\"id\":{i},\"name\":\"item {}\",\"ok\":true}},", i * 7).into_bytes()
+            })
+            .collect();
+        // Short, long (past the 32 KiB window, so the tables slide), then short again.
+        let bodies: [Vec<u8>; 5] = [
+            json[..300].to_vec(),
+            json.clone(),
+            json.repeat(20),
+            b"abc".repeat(50),
+            json[..4000].to_vec(),
+        ];
+        for format in [Format::Gzip, Format::Zlib] {
+            for level in [1, 2, 5, 6, 9] {
+                let level = Level::new(level);
+                for _ in 0..2 {
+                    for b in &bodies {
+                        let z = deflate_body(format, level, b);
+                        assert_eq!(z, akio_deflate::compress(format, level, b));
+                        assert_eq!(
+                            akio_deflate::decompress(format, &z, usize::MAX).unwrap(),
+                            *b
+                        );
+                    }
+                }
+            }
+        }
+        // One kept compressor per format and level.
+        assert_eq!(DEFLATERS.with(|d| d.borrow().len()), 10);
+    }
 
     #[test]
     fn hex_helpers_match_format() {
