@@ -341,7 +341,7 @@ impl Workers {
                 continue;
             };
             let timeout = if block {
-                lp.next_timeout()
+                akio_core::timer::poll_timeout(lp.next_timeout())
             } else {
                 Some(Duration::ZERO)
             };
@@ -363,6 +363,8 @@ impl Workers {
 
     fn run(self: Arc<Self>, me: usize, cfg: &Arc<Config>) {
         CURRENT.with(|c| c.set((self.uid, me)));
+        // Loop timers (ADR-099): a timer set from a round runs later on the same worker.
+        akio_core::timer::install();
         let shard = &self.shards[me];
         let _ = shard.thread.set(std::thread::current());
         let mut ctx = WorkerCtx {
@@ -373,6 +375,7 @@ impl Workers {
         let driving = !self.drivers().is_empty();
         let mut since_poll = 0u32;
         loop {
+            akio_core::timer::fire();
             if let Some(c) = self.find(me) {
                 ctx.stats.iterations.add_local(1);
                 c.run_round(&mut ctx);
@@ -428,16 +431,28 @@ impl Workers {
                 // driver before it parks, so a driver is not normally left unpolled; the timeout
                 // bounds the case where its last poller went into a long handler meanwhile.
                 if shard.parked.load(Ordering::SeqCst) {
-                    std::thread::park_timeout(Duration::from_millis(10));
+                    let t = akio_core::timer::next_wait()
+                        .map_or(Duration::from_millis(10), |w| w.min(Duration::from_millis(10)));
+                    std::thread::park_timeout(t);
                     shard.parked.store(false, Ordering::SeqCst);
                 }
             } else {
                 while shard.parked.load(Ordering::SeqCst) {
-                    std::thread::park();
+                    match akio_core::timer::next_wait() {
+                        // A timer of this worker is due: wake for it.
+                        Some(w) => {
+                            std::thread::park_timeout(w);
+                            if akio_core::timer::next_wait().is_some_and(|w| w.is_zero()) {
+                                shard.parked.store(false, Ordering::SeqCst);
+                            }
+                        }
+                        None => std::thread::park(),
+                    }
                 }
             }
             self.sleeping.fetch_sub(1, Ordering::SeqCst);
         }
+        akio_core::timer::uninstall();
         CURRENT.with(|c| c.set((0, 0)));
     }
 }
