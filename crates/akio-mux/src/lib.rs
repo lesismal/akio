@@ -33,7 +33,6 @@
 #![warn(clippy::unwrap_used)]
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -196,7 +195,7 @@ struct Inner {
     sniff_bytes_set: bool,
     sniff_timeout: Option<Duration>,
     /// Which acceptor each connection went to (for graceful shutdown).
-    chosen: Mutex<HashMap<u64, Arc<dyn DynAcceptor>>>,
+    chosen: Mutex<akio_core::IdMap<Arc<dyn DynAcceptor>>>,
 }
 
 /// The multiplexer: an acceptor that hands each connection to the first matching route.
@@ -224,7 +223,7 @@ impl Mux {
             max_sniff_bytes: 64,
             sniff_bytes_set: false,
             sniff_timeout: Some(DEFAULT_SNIFF_TIMEOUT),
-            chosen: Mutex::new(HashMap::new()),
+            chosen: Mutex::new(akio_core::IdMap::default()),
         }))
     }
 

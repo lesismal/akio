@@ -35,6 +35,9 @@ use akio_core::{Acceptor, AnyAcceptor, Conn, ConnInner, DynAcceptor, DynHandler,
 
 use crate::deadline::Pending;
 
+/// Connection ids, hashed with akio-core's cheap id hasher (ids are not attacker-chosen).
+type IdSet = HashSet<u64, std::hash::BuildHasherDefault<akio_core::IdHasher>>;
+
 /// The v2 signature.
 pub const V2_SIGNATURE: [u8; 12] = *b"\r\n\r\n\0\r\nQUIT\n";
 const V1_PREFIX: &[u8] = b"PROXY ";
@@ -650,7 +653,7 @@ struct Inner {
     allow_missing: bool,
     trusted: Option<Trust>,
     /// Connections still reading their header (for graceful shutdown).
-    reading: Mutex<HashSet<u64>>,
+    reading: Mutex<IdSet>,
 }
 
 /// Listener side: reads a PROXY header before the next acceptor runs (ADR-095).
@@ -688,7 +691,7 @@ impl ProxyProtocol {
             v2: true,
             allow_missing: false,
             trusted: None,
-            reading: Mutex::new(HashSet::new()),
+            reading: Mutex::new(IdSet::default()),
         }))
     }
 
@@ -744,7 +747,7 @@ impl ProxyProtocol {
         AnyAcceptor::from_dyn(Arc::new(self))
     }
 
-    fn reading(&self) -> std::sync::MutexGuard<'_, HashSet<u64>> {
+    fn reading(&self) -> std::sync::MutexGuard<'_, IdSet> {
         self.0.reading.lock().unwrap_or_else(|p| p.into_inner())
     }
 }

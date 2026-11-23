@@ -11,7 +11,7 @@
 //! assert_eq!(parse_client_hello(b"GET / HTTP/1.1").unwrap_err(), HelloError::Invalid);
 //! ```
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 /// The default `Mux::max_sniff_bytes` of a mux with a [`Rule::TlsSni`](crate::Rule::TlsSni) or
 /// [`Rule::TlsHello`](crate::Rule::TlsHello) route: one full-size record and its header.
@@ -332,7 +332,12 @@ fn alpn_list(data: &[u8], at: usize) -> Option<(usize, usize)> {
 /// assert!(!m.matches("a.b.example.org"));
 /// ```
 #[derive(Clone, Debug, Default)]
-pub struct SniMatcher {
+pub struct SniMatcher(Arc<Names>);
+
+/// Behind an `Arc` so that [`Rule`](crate::Rule) stays small: routes are scanned for every
+/// connection.
+#[derive(Clone, Debug, Default)]
+struct Names {
     exact: HashSet<String>,
     /// What follows `*.`.
     wildcard: HashSet<String>,
@@ -358,12 +363,13 @@ impl SniMatcher {
     #[must_use]
     pub fn with_name(mut self, name: impl AsRef<str>) -> SniMatcher {
         let n = normalize(name.as_ref());
+        let names = Arc::make_mut(&mut self.0);
         match n.strip_prefix("*.") {
             Some(suffix) if !suffix.is_empty() => {
-                self.wildcard.insert(suffix.to_owned());
+                names.wildcard.insert(suffix.to_owned());
             }
             _ => {
-                self.exact.insert(n);
+                names.exact.insert(n);
             }
         }
         self
@@ -372,11 +378,11 @@ impl SniMatcher {
     /// Whether `name` (a server name as sent) matches.
     pub fn matches(&self, name: &str) -> bool {
         let n = normalize(name);
-        if self.exact.contains(&n) {
+        if self.0.exact.contains(&n) {
             return true;
         }
         match n.split_once('.') {
-            Some((label, suffix)) if !label.is_empty() => self.wildcard.contains(suffix),
+            Some((label, suffix)) if !label.is_empty() => self.0.wildcard.contains(suffix),
             _ => false,
         }
     }
