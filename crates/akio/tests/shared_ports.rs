@@ -354,3 +354,78 @@ fn ipv4_group_joined_and_sent_per_interface() {
     b.close();
     e.shutdown();
 }
+
+/// A group joined on one interface at bind time, then on a second one through the binding
+/// (`UdpBinding::join_multicast`, what an interface that appears later needs): a datagram out
+/// of the second interface is received only while that membership exists; joining twice is
+/// not an error, and `leave_multicast` ends it.
+#[test]
+fn ipv4_group_joined_and_left_on_a_bound_socket() {
+    let ifs = ipv4_multicast_interfaces();
+    let [first, second, ..] = &ifs[..] else {
+        eprintln!("skipped: fewer than two multicast interfaces with an IPv4 address");
+        return;
+    };
+    let e = engine();
+    let port = free_port();
+    let group: SocketAddr = format!("239.255.42.98:{port}").parse().unwrap();
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    let b = match e.bind_udp_multicast_on(
+        group,
+        &[first.index],
+        fn_acceptor(move |_c: &Conn<Rx>| Rx(Mutex::new(tx.lock().unwrap().clone()))),
+    ) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("skipped: no IPv4 multicast here ({err})");
+            e.shutdown();
+            return;
+        }
+    };
+    let got = |msg: &[u8]| -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_millis(700);
+        while let Ok((_, d)) =
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            if d == msg {
+                return true;
+            }
+        }
+        false
+    };
+    let out = |msg: &[u8]| {
+        if let Err(err) = b.send_to_on(msg, group, second.index) {
+            panic!("{}: not sent ({err})", second.name);
+        }
+    };
+    out(b"before");
+    assert!(
+        !got(b"before"),
+        "received out of {} before joining it",
+        second.name
+    );
+    b.join_multicast(group.ip(), second.index).unwrap();
+    b.join_multicast(group.ip(), second.index).unwrap();
+    out(b"joined");
+    assert!(
+        got(b"joined"),
+        "nothing out of {} after joining it",
+        second.name
+    );
+    b.leave_multicast(group.ip(), second.index).unwrap();
+    out(b"left");
+    assert!(
+        !got(b"left"),
+        "received out of {} after leaving it",
+        second.name
+    );
+    // An interface that does not exist is refused.
+    assert!(b.join_multicast(group.ip(), 999_999).is_err());
+    eprintln!(
+        "joined and left on {} after binding on {}",
+        second.name, first.name
+    );
+    b.close();
+    e.shutdown();
+}

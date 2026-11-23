@@ -13,7 +13,17 @@
 #   3. the same avahi not resolving the name an Endpoint conceals 10.66.1.1 (a0) behind: the
 #      record is not of use on b0's link and is neither announced nor answered there (§6.2);
 #   4. an akio Endpoint on 10.66.1.1 resolving a name only avahi publishes on b0 (10.66.2.1, a
-#      second Endpoint there) and connecting to it: its queries go out of b0 too.
+#      second Endpoint there) and connecting to it: its queries go out of b0 too;
+#   5. (ADR-078 update 4) an interface that appears after the Endpoint's mDNS started: a third
+#      veth pair c0 (10.66.3.1/24) <-> c1 (in a network namespace q of its own), made once A's
+#      mDNS runs; avahi, moved into q on c1 alone (address 169.254.5.5/16), publishes a name for
+#      10.66.3.1 and A resolves it and connects: the group is joined on c0 when the name is
+#      resolved, queries go out of c0 and the answer comes in over it (avahi runs in another
+#      namespace so that nothing reaches A by multicast loopback, which Linux delivers to every
+#      socket on the port whatever it joined: IP_MULTICAST_ALL);
+#   6. (ADR-078 update 4) a query from a source on no known subnet: a querier in q whose only
+#      address is 169.254.5.5/16, behind c0, gets the name an Endpoint conceals 10.66.3.1 (c0)
+#      behind, by multicast on c0, and not the one concealing 10.66.1.1 (a0).
 # The examples and tests are built in rust:1; the image adds avahi, dbus and iproute2 (the same
 # image as mdns6.sh).
 set -eu
@@ -36,7 +46,9 @@ EOF
 docker rm -f $C >/dev/null 2>&1 || true
 trap 'docker rm -f $C >/dev/null 2>&1 || true' EXIT
 # seccomp=unconfined: Docker's default profile blocks io_uring_setup(2).
-docker run -d --name $C --network none --cap-add NET_ADMIN --security-opt seccomp=unconfined \
+# SYS_ADMIN: `unshare -n` (step 6's querier in a network namespace of its own).
+docker run -d --name $C --network none --cap-add NET_ADMIN --cap-add SYS_ADMIN \
+  --security-opt seccomp=unconfined \
   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.default.disable_ipv6=0 \
   --sysctl net.ipv6.conf.default.accept_dad=0 --sysctl net.ipv6.conf.all.accept_dad=0 \
   -v $VOL:/tmp/t $IMG sleep infinity >/dev/null
@@ -106,4 +118,55 @@ x "cat /tmp/publish.log"
 x "AKIO_LOG=akio_webrtc=debug $RS mdns-resolve '10.66.1.1:0' '10.66.2.1:0' $PUB 2>/tmp/resolve.log"
 x "grep -m1 'mdns: $PUB is' /tmp/resolve.log"
 x "grep -qE 'mdns: $PUB is \\[10.66.2.1\\] \\(from 10.66.2.1:5353\\)' /tmp/resolve.log"
+
+echo "== an interface that appears after mDNS started (c0): joined, queried, resolved, connected"
+avahi_stop() {
+  x 'pkill avahi-daemon || true; for _ in $(seq 30); do pgrep avahi-daemon >/dev/null || break; sleep 0.1; done
+     pkill -9 avahi-daemon || true; rm -f /run/avahi-daemon/pid'
+}
+avahi_stop
+x 'sed -i "s/^allow-interfaces=b0/allow-interfaces=c1/" /etc/avahi/avahi-daemon.conf'
+PUB3=$(x 'cat /proc/sys/kernel/random/uuid').local
+x "rm -f /tmp/c0-up; MDNS_START_AFTER=/tmp/c0-up AKIO_LOG=akio_webrtc=debug $RS mdns-resolve '10.66.1.1:0' '10.66.3.1:0' $PUB3 >/tmp/late.out 2>/tmp/late.log &"
+for _ in $(seq 100); do x 'grep -q "mdns started" /tmp/late.out' && break; sleep 0.1; done
+sleep 6 # past the 5 s between two readings of the interface list
+# Namespace q: held open by a sleeping process (`ip netns add` needs a mount Docker refuses).
+x 'unshare -n sleep infinity >/dev/null 2>&1 & echo $! >/tmp/q.pid'
+Q=$(x 'cat /tmp/q.pid')
+qx() { x "nsenter -t $Q -n sh -c '$1'"; }
+x "ip link add c0 type veth peer name c1 && ip link set c1 netns $Q &&
+   ip addr add 10.66.3.1/24 dev c0 && ip link set c0 up"
+qx 'ip link set lo up && ip link set c1 up && ip addr add 169.254.5.5/16 dev c1 &&
+    ip route add default dev c1'
+# (An on-link default route, as a host with only a 169.254 address has: without any route back
+# to 10.66.3.1, even loose reverse-path filtering drops the answers.)
+# avahi in q, on c1 (the system bus is a Unix socket: shared with this namespace).
+qx 'avahi-daemon -D --no-rlimits --no-drop-root --no-chroot'
+for _ in $(seq 50); do x 'avahi-daemon -c' && break; sleep 0.2; done
+sleep 3 # avahi probes and announces its host name first
+x "avahi-publish -a -R $PUB3 10.66.3.1 >/tmp/publish3.log 2>&1 &"
+for _ in $(seq 50); do x "grep -q Established /tmp/publish3.log" && break; sleep 0.1; done
+x 'touch /tmp/c0-up'
+for _ in $(seq 300); do x 'grep -q "^ok:" /tmp/late.out' && break; sleep 0.1; done
+x 'cat /tmp/late.out; grep -m2 "new interface" /tmp/late.log || true'
+x 'grep -q "^ok:" /tmp/late.out'
+x "grep -q 'mdns: IPv4 group joined on new interface' /tmp/late.log"
+x "grep -m1 'mdns: $PUB3 is' /tmp/late.log"
+x "grep -qE 'mdns: $PUB3 is \\[10.66.3.1\\] \\(from 169.254.5.5:5353\\)' /tmp/late.log"
+avahi_stop
+
+echo "== a query from 169.254.5.5 (no known subnet, behind c0): each record on its own link only"
+x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '10.66.3.1:0' 12 >/tmp/conceal-c.out 2>/tmp/conceal-c.log &"
+x "AKIO_LOG=akio_webrtc=debug $RS mdns-conceal '10.66.1.1:0' 12 >/tmp/conceal-a2.out 2>/tmp/conceal-a2.log &"
+for f in conceal-c conceal-a2; do
+  for _ in $(seq 50); do x "grep -q ^name /tmp/$f.out" && break; sleep 0.1; done
+done
+NAME_C=$(x 'sed -n "s/^name //p" /tmp/conceal-c.out')
+NAME_A2=$(x 'sed -n "s/^name //p" /tmp/conceal-a2.out')
+sleep 4 # the names' probes and announcements are over: what the querier gets is an answer
+OUT=$(qx "$RS mdns-query 3 $NAME_C $NAME_A2")
+echo "${OUT:-(no answer)}"
+echo "$OUT" | grep -q "answer $NAME_C 10.66.3.1 from 10.66.3.1:5353"
+if echo "$OUT" | grep -q "answer $NAME_A2"; then echo "FAIL: an a0 address answered on c0"; exit 1; fi
+x "grep -q 'mdns: answering 169.254.5.5' /tmp/conceal-c.log"
 echo "mdns over ipv4 on two interfaces: all passed"

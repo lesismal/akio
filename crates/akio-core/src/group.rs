@@ -366,11 +366,62 @@ impl UdpBinding {
         }
     }
 
+    /// Joins multicast group `group` on interface `interface` (an index, as
+    /// `akio_sys::interfaces` lists them; 0: the default one), on a socket already bound
+    /// (`akio::Engine::bind_udp_multicast_on` joins the interfaces known when it binds; this
+    /// adds those that appear later). An IPv4 join names the interface by its first IPv4
+    /// address: an interface without one fails with [`io::ErrorKind::AddrNotAvailable`]. A
+    /// group already joined there is not an error. The group's family must be the socket's.
+    pub fn join_multicast(&self, group: IpAddr, interface: u32) -> io::Result<()> {
+        let r = match group {
+            IpAddr::V4(g) => {
+                let on = ipv4_of(interface)?;
+                self.sock.join_multicast_v4(&g, &on)
+            }
+            IpAddr::V6(g) => self.sock.join_multicast_v6(&g, interface),
+        };
+        match r {
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => Ok(()),
+            r => r,
+        }
+    }
+
+    /// Leaves multicast group `group` on interface `interface` (as
+    /// [`join_multicast`](Self::join_multicast) names it). An interface that has gone away
+    /// takes its memberships with it; leaving one fails, which callers may ignore.
+    pub fn leave_multicast(&self, group: IpAddr, interface: u32) -> io::Result<()> {
+        match group {
+            IpAddr::V4(g) => {
+                let on = ipv4_of(interface)?;
+                self.sock.leave_multicast_v4(&g, &on)
+            }
+            IpAddr::V6(g) => self.sock.leave_multicast_v6(&g, interface),
+        }
+    }
+
     /// Closes the socket: its connections are closed (their `on_close` runs on the I/O thread)
     /// and it stops receiving. Idempotent.
     pub fn close(&self) {
         (self.closer)();
     }
+}
+
+/// The address an IPv4 multicast join names interface `index` by: its first IPv4 address
+/// (0: the default interface, `0.0.0.0`).
+fn ipv4_of(index: u32) -> io::Result<std::net::Ipv4Addr> {
+    if index == 0 {
+        return Ok(std::net::Ipv4Addr::UNSPECIFIED);
+    }
+    akio_sys::interfaces()?
+        .iter()
+        .find(|i| i.index == index)
+        .and_then(akio_sys::Interface::ipv4)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!("interface {index} has no IPv4 address"),
+            )
+        })
 }
 
 /// Counters of a UDP listener (see `Config::udp_max_peers`).
