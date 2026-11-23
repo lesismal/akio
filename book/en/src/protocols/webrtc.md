@@ -719,7 +719,8 @@ Chrome is 4 packets paced and 7 unpaced. While the path is marked ECT(1), the qu
 | `max_permissions`, `max_channels` | 256, 256 | per allocation (508) |
 | `peer_allowed`, `allow_private_peers` | none, false | the default refuses loopback, private, link-local, multicast and reserved peers (`denied_by_default`): a relay into the server's own network would be an SSRF hole |
 | `copy_dscp` | true | relayed datagrams keep the DSCP they came with (next paragraphs); false sends DSCP 0 |
-| `relay_icmp` | true | ICMP errors of datagrams to peers go back to the client (Linux) |
+| `copy_ttl` | true | relayed datagrams go out with the TTL / hop limit they came with minus one (next paragraphs); false sends the default |
+| `relay_icmp` | true | ICMP errors of datagrams to peers go back to the client (Linux, macOS) |
 
 Allocate, Refresh, CreatePermission, ChannelBind, Send and Data indications, ChannelData,
 `EVEN-PORT` with `RESERVATION-TOKEN` and `REQUESTED-ADDRESS-FAMILY` are supported; requests are
@@ -765,14 +766,41 @@ ways:
   `TurnEnv::send_to_peer_tos` / `send_to_client_tos`. The defaults of those pass the ECN bits
   on to the `_ecn` methods of ADR-083, whose defaults drop them.
 
+**TTL** (RFC 5766 section 12, RFC 8656 section 13, ADR-091 update). Relayed data goes out with
+the TTL (IPv4) or hop limit (IPv6) it came in with minus one, both ways, as a router would: a
+datagram looping between relays (RFC 8656 section 21.1.7) dies once its TTL runs out.
+
+- A datagram that arrives with TTL 1 is not relayed (`TurnStats::ttl_expired`); requests are
+  answered whatever their TTL. Data from a peer to a TCP or TLS client is relayed anyway: no
+  hop of the datagram's own follows.
+- `TurnServer` asks its listener and relay sockets for the TTL (`IP_RECVTTL` /
+  `IPV6_RECVHOPLIMIT`) and sends it in an `IP_TTL` / `IPV6_HOPLIMIT` control message. macOS
+  ignores a per-datagram IPv4 TTL, so IPv4 datagrams relayed there keep the default.
+- `copy_ttl(false)` sends everything with the socket's default (the alternative both RFCs
+  allow). An embedding gets the fields with `handle_client_ip` / `handle_peer_ip` and
+  `TurnEnv::send_to_peer_ip` / `send_to_client_ip` (`IpFields`), whose defaults call the `_tos`
+  methods.
+
+**DONT-FRAGMENT** (RFC 8656 sections 7.2, 11.2, 14 and 15, ADR-091 update). A Send indication
+with `DONT-FRAGMENT` goes to the peer with the "don't fragment" bit set: from a UDP or DTLS
+client when both sides are IPv4 (with IPv6 on either side the attribute is ignored), from a TCP
+or TLS client always. Every other relayed datagram goes with DF clear: a datagram too big for
+the path is fragmented, except one that asked for DF, which is dropped (`EMSGSIZE`).
+`TurnServer` keeps DF a setting of each relay socket (Linux has no per-datagram DF for IPv4) and
+changes it only when a datagram wants the other value. An embedding's `TurnEnv` that cannot set
+DF keeps `sets_dont_fragment` false: an Allocate with `DONT-FRAGMENT` is then answered 420 and
+such Send indications are dropped, as the RFC asks.
+
 **ICMP** (RFC 8656 section 11.5, ADR-091). When a datagram relayed to a peer draws an ICMP
 destination unreachable, time exceeded or packet too big, the client gets a Data indication
 with `XOR-PEER-ADDRESS` and an `ICMP` attribute (type, code, and the next-hop MTU for "packet
 too big"), and no `DATA`, if it has a permission for that address.
 
-- `TurnServer` binds its relay sockets with `Engine::bind_udp_icmp`, which sets `IP_RECVERR` /
-  `IPV6_RECVERR` and reads the socket's error queue on its I/O thread. Linux only: elsewhere
-  unconnected sockets never hear of ICMP.
+- `TurnServer` binds its relay sockets with `Engine::bind_udp_icmp`. On Linux that sets
+  `IP_RECVERR` / `IPV6_RECVERR` and reads the socket's error queue on its I/O thread; on macOS
+  the I/O thread reads an unprivileged ICMP socket of its own and keeps the errors whose quoted
+  datagram came from one of its relay sockets. Elsewhere unconnected sockets never hear of
+  ICMP.
 - `TurnCore::handle_icmp(now, relay, peer, type, code, mtu, env)` is the entry point for an
   embedding; `TurnStats::icmp` counts what was relayed.
 - ICMP is best effort: hosts rate-limit it and networks filter it.
@@ -899,7 +927,11 @@ one over UDP.
 
 A Data indication with `ICMP` becomes `ClientEvent::Icmp { peer, icmp_type, code, mtu }` (a
 datagram to `peer` was refused on the way; the port may be 0), for addresses the client has a
-permission for.
+permission for. An `Endpoint` hands these to ICE: a port or protocol unreachable fails the
+relayed candidate's pairs to that address whose connectivity check is in flight
+(`IceAgent::handle_icmp_error`, RFC 8445 section 7.2.5.2.2), instead of waiting out the check's
+retransmissions; pairs that work are left to consent freshness, since ICMP is not
+authenticated.
 
 For a TCP allocation, `ClientConfig::tcp_allocation(true)` (over TCP or TLS). `connect(peer)`
 sends a Connect and is answered by `ClientEvent::Connected { peer, id }` or `ConnectFailed`;

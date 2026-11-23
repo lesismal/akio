@@ -1004,6 +1004,7 @@ pub fn akio_core::UdpBinding::leave_multicast(&self, core::net::ip_addr::IpAddr,
 pub fn akio_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::send_to_on(&self, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::set_dont_fragment(&self, bool) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_unicast_hops(&self, u32) -> core::io::error::Result<()>
 impl core::clone::Clone for akio_core::UdpBinding
 pub fn akio_core::UdpBinding::clone(&self) -> Self

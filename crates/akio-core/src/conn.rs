@@ -64,12 +64,18 @@ pub type Task = Box<dyn std::any::Any + Send>;
 /// What a [`Task`] holds for handler type `H`.
 pub(crate) type Completion<H> = Box<dyn FnOnce(&mut H, &Conn<H>) + Send>;
 
+/// A datagram's IP header fields in one word: the traffic class byte (DSCP and ECN) in the low
+/// byte, the TTL / hop limit in the high one (0: the socket's); 0 sends no control message.
+const fn ip_fields(tos: u8, ttl: u8) -> u16 {
+    tos as u16 | (ttl as u16) << 8
+}
+
 enum Bytes {
     Owned(Vec<u8>),
     Shared(SharedBuf),
     /// UDP: consecutive datagrams of `.1` bytes each (the last may be shorter), see
-    /// [`Conn::send_segments`], sent with traffic class byte `.2` (DSCP and ECN; 0: none).
-    Segmented(Vec<u8>, usize, u8),
+    /// [`Conn::send_segments`], sent with the IP header fields `.2` (see [`ip_fields`]).
+    Segmented(Vec<u8>, usize, u16),
     /// `len` bytes of `file` from `start`, sent with `sendfile(2)` (never copied into memory).
     #[cfg(unix)]
     File {
@@ -512,15 +518,15 @@ impl WriteState {
         }
     }
 
-    /// UDP: the datagrams queued, in order, with their traffic class bytes (DSCP and ECN).
-    fn datagrams_tos(&self) -> impl Iterator<Item = (&[u8], u8)> {
+    /// UDP: the datagrams queued, in order, with their IP header fields (see [`ip_fields`]).
+    fn datagrams_ip(&self) -> impl Iterator<Item = (&[u8], u16)> {
         self.queue.iter().flat_map(|c| {
             let rest = c.rest();
-            let (seg, tos) = match c.bytes {
-                Bytes::Segmented(_, seg, tos) => (seg, tos),
+            let (seg, ip) = match c.bytes {
+                Bytes::Segmented(_, seg, ip) => (seg, ip),
                 _ => (rest.len().max(1), 0),
             };
-            rest.chunks(seg).map(move |d| (d, tos))
+            rest.chunks(seg).map(move |d| (d, ip))
         })
     }
 
@@ -629,11 +635,11 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                 }
                 let dest = it.inner.udp_target().0;
                 let v6 = it.inner.local.is_ipv6();
-                let (mut seg, mut total, mut ecn) = (0, 0, 0);
-                let mut iter = it.w.datagrams_tos().peekable();
+                let (mut seg, mut total, mut ip) = (0, 0, 0);
+                let mut iter = it.w.datagrams_ip().peekable();
                 while let Some((d, e)) = iter.next() {
                     if np == 0 {
-                        (seg, total, ecn) = (d.len(), 0, e);
+                        (seg, total, ip) = (d.len(), 0, e);
                     }
                     parts[np] = d;
                     np += 1;
@@ -643,13 +649,14 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                         && d.len() == seg
                         && np < MAX_GSO_SEGMENTS
                         && iter.peek().is_some_and(|&(n, e)| {
-                            e == ecn && n.len() <= seg && total + n.len() <= MAX_GSO_BYTES
+                            e == ip && n.len() <= seg && total + n.len() <= MAX_GSO_BYTES
                         });
                     if joins {
                         continue;
                     }
                     let g = if np > 1 { seg } else { 0 };
-                    let pushed = b.push_tos(dest, &parts[..np], g, ecn, v6);
+                    let (tos, ttl) = (ip as u8, (ip >> 8) as u8);
+                    let pushed = b.push_ip(dest, &parts[..np], g, tos, ttl, v6);
                     let cnt = np;
                     np = 0;
                     if !pushed {
@@ -821,6 +828,8 @@ pub struct ConnInner {
     /// UDP: the traffic class byte (DSCP and ECN) of the datagram being delivered (set by the
     /// loop).
     rx_tos: AtomicU8,
+    /// UDP: the TTL / hop limit of the datagram being delivered (0: not reported).
+    rx_ttl: AtomicU8,
     /// Kernel offload of the transport (Linux, [`Transport::offload`]): `OFFLOAD_NONE`,
     /// `OFFLOAD_PENDING` (ask after reads and flushes) and `OFFLOAD_RX` (bit: the read
     /// direction is in the kernel). Read without the lock by the loop's hot paths.
@@ -861,6 +870,7 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
+            rx_ttl: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -898,6 +908,7 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
+            rx_ttl: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -940,6 +951,7 @@ impl ConnInner {
             pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_tos: AtomicU8::new(0),
+            rx_ttl: AtomicU8::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
             write: Mutex::new(WriteState {
@@ -987,11 +999,11 @@ impl ConnInner {
     ) -> io::Result<bool> {
         if w.datagram {
             loop {
-                let Some((d, tos)) = w.datagrams_tos().next() else {
+                let Some((d, ip)) = w.datagrams_ip().next() else {
                     return Ok(true);
                 };
                 // Userspace stacks take the ECN codepoint only.
-                if sink(d, tos & 3) == 0 {
+                if sink(d, ip as u8 & 3) == 0 {
                     return Ok(false);
                 }
                 w.sent_datagrams(1);
@@ -1071,21 +1083,22 @@ impl ConnInner {
         }
     }
 
-    /// A UDP datagram with traffic class byte `ecn` (DSCP and ECN: one `sendmsg` with an
-    /// `IP_TOS` / `IPV6_TCLASS` control message).
+    /// A UDP datagram with IP header fields `ip` (see [`ip_fields`]: one `sendmsg` with
+    /// `IP_TOS` / `IPV6_TCLASS` and `IPV6_HOPLIMIT` control messages).
     #[cfg(target_os = "macos")]
-    fn raw_write_ecn(&self, data: &[u8], ecn: u8) -> io::Result<usize> {
+    fn raw_write_ip(&self, data: &[u8], ip: u16) -> io::Result<usize> {
         use std::os::fd::AsRawFd;
         match &self.sock {
             Sock::Udp {
                 sock,
                 peer,
                 connected,
-            } => akio_sys::send_to_tos(
+            } => akio_sys::send_to_ip(
                 sock.as_raw_fd(),
                 data,
                 (!connected).then_some(peer),
-                ecn,
+                ip as u8,
+                (ip >> 8) as u8,
                 self.local.is_ipv6(),
             ),
             _ => self.raw_write(data),
@@ -1133,6 +1146,28 @@ impl ConnInner {
     /// delivered.
     pub fn set_rx_tos(&self, tos: u8) {
         self.rx_tos.store(tos, Ordering::Relaxed);
+    }
+
+    /// Loop side, UDP: the TTL / hop limit of the datagram about to be delivered (0 when not
+    /// reported).
+    pub fn set_rx_ttl(&self, ttl: u8) {
+        self.rx_ttl.store(ttl, Ordering::Relaxed);
+    }
+
+    /// UDP: the TTL / hop limit of the datagram being delivered (0 when unknown).
+    pub fn rx_ttl(&self) -> u8 {
+        self.rx_ttl.load(Ordering::Relaxed)
+    }
+
+    /// UDP on a kernel socket: asks for the TTL / hop limit of every datagram the socket
+    /// receives ([`rx_ttl`](Self::rx_ttl)); the socket is shared by every peer of a listener or
+    /// bound socket. Whether it was enabled.
+    pub fn enable_rx_ttl(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Sock::Udp { sock, .. } = &self.sock {
+            return akio_sys::enable_recv_ttl(std::os::fd::AsRawFd::as_raw_fd(&**sock));
+        }
+        false
     }
 
     /// UDP: the ECN codepoint of the datagram being delivered (0 when unknown).
@@ -1473,18 +1508,18 @@ impl ConnInner {
             }
             #[cfg(not(target_os = "linux"))]
             loop {
-                let Some((d, ecn)) = w.datagrams_tos().next() else {
+                let Some((d, ip)) = w.datagrams_ip().next() else {
                     return Ok(true);
                 };
                 #[cfg(target_os = "macos")]
-                let r = if ecn == 0 {
+                let r = if ip == 0 {
                     self.raw_write(d)
                 } else {
-                    self.raw_write_ecn(d, ecn)
+                    self.raw_write_ip(d, ip)
                 };
                 #[cfg(not(target_os = "macos"))]
                 let r = {
-                    let _ = ecn;
+                    let _ = ip;
                     self.raw_write(d)
                 };
                 match r {
@@ -1616,22 +1651,30 @@ impl ConnInner {
     /// [`send_segments_ecn`](Self::send_segments_ecn) with the whole traffic class byte `tos`
     /// (DSCP in the upper six bits, ECN in the low two). Userspace stacks get its ECN bits only.
     pub fn send_segments_tos(&self, data: Vec<u8>, seg: usize, tos: u8) -> Result<()> {
+        self.send_segments_ip(data, seg, tos, 0)
+    }
+
+    /// [`send_segments_tos`](Self::send_segments_tos) with the TTL / hop limit `ttl` (0: the
+    /// socket's). Kernel sockets on Linux, and IPv6 ones on macOS, set it; elsewhere it is
+    /// dropped.
+    pub fn send_segments_ip(&self, data: Vec<u8>, seg: usize, tos: u8, ttl: u8) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut w = self.lock();
-        let (seg, ecn) = if tos != 0 && w.datagram && self.is_datagram_sock() {
+        let ip = ip_fields(tos, ttl);
+        let (seg, fields) = if ip != 0 && w.datagram && self.is_datagram_sock() {
             // A datagram with a codepoint is queued as one segment of its own length.
             let seg = if seg == 0 {
                 data.len()
             } else {
                 seg.min(data.len())
             };
-            (seg, tos)
+            (seg, ip)
         } else {
             (seg, 0)
         };
-        if !w.datagram || w.transport.is_some() || seg == 0 || (seg >= data.len() && ecn == 0) {
+        if !w.datagram || w.transport.is_some() || seg == 0 || (seg >= data.len() && fields == 0) {
             drop(w);
             if seg == 0 || !self.is_datagram_sock() {
                 return self.send_owned(data);
@@ -1645,7 +1688,7 @@ impl ConnInner {
         let was_empty = w.queue.is_empty();
         w.add_queued(data.len());
         w.queue.push_back(Chunk {
-            bytes: Bytes::Segmented(data, seg, ecn),
+            bytes: Bytes::Segmented(data, seg, fields),
             off: 0,
         });
         if self.corked(&w) {
@@ -2584,6 +2627,23 @@ impl<H> Conn<H> {
         self.inner.send_segments_tos(data, segment_size, tos)
     }
 
+    /// UDP (internal, outside the stability promise): [`send_segments_tos`] with the TTL
+    /// (IPv4) or hop limit (IPv6) `ttl` on every datagram (0: the socket's), in an `IP_TTL` /
+    /// `IPV6_HOPLIMIT` control message. Linux kernel sockets set it, macOS ones on IPv6 only
+    /// (XNU ignores `IP_TTL` on send); elsewhere it is dropped.
+    ///
+    /// [`send_segments_tos`]: Self::send_segments_tos
+    #[doc(hidden)]
+    pub fn send_segments_ip(
+        &self,
+        data: Vec<u8>,
+        segment_size: usize,
+        tos: u8,
+        ttl: u8,
+    ) -> Result<()> {
+        self.inner.send_segments_ip(data, segment_size, tos, ttl)
+    }
+
     /// UDP (internal, outside the stability promise): inside `on_data`, the ECN codepoint the
     /// datagram arrived with (0 when not ECN-capable or not reported by the platform).
     #[doc(hidden)]
@@ -2597,6 +2657,24 @@ impl<H> Conn<H> {
     #[doc(hidden)]
     pub fn rx_tos(&self) -> u8 {
         self.inner.rx_tos()
+    }
+
+    /// UDP (internal, outside the stability promise): inside `on_data`, the TTL (IPv4) or hop
+    /// limit (IPv6) the datagram arrived with; 0 unless asked for with
+    /// [`enable_rx_ttl`](Self::enable_rx_ttl) (kernel sockets on Linux and macOS).
+    #[doc(hidden)]
+    pub fn rx_ttl(&self) -> u8 {
+        self.inner.rx_ttl()
+    }
+
+    /// UDP (internal, outside the stability promise): asks the kernel for the TTL / hop limit
+    /// of every datagram this connection's socket receives, read with
+    /// [`rx_ttl`](Self::rx_ttl). The socket is shared with every other peer of the listener or
+    /// bound socket, which then get it too. Whether it was enabled (not on akio-dpdk, nor
+    /// outside Linux and macOS).
+    #[doc(hidden)]
+    pub fn enable_rx_ttl(&self) -> bool {
+        self.inner.enable_rx_ttl()
     }
 
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the

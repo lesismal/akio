@@ -903,8 +903,8 @@ fn batch_end_on_a_dialed_connection() {
 }
 
 /// `bind_udp_icmp`: ICMP port unreachable for a datagram to a closed port reaches the handler
-/// (Linux `IP_RECVERR`), while the socket goes on sending and receiving; elsewhere it is a
-/// plain bound socket.
+/// (Linux `IP_RECVERR`, macOS an ICMP socket of the I/O thread), while the socket goes on
+/// sending and receiving.
 #[test]
 fn bound_socket_hears_icmp_errors() {
     struct Count(Arc<AtomicUsize>);
@@ -940,7 +940,7 @@ fn bound_socket_hears_icmp_errors() {
         assert_eq!(recv(&live), b"pong", "round {round}");
     }
     wait_for("echoes", || got.load(Ordering::SeqCst) == 3);
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         wait_for("ICMP", || !icmp.lock().unwrap().is_empty());
         let errs = icmp.lock().unwrap();
         for err in errs.iter() {

@@ -1,6 +1,8 @@
 //! Batched datagram I/O (Linux): `recvmmsg` with optional UDP GRO, `sendmmsg` with optional UDP
 //! GSO (`UDP_SEGMENT`), and the ECN codepoint of each datagram (RFC 3168) both ways: received
-//! from the `IP_TOS` / `IPV6_TCLASS` control message ([`enable_ecn`]), sent as one per message.
+//! from the `IP_TOS` / `IPV6_TCLASS` control message ([`enable_ecn`]), sent as one per message;
+//! likewise the TTL / hop limit, received when asked for ([`enable_recv_ttl`]) and set per
+//! message (`IP_TTL` / `IPV6_HOPLIMIT`).
 //!
 //! GSO is detected once per process and turned off for good when the kernel or a device refuses
 //! it (`EIO`/`EINVAL`, as quinn does); `AKIO_UDP_GSO=0` / `AKIO_UDP_GRO=0` / `AKIO_UDP_ECN=0`
@@ -16,8 +18,8 @@ use std::{
 };
 
 use crate::ffi::{
-    self, IP_RECVTOS, IP_TOS, IPPROTO_IP, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP,
-    UDP_GRO, UDP_SEGMENT,
+    self, IP_RECVTOS, IP_RECVTTL, IP_TOS, IP_TTL, IPPROTO_IP, IPPROTO_IPV6, IPV6_HOPLIMIT,
+    IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP, UDP_GRO, UDP_SEGMENT,
 };
 use crate::net::parse_addr;
 
@@ -29,9 +31,9 @@ pub const MAX_GSO_BYTES: usize = 65000;
 pub const SEND_BATCH: usize = 64;
 const MAX_IOV: usize = 1024;
 
-/// Space for two `cmsghdr`s carrying an `int` each (u16 for UDP_SEGMENT, int for UDP_GRO, a byte
-/// or an int for the traffic class), 8-aligned.
-type Ctrl = [u64; 8];
+/// Space for three `cmsghdr`s carrying an `int` each (u16 for UDP_SEGMENT, int for UDP_GRO, a
+/// byte or an int for the traffic class, an int for the TTL / hop limit), 8-aligned.
+type Ctrl = [u64; 12];
 
 const UNKNOWN: u8 = 0;
 const ON: u8 = 1;
@@ -150,6 +152,18 @@ pub fn enable_ecn(fd: RawFd) -> bool {
     v4 || v6
 }
 
+/// Asks the kernel to report the TTL (IPv4) or hop limit (IPv6) of every received datagram
+/// (`IP_RECVTTL`, and `IPV6_RECVHOPLIMIT` on an IPv6 socket); [`RecvBatch::ttl`] reads it.
+/// Returns whether it was enabled. Off by default: only a relay that copies the TTL (TURN, RFC
+/// 5766 section 12) wants the extra control message on every datagram.
+pub fn enable_recv_ttl(fd: RawFd) -> bool {
+    crate::net::set_both(
+        fd,
+        (IPPROTO_IP, IP_RECVTTL),
+        (IPPROTO_IPV6, IPV6_RECVHOPLIMIT),
+    )
+}
+
 /// Receives up to `slots` datagrams per syscall into pooled receive slabs (ADR-024).
 ///
 /// Each slot receives into the free tail of its own slab (`akio_buf::slab`, two slot sizes
@@ -225,7 +239,7 @@ impl RecvBatch {
             ],
             // SAFETY: sockaddr_storage and mmsghdr are plain-old-data; all-zero is valid.
             names: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
-            ctrl: vec![[0; 8]; slots],
+            ctrl: vec![[0; 12]; slots],
             gro,
             // SAFETY: as above.
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
@@ -373,6 +387,64 @@ impl RecvBatch {
         tos.map_or(0, |v| v as u8)
     }
 
+    /// The TTL (IPv4) or hop limit (IPv6) datagram `i` of the last `recv` arrived with: 0 when
+    /// not reported (see [`enable_recv_ttl`]).
+    pub fn ttl(&self, i: usize) -> u8 {
+        if i >= self.got {
+            return 0;
+        }
+        let ttl = self.cmsg_int(i, |level, ty| {
+            (level == IPPROTO_IP && ty == IP_TTL) || (level == IPPROTO_IPV6 && ty == IPV6_HOPLIMIT)
+        });
+        ttl.map_or(0, |v| v.clamp(0, 255) as u8)
+    }
+
+    /// [`tos`](Self::tos) and [`ttl`](Self::ttl) of datagram `i` together, in one walk over
+    /// its control messages.
+    pub fn tos_ttl(&self, i: usize) -> (u8, u8) {
+        if i >= self.got {
+            return (0, 0);
+        }
+        let (mut tos, mut ttl) = (0, 0);
+        self.each_cmsg_int(i, |level, ty, v| {
+            if (level == IPPROTO_IP && ty == IP_TOS) || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
+            {
+                tos = v as u8;
+            } else if (level == IPPROTO_IP && ty == IP_TTL)
+                || (level == IPPROTO_IPV6 && ty == IPV6_HOPLIMIT)
+            {
+                ttl = v.clamp(0, 255) as u8;
+            }
+        });
+        (tos, ttl)
+    }
+
+    /// Calls `f(level, type, value)` for every control message of datagram `i` with an int
+    /// payload, or a one-byte one (widened).
+    fn each_cmsg_int(&self, i: usize, mut f: impl FnMut(ffi::c_int, ffi::c_int, i32)) {
+        let h = &self.msgs[i].msg_hdr;
+        // SAFETY: as in `cmsg_int`: the walk stays within `msg_control[..msg_controllen]`
+        // (`self.ctrl[i]`), and a payload is read only within the `cmsg_len` the kernel wrote.
+        unsafe {
+            let mut c = ffi::cmsg_firsthdr(h);
+            while !c.is_null() {
+                let data = ffi::cmsg_data(c);
+                let len: usize = (*c).cmsg_len;
+                let v = if len >= ffi::cmsg_len(size_of::<ffi::c_int>()) {
+                    Some(std::ptr::read_unaligned(data.cast::<ffi::c_int>()))
+                } else if len >= ffi::cmsg_len(1) {
+                    Some(i32::from(*data))
+                } else {
+                    None
+                };
+                if let Some(v) = v {
+                    f((*c).cmsg_level, (*c).cmsg_type, v);
+                }
+                c = ffi::cmsg_nxthdr(h, c);
+            }
+        }
+    }
+
     /// The payload of the first control message of datagram `i` that `want(level, type)`
     /// accepts, as an int (a one-byte payload, as `IP_TOS` has, is widened).
     fn cmsg_int(&self, i: usize, want: impl Fn(ffi::c_int, ffi::c_int) -> bool) -> Option<i32> {
@@ -407,9 +479,11 @@ struct Meta {
     iov_len: usize,
     namelen: ffi::socklen_t,
     gso: u16,
-    /// Traffic class byte to send with (DSCP and ECN; 0: none), and whether the socket is
-    /// IPv6 (`IPV6_TCLASS` rather than `IP_TOS`).
+    /// Traffic class byte to send with (DSCP and ECN; 0: none), TTL / hop limit (0: the
+    /// socket's), and whether the socket is IPv6 (`IPV6_TCLASS` / `IPV6_HOPLIMIT` rather than
+    /// `IP_TOS` / `IP_TTL`).
     tos: u8,
+    ttl: u8,
     v6: bool,
 }
 
@@ -445,7 +519,7 @@ impl SendBatch {
             iov: Vec::with_capacity(MAX_IOV),
             // SAFETY: plain-old-data; all-zero is valid.
             names: (0..SEND_BATCH).map(|_| unsafe { mem::zeroed() }).collect(),
-            ctrl: vec![[0; 8]; SEND_BATCH],
+            ctrl: vec![[0; 12]; SEND_BATCH],
             meta: Vec::with_capacity(SEND_BATCH),
             // SAFETY: as above.
             msgs: (0..SEND_BATCH).map(|_| unsafe { mem::zeroed() }).collect(),
@@ -517,6 +591,20 @@ impl<'d> Batch<'_, 'd> {
         tos: u8,
         v6_socket: bool,
     ) -> bool {
+        self.push_ip(dest, parts, gso, tos, 0, v6_socket)
+    }
+
+    /// As [`push_tos`](Self::push_tos), with the TTL (IPv4) or hop limit (IPv6) `ttl` set on
+    /// the message's datagrams (`IP_TTL` / `IPV6_HOPLIMIT`; 0 sends none: the socket's).
+    pub fn push_ip(
+        &mut self,
+        dest: Option<&SocketAddr>,
+        parts: &[&'d [u8]],
+        gso: usize,
+        tos: u8,
+        ttl: u8,
+        v6_socket: bool,
+    ) -> bool {
         let s = &mut *self.s;
         let i = s.meta.len();
         if i == SEND_BATCH || s.iov.len() + parts.len() > MAX_IOV {
@@ -543,6 +631,7 @@ impl<'d> Batch<'_, 'd> {
             namelen,
             gso: gso.min(u16::MAX as usize) as u16,
             tos,
+            ttl,
             v6: v6_socket,
         });
         true
@@ -579,12 +668,15 @@ impl<'d> Batch<'_, 'd> {
             if m.tos > 0 {
                 space += ffi::cmsg_space(size_of::<ffi::c_int>());
             }
+            if m.ttl > 0 {
+                space += ffi::cmsg_space(size_of::<ffi::c_int>());
+            }
             if space > 0 {
-                s.ctrl[i] = [0; 8];
+                s.ctrl[i] = [0; 12];
                 h.msg_control = (&raw mut s.ctrl[i]).cast();
                 h.msg_controllen = space as _;
-                // SAFETY: `msg_control` points to `ctrl[i]` (64 bytes, 8-aligned, zeroed above),
-                // large enough for the (at most two) cmsghdrs CMSG_SPACE counted; each header
+                // SAFETY: `msg_control` points to `ctrl[i]` (96 bytes, 8-aligned, zeroed above),
+                // large enough for the (at most three) cmsghdrs CMSG_SPACE counted; each header
                 // comes from CMSG_FIRSTHDR / CMSG_NXTHDR within that length, the next one only
                 // after its predecessor's `cmsg_len` is set.
                 unsafe {
@@ -601,6 +693,14 @@ impl<'d> Batch<'_, 'd> {
                         (*c).cmsg_type = if m.v6 { IPV6_TCLASS } else { IP_TOS };
                         (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
                         let v = ffi::c_int::from(m.tos);
+                        std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
+                        c = ffi::cmsg_nxthdr(h, c);
+                    }
+                    if m.ttl > 0 && !c.is_null() {
+                        (*c).cmsg_level = if m.v6 { IPPROTO_IPV6 } else { IPPROTO_IP };
+                        (*c).cmsg_type = if m.v6 { IPV6_HOPLIMIT } else { IP_TTL };
+                        (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
+                        let v = ffi::c_int::from(m.ttl);
                         std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
                     }
                 }
@@ -648,6 +748,19 @@ pub fn send_to_tos(
     tos: u8,
     v6_socket: bool,
 ) -> io::Result<usize> {
+    send_to_ip(fd, data, dest, tos, 0, v6_socket)
+}
+
+/// [`send_to_tos`] with the TTL (IPv4) or hop limit (IPv6) `ttl` (`IP_TTL` / `IPV6_HOPLIMIT`
+/// control message; 0 sends none: the socket's).
+pub fn send_to_ip(
+    fd: RawFd,
+    data: &[u8],
+    dest: Option<&SocketAddr>,
+    tos: u8,
+    ttl: u8,
+    v6_socket: bool,
+) -> io::Result<usize> {
     let (mut ss, slen) = match dest {
         Some(d) => {
             let d = match (v6_socket, d) {
@@ -665,7 +778,7 @@ pub fn send_to_tos(
         iov_base: data.as_ptr().cast_mut().cast(),
         iov_len: data.len(),
     };
-    let mut ctrl: Ctrl = [0; 8];
+    let mut ctrl: Ctrl = [0; 12];
     // SAFETY: a zeroed msghdr is a valid empty one; its fields are filled in below.
     let mut h: ffi::msghdr = unsafe { mem::zeroed() };
     if slen > 0 {
@@ -674,19 +787,31 @@ pub fn send_to_tos(
     }
     h.msg_iov = &raw mut iov;
     h.msg_iovlen = 1;
-    if tos != 0 {
+    let level = if v6_socket { IPPROTO_IPV6 } else { IPPROTO_IP };
+    let msgs = [
+        (tos, if v6_socket { IPV6_TCLASS } else { IP_TOS }),
+        (ttl, if v6_socket { IPV6_HOPLIMIT } else { IP_TTL }),
+    ];
+    let count = msgs.iter().filter(|m| m.0 != 0).count();
+    if count > 0 {
         h.msg_control = (&raw mut ctrl).cast();
-        h.msg_controllen = ffi::cmsg_space(size_of::<ffi::c_int>()) as _;
-        // SAFETY: `msg_control` points to `ctrl` (64 bytes, 8-aligned, zeroed), room for the
-        // one cmsghdr CMSG_SPACE counted; the header comes from CMSG_FIRSTHDR within it.
+        h.msg_controllen = (count * ffi::cmsg_space(size_of::<ffi::c_int>())) as _;
+        // SAFETY: `msg_control` points to `ctrl` (96 bytes, 8-aligned, zeroed), room for the
+        // (at most two) cmsghdrs CMSG_SPACE counted; each header comes from CMSG_FIRSTHDR /
+        // CMSG_NXTHDR within that length, the next one only after its predecessor's
+        // `cmsg_len` is set.
         unsafe {
-            let c = ffi::cmsg_firsthdr(&raw const h);
-            if !c.is_null() {
-                (*c).cmsg_level = if v6_socket { IPPROTO_IPV6 } else { IPPROTO_IP };
-                (*c).cmsg_type = if v6_socket { IPV6_TCLASS } else { IP_TOS };
+            let mut c = ffi::cmsg_firsthdr(&raw const h);
+            for (v, ty) in msgs {
+                if v == 0 || c.is_null() {
+                    continue;
+                }
+                (*c).cmsg_level = level;
+                (*c).cmsg_type = ty;
                 (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
-                let v = ffi::c_int::from(tos);
+                let v = ffi::c_int::from(v);
                 std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
+                c = ffi::cmsg_nxthdr(&raw const h, c);
             }
         }
     }
@@ -735,6 +860,94 @@ mod tests {
                 assert_eq!(k, 1);
                 assert_eq!(rb.get(0).unwrap().0, b"marked");
                 assert_eq!(rb.ecn(0), ecn, "{bind} ecn {ecn}");
+            }
+        }
+    }
+
+    /// Receives up to `want` datagrams into `rb` (waiting up to a second).
+    fn recv_some(rb: &mut RecvBatch, fd: RawFd, want: usize) -> usize {
+        for _ in 0..200 {
+            let k = rb.recv(fd).unwrap();
+            if k >= want {
+                return k;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        0
+    }
+
+    /// The TTL / hop limit both ways: none reported until asked for; `send_to_ip` and a
+    /// `sendmmsg` message carrying GSO, traffic class and TTL control messages together.
+    #[test]
+    fn ttl_both_ways() {
+        for (bind, v6) in [("127.0.0.1:0", false), ("[::1]:0", true)] {
+            let Ok(rx) = UdpSocket::bind(bind) else {
+                continue; // no IPv6 loopback
+            };
+            rx.set_nonblocking(true).unwrap();
+            assert!(enable_ecn(rx.as_raw_fd()));
+            let tx = UdpSocket::bind(bind).unwrap();
+            let dest = rx.local_addr().unwrap();
+            let mut rb = RecvBatch::new(8, 2048);
+            send_to_ip(tx.as_raw_fd(), b"a", Some(&dest), 0, 33, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, rx.as_raw_fd(), 1), 1);
+            assert_eq!(rb.ttl(0), 0, "{bind}: not asked for");
+            assert!(enable_recv_ttl(rx.as_raw_fd()));
+            send_to_ip(tx.as_raw_fd(), b"b", Some(&dest), 0xb8, 33, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, rx.as_raw_fd(), 1), 1);
+            assert_eq!((rb.tos(0), rb.ttl(0)), (0xb8, 33), "{bind}");
+            assert_eq!(rb.tos_ttl(0), (0xb8, 33), "{bind}");
+            send_to_ip(tx.as_raw_fd(), b"c", Some(&dest), 0, 0, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, rx.as_raw_fd(), 1), 1);
+            assert_eq!((rb.tos(0), rb.ttl(0)), (0, 64), "{bind}: the default");
+            // Two messages in one sendmmsg: the first two datagrams by GSO with every control
+            // message, the second plain with a TTL only.
+            let mut sb = SendBatch::new();
+            let mut b = sb.batch();
+            let gso = if gso_enabled() { 4 } else { 0 };
+            let parts: &[&[u8]] = if gso > 0 {
+                &[b"1111", b"2222"]
+            } else {
+                &[b"1111"]
+            };
+            assert!(b.push_ip(Some(&dest), parts, gso, 0x89, 7, v6));
+            assert!(b.push_ip(Some(&dest), &[b"3333"], 0, 0, 200, v6));
+            assert_eq!(b.send(tx.as_raw_fd(), 0).unwrap(), 2);
+            let n = parts.len() + 1;
+            let mut got = Vec::new();
+            for _ in 0..200 {
+                let k = rb.recv(rx.as_raw_fd()).unwrap();
+                for i in 0..k {
+                    got.push((rb.get(i).unwrap().0.to_vec(), rb.tos(i), rb.ttl(i)));
+                }
+                if got.len() >= n {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let want: Vec<(Vec<u8>, u8, u8)> = parts
+                .iter()
+                .map(|p| (p.to_vec(), 0x89, 7))
+                .chain([(b"3333".to_vec(), 0, 200)])
+                .collect();
+            assert_eq!(got, want, "{bind}");
+        }
+    }
+
+    #[test]
+    fn dont_fragment_toggles() {
+        for (bind, v6) in [("127.0.0.1:0", false), ("[::1]:0", true)] {
+            let Ok(s) = UdpSocket::bind(bind) else {
+                continue;
+            };
+            let fd = s.as_raw_fd();
+            crate::set_dont_fragment(fd, v6, true).unwrap();
+            if !v6 {
+                assert!(crate::dont_fragment(fd).unwrap());
+            }
+            crate::set_dont_fragment(fd, v6, false).unwrap();
+            if !v6 {
+                assert!(!crate::dont_fragment(fd).unwrap());
             }
         }
     }

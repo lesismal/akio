@@ -1170,6 +1170,28 @@ impl Rtc {
         self.ice.add_remote_candidate(c);
     }
 
+    /// An ICMP error about a datagram from local address `local` to `remote` (a TURN server
+    /// relaying it for a relayed candidate): a hard one fails the pairs from `local` to
+    /// `remote` whose check is in flight, in every transport's agent
+    /// ([`akio_ice::IceAgent::handle_icmp_error`]). Whether a pair failed.
+    pub(crate) fn icmp_error(
+        &mut self,
+        now: Instant,
+        local: SocketAddr,
+        remote: SocketAddr,
+        icmp_type: u8,
+        code: u8,
+    ) -> bool {
+        let mut failed = false;
+        if self.tp_entry() {
+            self.tp_each(|s| failed |= s.icmp_error(now, local, remote, icmp_type, code));
+        }
+        failed
+            | self
+                .ice
+                .handle_icmp_error(now, local, remote, icmp_type, code)
+    }
+
     /// Adds a remote candidate line (`candidate:...`): one whose address is an mDNS name is
     /// kept for the resolver ([`Rtc::take_mdns`]); `Err` for anything else that does not
     /// parse (FQDNs included).

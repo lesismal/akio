@@ -1,5 +1,7 @@
 //! Datagram I/O with ECN codepoints (macOS): one datagram per `sendmsg` / `recvmsg`, the
-//! codepoint (RFC 3168) carried in an `IP_TOS` / `IPV6_TCLASS` control message each way.
+//! codepoint (RFC 3168) carried in an `IP_TOS` / `IPV6_TCLASS` control message each way, and the
+//! TTL / hop limit received when asked for ([`enable_recv_ttl`]) and, on IPv6 sockets, sent
+//! (`IPV6_HOPLIMIT`: XNU ignores an `IP_TTL` control message on send).
 //!
 //! The control messages are built and parsed as plain bytes (no pointer walking): only the two
 //! system calls are `unsafe`. `AKIO_UDP_ECN=0` disables ECN, as on Linux.
@@ -12,7 +14,8 @@ use std::{
 };
 
 use crate::ffi::{
-    self, IP_RECVTOS, IP_TOS, IPPROTO_IP, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS,
+    self, IP_RECVTOS, IP_RECVTTL, IP_TOS, IP_TTL, IPPROTO_IP, IPPROTO_IPV6, IPV6_HOPLIMIT,
+    IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, IPV6_TCLASS,
 };
 use crate::net::{parse_addr, sockaddr};
 
@@ -67,6 +70,17 @@ pub fn enable_ecn(fd: RawFd) -> bool {
     v4 || v6
 }
 
+/// Asks the kernel to report the TTL (IPv4) or hop limit (IPv6) of every received datagram
+/// (`IP_RECVTTL`, and `IPV6_RECVHOPLIMIT` on an IPv6 socket); [`recv_from_ip`] reads it.
+/// Returns whether it was enabled.
+pub fn enable_recv_ttl(fd: RawFd) -> bool {
+    crate::net::set_both(
+        fd,
+        (IPPROTO_IP, IP_RECVTTL),
+        (IPPROTO_IPV6, IPV6_RECVHOPLIMIT),
+    )
+}
+
 /// Receives one datagram into `buf`: its length, sender and ECN codepoint (the low two bits of
 /// the traffic class; 0 when not ECN-capable or not reported, see [`enable_ecn`]). A datagram
 /// longer than `buf` is truncated, as `recv_from` does.
@@ -77,6 +91,12 @@ pub fn recv_from_ecn(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr
 /// [`recv_from_ecn`] with the whole traffic class byte (DSCP in the upper six bits, ECN in the
 /// low two; 0 when not reported).
 pub fn recv_from_tos(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, u8)> {
+    recv_from_ip(fd, buf).map(|(n, a, tos, _)| (n, a, tos))
+}
+
+/// [`recv_from_tos`] with the TTL (IPv4) or hop limit (IPv6) the datagram arrived with (0 when
+/// not reported, see [`enable_recv_ttl`]): length, sender, traffic class byte, TTL.
+pub fn recv_from_ip(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, u8, u8)> {
     // SAFETY: sockaddr_storage is plain-old-data; all-zero is a valid value.
     let mut ss: ffi::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut ctrl = Ctrl([0; 64]);
@@ -101,7 +121,8 @@ pub fn recv_from_tos(fd: RawFd, buf: &mut [u8]) -> io::Result<(usize, SocketAddr
     }
     let addr = parse_addr(&ss).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     let clen = (msg.msg_controllen as usize).min(ctrl.0.len());
-    Ok((n as usize, addr, tos_of(&ctrl.0[..clen])))
+    let ctrl = &ctrl.0[..clen];
+    Ok((n as usize, addr, tos_of(ctrl), ttl_of(ctrl)))
 }
 
 /// The ECN codepoint in received control data (see [`tos_of`]).
@@ -113,6 +134,25 @@ pub(crate) fn ecn_of(ctrl: &[u8]) -> u8 {
 /// The traffic class byte in received control data: an `IP_TOS` / `IP_RECVTOS` message (one
 /// byte, or an int) or an `IPV6_TCLASS` message (an int); 0 when there is none.
 pub(crate) fn tos_of(ctrl: &[u8]) -> u8 {
+    find_byte(ctrl, |level, ty| {
+        (level == IPPROTO_IP && (ty == IP_TOS || ty == IP_RECVTOS))
+            || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
+    })
+}
+
+/// The TTL / hop limit in received control data: an `IP_RECVTTL` message (one byte; `IP_TTL`
+/// accepted too) or an `IPV6_HOPLIMIT` message (an int); 0 when there is none.
+pub(crate) fn ttl_of(ctrl: &[u8]) -> u8 {
+    find_byte(ctrl, |level, ty| {
+        (level == IPPROTO_IP && (ty == IP_RECVTTL || ty == IP_TTL))
+            || (level == IPPROTO_IPV6 && ty == IPV6_HOPLIMIT)
+    })
+}
+
+/// The first payload byte of the first control message `want(level, type)` accepts: a
+/// one-byte payload is the value itself, an int's low byte comes first (both targets are
+/// little-endian); 0 when there is none.
+fn find_byte(ctrl: &[u8], want: impl Fn(ffi::c_int, ffi::c_int) -> bool) -> u8 {
     let mut off = 0;
     while off + CMSG_HDR <= ctrl.len() {
         let word = |i: usize| {
@@ -125,11 +165,7 @@ pub(crate) fn tos_of(ctrl: &[u8]) -> u8 {
             break;
         }
         let data = &ctrl[off + CMSG_HDR..off + len];
-        let tos = (level == IPPROTO_IP && (ty == IP_TOS || ty == IP_RECVTOS))
-            || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS);
-        if tos && !data.is_empty() {
-            // A one-byte payload is the TOS byte itself; an int's low byte comes first (both
-            // targets are little-endian).
+        if want(level, ty) && !data.is_empty() {
             return data[0];
         }
         off += (len + 3) & !3;
@@ -159,6 +195,20 @@ pub fn send_to_tos(
     tos: u8,
     v6_socket: bool,
 ) -> io::Result<usize> {
+    send_to_ip(fd, data, dest, tos, 0, v6_socket)
+}
+
+/// [`send_to_tos`] with the hop limit `ttl` on an IPv6 socket (`IPV6_HOPLIMIT` control
+/// message; 0 sends none: the socket's). On an IPv4 socket `ttl` is not sent: XNU ignores an
+/// `IP_TTL` control message, so the datagram has the socket's TTL either way.
+pub fn send_to_ip(
+    fd: RawFd,
+    data: &[u8],
+    dest: Option<&SocketAddr>,
+    tos: u8,
+    ttl: u8,
+    v6_socket: bool,
+) -> io::Result<usize> {
     let (mut ss, slen) = match dest {
         Some(d) => {
             // An IPv6 socket reaches an IPv4 peer at its IPv4-mapped address.
@@ -175,22 +225,25 @@ pub fn send_to_tos(
         None => (unsafe { std::mem::zeroed() }, 0),
     };
     let mut ctrl = Ctrl([0; 64]);
-    let clen = if tos != 0 {
-        let (level, ty) = if v6_socket {
-            (IPPROTO_IPV6, IPV6_TCLASS)
-        } else {
-            (IPPROTO_IP, IP_TOS)
-        };
+    let level = if v6_socket { IPPROTO_IPV6 } else { IPPROTO_IP };
+    let msgs = [
+        (tos, if v6_socket { IPV6_TCLASS } else { IP_TOS }),
+        (if v6_socket { ttl } else { 0 }, IPV6_HOPLIMIT),
+    ];
+    let mut clen = 0;
+    for (v, ty) in msgs {
+        if v == 0 {
+            continue;
+        }
+        // Each message: header, an int, padded to 4 bytes (it already is).
         let len = CMSG_HDR + size_of::<ffi::c_int>();
-        let c = &mut ctrl.0;
+        let c = &mut ctrl.0[clen..clen + len];
         c[0..4].copy_from_slice(&(len as u32).to_ne_bytes());
         c[4..8].copy_from_slice(&level.to_ne_bytes());
         c[8..12].copy_from_slice(&ty.to_ne_bytes());
-        c[CMSG_HDR..len].copy_from_slice(&ffi::c_int::from(tos).to_ne_bytes());
-        len
-    } else {
-        0
-    };
+        c[CMSG_HDR..len].copy_from_slice(&ffi::c_int::from(v).to_ne_bytes());
+        clen += len;
+    }
     let mut iov = ffi::iovec {
         iov_base: data.as_ptr().cast_mut().cast(),
         iov_len: data.len(),
@@ -308,6 +361,43 @@ mod tests {
         assert_eq!(from, tx.local_addr().expect("addr"));
     }
 
+    /// The TTL / hop limit read back once asked for; the hop limit sent on IPv6 (XNU ignores
+    /// an IPv4 `IP_TTL` control message: the socket's 64 arrives).
+    #[test]
+    fn ttl_both_ways() {
+        for v6 in [false, true] {
+            let (rx, tx) = pair(v6);
+            let dest = rx.local_addr().expect("addr");
+            let mut buf = [0u8; 16];
+            send_to_ip(tx.as_raw_fd(), b"a", Some(&dest), 0, 33, v6).expect("send");
+            let (_, _, _, ttl) = recv_from_ip(rx.as_raw_fd(), &mut buf).expect("recv");
+            assert_eq!(ttl, 0, "not asked for");
+            assert!(enable_recv_ttl(rx.as_raw_fd()) && enable_ecn(rx.as_raw_fd()));
+            send_to_ip(tx.as_raw_fd(), b"b", Some(&dest), 0xb8, 33, v6).expect("send");
+            send_to_ip(tx.as_raw_fd(), b"c", Some(&dest), 0, 0, v6).expect("send");
+            let (_, _, tos, ttl) = recv_from_ip(rx.as_raw_fd(), &mut buf).expect("recv");
+            assert_eq!((tos, ttl), (0xb8, if v6 { 33 } else { 64 }), "v6={v6}");
+            let (_, _, tos, ttl) = recv_from_ip(rx.as_raw_fd(), &mut buf).expect("recv");
+            assert_eq!((tos, ttl), (0, 64), "v6={v6}");
+        }
+    }
+
+    #[test]
+    fn dont_fragment_toggles() {
+        for v6 in [false, true] {
+            let (_, tx) = pair(v6);
+            let fd = tx.as_raw_fd();
+            crate::set_dont_fragment(fd, v6, true).expect("on");
+            if !v6 {
+                assert!(crate::dont_fragment(fd).expect("get"));
+            }
+            crate::set_dont_fragment(fd, v6, false).expect("off");
+            if !v6 {
+                assert!(!crate::dont_fragment(fd).expect("get"));
+            }
+        }
+    }
+
     #[test]
     fn control_parsing_is_bounded() {
         assert_eq!(ecn_of(&[]), 0);
@@ -327,5 +417,8 @@ mod tests {
         c[24..28].copy_from_slice(&IP_RECVTOS.to_ne_bytes());
         c[28] = 0b1011_1011;
         assert_eq!(ecn_of(&c), 3);
+        assert_eq!(ttl_of(&c), 0);
+        c[24..28].copy_from_slice(&IP_RECVTTL.to_ne_bytes());
+        assert_eq!((ttl_of(&c), tos_of(&c)), (0b1011_1011, 0));
     }
 }

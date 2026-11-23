@@ -1,5 +1,5 @@
-//! Dual allocations (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`), ECN and DSCP across the relay and
-//! ICMP relaying, on the state machine.
+//! Dual allocations (RFC 8656 `ADDITIONAL-ADDRESS-FAMILY`), ECN, DSCP and TTL across the relay,
+//! `DONT-FRAGMENT` and ICMP relaying, on the state machine.
 
 use super::*;
 use crate::fuzzing::{CLIENT, REALM, USER};
@@ -850,4 +850,236 @@ fn icmp_is_relayed() {
     assert_eq!(env.sent.len(), n);
     core.handle_icmp(now, r4, peer4(), 3, 3, 0, &mut env);
     assert_eq!(env.sent.len(), n + 1);
+}
+
+/// An environment that sees every relayed field (`send_to_*_ip`), may or may not set DF, and
+/// may stand for a stream client (`pads_channel_data`).
+#[derive(Default)]
+struct IpEnv {
+    inner: Env,
+    /// To the client: data, fields.
+    sent: Vec<(Vec<u8>, IpFields)>,
+    /// To peers: relay, peer, data, fields.
+    to_peer: Vec<(SocketAddr, SocketAddr, Vec<u8>, IpFields)>,
+    df: bool,
+    stream: bool,
+}
+
+impl TurnEnv for IpEnv {
+    fn send_to_client(&mut self, c: SocketAddr, data: &[u8]) {
+        self.send_to_client_ip(c, data, IpFields::default());
+    }
+    fn send_to_client_ip(&mut self, _: SocketAddr, data: &[u8], ip: IpFields) {
+        self.sent.push((data.to_vec(), ip));
+    }
+    fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]) {
+        self.send_to_peer_ip(relay, peer, data, IpFields::default());
+    }
+    fn send_to_peer_ip(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8], ip: IpFields) {
+        self.to_peer.push((relay, peer, data.to_vec(), ip));
+    }
+    fn sets_dont_fragment(&self) -> bool {
+        self.df
+    }
+    fn pads_channel_data(&self, _: SocketAddr) -> bool {
+        self.stream
+    }
+    fn open_relay(&mut self, c: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
+        self.inner.open_relay(c, addr)
+    }
+    fn close_relay(&mut self, relay: SocketAddr) {
+        self.inner.close_relay(relay);
+    }
+}
+
+impl IpEnv {
+    fn last(&self) -> Message<'_> {
+        Message::parse(&self.sent.last().expect("sent").0).expect("stun")
+    }
+    fn code(&self) -> Option<u16> {
+        self.last().error_code().map(|e| e.0)
+    }
+}
+
+/// A dual allocation for `env` with a channel to `peer4()` and a permission for `peer6()`:
+/// the IPv4 and IPv6 relays.
+fn dual_with_peers(core: &mut TurnCore, env: &mut IpEnv, now: Instant) -> (SocketAddr, SocketAddr) {
+    for b in [
+        udp().attr(attr::ADDITIONAL_ADDRESS_FAMILY, &family(true)),
+        req(Method::CHANNEL_BIND)
+            .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+            .xor_addr(attr::XOR_PEER_ADDRESS, peer4()),
+        req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer6()),
+    ] {
+        let m = authed(core, now, b);
+        core.handle_client(now, CLIENT, &m, env);
+        assert_eq!(env.code(), None);
+    }
+    (env.inner.open[0], env.inner.open[1])
+}
+
+fn send_ind(peer: SocketAddr, df: bool) -> Vec<u8> {
+    let mut b = MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
+        .xor_addr(attr::XOR_PEER_ADDRESS, peer)
+        .attr(attr::DATA, b"i");
+    if df {
+        b = b.attr(attr::DONT_FRAGMENT, &[]);
+    }
+    b.build()
+}
+
+/// The TTL goes out one less than it came in, both ways, on ChannelData, Send and Data
+/// indications (RFC 5766 section 12, RFC 8656 section 13); an unknown one (0) stays unknown; a
+/// datagram that came in with 1 is dropped and counted, while requests with 1 are still
+/// answered. Off, every relayed datagram gets the socket's (0).
+#[test]
+fn ttl_is_decremented_unless_off() {
+    for copy in [true, false] {
+        let now = Instant::now();
+        let mut core = core_with(
+            cfg(V4)
+                .additional_relay_ip(V6.parse().unwrap())
+                .copy_ttl(copy),
+            now,
+        );
+        let mut env = IpEnv::default();
+        let (r4, r6) = dual_with_peers(&mut core, &mut env, now);
+        for (ttl, tos) in [(64u8, 0xb9u8), (2, 0), (255, 2), (0, 0x8a)] {
+            let want = IpFields::new(tos, if copy && ttl > 0 { ttl - 1 } else { 0 });
+            let ip = IpFields::new(tos, ttl);
+            core.handle_client_ip(now, CLIENT, &[0x40, 0, 0, 1, b'a'], ip, &mut env);
+            core.handle_client_ip(now, CLIENT, &send_ind(peer6(), false), ip, &mut env);
+            let n = env.to_peer.len();
+            assert_eq!(
+                (env.to_peer[n - 2].0, env.to_peer[n - 2].3),
+                (r4, want),
+                "{ttl}"
+            );
+            assert_eq!(
+                (env.to_peer[n - 1].0, env.to_peer[n - 1].3),
+                (r6, want),
+                "{ttl}"
+            );
+            core.handle_peer_ip(now, r4, peer4(), b"cd", ip, &mut env);
+            core.handle_peer_ip(now, r6, peer6(), b"di", ip, &mut env);
+            let n = env.sent.len();
+            assert!(is_channel_data(&env.sent[n - 2].0));
+            assert_eq!(env.sent[n - 2].1, want, "{ttl}");
+            assert_eq!(env.last().method(), Method::DATA);
+            assert_eq!(env.sent[n - 1].1, want, "{ttl}");
+        }
+        assert_eq!(core.stats().ttl_expired, 0);
+        // TTL 1: nothing left for the hop through the server.
+        let (np, nc) = (env.to_peer.len(), env.sent.len());
+        let one = IpFields::new(0, 1);
+        core.handle_client_ip(now, CLIENT, &[0x40, 0, 0, 1, b'a'], one, &mut env);
+        core.handle_client_ip(now, CLIENT, &send_ind(peer6(), false), one, &mut env);
+        core.handle_peer_ip(now, r4, peer4(), b"cd", one, &mut env);
+        core.handle_peer_ip(now, r6, peer6(), b"di", one, &mut env);
+        if copy {
+            assert_eq!((env.to_peer.len(), env.sent.len()), (np, nc));
+            assert_eq!(core.stats().ttl_expired, 4);
+        } else {
+            assert_eq!((env.to_peer.len(), env.sent.len()), (np + 2, nc + 2));
+            assert!(env.to_peer[np..].iter().all(|t| t.3.ttl == 0));
+            assert!(env.sent[nc..].iter().all(|t| t.1.ttl == 0));
+            assert_eq!(core.stats().ttl_expired, 0);
+        }
+        // A request is answered whatever its TTL; the response carries none.
+        let m = authed(&core, now, req(Method::REFRESH));
+        core.handle_client_ip(now, CLIENT, &m, one, &mut env);
+        assert_eq!(env.last().class(), Class::Success);
+        assert_eq!(env.sent.last().map(|s| s.1), Some(IpFields::default()));
+        // The TOS-only entry points carry no TTL.
+        core.handle_peer_tos(now, r4, peer4(), b"cd", 0xb9, &mut env);
+        assert_eq!(env.sent.last().map(|s| s.1), Some(IpFields::new(0xb9, 0)));
+    }
+}
+
+/// A stream client gets data from peers that came in with TTL 1 (no hop of the datagram's own
+/// follows, RFC 8656 section 16), without fields.
+#[test]
+fn ttl_does_not_drop_for_stream_clients() {
+    let now = Instant::now();
+    let mut core = dual(now);
+    let mut env = IpEnv {
+        stream: true,
+        ..IpEnv::default()
+    };
+    let (r4, _) = dual_with_peers(&mut core, &mut env, now);
+    core.handle_peer_ip(now, r4, peer4(), b"cd", IpFields::new(0xb9, 1), &mut env);
+    assert!(is_channel_data(&env.sent.last().expect("sent").0));
+    assert_eq!(env.sent.last().map(|s| s.1), Some(IpFields::default()));
+    assert_eq!(core.stats().ttl_expired, 0);
+}
+
+/// `DONT-FRAGMENT` (RFC 8656 sections 7.2, 11.2, 13 to 15): with an environment that cannot set
+/// DF, an Allocate carrying it is answered 420 naming it, and a Send indication carrying it is
+/// dropped. With one that can, the Allocate succeeds, and a Send indication with it goes out
+/// with DF from an IPv4 client to an IPv4 peer, or from a stream client; every other datagram
+/// goes with DF clear (ChannelData, Send without it, IPv6 relays from a UDP client).
+#[test]
+fn dont_fragment() {
+    let now = Instant::now();
+    let mut core = dual(now);
+    let mut env = IpEnv::default();
+    let m = authed(&core, now, udp().attr(attr::DONT_FRAGMENT, &[]));
+    core.handle_client(now, CLIENT, &m, &mut env);
+    assert_eq!(env.code(), Some(420));
+    let unknown = env.last().get(attr::UNKNOWN_ATTRIBUTES).map(<[u8]>::to_vec);
+    assert_eq!(unknown, Some(attr::DONT_FRAGMENT.to_be_bytes().to_vec()));
+    assert!(env.inner.open.is_empty());
+    dual_with_peers(&mut core, &mut env, now);
+    let ip = IpFields::new(0, 64);
+    let n = env.to_peer.len();
+    core.handle_client_ip(now, CLIENT, &send_ind(peer4(), true), ip, &mut env);
+    assert_eq!(env.to_peer.len(), n, "dropped: DF cannot be set");
+    core.handle_client_ip(now, CLIENT, &send_ind(peer4(), false), ip, &mut env);
+    assert_eq!(env.to_peer.len(), n + 1);
+
+    for stream in [false, true] {
+        let mut core = dual(now);
+        let mut env = IpEnv {
+            df: true,
+            stream,
+            ..IpEnv::default()
+        };
+        let m = authed(
+            &core,
+            now,
+            udp()
+                .attr(attr::ADDITIONAL_ADDRESS_FAMILY, &family(true))
+                .attr(attr::DONT_FRAGMENT, &[]),
+        );
+        core.handle_client(now, CLIENT, &m, &mut env);
+        assert_eq!(env.code(), None, "stream={stream}");
+        for b in [
+            req(Method::CHANNEL_BIND)
+                .u32(attr::CHANNEL_NUMBER, 0x4000 << 16)
+                .xor_addr(attr::XOR_PEER_ADDRESS, peer4()),
+            req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, peer6()),
+        ] {
+            let m = authed(&core, now, b);
+            core.handle_client(now, CLIENT, &m, &mut env);
+        }
+        let (r4, r6) = (env.inner.open[0], env.inner.open[1]);
+        let ip = if stream { IpFields::default() } else { ip };
+        let cases = [
+            (send_ind(peer4(), true), r4, true),
+            (send_ind(peer4(), false), r4, false),
+            (vec![0x40, 0, 0, 1, b'a'], r4, false),
+            // IPv6 relays: ignored from a UDP client (section 13), kept from a stream
+            // (section 15).
+            (send_ind(peer6(), true), r6, stream),
+        ];
+        for (i, (msg, relay, df)) in cases.into_iter().enumerate() {
+            core.handle_client_ip(now, CLIENT, &msg, ip, &mut env);
+            let last = env.to_peer.last().expect("relayed");
+            assert_eq!(last.0, relay, "stream={stream} case {i}");
+            assert_eq!(last.3.dont_fragment, df, "stream={stream} case {i}");
+        }
+        // Back to the client, never DF.
+        core.handle_peer_ip(now, r4, peer4(), b"cd", ip, &mut env);
+        assert!(!env.sent.last().expect("sent").1.dont_fragment);
+    }
 }

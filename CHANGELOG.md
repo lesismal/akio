@@ -26,6 +26,41 @@ ADR-078's fourth update (2026-11-23), additive:
   the default interface or by unicast; a legacy unicast querier gets only the records of every
   link.
 
+### Added: TTL across the TURN relay, DONT-FRAGMENT, ICMP on macOS, ICMP in ICE (akio-turn, akio-ice, akio-webrtc, akio, akio-core, akio-epoll, akio-sys)
+
+ADR-091's update (2026-11-23), the items it left:
+
+- akio-turn server: relayed datagrams go out with the TTL / hop limit they came in with minus
+  one, both ways (RFC 5766 section 12, RFC 8656 section 13); one that arrives with 1 is dropped
+  and counted (`TurnStats::ttl_expired`). `TurnConfig::copy_ttl` (true; false sends the socket's
+  default). macOS cannot set an IPv4 TTL per datagram: those keep the default.
+- akio-turn server: `DONT-FRAGMENT` is acted on: a Send indication carrying it goes to the peer
+  with DF set (IPv4 to IPv4 from a UDP client, any family from a stream client); everything
+  else goes with DF clear. An environment that cannot set DF answers an Allocate carrying it
+  with 420 and drops such Send indications (RFC 8656 sections 7.2 and 11.2).
+- For embedders: `IpFields`, `TurnCore::handle_client_ip` / `handle_peer_ip`,
+  `TurnEnv::send_to_client_ip` / `send_to_peer_ip` (defaults call the `_tos` methods) and
+  `TurnEnv::sets_dont_fragment` (default false).
+- akio: `Engine::bind_udp_icmp` reports ICMP errors on macOS too, read from an unprivileged ICMP
+  socket of the I/O thread; akio-turn's ICMP relaying (RFC 8656 section 11.5) thus works there.
+- akio-ice: `IceAgent::handle_icmp_error`: a hard ICMP error (port or protocol unreachable)
+  fails the pairs whose check is in flight (RFC 8445 section 7.2.5.2.2); succeeded pairs are
+  left to consent freshness. akio-webrtc feeds it the ICMP errors the TURN server relays for
+  relayed candidates.
+- akio: `UdpBinding::set_dont_fragment`. akio-sys: `set_dont_fragment`, `dont_fragment`,
+  `enable_recv_ttl`, `send_to_ip`, `RecvBatch::ttl` / `tos_ttl`, `Batch::push_ip`,
+  `recv_from_ip` (macOS), `parse_icmp_error` / `IcmpPacket`, `IcmpListener` /
+  `icmp_source_matches` (macOS). Hidden: `Conn::rx_ttl`, `Conn::enable_rx_ttl`,
+  `Conn::send_segments_ip`, `UdpBinding::send_to_ip`, `UdpBinding::enable_rx_ttl`.
+- Behaviour changes: akio-turn's relayed datagrams carry the decremented TTL (was the socket's,
+  normally 64); its relay sockets send with DF clear (Linux set DF on whatever fit the path MTU);
+  a `TurnEnv` that does not override `sets_dont_fragment` now answers an Allocate with
+  `DONT-FRAGMENT` 420 instead of accepting it.
+- `tools/interop/webrtc/turn-ttl-df.sh` (TTL and DF against coturn across a 1500-byte link),
+  `turn-relay-bench` takes `TURN_BENCH_COPY_TTL=0`, new fuzz target `sys_icmp_error`.
+  Relay A/B against main: no measurable change; TTL copying costs about 5 % against not copying,
+  within the spread (docs/BENCHMARKS.md).
+
 ### Fixed: BitTorrent client on port 0 racing other sockets (akio-bittorrent)
 
 `Client::new` with `listen` on port 0 picks one port number for TCP and UDP by probing both,
@@ -151,7 +186,7 @@ ADR-091, additive:
 - Behaviour change: akio-turn's relayed datagrams carry the sender's DSCP (was the socket's,
   normally 0), and its UDP relay sockets have `IP_RECVERR` on Linux.
 - Not changed: `Endpoint::gather_relay` stays single-family (ADR-091 says why); TTL is not
-  copied.
+  copied (done later, see ADR-091's update above).
 - `turn-relay-bench` takes `TURN_BENCH_TOS`; `tools/interop/webrtc/turn-dual.sh` checks DSCP,
   ICMP and the per-family release. Relay A/B against main:
   no measurable change; DSCP-marked datagrams cost what ECN-marked ones did (docs/BENCHMARKS.md).

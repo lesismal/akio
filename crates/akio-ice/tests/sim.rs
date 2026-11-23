@@ -71,6 +71,12 @@ struct Net {
     nats: Vec<Nat>,
     /// Rewrites the source of matching packets (spoofing tests).
     rewrite: Option<Rewrite>,
+    /// Closed ports: a datagram to one draws an ICMP port unreachable, delivered to the
+    /// sender's agent (`handle_icmp_error`) one delay later: (when, local, remote).
+    refused: HashSet<SocketAddr>,
+    icmp: Vec<(Instant, SocketAddr, SocketAddr)>,
+    /// Datagrams sent to each refused address.
+    to_refused: HashMap<SocketAddr, usize>,
 }
 
 impl Net {
@@ -87,6 +93,9 @@ impl Net {
             down: false,
             nats: Vec::new(),
             rewrite: None,
+            refused: HashSet::new(),
+            icmp: Vec::new(),
+            to_refused: HashMap::new(),
         }
     }
 
@@ -99,6 +108,12 @@ impl Net {
 
     fn send(&mut self, now: Instant, t: Transmit) {
         if self.down || self.dead.contains(&t.source) || self.dead.contains(&t.destination) {
+            return;
+        }
+        if self.refused.contains(&t.destination) {
+            *self.to_refused.entry(t.destination).or_default() += 1;
+            self.icmp
+                .push((now + self.delay * 2, t.source, t.destination));
             return;
         }
         let mut src = t.source;
@@ -138,7 +153,20 @@ impl Net {
     }
 
     fn next_at(&self) -> Option<Instant> {
-        self.queue.iter().map(|p| p.at).min()
+        self.queue
+            .iter()
+            .map(|p| p.at)
+            .chain(self.icmp.iter().map(|i| i.0))
+            .min()
+    }
+
+    /// Pops the due ICMP errors: (local, remote).
+    fn due_icmp(&mut self, now: Instant) -> Vec<(SocketAddr, SocketAddr)> {
+        let (due, keep) = self.icmp.drain(..).partition(|i| i.0 <= now);
+        self.icmp = keep;
+        due.into_iter()
+            .map(|(_, l, r): (Instant, _, _)| (l, r))
+            .collect()
     }
 
     /// Pops the due packets in delivery order, after inbound NAT translation (dropped when
@@ -351,6 +379,11 @@ impl Sim {
         }
         self.now = self.now.max(next);
         let now = self.now;
+        for (local, remote) in self.net.due_icmp(now) {
+            if let Some(peer) = self.peers.iter_mut().find(|x| x.addrs.contains(&local)) {
+                peer.agent.handle_icmp_error(now, local, remote, 3, 3);
+            }
+        }
         for p in self.net.due(now) {
             if let Some(peer) = self.peers.iter_mut().find(|x| x.addrs.contains(&p.dst)) {
                 if !peer.agent.handle_receive(now, p.src, p.dst, &p.data) {
@@ -603,6 +636,100 @@ fn some_candidates_unreachable() {
     assert_eq!(r, a("10.0.0.2:2000"));
     sim.assert_connected_pair();
     assert!(sim.run_until(Duration::from_secs(20), |s| s.both(IceState::Completed)));
+}
+
+/// A remote candidate on a closed port: its pairs fail on the ICMP port unreachable their first
+/// check draws (RFC 8445 section 7.2.5.2.2), not after the check's retransmissions; soft
+/// errors, other addresses and other ports change nothing, port 0 (not reported) matches.
+#[test]
+fn icmp_port_unreachable_fails_the_check() {
+    let local = a("10.0.0.1:1000");
+    let remote = a("10.0.0.2:2000");
+    let started = |icmp: bool| {
+        let now = Instant::now();
+        let mut ag = IceAgent::new(full(true), now);
+        assert!(ag.add_local_candidate(Candidate::host(local)));
+        ag.set_remote_credentials(Credentials::new("rfrag", "rpassword-rpassword-r"));
+        ag.add_remote_candidate(Candidate::host(remote));
+        ag.end_of_remote_candidates();
+        let mut t = now;
+        // Until the first check is out.
+        while ag.poll_transmit().is_none() {
+            t = ag.poll_timeout().expect("timer").max(t);
+            ag.handle_timeout(t);
+        }
+        assert_eq!(ag.state(), IceState::Checking);
+        if icmp {
+            t += Duration::from_millis(20);
+            // Soft errors and other destinations are ignored.
+            assert!(!ag.handle_icmp_error(t, local, remote, 3, 1));
+            assert!(!ag.handle_icmp_error(t, local, remote, 11, 0));
+            assert!(!ag.handle_icmp_error(t, local, a("10.0.0.2:2001"), 3, 3));
+            assert!(!ag.handle_icmp_error(t, a("10.0.0.1:1001"), remote, 3, 3));
+            assert_eq!(ag.state(), IceState::Checking);
+            assert!(ag.handle_icmp_error(t, local, a("10.0.0.2:0"), 3, 3));
+            // Nothing left in flight: a second error does nothing.
+            assert!(!ag.handle_icmp_error(t, local, remote, 3, 3));
+        }
+        // Run the timers until it gives up.
+        while ag.state() != IceState::Failed {
+            let Some(next) = ag.poll_timeout() else {
+                break;
+            };
+            t = next.max(t);
+            ag.handle_timeout(t);
+            while ag.poll_transmit().is_some() {}
+        }
+        assert_eq!(ag.state(), IceState::Failed);
+        t - now
+    };
+    let with = started(true);
+    let without = started(false);
+    assert!(with < Duration::from_millis(100), "{with:?}");
+    assert!(without > Duration::from_secs(1), "{without:?}");
+}
+
+/// On a simulated network: a remote candidate is a closed port that answers with ICMP port
+/// unreachable. Its pair fails at its first check (one datagram, no retransmissions) while the
+/// agents connect over the other; an ICMP error naming the selected pair later (spoofed)
+/// leaves it.
+#[test]
+fn icmp_refused_candidate_and_spoofed_error() {
+    let mut sim = basic(
+        7,
+        full(true),
+        &["10.0.0.1:1000"],
+        full(false),
+        &["10.0.0.2:2000"],
+    );
+    let closed = a("10.0.0.4:2004");
+    sim.net.refused.insert(closed);
+    sim.signal();
+    let c = Candidate::parse("a=candidate:9 1 udp 2130706431 10.0.0.4 2004 typ host").unwrap();
+    sim.peers[0].agent.add_remote_candidate(c);
+    assert!(
+        sim.run_until(Duration::from_secs(20), |s| s.both(IceState::Connected)
+            || s.both(IceState::Completed))
+    );
+    sim.assert_connected_pair();
+    assert_eq!(
+        sim.peers[0].agent.selected_pair().unwrap().1,
+        a("10.0.0.2:2000")
+    );
+    let sel = sim.peers[0].agent.selected_pair().unwrap();
+    let now = sim.now;
+    assert!(
+        !sim.peers[0]
+            .agent
+            .handle_icmp_error(now, sel.0, sel.1, 3, 3)
+    );
+    sim.run_for(Duration::from_secs(5));
+    assert_eq!(sim.peers[0].agent.selected_pair(), Some(sel));
+    assert_eq!(sim.net.to_refused.get(&closed), Some(&1));
+    assert!(matches!(
+        sim.peers[0].agent.state(),
+        IceState::Connected | IceState::Completed
+    ));
 }
 
 #[test]

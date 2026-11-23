@@ -8,7 +8,8 @@
 //! `TURN_BENCH_ECN=<1|2|3>` marks every datagram of both senders with that ECN codepoint
 //! (Linux and macOS), which the relay copies (RFC 8656 section 14, ADR-083).
 //! `TURN_BENCH_TOS=<0-255>` marks them with that whole traffic class byte instead (DSCP and
-//! ECN, ADR-091); `TURN_BENCH_ECN` is then ignored.
+//! ECN, ADR-091); `TURN_BENCH_ECN` is then ignored. `TURN_BENCH_COPY_TTL=0` turns off the
+//! server's TTL copying (`TurnConfig::copy_ttl`, on by default, ADR-091 update).
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -95,8 +96,10 @@ fn main() {
     let threads = args.get(2).copied().unwrap_or(4);
 
     let auth = static_auth("akio", [("bench", "secret")]);
-    let mut cfg =
-        TurnConfig::new("akio", auth, "127.0.0.1".parse().expect("ip")).allow_private_peers(true);
+    let copy_ttl = std::env::var("TURN_BENCH_COPY_TTL").map_or(true, |v| v != "0");
+    let mut cfg = TurnConfig::new("akio", auth, "127.0.0.1".parse().expect("ip"))
+        .allow_private_peers(true)
+        .copy_ttl(copy_ttl);
     cfg.max_allocations_per_user = 100_000;
     let turn = TurnServer::new(cfg);
     let engine = Arc::new(
