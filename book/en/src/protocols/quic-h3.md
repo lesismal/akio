@@ -292,7 +292,8 @@ for a streamed one) to the request the tag names. The sink is shared by the conn
 requests (through a thin `SharedSink`), and request targets and headers are built with
 `request_target` and `request_headers` in the storage of a finished request kept per thread;
 after encoding a response's head the sink hands its header storage back with
-`recycle_response_headers`. So none of these costs an allocation per request (ADR-025, ADR-081;
+`recycle_response_headers`, and a body it has copied out with `recycle_response_body`. So none
+of these costs an allocation per request (ADR-025, ADR-081;
 the older boxed `ResponseSink` with `dispatch` is deprecated). akio-h3 implements the sink on QUIC streams, which is why routers, middleware and
 handlers work unchanged. See [Architecture](../architecture.md).
 
@@ -300,7 +301,10 @@ What a request costs: frames are read in place from the received stream data, th
 is decoded into a buffer the connection reuses and copied once into the request's `Headers`, and
 the response's HEADERS frame is QPACK-encoded straight into the buffer handed to QUIC, together
 with a body of up to 16 KiB and the trailers (one write per response; a larger body follows
-without a copy). One connection with 64 requests in flight serves about 840 k req/s on a
+without a copy). The client builds a response's headers in the storage of a response dropped
+on its thread before, so a callback that reads the response and drops it lends that storage to
+the next one; the body is the caller's `Vec<u8>`. akio-quic keeps its packet buffers, ACK
+processing and send batches off the allocator in the steady state (ADR-081). One connection with 64 requests in flight serves about 840 k req/s on a
 Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md)).
 
 ## Not done

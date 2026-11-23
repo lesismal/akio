@@ -10,6 +10,33 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: no allocation per HTTP request on the server, fewer on the HTTP/3 client and QUIC's hot path (akio-http, akio-h3, akio-quic, akio-core, akio-epoll, akio-buf; ADR-081 update)
+
+docs/adr/081-per-thread-head-storage.md, update of 2026-11-23. No public API change; the
+snapshots are unchanged.
+
+- **`text` bodies reuse a buffer per thread.** `Response::text` / `Context::text` given a `&str`
+  copy it into the thread's spare body buffer instead of making a `String` (other types convert
+  as before; a `String` is moved). HTTP/1.1, HTTP/2 and HTTP/3 give the buffer back (up to
+  4 KiB) once the body is copied into their output.
+- **The HTTP/3 client builds response heads in reused storage.** `Headers` storage that is
+  dropped refills the thread's empty response spare, so a response read and dropped in the
+  client's callback lends its storage to the next one. The body stays the caller's `Vec<u8>`.
+- **QUIC:** datagram buffers from akio-buf's pool; ACK frames read in place, without a vector;
+  one acknowledgment list kept per connection; spare frame lists up to the packets in flight.
+- **UDP flush (akio-core, akio-epoll):** the `sendmmsg` map and GSO parts without heap vectors,
+  no lists for a one-connection flush, the epoll loop's connection list kept.
+- Hidden additions: `akio_buf::text::as_str`, `akio_http::transport::{response_headers,
+  recycle_response_body}`; akio-core's hidden `ConnInner::flush_datagram_peers` is generic over
+  the connection handle.
+- Allocator calls (bpftrace, gpu51): HTTP/1.1, pipelined and h2c 1.0 → 0 per request (epoll and
+  io_uring); `quic-bench h3` both ends 6.0 → 2.03 (the client's response body and the
+  benchmark's request callback); QUIC bulk 482 → 21.5 per MB.
+- Same-run A/B on gpu51 under `quiet.sh` (7 rounds, medians): server user cycles per request
+  HTTP/1.1 0.975×, pipelined 1.004× (noise), h2c 0.989×; req/s 1.003× / 1.000× / 1.008×;
+  HTTP/3 req/s 1.005× (instructions 0.980×); QUIC bulk 1.025×. A first version taking bodies
+  from akio-buf's pool cost pipelined HTTP/1.1 3.3% more cycles and was replaced.
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:

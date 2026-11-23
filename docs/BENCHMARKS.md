@@ -2261,6 +2261,33 @@ direction carries full-size frames. Connection churn gains least: most of its co
 kernel clients' own connect and close. This measures copy mode; zero-copy on a NIC that supports
 it is not measured (the host's NICs are not used).
 
+### HTTP and QUIC allocations, second pass (ADR-081 update, same-run A/B, 2026-11-23)
+
+Measured on gpu51. `base` is `main` at `5cc005c0`, `new` the branch; both built in one session
+and run interleaved under `quiet.sh`, 7 rounds. HTTP: `http-bench` (epoll), a fresh server per
+run on CPUs 0–3 with 4 threads, `h2load` with 8 threads on CPUs 4–11, 2-second warm-up then 10
+seconds, `perf stat -e cycles:u,instructions:u` on the server. HTTP/3: `quic-bench h3 10 64`,
+`perf stat` on the whole process (both ends). Bulk: `quic-bench bulk 8000`, one stream. Both
+QUIC cases on CPUs 2–5. Medians.
+
+Allocator calls (bpftrace uprobes on malloc, calloc, realloc, posix_memalign and aligned_alloc):
+HTTP/1.1, pipelined and h2c 1.0 → 0 per request on the server (epoll and io_uring);
+`quic-bench h3` both ends 6.0 → 2.03 (left: the client's response body, which is the caller's,
+and the benchmark's own request callback); QUIC bulk 482 → 21.5 per MB.
+
+| Case | req/s base → new | × | user cycles / request | × | instructions / request | × |
+|---|---:|---:|---:|---:|---:|---:|
+| HTTP/1.1, 256 connections | 578,340 → 580,183 | 1.003 | 4,861 → 4,738 | 0.975 | 6,470 → 6,457 | 0.998 |
+| HTTP/1.1 pipelined 16 × 256 | 3,800,088 → 3,798,787 | 1.000 | 2,304 → 2,314 | 1.004 | 5,435 → 5,416 | 0.997 |
+| h2c 64 conns × 16 streams | 3,286,046 → 3,313,472 | 1.008 | 4,099 → 4,054 | 0.989 | 8,369 → 8,331 | 0.996 |
+| HTTP/3 GET, one connection, 64 in flight (both ends) | 790,826 → 794,709 | 1.005 | 6,416 → 6,447 | 1.005 | 17,273 → 16,920 | 0.980 |
+| QUIC bulk, one stream (Mbit/s) | 18,550 → 19,007 | 1.025 | | | | |
+
+Pipelined cycles per request were 1.000–1.014× by round; bulk was faster in 7 of 7 rounds
+(1.010–1.090×). A first version that took `text` bodies from akio-buf's pool measured, in the
+same setup: pipelined 1.033× cycles per request (worse in 7 of 7 rounds) and 0.986× req/s;
+HTTP/1.1 1.001×, h2c 0.992×. Replaced by a per-thread `Cell<Vec<u8>>` spare (the table above).
+
 ### HTTP allocations per request (ADR-081, same-run A/B, 2026-11-22)
 
 Measured on gpu51. `base` is `main` at `7e4db2d9`, `new` the branch; `http-bench` (epoll), both
