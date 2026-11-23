@@ -309,6 +309,48 @@ files, never a broken one. `RecordHooks::file_name` names files (relative to `di
 `start` from the hub's `on_publish` hook. MPEG-TS files repeat the PAT and PMT before every
 video keyframe (and every second), so a cut or truncated file still plays from any keyframe.
 
+## Video on demand: MP4 files
+
+`akio_media::mp4` reads MP4 files that are not fragmented (what ffmpeg, encoders and cameras
+write) and cuts them into HLS segments at video keyframes, without transcoding. It does no I/O
+itself: a server reads the byte ranges it names on the logical pool or a thread of its own,
+never on an I/O thread ([ADR-097](https://github.com/lesismal/akio/blob/main/docs/adr/097-mp4-file-reader-segment-planner.md)).
+
+```rust,ignore
+use akio_media::{av::SECOND, fmp4, mp4::{Limits, Locator, Movie, Plan}};
+
+// Find the moov (front or back of the file) with a few 16-byte header reads, then read it.
+let limits = Limits::default();
+let mut loc = Locator::new(file_size, &limits);
+let at = loop {
+    let (off, len) = loc.next_read();
+    if let Some(at) = loc.feed(&read_at(off, len))? { break at; }
+};
+let movie = Movie::parse(&read_at(at.offset, at.size as usize), &at, &limits)?;
+let plan = Plan::new(&movie, 6 * SECOND)?;
+let playlist = plan.vod_playlist(Some("init.mp4"), |i| format!("{i}.m4s"));
+let mut mux = fmp4::Muxer::new(&movie.av_tracks()); // mux.init_segment() is init.mp4
+
+// Segment i, when a player asks for it: read its ranges, then mux.
+let seg = plan.segment(&movie, i);
+let reads: Vec<_> = seg.byte_ranges(&movie, 64 * 1024).into_iter()
+    .map(|r| (r.start, read_at(r.start, (r.end - r.start) as usize))).collect();
+let parts: Vec<(u64, &[u8])> = reads.iter().map(|(o, b)| (*o, &b[..])).collect();
+let mut out = Vec::new();
+seg.write_fmp4(&movie, &parts, &mut mux, &mut out)?; // or seg.write_ts(..) for MPEG-TS
+```
+
+- Codecs: H.264 (`avc1` / `avc3`), H.265 (`hvc1` / `hev1`), AV1, VP8 / VP9, AAC and Opus; other
+  tracks (AC-3, subtitles) are indexed with their format code and left out of the segments.
+- The sample index is compact (an hour at 60 fps with B-frames and AAC: 1.6 MB) and immutable,
+  so one parsed `Movie` serves every player. `Segment::packets` gives the canonical packets
+  instead, to play a file into the hub.
+- Edit lists are applied as players do (B-frame delay, AAC priming, a late start); every time
+  is moved by `Plan::delay()` so that no decode time is negative.
+- `Limits` bounds the `moov` (64 MiB), boxes, tracks, samples a track, edits and segments.
+  Every table is checked against its box and against the others, and every sample against the
+  file's size.
+
 ## AV1 in MPEG-TS
 
 The MPEG-TS muxer and demuxer carry AV1 as the Alliance for Open Media specifies ("Carriage

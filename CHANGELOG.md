@@ -10,6 +10,28 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: MP4 files read without I/O and cut into HLS segments (akio-media)
+
+ADR-097, additive (akit's request A7):
+
+- `akio_media::mp4`, a reader of MP4 files that are not fragmented, which does no I/O of its
+  own: `Locator` names the header reads that find the `moov` (front or back, 64-bit sizes), and
+  `Movie::parse` reads the `moov`. A track has its handler, language, name, timescale, edit
+  list, format code and codec (`avc1` / `avc3`, `hvc1` / `hev1`, `av01`, `vp08` / `vp09`, `mp4a`,
+  `Opus`; others such as `ac-3` are kept as `Codec::Unknown`).
+- `SampleIndex`: a compact index of `stts`, `ctts`, `stss`, `stsc`, `stsz` / `stz2` and
+  `stco` / `co64` (1.6 MB for an hour at 60 fps with B-frames and AAC), with lookups by index,
+  decode time and keyframe, and walks at constant cost a sample. `Mp4Track::keyframe_at` finds
+  the keyframe for a time.
+- `Plan` cuts a movie into segments at video keyframes. A `Segment` gives the byte ranges to
+  read, its canonical packets (`Segment::packets`), and muxes them as fMP4 (`write_fmp4`) or
+  MPEG-TS (`write_ts`); `Plan::vod_playlist` writes the VOD playlist.
+- `Limits` bounds the `moov` bytes, boxes, tracks, samples a track, edits and segments; tables
+  are checked against their boxes, each other and the file size. Fuzz target `mp4_read`; ffmpeg
+  interop test `tests/mp4_interop.rs`.
+- `fmp4::Muxer::set_next_sequence`: the `mfhd` sequence number of the next fragment, for
+  segments made out of order.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

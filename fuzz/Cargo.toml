@@ -364,6 +364,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "mp4_read"
+path = "fuzz_targets/mp4_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mpegts_demux"
 path = "fuzz_targets/mpegts_demux.rs"
 test = false

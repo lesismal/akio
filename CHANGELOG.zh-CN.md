@@ -10,6 +10,23 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：不做 I/O 地读取 MP4 文件并切成 HLS 分段（akio-media）
+
+ADR-097，均为新增（akit 的请求 A7）：
+
+- `akio_media::mp4`：非分片 MP4 文件的读取器，本身不做 I/O。`Locator` 指出为找到 `moov`（在开头或末尾，支持
+  64 位大小）所需的头读取，`Movie::parse` 解析 `moov`。轨道包含 handler、语言、名字、时间刻度、编辑列表、格式码
+  与编解码器（`avc1` / `avc3`、`hvc1` / `hev1`、`av01`、`vp08` / `vp09`、`mp4a`、`Opus`；`ac-3` 等其他格式保留
+  为 `Codec::Unknown`）。
+- `SampleIndex`：`stts`、`ctts`、`stss`、`stsc`、`stsz` / `stz2` 与 `stco` / `co64` 的紧凑索引（一小时 60 fps
+  含 B 帧加 AAC 为 1.6 MB），可按序号、解码时间与关键帧查询，并以每采样常数代价遍历。`Mp4Track::keyframe_at`
+  找出某时刻对应的关键帧。
+- `Plan` 在视频关键帧处把影片切成分段。`Segment` 给出要读取的字节范围与规范包（`Segment::packets`），并把它们
+  复用为 fMP4（`write_fmp4`）或 MPEG-TS（`write_ts`）；`Plan::vod_playlist` 写出点播播放列表。
+- `Limits` 限制 `moov` 字节数、box、轨道、每轨采样、编辑与分段的数量；各表与其 box、彼此以及文件大小核对。
+  模糊测试目标 `mp4_read`；ffmpeg 互通测试 `tests/mp4_interop.rs`。
+- `fmp4::Muxer::set_next_sequence`：下一个分片的 `mfhd` 序号，用于不按顺序生成的分段。
+
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
 ADR-078 的第四次更新（2026-11-23），均为新增：
