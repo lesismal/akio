@@ -43,6 +43,23 @@ akio-webrtc 的行为变化（帧模式）：
 - `tools/interop/webrtc`：`client-loss`，pion 发送 VP8 并漏掉一个包，检查收到一个 PLI，且在 pion
   发出关键帧之后不再收到。
 - 代价：gpu51 上同轮 A/B（`webrtc-bench`，base 为 `main` 的 `50a82315`）：没有可测量的变化；`media` 1.002，`video` / `video-jb` 每秒帧数 1.000，每帧 CPU 0.996 / 1.000（每轮比值中位数，每个范围都跨过 1）。见 BENCHMARKS。
+### 新增：host 候选的 ICMP，向 TURN 客户端报告“包过大”与“超时”（akio-webrtc、akio-turn、akio-sys）
+
+ADR-091 的第二次更新（2026-11-23），了结第一次更新留下的各项：
+
+- akio-webrtc：`Endpoint` 自己的 socket（`bind`、`bind_rtcp`、`bind_transport_socket`）能收到其数据报引起的
+  ICMP 错误（`Engine::bind_udp_icmp`：Linux `IP_RECVERR`，macOS 用循环的 ICMP socket），硬错误（端口或协议
+  不可达）让 host 与服务器反射候选发往该地址、正在进行的检查立即失败（RFC 8445 7.2.5.2.2 节），与中继候选已有的
+  处理相同：对关闭端口的检查在几毫秒内失败，而不是在约八秒内发送七次之后。
+- akio-turn 服务器：内核以大于路径 MTU 为由拒绝（`EMSGSIZE`）的 `DONT-FRAGMENT` 数据报，以带 `ICMP` 的 Data
+  indication 报告给客户端：IPv4 中继上为“需要分片”（3/4），IPv6 中继上为“包过大”（ICMPv6 2/0），带路径 MTU
+  （RFC 8656 13.2 与 14 节），每个中继每 100 ms 最多一次；此前被静默丢弃。
+- akio-turn 服务器：客户端在 TTL 1 处被丢弃的数据报，针对其对端产生一个带 `ICMP` 超时（11/0，ICMPv6 3/0）的 Data
+  indication，每个分配每 100 ms 最多一次（RFC 8656 13.2 节的路由器行为，在带内送达）。两者都由
+  `TurnConfig::relay_icmp(false)` 关闭，并计入 `TurnStats::icmp`。对端在 TTL 1 处被丢弃的数据报仍被静默丢弃：
+  告知对端需要原始 socket（已拒绝，见 ADR-091）。
+- akio-sys：`path_mtu(dest)`，主机所知的到某地址的路径 MTU（Linux `IP_MTU` / `IPV6_MTU`，macOS 为接口的 MTU）。
+- `tools/interop/webrtc/turn-ttl-df.sh` 针对 akio-turn 检查这两种报告。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 

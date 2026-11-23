@@ -1080,11 +1080,26 @@ impl Hub {
     /// The TURN server at relayed address `relayed` relayed an ICMP error about a datagram to
     /// `peer`: every open peer's agent fails the pairs from that relayed candidate to `peer`
     /// whose check is in flight, when the error is a hard one (port or protocol unreachable).
-    fn relay_icmp(&self, relayed: SocketAddr, peer: SocketAddr, icmp_type: u8, code: u8) {
+    /// An ICMP error about a datagram one of the endpoint's own sockets sent: to every peer's
+    /// agents, from the host candidate the socket stands for (its bound address, or the one
+    /// advertised for an unspecified bind) to the destination as candidates name it (no
+    /// scope, IPv4 rather than IPv4-mapped).
+    fn host_icmp(&self, e: &akio::IcmpError) {
+        let local = self.destination(e.local);
+        let remote = match e.dest {
+            SocketAddr::V6(v) => SocketAddr::new(v.ip().to_canonical(), v.port()),
+            a => a,
+        };
+        self.icmp_to_peers(local, remote, e.icmp_type, e.code);
+    }
+
+    /// An ICMP error about a datagram from `local` (a host candidate's base or a relayed
+    /// address) to `remote`, for every peer's agents.
+    fn icmp_to_peers(&self, local: SocketAddr, remote: SocketAddr, icmp_type: u8, code: u8) {
         let peers: Vec<Peer> = lock(&self.peers).values().cloned().collect();
         let now = Instant::now();
         for p in peers {
-            let _ = p.with_rtc_inner(|rtc| rtc.icmp_error(now, relayed, peer, icmp_type, code));
+            let _ = p.with_rtc_inner(|rtc| rtc.icmp_error(now, local, remote, icmp_type, code));
         }
     }
 
@@ -1742,6 +1757,23 @@ impl Acceptor for BoundAcceptor {
     }
 }
 
+/// Binds a socket of `hub`'s on `engine` at `addr`: its datagrams go to the hub, and so do
+/// the ICMP errors its datagrams draw (`Engine::bind_udp_icmp`: Linux `IP_RECVERR`, macOS the
+/// loop's ICMP socket), which fail the host candidates' connectivity checks to a closed port
+/// at once (RFC 8445 section 7.2.5.2.2, ADR-091).
+fn bind_host(engine: &Engine, addr: SocketAddr, hub: &Arc<Hub>) -> io::Result<UdpBinding> {
+    let w = Arc::downgrade(hub);
+    engine.bind_udp_icmp(
+        addr,
+        BoundAcceptor(Arc::downgrade(hub)),
+        move |e: &akio::IcmpError| {
+            if let Some(h) = w.upgrade() {
+                h.host_icmp(e);
+            }
+        },
+    )
+}
+
 /// The address of the interface that routes to the Internet (no packet is sent), else
 /// loopback.
 fn primary_ip(v6: bool) -> IpAddr {
@@ -1775,9 +1807,7 @@ impl Endpoint {
     /// [`add_candidate`](Self::add_candidate).
     pub fn bind(engine: &Engine, addr: SocketAddr) -> Result<Endpoint, Error> {
         let hub = Arc::new(Hub::new(Tx::Bound(OnceLock::new()), false, Vec::new()));
-        let b = engine
-            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&hub)))
-            .map_err(Error::Io)?;
+        let b = bind_host(engine, addr, &hub).map_err(Error::Io)?;
         let local = b.local_addr();
         let host = if local.ip().is_unspecified() {
             SocketAddr::new(primary_ip(local.is_ipv6()), local.port())
@@ -1812,9 +1842,7 @@ impl Endpoint {
                 "the RTCP socket is bound already",
             )));
         }
-        let b = engine
-            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
-            .map_err(Error::Io)?;
+        let b = bind_host(engine, addr, &self.0).map_err(Error::Io)?;
         let local = b.local_addr();
         let host = if local.ip().is_unspecified() {
             SocketAddr::new(primary_ip(local.is_ipv6()), local.port())
@@ -1846,9 +1874,7 @@ impl Endpoint {
         engine: &Engine,
         addr: SocketAddr,
     ) -> Result<SocketAddr, Error> {
-        let b = engine
-            .bind_udp(addr, BoundAcceptor(Arc::downgrade(&self.0)))
-            .map_err(Error::Io)?;
+        let b = bind_host(engine, addr, &self.0).map_err(Error::Io)?;
         let local = b.local_addr();
         let host = if local.ip().is_unspecified() {
             SocketAddr::new(primary_ip(local.is_ipv6()), local.port())

@@ -2,12 +2,22 @@
 //! macOS has no stable system call interface).
 
 use super::{
-    c_char, c_int, c_uint, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t, sockaddr,
-    socklen_t, ssize_t, timespec,
+    c_char, c_int, c_uint, c_ulong, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t,
+    sockaddr, socklen_t, ssize_t, timespec,
 };
 
 /// `sa_family_t`.
 pub type sa_family_t = u8;
+
+/// `struct ifreq` with the `ifru_mtu` member of its union (`SIOCGIFMTU`), padded to the
+/// union's 16 bytes (aligned as the union, which holds pointers).
+#[repr(C, align(8))]
+#[derive(Clone, Copy, Debug)]
+pub struct ifreq_mtu {
+    pub ifr_name: [c_char; IFNAMSIZ],
+    pub ifr_mtu: c_int,
+    pub _pad: [u8; 12],
+}
 
 // ---- errno -------------------------------------------------------------------------------
 pub const EPERM: c_int = 1;
@@ -18,6 +28,7 @@ pub const EBADF: c_int = 9;
 pub const EINVAL: c_int = 22;
 pub const EAGAIN: c_int = 35;
 pub const EINPROGRESS: c_int = 36;
+pub const EMSGSIZE: c_int = 40;
 pub const ENOSYS: c_int = 78;
 
 // ---- files and fcntl -----------------------------------------------------------------------
@@ -49,6 +60,9 @@ pub const IPV6_TCLASS: c_int = 36;
 pub const IP_TTL: c_int = 4;
 pub const IP_RECVTTL: c_int = 24;
 pub const IP_DONTFRAG: c_int = 28;
+pub const IFNAMSIZ: usize = 16;
+/// `_IOWR('i', 51, struct ifreq)`: the MTU of the interface named in an `ifreq`.
+pub const SIOCGIFMTU: c_ulong = 0xc020_6933;
 pub const IPV6_HOPLIMIT: c_int = 47;
 pub const IPV6_RECVHOPLIMIT: c_int = 37;
 pub const IPV6_DONTFRAG: c_int = 62;
@@ -215,6 +229,7 @@ unsafe extern "C" {
     pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
     pub fn if_nametoindex(name: *const c_char) -> c_uint;
     pub fn getifaddrs(ifap: *mut *mut super::ifaddrs) -> c_int;
+    pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     pub fn freeifaddrs(ifa: *mut super::ifaddrs);
     pub fn sendfile(
         fd: c_int,

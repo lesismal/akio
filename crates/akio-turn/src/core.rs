@@ -277,7 +277,12 @@ pub struct TurnConfig {
     pub copy_ttl: bool,
     /// ICMP errors drawn by datagrams relayed to peers go back to the client as Data
     /// indications with an `ICMP` attribute (true, RFC 8656 section 11.5). [`TurnServer`]
-    /// reads them on Linux (`akio::Engine::bind_udp_icmp`); elsewhere there are none.
+    /// reads them on Linux and macOS (`akio::Engine::bind_udp_icmp`); elsewhere there are
+    /// none. The server's own errors go the same way and are turned off with it: time
+    /// exceeded for a client's datagram dropped at TTL 1 (see [`copy_ttl`](Self::copy_ttl);
+    /// at most one per allocation per 100 ms), and, from [`TurnServer`], "fragmentation
+    /// needed" / "packet too big" with the path MTU for a `DONT-FRAGMENT` datagram the kernel
+    /// refuses as too large (RFC 8656 sections 13.2 and 14; at most one per relay per 100 ms).
     ///
     /// [`TurnServer`]: crate::TurnServer
     pub relay_icmp: bool,
@@ -500,7 +505,14 @@ struct Allocation {
     chan_of: HashMap<SocketAddr, u16>,
     /// A TCP allocation (RFC 6062): its connections. `relay` is then its listener.
     tcp: Option<Box<TcpAlloc>>,
+    /// When the client was last told of a datagram of its dropped at TTL 1 (ICMP time
+    /// exceeded), to tell it at most once per [`TTL_ICMP_GAP`].
+    ttl_icmp_at: Option<Instant>,
 }
+
+/// The least time between two "time exceeded" indications to one client: one tells it what
+/// happened; a stream of them would cost a message per dropped datagram.
+const TTL_ICMP_GAP: Duration = Duration::from_millis(100);
 
 impl Allocation {
     /// Whether any relayed address is still alive.
@@ -1004,6 +1016,7 @@ impl TurnCore {
         }
         let relay = r.relay;
         let Some(out) = self.relayed(ip) else {
+            self.ttl_exceeded(now, client, relay, peer, env);
             return;
         };
         self.stats.to_peer += 1;
@@ -1043,6 +1056,7 @@ impl TurnCore {
         }
         let relay = r.relay;
         let Some(mut out) = self.relayed(ip) else {
+            self.ttl_exceeded(now, client, relay, peer, env);
             return;
         };
         // DF applies IPv4 to IPv4 over UDP (section 14; translations to or from IPv6 ignore
@@ -1189,6 +1203,37 @@ impl TurnCore {
             t => t - 1,
         };
         Some(IpFields::new(tos, ttl))
+    }
+
+    /// A datagram from `client` to `peer` through `relay` was dropped at TTL 1: the client
+    /// hears of it as a router's sender would (RFC 8656 section 13.2: the server "acts as a
+    /// regular router", ICMP error included), in a Data indication with `ICMP` time exceeded
+    /// (ICMPv4 11/0, ICMPv6 3/0 by the relay's family), at most once per [`TTL_ICMP_GAP`].
+    /// Through [`handle_icmp`](Self::handle_icmp): `relay_icmp`, the permission and the peer
+    /// policy apply. A peer's datagram dropped so draws nothing: telling a peer takes a real
+    /// ICMP message, which an unprivileged process cannot send.
+    fn ttl_exceeded(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        env: &mut dyn TurnEnv,
+    ) {
+        if !self.shared.cfg.relay_icmp {
+            return;
+        }
+        let Some(a) = self.allocs.get_mut(&client) else {
+            return;
+        };
+        if a.ttl_icmp_at
+            .is_some_and(|t| now.saturating_duration_since(t) < TTL_ICMP_GAP)
+        {
+            return;
+        }
+        a.ttl_icmp_at = Some(now);
+        let (ty, code) = if relay.is_ipv6() { (3, 0) } else { (11, 0) };
+        self.handle_icmp(now, relay, peer, ty, code, 0, env);
     }
 
     /// An ICMP error (type `icmp_type`, code `code`) that a datagram sent from the relay
@@ -1758,6 +1803,7 @@ impl TurnCore {
                 chans: HashMap::new(),
                 chan_of: HashMap::new(),
                 tcp: tcp.then(Box::default),
+                ttl_icmp_at: None,
             },
         );
         b

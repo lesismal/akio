@@ -51,6 +51,28 @@ Changed behaviour in akio-webrtc (frame mode):
 - `tools/interop/webrtc`: `client-loss`, pion sending VP8 with one packet left out, checks
   that one PLI comes back and none after pion's keyframe.
 - Cost: Same-run A/B on gpu51 (`webrtc-bench`, base `main` `50a82315`): no measurable change; `media` 1.002, `video` / `video-jb` frames per second 1.000 and CPU per frame 0.996 / 1.000 (per-round ratio medians, every range spanning 1). See BENCHMARKS.
+### Added: ICMP for host candidates, "packet too big" and "time exceeded" to TURN clients (akio-webrtc, akio-turn, akio-sys)
+
+ADR-091's second update (2026-11-23), the items its first update left:
+
+- akio-webrtc: an `Endpoint`'s own sockets (`bind`, `bind_rtcp`, `bind_transport_socket`) hear
+  the ICMP errors their datagrams draw (`Engine::bind_udp_icmp`: Linux `IP_RECVERR`, macOS the
+  loop's ICMP socket), and a hard one (port or protocol unreachable) fails the host and
+  server-reflexive candidates' checks in flight to that address at once (RFC 8445 section
+  7.2.5.2.2), as relayed candidates' already did: a check to a closed port fails in
+  milliseconds instead of after seven sends over about eight seconds.
+- akio-turn server: a `DONT-FRAGMENT` datagram the kernel refuses as larger than the path MTU
+  (`EMSGSIZE`) is reported to the client in a Data indication with `ICMP` "fragmentation needed"
+  (3/4) on an IPv4 relay or "packet too big" (ICMPv6 2/0) on an IPv6 one, with the path MTU
+  (RFC 8656 sections 13.2 and 14), at most once per relay per 100 ms; it was dropped silently.
+- akio-turn server: a client's datagram dropped at TTL 1 draws a Data indication with `ICMP`
+  time exceeded (11/0, ICMPv6 3/0) for its peer, at most once per allocation per 100 ms (RFC 8656
+  section 13.2's router behaviour, delivered in band). Both are turned off with
+  `TurnConfig::relay_icmp(false)` and counted in `TurnStats::icmp`. A peer's datagram dropped
+  at TTL 1 is still dropped silently: telling a peer would take a raw socket (declined, ADR-091).
+- akio-sys: `path_mtu(dest)`, the MTU of the path to an address as the host knows it (Linux
+  `IP_MTU` / `IPV6_MTU`, macOS the interface's).
+- `tools/interop/webrtc/turn-ttl-df.sh` checks both reports against akio-turn.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 

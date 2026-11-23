@@ -3,7 +3,8 @@
 English | [简体中文](091-turn-icmp-dscp-family-release.zh-CN.md)
 
 Status: accepted (2026-11-23); updated 2026-11-23 (TTL, `DONT-FRAGMENT`, ICMP on macOS, ICMP in
-ICE: see the update at the end)
+ICE: see the first update at the end); updated 2026-11-23 again (ICMP for host candidates, "packet
+too big" and "time exceeded" to the client: the second update)
 
 ## Context
 
@@ -367,3 +368,111 @@ median 0.943, about 5 %, what ECN marks cost in ADR-083. docs/BENCHMARKS.md has 
 - A `[::]` dual-stack socket on macOS hears of its IPv6 datagrams' ICMP errors only.
 - ICMP for an endpoint's own host candidates (its unconnected socket, `IP_RECVERR` on Linux) is
   not fed to ICE: only relayed candidates get it, through the TURN server.
+
+## Update 2 (2026-11-23): host candidates, "packet too big", "time exceeded"
+
+The first update left three of its items: ICMP for an endpoint's own host candidates, a report
+to the client for a DF datagram the kernel refuses, and ICMP time exceeded for a datagram dropped
+at TTL 1. Two are done, the third in the direction that needs no privileges.
+
+### Context, corrected
+
+The first update's "Not done" said section 13.2 prefers telling the sender of a refused DF
+datagram "with 48 bytes off the MTU". RFC 8656 says more precisely: 13.2 (IPv6 to IPv6, no
+Fragment header) drops a datagram larger than the outgoing link MTU and sends ICMPv6 "packet too
+big" to the sender of the incoming packet; 13.2 and 13.3 reduce the MTU by 48 bytes only when that
+ICMP goes **to the peer** ("to allow room for the overhead of a Data indication": the peer's
+datagram reaches the client wrapped in one). Towards the client the MTU is the leg to the peer's,
+which carries the bare payload, and section 18.13 defines the `ICMP` attribute's error data as
+"the next-hop link MTU". Section 14 (IPv4 to IPv4) leaves a DF datagram that does not fit to
+RFC 1122's rules, under which the sender hears "fragmentation needed" with the MTU.
+
+### Decision
+
+**Host candidates: ICMP read on the endpoint's sockets.** `Endpoint::bind`, `bind_rtcp` and
+`bind_transport_socket` bind with `Engine::bind_udp_icmp` (Linux `IP_RECVERR`; macOS the loop's
+ICMP socket) and hand each error to every peer's agents as the relayed path does: `local` is the
+host candidate the socket's bound address stands for (the address `Endpoint` advertises for an
+unspecified bind), `remote` the destination, unscoped and with an IPv4-mapped address turned back
+into IPv4. `IceAgent::handle_icmp_error` does the rest unchanged: hard errors fail the pairs from
+that base (host and server-reflexive candidates share it) whose check is in flight; successful
+pairs, soft errors and unknown addresses are ignored. No switch: the cost is what
+`bind_udp_icmp` costs (an error queue read per error on Linux; on macOS each UDP loop's ICMP
+socket, shared with any TURN relay or other ICMP socket on the loop, hears every ICMP message of
+the host). No public API change: `Endpoint` already documents ICMP as best effort.
+
+**"Packet too big": the refused DF datagram is reported to the client.** When `TurnServer`'s send
+to a peer with DF set fails with `EMSGSIZE` (the kernel knows a smaller path MTU: Linux checks the
+route's path MTU, macOS the interface's), the client gets what a router would have sent it, as an
+RFC 8656 Data indication: `ICMP` type 3 code 4 ("fragmentation needed") on an IPv4 relay, ICMPv6
+type 2 code 0 on an IPv6 relay (the stream client case of section 15), with the path MTU as error
+data, unreduced (above), and the peer's address and port.
+
+- The MTU comes from a new `akio_sys::path_mtu(dest)`: a UDP socket connected to `dest`, then
+  `IP_MTU` / `IPV6_MTU` (Linux: the route's MTU, including what path MTU discovery learnt), or on
+  macOS the MTU of the interface that holds the connected socket's local address (`SIOCGIFMTU`).
+  Nothing is reported when it cannot be found, or when the datagram (with its IP and UDP
+  headers) fits it: `EMSGSIZE` also means larger than the socket's send buffer, which on macOS
+  is 9216 bytes by default (`net.inet.udp.maxdgram`), DF or not.
+- Three system calls and a file descriptor per report, on the error path only: reports are
+  limited per relay to one per 100 ms. The report is made once the shard's call into the core
+  returns (the core cannot be re-entered from inside `TurnEnv::send_to_peer_ip`), through the
+  existing `TurnCore::handle_icmp`, so `relay_icmp(false)`, permissions, the peer policy and
+  `TurnStats::icmp` apply as for ICMP from the network.
+- No `TurnEnv` or `TurnCore` change: a custom environment that wants the same reports calls
+  `handle_icmp` with those types itself.
+- Peer to client: the server never sets DF towards clients, so nothing is refused there.
+
+**"Time exceeded": told to the client in band; not to peers.** A datagram from the client that
+arrives with TTL 1 is dropped (first update); the client now also gets a Data indication with
+`ICMP` type 11 code 0 (ICMPv4 time exceeded in transit) on an IPv4 relay, type 3 code 0 (ICMPv6
+time exceeded) on an IPv6 one, for the peer it addressed: the router behaviour 13.2 prefers
+("generating an ICMPv6 error if it reaches zero"), delivered the way TURN delivers every ICMP
+error to its client. It needs no privileges. `TurnCore` does it (`relay_icmp`, permission and
+peer policy as for any ICMP, counted in `TurnStats::icmp`), at most one per allocation per
+100 ms: a client sending a stream of TTL 1 datagrams gets one indication per 100 ms, not one per
+datagram.
+
+**Declined: time exceeded to a peer.** A peer's datagram that arrives with TTL 1 stays dropped
+silently. Telling the peer means sending it a real ICMP message (the peer speaks no TURN),
+quoting the dropped datagram's IP header, from the relay's address: that takes a raw socket
+(`CAP_NET_RAW` on Linux, root on macOS). The unprivileged ICMP sockets do not help: Linux's ping
+sockets and macOS's datagram ICMP sockets send echo requests only (measured: any other type,
+time exceeded and destination unreachable included, is refused with `EINVAL`). A TURN server needing a capability it does
+not otherwise need, to answer a TTL that only a looping or deliberately crafted datagram reaches,
+is a bad trade.
+
+### Measured
+
+- Interop (`tools/interop/webrtc/turn-ttl-df.sh`, gpu51, 1500-byte bridge): akio-turn answers a
+  2000-byte DF Send indication with ICMP 3/4 carrying MTU 1500 and a TTL 1 one with ICMP 11/0, and
+  relays the next small DF datagram. coturn 4.6 sends neither, and did not relay the next small DF
+  datagram either. The other rows are unchanged (akio-turn 39 / 49, coturn 39 / 64).
+- Host candidates: a check to a closed port fails ICE in about 1 ms, against 8.2 s with the ICMP
+  ignored (`tests/loopback.rs`, macOS).
+- Same-run A/B against `main` `50a82315` (gpu51, 8 alternating rounds under `quiet.sh`;
+  docs/BENCHMARKS.md): data channel 1.001 (0.987–1.008); relay total per-round median 0.967
+  (0.825–1.652), within the benchmark's round-to-round noise (one build's to-peer rate alone
+  ranges from 38k to 110k datagrams/s). A 12-round relay-only rerun was stopped while still
+  queued behind other projects' runs.
+- Fuzz (macOS, 5 minutes per target in parallel, no parser changed so no new seeds): `turn_server`
+  0.82M, `turn_stream` 0.92M, `turn_tcp` 0.80M, `turn_dtls` 0.78M runs, no finding; the
+  `turn_server` TTL selector now also checks the time exceeded indication.
+
+### Tests
+
+- akio-sys: `path_mtu` of loopback on both families (Linux 65536, or the lowered MTU; macOS
+  lo0's 16384), an error where the connect fails (macOS: the unspecified address).
+- akio-turn core: TTL 1 from a client on ChannelData and Send indications draws one time
+  exceeded indication (11/0 IPv4, 3/0 IPv6) for the peer, none without permission, with
+  `relay_icmp(false)`, or within 100 ms of the last; a peer's TTL 1 still draws nothing.
+- akio-turn on real sockets: a Send indication with `DONT-FRAGMENT` one byte over the path MTU
+  to the peer (when loopback's MTU is lowered, as in the Linux Docker run with `NET_ADMIN`;
+  skipped otherwise, and on macOS, where the 9216-byte send limit is below lo0's 16384) draws ICMP 3/4 with that MTU at the client, and the next
+  one fitting is relayed; the same without `DONT-FRAGMENT` is relayed (fragmented).
+- akio-webrtc (`tests/loopback.rs`): an endpoint whose only remote candidate is a closed port
+  reaches ICE failure (reported as `Disconnected`) well within a second: about 1 ms, the check
+  failing on the port unreachable from the host socket, against 8.2 s without the ICMP (measured
+  with the error ignored).
+- Interop: `tools/interop/webrtc/turn-ttl-df.sh` checks the client's ICMP 3/4 with the bridge's
+  MTU for the 2000-byte DF datagram, and time exceeded for TTL 1, against akio-turn.

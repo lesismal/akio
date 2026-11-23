@@ -404,3 +404,65 @@ fn peers_are_bounded() {
     e.shutdown();
     e.wait();
 }
+
+/// Reports ICE state changes.
+struct IceWatch(Mutex<Sender<akio_webrtc::IceConnectionState>>);
+impl PeerHandler for IceWatch {
+    fn on_ice_state(&mut self, _p: &Peer, s: akio_webrtc::IceConnectionState) {
+        let _ = self.0.lock().unwrap().send(s);
+    }
+}
+
+/// ICMP for a host candidate (RFC 8445 section 7.2.5.2.2, ADR-091): the endpoint's socket hears
+/// the port unreachable its first check to a closed port draws (Linux `IP_RECVERR`, macOS the
+/// loop's ICMP socket), the agent fails the pair at once and, with no other pair and the
+/// remote's candidates complete, ICE fails (reported as `Disconnected`) well within a second,
+/// where without ICMP the check would be sent seven times over about six seconds first.
+#[test]
+fn icmp_fails_a_host_check_to_a_closed_port() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return;
+    }
+    let (e, _) = engine_with(None);
+    let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let (tx, rx) = channel();
+    let (pa, offer) = a
+        .create_offer(IceWatch(Mutex::new(tx)), |api| {
+            api.add_channel("c");
+        })
+        .unwrap();
+    // B never hears of A's candidates (so it cannot check A, which would let A learn B's
+    // real address from the check), and A hears only of a closed port.
+    let no_candidates = |sdp: &str| -> String {
+        sdp.lines()
+            .filter(|l| !l.starts_with("a=candidate") && !l.starts_with("a=end-of-candidates"))
+            .map(|l| format!("{l}\r\n"))
+            .collect()
+    };
+    let (_pb, answer) = b.accept_offer(&no_candidates(&offer), Echo).unwrap();
+    let closed = std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let mut answer = no_candidates(&answer);
+    answer.push_str(&format!(
+        "a=candidate:1 1 udp 2130706431 127.0.0.1 {} typ host\r\na=end-of-candidates\r\n",
+        closed.port()
+    ));
+    let t0 = Instant::now();
+    pa.accept_answer(&answer).unwrap();
+    let deadline = t0 + T;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let s = rx.recv_timeout(left).expect("ICE never failed");
+        if s == akio_webrtc::IceConnectionState::Disconnected {
+            break;
+        }
+    }
+    let took = t0.elapsed();
+    assert!(took < Duration::from_secs(1), "ICE failed after {took:?}");
+    a.close();
+    b.close();
+    e.shutdown();
+}

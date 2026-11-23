@@ -2774,6 +2774,31 @@ sections above). `±` is half the min–max spread of the rounds.
 **Answer:** no measurable change; every per-round range spans 1. What the requests do under loss
 is shown by the tests and the pion `client-loss` interop (ADR-092 update), not by CPU.
 
+### TURN relay and WebRTC data channel (ADR-091 update 2, same-run A/B)
+
+Measured 2026-11-23 on gpu51. The question: do ICMP on the endpoint's host sockets
+(`bind_udp_icmp`), the `EMSGSIZE` check after each send to a peer and the TTL 1 report slow the
+relay or the data channel? Without errors the new work per datagram is one branch on the send's
+result; the TTL check already existed.
+
+`main` is `50a82315`; `branch` is `claude/icmp-ice-ptb-ac981a`. Both were built in one session into
+separate target directories and ran alternately (main first in odd rounds) under `quiet.sh` on
+CPUs 2–9: 8 rounds of `turn-relay-bench 8 6 4` and `webrtc-bench dc 5`. `±` is half the min–max
+spread of the rounds.
+
+| Metric | main median | branch median | branch / main (medians) | per-round ratio median (range) |
+|---|---:|---:|---:|---:|
+| relay to peer (datagrams/s) | 98.0k (±36%) | 79.3k (±29%) | 0.809 | 0.829 (0.560–2.666) |
+| relay to client (datagrams/s) | 179.6k (±27%) | 187.8k (±14%) | 1.046 | 1.028 (0.812–1.444) |
+| relay total (datagrams/s) | 273.6k (±24%) | 267.6k (±9%) | 0.978 | 0.967 (0.825–1.652) |
+| data channel (MB/s) | 156.2 (±0.5%) | 156.4 (±1.0%) | 1.001 | 1.001 (0.987–1.008) |
+
+**Answer:** the data channel is unchanged. The relay totals agree within the noise (per-round
+median 0.967, range 0.825–1.652). The to-peer direction alone swings from 38k to 110k datagrams/s
+between rounds of one build, so its lower median does not show a cost. A 12-round relay-only
+rerun to narrow it was queued behind other projects' `quiet.sh` runs and was stopped before it
+started; the code on that path adds only a branch on `Err`.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

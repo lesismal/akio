@@ -4,8 +4,10 @@
 # servers (akio-turn, coturn) share one container, the peer runs in another across the Docker
 # bridge (a 1500-byte link). The client sends with TTL 40 and the peer answers with TTL 50; the
 # client then sends Send indications: 100 bytes with DONT-FRAGMENT, 2000 bytes without and with
-# it, 100 bytes with it again. akio-turn must relay with TTL 39 and 49, fragment the big one
-# without DF and refuse it with DF (EMSGSIZE); coturn's behaviour is printed.
+# it, 100 bytes with it again, then 100 bytes with TTL 1. akio-turn must relay with TTL 39 and
+# 49, fragment the big one without DF and refuse it with DF (EMSGSIZE), telling the client with
+# ICMP 3/4 and MTU 1500 (RFC 8656 section 14, ADR-091), and drop the TTL 1 one telling the
+# client with ICMP 11/0; coturn's behaviour is printed.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 VOL=${AKIO_TURNDUAL_VOLUME:-akio-turndual-target}
@@ -32,5 +34,5 @@ sleep 2
 echo "== coturn 4.6"
 docker exec akio-ttldf-it $RS client 127.0.0.1:3478 "$PEER:7000" alice wonderland
 echo "== akio-turn"
-docker exec akio-ttldf-it $RS client 127.0.0.1:9823 "$PEER:7000" alice wonderland ttl,df
+docker exec akio-ttldf-it $RS client 127.0.0.1:9823 "$PEER:7000" alice wonderland ttl,df,ptb,ttl1
 echo "turn TTL / DONT-FRAGMENT interop: all passed"
