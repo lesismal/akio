@@ -23,7 +23,13 @@
 #      socket on the port whatever it joined: IP_MULTICAST_ALL);
 #   6. (ADR-078 update 4) a query from a source on no known subnet: a querier in q whose only
 #      address is 169.254.5.5/16, behind c0, gets the name an Endpoint conceals 10.66.3.1 (c0)
-#      behind, by multicast on c0, and not the one concealing 10.66.1.1 (a0).
+#      behind, by multicast on c0, and not the one concealing 10.66.1.1 (a0);
+#   7. (ADR-093) two interfaces sharing a prefix: d0 (10.66.4.1/24) and e0 (10.66.4.2/24), each
+#      a veth pair to a namespace of its own (q2: d1 10.66.4.11/24, q3: e1 10.66.4.12/24). A
+#      querier behind each link asks for the name concealing that link's address and gets it,
+#      out of its own interface: the query is placed on the interface it arrived on. Inferred
+#      from the source (the longest prefix, a tie between d0 and e0), one of the two queries is
+#      placed on the other link and its answer leaves there, where nobody hears it.
 # The examples and tests are built in rust:1; the image adds avahi, dbus and iproute2 (the same
 # image as mdns6.sh).
 set -eu
@@ -64,7 +70,7 @@ T_SYS=$(x 'sed -n 3p /tmp/t/mdns4-tests.txt')
 
 echo "== mDNS and multicast tests on two IPv4 links (epoll, then io_uring)"
 for b in epoll uring; do
-  x "AKIO_TEST_BACKEND=$b $T_SYS iface 2>&1 | grep 'test result'"
+  x "AKIO_TEST_BACKEND=$b $T_SYS iface arrival_interface 2>&1 | grep 'test result'"
   x "AKIO_TEST_BACKEND=$b $T_SHARED --nocapture --test-threads=1 2>&1 | grep -E 'skipped|looped|not sent|test result'" | tee /tmp/mdns4-shared.out
   x "AKIO_TEST_BACKEND=$b $T_MDNS --nocapture 2>&1 | grep -E 'skipped|connected|test result'" | tee /tmp/mdns4-tests.out
   grep -q "2 of 2 interfaces looped back" /tmp/mdns4-shared.out
@@ -169,4 +175,35 @@ echo "${OUT:-(no answer)}"
 echo "$OUT" | grep -q "answer $NAME_C 10.66.3.1 from 10.66.3.1:5353"
 if echo "$OUT" | grep -q "answer $NAME_A2"; then echo "FAIL: an a0 address answered on c0"; exit 1; fi
 x "grep -q 'mdns: answering 169.254.5.5' /tmp/conceal-c.log"
+
+echo "== two interfaces sharing a prefix (d0, e0 in 10.66.4.0/24): each query answered on its own link"
+x 'unshare -n sleep infinity >/dev/null 2>&1 & echo $! >/tmp/q2.pid'
+x 'unshare -n sleep infinity >/dev/null 2>&1 & echo $! >/tmp/q3.pid'
+Q2=$(x 'cat /tmp/q2.pid')
+Q3=$(x 'cat /tmp/q3.pid')
+x "ip link add d0 type veth peer name d1 && ip link set d1 netns $Q2 &&
+   ip link add e0 type veth peer name e1 && ip link set e1 netns $Q3 &&
+   ip addr add 10.66.4.1/24 dev d0 && ip addr add 10.66.4.2/24 dev e0 &&
+   ip link set d0 up && ip link set e0 up"
+x "nsenter -t $Q2 -n sh -c 'ip link set lo up && ip link set d1 up &&
+   ip addr add 10.66.4.11/24 dev d1 && ip route add default dev d1'"
+x "nsenter -t $Q3 -n sh -c 'ip link set lo up && ip link set e1 up &&
+   ip addr add 10.66.4.12/24 dev e1 && ip route add default dev e1'"
+x 'ip -br addr show d0; ip -br addr show e0; ip route show 10.66.4.0/24'
+x "AKIO_LOG=akio_webrtc=trace $RS mdns-conceal '10.66.4.1:0' 14 >/tmp/conceal-d.out 2>/tmp/conceal-d.log &"
+x "AKIO_LOG=akio_webrtc=trace $RS mdns-conceal '10.66.4.2:0' 14 >/tmp/conceal-e.out 2>/tmp/conceal-e.log &"
+for f in conceal-d conceal-e; do
+  for _ in $(seq 50); do x "grep -q ^name /tmp/$f.out" && break; sleep 0.1; done
+done
+NAME_D=$(x 'sed -n "s/^name //p" /tmp/conceal-d.out')
+NAME_E=$(x 'sed -n "s/^name //p" /tmp/conceal-e.out')
+sleep 4 # past the probes and announcements
+OUT_D=$(x "nsenter -t $Q2 -n $RS mdns-query 3 $NAME_D")
+OUT_E=$(x "nsenter -t $Q3 -n $RS mdns-query 3 $NAME_E")
+echo "behind d0: ${OUT_D:-(no answer)}"
+echo "behind e0: ${OUT_E:-(no answer)}"
+x "grep -m1 'mdns: query from 10.66.4.11' /tmp/conceal-d.log || true"
+x "grep -m1 'mdns: query from 10.66.4.12' /tmp/conceal-e.log || true"
+echo "$OUT_D" | grep -q "answer $NAME_D 10.66.4.1 from 10.66.4.1:5353"
+echo "$OUT_E" | grep -q "answer $NAME_E 10.66.4.2 from 10.66.4.2:5353"
 echo "mdns over ipv4 on two interfaces: all passed"

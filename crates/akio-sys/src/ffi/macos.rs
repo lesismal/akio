@@ -56,6 +56,9 @@ pub const IPPROTO_ICMP: c_int = 1;
 pub const IPPROTO_ICMPV6: c_int = 58;
 pub const IP_PKTINFO: c_int = 26;
 pub const IPV6_PKTINFO: c_int = 46;
+/// `<netinet/in.h>`: `IP_RECVPKTINFO` is `IP_PKTINFO` (libc has no constant to compare with).
+pub const IP_RECVPKTINFO: c_int = IP_PKTINFO;
+pub const IPV6_RECVPKTINFO: c_int = 61;
 pub const IFF_UP: c_int = 0x1;
 pub const IFF_LOOPBACK: c_int = 0x8;
 pub const IFF_POINTOPOINT: c_int = 0x10;

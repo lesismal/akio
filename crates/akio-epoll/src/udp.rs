@@ -56,7 +56,7 @@ use akio_core::{
     DynHandler, Error, Group, IdHasher, IdMap, LoopMeta, Pool, Task, UdpStats, hash::KeyedMap,
     telemetry::LoopCmd,
 };
-use akio_sys::{Event, Poller};
+use akio_sys::{Event, Poller, RecvInfo};
 use akio_timer::{TimerId, Wheel};
 
 use crate::reactor::{Cmd, LoopShared};
@@ -552,7 +552,7 @@ impl UdpLoop {
                 let Some(peer) = batch.addr(i) else {
                     continue;
                 };
-                let ip = batch.tos_ttl(i);
+                let ip = batch.info(i);
                 let Some(id) = self.admit(src, peer) else {
                     continue;
                 };
@@ -644,8 +644,8 @@ impl UdpLoop {
         'event: for _ in 0..MAX_BATCHES_PER_EVENT {
             // A batch is up to BATCH datagrams, as with recvmmsg.
             for _ in 0..BATCH {
-                match akio_sys::recv_from_ip(sock.as_raw_fd(), buf.buf()) {
-                    Ok((n, peer, tos, ttl)) => {
+                match akio_sys::recv_from_info(sock.as_raw_fd(), buf.buf()) {
+                    Ok((n, peer, ip)) => {
                         self.clock = Instant::now();
                         let Some(id) = self.admit(src, peer) else {
                             continue;
@@ -655,7 +655,7 @@ impl UdpLoop {
                         } else {
                             Rx::Slice(&buf.free[..n])
                         };
-                        self.on_datagram(src, peer, Some(id), rx, (tos, ttl));
+                        self.on_datagram(src, peer, Some(id), rx, ip);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -687,8 +687,8 @@ impl UdpLoop {
         }
     }
 
-    /// One datagram from `peer` with traffic class byte and TTL `ip` (DSCP and ECN, TTL / hop
-    /// limit; 0 when not reported), for connection `id` when the caller has just admitted it,
+    /// One datagram from `peer` with what the kernel reported with it, `ip` (traffic class
+    /// byte, TTL / hop limit, arrival interface; each 0 when not reported), for connection `id` when the caller has just admitted it,
     /// else looked up (or opened) again.
     fn on_datagram(
         &mut self,
@@ -696,7 +696,7 @@ impl UdpLoop {
         peer: SocketAddr,
         id: Option<u64>,
         data: Rx<'_>,
-        ip: (u8, u8),
+        ip: RecvInfo,
     ) {
         let Some(id) = id.or_else(|| self.admit(src, peer)) else {
             return;
@@ -719,8 +719,9 @@ impl UdpLoop {
             }
             self.touched.push(id);
         }
-        p.inner.set_rx_tos(ip.0);
-        p.inner.set_rx_ttl(ip.1);
+        p.inner.set_rx_tos(ip.tos);
+        p.inner.set_rx_ttl(ip.ttl);
+        p.inner.set_rx_interface(ip.interface);
         let owned = p.owned;
         let h = &mut *p.handler;
         let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));
@@ -908,7 +909,7 @@ impl UdpLoop {
             };
             self.clock = Instant::now();
             for i in 0..n {
-                let ip = batch.tos_ttl(i);
+                let ip = batch.info(i);
                 if self.conns.get(&id).is_some_and(|p| p.owned) {
                     let Some((mut data, _, seg)) = batch.take(i) else {
                         continue;
@@ -968,15 +969,15 @@ impl UdpLoop {
         let owned = self.conns.get(&id).is_some_and(|p| p.owned);
         let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
-            match akio_sys::recv_from_ip(sock.as_raw_fd(), buf.buf()) {
-                Ok((n, _, tos, ttl)) => {
+            match akio_sys::recv_from_info(sock.as_raw_fd(), buf.buf()) {
+                Ok((n, _, ip)) => {
                     self.clock = Instant::now();
                     let rx = if owned {
                         Rx::Owned(buf.free.split_to(n))
                     } else {
                         Rx::Slice(&buf.free[..n])
                     };
-                    if !self.deliver(id, rx, (tos, ttl)) {
+                    if !self.deliver(id, rx, ip) {
                         self.scratch = Some(buf);
                         return;
                     }
@@ -1002,7 +1003,7 @@ impl UdpLoop {
     }
 
     /// One datagram for dialed connection `id`. `false` when the connection is gone.
-    fn deliver(&mut self, id: u64, data: Rx<'_>, ip: (u8, u8)) -> bool {
+    fn deliver(&mut self, id: u64, data: Rx<'_>, ip: RecvInfo) -> bool {
         let t0 = self.timed_start();
         let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
@@ -1012,8 +1013,9 @@ impl UdpLoop {
         p.last_active = now;
         p.bytes_in += len as u64;
         self.shared.stats.datagram_in(len);
-        p.inner.set_rx_tos(ip.0);
-        p.inner.set_rx_ttl(ip.1);
+        p.inner.set_rx_tos(ip.tos);
+        p.inner.set_rx_ttl(ip.ttl);
+        p.inner.set_rx_interface(ip.interface);
         let owned = p.owned;
         let h = &mut *p.handler;
         let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));

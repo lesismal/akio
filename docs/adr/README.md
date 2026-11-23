@@ -79,7 +79,7 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-075: AES-128 I-frame playlists, RTCP sync for RTSP RECORD sessions, query strings on rendition reports](075-media-aes-iframes-record-sync-report-queries.md) (accepted 2026-11-22)
 - [ADR-076: TURN TCP allocations (RFC 6062)](076-turn-tcp-allocations.md) (accepted 2026-11-22; updated 2026-11-22: engine-driven client, Connect timeout, `Endpoint` decision)
 - [ADR-077: ECN-capable RTP, latching media without ICE, and congestion control across transports without BUNDLE](077-webrtc-ecn-latching-unbundled-cc.md) (accepted 2026-11-22)
-- [ADR-078: mDNS over IPv6: hop limit 255, IPv6-only links, interop with Chrome, avahi and mDNSResponder](078-mdns-ipv6-hop-limit-ipv6-only.md) (accepted 2026-11-22, updated twice 2026-11-22 and on 2026-11-23: interface-aware records, IPv4 multicast per interface)
+- [ADR-078: mDNS over IPv6: hop limit 255, IPv6-only links, interop with Chrome, avahi and mDNSResponder](078-mdns-ipv6-hop-limit-ipv6-only.md) (accepted 2026-11-22, updated twice 2026-11-22 and on 2026-11-23: interface-aware records, IPv4 multicast per interface; arrival interface: ADR-093)
 - [ADR-079: Large-window brotli, the shared brotli framing format, and custom word lists in the encoder (RFC 9841)](079-brotli-large-window-framing-custom-words.md) (accepted 2026-11-22)
 - [ADR-080: The RTSP server's REDIRECT, the client following it; RTMP lookups on reconnect](080-rtsp-server-redirect-rtmp-lookups.md) (accepted 2026-11-22)
 - [ADR-081: Per-thread header storage, pooled response heads, HTTP/2 requests without a boxed context](081-per-thread-head-storage.md) (accepted 2026-11-22; updated 2026-11-23: response bodies, the HTTP/3 client's heads, QUIC's hot path)
@@ -92,3 +92,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-088: NUMA placement of the engine's threads, off by default](088-numa-placement.md) (accepted 2026-11-23; updated 2026-11-23: io_uring rings on the loop's node, SQPOLL threads placed)
 - [ADR-091: TURN ICMP relaying, DSCP across the relay, and giving back one family](091-turn-icmp-dscp-family-release.md) (accepted 2026-11-23)
 - [ADR-092: A video playout buffer, E-model delay classes and room noise, VoIP packet length and late discards](092-video-playout-emodel-classes.md) (accepted 2026-11-23)
+- [ADR-093: The interface a UDP datagram arrived on, opt-in per bound socket; mDNS places queries by it](093-udp-arrival-interface.md) (accepted 2026-11-23; closes ADR-078 update 4's leftover)

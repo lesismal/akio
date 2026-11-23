@@ -2,7 +2,8 @@
 //! GSO (`UDP_SEGMENT`), and the ECN codepoint of each datagram (RFC 3168) both ways: received
 //! from the `IP_TOS` / `IPV6_TCLASS` control message ([`enable_ecn`]), sent as one per message;
 //! likewise the TTL / hop limit, received when asked for ([`enable_recv_ttl`]) and set per
-//! message (`IP_TTL` / `IPV6_HOPLIMIT`).
+//! message (`IP_TTL` / `IPV6_HOPLIMIT`); and the interface a datagram arrived on, received when
+//! asked for ([`enable_recv_interface`](crate::enable_recv_interface), [`RecvBatch::info`]).
 //!
 //! GSO is detected once per process and turned off for good when the kernel or a device refuses
 //! it (`EIO`/`EINVAL`, as quinn does); `AKIO_UDP_GSO=0` / `AKIO_UDP_GRO=0` / `AKIO_UDP_ECN=0`
@@ -18,10 +19,11 @@ use std::{
 };
 
 use crate::ffi::{
-    self, IP_RECVTOS, IP_RECVTTL, IP_TOS, IP_TTL, IPPROTO_IP, IPPROTO_IPV6, IPV6_HOPLIMIT,
-    IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP, UDP_GRO, UDP_SEGMENT,
+    self, IP_PKTINFO, IP_RECVTOS, IP_RECVTTL, IP_TOS, IP_TTL, IPPROTO_IP, IPPROTO_IPV6,
+    IPV6_HOPLIMIT, IPV6_PKTINFO, IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP, UDP_GRO,
+    UDP_SEGMENT,
 };
-use crate::net::parse_addr;
+use crate::net::{RecvInfo, parse_addr};
 
 /// Most datagrams one GSO send may carry (the kernel's `UDP_MAX_SEGMENTS` is 64 before 6.x).
 pub const MAX_GSO_SEGMENTS: usize = 64;
@@ -34,6 +36,11 @@ const MAX_IOV: usize = 1024;
 /// Space for three `cmsghdr`s carrying an `int` each (u16 for UDP_SEGMENT, int for UDP_GRO, a
 /// byte or an int for the traffic class, an int for the TTL / hop limit), 8-aligned.
 type Ctrl = [u64; 12];
+
+/// A receive slot's control data, 8-aligned: the GRO segment size (24 bytes), the traffic class
+/// (24), the TTL / hop limit (24) and an `in6_pktinfo` (40, an `in_pktinfo` 32) fit with room
+/// to spare (the kernel writes only the messages it has, so the size costs nothing per call).
+type RecvCtrl = [u64; 16];
 
 const UNKNOWN: u8 = 0;
 const ON: u8 = 1;
@@ -180,7 +187,7 @@ pub struct RecvBatch {
     size: usize,
     iov: Vec<ffi::iovec>,
     names: Vec<ffi::sockaddr_storage>,
-    ctrl: Vec<Ctrl>,
+    ctrl: Vec<RecvCtrl>,
     gro: bool,
     msgs: Vec<ffi::mmsghdr>,
     got: usize,
@@ -239,7 +246,7 @@ impl RecvBatch {
             ],
             // SAFETY: sockaddr_storage and mmsghdr are plain-old-data; all-zero is valid.
             names: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
-            ctrl: vec![[0; 12]; slots],
+            ctrl: vec![[0; 16]; slots],
             gro,
             // SAFETY: as above.
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
@@ -271,9 +278,10 @@ impl RecvBatch {
             h.msg_namelen = size_of::<ffi::sockaddr_storage>() as ffi::socklen_t;
             h.msg_iov = &raw mut self.iov[i];
             h.msg_iovlen = 1;
-            // Control data: the GRO segment size and the traffic class (ECN), when enabled.
+            // Control data: the GRO segment size, the traffic class (ECN), the TTL and the
+            // arrival interface, when enabled.
             h.msg_control = (&raw mut self.ctrl[i]).cast();
-            h.msg_controllen = size_of::<Ctrl>() as _;
+            h.msg_controllen = size_of::<RecvCtrl>() as _;
             h.msg_flags = 0;
             self.msgs[i].msg_len = 0;
         }
@@ -402,47 +410,69 @@ impl RecvBatch {
     /// [`tos`](Self::tos) and [`ttl`](Self::ttl) of datagram `i` together, in one walk over
     /// its control messages.
     pub fn tos_ttl(&self, i: usize) -> (u8, u8) {
-        if i >= self.got {
-            return (0, 0);
-        }
-        let (mut tos, mut ttl) = (0, 0);
-        self.each_cmsg_int(i, |level, ty, v| {
-            if (level == IPPROTO_IP && ty == IP_TOS) || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
-            {
-                tos = v as u8;
-            } else if (level == IPPROTO_IP && ty == IP_TTL)
-                || (level == IPPROTO_IPV6 && ty == IPV6_HOPLIMIT)
-            {
-                ttl = v.clamp(0, 255) as u8;
-            }
-        });
-        (tos, ttl)
+        let r = self.info(i);
+        (r.tos, r.ttl)
     }
 
-    /// Calls `f(level, type, value)` for every control message of datagram `i` with an int
-    /// payload, or a one-byte one (widened).
-    fn each_cmsg_int(&self, i: usize, mut f: impl FnMut(ffi::c_int, ffi::c_int, i32)) {
+    /// The traffic class byte, the TTL / hop limit and the arrival interface of datagram `i`
+    /// of the last `recv` (each 0 when not reported: see [`enable_ecn`], [`enable_recv_ttl`],
+    /// [`enable_recv_interface`](crate::enable_recv_interface)), in one walk over its control
+    /// messages.
+    pub fn info(&self, i: usize) -> RecvInfo {
+        let mut r = RecvInfo::default();
+        if i >= self.got {
+            return r;
+        }
         let h = &self.msgs[i].msg_hdr;
         // SAFETY: as in `cmsg_int`: the walk stays within `msg_control[..msg_controllen]`
-        // (`self.ctrl[i]`), and a payload is read only within the `cmsg_len` the kernel wrote.
+        // (`self.ctrl[i]`), and a payload is read (unaligned) only within the `cmsg_len` the
+        // kernel wrote: an `in_pktinfo` / `in6_pktinfo` when that long, else one int or one byte.
         unsafe {
             let mut c = ffi::cmsg_firsthdr(h);
             while !c.is_null() {
                 let data = ffi::cmsg_data(c);
                 let len: usize = (*c).cmsg_len;
-                let v = if len >= ffi::cmsg_len(size_of::<ffi::c_int>()) {
-                    Some(std::ptr::read_unaligned(data.cast::<ffi::c_int>()))
-                } else if len >= ffi::cmsg_len(1) {
-                    Some(i32::from(*data))
+                let (level, ty) = ((*c).cmsg_level, (*c).cmsg_type);
+                if level == IPPROTO_IP && ty == IP_PKTINFO {
+                    if len >= ffi::cmsg_len(size_of::<ffi::in_pktinfo>()) {
+                        let p = std::ptr::read_unaligned(data.cast::<ffi::in_pktinfo>());
+                        r.interface = p.ipi_ifindex;
+                    }
+                } else if level == IPPROTO_IPV6 && ty == IPV6_PKTINFO {
+                    if len >= ffi::cmsg_len(size_of::<ffi::in6_pktinfo>()) {
+                        let p = std::ptr::read_unaligned(data.cast::<ffi::in6_pktinfo>());
+                        r.interface = p.ipi6_ifindex;
+                    }
                 } else {
-                    None
-                };
-                if let Some(v) = v {
-                    f((*c).cmsg_level, (*c).cmsg_type, v);
+                    let v = if len >= ffi::cmsg_len(size_of::<ffi::c_int>()) {
+                        Some(std::ptr::read_unaligned(data.cast::<ffi::c_int>()))
+                    } else if len >= ffi::cmsg_len(1) {
+                        Some(i32::from(*data))
+                    } else {
+                        None
+                    };
+                    if let Some(v) = v {
+                        if (level == IPPROTO_IP && ty == IP_TOS)
+                            || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
+                        {
+                            r.tos = v as u8;
+                        } else if (level == IPPROTO_IP && ty == IP_TTL)
+                            || (level == IPPROTO_IPV6 && ty == IPV6_HOPLIMIT)
+                        {
+                            r.ttl = v.clamp(0, 255) as u8;
+                        }
+                    }
                 }
                 c = ffi::cmsg_nxthdr(h, c);
             }
         }
+        r
+    }
+
+    /// The index of the interface datagram `i` of the last `recv` arrived on: 0 when not
+    /// reported (see [`enable_recv_interface`](crate::enable_recv_interface)).
+    pub fn interface(&self, i: usize) -> u32 {
+        self.info(i).interface
     }
 
     /// The payload of the first control message of datagram `i` that `want(level, type)`
@@ -932,6 +962,54 @@ mod tests {
                 .collect();
             assert_eq!(got, want, "{bind}");
         }
+    }
+
+    /// The arrival interface: 0 until asked for; then lo's index for both families and for an
+    /// IPv4 datagram on a dual-stack socket, next to the traffic class, the TTL and, with GRO,
+    /// its segment size (the slot's control buffer holds all four); 0 again once turned off.
+    #[test]
+    fn arrival_interface() {
+        let lo = crate::interfaces()
+            .unwrap()
+            .iter()
+            .find(|i| i.flags.is_loopback())
+            .expect("a loopback interface")
+            .index;
+        for (bind, v6) in [("127.0.0.1:0", false), ("[::1]:0", true)] {
+            let Ok(rx) = UdpSocket::bind(bind) else {
+                continue; // no IPv6 loopback
+            };
+            rx.set_nonblocking(true).unwrap();
+            let fd = rx.as_raw_fd();
+            let tx = UdpSocket::bind(bind).unwrap();
+            let dest = rx.local_addr().unwrap();
+            let mut rb = RecvBatch::with_gro(4, 65536, enable_gro(fd));
+            send_to_ip(tx.as_raw_fd(), b"a", Some(&dest), 0, 0, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, fd, 1), 1);
+            assert_eq!(rb.interface(0), 0, "{bind}: not asked for");
+            assert!(crate::enable_recv_interface(fd, true));
+            assert!(enable_recv_ttl(fd) && enable_ecn(fd));
+            send_to_ip(tx.as_raw_fd(), b"b", Some(&dest), 0xb8, 33, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, fd, 1), 1);
+            assert_eq!(rb.info(0), RecvInfo::new(0xb8, 33, lo), "{bind}");
+            assert_eq!(rb.tos_ttl(0), (0xb8, 33), "{bind}");
+            assert_eq!(rb.get(0).unwrap().0, b"b");
+            assert!(crate::enable_recv_interface(fd, false));
+            send_to_ip(tx.as_raw_fd(), b"c", Some(&dest), 0, 0, v6).unwrap();
+            assert_eq!(recv_some(&mut rb, fd, 1), 1);
+            assert_eq!(rb.interface(0), 0, "{bind}: turned off");
+        }
+        let Ok(rx) = UdpSocket::bind("[::]:0") else {
+            return; // no IPv6
+        };
+        rx.set_nonblocking(true).unwrap();
+        assert!(crate::enable_recv_interface(rx.as_raw_fd(), true));
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = rx.local_addr().unwrap().port();
+        tx.send_to(b"d", ("127.0.0.1", port)).unwrap();
+        let mut rb = RecvBatch::new(2, 2048);
+        assert_eq!(recv_some(&mut rb, rx.as_raw_fd(), 1), 1);
+        assert_eq!(rb.interface(0), lo, "IPv4 on a dual-stack socket");
     }
 
     #[test]

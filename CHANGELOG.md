@@ -10,6 +10,28 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the interface a UDP datagram arrived on; mDNS places queries by it (akio-core, akio-epoll, akio-sys, akio-webrtc)
+
+ADR-093 (2026-11-23), additive:
+
+- `UdpBinding::set_recv_interface(on)`: asks the kernel to report the interface every datagram
+  of a bound socket arrives on (Linux `IP_PKTINFO`, macOS `IP_RECVPKTINFO`, and
+  `IPV6_RECVPKTINFO`; elsewhere `ErrorKind::Unsupported`). Off by default.
+- `Conn::rx_interface()`: inside `on_data`, the index of the interface the datagram arrived on
+  (0 when not asked for or not reported). Per datagram, like the traffic class and TTL. The
+  same UDP loop serves bound sockets on epoll, io_uring and kqueue, so all three report it.
+- akio-sys: `enable_recv_interface(fd, on)`, `RecvInfo { tos, ttl, interface }`,
+  `RecvBatch::info` / `RecvBatch::interface` (Linux), `recv_from_info` (macOS). The receive
+  slots' control buffers grow to 128 bytes (Linux, from 96; macOS, from 64) so that GRO, traffic
+  class, TTL and packet info fit together.
+- akio-webrtc mDNS asks for it on its sockets and places a query on the interface it arrived
+  on, inferring the link from the source address only where the platform does not tell. A
+  query from a link that shares its prefix with another interface is now answered on its own
+  link; unicast answers (QU, legacy unicast) leave out of the interface the query came in on.
+- Sockets that do not opt in receive as before (gpu51, 10 same-run rounds: 0.999 of main; opting
+  in costs about 0.6 % on a saturated receiver): A/B in
+  [BENCHMARKS](docs/BENCHMARKS.md#bound-udp-socket-receive-arrival-interface-adr-093-same-run-ab).
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:
