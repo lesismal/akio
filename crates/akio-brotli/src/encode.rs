@@ -2417,11 +2417,13 @@ fn merged_cost(t: &[f64; 4096], a: &Hist, b: &Hist) -> f64 {
     for &s in a.used() {
         sum += nlog2n_in(t, a.h[usize::from(s)] + b.h[usize::from(s)]);
     }
+    // Without a branch per symbol (whether `a` has it is unpredictable); adding 0.0 leaves the
+    // sum exactly as it was.
     for &s in b.used() {
-        if a.h[usize::from(s)] == 0 {
-            sum += nlog2n_in(t, b.h[usize::from(s)]);
-            used += 1;
-        }
+        let only_b = a.h[usize::from(s)] == 0;
+        let v = nlog2n_in(t, b.h[usize::from(s)]);
+        sum += if only_b { v } else { 0.0 };
+        used += usize::from(only_b);
     }
     code_cost(t, a.total + b.total, sum, used)
 }
