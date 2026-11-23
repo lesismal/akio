@@ -217,6 +217,7 @@ impl akio_quic::Connection
 pub fn akio_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn akio_quic::Connection::close(&self, u32, &[u8])
 pub fn akio_quic::Connection::early_data(&self) -> akio_tls::EarlyData
+pub fn akio_quic::Connection::execute(&self, akio_pool::Job) -> core::result::Result<(), akio_pool::Job>
 pub fn akio_quic::Connection::finish(&self, akio_quic::StreamId) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::hold_reads(&self, akio_quic::StreamId, bool) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::is_closed(&self) -> bool

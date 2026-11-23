@@ -353,6 +353,7 @@ pub fn akio_arpc::Routes::middleware(self, impl core::ops::function::Fn(&mut aki
 pub fn akio_arpc::Routes::new() -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
+pub fn akio_arpc::Routes::run_on_pool(self, bool) -> akio_arpc::Routes
 impl core::default::Default for akio_arpc::Routes
 pub fn akio_arpc::Routes::default() -> Self
 impl core::fmt::Debug for akio_arpc::Routes
@@ -435,6 +436,7 @@ pub const akio_arpc::DEFAULT_CALL_TIMEOUT: core::time::Duration
 pub const akio_arpc::DEFAULT_MAX_PENDING_CALLS: usize
 pub const akio_arpc::DEFAULT_MAX_STREAMS_PER_CONN: usize
 pub const akio_arpc::METHOD_NOT_FOUND: &str
+pub const akio_arpc::SERVER_BUSY: &str
 pub trait akio_arpc::Coder: core::marker::Send + core::marker::Sync + 'static
 pub fn akio_arpc::Coder::decode(&self, &mut alloc::vec::Vec<u8>, &mut akio_arpc::coder::Values, usize) -> core::result::Result<(), akio_arpc::coder::CoderError>
 pub fn akio_arpc::Coder::encode(&self, &mut alloc::vec::Vec<u8>, &akio_arpc::coder::Values)

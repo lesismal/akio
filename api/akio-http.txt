@@ -833,6 +833,9 @@ pub fn akio_http::Context::stream_response(&mut self, u16, akio_http::message::H
 pub fn akio_http::Context::text(&mut self, u16, impl core::convert::Into<alloc::string::String>)
 pub fn akio_http::Context::upgrade_raw(&mut self, impl akio_http::raw::RawHandler) -> bool
 pub fn akio_http::Context::upgrade_websocket(&mut self, impl akio_ws::session::WsHandler, &akio_http::WsOptions) -> bool
+impl akio_http::Context
+pub fn akio_http::Context::detach_to_pool(&mut self, impl core::ops::function::FnOnce(akio_http::Detached) + core::marker::Send + 'static) -> bool
+pub fn akio_http::Context::executor(&self) -> core::option::Option<akio_http::Executor>
 impl core::fmt::Debug for akio_http::Context
 pub fn akio_http::Context::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_http::Context
@@ -854,6 +857,18 @@ impl !core::marker::Sync for akio_http::Detached
 impl core::marker::Unpin for akio_http::Detached
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::Detached
 impl !core::panic::unwind_safe::UnwindSafe for akio_http::Detached
+pub struct akio_http::Executor(_)
+impl akio_http::Executor
+pub fn akio_http::Executor::execute(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> akio_core::error::Result<()>
+impl core::clone::Clone for akio_http::Executor
+pub fn akio_http::Executor::clone(&self) -> Self
+impl core::fmt::Debug for akio_http::Executor
+pub fn akio_http::Executor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::Executor
+impl core::marker::Sync for akio_http::Executor
+impl core::marker::Unpin for akio_http::Executor
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::Executor
+impl !core::panic::unwind_safe::UnwindSafe for akio_http::Executor
 #[non_exhaustive] pub struct akio_http::FileBody
 pub akio_http::FileBody::file: alloc::rcs::arc::Arc<std::fs::File>
 pub akio_http::FileBody::len: u64
@@ -881,6 +896,7 @@ pub akio_http::H2Config::max_header_list: u32
 pub akio_http::H2Config::max_pending_bytes: usize
 pub akio_http::H2Config::max_resets: u32
 pub akio_http::H2Config::reset_window: core::time::Duration
+pub akio_http::H2Config::run_on_pool: bool
 pub akio_http::H2Config::stats: core::option::Option<akio_http::observe::H2Stats>
 impl core::clone::Clone for akio_http::H2Config
 pub fn akio_http::H2Config::clone(&self) -> Self
@@ -939,6 +955,7 @@ pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Durati
 pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::max_body_bytes: usize
 pub akio_http::HttpConfig::max_header_bytes: usize
+pub akio_http::HttpConfig::run_on_pool: bool
 impl core::clone::Clone for akio_http::HttpConfig
 pub fn akio_http::HttpConfig::clone(&self) -> Self
 impl core::default::Default for akio_http::HttpConfig
