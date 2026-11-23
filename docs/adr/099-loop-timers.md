@@ -16,7 +16,8 @@ did not complete, a command posted to the loop with an `eventfd` wakeup. The tim
 compete for the CPUs the loops run on.
 
 HttpArena's `async` profile measures exactly this: `GET /delay/10` over 32,000 held connections.
-Our entry answered from sharded `Mutex<BinaryHeap>` timer threads and reached RESULT_BEFORE.
+Our entry answered from sharded `Mutex<BinaryHeap>` timer threads and reached about 572k req/s, against about 663k for the fastest entry (dusty-tuned, io_uring)
+on the same machine.
 
 ## Decision
 
@@ -55,4 +56,16 @@ delivery (that is the cost being removed).
   crate; no new third-party dependency).
 - A loop without timers pays a thread-local read per iteration.
 - Measured on gpu51 (HttpArena `async`, same-run A/B, 3 rounds; `akio` = the timer threads,
-  `akio-timer` = `Context::after`): RESULTS. Profile: PROFILE.
+  `akio-timer` = `Context::after`): `akio` 571,051 / 572,687 / 572,587 req/s,
+  `akio-timer` 597,215 / 602,551 / 600,046 (+4.8 %). Not measurably slower where no timer is
+  set (2 rounds): `baseline` 1,082,708 / 1,084,209 against 1,072,531 / 1,082,454 (−0.5 %),
+  `pipelined` 7,260,969 / 7,291,139 against 7,194,758 / 7,142,118 (−1.5 %; CPU% differs between
+  the runs by more than that). In a single profiling run, `akio-timer` with `AKIO_BACKEND=uring`
+  reached 768,853 against dusty-tuned's 662,540. Profile
+  (5 s under the same load, `perf stat` / `perf record`): with the timer threads the server made
+  417k context switches, 32.8k CPU migrations, 12.2k `futex` and 786k `epoll_wait` calls; with
+  loop timers 156, 0, 0 and 2.8k (the loops never sleep), each of the 8 I/O threads at 12.5 % of
+  the samples. What remains is the kernel's TCP work: 84 % of the CPU (receive path, conntrack,
+  AppArmor socket checks, syscall entry), for one `recvfrom` and one `sendto` per request on
+  epoll. On io_uring the receives go through the ring (162k `io_uring_enter` in 5 s) and only the
+  send stays a syscall, so the same entry with `AKIO_BACKEND=uring` is the fastest of the run.
