@@ -346,6 +346,8 @@ impl QueueLoop {
     /// Reads are off (and the poller reported an error, or a probe interval passed): find
     /// out, without taking a packet, whether the device is gone. Linux: a zero-length write fails with `EBADFD` on a deleted
     /// device (`EINVAL` on a live one). Elsewhere a live device raises no such event.
+    // `&mut self` is used on Linux alone, where a gone device is finalized here.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::needless_pass_by_ref_mut))]
     fn probe_gone(&mut self, fd: std::os::fd::RawFd) {
         #[cfg(target_os = "linux")]
         if let Err(e) = akio_sys::write_packet(fd, &[]) {
