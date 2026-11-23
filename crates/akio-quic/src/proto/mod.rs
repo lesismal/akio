@@ -89,25 +89,25 @@ mod keyed_tests {
     fn keyed_hash() {
         let mut rng = akio_crypto::rand::ChaChaRng::from_seed([7; 32]);
         let (a, b) = (keyed_from_rng(&mut rng), keyed_from_rng(&mut rng));
-        let cid = cid::ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let cid = ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         // Deterministic per key, different across keys.
         assert_eq!(a.hash_one(cid), a.hash_one(cid));
         assert_ne!(a.hash_one(cid), b.hash_one(cid));
         // The length takes part: a zero-padded prefix is another key.
-        let short = cid::ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7]).unwrap();
-        let padded = cid::ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 0]).unwrap();
+        let short = ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7]).unwrap();
+        let padded = ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 0]).unwrap();
         assert_ne!(a.hash_one(short), a.hash_one(padded));
         // Sequential IDs spread over the low bits (the bucket index).
         let mut seen = std::collections::HashSet::new();
         for i in 0u64..4096 {
-            let c = cid::ConnectionId::new(&i.to_be_bytes()).unwrap();
+            let c = ConnectionId::new(&i.to_be_bytes()).unwrap();
             seen.insert(a.hash_one(c) & 0xfff);
         }
         assert!(seen.len() > 2400, "{}", seen.len());
         let d = KeyedHash::default();
         let addr: std::net::SocketAddr = "127.0.0.1:443".parse().unwrap();
         assert_eq!(d.hash_one(addr), d.hash_one(addr));
-        let mut m: KeyedMap<cid::ConnectionId, u32> = KeyedMap::with_hasher(a);
+        let mut m: KeyedMap<ConnectionId, u32> = KeyedMap::with_hasher(a);
         m.insert(cid, 1);
         assert_eq!(m.get(&cid), Some(&1));
         assert_eq!(m.get(&short), None);
