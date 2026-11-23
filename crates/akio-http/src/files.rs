@@ -35,8 +35,13 @@ use crate::{
 ///   1 MiB, is ignored and the whole file is sent. A multipart body is built in memory.
 /// * `index.html` for directories; `..` and other escapes are refused. Symlinks are followed.
 /// * `file.ext.br` / `file.ext.zst` / `file.ext.gz` next to `file.ext` are served to clients
-///   that accept them (`br`, `zstd`, `gzip`; tried in that order);
-///   whether they exist is cached with the file, so a hit costs no `stat` per variant.
+///   that accept them: the one the client's `Accept-Encoding` ranks highest by its q values
+///   (`*` standing for codings it does not name, `q=0` refusing one), among equals the first of
+///   [`twins`](Files::twins) (`br`, `zstd`, `gzip` by default); whether they exist is cached
+///   with the file, so a hit costs no `stat` per variant.
+/// * [`serve`](Files::serve) serves a path the caller names; [`try_paths`](Files::try_paths)
+///   tries candidate paths in turn (`try_files`); [`list_directories`](Files::list_directories)
+///   lists a directory without an index file.
 /// * Files up to [`max_cached_bytes`](Files::max_cached_bytes) are cached in memory and
 ///   re-checked against the disk at most every [`check_interval`](Files::check_interval);
 ///   larger ones are sent with `sendfile` from a handle kept open (with its metadata) for up to
@@ -77,7 +82,33 @@ struct Inner {
     /// The change notifications, set up on the first request that reaches the disk (`None`
     /// when they cannot be).
     watch: OnceLock<Option<Arc<Watch>>>,
+    /// The compressed twins looked up, as indexes into [`TWINS`], in order of preference among
+    /// equal q values; none: no lookups and no `Vary`.
+    twins: Vec<usize>,
+    /// [`Files::try_paths`]' candidates; none: the path asked for.
+    tries: Vec<String>,
+    /// [`Files::hide`]'s test.
+    hide: Option<Hide>,
+    /// What the candidates resolved request paths to (see [`Tried`]).
+    tried: RwLock<HashMap<String, Tried>>,
+    /// [`Files::list_directories`]' bound on the entries read; 0: no listings.
+    list_max: usize,
 }
+
+/// [`Files::hide`]'s test.
+type Hide = Arc<dyn Fn(&str) -> bool + Send + Sync + std::panic::RefUnwindSafe>;
+
+/// The file [`Files::try_paths`]' candidates resolved a request path to, and when (in
+/// [`clock_ms`] milliseconds): trusted for [`check_interval`](Files::check_interval) while the
+/// file's own entry is.
+struct Tried {
+    file: PathBuf,
+    checked: u64,
+}
+
+/// The most request paths [`Files::try_paths`] remembers the resolution of; past it the memory
+/// starts over.
+const MAX_TRIED: usize = 4096;
 
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -200,6 +231,7 @@ impl Cached {
         mime: &'static str,
         encoding: Option<&str>,
         cache_control: Option<&str>,
+        vary: bool,
         twins: [Option<Arc<Cached>>; 3],
         track: (bool, Option<Arc<FileWatch>>),
     ) -> Cached {
@@ -218,7 +250,9 @@ impl Cached {
         if let Some(e) = encoding {
             meta.append("Content-Encoding", e);
         }
-        meta.append("Vary", "Accept-Encoding");
+        if vary {
+            meta.append("Vary", "Accept-Encoding");
+        }
         let mut full = Headers::with_capacity(7, 192);
         full.append("Content-Type", mime);
         for (n, v) in meta.iter() {
@@ -296,6 +330,11 @@ impl Files {
                 watch_on: false,
                 max_watches: 1024,
                 watch: OnceLock::new(),
+                twins: vec![0, 1, 2],
+                tries: Vec::new(),
+                hide: None,
+                tried: RwLock::default(),
+                list_max: 0,
             }),
         }
     }
@@ -368,6 +407,69 @@ impl Files {
         self
     }
 
+    /// The compressed twins served, by coding name (`"br"`, `"zstd"`, `"gzip"`), in order of
+    /// preference among codings the client accepts with equal q values (default all three, in
+    /// that order). Other names, and a name given twice, are left out. None (`&[]`) looks up no
+    /// twins and sends no `Vary: Accept-Encoding`.
+    #[must_use]
+    pub fn twins(mut self, encodings: &[&str]) -> Files {
+        let mut order = Vec::new();
+        for e in encodings {
+            if let Some(i) = TWINS.iter().position(|(name, _)| name == e) {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        self.cfg().twins = order;
+        self
+    }
+
+    /// Candidate paths tried in turn for each request, as nginx's `try_files`: `{path}` stands
+    /// for the path asked for (percent-decoded, with a leading `/`), and a candidate ending in
+    /// `/` names a directory, served by its index file (or its listing, see
+    /// [`list_directories`](Files::list_directories)). The first that exists is served; when
+    /// none does the answer is `404`. A candidate that names a directory without the slash, a
+    /// file with one, something other than a regular file or directory, or a path outside the
+    /// root (`..`, a NUL, a backslash), or that [`hide`](Files::hide) hides, is passed over.
+    /// `["{path}", "{path}/", "/index.html"]` serves a single-page application.
+    ///
+    /// What the candidates resolved a path to is kept (for up to 4096 paths) and trusted for
+    /// [`check_interval`](Files::check_interval), so a request for a path resolved lately is
+    /// answered on the I/O thread like any cached file; the rest are resolved on the disk pool.
+    #[must_use]
+    pub fn try_paths(mut self, candidates: &[&str]) -> Files {
+        self.cfg().tries = candidates.iter().map(|c| (*c).to_owned()).collect();
+        self
+    }
+
+    /// A test of the paths a request names (percent-decoded, with a leading `/`): a path for
+    /// which it returns `true` is answered `404`, as a file that is not there, and a
+    /// [`try_paths`](Files::try_paths) candidate for which it does is passed over. For
+    /// instance, files whose names start with a dot. Runs on the I/O thread for the path asked
+    /// for, and on the disk pool for candidates; it must not block.
+    #[must_use]
+    pub fn hide(
+        mut self,
+        f: impl Fn(&str) -> bool + Send + Sync + std::panic::RefUnwindSafe + 'static,
+    ) -> Files {
+        self.cfg().hide = Some(Arc::new(f));
+        self
+    }
+
+    /// Lists a directory that has no index file, asked for with its trailing slash, rather than
+    /// answering `404` (default off: 0). At most `max_entries` entries are read, in the order
+    /// the directory gives them, and a listing of a directory with more says so. Names starting
+    /// with a dot are left out. The page (`text/html; charset=utf-8`, `Cache-Control:
+    /// no-cache`) shows directories first, then files, each group by name, with sizes and
+    /// modification times (UTC); links are relative. Listings are read on the disk pool for
+    /// every request and are not cached.
+    #[must_use]
+    pub fn list_directories(mut self, max_entries: usize) -> Files {
+        self.cfg().list_max = max_entries;
+        self
+    }
+
     /// A `Cache-Control` header for every file response.
     #[must_use]
     pub fn cache_control(mut self, v: &str) -> Files {
@@ -375,12 +477,9 @@ impl Files {
         self
     }
 
-    /// The path below the root asked for, or `None` if it is unsafe.
-    fn relative(ctx: &Context) -> Option<PathBuf> {
-        let raw = ctx
-            .param_raw("path")
-            .map_or_else(|| ctx.path().to_owned(), str::to_owned);
-        let decoded = percent_decode(&raw)?;
+    /// The path below the root `decoded` (a percent-decoded request path) names, or `None` if
+    /// it is unsafe.
+    fn relative(decoded: &str) -> Option<PathBuf> {
         let mut rel = PathBuf::new();
         for seg in decoded.split('/').filter(|s| !s.is_empty() && *s != ".") {
             if seg == ".." || seg.contains(['\\', '\0', ':']) {
@@ -489,8 +588,14 @@ impl Inner {
     }
 
     /// Answers a request from the disk (on the disk pool): `stat`, directory index, (re)loading
-    /// the cache entry and its compressed twins.
-    fn serve_disk(self: &Arc<Self>, req: &Request, mut path: PathBuf) -> Response {
+    /// the cache entry and its compressed twins. `list_as` is the path a directory without an
+    /// index file is listed as, when it may be (see [`Files::list_directories`]).
+    fn serve_disk(
+        self: &Arc<Self>,
+        req: &Request,
+        mut path: PathBuf,
+        list_as: Option<&str>,
+    ) -> Response {
         // Watches go up before the disk is consulted, so a change after it is reported.
         let ticket = self.watch_begin(&path);
         let Ok(mut md) = fs::metadata(&path) else {
@@ -504,7 +609,12 @@ impl Inner {
             path.push(&self.index);
             match fs::metadata(&path) {
                 Ok(m) if m.is_file() => md = m,
-                _ => return Response::text(404, "Not Found"),
+                _ => {
+                    return match list_as {
+                        Some(title) if self.list_max > 0 => list_dir(&dir, title, self.list_max),
+                        _ => Response::text(404, "Not Found"),
+                    };
+                }
             }
             let entry = Arc::new(DirEntry {
                 index: Arc::from(path.as_path()),
@@ -520,9 +630,88 @@ impl Inner {
         let Some(c) = self.load_tracked(&path, &md, track) else {
             return Response::text(404, "Not Found");
         };
-        let served = pick(&c, req.headers.get("accept-encoding").unwrap_or(""));
+        let served = pick(&c, &req.headers, &self.twins);
         self.build(req, served, true)
             .unwrap_or_else(|| Response::text(500, "Internal Server Error"))
+    }
+
+    /// What [`Files::try_paths`]' candidates resolved `asked` to lately, when that file's entry
+    /// is still inside its trust window too.
+    fn tried_fresh(&self, asked: &str) -> Option<Arc<Cached>> {
+        let file = {
+            let g = read_lock(&self.tried);
+            let t = g.get(asked)?;
+            let age = clock_ms().saturating_sub(t.checked);
+            if u128::from(age) >= self.check_interval.as_millis() {
+                return None;
+            }
+            t.file.clone()
+        };
+        self.fresh(&file)
+    }
+
+    /// Answers a request with [`Files::try_paths`]' candidates, from the disk (on the disk
+    /// pool): the first that names a file, or a directory (with its slash) with an index file
+    /// or a listing, is served; 404 when none does.
+    fn serve_tries(self: &Arc<Self>, req: &Request, asked: &str) -> Response {
+        for t in &self.tries {
+            let cand = t.replace("{path}", asked);
+            let Some(rel) = Files::relative(&cand) else {
+                continue;
+            };
+            if self.hide.as_ref().is_some_and(|h| h(&cand)) {
+                continue;
+            }
+            let dir = cand.ends_with('/') || rel.as_os_str().is_empty();
+            let full = self.root.join(&rel);
+            let Ok(md) = fs::metadata(&full) else {
+                continue;
+            };
+            let (file, md) = if md.is_dir() {
+                if !dir {
+                    continue;
+                }
+                let index = full.join(&self.index);
+                match fs::metadata(&index) {
+                    Ok(m) if m.is_file() => (index, m),
+                    _ if self.list_max > 0 => {
+                        // The listing's links are relative to the candidate, cleaned.
+                        let mut title = String::from("/");
+                        for seg in &rel {
+                            title.push_str(&seg.to_string_lossy());
+                            title.push('/');
+                        }
+                        return list_dir(&full, &title, self.list_max);
+                    }
+                    _ => continue,
+                }
+            } else if dir || !md.is_file() {
+                continue;
+            } else {
+                (full, md)
+            };
+            let Some(c) = self.load_tracked(&file, &md, None) else {
+                continue;
+            };
+            {
+                let mut g = write_lock(&self.tried);
+                if g.len() >= MAX_TRIED && !g.contains_key(asked) {
+                    g.clear();
+                }
+                g.insert(
+                    asked.to_owned(),
+                    Tried {
+                        file,
+                        checked: clock_ms(),
+                    },
+                );
+            }
+            let served = pick(&c, &req.headers, &self.twins);
+            return self
+                .build(req, served, true)
+                .unwrap_or_else(|| Response::text(500, "Internal Server Error"));
+        }
+        Response::text(404, "Not Found")
     }
 
     /// [`load_tracked`](Inner::load_tracked) without change notifications.
@@ -548,6 +737,9 @@ impl Inner {
         let watch = track.map(|t| &t.w);
         let mime = Files::mime(path);
         let twins: [Option<Arc<Cached>>; 3] = std::array::from_fn(|i| {
+            if !self.twins.contains(&i) {
+                return None;
+            }
             let (enc, ext) = TWINS[i];
             let mut p = path.as_os_str().to_owned();
             p.push(".");
@@ -585,6 +777,7 @@ impl Inner {
                     mime,
                     None,
                     self.cache_control.as_deref(),
+                    !self.twins.is_empty(),
                     twins,
                     (o.trackable, o.guard.clone()),
                 ))
@@ -658,6 +851,7 @@ impl Inner {
             mime,
             encoding,
             self.cache_control.as_deref(),
+            !self.twins.is_empty(),
             twins,
             track,
         )))
@@ -966,20 +1160,177 @@ impl Cached {
     }
 }
 
-/// The variant of `c` to send for `Accept-Encoding: accept`: a compressed twin the client
-/// accepts, else `c` itself.
-fn pick<'a>(c: &'a Arc<Cached>, accept: &str) -> &'a Arc<Cached> {
-    for ((enc, _), twin) in TWINS.iter().zip(&c.twins) {
-        if let Some(t) = twin {
-            if accept
-                .split(',')
-                .any(|tok| tok.trim().split(';').next() == Some(*enc))
-            {
-                return t;
+/// The variant of `c` to send for the request's `Accept-Encoding` fields: the compressed twin
+/// on disk the client ranks highest by q value, among equals the first in `order` (indexes into
+/// [`TWINS`]); else `c` itself.
+fn pick<'a>(c: &'a Arc<Cached>, headers: &Headers, order: &[usize]) -> &'a Arc<Cached> {
+    if c.twins.iter().all(Option::is_none) {
+        return c;
+    }
+    let mut best: Option<(&'a Arc<Cached>, f64)> = None;
+    for &i in order {
+        let (Some(Some(t)), Some((enc, _))) = (c.twins.get(i), TWINS.get(i)) else {
+            continue;
+        };
+        let q = accept_q(headers, enc);
+        if q > 0.0 && best.is_none_or(|(_, b)| q > b) {
+            best = Some((t, q));
+        }
+    }
+    best.map_or(c, |(t, _)| t)
+}
+
+/// The q value the `Accept-Encoding` fields give `coding` (RFC 9110 section 12.5.3): its own,
+/// else that of `*`, else 0 (not accepted). Names compare case-insensitively; a q value that
+/// does not parse, or lies outside 0 to 1, counts as 1.
+fn accept_q(headers: &Headers, coding: &str) -> f64 {
+    let (mut own, mut any) = (None, None);
+    for field in headers.get_all("accept-encoding") {
+        for member in field.split(',') {
+            let mut parts = member.split(';');
+            let name = parts.next().unwrap_or("").trim();
+            let mut q = 1.0;
+            for param in parts {
+                if let Some((k, v)) = param.split_once('=') {
+                    if k.trim().eq_ignore_ascii_case("q") {
+                        if let Ok(v) = v.trim().parse::<f64>() {
+                            if (0.0..=1.0).contains(&v) {
+                                q = v;
+                            }
+                        }
+                    }
+                }
+            }
+            if name.eq_ignore_ascii_case(coding) {
+                own = Some(q);
+            } else if name == "*" {
+                any = Some(q);
             }
         }
     }
-    c
+    own.or(any).unwrap_or(0.0)
+}
+
+/// A listing of the directory `dir`, asked for as `title` (a decoded request path ending in
+/// `/`): at most `max` entries read, names starting with a dot left out, directories first,
+/// each group by name. Runs on the disk pool.
+fn list_dir(dir: &Path, title: &str, max: usize) -> Response {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return Response::text(404, "Not Found");
+    };
+    // One more than shown tells whether there are more; a huge directory costs no more.
+    let mut entries: Vec<(String, bool, Option<fs::Metadata>)> = Vec::new();
+    let mut more = false;
+    for e in rd {
+        let Ok(e) = e else { break };
+        if entries.len() == max {
+            more = true;
+            break;
+        }
+        let name = e.file_name().to_string_lossy().into_owned();
+        let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+        entries.push((name, is_dir, e.metadata().ok()));
+    }
+    entries.retain(|(name, ..)| !name.starts_with('.'));
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let title = html_escape(&format!("Index of {title}"));
+    let mut b = String::with_capacity(256 + entries.len() * 128);
+    b.push_str("<!doctype html>\n<meta charset=\"utf-8\">\n<title>");
+    b.push_str(&title);
+    b.push_str("</title>\n<h1>");
+    b.push_str(&title);
+    b.push_str("</h1>\n<table>\n");
+    if title != "Index of /" {
+        b.push_str("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n");
+    }
+    for (name, is_dir, md) in &entries {
+        let (mut size, mut modified) = (String::new(), String::new());
+        if let Some(md) = md {
+            modified = format_minute(unix_secs(md.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+            if !is_dir {
+                size = md.len().to_string();
+            }
+        }
+        // The href is relative, its one segment escaped, so a name with `?`, `#` or `:` stays
+        // a name.
+        let mut href = format!("./{}", path_escape(name));
+        let mut shown = name.clone();
+        if *is_dir {
+            href.push('/');
+            shown.push('/');
+        }
+        b.push_str("<tr><td><a href=\"");
+        b.push_str(&html_escape(&href));
+        b.push_str("\">");
+        b.push_str(&html_escape(&shown));
+        b.push_str("</a></td><td>");
+        b.push_str(&size);
+        b.push_str("</td><td>");
+        b.push_str(&modified);
+        b.push_str("</td></tr>\n");
+    }
+    b.push_str("</table>\n");
+    if more {
+        b.push_str(&format!(
+            "<p>Only the first {max} entries the directory gave are listed.</p>\n"
+        ));
+    }
+    let mut r = Response::with_body(200, "text/html; charset=utf-8", b.into_bytes());
+    r.headers.append("Cache-Control", "no-cache");
+    r
+}
+
+/// `&`, `<`, `>`, `"` and `'` as HTML character references.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&#34;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// One path segment percent-encoded: all but letters, digits and `-._~$&+:=@`.
+fn path_escape(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
+    for &c in s.as_bytes() {
+        if c.is_ascii_alphanumeric() || b"-._~$&+:=@".contains(&c) {
+            out.push(char::from(c));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(c >> 4)]));
+            out.push(char::from(HEX[usize::from(c & 15)]));
+        }
+    }
+    out
+}
+
+/// `secs` since the Unix epoch as `YYYY-MM-DD hh:mm`, in UTC.
+fn format_minute(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Civil-from-days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        rem / 3600,
+        rem % 3600 / 60
+    )
 }
 
 fn unix_secs(t: SystemTime) -> u64 {
@@ -1166,31 +1517,76 @@ fn multipart(
 
 impl Service for Files {
     fn call(&self, ctx: &mut Context) {
+        let raw = ctx
+            .param_raw("path")
+            .map_or_else(|| ctx.path().to_owned(), str::to_owned);
+        self.serve(ctx, &raw);
+    }
+
+    fn streams_bodies(&self) -> bool {
+        false
+    }
+}
+
+impl Files {
+    /// Serves `path`, a request path below the root as sent (percent-encoded), in place of the
+    /// route parameter `path` or the request's own path [`Service::call`] takes: for a caller
+    /// that routes by a path of its own (a prefix stripped, dot segments removed). It is
+    /// percent-decoded and checked as theirs are.
+    pub fn serve(&self, ctx: &mut Context, path: &str) {
         let head = *ctx.method() == Method::Head;
         if *ctx.method() != Method::Get && !head {
             return ctx
                 .respond(Response::text(405, "Method Not Allowed").header("Allow", "GET, HEAD"));
         }
-        let Some(rel) = Files::relative(ctx) else {
+        let Some(decoded) = percent_decode(path) else {
             return ctx.text(404, "Not Found");
         };
-        let path = self.inner.root.join(&rel);
+        let Some(rel) = Files::relative(&decoded) else {
+            return ctx.text(404, "Not Found");
+        };
+        let inner = &self.inner;
+        // The path asked for, with a leading slash: what `hide` and `{path}` see.
+        let asked = if decoded.starts_with('/') {
+            decoded
+        } else {
+            format!("/{decoded}")
+        };
+        if inner.hide.as_ref().is_some_and(|h| h(&asked)) {
+            return ctx.text(404, "Not Found");
+        }
         // Fast path: an entry still inside its trust window needs no syscall at all.
-        if let Some(c) = self.inner.fresh(&path) {
-            let served = pick(&c, ctx.header("accept-encoding").unwrap_or(""));
-            if let Some(r) = self.inner.build(ctx.req(), served, false) {
+        let known = if inner.tries.is_empty() {
+            inner.fresh(&inner.root.join(&rel))
+        } else {
+            inner.tried_fresh(&asked)
+        };
+        if let Some(c) = known {
+            let served = pick(&c, &ctx.req().headers, &inner.twins);
+            if let Some(r) = inner.build(ctx.req(), served, false) {
                 return ctx.respond(r);
             }
         }
         // Anything else touches the disk: on the disk pool, never on the I/O thread.
         let Some(d) = ctx.detach() else { return };
-        let inner = self.inner.clone();
+        let inner = inner.clone();
         let cell = Arc::new(Mutex::new(Some(d)));
         let job_cell = cell.clone();
         let job = Box::new(move || {
             let d = lock(&job_cell).take();
             let Some(d) = d else { return };
-            let r = inner.serve_disk(d.req(), path);
+            let r = if inner.tries.is_empty() {
+                // A directory is listed only when asked for with its slash, so that its
+                // relative links resolve.
+                let dir = asked.ends_with('/') || rel.as_os_str().is_empty();
+                inner.serve_disk(
+                    d.req(),
+                    inner.root.join(&rel),
+                    dir.then_some(asked.as_str()),
+                )
+            } else {
+                inner.serve_tries(d.req(), &asked)
+            };
             d.respond(r);
         });
         if disk_pool().try_execute(job).is_err() {
@@ -1199,10 +1595,6 @@ impl Service for Files {
                 d.respond(Response::text(503, "Service Unavailable").header("Retry-After", "1"));
             }
         }
-    }
-
-    fn streams_bodies(&self) -> bool {
-        false
     }
 }
 
@@ -1346,6 +1738,43 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accept_q_values() {
+        let q = |fields: &[&str], coding: &str| {
+            let mut h = Headers::new();
+            for f in fields {
+                h.append("Accept-Encoding", f);
+            }
+            accept_q(&h, coding)
+        };
+        assert!((q(&["gzip"], "gzip") - 1.0).abs() < 1e-9);
+        assert!((q(&["GZIP;q=0.3"], "gzip") - 0.3).abs() < 1e-9);
+        assert!((q(&["br", "gzip ; q=0.5"], "gzip") - 0.5).abs() < 1e-9);
+        assert!((q(&["*;q=0.2"], "zstd") - 0.2).abs() < 1e-9);
+        assert!(q(&["*;q=0.2, zstd;q=0"], "zstd").abs() < 1e-9);
+        assert!(q(&["deflate"], "gzip").abs() < 1e-9);
+        assert!(q(&[], "gzip").abs() < 1e-9);
+        assert!((q(&["gzip;q=nope"], "gzip") - 1.0).abs() < 1e-9);
+        assert!((q(&["gzip;q=2"], "gzip") - 1.0).abs() < 1e-9);
+        assert!((q(&["gzip;level=3;q=0.7"], "gzip") - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn listing_escapes_and_dates() {
+        assert_eq!(path_escape("a&b<c>.txt"), "a&b%3Cc%3E.txt");
+        assert_eq!(path_escape("q?x #y/z;w,v"), "q%3Fx%20%23y%2Fz%3Bw%2Cv");
+        assert_eq!(path_escape("ok-_.~$+:=@9"), "ok-_.~$+:=@9");
+        assert_eq!(path_escape("é"), "%C3%A9");
+        assert_eq!(
+            html_escape(r#"<a href="x">&'</a>"#),
+            "&lt;a href=&#34;x&#34;&gt;&amp;&#39;&lt;/a&gt;"
+        );
+        assert_eq!(format_minute(0), "1970-01-01 00:00");
+        assert_eq!(format_minute(784_111_777), "1994-11-06 08:49");
+        assert_eq!(format_minute(951_782_400), "2000-02-29 00:00");
+        assert_eq!(format_minute(4_102_444_799), "2099-12-31 23:59");
+    }
 
     #[test]
     fn http_dates_round_trip() {
@@ -1628,7 +2057,9 @@ mod tests {
         assert_eq!(gz.meta.get("content-encoding"), Some("gzip"));
         assert!(gz.etag.ends_with("-gzip\""));
         let enc = |c: &Arc<Cached>, accept: &str| {
-            pick(c, accept)
+            let mut h = Headers::new();
+            h.append("Accept-Encoding", accept);
+            pick(c, &h, &[0, 1, 2])
                 .meta
                 .get("content-encoding")
                 .map(str::to_owned)
@@ -1653,7 +2084,7 @@ mod tests {
 
     fn get(f: &Files, p: &Path) -> Response {
         f.inner
-            .serve_disk(&Request::new(Method::Get, "/"), p.to_owned())
+            .serve_disk(&Request::new(Method::Get, "/"), p.to_owned(), None)
     }
 
     /// Waits up to 5 s for `cond`.

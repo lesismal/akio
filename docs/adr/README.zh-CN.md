@@ -94,3 +94,4 @@
 - [ADR-092：视频播放缓冲，E-model 时延敏感度等级与房间噪声，VoIP 包长与迟到丢弃](092-video-playout-emodel-classes.zh-CN.md)（2026-11-23 采纳）
 - [ADR-093：UDP 数据报的到达接口，按已绑定套接字选择开启；mDNS 据此确定查询所在链路](093-udp-arrival-interface.zh-CN.md)（2026-11-23 采纳；了结 ADR-078 更新 4 的遗留项）
 - [ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭](094-handlers-on-the-logical-pool.zh-CN.md)（2026-11-23 采纳）
+- [ADR-100：面向网关的静态文件：调用者给出的路径、按 q 值选择压缩副本、候选路径、目录列表](100-static-files-gateway-settings.zh-CN.md)（2026-11-24 采纳）

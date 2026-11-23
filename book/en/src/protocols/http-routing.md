@@ -157,11 +157,18 @@ metadata, partial chunks and repeat metadata for listing (`read_container`, `Con
 | `watch(on)` | off | follow changes through inotify (Linux) / kqueue (macOS): watched entries are trusted until a change drops them (not for network or FUSE file systems) |
 | `max_watches(n)` | 1024 | most watches `watch` sets up (directories; plus one file descriptor per cached file on macOS); past it, the `check_interval` rule |
 | `cache_control(v)` | none | `Cache-Control` header on every file response |
+| `twins(encodings)` | `br`, `zstd`, `gzip` | compressed twins served, in order of preference among equal q values; `&[]`: none, and no `Vary` |
+| `try_paths(candidates)` | none | paths tried in turn (`try_files`): `{path}` is the path asked for, a trailing `/` a directory; the first that exists is served, else 404 |
+| `hide(f)` | none | paths for which `f` returns true are answered 404, and `try_paths` candidates passed over |
+| `list_directories(n)` | 0 (off) | an HTML listing of a directory without an index file, asked for with its slash; at most `n` entries read |
+
+`Files::serve(ctx, path)` serves a path the caller names, for a service that routes by a path of its
+own (a prefix stripped).
 
 Features: `GET`/`HEAD`; `ETag` and `Last-Modified`; `If-None-Match` / `If-Modified-Since` (304),
 `If-Match` / `If-Unmodified-Since` (412); `Range` requests (206/416) guarded by `If-Range`;
 `..` and other escapes refused (symlinks are followed); `file.ext.br` / `file.ext.zst` / `file.ext.gz` served to
-clients that accept them; large files sent with `sendfile(2)` on plain TCP (read through memory
+clients that accept them, the one `Accept-Encoding` ranks highest by q value; large files sent with `sendfile(2)` on plain TCP (read through memory
 under TLS).
 
 Several ranges (`Range: bytes=0-9,500-599,-10`) get a `206` with a `multipart/byteranges` body

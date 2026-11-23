@@ -10,6 +10,27 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings (akio-http)
+
+ADR-100, additive:
+
+- `Files::serve(ctx, path)` serves a path the caller names (percent-encoded, checked as the route
+  parameter is), for a caller that routes by a path of its own.
+- `Files::twins(&[&str])`: the compressed twins served (`br`, `zstd`, `gzip`), in order of
+  preference among equal q values; `&[]` looks none up and sends no `Vary: Accept-Encoding`.
+- `Files::try_paths(&[&str])`: candidate paths tried in turn (nginx's `try_files`), `{path}`
+  standing for the path asked for and a trailing `/` for a directory. What a path resolved to is
+  kept (at most 4096 paths) for `check_interval`.
+- `Files::hide(f)`: paths for which `f` returns true are answered 404, and candidates passed over.
+- `Files::list_directories(max_entries)`: an HTML listing of a directory without an index file,
+  asked for with its slash (off by default).
+
+### Changed: `Files` picks a compressed twin by the client's q values (akio-http)
+
+ADR-100: the twin served is the one `Accept-Encoding` ranks highest by q value (RFC 9110
+section 12.5.3), among equals the first of `br`, `zstd`, `gzip`. `br;q=0` no longer gets the `br`
+twin; `*` gets the first twin; coding names match in any case.
+
 ### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
 
 ADR-094, additive:

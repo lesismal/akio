@@ -135,10 +135,16 @@ ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词�
 | `watch(on)` | 关闭 | 经 inotify（Linux）/ kqueue（macOS）跟随变化：有监视的缓存项在变化把它丢弃之前一直被信任（不适用于网络文件系统与 FUSE） |
 | `max_watches(n)` | 1024 | `watch` 最多建立的监视数（目录；macOS 上另加每个缓存文件一个文件描述符）；超过后按 `check_interval` 规则 |
 | `cache_control(v)` | 无 | 每个文件响应的 `Cache-Control` 头 |
+| `twins(encodings)` | `br`、`zstd`、`gzip` | 提供的压缩副本，按 q 值相同时的偏好排列；`&[]`：不提供，也不发送 `Vary` |
+| `try_paths(candidates)` | 无 | 依次尝试的路径（`try_files`）：`{path}` 是请求的路径，结尾的 `/` 表示目录；提供第一个存在的，否则 404 |
+| `hide(f)` | 无 | `f` 返回 true 的路径答 404，`try_paths` 的候选被跳过 |
+| `list_directories(n)` | 0（关闭） | 为带斜杠请求、没有索引文件的目录生成 HTML 列表；最多读取 `n` 项 |
+
+`Files::serve(ctx, path)` 提供调用者给出的路径，供按自己的路径路由（去掉前缀）的 service 使用。
 
 功能：`GET`/`HEAD`；`ETag` 与 `Last-Modified`；`If-None-Match` / `If-Modified-Since`（304），
 `If-Match` / `If-Unmodified-Since`（412）；由 `If-Range` 保护的 `Range` 请求（206/416）；拒绝 `..`
-等越界路径（跟随符号链接）；向接受的客户端提供 `file.ext.br` / `file.ext.zst` / `file.ext.gz`；明文 TCP 上大文件用
+等越界路径（跟随符号链接）；向接受的客户端提供 `file.ext.br` / `file.ext.zst` / `file.ext.gz`（`Accept-Encoding` 按 q 值排得最高的那个）；明文 TCP 上大文件用
 `sendfile(2)` 发送（TLS 下经内存读取）。
 
 多个区间（`Range: bytes=0-9,500-599,-10`）返回 `206` 与 `multipart/byteranges` 响应体（RFC 9110
