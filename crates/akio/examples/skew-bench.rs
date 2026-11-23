@@ -35,7 +35,7 @@ fn spin(us: u32) {
     if us == 0 {
         return;
     }
-    let until = Instant::now() + Duration::from_micros(us as u64);
+    let until = Instant::now() + Duration::from_micros(u64::from(us));
     let mut x = 0x9e37_79b9_7f4a_7c15_u64;
     loop {
         for _ in 0..64 {
@@ -75,8 +75,7 @@ fn server(addr: SocketAddr, mode: &str, sizes: Option<&str>) {
         "rounds" => {
             let (p, w) = sizes
                 .and_then(|s| s.split_once(':'))
-                .map(|(p, w)| (p.parse().unwrap_or(0), w.parse().unwrap_or(0)))
-                .unwrap_or((0, 0));
+                .map_or((0, 0), |(p, w)| (p.parse().unwrap_or(0), w.parse().unwrap_or(0)));
             l = l.scheduling(Scheduling::Rounds(RoundsConfig::new(p, w)));
         }
         _ => {

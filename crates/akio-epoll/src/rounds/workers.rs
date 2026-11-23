@@ -153,7 +153,7 @@ impl Workers {
     /// Stops the threads once their queues are empty and joins them.
     pub(crate) fn stop_and_join(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        for s in self.shards.iter() {
+        for s in &self.shards {
             s.wake();
         }
         let hs = std::mem::take(&mut *self.handles.lock().unwrap_or_else(|p| p.into_inner()));

@@ -506,7 +506,7 @@ impl RConn {
     }
 
     /// Closes the connection and runs `on_close` exactly once.
-    fn finalize(&self, st: &mut St, err: Option<Error>, ctx: &mut WorkerCtx) {
+    fn finalize(&self, st: &mut St, err: Option<Error>, ctx: &WorkerCtx) {
         if st.closed {
             return;
         }
