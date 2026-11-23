@@ -452,9 +452,9 @@ is a bad trade.
   ignored (`tests/loopback.rs`, macOS).
 - Same-run A/B against `main` `50a82315` (gpu51, 8 alternating rounds under `quiet.sh`;
   docs/BENCHMARKS.md): data channel 1.001 (0.987–1.008); relay total per-round median 0.967
-  (0.825–1.652), within the benchmark's round-to-round noise (one build's to-peer rate alone
-  ranges from 38k to 110k datagrams/s). A 12-round relay-only rerun was stopped while still
-  queued behind other projects' runs.
+  (0.825–1.652); a 12-round relay-only rerun 1.048 (0.833–1.262), its to-peer median ratio
+  1.128 against the first run's 0.829: no measurable change, only the benchmark's round-to-round
+  noise (one build's to-peer rate ranges from 38k to 110k datagrams/s).
 - Fuzz (macOS, 5 minutes per target in parallel, no parser changed so no new seeds): `turn_server`
   0.82M, `turn_stream` 0.92M, `turn_tcp` 0.80M, `turn_dtls` 0.78M runs, no finding; the
   `turn_server` TTL selector now also checks the time exceeded indication.
