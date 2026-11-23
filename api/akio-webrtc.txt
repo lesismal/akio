@@ -721,6 +721,7 @@ pub fn akio_webrtc::RtcConfig::set_ecn_initiation(self, akio_webrtc::EcnInitiati
 pub fn akio_webrtc::RtcConfig::set_ecn_marking(self, akio_webrtc::EcnMarking) -> Self
 pub fn akio_webrtc::RtcConfig::set_fec_mask(self, akio_webrtc::FecMask) -> Self
 pub fn akio_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
+pub fn akio_webrtc::RtcConfig::set_keyframe_on_loss(self, bool) -> Self
 pub fn akio_webrtc::RtcConfig::set_latching(self, akio_webrtc::Latching) -> Self
 pub fn akio_webrtc::RtcConfig::set_padding_rate(self, u64) -> Self
 pub fn akio_webrtc::RtcConfig::set_plain_keepalive(self, core::time::Duration) -> Self

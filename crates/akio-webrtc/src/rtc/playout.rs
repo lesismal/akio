@@ -185,8 +185,9 @@ impl Rtc {
     /// The frames the assembler of video stream `ssrc` (on `line`) has complete into its
     /// playout buffer (made on its first frame, made again when the clock rate changes, the
     /// frames still in the old one handed out first), flagged repaired after a
-    /// retransmission (`rtx`) or a gap; then the frames due go out. Frames dropped without a
-    /// keyframe to resume from ask the sender for one (PLI, when negotiated).
+    /// retransmission (`rtx`) or a gap; then the frames due go out. Frames that cannot be
+    /// decoded, or dropped without a keyframe to resume from, ask the sender for one
+    /// (`keyframe.rs`).
     pub(super) fn video_push(&mut self, now: Instant, line: usize, ssrc: u32, rtx: bool) {
         let Some(bounds) = self.cfg.video_playout else {
             return;
@@ -211,8 +212,12 @@ impl Rtc {
         }
         let nack = l.codecs.iter().any(|c| c.fb.iter().any(|f| f == "nack"));
         let rtt = nack.then(|| r.stream.rtt()).flatten();
+        let krtt = Self::keyframe_rtt(r, l);
         let Recv {
-            assembler, video, ..
+            assembler,
+            video,
+            keyframe,
+            ..
         } = r;
         let Some((pt, asm)) = assembler.as_mut() else {
             return;
@@ -225,8 +230,11 @@ impl Rtc {
         });
         v.buf.set_round_trip(rtt);
         let mut repaired = rtx;
+        let mut ask = false;
         loop {
             while let Some(f) = asm.pop() {
+                // After a given-up packet, frames up to a keyframe cannot be decoded.
+                ask |= keyframe.on_frame(now, f.keyframe, f.contiguous && !f.partial, krtt);
                 let mut flags = VideoFrameFlags::NONE;
                 if f.keyframe {
                     flags |= VideoFrameFlags::KEYFRAME;
@@ -258,18 +266,12 @@ impl Rtc {
             }
             v.buf.hole_given_up();
         }
-        let keyframe = v.buf.take_keyframe_request();
+        if v.buf.take_keyframe_request() {
+            ask |= keyframe.on_drop(now, krtt);
+        }
         release_video(r, l, now, false, &mut self.events);
-        let pli = l
-            .codecs
-            .iter()
-            .any(|c| c.fb.iter().any(|f| f == "nack pli"));
-        if keyframe && pli {
-            let pkt = Rtcp::Pli {
-                sender_ssrc: l.send.ssrc(),
-                media_ssrc: ssrc,
-            };
-            self.send_rtcp(&[pkt]);
+        if ask {
+            self.request_keyframe_on_loss(line, ssrc);
         }
     }
 

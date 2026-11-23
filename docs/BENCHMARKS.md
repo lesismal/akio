@@ -2722,6 +2722,28 @@ under 0.2 % of the 10 µs per frame the whole receive path takes. The hole deadl
 nothing measurable without loss; with loss, what they change is shown by the tests (ADR-092
 update), not by CPU.
 
+### Keyframe request on a given-up packet (ADR-092 update, same-run A/B)
+
+Measured 2026-11-23 on gpu51. The question: does the per-frame keyframe bookkeeping slow the
+video receive path, with the playout buffer off and on? Without loss it is one branch per frame
+out of the assembler and an RTT lookup per batch; no request goes out.
+
+`base` is `main` at `50a82315`; `new` is the branch. Both were built in one session into
+separate target directories and ran interleaved under `quiet.sh` on CPUs 2–9, 5 s per run,
+base first in each pair: 7 rounds of `media`, 11 of `video` / `video-jb` (the modes as in the
+sections above). `±` is half the min–max spread of the rounds.
+
+| Mode | base median | new median | new / base (medians) | per-round ratio median (range) |
+|---|---:|---:|---:|---:|
+| media (MB/s) | 177.4 (±0.3%) | 177.8 (±0.3%) | 1.002 | 1.002 (0.998–1.003) |
+| video (k frames/s) | 49.0 (±0.5%) | 49.0 (±0.3%) | 1.000 | 1.000 (0.994–1.004) |
+| video, CPU per frame (µs) | 8.96 (±1.7%) | 8.93 (±1.3%) | 0.997 | 0.996 (0.986–1.023) |
+| video-jb (k frames/s) | 49.0 (±0.5%) | 49.0 (±0.2%) | 1.000 | 1.000 (0.998–1.008) |
+| video-jb, CPU per frame (µs) | 10.04 (±2.3%) | 10.04 (±0.8%) | 1.000 | 1.000 (0.964–1.006) |
+
+**Answer:** no measurable change; every per-round range spans 1. What the requests do under loss
+is shown by the tests and the pion `client-loss` interop (ADR-092 update), not by CPU.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

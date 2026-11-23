@@ -363,7 +363,7 @@ fn simulcast(
             step(&mut a, &mut b, t, &mut net);
         }
     }
-    assert!(b.rtc.request_keyframe(video, KeyframeRequestKind::Pli));
+    assert!(b.rtc.request_keyframe(t, video, KeyframeRequestKind::Pli));
     for _ in 0..400 {
         t += Duration::from_millis(5);
         step(&mut a, &mut b, t, &mut net);
@@ -372,11 +372,11 @@ fn simulcast(
     let mark = a.events.len();
     assert!(
         !b.rtc
-            .request_keyframe_of(video, Some("x"), KeyframeRequestKind::Pli)
+            .request_keyframe_of(t, video, Some("x"), KeyframeRequestKind::Pli)
     );
     assert_eq!(
         b.rtc
-            .request_keyframe_of(video, Some("m"), KeyframeRequestKind::Pli),
+            .request_keyframe_of(t, video, Some("m"), KeyframeRequestKind::Pli),
         !strip_answer
     );
     for _ in 0..400 {

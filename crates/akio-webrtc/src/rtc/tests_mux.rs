@@ -1049,6 +1049,13 @@ fn video_playout_buffer_under_jitter_and_loss() {
     assert!(s.repaired > 5, "{s:?}");
     assert!(s.delay >= Duration::from_millis(30) && s.delay <= Duration::from_millis(300));
     assert_eq!(s.dropped, 0);
+    // Losses NACK repaired ask for no keyframe. A packet given up asks, and asks again
+    // every 200 ms until the next keyframe (a's come every 3 s, whatever it is asked).
+    let asked = b.rtc.stats.keyframes_requested;
+    assert!(
+        asked >= 1 && asked <= 15 * s.holes_given_up,
+        "{asked} {s:?}"
+    );
     assert!(b.rtc.video_playout_stats(Mid::new("nope")).is_none());
     // a has no buffer: no playout instants, and no statistics.
     assert!(a.events.iter().all(|e| match e {
@@ -1368,5 +1375,256 @@ fn opus_band_from_sdp_rates_received_audio() {
             ..codec.clone()
         };
         assert_eq!(receipts::opus_band(&[c]), band, "{sprop}");
+    }
+}
+
+/// The description without plain NACK (no retransmissions), keeping `nack pli`.
+fn no_retransmission(sdp: &str) -> String {
+    sdp.split("\r\n")
+        .filter(|l| !(l.starts_with("a=rtcp-fb:") && l.ends_with(" nack")))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// The description without NACK nor PLI, keeping `ccm fir`.
+fn fir_only(sdp: &str) -> String {
+    no_nack(sdp)
+}
+
+/// What a keyframe-on-loss run saw: b's frames as they came out, and the keyframe requests
+/// a received (when, and which).
+struct KeyRun {
+    frames: Vec<(Instant, MediaData)>,
+    requests: Vec<(Instant, KeyframeRequestKind)>,
+    /// When a sent the keyframes it was asked for.
+    keyframes_sent: Vec<Instant>,
+    /// The end of the run.
+    end: Instant,
+}
+
+/// VP8 at 30 frames/s from a to b on `mid`, frames `start..start + n` then 60 frame
+/// intervals of silence; frame 0 is a keyframe and, when `honor`, the frame after each
+/// keyframe request a gets. The media a sends in the first millisecond of each frame in
+/// `lose` is lost (a hole of a packet or more).
+#[allow(clippy::too_many_arguments)]
+fn keyframe_run(
+    a: &mut Side,
+    b: &mut Side,
+    net: &mut Net,
+    mid: Mid,
+    start: u64,
+    n: u64,
+    lose: &[u64],
+    honor: bool,
+    mut now: Instant,
+) -> KeyRun {
+    let pt = a.rtc.payload_type(mid, Codec::Vp8).unwrap();
+    let mut run = KeyRun {
+        frames: Vec::new(),
+        requests: Vec::new(),
+        keyframes_sent: Vec::new(),
+        end: now,
+    };
+    let (mut seen_a, mut seen_b) = (a.events.len(), b.events.len());
+    let mut asked = false;
+    for i in start..start + n + 60 {
+        if i < start + n {
+            let t = MediaTime::new(i * 3000, Frequency::NINETY_KHZ);
+            let key = i == 0 || (honor && asked);
+            if key && i > 0 {
+                run.keyframes_sent.push(now);
+            }
+            asked = false;
+            let mut f = vec![0x55u8; if key { 12_000 } else { 2_400 }];
+            f[0] = if key { 0x10 } else { 0x11 };
+            f[1] = i as u8;
+            a.rtc.write_media(now, mid, None, pt, t, &f).unwrap();
+        }
+        for k in 0..33 + u64::from(i % 3 == 0) {
+            net.loss = if k == 0 && lose.contains(&i) { 100 } else { 0 };
+            now += Duration::from_millis(1);
+            step(a, b, now, net);
+            for e in &a.events[seen_a..] {
+                if let RtcEvent::Keyframe(r) = e {
+                    run.requests.push((now, r.kind));
+                    asked = true;
+                }
+            }
+            seen_a = a.events.len();
+            for e in &b.events[seen_b..] {
+                if let RtcEvent::MediaData(d) = e {
+                    run.frames.push((now, d.clone()));
+                }
+            }
+            seen_b = b.events.len();
+        }
+    }
+    net.loss = 0;
+    run.end = now;
+    run
+}
+
+/// A sending to b with b's configuration `cb` and the offer munged by `munge`.
+fn keyframe_peers(cb: ConfigInner, munge: fn(&str) -> String) -> (Side, Side, Mid, Net, Instant) {
+    let (mut a, mut b, mids, _, _, now) =
+        negotiate(ConfigInner::default(), cb, &[MediaKind::Video], munge, same);
+    let mut net = Net::new(23);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    (a, b, mids[0], net, now)
+}
+
+/// b's frames that came out after the first keyframe at or after `t` (the frame index is
+/// the second byte); whether every one of them is contiguous.
+fn recovered_after(frames: &[(Instant, MediaData)], t: Instant) -> (usize, bool) {
+    let Some(k) = frames
+        .iter()
+        .position(|(at, d)| *at >= t && d.data.first().is_some_and(|b| b & 1 == 0))
+    else {
+        return (0, false);
+    };
+    let rest = &frames[k..];
+    (rest.len(), rest.iter().all(|(_, d)| d.contiguous))
+}
+
+#[test]
+fn keyframe_requested_once_per_given_up_packet() {
+    use akio_rtp::PlayoutDelay;
+    for playout in [Some(PlayoutDelay::default()), None] {
+        let cb = ConfigInner {
+            video_playout: playout,
+            ..ConfigInner::default()
+        };
+        let (mut a, mut b, mid, mut net, now) = keyframe_peers(cb, no_retransmission);
+        let lose = [40, 130];
+        let run = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 240, &lose, true, now);
+        // Each hole is given up (nothing repairs it) and asks for a keyframe once, by PLI.
+        let gaps = run.frames.iter().filter(|(_, d)| !d.contiguous).count();
+        assert_eq!(gaps, 2, "playout {playout:?}");
+        assert_eq!(run.requests.len(), 2, "{:?}", run.requests);
+        assert!(run.requests.iter().all(|r| r.1 == KeyframeRequestKind::Pli));
+        assert_eq!(b.rtc.stats.keyframes_requested, 2);
+        // The keyframe answering each request repairs the picture: every frame after it is
+        // contiguous, and the second loss is the only gap after the first keyframe.
+        let (n, ok) = recovered_after(&run.frames, run.keyframes_sent[1]);
+        assert!(n > 80 && ok, "{n} {ok}");
+        let first = recovered_after(&run.frames, run.keyframes_sent[0]);
+        assert!(first.0 > 150, "{first:?}");
+        // The request went out with the first frame that could not be decoded: its keyframe
+        // follows within a round trip and its own transfer.
+        let broken: Vec<Instant> = run
+            .frames
+            .iter()
+            .filter(|(_, d)| !d.contiguous)
+            .map(|(at, _)| *at)
+            .collect();
+        for (g, k) in broken.iter().zip(&run.keyframes_sent) {
+            let key = run
+                .frames
+                .iter()
+                .find(|(at, d)| at >= k && d.data[0] & 1 == 0)
+                .unwrap()
+                .0;
+            let d = key - *g;
+            assert!(
+                d < Duration::from_millis(150),
+                "{d:?} (playout {playout:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn keyframe_request_repeats_no_sooner_than_200_ms() {
+    // The sender ignores the requests: one every 200 ms or more while the picture stays
+    // broken, none before the loss, and none once a keyframe came.
+    let (mut a, mut b, mid, mut net, now) =
+        keyframe_peers(ConfigInner::default(), no_retransmission);
+    let run = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 90, &[30], false, now);
+    let n = run.requests.len();
+    // From frame 31 (about 1 s) to the end of frame 89 (about 2 s) at 200 ms or more apart.
+    assert!((5..=10).contains(&n), "{:?}", run.requests);
+    for w in run.requests.windows(2) {
+        let d = w[1].0 - w[0].0;
+        // 200 ms between sends, give or take the 0..6 ms of network spread.
+        assert!(d >= Duration::from_millis(194), "{d:?}");
+    }
+    // Then a keyframe: the requests stop.
+    let pt = a.rtc.payload_type(mid, Codec::Vp8).unwrap();
+    let mut now = run.end;
+    let before = run.requests.len();
+    for i in 0..60u64 {
+        let key = i == 0;
+        let mut f = vec![0x55u8; if key { 12_000 } else { 2_400 }];
+        f[0] = if key { 0x10 } else { 0x11 };
+        let t = MediaTime::new((150 + i) * 3000, Frequency::NINETY_KHZ);
+        a.rtc.write_media(now, mid, None, pt, t, &f).unwrap();
+        for _ in 0..33 {
+            now += Duration::from_millis(1);
+            step(&mut a, &mut b, now, &mut net);
+        }
+    }
+    let after = a
+        .events
+        .iter()
+        .filter(|e| matches!(e, RtcEvent::Keyframe(_)))
+        .count();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn keyframe_on_loss_fir_and_opt_out() {
+    // Without `nack pli` but with `ccm fir`: a FIR.
+    let (mut a, mut b, mid, mut net, now) = keyframe_peers(ConfigInner::default(), fir_only);
+    let run = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 100, &[40], true, now);
+    assert_eq!(
+        run.requests.iter().map(|r| r.1).collect::<Vec<_>>(),
+        [KeyframeRequestKind::Fir]
+    );
+    assert!(recovered_after(&run.frames, run.keyframes_sent[0]).1);
+    // Opted out: the gap reaches the application and nothing is asked.
+    let cb = ConfigInner {
+        keyframe_on_loss: false,
+        ..ConfigInner::default()
+    };
+    let (mut a, mut b, mid, mut net, now) = keyframe_peers(cb, no_retransmission);
+    let run = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 100, &[40], true, now);
+    assert_eq!(run.frames.iter().filter(|(_, d)| !d.contiguous).count(), 1);
+    assert!(run.requests.is_empty());
+    assert_eq!(b.rtc.stats.keyframes_requested, 0);
+    // With NACK and no playout buffer the lost packet is retransmitted in time: no gap,
+    // nothing asked. With the buffer and no round trip known yet (b sends nothing), the
+    // deadline may come first: a request then follows only a packet given up.
+    for playout in [None, Some(akio_rtp::PlayoutDelay::default())] {
+        let cb = ConfigInner {
+            video_playout: playout,
+            ..ConfigInner::default()
+        };
+        let (mut a, mut b, mid, mut net, now) = keyframe_peers(cb, same);
+        let run = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 100, &[40], true, now);
+        let gaps = run.frames.iter().filter(|(_, d)| !d.contiguous).count();
+        assert_eq!(run.requests.len(), gaps, "{:?}", run.requests);
+        if playout.is_none() {
+            assert_eq!(gaps, 0);
+        }
+        assert!(run.frames.len() >= 99, "{}", run.frames.len());
+    }
+    // An application's request counts as outstanding: a loss right after it asks nothing
+    // more for 200 ms. Without it, the same loss asks.
+    for app in [true, false] {
+        let cb = ConfigInner {
+            video_playout: Some(akio_rtp::PlayoutDelay::default()),
+            ..ConfigInner::default()
+        };
+        let (mut a, mut b, mid, mut net, now) = keyframe_peers(cb, no_retransmission);
+        let run0 = keyframe_run(&mut a, &mut b, &mut net, mid, 0, 30, &[], false, now);
+        assert!(run0.requests.is_empty());
+        let t = run0.end;
+        if app {
+            assert!(b.rtc.request_keyframe(t, mid, KeyframeRequestKind::Pli));
+        }
+        let run = keyframe_run(&mut a, &mut b, &mut net, mid, 90, 4, &[91], false, t);
+        assert_eq!(run.frames.iter().filter(|(_, d)| !d.contiguous).count(), 1);
+        assert_eq!(run.requests.len(), 1, "{:?}", run.requests);
+        assert_eq!(b.rtc.stats.keyframes_requested, u64::from(!app));
     }
 }

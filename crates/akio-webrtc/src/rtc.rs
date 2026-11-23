@@ -615,6 +615,8 @@ struct Recv {
     /// Sequence numbers reported lost that arrived since, and whether they play (ADR-092
     /// update): taken back from the loss count, as played or discarded, by the next report.
     late_arrived: Vec<(u16, bool)>,
+    /// Whether the video stream needs a keyframe, and when it last asked (ADR-092 update).
+    keyframe: keyframe::KeyframeNeed,
 }
 
 /// How an incoming SSRC maps to a media line.
@@ -1045,6 +1047,8 @@ struct Stats {
     ecn_ce_received: u64,
     cryptex_received: u64,
     red_recovered: u64,
+    /// Keyframe requests sent because received video could not be decoded (ADR-092 update).
+    keyframes_requested: u64,
     /// Totals of the remote receivers' XR loss and duplicate RLE blocks.
     xr_received: u64,
     xr_lost: u64,
@@ -2741,14 +2745,20 @@ impl Rtc {
     }
 
     /// Asks the remote sender of `mid` for a keyframe. `false`: no such line.
-    pub(crate) fn request_keyframe(&mut self, mid: Mid, kind: KeyframeRequestKind) -> bool {
-        self.request_keyframe_of(mid, None, kind)
+    pub(crate) fn request_keyframe(
+        &mut self,
+        now: Instant,
+        mid: Mid,
+        kind: KeyframeRequestKind,
+    ) -> bool {
+        self.request_keyframe_of(now, mid, None, kind)
     }
 
     /// A keyframe request for the streams of `mid`, or with `rid` only for the simulcast
     /// encoding `rid` (`false` if no stream of that RID has arrived yet).
     pub(crate) fn request_keyframe_of(
         &mut self,
+        now: Instant,
         mid: Mid,
         rid: Option<&str>,
         kind: KeyframeRequestKind,
@@ -2773,6 +2783,12 @@ impl Rtc {
             targets = self.media[idx].remote_ssrcs.clone();
             let l = &self.media[idx];
             targets.retain(|s| !l.remote_rtx.contains_key(s) && !l.remote_fec.contains_key(s));
+        }
+        // The application's request is outstanding for these streams (ADR-092 update).
+        for t in &targets {
+            if let Some(r) = self.recv.get_mut(t) {
+                r.keyframe.asked(now);
+            }
         }
         let line = &mut self.media[idx];
         let sender = line.send.ssrc();
@@ -3378,13 +3394,25 @@ impl Rtc {
             return;
         };
         let rid = recv.rid.clone();
-        let Some((pt, asm)) = recv.assembler.as_mut() else {
+        let krtt = Self::keyframe_rtt(recv, l);
+        let video = l.kind == MediaKind::Video;
+        let Recv {
+            assembler,
+            keyframe,
+            ..
+        } = recv;
+        let Some((pt, asm)) = assembler.as_mut() else {
             return;
         };
         let Some(codec) = l.codec(*pt) else {
             return;
         };
+        let mut ask = false;
         while let Some(f) = asm.pop() {
+            // After a given-up packet, video frames up to a keyframe cannot be decoded.
+            if video {
+                ask |= keyframe.on_frame(now, f.keyframe, f.contiguous && !f.partial, krtt);
+            }
             self.events.push_back(RtcEvent::MediaData(MediaData {
                 mid,
                 pt: Pt::from(*pt),
@@ -3400,6 +3428,9 @@ impl Rtc {
                 playout_time: None,
                 data: Arc::from(f.data),
             }));
+        }
+        if ask {
+            self.request_keyframe_on_loss(line, ssrc);
         }
     }
 
@@ -3847,6 +3878,7 @@ impl Rtc {
                     }),
                     cryptex_received: self.stats.cryptex_received,
                     red_recovered: self.stats.red_recovered,
+                    keyframes_requested: self.stats.keyframes_requested,
                     xr_received: self.stats.xr_received,
                     xr_lost: self.stats.xr_lost,
                     xr_duplicated: self.stats.xr_duplicated,
@@ -4326,6 +4358,7 @@ fn recv_entry<'a>(
         audio_ptime: receipts::PacketTime::default(),
         reported_lost: VecDeque::new(),
         late_arrived: Vec::new(),
+        keyframe: keyframe::KeyframeNeed::default(),
     }))
 }
 
@@ -4410,6 +4443,7 @@ mod channels;
 mod ecn;
 mod ecn_fb;
 mod feedback;
+mod keyframe;
 mod latch;
 mod pacing;
 mod playout;

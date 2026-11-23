@@ -4,6 +4,9 @@
 //	webrtc-pion client-dc <http-addr>                offers a data channel, checks 100 echoes
 //	webrtc-pion client-media <http-addr>             offers Opus + VP8 + a data channel, checks
 //	                                                 RTP echo and that a PLI reaches the server
+//	webrtc-pion client-loss <http-addr>              offers VP8 and leaves one packet out: the
+//	                                                 akio receiver asks for a keyframe once
+//	                                                 (PLI), and not again after pion sends it
 //	webrtc-pion client-turn <http-addr> <turn> <user> <pass>
 //	                                                 client-dc over a TURN relay only
 //	webrtc-pion turn-raw <turn> <user> <pass>        pion/turn client: allocate, permission,
@@ -150,6 +153,102 @@ func dcEcho(pc *webrtc.PeerConnection, addr string, what string) {
 		fail("lossy echo timed out")
 	}
 	fmt.Printf("ok: pion %s: 100 ordered messages and an unordered/unreliable one echoed\n", what)
+	pc.Close()
+}
+
+// clientLoss sends VP8 frames of three RTP packets (a keyframe first) and leaves out one
+// packet of frame 40: the akio receiver gives it up and asks for a keyframe (ADR-092 update).
+// The keyframe pion sends in answer ends the requests: exactly one PLI comes, after the loss.
+func clientLoss(addr string) {
+	pc := newPC(nil, false)
+	video, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}, "video", "pion")
+	check(err)
+	vs, err := pc.AddTrack(video)
+	check(err)
+	type req struct {
+		at  time.Time
+		fir bool
+	}
+	reqs := make(chan req, 100)
+	go func() {
+		for {
+			pkts, _, err := vs.ReadRTCP()
+			if err != nil {
+				return
+			}
+			for _, p := range pkts {
+				switch p.(type) {
+				case *rtcp.PictureLossIndication:
+					reqs <- req{time.Now(), false}
+				case *rtcp.FullIntraRequest:
+					reqs <- req{time.Now(), true}
+				}
+			}
+		}
+	}()
+	connected := make(chan struct{})
+	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		if s == webrtc.PeerConnectionStateConnected {
+			close(connected)
+		}
+	})
+	offer(pc, addr)
+	select {
+	case <-connected:
+	case <-time.After(15 * time.Second):
+		fail("not connected")
+	}
+	seq := uint16(7000)
+	var lostAt time.Time
+	var got []req
+	keyframes := 0
+	asked := false
+	for i := 0; i < 150; i++ {
+		key := i == 0 || asked
+		if key && i > 0 {
+			keyframes++
+		}
+		asked = false
+		for k := 0; k < 3; k++ {
+			// The VP8 payload descriptor (S on the first packet, partition 0), then the
+			// payload header's first byte: P = 0 on a keyframe.
+			payload := append([]byte{0x00}, bytes.Repeat([]byte{0x55}, 900)...)
+			if k == 0 {
+				payload[0] = 0x10
+				payload[1] = 0x11
+				if key {
+					payload[1] = 0x10
+				}
+			}
+			p := &rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 96, SequenceNumber: seq,
+				Timestamp: uint32(i) * 3000, Marker: k == 2, SSRC: 1}, Payload: payload}
+			seq++
+			if i == 40 && k == 1 {
+				lostAt = time.Now()
+				continue
+			}
+			check(video.WriteRTP(p))
+		}
+		time.Sleep(33 * time.Millisecond)
+	drain:
+		for {
+			select {
+			case r := <-reqs:
+				got = append(got, r)
+				asked = true
+			default:
+				break drain
+			}
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	for len(reqs) > 0 {
+		got = append(got, <-reqs)
+	}
+	if len(got) != 1 || got[0].fir || got[0].at.Before(lostAt) || keyframes != 1 {
+		fail("loss: %d keyframe requests (%v), %d keyframes sent; want one PLI after the loss", len(got), got, keyframes)
+	}
+	fmt.Printf("ok: pion loss: one PLI %v after the lost packet, none after the keyframe\n", got[0].at.Sub(lostAt).Round(time.Millisecond))
 	pc.Close()
 }
 
@@ -527,6 +626,8 @@ func main() {
 		dcEcho(newPC(nil, false), os.Args[2], "data channels")
 	case "client-media":
 		clientMedia(os.Args[2])
+	case "client-loss":
+		clientLoss(os.Args[2])
 	case "client-turn":
 		ice := []webrtc.ICEServer{{URLs: []string{"turn:" + os.Args[3] + "?transport=udp"}, Username: os.Args[4], Credential: os.Args[5]}}
 		dcEcho(newPC(ice, true), os.Args[2], "over an akio TURN relay")
