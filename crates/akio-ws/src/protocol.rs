@@ -228,7 +228,7 @@ fn header_len(b1: u8) -> usize {
 
 /// Parses a complete header (`h.len() == header_len(h[1])`) and enforces the rules that need
 /// nothing but the header.
-#[inline]
+#[inline(always)]
 fn parse_header(role: Role, h: &[u8]) -> Result<Header, ProtocolError> {
     let fin = h[0] & 0x80 != 0;
     let rsv1 = h[0] & 0x40 != 0;
@@ -449,12 +449,14 @@ impl Decoder {
         let go = match h.mask {
             None => emit_data(text, payload, f)?,
             Some(m) => {
-                let mut buf = std::mem::take(&mut self.mbuf);
+                let buf = &mut self.mbuf;
                 buf.clear();
                 buf.extend_from_slice(payload);
-                unmask(&mut buf, m, 0);
-                let r = emit_data(text, &buf, f);
-                self.keep(buf);
+                unmask(buf, m, 0);
+                let r = emit_data(text, buf, f);
+                if buf.capacity() > KEEP_BUF {
+                    *buf = Vec::new();
+                }
                 r?
             }
         };

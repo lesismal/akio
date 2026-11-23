@@ -660,7 +660,7 @@ fn compressed_messages_of_growing_size_echo_and_close_like_autobahn_12() {
     // permessage-deflate, many compressible text messages (some pipelined, some one at a time,
     // some fragmented), then the close handshake.
     let n = Arc::new(Mutex::new(0));
-    let n2 = n.clone();
+    let n2 = n;
     let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
         ctx.upgrade_websocket(RefEcho(n2.clone()), &WsOptions::default());
     }));
@@ -757,7 +757,7 @@ fn compressed_messages_in_256_byte_fragments_like_autobahn_12_4_12() {
     // Autobahn 12.4.x: 1000 compressible text messages per case, compressed with context
     // takeover and split into 256-byte frames, written back to back while the echoes come back.
     let n = Arc::new(Mutex::new(0));
-    let n2 = n.clone();
+    let n2 = n;
     let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
         ctx.upgrade_websocket(RefEcho(n2.clone()), &WsOptions::default());
     }));
@@ -810,7 +810,7 @@ fn compressed_messages_in_256_byte_fragments_like_autobahn_12_4_12() {
                 let pieces: Vec<&[u8]> = z.chunks(256).collect();
                 let mut wire = Vec::new();
                 for (k, p) in pieces.iter().enumerate() {
-                    let op = if k == 0 { 1 } else { 0 };
+                    let op = u8::from(k == 0);
                     wire.extend(frame_bytes(op, k + 1 == pieces.len(), k == 0, p));
                 }
                 w.write_all(&wire).unwrap();
@@ -832,5 +832,56 @@ fn compressed_messages_in_256_byte_fragments_like_autobahn_12_4_12() {
         send(&mut s, 8, true, &1000u16.to_be_bytes());
         assert_eq!(close_code(&recv(&mut s)), 1000);
     }
+    stop(&e);
+}
+
+/// On "go": sends "A", has another thread send "B" (or close, on "close") and waits until that
+/// returned, then sends "C". Everything happens inside one read's batch.
+struct Relay;
+
+impl WsHandler for Relay {
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        let MessageRef::Text(t) = msg else { return };
+        ws.send_text("A").unwrap();
+        let other = ws.clone();
+        let close = t == "close";
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let r = if close {
+                other.close(1000, "from another thread");
+                Ok(())
+            } else {
+                other.send_text("B")
+            };
+            tx.send(r).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let c = ws.send_text("C");
+        assert_eq!(c.is_err(), close, "sends after a close fail");
+    }
+}
+
+#[test]
+fn another_threads_send_caused_by_the_handler_never_overtakes_it() {
+    let e = start(Router::new().get("/ws", |ctx: &mut Context| {
+        ctx.upgrade_websocket(Relay, &WsOptions::default());
+    }));
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    for _ in 0..20 {
+        send(&mut s, 1, true, b"go");
+        let got: Vec<Vec<u8>> = (0..3).map(|_| recv(&mut s).payload).collect();
+        // B was sent after A (the handler sent A before starting the thread): it comes after A.
+        let a = got.iter().position(|p| p == b"A").unwrap();
+        let b = got.iter().position(|p| p == b"B").unwrap();
+        assert!(a < b, "{got:?}");
+        assert!(got.iter().any(|p| p == b"C"));
+    }
+    // A close from another thread while the handler's output is collected: A, then the close
+    // frame, then the end of the stream; C was refused.
+    send(&mut s, 1, true, b"close");
+    assert_eq!(recv(&mut s).payload, b"A");
+    let f = recv(&mut s);
+    assert_eq!(close_code(&f), 1000);
+    expect_eof(&mut s);
     stop(&e);
 }

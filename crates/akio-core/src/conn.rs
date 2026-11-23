@@ -1888,6 +1888,22 @@ impl ConnInner {
         self.send_owned(v)
     }
 
+    /// Bytes the send queue takes before sends fail with `Overloaded` (0 once closed or closing).
+    /// A caller that collects output on the loop thread and sends it in one piece checks against
+    /// this first; nothing else adds to the queue while the loop is inside that connection's
+    /// callback, except other threads.
+    pub fn send_room(&self) -> usize {
+        let w = self.lock();
+        if !self.is_open() || w.close_after_send {
+            return 0;
+        }
+        self.cfg
+            .telemetry
+            .live()
+            .max_queued_bytes()
+            .saturating_sub(w.queued)
+    }
+
     /// Sends `data`, then closes once everything queued is written, as one step: nothing sent
     /// after it, from any thread, is accepted ([`close_after_send`](Self::close_after_send)
     /// follows in the same critical section). akio-ws sends its close frame with it, so no data
