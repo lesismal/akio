@@ -506,6 +506,10 @@ impl Group for UringGroup {
         self.sender.clone()
     }
 
+    fn set_balance(&self, on: bool) {
+        self.roster.set_balance(on);
+    }
+
     fn pin_threads(&self, cpus: Vec<Vec<usize>>) {
         let mut st = lock(&self.state);
         *lock(&self.pins) = cpus;

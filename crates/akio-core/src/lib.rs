@@ -13,6 +13,8 @@
 //! (中文: [Handler、Acceptor 与 `Conn`](https://lesismal.github.io/akio/zh-CN/concepts/handlers.html)).
 #![warn(clippy::unwrap_used)]
 
+#[doc(hidden)]
+pub mod balance;
 mod config;
 mod conn;
 mod datagrams;

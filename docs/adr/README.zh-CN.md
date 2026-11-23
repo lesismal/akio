@@ -95,3 +95,4 @@
 - [ADR-093：UDP 数据报的到达接口，按已绑定套接字选择开启；mDNS 据此确定查询所在链路](093-udp-arrival-interface.zh-CN.md)（2026-11-23 采纳；了结 ADR-078 更新 4 的遗留项）
 - [ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭](094-handlers-on-the-logical-pool.zh-CN.md)（2026-11-23 采纳）
 - [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
+- [ADR-100：在监听器的各线程之间于 accept 时均衡连接](100-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）

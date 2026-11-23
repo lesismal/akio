@@ -28,6 +28,7 @@
 | `.threads(n)` | 该 listener 的 I/O 线程数 | 每核一个 |
 | `.backend(Backend::..)` | `Epoll`（macOS 上是 kqueue）或 `IoUring(UringConfig)` | `Epoll` |
 | `.accel(Accel::..)` | `None` 或 `Ebpf(EbpfConfig)` 分流 | `None` |
+| `.balance(Balance::..)` | `LeastConnections`：持有连接超出份额的线程把新连接在首次读取之前交给连接最少的线程（ADR-100）；`Kernel`：套接字接受到哪个线程就留在哪个线程 | `LeastConnections`（有 eBPF 分流或 NUMA `incoming_cpu` 时为 `Kernel`） |
 
 每个 listener 有自己的线程，listener 之间从不共享 I/O 线程。handler 类型、后端和线程数各不
 相同的多个 listener 可以放在同一个 engine 里。

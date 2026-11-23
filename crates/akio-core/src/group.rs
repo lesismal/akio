@@ -23,6 +23,10 @@ pub trait Group: Send + Sync {
     /// (none for an empty set or past the end). Takes effect only before [`start`](Self::start);
     /// groups whose threads cannot be pinned ignore it.
     fn pin_threads(&self, _cpus: Vec<Vec<usize>>) {}
+    /// Accept-time balancing (ADR-100): when on, a thread that accepts a connection while it
+    /// holds more than its share hands it to the least loaded thread before reading from it
+    /// (`akio_core::balance`). TCP listener groups implement it; the others ignore it.
+    fn set_balance(&self, _on: bool) {}
     /// Per active I/O thread, the CPU its kernel SQ polling thread is pinned to (io_uring with
     /// SQPOLL and pinned threads, ADR-088); empty for groups without one.
     fn sq_thread_cpus(&self) -> Vec<Option<usize>> {

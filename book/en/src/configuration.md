@@ -59,6 +59,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `threads(n)` | one per core | I/O threads of this listener (at least 1) |
 | `backend(Backend)` | `Epoll` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | `Ebpf(EbpfConfig)` for steering |
+| `balance(Balance)` | `LeastConnections` | accept-time balancing over the threads (ADR-100); `Kernel` keeps the kernel's `SO_REUSEPORT` distribution |
 
 Listeners and backends are fixed when the engine is built. Thread counts change at runtime with
 `Engine::set_threads(index, n)` (TCP listeners and client groups; see

@@ -404,6 +404,13 @@ pub(crate) enum Cmd {
     Shutdown,
     /// From the engine's telemetry hub (connection table, live-settings reload).
     Core(LoopCmd),
+    /// Accept-time balancing (ADR-100): a connection another loop of the group accepted, to be
+    /// served here. Counted in this loop's `LoopStats::load` until it arrives.
+    Adopt {
+        stream: TcpStream,
+        peer: std::net::SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+    },
     Dial {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
@@ -441,6 +448,8 @@ pub(crate) struct Roster {
     /// Listener `idx` has a home: active loop `idx % active` (`SO_REUSEPORT` groups, one socket
     /// per loop index). Otherwise the loops hold clones of one socket and nothing is routed.
     routed: bool,
+    /// Accept-time balancing (ADR-100, `Group::set_balance`).
+    balance: AtomicBool,
 }
 
 impl Roster {
@@ -449,6 +458,7 @@ impl Roster {
             active: RwLock::new(Vec::new()),
             rr: AtomicUsize::new(0),
             routed,
+            balance: AtomicBool::new(false),
         }
     }
 
@@ -492,6 +502,35 @@ impl Roster {
         if !g.is_empty() {
             g[idx % g.len()].post(Cmd::AddListener(idx, l));
         }
+    }
+
+    pub(crate) fn set_balance(&self, on: bool) {
+        self.balance.store(on, Ordering::Relaxed);
+    }
+
+    /// Accept-time balancing (ADR-100): the active loop a connection just accepted by `me`
+    /// should go to instead, if `me` holds more than its share (`akio_core::balance`). The
+    /// target's load already counts the connection when this returns.
+    fn handoff_target(&self, me: &LoopShared) -> Option<Arc<LoopShared>> {
+        if !self.balance.load(Ordering::Relaxed) {
+            return None;
+        }
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        let t = akio_core::balance::pick(&me.stats, &g, |l| &l.stats)?.clone();
+        t.stats.handoff_begin();
+        Some(t)
+    }
+
+    /// Passes on a handed-over connection that reached a loop which is leaving: to the next
+    /// active loop, or closes it when there is none.
+    fn hand_on(&self, cmd: Cmd) {
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        if g.is_empty() {
+            return;
+        }
+        let t = &g[self.rr.fetch_add(1, Ordering::Relaxed) % g.len()];
+        t.stats.handoff_begin();
+        t.post(cmd);
     }
 }
 
@@ -957,6 +996,10 @@ impl Loop {
         for cmd in self.shared.take() {
             match cmd {
                 Cmd::AddListener(idx, l) => self.roster.forward_listener(idx, l),
+                c @ Cmd::Adopt { .. } => {
+                    self.shared.stats.handoff_done();
+                    self.roster.hand_on(c);
+                }
                 c @ Cmd::Dial { .. } => {
                     if let Err(Cmd::Dial { on_error, .. }) = self.roster.post_next(c) {
                         on_error(io::Error::new(
@@ -1223,7 +1266,45 @@ impl Loop {
         let Some(acceptor) = self.acceptor.clone() else {
             return;
         };
+        // Accept-time balancing (ADR-100): a loop holding more than its share hands the
+        // connection over before reading from it.
+        if !self.retiring {
+            if let Some(to) = self.roster.handoff_target(&self.shared) {
+                to.post(Cmd::Adopt {
+                    stream,
+                    peer,
+                    acceptor,
+                });
+                return;
+            }
+        }
         self.open(stream, peer, acceptor, false);
+    }
+
+    /// A connection another loop accepted and handed here (ADR-100).
+    fn adopt_accepted(
+        &mut self,
+        stream: TcpStream,
+        peer: std::net::SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) {
+        if self.draining.is_some() {
+            // As for one the cancelled multishot accept completes while draining (`on_accept`):
+            // serve its first request, then shut it down.
+            if let Some(id) = self.open(stream, peer, acceptor, false) {
+                if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                    lc.shutdown_after_data = true;
+                }
+            }
+        } else if self.retiring {
+            self.roster.hand_on(Cmd::Adopt {
+                stream,
+                peer,
+                acceptor,
+            });
+        } else {
+            self.open(stream, peer, acceptor, false);
+        }
     }
 
     fn on_poll(&mut self, id: u64) {
@@ -1691,6 +1772,14 @@ impl Loop {
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
                     Cmd::Core(c) => self.on_core(c),
+                    Cmd::Adopt {
+                        stream,
+                        peer,
+                        acceptor,
+                    } => {
+                        self.shared.stats.handoff_done();
+                        self.adopt_accepted(stream, peer, acceptor);
+                    }
                     Cmd::Dial {
                         stream,
                         acceptor,

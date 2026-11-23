@@ -103,6 +103,28 @@ pub enum Accel {
     Ebpf(EbpfConfig),
 }
 
+/// How a TCP listener spreads new connections over its I/O threads ([`Listener::balance`],
+/// ADR-100). Either way a connection stays on one thread for its whole life (ADR-001).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Balance {
+    /// Each thread serves every connection its listening socket gets: the kernel's
+    /// `SO_REUSEPORT` hash (or the [`Accel::Ebpf`] steering program) decides alone. The hash is
+    /// even only on average (1024 connections over 8 threads: 119..141 measured), so when every
+    /// connection carries the same load the busiest thread saturates first.
+    Kernel,
+    /// A thread that accepts a connection while it holds more than its share (more than
+    /// `2 + min / 32` connections above the thread with the fewest) hands it, before reading
+    /// a byte, to the thread with the fewest open connections, where `on_open` runs and the
+    /// connection stays. The cost is one cross-thread wake-up per connection handed over, paid
+    /// only while the threads are uneven. The default, except on listeners whose
+    /// [`Accel::Ebpf`] steering program is attached or whose sockets have NUMA
+    /// `SO_INCOMING_CPU` ([`NumaConfig::incoming_cpu`]): there the placement was asked for and
+    /// is kept ([`Kernel`](Self::Kernel)).
+    #[default]
+    LeastConnections,
+}
+
 /// Configuration of [`Accel::Ebpf`]. `#[non_exhaustive]`: start from
 /// `EbpfConfig::default()` and set fields.
 #[derive(Clone, Debug)]
@@ -161,6 +183,7 @@ pub struct Listener {
     /// Set by [`Listener::backend`]; `AKIO_DEFAULT_BACKEND` applies only when it is not.
     backend_explicit: bool,
     accel: Accel,
+    balance: Balance,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
     /// The handler factory of a connectionless datagram listener (ADR-065).
@@ -184,6 +207,7 @@ impl Listener {
             backend: Backend::default(),
             backend_explicit: false,
             accel: Accel::default(),
+            balance: Balance::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
             datagrams: None,
@@ -238,6 +262,14 @@ impl Listener {
     #[must_use]
     pub fn accel(mut self, a: Accel) -> Self {
         self.accel = a;
+        self
+    }
+
+    /// How new connections are spread over the I/O threads (default:
+    /// [`Balance::LeastConnections`]; TCP listeners only, UDP ignores it).
+    #[must_use]
+    pub fn balance(mut self, b: Balance) -> Self {
+        self.balance = b;
         self
     }
 
@@ -378,6 +410,8 @@ impl EngineBuilder {
         let mut udp_listeners: Vec<usize> = Vec::new();
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
+        // Per listener: accept-time balancing asked for (ADR-100).
+        let mut balances: Vec<bool> = Vec::new();
         // Groups whose threads NUMA placement leaves alone (DPDK places its own lcores).
         #[cfg_attr(not(feature = "dpdk"), allow(unused_mut))]
         let mut unplaced: Vec<usize> = Vec::new();
@@ -391,6 +425,7 @@ impl EngineBuilder {
                 }
             }
             accels.push(l.accel.clone());
+            balances.push(!l.udp && l.balance == Balance::LeastConnections);
             if let Some(factory) = l.datagrams.take() {
                 if !l.udp || l.acceptor.is_some() {
                     return Err(io::Error::new(
@@ -517,6 +552,12 @@ impl EngineBuilder {
             .zip(&groups)
             .map(|(a, g)| apply_accel(a, g.as_ref()))
             .collect::<io::Result<Vec<_>>>()?;
+        // Balancing would undo a placement the listener asked for: a steering program, or
+        // NUMA's `SO_INCOMING_CPU`.
+        for ((g, on), a) in groups.iter().zip(&balances).zip(&accel) {
+            let placed = matches!(a, AccelStatus::Steering(_)) || numa_cfg.incoming_cpu;
+            g.set_balance(*on && !placed);
+        }
         // `dial` goes to the client group, else to the last TCP listener's group (never to a UDP
         // group, which cannot dial TCP).
         let mut tcp_dial = (0..groups.len()).rev().find(|i| !udp_listeners.contains(i));

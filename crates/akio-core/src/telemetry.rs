@@ -97,6 +97,9 @@ macro_rules! loop_counters {
             meta: LoopMeta,
             running: AtomicBool,
             retiring: AtomicBool,
+            /// Connections handed to this thread by another one at accept time (ADR-100) and
+            /// not opened here yet.
+            incoming: AtomicU64,
             $( #[doc(hidden)] pub $field: Counter, )*
         }
 
@@ -110,7 +113,7 @@ macro_rules! loop_counters {
         impl LoopStats {
             /// Counters of a thread described by `meta`.
             pub fn new(meta: LoopMeta) -> LoopStats {
-                LoopStats { meta, running: AtomicBool::new(false), retiring: AtomicBool::new(false), $( $field: Counter::default(), )* }
+                LoopStats { meta, running: AtomicBool::new(false), retiring: AtomicBool::new(false), incoming: AtomicU64::new(0), $( $field: Counter::default(), )* }
             }
 
             /// Copies the counters.
@@ -215,6 +218,28 @@ impl LoopStats {
     /// Whether the thread is retiring.
     pub fn retiring(&self) -> bool {
         self.retiring.load(Ordering::Acquire)
+    }
+
+    /// Connections open on this thread now, plus those handed to it and not opened yet: what
+    /// accept-time balancing (ADR-100) compares. Readable from any thread.
+    pub fn load(&self) -> u64 {
+        (self.accepted.get() + self.dialed.get())
+            .saturating_sub(self.closed.get())
+            .saturating_add(self.incoming.load(Ordering::Relaxed))
+    }
+
+    /// Another thread is handing this one a connection (counted in [`load`](Self::load) until
+    /// [`handoff_done`](Self::handoff_done)).
+    pub fn handoff_begin(&self) {
+        self.incoming.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A connection handed to this thread arrived (opened here, passed on or dropped).
+    pub fn handoff_done(&self) {
+        // Never below zero, even if a command is ever delivered twice.
+        let _ = self
+            .incoming
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
     }
 
     /// Counts one received datagram of `n` bytes.

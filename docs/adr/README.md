@@ -95,3 +95,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-093: The interface a UDP datagram arrived on, opt-in per bound socket; mDNS places queries by it](093-udp-arrival-interface.md) (accepted 2026-11-23; closes ADR-078 update 4's leftover)
 - [ADR-094: Protocol handlers on the logical pool, per protocol, off by default](094-handlers-on-the-logical-pool.md) (accepted 2026-11-23)
 - [ADR-101: Borrowed WebSocket messages and a lock-free send path](101-borrowed-websocket-messages.md) (accepted 2026-11-23)
+- [ADR-100: Accept-time balancing of connections over a listener's threads](100-accept-time-balancing.md) (accepted 2026-11-23; updates ADR-001)

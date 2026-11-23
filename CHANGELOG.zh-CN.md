@@ -96,6 +96,18 @@ ADR-101，均为新增：
 - 这样的会话还把 handler 在一次读期间发送的内容在读结束时整体一次交给连接（每条消息不加锁）；期间其他线程的发送
   排在其后，因 handler 发出的消息而引起的发送不会越过它。
 - `ws-echo` 示例（Autobahn 的测试目标）改用 `on_message_ref`。
+### 变更：TCP 监听器在 accept 时把连接均衡到各线程（akio、akio-core、akio-epoll、akio-uring）
+
+ADR-100。`SO_REUSEPORT` 的哈希把 1024 个等负载连接分到 8 个线程上时每线程 119..141 个；在固定 100 万请求/秒
+（HttpArena `latency-1m`）下，最忙的线程饱和，p99 达到 1.35 s，而其他线程尚有余力。
+
+- `akio::Balance { Kernel, LeastConnections }`（`#[non_exhaustive]`）与 `Listener::balance`。默认是
+  `LeastConnections`：线程接受一个连接时，若它持有的连接比本监听器最少的线程多出 `2 + min / 32` 以上，就在读取任何
+  数据之前把连接交给那个线程；`on_open` 及所有回调都在那里运行（ADR-001 仍成立）。
+- 挂载了 `Accel::Ebpf` 分流程序的监听器、启用 NUMA `incoming_cpu` 的引擎以及 UDP 监听器不启用。`Balance::Kernel`
+  恢复之前的行为。
+- `LoopStats::load`、`handoff_begin` / `handoff_done` 以及隐藏的 `akio_core::balance` 与 `Group::set_balance`
+  把它传给 epoll/kqueue 与 io_uring 后端。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
