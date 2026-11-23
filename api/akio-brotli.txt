@@ -1,4 +1,17 @@
 pub mod akio_brotli
+#[non_exhaustive] pub enum akio_brotli::DictionaryRef<'a>
+pub akio_brotli::DictionaryRef::Resource(usize)
+pub akio_brotli::DictionaryRef::Shared(&'a akio_brotli::SharedDictionary, &'a [u8; 32])
+impl<'a> core::clone::Clone for akio_brotli::DictionaryRef<'a>
+pub fn akio_brotli::DictionaryRef<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_brotli::DictionaryRef<'a>
+pub fn akio_brotli::DictionaryRef<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for akio_brotli::DictionaryRef<'a>
+impl<'a> core::marker::Send for akio_brotli::DictionaryRef<'a>
+impl<'a> core::marker::Sync for akio_brotli::DictionaryRef<'a>
+impl<'a> core::marker::Unpin for akio_brotli::DictionaryRef<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_brotli::DictionaryRef<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_brotli::DictionaryRef<'a>
 #[non_exhaustive] pub enum akio_brotli::Error
 pub akio_brotli::Error::BadBlockLength
 pub akio_brotli::Error::BadContainer
@@ -73,14 +86,38 @@ impl core::marker::Sync for akio_brotli::Compressor
 impl core::marker::Unpin for akio_brotli::Compressor
 impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Compressor
 impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Compressor
+#[non_exhaustive] pub struct akio_brotli::Container
+pub akio_brotli::Container::global: alloc::vec::Vec<([u8; 2], alloc::vec::Vec<u8>)>
+pub akio_brotli::Container::resources: alloc::vec::Vec<akio_brotli::Resource>
+impl akio_brotli::Container
+pub fn akio_brotli::Container::read(&[u8], usize, &mut dyn core::ops::function::FnMut(&[u8; 32]) -> core::option::Option<alloc::vec::Vec<u8>>) -> core::result::Result<akio_brotli::Container, akio_brotli::Error>
+impl core::clone::Clone for akio_brotli::Container
+pub fn akio_brotli::Container::clone(&self) -> Self
+impl core::cmp::Eq for akio_brotli::Container
+impl core::cmp::PartialEq for akio_brotli::Container
+pub fn akio_brotli::Container::eq(&self, &Self) -> bool
+impl core::default::Default for akio_brotli::Container
+pub fn akio_brotli::Container::default() -> Self
+impl core::fmt::Debug for akio_brotli::Container
+pub fn akio_brotli::Container::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_brotli::Container
+impl core::marker::Send for akio_brotli::Container
+impl core::marker::Sync for akio_brotli::Container
+impl core::marker::Unpin for akio_brotli::Container
+impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Container
+impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Container
 pub struct akio_brotli::ContainerWriter
 impl akio_brotli::ContainerWriter
 pub fn akio_brotli::ContainerWriter::add(&mut self, &str, &[u8]) -> usize
 pub fn akio_brotli::ContainerWriter::add_dictionary(&mut self, &[u8]) -> usize
+pub fn akio_brotli::ContainerWriter::add_global_metadata(&mut self, &[([u8; 2], alloc::vec::Vec<u8>)])
+pub fn akio_brotli::ContainerWriter::add_resource(&mut self, &akio_brotli::Resource, core::option::Option<akio_brotli::DictionaryRef<'_>>) -> usize
 pub fn akio_brotli::ContainerWriter::add_with_dictionary(&mut self, &str, &[u8], usize) -> usize
 pub fn akio_brotli::ContainerWriter::add_with_shared_dictionary(&mut self, &str, &[u8], &akio_brotli::SharedDictionary, &[u8; 32]) -> usize
 pub fn akio_brotli::ContainerWriter::finish(self) -> alloc::vec::Vec<u8>
 pub fn akio_brotli::ContainerWriter::new(akio_brotli::Level) -> akio_brotli::ContainerWriter
+pub fn akio_brotli::ContainerWriter::part_size(self, usize) -> akio_brotli::ContainerWriter
+pub fn akio_brotli::ContainerWriter::repeat_metadata(self, bool) -> akio_brotli::ContainerWriter
 impl core::fmt::Debug for akio_brotli::ContainerWriter
 pub fn akio_brotli::ContainerWriter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_brotli::ContainerWriter
@@ -161,6 +198,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_brotli::Progress
 impl core::panic::unwind_safe::UnwindSafe for akio_brotli::Progress
 #[non_exhaustive] pub struct akio_brotli::Resource
 pub akio_brotli::Resource::data: alloc::vec::Vec<u8>
+pub akio_brotli::Resource::fields: alloc::vec::Vec<([u8; 2], alloc::vec::Vec<u8>)>
+pub akio_brotli::Resource::footer: alloc::vec::Vec<([u8; 2], alloc::vec::Vec<u8>)>
 pub akio_brotli::Resource::hash: core::option::Option<[u8; 32]>
 pub akio_brotli::Resource::hidden: bool
 pub akio_brotli::Resource::modified: core::option::Option<i64>

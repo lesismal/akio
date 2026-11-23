@@ -86,10 +86,12 @@
   14 位流头，窗口 2^10..2^30，距离最大 2^31 - 4，使用更大的距离字母表（按 Google 对它的上限解码）。只用于
   事先约定的对端：常规解码器拒绝这种流，我们的解码器在未要求时也拒绝。与 Google 的
   `brotli --large_window` 双向核对，包括超过 64 MiB 的距离。
-- `read_container` / `ContainerWriter`：RFC 9841 的封装格式，由资源（数据块，或延续同一个流的一串部分
-  数据块，不压缩、brotli 或共享 brotli）、元数据、按指针或按哈希码的字典引用、中央目录和最终尾部组成的
-  容器；读取时检查第 8 节的所有规则。哈希码视为不透明值（RFC 规定了 HighwayHash 但没有给出密钥）：哈希
-  引用由调用方解析。
+- `read_container` / `Container::read` / `ContainerWriter`：RFC 9841 的封装格式，由资源（数据块，或延续
+  同一个流的一串部分数据块，不压缩、brotli 或共享 brotli）、元数据（名称、修改时间、自定义字段、尾部与
+  全局元数据字段）、供从末尾列出资源的重复元数据、按指针或按哈希码的字典引用、中央目录和最终尾部组成的
+  容器。读取时检查第 8 节的所有规则，包括重复元数据与被重复的块是否一致；写入器能写出每一种块
+  （`add_resource`、`add_global_metadata`、`part_size`、`repeat_metadata`），读出的容器能原样写回。哈希码
+  视为不透明值（RFC 规定了 HighwayHash 但没有给出密钥）：哈希引用由调用方解析。
 
 ```rust
 use akio_brotli::{Level, compress, decompress};
@@ -135,7 +137,7 @@ assert_eq!(decompress(&packed, data.len()).unwrap(), data);
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml brotli FILE...`。
 
 局限：编码器只在 10、11 级搜索静态字典且不搜索省略开头的变换（自定义字典的词：搜索其全部变换），总是使用
-`NPOSTFIX` = `NDIRECT` = 0；容器写入器每个资源只写一个数据块，元数据只写名称。11 级
+`NPOSTFIX` = `NDIRECT` = 0。11 级
 输出在基准语料的 HTTP 负载上比 Google 的大 0.9–1.3%，在其 Silesia 部分小 4.5%（docs/BENCHMARKS.zh-CN.md，
 “brotli 块分割”）。
 前缀码按精确码长或按为游程编码平滑过的计数（zopfli 的 `OptimizeHuffmanForRle`）存储，取总代价较小者，

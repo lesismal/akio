@@ -135,8 +135,9 @@ serialized shared dictionaries with custom word lists and transforms
 prefix and, at levels 10 and 11, the custom words (ADR-079). The rest of RFC 9841 is there too,
 outside the middleware: large-window streams (`decompress_large_window`,
 `Compressor::large_window`; windows up to 1 GiB, only between peers that agreed to them) and
-the framing format, a container of resources that may use one another as dictionaries
-(`read_container`, `ContainerWriter`).
+the framing format, a container of resources that may use one another as dictionaries, with
+metadata, partial chunks and repeat metadata for listing (`read_container`, `Container::read`,
+`ContainerWriter`).
 
 ```rust,ignore
 {{#include ../../../../crates/akio-http/examples/guide-http.rs:compression}}

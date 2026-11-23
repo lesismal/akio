@@ -190,50 +190,89 @@ pub fn stream_roundtrip(data: &[u8]) {
 
 /// `brotli_container`: with bit 0 of `data[0]` clear, `data[1..]` as a shared brotli
 /// framing format container: never panics (a hash reference resolves to the hash's 32 bytes
-/// as a dictionary). With it set, a container written from pieces of `data[1..]` (named
-/// resources, hidden ones and resources compressed with an earlier one as their dictionary,
-/// at the level of `data[0] >> 4`) reads back as written.
+/// as a dictionary), and a container that reads is written back resource by resource
+/// ([`ContainerWriter::add_resource`](crate::ContainerWriter::add_resource), global metadata
+/// too) and reads back the same. With it set, a container written from pieces of `data[1..]`
+/// reads back as written: named resources with a modification time, custom and footer fields
+/// and hash codes, hidden ones and resources compressed with an earlier one as their
+/// dictionary, global metadata, at the level of `data[0] >> 4`, with repeat metadata if bit 1
+/// is set and partial data chunks of 1, 64 or 1000 bytes as bits 2 and 3 say (1, 2, 3; none
+/// if 0).
 pub fn container(data: &[u8]) {
+    use crate::{Container, ContainerWriter, DictionaryRef, Resource};
     let Some((&cfg, body)) = data.split_first() else {
         return;
     };
     if cfg & 1 == 0 {
-        let _ = crate::read_container(body, LIMIT, &mut |h| Some(h.to_vec()));
+        let Ok(c) = Container::read(body, LIMIT, &mut |h| Some(h.to_vec())) else {
+            return;
+        };
+        let mut w = ContainerWriter::new(Level::new(1)).repeat_metadata(true);
+        if !c.global.is_empty() {
+            w.add_global_metadata(&c.global);
+        }
+        for r in &c.resources {
+            w.add_resource(r, None);
+        }
+        let again = Container::read(&w.finish(), usize::MAX, &mut |_| None).expect("reads back");
+        assert!(again == c, "rewritten container differs");
         return;
     }
-    let mut w = crate::ContainerWriter::new(Level::new(u32::from(cfg >> 4)));
-    let mut want: Vec<(String, &[u8], bool)> = Vec::new();
+    let part = [0, 1, 64, 1000][usize::from(cfg >> 2 & 3)];
+    let mut w = ContainerWriter::new(Level::new(u32::from(cfg >> 4)))
+        .repeat_metadata(cfg & 2 != 0)
+        .part_size(part);
+    let mut want: Vec<Resource> = Vec::new();
+    let mut global = Vec::new();
     let mut dict = None;
     let mut rest = body;
     while let Some((&n, tail)) = rest.split_first() {
         let n = usize::from(n).min(tail.len()) * 16 % (tail.len() + 1);
         let (piece, tail) = tail.split_at(n);
         rest = tail;
-        let name = format!("r{}", want.len());
-        let hidden = match (want.len() % 3, dict) {
-            (1, _) => {
-                dict = Some(w.add_dictionary(piece));
-                true
-            }
-            (2, Some(d)) => {
-                w.add_with_dictionary(&name, piece, d);
-                false
-            }
-            _ => {
-                w.add(&name, piece);
-                false
-            }
+        let k = want.len();
+        let b = |i: usize| piece.get(i).copied().unwrap_or(0);
+        let mut r = Resource {
+            data: piece.to_vec(),
+            ..Resource::default()
         };
-        want.push((if hidden { String::new() } else { name }, piece, hidden));
+        if b(0) & 1 != 0 {
+            r.name = Some(format!("r{k}").into_bytes());
+        }
+        if b(0) & 2 != 0 {
+            r.modified = Some(i64::from(b(1)) << 40 | k as i64);
+        }
+        if b(0) & 4 != 0 {
+            r.fields
+                .push((*b"XA", piece[..piece.len().min(5)].to_vec()));
+        }
+        if b(0) & 8 != 0 {
+            r.footer.push((*b"FT", vec![b(2); usize::from(b(3) & 15)]));
+        }
+        if b(0) & 16 != 0 {
+            r.hash = Some([b(4); 32]);
+        }
+        if b(0) & 32 != 0 {
+            global.push((*b"GL", vec![b(5)]));
+            w.add_global_metadata(&global[global.len() - 1..]);
+        }
+        let idx = match (k % 3, dict) {
+            (1, _) => {
+                r.hidden = true;
+                let i = w.add_resource(&r, None);
+                dict = Some(i);
+                i
+            }
+            (2, Some(d)) => w.add_resource(&r, Some(DictionaryRef::Resource(d))),
+            _ => w.add_resource(&r, None),
+        };
+        assert_eq!(idx, k);
+        want.push(r);
     }
     let packed = w.finish();
-    let got = crate::read_container(&packed, usize::MAX, &mut |_| None).expect("reads back");
-    assert_eq!(got.len(), want.len());
-    for (g, (name, data, hidden)) in got.iter().zip(&want) {
-        assert!(g.data == *data && g.hidden == *hidden, "resource differs");
-        let gname = g.name.as_deref().unwrap_or(&[]);
-        assert!(gname == name.as_bytes(), "name differs");
-    }
+    let got = Container::read(&packed, usize::MAX, &mut |_| None).expect("reads back");
+    assert!(got.resources == want, "resources differ");
+    assert!(got.global == global, "global metadata differs");
 }
 
 #[cfg(test)]

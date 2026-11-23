@@ -114,7 +114,8 @@ CPU 开销仍然最大（每次刷新的事件约 1 us，zstd 0.3 us），高频
 词表与变换的 RFC 9841 序列化共享字典（`SharedDictionary::new`、`decompress_with_shared_dictionary`；
 ADR-069）；编码器使用前缀，并在级别 10 和 11 使用自定义词（ADR-079）。RFC 9841 的其余部分也在中间件之外
 提供：大窗口流（`decompress_large_window`、`Compressor::large_window`；窗口最大 1 GiB，只用于事先约定的
-对端），以及封装格式，即资源之间可以互作字典的容器（`read_container`、`ContainerWriter`）。
+对端），以及封装格式，即资源之间可以互作字典的容器，带元数据、部分数据块和供列出资源的重复元数据
+（`read_container`、`Container::read`、`ContainerWriter`）。
 
 ```rust,ignore
 {{#include ../../../../crates/akio-http/examples/guide-http.rs:compression}}

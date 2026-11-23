@@ -128,11 +128,15 @@ compression middleware in `akio-http` and the brotli algorithm of TLS certificat
   2^31 - 4 with the larger distance alphabet (decoded with Google's limit on it). Only for peers
   that agreed to it: regular decoders refuse such streams, ours included unless asked. Checked
   both ways against Google's `brotli --large_window`, distances past 64 MiB included.
-- `read_container` / `ContainerWriter`: RFC 9841's framing format, a container of resources
-  (data chunks or runs of partial chunks continuing one stream, uncompressed, brotli or shared
-  brotli), metadata, dictionary references by pointer or by hash code, a central directory and
-  a final footer; the reader checks every rule of section 8. Hash codes are opaque (the RFC names
-  HighwayHash but no key): the caller resolves hash references.
+- `read_container` / `Container::read` / `ContainerWriter`: RFC 9841's framing format, a
+  container of resources (data chunks or runs of partial chunks continuing one stream,
+  uncompressed, brotli or shared brotli), metadata (name, modification time, custom, footer and
+  global fields), repeat metadata for listing from the end, dictionary references by pointer or
+  by hash code, a central directory and a final footer. The reader checks every rule of section
+  8, repeat metadata against the chunks it repeats included; the writer writes every chunk kind
+  (`add_resource`, `add_global_metadata`, `part_size`, `repeat_metadata`), and a container read
+  is written back as it was read. Hash codes are opaque (the RFC names HighwayHash but no key):
+  the caller resolves hash references.
 
 ```rust
 use akio_brotli::{Level, compress, decompress};
@@ -193,8 +197,7 @@ Against the C library in-process (Silesia and HTTP payloads, docs/BENCHMARKS.md)
 
 Limitations: the encoder searches the static dictionary only at levels 10 and 11 and not under
 the omit-first transforms (a custom dictionary's words: under all its transforms), always uses
-`NPOSTFIX` = `NDIRECT` = 0; the container writer writes one data chunk per resource and names
-as the only metadata. Its output at level 11 is 0.9-1.3%
+`NPOSTFIX` = `NDIRECT` = 0. Its output at level 11 is 0.9-1.3%
 larger than Google's on the HTTP payloads of the benchmark corpus and 4.5% smaller on its
 Silesia part (docs/BENCHMARKS.md, "Brotli block splitting"). Prefix codes are stored from the exact code lengths or from
 counts smoothed for run-length coding (zopfli's `OptimizeHuffmanForRle`), whichever is cheaper,

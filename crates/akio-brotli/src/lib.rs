@@ -69,7 +69,7 @@ pub use dstream::Decompressor;
 pub use encode::{
     compress, compress_large_window, compress_with_dictionary, compress_with_shared_dictionary,
 };
-pub use frame::{ContainerWriter, Resource, read_container};
+pub use frame::{Container, ContainerWriter, DictionaryRef, Resource, read_container};
 pub use shared::SharedDictionary;
 
 /// What a streaming [`Compressor::compress`] call does after taking its input.
