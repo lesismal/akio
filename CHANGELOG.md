@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: faster brotli compression, same output (akio-brotli)
+
+akio-brotli's encoder at levels 0..=6 hashes each searched position once, keeps its bucket
+tables in a specialized loop per bucket size with byte counters, and codes commands, writes bits
+and clusters literal contexts with less work. Output is bit-identical at every level (one-shot,
+with dictionaries and streamed). Same-run A/B on gpu51: Silesia 1.21-1.29x faster at levels
+1, 4, 5 and 6, HTTP payloads 1.16-1.45x; the `compress` middleware's streams (quality 4) write
+16 KiB pieces 1.21x faster and small events 5% faster. No API change; see docs/BENCHMARKS.md
+("Brotli: encoder write cost"). `tools/codec-bench` gains `BENCH_DEC=0` and `BENCH_AKIO=0`.
+
 ### Fixed: BitTorrent client on port 0 racing other sockets (akio-bittorrent)
 
 `Client::new` with `listen` on port 0 picks one port number for TCP and UDP by probing both,
