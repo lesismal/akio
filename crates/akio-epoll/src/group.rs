@@ -355,6 +355,10 @@ impl Group for EpollGroup {
         self.fds.clone()
     }
 
+    fn set_balance(&self, on: bool) {
+        self.roster.set_balance(on);
+    }
+
     fn pin_threads(&self, cpus: Vec<Vec<usize>>) {
         *lock(&self.pins) = cpus;
     }

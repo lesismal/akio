@@ -1407,6 +1407,8 @@ impl UdpLoop {
                         io::ErrorKind::Unsupported,
                         "dial is not supported on a UDP listener",
                     )),
+                    // TCP groups only (accept-time balancing); never sent to a UDP loop.
+                    Cmd::Adopt { .. } => {}
                 }
             }
         }

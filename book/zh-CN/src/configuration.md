@@ -59,6 +59,7 @@
 | `threads(n)` | 每核一个 | 该 listener 的 I/O 线程数（至少 1） |
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |
+| `balance(Balance)` | `LeastConnections` | 接受连接时在线程间均衡（ADR-100）；`Kernel` 保持内核 `SO_REUSEPORT` 的分配 |
 
 listener 和后端在构建 engine 时就固定了。线程数可以在运行时用 `Engine::set_threads(index, n)`
 修改（TCP listener 和 client 组；见[可观测性与热更新](observability.md#io-线程数)）。

@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: TCP listeners balance connections over their threads at accept time (akio, akio-core, akio-epoll, akio-uring)
+
+ADR-100. `SO_REUSEPORT`'s hash left 1024 equal connections at 119..141 per thread on 8 threads;
+at a fixed 1M requests/s (HttpArena `latency-1m`) the busiest thread saturated and p99 reached
+1.35 s while the others had room.
+
+- `akio::Balance { Kernel, LeastConnections }` (`#[non_exhaustive]`) and `Listener::balance`.
+  The default is `LeastConnections`: a thread that accepts a connection while it holds more than
+  `2 + min / 32` connections above the least loaded thread of its listener hands it to that
+  thread before anything is read; `on_open` and every callback run there (ADR-001 holds).
+- Off for listeners with an attached `Accel::Ebpf` steering program, engines with NUMA
+  `incoming_cpu`, and UDP listeners. `Balance::Kernel` restores the previous behaviour.
+- `LoopStats::load`, `handoff_begin` / `handoff_done` and the hidden `akio_core::balance` and
+  `Group::set_balance` carry it to the epoll/kqueue and io_uring backends.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

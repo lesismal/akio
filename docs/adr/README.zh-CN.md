@@ -92,3 +92,4 @@
 - [ADR-088：引擎线程的 NUMA 放置，默认关闭](088-numa-placement.zh-CN.md)（2026-11-23 采纳；2026-11-23 更新：io_uring ring 建在循环所在节点上，SQPOLL 线程得到放置）
 - [ADR-091：TURN 转告 ICMP、经中继保留 DSCP、交还一个地址族](091-turn-icmp-dscp-family-release.zh-CN.md)（2026-11-23 采纳）
 - [ADR-092：视频播放缓冲，E-model 时延敏感度等级与房间噪声，VoIP 包长与迟到丢弃](092-video-playout-emodel-classes.zh-CN.md)（2026-11-23 采纳）
+- [ADR-100：在监听器的各线程之间于 accept 时均衡连接](100-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
