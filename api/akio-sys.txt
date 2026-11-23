@@ -131,6 +131,27 @@ impl core::marker::Sync for akio_sys::FsWatcher
 impl core::marker::Unpin for akio_sys::FsWatcher
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::FsWatcher
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::FsWatcher
+#[non_exhaustive] pub struct akio_sys::IcmpReport
+pub akio_sys::IcmpReport::code: u8
+pub akio_sys::IcmpReport::dest: core::net::socket_addr::SocketAddr
+pub akio_sys::IcmpReport::from: core::option::Option<core::net::ip_addr::IpAddr>
+pub akio_sys::IcmpReport::icmp_type: u8
+pub akio_sys::IcmpReport::info: u32
+pub akio_sys::IcmpReport::v6: bool
+impl core::clone::Clone for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::IcmpReport
+impl core::cmp::PartialEq for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::IcmpReport
+pub fn akio_sys::IcmpReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_sys::IcmpReport
+impl core::marker::StructuralPartialEq for akio_sys::IcmpReport
+impl core::marker::Send for akio_sys::IcmpReport
+impl core::marker::Sync for akio_sys::IcmpReport
+impl core::marker::Unpin for akio_sys::IcmpReport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::IcmpReport
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::IcmpReport
 #[non_exhaustive] pub struct akio_sys::Interface
 pub akio_sys::Interface::addrs: alloc::vec::Vec<akio_sys::InterfaceAddr>
 pub akio_sys::Interface::flags: akio_sys::InterfaceFlags
@@ -198,27 +219,6 @@ impl core::marker::Sync for akio_sys::InterfaceFlags
 impl core::marker::Unpin for akio_sys::InterfaceFlags
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::InterfaceFlags
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::InterfaceFlags
-#[non_exhaustive] pub struct akio_sys::IcmpReport
-pub akio_sys::IcmpReport::code: u8
-pub akio_sys::IcmpReport::dest: core::net::socket_addr::SocketAddr
-pub akio_sys::IcmpReport::from: core::option::Option<core::net::ip_addr::IpAddr>
-pub akio_sys::IcmpReport::icmp_type: u8
-pub akio_sys::IcmpReport::info: u32
-pub akio_sys::IcmpReport::v6: bool
-impl core::clone::Clone for akio_sys::IcmpReport
-pub fn akio_sys::IcmpReport::clone(&self) -> Self
-impl core::cmp::Eq for akio_sys::IcmpReport
-impl core::cmp::PartialEq for akio_sys::IcmpReport
-pub fn akio_sys::IcmpReport::eq(&self, &Self) -> bool
-impl core::fmt::Debug for akio_sys::IcmpReport
-pub fn akio_sys::IcmpReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for akio_sys::IcmpReport
-impl core::marker::StructuralPartialEq for akio_sys::IcmpReport
-impl core::marker::Send for akio_sys::IcmpReport
-impl core::marker::Sync for akio_sys::IcmpReport
-impl core::marker::Unpin for akio_sys::IcmpReport
-impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::IcmpReport
-impl core::panic::unwind_safe::UnwindSafe for akio_sys::IcmpReport
 pub struct akio_sys::Poller
 impl akio_sys::Poller
 pub fn akio_sys::Poller::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
