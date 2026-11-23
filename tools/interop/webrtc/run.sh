@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # akio-webrtc / akio-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
-# offer directions, PLI, WebRTC through an akio TURN relay, the pion/turn client against
-# akio-turn over UDP, TCP and TLS, the akio_turn client against pion/turn and akio-turn over
-# UDP, TCP and TLS, Endpoint relayed candidates (on akio-turn and pion/turn, allocated over UDP,
+# offer directions, PLI (pion's to akio, and akio's when a video packet is lost), WebRTC
+# through an akio TURN relay, the pion/turn client against akio-turn over UDP, TCP and TLS,
+# the akio_turn client against pion/turn and akio-turn over UDP, TCP and TLS, Endpoint relayed candidates (on akio-turn and pion/turn, allocated over UDP,
 # TCP and TLS), ICE-TCP both ways (akio passive with pion active, akio active with pion passive,
 # pion active to the ICE-lite server's passive candidate), simulcast sending (pion receives
 # the three RIDs) and DTLS 1.3 offered to pion's DTLS 1.2 in both roles (falls back, ADR-048);
@@ -39,6 +39,7 @@ sleep 1
 echo "== pion offers to the akio ICE-lite server"
 $GO client-dc 127.0.0.1:9501
 $GO client-media 127.0.0.1:9501
+$GO client-loss 127.0.0.1:9501
 echo "== akio (full ICE Endpoint) offers to pion"
 $RS client 127.0.0.1:9502 dc
 $RS client 127.0.0.1:9502 media

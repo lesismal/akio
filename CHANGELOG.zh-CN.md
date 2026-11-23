@@ -26,6 +26,23 @@ ADR-093（2026-11-23），均为新增：
   一接口共享前缀的链路的查询，现在在它自己的链路上得到应答；单播应答（QU、传统单播）从查询进入的接口发出。
 - 未开启的套接字接收方式不变（gpu51，同轮 10 轮：为 main 的 0.999；开启后在饱和的接收方上约多花 0.6%）：A/B 见
   [BENCHMARKS](docs/BENCHMARKS.zh-CN.md#已绑定-udp-套接字的接收到达接口adr-093同轮-ab)。
+### 新增：放弃接收的视频包时请求关键帧（akio-webrtc）
+
+ADR-092 更新（2026-11-23，"放弃一个包时请求关键帧"），新增：`RtcConfig::set_keyframe_on_loss(bool)`，
+默认打开。
+
+akio-webrtc 的行为变化（帧模式）：
+
+- 从帧组装器出来的视频帧，若在被放弃的包之后（`contiguous = false`）或含有只恢复了一部分的包，且
+  不是关键帧，就向发送方请求关键帧：在带 `nack pli` 的媒体行上发 PLI，否则在带 `ccm fir` 的行上
+  发 FIR。无论是否打开视频播放缓冲，无论包是在播放截止时间还是按包数被放弃。
+- 请求在关键帧出来或经过 `max(RTT, 200 ms)` 之前都算未完成；只有之后再出来的无法解码的帧才发下
+  一个。应用的请求（`Peer::request_keyframe`、`request_layer_keyframe`）也算作未完成的请求。
+- 播放缓冲溢出（没有关键帧可恢复而丢帧）时的请求以同样方式限速，受同一开关控制。
+- 周期统计计数这些请求（`keyframes_requested`）。
+- `tools/interop/webrtc`：`client-loss`，pion 发送 VP8 并漏掉一个包，检查收到一个 PLI，且在 pion
+  发出关键帧之后不再收到。
+- 代价：gpu51 上同轮 A/B（`webrtc-bench`，base 为 `main` 的 `50a82315`）：没有可测量的变化；`media` 1.002，`video` / `video-jb` 每秒帧数 1.000，每帧 CPU 0.996 / 1.000（每轮比值中位数，每个范围都跨过 1）。见 BENCHMARKS。
 
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 

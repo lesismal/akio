@@ -31,6 +31,26 @@ ADR-093 (2026-11-23), additive:
 - Sockets that do not opt in receive as before (gpu51, 10 same-run rounds: 0.999 of main; opting
   in costs about 0.6 % on a saturated receiver): A/B in
   [BENCHMARKS](docs/BENCHMARKS.md#bound-udp-socket-receive-arrival-interface-adr-093-same-run-ab).
+### Added: a keyframe request when a received video packet is given up (akio-webrtc)
+
+ADR-092 update (2026-11-23, "a keyframe request when a packet is given up"), additive:
+`RtcConfig::set_keyframe_on_loss(bool)`, on by default.
+
+Changed behaviour in akio-webrtc (frame mode):
+
+- A video frame out of the frame assembler after a given-up packet (`contiguous = false`) or
+  with a packet rebuilt only in part, that is not a keyframe, asks the sender for a keyframe: a
+  PLI on a line with `nack pli`, otherwise a FIR on a line with `ccm fir`. With or without the
+  video playout buffer, whether the packet was given up at the playout deadline or by count.
+- The request stays outstanding until a keyframe comes out or `max(RTT, 200 ms)` passes; only
+  an undecodable frame after that sends the next. A request of the application's
+  (`Peer::request_keyframe`, `request_layer_keyframe`) counts as outstanding too.
+- The playout buffer's overflow request (frames dropped without a keyframe) is rate limited
+  the same way and follows the same switch.
+- The periodic statistics count the requests (`keyframes_requested`).
+- `tools/interop/webrtc`: `client-loss`, pion sending VP8 with one packet left out, checks
+  that one PLI comes back and none after pion's keyframe.
+- Cost: Same-run A/B on gpu51 (`webrtc-bench`, base `main` `50a82315`): no measurable change; `media` 1.002, `video` / `video-jb` frames per second 1.000 and CPU per frame 0.996 / 1.000 (per-round ratio medians, every range spanning 1). See BENCHMARKS.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 

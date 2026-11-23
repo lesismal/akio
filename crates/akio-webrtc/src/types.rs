@@ -754,6 +754,9 @@ pub(crate) enum Other {
         cryptex_received: u64,
         /// Packets received as redundancy in Opus RED that stood in for a lost one.
         red_recovered: u64,
+        /// Keyframe requests (PLI or FIR) sent because a received video frame could not be
+        /// decoded after a gap (ADR-092 update).
+        keyframes_requested: u64,
         /// Sent packets the remote receivers' XR loss RLE blocks report received and lost,
         /// and their duplicate RLE blocks duplicated (RFC 3611 §4.1, §4.2).
         xr_received: u64,
@@ -891,6 +894,8 @@ pub(crate) struct ConfigInner {
     pub(crate) jitter: Option<akio_rtp::PlayoutDelay>,
     /// The video playout buffer (ADR-092): `None` off.
     pub(crate) video_playout: Option<akio_rtp::PlayoutDelay>,
+    /// A keyframe request when received video cannot be decoded (ADR-092 update).
+    pub(crate) keyframe_on_loss: bool,
     /// The E-model's delay sensitivity class for the XR VoIP metrics (ADR-092).
     pub(crate) delay_sensitivity: akio_rtp::DelaySensitivity,
     /// RFC 6263 keepalives without ICE (ADR-086); zero: none.
@@ -946,6 +951,7 @@ impl Default for ConfigInner {
             latching: Latching::Off,
             jitter: None,
             video_playout: None,
+            keyframe_on_loss: true,
             delay_sensitivity: akio_rtp::DelaySensitivity::Default,
             keepalive: Duration::ZERO,
         }
@@ -984,6 +990,7 @@ impl fmt::Debug for RtcConfig {
             .field("audio_red", &self.0.audio_red)
             .field("audio_jitter_buffer", &self.0.jitter)
             .field("video_playout_buffer", &self.0.video_playout)
+            .field("keyframe_on_loss", &self.0.keyframe_on_loss)
             .field("voip_delay_sensitivity", &self.0.delay_sensitivity)
             .finish_non_exhaustive()
     }
@@ -1141,8 +1148,8 @@ impl RtcConfig {
     ///   frames are predicted from it).
     /// - At most [`akio_rtp::VIDEO_PLAYOUT_MAX_FRAMES`] frames and
     ///   [`akio_rtp::VIDEO_PLAYOUT_MAX_BYTES`] bytes per stream: when full, the frames
-    ///   before a buffered keyframe are dropped, or, with none, the oldest, and a PLI asks for
-    ///   a keyframe (on a line with `nack pli`).
+    ///   before a buffered keyframe are dropped, or, with none, the oldest, and the sender is
+    ///   asked for a keyframe ([`set_keyframe_on_loss`](Self::set_keyframe_on_loss)).
     ///
     /// - A missing packet is given up when the frame waiting behind it is due, but at least a
     ///   round trip (with NACK), the target delay or 10 ms after the wait began
@@ -1155,6 +1162,27 @@ impl RtcConfig {
     #[must_use]
     pub fn set_video_playout_buffer(mut self, delay: Option<akio_rtp::PlayoutDelay>) -> Self {
         self.0.video_playout = delay;
+        self
+    }
+
+    /// Whether to ask the sender for a keyframe when received video cannot be decoded
+    /// (ADR-092 update; frame mode): a frame after a given-up packet (`contiguous = false`),
+    /// or with a packet rebuilt only in part, that is not a keyframe, and the video playout
+    /// buffer's overflow without a keyframe to resume from.
+    ///
+    /// - The request is a PLI on a line with `nack pli`, otherwise a FIR on a line with
+    ///   `ccm fir`, otherwise none.
+    /// - One goes out when the need starts. It stays outstanding until a keyframe comes out
+    ///   or `max(RTT, 200 ms)` passes; an undecodable frame after that sends the next. A
+    ///   request of the application's ([`Peer::request_keyframe`](crate::Peer::request_keyframe))
+    ///   counts as outstanding too.
+    /// - The periodic statistics count them (`keyframes_requested`).
+    ///
+    /// `true` (the default), as browsers do; `false` leaves it to the application, which still
+    /// sees `contiguous = false`.
+    #[must_use]
+    pub fn set_keyframe_on_loss(mut self, on: bool) -> Self {
+        self.0.keyframe_on_loss = on;
         self
     }
 
@@ -1901,6 +1929,9 @@ mod tests {
             .set_reordering_size(10, 20)
             .set_sctp_max_buffered_amount(1 << 20);
         assert!(format!("{cfg:?}").contains("rtp_mode"));
+        assert!(cfg.0.keyframe_on_loss);
+        let cfg = cfg.set_keyframe_on_loss(false);
+        assert!(!cfg.0.keyframe_on_loss);
         assert_eq!(
             cfg.0.codecs,
             vec![Codec::Opus, Codec::Pcmu, Codec::Vp8, Codec::H264]

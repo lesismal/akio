@@ -509,7 +509,7 @@ impl Peer {
     /// Asks the remote sender of `mid` for a keyframe (PLI or FIR).
     pub fn request_keyframe(&self, mid: Mid, kind: KeyframeRequestKind) -> Result<(), Error> {
         self.with_rtc_inner(|rtc| {
-            if rtc.request_keyframe(mid, kind) {
+            if rtc.request_keyframe(Instant::now(), mid, kind) {
                 Ok(())
             } else {
                 Err(Error::UnknownMedia)
@@ -527,7 +527,7 @@ impl Peer {
         kind: KeyframeRequestKind,
     ) -> Result<(), Error> {
         self.with_rtc_inner(|rtc| {
-            if rtc.request_keyframe_of(mid, Some(rid), kind) {
+            if rtc.request_keyframe_of(Instant::now(), mid, Some(rid), kind) {
                 Ok(())
             } else {
                 Err(Error::UnknownMedia)

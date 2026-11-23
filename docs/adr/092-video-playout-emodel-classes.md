@@ -421,3 +421,85 @@ Behaviour changes in akio-webrtc:
   - Time-stretching (the decoder's).
   - Opus super-wideband values (rated as wideband).
   - A PLI when a packet is given up (the application sees `contiguous = false`).
+
+## Update (2026-11-23): a keyframe request when a packet is given up
+
+### Context
+
+A missing video packet that is given up (by the playout deadline or by the assembler's count)
+leaves the application a frame with `contiguous = false`. The frames after it predict from a
+picture the decoder never had, so the picture stays broken until the next keyframe, which on
+a WebRTC sender can be many seconds away. akio sent no keyframe request for it: only the
+playout buffer's overflow did, unthrottled, and the application had to notice the gap and call
+`Peer::request_keyframe` itself. libwebrtc's receiver asks for a keyframe as soon as a frame
+cannot be decoded, and repeats the request no sooner than 200 ms after the last one while it
+still waits (`VideoReceiveStream2`, `max_wait_for_keyframe_`).
+
+### Decision
+
+akio-webrtc, in frame mode, for every received video stream (with or without the playout
+buffer):
+
+- **When a keyframe is needed.** A frame out of the frame assembler after a gap
+  (`contiguous = false`) or with a packet rebuilt only in part, that is not a keyframe, cannot
+  be decoded. The stream then needs a keyframe until one comes out whole. A gap followed
+  directly by a keyframe needs nothing. The playout buffer's overflow without a keyframe to
+  resume from (ADR-092) also needs one.
+- **The request.** A PLI on a line with `nack pli`; otherwise a FIR on a line with `ccm fir`
+  (RFC 5104 reserves FIR for a decoder that starts over, so PLI comes first, as in libwebrtc);
+  otherwise none.
+- **Rate.** One request is sent when the need starts. While it is outstanding, none follows:
+  it is outstanding until a keyframe comes out, or until `max(RTT, 200 ms)` has passed (the
+  stream's round-trip time when known). A later undecodable frame after that sends the next
+  one. So at most one request per round trip and per 200 ms, and a sender that stops sending
+  stops the requests.
+- **Requests from the application** (`Peer::request_keyframe`, `request_layer_keyframe`)
+  count as outstanding for the streams they name, so akio does not repeat them at once.
+- **Opting out.** `RtcConfig::set_keyframe_on_loss(false)` sends none (the application still
+  sees `contiguous = false` and can ask itself). On by default, like browsers. The playout
+  buffer's overflow request follows the same switch.
+- **Seeing it.** The periodic statistics (`Event::Other`, `RtcConfig::set_stats_interval`)
+  count the requests sent this way (`keyframes_requested`).
+- RTP mode is unchanged: the application has the packets and decides.
+
+Not done: a frame whose references were not lost (a VP8 / VP9 / AV1 frame of a higher
+temporal layer, a discardable frame) still counts as undecodable after a gap. The assembler
+does not read the layer structure; libwebrtc's reference finders do. The cost is a keyframe
+the decoder might not have needed.
+
+### API
+
+Additive: akio-webrtc `RtcConfig::set_keyframe_on_loss(bool)`.
+
+Behaviour changes in akio-webrtc:
+
+- A given-up packet followed by a frame that is not a keyframe sends a PLI (or FIR), by
+  default.
+- The playout buffer's overflow request is rate limited the same way.
+
+### Consequences
+
+- **Tests, akio-webrtc `rtc/keyframe.rs`** (the state machine): one request per gap, none
+  for a gap followed by a keyframe, none while outstanding, the next at 200 ms, at the RTT
+  when longer; a keyframe with a part-rebuilt packet does not end the need; an application
+  request and an overflow share the limit.
+- **Tests, `tests_mux.rs`**, two peers over the simulated network, a packet lost per hole:
+  - VP8 at 30 frames/s without retransmission (`nack pli` kept), two holes 3 s apart, with
+    and without the playout buffer: one PLI per hole; the keyframe that answers it comes out
+    within 150 ms of the first broken frame; every frame after it is contiguous.
+  - A sender that ignores PLIs: one request every 200 ms or more (at least 194 ms apart at
+    the sender, after the network's spread) while the frames stay broken, none after a
+    keyframe.
+  - Without `nack pli` but with `ccm fir`: one FIR. Opted out: the gap reaches the
+    application and nothing is sent. An application request just before a loss: ours is
+    suppressed.
+  - With NACK, a lost packet retransmitted in time asks for nothing (no playout buffer). With
+    the buffer and no round trip known yet, the deadline can come first; a request then
+    follows only that given-up packet. In the 2 % loss run with NACK and a round trip, the
+    requests stay within 15 per given-up packet (a's keyframes come every 3 s, whatever it is
+    asked).
+- **Interop.** `tools/interop/webrtc` `client-loss`: pion sends VP8 and leaves one packet
+  out; the akio server sends one PLI (367 ms after the loss by the count of 30 packets, 165 ms
+  with `AKIO_INTEROP_PLAYOUT=1`), and none after pion's keyframe. The whole pion suite passes
+  plain and with the playout buffers.
+- **Costs.** Same-run A/B on gpu51 (`webrtc-bench`, base `main` `50a82315`): no measurable change; `media` 1.002, `video` / `video-jb` frames per second 1.000 and CPU per frame 0.996 / 1.000 (per-round ratio medians, every range spanning 1).
