@@ -98,9 +98,9 @@ pub enum Scheduling {
     /// reads it, runs its handler inline and writes it, for the connection's whole life.
     #[default]
     Loops,
-    /// A few pollers only wait for readiness and accept; each round of a connection (read,
-    /// handler, write) runs on whichever worker of a pool is free, one round of a connection at
-    /// a time. Spreads load by work rather than by connection, at the cost of a hand-off per
+    /// A pool of workers, one per CPU, runs each round of a connection (read, handler, write) on
+    /// whichever worker is free, one round of a connection at a time; a worker with nothing to
+    /// run waits for readiness in `epoll_wait` itself (as Tokio's runtime does). Spreads load by work rather than by connection, at the cost of a hand-off per
     /// round. epoll/kqueue only (not io_uring or DPDK); TCP only (UDP listeners keep their
     /// loops); [`Engine::set_threads`] is refused.
     Rounds(RoundsConfig),
@@ -111,7 +111,8 @@ pub enum Scheduling {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RoundsConfig {
-    /// Pollers (default: one with 4 CPUs or fewer, otherwise one per 4 CPUs and at least 2).
+    /// epoll/kqueue instances the workers poll (default: 1). Each listener socket and
+    /// connection belongs to one of them; more than one rarely helps (ADR-102).
     pub pollers: usize,
     /// Workers that run rounds (default: one per CPU).
     pub workers: usize,

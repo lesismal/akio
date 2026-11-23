@@ -14,10 +14,10 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ADR-102，均为新增：
 
-- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`：少量 poller 只等待就绪事件和 accept；连接
-  的每一轮（读、handler、写）在 worker 池中任意空闲的 worker 上执行，同一连接同一时刻只执行一轮。负载
-  按工作量而不是按连接分摊。`RoundsConfig { pollers, workers }`，0 表示默认值（poller：4 个 CPU 及以下
-  1 个，否则每 4 个 CPU 一个、至少 2 个；worker：每个 CPU 一个）。默认仍是 `Scheduling::Loops`
+- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`：连接的每一轮（读、handler、写）在 worker
+  池中任意空闲的 worker 上执行，同一连接同一时刻只执行一轮；空闲的 worker 自己在 `epoll_wait` 中等待，
+  与 Tokio 的 runtime 相同。负载按工作量而不是按连接分摊。`RoundsConfig { pollers, workers }`，0 表示
+  默认值（1 个 epoll 实例；每个 CPU 一个 worker）。默认仍是 `Scheduling::Loops`
   （thread-per-core，ADR-001）。
 - `AKIO_DEFAULT_SCHEDULING=rounds|loops` 为没有显式选择的 listener 指定调度方式（测试开关）。
 - 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。

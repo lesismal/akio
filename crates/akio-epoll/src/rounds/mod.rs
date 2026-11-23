@@ -34,7 +34,9 @@ pub(crate) const BACKEND: &str = if cfg!(target_os = "linux") {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RoundsConfig {
-    /// Pollers (default: one with 4 CPUs or fewer, otherwise one per 4 CPUs and at least 2).
+    /// epoll/kqueue instances the workers poll (default: 1; with dedicated poller threads,
+    /// `AKIO_ROUNDS_POLLERS=dedicated`: one with 4 CPUs or fewer, else one per 4 CPUs, at
+    /// least 2).
     pub pollers: usize,
     /// Workers that run rounds (default: one per CPU).
     pub workers: usize,

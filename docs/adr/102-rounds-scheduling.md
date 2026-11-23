@@ -2,7 +2,7 @@
 
 English | [简体中文](102-rounds-scheduling.zh-CN.md)
 
-Status: proposed (2026-11-23)
+Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements)
 
 ## Context
 
@@ -31,11 +31,17 @@ handler, write) runs on whichever worker is idle.
    something only per-thread loops do: io_uring (its own choice or `AKIO_DEFAULT_BACKEND`'s) or
    BPF steering (`Accel::Ebpf`).
 2. **Rounds mode** (`akio-epoll`, epoll on Linux and kqueue on macOS):
-   - **Pollers** (`RoundsConfig::pollers`, 0 = auto: one with 4 CPUs or fewer, otherwise one per
-     4 CPUs and at least 2) wait for readiness, accept, and handle the control path (dials,
-     timers, telemetry, shutdown). They never read, write or run user code. A connection is
-     registered once, edge-triggered for reads and writes (`EPOLLET` / `EV_CLEAR`), so a
-     poller makes no `epoll_ctl` per round.
+   - **Drivers, polled by the workers** (as Tokio's multi-thread runtime). There are no poller
+     threads: each epoll/kqueue instance (`RoundsConfig::pollers`, default 1) is a *driver*
+     behind a lock. A worker with nothing to run takes a free driver and waits in its
+     `epoll_wait`; the connections it finds ready go to its own queue, and parked workers are
+     woken to steal them. A busy worker polls the drivers without blocking every 61 rounds
+     (Tokio's `event_interval`), so under load events are collected with no thread waking
+     another. A driver also accepts and runs the control path (dials, timers, telemetry,
+     shutdown); it never reads, writes or runs user code. A connection is registered once,
+     edge-triggered for reads and writes (`EPOLLET` / `EV_CLEAR`), so a round makes no
+     `epoll_ctl`. Dedicated poller threads (the first prototype) remain behind
+     `AKIO_ROUNDS_POLLERS=dedicated` for comparison; they lose (see Measurements).
    - **Workers** (`RoundsConfig::workers`, 0 = auto: one per CPU) run rounds. A round of a
      connection runs `on_open` if it has not run, the `spawn_blocking` completions posted to it,
      flushes its queue, reads until the socket is drained (at most 16 reads, then it yields to
@@ -46,9 +52,9 @@ handler, write) runs on whichever worker is idle.
      worker runs it at a time, and a round started after an event sees it. This is what lets
      `Handler: Send` (not `Sync`) keep working unchanged.
    - **The worker pool** is not `akio-pool` (one mutex-guarded queue, sized for blocking work):
-     each worker has its own queue, pollers spread connections over them in turn, and an idle
-     worker steals from the others before it parks; a poster wakes a parked worker only when
-     none is spinning. Rounds started from a worker (a send from another connection's handler
+     each worker has its own queue, an idle worker steals half of another's queue, spins 64
+     times and parks; a poster wakes a parked worker only when none is spinning (and, when every
+     idle worker is in `epoll_wait`, interrupts one through the driver's eventfd). Rounds started from a worker (a send from another connection's handler
      that needs a flush) go to that worker's own queue.
    - Blocking work still belongs on the logical pool (`spawn_blocking`, `run_on_pool`): a
      blocked worker delays the connections queued behind it, though the others steal them.
@@ -75,31 +81,47 @@ handler, write) runs on whichever worker is idle.
 ## Measurements
 
 gpu51 (Ryzen 7 7800X3D, Linux 7.0), 2026-11-24. Server on CPUs 0-3,8-11 (8 logical CPUs; loops:
-8 threads; rounds: 2 pollers, 8 workers), clients on the other 8. Three rounds of 10 s per case,
-averages; "CPU" is server CPU seconds per round (about 88 is all 8 CPUs).
+8 threads; rounds: 8 workers, 1 driver), clients on the other 8. 10 s per case; two or three
+rounds, which agree within a few percent for rounds and vary up to 20% for loops (the kernel's
+hash differs per run). "CPU" is server CPU seconds per run (about 88 is all 8 CPUs).
 
 `skew-bench` (CPU-bound requests; `conns`, in-flight `depth`, `work` per request):
 
 | Case | Loops | Rounds | Requests per connection, min-max | CPU |
 |---|---|---|---|---|
-| 12 conns, depth 4, 50 µs | 107k/s | **141k/s (+31%)** | loops 47k-187k, rounds 113k-119k | 55-65 → 83 |
-| 8 conns, depth 8, 100 µs | 46k/s | **69k/s (+50%)** | loops 25k-98k, rounds 85k-87k | 43-55 → 77 |
-| 64 conns (4 at 500 µs, rest 20 µs), depth 2 | **246k/s** | 212k/s (-14%) | loops 5k-83k, rounds 13k-36k | 87 both |
-| 256 conns, depth 1, 10 µs | **458k/s** | 432k/s (-6%); p99 4.4 ms vs 1.2 ms | even in both | 87 both |
+| 12 conns, depth 4, 50 µs | 114k-132k/s, p99 0.85-1.27 ms | **151k/s, p99 0.39 ms** | loops 32k-189k, rounds 126k-126k | 66-77 → 88 |
+| 8 conns, depth 8, 100 µs | 39k-59k/s, p99 1.6-3.2 ms | **78k/s, p99 0.82 ms** | loops 25k-98k, rounds 98k-98k | 44-66 → 87 |
+| 64 conns (4 at 500 µs, rest 20 µs), depth 2 | 210k-258k/s, p99 2.4-2.8 ms | 217k/s, **p99 1.5 ms** | loops 4k-134k, rounds 14k-35k | 88 both |
+| 256 conns, depth 1, 10 µs | **481k/s**, p99 1.1 ms | 450k/s (-6%), **p99 0.92 ms** | loops 11k-26k, rounds 17.5k-17.6k | 87 / 85 |
 
-TCP echo (`echo-bench`, 8 client threads):
+TCP echo (`echo-bench`, 8 client threads; `bench-server`):
 
-| Case | Loops | Rounds | CPU per request |
+| Case | Loops | Rounds | CPU |
 |---|---|---|---|
-| 64 conns x 64 B | 706k/s | 763k/s (+8%) | 7.0 → 8.5 µs (+21%) |
-| 1024 conns x 64 B | 788k/s | 878k/s (+11%) | 6.6 → 7.7 µs (+16%) |
-| 256 conns x 1 KiB | 734k/s | 859k/s (+17%) | 6.9 → 7.9 µs (+16%) |
+| 64 conns x 64 B | 840k-915k/s | **983k/s** | 57-62 → 76 |
+| 1024 conns x 64 B | **1.01M-1.09M/s** | 978k-988k/s (-6%) | 67-72 → 71 |
+| 256 conns x 1 KiB | 906k-1.08M/s | 952k-955k/s | 62-72 → 71 |
 
-- With few connections per thread, the kernel's hash leaves threads idle under loops (CPU 55-65
-  of 88, a 4x spread between connections); rounds use every CPU, and throughput rises 31-50%.
-- When loops already saturate every CPU with CPU-bound work, the hand-off per round costs 6-14%,
-  and with 256 connections the tail grows (p99 4.4 ms against 1.2 ms; not investigated yet).
-- In echo, which does not saturate the server's CPUs under loops (about 50 of 88), rounds answer
-  8-17% more requests by using more of them, at 16-21% more CPU per request.
+What was tried on the way, same host:
+
+- **Dedicated poller threads** (2 pollers + 8 workers, the first prototype): 256 conns x 10 µs
+  had p99 4.1 ms, all of it between the request reaching the server socket and its round
+  starting (the client's own `write` took 8 µs at p99; the way back 28 µs). Changing the thread
+  counts (2:6, 1:7), the spin, or pinning the pollers to CPUs of their own (which took their
+  involuntary context switches from hundreds to single digits) left it at 4.0-5.4 ms. Workers
+  polling the drivers removed it (0.92 ms), and with it the extra threads.
+- **Two drivers** instead of one: 3% more throughput at 256 conns, worse tails (p99 0.57 ms
+  against 0.39 ms at 12 conns, 2.2-2.5 ms against 1.5 ms with the heavy connections).
+- **Spin** 0 / 64 / 1000 and **busy-poll interval** 31 / 61 / 127 rounds: no effect on
+  `skew-bench` (within 1%); spinning 1000 times answers 2-4% more echo requests at 11% more CPU.
+  The defaults stay at 64 and 61.
+
+Conclusions:
+
+- Where loops leave CPUs idle because of how the kernel spread the connections (few connections
+  per thread), rounds use all of them: 15-100% more throughput and tails 2-4x shorter.
+- Where loops already saturate every CPU with evenly spread connections, rounds cost about 6% of
+  throughput (the hand-off per round), with equal or shorter tails.
+- So loops stay the default; rounds are the choice for few or uneven connections.
 
 HttpArena profiles (`akio-rounds` against `akio-loops`, same source) follow in the shared batch.
