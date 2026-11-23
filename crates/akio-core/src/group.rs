@@ -190,6 +190,31 @@ impl UdpBinding {
         }
     }
 
+    /// [`send_to`](Self::send_to) out of interface `interface` (an index, as
+    /// `akio_sys::interfaces` lists them; 0: the system's choice, a plain `send_to`): the
+    /// interface goes with the datagram (`IP_PKTINFO` / `IPV6_PKTINFO`), so a datagram to a
+    /// multicast group leaves on that link, as `IP_MULTICAST_IF` would make every datagram of
+    /// the socket do. What IPv4 multicast on several interfaces needs (IPv6 can name the link
+    /// in the destination's scope id instead). Linux and macOS; elsewhere a non-zero
+    /// `interface` fails with [`io::ErrorKind::Unsupported`].
+    pub fn send_to_on(&self, data: &[u8], addr: SocketAddr, interface: u32) -> io::Result<()> {
+        if interface == 0 {
+            return self.send_to(data, addr);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        loop {
+            match akio_sys::send_to_on(&self.sock, data, addr, interface) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                r => return r.map(|_| ()),
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (data, addr);
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
     /// (internal, outside the stability promise) [`send_to`](Self::send_to) with ECN codepoint
     /// `ecn` (RFC 3168: 2 = ECT(0), 1 = ECT(1), 3 = CE, 0 = not ECN-capable), in an `IP_TOS` /
     /// `IPV6_TCLASS` control message on Linux and macOS (unless `AKIO_UDP_ECN=0`); elsewhere,

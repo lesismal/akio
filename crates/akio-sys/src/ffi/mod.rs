@@ -86,6 +86,41 @@ pub struct sockaddr {
     _opaque: [u8; 16],
 }
 
+/// `struct ifaddrs` (`getifaddrs(3)`; the same on Linux and macOS, where the fifth field is
+/// `ifa_dstaddr`).
+#[repr(C)]
+#[derive(Debug)]
+pub struct ifaddrs {
+    pub ifa_next: *mut ifaddrs,
+    pub ifa_name: *mut c_char,
+    pub ifa_flags: c_uint,
+    pub ifa_addr: *mut sockaddr,
+    pub ifa_netmask: *mut sockaddr,
+    pub ifa_ifu: *mut sockaddr,
+    pub ifa_data: *mut c_void,
+}
+
+/// `struct in_pktinfo` (`IP_PKTINFO` control message; `ipi_ifindex` is an `int` on Linux, an
+/// `unsigned int` on macOS).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct in_pktinfo {
+    pub ipi_ifindex: c_uint,
+    pub ipi_spec_dst: in_addr,
+    pub ipi_addr: in_addr,
+}
+
+/// `struct in6_pktinfo` (`IPV6_PKTINFO` control message).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct in6_pktinfo {
+    pub ipi6_addr: in6_addr,
+    pub ipi6_ifindex: c_uint,
+}
+
+const _: () = assert!(size_of::<ifaddrs>() == 56 && align_of::<ifaddrs>() == 8);
+const _: () = assert!(size_of::<in_pktinfo>() == 12 && align_of::<in_pktinfo>() == 4);
+const _: () = assert!(size_of::<in6_pktinfo>() == 20 && align_of::<in6_pktinfo>() == 4);
 const _: () = assert!(size_of::<iovec>() == 16 && align_of::<iovec>() == 8);
 const _: () = assert!(size_of::<in6_addr>() == 16 && align_of::<in6_addr>() == 4);
 const _: () = assert!(size_of::<timespec>() == 16);

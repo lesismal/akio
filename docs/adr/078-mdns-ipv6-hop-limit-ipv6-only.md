@@ -163,3 +163,93 @@ the delay. macOS (lo0 and en*: all checks) and `tools/interop/webrtc/mdns6.sh` o
 and io_uring, avahi steps; the container's two links are the ends of one veth pair, one wire,
 so the test notices that a query sent on one reaches the other and skips the other-link
 check there).
+
+## Update 3 (2026-11-23): records on the interface that holds the address, IPv4 on every interface
+
+Update 2 left two gaps, both for want of an interface address list: addresses other than IPv6
+link-local ones (IPv4, global and ULA IPv6) were probed, announced and answered on every link,
+and IPv4 joined `224.0.0.251` on the default interface only, so a host on another IPv4 link
+neither heard our announcements nor got answers, and our queries never reached it.
+
+1. **akio-sys: the interface list.** `akio_sys::interfaces()` reads `getifaddrs(3)` (Linux and
+   macOS, through the own `ffi` layer: `struct ifaddrs` is now shared by both, macOS declares
+   `getifaddrs` / `freeifaddrs` / `if_nametoindex`) into owned values: `Interface { name, index,
+   flags, addrs }`, `InterfaceFlags` (up, running, loopback, point-to-point, multicast),
+   `InterfaceAddr { ip, prefix_len }` with `contains` (subnet test). Socket addresses are copied
+   byte-wise, never referenced in place; on macOS at most `sa_len` bytes (netmasks are cut short)
+   and the scope id the BSD kernels embed in link-local addresses is cleared. akio-tls's NIC
+   offload check (`ktls::interface_addrs`) now uses it instead of its own `getifaddrs` loop.
+2. **Sending out of an interface.** IPv4 multicast has no scope id: `IP_MULTICAST_IF` picks the
+   interface for the whole socket, which an engine binding shared between threads cannot switch
+   per datagram. `akio_sys::send_to_on(&UdpSocket, data, addr, interface)` names it per datagram
+   instead, in an `IP_PKTINFO` / `IPV6_PKTINFO` control message (`ipi_ifindex`), which both
+   Linux and macOS honour for a multicast destination; the source address is the system's choice
+   on that interface. `UdpBinding::send_to_on` exposes it on engine bindings (additive).
+   Checked: a datagram to a group sent out of each interface is looped back from that
+   interface's address. macOS refuses a scoped multicast send on `lo0` ("network unreachable"),
+   so mDNS leaves loopback out (this host's listeners get the copies looped back from the other
+   interfaces).
+3. **akio: IPv4 groups joined per interface.** `Engine::bind_udp_multicast_on` took `&[0]` only
+   for an IPv4 group; it now takes interface indexes for both families (additive: what was
+   refused now works). An IPv4 join names the interface by address, so each index is mapped to
+   the interface's first IPv4 address through `akio_sys::interfaces`; unknown interfaces and
+   those without IPv4 are skipped, and the call fails (`AddrNotAvailable`, or the last join
+   error) only when none is left. Linux allows 20 IPv4 memberships per socket by default
+   (`net.ipv4.igmp_max_memberships`); mDNS asks for at most 20.
+4. **akio-webrtc: every address on its own interface.** `resolve_mdns` reads the interface
+   list once. IPv4 joins `224.0.0.251` on every interface that is up, multicast-capable, not
+   loopback and has an IPv4 address (the default interface when there is none, and when every
+   per-interface join is refused); IPv6 joins `ff02::fb` as before (the list replaces the
+   `/proc/net/if_inet6` / connect probing). Queries, probes, announcements and goodbyes go out of
+   each IPv4 interface (`send_to_on`) and to `ff02::fb` on each IPv6 link. A concealed address
+   gets the interface that holds it (a link-local IPv6 address: its scope id; the list is read
+   again once if no interface holds it), and its records go out on that interface only, over
+   both families. A query's interface is its source's scope id, else the interface holding the
+   source address, else the one whose subnet holds it (the longest prefix); it is answered only
+   with the records usable there, out of that interface: those of that interface, and (except
+   IPv6 link-local ones, whose link is their scope) those whose address lies in one of its
+   subnets. The second half matters where two interfaces share a link and a prefix (two NICs on
+   one LAN, the two ends of a veth pair): a query from a global or ULA source carries no scope
+   id, so its interface is inferred from the source and may be the other one. The first run of
+   `mdns6.sh` showed it: avahi on v1 queries from `fd00:6::2`, the copy that crossed the veth
+   arrived on v0, both read as "from v1", and `fd00:6::1` (on v0, in v1's `fd00:6::/64`) went
+   unanswered; avahi still resolved it from our announcements, which cross the wire. Unchanged on purpose: loopback
+   addresses have no interface (this host's queriers may ask on any link), and a query from a
+   source on no known subnet (a querier with only a 169.254 address, say) is answered with every
+   record, as before.
+
+The receive path is unchanged: the engine does not report the interface a datagram arrived on
+(no `IP_PKTINFO` on receive), so an IPv4 query's interface is inferred from its source address;
+on two interfaces with overlapping subnets the longest prefix wins and ties go to the first.
+
+Not done: interfaces that appear after `resolve_mdns` are not joined (an address to conceal on
+none of the known interfaces re-reads the list for its records, not for the joins).
+
+Verification:
+
+- akio-sys: the interface list (a loopback interface with `127.0.0.1/8`, unique sorted indexes,
+  no embedded scope in link-local addresses), subnets, `send_to_on` naming the interface (a
+  nonexistent one refused), the `ifaddrs` / `in_pktinfo` / `in6_pktinfo` layouts, the `IP_PKTINFO`
+  / `IPV6_PKTINFO` / `IFF_*` constants and the control message's `CMSG_LEN` / `CMSG_SPACE` against
+  `libc`. akio `tests/shared_ports.rs` `ipv4_group_joined_and_sent_per_interface`: an IPv4 group
+  joined on every interface by index, a datagram out of each looped back from that interface's
+  address (macOS: en1 and bridge100, lo0 refused as above; gpu51: 5 of 5, Wi-Fi and four bridges
+  without carrier).
+- akio-webrtc `tests/mdns.rs` `ipv4_names_stay_on_their_interface` (two IPv4 multicast
+  interfaces, the address on each in turn): every IPv4 probe and announcement of the name comes
+  from the address's interface, a query sent out of the other interface is not answered, one
+  out of its own is, from its address. Control: with the interface lookup and the IPv4 interface
+  list disabled (the update-2 behaviour) it fails on the non-default interface ("sent on another
+  interface").
+- `tools/interop/webrtc/mdns4.sh` (gpu51, Docker, two veth pairs, IPv4 on a0 `10.66.1.1/24` and
+  b0 `10.66.2.1/24`, default route on a0): the mDNS (11/11, none skipped) and engine multicast
+  tests, epoll and io_uring; avahi 0.8 on b0 alone (IPv4 only, `check-response-ttl=yes`) resolves
+  the name concealing `10.66.2.1` (b0, not the default interface), does not resolve the one
+  concealing `10.66.1.1` (a0; timeout, and the Endpoint logs no answer), and publishes a name
+  (`10.66.2.1`) that an Endpoint on `10.66.1.1` resolves (answer from `10.66.2.1:5353`) and
+  connects to with 20 data channel echoes.
+- `tools/interop/webrtc/mdns6.sh` green again after the on-link rule above (all avahi steps;
+  the mDNS tests there skip the IPv4 one by name, as the link has no IPv4).
+- macOS and gpu51 (rustc 1.100): `cargo test` of akio-sys, akio-core, akio and akio-webrtc on
+  epoll and with `AKIO_TEST_BACKEND=uring`, akio-tls with `ktls` (its offload check now reads
+  the interface list), clippy `-D warnings`, `tools/unsafe-inventory.py --check`.

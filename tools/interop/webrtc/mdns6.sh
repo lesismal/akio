@@ -58,7 +58,8 @@ echo "== mDNS and multicast tests on the IPv6-only link (epoll, then io_uring)"
 for b in epoll uring; do
   x "AKIO_TEST_BACKEND=$b $T_SYS multicast_hops 2>&1 | grep 'test result'"
   x "AKIO_TEST_BACKEND=$b $T_SHARED --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-shared.out
-  x "AKIO_TEST_BACKEND=$b $T_MDNS --nocapture 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-tests.out
+  # The IPv4 per-interface test needs two IPv4 links (mdns4.sh); there are none here.
+  x "AKIO_TEST_BACKEND=$b $T_MDNS --nocapture --skip ipv4_ 2>&1 | grep -E 'skipped|test result'" | tee /tmp/mdns6-tests.out
   # Nothing skipped: the IPv6 tests and the concealing ones (over ff02::fb only) all ran.
   if grep -q skipped /tmp/mdns6-tests.out; then echo "FAIL: a test was skipped"; exit 1; fi
   grep -q "test result: ok" /tmp/mdns6-tests.out

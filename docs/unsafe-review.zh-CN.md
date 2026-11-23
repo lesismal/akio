@@ -2,7 +2,7 @@
 
 [English](unsafe-review.md) | 简体中文
 
-状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `akio-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）；2026-11-17 新增 `akio-buf` 的 `slab` 模块（UDP 接收 slab，ADR-024）。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
+状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `akio-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）；2026-11-17 新增 `akio-buf` 的 `slab` 模块（UDP 接收 slab，ADR-024）；2026-11-23 新增 `akio-sys` 的 `iface` 模块（接口列表、按接口发送，ADR-078 更新 3），`ktls` 中读取 `getifaddrs` 的代码移入其中。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
 
 akio 是网络库：它的内存安全缺陷就是其使用者的远程代码执行漏洞。本页是 `unsafe` 代码的规范：每个 `unsafe` 位置必须满足的检查清单、新增 `unsafe` 的流程、清单统计，以及 1.0 审查的结论。
 
@@ -83,7 +83,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | akio-http | 0 | 0 | 0 | 8 |
 | akio-brotli | 0 | 0 | 0 | 7 |
 | akio-crypto | 153 | 73 | 0 | 0 |
-| akio-sys | 117 | 3 | 3 | 0 |
+| akio-sys | 131 | 5 | 3 | 0 |
 | akio-buf | 5 | 0 | 2 | 0 |
 | akio-uring | 43 | 5 | 2 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
@@ -96,11 +96,12 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 |---|---:|---|---|
 | `akio-sys/src/ffi/` | 5 + 布局测试中 8 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
 | `akio-sys/src/net.rs` | 21 | `socket`/`bind`/`listen`/`connect`（含为 TCP 同时打开而从已绑定的共享端口发起的 connect，ADR-044）、`setsockopt`、`sendfile`、`SocketAddr` <-> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`、`copy` | 接口列表（`getifaddrs` / `if_nametoindex` / `freeifaddrs`；akio-tls 的网卡卸载检测也经由它）与从指定接口发出一个数据报（带 `IP_PKTINFO` / `IPV6_PKTINFO` 控制消息的 `sendmsg`），Linux 与 macOS | 链表只在 `getifaddrs` 与 `freeifaddrs` 之间遍历（只释放一次），名字在释放前复制出来；套接字地址按地址族（在 `sin_family` 的偏移处读取，macOS 上是一个字节）逐字节复制进清零的 `sockaddr_in` / `sockaddr_in6`，从不就地引用，macOS 上最多复制 `sa_len` 字节（子网掩码会被截短）；控制消息是 `#[repr(C)]` 的 `cmsghdr` + `in_pktinfo` / `in6_pktinfo`，其 `CMSG_LEN` / `CMSG_SPACE` 在测试中与 `libc` 对照，构造时不用 `unsafe`，`msghdr` 只指向存活的局部变量 |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
 | `akio-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `akio-sys/src/fswatch.rs` | 12（Linux 7 个，macOS 5 个） | 供 akio-http 静态文件缓存使用的变更通知：`inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`、对 inotify fd 与 eventfd 的 `ppoll`、读取事件（Linux）；`kqueue`、`fcntl`、带 `EVFILT_VNODE` / `EVFILT_USER` 的 `kevent` 注册与等待（macOS） | fd 立即被拥有；路径是以 NUL 结尾的 `CString`；读取不越过缓冲区，记录按字节解析；kevent 的 `udata` 是监视 id，从不解引用；`O_EVTONLY` 描述符由 `std` 打开并归监视器所有 |
 | `akio-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
-| `akio-sys/src/ktls.rs` | 15 | 内核 TLS（akio-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`、`getifaddrs`/`freeifaddrs` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照）；`getifaddrs` 链表只在 `freeifaddrs` 之前读取，地址按其地址族非对齐读取 |
+| `akio-sys/src/ktls.rs` | 12 | 内核 TLS（akio-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`；接口地址来自 `iface` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照） |
 | `akio-sys/src/udp.rs` | 12 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO / ECN cmsg | 每个接收 iovec 覆盖某槽位独占 slab 区间（`akio_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `akio-sys/src/udp_mac.rs` | 5 | macOS：每次 `sendmsg` / `recvmsg` 一个数据报及其 ECN 码点（`IP_TOS` / `IPV6_TCLASS` cmsg），`IP_RECVTOS` / `IPV6_RECVTCLASS` 的 `setsockopt` | `msghdr` 只指向存活的局部变量（`sockaddr_storage`、覆盖调用方切片的一个 iovec、64 字节 8 对齐的控制缓冲区）并带其长度，或为空指针且长度为 0；控制数据按字节构造与解析，以 `msg_controllen` 为界（不做 `CMSG_*` 指针遍历） |
 | `akio-crypto/src/aes/hw.rs` | 26 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |

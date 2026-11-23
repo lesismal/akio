@@ -130,6 +130,73 @@ impl core::marker::Sync for akio_sys::FsWatcher
 impl core::marker::Unpin for akio_sys::FsWatcher
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::FsWatcher
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::FsWatcher
+#[non_exhaustive] pub struct akio_sys::Interface
+pub akio_sys::Interface::addrs: alloc::vec::Vec<akio_sys::InterfaceAddr>
+pub akio_sys::Interface::flags: akio_sys::InterfaceFlags
+pub akio_sys::Interface::index: u32
+pub akio_sys::Interface::name: alloc::string::String
+impl akio_sys::Interface
+pub fn akio_sys::Interface::contains(&self, core::net::ip_addr::IpAddr) -> bool
+pub fn akio_sys::Interface::has_addr(&self, core::net::ip_addr::IpAddr) -> bool
+pub fn akio_sys::Interface::ipv4(&self) -> core::option::Option<core::net::ip_addr::Ipv4Addr>
+impl core::clone::Clone for akio_sys::Interface
+pub fn akio_sys::Interface::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::Interface
+impl core::cmp::PartialEq for akio_sys::Interface
+pub fn akio_sys::Interface::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::Interface
+pub fn akio_sys::Interface::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_sys::Interface
+impl core::marker::Send for akio_sys::Interface
+impl core::marker::Sync for akio_sys::Interface
+impl core::marker::Unpin for akio_sys::Interface
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::Interface
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::Interface
+#[non_exhaustive] pub struct akio_sys::InterfaceAddr
+pub akio_sys::InterfaceAddr::ip: core::net::ip_addr::IpAddr
+pub akio_sys::InterfaceAddr::prefix_len: u8
+impl akio_sys::InterfaceAddr
+pub fn akio_sys::InterfaceAddr::contains(&self, core::net::ip_addr::IpAddr) -> bool
+impl core::clone::Clone for akio_sys::InterfaceAddr
+pub fn akio_sys::InterfaceAddr::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::InterfaceAddr
+impl core::cmp::PartialEq for akio_sys::InterfaceAddr
+pub fn akio_sys::InterfaceAddr::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::InterfaceAddr
+pub fn akio_sys::InterfaceAddr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_sys::InterfaceAddr
+pub fn akio_sys::InterfaceAddr::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_sys::InterfaceAddr
+impl core::marker::StructuralPartialEq for akio_sys::InterfaceAddr
+impl core::marker::Send for akio_sys::InterfaceAddr
+impl core::marker::Sync for akio_sys::InterfaceAddr
+impl core::marker::Unpin for akio_sys::InterfaceAddr
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::InterfaceAddr
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::InterfaceAddr
+pub struct akio_sys::InterfaceFlags(_)
+impl akio_sys::InterfaceFlags
+pub fn akio_sys::InterfaceFlags::bits(self) -> u32
+pub fn akio_sys::InterfaceFlags::is_loopback(self) -> bool
+pub fn akio_sys::InterfaceFlags::is_multicast(self) -> bool
+pub fn akio_sys::InterfaceFlags::is_point_to_point(self) -> bool
+pub fn akio_sys::InterfaceFlags::is_running(self) -> bool
+pub fn akio_sys::InterfaceFlags::is_up(self) -> bool
+impl core::clone::Clone for akio_sys::InterfaceFlags
+pub fn akio_sys::InterfaceFlags::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::InterfaceFlags
+impl core::cmp::PartialEq for akio_sys::InterfaceFlags
+pub fn akio_sys::InterfaceFlags::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::InterfaceFlags
+pub fn akio_sys::InterfaceFlags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_sys::InterfaceFlags
+pub fn akio_sys::InterfaceFlags::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_sys::InterfaceFlags
+impl core::marker::StructuralPartialEq for akio_sys::InterfaceFlags
+impl core::marker::Send for akio_sys::InterfaceFlags
+impl core::marker::Sync for akio_sys::InterfaceFlags
+impl core::marker::Unpin for akio_sys::InterfaceFlags
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::InterfaceFlags
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::InterfaceFlags
 pub struct akio_sys::Poller
 impl akio_sys::Poller
 pub fn akio_sys::Poller::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
@@ -194,10 +261,12 @@ pub fn akio_sys::enable_ecn(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::enable_gro(std::os::fd::raw::RawFd) -> bool
 pub fn akio_sys::gro_available() -> bool
 pub fn akio_sys::gso_enabled() -> bool
+pub fn akio_sys::interfaces() -> core::io::error::Result<alloc::vec::Vec<akio_sys::Interface>>
 pub fn akio_sys::listen(core::net::socket_addr::SocketAddr, bool, i32) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn akio_sys::listen_udp(core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<std::net::udp::UdpSocket>
 pub fn akio_sys::multicast_hops_v6(&std::net::udp::UdpSocket) -> core::io::error::Result<u32>
 pub fn akio_sys::send_to_ecn(std::os::fd::raw::RawFd, &[u8], core::option::Option<&core::net::socket_addr::SocketAddr>, u8, bool) -> core::io::error::Result<usize>
+pub fn akio_sys::send_to_on(&std::net::udp::UdpSocket, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<usize>
 pub fn akio_sys::sendfile(std::os::fd::raw::RawFd, std::os::fd::raw::RawFd, u64, usize) -> core::io::error::Result<usize>
 pub fn akio_sys::set_backlog(&std::net::tcp::TcpListener, i32) -> core::io::error::Result<()>
 pub fn akio_sys::set_multicast_hops_v6(&std::net::udp::UdpSocket, u32) -> core::io::error::Result<()>

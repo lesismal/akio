@@ -17,6 +17,30 @@ then lets the engine bind it; another socket could take it in between and `new` 
 `AddrInUse` (seen as a flaky `tests/resume.rs` under parallel tests). It now picks again and
 retries the binds, up to 20 times. A port given explicitly still fails at once.
 
+### Added: the interface list; mDNS records and IPv4 multicast per interface (akio-sys, akio-core, akio, akio-webrtc)
+
+ADR-078's third update (2026-11-23), additive:
+
+- `akio_sys::interfaces()`: the host's network interfaces from `getifaddrs(3)` (Linux and
+  macOS): `Interface { name, index, flags, addrs }`, `InterfaceFlags` (`is_up`, `is_running`,
+  `is_loopback`, `is_point_to_point`, `is_multicast`, `bits`), `InterfaceAddr { ip, prefix_len }`
+  with `contains`; IPv6 link-local addresses come without macOS's embedded scope id.
+  `akio_sys::send_to_on(&UdpSocket, data, addr, interface)` sends a datagram out of an interface
+  (`IP_PKTINFO` / `IPV6_PKTINFO`).
+- `UdpBinding::send_to_on(data, addr, interface)`: the same on an engine binding; to a multicast
+  group it picks the link, as `IP_MULTICAST_IF` would for the whole socket.
+- `Engine::bind_udp_multicast_on` takes interface indexes for IPv4 groups too (each joined on the
+  interface's first IPv4 address; before, anything but `&[0]` was refused with `InvalidInput`).
+  An unknown interface, or one without IPv4, is skipped (`AddrNotAvailable` when none is left).
+- akio-webrtc mDNS: IPv4 joins `224.0.0.251` on every multicast-capable interface with an IPv4
+  address (loopback aside) and sends out of each, as IPv6 does on `ff02::fb`; each concealed
+  address (IPv4, global and ULA IPv6 now too) is probed, announced, withdrawn and answered on the
+  interface that holds it only (RFC 6762 §6.2), and answers leave from the interface of the query
+  (with the records of that interface, and of addresses in its subnets).
+  Loopback addresses, and queries from a source on no known subnet, keep going to and being
+  answered on every link.
+- `tools/interop/webrtc/mdns4.sh`: two IPv4 links in a container, avahi on the non-default one.
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:

@@ -66,6 +66,29 @@ fn common_layouts() {
         sin6_scope_id
     );
     same_layout!(super::sockaddr_storage, libc::sockaddr_storage, ss_family);
+    same_layout!(
+        super::ifaddrs,
+        libc::ifaddrs,
+        ifa_next,
+        ifa_name,
+        ifa_flags,
+        ifa_addr,
+        ifa_netmask,
+        ifa_data
+    );
+    same_layout!(
+        super::in_pktinfo,
+        libc::in_pktinfo,
+        ipi_ifindex,
+        ipi_spec_dst,
+        ipi_addr
+    );
+    same_layout!(
+        super::in6_pktinfo,
+        libc::in6_pktinfo,
+        ipi6_addr,
+        ipi6_ifindex
+    );
     assert_eq!(size_of::<super::socklen_t>(), size_of::<libc::socklen_t>());
     assert_eq!(
         size_of::<super::sa_family_t>(),
@@ -113,6 +136,13 @@ fn common_constants() {
         IPV6_V6ONLY,
         IPV6_MULTICAST_HOPS,
         IPV6_UNICAST_HOPS,
+        IP_PKTINFO,
+        IPV6_PKTINFO,
+        IFF_UP,
+        IFF_LOOPBACK,
+        IFF_POINTOPOINT,
+        IFF_RUNNING,
+        IFF_MULTICAST,
         SIGHUP,
         SIGINT,
         SIGQUIT,
@@ -219,16 +249,7 @@ fn linux_layouts() {
         sa_flags,
         sa_restorer
     );
-    same_layout!(
-        super::ifaddrs,
-        libc::ifaddrs,
-        ifa_next,
-        ifa_name,
-        ifa_flags,
-        ifa_addr,
-        ifa_netmask,
-        ifa_data
-    );
+    same_layout!(super::ifaddrs, libc::ifaddrs, ifa_ifu);
     assert_eq!(size_of::<super::ifreq_data>(), size_of::<libc::ifreq>());
     same_layout!(
         super::utsname,
@@ -400,6 +421,7 @@ fn macos_layouts() {
     same_layout!(super::sockaddr_in, libc::sockaddr_in, sin_len);
     same_layout!(super::sockaddr_in6, libc::sockaddr_in6, sin6_len);
     same_layout!(super::sockaddr_storage, libc::sockaddr_storage, ss_len);
+    same_layout!(super::ifaddrs, libc::ifaddrs; ifa_ifu = ifa_dstaddr);
     same_layout!(
         super::msghdr,
         libc::msghdr,
