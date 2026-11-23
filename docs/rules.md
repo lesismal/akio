@@ -98,3 +98,15 @@ Every check costs waiting; each change gets the checks its kind needs, no more.
     that depend on them; the whole workspace suite (macOS, Linux arm64 in Docker with epoll and
     io_uring, x86_64 Linux natively) runs once before a merge or a push. At most two sessions run
     the whole suite at once.
+
+## 8. Cleaning up
+
+19. **Every development, test and benchmark run cleans up after itself and frees the space it
+    took.** When the work is done (a feature, a fix, a test or benchmark run, a reproduction),
+    remove what it left behind, on this machine and on the benchmark host: build output made for it
+    (the `target/` directories of copies and worktrees, test binaries), copies of the tree and git
+    worktrees, containers, images and volumes it created, and logs and temporary files no longer
+    needed. Caches kept on purpose (a harness's shared target directory, pinned images) stay, but
+    are pruned when they grow. The benchmark host's disk is shared by every session: check its free
+    space (`df -h /`) before a large build, and never leave it fuller than you found it; a full disk
+    stops everyone's builds and runs.
