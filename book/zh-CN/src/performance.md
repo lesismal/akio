@@ -27,7 +27,9 @@
 - 在有多个 NUMA 节点的机器上，`EngineBuilder::numa`（或 `AKIO_NUMA=spread`，ADR-088）让每个 I/O 线程留在一个节点
   上，或网卡所在的节点上（`NumaConfig::interface("eth0")`），使用该节点的 CPU（`per_cpu`：每线程一个 CPU），逻辑池也
   限制在这些 CPU 上；`incoming_cpu` 为中断分布在这些 CPU 上的网卡加上 `SO_INCOMING_CPU`。默认关闭；
-  `Engine::numa_status()` 显示放置结果。在单节点上它既无帮助也无损害。
+  `Engine::numa_status()` 显示放置结果。使用 io_uring 时每个线程的 ring 在其节点上创建，启用 `sqpoll` 时内核轮询线程
+  绑定到它的一个 CPU 上（`ThreadPlacement::sq_thread_cpu`；此时宜用整节点集合而非 `per_cpu`，否则轮询线程与循环
+  共用一个 CPU）。在单节点上它既无帮助也无损害。
 
 ## 3. 后端选择
 

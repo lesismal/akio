@@ -19,6 +19,11 @@ pub trait Group: Send + Sync {
     /// (none for an empty set or past the end). Takes effect only before [`start`](Self::start);
     /// groups whose threads cannot be pinned ignore it.
     fn pin_threads(&self, _cpus: Vec<Vec<usize>>) {}
+    /// Per active I/O thread, the CPU its kernel SQ polling thread is pinned to (io_uring with
+    /// SQPOLL and pinned threads, ADR-088); empty for groups without one.
+    fn sq_thread_cpus(&self) -> Vec<Option<usize>> {
+        Vec::new()
+    }
     /// A sender on the socket of a datagram listener (ADR-065; `None` for other groups).
     fn datagram_sender(&self) -> Option<DatagramSender> {
         None

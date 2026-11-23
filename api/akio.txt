@@ -182,6 +182,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaReport
 pub akio::numa::ThreadPlacement::cpus: alloc::vec::Vec<usize>
 pub akio::numa::ThreadPlacement::incoming_cpu: core::option::Option<usize>
 pub akio::numa::ThreadPlacement::node: usize
+pub akio::numa::ThreadPlacement::sq_thread_cpu: core::option::Option<usize>
 impl core::clone::Clone for akio::numa::ThreadPlacement
 pub fn akio::numa::ThreadPlacement::clone(&self) -> Self
 impl core::cmp::Eq for akio::numa::ThreadPlacement
@@ -428,6 +429,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaReport
 pub akio::ThreadPlacement::cpus: alloc::vec::Vec<usize>
 pub akio::ThreadPlacement::incoming_cpu: core::option::Option<usize>
 pub akio::ThreadPlacement::node: usize
+pub akio::ThreadPlacement::sq_thread_cpu: core::option::Option<usize>
 impl core::clone::Clone for akio::numa::ThreadPlacement
 pub fn akio::numa::ThreadPlacement::clone(&self) -> Self
 impl core::cmp::Eq for akio::numa::ThreadPlacement

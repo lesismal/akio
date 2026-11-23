@@ -859,9 +859,14 @@ fn place_threads(
                 node: *node,
                 cpus: cpus.clone(),
                 incoming_cpu: incoming,
+                sq_thread_cpu: None,
             });
         }
+        // io_uring groups recreate their rings on these sets here (ADR-088, update).
         g.pin_threads(sets.into_iter().map(|(_, c)| c).collect());
+        for (p, sq) in placed.iter_mut().zip(g.sq_thread_cpus()) {
+            p.sq_thread_cpu = sq;
+        }
         report.push(placed);
     }
     NumaStatus::Placed(NumaReport {

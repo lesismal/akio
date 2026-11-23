@@ -26,6 +26,10 @@ ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：
   时让构建失败。`AKIO_NUMA`（`spread`、`nodes:0,1`、`iface:eth0`、`+cpu`、`+incoming`、`+nopool`、`+strict`）在构建器
   未被告知时提供配置。`Engine::numa_status()` 报告 `Off`、`Placed(NumaReport)` 或 `Degraded(原因)`。仅 Linux；由 eBPF
   CPU 分流绑核的组与 DPDK 组保持不变。
+- 放置下的 io_uring（akio-uring）：每个循环的 ring 在一个绑定到该循环 CPU 集合的临时线程上创建，内核因此在该节点上
+  分配它（临时线程与 single-issuer / `R_DISABLED` 配置保持不变）；启用 `UringConfig::sqpoll` 时，内核轮询线程用
+  `IORING_SETUP_SQ_AFF` 绑定到集合中的一个 CPU（共用同一集合的循环依次取后续 CPU），由
+  `ThreadPlacement::sq_thread_cpu` 报告。eBPF 分流的 `pin_threads` 同样适用。放置关闭时没有任何变化。
 - `akio_sys::numa`：`nodes`、`interface_node`、`parse_cpulist`、`set_incoming_cpu`、`incoming_cpu`（sysfs、
   `SO_INCOMING_CPU`）。
 - `tools/bench/numa.sh`：通过 `AKIO_NUMA` 做放置 A/B。在单节点的 gpu51 上，各模式与关闭放置相比都在噪声范围内

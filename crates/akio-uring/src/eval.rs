@@ -35,7 +35,7 @@ use std::{
 
 use akio_sys::ffi;
 
-use crate::reactor::{BGID, BUF_COUNT, BufRing, KernelBuf, make_ring};
+use crate::reactor::{BGID, BUF_COUNT, BufRing, KernelBuf, RingPlace, make_ring_at};
 use crate::ring::{Ring, Sqe, cqe_buffer, cqe_more, cqe_notif, notif_copied};
 
 const OP_ACCEPT: u64 = 1;
@@ -319,7 +319,8 @@ fn serve_thread(
     resp: usize,
     until: Instant,
 ) -> io::Result<Counts> {
-    let (ring, needs_enable) = make_ring(4096, false)?;
+    let made = make_ring_at(4096, false, &RingPlace::default())?;
+    let (ring, needs_enable) = (made.ring, made.needs_enable);
     if needs_enable {
         ring.enable_rings()?;
     }

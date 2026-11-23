@@ -84,21 +84,69 @@ pub(crate) fn on_scratch_thread<T: Send>(f: impl FnOnce() -> T + Send) -> io::Re
     })
 }
 
-/// Creates a ring (see [`make_ring_here`]) on a scratch thread ([`on_scratch_thread`]).
-pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
-    on_scratch_thread(move || make_ring_here(entries, sqpoll))?
+/// Where a loop's ring is created and its SQPOLL thread runs ([`Group::pin_threads`]).
+///
+/// [`Group::pin_threads`]: akio_core::Group::pin_threads
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RingPlace {
+    /// The loop's CPU set: the scratch thread that creates the ring is pinned to it first, so
+    /// the kernel allocates the ring's memory on that node. Empty: anywhere (not pinned).
+    pub(crate) cpus: Vec<usize>,
+    /// With SQPOLL, the CPU its kernel thread is pinned to (`IORING_SETUP_SQ_AFF`).
+    pub(crate) sq_cpu: Option<usize>,
+}
+
+/// A ring from [`make_ring_here`].
+pub(crate) struct NewRing {
+    pub(crate) ring: Ring,
+    /// The ring starts disabled and must be enabled by the thread that will drive it.
+    pub(crate) needs_enable: bool,
+    /// The CPU its SQPOLL thread is pinned to (`IORING_SETUP_SQ_AFF` accepted).
+    pub(crate) sq_cpu: Option<usize>,
+}
+
+/// Creates a ring on a scratch thread ([`on_scratch_thread`]) that is first pinned to
+/// `place.cpus` (best effort; not pinned when empty), with its SQPOLL thread on `place.sq_cpu`.
+pub(crate) fn make_ring_at(entries: u32, sqpoll: bool, place: &RingPlace) -> io::Result<NewRing> {
+    on_scratch_thread(move || {
+        if !place.cpus.is_empty() {
+            // A thread that cannot be pinned creates the ring where it runs, as unplaced.
+            let _ = akio_sys::process::pin_current_thread(&place.cpus);
+        }
+        make_ring_here(entries, sqpoll, place.sq_cpu)
+    })?
 }
 
 /// Creates a ring with the cheapest setup the kernel accepts: cooperative task-run, a single
-/// issuer and deferred task-run (6.1+); anything less if that is refused. The returned flag says
-/// the ring starts disabled and must be enabled by the thread that will drive it (single-issuer
-/// rings belong to the thread that enables them, and rings are built on another thread). Call it
-/// only on a thread that exits soon (see [`on_scratch_thread`]).
-pub(crate) fn make_ring_here(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
+/// issuer and deferred task-run (6.1+); anything less if that is refused. The returned ring may
+/// start disabled ([`NewRing::needs_enable`]): single-issuer rings belong to the thread that
+/// enables them, and rings are built on another thread. With `sqpoll`, `sq_cpu` pins the polling
+/// thread (`IORING_SETUP_SQ_AFF`; without it if the kernel refuses that CPU). Call it only on a
+/// thread that exits soon (see [`on_scratch_thread`]).
+pub(crate) fn make_ring_here(
+    entries: u32,
+    sqpoll: bool,
+    sq_cpu: Option<usize>,
+) -> io::Result<NewRing> {
     let cq = entries.saturating_mul(4);
+    let plain = |ring| NewRing {
+        ring,
+        needs_enable: false,
+        sq_cpu: None,
+    };
     if sqpoll {
-        let r = Ring::new(entries, ring::SETUP_CQSIZE | ring::SETUP_SQPOLL, cq, 1000)?;
-        return Ok((r, false));
+        let flags = ring::SETUP_CQSIZE | ring::SETUP_SQPOLL;
+        if let Some(cpu) = sq_cpu.and_then(|c| u32::try_from(c).ok()) {
+            // EINVAL when the CPU is offline or outside this task's cpuset.
+            if let Ok(r) = Ring::with_sq_cpu(entries, flags | ring::SETUP_SQ_AFF, cq, 1000, cpu) {
+                return Ok(NewRing {
+                    ring: r,
+                    needs_enable: false,
+                    sq_cpu: Some(cpu as usize),
+                });
+            }
+        }
+        return Ring::new(entries, flags, cq, 1000).map(plain);
     }
     let fast = ring::SETUP_CQSIZE
         | ring::SETUP_COOP_TASKRUN
@@ -106,7 +154,11 @@ pub(crate) fn make_ring_here(entries: u32, sqpoll: bool) -> io::Result<(Ring, bo
         | ring::SETUP_DEFER_TASKRUN
         | ring::SETUP_R_DISABLED;
     if let Ok(r) = Ring::new(entries, fast, cq, 0) {
-        return Ok((r, true));
+        return Ok(NewRing {
+            ring: r,
+            needs_enable: true,
+            sq_cpu: None,
+        });
     }
     if let Ok(r) = Ring::new(
         entries,
@@ -114,9 +166,9 @@ pub(crate) fn make_ring_here(entries: u32, sqpoll: bool) -> io::Result<(Ring, bo
         cq,
         0,
     ) {
-        return Ok((r, false));
+        return Ok(plain(r));
     }
-    Ok((Ring::new(entries, ring::SETUP_CQSIZE, cq, 0)?, false))
+    Ring::new(entries, ring::SETUP_CQSIZE, cq, 0).map(plain)
 }
 
 /// One entry of a provided-buffer ring (`struct io_uring_buf`). Entries are written through raw
@@ -638,6 +690,8 @@ pub(crate) struct Loop {
     bufs: BufGroup,
     old_bufs: Option<BufGroup>,
     needs_enable: bool,
+    /// The CPU the ring's SQPOLL thread is pinned to (`RingPlace::sq_cpu`, accepted).
+    sq_cpu: Option<usize>,
     shared: Arc<LoopShared>,
     listeners: Vec<Lsn>,
     /// The acceptor of the group's listener (`None` in a client-only group).
@@ -743,6 +797,15 @@ fn feed(
     }
 }
 
+/// The submission queue depth of a loop's ring.
+fn ring_entries(opts: &UringOptions) -> u32 {
+    if opts.entries == 0 {
+        1024
+    } else {
+        opts.entries
+    }
+}
+
 impl Loop {
     pub(crate) fn new(
         shared: Arc<LoopShared>,
@@ -751,13 +814,14 @@ impl Loop {
         roster: Arc<Roster>,
         cfg: Arc<Config>,
         opts: &UringOptions,
+        place: &RingPlace,
     ) -> io::Result<Loop> {
-        let entries = if opts.entries == 0 {
-            1024
-        } else {
-            opts.entries
-        };
-        let (ring, needs_enable) = make_ring(entries, opts.sqpoll)?;
+        let entries = ring_entries(opts);
+        let NewRing {
+            ring,
+            needs_enable,
+            sq_cpu,
+        } = make_ring_at(entries, opts.sqpoll, place)?;
         for (_, l) in &listeners {
             l.set_nonblocking(true)?;
         }
@@ -769,6 +833,7 @@ impl Loop {
             bufs: BufGroup::alloc(buf_size, BGID)?,
             old_bufs: None,
             needs_enable,
+            sq_cpu,
             shared,
             listeners: listeners
                 .into_iter()
@@ -800,6 +865,21 @@ impl Loop {
             spare_cmds: Vec::new(),
             dgrams: Vec::new(),
         })
+    }
+
+    /// Replaces the ring of this loop (built, not started: nothing uses the ring yet) with one
+    /// created at `place`. On error the loop keeps its ring.
+    pub(crate) fn place_ring(&mut self, opts: &UringOptions, place: &RingPlace) -> io::Result<()> {
+        let r = make_ring_at(ring_entries(opts), opts.sqpoll, place)?;
+        self.ring = r.ring;
+        self.needs_enable = r.needs_enable;
+        self.sq_cpu = r.sq_cpu;
+        Ok(())
+    }
+
+    /// The CPU this loop's SQPOLL thread is pinned to, if any.
+    pub(crate) fn sq_cpu(&self) -> Option<usize> {
+        self.sq_cpu
     }
 
     /// Serves the datagram listener socket of `port` on this loop (before it starts).
@@ -2127,6 +2207,79 @@ impl Loop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kernel SQ polling threads of this process (`iou-sqp-*`): task id and allowed CPUs.
+    fn sqp_threads() -> Vec<(String, Vec<usize>)> {
+        let mut out = Vec::new();
+        for t in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let comm = std::fs::read_to_string(t.path().join("comm")).unwrap_or_default();
+            if !comm.starts_with("iou-sqp-") {
+                continue;
+            }
+            let status = std::fs::read_to_string(t.path().join("status")).unwrap_or_default();
+            let list = status
+                .lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            let cpus = akio_sys::numa::parse_cpulist(&list).unwrap_or_default();
+            out.push((t.file_name().to_string_lossy().into_owned(), cpus));
+        }
+        out
+    }
+
+    /// Placed rings (ADR-088, update): with SQPOLL and an SQ CPU, the kernel's polling thread
+    /// runs on that CPU only; a CPU the kernel refuses falls back to an unpinned polling thread;
+    /// without SQPOLL the setup is unchanged (single issuer, created disabled where supported).
+    /// Skipped where io_uring or SQPOLL is unavailable.
+    #[test]
+    fn placed_ring_pins_the_sqpoll_thread() {
+        let Some(&cpu) = akio_sys::process::allowed_cpus().unwrap_or_default().last() else {
+            return;
+        };
+        let place = RingPlace {
+            cpus: vec![cpu],
+            sq_cpu: Some(cpu),
+        };
+        let before: Vec<String> = sqp_threads().into_iter().map(|(t, _)| t).collect();
+        let r = match make_ring_at(8, true, &place) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipped: no SQPOLL ring here ({e})");
+                return;
+            }
+        };
+        assert_eq!(r.sq_cpu, Some(cpu));
+        assert!(!r.needs_enable);
+        let new: Vec<_> = sqp_threads()
+            .into_iter()
+            .filter(|(t, _)| !before.contains(t))
+            .collect();
+        assert_eq!(new.len(), 1, "{new:?}");
+        assert_eq!(new[0].1, vec![cpu]);
+        drop(r);
+
+        // A CPU that does not exist: created without SQ_AFF.
+        let off = RingPlace {
+            cpus: vec![cpu],
+            sq_cpu: Some(1 << 20),
+        };
+        let r = make_ring_at(8, true, &off).expect("SQPOLL ring without SQ_AFF");
+        assert_eq!(r.sq_cpu, None);
+        // Not placed: as before.
+        let r = make_ring_at(8, true, &RingPlace::default()).expect("SQPOLL ring");
+        assert_eq!(r.sq_cpu, None);
+        // Without SQPOLL the SQ CPU is ignored and the setup is the unplaced one.
+        let unplaced = make_ring_at(8, false, &RingPlace::default()).expect("ring");
+        let placed = make_ring_at(8, false, &place).expect("placed ring");
+        assert_eq!(placed.sq_cpu, None);
+        assert_eq!(placed.needs_enable, unplaced.needs_enable);
+    }
 
     /// Pure memory operations (no syscalls), so this also runs under Miri: the mirrored entry
     /// layout matches `struct io_uring_buf`, `give` wraps and `publish` lands on entry 0's `resv`.

@@ -26,6 +26,8 @@ use akio_sys::ffi::{self, c_long, c_void};
 
 /// `IORING_SETUP_*`.
 pub(crate) const SETUP_SQPOLL: u32 = 1 << 1;
+/// With `SETUP_SQPOLL`: pin the SQ polling thread to `sq_thread_cpu`.
+pub(crate) const SETUP_SQ_AFF: u32 = 1 << 2;
 pub(crate) const SETUP_CQSIZE: u32 = 1 << 3;
 pub(crate) const SETUP_R_DISABLED: u32 = 1 << 6;
 pub(crate) const SETUP_COOP_TASKRUN: u32 = 1 << 8;
@@ -509,7 +511,7 @@ impl std::fmt::Debug for Ring {
 
 // SAFETY: the raw pointers point into the ring's own mappings, which are process-wide and live
 // as long as the `Ring`; nothing ties them to the thread that created it. A ring is created on a
-// scratch thread (`reactor::make_ring`) and then used by one I/O thread at a time.
+// scratch thread (`reactor::make_ring_at`) and then used by one I/O thread at a time.
 unsafe impl Send for Ring {}
 
 impl Ring {
@@ -521,10 +523,22 @@ impl Ring {
         cq_entries: u32,
         sq_thread_idle: u32,
     ) -> io::Result<Ring> {
+        Self::with_sq_cpu(entries, flags, cq_entries, sq_thread_idle, 0)
+    }
+
+    /// [`new`](Self::new) with `sq_thread_cpu` (read by the kernel only with `SETUP_SQ_AFF`).
+    pub(crate) fn with_sq_cpu(
+        entries: u32,
+        flags: u32,
+        cq_entries: u32,
+        sq_thread_idle: u32,
+        sq_thread_cpu: u32,
+    ) -> io::Result<Ring> {
         let mut p = Params {
             flags,
             cq_entries,
             sq_thread_idle,
+            sq_thread_cpu,
             ..Params::default()
         };
         // SAFETY: `p` is a valid, zero-initialised `io_uring_params` the kernel reads and

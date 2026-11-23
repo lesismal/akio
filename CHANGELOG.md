@@ -30,6 +30,12 @@ ADR-088 (docs/adr/088-numa-placement.md), additive:
   engine whose builder was not told. `Engine::numa_status()` reports `Off`, `Placed(NumaReport)`
   or `Degraded(reason)`. Linux only; groups pinned by eBPF CPU steering and DPDK groups are left
   alone.
+- io_uring (akio-uring) under placement: each loop's ring is created on a scratch thread pinned to
+  the loop's CPU set, so the kernel allocates it on that node (the scratch thread and the
+  single-issuer / `R_DISABLED` setup stay); with `UringConfig::sqpoll` the kernel polling thread
+  is pinned with `IORING_SETUP_SQ_AFF` to one CPU of the set (loops sharing a set take
+  successive CPUs), reported as `ThreadPlacement::sq_thread_cpu`. Also applies to eBPF
+  steering's `pin_threads`. Nothing changes with placement off.
 - `akio_sys::numa`: `nodes`, `interface_node`, `parse_cpulist`, `set_incoming_cpu`,
   `incoming_cpu` (sysfs, `SO_INCOMING_CPU`).
 - `tools/bench/numa.sh`: placement A/B through `AKIO_NUMA`. On one-node gpu51 every mode is within
