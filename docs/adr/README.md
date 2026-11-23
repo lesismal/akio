@@ -92,3 +92,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-088: NUMA placement of the engine's threads, off by default](088-numa-placement.md) (accepted 2026-11-23; updated 2026-11-23: io_uring rings on the loop's node, SQPOLL threads placed)
 - [ADR-091: TURN ICMP relaying, DSCP across the relay, and giving back one family](091-turn-icmp-dscp-family-release.md) (accepted 2026-11-23)
 - [ADR-092: A video playout buffer, E-model delay classes and room noise, VoIP packet length and late discards](092-video-playout-emodel-classes.md) (accepted 2026-11-23)
+- [ADR-101: Borrowed WebSocket messages and a lock-free send path](101-borrowed-websocket-messages.md) (accepted 2026-11-23)
