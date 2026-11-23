@@ -10,6 +10,24 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TUN devices (akio-tun, akio, akio-sys)
+
+ADR-096, additive; akit request A8 (fit's VPN track):
+
+- New crate `akio-tun` (`akio::tun` with the cargo feature `tun`): `TunDevice::create(&TunConfig)`
+  opens and configures a TUN interface (Linux `/dev/net/tun` with `IFF_TUN | IFF_NO_PI`, optionally
+  multi-queue; macOS `utun`): name, MTU, IPv4 / IPv6 addresses, up / down, later through
+  `TunControl`. `TunServer::start` or `Engine::serve_tun` serves it: one I/O thread (epoll /
+  kqueue, on every backend) and one connection per queue; the handler gets each packet as a
+  borrowed `&[u8]` in `on_data`, `Conn::send` and the cloneable `TunWriter` write packets from any
+  thread without blocking, through a queue bounded by `max_queued_bytes` (`Overloaded`), with
+  `on_drain` and `hold_reads`. A device deleted underneath closes the connection with the error.
+  Needs `CAP_NET_ADMIN` (Linux) or root (macOS); its tests skip without them unless
+  `AKIO_TEST_EXPECT_TUN=1`.
+- akio-sys: `tun_open`, `tun_is_multi_queue`, `utun_open`, `utun_name`, `read_packet`,
+  `write_packet`, `tun_gone`, and interface settings by ioctl: `if_mtu`, `if_set_mtu`, `if_is_up`,
+  `if_set_up`, `if_index`, `if_add_addr`, `if_del_addr`.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

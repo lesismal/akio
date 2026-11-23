@@ -33,6 +33,7 @@ flowchart BT
     uring["akio-uring<br/>io_uring groups"]
     ebpf["akio-ebpf<br/>reuseport steering, sockmap relay"]
     dpdk["akio-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
+    tun["akio-tun<br/>TUN devices (Linux, macOS utun)"]
     tls["akio-tls<br/>own TLS 1.3/1.2 Transport"]
     facade["akio<br/>Engine, Listener, Backend, Accel"]
     http["akio-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
@@ -67,6 +68,9 @@ flowchart BT
     uring --> facade
     ebpf --> facade
     dpdk -.->|feature dpdk| facade
+    core --> tun
+    sys --> tun
+    tun -.->|feature tun| facade
     tls --> facade
     facade --> ws
     deflate --> ws

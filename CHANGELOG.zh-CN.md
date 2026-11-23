@@ -10,6 +10,20 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：TUN 设备（akio-tun、akio、akio-sys）
+
+ADR-096，纯新增；akit 请求 A8（fit 的 VPN 路线）：
+
+- 新 crate `akio-tun`（启用 cargo feature `tun` 后为 `akio::tun`）：`TunDevice::create(&TunConfig)` 打开并配置 TUN 接口
+  （Linux 上以 `IFF_TUN | IFF_NO_PI` 打开 `/dev/net/tun`，可选多队列；macOS 上为 `utun`）：名字、MTU、IPv4 / IPv6 地址、
+  up / down，之后可经 `TunControl` 修改。`TunServer::start` 或 `Engine::serve_tun` 服务它：每个队列一个 I/O 线程（任何后端上
+  都是 epoll / kqueue）和一个连接；handler 在 `on_data` 中以借用的 `&[u8]` 拿到每个包，`Conn::send` 与可克隆的 `TunWriter`
+  可从任意线程非阻塞地写包，经由以 `max_queued_bytes` 为上限的队列（`Overloaded`），并有 `on_drain` 与 `hold_reads`。
+  设备被删除时以该错误关闭连接。需要 `CAP_NET_ADMIN`（Linux）或 root（macOS）；没有时其测试会跳过，除非设置
+  `AKIO_TEST_EXPECT_TUN=1`。
+- akio-sys：`tun_open`、`tun_is_multi_queue`、`utun_open`、`utun_name`、`read_packet`、`write_packet`、`tun_gone`，以及
+  基于 ioctl 的接口设置：`if_mtu`、`if_set_mtu`、`if_is_up`、`if_set_up`、`if_index`、`if_add_addr`、`if_del_addr`。
+
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
 ADR-078 的第四次更新（2026-11-23），均为新增：

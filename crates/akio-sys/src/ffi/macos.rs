@@ -185,7 +185,7 @@ const _: () = assert!(size_of::<sigaction>() == 16);
 // ---- libSystem functions -------------------------------------------------------------------
 
 // Soundness of the declarations: each matches the prototype in the macOS SDK headers (types as laid out
-// above); `fcntl` is variadic in C and declared variadic, which matters on arm64, where variadic
+// above); `fcntl` and `ioctl` are variadic in C and declared variadic, which matters on arm64, where variadic
 // arguments go on the stack.
 unsafe extern "C" {
     pub fn __error() -> *mut c_int;
@@ -235,6 +235,8 @@ unsafe extern "C" {
     pub fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t;
     pub fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t;
     pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    pub fn ioctl(fd: c_int, request: core::ffi::c_ulong, ...) -> c_int;
+    pub fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
 
     pub fn getentropy(buf: *mut c_void, len: size_t) -> c_int;
 
