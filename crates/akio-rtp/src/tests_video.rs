@@ -336,6 +336,11 @@ fn delay_shrinks_at_keyframes_at_once_else_slowly() {
     push(&mut pb, i, 0, true);
     let after = pb.stats();
     assert!(after.delay <= after.target + ms(2), "{before:?} {after:?}");
+    // Through all of it, frames came out in order, never before they were complete.
+    assert!(out.len() as u32 + 10 > i, "{} of {i}", out.len());
+    assert!(out.windows(2).all(|w| w[0].data + 1 == w[1].data));
+    assert!(out.windows(2).all(|w| w[0].playout <= w[1].playout));
+    assert!(out.iter().all(|f| f.playout >= f.completed));
 }
 
 #[test]
