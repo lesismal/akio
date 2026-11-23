@@ -194,7 +194,7 @@ impl RoundsGroup {
                 .filter_map(|s| {
                     s.pending.take().map(|lp| {
                         Arc::new(Driver {
-                            lp: Mutex::new(lp),
+                            lp: Mutex::new(Some(lp)),
                             shared: s.shared.clone(),
                             done: AtomicBool::new(false),
                         })

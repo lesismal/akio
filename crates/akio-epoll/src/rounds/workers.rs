@@ -123,7 +123,9 @@ impl Shard {
 
 /// A poller driven by the workers (driver mode).
 pub(crate) struct Driver {
-    pub(crate) lp: Mutex<RLoop>,
+    /// `None` once the pool stopped: dropping the loop releases its sockets, its poller and
+    /// the `Arc`s it holds back to this pool.
+    pub(crate) lp: Mutex<Option<RLoop>>,
     pub(crate) shared: Arc<PollerShared>,
     /// Its loop finished (shut down and drained): nobody polls it any more.
     pub(crate) done: AtomicBool,
@@ -263,7 +265,17 @@ impl Workers {
         for st in &self.stats {
             st.set_running(false);
         }
-        // Break the cycle drivers -> loops -> this pool.
+        // Connections still queued hold this pool (cycle pool -> queue -> connection -> pool).
+        for sh in &self.shards {
+            let q = std::mem::take(&mut *sh.q.lock().unwrap_or_else(|p| p.into_inner()));
+            sh.len.store(0, Ordering::SeqCst);
+            drop(q);
+        }
+        // Break the cycle drivers -> loops -> this pool: drop the loops (their sockets close).
+        for d in self.drivers() {
+            let lp = d.lp.lock().unwrap_or_else(|p| p.into_inner()).take();
+            drop(lp);
+        }
         self.drivers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -337,7 +349,14 @@ impl Workers {
             if d.done.load(Ordering::Acquire) {
                 continue;
             }
-            let Ok(mut lp) = d.lp.try_lock() else {
+            // A poisoned lock means a callback panicked inside a poll (a dial's `on_error`,
+            // say); the loop's state is still consistent, so keep polling it.
+            let mut g = match d.lp.try_lock() {
+                Ok(g) => g,
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => continue,
+            };
+            let Some(lp) = g.as_mut() else {
                 continue;
             };
             let timeout = if block {
@@ -348,10 +367,18 @@ impl Workers {
             if block {
                 self.in_poll.fetch_add(1, Ordering::SeqCst);
             }
-            let finished = lp.poll_once(timeout);
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lp.poll_once(timeout)));
             if block {
                 self.in_poll.fetch_sub(1, Ordering::SeqCst);
             }
+            let finished = r.unwrap_or_else(|_| {
+                akio_core::telemetry::log_or_stderr(
+                    akio_log::Level::Error,
+                    format_args!("a callback panicked while a worker polled; polling goes on"),
+                );
+                false
+            });
             if finished {
                 d.done.store(true, Ordering::Release);
                 d.shared.stats.set_running(false);
