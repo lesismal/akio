@@ -39,6 +39,7 @@ pub use akio::log
 pub use akio::metrics
 pub use akio::telemetry
 pub use akio::tls
+pub use akio::tun
 pub mod akio::dns
 #[non_exhaustive] pub struct akio::dns::CacheConfig
 pub akio::dns::CacheConfig::max_entries: usize
@@ -332,6 +333,8 @@ pub fn akio::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<akio_core::teleme
 pub fn akio::Engine::threads(&self) -> alloc::vec::Vec<usize>
 pub fn akio::Engine::udp_stats(&self) -> akio_core::group::UdpStats
 pub fn akio::Engine::wait(&self)
+impl akio::Engine
+pub fn akio::Engine::serve_tun<A: akio_core::handler::Acceptor>(&self, akio_tun::TunDevice, A) -> core::io::error::Result<akio_tun::TunServer>
 impl core::fmt::Debug for akio::Engine
 pub fn akio::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio::Engine

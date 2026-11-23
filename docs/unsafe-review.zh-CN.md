@@ -2,7 +2,7 @@
 
 [English](unsafe-review.md) | 简体中文
 
-状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `akio-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）；2026-11-17 新增 `akio-buf` 的 `slab` 模块（UDP 接收 slab，ADR-024）；2026-11-23 新增 `akio-sys` 的 `iface` 模块（接口列表、按接口发送，ADR-078 更新 3），`ktls` 中读取 `getifaddrs` 的代码移入其中；2026-11-23 新增 `akio-sys` 的 `icmp_mac` 模块（macOS ICMP socket）以及 TTL / DF 的控制消息与选项（ADR-091 更新）。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
+状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `akio-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）；2026-11-17 新增 `akio-buf` 的 `slab` 模块（UDP 接收 slab，ADR-024）；2026-11-23 新增 `akio-sys` 的 `iface` 模块（接口列表、按接口发送，ADR-078 更新 3），`ktls` 中读取 `getifaddrs` 的代码移入其中；2026-11-23 新增 `akio-sys` 的 `icmp_mac` 模块（macOS ICMP socket）以及 TTL / DF 的控制消息与选项（ADR-091 更新）；2026-11-23 新增 `akio-sys` 的 `tun` 模块（TUN 设备及其接口设置，ADR-096）。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
 
 akio 是网络库：它的内存安全缺陷就是其使用者的远程代码执行漏洞。本页是 `unsafe` 代码的规范：每个 `unsafe` 位置必须满足的检查清单、新增 `unsafe` 的流程、清单统计，以及 1.0 审查的结论。
 
@@ -10,7 +10,7 @@ akio 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 
 | Crate | 状态 | 原因 |
 |---|---|---|
-| `akio-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`） |
+| `akio-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`）、TUN 设备与接口 ioctl（ADR-096） |
 | `akio-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许（以及仅测试用的 `eval` 测量工具） | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `akio-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 与 `xsk` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya）；AF_XDP socket、其 UMEM 与环（`xsk`，ADR-063） |
 | `akio-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `akio_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
@@ -18,7 +18,7 @@ akio 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `akio-crypto` | `#![deny(unsafe_code)]`，仅十二个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`（含 `chacha::hw::avx512` 与 `chacha::hw::ifma`）、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64`、`bignum::hw`、`bignum::ifma`，以及 `fill`（基于向量未初始化空闲容量的 AEAD 输出缓冲区）允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ 搭配 AVX-512 或 AVX2 的 `asm!` AES-GCM 内核，以及基于 VAES / VPCLMULQDQ + AVX-512 的 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂与 Poly1305 中使用 AVX-512 IFMA 的 `asm!` 块以及 AVX-512 上的 ChaCha20 `asm!` 块（同样在 MSRV 上不稳定），aarch64 上 P-256 与 Curve25519 域运算中使用 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链的 `asm!` 块，以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；`fill` 让 TLS 记录层（`#![forbid(unsafe_code)]`）直接在 `Vec` 的空闲容量中加密和解密，不必先清零（16 KiB AES-GCM 记录约 10%），其 `unsafe` 只用于在每个字节都写入后把缓冲区视为字节切片以及 `Vec::set_len`；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
 | `tools/ct-dudect` | `#![deny(unsafe_code)]`，仅 `timer` 模块允许 | 统计计时测试（docs/constant-time.zh-CN.md）：两处读取周期计数器的 `asm!`（x86_64 为 `lfence; rdtsc; lfence`，aarch64 为 `isb; mrs cntvct_el0`），只用寄存器、不访问内存；不发布 |
 | `tools/codec-bench` | 不发布，独立 workspace | 基准测试中对 Google C 库 libbrotli（`brotlic-sys`）的三处一次性调用，用于与 akio-brotli 对比（docs/BENCHMARKS.zh-CN.md）；libzstd 通过安全的 `zstd` crate 调用 |
-| 其它所有 crate（`akio`、`akio-core`、`akio-x509`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-turn`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-webrtc`、`akio-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
+| 其它所有 crate（`akio`、`akio-core`、`akio-x509`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-turn`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-webrtc`、`akio-media`、`akio-tun`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
 
@@ -84,11 +84,11 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
 | akio-http | 0 | 0 | 0 | 8 |
-| akio-sys | 142 | 5 | 3 | 0 |
+| akio-sys | 163 | 5 | 3 | 0 |
 | akio-uring | 43 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **432** | **87** | **11** | **40** |
+| **total** | **453** | **87** | **11** | **40** |
 
 按用途：
 
@@ -103,6 +103,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | `akio-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `akio-sys/src/ktls.rs` | 12 | 内核 TLS（akio-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`；接口地址来自 `iface` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照） |
 | `akio-sys/src/udp.rs` | 13 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO / 流量类别 / TTL cmsg（每个消息最多三个，96 字节控制缓冲区） | 每个接收 iovec 覆盖某槽位独占 slab 区间（`akio_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
+| `akio-sys/src/tun.rs` | 21（Linux 12，macOS 9） | TUN 设备（ADR-096）：`open("/dev/net/tun")` 加 `TUNSETIFF` / `TUNGETIFF`（Linux），utun 内核控制（`socket(PF_SYSTEM)`、`CTLIOCGINFO`、以 `sockaddr_ctl` `connect`、`getsockopt(UTUN_OPT_IFNAME)`、`fcntl`；macOS）；在数据报 socket 上用 ioctl 设置接口（`SIOCGIFMTU` / `SIOCSIFMTU`、`SIOCGIFFLAGS` / `SIOCSIFFLAGS`、`SIOCGIFINDEX`，IPv4 的 `SIOCSIFADDR` / `SIOCSIFNETMASK` / `SIOCDIFADDR`，Linux 上 IPv6 经 `struct in6_ifreq`；macOS 上 `SIOCAIFADDR` / `SIOCAIFADDR_IN6` / `SIOCDIFADDR(_IN6)`）；每次 `read`、每次 `write`（Linux）或每次带两个 iovec 的 `writev`（macOS，utun 的 4 字节地址族头在前）一个包 | 交给内核的每个结构都是与 C 布局大小、对齐一致的 `#[repr(C)]` 字节数组（编译期断言：`ifreq` 40 / 32 字节且 8 对齐，`in6_ifreq` 24 / 288，`ifaliasreq` 64，`in6_aliasreq` 128，`ctl_info` 100，`sockaddr_ctl` 32），在安全代码里用 `to_ne_bytes` / `to_be_bytes` 逐字段填写，调用期间被独占借用；每个 ioctl 请求只读写这一个结构；接口名检查为短于 `IFNAMSIZ` 且不含 NUL，读回时截到第一个 NUL；fd 在 `open` / `socket` 之后、任何可能失败的步骤之前即被拥有；读写缓冲区是调用方的切片及其自身长度，`writev` 的 iovec 指向存活的 4 字节头和包，返回长度被限制（`saturating_sub(4)`） |
 | `akio-sys/src/udp_mac.rs` | 5 | macOS：每次 `sendmsg` / `recvmsg` 一个数据报及其流量类别与 TTL / 跳数限制（`IP_TOS` / `IPV6_TCLASS`、`IPV6_HOPLIMIT` cmsg；读取 `IP_RECVTTL` / `IPV6_HOPLIMIT`），`IP_RECVTOS` / `IPV6_RECVTCLASS` 的 `setsockopt` | `msghdr` 只指向存活的局部变量（`sockaddr_storage`、覆盖调用方切片的一个 iovec、64 字节 8 对齐的控制缓冲区）并带其长度，或为空指针且长度为 0；控制数据按字节构造与解析，以 `msg_controllen` 为界（不做 `CMSG_*` 指针遍历） |
 | `akio-sys/src/icmp_mac.rs` | 3 | macOS：无特权的 ICMP / ICMPv6 socket（`SOCK_DGRAM` 加 `IPPROTO_ICMP` / `IPPROTO_ICMPV6` 的 `socket`，立即被拥有），用 `recvmsg` 读取（绑定的 UDP socket 的 ICMP 错误，ADR-091 更新）；消息由安全代码解析（`icmp_packet.rs`，由 `sys_icmp_error` fuzz） | fd 在 `fcntl` 调用前即被拥有；`msghdr` 只指向存活的局部变量（`sockaddr_storage`、覆盖 576 字节栈缓冲区的一个 iovec）并带其长度，没有控制数据；读到的长度被限制在缓冲区内 |
 | `akio-crypto/src/aes/hw.rs` | 26 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |

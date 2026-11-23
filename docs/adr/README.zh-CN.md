@@ -97,3 +97,4 @@
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
 - [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
 - [ADR-095：不终止 TLS 按 SNI 路由，以及 PROXY 协议（akio-mux）](095-mux-sni-routing-proxy-protocol.zh-CN.md)（2026-11-23 采纳）
+- [ADR-096：在 I/O 线程上服务 TUN 设备，独立成 crate](096-tun-devices.zh-CN.md)（2026-11-23 采纳）

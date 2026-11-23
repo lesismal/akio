@@ -58,6 +58,7 @@ dependencies = [
  "akio-log",
  "akio-sys",
  "akio-tls",
+ "akio-tun",
  "akio-uring",
  "akio-x509",
  "libc",
@@ -391,6 +392,15 @@ dependencies = [
  "akio-x509",
  "akio-zstd",
  "rustls",
+]
+
+[[package]]
+name = "akio-tun"
+version = "1.0.0-rc.1"
+dependencies = [
+ "akio",
+ "akio-core",
+ "akio-sys",
 ]
 
 [[package]]

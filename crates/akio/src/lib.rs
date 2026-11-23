@@ -32,6 +32,8 @@ use std::{
 
 pub mod dns;
 pub mod numa;
+#[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
+mod tun_engine;
 
 /// TLS: wrap an acceptor in [`tls::Tls`] to serve or dial over TLS (configs: [`tls::ServerConfig`],
 /// [`tls::ClientConfig`]).
@@ -56,6 +58,11 @@ pub use akio_dpdk as dpdk;
 use akio_core::{
     AcceptFilter, DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr,
 };
+/// TUN devices (cargo feature `tun`, Linux and macOS): layer-3 virtual interfaces served on I/O
+/// threads, one IP packet per `on_data` and per `send`; see [`Engine::serve_tun`].
+#[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
+pub use akio_tun as tun;
+
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
     DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,

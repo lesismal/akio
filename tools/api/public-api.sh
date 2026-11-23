@@ -25,7 +25,7 @@ fi
 all=(akio-sys akio-regex akio-log akio-crypto akio-x509 akio-dtls akio-srtp akio-rtp akio-sctp akio-ice akio-buf akio-deflate akio-brotli akio-zstd akio-timer akio-pool akio-core akio-epoll akio-uring akio-tls
     akio-http akio-ws akio-mux akio-socks akio-arpc akio-grpc akio-protobuf akio-protobuf-build
     akio-kcp akio-quic akio-h3
-    akio-ebpf akio-prefork akio-dpdk akio-turn akio-webrtc akio-media akio-bittorrent akio-export akio)
+    akio-ebpf akio-prefork akio-dpdk akio-tun akio-turn akio-webrtc akio-media akio-bittorrent akio-export akio)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else
@@ -37,6 +37,7 @@ fi
 features_for() {
     case "$1" in
     akio-media) echo "--features webrtc" ;;
+    akio) echo "--features tun" ;;
     *) echo "" ;;
     esac
 }

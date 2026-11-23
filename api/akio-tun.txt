@@ -1,0 +1,94 @@
+pub mod akio_tun
+pub struct akio_tun::TunConfig
+impl akio_tun::TunConfig
+pub fn akio_tun::TunConfig::address(self, core::net::ip_addr::IpAddr, u8) -> Self
+pub fn akio_tun::TunConfig::mtu(self, u32) -> Self
+pub fn akio_tun::TunConfig::name(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn akio_tun::TunConfig::new() -> akio_tun::TunConfig
+pub fn akio_tun::TunConfig::queues(self, usize) -> Self
+pub fn akio_tun::TunConfig::up(self, bool) -> Self
+impl core::clone::Clone for akio_tun::TunConfig
+pub fn akio_tun::TunConfig::clone(&self) -> Self
+impl core::default::Default for akio_tun::TunConfig
+pub fn akio_tun::TunConfig::default() -> Self
+impl core::fmt::Debug for akio_tun::TunConfig
+pub fn akio_tun::TunConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_tun::TunConfig
+impl core::marker::Sync for akio_tun::TunConfig
+impl core::marker::Unpin for akio_tun::TunConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_tun::TunConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_tun::TunConfig
+pub struct akio_tun::TunControl
+impl akio_tun::TunControl
+pub fn akio_tun::TunControl::add_address(&self, core::net::ip_addr::IpAddr, u8) -> core::io::error::Result<()>
+pub fn akio_tun::TunControl::index(&self) -> core::io::error::Result<u32>
+pub fn akio_tun::TunControl::is_up(&self) -> core::io::error::Result<bool>
+pub fn akio_tun::TunControl::mtu(&self) -> core::io::error::Result<u32>
+pub fn akio_tun::TunControl::name(&self) -> &str
+pub fn akio_tun::TunControl::remove_address(&self, core::net::ip_addr::IpAddr, u8) -> core::io::error::Result<()>
+pub fn akio_tun::TunControl::set_mtu(&self, u32) -> core::io::error::Result<()>
+pub fn akio_tun::TunControl::set_up(&self, bool) -> core::io::error::Result<()>
+impl core::clone::Clone for akio_tun::TunControl
+pub fn akio_tun::TunControl::clone(&self) -> Self
+impl core::cmp::Eq for akio_tun::TunControl
+impl core::cmp::PartialEq for akio_tun::TunControl
+pub fn akio_tun::TunControl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_tun::TunControl
+pub fn akio_tun::TunControl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_tun::TunControl
+impl core::marker::Send for akio_tun::TunControl
+impl core::marker::Sync for akio_tun::TunControl
+impl core::marker::Unpin for akio_tun::TunControl
+impl core::panic::unwind_safe::RefUnwindSafe for akio_tun::TunControl
+impl core::panic::unwind_safe::UnwindSafe for akio_tun::TunControl
+pub struct akio_tun::TunDevice
+impl akio_tun::TunDevice
+pub fn akio_tun::TunDevice::control(&self) -> akio_tun::TunControl
+pub fn akio_tun::TunDevice::create(&akio_tun::TunConfig) -> core::io::error::Result<akio_tun::TunDevice>
+pub fn akio_tun::TunDevice::name(&self) -> &str
+pub fn akio_tun::TunDevice::queues(&self) -> usize
+impl core::fmt::Debug for akio_tun::TunDevice
+pub fn akio_tun::TunDevice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_tun::TunDevice
+impl core::marker::Sync for akio_tun::TunDevice
+impl core::marker::Unpin for akio_tun::TunDevice
+impl core::panic::unwind_safe::RefUnwindSafe for akio_tun::TunDevice
+impl core::panic::unwind_safe::UnwindSafe for akio_tun::TunDevice
+pub struct akio_tun::TunServer
+impl akio_tun::TunServer
+pub fn akio_tun::TunServer::control(&self) -> akio_tun::TunControl
+pub fn akio_tun::TunServer::is_closed(&self) -> bool
+pub fn akio_tun::TunServer::join(&self)
+pub fn akio_tun::TunServer::name(&self) -> &str
+pub fn akio_tun::TunServer::queues(&self) -> usize
+pub fn akio_tun::TunServer::shutdown(&self)
+pub fn akio_tun::TunServer::start<A: akio_core::handler::Acceptor>(akio_tun::TunDevice, A, akio_core::config::Config) -> core::io::error::Result<akio_tun::TunServer>
+pub fn akio_tun::TunServer::writer(&self) -> akio_tun::TunWriter
+impl core::fmt::Debug for akio_tun::TunServer
+pub fn akio_tun::TunServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_tun::TunServer
+pub fn akio_tun::TunServer::drop(&mut self)
+impl core::marker::Send for akio_tun::TunServer
+impl core::marker::Sync for akio_tun::TunServer
+impl core::marker::Unpin for akio_tun::TunServer
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_tun::TunServer
+impl !core::panic::unwind_safe::UnwindSafe for akio_tun::TunServer
+pub struct akio_tun::TunWriter
+impl akio_tun::TunWriter
+pub fn akio_tun::TunWriter::is_open(&self, usize) -> bool
+pub fn akio_tun::TunWriter::on_drain(&self, usize, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
+pub fn akio_tun::TunWriter::queue_of(&self, &[u8]) -> usize
+pub fn akio_tun::TunWriter::queued_bytes(&self, usize) -> usize
+pub fn akio_tun::TunWriter::queues(&self) -> usize
+pub fn akio_tun::TunWriter::send(&self, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_tun::TunWriter::send_on(&self, usize, &[u8]) -> akio_core::error::Result<()>
+pub fn akio_tun::TunWriter::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::error::Result<()>
+impl core::clone::Clone for akio_tun::TunWriter
+pub fn akio_tun::TunWriter::clone(&self) -> Self
+impl core::fmt::Debug for akio_tun::TunWriter
+pub fn akio_tun::TunWriter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_tun::TunWriter
+impl core::marker::Sync for akio_tun::TunWriter
+impl core::marker::Unpin for akio_tun::TunWriter
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_tun::TunWriter
+impl !core::panic::unwind_safe::UnwindSafe for akio_tun::TunWriter

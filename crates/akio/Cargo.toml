@@ -19,6 +19,7 @@ akio-epoll = { workspace = true }
 akio-ebpf = { workspace = true }
 akio-tls = { workspace = true }
 akio-dpdk = { workspace = true, optional = true }
+akio-tun = { workspace = true, optional = true }
 akio-log = { workspace = true }
 # Socket setup the engine does itself (`bind_udp_multicast`, `dial_from`).
 akio-sys = { workspace = true }
@@ -32,6 +33,8 @@ akio-uring = { workspace = true }
 dpdk = ["dep:akio-dpdk"]
 # Also DPDK ports (`akio::dpdk::Device::Dpdk`): links libdpdk, found with pkg-config (Linux).
 dpdk-pmd = ["dpdk", "akio-dpdk/pmd"]
+# TUN devices (`akio::tun`, `Engine::serve_tun`, ADR-096): Linux `/dev/net/tun`, macOS utun.
+tun = ["dep:akio-tun"]
 # Raw access to wrapped dependencies (`akio::tls::rustls`, `from_rustls` ...): outside the
 # semver promise (docs/api-stability.md).
 unstable = ["akio-tls/unstable"]
