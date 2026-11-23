@@ -27,7 +27,9 @@ handler, write) runs on whichever worker is idle.
 1. **A listener chooses its scheduling**: `akio::Scheduling::Loops` (the default, ADR-001
    unchanged) or `Scheduling::Rounds(RoundsConfig)`. `Listener::scheduling` sets it; the
    environment variable `AKIO_DEFAULT_SCHEDULING=rounds` sets it for listeners that did not (a
-   test knob, like `AKIO_DEFAULT_BACKEND`, ADR-029).
+   test knob, like `AKIO_DEFAULT_BACKEND`, ADR-029), except where the listener asked for
+   something only per-thread loops do: io_uring (its own choice or `AKIO_DEFAULT_BACKEND`'s) or
+   BPF steering (`Accel::Ebpf`).
 2. **Rounds mode** (`akio-epoll`, epoll on Linux and kqueue on macOS):
    - **Pollers** (`RoundsConfig::pollers`, 0 = auto: one with 4 CPUs or fewer, otherwise one per
      4 CPUs and at least 2) wait for readiness, accept, and handle the control path (dials,

@@ -437,10 +437,16 @@ impl EngineBuilder {
         let env_scheduling = env_default_scheduling(); // likewise (ADR-102)
         for mut l in self.listeners {
             let explicit_scheduling = l.scheduling.is_some();
+            // The environment's default never overrides what the listener asked for explicitly
+            // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
+            // per-thread loops.
+            let env_applies = matches!(l.backend, Backend::Epoll)
+                && (l.backend_explicit || env_backend.is_none())
+                && matches!(l.accel, Accel::None);
             let scheduling = l
                 .scheduling
                 .take()
-                .or_else(|| env_scheduling.clone())
+                .or_else(|| env_scheduling.clone().filter(|_| env_applies))
                 .unwrap_or_default();
             if let Some(b) = &env_backend {
                 // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners

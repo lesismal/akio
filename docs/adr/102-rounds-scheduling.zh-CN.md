@@ -24,7 +24,9 @@ ADR-100 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
 1. **由 listener 选择调度方式**：`akio::Scheduling::Loops`（默认，ADR-001 不变）或
    `Scheduling::Rounds(RoundsConfig)`，用 `Listener::scheduling` 设置。环境变量
    `AKIO_DEFAULT_SCHEDULING=rounds` 为没有显式设置的 listener 选择轮次模式（测试开关，与
-   ADR-029 的 `AKIO_DEFAULT_BACKEND` 相同）。
+   ADR-029 的 `AKIO_DEFAULT_BACKEND` 相同）。但如果 listener 要求了只有每线程事件循环才支持的东西，
+   环境变量不生效：io_uring（listener 自己选的或 `AKIO_DEFAULT_BACKEND` 指定的）和 BPF 调度
+   （`Accel::Ebpf`）。
 2. **轮次模式**（`akio-epoll`，Linux 上 epoll，macOS 上 kqueue）：
    - **Poller**（`RoundsConfig::pollers`，0 = 自动：4 个 CPU 及以下 1 个，否则每 4 个 CPU 一个、
      至少 2 个）等待就绪事件、accept，并处理控制路径（dial、定时器、遥测、关闭）。它们从不读写，

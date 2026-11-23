@@ -373,6 +373,9 @@ fn reload_swaps_workers(mode: ListenMode) -> Failures {
 /// In-place reloads change each worker's I/O thread count (grow and shrink) under traffic: no
 /// process is replaced and no request fails.
 fn reload_in_place_resizes_workers(mode: ListenMode) {
+    if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds") {
+        return; // rounds scheduling refuses set_threads (ADR-102)
+    }
     let file = std::env::temp_dir().join(format!(
         "akio-prefork-threads-{}-{mode:?}",
         std::process::id()
