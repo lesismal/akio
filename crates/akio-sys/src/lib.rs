@@ -19,9 +19,9 @@
 #[doc(hidden)]
 pub mod ffi;
 mod fswatch;
-mod iface;
 #[cfg(target_os = "linux")]
 mod icmp;
+mod iface;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod ktls;
@@ -37,9 +37,9 @@ mod udp_mac;
 mod waker;
 
 pub use fswatch::{FsEvent, FsWatcher, WatchId};
-pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on};
 #[cfg(target_os = "linux")]
 pub use icmp::{IcmpReport, enable_recverr, is_icmp_error, recv_icmp};
+pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use net::listen_backlog;
