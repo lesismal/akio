@@ -141,7 +141,6 @@ impl Default for H3Config {
             max_field_section_bytes: 64 << 10,
             qpack_max_table_capacity: 4096,
             qpack_blocked_streams: 16,
-            qpack_encoder_capacity: 0,
             run_on_pool: false,
             qpack_encoder_capacity: 4096,
         }
