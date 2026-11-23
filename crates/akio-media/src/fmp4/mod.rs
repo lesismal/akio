@@ -27,6 +27,7 @@ mod mux;
 
 use std::fmt;
 
+pub(crate) use demux::sample_entry;
 pub use demux::{Demuxer, Event};
 pub use mux::{Muxer, write_styp};
 

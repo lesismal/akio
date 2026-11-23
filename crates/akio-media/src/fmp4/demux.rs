@@ -365,7 +365,7 @@ fn child<'a>(body: &'a [u8], typ: &[u8; 4]) -> Result<Option<&'a [u8]>, Fmp4Erro
 }
 
 /// The track an `stsd` describes (its first entry).
-fn sample_entry(stsd: &[u8]) -> Result<Track, Fmp4Error> {
+pub(crate) fn sample_entry(stsd: &[u8]) -> Result<Track, Fmp4Error> {
     let mut r = Reader::new(stsd);
     r.skip(4)?;
     if r.u32()? == 0 {

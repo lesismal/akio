@@ -255,6 +255,44 @@ rec.start("live/cam")?; // 最多等待 `cfg.wait`（10 秒）推流者出现，
 `on_publish` 钩子中调用 `start`。MPEG-TS 文件在每个视频关键帧前（以及至少每秒）重复 PAT 与 PMT，因此被截断
 的文件也能从任一关键帧播放。
 
+## 点播：MP4 文件
+
+`akio_media::mp4` 读取非分片的 MP4 文件（ffmpeg、编码器与摄像机写出的那种），并在视频关键帧处把它们切成
+HLS 分段，不做转码。它本身不做 I/O：服务器在逻辑线程池或自己的线程上读取它指出的字节范围，绝不在 I/O 线程上读取
+（[ADR-097](https://github.com/lesismal/akio/blob/main/docs/adr/097-mp4-file-reader-segment-planner.zh-CN.md)）。
+
+```rust,ignore
+use akio_media::{av::SECOND, fmp4, mp4::{Limits, Locator, Movie, Plan}};
+
+// 通过几次 16 字节的头读取找到 moov（在文件开头或末尾），然后读入它。
+let limits = Limits::default();
+let mut loc = Locator::new(file_size, &limits);
+let at = loop {
+    let (off, len) = loc.next_read();
+    if let Some(at) = loc.feed(&read_at(off, len))? { break at; }
+};
+let movie = Movie::parse(&read_at(at.offset, at.size as usize), &at, &limits)?;
+let plan = Plan::new(&movie, 6 * SECOND)?;
+let playlist = plan.vod_playlist(Some("init.mp4"), |i| format!("{i}.m4s"));
+let mut mux = fmp4::Muxer::new(&movie.av_tracks()); // mux.init_segment() 即 init.mp4
+
+// 播放器请求第 i 个分段时：读取它的范围，然后复用。
+let seg = plan.segment(&movie, i);
+let reads: Vec<_> = seg.byte_ranges(&movie, 64 * 1024).into_iter()
+    .map(|r| (r.start, read_at(r.start, (r.end - r.start) as usize))).collect();
+let parts: Vec<(u64, &[u8])> = reads.iter().map(|(o, b)| (*o, &b[..])).collect();
+let mut out = Vec::new();
+seg.write_fmp4(&movie, &parts, &mut mux, &mut out)?; // MPEG-TS 用 seg.write_ts(..)
+```
+
+- 编解码器：H.264（`avc1` / `avc3`）、H.265（`hvc1` / `hev1`）、AV1、VP8 / VP9、AAC 与 Opus；其他轨道（AC-3、
+  字幕）带着格式码被索引，但不进入分段。
+- 采样索引紧凑（一小时 60 fps 含 B 帧加 AAC：1.6 MB）且不可变，一个解析好的 `Movie` 可服务所有播放器。
+  `Segment::packets` 则给出规范包，用于把文件播放进 hub。
+- 编辑列表按播放器的方式应用（B 帧延迟、AAC 预填充、延后开始）；所有时间都推后 `Plan::delay()`，使解码时间不为负。
+- `Limits` 限制 `moov`（64 MiB）、box、轨道、每轨采样、编辑与分段的数量。每张表都与其 box 及其他表核对，每个采样
+  都与文件大小核对。
+
 ## MPEG-TS 中的 AV1
 
 MPEG-TS 封装器与解封装器按开放媒体联盟的规范（"Carriage of AV1 in MPEG-2 TS"）承载 AV1：流类型 0x06，

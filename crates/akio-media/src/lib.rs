@@ -14,6 +14,8 @@
 //!   `webrtc::RtcMedia` (WHIP/WHEP media over `akio-webrtc`). HLS segments can be encrypted
 //!   (AES-128, [`hls::KeyProvider`]).
 //! * [`record`]: hub streams recorded to fMP4 or FLV files, off the I/O threads.
+//! * [`mp4`]: MP4 files (not fragmented) read without I/O of its own, and cut into HLS
+//!   segments at keyframes without transcoding (video on demand).
 //! * Formats and codecs: [`flv`], [`mpegts`], [`fmp4`], [`rtp`], [`sdp`], [`amf`], [`codec`].
 //!
 //! Guide: [Streaming media](https://lesismal.github.io/akio/en/protocols/media.html),
@@ -37,6 +39,7 @@ pub mod hls;
 pub mod http;
 pub mod httpflv;
 pub mod hub;
+pub mod mp4;
 pub mod mpegts;
 pub mod reconnect;
 pub mod record;

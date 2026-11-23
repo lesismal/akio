@@ -3,6 +3,7 @@
 
 pub mod fmp4;
 pub mod hls;
+pub mod mp4;
 pub mod rtmp;
 pub mod rtsp;
 pub mod srt;
