@@ -220,7 +220,13 @@ Behaviour changes without an API change:
 - **Fuzzing.** The `rtp_rtcp` target drives a `VideoPlayout` with arbitrary steps, flags and
   sizes, checking order, bounds and never playing before completion or past the bound. It also
   rates with fuzzed classes, room noise, monotic tables and Opus bands.
-- **Costs**: see BENCHMARKS, "Video playout buffer (ADR-092, same-run A/B)".
+- **Costs** (BENCHMARKS, "Video playout buffer (ADR-092, same-run A/B)", gpu51):
+  - Off: no measurable change. Video CPU per frame is 8.94 against 8.92 µs, VP8 `media` 1.000.
+  - On: 1.14 µs more CPU per frame (+13 %), mostly the timer wake-up for each frame handed out
+    at its playout instant. The buffer alone takes 44 ns per frame. One 30 frames/s stream costs
+    about 34 µs of CPU per second.
+  - The shared estimator costs the audio buffer 1.5 ns per frame in isolation; end to end
+    (`audio-jb`) the ratio is 1.000.
 - **Not done**:
   - Giving up a missing video packet at its frame's playout deadline. The assembler still
     gives up by packet count.

@@ -48,7 +48,9 @@ ADR-092 (docs/adr/092-video-playout-emodel-classes.md) closes ADR-087's leftover
   - A packet reported lost and discarded late in a later interval counts as discarded.
 - The audio `JitterBuffer` shares its delay estimator with `VideoPlayout` (same behaviour).
 - `webrtc-bench video` / `video-jb` and `jitter-bench video`.
-- BENCH_EN
+- Same-run A/B on gpu51 (BENCHMARKS, "Video playout buffer"): with the buffer off, no
+  measurable change (video CPU per frame 8.94 against 8.92 µs, VP8 `media` 1.000). On, it costs
+  1.14 µs of CPU per frame, mostly the timer wake-up; the buffer alone takes 44 ns per frame.
 
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 

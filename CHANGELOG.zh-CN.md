@@ -44,7 +44,9 @@ ADR-092（docs/adr/092-video-playout-emodel-classes.zh-CN.md）完成 ADR-087 �
   - 被报为丢失、在后续区间迟到丢弃的包计为丢弃。
 - 音频 `JitterBuffer` 与 `VideoPlayout` 共用时延估计器（行为不变）。
 - `webrtc-bench video` / `video-jb` 与 `jitter-bench video`。
-- BENCH_ZH
+- gpu51 上同轮 A/B（BENCHMARKS，"视频播放缓冲"）：缓冲关闭时没有可测出的变化（视频每帧 CPU
+  8.94 对 8.92 µs，VP8 `media` 1.000）；打开时每帧多 1.14 µs CPU，主要是定时器唤醒；缓冲本身每帧
+  44 ns。
 
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
