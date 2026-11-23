@@ -464,6 +464,34 @@ impl core::marker::Sync for akio_x509::CertificateParams
 impl core::marker::Unpin for akio_x509::CertificateParams
 impl core::panic::unwind_safe::RefUnwindSafe for akio_x509::CertificateParams
 impl core::panic::unwind_safe::UnwindSafe for akio_x509::CertificateParams
+pub struct akio_x509::CertificateRequest
+impl akio_x509::CertificateRequest
+pub fn akio_x509::CertificateRequest::as_der(&self) -> &[u8]
+pub fn akio_x509::CertificateRequest::attributes(&self) -> &[(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)]
+pub fn akio_x509::CertificateRequest::extensions(&self) -> &[akio_x509::Extension]
+pub fn akio_x509::CertificateRequest::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<akio_x509::CertificateRequest, akio_x509::Error>
+pub fn akio_x509::CertificateRequest::from_pem(&[u8]) -> core::result::Result<akio_x509::CertificateRequest, akio_x509::Error>
+pub fn akio_x509::CertificateRequest::info_der(&self) -> &[u8]
+pub fn akio_x509::CertificateRequest::public_key(&self) -> core::result::Result<akio_crypto::pkey::PublicKey, akio_x509::Error>
+pub fn akio_x509::CertificateRequest::signature(&self) -> &[u8]
+pub fn akio_x509::CertificateRequest::signature_algorithm(&self) -> core::result::Result<akio_crypto::pkey::SignatureAlgorithm, akio_x509::Error>
+pub fn akio_x509::CertificateRequest::spki_der(&self) -> &[u8]
+pub fn akio_x509::CertificateRequest::subject(&self) -> &akio_x509::Name
+pub fn akio_x509::CertificateRequest::subject_alt_names(&self) -> &[akio_x509::GeneralName]
+pub fn akio_x509::CertificateRequest::to_pem(&self) -> alloc::string::String
+pub fn akio_x509::CertificateRequest::verify_signature(&self) -> core::result::Result<(), akio_x509::Error>
+impl core::clone::Clone for akio_x509::CertificateRequest
+pub fn akio_x509::CertificateRequest::clone(&self) -> Self
+impl core::cmp::Eq for akio_x509::CertificateRequest
+impl core::cmp::PartialEq for akio_x509::CertificateRequest
+pub fn akio_x509::CertificateRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_x509::CertificateRequest
+pub fn akio_x509::CertificateRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_x509::CertificateRequest
+impl core::marker::Sync for akio_x509::CertificateRequest
+impl core::marker::Unpin for akio_x509::CertificateRequest
+impl core::panic::unwind_safe::RefUnwindSafe for akio_x509::CertificateRequest
+impl core::panic::unwind_safe::UnwindSafe for akio_x509::CertificateRequest
 pub struct akio_x509::Crl
 impl akio_x509::Crl
 pub fn akio_x509::Crl::as_der(&self) -> &[u8]
@@ -544,6 +572,23 @@ impl core::marker::Sync for akio_x509::CrlSet
 impl core::marker::Unpin for akio_x509::CrlSet
 impl core::panic::unwind_safe::RefUnwindSafe for akio_x509::CrlSet
 impl core::panic::unwind_safe::UnwindSafe for akio_x509::CrlSet
+pub struct akio_x509::CsrParams
+pub akio_x509::CsrParams::custom_extensions: alloc::vec::Vec<akio_x509::Extension>
+pub akio_x509::CsrParams::extended_key_usage: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub akio_x509::CsrParams::subject: akio_x509::Name
+pub akio_x509::CsrParams::subject_alt_names: alloc::vec::Vec<akio_x509::GeneralName>
+impl akio_x509::CsrParams
+pub fn akio_x509::CsrParams::new<S: core::convert::AsRef<str>>(impl core::iter::traits::collect::IntoIterator<Item = S>) -> akio_x509::CsrParams
+pub fn akio_x509::CsrParams::sign(&self, &akio_crypto::pkey::PrivateKey) -> core::result::Result<akio_x509::CertificateRequest, akio_x509::Error>
+impl core::clone::Clone for akio_x509::CsrParams
+pub fn akio_x509::CsrParams::clone(&self) -> Self
+impl core::fmt::Debug for akio_x509::CsrParams
+pub fn akio_x509::CsrParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_x509::CsrParams
+impl core::marker::Sync for akio_x509::CsrParams
+impl core::marker::Unpin for akio_x509::CsrParams
+impl core::panic::unwind_safe::RefUnwindSafe for akio_x509::CsrParams
+impl core::panic::unwind_safe::UnwindSafe for akio_x509::CsrParams
 pub struct akio_x509::DistributionPoint
 pub akio_x509::DistributionPoint::crl_issuer: alloc::vec::Vec<akio_x509::GeneralName>
 pub akio_x509::DistributionPoint::full_name: alloc::vec::Vec<akio_x509::GeneralName>
@@ -925,7 +970,9 @@ impl<'a> core::marker::Unpin for akio_x509::Verifier<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_x509::Verifier<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for akio_x509::Verifier<'a>
 pub const akio_x509::DEFAULT_CLOCK_SKEW: u32
+pub const akio_x509::MAX_ATTRIBUTES: usize
 pub const akio_x509::MAX_INTERMEDIATES: usize
+pub const akio_x509::MAX_REQUEST_LEN: usize
 pub const akio_x509::MAX_SIGNATURE_CHECKS: usize
 pub fn akio_x509::dns_name_matches(&str, &str) -> bool
 pub fn akio_x509::generate_simple_self_signed<S: core::convert::AsRef<str>>(impl core::iter::traits::collect::IntoIterator<Item = S>) -> core::result::Result<(akio_x509::Certificate, akio_crypto::pkey::PrivateKey), akio_x509::Error>

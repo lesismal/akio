@@ -10,6 +10,13 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：证书签名请求（akio-x509）
+
+ADR-093，纯新增：`CsrParams` 为密钥生成 PKCS#10 请求（RFC 2986），subjectAltName、extKeyUsage 和其他扩展放在
+`extensionRequest` 中，即 ACME 客户端完成订单时发送的请求（RFC 8555）；`CertificateRequest` 从 DER 或 PEM 严格
+解析请求并检查签名（`verify_signature`），受 `MAX_REQUEST_LEN` 和 `MAX_ATTRIBUTES` 限制。模糊测试目标
+`x509_csr`；与 rcgen 和 OpenSSL 互通。
+
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
 ADR-078 的第四次更新（2026-11-23），均为新增：

@@ -10,6 +10,14 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: certificate signing requests (akio-x509)
+
+ADR-093, additive: `CsrParams` makes a PKCS#10 request (RFC 2986) for a key, with
+subjectAltNames, extKeyUsage and further extensions in an `extensionRequest`, as an ACME client
+sends to finalize an order (RFC 8555); `CertificateRequest` parses one strictly from DER or PEM and
+checks its signature (`verify_signature`), within `MAX_REQUEST_LEN` and `MAX_ATTRIBUTES`. Fuzz
+target `x509_csr`; interop with rcgen and OpenSSL.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

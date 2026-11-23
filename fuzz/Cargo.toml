@@ -574,6 +574,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "x509_csr"
+path = "fuzz_targets/x509_csr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "x509_ocsp"
 path = "fuzz_targets/x509_ocsp.rs"
 test = false
