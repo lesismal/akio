@@ -28,6 +28,7 @@ use crate::tables::{
 };
 use crate::{Level, SharedDictionary};
 
+mod bucket;
 mod sdict;
 mod split;
 
@@ -309,12 +310,13 @@ pub(crate) struct Encoder<'a> {
     wmask: usize,
     /// Instead of chains (levels with up to 32 candidates and no optimal parsing): per hash,
     /// a bucket of the last `1 << block_bits` positions (`buckets`) and how many were entered
-    /// (`num`); the same candidates in the same order, in one or two cache lines.
+    /// (`num`, kept modulo twice the bucket size: it says which entries are filled and which
+    /// is the oldest); the same candidates in the same order, in one or two cache lines.
     block_bits: u32,
     /// Hash the next five bytes instead of four (levels with 16 or more candidates: fewer of
     /// them that cannot match, as in Google's `H6`).
     hash5: bool,
-    num: Vec<u32>,
+    num: Vec<u8>,
     buckets: Vec<u32>,
     /// Next position to enter into the hash chains.
     ins: usize,
@@ -376,7 +378,7 @@ impl State {
     /// Bytes allocated for the match tables.
     #[cfg(test)]
     pub(crate) fn table_bytes(&self) -> usize {
-        4 * (self.head.len() + self.prev.len() + self.num.len() + self.buckets.len())
+        4 * (self.head.len() + self.prev.len() + self.buckets.len()) + self.num.len()
     }
 }
 
@@ -389,7 +391,7 @@ pub(crate) struct State {
     wmask: usize,
     block_bits: u32,
     hash5: bool,
-    num: Vec<u32>,
+    num: Vec<u8>,
     buckets: Vec<u32>,
     ins: usize,
     last: [u32; 4],
@@ -444,6 +446,20 @@ fn match_len(d: &[u8], a: usize, b: usize, max: usize) -> usize {
         n += 1;
     }
     n
+}
+
+/// The next value of a bucket's counter of entered positions, for buckets of `size` entries
+/// (a power of two up to 32): counted up to `2 * size`, then from `size` again, which keeps
+/// both what is needed from it, how many entries are filled (`k.min(size)`) and the next
+/// slot (`k % size`).
+#[inline(always)]
+fn bump(k: u8, size: usize) -> u8 {
+    let n = k + 1;
+    if usize::from(n) == 2 * size {
+        size as u8
+    } else {
+        n
+    }
 }
 
 fn log2_floor(x: usize) -> i64 {
@@ -672,34 +688,19 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    /// The chains' hash of the four bytes at `i` (buckets: `bucket::Buckets::key`).
     #[inline(always)]
     fn hash(&self, i: usize) -> usize {
-        if self.hash5 {
-            let v = load8(self.data, i) << 24;
-            return (v.wrapping_mul(0x1E35_A7BD_1E35_A7BD) >> (64 - self.p.hash_bits)) as usize;
-        }
         (load4(self.data, i).wrapping_mul(0x1E35_A7BD) >> (32 - self.p.hash_bits)) as usize
     }
 
     /// Enters positions up to `upto` (exclusive) into the hash chains.
     pub(crate) fn insert_until(&mut self, upto: usize) {
-        let lim = upto.min(self.data.len().saturating_sub(3));
         if !self.num.is_empty() {
-            let mask = (1u32 << self.block_bits) - 1;
-            while self.ins < lim {
-                let i = self.ins;
-                let h = self.hash(i);
-                let k = self.num[h];
-                self.num[h] = k.wrapping_add(1);
-                if let Some(b) = self
-                    .buckets
-                    .get_mut((h << self.block_bits) | (k & mask) as usize)
-                {
-                    *b = i as u32;
-                }
-                self.ins += 1;
-            }
+            self.insert_buckets(upto);
+            return;
         }
+        let lim = upto.min(self.data.len().saturating_sub(3));
         while self.ins < lim {
             let i = self.ins;
             let h = self.hash(i);
@@ -748,59 +749,6 @@ impl<'a> Encoder<'a> {
         if max_len < 4 {
             return best;
         }
-        if !self.num.is_empty() {
-            // The bucket, most recent first.
-            let h = self.hash(i);
-            let k = self.num[h];
-            let size = 1u32 << self.block_bits;
-            let bucket = self
-                .buckets
-                .get(h << self.block_bits..(h + 1) << self.block_bits)
-                .unwrap_or(&[]);
-            for j in 1..=k.min(size) {
-                let c = bucket
-                    .get((k.wrapping_sub(j) & (size - 1)) as usize)
-                    .copied()
-                    .unwrap_or(0) as usize;
-                // Entries are positions before `i`: `c >= i` wraps around and stops too.
-                let mut max_len = max_len;
-                if i.wrapping_sub(c).wrapping_sub(1) >= max_dist {
-                    // Beyond the window: the dictionary, if any (the oldest entries).
-                    let room = if c < i { self.dict_room(i, c) } else { 0 };
-                    if room < 4 {
-                        if room == 0 {
-                            break;
-                        }
-                        continue;
-                    }
-                    max_len = max_len.min(room);
-                }
-                if best_len >= max_len {
-                    if max_len < end - i {
-                        continue;
-                    }
-                    break;
-                }
-                // `c + best_len < i + best_len < end`.
-                if d[c + best_len] != d[i + best_len] {
-                    continue;
-                }
-                let len = match_len(d, c, i, max_len);
-                if len >= 4 {
-                    let dist = i - c;
-                    let score = 135 * len as i64 + 1920 - 30 * log2_floor(dist);
-                    if score > best_score {
-                        best_score = score;
-                        best_len = len;
-                        best = Some(Found { len, dist, score });
-                        if len >= self.p.nice {
-                            break;
-                        }
-                    }
-                }
-            }
-            return best;
-        }
         let mut cand = self.head[self.hash(i)];
         let mut n = self.p.depth;
         while cand != NIL && n > 0 {
@@ -843,6 +791,10 @@ impl<'a> Encoder<'a> {
 
     /// Greedy or lazy parse of `start..end` into `cmds`; updates the ring.
     fn parse_lazy(&mut self, start: usize, end: usize, cmds: &mut Vec<Command>) {
+        if !self.num.is_empty() {
+            self.parse_buckets(start, end, cmds);
+            return;
+        }
         let mut i = start;
         let mut lit_start = start;
         let mut ring = self.last;
@@ -1882,30 +1834,51 @@ struct Coded {
     dist_n: u8,
 }
 
+/// The insert length code of `n` (Google's `GetInsertLengthCode`).
+#[inline(always)]
 fn ins_code(n: usize) -> usize {
-    INS_BASE.partition_point(|&b| b as usize <= n) - 1
+    if n < 6 {
+        n
+    } else if n < 130 {
+        let nbits = log2_floor(n - 2) as usize - 1;
+        (nbits << 1) + ((n - 2) >> nbits) + 2
+    } else if n < 2114 {
+        log2_floor(n - 66) as usize + 10
+    } else if n < 6210 {
+        21
+    } else if n < 22594 {
+        22
+    } else {
+        23
+    }
 }
 
+/// The copy length code of `n` (Google's `GetCopyLengthCode`; 0 below 2).
+#[inline(always)]
 fn copy_code(n: usize) -> usize {
-    COPY_BASE.partition_point(|&b| b as usize <= n).max(1) - 1
+    if n < 10 {
+        n.saturating_sub(2)
+    } else if n < 134 {
+        let nbits = log2_floor(n - 6) as usize - 1;
+        (nbits << 1) + ((n - 6) >> nbits) + 4
+    } else if n < 2118 {
+        log2_floor(n - 70) as usize + 12
+    } else {
+        23
+    }
 }
+
+/// The block of 64 insert-and-copy symbols of insert code `ic >> 3` and copy code `cc >> 3`
+/// with an explicit distance, at `(cc >> 3) + 3 * (ic >> 3)` (section 5).
+const CMD_BLOCK: [u8; 9] = [2, 3, 6, 4, 5, 8, 7, 9, 10];
 
 /// The insert-and-copy symbol of insert code `ic` and copy code `cc` (section 5).
+#[inline(always)]
 fn command_symbol(ic: usize, cc: usize, implicit: bool) -> usize {
     let block = if implicit {
         cc >> 3
     } else {
-        match (ic >> 3, cc >> 3) {
-            (0, 0) => 2,
-            (0, 1) => 3,
-            (1, 0) => 4,
-            (1, 1) => 5,
-            (0, _) => 6,
-            (2, 0) => 7,
-            (1, _) => 8,
-            (_, 1) => 9,
-            _ => 10,
-        }
+        usize::from(CMD_BLOCK[((cc >> 3) + 3 * (ic >> 3)).min(8)])
     };
     block * 64 + (ic & 7) * 8 + (cc & 7)
 }
@@ -1919,6 +1892,36 @@ fn explicit_distance(d: usize) -> (u16, u32, u8) {
     (sym as u16, (v & ((1 << nb) - 1)) as u32, nb as u8)
 }
 
+/// The short distance code of `d` (0..16) under ring `r`, if any: the first of the ring's
+/// four distances, the last one plus or minus 1, 2, 3, then the second to last one's.
+#[inline(always)]
+fn short_code(d: u32, r: &[u32; 4]) -> Option<u16> {
+    // Codes of `d - r + 3` for 0..=6 (3: `d` is that distance, coded before).
+    const NEAR: [u16; 7] = [8, 6, 4, 0, 5, 7, 9];
+    if d == r[0] {
+        return Some(0);
+    }
+    if d == r[1] {
+        return Some(1);
+    }
+    if d == r[2] {
+        return Some(2);
+    }
+    if d == r[3] {
+        return Some(3);
+    }
+    let o0 = i64::from(d) - i64::from(r[0]) + 3;
+    if (0..7).contains(&o0) {
+        return Some(NEAR[o0 as usize]);
+    }
+    let o1 = i64::from(d) - i64::from(r[1]) + 3;
+    if (0..7).contains(&o1) {
+        return Some(NEAR[o1 as usize] + 6);
+    }
+    None
+}
+
+#[inline(always)]
 fn code_command(c: &Command, ring: &mut [u32; 4]) -> Coded {
     let ins = c.insert as usize;
     let ic = ins_code(ins);
@@ -1940,26 +1943,8 @@ fn code_command(c: &Command, ring: &mut [u32; 4]) -> Coded {
     let cc = copy_code(copy);
     let d = c.dist;
     let r = *ring;
-    let short = [
-        Some(r[0]),
-        Some(r[1]),
-        Some(r[2]),
-        Some(r[3]),
-        r[0].checked_sub(1),
-        r[0].checked_add(1),
-        r[0].checked_sub(2),
-        r[0].checked_add(2),
-        r[0].checked_sub(3),
-        r[0].checked_add(3),
-        r[1].checked_sub(1),
-        r[1].checked_add(1),
-        r[1].checked_sub(2),
-        r[1].checked_add(2),
-        r[1].checked_sub(3),
-        r[1].checked_add(3),
-    ];
-    let (dsym, dist_x, dist_n) = match short.iter().position(|&s| s == Some(d)) {
-        Some(k) => (k as u16, 0, 0),
+    let (dsym, dist_x, dist_n) = match short_code(d, &r) {
+        Some(k) => (k, 0, 0),
         None => explicit_distance(d as usize),
     };
     if dsym != 0 && c.out == 0 {
@@ -3401,6 +3386,67 @@ mod tests {
         let lens: u64 = lay.lit.lens.iter().map(|&l| u64::from(l)).sum();
         assert!(lay.lit.ntypes == 1 || lens >= mb.cmds.iter().map(|c| u64::from(c.insert)).sum());
         (lay.lit.ntypes, lay.cmd.ntypes, lay.dist.ntypes)
+    }
+
+    /// The closed-form length codes, command blocks and short distance codes give what the
+    /// tables and the order of the specification give.
+    #[test]
+    fn command_codes_match_the_tables() {
+        for n in 0..100_000usize {
+            let ic = INS_BASE.partition_point(|&b| b as usize <= n) - 1;
+            assert_eq!(ins_code(n), ic, "insert {n}");
+            let cc = COPY_BASE.partition_point(|&b| b as usize <= n).max(1) - 1;
+            assert_eq!(copy_code(n), cc, "copy {n}");
+        }
+        for ic in 0..24 {
+            for cc in 0..24 {
+                let block = match (ic >> 3, cc >> 3) {
+                    (0, 0) => 2,
+                    (0, 1) => 3,
+                    (1, 0) => 4,
+                    (1, 1) => 5,
+                    (0, _) => 6,
+                    (2, 0) => 7,
+                    (1, _) => 8,
+                    (_, 1) => 9,
+                    _ => 10,
+                };
+                assert_eq!(
+                    command_symbol(ic, cc, false),
+                    block * 64 + (ic & 7) * 8 + (cc & 7)
+                );
+            }
+        }
+        // Short distance codes: the first match in the order of section 4.
+        let mut x = 0x9E37_79B9u32;
+        for _ in 0..200_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let small = |v: u32| 1 + v % 12;
+            let r = [small(x), small(x >> 4), small(x >> 8), small(x >> 12)];
+            let d = small(x >> 16);
+            let short = [
+                Some(r[0]),
+                Some(r[1]),
+                Some(r[2]),
+                Some(r[3]),
+                r[0].checked_sub(1),
+                r[0].checked_add(1),
+                r[0].checked_sub(2),
+                r[0].checked_add(2),
+                r[0].checked_sub(3),
+                r[0].checked_add(3),
+                r[1].checked_sub(1),
+                r[1].checked_add(1),
+                r[1].checked_sub(2),
+                r[1].checked_add(2),
+                r[1].checked_sub(3),
+                r[1].checked_add(3),
+            ];
+            let want = short.iter().position(|&s| s == Some(d)).map(|k| k as u16);
+            assert_eq!(short_code(d, &r), want, "{d} {r:?}");
+        }
     }
 
     /// The sparse smoothing and run counting give what the dense ones give.

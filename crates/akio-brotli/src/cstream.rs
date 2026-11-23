@@ -302,20 +302,10 @@ mod tests {
         // (level, window bits, bytes after one event, bytes after many)
         for (q, wbits, small, full) in [
             // 2^8 hashes, 4 entries each; then 2^15 (the level's bound).
-            (
-                4,
-                18,
-                4 * ((1 << 8) + (1 << 10)),
-                4 * ((1 << 15) + (1 << 17)),
-            ),
+            (4, 18, (1 << 8) + 4 * (1 << 10), (1 << 15) + 4 * (1 << 17)),
             // 16 entries per hash: 2^8; within a 64 KiB window 2^14 (the level's 2^15
             // bounded by about two entries per byte of window).
-            (
-                5,
-                16,
-                4 * ((1 << 8) + (1 << 12)),
-                4 * ((1 << 14) + (1 << 18)),
-            ),
+            (5, 16, (1 << 8) + 4 * (1 << 12), (1 << 14) + 4 * (1 << 18)),
             // Chains: 2^10 hashes and 1 KiB of positions; then 2^17 and the window.
             (
                 9,
