@@ -95,3 +95,4 @@
 - [ADR-093：UDP 数据报的到达接口，按已绑定套接字选择开启；mDNS 据此确定查询所在链路](093-udp-arrival-interface.zh-CN.md)（2026-11-23 采纳；了结 ADR-078 更新 4 的遗留项）
 - [ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭](094-handlers-on-the-logical-pool.zh-CN.md)（2026-11-23 采纳）
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
+- [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）

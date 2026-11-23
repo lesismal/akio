@@ -424,6 +424,11 @@ pub(crate) enum Cmd {
     },
     /// Thread resizing: a retiring loop becomes active again.
     Revive,
+    /// The listener was removed (ADR-099; see the epoll backend).
+    StopListening {
+        drain: Option<Duration>,
+        exit: bool,
+    },
 }
 
 /// `LoopShared::state`: taking new connections.
@@ -706,6 +711,16 @@ pub(crate) struct Loop {
     retire_kill: Option<Instant>,
     /// After a failed accept (EMFILE...) do not re-arm before this instant.
     accept_retry_at: Option<Instant>,
+    /// The listener's accept filter (ADR-099), run before a connection is opened (none in a
+    /// client-only group).
+    filter: Option<akio_core::FilterView>,
+    /// The listener was removed (`Cmd::StopListening`, see the epoll backend); with
+    /// `unlisted_drain`, connections the cancelled accept still delivers are shut down after
+    /// their first data, as while draining.
+    unlisted: bool,
+    unlisted_exit: bool,
+    unlisted_drain: bool,
+    unlisted_kill: Option<Instant>,
     /// While draining: the listener's acceptor, for connections the multishot accept completed
     /// before its cancellation took effect.
     drain_acceptor: Option<Arc<dyn DynAcceptor>>,
@@ -850,6 +865,11 @@ impl Loop {
             retire_at: None,
             retire_kill: None,
             accept_retry_at: None,
+            filter: None,
+            unlisted: false,
+            unlisted_exit: false,
+            unlisted_drain: false,
+            unlisted_kill: None,
             drain_acceptor: None,
             wake_buf: KernelBuf::new(8)?,
             wake_armed: false,
@@ -994,9 +1014,11 @@ impl Loop {
                     self.graveyard.clear();
                 }
             }
-            let mut timeout =
-                (self.draining.is_some() || self.retire_at.is_some() || self.retire_kill.is_some())
-                    .then_some(Duration::from_millis(50));
+            let mut timeout = (self.draining.is_some()
+                || self.retire_at.is_some()
+                || self.retire_kill.is_some()
+                || self.unlisted_kill.is_some())
+            .then_some(Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
@@ -1031,6 +1053,10 @@ impl Loop {
             self.drain_cmds();
             self.fire_timers();
             if self.retiring && self.draining.is_none() && self.retire_step() {
+                break;
+            }
+            if self.unlisted && self.draining.is_none() && self.unlisted_step() {
+                self.quiesce();
                 break;
             }
             if let Some(deadline) = self.draining {
@@ -1124,7 +1150,7 @@ impl Loop {
             self.wake_armed = true;
         }
         let backoff_over = self.accept_retry_at.is_none_or(|t| Instant::now() >= t);
-        if self.draining.is_none() && !self.retiring && backoff_over {
+        if self.draining.is_none() && !self.retiring && !self.unlisted && backoff_over {
             let mut arm = Vec::new();
             for ls in &mut self.listeners {
                 if let (false, Some(l)) = (ls.armed, &ls.l) {
@@ -1202,7 +1228,12 @@ impl Loop {
         let Ok(peer) = stream.peer_addr() else {
             return;
         };
-        if self.draining.is_some() {
+        if !self.filter.as_mut().is_none_or(|f| f.allows(&peer)) {
+            self.shared.stats.filtered.add_local(1);
+            akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
+            return; // dropping the stream closes it
+        }
+        if self.draining.is_some() || self.unlisted_drain {
             // Accepted before the cancellation of the multishot accept took effect: the peer
             // already counts as connected (on a listening socket shared with other processes it
             // could have been served there). Resetting it would lose its first request, so serve
@@ -1709,6 +1740,7 @@ impl Loop {
                         self.retire_kill = None;
                         self.shared.stats.set_retiring(false);
                     }
+                    Cmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
                 }
             }
         }
@@ -1832,9 +1864,66 @@ impl Loop {
         l
     }
 
+    /// Gives a loop that has not started yet its group's accept filter.
+    pub(crate) fn set_filter(&mut self, cell: &Arc<akio_core::FilterCell>) {
+        self.filter = Some(akio_core::FilterView::new(cell.clone()));
+    }
+
+    /// The listener was removed (ADR-099): the multishot accepts are cancelled and the
+    /// listening sockets close once that is done; the connections stay.
+    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+        if self.draining.is_some() {
+            return; // the engine is shutting down anyway
+        }
+        self.unlisted = true;
+        self.unlisted_exit |= exit;
+        if drain.is_some() {
+            self.unlisted_drain = true;
+            if self.accepts_armed() {
+                self.drain_acceptor = self.acceptor.clone();
+            }
+        }
+        let idxs: Vec<usize> = self.listeners.iter().map(|l| l.idx).collect();
+        for idx in idxs {
+            drop(self.drop_listener(idx));
+        }
+        if let Some(d) = drain {
+            let at = Instant::now() + d;
+            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+            self.notify_shutdown();
+        }
+    }
+
+    /// Once per iteration after the listener was removed: closes what is left at the drain
+    /// deadline, and ends the thread (true) once no connection and no accept is left, if it
+    /// may.
+    fn unlisted_step(&mut self) -> bool {
+        if self.unlisted_kill.is_some_and(|t| Instant::now() >= t) {
+            self.unlisted_kill = None;
+            let ids: Vec<u64> = self.slots.keys().copied().collect();
+            for id in ids {
+                match self.slots.get(&id) {
+                    Some(Slot::Conn(_)) => self.finalize(id, None),
+                    _ => {
+                        if let Some(Slot::Connecting {
+                            on_error: Some(f), ..
+                        }) = self.slots.remove(&id)
+                        {
+                            f(io::Error::new(
+                                io::ErrorKind::ConnectionAborted,
+                                "listener shut down",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        self.unlisted_exit && self.slots.is_empty() && !self.accepts_armed() && self.dgrams_idle()
+    }
+
     /// Starts accepting on listener `idx`, or passes it on if this loop is retiring.
     fn add_listener(&mut self, idx: usize, l: TcpListener) {
-        if self.draining.is_some() {
+        if self.draining.is_some() || self.unlisted {
             return;
         }
         if self.retiring {

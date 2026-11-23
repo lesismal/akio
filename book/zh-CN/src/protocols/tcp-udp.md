@@ -13,6 +13,30 @@ TCP 服务端就是一个服务某个 acceptor 的 `Listener::tcp(addr)`；见[�
 - 文件 body：协议代码可以通过有序响应的分段（`Part::File`）用 `sendfile(2)` 发送文件区间；
   akio-http 在明文 TCP 上用它发送静态文件。
 
+### 运行时的 listener
+
+重新加载配置时可以不重启地增加和移除 TCP listener（ADR-099）：
+
+- `Engine::add_listener(listener)` 像 `build` 一样绑定 listener，使用它自己的后端、线程数、`Accel`
+  与过滤器；engine 运行中时立即启动其线程；返回 `ListenerId`。`Engine::listeners()` 列出正在接受
+  连接的 listener 及其 id、地址和线程数（builder 的 listener 的 id 为 `0..n`）。
+- `Engine::remove_listener(id)` 停止接受连接并关闭监听 socket；已打开的连接继续运行，每个线程在
+  其最后一个连接关闭后退出。
+- `Engine::shutdown_listener(id, drain)` 还会对每个打开的连接调用 `on_shutdown`，并在 `drain`
+  之后关闭仍打开的连接。
+- 两者都立即返回；socket 在线程的下一次迭代时关闭。要在同一地址上无间隙地替换 listener，先加入
+  新的（Linux 上两者通过 `SO_REUSEPORT` 共享端口），再移除旧的。
+- 会增删 listener 的 engine 应设置 `client_threads`：否则 dial 运行在 builder 最后一个 listener
+  的线程上，这些线程在该 listener 被移除后仍会保留。
+
+### accept 过滤器
+
+`Listener::filter(|peer: &SocketAddr| -> bool)` 在 `accept` 之后立即在 I/O 线程上运行，早于
+`max_connections`、acceptor 与 TLS；返回 `false` 立即关闭连接，并计入
+`akio_connections_filtered_total`。允许 / 拒绝列表放在这里：只做查表。
+`Engine::set_listener_filter(id, f)` 与 `clear_listener_filter(id)` 在运行时替换它；调用返回后的
+每次 `accept` 都使用新的过滤器。
+
 ## TCP 客户端
 
 ```rust,ignore

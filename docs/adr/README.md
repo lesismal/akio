@@ -95,3 +95,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-093: The interface a UDP datagram arrived on, opt-in per bound socket; mDNS places queries by it](093-udp-arrival-interface.md) (accepted 2026-11-23; closes ADR-078 update 4's leftover)
 - [ADR-094: Protocol handlers on the logical pool, per protocol, off by default](094-handlers-on-the-logical-pool.md) (accepted 2026-11-23)
 - [ADR-098: Server certificates chosen per handshake by a resolver that may answer later](098-tls-cert-resolver.md) (accepted 2026-11-23)
+- [ADR-099: TCP listeners added, removed and drained at run time, and a filter on accepted connections](099-runtime-listeners-accept-filter.md) (accepted 2026-11-23)

@@ -149,6 +149,8 @@ loop_counters! {
     closed: "counter", "akio_connections_closed_total", "Connections closed.";
     /// Connections refused because `max_connections` was reached.
     rejected: "counter", "akio_connections_rejected_total", "Connections refused by max_connections.";
+    /// Connections refused by the listener's accept filter (`Listener::filter`).
+    filtered: "counter", "akio_connections_filtered_total", "Connections refused by the listener's accept filter.";
     /// `accept(2)` failures (EMFILE...).
     accept_errors: "counter", "akio_accept_errors_total", "accept(2) failures.";
     /// Connections closed by the idle timeout.
@@ -598,6 +600,8 @@ pub struct Telemetry {
     bound: AtomicBool,
     fixed: Mutex<Option<Fixed>>,
     loops: Mutex<Vec<LoopEntry>>,
+    /// Counters of the threads that left `loops` (`unregister_loops`), kept in the totals.
+    gone: Mutex<LoopCounters>,
     slow: Mutex<VecDeque<SlowRecord>>,
     open: AtomicUsize,
     pool: Mutex<Weak<Pool>>,
@@ -625,6 +629,7 @@ impl Default for Telemetry {
             bound: AtomicBool::new(false),
             fixed: Mutex::new(None),
             loops: Mutex::new(Vec::new()),
+            gone: Mutex::new(LoopCounters::default()),
             slow: Mutex::new(VecDeque::new()),
             open: AtomicUsize::new(0),
             pool: Mutex::new(Weak::new()),
@@ -695,6 +700,24 @@ impl Telemetry {
             Some(l) => l.post = post,
             None => loops.push(LoopEntry { stats, post }),
         }
+    }
+
+    /// Removes the threads with these counters from the table (the exited threads of a listener
+    /// removed at run time, ADR-099); what they counted stays in [`Metrics::total`], so totals
+    /// never go back. Backend-facing.
+    #[doc(hidden)]
+    pub fn unregister_loops(&self, stats: &[Arc<LoopStats>]) {
+        let mut loops = lock(&self.loops);
+        let mut gone = lock(&self.gone);
+        loops.retain(|l| {
+            if !stats.iter().any(|s| Arc::ptr_eq(s, &l.stats)) {
+                return true;
+            }
+            let mut c = l.stats.snapshot();
+            c.queued_bytes = 0; // a gauge: nothing is queued on an exited thread
+            gone.add(&c);
+            false
+        });
     }
 
     /// Applies the reloadable settings of `cfg` to the running engine and reports what changed
@@ -964,7 +987,7 @@ impl Telemetry {
                 counters: l.stats.snapshot(),
             })
             .collect();
-        let mut total = LoopCounters::default();
+        let mut total = *lock(&self.gone);
         for l in &loops {
             total.add(&l.counters);
         }
@@ -1512,4 +1535,41 @@ pub fn slow_callbacks_json(recs: &[SlowRecord]) -> String {
 #[doc(hidden)]
 pub fn log_or_stderr(level: akio_log::Level, msg: std::fmt::Arguments<'_>) {
     akio_log::log_or_stderr(level, "akio", msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unregistered_loops_leave_the_table_but_not_the_totals() {
+        let t = Telemetry::new();
+        let a = Arc::new(LoopStats::new(LoopMeta::new("epoll", None, 0)));
+        let b = Arc::new(LoopStats::new(LoopMeta::new("epoll", None, 1)));
+        for s in [&a, &b] {
+            t.register_loop(s.clone(), Box::new(|_| {}));
+        }
+        a.accepted.add_local(3);
+        a.filtered.add_local(2);
+        a.queued_bytes.add_local(7);
+        b.accepted.add_local(5);
+        t.unregister_loops(std::slice::from_ref(&a));
+        let m = t.metrics();
+        assert_eq!(m.loops.len(), 1);
+        assert_eq!(m.total.accepted, 8);
+        assert_eq!(m.total.filtered, 2);
+        assert_eq!(
+            m.total.queued_bytes, 0,
+            "a gauge of an exited thread is not kept"
+        );
+        // Unknown counters change nothing; the rest keeps counting.
+        t.unregister_loops(&[Arc::new(LoopStats::new(LoopMeta::new("epoll", None, 9)))]);
+        b.accepted.add_local(1);
+        assert_eq!(t.metrics().total.accepted, 9);
+        assert!(
+            t.metrics()
+                .to_prometheus()
+                .contains("akio_connections_filtered_total")
+        );
+    }
 }

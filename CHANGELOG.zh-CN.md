@@ -10,6 +10,32 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：运行时增加、移除和排空 TCP listener；accept 过滤器（akio、akio-core、akio-epoll、akio-uring）
+
+ADR-099（2026-11-23），增量：
+
+- `Engine::add_listener(Listener) -> io::Result<ListenerId>` 在运行中（或尚未启动）的 engine 上像
+  `build` 一样绑定 TCP listener：它的后端（epoll / kqueue / io_uring，含回退与 `strict`）、线程数
+  （Linux 上每线程一个 `SO_REUSEPORT`）、`Accel`、继承的 socket、过滤器、engine 的配置与实时设置、
+  NUMA 放置。UDP / 数据报 listener 被拒绝（`InvalidInput`），DPDK 返回 `Unsupported`。
+- `Engine::remove_listener(id)`：停止接受连接并关闭监听 socket；已打开的连接继续运行，每个线程在
+  最后一个连接关闭后退出。`Engine::shutdown_listener(id, drain)`：还会立即对每个打开的连接调用
+  `on_shutdown`，并在 `drain` 之后关闭剩余连接。
+- `ListenerId`（builder 的 listener 为 `0..n`，之后是加入的）、`Engine::listeners() ->
+  Vec<ListenerInfo>`（id、地址、线程数、accel、udp）、`Engine::set_listener_threads(id, n)`。
+- `EngineBuilder::max_listeners(n)`（默认 1024）：同时存在的 listener 数，包括已移除但仍在服务的；
+  超过时 `add_listener` 以 `QuotaExceeded` 失败。
+- `Listener::filter(Fn(&SocketAddr) -> bool)`：在 `accept` 之后立即在 I/O 线程上运行，早于
+  `max_connections`、acceptor 与 TLS；被拒绝的连接计入新的 `LoopCounters::filtered`
+  （`akio_connections_filtered_total`）。`Engine::set_listener_filter` / `clear_listener_filter`
+  在运行时替换它，对调用之后的每次 accept 生效（每次 accept 一次原子读，不加锁）。
+- 被移除 listener 已退出线程的每线程计数器离开 `Metrics::loops`；其计数保留在 `Metrics::total` 中。
+
+### 变更：`Engine::wait` 等待 `shutdown`（akio）
+
+`wait`（因此 `run`）现在只在 `shutdown` 被调用且所有 I/O 线程（包括运行时加入的 listener 的线程）
+都已退出后才返回。没有 listener 也没有 client 线程的 engine 以前会立即返回。
+
 ### 新增：由可稍后应答的解析器按握手选择服务端证书（akio-tls）
 
 ADR-098，均为新增（akit 的 A2：服务期间续期证书，以及按需 TLS）：

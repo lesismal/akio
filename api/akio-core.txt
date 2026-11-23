@@ -355,6 +355,7 @@ pub akio_core::telemetry::LoopCounters::datagrams_in: u64
 pub akio_core::telemetry::LoopCounters::datagrams_out: u64
 pub akio_core::telemetry::LoopCounters::dialed: u64
 pub akio_core::telemetry::LoopCounters::events: u64
+pub akio_core::telemetry::LoopCounters::filtered: u64
 pub akio_core::telemetry::LoopCounters::handshake_failures: u64
 pub akio_core::telemetry::LoopCounters::idle_timeouts: u64
 pub akio_core::telemetry::LoopCounters::iterations: u64
@@ -758,6 +759,7 @@ pub akio_core::LoopCounters::datagrams_in: u64
 pub akio_core::LoopCounters::datagrams_out: u64
 pub akio_core::LoopCounters::dialed: u64
 pub akio_core::LoopCounters::events: u64
+pub akio_core::LoopCounters::filtered: u64
 pub akio_core::LoopCounters::handshake_failures: u64
 pub akio_core::LoopCounters::idle_timeouts: u64
 pub akio_core::LoopCounters::iterations: u64

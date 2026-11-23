@@ -95,6 +95,13 @@ pub(crate) enum Cmd {
     },
     /// Thread resizing: a retiring loop becomes active again.
     Revive,
+    /// The listener was removed (ADR-099): close the listening sockets for good; with `drain`,
+    /// shut the connections down now and close the rest after it; with `exit`, end the thread
+    /// once no connection is left.
+    StopListening {
+        drain: Option<Duration>,
+        exit: bool,
+    },
 }
 
 /// `LoopShared::state`: taking new connections.
@@ -363,6 +370,15 @@ pub(crate) struct Loop {
     retire_kill: Option<Instant>,
     /// The listener is out of the poller until then, after a failed `accept`.
     accept_paused_until: Option<Instant>,
+    /// The listener's accept filter (ADR-099), run before a connection is opened (none in a
+    /// client-only group).
+    filter: Option<akio_core::FilterView>,
+    /// The listener was removed (`Cmd::StopListening`): listening sockets handed here later are
+    /// closed; with `unlisted_exit` the thread ends once no connection is left, and at
+    /// `unlisted_kill` (the drain deadline) the connections still open are closed.
+    unlisted: bool,
+    unlisted_exit: bool,
+    unlisted_kill: Option<Instant>,
     /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
     wheel: Wheel<u64>,
     epoch: Instant,
@@ -414,6 +430,10 @@ impl Loop {
             retire_at: None,
             retire_kill: None,
             accept_paused_until: None,
+            filter: None,
+            unlisted: false,
+            unlisted_exit: false,
+            unlisted_kill: None,
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             clock: Instant::now(),
@@ -448,9 +468,11 @@ impl Loop {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
         let mut events: Vec<Event> = Vec::with_capacity(1024);
         loop {
-            let mut timeout =
-                (self.draining.is_some() || self.retire_at.is_some() || self.retire_kill.is_some())
-                    .then_some(Duration::from_millis(50));
+            let mut timeout = (self.draining.is_some()
+                || self.retire_at.is_some()
+                || self.retire_kill.is_some()
+                || self.unlisted_kill.is_some())
+            .then_some(Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 // Round up: waking a hair late is fine, spinning on a not-yet-due tick is not.
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
@@ -479,6 +501,9 @@ impl Loop {
             self.fire_timers();
             self.resume_accept();
             if self.retiring && self.retire_step() {
+                break;
+            }
+            if self.unlisted && self.draining.is_none() && self.unlisted_step() {
                 break;
             }
             if let Some(deadline) = self.draining {
@@ -755,7 +780,50 @@ impl Loop {
                 self.retire_kill = None;
                 self.shared.stats.set_retiring(false);
             }
+            Cmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
         }
+    }
+
+    /// Gives a loop that has not started yet its group's accept filter.
+    pub(crate) fn set_filter(&mut self, cell: &Arc<akio_core::FilterCell>) {
+        self.filter = Some(akio_core::FilterView::new(cell.clone()));
+    }
+
+    // ---- removing the listener (ADR-099) ------------------------------------------------------
+
+    /// The listener was removed: its listening sockets close now; the connections stay (see
+    /// `Cmd::StopListening`).
+    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+        if self.draining.is_some() {
+            return; // the engine is shutting down anyway
+        }
+        self.unlisted = true;
+        self.unlisted_exit |= exit;
+        self.accept_paused_until = None;
+        for (_, l) in std::mem::take(&mut self.listeners) {
+            self.poller.delete(l.as_raw_fd()); // and dropping it closes it
+        }
+        if let Some(d) = drain {
+            let at = Instant::now() + d;
+            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+            self.notify_shutdown();
+        }
+    }
+
+    /// Once per iteration after the listener was removed: closes what is left at the drain
+    /// deadline, and ends the thread (true) once no connection is left, if it may.
+    fn unlisted_step(&mut self) -> bool {
+        if self.unlisted_kill.is_some_and(|t| Instant::now() >= t) {
+            self.unlisted_kill = None;
+            let ids: Vec<u64> = self.slots.keys().copied().collect();
+            for id in ids {
+                match self.slots.get(&id) {
+                    Some(Slot::Conn(_)) => self.finalize(id, None),
+                    _ => self.abort_dial(id, "listener shut down"),
+                }
+            }
+        }
+        self.unlisted_exit && self.slots.is_empty()
     }
 
     // ---- thread resizing (ADR-028) ----------------------------------------------------------
@@ -763,8 +831,8 @@ impl Loop {
     /// Starts accepting on listener `idx` (passed on by a retiring loop, or given back to a
     /// loop the group grew again), or passes it on if this loop is retiring itself.
     fn add_listener(&mut self, idx: usize, l: TcpListener) {
-        if self.draining.is_some() {
-            return; // shutting down: the socket closes with the others
+        if self.draining.is_some() || self.unlisted {
+            return; // shutting down or removed: the socket closes
         }
         if self.retiring {
             self.roster.forward_listener(idx, l);
@@ -966,6 +1034,11 @@ impl Loop {
             };
             match l.accept() {
                 Ok((stream, peer)) => {
+                    if !self.filter.as_mut().is_none_or(|f| f.allows(&peer)) {
+                        self.shared.stats.filtered.add_local(1);
+                        akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
+                        continue; // dropping the stream closes it
+                    }
                     let acceptor = acceptor.clone();
                     self.open(stream, peer, acceptor, false);
                 }

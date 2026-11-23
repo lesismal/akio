@@ -384,6 +384,10 @@ sequenceDiagram
 - 连接关闭是基于一个原子量的三态机（`OPEN → CLOSING → CLOSED`）：`close_after_send` 进入
   CLOSING，队列清空后由事件循环结束；`close`、错误、排空后的 EOF、空闲超时和 panic 直接结束。
   `on_close` 在所属线程上恰好执行一次；该连接尚未执行的完成回调被丢弃。
+- 引擎运行时可以去掉单个 listener（ADR-099）：`remove_listener` 向其事件循环投递 `StopListening`，
+  它们关闭监听 socket，保留连接直到连接关闭，然后退出；`shutdown_listener` 还会对这些连接调用
+  `on_shutdown`，并在排空截止时关闭其余连接。`add_listener` 像 `build` 一样绑定并启动一个新组。
+  `wait` 也会 join 这些组，并且只在 `shutdown` 之后返回。
 - 只有在 I/O 线程退出之后才停止线程池，因为完成回调需要一个事件循环来执行。
 
 ## 8. 错误处理

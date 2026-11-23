@@ -1374,7 +1374,8 @@ impl UdpLoop {
                     Cmd::AddListener(..)
                     | Cmd::GiveListener { .. }
                     | Cmd::Retire { .. }
-                    | Cmd::Revive => {}
+                    | Cmd::Revive
+                    | Cmd::StopListening { .. } => {}
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
                     Cmd::BindUdp {
                         id,

@@ -15,6 +15,32 @@ details:
 - File bodies: protocol code can send a file range with `sendfile(2)` through ordered response
   parts (`Part::File`); akio-http uses it for static files on plain TCP.
 
+### Listeners at run time
+
+A configuration reload adds and removes TCP listeners without a restart (ADR-099):
+
+- `Engine::add_listener(listener)` binds a listener as `build` does, with its own backend,
+  threads, `Accel` and filter, and starts its threads if the engine runs; it returns a
+  `ListenerId`. `Engine::listeners()` lists the listeners accepting, with their ids, addresses
+  and thread counts (the builder's have ids `0..n`).
+- `Engine::remove_listener(id)` stops accepting and closes the listening sockets; open
+  connections keep running, and each thread exits after its last one.
+- `Engine::shutdown_listener(id, drain)` also calls `on_shutdown` on every open connection and
+  closes those still open after `drain`.
+- Both return at once; the sockets close at the threads' next iteration. To replace a listener
+  on the same address without a gap, add the new one first (on Linux both share the port with
+  `SO_REUSEPORT`), then remove the old one.
+- Engines that add and remove listeners should set `client_threads`: without them, dials run on
+  the last builder listener's threads, which then stay up after that listener is removed.
+
+### Accept filters
+
+`Listener::filter(|peer: &SocketAddr| -> bool)` runs on the I/O thread right after `accept`,
+before `max_connections`, the acceptor and TLS; `false` closes the connection at once and counts
+it in `akio_connections_filtered_total`. Allow / deny lists belong here: keep it to a lookup.
+`Engine::set_listener_filter(id, f)` and `clear_listener_filter(id)` swap it while the engine
+runs; every `accept` after the call returns uses the new one.
+
 ## TCP clients
 
 ```rust,ignore

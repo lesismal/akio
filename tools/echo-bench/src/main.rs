@@ -8,7 +8,10 @@
 //! messages the server inflates, replies whatever the server sends, compressed or not), `tls`, or
 //! `tlshs` (build with `--features tls`; the server certificate is not verified). `tlshs`
 //! measures full TLS handshakes per second instead: each of `conns` workers connects, completes a
-//! handshake (no resumption), and closes, in a loop. Connections are spread over a few client threads; each thread sends one message on
+//! handshake (no resumption), and closes, in a loop. `connect` measures new plain TCP
+//! connections per second the same way: each worker connects, echoes one `msg_bytes` message and
+//! closes, in a loop (the accept path; on Linux loopback `tcp_tw_reuse` lets ports in TIME_WAIT
+//! be reused). Connections are spread over a few client threads; each thread sends one message on
 //! every connection it owns, then reads all the replies, so the load stays closed-loop per
 //! connection without a thread per connection (which would saturate the client first).
 //! A server may answer after any delay: the reply only has to be `msg_bytes` long.
@@ -338,6 +341,9 @@ fn main() {
     if let Some(kind) = mode.strip_prefix("hold-") {
         return hold(&addr, conns, size, secs, threads, kind);
     }
+    if mode == "connect" {
+        return connects(&addr, conns, size, secs);
+    }
     #[cfg(feature = "tls")]
     if mode == "tlshs" {
         return handshakes(&addr, conns, secs);
@@ -393,6 +399,48 @@ fn main() {
         } else {
             String::new()
         }
+    );
+}
+
+/// `connect` mode: `workers` threads each connecting, echoing one message and closing, back to
+/// back for `secs`.
+fn connects(addr: &str, workers: usize, size: usize, secs: u64) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (total, failed) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let handles: Vec<_> = (0..workers)
+        .map(|_| {
+            let addr = addr.to_string();
+            let (stop, total, failed) = (stop.clone(), total.clone(), failed.clone());
+            thread::spawn(move || {
+                let msg = vec![b'x'; size];
+                let mut buf = vec![0u8; size];
+                while !stop.load(Ordering::Relaxed) {
+                    let r = (|| -> io::Result<()> {
+                        let mut s = TcpStream::connect(&addr)?;
+                        s.set_nodelay(true)?;
+                        s.write_all(&msg)?;
+                        s.read_exact(&mut buf)?;
+                        Ok(())
+                    })();
+                    match r {
+                        Ok(()) => total.fetch_add(1, Ordering::Relaxed),
+                        Err(_) => failed.fetch_add(1, Ordering::Relaxed),
+                    };
+                }
+            })
+        })
+        .collect();
+    let start = Instant::now();
+    thread::sleep(Duration::from_secs(secs));
+    stop.store(true, Ordering::Relaxed);
+    for h in handles {
+        let _ = h.join();
+    }
+    let el = start.elapsed().as_secs_f64();
+    println!(
+        "mode=connect workers={workers}  {:.0} connections/s  failed={}",
+        total.load(Ordering::Relaxed) as f64 / el,
+        failed.load(Ordering::Relaxed)
     );
 }
 
