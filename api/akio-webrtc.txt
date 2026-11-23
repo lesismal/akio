@@ -627,6 +627,7 @@ pub fn akio_webrtc::Peer::send(&self, akio_webrtc::ChannelId, &[u8], bool) -> co
 pub fn akio_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
 pub fn akio_webrtc::Peer::set_channel_priority(&self, akio_webrtc::ChannelId, akio_webrtc::ChannelPriority) -> core::result::Result<(), akio_webrtc::Error>
 pub fn akio_webrtc::Peer::set_voip_quality(&self, akio_webrtc::Mid, akio_rtp::xr::VoipQuality, core::option::Option<akio_rtp::emodel::EModel>) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::video_playout_stats(&self, akio_webrtc::Mid) -> core::result::Result<alloc::vec::Vec<(u32, akio_rtp::video::VideoPlayoutStats)>, akio_webrtc::Error>
 pub fn akio_webrtc::Peer::write_media(&self, akio_webrtc::Mid, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
 pub fn akio_webrtc::Peer::write_simulcast(&self, akio_webrtc::Mid, &str, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
 impl core::clone::Clone for akio_webrtc::Peer
@@ -731,6 +732,8 @@ pub fn akio_webrtc::RtcConfig::set_sctp_scheduler(self, akio_webrtc::ChannelSche
 pub fn akio_webrtc::RtcConfig::set_sdes_mki_length(self, u8) -> Self
 pub fn akio_webrtc::RtcConfig::set_stats_interval(self, core::option::Option<core::time::Duration>) -> Self
 pub fn akio_webrtc::RtcConfig::set_ulpfec_level0(self, core::option::Option<usize>) -> Self
+pub fn akio_webrtc::RtcConfig::set_video_playout_buffer(self, core::option::Option<akio_rtp::jitter::PlayoutDelay>) -> Self
+pub fn akio_webrtc::RtcConfig::set_voip_delay_sensitivity(self, akio_rtp::emodel::DelaySensitivity) -> Self
 impl core::fmt::Debug for akio_webrtc::RtcConfig
 pub fn akio_webrtc::RtcConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_webrtc::RtcConfig

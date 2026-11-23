@@ -170,3 +170,17 @@ akio-webrtc 目前在音频帧一到达就交给应用。
     的 NB / WB 模式（未公布），以及可选用的单耳宽带表。
   - VoIP 块的突发与间隙时长仍假设 20 ms 的包。
   - 若一个包在报告其丢失的间隔之后的某个间隔里才被丢弃，不做匹配。
+
+## 更新（2026-11-23）：遗留项由 ADR-092 完成
+
+[ADR-092](092-video-playout-emodel-classes.zh-CN.md) 处理了上面"未完成"的清单：
+
+- 视频播放缓冲（`VideoPlayout`、`RtcConfig::set_video_playout_buffer`）；
+- 时延敏感度等级（`DelaySensitivity`、`RtcConfig::set_voip_delay_sensitivity`）；
+- 由应用给出的房间噪声计算 03/2023 版的 `Ro,FB`（`EModel::with_room_noise`）；不给时仍为 148；
+- 单耳表可选（`EModel::for_codec_monotic`）；
+- 已发表的窄带 / 宽带 Opus 值（`EModel::opus`）；
+- 突发与间隙时长按测得的包长计算；
+- 跨报告区间匹配迟到丢弃。
+
+EVS 的 NB / WB 模式仍无发表的数值。时间伸缩仍是解码器的职责。

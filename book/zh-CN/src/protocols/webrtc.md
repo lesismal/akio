@@ -330,12 +330,15 @@ let cfg = akio_webrtc::rtc_config()
   G.107.1，全频带的用 G.107.2；ADR-085、ADR-087）根据丢包、其突发性、往返时间与端系统时延算出的 R
   因子、MOS-LQ 与 MOS-CQ，使用所收编解码器在测得码率下的 G.113 规划值（`EModel::for_codec_rate`：
   PCMU、PCMA、G.722、G.729、G.723.1、AMR-WB、EVS，以及没有 ITU-T 取值的 Opus：按码率以由 P.863
-  推导的值评为全频带），并在接收方配置中带上它的丢包隐藏。只有解码、播放音频的应用才知道的值，由
+  推导的值评为全频带），并在接收方配置中带上它的丢包隐藏。突发与间隙时长和码率按该流测得的包长计算
+  （ADR-092）；被报为丢失、之后到达又被抖动缓冲丢弃的包计为丢弃。时延按 G.107 的默认时延敏感度等级
+  评分，除非 `set_voip_delay_sensitivity(DelaySensitivity::Low)`（或 `VeryLow`）说明已知用户对时延
+  不太敏感；G.107 要求随结果注明这种选择。只有解码、播放音频的应用才知道的值，由
   应用经 `set_voip_quality` 提供；其余以不可用（127）发送。收到的块以 `XrReceipts` 与 `VoipMetrics`
   事件报告（后者可用 `metrics.quality()` 解码），并累计到统计中。
 
   ```rust,ignore
-  use akio_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+  use akio_rtp::{EModel, JitterBufferConfig, OpusBand, VoipQuality, pcm_level_dbm0};
 
   // 解码之后：讲话段的语音电平，抖动缓冲的当前状态。
   peer.set_voip_quality(mid, VoipQuality {
@@ -350,6 +353,11 @@ let cfg = akio_webrtc::rtc_config()
       }),
       ..VoipQuality::default()
   }, None)?; // None：使用所收编解码器的 E-model 值
+
+  // 或者用自己的模型：宽带 Opus（已发表的值）、手柄收听的 G.722 表、两端的房间噪声
+  // （全频带：Ro,FB 按 G.107.2 03/2023 计算）。
+  let model = EModel::opus(OpusBand::Wideband, 12_000).with_room_noise(45.0, 40.0);
+  peer.set_voip_quality(mid, VoipQuality::default(), Some(model))?;
   ```
 - **音频抖动缓冲**（ADR-087）：`set_audio_jitter_buffer(Some(PlayoutDelay::default()))` 让每条
   收到的音频流经过一个抖动缓冲。
@@ -361,7 +369,7 @@ let cfg = akio_webrtc::rtc_config()
   - 除非 `set_voip_quality` 给出应用自己的值，缓冲的时延与丢弃填入 VoIP 指标的抖动缓冲字段和丢弃
     字段。
   - `Peer::jitter_buffer_stats(mid)` 给出它的计数。
-  - 视频与 RTP 模式不受影响。不经 peer 时，可直接用同一个缓冲 `akio_rtp::JitterBuffer`。
+  - RTP 模式不受影响。不经 peer 时，可直接用同一个缓冲 `akio_rtp::JitterBuffer`。
 
   ```rust,ignore
   use akio_rtp::PlayoutDelay;
@@ -369,6 +377,22 @@ let cfg = akio_webrtc::rtc_config()
   let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
       Duration::from_millis(20), Duration::from_millis(300))));
   // 在处理函数中：音频的 d.playout_time 为 Some(时刻)；空缺之后 !d.contiguous。
+  ```
+- **视频播放缓冲**（ADR-092）：`set_video_playout_buffer(Some(PlayoutDelay::default()))` 把每条
+  收到的视频流的完整帧保留到各自的播放时刻，到达不均匀的帧也能均匀显示。
+  - 帧按解码顺序、各在 `d.playout_time` 到达 `on_media_data`。
+  - 时延跟随各帧时延的第 95 百分位，并覆盖最近的关键帧（它们到达更慢）；在带 NACK 的线路上，若最近
+    10 s 有帧需要重传，再加一个往返时间。
+  - 迟到的帧立即交出，不丢弃：后面的帧要以它为参考预测。
+  - 有上界（256 帧、16 MiB）：满时丢弃到缓冲中的某个关键帧为止，或丢弃最旧的一帧并用 PLI 请求关键帧。
+  - `Peer::video_playout_stats(mid)` 给出它的计数。不经 peer 时，可直接用同一个缓冲
+    `akio_rtp::VideoPlayout`。
+  - 缺失的包仍按 `set_reordering_size` 的包数放弃，而不是按时间。
+
+  ```rust,ignore
+  let cfg = rtc_config().set_video_playout_buffer(Some(PlayoutDelay::adaptive(
+      Duration::ZERO, Duration::from_millis(400))));
+  // 在处理函数中：在 d.playout_time 显示 d.data；空缺之后 !d.contiguous。
   ```
 - **ULPFEC 保护级别**（RFC 5109 §5）：`set_ulpfec_level0(Some(l0))` 时一帧的 FEC 包保护每个包的前
   `l0` 字节，另有一个级别覆盖其余部分一次：单个丢包能完整修复，修复字节少得多。libwebrtc 只读级别 0

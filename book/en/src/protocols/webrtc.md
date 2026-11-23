@@ -410,13 +410,18 @@ let cfg = akio_webrtc::rtc_config()
   trip and the end system delay, with the received codec's G.113 planning values at its measured
   bitrate (`EModel::for_codec_rate`: PCMU, PCMA, G.722, G.729, G.723.1, AMR-WB, EVS, and Opus,
   which has no ITU-T value: rated fullband by bitrate with P.863-derived values) and its
-  concealment in the receiver configuration. What only the application knows, since it decodes and plays the audio, it
+  concealment in the receiver configuration. The burst and gap durations and the bitrate use the
+  stream's measured packet length (ADR-092), and a packet reported lost that arrives later and is
+  discarded by the jitter buffer counts as discarded. The delay is rated in G.107's default
+  delay sensitivity class unless `set_voip_delay_sensitivity(DelaySensitivity::Low)` (or
+  `VeryLow`) says the users are known to mind delay less; G.107 asks that such a choice be
+  stated with the results. What only the application knows, since it decodes and plays the audio, it
   gives with `set_voip_quality`; the rest is sent unavailable (127). Received ones arrive as
   `XrReceipts` and `VoipMetrics` events (`metrics.quality()` decodes the latter), with totals in
   the statistics.
 
   ```rust,ignore
-  use akio_rtp::{JitterBufferConfig, VoipQuality, pcm_level_dbm0};
+  use akio_rtp::{EModel, JitterBufferConfig, OpusBand, VoipQuality, pcm_level_dbm0};
 
   // After decoding: speech level over talkspurts, the jitter buffer as it stands.
   peer.set_voip_quality(mid, VoipQuality {
@@ -431,6 +436,11 @@ let cfg = akio_webrtc::rtc_config()
       }),
       ..VoipQuality::default()
   }, None)?; // None: the received codec's E-model values
+
+  // Or a model of its own: wideband Opus (published values), handset listening's G.722
+  // table, the room noise of both ends (fullband: Ro,FB from G.107.2 03/2023).
+  let model = EModel::opus(OpusBand::Wideband, 12_000).with_room_noise(45.0, 40.0);
+  peer.set_voip_quality(mid, VoipQuality::default(), Some(model))?;
   ```
 - **Audio jitter buffer** (ADR-087): `set_audio_jitter_buffer(Some(PlayoutDelay::default()))`
   holds each received audio stream in a jitter buffer.
@@ -443,8 +453,8 @@ let cfg = akio_webrtc::rtc_config()
   - The buffer's delay and discards fill the jitter buffer and discard fields of the VoIP
     metrics, unless `set_voip_quality` gives the application's own.
   - `Peer::jitter_buffer_stats(mid)` gives its counters.
-  - Video and RTP mode are not affected. `akio_rtp::JitterBuffer` is the same buffer for use
-    without a peer.
+  - RTP mode is not affected. `akio_rtp::JitterBuffer` is the same buffer for use without a
+    peer.
 
   ```rust,ignore
   use akio_rtp::PlayoutDelay;
@@ -452,6 +462,25 @@ let cfg = akio_webrtc::rtc_config()
   let cfg = rtc_config().set_audio_jitter_buffer(Some(PlayoutDelay::adaptive(
       Duration::from_millis(20), Duration::from_millis(300))));
   // In the handler: d.playout_time is Some(when) for audio; !d.contiguous after a gap.
+  ```
+- **Video playout buffer** (ADR-092): `set_video_playout_buffer(Some(PlayoutDelay::default()))`
+  holds the complete frames of each received video stream until their playout instants, so
+  frames that arrive unevenly are shown evenly.
+  - Frames reach `on_media_data` in decoding order, each at `d.playout_time`.
+  - The delay follows the 95th percentile of the frames' delay. It also covers the latest
+    keyframes, which take longer to arrive. On a line with NACK, while frames needed
+    retransmission in the last 10 s, it adds a round trip.
+  - Late frames go out at once rather than being dropped: later frames are predicted from them.
+  - It is bounded (256 frames, 16 MiB). When full, it drops up to a buffered keyframe, or drops
+    the oldest frame and asks for a keyframe with a PLI.
+  - `Peer::video_playout_stats(mid)` gives its counters. `akio_rtp::VideoPlayout` is the same
+    buffer for use without a peer.
+  - A missing packet is still given up by `set_reordering_size`'s count, not by time.
+
+  ```rust,ignore
+  let cfg = rtc_config().set_video_playout_buffer(Some(PlayoutDelay::adaptive(
+      Duration::ZERO, Duration::from_millis(400))));
+  // In the handler: show d.data at d.playout_time; !d.contiguous after a gap.
   ```
 - **ULPFEC levels** (RFC 5109 §5): with `set_ulpfec_level0(Some(l0))` the FEC packets of a frame
   protect the first `l0` bytes of each packet and one more level covers the rest once: a single
