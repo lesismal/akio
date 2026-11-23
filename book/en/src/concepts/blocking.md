@@ -77,7 +77,7 @@ is sent later from any thread:
 
 | Crate | Mechanism |
 |---|---|
-| akio-http | `Context::detach()` returns a `Detached` you `respond` from any thread; pipelined responses stay ordered. |
+| akio-http | `Context::detach()` returns a `Detached` you `respond` from any thread; `Context::detach_to_pool(f)` detaches and runs `f` on the engine's pool; pipelined responses stay ordered. |
 | akio-ws | `WsSender` is `Clone + Send + Sync`; send from any thread. |
 | akio-grpc | The `Sink` handed to a method is usable from any thread. |
 | akio-arpc | `Context::detach()` returns a `Responder`. |
@@ -86,6 +86,40 @@ is sent later from any thread:
 These give you the "answer later" half; run the work wherever suits you: a thread of your own,
 your own pool, or another runtime ([Migrating from tokio](../migration/from-tokio.md) shows the
 bridge). For raw `Handler`s, `Conn::spawn_blocking` uses the engine's pool.
+
+## Running every handler on the pool
+
+The HTTP, gRPC and arpc servers can also run **every** request's handler on the pool, so
+handlers may block and the requests of one connection are served at the same time instead of
+one after another. It is off by default, set per protocol:
+
+```rust,ignore
+let mut http = HttpConfig::default();
+http.run_on_pool = true;                         // HTTP/1.1
+let mut h2 = H2Config::default();
+h2.run_on_pool = true;                           // HTTP/2 streams
+http.h2 = Some(h2);
+let mut h3 = H3Config::default();
+h3.run_on_pool = true;                           // HTTP/3 (akio-h3)
+let grpc = GrpcServer::new().run_on_pool(true);  // gRPC calls
+let routes = Routes::new().run_on_pool(true);    // arpc requests and notifies
+```
+
+- **What moves.** The middleware and the handler. Parsing, limits, flow control and (for gRPC)
+  interceptors and message decoding stay on the I/O thread.
+- **What stays inline.** Requests that may take the connection over (HTTP/1.1 `CONNECT` and
+  `Upgrade`, extended CONNECT on HTTP/2 and HTTP/3), requests whose body the service takes as a
+  stream, arpc streams. A pooled handler's `upgrade_websocket` / `upgrade_raw` return `false`.
+- **Order.** HTTP/1.1 responses go out in request order whether each request ran inline, on the
+  pool, or was detached by its handler: every request reserves its response position before it
+  runs. A gRPC call's messages reach its handler one at a time and in order; different calls run
+  at once. arpc answers go out as they are ready (callers match them by sequence number), and
+  notifies may be handled in any order.
+- **A full pool.** The request is answered at once: HTTP `503` with `Retry-After`, gRPC
+  `RESOURCE_EXHAUSTED`, arpc the error `SERVER_BUSY` (a notify is dropped).
+
+Handlers that never block gain nothing from it: each request then pays a hand-off to a pool
+thread. Turn it on where handlers block, or for a single request use `detach_to_pool`.
 
 ## Slow-callback detection
 

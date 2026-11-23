@@ -10,6 +10,30 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
+
+ADR-094, additive:
+
+- `HttpConfig::run_on_pool` (HTTP/1.1), `H2Config::run_on_pool` (HTTP/2) and
+  `H3Config::run_on_pool` (HTTP/3) run each complete request's middleware and handler on the
+  engine's logical pool. Handlers may block, and the requests of one connection are served at the
+  same time.
+  - HTTP/1.1 responses still go out in request order, however inline, pooled and detached requests
+    interleave.
+  - Requests that may take the connection over, and streamed request bodies, stay on the I/O
+    thread.
+- `GrpcServer::run_on_pool(bool)`: each call's handler runs on the pool and gets its messages one
+  at a time and in order; different calls run at once.
+- `Routes::run_on_pool(bool)` (arpc): requests and notifies run on the pool; streams stay inline.
+  The new constant `SERVER_BUSY` is the error text when the pool refuses a request.
+- A full pool is answered at once: HTTP `503`, gRPC `RESOURCE_EXHAUSTED`, arpc `SERVER_BUSY`.
+- `Context::detach_to_pool(f)` and `Context::executor()` (akio-http, with the new `Executor`) send
+  one request to the pool.
+- Lower-level pieces:
+  - `Conn::execute`, `ConnInner::execute` and the re-exported `Job` (akio-core).
+  - `Connection::execute` (akio-quic).
+  - `ConnSink::execute` and `transport::dispatch_conn_on_pool` (akio-http).
+
 ### Added: the interface a UDP datagram arrived on; mDNS places queries by it (akio-core, akio-epoll, akio-sys, akio-webrtc)
 
 ADR-093 (2026-11-23), additive:

@@ -27,6 +27,14 @@ pub trait ConnSink: Send + Sync + 'static {
     /// Sends the head of the response to the request tagged `tag`; its body follows through
     /// the returned sink. `None` if the stream is gone.
     fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>>;
+
+    /// Runs `job` on the engine's logical pool for this connection: requests dispatched with
+    /// [`dispatch_conn_on_pool`], and [`Context::executor`](crate::Context::executor). Hands
+    /// `job` back, unrun, when the pool cannot take it (its queue is full, the connection is
+    /// gone). The default has no pool and hands every job back.
+    fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        Err(job)
+    }
 }
 
 /// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count
@@ -139,6 +147,26 @@ pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &Shar
     drop(g);
     finalize(&mut ctx);
     ctx.recycle_request();
+}
+
+/// [`dispatch_conn`] on the engine's logical pool: the service (middleware and handler) runs
+/// on a pool thread through [`ConnSink::execute`], so a slow handler holds up neither the I/O
+/// thread nor the connection's other requests. When the pool cannot take the request it is
+/// answered `503` here. For transports that let the application choose (HTTP/3's
+/// `run_on_pool`); requests that may take the stream over (extended CONNECT) belong on the
+/// I/O thread with [`start_conn`].
+pub fn dispatch_conn_on_pool<S: Service>(
+    service: &Arc<S>,
+    req: Request,
+    sink: &SharedSink,
+    tag: u64,
+) {
+    let ctx = Context::new_ext(req, ExtOut(sink.clone(), tag));
+    crate::pool::call_on_pool(
+        service.clone(),
+        ctx,
+        &crate::pool::Executor::ext(sink.clone()),
+    );
 }
 
 /// A [`Request::target`] for a new request: `target` copied into the buffer of a request this

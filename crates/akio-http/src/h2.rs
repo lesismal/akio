@@ -112,6 +112,12 @@ pub struct H2Config {
     /// `:protocol` is just a request the service answers. When off, `:protocol` makes a
     /// request malformed (`RST_STREAM PROTOCOL_ERROR`). Default on.
     pub enable_connect_protocol: bool,
+    /// Run each stream's service (middleware and handler) on the engine's logical pool instead
+    /// of the connection's I/O thread, so handlers may block and the streams of one connection
+    /// are served at the same time. Requests whose body the service takes as a stream, and
+    /// extended CONNECTs, stay on the I/O thread. When the pool's queue is full the stream is
+    /// answered `503`. Default `false`.
+    pub run_on_pool: bool,
 }
 
 impl Default for H2Config {
@@ -129,6 +135,7 @@ impl Default for H2Config {
             reset_window: Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
+            run_on_pool: false,
         }
     }
 }
@@ -1731,6 +1738,11 @@ impl H2Responder {
         }
     }
 
+    /// The connection, while the session lives.
+    pub(crate) fn conn(&self) -> Option<Arc<ConnInner>> {
+        self.core.upgrade().map(|c| lock(&c).conn.clone())
+    }
+
     /// Starts a response whose body is written later; `None` if the connection is gone.
     pub(crate) fn start_stream(&self, resp: Response) -> Option<H2Stream> {
         let core = self.core.upgrade()?;
@@ -2039,6 +2051,8 @@ impl WsLink for H2WsLink {
 pub(crate) struct H2Session<S> {
     core: Shared,
     service: Arc<S>,
+    /// The logical pool, when complete requests run there (`H2Config::run_on_pool`).
+    pool: Option<crate::pool::Executor>,
     /// The deadline phase after the last read (computed under the lock it takes anyway).
     phase: std::cell::Cell<Phase>,
 }
@@ -2056,6 +2070,9 @@ impl<S: Service> H2Session<S> {
         early: bool,
     ) -> H2Session<S> {
         let tls = conn.has_transport();
+        let pool = cfg
+            .run_on_pool
+            .then(|| crate::pool::Executor::conn(conn.clone()));
         let svc_mode = service.clone();
         let svc_push = service.clone();
         let local = Settings {
@@ -2126,6 +2143,7 @@ impl<S: Service> H2Session<S> {
         let s = H2Session {
             core,
             service,
+            pool,
             phase: std::cell::Cell::new(Phase::Head),
         };
         let mut first = Vec::new();
@@ -2262,6 +2280,9 @@ impl<S: Service> H2Session<S> {
         match a {
             Action::Dispatch(req, resp) => {
                 let mut ctx = Context::new_h2(req, resp);
+                if let Some(exec) = &self.pool {
+                    return crate::pool::call_on_pool(self.service.clone(), ctx, exec);
+                }
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);

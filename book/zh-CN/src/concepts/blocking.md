@@ -73,7 +73,7 @@ panic 和被拒绝的任务数。
 
 | crate | 机制 |
 |---|---|
-| akio-http | `Context::detach()` 返回 `Detached`，可在任何线程上 `respond`；流水线响应保持顺序。 |
+| akio-http | `Context::detach()` 返回 `Detached`，可在任何线程上 `respond`；`Context::detach_to_pool(f)` 先 detach，再在 engine 的线程池上执行 `f`；流水线响应保持顺序。 |
 | akio-ws | `WsSender` 是 `Clone + Send + Sync`，可在任何线程发送。 |
 | akio-grpc | 交给方法的 `Sink` 可以在任何线程使用。 |
 | akio-arpc | `Context::detach()` 返回 `Responder`。 |
@@ -82,6 +82,37 @@ panic 和被拒绝的任务数。
 它们提供的是"稍后答复"这一半；工作本身放在哪里执行由你决定：自己的线程、自己的线程池，
 或者另一个运行时（[从 tokio 迁移](../migration/from-tokio.md)展示了衔接方式）。对于原始的
 `Handler`，`Conn::spawn_blocking` 使用 engine 的线程池。
+
+## 让所有 handler 在线程池上执行
+
+HTTP、gRPC 和 arpc 服务端也可以把**每个**请求的 handler 都放到线程池上执行：handler 可以阻塞，
+同一连接上的多个请求同时处理，而不是一个接一个。默认关闭，按协议分别设置：
+
+```rust,ignore
+let mut http = HttpConfig::default();
+http.run_on_pool = true;                         // HTTP/1.1
+let mut h2 = H2Config::default();
+h2.run_on_pool = true;                           // HTTP/2 的各个 stream
+http.h2 = Some(h2);
+let mut h3 = H3Config::default();
+h3.run_on_pool = true;                           // HTTP/3（akio-h3）
+let grpc = GrpcServer::new().run_on_pool(true);  // gRPC 调用
+let routes = Routes::new().run_on_pool(true);    // arpc 的请求和通知
+```
+
+- **移到线程池的部分。** 中间件和 handler。解析、限制、流控，以及 gRPC 的拦截器和消息解码，仍在
+  I/O 线程上。
+- **仍在 I/O 线程执行的请求。** 可能接管连接的请求（HTTP/1.1 的 `CONNECT` 和 `Upgrade`，HTTP/2
+  与 HTTP/3 的扩展 CONNECT）、service 以流方式接收请求体的请求、arpc 的 stream。在线程池上执行的
+  handler 调用 `upgrade_websocket` / `upgrade_raw` 会返回 `false`。
+- **顺序。** 不论每个请求是 inline 执行、在线程池上执行，还是被 handler 自己 detach，HTTP/1.1
+  的响应都按请求顺序发出：每个请求在执行前就预留了响应位置。一个 gRPC 调用的消息逐条、按顺序交给它的
+  handler，不同调用同时执行。arpc 的答复谁先完成谁先发（调用方按序号匹配），通知可能以任意顺序处理。
+- **线程池满时。** 请求立即得到答复：HTTP 返回带 `Retry-After` 的 `503`，gRPC 返回
+  `RESOURCE_EXHAUSTED`，arpc 返回错误 `SERVER_BUSY`（通知则被丢弃）。
+
+从不阻塞的 handler 开启它没有好处：每个请求反而多一次交给线程池线程的开销。只在 handler 会阻塞的
+地方开启；单个请求用 `detach_to_pool` 即可。
 
 ## 慢回调检测
 

@@ -11,7 +11,8 @@
 //!   with the deprecated `prost` feature, which is outside the semver promise).
 //!
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
-//! from any thread, so slow work goes to the logical pool or another thread.
+//! from any thread, so slow work goes to the logical pool or another thread, or every handler
+//! runs on the pool with [`GrpcServer::run_on_pool`].
 //!
 //! Guide: [gRPC](https://lesismal.github.io/akio/en/protocols/grpc.html)
 //! (中文: [gRPC](https://lesismal.github.io/akio/zh-CN/protocols/grpc.html)).
@@ -28,7 +29,7 @@ pub use akio_http::Headers;
 pub mod fuzzing;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -521,6 +522,7 @@ pub struct GrpcServer {
     max_collect: usize,
     max_deadline: Duration,
     compress: bool,
+    run_on_pool: bool,
 }
 
 impl Default for GrpcServer {
@@ -532,6 +534,7 @@ impl Default for GrpcServer {
             max_collect: DEFAULT_MAX_COLLECT,
             max_deadline: DEFAULT_MAX_DEADLINE,
             compress: false,
+            run_on_pool: false,
         }
     }
 }
@@ -688,6 +691,19 @@ impl GrpcServer {
         self
     }
 
+    /// Run the methods' handlers on the engine's logical pool instead of the connection's I/O
+    /// thread, so they may block and the calls of one connection are served at the same time.
+    /// Each call is opened and handed its request messages on the pool one at a time and in
+    /// order, as it is inline; messages waiting for a busy handler count against
+    /// [`max_collect_bytes`](Self::max_collect_bytes) (past it, `RESOURCE_EXHAUSTED`).
+    /// Interceptors, decoding and limits stay on the I/O thread. When the pool's queue is full
+    /// the call ends with `RESOURCE_EXHAUSTED`. Default `false`.
+    #[must_use]
+    pub fn run_on_pool(mut self, on: bool) -> GrpcServer {
+        self.run_on_pool = on;
+        self
+    }
+
     fn trailers_only(ctx: &mut Context, status: Status) {
         let mut r = Response::new(200);
         r.headers.set("content-type", "application/grpc");
@@ -739,6 +755,11 @@ impl Service for GrpcServer {
             && ctx
                 .header("grpc-accept-encoding")
                 .is_some_and(|v| v.split(',').any(|e| e.trim() == "gzip"));
+        let pool = if self.run_on_pool {
+            ctx.executor()
+        } else {
+            None
+        };
         let Some(detached) = ctx.detach() else {
             return;
         };
@@ -763,8 +784,30 @@ impl Service for GrpcServer {
                 deadline,
             }
         }));
-        let mut on_msg = open(&md, sink.clone());
         let mut deframer = Deframer::new(self.max_message.unwrap_or(DEFAULT_MAX_MESSAGE), req_gzip);
+        if let Some(exec) = pool {
+            let call = OnPool::open(exec, sink.clone(), open.clone(), md, self.max_collect);
+            return ctx.on_body(move |_ctx, ev| match ev {
+                BodyEvent::Chunk(b) => {
+                    if sink.is_finished() {
+                        return;
+                    }
+                    if let Err(s) = deframer.feed_with(b, |m| call.push(Some(m))) {
+                        sink.finish(s);
+                    }
+                }
+                BodyEvent::End(_) => {
+                    if sink.is_finished() {
+                        return;
+                    }
+                    if deframer.leftover() {
+                        return sink.finish(Status::new(Code::Internal, "truncated message"));
+                    }
+                    call.push(None);
+                }
+            });
+        }
+        let mut on_msg = open(&md, sink.clone());
         ctx.on_body(move |_ctx, ev| match ev {
             BodyEvent::Chunk(b) => {
                 if sink.is_finished() {
@@ -784,6 +827,137 @@ impl Service for GrpcServer {
                 on_msg(None);
             }
         });
+    }
+}
+
+// ---- calls on the logical pool -----------------------------------------------------------------
+
+/// A call whose handler runs on the logical pool ([`GrpcServer::run_on_pool`]): its request
+/// messages queue here and one pool job at a time hands them over, in order, so the handler
+/// sees them exactly as it would inline while the connection's other calls run alongside.
+struct OnPool {
+    exec: akio_http::Executor,
+    sink: Sink,
+    /// Most bytes of messages that may wait for the handler.
+    max_queued: usize,
+    st: Mutex<PoolState>,
+}
+
+struct PoolState {
+    /// The method's `open`, until the first job runs it.
+    open: Option<(OpenFn, Arc<Metadata>)>,
+    /// The handler between jobs (taken by the job running it).
+    on_msg: Option<OnMessage>,
+    queue: VecDeque<Option<Vec<u8>>>,
+    queued: usize,
+    /// A job is queued or running; the next message rides on it.
+    running: bool,
+}
+
+impl OnPool {
+    /// Opens the call on the pool.
+    fn open(
+        exec: akio_http::Executor,
+        sink: Sink,
+        open: OpenFn,
+        md: Arc<Metadata>,
+        max_queued: usize,
+    ) -> Arc<OnPool> {
+        let call = Arc::new(OnPool {
+            exec,
+            sink,
+            max_queued,
+            st: Mutex::new(PoolState {
+                open: Some((open, md)),
+                on_msg: None,
+                queue: VecDeque::new(),
+                queued: 0,
+                running: true,
+            }),
+        });
+        call.start();
+        call
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.st.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Queues a message (`None`: the client half-closed) for the handler.
+    fn push(self: &Arc<Self>, m: Option<Vec<u8>>) {
+        let start = {
+            let mut st = self.state();
+            if let Some(b) = &m {
+                st.queued = st.queued.saturating_add(b.len());
+                if st.queued > self.max_queued {
+                    st.queue.clear();
+                    drop(st);
+                    return self.sink.finish(Status::new(
+                        Code::ResourceExhausted,
+                        "request messages waiting for the handler exceed the limit",
+                    ));
+                }
+            }
+            st.queue.push_back(m);
+            !std::mem::replace(&mut st.running, true)
+        };
+        if start {
+            self.start();
+        }
+    }
+
+    /// Queues the job that runs the handler.
+    fn start(self: &Arc<Self>) {
+        let me = self.clone();
+        if self.exec.execute(move || me.run()).is_err() {
+            // `running` stays set: nothing more is queued for a call that has ended.
+            self.state().queue.clear();
+            self.sink
+                .finish(Status::new(Code::ResourceExhausted, "server busy"));
+        }
+    }
+
+    /// The pool job: opens the call the first time, then hands over what has queued.
+    fn run(&self) {
+        // A handler that panics ends its call (the pool thread carries on).
+        struct Guard<'a>(&'a Sink);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0
+                        .finish(Status::new(Code::Internal, "handler panicked"));
+                }
+            }
+        }
+        let _guard = Guard(&self.sink);
+        let (on_msg, open) = {
+            let mut st = self.state();
+            (st.on_msg.take(), st.open.take())
+        };
+        let mut on_msg = match (on_msg, open) {
+            (Some(f), _) => f,
+            (None, Some((open, md))) => open(&md, self.sink.clone()),
+            (None, None) => return,
+        };
+        loop {
+            let m = {
+                let mut st = self.state();
+                match st.queue.pop_front() {
+                    Some(m) => {
+                        st.queued -= m.as_ref().map_or(0, Vec::len);
+                        m
+                    }
+                    None => {
+                        st.on_msg = Some(on_msg);
+                        st.running = false;
+                        return;
+                    }
+                }
+            };
+            if !self.sink.is_finished() {
+                on_msg(m);
+            }
+        }
     }
 }
 

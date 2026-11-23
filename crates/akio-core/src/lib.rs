@@ -33,7 +33,7 @@ pub use akio_buf::SharedBuf;
 pub use akio_pool::Pool;
 #[doc(hidden)]
 pub use akio_pool::ThreadHook;
-pub use akio_pool::{PoolConfig, PoolStats};
+pub use akio_pool::{Job, PoolConfig, PoolStats};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]

@@ -44,6 +44,18 @@ pub struct HttpConfig {
     /// connection. On HTTP/2, no frame for this long while request bodies are incomplete
     /// answers those streams `408` (streamed ones are reset). Default 60 s; `None` disables it.
     pub body_timeout: Option<Duration>,
+    /// Run each HTTP/1.1 request's service (middleware and handler) on the engine's logical
+    /// pool instead of the connection's I/O thread, so handlers may block and pipelined
+    /// requests of one connection are served at the same time. Responses still go out in
+    /// request order. Requests that may take the connection over (`CONNECT`, `Upgrade`) and
+    /// requests whose body the service takes as a stream stay on the I/O thread; a pooled
+    /// handler's `upgrade_websocket` / `upgrade_raw` return `false`. When the pool's queue is
+    /// full the request is answered `503`. HTTP/2 has its own switch,
+    /// [`H2Config::run_on_pool`]. Default `false`: handlers run inline and must not block
+    /// (a single request can still go to the pool with [`Context::detach_to_pool`]).
+    ///
+    /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
+    pub run_on_pool: bool,
 }
 
 impl Default for HttpConfig {
@@ -55,6 +67,7 @@ impl Default for HttpConfig {
             head_timeout: Some(Duration::from_secs(10)),
             keep_alive_timeout: Some(Duration::from_secs(75)),
             body_timeout: Some(Duration::from_secs(60)),
+            run_on_pool: false,
         }
     }
 }
@@ -735,11 +748,21 @@ impl<S: Service> Session<S> {
                 return;
             }
         }
+        let pooled = self.cfg.run_on_pool && !may_take_over(&req);
         let Ok(slot) = c.reserve_response() else {
             self.state = State::Closed;
             return;
         };
         let mut ctx = Context::new(req, slot, keep_alive);
+        if pooled {
+            // Its response keeps its place through the slot; reading goes on meanwhile.
+            let exec = crate::pool::Executor::conn(c.inner().clone());
+            crate::pool::call_on_pool(self.service.clone(), ctx, &exec);
+            if !keep_alive {
+                self.state = State::Closed;
+            }
+            return;
+        }
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
         drop(g);
@@ -778,6 +801,12 @@ impl<S: Service> Session<S> {
             slot.fill_close(out);
         }
     }
+}
+
+/// Whether the handler of `req` may take the connection over (`upgrade_raw`,
+/// `upgrade_websocket`): such requests run on the I/O thread even with `run_on_pool`.
+fn may_take_over(req: &Request) -> bool {
+    req.method == crate::message::Method::Connect || req.headers.get("upgrade").is_some()
 }
 
 /// The decoded `HTTP2-Settings` of an `Upgrade: h2c` request, if it is one.

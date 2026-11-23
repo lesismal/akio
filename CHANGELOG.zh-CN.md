@@ -10,6 +10,27 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
+
+ADR-094，均为新增：
+
+- `HttpConfig::run_on_pool`（HTTP/1.1）、`H2Config::run_on_pool`（HTTP/2）和 `H3Config::run_on_pool`
+  （HTTP/3）让每个完整请求的中间件和 handler 在 engine 的逻辑线程池上执行。handler 可以阻塞，同一连接上
+  的多个请求同时处理。
+  - 不论 inline、线程池和 detach 的请求如何交错，HTTP/1.1 的响应仍按请求顺序发出。
+  - 可能接管连接的请求和流式请求体仍在 I/O 线程上执行。
+- `GrpcServer::run_on_pool(bool)`：每个调用的 handler 在线程池上执行，消息逐条、按顺序交付；不同调用
+  同时执行。
+- `Routes::run_on_pool(bool)`（arpc）：请求和通知在线程池上执行；stream 仍 inline。新常量 `SERVER_BUSY`
+  是线程池拒绝请求时的错误文本。
+- 线程池满时立即答复：HTTP 返回 `503`，gRPC 返回 `RESOURCE_EXHAUSTED`，arpc 返回 `SERVER_BUSY`。
+- `Context::detach_to_pool(f)` 和 `Context::executor()`（akio-http，配合新的 `Executor`）把单个请求送到
+  线程池。
+- 更底层的接口：
+  - `Conn::execute`、`ConnInner::execute` 和重新导出的 `Job`（akio-core）。
+  - `Connection::execute`（akio-quic）。
+  - `ConnSink::execute` 和 `transport::dispatch_conn_on_pool`（akio-http）。
+
 ### 新增：UDP 数据报的到达接口；mDNS 据此确定查询所在链路（akio-core、akio-epoll、akio-sys、akio-webrtc）
 
 ADR-093（2026-11-23），均为新增：

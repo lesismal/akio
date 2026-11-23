@@ -71,6 +71,9 @@ use crate::{
 /// Error text of a call to a method the peer does not serve (the same as Go's).
 pub const METHOD_NOT_FOUND: &str = "method not found";
 
+/// Error text of a call that found the logical pool full ([`Routes::run_on_pool`]).
+pub const SERVER_BUSY: &str = "server busy";
+
 /// Default most streams the peer may have open on one connection
 /// ([`Routes::max_streams_per_conn`]).
 pub const DEFAULT_MAX_STREAMS_PER_CONN: usize = 1024;
@@ -169,6 +172,7 @@ pub struct Routes {
     max_streams: usize,
     max_pending: usize,
     call_timeout: Option<Duration>,
+    run_on_pool: bool,
 }
 
 impl Default for Routes {
@@ -184,6 +188,7 @@ impl Default for Routes {
             max_streams: DEFAULT_MAX_STREAMS_PER_CONN,
             max_pending: DEFAULT_MAX_PENDING_CALLS,
             call_timeout: Some(DEFAULT_CALL_TIMEOUT),
+            run_on_pool: false,
         }
     }
 }
@@ -332,6 +337,47 @@ impl Routes {
     pub fn call_timeout(mut self, t: Option<Duration>) -> Routes {
         self.call_timeout = t;
         self
+    }
+
+    /// Run each request's and notify's middleware and handler on the engine's logical pool
+    /// instead of the connection's I/O thread, so handlers may block and the requests of one
+    /// connection are served at the same time: answers go out as they are ready (callers match
+    /// them by sequence number), and notifies may be handled in any order. Streams stay on the
+    /// I/O thread, in order. When the pool's queue is full a request is answered with the
+    /// error [`SERVER_BUSY`] (a notify is dropped). Default `false`.
+    #[must_use]
+    pub fn run_on_pool(mut self, on: bool) -> Routes {
+        self.run_on_pool = on;
+        self
+    }
+}
+
+thread_local! {
+    /// Set while a job the pool refused runs here instead, to answer [`SERVER_BUSY`] (a
+    /// refused job comes back as an opaque `FnOnce`).
+    static REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs the middleware and handler of `ctx`.
+fn serve(routes: &Routes, ctx: &mut Context) {
+    let route = routes.handlers.get(ctx.msg.method.as_str());
+    let handler = match route.and_then(|r| r.handler.as_ref()) {
+        Some(h) => Some(h),
+        None => routes.handlers.get("").and_then(|r| r.handler.as_ref()),
+    };
+    let local = route.map_or(&[][..], |r| r.middleware.as_slice());
+    if routes.middleware.is_empty() && local.is_empty() {
+        match handler {
+            Some(h) => h(ctx),
+            None => ctx.error(METHOD_NOT_FOUND),
+        }
+    } else {
+        Next {
+            global: &routes.middleware,
+            local,
+            handler,
+        }
+        .run(ctx);
     }
 }
 
@@ -688,13 +734,6 @@ impl Peer {
             }
             Cmd::Pong => {}
             Cmd::Request | Cmd::Notify => {
-                let routes = &self.0.routes;
-                let route = routes.handlers.get(m.method.as_str());
-                let handler = match route.and_then(|r| r.handler.as_ref()) {
-                    Some(h) => Some(h),
-                    None => routes.handlers.get("").and_then(|r| r.handler.as_ref()),
-                };
-                let local = route.map_or(&[][..], |r| r.middleware.as_slice());
                 let mut ctx = Context {
                     peer: self.clone(),
                     conn: conn.clone(),
@@ -702,18 +741,20 @@ impl Peer {
                     responded: false,
                     values,
                 };
-                if routes.middleware.is_empty() && local.is_empty() {
-                    match handler {
-                        Some(h) => h(&mut ctx),
-                        None => ctx.error(METHOD_NOT_FOUND),
+                if !self.0.routes.run_on_pool {
+                    return serve(&self.0.routes, &mut ctx);
+                }
+                let job: akio_core::Job = Box::new(move || {
+                    if REFUSED.get() {
+                        return ctx.error(SERVER_BUSY);
                     }
-                } else {
-                    Next {
-                        global: &routes.middleware,
-                        local,
-                        handler,
-                    }
-                    .run(&mut ctx);
+                    let routes = ctx.peer.0.routes.clone();
+                    serve(&routes, &mut ctx);
+                });
+                if let Err(job) = conn.execute(job) {
+                    REFUSED.set(true);
+                    job();
+                    REFUSED.set(false);
                 }
             }
             Cmd::Response => {

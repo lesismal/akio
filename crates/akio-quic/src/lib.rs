@@ -295,20 +295,32 @@ impl Connection {
     /// from any thread). Fails with [`Error::Overloaded`] when the pool's queue is full and
     /// [`Error::Closed`] when the connection or its socket is gone.
     pub fn spawn_blocking(&self, work: impl FnOnce() + Send + 'static) -> Result<(), Error> {
-        let addr = self.remote_addr();
-        let sock = {
-            let socks = lock(&self.0.ep.socks);
-            socks
-                .get(&addr)
-                .cloned()
-                .or_else(|| socks.values().next().cloned())
-        };
-        let sock = sock.ok_or(Error::Closed)?;
+        let sock = self.pool_socket().ok_or(Error::Closed)?;
         sock.spawn_blocking(work, |_: &mut Udp, _, ()| {})
             .map_err(|e| match e {
                 akio_core::Error::Overloaded => Error::Overloaded,
                 _ => Error::Closed,
             })
+    }
+
+    /// [`spawn_blocking`](Self::spawn_blocking) that hands `job` back, unrun, when it cannot
+    /// be queued (the pool's queue is full, or the connection's socket is gone), so the caller
+    /// can still answer for it.
+    pub fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        match self.pool_socket() {
+            Some(sock) => sock.inner().execute(job),
+            None => Err(job),
+        }
+    }
+
+    /// The socket this connection's pool work is posted through: the one its peer is on.
+    fn pool_socket(&self) -> Option<Conn<Udp>> {
+        let addr = self.remote_addr();
+        let socks = lock(&self.0.ep.socks);
+        socks
+            .get(&addr)
+            .cloned()
+            .or_else(|| socks.values().next().cloned())
     }
 
     /// Ends a stream once its queued bytes are out.

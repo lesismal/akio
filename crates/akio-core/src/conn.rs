@@ -2049,6 +2049,20 @@ impl ConnInner {
         }
     }
 
+    /// Runs `job` on the engine's logical pool, with no completion back on the I/O thread
+    /// (what `job` sends goes out from the pool thread; responses keep their order through
+    /// [`reserve`](Self::reserve)d positions). `Err(job)` hands it back, unrun, when the pool's
+    /// queue is full, the engine has no pool, or the connection is closed.
+    pub fn execute(&self, job: akio_pool::Job) -> std::result::Result<(), akio_pool::Job> {
+        if !self.is_open() {
+            return Err(job);
+        }
+        match self.link.pool() {
+            Some(pool) => pool.try_execute(job).map_err(|r| r.0),
+            None => Err(job),
+        }
+    }
+
     /// Reserves the next response position. Call in request order (on the I/O thread).
     pub fn reserve(&self) -> u64 {
         let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
@@ -2794,6 +2808,20 @@ impl<H: Handler> Conn<H> {
         pool.try_execute(job).map_err(|_| Error::Overloaded)
     }
 
+    /// Runs `work` on the logical pool with no completion: for work that answers by itself
+    /// (through [`send`](Self::send) or a [`ResponseSlot`], both usable from any thread).
+    /// [`spawn_blocking`](Self::spawn_blocking) is the form whose result comes back to the
+    /// handler. Fails with [`Error::Overloaded`] when the pool's queue is full and
+    /// [`Error::Closed`] when the connection is gone; `work` is dropped unrun then.
+    pub fn execute(&self, work: impl FnOnce() + Send + 'static) -> Result<()> {
+        if !self.inner.is_open() || self.inner.link.pool().is_none() {
+            return Err(Error::Closed);
+        }
+        self.inner
+            .execute(Box::new(work))
+            .map_err(|_| Error::Overloaded)
+    }
+
     /// Reserves the next response position on this connection. Responses are written in
     /// reservation order no matter in which order the slots are filled, which keeps pipelined
     /// protocols correct when requests finish out of order on the pool. Reserve on the I/O
@@ -2820,6 +2848,12 @@ pub struct ResponseSlot {
 }
 
 impl ResponseSlot {
+    /// The connection this position is on (`None` once filled).
+    #[doc(hidden)]
+    pub fn conn(&self) -> Option<&Arc<ConnInner>> {
+        self.inner.as_ref()
+    }
+
     /// Supplies the response bytes. Safe to call from any thread.
     pub fn fill(mut self, data: Vec<u8>) {
         if let Some(inner) = self.inner.take() {

@@ -93,3 +93,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-091: TURN ICMP relaying, DSCP across the relay, and giving back one family](091-turn-icmp-dscp-family-release.md) (accepted 2026-11-23)
 - [ADR-092: A video playout buffer, E-model delay classes and room noise, VoIP packet length and late discards](092-video-playout-emodel-classes.md) (accepted 2026-11-23)
 - [ADR-093: The interface a UDP datagram arrived on, opt-in per bound socket; mDNS places queries by it](093-udp-arrival-interface.md) (accepted 2026-11-23; closes ADR-078 update 4's leftover)
+- [ADR-094: Protocol handlers on the logical pool, per protocol, off by default](094-handlers-on-the-logical-pool.md) (accepted 2026-11-23)
