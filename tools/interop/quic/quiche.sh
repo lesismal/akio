@@ -22,7 +22,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 VOL=${AKIO_INTEROP_TARGET:-akio-interop-target}
 QUICHE=${QUICHE:-0.30.1}
-docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+docker run --rm -v "$ROOT":/w -w /w -v akio-cargo-reg:/usr/local/cargo/registry \
     -v "$VOL":/tmp/t -e CARGO_TARGET_DIR=/tmp/t -v "quiche-apps-$QUICHE":/opt/quiche \
     -e QUICHE="$QUICHE" rust:1 bash -c '
 set -eu
