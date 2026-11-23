@@ -196,6 +196,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "mux_tls_hello"
+path = "fuzz_targets/mux_tls_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proxy_header"
+path = "fuzz_targets/proxy_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "kcp_input"
 path = "fuzz_targets/kcp_input.rs"
 test = false

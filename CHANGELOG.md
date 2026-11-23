@@ -10,6 +10,33 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TLS routing by SNI without terminating it, and the PROXY protocol (akio-mux, akio-core)
+
+ADR-095, for akit's TLS passthrough and load-balanced listeners:
+
+- `Rule::TlsSni(SniMatcher)` (exact names and one-label `*.` wildcards, without case) and
+  `Rule::TlsHello(Arc<dyn Fn(&ClientHello) -> bool>)` (server name, ALPN): route a connection by
+  its ClientHello without terminating TLS, the hello being replayed to the route. The hello may
+  span several reads and TLS records. A mux with one of these routes sniffs up to
+  `TLS_SNIFF_BYTES` (16 KiB + 5) unless `max_sniff_bytes` was set.
+- `akio_mux::tls`: `parse_client_hello`, `ClientHello` (`server_name`, `alpn`, `offers_alpn`,
+  `legacy_version`, `consumed`), `HelloError`, `SniMatcher`; a standalone parser (akio-mux does
+  not depend on akio-tls).
+- `akio_mux::proxy`: PROXY protocol v1 and v2 (TLVs, CRC32C checked, LOCAL, IPv4 / IPv6 / Unix).
+  `ProxyProtocol::new(next)` / `new_any(next)` reads the header before `next` runs
+  (`header_timeout` 5 s, `max_header_bytes` 4096, `versions`, `allow_missing`, `trusted`) and
+  attaches it to the connection: `proxy::header(&conn)`, `proxy::client_addr(&conn)`. Dial side:
+  `ProxyHeader::proxy` / `local` / `with_tlv`, `encode_v1` / `encode_v2`, `proxy::send_header`.
+- akio-core: `Conn::attachment::<T>()` and the hidden `ConnInner::attach`, one write-once value
+  per connection set by a listener-side layer before the handler runs.
+- Fuzz targets `mux_tls_hello` and `proxy_header`.
+
+### Changed: `Mux` tries routes strictly in order (akio-mux)
+
+A route that matches now waits while an earlier route is still undecided (`NeedMore`), instead
+of taking the connection at once; at the sniff limit the first match still wins. This is what
+"routes are tried in order" promised, and what an SNI route before `Rule::Tls` needs.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:
