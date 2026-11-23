@@ -10,6 +10,37 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TCP listeners added, removed and drained at run time; accept filters (akio, akio-core, akio-epoll, akio-uring)
+
+ADR-094 (2026-11-23), additive:
+
+- `Engine::add_listener(Listener) -> io::Result<ListenerId>` binds a TCP listener on a running
+  (or not yet started) engine as `build` does: its backend (epoll / kqueue / io_uring with the
+  fallback and `strict`), threads (`SO_REUSEPORT` per thread on Linux), `Accel`, inherited
+  socket, filter, the engine's config with the live settings, NUMA placement. UDP / datagram
+  listeners are refused (`InvalidInput`), DPDK ones `Unsupported`.
+- `Engine::remove_listener(id)`: stops accepting and closes the listening sockets; open
+  connections keep running and each thread exits after its last one.
+  `Engine::shutdown_listener(id, drain)`: also `on_shutdown` for every open connection now, and
+  those left after `drain` are closed.
+- `ListenerId` (builder listeners `0..n`, then the added ones), `Engine::listeners() ->
+  Vec<ListenerInfo>` (id, address, threads, accel, udp), `Engine::set_listener_threads(id, n)`.
+- `EngineBuilder::max_listeners(n)` (default 1024): listeners at once, removed ones still
+  serving included; `add_listener` past it fails with `QuotaExceeded`.
+- `Listener::filter(Fn(&SocketAddr) -> bool)`: runs on the I/O thread right after `accept`,
+  before `max_connections`, the acceptor and TLS; refused connections are counted in the new
+  `LoopCounters::filtered` (`akio_connections_filtered_total`). `Engine::set_listener_filter` /
+  `clear_listener_filter` swap it at run time, in force for every accept after the call (one
+  atomic load per accept, no lock).
+- The per-thread counters of a removed listener's exited threads leave `Metrics::loops`; their
+  counts stay in `Metrics::total`.
+
+### Changed: `Engine::wait` waits for `shutdown` (akio)
+
+`wait` (and so `run`) now returns only after `shutdown` was called and every I/O thread, those
+of listeners added at run time included, has exited. An engine with no listener and no client
+threads used to return at once.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

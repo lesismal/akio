@@ -2,9 +2,109 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
-use crate::{DatagramSender, DynAcceptor};
+use crate::{DatagramSender, DynAcceptor, LoopStats};
+
+/// A listener's accept filter (ADR-094): called on the I/O thread with the peer's address
+/// right after `accept`; `false` closes the connection before anything else runs.
+/// Backend-facing.
+#[doc(hidden)]
+pub type AcceptFilter = Arc<dyn Fn(&SocketAddr) -> bool + Send + Sync>;
+
+/// The accept filter of one listener group, shared by its loops (ADR-094): replaced under the
+/// lock, then the generation is bumped; each loop reads the generation once per accept and
+/// takes the new filter only when it changed, so no lock is taken per connection and a filter
+/// is in force for every `accept` that starts after [`set`](Self::set) returned. Backend-facing.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct FilterCell {
+    generation: std::sync::atomic::AtomicU64,
+    filter: std::sync::Mutex<Option<AcceptFilter>>,
+}
+
+impl std::fmt::Debug for FilterCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterCell").finish_non_exhaustive()
+    }
+}
+
+impl FilterCell {
+    /// Installs `filter` (or with `None` removes it).
+    pub fn set(&self, filter: Option<AcceptFilter>) {
+        let mut g = self.filter.lock().unwrap_or_else(|p| p.into_inner());
+        *g = filter;
+        // Under the lock: a loop that sees the new generation reads the new filter.
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// A loop's view of its group's [`FilterCell`]: the filter it last read and its generation.
+/// Backend-facing.
+#[doc(hidden)]
+pub struct FilterView {
+    cell: Arc<FilterCell>,
+    generation: u64,
+    filter: Option<AcceptFilter>,
+}
+
+impl std::fmt::Debug for FilterView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterView")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FilterView {
+    /// A view of `cell` (it reads the filter at its first check).
+    pub fn new(cell: Arc<FilterCell>) -> FilterView {
+        FilterView {
+            cell,
+            generation: 0,
+            filter: None,
+        }
+    }
+
+    /// Whether the connection from `peer` may be opened: the current filter, if any, allows it.
+    /// A filter that panics refuses the connection.
+    #[inline]
+    pub fn allows(&mut self, peer: &SocketAddr) -> bool {
+        let g = self
+            .cell
+            .generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if g != self.generation {
+            self.filter = self
+                .cell
+                .filter
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            self.generation = g;
+        }
+        filter_allows(self.filter.as_ref(), peer)
+    }
+}
+
+/// Runs `filter` for `peer` (none: accepted); a filter that panics refuses the connection.
+fn filter_allows(filter: Option<&AcceptFilter>, peer: &SocketAddr) -> bool {
+    let Some(f) = filter else {
+        return true;
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(peer))) {
+        Ok(allowed) => allowed,
+        Err(_) => {
+            crate::telemetry::log_or_stderr(
+                akio_log::Level::Error,
+                format_args!("accept filter panicked for {peer}; connection refused"),
+            );
+            false
+        }
+    }
+}
 
 /// One backend instance serving one listener (or, with no listener, only dialed connections):
 /// a group of I/O threads. Implemented by backend crates; `Engine` composes groups, which is how
@@ -52,6 +152,34 @@ pub trait Group: Send + Sync {
             io::ErrorKind::Unsupported,
             "this group cannot change its thread count",
         ))
+    }
+    /// Stops accepting for good (ADR-094): the listening sockets are closed, open connections
+    /// stay on their threads. With `drain`, every open connection gets `on_shutdown` now and
+    /// those still open after `drain` are closed. With `exit_when_idle` each thread exits once
+    /// it has no connection left (otherwise it stays up for dials until shutdown). Returns once
+    /// posted. Only TCP listener groups implement it.
+    fn stop_listening(&self, _drain: Option<Duration>, _exit_when_idle: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group cannot stop listening",
+        ))
+    }
+    /// Installs (or with `None` removes) the accept filter of a TCP listener group: every
+    /// `accept` its threads start after this returns runs it.
+    fn set_filter(&self, _filter: Option<AcceptFilter>) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group has no accept filter",
+        ))
+    }
+    /// Whether the group was started and every one of its threads has exited (a group that
+    /// stopped listening and whose connections are all closed).
+    fn finished(&self) -> bool {
+        false
+    }
+    /// The counters of every thread the group has had (to unregister them from telemetry).
+    fn loop_stats(&self) -> Vec<Arc<LoopStats>> {
+        Vec::new()
     }
     /// Begins graceful shutdown: stop accepting, notify, drain, then stop the threads.
     fn shutdown(&self);

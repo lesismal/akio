@@ -299,26 +299,33 @@ impl core::panic::unwind_safe::UnwindSafe for akio::EbpfConfig
 pub struct akio::Engine
 impl akio::Engine
 pub fn akio::Engine::accel_status(&self) -> &[akio::AccelStatus]
+pub fn akio::Engine::add_listener(&self, akio::Listener) -> core::io::error::Result<akio::ListenerId>
 pub fn akio::Engine::adopt_tcp<A: akio_core::handler::Acceptor>(&self, std::net::tcp::TcpStream, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::bind_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_icmp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::Fn(&akio_core::group::IcmpError) + core::marker::Send + core::marker::Sync + 'static) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_multicast<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_multicast_on<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, &[u32], A) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::builder() -> akio::EngineBuilder
+pub fn akio::Engine::clear_listener_filter(&self, akio::ListenerId) -> core::io::error::Result<()>
 pub fn akio::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<akio_core::telemetry::ConnInfo>
 pub fn akio::Engine::datagram_sender(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<akio_core::datagrams::DatagramSender>
 pub fn akio::Engine::dial<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_udp_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::listeners(&self) -> alloc::vec::Vec<akio::ListenerInfo>
 pub fn akio::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn akio::Engine::metrics(&self) -> akio_core::telemetry::Metrics
 pub fn akio::Engine::numa_status(&self) -> &akio::numa::NumaStatus
 pub fn akio::Engine::pool_stats(&self) -> akio_pool::PoolStats
 pub fn akio::Engine::reload(&self, &akio_core::config::Config) -> akio_core::telemetry::ReloadReport
+pub fn akio::Engine::remove_listener(&self, akio::ListenerId) -> core::io::error::Result<()>
 pub fn akio::Engine::run(&self) -> core::io::error::Result<()>
+pub fn akio::Engine::set_listener_filter(&self, akio::ListenerId, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> core::io::error::Result<()>
+pub fn akio::Engine::set_listener_threads(&self, akio::ListenerId, usize) -> core::io::error::Result<()>
 pub fn akio::Engine::set_threads(&self, usize, usize) -> core::io::error::Result<()>
 pub fn akio::Engine::shutdown(&self)
+pub fn akio::Engine::shutdown_listener(&self, akio::ListenerId, core::time::Duration) -> core::io::error::Result<()>
 pub fn akio::Engine::slow_callbacks(&self) -> alloc::vec::Vec<akio_core::telemetry::SlowRecord>
 pub fn akio::Engine::start(&self) -> core::io::error::Result<()>
 pub fn akio::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
@@ -338,6 +345,7 @@ pub fn akio::EngineBuilder::build(self) -> core::io::error::Result<akio::Engine>
 pub fn akio::EngineBuilder::client_threads(self, usize) -> Self
 pub fn akio::EngineBuilder::config(self, akio_core::config::Config) -> Self
 pub fn akio::EngineBuilder::listen(self, akio::Listener) -> Self
+pub fn akio::EngineBuilder::max_listeners(self, usize) -> Self
 pub fn akio::EngineBuilder::numa(self, akio::numa::NumaConfig) -> Self
 pub fn akio::EngineBuilder::pool(self, akio_pool::PoolConfig) -> Self
 pub fn akio::EngineBuilder::udp_client_threads(self, usize) -> Self
@@ -370,6 +378,7 @@ pub struct akio::Listener
 impl akio::Listener
 pub fn akio::Listener::accel(self, akio::Accel) -> Self
 pub fn akio::Listener::backend(self, akio::Backend) -> Self
+pub fn akio::Listener::filter(self, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn akio::Listener::serve<A: akio_core::handler::Acceptor>(self, A) -> Self
 pub fn akio::Listener::serve_any(self, impl core::convert::Into<akio_core::handler::AnyAcceptor>) -> Self
 pub fn akio::Listener::serve_datagrams<H, F>(self, F) -> Self where H: akio_core::datagrams::DatagramsHandler, F: core::ops::function::Fn(&akio_core::datagrams::DatagramSender) -> H + core::marker::Send + core::marker::Sync + 'static
@@ -384,6 +393,46 @@ impl core::marker::Sync for akio::Listener
 impl core::marker::Unpin for akio::Listener
 impl !core::panic::unwind_safe::RefUnwindSafe for akio::Listener
 impl !core::panic::unwind_safe::UnwindSafe for akio::Listener
+pub struct akio::ListenerId(_)
+impl akio::ListenerId
+pub fn akio::ListenerId::get(self) -> u64
+impl core::clone::Clone for akio::ListenerId
+pub fn akio::ListenerId::clone(&self) -> Self
+impl core::cmp::Eq for akio::ListenerId
+impl core::cmp::Ord for akio::ListenerId
+pub fn akio::ListenerId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for akio::ListenerId
+pub fn akio::ListenerId::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for akio::ListenerId
+pub fn akio::ListenerId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for akio::ListenerId
+pub fn akio::ListenerId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio::ListenerId
+pub fn akio::ListenerId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio::ListenerId
+pub fn akio::ListenerId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio::ListenerId
+impl core::marker::StructuralPartialEq for akio::ListenerId
+impl core::marker::Send for akio::ListenerId
+impl core::marker::Sync for akio::ListenerId
+impl core::marker::Unpin for akio::ListenerId
+impl core::panic::unwind_safe::RefUnwindSafe for akio::ListenerId
+impl core::panic::unwind_safe::UnwindSafe for akio::ListenerId
+#[non_exhaustive] pub struct akio::ListenerInfo
+pub akio::ListenerInfo::accel: akio::AccelStatus
+pub akio::ListenerInfo::id: akio::ListenerId
+pub akio::ListenerInfo::local_addr: core::net::socket_addr::SocketAddr
+pub akio::ListenerInfo::threads: usize
+pub akio::ListenerInfo::udp: bool
+impl core::clone::Clone for akio::ListenerInfo
+pub fn akio::ListenerInfo::clone(&self) -> Self
+impl core::fmt::Debug for akio::ListenerInfo
+pub fn akio::ListenerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio::ListenerInfo
+impl core::marker::Sync for akio::ListenerInfo
+impl core::marker::Unpin for akio::ListenerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for akio::ListenerInfo
+impl core::panic::unwind_safe::UnwindSafe for akio::ListenerInfo
 #[non_exhaustive] pub struct akio::NumaConfig
 pub akio::NumaConfig::incoming_cpu: bool
 pub akio::NumaConfig::per_cpu: bool

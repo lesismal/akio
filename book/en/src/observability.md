@@ -29,7 +29,7 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 | Series | Type |
 |---|---|
 | `akio_connections_accepted_total`, `akio_connections_dialed_total`, `akio_connections_closed_total` | counter |
-| `akio_connections_rejected_total` (max_connections), `akio_accept_errors_total`, `akio_idle_timeouts_total` | counter |
+| `akio_connections_rejected_total` (max_connections), `akio_connections_filtered_total` (`Listener::filter`), `akio_accept_errors_total`, `akio_idle_timeouts_total` | counter |
 | `akio_read_bytes_total`, `akio_reads_total`, `akio_written_bytes_total`, `akio_writes_total` | counter |
 | `akio_udp_datagrams_received_total`, `akio_udp_datagrams_sent_total` | counter |
 | `akio_send_queue_bytes` | gauge |

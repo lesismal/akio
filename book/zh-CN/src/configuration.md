@@ -48,6 +48,7 @@
 | `pool(PoolConfig)` | 见下文 | `spawn_blocking` 使用的逻辑线程池 |
 | `client_threads(n)` | 0 | 只用于 `Engine::dial` 的 I/O 线程；没有时 dial 使用最后一个 listener 的线程 |
 | `udp_client_threads(n)` | 0 | 用于 `Engine::dial_udp` 的 I/O 线程；没有时使用最后一个 UDP listener 的线程（或报错） |
+| `max_listeners(n)` | 1024 | 同时存在的 listener 数，包括已移除但仍在服务连接的；超过时 `Engine::add_listener` 以 `QuotaExceeded` 失败 |
 | `build()` | – | 绑定并校验；返回 `io::Result<Engine>` |
 
 ## `Listener`
@@ -59,9 +60,15 @@
 | `threads(n)` | 每核一个 | 该 listener 的 I/O 线程数（至少 1） |
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |
+| `filter(Fn(&SocketAddr) -> bool)` | 无 | TCP：在 `accept` 之后、acceptor 与 TLS 之前拒绝连接（允许 / 拒绝列表） |
 
-listener 和后端在构建 engine 时就固定了。线程数可以在运行时用 `Engine::set_threads(index, n)`
-修改（TCP listener 和 client 组；见[可观测性与热更新](observability.md#io-线程数)）。
+TCP listener 可以在 engine 运行时增加和移除（ADR-094）：`Engine::add_listener` 像 `build` 一样绑定
+（同样的后端、线程、accel 与过滤器选项）并返回其 `ListenerId`；`remove_listener(id)` 停止接受连接，
+已有连接继续运行；`shutdown_listener(id, drain)` 还会对它们调用 `on_shutdown`，并在 `drain` 之后关闭
+剩余连接；`listeners()` 列出它们；`set_listener_filter` / `clear_listener_filter` 替换过滤器。见
+[TCP 服务器](protocols/tcp-udp.md#运行时的-listener)。线程数可以在运行时用
+`Engine::set_threads(index, n)`（builder 的 listener 和 client 组）或 `set_listener_threads(id, n)`
+修改（见[可观测性与热更新](observability.md#io-线程数)）。
 
 `UringConfig`：`entries`（SQ 深度，0 = 默认）、`sqpoll`（内核 SQ 轮询线程，false）、`strict`
 （失败而不是回退到 epoll，false）。
