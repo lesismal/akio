@@ -148,7 +148,7 @@ impl Machine {
         }
     }
 
-    /// A server waiting for an asynchronous anti-replay answer.
+    /// A server waiting for an asynchronous anti-replay answer or its certificate resolver.
     pub(crate) fn suspended(&self) -> bool {
         matches!(self, Machine::Server(s) if s.suspended())
     }
@@ -160,10 +160,10 @@ impl Machine {
         }
     }
 
-    pub(crate) fn set_replay_waker(&self, w: Waker) -> bool {
+    pub(crate) fn set_resume_waker(&self, w: Waker) -> bool {
         match self {
             Machine::Client(_) => false,
-            Machine::Server(s) => s.set_replay_waker(w),
+            Machine::Server(s) => s.set_resume_waker(w),
         }
     }
 
@@ -227,7 +227,7 @@ pub struct Connection {
     /// `kernel_records_sent`).
     #[cfg(feature = "ktls")]
     kernel_records: u64,
-    /// Called when a suspended handshake can go on (an asynchronous anti-replay answer came).
+    /// Called when a suspended handshake can go on (an anti-replay or certificate answer came).
     waker: Option<Waker>,
 }
 
@@ -300,13 +300,13 @@ impl Connection {
     }
 
     /// Sets what to call when a suspended handshake can go on: the server's handshake waits
-    /// for an asynchronous anti-replay store (ADR-062); calling [`recv`](Self::recv) (with no
-    /// input) then takes it up again.
+    /// for an asynchronous anti-replay store (ADR-062) or a certificate resolver (ADR-093);
+    /// calling [`recv`](Self::recv) (with no input) then takes it up again.
     pub(crate) fn set_waker(&mut self, w: Waker) {
         self.waker = Some(w);
     }
 
-    /// The handshake is suspended, waiting for an asynchronous anti-replay answer.
+    /// The handshake is suspended, waiting for an anti-replay answer or a certificate.
     pub fn suspended(&self) -> bool {
         self.m.suspended()
     }
@@ -315,7 +315,7 @@ impl Connection {
     /// drivers; then call [`recv`](Self::recv)).
     pub fn wait_resumable(&self) {
         if let Machine::Server(s) = &self.m {
-            s.wait_replay();
+            s.wait_resumable();
         }
     }
 
@@ -616,7 +616,7 @@ impl Connection {
                 if self.rx.len() > 2 * self.m.early_skip() + MAX_HANDSHAKE {
                     return fatal(
                         Alert::UnexpectedMessage,
-                        "too much data while the anti-replay check is pending",
+                        "too much data while the handshake is suspended",
                     );
                 }
                 return Ok(());
@@ -658,7 +658,7 @@ impl Connection {
         Ok(())
     }
 
-    /// A suspended handshake: takes the ClientHello up again if the anti-replay answer is
+    /// A suspended handshake: takes the ClientHello up again if its answer is
     /// here (`true`), else registers the waker (`false`).
     fn resume_now(&mut self, out: &mut Vec<u8>) -> Result<bool, Fatal> {
         loop {
@@ -681,7 +681,7 @@ impl Connection {
                 }
                 None => match &self.waker {
                     // Answered between the two looks: go on now.
-                    Some(w) if !self.m.set_replay_waker(w.clone()) => {}
+                    Some(w) if !self.m.set_resume_waker(w.clone()) => {}
                     _ => return Ok(false),
                 },
             }

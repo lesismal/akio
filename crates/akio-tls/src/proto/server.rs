@@ -22,6 +22,7 @@ use super::sig;
 use super::suites::{self, Auth12, EMPTY_RENEGOTIATION_INFO_SCSV, FALLBACK_SCSV, Suite};
 use super::tls12;
 use crate::replay::{Slot, Waker};
+use crate::resolver::{CertAnswer, CertDone, ClientHelloInfo, PendingGuard};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum St {
@@ -96,6 +97,10 @@ pub(crate) struct Server {
     replay_wait: Option<Box<ReplayWait>>,
     /// The answer, for the ClientHello taken up again: PSK index, session, accept early data.
     replay_done: Option<Box<(usize, Session, bool)>>,
+    /// The ClientHello suspended until the certificate resolver answers (ADR-093).
+    cert_wait: Option<Box<CertWait>>,
+    /// The resolver's answer, for the ClientHello taken up again.
+    cert_done: Option<CertAnswer>,
     /// TLS 1.3: the client can resume with tickets (psk_dhe_ke among its PSK modes; we offer
     /// no other mode, RFC 8446 section 4.2.9).
     client_dhe_ke: bool,
@@ -111,6 +116,15 @@ struct ReplayWait {
     index: usize,
     session: Session,
     slot: Arc<Slot>,
+}
+
+/// A ClientHello waiting for the certificate resolver: handled again from the start with the
+/// answer (it found no PSK, so nothing is looked up twice). Counted among the configuration's
+/// pending resolutions while it lives.
+struct CertWait {
+    msg: Vec<u8>,
+    slot: Arc<Slot<CertAnswer>>,
+    _pending: PendingGuard,
 }
 
 /// The parts of ClientHello1 that ClientHello2 must repeat: everything but the key shares,
@@ -192,34 +206,56 @@ impl Server {
             quic_ticket_version: 0,
             replay_wait: None,
             replay_done: None,
+            cert_wait: None,
+            cert_done: None,
             client_dhe_ke: false,
             key_update_answered: false,
         }
     }
 
-    /// The handshake waits for an asynchronous anti-replay answer.
+    /// The handshake waits for an asynchronous anti-replay answer or for the certificate
+    /// resolver.
     pub(crate) fn suspended(&self) -> bool {
-        self.replay_wait.is_some()
+        self.replay_wait.is_some() || self.cert_wait.is_some()
     }
 
     /// While [`suspended`](Self::suspended): has `w` called once the answer is here; `false`
     /// if it already is (resume right away).
-    pub(crate) fn set_replay_waker(&self, w: Waker) -> bool {
+    pub(crate) fn set_resume_waker(&self, w: Waker) -> bool {
+        if let Some(c) = &self.cert_wait {
+            return c.slot.set_waker(w);
+        }
         self.replay_wait
             .as_ref()
             .is_some_and(|r| r.slot.set_waker(w))
     }
 
     /// While [`suspended`](Self::suspended): blocks until the answer is here (blocking drivers).
-    pub(crate) fn wait_replay(&self) {
+    pub(crate) fn wait_resumable(&self) {
+        if let Some(c) = &self.cert_wait {
+            c.slot.wait();
+        }
         if let Some(r) = &self.replay_wait {
             r.slot.wait();
         }
     }
 
-    /// Takes the suspended ClientHello up again once its anti-replay answer is here: `false`
-    /// (nothing done) while it is not.
+    /// Takes the suspended ClientHello up again once its answer is here: `false` (nothing
+    /// done) while it is not.
     pub(crate) fn resume(&mut self, out: &mut Vec<Action>) -> Result<bool, Fatal> {
+        if let Some(c) = &self.cert_wait {
+            let Some(answer) = c.slot.result() else {
+                return Ok(false);
+            };
+            let Some(w) = self.cert_wait.take() else {
+                return Ok(false);
+            };
+            // Uncounted from the pending resolutions before the handshake goes on.
+            let CertWait { msg, .. } = *w;
+            self.cert_done = Some(answer);
+            self.handle(&msg, out)?;
+            return Ok(true);
+        }
         let Some(accept) = self.replay_wait.as_ref().and_then(|r| r.slot.result()) else {
             return Ok(false);
         };
@@ -352,13 +388,88 @@ impl Server {
             .ok_or_else(|| Fatal::new(Alert::InternalError, "no suite"))
     }
 
-    fn pick_cert(&mut self, sni: Option<&String>) -> Arc<CertKey> {
-        let c = sni
-            .and_then(|n| self.cfg.sni.get(n))
-            .unwrap_or(&self.cfg.cert)
-            .clone();
+    /// The configuration's own chain for `sni`: the `sni_cert` one, else the default.
+    fn static_cert(&self, sni: Option<&String>) -> Option<Arc<CertKey>> {
+        sni.and_then(|n| self.cfg.sni.get(n))
+            .or(self.cfg.cert.as_ref())
+            .cloned()
+    }
+
+    /// The certificate of a full handshake: the configuration's, or the resolver's (ADR-093).
+    /// `Ok(None)`: the resolver answers later, the ClientHello `msg` is kept and nothing was
+    /// sent (the caller returns at once).
+    fn select_cert(
+        &mut self,
+        msg: &[u8],
+        ch: &ClientHello<'_>,
+        tls13: bool,
+        sig_algs: &[u16],
+    ) -> Result<Option<Arc<CertKey>>, Fatal> {
+        let Some(r) = &self.cfg.resolver else {
+            let c = self
+                .static_cert(ch.sni.as_ref())
+                .ok_or_else(|| Fatal::new(Alert::InternalError, "no certificate"))?;
+            self.cert = Some(c.clone());
+            return Ok(Some(c));
+        };
+        let answer = match self.cert_done.take() {
+            Some(a) => a,
+            None => {
+                let slot = Arc::new(Slot::new(CertAnswer::TimedOut));
+                let info = ClientHelloInfo {
+                    server_name: ch.sni.as_deref(),
+                    alpn: ch.alpn.as_deref().unwrap_or(&[]),
+                    signature_schemes: sig_algs,
+                    cipher_suites: &ch.suites,
+                    tls13,
+                    quic: self.quic.is_some(),
+                };
+                r.resolver.resolve(&info, CertDone::new(slot.clone()));
+                match slot.result() {
+                    // Answered in the call: nothing suspends.
+                    Some(a) => a,
+                    None => {
+                        let Some(guard) = PendingGuard::acquire(&r.pending, r.max_pending) else {
+                            // The answer is abandoned (`CertDone::is_abandoned`).
+                            return fatal(
+                                Alert::InternalError,
+                                "too many handshakes waiting for the certificate resolver",
+                            );
+                        };
+                        slot.expire_at(std::time::Instant::now() + r.timeout);
+                        self.cert_wait = Some(Box::new(CertWait {
+                            msg: msg.to_vec(),
+                            slot,
+                            _pending: guard,
+                        }));
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+        let c = match answer {
+            CertAnswer::Key(k) => k,
+            CertAnswer::Default => self.static_cert(ch.sni.as_ref()).ok_or_else(|| {
+                Fatal::new(Alert::UnrecognizedName, "no certificate for this name")
+            })?,
+            CertAnswer::Alert(a) => {
+                return fatal(a, "the certificate resolver refused the handshake");
+            }
+            CertAnswer::TimedOut => {
+                return fatal(
+                    Alert::InternalError,
+                    "the certificate resolver did not answer in time",
+                );
+            }
+            CertAnswer::Dropped => {
+                return fatal(
+                    Alert::InternalError,
+                    "the certificate resolver dropped its answer",
+                );
+            }
+        };
         self.cert = Some(c.clone());
-        c
+        Ok(Some(c))
     }
 
     fn pick_alpn(&mut self, offered: Option<&Vec<&[u8]>>) -> Result<(), Fatal> {
@@ -491,7 +602,6 @@ impl Server {
             }
         }
         self.sni.clone_from(&ch.sni);
-        let cert = self.pick_cert(ch.sni.as_ref());
         self.pick_alpn(ch.alpn.as_ref())?;
         if self.quic.is_some() {
             self.peer_quic = Some(
@@ -520,7 +630,9 @@ impl Server {
             let (i, s, accept) = *d;
             psk = Some((i, s));
             early = accept;
-        } else if let (Some(offer), true) = (&ch.psk, self.cfg.resumption()) {
+        } else if let (Some(offer), true, None) = (&ch.psk, self.cfg.resumption(), &self.cert_done)
+        {
+            // (Taken up again after the certificate resolver: this found no PSK before.)
             let dhe = ch.psk_modes.is_some_and(|m| m.contains(&PSK_DHE_KE));
             if dhe {
                 let now = now_secs();
@@ -567,17 +679,23 @@ impl Server {
                 }
             }
         }
-        let scheme =
-            if psk.is_some() {
-                None
-            } else {
-                let algs = ch.sig_algs.as_ref().ok_or_else(|| {
-                    Fatal::new(Alert::MissingExtension, "no signature_algorithms")
-                })?;
-                Some(sig::choose(&cert.key, algs, true).ok_or_else(|| {
-                    Fatal::new(Alert::HandshakeFailure, "no common signature scheme")
-                })?)
+        // A full handshake signs with a certificate; a resumed one sends none.
+        let signer = if psk.is_some() {
+            None
+        } else {
+            let algs = ch
+                .sig_algs
+                .as_ref()
+                .ok_or_else(|| Fatal::new(Alert::MissingExtension, "no signature_algorithms"))?;
+            let Some(cert) = self.select_cert(msg, ch, true, algs)? else {
+                // Waiting for the resolver: nothing sent, nothing changed that the second
+                // pass does not set again.
+                return Ok(());
             };
+            let scheme = sig::choose(&cert.key, algs, true)
+                .ok_or_else(|| Fatal::new(Alert::HandshakeFailure, "no common signature scheme"))?;
+            Some((scheme, cert))
+        };
         if early {
             self.early = EarlyData::Accepted;
         } else if ch.early_data {
@@ -689,7 +807,7 @@ impl Server {
         });
         self.t.add(&ee);
         out.push(Action::Msg(Level::Handshake, ee));
-        if let Some(scheme) = scheme {
+        if let Some((scheme, cert)) = signer {
             if self.cfg.client_auth.is_some() {
                 let cr = message(CERTIFICATE_REQUEST, |o| {
                     put_vec8(o, &[]);
@@ -986,37 +1104,18 @@ impl Server {
         self.ems = ch.ems;
         self.client_random = ch.random;
         self.sni.clone_from(&ch.sni);
-        if let Some(peer) = ch.record_limit {
-            // record_size_limit (RFC 8449): protected records only, after the CCS.
-            let ours = self.cfg.record_limit.min(MAX_RECORD_LIMIT12);
-            self.record_limit12 = Some(ours);
-            out.push(Action::RecordLimit {
-                read: ours,
-                write: peer,
-            });
-        }
-        let cert = self.pick_cert(ch.sni.as_ref());
-        let auth = if sig::is_rsa(&cert.key) {
-            Auth12::Rsa
-        } else {
-            Auth12::Ecdsa
-        };
         self.pick_alpn(ch.alpn.as_ref())?;
-        let mut sr = random::<32>()?;
-        if self.cfg.suites.iter().any(|s| s.is_tls13()) {
-            sr[24..].copy_from_slice(&DOWNGRADE_TLS12);
-        }
-        self.server_random = sr;
-        self.version = TLS12;
 
-        // Resumption by ticket or session id.
+        // Resumption by ticket or session id (not looked up again after the certificate
+        // resolver: it found nothing).
         let now = now_secs();
+        let lookup = self.cert_done.is_none();
         let resumed = match (ch.session_ticket, &self.cfg.ticketer) {
-            (Some(tk), Some(t)) if !tk.is_empty() => t.open(tk),
+            (Some(tk), Some(t)) if lookup && !tk.is_empty() => t.open(tk),
             _ => None,
         }
         .or_else(|| match &self.cfg.cache {
-            Some(c) if !ch.session_id.is_empty() => c.get(ch.session_id),
+            Some(c) if lookup && !ch.session_id.is_empty() => c.get(ch.session_id),
             _ => None,
         })
         .filter(|s| {
@@ -1028,6 +1127,35 @@ impl Server {
                 && s.sni == self.sni
                 && suites::by_id(s.suite).is_some_and(|x| x.tls12.is_some())
         });
+        let default_algs = [
+            sig::PKCS1_SHA256,
+            sig::ECDSA_P256_SHA256,
+            sig::ECDSA_P384_SHA384,
+        ];
+        let algs = ch.sig_algs.as_deref().unwrap_or(&default_algs);
+        let cert = match resumed {
+            Some(_) => None,
+            None => match self.select_cert(msg, ch, false, algs)? {
+                Some(c) => Some(c),
+                // Waiting for the resolver: nothing sent.
+                None => return Ok(()),
+            },
+        };
+        if let Some(peer) = ch.record_limit {
+            // record_size_limit (RFC 8449): protected records only, after the CCS.
+            let ours = self.cfg.record_limit.min(MAX_RECORD_LIMIT12);
+            self.record_limit12 = Some(ours);
+            out.push(Action::RecordLimit {
+                read: ours,
+                write: peer,
+            });
+        }
+        let mut sr = random::<32>()?;
+        if self.cfg.suites.iter().any(|s| s.is_tls13()) {
+            sr[24..].copy_from_slice(&DOWNGRADE_TLS12);
+        }
+        self.server_random = sr;
+        self.version = TLS12;
         if let Some(s) = resumed {
             let suite = suites::by_id(s.suite)
                 .ok_or_else(|| Fatal::new(Alert::InternalError, "session suite"))?;
@@ -1059,6 +1187,12 @@ impl Server {
             return Ok(());
         }
 
+        let cert = cert.ok_or_else(|| Fatal::new(Alert::InternalError, "no certificate"))?;
+        let auth = if sig::is_rsa(&cert.key) {
+            Auth12::Rsa
+        } else {
+            Auth12::Ecdsa
+        };
         let suite = self
             .cfg
             .suites
@@ -1075,12 +1209,6 @@ impl Server {
             .copied()
             .find(|g| client_groups.contains(&g.id()))
             .ok_or_else(|| Fatal::new(Alert::HandshakeFailure, "no common group"))?;
-        let default_algs = [
-            sig::PKCS1_SHA256,
-            sig::ECDSA_P256_SHA256,
-            sig::ECDSA_P384_SHA384,
-        ];
-        let algs = ch.sig_algs.as_deref().unwrap_or(&default_algs);
         let scheme = sig::choose(&cert.key, algs, false)
             .ok_or_else(|| Fatal::new(Alert::HandshakeFailure, "no common signature scheme"))?;
         self.suite = Some(suite);

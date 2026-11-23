@@ -564,7 +564,8 @@ mod tests {
         drop(c3);
         assert_eq!(s3.result(), Some(false));
         // No answer: the timeout rejects, and a late answer changes nothing.
-        assert!(!s4.wait());
+        s4.wait();
+        assert_eq!(s4.result(), Some(false));
         c4.complete(Ok(true));
         assert_eq!(s4.result(), Some(false));
     }

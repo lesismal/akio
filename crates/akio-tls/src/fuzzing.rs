@@ -300,7 +300,7 @@ mod tests {
         }
         assert_eq!(i, 4);
         // The new messages' bodies as such: CompressedCertificate, CertificateStatus.
-        let leaf = &f.server.inner.cert.chain[0];
+        let leaf = &f.server.inner.cert.as_ref().expect("default chain").chain[0];
         let chain = vec![leaf.clone(), leaf.clone()];
         let mut body = Vec::new();
         crate::proto::msgs::certificate13_body(&mut body, &[], &chain, None);

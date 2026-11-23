@@ -176,24 +176,24 @@ impl QuicTls {
     }
 
     /// Sets what to call (from any thread) when a suspended handshake can go on: the server
-    /// waits for an asynchronous anti-replay store (ADR-062). The QUIC connection then calls
-    /// [`resume`](Self::resume) from its own thread. `w` is never called from inside a
-    /// method of this handshake.
+    /// waits for an asynchronous anti-replay store (ADR-062) or certificate resolver
+    /// (ADR-093). The QUIC connection then calls [`resume`](Self::resume) from its own thread.
+    /// `w` is never called from inside a method of this handshake.
     pub fn set_waker(&mut self, w: std::sync::Arc<dyn Fn() + Send + Sync>) {
         if self.m.suspended() {
             // Already answered: the next `resume` goes on.
-            let _ = self.m.set_replay_waker(w.clone());
+            let _ = self.m.set_resume_waker(w.clone());
         }
         self.waker = Some(w);
     }
 
-    /// The server's handshake waits for an asynchronous anti-replay answer: nothing more
+    /// The server's handshake waits for an anti-replay answer or a certificate: nothing more
     /// comes out until [`resume`](Self::resume) takes it up again.
     pub fn suspended(&self) -> bool {
         self.m.suspended()
     }
 
-    /// Takes a suspended handshake up again if its anti-replay answer is here; `Ok(false)`
+    /// Takes a suspended handshake up again if its answer is here; `Ok(false)`
     /// while it is not (the waker is called when it is). An error is fatal, as for
     /// [`read_handshake`](Self::read_handshake).
     pub fn resume(&mut self) -> Result<bool, Fatal> {
@@ -227,7 +227,7 @@ impl QuicTls {
                 return Ok(true);
             }
             match &self.waker {
-                Some(w) if !self.m.set_replay_waker(w.clone()) => {}
+                Some(w) if !self.m.set_resume_waker(w.clone()) => {}
                 _ => return Ok(false),
             }
         }
@@ -289,7 +289,7 @@ impl QuicTls {
                 if self.hs.len() > MAX_HANDSHAKE {
                     return Err(Fatal::new(
                         Alert::UnexpectedMessage,
-                        "handshake data while the anti-replay check is pending",
+                        "handshake data while the handshake is suspended",
                     ));
                 }
                 if !self.resume_now()? {

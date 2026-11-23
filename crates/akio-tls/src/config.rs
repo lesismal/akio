@@ -20,6 +20,7 @@ use crate::proto::msgs::{
 use crate::proto::session::{AntiReplay, ClientCache, ReplayStore, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
 use crate::replay::{AntiReplayStore, AsyncAntiReplayStore, MemoryAntiReplay};
+use crate::resolver::{CertResolver, ResolverSettings};
 
 /// A certificate compression algorithm (RFC 8879), all implemented in-house: zlib through
 /// `akio-deflate`, brotli through `akio-brotli`, zstd through `akio-zstd`.
@@ -416,7 +417,7 @@ fn check_record_limit(limit: u16) -> Result<u16, Error> {
 /// A light check that `der` looks like a successful OCSPResponse (RFC 6960 section 4.2.1):
 /// `SEQUENCE { responseStatus ENUMERATED successful(0), responseBytes [0] ... }` spanning the
 /// whole input. The response itself (signature, validity, certificate) is not verified.
-fn check_ocsp_response(der: &[u8]) -> Result<(), Error> {
+pub(crate) fn check_ocsp_response(der: &[u8]) -> Result<(), Error> {
     // One DER length at `b[*i..]`.
     fn len(b: &[u8], i: &mut usize) -> Option<usize> {
         let first = *b.get(*i)?;
@@ -507,7 +508,7 @@ pub struct ClientParts {
 /// Keeps the configs `Send + Sync` but neither `UnwindSafe` nor `RefUnwindSafe`, as they were
 /// when they wrapped rustls (`api/akio-tls.txt`): promising those auto traits now would forbid
 /// unwind-unsafe state (a callback, a cache) in a later release.
-type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
+pub(crate) type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 
 // ---- kernel TLS ----
 
@@ -581,9 +582,37 @@ impl fmt::Debug for ServerConfig {
 impl ServerConfig {
     /// Starts a configuration serving the certificate chain `chain` (leaf first) with `key`.
     pub fn builder(chain: Vec<Certificate>, key: PrivateKey) -> ServerConfigBuilder {
+        ServerConfigBuilder::new(Some((chain, key)))
+    }
+
+    /// Starts a configuration whose certificates all come from `resolver` (ADR-093; see
+    /// [`ServerConfigBuilder::cert_resolver`]), with no default chain: a handshake the
+    /// resolver answers with [`CertDone::use_default`](crate::CertDone::use_default) gets the
+    /// [`sni_cert`](ServerConfigBuilder::sni_cert) chain for its name, or fails with
+    /// `unrecognized_name`.
+    pub fn builder_with_resolver(resolver: Arc<dyn CertResolver>) -> ServerConfigBuilder {
+        ServerConfigBuilder::new(None).cert_resolver(resolver)
+    }
+
+    /// The ALPN protocols offered, in preference order.
+    pub fn alpn_protocols(&self) -> &[Vec<u8>] {
+        &self.inner.alpn
+    }
+
+    /// The configuration as given (QUIC's rustls bridge); not a public API.
+    #[doc(hidden)]
+    pub fn __parts(&self) -> &ServerParts {
+        &self.parts
+    }
+}
+
+impl ServerConfigBuilder {
+    fn new(default: Option<(Vec<Certificate>, PrivateKey)>) -> ServerConfigBuilder {
         ServerConfigBuilder {
-            chain,
-            key,
+            default,
+            resolver: None,
+            resolver_timeout: DEFAULT_RESOLVER_TIMEOUT,
+            max_pending_resolutions: DEFAULT_MAX_PENDING_RESOLUTIONS,
             sni: Vec::new(),
             alpn: Vec::new(),
             client_auth: None,
@@ -611,24 +640,17 @@ impl ServerConfig {
             ktls: KtlsConfig::default(),
         }
     }
-
-    /// The ALPN protocols offered, in preference order.
-    pub fn alpn_protocols(&self) -> &[Vec<u8>] {
-        &self.inner.alpn
-    }
-
-    /// The configuration as given (QUIC's rustls bridge); not a public API.
-    #[doc(hidden)]
-    pub fn __parts(&self) -> &ServerParts {
-        &self.parts
-    }
 }
 
 /// Builds a [`ServerConfig`].
 #[must_use]
 pub struct ServerConfigBuilder {
-    chain: Vec<Certificate>,
-    key: PrivateKey,
+    /// The default chain and key (`None`: `builder_with_resolver`).
+    default: Option<(Vec<Certificate>, PrivateKey)>,
+    /// Wrapped so the builder stays unwind safe (a resolver is only called after `build`).
+    resolver: Option<std::panic::AssertUnwindSafe<Arc<dyn CertResolver>>>,
+    resolver_timeout: Duration,
+    max_pending_resolutions: usize,
     sni: Vec<(String, Vec<Certificate>, PrivateKey)>,
     alpn: Vec<Vec<u8>>,
     client_auth: Option<(RootCerts, bool)>,
@@ -666,6 +688,10 @@ const ANTI_REPLAY_ENTRIES: usize = 100_000;
 const TICKET_LIFETIME: u32 = 6 * 3600;
 /// Default of [`ServerConfigBuilder::anti_replay_timeout`].
 const DEFAULT_ANTI_REPLAY_TIMEOUT: Duration = Duration::from_secs(1);
+/// Default of [`ServerConfigBuilder::cert_resolver_timeout`].
+const DEFAULT_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default of [`ServerConfigBuilder::max_pending_cert_resolutions`].
+const DEFAULT_MAX_PENDING_RESOLUTIONS: usize = 1024;
 
 /// The shared anti-replay store a builder was given.
 enum StoreChoice {
@@ -680,6 +706,13 @@ impl fmt::Debug for ServerConfigBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServerConfigBuilder")
             .field("alpn", &self.alpn)
+            .field("default_cert", &self.default.is_some())
+            .field("cert_resolver", &self.resolver.is_some())
+            .field("cert_resolver_timeout", &self.resolver_timeout)
+            .field(
+                "max_pending_cert_resolutions",
+                &self.max_pending_resolutions,
+            )
             .field(
                 "sni_names",
                 &self.sni.iter().map(|s| &s.0).collect::<Vec<_>>(),
@@ -730,6 +763,37 @@ impl ServerConfigBuilder {
     ) -> Self {
         self.sni
             .push((server_name.into().to_ascii_lowercase(), chain, key));
+        self
+    }
+
+    /// Chooses the certificate of every full handshake with `resolver` (ADR-093), which can
+    /// answer right away or later from another thread without holding the I/O thread: for
+    /// certificates replaced while serving ([`CertStore`](crate::CertStore)) and issued on
+    /// demand. The chains given to [`builder`](ServerConfig::builder) and
+    /// [`sni_cert`](Self::sni_cert) are what
+    /// [`CertDone::use_default`](crate::CertDone::use_default) serves. Over TCP and QUIC, TLS
+    /// 1.2 and 1.3; resumed handshakes do not call it.
+    pub fn cert_resolver(mut self, resolver: Arc<dyn CertResolver>) -> Self {
+        self.resolver = Some(std::panic::AssertUnwindSafe(resolver));
+        self
+    }
+
+    /// How long a handshake waits for the [`cert_resolver`](Self::cert_resolver) to answer
+    /// before failing with `internal_error` (10 s by default; at least 1 ms). The
+    /// [`handshake_timeout`](Self::handshake_timeout) (10 s by default) still bounds the whole
+    /// handshake: raise both for certificates issued during the handshake.
+    pub fn cert_resolver_timeout(mut self, timeout: Duration) -> Self {
+        self.resolver_timeout = timeout.max(Duration::from_millis(1));
+        self
+    }
+
+    /// How many handshakes of this configuration may wait for the
+    /// [`cert_resolver`](Self::cert_resolver) at once (1024 by default; at least 1). The
+    /// resolver is still called while that many wait, and an answer given inside the call is
+    /// served (it waits for nothing); a handshake that would wait beyond the limit fails with
+    /// `internal_error` instead, its [`CertDone`](crate::CertDone) abandoned.
+    pub fn max_pending_cert_resolutions(mut self, n: usize) -> Self {
+        self.max_pending_resolutions = n.max(1);
         self
     }
 
@@ -1009,21 +1073,6 @@ impl ServerConfigBuilder {
 
     /// Checks the certificates and key and builds the configuration.
     pub fn build(self) -> Result<ServerConfig, Error> {
-        if self.chain.is_empty() {
-            return Err(Error::new("empty certificate chain"));
-        }
-        let certified = |chain: &[Certificate], key: &PrivateKey| -> Result<CertKey, Error> {
-            let k = key.parse()?;
-            let leaf = akio_x509::Certificate::from_der(chain[0].0.clone())
-                .map_err(|e| Error::wrap("bad certificate", e))?;
-            let pk = leaf
-                .public_key()
-                .map_err(|e| Error::wrap("certificate public key", e))?;
-            if pk != k.public_key() {
-                return Err(Error::new("private key does not match the certificate"));
-            }
-            Ok(CertKey::new(chain.iter().map(|c| c.0.clone()).collect(), k))
-        };
         let record_limit = check_record_limit(self.record_limit)?;
         if let Some(r) = &self.ocsp {
             check_ocsp_response(r)?;
@@ -1036,8 +1085,17 @@ impl ServerConfigBuilder {
                 "client OCSP policy without client authentication",
             ));
         }
-        let mut default = certified(&self.chain, &self.key)?;
-        default.ocsp.clone_from(&self.ocsp);
+        let default = match &self.default {
+            Some((chain, key)) => {
+                let mut d = certified_key(chain, key)?;
+                d.ocsp.clone_from(&self.ocsp);
+                Some(d)
+            }
+            None if self.ocsp.is_some() => {
+                return Err(Error::new("OCSP response without a default certificate"));
+            }
+            None => None,
+        };
         let mut by_name = HashMap::new();
         let mut sni_parts = Vec::new();
         for (name, _) in &self.sni_ocsp {
@@ -1048,10 +1106,7 @@ impl ServerConfigBuilder {
             }
         }
         for (name, chain, key) in &self.sni {
-            if chain.is_empty() {
-                return Err(Error::new("empty certificate chain"));
-            }
-            let mut ck = certified(chain, key)?;
+            let mut ck = certified_key(chain, key)?;
             if let Some((_, r)) = self.sni_ocsp.iter().rev().find(|(n, _)| n == name) {
                 check_ocsp_response(r)?;
                 ck.ocsp = Some(r.clone());
@@ -1097,8 +1152,14 @@ impl ServerConfigBuilder {
             None
         };
         let parts = ServerParts {
-            chain: default.chain.clone(),
-            key_pkcs8: default.key.to_pkcs8_der(),
+            chain: default
+                .as_ref()
+                .map(|d| d.chain.clone())
+                .unwrap_or_default(),
+            key_pkcs8: default
+                .as_ref()
+                .map(|d| d.key.to_pkcs8_der())
+                .unwrap_or_default(),
             sni: sni_parts,
             alpn: self.alpn.clone(),
             client_auth: self.client_auth.as_ref().map(|(r, req)| (r.ders(), *req)),
@@ -1107,7 +1168,13 @@ impl ServerConfigBuilder {
             tls13_only: self.tls13_only,
         };
         let settings = ServerSettings {
-            cert: Arc::new(default),
+            cert: default.map(Arc::new),
+            resolver: self.resolver.map(|r| ResolverSettings {
+                resolver: r.0,
+                timeout: self.resolver_timeout,
+                max_pending: self.max_pending_resolutions,
+                pending: Arc::default(),
+            }),
             sni: by_name,
             alpn: self.alpn,
             client_auth: self.client_auth.map(|(r, req)| (Arc::new(r.0), req)),
@@ -1142,6 +1209,24 @@ impl ServerConfigBuilder {
             _reserved: PhantomData,
         })
     }
+}
+
+/// `chain` (leaf first) and `key`, checked: a non-empty chain whose leaf parses and has
+/// `key`'s public key.
+pub(crate) fn certified_key(chain: &[Certificate], key: &PrivateKey) -> Result<CertKey, Error> {
+    let Some(leaf) = chain.first() else {
+        return Err(Error::new("empty certificate chain"));
+    };
+    let k = key.parse()?;
+    let leaf = akio_x509::Certificate::from_der(leaf.0.clone())
+        .map_err(|e| Error::wrap("bad certificate", e))?;
+    let pk = leaf
+        .public_key()
+        .map_err(|e| Error::wrap("certificate public key", e))?;
+    if pk != k.public_key() {
+        return Err(Error::new("private key does not match the certificate"));
+    }
+    Ok(CertKey::new(chain.iter().map(|c| c.0.clone()).collect(), k))
 }
 
 // ---- client ----

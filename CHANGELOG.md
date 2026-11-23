@@ -10,6 +10,29 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: server certificates chosen per handshake by a resolver that may answer later (akio-tls)
+
+ADR-093, additive (akit's A2: certificates renewed while serving, and on-demand TLS):
+
+- `CertResolver::resolve(&ClientHelloInfo, CertDone)`, set with
+  `ServerConfigBuilder::cert_resolver` or `ServerConfig::builder_with_resolver` (no default
+  chain). `ClientHelloInfo` gives the SNI name, offered ALPN protocols, signature schemes, cipher
+  suites, version and whether it is QUIC. `CertDone` (`Send`) is answered once from any thread:
+  `complete(CertifiedKey)`, `use_default()` (the configuration's own chains), `fail(CertAlert)`;
+  dropped unanswered it fails with `internal_error`; `is_abandoned()` says nobody waits.
+- An answer inside the call goes on in the same call (no suspension, no wake-up). A later one
+  suspends that handshake only, as ADR-062's asynchronous anti-replay store does: the I/O thread
+  serves its other connections, and the handshake resumes on it when answered. TCP (engine and
+  the blocking stream) and QUIC, TLS 1.2 and 1.3; resumed handshakes do not call the resolver,
+  and after a HelloRetryRequest it is called once.
+- `cert_resolver_timeout` (10 s, then `internal_error`) and `max_pending_cert_resolutions` (1024
+  waiting handshakes per configuration; beyond it a handshake that would wait fails).
+- `CertifiedKey` (a chain and key checked once, `from_pem`, `with_ocsp_response`, `chain_der`)
+  and `CertStore`, a resolver answering inline from names (exact or `*.` one label deep) that are
+  replaced at any time with `insert` / `remove` / `set_default`.
+- The static-certificate path is unchanged (one `Option` check per full handshake): same-run A/B
+  of the TLS handshake benchmark on the quiet host below.
+
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
 
 ADR-078's fourth update (2026-11-23), additive:

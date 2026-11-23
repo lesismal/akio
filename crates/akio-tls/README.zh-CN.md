@@ -9,7 +9,8 @@
 第 C 波）。
 
 用 `Tls::server`（或供 `Engine::dial` 使用的 `Tls::client`）包装任意 acceptor，其 handler 看到的就是
-明文；握手在连接所属的 I/O 线程上进行，从不阻塞。用 `ServerConfig::builder(chain, key)`（SNI 证书、
+明文；握手在连接所属的 I/O 线程上进行，从不阻塞。用 `ServerConfig::builder(chain, key)`（SNI 证书、由可稍后在其他线程上应答的
+`CertResolver` 按握手选择的证书（ADR-093）、
 ALPN、客户端认证、会话缓存与票据、`tls13_only`、记录大小限制、证书压缩、装订的 OCSP 响应）与
 `ClientConfig::builder()`（根证书、ALPN、客户端证书、SNI、会话恢复、记录大小限制、证书压缩、OCSP
 stapling 及其校验、CRL、仅供测试的 `insecure_skip_verify`）配置；`tls_info` 读取协商结果。

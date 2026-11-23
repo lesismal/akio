@@ -1,5 +1,7 @@
 //! 0-RTT end to end over loopback: a resumed client sends its request before the handshake,
 //! the server sees it as early data (and can refuse it), the client learns the outcome.
+//! Also a handshake waiting for a server certificate resolver that answers later (ADR-093),
+//! which suspends the handshake the same way an asynchronous anti-replay store does.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -187,6 +189,61 @@ fn zero_rtt_with_an_async_anti_replay_store() {
         assert_eq!(b, b"early:GET /");
         assert_eq!(c.early_data(), EarlyData::Accepted);
         std::thread::sleep(Duration::from_millis(100));
+        c.close(0, b"");
+    }
+}
+
+/// A certificate resolver answering from another thread (ADR-093): the QUIC handshake waits
+/// for it and is driven again from that thread. The client trusts only the resolver's
+/// certificate, not the configuration's default one.
+struct LaterCert(akio::tls::CertifiedKey);
+
+impl akio::tls::CertResolver for LaterCert {
+    fn resolve(&self, hello: &akio::tls::ClientHelloInfo<'_>, done: akio::tls::CertDone) {
+        assert!(hello.is_quic() && hello.server_name() == Some("localhost"));
+        let key = self.0.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            done.complete(key);
+        });
+    }
+}
+
+#[test]
+fn certificate_from_a_resolver_answering_later() {
+    let default = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let served = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let served_cert = akio::tls::Certificate::from_der(served.0.as_der().to_vec());
+    let key = akio::tls::CertifiedKey::new(
+        vec![served_cert.clone()],
+        akio::tls::PrivateKey::from_pkcs8_der(served.1.to_pkcs8_der()),
+    )
+    .unwrap();
+    let tls = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(
+            default.0.as_der().to_vec(),
+        )],
+        akio::tls::PrivateKey::from_pkcs8_der(default.1.to_pkcs8_der()),
+    )
+    .alpn(["echo"])
+    .cert_resolver(Arc::new(LaterCert(key)))
+    .build()
+    .unwrap();
+    let cfg = akio_quic::server_config_from(&tls).unwrap();
+    let server = QuicServer::new(cfg, |_c: &Connection| Echo::default());
+    let e = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(server))
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&served_cert).unwrap();
+    let cfg = akio_quic::client_config(roots, &[b"echo"]).unwrap();
+    for _ in 0..2 {
+        let (b, c) = request(&e, addr, &cfg, b"resolved");
+        assert_eq!(b, b"late:resolved");
         c.close(0, b"");
     }
 }

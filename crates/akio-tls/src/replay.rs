@@ -100,30 +100,44 @@ impl Drop for ReplayCheck {
 /// Wakes the connection waiting for a [`Slot`].
 pub(crate) type Waker = Arc<dyn Fn() + Send + Sync>;
 
-#[derive(Default)]
-struct SlotState {
-    /// The answer: accept the early data or not.
-    result: Option<bool>,
+struct SlotState<T> {
+    /// The answer (anti-replay: accept the early data or not; certificate resolver: the
+    /// certificate, ADR-093).
+    result: Option<T>,
     waker: Option<Waker>,
 }
 
-/// Where the answer of an asynchronous anti-replay check lands: the suspended handshake
-/// polls it, its connection registers a waker, a blocking driver can wait on it.
-#[derive(Default)]
-pub(crate) struct Slot {
-    st: Mutex<SlotState>,
+/// Where an answer a suspended handshake waits for lands (an asynchronous anti-replay check,
+/// ADR-062, or a certificate resolver, ADR-093): the handshake polls it, its connection
+/// registers a waker, a blocking driver can wait on it.
+pub(crate) struct Slot<T = bool> {
+    st: Mutex<SlotState<T>>,
     cv: Condvar,
+    /// The answer when the deadline passes (or the lock is poisoned).
+    expired: T,
 }
 
-impl Slot {
-    /// The first answer wins (the store's, or the timeout's).
-    fn set(&self, accept: bool) {
+impl<T: Clone> Slot<T> {
+    /// An empty slot; `expired` is what a missed deadline answers.
+    pub(crate) fn new(expired: T) -> Slot<T> {
+        Slot {
+            st: Mutex::new(SlotState {
+                result: None,
+                waker: None,
+            }),
+            cv: Condvar::new(),
+            expired,
+        }
+    }
+
+    /// The first answer wins (the store's or resolver's, or the timeout's).
+    pub(crate) fn set(&self, v: T) {
         let waker = {
             let Ok(mut g) = self.st.lock() else { return };
             if g.result.is_some() {
                 return;
             }
-            g.result = Some(accept);
+            g.result = Some(v);
             g.waker.take()
         };
         self.cv.notify_all();
@@ -132,11 +146,11 @@ impl Slot {
         }
     }
 
-    /// The answer, if there is one yet (a poisoned slot rejects).
-    pub(crate) fn result(&self) -> Option<bool> {
+    /// The answer, if there is one yet (a poisoned slot answers `expired`).
+    pub(crate) fn result(&self) -> Option<T> {
         match self.st.lock() {
-            Ok(g) => g.result,
-            Err(_) => Some(false),
+            Ok(g) => g.result.clone(),
+            Err(_) => Some(self.expired.clone()),
         }
     }
 
@@ -153,19 +167,36 @@ impl Slot {
     }
 
     /// Blocks until the answer is here (the blocking test stream only).
-    pub(crate) fn wait(&self) -> bool {
+    pub(crate) fn wait(&self) {
         let Ok(mut g) = self.st.lock() else {
-            return false;
+            return;
         };
-        loop {
-            if let Some(r) = g.result {
-                return r;
-            }
+        while g.result.is_none() {
             g = match self.cv.wait(g) {
                 Ok(g) => g,
-                Err(_) => return false,
+                Err(_) => return,
             };
         }
+    }
+
+    /// Answers `expired` at `at` unless answered before (the shared timer thread).
+    pub(crate) fn expire_at(self: &Arc<Self>, at: Instant)
+    where
+        T: Send + Sync + 'static,
+    {
+        let weak: Weak<dyn Expire> = Arc::downgrade(self) as Weak<dyn Expire>;
+        deadlines().add(at, weak);
+    }
+}
+
+/// A slot the timer thread can answer.
+trait Expire: Send + Sync {
+    fn expire(&self);
+}
+
+impl<T: Clone + Send + Sync> Expire for Slot<T> {
+    fn expire(&self) {
+        self.set(self.expired.clone());
     }
 }
 
@@ -177,10 +208,10 @@ pub(crate) fn start_check(
     ttl: Duration,
     timeout: Duration,
 ) -> Arc<Slot> {
-    let slot = Arc::new(Slot::default());
+    let slot = Arc::new(Slot::new(false));
     store.check_and_insert(binder, ttl, ReplayCheck { slot: slot.clone() });
     if slot.result().is_none() {
-        deadlines().add(Instant::now() + timeout, &slot);
+        slot.expire_at(Instant::now() + timeout);
     }
     slot
 }
@@ -192,7 +223,7 @@ struct Deadlines {
     cv: Condvar,
 }
 
-struct Deadline(Instant, u64, Weak<Slot>);
+struct Deadline(Instant, u64, Weak<dyn Expire>);
 
 impl PartialEq for Deadline {
     fn eq(&self, o: &Deadline) -> bool {
@@ -211,8 +242,9 @@ impl Ord for Deadline {
     }
 }
 
-/// The process-wide timer of asynchronous checks: one thread, started by the first check
-/// that is not answered right away.
+/// The process-wide timer of suspended handshakes' answers (asynchronous anti-replay checks,
+/// certificate resolvers): one thread, started by the first answer that is not given right
+/// away.
 fn deadlines() -> &'static Arc<Deadlines> {
     static D: OnceLock<Arc<Deadlines>> = OnceLock::new();
     D.get_or_init(|| {
@@ -232,12 +264,12 @@ fn deadlines() -> &'static Arc<Deadlines> {
 }
 
 impl Deadlines {
-    fn add(&self, at: Instant, slot: &Arc<Slot>) {
+    fn add(&self, at: Instant, slot: Weak<dyn Expire>) {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Ok(mut h) = self.heap.lock() else { return };
         let first = h.peek().is_none_or(|Reverse(d)| at < d.0);
-        h.push(Reverse(Deadline(at, seq, Arc::downgrade(slot))));
+        h.push(Reverse(Deadline(at, seq, slot)));
         drop(h);
         if first {
             self.cv.notify_one();
@@ -257,7 +289,7 @@ impl Deadlines {
             if !due.is_empty() {
                 drop(h);
                 for s in due.iter().filter_map(Weak::upgrade) {
-                    s.set(false);
+                    s.expire();
                 }
                 h = match self.heap.lock() {
                     Ok(h) => h,

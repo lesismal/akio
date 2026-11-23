@@ -81,7 +81,7 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 
 | Need | Server: `ServerConfig::builder(chain, key)` | Client: `ClientConfig::builder()` |
 |---|---|---|
-| certificates | the chain and key; `.sni_cert(name, chain, key)` per SNI name | `.client_cert(chain, key)` |
+| certificates | the chain and key; `.sni_cert(name, chain, key)` per SNI name; `.cert_resolver(r)` per handshake (below) | `.client_cert(chain, key)` |
 | trust | `.client_auth_required(roots)` / `.client_auth_optional(roots)` | `.roots(roots)` |
 | ALPN (`h2`, `http/1.1`, custom) | `.alpn(["h2", "http/1.1"])` | `.alpn([..])` |
 | session resumption | `.session_cache(entries)`, `.session_tickets(true)` | `.resumption(false)` to disable |
@@ -205,6 +205,57 @@ repeat (reads without side effects), and answer the others `425 Too Early`:
     }
     // ...
 })
+```
+
+## Certificates chosen per handshake
+
+Decided in [ADR-093](https://github.com/lesismal/akio/blob/main/docs/adr/093-tls-cert-resolver.md).
+A `CertResolver` on the server configuration chooses the certificate of every full handshake, for
+certificates replaced while serving (ACME renewals) and certificates issued during the handshake
+(on-demand TLS). It is called on the I/O thread with a `ClientHelloInfo` (SNI name, offered ALPN
+protocols, signature schemes and cipher suites, version, QUIC or not) and a `CertDone`, which it
+answers once, from any thread:
+
+- `done.complete(key)` serves a `CertifiedKey` (a chain and its key, checked once; reuse the value,
+  it keeps its compressed certificate messages);
+- `done.use_default()` serves what the configuration would without a resolver (the `sni_cert`
+  chain for the name, else the default chain; `unrecognized_name` if there is none);
+- `done.fail(CertAlert::AccessDenied)` (or `HandshakeFailure`, `UnrecognizedName`,
+  `InternalError`) ends the handshake; dropping `done` unanswered is `internal_error`.
+
+Answered before `resolve` returns, the handshake goes on in the same call. Otherwise it waits
+without holding the thread (its other connections go on), and resumes on its I/O thread when
+answered, over TCP and QUIC, TLS 1.2 and 1.3. Resumed handshakes send no certificate and do not
+call the resolver; after a HelloRetryRequest it is called once, for the second ClientHello.
+Limits: `.cert_resolver_timeout(d)` (10 s; then `internal_error`; the handshake timeout, also
+10 s, still applies, so raise both for on-demand issuance) and
+`.max_pending_cert_resolutions(n)` (1024 waiting handshakes per configuration; beyond that a
+handshake that would wait fails, while answers given inside the call are still served).
+`done.is_abandoned()` tells a slow resolver nobody waits any more.
+
+`CertStore` is a ready-made resolver answering inline: names (exact, or `*.example.com` one label
+deep) to `CertifiedKey`, changed at any time with `insert`, `remove` and `set_default`.
+
+```rust,ignore
+use akio_tls::{CertDone, CertResolver, CertStore, CertifiedKey, ClientHelloInfo, ServerConfig};
+
+let store = CertStore::new();
+store.insert("a.example.com", CertifiedKey::from_pem(&chain_pem, &key_pem)?);
+let cfg = ServerConfig::builder_with_resolver(Arc::new(store.clone())).build()?;
+// Renewed later, from any thread: new handshakes get the new chain.
+store.insert("a.example.com", CertifiedKey::from_pem(&new_chain, &new_key)?);
+
+// On demand: cache hits inline, misses from an issuing task.
+struct OnDemand { store: CertStore, issuer: Issuer }
+impl CertResolver for OnDemand {
+    fn resolve(&self, hello: &ClientHelloInfo<'_>, done: CertDone) {
+        match (self.store.get(hello.server_name()), hello.server_name()) {
+            (Some(k), _) => done.complete(k),
+            (None, Some(name)) if self.issuer.allowed(name) => self.issuer.issue(name, done),
+            _ => done.use_default(),
+        }
+    }
+}
 ```
 
 ## Record size limit, certificate compression, OCSP stapling
