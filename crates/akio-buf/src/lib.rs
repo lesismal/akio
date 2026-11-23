@@ -7,9 +7,9 @@
 //! * [`SharedBuf`] is a cheaply clonable, immutable buffer for broadcast (`send_shared`).
 //! * `slab` (`#[doc(hidden)]`, backend-facing): receive slabs viewed through disjoint owned
 //!   handles, so a received datagram reaches a protocol layer without a copy (ADR-024).
-//! * `text` (`#[doc(hidden)]`, for akio-http): a `&str` passed as `impl Into<String>` copied into
-//!   a pool buffer instead of a new `String` (ADR-081). `slab` and `text` hold the crate's only
-//!   `unsafe`.
+//! * `text` (`#[doc(hidden)]`, for akio-http): recognises a `&str` passed as
+//!   `impl Into<String>`, so akio-http can copy it into a buffer it reuses instead of making a
+//!   new `String` (ADR-081). `slab` and `text` hold the crate's only `unsafe`.
 //!
 //! Guide: [Architecture: memory and buffers](https://lesismal.github.io/akio/en/architecture.html#5-memory-and-buffers)
 //! (中文: [架构：内存与缓冲区](https://lesismal.github.io/akio/zh-CN/architecture.html)).

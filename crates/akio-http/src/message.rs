@@ -264,6 +264,38 @@ thread_local! {
     /// The storage of the last response head this thread encoded, for the next response built
     /// with [`Response::with_body`] (and [`Response::text`]) on this thread.
     static SPARE_RESP: std::cell::Cell<Headers> = const { std::cell::Cell::new(Headers::EMPTY) };
+    /// The buffer of the last response body this thread copied out, emptied, for the next
+    /// [`Response::text`] given a `&str` here.
+    static SPARE_BODY: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// A spare body buffer larger than this is not kept.
+const SPARE_BODY_MAX: usize = 4096;
+
+/// The bytes of a [`Response::text`] body: a `&str` copied into this thread's spare body
+/// buffer (allocating only when there is none or it is too small), anything else through
+/// `Into<String>` as before.
+#[inline]
+fn text_body<T: Into<String>>(v: T) -> Vec<u8> {
+    match akio_buf::text::as_str(&v) {
+        Some("") => Vec::new(),
+        Some(s) => {
+            let mut b = SPARE_BODY.with(std::cell::Cell::take);
+            b.extend_from_slice(s.as_bytes());
+            b
+        }
+        None => v.into().into_bytes(),
+    }
+}
+
+/// Keeps `body`, which the transport has copied out, as this thread's spare body buffer
+/// (replacing the one there), unless it is empty or larger than worth keeping.
+#[inline]
+pub(crate) fn recycle_body(mut body: Vec<u8>) {
+    if body.capacity() != 0 && body.capacity() <= SPARE_BODY_MAX {
+        body.clear();
+        SPARE_BODY.with(|c| c.set(body));
+    }
 }
 
 /// Which spare a [`Headers`] storage comes from and goes back to.
@@ -570,13 +602,9 @@ impl Response {
 
     /// A `text/plain; charset=utf-8` response.
     pub fn text(status: u16, body: impl Into<String>) -> Response {
-        // A `&str` is copied into a pool buffer of this thread instead of a new `String`; the
-        // transport gives the buffer back once the body is in its output (ADR-081).
-        Response::with_body(
-            status,
-            "text/plain; charset=utf-8",
-            akio_buf::text::into_bytes(body),
-        )
+        // A `&str` is copied into this thread's spare body buffer instead of a new `String`;
+        // the transport gives the buffer back once the body is in its output (ADR-081).
+        Response::with_body(status, "text/plain; charset=utf-8", text_body(body))
     }
 
     /// A response with the given content type and body.
@@ -832,6 +860,48 @@ mod tests {
         drop(Headers::with_capacity(1, SPARE_HEADERS_MAX + 1));
         assert_eq!(Headers::spare(Spare::Resp, 0, 0).s.buf.capacity(), 0);
         drop(s);
+    }
+
+    /// A `&str` text body is copied into the thread's spare body buffer, which the transport
+    /// gives back once the body is out; other bodies convert as before (ADR-081).
+    #[test]
+    fn text_bodies_use_the_spare_body_buffer() {
+        let r = Response::text(200, "Hello, World!");
+        assert_eq!(r.body, b"Hello, World!");
+        let p = r.body.as_ptr();
+        recycle_body(r.body);
+        let local = String::from("x");
+        let r = Response::text(200, local.as_str());
+        assert_eq!(
+            (r.body.as_ptr(), &r.body[..]),
+            (p, &b"x"[..]),
+            "the buffer was reused"
+        );
+        // An owned `String` is moved, not copied.
+        let s = String::with_capacity(64) + "owned";
+        let sp = s.as_ptr();
+        let o = Response::text(200, s);
+        assert_eq!((o.body.as_ptr(), &o.body[..]), (sp, &b"owned"[..]));
+        assert_eq!(Response::text(200, 'c').body, b"c");
+        assert!(Response::text(200, "").body.capacity() == 0);
+        // Too large to keep: not kept, and a body that grew past the limit is not either.
+        let spare_cap = || {
+            SPARE_BODY.with(|c| {
+                let v = c.take();
+                let n = v.capacity();
+                c.set(v);
+                n
+            })
+        };
+        assert_eq!(spare_cap(), 0, "the spare was taken");
+        recycle_body(Vec::with_capacity(SPARE_BODY_MAX + 1));
+        assert_eq!(spare_cap(), 0);
+        recycle_body(r.body);
+        assert!(spare_cap() > 0);
+        let big = Response::text(200, &*"b".repeat(SPARE_BODY_MAX + 1));
+        assert_eq!(spare_cap(), 0, "the big body took the spare");
+        recycle_body(big.body);
+        assert_eq!(spare_cap(), 0);
     }
 
     #[test]

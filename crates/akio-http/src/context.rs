@@ -263,8 +263,8 @@ impl Responder {
         let mut head = akio_buf::get(192 + resp.body.len());
         resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
         resp.headers.recycle(Spare::Resp);
-        // The body is in `head` now (or not sent at all): a pool buffer goes back.
-        akio_buf::put(resp.body);
+        // The body is in `head` now (or not sent at all): its buffer is the thread's spare.
+        crate::message::recycle_body(resp.body);
         let bodyless = status < 200 || status == 204 || status == 304;
         match resp.file {
             Some(f) if !self.head_only && !bodyless => self.slot.fill_parts(

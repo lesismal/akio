@@ -174,12 +174,12 @@ pub fn recycle_response_headers(headers: Headers) {
     headers.recycle(Spare::Resp);
 }
 
-/// Hands the body of a response the transport has copied into its output back to this thread's
-/// buffer pool: [`Response::text`] builds a body from a `&str` in a pool buffer (ADR-081), as
-/// HTTP/1.1 and HTTP/2 do once they have copied the body. Other buffers are dropped.
+/// Hands the body of a response the transport has copied into its output back to this thread,
+/// as HTTP/1.1 and HTTP/2 do: its buffer (up to 4 KiB) becomes the spare that the next
+/// [`Response::text`] given a `&str` here copies into (ADR-081).
 #[inline]
 pub fn recycle_response_body(body: Vec<u8>) {
-    akio_buf::put(body);
+    crate::message::recycle_body(body);
 }
 
 #[inline]
