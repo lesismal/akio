@@ -345,7 +345,68 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [ ] `akio-bittorrent` 的 `seed_limits_pause` 在高负载主机上超时过一次，原因不明；断言现在会打印双方的统计。下次失败时查看。
 - [ ] `akio-ebpf` 的 `syn_flood_protection_leaves_established_connections_alone` 在共享主机上会失败：`lo` 上的 XDP 限速器会计入其他进程的 SYN（2026-11-23 在 gpu51 上失败一次，单独运行 3/3 通过）。改为只统计自己的端口，或放在独立的网络命名空间中运行。
 
-## 4. 工程规范
+## 4. 基准测试与优化状态
+
+热路径上的每个功能（[rules.zh-CN.md](rules.zh-CN.md) 规则 16：读写路径、解析器、路由、加密内核）都需要基准测试；
+热路径之外的数据面功能在 crate 微基准能说明问题时也需要（该行会注明）。**已测**指在安静主机上测过，数字记在
+`docs/BENCHMARKS.md`、ADR 或上文条目中（与参考实现或改动前的代码对比）；**已优化**指至少做过一轮由这些数字驱动的
+优化，并写明仍然落后之处。取值：`是`（注明记录位置）、`部分`、`否`。**两列不都是 `是` 的行，就是留给压测任务的
+待办项。** 功能需要基准测试的功能开发任务把它的行加为 `否` / `否`，并写明应当测什么（规则 20）；压测任务测过或优化
+之后更新该行。状态截至 2026-11-24。
+
+| 功能 | crate / 计划条目 | 已测 | 已优化 | 证据或剩余工作 |
+|---|---|---|---|---|
+| 事件循环，epoll | akio-core、akio-epoll、akio-buf、akio-timer（M1） | 是（BENCHMARKS 测评 `10070cff`，TCP echo，每连接内存） | 是（2026-11-14 一轮：每次回调读一次时钟、内联队列头；`3d3aca96`） | 与 tokio 同一档次；keep-alive HTTP/1 受内核限制。时间轮和缓冲池没有单独的微基准。 |
+| 事件循环，io_uring | akio-uring（M2） | 是（测评；“io_uring 特性评估”） | 部分 | 评估过注册文件、SEND_ZC、MSG_RING，均未采用；基于 ring 的发送仍未做（“未排期的遗留项”）。 |
+| 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
+| TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
+| UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |
+| 逻辑池（`spawn_blocking`） | akio-pool（M2） | 部分（M2：比在线程上直接阻塞恢复约 58x） | 否 | 没有每个任务提交/完成成本的同轮微基准。 |
+| NUMA 放置 | akio-core（ADR-088） | 部分（“NUMA 放置”：只测了开销，gpu51 只有一个节点） | 否 | 跨节点的收益需要多节点主机。 |
+| 热重载、prefork 分流 | akio-core、akio-prefork（ADR-028） | 是（“热重载”，引擎 A/B） | 是（未测出开销） | prefork 的 BPF 分流没有单独测过。 |
+| 遥测、指标、span、OTLP、日志 | akio-core、akio-export、akio-log（ADR-020、ADR-064） | 是（“遥测开销”“可观测性开销”“OTLP 导出新增项”；akio-log `overhead` 基准） | 是（exemplar 路径移出热路径，`d4151796`、`7dde0830`；关闭的日志语句 0.25 ns） | – |
+| TLS 1.3/1.2 记录与握手 | akio-tls（M2） | 是（“内存中的 TLS 1.3”，测评 TLS echo 和握手） | 是（记录原地处理、去掉清零；16 KiB 时 1.72x rustls+ring） | 测评中的握手速率受客户端限制。 |
+| 内核 TLS | akio-tls、akio-uring（ADR-067） | 是（“内核 TLS 评估”“引擎中的内核 TLS”） | 是（软件 kTLS 更慢，未采用） | TLS 卸载网卡没有测过（没有这类网卡）。 |
+| 加密：AEAD、哈希、CRC（TLS/QUIC 批量数据） | akio-crypto | 是（“密码学”“AES-GCM”“ChaCha20-Poly1305”各节） | 是（VAES/AVX-512/AVX2 内核、SHA-NI、CRC 折叠、Poly1305 IFMA/AVX2） | – |
+| 加密：公钥（P-256、X25519、Ed25519、RSA、P-384、P-521、Ed448） | akio-crypto | 是（`pk_bench`、`tls-bench handshakes`） | 是（x86-64 汇编、IFMA RSA；P-256 为 ring 的 1.12–1.57x，RSA 最高 3.7x） | P-384 / P-521 / Ed448 没有专门优化过。 |
+| 加密：其他原语（AES-CTR / 单块、SHA-512、MD5、base64、PBKDF2、HMAC-SHA1） | akio-crypto（KCP、SRTP、STUN、kcptun 密钥） | 是（“密码学”表） | 否 | 落后于 RustCrypto：AES-128-CTR 16 KiB 0.73x、SHA-512 0.66x、base64 0.75x、MD5 0.84x、HMAC-SHA1 100 B 0.94x、PBKDF2 0.83 对 0.57 ms。 |
+| aarch64 上的加密 | akio-crypto（性能优化第二轮） | 部分（P-256 / X25519 在共享的 Apple M4 Pro 上测过一次） | 部分（汇编有测试，未调优） | 没有 ARM 基准主机；aarch64 上的 AES-GCM / ChaCha / RSA 未测。 |
+| HTTP/1.1 服务端 | akio-http（M3） | 是（测评，对比 hyper / fib / monoio） | 是（请求头先用 32 个槽位解析，ADR-081 每请求分配） | keep-alive 受内核限制。 |
+| HTTP/1 请求头解析器、HPACK | akio-ws `http1`、akio-http `hpack` | 是（“编解码微基准”） | 部分 | 完整请求头上耗时为 httparse 的 1.0–1.2x（没有 SIMD）；HPACK 领先 loona-hpack。 |
+| HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
+| 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
+| 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |
+| HTTP/2 | akio-http（M4） | 是（测评 h2c、TLS 上的 h2） | 是（帧原地解析、扁平 HPACK；fib 的 1.22–1.34x） | 处于 h2load 的上限：是下界。 |
+| 压缩中间件、流式响应 | akio-http `compress`（ADR-074） | 是（“压缩的流式响应”、brotli 流式各节） | 是（每次写入和每个流的固定开销） | – |
+| WebSocket（HTTP/1、HTTP/2、HTTP/3） | akio-ws（M3、ADR-060、ADR-011） | 是（测评 echo、内存，“HTTP/2 上的 WebSocket”） | 部分（内存；规则审计中 echo +7–11%） | 帧解析、掩码和 UTF-8 校验没有微基准，也没有优化过。 |
+| permessage-deflate、deflate | akio-deflate | 是（“Deflate”，`pmd_echo`） | 是（zlib-ng 策略、stored 块只拷贝一次） | 仍是没有 SIMD 的安全 Rust。 |
+| Brotli、Zstandard | akio-brotli、akio-zstd（ADR-041、ADR-069） | 是（`tools/codec-bench`，对比 libbrotli / libzstd） | 是（多轮，最近一轮 2026-11-23） | BMI2 路径等待 MSRV 的决定（“未排期的遗留项”）。 |
+| QUIC | akio-quic（M5） | 是（“QUIC 与 HTTP/3”，`quic-bench`） | 是（pacer、GRO、每批一次 ACK、池化缓冲区；ADR-081 更新） | 除 quinn-proto 外没有参考实现（quic-go 未测）。 |
+| HTTP/3、QPACK | akio-h3（M5） | 是（`quic-bench h3`） | 是（429k → 839k req/s，每请求 8.6 次分配） | 开启 QPACK 编码器的情况没有单独优化过。 |
+| KCP | akio-kcp（M5） | 否（有 `kcp-bench`，没有记录结果） | 否 | 对比 kcp-go 测批量和 echo，带和不带加密 / FEC。 |
+| gRPC | akio-grpc（M4） | 部分（`33fb59ed8` 中的 `grpc-bench` A/B：318k calls/s） | 部分（每个 sink 一把锁、原地解帧） | 没有与参考实现对比（grpc-go、tonic）；protobuf 编解码未测。 |
+| Protobuf 运行时 | akio-protobuf | 否 | 否 | 在 gRPC 路径上对比 prost 测编解码。 |
+| arpc | akio-arpc（M4、ADR-023） | 部分（`arpc-bench` A/B：8.2M calls/s） | 部分（帧内联编码、原地解码） | 没有与 Go arpc 对比。 |
+| 协议嗅探 | akio-mux（M4） | 否 | 否 | 每连接一次；对嗅探和 accept 移交做一个微基准，就能知道它是否要紧。 |
+| SOCKS 中继 | akio-socks | 是（`ebpf-bench socks`，用户态中继 A/B `8075a7f9`） | 部分（sockmap splice 选项） | – |
+| eBPF 加速（分流、sockmap、XDP） | akio-ebpf（M5） | 是（“eBPF 加速”） | 否 | 只在回环上测过一次（2026-11-18）；没有调优。 |
+| 用户态 TCP/IP 协议栈、DPDK、AF_XDP | akio-dpdk（M6、ADR-063、ADR-068） | 部分（`stack-bench` 内存线路，veth 上的 AF_XDP；没有网卡） | 是（协议栈为 smoltcp 的 6.5–11x；2026-11-18 的 `perf(dpdk)`） | 从未在真实网卡上测过 DPDK。 |
+| DTLS 记录与握手 | akio-dtls | 部分（只有 `dtls-bench`、`dtls-hs-bench` A/B） | 部分（DTLS 1.2 每条记录不再分配，`09125dae`） | 没有与参考实现对比（OpenSSL、pion）。 |
+| SRTP | akio-srtp（ADR-040） | 部分（ADR-040 中的 `srtp_bench` A/B） | 否 | 没有与 libsrtp 对比；AES-CM 依赖上面较慢的 AES-CTR。 |
+| SCTP 数据通道 | akio-sctp（ADR-037） | 部分（`sctp_bench` A/B，内存中） | 部分 | 没有与 usrsctp 对比。 |
+| WebRTC 媒体与数据通道 | akio-webrtc、akio-ice、akio-rtp | 是（`webrtc-bench`，每个 ADR 的 A/B） | 部分（`901bb712`、`f4f98330`） | 记录的每次运行都是回归检查；媒体路径本身没有优化过。 |
+| 抖动缓冲、视频播放缓冲 | akio-rtp（ADR-087、ADR-092） | 是（`jitter-bench`：每帧 47 ns） | 是（第二轮，ADR-092 更新） | – |
+| TURN 中继 | akio-turn（ADR-083、ADR-091） | 是（`turn-relay-bench`） | 是（按客户端分片分配，3.7x；`028d61d2`） | 没有与 coturn 的吞吐对比。 |
+| 媒体服务器（RTMP、RTSP、HLS、hub） | akio-media | 部分（`bench_segmenting`，各 ADR 的接入 A/B） | 部分（2026-11-21/22 的 `perf(media)`） | 没有与参考服务器对比（SRS、mediamtx）。 |
+| BitTorrent | akio-bittorrent | 部分（`bt-bench` A/B：回环 2,180 MiB/s） | 部分（SHA-1 分片哈希） | 没有与其他客户端对比。 |
+
+待办项（不是 `是` / `是` 的行），大致按分量排列：KCP 和 protobuf（什么都没测）；落后于 RustCrypto 的加密原语
+（AES-CTR、SHA-512、base64、MD5、PBKDF2、HMAC-SHA1，供 KCP、SRTP 和 STUN 使用）；WebSocket 帧解析、掩码和
+UTF-8；gRPC、arpc、DTLS、SRTP、SCTP、HTTP/1 客户端、媒体和 BitTorrent 与参考实现的对比；HTTP/1 请求头解析器和
+日志过滤正则；io_uring 基于 ring 的发送；eBPF 调优；逻辑池和 akio-mux 的微基准；受硬件限制的行（网卡上的 DPDK、
+跨节点 NUMA、aarch64、kqueue）。
+
+## 5. 工程规范
 - **数据面规则**：[docs/rules.zh-CN.md](rules.zh-CN.md)（绝不阻塞 I/O 线程、消息体和队列有界、背压联动、超时与带安全默认值的上限、热路径工作放到构建时、验证与改动相称）；默认值见 ADR-009。
 - CI（用户 2026-11-16 决定）：GitHub Actions 只在发布预发布版本或手动运行时执行；普通提交、推送与 PR 不触发。每次改动在推送前于本地验证：macOS、Docker 中的 Linux arm64（epoll 与 `AKIO_TEST_BACKEND=uring`），以及原生 x86_64 Linux（x86 汇编、真实 io_uring 与基准测试）。
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
@@ -355,7 +416,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - **文档**：每个 crate 有 crate-level 文档与可运行 doctest；README 保持中英双语（与 fib 一致）。
 - **性能**：PR 若触及热路径，附 benchmark 前后对比；夜间 benchmark 对比历史基线。
 
-## 5. 建议的启动顺序（审核通过后）
+## 6. 建议的启动顺序（审核通过后）
 1. M0：先定稿 ADR-001~004 与 `Handler`/`Conn` API 原型（这是后续所有工作的地基，改动成本最高）。
 2. M1：先打通 epoll TCP echo + 跨线程 `Conn::send`，尽早上 loom 和 benchmark。
 3. M2 开头先做逻辑池（它直接决定 `Handler` 的状态类型设计），再做 io_uring。

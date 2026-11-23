@@ -345,7 +345,72 @@ Leftovers of the performance passes and of the 2026-11-23 rounds that no round h
 - [ ] `akio-bittorrent` `seed_limits_pause` timed out once on a loaded host, cause unknown; the assert now prints both sides' stats. Look at them the next time it fails.
 - [ ] `akio-ebpf` `syn_flood_protection_leaves_established_connections_alone` fails on a shared host: the XDP limiter on `lo` counts SYNs from other processes (failed once on gpu51 during the 2026-11-23 run, 3/3 alone). Make it count only its own port, or run it in its own network namespace.
 
-## 4. Engineering rules
+## 4. Benchmark and optimization status
+
+Every feature on the hot path ([rules.md](rules.md) rule 16: read/write path, parsers, routing,
+crypto kernels) needs a benchmark, and so does a data-plane feature off the hot path when a crate
+micro-benchmark tells something (its row says so). **Benchmarked** means measured on the quiet
+host with the numbers in `docs/BENCHMARKS.md`, an ADR or the entry above (against a reference
+implementation or the previous code); **optimized** means at least one pass driven by those numbers,
+with what is still behind written down. Values: `yes` (where it is recorded), `partial`, `no`.
+**A row that is not `yes` in both columns is an open todo for a benchmark task.** A feature task
+whose feature needs a benchmark adds its row as `no` / `no` and names what to measure (rule 20); a
+benchmark task updates the row when it has measured or optimized. Status as of 2026-11-24.
+
+| Feature | Crate / plan item | Benchmarked | Optimized | Evidence or what is left |
+|---|---|---|---|---|
+| Event loop, epoll | akio-core, akio-epoll, akio-buf, akio-timer (M1) | yes (BENCHMARKS campaign `10070cff`, TCP echo, memory per connection) | yes (2026-11-14 pass: one clock read per callback, inline queue heads; `3d3aca96`) | Same class as tokio; keep-alive HTTP/1 is kernel-bound. No isolated micro-bench of the timer wheel or the buffer pool. |
+| Event loop, io_uring | akio-uring (M2) | yes (campaign; "io_uring features evaluation") | partial | Registered files, SEND_ZC, MSG_RING evaluated, none adopted; ring-based sends open ("Open, not scheduled"). |
+| Event loop, kqueue | akio-epoll (macOS, M1) | no | no | Development/debug backend; rule 17 discards macOS numbers. Needs a decision whether it gets a benchmark at all (an idle macOS host, or none). |
+| TCP echo and memory per connection | akio-core | yes (campaign, `tools/bench/echo.sh`, `mem.sh`) | yes (inline queue heads, boxed session states, boxed deflate state) | Client-bound plateau at 0.65–0.8 M req/s; no latency percentiles. |
+| UDP: per-peer, connectionless, GRO/GSO, owned buffers | akio-core, akio-sys (ADR-024, ADR-065, ADR-093) | yes ("Connectionless UDP", "Bound UDP socket receive", campaign UDP echo) | yes (GRO default, `recvmmsg` slots in pooled slabs, `sendmmsg` + GSO, 1.08x datagram listener) | – |
+| Logical pool (`spawn_blocking`) | akio-pool (M2) | partial (M2: pool recovers ~58x over blocking inline) | no | No same-run micro-bench of submit/complete cost per task. |
+| NUMA placement | akio-core (ADR-088) | partial ("NUMA placement": cost only, gpu51 has one node) | no | The gain across nodes needs a multi-node host. |
+| Hot reload, prefork steering | akio-core, akio-prefork (ADR-028) | yes ("Hot reload", engine A/B) | yes (no cost measured) | Prefork BPF steering not measured on its own. |
+| Telemetry, metrics, spans, OTLP, logging | akio-core, akio-export, akio-log (ADR-020, ADR-064) | yes ("Telemetry overhead", "Observability overhead", "OTLP export additions"; akio-log `overhead` bench) | yes (exemplar path out of line, `d4151796`, `7dde0830`; disabled statement 0.25 ns) | – |
+| TLS 1.3/1.2 records and handshakes | akio-tls (M2) | yes ("TLS 1.3 in memory", campaign TLS echo and handshakes) | yes (records in place, zero-fill removed; 1.72x rustls+ring at 16 KiB) | Handshake rate in the campaign is client-bound. |
+| Kernel TLS | akio-tls, akio-uring (ADR-067) | yes ("Kernel TLS evaluation", "Kernel TLS in the engine") | yes (software kTLS not adopted: slower) | TLS-offload NIC not measured (no such NIC). |
+| Crypto: AEAD, hashes, CRC (TLS/QUIC bulk) | akio-crypto | yes ("Cryptography", "AES-GCM", "ChaCha20-Poly1305" sections) | yes (VAES/AVX-512/AVX2 kernels, SHA-NI, CRC folding, Poly1305 IFMA/AVX2) | – |
+| Crypto: public key (P-256, X25519, Ed25519, RSA, P-384, P-521, Ed448) | akio-crypto | yes (`pk_bench`, `tls-bench handshakes`) | yes (x86-64 asm, IFMA RSA; P-256 1.12–1.57x ring, RSA up to 3.7x) | P-384 / P-521 / Ed448 have had no dedicated pass. |
+| Crypto: other primitives (AES-CTR / one block, SHA-512, MD5, base64, PBKDF2, HMAC-SHA1) | akio-crypto (KCP, SRTP, STUN, kcptun keys) | yes ("Cryptography" table) | no | Behind RustCrypto: AES-128-CTR 16 KiB 0.73x, SHA-512 0.66x, base64 0.75x, MD5 0.84x, HMAC-SHA1 100 B 0.94x, PBKDF2 0.83 vs 0.57 ms. |
+| Crypto on aarch64 | akio-crypto (Performance pass 2) | partial (P-256 / X25519 once on a shared Apple M4 Pro) | partial (asm tested, not tuned) | No ARM benchmark host; AES-GCM / ChaCha / RSA on aarch64 unmeasured. |
+| HTTP/1.1 server | akio-http (M3) | yes (campaign vs hyper / fib / monoio) | yes (heads with 32 slots first, ADR-081 allocations per request) | Keep-alive is kernel-bound. |
+| HTTP/1 head parser, HPACK | akio-ws `http1`, akio-http `hpack` | yes ("Codec micro benchmarks") | partial | Head parser 1.0–1.2x httparse's time on whole heads (no SIMD); HPACK ahead of loona-hpack. |
+| HTTP/1 client | akio-http `client` (ADR-059) | partial (`client-bench` A/B only, 270k req/s) | partial (one deadline timer per connection, `95bca264`) | No reference comparison (hyper client, reqwest). |
+| Router and route regexps | akio-http, akio-regex (ADR-051) | yes (`router-bench`, "Codec micro benchmarks") | yes (~28 ns, 0 allocations per lookup; route regexps faster than `regex`) | – |
+| Log-filter regexps | akio-regex, akio-log (ADR-047) | yes ("Codec micro benchmarks", `logregex`) | partial | Alternations without a match 92 vs 16 ns and `\b\d+ms\b` 93 vs 33 ns against `regex`; compile slower. Off the hot path (filters only). |
+| HTTP/2 | akio-http (M4) | yes (campaign h2c, h2 over TLS) | yes (frames in place, flat HPACK; 1.22–1.34x fib) | At h2load's ceiling: lower bounds. |
+| Compression middleware, streamed responses | akio-http `compress` (ADR-074) | yes ("Compressed streamed responses", brotli streaming sections) | yes (fixed costs per write and per stream) | – |
+| WebSocket (HTTP/1, HTTP/2, HTTP/3) | akio-ws (M3, ADR-060, ADR-011) | yes (campaign echo, memory, "WebSocket over HTTP/2") | partial (memory, echo +7–11% in the rules audit) | No micro-bench of frame parsing, masking and UTF-8 validation; no pass on them. |
+| permessage-deflate, deflate | akio-deflate | yes ("Deflate", `pmd_echo`) | yes (zlib-ng strategies, stored blocks one copy) | Still safe Rust without SIMD. |
+| Brotli, Zstandard | akio-brotli, akio-zstd (ADR-041, ADR-069) | yes (`tools/codec-bench` vs libbrotli / libzstd) | yes (several passes, last 2026-11-23) | BMI2 paths wait on the MSRV decision ("Open, not scheduled"). |
+| QUIC | akio-quic (M5) | yes ("QUIC and HTTP/3", `quic-bench`) | yes (pacer, GRO, per-batch ACKs, pooled buffers; ADR-081 update) | No reference server beyond quinn-proto (quic-go not measured). |
+| HTTP/3, QPACK | akio-h3 (M5) | yes (`quic-bench h3`) | yes (429k → 839k req/s, 8.6 allocations per request) | QPACK encoder on has no own pass. |
+| KCP | akio-kcp (M5) | no (`kcp-bench` exists, no recorded result) | no | Measure bulk and echo against kcp-go, with and without crypt / FEC. |
+| gRPC | akio-grpc (M4) | partial (`grpc-bench` A/B in `33fb59ed8`: 318k calls/s) | partial (one lock per sink, in-place deframing) | No reference comparison (grpc-go, tonic); protobuf encode/decode not measured. |
+| Protobuf runtime | akio-protobuf | no | no | Encode/decode against prost on the gRPC path. |
+| arpc | akio-arpc (M4, ADR-023) | partial (`arpc-bench` A/B: 8.2M calls/s) | partial (inline frame encoding, in-place decoding) | No comparison against Go arpc. |
+| Protocol sniffing | akio-mux (M4) | no | no | Once per connection; a micro-bench of the sniff and the accept hand-over would tell whether it matters. |
+| SOCKS relay | akio-socks | yes (`ebpf-bench socks`, userspace relay A/B `8075a7f9`) | partial (sockmap splice option) | – |
+| eBPF acceleration (steering, sockmap, XDP) | akio-ebpf (M5) | yes ("eBPF acceleration") | no | Measured once over loopback (2026-11-18); no tuning pass. |
+| Userspace TCP/IP stack, DPDK, AF_XDP | akio-dpdk (M6, ADR-063, ADR-068) | partial (`stack-bench` memory wire, AF_XDP on veth; no NIC) | yes (stack 6.5–11x smoltcp; `perf(dpdk)` 2026-11-18) | DPDK with a real NIC never measured. |
+| DTLS records and handshakes | akio-dtls | partial (`dtls-bench`, `dtls-hs-bench` A/B only) | partial (no allocation per DTLS 1.2 record, `09125dae`) | No reference comparison (OpenSSL, pion). |
+| SRTP | akio-srtp (ADR-040) | partial (`srtp_bench` A/B in ADR-040) | no | No comparison against libsrtp; AES-CM rests on the slower AES-CTR above. |
+| SCTP data channels | akio-sctp (ADR-037) | partial (`sctp_bench` A/B, in memory) | partial | No comparison against usrsctp. |
+| WebRTC media and data channels | akio-webrtc, akio-ice, akio-rtp | yes (`webrtc-bench`, A/B per ADR) | partial (`901bb712`, `f4f98330`) | Every recorded run is a regression check; no pass on the media path itself. |
+| Jitter buffer, video playout | akio-rtp (ADR-087, ADR-092) | yes (`jitter-bench`: 47 ns per frame) | yes (second pass, ADR-092 update) | – |
+| TURN relay | akio-turn (ADR-083, ADR-091) | yes (`turn-relay-bench`) | yes (sharded allocations, 3.7x; `028d61d2`) | No comparison against coturn's throughput. |
+| Media server (RTMP, RTSP, HLS, hub) | akio-media | partial (`bench_segmenting`, ingest A/B per ADR) | partial (`perf(media)` 2026-11-21/22) | No comparison against a reference server (SRS, mediamtx). |
+| BitTorrent | akio-bittorrent | partial (`bt-bench` A/B: 2,180 MiB/s loopback) | partial (SHA-1 piece hashing) | No comparison against another client. |
+
+Open todos (rows not `yes` / `yes`), roughly by weight: KCP and protobuf (nothing measured); the
+crypto primitives behind RustCrypto (AES-CTR, SHA-512, base64, MD5, PBKDF2, HMAC-SHA1, which feed
+KCP, SRTP and STUN); WebSocket frame parsing, masking and UTF-8; reference comparisons for gRPC,
+arpc, DTLS, SRTP, SCTP, the HTTP/1 client, media and BitTorrent; the HTTP/1 head parser and the
+log-filter regexps; io_uring ring-based sends; eBPF tuning; the logical pool and akio-mux
+micro-benchmarks; the hardware-bound rows (DPDK on a NIC, NUMA across nodes, aarch64, kqueue).
+
+## 5. Engineering rules
 - **Data-plane rules**: [docs/rules.md](rules.md) (never block an I/O thread, bounded bodies and queues, linked backpressure, timeouts and safe-default limits, build-time work on the hot path, verification sized to the change); defaults in ADR-009.
 - CI (decided by the user, 2026-11-16): GitHub Actions runs only when a pre-release is published or by hand; ordinary commits, pushes and pull requests do not trigger it. Every change is verified locally before it is pushed: macOS, Linux arm64 in Docker (epoll and `AKIO_TEST_BACKEND=uring`), and natively on x86_64 Linux for the x86 assembly, real io_uring and benchmarks.
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
@@ -355,7 +420,7 @@ Leftovers of the performance passes and of the 2026-11-23 rounds that no round h
 - **Docs**: every crate has crate-level docs and runnable doctests; READMEs stay bilingual (as in fib), `X.md` in English and `X.zh-CN.md` in Chinese.
 - **Performance**: a PR touching hot paths attaches before/after benchmarks; nightly benchmarks compare against historical baselines.
 
-## 5. Suggested order after approval
+## 6. Suggested order after approval
 1. M0: settle ADR-001 to 004 and the `Handler`/`Conn` API prototype first (the foundation for everything else and the costliest to change).
 2. M1: get epoll TCP echo and cross-thread `Conn::send` working, and bring in loom and benchmarks early.
 3. M2: start with the logical pool (it directly shapes the `Handler` state type), then io_uring.

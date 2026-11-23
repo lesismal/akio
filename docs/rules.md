@@ -3,7 +3,7 @@
 English | [简体中文](rules.zh-CN.md)
 
 Every change to `akio` follows these rules. They complement the engineering rules in
-[DEV-PLAN section 4](DEV-PLAN.md#4-engineering-rules) and the ADRs: those say how the code is
+[DEV-PLAN section 5](DEV-PLAN.md#5-engineering-rules) and the ADRs: those say how the code is
 organised and verified; these say what the data plane must never do. They are adapted from
 [fit's rules](https://github.com/lesismal/fit/blob/main/docs/rules.md), which hold the same line
 for a proxy built on an event-loop library.
@@ -125,3 +125,9 @@ Every check costs waiting; each change gets the checks its kind needs, no more.
     another rule asks for a measurement, the feature task leaves it to such a benchmark task and
     says in its report what should be measured. A feature task runs a benchmark only when the user
     asks for one in that task.
+
+    A feature task whose feature needs a benchmark (rule 16) adds its row to, or keeps it in, the
+    benchmark status table of [DEV-PLAN section 4](DEV-PLAN.md#4-benchmark-and-optimization-status),
+    marked not benchmarked and not optimized, and names there what should be measured; a benchmark
+    task updates the row with what it measured and optimized. A row not benchmarked or not
+    optimized is an open todo.
