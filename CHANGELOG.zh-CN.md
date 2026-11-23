@@ -10,6 +10,30 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：不终止 TLS 按 SNI 路由，以及 PROXY 协议（akio-mux、akio-core）
+
+ADR-095，用于 akit 的 TLS 透传和负载均衡后的监听器：
+
+- `Rule::TlsSni(SniMatcher)`（精确名和单标签 `*.` 通配，不区分大小写）和
+  `Rule::TlsHello(Arc<dyn Fn(&ClientHello) -> bool>)`（服务器名、ALPN）：按 ClientHello 路由连接而
+  不终止 TLS，hello 会重放给选中的路由。hello 可以跨多次读取和多个 TLS 记录。带有这类路由的 mux
+  默认嗅探到 `TLS_SNIFF_BYTES`（16 KiB + 5），除非设置过 `max_sniff_bytes`。
+- `akio_mux::tls`：`parse_client_hello`、`ClientHello`（`server_name`、`alpn`、`offers_alpn`、
+  `legacy_version`、`consumed`）、`HelloError`、`SniMatcher`；独立解析器（akio-mux 不依赖 akio-tls）。
+- `akio_mux::proxy`：PROXY 协议 v1 和 v2（TLV、校验 CRC32C、LOCAL、IPv4 / IPv6 / Unix）。
+  `ProxyProtocol::new(next)` / `new_any(next)` 在 `next` 运行前读取头部（`header_timeout` 5 秒、
+  `max_header_bytes` 4096、`versions`、`allow_missing`、`trusted`），并把它附加到连接上：
+  `proxy::header(&conn)`、`proxy::client_addr(&conn)`。拨号侧：`ProxyHeader::proxy` / `local` /
+  `with_tlv`、`encode_v1` / `encode_v2`、`proxy::send_header`。
+- akio-core：`Conn::attachment::<T>()` 和隐藏的 `ConnInner::attach`，每个连接一个只写一次的值，
+  由监听侧的层在处理器运行前设置。
+- 模糊测试目标 `mux_tls_hello` 和 `proxy_header`。
+
+### 变更：`Mux` 严格按顺序尝试路由（akio-mux）
+
+匹配的路由现在会在更早的路由仍未决定（`NeedMore`）时等待，而不是立即接手连接；到达嗅探上限时仍由
+第一个匹配者胜出。这正是"路由按顺序尝试"所承诺的，也是放在 `Rule::Tls` 之前的 SNI 路由所需要的。
+
 ### 新增：运行时增加、移除和排空 TCP listener；accept 过滤器（akio、akio-core、akio-epoll、akio-uring）
 
 ADR-099（2026-11-23），增量：

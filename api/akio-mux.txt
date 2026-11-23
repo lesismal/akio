@@ -1,4 +1,260 @@
 pub mod akio_mux
+pub mod akio_mux::proxy
+pub mod akio_mux::proxy::tlv
+pub const akio_mux::proxy::tlv::ALPN: u8
+pub const akio_mux::proxy::tlv::AUTHORITY: u8
+pub const akio_mux::proxy::tlv::CRC32C: u8
+pub const akio_mux::proxy::tlv::NETNS: u8
+pub const akio_mux::proxy::tlv::NOOP: u8
+pub const akio_mux::proxy::tlv::SSL: u8
+pub const akio_mux::proxy::tlv::UNIQUE_ID: u8
+pub enum akio_mux::proxy::Addresses
+pub akio_mux::proxy::Addresses::Inet
+pub akio_mux::proxy::Addresses::Inet::destination: core::net::socket_addr::SocketAddr
+pub akio_mux::proxy::Addresses::Inet::source: core::net::socket_addr::SocketAddr
+pub akio_mux::proxy::Addresses::None
+pub akio_mux::proxy::Addresses::Unix
+pub akio_mux::proxy::Addresses::Unix::destination: alloc::vec::Vec<u8>
+pub akio_mux::proxy::Addresses::Unix::source: alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_mux::proxy::Addresses
+pub fn akio_mux::proxy::Addresses::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::Addresses
+impl core::cmp::PartialEq for akio_mux::proxy::Addresses
+pub fn akio_mux::proxy::Addresses::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::Addresses
+pub fn akio_mux::proxy::Addresses::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::Addresses
+pub fn akio_mux::proxy::Addresses::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_mux::proxy::Addresses
+impl core::marker::Send for akio_mux::proxy::Addresses
+impl core::marker::Sync for akio_mux::proxy::Addresses
+impl core::marker::Unpin for akio_mux::proxy::Addresses
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::Addresses
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::Addresses
+pub enum akio_mux::proxy::Command
+pub akio_mux::proxy::Command::Local
+pub akio_mux::proxy::Command::Proxy
+impl core::clone::Clone for akio_mux::proxy::Command
+pub fn akio_mux::proxy::Command::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::Command
+impl core::cmp::PartialEq for akio_mux::proxy::Command
+pub fn akio_mux::proxy::Command::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::Command
+pub fn akio_mux::proxy::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::Command
+pub fn akio_mux::proxy::Command::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_mux::proxy::Command
+impl core::marker::StructuralPartialEq for akio_mux::proxy::Command
+impl core::marker::Send for akio_mux::proxy::Command
+impl core::marker::Sync for akio_mux::proxy::Command
+impl core::marker::Unpin for akio_mux::proxy::Command
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::Command
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::Command
+#[non_exhaustive] pub enum akio_mux::proxy::ProxyError
+pub akio_mux::proxy::ProxyError::Incomplete
+pub akio_mux::proxy::ProxyError::Invalid(&'static str)
+impl core::clone::Clone for akio_mux::proxy::ProxyError
+pub fn akio_mux::proxy::ProxyError::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::ProxyError
+impl core::cmp::PartialEq for akio_mux::proxy::ProxyError
+pub fn akio_mux::proxy::ProxyError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_mux::proxy::ProxyError
+impl core::fmt::Debug for akio_mux::proxy::ProxyError
+pub fn akio_mux::proxy::ProxyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_mux::proxy::ProxyError
+pub fn akio_mux::proxy::ProxyError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_mux::proxy::ProxyError
+impl core::marker::StructuralPartialEq for akio_mux::proxy::ProxyError
+impl core::marker::Send for akio_mux::proxy::ProxyError
+impl core::marker::Sync for akio_mux::proxy::ProxyError
+impl core::marker::Unpin for akio_mux::proxy::ProxyError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::ProxyError
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::ProxyError
+pub enum akio_mux::proxy::Transport
+pub akio_mux::proxy::Transport::Datagram
+pub akio_mux::proxy::Transport::Stream
+pub akio_mux::proxy::Transport::Unspec
+impl core::clone::Clone for akio_mux::proxy::Transport
+pub fn akio_mux::proxy::Transport::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::Transport
+impl core::cmp::PartialEq for akio_mux::proxy::Transport
+pub fn akio_mux::proxy::Transport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::Transport
+pub fn akio_mux::proxy::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::Transport
+pub fn akio_mux::proxy::Transport::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_mux::proxy::Transport
+impl core::marker::StructuralPartialEq for akio_mux::proxy::Transport
+impl core::marker::Send for akio_mux::proxy::Transport
+impl core::marker::Sync for akio_mux::proxy::Transport
+impl core::marker::Unpin for akio_mux::proxy::Transport
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::Transport
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::Transport
+pub enum akio_mux::proxy::Version
+pub akio_mux::proxy::Version::V1
+pub akio_mux::proxy::Version::V2
+impl core::clone::Clone for akio_mux::proxy::Version
+pub fn akio_mux::proxy::Version::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::Version
+impl core::cmp::PartialEq for akio_mux::proxy::Version
+pub fn akio_mux::proxy::Version::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::Version
+pub fn akio_mux::proxy::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::Version
+pub fn akio_mux::proxy::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_mux::proxy::Version
+impl core::marker::StructuralPartialEq for akio_mux::proxy::Version
+impl core::marker::Send for akio_mux::proxy::Version
+impl core::marker::Sync for akio_mux::proxy::Version
+impl core::marker::Unpin for akio_mux::proxy::Version
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::Version
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::Version
+pub struct akio_mux::proxy::ProxyHeader
+pub akio_mux::proxy::ProxyHeader::addresses: akio_mux::proxy::Addresses
+pub akio_mux::proxy::ProxyHeader::command: akio_mux::proxy::Command
+pub akio_mux::proxy::ProxyHeader::tlvs: alloc::vec::Vec<akio_mux::proxy::Tlv>
+pub akio_mux::proxy::ProxyHeader::transport: akio_mux::proxy::Transport
+pub akio_mux::proxy::ProxyHeader::version: akio_mux::proxy::Version
+impl akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::authority(&self) -> core::option::Option<&str>
+pub fn akio_mux::proxy::ProxyHeader::destination(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_mux::proxy::ProxyHeader::encode(&self, akio_mux::proxy::Version) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_mux::proxy::ProxyHeader::encode_v1(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_mux::proxy::ProxyHeader::encode_v2(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn akio_mux::proxy::ProxyHeader::local() -> akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::parse(&[u8]) -> core::result::Result<(akio_mux::proxy::ProxyHeader, usize), akio_mux::proxy::ProxyError>
+pub fn akio_mux::proxy::ProxyHeader::proxy(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::source(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn akio_mux::proxy::ProxyHeader::tlv(&self, u8) -> core::option::Option<&[u8]>
+pub fn akio_mux::proxy::ProxyHeader::with_tlv(self, u8, impl core::convert::Into<alloc::vec::Vec<u8>>) -> akio_mux::proxy::ProxyHeader
+impl core::clone::Clone for akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::ProxyHeader
+impl core::cmp::PartialEq for akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_mux::proxy::ProxyHeader
+impl core::marker::Send for akio_mux::proxy::ProxyHeader
+impl core::marker::Sync for akio_mux::proxy::ProxyHeader
+impl core::marker::Unpin for akio_mux::proxy::ProxyHeader
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::ProxyHeader
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::ProxyHeader
+pub struct akio_mux::proxy::ProxyProtocol(_)
+impl akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::allow_missing(self, bool) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::header_timeout(self, core::option::Option<core::time::Duration>) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::into_any(self) -> akio_core::handler::AnyAcceptor
+pub fn akio_mux::proxy::ProxyProtocol::max_header_bytes(self, usize) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::new<A: akio_core::handler::Acceptor>(A) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::new_any(impl core::convert::Into<akio_core::handler::AnyAcceptor>) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::trusted(self, impl core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::versions(self, bool, bool) -> akio_mux::proxy::ProxyProtocol
+impl core::clone::Clone for akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::clone(&self) -> Self
+impl core::convert::From<akio_mux::proxy::ProxyProtocol> for akio_core::handler::AnyAcceptor
+pub fn akio_core::handler::AnyAcceptor::from(akio_mux::proxy::ProxyProtocol) -> akio_core::handler::AnyAcceptor
+impl core::fmt::Debug for akio_mux::proxy::ProxyProtocol
+pub fn akio_mux::proxy::ProxyProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_mux::proxy::ProxyProtocol
+impl core::marker::Sync for akio_mux::proxy::ProxyProtocol
+impl core::marker::Unpin for akio_mux::proxy::ProxyProtocol
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::ProxyProtocol
+impl !core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::ProxyProtocol
+pub struct akio_mux::proxy::Tlv
+pub akio_mux::proxy::Tlv::kind: u8
+pub akio_mux::proxy::Tlv::value: alloc::vec::Vec<u8>
+impl core::clone::Clone for akio_mux::proxy::Tlv
+pub fn akio_mux::proxy::Tlv::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::proxy::Tlv
+impl core::cmp::PartialEq for akio_mux::proxy::Tlv
+pub fn akio_mux::proxy::Tlv::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::proxy::Tlv
+pub fn akio_mux::proxy::Tlv::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_mux::proxy::Tlv
+pub fn akio_mux::proxy::Tlv::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_mux::proxy::Tlv
+impl core::marker::Send for akio_mux::proxy::Tlv
+impl core::marker::Sync for akio_mux::proxy::Tlv
+impl core::marker::Unpin for akio_mux::proxy::Tlv
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::proxy::Tlv
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::proxy::Tlv
+pub const akio_mux::proxy::DEFAULT_HEADER_TIMEOUT: core::time::Duration
+pub const akio_mux::proxy::DEFAULT_MAX_HEADER: usize
+pub const akio_mux::proxy::V1_MAX: usize
+pub const akio_mux::proxy::V2_MAX: usize
+pub const akio_mux::proxy::V2_SIGNATURE: [u8; 12]
+pub fn akio_mux::proxy::client_addr<H>(&akio_core::conn::Conn<H>) -> core::net::socket_addr::SocketAddr
+pub fn akio_mux::proxy::crc32c(&[u8]) -> u32
+pub fn akio_mux::proxy::header<H>(&akio_core::conn::Conn<H>) -> core::option::Option<&akio_mux::proxy::ProxyHeader>
+pub fn akio_mux::proxy::send_header<H>(&akio_core::conn::Conn<H>, &akio_mux::proxy::ProxyHeader, akio_mux::proxy::Version) -> akio_core::error::Result<()>
+pub mod akio_mux::tls
+#[non_exhaustive] pub enum akio_mux::tls::HelloError
+pub akio_mux::tls::HelloError::Incomplete
+pub akio_mux::tls::HelloError::Invalid
+impl core::clone::Clone for akio_mux::tls::HelloError
+pub fn akio_mux::tls::HelloError::clone(&self) -> Self
+impl core::cmp::Eq for akio_mux::tls::HelloError
+impl core::cmp::PartialEq for akio_mux::tls::HelloError
+pub fn akio_mux::tls::HelloError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_mux::tls::HelloError
+pub fn akio_mux::tls::HelloError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_mux::tls::HelloError
+impl core::marker::StructuralPartialEq for akio_mux::tls::HelloError
+impl core::marker::Send for akio_mux::tls::HelloError
+impl core::marker::Sync for akio_mux::tls::HelloError
+impl core::marker::Unpin for akio_mux::tls::HelloError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::HelloError
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::tls::HelloError
+pub struct akio_mux::tls::Alpn<'a>
+impl<'a> core::clone::Clone for akio_mux::tls::Alpn<'a>
+pub fn akio_mux::tls::Alpn<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_mux::tls::Alpn<'a>
+pub fn akio_mux::tls::Alpn<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::iter::traits::iterator::Iterator for akio_mux::tls::Alpn<'a>
+pub type akio_mux::tls::Alpn<'a>::Item = &'a [u8]
+pub fn akio_mux::tls::Alpn<'a>::next(&mut self) -> core::option::Option<&'a [u8]>
+impl<'a> core::marker::Send for akio_mux::tls::Alpn<'a>
+impl<'a> core::marker::Sync for akio_mux::tls::Alpn<'a>
+impl<'a> core::marker::Unpin for akio_mux::tls::Alpn<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::Alpn<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_mux::tls::Alpn<'a>
+pub struct akio_mux::tls::ClientHello<'a>
+impl<'a> akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::alpn(&self) -> akio_mux::tls::Alpn<'_>
+pub fn akio_mux::tls::ClientHello<'a>::consumed(&self) -> usize
+pub fn akio_mux::tls::ClientHello<'a>::legacy_version(&self) -> u16
+pub fn akio_mux::tls::ClientHello<'a>::offers_alpn(&self, &[u8]) -> bool
+pub fn akio_mux::tls::ClientHello<'a>::server_name(&self) -> core::option::Option<&str>
+impl<'a> core::clone::Clone for akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_mux::tls::ClientHello<'a>
+impl<'a> core::marker::Sync for akio_mux::tls::ClientHello<'a>
+impl<'a> core::marker::Unpin for akio_mux::tls::ClientHello<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::ClientHello<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_mux::tls::ClientHello<'a>
+pub struct akio_mux::tls::SniMatcher
+impl akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::matches(&self, &str) -> bool
+pub fn akio_mux::tls::SniMatcher::new<I, S>(I) -> akio_mux::tls::SniMatcher where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
+pub fn akio_mux::tls::SniMatcher::with_name(self, impl core::convert::AsRef<str>) -> akio_mux::tls::SniMatcher
+impl core::clone::Clone for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::clone(&self) -> Self
+impl core::default::Default for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::default() -> Self
+impl core::fmt::Debug for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_mux::tls::SniMatcher
+impl core::marker::Sync for akio_mux::tls::SniMatcher
+impl core::marker::Unpin for akio_mux::tls::SniMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::SniMatcher
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::tls::SniMatcher
+pub const akio_mux::tls::TLS_SNIFF_BYTES: usize
+pub fn akio_mux::tls::parse_client_hello(&[u8]) -> core::result::Result<akio_mux::tls::ClientHello<'_>, akio_mux::tls::HelloError>
 pub enum akio_mux::Decision
 pub akio_mux::Decision::NeedMore
 pub akio_mux::Decision::No
@@ -26,6 +282,8 @@ pub akio_mux::Rule::Prefix(alloc::vec::Vec<u8>)
 pub akio_mux::Rule::Socks4
 pub akio_mux::Rule::Socks5
 pub akio_mux::Rule::Tls
+pub akio_mux::Rule::TlsHello(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_mux::tls::ClientHello<'_>) -> bool + core::marker::Send + core::marker::Sync)>)
+pub akio_mux::Rule::TlsSni(akio_mux::tls::SniMatcher)
 impl akio_mux::Rule
 pub fn akio_mux::Rule::decide(&self, &[u8]) -> akio_mux::Decision
 impl core::clone::Clone for akio_mux::Rule
@@ -37,6 +295,22 @@ impl core::marker::Sync for akio_mux::Rule
 impl core::marker::Unpin for akio_mux::Rule
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_mux::Rule
 impl !core::panic::unwind_safe::UnwindSafe for akio_mux::Rule
+pub struct akio_mux::ClientHello<'a>
+impl<'a> akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::alpn(&self) -> akio_mux::tls::Alpn<'_>
+pub fn akio_mux::tls::ClientHello<'a>::consumed(&self) -> usize
+pub fn akio_mux::tls::ClientHello<'a>::legacy_version(&self) -> u16
+pub fn akio_mux::tls::ClientHello<'a>::offers_alpn(&self, &[u8]) -> bool
+pub fn akio_mux::tls::ClientHello<'a>::server_name(&self) -> core::option::Option<&str>
+impl<'a> core::clone::Clone for akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_mux::tls::ClientHello<'a>
+pub fn akio_mux::tls::ClientHello<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_mux::tls::ClientHello<'a>
+impl<'a> core::marker::Sync for akio_mux::tls::ClientHello<'a>
+impl<'a> core::marker::Unpin for akio_mux::tls::ClientHello<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::ClientHello<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_mux::tls::ClientHello<'a>
 pub struct akio_mux::Mux(_)
 impl akio_mux::Mux
 pub fn akio_mux::Mux::fallback<A: akio_core::handler::Acceptor>(self, A) -> akio_mux::Mux
@@ -59,4 +333,21 @@ impl core::marker::Sync for akio_mux::Mux
 impl core::marker::Unpin for akio_mux::Mux
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_mux::Mux
 impl !core::panic::unwind_safe::UnwindSafe for akio_mux::Mux
+pub struct akio_mux::SniMatcher
+impl akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::matches(&self, &str) -> bool
+pub fn akio_mux::tls::SniMatcher::new<I, S>(I) -> akio_mux::tls::SniMatcher where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
+pub fn akio_mux::tls::SniMatcher::with_name(self, impl core::convert::AsRef<str>) -> akio_mux::tls::SniMatcher
+impl core::clone::Clone for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::clone(&self) -> Self
+impl core::default::Default for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::default() -> Self
+impl core::fmt::Debug for akio_mux::tls::SniMatcher
+pub fn akio_mux::tls::SniMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_mux::tls::SniMatcher
+impl core::marker::Sync for akio_mux::tls::SniMatcher
+impl core::marker::Unpin for akio_mux::tls::SniMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for akio_mux::tls::SniMatcher
+impl core::panic::unwind_safe::UnwindSafe for akio_mux::tls::SniMatcher
 pub const akio_mux::DEFAULT_SNIFF_TIMEOUT: core::time::Duration
+pub const akio_mux::TLS_SNIFF_BYTES: usize

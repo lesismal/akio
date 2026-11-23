@@ -96,3 +96,4 @@
 - [ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭](094-handlers-on-the-logical-pool.zh-CN.md)（2026-11-23 采纳）
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
 - [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
+- [ADR-095：不终止 TLS 按 SNI 路由，以及 PROXY 协议（akio-mux）](095-mux-sni-routing-proxy-protocol.zh-CN.md)（2026-11-23 采纳）

@@ -96,3 +96,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-094: Protocol handlers on the logical pool, per protocol, off by default](094-handlers-on-the-logical-pool.md) (accepted 2026-11-23)
 - [ADR-098: Server certificates chosen per handshake by a resolver that may answer later](098-tls-cert-resolver.md) (accepted 2026-11-23)
 - [ADR-099: TCP listeners added, removed and drained at run time, and a filter on accepted connections](099-runtime-listeners-accept-filter.md) (accepted 2026-11-23)
+- [ADR-095: TLS routing by SNI without terminating it, and the PROXY protocol (akio-mux)](095-mux-sni-routing-proxy-protocol.md) (accepted 2026-11-23)

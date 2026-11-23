@@ -1,9 +1,10 @@
 use std::{
+    any::Any,
     collections::VecDeque,
     io::{self, IoSlice, Write},
     marker::PhantomData,
     net::{SocketAddr, TcpStream, UdpSocket},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use akio_buf::SharedBuf;
@@ -59,7 +60,7 @@ pub trait LoopLink: Send + Sync {
 
 /// A type-erased completion for a connection's handler (see [`LoopLink::post_task`]).
 #[doc(hidden)]
-pub type Task = Box<dyn std::any::Any + Send>;
+pub type Task = Box<dyn Any + Send>;
 
 /// What a [`Task`] holds for handler type `H`.
 pub(crate) type Completion<H> = Box<dyn FnOnce(&mut H, &Conn<H>) + Send>;
@@ -244,7 +245,7 @@ pub trait Transport: Send + 'static {
     /// The application is done sending: append the closing record(s), if any, to `out`.
     fn shutdown(&mut self, out: &mut Vec<u8>);
     /// For downcasting to the concrete transport.
-    fn as_any(&mut self) -> &mut dyn std::any::Any;
+    fn as_any(&mut self) -> &mut dyn Any;
     /// Short name for the connection table (`"tls"`, ...).
     fn name(&self) -> &'static str {
         "custom"
@@ -851,6 +852,9 @@ pub struct ConnInner {
     cfg: Arc<Config>,
     local: SocketAddr,
     peer: SocketAddr,
+    /// Set once by the layer that read the connection's first bytes (a PROXY header, ADR-095);
+    /// read without a lock.
+    attachment: OnceLock<Arc<dyn Any + Send + Sync>>,
 }
 
 #[doc(hidden)]
@@ -888,6 +892,7 @@ impl ConnInner {
             cfg,
             local,
             peer,
+            attachment: OnceLock::new(),
         })
     }
 
@@ -932,6 +937,7 @@ impl ConnInner {
             cfg,
             local,
             peer,
+            attachment: OnceLock::new(),
         })
     }
 
@@ -972,6 +978,7 @@ impl ConnInner {
             cfg,
             local,
             peer,
+            attachment: OnceLock::new(),
         })
     }
 
@@ -2537,6 +2544,20 @@ impl ConnInner {
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer
     }
+
+    /// Attaches `value` to the connection, once: a second call returns its value back. For a
+    /// layer that learned something before the handler ran (the PROXY protocol's addresses).
+    pub fn attach(
+        &self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> std::result::Result<(), Arc<dyn Any + Send + Sync>> {
+        self.attachment.set(value)
+    }
+
+    /// The value [`attach`](Self::attach)ed to the connection, if it is a `T`.
+    pub fn attachment<T: Any>(&self) -> Option<&T> {
+        self.attachment.get()?.downcast_ref::<T>()
+    }
 }
 
 /// A cloneable, thread-safe handle to a connection (ADR-002).
@@ -2591,6 +2612,13 @@ impl<H> Conn<H> {
     /// Process-unique connection id.
     pub fn id(&self) -> u64 {
         self.inner.id()
+    }
+
+    /// What a listener-side layer attached to this connection before its handler ran, if it is
+    /// a `T` (for instance `akio_mux::proxy::ProxyHeader`; ADR-095). At most one value is
+    /// attached per connection.
+    pub fn attachment<T: Any>(&self) -> Option<&T> {
+        self.inner.attachment::<T>()
     }
 
     /// Whether the connection is still open for sending.
