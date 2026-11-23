@@ -194,6 +194,10 @@ pub struct ThreadPlacement {
     pub cpus: Vec<usize>,
     /// The `SO_INCOMING_CPU` set on its listening socket, if any.
     pub incoming_cpu: Option<usize>,
+    /// io_uring with [`UringConfig::sqpoll`](crate::UringConfig::sqpoll): the CPU its ring's
+    /// kernel SQ polling thread is pinned to (`IORING_SETUP_SQ_AFF`), one of [`cpus`](Self::cpus).
+    /// The ring itself is created on a thread pinned to `cpus`, so its memory is on the node.
+    pub sq_thread_cpu: Option<usize>,
 }
 
 /// A node with the CPUs of it this process may use.

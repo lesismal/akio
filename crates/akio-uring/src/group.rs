@@ -15,7 +15,7 @@ use akio_core::{
     LoopStats, Pool,
 };
 
-use crate::reactor::{Cmd, Loop, LoopShared, Roster};
+use crate::reactor::{Cmd, Loop, LoopShared, RingPlace, Roster};
 use crate::ring;
 use akio_sys::ffi;
 
@@ -56,8 +56,9 @@ fn probe_here() -> Result<(), String> {
     if (maj, min) < (5, 19) {
         return Err(format!("kernel {rel} is older than 5.19"));
     }
-    let (ring, _) =
-        crate::reactor::make_ring_here(8, false).map_err(|e| format!("io_uring_setup: {e}"))?;
+    let ring = crate::reactor::make_ring_here(8, false, None)
+        .map_err(|e| format!("io_uring_setup: {e}"))?
+        .ring;
     if ring.features() & ring::FEAT_EXT_ARG == 0 {
         return Err("IORING_FEAT_EXT_ARG unsupported".into());
     }
@@ -80,6 +81,19 @@ fn probe_here() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Where loop `i` creates its ring, given the CPU sets `pins` of the group's loops: on its own
+/// set, and with `sqpoll` its SQPOLL thread on one CPU of that set, the first for the first loop
+/// with that set, the next for the next one (loops that share a whole-node set do not stack
+/// their polling threads on one CPU).
+fn ring_place(pins: &[Vec<usize>], i: usize, sqpoll: bool) -> RingPlace {
+    let cpus = pins.get(i).cloned().unwrap_or_default();
+    let sq_cpu = (sqpoll && !cpus.is_empty()).then(|| {
+        let before = pins[..i].iter().filter(|s| **s == cpus).count();
+        cpus[before % cpus.len()]
+    });
+    RingPlace { cpus, sq_cpu }
 }
 
 /// A group of io_uring I/O threads serving one listener.
@@ -124,6 +138,8 @@ struct LoopSlot {
     shared: Arc<LoopShared>,
     /// Built, not started yet.
     pending: Option<Loop>,
+    /// The CPU its ring's SQPOLL thread is pinned to.
+    sq_cpu: Option<usize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -230,7 +246,16 @@ impl UringGroup {
         for (thread, l) in listeners.into_iter().enumerate() {
             let ls = l.map(|l| vec![(thread, l)]).unwrap_or_default();
             slots.push(Self::make_loop(
-                thread, None, ls, &acceptor, &roster, addr, &cfg, &pool, &opts,
+                thread,
+                None,
+                ls,
+                &acceptor,
+                &roster,
+                addr,
+                &cfg,
+                &pool,
+                &opts,
+                &RingPlace::default(),
             )?);
         }
         roster.set(slots.iter().map(|s| s.shared.clone()).collect());
@@ -306,6 +331,7 @@ impl UringGroup {
         cfg: &Arc<Config>,
         pool: &Arc<Pool>,
         opts: &UringOptions,
+        place: &RingPlace,
     ) -> io::Result<LoopSlot> {
         let sh = match stats {
             Some(st) => LoopShared::with_stats(pool.clone(), cfg, st)?,
@@ -323,9 +349,11 @@ impl UringGroup {
             roster.clone(),
             cfg.clone(),
             opts,
+            place,
         )?;
         Ok(LoopSlot {
             shared: sh,
+            sq_cpu: lp.sq_cpu(),
             pending: Some(lp),
             handle: None,
         })
@@ -360,6 +388,11 @@ impl UringGroup {
     /// The CPU set loop `i` is pinned to (empty: not pinned).
     fn pin_of(&self, i: usize) -> Vec<usize> {
         lock(&self.pins).get(i).cloned().unwrap_or_default()
+    }
+
+    /// Where loop `i` creates its ring ([`ring_place`]).
+    fn place_of(&self, i: usize) -> RingPlace {
+        ring_place(&lock(&self.pins), i, self.opts.sqpoll)
     }
 
     /// Grows to `n > st.active` loops.
@@ -404,6 +437,7 @@ impl UringGroup {
                     &self.cfg,
                     &self.pool,
                     &self.opts,
+                    &self.place_of(i),
                 )?;
                 Self::spawn(i, &mut slot, self.pin_of(i))?;
                 if existed {
@@ -473,7 +507,27 @@ impl Group for UringGroup {
     }
 
     fn pin_threads(&self, cpus: Vec<Vec<usize>>) {
+        let mut st = lock(&self.state);
         *lock(&self.pins) = cpus;
+        // Loops built but not started get a ring created on their CPU set (ADR-088, update):
+        // the kernel allocates it on that node and pins an SQPOLL thread there. Best effort: a
+        // loop whose ring cannot be recreated keeps the one it was built with.
+        for (i, slot) in st.slots.iter_mut().enumerate() {
+            let place = self.place_of(i);
+            if place.cpus.is_empty() {
+                continue;
+            }
+            if let Some(lp) = slot.pending.as_mut() {
+                if lp.place_ring(&self.opts, &place).is_ok() {
+                    slot.sq_cpu = lp.sq_cpu();
+                }
+            }
+        }
+    }
+
+    fn sq_thread_cpus(&self) -> Vec<Option<usize>> {
+        let st = lock(&self.state);
+        st.slots[..st.active].iter().map(|s| s.sq_cpu).collect()
     }
 
     fn start(&self) -> io::Result<()> {
@@ -604,5 +658,32 @@ impl UringGroup {
                 "no I/O thread to serve the connection",
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_place_spreads_sqpoll_threads_over_a_shared_set() {
+        let node = vec![0, 1, 2, 3];
+        let pins = vec![node.clone(), vec![4], node.clone(), node, vec![5, 6]];
+        let at = |i, sqpoll| ring_place(&pins, i, sqpoll);
+        // Each loop creates its ring on its own set.
+        assert_eq!(at(1, false).cpus, vec![4]);
+        assert_eq!(at(1, false).sq_cpu, None);
+        // SQPOLL: the first loop with a set gets its first CPU, the next ones the next CPUs.
+        assert_eq!(at(0, true).sq_cpu, Some(0));
+        assert_eq!(at(1, true).sq_cpu, Some(4));
+        assert_eq!(at(2, true).sq_cpu, Some(1));
+        assert_eq!(at(3, true).sq_cpu, Some(2));
+        assert_eq!(at(4, true).sq_cpu, Some(5));
+        // Not pinned (no set, or past the end): no placement.
+        assert_eq!(ring_place(&[], 0, true), RingPlace::default());
+        assert_eq!(at(9, true), RingPlace::default());
+        // A set shared by more loops than it has CPUs wraps.
+        let one = vec![vec![7, 8]; 3];
+        assert_eq!(ring_place(&one, 2, true).sq_cpu, Some(7));
     }
 }
