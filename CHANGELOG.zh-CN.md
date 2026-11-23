@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：HTTP/3 服务端默认使用 QPACK 动态表；按 UDP 对端记住 QUIC 路由（akio-h3、akio-quic）
+
+ADR-102（2026-11-24）：
+
+- akio-h3：`H3Config::qpack_encoder_capacity` 默认改为 4096（原为 0），`H3ClientOptions` 仍为 0。
+  对提供动态表的对端（nghttp3：curl 的 libcurl-ngtcp2、h2load），响应的 `date`、`content-type`
+  等重复字段在第二次出现后变为一字节引用；不提供动态表的对端不受影响。`date` 现在会被插入
+  （每秒一个值）。设为 0 即恢复只用字面值的旧编码。
+- 修复（akio-h3）：开启编码器时，编码器流放不下的插入（连接发送缓冲区已满）会被丢弃，引用
+  它们的字段段永远无法解码。现在只在编码器流的发送余量之内插入。
+- akio-quic：发往 UDP 对端上次所用连接 ID 的短头部数据报直接交给该连接，不经端点与连接表的
+  锁；服务端连接经上次所用的 socket 发送，不查共享 socket 表。
+
 ### 新增：之后出现的接口上的 mDNS；来自未知子网的查询（akio-core、akio-webrtc）
 
 ADR-078 的第四次更新（2026-11-23），均为新增：
